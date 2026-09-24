@@ -1987,6 +1987,8 @@ int cmethod_takes_self_cls(Compiler *c, int si) {
     for (int nid = 0; nid < c->nt->count && !ans; nid++) {
       if (c->nscope[nid] != si) continue;
       if (nt_kind(c->nt, nid) == NK_SelfNode) { ans = 1; break; }
+      /* super in `self.new` constructs whichever class received the call */
+      if (comp_super_is_class_new(c, nid)) { ans = 1; break; }
       const char *ty = nt_type(c->nt, nid);
       if (ty && sp_streq(ty, "CallNode") && nt_ref(c->nt, nid, "receiver") < 0) {
         const char *nm = nt_str(c->nt, nid, "name");
@@ -8664,6 +8666,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
      chain and call the sp_<Cls>_s_ form (class methods take no instance
      self). The instance path below would miss `def self.x` entirely. */
   if (s->is_cmethod) {
+    if (comp_super_is_class_new(c, id)) { emit_super_class_new(c, id, b); return; }
     int cdef = -1;
     int cmi = p >= 0 ? comp_cmethod_in_chain(c, p, uname, &cdef) : -1;
     if (cmi < 0) {

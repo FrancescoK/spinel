@@ -258,6 +258,7 @@ int cmethod_takes_self_cls(Compiler *c, int si);
 const char *emit_cmethod_self_cls_arg(Compiler *c, int mi, int recv_cls, Buf *b);
 int ctor_needs_self_defaults(Compiler *c, int initm, int argc);
 void emit_ctor_alloc_init(Compiler *c, int cid, int initm, int argsNode, int call_id, Buf *b);
+void emit_super_class_new(Compiler *c, int id, Buf *b); /* super in `self.new` */
 extern const char *g_ctor_self;
 extern const char *g_ctor_self_deref;
 extern const char *g_arm_self;
