@@ -1279,6 +1279,7 @@ now work on current master:
 | Closures flowing through containers (`{op: ->(a,b){a+b}}[:op].call(2,3)`) | works |
 | `String#oct` (`0x`/`0b`/`0o` prefixes) and `Array#first` on empty → `nil` | works |
 | `send(:literal)` / `__send__("literal")` / `public_send(:literal)` on **implicit self** | works (resolved on the AST, so a `send(:` inside a string literal is left untouched) |
+| `alias` / `alias_method` inside a reopened `String` / `Integer` / `Float` / `Symbol` (`class String; alias starts_with? start_with?`), naming a builtin method or one the reopen defined | works on a concretely typed or implicit-self receiver; a poly (run-time-typed) receiver does not see the alias yet |
 | Hash variant inference (a wrong initial guess widens to poly transparently) | correct (a perf cost, not a correctness limit) |
 
 There is no Ruby self-host "bootstrap fixpoint" constraint: the C compiler is

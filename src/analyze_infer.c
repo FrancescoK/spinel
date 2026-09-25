@@ -1806,6 +1806,41 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (!has_user) return TY_POLY;
   }
 
+  /* `alias new old` / `alias_method :new, :old` in a reopened primitive
+     (`class String; alias starts_with? start_with?`). The reopen's ClassInfo
+     carries the alias, but a call on a String-typed receiver is resolved by
+     NAME against the builtin surface, which has never heard of `new`: the
+     emitter raised NoMethodError for a builtin target, and named a C
+     function that does not exist (sp_String_yell) for a target the reopen
+     itself defined. Resolve through the alias table once, on the node, so
+     every later pass and the emitter see the target name -- a builtin
+     method dispatches as the builtin, a reopen's own def as that def.
+     Receiverless inside the reopen (`def shout = up + "!"`) the class is the
+     scope's own. Only the primitives the reopen dispatch covers can reach
+     here: builtin_class_of_type names no other. */
+  {
+    int aci = -1;
+    if (recv >= 0) {
+      const char *bcn = builtin_class_of_type(infer_type(c, recv));
+      if (bcn) aci = comp_class_index(c, bcn);
+    }
+    else {
+      int si = id < c->nt->count ? c->nscope[id] : -1;
+      int k = si >= 0 ? c->scopes[si].class_id : -1;
+      if (k >= 0 && k < c->nclasses && c->classes[k].name &&
+          (sp_streq(c->classes[k].name, "String") || sp_streq(c->classes[k].name, "Integer") ||
+           sp_streq(c->classes[k].name, "Float") || sp_streq(c->classes[k].name, "Symbol")))
+        aci = k;
+    }
+    if (aci >= 0 && c->classes[aci].naliases > 0) {
+      const char *rn = comp_resolve_alias(c, aci, name);
+      if (rn && !sp_streq(rn, name)) {
+        nt_node_set_str((NodeTable *)nt, id, "name", rn);
+        name = nt_str(nt, id, "name");
+      }
+    }
+  }
+
   /* `Module.accessor.cmethod(...)` where the singleton accessor statically
      folds to a constant: dispatch as that constant's class method. This has to
      come BEFORE anything that decides by the receiver's type, because the
