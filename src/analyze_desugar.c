@@ -1189,7 +1189,20 @@ int desugar_reopen_implicit_self(Compiler *c) {
     if (c->node_cbody) c->node_cbody[sn] = c->node_cbody[id];
     nt_node_set_ref(nt, id, "receiver", sn);
     TyKind t = infer_type(c, id);
-    if (t == TY_UNKNOWN) { nt_node_set_ref(nt, id, "receiver", -1); continue; }
+    /* A boxed self (Object / Numeric / Array / Hash) keeps the receiver even
+       when the call cannot be typed yet: bare, it IS a call on self, and as
+       `self.m` an unresolved name is the same run-time NoMethodError the
+       explicit spelling gets -- reached only if the method runs. Taking the
+       receiver away left a bare unresolved call, which is refused at compile
+       time for the whole program: a module method copied into the live Hash
+       reopen (activesupport's DeepMergeable#deep_merge!, `merge!(other) do`)
+       refused `require "active_support/core_ext/hash/deep_merge"` outright
+       though nothing called it. A Range / Time / File / Class self holds one
+       builtin kind and still gives the name back for the top level. */
+    if (t == TY_UNKNOWN && !boxed_any && !sp_streq(cn, "Array") && !sp_streq(cn, "Hash")) {
+      nt_node_set_ref(nt, id, "receiver", -1);
+      continue;
+    }
     changed = 1;
   }
   return changed;
