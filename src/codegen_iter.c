@@ -240,7 +240,10 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
        because every other site inlined it (#4500). */
     Scope *encl = comp_scope_of(c, id);
     mi = -1;
-    if (encl && encl->class_id >= 0) {
+    /* inside an instance_eval/exec splice self is the rebound receiver */
+    if (g_ie_class_id >= 0 && (mi = comp_method_in_chain(c, g_ie_class_id, name, NULL)) >= 0)
+      recv_class = g_ie_class_id;
+    else if (encl && encl->class_id >= 0) {
       if (encl->is_cmethod) mi = comp_cmethod_in_chain(c, encl->class_id, name, NULL);
       if (mi < 0) {
         mi = comp_method_in_chain(c, encl->class_id, name, NULL);

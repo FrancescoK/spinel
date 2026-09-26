@@ -4418,6 +4418,14 @@ else {
     if (iec >= 0) {
       int imi = comp_method_in_chain(c, iec, name, NULL);
       if (imi >= 0) return method_call_ret(c, imi, id);
+      if (argc == 0)
+        for (int k = iec; k >= 0 && k < c->nclasses; k = c->classes[k].parent)
+          if (comp_is_reader(&c->classes[k], name)) {
+            char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", name);
+            TyKind rt = ivar_value_ty(&c->classes[iec], comp_ivar_index(&c->classes[iec], ivn));
+            if (rt != TY_UNKNOWN) return rt;
+            break;
+          }
     }
     int pk[64], npk = ie_poly_classes_at(c, id, pk, 64);
     TyKind pr = TY_UNKNOWN;
