@@ -21695,6 +21695,28 @@ int bare_call_class_owned(Compiler *c, int id) {
          comp_reader_in_chain(c, cid, name, NULL);
 }
 
+/* A receiverless call to a builtin reopen's OWN method (`def present? =
+   !blank?` inside `class String`): self is the builtin value -- const char *,
+   sp_RbVal, sp_Range, ... -- and emit_dispatch's cast of it to the user-struct
+   pointer was a C error for every one of them (blank.rb). Call it the way the
+   explicit-receiver reopen path does. Answers 1 when it emitted the call. */
+static int emit_reopen_own_call(Compiler *c, int id, int dispatch_cid, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || dispatch_cid < 0 || dispatch_cid >= c->nclasses) return 0;
+  const char *cn = c->classes[dispatch_cid].name;
+  if (!cn || !is_builtin_reopen(cn) || sp_streq(cn, "Toplevel")) return 0;
+  if (nt_ref(nt, id, "block") >= 0) return 0;
+  Scope *self = comp_scope_of(c, id);
+  if (!self || self->is_cmethod) return 0;
+  int mi = comp_method_in_chain(c, dispatch_cid, name, NULL);
+  if (mi < 0 || mi >= c->nscopes || c->scopes[mi].class_id != dispatch_cid || c->scopes[mi].is_cmethod) return 0;
+  buf_printf(b, "sp_%s_%s(%s", mc_reopen_cls(c, dispatch_cid, name), mc(name), g_self);
+  emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), ", ", b);
+  buf_puts(b, ")");
+  return 1;
+}
+
 /* The implicit-self member a receiverless call names: an attr reader on the
    dispatch class, or a method its own chain defines. Answers 1 when it emitted
    the call. Asked from two places -- in front of the Kernel arms, so a class
@@ -21743,6 +21765,7 @@ static int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
     return 1;
   }
   if (comp_method_in_chain(c, dispatch_cid, name, NULL) >= 0) {
+    if (emit_reopen_own_call(c, id, dispatch_cid, b)) return 1;
     emit_dispatch(c, dispatch_cid, name, g_self, nt_ref(nt, id, "arguments"),
                   nt_ref(nt, id, "block"), b);
     return 1;
@@ -33361,6 +33384,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           if (comp_method_in_chain(c, k, name, NULL) >= 0) { mi = k; break; }
         }
       }
+      if (mi >= 0 && emit_reopen_own_call(c, id, dispatch_cid, b)) return;
       if (mi >= 0) {
         emit_dispatch(c, dispatch_cid, name, g_self, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
         return;
