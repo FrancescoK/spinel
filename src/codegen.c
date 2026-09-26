@@ -10732,6 +10732,9 @@ void emit_regex_section(Compiler *c, Buf *b) {
   for (int aci = 0; aci < c->nclasses; aci++) {
     ClassInfo *ci = &c->classes[aci];
     if (ci->is_native_class || !ci->instantiated) continue;
+    /* the scan loop above skips these (the Toplevel pseudo-class, a builtin
+       reopen): no sp_<C>__gc_scan exists to tag */
+    if (is_builtin_reopen(ci->name)) continue;
     int is_exc_iv = ci->nivars > 0 && class_is_exc_subclass(c, aci);
     if (!class_needs_scan(ci) && !is_exc_iv) continue;   /* no scan emitted */
     const char *rn = class_ruby_name(c, aci) ? class_ruby_name(c, aci) : ci->name;
