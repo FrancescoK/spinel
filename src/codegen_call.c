@@ -884,6 +884,10 @@ static void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_
        cls_id names the container kind, which the runtime's predicates read */
     if (ai >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)) ? %d : ", tv, tv, ai);
     if (hi >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_t%d.cls_id)) ? %d : ", tv, tv, hi);
+    /* a shared-mutable string travels as a handle box, not the plain string
+       tag the String arm keys on; it is the String's too */
+    { int si = comp_class_index(c, "String");
+      if (si >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STRBUF) ? %d : ", tv, tv, si); }
   }
   buf_printf(b, "(_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id", tv, tv);
   for (unsigned i = 0; i < sizeof P / sizeof P[0]; i++) {
@@ -906,6 +910,7 @@ static void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_
   if (comp_class_index(c, "Range") >= 0) buf_puts(b, ")");
   if (comp_class_index(c, "Array") >= 0) buf_puts(b, ")");
   if (comp_class_index(c, "Hash") >= 0) buf_puts(b, ")");
+  if (comp_class_index(c, "String") >= 0) buf_puts(b, ")");
 }
 
 /* A poly receiver can hold a Class object at run time. The instance-method
@@ -7915,7 +7920,9 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
              alike), not the int payload (blank.rb) */
           else if (sp_streq(_dcn, "Numeric")) snprintf(_dself, sizeof _dself, "_t%d", tv);
           else if (sp_streq(_dcn, "Float")) snprintf(_dself, sizeof _dself, "_t%d.v.f", tv);
-          else if (sp_streq(_dcn, "String")) snprintf(_dself, sizeof _dself, "_t%d.v.s", tv);
+          /* a plain string box or a mutable handle: deref answers the live
+             text for the handle and is the identity for the plain box */
+          else if (sp_streq(_dcn, "String")) snprintf(_dself, sizeof _dself, "sp_poly_strbuf_deref(_t%d).v.s", tv);
           else if (sp_streq(_dcn, "Symbol")) snprintf(_dself, sizeof _dself, "(sp_sym)_t%d.v.i", tv);
           else if (sp_streq(_dcn, "NilClass")) snprintf(_dself, sizeof _dself, "0");
           /* Object's (and Array's) methods take self boxed */
@@ -9403,7 +9410,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           else if (sp_streq(_dcn2, "Float"))
             snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d.v.f", tv);
           else if (sp_streq(_dcn2, "String"))
-            snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d.v.s", tv);
+            snprintf(selfpbuf2, sizeof selfpbuf2, "sp_poly_strbuf_deref(_t%d).v.s", tv);
           else if (sp_streq(_dcn2, "Symbol"))
             snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_sym)_t%d.v.i", tv);
           else if (sp_streq(_dcn2, "NilClass"))
