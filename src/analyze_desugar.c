@@ -532,6 +532,93 @@ int desugar_blk_param_writes(Compiler *c) {
   return changed;
 }
 
+/* ---- `yield` inside a proc / lambda literal ----------------------------
+   A proc literal is a real closure -- its own C function -- and a `yield` in
+   it has no inlined caller's block to reach, so it raised LocalJumpError at
+   run time however the method was called. The block IS reachable as a
+   value: the method's &block parameter, captured by the closure like any
+   local (`b.call(x)` inside the proc always worked). So a yield in a
+   closure becomes `<bp>.call(args)` on the def's block parameter, and a def
+   with no named one gets `&__blk`. A block attached to any other call
+   (`each { yield }`) is inlined with its method and keeps its yield. */
+static int yic_is_closure_call(const NodeTable *nt, int node) {
+  if (nt_kind(nt, node) != NK_CallNode || nt_ref(nt, node, "block") < 0) return 0;
+  const char *nm = nt_str(nt, node, "name");
+  if (!nm) return 0;
+  int recv = nt_ref(nt, node, "receiver");
+  if (recv < 0) return sp_streq(nm, "proc") || sp_streq(nm, "lambda");
+  const char *rty = nt_type(nt, recv);
+  return sp_streq(nm, "new") && rty && sp_streq(rty, "ConstantReadNode") &&
+         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Proc");
+}
+/* bp == NULL: count the yields inside closures; else rewrite them */
+static int yic_walk(NodeTable *nt, int node, int in_closure, const char *bp) {
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode) return 0;
+  int hits = 0;
+  if (k == NK_YieldNode && in_closure) {
+    hits++;
+    if (bp) {
+      int rd = nt_new_node(nt, "LocalVariableReadNode");
+      if (rd >= 0) {
+        nt_node_set_str(nt, rd, "name", bp);
+        nt_node_set_type(nt, node, "CallNode");
+        nt_node_set_ref(nt, node, "receiver", rd);
+        nt_node_set_str(nt, node, "name", "call");
+        nt_node_set_ref(nt, node, "block", -1);
+        if (nt_ref(nt, node, "arguments") < 0) nt_node_set_ref(nt, node, "arguments", -1);
+      }
+    }
+    return hits;
+  }
+  int enter = in_closure || k == NK_LambdaNode;
+  if (yic_is_closure_call(nt, node)) {
+    /* the closure's body is inside; its arguments and receiver are not */
+    int nr = nt_num_refs(nt, node);
+    for (int i = 0; i < nr; i++) {
+      int ch = nt_ref_at(nt, node, i);
+      hits += yic_walk(nt, ch, ch == nt_ref(nt, node, "block") ? 1 : in_closure, bp);
+    }
+    return hits;
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) hits += yic_walk(nt, nt_ref_at(nt, node, i), enter, bp);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, node, i, &n);
+    for (int j = 0; j < n; j++) hits += yic_walk(nt, ids[j], enter, bp);
+  }
+  return hits;
+}
+int desugar_yield_in_closure(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_DefNode) continue;
+    int body = nt_ref(nt, id, "body");
+    if (body < 0) continue;
+    if (yic_walk(nt, body, 0, NULL) == 0) continue;
+    int pn = nt_ref(nt, id, "parameters");
+    if (pn < 0) {
+      pn = nt_new_node(nt, "ParametersNode"); if (pn < 0) continue;
+      nt_node_set_ref(nt, id, "parameters", pn);
+    }
+    int bpn = nt_ref(nt, pn, "block");
+    const char *bp = (bpn >= 0 && nt_kind(nt, bpn) == NK_BlockParameterNode) ? nt_str(nt, bpn, "name") : NULL;
+    if (!bp || !bp[0]) {
+      if (bpn < 0) { bpn = nt_new_node(nt, "BlockParameterNode"); if (bpn < 0) continue; nt_node_set_ref(nt, pn, "block", bpn); }
+      nt_node_set_str(nt, bpn, "name", "__blk");
+      bp = "__blk";
+    }
+    char bpc[300]; snprintf(bpc, sizeof bpc, "%s", bp);
+    yic_walk(nt, body, 0, bpc);
+    comp_grow_node_arrays(c);
+    changed = 1;
+  }
+  return changed;
+}
+
 /* Proc#>> / #<< with a Method operand: wrap the Method side in #to_proc at the
    AST, so composition always runs proc-to-proc. The to_proc emission builds a
    real trampoline proc that publishes its boxed result through the return
