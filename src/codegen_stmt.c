@@ -6437,7 +6437,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
 
   /* Inside a method that owns a proc-return frame: funnel every `return`
      through the single exit that pops the frame, storing the value first. */
-  if (g_method_pr_label && g_ensure_depth == 0) {
+  if (g_method_pr_label && g_ensure_depth == g_method_pr_ensure_depth) {
     emit_indent(b, indent);
     buf_puts(b, "{ ");
     if (g_method_pr_var) {

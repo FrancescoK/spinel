@@ -659,6 +659,13 @@ int g_loop_ensure_base = 0;     /* ensure depth at the innermost C-loop entry */
 int g_brk_exc_base = 0;         /* frame depth at the valued-break wrapper */
 int g_block_brk_exc_base = 0;   /* ... for yield-block re-entry (mirrors g_block_brk_ebase) */
 int g_method_pr_exc_depth = 0;
+/* ... and the ENSURE depth at that target. A `return` inside a yielding
+   method's body inlined under a caller's begin..ensure was routed through
+   the caller's frame (the frame route fired on any open ensure), which made
+   the CALLER return: a Logger#add early-out spliced under Dir.mktmpdir's
+   ensure ended the whole program silently. The funnel wins unless an ensure
+   opened INSIDE the spliced body since the label was installed. */
+int g_method_pr_ensure_depth = 0;
 /* Loop-invariant string-length hoisting: while a loop whose receiver string is
    not mutated in its body is being emitted, g_hoist_len_recv holds that
    receiver's AST local name and g_hoist_len_var the C temp caching its length;
