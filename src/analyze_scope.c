@@ -4244,37 +4244,8 @@ static void check_unrewritten_delegators(Compiler *c) {
   }
 }
 
-/* `const_get(name)` with a name known only at run time: constants are
-   resolved at compile time, so the call typed nothing and compiled silently,
-   and the first call on its value raised NoMethodError for "unknown" (#4843).
-   On a constant receiver desugar_dynamic_const_get has already made it a
-   lookup in a table of the module's constants; any other receiver (a class
-   held in a variable) is refused where it is written. A literal Symbol or
-   String name resolves. */
-static void check_dynamic_const_get(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  NT_FOREACH_KIND(nt, NK_CallNode, id) {
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, "const_get")) continue;
-    int args = nt_ref(nt, id, "arguments");
-    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    if (an < 1 || !av) continue;
-    NodeKind k = nt_kind(nt, av[0]);
-    if (k == NK_SymbolNode || k == NK_StringNode) continue;
-    /* a program that defines const_get itself is calling its own method */
-    int user = 0;
-    for (int ci = 0; ci < c->nclasses && !user; ci++)
-      if (comp_cmethod_in_class(c, ci, "const_get") >= 0 || comp_method_in_class(c, ci, "const_get") >= 0) user = 1;
-    if (user) continue;
-    unsupported_feature(c, id,
-      "const_get with a name known only at run time is not supported: constants "
-      "are resolved at compile time (use a literal name, or a Hash from names to classes)");
-  }
-}
-
 void resolve_parents(Compiler *c) {
   check_class_redeclarations(c);
-  check_dynamic_const_get(c);
   check_blk_param_writes(c);
   check_unrewritten_delegators(c);
   const NodeTable *nt = c->nt;

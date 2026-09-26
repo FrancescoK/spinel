@@ -1132,6 +1132,106 @@ int desugar_constant_path_self_alias(Compiler *c) {
   return changed;
 }
 
+/* `recv.const_get(name)` with a NAME known only at run time (a variable, a
+   method result, an interpolated string -- activesupport's constantize is
+   `Object.const_get(camel_cased_word)`). Every constant the program defines is
+   known here, so the call lowers to a static dispatch over those names, the
+   way a runtime `send` does over the program's method names: one synthesized
+   `recv.const_get(:Name)` arm per candidate, each typed by the fixpoint
+   through the literal rule that already resolves a class or a value, and
+   codegen emits `name == :N1 ? arm1 : ... : NameError`. The candidate set is
+   whole-program, so a runtime name matching none is genuinely undefined and
+   the NameError is CRuby's, not a lowering gap. The arm ids are stashed on the
+   call under "dyn_cget_arms". A receiverless call in a class method or class
+   body was given `self` by desugar_bare_const_get first. */
+int desugar_dynamic_const_get_arms(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  int changed = 0;
+  /* a user-defined const_get resolves normally; don't intercept */
+  for (int s = 0; s < c->nscopes; s++) { const char *sn = c->scopes[s].name;
+    if (sn && sp_streq(sn, "const_get")) return 0; }
+  int any = 0;
+  for (int id = 0; id < n0 && !any; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "const_get") || nt_ref(nt, id, "receiver") < 0) continue;
+    { int dn = 0; nt_arr(nt, id, "dyn_cget_arms", &dn); if (dn > 0) continue; }
+    int a = nt_ref(nt, id, "arguments"); if (a < 0) continue;
+    int ac = 0; const int *av = nt_arr(nt, a, "arguments", &ac);
+    if (ac < 1 || !av) continue;
+    NodeKind k0 = nt_kind(nt, av[0]);
+    if (k0 == NK_SymbolNode || k0 == NK_StringNode) continue;
+    any = 1;
+  }
+  if (!any) return 0;
+  /* the candidates: every constant the program writes or opens as a class or
+     module, by its own (last) name -- the flat namespace the literal rule
+     resolves in */
+  char **cand = NULL; int ncand = 0, candcap = 0;
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    const char *v = NULL;
+    if (k == NK_ConstantWriteNode) v = nt_str(nt, id, "name");
+    else if (k == NK_ClassNode || k == NK_ModuleNode) {
+      int cp = nt_ref(nt, id, "constant_path");
+      v = cp >= 0 ? nt_str(nt, cp, "name") : nt_str(nt, id, "name");
+    }
+    if (!v || !*v) continue;
+    int dup = 0;
+    for (int j = 0; j < ncand && !dup; j++) if (sp_streq(cand[j], v)) dup = 1;
+    if (dup) continue;
+    if (ncand == candcap) { candcap = candcap ? candcap * 2 : 32; cand = (char **)realloc(cand, sizeof(char *) * (size_t)candcap); }
+    cand[ncand++] = strdup(v);
+  }
+  if (ncand > 512) { for (int k = 512; k < ncand; k++) free(cand[k]); ncand = 512; }
+  for (int id = 0; id < n0 && ncand > 0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "const_get")) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) continue;
+    { int dn = 0; nt_arr(nt, id, "dyn_cget_arms", &dn); if (dn > 0) continue; }
+    int args = nt_ref(nt, id, "arguments");
+    if (args < 0) continue;
+    int argc = 0; const int *argv = nt_arr(nt, args, "arguments", &argc);
+    if (argc < 1 || !argv) continue;
+    NodeKind k0 = nt_kind(nt, argv[0]);
+    if (k0 == NK_SymbolNode || k0 == NK_StringNode) continue;
+    int nrest = argc - 1;
+    if (nrest > 8) continue;
+    int rest[8]; for (int k = 0; k < nrest; k++) rest[k] = argv[k + 1];
+    int base = nt->count;
+    int *arms = (int *)malloc(sizeof(int) * (size_t)ncand);
+    if (!arms) break;
+    int narm = 0;
+    for (int k = 0; k < ncand; k++) {
+      int sym = nt_new_node(nt, "SymbolNode"); if (sym < 0) break;
+      nt_node_set_str(nt, sym, "value", cand[k]);
+      int na = nt_new_node(nt, "ArgumentsNode"); if (na < 0) break;
+      int aa[9]; aa[0] = sym; for (int j = 0; j < nrest; j++) aa[j + 1] = rest[j];
+      nt_node_set_arr(nt, na, "arguments", aa, nrest + 1);
+      int call = nt_new_node(nt, "CallNode"); if (call < 0) break;
+      nt_node_set_ref(nt, call, "receiver", recv);
+      nt_node_set_str(nt, call, "name", "const_get");
+      nt_node_set_int(nt, call, "dyn_arm", 1);
+      nt_node_set_ref(nt, call, "arguments", na);
+      nt_node_set_ref(nt, call, "block", -1);
+      arms[narm++] = call;
+    }
+    nt_node_set_arr(nt, id, "dyn_cget_arms", arms, narm);
+    free(arms);
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    int cb = c->node_cbody ? c->node_cbody[id] : -1;
+    for (int j = base; j < nt->count; j++) { c->nscope[j] = encl; if (c->node_cbody) c->node_cbody[j] = cb; }
+    changed = 1;
+  }
+  for (int k = 0; k < ncand; k++) free(cand[k]);
+  free(cand);
+  return changed;
+}
+
 /* Proc#>> / #<< with a Method operand: wrap the Method side in #to_proc at the
    AST, so composition always runs proc-to-proc. The to_proc emission builds a
    real trampoline proc that publishes its boxed result through the return
@@ -9358,11 +9458,49 @@ static int cg_def(NodeTable *nt, int like, const char *mname, const char *op,
     nt_node_set_arr(nt, ust, "body", &rc, 1);
     nt_node_set_ref(nt, unl, "predicate", kq);
     nt_node_set_ref(nt, unl, "statements", ust);
+    /* a name that is no constant name (`const_get("lower")`) is CRuby's
+       other NameError, checked first:
+         raise NameError, "wrong constant name " + __cg_k unless __cg_k[0].between?("A", "Z") */
+    int c0 = fwd_new_node_like(nt, like, "CallNode");
+    int c0a = fwd_new_node_like(nt, like, "ArgumentsNode");
+    int i0 = fwd_new_node_like(nt, like, "IntegerNode");
+    nt_node_set_int(nt, i0, "value", 0);
+    nt_node_set_arr(nt, c0a, "arguments", &i0, 1);
+    nt_node_set_str(nt, c0, "name", "[]");
+    nt_node_set_ref(nt, c0, "receiver", cg_local_read(nt, like, "__cg_k"));
+    nt_node_set_ref(nt, c0, "arguments", c0a);
+    int bw = fwd_new_node_like(nt, like, "CallNode");
+    int bwa = fwd_new_node_like(nt, like, "ArgumentsNode");
+    int bwv[2] = { cg_str(nt, like, "A"), cg_str(nt, like, "Z") };
+    nt_node_set_arr(nt, bwa, "arguments", bwv, 2);
+    nt_node_set_str(nt, bw, "name", "between?");
+    nt_node_set_ref(nt, bw, "receiver", c0);
+    nt_node_set_ref(nt, bw, "arguments", bwa);
+    int cat2 = fwd_new_node_like(nt, like, "CallNode");
+    int cat2a = fwd_new_node_like(nt, like, "ArgumentsNode");
+    int cat2k = cg_local_read(nt, like, "__cg_k");
+    nt_node_set_arr(nt, cat2a, "arguments", &cat2k, 1);
+    nt_node_set_str(nt, cat2, "name", "+");
+    nt_node_set_ref(nt, cat2, "receiver", cg_str(nt, like, "wrong constant name "));
+    nt_node_set_ref(nt, cat2, "arguments", cat2a);
+    int rc2 = fwd_new_node_like(nt, like, "CallNode");
+    int rc2a = fwd_new_node_like(nt, like, "ArgumentsNode");
+    int ne2 = fwd_new_node_like(nt, like, "ConstantReadNode");
+    nt_node_set_str(nt, ne2, "name", "NameError");
+    int rav2[2] = { ne2, cat2 };
+    nt_node_set_arr(nt, rc2a, "arguments", rav2, 2);
+    nt_node_set_str(nt, rc2, "name", "raise");
+    nt_node_set_ref(nt, rc2, "arguments", rc2a);
+    int unl2 = fwd_new_node_like(nt, like, "UnlessNode");
+    int ust2 = fwd_new_node_like(nt, like, "StatementsNode");
+    nt_node_set_arr(nt, ust2, "body", &rc2, 1);
+    nt_node_set_ref(nt, unl2, "predicate", bw);
+    nt_node_set_ref(nt, unl2, "statements", ust2);
     int kr = cg_local_read(nt, like, "__cg_k");
     nt_node_set_arr(nt, args, "arguments", &kr, 1);
     nt_node_set_ref(nt, call, "receiver", cg_local_read(nt, like, "__cg_h"));
-    int stmts[4] = { wh, wk, unl, call };
-    nt_node_set_arr(nt, body, "body", stmts, 4);
+    int stmts[5] = { wh, wk, unl2, unl, call };
+    nt_node_set_arr(nt, body, "body", stmts, 5);
   }
   nt_node_set_str(nt, def, "name", mname);
   nt_node_set_ref(nt, def, "receiver", self);

@@ -1,0 +1,12 @@
+1
+2
+Carts::A
+9
+3
+"carts"
+3
+"Carts"
+4
+"uninitialized constant Carts::Nope"
+"uninitialized constant Nope"
+"wrong constant name lower"

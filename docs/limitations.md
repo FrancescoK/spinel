@@ -1020,27 +1020,30 @@ double, so that case raises `Math::DomainError` loudly (the class
 every float power to a boxed union. Compute via `Complex(x) ** y` where the
 complex result is really wanted.
 
-#### `const_get` takes a literal name
+#### `const_get` with a runtime name is a static dispatch
 
-Constants are resolved at compile time, so `const_get` has to name its
-constant as a literal Symbol or String:
-
-```ruby
-module Carts
-  TYPES = { 0 => :A, 1 => :B }
-  def self.build(t, x) = const_get(TYPES.fetch(t)).new(x)   # refused
-end
-```
-
-A name known only at run time is refused where it is written. Map the names
-to the classes themselves instead, which is the same table one step earlier:
+Constants are resolved at compile time, and every constant the program
+defines is known then, so `const_get` with a name known only at run time
+lowers to a dispatch over those names, the way a runtime `send` lowers over
+the program's method names: the arm whose name matches answers the constant,
+a class or a value, and a name matching none raises the `NameError` CRuby
+raises (`uninitialized constant Carts::Nope`, `wrong constant name lower`).
 
 ```ruby
 module Carts
-  TYPES = { 0 => A, 1 => B }
-  def self.build(t, x) = TYPES.fetch(t).new(x)
+  TYPES = { 0 => "A", 1 => "B" }
+  def self.build(t, x) = const_get(TYPES.fetch(t)).new(x)   # works
+  def self.constantize(name) = Object.const_get(name)         # activesupport's shape
 end
 ```
+
+The result is poly (any constant), so what follows is the boxed-value
+surface: `.new`, `.name`, `::CONST` on a class value all work. The
+candidates are the program's constants by their own name in the flat
+namespace the literal form resolves in, so a `"Outer::Inner"` path string is
+not matched and raises. The call needs a class or module receiver, explicit
+or the implicit self of a class method or class body; in an instance method
+an instance has no `const_get`, and the call is refused where it is written.
 
 #### `defined?(@ivar)` is answered at compile time
 
