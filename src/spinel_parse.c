@@ -4754,3 +4754,36 @@ char *sp_parse_file_to_text(const char *source_file, const char *argv0) {
   }
   return out.data;
 }
+
+/* Parse a Ruby snippet -- a class_eval string a desugar can read at compile
+   time -- into the text AST the entry program is loaded from: "ROOT n" and
+   the node lines, no file map. NULL when it does not parse. The flattener's
+   globals belong to the entry parse, which is over by the time this runs;
+   they are saved around the call and reset the way that parse resets them.
+   Line / file facts are left off: the desugar stamps the eval site's. */
+char *sp_parse_snippet_to_text(const char *src) {
+  if (!src) return NULL;
+  pm_parser_t parser;
+  pm_parser_init(&parser, (const uint8_t *)src, strlen(src), NULL);
+  pm_node_t *root = pm_parse(&parser);
+  if (parser.error_list.size > 0) {
+    pm_node_destroy(&parser, root);
+    pm_parser_free(&parser);
+    return NULL;
+  }
+  const pm_parser_t *saved_parser = g_parser;
+  int saved_emit_line = g_emit_line, saved_emit_end = g_emit_end;
+  char **saved_lines = lines; size_t saved_count = line_count, saved_cap = line_cap; int saved_counter = node_counter;
+  g_parser = &parser; g_emit_line = 0; g_emit_end = 0;
+  lines = NULL; line_count = 0; line_cap = 0; node_counter = 0;
+  int root_id = flatten(root);
+  SpStrBuf out = {0};
+  sb_printf(&out, "ROOT %d\n", root_id);
+  for (size_t i = 0; i < line_count; i++) { sb_puts(&out, lines[i]); sb_puts(&out, "\n"); free(lines[i]); }
+  free(lines);
+  lines = saved_lines; line_count = saved_count; line_cap = saved_cap; node_counter = saved_counter;
+  g_parser = saved_parser; g_emit_line = saved_emit_line; g_emit_end = saved_emit_end;
+  pm_node_destroy(&parser, root);
+  pm_parser_free(&parser);
+  return out.data;
+}
