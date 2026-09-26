@@ -33107,6 +33107,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         return;
       }
       if (!c->classes[ci].is_struct) {
+        /* the generic constructor path first: it fills the defaults, threads a
+           literal or forwarded block into a stored-block initialize and passes
+           NULL for an absent one. This arm ran ahead of it for a constant PATH
+           and rendered the positional arguments alone, so `NS::Reg.new` and
+           `NS::Reg.new { ... }` on an `initialize(o = nil, &blk)` were calls
+           with too few arguments (a plain `Reg.new` never came this way). */
+        if (emit_class_new_call(c, id, b)) return;
         buf_printf(b, "sp_%s_new(", c->classes[ci].c_name);
         int initm = comp_method_in_chain(c, ci, "initialize", NULL);
         if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
