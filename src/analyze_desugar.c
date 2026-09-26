@@ -9203,3 +9203,59 @@ int desugar_object_method_builtin_overrides(Compiler *c) {
   if (changed) comp_grow_node_arrays(c);
   return changed;
 }
+
+/* ---- `Klass.attr op= v` / `||=` / `&&=` on a class object ----
+   The attribute op-assign emitters serve object receivers; a CONSTANT
+   receiver (a class-level accessor, `Config.limit += 5`) was refused. The
+   receiver evaluates without effect, so the node becomes what Ruby defines:
+     Klass.a op= v   ->  Klass.a = Klass.a op v
+     Klass.a ||= v   ->  Klass.a || (Klass.a = v)     (&&= likewise) */
+static int ca_attr_call(NodeTable *nt, int recv, const char *name, int arg) {
+  int cl = nt_new_node(nt, "CallNode"); if (cl < 0) return -1;
+  nt_node_set_ref(nt, cl, "receiver", recv); nt_node_set_str(nt, cl, "name", name);
+  if (arg >= 0) {
+    int args = nt_new_node(nt, "ArgumentsNode"); if (args < 0) return -1;
+    nt_node_set_arr(nt, args, "arguments", &arg, 1);
+    nt_node_set_ref(nt, cl, "arguments", args);
+  }
+  else nt_node_set_ref(nt, cl, "arguments", -1);
+  nt_node_set_ref(nt, cl, "block", -1);
+  return cl;
+}
+int desugar_const_attr_op_assign(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty) continue;
+    int is_op = sp_streq(ty, "CallOperatorWriteNode"), is_or = sp_streq(ty, "CallOrWriteNode"), is_and = sp_streq(ty, "CallAndWriteNode");
+    if (!is_op && !is_or && !is_and) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || (nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode)) continue;
+    /* the dumper spells the attribute once, as `name`; the writer is name= */
+    const char *rn = nt_str(nt, id, "name");
+    int v = nt_ref(nt, id, "value");
+    if (!rn || !rn[0] || v < 0 || nt_ref(nt, id, "arguments") >= 0) continue;
+    char wn[200]; snprintf(wn, sizeof wn, "%s=", rn);
+    const char *op = is_op ? nt_str(nt, id, "binary_operator") : NULL;
+    if (is_op && !op) continue;
+    int recv2 = nt_clone_subtree(nt, recv); if (recv2 < 0) continue;
+    int read = ca_attr_call(nt, recv, rn, -1); if (read < 0) continue;
+    if (op) {
+      int opc = ca_attr_call(nt, read, op, v); if (opc < 0) continue;
+      int store = ca_attr_call(nt, recv2, wn, opc); if (store < 0) continue;
+      int na = nt_ref(nt, store, "arguments");
+      nt_node_reset(nt, id, "CallNode");
+      nt_node_set_ref(nt, id, "receiver", recv2); nt_node_set_str(nt, id, "name", wn);
+      nt_node_set_ref(nt, id, "arguments", na); nt_node_set_ref(nt, id, "block", -1);
+    }
+    else {
+      int store = ca_attr_call(nt, recv2, wn, v); if (store < 0) continue;
+      nt_node_reset(nt, id, is_or ? "OrNode" : "AndNode");
+      nt_node_set_ref(nt, id, "left", read); nt_node_set_ref(nt, id, "right", store);
+    }
+    changed = 1;
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
