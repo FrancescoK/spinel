@@ -599,41 +599,43 @@ collect(o, ctx.tbl)
 Give the parameter the argument's kind (an rbs seed, or call sites that all
 pass the same kind) or build the argument as a general Array.
 
-#### A block parameter is read-only
+#### A reassigned block parameter, and `yield` inside a proc literal
 
-Assigning to a method's `&block` parameter is refused at compile time:
-
-```ruby
-def fetch(key, &blk)
-  blk ||= proc { |k| raise KeyError, k }   # refused
-  ...
-end
-# spinel: t.rb:2: assignment to the block parameter &blk of `fetch` is not supported: ...
-```
-
-Write the same thing against a new local:
+Assigning to a method's `&block` parameter used to be refused where it was
+written. It now compiles as the rewrite that used to be asked for, done by
+the compiler: the parameter's value moves to a fresh local at the top of the
+body, the writes and later reads use that local, and `yield` and
+`block_given?` keep seeing the block the caller passed, which is CRuby's
+split too.
 
 ```ruby
 def fetch(key, &blk)
-  handler = blk || proc { |k| raise KeyError, k }
-  ...
+  blk ||= proc { |k| raise KeyError, k }   # works
+  blk.call(key)
+end
+
+def dispatch(*args, &block)                 # activesupport's BroadcastLogger
+  if block_given?
+    called, result = false, nil
+    block = proc { |*a| called ? result : (called = true; result = yield(*a)) }
+  end
+  targets.map { |t| t.send(:log, *args, &block) }
 end
 ```
 
-A method that yields is inlined at each call site, and there its block is
-not a value at all -- it is the caller's block, pasted in at the yields. A
-read of the parameter is answered from whether that call site passed one; a
-write has nowhere to go. A method that does not yield does hold its block in
-a real variable and could take the write, but which kind a method is depends
-on whether a `yield` appears anywhere in its body, so permitting it there
-would make an unrelated assignment stop compiling the day a `yield` is added
-elsewhere. One rule, decided by the line itself, is the one that stays usable.
+A `yield` inside a `proc` or `lambda` literal is the other half of that
+shape. The literal is a real closure, its own C function, with no inlined
+caller's block to reach, so the yield raised LocalJumpError at run time. It
+now calls the method's block parameter as a value, `blk.call(args)`, and a
+def with no named block parameter is given `&__blk` for the purpose. A
+block attached to any other call (`each { yield }`) is inlined with its
+method and keeps its `yield`.
 
-Little is given up. In CRuby a reassigned block parameter does not change
-what `yield` or `block_given?` see -- only later reads of the local -- so in
-a method that yields, the assignment rarely does what it appears to. A block
-argument that happens to share the name (`each { |blk| ... }`) is the block's
-own variable and is not affected, and neither is a nested `def`.
+A method whose block use is `block_given?` plus a value use of the parameter
+(`x = blk`, a capture in a proc, a `&blk` forward) takes the same lowering a
+method with a literal `yield` and a value use does: it is emitted as one
+function with the block as a real parameter rather than inlined per call
+site.
 
 #### A nested numeric table or an object array is boxed by reference
 
