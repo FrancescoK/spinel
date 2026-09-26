@@ -7523,6 +7523,15 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         else emit_str_expr(c, argv[1], b);
         buf_puts(b, ")");
       }
+      else if ((sp_streq(name, "gsub") || sp_streq(name, "sub")) && argc == 2 &&
+               comp_ntype(c, argv[0]) == TY_POLY && comp_ntype(c, argv[1]) != TY_STR_STR_HASH) {
+        /* a pattern that is a Regexp or a String only at runtime (an inflection
+           rule read out of a [pattern, replacement] pair): the runtime picks
+           the engine by its tag. The string-pattern path coerced the Regexp. */
+        buf_puts(b, "sp_poly_pat_gsub("); emit_boxed(c, argv[0], b);
+        buf_printf(b, ", %s, ", r); emit_str_expr(c, argv[1], b);
+        buf_printf(b, ", %d)", sp_streq(name, "sub") ? 1 : 0);
+      }
       else if (sp_streq(name, "split") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
         buf_printf(b, "sp_re_split(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
       }

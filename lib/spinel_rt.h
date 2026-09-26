@@ -13150,6 +13150,21 @@ static sp_PolyArray *sp_poly_flatten(sp_RbVal v) {
   SP_GC_ROOT(src);
   return sp_PolyArray_flatten(src);
 }
+/* String#gsub / #sub whose pattern is a poly value: a Regexp (the boxed
+   compiled pattern) or a String, decided at runtime -- activesupport's
+   inflection rules are [pattern, replacement] pairs of either kind, read
+   out of one array. Anything else is CRuby's TypeError. */
+static const char *sp_poly_pat_gsub(sp_RbVal pat, const char *s, const char *rep, int once) {
+  if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_REGEX && pat.v.p)
+    return once ? sp_re_sub((mrb_regexp_pattern *)pat.v.p, s, rep)
+                : sp_re_gsub((mrb_regexp_pattern *)pat.v.p, s, rep);
+  if (pat.tag == SP_TAG_STR || sp_poly_is_strbuf(pat)) {
+    const char *ps = sp_poly_recv_s(pat, once ? "sub" : "gsub");
+    return once ? sp_str_sub(s, ps, rep) : sp_str_gsub(s, ps, rep);
+  }
+  sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (expected Regexp)", sp_poly_class_name(pat)));
+  return s;
+}
 static sp_PolyArray *sp_poly_uniq(sp_RbVal v) {
   sp_PolyArray *src = sp_poly_arr_recv(v, "uniq");
   SP_GC_ROOT(src);

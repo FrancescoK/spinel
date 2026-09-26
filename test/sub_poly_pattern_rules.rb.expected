@@ -1,0 +1,11 @@
+"buses"
+"boxes"
+"carts"
+"cats"
+"people"
+"boy"
+"f0o"
+"boZ"
+"cb"
+["m!S!S!pp!", 2]
+TypeError: wrong argument type Integer (expected Regexp)
