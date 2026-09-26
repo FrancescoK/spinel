@@ -1051,6 +1051,13 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           int tsb = ++g_tmp, tob = ++g_tmp, tnb = ++g_tmp;
           buf_printf(b, "({ sp_String *_t%d = %s; const char *_t%d = sp_String_cstr(_t%d); (void)_t%d; ",
                      tsb, srefB, tob, tsb, tob);
+          /* gsub!/sub! answer nil when no SUBSTITUTION was made, which the
+             text comparison below cannot tell from a match that wrote the same
+             bytes (`"cats".sub!(/s$/, "s")`): the runtime's matched flag says.
+             Cleared in the prelude, ahead of a block form's loop, which the
+             emitter hoists there. */
+          int subm = sbi <= 1;
+          if (subm) buf_puts(g_pre ? g_pre : b, "sp_re_sub_matched = 0; ");
           nt_node_set_str((NodeTable *)nt, id, "name", SBANG[sbi].plain);
           Buf nbB; memset(&nbB, 0, sizeof nbB);
           emit_expr(c, id, &nbB);
@@ -1062,7 +1069,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           int tchg = ++g_tmp;
           buf_printf(b, "const char *_t%d = %s; ", tnb, nbB.p ? nbB.p : "");
           if (SBANG[sbi].nil_nc)
-            buf_printf(b, "int _t%d = !sp_str_eq(_t%d, _t%d); ", tchg, tob, tnb);
+            buf_printf(b, "int _t%d = !sp_str_eq(_t%d, _t%d)%s; ", tchg, tob, tnb, subm ? " || sp_re_sub_matched" : "");
           buf_printf(b, "sp_String_set_bin(_t%d, _t%d); ", tsb, tnb);
           free(nbB.p);
           if (SBANG[sbi].nil_nc)
@@ -1076,6 +1083,8 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "({ const char *_t%d = ", to); emit_expr(c, recv, b); buf_puts(b, "; (void)_t"); buf_printf(b, "%d; ", to);
       /* an in-place mutator on a frozen string raises FrozenError (#3003) */
       buf_printf(b, "if (sp_str_is_frozen_val(_t%d)) sp_raise_frozen_str(_t%d); ", to, to);
+      int subm2 = sbi <= 1;   /* gsub!/sub!: nil means no substitution, see above */
+      if (subm2) buf_puts(g_pre ? g_pre : b, "sp_re_sub_matched = 0; ");
       nt_node_set_str((NodeTable *)nt, id, "name", SBANG[sbi].plain);
       Buf nb; memset(&nb, 0, sizeof nb);
       emit_expr(c, id, &nb);
@@ -1084,7 +1093,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       free(nb.p);
       if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn2); }
       if (SBANG[sbi].nil_nc)
-        buf_printf(b, "sp_str_eq(_t%d, _t%d) ? NULL : _t%d; })", to, tn2, tn2);
+        buf_printf(b, "(sp_str_eq(_t%d, _t%d)%s) ? NULL : _t%d; })", to, tn2, subm2 ? " && !sp_re_sub_matched" : "", tn2);
       else
         buf_printf(b, "_t%d; })", tn2);
       return 1;

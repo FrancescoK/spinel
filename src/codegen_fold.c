@@ -1274,6 +1274,7 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_int _t%d = sp_re_match_at(sp_re_pat_%d, _t%d, _t%d);\n", tm, reidx, ts, tpos);
   }
   emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "if (_t%d < 0) { sp_String_append_bin(_t%d, _t%d + _t%d); break; }\n", tm, tout, ts, tpos);
+  emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_re_sub_matched = 1;\n");   /* the bang forms' nil contract */
   if (strpat) {
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_int _t%d = _t%d;\n", tms, tm);
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_int _t%d = _t%d + _t%d;\n", tme, tm, tnl);

@@ -55,6 +55,11 @@ extern SP_TLS const mrb_regexp_pattern *sp_re_last_pat;
 extern SP_TLS const char *sp_re_match_str;
 extern SP_TLS const char *sp_re_match_pre;
 extern SP_TLS const char *sp_re_match_post;
+/* Whether the last sub / gsub (regex or string pattern) found a match: the
+   bang forms answer nil when NO SUBSTITUTION was made, which is not the same
+   as the text being unchanged (`"cats".sub!(/s$/, "s")` matches and answers
+   the string). The emitter clears it before the call and reads it after. */
+extern SP_TLS int sp_re_sub_matched;
 const char *sp_re_pre_match(void);   /* $` , built on demand */
 const char *sp_re_post_match(void);  /* $' , built on demand */
 extern const char *sp_re_startup_err;
