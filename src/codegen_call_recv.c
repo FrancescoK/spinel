@@ -12702,6 +12702,18 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
                     " : (sp_raise_cls(\"ArgumentError\", \"wrong number of arguments\"), sp_box_nil()))",
                  tkeys, tsv, tkeys, tkeys, tsv, tkeys, tkeys);
     }
+    else if (g_poly_builtin_arm && (argc == 1 || argc == 2)) {
+      /* the builtin arm of a dispatch a user class owning `slice` opened: the
+         value is a builtin here, but the `[]` re-entry below would ask that
+         class's `[]` too and find no arm for an Array (#5114) */
+      if (argc == 1) {
+        buf_printf(b, "sp_poly_index_poly(_t%d, ", tsv); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      }
+      else {
+        buf_printf(b, "sp_poly_slice(_t%d, sp_poly_to_i(", tsv); emit_boxed(c, argv[0], b);
+        buf_puts(b, "), sp_poly_to_i("); emit_boxed(c, argv[1], b); buf_puts(b, "))");
+      }
+    }
     else if (argc == 1 || argc == 2) {
       g_argov_node[g_n_argov] = recv;
       snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tsv);

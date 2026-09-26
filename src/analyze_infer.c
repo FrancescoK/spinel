@@ -5243,6 +5243,24 @@ else {
          The rules above name the cases someone hit one at a time; this asks
          for every name, which is the same question an_poly_concrete asks from
          the other side. */
+      /* A user answer that is already poly needs no widening, but the
+         dispatch's default arm is still shaped from the builtin answer: not
+         recorded, a genuine Hash reaching `slice` beside a NodeSet#slice
+         answering an object or an element had no arm and raised (#5114).
+         Asked once per node per iteration, like the question below. */
+      if (found && !an_builtin_only && r == TY_POLY && recv >= 0 &&
+          c->poly_builtin_ty && id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN &&
+          (nat_found || an_user_defines_or_reads(c, name))) {
+        long pk = narrow_key(4, id, "");
+        int phit; (void)narrow_memo_get(pk, &phit);
+        if (!phit) {
+          an_builtin_only = 1;
+          TyKind pbt = infer_call(c, id);
+          an_builtin_only = 0;
+          narrow_memo_put(pk, (int)pbt);
+          if (pbt != TY_UNKNOWN && pbt != TY_VOID) c->poly_builtin_ty[id] = pbt;
+        }
+      }
       if (found && !an_builtin_only && r != TY_POLY && r != TY_UNKNOWN &&
           recv >= 0 && (nat_found || an_user_defines_or_reads(c, name))) {
         /* Asking costs a full re-inference of the call, and the same node is
