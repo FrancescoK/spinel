@@ -1200,12 +1200,18 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   if (argc != 1) return 0;
   int reidx = re_lit_index(c, argv[0]);
-  int strpat = 0;
+  int strpat = 0, dynre = 0;
   if (reidx < 0) {
+    /* a Regexp VALUE (a parameter, a reader, a local): the compiled pattern
+       itself at C level, hoisted once and scanned with like a literal's.
+       Only a literal was admitted before, so activesupport's
+       `word.gsub!(inflections.acronyms_underscore_regex) { ... }` fell to
+       a static NoMethodError. */
+    if (comp_ntype(c, argv[0]) == TY_REGEX) dynre = 1;
     /* a plain-String pattern: the same scan loop, matching by strstr (an
        empty needle degenerates to the zero-width branch, like CRuby) */
-    if (comp_ntype(c, argv[0]) != TY_STRING) return 0;
-    strpat = 1;
+    else if (comp_ntype(c, argv[0]) == TY_STRING) strpat = 1;
+    else return 0;
   }
   const char *p0 = block_param_name(c, block, 0); if (p0) p0 = rename_local(p0);
   int body = nt_ref(nt, block, "body");
@@ -1235,7 +1241,14 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
      NUL: `"a\0b".gsub(/./m) { }` walked one character and stopped. */
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_int _t%d = (sp_int)sp_str_byte_len(_t%d);\n", tslen, ts);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_String *_t%d = sp_String_new(\"\"); SP_GC_ROOT(_t%d);\n", tout, tout);
-  int tnd = 0, tnl = 0;
+  int tnd = 0, tnl = 0, tre = 0;
+  if (dynre) {
+    tre = ++g_tmp;
+    Buf pb; memset(&pb, 0, sizeof pb); emit_expr(c, argv[0], &pb);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "mrb_regexp_pattern *_t%d = %s;\n", tre, pb.p ? pb.p : "NULL");
+    free(pb.p);
+  }
   if (strpat) {
     tnd = ++g_tmp; tnl = ++g_tmp;
     Buf ab; memset(&ab, 0, sizeof ab); emit_str_expr(c, argv[0], &ab);
@@ -1253,6 +1266,9 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "sp_int _t%d = ({ const char *_h = strstr(_t%d + _t%d, _t%d); _h ? (sp_int)(_h - (_t%d + _t%d)) : (sp_int)-1; });\n",
                tm, ts, tpos, tnd, ts, tpos);
+  }
+  else if (dynre) {
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_int _t%d = sp_re_match_at(_t%d, _t%d, _t%d);\n", tm, tre, ts, tpos);
   }
   else {
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_int _t%d = sp_re_match_at(sp_re_pat_%d, _t%d, _t%d);\n", tm, reidx, ts, tpos);

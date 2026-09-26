@@ -10688,7 +10688,8 @@ int infer_block_params(Compiler *c) {
                                  sp_streq(name, "chars") || sp_streq(name, "lines") || sp_streq(name, "split")))
       pt = TY_STRING;  /* split { |piece| } yields each substring */
     else if ((rt == TY_STRING || rt == TY_POLY) &&
-             (sp_streq(name, "gsub") || sp_streq(name, "sub")))
+             (sp_streq(name, "gsub") || sp_streq(name, "sub") ||
+              sp_streq(name, "gsub!") || sp_streq(name, "sub!")))   /* the bang forms are rewritten to these */
       /* block receives the matched substring -- a String whatever the
          receiver's static type is, so a BOXED receiver yields one too. Left at
          TY_STRING for the typed receiver only, the poly form declared the
