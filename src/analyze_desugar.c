@@ -1144,16 +1144,16 @@ int desugar_constant_path_self_alias(Compiler *c) {
    top level defines is left alone, as is a Kernel function -- `puts` inside
    a Range method is Kernel#puts, not a method the Range answers. */
 static int reopen_kernel_name(const char *nm) {
+  /* Kernel FUNCTIONS: a bare `puts` is Kernel#puts whatever self is. A
+     method every object answers on itself (respond_to?, nil?, to_s, dup,
+     ...) is not here: bare, it IS a call on self, and giving it the
+     receiver lets the ordinary folds and dispatch answer it. */
   static const char *const set[] = {
     "puts", "print", "p", "pp", "printf", "format", "sprintf", "raise", "warn",
     "require", "require_relative", "loop", "lambda", "proc", "block_given?",
-    "rand", "srand", "sleep", "exit", "abort", "at_exit", "catch", "throw",
+    "rand", "srand", "sleep", "exit", "exit!", "abort", "at_exit", "catch", "throw",
     "binding", "caller", "gets", "open", "system", "exec", "fork", "spawn",
-    "Integer", "Float", "String", "Array", "Hash", "Rational", "Complex",
-    "freeze", "frozen?", "dup", "clone", "itself", "then", "tap", "instance_variable_get",
-    "instance_variable_set", "is_a?", "kind_of?", "respond_to?", "send", "__send__",
-    "public_send", "method", "methods", "object_id", "hash", "class", "nil?",
-    "inspect", "to_s", NULL };
+    "Integer", "Float", "String", "Array", "Hash", "Rational", "Complex", NULL };
   for (int k = 0; set[k]; k++) if (sp_streq(nm, set[k])) return 1;
   return 0;
 }
@@ -1171,9 +1171,16 @@ int desugar_reopen_implicit_self(Compiler *c) {
     Scope *sc = comp_scope_of(c, id);
     if (!sc || !sc->name || sc->is_cmethod || sc->class_id < 0 || sc->class_id >= c->nclasses) continue;
     const char *cn = c->classes[sc->class_id].name;
-    if (!cn || !(sp_streq(cn, "Range") || sp_streq(cn, "Time") ||
-                 sp_streq(cn, "File") || sp_streq(cn, "Class"))) continue;
-    if (comp_method_in_chain(c, sc->class_id, nm, NULL) >= 0) continue;   /* the reopen's own */
+    /* Object / Numeric: self is a boxed value of ANY class, so even the
+       reopen's own name goes through self -- `present?` inside
+       Object#presence reaches String#present? for a String, as Ruby's bare
+       call does. The others hold one builtin kind and call their own
+       directly. */
+    int boxed_any = cn && (sp_streq(cn, "Object") || sp_streq(cn, "Numeric"));
+    if (!cn || !(boxed_any || sp_streq(cn, "Range") || sp_streq(cn, "Time") ||
+                 sp_streq(cn, "File") || sp_streq(cn, "Class") ||
+                 sp_streq(cn, "Array") || sp_streq(cn, "Hash"))) continue;
+    if (!boxed_any && comp_method_in_chain(c, sc->class_id, nm, NULL) >= 0) continue;   /* the reopen's own */
     if (comp_method_index(c, nm) >= 0) continue;                            /* a top-level def */
     int sn = nt_new_node(nt, "SelfNode");
     if (sn < 0) continue;
