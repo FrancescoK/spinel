@@ -1858,6 +1858,15 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (g_promote_mode && argc == 0 && sp_streq(name, "to_i")) return TY_POLY;
     for (int q = 0; AN_POLY_RAW[q].n; q++)
       if (AN_POLY_RAW[q].ac == argc && sp_streq(name, AN_POLY_RAW[q].n)) return AN_POLY_RAW[q].t;
+    /* the exception accessors the emitter answers on a poly receiver
+       through sp_poly_exc_acc (a rescued exception in a union-typed local, a
+       `case msg when ::Exception` subject): a boxed value each, nil when
+       the exception has none -- `if msg.backtrace` in the logger gem's
+       Formatter was refused as a non-bool condition because the call had
+       no type at all */
+    if (argc == 0 && (sp_streq(name, "backtrace") || sp_streq(name, "result") ||
+                      sp_streq(name, "errno") || sp_streq(name, "key") || sp_streq(name, "receiver")))
+      return TY_POLY;
   }
 
   /* A retargeted `x.send(:m)` reaching a top-level def: see the codegen twin. */
