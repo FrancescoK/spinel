@@ -899,6 +899,10 @@ int re_lit_node(Compiler *c, int nid) {
       continue;
     const char *kn = nt_str(nt, k, "name");
     if (!kn || !sp_streq(kn, nm)) continue;
+    /* a local is its own scope's: a top-level `re = /x/` is not the `re`
+       parameter of a method, which resolved to that literal by name alone and
+       scanned with the wrong pattern (a parameter has no write at all) */
+    if (want_local && comp_scope_of(c, k) != comp_scope_of(c, nid)) continue;
     int v = nt_ref(nt, k, "value");
     if (want_const && v >= 0 && nt_type(nt, v) && sp_streq(nt_type(nt, v), "CallNode") &&
         nt_str(nt, v, "name") && sp_streq(nt_str(nt, v, "name"), "freeze"))
