@@ -6413,6 +6413,15 @@ int infer_ivar_types(Compiler *c) {
       }
       if (!sp_streq(ty, "InstanceVariableOperatorWriteNode"))
         vt = empty_container_write(c, vnode, vt, ci->ivar_types[iv]);
+      /* A Time slot's `+= n` / `-= n` with a numeric operand answers a Time
+         (Time + Integer / Float); unifying the RHS boxed the slot to poly
+         and `@t.hour` after it had no arm (the logger gem's Period). */
+      else if (sp_streq(ty, "InstanceVariableOperatorWriteNode") && ci->ivar_types[iv] == TY_TIME) {
+        const char *op2 = nt_str(nt, id, "binary_operator");
+        if (op2 && (sp_streq(op2, "+") || sp_streq(op2, "-")) &&
+            (vt == TY_INT || vt == TY_FLOAT || vt == TY_BIGINT))
+          vt = TY_TIME;
+      }
       /* A narrowed int table is pinned: its own write reads TY_POLY_ARRAY,
          and the two array kinds unify to the plain poly SCALAR -- re-deriving
          it here would replace the narrowed type with something strictly
