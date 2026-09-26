@@ -10031,9 +10031,31 @@ static void ple_build(Compiler *c) {
       ple_mark_escaped(c, nt_ref(nt, el[k], "value"));
     }
   }
+  /* ... and as a KEYWORD argument's value: `Logger.new(io, formatter: proc {
+     |sev, time, prog, msg| ... })`. The argument loop above marked the
+     KeywordHashNode itself, never the literal inside it, so the formatter's
+     params kept the int default and a String severity arrived as its
+     pointer. Same rule as a hash literal's values. */
+  NT_FOREACH_KIND(nt, NK_KeywordHashNode, id) {
+    int en = 0; const int *el = nt_arr(nt, id, "elements", &en);
+    for (int k = 0; k < en; k++) {
+      if (el[k] < 0 || !nt_type(nt, el[k]) || !sp_streq(nt_type(nt, el[k]), "AssocNode")) continue;
+      ple_mark_escaped(c, nt_ref(nt, el[k], "value"));
+    }
+  }
   NT_FOREACH_KIND(nt, NK_ArrayNode, id) {
     int en = 0; const int *el = nt_arr(nt, id, "elements", &en);
     for (int k = 0; k < en; k++) ple_mark_escaped(c, el[k]);
+  }
+  /* A proc literal that is the fallback of `||=` / `&&=` (`blk ||= proc { |k|
+     ... }`, the default for an absent block) shares its slot with a value
+     this scan cannot see, and the slot is called as a poly. It escapes. */
+  {
+    static const NodeKind orw[] = { NK_LocalVariableOrWriteNode, NK_LocalVariableAndWriteNode,
+                                    NK_InstanceVariableOrWriteNode, NK_InstanceVariableAndWriteNode };
+    for (unsigned q = 0; q < sizeof orw / sizeof orw[0]; q++) {
+      NT_FOREACH_KIND(nt, orw[q], id) ple_mark_escaped(c, nt_ref(nt, id, "value"));
+    }
   }
   /* A proc literal RETURNED from a method (an explicit `return ->(x){...}` or
      the body tail that is the implicit return) escapes: the caller invokes it
