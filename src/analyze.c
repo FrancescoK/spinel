@@ -21643,6 +21643,18 @@ void analyze_program(Compiler *c) {
        boxes each element. Either way a value instance here would be boxed. */
     if (s && (s->ret == TY_POLY || s->ret == TY_POLY_ARRAY)) c->classes[q].is_value_type = 0;
   }
+  /* An instance held in a class variable: the cvar is a file-scope static
+     initialized to NULL and GC-marked through its pointer, so its class must
+     be a heap object (a value type has no NULL and no pointer to mark). */
+  for (int i = 0; i < c->nclasses; i++) {
+    ClassInfo *ci = &c->classes[i];
+    for (int j = 0; j < ci->ncvars; j++) {
+      TyKind t = ci->cvar_types[j];
+      if (!ty_is_object(t)) continue;
+      int q = ty_object_class(t);
+      if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0;
+    }
+  }
   for (int id = 0; id < c->nt->count; id++) {
     const char *ty = nt_type(c->nt, id);
     if (!ty || !sp_streq(ty, "BlockNode")) continue;
