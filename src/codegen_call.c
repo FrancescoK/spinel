@@ -823,7 +823,9 @@ static int class_is_prim_reopen(Compiler *c, int k) {
   const char *n = c->classes[k].name;
   return sp_streq(n, "Integer") || sp_streq(n, "Float") ||
          sp_streq(n, "String") || sp_streq(n, "Symbol") ||
-         sp_streq(n, "NilClass") || sp_streq(n, "TrueClass") || sp_streq(n, "FalseClass");
+         sp_streq(n, "NilClass") ||
+         sp_streq(n, "TrueClass") || sp_streq(n, "FalseClass") ||
+         sp_streq(n, "Time") || sp_streq(n, "Range");
 }
 
 /* Whether a user exception class answers `name`: the dispatch key then has
@@ -870,6 +872,13 @@ static void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_
     {"SP_TAG_STR", "String"},  {"SP_TAG_SYM", "Symbol"},
     {"SP_TAG_NIL", "NilClass"},
   };
+  /* a boxed Time / Range is an OBJ box whose cls_id names the builtin, so
+     it has to be asked before the plain cls_id read below claims it */
+  {
+    int ti = comp_class_index(c, "Time"), ri = comp_class_index(c, "Range");
+    if (ti >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_TIME) ? %d : ", tv, tv, ti);
+    if (ri >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? %d : ", tv, tv, ri);
+  }
   buf_printf(b, "(_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id", tv, tv);
   for (unsigned i = 0; i < sizeof P / sizeof P[0]; i++) {
     int idx = comp_class_index(c, P[i].cls);
@@ -879,7 +888,16 @@ static void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_
     if (ti >= 0 || fi >= 0)
       buf_printf(b, " : _t%d.tag == SP_TAG_BOOL ? (_t%d.v.b ? %d : %d)", tv, tv,
                  ti >= 0 ? ti : 0x7fffffff, fi >= 0 ? fi : 0x7fffffff); }
+  /* a boxed bool is one of two classes, by its value (blank.rb reopens both) */
+  {
+    int ti = comp_class_index(c, "TrueClass"), fi = comp_class_index(c, "FalseClass");
+    if (ti >= 0 || fi >= 0)
+      buf_printf(b, " : _t%d.tag == SP_TAG_BOOL ? (_t%d.v.i ? %d : %d)", tv, tv,
+                 ti >= 0 ? ti : 0x7fffffff, fi >= 0 ? fi : 0x7fffffff);
+  }
   buf_puts(b, " : 0x7fffffff)");
+  if (comp_class_index(c, "Time") >= 0) buf_puts(b, ")");
+  if (comp_class_index(c, "Range") >= 0) buf_puts(b, ")");
 }
 
 /* A poly receiver can hold a Class object at run time. The instance-method
@@ -7871,7 +7889,9 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             continue;
           } }
         if (mi >= 0 && c->scopes[mi].nrequired == 0 &&
-            (scope_has_callable_symbol(c, mi) || scope_needs_proc_form(c, mi))) {
+            (scope_has_callable_symbol(c, mi) || scope_needs_proc_form(c, mi)) &&
+            !(c->classes[defcls].name && (sp_streq(c->classes[defcls].name, "Class") ||
+                                          sp_streq(c->classes[defcls].name, "File")))) {
           nd_callee(c, id, mi, defcls, 1);   /* one switch arm (#4557) */
           /* Build the call; append default values for any optional params
              not provided by the (zero-arg) call site. */
@@ -7882,7 +7902,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           const char *_dcn = c->classes[defcls].c_name;
           char _dself[320];
           int _dstruct = 0;   /* the receiver is a struct pointer in .v.p */
-          if (sp_streq(_dcn, "Integer") || sp_streq(_dcn, "Numeric")) snprintf(_dself, sizeof _dself, "_t%d.v.i", tv);
+          if (sp_streq(_dcn, "Integer")) snprintf(_dself, sizeof _dself, "_t%d.v.i", tv);
+          /* a Numeric reopen takes self BOXED (it serves Integer and Float
+             alike), not the int payload (blank.rb) */
+          else if (sp_streq(_dcn, "Numeric")) snprintf(_dself, sizeof _dself, "_t%d", tv);
           else if (sp_streq(_dcn, "Float")) snprintf(_dself, sizeof _dself, "_t%d.v.f", tv);
           else if (sp_streq(_dcn, "String")) snprintf(_dself, sizeof _dself, "_t%d.v.s", tv);
           else if (sp_streq(_dcn, "Symbol")) snprintf(_dself, sizeof _dself, "(sp_sym)_t%d.v.i", tv);
@@ -7892,6 +7915,13 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             snprintf(_dself, sizeof _dself, "_t%d", tv);
           else if (sp_streq(_dcn, "TrueClass") || sp_streq(_dcn, "FalseClass"))
             snprintf(_dself, sizeof _dself, "(int)_t%d.v.b", tv);
+          else if (sp_streq(_dcn, "NilClass")) snprintf(_dself, sizeof _dself, "0");
+          else if (sp_streq(_dcn, "TrueClass") || sp_streq(_dcn, "FalseClass")) snprintf(_dself, sizeof _dself, "(int)_t%d.v.i", tv);
+          else if (sp_streq(_dcn, "Array") || sp_streq(_dcn, "Hash") || sp_streq(_dcn, "Object"))
+            snprintf(_dself, sizeof _dself, "_t%d", tv);
+          /* a boxed Time / Range points at the value; the reopen takes it by value */
+          else if (sp_streq(_dcn, "Time") || sp_streq(_dcn, "Range"))
+            snprintf(_dself, sizeof _dself, "*(sp_%s *)_t%d.v.p", _dcn, tv);
           /* a by-value (value-type) class method takes self by value:
              dereference the boxed pointer instead of passing it (#2441) */
           else if (c->classes[defcls].is_value_type) {
@@ -7899,7 +7929,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           else { snprintf(_dself, sizeof _dself, "(sp_%s *)_t%d.v.p", _dcn, tv); _dstruct = 1; }
           /* a yielding candidate is called through its proc-form clone (#3399) */
           int pfi9 = scope_proc_form_of(c, mi);
-          buf_printf(&cb, "sp_%s_%s(%s", _dcn,
+          buf_printf(&cb, "sp_%s_%s(%s", mc_reopen_cls(c, defcls, c->scopes[mi].name),
                      mc(pfi9 >= 0 ? c->scopes[pfi9].name : c->scopes[mi].name), _dself);
           if (c->scopes[mi].nparams > 0) {
             const char *saved_self = g_self;
@@ -9350,8 +9380,16 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            a non-existent sp_<Prim> struct (#4219), as the zero-arg dispatch's
            arm already does. */
         { const char *_dcn2 = c->classes[defcls].c_name;
-          if (sp_streq(_dcn2, "Integer") || sp_streq(_dcn2, "Numeric"))
+          if (sp_streq(_dcn2, "Integer"))
             snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d.v.i", tv);
+          else if (sp_streq(_dcn2, "Numeric"))
+            snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d", tv);
+          else if (sp_streq(_dcn2, "NilClass"))
+            snprintf(selfpbuf2, sizeof selfpbuf2, "0");
+          else if (sp_streq(_dcn2, "TrueClass") || sp_streq(_dcn2, "FalseClass"))
+            snprintf(selfpbuf2, sizeof selfpbuf2, "(int)_t%d.v.i", tv);
+          else if (sp_streq(_dcn2, "Time") || sp_streq(_dcn2, "Range"))
+            snprintf(selfpbuf2, sizeof selfpbuf2, "*(sp_%s *)_t%d.v.p", _dcn2, tv);
           else if (sp_streq(_dcn2, "Float"))
             snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d.v.f", tv);
           else if (sp_streq(_dcn2, "String"))
@@ -9375,7 +9413,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            sibling arm at the default dispatch has spelled this out since
            #2441; without it the C build stopped the moment ceaea73e gave
            `join` a user arm and that user's class was a value type. */
-        buf_printf(&cb, "sp_%s_%s(%s%s", c->classes[defcls].c_name,
+        buf_printf(&cb, "sp_%s_%s(%s%s", mc_reopen_cls(c, defcls, c->scopes[mi].name),
                    mc(pfi8 >= 0 ? c->scopes[pfi8].name : c->scopes[mi].name),
                    c->classes[defcls].is_value_type ? "*" : "", selfpbuf2);
         const char *saved_self = g_self;
