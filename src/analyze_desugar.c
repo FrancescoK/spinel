@@ -438,6 +438,100 @@ int desugar_masgn_store_evidence(Compiler *c) {
   return changed;
 }
 
+
+/* ---- a def's &block parameter, reassigned ------------------------------
+   `block = proc { ... }` inside `def dispatch(..., &block)`, or the
+   `blk ||= proc { }` default: CRuby rebinds the local while `yield` and
+   `block_given?` keep seeing the block the caller passed. Spinel refused the
+   write where it was written (a yielding method is inlined at each call
+   site, where its block is not a value at all -- the parameter has nowhere to
+   take a write) and asked for the rewrite against a fresh local. This is
+   that rewrite, done by the compiler: the parameter's VALUE moves to a fresh
+   local `__bpv_<name>` assigned at the top of the body, every read and write
+   of the name in the body uses the local, and yield / block_given? stay on
+   the caller's block, which is exactly CRuby's split. A nested def is its own
+   scope; a block declaring its own `<name>` shadows the parameter inside it.
+   activesupport's BroadcastLogger#dispatch is the shape, and `require
+   "active_support"` itself runs through it. */
+static int bpw_kind_is_lvar(NodeKind k) {
+  return k == NK_LocalVariableReadNode || k == NK_LocalVariableWriteNode ||
+         k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode ||
+         k == NK_LocalVariableOperatorWriteNode || k == NK_LocalVariableTargetNode;
+}
+static int bpw_kind_is_write(NodeKind k) {
+  return k == NK_LocalVariableWriteNode || k == NK_LocalVariableOrWriteNode ||
+         k == NK_LocalVariableAndWriteNode || k == NK_LocalVariableOperatorWriteNode ||
+         k == NK_LocalVariableTargetNode;
+}
+static int bpw_locals_have(const char *locals, const char *nm) {
+  if (!locals || !nm) return 0;
+  size_t n = strlen(nm);
+  const char *p = locals;
+  while (*p) {
+    const char *e = strchr(p, ',');
+    size_t len = e ? (size_t)(e - p) : strlen(p);
+    if (len == n && strncmp(p, nm, n) == 0) return 1;
+    if (!e) break;
+    p = e + 1;
+  }
+  return 0;
+}
+/* rename == NULL: count the writes; else rename every read and write */
+static int bpw_walk(NodeTable *nt, int node, const char *bp, const char *rename) {
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode) return 0;
+  if ((k == NK_BlockNode || k == NK_LambdaNode) && bpw_locals_have(nt_str(nt, node, "locals"), bp)) return 0;
+  int hits = 0;
+  if (bpw_kind_is_lvar(k)) {
+    const char *nm = nt_str(nt, node, "name");
+    if (nm && sp_streq(nm, bp)) {
+      if (rename) nt_node_set_str(nt, node, "name", rename);
+      if (bpw_kind_is_write(k)) hits++;
+    }
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) hits += bpw_walk(nt, nt_ref_at(nt, node, i), bp, rename);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, node, i, &n);
+    for (int j = 0; j < n; j++) hits += bpw_walk(nt, ids[j], bp, rename);
+  }
+  return hits;
+}
+int desugar_blk_param_writes(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_DefNode) continue;
+    int pn = nt_ref(nt, id, "parameters");
+    if (pn < 0) continue;
+    int bpn = nt_ref(nt, pn, "block");
+    if (bpn < 0 || nt_kind(nt, bpn) != NK_BlockParameterNode) continue;
+    const char *bp = nt_str(nt, bpn, "name");
+    if (!bp || !bp[0]) continue;
+    int body = nt_ref(nt, id, "body");
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    if (bpw_walk(nt, body, bp, NULL) == 0) continue;
+    char nn[300]; snprintf(nn, sizeof nn, "__bpv_%s", bp);
+    bpw_walk(nt, body, bp, nn);
+    int rd = nt_new_node(nt, "LocalVariableReadNode"); if (rd < 0) continue;
+    nt_node_set_str(nt, rd, "name", bp);
+    int wr = nt_new_node(nt, "LocalVariableWriteNode"); if (wr < 0) continue;
+    nt_node_set_str(nt, wr, "name", nn);
+    nt_node_set_ref(nt, wr, "value", rd);
+    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+    int *nb = (int *)malloc(sizeof(int) * (size_t)(bn + 1));
+    if (!nb) continue;
+    nb[0] = wr; for (int j = 0; j < bn; j++) nb[j + 1] = bb[j];
+    nt_node_set_arr(nt, body, "body", nb, bn + 1);
+    free(nb);
+    comp_grow_node_arrays(c);
+    changed = 1;
+  }
+  return changed;
+}
+
 /* Proc#>> / #<< with a Method operand: wrap the Method side in #to_proc at the
    AST, so composition always runs proc-to-proc. The to_proc emission builds a
    real trampoline proc that publishes its boxed result through the return

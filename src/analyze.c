@@ -18282,6 +18282,7 @@ void analyze_program(Compiler *c) {
   desugar_builtin_reopen_methods(c);     /* class Hash; def m -> Object#m guarded by is_a?(Hash) */
   desugar_body_ivars(c);                 /* module-body @x read / in a block -> Mod.__spinel_civget_x */
   desugar_extended_module_attrs(c);
+  desugar_blk_param_writes(c);           /* `blk = proc {}` on a &blk param -> a fresh local */
   /* builtins/enumerable.rb, spliced by the parser: its definitions become
      the receiver-taking top-level functions before any scope is built */
   desugar_builtins(c);
