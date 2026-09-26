@@ -18985,6 +18985,7 @@ void analyze_program(Compiler *c) {
   desugar_extend_self(c);                /* `extend self` -> a def self.m twin per def */
   desugar_kernel_reopen(c);              /* module Kernel; def m -> a top-level def m */
   desugar_ffi_library_functions(c);   /* attach_function :f -> def self.f (the ffi gem) */
+  desugar_singleton_attr(c);             /* singleton_class.attr_accessor :x -> def self.x / def self.x= */
   /* builtins/enumerable.rb, spliced by the parser: its definitions become
      the receiver-taking top-level functions before any scope is built */
   desugar_builtins(c);
