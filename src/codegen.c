@@ -11871,8 +11871,13 @@ static void scan_prologue_features(Compiler *c) {
       /* A class a bundled library defines, named without requiring it. CRuby
          raises NameError at run time; here the unknown constant flows into
          the inference as an untyped value and the generated C can end up
-         ill-typed far from the cause, so say what is missing instead. */
-      {
+         ill-typed far from the cause, so say what is missing instead.
+         Only a TOP-LEVEL name is the library's: a path segment under a
+         parent (`ActiveSupport::JSON::Encoding`) names that module's own
+         constant, and telling it to `require "json"` refused every
+         activesupport file that reaches its JSON encoder. */
+      if (sp_streq(ty, "ConstantPathNode") && nt_ref(nt, i, "parent") >= 0) { /* nested */ }
+      else {
         static const struct { const char *cls, *feat; } PKG[] = {
           {"StringIO","stringio"}, {"CSV","csv"}, {"JSON","json"}, {"Set","set"},
           {"StringScanner","strscan"}, {"Base64","base64"}, {"Digest","digest"},
