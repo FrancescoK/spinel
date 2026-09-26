@@ -2820,6 +2820,13 @@ void qualify_colliding_classes(Compiler *c) {
        nested `class Store` elsewhere (activesupport's Cache::Store) shares
        that key and was refused as a merge; qualified, it is its own class. */
     if (!collide && ws[i].depth > 0 && qc_native_leaf_declared(c, ws[i].name)) collide = 1;
+    /* ... and the builtin classes the id table does not carry (Encoding is
+       a tag of its own, not a class id): walk_scope refuses a nested
+       `module Encoding` -- activesupport's ActiveSupport::JSON::Encoding --
+       by is_builtin_class_name, so qualify by the same predicate and the
+       refusal is never reached. A builtin MODULE's name (Comparable, Math)
+       reopens at any depth and is left alone. */
+    if (!collide && ws[i].depth > 0 && is_builtin_class_name(ws[i].name) && !is_builtin_module_name(ws[i].name)) collide = 1;
     if (!collide) { ws[i] = ws[--wn]; i--; continue; }
     any = 1;
   }
