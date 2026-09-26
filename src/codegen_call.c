@@ -20763,6 +20763,10 @@ static int emit_poly_isa_test(Compiler *c, const char *cn, const char *v, int ex
   else if (sp_streq(cn, "Encoding")) buf_printf(b, "%s.tag == SP_TAG_ENCODING", v);
   else {
     int cid = comp_class_index(c, cn);
+    /* a reopened builtin's entry (`class Time; def m`) is not the class a
+       boxed Time carries (SP_BUILTIN_TIME): the runtime ancestry answers
+       for it, as for a builtin with no entry */
+    if (cid >= 0 && is_builtin_reopen(cn) && builtin_class_id(cn) != 0) cid = -1;
     if (cid >= 0) {
       buf_printf(b, "(%s.tag == SP_TAG_OBJ && (", v);
       int first = 1;
@@ -23874,7 +23878,11 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       const char *ocR = rtR == TY_STRING ? "String"
                       : rtR == TY_INT ? "Integer"
                       : rtR == TY_FLOAT ? "Float"
-                      : rtR == TY_SYMBOL ? "Symbol" : NULL;
+                      : rtR == TY_SYMBOL ? "Symbol"
+                      : rtR == TY_RANGE ? "Range"
+                      : rtR == TY_TIME ? "Time"
+                      : rtR == TY_IO ? "File"
+                      : rtR == TY_CLASS ? "Class" : NULL;
       if (ocR) {
         int ciR = comp_class_index(c, ocR);
         int miR = ciR >= 0 ? comp_method_in_chain(c, ciR, nmR, NULL) : -1;
@@ -24281,6 +24289,28 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   }
   if (emit_dynamic_send(c, id, b)) return;   /* recv.send(runtime_name, args) static dispatch */
   if (emit_dynamic_respond_to(c, id, b)) return;   /* recv.respond_to?(runtime_name) static dispatch */
+  /* A program's own method on Range / Time / File / Class, ahead of the
+     builtin emitters for those receivers (the inference twin sits at the top
+     of infer_call_inner for the same reason: a reopen's name wins over the
+     builtin's, as in Ruby). */
+  {
+    int erecv = nt_ref(c->nt, id, "receiver");
+    TyKind ert = erecv >= 0 ? comp_ntype(c, erecv) : TY_VOID;
+    if (erecv >= 0 && (ert == TY_RANGE || ert == TY_TIME || ert == TY_IO || ert == TY_CLASS) &&
+        nt_ref(c->nt, id, "block") < 0) {
+      const char *ename = nt_str(c->nt, id, "name");
+      const char *ecn = ert == TY_RANGE ? "Range" : ert == TY_TIME ? "Time" : ert == TY_IO ? "File" : "Class";
+      int eci = comp_class_index(c, ecn);
+      int emi = (eci >= 0 && ename) ? comp_method_in_chain(c, eci, ename, NULL) : -1;
+      if (emi >= 0) {
+        buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, eci, ename), mc(ename));
+        emit_expr(c, erecv, b);
+        emit_args_filled(c, emi, nt_ref(c->nt, id, "arguments"), ", ", b);
+        buf_puts(b, ")");
+        return;
+      }
+    }
+  }
   if (emit_vis_refusal(c, id, b)) return;
   /* k = Struct.new(:a, :b): the registered anonymous struct class, as a
      first-class class value */
@@ -40467,6 +40497,10 @@ else {
     else if (rt == TY_INT)     oc_cn = "Integer";
     else if (rt == TY_FLOAT)   oc_cn = "Float";
     else if (rt == TY_SYMBOL)  oc_cn = "Symbol";
+    else if (rt == TY_RANGE)   oc_cn = "Range";
+    else if (rt == TY_TIME)    oc_cn = "Time";
+    else if (rt == TY_IO)      oc_cn = "File";
+    else if (rt == TY_CLASS)   oc_cn = "Class";
     if (oc_cn) {
       int oc_ci = comp_class_index(c, oc_cn);
       if (oc_ci >= 0) {

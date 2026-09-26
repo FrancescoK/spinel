@@ -2046,6 +2046,17 @@ static TyKind infer_call_inner(Compiler *c, int id) {
        (argc == 2 && sp_streq(name, "insert")) ||
        (argc == 0 && sp_streq(name, "clear"))))
     return TY_STRING;
+  /* A program's own method on Range / Time / File / Class, ahead of the
+     builtin rules for those receivers: the Time block below answers Integer
+     for a name it does not know, which typed `t.stamp` as an int slot around
+     a String-returning reopen. The scalar reopens (String, Integer, ...) keep
+     their place further down, where their rules have long been ordered. */
+  if (recv >= 0 && (rt == TY_RANGE || rt == TY_TIME || rt == TY_IO || rt == TY_CLASS)) {
+    const char *ecn = rt == TY_RANGE ? "Range" : rt == TY_TIME ? "Time" : rt == TY_IO ? "File" : "Class";
+    int eci = comp_class_index(c, ecn);
+    int emi = eci >= 0 ? comp_method_in_chain(c, eci, name, NULL) : -1;
+    if (emi >= 0) return method_call_ret(c, emi, id);
+  }
   /* A boxed-value hash whose values are all one class: its value reads are
      that class (nil included, as a NULL pointer), and `values` an array of it
      (#4846). */
@@ -4448,6 +4459,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     else if (rt == TY_FLOAT)   oc_cn = "Float";
     else if (rt == TY_SYMBOL)  oc_cn = "Symbol";
     else if (rt == TY_BOOL)    oc_cn = "TrueClass";
+    else if (rt == TY_RANGE)   oc_cn = "Range";
+    else if (rt == TY_TIME)    oc_cn = "Time";
+    else if (rt == TY_IO)      oc_cn = "File";
+    else if (rt == TY_CLASS)   oc_cn = "Class";
     if (oc_cn) {
       int oc_ci = comp_class_index(c, oc_cn);
       if (oc_ci >= 0) {
@@ -7838,6 +7853,10 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (sp_streq(cn, "TrueClass") || sp_streq(cn, "FalseClass") || sp_streq(cn, "NilClass")) return TY_BOOL;
     if (sp_streq(cn, "Array"))   return TY_POLY_ARRAY;
     if (sp_streq(cn, "Object"))  return TY_POLY;  /* dynamic: called on any receiver type */
+    if (sp_streq(cn, "Range"))   return TY_RANGE;
+    if (sp_streq(cn, "Time"))    return TY_TIME;
+    if (sp_streq(cn, "File"))    return TY_IO;
+    if (sp_streq(cn, "Class"))   return TY_CLASS;
     return ty_object(self_cls);
   }
   if (nk == NK_InstanceVariableReadNode) {

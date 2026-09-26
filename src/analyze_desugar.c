@@ -1132,6 +1132,62 @@ int desugar_constant_path_self_alias(Compiler *c) {
   return changed;
 }
 
+/* A receiverless call inside a program's own instance method on Range / Time /
+   File / Class (`class Range; def span = last - first`). Ruby resolves it on
+   self first, and self here is the builtin value; the scalar reopens
+   (String, Integer, ...) answer the same shape from a hand-kept table of
+   names in the inference and the emitter. Rather than a fifth table, the call
+   is given `self` as its receiver when the builtin answers the name: the
+   receiver is set, the call is typed, and a type the inference cannot give
+   (an unknown name, or one whose argument types have not settled yet) takes
+   the receiver away again for this round. A name the reopen or the program's
+   top level defines is left alone, as is a Kernel function -- `puts` inside
+   a Range method is Kernel#puts, not a method the Range answers. */
+static int reopen_kernel_name(const char *nm) {
+  static const char *const set[] = {
+    "puts", "print", "p", "pp", "printf", "format", "sprintf", "raise", "warn",
+    "require", "require_relative", "loop", "lambda", "proc", "block_given?",
+    "rand", "srand", "sleep", "exit", "abort", "at_exit", "catch", "throw",
+    "binding", "caller", "gets", "open", "system", "exec", "fork", "spawn",
+    "Integer", "Float", "String", "Array", "Hash", "Rational", "Complex",
+    "freeze", "frozen?", "dup", "clone", "itself", "then", "tap", "instance_variable_get",
+    "instance_variable_set", "is_a?", "kind_of?", "respond_to?", "send", "__send__",
+    "public_send", "method", "methods", "object_id", "hash", "class", "nil?",
+    "inspect", "to_s", NULL };
+  for (int k = 0; set[k]; k++) if (sp_streq(nm, set[k])) return 1;
+  return 0;
+}
+
+int desugar_reopen_implicit_self(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    if (nt_ref(nt, id, "receiver") >= 0) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || reopen_kernel_name(nm)) continue;
+    if (id >= c->node_cap) continue;
+    Scope *sc = comp_scope_of(c, id);
+    if (!sc || !sc->name || sc->is_cmethod || sc->class_id < 0 || sc->class_id >= c->nclasses) continue;
+    const char *cn = c->classes[sc->class_id].name;
+    if (!cn || !(sp_streq(cn, "Range") || sp_streq(cn, "Time") ||
+                 sp_streq(cn, "File") || sp_streq(cn, "Class"))) continue;
+    if (comp_method_in_chain(c, sc->class_id, nm, NULL) >= 0) continue;   /* the reopen's own */
+    if (comp_method_index(c, nm) >= 0) continue;                            /* a top-level def */
+    int sn = nt_new_node(nt, "SelfNode");
+    if (sn < 0) continue;
+    comp_grow_node_arrays(c);
+    c->nscope[sn] = c->nscope[id];
+    if (c->node_cbody) c->node_cbody[sn] = c->node_cbody[id];
+    nt_node_set_ref(nt, id, "receiver", sn);
+    TyKind t = infer_type(c, id);
+    if (t == TY_UNKNOWN) { nt_node_set_ref(nt, id, "receiver", -1); continue; }
+    changed = 1;
+  }
+  return changed;
+}
+
 /* Proc#>> / #<< with a Method operand: wrap the Method side in #to_proc at the
    AST, so composition always runs proc-to-proc. The to_proc emission builds a
    real trampoline proc that publishes its boxed result through the return
@@ -9581,7 +9637,11 @@ int desugar_builtin_reopen_self_calls(Compiler *c) {
  *   end
  */
 static const char *mo_guard_class(const char *cn) {
-  static const char *const B[] = { "Hash", "Time", "Range", "Regexp", "Proc", "Date",
+  /* Hash, Time and Range reopenings are modelled directly (a typed receiver
+     dispatches to the reopening's own method, a boxed one through the
+     dispatch key, and respond_to? sees them): the guard form is for the
+     builtins that model does not cover */
+  static const char *const B[] = { "Regexp", "Proc", "Date",
     "DateTime", "Rational", "Complex", NULL };
   for (int i = 0; B[i]; i++) if (sp_streq(B[i], cn)) return B[i];
   return NULL;

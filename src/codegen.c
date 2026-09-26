@@ -3251,6 +3251,10 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
     else if (sp_streq(cn, "TrueClass") || sp_streq(cn, "FalseClass") || sp_streq(cn, "NilClass")) { buf_puts(b, "int self"); }
     else if (sp_streq(cn, "Array"))   { buf_puts(b, "sp_RbVal self"); }
     else if (sp_streq(cn, "Object") || sp_streq(cn, "Numeric")) { buf_puts(b, "sp_RbVal self"); }
+    else if (sp_streq(cn, "Range"))   { buf_puts(b, "sp_Range self"); }
+    else if (sp_streq(cn, "Time"))    { buf_puts(b, "sp_Time self"); }
+    else if (sp_streq(cn, "File"))    { buf_puts(b, "sp_File *self"); }
+    else if (sp_streq(cn, "Class"))   { buf_puts(b, "sp_Class self"); }
     else {
       /* value-type reader methods take self by value; initialize keeps a
          pointer so it can populate the fields during construction. */
@@ -7263,7 +7267,13 @@ int is_builtin_reopen(const char *name) {
          sp_streq(name, "TrueClass") || sp_streq(name, "FalseClass") ||
          sp_streq(name, "NilClass")  || sp_streq(name, "Array")   ||
          sp_streq(name, "Object")    || sp_streq(name, "Numeric") ||
-         sp_streq(name, "Dir");
+         sp_streq(name, "Dir")       ||
+         /* runtime value types with a typedef of their own (sp_Range, sp_Time,
+            sp_File, sp_Class): a user struct under that name was a C-level
+            typedef collision before any call was reached (activesupport's
+            blank.rb reopens Range and Time) */
+         sp_streq(name, "Range")     || sp_streq(name, "Time") ||
+         sp_streq(name, "File")      || sp_streq(name, "Class");
 }
 
 /* Returns 1 if n is a known built-in exception class name. */

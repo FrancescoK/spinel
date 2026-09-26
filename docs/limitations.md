@@ -1280,6 +1280,7 @@ now work on current master:
 | `String#oct` (`0x`/`0b`/`0o` prefixes) and `Array#first` on empty → `nil` | works |
 | `send(:literal)` / `__send__("literal")` / `public_send(:literal)` on **implicit self** | works (resolved on the AST, so a `send(:` inside a string literal is left untouched) |
 | `alias` / `alias_method` inside a reopened `String` / `Integer` / `Float` / `Symbol` (`class String; alias starts_with? start_with?`), naming a builtin method or one the reopen defined | works on a concretely typed or implicit-self receiver; a poly (run-time-typed) receiver does not see the alias yet |
+| A program's own instance methods on `Range`, `Time`, `File` and `Class` (`class Range; def blank? = false`, `def span = last - first`), and class methods on `File` | works on a concretely typed receiver, with `self` the builtin value and a receiverless builtin call (`last`) resolving on it; a poly (run-time-typed) receiver does not reach the method yet. Used to be a C typedef collision (`sp_Range`) before any call |
 | Hash variant inference (a wrong initial guess widens to poly transparently) | correct (a perf cost, not a correctness limit) |
 
 There is no Ruby self-host "bootstrap fixpoint" constraint: the C compiler is
