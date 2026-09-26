@@ -4488,6 +4488,23 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
   source = sp_splice_named_builtin(source, argv0, "Gem", "builtins/gem.rb", &fsl, &fsl_n);
   source = sp_splice_named_builtin(source, argv0, "RbConfig", "builtins/rbconfig.rb", &fsl, &fsl_n);
   source = sp_splice_object_space(source, argv0, &fsl, &fsl_n);
+  /* The implicit Set splice above saw the ENTRY file only; a `Set.new` in
+     a required file (activesupport's notifications/fanout.rb) was invisible
+     to it, and the build stopped on the name without its require. Ask again
+     over the resolved program, the way the builtins splice below does, and
+     splice set.rb ahead of everything when it is named and was not
+     required: CRuby provides Set without a require wherever it is used. */
+  if (!sp_feature_required("set") && !strstr(source, "class Set") &&
+      source_references_set(source)) {
+    const char *head = "require \"set\"\n";
+    size_t sl = strlen(source), hl = strlen(head);
+    char *ns = (char *)malloc(sl + hl + 1);
+    if (ns) {
+      memcpy(ns, head, hl); memcpy(ns + hl, source, sl + 1);
+      free(source);
+      source = resolve_plain_requires(ns, argv0, &fsl, &fsl_n);
+    }
+  }
   source = sp_splice_builtins(source, argv0, &fsl, &fsl_n);
   source = sp_splice_builtin_extras(source, argv0, &fsl, &fsl_n);
   source = sp_splice_builtin_enumerator(source, argv0, &fsl, &fsl_n);
