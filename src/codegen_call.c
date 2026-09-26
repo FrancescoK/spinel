@@ -825,7 +825,8 @@ static int class_is_prim_reopen(Compiler *c, int k) {
          sp_streq(n, "String") || sp_streq(n, "Symbol") ||
          sp_streq(n, "NilClass") ||
          sp_streq(n, "TrueClass") || sp_streq(n, "FalseClass") ||
-         sp_streq(n, "Time") || sp_streq(n, "Range");
+         sp_streq(n, "Time") || sp_streq(n, "Range") ||
+         sp_streq(n, "Array") || sp_streq(n, "Hash");
 }
 
 /* Whether a user exception class answers `name`: the dispatch key then has
@@ -876,8 +877,13 @@ static void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_
      it has to be asked before the plain cls_id read below claims it */
   {
     int ti = comp_class_index(c, "Time"), ri = comp_class_index(c, "Range");
+    int ai = comp_class_index(c, "Array"), hi = comp_class_index(c, "Hash");
     if (ti >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_TIME) ? %d : ", tv, tv, ti);
     if (ri >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? %d : ", tv, tv, ri);
+    /* a boxed array / hash of any element kind is its reopen's; the box's
+       cls_id names the container kind, which the runtime's predicates read */
+    if (ai >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)) ? %d : ", tv, tv, ai);
+    if (hi >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_t%d.cls_id)) ? %d : ", tv, tv, hi);
   }
   buf_printf(b, "(_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id", tv, tv);
   for (unsigned i = 0; i < sizeof P / sizeof P[0]; i++) {
@@ -898,6 +904,8 @@ static void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_
   buf_puts(b, " : 0x7fffffff)");
   if (comp_class_index(c, "Time") >= 0) buf_puts(b, ")");
   if (comp_class_index(c, "Range") >= 0) buf_puts(b, ")");
+  if (comp_class_index(c, "Array") >= 0) buf_puts(b, ")");
+  if (comp_class_index(c, "Hash") >= 0) buf_puts(b, ")");
 }
 
 /* A poly receiver can hold a Class object at run time. The instance-method
@@ -9390,6 +9398,8 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             snprintf(selfpbuf2, sizeof selfpbuf2, "(int)_t%d.v.i", tv);
           else if (sp_streq(_dcn2, "Time") || sp_streq(_dcn2, "Range"))
             snprintf(selfpbuf2, sizeof selfpbuf2, "*(sp_%s *)_t%d.v.p", _dcn2, tv);
+          else if (sp_streq(_dcn2, "Array") || sp_streq(_dcn2, "Hash") || sp_streq(_dcn2, "Object"))
+            snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d", tv);
           else if (sp_streq(_dcn2, "Float"))
             snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d.v.f", tv);
           else if (sp_streq(_dcn2, "String"))
