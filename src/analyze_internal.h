@@ -358,6 +358,7 @@ int desugar_ie_bare_object_calls(Compiler *c);
 int desugar_bare_object_reopen_calls(Compiler *c);
 int desugar_match_predicate(Compiler *c);
 int desugar_masgn_store_evidence(Compiler *c);
+int desugar_index_assign_user_recv(Compiler *c);
 int desugar_compose_method_operand(Compiler *c);
 int desugar_method_curry(Compiler *c);
 int desugar_curry_arity_to_int(Compiler *c);
