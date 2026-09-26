@@ -544,6 +544,9 @@ const char *builtin_class_of_type(TyKind t) {
   if (t == TY_TIME) return "Time";
   if (t == TY_IO) return "File";
   if (t == TY_CLASS) return "Class";
+  if (t == TY_NIL) return "NilClass";
+  if (ty_is_array(t)) return "Array";
+  if (ty_is_hash(t)) return "Hash";
   return NULL;
 }
 

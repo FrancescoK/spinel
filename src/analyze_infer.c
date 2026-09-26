@@ -7086,8 +7086,16 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         if (oc_mi >= 0) return c->scopes[oc_mi].ret;
       }
     }
+    /* Hash reopening: any hash-typed receiver */
+    if (ty_is_hash(rt)) {
+      int oc_ci = comp_class_index(c, "Hash");
+      if (oc_ci >= 0) {
+        int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
+        if (oc_mi >= 0) return c->scopes[oc_mi].ret;
+      }
+    }
     /* Numeric reopening: integers and floats */
-    if (rt == TY_INT || rt == TY_FLOAT) {
+    if (rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) {
       int oc_ci = comp_class_index(c, "Numeric");
       if (oc_ci >= 0) {
         int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
@@ -7097,6 +7105,14 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     /* FalseClass methods (TrueClass already checked earlier for TY_BOOL) */
     if (rt == TY_BOOL) {
       int oc_ci = comp_class_index(c, "FalseClass");
+      if (oc_ci >= 0) {
+        int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
+        if (oc_mi >= 0) return c->scopes[oc_mi].ret;
+      }
+    }
+    /* NilClass methods on a receiver known to be nil */
+    if (rt == TY_NIL) {
+      int oc_ci = comp_class_index(c, "NilClass");
       if (oc_ci >= 0) {
         int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
         if (oc_mi >= 0) return c->scopes[oc_mi].ret;
@@ -7851,7 +7867,11 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (sp_streq(cn, "Float"))   return TY_FLOAT;
     if (sp_streq(cn, "Symbol"))  return TY_SYMBOL;
     if (sp_streq(cn, "TrueClass") || sp_streq(cn, "FalseClass") || sp_streq(cn, "NilClass")) return TY_BOOL;
-    if (sp_streq(cn, "Array"))   return TY_POLY_ARRAY;
+    /* an Array / Hash reopen takes self boxed (sp_RbVal): the receiver may
+       be any element kind. Typing it as the unboxed poly array handed
+       sp_PolyArray_length an sp_RbVal (#blank.rb) */
+    if (sp_streq(cn, "Array"))   return TY_POLY;
+    if (sp_streq(cn, "Hash"))    return TY_POLY;
     if (sp_streq(cn, "Object"))  return TY_POLY;  /* dynamic: called on any receiver type */
     if (sp_streq(cn, "Range"))   return TY_RANGE;
     if (sp_streq(cn, "Time"))    return TY_TIME;

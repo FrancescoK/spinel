@@ -40579,6 +40579,44 @@ else {
         return;
       }
     }
+    /* Hash reopening: any hash-typed receiver -> box to sp_RbVal */
+    if (ty_is_hash(rt)) {
+      int hc_ci = comp_class_index(c, "Hash");
+      int hc_mi = hc_ci >= 0 ? comp_method_in_chain(c, hc_ci, name, NULL) : -1;
+      if (hc_mi >= 0) {
+        buf_printf(b, "sp_Hash_%s(", mc(name));
+        emit_boxed(c, recv, b);
+        emit_args_filled(c, hc_mi, nt_ref(nt, id, "arguments"), ", ", b);
+        buf_puts(b, ")");
+        return;
+      }
+    }
+    /* NilClass methods on a receiver known to be nil (self is the `int self`
+       the bool reopens take; nil carries nothing) */
+    if (rt == TY_NIL) {
+      int nc_ci = comp_class_index(c, "NilClass");
+      int nc_mi = nc_ci >= 0 ? comp_method_in_chain(c, nc_ci, name, NULL) : -1;
+      if (nc_mi >= 0) {
+        buf_printf(b, "((void)("); emit_expr(c, recv, b);
+        buf_printf(b, "), sp_NilClass_%s(0", mc(name));
+        emit_args_filled(c, nc_mi, nt_ref(nt, id, "arguments"), ", ", b);
+        buf_puts(b, "))");
+        return;
+      }
+    }
+    /* Numeric reopening: an Integer / Float receiver whose own reopen (above)
+       did not answer; the inference twin has typed it. Self is boxed. */
+    if (rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) {
+      int nm_ci = comp_class_index(c, "Numeric");
+      int nm_mi = nm_ci >= 0 ? comp_method_in_chain(c, nm_ci, name, NULL) : -1;
+      if (nm_mi >= 0) {
+        buf_printf(b, "sp_Numeric_%s(", mc(name));
+        emit_boxed(c, recv, b);
+        emit_args_filled(c, nm_mi, nt_ref(nt, id, "arguments"), ", ", b);
+        buf_puts(b, ")");
+        return;
+      }
+    }
     /* Array reopening: any array-typed receiver -> box to sp_RbVal */
     if (ty_is_array(rt)) {
       int oc_ci2 = comp_class_index(c, "Array");
