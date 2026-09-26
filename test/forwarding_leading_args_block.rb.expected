@@ -1,0 +1,6 @@
+[[1], {x: 2}, 3]
+[[:lead, 1], {x: 2}, 3]
+[[], {}, nil]
+[:info, ["msg"], {}, nil]
+[:warn, ["w"], {level: 1}, :blk]
+[:info, [], {}, nil]

@@ -5404,6 +5404,21 @@ static int fwd_target_shape(const NodeTable *nt, int def, int call, int is_super
   }
   return fwd_class_value_new_shape(nt);
 }
+/* whether a def of `name` takes a *rest or **rest: a forward to it wants the
+   splat channels, where the direct model (one synthesized parameter per
+   forwarded argument) binds the first argument to the rest slot */
+static int def_has_rest_by_name(const NodeTable *nt, const char *name) {
+  for (int id = 0; id < nt->count; id++) {
+    if (!fwd_node_is(nt, id, "DefNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, name)) continue;
+    int pn = nt_ref(nt, id, "parameters");
+    if (pn < 0) continue;
+    if (fwd_node_is(nt, nt_ref(nt, pn, "rest"), "RestParameterNode") ||
+        fwd_node_is(nt, nt_ref(nt, pn, "keyword_rest"), "KeywordRestParameterNode")) return 1;
+  }
+  return 0;
+}
 static int fwd_new_node_like(NodeTable *nt, int like, const char *ty) {
   int id = nt_new_node(nt, ty);
   if (id < 0) return -1;
