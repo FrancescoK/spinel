@@ -2073,6 +2073,7 @@ void qc_qualified_name(char *out, size_t cap, const QCWrite *w) {
    == id. qc_def_cpath[id]: some Class/ModuleNode has constant_path == id. */
 static unsigned char *qc_cpath_parent = NULL;
 static unsigned char *qc_def_cpath = NULL;
+static int qc_retype_root_reads = 0;
 static void qc_build_reverse_flags(Compiler *c) {
   const NodeTable *nt = c->nt;
   int n = nt->count;
@@ -2089,6 +2090,11 @@ static void qc_build_reverse_flags(Compiler *c) {
     else if (sp_streq(qt, "ClassNode") || sp_streq(qt, "ModuleNode")) {
       int cp = nt_ref(nt, q, "constant_path");
       if (cp >= 0 && cp < n) qc_def_cpath[cp] = 1;
+    }
+    /* a `::X = v` / `::X ||= v` target is written through its path node */
+    else if (strncmp(qt, "ConstantPath", 12) == 0) {
+      int t = nt_ref(nt, q, "target");
+      if (t >= 0 && t < n) qc_def_cpath[t] = 1;
     }
   }
 }
@@ -2146,6 +2152,19 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
       char chain[QC_MAXDEPTH + 1][64];
       int abs_anchor = 0;
       int cl = qc_read_chain(nt, node, chain, &abs_anchor);
+      /* `::X` for a colliding class leaf: every nested X is about to be
+         renamed to its qualified name, so the bare name X is left naming only
+         the top-level X (a user class or the builtin). Read it as the bare
+         constant, which is what the builtin receivers (`File.binwrite`,
+         `Time.at`) are recognised by. */
+      if (cl == 1 && abs_anchor && qc_retype_root_reads &&
+          !(qc_def_cpath && qc_def_cpath[node])) {
+        for (int i = 0; i < wn; i++) {
+          if (!sp_streq(ws[i].name, chain[0])) continue;
+          nt_node_set_type((NodeTable *)nt, node, "ConstantReadNode");
+          break;
+        }
+      }
       if (cl >= 2) {
         const char *cname = chain[cl - 1];
         /* does this name participate in a collision? */
@@ -2310,7 +2329,9 @@ void qualify_colliding_classes(Compiler *c) {
        then qualify the nested definitions themselves */
     char mods[QC_MAXDEPTH][64];
     qc_build_reverse_flags(c);
+    qc_retype_root_reads = 1;
     qc_rewrite_reads(c, nt->root_id, mods, 0, ws, wn);
+    qc_retype_root_reads = 0;
     qc_free_reverse_flags();
     for (int i = 0; i < wn; i++) {
       if (ws[i].depth == 0) continue;
