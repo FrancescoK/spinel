@@ -11693,6 +11693,8 @@ static int an_local_has_alias(Compiler *c, const char *vn, Scope *vs) {
 }
 /* Is this argument node a shared-handle slot read (a str_shared local or a
    shared ivar)? */
+static int strbuf_container_stores_string(Compiler *c, const char *contn, Scope *conts);
+static int strbuf_container_stores_nonstring(Compiler *c, const char *contn, Scope *conts);
 static int an_arg_is_shared_handle(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (node < 0) return 0;
@@ -11712,6 +11714,19 @@ static int an_arg_is_shared_handle(Compiler *c, int node) {
     int iv = comp_ivar_index(&c->classes[cid], vn);
     return iv >= 0 && c->classes[cid].ivar_types[iv] == TY_STRBUF &&
            c->classes[cid].ivar_str_shared[iv];
+  }
+  /* `h[:k]` / `a[0]` -- an element of a container that holds strings. The
+     container-store rules make those elements shared handles as soon as one
+     is mutated through, so the element read hands a handle over the same way
+     a promoted local does; counting it as a plain value left the OTHER call
+     sites' plain locals unpromoted, and their appends died in a copy. */
+  if (container_elem_read_p(nt, node)) {
+    int cr = nt_ref(nt, node, "receiver");
+    if (cr < 0 || nt_kind(nt, cr) != NK_LocalVariableReadNode) return 0;
+    const char *cn = nt_str(nt, cr, "name");
+    Scope *cs = comp_scope_of(c, cr);
+    return cn && cs && strbuf_container_stores_string(c, cn, cs) &&
+           !strbuf_container_stores_nonstring(c, cn, cs);
   }
   return 0;
 }
@@ -13402,7 +13417,15 @@ static int convert_byref_handle_params(Compiler *c,
       LocalVar *pp = scope_local(m2, m2->pnames[pj]);
       if (!pp) continue;
       int is_handle = (pp->is_param && pp->type == TY_STRBUF && pp->str_shared);
-      if (!pp->byref_out && !is_handle) continue;
+      /* A POLY parameter the callee mutates in place takes the same pull: the
+         call sites disagreed on the argument's shape (a reader here, a hash
+         element there), so inference widened the parameter instead of making
+         it a handle. A handle arriving at one call site still means every
+         other call site has to hand one over -- boxed as a plain string, the
+         plain local was copied and the caller never saw the append. */
+      int poly_mut = (pp->is_param && pp->type == TY_POLY &&
+                      an_param_mutated_in_place(c, mi2, pj));
+      if (!pp->byref_out && !is_handle && !poly_mut) continue;
       /* one pass over this method's call sites: detect a handle arg, and
          (once converted) pull plain-local args into the shared set */
       int saw_handle = is_handle;

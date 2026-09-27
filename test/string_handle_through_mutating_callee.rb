@@ -50,3 +50,17 @@ def push_both2(x); x << "!"; end
 tt = +"a"; push_both2(tt); cc = Box.new; push_both2(cc.reader)
 p tt
 p cc.reader
+
+# one helper reached with a reader argument AND a container element: two
+# argument shapes that each demand the handle, through one parameter. The
+# reader's handle used to be wrapped in a fresh one (sp_String_new_shared
+# takes a value, not a handle) and the C build stopped.
+def push_mixed(x); x << "!"; end
+mb = Box.new; push_mixed(mb.reader)
+mh = { k: +"" }; push_mixed(mh[:k])
+ma = [+""];      push_mixed(ma[0])
+ml = +"a";       push_mixed(ml)
+p mb.reader
+p mh[:k]
+p ma[0]
+p ml
