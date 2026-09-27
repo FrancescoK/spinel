@@ -8486,10 +8486,31 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   if (mi < 0) return 0;
   Scope *m = &c->scopes[mi];
   if (!m->yields || scope_has_return(c, mi)) return 0;
+  if (g_nren + m->nlocals >= MAX_RENAME) return 0;
+  for (int i = 0; i < m->nlocals; i++) {
+    LocalVar *lv = &m->locals[i];
+    if (m->blk_param && lv->name && sp_streq(lv->name, m->blk_param)) continue;
+    if (!is_scalar_ret(lv->type)) return 0;
+  }
   int block = nt_ref(c->nt, id, "block");
   /* A bare `super` forwards the caller's block, which is the one currently
      being spliced into this (inlined) method. */
+  Buf fwd_pb; memset(&fwd_pb, 0, sizeof fwd_pb);
+  const char *fwd_yield_proc = NULL;
+  int explicit_block_arg = 0;
   if (block < 0) block = g_block_id;
+  /* So does `super(&)` or `super(&blk)` naming this method's block; a
+     forwarded real proc drives the yields instead, as in an inlined
+     `inner(&pr)`, and `super(&nil)` passes no block. */
+  else if (nt_kind(c->nt, block) == NK_BlockArgumentNode) {
+    block = resolve_forwarded_block(c, block);
+    if (block >= 0 && nt_kind(c->nt, block) == NK_BlockArgumentNode) {
+      emit_forwarded_proc_arg(c, block, &fwd_pb);
+      if (fwd_pb.p && !sp_streq(fwd_pb.p, "NULL")) fwd_yield_proc = fwd_pb.p;
+      explicit_block_arg = 1;
+      block = -1;
+    }
+  }
   /* No block to splice: the parent is still only ever inlined (a yielding
      method has no C function of its own), and the call to an undefined
      sp_<Cls>_<m> did not link (#4852). A caller holding its block as a proc
@@ -8497,16 +8518,9 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      synthesizes -- drives the parent's yields through that proc, as an
      inlined `inner(&blk)` does; with neither, `block_given?` folds false. */
   char yprocbuf[128];
-  const char *fwd_yield_proc = NULL;
-  if (block < 0 && s->blk_param && s->blk_param[0] && !s->yields) {
+  if (!explicit_block_arg && block < 0 && s->blk_param && s->blk_param[0] && !s->yields) {
     snprintf(yprocbuf, sizeof yprocbuf, "lv_%s", rename_local(s->blk_param));
     fwd_yield_proc = yprocbuf;
-  }
-  if (g_nren + m->nlocals >= MAX_RENAME) return 0;
-  for (int i = 0; i < m->nlocals; i++) {
-    LocalVar *lv = &m->locals[i];
-    if (m->blk_param && lv->name && sp_streq(lv->name, m->blk_param)) continue;
-    if (!is_scalar_ret(lv->type)) return 0;
   }
 
   int tag = ++g_tmp;
@@ -8534,7 +8548,10 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_block_param_name = m->blk_param;
   const char *saved_ypr = g_yield_proc_ref;
   TyKind saved_yslot = g_yield_slot_ty;
-  if (fwd_yield_proc) {
+  /* an explicit `&proc` or `&nil` replaces a lowered caller's own block */
+  int saved_low = g_current_scope_is_lowered;
+  if (explicit_block_arg) g_current_scope_is_lowered = 0;
+  if (fwd_yield_proc || explicit_block_arg) {
     g_yield_proc_ref = fwd_yield_proc;
     g_yield_slot_ty = as_expr ? comp_ntype(c, id) : TY_UNKNOWN;
   }
@@ -8614,6 +8631,8 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_block_brk_exc_base = saved_bbexc; g_brk_exc_base = saved_bexc;
   g_brk_ser_var = saved_ser; g_brk_ensure_base = saved_ebase;
   g_yield_proc_ref = saved_ypr; g_yield_slot_ty = saved_yslot;
+  g_current_scope_is_lowered = saved_low;
+  free(fwd_pb.p);
   return 1;
 }
 
