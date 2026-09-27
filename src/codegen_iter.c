@@ -998,7 +998,14 @@ void emit_yield_proc_call(Compiler *c, int args_node, TyKind result_ty, Buf *b, 
    mirroring the box/unbox handling of the requireds binding arm. */
 static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
   TyKind at = comp_ntype(c, node);
-  if (ot == TY_POLY && at != TY_POLY && at != TY_UNKNOWN) emit_boxed(c, node, b);
+  /* an empty `{}` / `[]` stays untyped, and emit_boxed gives it the poly form */
+  NodeKind nk = nt_kind(c->nt, node);
+  int empty_lit = 0;
+  if (at == TY_UNKNOWN && (nk == NK_HashNode || nk == NK_ArrayNode)) {
+    nt_arr(c->nt, node, "elements", &empty_lit);
+    empty_lit = empty_lit == 0;
+  }
+  if (ot == TY_POLY && ((at != TY_POLY && at != TY_UNKNOWN) || empty_lit)) emit_boxed(c, node, b);
   else if (at == TY_POLY && ot != TY_POLY && ot != TY_UNKNOWN) {
     Buf t; memset(&t, 0, sizeof t); emit_expr(c, node, &t);
     emit_unbox_text(c, ot, t.p ? t.p : "", b); free(t.p);

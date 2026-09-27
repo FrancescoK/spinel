@@ -7458,6 +7458,24 @@ static int pure_block_param(Compiler *c, Scope *s, const char *name) {
   return 1;
 }
 
+/* What one yield of `yv` binds to the block's oi-th optional parameter. A
+   lone Array auto-splats across a block with more than one binding slot (see
+   the as_elem gate in infer_block_params), and its runtime length decides
+   whether the optional gets an element or its default. Otherwise the
+   requireds before and after the optionals are filled first and the
+   optionals take what is left. */
+static TyKind block_opt_yield_type(Compiler *c, int block, const int *yv, int yc,
+                                   int p_pre, int p_opt, int p_post, int oi, TyKind dt) {
+  const NodeTable *nt = c->nt;
+  int slots = p_pre + p_opt + p_post;
+  if (yc == 1 && (slots > 1 || (slots >= 1 && block_rest_marker(c, block))) &&
+      !(nt_type(nt, yv[0]) && sp_streq(nt_type(nt, yv[0]), "SplatNode"))) {
+    TyKind yat = infer_type(c, yv[0]);
+    if (ty_is_array(yat)) return ty_unify(ty_unify(ty_array_elem(yat), TY_POLY), dt);
+  }
+  return oi < yc - p_pre - p_post ? infer_type(c, yv[p_pre + oi]) : dt;
+}
+
 int infer_block_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -8174,20 +8192,24 @@ int infer_block_params(Compiler *c) {
           if (lv->type != TY_POLY_ARRAY) { lv->type = TY_POLY_ARRAY; changed = 1; }
         }
         /* Optional block params (`|a, b=10|`): a yielded arg at the optional's
-           position types it; an omitted optional takes its default's type. */
-        int nreq_b = 0; while (block_param_name(c, block, nreq_b)) nreq_b++;
+           position types it; an omitted optional takes its default's type.
+           The requireds after the optionals are filled first, so only the
+           args left over past both required groups reach the optionals.
+           Every yield of the method binds the block, each with its own
+           arity. */
         for (int oi = 0; ; oi++) {
           const char *op = block_opt_name(c, block, oi);
           if (!op) break;
-          int yi = nreq_b + oi;
-          TyKind ot;
-          if (as_elem != TY_UNKNOWN) {
-            /* destructured: an optional binds an element or its default */
-            int dv = block_opt_default(c, block, oi);
-            ot = ty_unify(as_elem, dv >= 0 ? infer_type(c, dv) : TY_NIL);
+          int dv = block_opt_default(c, block, oi);
+          TyKind dt = dv >= 0 ? infer_type(c, dv) : TY_NIL;
+          TyKind ot = block_opt_yield_type(c, block, yargs, yc, p_pre, p_opt, p_post, oi, dt);
+          NT_FOREACH_KIND(nt, NK_YieldNode, _yi) {
+            if (c->nscope[_yi] != yld_mi || _yi == yn) continue;
+            int _ya2 = nt_ref(nt, _yi, "arguments");
+            int _yc2 = 0;
+            const int *_yv2 = _ya2 >= 0 ? nt_arr(nt, _ya2, "arguments", &_yc2) : NULL;
+            ot = ty_unify(ot, block_opt_yield_type(c, block, _yv2, _yc2, p_pre, p_opt, p_post, oi, dt));
           }
-          else if (yi < yc) ot = infer_type(c, yargs[yi]);
-          else { int dv = block_opt_default(c, block, oi); ot = dv >= 0 ? infer_type(c, dv) : TY_NIL; }
           LocalVar *lv = scope_local_intern(bs, op); lv->is_block_param = 1;
           TyKind m = ty_unify(lv->type, ot);
           if (m != lv->type) { lv->type = m; changed = 1; }
