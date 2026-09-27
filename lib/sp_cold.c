@@ -2787,7 +2787,15 @@ sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler) {SP_GC_ROOT_RBVAL(sig);S
     sp_trap_proc[no] = (sp_Proc *)handler.v.p;
     sp_trap_state[no] = NULL;
     if (no == 0) { static int armed = 0; if (!armed) { armed = 1; atexit(sp_sig_exit_dispatch); } }
-    else signal(no, sp_sig_c_handler);
+    else {
+      /* SA_NODEFER: a proc that raises leaves the handler by a jump, so the
+         kernel would never unblock the signal and the trap fires only once */
+      struct sigaction sa; memset(&sa, 0, sizeof sa);
+      sa.sa_handler = sp_sig_c_handler;
+      sigemptyset(&sa.sa_mask);
+      sa.sa_flags = SA_RESTART | SA_NODEFER;
+      sigaction(no, &sa, NULL);
+    }
   }
   else {
     const char *hs = (handler.tag == SP_TAG_STR && handler.v.s) ? handler.v.s : "DEFAULT";
