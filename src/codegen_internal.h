@@ -979,6 +979,7 @@ int emit_native_case_eq(Compiler *c, int cond, TyKind subj_t, const char *subj_r
 int exc_subclass_defines(Compiler *c, const char *name);
 int emit_value_recv_call(Compiler *c, int id, Buf *b);
 int emit_range_call(Compiler *c, int id, Buf *b);
+int emit_boxed_class_aref(Compiler *c, int id, Buf *b);
 int emit_poly_call(Compiler *c, int id, Buf *b);
 int diagnose_eval_call(Compiler *c, int id);
 int diagnose_unsupported_call(Compiler *c, int id);

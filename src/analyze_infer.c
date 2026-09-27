@@ -1447,6 +1447,25 @@ static TyKind an_self_call_ret(Compiler *c, Scope *self, const char *name, int m
   }
   return r;
 }
+/* `k[]` or `k[1, 2, 3]` on a boxed receiver: no builtin `[]` takes that
+   many arguments, so the call was left untyped; a Struct or Data class
+   value takes it as `new`, which the call's emitter branches to
+   (emit_boxed_class_aref), so in a program with such a class the call's
+   value is boxed. */
+static int boxed_struct_aref_may_construct(Compiler *c, int id) {
+  const char *nm = nt_str(c->nt, id, "name");
+  int recv = nt_ref(c->nt, id, "receiver");
+  if (!nm || !sp_streq(nm, "[]") || recv < 0 || comp_ntype(c, recv) != TY_POLY) return 0;
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    ClassInfo *k = &c->classes[ci];
+    if (!k->is_struct || is_builtin_reopen(k->name) || k->is_native_class) continue;
+    if (comp_cmethod_in_chain(c, ci, "[]", NULL) >= 0 ||
+        comp_cmethod_in_chain(c, ci, "new", NULL) >= 0) continue;
+    return 1;
+  }
+  return 0;
+}
+
 TyKind infer_call(Compiler *c, int id) {
   /* the class arm of a builtin's receiver test (`__r.is_a?(K) ? __r.m { }
      : ...`, enum_own) answers what the classes' own methods answer, as the
@@ -1471,6 +1490,7 @@ TyKind infer_call(Compiler *c, int id) {
     }
   }
   TyKind t = infer_call_inner(c, id);
+  if (t == TY_UNKNOWN && boxed_struct_aref_may_construct(c, id)) return TY_POLY;
   if (t == TY_UNKNOWN && builtin_arity_violation(c, id)) return TY_NIL;
   return t;
 }
