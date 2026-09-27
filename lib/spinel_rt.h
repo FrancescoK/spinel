@@ -9886,6 +9886,21 @@ static sp_RbVal sp_poly_fiber_value(sp_RbVal v) {
    codegen emits direct symbol references (sp_Thread_join_timeout) so
    the signatures must be visible here. */
 sp_thread *sp_Thread_join_timeout(sp_thread *t, double seconds);
+sp_PolyArray *sp_Thread_tls_keys(sp_thread *t);
+
+#if defined(SPINEL_EXT_HOST) || defined(SPINEL_EXT_KERNEL)
+sp_sym sp_sym_intern_n(const char *s, size_t n);
+#else
+static sp_sym sp_sym_intern_n(const char *s, size_t n);
+#endif
+static sp_sym sp_thread_local_key(sp_RbVal k) {
+  k = sp_poly_strbuf_deref(k);
+  SP_GC_ROOT_RBVAL(k);
+  if (k.tag == SP_TAG_SYM) return (sp_sym)k.v.i;
+  if (k.tag == SP_TAG_STR && k.v.s) return sp_sym_intern_n(k.v.s, sp_str_byte_len(k.v.s));
+  sp_raise_cls("TypeError", sp_sprintf("%s is not a symbol nor a string", sp_poly_inspect(k)));
+  return (sp_sym)0;
+}
 
 /* `poly.join(<number>)` can only be Thread#join(limit): Array#join with a
    numeric separator is a TypeError in CRuby, so a numeric argument leaves no
@@ -14072,6 +14087,7 @@ static inline const char *sp_poly_pack(sp_RbVal recv, const char *fmt) {
 static const char *sp_sym_to_s(sp_sym id) { (void)id; return sp_str_empty; }
 static const char *sp_class_to_s(sp_Class c) { return c.name ? c.name : sp_str_empty; }
 static sp_sym sp_sym_intern(const char *s) { (void)s; return (sp_sym)0; }
+static sp_sym sp_sym_intern_n(const char *s, size_t n) { (void)s; (void)n; return (sp_sym)0; }
 #endif
 
 #endif /* SP_RUNTIME_H */

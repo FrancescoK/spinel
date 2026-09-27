@@ -1,0 +1,28 @@
+5
+1
+1
+nil
+2
+true
+true
+"x"
+7
+[:a, :b, :name, :r, :zz]
+false
+[:a, :name, :r, :zz]
+5
+[:get, "1 is not a symbol nor a string"]
+[:set, "1 is not a symbol nor a string"]
+[:key, "1 is not a symbol nor a string"]
+[:get, "nil is not a symbol nor a string"]
+[:set, "nil is not a symbol nor a string"]
+[:key, "nil is not a symbol nor a string"]
+[:get, "1.5 is not a symbol nor a string"]
+[:set, "1.5 is not a symbol nor a string"]
+[:key, "1.5 is not a symbol nor a string"]
+[:get, "[1] is not a symbol nor a string"]
+[:set, "[1] is not a symbol nor a string"]
+[:key, "[1] is not a symbol nor a string"]
+[:w]
+3
+[:w]

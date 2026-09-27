@@ -2770,6 +2770,24 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "sp_Thread_tls_key("); emit_expr(c, recv, b); buf_puts(b, ", ");
       emit_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
     }
+    if (((sp_streq(name, "[]") || sp_streq(name, "key?")) && argc == 1) ||
+        (sp_streq(name, "[]=") && argc == 2)) {
+      int tt = ++g_tmp, tk = ++g_tmp, tv = ++g_tmp;
+      buf_printf(b, "({ sp_thread *_t%d = ", tt); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_RbVal _t%d = ", tk); emit_boxed(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tk);
+      if (argc == 2) {
+        buf_printf(b, " sp_RbVal _t%d = ", tv); emit_boxed(c, argv[1], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tv);
+      }
+      buf_printf(b, " sp_Thread_tls_%s(_t%d, sp_thread_local_key(_t%d)",
+                 argc == 2 ? "set" : sp_streq(name, "[]") ? "get" : "key", tt, tk);
+      if (argc == 2) buf_printf(b, ", _t%d", tv);
+      buf_puts(b, "); })"); return 1;
+    }
+    if (sp_streq(name, "keys") && argc == 0) {
+      buf_puts(b, "sp_Thread_tls_keys("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
   }
 
   /* Mutex instance methods. synchronize is handled by the generic block handler
