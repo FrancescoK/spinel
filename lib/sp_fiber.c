@@ -288,6 +288,13 @@ static void sp_fiber_fault_handler(int sig, siginfo_t *si, void *uctx) {
 #else
     sigprocmask(SIG_UNBLOCK, &m, 0);   /* one thread: the same mask */
 #endif
+#ifdef __APPLE__
+    /* _longjmp (sp_types.h) also leaves the kernel's on-alt-stack flag set,
+       so the next overflow's signal has nowhere to go and the process dies
+       of SIGILL. Clear it the way Darwin's longjmp does. */
+    { extern int __sigreturn(void *, int, uintptr_t);
+      __sigreturn(NULL, 0x80000000 /* UC_RESET_ALT_STACK */, 0); }
+#endif
     sp_stack_overflow_raise_fn();   /* returns only if no handler is armed */
     /* Nothing to rescue it: report it as the uncaught exception it is and
        leave, rather than letting the default disposition kill the process on
