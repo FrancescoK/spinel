@@ -2975,6 +2975,104 @@ static int anon_block_fwd_rewrite(Compiler *c, int node) {
   return changed;
 }
 
+static int module_is_extended(const NodeTable *nt, const char *mn) {
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "extend") || nt_ref(nt, id, "receiver") >= 0) continue;
+    int an = nt_ref(nt, id, "arguments");
+    int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+    for (int k = 0; k < ac; k++) {
+      NodeKind ak = nt_kind(nt, av[k]);
+      const char *anm = nt_str(nt, av[k], "name");
+      if ((ak == NK_ConstantReadNode || ak == NK_ConstantPathNode) && anm && sp_streq(anm, mn))
+        return 1;
+    }
+  }
+  return 0;
+}
+
+static int attr_as_def(NodeTable *nt, int call, const char *base, int writer) {
+  char mn[256], ivn[256];
+  snprintf(mn, sizeof mn, "%s%s", base, writer ? "=" : "");
+  snprintf(ivn, sizeof ivn, "@%s", base);
+  int iv = nt_new_node(nt, writer ? "InstanceVariableWriteNode" : "InstanceVariableReadNode");
+  int def = nt_new_node(nt, "DefNode");
+  int body = nt_new_node(nt, "StatementsNode");
+  if (iv < 0 || def < 0 || body < 0) return -1;
+  nt_node_set_str(nt, iv, "name", ivn);
+  if (writer) {
+    int pr = nt_new_node(nt, "RequiredParameterNode");
+    int ps = nt_new_node(nt, "ParametersNode");
+    int rd = nt_new_node(nt, "LocalVariableReadNode");
+    if (pr < 0 || ps < 0 || rd < 0) return -1;
+    nt_node_set_str(nt, pr, "name", "value");
+    nt_node_set_arr(nt, ps, "requireds", &pr, 1);
+    nt_node_set_str(nt, rd, "name", "value");
+    nt_node_set_ref(nt, iv, "value", rd);
+    nt_node_set_ref(nt, def, "parameters", ps);
+  }
+  nt_node_set_arr(nt, body, "body", &iv, 1);
+  nt_node_set_str(nt, def, "name", mn);
+  nt_node_set_ref(nt, def, "body", body);
+  static const char *const pos[] = { "node_line", "node_file", "node_col" };
+  for (int k = 0; k < 3; k++) {
+    long long v = nt_int(nt, call, pos[k], 0);
+    nt_node_set_int(nt, def, pos[k], v);
+    nt_node_set_int(nt, iv, pos[k], v);
+  }
+  return def;
+}
+
+void desugar_extended_module_attrs(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int m = 0; m < n0; m++) {
+    if (nt_kind(nt, m) != NK_ModuleNode) continue;
+    int cp = nt_ref(nt, m, "constant_path");
+    const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    int body = nt_ref(nt, m, "body");
+    int n = 0;
+    const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+    if (!mn || !st || !module_is_extended(nt, mn)) continue;
+    int *out = malloc(sizeof(int) * (size_t)(n * 2 + 64));
+    if (!out) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    int no = 0, cap = n * 2 + 64, rewrote = 0;
+    for (int k = 0; k < n; k++) {
+      int s = st[k];
+      const char *an = nt_kind(nt, s) == NK_CallNode && nt_ref(nt, s, "receiver") < 0 &&
+                       nt_ref(nt, s, "block") < 0 ? nt_str(nt, s, "name") : NULL;
+      int rd = an && (sp_streq(an, "attr_accessor") || sp_streq(an, "attr_reader"));
+      int wr = an && (sp_streq(an, "attr_accessor") || sp_streq(an, "attr_writer"));
+      int ar = nt_ref(nt, s, "arguments");
+      int ac = 0; const int *av = (rd || wr) && ar >= 0 ? nt_arr(nt, ar, "arguments", &ac) : NULL;
+      int ok = ac > 0;
+      for (int j = 0; j < ac && ok; j++) ok = nt_kind(nt, av[j]) == NK_SymbolNode && nt_str(nt, av[j], "value");
+      if (!ok) {
+        if (no == cap) { cap *= 2; out = realloc(out, sizeof(int) * (size_t)cap); if (!out) exit(1); }
+        out[no++] = s;
+        continue;
+      }
+      for (int j = 0; j < ac; j++) {
+        char base[256];
+        snprintf(base, sizeof base, "%s", nt_str(nt, av[j], "value"));
+        for (int w = 0; w < 2; w++) {
+          if (!(w ? wr : rd)) continue;
+          int d = attr_as_def(nt, s, base, w);
+          if (d < 0) continue;
+          if (no == cap) { cap *= 2; out = realloc(out, sizeof(int) * (size_t)cap); if (!out) exit(1); }
+          out[no++] = d;
+        }
+      }
+      rewrote = 1;
+    }
+    if (rewrote) {
+      nt_node_set_arr(nt, body, "body", out, no);
+      comp_grow_node_arrays(c);
+    }
+    free(out);
+  }
+}
+
 /* `def m(&) = keep(&)` -> `def m(&__anon_block) = keep(&__anon_block)`.
    An anonymous `&` had no name, so it was always yield-inlined: the analysis
    that decides whether a named &blk escapes (and must stay a real sp_Proc *
