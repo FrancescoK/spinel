@@ -12281,6 +12281,33 @@ static int promote_append_accumulators(Compiler *c) {
   return changed;
 }
 
+/* Does scope `mi` mutate its parameter `pi` in place (`p << x`, `p.gsub!`)?
+   The byref machinery answers the same question, but it is computed after the
+   fixpoint (compute_byref_out_params), so this pass -- which runs inside it --
+   asks the body directly. Only a plain local read of the parameter counts:
+   a rebind makes the name someone else's. */
+static int an_param_mutated_in_place(Compiler *c, int mi, int pi) {
+  if (mi < 0 || mi >= c->nscopes) return 0;
+  Scope *m = &c->scopes[mi];
+  if (pi < 0 || pi >= m->nparams || !m->pnames[pi]) return 0;
+  const char *pn = m->pnames[pi];
+  const NodeTable *nt = c->nt;
+  /* the callee's OWN calls, not the program's: the sweep below asks this for
+     every argument of every resolvable call site, every fixpoint round, and
+     the whole-table walk made that quadratic on a large program (the same
+     chain strbuf_slot_eligible_shape moved to) */
+  for (int u = comp_scall_first(c, mi); u >= 0; u = comp_scall_next(c, u)) {
+    if (nt_kind(nt, u) != NK_CallNode) continue;
+    const char *un = nt_str(nt, u, "name");
+    if (!un || !an_str_mutator_name(un)) continue;
+    int ur = nt_ref(nt, u, "receiver");
+    if (ur < 0 || nt_kind(nt, ur) != NK_LocalVariableReadNode) continue;
+    const char *urn = nt_str(nt, ur, "name");
+    if (urn && sp_streq(urn, pn)) return 1;
+  }
+  return 0;
+}
+
 static int promote_shared_stored_strings(Compiler *c) {
   int changed = 0;
   sb_store_valid = 0;   /* this run's store index is built on first use */
@@ -12472,6 +12499,147 @@ static int promote_shared_stored_strings(Compiler *c) {
       }
       if (any4 && !c->strbuf_box[mrecv]) { c->strbuf_box[mrecv] = 1; changed = 1; }
     }
+  }
+
+  /* An ivar handed to a parameter the CALLEE mutates (`push(obj.buf)`,
+     `push(@buf)`). The mutation census keys on the mutator's RECEIVER, and
+     here that receiver is the callee's parameter -- a different scope -- so
+     the ivar recorded no mutation of its own and stayed a plain value. The
+     call site then read it into a temp, lent the temp to the byref slot, and
+     the appends died with it: the caller's string came back empty, with no
+     error (the #5112 fix covered mutation THROUGH the reader, not mutation of
+     what the reader HANDED OUT).
+
+     Promote the ivar to the shared handle, the same conclusion the external
+     reader-mutation rule above reaches for `expr.reader << x`, and mark the
+     argument's read so it hands out the handle rather than a safe copy. */
+  for (int cu = comp_kind_first(c, NK_CallNode); cu >= 0; cu = comp_kind_next(c, cu)) {
+    if (nt_kind(nt, cu) != NK_CallNode) continue;
+    /* only a call we can pin to one body: the callee is what says whether the
+       argument is mutated, and a receiver we cannot resolve has no single one */
+    int curecv = nt_ref(nt, cu, "receiver");
+    if (curecv >= 0) {
+      NodeKind rk = nt_kind(nt, curecv);
+      if (rk != NK_SelfNode && rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) continue;
+    }
+    const char *cun = nt_str(nt, cu, "name");
+    if (!cun) continue;
+    int cmi = an_any_scope_by_name(c, cun);
+    if (cmi < 0) continue;
+    int cargs = nt_ref(nt, cu, "arguments");
+    int cargc = 0;
+    const int *cargv = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cargc) : NULL;
+    for (int j = 0; j < cargc && j < c->scopes[cmi].nparams; j++) {
+      if (!an_param_mutated_in_place(c, cmi, j)) continue;
+      int an5 = cargv[j];
+      char ivb5[300]; int defc5 = -1; const char *ivn5 = NULL;
+      int box_node = -1;
+      /* Only a reader CALL. A bare `@buf` argument is an lvalue the caller
+         can lend, and the byref out-param already carries the mutation back
+         -- including through an inlined yielding callee, which binds the
+         parameter as an alias of that very slot. Promoting those to handles
+         took the address of an rvalue instead (test
+         inline_yield_string_param_alias). A reader call has no slot to lend:
+         that is the case with nothing else to fall back on. */
+      if (nt_kind(nt, an5) == NK_CallNode) {
+        int rr5 = nt_ref(nt, an5, "receiver");
+        if (rr5 < 0) continue;
+        TyKind rt5 = infer_type(c, rr5);
+        /* `push(h[:k])` / `push(arr[0])` -- an element read. The container's
+           strings have to become handles together, or the element read stays
+           a copy and the callee fills it instead of the stored string. The
+           same demand the container-store rules make when a shared string is
+           put IN; here the evidence arrives from what is done to what comes
+           OUT. Without this arm a program mixing both argument shapes through
+           one callee got two incompatible ABIs for one parameter and the C
+           build stopped. */
+        if ((ty_is_array(rt5) || ty_is_hash(rt5)) &&
+            nt_kind(nt, rr5) == NK_LocalVariableReadNode) {
+          const char *cn5 = nt_str(nt, rr5, "name");
+          Scope *cs5 = comp_scope_of(c, rr5);
+          if (cn5 && cs5 && strbuf_demand_container_stores(c, cn5, cs5)) changed = 1;
+          continue;
+        }
+        /* `push(obj.buf)` -- a reader call over an object-typed receiver */
+        if (!ty_is_object(rt5)) continue;
+        defc5 = ty_object_class(rt5);
+        ivn5 = an_reader_ivar_of(c, an5, &defc5, ivb5, sizeof ivb5);
+        box_node = an5;
+      }
+      if (!ivn5 || defc5 < 0) continue;
+      if (strbuf_ivar_mut_kind(c, defc5, ivn5) < 0) continue;
+      if (strbuf_promote_ivar(c, defc5, ivn5)) changed = 1;
+      { int iv5 = comp_ivar_index(&c->classes[defc5], ivn5);
+        if (iv5 < 0 || !c->classes[defc5].ivar_str_shared[iv5]) continue; }
+      if (box_node >= 0 && !c->strbuf_box[box_node])
+        { c->strbuf_box[box_node] = 1; changed = 1; }
+      /* The parameter takes the handle too. Left a plain String it would be
+         promoted to the byref out-param ABI instead (compute_byref_out_params
+         keys on TY_STRING), and the call site has no lvalue to lend for a
+         reader call -- it would materialise a temp, which is the copy we just
+         removed. A handle needs no lending: `<<` through it mutates the one
+         buffer, which is what the ivar now is. Every method of this name has
+         to agree, since a call site resolves by name. */
+      { const char *gn5 = c->scopes[cmi].name;
+        int all5 = 1;
+        for (int k5 = 1; gn5 && k5 < c->nscopes; k5++) {
+          Scope *m5 = &c->scopes[k5];
+          if (!m5->name || !sp_streq(m5->name, gn5)) continue;
+          if (j >= m5->nparams || !m5->pnames[j]) { all5 = 0; break; }
+          LocalVar *q5 = scope_local(m5, m5->pnames[j]);
+          if (!q5 || !q5->is_param || q5->is_block_param || q5->rbs_seeded ||
+              (q5->type != TY_STRING && q5->type != TY_STRBUF)) { all5 = 0; break; }
+        }
+        for (int k5 = 1; all5 && gn5 && k5 < c->nscopes; k5++) {
+          Scope *m5 = &c->scopes[k5];
+          if (!m5->name || !sp_streq(m5->name, gn5)) continue;
+          LocalVar *q5 = scope_local(m5, m5->pnames[j]);
+          if (!q5 || (q5->type == TY_STRBUF && q5->str_shared && !q5->byref_out)) continue;
+          q5->type = TY_STRBUF; q5->str_shared = 1; q5->byref_out = 0;
+          changed = 1;
+        }
+      }
+    }
+  }
+
+  /* An alias taken FROM a reader and mutated through (`t = c.name; t << x`).
+     The converse of #5112, which fixed the alias taken BEFORE a mutation that
+     goes through the reader; here the mutation goes through the ALIAS and the
+     ivar never saw it. The pure-alias rule below pairs two LOCALS, and the
+     mutation census keys on the mutator's receiver -- a local, so the ivar
+     recorded nothing. The reader handed out a copy, the local was mutated,
+     and the object kept the old string, silently.
+
+     This is the shape a buffer-holding object is used through: `buf =
+     state.buffer; buf << "<div>"`. */
+  for (int w6 = comp_kind_first(c, NK_LocalVariableWriteNode); w6 >= 0; w6 = comp_kind_next(c, w6)) {
+    if (nt_kind(nt, w6) != NK_LocalVariableWriteNode) continue;
+    int v6 = nt_ref(nt, w6, "value");
+    if (v6 < 0 || nt_kind(nt, v6) != NK_CallNode) continue;
+    int rr6 = nt_ref(nt, v6, "receiver");
+    if (rr6 < 0) continue;
+    TyKind rt6 = infer_type(c, rr6);
+    if (!ty_is_object(rt6)) continue;
+    const char *tn6 = nt_str(nt, w6, "name");
+    Scope *ws6 = comp_scope_of(c, w6);
+    if (!tn6 || !ws6) continue;
+    /* the alias has to be mutated in place -- without that there is nothing
+       to carry back and the copy-on-read slot stays the cheaper shape */
+    if (strbuf_mut_kind(c, tn6, ws6) != 1) continue;
+    char ivb6[300]; int defc6 = ty_object_class(rt6);
+    const char *ivn6 = an_reader_ivar_of(c, v6, &defc6, ivb6, sizeof ivb6);
+    if (!ivn6 || defc6 < 0) continue;
+    if (strbuf_ivar_mut_kind(c, defc6, ivn6) < 0) continue;
+    if (strbuf_promote_ivar(c, defc6, ivn6)) changed = 1;
+    { int iv6 = comp_ivar_index(&c->classes[defc6], ivn6);
+      if (iv6 < 0 || !c->classes[defc6].ivar_str_shared[iv6]) continue; }
+    if (!c->strbuf_box[v6]) { c->strbuf_box[v6] = 1; changed = 1; }
+    { LocalVar *tv6 = scope_local(ws6, tn6);
+      if (tv6 && strbuf_slot_eligible_shape(c, tn6, ws6, tv6) &&
+          (tv6->type == TY_STRING || tv6->type == TY_STRBUF) &&
+          !(tv6->type == TY_STRBUF && tv6->str_shared)) {
+        tv6->type = TY_STRBUF; tv6->str_shared = 1; changed = 1;
+      } }
   }
 
   /* Pure-alias pairs (`s2 = s1`): when either endpoint of the alias is

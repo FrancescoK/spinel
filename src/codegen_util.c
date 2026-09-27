@@ -1928,6 +1928,12 @@ void emit_box_open(Compiler *c, TyKind t, Buf *b) {
   else if (t == TY_STR_ARRAY)   buf_puts(b, "sp_box_nullable_obj((void *)(");
   else if (t == TY_POLY_ARRAY)  buf_puts(b, "sp_box_nullable_obj((void *)(");
   else if (ty_is_ptr_array(t))  buf_puts(b, "sp_box_ptr_array_k((void *)(");   /* by reference, stamped (#4486) */
+  /* A shared-mutable string boxes as the handle, the SP_BUILTIN_STRBUF object
+     the poly operators deref (sp_poly_is_strbuf). Without an arm of its own it
+     fell to TY_STRING's sp_box_str, which takes a `const char *` and was
+     handed an `sp_String *`: the C build stopped. emit_boxed_text has had the
+     handle arm; this is its open/close twin. */
+  else if (t == TY_STRBUF) buf_puts(b, "sp_box_obj(");
   else if (t == TY_CLASS) buf_puts(b, "sp_box_class(");
   else if (t == TY_COMPLEX)  buf_puts(b, "sp_box_complex(");
   else if (t == TY_RATIONAL) buf_puts(b, "sp_box_rational(");
@@ -1946,6 +1952,7 @@ void emit_box_close(Compiler *c, TyKind t, Buf *b) {
   if (t == TY_POLY || t == TY_UNKNOWN) return; /* no-op: already sp_RbVal */
   { const char *nbid = ty_nullable_builtin_id(t);
     if (nbid) { buf_printf(b, "), %s)", nbid); return; } }
+  if (t == TY_STRBUF)         { buf_puts(b, ", SP_BUILTIN_STRBUF)"); return; }
   if (ty_is_object(t))        { buf_printf(b, "), %d)", ty_object_class(t)); return; }
   /* array open used sp_box_nullable_obj((void *)( ... -- close with the kind. */
   if (t == TY_INT_ARRAY)   { buf_puts(b, "), SP_BUILTIN_INT_ARRAY)"); return; }
