@@ -2691,6 +2691,40 @@ char **dsend_candidates(Compiler *c, int *out_n) {
     cand[ncand++] = strdup(v);
     anh_add(&cand_set, cand[ncand - 1]);
   }
+  /* ... and the names the program DEFINES: its defs, class methods, attr
+     readers and writers (as `x=`). A writer reached as `public_send("#{name}=",
+     value)` (activesupport's deprecators) or a method named by concatenation
+     is spelled by no literal, yet is exactly what the receiver answers; a
+     name outside both sets raises NoMethodError at the dispatch. The
+     constructor is left out: it is emitted as a void C function whatever
+     its body's value, and an arm typed from that body did not compile. */
+  {
+    for (int s = 0; s < c->nscopes; s++) {
+      const char *sn = c->scopes[s].name;
+      if (!sn || !*sn || strncmp(sn, "__", 2) == 0 || strchr(sn, '#') || !dsend_method_name_shaped(sn)) continue;
+      if (sp_streq(sn, "initialize")) continue;
+      int skip = 0;
+      for (int k = 0; sends[k]; k++) if (sp_streq(sn, sends[k])) { skip = 1; break; }
+      if (skip || anh_has(&cand_set, sn)) continue;
+      if (ncand == candcap) { candcap = candcap ? candcap * 2 : 16; cand = (char **)realloc(cand, sizeof(char *) * candcap); }
+      cand[ncand++] = strdup(sn);
+      anh_add(&cand_set, cand[ncand - 1]);
+    }
+    for (int ci = 0; ci < c->nclasses; ci++) {
+      ClassInfo *cl = &c->classes[ci];
+      for (int pass = 0; pass < 2; pass++) {
+        int n = pass ? cl->nwriters : cl->nreaders;
+        char **names = pass ? cl->writers : cl->readers;
+        for (int j = 0; j < n; j++) {
+          char nm2[200]; snprintf(nm2, sizeof nm2, pass ? "%s=" : "%s", names[j]);
+          if (anh_has(&cand_set, nm2) || !dsend_method_name_shaped(nm2)) continue;
+          if (ncand == candcap) { candcap = candcap ? candcap * 2 : 16; cand = (char **)realloc(cand, sizeof(char *) * candcap); }
+          cand[ncand++] = strdup(nm2);
+          anh_add(&cand_set, cand[ncand - 1]);
+        }
+      }
+    }
+  }
   anh_free(&cand_set);
   int any_computed = 0;
   for (int id = 0; id < n0 && !any_computed; id++) {
@@ -2727,6 +2761,9 @@ char **dsend_candidates(Compiler *c, int *out_n) {
     }
     for (int k = 0; k < ncand; k++) {
       if (anh_has(&defined, cand[k])) score[k] = 2;
+      /* the writer table holds the attribute, so `x=` ranks through `x` */
+      { char wbase[256];
+        if (score[k] < 2 && setter_base_name(cand[k], wbase, sizeof wbase) && anh_has(&defined, wbase)) score[k] = 2; }
       if (score[k] < 2 && !((cand[k][0] >= 'a' && cand[k][0] <= 'z') || cand[k][0] == '_')) score[k] = 1;   /* an operator */
       if (score[k] < 1 && anh_has(&called, cand[k])) score[k] = 1;
     }
