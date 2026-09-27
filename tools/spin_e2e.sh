@@ -929,6 +929,12 @@ if command -v ruby >/dev/null 2>&1 && [ -f "$(ruby -e 'puts RbConfig::CONFIG["ru
   mv kernel.rb.orig lib/fastx/kernel.rb
   expect "ext loader finds the built extension" "24 1" \
     "$(ruby -I build/ext -I lib -e 'require "fastx"; puts "#{Fastx.double(12)} #{$LOADED_FEATURES.grep(/fastx\/fastx\./).size}"' 2>&1 | tail -1)"
+  # spin found through PATH (argv[0] is the bare name) vendors the runtime too
+  cd "$WORK"
+  ( PATH="$(dirname "$SPIN"):$PATH"; spin ext new pathx >/dev/null && cd pathx && spin ext build >/dev/null 2>&1 ) ||
+    fail "ext build through PATH"
+  [ -f pathx/ext/pathx/spinel_rt.h ] || fail "ext build through PATH: runtime not vendored"
+  cd fastx
   # the loader falls back to the plain kernel when no extension is built
   expect "ext fallback require" "24" "$(ruby -I lib -e 'require "fastx"; puts Fastx.double(12)' 2>&1 | tail -1)"
 else
