@@ -9277,6 +9277,16 @@ static void sp_kw_splat_check(sp_RbVal h, const char *const *mem, int n,
   if (cnt) sp_raise_cls("ArgumentError", is_data ? sp_sprintf("unknown keyword%s: %s", cnt > 1 ? "s" : "", buf)
                                                  : sp_sprintf("unknown keywords: %s", buf));
 }
+/* A boxed `**` operand, converted the way CRuby converts one before any
+   keyword is bound or checked: nil carries no keywords and a Hash is
+   itself, but a builtin of any other class has no #to_hash, which is a
+   TypeError. A user object is let through: its #to_hash is not
+   reachable from here. */
+static void sp_kw_splat_conv_check(sp_RbVal v) {
+  if (v.tag == SP_TAG_NIL || sp_poly_is_user_obj(v) ||
+      (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id))) return;
+  sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Hash", sp_convert_src_name(v)));
+}
 
 /* NilClass-aware conversions for a boxed receiver (a nil-holding local widens
    to poly): nil converts per NilClass, a value already of the target kind is
