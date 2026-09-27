@@ -1,0 +1,3 @@
+{bind_to_object: nil, terminator: nil}
+{bind_to_object: true, terminator: nil}
+false

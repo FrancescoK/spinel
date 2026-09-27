@@ -27073,6 +27073,14 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         free(objptr.p);
         return;
       }
+      Buf sgb; memset(&sgb, 0, sizeof sgb);
+      if (!class_has_subclass(c, cid) &&
+          emit_sg_accessor(c, cid, c->classes[cid].name, name, argc, argv, &sgb)) {
+        buf_puts(b, "((void)("); emit_expr(c, robj, b); buf_printf(b, "), %s)", sgb.p);
+        free(sgb.p);
+        return;
+      }
+      free(sgb.p);
     }
   }
   /* SomeClass.name / .to_s / .inspect -> the class-name string. A

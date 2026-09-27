@@ -1664,6 +1664,8 @@ static TyKind kconv_integer_kind(Compiler *c, int arg, int noraise) {
   return TY_INT;
 }
 
+int class_has_subclass(Compiler *c, int ocid);
+
 static int sg_accessor_type(Compiler *c, int ci, const char *name, TyKind *out) {
   ClassInfo *cls = &c->classes[ci];
   int nlen = (int)strlen(name);
@@ -4113,6 +4115,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
           }
           return r;
         }
+        TyKind sgt;
+        if (!class_has_subclass(c, cid) && sg_accessor_type(c, cid, name, &sgt)) return sgt;
       }
     }
   }
