@@ -6627,7 +6627,22 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
           buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, lv_%s);\n", krhash, akw);
           continue;
         }
-        const char *shn = ty_hash_cname(comp_ntype(c, inner3));
+        TyKind sty = comp_ntype(c, inner3);
+        if (sty == TY_POLY) {
+          /* A Hash only known at run time (a value read out of a poly-valued
+             hash): its entries are merged by a runtime walk. */
+          Buf pb; memset(&pb, 0, sizeof pb);
+          if (!splat_seen && ds_hash_tmp >= 0 && ds_hash_type == TY_POLY)
+            buf_printf(&pb, "_t%d", ds_hash_tmp);
+          else
+            emit_expr(c, inner3, &pb);
+          splat_seen = 1;
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_kwrest_merge_poly(_t%d, %s);\n", krhash, pb.p ? pb.p : "sp_box_nil()");
+          free(pb.p);
+          continue;
+        }
+        const char *shn = ty_hash_cname(sty);
         if (!shn || !sp_streq(shn, "SymPoly")) {
           unsupported(c, argsNode, "double-splat forward of a non-symbol-keyed hash into a keyword-rest parameter");
           continue;
