@@ -1481,14 +1481,13 @@ static const char *array_op_assign_src(Compiler *c, const char *lval, const char
 
 /* The conversion that boxes a `vt` rhs into a PolyArray operand, as the binary
    `poly_array OP typed_array` arms do, or NULL. A poly rhs is coerced at run
-   time for the set ops only (sp_poly_set_operand); the binary `+` has no such
-   arm either. Without it `m -= ["x"]` on a `[1, "x"]` slot was refused where
-   `m = m - ["x"]` built. */
-static const char *poly_array_rhs_conv(TyKind vt, int set_op) {
+   time (sp_poly_set_operand). Without it `m -= ["x"]` on a `[1, "x"]` slot was
+   refused where `m = m - ["x"]` built. */
+static const char *poly_array_rhs_conv(TyKind vt) {
   if (vt == TY_INT_ARRAY) return "sp_IntArray_to_poly";
   if (vt == TY_STR_ARRAY) return "sp_StrArray_to_poly_fmt";
   if (vt == TY_FLOAT_ARRAY) return "sp_FloatArray_to_poly";
-  if (vt == TY_POLY && set_op) return "sp_poly_set_operand";
+  if (vt == TY_POLY) return "sp_poly_set_operand";
   return NULL;
 }
 
@@ -1509,7 +1508,7 @@ int emit_array_op_assign(Compiler *c, const char *lval, TyKind t,
   if (!k) return 0;
   TyKind vt = comp_ntype(c, v);
   if (sp_streq(op, "|") || sp_streq(op, "&") || sp_streq(op, "-")) {
-    const char *conv = (t == TY_POLY_ARRAY && vt != t) ? poly_array_rhs_conv(vt, 1) : NULL;
+    const char *conv = (t == TY_POLY_ARRAY && vt != t) ? poly_array_rhs_conv(vt) : NULL;
     if (vt != t && vt != TY_UNKNOWN && !conv) return 0;
     const char *fn = sp_streq(op, "&") ? "intersect" : (sp_streq(op, "|") ? "union" : "difference");
     size_t pre_mark = g_pre ? g_pre->len : 0;
@@ -1534,7 +1533,7 @@ int emit_array_op_assign(Compiler *c, const char *lval, TyKind t,
       int nel = 0; nt_arr(c->nt, v, "elements", &nel);
       rhs_empty = (nel == 0);
     }
-    const char *conv = (t == TY_POLY_ARRAY && vt != t && !rhs_empty) ? poly_array_rhs_conv(vt, 0) : NULL;
+    const char *conv = (t == TY_POLY_ARRAY && vt != t && !rhs_empty) ? poly_array_rhs_conv(vt) : NULL;
     if (vt != t && !rhs_empty && !conv) return 0;
     size_t pre_mark = g_pre ? g_pre->len : 0;
     Buf rb; memset(&rb, 0, sizeof rb);
