@@ -119,6 +119,9 @@ void sp_alloc_worker_tune(int workers); /* size the collection budget for N work
 
 extern const char sp_str_empty_data[];
 #define sp_str_empty (sp_str_empty_data + 1)
+/* a nullable string (NULL) as the empty string, the standard C spelling of
+   GNU's `s ?: sp_str_empty` */
+static inline const char *sp_str_or_empty(const char *s) { return s ? s : sp_str_empty; }
 
 /* UTF-8 char-length cache. Shared (extern) so sp_str_sweep flushes the same
    table the length helpers in spinel_rt.h populate: a per-TU split would leave

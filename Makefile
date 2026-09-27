@@ -14,6 +14,13 @@
 # Set `COPT=-O0 -g0` in config.mk for fast iteration / debugging.
 # A command-line `make COPT=-O0` takes precedence.
 COPT ?= -O2
+# PORTABLE=1 compiles the runtime and the test programs with -DSP_PORTABLE:
+# every fallback in lib/sp_compat.h, even where the GNU extension exists, so a
+# GCC or clang tree runs the code a plain C compiler would get. Use a tree of
+# its own (the objects differ).
+ifeq ($(PORTABLE),1)
+COPT += -DSP_PORTABLE
+endif
 # Machine-local overrides (gitignored config.mk is a common dev pattern).
 -include config.mk
 

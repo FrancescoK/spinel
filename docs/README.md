@@ -32,6 +32,9 @@ Start here, then open the topic you need.
 - **[wasm.md](wasm.md)** -- `--target=wasm32-wasi`: the program as a
   WebAssembly module for wasmtime, Node or a browser, what it needs (the
   wasi-sdk, `make wasm-rt`) and what the target does without.
+- **[portability.md](portability.md)** -- the GNU C extensions behind
+  `lib/sp_compat.h`, their standard C fallbacks, `make PORTABLE=1` to build
+  with every fallback, and what still needs a GNU-compatible compiler.
 - **[profiling.md](profiling.md)** -- where the time goes (`--profile` plus any
   frame-pointer sampler) and where the allocations come from
   (`SPINEL_ALLOC_REPORT`, with per-site attribution).

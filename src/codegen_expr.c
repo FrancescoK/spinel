@@ -227,7 +227,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
       }
       else if (t == TY_STRING) {
         /* a nullable string (NULL) interpolates as the empty string */
-        buf_puts(&conv, "("); EMIT_IV(); buf_puts(&conv, " ?: sp_str_empty)");
+        buf_puts(&conv, "sp_str_or_empty("); EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (t == TY_FLOAT) {
         buf_puts(&conv, "sp_float_to_s(");

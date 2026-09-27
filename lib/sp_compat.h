@@ -324,7 +324,18 @@ __extension__ typedef unsigned __int128 sp_uint128;
    them can build. The memory-order arguments are dropped with the builtin,
    so the __ATOMIC_* names need not exist there. */
 
-#if !defined(SP_PORTABLE) && (SP_HAS_BUILTIN(__atomic_load_n) || SP_GNUC_PREREQ(4, 7) || defined(__clang__))
+/* The threaded runtime needs them for its correctness, not its speed, so
+   SP_PORTABLE keeps them there: its fallback is the single-threaded one. */
+#if defined(SP_PORTABLE) && !defined(SP_THREADS)
+# define SP_ATOMICS_BUILTIN 0
+#elif SP_HAS_BUILTIN(__atomic_load_n) || SP_GNUC_PREREQ(4, 7) || defined(__clang__) || \
+      (defined(SP_THREADS) && defined(__GNUC__))
+# define SP_ATOMICS_BUILTIN 1
+#else
+# define SP_ATOMICS_BUILTIN 0
+#endif
+
+#if SP_ATOMICS_BUILTIN
 # define SP_HAVE_ATOMICS 1
 # define SP_ATOMIC_LOAD(p, mo)            __atomic_load_n(p, mo)
 # define SP_ATOMIC_STORE(p, v, mo)        __atomic_store_n(p, v, mo)

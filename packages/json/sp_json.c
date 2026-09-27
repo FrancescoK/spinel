@@ -44,7 +44,7 @@ typedef struct {
    a byte at a time, and a second allocator inside its body stops that. With
    the grow written inline, nm gives jb_add a symbol of its own and the
    generate benchmark goes from 1.98 s to 2.58 s. */
-SP_COLD static __attribute__((noinline)) void jb_grow_heap(jbuf *b, size_t cap) {
+SP_COLD static SP_NOINLINE void jb_grow_heap(jbuf *b, size_t cap) {
   char *q = sp_str_alloc(cap);   /* collects; b->heap is the walk's root */
   if (b->len) memcpy(q, b->p, b->len);
   b->p = b->heap = q;
@@ -152,7 +152,7 @@ static const char *sp_json_key(sp_RbVal k) {
    identity -- 100 levels of distinct arrays serialize and the 101st raises,
    whether or not anything repeats. */
 #define SP_JSON_MAX_NESTING 100
-SP_COLD static __attribute__((noinline, noreturn)) void sp_json_too_deep(jbuf *b) {
+SP_COLD static SP_NOINLINE SP_NORETURN void sp_json_too_deep(jbuf *b) {
   /* The walk's own raise, so the walk can hand it the buffer to release (#4355).
      One it has already moved onto the GC heap needs nothing: the collector
      takes that with the root the landing frame drops. */
@@ -355,7 +355,7 @@ const char *sp_json_pretty(sp_RbVal v) {
 
 typedef struct { const char *p, *end; } jrd;
 
-static __attribute__((noreturn)) void jp_err(const char *msg) {
+static SP_NORETURN void jp_err(const char *msg) {
   sp_raise_cls("JSON::ParserError", msg);
 }
 static void jp_ws(jrd *j) {

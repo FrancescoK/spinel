@@ -286,13 +286,16 @@ typedef sp_int128 sp_rat_wide;
 # define SP_RAT_SUB(a, b) ((a) - (b))
 #elif INTPTR_MAX > 0x7fffffff
 typedef long long sp_rat_wide;
-static sp_rat_wide sp_rat_ck(int ovf, intptr_t r) {
-  if (ovf) sp_raise_cls("RangeError", "Rational out of sp_int range");
-  return (sp_rat_wide)r;
+static void sp_rat_ovf(void) { sp_raise_cls("RangeError", "Rational out of sp_int range"); }
+static sp_rat_wide sp_rat_mul_ck(sp_rat_wide a, sp_rat_wide b) {
+  intptr_t r; if (sp_ckd_mul_iptr((intptr_t)a, (intptr_t)b, &r)) sp_rat_ovf(); return r;
 }
-static sp_rat_wide sp_rat_mul_ck(sp_rat_wide a, sp_rat_wide b) { intptr_t r; return sp_rat_ck(sp_ckd_mul_iptr((intptr_t)a, (intptr_t)b, &r), r); }
-static sp_rat_wide sp_rat_add_ck(sp_rat_wide a, sp_rat_wide b) { intptr_t r; return sp_rat_ck(sp_ckd_add_iptr((intptr_t)a, (intptr_t)b, &r), r); }
-static sp_rat_wide sp_rat_sub_ck(sp_rat_wide a, sp_rat_wide b) { intptr_t r; return sp_rat_ck(sp_ckd_sub_iptr((intptr_t)a, (intptr_t)b, &r), r); }
+static sp_rat_wide sp_rat_add_ck(sp_rat_wide a, sp_rat_wide b) {
+  intptr_t r; if (sp_ckd_add_iptr((intptr_t)a, (intptr_t)b, &r)) sp_rat_ovf(); return r;
+}
+static sp_rat_wide sp_rat_sub_ck(sp_rat_wide a, sp_rat_wide b) {
+  intptr_t r; if (sp_ckd_sub_iptr((intptr_t)a, (intptr_t)b, &r)) sp_rat_ovf(); return r;
+}
 # define SP_RAT_MUL(a, b) sp_rat_mul_ck((sp_rat_wide)(a), (sp_rat_wide)(b))
 # define SP_RAT_ADD(a, b) sp_rat_add_ck(a, b)
 # define SP_RAT_SUB(a, b) sp_rat_sub_ck(a, b)
