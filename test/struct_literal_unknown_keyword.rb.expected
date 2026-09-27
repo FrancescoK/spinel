@@ -1,0 +1,36 @@
+lit 1
+lit 9
+ArgumentError: unknown keywords: z
+lit 9
+lit 1
+ArgumentError: unknown keywords: z
+ArgumentError: unknown keywords: z, w
+ArgumentError: unknown keywords: c
+ArgumentError: unknown keywords: w, z
+lit 1
+lit 3
+ArgumentError: unknown keywords: c
+ArgumentError: unknown keywords: c, d
+lit 1
+lit 2
+lit 9
+ArgumentError: unknown keyword: :z
+ArgumentError: unknown keywords: :z, :w
+ArgumentError: unknown keywords: z
+ArgumentError: unknown keywords: c
+ArgumentError: unknown keyword: :z
+3
+ArgumentError: unknown keywords: a"b
+ArgumentError: unknown keywords: a\b
+ArgumentError: unknown keywords: a"b
+ArgumentError: unknown keyword: :"q\"z"
+key a
+ArgumentError: unknown keywords: z
+key a
+ArgumentError: unknown keywords: c
+RuntimeError: key
+#<struct Plain a=1, b=nil>
+#<struct Plain a=1, b=2>
+#<struct Pair a=1, b={b: 2}>
+#<struct Opts a=1, b=2>
+#<data Point x=1, y=2>
