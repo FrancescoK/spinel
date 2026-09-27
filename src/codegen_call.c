@@ -672,6 +672,7 @@ int sn_guard_pending(Compiler *c, int id) {
 /* Neither class is the other, nor an ancestor of the other. Such a pair has no
    conversion: their structs share no prefix by construction. */
 static int g_subdispatch_id = -1;   /* the call currently re-entered as poly (#4023) */
+static int g_cls_value_recv = -1;   /* a Class-typed receiver boxed for the class-tag dispatch */
 static int obj_class_unrelated(Compiler *c, int a, int b) {
   if (a < 0 || b < 0 || a == b) return 0;
   for (int k = c->classes[a].parent; k >= 0; k = c->classes[k].parent) if (k == b) return 0;
@@ -759,22 +760,43 @@ static void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_
    `if (tag == SP_TAG_CLASS) { switch ... } else ` and returns 1 when any arm
    was built; emits nothing and returns 0 otherwise. */
 static int cls_arm_takes_argc(Scope *s, int argc);
-static int emit_poly_cls_value_prearm(Compiler *c, const char *name, int argc,
+/* The call's literal block as one rooted proc temp, ahead of a dispatch whose
+   arms share it (only one arm runs), or -1 when there is none to build. A
+   forwarded `&blk` is left to emit_cmethod_block_arg, which passes it through. */
+static int hoist_call_block_proc(Compiler *c, int id) {
+  int cblk = resolve_forwarded_block(c, nt_ref(c->nt, id, "block"));
+  const char *cbt = cblk >= 0 ? nt_type(c->nt, cblk) : NULL;
+  if (!cbt || sp_streq(cbt, "BlockArgumentNode")) return -1;
+  int t = ++g_tmp;
+  Buf pb; memset(&pb, 0, sizeof pb);
+  emit_proc_literal(c, cblk, &pb);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", t, pb.p ? pb.p : "NULL");
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
+  free(pb.p);
+  return t;
+}
+static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int argc,
                                       const int *atmp, const TyKind *atmp_ty,
-                                      int tv, int tr, TyKind ret, Buf *b) {
-  int ccls8[64], cmi8[64], nc8 = 0;
+                                      int tv, int tr, TyKind ret, int blk_tmp, Buf *b) {
+  int ccls8[64], cmi8[64], nc8 = 0, wants_blk = 0;
   int ncc8 = 0;
   const PolyCand *cc8 = comp_cmethod_candidates(c, name, &ncc8);   /* per name, not per site (#4966) */
   for (int ki = 0; ki < ncc8 && nc8 < 64; ki++) {
     int k = cc8[ki].cls;
     if (is_builtin_reopen(c->classes[k].name)) continue;
     int kmi = cc8[ki].mi;
-    if (!scope_has_callable_symbol(c, kmi)) continue;
+    /* a yielding candidate is called through its proc form (#3399) */
+    int kpf = scope_proc_form_of(c, kmi);
+    if (kpf >= 0 && !proc_form_live(c, kpf)) kpf = -1;
+    if (!scope_has_callable_symbol(c, kmi) && kpf < 0) continue;
+    if (kpf >= 0) kmi = kpf;
     Scope *ks = &c->scopes[kmi];
-    /* a yielding / block-taking / rest candidate has no arm this emitter can
-       fill; such a class falls to the default raise */
-    if (ks->yields || (ks->blk_param && ks->blk_param[0]) || ks->rest_idx >= 0)
-      continue;
+    /* a rest candidate has no arm this emitter can fill; such a class falls
+       to the default raise */
+    if (ks->yields || ks->rest_idx >= 0) continue;
+    if (ks->blk_param && ks->blk_param[0]) wants_blk = 1;
     if (!cls_arm_takes_argc(ks, argc)) continue;
     /* a param and its argument temp both concretely typed but different is a
        hard C error, not a coercion: that class cannot be this call's target */
@@ -792,6 +814,7 @@ static int emit_poly_cls_value_prearm(Compiler *c, const char *name, int argc,
     ccls8[nc8] = k; cmi8[nc8] = kmi; nc8++;
   }
   if (nc8 == 0) return 0;
+  if (wants_blk && blk_tmp < 0) blk_tmp = hoist_call_block_proc(c, id);
   buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) { switch (_t%d.cls_id) {", tv, tv);
   for (int i = 0; i < nc8; i++) {
     Scope *ks = &c->scopes[cmi8[i]];
@@ -820,6 +843,7 @@ static int emit_poly_cls_value_prearm(Compiler *c, const char *name, int argc,
       }
       else emit_arg_or_default(c, ks, a, -1, &cb);
     }
+    emit_cmethod_block_arg(c, id, ks, blk_tmp, &cb);
     buf_puts(&cb, ")");
     buf_printf(b, " case %d: ", ccls8[i]);
     if (method_is_void(ks)) buf_puts(b, cb.p ? cb.p : "");
@@ -6557,7 +6581,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                       (c->classes[0].instantiated || class_is_prim_reopen(c, 0));
       /* a class-valued receiver dispatches class-side, ahead of the instance
          arms (#4218) */
-      emit_poly_cls_value_prearm(c, name, 0, NULL, NULL, tv, tr, ret, b);
+      emit_poly_cls_value_prearm(c, id, name, 0, NULL, NULL, tv, tr, ret, blk_tmp0, b);
       /* a primitive-reopen candidate needs the tag-mapping key (#4219) */
       int prim_cand0 = 0;
       for (int k = 0; k < c->nclasses && !prim_cand0; k++) {
@@ -7788,7 +7812,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
          arms (#4218). Positional calls only: the keyword-hash split binds by
          name against a specific candidate, which this pre-arm does not do. */
       if (kwh < 0 && splat_a < 0)
-        emit_poly_cls_value_prearm(c, name, argc, atmp, atmp_ty, tv, tr, ret, b);
+        emit_poly_cls_value_prearm(c, id, name, argc, atmp, atmp_ty, tv, tr, ret, blk_tmp2, b);
       /* a primitive-reopen candidate needs the tag-mapping key (#4219) */
       int prim_cand2 = 0;
       for (int k = 0; k < c->nclasses && !prim_cand2; k++) {
@@ -17269,7 +17293,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
          Class) and a poly result slot (dflt nil), the shape this arises in. */
       if (grt == TY_POLY && nm && (ret == TY_POLY || ret == TY_UNKNOWN) &&
           g_cls_tag_skip != id) {
-        int ccls[64], cmi[64], cdef[64], nc = 0;
+        int ccls[64], cmi[64], cdef[64], cpf[64], nc = 0;
         int cargc = 0, csplat = 0;
         { int ca = nt_ref(nt, id, "arguments");
           const int *cav = ca >= 0 ? nt_arr(nt, ca, "arguments", &cargc) : NULL;
@@ -17288,7 +17312,12 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
         for (int k = 0; k < c->nclasses && nc < 64; k++) {
           int dc = -1;
           int mi = comp_cmethod_in_chain(c, k, nm, &dc);
-          if (mi < 0 || !scope_has_callable_symbol(c, mi)) continue;
+          if (mi < 0) continue;
+          /* a yielding class method has no symbol of its own; its proc-form
+             clone is the arm, taking the block as a proc (#3399) */
+          int pfk = scope_proc_form_of(c, mi);
+          if (pfk >= 0 && !proc_form_live(c, pfk)) pfk = -1;
+          if (!scope_has_callable_symbol(c, mi) && pfk < 0) continue;
           /* A class method that cannot take this call's arguments is not a
              candidate: emitting its arm put the arity raise in the prelude,
              where it fired before the tag was even tested (#3520). A rest
@@ -17303,7 +17332,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
             int rreq = rest_shortfall_required(c, cs4);
             if (cs4->rest_idx < 0 ? (cargc > cs4->nparams || cargc < cs4->nrequired)
                                   : (!csplat && cargc < rreq)) continue; }
-          ccls[nc] = k; cmi[nc] = mi; cdef[nc] = dc; nc++;
+          ccls[nc] = k; cmi[nc] = mi; cdef[nc] = dc; cpf[nc] = pfk; nc++;
         }
         if (nc > 0) {
           /* The receiver first, into a rooted temp of its own: Ruby evaluates
@@ -17347,18 +17376,25 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
               c->ntype[hav[a]] = TY_POLY;
               hoisted_n++;
             } }
+          int wants_blk = 0, blk_tmp = -1;
+          for (int k = 0; k < nc; k++) {
+            Scope *ks = &c->scopes[cpf[k] >= 0 ? cpf[k] : cmi[k]];
+            if (ks->blk_param && ks->blk_param[0] && !ks->yields) wants_blk = 1;
+          }
+          if (wants_blk) blk_tmp = hoist_call_block_proc(c, id);
           buf_printf(b, "({ (_t%d.tag == SP_TAG_CLASS) ? (", tv);
           nd_stamp(id, ND_SWITCH);
           for (int k = 0; k < nc; k++) {
             nd_callee(c, id, cmi[k], cdef[k], 1);
             buf_printf(b, "_t%d.cls_id == %d ? ", tv, ccls[k]);
             Buf cb; memset(&cb, 0, sizeof cb);
-            buf_printf(&cb, "sp_%s_s_%s(", c->classes[cdef[k]].c_name, mc(c->scopes[cmi[k]].name));
-            const char *leadk = emit_cmethod_self_cls_arg(c, cmi[k], ccls[k], &cb);
-            emit_args_filled(c, cmi[k], argsN, leadk, &cb);
-            emit_cmethod_block_arg(c, id, &c->scopes[cmi[k]], -1, &cb);
+            int ksym = cpf[k] >= 0 ? cpf[k] : cmi[k];
+            buf_printf(&cb, "sp_%s_s_%s(", c->classes[cdef[k]].c_name, mc(c->scopes[ksym].name));
+            const char *leadk = emit_cmethod_self_cls_arg(c, ksym, ccls[k], &cb);
+            emit_args_filled(c, ksym, argsN, leadk, &cb);
+            emit_cmethod_block_arg(c, id, &c->scopes[ksym], blk_tmp, &cb);
             buf_puts(&cb, ")");
-            TyKind mret = (TyKind)c->scopes[cmi[k]].ret;
+            TyKind mret = (TyKind)c->scopes[ksym].ret;
             if (mret == TY_POLY) buf_puts(b, cb.p ? cb.p : "sp_box_nil()");
             else emit_boxed_text(c, mret, cb.p ? cb.p : "0", b);
             free(cb.p);
@@ -17370,7 +17406,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
              `k.downcase` on a String bind to an unrelated `def self.downcase`
              and fail with that method's arity (#3520). */
           Buf eb2; memset(&eb2, 0, sizeof eb2);
-          if (g_n_argov < MAX_ARG_OVERRIDE) {
+          if (g_n_argov < MAX_ARG_OVERRIDE && g_cls_value_recv != recv) {
             int slot2 = g_n_argov++;
             g_argov_node[slot2] = recv;
             snprintf(g_argov_text[slot2], sizeof g_argov_text[0], "_t%d", tv);
@@ -27926,6 +27962,37 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
            signature -- the args are hoisted into poly temps first so a
            side-effecting argument is evaluated once, not once per arm. */
         int simple9 = (nt_ref(nt, id, "block") < 0);
+        /* With a block, a candidate taking it -- a yielding one through its
+           proc form -- is an arm of the poly receiver's class-tag dispatch,
+           which hands the block over as a proc: box the class and take it. */
+        if (!simple9 && comp_ntype(c, id) == TY_POLY && g_n_argov < MAX_ARG_OVERRIDE) {
+          int any_pf9 = 0;
+          for (int k = 0; k < c->nclasses && !any_pf9; k++) {
+            int kmi = comp_cmethod_in_chain(c, k, name, NULL);
+            if (kmi < 0) continue;
+            Scope *ks9 = &c->scopes[kmi];
+            if (scope_proc_form_of(c, kmi) >= 0 ||
+                (ks9->blk_param && ks9->blk_param[0] && !ks9->yields)) any_pf9 = 1;
+          }
+          if (any_pf9) {
+            int tsd = ++g_tmp;
+            Buf rb9; memset(&rb9, 0, sizeof rb9); emit_boxed(c, recv, &rb9);
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n",
+                       tsd, rb9.p ? rb9.p : "sp_box_nil()", tsd);
+            free(rb9.p);
+            g_argov_node[g_n_argov] = recv;
+            snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tsd);
+            g_n_argov++;
+            TyKind svsd = c->ntype[recv]; c->ntype[recv] = TY_POLY;
+            int svcv = g_cls_value_recv; g_cls_value_recv = recv;
+            int done9 = emit_unresolved_call(c, id, b);
+            g_cls_value_recv = svcv;
+            c->ntype[recv] = svsd;
+            g_n_argov--;
+            if (done9) return;
+          }
+        }
         for (int k = 0; simple9 && k < c->nclasses; k++) {
           if (is_builtin_reopen(c->classes[k].name)) continue;
           int kmi = comp_cmethod_in_chain(c, k, name, NULL);

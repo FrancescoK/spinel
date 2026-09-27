@@ -2015,6 +2015,9 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
     cand[nc++] = k;
   }
   if (nc == 0) return 0;
+  /* a class method of the name: the value may be a Class, which only the
+     ordinary poly dispatch's class-side arms answer */
+  { int ncc = 0; comp_cmethod_candidates(c, name, &ncc); if (ncc > 0) return 0; }
   /* names that a BUILTIN container also answers (each/map/...) are unsafe: a
      poly value here can be an Array/Hash at run time, not one of our user
      classes, and the cls_id switch would miss it silently. Only dispatch names
