@@ -2454,6 +2454,7 @@ extern SP_NORETURN void sp_raise_stop_iteration(sp_RbVal result);
 extern SP_TLS sp_RbVal _sp_proc_poly_ret;
 extern SP_TLS sp_RbVal _sp_proc_poly_args[];
 extern sp_int sp_proc_call(sp_Proc *p, sp_int argc, sp_int *args);
+extern void sp_trap_call(sp_Proc *p, int no);
 extern const char *sp_signal_signame(sp_int no);
 extern SP_COLD int sp_signal_resolve(sp_RbVal sig);
 
@@ -2761,11 +2762,7 @@ sp_PolyArray *sp_Enumerator_to_a(sp_Enumerator *e) {
 }
 void sp_sig_c_handler(int no) {
   sp_Proc *p = (no >= 0 && no < SP_SIG_MAX) ? (sp_Proc *)sp_trap_proc[no] : NULL;
-  if (p) {
-    sp_int slot = (sp_int)no;
-    _sp_proc_poly_args[0] = sp_box_int((sp_int)no);
-    sp_proc_call(p, 1, &slot);
-  }
+  if (p) sp_trap_call(p, no);
 }
 void sp_sig_exit_dispatch(void) {
   sp_Proc *p = (sp_Proc *)sp_trap_proc[0];
@@ -2787,15 +2784,7 @@ sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler) {SP_GC_ROOT_RBVAL(sig);S
     sp_trap_proc[no] = (sp_Proc *)handler.v.p;
     sp_trap_state[no] = NULL;
     if (no == 0) { static int armed = 0; if (!armed) { armed = 1; atexit(sp_sig_exit_dispatch); } }
-    else {
-      /* SA_NODEFER: a proc that raises leaves the handler by a jump, so the
-         kernel would never unblock the signal and the trap fires only once */
-      struct sigaction sa; memset(&sa, 0, sizeof sa);
-      sa.sa_handler = sp_sig_c_handler;
-      sigemptyset(&sa.sa_mask);
-      sa.sa_flags = SA_RESTART | SA_NODEFER;
-      sigaction(no, &sa, NULL);
-    }
+    else signal(no, sp_sig_c_handler);
   }
   else {
     const char *hs = (handler.tag == SP_TAG_STR && handler.v.s) ? handler.v.s : "DEFAULT";
