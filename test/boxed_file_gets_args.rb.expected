@@ -1,0 +1,19 @@
+"hello"
+"\nwo"
+"hel"
+"lo\n"
+"hello"
+"world"
+"he"
+"llo"
+"world\nend"
+"hello\nwor"
+"ld"
+""
+["he", "", "o\nwor", "d\nend"]
+"hello"
+"ab"
+""
+"c"
+nil
+EOFError

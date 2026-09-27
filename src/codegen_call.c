@@ -19075,6 +19075,30 @@ static int emit_spread_args(Compiler *c, const int *argv, int argc) {
   return ta;
 }
 
+/* The (separator, limit, chomp) arguments of sp_File_gets_sep and
+   sp_File_readline_sep from IO#gets's argument forms (#2809): an argument
+   typed Integer is the limit, a `chomp:` keyword the flag, anything else the
+   separator; an absent one is "\n", 0 or 0. */
+static void emit_gets_sep_args(Compiler *c, const int *argv, int argc, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int gsep = -1, glim = -1;
+  Buf gchomp; memset(&gchomp, 0, sizeof gchomp);   /* the C truth of `chomp:` */
+  for (int k = 0; k < argc; k++) {
+    const char *kty = nt_type(nt, argv[k]);
+    if (kty && sp_streq(kty, "KeywordHashNode")) {
+      int cv = struct_kwarg_value(c, argv[k], "chomp");
+      emit_kw_flag(c, cv, &gchomp);
+    }
+    else if (comp_ntype(c, argv[k]) == TY_INT) glim = argv[k];
+    else gsep = argv[k];
+  }
+  if (gsep >= 0) emit_str_expr_nilable(c, gsep, b); else buf_puts(b, "\"\\n\"");
+  buf_puts(b, ", ");
+  if (glim >= 0) emit_int_expr(c, glim, b); else buf_puts(b, "0");
+  buf_printf(b, ", %s", gchomp.p ? gchomp.p : "0");
+  free(gchomp.p);
+}
+
 static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -23922,29 +23946,15 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       free(rb.p); return;
     }
     if (sp_streq(name, "gets") || sp_streq(name, "readline")) {
-      /* separator / limit / chomp: forms (#2809); readline raises EOFError
-         at end of file (#2817) */
-      int gsep = -1, glim = -1;
-      Buf gchomp; memset(&gchomp, 0, sizeof gchomp);   /* the C truth of `chomp:` */
-      for (int k = 0; k < argc; k++) {
-        const char *kty = nt_type(nt, argv[k]);
-        if (kty && sp_streq(kty, "KeywordHashNode")) {
-          int cv = struct_kwarg_value(c, argv[k], "chomp");
-          emit_kw_flag(c, cv, &gchomp);
-        }
-        else if (comp_ntype(c, argv[k]) == TY_INT) glim = argv[k];
-        else gsep = argv[k];
-      }
+      /* readline raises EOFError at end of file (#2817) */
       int is_rdl = sp_streq(name, "readline");
       if (argc == 0 && !is_rdl) buf_printf(b, "sp_File_gets(%s)", r);
       else {
         buf_printf(b, "sp_File_%s(%s, ", is_rdl ? "readline_sep" : "gets_sep", r);
-        if (gsep >= 0) emit_str_expr_nilable(c, gsep, b); else buf_puts(b, "\"\\n\"");
-        buf_puts(b, ", ");
-        if (glim >= 0) emit_int_expr(c, glim, b); else buf_puts(b, "0");
-        buf_printf(b, ", %s)", gchomp.p ? gchomp.p : "0");
+        emit_gets_sep_args(c, argv, argc, b);
+        buf_puts(b, ")");
       }
-      free(gchomp.p); free(rb.p); return;
+      free(rb.p); return;
     }
     if (sp_streq(name, "getc") && argc == 0) {
       buf_printf(b, "sp_File_getc(%s)", r); free(rb.p); return;
@@ -24724,8 +24734,16 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       }
       else if (sp_streq(name, "fsync") || sp_streq(name, "fdatasync"))
         buf_printf(b, "sp_File_fsync(_t%d); })", tio2);
-      else if (sp_streq(name, "gets")) buf_printf(b, "sp_File_gets(_t%d); })", tio2);
-      else if (sp_streq(name, "readline")) buf_printf(b, "sp_File_readline_sep(_t%d, \"\\n\", 0, 0); })", tio2);
+      else if (sp_streq(name, "gets") && argc == 0) buf_printf(b, "sp_File_gets(_t%d); })", tio2);
+      /* the separator, limit and `chomp:` a typed handle takes: dropping
+         them read `f.gets("o")` and `f.gets(3)` as a whole line. The handle
+         is rooted across the arguments, which are evaluated after it. */
+      else if (sp_streq(name, "gets") || sp_streq(name, "readline")) {
+        buf_printf(b, "SP_GC_ROOT(_t%d); sp_File_%s(_t%d, ", tio2,
+                   sp_streq(name, "readline") ? "readline_sep" : "gets_sep", tio2);
+        emit_gets_sep_args(c, argv, argc, b);
+        buf_puts(b, "); })");
+      }
       /* readpartial takes a count and an optional buffer, nothing else:
          count-less, the arm below was skipped and the fallback answered
          fileno; over-long, the extras were read and dropped. CRuby refuses
