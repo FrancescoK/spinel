@@ -10057,6 +10057,12 @@ static void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Bu
                    ci, c->classes[ci].name);
       continue;
     }
+    /* A class this call cannot construct: the analysis bound the arguments
+       into the initialize of each class it can reach, and left this one's
+       parameters to its own callers, so laying the arguments out for it
+       could pass them in the wrong C type. A splat binds every class, and
+       keeps every arm. */
+    if (!call_has_splat_arg(nt, argv, argc) && !dynamic_new_may_reach(c, id, ci)) continue;
     /* the layout's own statements (a keyword check, a hoisted argument)
        belong to this arm: ahead of the switch every arm's check ran for
        every class, and one class's keywords were unknown to the next */

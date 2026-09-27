@@ -3383,6 +3383,229 @@ static int bind_call_args_shifted(Compiler *c, int call_id, int mi, int shift) {
   return changed;
 }
 
+static void mark_body_self(const NodeTable *nt, int id, int owner, int *body_self, int depth) {
+  if (id < 0 || depth > 400) return;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return;
+  if (k == NK_SelfNode) { body_self[id] = owner; return; }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) mark_body_self(nt, nt_ref_at(nt, id, i), owner, body_self, depth + 1);
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++) mark_body_self(nt, ids[j], owner, body_self, depth + 1);
+  }
+}
+
+static int name_in(const char *n, const char *const *set) {
+  for (int i = 0; n && set[i]; i++) if (sp_streq(n, set[i])) return 1;
+  return 0;
+}
+
+/* Is the value of node `u` handed on -- stored, passed, returned -- rather
+   than only consumed where it stands? Consumed: the receiver of a call that
+   does not hand its receiver on, an interpolated part, the argument of an
+   output, comparison or type-test call, the parent of a `K::X` path, a class
+   definition's name or superclass, a `when` or `rescue` clause, a statement
+   whose value is dropped. A conditional, `and`/`or`, parentheses or a block
+   of statements passes its last value up to be asked the same. */
+static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
+  static const char *const passes_recv[] = {
+    "method", "public_method", "send", "public_send", "__send__", "then", "tap",
+    "itself", "yield_self", "freeze", "dup", "clone", "instance_exec",
+    "instance_eval", "class_exec", "class_eval", "module_eval", NULL };
+  static const char *const consumes_args[] = {
+    "puts", "print", "p", "pp", "warn", "raise", "format", "sprintf", "printf",
+    "is_a?", "kind_of?", "instance_of?", "include", "extend", "prepend",
+    "include?", "==", "!=", "===", "equal?", "eql?", "<", "<=", ">", ">=", "<=>", NULL };
+  for (int depth = 0; depth < 400; depth++) {
+    int p = parent[u];
+    if (p < 0) return 0;
+    NodeKind pk = nt_kind(nt, p);
+    const char *pt = nt_type(nt, p);
+    if (pk == NK_StatementsNode) {
+      int n = 0; const int *body = nt_arr(nt, p, "body", &n);
+      if (n > 0 && body[n - 1] != u) return 0;
+      u = p; continue;
+    }
+    if (pk == NK_ParenthesesNode || pk == NK_IfNode || pk == NK_UnlessNode ||
+        pk == NK_AndNode || pk == NK_OrNode || pk == NK_BeginNode ||
+        (pt && (sp_streq(pt, "ElseNode") || sp_streq(pt, "EmbeddedStatementsNode")))) {
+      u = p; continue;
+    }
+    if (pt && (sp_streq(pt, "InterpolatedStringNode") || sp_streq(pt, "InterpolatedSymbolNode") ||
+               sp_streq(pt, "InterpolatedXStringNode") ||
+               sp_streq(pt, "InterpolatedRegularExpressionNode") || sp_streq(pt, "WhenNode") ||
+               sp_streq(pt, "ProgramNode")))
+      return 0;
+    if (pk == NK_ClassNode || pk == NK_ModuleNode || pk == NK_ConstantPathNode ||
+        pk == NK_RescueNode)
+      return 0;
+    if (pk == NK_CallNode) {
+      if (nt_ref(nt, p, "receiver") == u) return name_in(nt_str(nt, p, "name"), passes_recv);
+      return 1;
+    }
+    if (pt && sp_streq(pt, "ArgumentsNode")) {
+      int call = parent[p];
+      if (call >= 0 && nt_kind(nt, call) == NK_CallNode &&
+          name_in(nt_str(nt, call, "name"), consumes_args)) return 0;
+      return 1;
+    }
+    return 1;
+  }
+  return 1;
+}
+
+/* Can a Class value of class `cid` reach a receiver the analysis cannot pin?
+   Only if some expression producing it is handed on (value_handed_on): a
+   constant naming it, `self` in its class body or in a class method of it or
+   an ancestor. `.class`, `superclass` or `singleton_class` handed on, and
+   the reflective readers (`const_get`, `subclasses`, an `inherited` hook),
+   are taken to hand out any class. */
+static int class_value_escapes(Compiler *c, int cid) {
+  const NodeTable *nt = c->nt;
+  static char *esc = NULL;
+  static int esc_n = -1, esc_count = -1;
+  if (cid < 0 || cid >= c->nclasses) return 1;
+  if (esc && esc_n == c->nclasses && esc_count == nt->count) return esc[cid];
+  free(esc);
+  esc = (char *)calloc((size_t)(c->nclasses > 0 ? c->nclasses : 1), 1);
+  size_t nn = (size_t)(nt->count > 0 ? nt->count : 1);
+  int *parent = (int *)malloc(sizeof(int) * nn);
+  int *body_self = (int *)malloc(sizeof(int) * nn);
+  if (!esc || !parent || !body_self) {
+    free(parent); free(body_self); free(esc); esc = NULL; return 1;
+  }
+  esc_n = c->nclasses; esc_count = nt->count;
+  for (int u = 0; u < nt->count; u++) parent[u] = body_self[u] = -1;
+  for (int u = 0; u < nt->count; u++) {
+    int nr = nt_num_refs(nt, u);
+    for (int i = 0; i < nr; i++) {
+      int ch = nt_ref_at(nt, u, i);
+      if (ch >= 0 && ch < nt->count) parent[ch] = u;
+    }
+    int na = nt_num_arrs(nt, u);
+    for (int i = 0; i < na; i++) {
+      int n = 0; const int *ids = nt_arr_at(nt, u, i, &n);
+      for (int j = 0; j < n; j++) if (ids[j] >= 0 && ids[j] < nt->count) parent[ids[j]] = u;
+    }
+    NodeKind k = nt_kind(nt, u);
+    if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) {
+      int owner = -2;   /* a singleton class body's self: any class */
+      if (k != NK_SingletonClassNode) {
+        int cp = nt_ref(nt, u, "constant_path");
+        owner = cp >= 0 ? comp_class_index(c, nt_str(nt, cp, "name")) : -1;
+        if (owner < 0) owner = -2;
+      }
+      mark_body_self(nt, nt_ref(nt, u, "body"), owner, body_self, 0);
+    }
+  }
+  static const char *const reflective[] = {
+    "inherited", "const_get", "subclasses", "descendants", "each_object", NULL };
+  int all = 0;
+  for (int u = 0; u < nt->count && !all; u++) {
+    NodeKind k = nt_kind(nt, u);
+    if (k == NK_CallNode && name_in(nt_str(nt, u, "name"), reflective)) { all = 1; break; }
+    if (k != NK_ConstantReadNode && k != NK_ConstantPathNode && k != NK_SelfNode &&
+        k != NK_CallNode) continue;
+    if (k == NK_CallNode) {
+      const char *un = nt_str(nt, u, "name");
+      int rc = nt_ref(nt, u, "receiver");
+      const char *rn = rc >= 0 && nt_kind(nt, rc) == NK_ConstantReadNode ? nt_str(nt, rc, "name") : NULL;
+      /* an anonymous class, unless a constant names it */
+      int anon = un && rn && ((sp_streq(un, "new") && (sp_streq(rn, "Class") || sp_streq(rn, "Struct"))) ||
+                              (sp_streq(un, "define") && sp_streq(rn, "Data")));
+      if (anon && parent[u] >= 0 && nt_type(nt, parent[u]) &&
+          sp_streq(nt_type(nt, parent[u]), "ConstantWriteNode")) continue;
+      if (!anon && (!un || !(sp_streq(un, "class") || sp_streq(un, "superclass") ||
+                             sp_streq(un, "singleton_class")))) continue;
+    }
+    if (!value_handed_on(nt, parent, u)) continue;
+    if (k == NK_CallNode) { all = 1; break; }
+    if (k != NK_SelfNode) {
+      const char *cn = nt_str(nt, u, "name");
+      for (int d = 0; cn && d < c->nclasses; d++)
+        if (c->classes[d].name && sp_streq(c->classes[d].name, cn)) esc[d] = 1;
+      continue;
+    }
+    if (body_self[u] >= 0) { esc[body_self[u]] = 1; continue; }
+    if (body_self[u] == -2) { all = 1; break; }
+    Scope *s = comp_scope_of(c, u);
+    if (!s || !s->is_cmethod) continue;   /* an instance, or main */
+    if (s->class_id < 0) { all = 1; break; }
+    for (int d = 0; d < c->nclasses; d++)
+      if (d == s->class_id || is_descendant(c, d, s->class_id)) esc[d] = 1;
+  }
+  if (all) memset(esc, 1, (size_t)c->nclasses);
+  free(parent); free(body_self);
+  return esc[cid];
+}
+
+/* Can `new` at `call_id`, on a Class value the analysis cannot pin,
+   construct class `cid`? `new(...)` or `self.new(...)` in a class method,
+   and `self.class.new(...)` in an instance method, reach that class and its
+   descendants; `x.class.new(...)` and `x.superclass.new(...)` any class;
+   any other receiver a class whose value is handed on somewhere
+   (class_value_escapes). */
+int dynamic_new_may_reach(Compiler *c, int call_id, int cid) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, call_id, "receiver");
+  Scope *s = comp_scope_of(c, call_id);
+  int self_cid = -1;
+  if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
+    if (s && s->is_cmethod) self_cid = s->class_id;
+  }
+  else if (nt_kind(nt, recv) == NK_CallNode && nt_str(nt, recv, "name") &&
+           (sp_streq(nt_str(nt, recv, "name"), "class") ||
+            sp_streq(nt_str(nt, recv, "name"), "superclass"))) {
+    int of = nt_ref(nt, recv, "receiver");
+    if (sp_streq(nt_str(nt, recv, "name"), "class") &&
+        (of < 0 || nt_kind(nt, of) == NK_SelfNode) && s && !s->is_cmethod && s->class_id >= 0)
+      self_cid = s->class_id;
+    else return 1;
+  }
+  if (self_cid >= 0) return cid == self_cid || is_descendant(c, cid, self_cid);
+  return class_value_escapes(c, cid);
+}
+
+/* `klass.new(a, b)` on a Class value the analysis cannot pin: the codegen
+   switch has an arm for every class whose initialize takes this many
+   positionals, and each class the call can reach is constructed by it. Its
+   initialize's parameters take the arguments' types as a static
+   `K.new(a, b)` would give them. */
+static int bind_dynamic_new_initializers(Compiler *c, int call_id) {
+  const NodeTable *nt = c->nt;
+  int an = nt_ref(nt, call_id, "arguments");
+  int argc = 0;
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &argc) : NULL;
+  int npos = 0;
+  for (int k = 0; k < argc; k++) {
+    NodeKind ak = nt_kind(nt, av[k]);
+    if (ak != NK_KeywordHashNode && ak != NK_BlockArgumentNode) npos++;
+  }
+  int changed = 0;
+  int *seen = (int *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), sizeof(int));
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!dynamic_new_may_reach(c, call_id, k)) continue;
+    int imi = comp_method_in_chain(c, k, "initialize", NULL);
+    if (imi < 0 || imi >= c->nscopes || seen[imi]) continue;
+    seen[imi] = 1;
+    int pn = c->scopes[imi].def_node >= 0 ? nt_ref(nt, c->scopes[imi].def_node, "parameters") : -1;
+    int nreq = 0, nopt = 0, npost = 0, rest = -1;
+    if (pn >= 0) {
+      nt_arr(nt, pn, "requireds", &nreq);
+      nt_arr(nt, pn, "optionals", &nopt);
+      nt_arr(nt, pn, "posts", &npost);
+      rest = nt_ref(nt, pn, "rest");
+    }
+    nreq += npost;
+    if (npos < nreq || (rest < 0 && npos > nreq + nopt)) continue;
+    changed |= bind_call_params(c, call_id, imi);
+  }
+  free(seen);
+  return changed;
+}
+
 /* Unify a call's argument types into method scope `mi`'s parameters. */
 int bind_call_params(Compiler *c, int call_id, int mi) {
   if (mi < 0) return 0;
@@ -4776,6 +4999,13 @@ int infer_param_types(Compiler *c) {
           }
           splat_new = 1;
         }
+      }
+      /* the same without a splat: an argument that reaches an initialize only
+         through this call left its parameter typed by the static
+         constructions alone, and the arm then read it as their type */
+      if (!static_cls && !splat_new && sp_streq(name, "new")) {
+        TyKind rt1 = infer_type(c, recv);
+        if (rt1 == TY_CLASS || rt1 == TY_POLY) changed |= bind_dynamic_new_initializers(c, id);
       }
       if (!static_cls && infer_type(c, recv) == TY_CLASS) {
         int bound_any = 0;
