@@ -60,6 +60,8 @@ int class_is_blank_slate(Compiler *c, int ci);
 int proc_to_proc_method_node(Compiler *c, int recv);
 int local_sole_range_node(Compiler *c, int recv);
 int const_array_elems_all_int_array(Compiler *c, const char *cname);
+int *an_parent_map(const NodeTable *nt);
+int an_value_dropped(const NodeTable *nt, const int *parent, int node);
 int local_all_writes_empty_hash(Compiler *c, Scope *sc, const char *name);
 int method_call_param_shift(Compiler *c, int mn, int mi);
 

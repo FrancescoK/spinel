@@ -7744,7 +7744,7 @@ static int narrow_int_table_ivars(Compiler *c) {
      ivar node of every name. And for a read, the first call it is the
      receiver of -- the only one the check below looks at -- which it found by
      walking the whole table again, per read. */
-  int *ivl = NULL, nivl = 0, *ivl_next = NULL, *first_call = NULL;
+  int *ivl = NULL, nivl = 0, *ivl_next = NULL, *first_call = NULL, *parent_of = NULL;
   const char **ivl_name = NULL;
   int ivl_buckets = 0, *ivl_head = NULL;
   for (int ci = 0; ci < c->nclasses; ci++) {
@@ -7877,6 +7877,12 @@ static int narrow_int_table_ivars(Compiler *c) {
               if (at != TY_INT_ARRAY && at != TY_NIL) rows_ok = 0;
             }
             if (!rows_ok) break;
+            /* an append answers the table: dropped, or it is another
+               reference to it that this scan does not follow */
+            if (!sp_streq(un, "[]=")) {
+              if (!parent_of) parent_of = an_parent_map(nt);
+              if (!parent_of || !an_value_dropped(nt, parent_of, u)) break;
+            }
           }
           used = 1; break;
         }
@@ -7889,7 +7895,7 @@ static int narrow_int_table_ivars(Compiler *c) {
       }
     }
   }
-  free(ivl); free(ivl_head); free(ivl_next); free(ivl_name); free(first_call);
+  free(ivl); free(ivl_head); free(ivl_next); free(ivl_name); free(first_call); free(parent_of);
   return narrowed;
 }
 
@@ -8540,8 +8546,13 @@ static int narrow_object_arrays(Compiler *c) {
       int S = read_slot[recv];
       if (oa_recv_op_ok(name, argc, has_block)) {
         claimed[recv] = 1;
-        if (name && (sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")))
+        if (name && (sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append"))) {
           for (int a = 0; a < argc; a++) sl[S].cls = oa_cls_join(sl[S].cls, oa_elem_evidence(c, sl, S, argv[a]));
+          /* an append answers the array: like a sort result it must land
+             in a modeled consumer, or a chained `a.push(x).push(y)` pushes
+             an element no slot sees */
+          if (!(id < nc && value_ok[id])) sl[S].alive = 0;
+        }
         else if (name && sp_streq(name, "[]=") && argc == 2) {
           /* a range-keyed []= is a splice, which the obj-array representation
              has no emitter for: keep the slot on the poly path */

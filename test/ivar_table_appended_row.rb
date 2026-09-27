@@ -157,3 +157,69 @@ class Keep
   end
 end
 p Keep.new.grow
+
+# A call that answers the table itself hands on a reference too: `itself`,
+# `tap`, `then`, a chained `push`, or a `select!` result appended to.
+class Its
+  def initialize
+    @banks = [[1]]
+  end
+  def grow
+    @banks.itself.push([1.5, 2.5])
+    @banks[1]
+  end
+end
+p Its.new.grow
+
+class Tap
+  def initialize
+    @banks = [[1]]
+    @patterns = [[]]
+  end
+  def pick(i) = @patterns[i]
+  def grow
+    @banks.tap { |t| t << pick(0) }
+    @banks[1]
+  end
+end
+p Tap.new.grow
+
+class Chain
+  def initialize
+    @banks = [[1]]
+    @patterns = [[]]
+  end
+  def pick(i) = @patterns[i]
+  def grow
+    @banks.push([2]).push(pick(0))
+    @banks[2]
+  end
+end
+p Chain.new.grow
+
+class Sel
+  def initialize
+    @banks = [[1]]
+    @patterns = [[]]
+  end
+  def pick(i) = @patterns[i]
+  def grow
+    t = @banks.select! { true } || @banks
+    t << pick(0)
+    @banks[1]
+  end
+end
+p Sel.new.grow
+
+class Thn
+  def initialize
+    @banks = [[1]]
+    @patterns = [[]]
+  end
+  def pick(i) = @patterns[i]
+  def grow
+    @banks.then { |t| t.unshift(pick(0)) }
+    @banks[0]
+  end
+end
+p Thn.new.grow
