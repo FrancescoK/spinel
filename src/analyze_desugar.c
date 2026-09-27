@@ -2958,6 +2958,15 @@ int desugar_dynamic_send(Compiler *c) {
       nt_node_set_ref(nt, sp, "expression", drop);
       rest[0] = sp; nrest = 1;                                 /* the arms: *args.drop(1) */
     }
+    /* a `*args` or `**kwargs` among the arguments makes the count a run-time
+       matter (`send(method, *args, **kwargs, &block)`): the arity filter
+       below would have read them as two positionals and dropped a
+       one-parameter callee */
+    int rest_variadic = 0;
+    for (int k = 0; k < nrest; k++) {
+      NodeKind rk = nt_kind(nt, rest[k]);
+      if (rk == NK_SplatNode || rk == NK_KeywordHashNode) rest_variadic = 1;
+    }
     int *arms = (int *)malloc(sizeof(int) * (size_t)(nuse > 0 ? nuse : 1)); int narm = 0;
     for (int k = 0; k < nuse; k++) {
       if (sp_streq(use[k], "initialize") || sp_streq(use[k], "initialize_copy")) continue;
@@ -2967,7 +2976,7 @@ int desugar_dynamic_send(Compiler *c) {
          fixpoint types such a call anyway, and its arm was emitted -- and
          one naming the enclosing method itself, which the block-carrying
          inline expands at the arm, expanded without end. */
-      if (splat_src < 0 && dsend_defined_arity_excludes(c, use[k], nrest)) continue;
+      if (splat_src < 0 && !rest_variadic && dsend_defined_arity_excludes(c, use[k], nrest)) continue;
       int na = nt_new_node(nt, "ArgumentsNode"); if (na < 0) break;
       if (nrest) nt_node_set_arr(nt, na, "arguments", rest, nrest);
       int call = nt_new_node(nt, "CallNode"); if (call < 0) break;
