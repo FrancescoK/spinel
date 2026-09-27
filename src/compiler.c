@@ -1742,6 +1742,7 @@ LocalVar *scope_local_intern(Scope *s, const char *name) {
     s->locals = realloc(s->locals, sizeof(LocalVar) * (size_t)s->clocals);
   }
   lv = &s->locals[s->nlocals++];
+  memset(lv, 0, sizeof *lv);
   lv->name = strdup(name);
   lv->type = TY_UNKNOWN;
   why_reset(&lv->why);
