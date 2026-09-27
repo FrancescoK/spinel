@@ -3650,14 +3650,24 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
   if (m->rest_idx >= 0 && max_bind > m->rest_idx) max_bind = m->rest_idx;
   if (m->kwrest_idx >= 0 && max_bind > m->kwrest_idx) max_bind = m->kwrest_idx;
   int n = pos_argc < max_bind ? pos_argc : max_bind;
+  /* `def m(a = 1, b)` given one argument funds b, not a: with an optional
+     ahead of a required, each parameter takes the argument the call lays
+     out for it (arg_slot_for_param), as codegen passes it. A splat spreads
+     positionally below. */
+  int remap = argv && opt_before_required(c, m);
+  for (int k = 0; remap && k < pos_argc; k++)
+    if (nt_kind(nt, argv[k]) == NK_SplatNode) remap = 0;
+  if (remap) n = max_bind;
   for (int k = 0; k < n; k++) {
-    const char *apty = argv ? nt_type(nt, argv[k]) : NULL;
+    int arg = k;
+    if (remap && (arg = arg_slot_for_param(c, m, k, pos_argc)) < 0) continue;
+    const char *apty = argv ? nt_type(nt, argv[arg]) : NULL;
     /* A single SplatNode spreads its array across every remaining fixed param,
        not just this position. Bind each from the array's element type so a
        splat-only call site (`f(*args)`) still types -- and therefore emits --
        the callee, then stop (the splat consumes the rest of the positionals). */
     if (apty && sp_streq(apty, "SplatNode")) {
-      int inner = nt_ref(nt, argv[k], "expression");
+      int inner = nt_ref(nt, argv[arg], "expression");
       TyKind arr = inner >= 0 ? infer_type(c, inner) : TY_UNKNOWN;
       TyKind at = ty_is_array(arr) ? ty_array_elem(arr) : TY_POLY;
       if (at == TY_VOID || at == TY_NIL) at = TY_POLY;
@@ -3665,11 +3675,11 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
         if (!m->pnames[pk]) continue;
         LocalVar *p = scope_local(m, m->pnames[pk]);
         if (!p || p->rbs_seeded) continue;
-        changed |= slot_take(c, p, at, argv[k]);
+        changed |= slot_take(c, p, at, argv[arg]);
       }
       break;
     }
-    TyKind at = infer_type(c, argv[k]);
+    TyKind at = infer_type(c, argv[arg]);
     LocalVar *p = scope_local(m, m->pnames[k]);
     if (!p || p->rbs_seeded) continue;
 
@@ -3679,8 +3689,8 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
        concrete kind from another call site must win the unification. */
     if (g_final_bind_pass && p->type == TY_UNKNOWN && at == TY_UNKNOWN &&
         apty && sp_streq(apty, "ArrayNode")) {
-      int en0 = 0; nt_arr(nt, argv[k], "elements", &en0);
-      if (en0 == 0) { slot_rule(c, p, TY_POLY_ARRAY, argv[k], "an empty `[]` argument and no other call site typing it: the parameter is the untyped array"); changed = 1; continue; }
+      int en0 = 0; nt_arr(nt, argv[arg], "elements", &en0);
+      if (en0 == 0) { slot_rule(c, p, TY_POLY_ARRAY, argv[arg], "an empty `[]` argument and no other call site typing it: the parameter is the untyped array"); changed = 1; continue; }
     }
     /* An empty `{}` / `[]` literal carries no type of its own, so it is skipped
        by the unification below. When ANOTHER call site typed the parameter as
@@ -3691,8 +3701,8 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
       int cross = (sp_streq(apty, "HashNode") && !ty_is_hash(p->type)) ||
                   (sp_streq(apty, "ArrayNode") && !ty_is_array(p->type));
       if (cross) {
-        int en1 = 0; nt_arr(nt, argv[k], "elements", &en1);
-        if (en1 == 0) { slot_rule(c, p, TY_POLY, argv[k], "an empty literal argument of one container kind where another call site passed the other: only the boxed slot holds both"); changed = 1; continue; }
+        int en1 = 0; nt_arr(nt, argv[arg], "elements", &en1);
+        if (en1 == 0) { slot_rule(c, p, TY_POLY, argv[arg], "an empty literal argument of one container kind where another call site passed the other: only the boxed slot holds both"); changed = 1; continue; }
       }
     }
     /* A void arg (`sink(always_raising_method)`) is nil-ish in value position:
@@ -3730,14 +3740,14 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
       merged = TY_POLY;
     else
       merged = ty_unify(p->type, at);
-    changed |= slot_set(c, p, merged, at, argv[k]);
+    changed |= slot_set(c, p, merged, at, argv[arg]);
     /* Reverse binding: an empty-`{}`-only local passed to a hash parameter is
        that hash container, filled inside the callee through the reference.
        Type the local as the param's hash so it is constructed (sp_<H>Hash_new)
        rather than passed as a NULL-deref'ing poly nil. */
     if (ty_is_hash(p->type) && apty && sp_streq(apty, "LocalVariableReadNode")) {
-      const char *an = nt_str(nt, argv[k], "name");
-      Scope *asc = an ? comp_scope_of(c, argv[k]) : NULL;
+      const char *an = nt_str(nt, argv[arg], "name");
+      Scope *asc = an ? comp_scope_of(c, argv[arg]) : NULL;
       LocalVar *al = asc ? scope_local(asc, an) : NULL;
       if (al && !al->is_param && !al->is_block_param &&
           (al->type == TY_UNKNOWN || al->type == TY_POLY) &&
@@ -3751,8 +3761,8 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
        PolyPoly hash, so a StrPoly default silently dropped an int-keyed write
        (#3158). Type the caller's `{}` as PolyPoly so any key persists. */
     if (p->type == TY_POLY && apty && sp_streq(apty, "LocalVariableReadNode")) {
-      const char *an = nt_str(nt, argv[k], "name");
-      Scope *asc = an ? comp_scope_of(c, argv[k]) : NULL;
+      const char *an = nt_str(nt, argv[arg], "name");
+      Scope *asc = an ? comp_scope_of(c, argv[arg]) : NULL;
       LocalVar *al = asc ? scope_local(asc, an) : NULL;
       if (al && !al->is_param && !al->is_block_param &&
           (al->type == TY_UNKNOWN || al->type == TY_POLY || ty_is_hash(al->type)) &&
@@ -3768,8 +3778,8 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
        ill-typed sp_StrArray_push of a symbol (#2989). Only the widening
        direction, only to the poly array, so it stays monotonic. */
     if (p->push_widened && apty && sp_streq(apty, "LocalVariableReadNode")) {
-      const char *an = nt_str(nt, argv[k], "name");
-      Scope *asc = an ? comp_scope_of(c, argv[k]) : NULL;
+      const char *an = nt_str(nt, argv[arg], "name");
+      Scope *asc = an ? comp_scope_of(c, argv[arg]) : NULL;
       LocalVar *al = asc ? scope_local(asc, an) : NULL;
       if (al && ty_is_array(al->type) && al->type != TY_POLY_ARRAY &&
           !al->is_param && !al->is_block_param &&
@@ -3778,7 +3788,7 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
       }
     }
     if (merged == TY_PROC) {
-      TyKind pr = proc_ret_of(c, argv[k]);
+      TyKind pr = proc_ret_of(c, argv[arg]);
       if (pr != TY_UNKNOWN && p->proc_ret != (int)pr) { p->proc_ret = (int)pr; changed = 1; }
     }
   }

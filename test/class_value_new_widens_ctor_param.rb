@@ -61,3 +61,21 @@ end
 puts One.new.show
 puts Holder.new(Box).make(:sym, tag: "x").show
 puts Holder.new(Box).make("str").show
+
+# One argument to `initialize(a = "x", b, ...)` funds b, not the optional a.
+class OptFirst
+  def initialize(a = "x", b, k: 0)
+    @a = a
+    @b = b
+  end
+
+  def show = "#{@a.inspect} #{@b.inspect}"
+end
+
+OPT_FIRST = [OptFirst].freeze
+
+def opt_first(x) = OPT_FIRST[0].new(x, k: 1)
+
+puts OptFirst.new("y", 2).show
+puts opt_first(3).show
+puts opt_first(:s).show

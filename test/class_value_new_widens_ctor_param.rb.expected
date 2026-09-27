@@ -6,3 +6,6 @@ forwarded synth
 1 t
 :sym x
 "str" t
+"y" 2
+"x" 3
+"x" :s
