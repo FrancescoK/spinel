@@ -1777,6 +1777,75 @@ int ie_tramp_effective_arg(Compiler *c, int caller_id, int p) {
   return arg;  /* ivar / literal / other: evaluated in the rebound-self context */
 }
 
+static int ie_forward_target(Compiler *c, int cls, const char *name, int receiverless);
+static int ie_forward_hops;
+
+static int ie_forward_find(Compiler *c, int node, const Scope *s, int self_cls, int depth) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || depth > 64) return -1;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return -1;
+  if (k == NK_CallNode) {
+    const char *cn = nt_str(nt, node, "name");
+    int barg = nt_ref(nt, node, "block");
+    if (cn && barg >= 0 && nt_kind(nt, barg) == NK_BlockArgumentNode) {
+      int bexpr = nt_ref(nt, barg, "expression");
+      const char *bvn = bexpr >= 0 ? nt_str(nt, bexpr, "name") : NULL;
+      if (bexpr < 0 ? !s->blk_param[0] : (bvn && sp_streq(bvn, s->blk_param))) {
+        int r = nt_ref(nt, node, "receiver");
+        TyKind rt = r >= 0 ? infer_type(c, r) : TY_UNKNOWN;
+        int rcls = r < 0 ? self_cls : ty_is_object(rt) ? ty_object_class(rt) : -1;
+        if (sp_streq(cn, "instance_eval") || sp_streq(cn, "instance_exec")) {
+          if (r < 0 || rcls >= 0) return rcls;
+        }
+        else if (ie_forward_hops < 8) {
+          ie_forward_hops++;
+          int t = ie_forward_target(c, rcls, cn, r < 0);
+          ie_forward_hops--;
+          if (t >= 0) return t;
+        }
+      }
+    }
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) {
+    int f = ie_forward_find(c, nt_ref_at(nt, node, i), s, self_cls, depth + 1);
+    if (f >= 0) return f;
+  }
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, node, i, &n);
+    for (int j = 0; j < n; j++) {
+      int f = ie_forward_find(c, ids[j], s, self_cls, depth + 1);
+      if (f >= 0) return f;
+    }
+  }
+  return -1;
+}
+
+/* A method on `cls` that hands its own block to `X.instance_eval/exec(&blk)`
+   runs a call site's literal block with self = X: the class of X, or -1. */
+static int ie_forward_target(Compiler *c, int cls, const char *name, int receiverless) {
+  if (!name) return -1;
+  int mi = cls >= 0 ? comp_method_in_chain(c, cls, name, NULL) : -1;
+  if (mi < 0 && receiverless) {
+    mi = comp_method_index(c, name);
+    if (mi >= 0 && c->scopes[mi].class_id >= 0) mi = -1;
+  }
+  if (mi < 0) return -1;
+  const Scope *s = &c->scopes[mi];
+  if (!s->blk_param || s->body < 0) return -1;
+  return ie_forward_find(c, s->body, s, cls, 0);
+}
+
+static int ie_receiverless_self_class(Compiler *c, int id) {
+  int v = ie_class_of(c, id);
+  if (v >= 0) return v;
+  if (v < -1) return -1;
+  Scope *s = comp_scope_of(c, id);
+  return (s && s->class_id >= 0 && !s->is_cmethod) ? s->class_id : -1;
+}
+
 /* (Re)build the instance_eval/exec node→class map from current receiver types. */
 void build_ie_map(Compiler *c) {
   const NodeTable *nt = c->nt;
@@ -1801,6 +1870,7 @@ void build_ie_map(Compiler *c) {
     if (recv < 0) {
       /* receiverless instance_eval/exec inside an instance method: self. */
       cls = ie_implicit_self_class(c, id);
+      if (cls < 0) cls = ie_forward_target(c, ie_receiverless_self_class(c, id), nm, 1);
       if (cls < 0) continue;
     }
     else {
@@ -1809,7 +1879,10 @@ void build_ie_map(Compiler *c) {
       if (cls == -1) continue;
       if (!sp_streq(nm, "instance_eval") && !sp_streq(nm, "instance_exec")) {
         /* not a direct instance_eval/exec: maybe a trampoline method on `cls`? */
-        if (!comp_trampoline_kind(c, cls, nm, NULL)) continue;
+        if (!comp_trampoline_kind(c, cls, nm, NULL)) {
+          cls = ie_forward_target(c, cls, nm, 0);
+          if (cls < 0) continue;
+        }
       }
     }
     int body = nt_ref(nt, blk, "body");

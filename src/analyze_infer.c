@@ -4418,6 +4418,8 @@ else {
     if (iec >= 0) {
       int imi = comp_method_in_chain(c, iec, name, NULL);
       if (imi >= 0) return method_call_ret(c, imi, id);
+      TyKind at;
+      if (argc == 0 && attr_reader_ty(c, iec, name, &at)) return at;
     }
     int pk[64], npk = ie_poly_classes_at(c, id, pk, 64);
     TyKind pr = TY_UNKNOWN;

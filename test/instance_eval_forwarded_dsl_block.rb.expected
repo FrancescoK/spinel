@@ -1,0 +1,15 @@
+[:ignite, :park]
+[[{parked: :idling}], [{idling: :parked}]]
+[:ignite, :shift_up, :park]
+[[[:parked, :idling], [:stalled, :stalled], [:idling, :idling]], [[:idling, :first_gear]], []]
+["go", "GO!"]
+[:parked, :idling]
+0
+2
+:go
+:go
+["A", "B"]
+["a", "b"]
+[["x"], ["y"]]
+"GO"
+"HI"
