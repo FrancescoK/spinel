@@ -1,0 +1,4 @@
+2
+{"endpoint" => "e", "p256dh_key" => "p", "auth_key" => "a"}
+{"id" => 2}
+{"endpoint" => "e", "auth_key" => "a"}

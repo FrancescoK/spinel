@@ -119,11 +119,18 @@ int an_builtin_only_p(void) { return an_builtin_only; }
    under the flag (see infer_type), so this is safe to ask after analysis --
    the why-chain asks it of a send on a poly receiver, to tell a result the
    builtin already makes untyped from one a user candidate's return made so. */
+/* The receiver of the call being asked. The question is about that call
+   alone: the receiver is what it is, and re-derived under the flag a
+   receiver that is itself a poly call (`newest(subs).attributes`) lost its
+   user answers and left the builtin one unknown (#5116). */
+static int an_bo_recv = -1;
 TyKind an_builtin_answer(Compiler *c, int id) {
-  int was = an_builtin_only;
+  int was = an_builtin_only, was_recv = an_bo_recv;
   an_builtin_only = 1;
+  an_bo_recv = nt_kind(c->nt, id) == NK_CallNode ? nt_ref(c->nt, id, "receiver") : -1;
   TyKind t = infer_call(c, id);
   an_builtin_only = was;
+  an_bo_recv = was_recv;
   return t;
 }
 
@@ -4883,9 +4890,7 @@ else {
           nt_ref(nt, id, "block") < 0 && c->poly_builtin_ty &&
           id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN &&
           an_user_defines_or_reads(c, name)) {
-        an_builtin_only = 1;
-        TyKind bt = infer_call(c, id);
-        an_builtin_only = 0;
+        TyKind bt = an_builtin_answer(c, id);
         c->poly_builtin_ty[id] = bt;
       }
       if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) return an_poly_concrete(c, name, TY_STRING);
@@ -5274,9 +5279,7 @@ else {
         long pk = narrow_key(4, id, "");
         int phit; (void)narrow_memo_get(pk, &phit);
         if (!phit) {
-          an_builtin_only = 1;
-          TyKind pbt = infer_call(c, id);
-          an_builtin_only = 0;
+          TyKind pbt = an_builtin_answer(c, id);
           narrow_memo_put(pk, (int)pbt);
           if (pbt != TY_UNKNOWN && pbt != TY_VOID) c->poly_builtin_ty[id] = pbt;
         }
@@ -5311,9 +5314,7 @@ else {
                               (TyKind)bcached == r);
         if (btrust) { bt = (TyKind)bcached; }
         else {
-          an_builtin_only = 1;
-          bt = infer_call(c, id);
-          an_builtin_only = 0;
+          bt = an_builtin_answer(c, id);
           narrow_memo_put(bk, (int)bt);
         }
         /* Record what the builtin surface alone answers, the way the
@@ -5338,9 +5339,7 @@ else {
          dispatch keeps its container arm. */
       if (!an_builtin_only && npc > 0 && recv >= 0 && poly_container_read_p(name) &&
           nt_ref(nt, id, "block") < 0) {
-        an_builtin_only = 1;
-        TyKind bt = infer_call(c, id);
-        an_builtin_only = 0;
+        TyKind bt = an_builtin_answer(c, id);
         if (bt != TY_UNKNOWN && bt != TY_VOID) {
           if (c->poly_builtin_ty && id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN)
             c->poly_builtin_ty[id] = bt;
@@ -7959,6 +7958,9 @@ TyKind infer_type(Compiler *c, int id) {
      duration, and the cache is left untouched so the receiver's own type is
      unaffected. */
   if (id == g_face_node) return g_face_kind;
+  /* see an_builtin_answer: the asked call's receiver keeps its own type */
+  if (an_builtin_only && id == an_bo_recv && id < c->node_cap && c->ntype[id] != TY_UNKNOWN)
+    return c->ntype[id];
   /* A depth-0 entry opens a fresh memo generation: nothing carries over from
      the previous tree, so the fixpoint sees every table change. */
   if (g_infer_depth == 0 && ++g_imemo_gen == 0) {
