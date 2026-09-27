@@ -1,5 +1,6 @@
 #include "analyze_internal.h"
 int callee_has_kwarg(Compiler *c, Scope *m, const char *name);
+int callee_declares_kwargs(Compiler *c, Scope *m);
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -3661,7 +3662,8 @@ else {
       /* The parameter is the one the hash funds as one more argument, which
          with a leading optional is not the one at index pos_argc. */
       int kslot = pos_argc < max_bind ? kwh_arg_param(c, m, pos_argc) : -1;
-      if (!any_kw_bound && m->kwrest_idx < 0 && kslot >= 0 && kslot < max_bind) {
+      if (!any_kw_bound && m->kwrest_idx < 0 && !callee_declares_kwargs(c, m) &&
+          kslot >= 0 && kslot < max_bind) {
         LocalVar *p = m->pnames[kslot] ? scope_local(m, m->pnames[kslot]) : NULL;
         if (p && !p->rbs_seeded) {
           TyKind kwt = infer_type(c, kwh);
