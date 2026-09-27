@@ -5230,7 +5230,47 @@ static TyKind cvar_empty_container_type(Compiler *c, int vnode, const char *nm, 
   return vt;
 }
 
-/* @ivar types from their assignments across the class's methods. */
+static int is_cvar_write_kind(NodeKind k) {
+  return k == NK_ClassVariableWriteNode || k == NK_ClassVariableOrWriteNode ||
+         k == NK_ClassVariableAndWriteNode || k == NK_ClassVariableOperatorWriteNode;
+}
+
+/* Registers the cvar a write-like node (`=`, `||=`, `&&=`, `op=`) stores into
+   and unifies the stored type into its slot. An op-write stores the RHS type
+   unless the slot holds an object (the operator method's return) or an array
+   the operator combines with its own kind. */
+static int cvar_note_write(Compiler *c, ClassInfo *ci, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm) return 0;
+  int old_n = ci->ncvars;
+  int idx = comp_cvar_intern(ci, nm);
+  int changed = ci->ncvars != old_n;
+  int vnode = nt_ref(nt, id, "value");
+  TyKind cur = ci->cvar_types[idx];
+  TyKind vt;
+  if (nt_kind(nt, id) == NK_ClassVariableOperatorWriteNode) {
+    vt = infer_type(c, vnode);
+    const char *op = nt_str(nt, id, "binary_operator");
+    if (ty_is_object(cur)) {
+      int mi = op ? comp_method_in_chain(c, ty_object_class(cur), op, NULL) : -1;
+      vt = (mi >= 0 && c->scopes[mi].ret != TY_UNKNOWN) ? c->scopes[mi].ret : cur;
+    } else if ((ty_is_array(cur) || cur == TY_POLY_ARRAY) && op &&
+               ((sp_streq(op, "*") && vt == TY_INT) ||
+                ((sp_streq(op, "|") || sp_streq(op, "&") || sp_streq(op, "-") ||
+                  sp_streq(op, "+")) && vt == cur)))
+      vt = cur;
+    if (vt == TY_NIL || vt == TY_UNKNOWN) return changed;
+  } else {
+    vt = cvar_empty_container_type(c, vnode, nm, infer_type(c, vnode));
+    if (vt == TY_NIL) vt = nil_write_type(cur);
+    if (vt == TY_NIL) return changed;
+  }
+  TyKind merged = ty_unify(cur, vt);
+  if (merged != cur) { ci->cvar_types[idx] = merged; changed = 1; }
+  return changed;
+}
+
 /* Register each class variable (@@x) in its owning class and infer its type
    from the write sites' RHS. */
 int infer_cvar_types(Compiler *c) {
@@ -5246,16 +5286,8 @@ int infer_cvar_types(Compiler *c) {
       int s = stmts[k];
       const char *sty = nt_type(nt, s);
       if (!sty) continue;
-      if (sp_streq(sty, "ClassVariableWriteNode")) {
-        const char *nm = nt_str(nt, s, "name");
-        if (!nm) continue;
-        int idx = comp_cvar_intern(&c->classes[ci], nm);
-        int vnode = nt_ref(nt, s, "value");
-        TyKind vt = cvar_empty_container_type(c, vnode, nm, infer_type(c, vnode));
-        if (vt == TY_NIL) vt = nil_write_type(c->classes[ci].cvar_types[idx]);
-        if (vt == TY_NIL) continue;
-        TyKind merged = ty_unify(c->classes[ci].cvar_types[idx], vt);
-        if (merged != c->classes[ci].cvar_types[idx]) { c->classes[ci].cvar_types[idx] = merged; changed = 1; }
+      if (is_cvar_write_kind(nt_kind(nt, s))) {
+        if (cvar_note_write(c, &c->classes[ci], s)) changed = 1;
       }
       else if (sp_streq(sty, "MultiWriteNode")) {
         int mln = 0;
@@ -5279,18 +5311,11 @@ int infer_cvar_types(Compiler *c) {
     }
   }
   /* Pass 2: method-level writes (comp_scope_of has class_id set). */
-  NT_FOREACH_KIND(nt, NK_ClassVariableWriteNode, id) {
-    const char *nm = nt_str(nt, id, "name");
+  for (int id = 0; id < nt->count; id++) {
+    if (!is_cvar_write_kind(nt_kind(nt, id))) continue;
     Scope *s = comp_scope_of(c, id);
-    if (!nm || s->class_id < 0) continue;
-    ClassInfo *ci = &c->classes[s->class_id];
-    int idx = comp_cvar_intern(ci, nm);
-    int vnode = nt_ref(nt, id, "value");
-    TyKind vt = cvar_empty_container_type(c, vnode, nm, infer_type(c, vnode));
-    if (vt == TY_NIL) vt = nil_write_type(ci->cvar_types[idx]);
-    if (vt == TY_NIL) continue;
-    TyKind merged = ty_unify(ci->cvar_types[idx], vt);
-    if (merged != ci->cvar_types[idx]) { ci->cvar_types[idx] = merged; changed = 1; }
+    if (s->class_id < 0) continue;
+    if (cvar_note_write(c, &c->classes[s->class_id], id)) changed = 1;
   }
   /* Pass 2.5: `Klass.class_variable_set(:@@name, v)` with a literal name
      DECLARES the cvar when the class has no such write -- CRuby creates it on
@@ -5316,20 +5341,13 @@ int infer_cvar_types(Compiler *c) {
     if (merged != c->classes[cci].cvar_types[idx]) { c->classes[cci].cvar_types[idx] = merged; changed = 1; }
   }
   /* Pass 3: top-level writes (class_id == -1 in scope 0) -- use Toplevel pseudo-class. */
-  NT_FOREACH_KIND(nt, NK_ClassVariableWriteNode, id) {
-    const char *nm = nt_str(nt, id, "name");
+  for (int id = 0; id < nt->count; id++) {
+    if (!is_cvar_write_kind(nt_kind(nt, id))) continue;
     Scope *s = comp_scope_of(c, id);
-    if (!nm || s->class_id >= 0) continue;
+    if (!nt_str(nt, id, "name") || s->class_id >= 0) continue;
     int tl_idx = comp_class_index(c, "Toplevel");
     if (tl_idx < 0) { comp_class_new(c, "Toplevel", -1); tl_idx = c->nclasses - 1; }
-    ClassInfo *ci = &c->classes[tl_idx];
-    int idx = comp_cvar_intern(ci, nm);
-    int vnode = nt_ref(nt, id, "value");
-    TyKind vt = cvar_empty_container_type(c, vnode, nm, infer_type(c, vnode));
-    if (vt == TY_NIL) vt = nil_write_type(ci->cvar_types[idx]);
-    if (vt == TY_NIL) continue;
-    TyKind merged = ty_unify(ci->cvar_types[idx], vt);
-    if (merged != ci->cvar_types[idx]) { ci->cvar_types[idx] = merged; changed = 1; }
+    if (cvar_note_write(c, &c->classes[tl_idx], id)) changed = 1;
   }
   return changed;
 }

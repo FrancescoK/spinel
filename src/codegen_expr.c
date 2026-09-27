@@ -2263,11 +2263,13 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     if (cid < 0) { unsupported(c, id, "class variable or-write (no class scope)"); return; }
     char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[cid].name, nm + 2);
     int oidx = comp_cvar_index(&c->classes[cid], nm);
-    if (oidx >= 0 && c->classes[cid].cvar_types[oidx] == TY_POLY) {
-      buf_printf(b, "(sp_poly_truthy(%s) ? %s : (%s = ", ref, ref, ref);
-      emit_boxed(c, v, b); buf_puts(b, "))");
-    }
-    else { buf_printf(b, "(%s ? %s : (%s = ", ref, ref, ref); emit_expr(c, v, b); buf_puts(b, "))"); }
+    TyKind ot = oidx >= 0 ? c->classes[cid].cvar_types[oidx] : TY_UNKNOWN;
+    buf_puts(b, "(");
+    emit_slot_truthy(ot, ref, b);
+    buf_printf(b, " ? %s : (%s = ", ref, ref);
+    if (ot == TY_POLY) emit_boxed(c, v, b);
+    else emit_expr(c, v, b);
+    buf_puts(b, "))");
     return;
   }
   if (sp_streq(ty, "ClassVariableAndWriteNode")) {
@@ -2279,11 +2281,13 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     if (cid < 0) { unsupported(c, id, "class variable and-write (no class scope)"); return; }
     char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[cid].name, nm + 2);
     int aidx = comp_cvar_index(&c->classes[cid], nm);
-    if (aidx >= 0 && c->classes[cid].cvar_types[aidx] == TY_POLY) {
-      buf_printf(b, "(sp_poly_truthy(%s) ? (%s = ", ref, ref);
-      emit_boxed(c, v, b); buf_printf(b, ") : %s)", ref);
-    }
-    else { buf_printf(b, "(%s ? (%s = ", ref, ref); emit_expr(c, v, b); buf_puts(b, ") : 0)"); }
+    TyKind at = aidx >= 0 ? c->classes[cid].cvar_types[aidx] : TY_UNKNOWN;
+    buf_puts(b, "(");
+    emit_slot_truthy(at, ref, b);
+    buf_printf(b, " ? (%s = ", ref);
+    if (at == TY_POLY) emit_boxed(c, v, b);
+    else emit_expr(c, v, b);
+    buf_printf(b, ") : %s)", ref);
     return;
   }
   if (sp_streq(ty, "GlobalVariableReadNode")) {
