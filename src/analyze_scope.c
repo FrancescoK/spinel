@@ -173,7 +173,7 @@ void collect_def_params(Compiler *c, int def_id, Scope *s) {
           const char *kn = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
           if (!kn) continue;
           int dup = 0;
-          for (int p = 0; p < s->nparams; p++) if (sp_streq(s->pnames[p], kn)) { dup = 1; break; }
+          for (int p = 0; p < s->nparams; p++) if (s->pnames[p] && sp_streq(s->pnames[p], kn)) { dup = 1; break; }
           if (!dup) scope_add_param(s, kn, -1);
         }
       }
@@ -192,17 +192,30 @@ static int scope_is_forwarding(Compiler *c, Scope *s) {
          sp_streq(nt_type(c->nt, kwr), "ForwardingParameterNode");
 }
 
-/* The method `s`'s body forwards `...` to (a `callee(...)` call). Returns the
-   callee scope index, or -1 if none/unresolved. */
+/* The method `s`'s body forwards `...` to (a `callee(...)` call, `super(...)`
+   or a bare `super`). Returns the callee scope index, or -1 if
+   none/unresolved. */
 static int forwarding_target_idx(Compiler *c, Scope *s) {
   const NodeTable *nt = c->nt;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallNode") || comp_scope_of(c, id) != s) continue;
-    int a = nt_ref(nt, id, "arguments");
-    int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-    if (an != 1 || !nt_type(nt, av[0]) ||
-        !sp_streq(nt_type(nt, av[0]), "ForwardingArgumentsNode")) continue;
+    if (!ty || comp_scope_of(c, id) != s) continue;
+    int is_super = sp_streq(ty, "ForwardingSuperNode");
+    if (!is_super) {
+      if (!sp_streq(ty, "CallNode") && !sp_streq(ty, "SuperNode")) continue;
+      int a = nt_ref(nt, id, "arguments");
+      int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+      if (an != 1 || !nt_type(nt, av[0]) ||
+          !sp_streq(nt_type(nt, av[0]), "ForwardingArgumentsNode")) continue;
+      is_super = sp_streq(ty, "SuperNode");
+    }
+    if (is_super) {
+      if (s->class_id < 0 || s->is_cmethod || !s->name) continue;
+      int par = c->classes[s->class_id].parent;
+      int mi = par >= 0 ? comp_method_in_chain(c, par, s->name, NULL) : -1;
+      if (mi >= 0) return mi;
+      continue;
+    }
     const char *cn = nt_str(nt, id, "name");
     if (!cn) continue;
     int recv = nt_ref(nt, id, "receiver");
@@ -215,12 +228,68 @@ static int forwarding_target_idx(Compiler *c, Scope *s) {
   return -1;
 }
 
+/* A `Klass.new(...)` call whose receiver names a class that constructs
+   through `init` (its `initialize` resolves to that scope). */
+static int new_site_reaches(Compiler *c, int id, int init) {
+  const NodeTable *nt = c->nt;
+  const char *cn = nt_str(nt, id, "name");
+  if (!cn || !sp_streq(cn, "new")) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
+  if (!rty || (!sp_streq(rty, "ConstantReadNode") && !sp_streq(rty, "ConstantPathNode")))
+    return 0;
+  int cid = comp_class_index(c, nt_str(nt, recv, "name"));
+  return cid >= 0 && comp_method_in_chain(c, cid, "initialize", NULL) == init;
+}
+
+/* `def initialize(...)` is reached through `Klass.new(...)`, never a call named
+   `initialize`, so its forwarded params come from the `new` sites. */
+static void initialize_forwarding_params(Compiler *c, int init) {
+  Scope *s = &c->scopes[init];
+  const NodeTable *nt = c->nt;
+  int lead = 0;
+  while (lead < s->nparams && (!s->pnames[lead] || strncmp(s->pnames[lead], "__fwd_", 6) != 0)) lead++;
+  int nfwd = 0;
+  for (int p = 0; p < s->nparams; p++)
+    if (s->pnames[p] && strncmp(s->pnames[p], "__fwd_", 6) == 0) nfwd++;
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "CallNode") || !new_site_reaches(c, id, init)) continue;
+    int a = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (an == 1 && nt_type(nt, av[0]) && sp_streq(nt_type(nt, av[0]), "ForwardingArgumentsNode")) continue;
+    int kwh = an > 0 && nt_type(nt, av[an - 1]) &&
+              sp_streq(nt_type(nt, av[an - 1]), "KeywordHashNode") ? av[an - 1] : -1;
+    int pos = kwh >= 0 ? an - 1 : an;
+    while (nfwd < pos - lead) {
+      char nm[24]; snprintf(nm, sizeof nm, "__fwd_%d", nfwd++);
+      scope_add_param(s, nm, -1);
+    }
+    int en = 0; const int *els = kwh >= 0 ? nt_arr(nt, kwh, "elements", &en) : NULL;
+    for (int e = 0; e < en; e++) {
+      int key = nt_ref(nt, els[e], "key");
+      const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
+      const char *kn = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
+      if (!kn) continue;
+      int dup = 0;
+      for (int p = 0; p < s->nparams; p++) if (s->pnames[p] && sp_streq(s->pnames[p], kn)) { dup = 1; break; }
+      if (!dup) scope_add_param(s, kn, -1);
+    }
+  }
+}
+
 /* Chained `...`: a forwarding method called only via another `f(...)` forward
    has no concrete call site, so its call-site arity is 0. Top its synthesized
    positional params up to its forwarding target's arity, to a fixpoint, so
    `def h(...); f(...); end; def f(...); g(a,b); end` propagates g's arity back
    through f and h (#1288). */
 void topup_forwarding_arity(Compiler *c) {
+  for (int s = 1; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    if (sc->name && sp_streq(sc->name, "initialize") && !sc->is_cmethod &&
+        sc->class_id >= 0 && scope_is_forwarding(c, sc))
+      initialize_forwarding_params(c, s);
+  }
   int changed = 1;
   for (int iter = 0; iter < 32 && changed; iter++) {
     changed = 0;
