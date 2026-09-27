@@ -1,0 +1,12 @@
+y 1 {flash_jumper: true}
+fetch 2 {flash_jumper: true, x: 2}
+fetch-miss 0 {}
+index 2 {flash_jumper: true, x: 2}
+kw true {x: 2}
+kw-lit true {z: 1, x: 2}
+mixed 2 {flash_jumper: true, depth: 3}
+mixed-kw true {depth: 3}
+two 4 {a: 0, flash_jumper: true, depth: 3, b: 1}
+nil 0 {}
+obj {flash_jumper: true, depth: 3}
+no implicit conversion of Integer into Hash

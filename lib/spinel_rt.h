@@ -9946,6 +9946,24 @@ static void sp_kwargs_verify(sp_RbVal h, const char *const *allowed, const char 
   }
   if (cnt) sp_raise_cls("ArgumentError", sp_sprintf("unknown keyword%s: %s", cnt > 1 ? "s" : "", list));
 }
+/* `**h` into a **kwrest, where h is a Hash only known at run time: merge its
+   entries into the keyword-rest being collected. nil carries no keywords, as
+   in CRuby; anything else that is not a Hash is CRuby's TypeError. The
+   keyword-rest is Symbol-keyed, so a key of another kind is refused loudly
+   rather than dropped. */
+static void sp_kwrest_merge_poly(sp_SymPolyHash *dst, sp_RbVal h) {
+  if (h.tag == SP_TAG_NIL) return;
+  if (h.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(h.cls_id))
+    sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Hash", sp_convert_src_name(h)));
+  SP_GC_ROOT(dst); SP_GC_ROOT_RBVAL(h);
+  sp_int n = sp_poly_length(h);
+  for (sp_int i = 0; i < n; i++) {
+    sp_RbVal k, v;
+    sp_poly_hash_pair(h, i, &k, &v);
+    if (k.tag != SP_TAG_SYM) sp_poly_typed_hash_store_miss(k, v, "Symbol", NULL);
+    sp_SymPolyHash_set(dst, (sp_sym)k.v.i, v);
+  }
+}
 static sp_PolyArray *sp_poly_values(sp_RbVal v) {
   /* a Struct read out of a container answers its member values, as the typed
      Struct does; it fell to the raise below */
