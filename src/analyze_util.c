@@ -1250,6 +1250,36 @@ static int yvt_callee_index(Compiler *c, int cid) {
   return rmi;
 }
 
+static int yvt_reaches(Compiler *c, int cid, int mi) {
+  if (yvt_callee_index(c, cid) == mi) return 1;
+  const NodeTable *nt = c->nt;
+  const char *cn = nt_str(nt, cid, "name");
+  const char *mn = c->scopes[mi].name;
+  int crecv = nt_ref(nt, cid, "receiver");
+  if (!cn || !sp_streq(cn, "new") || crecv < 0 || !mn || !sp_streq(mn, "initialize") ||
+      !c->scopes[mi].yields || nt_ref(nt, cid, "block") < 0) return 0;
+  NodeKind rk = nt_kind(nt, crecv);
+  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) return 0;
+  TyKind rt = infer_type(c, crecv);
+  if (rt != TY_POLY && !(rt == TY_CLASS && class_var_static_ci(c, crecv) < 0)) return 0;
+  int a = nt_ref(nt, cid, "arguments");
+  int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  int npos = 0, splat = 0;
+  for (int i = 0; i < an; i++) {
+    NodeKind k = nt_kind(nt, av[i]);
+    if (k == NK_SplatNode) splat = 1;
+    else if (k != NK_KeywordHashNode && k != NK_BlockArgumentNode) npos++;
+  }
+  int pn = c->scopes[mi].def_node >= 0 ? nt_ref(nt, c->scopes[mi].def_node, "parameters") : -1;
+  int nreq = 0, nopt = 0, npost = 0;
+  if (pn >= 0) { nt_arr(nt, pn, "requireds", &nreq); nt_arr(nt, pn, "optionals", &nopt); nt_arr(nt, pn, "posts", &npost); }
+  if (!splat && npos < nreq + npost) return 0;
+  if (!splat && (pn < 0 || nt_ref(nt, pn, "rest") < 0) && npos > nreq + npost + nopt) return 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (!c->classes[k].is_struct && comp_method_in_chain(c, k, "initialize", NULL) == mi) return 1;
+  return 0;
+}
+
 /* The value type of every `next` that leaves the block whose body is `node`
    (a nested loop, block, lambda or def binds its own). A bare `next` is nil.
    TY_UNKNOWN when there is none. The block's value is its tail joined with
@@ -1308,7 +1338,7 @@ TyKind yield_value_type(Compiler *c, int mi) {
     /* skip calls that live inside method mi itself (recursive self-calls);
        only external call sites provide a concrete block value type */
     if ((int)(comp_scope_of(c, cid) - c->scopes) == mi) continue;
-    if (yvt_callee_index(c, cid) != mi) continue;
+    if (!yvt_reaches(c, cid, mi)) continue;
     /* `mi(&b)` / `mi(...)`: the call forwards the block of its enclosing
        method rather than passing a literal. The value `mi` yields is then
        whatever that forwarded block produces -- the enclosing method's
@@ -1416,7 +1446,7 @@ int yield_block_tails(Compiler *c, int mi, int *out, int max) {
     if (!yvt_may_reach(c, ii, mi)) continue;
     int fwd_args = yvt_fwd ? yvt_fwd[ii] : yvt_call_forwards_block(nt, cid);
     if ((int)(comp_scope_of(c, cid) - c->scopes) == mi) continue;
-    if (yvt_callee_index(c, cid) != mi) continue;
+    if (!yvt_reaches(c, cid, mi)) continue;
     const char *blkty = blk >= 0 ? nt_type(nt, blk) : NULL;
     if (fwd_args || (blkty && sp_streq(blkty, "BlockArgumentNode"))) {
       Scope *encl = comp_scope_of(c, cid);
@@ -1710,7 +1740,7 @@ static int method_block_presence(Compiler *c, int mi) {
     const char *cn = nt_str(nt, cid, "name");
     if (!cn || !mn || !sp_streq(cn, mn)) continue;
     if ((int)(comp_scope_of(c, cid) - c->scopes) == mi) continue;
-    if (yvt_callee_index(c, cid) != mi) continue;
+    if (!yvt_reaches(c, cid, mi)) continue;
     int blk = nt_ref(nt, cid, "block");
     if (blk < 0 && !yvt_call_forwards_block(nt, cid)) { without++; continue; }
     if (blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode) {
