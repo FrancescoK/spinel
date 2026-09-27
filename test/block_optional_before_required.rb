@@ -22,3 +22,21 @@ mixed { |a = 1, c| p [a, c] }
 
 one { |c, a = {}| p [a, c] }
 two { |c, a = {}| p [a, c] }
+
+def scalar_then_array
+  yield 5
+  yield ["x", 6]
+end
+scalar_then_array { |a = 1, c| p [a, c] }
+
+def scalar_then_int_array
+  yield 5
+  yield [7, 6]
+end
+scalar_then_int_array { |a = "s", c| p [a, c] }
+
+def array_then_pair
+  yield ["x", 6]
+  yield 5, 6
+end
+array_then_pair { |a = 1, c| p [a, c] }
