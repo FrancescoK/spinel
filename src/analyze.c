@@ -16633,6 +16633,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_include_math(c);             /* include Math: sqrt(x) -> Math.sqrt(x) */
     ch |= desugar_kernel_recv(c);              /* Kernel.puts x -> puts x */
     ch |= desugar_class_literal_ctors(c);      /* Array[a,b] -> [a,b]; Range.new -> (a..b) */
+    ch |= desugar_builtin_iter_block_shapes(c);  /* [1].each { |c, a = 10| } -> { |v| c = v; a = 10 } */
     ch |= desugar_multi_yield_map_param(c);    /* multi-yield each: map's |x| takes the 1st */
     ch |= desugar_enum_walk_calls(c);          /* enum.map { break } -> __enumw_map(enum) { } */
     ch |= desugar_enum_method_recv(c);         /* obj.map{} -> obj.__enum_to_a.map{} */
