@@ -8465,6 +8465,8 @@ static void emit_super_block_arg(Compiler *c, int id, Scope *s, Scope *pm, int l
     buf_printf(b, "lv_%s", rename_local(s->blk_param));
   /* the caller's block, implicitly forwarded from an inlined body */
   else if (s->yields && g_block_id >= 0) emit_proc_literal(c, g_block_id, b);
+  /* or the proc driving the inlined body (`on(:x, &pr)`) */
+  else if (s->yields && g_yield_proc_ref) buf_puts(b, g_yield_proc_ref);
   else buf_puts(b, "NULL");
 }
 

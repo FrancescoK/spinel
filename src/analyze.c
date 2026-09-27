@@ -13287,6 +13287,36 @@ static int convert_byref_handle_params(Compiler *c,
   return changed;
 }
 
+/* The method a `super` in scope `m` calls, or -1. */
+static int a_super_target(Compiler *c, Scope *m) {
+  const char *shadow = comp_prep_chain_target(c, m->class_id, m->name);
+  if (shadow) return m->is_cmethod ? comp_cmethod_in_class(c, m->class_id, shadow)
+                                   : comp_method_in_class(c, m->class_id, shadow);
+  int p = c->classes[m->class_id].parent;
+  if (p < 0) return -1;
+  const char *u = comp_prep_user_name(m->name);
+  return m->is_cmethod ? comp_cmethod_in_chain(c, p, u, NULL)
+                       : comp_method_in_chain(c, p, u, NULL);
+}
+
+/* Whether a `super` in scope `m` passes m's own block on: a bare `super`, one
+   with arguments but no block (implicit), or `super(&blk)` naming m's block. */
+static int a_scope_super_passes_block(Compiler *c, Scope *m) {
+  const NodeTable *nt = c->nt;
+  for (int q = 0; q < nt->count; q++) {
+    NodeKind k = nt_kind(nt, q);
+    if (k != NK_SuperNode && k != NK_ForwardingSuperNode) continue;
+    if (comp_scope_of(c, q) != m) continue;
+    int b = nt_ref(nt, q, "block");
+    if (b < 0) return 1;
+    if (nt_kind(nt, b) != NK_BlockArgumentNode) continue;
+    int e = nt_ref(nt, b, "expression");
+    if (e >= 0 && nt_kind(nt, e) == NK_LocalVariableReadNode &&
+        sp_streq(nt_str(nt, e, "name"), m->blk_param)) return 1;
+  }
+  return 0;
+}
+
 /* The block-taking method named `fn` that KEEPS its block -- reads its &blk
    parameter as anything but the receiver of `.call` or a `&blk` forward
    (`blk_call_recv` / `blk_arg_expr` mark those reads) -- or -1. `*first` gets
@@ -16070,6 +16100,15 @@ void analyze_program(Compiler *c) {
       }
     }
     free(inproc_m);
+    /* `super`, bare or with `&blk`, hands this method's block to the parent
+       method, which may keep it: an edge like a forward into a user method. */
+    if (!escapes && uses > 0 && m->class_id >= 0 && m->name && nfwd < cfwd) {
+      int sm = a_super_target(c, m);
+      Scope *ss = sm >= 0 ? &c->scopes[sm] : NULL;
+      if (ss && ss->blk_param && ss->blk_param[0] && a_scope_super_passes_block(c, m)) {
+        fwd_from[nfwd] = mi; fwd_to[nfwd] = sm; nfwd++;
+      }
+    }
     /* Recorded for the lowering pass further down: a method that wants its
        block's VALUE cannot be spliced, and if it also contains a literal
        `yield` the inline path is the only one it has -- which emits no
