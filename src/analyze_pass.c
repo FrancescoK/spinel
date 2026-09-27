@@ -3658,9 +3658,13 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
   for (int k = 0; remap && k < pos_argc; k++)
     if (nt_kind(nt, argv[k]) == NK_SplatNode) remap = 0;
   if (remap) n = max_bind;
+  /* a keyword hash no keyword parameter takes is one more positional
+     (#4877): it is counted in the layout, and bound by the hash rule below */
+  int lay_argc = pos_argc;
+  if (remap && kwh >= 0 && m->kwrest_idx < 0 && !callee_declares_kwargs(c, m)) lay_argc++;
   for (int k = 0; k < n; k++) {
     int arg = k;
-    if (remap && (arg = arg_slot_for_param(c, m, k, pos_argc)) < 0) continue;
+    if (remap && ((arg = arg_slot_for_param(c, m, k, lay_argc)) < 0 || arg >= pos_argc)) continue;
     const char *apty = argv ? nt_type(nt, argv[arg]) : NULL;
     /* A single SplatNode spreads its array across every remaining fixed param,
        not just this position. Bind each from the array's element type so a
