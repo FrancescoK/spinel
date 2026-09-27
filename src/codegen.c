@@ -1422,7 +1422,27 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
        never the NULL pointer, so the test costs one compare on a path that
        already allocates, and no analysis has to prove nilability. */
     case TY_BIGINT: fn = "sp_box_bigint_or_nil"; break;
-    case TY_STRING: fn = "sp_box_str";   break;
+    case TY_STRING: {
+      /* The node-type cache is finalized before the late handle passes run,
+         so a local promoted to a shared handle still reads as String here
+         while its C slot is an sp_String *. Box the HANDLE: sp_box_str would
+         hand the callee a copy, and the append would land in the copy (the
+         mixed case -- one callee reached with a reader argument and a plain
+         local -- printed the unchanged string). */
+      const char *sbn = nt_kind(c->nt, node) == NK_LocalVariableReadNode
+                          ? nt_str(c->nt, node, "name") : NULL;
+      if (sbn) {
+        Scope *sbs = comp_scope_of(c, node);
+        LocalVar *sblv = sbs ? scope_local(sbs, sbn) : NULL;
+        char srefS[1024];
+        if (sblv && sblv->type == TY_STRBUF && sblv->str_shared &&
+            strbuf_slot_ref(c, node, srefS, sizeof srefS)) {
+          buf_printf(b, "sp_box_obj(%s, SP_BUILTIN_STRBUF)", srefS);
+          return;
+        }
+      }
+      fn = "sp_box_str";   break;
+    }
     case TY_BOOL:   fn = "sp_box_bool";  break;
     case TY_SYMBOL: fn = "sp_box_sym";   break;
     case TY_RANGE:  fn = "sp_box_range"; break;
@@ -1477,6 +1497,25 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
         c->strbuf_box[node] = sv_m2;
         buf_puts(b, "), SP_BUILTIN_STRBUF)");
         return;
+      }
+      /* A reader call whose ivar is now the shared handle already emits the
+         sp_String * itself, so box THAT handle. Wrapping a fresh one around
+         it fed sp_String_new_shared (a const char * value) a handle, and the
+         C build stopped -- the mixed case where one callee is reached with
+         both a reader argument and a container element. */
+      if (nt_kind(c->nt, node) == NK_CallNode &&
+          comp_ntype(c, node) == TY_STRBUF &&
+          nt_ref(c->nt, node, "receiver") >= 0 &&
+          ty_is_object(comp_ntype(c, nt_ref(c->nt, node, "receiver")))) {
+        char sref_h[1024];
+        unsigned char sv_mh = c->strbuf_box[node];
+        c->strbuf_box[node] = 1;
+        int got_h = strbuf_slot_ref(c, node, sref_h, sizeof sref_h);
+        c->strbuf_box[node] = sv_mh;
+        if (got_h) {
+          buf_printf(b, "sp_box_obj(%s, SP_BUILTIN_STRBUF)", sref_h);
+          return;
+        }
       }
       /* a demanded literal / expression store: wrap a FRESH handle so the
          container element is mutable in place (#3227 P3) */
