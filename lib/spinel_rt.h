@@ -9866,6 +9866,18 @@ static sp_PolyArray *sp_poly_keys(sp_RbVal v) {
   sp_raise_cls("NoMethodError", "undefined method 'keys'");
   return NULL;  /* unreachable: sp_raise_cls is noreturn */
 }
+/* sp_kwargs_check for a `**hash` that cannot hold a Symbol key: every key it
+   carries is unknown to a callee with fixed keyword params. */
+static void sp_kwargs_reject(sp_RbVal h) {
+  if (sp_poly_length(h) == 0) return;
+  sp_PolyArray *k = sp_poly_keys(h); SP_GC_ROOT(k);
+  char list[256]; int n = 0;
+  for (sp_int i = 0; i < k->len && n < (int)sizeof(list) - 1; i++) {
+    int w = snprintf(list + n, sizeof(list) - n, "%s%s", i ? ", " : "", sp_poly_inspect(k->data[i]));
+    n = (w > 0 && n + w < (int)sizeof(list)) ? n + w : (int)sizeof(list) - 1;
+  }
+  sp_raise_cls("ArgumentError", sp_sprintf("unknown keyword%s: %s", k->len > 1 ? "s" : "", list));
+}
 static sp_PolyArray *sp_poly_values(sp_RbVal v) {
   /* a Struct read out of a container answers its member values, as the typed
      Struct does; it fell to the raise below */

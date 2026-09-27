@@ -6022,19 +6022,10 @@ int kwh_arg_param(Compiler *c, Scope *m, int pos_argc) {
    reimplementing the test. */
 int rest_kwh_tail(Compiler *c, Scope *m, int kwh, int pos_argc) {
   if (kwh < 0 || !m || m->kwrest_idx >= 0) return -1;
-  /* An anonymous `**` is the enclosing forwarding method's keyword hash, so
-     it feeds declared keyword params even though there is no literal key to
-     find. It must not be packed into the positional rest as a hash (and its
-     source node has no expression to render). */
-  int en0 = 0; const int *el0 = nt_arr(c->nt, kwh, "elements", &en0);
-  int anon_ds = 0;
-  for (int e = 0; e < en0; e++)
-    if (nt_kind(c->nt, el0[e]) == NK_AssocSplatNode &&
-        nt_ref(c->nt, el0[e], "value") < 0) { anon_ds = 1; break; }
-  if (anon_ds) {
-    int kn = 0; nt_arr(c->nt, nt_ref(c->nt, m->def_node, "parameters"), "keywords", &kn);
-    if (kn > 0) return -1;
-  }
+  /* A callee declaring keyword params takes the hash as keywords whatever
+     its keys, a `**h` (named or anonymous) included, which has none to find
+     by name. */
+  if (callee_declares_kwargs(c, m)) return -1;
   for (int i = 0; i < m->nparams; i++)
     if (m->pnames[i] && callee_has_kwarg(c, m, m->pnames[i]) &&
         kwh_lookup(c->nt, kwh, m->pnames[i]) >= 0) return -1;   /* a keyword param takes it */
@@ -6076,14 +6067,11 @@ static int kwh_consumed_by_kwparam(Compiler *c, Scope *m, int kwh) {
      bound the keyword hash to `a` as well as to `kw`, and any branch testing
      `a.nil?` took the wrong path (#3808). */
   if (m->kwrest_idx >= 0) return 1;
-  int en = 0; const int *el = nt_arr(c->nt, kwh, "elements", &en);
-  for (int e = 0; e < en; e++) {
-    int key = el ? nt_ref(c->nt, el[e], "key") : -1;
-    const char *kt = key >= 0 ? nt_type(c->nt, key) : NULL;
-    const char *kn = (kt && sp_streq(kt, "SymbolNode")) ? nt_str(c->nt, key, "value") : NULL;
-    if (kn && callee_param_is_declared_kwarg(c, m, kn)) return 1;
-  }
-  return 0;
+  /* A callee declaring a keyword parameter takes the hash as keywords
+     whatever its keys: a `**h` has no key to match by name, and a key no
+     parameter names is an unknown keyword. Matching keys by name bound
+     `f(1, **h)` against `def f(a, b = 5, k: 1)` to b as well. */
+  return callee_declares_kwargs(c, m);
 }
 
 void emit_rest_pack(Compiler *c, int from, int pos_argc, const int *argv, Buf *b) {
@@ -6451,6 +6439,46 @@ int emit_ds_hash_materialize(Compiler *c, int kwh, TyKind *out_type) {
   return ds_hash_tmp;
 }
 
+/* True when a `**hash` of this type can hold no Symbol key, so no keyword
+   parameter can take anything from it. */
+static int ds_hash_keys_not_symbols(TyKind t) {
+  TyKind k = ty_hash_key(t);
+  return k == TY_STRING || k == TY_INT;
+}
+
+/* A `**hash` forwarded into a method with fixed keyword params and no
+   keyword-rest must carry only declared keys, else CRuby raises
+   ArgumentError. Emit a runtime check over the materialized hash against the
+   callee's declared keyword names. A kwrest absorbs the extras, so only guard
+   when there is none. The object-receiver and inlined calls skipped this, so
+   `o.m(1, **{z: 1})` ran with the key dropped. */
+void emit_ds_unknown_kwarg_check(Compiler *c, Scope *m, int ds_hash_tmp, TyKind ds_hash_type) {
+  const NodeTable *nt = c->nt;
+  if (ds_hash_tmp < 0 || !m || m->kwrest_idx >= 0 || m->def_node < 0) return;
+  int pn = nt_ref(nt, m->def_node, "parameters");
+  int kn = 0; const int *kws = pn >= 0 ? nt_arr(nt, pn, "keywords", &kn) : NULL;
+  if (kn == 0) return;
+  if (ds_hash_type == TY_SYM_POLY_HASH) {
+    int chk = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "static const char *const _kw%d[] = {", chk);
+    for (int ki = 0; ki < kn; ki++) {
+      const char *kpn = nt_str(nt, kws[ki], "name");
+      if (kpn) buf_printf(g_pre, "\"%s\", ", kpn);
+    }
+    buf_puts(g_pre, "0};\n");
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_kwargs_check(_t%d, _kw%d);\n", ds_hash_tmp, chk);
+  }
+  else if (ds_hash_keys_not_symbols(ds_hash_type)) {
+    char tn[32]; snprintf(tn, sizeof tn, "_t%d", ds_hash_tmp);
+    emit_indent(g_pre, g_indent);
+    buf_puts(g_pre, "sp_kwargs_reject(");
+    emit_boxed_text(c, ds_hash_type, tn, g_pre);
+    buf_puts(g_pre, ");\n");
+  }
+}
+
 /* Emit the value for KEYWORD param `i` extracted by name from a materialized
    `**hash` temp, falling back to the param's default when the key is absent.
    Shared by emit_args_filled and emit_dispatch. */
@@ -6483,7 +6511,7 @@ void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
     free(ub.p);
     return;
   }
-  if (hn) {
+  if (hn && !ds_hash_keys_not_symbols(ds_hash_type)) {
     /* SymPoly: get returns sp_RbVal, unbox to param type.
        Other sym/str keyed hashes: get returns the value type directly. */
     TyKind hval = ty_hash_val(ds_hash_type);
@@ -6511,7 +6539,10 @@ void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
   else {
     /* Hash type unknown (no C-name), so the key can't be extracted; bind the
        param's declared default rather than the bare type-default, matching the
-       key-absent fallback in the typed branch above. */
+       key-absent fallback in the typed branch above. A String- or
+       Integer-keyed hash (an empty `{}` types as one) holds no Symbol key to
+       extract either: looking one up passed an sp_sym as its key, which the
+       C compiler refused. */
     emit_arg_or_default(c, m, i, -1, out);
   }
 }
@@ -7045,29 +7076,7 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
      Pre-evaluate the hash to a temp so we can do per-param lookups. */
   TyKind ds_hash_type = TY_UNKNOWN;
   int ds_hash_tmp = emit_ds_hash_materialize(c, kwh, &ds_hash_type);
-
-  /* A `**hash` forwarded into a method with fixed keyword params and no
-     keyword-rest must carry only declared keys, else CRuby raises
-     ArgumentError. Emit a runtime check over the materialized (symbol-keyed)
-     hash against the callee's declared keyword names. (A kwrest absorbs the
-     extras, so only guard when there is none.) */
-  if (ds_hash_tmp >= 0 && m && m->kwrest_idx < 0 && m->def_node >= 0) {
-    const char *dshn = ty_hash_cname(ds_hash_type);
-    int pn = nt_ref(nt, m->def_node, "parameters");
-    int kn = 0; const int *kws = pn >= 0 ? nt_arr(nt, pn, "keywords", &kn) : NULL;
-    if (kn > 0 && dshn && sp_streq(dshn, "SymPoly")) {
-      int chk = ++g_tmp;
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "static const char *const _kw%d[] = {", chk);
-      for (int ki = 0; ki < kn; ki++) {
-        const char *kpn = nt_str(nt, kws[ki], "name");
-        if (kpn) buf_printf(g_pre, "\"%s\", ", kpn);
-      }
-      buf_puts(g_pre, "0};\n");
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_kwargs_check(_t%d, _kw%d);\n", ds_hash_tmp, chk);
-    }
-  }
+  emit_ds_unknown_kwarg_check(c, m, ds_hash_tmp, ds_hash_type);
 
   /* Find the first SplatNode in positional args. If it comes before rest_idx
      (or before nparams for rest-less methods), pre-evaluate it to a temp so
@@ -7859,6 +7868,7 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
      into a NULL kwrest and let positionals steal keys by name). */
   TyKind ds_type_d = TY_UNKNOWN;
   int ds_tmp_d = (m && kwh_d >= 0) ? emit_ds_hash_materialize(c, kwh_d, &ds_type_d) : -1;
+  emit_ds_unknown_kwarg_check(c, m, ds_tmp_d, ds_type_d);
   int np = m ? m->nparams : pos_argc_d;
   /* evaluate each param value (provided arg or default) into a temp so the
      virtual-dispatch cases reuse them without re-evaluating */

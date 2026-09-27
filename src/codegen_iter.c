@@ -616,6 +616,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      param fell through to a fabricated default. */
   TyKind ds_type = TY_UNKNOWN;
   int ds_tmp = emit_ds_hash_materialize(c, kwh, &ds_type);
+  emit_ds_unknown_kwarg_check(c, m, ds_tmp, ds_type);
   /* The count and the keys, by the rule the ordinary call path follows. The
      loop below walks the PARAMETERS, so an argument none of them reads --
      a key naming no parameter (#4419), a positional past the last one --

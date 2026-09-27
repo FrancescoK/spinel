@@ -1,0 +1,15 @@
+13
+13
+10
+13
+13
+[13, 14]
+[1, nil, 7]
+[1, [], 7]
+13
+7
+7
+"unknown keyword: :z"
+"unknown keyword: :z"
+"unknown keywords: \"k\", \"j\""
+[1, {k: 7}]
