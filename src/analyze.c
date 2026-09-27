@@ -16730,6 +16730,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_to_proc_block_arg(c);        /* &obj (user to_proc) -> &(obj.to_proc) hoisted once */
     ch |= desugar_proc_expr_block_arg(c);      /* &(a >> b) -> hoisted temp */
     ch |= desugar_to_hash_splat(c);            /* f(**obj) -> f(**obj.to_hash) */
+    ch |= desugar_splat_to_a(c);               /* [*h] -> [*h.to_a] (Hash, user #to_a) */
     ch |= desugar_value_callable_forwards(c);  /* &proc -> { |x| proc.call(x) } */
     if (desugar_builtin_enum_calls(c)) {       /* recv.m(a) { } -> __enum_m(recv, a) { } */
       ch = 1;
