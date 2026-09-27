@@ -5653,6 +5653,23 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
         buf_puts(out, "sp_poly_as_bigint("); emit_expr(c, provided, out); buf_puts(out, ")");
         return;
       }
+      /* A parameter a --rbs seed pins to a typed array (`Array[String]`)
+         keeps its kind where inference would have widened it, so a poly
+         array reaches it as it is: the elements are converted at the
+         boundary, the way a seeded store converts them (#1827). Passed
+         unconverted, the sp_PolyArray * was bound as the typed array and
+         the C did not build (#5147). */
+      if ((pt == TY_INT_ARRAY || pt == TY_FLOAT_ARRAY || pt == TY_STR_ARRAY) &&
+          (at == TY_POLY_ARRAY || at == TY_POLY)) {
+        Buf ab; memset(&ab, 0, sizeof ab);
+        Buf bx; memset(&bx, 0, sizeof bx);
+        emit_expr(c, provided, &ab);
+        if (at == TY_POLY_ARRAY) emit_boxed_text(c, TY_POLY_ARRAY, ab.p ? ab.p : "NULL", &bx);
+        else buf_puts(&bx, ab.p ? ab.p : "sp_box_nil()");
+        emit_unbox_text(c, pt, bx.p ? bx.p : "sp_box_nil()", out);
+        free(ab.p); free(bx.p);
+        return;
+      }
       /* Bare call inside a class/module body: analyze may not have resolved the
          type because g_cbody_class_id is not set during fixpoint. Look it up now. */
       if (at == TY_UNKNOWN && g_class_body_id >= 0) {

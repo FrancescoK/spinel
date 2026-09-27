@@ -1,0 +1,4 @@
+module Enc
+  def self.join: (Array[String]) -> String
+  def self.total: (Array[Integer]) -> Integer
+end
