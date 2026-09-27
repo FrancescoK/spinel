@@ -37,3 +37,16 @@ class Inner
   def go; push_ivar(@buf); @buf; end
 end
 p Inner.new.go
+
+# one helper reached with BOTH a reader argument and a plain local: the
+# parameter takes the handle and the lvalue is normalized into it, so both
+# mutations land. Either order.
+def push_both(x); x << "!"; end
+bb = Box.new; push_both(bb.reader); ss = +"a"; push_both(ss)
+p bb.reader
+p ss
+
+def push_both2(x); x << "!"; end
+tt = +"a"; push_both2(tt); cc = Box.new; push_both2(cc.reader)
+p tt
+p cc.reader
