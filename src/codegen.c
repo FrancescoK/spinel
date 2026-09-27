@@ -8487,16 +8487,32 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int block = nt_ref(c->nt, id, "block");
   /* A bare `super` forwards the caller's block, which is the one currently
      being spliced into this (inlined) method. */
+  char yprocbuf[128];
+  const char *fwd_yield_proc = NULL;
   if (block < 0) block = g_block_id;
+  /* So does `super(&)` or `super(&blk)` naming this method's block; a
+     forwarded real proc drives the yields instead, as in an inlined
+     `inner(&pr)`. */
+  else if (nt_kind(c->nt, block) == NK_BlockArgumentNode) {
+    block = resolve_forwarded_block(c, block);
+    if (block >= 0 && nt_kind(c->nt, block) == NK_BlockArgumentNode) {
+      Buf pb; memset(&pb, 0, sizeof pb);
+      emit_forwarded_proc_arg(c, block, &pb);
+      if (pb.p && !sp_streq(pb.p, "NULL")) {
+        snprintf(yprocbuf, sizeof yprocbuf, "%s", pb.p);
+        fwd_yield_proc = yprocbuf;
+      }
+      free(pb.p);
+      block = -1;
+    }
+  }
   /* No block to splice: the parent is still only ever inlined (a yielding
      method has no C function of its own), and the call to an undefined
      sp_<Cls>_<m> did not link (#4852). A caller holding its block as a proc
      -- a declared `&blk`, or the one a super into a block-taking parent
      synthesizes -- drives the parent's yields through that proc, as an
      inlined `inner(&blk)` does; with neither, `block_given?` folds false. */
-  char yprocbuf[128];
-  const char *fwd_yield_proc = NULL;
-  if (block < 0 && s->blk_param && s->blk_param[0] && !s->yields) {
+  if (!fwd_yield_proc && block < 0 && s->blk_param && s->blk_param[0] && !s->yields) {
     snprintf(yprocbuf, sizeof yprocbuf, "lv_%s", rename_local(s->blk_param));
     fwd_yield_proc = yprocbuf;
   }
