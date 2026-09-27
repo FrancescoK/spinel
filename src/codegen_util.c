@@ -321,6 +321,12 @@ static int blk_param_call(const Compiler *c, int id) {
   const char *rn = nt_str(c->nt, r, "name");
   return rn && sp_streq(rn, g_block_param_name);
 }
+/* An empty `[]` literal: splatting it contributes no elements. */
+int is_empty_array_lit(const NodeTable *nt, int id) {
+  if (id < 0 || nt_kind(nt, id) != NK_ArrayNode) return 0;
+  int n = 0; nt_arr(nt, id, "elements", &n);
+  return n == 0;
+}
 /* The cached value type of every `next` leaving the block body `node`: a
    nested loop, block, lambda or def binds its own. TY_UNKNOWN when none.
    The block's value is its tail joined with these, exactly as analyze's
