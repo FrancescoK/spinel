@@ -12231,9 +12231,12 @@ static int an_param_mutated_in_place(Compiler *c, int mi, int pi) {
   if (pi < 0 || pi >= m->nparams || !m->pnames[pi]) return 0;
   const char *pn = m->pnames[pi];
   const NodeTable *nt = c->nt;
-  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
+  /* the callee's OWN calls, not the program's: the sweep below asks this for
+     every argument of every resolvable call site, every fixpoint round, and
+     the whole-table walk made that quadratic on a large program (the same
+     chain strbuf_slot_eligible_shape moved to) */
+  for (int u = comp_scall_first(c, mi); u >= 0; u = comp_scall_next(c, u)) {
     if (nt_kind(nt, u) != NK_CallNode) continue;
-    if (comp_scope_of(c, u) != m) continue;
     const char *un = nt_str(nt, u, "name");
     if (!un || !an_str_mutator_name(un)) continue;
     int ur = nt_ref(nt, u, "receiver");
