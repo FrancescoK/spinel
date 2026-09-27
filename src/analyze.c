@@ -12538,6 +12538,46 @@ static int promote_shared_stored_strings(Compiler *c) {
     }
   }
 
+  /* An alias taken FROM a reader and mutated through (`t = c.name; t << x`).
+     The converse of #5112, which fixed the alias taken BEFORE a mutation that
+     goes through the reader; here the mutation goes through the ALIAS and the
+     ivar never saw it. The pure-alias rule below pairs two LOCALS, and the
+     mutation census keys on the mutator's receiver -- a local, so the ivar
+     recorded nothing. The reader handed out a copy, the local was mutated,
+     and the object kept the old string, silently.
+
+     This is the shape a buffer-holding object is used through: `buf =
+     state.buffer; buf << "<div>"`. */
+  for (int w6 = comp_kind_first(c, NK_LocalVariableWriteNode); w6 >= 0; w6 = comp_kind_next(c, w6)) {
+    if (nt_kind(nt, w6) != NK_LocalVariableWriteNode) continue;
+    int v6 = nt_ref(nt, w6, "value");
+    if (v6 < 0 || nt_kind(nt, v6) != NK_CallNode) continue;
+    int rr6 = nt_ref(nt, v6, "receiver");
+    if (rr6 < 0) continue;
+    TyKind rt6 = infer_type(c, rr6);
+    if (!ty_is_object(rt6)) continue;
+    const char *tn6 = nt_str(nt, w6, "name");
+    Scope *ws6 = comp_scope_of(c, w6);
+    if (!tn6 || !ws6) continue;
+    /* the alias has to be mutated in place -- without that there is nothing
+       to carry back and the copy-on-read slot stays the cheaper shape */
+    if (strbuf_mut_kind(c, tn6, ws6) != 1) continue;
+    char ivb6[300]; int defc6 = ty_object_class(rt6);
+    const char *ivn6 = an_reader_ivar_of(c, v6, &defc6, ivb6, sizeof ivb6);
+    if (!ivn6 || defc6 < 0) continue;
+    if (strbuf_ivar_mut_kind(c, defc6, ivn6) < 0) continue;
+    if (strbuf_promote_ivar(c, defc6, ivn6)) changed = 1;
+    { int iv6 = comp_ivar_index(&c->classes[defc6], ivn6);
+      if (iv6 < 0 || !c->classes[defc6].ivar_str_shared[iv6]) continue; }
+    if (!c->strbuf_box[v6]) { c->strbuf_box[v6] = 1; changed = 1; }
+    { LocalVar *tv6 = scope_local(ws6, tn6);
+      if (tv6 && strbuf_slot_eligible_shape(c, tn6, ws6, tv6) &&
+          (tv6->type == TY_STRING || tv6->type == TY_STRBUF) &&
+          !(tv6->type == TY_STRBUF && tv6->str_shared)) {
+        tv6->type = TY_STRBUF; tv6->str_shared = 1; changed = 1;
+      } }
+  }
+
   /* Pure-alias pairs (`s2 = s1`): when either endpoint of the alias is
      in-place mutated, both share the one handle -- CRuby's mutable String
      objects -- regardless of which mutator (a bang-only alias set shares
