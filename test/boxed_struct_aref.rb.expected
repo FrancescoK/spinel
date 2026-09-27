@@ -1,0 +1,14 @@
+#<struct S a=1, b=2>
+#<struct S a=1, b=nil>
+#<struct S a=nil, b=nil>
+#<struct T x=1, y="two", z=[3]>
+#<data D x=3, y=4>
+[ArgumentError, "struct size differs"]
+[S, [3, 4], 7]
+["x", nil]
+[3, 4]
+[2, 3]
+"el"
+#<struct S a=1, b=2>
+"or"
+#<data D x=1, y=2>

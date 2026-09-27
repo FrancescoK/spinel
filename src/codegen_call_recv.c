@@ -12624,6 +12624,116 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, Buf *b) {
   else buf_printf(b, "_t%d; })", tnb);
 }
 
+/* The `[]` call this function is re-entering for a value that is not a
+   Struct or Data class, or -1. */
+static int g_aref_cls_skip = -1;
+
+/* A literal reads the same wherever it is emitted, so it is left in place
+   in emit_boxed_class_aref rather than bound to a temp. */
+static int aref_arg_in_place(const NodeTable *nt, int a) {
+  switch (nt_kind(nt, a)) {
+    case NK_NilNode: case NK_TrueNode: case NK_FalseNode: case NK_IntegerNode:
+    case NK_FloatNode: case NK_SymbolNode:
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+/* For a class built by its generated constructor, the boxed `new` dispatch
+   reads each argument as the type the compiler gave the member it fills.
+   Answers 1 when some argument's type is another type, or is not known, so
+   that class is left to the `[]` the value took before. */
+static int aref_arg_mistyped(Compiler *c, int ci, const int *argv, int argc) {
+  ClassInfo *k = &c->classes[ci];
+  if (comp_method_in_chain(c, ci, "initialize", NULL) >= 0) return 0;
+  for (int j = 0; j < argc && j < k->nreaders; j++) {
+    char mvn[300]; snprintf(mvn, sizeof mvn, "@%s", k->readers[j]);
+    int mvi = comp_ivar_index(k, mvn);
+    TyKind pt = (mvi >= 0 && k->ivar_types[mvi] != TY_UNKNOWN) ? k->ivar_types[mvi] : TY_POLY;
+    if (pt != TY_POLY && comp_ntype(c, argv[j]) != pt) return 1;
+  }
+  return 0;
+}
+
+/* `k[1, 2]` on a boxed receiver that holds a Struct or Data class: `[]` on
+   such a class is `new`, and the boxed `[]` reads the receiver as an Array,
+   a String or a user object, so a class value raised NoMethodError or
+   TypeError, or answered nil. Branch on the value: a class box whose id is
+   one of the program's Struct or Data classes takes the boxed `new`
+   dispatch through a rename re-entry, and anything else the `[]` it always
+   took, through a re-entry that reads the receiver and every argument that
+   is not a literal from temps they are evaluated into once. Only a call
+   whose value is boxed, with positional arguments that each have a C type,
+   and not a `&.` call, takes this path. */
+int emit_boxed_class_aref(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  int argc;
+  const int *argv = call_args(nt, id, &argc);
+  TyKind rt = recv >= 0 ? comp_recv_type(c, recv) : TY_VOID;
+  const char *cop = nt_str(nt, id, "call_operator");
+  if (cop && sp_streq(cop, "&.")) return 0;
+  if (recv >= 0 && rt == TY_POLY && name && sp_streq(name, "[]") && g_aref_cls_skip != id &&
+      nt_ref(nt, id, "block") < 0 && (comp_ntype(c, id) == TY_POLY || comp_ntype(c, id) == TY_UNKNOWN) &&
+      g_n_argov + argc + 1 <= MAX_ARG_OVERRIDE) {
+    for (int i = 0; i < argc; i++) {
+      NodeKind ak = nt_kind(nt, argv[i]);
+      if (ak == NK_KeywordHashNode || ak == NK_SplatNode || ak == NK_BlockArgumentNode) return 0;
+      if (aref_arg_in_place(nt, argv[i])) continue;
+      TyKind at = comp_ntype(c, argv[i]);
+      if (at == TY_UNKNOWN || at == TY_VOID || !c_type_name(at)) return 0;
+    }
+    int ncls = 0, tsv = 0;
+    Buf ids; memset(&ids, 0, sizeof ids);
+    for (int ci = 0; ci < c->nclasses; ci++) {
+      ClassInfo *k = &c->classes[ci];
+      if (!k->is_struct || is_builtin_reopen(k->name) || k->is_native_class) continue;
+      if (comp_cmethod_in_chain(c, ci, "[]", NULL) >= 0 ||
+          comp_cmethod_in_chain(c, ci, "new", NULL) >= 0) continue;
+      if (aref_arg_mistyped(c, ci, argv, argc)) continue;
+      if (!ncls) tsv = ++g_tmp;
+      buf_printf(&ids, "%s_t%d.cls_id == %d", ncls++ ? " || " : "", tsv, ci);
+    }
+    if (!ncls) { free(ids.p); return 0; }
+    /* the receiver, then each argument that is not a literal, once, into
+       rooted temps both re-entries below read; an argument whose own parts
+       are hoisted ahead of the statement (an Array or a Hash literal) has
+       those parts evaluated there, as the `[]` did before */
+    buf_printf(b, "({ sp_RbVal _t%d = ", tsv); emit_boxed(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tsv);
+    int nov0 = g_n_argov;
+    for (int i = 0; i < argc; i++) {
+      if (aref_arg_in_place(nt, argv[i])) continue;
+      TyKind at = comp_ntype(c, argv[i]);
+      int ta = ++g_tmp;
+      emit_ctype(c, at, b);
+      buf_printf(b, " _t%d = ", ta); emit_expr(c, argv[i], b); buf_puts(b, "; ");
+      if (ty_gc_rootable(c, at)) { emit_gc_root_tmp(c, at, ta, b); buf_puts(b, " "); }
+      g_argov_node[g_n_argov] = argv[i];
+      snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
+      g_n_argov++;
+    }
+    buf_printf(b, "(_t%d.tag == SP_TAG_CLASS && (%s)) ? ", tsv, ids.p);
+    g_argov_node[g_n_argov] = recv;
+    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tsv);
+    g_n_argov++;
+    nt_node_set_str((NodeTable *)nt, id, "name", "new");
+    Buf nb; memset(&nb, 0, sizeof nb); emit_call(c, id, &nb);
+    nt_node_set_str((NodeTable *)nt, id, "name", "[]");
+    int sv_skip = g_aref_cls_skip;
+    g_aref_cls_skip = id;
+    Buf ab; memset(&ab, 0, sizeof ab); emit_call(c, id, &ab);
+    g_aref_cls_skip = sv_skip;
+    g_n_argov = nov0;
+    buf_printf(b, "(%s) : (%s); })", nb.p ? nb.p : "sp_box_nil()", ab.p ? ab.p : "sp_box_nil()");
+    free(nb.p); free(ab.p); free(ids.p);
+    return 1;
+  }
+  return 0;
+}
+
 int emit_poly_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");

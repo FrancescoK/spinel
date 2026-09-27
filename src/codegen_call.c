@@ -17787,6 +17787,7 @@ static int recv_read_before_args(Compiler *c, int id) {
 }
 
 static void emit_call_held(Compiler *c, int id, Buf *b) {
+  if (emit_boxed_class_aref(c, id, b)) return;
   int rrecv = recv_read_before_args(c, id);
   if (rrecv >= 0) {
     TyKind rt = comp_ntype(c, rrecv);
