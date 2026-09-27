@@ -7364,7 +7364,7 @@ static int oa_block_has_nested_block(const NodeTable *nt, int blk) {
   return blk >= 0 && oa_block_has_nested_block_in(nt, nt_ref(nt, blk, "body"));
 }
 
-typedef struct { int sidx; LocalVar *lv; int cls; int alive; int uf; int needs_cmp; int row_iter; int saw_call; TyKind old_pin; int ici, iiv; } OAS;
+typedef struct { int sidx; LocalVar *lv; int cls; int alive; int uf; int needs_cmp; int poly_elem; int row_iter; int saw_call; TyKind old_pin; int ici, iiv; } OAS;
 
 /* The (sidx, lv) -> first slot index map, so a lookup is not a scan of every
    slot: the pass asks once per node, and the slot list grows with the
@@ -7496,9 +7496,11 @@ static void oa_note_empty(Compiler *c, int S, int node) {
   g_oa_empt_slot[g_oa_empt_n] = S; g_oa_empt_node[g_oa_empt_n] = node; g_oa_empt_n++;
 }
 /* element evidence from one value flowing into slot S, noting an empty
-   literal for the stamp above */
-static int oa_elem_evidence(Compiler *c, int S, int node) {
+   literal for the stamp above and a boxed element for the row check at
+   resolution */
+static int oa_elem_evidence(Compiler *c, OAS *sl, int S, int node) {
   oa_note_empty(c, S, node);
+  if (node >= 0 && infer_type(c, node) == TY_POLY) sl[S].poly_elem = 1;
   return oa_obj_class_of(c, node);
 }
 static int oa_recv_op_ok(const char *nm, int argc, int has_block) {
@@ -7861,6 +7863,21 @@ static int narrow_int_table_ivars(Compiler *c) {
           if (un && (sp_streq(un, "sort") || sp_streq(un, "sort!") ||
                      sp_streq(un, "min") || sp_streq(un, "max"))) { used = 0; break; }
           if (!oa_recv_op_ok(un, uan, nt_ref(nt, u, "block") >= 0)) { used = 0; break; }
+          /* what a store puts in the table is a row: a boxed value or another
+             kind would be taken as a bare sp_IntArray *. A value not typed
+             yet waits for a later round, since a pinned table is not vetted
+             again; an empty `[]` is typed by the table it lands in. */
+          if (un && (sp_streq(un, "[]=") || sp_streq(un, "push") || sp_streq(un, "<<") ||
+                     sp_streq(un, "append"))) {
+            const int *uav = nt_arr(nt, ua, "arguments", &uan);
+            int rows_ok = 1;
+            for (int a = sp_streq(un, "[]=") ? 1 : 0; a < uan && rows_ok; a++) {
+              TyKind at = infer_type(c, uav[a]);
+              if (at == TY_UNKNOWN && is_empty_array_literal(nt, uav[a], c->node_cap)) continue;
+              if (at != TY_INT_ARRAY && at != TY_NIL) rows_ok = 0;
+            }
+            if (!rows_ok) break;
+          }
           used = 1; break;
         }
         if (!used) { ok = 0; break; }
@@ -7967,7 +7984,7 @@ static void oa_classify_value(Compiler *c, OAS *sl, int n, const int *read_slot,
     int en = 0; const int *el = nt_arr(nt, v, "elements", &en);
     for (int e = 0; e < en; e++) {
       const char *ety = nt_type(nt, el[e]);
-      int ec = (ety && sp_streq(ety, "SplatNode")) ? -2 : oa_elem_evidence(c, S, el[e]);
+      int ec = (ety && sp_streq(ety, "SplatNode")) ? -2 : oa_elem_evidence(c, sl, S, el[e]);
       /* OA_CLS_IA / OA_CLS_FA (a nested scalar array) are negative SENTINELS,
          not an "invalid" -1/-2: they are real evidence, so they must not kill
          the slot (an `[[a,b],[c,d]]` array-of-int-array literal narrows like a
@@ -8005,7 +8022,7 @@ static void oa_classify_value(Compiler *c, OAS *sl, int n, const int *read_slot,
     else if (cn && (sp_streq(cn, "<<") || sp_streq(cn, "push") || sp_streq(cn, "append")) &&
              can >= 1 && nt_ref(nt, v, "block") < 0 && crecv >= 0 && read_slot[crecv] >= 0) {
       int cargv_n = 0; const int *cargv = nt_arr(nt, cargs, "arguments", &cargv_n);
-      for (int a = 0; a < cargv_n; a++) sl[S].cls = oa_cls_join(sl[S].cls, oa_elem_evidence(c, S, cargv[a]));
+      for (int a = 0; a < cargv_n; a++) sl[S].cls = oa_cls_join(sl[S].cls, oa_elem_evidence(c, sl, S, cargv[a]));
       claimed[crecv] = 1;
       oa_uf_union(sl, S, read_slot[crecv]);
     }
@@ -8022,7 +8039,7 @@ static void oa_classify_value(Compiler *c, OAS *sl, int n, const int *read_slot,
       int gbody = gb >= 0 ? nt_ref(nt, gb, "body") : -1;
       int gn = 0;
       const int *gs = gbody >= 0 ? nt_arr(nt, gbody, "body", &gn) : NULL;
-      int ec = (gs && gn > 0) ? oa_elem_evidence(c, S, gs[gn - 1]) : -1;
+      int ec = (gs && gn > 0) ? oa_elem_evidence(c, sl, S, gs[gn - 1]) : -1;
       /* `Array.new(n) { [] }`: the row is an empty literal, neutral here and
          built at the table's kind once something else (a pushed row, an
          `Array[Array[Float]]` seed) decides it (#4484) */
@@ -8201,7 +8218,7 @@ static int narrow_object_arrays(Compiler *c) {
       LocalVar *lv = &sc->locals[li];
       if (lv->type != TY_POLY_ARRAY || lv->is_block_param || lv->rbs_seeded) continue;
       if (n >= cap) { cap *= 2; sl = (OAS *)realloc(sl, sizeof(OAS) * cap); if (!sl) { fprintf(stderr, "oom\n"); exit(1); } }
-      sl[n].sidx = s; sl[n].lv = lv; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = -1; sl[n].iiv = -1;
+      sl[n].sidx = s; sl[n].lv = lv; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = -1; sl[n].iiv = -1;
       sl[n].old_pin = lv->oa_pin; lv->oa_pin = TY_UNKNOWN; n++;
     }
   }
@@ -8231,7 +8248,7 @@ static int narrow_object_arrays(Compiler *c) {
        Money#coerce for a pair) */
     if (method_name_implicitly_invoked(sc->name)) continue;
     if (n >= cap) { cap *= 2; sl = (OAS *)realloc(sl, sizeof(OAS) * cap); if (!sl) { fprintf(stderr, "oom\n"); exit(1); } }
-    sl[n].sidx = s; sl[n].lv = NULL; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = -1; sl[n].iiv = -1;
+    sl[n].sidx = s; sl[n].lv = NULL; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = -1; sl[n].iiv = -1;
     sl[n].old_pin = sc->ret_oa_pin; sc->ret_oa_pin = TY_UNKNOWN; n++;
   }
   /* 1c. one slot per @ivar holding a poly array (#4444). An ivar's references
@@ -8268,7 +8285,7 @@ static int narrow_object_arrays(Compiler *c) {
         if (comp_ivar_index(&c->classes[k], ivn) >= 0) { inherited = 1; break; }
       if (inherited) continue;
       if (n >= cap) { cap *= 2; sl = (OAS *)realloc(sl, sizeof(OAS) * cap); if (!sl) { fprintf(stderr, "oom\n"); exit(1); } }
-      sl[n].sidx = -1; sl[n].lv = NULL; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = ci; sl[n].iiv = iv;
+      sl[n].sidx = -1; sl[n].lv = NULL; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = ci; sl[n].iiv = iv;
       /* An `Array[Array[Integer]]` / `Array[Array[Float]]` seed is element
          evidence, the same evidence a pushed row gives: it decides the kind
          when the program's own rows are silent (`Array.new(n) { [] }`), and
@@ -8524,12 +8541,12 @@ static int narrow_object_arrays(Compiler *c) {
       if (oa_recv_op_ok(name, argc, has_block)) {
         claimed[recv] = 1;
         if (name && (sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")))
-          for (int a = 0; a < argc; a++) sl[S].cls = oa_cls_join(sl[S].cls, oa_elem_evidence(c, S, argv[a]));
+          for (int a = 0; a < argc; a++) sl[S].cls = oa_cls_join(sl[S].cls, oa_elem_evidence(c, sl, S, argv[a]));
         else if (name && sp_streq(name, "[]=") && argc == 2) {
           /* a range-keyed []= is a splice, which the obj-array representation
              has no emitter for: keep the slot on the poly path */
           if (infer_type(c, argv[0]) == TY_RANGE) sl[S].alive = 0;
-          else sl[S].cls = oa_cls_join(sl[S].cls, oa_elem_evidence(c, S, argv[1]));
+          else sl[S].cls = oa_cls_join(sl[S].cls, oa_elem_evidence(c, sl, S, argv[1]));
         }
         else if (name && (sp_streq(name, "min") || sp_streq(name, "max") ||
                           sp_streq(name, "sort") || sp_streq(name, "sort!"))) {
@@ -8823,6 +8840,7 @@ static int narrow_object_arrays(Compiler *c) {
     if (r == i) continue;
     sl[r].cls = oa_cls_join(sl[r].cls, sl[i].cls);
     if (sl[i].needs_cmp) sl[r].needs_cmp = 1;
+    if (sl[i].poly_elem) sl[r].poly_elem = 1;
     sl[r].row_iter |= sl[i].row_iter;
     if (!sl[i].alive) sl[r].alive = 0;
   }
@@ -8901,8 +8919,12 @@ static int narrow_object_arrays(Compiler *c) {
     if (OA_CLS_IS_NESTED(sl[r].cls)) {
       /* a nested scalar array: the codegen supports index/push/[]=/length/
          first/last but not the boxed sort/min/max comparators yet, so a
-         component that used those (needs_cmp) stays on the poly path for now. */
-      if (sl[r].needs_cmp) {
+         component that used those (needs_cmp) stays on the poly path for now.
+         A boxed element stored as a row stays there too: an object element
+         is unboxed with a class check, but a row is taken as a bare pointer,
+         and a boxed poly array read back through the table as an
+         sp_IntArray * printed garbage and crashed. */
+      if (sl[r].needs_cmp || sl[r].poly_elem) {
         OA_DROP_SRC_STAMP();
         if (sl[i].ici >= 0) continue;
         if (sl[i].lv) sl[i].lv->oa_pin = sl[i].old_pin;
