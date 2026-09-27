@@ -5189,23 +5189,51 @@ int infer_inherited_ivars(Compiler *c) {
    -- the C compiler rejected the store. Globals (#3205, #3263) and constants
    (#2879) already derive a variant from usage; this is the same rule for class
    variables. Returns UNKNOWN when the RHS is not an empty container. */
+/* Does `recv` answer the class variable `cvname`: a read of it, or a
+   zero-argument call to a method whose value is that read (`K.h[k] = v`
+   through `def self.h = @@h`)? */
+static int recv_is_cvar(Compiler *c, int recv, const char *cvname) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0) return 0;
+  if (nt_kind(nt, recv) == NK_ClassVariableReadNode) {
+    const char *rn = nt_str(nt, recv, "name");
+    return rn && sp_streq(rn, cvname);
+  }
+  if (nt_kind(nt, recv) != NK_CallNode || nt_ref(nt, recv, "arguments") >= 0 ||
+      nt_ref(nt, recv, "block") >= 0) return 0;
+  const char *mname = nt_str(nt, recv, "name");
+  if (!mname) return 0;
+  for (int mi = 0; mi < c->nscopes; mi++) {
+    Scope *s = &c->scopes[mi];
+    if (!s->name || s->nparams > 0 || !sp_streq(s->name, mname)) continue;
+    int last = scope_body_last(c, mi);
+    if (last < 0 || nt_kind(nt, last) != NK_ClassVariableReadNode) continue;
+    const char *rn = nt_str(nt, last, "name");
+    if (rn && sp_streq(rn, cvname)) return 1;
+  }
+  return 0;
+}
+
 static TyKind cvar_hash_variant_from_writes(Compiler *c, const char *cvname) {
   const NodeTable *nt = c->nt;
   TyKind kt = TY_UNKNOWN, vt = TY_UNKNOWN;
   int saw = 0;
   for (int w = 0; w < nt->count; w++) {
-    if (nt_kind(nt, w) != NK_CallNode) continue;
-    const char *wn = nt_str(nt, w, "name");
-    if (!wn || (!sp_streq(wn, "[]=") && !sp_streq(wn, "store"))) continue;
-    int wr = nt_ref(nt, w, "receiver");
-    if (wr < 0 || nt_kind(nt, wr) != NK_ClassVariableReadNode) continue;
-    const char *rn = nt_str(nt, wr, "name");
-    if (!rn || !sp_streq(rn, cvname)) continue;
+    NodeKind wk = nt_kind(nt, w);
+    /* `h[k] ||= v` / `h[k] &&= v` / `h[k] op= v` store `v` at `k` too */
+    int opw = wk == NK_IndexOrWriteNode || wk == NK_IndexAndWriteNode ||
+              wk == NK_IndexOperatorWriteNode;
+    if (!opw) {
+      if (wk != NK_CallNode) continue;
+      const char *wn = nt_str(nt, w, "name");
+      if (!wn || (!sp_streq(wn, "[]=") && !sp_streq(wn, "store"))) continue;
+    }
+    if (!recv_is_cvar(c, nt_ref(nt, w, "receiver"), cvname)) continue;
     int wa = nt_ref(nt, w, "arguments");
     int wan = 0; const int *wav = wa >= 0 ? nt_arr(nt, wa, "arguments", &wan) : NULL;
-    if (wan < 2) continue;
+    if (opw ? wan != 1 : wan < 2) continue;
     kt = ty_unify(kt, infer_type(c, wav[0]));
-    vt = ty_unify(vt, infer_type(c, wav[1]));
+    vt = ty_unify(vt, infer_type(c, opw ? nt_ref(nt, w, "value") : wav[1]));
     saw = 1;
   }
   /* No resolved index-write: the slot still has to be declarable, so take the
