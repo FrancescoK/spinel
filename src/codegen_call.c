@@ -2856,6 +2856,8 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
    chain `name == :m1 ? recv.m1(args) : ... : raise NoMethodError`, boxing each
    arm (the result is poly). Arms whose call did not resolve on the receiver
    (UNKNOWN type -- wrong name or arity for this receiver) are dropped. */
+static int g_dsend_active[64];
+static int g_dsend_depth = 0;
 static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   int narm = 0; const int *arms = nt_arr(nt, id, "dyn_send_arms", &narm);
@@ -2863,6 +2865,15 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
   int args = nt_ref(nt, id, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   if (argc < 1 || !argv) return 0;
+  /* An arm that reaches a yielding method expands it here, and that body
+     may hold this very send (`def fwd(m, &blk) = send(m, &blk)` naming
+     fwd among its candidates): the expansion re-entered this dispatch
+     without end. Inside its own arms the send is not emitted again; the
+     arm that led here is dropped by the probe, as an arm that cannot be
+     emitted is. */
+  for (int d = 0; d < g_dsend_depth; d++) if (g_dsend_active[d] == id) return 0;
+  if (g_dsend_depth >= 64) return 0;
+  g_dsend_active[g_dsend_depth++] = id;
   int sym = argv[0], mo = sp_streq(nt_str(nt, id, "name"), "method");
   TyKind st = comp_ntype(c, sym);
   int t = ++g_tmp, recv = nt_ref(nt, id, "receiver"), sv_nargov = g_n_argov;
@@ -2929,6 +2940,7 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
     buf_printf(b, "))); _r%d = sp_box_nil(); } _r%d; })", t, t);
   }
   else buf_printf(b, "{ sp_raise_cls(\"NoMethodError\", sp_sprintf(\"undefined method '%%s'\", sp_sym_to_s(_t%d))); _r%d = sp_box_nil(); } _r%d; })", t, t, t);
+  g_dsend_depth--;
   g_n_argov = sv_nargov;
   return 1;
 }
@@ -3156,7 +3168,14 @@ static void emit_concurrency_raise(Compiler *c, const char *rtext, int argc, con
     if (argc >= 2) emit_expr(c, argv[1], b); else buf_puts(b, "(&(\"\\xff\")[1])");
     buf_puts(b, ", NULL");
   }
-  else if (argc >= 1) { buf_puts(b, "\"RuntimeError\", "); emit_expr(c, argv[0], b); buf_puts(b, ", NULL"); }
+  else if (argc >= 1) {
+    /* the message is a String, or a boxed value (a runtime-name send's
+       argument) stringified: the C parameter is a const char * */
+    buf_puts(b, "\"RuntimeError\", ");
+    if (a0t == TY_STRING) emit_expr(c, argv[0], b);
+    else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
+    buf_puts(b, ", NULL");
+  }
   else buf_puts(b, "\"RuntimeError\", (&(\"\\xff\")[1]), NULL");
   buf_puts(b, ")");
 }

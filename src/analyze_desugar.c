@@ -2659,6 +2659,27 @@ static int dsend_receiver_names(Compiler *c, int cls, int subclasses, char ***ou
   return n;
 }
 
+/* Does every definition of `name` in the program refuse `argc` positional
+   arguments? A name the program does not define (a builtin's) is never
+   excluded; an attr reader takes none, an attr writer exactly one. */
+static int dsend_defined_arity_excludes(Compiler *c, const char *name, int argc) {
+  int defined = 0;
+  for (int s = 0; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    if (!sc->name || !sp_streq(sc->name, name)) continue;
+    defined = 1;
+    if (argc >= sc->nrequired && (sc->rest_idx >= 0 || argc <= sc->nparams)) return 0;
+  }
+  char wbase[256];
+  int is_w = setter_base_name(name, wbase, sizeof wbase);
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    ClassInfo *cl = &c->classes[ci];
+    if (comp_is_reader(cl, name)) { defined = 1; if (argc == 0) return 0; }
+    if (is_w && comp_is_writer(cl, wbase)) { defined = 1; if (argc == 1) return 0; }
+  }
+  return defined;
+}
+
 /* The closed set of method names a runtime-name send (and respond_to?)
    dispatches over: the symbol and string literals the program spells, and
    the methods it defines, ranked so the names that can be meant survive the
@@ -2820,10 +2841,10 @@ int desugar_dynamic_send(Compiler *c) {
     if (recv < 0) {
       /* A receiverless `send(name, ...)` in a method is `self.send(name, ...)`:
          send ignores visibility, so the two reach the same (private) methods,
-         and the explicit form already lowers (#4851). public_send differs --
-         it refuses a private target either way -- and is left alone. Only a
-         runtime name: a literal one is rewritten earlier. */
-      if (sp_streq(nm, "public_send")) continue;
+         and the explicit form already lowers (#4851). A receiverless
+         public_send is `self.public_send` the same way: it refuses a private
+         target either way, which is what its arms' vis_enforce stamp does.
+         Only a runtime name: a literal one is rewritten earlier. */
       Scope *ss = comp_scope_of(c, id);
       if (!ss || !ss->name) continue;
       int sa = nt_ref(nt, id, "arguments");
@@ -2846,6 +2867,19 @@ int desugar_dynamic_send(Compiler *c) {
     if (argc < 1 || !argv) continue;
     const char *a0 = nt_type(nt, argv[0]);
     if (a0 && (sp_streq(a0, "SymbolNode") || sp_streq(a0, "StringNode"))) continue;  /* literal: handled earlier */
+    /* `recv.public_send(*args, &blk)` (activesupport's Object#try): the name
+       is the array's first element and the rest are the arguments. The name
+       reads as `args[0]` and every arm takes `*args.drop(1)`; the array is
+       read more than once, so only a variable's -- a rest parameter, an
+       ivar -- not an expression with effects. Interning the whole array as
+       the name answered "undefined method '[:name]'". */
+    int splat_src = -1;
+    if (argc == 1 && nt_kind(nt, argv[0]) == NK_SplatNode) {
+      int se = nt_ref(nt, argv[0], "expression");
+      NodeKind sk = se >= 0 ? nt_kind(nt, se) : NK_NONE;
+      if (sk != NK_LocalVariableReadNode && sk != NK_InstanceVariableReadNode) continue;
+      splat_src = se;
+    }
     int nrest = argc - 1;
     if (nrest > 64) continue;
     char **use = cand; int nuse = ncand;
@@ -2893,16 +2927,54 @@ int desugar_dynamic_send(Compiler *c) {
       use = own; nuse = nown;
     }
     int rest[64]; for (int k = 0; k < nrest; k++) rest[k] = argv[k + 1];  /* copy before realloc */
+    /* the send's block goes to whichever method the name selects: a
+       forwarded `&blk` or the block written at the send (the arms are
+       emitted one per branch, so one node serves them all) */
+    int sblk = nt_ref(nt, id, "block");
     int base = nt->count;
+    if (splat_src >= 0) {
+      int r0 = nt_clone_subtree(nt, splat_src); if (r0 < 0) continue;
+      int i0 = nt_new_node(nt, "IntegerNode"); if (i0 < 0) continue;
+      nt_node_set_int(nt, i0, "value", 0);
+      int a0n = nt_new_node(nt, "ArgumentsNode"); if (a0n < 0) continue;
+      nt_node_set_arr(nt, a0n, "arguments", &i0, 1);
+      int nmcall = nt_new_node(nt, "CallNode"); if (nmcall < 0) continue;
+      nt_node_set_ref(nt, nmcall, "receiver", r0);
+      nt_node_set_str(nt, nmcall, "name", "[]");
+      nt_node_set_ref(nt, nmcall, "arguments", a0n);
+      int sargs = nt_new_node(nt, "ArgumentsNode"); if (sargs < 0) continue;
+      nt_node_set_arr(nt, sargs, "arguments", &nmcall, 1);
+      nt_node_set_ref(nt, id, "arguments", sargs);           /* the name: args[0] */
+      int r1 = nt_clone_subtree(nt, splat_src); if (r1 < 0) continue;
+      int i1 = nt_new_node(nt, "IntegerNode"); if (i1 < 0) continue;
+      nt_node_set_int(nt, i1, "value", 1);
+      int a1n = nt_new_node(nt, "ArgumentsNode"); if (a1n < 0) continue;
+      nt_node_set_arr(nt, a1n, "arguments", &i1, 1);
+      int drop = nt_new_node(nt, "CallNode"); if (drop < 0) continue;
+      nt_node_set_ref(nt, drop, "receiver", r1);
+      nt_node_set_str(nt, drop, "name", "drop");
+      nt_node_set_ref(nt, drop, "arguments", a1n);
+      int sp = nt_new_node(nt, "SplatNode"); if (sp < 0) continue;
+      nt_node_set_ref(nt, sp, "expression", drop);
+      rest[0] = sp; nrest = 1;                                 /* the arms: *args.drop(1) */
+    }
     int *arms = (int *)malloc(sizeof(int) * (size_t)(nuse > 0 ? nuse : 1)); int narm = 0;
     for (int k = 0; k < nuse; k++) {
       if (sp_streq(use[k], "initialize") || sp_streq(use[k], "initialize_copy")) continue;
+      /* A method the program defines takes only the arities its definitions
+         take: with a fixed argument list, a name no definition accepts at
+         that count gets no arm (a reader takes none, a writer one). The
+         fixpoint types such a call anyway, and its arm was emitted -- and
+         one naming the enclosing method itself, which the block-carrying
+         inline expands at the arm, expanded without end. */
+      if (splat_src < 0 && dsend_defined_arity_excludes(c, use[k], nrest)) continue;
       int na = nt_new_node(nt, "ArgumentsNode"); if (na < 0) break;
       if (nrest) nt_node_set_arr(nt, na, "arguments", rest, nrest);
       int call = nt_new_node(nt, "CallNode"); if (call < 0) break;
       nt_node_set_ref(nt, call, "receiver", recv);
+      if (sblk >= 0) nt_node_set_ref(nt, call, "block", sblk);
       nt_node_set_str(nt, call, "name", use[k]);
-      if (computed) comp_sym_intern(c, use[k]);
+      comp_sym_intern(c, use[k]);
       /* The dispatch keys each arm on the NAME it was built for, so a later
          desugar that rewrites the name (`first` -> `[]`) leaves the arm
          unreachable and the send raises. Mark them as owned. */
