@@ -13813,6 +13813,8 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     {
       const char *pfn =
         sp_streq(name, "nan?")      ? "sp_poly_nan_p" :
+        sp_streq(name, "next_float") ? "sp_poly_next_float" :
+        sp_streq(name, "prev_float") ? "sp_poly_prev_float" :
         sp_streq(name, "finite?")   ? "sp_poly_finite_p" :
         sp_streq(name, "infinite?") ? "sp_poly_infinite" :
         sp_streq(name, "zero?")     ? "sp_poly_zero_p" :
@@ -13839,7 +13841,10 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         if (!g_poly_builtin_arm)
         for (int kk = 0; kk < c->nclasses && !has_user; kk++)
           if (comp_poly_arm_defines_n(c, kk, name, argc) ||
-              (!c->classes[kk].is_native_class && comp_reader_in_chain(c, kk, name, NULL))) has_user = 1;
+              (!c->classes[kk].is_native_class && comp_reader_in_chain(c, kk, name, NULL)) ||
+              /* a class method of these names may be a boxed Class's */
+              ((sp_streq(name, "next_float") || sp_streq(name, "prev_float")) &&
+               comp_cmethod_in_chain(c, kk, name, NULL) >= 0)) has_user = 1;
         if (!has_user) {
           buf_printf(b, "%s(", pfn); emit_expr(c, recv, b); buf_puts(b, ")");
           return 1;
