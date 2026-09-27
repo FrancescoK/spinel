@@ -545,11 +545,13 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int argc = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   unsigned alias_mask = 0;
+  int splat_gather = 0;
   {
     int pargc = argc;
     if (argc > 0 && argv && nt_type(nt, argv[argc - 1]) &&
         sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) pargc = argc - 1;
-    for (int i = 0; i < m->nparams && i < 32; i++) {
+    splat_gather = inline_splat_gather_applies(c, m, argv, pargc, pargc < argc ? argv[pargc] : -1);
+    for (int i = 0; i < m->nparams && i < 32 && !splat_gather; i++) {
       if (i >= pargc || (m->rest_idx >= 0 && i >= m->rest_idx)) continue;
       NodeKind ak = nt_kind(nt, argv[i]);
       if (ak == NK_InstanceVariableReadNode) {
@@ -631,6 +633,27 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      `opts` kept its default and every `assert_select(sel, count: 0)` in a
      yielding helper asserted presence instead (#4436). */
   int kwh_slot = kwh_positional_slot(c, m, kwh, pos_argc);
+  int gather_tmp = -1;
+  if (splat_gather && !fwd_encl) {
+    /* call-site code, like each argument below: this inline's renames are
+       off, and an inlined call inside a splat operand pushes its own at this
+       depth, so the entries are parked across the gather */
+    int sv0 = g_nren, park_n = sv0 - saved_nren;
+    char (*park_f)[96] = park_n > 0 ? malloc(sizeof(char[96]) * (size_t)park_n) : NULL;
+    char (*park_t)[112] = park_n > 0 ? malloc(sizeof(char[112]) * (size_t)park_n) : NULL;
+    if (park_f && park_t) {
+      memcpy(park_f, g_ren_from + saved_nren, sizeof(char[96]) * (size_t)park_n);
+      memcpy(park_t, g_ren_to + saved_nren, sizeof(char[112]) * (size_t)park_n);
+    }
+    g_nren = saved_nren;
+    gather_tmp = emit_splat_gather(c, m, argv, pos_argc);
+    g_nren = sv0;
+    if (park_f && park_t) {
+      memcpy(g_ren_from + saved_nren, park_f, sizeof(char[96]) * (size_t)park_n);
+      memcpy(g_ren_to + saved_nren, park_t, sizeof(char[112]) * (size_t)park_n);
+    }
+    free(park_f); free(park_t);
+  }
   for (int i = 0; i < m->nparams; i++) {
     emit_indent(b, din);
     int aliased = i < 32 && (alias_mask & (1u << i));
@@ -671,6 +694,9 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
       if (mt == TY_POLY && et != TY_POLY) emit_boxed_text(c, et, txt, b);
       else buf_puts(b, txt);
     }
+    else if (gather_tmp >= 0 && i != m->kwrest_idx &&
+             !callee_param_is_declared_kwarg(c, m, m->pnames[i]))
+      emit_gathered_param(c, m, i, gather_tmp, b);
     /* A rest param collects the middle arguments into an Array. Without this
        the first argument was assigned straight into the rest slot -- a
        pointer of the wrong type, so the rest read back empty (or crashed). */

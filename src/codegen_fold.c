@@ -5955,7 +5955,7 @@ int emit_anon_rest_ref(Compiler *c, int splat, Buf *buf) {
   if (nt_ref(c->nt, splat, "expression") >= 0) return 0;
   Scope *sc = comp_scope_of(c, splat);
   if (!sc || sc->rest_idx < 0 || sc->rest_idx >= sc->nparams) return 0;
-  buf_printf(buf, "lv_%s", sc->pnames[sc->rest_idx]);
+  buf_printf(buf, "lv_%s", rename_local(sc->pnames[sc->rest_idx]));
   return 1;
 }
 
@@ -6922,26 +6922,33 @@ void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv, int
    keywords rather than one more positional. They and a keyword hash were
    refused here, so `kw(*[1], 2, k: 3)` on `def kw(a, b = 0, k: 1)` took the
    layout that assumes the splat fills the gap, and bound b its default. */
-static int splat_gather_applies(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh) {
+static int splat_gather_applies_x(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh,
+                                  int any_splat) {
   const NodeTable *nt = c->nt;
   if (!m || !argv) return 0;
   int nspl = 0, sk = -1;
   for (int k = 0; k < pos_argc; k++)
     if (nt_kind(nt, argv[k]) == NK_SplatNode) { nspl++; sk = k; }
-  if (nspl != 1 || sk >= pos_argc - 1 || m->rest_idx >= 0 || m->kwrest_idx >= 0 ||
-      m->cs_synth || opt_before_required(c, m)) return 0;
+  if (any_splat ? nspl == 0 : (nspl != 1 || sk >= pos_argc - 1)) return 0;
+  if (((m->rest_idx >= 0 || m->kwrest_idx >= 0) && !any_splat) || m->cs_synth ||
+      (opt_before_required(c, m) && !(any_splat && m->rest_idx >= 0))) return 0;
   int nkw = 0;
   for (int i = 0; i < m->nparams; i++) {
     if (!m->pnames[i] || (m->pnames[i][0] == '_' && m->pnames[i][1] == '_')) return 0;
     if (callee_has_kwarg(c, m, m->pnames[i])) nkw++;
   }
-  if (kwh >= 0 && (nkw == 0 || kwh_positional_slot(c, m, kwh, pos_argc) >= 0)) return 0;
+  if (kwh >= 0 && ((nkw == 0 && m->kwrest_idx < 0) || kwh_positional_slot(c, m, kwh, pos_argc) >= 0))
+    return 0;
   return 1;
+}
+
+static int splat_gather_applies(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh) {
+  return splat_gather_applies_x(c, m, argv, pos_argc, kwh, 0);
 }
 
 /* Gather a call's positionals, the splat spread in place, into one rooted
    PolyArray and refuse a count the parameters cannot take. Returns the temp. */
-static int emit_splat_gather(Compiler *c, Scope *m, const int *argv, int pos_argc) {
+int emit_splat_gather(Compiler *c, Scope *m, const int *argv, int pos_argc) {
   const NodeTable *nt = c->nt;
   int ct = ++g_tmp;
   emit_indent(g_pre, g_indent);
@@ -6970,6 +6977,13 @@ static int emit_splat_gather(Compiler *c, Scope *m, const int *argv, int pos_arg
   }
   int pos_required = 0, pos_params = 0;
   positional_arity(c, m, &pos_required, &pos_params);
+  if (m->rest_idx >= 0) {
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre,
+               "if (_t%d->len < %d) sp_raise_cls(\"ArgumentError\", sp_sprintf(\"wrong number of arguments (given %%lld, expected %d+)\", (long long)_t%d->len));\n",
+               ct, pos_required, pos_required, ct);
+    return ct;
+  }
   char expbuf[48];
   if (pos_required == pos_params) snprintf(expbuf, sizeof expbuf, "expected %d", pos_params);
   else snprintf(expbuf, sizeof expbuf, "expected %d..%d", pos_required, pos_params);
@@ -6978,6 +6992,51 @@ static int emit_splat_gather(Compiler *c, Scope *m, const int *argv, int pos_arg
              "if (_t%d->len < %d || _t%d->len > %d) sp_raise_cls(\"ArgumentError\", sp_sprintf(\"wrong number of arguments (given %%lld, %s)\", (long long)_t%d->len));\n",
              ct, pos_required, ct, pos_params, expbuf, ct);
   return ct;
+}
+
+/* The inlined yield path binds parameters one by one from the argument
+   nodes, so any splat among the positionals -- trailing or not -- takes the
+   gather: `blk(*[26, 18]) { }` bound the whole array into the first
+   parameter. emit_gathered_param binds positional parameter i from the
+   emit_splat_gather temp, an optional past the end taking its default. */
+int inline_splat_gather_applies(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh) {
+  return splat_gather_applies_x(c, m, argv, pos_argc, kwh, 1);
+}
+
+void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out) {
+  int rest = m->rest_idx, npost = rest >= 0 ? m->npost_rest : 0;
+  if (i == rest) {
+    int t = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb);
+    buf_printf(&rb,
+               "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+               " for (sp_int _si = (%d < _t%d->len - %d ? %d : _t%d->len - %d); _si < _t%d->len - %d; _si++)"
+               " sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _si)); _t%d; })",
+               t, t, rest, ct, npost, rest, ct, npost, ct, npost, t, ct, t);
+    LocalVar *rp = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
+    if (rp && rp->type == TY_POLY) emit_boxed_text(c, TY_POLY_ARRAY, rb.p, out);
+    else buf_puts(out, rb.p);
+    free(rb.p);
+    return;
+  }
+  LocalVar *sp = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
+  TyKind pt = sp ? sp->type : TY_POLY;
+  Buf eb; memset(&eb, 0, sizeof eb);
+  char raw[80];
+  if (rest >= 0 && i > rest)
+    snprintf(raw, sizeof raw, "sp_PolyArray_get(_t%d, _t%d->len - %d)", ct, ct, rest + npost + 1 - i);
+  else snprintf(raw, sizeof raw, "sp_PolyArray_get(_t%d, %d)", ct, i);
+  if (pt != TY_POLY && pt != TY_UNKNOWN) emit_unbox_text(c, pt, raw, &eb);
+  else buf_puts(&eb, raw);
+  if ((rest < 0 || i < rest) && (i >= m->nrequired || (m->pdefault && m->pdefault[i] >= 0))) {
+    Buf db; memset(&db, 0, sizeof db);
+    emit_arg_or_default(c, m, i, -1, &db);
+    buf_printf(out, "(%d < _t%d->len ? %s : %s)", i + npost, ct, eb.p ? eb.p : "",
+               db.p ? db.p : default_value(pt));
+    free(db.p);
+  }
+  else buf_puts(out, eb.p ? eb.p : raw);
+  free(eb.p);
 }
 
 void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out) {
