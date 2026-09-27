@@ -10643,6 +10643,31 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             if (nt_type(nt, elss[i]) && sp_streq(nt_type(nt, elss[i]), "AssocSplatNode"))
               splat_h = nt_ref(nt, elss[i], "value");
         }
+        /* The `**h` is evaluated once, ahead of the members it fills (each
+           read the expression again), and a Data or keyword Struct checks
+           its keys against the members the way CRuby does: a Data member no
+           key names is missing, a key naming no member is unknown (#5175). */
+        int splat_tmp = -1;
+        if (splat_h >= 0) {
+          Buf hv0; memset(&hv0, 0, sizeof hv0); emit_boxed(c, splat_h, &hv0);
+          splat_tmp = ++g_tmp;
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n",
+                     splat_tmp, hv0.p ? hv0.p : "sp_box_nil()", splat_tmp);
+          free(hv0.p);
+          if (cls->is_data || cls->kw_init != -1) {
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "sp_kw_splat_check(_t%d, (const char *const[]){", splat_tmp);
+            for (int a = 0; a < cls->nivars; a++) buf_printf(g_pre, "%s\"%s\"", a ? ", " : "", cls->ivars[a] + 1);
+            if (cls->nivars == 0) buf_puts(g_pre, "\"\"");
+            buf_puts(g_pre, "}, ");
+            buf_printf(g_pre, "%d, (const unsigned char[]){", cls->nivars);
+            for (int a = 0; a < cls->nivars; a++)
+              buf_printf(g_pre, "%s%d", a ? ", " : "", struct_kwarg_value(c, kwh, cls->ivars[a] + 1) >= 0);
+            if (cls->nivars == 0) buf_puts(g_pre, "0");
+            buf_printf(g_pre, "}, %d);\n", cls->is_data ? 1 : 0);
+          }
+        }
         buf_printf(b, "sp_%s_new(", cls->c_name);
         for (int a = 0; a < cls->nivars; a++) {
           if (a) buf_puts(b, ", ");
@@ -10698,10 +10723,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             free(mv.p);
           }
           else if (splat_h >= 0) {
-            Buf hv; memset(&hv, 0, sizeof hv); emit_boxed(c, splat_h, &hv);
-            buf_printf(b, "sp_poly_hash_get_pair_val(%s, sp_box_sym(sp_sym_intern(\"%s\")), &(sp_bool){0})",
-                       hv.p ? hv.p : "sp_box_nil()", cls->ivars[a] + 1);
-            free(hv.p);
+            buf_printf(b, "sp_poly_hash_get_pair_val(_t%d, sp_box_sym(sp_sym_intern(\"%s\")), &(sp_bool){0})",
+                       splat_tmp, cls->ivars[a] + 1);
           }
           else buf_puts(b, default_value(cls->ivar_types[a]));
         }

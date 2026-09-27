@@ -1,0 +1,12 @@
+ArgumentError: missing keyword: :y
+ArgumentError: unknown keyword: :z
+#<data Point x=1, y=2>
+#<data Point x=1, y=5>
+1
+ArgumentError: missing keywords: :y, :w
+ArgumentError: unknown keywords: :z, :q
+ArgumentError: unknown keywords: c
+ArgumentError: unknown keywords: c, d
+#<struct Opts a=1, b=7>
+ArgumentError: unknown keywords: c
+#<struct Plain a=1, b=7>

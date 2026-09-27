@@ -9237,6 +9237,46 @@ case SP_BUILTIN_IO:{sp_int sp_file_size(const char*);sp_File*_f=(sp_File*)v.v.p;
 case SP_BUILTIN_STRBUF: return (sp_int)((sp_String *)v.v.p)->len;   /* live length (#3227) */
 /* a user object with #to_a (a container-read Set, #3234): its element count */
 default: if (sp_obj_to_a_fn) { sp_RbVal _a = sp_obj_to_a_fn(v); if (_a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_a.cls_id)) return sp_poly_length(_a); } return 0;}}
+/* The keys a `**h` into a Data or keyword Struct constructor must answer for,
+   checked as CRuby checks them (#5175): a Data member neither a literal key
+   nor the hash names is missing, and a key the hash carries that names no
+   member is unknown, Data's before Struct's wording. `lit[i]` says member i
+   was given by a literal key. Without this the member read nil and the key
+   was dropped. */
+static void sp_kw_splat_check(sp_RbVal h, const char *const *mem, int n,
+                              const unsigned char *lit, int is_data) {
+  SP_GC_ROOT_RBVAL(h);
+  char buf[1024]; size_t len = 0; int cnt = 0;
+  buf[0] = 0;
+  if (is_data) {
+    for (int i = 0; i < n; i++) {
+      if (lit[i]) continue;
+      sp_bool f = 0;
+      (void)sp_poly_hash_get_pair_val(h, sp_box_sym(sp_sym_intern(mem[i])), &f);
+      if (f) continue;
+      if (len < sizeof buf) len += (size_t)snprintf(buf + len, sizeof buf - len, "%s:%s", cnt ? ", " : "", mem[i]);
+      cnt++;
+    }
+    if (cnt) sp_raise_cls("ArgumentError", sp_sprintf("missing keyword%s: %s", cnt > 1 ? "s" : "", buf));
+  }
+  sp_int nk = sp_poly_length(h);
+  for (sp_int j = 0; j < nk; j++) {
+    sp_RbVal pr = sp_poly_each_elem(h, j);
+    if (pr.tag != SP_TAG_OBJ || pr.cls_id != SP_BUILTIN_POLY_ARRAY) continue;
+    sp_RbVal k = sp_PolyArray_get((sp_PolyArray *)pr.v.p, 0);
+    int known = 0;
+    if (k.tag == SP_TAG_SYM) {
+      const char *kn = sp_poly_to_s(k);
+      for (int i = 0; i < n && !known; i++) known = strcmp(kn, mem[i]) == 0;
+    }
+    if (known) continue;
+    if (len < sizeof buf) len += (size_t)snprintf(buf + len, sizeof buf - len, "%s%s", cnt ? ", " : "",
+                                                  is_data ? sp_poly_inspect(k) : sp_poly_to_s(k));
+    cnt++;
+  }
+  if (cnt) sp_raise_cls("ArgumentError", is_data ? sp_sprintf("unknown keyword%s: %s", cnt > 1 ? "s" : "", buf)
+                                                 : sp_sprintf("unknown keywords: %s", buf));
+}
 
 /* NilClass-aware conversions for a boxed receiver (a nil-holding local widens
    to poly): nil converts per NilClass, a value already of the target kind is
