@@ -10541,6 +10541,11 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
     int mi = k >= 0 ? comp_cmethod_in_chain(c, k, nm, NULL) : -1;
     if (mi >= 0) { snprintf(resolved, sizeof resolved, "\x01%d", mi); names[0] = resolved; }
   }
+  char arm_name[300];
+  if (k0 == NK_CallNode && nm && names[0] == nm && nt_int(nt, id, "dyn_arm", 0) > 0) {
+    snprintf(arm_name, sizeof arm_name, "\x02%s", nm);
+    names[0] = arm_name;
+  }
   if (k0 == NK_IndexOperatorWriteNode || k0 == NK_IndexOrWriteNode || k0 == NK_IndexAndWriteNode) {
     names[1] = "[]"; names[2] = "[]=";
   }

@@ -1422,6 +1422,41 @@ static int dsend_method_name_shaped(const char *v) {
   return v[i] == 0;
 }
 
+static void dsend_add_name(char ***names, int *n, int *cap, ANameHash *seen, const char *v) {
+  if (!v || !*v || anh_has(seen, v)) return;
+  if (sp_streq(v, "send") || sp_streq(v, "__send__") || sp_streq(v, "public_send")) return;
+  if (*n == *cap) { *cap = *cap ? *cap * 2 : 32; *names = (char **)realloc(*names, sizeof(char *) * (size_t)*cap); }
+  (*names)[(*n)++] = strdup(v);
+  anh_add(seen, (*names)[*n - 1]);
+}
+
+static int dsend_receiver_names(Compiler *c, int cls, char ***out) {
+  static const char *const object_methods[] = { "to_s", "inspect", "class", "hash", "frozen?", "nil?",
+    "==", "!=", "equal?", "eql?", "respond_to?", "is_a?", "kind_of?", "instance_of?", "freeze", "dup",
+    "itself", "object_id", NULL };
+  char **names = NULL; int n = 0, cap = 0;
+  ANameHash seen; memset(&seen, 0, sizeof seen);
+  for (int s = 0; s < c->nscopes; s++) {
+    const Scope *sc = &c->scopes[s];
+    if (!sc->name || sc->is_cmethod || sc->class_id < 0) continue;
+    if (sp_streq(sc->name, "initialize") || sp_streq(sc->name, "initialize_copy")) continue;
+    if (comp_method_in_chain(c, cls, sc->name, NULL) >= 0) dsend_add_name(&names, &n, &cap, &seen, sc->name);
+  }
+  for (int k = cls; k >= 0 && k < c->nclasses; k = c->classes[k].parent) {
+    ClassInfo *cl = &c->classes[k];
+    for (int r = 0; r < cl->nreaders; r++) dsend_add_name(&names, &n, &cap, &seen, cl->readers[r]);
+    for (int w = 0; w < cl->nwriters; w++) {
+      char wn[256];
+      snprintf(wn, sizeof wn, "%s=", cl->writers[w]);
+      dsend_add_name(&names, &n, &cap, &seen, wn);
+    }
+  }
+  for (int k = 0; object_methods[k]; k++) dsend_add_name(&names, &n, &cap, &seen, object_methods[k]);
+  anh_free(&seen);
+  *out = names;
+  return n;
+}
+
 int desugar_dynamic_send(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
@@ -1473,7 +1508,14 @@ int desugar_dynamic_send(Compiler *c) {
     anh_add(&cand_set, cand[ncand - 1]);
   }
   anh_free(&cand_set);
-  if (ncand == 0) { free(cand); return 0; }
+  int any_computed = 0;
+  for (int id = 0; id < n0 && !any_computed; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    int a = nt_ref(nt, id, "arguments");
+    int ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    if (ac >= 1 && av && an_send_name_is_computed(c, av[0])) any_computed = 1;
+  }
+  if (ncand == 0 && !any_computed) { free(cand); return 0; }
   /* The arms are one synthesized call per candidate per send, each typed by
      the fixpoint, so the set is capped. The cap used to be a hard 128 over
      EVERY literal in the program, and a program with 129 unrelated strings
@@ -1552,15 +1594,37 @@ int desugar_dynamic_send(Compiler *c) {
     if (a0 && (sp_streq(a0, "SymbolNode") || sp_streq(a0, "StringNode"))) continue;  /* literal: handled earlier */
     int nrest = argc - 1;
     if (nrest > 64) continue;
+    char **use = cand; int nuse = ncand;
+    char **own = NULL; int nown = 0;
+    int computed = an_send_name_is_computed(c, argv[0]);
+    if (computed) {
+      TyKind rt = infer_type(c, recv);
+      if (ty_is_object(rt)) nown = dsend_receiver_names(c, ty_object_class(rt), &own);
+      else if (rt == TY_POLY || rt == TY_UNKNOWN) {
+        int cap = 0; ANameHash seen; memset(&seen, 0, sizeof seen);
+        for (int k = 0; k < c->nclasses; k++) {
+          if (comp_class_is_module(c, &c->classes[k])) continue;
+          char **kn = NULL; int nk = dsend_receiver_names(c, k, &kn);
+          for (int j = 0; j < nk; j++) { dsend_add_name(&own, &nown, &cap, &seen, kn[j]); free(kn[j]); }
+          free(kn);
+        }
+        for (int k = 0; k < ncand; k++) dsend_add_name(&own, &nown, &cap, &seen, cand[k]);
+        anh_free(&seen);
+      }
+      else continue;
+      if (nown == 0 || nown > 1024) { for (int k = 0; k < nown; k++) free(own[k]); free(own); continue; }
+      use = own; nuse = nown;
+    }
     int rest[64]; for (int k = 0; k < nrest; k++) rest[k] = argv[k + 1];  /* copy before realloc */
     int base = nt->count;
-    int arms[256]; int narm = 0;
-    for (int k = 0; k < ncand; k++) {
+    int *arms = (int *)malloc(sizeof(int) * (size_t)(nuse > 0 ? nuse : 1)); int narm = 0;
+    for (int k = 0; k < nuse; k++) {
       int na = nt_new_node(nt, "ArgumentsNode"); if (na < 0) break;
       if (nrest) nt_node_set_arr(nt, na, "arguments", rest, nrest);
       int call = nt_new_node(nt, "CallNode"); if (call < 0) break;
       nt_node_set_ref(nt, call, "receiver", recv);
-      nt_node_set_str(nt, call, "name", cand[k]);
+      nt_node_set_str(nt, call, "name", use[k]);
+      if (computed) comp_sym_intern(c, use[k]);
       /* The dispatch keys each arm on the NAME it was built for, so a later
          desugar that rewrites the name (`first` -> `[]`) leaves the arm
          unreachable and the send raises. Mark them as owned. */
@@ -1571,6 +1635,10 @@ int desugar_dynamic_send(Compiler *c) {
       arms[narm++] = call;
     }
     nt_node_set_arr(nt, id, "dyn_send_arms", arms, narm);
+    free(arms);
+    if (computed) nt_node_set_int(nt, id, "dyn_send_complete", 1);
+    for (int k = 0; k < nown; k++) free(own[k]);
+    free(own);
     comp_grow_node_arrays(c);
     int encl = c->nscope[id];
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;

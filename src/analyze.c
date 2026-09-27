@@ -313,6 +313,11 @@ void compute_reachable(Compiler *c) {
         for(int _u=SN_FIRST(c->scopes[_t].name);_u>=0;_u=sn_link[_u]) \
           if(!c->scopes[_u].reachable && c->scopes[_u].is_cmethod && cr_class_is_ancestor(c, c->scopes[_u].class_id, c->scopes[_t].class_id)) \
             { c->scopes[_u].reachable=1; queue[qtail++]=_u; } } } \
+    else if(_mn && _mn[0]=='\x02'){ if(!anh_has(&cn_set,_mn)){ CN_ADD(_mn); \
+      for(int _k=0;_k<c->nclasses;_k++){ if(comp_class_is_module(c,&c->classes[_k])) continue; \
+        for(int _p=_k,_h=0;_p>=0&&_p<c->nclasses&&_h<64;_p=c->classes[_p].parent,_h++){ \
+          int _t=comp_method_in_chain(c,_p,_mn+1,NULL); \
+          if(_t>=0 && !c->scopes[_t].reachable){ c->scopes[_t].reachable=1; queue[qtail++]=_t; } } } } } \
     else if(_mn && !anh_has(&cn_set,_mn)){ CN_ADD(_mn); \
     for(int _t=SN_FIRST(_mn);_t>=0;_t=sn_link[_t]) \
       if(!c->scopes[_t].reachable) \

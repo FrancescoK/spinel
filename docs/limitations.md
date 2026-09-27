@@ -89,8 +89,12 @@ program -- `recv.send(name) → name == :a ? recv.a : name == :b ? recv.b : … 
 raise NoMethodError` -- with the receiver's type and the argument count selecting
 which arms resolve (the result is `poly`). A name that is not one of those
 literals, or not a method on the receiver, raises `NoMethodError` at runtime. A
-name drawn from outside the program's closed set of literals still can't be
-dispatched. A **literal** name is fully resolved -- see below.
+**computed** name (an interpolation, `to_sym`, a concatenation) sent to a user-class
+receiver dispatches over everything that class answers -- its methods, readers and
+writers, and the Object methods every instance has -- so the set is complete; on a
+boxed receiver it covers every user class plus the program's literals. A computed
+name sent to a builtin receiver (a String, an Array, ...) is still refused at compile
+time. A **literal** name is fully resolved -- see below.
 
 ---
 
