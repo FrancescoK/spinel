@@ -1,0 +1,18 @@
+A0
+B1
+bare 3 6000
+true
+bare nil 1
+bare nil 6581
+bare 9 2
+bare 4 6581
+b
+machine 3 6000
+true
+machine 1 1
+machine 1 8580
+machine 9 2
+machine 4 8580
+m
+B5
+A6

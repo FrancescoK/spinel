@@ -1990,6 +1990,13 @@ int class_recv_is_dynamic(Compiler *c, int recv) {
   if (!rty) return 0;
   if (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode"))
     return 1;
+  /* A global or class variable, or a conditional picking the class
+     (`(bare ? A : B).new(x)`), carries it only at run time as well; with
+     arguments they had no emitter and the call was refused. */
+  if (sp_streq(rty, "GlobalVariableReadNode") || sp_streq(rty, "ClassVariableReadNode") ||
+      sp_streq(rty, "IfNode") || sp_streq(rty, "UnlessNode") || sp_streq(rty, "CaseNode") ||
+      sp_streq(rty, "AndNode") || sp_streq(rty, "OrNode"))
+    return 1;
   if (!sp_streq(rty, "CallNode")) return 0;
   /* `self.class` resolves to the enclosing class statically and has its own
      arms on both sides; treating it as dynamic would steal them. */
