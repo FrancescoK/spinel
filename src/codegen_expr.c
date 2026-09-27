@@ -2326,6 +2326,12 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     if (emit_empty_container_for_slot(c, v, ct, b)) { /* emitted at the slot's type */ }
     else if (ct == TY_POLY) emit_boxed(c, v, b);
     else if (emit_array_into_poly_slot(c, ct, v, b)) { }
+    /* a boxed value into a slot typed by its other writes (a writer's
+       parameter reached through a `self.class.x =` dispatch, which boxes
+       what it passes) is unboxed into the slot, as an ivar's is */
+    else if (comp_ntype(c, v) == TY_POLY && ct != TY_UNKNOWN) {
+      Buf vb = expr_buf(c, v); emit_unbox_text(c, ct, vb.p ? vb.p : "sp_box_nil()", b); free(vb.p);
+    }
     else emit_expr(c, v, b);
     emit_cvar_set_flag_after(c, cid, nm, b);
     buf_puts(b, ")");
