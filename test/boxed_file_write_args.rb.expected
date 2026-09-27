@@ -1,0 +1,18 @@
+3
+6
+0
+4
+9
+3
+3
+2
+nil
+show 0
+3
+recv 2
+3
+[IOError, "closed stream"]
+3
+"abc1s2.5\nx\u0000yzé[1, 2]\n12\npq\npq01\nx3\nkl\n"
+out1
+5
