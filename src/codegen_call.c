@@ -9466,20 +9466,95 @@ int ctor_needs_self_defaults(Compiler *c, int initm, int argc) {
   return 0;
 }
 
+/* One constructor argument of a `k.new(...)` dispatch arm, `val` its text.
+   The arm spells each argument inline, so a default reading an earlier
+   parameter (`initialize(t, k: t.size)`) emitted the callee's `lv_t` at the
+   call site, where nothing declares it. With `pd_uid` set (the constructor
+   has such a default) the value is bound to a local in `pdpre` and the
+   parameter renamed to it, as a direct call does (#4431); the rename is
+   registered after the binding, so only a later default reads it. */
+static void ctor_arm_arg(Compiler *c, Scope *is, int j, const char *val, int pd_uid,
+                         Buf *pdpre, Buf *args) {
+  const char *pn = is && is->pnames ? is->pnames[j] : NULL;
+  LocalVar *pv = pn ? scope_local(is, pn) : NULL;
+  if (!pd_uid || !pn || (pv && pv->byref_out) || g_nren >= MAX_RENAME) {
+    buf_puts(args, val);
+    return;
+  }
+  TyKind pt = pv && pv->type != TY_UNKNOWN ? pv->type : TY_POLY;
+  emit_ctype(c, pt, pdpre);
+  buf_printf(pdpre, " lv__pd%d_%d = %s; ", pd_uid, j, val);
+  if (needs_root(pt))
+    buf_printf(pdpre, pt == TY_POLY ? "SP_GC_ROOT_RBVAL(lv__pd%d_%d); " : "SP_GC_ROOT(lv__pd%d_%d); ",
+               pd_uid, j);
+  buf_printf(args, "lv__pd%d_%d", pd_uid, j);
+  snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", pn);
+  snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_pd%d_%d", pd_uid, j);
+  g_nren++;
+}
+
+/* The allocation half of emit_ctor_alloc_init: declares `_tN` holding the
+   uninitialized object (rooted) and answers N. */
+static int ctor_alloc_decl(Compiler *c, int cid, Buf *b) {
+  int is_val = comp_ty_value_obj(c, ty_object(cid));
+  int t = ++g_tmp;
+  buf_printf(b, "sp_%s %s_t%d = ", c->classes[cid].c_name, is_val ? "" : "*", t);
+  emit_obj_alloc_expr(c, cid, b);
+  buf_puts(b, "; ");
+  if (!is_val) buf_printf(b, "SP_GC_ROOT(_t%d); ", t);
+  return t;
+}
+
+/* The initialize half: runs it on the object in `_tN`, `args` each led by
+   ", ". An INHERITED #initialize takes the defining class's pointer: without
+   the cast the C compiler is handed a subclass pointer, which clang rejects
+   outright (#3890). The struct layouts share their prefix, as every other
+   inherited-call site here assumes. */
+static void ctor_init_call(Compiler *c, int cid, int t, const char *args, Buf *b) {
+  int is_val = comp_ty_value_obj(c, ty_object(cid));
+  int initcls = cid;
+  comp_method_in_chain(c, cid, "initialize", &initcls);
+  if (initcls != cid && !is_val)
+    buf_printf(b, "sp_%s_initialize((sp_%s *)_t%d%s); ", c->classes[initcls].c_name,
+               c->classes[initcls].c_name, t, args);
+  else
+    buf_printf(b, "sp_%s_initialize(%s_t%d%s); ", c->classes[initcls].c_name,
+               is_val ? "&" : "", t, args);
+}
+
+/* The `case` of a `k.new(...)` dispatch arm for class `ci`: construct with
+   `args` into `_t<rt2>`, boxed. `pre` (NULL for none) holds the arm's own
+   bindings, which put the arm in a block. With `self_t` >= 0 the object was
+   already allocated into `_t<self_t>` (a default reads it) and initialize
+   runs on it. */
+static void emit_ctor_arm_case(Compiler *c, int ci, int rt2, int self_t, const char *pre,
+                               const char *args, Buf *b) {
+  const char *cn = c->classes[ci].c_name;
+  buf_printf(b, "case %d: ", ci);
+  if (pre) buf_printf(b, "{ %s", pre);
+  Buf obj; memset(&obj, 0, sizeof obj);
+  if (self_t >= 0) {
+    Buf ia; memset(&ia, 0, sizeof ia);
+    if (args[0]) buf_printf(&ia, ", %s", args);
+    ctor_init_call(c, ci, self_t, ia.p ? ia.p : "", b);
+    free(ia.p);
+    buf_printf(&obj, "_t%d", self_t);
+  }
+  else buf_printf(&obj, "sp_%s_new(%s)", cn, args);
+  if (c->classes[ci].is_value_type) buf_printf(b, "_t%d=sp_box_vobj_%s(%s);", rt2, cn, obj.p);
+  else buf_printf(b, "_t%d=sp_box_obj(%s,%d);", rt2, obj.p, ci);
+  buf_puts(b, pre ? " } break;" : " break;");
+  free(obj.p);
+}
+
 /* `Klass.new(args)` where an omitted default reads the instance: allocate the
    object (no initialize), then run initialize with self bound to it, so the
    default sees the object CRuby would have evaluated it on. Answers the object
    (a pointer, or the struct itself for a value-type class). */
 void emit_ctor_alloc_init(Compiler *c, int cid, int initm, int argsNode, int call_id, Buf *b) {
-  ClassInfo *ci = &c->classes[cid];
   int is_val = comp_ty_value_obj(c, ty_object(cid));
-  int initcls = cid;
-  comp_method_in_chain(c, cid, "initialize", &initcls);
-  int t = ++g_tmp;
-  buf_printf(b, "({ sp_%s %s_t%d = ", ci->c_name, is_val ? "" : "*", t);
-  emit_obj_alloc_expr(c, cid, b);
-  buf_puts(b, "; ");
-  if (!is_val) buf_printf(b, "SP_GC_ROOT(_t%d); ", t);
+  buf_puts(b, "({ ");
+  int t = ctor_alloc_decl(c, cid, b);
   char selftxt[24];
   snprintf(selftxt, sizeof selftxt, "_t%d", t);
   const char *sv_cs = g_ctor_self, *sv_csd = g_ctor_self_deref;
@@ -9496,16 +9571,7 @@ void emit_ctor_alloc_init(Compiler *c, int cid, int initm, int argsNode, int cal
   if (initm >= 0) emit_ctor_block_slot(c, call_id, initm, ", ", &args);   /* its `&blk` */
   g_pre = sv_pre; g_indent = sv_ind;
   if (apre.p) buf_puts(b, apre.p);
-  /* An INHERITED #initialize takes the defining class's pointer: without the
-     cast the C compiler is handed a subclass pointer, which clang rejects
-     outright (#3890). The struct layouts share their prefix, as every other
-     inherited-call site here assumes. */
-  if (initcls != cid && !is_val)
-    buf_printf(b, "sp_%s_initialize((sp_%s *)_t%d%s); ", c->classes[initcls].c_name,
-               c->classes[initcls].c_name, t, args.p ? args.p : "");
-  else
-    buf_printf(b, "sp_%s_initialize(%s_t%d%s); ", c->classes[initcls].c_name,
-               is_val ? "&" : "", t, args.p ? args.p : "");
+  ctor_init_call(c, cid, t, args.p ? args.p : "", b);
   free(apre.p); free(args.p);
   g_ctor_self = sv_cs; g_ctor_self_deref = sv_csd;
   buf_printf(b, "_t%d; })", t);
@@ -10033,6 +10099,18 @@ static void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Bu
                      npos + 1, expect);
         }
       }
+    }
+    /* a default reading the instance runs on the allocated object */
+    if (ctor_needs_self_defaults(c, initm, 0) && !class_is_exc_subclass(c, ci)) {
+      g_pre = sv_pre;
+      buf_printf(b, "case %d: { %s _t%d=", ci, apre.p ? apre.p : "", rt2);
+      buf_printf(b, c->classes[ci].is_value_type ? "sp_box_vobj_%s(" : "sp_box_obj(",
+                 c->classes[ci].c_name);
+      emit_ctor_alloc_init(c, ci, initm, nt_ref(nt, id, "arguments"), id, b);
+      if (c->classes[ci].is_value_type) buf_puts(b, "); } break; ");
+      else buf_printf(b, ", %d); } break; ", ci);
+      free(apre.p); free(aval.p);
+      continue;
     }
     emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", &aval);
     /* the constructor's &block slot, as in the positional arms: a `**`
@@ -28629,7 +28707,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         }
         else {
           if (argc < nreq || argc > np) continue;
-          if (argc < np && ctor_needs_self_defaults(c, initm, argc)) continue;
+          if (argc < np && class_is_exc_subclass(c, ci) && ctor_needs_self_defaults(c, initm, argc)) continue;
         }
       }
       /* A parameter and its argument both concretely typed but DIFFERENT is a
@@ -28648,14 +28726,25 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
               ptc != atc) incompat = 1;
         }
         if (incompat) continue; }
-      buf_printf(b, "case %d: _t%d=", ci, rt2);
-      if (c->classes[ci].is_value_type)
-        buf_printf(b, "sp_box_vobj_%s(sp_%s_new(", c->classes[ci].c_name, c->classes[ci].c_name);
-      else
-        buf_printf(b, "sp_box_obj(sp_%s_new(", c->classes[ci].c_name);
       Scope *is2 = initm >= 0 ? &c->scopes[initm] : NULL;
+      int pd_uid = is2 && default_refs_earlier_param(c, is2) ? ++g_tmp : 0, pd_base = g_nren;
+      Buf pdpre; memset(&pdpre, 0, sizeof pdpre);
+      Buf ab; memset(&ab, 0, sizeof ab);
+      /* a default reading the instance: allocate first, then run initialize
+         on the object with self bound to it, as emit_ctor_alloc_init does */
+      const char *sv_cs = g_ctor_self, *sv_csd = g_ctor_self_deref;
+      char selftxt[24];
+      int self_t = -1;
+      if (argc < np && ctor_needs_self_defaults(c, initm, argc)) {
+        self_t = ctor_alloc_decl(c, ci, &pdpre);
+        snprintf(selftxt, sizeof selftxt, "_t%d", self_t);
+        g_ctor_self = selftxt;
+        g_ctor_self_deref = comp_ty_value_obj(c, ty_object(ci)) ? "." : "->";
+      }
+      Buf *sv_pre = g_pre;
+      if (pd_uid || self_t >= 0) g_pre = &pdpre;
       for (int j = 0; j < np; j++) {
-        if (j) buf_puts(b, ", ");
+        if (j) buf_puts(&ab, ", ");
         LocalVar *pp = is2 ? scope_local(is2, is2->pnames[j]) : NULL;
         TyKind pt = (pp && pp->type != TY_UNKNOWN) ? pp->type : TY_POLY;
         /* a generated member constructor takes the member's own slot type */
@@ -28671,23 +28760,27 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           snprintf(probe, sizeof probe,
                    "sp_poly_hash_probe(_t%d, sp_box_sym(sp_sym_intern(\"%s\")), &_kwf)",
                    atmp[0], c->classes[ci].readers[j]);
-          buf_puts(b, "({ sp_bool _kwf; sp_RbVal _kwv = ");
-          buf_puts(b, probe);
-          buf_puts(b, "; (void)_kwf; ");
-          if (pt == TY_POLY) buf_puts(b, "_kwv");
-          else emit_unbox_text(c, pt, "_kwv", b);
-          buf_puts(b, "; })");
+          buf_puts(&ab, "({ sp_bool _kwf; sp_RbVal _kwv = ");
+          buf_puts(&ab, probe);
+          buf_puts(&ab, "; (void)_kwf; ");
+          if (pt == TY_POLY) buf_puts(&ab, "_kwv");
+          else emit_unbox_text(c, pt, "_kwv", &ab);
+          buf_puts(&ab, "; })");
           continue;
         }
-        if (j >= argc && is2) { emit_arg_or_default(c, is2, j, -1, b); continue; }
-        if (j >= argc) { buf_puts(b, default_value(pt)); continue; }   /* a nil-filled member */
-        snprintf(tn, sizeof tn, "_t%d", atmp[j]);
-        if (pt == TY_POLY) buf_puts(b, tn);
-        else emit_unbox_text(c, pt, tn, b);
+        if (j >= argc && !is2) { buf_puts(&ab, default_value(pt)); continue; }   /* a nil-filled member */
+        Buf ub; memset(&ub, 0, sizeof ub);
+        snprintf(tn, sizeof tn, "_t%d", j < argc ? atmp[j] : 0);
+        if (j >= argc) emit_arg_or_default(c, is2, j, -1, &ub);
+        else if (pt != TY_POLY) emit_unbox_text(c, pt, tn, &ub);
+        ctor_arm_arg(c, is2, j, ub.p ? ub.p : tn, pd_uid, &pdpre, &ab); free(ub.p);
       }
-      emit_ctor_block_slot(c, id, initm, np > 0 ? ", " : "", b);
-      if (c->classes[ci].is_value_type) buf_printf(b, "));break;");
-      else buf_printf(b, "),%d);break;", ci);
+      g_nren = pd_base;
+      g_pre = sv_pre;
+      g_ctor_self = sv_cs; g_ctor_self_deref = sv_csd;
+      emit_ctor_block_slot(c, id, initm, np > 0 ? ", " : "", &ab);
+      emit_ctor_arm_case(c, ci, rt2, self_t, pdpre.p, ab.p ? ab.p : "", b);
+      free(pdpre.p); free(ab.p);
     }
     /* A class the switch has no arm for is a program that cannot construct it,
        which is a raise -- the sibling emitter below has always said so. Without
@@ -28752,7 +28845,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       /* fill any optional constructor params with their defaults (an
          optional-arg initialize is zero-arg-compatible but its C function
          still declares the slots, #2452); the call site supplies no args, so
-         emit_args_filled emits each param's default. */
+         emit_args_filled emits each param's default. A default reading the
+         instance runs on the allocated object, as in the poly arm below. */
+      if (ctor_needs_self_defaults(c, initm, 0) && !class_is_exc_subclass(c, ci)) {
+        buf_printf(b, "case %d: _t%d=", ci, rt2);
+        buf_printf(b, c->classes[ci].is_value_type ? "sp_box_vobj_%s(" : "sp_box_obj(",
+                   c->classes[ci].c_name);
+        emit_ctor_alloc_init(c, ci, initm, -1, id, b);
+        if (c->classes[ci].is_value_type) buf_puts(b, "); break;");
+        else buf_printf(b, ",%d); break;", ci);
+        continue;
+      }
       Buf ab9; memset(&ab9, 0, sizeof ab9);
       if (initm >= 0 && c->scopes[initm].nparams > 0)
         emit_args_filled(c, initm, -1, "", &ab9);
@@ -28867,7 +28970,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (initm < 0) { if (!nil_fill && (argc != np || nreq != np)) continue; }
       else {
         if (argc < nreq || argc > np) continue;
-        if (argc < np && ctor_needs_self_defaults(c, initm, argc)) continue;
+        if (argc < np && class_is_exc_subclass(c, ci) && ctor_needs_self_defaults(c, initm, argc)) continue;
       }
       /* A parameter and its argument both concretely typed but DIFFERENT is a
          miscompile, not a coercion: the unbox below would read the argument's
@@ -28885,14 +28988,25 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
               ptc != atc) incompat = 1;
         }
         if (incompat) continue; }
-      buf_printf(b, "case %d: _t%d=", ci, rt2);
-      if (c->classes[ci].is_value_type)
-        buf_printf(b, "sp_box_vobj_%s(sp_%s_new(", c->classes[ci].c_name, c->classes[ci].c_name);
-      else
-        buf_printf(b, "sp_box_obj(sp_%s_new(", c->classes[ci].c_name);
       Scope *is = initm >= 0 ? &c->scopes[initm] : NULL;
+      int pd_uid = is && default_refs_earlier_param(c, is) ? ++g_tmp : 0, pd_base = g_nren;
+      Buf pdpre; memset(&pdpre, 0, sizeof pdpre);
+      Buf ab; memset(&ab, 0, sizeof ab);
+      /* a default reading the instance: allocate first, then run initialize
+         on the object with self bound to it, as emit_ctor_alloc_init does */
+      const char *sv_cs = g_ctor_self, *sv_csd = g_ctor_self_deref;
+      char selftxt[24];
+      int self_t = -1;
+      if (argc < np && ctor_needs_self_defaults(c, initm, argc)) {
+        self_t = ctor_alloc_decl(c, ci, &pdpre);
+        snprintf(selftxt, sizeof selftxt, "_t%d", self_t);
+        g_ctor_self = selftxt;
+        g_ctor_self_deref = comp_ty_value_obj(c, ty_object(ci)) ? "." : "->";
+      }
+      Buf *sv_pre = g_pre;
+      if (pd_uid || self_t >= 0) g_pre = &pdpre;
       for (int j = 0; j < np; j++) {
-        if (j) buf_puts(b, ", ");
+        if (j) buf_puts(&ab, ", ");
         LocalVar *pp = is ? scope_local(is, is->pnames[j]) : NULL;
         TyKind pt = (pp && pp->type != TY_UNKNOWN) ? pp->type : TY_POLY;
         /* a generated member constructor takes the member's own slot type */
@@ -28902,15 +29016,19 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           if (mvi >= 0 && c->classes[ci].ivar_types[mvi] != TY_UNKNOWN)
             pt = c->classes[ci].ivar_types[mvi];
         }
-        if (j >= argc && is) { emit_arg_or_default(c, is, j, -1, b); continue; }
-        if (j >= argc) { buf_puts(b, default_value(pt)); continue; }   /* a nil-filled member */
-        char tn[24]; snprintf(tn, sizeof tn, "_t%d", atmp[j]);
-        Buf ub; memset(&ub, 0, sizeof ub); emit_unbox_text(c, pt, tn, &ub);
-        buf_puts(b, ub.p ? ub.p : tn); free(ub.p);
+        if (j >= argc && !is) { buf_puts(&ab, default_value(pt)); continue; }   /* a nil-filled member */
+        Buf ub; memset(&ub, 0, sizeof ub);
+        char tn[24]; snprintf(tn, sizeof tn, "_t%d", j < argc ? atmp[j] : 0);
+        if (j >= argc) emit_arg_or_default(c, is, j, -1, &ub);
+        else emit_unbox_text(c, pt, tn, &ub);
+        ctor_arm_arg(c, is, j, ub.p ? ub.p : tn, pd_uid, &pdpre, &ab); free(ub.p);
       }
-      emit_ctor_block_slot(c, id, initm, np > 0 ? ", " : "", b);
-      if (c->classes[ci].is_value_type) buf_puts(b, ")); break;");
-      else buf_printf(b, "),%d); break;", ci);
+      g_nren = pd_base;
+      g_pre = sv_pre;
+      g_ctor_self = sv_cs; g_ctor_self_deref = sv_csd;
+      emit_ctor_block_slot(c, id, initm, np > 0 ? ", " : "", &ab);
+      emit_ctor_arm_case(c, ci, rt2, self_t, pdpre.p, ab.p ? ab.p : "", b);
+      free(pdpre.p); free(ab.p);
     }
     buf_printf(b, "default: sp_raise_nomethod(sp_nomethod_msg(\"new\", _t%d)); } _t%d; })", kt, rt2);
     g_ctor_blk_tmp = sv_cbt;
