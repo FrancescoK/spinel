@@ -19392,6 +19392,27 @@ static void emit_gets_sep_args(Compiler *c, const int *argv, int argc, Buf *b) {
   free(gchomp.p);
 }
 
+/* The readiness family on a handle `r`: the handle when ready, nil (NULL)
+   on timeout. IO#wait takes the direction as a trailing symbol. */
+static void emit_io_wait(Compiler *c, const char *name, int argc, const int *argv,
+                         const char *r, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int ev = sp_streq(name, "wait_writable") ? 1
+         : sp_streq(name, "wait_priority") ? 2 : 0;
+  if (sp_streq(name, "wait") && argc == 2) {
+    const char *sym = nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "SymbolNode")
+                      ? nt_str(nt, argv[1], "value") : NULL;
+    if (sym && sp_streq(sym, "write")) ev = 1;
+    else if (sym && sp_streq(sym, "priority")) ev = 2;
+    else if (sym && sp_streq(sym, "read_write")) ev = 3;
+  }
+  buf_printf(b, "sp_io_wait_events(%s, ", r);
+  if (argc >= 1 && !(nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "NilNode")))
+    emit_float_expr(c, argv[0], b);
+  else buf_puts(b, "-1.0");
+  buf_printf(b, ", %d)", ev);
+}
+
 static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -23967,21 +23988,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     }
     if ((sp_streq(name, "wait_readable") || sp_streq(name, "wait_writable") ||
          sp_streq(name, "wait_priority") || sp_streq(name, "wait")) && argc <= 2) {
-      int ev = sp_streq(name, "wait_writable") ? 1
-             : sp_streq(name, "wait_priority") ? 2 : 0;
-      /* IO#wait takes the direction as a trailing symbol */
-      if (sp_streq(name, "wait") && argc == 2) {
-        const char *sym = nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "SymbolNode")
-                          ? nt_str(nt, argv[1], "value") : NULL;
-        if (sym && sp_streq(sym, "write")) ev = 1;
-        else if (sym && sp_streq(sym, "priority")) ev = 2;
-        else if (sym && sp_streq(sym, "read_write")) ev = 3;
-      }
-      buf_printf(b, "sp_io_wait_events(%s, ", r);
-      if (argc >= 1 && !(nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "NilNode")))
-        emit_float_expr(c, argv[0], b);
-      else buf_puts(b, "-1.0");
-      buf_printf(b, ", %d)", ev);
+      emit_io_wait(c, name, argc, argv, r, b);
       free(rb.p); return;
     }
     /* size/ftype read the HANDLE so an lstat handle describes the link
@@ -24868,7 +24875,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           read back out of a container, is a poly value like any other, and
           without an arm here `w.read_nonblock(n, exception: false)` had no
           emitter at all (#4236/#4237) */
-       sp_streq(name, "read_nonblock") || sp_streq(name, "write_nonblock"))) {
+       sp_streq(name, "read_nonblock") || sp_streq(name, "write_nonblock") ||
+       /* the readiness family: a lambda's parameter is boxed, so a handle
+          passed through one reached `wait_readable` with no emitter, and in
+          a condition it was refused as non-bool. IO#wait stays off the list,
+          ConditionVariable#wait shares the name. */
+       ((sp_streq(name, "wait_readable") || sp_streq(name, "wait_writable") ||
+         sp_streq(name, "wait_priority")) && argc <= 1))) {
     int iocand = 0;
     for (int k = 0; k < c->nclasses && !iocand; k++) {
       /* a native class's methods are its declared bindings, which is the
@@ -25063,6 +25076,12 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           if (sbp) buf_printf(b, "; lv_%s = _t%d", rename_local(sbp), tsp);
           buf_printf(b, "; _t%d", tsp);
         }
+        buf_puts(b, "; })");
+      }
+      else if (sp_streq(name, "wait_readable") || sp_streq(name, "wait_writable") ||
+               sp_streq(name, "wait_priority")) {
+        char tr[32]; snprintf(tr, sizeof tr, "_t%d", tio2);
+        emit_io_wait(c, name, argc, argv, tr, b);
         buf_puts(b, "; })");
       }
       else if (sp_streq(name, "close")) buf_printf(b, "sp_File_close(_t%d); })", tio2);

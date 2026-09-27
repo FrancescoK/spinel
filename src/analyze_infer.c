@@ -5558,6 +5558,9 @@ else {
           an_nonblock_no_exception(c, id))
         return an_poly_concrete(c, name, TY_POLY);
       if (sp_streq(name, "read_nonblock")) return an_poly_concrete(c, name, TY_STRING);
+      if ((sp_streq(name, "wait_readable") || sp_streq(name, "wait_writable") ||
+           sp_streq(name, "wait_priority")) && argc <= 1)
+        return an_poly_concrete(c, name, TY_IO);
       if (sp_streq(name, "write_nonblock")) return an_poly_concrete(c, name, TY_INT);
       if (sp_streq(name, "read") || sp_streq(name, "gets") ||
           sp_streq(name, "readline") || sp_streq(name, "pread") ||

@@ -1,0 +1,6 @@
+true
+[:quit, :next]
+[]
+[:eof]
+"writable"
+[:quit]
