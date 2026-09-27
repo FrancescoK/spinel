@@ -17837,9 +17837,25 @@ void analyze_program(Compiler *c) {
      is such a call picks the type up too. */
   for (int iter = 0; iter < 8; iter++) {
     int lifted = 0;
+    /* A NIL return was read off a local the loop above just made poly:
+       `h = nil; h ||= {}; h` is nil through the fixpoint, because the
+       element-less `{}` stays UNKNOWN, and the method then dropped the hash
+       it built. Its tail or one of its returns now reads poly. */
+    NT_FOREACH_KIND(c->nt, NK_ReturnNode, rid) {
+      Scope *rs = comp_scope_of(c, rid);
+      if (rs && rs->ret == TY_NIL && return_node_type(c, rid) == TY_POLY &&
+          !rs->ret_rbs_seeded && !rs->ret_specialized && !rs->cs_synth &&
+          !rs->is_lowered_yield) { rs->ret = TY_POLY; lifted = 1; }
+    }
     for (int s = 0; s < c->nscopes; s++) {
       Scope *sc = &c->scopes[s];
-      if (sc->ret != TY_UNKNOWN || sc->body < 0) continue;
+      if (sc->body < 0) continue;
+      if (sc->ret == TY_NIL && !sc->ret_rbs_seeded && !sc->ret_specialized &&
+          !sc->cs_synth && !sc->is_lowered_yield) {
+        if (infer_type(c, sc->body) == TY_POLY) { sc->ret = TY_POLY; lifted = 1; }
+        continue;
+      }
+      if (sc->ret != TY_UNKNOWN) continue;
       TyKind rl = infer_type(c, sc->body);
       if (rl != TY_UNKNOWN && rl != TY_VOID) { sc->ret = rl; lifted = 1; }
     }
