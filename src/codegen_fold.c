@@ -7735,6 +7735,15 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
     if (kmi >= 0 && (TyKind)c->scopes[kmi].ret != TY_UNKNOWN)
       ret = ty_unify(ret, (TyKind)c->scopes[kmi].ret);
   }
+  /* A yielding method answers what this call's block makes it answer, which
+     its scope's return type (the last splice's) does not say: the arms are its
+     proc-form clones, whose boxed value the switch unboxes into the call's type */
+  if (m && m->yields && blk_node >= 0 && g_nd_call_id >= 0 &&
+      nt_ref(nt, g_nd_call_id, "block") == blk_node &&
+      scope_proc_form_of(c, mi) >= 0) {
+    TyKind ct = comp_ntype(c, g_nd_call_id);
+    if (ct != TY_UNKNOWN) ret = ct;
+  }
 
   int argc = 0;
   const int *argv = argsNode >= 0 ? nt_arr(nt, argsNode, "arguments", &argc) : NULL;
