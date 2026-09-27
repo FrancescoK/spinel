@@ -1749,7 +1749,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") >= 0 &&
       poly_enum_op_for(name)) {
     for (int k = 0; k < c->nclasses; k++) {
-      if (!c->classes[k].instantiated) continue;
+      if (!c->classes[k].ctor_reachable) continue;
       if (comp_method_in_chain(c, k, name, NULL) >= 0) return TY_POLY;
     }
   }
@@ -1758,7 +1758,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      block-carrying call on the builtin path entirely. */
   if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") >= 0) {
     for (int k = 0; k < c->nclasses; k++) {
-      if (!c->classes[k].instantiated) continue;
+      if (!c->classes[k].ctor_reachable) continue;
       int ymi = comp_method_in_chain(c, k, name, NULL);
       if (ymi >= 0 && c->scopes[ymi].yields) return TY_POLY;
     }
