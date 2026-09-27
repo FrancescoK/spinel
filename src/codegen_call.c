@@ -10374,6 +10374,18 @@ static void emit_struct_member_value(Compiler *c, ClassInfo *cls, int a, int vno
     emit_expr_slot(c, vnode, cls->ivar_types[a], mv);
   else emit_unresolved_coerced(c, vnode, cls->ivar_types[a], mv);
 }
+/* Does Symbol#inspect show `name` bare, as `:name`? True for an ASCII
+   identifier with an optional trailing `?`, `!` or `=`; anything else is
+   left to sp_sym_inspect_name, which quotes where CRuby does. */
+static int sym_name_plain(const char *s) {
+  if (!s || !((*s >= 'a' && *s <= 'z') || (*s >= 'A' && *s <= 'Z') || *s == '_')) return 0;
+  for (s++; *s; s++) {
+    if ((*s >= 'a' && *s <= 'z') || (*s >= 'A' && *s <= 'Z') || (*s >= '0' && *s <= '9') || *s == '_') continue;
+    return (*s == '?' || *s == '!' || *s == '=') && !s[1];
+  }
+  return 1;
+}
+
 static int emit_class_new_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -10578,11 +10590,21 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
                      argc, cls->c_name);
           return 1;
         }
-        /* a keyword whose name is not a member is an ArgumentError for both Data
-           and keyword_init Structs (#3079); a plain Struct treats a trailing
-           keyword hash as a positional value, so it is exempt. */
-        if (kwh >= 0 && (cls->is_data || cls->kw_init)) {
+        /* a keyword whose name is not a member is an ArgumentError for Data and
+           for a Struct taking keywords -- keyword_init: true, or unspecified
+           with keywords alone (#3079). Every argument is evaluated first, in
+           order, and each such key is named in CRuby's words: Data's
+           `unknown keyword: :z` / `unknown keywords: :z, :w`, a Struct's
+           `unknown keywords: z, w`; a key written twice is named once, where
+           it last appears. keyword_init: false (where CRuby takes the
+           keywords as one positional Hash) keeps its earlier answer: the
+           first such key, as `unknown keyword: :z`. */
+        if (kwh >= 0) {
+          int kwf = cls->kw_init == -1, data_words = cls->is_data || kwf;
           int nke = 0; const int *elke = nt_arr(nt, kwh, "elements", &nke);
+          Buf unk; memset(&unk, 0, sizeof unk);
+          int nunk = 0, plain = 1;
+          const char **unames = malloc(sizeof(char *) * (size_t)(nke > 0 ? nke : 1));
           for (int e = 0; e < nke; e++) {
             if (!(nt_type(nt, elke[e]) && sp_streq(nt_type(nt, elke[e]), "AssocNode"))) continue;
             int key = nt_ref(nt, elke[e], "key");
@@ -10590,18 +10612,57 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             const char *kn = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
             if (!kn) continue;
             char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", kn);
-            if (comp_ivar_index(cls, ivn) < 0) {
-              buf_puts(b, "({ ");
-              for (int e2 = 0; e2 < nke; e2++) {
-                if (!(nt_type(nt, elke[e2]) && sp_streq(nt_type(nt, elke[e2]), "AssocNode"))) continue;
-                int vv = nt_ref(nt, elke[e2], "value");
-                if (vv >= 0) { buf_puts(b, "(void)("); emit_boxed(c, vv, b); buf_puts(b, "); "); }
-              }
-              buf_printf(b, "sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"unknown keyword: :%s\")[1])); (sp_%s *)0; })",
-                         kn, cls->c_name);
-              return 1;
+            if (comp_ivar_index(cls, ivn) >= 0 || (kwf && nunk)) continue;
+            int seen = 0;
+            for (int e2 = e + 1; !kwf && e2 < nke && !seen; e2++) {
+              int k2 = nt_ref(nt, elke[e2], "key");
+              seen = k2 >= 0 && nt_type(nt, k2) && sp_streq(nt_type(nt, k2), "SymbolNode") &&
+                     sp_streq(nt_str(nt, k2, "value"), kn);
             }
+            if (seen) continue;
+            if (data_words && !sym_name_plain(kn)) plain = 0;
+            unames[nunk] = kn;
+            buf_printf(&unk, "%s%s%s", nunk++ ? ", " : "", data_words ? ":" : "", kn);
           }
+          if (nunk) {
+            buf_puts(b, "({ ");
+            for (int e2 = 0; e2 < nke; e2++) {
+              if (kwf && !(nt_type(nt, elke[e2]) && sp_streq(nt_type(nt, elke[e2]), "AssocNode"))) continue;
+              /* a computed key runs before its value, as in CRuby */
+              int kk = kwf ? -1 : nt_ref(nt, elke[e2], "key");
+              if (kk >= 0 && nt_kind(nt, kk) != NK_SymbolNode && nt_kind(nt, kk) != NK_StringNode) {
+                buf_puts(b, "(void)("); emit_boxed(c, kk, b); buf_puts(b, "); ");
+              }
+              int vv = nt_ref(nt, elke[e2], "value");
+              if (vv >= 0) { buf_puts(b, "(void)("); emit_boxed(c, vv, b); buf_puts(b, "); "); }
+            }
+            /* The names go into a C string literal, escaped. Data names a key
+               by its inspect, which quotes one that is not a plain identifier
+               (`:"q\"z"`); that one is inspected at run time. */
+            const char *pl = (nunk > 1 || !data_words) ? "s" : "";
+            buf_puts(b, "sp_raise_cls(\"ArgumentError\", ");
+            if (plain) {
+              Buf msg; memset(&msg, 0, sizeof msg);
+              buf_printf(&msg, "unknown keyword%s: %s", pl, unk.p);
+              emit_str_literal(b, msg.p);
+              free(msg.p);
+            }
+            else {
+              buf_printf(b, "sp_sprintf(\"unknown keyword%s: ", pl);
+              for (int u = 0; u < nunk; u++) buf_puts(b, u ? ", %s" : "%s");
+              buf_puts(b, "\"");
+              for (int u = 0; u < nunk; u++) {
+                buf_puts(b, ", sp_sym_inspect_name(");
+                emit_str_literal(b, unames[u]);
+                buf_puts(b, ")");
+              }
+              buf_puts(b, ")");
+            }
+            buf_printf(b, "); (sp_%s *)0; })", cls->c_name);
+            free(unk.p); free(unames);
+            return 1;
+          }
+          free(unk.p); free(unames);
         }
         /* `X.new(*arr)`: a sole positional splat spreads the array across the
            members at run time -- static arity can't see the count, so it would
