@@ -7461,7 +7461,6 @@ static void oa_note_empty(Compiler *c, int S, int node) {
    resolution */
 static int oa_elem_evidence(Compiler *c, OAS *sl, int S, int node) {
   oa_note_empty(c, S, node);
-  if (getenv("DBGOA")) fprintf(stderr, "oa_ev S=%d node=%d ty=%s\n", S, node, ty_name(infer_type(c, node)));
   if (node >= 0 && infer_type(c, node) == TY_POLY) sl[S].poly_elem = 1;
   return oa_obj_class_of(c, node);
 }
@@ -7826,14 +7825,17 @@ static int narrow_int_table_ivars(Compiler *c) {
                      sp_streq(un, "min") || sp_streq(un, "max"))) { used = 0; break; }
           if (!oa_recv_op_ok(un, uan, nt_ref(nt, u, "block") >= 0)) { used = 0; break; }
           /* what a store puts in the table is a row: a boxed value or another
-             kind would be taken as a bare sp_IntArray * */
+             kind would be taken as a bare sp_IntArray *. A value not typed
+             yet waits for a later round, since a pinned table is not vetted
+             again; an empty `[]` is typed by the table it lands in. */
           if (un && (sp_streq(un, "[]=") || sp_streq(un, "push") || sp_streq(un, "<<") ||
                      sp_streq(un, "append"))) {
             const int *uav = nt_arr(nt, ua, "arguments", &uan);
             int rows_ok = 1;
             for (int a = sp_streq(un, "[]=") ? 1 : 0; a < uan && rows_ok; a++) {
               TyKind at = infer_type(c, uav[a]);
-              if (at != TY_INT_ARRAY && at != TY_NIL && at != TY_UNKNOWN) rows_ok = 0;
+              if (at == TY_UNKNOWN && is_empty_array_literal(nt, uav[a], c->node_cap)) continue;
+              if (at != TY_INT_ARRAY && at != TY_NIL) rows_ok = 0;
             }
             if (!rows_ok) break;
           }
@@ -7842,7 +7844,6 @@ static int narrow_int_table_ivars(Compiler *c) {
         if (!used) { ok = 0; break; }
       }
       if (ok && saw_table) {
-        sp_ivwatch(ivn, "DBG int_table", cl->ivar_types[iv], TY_INT_ARRAY_ARRAY);
         cl->ivar_types[iv] = TY_INT_ARRAY_ARRAY;
         cl->ivar_int_table[iv] = 1;
         narrowed = 1;
@@ -8234,7 +8235,6 @@ static int narrow_object_arrays(Compiler *c) {
       if (cl->ivar_oa_type[iv] != TY_UNKNOWN) {
         /* this pass's own narrowing from the last round: back on the poly
            array, the evidence decides again (the same reset the locals get) */
-        sp_ivwatch(ivn, "DBG oa reset", cl->ivar_types[iv], TY_POLY_ARRAY);
         cl->ivar_types[iv] = TY_POLY_ARRAY; cl->ivar_int_table[iv] = 0;
       }
       if (cl->ivar_types[iv] != TY_POLY_ARRAY || cl->ivar_int_table[iv]) continue;
