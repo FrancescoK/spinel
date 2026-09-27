@@ -8163,20 +8163,29 @@ int infer_block_params(Compiler *c) {
           if (lv->type != TY_POLY_ARRAY) { lv->type = TY_POLY_ARRAY; changed = 1; }
         }
         /* Optional block params (`|a, b=10|`): a yielded arg at the optional's
-           position types it; an omitted optional takes its default's type. */
-        int nreq_b = 0; while (block_param_name(c, block, nreq_b)) nreq_b++;
+           position types it; an omitted optional takes its default's type.
+           The requireds after the optionals are filled first, so only the
+           args left over past both required groups reach the optionals.
+           Every yield of the method binds the block, each with its own
+           arity. */
         for (int oi = 0; ; oi++) {
           const char *op = block_opt_name(c, block, oi);
           if (!op) break;
-          int yi = nreq_b + oi;
+          int yi = p_pre + oi;
+          int dv = block_opt_default(c, block, oi);
+          TyKind dt = dv >= 0 ? infer_type(c, dv) : TY_NIL;
           TyKind ot;
-          if (as_elem != TY_UNKNOWN) {
-            /* destructured: an optional binds an element or its default */
-            int dv = block_opt_default(c, block, oi);
-            ot = ty_unify(as_elem, dv >= 0 ? infer_type(c, dv) : TY_NIL);
+          if (as_elem != TY_UNKNOWN) ot = ty_unify(as_elem, dt);  /* destructured: an element or the default */
+          else {
+            ot = oi < yc - p_pre - p_post ? infer_type(c, yargs[yi]) : dt;
+            NT_FOREACH_KIND(nt, NK_YieldNode, _yi) {
+              if (c->nscope[_yi] != yld_mi || _yi == yn) continue;
+              int _ya2 = nt_ref(nt, _yi, "arguments");
+              int _yc2 = 0;
+              const int *_yv2 = _ya2 >= 0 ? nt_arr(nt, _ya2, "arguments", &_yc2) : NULL;
+              ot = ty_unify(ot, oi < _yc2 - p_pre - p_post ? infer_type(c, _yv2[yi]) : dt);
+            }
           }
-          else if (yi < yc) ot = infer_type(c, yargs[yi]);
-          else { int dv = block_opt_default(c, block, oi); ot = dv >= 0 ? infer_type(c, dv) : TY_NIL; }
           LocalVar *lv = scope_local_intern(bs, op); lv->is_block_param = 1;
           TyKind m = ty_unify(lv->type, ot);
           if (m != lv->type) { lv->type = m; changed = 1; }
