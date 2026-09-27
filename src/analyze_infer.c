@@ -6931,8 +6931,9 @@ static TyKind an_branch_ty(Compiler *c, int stmts) {
   return t;
 }
 
-/* 1 when a branch's value is an empty `[]` literal, 2 for an empty `{}`. */
-static int branch_tail_empty_container(Compiler *c, int b) {
+/* 1 when a value (a branch arm, a write's right side, a returned value) is
+   an empty `[]` literal, 2 for an empty `{}`. */
+int an_empty_container_kind(Compiler *c, int b) {
   const NodeTable *nt = c->nt;
   while (b >= 0) {
     NodeKind k = nt_kind(nt, b);
@@ -6950,9 +6951,10 @@ static int branch_tail_empty_container(Compiler *c, int b) {
   }
   return 0;
 }
-/* the other arm's settled type is not the empty literal's kind of container */
-static int empty_container_disagrees(int kind, TyKind other) {
-  if (other == TY_UNKNOWN || other == TY_NIL || other == TY_VOID || other == TY_POLY) return 0;
+/* the other arm's (or the slot's other writes') settled type is not the
+   empty literal's kind of container */
+int an_empty_container_disagrees(int kind, TyKind other) {
+  if (!kind || other == TY_UNKNOWN || other == TY_NIL || other == TY_VOID || other == TY_POLY) return 0;
   if (kind == 1) return !ty_is_array(other) && !ty_is_obj_array(other);
   return !ty_is_hash(other);
 }
@@ -7536,9 +7538,9 @@ TyKind infer_uncached(Compiler *c, int id) {
        String, a number. It is a container all the same, so a non-container
        other arm makes the answer boxed; `if u then Rel.new else [] end` built
        an sp_IntArray into an sp_Rel slot (#4938). */
-    { int tk = branch_tail_empty_container(c, then_b), ek = branch_tail_empty_container(c, else_b);
-      if (tt == TY_UNKNOWN && tk && ek == 0 && empty_container_disagrees(tk, et)) return TY_POLY;
-      if (et == TY_UNKNOWN && ek && tk == 0 && empty_container_disagrees(ek, tt)) return TY_POLY;
+    { int tk = an_empty_container_kind(c, then_b), ek = an_empty_container_kind(c, else_b);
+      if (tt == TY_UNKNOWN && tk && ek == 0 && an_empty_container_disagrees(tk, et)) return TY_POLY;
+      if (et == TY_UNKNOWN && ek && tk == 0 && an_empty_container_disagrees(ek, tt)) return TY_POLY;
       /* ...and against an arm that settles on no type at all (a call nothing
          answers raises), once the rounds are no longer optimistic, the empty
          literal is the value: `if q then Parser.new.parse(q) else [] end`

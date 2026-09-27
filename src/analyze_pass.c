@@ -2131,6 +2131,11 @@ int infer_write_types(Compiler *c) {
           Scope *s2 = comp_scope_of(c, id);
           LocalVar *lv2 = scope_local(s2, nm);
           if (lv2 && (TyKind)lv2->gc_root != TY_UNKNOWN) newt = (TyKind)lv2->gc_root;
+          /* ...unless that type is not a container of the literal's kind:
+             `x = 1; x = {}` holds an Integer and a Hash, so it boxes. Kept,
+             the Integer slot was assigned the hash pointer. */
+          if (an_empty_container_disagrees(an_empty_container_kind(c, val_id), newt))
+            newt = TY_POLY;
         }
         /* `d = h.dup/clone`: inherit receiver's hash type from prior iteration */
         if (newt == TY_UNKNOWN) {
@@ -9358,6 +9363,9 @@ int infer_return_types(Compiler *c) {
      once instead. */
   TyKind *ret_acc = (TyKind *)malloc(sizeof(TyKind) * (size_t)ns);
   char *has_ret = (char *)calloc((size_t)ns, 1);
+  /* per scope, the kinds (an_empty_container_kind bits) of the empty `[]` /
+     `{}` its explicit returns answer: untyped, they vanish from ret_acc */
+  char *ret_empty = (char *)calloc((size_t)(ns > 0 ? ns : 1), 1);
   /* Also chain each scope's ReturnNodes (ret_head[scope] -> id -> ret_next[id]),
      so the proc-return block below walks a scope's returns instead of rescanning
      every node per proc-returning scope. */
@@ -9454,6 +9462,8 @@ int infer_return_types(Compiler *c) {
       }
       ret_acc[si] = has_ret[si] ? ty_unify(ret_acc[si], rt) : rt;
       has_ret[si] = 1;
+      if (rt == TY_UNKNOWN && ret_empty)
+        ret_empty[si] |= (char)an_empty_container_kind(c, return_value_node(c, id));
       if (ret_head && ret_next) { ret_next[id] = ret_head[si]; ret_head[si] = id; }
     }
     free(noblk);
@@ -9579,7 +9589,19 @@ int infer_return_types(Compiler *c) {
       }
     }
     /* explicit returns within this scope (collected above) */
-    if (!tail_unreachable && has_ret && has_ret[s]) r = ty_unify(r, ret_acc[s]);
+    if (!tail_unreachable && has_ret && has_ret[s]) {
+      /* An empty `[]` / `{}` value is still untyped, and the unify took the
+         other values' type for it: `return 1 if b; {}` returned the hash
+         pointer through an sp_int. Beside a value of another kind it is a
+         container all the same, so the method boxes (the if/else rule). */
+      int tk = empty_body ? 0 : an_empty_container_kind(c, sc->body);
+      if (r == TY_UNKNOWN && an_empty_container_disagrees(tk, ret_acc[s])) r = TY_POLY;
+      r = ty_unify(r, ret_acc[s]);
+    }
+    if (has_ret && has_ret[s] && ret_empty && ret_empty[s] &&
+        (an_empty_container_disagrees(ret_empty[s] & 1, r) ||
+         an_empty_container_disagrees(ret_empty[s] & 2, r)))
+      r = TY_POLY;
     ret_decided:
     /* Post-backstop re-runs fill returns whose body only settled after the
        main fixpoint (a `r = expr; r` chain, #1670). Adopting a NEW poly there
@@ -9765,7 +9787,7 @@ int infer_return_types(Compiler *c) {
     else sc->ret_oa_pin = TY_UNKNOWN;
   }
 
-  free(ret_acc); free(has_ret); free(ret_head); free(ret_next); free(ret_narrow);
+  free(ret_acc); free(has_ret); free(ret_empty); free(ret_head); free(ret_next); free(ret_narrow);
   return changed;
 }
 
