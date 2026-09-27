@@ -7761,7 +7761,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                 scope_needs_proc_form(c, mi2)) {
               blk_tmp2 = ++g_tmp;
               Buf pb2; memset(&pb2, 0, sizeof pb2);
-              emit_proc_literal(c, cblk2, &pb2);
+              /* a forwarded &blk / anonymous & is a live proc, not a literal
+                 to lower -- the same guard the other dispatch arms carry */
+              if (!emit_forwarded_proc_arg(c, cblk2, &pb2))
+                emit_proc_literal(c, cblk2, &pb2);
               emit_indent(g_pre, g_indent);
               buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp2, pb2.p ? pb2.p : "NULL");
               emit_indent(g_pre, g_indent);
