@@ -11809,7 +11809,13 @@ static sp_PolyArray *sp_enum_items_from(sp_RbVal v) {
        below, so an external enumerator over one yielded nothing (#4022). */
     if (v.cls_id >= 0 && sp_obj_to_a_fn) {
       sp_RbVal a = sp_obj_to_a_fn(v);
-      if (a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(a.cls_id)) return sp_poly_to_poly_array(a);
+      /* A #to_a answer that already is a poly array is copied through the
+         poly-array arm above rather than handed back as is: a user's own
+         #to_a may answer the array it keeps, and the reverse_each constructor
+         reverses the items it is handed in place. A typed array converts to
+         a fresh poly array as before. */
+      if (a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(a.cls_id))
+        return a.cls_id == SP_BUILTIN_POLY_ARRAY ? sp_enum_items_from(a) : sp_poly_to_poly_array(a);
     }
   }
   return sp_PolyArray_new();
