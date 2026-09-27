@@ -1446,13 +1446,20 @@ static int local_is_bounded_counter(Compiler *c, int id, const char *nm, LocalVa
    a rooted temp inserted in g_pre at `pre_mark`, ahead of any prelude, and
    answer the temp as the operation's input; otherwise answer `lval` (#4875).
    `ctype` spells the temp's C type; a scalar (`root` 0) needs no root, a
-   boxed value (`root` 2) takes the sp_RbVal root. */
+   boxed value (`root` 2) takes the sp_RbVal root. With no g_pre -- a proc
+   or lambda parameter default -- the temp opens a block in `b` itself,
+   which op_assign_slot_end closes after the write. */
 static const char *op_assign_slot_src(Compiler *c, const char *lval, const char *ctype,
                                       int root, int v, size_t pre_mark,
-                                      char *tn, size_t tnsz) {
-  if (!g_pre || !subtree_has_side_effect(c, v)) return lval;
+                                      char *tn, size_t tnsz, Buf *b) {
+  if (!subtree_has_side_effect(c, v)) return lval;
   int t = ++g_tmp;
   snprintf(tn, tnsz, "_t%d", t);
+  if (!g_pre) {
+    buf_printf(b, "{ %s_t%d = %s; ", ctype, t, lval);
+    if (root) buf_printf(b, "%s(_t%d); ", root == 2 ? "SP_GC_ROOT_RBVAL" : "SP_GC_ROOT", t);
+    return tn;
+  }
   Buf cap; memset(&cap, 0, sizeof cap);
   emit_indent(&cap, g_indent); buf_printf(&cap, "%s_t%d = %s;\n", ctype, t, lval);
   if (root) { emit_indent(&cap, g_indent); buf_printf(&cap, "%s(_t%d);\n", root == 2 ? "SP_GC_ROOT_RBVAL" : "SP_GC_ROOT", t); }
@@ -1463,10 +1470,13 @@ static const char *op_assign_slot_src(Compiler *c, const char *lval, const char 
   free(prelude); free(cap.p);
   return tn;
 }
+static void op_assign_slot_end(const char *src, const char *lval, Buf *b) {
+  buf_puts(b, !g_pre && src != lval ? " }\n" : "\n");
+}
 static const char *array_op_assign_src(Compiler *c, const char *lval, const char *k,
-                                       int v, size_t pre_mark, char *tn, size_t tnsz) {
+                                       int v, size_t pre_mark, char *tn, size_t tnsz, Buf *b) {
   char ct[48]; snprintf(ct, sizeof ct, "sp_%sArray *", k);
-  return op_assign_slot_src(c, lval, ct, 1, v, pre_mark, tn, tnsz);
+  return op_assign_slot_src(c, lval, ct, 1, v, pre_mark, tn, tnsz, b);
 }
 
 /* The conversion that boxes a `vt` rhs into a PolyArray operand, as the binary
@@ -1508,10 +1518,11 @@ int emit_array_op_assign(Compiler *c, const char *lval, TyKind t,
     else if (conv) { buf_printf(&rb, "%s(", conv); emit_expr(c, v, &rb); buf_puts(&rb, ")"); }
     else emit_expr(c, v, &rb);
     char tn[32];
-    const char *src = array_op_assign_src(c, lval, k, v, pre_mark, tn, sizeof tn);
+    const char *src = array_op_assign_src(c, lval, k, v, pre_mark, tn, sizeof tn, b);
     buf_printf(b, "%s = sp_%sArray_%s(%s, ", lval, k, fn, src);
     buf_puts(b, rb.p ? rb.p : "");
-    buf_puts(b, ");\n");
+    buf_puts(b, ");");
+    op_assign_slot_end(src, lval, b);
     free(rb.p);
     return 1;
   }
@@ -1531,10 +1542,11 @@ int emit_array_op_assign(Compiler *c, const char *lval, TyKind t,
     else if (conv) { buf_printf(&rb, "%s(", conv); emit_expr(c, v, &rb); buf_puts(&rb, ")"); }
     else emit_expr(c, v, &rb);
     char tn[32];
-    const char *src = array_op_assign_src(c, lval, k, v, pre_mark, tn, sizeof tn);
+    const char *src = array_op_assign_src(c, lval, k, v, pre_mark, tn, sizeof tn, b);
     buf_printf(b, "%s = sp_%sArray_concat(%s, ", lval, k, src);
     buf_puts(b, rb.p ? rb.p : "");
-    buf_puts(b, ");\n");
+    buf_puts(b, ");");
+    op_assign_slot_end(src, lval, b);
     free(rb.p);
     return 1;
   }
@@ -1544,7 +1556,7 @@ int emit_array_op_assign(Compiler *c, const char *lval, TyKind t,
     Buf rb; memset(&rb, 0, sizeof rb);
     emit_int_expr(c, v, &rb);
     char tsrc[32];
-    const char *src = array_op_assign_src(c, lval, k, v, pre_mark, tsrc, sizeof tsrc);
+    const char *src = array_op_assign_src(c, lval, k, v, pre_mark, tsrc, sizeof tsrc, b);
     buf_printf(b, "{ sp_%sArray *_t%d = %s; sp_int _t%d = ", k, ta, src, tn);
     buf_puts(b, rb.p ? rb.p : "");
     free(rb.p);
@@ -1558,7 +1570,8 @@ int emit_array_op_assign(Compiler *c, const char *lval, TyKind t,
       buf_printf(b, " sp_%sArray_push(_t%d, _t%d->data[_t%d->start + _t%d]);", k, tr, ta, ta, tj);
     else
       buf_printf(b, " sp_%sArray_push(_t%d, _t%d->data[_t%d]);", k, tr, ta, tj);
-    buf_printf(b, " %s = _t%d; }\n", lval, tr);
+    buf_printf(b, " %s = _t%d; }", lval, tr);
+    op_assign_slot_end(src, lval, b);
     return 1;
   }
   return 0;
@@ -1614,16 +1627,17 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
   const char *src = lval;
   if (capture) {
     char ct[48]; snprintf(ct, sizeof ct, "%s ", c_type_name(t));
-    src = op_assign_slot_src(c, lval, ct, t == TY_BIGINT, v, pre_mark, tn, sizeof tn);
+    src = op_assign_slot_src(c, lval, ct, t == TY_BIGINT, v, pre_mark, tn, sizeof tn, b);
   }
   /* Int and Bignum arithmetic take the same overflow-checked helpers as the
      binary form: a raw C `lv_x *= y` silently wrapped where `x * y` raised.
      Bitwise ops map straight to the C operator (fixed-width wrap, same as the
      binary `x << y` path). */
-  if (fn) buf_printf(b, "%s = %s(%s, %s);\n", lval, fn, src, rhs);
-  else if (bitop) buf_printf(b, "%s = (%s %s (%s));\n", lval, src, op, rhs);
-  else if (src == lval) buf_printf(b, "%s %s= %s;\n", lval, op, rhs);
-  else buf_printf(b, "%s = %s %s (%s);\n", lval, src, op, rhs);
+  if (fn) buf_printf(b, "%s = %s(%s, %s);", lval, fn, src, rhs);
+  else if (bitop) buf_printf(b, "%s = (%s %s (%s));", lval, src, op, rhs);
+  else if (src == lval) buf_printf(b, "%s %s= %s;", lval, op, rhs);
+  else buf_printf(b, "%s = %s %s (%s);", lval, src, op, rhs);
+  op_assign_slot_end(src, lval, b);
   free(rb.p);
   return 1;
 }
@@ -1654,12 +1668,13 @@ int emit_poly_op_assign(Compiler *c, const char *lval, const char *op, int v,
   Buf rb; memset(&rb, 0, sizeof rb);
   emit_boxed(c, v, &rb);
   char tn[32];
-  const char *src = capture ? op_assign_slot_src(c, lval, "sp_RbVal ", 2, v, pre_mark, tn, sizeof tn)
+  const char *src = capture ? op_assign_slot_src(c, lval, "sp_RbVal ", 2, v, pre_mark, tn, sizeof tn, b)
                             : lval;
   buf_printf(b, "%s = %s(%s, %s", lval, ops[k][1], src, rb.p ? rb.p : "sp_box_nil()");
   if (sp_streq(ops[k][1], "sp_poly_bitop"))
     buf_printf(b, ", %d", sp_streq(op, "&") ? 0 : sp_streq(op, "|") ? 1 : 2);
-  buf_puts(b, ");\n");
+  buf_puts(b, ");");
+  op_assign_slot_end(src, lval, b);
   free(rb.p);
   return 1;
 }

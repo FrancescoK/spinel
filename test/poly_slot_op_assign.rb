@@ -83,3 +83,23 @@ class L
   end
 end
 L.go(c)
+
+$g = 1.5
+$g = 1 if c
+l = ->(x = ($g += ($g = 100; 2.25))) { x }
+p l.call
+$h = 1.5
+m = ->(x = ($h += ($h = 100.0; 2.25))) { x }
+p m.call
+class M
+  @@v = "s"
+
+  def self.go(c)
+    @@v = 1 if c
+    n = ->(x = (@@v *= (@@v = 100; 3))) { x }
+    p n.call
+  end
+end
+M.go(c)
+pr = proc { |x = ($g -= ($g = 100; 2))| x }
+p pr.call
