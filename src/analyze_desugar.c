@@ -2887,6 +2887,9 @@ static int def_shape_by_name(const NodeTable *nt, const char *name) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, name)) continue;
     int pn = nt_ref(nt, id, "parameters");
+    /* a `def m(...)` forwarder of the same name passes its args on: it takes
+       whatever shape its own target has */
+    if (pn >= 0 && fwd_node_is(nt, nt_ref(nt, pn, "keyword_rest"), "ForwardingParameterNode")) continue;
     int sh = 0;
     if (pn >= 0) {
       int rn = 0; nt_arr(nt, pn, "requireds", &rn);
@@ -3002,7 +3005,7 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
       int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
       if (ac < 1 || !av || !fwd_node_is(nt, av[ac - 1], "ForwardingArgumentsNode")) continue;
       const char *cn = nt_str(nt, id, "name");
-      int sh = (nt_ref(nt, id, "receiver") < 0 && cn) ? def_shape_by_name(nt, cn) : -1;
+      int sh = cn ? def_shape_by_name(nt, cn) : -1;
       if (sh < 0 || nt_ref(nt, id, "block") >= 0) { ok = 0; break; }
       if (ncalls && sh != shape) { ok = 0; break; }
       shape = sh;
