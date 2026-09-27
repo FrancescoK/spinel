@@ -1124,6 +1124,17 @@ static int emit_scalar_op_assign_value(Compiler *c, const char *ref, TyKind t,
   return ok;
 }
 
+/* The boxed twin, for a poly slot. */
+static int emit_poly_op_assign_value(Compiler *c, const char *ref, TyKind t,
+                                     const char *op, int v, Buf *b) {
+  if (t != TY_POLY) return 0;
+  Buf ab; memset(&ab, 0, sizeof ab);
+  int ok = emit_poly_op_assign(c, ref, op, v, 1, &ab);
+  if (ok) buf_printf(b, "({ %s%s; })", ab.p, ref);
+  free(ab.p);
+  return ok;
+}
+
 static void emit_expr_node(Compiler *c, int id, Buf *b);
 
 /* How many expressions enclose the one being emitted: a call nested in an
@@ -2210,6 +2221,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       emit_str_expr(c, v, b); buf_puts(b, "))");
     }
     else if (emit_array_op_assign_value(c, gref, lv->type, op, v, b)) { }
+    else if (emit_poly_op_assign_value(c, gref, lv->type, op, v, b)) { }
     else if (emit_scalar_op_assign_value(c, gref, lv->type, op, v, b)) { }
     else {
       buf_printf(b, "(gv_%s %s= ", rn, op ? op : "+");
@@ -2234,17 +2246,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       emit_str_expr(c, v, b); buf_puts(b, "))");
     }
     else if (emit_array_op_assign_value(c, ref, ct, op, v, b)) { }
-    else if (ct == TY_POLY) {
-      const char *pfn = sp_streq(op ? op : "+", "+") ? "sp_poly_add"
-                      : sp_streq(op, "-") ? "sp_poly_sub"
-                      : sp_streq(op, "*") ? "sp_poly_mul"
-                      : sp_streq(op, "/") ? "sp_poly_div" : NULL;
-      int bitop = op && (sp_streq(op, "<<") || sp_streq(op, ">>") || sp_streq(op, "&") ||
-                         sp_streq(op, "|") || sp_streq(op, "^") || sp_streq(op, "%"));
-      if (pfn) { buf_printf(b, "(%s = %s(%s, ", ref, pfn, ref); emit_boxed(c, v, b); buf_puts(b, "))"); }
-      else if (bitop) { buf_printf(b, "(%s = sp_box_int(sp_poly_to_i(%s) %s ", ref, ref, op); emit_int_expr(c, v, b); buf_puts(b, "))"); }
-      else { buf_printf(b, "(%s %s= ", ref, op ? op : "+"); emit_expr(c, v, b); buf_puts(b, ")"); }
-    }
+    else if (emit_poly_op_assign_value(c, ref, ct, op, v, b)) { }
     else if (emit_scalar_op_assign_value(c, ref, ct, op, v, b)) { }
     else {
       buf_printf(b, "(%s %s= ", ref, op ? op : "+");

@@ -1445,16 +1445,24 @@ static int local_is_bounded_counter(Compiler *c, int id, const char *nm, LocalVa
    whose order C leaves unspecified. For an effectful rhs, read the slot into
    a rooted temp inserted in g_pre at `pre_mark`, ahead of any prelude, and
    answer the temp as the operation's input; otherwise answer `lval` (#4875).
-   `ctype` spells the temp's C type; a scalar (`root` 0) needs no root. */
+   `ctype` spells the temp's C type; a scalar (`root` 0) needs no root, a
+   boxed value (`root` 2) takes the sp_RbVal root. With no g_pre -- a proc
+   or lambda parameter default -- the temp opens a block in `b` itself,
+   which op_assign_slot_end closes after the write. */
 static const char *op_assign_slot_src(Compiler *c, const char *lval, const char *ctype,
                                       int root, int v, size_t pre_mark,
-                                      char *tn, size_t tnsz) {
-  if (!g_pre || !subtree_has_side_effect(c, v)) return lval;
+                                      char *tn, size_t tnsz, Buf *b) {
+  if (!subtree_has_side_effect(c, v)) return lval;
   int t = ++g_tmp;
   snprintf(tn, tnsz, "_t%d", t);
+  if (!g_pre) {
+    buf_printf(b, "{ %s_t%d = %s; ", ctype, t, lval);
+    if (root) buf_printf(b, "%s(_t%d); ", root == 2 ? "SP_GC_ROOT_RBVAL" : "SP_GC_ROOT", t);
+    return tn;
+  }
   Buf cap; memset(&cap, 0, sizeof cap);
   emit_indent(&cap, g_indent); buf_printf(&cap, "%s_t%d = %s;\n", ctype, t, lval);
-  if (root) { emit_indent(&cap, g_indent); buf_printf(&cap, "SP_GC_ROOT(_t%d);\n", t); }
+  if (root) { emit_indent(&cap, g_indent); buf_printf(&cap, "%s(_t%d);\n", root == 2 ? "SP_GC_ROOT_RBVAL" : "SP_GC_ROOT", t); }
   char *prelude = strdup(g_pre->len > pre_mark ? g_pre->p + pre_mark : "");
   buf_erase(g_pre, pre_mark, g_pre->len - pre_mark);
   buf_puts(g_pre, cap.p);
@@ -1462,10 +1470,13 @@ static const char *op_assign_slot_src(Compiler *c, const char *lval, const char 
   free(prelude); free(cap.p);
   return tn;
 }
+static void op_assign_slot_end(const char *src, const char *lval, Buf *b) {
+  buf_puts(b, !g_pre && src != lval ? " }\n" : "\n");
+}
 static const char *array_op_assign_src(Compiler *c, const char *lval, const char *k,
-                                       int v, size_t pre_mark, char *tn, size_t tnsz) {
+                                       int v, size_t pre_mark, char *tn, size_t tnsz, Buf *b) {
   char ct[48]; snprintf(ct, sizeof ct, "sp_%sArray *", k);
-  return op_assign_slot_src(c, lval, ct, 1, v, pre_mark, tn, tnsz);
+  return op_assign_slot_src(c, lval, ct, 1, v, pre_mark, tn, tnsz, b);
 }
 
 /* The conversion that boxes a `vt` rhs into a PolyArray operand, as the binary
@@ -1507,10 +1518,11 @@ int emit_array_op_assign(Compiler *c, const char *lval, TyKind t,
     else if (conv) { buf_printf(&rb, "%s(", conv); emit_expr(c, v, &rb); buf_puts(&rb, ")"); }
     else emit_expr(c, v, &rb);
     char tn[32];
-    const char *src = array_op_assign_src(c, lval, k, v, pre_mark, tn, sizeof tn);
+    const char *src = array_op_assign_src(c, lval, k, v, pre_mark, tn, sizeof tn, b);
     buf_printf(b, "%s = sp_%sArray_%s(%s, ", lval, k, fn, src);
     buf_puts(b, rb.p ? rb.p : "");
-    buf_puts(b, ");\n");
+    buf_puts(b, ");");
+    op_assign_slot_end(src, lval, b);
     free(rb.p);
     return 1;
   }
@@ -1530,10 +1542,11 @@ int emit_array_op_assign(Compiler *c, const char *lval, TyKind t,
     else if (conv) { buf_printf(&rb, "%s(", conv); emit_expr(c, v, &rb); buf_puts(&rb, ")"); }
     else emit_expr(c, v, &rb);
     char tn[32];
-    const char *src = array_op_assign_src(c, lval, k, v, pre_mark, tn, sizeof tn);
+    const char *src = array_op_assign_src(c, lval, k, v, pre_mark, tn, sizeof tn, b);
     buf_printf(b, "%s = sp_%sArray_concat(%s, ", lval, k, src);
     buf_puts(b, rb.p ? rb.p : "");
-    buf_puts(b, ");\n");
+    buf_puts(b, ");");
+    op_assign_slot_end(src, lval, b);
     free(rb.p);
     return 1;
   }
@@ -1543,7 +1556,7 @@ int emit_array_op_assign(Compiler *c, const char *lval, TyKind t,
     Buf rb; memset(&rb, 0, sizeof rb);
     emit_int_expr(c, v, &rb);
     char tsrc[32];
-    const char *src = array_op_assign_src(c, lval, k, v, pre_mark, tsrc, sizeof tsrc);
+    const char *src = array_op_assign_src(c, lval, k, v, pre_mark, tsrc, sizeof tsrc, b);
     buf_printf(b, "{ sp_%sArray *_t%d = %s; sp_int _t%d = ", k, ta, src, tn);
     buf_puts(b, rb.p ? rb.p : "");
     free(rb.p);
@@ -1557,7 +1570,8 @@ int emit_array_op_assign(Compiler *c, const char *lval, TyKind t,
       buf_printf(b, " sp_%sArray_push(_t%d, _t%d->data[_t%d->start + _t%d]);", k, tr, ta, ta, tj);
     else
       buf_printf(b, " sp_%sArray_push(_t%d, _t%d->data[_t%d]);", k, tr, ta, tj);
-    buf_printf(b, " %s = _t%d; }\n", lval, tr);
+    buf_printf(b, " %s = _t%d; }", lval, tr);
+    op_assign_slot_end(src, lval, b);
     return 1;
   }
   return 0;
@@ -1613,16 +1627,54 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
   const char *src = lval;
   if (capture) {
     char ct[48]; snprintf(ct, sizeof ct, "%s ", c_type_name(t));
-    src = op_assign_slot_src(c, lval, ct, t == TY_BIGINT, v, pre_mark, tn, sizeof tn);
+    src = op_assign_slot_src(c, lval, ct, t == TY_BIGINT, v, pre_mark, tn, sizeof tn, b);
   }
   /* Int and Bignum arithmetic take the same overflow-checked helpers as the
      binary form: a raw C `lv_x *= y` silently wrapped where `x * y` raised.
      Bitwise ops map straight to the C operator (fixed-width wrap, same as the
      binary `x << y` path). */
-  if (fn) buf_printf(b, "%s = %s(%s, %s);\n", lval, fn, src, rhs);
-  else if (bitop) buf_printf(b, "%s = (%s %s (%s));\n", lval, src, op, rhs);
-  else if (src == lval) buf_printf(b, "%s %s= %s;\n", lval, op, rhs);
-  else buf_printf(b, "%s = %s %s (%s);\n", lval, src, op, rhs);
+  if (fn) buf_printf(b, "%s = %s(%s, %s);", lval, fn, src, rhs);
+  else if (bitop) buf_printf(b, "%s = (%s %s (%s));", lval, src, op, rhs);
+  else if (src == lval) buf_printf(b, "%s %s= %s;", lval, op, rhs);
+  else buf_printf(b, "%s = %s %s (%s);", lval, src, op, rhs);
+  op_assign_slot_end(src, lval, b);
+  free(rb.p);
+  return 1;
+}
+
+/* The boxed arm of `x OP= v` on any slot a plain C lvalue names: a poly
+   local, global, class variable or ivar folds through the same
+   tag-dispatching sp_poly_<op> helpers the binary `x OP v` uses. The global
+   had no arm at all and emitted the raw C operator on an sp_RbVal; the class
+   variable and ivar arms lacked `%` and `**`, and spelled the bitwise ops as
+   `sp_box_int(sp_poly_to_i(x) OP ...)`, which truncated a Bignum and a
+   Float. `capture` reads the slot ahead of an effectful rhs, as the scalar
+   arms do. The caller has emitted the indent. Answers 1 when it emitted the
+   write. */
+int emit_poly_op_assign(Compiler *c, const char *lval, const char *op, int v,
+                        int capture, Buf *b) {
+  if (!op) return 0;
+  static const char *const ops[][2] = {
+    { "+", "sp_poly_add" }, { "-", "sp_poly_sub" }, { "*", "sp_poly_mul" },
+    { "/", "sp_poly_div" }, { "%", "sp_poly_mod" }, { "**", "sp_poly_pow" },
+    { "<<", "sp_poly_shl" }, { ">>", "sp_poly_shr" },
+    { "&", "sp_poly_bitop" }, { "|", "sp_poly_bitop" }, { "^", "sp_poly_bitop" },
+  };
+  int k = -1;
+  for (int i = 0; i < (int)(sizeof ops / sizeof ops[0]); i++)
+    if (sp_streq(op, ops[i][0])) { k = i; break; }
+  if (k < 0) return 0;
+  size_t pre_mark = g_pre ? g_pre->len : 0;
+  Buf rb; memset(&rb, 0, sizeof rb);
+  emit_boxed(c, v, &rb);
+  char tn[32];
+  const char *src = capture ? op_assign_slot_src(c, lval, "sp_RbVal ", 2, v, pre_mark, tn, sizeof tn, b)
+                            : lval;
+  buf_printf(b, "%s = %s(%s, %s", lval, ops[k][1], src, rb.p ? rb.p : "sp_box_nil()");
+  if (sp_streq(ops[k][1], "sp_poly_bitop"))
+    buf_printf(b, ", %d", sp_streq(op, "&") ? 0 : sp_streq(op, "|") ? 1 : 2);
+  buf_puts(b, ");");
+  op_assign_slot_end(src, lval, b);
   free(rb.p);
   return 1;
 }
@@ -1781,24 +1833,7 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
   }
   /* Poly local (e.g. an int seeded then widened by a float op): defer the
      arithmetic to the runtime's tag-dispatching sp_poly_<op>. */
-  if (t == TY_POLY) {
-    const char *pfn = NULL;
-    if (sp_streq(op, "+")) pfn = "sp_poly_add";
-    else if (sp_streq(op, "-")) pfn = "sp_poly_sub";
-    else if (sp_streq(op, "*")) pfn = "sp_poly_mul";
-    else if (sp_streq(op, "/")) pfn = "sp_poly_div";
-    else if (sp_streq(op, "%")) pfn = "sp_poly_mod";
-    /* `**=` too: the binary `**` and the index op-assign already spell it
-       sp_poly_pow, only this arm lacked the row, so `f **= 3` on a boxed
-       local was refused where `f = f ** 3` built (#4766) */
-    else if (sp_streq(op, "**")) pfn = "sp_poly_pow";
-    if (pfn) {
-      buf_printf(b, "%s = %s(%s, ", lval, pfn, lv_op_assign_src(c, lval, t, cap, rtn, sizeof rtn));
-      emit_boxed(c, v, b);
-      buf_puts(b, ");\n");
-      return;
-    }
-  }
+  if (t == TY_POLY && emit_poly_op_assign(c, lval, op, v, cap, b)) return;
   /* A Rational / Complex local op-assigned a BOXED value (an element read out
      of a poly array): the binary form folds through sp_poly_<op>, whose result
      is boxed, so unbox it back into the slot. `acc = acc + b[0]` already
@@ -1819,29 +1854,6 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
       buf_puts(b, "));\n");
       return;
     }
-  }
-  /* Poly local bitwise op-assign (`x &= v`, `x <<= v`, ...): the same helpers
-     the binary `x & v` path uses, so the semantics cannot drift. The old raw
-     C form (`sp_box_int(sp_poly_to_i(x) << to_i(v))`) truncated a Bignum on
-     either side to int64 -- `acc |= (1 << 63)` lost the promoted bit for good
-     -- and a 63-bit `<<=` shifted into the sign bit and boxed SP_INT_NIL,
-     which read back as nil. sp_poly_shl carries the per-mode overflow
-     contract (promote to Bignum / raise / wrap) exactly as the binary form
-     does; sp_poly_bitop keeps a Bignum operand's width. */
-  if (t == TY_POLY && (sp_streq(op, "<<") || sp_streq(op, ">>") ||
-                       sp_streq(op, "|") || sp_streq(op, "&") || sp_streq(op, "^"))) {
-    if (sp_streq(op, "<<") || sp_streq(op, ">>")) {
-      buf_printf(b, "%s = sp_poly_%s(%s, ", lval, sp_streq(op, "<<") ? "shl" : "shr",
-                 lv_op_assign_src(c, lval, t, cap, rtn, sizeof rtn));
-      emit_boxed(c, v, b);
-      buf_puts(b, ");\n");
-    }
-    else {
-      buf_printf(b, "%s = sp_poly_bitop(%s, ", lval, lv_op_assign_src(c, lval, t, cap, rtn, sizeof rtn));
-      emit_boxed(c, v, b);
-      buf_printf(b, ", %d);\n", sp_streq(op, "&") ? 0 : sp_streq(op, "|") ? 1 : 2);
-    }
-    return;
   }
   if (emit_array_op_assign(c, lval, t, op, v, b)) return;
   /* A captured local whose type never resolved: the celled path used to send
@@ -8405,19 +8417,7 @@ else {
       emit_str_expr(c, v, b); buf_puts(b, ");\n");
     }
     else if (emit_array_op_assign(c, ref, ct, op, v, b)) { }
-    else if (ct == TY_POLY) {
-      /* a widened cvar op-assign routes through the tag-dispatching sp_poly_<op>
-         (mirrors the local op-assign poly arm). */
-      const char *pfn = sp_streq(op ? op : "+", "+") ? "sp_poly_add"
-                      : sp_streq(op, "-") ? "sp_poly_sub"
-                      : sp_streq(op, "*") ? "sp_poly_mul"
-                      : sp_streq(op, "/") ? "sp_poly_div" : NULL;
-      int bitop = op && (sp_streq(op, "<<") || sp_streq(op, ">>") || sp_streq(op, "&") ||
-                         sp_streq(op, "|") || sp_streq(op, "^") || sp_streq(op, "%"));
-      if (pfn) { buf_printf(b, "%s = %s(%s, ", ref, pfn, ref); emit_boxed(c, v, b); buf_puts(b, ");\n"); }
-      else if (bitop) { buf_printf(b, "%s = sp_box_int(sp_poly_to_i(%s) %s ", ref, ref, op); emit_int_expr(c, v, b); buf_puts(b, ");\n"); }
-      else { buf_printf(b, "%s %s= ", ref, op ? op : "+"); emit_expr(c, v, b); buf_puts(b, ";\n"); }
-    }
+    else if (ct == TY_POLY && emit_poly_op_assign(c, ref, op, v, 1, b)) { }
     else if (emit_scalar_op_assign(c, ref, ct, op, v, 1, b)) { }
     else {
       buf_printf(b, "%s %s= ", ref, op ? op : "+");
@@ -8641,25 +8641,7 @@ else {
         }
         buf_puts(b, ";\n");
       }
-      else if ((sp_streq(op, "+") || sp_streq(op, "-") || sp_streq(op, "*") || sp_streq(op, "/"))) {
-        /* numeric op on a poly slot: runtime poly arithmetic with a boxed rhs */
-        const char *pfn = sp_streq(op, "+") ? "sp_poly_add" : sp_streq(op, "-") ? "sp_poly_sub"
-                        : sp_streq(op, "*") ? "sp_poly_mul" : "sp_poly_div";
-        buf_printf(b, "%s = %s(%s, ", ref, pfn, ref);
-        emit_boxed(c, nt_ref(nt, id, "value"), b);
-        buf_puts(b, ");\n");
-      }
-      else if (sp_streq(op, "<<") || sp_streq(op, ">>") ||
-               sp_streq(op, "|") || sp_streq(op, "&") || sp_streq(op, "^")) {
-        /* bitwise op-assign on a poly slot: coerce to int, re-box the result
-           (same shape as the local poly-bitwise path). */
-        int ival = nt_ref(nt, id, "value");
-        TyKind rhst = comp_ntype(c, ival);
-        buf_printf(b, "%s = sp_box_int((sp_poly_to_i(%s) %s (", ref, ref, op);
-        if (rhst == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, ival, b); buf_puts(b, ")"); }
-        else emit_expr(c, ival, b);
-        buf_puts(b, ")));\n");
-      }
+      else if (emit_poly_op_assign(c, ref, op, nt_ref(nt, id, "value"), 1, b)) { }
       else {
         buf_printf(b, "%s %s= ", ref, op);
         emit_expr(c, nt_ref(nt, id, "value"), b); buf_puts(b, ";\n");
@@ -9220,6 +9202,7 @@ else {
       emit_str_expr(c, v, b); buf_puts(b, ");\n");
     }
     else if (emit_array_op_assign(c, gref, lv->type, op, v, b)) { }
+    else if (lv->type == TY_POLY && emit_poly_op_assign(c, gref, op, v, 1, b)) { }
     else if (emit_scalar_op_assign(c, gref, lv->type, op, v, 1, b)) { }
     else {
       buf_printf(b, "gv_%s %s= ", rn, op ? op : "+");
