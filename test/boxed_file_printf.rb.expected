@@ -1,0 +1,19 @@
+nil
+nil
+[ArgumentError, "too few arguments"]
+007-x
+plain
+1 two 3.5
+|nil|sym |ff
+002.2
+010.0
+a-b
+q
+stdout and 2
+nil
+"skip"
+went
+nil
+:quiet
+argument
+NoMethodError

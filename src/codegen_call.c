@@ -9640,6 +9640,26 @@ static void emit_splat_operand_array(Compiler *c, int node, Buf *b) {
   buf_puts(b, spread ? "))" : ")");
 }
 
+/* Can a boxed IO's printf gather its arguments into one list? Not past a
+   `**` argument, several forms of which have no boxed value (an anonymous
+   `**`, `**nil`, a String-keyed merge), nor past a splat with no array form;
+   those calls keep the general dispatch, which never emits them. */
+static int boxed_printf_list_ok(Compiler *c, const int *argv, int argc) {
+  const NodeTable *nt = c->nt;
+  for (int k = 0; k < argc; k++) {
+    if (nt_kind(nt, argv[k]) == NK_KeywordHashNode) {
+      int ne = 0; const int *el = nt_arr(nt, argv[k], "elements", &ne);
+      for (int e = 0; e < ne; e++)
+        if (nt_kind(nt, el[e]) == NK_AssocSplatNode) return 0;
+    }
+    if (nt_kind(nt, argv[k]) == NK_SplatNode) {
+      int so = nt_ref(nt, argv[k], "expression");
+      if (!splat_operand_ok(c, so >= 0 ? so : argv[k])) return 0;
+    }
+  }
+  return 1;
+}
+
 /* `X.new(*arr)` on a Struct or Data class: the array spread across the
    members at run time. Data requires an exact count; Struct nil-fills a short
    array and rejects a long one (#2971); a keyword_init Struct takes no
@@ -24871,6 +24891,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           poly value -- `size`, `<<`, `each` -- stay off this list; they have
           their own arms. */
        sp_streq(name, "puts") || sp_streq(name, "print") || sp_streq(name, "putc") ||
+       (sp_streq(name, "printf") && boxed_printf_list_ok(c, argv, argc)) ||
        sp_streq(name, "eof?") || sp_streq(name, "closed?") || sp_streq(name, "path") ||
        sp_streq(name, "to_path") ||
        sp_streq(name, "tty?") || sp_streq(name, "isatty") ||
@@ -24912,6 +24933,39 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       if (comp_method_in_chain(c, k, name, NULL) >= 0 ||
           comp_reader_in_chain(c, k, name, NULL))
         iocand = 1;
+    }
+    /* printf: the receiver and every argument, the format included, are
+       evaluated and rooted before the handle is unboxed, so a receiver that
+       is no IO raises NoMethodError after them, as in CRuby. The format
+       then comes off the front of the list (a splat may supply it) and the
+       rest are formatted and written as the typed arm does. */
+    if (!iocand && sp_streq(name, "printf")) {
+      int trv = ++g_tmp, tpa = ++g_tmp, tio3 = ++g_tmp, tfv = ++g_tmp, tfs = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", trv);
+      emit_boxed(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ",
+                 trv, tpa, tpa);
+      for (int ai = 0; ai < argc; ai++) {
+        /* a splat contributes its ELEMENTS, not one array argument (#3957) */
+        if (nt_kind(nt, argv[ai]) == NK_SplatNode) {
+          int so = nt_ref(nt, argv[ai], "expression");
+          buf_printf(b, "sp_PolyArray_append_all(_t%d, ", tpa);
+          emit_splat_operand_array(c, so >= 0 ? so : argv[ai], b);
+          buf_puts(b, "); ");
+        }
+        else {
+          buf_printf(b, "sp_PolyArray_push(_t%d, ", tpa);
+          emit_boxed(c, argv[ai], b);
+          buf_puts(b, "); ");
+        }
+      }
+      buf_printf(b, "sp_File *_t%d = sp_poly_as_io(_t%d, \"printf\"); ", tio3, trv);
+      buf_printf(b, "if (_t%d->len == 0) sp_raise_cls(\"ArgumentError\", \"too few arguments\"); ", tpa);
+      buf_printf(b, "sp_RbVal _t%d = sp_PolyArray_shift(_t%d); SP_GC_ROOT_RBVAL(_t%d); ", tfv, tpa, tfv);
+      buf_printf(b, "const char *_t%d = sp_poly_arg_str_chk(_t%d); SP_GC_ROOT_STR(_t%d); ", tfs, tfv, tfs);
+      buf_printf(b, "sp_File_write_bin(_t%d, sp_str_format_polyarr(_t%d, _t%d)); sp_box_nil(); })",
+                 tio3, tfs, tpa);
+      return;
     }
     if (!iocand) {
       int tio2 = ++g_tmp;
