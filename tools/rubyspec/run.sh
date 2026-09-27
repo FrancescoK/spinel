@@ -92,7 +92,7 @@ else
   ls "$DIR"/*.rb > "$TDIR/files"
 fi
 
-xargs -a "$TDIR/files" -P "$JOBS" -I{} bash -c 'classify_one "$@"' _ {}
+xargs -P "$JOBS" -I{} bash -c 'classify_one "$@"' _ {} < "$TDIR/files"
 
 # stitch rows in stable (example-name) order
 : > "$OUT"
