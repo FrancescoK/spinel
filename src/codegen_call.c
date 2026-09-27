@@ -4831,12 +4831,20 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
    drops the keys that arm's declared keyword parameters took. Written once:
    the kwrest collection, the *rest tail, the positional collapse and the
    builtin Hash arm all want the same object. */
-static void emit_kwh_sym_hash(Compiler *c, int kwn, const int *kwels,
-                              const int *kwtmp, const TyKind *kwty,
+static void emit_kwh_sym_fill(Compiler *c, int th, int kwn, const int *kwels,
+                              const int *kwtmp, const TyKind *kwty, int kwall,
                               Scope *skip_kw, Buf *out) {
   const NodeTable *nt = c->nt;
-  int th = ++g_tmp;
-  buf_printf(out, "({ sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d);", th, th);
+  if (kwall >= 0) {
+    buf_printf(out, " sp_SymPolyHash_update(_t%d, _t%d);", th, kwall);
+    int pn = skip_kw && skip_kw->def_node >= 0 ? nt_ref(nt, skip_kw->def_node, "parameters") : -1;
+    int kn = 0; const int *kws = pn >= 0 ? nt_arr(nt, pn, "keywords", &kn) : NULL;
+    for (int k = 0; k < kn; k++) {
+      const char *kpn = nt_str(nt, kws[k], "name");
+      if (kpn) buf_printf(out, " sp_SymPolyHash_delete(_t%d, (sp_sym)%d);", th, comp_sym_intern(c, kpn));
+    }
+    return;
+  }
   for (int e = 0; e < kwn; e++) {
     int key = nt_ref(nt, kwels[e], "key");
     const char *kn = key >= 0 ? nt_str(nt, key, "value") : NULL;
@@ -4850,6 +4858,14 @@ static void emit_kwh_sym_hash(Compiler *c, int kwn, const int *kwels,
                comp_sym_intern(c, kn), eb.p ? eb.p : "sp_box_nil()");
     free(eb.p);
   }
+}
+
+static void emit_kwh_sym_hash(Compiler *c, int kwn, const int *kwels,
+                              const int *kwtmp, const TyKind *kwty, int kwall,
+                              Scope *skip_kw, Buf *out) {
+  int th = ++g_tmp;
+  buf_printf(out, "({ sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d);", th, th);
+  emit_kwh_sym_fill(c, th, kwn, kwels, kwtmp, kwty, kwall, skip_kw, out);
   buf_printf(out, " _t%d; })", th);
 }
 
@@ -4871,6 +4887,12 @@ static int kwh_named_kwarg_fills(Compiler *c, Scope *m, int kwh) {
   int en = 0; const int *els = nt_arr(nt, kwh, "elements", &en);
   int n = 0;
   for (int e = 0; e < en; e++) {
+    if (nt_kind(nt, els[e]) == NK_AssocSplatNode) {
+      int pn = m->def_node >= 0 ? nt_ref(nt, m->def_node, "parameters") : -1;
+      n = 0;
+      if (pn >= 0) nt_arr(nt, pn, "keywords", &n);
+      return n;
+    }
     int key = nt_ref(nt, els[e], "key");
     const char *kn = key >= 0 ? nt_str(nt, key, "value") : NULL;
     if (kn && callee_param_is_declared_kwarg(c, m, kn)) n++;
@@ -5988,7 +6010,7 @@ static int poly_arm_count(Compiler *c, Scope *m, int kwh, int pos_argc, int spla
   }
   int unbound_kwh = kwh >= 0 && !fills && !named && m->kwrest_idx < 0;
   /* keywords into a method that declares none are one more positional hash */
-  if (unbound_kwh && !kwd) { given++; unbound_kwh = 0; }
+  if (unbound_kwh && !kwd) { if (!kwh_only_spreads(c->nt, kwh)) given++; unbound_kwh = 0; }
   if (judged && !unbound_kwh && (given < req || (m->rest_idx < 0 && given > tot))) {
     if (m->rest_idx >= 0) snprintf(exp, n, "given %d, expected %d+", given, req);
     else if (req == tot) snprintf(exp, n, "given %d, expected %d", given, req);
@@ -7356,27 +7378,36 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
        it off so the user-method arms match keyword params by NAME, not by
        position (the whole hash used to flow into the *rest / first keyword
        slot, garbling both -- #3268). Only a plain sym-keyed literal is
-       recognized; a double-splat inside keeps the old positional path. */
-    int kwh = -1, pos_argc = argc;
+       recognized. */
+    int kwh = -1, pos_argc = argc, kw_ds = 0;
     { const char *l_ty = nt_type(nt, argv[argc - 1]);
       if (l_ty && sp_streq(l_ty, "KeywordHashNode")) {
         int en = 0; const int *els = nt_arr(nt, argv[argc - 1], "elements", &en);
-        int plain = en > 0;
+        int plain = en > 0, nds = 0;
         for (int e = 0; e < en; e++) {
+          if (nt_kind(nt, els[e]) == NK_AssocSplatNode) {
+            int src = nt_ref(nt, els[e], "value");
+            if (src < 0 || comp_ntype(c, src) != TY_SYM_POLY_HASH) { plain = 0; break; }
+            nds++;
+            continue;
+          }
           int key = nt_ref(nt, els[e], "key");
           const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
           if (!kty || !sp_streq(kty, "SymbolNode")) { plain = 0; break; }
         }
-        if (plain) { kwh = argv[argc - 1]; pos_argc = argc - 1; }
+        if (nds && comp_ntype(c, argv[argc - 1]) != TY_SYM_POLY_HASH) plain = 0;
+        if (plain) { kwh = argv[argc - 1]; pos_argc = argc - 1; kw_ds = nds > 0; }
       }
     }
+    if (kw_ds) is_strencode = 0;
+    int kw_pos = kwh < 0 || kw_ds;
     int ncand = 0;
     for (int k = 0; k < c->nclasses; k++) {
       /* a native class's methods are its declared bindings (#4504) */
       if (c->classes[k].is_native_class) {
-        if (kwh < 0 && !has_splat_arg && c->classes[k].instantiated) {
-          int nmi = comp_native_method_find(c, k, name, pos_argc, 0);
-          if (nmi >= 0 && c->native_methods[nmi].nargs == pos_argc) ncand++;
+        if (kw_pos && !has_splat_arg && c->classes[k].instantiated) {
+          int nmi = comp_native_method_find(c, k, name, argc, 0);
+          if (nmi >= 0 && c->native_methods[nmi].nargs == argc) ncand++;
         }
         continue;
       }
@@ -7460,7 +7491,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
        arm at all and the call lowered to the unresolved-method raise. The
        runtime answers by the class's name, as the typed emitters answer by
        the constant's (#2325, #2585). */
-    int is_ctryconv = sp_streq(name, "try_convert") && argc == 1 && !has_splat_arg && kwh < 0 &&
+    int is_ctryconv = sp_streq(name, "try_convert") && argc == 1 && !has_splat_arg && kw_pos &&
                       nt_ref(nt, id, "block") < 0 && !diag_user_defines(c, name) &&
                       comp_ntype(c, id) == TY_POLY;
     /* An Integer-only arithmetic name: force the switch open even when
@@ -7546,7 +7577,14 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
          arm's keyword params by name below (#3268) */
       int kwn = 0; const int *kwels = NULL;
       int *kwtmp = NULL; TyKind *kwty = NULL;
-      if (kwh >= 0) {
+      int kwall = -1;
+      if (kw_ds) {
+        kwall = atmp[pos_argc] = ++g_tmp;
+        atmp_ty[pos_argc] = TY_SYM_POLY_HASH;
+        buf_printf(b, "sp_SymPolyHash *_t%d = ", kwall); emit_expr(c, kwh, b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); ", kwall);
+      }
+      else if (kwh >= 0) {
         kwels = nt_arr(nt, kwh, "elements", &kwn);
         kwtmp = malloc(sizeof(int) * (size_t)(kwn > 0 ? kwn : 1));
         kwty  = malloc(sizeof(TyKind) * (size_t)(kwn > 0 ? kwn : 1));
@@ -7576,7 +7614,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           atmp[pos_argc] = ++g_tmp;
           atmp_ty[pos_argc] = TY_SYM_POLY_HASH;
           buf_printf(b, "sp_SymPolyHash *_t%d = ", atmp[pos_argc]);
-          emit_kwh_sym_hash(c, kwn, kwels, kwtmp, kwty, NULL, b);
+          emit_kwh_sym_hash(c, kwn, kwels, kwtmp, kwty, -1, NULL, b);
           buf_printf(b, "; SP_GC_ROOT(_t%d); ", atmp[pos_argc]);
         }
       }
@@ -7821,7 +7859,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       /* a class-valued receiver dispatches class-side, ahead of the instance
          arms (#4218). Positional calls only: the keyword-hash split binds by
          name against a specific candidate, which this pre-arm does not do. */
-      if (kwh < 0 && splat_a < 0)
+      if (kw_pos && splat_a < 0)
         emit_poly_cls_value_prearm(c, id, name, argc, atmp, atmp_ty, tv, tr, ret, blk_tmp2, b);
       /* a primitive-reopen candidate needs the tag-mapping key (#4219) */
       int prim_cand2 = 0;
@@ -7840,10 +7878,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
          the shadowed-call path has never handled a splat (the dispatch's arg
          hoisting does not model one), and routing the whole array as a single
          argument would only be silently wrong. */
-      if (kwh < 0 && !has_splat_arg)
+      if (kw_pos && !has_splat_arg)
         emit_poly_callable_prearm(c, name, argc, atmp, atmp_ty, tv, tr, ret, b);
       /* a genuine String in a slot whose name a user class owns (#4816) */
-      if (kwh < 0 && !has_splat_arg)
+      if (kw_pos && !has_splat_arg)
         emit_poly_str_prearm(c, id, recv, name, argc, argv, atmp, atmp_ty, ret, tv, tr, b);
       buf_puts(b, "switch (");
       /* where this switch starts, so its end can tell whether any arm below
@@ -7860,14 +7898,14 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            while its zero-arg calls dispatched (#4504). Positional calls
            only: a binding declares no keywords and no splat. */
         if (c->classes[k].is_native_class) {
-          if (kwh >= 0 || has_splat_arg || !c->classes[k].instantiated) continue;
-          int nmi = comp_native_method_find(c, k, name, pos_argc, 0);
-          if (nmi < 0 || c->native_methods[nmi].nargs != pos_argc) continue;
+          if (!kw_pos || has_splat_arg || !c->classes[k].instantiated) continue;
+          int nmi = comp_native_method_find(c, k, name, argc, 0);
+          if (nmi < 0 || c->native_methods[nmi].nargs != argc) continue;
           NativeMethod *nmet = &c->native_methods[nmi];
           Buf cb; memset(&cb, 0, sizeof cb);
           buf_printf(&cb, "%s((%s *)_t%d.v.p", nmet->csym, c->classes[k].c_struct, tv);
           int ok = 1;
-          for (int ai = 0; ai < pos_argc && ok; ai++) {
+          for (int ai = 0; ai < argc && ok; ai++) {
             const char *spec = nmet->args[ai];
             char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[ai]);
             buf_puts(&cb, ", ");
@@ -8122,23 +8160,15 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
              below has nothing to give it, and the arm handed the callee NULL */
           if (a == ms->kwrest_idx) {
             LocalVar *krp = pnm ? scope_local(ms, pnm) : NULL;
-            int kh2 = ++g_tmp;
             if (krp && krp->type == TY_POLY) buf_puts(&pa, "sp_box_obj(");
-            buf_printf(&pa, "({ sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d);", kh2, kh2);
-            for (int e = 0; e < kwn; e++) {
-              int key = nt_ref(nt, kwels[e], "key");
-              const char *kn = key >= 0 ? nt_str(nt, key, "value") : NULL;
-              if (!kn || callee_param_is_declared_kwarg(c, ms, kn)) continue;
-              char tn[32]; snprintf(tn, sizeof tn, "_t%d", kwtmp[e]);
-              Buf eb; memset(&eb, 0, sizeof eb);
-              if (kwty[e] == TY_POLY) buf_puts(&eb, tn);
-              else emit_boxed_text(c, kwty[e], tn, &eb);
-              buf_printf(&pa, " sp_SymPolyHash_set(_t%d, (sp_sym)%d, %s);", kh2,
-                         comp_sym_intern(c, kn), eb.p ? eb.p : "sp_box_nil()");
-              free(eb.p);
-            }
-            buf_printf(&pa, " _t%d; })", kh2);
+            emit_kwh_sym_hash(c, kwn, kwels, kwtmp, kwty, kwall, ms, &pa);
             if (krp && krp->type == TY_POLY) buf_puts(&pa, ", SP_BUILTIN_SYM_POLY_HASH)");
+            continue;
+          }
+          if (kwall >= 0 && pnm && callee_param_is_declared_kwarg(c, ms, pnm)) {
+            g_self = selfdbuf2;
+            emit_ds_param_extract(c, ms, a, kwall, TY_SYM_POLY_HASH, &pa);
+            g_self = saved_self;
             continue;
           }
           /* a declared keyword param binds by NAME from the split-off keyword
@@ -8190,24 +8220,12 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                out). Consumed means some declared keyword param took a key
                from it. */
             if (rest_kwh_tail(c, ms, kwh, pos_argc) >= 0) {
-              {
-                int kh3 = ++g_tmp;
-                buf_printf(&pa, " sp_PolyArray_push(_t%d, ({ sp_SymPolyHash *_t%d = sp_SymPolyHash_new();"
-                                " SP_GC_ROOT(_t%d);", rt2, kh3, kh3);
-                for (int e = 0; e < kwn; e++) {
-                  int key = nt_ref(nt, kwels[e], "key");
-                  const char *kn = key >= 0 ? nt_str(nt, key, "value") : NULL;
-                  if (!kn) continue;
-                  char tn[32]; snprintf(tn, sizeof tn, "_t%d", kwtmp[e]);
-                  Buf eb; memset(&eb, 0, sizeof eb);
-                  if (kwty[e] == TY_POLY) buf_puts(&eb, tn);
-                  else emit_boxed_text(c, kwty[e], tn, &eb);
-                  buf_printf(&pa, " sp_SymPolyHash_set(_t%d, (sp_sym)%d, %s);", kh3,
-                             comp_sym_intern(c, kn), eb.p ? eb.p : "sp_box_nil()");
-                  free(eb.p);
-                }
-                buf_printf(&pa, " sp_box_obj(_t%d, SP_BUILTIN_SYM_POLY_HASH); }));", kh3);
-              }
+              int kh3 = ++g_tmp;
+              if (kwall >= 0 && kwh_only_spreads(nt, kwh)) buf_printf(&pa, " if (_t%d->len > 0)", kwall);
+              buf_printf(&pa, " sp_PolyArray_push(_t%d, ({ sp_SymPolyHash *_t%d = sp_SymPolyHash_new();"
+                              " SP_GC_ROOT(_t%d);", rt2, kh3, kh3);
+              emit_kwh_sym_fill(c, kh3, kwn, kwels, kwtmp, kwty, kwall, NULL, &pa);
+              buf_printf(&pa, " sp_box_obj(_t%d, SP_BUILTIN_SYM_POLY_HASH); }));", kh3);
             }
             buf_printf(&pa, " _t%d; })", rt2);
             continue;
@@ -8222,7 +8240,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           if (kwh_positional_slot(c, ms, kwh, pos_argc) == a) {
             LocalVar *cp = pnm ? scope_local(ms, pnm) : NULL;
             if (cp && cp->type == TY_POLY) buf_puts(&pa, "sp_box_obj(");
-            emit_kwh_sym_hash(c, kwn, kwels, kwtmp, kwty, NULL, &pa);
+            emit_kwh_sym_hash(c, kwn, kwels, kwtmp, kwty, kwall, NULL, &pa);
             if (cp && cp->type == TY_POLY) buf_puts(&pa, ", SP_BUILTIN_SYM_POLY_HASH)");
             continue;
           }
@@ -8307,6 +8325,14 @@ else {
         free(pdpre.p);
         buf_printf(b, " case %d: ", k);
         if (splat_a >= 0) emit_poly_splat_arity(c, id, ms, splat_a, atmp[splat_a], b);
+        if (kwall >= 0) emit_kwhash_verify(c, ms, kwall, b);
+        if (kwall >= 0 && kwh_only_spreads(nt, kwh) && !callee_declares_kwargs(c, ms) &&
+            ms->kwrest_idx < 0 && kwh_positional_slot(c, ms, kwh, pos_argc) < 0) {
+          char exp1[48];
+          if (poly_arm_count(c, &c->scopes[mi], -1, pos_argc + 1, -1, exp1, sizeof exp1) < 0)
+            buf_printf(b, "if (_t%d->len > 0) sp_raise_cls(\"ArgumentError\", \"wrong number of arguments"
+                          " (%s)\"); ", kwall, exp1);
+        }
         /* a proc form carries its own inferred return type (#3399) */
         int pf8 = pfi8 >= 0;
         TyKind mret8 = pf8 ? c->scopes[pfi8].ret : mret;
@@ -9076,7 +9102,7 @@ else {
         }
         else {
           buf_puts(&mb, "sp_box_obj(");
-          emit_kwh_sym_hash(c, kwn, kwels, kwtmp, kwty, NULL, &mb);
+          emit_kwh_sym_hash(c, kwn, kwels, kwtmp, kwty, kwall, NULL, &mb);
           buf_puts(&mb, ", SP_BUILTIN_SYM_POLY_HASH)");
         }
         char gen[600];
@@ -9133,7 +9159,7 @@ else {
         int n = 0;
         pid[n] = tv; pty[n++] = TY_POLY;
         for (int a = 0; a < pos_argc; a++) { pid[n] = atmp[a]; pty[n++] = atmp_ty[a]; }
-        if (kwh >= 0 && sp_streq(name, "fetch") && argc == 2) { pid[n] = atmp[pos_argc]; pty[n++] = atmp_ty[pos_argc]; }
+        if (kwh >= 0 && (kw_ds || (sp_streq(name, "fetch") && argc == 2))) { pid[n] = atmp[pos_argc]; pty[n++] = atmp_ty[pos_argc]; }
         for (int e = 0; e < kwn; e++) { pid[n] = kwtmp[e]; pty[n++] = kwty[e]; }
         if (blk_tmp2 >= 0) { pid[n] = blk_tmp2; pty[n++] = TY_PROC; }   /* the block's proc */
         pd_done = pd_hoist(c, b, pd_from, tr, is_scalar_ret(ret) ? ret : TY_INT, pid, pty, n);

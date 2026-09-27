@@ -1,0 +1,20 @@
+[:svg, :m, 2]
+[:dot, :m, 1]
+[:dot, :m, 3]
+[:svg, :m, 3]
+[:svg, :m, 5]
+[:dot, :m, 7]
+[:svg, :m, 6]
+[:dot, :m, 6]
+[:svg, :m, {a: 1, b: "x"}]
+[:dot, :m, {}]
+[:svg, :m, 9, {extra: 1, z: :q}]
+[:dot, :m, 2, {extra: 1}]
+[:svg, :m, 4]
+[:dot, :m, 6]
+"missing keyword: :scale"
+"unknown keyword: :bogus"
+[:svg, :m]
+"wrong number of arguments (given 2, expected 1)"
+[:svg, :m, []]
+[:dot, :m, [{a: 1}]]
