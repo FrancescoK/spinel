@@ -791,18 +791,71 @@ static int poly_double_index_int(Compiler *c, int id) {
   return ivar_array_elems_int_returning(c, cid, ivname);
 }
 
+/* Each node's parent (-1 for a root), for walks that ask where a value
+   goes. The caller frees it. */
+int *an_parent_map(const NodeTable *nt) {
+  int *parent = malloc(sizeof(int) * ((size_t)nt->count + 1));
+  if (!parent) return NULL;
+  for (int id = 0; id < nt->count; id++) parent[id] = -1;
+  for (int id = 0; id < nt->count; id++) {
+    int nr = nt_num_refs(nt, id);
+    for (int i = 0; i < nr; i++) {
+      int ch = nt_ref_at(nt, id, i);
+      if (ch >= 0 && ch < nt->count) parent[ch] = id;
+    }
+    int na = nt_num_arrs(nt, id);
+    for (int i = 0; i < na; i++) {
+      int an = 0;
+      const int *av = nt_arr_at(nt, id, i, &an);
+      for (int e = 0; e < an; e++)
+        if (av[e] >= 0 && av[e] < nt->count) parent[av[e]] = id;
+    }
+  }
+  return parent;
+}
+
+/* Whether the value of `node` is thrown away: a statement that is not the
+   value of its sequence, or the last one of a loop body or of the block of
+   an iterator that does not answer the block's value. */
+int an_value_dropped(const NodeTable *nt, const int *parent, int node) {
+  int st = parent[node];
+  if (st < 0 || nt_kind(nt, st) != NK_StatementsNode) return 0;
+  int sn = 0;
+  const int *sb = nt_arr(nt, st, "body", &sn);
+  if (sn > 0 && sb[sn - 1] != node) return 1;
+  int owner = parent[st];
+  if (owner < 0) return 0;
+  NodeKind ok = nt_kind(nt, owner);
+  if (ok == NK_WhileNode || ok == NK_UntilNode) return 1;
+  if (ok != NK_BlockNode) return 0;
+  int bc = parent[owner];
+  const char *bn = bc >= 0 && nt_kind(nt, bc) == NK_CallNode ? nt_str(nt, bc, "name") : NULL;
+  return bn && (sp_streq(bn, "each") || sp_streq(bn, "times") || sp_streq(bn, "upto") ||
+                sp_streq(bn, "downto") || sp_streq(bn, "each_with_index") || sp_streq(bn, "step") ||
+                sp_streq(bn, "loop"));
+}
+
 /* Whether every element stored into poly-array ivar `@<ivname>` is an int
    array (a nested array of int arrays, e.g. @chr_banks / @nmt_mem). Element
    reads then yield an int array rather than a boxed poly. */
 static int ivar_array_elems_all_int_array_impl(Compiler *c, int cid, const char *ivname) {
   const NodeTable *nt = c->nt;
   int saw = 0;
+  const char *bare = ivname[0] == '@' ? ivname + 1 : ivname;
+  ClassInfo *cl = &c->classes[cid];
+  if (comp_is_reader(cl, bare) || comp_is_writer(cl, bare)) return 0;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
     if (sp_streq(ty, "CallNode")) {
       const char *nm = nt_str(nt, id, "name");
-      if (!nm || (!sp_streq(nm, "[]=") && !sp_streq(nm, "store"))) continue;
+      if (!nm) continue;
+      int is_store = sp_streq(nm, "[]=") || sp_streq(nm, "store");
+      int is_insert = sp_streq(nm, "insert");
+      int is_concat = sp_streq(nm, "concat");
+      int is_append = sp_streq(nm, "<<") || sp_streq(nm, "push") || sp_streq(nm, "append") ||
+                      sp_streq(nm, "unshift") || sp_streq(nm, "prepend");
+      if (!is_store && !is_insert && !is_concat && !is_append) continue;
       int recv = nt_ref(nt, id, "receiver");
       if (recv < 0 || !sp_streq(nt_type(nt, recv) ? nt_type(nt, recv) : "", "InstanceVariableReadNode")) continue;
       const char *rn = nt_str(nt, recv, "name");
@@ -812,11 +865,28 @@ static int ivar_array_elems_all_int_array_impl(Compiler *c, int cid, const char 
       int args = nt_ref(nt, id, "arguments");
       int an = 0;
       const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      if (an < 2) continue;
-      TyKind vt = comp_ntype(c, av[1]);
-      if (vt == TY_INT_ARRAY) { saw = 1; continue; }
-      if (vt == TY_NIL || vt == TY_UNKNOWN) continue;
-      return 0;
+      if (is_store && an < 2) continue;
+      for (int a = is_store || is_insert ? 1 : 0; a < an; a++) {
+        const char *aty = nt_type(nt, av[a]);
+        if (aty && sp_streq(aty, "SplatNode")) return 0;
+        if (is_concat) {
+          if (!aty || !sp_streq(aty, "ArrayNode")) return 0;
+          int en = 0;
+          const int *els = nt_arr(nt, av[a], "elements", &en);
+          for (int e = 0; e < en; e++) {
+            TyKind et = comp_ntype(c, els[e]);
+            if (et == TY_INT_ARRAY) { saw = 1; continue; }
+            if (et == TY_NIL || et == TY_UNKNOWN) continue;
+            return 0;
+          }
+          continue;
+        }
+        TyKind vt = comp_ntype(c, av[a]);
+        if (vt == TY_INT_ARRAY) { saw = 1; continue; }
+        if (vt == TY_NIL || vt == TY_UNKNOWN) continue;
+        return 0;
+      }
+      continue;
     }
     if (sp_streq(ty, "InstanceVariableWriteNode")) {
       const char *nm = nt_str(nt, id, "name");
@@ -857,6 +927,53 @@ static int ivar_array_elems_all_int_array_impl(Compiler *c, int cid, const char 
       continue;
     }
   }
+  if (!saw) return 0;
+  /* The stores above are only every row when no other reference to the
+     table can be appended to: each read must be the receiver of a call
+     that answers something other than the table, or of one of the vetted
+     stores / `each` whose answer (the table itself) is dropped. A read
+     handed on as a value (a `def t = @t` reader, `t = @t`, an argument,
+     `@t.itself`, `@t.tap { }`, `@t.push(r).push(r2)`) could be appended to
+     where this scan does not look. */
+  int *parent = an_parent_map(nt);
+  if (!parent) return 0;
+  for (int id = 0; id < nt->count && saw; id++) {
+    NodeKind k = nt_kind(nt, id);
+    int is_read = k == NK_InstanceVariableReadNode;
+    if (!is_read && k != NK_InstanceVariableOperatorWriteNode &&
+        k != NK_InstanceVariableOrWriteNode && k != NK_InstanceVariableAndWriteNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, ivname)) continue;
+    Scope *s = comp_scope_of(c, id);
+    if (!s || s->class_id != cid) continue;
+    if (!is_read) { saw = 0; break; }
+    int call = parent[id];
+    if (call < 0 || nt_kind(nt, call) != NK_CallNode || nt_ref(nt, call, "receiver") != id) { saw = 0; break; }
+    const char *cn = nt_str(nt, call, "name");
+    if (!cn) { saw = 0; break; }
+    static const char *const answers_other[] = {
+      "[]", "at", "fetch", "dig", "first", "last", "size", "length", "count",
+      "empty?", "any?", "include?", "index", "map", "collect", "sum", "min", "max",
+      "each_slice", "==", "!=", "inspect", "to_s", "hash", "[]=", "store", NULL };
+    static const char *const answers_self[] = {
+      "<<", "push", "append", "unshift", "prepend", "insert", "concat",
+      "each", "each_with_index", "each_index", "reverse_each", NULL };
+    int other = 0, self_ans = 0;
+    for (int i = 0; answers_other[i]; i++) if (sp_streq(cn, answers_other[i])) { other = 1; break; }
+    for (int i = 0; !other && answers_self[i]; i++) if (sp_streq(cn, answers_self[i])) { self_ans = 1; break; }
+    if (other) {
+      /* a block-less enumerator answer (`@t.map`) is a view of the table */
+      if ((sp_streq(cn, "map") || sp_streq(cn, "collect") || sp_streq(cn, "each_slice")) &&
+          nt_ref(nt, call, "block") < 0) saw = 0;
+      continue;
+    }
+    if (!self_ans) { saw = 0; break; }
+    if ((sp_streq(cn, "each") || sp_streq(cn, "each_with_index") || sp_streq(cn, "each_index") ||
+         sp_streq(cn, "reverse_each")) && nt_ref(nt, call, "block") < 0) { saw = 0; break; }
+    /* the answer is the table: it must be dropped */
+    if (!an_value_dropped(nt, parent, call)) saw = 0;
+  }
+  free(parent);
   return saw;
 }
 
