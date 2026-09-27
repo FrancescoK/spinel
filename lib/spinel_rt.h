@@ -9290,10 +9290,11 @@ static void sp_kw_splat_check(sp_RbVal h, const char *const *mem, int n,
 /* A boxed `**` operand, converted the way CRuby converts one before any
    keyword is bound or checked: nil carries no keywords and a Hash is
    itself, but a builtin of any other class has no #to_hash, which is a
-   TypeError. A user object is let through: its #to_hash is not
-   reachable from here. */
-static void sp_kw_splat_conv_check(sp_RbVal v) {
-  if (v.tag == SP_TAG_NIL || sp_poly_is_user_obj(v) ||
+   TypeError. A user object is one too unless `user_ok`, which the
+   compiler sets when some class of the program defines #to_hash or
+   method_missing: that #to_hash is not reachable from here. */
+static void sp_kw_splat_conv_check(sp_RbVal v, int user_ok) {
+  if (v.tag == SP_TAG_NIL || (user_ok && sp_poly_is_user_obj(v)) ||
       (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id))) return;
   sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Hash", sp_convert_src_name(v)));
 }

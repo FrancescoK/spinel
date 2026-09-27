@@ -6419,11 +6419,21 @@ static const char *kw_splat_bad_cls(Compiler *c, TyKind t) {
   return conv_cls_name_of(c, t);
 }
 
+/* Can a boxed user object answer #to_hash? Only when some class of the
+   program defines it, or method_missing; otherwise its conversion is a
+   TypeError as surely as a builtin's. */
+static int kw_splat_user_may_convert(Compiler *c) {
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_method_in_chain(c, k, "to_hash", NULL) >= 0 ||
+        comp_method_in_chain(c, k, "method_missing", NULL) >= 0) return 1;
+  return 0;
+}
+
 /* See codegen_internal.h. */
 void emit_kw_splat_conv_check(Compiler *c, TyKind t, const char *val) {
   if (t == TY_POLY) {
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_kw_splat_conv_check(%s);\n", val);
+    buf_printf(g_pre, "sp_kw_splat_conv_check(%s, %d);\n", val, kw_splat_user_may_convert(c));
     return;
   }
   const char *cn = kw_splat_bad_cls(c, t);
@@ -6436,7 +6446,8 @@ void emit_kw_splat_conv_check(Compiler *c, TyKind t, const char *val) {
 void emit_kw_splat_operand_inline(Compiler *c, int node, Buf *b) {
   TyKind t = comp_ntype(c, node);
   if (t == TY_POLY) {
-    buf_puts(b, "sp_kw_splat_conv_check("); emit_boxed(c, node, b); buf_puts(b, "); ");
+    buf_puts(b, "sp_kw_splat_conv_check("); emit_boxed(c, node, b);
+    buf_printf(b, ", %d); ", kw_splat_user_may_convert(c));
     return;
   }
   buf_puts(b, "(void)("); emit_boxed(c, node, b); buf_puts(b, "); ");
@@ -6680,7 +6691,17 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
         TyKind sty = comp_ntype(c, inner3);
         /* `**nil` carries no keywords, and a first operand of another
            class already raised where emit_ds_hash_materialize evaluated it */
-        if (sty == TY_NIL || (nsplat3 == 1 && kw_splat_bad_cls(c, sty))) continue;
+        const char *bad3 = kw_splat_bad_cls(c, sty);
+        if (bad3 && nsplat3 > 1) {
+          /* a later operand of another class raises where it stands */
+          Buf hb; memset(&hb, 0, sizeof hb);
+          emit_expr(c, inner3, &hb);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "(void)(%s);\n", hb.p ? hb.p : "0");
+          free(hb.p);
+          emit_kw_splat_conv_check(c, sty, NULL);
+        }
+        if (sty == TY_NIL || bad3) continue;
         if (sty == TY_POLY) {
           /* A Hash only known at run time (a value read out of a poly-valued
              hash): its entries are merged by a runtime walk. */
