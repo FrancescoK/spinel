@@ -2853,6 +2853,65 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* Runtime-name `recv.respond_to?(name)`: desugar_dynamic_respond_to stashed
+   one literal `recv.respond_to?(:m)` arm per candidate name. Emit `name ==
+   :m1 ? arm1 : ... : false` over the interned name, the way the dynamic send
+   dispatches; an arm the fold could not answer is dropped (false). */
+static int emit_dynamic_respond_to(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int narm = 0; const int *arms = nt_arr(nt, id, "dyn_rto_arms", &narm);
+  if (narm <= 0) return 0;
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  if (argc < 1 || !argv) return 0;
+  int sym = argv[0];
+  TyKind st = comp_ntype(c, sym);
+  int t = ++g_tmp;
+  buf_printf(b, "({ sp_sym _t%d = ", t);
+  if (st == TY_SYMBOL) emit_expr(c, sym, b);
+  else if (st == TY_STRING) { buf_puts(b, "sp_sym_intern("); emit_expr(c, sym, b); buf_puts(b, ")"); }
+  else {
+    int tn = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tn); emit_boxed(c, sym, b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_SYM ? (sp_sym)_t%d.v.i : sp_sym_intern(sp_poly_to_s(_t%d)); })",
+               tn, tn, tn);
+  }
+  buf_printf(b, "; sp_bool _r%d = 0; ", t);
+  Buf *sv_pre = g_pre;
+  for (int k = 0; k < narm; k++) {
+    int arm = arms[k];
+    TyKind at = comp_ntype(c, arm);
+    if (at == TY_UNKNOWN || at == TY_VOID) continue;
+    int aargs = nt_ref(nt, arm, "arguments");
+    int aac = 0; const int *aav = aargs >= 0 ? nt_arr(nt, aargs, "arguments", &aac) : NULL;
+    const char *nm = (aac >= 1 && aav) ? nt_str(nt, aav[0], "value") : NULL;
+    if (!nm) continue;
+    Buf pre = {0, 0, 0}, body = {0, 0, 0};
+    g_pre = &pre;
+    int sv_probe = g_unsup_probe; g_unsup_probe = 1;
+    ConvHold *sv_hold = g_conv_hold;
+    int sv_open_defaults = g_open_defaults;
+    volatile int ok;
+    if (setjmp(g_unsup_recover) == 0) { emit_expr(c, arm, &body); ok = 1; }
+    else ok = 0;
+    g_conv_hold = sv_hold;
+    g_open_defaults = sv_open_defaults;
+    g_unsup_probe = sv_probe;
+    g_pre = sv_pre;
+    if (ok) {
+      buf_printf(b, "if (_t%d == (sp_sym)%d) { ", t, comp_sym_intern(c, nm));
+      if (pre.p && pre.len) buf_puts(b, pre.p);
+      buf_printf(b, "_r%d = ", t);
+      if (at == TY_BOOL) buf_printf(b, "(%s)", body.p ? body.p : "0");
+      else { buf_puts(b, "sp_truthy("); emit_boxed_text(c, at, body.p ? body.p : "0", b); buf_puts(b, ")"); }
+      buf_puts(b, "; }\nelse ");
+    }
+    free(pre.p); free(body.p);
+  }
+  buf_printf(b, "{ _r%d = 0; } _r%d; })", t, t);
+  return 1;
+}
+
 /* The single value a resume / transfer hands the fiber. Ruby passes any number
    of arguments and the body's parameters take them positionally, but the fiber
    carries ONE resumed value -- so two or more are packed into a poly array,
@@ -23734,6 +23793,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     }
   }
   if (emit_dynamic_send(c, id, b)) return;   /* recv.send(runtime_name, args) static dispatch */
+  if (emit_dynamic_respond_to(c, id, b)) return;   /* recv.respond_to?(runtime_name) static dispatch */
   if (emit_vis_refusal(c, id, b)) return;
   /* k = Struct.new(:a, :b): the registered anonymous struct class, as a
      first-class class value */

@@ -395,6 +395,7 @@ int desugar_dynamic_send(Compiler *c);
 void expand_static_splat_args(Compiler *c, int from, int count);
 int desugar_dynamic_method(Compiler *c);
 int desugar_engine_branches(Compiler *c);
+int desugar_dynamic_respond_to(Compiler *c);
 int desugar_toplevel_instance_exec(Compiler *c);
 int desugar_binding_lvget(Compiler *c);
 int desugar_rightward_pattern(Compiler *c);

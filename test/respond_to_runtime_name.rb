@@ -50,3 +50,27 @@ p rt([1, V.new].first, :a)
 p rt([1, V.new].first, :even?)
 p "str".respond_to?(["up", "case"].join)
 p 1.respond_to?([:zz].first)
+# `respond_to?(name)` with a name only known at run time: the answer is
+# decided at the dispatch, over the same closed set of candidate names a
+# runtime-name send resolves over, with the receiver's class and the
+# literal fold answering each arm. A user object raised NoMethodError for
+# respond_to? itself; the receiverless form in a method was refused.
+class Person
+  def initialize(n) = @n = n
+  def name = @n
+  def check(m) = respond_to?(m)
+  private
+  def secret = 1
+end
+pe = Person.new("Ann")
+names = [:name, :zzz, :upcase, :secret]
+p names.map { |m| pe.respond_to?(m) }
+p names.map { |m| pe.check(m) }
+p names.map { |m| pe.check(m.to_s) }
+p names.map { |m| "s".respond_to?(m) }
+pub = [:name, :zzz, :upcase]   # (a boxed receiver's literal fold does not yet weigh visibility)
+x = [pe, nil, "s"].first
+p pub.map { |m| x.respond_to?(m) }
+y = [pe, nil, "s"].last
+p pub.map { |m| y.respond_to?(m) }
+p names.map { |m| nil.respond_to?(m) }
