@@ -1319,6 +1319,23 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
 }
 
 /* Object receivers: the user-object face of infer_call */
+/* The type an attr reader `name` answers on class `cid`, when a reader (not an
+   explicit `def` at an equal-or-more-derived class, #3909) wins the member
+   arbitration: the ivar's type in the class that defines the reader, through
+   any alias. */
+int attr_reader_ty(Compiler *c, int cid, const char *name, TyKind *out) {
+  int rdcls = -1;
+  if (comp_resolve_member(c, cid, name, 0, &rdcls, NULL) != SP_MEMBER_ATTR) return 0;
+  const char *rname = comp_resolve_alias(c, cid, name);
+  char ivn[256];
+  snprintf(ivn, sizeof ivn, "@%s", rname);
+  ClassInfo *rci = (rdcls >= 0 && rdcls < c->nclasses) ? &c->classes[rdcls] : &c->classes[cid];
+  int iv = comp_ivar_index(rci, ivn);
+  if (iv < 0) return 0;
+  *out = ivar_value_ty(rci, iv);
+  return 1;
+}
+
 int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -1444,23 +1461,7 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       }
     }
     /* attr reader (resolve alias so `alias v access_token` returns @access_token type) */
-    { int rdcls = -1, mdcls = -1;
-      /* An explicit `def x` at an equal-or-more-derived class overrides the
-         attribute, and the read emitter already calls it. Take the type from
-         whichever member wins the same arbitration; typing the call as the
-         ivar while emitting a call to the override reinterprets the returned
-         value as the attr's type (#3909). */
-      int reader_wins = comp_resolve_member(c, cid, name, 0, &rdcls, NULL) == SP_MEMBER_ATTR;
-      (void)mdcls;
-      if (reader_wins) {
-        const char *rname = comp_resolve_alias(c, cid, name);
-        char ivn[256];
-        snprintf(ivn, sizeof ivn, "@%s", rname);
-        ClassInfo *rci = (rdcls >= 0 && rdcls < c->nclasses) ? &c->classes[rdcls] : cls;
-        int iv = comp_ivar_index(rci, ivn);
-        if (iv >= 0) { *out = ivar_value_ty(rci, iv); return 1; }
-      }
-    }
+    if (attr_reader_ty(c, cid, name, out)) return 1;
     /* attr writer: obj.x= returns the assigned value */
     size_t ln = strlen(name);
     if (ln >= 2 && name[ln - 1] == '=') {

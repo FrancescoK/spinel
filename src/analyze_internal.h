@@ -16,6 +16,7 @@
    wasm link reports as a signature mismatch and an LP64 link hides) */
 __attribute__((noreturn)) void unsupported_feature(Compiler *c, int id, const char *msg);
 int ie_class_of(Compiler *c, int node);
+int attr_reader_ty(Compiler *c, int cid, const char *name, TyKind *out);
 int ie_poly_classes_at(Compiler *c, int node, int *out, int max);
 int ie_kernel_global(const char *n);
 
