@@ -9736,6 +9736,8 @@ else {
       if (rn > 0) { unsupported(c, id, "multiple assignment"); return; }
       for (int i = en; i < ln; i++) {
         const char *lty = nt_type(nt, lefts[i]);
+        if (lty && sp_streq(lty, "ConstantTargetNode") && nt_str(nt, lefts[i], "name") &&
+            comp_const(c, nt_str(nt, lefts[i], "name"))) continue;
         if (!lty || !sp_streq(lty, "LocalVariableTargetNode")) { unsupported(c, id, "multiple assignment"); return; }
       }
     }
@@ -9914,6 +9916,14 @@ else {
             buf_printf(b, " = %s;\n", nilv);
           }
         }
+        else if (lty && sp_streq(lty, "ConstantTargetNode")) {
+          const char *cnm_u = nt_str(nt, lefts[i], "name");
+          LocalVar *cv_u = cnm_u ? comp_const(c, cnm_u) : NULL;
+          if (cv_u) {
+            emit_indent(b, indent);
+            buf_printf(b, "cst_%s = %s;\n", cnm_u, nil_sentinel(cv_u->type));
+          }
+        }
         continue;
       }
       if (lty && sp_streq(lty, "LocalVariableTargetNode")) {
@@ -9953,8 +9963,18 @@ else {
       }
       else if (lty && (sp_streq(lty, "ConstantPathTargetNode") || sp_streq(lty, "ConstantTargetNode")) &&
                nt_str(nt, lefts[i], "name") && comp_const(c, nt_str(nt, lefts[i], "name"))) {
+        const char *cnm_l = nt_str(nt, lefts[i], "name");
+        TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
         emit_indent(b, indent);
-        buf_printf(b, "cst_%s = _t%d;\n", nt_str(nt, lefts[i], "name"), tmps[i]);
+        buf_printf(b, "cst_%s = ", cnm_l);
+        if (comp_const(c, cnm_l)->type == TY_POLY && valt != TY_POLY) {
+          char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmps[i]);
+          Buf bx; memset(&bx, 0, sizeof bx);
+          emit_boxed_text(c, valt, expr, &bx);
+          buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+        }
+        else buf_printf(b, "_t%d", tmps[i]);
+        buf_puts(b, ";\n");
       }
       else if (lty && sp_streq(lty, "InstanceVariableTargetNode")) {
         const char *ivnm = nt_str(nt, lefts[i], "name");

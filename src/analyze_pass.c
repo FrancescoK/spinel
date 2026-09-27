@@ -2278,7 +2278,18 @@ int infer_write_types(Compiler *c) {
          naming it here would claim a typing for something that cannot compile. */
       if (is_io_pair) {
         for (int i = 0; i < 2; i++) {
-          if (!sp_streq(nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "", "LocalVariableTargetNode")) continue;
+          const char *lty_io = nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "";
+          if (sp_streq(lty_io, "ConstantTargetNode")) {
+            /* `R, W = IO.pipe`: an untyped constant gets no slot to assign */
+            const char *cnm_io = nt_str(nt, lefts[i], "name");
+            LocalVar *cv_io = cnm_io ? comp_const(c, cnm_io) : NULL;
+            if (cv_io && cv_io->type != TY_IO) {
+              cv_io->type = ty_unify(cv_io->type, TY_IO);
+              changed = 1;
+            }
+            continue;
+          }
+          if (!sp_streq(lty_io, "LocalVariableTargetNode")) continue;
           const char *lnm = nt_str(nt, lefts[i], "name");
           LocalVar *lv = lnm ? scope_local_intern(comp_scope_of(c, id), lnm) : NULL;
           if (lv) lv->type = TY_IO;   /* the end-of-pass sweep reports it */
@@ -2434,7 +2445,7 @@ int infer_write_types(Compiler *c) {
         LocalVar *cv = cnm ? comp_const(c, cnm) : NULL;
         if (!cv) continue;
         TyKind et = infer_type(c, els[i]);
-        if (et == TY_NIL) continue;
+        if (et == TY_NIL || nt_kind(nt, els[i]) == NK_SplatNode) et = TY_POLY;
         TyKind mg = ty_unify(cv->type, et);
         if (mg != cv->type) { cv->type = mg; changed = 1; }
       }
@@ -2477,6 +2488,14 @@ int infer_write_types(Compiler *c) {
     Scope *usc = comp_scope_of(c, id);
     for (int i = en; i < ln; i++) {
       const char *lty = nt_type(nt, lefts[i]);
+      if (lty && sp_streq(lty, "ConstantTargetNode")) {
+        const char *cnm_u = nt_str(nt, lefts[i], "name");
+        LocalVar *cv_u = cnm_u ? comp_const(c, cnm_u) : NULL;
+        if (!cv_u) continue;
+        TyKind mg_u = ty_unify(cv_u->type, TY_POLY);
+        if (mg_u != cv_u->type) { cv_u->type = mg_u; changed = 1; }
+        continue;
+      }
       if (!lty || !sp_streq(lty, "LocalVariableTargetNode")) continue;
       const char *lnm = nt_str(nt, lefts[i], "name");
       LocalVar *lv = lnm ? scope_local(usc, lnm) : NULL;
