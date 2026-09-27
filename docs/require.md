@@ -19,6 +19,7 @@ They are different mechanisms and stay distinct:
 |---|---|---|
 | `require_relative "path"` | a project-local file, spliced into the program | always; a missing file is a **compile error** |
 | `require "name"` | a named **feature** (bundled stdlib, native, or -- planned -- a package) | the feature must exist, else a **compile error** |
+| `Kernel.require "name"` / `::Kernel.require "name"` | the same as the bare `require` | as above; any other receiver (`obj.require`) is an ordinary method call |
 
 `require` is *not* a runtime file load. Spinel is a whole-program
 ahead-of-time compiler, so every `require` is known at compile time and there is
