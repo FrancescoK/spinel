@@ -9253,12 +9253,24 @@ int desugar_index_assign_user_recv(Compiler *c) {
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     if (recv < 0 || v < 0 || an != 1 || !av || nt_ref(nt, id, "block") >= 0) continue;
     if (!ix_pure(nt, recv) || !ix_pure(nt, av[0])) continue;
-    TyKind rt = comp_ntype(c, recv);
-    if (!ty_is_object(rt)) rt = infer_type(c, recv);   /* a local's type lives in its scope slot */
-    if (!ty_is_object(rt)) continue;
-    int cid = ty_object_class(rt);
-    if (cid < 0 || cid >= c->nclasses) continue;
-    if (comp_method_in_chain(c, cid, "[]", NULL) < 0 || comp_method_in_chain(c, cid, "[]=", NULL) < 0) continue;
+    NodeKind rk = nt_kind(nt, recv);
+    if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
+      /* `Mod[k] ||= v` on a module or class whose `[]` / `[]=` are its own
+         class-level methods (activesupport's IsolatedExecutionState store):
+         the same rewrite, calling the constant's methods */
+      const char *cn = nt_str(nt, recv, "name");
+      int cid = cn ? comp_class_index(c, cn) : -1;
+      if (cid < 0 || cid >= c->nclasses) continue;
+      if (comp_cmethod_in_chain(c, cid, "[]", NULL) < 0 || comp_cmethod_in_chain(c, cid, "[]=", NULL) < 0) continue;
+    }
+    else {
+      TyKind rt = comp_ntype(c, recv);
+      if (!ty_is_object(rt)) rt = infer_type(c, recv);   /* a local's type lives in its scope slot */
+      if (!ty_is_object(rt)) continue;
+      int cid = ty_object_class(rt);
+      if (cid < 0 || cid >= c->nclasses) continue;
+      if (comp_method_in_chain(c, cid, "[]", NULL) < 0 || comp_method_in_chain(c, cid, "[]=", NULL) < 0) continue;
+    }
     const char *op = k == NK_IndexOperatorWriteNode ? nt_str(nt, id, "binary_operator") : NULL;
     if (k == NK_IndexOperatorWriteNode && !op) continue;
     int key = av[0];
