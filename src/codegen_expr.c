@@ -2964,6 +2964,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         if (ety && sp_streq(ety, "SplatNode")) {
           /* [*arr] or [*range] -- expand into poly */
           int inner = nt_ref(nt, els[j], "expression");
+          if (is_empty_array_lit(nt, inner)) continue;
           TyKind it = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
           Buf el; memset(&el, 0, sizeof el); emit_expr(c, inner, &el);
           const char *ep = el.p ? el.p : "NULL";
@@ -3028,6 +3029,7 @@ else {
       if (ety && sp_streq(ety, "SplatNode")) {
         /* [*range] or [*arr] inside a typed array literal */
         int inner = nt_ref(nt, els[j], "expression");
+        if (is_empty_array_lit(nt, inner)) continue;
         TyKind it = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
         Buf el; memset(&el, 0, sizeof el); emit_expr(c, inner, &el);
         const char *ep = el.p ? el.p : "NULL";

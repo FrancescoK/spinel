@@ -570,6 +570,7 @@ int proc_numbered_max(const NameSet *used);
 int proc_has_rest(Compiler *c, int create);
 void emit_hash_pairs_expr(Compiler *c, int recv, TyKind rt, const char *hn, Buf *b);
 TyKind comp_recv_type(Compiler *c, int recv);
+int is_empty_array_lit(const NodeTable *nt, int id);
 int proc_slot_is_ptr(TyKind t);
 int proc_slot_via_poly(Compiler *c, TyKind t);
 int cell_is_typed_ptr(Compiler *c, LocalVar *lv);
