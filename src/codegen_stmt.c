@@ -12468,7 +12468,7 @@ int emit_index_opw_hoist(Compiler *c, int id, Buf *pre, int indent) {
   buf_printf(pre, "%s _t%d = %s;\n", c_type_name(rt), ta, rb.p ? rb.p : "0");
   /* a receiver or key that allocates has no other root while the fold below
      runs, and the fold can collect */
-  if (subtree_may_allocate(nt, recv)) {
+  if (subtree_may_allocate(nt, recv) || subtree_has_side_effect(c, nt_ref(nt, id, "value"))) {
     emit_indent(pre, indent);
     buf_printf(pre, rt == TY_POLY ? "SP_GC_ROOT_RBVAL(_t%d);\n" : "SP_GC_ROOT(_t%d);\n", ta);
   }
@@ -12486,6 +12486,47 @@ int emit_index_opw_hoist(Compiler *c, int id, Buf *pre, int indent) {
   return 1;
 }
 void emit_index_opw_unhoist(void) { g_iow_recv_ref = NULL; g_iow_key_ref = NULL; }
+
+enum { IOW_RHS_EXPR, IOW_RHS_BOXED, IOW_RHS_INT };
+
+/* The right-hand side of an index write as C text. With `pre` set, its
+   prelude lands in `pre` at the current position rather than in g_pre ahead
+   of the whole statement, so it runs after the receiver, key and slot read
+   already emitted there, as Ruby orders them. */
+static char *iow_rhs(Compiler *c, int v, int mode, Buf *pre) {
+  Buf rb; memset(&rb, 0, sizeof rb);
+  Buf *sv = g_pre;
+  if (pre) g_pre = pre;
+  if (mode == IOW_RHS_BOXED) emit_boxed(c, v, &rb);
+  else if (mode == IOW_RHS_INT) emit_int_expr(c, v, &rb);
+  else emit_expr(c, v, &rb);
+  g_pre = sv;
+  return rb.p ? rb.p : strdup("");
+}
+
+/* Read the slot `slot` names into a rooted temp of type `t` and point `slot`
+   at the temp: Ruby reads the slot before an effectful right-hand side runs,
+   and that right-hand side can replace the slot's value (#4875). */
+static void iow_capture_slot(Compiler *c, TyKind t, char *slot, size_t n, Buf *b) {
+  int ts = ++g_tmp;
+  buf_printf(b, "%s _t%d = %s; ", c_type_name(t), ts, slot);
+  if (ty_gc_rootable(c, t)) { emit_gc_root_tmp(c, t, ts, b); buf_puts(b, " "); }
+  snprintf(slot, n, "_t%d", ts);
+}
+
+/* The right-hand side of `a[i] ||= v` / `&&= v`, emitted after its guard's
+   `if (...)`. An effectful one opens a block there and leaves its prelude in
+   it: hoisted ahead of the statement, that prelude ran even when the guard
+   skipped the write, and before the receiver, key and slot read. */
+static char *iow_guarded_rhs(Compiler *c, int v, int mode, Buf *b, int *open) {
+  *open = g_pre && subtree_has_side_effect(c, v);
+  if (*open) buf_puts(b, "{ ");
+  return iow_rhs(c, v, mode, *open ? b : NULL);
+}
+static void iow_guard_close(char *rhs, int open, Buf *b) {
+  if (open) buf_puts(b, "; }");
+  free(rhs);
+}
 
 void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
@@ -12527,20 +12568,17 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
         (sp_streq(op, "+") ? "sp_poly_add" : sp_streq(op, "-") ? "sp_poly_sub" :
          sp_streq(op, "*") ? "sp_poly_mul" : sp_streq(op, "/") ? "sp_poly_div" :
          sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "**") ? "sp_poly_pow" : NULL) : NULL;
+    int eff = g_pre && subtree_has_side_effect(c, v);
+    char slot[64];
+    snprintf(slot, sizeof slot, "sp_%sHash_get(_t%d, _t%d)", hn, ta, tb);
+    if (eff) iow_capture_slot(c, vt, slot, sizeof slot, b);
+    char *rhs = iow_rhs(c, v, pf ? IOW_RHS_BOXED : IOW_RHS_EXPR, eff ? b : NULL);
     buf_printf(b, "%s _t%d = ", c_type_name(vt), tv);
-    if (vt == TY_STRING && sp_streq(op, "+")) {
-      buf_printf(b, "sp_str_concat(sp_%sHash_get(_t%d, _t%d), ", hn, ta, tb);
-      emit_expr(c, v, b); buf_puts(b, ")");
-    }
-    else if (pf) {
-      /* a poly-valued slot folds via the dynamic operator on boxed operands */
-      buf_printf(b, "%s(sp_%sHash_get(_t%d, _t%d), ", pf, hn, ta, tb);
-      emit_boxed(c, v, b); buf_puts(b, ")");
-    }
-    else {
-      buf_printf(b, "sp_%sHash_get(_t%d, _t%d) %s ", hn, ta, tb, op);
-      buf_puts(b, "("); emit_expr(c, v, b); buf_puts(b, ")");
-    }
+    /* a poly-valued slot folds via the dynamic operator on boxed operands */
+    if (vt == TY_STRING && sp_streq(op, "+")) buf_printf(b, "sp_str_concat(%s, %s)", slot, rhs);
+    else if (pf) buf_printf(b, "%s(%s, %s)", pf, slot, rhs);
+    else buf_printf(b, "%s %s (%s)", slot, op, rhs);
+    free(rhs);
     buf_puts(b, "; ");
     buf_printf(b, "if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); ", ta, ta, hash_box_cls(rt));
     buf_printf(b, "sp_%sHash_set(_t%d, _t%d, _t%d); }\n", hn, ta, tb, tv);
@@ -12566,58 +12604,51 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
        sp_str_plus/repeat) can trigger a collection before the closing
        sp_*Array_set. A bare local/ivar read is already rooted at its slot,
        so it skips the push (keeps hot emissions byte-identical). */
+    int eff = g_pre && subtree_has_side_effect(c, v);
     buf_printf(b, "{ %s _t%d = ", c_type_name(rt), ta); iow_emit_recv(c, recv, b);
-    if (subtree_may_allocate(nt, recv)) buf_printf(b, "; SP_GC_ROOT(_t%d)", ta);
+    if (subtree_may_allocate(nt, recv) || (eff && !g_iow_recv_ref)) buf_printf(b, "; SP_GC_ROOT(_t%d)", ta);
     buf_printf(b, "; sp_int _t%d = ", tb); iow_emit_key(c, argv[0], b, IOW_KEY_INT, TY_INT);
     buf_puts(b, "; ");
-    if (rt == TY_POLY_ARRAY) {
-      /* poly slot: fold via the tag-dispatching operator on boxed operands,
-         like the TY_POLY receiver path below. */
-      if (!pf) unsupported(c, id, "index operator assignment (poly array, operator)");
-      buf_printf(b, "sp_PolyArray_set(_t%d, _t%d, %s(sp_PolyArray_get(_t%d, _t%d), ",
-                 ta, tb, pf, ta, tb);
-      emit_boxed(c, v, b); buf_puts(b, ")); }\n");
-    }
-    else if (rt == TY_STR_ARRAY) {
+    char slot[64];
+    snprintf(slot, sizeof slot, "sp_%sArray_get(_t%d, _t%d)", k, ta, tb);
+    if (rt == TY_STR_ARRAY && (sp_streq(op, "+") || sp_streq(op, "<<"))) {
       /* String slots take String ops only: `+`/`<<` concatenate, `*` repeats
          (String#*). The native fallthrough (`char* << char*`, `char* * int`)
          never compiles, so anything else is rejected here explicitly. */
-      if (sp_streq(op, "+") || sp_streq(op, "<<")) {
-        int tc = ++g_tmp, td = ++g_tmp;
-        buf_printf(b, "sp_StrArray_set(_t%d, _t%d, ({ const char *_t%d = sp_StrArray_get(_t%d, _t%d); "
-                   "SP_GC_ROOT(_t%d); const char *_t%d = ", ta, tb, tc, ta, tb, tc, td);
-        if (vt == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, v, b); buf_puts(b, ")"); }
-        else emit_expr(c, v, b);
-        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_str_plus(_t%d, _t%d); })); }\n", td, tc, td);
-      }
-      else if (sp_streq(op, "*")) {
-        buf_printf(b, "sp_StrArray_set(_t%d, _t%d, sp_str_repeat(sp_StrArray_get(_t%d, _t%d), ",
-                   ta, tb, ta, tb);
-        emit_int_expr(c, v, b);
-        buf_puts(b, ")); }\n");
-      }
-      else unsupported(c, id, "index operator assignment (string array, operator)");
+      int tc = ++g_tmp, td = ++g_tmp;
+      buf_printf(b, "sp_StrArray_set(_t%d, _t%d, ({ const char *_t%d = %s; SP_GC_ROOT(_t%d); ",
+                 ta, tb, tc, slot, tc);
+      char *rhs = iow_rhs(c, v, IOW_RHS_EXPR, eff ? b : NULL);
+      if (vt == TY_POLY) buf_printf(b, "const char *_t%d = sp_poly_to_s(%s)", td, rhs);
+      else buf_printf(b, "const char *_t%d = %s", td, rhs);
+      free(rhs);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); sp_str_plus(_t%d, _t%d); })); }\n", td, tc, td);
+      return;
     }
+    if (rt == TY_STR_ARRAY && !sp_streq(op, "*"))
+      unsupported(c, id, "index operator assignment (string array, operator)");
+    /* poly slot: fold via the tag-dispatching operator on boxed operands,
+       like the TY_POLY receiver path below. */
+    if (rt == TY_POLY_ARRAY && !pf) unsupported(c, id, "index operator assignment (poly array, operator)");
+    if (eff) iow_capture_slot(c, rt == TY_POLY_ARRAY ? TY_POLY : ty_array_elem(rt), slot, sizeof slot, b);
+    int mode = rt == TY_STR_ARRAY ? IOW_RHS_INT : (rt == TY_POLY_ARRAY || vt == TY_POLY) ? IOW_RHS_BOXED : IOW_RHS_EXPR;
+    char *rhs = iow_rhs(c, v, mode, eff ? b : NULL);
+    buf_printf(b, "sp_%sArray_set(_t%d, _t%d, ", k, ta, tb);
+    if (rt == TY_POLY_ARRAY) buf_printf(b, "%s(%s, %s)", pf, slot, rhs);
+    else if (rt == TY_STR_ARRAY) buf_printf(b, "sp_str_repeat(%s, %s)", slot, rhs);
     else if (vt == TY_POLY && pf) {
       /* typed int/float slot, poly RHS: box the slot, fold via the dynamic
          operator, unbox back to the slot type -- exactly what the plain
          `a[i] = a[i] + rhs` form emits (issue: `double + sp_RbVal`). */
       const char *box = (rt == TY_FLOAT_ARRAY) ? "sp_box_float" : "sp_box_int";
       const char *unbox = (rt == TY_FLOAT_ARRAY) ? "sp_poly_to_f" : "sp_poly_to_i";
-      buf_printf(b, "sp_%sArray_set(_t%d, _t%d, %s(%s(%s(sp_%sArray_get(_t%d, _t%d)), ",
-                 k, ta, tb, unbox, pf, box, k, ta, tb);
-      emit_boxed(c, v, b); buf_puts(b, "))); }\n");
+      buf_printf(b, "%s(%s(%s(%s), %s))", unbox, pf, box, slot, rhs);
     }
-    else if (vt == TY_POLY) {
-      /* shift/bitwise on an int slot with a poly RHS: unbox the RHS */
-      buf_printf(b, "sp_%sArray_set(_t%d, _t%d, sp_%sArray_get(_t%d, _t%d) %s sp_poly_to_i(",
-                 k, ta, tb, k, ta, tb, op);
-      emit_boxed(c, v, b); buf_puts(b, ")); }\n");
-    }
-    else {
-      buf_printf(b, "sp_%sArray_set(_t%d, _t%d, sp_%sArray_get(_t%d, _t%d) %s ", k, ta, tb, k, ta, tb, op);
-      buf_puts(b, "("); emit_expr(c, v, b); buf_puts(b, ")); }\n");
-    }
+    /* shift/bitwise on an int slot with a poly RHS: unbox the RHS */
+    else if (vt == TY_POLY) buf_printf(b, "%s %s sp_poly_to_i(%s)", slot, op, rhs);
+    else buf_printf(b, "%s %s (%s)", slot, op, rhs);
+    free(rhs);
+    buf_puts(b, "); }\n");
     return;
   }
   if (rt == TY_POLY) {
@@ -12641,20 +12672,23 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
         sp_streq(op, "^") ? "sp_poly_bxor" : NULL;
     if (!pf) unsupported(c, id, "index operator assignment (poly-recv, operator)");
     int tc = ++g_tmp;
+    int eff = g_pre && subtree_has_side_effect(c, v);
+    buf_printf(b, "{ sp_RbVal _t%d = ", ta); iow_emit_recv(c, recv, b);
+    if (eff && !g_iow_recv_ref) buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d)", ta);
     if (kt == TY_INT) {
-      buf_printf(b, "{ sp_RbVal _t%d = ", ta); iow_emit_recv(c, recv, b);
       buf_printf(b, "; sp_int _t%d = ", tb); iow_emit_key(c, argv[0], b, IOW_KEY_INT, TY_INT); buf_puts(b, "; ");
       buf_printf(b, "sp_RbVal _t%d = sp_poly_arr_get_hash(_t%d, _t%d);", tc, ta, tb);
-      buf_printf(b, " sp_poly_arr_set_hash(_t%d, _t%d, %s(_t%d, ", ta, tb, pf, tc);
-      emit_boxed(c, v, b); buf_puts(b, ")); }\n");
     }
     else {
-      buf_printf(b, "{ sp_RbVal _t%d = ", ta); iow_emit_recv(c, recv, b);
       buf_printf(b, "; sp_RbVal _t%d = ", tb); iow_emit_key(c, argv[0], b, IOW_KEY_BOXED, TY_POLY); buf_puts(b, "; ");
+      if (eff && !g_iow_key_ref && subtree_may_allocate(nt, argv[0])) buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d); ", tb);
       buf_printf(b, "sp_RbVal _t%d = sp_poly_index_poly(_t%d, _t%d);", tc, ta, tb);
-      buf_printf(b, " sp_poly_set_poly(_t%d, _t%d, %s(_t%d, ", ta, tb, pf, tc);
-      emit_boxed(c, v, b); buf_puts(b, ")); }\n");
     }
+    if (eff) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", tc);
+    char *rhs = iow_rhs(c, v, IOW_RHS_BOXED, eff ? b : NULL);
+    buf_printf(b, " %s(_t%d, _t%d, %s(_t%d, %s)); }\n",
+               kt == TY_INT ? "sp_poly_arr_set_hash" : "sp_poly_set_poly", ta, tb, pf, tc, rhs);
+    free(rhs);
     return;
   }
   unsupported(c, id, "index operator assignment");
@@ -12692,10 +12726,11 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
     buf_puts(b, "; ");
     if (subtree_may_allocate(nt, argv[0]) && needs_root(kt)) { emit_gc_root_tmp(c, kt, tb, b); buf_puts(b, " "); }
     if (vt == TY_POLY) {
-      buf_printf(b, "if (%ssp_poly_truthy(sp_%sHash_get(_t%d, _t%d))) sp_%sHash_set(_t%d, _t%d, ",
-                 is_or ? "!" : "", hn, ta, tb, hn, ta, tb);
-      emit_boxed(c, v, b);
-      buf_puts(b, ")");
+      buf_printf(b, "if (%ssp_poly_truthy(sp_%sHash_get(_t%d, _t%d))) ", is_or ? "!" : "", hn, ta, tb);
+      int open = 0;
+      char *rhs = iow_guarded_rhs(c, v, IOW_RHS_BOXED, b, &open);
+      buf_printf(b, "sp_%sHash_set(_t%d, _t%d, %s)", hn, ta, tb, rhs);
+      iow_guard_close(rhs, open, b);
     }
     else {
       /* `h[k] ||= v` is `h[k] || (h[k] = v)`: it is the READ that decides, and
@@ -12707,9 +12742,11 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
       int tc = ++g_tmp;
       buf_printf(b, "%s _t%d = sp_%sHash_get(_t%d, _t%d); if (", c_type_name(vt), tc, hn, ta, tb);
       emit_slot_nil_test(c, vt, tc, is_or, b);
-      buf_printf(b, ") sp_%sHash_set(_t%d, _t%d, ", hn, ta, tb);
-      emit_expr(c, v, b);
-      buf_puts(b, ")");
+      buf_puts(b, ") ");
+      int open = 0;
+      char *rhs = iow_guarded_rhs(c, v, IOW_RHS_EXPR, b, &open);
+      buf_printf(b, "sp_%sHash_set(_t%d, _t%d, %s)", hn, ta, tb, rhs);
+      iow_guard_close(rhs, open, b);
     }
     buf_puts(b, "; }\n");
     return;
@@ -12720,39 +12757,31 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
     if (!k) { unsupported(c, id, "index and/or write (array kind)"); return; }
     emit_indent(b, indent);
     buf_printf(b, "{ %s _t%d = ", c_type_name(rt), ta); emit_expr(c, recv, b);
+    if (g_pre && subtree_has_side_effect(c, v)) buf_printf(b, "; SP_GC_ROOT(_t%d)", ta);
     buf_printf(b, "; sp_int _t%d = ", tb); emit_int_expr(c, argv[0], b);
     buf_puts(b, "; ");
-    if (rt == TY_INT_ARRAY) {
-      /* int slots are nil only out of bounds (0 is truthy); ||= writes when
-         nil, &&= when present. Compare with == / != to avoid `!x != NIL`. */
-      buf_printf(b, "if (sp_IntArray_get(_t%d, _t%d) %s SP_INT_NIL) sp_IntArray_set(_t%d, _t%d, ",
-                 ta, tb, is_or ? "==" : "!=", ta, tb);
-      { Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, v, &vb);
-        emit_typed_sink_text(c, v, TY_INT, vb.p ? vb.p : "0", b); free(vb.p); }
-      buf_puts(b, ")");
-    }
-    else if (rt == TY_FLOAT_ARRAY) {
-      buf_printf(b, "if (%ssp_float_is_nil(sp_FloatArray_get(_t%d, _t%d))) sp_FloatArray_set(_t%d, _t%d, ",
-                 is_or ? "" : "!", ta, tb, ta, tb);
-      { Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, v, &vb);
-        emit_typed_sink_text(c, v, TY_FLOAT, vb.p ? vb.p : "0.0", b); free(vb.p); }
-      buf_puts(b, ")");
-    }
-    else if (rt == TY_STR_ARRAY) {
-      buf_printf(b, "if (%ssp_StrArray_get(_t%d, _t%d)) sp_StrArray_set(_t%d, _t%d, ",
-                 is_or ? "!" : "", ta, tb, ta, tb);
-      emit_expr(c, v, b);
-      buf_puts(b, ")");
-    }
-    else if (rt == TY_POLY_ARRAY) {
-      buf_printf(b, "if (%ssp_poly_truthy(sp_PolyArray_get(_t%d, _t%d))) sp_PolyArray_set(_t%d, _t%d, ",
-                 is_or ? "!" : "", ta, tb, ta, tb);
-      emit_boxed(c, v, b);
-      buf_puts(b, ")");
-    }
+    /* int slots are nil only out of bounds (0 is truthy); ||= writes when
+       nil, &&= when present. Compare with == / != to avoid `!x != NIL`. */
+    if (rt == TY_INT_ARRAY)
+      buf_printf(b, "if (sp_IntArray_get(_t%d, _t%d) %s SP_INT_NIL) ", ta, tb, is_or ? "==" : "!=");
+    else if (rt == TY_FLOAT_ARRAY)
+      buf_printf(b, "if (%ssp_float_is_nil(sp_FloatArray_get(_t%d, _t%d))) ", is_or ? "" : "!", ta, tb);
+    else if (rt == TY_STR_ARRAY)
+      buf_printf(b, "if (%ssp_StrArray_get(_t%d, _t%d)) ", is_or ? "!" : "", ta, tb);
+    else if (rt == TY_POLY_ARRAY)
+      buf_printf(b, "if (%ssp_poly_truthy(sp_PolyArray_get(_t%d, _t%d))) ", is_or ? "!" : "", ta, tb);
     else {
       unsupported(c, id, "index and/or write (array type)"); return;
     }
+    int open = 0;
+    char *rhs = iow_guarded_rhs(c, v, rt == TY_POLY_ARRAY ? IOW_RHS_BOXED : IOW_RHS_EXPR, b, &open);
+    buf_printf(b, "sp_%sArray_set(_t%d, _t%d, ", k, ta, tb);
+    if (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY)
+      emit_typed_sink_text(c, v, rt == TY_INT_ARRAY ? TY_INT : TY_FLOAT,
+                           rhs[0] ? rhs : (rt == TY_INT_ARRAY ? "0" : "0.0"), b);
+    else buf_puts(b, rhs);
+    buf_puts(b, ")");
+    iow_guard_close(rhs, open, b);
     buf_puts(b, "; }\n");
     return;
   }
@@ -12765,10 +12794,13 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
     emit_indent(b, indent);
     buf_printf(b, "{ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, b);
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", ta, tb); emit_boxed(c, argv[0], b);
-    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); if (%ssp_poly_truthy(sp_poly_index_poly(_t%d, _t%d))) sp_poly_set_poly(_t%d, _t%d, ",
-               tb, is_or ? "!" : "", ta, tb, ta, tb);
-    emit_boxed(c, v, b);
-    buf_puts(b, "); }\n");
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); if (%ssp_poly_truthy(sp_poly_index_poly(_t%d, _t%d))) ",
+               tb, is_or ? "!" : "", ta, tb);
+    int open = 0;
+    char *rhs = iow_guarded_rhs(c, v, IOW_RHS_BOXED, b, &open);
+    buf_printf(b, "sp_poly_set_poly(_t%d, _t%d, %s)", ta, tb, rhs);
+    iow_guard_close(rhs, open, b);
+    buf_puts(b, "; }\n");
     return;
   }
 

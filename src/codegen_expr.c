@@ -1136,6 +1136,18 @@ void emit_expr(Compiler *c, int id, Buf *b) {
   g_expr_depth--;
 }
 
+/* `_tN = v` inside the guard of an `a[i] ||= v` / `&&= v` value, with v's
+   own prelude emitted in the guard too: hoisted above it, that prelude ran
+   even when the guard skipped the write, and before the slot read. */
+static void emit_guarded_slot_assign(Compiler *c, int v, int tn, Buf *b) {
+  Buf rvb; memset(&rvb, 0, sizeof rvb);
+  Buf *svp = g_pre; g_pre = b;
+  emit_expr(c, v, &rvb);
+  g_pre = svp;
+  buf_printf(b, "_t%d = %s", tn, rvb.p ? rvb.p : "0");
+  free(rvb.p);
+}
+
 static void emit_expr_node(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -1861,24 +1873,24 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       buf_printf(b, "({ sp_IntArray *_t%d = ", ta2); emit_expr(c, ir, b);
       buf_printf(b, "; sp_int _t%d = ", tb2); emit_int_expr(c, iav[0], b);
       buf_printf(b, "; sp_int _t%d = sp_IntArray_get(_t%d, _t%d);", tc2, ta2, tb2);
-      buf_printf(b, " if (%s(_t%d == SP_INT_NIL)) { _t%d = ", is_or2 ? "" : "!", tc2, tc2);
-      emit_expr(c, iv, b);
+      buf_printf(b, " if (%s(_t%d == SP_INT_NIL)) { ", is_or2 ? "" : "!", tc2);
+      emit_guarded_slot_assign(c, iv, tc2, b);
       buf_printf(b, "; sp_IntArray_set(_t%d, _t%d, _t%d); } _t%d; })", ta2, tb2, tc2, tc2);
     }
     else if (irt == TY_FLOAT_ARRAY) {
       buf_printf(b, "({ sp_FloatArray *_t%d = ", ta2); emit_expr(c, ir, b);
       buf_printf(b, "; sp_int _t%d = ", tb2); emit_int_expr(c, iav[0], b);
       buf_printf(b, "; sp_float _t%d = sp_FloatArray_get(_t%d, _t%d);", tc2, ta2, tb2);
-      buf_printf(b, " if (%ssp_float_is_nil(_t%d)) { _t%d = ", is_or2 ? "" : "!", tc2, tc2);
-      emit_expr(c, iv, b);
+      buf_printf(b, " if (%ssp_float_is_nil(_t%d)) { ", is_or2 ? "" : "!", tc2);
+      emit_guarded_slot_assign(c, iv, tc2, b);
       buf_printf(b, "; sp_FloatArray_set(_t%d, _t%d, _t%d); } _t%d; })", ta2, tb2, tc2, tc2);
     }
     else if (irt == TY_STR_ARRAY) {
       buf_printf(b, "({ sp_StrArray *_t%d = ", ta2); emit_expr(c, ir, b);
       buf_printf(b, "; sp_int _t%d = ", tb2); emit_int_expr(c, iav[0], b);
       buf_printf(b, "; const char *_t%d = sp_StrArray_get(_t%d, _t%d);", tc2, ta2, tb2);
-      buf_printf(b, " if (%s_t%d) { _t%d = ", is_or2 ? "!" : "", tc2, tc2);
-      emit_expr(c, iv, b);
+      buf_printf(b, " if (%s_t%d) { ", is_or2 ? "!" : "", tc2);
+      emit_guarded_slot_assign(c, iv, tc2, b);
       buf_printf(b, "; sp_StrArray_set(_t%d, _t%d, _t%d); } _t%d; })", ta2, tb2, tc2, tc2);
     }
     else if (ty_is_hash(irt)) {
@@ -1911,8 +1923,8 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         buf_printf(b, "%s _t%d = sp_%sHash_get(_t%d, _t%d);", c_type_name(vt), tc2, hn, ta2, tb2);
         buf_puts(b, " if (");
         emit_slot_nil_test(c, vt, tc2, is_or2, b);
-        buf_printf(b, ") { _t%d = ", tc2);
-        emit_expr(c, iv, b);
+        buf_puts(b, ") { ");
+        emit_guarded_slot_assign(c, iv, tc2, b);
         buf_printf(b, "; sp_%sHash_set(_t%d, _t%d, _t%d); } _t%d; })", hn, ta2, tb2, tc2, tc2);
       }
     }
