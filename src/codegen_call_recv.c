@@ -10991,7 +10991,7 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
          side-effecting receiver (`c.utc`, which mutates the local) twice --
          unsequenced modification (#2865). */
       int tf = ++g_tmp;
-      buf_printf(b, "({ sp_Time _t%d = (%s); (sp_float)_t%d.tv_sec + (sp_float)_t%d.tv_nsec / 1e9; })", tf, r, tf, tf);
+      buf_printf(b, "({ sp_Time _t%d = (%s); sp_time_ns_to_f(_t%d.tv_sec, _t%d.tv_nsec); })", tf, r, tf, tf);
     }
     else if (sp_streq(name, "subsec")) {
       /* CRuby: Integer 0 for a whole second, else the exact Rational */

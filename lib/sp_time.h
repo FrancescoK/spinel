@@ -21,6 +21,18 @@
    only for kind 2; the positional (sp_Time){sec, ns, kind} initializers used
    throughout leave it zero. */
 typedef struct { int64_t tv_sec; int32_t tv_nsec; int8_t is_utc; int32_t utc_off; } sp_Time;
+/* Seconds as a Float the way CRuby's Time#to_f and Time#- make them: the
+   whole nanosecond count converted, then divided by 1e9. That count is not
+   always a double, so the answer can sit just below the decimal value
+   (1790544731.561 reads 1790544731.5609999), and an epoch-milliseconds
+   `(t.to_f * 1000).to_i` depends on it (#5211). Past Fixnum's reach
+   (2**62 ns) CRuby rounds the exact quotient, which the split sum is the
+   nearest to here. */
+static inline double sp_time_ns_to_f(int64_t sec, int64_t nsec) {
+  if (sec > -4611686018LL && sec < 4611686018LL)
+    return (double)(sec * 1000000000LL + nsec) / 1e9;
+  return (double)sec + (double)nsec / 1e9;
+}
 
 /* Constructors */
 sp_Time sp_time_now(void);

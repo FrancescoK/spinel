@@ -745,5 +745,5 @@ sp_Time sp_time_sub_i(sp_Time t, int64_t secs) {
   return r;
 }
 double sp_time_sub_t(sp_Time a, sp_Time b) {
-  return (double)(a.tv_sec - b.tv_sec) + ((double)(a.tv_nsec - b.tv_nsec) / 1e9);
+  return sp_time_ns_to_f(a.tv_sec - b.tv_sec, (int64_t)a.tv_nsec - b.tv_nsec);
 }
