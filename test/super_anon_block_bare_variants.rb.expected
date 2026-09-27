@@ -1,0 +1,16 @@
+bare:1
+explicit:1
+implicit:1
+named:1
+yielder:1
+no handler for none
+no handler for none_explicit
+no handler for none_named
+proc p:30
+proc pn:30
+proc py:40
+7
+["called0", "called5"]
+poly bare:6
+poly explicit:6
+poly named:6
