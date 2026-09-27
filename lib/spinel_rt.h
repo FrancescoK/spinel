@@ -9866,6 +9866,46 @@ static sp_PolyArray *sp_poly_keys(sp_RbVal v) {
   sp_raise_cls("NoMethodError", "undefined method 'keys'");
   return NULL;  /* unreachable: sp_raise_cls is noreturn */
 }
+static int sp_kwargs_name_in(const char *nm, const char *const *names) {
+  for (const char *const *a = names; *a; a++) if (!strcmp(nm, *a)) return 1;
+  return 0;
+}
+static void sp_kwargs_list_add(char *list, int *n, int *cnt, const char *item) {
+  if (*n < 255) {
+    int w = snprintf(list + *n, 256 - *n, "%s%s", *cnt ? ", " : "", item);
+    *n = (w > 0 && *n + w < 256) ? *n + w : 255;
+  }
+  (*cnt)++;
+}
+/* The keywords a call passes as literal keys (`lit`) plus a `**h` (any hash
+   kind, boxed; nil for none), checked against a callee's declared keyword
+   names (`allowed`) as CRuby does: a required name found in neither raises
+   `missing keyword`, then, unless a **kwrest takes the extras
+   (`check_unknown` 0), a key naming no parameter raises `unknown keyword`. */
+static void sp_kwargs_verify(sp_RbVal h, const char *const *allowed, const char *const *required,
+                             const char *const *lit, int check_unknown) {
+  sp_PolyArray *k = sp_poly_length(h) > 0 ? sp_poly_keys(h) : sp_PolyArray_new(); SP_GC_ROOT(k);
+  char list[256]; int n = 0, cnt = 0;
+  list[0] = 0;
+  for (const char *const *r = required; *r; r++) {
+    int found = sp_kwargs_name_in(*r, lit);
+    for (sp_int i = 0; i < k->len && !found; i++)
+      if (k->data[i].tag == SP_TAG_SYM && !strcmp(sp_sym_to_s((sp_sym)k->data[i].v.i), *r)) found = 1;
+    if (!found) sp_kwargs_list_add(list, &n, &cnt, sp_sprintf(":%s", *r));
+  }
+  if (cnt) sp_raise_cls("ArgumentError", sp_sprintf("missing keyword%s: %s", cnt > 1 ? "s" : "", list));
+  if (!check_unknown) return;
+  for (const char *const *l = lit; *l; l++)
+    if (!sp_kwargs_name_in(*l, allowed)) sp_kwargs_list_add(list, &n, &cnt, sp_sprintf(":%s", *l));
+  for (sp_int i = 0; i < k->len; i++) {
+    if (k->data[i].tag == SP_TAG_SYM) {
+      const char *nm = sp_sym_to_s((sp_sym)k->data[i].v.i);
+      if (sp_kwargs_name_in(nm, allowed) || sp_kwargs_name_in(nm, lit)) continue;
+    }
+    sp_kwargs_list_add(list, &n, &cnt, sp_poly_inspect(k->data[i]));
+  }
+  if (cnt) sp_raise_cls("ArgumentError", sp_sprintf("unknown keyword%s: %s", cnt > 1 ? "s" : "", list));
+}
 static sp_PolyArray *sp_poly_values(sp_RbVal v) {
   /* a Struct read out of a container answers its member values, as the typed
      Struct does; it fell to the raise below */

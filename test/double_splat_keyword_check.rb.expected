@@ -1,0 +1,20 @@
+1
+"missing keyword: :k"
+"missing keyword: :k"
+"missing keyword: :k"
+"missing keyword: :j"
+"missing keywords: :k, :j"
+[1, 1, 3]
+"missing keyword: :k"
+[2, {z: 1}]
+"unknown keyword: :z"
+"unknown keyword: :z"
+"unknown keyword: :z"
+"unknown keywords: :z, :y, :x"
+[1, 5]
+"missing keyword: :k"
+"unknown keyword: :z"
+"unknown keyword: :z"
+"unknown keyword: :z"
+5
+"missing keyword: :k"
