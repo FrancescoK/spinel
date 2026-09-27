@@ -976,6 +976,8 @@ int emit_builtin_arity_guard(Compiler *c, int id, Buf *b);
 int emit_blockless_enumerator(Compiler *c, int id, Buf *b);
 int emit_unresolved_call(Compiler *c, int id, Buf *b);
 int emit_array_call(Compiler *c, int id, Buf *b);
+int emit_array_splat_mutator(Compiler *c, int id, Buf *b);
+void emit_str_insert_text(Compiler *c, int arg, Buf *b);
 int emit_hash_call(Compiler *c, int id, Buf *b);
 int emit_scalar_call(Compiler *c, int id, Buf *b);
 int emit_object_call(Compiler *c, int id, Buf *b);

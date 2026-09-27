@@ -24917,6 +24917,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
 
   /* `arr << x` / push / append in value position: mutate, then yield the array
      (statement position is handled earlier by emit_array_mutate_stmt). */
+  if (recv >= 0 && emit_array_splat_mutator(c, id, b)) return;
   if (recv >= 0 && (sp_streq(name, "<<") || sp_streq(name, "push") || sp_streq(name, "append")) &&
       argc >= 1 && ty_is_array(comp_ntype(c, recv))) {
     TyKind art = comp_ntype(c, recv);

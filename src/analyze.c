@@ -15236,9 +15236,13 @@ static void expand_static_splat_args(Compiler *c) {
          count. Reading past the end yields nil rather than Ruby's
          ArgumentError, and an element beyond the required arity is not
          passed on. */
+      /* Array#insert is variadic past its index: a splat there spreads at
+         run time (emit_array_splat_mutator), where two reads would drop or
+         nil-pad the elements. */
+      if (sp_streq(cnm, "insert") && sp_at > 0) continue;
       /* A block moves the required count (`sub(pat) { .. }` takes one
          argument, not two), so leave those alone. */
-      n = nt_ref(nt, id, "block") >= 0 ? -1 : splat_builtin_arity(cnm);
+      n =nt_ref(nt, id, "block") >= 0 ? -1 : splat_builtin_arity(cnm);
       /* slice has no arity to expand to on purpose (see the table). Leave the
          splat as it stands rather than refusing the program: Hash#slice's
          emitter iterates it, which is what the call means. */
