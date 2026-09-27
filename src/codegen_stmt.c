@@ -2208,6 +2208,10 @@ static int static_block_given_cond(Compiler *c, int pred) {
     return 1;
   }
   if (g_current_scope_is_lowered || g_yield_proc_ref) return -1;
+  /* a real function that keeps its named &blk: whether it was given one is
+     the parameter's run-time value (see blk_param_escapes) */
+  { Scope *ps = comp_scope_of(c, pred);
+    if (ps && ps->blk_param && ps->blk_param[0] && !ps->yields) return -1; }
   return 0;
 }
 
@@ -5991,16 +5995,21 @@ static void emit_tail_value(Compiler *c, int node, Buf *b) {
       for (int i = 0; ee && i < en; i++)
         if (comp_ntype(c, ee[i]) == TY_POLY) { lit_coerces = 0; break; }
     }
+    /* the slot the tail fills: a result var (an inlined call's, a begin's)
+       has its own type, which is not the enclosing method's return. An
+       inlined grep in `def f(r) = r.grep(Foo).map(&:n)` converted its tail
+       to f's Integer array while its slot was the grep's poly array. */
+    TyKind tgt = (g_result_var && g_result_ty != TY_UNKNOWN) ? g_result_ty : g_ret_type;
     if (comp_ntype(c, node) == TY_POLY_ARRAY && vnty && !lit_coerces) {
       const char *conv =
-        g_ret_type == TY_STR_ARRAY   ? "sp_StrArray_from_poly_array" :
-        g_ret_type == TY_INT_ARRAY   ? "sp_IntArray_from_poly_array" :
-        g_ret_type == TY_FLOAT_ARRAY ? "sp_FloatArray_from_poly_array" : NULL;
+        tgt == TY_STR_ARRAY   ? "sp_StrArray_from_poly_array" :
+        tgt == TY_INT_ARRAY   ? "sp_IntArray_from_poly_array" :
+        tgt == TY_FLOAT_ARRAY ? "sp_FloatArray_from_poly_array" : NULL;
       if (conv) {
         buf_printf(b, "%s(", conv); emit_expr(c, node, b); buf_puts(b, ")");
         return;
       }
-      if (ty_is_obj_array(g_ret_type))
+      if (ty_is_obj_array(tgt))
         unsupported(c, node, "declared return type is a typed object array but the body infers a poly array");
     }
   }

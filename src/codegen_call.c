@@ -25344,6 +25344,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else if (g_yield_proc_ref) {
       buf_printf(b, "(%s != NULL)", g_yield_proc_ref);
     }
+    /* a real function that keeps its named &blk (see blk_param_escapes):
+       the block is its parameter, present exactly when it is not NULL */
+    else if (comp_scope_of(c, id) && comp_scope_of(c, id)->blk_param &&
+             comp_scope_of(c, id)->blk_param[0] && !comp_scope_of(c, id)->yields) {
+      buf_printf(b, "(lv_%s != NULL)", rename_local(comp_scope_of(c, id)->blk_param));
+    }
     else {
       buf_puts(b, "0");
     }

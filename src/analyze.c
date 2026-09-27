@@ -13864,6 +13864,11 @@ int make_yield_proc_forms(Compiler *c) {
            every poly parameter each round: with no call site to widen it
            again, a clone reached only by a zero-argument call ended the
            fixpoint unknown and read its boxed argument as an sp_int. */
+        /* A *rest or **kwrest is the array or hash the arm packs, as in the
+           method it clones; typed poly, the arm's sp_PolyArray * did not fit
+           the clone's sp_RbVal parameter */
+        if (lv->type == TY_UNKNOWN && p == d->rest_idx) lv->type = TY_POLY_ARRAY;
+        else if (lv->type == TY_UNKNOWN && p == d->kwrest_idx) lv->type = TY_SYM_POLY_HASH;
         if (lv->type == TY_UNKNOWN) { lv->type = TY_POLY; lv->poly_dispatch_widened = 1; }
       }
       if (d->blk_param) {
@@ -15755,6 +15760,33 @@ static int propagate_ivars_up(Compiler *c) {
   }
   return prop_changed;
 }
+/* Does method scope `ms` hand its named `&blk` on as a value -- keep it in a
+   container, return it, pass it as a plain argument -- rather than only call
+   it or forward it with `&blk`? Such a method needs the proc itself, so it
+   stays a real function taking it, and its block_given? asks whether it is
+   NULL. Made inline-only for its block_given?, the stored `blk` named a local
+   the splice never declared (Benchmark::Job#item: `@list << [label, blk]`). */
+static int blk_param_escapes(Compiler *c, Scope *ms) {
+  const NodeTable *nt = c->nt;
+  if (!ms || !ms->blk_param || !ms->blk_param[0] || ms->def_node < 0) return 0;
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) == NK_YieldNode && comp_scope_of(c, id) == ms) return 0;
+  }
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_LocalVariableReadNode || comp_scope_of(c, id) != ms) continue;
+    const char *n = nt_str(nt, id, "name");
+    if (!n || !sp_streq(n, ms->blk_param)) continue;
+    int used = 0;
+    for (int k = 0; k < nt->count && !used; k++) {
+      NodeKind kk = nt_kind(nt, k);
+      if (kk == NK_CallNode && nt_ref(nt, k, "receiver") == id) used = 1;
+      else if (kk == NK_BlockArgumentNode && nt_ref(nt, k, "expression") == id) used = 1;
+    }
+    if (!used) return 1;
+  }
+  return 0;
+}
+
 
 void analyze_program(Compiler *c) {
   comp_poly_candidates_reset();
@@ -15987,7 +16019,8 @@ void analyze_program(Compiler *c) {
       const char *rty = r >= 0 ? nt_type(c->nt, r) : NULL;
       int self_or_none = r < 0 || (rty && sp_streq(rty, "SelfNode"));
       const char *nm = nt_str(c->nt, id, "name");
-      if (self_or_none && nm && sp_streq(nm, "block_given?")) comp_scope_of(c, id)->yields = 1;
+      if (self_or_none && nm && sp_streq(nm, "block_given?") &&
+          !blk_param_escapes(c, comp_scope_of(c, id))) comp_scope_of(c, id)->yields = 1;
     }
   }
   /* A method whose `super` lands on a yielding parent yields too. The parent

@@ -8563,6 +8563,16 @@ static sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen) {
     }
     return v;
   }
+  /* String#dup on a boxed string: a copy, unfrozen unless kept. Handed back
+     as-is, a `(fmt || FORMAT).dup` aliased the frozen constant and the next
+     gsub! on the "copy" raised FrozenError (Benchmark::Tms#format). */
+  if (v.tag == SP_TAG_STR && v.v.s) {
+    const char *src = v.v.s;
+    const char *d = sp_str_dup(src);
+    if (keep_frozen && sp_str_is_frozen_val(src)) d = sp_str_freeze_val(d);
+    v.v.s = d;
+    return v;
+  }
   if (v.tag == SP_TAG_OBJ && v.v.p &&
       (v.cls_id >= 0 || v.cls_id == SP_BUILTIN_OBJECT)) {
     sp_gc_hdr *h = (sp_gc_hdr *)((char *)v.v.p - sizeof(sp_gc_hdr));

@@ -351,6 +351,11 @@ static int sp_name_collides_runtime(const char *n) {
        ClassInfo; a USER class/module named Random (`OpenSSL::Random`) would
        emit sp_Random_s and clash with the runtime sp_Random typedef. */
     "Random",
+    /* runtime value types with no Ruby class of the same name: Process.times'
+       struct (a `Benchmark::Tms` is a user class of that name), the range,
+       rational and socket-option carriers, IO::Buffer's and Process::Status's */
+    "Tms", "StrRange", "FloatRange", "BigRational", "RbValue", "SockOpt",
+    "ProcessStatus", "IOBuffer",
     NULL };
   for (int i = 0; reserved[i]; i++) if (sp_streq(n, reserved[i])) return 1;
   return 0;

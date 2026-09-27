@@ -332,6 +332,14 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
                      ? nt_str(nt, fexpr, "name") : NULL;
     Scope *encl = pn ? comp_scope_of(c, id) : NULL;
     LocalVar *plv = encl ? scope_local(encl, pn) : NULL;
+    /* Only an anonymous `&` or the enclosing method's own block parameter
+       forwards the block this site runs under. Any other `&x` is a value --
+       a proc read out of a list, a local -- even inside an inline that has a
+       literal block: taken as a forward, `measure(&item)` inside Benchmark's
+       bmbm spliced the user's block given to bmbm and ran it with no
+       argument. */
+    int fwd_encl = fexpr < 0 || (pn && g_block_param_name && sp_streq(pn, g_block_param_name));
+    int no_encl = g_block_id < 0 || !fwd_encl;
     /* `def outer(&b); inner(&b); end`: the name is the ENCLOSING inlined
        method's own block parameter, which has no local of its own -- the
        inliner skips it as a virtual slot. It is the proc reference this
@@ -351,7 +359,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
              g_block_param_name && sp_streq(pn, g_block_param_name)) {
       /* nothing to forward: fall through with block = -1 below */
     }
-    else if (g_block_id < 0 && plv && plv->type == TY_PROC) {
+    else if (no_encl && plv && plv->type == TY_PROC) {
       snprintf(yprocbuf, sizeof yprocbuf, "lv_%s", rename_local(pn));
       fwd_yield_proc = yprocbuf;
     }
@@ -359,7 +367,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
        `method(:m)`, a Proc read out of a container -- is hoisted into a temp
        and driven the same way; without this the splice found no block at all
        and the call answered nil (#3688). */
-    else if (g_block_id < 0 && fexpr >= 0 && !fwd_yield_proc) {
+    else if (no_encl && fexpr >= 0 && !fwd_yield_proc) {
       TyKind fkt = comp_ntype(c, fexpr);
       if (fkt == TY_PROC || fkt == TY_METHOD || fkt == TY_POLY) {
         fwd_proc_expr = fexpr;
@@ -368,7 +376,8 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
         fwd_yield_proc = yprocbuf;
       }
     }
-    block = g_block_id;
+    /* a proc value drives the yields; the site's own block is not this one */
+    block = (fwd_yield_proc && !fwd_encl) ? -1 : g_block_id;
   }
   if (g_nren + m->nlocals >= MAX_RENAME) return 0;
   /* Pre-check: every body local must have an emittable type. Bail BEFORE
@@ -814,7 +823,8 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     int rtag = ++g_tmp;
     char rvbuf[32]; snprintf(rvbuf, sizeof rvbuf, "_t%d", rtag);
     emit_indent(b, din); emit_ctype(c, rt, b);
-    buf_printf(b, " _t%d = %s;\n", rtag, default_value(rt));
+    /* a value-type object is a struct, whose zero is `{0}`, not NULL */
+    buf_printf(b, " _t%d = %s;\n", rtag, comp_ty_value_obj(c, rt) ? "{0}" : default_value(rt));
     const char *sv_rv = g_result_var; g_result_var = rvbuf;
     int sp = g_result_poly; g_result_poly = (rt == TY_POLY);
     /* g_result_ty is the slot type a tail statement reads to pick its own

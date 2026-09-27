@@ -3597,6 +3597,12 @@ int desugar_builtin_enum_calls(Compiler *c) {
        loses the method it came from */
     if (!nm || (!sp_streq(nm, "each") && !sp_streq(nm, "with_index") && !sp_streq(nm, "each_with_index"))) continue;
     int er = nt_ref(nt, id, "receiver");
+    /* grep/grep_v answer an Array blockless, never an Enumerator, and their
+       block maps rather than iterates: `a.grep(p).each { }` is an each over
+       that Array, and left for the chain rule it was left unrewritten, so
+       the call named a method Array does not have (Benchmark.benchmark) */
+    const char *ern = (er >= 0 && er < n0) ? nt_str(nt, er, "name") : NULL;
+    if (ern && (sp_streq(ern, "grep") || sp_streq(ern, "grep_v"))) continue;
     if (er >= 0 && er < n0 && nt_kind(nt, er) == NK_CallNode && nt_ref(nt, er, "block") < 0) chained[er] = 1;
   }
   for (int id = 0; id < n0; id++) {
