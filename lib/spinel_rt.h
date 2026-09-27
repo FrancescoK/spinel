@@ -12990,18 +12990,15 @@ static sp_RbVal sp_Mutex_synchronize_proc(sp_mutex *m, sp_Proc *blk) {
    instead of nesting on it. A proc that raises or unwinds leaves the handler
    by a jump rather than a return, and the kernel would keep the signal
    blocked for good: land here first, unblock it, then pass the raise or
-   unwind on. */
-#ifdef SPINEL_EXT_HOST
-void sp_trap_call(sp_Proc *p, int no);
-#else
+   unwind on. The frame is armed before anything is rooted, so its root mark
+   is the interrupted code's. */
+#ifndef SPINEL_EXT_HOST
 void sp_trap_call(sp_Proc *p, int no) {
-  SP_GC_ROOT(p);
-  const char *ecls = NULL, *emsg = NULL; void *eobj = NULL; int excf = 0;
-  SP_GC_ROOT_STR(emsg); SP_GC_ROOT(eobj);
   sp_exc_check_depth();
   sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;
   sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;
   if (setjmp(sp_exc_stack[sp_exc_top - 1]) == 0) {
+    SP_GC_ROOT(p);   /* the proc may re-trap its signal, dropping sp_trap_proc's hold */
     sp_int slot = (sp_int)no;
     _sp_proc_poly_args[0] = sp_box_int((sp_int)no);
     sp_proc_call(p, 1, &slot);
@@ -13010,18 +13007,21 @@ void sp_trap_call(sp_Proc *p, int no) {
   }
   sp_exc_top--;
   sp_gc_nroots = sp_exc_rootmark[sp_exc_top]; sp_rescue_sp = sp_rescue_mark[sp_exc_top];
-  if (sp_unwind_kind == SP_UNWIND_NONE) {
-    excf = 1; emsg = sp_exc_msg[sp_exc_top]; ecls = sp_exc_cls[sp_exc_top]; eobj = sp_exc_obj[sp_exc_top];
-  }
-  { sigset_t m; sigemptyset(&m); sigaddset(&m, no);
-#ifdef SP_THREADS
-    pthread_sigmask(SIG_UNBLOCK, &m, NULL);
-#else
-    sigprocmask(SIG_UNBLOCK, &m, NULL);
-#endif
-  }
+  /* Take the exit before unblocking: a delivery that was pending runs its
+     proc right there, reusing this slot, and must not see (or clear) an
+     unwind still in flight. */
+  const char *ecls = sp_exc_cls[sp_exc_top], *emsg = sp_exc_msg[sp_exc_top];
+  void *eobj = sp_exc_obj[sp_exc_top];
+  SP_GC_ROOT_STR(emsg); SP_GC_ROOT(eobj);
+  int uk = sp_unwind_kind, ut = sp_unwind_target, ue = sp_unwind_exc_top;
+  struct sp_proc_home *uh = sp_unwind_home;
+  sp_unwind_kind = SP_UNWIND_NONE;
+  /* out of line on purpose: glibc marks sigprocmask __leaf__, and GCC would
+     keep the unwind state in registers across a direct call */
+  sp_sig_unblock(no, 0);
+  sp_unwind_kind = uk; sp_unwind_target = ut; sp_unwind_exc_top = ue; sp_unwind_home = uh;
   if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();
-  if (excf) { sp_pending_exc_obj = eobj; sp_raise_cls(ecls, emsg); }
+  sp_pending_exc_obj = eobj; sp_raise_cls(ecls, emsg);
 }
 #endif
 typedef struct { sp_RbVal obj; int which; int had; sp_RbVal ans; } sp_obj_conv_probe;

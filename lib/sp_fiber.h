@@ -119,6 +119,7 @@ SP_NORETURN void sp_fiber_raise_kill_self(void);
    signal stack, so the raise runs on memory the overflow did not touch.
    NULL (nothing installed, or no handler armed) keeps the old report. */
 extern void (*sp_stack_overflow_raise_fn)(void);
+void sp_sig_unblock(int a, int b);
 void sp_stack_guard_init(void);
 /* Run the program body on a stack this library maps (see sp_main_stack_run);
    sp_main_stack_hint asks for a size, SPINEL_MAIN_STACK in the environment
