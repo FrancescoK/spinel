@@ -444,7 +444,175 @@ static int fetch_operand_is_inert(Compiler *c, int n) {
   }
 }
 
+/* The text argument of String#insert. A splat there (`s.insert(i, *r)`, left
+   whole because Array#insert takes any count) has to hold exactly the text. */
+void emit_str_insert_text(Compiler *c, int arg, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, arg) != NK_SplatNode) { emit_str_expr(c, arg, b); return; }
+  int inner = nt_ref(nt, arg, "expression"), ts = ++g_tmp;
+  buf_printf(b, "({ sp_PolyArray *_t%d = ", ts);
+  if (inner < 0) {
+    if (!emit_anon_rest_ref(c, arg, b)) buf_puts(b, "sp_PolyArray_new()");
+  }
+  else {
+    buf_puts(b, "sp_poly_to_poly_array(sp_splat_to_array(");
+    emit_boxed(c, inner, b);
+    buf_puts(b, "))");
+  }
+  buf_printf(b, "; if (_t%d->len != 1) sp_raise_cls(\"ArgumentError\","
+                " sp_sprintf(\"wrong number of arguments (given %%lld, expected 2)\","
+                " (long long)(_t%d->len + 1))); sp_poly_arg_str_chk(_t%d->data[0]); })",
+             ts, ts, ts);
+}
+
+/* push / append / unshift / prepend / insert / concat with a `*splat` among
+   the arguments: the splat spreads across the argument list, so its length is
+   only known at run time. The per-name arms read each argument as one element,
+   which stored the splatted array itself (`a.push(*r)` answered
+   [1, 2, [3, 4]]) and dropped an anonymous `*` altogether. Gather the
+   arguments into one poly array -- a splat contributes each of its elements --
+   and apply the operation element by element. Used by the value and the
+   statement form alike. A poly receiver is taken for insert alone, which may
+   be a String's (one text) as well as an Array's. */
+int emit_array_splat_mutator(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!name || recv < 0 || nt_ref(nt, id, "block") >= 0) return 0;
+  int is_push = sp_streq(name, "push") || sp_streq(name, "append");
+  int is_unshift = sp_streq(name, "unshift") || sp_streq(name, "prepend");
+  int is_insert = sp_streq(name, "insert");
+  int is_concat = sp_streq(name, "concat");
+  if (!is_push && !is_unshift && !is_insert && !is_concat) return 0;
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  int has_splat = 0;
+  for (int a = 0; a < argc; a++)
+    if (nt_kind(nt, argv[a]) == NK_SplatNode) has_splat = 1;
+  if (!has_splat) return 0;
+  if (is_insert && nt_kind(nt, argv[0]) == NK_SplatNode) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  int poly = rt == TY_POLY && is_insert;
+  if (poly)
+    for (int k2 = 0; k2 < c->nclasses; k2++)
+      if (comp_poly_arm_defines(c, k2, name)) return 0;
+  /* a typed literal receiver given elements of another kind is rebuilt as
+     the poly array the call's value was typed as */
+  int lift = !poly && rt != TY_POLY_ARRAY && comp_ntype(c, id) == TY_POLY_ARRAY &&
+             nt_kind(nt, recv) == NK_ArrayNode;
+  if (lift) rt = TY_POLY_ARRAY;
+  else if (!poly && ty_is_array(comp_ntype(c, id)) && comp_ntype(c, id) != rt) return 0;
+  const char *k = rt == TY_POLY_ARRAY ? "Poly" : array_kind(rt);
+  if (!k && !poly) return 0;
+  if (is_insert && rt == TY_FLOAT_ARRAY) return 0;
+  for (int a = 0; a < argc; a++) {
+    if (nt_kind(nt, argv[a]) != NK_SplatNode || nt_ref(nt, argv[a], "expression") >= 0) continue;
+    Buf ab; memset(&ab, 0, sizeof ab);
+    int ok = emit_anon_rest_ref(c, argv[a], &ab);
+    free(ab.p);
+    if (!ok) return 0;
+  }
+  TyKind et = ty_array_elem(rt);
+  const char *conv = poly ? "" : et == TY_INT ? "sp_poly_elem_i" : et == TY_FLOAT ? "sp_poly_elem_f" :
+                     et == TY_STRING ? "sp_poly_elem_s" : "";
+  int tr = ++g_tmp, ta = ++g_tmp, ti = -1;
+  if (poly) {
+    buf_printf(b, "({ sp_RbVal _t%d = ", tr);
+    emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tr);
+  }
+  else {
+    buf_printf(b, "({ sp_%sArray *_t%d = ", k, tr);
+    if (lift) {
+      buf_puts(b, "sp_poly_to_poly_array(");
+      emit_boxed(c, recv, b);
+      buf_printf(b, "); SP_GC_ROOT(_t%d); ", tr);
+    }
+    else emit_recv_rooted(c, recv, tr, "SP_GC_ROOT", b);
+  }
+  if (is_insert) {
+    ti = ++g_tmp;
+    buf_printf(b, "sp_int _t%d = ", ti); emit_int_expr(c, argv[0], b); buf_puts(b, "; ");
+  }
+  buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
+  for (int a = is_insert ? 1 : 0; a < argc; a++) {
+    if (nt_kind(nt, argv[a]) == NK_SplatNode) {
+      int inner = nt_ref(nt, argv[a], "expression");
+      buf_printf(b, " sp_PolyArray_append_all(_t%d, ", ta);
+      TyKind at = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
+      if (inner < 0) emit_anon_rest_ref(c, argv[a], b);
+      else if (at == TY_RANGE || at == TY_STR_RANGE || ty_is_hash(at)) {
+        buf_puts(b, "sp_enum_items_from(");
+        emit_boxed(c, inner, b);
+        buf_puts(b, ")");
+      }
+      else {
+        buf_puts(b, "sp_poly_to_poly_array(sp_splat_to_array(");
+        emit_boxed(c, inner, b);
+        buf_puts(b, "))");
+      }
+      buf_puts(b, ");");
+    }
+    else {
+      buf_printf(b, " sp_PolyArray_push(_t%d, ", ta);
+      emit_boxed(c, argv[a], b);
+      buf_puts(b, ");");
+    }
+  }
+  if (is_concat) {
+    int tf = ++g_tmp, tc = ++g_tmp;
+    buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                  " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
+                  " sp_PolyArray_append_all(_t%d, sp_poly_set_operand(_t%d->data[_t%d]));",
+               tf, tf, tc, tc, ta, tc, tf, ta, tc);
+    ta = tf;
+  }
+  int tj = ++g_tmp;
+  if (is_push || is_concat)
+    buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
+                  " sp_%sArray_push(_t%d, %s(_t%d->data[_t%d]));",
+               tj, tj, ta, tj, k, tr, conv, ta, tj);
+  else if (is_unshift && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY))
+    buf_printf(b, " for (sp_int _t%d = _t%d->len - 1; _t%d >= 0; _t%d--)"
+                  " sp_%sArray_unshift(_t%d, %s(_t%d->data[_t%d]));",
+               tj, ta, tj, tj, k, tr, conv, ta, tj);
+  else if (is_unshift)
+    buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
+                  " sp_%sArray_insert(_t%d, _t%d, %s(_t%d->data[_t%d]));",
+               tj, tj, ta, tj, k, tr, tj, conv, ta, tj);
+  else {
+    /* a negative index is taken afresh against the grown array, which puts
+       each element after the one before it, as counting up does for a
+       non-negative one */
+    if (poly) {
+      buf_printf(b, " if ((_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) && _t%d->len != 1)"
+                    " sp_raise_cls(\"ArgumentError\", sp_sprintf(\"wrong number of arguments"
+                    " (given %%lld, expected 2)\", (long long)(_t%d->len + 1)));",
+                 tr, tr, ta, ta);
+      buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
+                    " _t%d = sp_poly_insert(_t%d, _t%d < 0 ? _t%d : _t%d + _t%d, _t%d->data[_t%d]);",
+                 tj, tj, ta, tj, tr, tr, ti, ti, ti, tj, ta, tj);
+      /* a plain String box cannot hold the spliced contents: an lvalue
+         receiver takes the result back */
+      if (nt_kind(nt, recv) == NK_LocalVariableReadNode ||
+          nt_kind(nt, recv) == NK_InstanceVariableReadNode) {
+        buf_puts(b, " ");
+        emit_expr(c, recv, b);
+        buf_printf(b, " = _t%d;", tr);
+      }
+    }
+    else
+      buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
+                    " sp_%sArray_insert(_t%d, _t%d < 0 ? _t%d : _t%d + _t%d, %s(_t%d->data[_t%d]));",
+                 tj, tj, ta, tj, k, tr, ti, ti, ti, tj, conv, ta, tj);
+  }
+  buf_printf(b, " _t%d; })", tr);
+  return 1;
+}
+
 int emit_array_call(Compiler *c, int id, Buf *b) {
+  if (emit_array_splat_mutator(c, id, b)) return 1;
   /* An array indexed by a String or a Symbol is CRuby's TypeError. A
      parameter can be typed that way by a call that never runs it -- one arm
      of a dispatch over several classes' [] (#5076) -- and the typed read
@@ -1020,7 +1188,8 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, " sp_int _t%d = ", ti2); emit_int_expr(c, argv[0], b);
       buf_printf(b, "; if (_t%d < 0) _t%d += (sp_int)sp_str_length(_t%d) + 1;", ti2, ti2, to);
       buf_printf(b, " const char *_t%d = sp_str_splice_at(_t%d, _t%d, 0, ", tn2, to, ti2);
-      emit_str_expr(c, argv[1], b); buf_puts(b, ", 0); ");
+      emit_str_insert_text(c, argv[1], b);
+      buf_puts(b, ", 0); ");
       if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn2); }
       buf_printf(b, "_t%d; })", tn2);
       return 1;

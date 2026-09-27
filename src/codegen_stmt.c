@@ -11373,6 +11373,17 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
   const int *argv = NULL;
   if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
 
+  {
+    Buf sb; memset(&sb, 0, sizeof sb);
+    if (emit_array_splat_mutator(c, id, &sb)) {
+      emit_indent(b, indent);
+      buf_printf(b, "(void)%s;\n", sb.p);
+      free(sb.p);
+      return 1;
+    }
+    free(sb.p);
+  }
+
   /* Guard-narrowed POLY receiver (#3227): `x << "!" if x.is_a?(String)`
      narrows the read to TY_STRING, but the SLOT is poly -- the string-value
      emitters would write the box's .v.s field and lose the shared handle
@@ -11876,7 +11887,9 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(b, "{ sp_int _t%d = ", ti); emit_int_expr(c, argv[0], b);
       buf_printf(b, "; if (_t%d < 0) _t%d += (sp_int)sp_str_length(", ti, ti); emit_expr(c, recv, b); buf_printf(b, ") + 1; ");
       emit_expr(c, recv, b); buf_puts(b, " = sp_str_concat(sp_str_concat(sp_str_sub_range(");
-      emit_expr(c, recv, b); buf_printf(b, ", 0, _t%d), ", ti); emit_expr(c, argv[1], b);
+      emit_expr(c, recv, b); buf_printf(b, ", 0, _t%d), ", ti);
+      if (nt_kind(nt, argv[1]) == NK_SplatNode) emit_str_insert_text(c, argv[1], b);
+      else emit_expr(c, argv[1], b);
       buf_puts(b, "), sp_str_sub_range("); emit_expr(c, recv, b);
       buf_printf(b, ", _t%d, (sp_int)sp_str_length(", ti); emit_expr(c, recv, b); buf_printf(b, "))); }\n");
       return 1;
