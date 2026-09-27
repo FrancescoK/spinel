@@ -736,6 +736,7 @@ void ffi_extern_name(Compiler *c, int fi, Buf *out);
 int ty_is_struct_valued(TyKind t);   /* see codegen_util.c: struct passed by value */
 const char *native_c_type(const char *spec);
 const char *default_value(TyKind t);
+void emit_slot_truthy(TyKind t, const char *ref, Buf *b);
 const char *raise_tail_value(TyKind t);
 const char *raise_tail_value_c(Compiler *c, TyKind t);
 void emit_bigint_operand_ext(Compiler *c, int node, Buf *b);

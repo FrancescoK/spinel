@@ -1875,6 +1875,15 @@ const char *default_value(TyKind t) {
     default:        return (ty_is_hash(t) || ty_is_object(t) || ty_is_obj_array(t)) ? "NULL" : "0";
   }
 }
+/* Ruby truthiness of a slot `ref` of type `t`, as a C condition: the scalar
+   kinds hold nil as a sentinel (default_value), which C reads as true. */
+void emit_slot_truthy(TyKind t, const char *ref, Buf *b) {
+  if (t == TY_INT)         buf_printf(b, "(%s != SP_INT_NIL)", ref);
+  else if (t == TY_FLOAT)  buf_printf(b, "(!sp_float_is_nil(%s))", ref);
+  else if (t == TY_SYMBOL) buf_printf(b, "(%s != (sp_sym)-1)", ref);
+  else if (t == TY_POLY)   buf_printf(b, "(sp_poly_truthy(%s))", ref);
+  else                     buf_printf(b, "(%s)", ref);
+}
 /* The C type of class `cid`'s instances. A `native_struct` carries the name
    its declaration gave -- which need not be derived from the Ruby class name
    (`native_struct "Store", "sp_X509_Store"`) -- and every other class is the

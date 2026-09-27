@@ -8434,12 +8434,15 @@ else {
     if (sc < 0) { unsupported(c, id, "class variable or-write (no class scope)"); return; }
     char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[sc].name, nm + 2);
     int oidx = comp_cvar_index(&c->classes[sc], nm);
-    int boxed = oidx >= 0 && c->classes[sc].cvar_types[oidx] == TY_POLY;
+    TyKind ot = oidx >= 0 ? c->classes[sc].cvar_types[oidx] : TY_UNKNOWN;
     emit_indent(b, indent);
     /* a boxed slot (one written nil and a bool, #4884) tests and stores as
        the value form does */
-    if (boxed) { buf_printf(b, "if (!sp_poly_truthy(%s)) { %s = ", ref, ref); emit_boxed(c, v, b); }
-    else { buf_printf(b, "if (!(%s)) { %s = ", ref, ref); emit_expr(c, v, b); }
+    buf_puts(b, "if (!");
+    emit_slot_truthy(ot, ref, b);
+    buf_printf(b, ") { %s = ", ref);
+    if (ot == TY_POLY) emit_boxed(c, v, b);
+    else emit_expr(c, v, b);
     buf_puts(b, "; }\n");
     return;
   }
@@ -8452,10 +8455,13 @@ else {
     if (sc < 0) { unsupported(c, id, "class variable and-write (no class scope)"); return; }
     char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[sc].name, nm + 2);
     int aidx = comp_cvar_index(&c->classes[sc], nm);
-    int boxed = aidx >= 0 && c->classes[sc].cvar_types[aidx] == TY_POLY;
+    TyKind at = aidx >= 0 ? c->classes[sc].cvar_types[aidx] : TY_UNKNOWN;
     emit_indent(b, indent);
-    if (boxed) { buf_printf(b, "if (sp_poly_truthy(%s)) { %s = ", ref, ref); emit_boxed(c, v, b); }
-    else { buf_printf(b, "if (%s) { %s = ", ref, ref); emit_expr(c, v, b); }
+    buf_puts(b, "if ");
+    emit_slot_truthy(at, ref, b);
+    buf_printf(b, " { %s = ", ref);
+    if (at == TY_POLY) emit_boxed(c, v, b);
+    else emit_expr(c, v, b);
     buf_puts(b, "; }\n");
     return;
   }
