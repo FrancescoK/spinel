@@ -7896,9 +7896,11 @@ void check_block_rest_support(Compiler *c) {
     {
       /* report the param as written, not the shadow rename's slot name */
       char disp[128]; snprintf(disp, sizeof disp, "%.*s", (int)block_param_written_len(rn), rn);
+      long long fid = nt_int(nt, id, "node_file", -1);
+      const char *file = fid >= 0 ? nt_file_path(nt, (int)fid) : NULL;
+      if (!file) file = nt->source_file ? nt->source_file : "source.rb";
       fprintf(stderr, "spinel: %s:%d: a block splat parameter (*%s) is not supported by the `%s` lowering\n",
-              nt->source_file ? nt->source_file : "source.rb",
-              (int)nt_int(nt, id, "node_line", 0), disp, nm);
+              file, (int)nt_int(nt, id, "node_line", 0), disp, nm);
     }
     exit(1);
   }
