@@ -7487,6 +7487,19 @@ int infer_block_params(Compiler *c) {
           lv->is_block_param = 1;
           if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
         }
+        /* keyword params bind out of the boxed kwargs hash, as the proc and
+           lambda-call forms' do below. Left untyped here they turned poly
+           only after the fixpoint, so what flowed from them (an ivar and the
+           calls on it) was still unknown when the enumerable rewrite ran,
+           and `@v.scan(re).filter_map { }` raised NoMethodError. */
+        int nkw = 0; const int *kws = nt_arr(nt, pn, "keywords", &nkw);
+        for (int j = 0; j < nkw; j++) {
+          const char *pname = nt_str(nt, kws[j], "name");
+          if (!pname) continue;
+          LocalVar *lv = scope_local_intern(bs, pname);
+          lv->is_block_param = 1;
+          if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+        }
       }
     }
   }
