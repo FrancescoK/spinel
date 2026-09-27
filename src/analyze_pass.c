@@ -8498,7 +8498,18 @@ int infer_block_params(Compiler *c) {
                  end: its block binds them the same way (#3987) */
               sp_streq(name, "reverse_each") ||
               sp_streq(name, "bsearch") ||
-              sp_streq(name, "chunk_while") || sp_streq(name, "slice_when")))
+              sp_streq(name, "chunk_while") || sp_streq(name, "slice_when") ||
+              /* a Hash's own walks: a boxed receiver runs them on the
+                 PolyPolyHash it is taken as (or dispatches them at run time)
+                 and binds every key and value boxed. Left off, a param typed
+                 in a round that still read the receiver as its `{}` arm's
+                 StrPolyHash stayed a String, and the boxed key was assigned
+                 to a const char * */
+              sp_streq(name, "transform_keys") || sp_streq(name, "transform_values") ||
+              sp_streq(name, "each_key") || sp_streq(name, "each_value") ||
+              sp_streq(name, "delete_if") || sp_streq(name, "keep_if") ||
+              sp_streq(name, "select!") || sp_streq(name, "filter!") ||
+              sp_streq(name, "reject!")))
       pt = TY_POLY;
 
     /* array.each_cons(n) / each_slice(n) { |a, b, ...| } -- a single param

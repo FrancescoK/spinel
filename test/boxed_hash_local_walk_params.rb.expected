@@ -1,0 +1,23 @@
+{"a" => "added", "b" => "gone"}
+{"a" => "added", "b" => "gone"}
+:a
+:b
+{b: "gone"}
+{a: "added"}
+{a: "added"}
+{a: "added"}
+{b: "gone"}
+{}
+{}
+{}
+{}
+nil
+nil
+nil
+{a: "1", b: "2"}
+{a: "1", b: "2"}
+1
+2
+{"x" => "y"}
+{"x" => "y"}
+"y"
