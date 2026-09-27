@@ -1,6 +1,7 @@
 #include "analyze_internal.h"
 int callee_has_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_declares_kwargs(Compiler *c, Scope *m);
+int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -4321,6 +4322,91 @@ int bind_coerce_operator_params(Compiler *c) {
   return changed;
 }
 
+int struct_zsuper_param(Compiler *c, Scope *s, int a, const char *member, int *rest_off) {
+  *rest_off = -1;
+  int pos = 0, after_rest = 0;
+  for (int k = 0; k < s->nparams; k++) {
+    const char *pn = s->pnames[k];
+    if (!pn || k == s->kwrest_idx) continue;
+    if (k == s->rest_idx) { after_rest = 1; continue; }
+    if (callee_param_is_declared_kwarg(c, s, pn)) {
+      if (sp_streq(pn, member)) return k;
+      continue;
+    }
+    if (after_rest) continue;
+    if (pos++ == a) return k;
+  }
+  if (s->rest_idx >= 0 && s->rest_idx < s->nparams && s->pnames[s->rest_idx]) {
+    *rest_off = a - pos;
+    return s->rest_idx;
+  }
+  return -1;
+}
+
+static int param_defaults_to_nil(Compiler *c, Scope *s, const char *name) {
+  for (int k = 0; name && s->pdefault && k < s->nparams; k++)
+    if (s->pnames[k] && sp_streq(s->pnames[k], name))
+      return s->pdefault[k] >= 0 && nt_kind(c->nt, s->pdefault[k]) == NK_NilNode;
+  return 0;
+}
+
+/* `super` in a Struct or Data's own initialize is what sets the members, so
+   the values it passes type them: a forwarded parameter's type, which
+   includes a `nil` default, or an explicit argument's. Typed only from the
+   `.new` arguments, a member read the nil a default left as that type's
+   zero. */
+static int struct_super_types_members(Compiler *c, int id, Scope *s) {
+  const NodeTable *nt = c->nt;
+  ClassInfo *cls = &c->classes[s->class_id];
+  int changed = 0;
+  int fwd = nt_kind(nt, id) == NK_ForwardingSuperNode;
+  int args = fwd ? -1 : nt_ref(nt, id, "arguments");
+  int an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  int kwh = (an == 1 && nt_kind(nt, av[0]) == NK_KeywordHashNode) ? av[0] : -1;
+  for (int a = 0; a < cls->nivars; a++) {
+    if (class_ivar_pinned(cls, cls->ivars[a])) continue;
+    const char *mname = cls->ivars[a] + 1;
+    TyKind at = TY_UNKNOWN;
+    int nilable = 0;
+    if (fwd) {
+      int roff;
+      int k = struct_zsuper_param(c, s, a, mname, &roff);
+      LocalVar *lv = k >= 0 ? scope_local(s, s->pnames[k]) : NULL;
+      if (lv && roff >= 0) at = TY_POLY;
+      else if (lv) { at = lv->type; nilable = lv->nullable_int || param_defaults_to_nil(c, s, s->pnames[k]); }
+    }
+    else {
+      int vnode = -1;
+      if (kwh >= 0) {
+        int kn = 0; const int *ke = nt_arr(nt, kwh, "elements", &kn);
+        for (int e = 0; e < kn; e++) {
+          if (nt_kind(nt, ke[e]) != NK_AssocNode) continue;
+          int key = nt_ref(nt, ke[e], "key");
+          if (key >= 0 && nt_kind(nt, key) == NK_SymbolNode &&
+              nt_str(nt, key, "value") && sp_streq(nt_str(nt, key, "value"), mname)) {
+            vnode = nt_ref(nt, ke[e], "value"); break;
+          }
+        }
+      }
+      else if (a < an && nt_kind(nt, av[a]) != NK_SplatNode) vnode = av[a];
+      if (vnode >= 0) {
+        at = infer_type(c, vnode);
+        nilable = nullable_int_value(c, vnode) ||
+                  (nt_kind(nt, vnode) == NK_LocalVariableReadNode &&
+                   param_defaults_to_nil(c, s, nt_str(nt, vnode, "name")));
+      }
+    }
+    if (at == TY_UNKNOWN) continue;
+    TyKind m = ty_unify(cls->ivar_types[a], at);
+    /* A Float member boxes without the nil check an Integer one has, so one
+       that can be nil is kept boxed. */
+    if (m == TY_FLOAT && (nilable || at == TY_NIL)) m = TY_POLY;
+    if (m != cls->ivar_types[a]) { cls->ivar_types[a] = m; changed = 1; }
+  }
+  return changed;
+}
+
 /* Struct construction: positional (or keyword) args set the member ivars
    in order. Shared by every spelling that constructs the struct: the
    constant, a qualified path, a local holding an anonymous struct, and a
@@ -4330,6 +4416,10 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
   const NodeTable *nt = c->nt;
   int changed = 0;
   ClassInfo *cls = &c->classes[ci];
+  /* A user initialize receives the arguments; its `super` sets the members
+     (struct_super_types_members). */
+  int imi = comp_method_in_chain(c, ci, "initialize", NULL);
+  if (imi >= 0) return bind_call_params(c, id, imi);
   int args = nt_ref(nt, id, "arguments");
   int an = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
@@ -4436,6 +4526,10 @@ int infer_param_types(Compiler *c) {
             if (mg != dst->type) { dst->type = mg; changed = 1; }
           }
         }
+        continue;
+      }
+      if (c->classes[s->class_id].is_struct && sp_streq(s->name, "initialize")) {
+        changed |= struct_super_types_members(c, id, s);
         continue;
       }
       int p = c->classes[s->class_id].parent;
