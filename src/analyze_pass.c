@@ -2045,6 +2045,23 @@ static int masgn_unify_elem(Compiler *c, Scope *ms, const int *tgts, int n, TyKi
         c->classes[ms->class_id].ivar_types[iv_ms] = mg; changed = 1;
       }
     }
+    else if (sp_streq(lty_ms, "GlobalVariableTargetNode")) {
+      const char *gnm = nt_str(nt, tgts[i], "name");
+      const char *grn = gnm ? comp_resolve_gvar(c, gnm + 1) : NULL;
+      LocalVar *glv = grn ? comp_gvar(c, grn) : NULL;
+      if (!glv) continue;
+      TyKind mg = ty_unify(glv->type, elem);
+      if (mg != glv->type) { glv->type = mg; changed = 1; }
+    }
+    else if (sp_streq(lty_ms, "ClassVariableTargetNode") && ms && ms->class_id >= 0) {
+      const char *cvnm = nt_str(nt, tgts[i], "name");
+      int cvx = cvnm ? comp_cvar_index(&c->classes[ms->class_id], cvnm) : -1;
+      if (cvx < 0) continue;
+      TyKind mg = ty_unify(c->classes[ms->class_id].cvar_types[cvx], elem);
+      if (mg != c->classes[ms->class_id].cvar_types[cvx]) {
+        c->classes[ms->class_id].cvar_types[cvx] = mg; changed = 1;
+      }
+    }
     else if (sp_streq(lty_ms, "ConstantTargetNode")) {
       const char *cnm_ms = nt_str(nt, tgts[i], "name");
       LocalVar *cv_ms = cnm_ms ? comp_const(c, cnm_ms) : NULL;
@@ -2278,6 +2295,8 @@ int infer_write_types(Compiler *c) {
          naming it here would claim a typing for something that cannot compile. */
       if (is_io_pair) {
         for (int i = 0; i < 2; i++) {
+          if (sp_streq(nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "", "GlobalVariableTargetNode"))
+            changed |= masgn_unify_elem(c, comp_scope_of(c, id), &lefts[i], 1, TY_IO);
           if (!sp_streq(nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "", "LocalVariableTargetNode")) continue;
           const char *lnm = nt_str(nt, lefts[i], "name");
           LocalVar *lv = lnm ? scope_local_intern(comp_scope_of(c, id), lnm) : NULL;
@@ -2319,6 +2338,8 @@ int infer_write_types(Compiler *c) {
               c->classes[ms_mr->class_id].ivar_types[ivx] = mg; changed = 1;
             }
           }
+          else if (sp_streq(lty_mr, "GlobalVariableTargetNode") || sp_streq(lty_mr, "ClassVariableTargetNode"))
+            changed |= masgn_unify_elem(c, ms_mr, &lefts[i], 1, elems[i]);
           else if (sp_streq(lty_mr, "ConstantTargetNode")) {
             const char *cnm = nt_str(nt, lefts[i], "name");
             LocalVar *cv = cnm ? comp_const(c, cnm) : NULL;
@@ -2344,7 +2365,10 @@ int infer_write_types(Compiler *c) {
         TyKind st = infer_type(c, value);
         if (st != TY_UNKNOWN && st != TY_NIL && !ty_is_array(st) && !ty_is_hash(st)) {
           for (int i = 0; i < ln; i++) {
-            if (!sp_streq(nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "", "LocalVariableTargetNode")) continue;
+            const char *lty_s = nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "";
+            if (sp_streq(lty_s, "GlobalVariableTargetNode") || sp_streq(lty_s, "ClassVariableTargetNode"))
+              changed |= masgn_unify_elem(c, comp_scope_of(c, id), &lefts[i], 1, st);
+            if (!sp_streq(lty_s, "LocalVariableTargetNode")) continue;
             const char *lnm = nt_str(nt, lefts[i], "name");
             LocalVar *lv = lnm ? scope_local(comp_scope_of(c, id), lnm) : NULL;
             if (!lv || lv->is_param || lv->is_block_param) continue;
@@ -2355,6 +2379,12 @@ int infer_write_types(Compiler *c) {
           int rest_ms = nt_ref(nt, id, "rest");
           if (rest_ms >= 0 && nt_type(nt, rest_ms) && sp_streq(nt_type(nt, rest_ms), "SplatNode")) {
             int rin_ms = nt_ref(nt, rest_ms, "expression");
+            if (rin_ms >= 0 && nt_type(nt, rin_ms) &&
+                sp_streq(nt_type(nt, rin_ms), "GlobalVariableTargetNode")) {
+              TyKind rat = ty_array_of(st);
+              changed |= masgn_unify_elem(c, comp_scope_of(c, id), &rin_ms, 1,
+                                          rat == TY_UNKNOWN ? TY_POLY_ARRAY : rat);
+            }
             if (rin_ms >= 0 && nt_type(nt, rin_ms) &&
                 sp_streq(nt_type(nt, rin_ms), "LocalVariableTargetNode")) {
               const char *rnm_ms = nt_str(nt, rin_ms, "name");
@@ -2389,7 +2419,22 @@ int infer_write_types(Compiler *c) {
                  transition is a real change. */
               if (mg_p != lv_p->type) { lv_p->type = mg_p; if (lv_p->rbs_seeded) changed = 1; }
             }
+            else if (sp_streq(lty_p, "GlobalVariableTargetNode") || sp_streq(lty_p, "ClassVariableTargetNode"))
+              changed |= masgn_unify_elem(c, ms_poly, &lefts[i], 1, TY_POLY);
           }
+          int rn_p = 0;
+          const int *rights_p = nt_arr(nt, id, "rights", &rn_p);
+          for (int j = 0; j < rn_p; j++) {
+            const char *rty_p = nt_type(nt, rights_p[j]) ? nt_type(nt, rights_p[j]) : "";
+            if (sp_streq(rty_p, "GlobalVariableTargetNode") || sp_streq(rty_p, "ClassVariableTargetNode"))
+              changed |= masgn_unify_elem(c, ms_poly, &rights_p[j], 1, TY_POLY);
+          }
+          int rest_p = nt_ref(nt, id, "rest");
+          int rin_p = (rest_p >= 0 && nt_type(nt, rest_p) && sp_streq(nt_type(nt, rest_p), "SplatNode"))
+                      ? nt_ref(nt, rest_p, "expression") : -1;
+          if (st == TY_POLY && rin_p >= 0 && nt_type(nt, rin_p) &&
+              sp_streq(nt_type(nt, rin_p), "GlobalVariableTargetNode"))
+            changed |= masgn_unify_elem(c, ms_poly, &rin_p, 1, TY_POLY_ARRAY);
         }
         if (ty_is_array(st)) {
           TyKind elem = ty_array_elem(st);
@@ -2411,6 +2456,9 @@ int infer_write_types(Compiler *c) {
               if (lv3 && !lv3->is_param && !lv3->is_block_param)
                 lv3->type = ty_unify(lv3->type, st);
             }
+            else if (inner2 >= 0 && nt_type(nt, inner2) &&
+                     sp_streq(nt_type(nt, inner2), "GlobalVariableTargetNode"))
+              changed |= masgn_unify_elem(c, ms_arr, &inner2, 1, st);
           }
         }
       }
