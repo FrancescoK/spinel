@@ -5848,7 +5848,7 @@ static int pd_hoist(Compiler *c, Buf *b, size_t from, int tr, TyKind rct,
       pd_def_cap = nc;
     }
     Buf pb; memset(&pb, 0, sizeof pb);
-    buf_puts(&pb, "static __attribute__((unused, noinline)) ");
+    buf_puts(&pb, "static SP_UNUSED SP_NOINLINE ");
     buf_printf(&pb, sig.p, fn); buf_puts(&pb, ";\n");
     Buf db; memset(&db, 0, sizeof db);
     emit_current_line_directive(c, &db);   /* the first site it came from */
@@ -13077,10 +13077,10 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
     /* the no-break path steps over the landing; the goto lands on it */
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "goto _brkend%d;\n", tS);
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-    emit_indent(g_pre, g_indent); buf_printf(g_pre, "_brklbl%d: __attribute__((unused));\n", tS);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "_brklbl%d: SP_UNUSED;\n", tS);
     emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_gc_nroots = _t%d;\n", tG);
     emit_indent(g_pre, g_indent); buf_printf(g_pre, "_t%d = _brkv%d;\n", tR, tS);
-    emit_indent(g_pre, g_indent); buf_printf(g_pre, "_brkend%d: __attribute__((unused));\n", tS);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "_brkend%d: SP_UNUSED;\n", tS);
   }
   else {
     emit_indent(g_pre, g_indent);
@@ -13096,7 +13096,7 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
        snapshot (correct for both paths -- after an ensure-running longjmp the
        handlers have already popped down to these) */
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "_brklbl%d: __attribute__((unused));\n", tS);
+    buf_printf(g_pre, "_brklbl%d: SP_UNUSED;\n", tS);
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_gc_nroots = _t%d;\n", tG);
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "sp_exc_top = _brkexc%d; sp_catch_top = _brkcat%d; sp_brk_top = _brkslot%d;\n",

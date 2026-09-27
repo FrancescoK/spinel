@@ -179,8 +179,8 @@ void       sp_sched_drain(void);
    everything that matters. */
 extern volatile int sp_safepoint_flag;
 #ifdef SP_THREADS
-#define SP_SAFEPOINT_POLL() __atomic_load_n(&sp_safepoint_flag, __ATOMIC_RELAXED)
-#define SP_SAFEPOINT_SET(v) __atomic_store_n(&sp_safepoint_flag, (v), __ATOMIC_RELAXED)
+#define SP_SAFEPOINT_POLL() SP_ATOMIC_LOAD(&sp_safepoint_flag, __ATOMIC_RELAXED)
+#define SP_SAFEPOINT_SET(v) SP_ATOMIC_STORE(&sp_safepoint_flag, (v), __ATOMIC_RELAXED)
 #else
 #define SP_SAFEPOINT_POLL() (sp_safepoint_flag)
 #define SP_SAFEPOINT_SET(v) (sp_safepoint_flag = (v))

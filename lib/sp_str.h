@@ -13,7 +13,7 @@
  * at the final link (same as lib/sp_core.c). */
 #include "sp_array.h"   /* sp_StrArray, sp_IntArray + sp_alloc.h / sp_gc.h / sp_types.h */
 
-const char *sp_sprintf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));  /* defined in the generated TU */
+const char *sp_sprintf(const char *fmt, ...) SP_PRINTF_FORMAT(1, 2);  /* defined in the generated TU */
 
 /* ---- hot UTF-8 + length-cache inline core (relocated from spinel_rt.h;
    each generated TU still inlines these identically). Length-cache state

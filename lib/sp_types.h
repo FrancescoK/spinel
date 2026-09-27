@@ -27,6 +27,7 @@
 #define _DARWIN_C_SOURCE
 #endif
 
+#include "sp_compat.h"   /* the GNU extensions behind macros; first, it sets them all */
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -50,7 +51,10 @@
    to before. Both sides must agree on the storage class, so SP_TLS lives in
    this shared base header. */
 #ifdef SP_THREADS
-# define SP_TLS __thread
+# ifdef SP_NO_THREAD_LOCAL
+#  error "spinel: the threaded runtime (SP_THREADS) needs thread-local storage"
+# endif
+# define SP_TLS SP_THREAD_LOCAL
 #else
 # define SP_TLS
 #endif
@@ -66,24 +70,10 @@ extern SP_TLS int sp_worker_id;      /* this OS worker's slot (0 = main); sp_sch
 extern int sp_active_workers;        /* live worker count; sp_sched.c */
 #endif
 
-/* Branch-hint / hot-cold attributes. Static approximation of PGO: marking
-   rare paths (raise, dispatch fallbacks) cold lets the C compiler split
-   them out of the hot path's i-cache footprint. No-op on non-GCC/clang. */
-#if defined(__GNUC__) || defined(__clang__)
-# define SP_LIKELY(x)   __builtin_expect(!!(x), 1)
-# define SP_UNLIKELY(x) __builtin_expect(!!(x), 0)
-# define SP_COLD        __attribute__((cold))
-# define SP_NOINLINE    __attribute__((noinline))
-# define SP_INLINE      inline __attribute__((always_inline))
-# define SP_NORETURN    __attribute__((noreturn))
-#else
-# define SP_LIKELY(x)   (x)
-# define SP_UNLIKELY(x) (x)
-# define SP_COLD
-# define SP_NOINLINE
-# define SP_INLINE      inline
-# define SP_NORETURN
-#endif
+/* Branch-hint / hot-cold attributes (SP_LIKELY, SP_UNLIKELY, SP_COLD,
+   SP_NOINLINE, SP_INLINE, SP_NORETURN) live in sp_compat.h. Static
+   approximation of PGO: marking rare paths (raise, dispatch fallbacks) cold
+   lets the C compiler split them out of the hot path's i-cache footprint. */
 
 /* sp_int follows pointer width (decided at compile time via intptr_t):
    int64_t on 64-bit hosts -- PCs, no behavior change -- and int32_t on

@@ -138,6 +138,10 @@ static void put_stripped(FILE *f, const char *t, size_t st, size_t en, int no_in
         fputs("noinline", f);   /* keep the attribute list well-formed */
         continue;
       }
+      if (no_inline && wl == 16 && memcmp(t + s, "SP_ALWAYS_INLINE", 16) == 0) {
+        fputs("SP_NOINLINE", f);   /* the sp_compat.h spelling of the same */
+        continue;
+      }
       if (!drop) fwrite(t + s, 1, wl, f);
       continue;
     }
@@ -331,7 +335,8 @@ int c_split(const char *pre_path, const char *out_dir, int nparts,
       ident_before(t, x->st, fp, x->name, sizeof x->name);
       if (!x->name[0]) { ok = 0; break; }
       int inl = has_word(t, x->st, fp, "inline") || has_word(t, x->st, fp, "__inline__") ||
-                has_word(t, x->st, fp, "__inline") || has_word(t, x->st, body, "always_inline");
+                has_word(t, x->st, fp, "__inline") || has_word(t, x->st, body, "always_inline") ||
+                has_word(t, x->st, body, "SP_ALWAYS_INLINE");
       /* a static local needs the single definition; 2 marks it */
       x->keep_inline = has_word(t, body, en, "static") ? 2 : inl;
     }
@@ -368,7 +373,8 @@ int c_split(const char *pre_path, const char *out_dir, int nparts,
       /* a prototype that says inline makes the function inline wherever it
          is defined (keep_inline here: "declared inline") */
       x->keep_inline = has_word(t, x->st, en, "inline") || has_word(t, x->st, en, "__inline__") ||
-                       has_word(t, x->st, en, "__inline") || has_word(t, x->st, en, "always_inline");
+                       has_word(t, x->st, en, "__inline") || has_word(t, x->st, en, "always_inline") ||
+                       has_word(t, x->st, en, "SP_ALWAYS_INLINE");
     }
     if (x->kind == IT_VAR && !x->name[0]) {
       long cut = decl_cut(t, x->st, en);

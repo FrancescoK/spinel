@@ -600,17 +600,17 @@ void sp_Fiber_storage_set(sp_Fiber*f,sp_sym k,sp_RbVal v){SP_GC_ROOT_RBVAL(v);SP
    with publishers that hold it. In the single-threaded build the atomics
    compile to plain ops on a never-contended slot. */
 #define SP_INJECT_LOCK_BIT 0x40000000
-#define SP_INJECT_PEEK(f) (__atomic_load_n(&(f)->inject, __ATOMIC_ACQUIRE) & ~SP_INJECT_LOCK_BIT)
+#define SP_INJECT_PEEK(f) (SP_ATOMIC_LOAD(&(f)->inject, __ATOMIC_ACQUIRE) & ~SP_INJECT_LOCK_BIT)
 /* Acquire the slot; returns the kind bits observed at lock time. */
 static int sp_fiber_inject_lock(sp_Fiber*f){
   for(;;){
-    int cur=__atomic_load_n(&f->inject,__ATOMIC_RELAXED);
+    int cur=SP_ATOMIC_LOAD(&f->inject,__ATOMIC_RELAXED);
     if(cur&SP_INJECT_LOCK_BIT)continue;   /* holder is mid-publish/consume; spin */
-    if(__atomic_compare_exchange_n(&f->inject,&cur,cur|SP_INJECT_LOCK_BIT,0,
+    if(SP_ATOMIC_CAS(&f->inject,&cur,cur|SP_INJECT_LOCK_BIT,0,
                                    __ATOMIC_ACQUIRE,__ATOMIC_RELAXED))return cur;
   }
 }
-static void sp_fiber_inject_unlock(sp_Fiber*f,int kind){__atomic_store_n(&f->inject,kind,__ATOMIC_RELEASE);}
+static void sp_fiber_inject_unlock(sp_Fiber*f,int kind){SP_ATOMIC_STORE(&f->inject,kind,__ATOMIC_RELEASE);}
 /* Publish kind+payload atomically with respect to a concurrent consume. */
 static void sp_fiber_inject_publish(sp_Fiber*f,int kind,const char*cls,const char*msg,void*obj){SP_GC_ROOT(f);SP_GC_ROOT_STR(msg);
   sp_fiber_inject_lock(f);

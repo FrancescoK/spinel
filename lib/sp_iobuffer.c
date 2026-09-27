@@ -669,9 +669,9 @@ static const char *iob_hexdump(sp_IOBuffer *b, int64_t off, int64_t len, int64_t
      before it reaches malloc (a huge width made the product wrap and the
      sprintf write past a too-small block). */
   uint64_t line_max, total;
-  if (__builtin_mul_overflow((uint64_t)width, (uint64_t)4, &line_max) ||
-      __builtin_add_overflow(line_max, (uint64_t)40, &line_max) ||
-      __builtin_mul_overflow((uint64_t)(nlines > 0 ? nlines : 1), line_max, &total) ||
+  if (sp_ckd_mul_u64((uint64_t)width, (uint64_t)4, &line_max) ||
+      sp_ckd_add_u64(line_max, (uint64_t)40, &line_max) ||
+      sp_ckd_mul_u64((uint64_t)(nlines > 0 ? nlines : 1), line_max, &total) ||
       total > (uint64_t)1 << 40)
     sp_oom_die();
   char *tmp = (char *)malloc((size_t)total);

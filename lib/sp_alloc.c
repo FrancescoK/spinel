@@ -685,7 +685,7 @@ static void sp_str_sweep_young(sp_str_hdr **head, sp_str_hdr **keep_head, sp_str
   size_t moved = 0, held = 0;
   while (h) {
     sp_str_hdr *next = h->next;
-    __builtin_prefetch(next);
+    SP_PREFETCH(next);
     char *body = (char *)(h + 1);
     unsigned char m = (unsigned char)body[0];
     held += h->size & SP_STR_SIZE_MASK;
@@ -693,7 +693,7 @@ static void sp_str_sweep_young(sp_str_hdr **head, sp_str_hdr **keep_head, sp_str
       /* Beside the mutators (a sweeper thread) the reset is a compare-and-
          swap: a `freeze` that lands on the same byte in the same moment wins,
          where a plain store could put its 0xfe over the 0xf1. */
-      if (m == 0xfc) { if (sp_gc_in_sweeper) { unsigned char ex = 0xfc; __atomic_compare_exchange_n((unsigned char *)body, &ex, (unsigned char)0xfe, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE); } else body[0] = (char)0xfe; }
+      if (m == 0xfc) { if (sp_gc_in_sweeper) { unsigned char ex = 0xfc; SP_ATOMIC_CAS((unsigned char *)body, &ex, (unsigned char)0xfe, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE); } else body[0] = (char)0xfe; }
       h->next = keep;
       if (!keep) tail = h;
       keep = h;
@@ -804,10 +804,10 @@ static void sp_str_sweep_old(sp_str_hdr **head, size_t *bytes) {
   sp_str_hdr **pp = head;
   while (*pp) {
     sp_str_hdr *h = *pp;
-    __builtin_prefetch(h->next);
+    SP_PREFETCH(h->next);
     char *body = (char *)(h + 1);
     unsigned char m = (unsigned char)body[0];
-    if (m == 0xfc) { if (sp_gc_in_sweeper) { unsigned char ex = 0xfc; __atomic_compare_exchange_n((unsigned char *)body, &ex, (unsigned char)0xfe, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE); } else body[0] = (char)0xfe; pp = &h->next; }
+    if (m == 0xfc) { if (sp_gc_in_sweeper) { unsigned char ex = 0xfc; SP_ATOMIC_CAS((unsigned char *)body, &ex, (unsigned char)0xfe, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE); } else body[0] = (char)0xfe; pp = &h->next; }
     else if (m == 0xf1) { pp = &h->next; }
     else {
       *pp = h->next;
@@ -1074,7 +1074,7 @@ char *sp_str_alloc_ext(size_t len) { return sp_str_alloc(len); }
 
 /* Wire string sweep into the object collector. Runs before main, so the hook is
    set before the first allocation can trigger a collection. */
-__attribute__((constructor)) static void sp_alloc_install_hooks(void) {
+SP_CONSTRUCTOR static void sp_alloc_install_hooks(void) {
   sp_gc_str_sweep_hook = sp_str_sweep_gated;
   sp_gc_str_major_due_hook = sp_str_major_due;
   sp_gc_obj_retune_hook = sp_gc_retune_object;
@@ -1349,7 +1349,7 @@ static int sp_resolve_report_signal(void) {
 static void sp_alloc_report_poll(void) {
   if (!sp_alloc_report_pending) return;
 #ifdef SP_THREADS
-  if (!__atomic_exchange_n(&sp_alloc_report_pending, 0, __ATOMIC_SEQ_CST)) return;
+  if (!SP_ATOMIC_EXCHANGE(&sp_alloc_report_pending, 0, __ATOMIC_SEQ_CST)) return;
 #else
   sp_alloc_report_pending = 0;
 #endif
@@ -1394,7 +1394,7 @@ static void sp_alloc_report_start_reader(void) {
 }
 #endif
 
-__attribute__((constructor)) static void sp_alloc_report_boot(void) {
+SP_CONSTRUCTOR static void sp_alloc_report_boot(void) {
   const char *e = getenv("SPINEL_ALLOC_REPORT");
   if (e && *e && strcmp(e, "0") != 0) {
     sp_alloc_report_on = 1; sp_gc_alloc_fast_ok = 0;

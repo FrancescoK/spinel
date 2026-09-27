@@ -32,7 +32,7 @@ typedef double  sp_float;
 
 /* Defined in the generated translation unit (spinel_rt.h); referenced
    here and resolved at link time. */
-__attribute__((noreturn)) void sp_raise_cls(const char *cls, const char *msg);
+SP_NORETURN void sp_raise_cls(const char *cls, const char *msg);
 const char *sp_sprintf(const char *fmt, ...);
 
 /* CRuby's `String#to_i` accepts a leading sign, then digits with
@@ -52,13 +52,13 @@ sp_int sp_str_to_i_cruby(const char *s) {SP_GC_ROOT_STR(s);
   while (*p) {
     if (*p >= '0' && *p <= '9') {
       /* Signed-overflow on `v * 10 + digit` is undefined behavior;
-         detect via __builtin_*_overflow. CRuby promotes to Bignum
+         detect via sp_ckd_*_iptr (sp_compat.h). CRuby promotes to Bignum
          on overflow but spinel's int model is int64-only -- raise
          RangeError instead of silently saturating, so a user-side
          `rescue` can react. */
       sp_int t;
-      if (__builtin_mul_overflow(v, 10, &t) ||
-          __builtin_add_overflow(t, (sp_int)(*p - '0'), &v)) {
+      if (sp_ckd_mul_iptr(v, 10, &t) ||
+          sp_ckd_add_iptr(t, (sp_int)(*p - '0'), &v)) {
         sp_raise_cls("RangeError", sp_sprintf("integer overflow parsing \"%s\"", s));
       }
       any = 1;
@@ -161,8 +161,8 @@ static const char *sp_int_scan(const char *p, sp_int base, sp_int *v, int *any) 
       return p;
     }
     sp_int t;
-    if (__builtin_mul_overflow(*v, base, &t) ||
-        __builtin_add_overflow(t, (sp_int)d, v)) return NULL;
+    if (sp_ckd_mul_iptr(*v, base, &t) ||
+        sp_ckd_add_iptr(t, (sp_int)d, v)) return NULL;
     *any = 1;
   }
 }
@@ -533,8 +533,8 @@ sp_int sp_str_oct(const char*s){SP_GC_ROOT_STR(s);
     else break;
     if(d>=base)break;
     sp_int t;
-    if(__builtin_mul_overflow(val,(sp_int)base,&t)||
-       __builtin_add_overflow(t,(sp_int)d,&val))
+    if(sp_ckd_mul_iptr(val,(sp_int)base,&t)||
+       sp_ckd_add_iptr(t,(sp_int)d,&val))
       sp_raise_cls("RangeError",sp_sprintf("integer overflow parsing \"%s\"",s));
     any=1; prev_us=0; p++;
   }

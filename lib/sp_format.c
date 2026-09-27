@@ -188,7 +188,7 @@ sp_Complex sp_complex_pow_rational(sp_Complex z, sp_Rational w) {
 /* ---- Rational arithmetic ----
    Intermediate products use a wider type; a result that does not fit back into
    sp_int raises RangeError (mruby promotes to Bigint -- a later phase can too).
-   __int128 covers the 64-bit build; int64 covers two int32 operands losslessly. */
+   A 128-bit integer covers the 64-bit build (see sp_rat_wide below); int64 covers two int32 operands losslessly. */
 static sp_int sp_rational_gcd_i(sp_int a, sp_int b) {
   if (a < 0) a = -a;
   if (b < 0) b = -b;
@@ -274,10 +274,33 @@ sp_Rational sp_str_to_r_strict(const char *s) {SP_GC_ROOT_STR(s);
   if (*p) sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Rational(): \"%s\"", s));
   return sp_rational_new(sign * num, den);
 }
-#if INTPTR_MAX > 0x7fffffff
-typedef __int128 sp_rat_wide;
+/* The products of two sp_int fit a 128-bit integer on the 64-bit build and a
+   long long on the 32-bit one. A 64-bit build without a 128-bit type
+   (sp_compat.h) computes in long long and checks every step, raising the
+   RangeError an out-of-range result raises anyway -- earlier than the wide
+   type would, for an intermediate the reduction would have brought back. */
+#if INTPTR_MAX > 0x7fffffff && SP_HAVE_INT128
+typedef sp_int128 sp_rat_wide;
+# define SP_RAT_MUL(a, b) ((sp_rat_wide)(a) * (b))
+# define SP_RAT_ADD(a, b) ((a) + (b))
+# define SP_RAT_SUB(a, b) ((a) - (b))
+#elif INTPTR_MAX > 0x7fffffff
+typedef long long sp_rat_wide;
+static sp_rat_wide sp_rat_ck(int ovf, intptr_t r) {
+  if (ovf) sp_raise_cls("RangeError", "Rational out of sp_int range");
+  return (sp_rat_wide)r;
+}
+static sp_rat_wide sp_rat_mul_ck(sp_rat_wide a, sp_rat_wide b) { intptr_t r; return sp_rat_ck(sp_ckd_mul_iptr((intptr_t)a, (intptr_t)b, &r), r); }
+static sp_rat_wide sp_rat_add_ck(sp_rat_wide a, sp_rat_wide b) { intptr_t r; return sp_rat_ck(sp_ckd_add_iptr((intptr_t)a, (intptr_t)b, &r), r); }
+static sp_rat_wide sp_rat_sub_ck(sp_rat_wide a, sp_rat_wide b) { intptr_t r; return sp_rat_ck(sp_ckd_sub_iptr((intptr_t)a, (intptr_t)b, &r), r); }
+# define SP_RAT_MUL(a, b) sp_rat_mul_ck((sp_rat_wide)(a), (sp_rat_wide)(b))
+# define SP_RAT_ADD(a, b) sp_rat_add_ck(a, b)
+# define SP_RAT_SUB(a, b) sp_rat_sub_ck(a, b)
 #else
 typedef long long sp_rat_wide;
+# define SP_RAT_MUL(a, b) ((sp_rat_wide)(a) * (b))
+# define SP_RAT_ADD(a, b) ((a) + (b))
+# define SP_RAT_SUB(a, b) ((a) - (b))
 #endif
 static sp_int sp_rat_fit(sp_rat_wide v) {
   if (v > (sp_rat_wide)INTPTR_MAX || v < (sp_rat_wide)(-INTPTR_MAX))
@@ -302,24 +325,24 @@ static sp_Rational sp_rational_new_wide(sp_rat_wide n, sp_rat_wide d) {
 }
 sp_Rational sp_rational_new_i64(int64_t n, int64_t d) { return sp_rational_new_wide((sp_rat_wide)n, (sp_rat_wide)d); }
 sp_Rational sp_rational_add(sp_Rational a, sp_Rational b) {
-  return sp_rational_new_wide(((sp_rat_wide)a.num * b.den) + ((sp_rat_wide)b.num * a.den),
-                              (sp_rat_wide)a.den * b.den);
+  return sp_rational_new_wide(SP_RAT_ADD(SP_RAT_MUL(a.num, b.den), SP_RAT_MUL(b.num, a.den)),
+                              SP_RAT_MUL(a.den, b.den));
 }
 sp_Rational sp_rational_sub(sp_Rational a, sp_Rational b) {
-  return sp_rational_new_wide(((sp_rat_wide)a.num * b.den) - ((sp_rat_wide)b.num * a.den),
-                              (sp_rat_wide)a.den * b.den);
+  return sp_rational_new_wide(SP_RAT_SUB(SP_RAT_MUL(a.num, b.den), SP_RAT_MUL(b.num, a.den)),
+                              SP_RAT_MUL(a.den, b.den));
 }
 sp_Rational sp_rational_mul(sp_Rational a, sp_Rational b) {
-  return sp_rational_new_wide((sp_rat_wide)a.num * b.num, (sp_rat_wide)a.den * b.den);
+  return sp_rational_new_wide(SP_RAT_MUL(a.num, b.num), SP_RAT_MUL(a.den, b.den));
 }
 sp_Rational sp_rational_div(sp_Rational a, sp_Rational b) {
   if (b.num == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
-  return sp_rational_new_wide((sp_rat_wide)a.num * b.den, (sp_rat_wide)a.den * b.num);
+  return sp_rational_new_wide(SP_RAT_MUL(a.num, b.den), SP_RAT_MUL(a.den, b.num));
 }
 sp_Rational sp_rational_neg(sp_Rational a) { a.num = -a.num; return a; }
 sp_Rational sp_rational_abs(sp_Rational a) { if (a.num < 0) a.num = -a.num; return a; }
 sp_int sp_rational_cmp(sp_Rational a, sp_Rational b) {
-  sp_rat_wide l = (sp_rat_wide)a.num * b.den, r = (sp_rat_wide)b.num * a.den;
+  sp_rat_wide l = SP_RAT_MUL(a.num, b.den), r = SP_RAT_MUL(b.num, a.den);
   return l < r ? -1 : (l > r ? 1 : 0);
 }
 sp_bool sp_rational_eq(sp_Rational a, sp_Rational b) {
@@ -369,7 +392,7 @@ static void sp_simplest_pos(double lo, double hi, sp_rat_wide *np, sp_rat_wide *
   if (fl == floor(hi)) {                                       /* no integer in (lo,hi) */
     sp_rat_wide n, d;
     sp_simplest_pos(1.0 / (hi - fl), 1.0 / (lo - fl), &n, &d);
-    *np = ((sp_rat_wide)fl * n) + d;
+    *np = SP_RAT_ADD(SP_RAT_MUL(fl, n), d);
     *dp = n;
     return;
   }

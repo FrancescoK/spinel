@@ -20,7 +20,7 @@
 #include <stdio.h>      /* snprintf for the int/float formatters below */
 #include <math.h>       /* HUGE_VAL / signbit for sp_float_to_s */
 
-const char *sp_sprintf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));  /* defined in the generated TU */
+const char *sp_sprintf(const char *fmt, ...) SP_PRINTF_FORMAT(1, 2);  /* defined in the generated TU */
 
 /* Global heap lock (Phase 1, design 6.1). Under SP_THREADS one mutex serializes
    the object- and string-heap mutations -- the trigger+collect, the calloc/
@@ -690,12 +690,12 @@ extern int sp_gc_stress_checked;
 void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *));
 void *sp_gc_alloc_nogc(size_t sz, void (*fin)(void *), void (*scn)(void *));
 
-__attribute__((noreturn)) void sp_raise_cls(const char *cls, const char *msg);  /* lib/sp_core.c */
-__attribute__((noreturn)) void sp_raise_frozen_str(const char *s);              /* lib/sp_str.c */
+SP_NORETURN void sp_raise_cls(const char *cls, const char *msg);  /* lib/sp_core.c */
+SP_NORETURN void sp_raise_frozen_str(const char *s);              /* lib/sp_str.c */
 /* The message carries the rodata marker byte: an in-flight exception's msg is
    marked by the GC (sp_mark_string reads s[-1]), so a bare literal -- whose
    [-1] is out of bounds -- would be UB when it lands at a section edge. */
-static void __attribute__((noinline, cold)) sp_raise_frozen_array(void) { sp_raise_cls("FrozenError", (&("\xff" "can't modify frozen Array")[1])); }
+static SP_NOINLINE SP_COLD void sp_raise_frozen_array(void) { sp_raise_cls("FrozenError", (&("\xff" "can't modify frozen Array")[1])); }
 /* Same, but stages the receiver so FrozenError#receiver answers the frozen
    object itself (identity-preserving boxing of the mutation target) (#3002).
    sp_exc_stage_recv lives in the generated TU; the ctor transfers the staged
@@ -703,12 +703,12 @@ static void __attribute__((noinline, cold)) sp_raise_frozen_array(void) { sp_rai
 void sp_exc_stage_recv(sp_RbVal v);
 /* the raise itself, in lib/sp_cold.c: the message carries the receiver's
    inspect, as CRuby's does ("can't modify frozen Array: [1, 2]") */
-__attribute__((noreturn)) void sp_raise_frozen_array_rv(sp_RbVal v);
-static void __attribute__((noinline, cold)) sp_raise_frozen_array_at(void *a, int cls_id) {
+SP_NORETURN void sp_raise_frozen_array_rv(sp_RbVal v);
+static SP_NOINLINE SP_COLD void sp_raise_frozen_array_at(void *a, int cls_id) {
   sp_raise_frozen_array_rv(sp_box_obj(a, cls_id));
 }
 /* boxed-receiver variant (the mutator holds an sp_RbVal, not the raw ptr) */
-static void __attribute__((noinline, cold)) sp_raise_frozen_array_v(sp_RbVal v) {
+static SP_NOINLINE SP_COLD void sp_raise_frozen_array_v(sp_RbVal v) {
   sp_raise_frozen_array_rv(v);
 }
 
@@ -807,58 +807,16 @@ static inline void sp_str_check_mutable(const char *s) {
 /* ---- relocated from spinel_rt.h: integer add/sub/mul overflow-check
    helpers (still static inline, pure textual move) used by lib/sp_cold.c's
    sp_int_pow. ---- */
-#ifndef __has_builtin
-#  define __has_builtin(x) 0
-#endif
-#if (defined(__GNUC__) && __GNUC__ >= 5) || \
-    (__has_builtin(__builtin_add_overflow) && \
-     __has_builtin(__builtin_sub_overflow) && \
-     __has_builtin(__builtin_mul_overflow))
-#  define SP_HAVE_OVERFLOW_BUILTINS 1
-#endif
-
-#ifdef SP_HAVE_OVERFLOW_BUILTINS
+/* the builtin, C23 <stdckdint.h> or a range check, per sp_compat.h */
 static inline sp_bool sp_int_add_overflow_p(sp_int a, sp_int b, sp_int *r) {
-  return __builtin_add_overflow(a, b, r);
+  return sp_ckd_add_iptr(a, b, r);
 }
 static inline sp_bool sp_int_sub_overflow_p(sp_int a, sp_int b, sp_int *r) {
-  return __builtin_sub_overflow(a, b, r);
+  return sp_ckd_sub_iptr(a, b, r);
 }
 static inline sp_bool sp_int_mul_overflow_p(sp_int a, sp_int b, sp_int *r) {
-  return __builtin_mul_overflow(a, b, r);
+  return sp_ckd_mul_iptr(a, b, r);
 }
-#else
-/* Portable fallback for compilers lacking __builtin_*_overflow.
-   sp_int is pointer-width (intptr_t), so compute in uintptr_t --
-   unsigned overflow is well-defined wrap-around in C -- and detect
-   signed overflow via the sign-bit XOR trick at the *correct* width
-   (the sign bit is sp_int's top bit: 63 on 64-bit, 31 on 32-bit).
-   Bounds use INTPTR_MAX/MIN, not the int64 MRB_INT_* macros, so this
-   path is self-contained and width-correct. Mul checks bounds before
-   multiplying because a 2x-width intermediate isn't portable. */
-#define SP_INT_OVF_SIGN ((uintptr_t)1 << (sizeof(sp_int) * 8 - 1))
-static inline sp_bool sp_int_add_overflow_p(sp_int a, sp_int b, sp_int *r) {
-  uintptr_t x = (uintptr_t)a, y = (uintptr_t)b, z = x + y;
-  *r = (sp_int)z;
-  return !!(((x ^ z) & (y ^ z)) & SP_INT_OVF_SIGN);
-}
-static inline sp_bool sp_int_sub_overflow_p(sp_int a, sp_int b, sp_int *r) {
-  uintptr_t x = (uintptr_t)a, y = (uintptr_t)b, z = x - y;
-  *r = (sp_int)z;
-  return !!(((x ^ z) & (~y ^ z)) & SP_INT_OVF_SIGN);
-}
-static inline sp_bool sp_int_mul_overflow_p(sp_int a, sp_int b, sp_int *r) {
-  if (a > 0 && b > 0 && a > INTPTR_MAX / b) { *r = a * b; return TRUE; }
-  if (a < 0 && b > 0 && a < INTPTR_MIN / b) { *r = a * b; return TRUE; }
-  if (a > 0 && b < 0 && b < INTPTR_MIN / a) { *r = a * b; return TRUE; }
-  if (a < 0 && b < 0 && (a <= INTPTR_MIN || b <= INTPTR_MIN || -a > INTPTR_MAX / -b)) {
-    *r = a * b; return TRUE;
-  }
-  *r = a * b;
-  return FALSE;
-}
-#undef SP_INT_OVF_SIGN
-#endif
 
 /* ---- Integer leaf-op prototypes (bodies relocated to lib/sp_cold.c):
    chr/digits/bit_length/bit_range/to_s_base/opt variants/pow. ---- */

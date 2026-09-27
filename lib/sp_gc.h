@@ -102,24 +102,24 @@ static inline void _sp_gc_root_pop(int *added) { if (*added) sp_gc_nroots--; }
 static inline void sp_gc_cleanup(int *p) { sp_gc_nroots = *p; }
 #define _SP_GC_CONCAT2(a,b) a##b
 #define _SP_GC_CONCAT(a,b) _SP_GC_CONCAT2(a,b)
-#define SP_GC_SAVE() int __attribute__((cleanup(sp_gc_cleanup))) _gc_saved = sp_gc_nroots
+#define SP_GC_SAVE() int SP_CLEANUP(sp_gc_cleanup) _gc_saved = sp_gc_nroots
 /* A `const char *` slot is a String, and takes the string tag (below) whichever
    macro roots it: a mutable String's payload (marker 0xfd) is kept alive by
    the handle in front of it, which only sp_mark_string reaches, and the
    object walk skips the payload. The slot's C type is the one thing every
    emitter agrees on, so the choice is made here rather than at each site. */
 #define _SP_GC_SLOT_TAG(v) _Generic(&(v), const char **: (uintptr_t)2, default: (uintptr_t)0)
-#define SP_GC_ROOT(v) int __attribute__((cleanup(_sp_gc_root_pop))) _SP_GC_CONCAT(_sp_gcr_, __COUNTER__) = _sp_gc_root_push((void**)((uintptr_t)&(v) | _SP_GC_SLOT_TAG(v)))
+#define SP_GC_ROOT(v) int SP_CLEANUP(_sp_gc_root_pop) _SP_GC_CONCAT(_sp_gcr_, __COUNTER__) = _sp_gc_root_push((void**)((uintptr_t)&(v) | _SP_GC_SLOT_TAG(v)))
 /* Root a poly (sp_RbVal) local: tag the stored slot's low bit so the mark
    walker routes it through sp_mark_rbval (the object pointer sits in a union at
    a nonzero offset, only for STR/OBJ tags). */
-#define SP_GC_ROOT_RBVAL(v) int __attribute__((cleanup(_sp_gc_root_pop))) _SP_GC_CONCAT(_sp_gcr_, __COUNTER__) = _sp_gc_root_push((void**)((uintptr_t)&(v) | (uintptr_t)1))
+#define SP_GC_ROOT_RBVAL(v) int SP_CLEANUP(_sp_gc_root_pop) _SP_GC_CONCAT(_sp_gcr_, __COUNTER__) = _sp_gc_root_push((void**)((uintptr_t)&(v) | (uintptr_t)1))
 /* Root a string slot that may hold a NON-spinel pointer (a stack line
    buffer from sp_File_gets_buf, an external char*): tag bit 2 routes the
    mark through sp_mark_string, which touches nothing unless the marker
    byte is exactly 0xfe -- safe on arbitrary memory, unlike sp_gc_mark's
    header walk. Use this for string parameters in runtime helpers. */
-#define SP_GC_ROOT_STR(v) int __attribute__((cleanup(_sp_gc_root_pop))) _SP_GC_CONCAT(_sp_gcr_, __COUNTER__) = _sp_gc_root_push((void**)((uintptr_t)&(v) | (uintptr_t)2))
+#define SP_GC_ROOT_STR(v) int SP_CLEANUP(_sp_gc_root_pop) _SP_GC_CONCAT(_sp_gcr_, __COUNTER__) = _sp_gc_root_push((void**)((uintptr_t)&(v) | (uintptr_t)2))
 #define SP_GC_RESTORE() sp_gc_nroots = _gc_saved
 
 /* ---- root frames ----
@@ -215,7 +215,7 @@ void sp_gc_wb_slow(void *obj);
    lending site was, it already decided. */
 void sp_gc_pin_remembered_slow(void *obj);
 static inline void sp_gc_pin_remembered(void *obj) {
-  if (__builtin_expect(sp_gc_minor_on, 1)) sp_gc_pin_remembered_slow(obj);
+  if (SP_EXPECT(sp_gc_minor_on, 1)) sp_gc_pin_remembered_slow(obj);
 }
 #define SP_GC_PINNED_MAX 16384
 extern void *sp_gc_pinned[SP_GC_PINNED_MAX];
@@ -228,7 +228,7 @@ static inline void sp_gc_wb(void *obj) {
      for a reader that never comes. rubys observed the other half of this from
      the source: `old` is set on every survivor regardless of the mode, so the
      barrier was doing its full work in both. */
-  if (__builtin_expect(sp_gc_minor_on, 1)) {
+  if (SP_EXPECT(sp_gc_minor_on, 1)) {
     /* With the mark on, the common case -- a young holder, or an old one
        already recorded -- is decided here from the header the store is about
        to touch anyway, so the call is paid only by a store that actually
@@ -299,10 +299,10 @@ extern void (*sp_gc_mark_suspended_fibers_hook)(void);
    The single-threaded build expands to the exact plain +=/-= it had, so
    that archive stays byte-identical. */
 #ifdef SP_THREADS
-#define SP_GC_CTR_ADD(ctr, n) __atomic_fetch_add(&(ctr), (size_t)(n), __ATOMIC_RELAXED)
-#define SP_GC_CTR_SUB(ctr, n) __atomic_fetch_sub(&(ctr), (size_t)(n), __ATOMIC_RELAXED)
-#define SP_GC_CTR_GET(ctr)    __atomic_load_n(&(ctr), __ATOMIC_RELAXED)
-#define SP_GC_CTR_SET(ctr, n) __atomic_store_n(&(ctr), (size_t)(n), __ATOMIC_RELAXED)
+#define SP_GC_CTR_ADD(ctr, n) SP_ATOMIC_FETCH_ADD(&(ctr), (size_t)(n), __ATOMIC_RELAXED)
+#define SP_GC_CTR_SUB(ctr, n) SP_ATOMIC_FETCH_SUB(&(ctr), (size_t)(n), __ATOMIC_RELAXED)
+#define SP_GC_CTR_GET(ctr)    SP_ATOMIC_LOAD(&(ctr), __ATOMIC_RELAXED)
+#define SP_GC_CTR_SET(ctr, n) SP_ATOMIC_STORE(&(ctr), (size_t)(n), __ATOMIC_RELAXED)
 #else
 #define SP_GC_CTR_ADD(ctr, n) ((ctr) += (size_t)(n))
 #define SP_GC_CTR_SUB(ctr, n) ((ctr) -= (size_t)(n))

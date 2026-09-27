@@ -241,7 +241,7 @@ SP_NORETURN SP_COLD void sp_raise_nil_float_op(int left_nil, const char *op);
    truncating remainder plus the fix-up. The same holds for / as `a >> k`,
    but taking it moved optcarrot's code enough to cost it 2% (branch
    aliasing, not work), so / keeps the general path. */
-#define SP_POW2_CONST(b) (__builtin_constant_p(b) && (b) > 0 && ((b) & ((b) - 1)) == 0)
+#define SP_POW2_CONST(b) (SP_CONSTANT_P(b) && (b) > 0 && ((b) & ((b) - 1)) == 0)
 static inline sp_int sp_idiv(sp_int a, sp_int b) {
   SP_INT_NIL_CK(a, b, "/");
   if (b == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
@@ -350,7 +350,7 @@ static inline sp_int sp_iremainder(sp_int a, sp_int b) {
 /* sp_gcd / sp_lcm / sp_powmod / sp_ceildiv / sp_int_clamp / sp_int_sqrt
    now live in libspinel_rt.a (lib/sp_core.c); declared via sp_core.h. */
 static inline char *sp_str_alloc_raw(size_t total_with_null);  /* fwd decl */
-const char *sp_sprintf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));   /* fwd decl */
+const char *sp_sprintf(const char *fmt, ...) SP_PRINTF_FORMAT(1, 2);   /* fwd decl */
 /* sp_ipow10 / sp_int_round / sp_int_ceil / sp_int_floor /
    sp_int_truncate / sp_str_oct now live in libspinel_rt.a
    (lib/sp_core.c); declared via sp_core.h. */
@@ -641,7 +641,7 @@ static inline void *sp_gc_freeze(void *p) { if (p) ((sp_gc_hdr *)((char *)p - si
    CRuby's message does. */
 SP_NORETURN SP_COLD void sp_raise_cannot_freeze(const char *cls, void *p);
 /* marker-prefixed message: see sp_raise_frozen_array (lib/sp_alloc.h) */
-static void __attribute__((noinline,cold)) sp_raise_frozen_hash(void){sp_raise_cls("FrozenError",(&("\xff" "can't modify frozen Hash")[1]));}
+static SP_NOINLINE SP_COLD void sp_raise_frozen_hash(void){sp_raise_cls("FrozenError",(&("\xff" "can't modify frozen Hash")[1]));}
 /* Pool-aware alloc. The recycle hook is stored in the gc_hdr; sweep
    calls it on unmarked objects instead of finalize+free. The hook
    decides whether to push the storage onto a per-class free-list or
@@ -692,38 +692,38 @@ static void sp_gc_pool_relink(sp_gc_hdr *h) {
    Single-threaded: the macros expand to the exact plain code this had. */
 #ifdef SP_THREADS
 static inline sp_gc_hdr *sp_pool_try_pop(sp_gc_hdr **head) {
-  sp_gc_hdr *old = __atomic_load_n(head, __ATOMIC_ACQUIRE);
+  sp_gc_hdr *old = SP_ATOMIC_LOAD(head, __ATOMIC_ACQUIRE);
   while (old) {
     /* A stale `old` may already belong to another worker, which is
        concurrently rewriting old->next (its relink push). The atomic load
        keeps that defined; the CAS below then fails and retries with a
        fresh head, discarding the stale next. */
-    sp_gc_hdr *nxt = __atomic_load_n(&old->next, __ATOMIC_RELAXED);
-    if (__atomic_compare_exchange_n(head, &old, nxt, 1,
+    sp_gc_hdr *nxt = SP_ATOMIC_LOAD(&old->next, __ATOMIC_RELAXED);
+    if (SP_ATOMIC_CAS(head, &old, nxt, 1,
                                     __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE)) break;
   }
   return old;
 }
-#define SP_POOL_CTR_INC(c) __atomic_fetch_add(&(c), 1, __ATOMIC_RELAXED)
-#define SP_POOL_CTR_DEC(c) __atomic_fetch_sub(&(c), 1, __ATOMIC_RELAXED)
+#define SP_POOL_CTR_INC(c) SP_ATOMIC_FETCH_ADD(&(c), 1, __ATOMIC_RELAXED)
+#define SP_POOL_CTR_DEC(c) SP_ATOMIC_FETCH_SUB(&(c), 1, __ATOMIC_RELAXED)
 /* The cap is reserved before the push, not checked beside it: a load-then-add
    lets every concurrent sweeper see room and all of them push, overshooting
    pool_max by up to their number. Add first; over the cap, give the slot back
    and free the storage. The count rises and falls by one per over-cap sweeper
    in between, which nothing reads for anything but the same cap. */
 #define SP_POOL_RECYCLE_BODY(CLS, h) \
-    long _c = __atomic_add_fetch(&sp_##CLS##_pool_count, 1, __ATOMIC_RELAXED); \
+    long _c = SP_ATOMIC_ADD_FETCH(&sp_##CLS##_pool_count, 1, __ATOMIC_RELAXED); \
     if (_c > sp_##CLS##_pool_max) { \
-      __atomic_fetch_sub(&sp_##CLS##_pool_count, 1, __ATOMIC_RELAXED); \
-      sp_slab_free(h); __atomic_fetch_add(&sp_##CLS##_pool_freed, 1, __ATOMIC_RELAXED); return; \
+      SP_ATOMIC_FETCH_SUB(&sp_##CLS##_pool_count, 1, __ATOMIC_RELAXED); \
+      sp_slab_free(h); SP_ATOMIC_FETCH_ADD(&sp_##CLS##_pool_freed, 1, __ATOMIC_RELAXED); return; \
     } \
     { sp_gc_hdr *_old; \
-      do { _old = __atomic_load_n(&sp_##CLS##_pool_head, __ATOMIC_ACQUIRE); (h)->next = _old; \
-      } while (!__atomic_compare_exchange_n(&sp_##CLS##_pool_head, &_old, (h), \
+      do { _old = SP_ATOMIC_LOAD(&sp_##CLS##_pool_head, __ATOMIC_ACQUIRE); (h)->next = _old; \
+      } while (!SP_ATOMIC_CAS(&sp_##CLS##_pool_head, &_old, (h), \
                                             0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)); } \
-    { __atomic_fetch_add(&sp_##CLS##_pool_pushes, 1, __ATOMIC_RELAXED); \
-      long _hwm = __atomic_load_n(&sp_##CLS##_pool_hwm, __ATOMIC_RELAXED); \
-      while (_c > _hwm && !__atomic_compare_exchange_n(&sp_##CLS##_pool_hwm, &_hwm, _c, \
+    { SP_ATOMIC_FETCH_ADD(&sp_##CLS##_pool_pushes, 1, __ATOMIC_RELAXED); \
+      long _hwm = SP_ATOMIC_LOAD(&sp_##CLS##_pool_hwm, __ATOMIC_RELAXED); \
+      while (_c > _hwm && !SP_ATOMIC_CAS(&sp_##CLS##_pool_hwm, &_hwm, _c, \
                                                        1, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {} }
 #else
 static inline sp_gc_hdr *sp_pool_try_pop(sp_gc_hdr **head) {
@@ -751,7 +751,7 @@ static inline sp_gc_hdr *sp_pool_try_pop(sp_gc_hdr **head) {
   static long sp_##CLS##_pool_pops = 0; \
   static long sp_##CLS##_pool_freed = 0; \
   static long sp_##CLS##_pool_hwm = 0; \
-  __attribute__((constructor)) static void sp_##CLS##_pool_init(void) { \
+  SP_CONSTRUCTOR static void sp_##CLS##_pool_init(void) { \
     const char *m = getenv("SP_POOL_MAX"); \
     if (m && *m) { long v = atol(m); if (v >= 0) sp_##CLS##_pool_max = v; } \
   } \
@@ -764,7 +764,7 @@ static inline sp_gc_hdr *sp_pool_try_pop(sp_gc_hdr **head) {
   static void sp_##CLS##_pool_recycle(sp_gc_hdr *h) { \
     SP_POOL_RECYCLE_BODY(CLS, h) \
   } \
-  __attribute__((destructor)) static void sp_##CLS##_pool_report(void) { \
+  SP_DESTRUCTOR static void sp_##CLS##_pool_report(void) { \
     const char *e = getenv("SP_POOL_REPORT"); \
     if (!e || !e[0] || e[0] == '0') return; \
     fprintf(stderr, #CLS " pool: pops=%ld pushes=%ld over_cap_freed=%ld hwm=%ld retained=%ld cap=%ld\n", \
@@ -1430,7 +1430,7 @@ static void sp_re_mark_globals(void) {
 /* Hand the collector (lib/sp_gc.c) this TU's root-marking and string-heap
    sweep. Runs before main, so the hooks are set before the first
    allocation can trigger a collection. */
-__attribute__((constructor)) static void sp_gc_install_tu_hooks(void) {
+SP_CONSTRUCTOR static void sp_gc_install_tu_hooks(void) {
   sp_gc_mark_globals_hook = sp_re_mark_globals;
   /* sp_gc_str_sweep_hook is installed by sp_alloc.c's constructor. */
 }
@@ -1663,7 +1663,7 @@ sp_RbVal sp_box_proc(void *p)        { return sp_box_obj(p, SP_BUILTIN_PROC); }
 /* #step(n) over a Float range -> a Float array toward last. A negative step walks
    descending; a wrong-direction step yields an empty array; the count is derived
    so accumulated float rounding does not drift. */
-sp_FloatArray *sp_frange_step(sp_FloatRange r, sp_float st) __attribute__((unused));
+sp_FloatArray *sp_frange_step(sp_FloatRange r, sp_float st) SP_UNUSED;
 /* sp_frange_step: moved to lib/sp_cold.c */
 sp_FloatArray *sp_frange_step(sp_FloatRange r, sp_float st);
 
@@ -2165,7 +2165,7 @@ int sp_net_sock_ip(int fd, int peer, char *ipbuf, int cap);
 /* TCPSocket#addr / #peeraddr: ["AF_INET", port, ip, ip], CRuby's numeric form.
    These belong to the socket classes, not to IO: a plain File answers
    NoMethodError, as CRuby does, rather than an empty address. */
-static sp_PolyArray *sp_sock_addr(sp_File *f, int peer) __attribute__((unused));
+static sp_PolyArray *sp_sock_addr(sp_File *f, int peer) SP_UNUSED;
 static sp_PolyArray *sp_sock_addr(sp_File *f, int peer) {
   if (!f || !f->is_sock)
     sp_raise_cls("NoMethodError", sp_sprintf("undefined method '%s' for an instance of %s",
@@ -3111,7 +3111,7 @@ SP_COLD void sp_exc_stage_val(sp_RbVal v);
 SP_COLD void sp_exc_stage_val(sp_RbVal v)  { sp_pending_exc_val = v;  sp_pending_exc_flags |= 4; }
 #endif
 /* frozen-Hash raise carrying the receiver (identity-preserving) (#3119) */
-static void __attribute__((noinline,cold)) sp_raise_frozen_hash_at(void *h, int cls_id) {
+static SP_NOINLINE SP_COLD void sp_raise_frozen_hash_at(void *h, int cls_id) {
   sp_exc_stage_recv(sp_box_obj(h, cls_id));
   sp_raise_cls("FrozenError", (&("\xff" "can't modify frozen Hash")[1]));
 }
@@ -3830,7 +3830,7 @@ static inline sp_float sp_float_pow(sp_float a, sp_float b) {
 /* rb_cmperr operand description: special constants and Floats read as their
    inspect (3, 1.5, nil, true, :sym), everything else as its class name --
    "comparison of VerN with 3 failed", not "... with Integer failed". */
-static const char *sp_cmperr_desc(sp_RbVal v) __attribute__((unused));
+static const char *sp_cmperr_desc(sp_RbVal v) SP_UNUSED;
 static const char *sp_cmperr_desc(sp_RbVal v) {
   switch (v.tag) {
     case SP_TAG_INT: case SP_TAG_FLT: case SP_TAG_BOOL: case SP_TAG_NIL: case SP_TAG_SYM:
@@ -3841,7 +3841,7 @@ static const char *sp_cmperr_desc(sp_RbVal v) {
 /* rb_cmpint-checked comparison: an incomparable pair (nil `<=>`) raises the
    Comparable ArgumentError. Backs the object <,<=,>,>=,between? emitters when
    the user `<=>` can return nil (a TY_INT `<=>` keeps the inline fast path). */
-static sp_int sp_poly_cmp_ck(sp_RbVal a, sp_RbVal b) __attribute__((unused));
+static sp_int sp_poly_cmp_ck(sp_RbVal a, sp_RbVal b) SP_UNUSED;
 static sp_int sp_poly_cmp_ck(sp_RbVal a, sp_RbVal b) {
   sp_bool ok = FALSE; sp_int r = sp_poly_cmp(a, b, &ok);
   if (!ok) sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(a), sp_cmperr_desc(b)));
@@ -3849,7 +3849,7 @@ static sp_int sp_poly_cmp_ck(sp_RbVal a, sp_RbVal b) {
 }
 /* Comparable#==: identity is equal; a nil `<=>` makes it false, never an
    error (CRuby cmp_equal). */
-static sp_bool sp_poly_cmp_eq(sp_RbVal a, sp_RbVal b) __attribute__((unused));
+static sp_bool sp_poly_cmp_eq(sp_RbVal a, sp_RbVal b) SP_UNUSED;
 static sp_bool sp_poly_cmp_eq(sp_RbVal a, sp_RbVal b) {
   if (a.tag == b.tag && a.v.p == b.v.p) return TRUE;
   sp_bool ok = FALSE; sp_int r = sp_poly_cmp(a, b, &ok);
@@ -3859,7 +3859,7 @@ static sp_bool sp_poly_cmp_eq(sp_RbVal a, sp_RbVal b) {
    bound clamps one-sided; both bounds present and lo > hi (or incomparable)
    raise ArgumentError; the result is the receiver or the applied bound. The
    user `<=>` dispatches through sp_obj_cmp_hook (via sp_poly_cmp). */
-static sp_RbVal sp_obj_clamp(sp_RbVal v, sp_RbVal lo, sp_RbVal hi) __attribute__((unused));
+static sp_RbVal sp_obj_clamp(sp_RbVal v, sp_RbVal lo, sp_RbVal hi) SP_UNUSED;
 static sp_RbVal sp_obj_clamp(sp_RbVal v, sp_RbVal lo, sp_RbVal hi) {
   /* Each operand can be a heap object and sp_poly_cmp_ck dispatches the user
      `<=>` (which allocates), so root all three -- v is live but unused across
@@ -3879,7 +3879,7 @@ static sp_RbVal sp_obj_clamp(sp_RbVal v, sp_RbVal lo, sp_RbVal hi) {
    end cannot clamp (CRuby); beginless/endless endpoints (the INTPTR_MIN/MAX
    range sentinels) clamp one-sided as nil bounds. Integer endpoints are boxed
    and flow to the user `<=>` like any operand. */
-static sp_RbVal sp_obj_clamp_range(sp_RbVal v, sp_Range r) __attribute__((unused));
+static sp_RbVal sp_obj_clamp_range(sp_RbVal v, sp_Range r) SP_UNUSED;
 static sp_RbVal sp_obj_clamp_range(sp_RbVal v, sp_Range r) {
   if (r.excl && r.last != INTPTR_MAX)
     sp_raise_cls("ArgumentError", "cannot clamp with an exclusive range");
@@ -4172,7 +4172,7 @@ static sp_RbVal sp_poly_clamp(sp_RbVal v, sp_RbVal lo, sp_RbVal hi) {
 /* clamp(range) on a boxed value: an exclusive range with a real end cannot
    clamp (CRuby); the INTPTR_MIN/MAX beginless/endless sentinels act as
    unbounded sides for numerics and nil bounds for user objects. */
-static sp_RbVal sp_poly_clamp_range(sp_RbVal v, sp_Range r) __attribute__((unused));
+static sp_RbVal sp_poly_clamp_range(sp_RbVal v, sp_Range r) SP_UNUSED;
 static sp_RbVal sp_poly_clamp_range(sp_RbVal v, sp_Range r) {
   sp_poly_recv_ck(v, "clamp");
   if (r.excl && r.last != INTPTR_MAX)
@@ -4190,7 +4190,7 @@ static sp_RbVal sp_poly_clamp_range(sp_RbVal v, sp_Range r) {
    (CRuby-compatible: 2.0 ** -1 == 0.5). See docs/limitations.md. */
 /* Integer#round(ndigits, half: mode): mode 0 = :even (banker's),
    1 = :up (default), 2 = :down. Positive ndigits are a no-op for ints. */
-sp_int sp_int_round_half(sp_int v, sp_int nd, int mode) __attribute__((unused));
+sp_int sp_int_round_half(sp_int v, sp_int nd, int mode) SP_UNUSED;
 /* sp_int_round_half: moved to lib/sp_cold.c */
 sp_int sp_int_round_half(sp_int v, sp_int nd, int mode);
 static sp_RbVal sp_poly_pow(sp_RbVal a, sp_RbVal b) {
@@ -5006,7 +5006,7 @@ static sp_PolyArray *sp_kernel_array(sp_RbVal x) {
   return r;
 }
 /* Issues #770, #789: NULL + bounds guard. Out-of-range set no-ops. */
-static void __attribute__((noinline, cold)) sp_PolyArray_set_cold(sp_PolyArray *a, sp_int i, sp_RbVal v) { if (!a) return; sp_gc_wb((void*)a); if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return; } sp_int orig=i; if (i < 0) i += a->len; if (i < 0) sp_raise_cls("IndexError", sp_sprintf("index %lld too small for array; minimum: %lld",(long long)orig,(long long)-a->len)); if (i > a->len) { /* a gap fills with nil, as in every typed array (#3615) */ sp_RbVal _nil = sp_box_nil(); while (a->len < i) sp_PolyArray_push(a, _nil); } if (i == a->len) { sp_PolyArray_push(a, v); return; } a->data[i] = v; }
+static SP_NOINLINE SP_COLD void sp_PolyArray_set_cold(sp_PolyArray *a, sp_int i, sp_RbVal v) { if (!a) return; sp_gc_wb((void*)a); if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return; } sp_int orig=i; if (i < 0) i += a->len; if (i < 0) sp_raise_cls("IndexError", sp_sprintf("index %lld too small for array; minimum: %lld",(long long)orig,(long long)-a->len)); if (i > a->len) { /* a gap fills with nil, as in every typed array (#3615) */ sp_RbVal _nil = sp_box_nil(); while (a->len < i) sp_PolyArray_push(a, _nil); } if (i == a->len) { sp_PolyArray_push(a, v); return; } a->data[i] = v; }
 /* An in-bounds store into a live array, the common case, inlines as the typed
    arrays' does (sp_IntArray_set). */
 static inline void sp_PolyArray_set(sp_PolyArray *a, sp_int i, sp_RbVal v) { if (SP_LIKELY(a && !a->frozen && i >= 0 && i < a->len)) { sp_gc_wb((void*)a); a->data[i] = v; return; } sp_PolyArray_set_cold(a, i, v); }
@@ -5475,7 +5475,7 @@ static sp_PolyArray *sp_PolyArray_compact_bang(sp_PolyArray *a) {sp_gc_wb((void*
    has no answer to give: the flat run would be infinite, so CRuby raises. The
    walk's own frames go first (sp_poly_recur_drop_kind). Off the hot path by
    construction -- they never return. */
-SP_NORETURN SP_COLD static __attribute__((noinline)) void sp_poly_recur_raise(int kind, const char *msg) {
+SP_NORETURN SP_COLD static SP_NOINLINE void sp_poly_recur_raise(int kind, const char *msg) {
   sp_poly_recur_drop_kind(kind);
   sp_raise_cls("ArgumentError", msg);
 }
@@ -6235,7 +6235,7 @@ static sp_PolyArray *sp_ptr_array_box(sp_PtrArray *a, int cls_id) {
     sp_PolyArray_push(p, sp_box_nullable_obj(a->data[i], cls_id));
   return p;
 }
-static sp_PtrArray *sp_PtrArray_sort_obj(sp_PtrArray *a, int cls_id) __attribute__((unused));
+static sp_PtrArray *sp_PtrArray_sort_obj(sp_PtrArray *a, int cls_id) SP_UNUSED;
 static sp_PtrArray *sp_PtrArray_sort_obj(sp_PtrArray *a, int cls_id) {
   SP_GC_ROOT(a);
   sp_PolyArray *p = sp_ptr_array_box(a, cls_id);
@@ -6246,7 +6246,7 @@ static sp_PtrArray *sp_PtrArray_sort_obj(sp_PtrArray *a, int cls_id) {
   for (sp_int i = 0; i < p->len; i++) sp_PtrArray_push(r, p->data[i].v.p);
   return r;
 }
-static void sp_PtrArray_sort_obj_bang(sp_PtrArray *a, int cls_id) __attribute__((unused));
+static void sp_PtrArray_sort_obj_bang(sp_PtrArray *a, int cls_id) SP_UNUSED;
 static void sp_PtrArray_sort_obj_bang(sp_PtrArray *a, int cls_id) {sp_gc_wb((void*)a); 
   if (!a) return;
   if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_PTR_ARRAY); return; }
@@ -6257,7 +6257,7 @@ static void sp_PtrArray_sort_obj_bang(sp_PtrArray *a, int cls_id) {sp_gc_wb((voi
   for (sp_int i = 0; i < a->len; i++) a->data[i] = p->data[i].v.p;
 }
 /* min/max over an object array; empty -> NULL (the object-typed nil). */
-static void *sp_PtrArray_minmax_obj(sp_PtrArray *a, int cls_id, int want_max) __attribute__((unused));
+static void *sp_PtrArray_minmax_obj(sp_PtrArray *a, int cls_id, int want_max) SP_UNUSED;
 static void *sp_PtrArray_minmax_obj(sp_PtrArray *a, int cls_id, int want_max) {sp_gc_wb((void*)a); 
   if (!a || a->len == 0) return NULL;
   SP_GC_ROOT(a);
@@ -6479,7 +6479,7 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
    `what` carries the class-bearing prefix ("can't modify frozen C"), rodata
    marker-prefixed at the emit site; the receiver renders through the full
    poly inspect (per-class ivar walk). */
-static void __attribute__((noinline,cold)) sp_raise_frozen_obj(sp_RbVal v, const char *what) {
+static SP_NOINLINE SP_COLD void sp_raise_frozen_obj(sp_RbVal v, const char *what) {
   const char *ins = sp_poly_inspect(v);
   SP_GC_ROOT_STR(ins);
   const char *msg = sp_str_concat3(what, (&("\xff" ": ")[1]), ins);
@@ -9189,7 +9189,7 @@ static sp_RbVal sp_poly_slot_set_key(sp_RbVal outer, sp_int oidx, sp_RbVal key, 
 /* Hash#compare_by_identity? for a poly-carried receiver: spinel hashes are
    always value-keyed (the mutating variant is a compile error), so any hash
    answers false; anything else raises CRuby's NoMethodError. */
-sp_bool sp_poly_cbi_p(sp_RbVal v) __attribute__((unused));
+sp_bool sp_poly_cbi_p(sp_RbVal v) SP_UNUSED;
 /* sp_poly_cbi_p: moved to lib/sp_cold.c */
 sp_bool sp_poly_cbi_p(sp_RbVal v);
 /* boxed-array count(v): value-equality element count (0 for non-arrays) */
@@ -10029,7 +10029,7 @@ static sp_RbVal sp_json_symbolize(sp_RbVal v) {
   }
   return v;
 }
-__attribute__((constructor)) static void sp_json_install_hooks(void) {
+SP_CONSTRUCTOR static void sp_json_install_hooks(void) {
   sp_json_kind_fn = sp_json_kind;
   sp_json_len_fn = sp_poly_length;
   sp_json_aref_fn = sp_poly_arr_get;
@@ -11044,7 +11044,7 @@ static sp_int sp_brk_push(void) {
       sp_oom_die();
   }
 #ifdef SP_THREADS
-  sp_int s = __atomic_fetch_add(&sp_brk_seq, 1, __ATOMIC_RELAXED);
+  sp_int s = SP_ATOMIC_FETCH_ADD(&sp_brk_seq, 1, __ATOMIC_RELAXED);
 #else
   sp_int s = sp_brk_seq++;
 #endif
@@ -11055,7 +11055,7 @@ static sp_int sp_brk_push(void) {
   sp_brk_top++;
   return s;
 }
-static void __attribute__((noreturn)) sp_brk_throw(sp_int serial, sp_RbVal v) {
+static SP_NORETURN void sp_brk_throw(sp_int serial, sp_RbVal v) {
   for (int i = sp_brk_top - 1; i >= 0; i--) {
     if (sp_brk_serial[i] != serial) continue;
     sp_brk_val[i] = v;
@@ -11132,7 +11132,7 @@ static SP_TLS sp_proc_home *sp_proc_ret_head = NULL;
 static sp_int sp_proc_home_seq = 0;
 static sp_int sp_proc_home_next(void) {
 #ifdef SP_THREADS
-  return __atomic_fetch_add(&sp_proc_home_seq, 1, __ATOMIC_RELAXED);
+  return SP_ATOMIC_FETCH_ADD(&sp_proc_home_seq, 1, __ATOMIC_RELAXED);
 #else
   return sp_proc_home_seq++;
 #endif
@@ -11225,7 +11225,7 @@ static void sp_publish_worker_roots(void) {
   for (int i = 0; i < 16; i++)
     _sp_gc_root_push((void **)((uintptr_t)&_sp_proc_poly_args[i] | (uintptr_t)1));
 }
-__attribute__((constructor)) static void sp_install_safepoint_publish(void) {
+SP_CONSTRUCTOR static void sp_install_safepoint_publish(void) {
   sp_safepoint_publish_hook = sp_publish_worker_roots;
 }
 #endif
@@ -11674,7 +11674,7 @@ const char *sp_dir_home_user(const char *user);
 /* Dir.glob([pat, ...]): each pattern globbed in order, results concatenated
    (#2828). */
 static sp_PolyArray *sp_enum_items_from(sp_RbVal v);   /* defined below */
-static sp_StrArray *sp_dir_glob_multi(sp_RbVal pats) __attribute__((unused));
+static sp_StrArray *sp_dir_glob_multi(sp_RbVal pats) SP_UNUSED;
 static sp_StrArray *sp_dir_glob_multi(sp_RbVal pats) {
   sp_StrArray *out = sp_StrArray_new();
   SP_GC_ROOT(out);
@@ -12464,7 +12464,7 @@ sp_Enumerator *sp_enum_of_one(sp_RbVal v, const char *meth);
 /* Enumerable#chain(*others) / Enumerator#+ : the sources are materialized and
    concatenated by the caller (the desugar builds `recv.to_a + other.to_a ...`),
    so the chain is a snapshot enumerator that reports as Enumerator::Chain. */
-static sp_Enumerator *sp_enum_chain_new(sp_RbVal arr) __attribute__((unused));
+static sp_Enumerator *sp_enum_chain_new(sp_RbVal arr) SP_UNUSED;
 static sp_Enumerator *sp_enum_chain_new(sp_RbVal arr) {
   SP_GC_ROOT_RBVAL(arr);
   sp_PolyArray *items = sp_enum_items_from(arr); SP_GC_ROOT(items);   /* the enumerator below is an allocation */

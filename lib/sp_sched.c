@@ -172,10 +172,10 @@ static void sp_sweep_task(const sp_sw_task *t) {
   if (sp_gc_ph_on) {
     /* microseconds in an integer, so the max is one atomic */
     unsigned long d = (unsigned long)((sp_monotonic_now() - t0) * 1e6), m;
-    __atomic_fetch_add(&g_sw_task_sum_us, d, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&g_sw_task_max_kind[t->kind], d, __ATOMIC_RELAXED);
-    do { m = __atomic_load_n(&g_sw_slot_max_us, __ATOMIC_RELAXED); if (d <= m) break; }
-    while (!__atomic_compare_exchange_n(&g_sw_slot_max_us, &m, d, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
+    SP_ATOMIC_FETCH_ADD(&g_sw_task_sum_us, d, __ATOMIC_RELAXED);
+    SP_ATOMIC_FETCH_ADD(&g_sw_task_max_kind[t->kind], d, __ATOMIC_RELAXED);
+    do { m = SP_ATOMIC_LOAD(&g_sw_slot_max_us, __ATOMIC_RELAXED); if (d <= m) break; }
+    while (!SP_ATOMIC_CAS(&g_sw_slot_max_us, &m, d, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
   }
 }
 /* The parallel mark: parked workers lent to the collector's drain. */
@@ -199,7 +199,7 @@ static int g_cs_owner_env = -1;                  /* SPINEL_GC_OWNER=0: the sweep
 static int sp_sweep_run_tasks(void) {
   int ran = 0;
   for (;;) {
-    int i = __atomic_fetch_add(&g_sw_next, 1, __ATOMIC_RELAXED);
+    int i = SP_ATOMIC_FETCH_ADD(&g_sw_next, 1, __ATOMIC_RELAXED);
     if (i >= g_sw_ntasks) break;
     sp_sweep_task(&g_sw_tasks[i]);
     ran++;
@@ -356,7 +356,7 @@ static unsigned char g_native_out[SP_MAX_WORKERS];    /* out of the world, roots
    its cache is warm, rather than at its next wake or by a sweeper thread. */
 static void sched_wake_all_workers(int mode) {   /* PRE: sched lock held */
   for (int i = 1; i < sp_active_workers; i++) {
-    unsigned char out = __atomic_load_n(&g_native_out[i], __ATOMIC_RELAXED);
+    unsigned char out = SP_ATOMIC_LOAD(&g_native_out[i], __ATOMIC_RELAXED);
     if (mode == 1 && out) continue;
     if (mode == 2 && out != SP_OUT_IDLE) continue;
 #ifdef SP_EV_BACKEND
@@ -364,7 +364,7 @@ static void sched_wake_all_workers(int mode) {   /* PRE: sched lock held */
 #endif
     if (g_wslot[i].idle) pthread_cond_signal(&g_wslot[i].cv);
   }
-  { unsigned char out0 = __atomic_load_n(&g_native_out[0], __ATOMIC_RELAXED);
+  { unsigned char out0 = SP_ATOMIC_LOAD(&g_native_out[0], __ATOMIC_RELAXED);
     if (!((mode == 1 && out0) || (mode == 2 && out0 != SP_OUT_IDLE))) sched_wake_main(); }
 }
 /* Wake the one worker that can run a thread pinned to `wid` (see home_wid).
@@ -409,7 +409,7 @@ static void sp_out_enter_locked(int wid, int how) {
     g_native_nfiber[wid] = 0;
     if (sp_fiber_current) g_native_fiber[wid][g_native_nfiber[wid]++] = sp_fiber_current;
     if (root && root != sp_fiber_current) g_native_fiber[wid][g_native_nfiber[wid]++] = root;
-    __atomic_store_n(&g_native_out[wid], (unsigned char)how, __ATOMIC_RELEASE);
+    SP_ATOMIC_STORE(&g_native_out[wid], (unsigned char)how, __ATOMIC_RELEASE);
   }
   g_nnative++;
 }
@@ -424,7 +424,7 @@ static void sp_out_leave_locked(int wid) {
     g_nparked++;
     if (g_nparked + g_nnative >= sp_active_workers - 1) pthread_cond_signal(&g_stw_request);
     while (g_stw_active && g_stw_epoch == my_epoch) {
-      if (g_cs_help && __atomic_load_n(&g_cs_unclaimed, __ATOMIC_RELAXED) > 0) {
+      if (g_cs_help && SP_ATOMIC_LOAD(&g_cs_unclaimed, __ATOMIC_RELAXED) > 0) {
         SCHED_UNLOCK(); sp_cs_help_run(); SCHED_LOCK(); continue;
       }
       pthread_cond_wait(&g_stw_release, &g_sched_lock);
@@ -432,12 +432,12 @@ static void sp_out_leave_locked(int wid) {
     if (g_stw_epoch == my_epoch) g_nparked--;
   }
   else g_nnative--;
-  if (wid >= 0 && wid < SP_MAX_WORKERS) { __atomic_store_n(&g_native_out[wid], 0, __ATOMIC_RELEASE); g_native_nfiber[wid] = 0; }
+  if (wid >= 0 && wid < SP_MAX_WORKERS) { SP_ATOMIC_STORE(&g_native_out[wid], 0, __ATOMIC_RELEASE); g_native_nfiber[wid] = 0; }
   /* the collection that ran while this worker was out left it its own young
      lists to sweep, and after a full cycle its slab chunks to release */
-  if (__atomic_load_n(&g_cs_unclaimed, __ATOMIC_RELAXED) > 0 || (g_cs_full && sp_slab_on > 0)) {
+  if (SP_ATOMIC_LOAD(&g_cs_unclaimed, __ATOMIC_RELAXED) > 0 || (g_cs_full && sp_slab_on > 0)) {
     SCHED_UNLOCK();
-    if (__atomic_load_n(&g_cs_unclaimed, __ATOMIC_RELAXED) > 0) sp_cs_owner_run(sp_worker_id);
+    if (SP_ATOMIC_LOAD(&g_cs_unclaimed, __ATOMIC_RELAXED) > 0) sp_cs_owner_run(sp_worker_id);
     if (g_cs_full && sp_slab_on > 0 && sp_cs_chunks_settled(sp_worker_id)) sp_slab_release_worker(sp_worker_id);
     SCHED_LOCK();
   }
@@ -502,7 +502,7 @@ static void sp_stw_park_locked(void) {
        (the collector claims only its own), the mutators are all parked here,
        and holding the lock through a free-heavy walk would serialize exactly
        what this phase exists to parallelize. */
-    if (g_sweep_go && __atomic_load_n(&g_sw_next, __ATOMIC_RELAXED) < g_sw_ntasks) {
+    if (g_sweep_go && SP_ATOMIC_LOAD(&g_sw_next, __ATOMIC_RELAXED) < g_sw_ntasks) {
       SCHED_UNLOCK();
       int ran = sp_sweep_run_tasks();
       SCHED_LOCK();
@@ -526,7 +526,7 @@ static void sp_stw_park_locked(void) {
     /* The previous concurrent sweep is not done and the collector asked for
        hands: what the sweeper threads have not claimed yet is claimed here,
        under the barrier, by everyone who is parked. */
-    if (g_cs_help && __atomic_load_n(&g_cs_unclaimed, __ATOMIC_RELAXED) > 0) {
+    if (g_cs_help && SP_ATOMIC_LOAD(&g_cs_unclaimed, __ATOMIC_RELAXED) > 0) {
       SCHED_UNLOCK();
       sp_cs_help_run();
       SCHED_LOCK();
@@ -540,9 +540,9 @@ static void sp_stw_park_locked(void) {
      slots it frees are the ones it allocates from next, still in its own
      cache from the walk; swept by another core they came back cold, and the
      mutators measured slower than under the stop-the-world sweep. */
-  if (__atomic_load_n(&g_cs_unclaimed, __ATOMIC_RELAXED) > 0 || (g_cs_full && sp_slab_on > 0)) {
+  if (SP_ATOMIC_LOAD(&g_cs_unclaimed, __ATOMIC_RELAXED) > 0 || (g_cs_full && sp_slab_on > 0)) {
     SCHED_UNLOCK();
-    if (__atomic_load_n(&g_cs_unclaimed, __ATOMIC_RELAXED) > 0) sp_cs_owner_run(sp_worker_id);
+    if (SP_ATOMIC_LOAD(&g_cs_unclaimed, __ATOMIC_RELAXED) > 0) sp_cs_owner_run(sp_worker_id);
     /* and, after a full cycle, its own slab chunks: the release that used
        to run for every worker under the next barrier */
     if (g_cs_full && sp_slab_on > 0 && sp_cs_chunks_settled(sp_worker_id)) sp_slab_release_worker(sp_worker_id);
@@ -616,7 +616,7 @@ static void sp_stw_collect_impl(int force) {
   /* SPINEL_GC_PHASES: how many of the workers this barrier waits for are in
      their own sweep of the previous cycle's lists (a sweep does not look at
      the safepoint), against how many are running the program */
-  int ph_sweeping = sp_gc_ph_on ? __atomic_load_n(&g_cs_running, __ATOMIC_RELAXED) : 0;
+  int ph_sweeping = sp_gc_ph_on ? SP_ATOMIC_LOAD(&g_cs_running, __ATOMIC_RELAXED) : 0;
   /* wake idle workers (and main waiting in its pump) so they park at the barrier
      rather than sit through the collection without publishing their roots. */
   sched_wake_all_workers(1);   /* reaches an ev_waiting main and workers too, except those out */
@@ -654,11 +654,11 @@ static void sp_stw_collect_impl(int force) {
   g_stw_active = 0;
   sp_recompute_safepoint_flag();   /* keep the flag set if a preempt is still pending */
   pthread_cond_broadcast(&g_stw_release);
-  if (__atomic_load_n(&g_cs_unclaimed, __ATOMIC_RELAXED) > 0) sched_wake_all_workers(2);   /* the idle owners sweep their own lists */
+  if (SP_ATOMIC_LOAD(&g_cs_unclaimed, __ATOMIC_RELAXED) > 0) sched_wake_all_workers(2);   /* the idle owners sweep their own lists */
   if (sp_gc_ph_on) sp_gc_ph_barrier += sp_monotonic_now() - bt0;
   SCHED_UNLOCK();
   /* the collector's own young lists, like every released worker's */
-  if (__atomic_load_n(&g_cs_unclaimed, __ATOMIC_RELAXED) > 0) sp_cs_owner_run(sp_worker_id);
+  if (SP_ATOMIC_LOAD(&g_cs_unclaimed, __ATOMIC_RELAXED) > 0) sp_cs_owner_run(sp_worker_id);
   if (g_cs_full && sp_slab_on > 0 && sp_cs_chunks_settled(sp_worker_id)) sp_slab_release_worker(sp_worker_id);
 #else
   (void)force;
@@ -1376,8 +1376,8 @@ static void sp_cs_run_task(const sp_sw_task *t) {
   }
   if (sp_gc_ph_on) {
     unsigned long d = (unsigned long)((sp_monotonic_now() - t0) * 1e6), m;
-    do { m = __atomic_load_n(&g_cs_task_max_us, __ATOMIC_RELAXED); if (d <= m) break; }
-    while (!__atomic_compare_exchange_n(&g_cs_task_max_us, &m, d, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
+    do { m = SP_ATOMIC_LOAD(&g_cs_task_max_us, __ATOMIC_RELAXED); if (d <= m) break; }
+    while (!SP_ATOMIC_CAS(&g_cs_task_max_us, &m, d, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
   }
 }
 /* Who takes a task: a worker's own young lists (CS_OBJ, CS_STR_YOUNG of a
@@ -1392,7 +1392,7 @@ static unsigned char g_cs_claimed[CS_TASK_MAX];
    finishing them. */
 static int sp_cs_task_is_owned(const sp_sw_task *t) {
   return (t->kind == CS_OBJ || t->kind == CS_STR_YOUNG || t->kind == CS_CHUNKS) && t->wid != CS_SWEEPER_WID &&
-         !(t->wid >= 0 && t->wid < SP_MAX_WORKERS && __atomic_load_n(&g_native_out[t->wid], __ATOMIC_RELAXED) == SP_OUT_NATIVE);
+         !(t->wid >= 0 && t->wid < SP_MAX_WORKERS && SP_ATOMIC_LOAD(&g_native_out[t->wid], __ATOMIC_RELAXED) == SP_OUT_NATIVE);
 }
 #define CS_RUN_SWEEPER 0
 #define CS_RUN_OWNER   1
@@ -1401,19 +1401,19 @@ static int sp_cs_run_tasks(int mode, int wid) {
   int ran = 0;
   double t0 = sp_gc_ph_on ? sp_monotonic_now() : 0;
   for (int i = 0; i < g_cs_ntasks; i++) {
-    if (__atomic_load_n(&g_cs_claimed[i], __ATOMIC_RELAXED)) continue;
+    if (SP_ATOMIC_LOAD(&g_cs_claimed[i], __ATOMIC_RELAXED)) continue;
     const sp_sw_task *t = &g_cs_tasks[i];
     int owned = g_cs_owner_env && sp_cs_task_is_owned(t);
     if (mode == CS_RUN_SWEEPER && owned) continue;
     if (mode == CS_RUN_OWNER && (!owned || t->wid != wid)) continue;
     unsigned char z = 0;
-    if (!__atomic_compare_exchange_n(&g_cs_claimed[i], &z, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) continue;
-    __atomic_fetch_sub(&g_cs_unclaimed, 1, __ATOMIC_RELAXED);
+    if (!SP_ATOMIC_CAS(&g_cs_claimed[i], &z, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) continue;
+    SP_ATOMIC_FETCH_SUB(&g_cs_unclaimed, 1, __ATOMIC_RELAXED);
     sp_cs_run_task(t);
-    __atomic_store_n(&g_cs_claimed[i], 2, __ATOMIC_RELEASE);   /* done: the owner's release reads this */
+    SP_ATOMIC_STORE(&g_cs_claimed[i], 2, __ATOMIC_RELEASE);   /* done: the owner's release reads this */
     ran++;
   }
-  if (sp_gc_ph_on && ran) __atomic_fetch_add(&g_cs_task_us, (unsigned long)((sp_monotonic_now() - t0) * 1e6), __ATOMIC_RELAXED);
+  if (sp_gc_ph_on && ran) SP_ATOMIC_FETCH_ADD(&g_cs_task_us, (unsigned long)((sp_monotonic_now() - t0) * 1e6), __ATOMIC_RELAXED);
   return ran;
 }
 /* May this worker hand its empty chunks back? Not while a sweeper thread is
@@ -1424,7 +1424,7 @@ static int sp_cs_chunks_settled(int wid) {
   if (!g_cs_pending) return 1;
   for (int i = 0; i < g_cs_ntasks; i++)
     if (g_cs_tasks[i].kind == CS_CHUNKS && g_cs_tasks[i].wid == wid)
-      return __atomic_load_n(&g_cs_claimed[i], __ATOMIC_ACQUIRE) == 2;
+      return SP_ATOMIC_LOAD(&g_cs_claimed[i], __ATOMIC_ACQUIRE) == 2;
   return 1;
 }
 /* Leaving the task list: count what was run, and count ourselves out.
@@ -1436,15 +1436,15 @@ static void sp_cs_finish(int ran) {
   pthread_mutex_lock(&g_cs_lock);
   /* release: the collector may find both counters at rest with an acquire
      load and proceed without the lock, and it then reads what the tasks wrote */
-  int fin = __atomic_add_fetch(&g_cs_finished, ran, __ATOMIC_RELEASE);
-  int running = __atomic_sub_fetch(&g_cs_running, 1, __ATOMIC_RELEASE);
+  int fin = SP_ATOMIC_ADD_FETCH(&g_cs_finished, ran, __ATOMIC_RELEASE);
+  int running = SP_ATOMIC_SUB_FETCH(&g_cs_running, 1, __ATOMIC_RELEASE);
   if (fin >= g_cs_ntasks && running == 0) {
     if (sp_gc_ph_on) sp_gc_ph_conc_wall += sp_monotonic_now() - g_cs_t0;
     pthread_cond_broadcast(&g_cs_done);
   }
   pthread_mutex_unlock(&g_cs_lock);
 }
-static void sp_cs_enter(void) { pthread_mutex_lock(&g_cs_lock); __atomic_fetch_add(&g_cs_running, 1, __ATOMIC_RELAXED); pthread_mutex_unlock(&g_cs_lock); }
+static void sp_cs_enter(void) { pthread_mutex_lock(&g_cs_lock); SP_ATOMIC_FETCH_ADD(&g_cs_running, 1, __ATOMIC_RELAXED); pthread_mutex_unlock(&g_cs_lock); }
 /* The owner's share, run by the released worker with the world running. */
 static void sp_cs_owner_run(int wid) {
   int was = sp_gc_in_sweeper;
@@ -1480,7 +1480,7 @@ static void *sp_cs_sweeper_main(void *arg) {
     while (g_cs_gen == seen && !g_shutdown) pthread_cond_wait(&g_cs_go, &g_cs_lock);
     if (g_shutdown) { pthread_mutex_unlock(&g_cs_lock); break; }
     seen = g_cs_gen;
-    __atomic_fetch_add(&g_cs_running, 1, __ATOMIC_RELAXED);
+    SP_ATOMIC_FETCH_ADD(&g_cs_running, 1, __ATOMIC_RELAXED);
     pthread_mutex_unlock(&g_cs_lock);
     sp_cs_finish(sp_cs_run_tasks(CS_RUN_SWEEPER, -1));
   }
@@ -1533,9 +1533,9 @@ static void sp_sched_conc_start(int full, int str_sweep, int str_major) {
   }
   pthread_mutex_lock(&g_cs_lock);
   if (sp_gc_ph_on) g_cs_t0 = sp_monotonic_now();
-  g_cs_ntasks = nt; __atomic_store_n(&g_cs_finished, 0, __ATOMIC_RELAXED);
+  g_cs_ntasks = nt; SP_ATOMIC_STORE(&g_cs_finished, 0, __ATOMIC_RELAXED);
   memset(g_cs_claimed, 0, (size_t)nt);
-  __atomic_store_n(&g_cs_unclaimed, nt, __ATOMIC_RELEASE);
+  SP_ATOMIC_STORE(&g_cs_unclaimed, nt, __ATOMIC_RELEASE);
   g_cs_pending = 1;
   g_cs_gen++;
   pthread_cond_broadcast(&g_cs_go);
@@ -1545,7 +1545,7 @@ static void sp_sched_conc_start(int full, int str_sweep, int str_major) {
    explicit one): join the sweepers and apply what they produced. */
 static void sp_sched_conc_wait(void) {
   if (!g_cs_pending) return;
-  if (__atomic_load_n(&g_cs_finished, __ATOMIC_ACQUIRE) < g_cs_ntasks || __atomic_load_n(&g_cs_running, __ATOMIC_ACQUIRE) > 0) {
+  if (SP_ATOMIC_LOAD(&g_cs_finished, __ATOMIC_ACQUIRE) < g_cs_ntasks || SP_ATOMIC_LOAD(&g_cs_running, __ATOMIC_ACQUIRE) > 0) {
     /* Not done yet: the world is stopped, so every parked worker is idle.
        Hand them the unclaimed tasks (thirty hands finish in a fraction of
        what eight sweepers need), take some ourselves, then join. */
@@ -1556,7 +1556,7 @@ static void sp_sched_conc_wait(void) {
     SCHED_UNLOCK();
     sp_cs_help_run();
     pthread_mutex_lock(&g_cs_lock);
-    while (__atomic_load_n(&g_cs_finished, __ATOMIC_RELAXED) < g_cs_ntasks || __atomic_load_n(&g_cs_running, __ATOMIC_RELAXED) > 0) pthread_cond_wait(&g_cs_done, &g_cs_lock);
+    while (SP_ATOMIC_LOAD(&g_cs_finished, __ATOMIC_RELAXED) < g_cs_ntasks || SP_ATOMIC_LOAD(&g_cs_running, __ATOMIC_RELAXED) > 0) pthread_cond_wait(&g_cs_done, &g_cs_lock);
     pthread_mutex_unlock(&g_cs_lock);
     SCHED_LOCK();
     g_cs_help = 0;
@@ -1696,7 +1696,7 @@ static void sp_sched_par_sweep(void) {
   sp_str_lcache_clear();
   SCHED_LOCK();
   g_sw_ntasks = nt;
-  __atomic_store_n(&g_sw_next, 0, __ATOMIC_RELEASE);
+  SP_ATOMIC_STORE(&g_sw_next, 0, __ATOMIC_RELEASE);
   g_sw_done = 0;
   g_sw_slot_max_us = 0;
   g_sweep_go = 1;
@@ -1746,8 +1746,8 @@ static void *sp_trim_thread_main(void *arg) {
   for (;;) {
     struct timespec ts = { 0, 20 * 1000 * 1000 };
     nanosleep(&ts, NULL);
-    if (__atomic_load_n(&g_shutdown, __ATOMIC_RELAXED)) break;   /* set under the sched lock at drain; read here without it */
-    if (__atomic_exchange_n(&sp_gc_trim_wanted, 0, __ATOMIC_ACQ_REL)) malloc_trim(0);
+    if (SP_ATOMIC_LOAD(&g_shutdown, __ATOMIC_RELAXED)) break;   /* set under the sched lock at drain; read here without it */
+    if (SP_ATOMIC_EXCHANGE(&sp_gc_trim_wanted, 0, __ATOMIC_ACQ_REL)) malloc_trim(0);
   }
   return NULL;
 }
@@ -3181,27 +3181,21 @@ const char *sp_Queue_class_name(sp_queue *q) {
    messages page at 64 connections parked 58k times a second on its
    fragment-cache shards (3,200 req/s); spinning first restores most of the
    throughput the parks took. */
-#if defined(__x86_64__) || defined(__i386__)
-#define SP_CPU_RELAX() __builtin_ia32_pause()
-#elif defined(__aarch64__)
-#define SP_CPU_RELAX() __asm__ __volatile__("yield" ::: "memory")
-#else
-#define SP_CPU_RELAX() ((void)0)
-#endif
+/* SP_CPU_RELAX: the architecture's pause instruction, sp_compat.h */
 #ifndef SP_MUTEX_SPIN
 #define SP_MUTEX_SPIN 256
 #endif
 static inline int sp_mutex_spin_acquire(sp_mutex *m, sp_thread *self) {
   for (int i = 0; i < SP_MUTEX_SPIN; i++) {
-    sp_thread *o = __atomic_load_n(&m->owner, __ATOMIC_SEQ_CST);
+    sp_thread *o = SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST);
     if (o == NULL) {
       sp_thread *expect = NULL;
-      if (__atomic_compare_exchange_n(&m->owner, &expect, self, 0,
+      if (SP_ATOMIC_CAS(&m->owner, &expect, self, 0,
                                       __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) return 1;
       continue;
     }
     if (o == self) return 0;   /* reentrancy or a deadlock: the slow path decides */
-    if (__atomic_load_n(&o->state, __ATOMIC_SEQ_CST) != SP_TH_RUNNING) return 0;
+    if (SP_ATOMIC_LOAD(&o->state, __ATOMIC_SEQ_CST) != SP_TH_RUNNING) return 0;
     SP_CPU_RELAX();
   }
   return 0;
@@ -3210,25 +3204,25 @@ static inline int sp_mutex_spin_acquire(sp_mutex *m, sp_thread *self) {
 void sp_Mutex_lock(sp_mutex *m) {
   sp_thread *self = g_current;
   sp_thread *expect = NULL;
-  if (__atomic_compare_exchange_n(&m->owner, &expect, self, 0,
+  if (SP_ATOMIC_CAS(&m->owner, &expect, self, 0,
                                   __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
-    { if (sched_lat_enabled()) __atomic_fetch_add(&g_mtx_fast, 1, __ATOMIC_RELAXED); return; }   /* was unlocked: ours, no lock taken */
+    { if (sched_lat_enabled()) SP_ATOMIC_FETCH_ADD(&g_mtx_fast, 1, __ATOMIC_RELAXED); return; }   /* was unlocked: ours, no lock taken */
   if (sp_mutex_spin_acquire(m, self))
-    { if (sched_lat_enabled()) __atomic_fetch_add(&g_mtx_spin, 1, __ATOMIC_RELAXED); return; }
+    { if (sched_lat_enabled()) SP_ATOMIC_FETCH_ADD(&g_mtx_spin, 1, __ATOMIC_RELAXED); return; }
   SCHED_LOCK();
   /* the owner re-entering its own Monitor just goes deeper */
-  if (__atomic_load_n(&m->owner, __ATOMIC_SEQ_CST) == self && m->reentrant) { m->depth++; SCHED_UNLOCK(); return; }
-  if (__atomic_load_n(&m->owner, __ATOMIC_SEQ_CST) == self) { SCHED_UNLOCK(); sp_raise_cls("ThreadError", "deadlock; recursive locking"); }
+  if (SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) == self && m->reentrant) { m->depth++; SCHED_UNLOCK(); return; }
+  if (SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) == self) { SCHED_UNLOCK(); sp_raise_cls("ThreadError", "deadlock; recursive locking"); }
   expect = NULL;
-  if (__atomic_compare_exchange_n(&m->owner, &expect, self, 0,
+  if (SP_ATOMIC_CAS(&m->owner, &expect, self, 0,
                                   __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
     { SCHED_UNLOCK(); return; }
   /* Count ourselves BEFORE the last look at `owner`: an unlocker that clears
      it after this point re-reads the count and finds us. */
   m->nwaiters++;
-  __atomic_thread_fence(__ATOMIC_SEQ_CST);
+  SP_ATOMIC_FENCE(__ATOMIC_SEQ_CST);
   expect = NULL;
-  if (__atomic_compare_exchange_n(&m->owner, &expect, self, 0,
+  if (SP_ATOMIC_CAS(&m->owner, &expect, self, 0,
                                   __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
     m->nwaiters--;                           /* released under us; took it instead */
     SCHED_UNLOCK();
@@ -3247,7 +3241,7 @@ void sp_Mutex_lock(sp_mutex *m) {
   for (;;) {
     sp_sched_block(&m->waiters);
     expect = NULL;
-    if (__atomic_compare_exchange_n(&m->owner, &expect, self, 0,
+    if (SP_ATOMIC_CAS(&m->owner, &expect, self, 0,
                                     __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) break;
     self->repark_front = 1;   /* re-park at the head (sp_sched_block honours this) */
   }
@@ -3261,11 +3255,11 @@ void sp_Mutex_unlock(sp_mutex *m) {
   /* depth is the owner's own field, so reading it as the owner needs no lock;
      a non-owner fails the exchange below and takes the slow path, which is
      where the ThreadError is raised. */
-  if (m->depth == 0 && __atomic_load_n(&m->nwaiters, __ATOMIC_SEQ_CST) == 0) {
+  if (m->depth == 0 && SP_ATOMIC_LOAD(&m->nwaiters, __ATOMIC_SEQ_CST) == 0) {
     sp_thread *expect = self;
-    if (__atomic_compare_exchange_n(&m->owner, &expect, NULL, 0,
+    if (SP_ATOMIC_CAS(&m->owner, &expect, NULL, 0,
                                     __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
-      if (__atomic_load_n(&m->nwaiters, __ATOMIC_SEQ_CST) == 0) return;
+      if (SP_ATOMIC_LOAD(&m->nwaiters, __ATOMIC_SEQ_CST) == 0) return;
       /* A waiter counted itself while we were releasing. It is parked, or is
          about to look at `owner` one more time and take it; either way the
          list is the authority, so finish the hand-off under the lock.
@@ -3292,12 +3286,12 @@ void sp_Mutex_unlock(sp_mutex *m) {
     }
   }
   SCHED_LOCK();
-  if (m->depth > 0 && __atomic_load_n(&m->owner, __ATOMIC_SEQ_CST) == self) { m->depth--; SCHED_UNLOCK(); return; }
-  if (__atomic_load_n(&m->owner, __ATOMIC_SEQ_CST) != self) {
+  if (m->depth > 0 && SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) == self) { m->depth--; SCHED_UNLOCK(); return; }
+  if (SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) != self) {
     SCHED_UNLOCK();
     sp_raise_cls("ThreadError", "Attempt to unlock a mutex which is not locked");
   }
-  __atomic_store_n(&m->owner, NULL, __ATOMIC_SEQ_CST);
+  SP_ATOMIC_STORE(&m->owner, NULL, __ATOMIC_SEQ_CST);
   if (m->waiters) sp_sched_wake_one(&m->waiters);
   SCHED_UNLOCK();
 }
@@ -3307,17 +3301,17 @@ void sp_Mutex_unlock(sp_mutex *m) {
 sp_bool sp_Mutex_try_lock(sp_mutex *m) {
   SCHED_LOCK();
   sp_bool r;
-  if (__atomic_load_n(&m->owner, __ATOMIC_SEQ_CST) == g_current && m->reentrant) { m->depth++; r = 1; }
+  if (SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) == g_current && m->reentrant) { m->depth++; r = 1; }
   else {
     sp_thread *expect = NULL;
-    r = __atomic_compare_exchange_n(&m->owner, &expect, g_current, 0,
+    r = SP_ATOMIC_CAS(&m->owner, &expect, g_current, 0,
                                     __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST) ? 1 : 0;
   }
   SCHED_UNLOCK();
   return r;
 }
-sp_bool sp_Mutex_locked(sp_mutex *m) { return __atomic_load_n(&m->owner, __ATOMIC_SEQ_CST) != NULL; }
-sp_bool sp_Mutex_owned(sp_mutex *m)  { return __atomic_load_n(&m->owner, __ATOMIC_SEQ_CST) == g_current; }
+sp_bool sp_Mutex_locked(sp_mutex *m) { return SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) != NULL; }
+sp_bool sp_Mutex_owned(sp_mutex *m)  { return SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) == g_current; }
 
 /* ---- ConditionVariable ----
  * #wait releases the mutex, parks on the CV, and re-acquires the mutex on
@@ -3335,11 +3329,11 @@ void sp_CondVar_wait(sp_condvar *cv, sp_mutex *m) {
      inlined (its hand-off + ownership check) since sp_Mutex_unlock would take
      the lock again on its own. */
   SCHED_LOCK();
-  if (__atomic_load_n(&m->owner, __ATOMIC_SEQ_CST) != g_current) {
+  if (SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) != g_current) {
     SCHED_UNLOCK();
     sp_raise_cls("ThreadError", "Attempt to unlock a mutex which is not locked");
   }
-  __atomic_store_n(&m->owner, NULL, __ATOMIC_SEQ_CST);
+  SP_ATOMIC_STORE(&m->owner, NULL, __ATOMIC_SEQ_CST);
   if (m->waiters) sp_sched_wake_one(&m->waiters);
   double ct0 = sched_lat_enabled() ? sp_monotonic_now() : 0;
   sp_sched_block(&cv->waiters);                /* park (drops+retakes the lock) */
@@ -3357,11 +3351,11 @@ void sp_CondVar_wait(sp_condvar *cv, sp_mutex *m) {
 void sp_CondVar_wait_nb(sp_condvar *cv, sp_mutex *m) {
   (void)cv;
   SCHED_LOCK();
-  if (__atomic_load_n(&m->owner, __ATOMIC_SEQ_CST) != g_current) {
+  if (SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) != g_current) {
     SCHED_UNLOCK();
     sp_raise_cls("ThreadError", "Attempt to unlock a mutex which is not locked");
   }
-  __atomic_store_n(&m->owner, NULL, __ATOMIC_SEQ_CST);
+  SP_ATOMIC_STORE(&m->owner, NULL, __ATOMIC_SEQ_CST);
   if (m->waiters) sp_sched_wake_one(&m->waiters);
   SCHED_UNLOCK();
   sp_Mutex_lock(m);

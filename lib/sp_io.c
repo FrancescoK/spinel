@@ -517,7 +517,7 @@ FILE *sp_io_closed_sentinel(void) {
     FILE *s = fopen("/dev/null", "r+");
     if (!s) s = fopen("/dev/null", "r");
     if (!s) sp_raise_cls("IOError", "cannot open /dev/null");
-    if (!__atomic_compare_exchange_n(&sentinel, &(FILE *){NULL}, s, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) fclose(s);
+    if (!SP_ATOMIC_CAS(&sentinel, &(FILE *){NULL}, s, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) fclose(s);
   }
   return sentinel;
 }

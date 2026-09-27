@@ -1895,7 +1895,7 @@ void emit_scope_decls(Compiler *c, Scope *s, Buf *b) {
      inside this method must not outlive it. The cleanup attribute puts the
      caller's registers back on every ordinary exit, early returns included. */
   if (s->name && s->def_node >= 0 && scope_performs_match(c, si))
-    buf_puts(b, "    sp_re_frame _sp_rf __attribute__((cleanup(sp_re_frame_pop)));"
+    buf_puts(b, "    sp_re_frame _sp_rf SP_CLEANUP(sp_re_frame_pop);"
                 " sp_re_frame_push(&_sp_rf);\n");
   /* Take the name this call spelled, and clear the channel so a call that did
      not write it (or a later nested one) cannot be mistaken for ours (#3729). */
@@ -2815,9 +2815,9 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
      definition, not just the prototype. */
   const char *unused = (s->class_id >= 0 && !s->is_cmethod &&
                         !c->classes[s->class_id].instantiated)
-                       ? "__attribute__((unused)) " : "";
+                       ? "SP_UNUSED " : "";
   const char *ihint = s->is_ext_entry ? ""   /* exported: no inline linkage */
-                    : method_inline_force(c, s) ? "inline __attribute__((always_inline)) "
+                    : method_inline_force(c, s) ? "inline SP_ALWAYS_INLINE "
                     : (method_inline_hint(c, s) ? "inline " : "");
   if (method_is_void(s)) { buf_puts(b, stor); buf_puts(b, ihint); buf_puts(b, unused); buf_puts(b, "void "); }
   else { buf_puts(b, stor); buf_puts(b, ihint); buf_puts(b, unused); emit_ctype(c, s->ret, b); buf_puts(b, " "); }
@@ -7174,7 +7174,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
        sp_box_range (the poly dispatch unboxes with *(sp_X *)v.p, so v.p must
        be a heap pointer). The value is fully evaluated at the call boundary;
        its heap ivars are rooted across the allocation. */
-    buf_printf(b, "__attribute__((unused)) static sp_RbVal sp_box_vobj_%s(sp_%s v) {\n",
+    buf_printf(b, "SP_UNUSED static sp_RbVal sp_box_vobj_%s(sp_%s v) {\n",
                ci->c_name, ci->c_name);
     for (int i = 0; i < ci->nivars; i++) {
       TyKind it = ci->ivar_types[i];
@@ -11680,7 +11680,7 @@ char *codegen_program(const NodeTable *nt) {
                    "extern void sp_IOBuffer_ffi_release_v(sp_RbVal, sp_int, sp_int);\n");
       /* which class ids are user classes, whose instances have no C address:
          a boxed pointer argument holding one is refused at run time */
-      buf_printf(&b, "static const unsigned char sp_ffi_user_cls[%d] __attribute__((unused)) = {", cf->nclasses > 0 ? cf->nclasses : 1);
+      buf_printf(&b, "static const unsigned char sp_ffi_user_cls[%d] SP_UNUSED = {", cf->nclasses > 0 ? cf->nclasses : 1);
       for (int k = 0; k < cf->nclasses; k++)
         buf_printf(&b, "%s%d", k ? "," : "", (!cf->classes[k].is_native_class && !is_builtin_reopen(cf->classes[k].name)) ? 1 : 0);
       if (cf->nclasses == 0) buf_puts(&b, "0");
@@ -12235,7 +12235,7 @@ char *codegen_program(const NodeTable *nt) {
     /* Module#included_modules: the ancestors that are modules (#2674). The
        ancestors are id-backed boxes (sp_box_class of a name-less sp_Class), so
        the cls_id rides the int slot. */
-    buf_puts(&b, "static sp_PolyArray *sp_class_included_modules(sp_Class c) __attribute__((unused));\n");
+    buf_puts(&b, "static sp_PolyArray *sp_class_included_modules(sp_Class c) SP_UNUSED;\n");
     buf_puts(&b, "static sp_PolyArray *sp_class_included_modules(sp_Class c){\n");
     buf_puts(&b, "  sp_PolyArray *a=sp_class_ancestors(c); SP_GC_ROOT(a);\n");
     buf_puts(&b, "  sp_PolyArray *r=sp_PolyArray_new(); SP_GC_ROOT(r);\n");
@@ -12451,14 +12451,14 @@ char *codegen_program(const NodeTable *nt) {
      emitted with the marshal dispatch near the end of the TU. Only user-class
      instances route through it, so a classless program emits neither. */
   if (g_emit_obj_dispatch) {
-    buf_puts(&b, "static const char *sp_obj_inspect_sw(int cls_id, void *p) __attribute__((cold, noinline));\n");
-    buf_puts(&b, "static const char *sp_obj_to_s_sw(int cls_id, void *p) __attribute__((cold, noinline));\n");
-    buf_puts(&b, "static sp_int sp_obj_to_int_sw(int cls_id, void *p, int *ok) __attribute__((cold, noinline));\n");
-    buf_puts(&b, "static const char *sp_obj_to_str_sw(int cls_id, void *p) __attribute__((cold, noinline));\n");
-    buf_puts(&b, "static const char *sp_obj_to_path_sw(int cls_id, void *p) __attribute__((cold, noinline));\n");
+    buf_puts(&b, "static const char *sp_obj_inspect_sw(int cls_id, void *p) SP_COLD SP_NOINLINE;\n");
+    buf_puts(&b, "static const char *sp_obj_to_s_sw(int cls_id, void *p) SP_COLD SP_NOINLINE;\n");
+    buf_puts(&b, "static sp_int sp_obj_to_int_sw(int cls_id, void *p, int *ok) SP_COLD SP_NOINLINE;\n");
+    buf_puts(&b, "static const char *sp_obj_to_str_sw(int cls_id, void *p) SP_COLD SP_NOINLINE;\n");
+    buf_puts(&b, "static const char *sp_obj_to_path_sw(int cls_id, void *p) SP_COLD SP_NOINLINE;\n");
     if (c->uses_kconv)
-      buf_puts(&b, "static int sp_obj_conv_sw(int cls_id, void *p, int which, sp_RbVal *out) __attribute__((cold, noinline));\n");
-    buf_puts(&b, "static const char *sp_obj_cls_name_rt(int cls_id) __attribute__((cold, noinline));\n");
+      buf_puts(&b, "static int sp_obj_conv_sw(int cls_id, void *p, int which, sp_RbVal *out) SP_COLD SP_NOINLINE;\n");
+    buf_puts(&b, "static const char *sp_obj_cls_name_rt(int cls_id) SP_COLD SP_NOINLINE;\n");
   }
   /* The #message / #to_s dispatchers below call these bodies unconditionally,
      so a program that defines an override without ever querying it left the
@@ -12489,7 +12489,7 @@ char *codegen_program(const NodeTable *nt) {
   { int any_exc = 0;
     for (int i = 0; i < c->nclasses && !any_exc; i++) any_exc = class_is_exc_subclass(c, i);
     if (any_exc) {
-      buf_puts(&b, "__attribute__((unused)) static int sp_exc_user_cls_id(sp_RbVal v){\n");
+      buf_puts(&b, "SP_UNUSED static int sp_exc_user_cls_id(sp_RbVal v){\n");
       buf_puts(&b, "  const char *n = v.v.p ? ((sp_Exception *)v.v.p)->cls_name : NULL;\n  if (!n) return 0x7fffffff;\n");
       for (int i = 0; i < c->nclasses; i++) {
         if (!class_is_exc_subclass(c, i) || !c->classes[i].name) continue;
@@ -12508,7 +12508,7 @@ char *codegen_program(const NodeTable *nt) {
   if (exc_has_user_msg_override(c)) {
     for (int pass = 0; pass < 2; pass++) {
       int want_message = pass;  /* 0 = to_s dispatcher, 1 = message dispatcher */
-      buf_printf(&b, "__attribute__((unused)) static const char *%s(sp_Exception *e){\n",
+      buf_printf(&b, "SP_UNUSED static const char *%s(sp_Exception *e){\n",
                  want_message ? "sp_user_exc_message" : "sp_user_exc_to_s");
       buf_puts(&b, "  if(!e)return (&(\"\\xff\")[1]);\n  const char *cls=e->cls_name;\n");
       for (int i = 0; i < c->nclasses; i++) {
@@ -12545,7 +12545,7 @@ char *codegen_program(const NodeTable *nt) {
   if (exc_has_nonstring_msg_override(c)) {
     for (int pass = 0; pass < 2; pass++) {
       int want_message = pass;
-      buf_printf(&b, "__attribute__((unused)) static sp_RbVal %s(sp_Exception *e){\n",
+      buf_printf(&b, "SP_UNUSED static sp_RbVal %s(sp_Exception *e){\n",
                  want_message ? "sp_user_exc_message_v" : "sp_user_exc_to_s_v");
       buf_puts(&b, "  if(!e)return sp_box_str((&(\"\\xff\")[1]));\n  const char *cls=e->cls_name;\n");
       for (int i = 0; i < c->nclasses; i++) {

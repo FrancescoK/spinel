@@ -246,7 +246,7 @@ static void sp_gc_fault_report(int sig) {
   signal(sig, SIG_DFL);
   raise(sig);
 }
-__attribute__((constructor)) static void sp_gc_debug_env(void){
+SP_CONSTRUCTOR static void sp_gc_debug_env(void){
   const char *v=getenv("SPINEL_GC_VERIFY"); sp_gc_verify=(v&&*v&&*v!='0');
   { const char *ph=getenv("SPINEL_GC_PHASES"); sp_gc_ph_on=(ph&&*ph&&*ph!='0'); }
   { const char *fi=getenv("SPINEL_GC_FULL_INTERVAL");
@@ -304,13 +304,7 @@ __attribute__((constructor)) static void sp_gc_debug_env(void){
 static double sp_gc_stat_now(void);
 #ifdef SP_THREADS
 #include <pthread.h>
-#if defined(__x86_64__) || defined(__i386__)
-#define SP_GC_CPU_RELAX() __builtin_ia32_pause()
-#elif defined(__aarch64__)
-#define SP_GC_CPU_RELAX() __asm__ __volatile__("yield" ::: "memory")
-#else
-#define SP_GC_CPU_RELAX() ((void)0)
-#endif
+#define SP_GC_CPU_RELAX() SP_CPU_RELAX()   /* sp_compat.h */
 /* ---- The parallel mark ----
    The roots are walked by the collector alone (they are few, and the root
    phase has state of its own); the DRAIN, which is the mark's time, runs on
@@ -334,7 +328,7 @@ static void sp_gc_mark_spill_n(int out) {
     else { pthread_mutex_unlock(&sp_gc_mk_lock); c = (sp_gc_mk_chunk *)malloc(sizeof *c); if (!c) sp_oom_die(); pthread_mutex_lock(&sp_gc_mk_lock); }
     int n = out - i; if (n > SP_GC_MK_CHUNK) n = SP_GC_MK_CHUNK;
     memcpy(c->obj, sp_gc_mark_stack + i, (size_t)n * sizeof(void *)); c->n = n; i += n;
-    c->next = sp_gc_mk_work; sp_gc_mk_work = c; __atomic_fetch_add(&sp_gc_mk_nwork, 1, __ATOMIC_RELAXED); sp_gc_ph_mk_spills++;
+    c->next = sp_gc_mk_work; sp_gc_mk_work = c; SP_ATOMIC_FETCH_ADD(&sp_gc_mk_nwork, 1, __ATOMIC_RELAXED); sp_gc_ph_mk_spills++;
   }
   pthread_mutex_unlock(&sp_gc_mk_lock);
   memmove(sp_gc_mark_stack, sp_gc_mark_stack + out, (size_t)(sp_gc_mark_top - out) * sizeof(void *));
@@ -351,10 +345,10 @@ void sp_gc_mark_par_begin(void) { if (sp_gc_mark_top > 0) sp_gc_mark_spill_n(sp_
 static int sp_gc_mk_markers = 1;   /* seats the scheduler hands out, plus the collector */
 void sp_gc_mark_par_markers(int n) { sp_gc_mk_markers = n; }
 static int sp_gc_mark_take(void) {
-  if (__atomic_load_n(&sp_gc_mk_nwork, __ATOMIC_RELAXED) == 0) return 0;
+  if (SP_ATOMIC_LOAD(&sp_gc_mk_nwork, __ATOMIC_RELAXED) == 0) return 0;
   pthread_mutex_lock(&sp_gc_mk_lock);
   sp_gc_mk_chunk *c = sp_gc_mk_work;
-  if (c) { sp_gc_mk_work = c->next; __atomic_fetch_sub(&sp_gc_mk_nwork, 1, __ATOMIC_RELAXED); sp_gc_ph_mk_takes++; }
+  if (c) { sp_gc_mk_work = c->next; SP_ATOMIC_FETCH_SUB(&sp_gc_mk_nwork, 1, __ATOMIC_RELAXED); sp_gc_ph_mk_takes++; }
   pthread_mutex_unlock(&sp_gc_mk_lock);
   if (!c) return 0;
   memcpy(sp_gc_mark_stack + sp_gc_mark_top, c->obj, (size_t)c->n * sizeof(void *));
@@ -368,26 +362,26 @@ static int sp_gc_mark_take(void) {
    the whole mark is done: no chunk to take and nobody holding work. */
 void sp_gc_mark_par_run(void) {
   if (!sp_gc_mark_stack) { sp_gc_mark_stack = (void **)malloc(sizeof(void *) * SP_GC_MARK_STACK_MAX); if (!sp_gc_mark_stack) sp_oom_die(); sp_gc_mark_cap = SP_GC_MARK_STACK_MAX; sp_gc_mark_top = 0; }
-  __atomic_fetch_add(&sp_gc_mk_busy, 1, __ATOMIC_ACQ_REL);
+  SP_ATOMIC_FETCH_ADD(&sp_gc_mk_busy, 1, __ATOMIC_ACQ_REL);
   for (;;) {
     while (sp_gc_mark_top > 0) {
       /* share while there is little on the list and a lot here: a marker
          that hoards a deep stack leaves the others spinning */
-      if (sp_gc_mark_top > 2 * SP_GC_MK_CHUNK && __atomic_load_n(&sp_gc_mk_nwork, __ATOMIC_RELAXED) < sp_gc_mk_markers) sp_gc_mark_spill();
+      if (sp_gc_mark_top > 2 * SP_GC_MK_CHUNK && SP_ATOMIC_LOAD(&sp_gc_mk_nwork, __ATOMIC_RELAXED) < sp_gc_mk_markers) sp_gc_mark_spill();
       void *obj = sp_gc_mark_stack[--sp_gc_mark_top];
       sp_gc_hdr *h = (sp_gc_hdr *)((char *)obj - sizeof(sp_gc_hdr));
       if (h->scan) h->scan(obj);
     }
     if (sp_gc_mark_take()) continue;
-    __atomic_fetch_sub(&sp_gc_mk_busy, 1, __ATOMIC_ACQ_REL);
+    SP_ATOMIC_FETCH_SUB(&sp_gc_mk_busy, 1, __ATOMIC_ACQ_REL);
     double i0 = (sp_gc_ph_on && sp_gc_mk_is_collector) ? sp_gc_stat_now() : 0;
     for (;;) {
-      if (__atomic_load_n(&sp_gc_mk_nwork, __ATOMIC_ACQUIRE) > 0) break;
-      if (__atomic_load_n(&sp_gc_mk_busy, __ATOMIC_ACQUIRE) == 0) { if (i0) sp_gc_ph_mk_idle += sp_gc_stat_now() - i0; sp_gc_mkl_fold(); return; }
+      if (SP_ATOMIC_LOAD(&sp_gc_mk_nwork, __ATOMIC_ACQUIRE) > 0) break;
+      if (SP_ATOMIC_LOAD(&sp_gc_mk_busy, __ATOMIC_ACQUIRE) == 0) { if (i0) sp_gc_ph_mk_idle += sp_gc_stat_now() - i0; sp_gc_mkl_fold(); return; }
       SP_GC_CPU_RELAX();
     }
     if (i0) sp_gc_ph_mk_idle += sp_gc_stat_now() - i0;
-    __atomic_fetch_add(&sp_gc_mk_busy, 1, __ATOMIC_ACQ_REL);
+    SP_ATOMIC_FETCH_ADD(&sp_gc_mk_busy, 1, __ATOMIC_ACQ_REL);
   }
 }
 void (*sp_gc_par_mark_hook)(void) = NULL;
@@ -437,7 +431,7 @@ void sp_gc_mark_str(const char *s) {
     int wy;
     /* SPINEL_GC_VERIFY: a string slot the sweep has freed is nobody's to
        mark; marking it would set generation bits on a free slot */
-    if (__builtin_expect(sp_gc_verify, 0) && !sp_slab_is_live(h)) { fprintf(stderr, "*** SPINEL_GC_VERIFY: the mark reached a freed heap string %p\n", (const void *)s); sp_gc_verify_fail((void *)s, (sp_gc_hdr *)h); }
+    if (SP_EXPECT(sp_gc_verify, 0) && !sp_slab_is_live(h)) { fprintf(stderr, "*** SPINEL_GC_VERIFY: the mark reached a freed heap string %p\n", (const void *)s); sp_gc_verify_fail((void *)s, (sp_gc_hdr *)h); }
     if (!sp_slab_mark(h, 0, &wy)) return;
     size_t sz = h->size & 0x3FFFFFFFu;
     sp_gc_mkl_str += sz;
@@ -445,7 +439,7 @@ void sp_gc_mark_str(const char *s) {
     return;
   }
 #ifdef SP_THREADS
-  __atomic_store_n((unsigned char *)s - 1, (unsigned char)0xfc, __ATOMIC_RELAXED);   /* several markers may set it; a plain byte store, spelled so TSan reads it as intended */
+  SP_ATOMIC_STORE((unsigned char *)s - 1, (unsigned char)0xfc, __ATOMIC_RELAXED);   /* several markers may set it; a plain byte store, spelled so TSan reads it as intended */
 #else
   ((char *)s)[-1] = (char)0xfc;
 #endif
@@ -458,13 +452,13 @@ void sp_gc_mark(void*obj){if(!obj)return;unsigned char pm=((unsigned char*)obj)[
     /* Several threads mark at once: the stamp is claimed with an exchange
        on the flag word, so an object is counted and scanned by exactly one
        of them. Nothing else writes the word under the barrier. */
-    unsigned *w=sp_gc_hdr_flags(h);unsigned o=__atomic_load_n(w,__ATOMIC_RELAXED);
+    unsigned *w=sp_gc_hdr_flags(h);unsigned o=SP_ATOMIC_LOAD(w,__ATOMIC_RELAXED);
     for(;;){
       if((o&SP_GC_FL_MARK_MASK)==sp_gc_mark_gen)return;
       if(sp_gc_minor&&(o&SP_GC_FL_OLD))return;
       unsigned nw=(o&~SP_GC_FL_MARK_MASK)|sp_gc_mark_gen;
       if(sp_gc_conc_promote&&!(o&SP_GC_FL_OLD))nw|=SP_GC_FL_OLD;
-      if(__atomic_compare_exchange_n(w,&o,nw,0,__ATOMIC_ACQ_REL,__ATOMIC_RELAXED))break;
+      if(SP_ATOMIC_CAS(w,&o,nw,0,__ATOMIC_ACQ_REL,__ATOMIC_RELAXED))break;
     }
     sp_gc_mkl_marked++;sp_gc_mkl_bytes+=h->size;if(!(o&SP_GC_FL_OLD)){sp_gc_mkl_young+=h->size;was_young=1;}
   }
@@ -486,7 +480,7 @@ void sp_gc_mark(void*obj){if(!obj)return;unsigned char pm=((unsigned char*)obj)[
     sp_gc_mkl_promo+=h->size;
     {
 #ifdef SP_THREADS
-      if(sp_gc_par_mark)__atomic_fetch_or(sp_gc_hdr_flags(h),SP_GC_FL_OLD,__ATOMIC_RELAXED);
+      if(sp_gc_par_mark)SP_ATOMIC_FETCH_OR(sp_gc_hdr_flags(h),SP_GC_FL_OLD,__ATOMIC_RELAXED);
       else
 #endif
       h->old=1;
@@ -505,13 +499,13 @@ else{h->scan(obj);}}}
    the mark; a helper folds when its drain ends. */
 static void sp_gc_mkl_fold(void){
 #ifdef SP_THREADS
-  if(sp_gc_par_mark&&!sp_gc_mk_is_collector)__atomic_fetch_add(&sp_gc_ph_mk_by_helpers,sp_gc_mkl_marked,__ATOMIC_RELAXED);
-  __atomic_fetch_add(&sp_gc_ct_marked,sp_gc_mkl_marked,__ATOMIC_RELAXED);
-  __atomic_fetch_add(&sp_gc_mk_bytes,sp_gc_mkl_bytes,__ATOMIC_RELAXED);
-  __atomic_fetch_add(&sp_gc_mk_young_bytes,sp_gc_mkl_young,__ATOMIC_RELAXED);
-  __atomic_fetch_add(&sp_gc_mk_str_bytes,sp_gc_mkl_str,__ATOMIC_RELAXED);
-  __atomic_fetch_add(&sp_gc_mk_str_young_bytes,sp_gc_mkl_str_young,__ATOMIC_RELAXED);
-  __atomic_fetch_add(&sp_gc_mk_promo_bytes,sp_gc_mkl_promo,__ATOMIC_RELAXED);
+  if(sp_gc_par_mark&&!sp_gc_mk_is_collector)SP_ATOMIC_FETCH_ADD(&sp_gc_ph_mk_by_helpers,sp_gc_mkl_marked,__ATOMIC_RELAXED);
+  SP_ATOMIC_FETCH_ADD(&sp_gc_ct_marked,sp_gc_mkl_marked,__ATOMIC_RELAXED);
+  SP_ATOMIC_FETCH_ADD(&sp_gc_mk_bytes,sp_gc_mkl_bytes,__ATOMIC_RELAXED);
+  SP_ATOMIC_FETCH_ADD(&sp_gc_mk_young_bytes,sp_gc_mkl_young,__ATOMIC_RELAXED);
+  SP_ATOMIC_FETCH_ADD(&sp_gc_mk_str_bytes,sp_gc_mkl_str,__ATOMIC_RELAXED);
+  SP_ATOMIC_FETCH_ADD(&sp_gc_mk_str_young_bytes,sp_gc_mkl_str_young,__ATOMIC_RELAXED);
+  SP_ATOMIC_FETCH_ADD(&sp_gc_mk_promo_bytes,sp_gc_mkl_promo,__ATOMIC_RELAXED);
 #else
   sp_gc_ct_marked+=sp_gc_mkl_marked;sp_gc_mk_bytes+=sp_gc_mkl_bytes;sp_gc_mk_young_bytes+=sp_gc_mkl_young;
   sp_gc_mk_str_bytes+=sp_gc_mkl_str;sp_gc_mk_str_young_bytes+=sp_gc_mkl_str_young;sp_gc_mk_promo_bytes+=sp_gc_mkl_promo;
@@ -618,10 +612,10 @@ void sp_gc_pin_remembered_slow(void *obj) {
      room. Two threads racing here can both win a slot; a duplicate entry is
      scanned twice and costs nothing. */
 #ifdef SP_THREADS
-  { int idx = __atomic_fetch_add(&sp_gc_npinned, 1, __ATOMIC_RELAXED);
+  { int idx = SP_ATOMIC_FETCH_ADD(&sp_gc_npinned, 1, __ATOMIC_RELAXED);
     if (idx < SP_GC_PINNED_MAX) { sp_gc_pinned[idx] = obj; h->pinned = 1; }
-    else { __atomic_store_n(&sp_gc_pin_overflow, 1, __ATOMIC_RELAXED);
-           __atomic_store_n(&sp_gc_npinned, SP_GC_PINNED_MAX, __ATOMIC_RELAXED); } }
+    else { SP_ATOMIC_STORE(&sp_gc_pin_overflow, 1, __ATOMIC_RELAXED);
+           SP_ATOMIC_STORE(&sp_gc_npinned, SP_GC_PINNED_MAX, __ATOMIC_RELAXED); } }
 #else
   if (sp_gc_npinned < SP_GC_PINNED_MAX) { sp_gc_pinned[sp_gc_npinned++] = obj; h->pinned = 1; }
   else sp_gc_pin_overflow = 1;
@@ -669,10 +663,10 @@ void sp_gc_wb_slow(void *obj) {
      barriers in place. The dirty bit needs no such care: only a mutator writes
      it, only ever to 1, and the collector reads and clears it under
      stop-the-world. */
-  { int idx = __atomic_fetch_add(&sp_gc_nremembered, 1, __ATOMIC_RELAXED);
+  { int idx = SP_ATOMIC_FETCH_ADD(&sp_gc_nremembered, 1, __ATOMIC_RELAXED);
     if (idx < SP_GC_REMEMBERED_MAX) sp_gc_remembered[idx] = obj;
-    else { __atomic_store_n(&sp_gc_rem_overflow, 1, __ATOMIC_RELAXED);
-           __atomic_store_n(&sp_gc_nremembered, SP_GC_REMEMBERED_MAX, __ATOMIC_RELAXED); } }
+    else { SP_ATOMIC_STORE(&sp_gc_rem_overflow, 1, __ATOMIC_RELAXED);
+           SP_ATOMIC_STORE(&sp_gc_nremembered, SP_GC_REMEMBERED_MAX, __ATOMIC_RELAXED); } }
 #else
   if (sp_gc_nremembered < SP_GC_REMEMBERED_MAX) sp_gc_remembered[sp_gc_nremembered++] = obj;
   else sp_gc_rem_overflow = 1;
@@ -741,7 +735,7 @@ void sp_gc_sweep_list(sp_gc_hdr **pp, int conc, sp_gc_hdr **out_head, sp_gc_hdr 
   size_t swept = 0, kept = 0, promoted = 0;
   while (*pp) {
     sp_gc_hdr *h = *pp;
-    __builtin_prefetch(h->next);
+    SP_PREFETCH(h->next);
     swept++;
     if (h->marked != sp_gc_mark_gen) {
       *pp = h->next;
@@ -775,7 +769,7 @@ void sp_gc_sweep_old_list(sp_gc_hdr **pp, size_t *out_live, sp_gc_hdr **out_tail
   size_t live = 0, swept = 0; sp_gc_hdr *tail = NULL;
   while (*pp) {
     sp_gc_hdr *h = *pp;
-    __builtin_prefetch(h->next);
+    SP_PREFETCH(h->next);
     swept++;
     if (h->marked != sp_gc_mark_gen) {
       *pp = h->next;
@@ -849,7 +843,7 @@ size_t sp_gc_ph_slab_freed_obj=0, sp_gc_ph_slab_freed_str=0;
 static size_t sp_gc_parked_acc=0;
 size_t sp_gc_parked_take(void){ size_t v; 
 #ifdef SP_THREADS
-  v=__atomic_exchange_n(&sp_gc_parked_acc,0,__ATOMIC_RELAXED);
+  v=SP_ATOMIC_EXCHANGE(&sp_gc_parked_acc,0,__ATOMIC_RELAXED);
 #else
   v=sp_gc_parked_acc; sp_gc_parked_acc=0;
 #endif
@@ -859,9 +853,9 @@ void sp_gc_sweep_chunks(int wid,int full){
   sp_slab_sweep_worker(wid,full,0,sp_gc_die_cb,&st);
   SP_GC_CTR_ADD(sp_gc_ct_swept,st.swept);
 #ifdef SP_THREADS
-  __atomic_fetch_add(&sp_gc_ph_slab_freed_obj,st.freed_obj,__ATOMIC_RELAXED);
-  __atomic_fetch_add(&sp_gc_ph_slab_freed_str,st.freed_str,__ATOMIC_RELAXED);
-  __atomic_fetch_add(&sp_gc_parked_acc,st.parked,__ATOMIC_RELAXED);
+  SP_ATOMIC_FETCH_ADD(&sp_gc_ph_slab_freed_obj,st.freed_obj,__ATOMIC_RELAXED);
+  SP_ATOMIC_FETCH_ADD(&sp_gc_ph_slab_freed_str,st.freed_str,__ATOMIC_RELAXED);
+  SP_ATOMIC_FETCH_ADD(&sp_gc_parked_acc,st.parked,__ATOMIC_RELAXED);
 #else
   sp_gc_ph_slab_freed_obj+=st.freed_obj; sp_gc_ph_slab_freed_str+=st.freed_str; sp_gc_parked_acc+=st.parked;
 #endif
@@ -1040,7 +1034,7 @@ static void sp_gc_trim_request(void){
        147 ms against 105 without it). The trimmer thread (sp_sched.c) does
        it beside the running program, where a mutator that lands on the
        arena being walked waits a few milliseconds for that arena alone. */
-    if (sp_gc_trimmer_on) __atomic_store_n(&sp_gc_trim_wanted, 1, __ATOMIC_RELEASE);
+    if (sp_gc_trimmer_on) SP_ATOMIC_STORE(&sp_gc_trim_wanted, 1, __ATOMIC_RELEASE);
     else { double t0 = sp_gc_ph_on ? sp_gc_stat_now() : 0; malloc_trim(0); if (sp_gc_ph_on) { sp_gc_ph_trim_inline++; sp_gc_ph_trim_inline_t += sp_gc_stat_now() - t0; } }   /* no worker pool yet, so no trimmer: a single-threaded program on the mt archive */
 #else
     malloc_trim(0);
@@ -1198,7 +1192,7 @@ void sp_gc_collect(void){
     if(sp_gc_rem_overflow){ for(sp_gc_hdr*h=sp_gc_old_heap;h;h=h->next)h->dirty=0; sp_slab_each_object(0,1,sp_gc_clear_dirty_cb,NULL); }
     else for(int ri=0;ri<sp_gc_nremembered;ri++)((sp_gc_hdr*)sp_gc_remembered[ri]-1)->dirty=0;
     sp_gc_hdr**pp=&sp_gc_old_heap;
-    while(*pp){sp_gc_hdr*h=*pp;__builtin_prefetch(h->next);SP_GC_CTR_ADD(sp_gc_ct_swept,1);if(h->marked!=sp_gc_mark_gen){*pp=h->next;if(h->recycle){h->recycle(h);}
+    while(*pp){sp_gc_hdr*h=*pp;SP_PREFETCH(h->next);SP_GC_CTR_ADD(sp_gc_ct_swept,1);if(h->marked!=sp_gc_mark_gen){*pp=h->next;if(h->recycle){h->recycle(h);}
     else{if(h->finalize)h->finalize((char*)h+sizeof(sp_gc_hdr));sp_slab_free(h);}}
     else{pp=&h->next;}}
     sp_gc_old_bytes=sp_gc_mk_bytes-sp_gc_mk_young_bytes;

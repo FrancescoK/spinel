@@ -76,8 +76,8 @@ sp_Time sp_time_at_div(int64_t num, int64_t den) {
   /* rem < den, so rem * 1e9 needs more than 64 bits only when den does:
      a 128-bit product where the compiler has one, long double otherwise
      (a 32-bit build; the quotient is below 1e9 either way) */
-#if defined(__SIZEOF_INT128__)
-  int64_t ns = (int64_t)(((__int128)rem * 1000000000) / den);
+#if SP_HAVE_INT128
+  int64_t ns = (int64_t)(((sp_int128)rem * 1000000000) / den);
 #else
   int64_t ns = (int64_t)(((long double)rem * 1000000000.0L) / (long double)den);
 #endif
@@ -102,15 +102,15 @@ static void sp_time_shift_ns(double secs, int64_t base_sec, int32_t base_ns,
   double m = frexp(secs, &e);
   int64_t mi = (int64_t)(m * 9007199254740992.0); /* m * 2^53, exact */
   e -= 53;
-#if defined(__SIZEOF_INT128__)
-  __int128 ns = (__int128)mi * 1000000000;
+#if SP_HAVE_INT128
+  sp_int128 ns = (sp_int128)mi * 1000000000;
   if (e > 0) ns = (e > 34) ? (ns < 0 ? INT64_MIN : INT64_MAX) : ns << e;
   /* Floor toward -inf (arithmetic shift), matching CRuby's #nsec/#usec, which
      truncate the exact rational. spinel stores nanosecond resolution, so the
      sub-nanosecond bits CRuby keeps for #to_f round-tripping are lost by
      design (see docs/limitations.md). */
   else if (e < 0) ns = (-e > 126) ? (ns < 0 ? -1 : 0) : ns >> -e;
-  __int128 total = ((__int128)base_sec * 1000000000 + base_ns) + ns;
+  sp_int128 total = ((sp_int128)base_sec * 1000000000 + base_ns) + ns;
   int64_t sec = (int64_t)(total / 1000000000);
   int64_t rem = (int64_t)(total % 1000000000);
 #else
