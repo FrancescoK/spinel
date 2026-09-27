@@ -1024,6 +1024,44 @@ void emit_str_expr_nilable(Compiler *c, int node, Buf *b) {
   emit_str_expr_ex(c, node, 0, b);
 }
 
+/* Is `node` a call bound to a user method whose C function is `void`
+   (method_is_void)? Bound the way the direct-call emitters bind it: a
+   receiverless call through the enclosing self, `Const.m` through the class
+   methods, an object receiver through its class -- where every override below
+   that class has to answer no value too, or the dispatch carries one. A
+   yielding method is spliced at the call and gives the splice's value.
+   Parentheses around the call (`push((table(x)))`) are peeled. */
+int call_answers_no_value(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  node = unwrap_parens(c, node);
+  if (node < 0 || nt_kind(nt, node) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, node, "name");
+  if (!nm) return 0;
+  int recv = nt_ref(nt, node, "receiver");
+  int mi = -1, cid = -1;
+  if (recv < 0) {
+    mi = comp_self_call_mi(c, node, nm);
+    Scope *self = comp_scope_of(c, node);
+    if (mi >= 0 && c->scopes[mi].class_id >= 0 && !c->scopes[mi].is_cmethod && self)
+      cid = self->class_id;
+  }
+  else if (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode) {
+    int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+    if (ci >= 0) mi = comp_cmethod_in_chain(c, ci, nm, NULL);
+  }
+  else if (ty_is_object(comp_ntype(c, recv))) {
+    cid = ty_object_class(comp_ntype(c, recv));
+    mi = comp_method_in_chain(c, cid, nm, NULL);
+  }
+  if (mi < 0 || c->scopes[mi].yields || !method_is_void(&c->scopes[mi])) return 0;
+  for (int k = 0; cid >= 0 && k < c->nclasses; k++) {
+    if (!is_descendant(c, k, cid)) continue;
+    int kmi = comp_method_in_chain(c, k, nm, NULL);
+    if (kmi >= 0 && (c->scopes[kmi].yields || !method_is_void(&c->scopes[kmi]))) return 0;
+  }
+  return 1;
+}
+
 /* Coerce an unresolved-call value into a concretely-typed slot. An unresolved
    call is typed TY_UNKNOWN and lowers to the gate's sp_raise_nomethod(...) poly
    token (an sp_RbVal that always raises); when it lands in a non-poly slot the
@@ -1052,6 +1090,15 @@ int emit_unresolved_coerced(Compiler *c, int node, TyKind target, Buf *b) {
   }
   else if (is_cls_tok && target != TY_POLY && target != TY_UNKNOWN) {
     buf_printf(b, "({ (void)%s; %s; })", txt, default_value(target));
+    is_tok = 1;
+  }
+  /* A call to a method that answers no value is a `void` C call: raw, it put
+     a void expression in the typed slot. Its node is TY_UNKNOWN when the
+     method ends in the raise of something defined nowhere (`Styler.render`),
+     which never returns. Evaluate it and hand the slot its nil, as the boxed
+     slots already do with `(call, sp_box_nil())`. */
+  else if (target != TY_UNKNOWN && call_answers_no_value(c, node)) {
+    buf_printf(b, "((void)(%s), %s)", txt, raise_tail_value_c(c, target));
     is_tok = 1;
   }
   else buf_puts(b, txt);

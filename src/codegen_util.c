@@ -922,6 +922,13 @@ void emit_typed_elem_value(Compiler *c, int node, TyKind et, Buf *b) {
     buf_puts(b, ")");
     return;
   }
+  /* An untyped value that never arrives -- an unresolved call's raise token,
+     a call to a method that answers no value -- is coerced for its raise, as
+     in the other typed slots. The numeric forms discard the token already. */
+  if (vt == TY_UNKNOWN && (et == TY_STRING || call_answers_no_value(c, node))) {
+    emit_unresolved_coerced(c, node, et, b);
+    return;
+  }
   if (et == TY_INT) emit_int_expr(c, node, b);
   else if (et == TY_FLOAT) emit_float_expr(c, node, b);
   else emit_expr(c, node, b);

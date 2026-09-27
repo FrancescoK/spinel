@@ -1114,6 +1114,7 @@ void emit_str_expr_nilable(Compiler *c, int node, Buf *b);
 /* strict with CRuby's rb_convert_type wording ("of nil into Integer") */
 void emit_int_expr_conv(Compiler *c, int node, Buf *b);
 int emit_unresolved_coerced(Compiler *c, int node, TyKind target, Buf *b);
+int call_answers_no_value(Compiler *c, int node);
 void emit_int_divisor(Compiler *c, int node, Buf *b);
 void emit_float_expr(Compiler *c, int node, Buf *b);
 void emit_float_coerce_expr(Compiler *c, int node, Buf *b);
