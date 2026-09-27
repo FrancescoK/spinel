@@ -996,6 +996,15 @@ void emit_yield_proc_call(Compiler *c, int args_node, TyKind result_ty, Buf *b, 
    args. Shared by YieldNode and `block.call`. `as_expr` wraps in ({...}). */
 /* Emit a block-arg source node coerced to the block param's slot type,
    mirroring the box/unbox handling of the requireds binding arm. */
+/* The keyword a block keyword param answers to: its name without the
+   `__bp<N>` suffix a block-param rename gives it. */
+static const char *block_kw_key(const char *kp, char *buf, size_t n) {
+  const char *s = kp ? strstr(kp, "__bp") : NULL;
+  if (!s) return kp;
+  snprintf(buf, n, "%.*s", (int)(s - kp), kp);
+  return buf;
+}
+
 static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
   TyKind at = comp_ntype(c, node);
   /* an empty `{}` / `[]` stays untyped, and emit_boxed gives it the poly form */
@@ -1063,6 +1072,16 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   int bbody = nt_ref(nt, blk, "body");
   int yc = 0;
   const int *yargs = args_node >= 0 ? nt_arr(nt, args_node, "arguments", &yc) : NULL;
+  /* A trailing kwargs hash (`k: 1`, `**h`) goes to a block that declares
+     keyword params or a **kwrest, never to its positionals: CRuby binds
+     `yield(k: 1)` into `|a, k:|` as a = nil. It stays positional only for a
+     block that takes no keywords. */
+  int ykw = -1;
+  if (yc > 0 && yargs && nt_kind(nt, yargs[yc - 1]) == NK_KeywordHashNode &&
+      (block_keyword_name(c, blk, 0) || block_kwrest_name(c, blk))) {
+    ykw = yargs[yc - 1];
+    yc--;
+  }
   Scope *bsc = comp_scope_of(c, blk);
   LocalVar *yalias_lv[16]; int yalias_n = 0, yalias_open = 0;
   /* The spliced body and the block's own parameter NAMES resolve at the
@@ -1298,10 +1317,75 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     }
     buf_puts(b, as_expr ? "; " : ";\n");
   }
-  /* Keyword block params (`|a:, b: 5|`): match the trailing yielded kwargs hash
-     by name; an omitted optional keyword takes its declared default. */
-  int ykw = (yc > 0 && yargs && nt_type(nt, yargs[yc - 1]) &&
-             sp_streq(nt_type(nt, yargs[yc - 1]), "KeywordHashNode")) ? yargs[yc - 1] : -1;
+  /* Keyword block params (`|a:, b: 5|`) and a `**kw` keyword-rest take the
+     trailing yielded kwargs hash. Literal pairs match by name at compile
+     time. A hash carrying a `**h` is known only at run time, so it is built
+     whole -- its merge order decides whether a literal or a splatted key
+     wins -- and each keyword is looked up in it. CRuby checks a block's
+     keywords as it checks a method's: a required keyword the hash lacks
+     raises `missing keyword`, and with no **kwrest a key naming no keyword
+     raises `unknown keyword`. */
+  int nkw = 0; while (block_keyword_name(c, blk, nkw)) nkw++;
+  int ykw_splat = 0;
+  if (ykw >= 0) {
+    int en = 0; const int *els = nt_arr(nt, ykw, "elements", &en);
+    for (int e = 0; e < en; e++)
+      if (nt_kind(nt, els[e]) == NK_AssocSplatNode) ykw_splat = 1;
+  }
+  int kwh_tmp = -1;
+  if (ykw_splat) {
+    kwh_tmp = ++g_tmp;
+    Buf hb; memset(&hb, 0, sizeof hb); emit_boxed(c, ykw, &hb);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n",
+               kwh_tmp, hb.p ? hb.p : "sp_box_nil()", kwh_tmp);
+    free(hb.p);
+  }
+  if (nkw > 0) {
+    int kw_bad = ykw_splat;
+    int lit_n = 0; const int *lit_els = ykw >= 0 && !ykw_splat ? nt_arr(nt, ykw, "elements", &lit_n) : NULL;
+    for (int ki = 0; ki < nkw && !kw_bad; ki++) {
+      char knb[160];
+      const char *kn = block_kw_key(block_keyword_name(c, blk, ki), knb, sizeof knb);
+      if (block_keyword_default(c, blk, ki) < 0 && (ykw < 0 || ie_kwhash_value(c, ykw, kn) < 0)) kw_bad = 1;
+    }
+    for (int e = 0; e < lit_n && !kw_bad && !block_kwrest_name(c, blk); e++) {
+      int key = nt_ref(nt, lit_els[e], "key");
+      const char *ks = key >= 0 && nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
+      int known = 0;
+      for (int ki = 0; ks && ki < nkw; ki++) {
+        char knb[160];
+        if (sp_streq(block_kw_key(block_keyword_name(c, blk, ki), knb, sizeof knb), ks)) known = 1;
+      }
+      if (!known) kw_bad = 1;
+    }
+    if (kw_bad) {
+      int chk = ++g_tmp;
+      if (!as_expr) emit_indent(b, indent);
+      buf_printf(b, "static const char *const _kw%d[] = {", chk);
+      for (int ki = 0; ki < nkw; ki++) {
+        char knb[160];
+        buf_printf(b, "\"%s\", ", block_kw_key(block_keyword_name(c, blk, ki), knb, sizeof knb));
+      }
+      buf_printf(b, "0}, *const _kr%d[] = {", chk);
+      for (int ki = 0; ki < nkw; ki++) {
+        char knb[160];
+        if (block_keyword_default(c, blk, ki) < 0)
+          buf_printf(b, "\"%s\", ", block_kw_key(block_keyword_name(c, blk, ki), knb, sizeof knb));
+      }
+      buf_printf(b, "0}, *const _kl%d[] = {", chk);
+      for (int e = 0; e < lit_n; e++) {
+        int key = nt_ref(nt, lit_els[e], "key");
+        const char *ks = key >= 0 && nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
+        if (ks) buf_printf(b, "\"%s\", ", ks);
+      }
+      buf_puts(b, "0}; ");
+      if (kwh_tmp >= 0) buf_printf(b, "sp_kwargs_verify(_t%d, ", kwh_tmp);
+      else buf_puts(b, "sp_kwargs_verify(sp_box_nil(), ");
+      buf_printf(b, "_kw%d, _kr%d, _kl%d, %d)%s", chk, chk, chk,
+                 block_kwrest_name(c, blk) ? 0 : 1, as_expr ? "; " : ";\n");
+    }
+  }
   for (int ki = 0; ; ki++) {
     const char *kp = block_keyword_name(c, blk, ki);
     if (!kp) break;
@@ -1310,13 +1394,25 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     snprintf(kprbuf, sizeof kprbuf, "%s", rename_local(kp));
     BI_METHOD_SIDE();
     const char *kpr = kprbuf;
+    char knb[160];
+    const char *kn = block_kw_key(kp, knb, sizeof knb);
     LocalVar *kl = bsc ? scope_local(bsc, kp) : NULL;
     TyKind kt = kl ? kl->type : TY_UNKNOWN;
-    int vn = ykw >= 0 ? ie_kwhash_value(c, ykw, kp) : -1;
+    int vn = ykw >= 0 && !ykw_splat ? ie_kwhash_value(c, ykw, kn) : -1;
     int dv = block_keyword_default(c, blk, ki);
     if (!as_expr) emit_indent(b, indent);
     buf_printf(b, "lv_%s = ", kpr);
-    if (vn >= 0) emit_block_arg_coerced(c, vn, kt, b);
+    if (kwh_tmp >= 0) {
+      buf_printf(b, "({ sp_bool _f = 0; sp_RbVal _v = sp_poly_hash_get_pair_val(_t%d, "
+                    "sp_box_sym(sp_sym_intern(\"%s\")), &_f); _f ? ", kwh_tmp, kn);
+      if (kt == TY_POLY || kt == TY_UNKNOWN) buf_puts(b, "_v");
+      else emit_unbox_text(c, kt, "_v", b);
+      buf_puts(b, " : ");
+      if (dv >= 0) { BI_BLOCK_SIDE(); emit_block_arg_coerced(c, dv, kt, b); BI_METHOD_SIDE(); }
+      else buf_puts(b, kt == TY_RANGE ? "(sp_Range){0}" : default_value(kt));
+      buf_puts(b, "; })");
+    }
+    else if (vn >= 0) emit_block_arg_coerced(c, vn, kt, b);
     else if (dv >= 0) { BI_BLOCK_SIDE(); emit_block_arg_coerced(c, dv, kt, b); BI_METHOD_SIDE(); }
     else buf_puts(b, kt == TY_RANGE ? "(sp_Range){0}" : default_value(kt));
     buf_puts(b, as_expr ? "; " : ";\n");
@@ -1335,10 +1431,20 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       const char *kwrr = kwrrbuf;
       int tkw = ++g_tmp;
       if (!as_expr) emit_indent(b, indent);
-      buf_printf(b, "sp_PolyPolyHash *_t%d = sp_PolyPolyHash_new();%s", tkw, as_expr ? " " : "\n");
+      if (kwh_tmp >= 0)
+        buf_printf(b, "sp_PolyPolyHash *_t%d = sp_PolyPolyHash_from_poly(_t%d);%s",
+                   tkw, kwh_tmp, as_expr ? " " : "\n");
+      else
+        buf_printf(b, "sp_PolyPolyHash *_t%d = sp_PolyPolyHash_new();%s", tkw, as_expr ? " " : "\n");
       if (!as_expr) emit_indent(b, indent);
       buf_printf(b, "SP_GC_ROOT(_t%d);%s", tkw, as_expr ? " " : "\n");
-      if (ykw >= 0) {
+      for (int ki = 0; kwh_tmp >= 0 && ki < nkw; ki++) {
+        char knb[160];
+        if (!as_expr) emit_indent(b, indent);
+        buf_printf(b, "sp_PolyPolyHash_delete(_t%d, sp_box_sym(sp_sym_intern(\"%s\")));%s", tkw,
+                   block_kw_key(block_keyword_name(c, blk, ki), knb, sizeof knb), as_expr ? " " : "\n");
+      }
+      if (ykw >= 0 && kwh_tmp < 0) {
         int en2 = 0; const int *els2 = nt_arr(nt, ykw, "elements", &en2);
         for (int e2 = 0; e2 < en2; e2++) {
           if (!nt_type(nt, els2[e2]) || !sp_streq(nt_type(nt, els2[e2]), "AssocNode")) continue;
@@ -1495,9 +1601,6 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
      effect (#3209). */
   if (splat_tmp < 0 && !brest) {
     for (int j = P + ot_static; j < yc - Q; j++) {
-      /* a trailing kwargs hash consumed by keyword params / **kwrest is not a
-         dropped positional -- it was already read above */
-      if (j == ykw && (block_keyword_name(c, blk, 0) || block_kwrest_name(c, blk))) continue;
       Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, yargs[j], &vb);
       if (!as_expr) emit_indent(b, indent);
       buf_printf(b, "(void)(%s)%s", vb.p ? vb.p : "0", as_expr ? "; " : ";\n");
