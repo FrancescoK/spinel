@@ -9617,6 +9617,45 @@ static int call_has_splat_arg(const NodeTable *nt, const int *argv, int argc) {
   return 0;
 }
 
+/* Does any class define `name` as a class method? A boxed Class or Module
+   reaches that method through the general dispatch, so an IO name only the
+   poly-IO arm answers must not claim the call. */
+static int class_method_named(Compiler *c, const char *name) {
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) return 1;
+  return 0;
+}
+
+/* Does any class have an attribute writer for `name` (`pos=` from
+   `attr_accessor :pos`, a Struct member)? Writers are kept under the base
+   name, which the arm's method and reader test does not ask. */
+static int attr_writer_named(Compiler *c, const char *name) {
+  size_t nl = strlen(name);
+  char base[128];
+  if (nl < 2 || name[nl - 1] != '=' || nl > sizeof base) return 0;
+  memcpy(base, name, nl - 1); base[nl - 1] = '\0';
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_writer_in_chain(c, k, base, NULL)) return 1;
+  return 0;
+}
+
+/* A File::Stat rides in the same boxed handle as an IO (its mode "stat" or
+   "lstat") and answers none of the IO methods: CRuby's NoMethodError. */
+static void emit_stat_handle_nomethod(int th, int tv, const char *name, Buf *b) {
+  buf_printf(b, "if (_t%d->mode && (strcmp(_t%d->mode, \"stat\") == 0 || "
+                "strcmp(_t%d->mode, \"lstat\") == 0)) sp_raise_poly_nomethod(\"%s\", _t%d); ",
+             th, th, th, name, tv);
+}
+
+/* The descriptor controls a boxed IO answers, at CRuby's arities: pos= and
+   flock one argument, sysseek and fcntl one or two, advise one to three. */
+static int boxed_desc_control_arity(const char *name, int argc) {
+  if (sp_streq(name, "pos=") || sp_streq(name, "flock")) return argc == 1;
+  if (sp_streq(name, "sysseek") || sp_streq(name, "fcntl")) return argc >= 1 && argc <= 2;
+  if (sp_streq(name, "advise")) return argc >= 1 && argc <= 3;
+  return 0;
+}
+
 /* A splat operand as a poly array: an Array kept, and anything else -- a
    boxed operand that is an Array only at run time, nil, a scalar -- spread
    by Ruby's rule (nil to [], any other value to [v]). */
@@ -24876,6 +24915,12 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
        (sp_streq(name, "winsize") && sp_feature_enabled("io/console")) ||
        sp_streq(name, "readlines") || sp_streq(name, "rewind") ||
        sp_streq(name, "readpartial") ||
+       /* the descriptor controls, at CRuby's arities, unless a splat carries
+          the arguments, the advice is not a Symbol, or a class method or an
+          attribute writer of that name may be the receiver's */
+       (boxed_desc_control_arity(name, argc) && !call_has_splat_arg(nt, argv, argc) &&
+        !(sp_streq(name, "advise") && comp_ntype(c, argv[0]) != TY_SYMBOL) &&
+        !class_method_named(c, name) && !attr_writer_named(c, name)) ||
        /* the descriptor surface a boxed handle needs as much as a typed one:
           an fd table is a mixed Hash (0/1/2 an IO, the rest Files), so every
           one of these reached the unresolved-call gate (#4611) */
@@ -24914,6 +24959,73 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     }
     if (!iocand) {
       int tio2 = ++g_tmp;
+      /* pos=, sysseek, flock, fcntl and advise, answering what the typed
+         arms answer: the offset pos= set, sysseek's and fcntl's integers,
+         flock's status, nil from advise. The receiver and then the
+         arguments are evaluated before the handle is unboxed, so a receiver
+         that is no IO raises NoMethodError after them, as in CRuby, and so
+         does a File::Stat, which rides in the same boxed handle. An integer
+         argument the compiler cannot type Integer or Float is held and
+         converted once the handle is known, with the typed arms'
+         sp_poly_arg_int_chk. */
+      if (boxed_desc_control_arity(name, argc)) {
+        int trv = ++g_tmp, first_int = sp_streq(name, "advise") ? 1 : 0, tadv = 0;
+        int targ[3] = {0, 0, 0}, theld[3] = {0, 0, 0};
+        buf_printf(b, "({ sp_RbVal _t%d = ", trv);
+        emit_boxed(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", trv);
+        if (first_int) {
+          /* the advice is a Symbol (:normal, :sequential, ...); read its name */
+          tadv = ++g_tmp;
+          buf_printf(b, "const char *_t%d = sp_sym_to_s(", tadv);
+          emit_expr(c, argv[0], b);
+          buf_printf(b, "); SP_GC_ROOT_STR(_t%d); ", tadv);
+        }
+        for (int ai = first_int; ai < argc; ai++) {
+          TyKind ak = comp_ntype(c, argv[ai]);
+          targ[ai] = ++g_tmp;
+          if (ak == TY_INT || ak == TY_FLOAT) {
+            buf_printf(b, "sp_int _t%d = ", targ[ai]);
+            emit_int_expr(c, argv[ai], b);
+            buf_puts(b, "; ");
+          }
+          else {
+            theld[ai] = ++g_tmp;
+            buf_printf(b, "sp_RbVal _t%d = ", theld[ai]);
+            emit_boxed(c, argv[ai], b);
+            buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", theld[ai]);
+          }
+        }
+        buf_printf(b, "sp_File *_t%d = sp_poly_as_io(_t%d, \"%s\"); ", tio2, trv, name);
+        emit_stat_handle_nomethod(tio2, trv, name, b);
+        /* flock is File's alone: a pipe, a standard stream or a socket
+           raises CRuby's NoMethodError */
+        if (sp_streq(name, "flock"))
+          buf_printf(b, "if (strcmp(sp_io_kind_name(_t%d), \"File\") != 0) "
+                        "sp_raise_poly_nomethod(\"flock\", _t%d); ", tio2, trv);
+        for (int ai = first_int; ai < argc; ai++)
+          if (theld[ai])
+            buf_printf(b, "sp_int _t%d = sp_poly_arg_int_chk(_t%d); ", targ[ai], theld[ai]);
+        if (sp_streq(name, "pos=")) {
+          buf_printf(b, "sp_File_seek(_t%d, _t%d, 0); _t%d; })", tio2, targ[0], targ[0]);
+        }
+        else if (sp_streq(name, "flock")) {
+          buf_printf(b, "sp_File_flock(_t%d, _t%d); })", tio2, targ[0]);
+        }
+        else if (sp_streq(name, "advise")) {
+          buf_printf(b, "sp_File_advise(_t%d, _t%d, ", tio2, tadv);
+          if (argc >= 2) buf_printf(b, "_t%d", targ[1]); else buf_puts(b, "0");
+          buf_puts(b, ", ");
+          if (argc >= 3) buf_printf(b, "_t%d", targ[2]); else buf_puts(b, "0");
+          buf_puts(b, "); sp_box_nil(); })");
+        }
+        else {
+          buf_printf(b, "sp_File_%s(_t%d, _t%d, ", name, tio2, targ[0]);
+          if (argc >= 2) buf_printf(b, "_t%d", targ[1]); else buf_puts(b, "0");
+          buf_puts(b, "); })");
+        }
+        return;
+      }
       buf_printf(b, "({ sp_File *_t%d = sp_poly_as_io(", tio2);
       emit_boxed(c, recv, b);
       buf_printf(b, ", \"%s\"); ", name);

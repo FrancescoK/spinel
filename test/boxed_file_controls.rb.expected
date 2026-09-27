@@ -1,0 +1,19 @@
+2
+"c"
+[4, "ef"]
+1
+3
+[1, "bc"]
+2
+"c"
+0
+unlocked
+0
+[1, 1]
+[nil, nil]
+TypeError
+NoMethodError
+argument
+NoMethodError
+[NoMethodError, "undefined method 'flock' for an instance of IO"]
+100

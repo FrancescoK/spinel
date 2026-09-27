@@ -5575,6 +5575,27 @@ else {
         return an_poly_concrete(c, name, TY_INT);   /* IO#write / #syswrite: the byte count */
       if (sp_streq(name, "close") || sp_streq(name, "flush")) return an_poly_concrete(c, name, TY_NIL);
       if (sp_streq(name, "fileno")) return an_poly_concrete(c, name, TY_INT);
+      /* the descriptor controls, at the arities the poly-IO arm takes them:
+         integers, and advise's nil boxed as the TY_IO arm boxes it. Only
+         where that arm emits the call: a class of the program's own (Object
+         reopened included) that defines the name, as an instance or a class
+         method, a reader or (for `pos=`) a writer, owns it instead, and its
+         answer may be anything; so it
+         is asked here even in the builtin-only derivation, which shapes the
+         dispatch's default arm. */
+      if ((((sp_streq(name, "pos=") || sp_streq(name, "flock")) && argc == 1) ||
+           ((sp_streq(name, "sysseek") || sp_streq(name, "fcntl")) && argc >= 1 && argc <= 2) ||
+           (sp_streq(name, "advise") && argc >= 1 && argc <= 3))) {
+        int owned = 0;
+        char wbase[16] = "";
+        if (sp_streq(name, "pos=")) memcpy(wbase, "pos", 4);
+        for (int k = 0; k < c->nclasses && !owned; k++)
+          if (comp_poly_arm_defines(c, k, name) || comp_cmethod_in_chain(c, k, name, NULL) >= 0 ||
+              (!c->classes[k].is_native_class && comp_is_reader(&c->classes[k], name)) ||
+              (wbase[0] && comp_writer_in_chain(c, k, wbase, NULL)))
+            owned = 1;
+        if (!owned) return sp_streq(name, "advise") ? TY_POLY : TY_INT;
+      }
       /* The rest of the names the poly-IO arm emits. Left untyped, the call
          read as valueless and the emitted value was DISCARDED -- `@fds[k].path`
          through a method answered nil while the arm had produced the path
