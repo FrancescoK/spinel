@@ -2046,6 +2046,7 @@ static const char *sp_poly_class_name(sp_RbVal v) {
         case SP_BUILTIN_CONDVAR: return SPL("Thread::ConditionVariable");
         case SP_BUILTIN_FIBER: return SPL("Fiber");
         case SP_BUILTIN_THREAD: return SPL("Thread");
+        case SP_BUILTIN_DIR: return SPL("Dir");
         case SP_BUILTIN_TMS: return SPL("Process::Tms");
         case SP_BUILTIN_OPENSTRUCT: return SPL("OpenStruct");
         /* These two had no arm of their own. They went unnoticed because their
@@ -6452,6 +6453,11 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
         case SP_BUILTIN_POLY_POLY_HASH: return sp_PolyPolyHash_inspect((sp_PolyPolyHash *)v.v.p);
         case SP_BUILTIN_OPENSTRUCT: return sp_OpenStruct_inspect((struct sp_OpenStruct_s *)v.v.p);
         case SP_BUILTIN_ENUMERATOR: return sp_enum_inspect_boxed(v);
+        /* #<Dir:PATH>, as the typed Dir's inspect renders it (#3250) */
+        case SP_BUILTIN_DIR: {
+          const char *_dp = v.v.p ? ((sp_Dir *)v.v.p)->path : NULL;
+          return sp_sprintf("#<Dir:%s>", _dp ? _dp : "");
+        }
         default:
           /* a user object: the generated per-class ivar walk renders
              #<Name:0x... @a=..., ...> like CRuby's default inspect */
