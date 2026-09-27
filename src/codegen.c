@@ -113,7 +113,8 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
   if (t == TY_BIGINT) { buf_printf(b, "sp_box_bigint_or_nil(%s)", expr); return; }
   const char *fn = NULL;
   switch (t) {
-    case TY_FLOAT: fn = "sp_box_float"; break;
+    /* the float slot's own nil sentinel boxes as nil, as SP_INT_NIL does above */
+    case TY_FLOAT: fn = "sp_box_float_or_nil"; break;
     case TY_BIGINT: fn = "sp_box_bigint"; break;
     case TY_STRING: fn = "sp_box_str"; break;     case TY_BOOL: fn = "sp_box_bool"; break;
     case TY_SYMBOL: fn = "sp_box_sym"; break;     case TY_RANGE: fn = "sp_box_range"; break;
@@ -1127,7 +1128,8 @@ int call_returns_nullable_int(Compiler *c, int node) {
   /* an attr-reader over an int ivar: int ivars are SP_INT_NIL-defaulted
      (ivar_scalar_nil_init), so the read can carry the sentinel -- boxing it
      as a plain int made `stored.nil?` false while inspect printed nil
-     (#3288). box_int_or_nil is a no-op on a real int. */
+     (#3288). box_int_or_nil is a no-op on a real int. A float ivar holds
+     sp_float_nil() the same way, and boxed plainly it printed NaN. */
   {
     int r = nt_ref(nt, node, "receiver");
     int a2 = nt_ref(nt, node, "arguments");
@@ -1140,9 +1142,8 @@ int call_returns_nullable_int(Compiler *c, int node) {
           char ivb2[300];
           snprintf(ivb2, sizeof ivb2, "@%s", comp_resolve_alias(c, cid2, nm));
           int iv2 = comp_ivar_index(&c->classes[defc2 >= 0 ? defc2 : cid2], ivb2);
-          if (iv2 >= 0 &&
-              c->classes[defc2 >= 0 ? defc2 : cid2].ivar_types[iv2] == TY_INT)
-            return 1;
+          TyKind ivt2 = iv2 >= 0 ? c->classes[defc2 >= 0 ? defc2 : cid2].ivar_types[iv2] : TY_UNKNOWN;
+          if (ivt2 == TY_INT || ivt2 == TY_FLOAT) return 1;
         }
       }
     }
@@ -7412,7 +7413,7 @@ static void emit_marshal_box_ivar(TyKind t, const char *expr, Buf *b) {
   }
   switch (t) {
     case TY_INT:    buf_printf(b, "(%s == SP_INT_NIL ? sp_box_nil() : sp_box_int(%s))", expr, expr); break;
-    case TY_FLOAT:  buf_printf(b, "sp_box_float(%s)", expr); break;
+    case TY_FLOAT:  buf_printf(b, "sp_box_float_or_nil(%s)", expr); break;
     case TY_STRING: buf_printf(b, "(%s ? sp_box_str(%s) : sp_box_nil())", expr, expr); break;
     case TY_BOOL:   buf_printf(b, "sp_box_bool(%s)", expr); break;
     case TY_SYMBOL: buf_printf(b, "sp_box_sym(%s)", expr); break;
@@ -7430,7 +7431,7 @@ static void emit_marshal_unbox_ivar(Compiler *c, TyKind t, Buf *b) {
   }
   switch (t) {
     case TY_INT:    buf_puts(b, "(val.tag == SP_TAG_NIL ? SP_INT_NIL : (sp_int)sp_poly_to_i(val))"); break;
-    case TY_FLOAT:  buf_puts(b, "(sp_float)sp_poly_to_f(val)"); break;
+    case TY_FLOAT:  buf_puts(b, "(val.tag == SP_TAG_NIL ? sp_float_nil() : (sp_float)sp_poly_to_f(val))"); break;
     case TY_STRING: buf_puts(b, "(val.tag == SP_TAG_STR ? val.v.s : NULL)"); break;
     case TY_BOOL:   buf_puts(b, "(val.tag == SP_TAG_BOOL ? val.v.b : 0)"); break;
     case TY_SYMBOL: buf_puts(b, "(val.tag == SP_TAG_SYM ? (sp_sym)val.v.i : 0)"); break;
@@ -7464,7 +7465,7 @@ static void emit_obj_to_hash_dispatch(Compiler *c, Buf *b) {
       buf_printf(b, "      sp_StrPolyHash_set(h, SPL(\"%s\"), ", iv);
       if (mt == TY_INT) buf_printf(b, "(o->iv_%s == SP_INT_NIL ? sp_box_nil() : sp_box_int(o->iv_%s))", ivf, ivf);
       else if (mt == TY_STRING) buf_printf(b, "(o->iv_%s ? sp_box_str(o->iv_%s) : sp_box_nil())", ivf, ivf);
-      else if (mt == TY_FLOAT) buf_printf(b, "sp_box_float(o->iv_%s)", ivf);
+      else if (mt == TY_FLOAT) buf_printf(b, "sp_box_float_or_nil(o->iv_%s)", ivf);
       else if (mt == TY_BOOL) buf_printf(b, "sp_box_bool(o->iv_%s)", ivf);
       else if (mt == TY_SYMBOL) buf_printf(b, "sp_box_sym(o->iv_%s)", ivf);
       else if (mt == TY_POLY) buf_printf(b, "o->iv_%s", ivf);
@@ -7686,7 +7687,7 @@ static void emit_obj_to_h_dispatch(Compiler *c, Buf *b) {
       buf_printf(b, "      sp_SymPolyHash_set(h, sp_sym_intern(\"%s\"), ", iv);
       if (mt == TY_INT) buf_printf(b, "(o->iv_%s == SP_INT_NIL ? sp_box_nil() : sp_box_int(o->iv_%s))", ivf, ivf);
       else if (mt == TY_STRING) buf_printf(b, "(o->iv_%s ? sp_box_str(o->iv_%s) : sp_box_nil())", ivf, ivf);
-      else if (mt == TY_FLOAT) buf_printf(b, "sp_box_float(o->iv_%s)", ivf);
+      else if (mt == TY_FLOAT) buf_printf(b, "sp_box_float_or_nil(o->iv_%s)", ivf);
       else if (mt == TY_BOOL) buf_printf(b, "sp_box_bool(o->iv_%s)", ivf);
       else if (mt == TY_SYMBOL) buf_printf(b, "sp_box_sym(o->iv_%s)", ivf);
       else if (mt == TY_POLY) buf_printf(b, "o->iv_%s", ivf);
@@ -7753,7 +7754,7 @@ static void emit_obj_struct_values_dispatch(Compiler *c, Buf *b) {
       buf_puts(b, "      sp_PolyArray_push(a, ");
       if (mt == TY_INT) buf_printf(b, "(o->iv_%s == SP_INT_NIL ? sp_box_nil() : sp_box_int(o->iv_%s))", ivf, ivf);
       else if (mt == TY_STRING) buf_printf(b, "(o->iv_%s ? sp_box_str(o->iv_%s) : sp_box_nil())", ivf, ivf);
-      else if (mt == TY_FLOAT) buf_printf(b, "sp_box_float(o->iv_%s)", ivf);
+      else if (mt == TY_FLOAT) buf_printf(b, "sp_box_float_or_nil(o->iv_%s)", ivf);
       else if (mt == TY_BOOL) buf_printf(b, "sp_box_bool(o->iv_%s)", ivf);
       else if (mt == TY_SYMBOL) buf_printf(b, "sp_box_sym(o->iv_%s)", ivf);
       else if (mt == TY_POLY) buf_printf(b, "o->iv_%s", ivf);

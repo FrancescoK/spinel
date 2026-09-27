@@ -7850,6 +7850,9 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
                   buf_puts(b, "("); emit_expr(c, recv, b); buf_printf(b, ")->iv_%s = ", iv_c(base));
                 }
                 if (ivt == TY_POLY && comp_ntype(c, argv[0]) != TY_POLY) emit_boxed(c, argv[0], b);
+                /* nil into a scalar slot is that slot's sentinel, as `@x = nil` writes it */
+                else if (nt_kind(nt, argv[0]) == NK_NilNode && (ivt == TY_FLOAT || ivt == TY_INT))
+                  buf_puts(b, ivt == TY_FLOAT ? "sp_float_nil()" : "SP_INT_NIL");
                 /* A genuinely poly rhs narrowing into a concrete slot takes
                    the same unboxing the local-assignment path uses. The slot
                    is concrete because an --rbs signature said so while the

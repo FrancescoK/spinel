@@ -14635,6 +14635,18 @@ int nullable_int_value(Compiler *c, int v) {
       }
       else {
         TyKind rt = infer_type(c, rcv);
+        /* an attr reader answers its float ivar, whose nil is the sentinel:
+           one some write left nil, or one initialize need not assign */
+        int rdc = -1;
+        if (ty_is_object(rt) && comp_reader_in_chain(c, ty_object_class(rt), cn, &rdc)) {
+          int k = rdc >= 0 ? rdc : ty_object_class(rt);
+          char ivb[300];
+          snprintf(ivb, sizeof ivb, "@%s", comp_resolve_alias(c, ty_object_class(rt), cn));
+          int iv = comp_ivar_index(&c->classes[k], ivb);
+          if (iv >= 0 && c->classes[k].ivar_types[iv] == TY_FLOAT &&
+              (c->classes[k].ivar_nullable_int[iv] || !ivar_assigned_in_initialize(c, k, ivb)))
+            return 1;
+        }
         if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), cn, NULL);
         else if (nt_kind(nt, rcv) == NK_ConstantReadNode) {
           int rci = comp_class_index(c, nt_str(nt, rcv, "name"));
