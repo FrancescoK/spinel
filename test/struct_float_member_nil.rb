@@ -37,3 +37,4 @@ a.x = 2.0
 p a.x
 a.x = nil
 p a.x
+p Marshal.load(Marshal.dump(a)).x
