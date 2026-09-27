@@ -308,7 +308,7 @@ int desugar_class_eval_value(Compiler *c);
 int desugar_instance_eval_builtin(Compiler *c);
 int desugar_builtin_class_var_recv(Compiler *c);
 int desugar_class_body_bare_new(Compiler *c);
-int desugar_bare_const_get(Compiler *c);
+int desugar_bare_class_self_calls(Compiler *c);
 int desugar_ie_bare_object_calls(Compiler *c);
 int desugar_match_predicate(Compiler *c);
 int desugar_masgn_object_index(Compiler *c);

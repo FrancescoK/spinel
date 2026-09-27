@@ -155,18 +155,32 @@ int desugar_class_body_bare_new(Compiler *c) {
    for "unknown" at run time (#4843). Give it self, as `self.const_get(:K)`,
    which already resolves. In an instance method self is an instance, which
    has no const_get, so that is left for the ordinary NoMethodError. */
-int desugar_bare_const_get(Compiler *c) {
+int desugar_bare_class_self_calls(Compiler *c) {
+  static const struct { const char *name; int argc; } surf[] = {
+    { "const_get", -1 }, { "superclass", 0 }, { "ancestors", 0 },
+    { "include?", 1 }, { "to_s", 0 }, { "inspect", 0 }, { "frozen?", 0 },
+  };
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, "const_get")) continue;
+    if (!nm) continue;
+    int want = -2;
+    for (size_t k = 0; k < sizeof surf / sizeof surf[0]; k++)
+      if (sp_streq(nm, surf[k].name)) { want = surf[k].argc; break; }
+    if (want == -2) continue;
     if (nt_ref(nt, id, "receiver") >= 0) continue;
     if (id >= c->node_cap) continue;
     Scope *sc = comp_scope_of(c, id);
     int in_cmethod = sc && sc->name && sc->is_cmethod && sc->class_id >= 0;
     int in_body = (!sc || !sc->name) && c->node_cbody[id] >= 0;
     if (!in_cmethod && !in_body) continue;
+    if (want >= 0) {
+      int argc = 0, an = nt_ref(nt, id, "arguments");
+      if (an >= 0) nt_arr(nt, an, "arguments", &argc);
+      if (!in_cmethod || argc != want || nt_ref(nt, id, "block") >= 0) continue;
+      if (comp_cmethod_in_chain(c, sc->class_id, nm, NULL) >= 0 || comp_method_index(c, nm) >= 0) continue;
+    }
     int sn = nt_new_node(nt, "SelfNode");
     if (sn < 0) continue;
     comp_grow_node_arrays(c);
