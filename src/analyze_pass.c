@@ -4341,6 +4341,17 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
   int splat_at = -1;
   for (int a = 0; a < an && kwh < 0; a++)
     if (nt_kind(nt, argv[a]) == NK_SplatNode) { splat_at = a; break; }
+  /* `S.new(k: v, **h)`: likewise, a member no literal key names takes
+     whatever h holds under its name, or nil -- boxed, as a `**h` binds a
+     method's keyword parameters. Typing it nil left it to the other
+     construction sites, and the boxed value pulled out of h did not fit a
+     member they had made a String. */
+  int kw_splat = 0;
+  if (kwh >= 0) {
+    int kn = 0; const int *ke = nt_arr(nt, kwh, "elements", &kn);
+    for (int e = 0; e < kn; e++)
+      if (nt_kind(nt, ke[e]) == NK_AssocSplatNode) kw_splat = 1;
+  }
   for (int a = 0; a < cls->nivars; a++) {
     /* a member not supplied at this construction can be nil */
     const char *mname = cls->ivars[a] + 1;
@@ -4356,7 +4367,7 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
     }
     else if (a < an) vnode = argv[a];
     if (class_ivar_pinned(cls, cls->ivars[a])) continue;
-    if (splat_at >= 0 && a >= splat_at) {
+    if ((splat_at >= 0 && a >= splat_at) || (kw_splat && vnode < 0)) {
       TyKind sm = ty_unify(cls->ivar_types[a], TY_POLY);
       if (sm != cls->ivar_types[a]) { cls->ivar_types[a] = sm; changed = 1; }
       continue;

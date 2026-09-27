@@ -1,0 +1,7 @@
+#<struct Result count=0, status="empty">
+#<struct Result count=2, status="ok">
+#<struct Result count=3, status=nil>
+#<struct Result count=4, status="four">
+#<struct Result count=5, status=nil>
+#<data D x=1, y="s">
+#<data D x=2, y=nil>
