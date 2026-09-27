@@ -15101,7 +15101,7 @@ static void mark_nullable_int_locals(Compiler *c) {
          supplies its elements, a scalar supplies exactly one, and anything
          else (an array-valued call or local) is only known at runtime. */
       int supply = 0;
-      if (v >= 0 && nt_kind(nt, v) == NK_ArrayNode) nt_arr(nt, v, "elements", &supply);
+      if (masgn_tuple_rhs(nt, v)) nt_arr(nt, v, "elements", &supply);
       else if (v >= 0 && nt_kind(nt, v) != NK_NilNode && !ty_is_array(infer_type(c, v))) supply = 1;
       int tn2 = 0; const int *tv2 = nt_arr(nt, id, "lefts", &tn2);
       for (int k = 0; tv2 && k < tn2; k++) {
@@ -18345,7 +18345,7 @@ void analyze_program(Compiler *c) {
           if (!ms) continue;
           /* a tuple right-hand side (`a, b = [], [x]`) pairs element with
              target: each target follows its own element */
-          if (nt_kind(nt, value) == NK_ArrayNode) {
+          if (masgn_tuple_rhs(nt, value)) {
             int en = 0; const int *el = nt_arr(nt, value, "elements", &en);
             int ln0 = 0; const int *lf = nt_arr(nt, id, "lefts", &ln0);
             for (int i = 0; i < ln0 && i < en; i++) {

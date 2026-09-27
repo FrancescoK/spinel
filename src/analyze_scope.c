@@ -3359,9 +3359,8 @@ int infer_global_const_types(Compiler *c) {
       int ln = 0;
       const int *lefts = nt_arr(nt, id, "lefts", &ln);
       int value = nt_ref(nt, id, "value");
-      const char *vty = nt_type(nt, value);
       int en = 0;
-      const int *els = (vty && sp_streq(vty, "ArrayNode")) ? nt_arr(nt, value, "elements", &en) : NULL;
+      const int *els = masgn_tuple_rhs(nt, value) ? nt_arr(nt, value, "elements", &en) : NULL;
       int rn_count = 0;
       nt_arr(nt, id, "rights", &rn_count);
       for (int i = 0; i < ln; i++) {
@@ -5261,9 +5260,8 @@ int infer_cvar_types(Compiler *c) {
         int mln = 0;
         const int *mlefts = nt_arr(nt, s, "lefts", &mln);
         int mval = nt_ref(nt, s, "value");
-        const char *mvty = nt_type(nt, mval);
         int men = 0;
-        const int *mels = (mvty && sp_streq(mvty, "ArrayNode")) ? nt_arr(nt, mval, "elements", &men) : NULL;
+        const int *mels = masgn_tuple_rhs(nt, mval) ? nt_arr(nt, mval, "elements", &men) : NULL;
         for (int mi = 0; mi < mln; mi++) {
           const char *mlty = nt_type(nt, mlefts[mi]);
           if (!mlty || !sp_streq(mlty, "ClassVariableTargetNode")) continue;

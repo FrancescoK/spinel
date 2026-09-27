@@ -210,6 +210,7 @@ int ffi_find_reader(Compiler *c, const char *mod, const char *name);
 int ffi_find_writer(Compiler *c, const char *mod, const char *name);
 int infer_global_const_types(Compiler *c);
 int infer_multiwrite_const_types(Compiler *c);
+int masgn_tuple_rhs(const NodeTable *nt, int value);
 void resolve_parents(Compiler *c);
 void resolve_inherited_aliases(Compiler *c);
 void process_include_body(Compiler *c, int ci, int body_node);

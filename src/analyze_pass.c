@@ -2022,6 +2022,18 @@ static int recv_hash_or_write(Compiler *c, int recv) {
   return n;
 }
 
+/* Is a multi-write's RHS a tuple -- a literal whose elements line up one to
+   one with the targets? One holding a splat (`a, b = *xs, "s"`) is not: it
+   is typed as the array it builds. */
+int masgn_tuple_rhs(const NodeTable *nt, int value) {
+  if (value < 0 || nt_kind(nt, value) != NK_ArrayNode) return 0;
+  int n = 0;
+  const int *els = nt_arr(nt, value, "elements", &n);
+  for (int i = 0; i < n; i++)
+    if (nt_kind(nt, els[i]) == NK_SplatNode) return 0;
+  return 1;
+}
+
 /* Unify elem into each local / ivar / constant target of a multi-write's
    lefts or rights. Returns 1 when an ivar or constant slot moved. */
 static int masgn_unify_elem(Compiler *c, Scope *ms, const int *tgts, int n, TyKind elem) {
@@ -2334,7 +2346,7 @@ int infer_write_types(Compiler *c) {
         continue;  /* the generic poly-tuple widening below must not re-widen */
       }
     }
-    if (!vty || !sp_streq(vty, "ArrayNode")) {
+    if (!masgn_tuple_rhs(nt, value)) {
       /* scalar RHS (`a, b = 1`): the first target gets the scalar, the rest
          their slot default. Type every target as the scalar's kind. Array /
          hash RHS would splat and is handled elsewhere, so skip those. */
@@ -9894,7 +9906,7 @@ static void bi_collect_assigns(const NodeTable *nt, int id, BiPair *pairs, int *
     const int *lhs = nt_arr(nt, id, "lefts", &ln);
     int v = nt_ref(nt, id, "value");
     const int *rhs = NULL;
-    if (v >= 0 && nt_type(nt, v) && sp_streq(nt_type(nt, v), "ArrayNode"))
+    if (masgn_tuple_rhs(nt, v))
       rhs = nt_arr(nt, v, "elements", &rn);
     for (int k = 0; lhs && rhs && k < ln && k < rn; k++) {
       const char *lty = nt_type(nt, lhs[k]);
