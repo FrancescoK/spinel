@@ -917,6 +917,18 @@ if command -v ruby >/dev/null 2>&1 && [ -f "$(ruby -e 'puts RbConfig::CONFIG["ru
     *"3/3 match"*) ;;
     *) fail "ext test differential: [$OUT]" ;;
   esac
+  # the differential compares against the compiled extension: a kernel edited
+  # after the build diverges from it
+  cp lib/fastx/kernel.rb kernel.rb.orig
+  sed 's/n \* 2/n * 3/' kernel.rb.orig > lib/fastx/kernel.rb
+  OUT=$("$SPIN" ext test 2>&1) || true
+  case "$OUT" in
+    *"2 case(s) diverge"*) ;;
+    *) fail "ext test did not load the compiled extension: [$OUT]" ;;
+  esac
+  mv kernel.rb.orig lib/fastx/kernel.rb
+  expect "ext loader finds the built extension" "24 1" \
+    "$(ruby -I build/ext -I lib -e 'require "fastx"; puts "#{Fastx.double(12)} #{$LOADED_FEATURES.grep(/fastx\/fastx\./).size}"' 2>&1 | tail -1)"
   # the loader falls back to the plain kernel when no extension is built
   expect "ext fallback require" "24" "$(ruby -I lib -e 'require "fastx"; puts Fastx.double(12)' 2>&1 | tail -1)"
 else
