@@ -1627,6 +1627,51 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
   return 1;
 }
 
+/* Whether the subtree at `id` assigns the local `nm`: a write, an
+   op-write or a multiple-assignment target by that name. */
+static int subtree_writes_local(Compiler *c, int id, const char *nm) {
+  const NodeTable *nt = c->nt;
+  if (id < 0) return 0;
+  const char *ty = nt_type(nt, id);
+  if (!ty) return 0;
+  if (!strncmp(ty, "LocalVariable", 13) && (strstr(ty, "Write") || strstr(ty, "Target"))) {
+    const char *wn = nt_str(nt, id, "name");
+    if (wn && sp_streq(wn, nm)) return 1;
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++)
+    if (subtree_writes_local(c, nt_ref_at(nt, id, i), nm)) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0;
+    const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++)
+      if (subtree_writes_local(c, ids[j], nm)) return 1;
+  }
+  return 0;
+}
+
+/* The read side of a local's `x OP= v`. Ruby reads x before it evaluates v,
+   but the arms below spell the read as `lval` beside the rhs, and C leaves
+   the order of the two unspecified: `x += (x = 100.0; 2.25)` became
+   `lv_x += ({ lv_x = 100.0; 2.25; })`, which read the new x. When the rhs
+   can write the local (`cap`), read it into a temp in g_pre ahead of the rhs
+   and answer the temp; otherwise answer `lval`. */
+static const char *lv_op_assign_src(Compiler *c, const char *lval, TyKind t,
+                                    int cap, char *tn, size_t tnsz) {
+  if (!cap || !g_pre) return lval;
+  int k = ++g_tmp;
+  snprintf(tn, tnsz, "_t%d", k);
+  emit_indent(g_pre, g_indent);
+  emit_ctype(c, t, g_pre);
+  buf_printf(g_pre, " _t%d = %s;", k, lval);
+  int value_obj = ty_is_object(t) && c->classes[ty_object_class(t)].is_value_type;
+  if (t == TY_POLY) buf_printf(g_pre, " SP_GC_ROOT_RBVAL(_t%d);", k);
+  else if (needs_root(t) && !value_obj) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", k);
+  buf_puts(g_pre, "\n");
+  return tn;
+}
+
 static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
                               const char *lval) {
   const NodeTable *nt = c->nt;
@@ -1645,9 +1690,13 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
      pointers. */
   int celled = (lv && lv->is_cell) ||
                (g_cap_struct && g_cap_names && nameset_has(g_cap_names, nm));
+  /* the rhs can reassign the local: directly, or through a closure over it */
+  int cap = t != TY_UNKNOWN && t != TY_PROC &&
+            (subtree_writes_local(c, v, nm) || (celled && subtree_has_side_effect(c, v)));
+  char rtn[32];
 
   if (t == TY_STRING && sp_streq(op, "+")) {
-    buf_printf(b, "%s = sp_str_concat(%s, ", lval, lval);
+    buf_printf(b, "%s = sp_str_concat(%s, ", lval, lv_op_assign_src(c, lval, t, cap, rtn, sizeof rtn));
     /* a poly RHS (a destructured `[Int, String]` element bound poly) is an
        sp_RbVal; coerce it to const char* for sp_str_concat (#2875). CRuby's
        String#+ raises TypeError on a non-string, so this only reaches a value
@@ -1664,11 +1713,12 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
     buf_printf(b, "%s = %s %s ", lval, lval, op); emit_expr(c, v, b); buf_puts(b, ";\n");
     return;
   }
-  if (emit_scalar_op_assign(c, lval, t, op, v, 0, b)) return;
+  if (emit_scalar_op_assign(c, lval, t, op, v, cap, b)) return;
   if (t == TY_COMPLEX && (sp_streq(op, "+") || sp_streq(op, "*"))) {
     /* coerce the rhs like the binary path does: an Integer, a Float or a boxed
        value all have to reach sp_complex_* as an sp_Complex */
-    buf_printf(b, "%s = sp_complex_%s(%s, ", lval, sp_streq(op, "+") ? "add" : "mul", lval);
+    buf_printf(b, "%s = sp_complex_%s(%s, ", lval, sp_streq(op, "+") ? "add" : "mul",
+               lv_op_assign_src(c, lval, t, cap, rtn, sizeof rtn));
     emit_complex_coerce(c, v, b); buf_puts(b, ");\n");
     return;
   }
@@ -1681,7 +1731,7 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
     TyKind vt = comp_ntype(c, v);
     if (vt == TY_RATIONAL || vt == TY_INT) {
       const char *fn = op[0] == '+' ? "add" : op[0] == '-' ? "sub" : op[0] == '*' ? "mul" : "div";
-      buf_printf(b, "%s = sp_rational_%s(%s, ", lval, fn, lval);
+      buf_printf(b, "%s = sp_rational_%s(%s, ", lval, fn, lv_op_assign_src(c, lval, t, cap, rtn, sizeof rtn));
       emit_rat_coerce(c, v, b);
       buf_puts(b, ");\n");
       return;
@@ -1713,6 +1763,7 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
     if (mi2 >= 0) {
       Scope *ms2 = &c->scopes[mi2];
       LocalVar *p2 = ms2->nparams >= 1 ? scope_local(ms2, ms2->pnames[0]) : NULL;
+      const char *rd = lv_op_assign_src(c, lval, t, cap, rtn, sizeof rtn);
       int atmp2 = ++g_tmp;
       TyKind p2t = p2 ? p2->type : comp_ntype(c, v);
       emit_indent(g_pre, g_indent);
@@ -1724,7 +1775,7 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
       buf_puts(g_pre, ";\n");
       buf_printf(b, "%s = sp_%s_%s((sp_%s *)%s, _t%d);\n",
                  lval, c->classes[defcls2].c_name, mc(ms2->name),
-                 c->classes[defcls2].c_name, lval, atmp2);
+                 c->classes[defcls2].c_name, rd, atmp2);
       return;
     }
   }
@@ -1742,7 +1793,7 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
        local was refused where `f = f ** 3` built (#4766) */
     else if (sp_streq(op, "**")) pfn = "sp_poly_pow";
     if (pfn) {
-      buf_printf(b, "%s = %s(%s, ", lval, pfn, lval);
+      buf_printf(b, "%s = %s(%s, ", lval, pfn, lv_op_assign_src(c, lval, t, cap, rtn, sizeof rtn));
       emit_boxed(c, v, b);
       buf_puts(b, ");\n");
       return;
@@ -1760,8 +1811,9 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
     else if (sp_streq(op, "/")) pfn = "sp_poly_div";
     if (pfn) {
       Buf bx; memset(&bx, 0, sizeof bx);
-      emit_boxed_text(c, t, lval, &bx);
-      buf_printf(b, "%s = sp_poly_as_rational(%s(%s, ", lval, pfn, bx.p ? bx.p : lval);
+      const char *rd = lv_op_assign_src(c, lval, t, cap, rtn, sizeof rtn);
+      emit_boxed_text(c, t, rd, &bx);
+      buf_printf(b, "%s = sp_poly_as_rational(%s(%s, ", lval, pfn, bx.p ? bx.p : rd);
       free(bx.p);
       emit_boxed(c, v, b);
       buf_puts(b, "));\n");
@@ -1779,12 +1831,13 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
   if (t == TY_POLY && (sp_streq(op, "<<") || sp_streq(op, ">>") ||
                        sp_streq(op, "|") || sp_streq(op, "&") || sp_streq(op, "^"))) {
     if (sp_streq(op, "<<") || sp_streq(op, ">>")) {
-      buf_printf(b, "%s = sp_poly_%s(%s, ", lval, sp_streq(op, "<<") ? "shl" : "shr", lval);
+      buf_printf(b, "%s = sp_poly_%s(%s, ", lval, sp_streq(op, "<<") ? "shl" : "shr",
+                 lv_op_assign_src(c, lval, t, cap, rtn, sizeof rtn));
       emit_boxed(c, v, b);
       buf_puts(b, ");\n");
     }
     else {
-      buf_printf(b, "%s = sp_poly_bitop(%s, ", lval, lval);
+      buf_printf(b, "%s = sp_poly_bitop(%s, ", lval, lv_op_assign_src(c, lval, t, cap, rtn, sizeof rtn));
       emit_boxed(c, v, b);
       buf_printf(b, ", %d);\n", sp_streq(op, "&") ? 0 : sp_streq(op, "|") ? 1 : 2);
     }
