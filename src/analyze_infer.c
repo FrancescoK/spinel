@@ -5583,6 +5583,8 @@ else {
       if (sp_streq(name, "rewind")) return an_poly_concrete(c, name, TY_INT);
       if (sp_streq(name, "puts") || sp_streq(name, "print") || sp_streq(name, "putc"))
         return an_poly_concrete(c, name, TY_NIL);
+      /* printf answers the boxed nil the TY_IO arm answers */
+      if (sp_streq(name, "printf")) return TY_POLY;
       if (sp_streq(name, "synchronize")) {
         int blk_id = nt_ref(nt, id, "block");
         if (blk_id >= 0) {
