@@ -797,12 +797,21 @@ static int poly_double_index_int(Compiler *c, int id) {
 static int ivar_array_elems_all_int_array_impl(Compiler *c, int cid, const char *ivname) {
   const NodeTable *nt = c->nt;
   int saw = 0;
+  const char *bare = ivname[0] == '@' ? ivname + 1 : ivname;
+  ClassInfo *cl = &c->classes[cid];
+  if (comp_is_reader(cl, bare) || comp_is_writer(cl, bare)) return 0;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
     if (sp_streq(ty, "CallNode")) {
       const char *nm = nt_str(nt, id, "name");
-      if (!nm || (!sp_streq(nm, "[]=") && !sp_streq(nm, "store"))) continue;
+      if (!nm) continue;
+      int is_store = sp_streq(nm, "[]=") || sp_streq(nm, "store");
+      int is_insert = sp_streq(nm, "insert");
+      int is_concat = sp_streq(nm, "concat");
+      int is_append = sp_streq(nm, "<<") || sp_streq(nm, "push") || sp_streq(nm, "append") ||
+                      sp_streq(nm, "unshift") || sp_streq(nm, "prepend");
+      if (!is_store && !is_insert && !is_concat && !is_append) continue;
       int recv = nt_ref(nt, id, "receiver");
       if (recv < 0 || !sp_streq(nt_type(nt, recv) ? nt_type(nt, recv) : "", "InstanceVariableReadNode")) continue;
       const char *rn = nt_str(nt, recv, "name");
@@ -812,11 +821,28 @@ static int ivar_array_elems_all_int_array_impl(Compiler *c, int cid, const char 
       int args = nt_ref(nt, id, "arguments");
       int an = 0;
       const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      if (an < 2) continue;
-      TyKind vt = comp_ntype(c, av[1]);
-      if (vt == TY_INT_ARRAY) { saw = 1; continue; }
-      if (vt == TY_NIL || vt == TY_UNKNOWN) continue;
-      return 0;
+      if (is_store && an < 2) continue;
+      for (int a = is_store || is_insert ? 1 : 0; a < an; a++) {
+        const char *aty = nt_type(nt, av[a]);
+        if (aty && sp_streq(aty, "SplatNode")) return 0;
+        if (is_concat) {
+          if (!aty || !sp_streq(aty, "ArrayNode")) return 0;
+          int en = 0;
+          const int *els = nt_arr(nt, av[a], "elements", &en);
+          for (int e = 0; e < en; e++) {
+            TyKind et = comp_ntype(c, els[e]);
+            if (et == TY_INT_ARRAY) { saw = 1; continue; }
+            if (et == TY_NIL || et == TY_UNKNOWN) continue;
+            return 0;
+          }
+          continue;
+        }
+        TyKind vt = comp_ntype(c, av[a]);
+        if (vt == TY_INT_ARRAY) { saw = 1; continue; }
+        if (vt == TY_NIL || vt == TY_UNKNOWN) continue;
+        return 0;
+      }
+      continue;
     }
     if (sp_streq(ty, "InstanceVariableWriteNode")) {
       const char *nm = nt_str(nt, id, "name");
@@ -857,6 +883,25 @@ static int ivar_array_elems_all_int_array_impl(Compiler *c, int cid, const char 
       continue;
     }
   }
+  if (!saw) return 0;
+  /* The stores above are only every row when the table is touched as a call
+     receiver: a read handed on as a value (a `def t = @t` reader, `t = @t`,
+     an argument) can be appended to where this scan does not look. */
+  unsigned char *is_recv = calloc((size_t)nt->count + 1, 1);
+  if (!is_recv) return 0;
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    int r = nt_ref(nt, id, "receiver");
+    if (r >= 0 && r < nt->count) is_recv[r] = 1;
+  }
+  for (int id = 0; id < nt->count && saw; id++) {
+    if (nt_kind(nt, id) != NK_InstanceVariableReadNode || is_recv[id]) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, ivname)) continue;
+    Scope *s = comp_scope_of(c, id);
+    if (s && s->class_id == cid) saw = 0;
+  }
+  free(is_recv);
   return saw;
 }
 
