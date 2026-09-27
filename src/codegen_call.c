@@ -10330,6 +10330,47 @@ void emit_super_class_new(Compiler *c, int id, Buf *b) {
   buf_printf(b, " default: break; } _t%d; })", rt);
 }
 
+/* The C text of `vnode` as the value of member `a` of a Struct/Data, in the
+   member's own slot type: what sp_<S>_new takes for it, before any rooting. */
+static void emit_struct_member_value(Compiler *c, ClassInfo *cls, int a, int vnode, Buf *mv) {
+  const NodeTable *nt = c->nt;
+  /* an empty `[]` member value has no element type of its own and
+     would fall back to an IntArray, mismatching the member type that
+     another construction fixed (#3359) */
+  int mt_empty = ty_is_array(cls->ivar_types[a]) && !ty_is_obj_array(cls->ivar_types[a]) &&
+                 nt_kind(nt, vnode) == NK_ArrayNode;
+  if (mt_empty) { int en3 = 0; nt_arr(nt, vnode, "elements", &en3); mt_empty = (en3 == 0); }
+  if (mt_empty) {
+    const char *mk = (cls->ivar_types[a] == TY_POLY_ARRAY) ? "Poly" : array_kind(cls->ivar_types[a]);
+    if (mk) buf_printf(mv, "sp_%sArray_new()", mk);
+    else emit_expr(c, vnode, mv);
+  }
+  else if (cls->ivar_types[a] == TY_POLY && comp_ntype(c, vnode) != TY_POLY) emit_boxed(c, vnode, mv);
+  /* The reverse of that box: a POLY value into a CONCRETE member
+     slot. A member name a second class also defines makes the read
+     a poly dispatch, whose value is an sp_RbVal, while the
+     synthesized constructor's parameter is the member's own C type
+     -- so the call did not compile, naming a line in
+     <spinel-synthesized> (#4348). */
+  else if (cls->ivar_types[a] != TY_POLY && cls->ivar_types[a] != TY_UNKNOWN &&
+           comp_ntype(c, vnode) == TY_POLY) {
+    Buf pv; memset(&pv, 0, sizeof pv);
+    emit_expr(c, vnode, &pv);
+    emit_unbox_text(c, cls->ivar_types[a], pv.p ? pv.p : "sp_box_nil()", mv);
+    free(pv.p);
+  }
+  /* an unresolved call's raise token is an sp_RbVal; coerce it to
+     the member's slot type as every ordinary argument site does, or
+     the C build stops at a line past the file's end with neither
+     the method nor the call named (#4216). A non-token value
+     emits unchanged. */
+  /* a nil member value into a scalar slot is the slot's sentinel
+     (the member joined nil with an Integer or a Float) */
+  else if ((cls->ivar_types[a] == TY_INT || cls->ivar_types[a] == TY_FLOAT) &&
+           (nt_kind(nt, vnode) == NK_NilNode || comp_ntype(c, vnode) == TY_NIL))
+    emit_expr_slot(c, vnode, cls->ivar_types[a], mv);
+  else emit_unresolved_coerced(c, vnode, cls->ivar_types[a], mv);
+}
 static int emit_class_new_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -10646,15 +10687,45 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         /* The `**h` is evaluated once, ahead of the members it fills (each
            read the expression again), and a Data or keyword Struct checks
            its keys against the members the way CRuby does: a Data member no
-           key names is missing, a key naming no member is unknown (#5175). */
+           key names is missing, a key naming no member is unknown (#5175).
+           The literal keywords beside it go into temps of their members'
+           types along with it, in source order, and the check follows them
+           all, as CRuby evaluates every argument before the constructor
+           looks at one: a value left in the call ran after the hash, and not
+           at all when the check raised. */
         int splat_tmp = -1;
+        int *lit_tmp = NULL;
         if (splat_h >= 0) {
-          Buf hv0; memset(&hv0, 0, sizeof hv0); emit_boxed(c, splat_h, &hv0);
-          splat_tmp = ++g_tmp;
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n",
-                     splat_tmp, hv0.p ? hv0.p : "sp_box_nil()", splat_tmp);
-          free(hv0.p);
+          lit_tmp = malloc(sizeof(int) * (size_t)(cls->nivars > 0 ? cls->nivars : 1));
+          for (int a = 0; a < cls->nivars; a++) lit_tmp[a] = -1;
+          int nkp; const int *elsp = nt_arr(nt, kwh, "elements", &nkp);
+          for (int i = 0; i < nkp; i++) {
+            int vv = nt_ref(nt, elsp[i], "value");
+            if (vv == splat_h) {
+              Buf hv0; memset(&hv0, 0, sizeof hv0); emit_boxed(c, splat_h, &hv0);
+              splat_tmp = ++g_tmp;
+              emit_indent(g_pre, g_indent);
+              buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n",
+                         splat_tmp, hv0.p ? hv0.p : "sp_box_nil()", splat_tmp);
+              free(hv0.p);
+              continue;
+            }
+            for (int a = 0; vv >= 0 && a < cls->nivars; a++) {
+              if (struct_kwarg_value(c, kwh, cls->ivars[a] + 1) != vv) continue;
+              TyKind mt = cls->ivar_types[a];
+              Buf lv; memset(&lv, 0, sizeof lv); emit_struct_member_value(c, cls, a, vv, &lv);
+              lit_tmp[a] = ++g_tmp;
+              emit_indent(g_pre, g_indent);
+              emit_ctype(c, mt, g_pre);
+              buf_printf(g_pre, " _t%d = %s;", lit_tmp[a], lv.p ? lv.p : default_value(mt));
+              if (mt == TY_POLY) buf_printf(g_pre, " SP_GC_ROOT_RBVAL(_t%d);", lit_tmp[a]);
+              else if (mt == TY_STR_RANGE)   /* two GC strings by value, as a String range local */
+                buf_printf(g_pre, " SP_GC_ROOT_STR(_t%d.first); SP_GC_ROOT_STR(_t%d.last);", lit_tmp[a], lit_tmp[a]);
+              else if (needs_root(mt)) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", lit_tmp[a]);
+              buf_puts(g_pre, "\n");
+              free(lv.p);
+            }
+          }
           if (cls->is_data || cls->kw_init != -1) {
             emit_indent(g_pre, g_indent);
             buf_printf(g_pre, "sp_kw_splat_check(_t%d, (const char *const[]){", splat_tmp);
@@ -10674,49 +10745,15 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           int vnode = -1;
           if (kwh >= 0) vnode = struct_kwarg_value(c, kwh, cls->ivars[a] + 1);
           else if (a < argc) vnode = argv[a];
-          if (vnode >= 0) {
-            /* an empty `[]` member value has no element type of its own and
-               would fall back to an IntArray, mismatching the member type that
-               another construction fixed (#3359) */
-            int mt_empty = ty_is_array(cls->ivar_types[a]) && !ty_is_obj_array(cls->ivar_types[a]) &&
-                           nt_kind(nt, vnode) == NK_ArrayNode;
-            if (mt_empty) { int en3 = 0; nt_arr(nt, vnode, "elements", &en3); mt_empty = (en3 == 0); }
+          if (lit_tmp && lit_tmp[a] >= 0) buf_printf(b, "_t%d", lit_tmp[a]);
+          else if (vnode >= 0) {
             /* Hoist a heap-backed member value into a rooted temp: a sibling
                member expression evaluated after it can collect (`Outer.new(
                Inner.new(i), body(i))`), and sp_<S>_new's own entry root comes
                too late for that -- by then the value it roots is already
                dangling and the next mark reads freed memory (#4049). */
             Buf mv; memset(&mv, 0, sizeof mv);
-            if (mt_empty) {
-              const char *mk = (cls->ivar_types[a] == TY_POLY_ARRAY) ? "Poly" : array_kind(cls->ivar_types[a]);
-              if (mk) buf_printf(&mv, "sp_%sArray_new()", mk);
-              else emit_expr(c, vnode, &mv);
-            }
-            else if (cls->ivar_types[a] == TY_POLY && comp_ntype(c, vnode) != TY_POLY) emit_boxed(c, vnode, &mv);
-            /* The reverse of that box: a POLY value into a CONCRETE member
-               slot. A member name a second class also defines makes the read
-               a poly dispatch, whose value is an sp_RbVal, while the
-               synthesized constructor's parameter is the member's own C type
-               -- so the call did not compile, naming a line in
-               <spinel-synthesized> (#4348). */
-            else if (cls->ivar_types[a] != TY_POLY && cls->ivar_types[a] != TY_UNKNOWN &&
-                     comp_ntype(c, vnode) == TY_POLY) {
-              Buf pv; memset(&pv, 0, sizeof pv);
-              emit_expr(c, vnode, &pv);
-              emit_unbox_text(c, cls->ivar_types[a], pv.p ? pv.p : "sp_box_nil()", &mv);
-              free(pv.p);
-            }
-            /* an unresolved call's raise token is an sp_RbVal; coerce it to
-               the member's slot type as every ordinary argument site does, or
-               the C build stops at a line past the file's end with neither
-               the method nor the call named (#4216). A non-token value
-               emits unchanged. */
-            /* a nil member value into a scalar slot is the slot's sentinel
-               (the member joined nil with an Integer or a Float) */
-            else if ((cls->ivar_types[a] == TY_INT || cls->ivar_types[a] == TY_FLOAT) &&
-                     (nt_kind(nt, vnode) == NK_NilNode || comp_ntype(c, vnode) == TY_NIL))
-              emit_expr_slot(c, vnode, cls->ivar_types[a], &mv);
-            else emit_unresolved_coerced(c, vnode, cls->ivar_types[a], &mv);
+            emit_struct_member_value(c, cls, a, vnode, &mv);
             if (arg_wants_root(c, cls->ivar_types[a], vnode))
               emit_rooted_operand(c, cls->ivar_types[a], -1, mv.p ? mv.p : "", b);
             else buf_puts(b, mv.p ? mv.p : "");
@@ -10729,6 +10766,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           else buf_puts(b, default_value(cls->ivar_types[a]));
         }
         buf_puts(b, ")");
+        free(lit_tmp);
         return 1;
       }
       if (ci >= 0 && !reopen_builtin_new) {

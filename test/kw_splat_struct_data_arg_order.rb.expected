@@ -1,0 +1,40 @@
+lit 1
+hash
+#<data Point x=1, y=2>
+hash
+lit 4
+#<data Late x=3, y=4>
+lit 1
+hash
+lit 3
+#<data Both x=1, y=2, w=3>
+lit 3
+lit 1
+hash
+#<data Both x=1, y=2, w=3>
+str Ada
+hash
+#<data Name first="Ada", last="Lovelace">
+lit 1
+counted
+#<data Point x=1, y=5>
+1
+lit 1
+hash
+ArgumentError: missing keyword: :y
+lit 1
+hash
+lit 3
+ArgumentError: missing keyword: :y
+lit 1
+hash
+#<struct Opts a=1, b=2>
+hash
+lit 2
+#<struct LateOpts a=1, b=2>
+lit 1
+hash
+#<struct Plain a=1, b=2>
+["a0", "z0", "t0"]
+["a1", "z1", "t1"]
+["a2", "z2", "t2"]
