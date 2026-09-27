@@ -503,6 +503,12 @@ void emit_rat_coerce(Compiler *c, int node, Buf *b);
 void emit_super(Compiler *c, int id, Buf *b);
 int  emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr);
 void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out);
+/* A splat among an inlined call's positionals: gather them all into one
+   PolyArray and bind each positional parameter from it (see
+   emit_args_filled's gather). */
+int inline_splat_gather_applies(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh);
+int emit_splat_gather(Compiler *c, Scope *m, const int *argv, int pos_argc);
+void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out);
 /* A splat operand whose static type is nil or a scalar: Ruby spreads nil to
    nothing and any of the others to itself. */
 int splat_operand_is_scalar(TyKind t);
