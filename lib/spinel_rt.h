@@ -12990,6 +12990,46 @@ static sp_RbVal sp_Mutex_synchronize_proc(sp_mutex *m, sp_Proc *blk) {
   if (excf) { sp_pending_exc_obj = eobj; sp_raise_cls(ecls, emsg); }
   return r;
 }
+/* ---- Signal.trap proc call ----
+   sp_sig_c_handler (lib/sp_cold.c) runs the trap proc inside the signal
+   handler, with the signal blocked, so a second delivery waits for the proc
+   instead of nesting on it. A proc that raises or unwinds leaves the handler
+   by a jump rather than a return, and the kernel would keep the signal
+   blocked for good: land here first, unblock it, then pass the raise or
+   unwind on. The frame is armed before anything is rooted, so its root mark
+   is the interrupted code's. */
+#ifndef SPINEL_EXT_HOST
+void sp_trap_call(sp_Proc *p, int no) {
+  sp_exc_check_depth();
+  sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;
+  sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;
+  if (setjmp(sp_exc_stack[sp_exc_top - 1]) == 0) {
+    SP_GC_ROOT(p);   /* the proc may re-trap its signal, dropping sp_trap_proc's hold */
+    sp_int slot = (sp_int)no;
+    _sp_proc_poly_args[0] = sp_box_int((sp_int)no);
+    sp_proc_call(p, 1, &slot);
+    sp_exc_top--;
+    return;
+  }
+  sp_exc_top--;
+  sp_gc_nroots = sp_exc_rootmark[sp_exc_top]; sp_rescue_sp = sp_rescue_mark[sp_exc_top];
+  /* Take the exit before unblocking: a delivery that was pending runs its
+     proc right there, reusing this slot, and must not see (or clear) an
+     unwind still in flight. */
+  const char *ecls = sp_exc_cls[sp_exc_top], *emsg = sp_exc_msg[sp_exc_top];
+  void *eobj = sp_exc_obj[sp_exc_top];
+  SP_GC_ROOT_STR(emsg); SP_GC_ROOT(eobj);
+  int uk = sp_unwind_kind, ut = sp_unwind_target, ue = sp_unwind_exc_top;
+  struct sp_proc_home *uh = sp_unwind_home;
+  sp_unwind_kind = SP_UNWIND_NONE;
+  /* out of line on purpose: glibc marks sigprocmask __leaf__, and GCC would
+     keep the unwind state in registers across a direct call */
+  sp_sig_unblock(no, 0);
+  sp_unwind_kind = uk; sp_unwind_target = ut; sp_unwind_exc_top = ue; sp_unwind_home = uh;
+  if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();
+  sp_pending_exc_obj = eobj; sp_raise_cls(ecls, emsg);
+}
+#endif
 typedef struct { sp_RbVal obj; int which; int had; sp_RbVal ans; } sp_obj_conv_probe;
 static void sp_obj_conv_probe_run(void *p) {
   sp_obj_conv_probe *c = (sp_obj_conv_probe *)p;

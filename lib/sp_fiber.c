@@ -266,6 +266,17 @@ SP_TLS sp_Fiber *sp_fiber_current = &sp_fiber_root;    /* extern: read by the ge
 #ifdef SP_THREADS
 #include <pthread.h>    /* only where the build has it: see sp_thread_stack_bounds */
 #endif
+/* Unblock signal a (and b, when nonzero) for the calling thread: a handler
+   that leaves by a jump instead of a return has to, or the signal stays
+   blocked (see sp_trap_call in spinel_rt.h). */
+void sp_sig_unblock(int a, int b) {
+  sigset_t m; sigemptyset(&m); sigaddset(&m, a); if (b) sigaddset(&m, b);
+#ifdef SP_THREADS
+  pthread_sigmask(SIG_UNBLOCK, &m, 0);
+#else
+  sigprocmask(SIG_UNBLOCK, &m, 0);   /* one thread: the same mask */
+#endif
+}
 static void sp_fiber_fault_write(const char *s) { size_t n = strlen(s); while (n) { ssize_t w = write(2, s, n); if (w <= 0) break; s += w; n -= (size_t)w; } }
 static void sp_fiber_fault_write_num(size_t v) { char b[24]; int i = (int)sizeof b; b[--i] = 0; do { b[--i] = (char)('0' + v % 10); v /= 10; } while (v); sp_fiber_fault_write(b + i); }
 static void sp_fiber_fault_handler(int sig, siginfo_t *si, void *uctx) {
@@ -282,12 +293,7 @@ static void sp_fiber_fault_handler(int sig, siginfo_t *si, void *uctx) {
     /* unblock the signal first: this raise does not return, and the mask it
        was entered with would otherwise stay blocked in the frame we jump to
        (on Linux longjmp does not restore it) */
-    sigset_t m; sigemptyset(&m); sigaddset(&m, SIGSEGV); sigaddset(&m, SIGBUS);
-#ifdef SP_THREADS
-    pthread_sigmask(SIG_UNBLOCK, &m, 0);
-#else
-    sigprocmask(SIG_UNBLOCK, &m, 0);   /* one thread: the same mask */
-#endif
+    sp_sig_unblock(SIGSEGV, SIGBUS);
 #ifdef __APPLE__
     /* _longjmp (sp_types.h) also leaves the kernel's on-alt-stack flag set,
        so the next overflow's signal has nowhere to go and the process dies
