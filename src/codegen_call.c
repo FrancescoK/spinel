@@ -10055,6 +10055,116 @@ static void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Bu
   g_ctor_blk_tmp = sv_cbt;
 }
 
+/* Is `s` spelled as an identifier, so a message can name it as `:s`
+   without quotes, and a C string literal can hold it as it is? */
+static int kw_name_is_ident(const char *s) {
+  if (!s || !(isalpha((unsigned char)s[0]) || s[0] == '_')) return 0;
+  for (const char *q = s + 1; *q; q++)
+    if (!(isalnum((unsigned char)*q) || *q == '_')) return 0;
+  return 1;
+}
+
+/* A sole keyword hash whose every key is a literal Symbol spelled as an
+   identifier (`k.new(a: 1)`), or -1: the call names the members it sets, so
+   a Struct or Data arm of a boxed `new` can check them where it is emitted,
+   and a key needs no quoting in a message. */
+static int call_sole_literal_kwh(const NodeTable *nt, const int *argv, int argc) {
+  if (argc != 1 || !argv || nt_kind(nt, argv[0]) != NK_KeywordHashNode) return -1;
+  int ne = 0; const int *els = nt_arr(nt, argv[0], "elements", &ne);
+  for (int e = 0; e < ne; e++) {
+    if (nt_kind(nt, els[e]) != NK_AssocNode) return -1;
+    int key = nt_ref(nt, els[e], "key");
+    const char *kn = key >= 0 && nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
+    if (!kw_name_is_ident(kn)) return -1;
+  }
+  return argv[0];
+}
+
+/* The type of the member slot `@name` of class `k`, TY_POLY when untyped. */
+static TyKind struct_member_slot_type(ClassInfo *k, const char *name) {
+  char mvn[300]; snprintf(mvn, sizeof mvn, "@%s", name);
+  int mvi = comp_ivar_index(k, mvn);
+  return (mvi >= 0 && k->ivar_types[mvi] != TY_UNKNOWN) ? k->ivar_types[mvi] : TY_POLY;
+}
+
+/* The arm of a boxed `new` for a Struct or Data class built by its generated
+   constructor from a sole literal keyword hash, evaluated into _t<htmp>: each
+   member a keyword names is read out of the hash, and each member none names
+   takes nil, as the positional arm fills a missing member. The keywords are
+   known here, so CRuby's ArgumentError is decided here too: a Data raises
+   for the members no keyword names and then for a keyword that names no
+   member, a Struct for the latter only, each in CRuby's words. Answers 0,
+   emitting nothing, when a member's name is not an identifier (a message
+   would have to quote it), and when a member the compiler has typed is
+   named by a value of another type or of a type it does not know: the
+   value would be read as the member's type. */
+static int emit_struct_kw_new_arm(Compiler *c, int ci, int kwh, int htmp, int rt2, Buf *b) {
+  const NodeTable *nt = c->nt;
+  ClassInfo *k = &c->classes[ci];
+  int ne = 0; const int *els = nt_arr(nt, kwh, "elements", &ne);
+  for (int j = 0; j < k->nreaders; j++)
+    if (!kw_name_is_ident(k->readers[j])) return 0;
+  for (int e = 0; e < ne; e++) {
+    const char *kn = nt_str(nt, nt_ref(nt, els[e], "key"), "value");
+    for (int j = 0; j < k->nreaders; j++) {
+      if (!sp_streq(kn, k->readers[j])) continue;
+      TyKind pt = struct_member_slot_type(k, k->readers[j]);
+      TyKind at = comp_ntype(c, nt_ref(nt, els[e], "value"));
+      if (pt != TY_POLY && pt != at) return 0;
+    }
+  }
+  Buf miss; memset(&miss, 0, sizeof miss);
+  Buf unk; memset(&unk, 0, sizeof unk);
+  int nmiss = 0, nunk = 0;
+  if (k->is_data) {
+    for (int j = 0; j < k->nreaders; j++) {
+      int named = 0;
+      for (int e = 0; e < ne && !named; e++)
+        named = sp_streq(nt_str(nt, nt_ref(nt, els[e], "key"), "value"), k->readers[j]);
+      if (named) continue;
+      buf_printf(&miss, "%s:%s", nmiss++ ? ", " : "", k->readers[j]);
+    }
+  }
+  for (int e = 0; e < ne; e++) {
+    const char *kn = nt_str(nt, nt_ref(nt, els[e], "key"), "value");
+    int seen = 0;
+    for (int j = 0; j < k->nreaders && !seen; j++) seen = sp_streq(kn, k->readers[j]);
+    for (int e2 = 0; e2 < e && !seen; e2++)
+      seen = sp_streq(kn, nt_str(nt, nt_ref(nt, els[e2], "key"), "value"));
+    if (seen) continue;
+    buf_printf(&unk, "%s%s%s", nunk++ ? ", " : "", k->is_data ? ":" : "", kn);
+  }
+  buf_printf(b, "case %d: ", ci);
+  if (nmiss)
+    buf_printf(b, "sp_raise_cls(\"ArgumentError\", \"missing keyword%s: %s\"); break;",
+               nmiss > 1 ? "s" : "", miss.p);
+  else if (nunk)
+    buf_printf(b, "sp_raise_cls(\"ArgumentError\", \"unknown keyword%s: %s\"); break;",
+               (nunk > 1 || !k->is_data) ? "s" : "", unk.p);
+  else {
+    buf_printf(b, "_t%d=", rt2);
+    if (k->is_value_type) buf_printf(b, "sp_box_vobj_%s(sp_%s_new(", k->c_name, k->c_name);
+    else buf_printf(b, "sp_box_obj(sp_%s_new(", k->c_name);
+    for (int j = 0; j < k->nreaders; j++) {
+      if (j) buf_puts(b, ", ");
+      TyKind pt = struct_member_slot_type(k, k->readers[j]);
+      int named = 0;
+      for (int e = 0; e < ne && !named; e++)
+        named = sp_streq(nt_str(nt, nt_ref(nt, els[e], "key"), "value"), k->readers[j]);
+      if (!named) { buf_puts(b, pt == TY_POLY ? "sp_box_nil()" : default_value(pt)); continue; }
+      buf_printf(b, "({ sp_bool _kwf; sp_RbVal _kwv = sp_poly_hash_probe(_t%d, "
+                 "sp_box_sym(sp_sym_intern(\"%s\")), &_kwf); (void)_kwf; ", htmp, k->readers[j]);
+      if (pt == TY_POLY) buf_puts(b, "_kwv");
+      else emit_unbox_text(c, pt, "_kwv", b);
+      buf_puts(b, "; })");
+    }
+    if (k->is_value_type) buf_puts(b, ")); break;");
+    else buf_printf(b, "),%d); break;", ci);
+  }
+  free(miss.p); free(unk.p);
+  return 1;
+}
+
 static int emit_class_new_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -28569,6 +28679,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     int kt = ++g_tmp, rt2 = ++g_tmp;
+    int kwh = call_sole_literal_kwh(nt, argv, argc);
     int *atmp = argc ? calloc(argc, sizeof(int)) : NULL;
     buf_printf(b, "({ sp_RbVal _t%d = ", kt); emit_expr(c, recv, b); buf_puts(b, "; ");
     int sv_cbt = hoist_ctor_block(c, id, b);
@@ -28596,6 +28707,19 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int gen_ctor = c->classes[ci].is_struct && initm < 0;
       if (c->classes[ci].is_struct && initm >= 0 && c->scopes[initm].yields) continue;
       if (gen_ctor) np = nreq = c->classes[ci].nreaders;
+      /* `k.new(a: 1, b: 2)`: the keywords name the members, as for a Data
+         and for a Struct that is not keyword_init: false (which takes the
+         hash as its first member, below). The arity test below read the hash
+         as one positional: a Data or keyword_init Struct of more than one
+         member had no arm and raised NoMethodError, and one of one member
+         and a plain Struct took the hash as the first member. A class whose
+         members the compiler does not know (`Struct.new(*list)` over a list
+         it cannot read) keeps the arms below, and so does a class the arm
+         declines. */
+      if (gen_ctor && kwh >= 0 && c->classes[ci].nreaders > 0 &&
+          (c->classes[ci].is_data || c->classes[ci].kw_init >= 0)) {
+        if (emit_struct_kw_new_arm(c, ci, kwh, atmp[0], rt2, b)) continue;
+      }
       /* A zero-arg construction also reaches a constructor whose params are all
          optional: the arm fills each with its default, exactly as the
          statically-known `Klass.new` does. */

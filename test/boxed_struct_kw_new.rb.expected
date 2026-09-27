@@ -1,0 +1,19 @@
+#<struct S a=1, b=2>
+#<struct S a=nil, b="x">
+[ArgumentError, "unknown keywords: c"]
+#<struct K a=[1], b=2>
+[ArgumentError, "unknown keywords: c, d"]
+#<struct N a={a: 1, b: 2}, b=nil>
+#<data D x=3, y=4>
+[ArgumentError, "missing keyword: :y"]
+[ArgumentError, "missing keywords: :x, :y"]
+[ArgumentError, "unknown keyword: :z"]
+[ArgumentError, "unknown keywords: :z, :w"]
+#<data D x=3, y=4>
+#<struct S a=1, b=2>
+["s", nil, D]
+30
+#<data x=3, y=4>
+#<struct S a=1, b=2>
+#<struct K a=1, b=2>
+[ArgumentError, "missing keywords: :x, :y"]
