@@ -2274,7 +2274,9 @@ RB
 so_dir = ENV["SPIN_EXT_SO_DIR"].to_s
 raise "run this via `spin ext test`" if so_dir.empty?
 $LOAD_PATH.unshift(so_dir)
-require "#{name}"
+# The compiled extension itself, not the loader: the loader falls back to the
+# kernel, and the kernel against itself always matches.
+require "#{name}/#{name}"
 
 pure = Module.new
 src = File.read(File.expand_path("../lib/#{name}/kernel.rb", __dir__))
@@ -2362,14 +2364,17 @@ def cmd_ext_test(root)
   so_dir = File.join(root, "build", "ext")
   Dir.mkdir(File.join(root, "build")) unless File.exist?(File.join(root, "build"))
   Dir.mkdir(so_dir) unless File.exist?(so_dir)
+  pkg_dir = File.join(so_dir, pkg)
+  Dir.mkdir(pkg_dir) unless File.exist?(pkg_dir)
   soflags = sh_read("uname -s").strip == "Darwin" ? "-bundle -Wl,-undefined,dynamic_lookup" : "-shared"
   cc = ENV["CC"].to_s == "" ? "cc" : ENV["CC"]
   cmd = cc + " " + soflags + " -fPIC -O2 -Wno-all" +
         " -I" + rh + " -I" + ra + " -I" + extdir +
         " " + Dir.glob(File.join(extdir, "*.c")).join(" ") +
-        " -lm -o " + File.join(so_dir, pkg + "." + dlext)
+        " -lm -o " + File.join(pkg_dir, pkg + "." + dlext)
   spin_die("spin ext test: extension did not compile") unless run_command(cmd)
-  # require "#{pkg}" finds the .so; the loader in lib/ finds the kernel.
+  # The .so sits where extconf.rb installs it (<pkg>/<pkg>), so the loader in
+  # lib/ requires it as it would from the installed gem.
   ok = system("SPIN_EXT_SO_DIR=" + so_dir + " ruby -I " + File.join(root, "lib") +
               " " + File.join(root, "test", "differential.rb"))
   spin_die("spin ext test: differential failed") unless ok
