@@ -464,6 +464,48 @@ static int sp_node_fsl(pm_node_t *node) {
   return g_frozen_string_literal;
 }
 
+/* `__FILE__` (1), `$0` / `$PROGRAM_NAME` (2), either one under a single
+   `File.expand_path(...)` (the same code), anything else 0. */
+static int sp_guard_operand(pm_node_t *node, int wrapped) {
+  if (!node) return 0;
+  if (PM_NODE_TYPE(node) == PM_SOURCE_FILE_NODE) return 1;
+  if (PM_NODE_TYPE(node) == PM_GLOBAL_VARIABLE_READ_NODE) {
+    char *gn = cstr(((pm_global_variable_read_node_t *)node)->name);
+    int r = strcmp(gn, "$0") == 0 || strcmp(gn, "$PROGRAM_NAME") == 0 ? 2 : 0;
+    free(gn);
+    return r;
+  }
+  if (wrapped || PM_NODE_TYPE(node) != PM_CALL_NODE) return 0;
+  pm_call_node_t *c = (pm_call_node_t *)node;
+  if (!c->receiver || PM_NODE_TYPE(c->receiver) != PM_CONSTANT_READ_NODE || c->block) return 0;
+  if (!c->arguments || c->arguments->arguments.size != 1) return 0;
+  char *rn = cstr(((pm_constant_read_node_t *)c->receiver)->name);
+  char *mn = cstr(c->name);
+  int ok = strcmp(rn, "File") == 0 && strcmp(mn, "expand_path") == 0;
+  free(rn); free(mn);
+  return ok ? sp_guard_operand(c->arguments->arguments.nodes[0], 1) : 0;
+}
+
+/* `__FILE__ == $0` and its spellings (either order, `$PROGRAM_NAME`, both
+   sides under File.expand_path, `!=`): 1 when true, 2 when false, 0 when
+   `node` is not the idiom. True in the entry script, false in a required
+   file; `$0` itself stays the binary's argv[0]. */
+static int sp_program_guard(pm_node_t *node) {
+  if (PM_NODE_TYPE(node) != PM_CALL_NODE) return 0;
+  pm_call_node_t *c = (pm_call_node_t *)node;
+  if (!c->receiver || c->block || !c->arguments || c->arguments->arguments.size != 1) return 0;
+  char *mn = cstr(c->name);
+  int eq = strcmp(mn, "==") == 0 ? 1 : strcmp(mn, "!=") == 0 ? 0 : -1;
+  free(mn);
+  if (eq < 0) return 0;
+  pm_node_t *rhs = c->arguments->arguments.nodes[0];
+  int rk = sp_guard_operand(c->receiver, 0), ak = sp_guard_operand(rhs, 0);
+  if (rk + ak != 3) return 0;
+  if ((PM_NODE_TYPE(c->receiver) == PM_CALL_NODE) != (PM_NODE_TYPE(rhs) == PM_CALL_NODE)) return 0;
+  int entry = sp_node_required_file(node) == NULL;
+  return entry == eq ? 1 : 2;
+}
+
 /* ---- Main flattening ---- */
 static int flatten(pm_node_t *node) {
   if (!node) return -1;
@@ -568,6 +610,12 @@ static int flatten(pm_node_t *node) {
   }
   case PM_CALL_NODE: {
     pm_call_node_t *n = (pm_call_node_t *)node;
+    { int pg = sp_program_guard(node);
+      if (pg) {
+        if (pg == 1) N("TrueNode"); else N("FalseNode");
+        I("program_guard", 1);
+        break;
+      } }
     N("CallNode");
     NAME("name", n->name);
     R("receiver", n->receiver);

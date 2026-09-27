@@ -13043,7 +13043,8 @@ char *codegen_program(const NodeTable *nt) {
   if (g_ext_init_name) {
     /* `if __FILE__ == $0` is the kernel's manual test driver AND the entry
        methods' call-site type source (ext-design.md): inference consumed it,
-       the emitted init drops it. Everything else in the toplevel runs. */
+       the emitted init drops it. Everything else in the toplevel runs. The
+       parser folded the predicate to a boolean marked program_guard. */
     int tb9 = c->scopes[0].body;
     const char *tt9 = tb9 >= 0 ? nt_type(c->nt, tb9) : NULL;
     int tn9 = 0;
@@ -13053,24 +13054,7 @@ char *codegen_program(const NodeTable *nt) {
       int st9 = tv9[k9];
       if (nt_kind(c->nt, st9) == NK_IfNode) {
         int pr9 = nt_ref(c->nt, st9, "predicate");
-        if (pr9 >= 0 && nt_kind(c->nt, pr9) == NK_CallNode &&
-            nt_str(c->nt, pr9, "name") && sp_streq(nt_str(c->nt, pr9, "name"), "==")) {
-          int rc9 = nt_ref(c->nt, pr9, "receiver");
-          int an9 = 0; const int *av9 = call_args(c->nt, pr9, &an9);
-          int o9 = an9 == 1 ? av9[0] : -1;
-          int sf9 = 0, pg9 = 0;
-          for (int w9 = 0; w9 < 2; w9++) {
-            int nd9 = w9 ? o9 : rc9;
-            if (nd9 < 0) continue;
-            NodeKind nk9 = nt_kind(c->nt, nd9);
-            if (nk9 == NK_SourceFileNode) sf9 = 1;
-            else if (nk9 == NK_GlobalVariableReadNode) {
-              const char *gn9 = nt_str(c->nt, nd9, "name");
-              if (gn9 && (sp_streq(gn9, "$0") || sp_streq(gn9, "$PROGRAM_NAME"))) pg9 = 1;
-            }
-          }
-          if (sf9 && pg9) continue;
-        }
+        if (pr9 >= 0 && nt_int(c->nt, pr9, "program_guard", 0)) continue;
       }
       EMIT_COLLECT_UNIT(emit_stmt(c, st9, body, 1));
     }

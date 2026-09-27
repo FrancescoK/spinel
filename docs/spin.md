@@ -539,7 +539,9 @@ its own fallback (the generated loader `require`s the extension and falls
 back to the source) and its own test oracle (`spin ext test` runs each case
 through the pure kernel and the compiled one and diffs). The `if __FILE__ ==
 $0` block at the bottom is the manual test driver *and* how the exported
-methods get their types -- it never runs at extension load.
+methods get their types -- it never runs at extension load. Compiled as
+a plain binary (`spinel kernel.rb`) the guard is true, as under `ruby
+kernel.rb`, so the same file is also a standalone program.
 
 `spin.toml` names what crosses:
 

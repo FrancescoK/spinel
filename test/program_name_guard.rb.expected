@@ -1,0 +1,7 @@
+file == $0
+$0 == file
+file == $PROGRAM_NAME
+expand_path
+true
+[false, false, false, false]
+true
