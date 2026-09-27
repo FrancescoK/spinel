@@ -6230,6 +6230,13 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         const char *sbclose = (ret == TY_POLY) ? ")" : "";
         buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) _t%d = %ssp_class_val_name(_t%d)%s; else ",
                    tv, tr, sbopen, tv, sbclose);
+        /* `name` on an Encoding (always carried boxed) and on a Symbol: a
+           frozen String, as CRuby answers and as the typed Symbol#name does */
+        if (sp_streq(name, "name"))
+          buf_printf(b, "if (_t%d.tag == SP_TAG_ENCODING) _t%d = %ssp_str_uminus_val(_t%d.v.s)%s; "
+                        "else if (_t%d.tag == SP_TAG_SYM) "
+                        "_t%d = %ssp_str_uminus_val(sp_sym_to_s((sp_sym)_t%d.v.i))%s; else ",
+                     tv, tr, sbopen, tv, sbclose, tv, tr, sbopen, tv, sbclose);
       }
       if (is_class_reflect) {
         /* sp_class_superclass only knows the user chain; a builtin class needs
