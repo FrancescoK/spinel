@@ -13778,8 +13778,13 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       }
     }
     /* String#to_sym interns; Symbol#to_sym is identity; every other tag raises
-       CRuby's NoMethodError. A user class defining to_sym wins via poly dispatch. */
-    if (sp_streq(name, "to_sym")) {
+       CRuby's NoMethodError. A user class defining to_sym wins via poly dispatch.
+       `intern` answers as `to_sym` does on both, and stands aside, as the
+       arm did not exist for it before, wherever the dispatch reads the name
+       some other way: a user reader (an attr_reader, a Struct member) or an
+       OpenStruct member when ostruct is loaded (#3197). */
+    int intern_read = sp_streq(name, "intern") && (sp_feature_required("ostruct") || user_defines_or_reads(c, name));
+    if (sp_streq(name, "to_sym") || (sp_streq(name, "intern") && !intern_read)) {
       int has_user = 0;
       if (!g_poly_builtin_arm)
       for (int kk = 0; kk < c->nclasses && !has_user; kk++)
@@ -13801,8 +13806,8 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, ")");
         buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d.tag == SP_TAG_STR ? sp_sym_intern_n(_t%d.v.s, sp_str_byte_len(_t%d.v.s))"
                       " : (_t%d.tag == SP_TAG_SYM ? (sp_sym)_t%d.v.i"
-                      " : (sp_raise_poly_nomethod(\"to_sym\", _t%d), (sp_sym)0)); })",
-                   t, t, t, t, t, t, t);
+                      " : (sp_raise_poly_nomethod(\"%s\", _t%d), (sp_sym)0)); })",
+                   t, t, t, t, t, t, name, t);
         if (box_sym) buf_puts(b, ")");
         return 1;
       }

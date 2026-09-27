@@ -4571,7 +4571,8 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
   /* String#start_with? / #end_with? on a poly value (a `string?` param widened
      over a nil/string union, or a string element read out of a container):
      dispatch on the string tag. Several candidate prefixes/suffixes OR together
-     (any match), the same as the direct-String path (#3211, #3254). */
+     (any match), the same as the direct-String path (#3211, #3254). A Symbol
+     answers them over its name, as a typed Symbol does. */
   if ((sp_streq(name, "start_with?") || sp_streq(name, "end_with?")) && argc >= 1 && argv) {
     const char *fn = sp_streq(name, "start_with?") ? "sp_str_start_with" : "sp_str_end_with";
     int tv = ++g_tmp;
@@ -4579,10 +4580,12 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
        arm reads, or the guard is single-armed and raises for it (#4279) */
     buf_printf(b, "({ sp_RbVal _t%d = sp_poly_strbuf_deref(", tv); emit_expr(c, recv, b);
     buf_puts(b, ")");
-    buf_printf(b, "; _t%d.tag == SP_TAG_STR ? (", tv);
+    buf_printf(b, "; const char *_s%d = _t%d.tag == SP_TAG_SYM ? sp_sym_to_s((sp_sym)_t%d.v.i) : _t%d.v.s;",
+               tv, tv, tv, tv);
+    buf_printf(b, " (_t%d.tag == SP_TAG_STR || _t%d.tag == SP_TAG_SYM) ? (", tv, tv);
     for (int j = 0; j < argc; j++) {
       if (j) buf_puts(b, " || ");
-      buf_printf(b, "%s(_t%d.v.s, ", fn, tv);
+      buf_printf(b, "%s(_s%d, ", fn, tv);
       emit_str_expr(c, argv[j], b);
       buf_puts(b, ")");
     }
@@ -31966,17 +31969,20 @@ else {
       return;
     }
     /* Poly receiver for `poly.match?(/re/)`: String#match? when it holds a
-       string. NilClass has no match?, so nil raises here rather than answering
-       false the way `nil !~` answers true. */
+       string, over its name when it holds a Symbol. NilClass has no match?, so
+       nil raises here rather than answering false the way `nil !~` answers
+       true. */
     if (are >= 0 && sp_streq(name, "match?") && rt == TY_POLY) {
       int tv = ++g_tmp;
       /* a shared-string handle is a String (#4279) */
       buf_printf(b, "({ sp_RbVal _t%d = sp_poly_strbuf_deref(", tv); emit_expr(c, recv, b);
       buf_puts(b, ")");
-      buf_printf(b, "; (sp_bool)(_t%d.tag == SP_TAG_STR ? ", tv);
-      if (argc == 1) buf_printf(b, "sp_re_match_p(sp_re_pat_%d, _t%d.v.s)", are, tv);
+      buf_printf(b, "; const char *_s%d = _t%d.tag == SP_TAG_SYM ? sp_sym_to_s((sp_sym)_t%d.v.i) : _t%d.v.s;",
+                 tv, tv, tv, tv);
+      buf_printf(b, " (sp_bool)((_t%d.tag == SP_TAG_STR || _t%d.tag == SP_TAG_SYM) ? ", tv, tv);
+      if (argc == 1) buf_printf(b, "sp_re_match_p(sp_re_pat_%d, _s%d)", are, tv);
       else {
-        buf_printf(b, "sp_str_re_match_p_at(sp_re_pat_%d, _t%d.v.s, ", are, tv);
+        buf_printf(b, "sp_str_re_match_p_at(sp_re_pat_%d, _s%d, ", are, tv);
         emit_expr(c, argv[1], b); buf_puts(b, ")");
       }
       buf_printf(b, " : (sp_raise_nomethod(sp_sprintf(\"undefined method 'match?' for an instance of %%s\","
