@@ -7872,6 +7872,46 @@ static int desugar_multi_yield_map_param(Compiler *c) {
   return changed;
 }
 
+/* Does a def's body answer a VALUE on some path -- a local or ivar read, a
+   literal, an assignment -- as the last expression or through a `return`?
+   The `each`-like idiom answers self, nil or an iterator call, whose value
+   nobody keeps; index_by answers the Hash it built. Walked through the tail
+   of if / unless / parentheses and a return's argument. */
+static int te_tail_is_value(const NodeTable *nt, int n, int depth) {
+  if (n < 0 || depth > 12) return 0;
+  switch (nt_kind(nt, n)) {
+    case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode:
+    case NK_LocalVariableWriteNode: case NK_InstanceVariableWriteNode:
+    case NK_HashNode: case NK_StringNode: case NK_IntegerNode: case NK_FloatNode:
+    case NK_SymbolNode: case NK_TrueNode: case NK_FalseNode:
+      return 1;
+    case NK_StatementsNode: {
+      int bn = 0; const int *bb = nt_arr(nt, n, "body", &bn);
+      if (bn <= 0) return 0;
+      /* a `return v` anywhere in the list counts, the last statement is the tail */
+      for (int i = 0; i < bn - 1; i++)
+        if (nt_kind(nt, bb[i]) == NK_ReturnNode || nt_kind(nt, bb[i]) == NK_IfNode ||
+            nt_kind(nt, bb[i]) == NK_UnlessNode)
+          if (te_tail_is_value(nt, bb[i], depth + 1)) return 1;
+      return te_tail_is_value(nt, bb[bn - 1], depth + 1);
+    }
+    case NK_IfNode:
+      return te_tail_is_value(nt, nt_ref(nt, n, "statements"), depth + 1) ||
+             te_tail_is_value(nt, nt_ref(nt, n, "subsequent"), depth + 1);
+    case NK_UnlessNode:
+      return te_tail_is_value(nt, nt_ref(nt, n, "statements"), depth + 1) ||
+             te_tail_is_value(nt, nt_ref(nt, n, "else_clause"), depth + 1);
+    case NK_ElseNode: return te_tail_is_value(nt, nt_ref(nt, n, "statements"), depth + 1);
+    case NK_ParenthesesNode: return te_tail_is_value(nt, nt_ref(nt, n, "body"), depth + 1);
+    case NK_ReturnNode: {
+      int a = nt_ref(nt, n, "arguments");
+      int ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+      return ac > 0 && te_tail_is_value(nt, av[0], depth + 1);
+    }
+    default: return 0;
+  }
+}
+
 /* Rewrite `recv.to_enum(:m, *a)` / `enum_for(:m, *a)` into a real Enumerator,
    dispatched on the receiver kind (needs the receiver type, so it runs in the
    fixpoint). A user-class receiver whose class defines a yielding `m` becomes
@@ -7887,7 +7927,12 @@ static int desugar_to_enum(Compiler *c) {
   for (int id = 0; id < n0; id++) {
     char m[128]; int extra = 0, has_block = 0;
     if (!to_enum_target(c, id, m, sizeof m, &extra, &has_block)) continue;
-    if (has_block) continue;                 /* size-callable block: PR follow-up */
+    /* A size block -- `to_enum(:m) { size }`, the blockless-branch idiom of
+       activesupport's index_by / index_with / Array#extract! -- names what
+       Enumerator#size would answer, which is not modelled: the block is
+       dropped once the call is rewritten below (left on the builtin form it
+       would run as the iteration's block). A call the rewrite leaves is
+       refused downstream as before. */
     int recv = nt_ref(nt, id, "receiver");
     /* receiver type: an explicit receiver's inferred type, else the enclosing
        self (implicit-self `enum_for(:m)` inside an instance method). */
@@ -7906,11 +7951,18 @@ static int desugar_to_enum(Compiler *c) {
       /* `return enum_for(:m) unless block_given?` inside method m: a blockless
          call to m returns the Enumerator (with a block m runs the body and its
          return is ignored). Pin m's return type so the blockless call site does
-         not inherit the polluted union of the enumerator and the yield path. */
+         not inherit the polluted union of the enumerator and the yield path --
+         for an `each`-like m, whose block form answers self or nothing. A
+         method whose block form answers a VALUE (activesupport's index_by
+         builds a Hash) is left to the union: pinned, it returned that value
+         through an Enumerator-typed C signature, a type error; widened, a
+         blockless call site reads a boxed Enumerator its consumers dispatch
+         on. */
       Scope *es = comp_scope_of(c, id);
       int self_recv = recv < 0 ||
                       (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode"));
-      if (self_recv && es && es->name && sp_streq(es->name, m) &&
+      int value_form = es && es->body >= 0 && te_tail_is_value(nt, es->body, 0);
+      if (self_recv && es && es->name && sp_streq(es->name, m) && !value_form &&
           es->ret != TY_ENUMERATOR) {
         es->ret = TY_ENUMERATOR;
         es->ret_specialized = 1;
@@ -7920,6 +7972,7 @@ static int desugar_to_enum(Compiler *c) {
       int empty = nt_new_node(nt, "ArgumentsNode");
       nt_node_set_arr(nt, empty, "arguments", NULL, 0);
       nt_node_set_ref(nt, id, "arguments", empty);
+      if (has_block) nt_node_set_ref(nt, id, "block", -1);
       comp_grow_node_arrays(c);
       c->nscope[empty] = c->nscope[id];
       changed = 1;
@@ -7943,6 +7996,7 @@ static int desugar_to_enum(Compiler *c) {
       int newargs = nt_new_node(nt, "ArgumentsNode");
       nt_node_set_arr(nt, newargs, "arguments", rest, ac > 1 ? ac - 1 : 0);
       nt_node_set_ref(nt, id, "arguments", newargs);
+      if (has_block) nt_node_set_ref(nt, id, "block", -1);
       comp_grow_node_arrays(c);
       c->nscope[newargs] = c->nscope[id];
       free(rest);
