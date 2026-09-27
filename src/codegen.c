@@ -5550,6 +5550,27 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
   g_emitting_class_id = sv_emcls; g_nren = sv_nren;
 }
 
+/* Bind a proc parameter slot: `cond` true reads the argument `arg`, else the
+   default node `dv` (or `fallback` when dv < 0) is evaluated. A default can
+   need helper statements (an array or hash literal allocates into a temp), so
+   they run in the else branch, and the slot is rooted: an allocated default
+   has no other reference. */
+static void emit_proc_param_slot(Compiler *c, Buf *pb, const char *name, const char *cond,
+                                 const char *arg, int dv, const char *fallback) {
+  Buf dpre = {0}, dval = {0};
+  Buf *sv_pre = g_pre; int sv_ind = g_indent;
+  g_pre = &dpre; g_indent = 3;
+  if (dv >= 0) emit_boxed(c, dv, &dval); else buf_puts(&dval, fallback);
+  g_pre = sv_pre; g_indent = sv_ind;
+  buf_printf(pb, "    sp_RbVal lv_%s;\n", name);
+  buf_printf(pb, "    if (%s) lv_%s = %s;\n", cond, name, arg);
+  buf_puts(pb, "    else {\n");
+  if (dpre.p) buf_puts(pb, dpre.p);
+  buf_printf(pb, "      lv_%s = %s;\n    }\n", name, dval.p ? dval.p : "sp_box_nil()");
+  buf_printf(pb, "    SP_GC_ROOT_RBVAL(lv_%s); (void)lv_%s;\n", name, name);
+  free(dpre.p); free(dval.p);
+}
+
 static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *cty = nt_type(nt, create);
@@ -6366,12 +6387,10 @@ else if (orecv >= 0 && onm) {
           unsupported(c, create, "proc optional default referencing another parameter (later slice)");
           return;
         } }
-      buf_printf(pb, "    sp_RbVal lv_%s = (%d + %d < argc - %d && %d + %d < 16)\n", on, arity, j, nposts, arity, j);
-      buf_printf(pb, "      ? _sp_proc_poly_args[%d + %d] : ", arity, j);
-      { int dv = proc_opt_value(c, create, j);
-        if (dv >= 0) emit_boxed(c, dv, pb); else buf_puts(pb, "sp_box_nil()"); }
-      buf_puts(pb, ";\n");
-      buf_printf(pb, "    (void)lv_%s;\n", on);
+      char cond[96], arg[64];
+      snprintf(cond, sizeof cond, "%d + %d < argc - %d && %d + %d < 16", arity, j, nposts, arity, j);
+      snprintf(arg, sizeof arg, "_sp_proc_poly_args[%d + %d]", arity, j);
+      emit_proc_param_slot(c, pb, on, cond, arg, proc_opt_value(c, create, j), "sp_box_nil()");
     }
     if (restn && restn[0]) {
       buf_printf(pb, "    sp_PolyArray *lv_%s = sp_PolyArray_new(); SP_GC_ROOT(lv_%s);\n", restn, restn);
@@ -6404,14 +6423,13 @@ else if (orecv >= 0 && onm) {
       int dv = (kpty && sp_streq(kpty, "OptionalKeywordParameterNode"))
                  ? nt_ref(nt, kwn[j], "value") : -1;
       int sym_id = comp_sym_intern(c, kn);
-      buf_printf(pb, "    sp_RbVal lv_%s = (argc > 0 && sp_poly_has_key(_sp_proc_poly_args[argc-1], sp_box_sym((sp_sym)%d)))\n", kn, sym_id);
-      buf_printf(pb, "      ? sp_poly_index_poly(_sp_proc_poly_args[argc-1], sp_box_sym((sp_sym)%d)) : ", sym_id);
+      char cond[128], arg[128], missing[160];
+      snprintf(cond, sizeof cond, "argc > 0 && sp_poly_has_key(_sp_proc_poly_args[argc-1], sp_box_sym((sp_sym)%d))", sym_id);
+      snprintf(arg, sizeof arg, "sp_poly_index_poly(_sp_proc_poly_args[argc-1], sp_box_sym((sp_sym)%d))", sym_id);
       /* A required keyword absent from the call raises ArgumentError (mirrors the
          method-keyword arm); an optional one falls back to its default. */
-      if (dv >= 0) emit_boxed(c, dv, pb);
-      else buf_printf(pb, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), sp_box_nil())", kn);
-      buf_puts(pb, ";\n");
-      buf_printf(pb, "    (void)lv_%s;\n", kn);
+      snprintf(missing, sizeof missing, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), sp_box_nil())", kn);
+      emit_proc_param_slot(c, pb, kn, cond, arg, dv, missing);
     }
   }
   /* `&b`: the block the caller attached to .call, delivered on the
