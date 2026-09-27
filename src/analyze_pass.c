@@ -7300,11 +7300,26 @@ static void ple_build(Compiler *c) {
   NT_FOREACH_KIND(nt, NK_BlockArgumentNode, ba) {
     ple_mark_escaped(c, nt_ref(nt, ba, "expression"));
   }
+  /* A proc literal that is a parameter's DEFAULT shares that parameter with
+     whatever proc a caller passes, so it is invoked through the same
+     type-erased ABI as a proc passed as an argument. It was never marked, took
+     the arithmetic Integer default, and read a Float argument as 0 through an
+     int slot: `def initialize(sleeper: ->(s) { ... })` then
+     `@sleeper.call(0.075)` saw 0. */
+  NT_FOREACH_KIND(nt, NK_OptionalParameterNode, op) {
+    ple_mark_escaped(c, nt_ref(nt, op, "value"));
+  }
+  NT_FOREACH_KIND(nt, NK_OptionalKeywordParameterNode, op) {
+    ple_mark_escaped(c, nt_ref(nt, op, "value"));
+  }
   /* A proc literal stored as a hash value or array element also escapes: it is
      read back as a boxed value and invoked through the type-erased ABI, so its
      args ride the boxed side-channel just like a proc passed as a call
-     argument (#3178). */
-  NT_FOREACH_KIND(nt, NK_HashNode, id) {
+     argument (#3178). A keyword argument, `m(f: ->(s) { ... })`, is an
+     element of a KeywordHashNode and escapes into the callee the same way. */
+  static const NodeKind hash_kinds[] = { NK_HashNode, NK_KeywordHashNode };
+  for (int hk = 0; hk < 2; hk++)
+  NT_FOREACH_KIND(nt, hash_kinds[hk], id) {
     int en = 0; const int *el = nt_arr(nt, id, "elements", &en);
     for (int k = 0; k < en; k++) {
       if (el[k] < 0 || !nt_type(nt, el[k]) || !sp_streq(nt_type(nt, el[k]), "AssocNode")) continue;
