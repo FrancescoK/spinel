@@ -10165,6 +10165,93 @@ static int emit_struct_kw_new_arm(Compiler *c, int ci, int kwh, int htmp, int rt
   return 1;
 }
 
+/* One construction of class `ci` for `super` in a `self.new` (Class#new):
+   the call's arguments laid out for ci's initialize, or with a bare `super`
+   the method's own parameters, in order. */
+static void emit_super_new_ctor(Compiler *c, int id, int ci, Buf *b) {
+  const NodeTable *nt = c->nt;
+  ClassInfo *k = &c->classes[ci];
+  if (k->is_struct || k->is_native_class || class_is_exc_subclass(c, ci))
+    unsupported(c, id, "super in `self.new` of a Struct, Data, exception or native class");
+  int initm = comp_method_in_chain(c, ci, "initialize", NULL);
+  int argsn = nt_ref(nt, id, "arguments");
+  int argc = 0; if (argsn >= 0) nt_arr(nt, argsn, "arguments", &argc);
+  if (nt_kind(nt, id) == NK_ForwardingSuperNode) {
+    Scope *s = comp_scope_of(c, id);
+    if (s->rest_idx >= 0 || s->kwrest_idx >= 0 || (s->blk_param && s->blk_param[0]))
+      unsupported(c, id, "bare super in `self.new` with a rest, keyword-rest or block parameter");
+    for (int i = 0; i < s->nparams; i++)
+      if (s->pnames[i] && callee_param_is_declared_kwarg(c, s, s->pnames[i]))
+        unsupported(c, id, "bare super in `self.new` with keyword parameters");
+    Scope *is = initm >= 0 ? &c->scopes[initm] : NULL;
+    int inp = is ? is->nparams : 0;
+    if (s->nparams > inp || (is && (is->rest_idx >= 0 || is->kwrest_idx >= 0))) {
+      buf_printf(b, "(sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given %d, expected %d)\"), %s)",
+                 s->nparams, inp, default_value(ty_object(ci)));
+      return;
+    }
+    buf_printf(b, "sp_%s_new(", k->c_name);
+    for (int i = 0; i < inp; i++) {
+      if (i) buf_puts(b, ", ");
+      if (i >= s->nparams) { emit_arg_or_default(c, is, i, -1, b); continue; }
+      LocalVar *sv = scope_local(s, s->pnames[i]);
+      LocalVar *dv = scope_local(is, is->pnames[i]);
+      TyKind st = sv ? sv->type : TY_POLY, dt = dv ? dv->type : TY_POLY;
+      if (st == TY_UNKNOWN) st = TY_POLY;
+      if (dt == TY_UNKNOWN) dt = TY_POLY;
+      char ln[300]; snprintf(ln, sizeof ln, "lv_%s", rename_local(s->pnames[i]));
+      if (dt == TY_POLY && st != TY_POLY) emit_boxed_text(c, st, ln, b);
+      else if (st == TY_POLY && dt != TY_POLY) emit_unbox_text(c, dt, ln, b);
+      else buf_puts(b, ln);
+    }
+    emit_ctor_block_slot(c, id, initm, inp > 0 ? ", " : "", b);
+    buf_puts(b, ")");
+    return;
+  }
+  if (initm < 0 && argc > 0) {
+    buf_printf(b, "(sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given %d, expected 0)\"), %s)",
+               argc, default_value(ty_object(ci)));
+    return;
+  }
+  if (initm >= 0 && ctor_needs_self_defaults(c, initm, argc)) {
+    emit_ctor_alloc_init(c, ci, initm, argsn, id, b);
+    return;
+  }
+  buf_printf(b, "sp_%s_new(", k->c_name);
+  Buf ab; memset(&ab, 0, sizeof ab);
+  if (initm >= 0) emit_args_filled(c, initm, argsn, "", &ab);
+  emit_ctor_block_slot(c, id, initm, ab.p && ab.p[0] ? ", " : "", &ab);
+  buf_puts(b, ab.p ? ab.p : "");
+  buf_puts(b, ")");
+  free(ab.p);
+}
+
+/* `super` in a `self.new` whose ancestors define no class method `new` is
+   Class#new: allocate the receiving class and run its initialize. A class
+   with no descendant can only receive the call itself; otherwise the method
+   takes the receiving class (cmethod_takes_self_cls) and each class it can
+   be gets an arm, the result boxed. */
+void emit_super_class_new(Compiler *c, int id, Buf *b) {
+  Scope *s = comp_scope_of(c, id);
+  int own = s->class_id, has_desc = 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (k != own && is_descendant(c, k, own)) has_desc = 1;
+  if (!has_desc) { emit_super_new_ctor(c, id, own, b); return; }
+  int rt = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = sp_box_nil(); switch (_sp_cls.cls_id) {", rt);
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k != own && !is_descendant(c, k, own)) continue;
+    Buf cb; memset(&cb, 0, sizeof cb);
+    emit_super_new_ctor(c, id, k, &cb);
+    buf_printf(b, " case %d: _t%d = ", k, rt);
+    if (c->classes[k].is_value_type) buf_printf(b, "sp_box_vobj_%s(%s)", c->classes[k].c_name, cb.p ? cb.p : "");
+    else buf_printf(b, "sp_box_obj(%s, %d)", cb.p ? cb.p : "NULL", k);
+    buf_puts(b, "; break;");
+    free(cb.p);
+  }
+  buf_printf(b, " default: break; } _t%d; })", rt);
+}
+
 static int emit_class_new_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -10588,9 +10675,12 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         /* user-defined def self.new takes precedence over the constructor */
         int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
         if (ucnew >= 0) {
-          int defcls2 = -1; comp_cmethod_in_chain(c, ci, "new", &defcls2);
-          buf_printf(b, "sp_%s_s_%s(", c->classes[defcls2 >= 0 ? defcls2 : ci].c_name, mc("new"));
-          emit_args_filled(c, ucnew, nt_ref(nt, id, "arguments"), "", b);
+          /* the receiving class rides in when the body reads it (#4217):
+             an inherited `self.new` building with `super`, or naming it */
+          emit_method_cname(c, &c->scopes[ucnew], b);
+          buf_puts(b, "(");
+          const char *ld = emit_cmethod_self_cls_arg(c, ucnew, ci, b);
+          emit_args_filled(c, ucnew, nt_ref(nt, id, "arguments"), ld, b);
           buf_puts(b, ")");
           return 1;
         }
@@ -28913,9 +29003,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
       if (ucnew >= 0) {
         /* user-defined def self.new: call it as a regular class method */
-        int defcls2 = -1; comp_cmethod_in_chain(c, ci, "new", &defcls2);
-        buf_printf(b, "sp_%s_s_%s(", c->classes[defcls2 >= 0 ? defcls2 : ci].c_name, mc("new"));
-        emit_args_filled(c, ucnew, nt_ref(nt, id, "arguments"), "", b);
+        emit_method_cname(c, &c->scopes[ucnew], b);
+        buf_puts(b, "(");
+        const char *ld = emit_cmethod_self_cls_arg(c, ucnew, ci, b);   /* #4217 */
+        emit_args_filled(c, ucnew, nt_ref(nt, id, "arguments"), ld, b);
         buf_puts(b, ")");
         return;
       }

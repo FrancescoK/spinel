@@ -574,6 +574,16 @@ void compute_instantiated(Compiler *c, int early) {
   for (int k = 0; k < c->nclasses; k++)
     if (c->classes[k].is_struct || c->classes[k].is_native_class) c->classes[k].instantiated = 1;
   for (int id = 0; id < nt->count && !disable; id++) {
+    /* super in a reachable `self.new` constructs the receiving class: this
+       one, or a descendant inheriting the method */
+    if (comp_super_is_class_new(c, id)) {
+      Scope *encl = comp_scope_of(c, id);
+      if (encl && encl->reachable)
+        for (int k = 0; k < c->nclasses; k++)
+          if (k == encl->class_id || is_descendant(c, k, encl->class_id))
+            c->classes[k].instantiated = 1;
+      continue;
+    }
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *name = nt_str(nt, id, "name");
     if (!name) continue;

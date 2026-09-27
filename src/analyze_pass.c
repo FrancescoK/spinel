@@ -4406,6 +4406,25 @@ int infer_param_types(Compiler *c) {
     if (sp_streq(ty, "SuperNode") || sp_streq(ty, "ForwardingSuperNode")) {
       Scope *s = comp_scope_of(c, id);
       if (s->class_id < 0 || !s->name) continue;
+      /* super in `self.new` is Class#new: its arguments reach the
+         initialize of whichever class receives it */
+      if (comp_super_is_class_new(c, id)) {
+        for (int k = 0; k < c->nclasses; k++) {
+          if (k != s->class_id && !is_descendant(c, k, s->class_id)) continue;
+          int imi = comp_method_in_chain(c, k, "initialize", NULL);
+          if (imi < 0) continue;
+          if (sp_streq(ty, "SuperNode")) { changed |= bind_call_params(c, id, imi); continue; }
+          Scope *im = &c->scopes[imi];
+          for (int q = 0; q < s->nparams && q < im->nparams; q++) {
+            LocalVar *src = scope_local(s, s->pnames[q]);
+            LocalVar *dst = scope_local(im, im->pnames[q]);
+            if (!src || !dst || dst->rbs_seeded || src->type == TY_UNKNOWN) continue;
+            TyKind mg = ty_unify(dst->type, src->type);
+            if (mg != dst->type) { dst->type = mg; changed = 1; }
+          }
+        }
+        continue;
+      }
       int p = c->classes[s->class_id].parent;
       if (p < 0) continue;
       int pmi = comp_method_in_chain(c, p, s->name, NULL);
