@@ -984,6 +984,8 @@ void register_module_functions(Compiler *c) {
             const char *aty = nt_type(nt, aargs[ai]);
             const char *aval = NULL;
             if (aty && sp_streq(aty, "SymbolNode")) aval = nt_str(nt, aargs[ai], "value");
+            else if (aty && sp_streq(aty, "DefNode") && nt_ref(nt, aargs[ai], "receiver") < 0)
+              aval = nt_str(nt, aargs[ai], "name");
             if (!aval) continue;
             for (int mi = 0; mi < c->nscopes; mi++) {
               if (c->scopes[mi].class_id == ci && !c->scopes[mi].is_cmethod &&
