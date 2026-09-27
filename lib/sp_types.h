@@ -32,6 +32,16 @@
 #include <stddef.h>
 #include <float.h>   /* DBL_MAX / DBL_MIN / DBL_EPSILON for Float::* constants */
 
+#include <setjmp.h>
+#ifdef __APPLE__
+/* Darwin's setjmp saves the signal mask, a sigprocmask syscall on every
+   begin/rescue. Nothing here needs the mask restored (glibc's longjmp doesn't
+   restore it either), so use the _ variants. Here so the generated TU and the
+   runtime agree on the pair. */
+#define setjmp(env) _setjmp(env)
+#define longjmp(env, val) _longjmp(env, val)
+#endif
+
 /* Per-worker storage under true parallelism. In the -DSP_THREADS runtime
    variant (and the generated TU when the program uses threads, compiled with
    the same define) the per-thread execution state -- the GC root stack, the
