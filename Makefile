@@ -1885,12 +1885,12 @@ endef
 # Per-package test rules (one pattern rule per bundled package: GNU Make
 # patterns allow a single %, so the package name is fixed per rule).
 define PKG_TEST_RULE
-build/test-results/pkg.$(1).%.ok: packages/$(1)/test/%.rb $$(SP_RT_LIB) $$(SP_RT_MT_LIB) $$(BUNDLED_NATIVE_OBJS) $$(PCH_PLAIN) $$(PCH_NOPOLY) | $$(SPINEL) $$(SPINEL_TIMEOUT)
+build/test-results/pkg.$(1).%.ok: packages/$(1)/test/%.rb $$(SP_RT_LIB) $$(SP_RT_MT_LIB) $$(BUNDLED_NATIVE_OBJS) $$(BUNDLED_NATIVE_MT_OBJS) $$(PCH_PLAIN) $$(PCH_NOPOLY) | $$(SPINEL) $$(SPINEL_TIMEOUT)
 	$$(RUN_ONE_TEST)
 endef
 $(foreach d,$(wildcard packages/*/test),$(eval $(call PKG_TEST_RULE,$(patsubst packages/%/test,%,$(d)))))
 
-build/test-results/%.ok: test/%.rb $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(PCH_PLAIN) $(PCH_NOPOLY) | $(SPINEL) $(SPINEL_TIMEOUT)
+build/test-results/%.ok: test/%.rb $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS) $(PCH_PLAIN) $(PCH_NOPOLY) | $(SPINEL) $(SPINEL_TIMEOUT)
 	$(RUN_ONE_TEST)
 
 clean-test-results:
