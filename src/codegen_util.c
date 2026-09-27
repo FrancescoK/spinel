@@ -2693,6 +2693,25 @@ int scope_proc_form_of(Compiler *c, int s) {
   if (pi < 0 || !c->scopes[pi].is_proc_form) return -1;
   return pi;
 }
+/* Is proc form `s` one some call can reach? The poly dispatch that names it
+   is emitted after the reachability pass, so the clone's own flag cannot say;
+   but its source method is reached by name wherever a call could take the
+   clone, and a source nothing calls leaves the clone dead, with callees the
+   pass rightly left out: emitted anyway, it named functions that were never
+   written (#5117). */
+int proc_form_live(Compiler *c, int s) {
+  Scope *pf = &c->scopes[s];
+  if (!pf->is_proc_form || pf->reachable) return 1;
+  const char *nm = pf->name;
+  const char *h = nm ? strstr(nm, "#pf") : NULL;
+  if (!h || pf->class_id < 0) return 1;
+  char src[192];
+  size_t n = (size_t)(h - nm);
+  if (n >= sizeof src) return 1;
+  memcpy(src, nm, n); src[n] = 0;
+  int si = comp_method_in_class(c, pf->class_id, src);
+  return si < 0 || c->scopes[si].reachable;
+}
 int scope_needs_proc_form(Compiler *c, int s) {
   return scope_proc_form_of(c, s) >= 0;
 }

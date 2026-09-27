@@ -12479,7 +12479,7 @@ char *codegen_program(const NodeTable *nt) {
   /* A proc form is named only by a poly dispatch, which is emitted later, so
      the reachability pass cannot see it. Emit it and let the C compiler drop
      it if no arm ends up calling it (#3399). */
-  for (int s = 1; s < c->nscopes; s++) { if (c->scopes[s].yields || (!c->scopes[s].reachable && !c->scopes[s].is_proc_form) || scope_is_shadowed(c, s) || (c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s))) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); }
+  for (int s = 1; s < c->nscopes; s++) { if (c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || (c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s))) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); }
 
   /* A boxed exception carries SP_BUILTIN_EXCEPTION, not its user class's
      index, so a poly dispatch over a user exception class's own method keys
@@ -12906,7 +12906,7 @@ char *codegen_program(const NodeTable *nt) {
   emit_obj_to_ary_dispatch(c, body);
   emit_obj_with_dispatch(c, body);
   for (int s = 1; s < c->nscopes; s++) {
-    if (c->scopes[s].yields || (!c->scopes[s].reachable && !c->scopes[s].is_proc_form) || scope_is_shadowed(c, s) || (c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s))) continue; EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));
+    if (c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || (c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s))) continue; EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));
   }
   /* Comparable cmp-hook dispatcher (after the user `<=>` definitions it calls). */
   emit_synth_line_marker(body);
