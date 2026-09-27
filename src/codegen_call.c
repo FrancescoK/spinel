@@ -27486,6 +27486,22 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
   }
 
+  /* Module#< / <= / > / >= / <=> with one side boxed: a class value read out
+     of an Array or Hash ordered against a class, or a class ordered against
+     a boxed operand. Answered at run time with the tri-state result. */
+  if (recv >= 0 && argc == 1 && (is_cmp_op(name) || sp_streq(name, "<=>")) &&
+      comp_ntype(c, id) == TY_POLY) {
+    TyKind crt = comp_ntype(c, recv), cat = comp_ntype(c, argv[0]);
+    if ((crt == TY_CLASS && cat != TY_CLASS) || (crt == TY_POLY && cat == TY_CLASS)) {
+      int op = sp_streq(name, "<") ? 0 : sp_streq(name, "<=") ? 1 :
+               sp_streq(name, ">") ? 2 : sp_streq(name, ">=") ? 3 : 4;
+      buf_puts(b, "sp_class_op_rv("); emit_boxed(c, recv, b);
+      buf_puts(b, ", "); emit_boxed(c, argv[0], b);
+      buf_printf(b, ", %d)", op);
+      return;
+    }
+  }
+
   /* TY_CLASS method dispatch */
   if (recv >= 0 && comp_ntype(c, recv) == TY_CLASS) {
     int _clt = ++g_tmp;

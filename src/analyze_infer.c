@@ -2158,6 +2158,11 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      (Base.subclasses / #ancestors hand back boxed classes, #2656). Only when no
      user class defines the method -- then it dispatches to that instead. */
   /* Boxed (poly) receivers: the run of poly-face arms of infer_call (analyze_infer_recv.c). */
+  /* A boxed receiver ordered against a class: Module#< and friends answer
+     nil for unrelated classes, so the result stays boxed as it does for a
+     class-typed receiver. */
+  if (recv >= 0 && argc == 1 && rt == TY_POLY && infer_type(c, argv[0]) == TY_CLASS &&
+      (is_cmp_op(name) || sp_streq(name, "<=>"))) return TY_POLY;
   { TyKind rr; if (infer_poly_call(c, id, rt, &rr)) return rr; }
   /* bool/nil <=> : 0 for an equal immediate pair, nil otherwise (#2733) */
   if (recv >= 0 && argc == 1 && sp_streq(name, "<=>") &&
