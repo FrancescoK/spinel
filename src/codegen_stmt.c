@@ -12243,6 +12243,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     if (vt == TY_POLY && et == TY_INT) { buf_puts(b, "sp_poly_elem_i("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
     else if (vt == TY_POLY && et == TY_STRING) { buf_puts(b, "sp_poly_elem_s("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
     else if (vt == TY_POLY && et == TY_FLOAT) { buf_puts(b, "sp_poly_elem_f("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+    else if (vt == TY_UNKNOWN) emit_unresolved_coerced(c, argv[1], et, b);   /* a raise token, a void call */
     else emit_expr(c, argv[1], b);
     buf_puts(b, ");\n");
     return 1;
@@ -12324,6 +12325,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
         emit_expr(c, argv[a], b);
         buf_puts(b, "), (&(\"\\xff\")[1]))");
       }
+      else if (vt == TY_UNKNOWN) emit_unresolved_coerced(c, argv[a], et, b);   /* a raise token, a void call */
       else emit_expr(c, argv[a], b);
       buf_puts(b, ");\n");
     }

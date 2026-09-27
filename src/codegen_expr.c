@@ -3057,7 +3057,10 @@ else {
       }
 else {
         Buf el; memset(&el, 0, sizeof el);
-        emit_expr(c, els[j], &el);   /* element preludes flow to g_pre first */
+        /* element preludes flow to g_pre first; an untyped element (a raise
+           token, a void call) is coerced to the element type */
+        if (comp_ntype(c, els[j]) == TY_UNKNOWN) emit_unresolved_coerced(c, els[j], ty_array_elem(at), &el);
+        else emit_expr(c, els[j], &el);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_%sArray_push(_t%d, ", k, t);
         buf_puts(g_pre, el.p ? el.p : "");

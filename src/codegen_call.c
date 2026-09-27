@@ -25102,6 +25102,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       else if (comp_ntype(c, argv[a]) == TY_POLY && elem == TY_FLOAT) {
         buf_puts(b, "sp_poly_to_f("); emit_expr(c, argv[a], b); buf_puts(b, ")");
       }
+      else if (comp_ntype(c, argv[a]) == TY_UNKNOWN) emit_unresolved_coerced(c, argv[a], elem, b);
       else emit_expr(c, argv[a], b);
       buf_puts(b, "); ");
     }
