@@ -16660,7 +16660,7 @@ void analyze_program(Compiler *c) {
     ch |= pad_unsupplied_params(c);            /* under-supplied call: placeholder param type */
     ch |= desugar_builtin_method_obj(c);       /* builtin recv.method(:sym) -> wrapper def */
     ch |= desugar_class_body_bare_new(c);      /* class body `new(x)` -> `Klass.new(x)` */
-    ch |= desugar_bare_const_get(c);           /* cmethod `const_get(:K)` -> `self.const_get(:K)` */
+    ch |= desugar_bare_class_self_calls(c);    /* cmethod `const_get(:K)` -> `self.const_get(:K)` */
     ch |= desugar_ie_bare_object_calls(c);     /* instance_eval { is_a?(K) } -> self.is_a?(K) */
     ch |= desugar_masgn_object_index(c);       /* obj[k], x = rhs -> tmp, x = rhs; obj[k] = tmp */
     ch |= desugar_include_math(c);             /* include Math: sqrt(x) -> Math.sqrt(x) */
