@@ -1851,7 +1851,8 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
   if (celled && t == TY_UNKNOWN) {
     const char *fn = int_arith_fn(op);
     if (fn) {
-      buf_printf(b, "%s = %s(%s, ", lval, fn, lval);
+      buf_printf(b, "%s = %s(%s, ", lval, fn,
+                 lv_op_assign_src(c, lval, TY_INT, subtree_has_side_effect(c, v), rtn, sizeof rtn));
       if (sp_streq(op, "/") || sp_streq(op, "%")) emit_int_divisor(c, v, b);
       else emit_expr(c, v, b);
       buf_puts(b, ");\n");
