@@ -1,0 +1,10 @@
+"a" "b" "\n" "c" "d" "\n" 
+97 98 10 99 100 10 
+"ab\ncd\n"
+97 98 10 99 100 10 "ab\ncd\n"
+[ab][cd]
+<ab><cd>
+"ab\ncd\n"
+ab
+cd
+"ab\ncd\n"
