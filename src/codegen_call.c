@@ -962,6 +962,18 @@ static int emit_reopen_arm_test(Compiler *c, int kmi, const char *name, const ch
   else buf_printf(b, "(%s) ? ", t);
   return 1;
 }
+static void emit_poly_splat_arity(Compiler *c, int id, Scope *ms, int sa, int st,
+                                  const PolyKw *kw, Buf *b);
+static void emit_poly_splat_param(Compiler *c, Scope *ms, int a, int sa, int st, const int *atmp,
+                                  const TyKind *atmp_ty, const char *selfp, Buf *pa);
+/* With a splatted argument (`splat_a` >= 0, the call's last positional, and
+   no keyword hash beside it): the arm spreads the array over its parameters
+   the way the instance arms do, judging the count at run time; a candidate
+   whose parameter list that spread cannot serve (keywords, a synthesized
+   signature) falls to the default raise. The call used to be refused
+   outright whenever any class had a class method of the name
+   (activesupport's Notifications: the module has its own `publish`, and
+   Fanout forwards to each listener's). */
 static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int argc,
                                       const int *atmp, const TyKind *atmp_ty,
                                       const PolyKw *kw, int tv, int tr, TyKind ret, int blk_tmp, Buf *b) {

@@ -1,0 +1,5 @@
+["a:[1, 2]", "a:[1, 2]"]
+["b:[]", "b:[]"]
+["x:[7]", "Tag.x@7"]
+["y:[]", "Tag.y@1"]
+ArgumentError: wrong number of arguments (given 3, expected 1..2)
