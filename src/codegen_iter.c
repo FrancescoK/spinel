@@ -1032,6 +1032,16 @@ static int block_tail_needs_value_form(Compiler *c, int id) {
      `with_retries { system(cmd) }` did not build (#4802). The expression
      form is the same compound as a statement expression. */
   if (nt_ref(nt, id, "receiver") < 0 && sp_streq(nm, "system")) return 1;
+  /* `p x` / `pp x` as the tail: the statement form prints and yields
+     nothing, while the call answers its argument (or the argument array),
+     which a predicate iterator reads as the block's truthiness
+     (`h.any? { |pa| p pa }` did not build). */
+  if (nt_ref(nt, id, "receiver") < 0 && (sp_streq(nm, "p") || sp_streq(nm, "pp")) &&
+      nt_ref(nt, id, "block") < 0 && !bare_call_class_owned(c, id)) {
+    int pa = nt_ref(nt, id, "arguments"), pn = 0;
+    if (pa >= 0) nt_arr(nt, pa, "arguments", &pn);
+    return pn >= 1;
+  }
   if (nt_ref(nt, id, "block") < 0) return 0;
   if (sp_streq(nm, "tap") || sp_streq(nm, "then") || sp_streq(nm, "yield_self"))
     return nt_ref(nt, id, "receiver") >= 0;
