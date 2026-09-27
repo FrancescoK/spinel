@@ -950,6 +950,24 @@ void register_module_functions(Compiler *c) {
     int bn = 0;
     const int *stmts = nt_arr(nt, body, "body", &bn);
     int in_module_function = 0;
+    /* `extend self` is the other spelling of module_function, and unlike it
+       the placement carries no meaning: it makes EVERY method of the module
+       callable on the module itself, wherever in the body it sits. So scan
+       for it first rather than letting the positional flag below decide.
+       (module_function also makes the instance copies private; a module
+       written this way is called as `M.f` -- the same assumption the
+       positional form already makes.) */
+    for (int k = 0; k < bn; k++) {
+      int s = stmts[k];
+      const char *sty = nt_type(nt, s);
+      if (!sty || !sp_streq(sty, "CallNode") || nt_ref(nt, s, "receiver") >= 0) continue;
+      const char *nm = nt_str(nt, s, "name");
+      if (!nm || !sp_streq(nm, "extend")) continue;
+      int an = 0;
+      int anode = nt_ref(nt, s, "arguments");
+      const int *aargs = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+      if (an == 1 && nt_kind(nt, aargs[0]) == NK_SelfNode) { in_module_function = 1; break; }
+    }
     for (int k = 0; k < bn; k++) {
       int s = stmts[k];
       const char *sty = nt_type(nt, s);
