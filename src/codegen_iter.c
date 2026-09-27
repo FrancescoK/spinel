@@ -191,6 +191,36 @@ static int inline_param_yielded_mutated(Compiler *c, int mi, const char *name, i
   return 0;
 }
 
+/* Does a `name` call to yielding method `mi` on a `disp_cls` receiver go
+   through the cls_id switch rather than being spliced? */
+static int takes_class_dispatch(Compiler *c, int mi, int disp_cls, const char *name) {
+  return disp_cls >= 0 && !c->scopes[mi].is_cmethod && scope_proc_form_of(c, mi) >= 0 &&
+         dispatch_impl_count(c, disp_cls, name) > 1;
+}
+
+/* A block-driving call emit_inline_call_x leaves to the cls_id switch: the
+   plain call it falls back to calls the proc-form clones, so it is no call to
+   refuse. */
+int block_call_takes_class_dispatch(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  int cls = -1;
+  if (recv < 0) {
+    Scope *encl = comp_scope_of(c, id);
+    if (!encl || encl->class_id < 0 || encl->is_cmethod) return 0;
+    cls = encl->class_id;
+  }
+  else {
+    TyKind rt = comp_ntype(c, recv);
+    if (!ty_is_object(rt)) return 0;
+    cls = ty_object_class(rt);
+  }
+  int mi = comp_method_in_chain(c, cls, name, NULL);
+  return mi >= 0 && c->scopes[mi].yields && takes_class_dispatch(c, mi, cls, name);
+}
+
 int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -270,12 +300,9 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   /* A subclass overriding the method takes its own arm of the cls_id switch;
      splicing this body answered for every class with the base's method. The
      switch reaches this one through its proc-form clone. */
-  {
-    int disp_cls = implicit_self ? comp_scope_of(c, id)->class_id : recv_class;
-    if (disp_cls >= 0 && !m->is_cmethod && scope_proc_form_of(c, mi) >= 0 &&
-        dispatch_impl_count(c, disp_cls, name) > 1)
-      return 0;
-  }
+  if (takes_class_dispatch(c, mi, implicit_self ? comp_scope_of(c, id)->class_id : recv_class,
+                           name))
+    return 0;
   /* A `return` inside the yielding method used to bail here -- but a bailed
      block call falls back to a plain function call against a symbol that is
      never emitted (yielding methods have no standalone function), an
@@ -2057,7 +2084,8 @@ int emit_inline_expr(Compiler *c, int id, Buf *b) {
     /* a block-driving call to a yielding method that can't be inlined here (a
        non-scalar result) has no standalone function to fall back to: the plain
        call would emit an undefined symbol (invalid C). Fail loud (#2948). */
-    if (nt_ref(c->nt, id, "block") >= 0 && call_targets_yielding_method(c, id))
+    if (nt_ref(c->nt, id, "block") >= 0 && call_targets_yielding_method(c, id) &&
+        !block_call_takes_class_dispatch(c, id))
       unsupported_feature(c, id,
         "a block-driving call to a method that yields could not be inlined "
         "(a yielding method has no standalone function to call)");

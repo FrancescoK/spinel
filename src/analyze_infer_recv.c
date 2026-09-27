@@ -1500,7 +1500,10 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       for (int di = 0; di < nd; di++) {
         int k = ds[di];
         int dmi = comp_method_in_class(c, k, name);
-        if (dmi >= 0) r = ty_unify(r, (TyKind)c->scopes[dmi].ret);
+        /* a yielding override answers this call's block, not its last splice's */
+        if (dmi >= 0)
+          r = ty_unify(r, c->scopes[dmi].yields ? method_call_ret(c, dmi, id)
+                                                : (TyKind)c->scopes[dmi].ret);
       }
       { *out = r; return 1; }
     }

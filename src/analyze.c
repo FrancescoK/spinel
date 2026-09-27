@@ -1018,17 +1018,25 @@ static int a_block_forwarded_to_proc(Compiler *c, int id) {
   const char *name = nt_str(nt, id, "name");
   if (!name) return 0;
   int recv = nt_ref(nt, id, "receiver");
-  int mi = -1;
+  int mi = -1, cls = -1;
   if (recv < 0) {
     Scope *self = comp_scope_of(c, id);
-    if (self && self->class_id >= 0) mi = comp_method_in_chain(c, self->class_id, name, NULL);
+    if (self && self->class_id >= 0) {
+      mi = comp_method_in_chain(c, self->class_id, name, NULL);
+      if (!self->is_cmethod) cls = self->class_id;
+    }
   }
   else {
     TyKind rt = infer_type(c, recv);
-    if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), name, NULL);
+    if (ty_is_object(rt)) mi = comp_method_in_chain(c, cls = ty_object_class(rt), name, NULL);
   }
-  return mi >= 0 && (a_scope_forwards_block_to_poly(c, mi) ||
-                     a_scope_forwards_block_to_keeper(c, mi, 0));
+  if (mi < 0) return 0;
+  /* a yielding method a subclass overrides is not spliced: the cls_id switch
+     calls its proc-form clone with the block as a real proc */
+  if (cls >= 0 && !c->scopes[mi].is_cmethod && scope_proc_form_of(c, mi) >= 0 &&
+      dispatch_impl_count(c, cls, name) > 1)
+    return 1;
+  return a_scope_forwards_block_to_poly(c, mi) || a_scope_forwards_block_to_keeper(c, mi, 0);
 }
 
 int a_proc_create_or_lifted(Compiler *c, int id) {

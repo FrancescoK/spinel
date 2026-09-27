@@ -948,6 +948,7 @@ int class_builtin_parent(Compiler *c, int cid);      /* codegen.c */
 int class_includes_module_named(Compiler *c, int cid, const char *mod_name);
 int class_isa_user(Compiler *c, int k, int cid, const char *cn);  /* codegen_call.c */
 int dispatch_impl_count(Compiler *c, int cid, const char *name);
+int block_call_takes_class_dispatch(Compiler *c, int id);
 void emit_dispatch(Compiler *c, int cid, const char *name, const char *selfptr, int argsNode, int blk_node, Buf *b);
 int emit_tap_then_expr(Compiler *c, int id, Buf *b);
 int recv_is_const(const NodeTable *nt, int recv, const char *name);

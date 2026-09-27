@@ -7738,7 +7738,7 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
         if (ty_is_object(yrt)) {
           int ycid = ty_object_class(yrt);
           int ymi = ycid >= 0 ? comp_method_in_chain(c, ycid, ycn, NULL) : -1;
-          if (ymi >= 0 && c->scopes[ymi].yields)
+          if (ymi >= 0 && c->scopes[ymi].yields && !block_call_takes_class_dispatch(c, id))
             unsupported_feature(c, id,
               "a block-driving call to a method that yields could not be inlined "
               "(a yielding method has no standalone function to call)");
