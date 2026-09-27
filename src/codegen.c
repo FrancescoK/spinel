@@ -8836,17 +8836,31 @@ void emit_super(Compiler *c, int id, Buf *b) {
          drop the whole hash into the first (scalar) member slot. */
       int kwh = (!is_fwd && an == 1 && sargv && nt_type(c->nt, sargv[0]) &&
                  sp_streq(nt_type(c->nt, sargv[0]), "KeywordHashNode")) ? sargv[0] : -1;
-      int cnt = kwh >= 0 ? cls->nivars : (is_fwd ? s->nparams : an);
+      int cnt = (kwh >= 0 || is_fwd) ? cls->nivars : an;
       buf_puts(b, "(");
       for (int a = 0; a < cls->nivars && a < cnt; a++) {
         TyKind ivt = cls->ivar_types[a];
+        int roff = -1;
+        int pk = is_fwd ? struct_zsuper_param(c, s, a, cls->ivars[a] + 1, &roff) : -1;
+        if (is_fwd && pk < 0) continue;
         buf_printf(b, "%s->iv_%s = ", g_self, cls->ivars[a] + 1);
-        if (is_fwd) {
-          LocalVar *pv = scope_local(s, s->pnames[a]);
+        if (is_fwd && roff >= 0) {
+          LocalVar *rv = scope_local(s, s->pnames[pk]);
+          char src[64]; snprintf(src, sizeof src, "lv_%s", rename_local(s->pnames[pk]));
+          Buf ra; memset(&ra, 0, sizeof ra);
+          emit_boxed_text(c, rv ? rv->type : TY_POLY_ARRAY, src, &ra);
+          Buf el; memset(&el, 0, sizeof el);
+          buf_printf(&el, "sp_poly_index_poly(%s, sp_box_int(%d))", ra.p ? ra.p : "sp_box_nil()", roff);
+          emit_unbox_nilable_text(c, ivt, el.p, b);
+          free(ra.p); free(el.p);
+        }
+        else if (is_fwd) {
+          LocalVar *pv = scope_local(s, s->pnames[pk]);
           TyKind at = pv && pv->type != TY_UNKNOWN ? pv->type : TY_POLY;
-          char src[64]; snprintf(src, sizeof src, "lv_%s", rename_local(s->pnames[a]));
-          if (ivt == TY_POLY && at != TY_POLY) { Buf ex; memset(&ex, 0, sizeof ex); emit_boxed_text(c, at, src, &ex); buf_puts(b, ex.p ? ex.p : ""); free(ex.p); }
-          else if (ivt != TY_POLY && at == TY_POLY) emit_unbox_text(c, ivt, src, b);
+          char src[64]; snprintf(src, sizeof src, "lv_%s", rename_local(s->pnames[pk]));
+          if (ivt == TY_POLY && at == TY_FLOAT) buf_printf(b, "sp_box_float_or_nil(%s)", src);
+          else if (ivt == TY_POLY && at != TY_POLY) { Buf ex; memset(&ex, 0, sizeof ex); emit_boxed_text(c, at, src, &ex); buf_puts(b, ex.p ? ex.p : ""); free(ex.p); }
+          else if (ivt != TY_POLY && at == TY_POLY) emit_unbox_nilable_text(c, ivt, src, b);
           else buf_puts(b, src);
         }
         else if (kwh >= 0) {
@@ -8869,7 +8883,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
             if (ivt == TY_POLY && at != TY_POLY) emit_boxed(c, vnode, b);
             else if (ivt != TY_POLY && at == TY_POLY) {
               Buf ex; memset(&ex, 0, sizeof ex); emit_expr(c, vnode, &ex);
-              emit_unbox_text(c, ivt, ex.p ? ex.p : "", b); free(ex.p);
+              emit_unbox_nilable_text(c, ivt, ex.p ? ex.p : "", b); free(ex.p);
             }
             else emit_expr(c, vnode, b);
           }
@@ -8881,7 +8895,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
             /* poly arg (e.g. an initialize param that stayed poly) into a scalar
                member slot: unbox to the member's C type. */
             Buf ex; memset(&ex, 0, sizeof ex); emit_expr(c, sargv[a], &ex);
-            emit_unbox_text(c, ivt, ex.p ? ex.p : "", b); free(ex.p);
+            emit_unbox_nilable_text(c, ivt, ex.p ? ex.p : "", b); free(ex.p);
           }
           else emit_expr(c, sargv[a], b);
         }

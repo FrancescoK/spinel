@@ -186,4 +186,11 @@ int method_call_param_shift(Compiler *c, int mn, int mi); /* 1 when self carries
 int an_class_can_be_reached(Compiler *c, int ci);
 
 int a_block_is_lifted(Compiler *c, int id);
+
+/* The parameter of Struct/Data initialize scope `s` that a bare `super`
+   forwards into member `a`: the keyword of the member's name, else the a-th
+   positional parameter. An index into s->pnames, or -1. When member `a` falls
+   in the rest parameter, that is the index and *rest_off is the element's
+   offset in it; otherwise *rest_off is -1. */
+int struct_zsuper_param(Compiler *c, Scope *s, int a, const char *member, int *rest_off);
 #endif
