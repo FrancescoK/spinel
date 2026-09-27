@@ -2779,6 +2779,23 @@ void qc_collect_class_writes(Compiler *c, int node, char (*path)[64], int depth,
   for (int i = 0; i < na; i++) { int m = 0; const int *ids = nt_arr_at(nt, node, i, &m); for (int k = 0; k < m; k++) qc_collect_class_writes(c, ids[k], path, depth, ws, n, cap); }
 }
 
+/* whether a `native_struct "A::B::Leaf", ...` declaration names `leaf` under
+   a qualified path */
+static int qc_native_leaf_declared(Compiler *c, const char *leaf) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "native_struct") || nt_ref(nt, id, "receiver") >= 0) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an < 1 || nt_kind(nt, av[0]) != NK_StringNode) continue;
+    const char *cn = nt_str(nt, av[0], "content");
+    const char *sep = cn ? strrchr(cn, ':') : NULL;
+    if (!sep || sep == cn || sep[-1] != ':') continue;
+    if (sp_streq(sep + 1, leaf)) return 1;
+  }
+  return 0;
+}
 void qualify_colliding_classes(Compiler *c) {
   const NodeTable *nt = c->nt;
   QCWrite *ws = NULL; int wn = 0, wcap = 0;
@@ -2798,6 +2815,11 @@ void qualify_colliding_classes(Compiler *c) {
        with another user class, and every builtin-name test (Array.new, the
        reopen checks) would take it for the builtin. Qualify it too (#3781). */
     if (!collide && ws[i].depth > 0 && builtin_class_id(ws[i].name) != 0) collide = 1;
+    /* ... and a native class declared under a qualified path (openssl's
+       `native_struct "X509::Store"`), which registers under its leaf: a
+       nested `class Store` elsewhere (activesupport's Cache::Store) shares
+       that key and was refused as a merge; qualified, it is its own class. */
+    if (!collide && ws[i].depth > 0 && qc_native_leaf_declared(c, ws[i].name)) collide = 1;
     if (!collide) { ws[i] = ws[--wn]; i--; continue; }
     any = 1;
   }
