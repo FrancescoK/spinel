@@ -1,0 +1,42 @@
+TypeError: no implicit conversion of Integer into Hash
+TypeError: no implicit conversion of String into Hash
+TypeError: no implicit conversion of Array into Hash
+TypeError: no implicit conversion of Symbol into Hash
+TypeError: no implicit conversion of Float into Hash
+TypeError: no implicit conversion of Foo into Hash
+TypeError: no implicit conversion of Integer into Hash
+TypeError: no implicit conversion of String into Hash
+TypeError: no implicit conversion of Integer into Hash
+TypeError: no implicit conversion of String into Hash
+TypeError: no implicit conversion of Array into Hash
+TypeError: no implicit conversion of Integer into Hash
+1
+[1, 0]
+#<struct Plain a=1, b=nil>
+TypeError: no implicit conversion of Integer into Hash
+TypeError: no implicit conversion of Integer into Hash
+[0, 0]
+#<struct Plain a=nil, b=nil>
+#<data Point x=1, y=2>
+TypeError: no implicit conversion of String into Hash
+lit 1
+TypeError: no implicit conversion of Integer into Hash
+TypeError: no implicit conversion of Integer into Hash
+TypeError: no implicit conversion of Integer into Hash
+TypeError: no implicit conversion of Integer into Hash
+TypeError: no implicit conversion of Integer into Hash
+lit 9
+TypeError: no implicit conversion of Integer into Hash
+lit 1
+ArgumentError: unknown keywords: c
+lit 1
+TypeError: no implicit conversion of Integer into Hash
+[0, 0]
+{}
+[0, {}]
+#<struct Plain a=nil, b=nil>
+#<struct Named a=nil, b=nil>
+ArgumentError: missing keywords: :x, :y
+[5, 6]
+{a: 5, b: 6}
+#<struct Plain a=5, b=6>

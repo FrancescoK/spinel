@@ -930,6 +930,15 @@ int callee_has_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_declares_kwargs(Compiler *c, Scope *m);
 int emit_ds_hash_materialize(Compiler *c, int kwh, TyKind *out_type);
+/* The TypeError CRuby raises for a `**` operand that is neither a Hash, nil
+   nor convertible with #to_hash, emitted into g_pre ahead of any keyword
+   check: a settled kind of another class raises outright, and a boxed one
+   (TY_POLY) is checked at run time on `val`, its evaluated value. */
+void emit_kw_splat_conv_check(Compiler *c, TyKind t, const char *val);
+/* The same conversion inline, as a statement of an enclosing `({ ... })`:
+   evaluates the `**` operand `node` into `b` and checks it there, for a
+   site that evaluates its arguments in its own order. */
+void emit_kw_splat_operand_inline(Compiler *c, int node, Buf *b);
 void emit_ds_kwarg_check(Compiler *c, Scope *m, int kwh, int ds_hash_tmp, TyKind ds_hash_type);
 void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
                            TyKind ds_hash_type, Buf *out);

@@ -6407,6 +6407,43 @@ static int empty_hash_literal(const NodeTable *nt, int id) {
   return n == 0;
 }
 
+/* The class a `**` operand of the settled kind `t` names in CRuby's
+   TypeError, or NULL when it may convert: a Hash is itself, nil carries no
+   keywords, an object that defines #to_hash was already rewritten to call
+   it (desugar_to_hash_splat) and one with method_missing may still answer
+   it, and a boxed value is only known at run time. */
+static const char *kw_splat_bad_cls(Compiler *c, TyKind t) {
+  if (ty_is_hash(t) || t == TY_NIL) return NULL;
+  if (ty_is_object(t) && (ty_object_class(t) < 0 ||
+      comp_method_in_chain(c, ty_object_class(t), "method_missing", NULL) >= 0)) return NULL;
+  return conv_cls_name_of(c, t);
+}
+
+/* See codegen_internal.h. */
+void emit_kw_splat_conv_check(Compiler *c, TyKind t, const char *val) {
+  if (t == TY_POLY) {
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_kw_splat_conv_check(%s);\n", val);
+    return;
+  }
+  const char *cn = kw_splat_bad_cls(c, t);
+  if (!cn) return;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into Hash\");\n", cn);
+}
+
+/* See codegen_internal.h. */
+void emit_kw_splat_operand_inline(Compiler *c, int node, Buf *b) {
+  TyKind t = comp_ntype(c, node);
+  if (t == TY_POLY) {
+    buf_puts(b, "sp_kw_splat_conv_check("); emit_boxed(c, node, b); buf_puts(b, "); ");
+    return;
+  }
+  buf_puts(b, "(void)("); emit_boxed(c, node, b); buf_puts(b, "); ");
+  const char *cn = kw_splat_bad_cls(c, t);
+  if (cn) buf_printf(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into Hash\"); ", cn);
+}
+
 int emit_ds_hash_materialize(Compiler *c, int kwh, TyKind *out_type) {
   const NodeTable *nt = c->nt;
   int ds_hash_tmp = -1;
@@ -6451,6 +6488,18 @@ int emit_ds_hash_materialize(Compiler *c, int kwh, TyKind *out_type) {
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", ds_hash_tmp, hb.p ? hb.p : "sp_box_nil()");
         free(hb.p);
+        char tn[32]; snprintf(tn, sizeof tn, "_t%d", ds_hash_tmp);
+        emit_kw_splat_conv_check(c, *out_type, tn);
+      }
+      else if (kw_splat_bad_cls(c, *out_type)) {
+        /* `**1`: no keywords to bind, only the operand to evaluate and
+           CRuby's TypeError to raise before any keyword is checked */
+        Buf hb; memset(&hb, 0, sizeof hb);
+        emit_expr(c, inner2, &hb);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "(void)(%s);\n", hb.p ? hb.p : "0");
+        free(hb.p);
+        emit_kw_splat_conv_check(c, *out_type, NULL);
       }
     }
     else {
@@ -6610,10 +6659,11 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
   buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", krhash);
   if (kwh >= 0) {
     int en3 = 0; const int *elems3 = nt_arr(nt, kwh, "elements", &en3);
-    int splat_seen = 0;
+    int splat_seen = 0, nsplat3 = 0;
     for (int e3 = 0; e3 < en3; e3++) {
       const char *ety3 = nt_type(nt, elems3[e3]);
       if (ety3 && sp_streq(ety3, "AssocSplatNode")) {
+        nsplat3++;
         /* Forwarded `**hash`: merge its entries into the keyword-rest
            (later entries win, so order with literals is preserved). Only
            a symbol-keyed hash can flow into a keyword-rest parameter. */
@@ -6627,7 +6677,11 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
           buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, lv_%s);\n", krhash, akw);
           continue;
         }
-        const char *shn = ty_hash_cname(comp_ntype(c, inner3));
+        /* `**nil` carries no keywords, and a first operand of another
+           class already raised where emit_ds_hash_materialize evaluated it */
+        TyKind st3 = comp_ntype(c, inner3);
+        if (st3 == TY_NIL || (nsplat3 == 1 && kw_splat_bad_cls(c, st3))) continue;
+        const char *shn = ty_hash_cname(st3);
         if (!shn || !sp_streq(shn, "SymPoly")) {
           unsupported(c, argsNode, "double-splat forward of a non-symbol-keyed hash into a keyword-rest parameter");
           continue;

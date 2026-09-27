@@ -10634,7 +10634,11 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
                 buf_puts(b, "(void)("); emit_boxed(c, kk, b); buf_puts(b, "); ");
               }
               int vv = nt_ref(nt, elke[e2], "value");
-              if (vv >= 0) { buf_puts(b, "(void)("); emit_boxed(c, vv, b); buf_puts(b, "); "); }
+              /* a `**` operand converts where it stands, so one that is not
+                 a Hash raises its TypeError ahead of the unknown key */
+              if (vv >= 0 && !kwf && nt_kind(nt, elke[e2]) == NK_AssocSplatNode)
+                emit_kw_splat_operand_inline(c, vv, b);
+              else if (vv >= 0) { buf_puts(b, "(void)("); emit_boxed(c, vv, b); buf_puts(b, "); "); }
             }
             /* The names go into a C string literal, escaped. Data names a key
                by its inspect, which quotes one that is not a plain identifier
@@ -10772,6 +10776,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
               buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n",
                          splat_tmp, hv0.p ? hv0.p : "sp_box_nil()", splat_tmp);
               free(hv0.p);
+              char stn[32]; snprintf(stn, sizeof stn, "_t%d", splat_tmp);
+              emit_kw_splat_conv_check(c, comp_ntype(c, splat_h), stn);
               continue;
             }
             for (int a = 0; vv >= 0 && a < cls->nivars; a++) {
