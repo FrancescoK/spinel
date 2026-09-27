@@ -4656,3 +4656,332 @@ int desugar_recursive_param_defaults(Compiler *c) {
   free(rd_alias); rd_alias = NULL; rd_nalias = 0;
   return changed;
 }
+
+/* How many values the builtin iterator `nm` yields to its block (0: not one
+   handled here), and the element type a single yielded value has, so the
+   caller can tell whether it is an Array. `hash_pair`: the value is a Hash's
+   [key, value] pair. */
+static int bs_yield_count(TyKind rt, const char *nm, int argc, TyKind *elem, int *hash_pair) {
+  static const char *const one[] = {
+    "each", "map", "collect", "flat_map", "collect_concat", "filter_map", "any?", "all?",
+    "none?", "one?", "count", "find", "detect", "find_index", "min_by", "max_by", "sort_by",
+    "group_by", "partition", "sum", "each_entry", "reverse_each", "take_while", "drop_while",
+    "uniq", "select", "filter", "reject", "delete_if", "keep_if", "select!", "filter!",
+    "reject!", "map!", "collect!", NULL };
+  static const char *const hash_kv[] = {
+    "select", "filter", "reject", "delete_if", "keep_if", "select!", "filter!", "reject!", NULL };
+  *hash_pair = 0;
+  *elem = TY_UNKNOWN;
+  if (sp_streq(nm, "each_with_index") && argc == 0) return 2;
+  if (sp_streq(nm, "each_with_object") && argc == 1) return 2;
+  if (ty_is_hash(rt)) {
+    if (argc != 0) return 0;
+    for (int k = 0; hash_kv[k]; k++) if (sp_streq(nm, hash_kv[k])) return 2;
+    if (sp_streq(nm, "each_pair")) { *hash_pair = 1; return 1; }
+    if (sp_streq(nm, "reverse_each") || sp_streq(nm, "uniq") || sp_streq(nm, "map!") ||
+        sp_streq(nm, "collect!")) return 0;
+    for (int k = 0; one[k]; k++) if (sp_streq(nm, one[k])) { *hash_pair = 1; return 1; }
+    return 0;
+  }
+  if (rt == TY_INT) {
+    if ((sp_streq(nm, "times") && argc == 0) ||
+        ((sp_streq(nm, "upto") || sp_streq(nm, "downto")) && argc == 1)) { *elem = TY_INT; return 1; }
+    return 0;
+  }
+  if (rt == TY_STRING) {
+    if ((sp_streq(nm, "each_char") || sp_streq(nm, "each_line")) && argc == 0) { *elem = TY_STRING; return 1; }
+    return 0;
+  }
+  TyKind et;
+  if (ty_is_array(rt) || ty_is_obj_array(rt)) et = ty_array_elem(rt);
+  else if (rt == TY_RANGE) et = TY_INT;
+  else return 0;
+  if ((sp_streq(nm, "each_slice") || sp_streq(nm, "each_cons")) && argc == 1) {
+    *elem = TY_POLY_ARRAY;   /* an Array of whatever the elements are */
+    return 1;
+  }
+  if (sp_streq(nm, "sum") && argc <= 1) { *elem = et; return 1; }
+  if (argc != 0) return 0;
+  if (rt == TY_RANGE && (sp_streq(nm, "reverse_each") || sp_streq(nm, "uniq") ||
+                         sp_streq(nm, "map!") || sp_streq(nm, "collect!") ||
+                         sp_streq(nm, "delete_if") || sp_streq(nm, "keep_if") ||
+                         sp_streq(nm, "select!") || sp_streq(nm, "filter!") ||
+                         sp_streq(nm, "reject!"))) return 0;
+  for (int k = 0; one[k]; k++) if (sp_streq(nm, one[k])) { *elem = et; return 1; }
+  return 0;
+}
+
+typedef struct {
+  NodeTable *nt;
+  int ok;
+} BsB;
+
+static int bs_new(BsB *b, const char *type) {
+  int id = nt_new_node(b->nt, type);
+  if (id < 0) b->ok = 0;
+  return id;
+}
+static int bs_read(BsB *b, const char *name) {
+  int id = bs_new(b, "LocalVariableReadNode");
+  if (id < 0) return id;
+  nt_node_set_str(b->nt, id, "name", name);
+  nt_node_set_int(b->nt, id, "depth", 0);
+  return id;
+}
+static int bs_int(BsB *b, long v) {
+  int id = bs_new(b, "IntegerNode");
+  if (id >= 0) nt_node_set_int(b->nt, id, "value", v);
+  return id;
+}
+static int bs_call(BsB *b, int recv, const char *name, const int *args, int n) {
+  int id = bs_new(b, "CallNode");
+  if (id < 0) return id;
+  nt_node_set_str(b->nt, id, "name", name);
+  nt_node_set_ref(b->nt, id, "receiver", recv);
+  nt_node_set_ref(b->nt, id, "block", -1);
+  int an = -1;
+  if (n > 0) {
+    an = bs_new(b, "ArgumentsNode");
+    if (an < 0) return -1;
+    nt_node_set_arr(b->nt, an, "arguments", args, n);
+  }
+  nt_node_set_ref(b->nt, id, "arguments", an);
+  return id;
+}
+static int bs_stmts(BsB *b, const int *ids, int n) {
+  int id = bs_new(b, "StatementsNode");
+  if (id >= 0) nt_node_set_arr(b->nt, id, "body", ids, n);
+  return id;
+}
+static int bs_if(BsB *b, int pred, const int *then_ids, int nthen, const int *else_ids, int nelse) {
+  int id = bs_new(b, "IfNode");
+  int ts = bs_stmts(b, then_ids, nthen);
+  int es = bs_stmts(b, else_ids, nelse);
+  int el = bs_new(b, "ElseNode");
+  if (id < 0 || ts < 0 || es < 0 || el < 0) return -1;
+  nt_node_set_ref(b->nt, el, "statements", es);
+  nt_node_set_ref(b->nt, id, "predicate", pred);
+  nt_node_set_ref(b->nt, id, "statements", ts);
+  nt_node_set_ref(b->nt, id, "subsequent", el);
+  return id;
+}
+static int bs_write(BsB *b, const char *name, int value) {
+  int id = bs_new(b, "LocalVariableWriteNode");
+  if (id < 0 || value < 0) { b->ok = 0; return -1; }
+  nt_node_set_str(b->nt, id, "name", name);
+  nt_node_set_int(b->nt, id, "depth", 0);
+  nt_node_set_ref(b->nt, id, "value", value);
+  return id;
+}
+static int bs_index(BsB *b, const char *ary, long i) {
+  int ix = bs_int(b, i);
+  return bs_call(b, bs_read(b, ary), "[]", &ix, 1);
+}
+static int bs_len_gt(BsB *b, const char *ary, long n) {
+  int len = bs_call(b, bs_read(b, ary), "length", NULL, 0);
+  int lit = bs_int(b, n);
+  return bs_call(b, len, ">", &lit, 1);
+}
+
+typedef struct {
+  const int *pre; int P;
+  const int *opt; int O;
+  const int *post; int Q;
+  int rest;            /* the RestParameterNode, or -1 */
+} BsShape;
+
+/* An optional's default: the node itself on its one use, a copy otherwise */
+static int bs_default(BsB *b, const BsShape *s, int j, int copy) {
+  int v = nt_ref(b->nt, s->opt[j], "value");
+  if (copy) v = nt_clone_subtree(b->nt, v);
+  if (v < 0) b->ok = 0;
+  return v;
+}
+
+/* Bind the parameters from the m values args[] names, a count known at
+   compile time. The writes go to out[]; answers how many. */
+static int bs_bind_static(BsB *b, const BsShape *s, const char *const *args, int m,
+                          int copy_defaults, int *out) {
+  NodeTable *nt = b->nt;
+  int n = 0;
+  for (int i = 0; i < s->P; i++)
+    out[n++] = bs_write(b, nt_str(nt, s->pre[i], "name"),
+                        i < m ? bs_read(b, args[i]) : bs_new(b, "NilNode"));
+  int avail = m - s->P - s->Q;
+  for (int j = 0; j < s->O; j++)
+    out[n++] = bs_write(b, nt_str(nt, s->opt[j], "name"),
+                        j < avail ? bs_read(b, args[s->P + j]) : bs_default(b, s, j, copy_defaults));
+  const char *rn = s->rest >= 0 ? nt_str(nt, s->rest, "name") : NULL;
+  if (rn && *rn) {
+    int els[2]; int ne = 0;
+    for (int k = s->P + s->O; k < m - s->Q; k++) els[ne++] = bs_read(b, args[k]);
+    int arr = bs_new(b, "ArrayNode");
+    if (arr >= 0) nt_node_set_arr(nt, arr, "elements", els, ne);
+    out[n++] = bs_write(b, rn, arr);
+  }
+  int pstart = m - s->Q > s->P ? m - s->Q : s->P;
+  for (int k = 0; k < s->Q; k++)
+    out[n++] = bs_write(b, nt_str(nt, s->post[k], "name"),
+                        pstart + k < m ? bs_read(b, args[pstart + k]) : bs_new(b, "NilNode"));
+  return n;
+}
+
+/* The same distribution over the elements of the Array `ary`, whose length
+   is known only at run time. */
+static int bs_bind_dynamic(BsB *b, const BsShape *s, const char *ary, int copy_defaults, int *out) {
+  NodeTable *nt = b->nt;
+  int n = 0;
+  for (int i = 0; i < s->P; i++)
+    out[n++] = bs_write(b, nt_str(nt, s->pre[i], "name"), bs_index(b, ary, i));
+  for (int j = 0; j < s->O; j++) {
+    const char *on = nt_str(nt, s->opt[j], "name");
+    int t = bs_write(b, on, bs_index(b, ary, s->P + j));
+    int e = bs_write(b, on, bs_default(b, s, j, copy_defaults));
+    out[n++] = bs_if(b, bs_len_gt(b, ary, s->P + s->Q + j), &t, 1, &e, 1);
+  }
+  const char *rn = s->rest >= 0 ? nt_str(nt, s->rest, "name") : NULL;
+  if (rn && *rn) {
+    int fixed = s->P + s->O + s->Q;
+    int len = bs_call(b, bs_read(b, ary), "length", NULL, 0);
+    int fx = bs_int(b, fixed);
+    int sargs[2] = { bs_int(b, s->P + s->O), bs_call(b, len, "-", &fx, 1) };
+    int t = bs_write(b, rn, bs_call(b, bs_read(b, ary), "[]", sargs, 2));
+    int z[2] = { bs_int(b, 0), bs_int(b, 0) };
+    int e = bs_write(b, rn, bs_call(b, bs_read(b, ary), "[]", z, 2));
+    out[n++] = bs_if(b, bs_len_gt(b, ary, fixed), &t, 1, &e, 1);
+  }
+  /* the posts take the last values once the pre-requireds are covered, and
+     the ones right after them otherwise */
+  for (int k = 0; k < s->Q; k++) {
+    const char *qn = nt_str(nt, s->post[k], "name");
+    int t = bs_write(b, qn, bs_index(b, ary, k - s->Q));
+    int e = bs_write(b, qn, bs_index(b, ary, s->P + k));
+    out[n++] = bs_if(b, bs_len_gt(b, ary, s->P + s->Q), &t, 1, &e, 1);
+  }
+  return n;
+}
+
+/* A block given to a builtin iterator with a parameter list the typed
+   emitters do not distribute: optionals (`|c, a = 10|`), posts (`|*r, c|`),
+   or a rest a yielded pair or Array is spread across. The emitters bind the
+   leading requireds by position and nothing else, so the others read nil.
+   The block is rewritten to take exactly the values the builtin yields as
+   plain requireds, and a prologue assigns the original parameters from them
+   by CRuby's rules: requireds (pre and post) first, optionals left to right
+   from what remains, the rest the middle. A single yielded Array is spread
+   when the list has more than one slot (or a slot and a rest); its length is
+   known only at run time, so that prologue indexes it, behind an
+   is_a?(Array) test when the element type does not settle it. */
+int desugar_builtin_iter_block_shapes(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  int changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    int blk = nt_ref(nt, id, "block");
+    if (recv < 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    int bp = nt_ref(nt, blk, "parameters");
+    if (bp < 0 || nt_kind(nt, bp) != NK_BlockParametersNode) continue;
+    int pn = nt_ref(nt, bp, "parameters");
+    if (pn < 0) continue;
+    BsShape s;
+    s.pre = nt_arr(nt, pn, "requireds", &s.P);
+    s.opt = nt_arr(nt, pn, "optionals", &s.O);
+    s.post = nt_arr(nt, pn, "posts", &s.Q);
+    s.rest = nt_ref(nt, pn, "rest");
+    if (s.rest >= 0 && nt_kind(nt, s.rest) != NK_RestParameterNode) s.rest = -1;
+    if (s.O == 0 && s.Q == 0 && s.rest < 0) continue;
+    if (nt_ref(nt, pn, "keyword_rest") >= 0 || nt_ref(nt, pn, "block") >= 0) continue;
+    { int kn = 0; nt_arr(nt, pn, "keywords", &kn); if (kn) continue; }
+    int bad = s.P + s.O + s.Q > 12;
+    for (int i = 0; i < s.P; i++) if (nt_kind(nt, s.pre[i]) != NK_RequiredParameterNode) bad = 1;
+    for (int i = 0; i < s.Q; i++) if (nt_kind(nt, s.post[i]) != NK_RequiredParameterNode) bad = 1;
+    const char *cop = nt_str(nt, id, "call_operator");
+    if (cop && sp_streq(cop, "&.")) bad = 1;
+    int args = nt_ref(nt, id, "arguments");
+    int argc = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    for (int k = 0; k < argc; k++) {
+      NodeKind ak = nt_kind(nt, av[k]);
+      if (ak == NK_SplatNode || ak == NK_BlockArgumentNode || ak == NK_KeywordHashNode) bad = 1;
+    }
+    if (bad) continue;
+    TyKind rt = infer_type(c, recv);
+    TyKind elem; int hash_pair;
+    int m = bs_yield_count(rt, nm, argc, &elem, &hash_pair);
+    if (m == 0) continue;
+    int slots = s.P + s.O + s.Q;
+    int splat = m == 1 && (slots > 1 || (slots >= 1 && s.rest >= 0));
+    int dyn = 0;   /* 1: the value is an Array; 2: tested at run time */
+    if (splat && hash_pair) m = 2;
+    else if (splat) {
+      if (elem == TY_UNKNOWN) continue;
+      if (ty_is_array(elem)) dyn = 1;
+      else if (elem == TY_POLY) dyn = 2;
+    }
+    /* a rest alone is bound right unless a pair or an Array is spread, or
+       the slice emitters, which refuse it, are the ones binding it */
+    int slices = sp_streq(nm, "each_slice") || sp_streq(nm, "each_cons");
+    if (s.O == 0 && s.Q == 0 && !splat && !ty_is_hash(rt) && !slices) continue;
+    if (s.O == 0 && s.Q == 0 && splat && !hash_pair && !dyn) continue;
+
+    BsB b = { nt, 1 };
+    int base = nt->count;
+    char names[2][48];
+    const char *argn[2];
+    int reqs[2];
+    for (int k = 0; k < m; k++) {
+      snprintf(names[k], sizeof names[k], "__bs%d_%d", k, blk);
+      argn[k] = names[k];
+      reqs[k] = bs_new(&b, "RequiredParameterNode");
+      if (reqs[k] >= 0) nt_node_set_str(nt, reqs[k], "name", argn[k]);
+    }
+    int pro[32]; int np = 0;
+    if (dyn == 0) np = bs_bind_static(&b, &s, argn, m, 0, pro);
+    else if (dyn == 1) np = bs_bind_dynamic(&b, &s, argn[0], 0, pro);
+    else {
+      int dw[16], sw[16];
+      int nd = bs_bind_dynamic(&b, &s, argn[0], 1, dw);
+      int ns = bs_bind_static(&b, &s, argn, 1, 0, sw);
+      int cr = bs_new(&b, "ConstantReadNode");
+      if (cr >= 0) nt_node_set_str(nt, cr, "name", "Array");
+      int pred = bs_call(&b, bs_read(&b, argn[0]), "is_a?", &cr, 1);
+      pro[np++] = bs_if(&b, pred, dw, nd, sw, ns);
+    }
+    for (int i = 0; i < np; i++) if (pro[i] < 0) b.ok = 0;
+    int body = nt_ref(nt, blk, "body");
+    int on = 0;
+    const int *old = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &on) : NULL;
+    int *all = (int *)malloc(sizeof(int) * (size_t)(np + on + 1));
+    if (!all) return changed;
+    memcpy(all, pro, sizeof(int) * (size_t)np);
+    int na = np;
+    if (old) { memcpy(all + na, old, sizeof(int) * (size_t)on); na += on; }
+    else all[na++] = body >= 0 ? body : bs_new(&b, "NilNode");
+    int nbody = bs_stmts(&b, all, na);
+    free(all);
+    int npn = bs_new(&b, "ParametersNode");
+    if (!b.ok || npn < 0 || nbody < 0) return changed;
+    nt_node_set_arr(nt, npn, "requireds", reqs, m);
+    nt_node_set_ref(nt, bp, "parameters", npn);
+    nt_node_set_ref(nt, blk, "body", nbody);
+    comp_grow_node_arrays(c);
+    for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[blk];
+    Scope *bs = comp_scope_of(c, blk);
+    for (int k = 0; k < m; k++) {
+      LocalVar *lv = scope_local_intern(bs, argn[k]);
+      if (lv) lv->is_block_param = 1;
+    }
+    /* the original names are plain locals now, and one nothing reads still
+       needs its slot for the prologue's write */
+    for (int i = 0; i < s.P; i++) scope_local_intern(bs, nt_str(nt, s.pre[i], "name"));
+    for (int i = 0; i < s.O; i++) scope_local_intern(bs, nt_str(nt, s.opt[i], "name"));
+    for (int i = 0; i < s.Q; i++) scope_local_intern(bs, nt_str(nt, s.post[i], "name"));
+    { const char *rn = s.rest >= 0 ? nt_str(nt, s.rest, "name") : NULL;
+      if (rn && *rn) scope_local_intern(bs, rn); }
+    changed = 1;
+  }
+  return changed;
+}
