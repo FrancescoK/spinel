@@ -4580,6 +4580,21 @@ int struct_zsuper_param(Compiler *c, Scope *s, int a, const char *member, int *r
   return -1;
 }
 
+int struct_super_spreads(Compiler *c, int args) {
+  const NodeTable *nt = c->nt;
+  int an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  for (int a = 0; a < an; a++) {
+    NodeKind k = nt_kind(nt, av[a]);
+    if (k == NK_SplatNode) return 1;
+    if (k != NK_KeywordHashNode) continue;
+    int kn = 0; const int *ke = nt_arr(nt, av[a], "elements", &kn);
+    for (int e = 0; e < kn; e++)
+      if (nt_kind(nt, ke[e]) == NK_AssocSplatNode) return 1;
+  }
+  return 0;
+}
+
 static int param_defaults_to_nil(Compiler *c, Scope *s, const char *name) {
   for (int k = 0; name && s->pdefault && k < s->nparams; k++)
     if (s->pnames[k] && sp_streq(s->pnames[k], name))
@@ -4601,8 +4616,16 @@ static int struct_super_types_members(Compiler *c, int id, Scope *s) {
   int an = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   int kwh = (an == 1 && nt_kind(nt, av[0]) == NK_KeywordHashNode) ? av[0] : -1;
+  /* A `*a` or `**h` decides only at run time which value reaches which
+     member, so every member takes a boxed value. */
+  int spreads = !fwd && struct_super_spreads(c, args);
   for (int a = 0; a < cls->nivars; a++) {
     if (class_ivar_pinned(cls, cls->ivars[a])) continue;
+    if (spreads) {
+      TyKind sm = ty_unify(cls->ivar_types[a], TY_POLY);
+      if (sm != cls->ivar_types[a]) { cls->ivar_types[a] = sm; changed = 1; }
+      continue;
+    }
     const char *mname = cls->ivars[a] + 1;
     TyKind at = TY_UNKNOWN;
     int nilable = 0;

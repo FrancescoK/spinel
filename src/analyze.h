@@ -193,4 +193,5 @@ int a_block_is_lifted(Compiler *c, int id);
    in the rest parameter, that is the index and *rest_off is the element's
    offset in it; otherwise *rest_off is -1. */
 int struct_zsuper_param(Compiler *c, Scope *s, int a, const char *member, int *rest_off);
+int struct_super_spreads(Compiler *c, int args);
 #endif
