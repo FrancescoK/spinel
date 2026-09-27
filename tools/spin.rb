@@ -2217,7 +2217,11 @@ end
 
 # The spinel installation's runtime sources (bin/spinel -> ../lib).
 def ext_runtime_dir
-  File.expand_path(File.join(File.dirname(spinel_bin), "..", "lib"))
+  rt = spinel_hdr_dir
+  if rt == "" || Dir.glob(File.join(rt, "*.c")).empty?
+    spin_die("spin ext build: can't find the Spinel runtime sources; set SPINEL_HDR_DIR to the runtime's lib directory")
+  end
+  rt
 end
 
 def cmd_ext_new(name)
@@ -2349,6 +2353,9 @@ def cmd_ext_build(root)
   Dir.glob(File.join(rt, "regexp", "shim", "mruby", "*.h")).each do |f|
     File.write(File.join(mdir, File.basename(f)), File.read(f))
     n += 1
+  end
+  unless File.exist?(File.join(extdir, "spinel_rt.h")) && File.exist?(File.join(extdir, "sp_gc.c"))
+    spin_die("spin ext build: no runtime sources in #{rt}")
   end
   puts "built ext/#{pkg}/ (#{pkg}.c, #{pkg}.h, #{pkg}_ext.c + #{n} runtime files)"
 end
