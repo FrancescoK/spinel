@@ -19054,7 +19054,9 @@ void analyze_program(Compiler *c) {
       }
     }
     if (sp_streq(ty, "InstanceVariableWriteNode") || sp_streq(ty, "GlobalVariableWriteNode") ||
-        sp_streq(ty, "ConstantWriteNode")) {
+        sp_streq(ty, "ConstantWriteNode") || sp_streq(ty, "ClassVariableWriteNode") ||
+        sp_streq(ty, "InstanceVariableOrWriteNode") || sp_streq(ty, "GlobalVariableOrWriteNode") ||
+        sp_streq(ty, "ClassVariableOrWriteNode")) {
       int v = nt_ref(c->nt, id, "value");
       if (v >= 0) { TyKind vt = comp_ntype(c, v); if (ty_is_object(vt)) { int q = ty_object_class(vt); if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0; } }
     }
