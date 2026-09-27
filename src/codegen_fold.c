@@ -6118,7 +6118,7 @@ void emit_rest_pack_kwh(Compiler *c, int from, int pos_argc, const int *argv, in
         return;
       }
       if (at == TY_POLY_ARRAY) {
-        emit_expr(c, inner, b);
+        buf_puts(b, "sp_PolyArray_dup("); emit_expr(c, inner, b); buf_puts(b, ")");
         return;
       }
     }
