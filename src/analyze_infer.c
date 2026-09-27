@@ -2836,7 +2836,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     {
       int recv_is_var = class_recv_is_dynamic(c, recv);
       TyKind uret = TY_UNKNOWN; int nc = recv_is_var ? 0 : -1000, set = 0;
-      int ncc = 0;
+      int ncc = 0, nblk = 0;
+      int has_blk = nt_ref(nt, id, "block") >= 0;
       const PolyCand *ccs = recv_is_var ? comp_cmethod_candidates(c, name, &ncc) : NULL;
       for (int ki = 0; ki < ncc; ki++) {
         int k = ccs[ki].cls;
@@ -2846,16 +2847,25 @@ static TyKind infer_call_inner(Compiler *c, int id) {
            arm the emitter can build, so it kills the whole dispatch. A
            candidate with the WRONG ARITY does not: this call cannot reach it,
            so it neither contributes a return type nor vetoes the others
-           (#4129). Codegen's cls_arm_takes_argc is the same rule. */
+           (#4129). Codegen's cls_arm_takes_argc is the same rule.
+           With a block, a candidate taking it (a yielding one through its
+           proc form) is reached by the poly receiver's class-tag dispatch
+           instead, which answers poly. */
+        if (has_blk && c->scopes[kmi].rest_idx < 0 &&
+            (c->scopes[kmi].yields || (c->scopes[kmi].blk_param && c->scopes[kmi].blk_param[0]))) {
+          if (argc >= c->scopes[kmi].nrequired && argc <= c->scopes[kmi].nparams) nblk++;
+          continue;
+        }
         if (c->scopes[kmi].rest_idx >= 0 || c->scopes[kmi].yields ||
-            (c->scopes[kmi].blk_param && c->scopes[kmi].blk_param[0])) { nc = 0; break; }
+            (c->scopes[kmi].blk_param && c->scopes[kmi].blk_param[0])) { nc = 0; nblk = 0; break; }
         if (argc < c->scopes[kmi].nrequired || argc > c->scopes[kmi].nparams) continue;
         nc++;
         TyKind kr = (TyKind)c->scopes[kmi].ret;
         if (!set) { uret = kr; set = 1; }
         else if (kr != uret) uret = TY_POLY;
       }
-      if (nc > 0 && nt_ref(nt, id, "block") < 0)
+      if (nblk > 0) return TY_POLY;
+      if (nc > 0 && !has_blk)
         return (uret == TY_UNKNOWN || uret == TY_VOID) ? TY_POLY : uret;
     }
   }

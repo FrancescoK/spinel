@@ -1,0 +1,27 @@
+wav out 44100
+7
+wav chunk 0
+wav chunk 1
+proc wav chunk 0
+kept wav .wav
+aiff out 44100
+aiff got 8
+aiff chunks 2
+proc aiff chunks 1
+kept aiff .aiff
+Mono out 44100
+8
+wav chunk 0
+wav chunk 1
+proc wav chunk 0
+kept wav .mono
+aiff arr 2
+wav ivar 3
+aiff tern 4
+aiff got AIFF TERN2 5
+tern kept aiff t
+Band.0
+Band.1
+band#0
+band#1
+NoMethodError

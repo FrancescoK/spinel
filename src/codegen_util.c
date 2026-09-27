@@ -2696,7 +2696,7 @@ int scope_proc_form_of(Compiler *c, int s) {
   if (!sc->name || sc->class_id < 0 || !sc->yields) return -1;
   char pfname[192];
   snprintf(pfname, sizeof pfname, "%s#pf", sc->name);
-  int pi = comp_method_in_class(c, sc->class_id, pfname);
+  int pi = (sc->is_cmethod ? comp_cmethod_in_class : comp_method_in_class)(c, sc->class_id, pfname);
   if (pi < 0 || !c->scopes[pi].is_proc_form) return -1;
   return pi;
 }
@@ -2716,7 +2716,7 @@ int proc_form_live(Compiler *c, int s) {
   size_t n = (size_t)(h - nm);
   if (n >= sizeof src) return 1;
   memcpy(src, nm, n); src[n] = 0;
-  int si = comp_method_in_class(c, pf->class_id, src);
+  int si = (pf->is_cmethod ? comp_cmethod_in_class : comp_method_in_class)(c, pf->class_id, src);
   return si < 0 || c->scopes[si].reachable;
 }
 int scope_needs_proc_form(Compiler *c, int s) {

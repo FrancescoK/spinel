@@ -13754,6 +13754,9 @@ static int pf_wanted(Compiler *c, const char *name) {
     if (!nm || !sp_streq(nm, name)) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv >= 0 && infer_type(c, recv) == TY_POLY) return 1;
+    /* a Class value known only at run time dispatches the same way */
+    if (recv >= 0 && infer_type(c, recv) == TY_CLASS && class_recv_is_dynamic(c, recv) &&
+        nt_ref(nt, id, "block") >= 0) return 1;
   }
   return 0;
 }
@@ -13798,12 +13801,12 @@ int make_yield_proc_forms(Compiler *c) {
        clone. Cloning the first left the poly dispatch arm running the
        package's transport where every other call site ran the program's
        stub in front of it (#4502). */
-    if (comp_method_in_class(c, src->class_id, src->name) != s) continue;
+    if ((src->is_cmethod ? comp_cmethod_in_class : comp_method_in_class)(c, src->class_id, src->name) != s) continue;
     /* `#` cannot appear in a Ruby method name, so the clone is invisible to
        the by-name lookups while still mangling to a valid C identifier. */
     char pfname[192];
     snprintf(pfname, sizeof pfname, "%s#pf", src->name);
-    if (comp_method_in_class(c, src->class_id, pfname) >= 0) continue;
+    if ((src->is_cmethod ? comp_cmethod_in_class : comp_method_in_class)(c, src->class_id, pfname) >= 0) continue;
     int nb = nt_clone_subtree(nt, src->body);
     if (nb < 0) continue;
     comp_scope_new(c, pfname, src->def_node);
