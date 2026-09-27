@@ -10633,7 +10633,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           if (nunk) {
             buf_puts(b, "({ ");
             for (int e2 = 0; e2 < nke; e2++) {
-              if (kwf && !(nt_type(nt, elke[e2]) && sp_streq(nt_type(nt, elke[e2]), "AssocNode"))) continue;
+              int splat_el = nt_kind(nt, elke[e2]) == NK_AssocSplatNode;
+              if (kwf && !splat_el && !(nt_type(nt, elke[e2]) && sp_streq(nt_type(nt, elke[e2]), "AssocNode"))) continue;
               /* a computed key runs before its value, as in CRuby */
               int kk = kwf ? -1 : nt_ref(nt, elke[e2], "key");
               if (kk >= 0 && nt_kind(nt, kk) != NK_SymbolNode && nt_kind(nt, kk) != NK_StringNode) {
@@ -10642,7 +10643,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
               int vv = nt_ref(nt, elke[e2], "value");
               /* a `**` operand converts where it stands, so one that is not
                  a Hash raises its TypeError ahead of the unknown key */
-              if (vv >= 0 && !kwf && nt_kind(nt, elke[e2]) == NK_AssocSplatNode)
+              if (vv >= 0 && splat_el)
                 emit_kw_splat_operand_inline(c, vv, b);
               else if (vv >= 0) { buf_puts(b, "(void)("); emit_boxed(c, vv, b); buf_puts(b, "); "); }
             }

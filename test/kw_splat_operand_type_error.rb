@@ -67,6 +67,14 @@ try { Plain.new(z: lit(9), **one, w: lit(8)) }
   try { Named.new(c: lit(1), **v) }
 end
 
+# keyword_init: false converts the operand too, and a later operand into a
+# **kw rest raises where it stands
+KwF = Struct.new(:a, :b, keyword_init: false)
+try { KwF.new(z: 1, **1) }
+h2 = { a: 1 }
+try { rest(**h2, **1) }
+try { rest(**h2, **nil) }
+
 # nil and #to_hash are unchanged
 try { k(**nil) }
 try { rest(**nil) }

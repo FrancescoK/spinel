@@ -1,0 +1,6 @@
+#<struct Named a=nil, b=2>
+ArgumentError: unknown keywords: c
+[0, 2]
+TypeError: no implicit conversion of Bare into Hash
+TypeError: no implicit conversion of Bare into Hash
+TypeError: no implicit conversion of Bare into Hash

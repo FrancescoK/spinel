@@ -31,6 +31,9 @@ lit 1
 ArgumentError: unknown keywords: c
 lit 1
 TypeError: no implicit conversion of Integer into Hash
+TypeError: no implicit conversion of Integer into Hash
+TypeError: no implicit conversion of Integer into Hash
+{a: 1}
 [0, 0]
 {}
 [0, {}]
