@@ -19446,6 +19446,27 @@ static void emit_io_wait(Compiler *c, const char *name, int argc, const int *arg
   buf_printf(b, ", %d)", ev);
 }
 
+/* Does a boxed IO's `write` take the argument-list branch? Any count of
+   arguments but a lone plain one; a lone splat counts, since it may hold any
+   number, when every splat has an array form (splat_operand_ok, as a Struct's
+   mixed splat `new` asks). A `&.` call and a keyword-hash argument stay off
+   the list: the operand binding that runs ahead of a call can evaluate side-
+   effecting arguments before a `&.` receiver is tested for nil, and an empty
+   `**h` passes nothing in CRuby. */
+static int boxed_write_takes_list(Compiler *c, int id, const int *argv, int argc) {
+  const NodeTable *nt = c->nt;
+  const char *op = nt_str(nt, id, "call_operator");
+  if (op && sp_streq(op, "&.")) return 0;
+  for (int k = 0; k < argc; k++) {
+    if (nt_kind(nt, argv[k]) == NK_KeywordHashNode) return 0;
+    if (nt_kind(nt, argv[k]) == NK_SplatNode) {
+      int so = nt_ref(nt, argv[k], "expression");
+      if (!splat_operand_ok(c, so >= 0 ? so : argv[k])) return 0;
+    }
+  }
+  return argc != 1 || nt_kind(nt, argv[0]) == NK_SplatNode;
+}
+
 static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -24968,6 +24989,37 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       return;
     }
     if (!iocand) {
+      /* write with an argument list (boxed_write_takes_list): the receiver
+         and then the arguments are evaluated (a splat contributes its
+         elements), the receiver and the list rooted, then the handle is
+         unboxed and checked open and each argument converted and written
+         in turn, answering the total byte count. The branch below writes
+         one argument. */
+      if (sp_streq(name, "write") && boxed_write_takes_list(c, id, argv, argc)) {
+        int trv = ++g_tmp, tpa = ++g_tmp, tio3 = ++g_tmp, tn = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", trv);
+        emit_boxed(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ",
+                   trv, tpa, tpa);
+        for (int ai = 0; ai < argc; ai++) {
+          if (nt_kind(nt, argv[ai]) == NK_SplatNode) {
+            int so = nt_ref(nt, argv[ai], "expression");
+            buf_printf(b, "sp_PolyArray_append_all(_t%d, ", tpa);
+            emit_splat_operand_array(c, so >= 0 ? so : argv[ai], b);
+            buf_puts(b, "); ");
+          }
+          else {
+            buf_printf(b, "sp_PolyArray_push(_t%d, ", tpa);
+            emit_boxed(c, argv[ai], b);
+            buf_puts(b, "); ");
+          }
+        }
+        buf_printf(b, "sp_File *_t%d = sp_poly_as_io(_t%d, \"write\"); SP_IO_OPEN(_t%d); sp_int _t%d = 0; ",
+                   tio3, trv, tio3, tn);
+        buf_printf(b, "for (sp_int _i = 0; _i < _t%d->len; _i++) _t%d += sp_File_write_poly(_t%d, _t%d->data[_i]); _t%d; })",
+                   tpa, tn, tio3, tpa, tn);
+        return;
+      }
       int tio2 = ++g_tmp;
       buf_printf(b, "({ sp_File *_t%d = sp_poly_as_io(", tio2);
       emit_boxed(c, recv, b);
