@@ -9692,8 +9692,9 @@ int ctor_needs_self_defaults(Compiler *c, int initm, int argc) {
   Scope *m = &c->scopes[initm];
   if (m->is_cmethod || m->class_id < 0 || m->yields) return 0;
   if (m->blk_param && m->blk_param[0]) return 0;   /* the block is threaded separately */
-  for (int i = argc; i < m->nparams; i++)
-    if (m->pdefault[i] >= 0 && ctor_default_reads_self(c, m, m->pdefault[i], 0)) return 1;
+  for (int i = 0; i < m->nparams; i++)
+    if (m->pdefault[i] >= 0 && arg_slot_for_param(c, m, i, argc) < 0 &&
+        ctor_default_reads_self(c, m, m->pdefault[i], 0)) return 1;
   return 0;
 }
 
@@ -9722,6 +9723,73 @@ static void ctor_arm_arg(Compiler *c, Scope *is, int j, const char *val, int pd_
   snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", pn);
   snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_pd%d_%d", pd_uid, j);
   g_nren++;
+}
+
+/* An initialize a positional `k.new(...)` arm cannot fill by position: one
+   taking a *rest, or with an optional ahead of a required parameter
+   (`initialize(a = 1, b)` given one argument binds it to b). nrequired, the
+   index past the last required parameter, is no count of them there, so the
+   arm's arity test and its by-position layout both went wrong. */
+static int ctor_arm_remaps(Compiler *c, Scope *is) {
+  return is && (is->rest_idx >= 0 || opt_before_required(c, is));
+}
+
+/* Does such an initialize take `argc` positional arguments? A required
+   keyword cannot be given by a positional call. */
+static int ctor_arm_takes(Compiler *c, Scope *is, int argc) {
+  int req = 0, tot = 0;
+  for (int j = 0; j < is->nparams; j++) {
+    if (j == is->rest_idx || j == is->kwrest_idx) continue;
+    int dflt = is->pdefault && is->pdefault[j] >= 0;
+    if (!is->pnames || !is->pnames[j]) return 0;
+    if (callee_param_is_declared_kwarg(c, is, is->pnames[j])) {
+      if (!dflt) return 0;
+      continue;
+    }
+    tot++;
+    if (!dflt) req++;
+  }
+  return argc >= req && (is->rest_idx >= 0 || argc <= tot);
+}
+
+/* The argument index parameter j of such an initialize takes, or -1 for one
+   filled otherwise (a default, the *rest, a keyword). */
+static int ctor_arm_slot(Compiler *c, Scope *is, int j, int argc) {
+  if (j == is->rest_idx || j == is->kwrest_idx) return -1;
+  if (is->pnames && is->pnames[j] && callee_param_is_declared_kwarg(c, is, is->pnames[j])) return -1;
+  if (is->rest_idx < 0) return arg_slot_for_param(c, is, j, argc);
+  int avail = argc - is->npost_rest;
+  if (j < is->rest_idx) return j < avail ? j : -1;
+  return avail + (j - is->rest_idx - 1);
+}
+
+/* Parameter j's value in such an arm, from the boxed argument temps `atmp`:
+   the *rest packs what the parameters around it leave, into an array
+   declared and rooted in `pdpre`, the arm's statement prefix. */
+static void ctor_arm_remap_arg(Compiler *c, Scope *is, int j, int argc, const int *atmp,
+                               Buf *pdpre, Buf *out) {
+  LocalVar *pp = is->pnames && is->pnames[j] ? scope_local(is, is->pnames[j]) : NULL;
+  TyKind pt = pp && pp->type != TY_UNKNOWN ? pp->type : TY_POLY;
+  if (j == is->rest_idx) {
+    int ra = ++g_tmp;
+    buf_printf(pdpre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", ra, ra);
+    for (int a = is->rest_idx; a < argc - is->npost_rest; a++)
+      buf_printf(pdpre, "sp_PolyArray_push(_t%d, _t%d); ", ra, atmp[a]);
+    char rt[24]; snprintf(rt, sizeof rt, "_t%d", ra);
+    if (pt == TY_POLY) emit_boxed_text(c, TY_POLY_ARRAY, rt, out);
+    else buf_puts(out, rt);
+    return;
+  }
+  if (j == is->kwrest_idx) {
+    if (pt == TY_POLY) emit_boxed_text(c, TY_SYM_POLY_HASH, "sp_SymPolyHash_new()", out);
+    else buf_puts(out, "sp_SymPolyHash_new()");
+    return;
+  }
+  int slot = ctor_arm_slot(c, is, j, argc);
+  if (slot < 0) { emit_arg_or_default(c, is, j, -1, out); return; }
+  char at[24]; snprintf(at, sizeof at, "_t%d", atmp[slot]);
+  if (pt == TY_POLY) buf_puts(out, at);
+  else emit_unbox_text(c, pt, at, out);
 }
 
 /* The allocation half of emit_ctor_alloc_init: declares `_tN` holding the
@@ -29465,6 +29533,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int initm = comp_method_in_chain(c, ci, "initialize", NULL);
       int np = initm >= 0 ? c->scopes[initm].nparams : 0;
       int nreq = initm >= 0 ? c->scopes[initm].nrequired : 0;
+      int remap = initm >= 0 && ctor_arm_remaps(c, &c->scopes[initm]);
       /* A Struct or Data class has a GENERATED constructor taking its members
          positionally rather than an `initialize` scope, so the arity test above
          finds nothing and the class was skipped entirely -- the switch came out
@@ -29510,6 +29579,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         if (initm < 0) {
           if (argc != np || nreq != np) continue;
         }
+        else if (remap) {
+          if (!ctor_arm_takes(c, &c->scopes[initm], argc)) continue;
+          if (class_is_exc_subclass(c, ci) && ctor_needs_self_defaults(c, initm, argc)) continue;
+        }
         else {
           if (argc < nreq || argc > np) continue;
           if (argc < np && class_is_exc_subclass(c, ci) && ctor_needs_self_defaults(c, initm, argc)) continue;
@@ -29523,10 +29596,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
          once optional parameters made such a class a candidate at all. */
       { int incompat = 0;
         Scope *cs = initm >= 0 ? &c->scopes[initm] : NULL;
-        for (int a2 = 0; cs && a2 < argc && a2 < cs->nparams && !incompat; a2++) {
+        for (int a2 = 0; cs && a2 < cs->nparams && !incompat; a2++) {
+          int sl = remap ? ctor_arm_slot(c, cs, a2, argc) : a2;
+          if (sl < 0 || sl >= argc) continue;
           LocalVar *cp = cs->pnames && cs->pnames[a2] ? scope_local(cs, cs->pnames[a2]) : NULL;
           TyKind ptc = cp ? cp->type : TY_POLY;
-          TyKind atc = argv ? comp_ntype(c, argv[a2]) : TY_POLY;
+          TyKind atc = argv ? comp_ntype(c, argv[sl]) : TY_POLY;
           if (ptc != TY_POLY && ptc != TY_UNKNOWN && atc != TY_POLY && atc != TY_UNKNOWN &&
               ptc != atc) incompat = 1;
         }
@@ -29540,7 +29615,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       const char *sv_cs = g_ctor_self, *sv_csd = g_ctor_self_deref;
       char selftxt[24];
       int self_t = -1;
-      if (argc < np && ctor_needs_self_defaults(c, initm, argc)) {
+      if (ctor_needs_self_defaults(c, initm, argc)) {
         self_t = ctor_alloc_decl(c, ci, &pdpre);
         snprintf(selftxt, sizeof selftxt, "_t%d", self_t);
         g_ctor_self = selftxt;
@@ -29550,6 +29625,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (pd_uid || self_t >= 0) g_pre = &pdpre;
       for (int j = 0; j < np; j++) {
         if (j) buf_puts(&ab, ", ");
+        if (remap) {
+          Buf ub; memset(&ub, 0, sizeof ub);
+          ctor_arm_remap_arg(c, is2, j, argc, atmp, &pdpre, &ub);
+          ctor_arm_arg(c, is2, j, ub.p ? ub.p : "", pd_uid, &pdpre, &ab); free(ub.p);
+          continue;
+        }
         LocalVar *pp = is2 ? scope_local(is2, is2->pnames[j]) : NULL;
         TyKind pt = (pp && pp->type != TY_UNKNOWN) ? pp->type : TY_POLY;
         /* a generated member constructor takes the member's own slot type */
@@ -29718,6 +29799,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int initm = comp_method_in_chain(c, ci, "initialize", NULL);
       int np = initm >= 0 ? c->scopes[initm].nparams : 0;
       int nreq = initm >= 0 ? c->scopes[initm].nrequired : 0;
+      int remap = initm >= 0 && ctor_arm_remaps(c, &c->scopes[initm]);
       /* A Struct or Data class had no arm here at all, so `{0 => S}.fetch(0)
          .new(5)` raised NoMethodError. Its generated constructor takes the
          members positionally, with the exact test the class-value emitter
@@ -29774,6 +29856,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         continue;
       }
       if (initm < 0) { if (!nil_fill && (argc != np || nreq != np)) continue; }
+      else if (remap) {
+        if (!ctor_arm_takes(c, &c->scopes[initm], argc)) continue;
+        if (class_is_exc_subclass(c, ci) && ctor_needs_self_defaults(c, initm, argc)) continue;
+      }
       else {
         if (argc < nreq || argc > np) continue;
         if (argc < np && class_is_exc_subclass(c, ci) && ctor_needs_self_defaults(c, initm, argc)) continue;
@@ -29786,10 +29872,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
          once optional parameters made such a class a candidate at all. */
       { int incompat = 0;
         Scope *cs = initm >= 0 ? &c->scopes[initm] : NULL;
-        for (int a2 = 0; cs && a2 < argc && a2 < cs->nparams && !incompat; a2++) {
+        for (int a2 = 0; cs && a2 < cs->nparams && !incompat; a2++) {
+          int sl = remap ? ctor_arm_slot(c, cs, a2, argc) : a2;
+          if (sl < 0 || sl >= argc) continue;
           LocalVar *cp = cs->pnames && cs->pnames[a2] ? scope_local(cs, cs->pnames[a2]) : NULL;
           TyKind ptc = cp ? cp->type : TY_POLY;
-          TyKind atc = argv ? comp_ntype(c, argv[a2]) : TY_POLY;
+          TyKind atc = argv ? comp_ntype(c, argv[sl]) : TY_POLY;
           if (ptc != TY_POLY && ptc != TY_UNKNOWN && atc != TY_POLY && atc != TY_UNKNOWN &&
               ptc != atc) incompat = 1;
         }
@@ -29803,7 +29891,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       const char *sv_cs = g_ctor_self, *sv_csd = g_ctor_self_deref;
       char selftxt[24];
       int self_t = -1;
-      if (argc < np && ctor_needs_self_defaults(c, initm, argc)) {
+      if (ctor_needs_self_defaults(c, initm, argc)) {
         self_t = ctor_alloc_decl(c, ci, &pdpre);
         snprintf(selftxt, sizeof selftxt, "_t%d", self_t);
         g_ctor_self = selftxt;
@@ -29813,6 +29901,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (pd_uid || self_t >= 0) g_pre = &pdpre;
       for (int j = 0; j < np; j++) {
         if (j) buf_puts(&ab, ", ");
+        if (remap) {
+          Buf ub; memset(&ub, 0, sizeof ub);
+          ctor_arm_remap_arg(c, is, j, argc, atmp, &pdpre, &ub);
+          ctor_arm_arg(c, is, j, ub.p ? ub.p : "", pd_uid, &pdpre, &ab); free(ub.p);
+          continue;
+        }
         LocalVar *pp = is ? scope_local(is, is->pnames[j]) : NULL;
         TyKind pt = (pp && pp->type != TY_UNKNOWN) ? pp->type : TY_POLY;
         /* a generated member constructor takes the member's own slot type */
