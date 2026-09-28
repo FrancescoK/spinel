@@ -3204,6 +3204,7 @@ static void sp_sched_unpark(sp_thread *t) {
   t->wait_head = NULL;
 }
 
+#ifdef SP_THREADS
 static void sp_sched_timer_expire(sp_sched_timer *timer, double now) {
   (void)now;
   sp_thread *t = timer->thread;
@@ -3234,6 +3235,7 @@ static void sp_sched_timer_expire(sp_sched_timer *timer, double now) {
     t->wake_pending = 1;
   }
 }
+#endif
 
 /* #kill / #raise: deliver an inject to the target so it terminates (running its
    ensures) or raises. The current thread acts on itself immediately; another
@@ -3604,32 +3606,39 @@ void sp_CondVar_wait(sp_condvar *cv, sp_mutex *m) {
   sp_Mutex_lock(m);   /* re-acquire (may block again on the mutex) */
 }
 
+/* The single-threaded runtime (or a threaded program before its monitor
+   starts) has no timer heap to park on. */
+static void sp_CondVar_wait_timeout_blocking(sp_mutex *m, double seconds) {
+  SCHED_LOCK();
+  if (SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) != g_current) {
+    SCHED_UNLOCK();
+    sp_raise_cls("ThreadError", "Attempt to unlock a mutex which is not locked");
+  }
+  SP_ATOMIC_STORE(&m->owner, NULL, __ATOMIC_SEQ_CST);
+  if (m->waiters) sp_sched_wake_one(&m->waiters);
+  SCHED_UNLOCK();
+  while (seconds > 86400.0) {
+    struct timespec day = {86400, 0};
+    while (nanosleep(&day, &day) == -1 && errno == EINTR) {}
+    seconds -= 86400.0;
+  }
+  struct timespec req = {(time_t)seconds, (long)((seconds - (time_t)seconds) * 1e9)};
+  if (req.tv_nsec >= 1000000000L) { req.tv_sec++; req.tv_nsec -= 1000000000L; }
+  while (nanosleep(&req, &req) == -1 && errno == EINTR) {}
+  sp_Mutex_lock(m);
+}
+
 void sp_CondVar_wait_timeout(sp_condvar *cv, sp_mutex *m, double seconds) {
   if (!(seconds > 0.0)) {
     sp_CondVar_wait_nb(cv, m);
     return;
   }
+#ifdef SP_THREADS
   /* With no spawned green threads there is no monitor yet. Release the mutex
      and sleep directly; the main thread is the only possible signaler in this
      state, so there cannot be a signal to lose. */
   if (!g_sysmon_started) {
-    SCHED_LOCK();
-    if (SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) != g_current) {
-      SCHED_UNLOCK();
-      sp_raise_cls("ThreadError", "Attempt to unlock a mutex which is not locked");
-    }
-    SP_ATOMIC_STORE(&m->owner, NULL, __ATOMIC_SEQ_CST);
-    if (m->waiters) sp_sched_wake_one(&m->waiters);
-    SCHED_UNLOCK();
-    while (seconds > 86400.0) {
-      struct timespec day = {86400, 0};
-      while (nanosleep(&day, &day) == -1 && errno == EINTR) {}
-      seconds -= 86400.0;
-    }
-    struct timespec req = {(time_t)seconds, (long)((seconds - (time_t)seconds) * 1e9)};
-    if (req.tv_nsec >= 1000000000L) { req.tv_sec++; req.tv_nsec -= 1000000000L; }
-    while (nanosleep(&req, &req) == -1 && errno == EINTR) {}
-    sp_Mutex_lock(m);
+    sp_CondVar_wait_timeout_blocking(m, seconds);
     return;
   }
   SCHED_LOCK();
@@ -3642,6 +3651,9 @@ void sp_CondVar_wait_timeout(sp_condvar *cv, sp_mutex *m, double seconds) {
   if (ct0 > 0) sched_hist_add(g_cv_hist, &g_cv_n, &g_cv_max, (sp_monotonic_now() - ct0) * 1e6);
   SCHED_UNLOCK();
   sp_Mutex_lock(m);
+#else
+  sp_CondVar_wait_timeout_blocking(m, seconds);
+#endif
 }
 
 /* CRuby's `wait(mutex, 0)`: release the mutex and return without parking.
