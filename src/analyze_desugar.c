@@ -5714,7 +5714,8 @@ static int bs_strip_keywords(Compiler *c, int blk, int bp, int pn) {
     if (!fwd_node_is(nt, kws[i], "RequiredKeywordParameterNode")) continue;
     const char *kname = nt_str(nt, kws[i], "name");
     if (!kname) return 0;
-    mo += snprintf(names + mo, sizeof names - (size_t)mo, "%s:%s", missing ? ", " : "", kname);
+    mo += snprintf(names + mo, sizeof names - (size_t)mo, "%s:%.*s", missing ? ", " : "",
+                   (int)block_param_written_len(kname), kname);
     if (mo >= (int)sizeof names) return 0;
     missing++;
   }
@@ -5754,8 +5755,10 @@ static int bs_strip_keywords(Compiler *c, int blk, int bp, int pn) {
   /* the keywords are plain locals of this block now, kept apart from any
      other scope's local of the same name */
   for (int i = 0; i < kn; i++) {
+    const char *wn = nt_str(nt, kws[i], "name");
+    if (block_param_written_len(wn) != strlen(wn)) { scope_local_intern(bs, wn); continue; }
     char kname[160];
-    snprintf(kname, sizeof kname, "%s__bp%d", nt_str(nt, kws[i], "name"), blk);
+    snprintf(kname, sizeof kname, "%s__bp%d", wn, blk);
     blkp_rewrite_refs(c, nbody, nt_str(nt, kws[i], "name"), kname);
     numbered_rename_locals_str(nt, blk, nt_str(nt, kws[i], "name"), kname);
     scope_local_intern(bs, kname);

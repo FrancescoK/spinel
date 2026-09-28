@@ -1763,11 +1763,24 @@ static int ie_poly_mark(Compiler *c, int id, TyKind rt) {
   return n == 1 ? k[0] : n > 1 ? -2 - id : -1;
 }
 
+/* The length of the name a block parameter was written with: `k__bp12`, as
+   rename_shadowing_block_params leaves a keyword that shadows an outer local,
+   is still the keyword `k`. */
+size_t block_param_written_len(const char *name) {
+  size_t n = strlen(name);
+  const char *sfx = strstr(name, "__bp");
+  if (!sfx || !sfx[4]) return n;
+  const char *q = sfx + 4;
+  while (*q >= '0' && *q <= '9') q++;
+  return *q ? n : (size_t)(sfx - name);
+}
+
 /* In a call-site KeywordHashNode (`k: 9, j: 2`), the value node bound to the
-   keyword `name`, or -1. Used to match instance_exec keyword block params. */
+   keyword `name`, or -1. Used to match keyword block params. */
 int ie_kwhash_value(Compiler *c, int kwhash, const char *name) {
   const NodeTable *nt = c->nt;
   if (kwhash < 0 || !name) return -1;
+  size_t nlen = block_param_written_len(name);
   int en = 0; const int *els = nt_arr(nt, kwhash, "elements", &en);
   for (int i = 0; i < en; i++) {
     const char *ety = nt_type(nt, els[i]);
@@ -1776,7 +1789,7 @@ int ie_kwhash_value(Compiler *c, int kwhash, const char *name) {
     const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
     if (!kty || !sp_streq(kty, "SymbolNode")) continue;
     const char *kn = nt_str(nt, key, "value");
-    if (kn && sp_streq(kn, name)) return nt_ref(nt, els[i], "value");
+    if (kn && strlen(kn) == nlen && !strncmp(kn, name, nlen)) return nt_ref(nt, els[i], "value");
   }
   return -1;
 }
@@ -2092,6 +2105,18 @@ int blkp_binds_param(Compiler *c, int create, const char *name) {
   if (bp >= 0 && nt_type(nt, bp) && sp_streq(nt_type(nt, bp), "BlockParametersNode")) {
     int ln = 0; const int *locs = nt_arr(nt, bp, "locals", &ln);
     for (int i = 0; i < ln; i++) if (blkp_param_binds(nt, locs[i], name)) return 1;
+  }
+  /* A block-local (`|b; q|`) is only in the block's comma-joined `locals`
+     string, which lists every name new to the block; an outer name the
+     block merely reads or writes is not in it. */
+  const char *ls = nt_str(nt, create, "locals");
+  size_t nl = strlen(name);
+  for (const char *p = ls; p && *p; ) {
+    const char *e = strchr(p, ',');
+    size_t seg = e ? (size_t)(e - p) : strlen(p);
+    if (seg == nl && !strncmp(p, name, nl)) return 1;
+    if (!e) break;
+    p = e + 1;
   }
   int pn = blkp_params_node(c, create);
   if (pn < 0) return 0;
@@ -3036,9 +3061,7 @@ void rename_shadowing_block_params(Compiler *c) {
         if (opts[q] >= 0 && nt_type(nt, opts[q]) &&
             sp_streq(nt_type(nt, opts[q]), "OptionalParameterNode") &&
             nt_str(nt, opts[q], "name")) extras[ne++] = opts[q];
-      /* a lambda's keywords as well (a block's are renamed by
-         bs_strip_keywords where a builtin iterator binds them) */
-      int kwn = 0; const int *kws = is_lambda ? nt_arr(nt, pn, "keywords", &kwn) : NULL;
+      int kwn = 0; const int *kws = nt_arr(nt, pn, "keywords", &kwn);
       for (int q = 0; q < kwn && ne < 128; q++)
         if (kws[q] >= 0 && is_name_binding_param(nt_type(nt, kws[q])) &&
             nt_str(nt, kws[q], "name")) extras[ne++] = kws[q];
