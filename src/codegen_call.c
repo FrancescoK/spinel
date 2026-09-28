@@ -19042,6 +19042,68 @@ static int default_writes_body_local(Compiler *c, Scope *tm) {
   return 0;
 }
 
+static void default_collect_names(Compiler *c, int id, const char **out, int cap, int *n) {
+  if (id < 0 || *n >= cap) return;
+  const char *ty = nt_type(c->nt, id);
+  if (ty && (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") ||
+             sp_streq(ty, "ModuleNode") || sp_streq(ty, "SingletonClassNode"))) return;
+  const char *nm = nt_str(c->nt, id, "name");
+  if (nm) {
+    int dup = 0;
+    for (int i = 0; i < *n; i++) if (sp_streq(out[i], nm)) { dup = 1; break; }
+    if (!dup) out[(*n)++] = nm;
+  }
+  int nr = nt_num_refs(c->nt, id);
+  for (int i = 0; i < nr; i++) default_collect_names(c, nt_ref_at(c->nt, id, i), out, cap, n);
+  int na = nt_num_arrs(c->nt, id);
+  for (int i = 0; i < na; i++) {
+    int n2 = 0; const int *ids = nt_arr_at(c->nt, id, i, &n2);
+    for (int k = 0; k < n2; k++) default_collect_names(c, ids[k], out, cap, n);
+  }
+}
+
+/* A default filled in at the call site binds its block parameters and its own
+   locals (`b: [a].map { |n| n * 2 }`, `b: (x = a; x + 1)`) through the
+   callee's METHOD-scope locals, which only the callee's prologue declares.
+   Declare the ones the default names in the caller's prelude, under a
+   per-emission unique spelling so a same-named caller local is neither
+   captured nor redeclared, and route the default to them through the rename
+   table. A name already renamed belongs to a frame that declared it (an
+   inlined body, a bound `.call`). Returns the g_nren to restore. */
+int declare_default_locals(Compiler *c, Scope *m, int dnode) {
+  int base = g_nren;
+  if (!m || dnode < 0) return base;
+  const char *names[256]; int nn = 0;
+  default_collect_names(c, dnode, names, 256, &nn);
+  const char *reads[256]; int nread = -1;
+  int uid = 0;
+  for (int i = 0; i < nn; i++) {
+    LocalVar *lv = scope_local(m, names[i]);
+    if (!lv || lv->is_param || lv->byref_out) continue;
+    if (m->blk_param && sp_streq(lv->name, m->blk_param)) continue;
+    if (!sp_streq(rename_local(lv->name), lv->name)) continue;
+    if (g_nren >= MAX_RENAME || strlen(lv->name) >= sizeof g_ren_from[0]) continue;
+    if (nread < 0) {
+      nread = 0;
+      if (m->body >= 0) bm_collect_names(c, m->body, 0, reads, 256, &nread);
+    }
+    for (int r = 0; r < nread; r++)
+      if (sp_streq(reads[r], lv->name))
+        unsupported_feature(c, dnode, "a parameter default that assigns a local the method body reads "
+                                      "(the default is evaluated at the call site)");
+    if (!uid) uid = ++g_tmp;
+    char rn[160];
+    snprintf(rn, sizeof rn, "_dl%d_%s", uid, lv->name);
+    if (strlen(rn) >= sizeof g_ren_to[0]) continue;
+    if (lv->type == TY_UNKNOWN) lv->type = TY_POLY;
+    emit_inlined_local_decl(c, lv, rn, g_pre, g_indent);
+    snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", lv->name);
+    snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "%s", rn);
+    g_nren++;
+  }
+  return base;
+}
+
 /* Would the bound `.call` frame's rename registrations outgrow the table?
    emit_callee_local_decls declares every local with its unique name, but
    push_callee_local_renames stops at MAX_RENAME (and emit_bm_param_alias
