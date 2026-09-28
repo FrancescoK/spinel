@@ -21723,11 +21723,15 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     if (sr >= 0 && self_res_active != id) {
       int prev = self_res_active;
       self_res_active = id;
+      /* a receiver that acts is read twice here, under the call and as the
+         answer: bind it once (emit_iter_value_expr does the same) */
+      int bound = iter_recv_bind_once(c, sr);
       buf_puts(b, "((void)(");
       emit_call(c, id, b);
       buf_puts(b, "), ");
       emit_expr(c, sr, b);
       buf_puts(b, ")");
+      if (bound) g_n_argov--;
       self_res_active = prev;
       return;
     }

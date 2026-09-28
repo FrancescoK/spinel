@@ -406,9 +406,15 @@ TyIterShape ty_iter_shape(const char *name) {
 int ty_block_yield(TyKind recv, const char *name, TyKind *out, int max) {
   if (!name || max < 1) return 0;
 #define BY_PUT(i, t) do { if ((i) < max) out[i] = (t); } while (0)
+  /* each_slice(n) and each_cons(n) hand their block one Array per step, which
+     the block's parameter is typed from as a literal block's is */
+  if ((ty_is_array(recv) || ty_is_hash(recv) || recv == TY_RANGE) &&
+      (sp_streq(name, "each_slice") || sp_streq(name, "each_cons"))) {
+    BY_PUT(0, TY_UNKNOWN); return 1;
+  }
   if (ty_is_array(recv)) {
     TyKind e = ty_array_elem(recv);
-    if (ty_is_array_elem_iter(name)) { BY_PUT(0, e); return 1; }
+    if (ty_is_array_elem_iter(name) || sp_streq(name, "to_h")) { BY_PUT(0, e); return 1; }
     if (sp_streq(name, "each_with_index")) { BY_PUT(0, e); BY_PUT(1, TY_INT); return 2; }
     return 0;
   }
@@ -427,7 +433,9 @@ int ty_block_yield(TyKind recv, const char *name, TyKind *out, int max) {
        raised at run time by a program that compiled. The 1-param and 2-param
        callable cases are then separated by the wrap_pair rule at the call site,
        which already existed for `each` and needs nothing new. */
-    if (ty_is_array_elem_iter(name)) {
+    /* to_h's block takes the key and the value too, and answers the new pair
+       (an Array's or a Range's takes the element) */
+    if (ty_is_array_elem_iter(name) || sp_streq(name, "to_h")) {
       BY_PUT(0, ty_hash_key(recv)); BY_PUT(1, ty_hash_val(recv)); return 2;
     }
     return 0;
@@ -435,7 +443,7 @@ int ty_block_yield(TyKind recv, const char *name, TyKind *out, int max) {
   if (recv == TY_RANGE) {
     /* a range yields ints to its element iterators */
     if (sp_streq(name, "each_with_index")) { BY_PUT(0, TY_INT); BY_PUT(1, TY_INT); return 2; }
-    if (ty_is_array_elem_iter(name)) { BY_PUT(0, TY_INT); return 1; }
+    if (ty_is_array_elem_iter(name) || sp_streq(name, "to_h")) { BY_PUT(0, TY_INT); return 1; }
     return 0;
   }
   if (recv == TY_INT) {

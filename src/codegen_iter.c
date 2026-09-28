@@ -2799,6 +2799,29 @@ int iter_value_answers_recv(Compiler *c, int id) {
         sp_streq(name, "split");
 }
 
+/* A receiver the value of an iteration answers is read twice, once under the
+   `to_a` hop the call walks and once as the answer, and one that acts
+   (`(z = lit(1); 1..2).each_entry { }`) ran twice. Bind it once, ahead of the
+   statement where the hop's own receiver temps go, and push an override so
+   both reads take the binding; answers 1 when the caller must pop it. */
+int iter_recv_bind_once(Compiler *c, int node) {
+  if (!g_pre || g_n_argov >= MAX_ARG_OVERRIDE || !subtree_has_side_effect(c, node)) return 0;
+  TyKind ot = comp_ntype(c, node);
+  if (ot == TY_UNKNOWN) return 0;
+  int t = ++g_tmp;
+  Buf ob = expr_buf(c, node);
+  emit_indent(g_pre, g_indent);
+  emit_ctype(c, ot, g_pre);
+  buf_printf(g_pre, " _t%d = %s;", t, ob.p ? ob.p : "");
+  free(ob.p);
+  if (needs_root(ot)) buf_printf(g_pre, ot == TY_POLY ? " SP_GC_ROOT_RBVAL(_t%d);" : " SP_GC_ROOT(_t%d);", t);
+  buf_puts(g_pre, "\n");
+  g_argov_node[g_n_argov] = node;
+  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", t);
+  g_n_argov++;
+  return 1;
+}
+
 int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -2845,6 +2868,9 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   int ok = emit_iteration_stmt(c, id, &body, 0);
   g_n_argov--;
   if (!ok) { free(body.p); return 0; }
+  /* The original receiver is read twice, once under the hop and once as the
+     answer */
+  int to = objn >= 0 ? iter_recv_bind_once(c, objn) : 0;
   buf_puts(b, "({ ");
   emit_ctype(c, rt, b);
   buf_printf(b, " _t%d = ", ta);
@@ -2863,6 +2889,7 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
      re-emitting it here references that same value rather than re-evaluating. */
   if (objn >= 0) { buf_puts(b, " "); emit_expr(c, objn, b); buf_puts(b, "; })"); }
   else buf_printf(b, " _t%d; })", ta);
+  if (to) g_n_argov--;
   return 1;
 }
 
