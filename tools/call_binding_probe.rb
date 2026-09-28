@@ -524,8 +524,10 @@ if File.directory?(out) && !Dir.empty?(out) && %w[summary.txt .lock].none? { |f|
 end
 FileUtils.mkdir_p(out)
 # one run at a time in a directory: another run's cleanup would take this one's findings
-lock = File.open(File.join(out, ".lock"), File::RDWR | File::CREAT)
-unless lock.flock(File::LOCK_EX | File::LOCK_NB)
+# held open to the end of the run: closing it, or letting it be collected,
+# releases the lock
+dir_lock = File.open(File.join(out, ".lock"), File::RDWR | File::CREAT)
+unless dir_lock.flock(File::LOCK_EX | File::LOCK_NB)
   warn "call_binding_probe: another run is using #{out}; give --out another directory"
   exit 4
 end
@@ -551,12 +553,12 @@ begin
   queue = Queue.new
   cases.each_slice(batch) { |b| queue << b }
   done = 0
-  lock = Mutex.new
+  progress = Mutex.new
   Array.new(jobs) do
     Thread.new do
       while (b = (queue.pop(true) rescue nil))
         probe.check(b, probe.expected(b))
-        lock.synchronize { done += b.size }
+        progress.synchronize { done += b.size }
         $stderr.print "\r#{done}/#{cases.size} cases, #{probe.findings.size} findings"
       end
     end
@@ -591,4 +593,5 @@ rescue StandardError => e
   exit 4
 ensure
   FileUtils.rm_rf(work) if work && !keep
+  dir_lock.close
 end
