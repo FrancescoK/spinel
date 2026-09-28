@@ -14087,7 +14087,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       int ccn = hold_recv_open(c, recv, 1, "sp_RbVal", "SP_GC_ROOT_RBVAL", b, &rcn);
       buf_printf(b, "sp_poly_cycle_n(%s, ", rcn.p);
       if (comp_ntype(c, argv[0]) == TY_INT) emit_int_expr(c, argv[0], b);
-      else { buf_puts(b, "sp_poly_cycle_count("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
+      else { buf_printf(b, "sp_poly_cycle_count(%s, ", rcn.p); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
       buf_puts(b, ")");
       free(rcn.p);
       if (ccn) buf_puts(b, "; })");

@@ -12735,21 +12735,27 @@ static sp_Enumerator *sp_Enumerator_new_cycle(sp_RbVal arr, sp_int n) {
    or String Range's or an Enumerator's items repeated n times, the
    Enumerator the typed arms build; anything else raises NoMethodError
    naming cycle. */
-/* cycle(n)'s count where the compiler types it anything but Integer: the
-   conversion of an Integer argument (sp_poly_arg_int_chk), and the
-   RangeError CRuby raises for a Bignum, which no count can be. */
-static sp_int sp_poly_cycle_count(sp_RbVal n) {
-  if (n.tag == SP_TAG_BIGINT) sp_raise_cls("RangeError", "bignum too big to convert into 'long'");
-  return sp_poly_arg_int_chk(n);
-}
-static sp_Enumerator *sp_poly_cycle_n(sp_RbVal v, sp_int n) {
+static void sp_poly_cycle_recv_chk(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ &&
       (sp_poly_is_array_kind(v.cls_id) || sp_poly_is_hash_kind(v.cls_id) ||
        v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE ||
        (v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p)))
-    return sp_Enumerator_new_cycle(v, n);
+    return;
   sp_raise_nomethod(sp_nomethod_msg("cycle", v));
-  return NULL;
+}
+/* cycle(n)'s count where the compiler types it anything but Integer: the
+   conversion of an Integer argument (sp_poly_arg_int_chk), and the
+   RangeError CRuby raises for a Bignum, which no count can be. The receiver
+   is checked first: a receiver without cycle raises NoMethodError before
+   its argument is converted, as in CRuby. */
+static sp_int sp_poly_cycle_count(sp_RbVal v, sp_RbVal n) {
+  sp_poly_cycle_recv_chk(v);
+  if (n.tag == SP_TAG_BIGINT) sp_raise_cls("RangeError", "bignum too big to convert into 'long'");
+  return sp_poly_arg_int_chk(n);
+}
+static sp_Enumerator *sp_poly_cycle_n(sp_RbVal v, sp_int n) {
+  sp_poly_cycle_recv_chk(v);
+  return sp_Enumerator_new_cycle(v, n);
 }
 /* slice_before/slice_after with a pattern VALUE: start a new group before
    (after) each element == pattern. Groups are poly arrays. */
