@@ -83,3 +83,24 @@ puts pk.new(**{ a: 1, b: 5 })
 tk = ARGV.empty? ? Trio : Pair
 kw = { a: 4 }
 puts tk.new(**kw)
+
+# a default's own statements run only when the hash leaves its key out
+def note(n)
+  puts "note #{n}"
+  n * 2
+end
+
+class Noted
+  def initialize(a:, b: [note(a), a].max, c: begin; note(a + 1); rescue; 0; end)
+    @v = [a, b, c]
+  end
+
+  def to_s = "Noted #{@v.inspect}"
+end
+
+def noted(**) = Noted.new(**)
+
+puts Noted.new(**{ a: 1, b: 7, c: 8 })
+puts Noted.new(**{ a: 1 })
+puts noted(a: 2, b: 9, c: 3)
+puts noted(a: 2)

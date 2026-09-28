@@ -6591,6 +6591,19 @@ void emit_ds_kwarg_check(Compiler *c, Scope *m, int kwh, int ds_hash_tmp, TyKind
 /* Emit the value for KEYWORD param `i` extracted by name from a materialized
    `**hash` temp, falling back to the param's default when the key is absent.
    Shared by emit_args_filled and emit_dispatch. */
+/* Param i's default as one expression: the statements it hoists run inside
+   it, so only where the default is taken. */
+static void emit_ds_default(Compiler *c, Scope *m, int i, Buf *out) {
+  Buf dp; memset(&dp, 0, sizeof dp);
+  Buf dv; memset(&dv, 0, sizeof dv);
+  Buf *sv_pre = g_pre; g_pre = &dp;
+  emit_arg_or_default(c, m, i, -1, &dv);
+  g_pre = sv_pre;
+  if (dp.p && dp.p[0]) buf_printf(out, "({ %s %s; })", dp.p, dv.p ? dv.p : "0");
+  else buf_puts(out, dv.p ? dv.p : "");
+  free(dp.p); free(dv.p);
+}
+
 void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
                                   TyKind ds_hash_type, Buf *out) {
   const char *hn = ty_hash_cname(ds_hash_type);
@@ -6603,7 +6616,7 @@ void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
     emit_unbox_text(c, pt, "_v", &ub);
     if (m->pdefault && m->pdefault[i] >= 0) {
       Buf db; memset(&db, 0, sizeof db);
-      emit_arg_or_default(c, m, i, -1, &db);
+      emit_ds_default(c, m, i, &db);
       buf_printf(out,
                  "({ sp_bool _f=0; sp_RbVal _v = sp_poly_hash_get_pair_val(_t%d, "
                  "sp_box_sym(sp_sym_intern(\"%s\")), &_f); _f ? (%s) : (%s); })",
@@ -6636,7 +6649,7 @@ void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
        get returns nil and silently drops the callee's default value. */
     if (m->pdefault && m->pdefault[i] >= 0) {
       Buf db; memset(&db, 0, sizeof db);
-      emit_arg_or_default(c, m, i, -1, &db);
+      emit_ds_default(c, m, i, &db);
       buf_printf(out, "(sp_%sHash_has_key(_t%d, sp_sym_intern(\"%s\")) ? (%s) : (%s))",
                  hn, ds_hash_tmp, m->pnames[i],
                  vb.p ? vb.p : "", db.p ? db.p : default_value(pt));
