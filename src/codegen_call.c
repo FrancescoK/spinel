@@ -115,6 +115,24 @@ static int re_src_has_backref(const char *s) {
   return 0;
 }
 
+static void emit_ctor_block_value(Compiler *c, int id, Buf *b);
+
+/* `new(..., &pr)` into a yielding initialize, the proc known only at run time
+   (emit_ctor_yield_inline declined it): the constructor that hands it to the
+   initialize's proc-form clone. 0 when the class has no such clone. */
+static int emit_ctor_new_with_proc(Compiler *c, int id, int ci, Buf *b) {
+  int blk = nt_ref(c->nt, id, "block");
+  if (blk < 0 || nt_kind(c->nt, blk) != NK_BlockArgumentNode) return 0;
+  if (ctor_init_proc_form(c, ci) < 0) return 0;
+  int initm = comp_method_in_chain(c, ci, "initialize", NULL);
+  buf_printf(b, "sp_%s_new_blk(", c->classes[ci].c_name);
+  emit_args_filled(c, initm, nt_ref(c->nt, id, "arguments"), "", b);
+  if (c->scopes[initm].nparams > 0) buf_puts(b, ", ");
+  emit_ctor_block_value(c, id, b);
+  buf_puts(b, ")");
+  return 1;
+}
+
 int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");
@@ -130,11 +148,19 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
      code and `block_given?` folds to false, matching a blockless `new`. */
   int fwd_block = 0;
   if (block >= 0 && nt_type(nt, block) && sp_streq(nt_type(nt, block), "BlockArgumentNode")) {
-    /* only inheritable when an enclosing block is actually in scope (an inlined
-       method's forwarded block); with none live there is nothing to yield to and
-       the plain-constructor fallback is correct. */
-    if (g_block_id < 0) return 0;
-    fwd_block = 1;
+    /* `&b` naming the inlined method's block parameter (or an anonymous `&`)
+       is its caller's block, or none when the caller gave none: then this is
+       the no-block construction, as `&nil` is. Any other proc is known only at
+       run time and goes to the constructor that takes one
+       (emit_ctor_new_with_proc). */
+    int rb = resolve_forwarded_block(c, block);
+    int bexpr = nt_ref(nt, block, "expression");
+    if (rb != block) {
+      block = rb;
+      fwd_block = rb >= 0;
+    }
+    else if (bexpr >= 0 && nt_kind(nt, bexpr) == NK_NilNode) block = -1;
+    else return 0;
   }
   else if (block >= 0 && (!nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode"))) return 0;
   int mi = comp_method_in_chain(c, ci, "initialize", NULL);
@@ -10931,7 +10957,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         }
         /* yielding initialize: inline its body at the call site (the block
            feeds the yields; the emitted constructor only allocates) */
-        if (emit_ctor_yield_inline(c, id, ci, b)) return 1;
+        if (emit_ctor_yield_inline(c, id, ci, b) || emit_ctor_new_with_proc(c, id, ci, b)) return 1;
         /* user-defined def self.new takes precedence over the constructor */
         int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
         if (ucnew >= 0) {
@@ -26795,7 +26821,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
            allocates, so without the inline the body's @ivar writes vanish
            (with or without a block at this site) */
         if (initm >= 0 && c->scopes[initm].yields &&
-            emit_ctor_yield_inline(c, id, new_cls, b)) return;
+            (emit_ctor_yield_inline(c, id, new_cls, b) || emit_ctor_new_with_proc(c, id, new_cls, b))) return;
         buf_printf(b, "sp_%s_new(", ncls->c_name);
         if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
         if (initm >= 0) emit_ctor_block_slot(c, id, initm, c->scopes[initm].nparams > 0 ? ", " : "", b);

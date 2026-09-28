@@ -13735,6 +13735,10 @@ static int pf_dynamic_new(Compiler *c) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, "new")) continue;
+    /* `new(..., &pr)`: a proc known only at run time reaches the body
+       through the clone as well */
+    int blk = nt_ref(nt, id, "block");
+    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode) return 1;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;
     int rk = nt_kind(nt, recv);

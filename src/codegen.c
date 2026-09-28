@@ -7381,18 +7381,17 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   }
   buf_puts(b, "  return self;\n}\n");
   if (init_pf < 0) return;
-  /* the full constructor: allocate, then run the body through the clone. No
-     block reaches a constructor called this way. */
+  /* the full constructor: allocate, then run the body through the clone,
+     which takes the block as a proc. sp_X_new_blk is for a `new(..., &pr)`
+     whose proc is known only at run time; sp_X_new passes none. */
   Scope *s = &c->scopes[init], *pf = &c->scopes[init_pf];
-  buf_printf(b, "static sp_%s *sp_%s_new(", ci->c_name, ci->c_name);
+  buf_printf(b, "static sp_%s *sp_%s_new_blk(", ci->c_name, ci->c_name);
   for (int i = 0; i < s->nparams; i++) {
-    if (i) buf_puts(b, ", ");
     LocalVar *p = scope_local(s, s->pnames[i]);
     emit_ctype(c, (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY, b);
-    buf_printf(b, " lv_%s", s->pnames[i]);
+    buf_printf(b, " lv_%s, ", s->pnames[i]);
   }
-  if (s->nparams == 0) buf_puts(b, "void");
-  buf_printf(b, ") {\n  sp_%s *self = sp_%s_new_noinit(", ci->c_name, ci->c_name);
+  buf_printf(b, "sp_Proc *_sp_blk) {\n  sp_%s *self = sp_%s_new_noinit(", ci->c_name, ci->c_name);
   for (int i = 0; i < s->nparams; i++) buf_printf(b, "%slv_%s", i ? ", " : "", s->pnames[i]);
   buf_puts(b, ");\n  SP_GC_ROOT(self);\n");
   buf_printf(b, "  (void)sp_%s_%s(", c->classes[initcls].c_name, mc(pf->name));
@@ -7409,7 +7408,18 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
     else if (pt == TY_POLY && qt != TY_POLY) emit_unbox_text(c, qt, ln, b);
     else buf_puts(b, ln);
   }
-  buf_puts(b, ", NULL);\n  return self;\n}\n");
+  buf_puts(b, ", _sp_blk);\n  return self;\n}\n");
+  buf_printf(b, "static sp_%s *sp_%s_new(", ci->c_name, ci->c_name);
+  for (int i = 0; i < s->nparams; i++) {
+    if (i) buf_puts(b, ", ");
+    LocalVar *p = scope_local(s, s->pnames[i]);
+    emit_ctype(c, (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY, b);
+    buf_printf(b, " lv_%s", s->pnames[i]);
+  }
+  if (s->nparams == 0) buf_puts(b, "void");
+  buf_printf(b, ") {\n  return sp_%s_new_blk(", ci->c_name);
+  for (int i = 0; i < s->nparams; i++) buf_printf(b, "lv_%s, ", s->pnames[i]);
+  buf_puts(b, "NULL);\n}\n");
 }
 
 /* Emit a statement-expression that allocates an instance of class `cid` with
@@ -12776,6 +12786,13 @@ char *codegen_program(const NodeTable *nt) {
         }
         if (s->nparams == 0) buf_puts(&b, "void");
         buf_puts(&b, ");\n");
+        buf_printf(&b, "static sp_%s *sp_%s_new_blk(", ci->c_name, ci->c_name);
+        for (int m = 0; m < s->nparams; m++) {
+          LocalVar *p = scope_local(s, s->pnames[m]);
+          emit_ctype(c, (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY, &b);
+          buf_puts(&b, ", ");
+        }
+        buf_puts(&b, "sp_Proc *);\n");
       }
     }
   }
