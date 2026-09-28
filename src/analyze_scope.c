@@ -1947,6 +1947,21 @@ else {
   }
 }
 
+static int cmethod_names_ivar(Compiler *c, int ci, const char *ivname) {
+  const NodeTable *nt = c->nt;
+  static const NodeKind kinds[] = { NK_InstanceVariableReadNode, NK_InstanceVariableWriteNode,
+                                    NK_InstanceVariableOrWriteNode, NK_InstanceVariableAndWriteNode,
+                                    NK_InstanceVariableOperatorWriteNode };
+  for (size_t k = 0; k < sizeof kinds / sizeof kinds[0]; k++)
+    NT_FOREACH_KIND(nt, kinds[k], id) {
+      int si = c->nscope[id];
+      const char *nm = nt_str(nt, id, "name");
+      if (si >= 0 && si < c->nscopes && c->scopes[si].is_cmethod &&
+          c->scopes[si].class_id == ci && nm && sp_streq(nm, ivname)) return 1;
+    }
+  return 0;
+}
+
 /* Collect attr_reader/attr_writer/attr_accessor declarations in class
    bodies, registering backing ivars + reader/writer method names.
    Also scans class << self bodies for singleton-level attr_accessors. */
@@ -1997,6 +2012,8 @@ void register_attrs_body(Compiler *c, ClassInfo *cls, int body) {
           const char *wnm = nt_str(nt, stmts[k2], "name");
           if (wnm && sp_streq(wnm, ivname)) { comp_add_sg_civ(cls, base); break; }
         }
+        if (!comp_is_sg_civ(cls, base) && cmethod_names_ivar(c, (int)(cls - c->classes), ivname))
+          comp_add_sg_civ(cls, base);
       }
     }
   }

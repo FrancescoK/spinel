@@ -19507,6 +19507,49 @@ static int boxed_write_takes_list(Compiler *c, int id, const int *argv, int argc
   return argc != 1 || nt_kind(nt, argv[0]) == NK_SplatNode;
 }
 
+static int emit_sg_accessor(Compiler *c, int ci, const char *cn, const char *name,
+                            int argc, const int *argv, Buf *b) {
+  ClassInfo *cls = &c->classes[ci];
+  int nlen = (int)strlen(name);
+  if (nlen > 1 && name[nlen - 1] == '=') {
+    /* setter */
+    char base[256]; int blen = nlen - 1;
+    if (blen >= (int)sizeof base) return 0;
+    memcpy(base, name, (size_t)blen); base[blen] = '\0';
+    if (!comp_is_sg_writer(cls, base)) return 0;
+    if (comp_is_sg_civ(cls, base)) {
+      char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", base);
+      int ivi = comp_ivar_index(cls, ivn);
+      TyKind ivt = ivi >= 0 ? cls->ivar_types[ivi] : TY_POLY;
+      buf_printf(b, "(civ_%s_%s = ", cn, iv_c(base));
+      if (argc < 1) buf_puts(b, ivt == TY_POLY ? "sp_box_nil()" : "0");
+      else if (ivt == TY_POLY) emit_boxed(c, argv[0], b);
+      else if (comp_ntype(c, argv[0]) == ivt) emit_expr(c, argv[0], b);
+      else {
+        Buf ab2; memset(&ab2, 0, sizeof ab2);
+        emit_boxed(c, argv[0], &ab2);
+        emit_unbox_text(c, ivt, ab2.p ? ab2.p : "sp_box_nil()", b);
+        free(ab2.p);
+      }
+      buf_puts(b, ")");
+      return 1;
+    }
+    buf_printf(b, "(sg_%s_%s = ", cn, base);
+    if (argc >= 1) emit_boxed(c, argv[0], b);
+    else buf_puts(b, "sp_box_nil()");
+    buf_puts(b, ")");
+    return 1;
+  }
+  /* getter -- through the alias table, so `class << self; alias_method
+     :shown?, :shown; end` reaches the reader it renames (#3776) */
+  const char *rn = comp_resolve_alias(c, ci, name);
+  if (!rn) rn = name;
+  if (!comp_is_sg_reader(cls, rn)) return 0;
+  if (comp_is_sg_civ(cls, rn)) buf_printf(b, "civ_%s_%s", cn, iv_c(rn));
+  else buf_printf(b, "sg_%s_%s", cn, rn);
+  return 1;
+}
+
 static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -27070,6 +27113,14 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         free(objptr.p);
         return;
       }
+      Buf sgb; memset(&sgb, 0, sizeof sgb);
+      if (!class_has_subclass(c, cid) &&
+          emit_sg_accessor(c, cid, c->classes[cid].name, name, argc, argv, &sgb)) {
+        buf_puts(b, "((void)("); emit_expr(c, robj, b); buf_printf(b, "), %s)", sgb.p);
+        free(sgb.p);
+        return;
+      }
+      free(sgb.p);
     }
   }
   /* SomeClass.name / .to_s / .inspect -> the class-name string. A
@@ -31515,52 +31566,7 @@ else {
     if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
       const char *cn = nt_str(nt, recv, "name");
       int ci = cn ? comp_class_index(c, cn) : -1;
-      if (ci >= 0) {
-        ClassInfo *_sgcls = &c->classes[ci];
-        int nlen = (int)strlen(name);
-        if (nlen > 1 && name[nlen - 1] == '=') {
-          /* setter */
-          char base[256]; int blen = nlen - 1;
-          memcpy(base, name, (size_t)blen); base[blen] = '\0';
-          if (comp_is_sg_writer(_sgcls, base)) {
-            if (comp_is_sg_civ(_sgcls, base)) {
-              char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", base);
-              int ivi = comp_ivar_index(_sgcls, ivn);
-              TyKind ivt = ivi >= 0 ? _sgcls->ivar_types[ivi] : TY_POLY;
-              buf_printf(b, "(civ_%s_%s = ", cn, iv_c(base));
-              if (argc < 1) buf_puts(b, ivt == TY_POLY ? "sp_box_nil()" : "0");
-              else if (ivt == TY_POLY) emit_boxed(c, argv[0], b);
-              else if (comp_ntype(c, argv[0]) == ivt) emit_expr(c, argv[0], b);
-              else {
-                Buf ab2; memset(&ab2, 0, sizeof ab2);
-                emit_boxed(c, argv[0], &ab2);
-                emit_unbox_text(c, ivt, ab2.p ? ab2.p : "sp_box_nil()", b);
-                free(ab2.p);
-              }
-              buf_puts(b, ")");
-              return;
-            }
-            buf_printf(b, "(sg_%s_%s = ", cn, base);
-            if (argc >= 1) {
-              emit_boxed(c, argv[0], b);
-            }
-            else buf_puts(b, "sp_box_nil()");
-            buf_puts(b, ")");
-            return;
-          }
-        }
-        else {
-          /* getter -- through the alias table, so `class << self; alias_method
-             :shown?, :shown; end` reaches the reader it renames (#3776) */
-          const char *_sgnm = comp_resolve_alias(c, ci, name);
-          if (!_sgnm) _sgnm = name;
-          if (comp_is_sg_reader(_sgcls, _sgnm)) {
-            if (comp_is_sg_civ(_sgcls, _sgnm)) buf_printf(b, "civ_%s_%s", cn, iv_c(_sgnm));
-            else buf_printf(b, "sg_%s_%s", cn, _sgnm);
-            return;
-          }
-        }
-      }
+      if (ci >= 0 && emit_sg_accessor(c, ci, cn, name, argc, argv, b)) return;
     }
   }
 
@@ -31572,31 +31578,8 @@ else {
     Scope *_sgencl = comp_scope_of(c, id);
     int _sg_cid = (_sgencl && _sgencl->is_cmethod && _sgencl->class_id >= 0)
                   ? _sgencl->class_id : g_class_body_id;
-    if (_sg_cid >= 0) {
-      ClassInfo *_sgcls = &c->classes[_sg_cid];
-      const char *_sgcn = _sgcls->name;
-      int _nlen = (int)strlen(name);
-      if (_nlen > 1 && name[_nlen - 1] == '=') {
-        char _base[256]; int _blen = _nlen - 1;
-        memcpy(_base, name, (size_t)_blen); _base[_blen] = '\0';
-        if (comp_is_sg_writer(_sgcls, _base)) {
-          buf_printf(b, "(sg_%s_%s = ", _sgcn, _base);
-          if (argc >= 1) {
-            emit_boxed(c, argv[0], b);
-          }
-          else buf_puts(b, "sp_box_nil()");
-          buf_puts(b, ")");
-          return;
-        }
-      }
-      else {
-        const char *_sgnm2 = comp_resolve_alias(c, _sg_cid, name);
-        if (comp_is_sg_reader(_sgcls, _sgnm2 ? _sgnm2 : name)) {
-          buf_printf(b, "sg_%s_%s", _sgcn, _sgnm2 ? _sgnm2 : name);
-          return;
-        }
-      }
-    }
+    if (_sg_cid >= 0 && emit_sg_accessor(c, _sg_cid, c->classes[_sg_cid].name, name, argc, argv, b))
+      return;
   }
 
   /* obj.attr = val as an expression: store into the ivar and yield the value.

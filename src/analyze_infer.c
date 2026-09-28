@@ -1664,6 +1664,34 @@ static TyKind kconv_integer_kind(Compiler *c, int arg, int noraise) {
   return TY_INT;
 }
 
+int class_has_subclass(Compiler *c, int ocid);
+
+static int sg_accessor_type(Compiler *c, int ci, const char *name, TyKind *out) {
+  ClassInfo *cls = &c->classes[ci];
+  int nlen = (int)strlen(name);
+  /* setter: name ends with '=' */
+  if (nlen > 1 && name[nlen - 1] == '=') {
+    char base[256]; int blen = nlen - 1;
+    if (blen >= (int)sizeof base) return 0;
+    memcpy(base, name, (size_t)blen); base[blen] = '\0';
+    if (!comp_is_sg_writer(cls, base)) return 0;
+    *out = TY_VOID;
+    return 1;
+  }
+  /* an accessor backed by the class-level ivar reads that slot's type;
+     the alias table maps a renamed accessor onto it (#3776) */
+  const char *rn = comp_resolve_alias(c, ci, name);
+  if (!rn) rn = name;
+  if (!comp_is_sg_reader(cls, rn)) return 0;
+  *out = TY_POLY;
+  if (comp_is_sg_civ(cls, rn)) {
+    char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", rn);
+    int ivi = comp_ivar_index(cls, ivn);
+    if (ivi >= 0 && cls->ivar_types[ivi] != TY_UNKNOWN) *out = ivar_value_ty(cls, ivi);
+  }
+  return 1;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
 
   /* a yielder push (`y << v` inside an Enumerator.new generator) lowers to a
@@ -2973,32 +3001,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
        sp_streq(nt_type(nt, recv), "ConstantPathNode"))) {
     const char *cn = nt_str(nt, recv, "name");
     int ci = cn ? comp_class_index(c, cn) : -1;
-    if (ci >= 0) {
-      ClassInfo *cls = &c->classes[ci];
-      int nlen = (int)strlen(name);
-      /* setter: name ends with '=' */
-      if (nlen > 1 && name[nlen - 1] == '=') {
-        char base[256]; int blen = nlen - 1;
-        if (blen > 0 && blen < (int)sizeof(base)) {
-          memcpy(base, name, (size_t)blen); base[blen] = '\0';
-          if (comp_is_sg_writer(cls, base)) return TY_VOID;
-        }
-      }
-else {
-        /* an accessor backed by the class-level ivar reads that slot's type;
-           the alias table maps a renamed accessor onto it (#3776) */
-        const char *rn = comp_resolve_alias(c, ci, name);
-        const char *base2 = rn ? rn : name;
-        if (comp_is_sg_reader(cls, base2)) {
-          if (comp_is_sg_civ(cls, base2)) {
-            char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", base2);
-            int ivi = comp_ivar_index(cls, ivn);
-            if (ivi >= 0 && cls->ivar_types[ivi] != TY_UNKNOWN) return ivar_value_ty(cls, ivi);
-          }
-          return TY_POLY;
-        }
-      }
-    }
+    TyKind sgt;
+    if (ci >= 0 && sg_accessor_type(c, ci, name, &sgt)) return sgt;
   }
   /* self.singleton_writer= / self.singleton_reader: inside a class method
      or directly in a class/module body (g_cbody_class_id). */
@@ -3007,22 +3011,8 @@ else {
     Scope *_self = comp_scope_of(c, id);
     int _sg_cid = (_self && _self->is_cmethod && _self->class_id >= 0)
                   ? _self->class_id : g_cbody_class_id;
-    if (_sg_cid >= 0) {
-      ClassInfo *_cls = &c->classes[_sg_cid];
-      int _nlen = (int)strlen(name);
-      if (_nlen > 1 && name[_nlen - 1] == '=') {
-        char _base[256]; int _blen = _nlen - 1;
-        if (_blen > 0 && _blen < (int)sizeof(_base)) {
-          memcpy(_base, name, (size_t)_blen); _base[_blen] = '\0';
-          if (comp_is_sg_writer(_cls, _base)) return TY_VOID;
-        }
-      }
-      else {
-        /* the alias table maps a renamed accessor onto the reader (#3788) */
-        const char *_rn = comp_resolve_alias(c, _sg_cid, name);
-        if (comp_is_sg_reader(_cls, _rn ? _rn : name)) return TY_POLY;
-      }
-    }
+    TyKind sgt;
+    if (_sg_cid >= 0 && sg_accessor_type(c, _sg_cid, name, &sgt)) return sgt;
   }
 
   /* FFI: call on a module that registered ffi_func/ffi_buffer/ffi_read_* */
@@ -4135,6 +4125,8 @@ else {
           }
           return r;
         }
+        TyKind sgt;
+        if (!class_has_subclass(c, cid) && sg_accessor_type(c, cid, name, &sgt)) return sgt;
       }
     }
   }
