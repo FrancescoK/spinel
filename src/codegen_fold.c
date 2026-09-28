@@ -6995,7 +6995,7 @@ void emit_ds_kwarg_check(Compiler *c, Scope *m, int kwh, int ds_hash_tmp, TyKind
   buf_printf(g_pre, ", _kw%d, _kr%d, _kl%d, %d);\n", chk, chk, chk, m->kwrest_idx < 0);
 }
 
-void emit_kwhash_verify(Compiler *c, Scope *m, int hash_tmp, Buf *out) {
+void emit_kwhash_verify(Compiler *c, Scope *m, int hash_tmp, TyKind hash_type, Buf *out) {
   const NodeTable *nt = c->nt;
   if (!m || m->def_node < 0) return;
   int pn = nt_ref(nt, m->def_node, "parameters");
@@ -7003,7 +7003,7 @@ void emit_kwhash_verify(Compiler *c, Scope *m, int hash_tmp, Buf *out) {
   if (kn == 0) return;
   char tn[32]; snprintf(tn, sizeof tn, "_t%d", hash_tmp);
   buf_puts(out, "sp_kwargs_verify(");
-  emit_boxed_text(c, TY_SYM_POLY_HASH, tn, out);
+  emit_boxed_text(c, hash_type, tn, out);
   buf_puts(out, ", (const char *const[]){");
   kw_param_names(nt, kws, kn, 0, out);
   buf_puts(out, "0}, (const char *const[]){");
@@ -7061,10 +7061,14 @@ void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
        Other sym/str keyed hashes: get returns the value type directly. */
     TyKind hval = ty_hash_val(ds_hash_type);
     Buf vb; memset(&vb, 0, sizeof vb);
+    /* A hash whose keys are of any class (`{ :a => 1, 1 => 2 }`) takes its
+       key boxed: a bare sp_sym is no sp_RbVal, and the C compiler refused
+       the call. */
+    char key[160];
+    snprintf(key, sizeof key, ty_hash_key(ds_hash_type) == TY_POLY ?
+             "sp_box_sym(sp_sym_intern(\"%s\"))" : "sp_sym_intern(\"%s\")", m->pnames[i]);
     char get_expr[256];
-    snprintf(get_expr, sizeof get_expr,
-             "sp_%sHash_get(_t%d, sp_sym_intern(\"%s\"))",
-             hn, ds_hash_tmp, m->pnames[i]);
+    snprintf(get_expr, sizeof get_expr, "sp_%sHash_get(_t%d, %s)", hn, ds_hash_tmp, key);
     if (hval == TY_POLY) emit_unbox_text(c, pt, get_expr, &vb);
     else buf_puts(&vb, get_expr);
     /* An optional keyword param (one with a default) whose key may be
@@ -7073,8 +7077,8 @@ void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
     if (m->pdefault && m->pdefault[i] >= 0) {
       Buf db; memset(&db, 0, sizeof db);
       emit_ds_default(c, m, i, &db);
-      buf_printf(out, "(sp_%sHash_has_key(_t%d, sp_sym_intern(\"%s\")) ? (%s) : (%s))",
-                 hn, ds_hash_tmp, m->pnames[i],
+      buf_printf(out, "(sp_%sHash_has_key(_t%d, %s) ? (%s) : (%s))",
+                 hn, ds_hash_tmp, key,
                  vb.p ? vb.p : "", db.p ? db.p : default_value(pt));
       free(db.p);
     }

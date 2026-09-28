@@ -793,8 +793,10 @@ typedef struct {
   int kwh, kwn, kwall;
   const int *kwels, *kwtmp;
   const TyKind *kwty;
+  int kwall_any;   /* kwall is a PolyPolyHash: a `**` may carry a key that is no Symbol */
 } PolyKw;
 static void emit_kwh_sym_hash(Compiler *c, const PolyKw *kw, Scope *skip_kw, Buf *out);
+static void emit_kwh_pos_hash(Compiler *c, const PolyKw *kw, int boxed, Buf *out);
 static int emit_poly_kw_param(Compiler *c, Scope *ms, int a, const PolyKw *kw,
                               const char *selfp, Buf *pa);
 static void emit_poly_kw_arm_checks(Compiler *c, Scope *m, Scope *ms, const PolyKw *kw,
@@ -893,7 +895,8 @@ static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int
       }
       LocalVar *pp = ks->pnames && ks->pnames[a] ? scope_local(ks, ks->pnames[a]) : NULL;
       TyKind pt = pp ? pp->type : TY_POLY;
-      if (a == kslot8 && ty_is_hash(pt) && pt != TY_SYM_POLY_HASH) incompat8 = 1;
+      if (a == kslot8 && ty_is_hash(pt) && pt != (kw->kwall_any ? TY_POLY_POLY_HASH : TY_SYM_POLY_HASH))
+        incompat8 = 1;
       if (kwh >= 0 && (a == ks->kwrest_idx || callee_param_is_declared_kwarg(c, ks, ks->pnames[a])))
         continue;
       int slot = arg_slot_for_param(c, ks, a, argc + (kslot8 >= 0));
@@ -925,9 +928,7 @@ static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int
       if (pt == TY_UNKNOWN) pt = TY_POLY;
       if (kwh >= 0 && emit_poly_kw_param(c, ks, a, kw, NULL, &cb)) continue;
       if (a == kslot) {
-        if (pt == TY_POLY) buf_puts(&cb, "sp_box_obj(");
-        emit_kwh_sym_hash(c, kw, NULL, &cb);
-        if (pt == TY_POLY) buf_puts(&cb, ", SP_BUILTIN_SYM_POLY_HASH)");
+        emit_kwh_pos_hash(c, kw, pt == TY_POLY, &cb);
         continue;
       }
       int slot = arg_slot_for_param(c, ks, a, argc + (kslot >= 0));
@@ -5128,7 +5129,9 @@ static void emit_kwh_sym_fill(Compiler *c, int th, const PolyKw *kw, Scope *skip
   const NodeTable *nt = c->nt;
   if (!kw) return;
   if (kw->kwall >= 0) {
-    buf_printf(out, " sp_SymPolyHash_update(_t%d, _t%d);", th, kw->kwall);
+    if (kw->kwall_any)
+      buf_printf(out, " sp_kwrest_merge_poly(_t%d, sp_box_obj(_t%d, SP_BUILTIN_POLY_POLY_HASH));", th, kw->kwall);
+    else buf_printf(out, " sp_SymPolyHash_update(_t%d, _t%d);", th, kw->kwall);
     int pn = skip_kw && skip_kw->def_node >= 0 ? nt_ref(nt, skip_kw->def_node, "parameters") : -1;
     int kn = 0; const int *kws = pn >= 0 ? nt_arr(nt, pn, "keywords", &kn) : NULL;
     for (int k = 0; k < kn; k++) {
@@ -5159,6 +5162,21 @@ static void emit_kwh_sym_hash(Compiler *c, const PolyKw *kw, Scope *skip_kw, Buf
   buf_printf(out, " _t%d; })", th);
 }
 
+/* The collapsed keyword hash as the one Hash a positional parameter, a
+   rest's tail or a builtin takes, boxed for a poly slot. One of any key is
+   the dispatch's own kwall, built fresh for this call: a copy into a
+   Symbol-keyed hash raised a TypeError for a key such as "a", which a
+   method without keywords takes in its Hash as CRuby does. */
+static void emit_kwh_pos_hash(Compiler *c, const PolyKw *kw, int boxed, Buf *out) {
+  if (kw->kwall_any) {
+    buf_printf(out, boxed ? "sp_box_obj(_t%d, SP_BUILTIN_POLY_POLY_HASH)" : "_t%d", kw->kwall);
+    return;
+  }
+  if (boxed) buf_puts(out, "sp_box_obj(");
+  emit_kwh_sym_hash(c, kw, NULL, out);
+  if (boxed) buf_puts(out, ", SP_BUILTIN_SYM_POLY_HASH)");
+}
+
 static int emit_poly_kw_param(Compiler *c, Scope *ms, int a, const PolyKw *kw,
                               const char *selfp, Buf *pa) {
   const NodeTable *nt = c->nt;
@@ -5184,7 +5202,7 @@ static int emit_poly_kw_param(Compiler *c, Scope *ms, int a, const PolyKw *kw,
     if (kn && sp_streq(kn, pnm)) { e_found = e; break; }
   }
   if (kw && kw->kwall >= 0)
-    emit_ds_param_extract(c, ms, a, kw->kwall, TY_SYM_POLY_HASH, pa);
+    emit_ds_param_extract(c, ms, a, kw->kwall, kw->kwall_any ? TY_POLY_POLY_HASH : TY_SYM_POLY_HASH, pa);
   else if (e_found >= 0) {
     LocalVar *kpv = scope_local(ms, pnm);
     TyKind kpt = kpv ? kpv->type : TY_UNKNOWN;
@@ -5202,7 +5220,7 @@ static int emit_poly_kw_param(Compiler *c, Scope *ms, int a, const PolyKw *kw,
 static void emit_poly_kw_arm_checks(Compiler *c, Scope *m, Scope *ms, const PolyKw *kw,
                                     int pos_argc, Buf *b) {
   if (!kw || kw->kwall < 0) return;
-  emit_kwhash_verify(c, ms, kw->kwall, b);
+  emit_kwhash_verify(c, ms, kw->kwall, kw->kwall_any ? TY_POLY_POLY_HASH : TY_SYM_POLY_HASH, b);
   if (kwh_only_spreads(c->nt, kw->kwh) && !callee_declares_kwargs(c, ms) &&
       ms->kwrest_idx < 0 && kwh_positional_slot(c, ms, kw->kwh, pos_argc) < 0) {
     char exp[48];
@@ -6474,32 +6492,68 @@ static int poly_kw_empty_literal(const NodeTable *nt, int src) {
 }
 
 /* Can the keyword hash's `**` element be merged into the arms' one
-   Symbol-keyed hash: a named hash, an anonymous `**`, or a literal? */
+   keyword hash: a named hash, an anonymous `**`, or a literal? A hash of
+   any key merges too: a key that is no Symbol is an unknown keyword to an
+   arm, which the arm's check raises, where the whole hash degraded to a
+   positional and every keyword-only arm raised `wrong number of arguments`. */
 static int poly_kw_splat_ok(Compiler *c, int el) {
   const NodeTable *nt = c->nt;
   int src = nt_ref(nt, el, "value");
   if (src < 0) return poly_anon_kwrest(c, el) != NULL;
   if (poly_kw_empty_literal(nt, src)) return 1;
   TyKind st = comp_ntype(c, src);
-  return st == TY_POLY || (ty_is_hash(st) && ty_hash_key(st) == TY_SYMBOL);
+  return st == TY_POLY || ty_is_hash(st);
 }
 
-/* The call's keywords as one Symbol-keyed hash, in order, so a later key
-   wins as it does in CRuby. */
-static void emit_poly_kw_all(Compiler *c, int kwh, int th, Buf *b) {
+/* 1 when a `**` of the keyword hash may carry a key that is no Symbol, so
+   the arms' keyword hash has to hold any key. */
+static int poly_kw_any_key(Compiler *c, int kwh) {
   const NodeTable *nt = c->nt;
   int en = 0; const int *els = nt_arr(nt, kwh, "elements", &en);
-  buf_printf(b, "sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d); ", th, th);
+  for (int e = 0; e < en; e++) {
+    int src = nt_kind(nt, els[e]) == NK_AssocSplatNode ? nt_ref(nt, els[e], "value") : -1;
+    if (src < 0 || poly_kw_empty_literal(nt, src)) continue;
+    TyKind st = comp_ntype(c, src);
+    if (st == TY_POLY || ty_hash_key(st) != TY_SYMBOL) return 1;
+  }
+  return 0;
+}
+
+/* The call's keywords as one hash, in order, so a later key wins as it does
+   in CRuby: Symbol-keyed, or of any key when poly_kw_any_key. */
+static void emit_poly_kw_all(Compiler *c, int kwh, int th, int any, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int en = 0; const int *els = nt_arr(nt, kwh, "elements", &en);
+  const char *hk = any ? "PolyPoly" : "SymPoly";
+  buf_printf(b, "sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d); ", hk, th, hk, th);
   for (int e = 0; e < en; e++) {
     if (nt_kind(nt, els[e]) != NK_AssocSplatNode) {
       int key = nt_ref(nt, els[e], "key");
-      buf_printf(b, "sp_SymPolyHash_set(_t%d, (sp_sym)%d, ", th,
+      buf_printf(b, any ? "sp_PolyPolyHash_set(_t%d, sp_box_sym((sp_sym)%d), "
+                        : "sp_SymPolyHash_set(_t%d, (sp_sym)%d, ", th,
                  comp_sym_intern(c, nt_str(nt, key, "value")));
       emit_boxed(c, nt_ref(nt, els[e], "value"), b);
       buf_puts(b, "); ");
       continue;
     }
     int src = nt_ref(nt, els[e], "value");
+    if (any) {
+      /* each source, the anonymous `**` too, merged by the walk that keeps
+         a key of any class */
+      Buf sb; memset(&sb, 0, sizeof sb);
+      if (src >= 0 && poly_kw_empty_literal(nt, src)) continue;
+      if (src >= 0) emit_boxed(c, src, &sb);
+      else {
+        LocalVar *kl = poly_anon_kwrest(c, els[e]);
+        Buf lr; memset(&lr, 0, sizeof lr);
+        emit_local_ref(c, els[e], "__anon_kwrest", &lr);
+        emit_boxed_text(c, kl->type, lr.p ? lr.p : "0", &sb);
+        free(lr.p);
+      }
+      buf_printf(b, "sp_kw_merge_any(_t%d, %s); ", th, sb.p ? sb.p : "sp_box_nil()");
+      free(sb.p);
+      continue;
+    }
     if (src < 0) {
       LocalVar *kl = poly_anon_kwrest(c, els[e]);
       Buf lr; memset(&lr, 0, sizeof lr);
@@ -8089,10 +8143,11 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       int kwn = 0; const int *kwels = NULL;
       int *kwtmp = NULL; TyKind *kwty = NULL;
       int kwall = -1;
+      int kwall_any = kw_ds && poly_kw_any_key(c, kwh);
       if (kw_ds) {
         kwall = atmp[pos_argc] = ++g_tmp;
-        atmp_ty[pos_argc] = TY_SYM_POLY_HASH;
-        emit_poly_kw_all(c, kwh, kwall, b);
+        atmp_ty[pos_argc] = kwall_any ? TY_POLY_POLY_HASH : TY_SYM_POLY_HASH;
+        emit_poly_kw_all(c, kwh, kwall, kwall_any, b);
       }
       else if (kwh >= 0) {
         kwels = nt_arr(nt, kwh, "elements", &kwn);
@@ -8128,15 +8183,15 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           buf_printf(b, "; SP_GC_ROOT(_t%d); ", atmp[pos_argc]);
         }
       }
-      PolyKw kw = { kwh, kwn, kwall, kwels, kwtmp, kwty };
+      PolyKw kw = { kwh, kwn, kwall, kwels, kwtmp, kwty, kwall_any };
       int stk = -1;
       if (splat_a >= 0 && kwh >= 0) {
         stk = ++g_tmp;
         buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
                       " sp_PolyArray_append_all(_t%d, _t%d); ", stk, stk, stk, atmp[splat_a]);
         if (kwall >= 0)
-          buf_printf(b, "if (_t%d->len > 0) sp_PolyArray_push(_t%d, sp_box_obj(_t%d, SP_BUILTIN_SYM_POLY_HASH)); ",
-                     kwall, stk, kwall);
+          buf_printf(b, "if (_t%d->len > 0) sp_PolyArray_push(_t%d, sp_box_obj(_t%d, %s)); ",
+                     kwall, stk, kwall, kwall_any ? "SP_BUILTIN_POLY_POLY_HASH" : "SP_BUILTIN_SYM_POLY_HASH");
         else {
           buf_printf(b, "sp_PolyArray_push(_t%d, sp_box_obj(", stk);
           emit_kwh_sym_hash(c, &kw, NULL, b);
@@ -8581,7 +8636,8 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           if (kslot >= 0 && ks->pnames && ks->pnames[kslot]) {
             LocalVar *kpv9 = scope_local(ks, ks->pnames[kslot]);
             TyKind kpt9 = kpv9 ? kpv9->type : TY_UNKNOWN;
-            if (ty_is_hash(kpt9) && kpt9 != TY_SYM_POLY_HASH) arm_key_incompat = 1;
+            if (ty_is_hash(kpt9) && kpt9 != (kwall_any ? TY_POLY_POLY_HASH : TY_SYM_POLY_HASH))
+              arm_key_incompat = 1;
           } }
         if (arm_key_incompat) continue;
         TyKind mret = c->scopes[mi].ret;
@@ -8700,12 +8756,19 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                out). Consumed means some declared keyword param took a key
                from it. */
             if (rest_kwh_tail(c, ms, kwh, pos_argc) >= 0) {
-              int kh3 = ++g_tmp;
               if (kwall >= 0 && kwh_only_spreads(nt, kwh)) buf_printf(&pa, " if (_t%d->len > 0)", kwall);
-              buf_printf(&pa, " sp_PolyArray_push(_t%d, ({ sp_SymPolyHash *_t%d = sp_SymPolyHash_new();"
-                              " SP_GC_ROOT(_t%d);", rt2, kh3, kh3);
-              emit_kwh_sym_fill(c, kh3, &kw, NULL, &pa);
-              buf_printf(&pa, " sp_box_obj(_t%d, SP_BUILTIN_SYM_POLY_HASH); }));", kh3);
+              if (kwall_any) {
+                buf_printf(&pa, " sp_PolyArray_push(_t%d, ", rt2);
+                emit_kwh_pos_hash(c, &kw, 1, &pa);
+                buf_puts(&pa, ");");
+              }
+              else {
+                int kh3 = ++g_tmp;
+                buf_printf(&pa, " sp_PolyArray_push(_t%d, ({ sp_SymPolyHash *_t%d = sp_SymPolyHash_new();"
+                                " SP_GC_ROOT(_t%d);", rt2, kh3, kh3);
+                emit_kwh_sym_fill(c, kh3, &kw, NULL, &pa);
+                buf_printf(&pa, " sp_box_obj(_t%d, SP_BUILTIN_SYM_POLY_HASH); }));", kh3);
+              }
             }
             buf_printf(&pa, " _t%d; })", rt2);
             continue;
@@ -8719,9 +8782,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
              rest; a callee with both funds the positional first. */
           if (kwh_positional_slot(c, ms, kwh, pos_argc) == a) {
             LocalVar *cp = pnm ? scope_local(ms, pnm) : NULL;
-            if (cp && cp->type == TY_POLY) buf_puts(&pa, "sp_box_obj(");
-            emit_kwh_sym_hash(c, &kw, NULL, &pa);
-            if (cp && cp->type == TY_POLY) buf_puts(&pa, ", SP_BUILTIN_SYM_POLY_HASH)");
+            emit_kwh_pos_hash(c, &kw, cp && cp->type == TY_POLY, &pa);
             continue;
           }
           /* box the call-site arg if this candidate's parameter is poly;
@@ -9596,9 +9657,7 @@ else {
           else emit_boxed_text(c, atmp_ty[0], tn, &mb);
         }
         else {
-          buf_puts(&mb, "sp_box_obj(");
-          emit_kwh_sym_hash(c, &kw, NULL, &mb);
-          buf_puts(&mb, ", SP_BUILTIN_SYM_POLY_HASH)");
+          emit_kwh_pos_hash(c, &kw, 1, &mb);
         }
         char gen[600];
         snprintf(gen, sizeof gen, "sp_box_obj(sp_poly_hash_merge(_t%d, %s), SP_BUILTIN_POLY_POLY_HASH)",
