@@ -2631,8 +2631,15 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
   buf_printf(b, "; for (sp_int _t%d = %d; _t%d < _t%d; _t%d++) _t%d = ", ti, start, ti, tn, ti, tacc);
   if (ifn)
     buf_printf(b, "%s(_t%d, sp_%sArray_get(_t%d, _t%d))", ifn, tacc, k, ta, ti);
-  else if (str_op)
-    buf_printf(b, "sp_str_concat(_t%d, sp_%sArray_get(_t%d, _t%d))", tacc, k, ta, ti);
+  /* String#+'s nil checks, inline: a nil accumulator raises NoMethodError
+     and a nil element TypeError, as CRuby's do, where sp_str_concat reads a
+     nil as "" */
+  else if (str_op) {
+    int te = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = sp_%sArray_get(_t%d, _t%d); if (!_t%d) sp_nil_recv(\"+\");"
+                  " if (!_t%d) sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into String\");"
+                  " sp_str_concat(_t%d, _t%d); })", te, k, ta, ti, tacc, te, tacc, te);
+  }
   else /* int_bitop or float direct-op */
     buf_printf(b, "_t%d %s sp_%sArray_get(_t%d, _t%d)", tacc, op, k, ta, ti);
   buf_printf(b, "; _t%d; })", tacc);
