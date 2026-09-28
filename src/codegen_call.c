@@ -28233,11 +28233,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* then / yield_self: pass receiver to block, return block result */
   if (recv >= 0 && (sp_streq(name, "then") || sp_streq(name, "yield_self"))) {
     int blk = nt_ref(nt, id, "block");
-    /* with NO block, an enumerator of one element -- the receiver (#4028) */
+    /* with NO block, an enumerator of one element -- the receiver (#4028),
+       named `then` for either name, as CRuby's yield_self is then's alias */
     if (blk < 0 && nt_ref(nt, id, "arguments") < 0) {
       buf_puts(b, "sp_enum_of_one(");
       emit_boxed(c, recv, b);
-      buf_printf(b, ", SPL(\"%s\"))", name);
+      buf_puts(b, ", SPL(\"then\"))");
       return;
     }
     if (blk >= 0) {

@@ -21,7 +21,7 @@
 #<Enumerator: "a\nb\n":each_line(chomp: true)>
 #<Enumerator: "a\nb\n":each_line(chomp: false)>
 #<Enumerator: 5:then>
-true
+#<Enumerator: 5:then>
 true
 true
 true

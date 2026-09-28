@@ -42,17 +42,17 @@ check_label("a\nb\n".each_line)
 check_label("a\nb\n".each_line(chomp: true))
 check_label("a\nb\n".each_line(chomp: false))
 check_label(5.then)
+check_label(5.yield_self)
 
 # These labels have pre-existing formatting differences from CRuby. Exercise
 # their stores and inspect readers for sanitizer coverage without pinning that
-# unrelated formatting (separator/regexp arguments and the yield_self alias).
+# unrelated formatting (separator/regexp arguments).
 def check_static_label(en)
   10000.times { |i| "churn#{i}" }
   p en.inspect.start_with?("#<Enumerator:")
 end
 check_static_label("a:b:".each_line(":"))
 check_static_label("aba".gsub(/a/))
-check_static_label(5.yield_self)
 # The endless-range arm builds a generator-backed Enumerator: its inspect shows
 # the Generator wrapper where CRuby shows the range, and embeds a process
 # address, so assert only that its label survives collection to be read.
