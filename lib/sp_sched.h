@@ -75,6 +75,7 @@ typedef struct sp_thread {
   struct sp_thread *all_next, *all_prev;  /* registry of live threads (GC roots) */
   void             *tls;         /* thread-local storage (Thread#[] / #[]=); lazily allocated */
   sp_sched_timer   *timer;       /* active scheduler timer for this wait, if any */
+  unsigned char     timer_expired; /* set when a generic timed wait reaches its deadline */
   int               io_fd;       /* fd this thread is parked on for I/O (-1 = none, scheduler-aware I/O) */
   short             io_events;   /* poll events it is waiting for (POLLIN/POLLOUT) */
   short             io_revents;  /* poll result the monitor delivered when the fd became ready */

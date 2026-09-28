@@ -254,7 +254,7 @@ static void sp_deadline_added(double d) {   /* PRE: sched lock held */
    deadline, so this keeps the park path cheap and amortizes heap repair across
    the batch, like IO::Event::Timers. Canceled handles are left in place until
    they reach the root or compaction makes rebuilding cheaper. */
-enum { SP_TIMER_SLEEP, SP_TIMER_IO, SP_TIMER_CONDVAR };
+enum { SP_TIMER_SLEEP, SP_TIMER_IO, SP_TIMER_WAIT };
 struct sp_sched_timer {
   double deadline;
   sp_thread *thread;
@@ -3120,14 +3120,16 @@ static void sp_sched_block(sp_thread **waitlist) {   /* PRE/POST: sched lock hel
   }
 }
 
-/* Timed ConditionVariable#wait has to reserve its timer before releasing the
-   mutex, then publish the waiter and its deadline under this same lock. That
-   preserves the signal-vs-park atomicity of sp_sched_block. Returns 0 only
-   when timer storage could not be allocated; the lock and mutex are still
-   held in that case. */
-static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, int kind, sp_mutex *mutex) {
+#ifdef SP_THREADS
+/* A timed wait reserves its timer and publishes the waiter under the scheduler
+   lock, preserving wake-vs-park atomicity. If mutex is non-NULL, it is checked
+   and released as part of parking (ConditionVariable#wait); other waiters such
+   as Queue#pop can pass NULL. Returns -1 if timer storage could not be allocated,
+   0 if the deadline expired, or 1 if another event woke the thread. The caller
+   holds the scheduler lock on return. */
+static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mutex *mutex) {
   sp_thread *self = g_current;
-  if (SP_ATOMIC_LOAD(&mutex->owner, __ATOMIC_SEQ_CST) != self) {
+  if (mutex && SP_ATOMIC_LOAD(&mutex->owner, __ATOMIC_SEQ_CST) != self) {
     SCHED_UNLOCK();
     sp_raise_cls("ThreadError", "Attempt to unlock a mutex which is not locked");
   }
@@ -3136,10 +3138,13 @@ static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, int kin
     sp_fiber_fire_inject_if_pending();
     SCHED_LOCK();
   }
-  if (!sp_timer_schedule(self, deadline, kind)) return 0;
+  self->timer_expired = 0;
+  if (!sp_timer_schedule(self, deadline, SP_TIMER_WAIT)) return -1;
 
-  SP_ATOMIC_STORE(&mutex->owner, NULL, __ATOMIC_SEQ_CST);
-  if (mutex->waiters) sp_sched_wake_one(&mutex->waiters);
+  if (mutex) {
+    SP_ATOMIC_STORE(&mutex->owner, NULL, __ATOMIC_SEQ_CST);
+    if (mutex->waiters) sp_sched_wake_one(&mutex->waiters);
+  }
   self->state = SP_TH_BLOCKED;
   self->off_cpu = 0;
   self->wake_pending = 0;
@@ -3172,8 +3177,9 @@ static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, int kin
     sp_fiber_fire_inject_if_pending();
     SCHED_LOCK();
   }
-  return 1;
+  return self->timer_expired ? 0 : 1;
 }
+#endif
 
 /* Move one thread off `*waitlist` back onto the run queue (or mark the main
    thread runnable so its pump returns). Returns the woken thread, or NULL. */
@@ -3212,6 +3218,7 @@ static void sp_sched_timer_expire(sp_sched_timer *timer, double now) {
   if (timer->kind == SP_TIMER_SLEEP && t->wait_head != &g_sleepers) return;
   if (timer->kind == SP_TIMER_IO && t->wait_head != &g_io_waiters) return;
 
+  if (timer->kind == SP_TIMER_WAIT) t->timer_expired = 1;
   if (timer->kind == SP_TIMER_IO) {
 #ifdef SP_EV_BACKEND
     g_ev_timeouts++;
@@ -3643,8 +3650,7 @@ void sp_CondVar_wait_timeout(sp_condvar *cv, sp_mutex *m, double seconds) {
   }
   SCHED_LOCK();
   double ct0 = sched_lat_enabled() ? sp_monotonic_now() : 0;
-  if (!sp_sched_block_timeout(&cv->waiters, sp_monotonic_now() + seconds,
-                              SP_TIMER_CONDVAR, m)) {
+  if (sp_sched_block_timeout(&cv->waiters, sp_monotonic_now() + seconds, m) < 0) {
     SCHED_UNLOCK();
     sp_raise_cls("NoMemoryError", "failed to schedule condition variable timeout");
   }

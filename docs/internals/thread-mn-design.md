@@ -77,8 +77,8 @@ green thread from the registry.
 
 A dedicated monitor thread ("sysmon"), off the workers' backs, has three jobs:
 
-1. **Fire timers.** `Kernel#sleep`, timed I/O waits, and timed condition waits
-   append handles to a staging buffer. The monitor batches them into a
+1. **Fire timers.** `Kernel#sleep`, timed I/O waits, and timed synchronization
+   waits append handles to a staging buffer. The monitor batches them into a
    `CLOCK_MONOTONIC` min-heap, expires its root when due, and periodically
    compacts canceled handles. (In the single-threaded build, sleep falls back
    to a plain blocking sleep.)
@@ -114,7 +114,10 @@ busy-waiting, and hold their waiters on intrusive wait lists:
 - **`ConditionVariable`** — `#wait` releases the mutex, parks on the condvar's
   `waiters`, and re-acquires the mutex on wake; `#signal` / `#broadcast` unpark.
   A timeout schedules a deadline in the scheduler's staged timer min-heap and
-  follows the same wake-and-reacquire path when it expires.
+  follows the same wake-and-reacquire path when it expires. Timed parking uses
+  the same wait-list mechanism as other blocking operations, optionally
+  releasing a mutex, and reports whether the deadline or another wake caused
+  the thread to resume.
 
 ## Status vs. the source
 
