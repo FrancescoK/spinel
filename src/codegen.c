@@ -7872,6 +7872,20 @@ static void emit_cls_answers_dispatch(Compiler *c, Buf *b) {
               "  sp_raise_nomethod(sp_nomethod_msg(\"keyword_init?\", v));\n  return sp_box_nil();\n}\n");
   g_tmp = tmp_saved;
 }
+static void emit_member_boxed(Compiler *c, TyKind mt, const char *ivf, Buf *b) {
+  if (mt == TY_INT) buf_printf(b, "(o->iv_%s == SP_INT_NIL ? sp_box_nil() : sp_box_int(o->iv_%s))", ivf, ivf);
+  else if (mt == TY_STRING) buf_printf(b, "(o->iv_%s ? sp_box_str(o->iv_%s) : sp_box_nil())", ivf, ivf);
+  else if (mt == TY_FLOAT) buf_printf(b, "sp_box_float_or_nil(o->iv_%s)", ivf);
+  else if (mt == TY_BOOL) buf_printf(b, "sp_box_bool(o->iv_%s)", ivf);
+  else if (mt == TY_SYMBOL) buf_printf(b, "sp_box_sym(o->iv_%s)", ivf);
+  else if (mt == TY_POLY) buf_printf(b, "o->iv_%s", ivf);
+  else {
+    char fb[128]; snprintf(fb, sizeof fb, "o->iv_%s", ivf);
+    Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, mt, fb, &bx);
+    buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+  }
+}
+
 /* Symbol-keyed Struct/Data #to_h, installed as sp_obj_to_h_fn. Mirrors the
    per-struct inline to_h emitter, but keyed by cls_id so a Struct/Data read out
    of a poly container can answer #to_h at run time (#2906). Data members are
@@ -7891,17 +7905,7 @@ static void emit_obj_to_h_dispatch(Compiler *c, Buf *b) {
       const char *iv = ci->ivars[j] + 1;  /* member name, sans @ (sym key) */
       const char *ivf = iv_c(iv);          /* C field id (mangled member) */
       buf_printf(b, "      sp_SymPolyHash_set(h, sp_sym_intern(\"%s\"), ", iv);
-      if (mt == TY_INT) buf_printf(b, "(o->iv_%s == SP_INT_NIL ? sp_box_nil() : sp_box_int(o->iv_%s))", ivf, ivf);
-      else if (mt == TY_STRING) buf_printf(b, "(o->iv_%s ? sp_box_str(o->iv_%s) : sp_box_nil())", ivf, ivf);
-      else if (mt == TY_FLOAT) buf_printf(b, "sp_box_float_or_nil(o->iv_%s)", ivf);
-      else if (mt == TY_BOOL) buf_printf(b, "sp_box_bool(o->iv_%s)", ivf);
-      else if (mt == TY_SYMBOL) buf_printf(b, "sp_box_sym(o->iv_%s)", ivf);
-      else if (mt == TY_POLY) buf_printf(b, "o->iv_%s", ivf);
-      else {
-        char fb[128]; snprintf(fb, sizeof fb, "o->iv_%s", ivf);
-        Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, mt, fb, &bx);
-        buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-      }
+      emit_member_boxed(c, mt, ivf, b);
       buf_puts(b, ");\n");
     }
     buf_puts(b, "      return sp_box_obj(h, SP_BUILTIN_SYM_POLY_HASH);\n    }\n");
@@ -7958,17 +7962,7 @@ static void emit_obj_struct_values_dispatch(Compiler *c, Buf *b) {
       TyKind mt = ci->ivar_types[j];
       const char *ivf = iv_c(ci->ivars[j] + 1);
       buf_puts(b, "      sp_PolyArray_push(a, ");
-      if (mt == TY_INT) buf_printf(b, "(o->iv_%s == SP_INT_NIL ? sp_box_nil() : sp_box_int(o->iv_%s))", ivf, ivf);
-      else if (mt == TY_STRING) buf_printf(b, "(o->iv_%s ? sp_box_str(o->iv_%s) : sp_box_nil())", ivf, ivf);
-      else if (mt == TY_FLOAT) buf_printf(b, "sp_box_float_or_nil(o->iv_%s)", ivf);
-      else if (mt == TY_BOOL) buf_printf(b, "sp_box_bool(o->iv_%s)", ivf);
-      else if (mt == TY_SYMBOL) buf_printf(b, "sp_box_sym(o->iv_%s)", ivf);
-      else if (mt == TY_POLY) buf_printf(b, "o->iv_%s", ivf);
-      else {
-        char fb[128]; snprintf(fb, sizeof fb, "o->iv_%s", ivf);
-        Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, mt, fb, &bx);
-        buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-      }
+      emit_member_boxed(c, mt, ivf, b);
       buf_puts(b, ");\n");
     }
     buf_puts(b, "      return sp_box_poly_array(a);\n    }\n");
