@@ -28366,7 +28366,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     Scope *encl = comp_scope_of(c, id);
     if (encl && encl->is_cmethod && encl->class_id >= 0 &&
         comp_cmethod_in_chain(c, encl->class_id, name, NULL) < 0) {
-      if (cmethod_takes_self_cls(c, (int)(encl - c->scopes))) buf_puts(b, "sp_class_to_s(_sp_cls)");
+      if (cmethod_takes_self_cls(c, (int)(encl - c->scopes)))
+        buf_printf(b, "sp_class_to_s(%s)", encl->yields && g_self ? g_self : "_sp_cls");
       else {
         /* the Ruby-visible name: the enclosing path, with any collision
            qualification undone (`Brainfuck__Array` is `Brainfuck::Array`) */
@@ -28381,7 +28382,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     Scope *encl = comp_scope_of(c, id);
     if (encl && encl->is_cmethod && encl->class_id >= 0 &&
         comp_cmethod_in_chain(c, encl->class_id, name, NULL) < 0) {
-      if (cmethod_takes_self_cls(c, (int)(encl - c->scopes))) buf_puts(b, "sp_class_to_s(_sp_cls)");
+      if (cmethod_takes_self_cls(c, (int)(encl - c->scopes)))
+        buf_printf(b, "sp_class_to_s(%s)", encl->yields && g_self ? g_self : "_sp_cls");
       else {
         /* the Ruby-visible name: the enclosing path, with any collision
            qualification undone (`Brainfuck__Array` is `Brainfuck::Array`) */

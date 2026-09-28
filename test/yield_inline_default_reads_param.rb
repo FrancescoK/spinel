@@ -60,3 +60,20 @@ class B; def py(a, b = a + 2) = yield(a, b); end
 class KA; def pk(a, k: a.to_s * 2) = yield(a, k); end
 class KB; def pk(a, k: a.to_s) = yield(a, k); end
 [KA.new, KB.new].each { |q| p q.pk(4) { |x, z| [x, z] } }
+
+class CBase
+  def self.m(a, b = self) = yield(a, b)
+  def self.n(a, b = name) = yield(a, b)
+  def self.w(a, b = new) = yield(a, b.class)
+  def self.q = yield(name)
+end
+class CSub < CBase; end
+p CSub.m(1) { |x, y| [x, y] }
+p CBase.m(1) { |x, y| [x, y] }
+p CSub.n(2) { |x, y| [x, y] }
+p CBase.n(2) { |x, y| [x, y] }
+p CSub.w(3) { |x, y| [x, y] }
+p CBase.w(3) { |x, y| [x, y] }
+cs = CSub
+p cs.m(4) { |x, y| [x, y] }
+p CSub.q { |x| x }

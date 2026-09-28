@@ -21,3 +21,11 @@
 [4, 0]
 [4, "44"]
 [4, "4"]
+[1, CSub]
+[1, CBase]
+[2, "CSub"]
+[2, "CBase"]
+[3, CSub]
+[3, CBase]
+[4, CSub]
+"CSub"
