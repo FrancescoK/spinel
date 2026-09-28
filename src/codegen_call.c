@@ -27101,12 +27101,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
      the legacy generator). */
   if (recv < 0 && sp_streq(name, "__dir__") && argc == 0) {
     /* a required file's own directory, which the parser stamped (#4839) */
-    const char *sf = nt_str(nt, id, "src_file");
-    if (!sf) sf = nt->source_file;
     char dir[1024];
-    if (sf && strrchr(sf, '/')) { size_t n = (size_t)(strrchr(sf, '/') - sf); if (n >= sizeof dir) n = sizeof dir - 1; if (n == 0) { dir[0] = '/'; dir[1] = 0; }
-else { memcpy(dir, sf, n); dir[n] = 0; } }
-    else { dir[0] = '.'; dir[1] = 0; }
+    an_node_dir(nt, id, dir, sizeof dir);
     emit_str_literal(b, dir);
     return;
   }

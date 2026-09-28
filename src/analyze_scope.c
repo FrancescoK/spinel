@@ -2709,16 +2709,8 @@ static char *ffi_fold_str(Compiler *c, int nid) {
     if (nm && sp_streq(nm, "__dir__") && rcv < 0 && an == 0) {
       /* the source file's directory (same convention as the codegen fold);
          in a required file, that file's own (#4839) */
-      const char *sf = nt_str(nt, nid, "src_file");
-      if (!sf) sf = nt->source_file;
       char dir[1024];
-      if (sf && strrchr(sf, '/')) {
-        size_t n = (size_t)(strrchr(sf, '/') - sf);
-        if (n >= sizeof dir) n = sizeof dir - 1;
-        if (n == 0) { dir[0] = '/'; dir[1] = 0; }
-        else { memcpy(dir, sf, n); dir[n] = 0; }
-      }
-      else { dir[0] = '.'; dir[1] = 0; }
+      an_node_dir(nt, nid, dir, sizeof dir);
       return strdup(dir);
     }
     if (nm && sp_streq(nm, "expand_path") && rcv >= 0 && (an == 1 || an == 2) &&

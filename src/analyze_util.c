@@ -2453,3 +2453,12 @@ int an_indexed_each_source(const NodeTable *nt, int recv) {
     return nt_ref(nt, wir, "receiver");
   return -1;
 }
+
+void an_node_dir(const NodeTable *nt, int id, char *dir, size_t cap) {
+  const char *sf = nt_str(nt, id, "src_file");
+  if (!sf) sf = nt->source_file;
+  const char *sl = sf ? strrchr(sf, '/') : NULL;
+  size_t n = sl && sl > sf ? (size_t)(sl - sf) : 1;
+  if (n >= cap) n = cap - 1;
+  memcpy(dir, sl ? sf : ".", n); dir[n] = 0;
+}
