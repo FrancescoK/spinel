@@ -2698,6 +2698,47 @@ static void emit_obj_nil(Compiler *c, TyKind pt, int t, Buf *b) {
   else buf_puts(b, "0");
 }
 
+/* 1 when exactly one `NAME = ...` writes the constant, at the top level of
+   the program rather than inside a module or a class (whose constant the
+   class-alias lookup, which reads names alone, would also lend to another
+   scope), and no `class NAME` or `module NAME` also names it */
+static int const_toplevel_alias(Compiler *c, const char *name) {
+  const NodeTable *nt = c->nt;
+  int cap = 256, sp = 0, n = 0, ok = 1;
+  int *st = malloc(sizeof(int) * (size_t)cap);
+  if (!st) return 0;
+  st[sp++] = nt->root_id; st[sp++] = 0;
+  while (sp > 0 && ok) {
+    int inside = st[--sp], id = st[--sp];
+    if (id < 0 || id >= nt->count) continue;
+    NodeKind k = nt_kind(nt, id);
+    if (k == NK_ClassNode || k == NK_ModuleNode) {
+      int cp = nt_ref(nt, id, "constant_path");
+      const char *nm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+      if (nm && sp_streq(nm, name)) ok = 0;
+      inside = 1;
+    }
+    if (k == NK_ConstantWriteNode) {
+      const char *nm = nt_str(nt, id, "name");
+      if (nm && sp_streq(nm, name) && (inside || ++n > 1)) ok = 0;
+    }
+    int nr = nt_num_refs(nt, id), na = nt_num_arrs(nt, id), m = nr;
+    for (int i = 0; i < na; i++) { int en = 0; nt_arr_at(nt, id, i, &en); m += en; }
+    if (sp + 2 * m > cap) {
+      while (sp + 2 * m > cap) cap *= 2;
+      int *ns = realloc(st, sizeof(int) * (size_t)cap);
+      if (!ns) { free(st); return 0; }
+      st = ns;
+    }
+    for (int i = 0; i < nr; i++) { st[sp++] = nt_ref_at(nt, id, i); st[sp++] = inside; }
+    for (int i = 0; i < na; i++) {
+      int en = 0; const int *el = nt_arr_at(nt, id, i, &en);
+      for (int j = 0; j < en; j++) { st[sp++] = el[j]; st[sp++] = inside; }
+    }
+  }
+  free(st);
+  return ok && n == 1;
+}
 /* The class arm of a `when` (statement or value form) or an `in` on a
    statically typed object subject, decided from the class table: 1 when it
    wrote a condition, 0 when the pattern names neither a root the object
@@ -2705,6 +2746,13 @@ static void emit_obj_nil(Compiler *c, TyKind pt, int t, Buf *b) {
    nor a module one of those includes (the caller decides the rest). */
 static int emit_obj_class_when(Compiler *c, TyKind pt, const char *cn, int t, Buf *b) {
   int cid = ty_object_class(pt);
+  /* a class-aliasing constant (Alias = SomeClass) tests the aliased class,
+     as the poly arm does (emit_poly_class_when), when the alias is written
+     once at the top level and names no class of its own */
+  if (comp_class_index(c, cn) < 0 && const_toplevel_alias(c, cn)) {
+    const char *ra = resolve_class_alias(c, cn);
+    if (ra) cn = ra;
+  }
   if (obj_is_root_class(c, cid, cn)) { buf_puts(b, "1"); return 1; }
   /* NilClass; Object and Kernel over a blank slate (`< BasicObject`), which
      the object is not but its nil is */
