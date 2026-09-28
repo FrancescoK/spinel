@@ -521,10 +521,11 @@ int sp_net_connect(const char *host, int port) {
     }
     freeaddrinfo(res);
     sp_fiber_undefer_inject();
-    if (fd < 0) {
+    if (sp_fiber_current && sp_fiber_inject_pending(sp_fiber_current)) {
+        if (fd >= 0) { close(fd); fd = -1; }   /* even if it connected */
         sp_fiber_fire_inject_if_pending();
-        return -1;
     }
+    if (fd < 0) return -1;
 
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
