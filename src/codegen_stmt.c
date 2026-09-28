@@ -10301,9 +10301,21 @@ else {
       else if (lty && sp_streq(lty, "GlobalVariableTargetNode")) {
         const char *gnm = nt_str(nt, lefts[i], "name");
         const char *rn2 = gnm ? comp_resolve_gvar(c, gnm + 1) : NULL;
-        if (!rn2 || !comp_gvar(c, rn2)) { unsupported(c, id, "multiple assignment global target"); continue; }
+        LocalVar *gv2 = rn2 ? comp_gvar(c, rn2) : NULL;
+        if (!gv2) { unsupported(c, id, "multiple assignment global target"); continue; }
         emit_indent(b, indent);
-        buf_printf(b, "gv_%s = _t%d;\n", rn2, tmps[i]);
+        buf_printf(b, "gv_%s = ", rn2);
+        /* a boxed global (widened under --int-overflow=promote) boxes the
+           typed element, as the ivar target above does */
+        TyKind gvalt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
+        if (gv2->type == TY_POLY && gvalt != TY_POLY) {
+          char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmps[i]);
+          Buf bx; memset(&bx, 0, sizeof bx);
+          emit_boxed_text(c, gvalt, expr, &bx);
+          buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+        }
+        else buf_printf(b, "_t%d", tmps[i]);
+        buf_puts(b, ";\n");
       }
       else if (lty && sp_streq(lty, "IndexTargetNode")) {
         int recv_id = nt_ref(nt, lefts[i], "receiver");
