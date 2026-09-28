@@ -5414,6 +5414,17 @@ static int emit_strbuf_local_write_handle(Compiler *c, int node, Buf *out) {
   return 1;
 }
 
+/* A parameter a closure in its method captures is a heap cell, and a default
+   that builds such a closure (`b: -> { a }`) captures the hoisted alias through
+   its cell spelling: give the alias `lv_<uniq>` that cell too. */
+static void emit_pd_cell_alias(Compiler *c, LocalVar *plv, const char *uniq) {
+  if (!plv || !plv->is_cell || plv->byref_out) return;
+  emit_inlined_local_decl(c, plv, uniq, g_pre, g_indent);
+  emit_indent(g_pre, g_indent);
+  if (plv->type == TY_PROC) buf_printf(g_pre, "*_cell_%s = (sp_int)(uintptr_t)lv_%s;\n", uniq, uniq);
+  else buf_printf(g_pre, "*_cell_%s = lv_%s;\n", uniq, uniq);
+}
+
 /* A default a dispatch arm omits runs on the receiver as the arm's class: the
    caller's self may be another class, or none at all at top level (#4873). */
 void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out) {
@@ -5469,7 +5480,9 @@ static void emit_arg_or_default_at(Compiler *c, Scope *m, int idx, int provided,
   g_open_default[g_open_defaults].m = m;
   g_open_default[g_open_defaults].idx = idx;
   g_open_defaults++;
+  int sv_nren = declare_default_locals(c, m, m->pdefault[idx]);
   emit_arg_or_default_fill(c, m, idx, provided, out);
+  g_nren = sv_nren;
   g_open_defaults--;
 }
 
@@ -7470,6 +7483,7 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, pt == TY_POLY ? "SP_GC_ROOT_RBVAL(lv_%s);\n" : "SP_GC_ROOT(lv_%s);\n", uniq);
         }
+        emit_pd_cell_alias(c, plv, uniq);
       }
       free(vb.p);
       /* Register the rename AFTER emitting temp i so param i+1's default reads
@@ -8401,6 +8415,8 @@ else {
         emit_indent(g_pre, g_indent);
         emit_ctype(c, att, g_pre);
         buf_printf(g_pre, " lv__pd%d_%d = _t%d; (void)lv__pd%d_%d;\n", pd_uid, k, atmp[k], pd_uid, k);
+        char pdn[48]; snprintf(pdn, sizeof pdn, "_pd%d_%d", pd_uid, k);
+        emit_pd_cell_alias(c, p, pdn);
         snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", m->pnames[k]);
         snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_pd%d_%d", pd_uid, k);
         g_nren++;

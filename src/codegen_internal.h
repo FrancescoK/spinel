@@ -916,6 +916,7 @@ void emit_autosplat_params(Compiler *c, int block, int np, int elem_temp, int in
 int poly_block_call_needs_dispatch(Compiler *c, int id);
 void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b);
 void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out);
+int declare_default_locals(Compiler *c, Scope *m, int dnode);
 int arg_wants_root(Compiler *c, TyKind pt, int provided);
 void emit_rooted_operand(Compiler *c, TyKind pt, int provided, const char *expr, Buf *out);
 int arg_slot_for_param(Compiler *c, Scope *m, int idx, int argc);
