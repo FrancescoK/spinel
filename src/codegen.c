@@ -9812,6 +9812,7 @@ void emit_regex_section(Compiler *c, Buf *b) {
                 "  sp_user_exc_modules_fn = sp_user_exc_modules;\n"
                 "  sp_poly_is_a_hook = sp_poly_is_a;\n"
                 "  sp_class_le_id_fn = sp_class_le_ids;\n"
+                "  sp_class_cmp_fn = sp_class_cmp_rv;\n"
                 "  sp_class_kind_of_name_fn = sp_class_kind_of_name;\n");
   /* an unoptimised build runs its fibers on 1 MB stacks (see g_opt_level);
      SPINEL_FIBER_STACK in the environment still wins */
@@ -12500,6 +12501,36 @@ char *codegen_program(const NodeTable *nt) {
       "    return sp_poly_kind_of_builtin(obj, sp_class_to_s(klass));\n"
       "  if (klass.name) return sp_poly_is_a_dyn(obj, sp_box_class(klass), 0);\n"
       "  return sp_class_le(sp_poly_get_class(obj),klass);\n}\n");
+    /* Module#< / <= / > / >= / <=> where an operand is boxed: the tri-state
+       answer of sp_class_lt3 and friends, TypeError for a non-class operand
+       (nil for <=>), and the ordinary poly comparison when the receiver turns
+       out not to be a class. The runtime reaches the same answer through
+       sp_class_cmp_fn. */
+    buf_puts(&b,
+      "static sp_RbVal sp_class_cmp_rv(sp_RbVal a, sp_RbVal b){return sp_class_cmp3(sp_unbox_class(a),sp_unbox_class(b));}\n"
+      "static sp_RbVal sp_class_op_rv(sp_RbVal a, sp_RbVal b, int op) SP_UNUSED;\n"
+      "static sp_RbVal sp_class_op_rv(sp_RbVal a, sp_RbVal b, int op){\n"
+      "  if(a.tag!=SP_TAG_CLASS){\n"
+      "    switch(op){\n"
+      "    case 0: return sp_box_bool(sp_poly_lt(a,b));\n"
+      "    case 1: return sp_box_bool(sp_poly_le(a,b));\n"
+      "    case 2: return sp_box_bool(sp_poly_gt(a,b));\n"
+      "    case 3: return sp_box_bool(sp_poly_ge(a,b));\n"
+      "    default: { sp_int r=sp_poly_spaceship(a,b); return r==SP_INT_NIL?sp_box_nil():sp_box_int(r); }\n"
+      "    }\n"
+      "  }\n"
+      "  if(b.tag!=SP_TAG_CLASS){\n"
+      "    if(op==4)return sp_box_nil();\n"
+      "    sp_raise_cls(\"TypeError\",\"compared with non class/module\");\n"
+      "  }\n"
+      "  sp_Class x=sp_unbox_class(a),y=sp_unbox_class(b);\n"
+      "  switch(op){\n"
+      "  case 0: return sp_class_lt3(x,y);\n"
+      "  case 1: return sp_class_le3(x,y);\n"
+      "  case 2: return sp_class_gt3(x,y);\n"
+      "  case 3: return sp_class_ge3(x,y);\n"
+      "  default: return sp_class_cmp3(x,y);\n"
+      "  }\n}\n");
     for (int ci = 0; ci < c->nclasses; ci++) { free(cls_incs[ci]); free(cls_preps[ci]); }
     free(cls_incs); free(cls_nincs); free(cls_preps); free(cls_npreps);
   }

@@ -1,0 +1,45 @@
+true
+true
+false
+false
+-1
+1
+true
+true
+false
+-1
+false
+true
+0
+true
+nil
+nil
+true
+true
+true
+false
+true
+-1
+"compared with non class/module"
+"compared with non class/module"
+nil
+Sub
+Other
+true
+true
+false
+true
+true
+true
+[Sub, Base]
+Sub
+:sub
+nil
+true
+NoMethodError
+"compared with non class/module"
+nil
+true
+true
+true
+nil
