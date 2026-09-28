@@ -1504,7 +1504,7 @@ int desugar_dynamic_send(Compiler *c) {
     }
     free(score);
   }
-  if (ncand > 256) { for (int k = 256; k < ncand; k++) free(cand[k]); ncand = 256; }
+  char **picked = (char **)malloc(sizeof(char *) * (size_t)(ncand > 0 ? ncand : 1));
   for (int id = 0; id < n0; id++) {
     if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
     const char *nm = nt_str(nt, id, "name");
@@ -1546,6 +1546,29 @@ int desugar_dynamic_send(Compiler *c) {
     char **use = cand; int nuse = ncand;
     char **own = NULL; int nown = 0;
     int computed = an_send_name_is_computed(c, argv[0]);
+    if (!computed && ncand > 256) {
+      /* Past the cap, the literals the receiver answers go first and are all
+         kept, so a program's other literals can't crowd its own names out. */
+      int npick = 0;
+      TyKind rt = infer_type(c, recv);
+      if (ty_is_object(rt) || rt == TY_POLY || rt == TY_UNKNOWN) {
+        ANameHash answers; memset(&answers, 0, sizeof answers);
+        for (int d = 0; d < c->nclasses; d++) {
+          if (ty_is_object(rt) ? d != ty_object_class(rt) : comp_class_is_module(c, &c->classes[d])) continue;
+          char **rn = NULL; int nrn = dsend_receiver_names(c, d, ty_is_object(rt), &rn);
+          for (int k = 0; k < nrn; k++) { if (!anh_has(&answers, rn[k])) anh_add(&answers, rn[k]); else free(rn[k]); }
+          free(rn);
+        }
+        for (int k = 0; k < ncand && npick < 1024; k++)
+          if (anh_has(&answers, cand[k])) picked[npick++] = cand[k];
+        for (int k = 0; k < ncand && npick < 256; k++)
+          if (!anh_has(&answers, cand[k])) picked[npick++] = cand[k];
+        for (int k = 0; k < answers.n; k++) free((char *)answers.key[k]);
+        anh_free(&answers);
+      }
+      else for (; npick < 256; npick++) picked[npick] = cand[npick];
+      use = picked; nuse = npick;
+    }
     if (computed) {
       TyKind rt = infer_type(c, recv);
       if (ty_is_object(rt)) nown = dsend_receiver_names(c, ty_object_class(rt), 1, &own);
@@ -1557,7 +1580,7 @@ int desugar_dynamic_send(Compiler *c) {
           for (int j = 0; j < nk; j++) { dsend_add_name(&own, &nown, &cap, &seen, kn[j]); free(kn[j]); }
           free(kn);
         }
-        for (int k = 0; k < ncand; k++) dsend_add_name(&own, &nown, &cap, &seen, cand[k]);
+        for (int k = 0; k < ncand && k < 256; k++) dsend_add_name(&own, &nown, &cap, &seen, cand[k]);
         anh_free(&seen);
       }
       else continue;
@@ -1594,6 +1617,7 @@ int desugar_dynamic_send(Compiler *c) {
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
     changed = 1;
   }
+  free(picked);
   for (int k = 0; k < ncand; k++) free(cand[k]);
   free(cand);
   return changed;
