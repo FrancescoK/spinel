@@ -4572,7 +4572,9 @@ static void desugar_enum_chain_shapes(Compiler *c) {
        materialize an Enumerator. */
 
     /* max(n) { cmp } / min(n) { cmp }: the n extremes by the comparator --
-       sort { cmp } then take from the appropriate end (max descends). */
+       sort { cmp } then take from the appropriate end (max descends). A block
+       argument read off a local, a constant or a Symbol literal (`&pr`,
+       `&:<=>`) goes to the sort the same way, which serves it as its own. */
     if ((sp_streq(nm, "max") || sp_streq(nm, "min")) && recv >= 0 &&
         nt_ref(nt, id, "block") >= 0) {
       int margs = nt_ref(nt, id, "arguments");
@@ -4580,7 +4582,10 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       if (margs >= 0) nt_arr(nt, margs, "arguments", &man);
       int mblk = nt_ref(nt, id, "block");
       const char *mbty = mblk >= 0 ? nt_type(nt, mblk) : NULL;
-      if (man == 1 && mbty && sp_streq(mbty, "BlockNode")) {
+      NodeKind mek = mbty && sp_streq(mbty, "BlockArgumentNode")
+                     ? nt_kind(nt, nt_ref(nt, mblk, "expression")) : NK_NONE;
+      if (man == 1 && mbty && (sp_streq(mbty, "BlockNode") || mek == NK_LocalVariableReadNode ||
+                               mek == NK_ConstantReadNode || mek == NK_SymbolNode)) {
         int sortc = nt_new_node(nt, "CallNode");
         nt_node_set_str(nt, sortc, "name", "sort");
         nt_node_set_ref(nt, sortc, "receiver", recv);
@@ -5706,14 +5711,6 @@ static int desugar_hash_block_arg(Compiler *c) {
   return changed;
 }
 
-/* Does iterator `nm` call its block with two values -- an accumulator and
-   the element, or the two it compares -- so that a Symbol's block sends the
-   second to the first? */
-static int block_arg_takes_two(const char *nm) {
-  return nm && (sp_streq(nm, "reduce") || sp_streq(nm, "inject") || sp_streq(nm, "sort") ||
-                sp_streq(nm, "min") || sp_streq(nm, "max") || sp_streq(nm, "minmax"));
-}
-
 static int desugar_symbol_var_block_arg(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -5735,34 +5732,31 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
     }
     if (ex < 0 || !nt_type(nt, ex) || !sp_streq(nt_type(nt, ex), "LocalVariableReadNode")) continue;
     if (infer_type(c, ex) != TY_SYMBOL) continue;
-    int two = !is_toproc && block_arg_takes_two(nm);
-    char pa[32], pb[32];
-    snprintf(pa, sizeof pa, "__svp_a_%d", id);
-    snprintf(pb, sizeof pb, "__svp_b_%d", id);
-    int kpa = nt_new_node(nt, "RequiredParameterNode");
-    nt_node_set_str(nt, kpa, "name", pa);
-    int preq[2] = { kpa, -1 };
-    int npar = 1;
-    if (two) {
-      int kpb = nt_new_node(nt, "RequiredParameterNode");
-      nt_node_set_str(nt, kpb, "name", pb);
-      preq[1] = kpb; npar = 2;
+    /* as many parameters as the call passes its block: the first receives
+       the send, the rest are its arguments */
+    int npar = is_toproc ? 1 : sym_block_values(c, id);
+    if (npar < 1) npar = 1;
+    char pn[8][32];
+    int preq[8], sa[9];
+    int base = nt->count;
+    for (int k = 0; k < npar; k++) {
+      snprintf(pn[k], sizeof pn[k], "__svp_%c_%d", 'a' + k, id);
+      preq[k] = nt_new_node(nt, "RequiredParameterNode");
+      nt_node_set_str(nt, preq[k], "name", pn[k]);
     }
     int params = nt_new_node(nt, "ParametersNode");
     nt_node_set_arr(nt, params, "requireds", preq, npar);
     int bparams = nt_new_node(nt, "BlockParametersNode");
     nt_node_set_ref(nt, bparams, "parameters", params);
     int ra = nt_new_node(nt, "LocalVariableReadNode");
-    nt_node_set_str(nt, ra, "name", pa);
+    nt_node_set_str(nt, ra, "name", pn[0]);
     int sargs = nt_new_node(nt, "ArgumentsNode");
-    int sa[2] = { ex, -1 };
-    int nsa = 1;
-    if (two) {
-      int rb2 = nt_new_node(nt, "LocalVariableReadNode");
-      nt_node_set_str(nt, rb2, "name", pb);
-      sa[1] = rb2; nsa = 2;
+    sa[0] = ex;
+    for (int k = 1; k < npar; k++) {
+      sa[k] = nt_new_node(nt, "LocalVariableReadNode");
+      nt_node_set_str(nt, sa[k], "name", pn[k]);
     }
-    nt_node_set_arr(nt, sargs, "arguments", sa, nsa);
+    nt_node_set_arr(nt, sargs, "arguments", sa, npar);
     int call = nt_new_node(nt, "CallNode");
     nt_node_set_str(nt, call, "name", "send");
     nt_node_set_ref(nt, call, "receiver", ra);
@@ -5774,20 +5768,11 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
     nt_node_set_ref(nt, blk2, "body", blkbody);
     comp_grow_node_arrays(c);
     /* new nodes belong to the call's scope */
-    int ns2[16]; int nn2 = 0;
-    ns2[nn2++] = kpa; if (two) ns2[nn2++] = preq[1];
-    ns2[nn2++] = params; ns2[nn2++] = bparams; ns2[nn2++] = ra;
-    if (two) ns2[nn2++] = sa[1];
-    ns2[nn2++] = sargs; ns2[nn2++] = call; ns2[nn2++] = blkbody; ns2[nn2++] = blk2;
-    for (int j = 0; j < nn2; j++) c->nscope[ns2[j]] = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[id];
     Scope *sc2 = comp_scope_of(c, id);
-    if (sc2) {
-      LocalVar *lva = scope_local_intern(sc2, pa);
-      if (lva) lva->is_block_param = 1;
-      if (two) {
-        LocalVar *lvb = scope_local_intern(sc2, pb);
-        if (lvb) lvb->is_block_param = 1;
-      }
+    for (int k = 0; sc2 && k < npar; k++) {
+      LocalVar *lv = scope_local_intern(sc2, pn[k]);
+      if (lv) lv->is_block_param = 1;
     }
     if (is_toproc) {
       /* sym_var.to_proc -> lambda { |x| x.send(sym_var) } */
@@ -17137,16 +17122,17 @@ static int psb_local(NodeTable *nt, const char *type, const char *name) {
   return n;
 }
 
-/* `proc { |x| x.name }` -- the block `&:name` lowers to -- or, for an iterator
-   that calls its block with two values, `proc { |x, y| x.name(y) }`. Its
-   parameters are boxed: whichever site the value reaches calls it, and
+/* `proc { |x| x.name }` -- the block `&:name` lowers to -- or, for a call
+   that passes its block `nv` values, `proc { |x, y| x.name(y) }` and so on.
+   Its parameters are boxed: whichever site the value reaches calls it, and
    through a builtin iterator's forward nothing types them, which then
    defaulted to an Integer (`[pt].map(&v)` called `x` on one). */
-static int psb_symbol_proc(Compiler *c, Scope *sc, const char *name, int two, const char *pfx) {
+static int psb_symbol_proc(Compiler *c, Scope *sc, const char *name, int nv, const char *pfx) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int req[2], args = -1;
-  char pn[2][64];
-  for (int k = 0; k < 1 + two; k++) {
+  int req[8], ys[8], args = -1;
+  char pn[8][64];
+  if (nv < 1) nv = 1;
+  for (int k = 0; k < nv; k++) {
     snprintf(pn[k], sizeof pn[k], "%s_%c", pfx, 'a' + k);
     req[k] = nt_new_node(nt, "RequiredParameterNode");
     nt_node_set_str(nt, req[k], "name", pn[k]);
@@ -17154,13 +17140,13 @@ static int psb_symbol_proc(Compiler *c, Scope *sc, const char *name, int two, co
     if (lv) { lv->is_block_param = 1; lv->type = TY_POLY; }
   }
   int params = nt_new_node(nt, "ParametersNode");
-  nt_node_set_arr(nt, params, "requireds", req, 1 + two);
+  nt_node_set_arr(nt, params, "requireds", req, nv);
   int bparams = nt_new_node(nt, "BlockParametersNode");
   nt_node_set_ref(nt, bparams, "parameters", params);
-  if (two) {
-    int y = psb_local(nt, "LocalVariableReadNode", pn[1]);
+  if (nv > 1) {
+    for (int k = 1; k < nv; k++) ys[k] = psb_local(nt, "LocalVariableReadNode", pn[k]);
     args = nt_new_node(nt, "ArgumentsNode");
-    nt_node_set_arr(nt, args, "arguments", &y, 1);
+    nt_node_set_arr(nt, args, "arguments", ys + 1, nv - 1);
   }
   int send = nt_new_node(nt, "CallNode");
   nt_node_set_str(nt, send, "name", name);
@@ -17208,7 +17194,11 @@ static int desugar_poly_symbol_block_arg(Compiler *c) {
     Scope *sc = comp_scope_of(c, id);
     if (!sc) continue;
     int first = nt->count;
-    int two = k == NK_CallNode && block_arg_takes_two(nt_str(nt, id, "name"));
+    int nv = k == NK_CallNode ? sym_block_values(c, id) : 0;
+    /* over a call that passes its block several values a value that is only
+       ever a Symbol is sent as a local is: the comparators and a seeded
+       inject run no Proc block argument */
+    if (nv && et == TY_SYMBOL) syms.n = 0;
     char vn[48], bn[48];
     snprintf(vn, sizeof vn, "__psym_%d", id);
     snprintf(bn, sizeof bn, "__psblk_%d", id);
@@ -17227,7 +17217,7 @@ static int desugar_poly_symbol_block_arg(Compiler *c) {
       for (int j = syms.n - 1; j >= 0; j--) {
         char pfx[64];
         snprintf(pfx, sizeof pfx, "__psym_%d_%d", id, j);
-        int pr = psb_symbol_proc(c, sc, syms.v[j], two, pfx);
+        int pr = psb_symbol_proc(c, sc, syms.v[j], nv, pfx);
         /* :name == __psym_N */
         int sy = nt_new_node(nt, "SymbolNode");
         nt_node_set_str(nt, sy, "value", syms.v[j]);

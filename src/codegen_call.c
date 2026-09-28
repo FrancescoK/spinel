@@ -27594,6 +27594,14 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         buf_puts(b, "sp_poly_to_f("); emit_expr(c, argv[a], b); buf_puts(b, ")");
       }
       else if (comp_ntype(c, argv[a]) == TY_UNKNOWN) emit_unresolved_coerced(c, argv[a], elem, b);
+      /* an Array, a Hash or an object into an Integer, Float or String
+         array is refused at run time, as the statement form refuses it */
+      else if ((elem == TY_INT || elem == TY_FLOAT || elem == TY_STRING) &&
+               (ty_is_array(comp_ntype(c, argv[a])) || ty_is_obj_array(comp_ntype(c, argv[a])) ||
+                ty_is_hash(comp_ntype(c, argv[a])) || ty_is_object(comp_ntype(c, argv[a])))) {
+        buf_puts(b, elem == TY_INT ? "sp_poly_elem_i(" : elem == TY_FLOAT ? "sp_poly_elem_f(" : "sp_poly_elem_s(");
+        emit_boxed(c, argv[a], b); buf_puts(b, ")");
+      }
       else emit_expr(c, argv[a], b);
       buf_puts(b, "); ");
     }

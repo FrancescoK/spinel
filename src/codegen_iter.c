@@ -1098,6 +1098,14 @@ static int block_tail_needs_value_form(Compiler *c, int id) {
     if (pa >= 0) nt_arr(nt, pa, "arguments", &pn);
     return pn >= 1;
   }
+  /* `a.concat(b)` / `a.push(b)` / `a << b` on an Array as the tail: the
+     statement form appends in a compound or through a void C call, while the
+     call answers the receiver (`def two = yield([1], [2]); two(&:concat)`
+     did not build). */
+  if ((sp_streq(nm, "concat") || sp_streq(nm, "push") || sp_streq(nm, "append") || sp_streq(nm, "<<")) &&
+      nt_ref(nt, id, "receiver") >= 0 && nt_ref(nt, id, "block") < 0 &&
+      nt_ref(nt, id, "arguments") >= 0 && ty_is_array(comp_ntype(c, nt_ref(nt, id, "receiver"))))
+    return 1;
   if (nt_ref(nt, id, "block") < 0) return 0;
   if (sp_streq(nm, "tap") || sp_streq(nm, "then") || sp_streq(nm, "yield_self"))
     return nt_ref(nt, id, "receiver") >= 0;
