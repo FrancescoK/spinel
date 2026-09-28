@@ -2077,7 +2077,8 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
     "[]", "[]=", "push", "<<", "pop", "shift", "unshift", "concat", "join",
     "flatten", "compact", "uniq", "reverse", "last", "index", "delete",
     "delete_at", "delete_if", "insert", "fetch", "sample", "shuffle",
-    "rotate", "slice", "fill", "dig", "+", "-", "*", "&", "|", NULL };
+    "rotate", "slice", "fill", "dig", "values_at", "+", "-", "*", "&", "|",
+    NULL };
   static const char *const hashm[] = {
     "[]", "[]=", "keys", "values", "fetch", "store", "delete", "key?",
     "has_key?", "member?", "value?", "has_value?", "each_pair", "each_key",
@@ -2101,7 +2102,8 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
   static const char *const intm[] = {
     "times", "upto", "downto", "succ", "next", "pred", "even?", "odd?",
     "gcd", "lcm", "digits", "bit_length", "chr", "ord", "pow", "&", "|",
-    "^", "<<", ">>", "~", "integer?", "allbits?", "anybits?", "nobits?", NULL };
+    "^", "<<", ">>", "~", "integer?", "allbits?", "anybits?", "nobits?",
+    "size", NULL };
   static const char *const fltm[] = {
     "nan?", "infinite?", "finite?", "integer?", NULL };
   static const char *const rngm[] = {
