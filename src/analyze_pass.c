@@ -5250,6 +5250,24 @@ int infer_param_types(Compiler *c) {
         Scope *pm = &c->scopes[pmi];
         int n = s->nparams < pm->nparams ? s->nparams : pm->nparams;
         if (pm->rest_idx >= 0 && n > pm->rest_idx) n = pm->rest_idx;
+        /* a `*rest` here spreads across the parent's fixed parameters from
+           its own index on, as a `super(*rest)` does */
+        int srest = s->rest_idx;
+        if (srest >= 0 && srest < n && s->pnames[srest]) {
+          LocalVar *rv = scope_local(s, s->pnames[srest]);
+          TyKind rt = rv ? rv->type : TY_UNKNOWN;
+          TyKind at = ty_is_array(rt) ? ty_array_elem(rt) : TY_POLY;
+          if (at == TY_VOID || at == TY_NIL || at == TY_UNKNOWN) at = TY_POLY;
+          int max_bind = pm->nparams;
+          if (pm->rest_idx >= 0 && max_bind > pm->rest_idx) max_bind = pm->rest_idx;
+          if (pm->kwrest_idx >= 0 && max_bind > pm->kwrest_idx) max_bind = pm->kwrest_idx;
+          for (int pk = srest; rt != TY_UNKNOWN && pk < max_bind; pk++) {
+            LocalVar *p = pm->pnames[pk] ? scope_local(pm, pm->pnames[pk]) : NULL;
+            if (!p || p->rbs_seeded || callee_param_is_declared_kwarg(c, pm, pm->pnames[pk])) continue;
+            changed |= slot_take(c, p, at, id);
+          }
+          n = srest;
+        }
         for (int k = 0; k < n; k++) {
           LocalVar *src = scope_local(s, s->pnames[k]);
           LocalVar *dst = scope_local(pm, pm->pnames[k]);

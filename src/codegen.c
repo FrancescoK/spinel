@@ -8628,6 +8628,64 @@ static void emit_zsuper_rest_pack(Compiler *c, Scope *s, Scope *pm, int npos, Bu
   else buf_puts(b, tn);
 }
 
+static void emit_zsuper_arg(Compiler *c, TyKind st, TyKind dt, const char *pname, Buf *b);
+
+/* A bare `super` in a method taking `*rest`: CRuby passes its positionals
+   with the rest spread among them, so how many reach the parent is known only
+   at run time. Gather them into one Array rooted in the prelude and refuse a
+   count the parent cannot take; -1 when the method has no named rest. */
+static int emit_zsuper_gather(Compiler *c, Scope *s, Scope *pm) {
+  if (s->rest_idx < 0 || !s->pnames[s->rest_idx]) return -1;
+  LocalVar *rv = scope_local(s, s->pnames[s->rest_idx]);
+  if (!rv) return -1;
+  int ct = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", ct, ct);
+  for (int i = 0; i < s->nparams && i != s->kwrest_idx &&
+                  !callee_param_is_declared_kwarg(c, s, s->pnames[i]); i++) {
+    LocalVar *ep = scope_local(s, s->pnames[i]);
+    TyKind et = ep && ep->type != TY_UNKNOWN ? ep->type : TY_POLY;
+    char txt[128]; snprintf(txt, sizeof txt, "lv_%s", rename_local(s->pnames[i]));
+    Buf ab; memset(&ab, 0, sizeof ab);
+    if (et == TY_POLY) buf_puts(&ab, txt);
+    else emit_boxed_text(c, et, txt, &ab);
+    emit_indent(g_pre, g_indent);
+    if (i == s->rest_idx)
+      buf_printf(g_pre, "sp_PolyArray_append_all(_t%d, sp_poly_to_poly_array(sp_splat_to_array(%s)));\n",
+                 ct, ab.p);
+    else buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", ct, ab.p);
+    free(ab.p);
+  }
+  emit_gather_arity_check(c, pm, ct);
+  return ct;
+}
+
+/* The parent's parameter i for a bare `super` gathered by
+   emit_zsuper_gather: a positional from the gathered Array, a keyword from
+   this method's like-named keyword, anything else its default or empty.
+   A parent inlined in place names its own locals under the renames up to
+   parent_nren, this method's under those up to own_nren. */
+static void emit_zsuper_gathered_arg(Compiler *c, Scope *s, Scope *pm, int i, int ct,
+                                     int own_nren, int parent_nren, Buf *b) {
+  int sv = g_nren;
+  LocalVar *src = i != pm->kwrest_idx && callee_param_is_declared_kwarg(c, s, pm->pnames[i])
+                  ? scope_local(s, pm->pnames[i]) : NULL;
+  if (i != pm->kwrest_idx && !callee_param_is_declared_kwarg(c, pm, pm->pnames[i])) {
+    g_nren = parent_nren;
+    emit_gathered_param(c, pm, i, ct, b);
+  }
+  else if (src && callee_param_is_declared_kwarg(c, pm, pm->pnames[i])) {
+    LocalVar *dst = scope_local(pm, pm->pnames[i]);
+    g_nren = own_nren;
+    emit_zsuper_arg(c, src->type, dst ? dst->type : TY_UNKNOWN, pm->pnames[i], b);
+  }
+  else {
+    g_nren = parent_nren;
+    emit_zsuper_param_fill(c, pm, i, b);
+  }
+  g_nren = sv;
+}
+
 /* The trailing `&blk` slot of a `super` call: the parent's C function takes
    one whenever it keeps a named block parameter, and the call left it out
    (#4852). The call's own block goes there -- a literal as a proc, a `&proc`
@@ -8768,29 +8826,54 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int argc = 0;
   const int *argv = args >= 0 ? nt_arr(c->nt, args, "arguments", &argc) : NULL;
   int surplus = is_forwarding ? zsuper_rest_surplus(c, s, m) : -1;
-  for (int i = 0; i < m->nparams; i++) {
+  /* Explicit arguments bind as an inlined call's do: binding them slot by
+     slot put `super(*r)`'s whole Array into the first parameter, and a rest,
+     post or keyword parameter took a positional. */
+  /* `super(...)` forwards fixed __fwd_N slots topped up to the parent's
+     arity, which cannot say that a caller left an argument out: an optional
+     or rest parameter would bind a zero where its default or an empty Array
+     belongs. */
+  if (argc == 1 && nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "ForwardingArgumentsNode")) {
+    for (int i = 0; i < m->nparams; i++) {
+      if (i == m->kwrest_idx || callee_param_is_declared_kwarg(c, m, m->pnames[i])) continue;
+      if (i == m->rest_idx || i >= m->nrequired || (m->pdefault && m->pdefault[i] >= 0)) {
+        unsupported_feature(c, id, "`super(...)` into a method that yields and takes an optional or *rest "
+                                   "parameter: the forwarded arguments cannot leave one out");
+        break;
+      }
+    }
+  }
+  if (!is_forwarding) {
+    int pargc = argc;
+    if (argc > 0 && nt_kind(c->nt, argv[argc - 1]) == NK_KeywordHashNode) pargc = argc - 1;
+    int splat_gather = inline_splat_gather_applies(c, m, argv, pargc, pargc < argc ? argv[pargc] : -1);
+    emit_inline_bind_params(c, m, args, argv, argc, splat_gather, 0, tag, saved_nren, din, b);
+  }
+  int zgather = -1;
+  if (is_forwarding) {
+    int sv = g_nren; g_nren = saved_nren;
+    zgather = emit_zsuper_gather(c, s, m);
+    g_nren = sv;
+  }
+  for (int i = 0; is_forwarding && i < m->nparams; i++) {
     emit_indent(b, din);
     { char rn[128]; snprintf(rn, sizeof rn, "_y%d_%s", tag, m->pnames[i]);
       emit_inlined_param_target(c, m, m->pnames[i], rn, b); }
     int sv = g_nren; g_nren = saved_nren;
-    if (is_forwarding) {
-      if (surplus >= 0 && i == m->rest_idx) emit_zsuper_rest_pack(c, s, m, surplus, b);
-      else if (i < s->nparams && (surplus < 0 || i < m->rest_idx)) {
-        /* the forwarded local carries the CHILD's type; box it when the
-           parent's slot is boxed, as the ordinary inline binder does */
-        LocalVar *ep = scope_local(s, s->pnames[i]);
-        LocalVar *mp = scope_local(m, m->pnames[i]);
-        TyKind et = ep ? ep->type : TY_POLY;
-        TyKind mt = mp ? mp->type : TY_POLY;
-        char txt[128]; snprintf(txt, sizeof txt, "lv_%s", rename_local(s->pnames[i]));
-        if (mt == TY_POLY && et != TY_POLY) emit_boxed_text(c, et, txt, b);
-        else buf_puts(b, txt);
-      }
-      else { g_nren = sv; emit_zsuper_param_fill(c, m, i, b); sv = g_nren; }
+    if (zgather >= 0) emit_zsuper_gathered_arg(c, s, m, i, zgather, saved_nren, sv, b);
+    else if (surplus >= 0 && i == m->rest_idx) emit_zsuper_rest_pack(c, s, m, surplus, b);
+    else if (i < s->nparams && (surplus < 0 || i < m->rest_idx)) {
+      /* the forwarded local carries the CHILD's type; box it when the
+         parent's slot is boxed, as the ordinary inline binder does */
+      LocalVar *ep = scope_local(s, s->pnames[i]);
+      LocalVar *mp = scope_local(m, m->pnames[i]);
+      TyKind et = ep ? ep->type : TY_POLY;
+      TyKind mt = mp ? mp->type : TY_POLY;
+      char txt[128]; snprintf(txt, sizeof txt, "lv_%s", rename_local(s->pnames[i]));
+      if (mt == TY_POLY && et != TY_POLY) emit_boxed_text(c, et, txt, b);
+      else buf_puts(b, txt);
     }
-    else {
-      emit_arg_or_default(c, m, i, i < argc ? argv[i] : -1, b);
-    }
+    else { g_nren = sv; emit_zsuper_param_fill(c, m, i, b); sv = g_nren; }
     g_nren = sv;
     buf_puts(b, ";\n");
   }
@@ -8978,7 +9061,14 @@ void emit_super(Compiler *c, int id, Buf *b) {
     if (cmethod_takes_self_cls(c, cmi))
       buf_printf(b, "%s%s", cmethod_takes_self_cls(c, (int)(s - c->scopes)) ? "_sp_cls" : "((sp_Class){-1, NULL})",
                  c->scopes[cmi].nparams > 0 ? ", " : "");
-    if (ty && sp_streq(ty, "ForwardingSuperNode")) {
+    int zgather = ty && sp_streq(ty, "ForwardingSuperNode") ? emit_zsuper_gather(c, s, &c->scopes[cmi]) : -1;
+    if (zgather >= 0) {
+      for (int i = 0; i < c->scopes[cmi].nparams; i++) {
+        buf_puts(b, i == 0 ? "" : ", ");
+        emit_zsuper_gathered_arg(c, s, &c->scopes[cmi], i, zgather, g_nren, g_nren, b);
+      }
+    }
+    else if (ty && sp_streq(ty, "ForwardingSuperNode")) {
       Scope *pm = &c->scopes[cmi];
       int n = s->nparams < pm->nparams ? s->nparams : pm->nparams;
       int surplus = zsuper_rest_surplus(c, s, pm);
@@ -9177,7 +9267,14 @@ void emit_super(Compiler *c, int id, Buf *b) {
     return;
   }
   buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].c_name, mc(uname), c->classes[defcls].c_name, g_self);
-  if (ty && sp_streq(ty, "ForwardingSuperNode")) {
+  int zgather = ty && sp_streq(ty, "ForwardingSuperNode") ? emit_zsuper_gather(c, s, &c->scopes[mi]) : -1;
+  if (zgather >= 0) {
+    for (int i = 0; i < c->scopes[mi].nparams; i++) {
+      buf_puts(b, ", ");
+      emit_zsuper_gathered_arg(c, s, &c->scopes[mi], i, zgather, g_nren, g_nren, b);
+    }
+  }
+  else if (ty && sp_streq(ty, "ForwardingSuperNode")) {
     Scope *pm = &c->scopes[mi];
     int n = s->nparams < pm->nparams ? s->nparams : pm->nparams;
     int surplus = zsuper_rest_surplus(c, s, pm);

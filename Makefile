@@ -994,6 +994,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a singleton def on an untraceable receiver compiled)"; ok=0; \
 	else grep -q "singleton method that needs a self, on a receiver that is not one user-class instance" "$$tmp/r.out" || \
 	  { echo "reject-test: FAIL (rejected without saying why)"; sed -n 1,5p "$$tmp/r.out"; ok=0; }; fi; \
+	t=test/reject/forwarding_super_yielding_optional.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/fy.c" >"$$tmp/fy.out" 2>&1; then \
+	  echo "reject-test: FAIL (super(...) into a yielding parent with an optional compiled)"; ok=0; \
+	else grep -q "the forwarded arguments cannot leave one out" "$$tmp/fy.out" || \
+	  { echo "reject-test: FAIL (super(...) into a yielding parent rejected without saying why)"; sed -n 1,5p "$$tmp/fy.out"; ok=0; }; fi; \
 	t=test/reject/class_then_module.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/m.c" >"$$tmp/m.out" 2>&1; then \
 	  echo "reject-test: FAIL (#4309: a constant declared class and then module compiled)"; ok=0; \
