@@ -12,6 +12,7 @@ end
 
 try(:each) { d.each { |v| p v } }
 try(:each_pair) { d.each_pair { |k, v| p k } }
+try(:each_pair_no_block) { d.each_pair }
 try(:each_with_index) { d.each_with_index { |v, i| p i } }
 try(:size) { p d.size }
 try(:length) { p d.length }

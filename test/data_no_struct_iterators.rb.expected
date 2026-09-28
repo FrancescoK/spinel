@@ -1,5 +1,6 @@
 [:each, NoMethodError]
 [:each_pair, NoMethodError]
+[:each_pair_no_block, NoMethodError]
 [:each_with_index, NoMethodError]
 [:size, NoMethodError]
 [:length, NoMethodError]
