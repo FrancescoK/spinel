@@ -5621,6 +5621,31 @@ static int struct_super_types_members(Compiler *c, int id, Scope *s) {
   return changed;
 }
 
+/* The type a Struct constructor's argument `v` gives its member. An empty
+   container literal (or `Array.new` / `Hash.new`) has no type of its own
+   until a use fills it in, and a member has no write of its own to be
+   filled through: it stayed UNKNOWN to the backstop and read back boxed.
+   Take the empty container's kind, the way an `@ivar = []` write does
+   (#4460). */
+static TyKind struct_member_arg_type(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  TyKind at = infer_type(c, v);
+  if (at != TY_UNKNOWN) return at;
+  NodeKind vk = nt_kind(nt, v);
+  if (vk == NK_ArrayNode) return TY_POLY_ARRAY;
+  if (vk == NK_HashNode) return TY_POLY_POLY_HASH;
+  if (vk == NK_CallNode) {
+    const char *vn = nt_str(nt, v, "name"); int vr = nt_ref(nt, v, "receiver");
+    int va = nt_ref(nt, v, "arguments"); int van = 0; if (va >= 0) nt_arr(nt, va, "arguments", &van);
+    const char *vrn = vr >= 0 && nt_kind(nt, vr) == NK_ConstantReadNode ? nt_str(nt, vr, "name") : NULL;
+    if (vn && vrn && sp_streq(vn, "new") && van == 0 && nt_ref(nt, v, "block") < 0) {
+      if (sp_streq(vrn, "Array")) return TY_POLY_ARRAY;
+      if (sp_streq(vrn, "Hash")) return TY_POLY_POLY_HASH;
+    }
+  }
+  return at;
+}
+
 /* Struct construction: positional (or keyword) args set the member ivars
    in order. Shared by every spelling that constructs the struct: the
    constant, a qualified path, a local holding an anonymous struct, and a
@@ -5651,7 +5676,9 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
      whatever h holds under its name, or nil -- boxed, as a `**h` binds a
      method's keyword parameters. Typing it nil left it to the other
      construction sites, and the boxed value pulled out of h did not fit a
-     member they had made a String. */
+     member they had made a String. So is a member a literal key names
+     ahead of the `**`, whose value h replaces when it carries the key; a
+     literal key after the last `**` is the member's. */
   int kw_splat = 0;
   if (kwh >= 0) {
     int kn = 0; const int *ke = nt_arr(nt, kwh, "elements", &kn);
@@ -5668,43 +5695,38 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
     const char *mname = cls->ivars[a] + 1;
     int kn = 0;
     const int *ke = kwh >= 0 ? nt_arr(nt, kwh, "elements", &kn) : NULL;
-    int vnode = -1;
+    int vnode = -1, splat_after = 0;
     if (kwh >= 0) {
       for (int e = 0; e < kn && !kwf; e++) {
+        if (nt_kind(nt, ke[e]) == NK_AssocSplatNode) { splat_after = 1; continue; }
         int key = nt_ref(nt, ke[e], "key");
         if (key >= 0 && nt_type(nt, key) && sp_streq(nt_type(nt, key), "SymbolNode") &&
-            nt_str(nt, key, "value") && sp_streq(nt_str(nt, key, "value"), mname)) { vnode = nt_ref(nt, ke[e], "value"); break; }
+            nt_str(nt, key, "value") && sp_streq(nt_str(nt, key, "value"), mname)) {
+          if (vnode < 0) vnode = nt_ref(nt, ke[e], "value");
+          splat_after = 0;
+        }
       }
     }
     else if (a < an) vnode = argv[a];
     if (class_ivar_pinned(cls, cls->ivars[a])) continue;
-    if ((splat_at >= 0 && a >= splat_at) || (kw_splat && vnode < 0 && (!kwf || a == 0))) {
+    if ((splat_at >= 0 && a >= splat_at) || (kw_splat && (vnode < 0 || splat_after) && (!kwf || a == 0))) {
       TyKind sm = ty_unify(cls->ivar_types[a], TY_POLY);
       if (sm != cls->ivar_types[a]) { cls->ivar_types[a] = sm; changed = 1; }
       continue;
     }
-    TyKind at = vnode >= 0 ? infer_type(c, vnode) : TY_NIL;
-    /* An empty container literal (or `Array.new` / `Hash.new`) has
-       no type of its own until a use fills it in, and a member
-       has no write of its own to be filled through: it stayed
-       UNKNOWN to the backstop and read back boxed. Take the empty
-       container's kind, the way an `@ivar = []` write does
-       (#4460). */
-    if (at == TY_UNKNOWN && vnode >= 0) {
-      NodeKind vk = nt_kind(nt, vnode);
-      if (vk == NK_ArrayNode) at = TY_POLY_ARRAY;
-      else if (vk == NK_HashNode) at = TY_POLY_POLY_HASH;
-      else if (vk == NK_CallNode) {
-        const char *vn = nt_str(nt, vnode, "name"); int vr = nt_ref(nt, vnode, "receiver");
-        int va = nt_ref(nt, vnode, "arguments"); int van = 0; if (va >= 0) nt_arr(nt, va, "arguments", &van);
-        const char *vrn = vr >= 0 && nt_kind(nt, vr) == NK_ConstantReadNode ? nt_str(nt, vr, "name") : NULL;
-        if (vn && vrn && sp_streq(vn, "new") && van == 0 && nt_ref(nt, vnode, "block") < 0) {
-          if (sp_streq(vrn, "Array")) at = TY_POLY_ARRAY;
-          else if (sp_streq(vrn, "Hash")) at = TY_POLY_POLY_HASH;
-        }
-      }
-    }
+    TyKind at = vnode >= 0 ? struct_member_arg_type(c, vnode) : TY_NIL;
     TyKind m = ty_unify(cls->ivar_types[a], at);
+    /* Any other literal key may bind the member too: its name written
+       again, whose last value CRuby binds, or a key that is not a Symbol,
+       which names a member only at run time, a String by name and a
+       Struct's other key by index. */
+    for (int e = 0; e < kn && !kwf; e++) {
+      int key = nt_ref(nt, ke[e], "key"), v = nt_ref(nt, ke[e], "value");
+      if (nt_kind(nt, ke[e]) != NK_AssocNode || v == vnode) continue;
+      const char *sn = nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
+      if (!sn || sp_streq(sn, mname))
+        m = ty_unify(m, struct_member_arg_type(c, v));
+    }
     if (m != cls->ivar_types[a]) { cls->ivar_types[a] = m; changed = 1; }
     /* An empty `{}` argument has no keys of its own: build it as the variant
        the member settles on, which writes through the member's reader can
