@@ -1,0 +1,14 @@
+"no keywords accepted"
+"wrong number of arguments (given 2, expected 1)"
+1
+"no keywords accepted"
+1
+1
+1
+"no keywords accepted"
+"wrong number of arguments (given 1, expected 0)"
+0
+[{k: 1}]
+[{k: 1}]
+[[1, {k: 1}]]
+1

@@ -29,10 +29,18 @@ const char *sp_proc_inspect(sp_Proc *p) {SP_GC_ROOT(p);
 /* Lambda strict-arity check: raise ArgumentError if argc is outside
    [req, req+opt] (no upper bound with a rest param). Procs are lenient. */
 void sp_proc_lambda_arity_check(sp_int argc, sp_int req, sp_int opt, sp_bool has_rest, sp_bool has_kw) {
-  /* a lambda with keyword parameters accepts one extra trailing argument (the
-     keyword hash) beyond its positional maximum. */
-  sp_int max = req + opt + (has_kw ? 1 : 0);
-  if (argc < req || (!has_rest && argc > max)) sp_raise_cls("ArgumentError", "wrong number of arguments");
+  /* has_kw: the trailing argument is the keyword hash, which is not counted
+     against the positional arity. */
+  sp_int given = argc - (has_kw ? 1 : 0);
+  if (given >= req && (has_rest || given <= req + opt)) return;
+  if (has_rest)
+    sp_raise_cls("ArgumentError", sp_sprintf("wrong number of arguments (given %lld, expected %lld+)",
+                                             (long long)given, (long long)req));
+  if (opt > 0)
+    sp_raise_cls("ArgumentError", sp_sprintf("wrong number of arguments (given %lld, expected %lld..%lld)",
+                                             (long long)given, (long long)req, (long long)(req + opt)));
+  sp_raise_cls("ArgumentError", sp_sprintf("wrong number of arguments (given %lld, expected %lld)",
+                                           (long long)given, (long long)req));
 }
 /* Proc#parameters with an explicit mode. Kinds are stored canonically
    (lambda-style: a plain positional is "req"); printing for proc mode remaps

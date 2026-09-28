@@ -6309,9 +6309,34 @@ else if (orecv >= 0 && onm) {
   }
   /* Lambda: strict arity -- requireds + trailing posts mandatory, optionals
      widen the max, a splat rest lifts it entirely. */
-  int has_kwrest = 0;
+  int has_kwrest = 0, no_kw = 0;
   { int pnk = proc_params_node(c, create);
-    if (pnk >= 0 && nt_ref(nt, pnk, "keyword_rest") >= 0) has_kwrest = 1; }
+    int kwr = pnk >= 0 ? nt_ref(nt, pnk, "keyword_rest") : -1;
+    if (kwr >= 0) has_kwrest = 1;
+    if (kwr >= 0 && nt_type(nt, kwr) && sp_streq(nt_type(nt, kwr), "NoKeywordsParameterNode")) no_kw = 1; }
+  /* The trailing argument is keywords when it is a Hash the call site passed
+     as keywords (_sp_proc_kwpos, read before anything below can call another
+     proc, and cleared whatever this proc's shape is). A caller that does not
+     say -- a runtime path -- has it taken as keywords only past the required
+     positionals. The keywords are taken out of the positional count, so an
+     optional, a rest or a post never binds the keyword hash. A `**nil` proc
+     takes keywords only from a call site that passed them, and refuses them. */
+  int has_kwp = nkw > 0 || has_kwrest;
+  if (has_kwp) {
+    g_needs_proc_poly_argslot = 1;
+    buf_printf(pb, "    int _sp_kwpos = _sp_proc_kwpos; _sp_proc_kwpos = 0;\n"
+                   "    sp_int _sp_haskw = argc > 0 && argc <= 16 && _sp_kwpos != 1"
+                   " && (_sp_kwpos == 2 || argc > %d)"
+                   " && _sp_proc_poly_args[argc-1].tag == SP_TAG_OBJ"
+                   " && sp_poly_is_hash_kind(_sp_proc_poly_args[argc-1].cls_id);\n"
+                   "    sp_RbVal _sp_kwh = _sp_haskw ? _sp_proc_poly_args[argc-1] : sp_box_nil();"
+                   " SP_GC_ROOT_RBVAL(_sp_kwh);\n"
+                   "    argc -= _sp_haskw;\n", no_kw ? 16 : arity + nposts);
+    if (no_kw)
+      buf_puts(pb, "    if (_sp_haskw && sp_poly_length(_sp_kwh) > 0)"
+                   " sp_raise_cls(\"ArgumentError\", \"no keywords accepted\");\n");
+  }
+  else buf_puts(pb, "    _sp_proc_kwpos = 0;\n");
   /* `arity` counts numbered parameters when the block carries a
      NumberedParametersNode, so adding nnumbered there counts them twice and a
      `lambda { _1 }.call("a")` was rejected as taking two. Only the
@@ -6320,7 +6345,7 @@ else if (orecv >= 0 && onm) {
   if (is_lambda) buf_printf(pb, "    sp_proc_lambda_arity_check(argc, %d, %d, %s, %s);\n",
                             arity + nposts + num_extra, nopts,
                             proc_has_rest(c, create) ? "TRUE" : "FALSE",
-                            (nkw > 0 || has_kwrest) ? "TRUE" : "FALSE");
+                            "FALSE");
   /* CRuby proc auto-splat: a single Array passed to a non-lambda proc taking
      more than one positional is destructured across the parameters. Rewrite
      the argument view (both the sp_int[] slots and the boxed side-channel)
@@ -6328,7 +6353,8 @@ else if (orecv >= 0 && onm) {
   if (!is_lambda && arity >= 2) {
     g_needs_proc_poly_argslot = 1;
     buf_puts(pb, "    sp_int _sp_as_buf[16];\n");
-    buf_puts(pb, "    if (argc == 1 && _sp_proc_poly_args[0].tag == SP_TAG_OBJ && sp_poly_is_array_kind(_sp_proc_poly_args[0].cls_id)) {\n");
+    buf_printf(pb, "    if (argc == 1%s && _sp_proc_poly_args[0].tag == SP_TAG_OBJ && sp_poly_is_array_kind(_sp_proc_poly_args[0].cls_id)) {\n",
+               has_kwp ? " && !_sp_haskw" : "");
     buf_puts(pb, "      sp_RbVal _sp_as_a = _sp_proc_poly_args[0];\n");
     buf_puts(pb, "      sp_int _sp_as_n = sp_poly_length(_sp_as_a); if (_sp_as_n > 16) _sp_as_n = 16;\n");
     buf_puts(pb, "      for (sp_int _i = 0; _i < _sp_as_n; _i++) {\n");
@@ -6581,9 +6607,9 @@ else if (orecv >= 0 && onm) {
       char key[128];
       snprintf(key, sizeof key, "%s", param_public_name(kn));
       int sym_id = comp_sym_intern(c, key);
-      char cond[128], arg[128], missing[160];
-      snprintf(cond, sizeof cond, "argc > 0 && sp_poly_has_key(_sp_proc_poly_args[argc-1], sp_box_sym((sp_sym)%d))", sym_id);
-      snprintf(arg, sizeof arg, "sp_poly_index_poly(_sp_proc_poly_args[argc-1], sp_box_sym((sp_sym)%d))", sym_id);
+      char cond[160], arg[128], missing[160];
+      snprintf(cond, sizeof cond, "_sp_haskw && sp_poly_has_key(_sp_kwh, sp_box_sym((sp_sym)%d))", sym_id);
+      snprintf(arg, sizeof arg, "sp_poly_index_poly(_sp_kwh, sp_box_sym((sp_sym)%d))", sym_id);
       /* A required keyword absent from the call raises ArgumentError (mirrors the
          method-keyword arm); an optional one falls back to its default. */
       snprintf(missing, sizeof missing, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), sp_box_nil())", key);
@@ -6600,10 +6626,7 @@ else if (orecv >= 0 && onm) {
         if (kn) buf_printf(pb, "\"%s\", ", param_public_name(kn));
       }
       buf_printf(pb, "0}, *const _pkn[] = {0};%c", 10);
-      buf_printf(pb, "      if (argc > %d && argc <= 16 && _sp_proc_poly_args[argc-1].tag == SP_TAG_OBJ"
-                     " && sp_poly_is_hash_kind(_sp_proc_poly_args[argc-1].cls_id))"
-                     " sp_kwargs_verify(_sp_proc_poly_args[argc-1], _pkw, _pkn, _pkn, 1); }%c",
-                 arity + nposts, 10);
+      buf_printf(pb, "      if (_sp_haskw) sp_kwargs_verify(_sp_kwh, _pkw, _pkn, _pkn, 1); }%c", 10);
     }
   }
   /* `&b`: the block the caller attached to .call, delivered on the
@@ -6631,7 +6654,7 @@ else if (orecv >= 0 && onm) {
     if (krn) {
       g_needs_proc_poly_argslot = 1;
       if (nkw > 0) {
-        buf_printf(pb, "    sp_RbVal _kwr_%s = sp_box_obj(sp_poly_hash_merge(sp_box_nil(), argc > 0 ? _sp_proc_poly_args[argc-1] : sp_box_nil()),"
+        buf_printf(pb, "    sp_RbVal _kwr_%s = sp_box_obj(sp_poly_hash_merge(sp_box_nil(), _sp_kwh),"
                        " SP_BUILTIN_POLY_POLY_HASH); SP_GC_ROOT_RBVAL(_kwr_%s);%c", krn, krn, 10);
         int nkw3 = 0;
         const int *kwn3 = nt_arr(nt, pnr, "keywords", &nkw3);
@@ -6642,9 +6665,7 @@ else if (orecv >= 0 && onm) {
         }
       }
       else
-        buf_printf(pb, "    sp_RbVal _kwr_%s = (argc > 0 && _sp_proc_poly_args[argc-1].tag == SP_TAG_OBJ"
-                       " && sp_poly_is_hash_kind(_sp_proc_poly_args[argc-1].cls_id))"
-                       " ? _sp_proc_poly_args[argc-1]"
+        buf_printf(pb, "    sp_RbVal _kwr_%s = _sp_haskw ? _sp_kwh"
                        " : sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH);"
                        " SP_GC_ROOT_RBVAL(_kwr_%s);%c", krn, krn, 10);   /* the empty hash is held by nothing else */
       LocalVar *klv = scope_local(bs, krn);
@@ -6669,8 +6690,8 @@ else if (orecv >= 0 && onm) {
      here makes the previous result stale, so both can be dropped. Cleared
      whatever this proc's own shape is: the CALLER published into them.
      Same discipline as _sp_proc_blk. */
-  buf_puts(pb, "    for (int _sp_ac = 0; _sp_ac < argc && _sp_ac < 16; _sp_ac++)"
-               " _sp_proc_poly_args[_sp_ac] = sp_box_nil();\n");
+  buf_printf(pb, "    for (int _sp_ac = 0; _sp_ac < argc%s && _sp_ac < 16; _sp_ac++)"
+                 " _sp_proc_poly_args[_sp_ac] = sp_box_nil();\n", has_kwp ? " + _sp_haskw" : "");
   buf_puts(pb, "    _sp_proc_poly_ret = sp_box_nil();\n");
   for (int i = 0; i < locals.n; i++) {
     LocalVar *lv = scope_local(bs, locals.v[i]);
