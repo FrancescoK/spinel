@@ -5415,6 +5415,21 @@ static int hash_lit_empty(const NodeTable *nt, int n) {
   return en == 0;
 }
 
+static void emit_blk_value_as(Compiler *c, int blk, TyKind vt, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int bbody = nt_ref(nt, blk, "body");
+  int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
+  int bval = bn > 0 ? bb[bn - 1] : -1;
+  buf_puts(b, "({ ");
+  for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
+  if (bval >= 0) {
+    if (vt == TY_POLY && comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, b);
+    else emit_expr(c, bval, b);
+  }
+  else buf_puts(b, vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
+  buf_puts(b, "; })");
+}
+
 int emit_hash_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -6372,19 +6387,7 @@ else {
           if (bp1) buf_printf(b, " lv_%s = sp_%sHash_get(_t%d, _t%d);", rename_local(bp1), hn, tr, tk);
           if (bp2) buf_printf(b, " lv_%s = sp_%sHash_get(_t%d, _t%d);", rename_local(bp2), hn, to, tk);
           buf_printf(b, " sp_%sHash_set(_t%d, _t%d, ", hn, tr, tk);
-          {
-            int bbody = nt_ref(nt, blk, "body");
-            int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
-            int bval = bn > 0 ? bb[bn - 1] : -1;
-            buf_puts(b, "({ ");
-            for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
-            if (bval >= 0) {
-              if (vt == TY_POLY && comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, b);
-              else emit_expr(c, bval, b);
-            }
-            else buf_puts(b, vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
-            buf_puts(b, "; })");
-          }
+          emit_blk_value_as(c, blk, vt, b);
           buf_printf(b, "); }\nelse { sp_%sHash_set(_t%d, _t%d, sp_%sHash_get(_t%d, _t%d)); }", hn, tr, tk, hn, to, tk);
         }
         else {
@@ -6484,19 +6487,7 @@ else {
         if (bp1) buf_printf(b, " lv_%s = sp_%sHash_get(_t%d, _t%d);", rename_local(bp1), hn, tr, tk);
         if (bp2) buf_printf(b, " lv_%s = sp_%sHash_get(_t%d, _t%d);", rename_local(bp2), hn, to, tk);
         buf_printf(b, " sp_%sHash_set(_t%d, _t%d, ", hn, tr, tk);
-        {
-          int bbody = nt_ref(nt, blk, "body");
-          int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
-          int bval = bn > 0 ? bb[bn - 1] : -1;
-          buf_puts(b, "({ ");
-          for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
-          if (bval >= 0) {
-            if (vt == TY_POLY && comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, b);
-            else emit_expr(c, bval, b);
-          }
-          else buf_puts(b, vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
-          buf_puts(b, "; })");
-        }
+        emit_blk_value_as(c, blk, vt, b);
         buf_printf(b, "); }\nelse { sp_%sHash_set(_t%d, _t%d, sp_%sHash_get(_t%d, _t%d)); } }", hn, tr, tk, hn, to, tk);
         buf_printf(b, " _t%d; })", tr);
         return 1;
