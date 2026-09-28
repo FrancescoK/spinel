@@ -5666,6 +5666,18 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       if (sp_streq(name, "path") || sp_streq(name, "to_path"))
         return an_poly_concrete(c, name, TY_STRING);
       if (sp_streq(name, "readlines")) return an_poly_concrete(c, name, TY_STR_ARRAY);
+      /* a stat's mode and numeric fields, as the TY_IO arms type them, where
+         the poly-IO arm emits them: not where a class method may own the
+         name or an OpenStruct may carry it */
+      if (argc == 0 && !sp_feature_required("ostruct") &&
+          (sp_streq(name, "mode") || sp_streq(name, "uid") || sp_streq(name, "gid") ||
+           sp_streq(name, "nlink") || sp_streq(name, "dev") || sp_streq(name, "ino") ||
+           sp_streq(name, "blksize") || sp_streq(name, "blocks") || sp_streq(name, "rdev"))) {
+        int cm = 0;
+        for (int k = 0; k < c->nclasses && !cm; k++)
+          if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) cm = 1;
+        if (!cm) return an_poly_concrete(c, name, TY_INT);
+      }
       if (sp_streq(name, "rewind")) return an_poly_concrete(c, name, TY_INT);
       if (sp_streq(name, "puts") || sp_streq(name, "print") || sp_streq(name, "putc"))
         return an_poly_concrete(c, name, TY_NIL);
