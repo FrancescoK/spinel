@@ -1529,7 +1529,7 @@ void register_struct_members(Compiler *c, ClassInfo *cls, int val) {
         char siv[256]; snprintf(siv, sizeof siv, "@%s", sm);
         comp_ivar_intern(cls, siv);
         comp_add_reader(cls, sm);
-        comp_add_writer(cls, sm);
+        if (!cls->is_data) comp_add_writer(cls, sm);
       }
       continue;
     }
@@ -1539,7 +1539,8 @@ void register_struct_members(Compiler *c, ClassInfo *cls, int val) {
     char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", m);
     comp_ivar_intern(cls, ivn);
     comp_add_reader(cls, m);
-    comp_add_writer(cls, m);
+    /* a Data member is read-only: no `x=` to call, answer or list */
+    if (!cls->is_data) comp_add_writer(cls, m);
   }
 }
 
