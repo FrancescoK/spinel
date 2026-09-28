@@ -4433,6 +4433,16 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     else if (sp_streq(name, "friday?"))    tb = "(sp_time_wday(*(sp_Time *)_tR.v.p) == 5)";
     else if (sp_streq(name, "saturday?"))  tb = "(sp_time_wday(*(sp_Time *)_tR.v.p) == 6)";
     else if (sp_streq(name, "zone"))       ts = "sp_time_zone(*(sp_Time *)_tR.v.p)";
+    /* the fixed C-style stamp, as the typed arm renders it; only where the
+       call is typed a String (or in the dispatch's default arm), and not
+       where a reopened Object or Kernel has an asctime, which answers for
+       every receiver the table does not */
+    else if (sp_streq(name, "asctime") && (comp_ntype(c, id) == TY_STRING || g_poly_builtin_arm) &&
+             !(comp_class_index(c, "Object") >= 0 &&
+               comp_method_in_chain(c, comp_class_index(c, "Object"), name, NULL) >= 0) &&
+             !(comp_class_index(c, "Kernel") >= 0 &&
+               comp_method_in_chain(c, comp_class_index(c, "Kernel"), name, NULL) >= 0))
+      ts = "sp_time_strftime(*(sp_Time *)_tR.v.p, \"%a %b %e %H:%M:%S %Y\")";
     else if ((sp_streq(name, "iso8601") || sp_streq(name, "xmlschema")) &&
              sp_feature_enabled("time"))
       ts = "sp_time_iso8601(*(sp_Time *)_tR.v.p)";

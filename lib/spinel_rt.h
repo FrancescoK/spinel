@@ -12619,6 +12619,27 @@ static sp_Enumerator *sp_Enumerator_new_indices(sp_RbVal arr) {
   for (sp_int i = 0; i < n; i++) sp_PolyArray_push(idx, sp_box_int(i));
   { sp_Enumerator *e = sp_Enumerator_new_from_items(idx); e->source = arr; e->meth = SPL("each_index"); return e; }
 }
+/* Time#to_a on a boxed receiver: [sec, min, hour, mday, mon, year, wday,
+   yday, isdst, zone], as the typed Time#to_a answers; any other value's to_a
+   is sp_poly_to_a_arr's. Only the `to_a` call itself answers through here --
+   the other callers of sp_poly_to_a_arr (a `for` loop, `deconstruct`, the
+   Enumerable names) keep a Time's NoMethodError, as CRuby raises. */
+static sp_PolyArray *sp_poly_to_a_call(sp_RbVal v) {
+  if (!(v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_TIME && v.v.p)) return sp_poly_to_a_arr(v);
+  sp_Time t = *(sp_Time *)v.v.p;
+  sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a);
+  sp_PolyArray_push(a, sp_box_int(sp_time_sec(t)));
+  sp_PolyArray_push(a, sp_box_int(sp_time_min(t)));
+  sp_PolyArray_push(a, sp_box_int(sp_time_hour(t)));
+  sp_PolyArray_push(a, sp_box_int(sp_time_mday(t)));
+  sp_PolyArray_push(a, sp_box_int(sp_time_mon(t)));
+  sp_PolyArray_push(a, sp_box_int(sp_time_year(t)));
+  sp_PolyArray_push(a, sp_box_int(sp_time_wday(t)));
+  sp_PolyArray_push(a, sp_box_int(sp_time_yday(t)));
+  sp_PolyArray_push(a, sp_box_bool(sp_time_isdst(t) != 0));
+  sp_PolyArray_push(a, sp_box_str(sp_time_zone(t)));
+  return a;
+}
 /* Array#each_slice(n) with no block: a materialized Enumerator whose items are
    the consecutive non-overlapping slices of length n (the last may be short).
    `slice` is block-scoped, so its GC root pops each iteration; `out` keeps the

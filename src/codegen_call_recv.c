@@ -13593,7 +13593,9 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       for (int kk = 0; kk < c->nclasses && !has_user_ta; kk++)
         if (comp_poly_arm_defines_n(c, kk, name, argc)) has_user_ta = 1;
       if (!has_user_ta) {
-        buf_puts(b, "sp_poly_to_a_arr("); emit_expr(c, recv, b); buf_puts(b, ")");
+        /* to_a itself also answers a Time's fields (sp_poly_to_a_call) */
+        buf_puts(b, sp_streq(name, "to_a") ? "sp_poly_to_a_call(" : "sp_poly_to_a_arr(");
+        emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
     }
