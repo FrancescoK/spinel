@@ -6073,12 +6073,14 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
   return changed;
 }
 
-/* `&:m` reaches here as `{ |_spx| _spx.m }` (spinel_parse.c). The block
-   is marked with m before a desugar rewrites the call (`_spx.first` ->
-   `_spx[0]`), for the shapes below that pass it a second value. */
+/* `&:m` reaches here as `{ |_spx| _spx.m }`, a block spinel_parse.c marks
+   sym_proc_block (a user's own block spelled the same is not one). The
+   block is marked with m before a desugar rewrites the call (`_spx.first`
+   -> `_spx[0]`), for the shapes below that pass it a second value. */
 void mark_sym_proc_blocks(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   NT_FOREACH_KIND(nt, NK_BlockNode, blk) {
+    if (!nt_int(nt, blk, "sym_proc_block", 0)) continue;
     int bp = nt_ref(nt, blk, "parameters");
     int pn = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
     if (pn < 0) continue;
