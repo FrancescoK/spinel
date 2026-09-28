@@ -6877,6 +6877,8 @@ int desugar_enum_method_recv(Compiler *c) {
          (codegen): an endless Enumerator has no array to read */
       if ((sp_streq(nm, "each") || sp_streq(nm, "each_with_index")) && nt_ref(nt, id, "block") >= 0)
         nt_node_set_str(nt, wrap, "enum_each_wrap", "1");
+      /* the call still yields what the Enumerator yields (enum_pair_source_call) */
+      nt_node_set_str(nt, wrap, "enum_hop", "1");
       nt_node_set_str(nt, wrap, "name", "to_a");
       nt_node_set_ref(nt, wrap, "receiver", recv);
       nt_node_set_ref(nt, id, "receiver", wrap);
@@ -17153,6 +17155,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_include_math(c);             /* include Math: sqrt(x) -> Math.sqrt(x) */
     ch |= desugar_kernel_recv(c);              /* Kernel.puts x -> puts x */
     ch |= desugar_class_literal_ctors(c);      /* Array[a,b] -> [a,b]; Range.new -> (a..b) */
+    ch |= desugar_enum_iter_splat_args(c);     /* enum.map(*a, &b) -> enum.map(&b) */
     ch |= desugar_builtin_iter_block_shapes(c);  /* [1].each { |c, a = 10| } -> { |v| c = v; a = 10 } */
     ch |= desugar_multi_yield_map_param(c);    /* multi-yield each: map's |x| takes the 1st */
     ch |= desugar_enum_walk_calls(c);          /* enum.map { break } -> __enumw_map(enum) { } */

@@ -40,6 +40,10 @@ int an_send_name_is_computed(Compiler *c, int arg);
    reads the cached results via comp_ntype. */
 TyKind infer_type(Compiler *c, int id);
 
+/* `recv` is a blockless call making an Enumerator that yields two values per
+   element: each_with_index, with_index, each_with_object, with_object. */
+int enum_pair_source_call(const NodeTable *nt, int recv);
+
 /* True when node `id`'s value, held in an unboxed scalar slot, can be the
    reserved nil sentinel (SP_INT_NIL / the float twin). The slot type alone
    cannot say -- an `Integer?` and an `Integer` are both TY_INT -- so codegen
