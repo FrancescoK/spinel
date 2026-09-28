@@ -28,20 +28,45 @@ int resolve_forwarded_block(Compiler *c, int block) {
   return forwards_param ? g_block_id : block;
 }
 
+/* The value of a `&expr` block argument as the sp_Proc * a `&blk`
+   parameter takes: a Proc as itself, a boxed value through
+   sp_poly_to_block (nil is no block), a Method through its trampoline
+   proc. Writes nothing and returns 0 for any other type. Each site that
+   hands a block argument to a real `&blk` parameter goes through here;
+   they each had the Proc arm alone and passed NULL for the rest, so the
+   method ran without its block and the expression was never evaluated. */
+int emit_block_arg_proc(Compiler *c, int fe, Buf *b) {
+  TyKind t = comp_ntype(c, fe);
+  if (t == TY_PROC) { emit_expr(c, fe, b); return 1; }
+  if (t == TY_POLY) {
+    buf_puts(b, "sp_poly_to_block("); emit_boxed(c, fe, b); buf_puts(b, ")");
+    return 1;
+  }
+  if (t == TY_METHOD) {
+    /* rooted across the proc's allocation, as Method#to_proc roots it */
+    int tp = ++g_tmp;
+    buf_printf(b, "({ sp_BoundMethod *_t%d = ", tp);
+    emit_expr(c, fe, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); sp_method_to_proc(_t%d); })", tp, tp);
+    return 1;
+  }
+  return 0;
+}
+
 /* A BlockArgumentNode that survives resolve_forwarded_block has no inline
-   block to splice: it forwards a REAL proc -- a TY_PROC expression (`&block`
-   from a real-function body, e.g. a self-recursive block method), or the
-   caller's own proc param via anonymous `&`. Write that proc expression (or
-   NULL) into b and return 1; return 0 when blk_node isn't that shape (a
-   literal block, for emit_proc_literal). Mirrors the same branch in
-   emit_cmethod_block_arg. */
+   block to splice: it forwards a REAL proc -- a proc-valued expression
+   (`&block` from a real-function body, e.g. a self-recursive block method;
+   see emit_block_arg_proc), or the caller's own proc param via anonymous
+   `&`. Write that proc expression (or NULL) into b and return 1; return 0
+   when blk_node isn't that shape (a literal block, for emit_proc_literal).
+   Mirrors the same branch in emit_cmethod_block_arg. */
 int emit_forwarded_proc_arg(Compiler *c, int blk_node, Buf *b) {
   const NodeTable *nt = c->nt;
   if (blk_node < 0) return 0;
   const char *ty = nt_type(nt, blk_node);
   if (!ty || !sp_streq(ty, "BlockArgumentNode")) return 0;
   int fe = nt_ref(nt, blk_node, "expression");
-  if (fe >= 0 && comp_ntype(c, fe) == TY_PROC) { emit_expr(c, fe, b); return 1; }
+  if (fe >= 0 && emit_block_arg_proc(c, fe, b)) return 1;
   if (fe < 0) {
     /* anonymous `&`: the BlockArgumentNode sits in the caller's body, so its
        scope is the caller -- forward that method's own proc param */

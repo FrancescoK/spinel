@@ -10460,13 +10460,10 @@ static void emit_ctor_block_value(Compiler *c, int id, Buf *b) {
   if (bk != NK_BlockArgumentNode) { buf_puts(b, "NULL"); return; }
   int bexpr = nt_ref(nt, blk, "expression");
   /* a proc value threads itself into the stored `&blk`; a boxed one (read
-     out of a poly slot) unboxes to its sp_Proc * */
-  if (bexpr >= 0 && comp_ntype(c, bexpr) == TY_PROC) emit_expr(c, bexpr, b);
-  else if (bexpr >= 0 && comp_ntype(c, bexpr) == TY_POLY) {
-    buf_puts(b, "(sp_Proc *)("); emit_expr(c, bexpr, b); buf_puts(b, ").v.p");
-  }
+     out of a poly slot) or a Method converts to its sp_Proc * */
+  if (bexpr >= 0 && emit_block_arg_proc(c, bexpr, b)) return;
   /* an anonymous `&` forwards the enclosing method's own proc */
-  else if (bexpr < 0) emit_forwarded_proc_arg(c, blk, b);
+  if (bexpr < 0) emit_forwarded_proc_arg(c, blk, b);
   /* a block of an unmodeled static type: refuse rather than thread NULL,
      which a later @blk.call would misread */
   else unsupported(c, id, "forwarding a block of this type into a stored-block initialize");
@@ -14669,7 +14666,7 @@ static void emit_cmethod_block_arg(Compiler *c, int id, Scope *cm, int blk_tmp, 
      forwards the caller's own blk param (#2444). */
   if (nt_type(c->nt, blk_node) && sp_streq(nt_type(c->nt, blk_node), "BlockArgumentNode")) {
     int fe = nt_ref(c->nt, blk_node, "expression");
-    if (fe >= 0 && comp_ntype(c, fe) == TY_PROC) { emit_expr(c, fe, b); return; }
+    if (fe >= 0 && emit_block_arg_proc(c, fe, b)) return;
     if (fe < 0) {
       Scope *caller9 = comp_scope_of(c, id);
       if (caller9 && caller9->blk_param && caller9->blk_param[0] && !caller9->yields) {
@@ -23934,8 +23931,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           free(pv.p);
           buf_printf(b, "_t%d", tb);
         }
-        else if (bx >= 0 && comp_ntype(c, bx) == TY_PROC) emit_expr(c, bx, b);
-        else buf_puts(b, "NULL");
+        else if (bx < 0 || !emit_block_arg_proc(c, bx, b)) buf_puts(b, "NULL");
       }
       buf_puts(b, ")");
       return;

@@ -8761,8 +8761,8 @@ static void emit_super_block_arg(Compiler *c, int id, Scope *s, Scope *pm, int l
   if (bty && sp_streq(bty, "BlockArgumentNode")) {
     int fe = nt_ref(c->nt, blk, "expression");
     if (fe >= 0) {
-      if (comp_ntype(c, fe) == TY_PROC) emit_expr(c, fe, b);
-      else if (sp_streq(nt_type(c->nt, fe), "NilNode")) buf_puts(b, "NULL");
+      if (emit_block_arg_proc(c, fe, b)) return;
+      if (sp_streq(nt_type(c->nt, fe), "NilNode")) buf_puts(b, "NULL");
       else unsupported(c, blk, "super with a block argument that is not a proc");
       return;
     }

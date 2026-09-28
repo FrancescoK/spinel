@@ -10655,6 +10655,9 @@ static sp_Proc *sp_poly_to_proc(sp_RbVal v) {
      block wherever a proc would (#3864) */
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_CURRY)
     return sp_curry_to_proc((sp_Curry *)v.v.p);
+  /* a Method converts through Method#to_proc, as CRuby's `&m` does */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_METHOD)
+    return sp_method_to_proc((sp_BoundMethod *)v.v.p);
   sp_raise_cls("TypeError", "callable object is expected");
   return NULL;
 }
