@@ -1526,7 +1526,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   if (!name) return 0;
   if (recv >= 0 && rt == TY_POLY && argc == 0 &&
       (sp_streq(name, "to_s") || sp_streq(name, "inspect")) &&
-      !an_user_defines_method(c, name))
+      !an_user_recv_defines_method(c, name))
     { *out = TY_STRING; return 1; }
   /* #hash on a boxed receiver is always the Integer sp_rbval_hash_key
      answers -- a user #hash in the program is reached through
@@ -1567,7 +1567,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      these names also belong to exceptions and procs. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       (sp_streq(name, "unbind") || sp_streq(name, "receiver")) &&
-      an_program_builds_methods(c) && !an_user_defines_method(c, name))
+      an_program_builds_methods(c) && !an_user_recv_defines_method(c, name))
     { *out = TY_POLY; return 1; }
   /* Numeric#fdiv on a boxed receiver is a Float whatever the operands are
      (#3767); without a type the boxed result was dropped and read as nil. */
@@ -1580,7 +1580,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      result was discarded (#2882). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 &&
       (sp_streq(name, "real") || sp_streq(name, "imaginary") || sp_streq(name, "imag")) &&
-      !an_user_defines_method(c, name))
+      !an_user_recv_defines_method(c, name))
     { *out = TY_POLY; return 1; }
   /* Numeric#arg / #angle / #phase (0, pi or a Complex's angle) and #rect /
      #rectangular (a pair) on a poly value, where the dispatch answers them
@@ -1888,13 +1888,13 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      boxed, so the result is poly (#2904). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 &&
       (sp_streq(name, "find") || sp_streq(name, "detect")) &&
-      nt_ref(nt, id, "block") >= 0 && !an_user_defines_method(c, name))
+      nt_ref(nt, id, "block") >= 0 && !an_user_recv_defines_method(c, name))
     { *out = TY_POLY; return 1; }
   /* exception accessors on a poly receiver (an exception rescued into a
      union-typed local) delegate at runtime; message and its renderings are
      Strings, the rest carry boxed values (#3120, #3122). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name) &&
+      !an_user_recv_defines_method(c, name) &&
       (sp_streq(name, "message") || sp_streq(name, "result") ||
        sp_streq(name, "errno") ||
        sp_streq(name, "key") || sp_streq(name, "receiver") ||
@@ -1907,7 +1907,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      container: an int-returning builtin the poly-builtin dispatch handles at
      runtime; type it int so the result is not boxed to nil (#3162). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name) &&
+      !an_user_recv_defines_method(c, name) &&
       (sp_streq(name, "arity") || sp_streq(name, "year") || sp_streq(name, "mon") ||
        sp_streq(name, "month") || sp_streq(name, "mday") ||
        sp_streq(name, "hour") || sp_streq(name, "sec") ||
@@ -1922,7 +1922,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      (#4109). The result stays boxed, so a further `.year` dispatches through
      this same surface. */
   if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name) &&
+      !an_user_recv_defines_method(c, name) &&
       ((argc == 0 && (sp_streq(name, "utc") || sp_streq(name, "gmtime") ||
                       sp_streq(name, "getutc") || sp_streq(name, "localtime") ||
                       sp_streq(name, "getlocal") || sp_streq(name, "round"))) ||
@@ -1937,7 +1937,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      ceil belong to the collections and the numbers too, and claiming a type
      for them would answer for every boxed receiver, not just a Time. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name)) {
+      !an_user_recv_defines_method(c, name)) {
     if (sp_streq(name, "tv_usec") || sp_streq(name, "usec") ||
         sp_streq(name, "tv_nsec") || sp_streq(name, "nsec") ||
         sp_streq(name, "utc_offset") || sp_streq(name, "gmt_offset") ||
@@ -1963,61 +1963,61 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      typed emitter serves, absent here (campfire's
      `message.created_at.utc.iso8601(3)` over a nilable column). */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name) &&
+      !an_user_recv_defines_method(c, name) &&
       (sp_streq(name, "iso8601") || sp_streq(name, "xmlschema")) &&
       sp_feature_enabled("time"))
     { *out = TY_STRING; return 1; }
   /* Range#to_a on a poly value: its element array. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name) && sp_streq(name, "to_a"))
+      !an_user_recv_defines_method(c, name) && sp_streq(name, "to_a"))
     { *out = TY_POLY_ARRAY; return 1; }
   /* uniq on a poly value that is an array at runtime: a poly array (#3341). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name) && sp_streq(name, "uniq"))
+      !an_user_recv_defines_method(c, name) && sp_streq(name, "uniq"))
     { *out = TY_POLY_ARRAY; return 1; }
   /* String#split on a poly value (a string param widened to poly): a string
      array, so a following `.map` / multiple assignment narrows (#3186/#3164). */
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "split") &&
-      argc <= 2 && nt_ref(nt, id, "block") < 0 && !an_user_defines_method(c, name))
+      argc <= 2 && nt_ref(nt, id, "block") < 0 && !an_user_recv_defines_method(c, name))
     { *out = TY_STR_ARRAY; return 1; }
   /* blockless each_index / each_with_index on a poly value (an inner array read
      out of a container): a chained Enumerator, so `.map`/`.to_a` re-dispatch on
      it materializes (#3160). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name) &&
+      !an_user_recv_defines_method(c, name) &&
       (sp_streq(name, "each_index") || sp_streq(name, "each_with_index")))
     { *out = TY_ENUMERATOR; return 1; }
   /* Hash#merge on a poly value: a general PolyPoly hash. */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name) && sp_streq(name, "merge"))
+      !an_user_recv_defines_method(c, name) && sp_streq(name, "merge"))
     { *out = TY_POLY_POLY_HASH; return 1; }
   /* When ostruct is in the program, a bare reader on a poly value may be an
      OpenStruct member (any name, boxed value). The runtime dispatch checks the
      tag; type it poly so the member is not truncated to a class-name string
      (#3197). Length/size/predicate readers keep their own arms. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name) && sp_feature_required("ostruct") &&
+      !an_user_recv_defines_method(c, name) && sp_feature_required("ostruct") &&
       name[0] && name[strlen(name) - 1] != '?' && name[strlen(name) - 1] != '!' &&
       !poly_builtin_zero_arg_name(name))
     { *out = TY_POLY; return 1; }
 
   /* #clear on a poly value returns the (emptied) receiver, itself poly. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name) && sp_streq(name, "clear"))
+      !an_user_recv_defines_method(c, name) && sp_streq(name, "clear"))
     { *out = TY_POLY; return 1; }
   /* String#bytesplice on a poly value: the new contents, boxed */
   if (recv >= 0 && rt == TY_POLY && argc == 3 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name) && sp_streq(name, "bytesplice"))
+      !an_user_recv_defines_method(c, name) && sp_streq(name, "bytesplice"))
     { *out = TY_POLY; return 1; }
   /* String#replace/prepend/concat on a poly value: self, boxed */
   if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name) && argc >= 1 &&
+      !an_user_recv_defines_method(c, name) && argc >= 1 &&
       (sp_streq(name, "replace") || sp_streq(name, "prepend") ||
        sp_streq(name, "concat")))
     { *out = TY_POLY; return 1; }
   /* in-place string mutators on a poly value: self (boxed) or nil */
   if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name) && name[0] && strlen(name) > 1 &&
+      !an_user_recv_defines_method(c, name) && name[0] && strlen(name) > 1 &&
       name[strlen(name) - 1] == '!') {
     static const char *const PBN[] = {
       "upcase!","downcase!","capitalize!","swapcase!","strip!","lstrip!",
@@ -2029,16 +2029,16 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   }
   /* Array#delete_at on a poly value: the removed element, boxed. */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name) && sp_streq(name, "delete_at"))
+      !an_user_recv_defines_method(c, name) && sp_streq(name, "delete_at"))
     { *out = TY_POLY; return 1; }
   /* Array#pop / #shift on a poly value: the removed element, boxed. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name) &&
+      !an_user_recv_defines_method(c, name) &&
       (sp_streq(name, "pop") || sp_streq(name, "shift")))
     { *out = TY_POLY; return 1; }
   /* Array#insert on a poly value: in-place, returns the receiver (boxed). */
   if (recv >= 0 && rt == TY_POLY && argc >= 1 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name) && sp_streq(name, "insert"))
+      !an_user_recv_defines_method(c, name) && sp_streq(name, "insert"))
     { *out = TY_POLY; return 1; }
   /* Time accessors on a poly value (a Time read out of a container): the
      codegen dispatch runs sp_time_* on the TIME tag and raises otherwise,
@@ -2046,7 +2046,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      exposes the name as a method OR a reader (a Data/Struct member like
      `day` dispatches to the member, #3239). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name) &&
+      !an_user_recv_defines_method(c, name) &&
       (sp_streq(name, "year") || sp_streq(name, "mon") || sp_streq(name, "month") ||
        sp_streq(name, "mday") || sp_streq(name, "day") || sp_streq(name, "hour") ||
        sp_streq(name, "sec") || sp_streq(name, "wday") || sp_streq(name, "yday"))) {
@@ -2059,30 +2059,30 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      through and raises otherwise, so the non-raising result is a Symbol
      (typing it poly made the raw sp_sym land in an sp_RbVal slot, #3331). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name) &&
+      !an_user_recv_defines_method(c, name) &&
       (sp_streq(name, "to_sym") || sp_streq(name, "intern")))
     { *out = TY_SYMBOL; return 1; }
   /* reduce/inject on a poly value (an array read out of a container): the
      fold runs over boxed elements, so the result is boxed. */
   if (recv >= 0 && rt == TY_POLY && argc <= 1 && nt_ref(nt, id, "block") >= 0 &&
-      !an_user_defines_method(c, name) &&
+      !an_user_recv_defines_method(c, name) &&
       (sp_streq(name, "reduce") || sp_streq(name, "inject")))
     { *out = TY_POLY; return 1; }
   /* String#start_with? / #end_with? on a poly value: a bool. */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name) &&
+      !an_user_recv_defines_method(c, name) &&
       (sp_streq(name, "start_with?") || sp_streq(name, "end_with?")))
     { *out = TY_BOOL; return 1; }
   /* sort over a poly value that is an array at runtime (a group_by bucket / an
      inner array): a fresh sorted poly array (#2928). */
-  if (recv >= 0 && rt == TY_POLY && argc == 0 && !an_user_defines_method(c, name) &&
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && !an_user_recv_defines_method(c, name) &&
       sp_streq(name, "sort") && nt_ref(nt, id, "block") < 0)
     { *out = TY_POLY_ARRAY; return 1; }
   /* ...and with a COMPARATOR block, which the emitter re-dispatches through
      the array path. Without the type the method emitted as void and answered
      nil, having sorted correctly on the way (#4290). min / max with one pick
      an element, so they answer boxed. */
-  if (recv >= 0 && rt == TY_POLY && argc == 0 && !an_user_defines_method(c, name) &&
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && !an_user_recv_defines_method(c, name) &&
       nt_ref(nt, id, "block") >= 0) {
     if (sp_streq(name, "sort")) { *out = TY_POLY_ARRAY; return 1; }
     if (sp_streq(name, "min") || sp_streq(name, "max")) { *out = TY_POLY; return 1; }
@@ -2091,12 +2091,12 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      Data instance, boxed poly (#2890). */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "with") &&
       nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode") &&
-      !an_user_defines_method(c, name))
+      !an_user_recv_defines_method(c, name))
     { *out = TY_POLY; return 1; }
   /* poly.new(args): instantiating a Class value read out of a container yields
      a fresh object, boxed poly (#2888). */
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "new") &&
-      !an_user_defines_method(c, name)) {
+      !an_user_recv_defines_method(c, name)) {
     /* a block goes to each class's `&blk`; a yielding initialize has none,
        and takes a literal spliced into its arm -- this one, or the one a
        yielding method forwarding its own block inlines with (codegen's

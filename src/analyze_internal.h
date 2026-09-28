@@ -143,6 +143,7 @@ TyKind yield_value_type_via_super(Compiler *c, int mi);
 int yield_value_diverges(Compiler *c, int mi);
 TyKind yield_aware_elem_ty(Compiler *c, int node);
 int an_user_defines_method(Compiler *c, const char *name);
+int an_user_recv_defines_method(Compiler *c, const char *name);
 extern int g_yvt_unify_all;
 /* The return type of a call to method `mi`. A method whose body is just a
    bare `yield` returns the block's value -- and since it inlines per call
