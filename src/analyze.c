@@ -6907,6 +6907,7 @@ int desugar_enum_method_recv(Compiler *c) {
       nt_node_set_ref(nt, id, "receiver", wrap);
       comp_grow_node_arrays(c);
       c->nscope[wrap] = c->nscope[id];
+      enum_hop_yield_view(c, id, wrap);
       changed = 1;
       continue;
     }
@@ -16573,6 +16574,7 @@ void analyze_program(Compiler *c) {
       comp_grow_node_arrays(c);
     }
   }
+  mark_sym_proc_blocks(c);               /* { |_spx| _spx.m } is `&:m` */
   desugar_root_scoped_constants(c);      /* ::Name -> Name (#4801) */
   desugar_engine_branches(c);
   desugar_class_reopen(c);               /* class Class / Class.class_eval -> a module */
@@ -17398,6 +17400,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_kernel_recv(c);              /* Kernel.puts x -> puts x */
     ch |= desugar_class_literal_ctors(c);      /* Array[a,b] -> [a,b]; Range.new -> (a..b) */
     ch |= desugar_enum_iter_splat_args(c);     /* enum.map(*a, &b) -> enum.map(&b) */
+    ch |= desugar_enum_pair_sym_block(c);      /* a.each_with_index.map(&:m) -> { |x, i| x.m(i) } */
     ch |= desugar_builtin_iter_block_shapes(c);  /* [1].each { |c, a = 10| } -> { |v| c = v; a = 10 } */
     ch |= desugar_multi_yield_map_param(c);    /* multi-yield each: map's |x| takes the 1st */
     ch |= desugar_enum_walk_calls(c);          /* enum.map { break } -> __enumw_map(enum) { } */

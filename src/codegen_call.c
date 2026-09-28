@@ -3035,6 +3035,10 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "sp_enum_chain_new("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
     return 1;
   }
+  if (recv < 0 && sp_streq(name, "__enum_pairs") && argc == 1) {
+    buf_puts(b, "sp_enum_pairs_new("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+    return 1;
+  }
   /* ---- Complex / Rational value types ---- */
   /* Kernel#Complex(re[, im]): a Float argument marks its component
      Float-classed so rendering and abs/abs2 keep CRuby's classes. */
@@ -25088,6 +25092,12 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       emit_int_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
     if ((sp_streq(name, "to_a") || sp_streq(name, "entries")) && argc == 0) {
+      /* the hop a block of map and its kin reads (desugar_enum_block_yield_view) */
+      const char *view = nt_str(nt, id, "enum_yield_view");
+      if (view) {
+        buf_puts(b, "sp_Enumerator_to_a_yielded("); emit_expr(c, recv, b);
+        buf_printf(b, ", %d)", sp_streq(view, "args")); return;
+      }
       buf_puts(b, "sp_Enumerator_to_a("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
     if (argc == 1 && (sp_streq(name, "equal?") || sp_streq(name, "eql?") || sp_streq(name, "==")) &&

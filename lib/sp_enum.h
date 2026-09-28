@@ -37,6 +37,11 @@ typedef struct {
   sp_bool endless;                       /* an argless #cycle: the items are one round, and
                                              #next / #peek start over at their end, so the
                                              enumerator never stops (sp_gc_alloc zero-fills) */
+  sp_bool yields_pair;                   /* each item is the two values one step yields
+                                             (each_with_index, with_index, each_with_object,
+                                             with_object) packed as an Array, which a block
+                                             of map and its kin takes spread
+                                             (sp_gc_alloc zero-fills) */
 } sp_Enumerator;
 
 #endif
