@@ -118,6 +118,16 @@ module URI
     out
   end
 
+  # The value of one hex digit character, or nil for anything else.
+  def self.hex_digit(c)
+    return nil unless c
+    o = c.ord
+    return o - 48 if o >= 48 && o <= 57
+    return o - 55 if o >= 65 && o <= 70
+    return o - 87 if o >= 97 && o <= 102
+    nil
+  end
+
   def self.decode_www_form_component(str)
     out = String.new
     s = str.to_s
@@ -127,8 +137,12 @@ module URI
       if ch == "+"
         out << " "
         i += 1
-      elsif ch == "%" && i + 2 < s.length
-        out << s[i + 1, 2].to_i(16).chr
+      elsif ch == "%"
+        # a % not followed by two hex digits is CRuby's ArgumentError
+        h1 = hex_digit(s[i + 1])
+        h2 = hex_digit(s[i + 2])
+        raise ArgumentError, "invalid %-encoding (#{s})" unless h1 && h2
+        out << (h1 * 16 + h2).chr
         i += 3
       else
         out << ch
