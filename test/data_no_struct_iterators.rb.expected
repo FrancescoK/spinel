@@ -1,0 +1,13 @@
+[:each, NoMethodError]
+[:each_pair, NoMethodError]
+[:each_with_index, NoMethodError]
+[:size, NoMethodError]
+[:length, NoMethodError]
+[:map, NoMethodError]
+false
+[:param_each, NoMethodError]
+1
+2
+[:a, 1]
+[:b, 2]
+2

@@ -10015,7 +10015,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, " (sp_int)(_t%d >> 1); })", th5);
       return 1;
     }
-    if ((sp_streq(name, "size") || sp_streq(name, "length")) && argc == 0) {
+    if ((sp_streq(name, "size") || sp_streq(name, "length")) && argc == 0 && !sc->is_data) {
       char szn[272]; snprintf(szn, sizeof szn, "@%s", name);
       if (comp_ivar_index(sc, szn) < 0) {
         Buf rb = expr_buf(c, recv);

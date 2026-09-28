@@ -4075,7 +4075,8 @@ static void synth_struct_each(Compiler *c) {
   int ncls0 = c->nclasses;
   for (int ci = 0; ci < ncls0; ci++) {
     ClassInfo *cls = &c->classes[ci];
-    if (!cls->is_struct || cls->nivars == 0) continue;
+    /* Data is not Enumerable: each/each_pair/each_with_index are Struct's */
+    if (!cls->is_struct || cls->is_data || cls->nivars == 0) continue;
     if (comp_method_in_class(c, ci, "each") >= 0) continue;
     int stmts[65]; int nst = 0;
     for (int j = 0; j < cls->nivars && nst < 64; j++) {
