@@ -12154,7 +12154,8 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
            really the unresolved-call gate's sp_raise_nomethod(...) poly
            (`s << time_or_nil.strftime(...)`) goes through emit_str_expr, which
            keeps the raise instead of passing the sp_RbVal through raw. */
-        emit_str_append_arg(c, arg, b);
+        { char rt[1100]; snprintf(rt, sizeof rt, "sp_String_cstr(%s)", srefC);
+          emit_str_append_arg(c, arg, rt, b); }
         buf_puts(b, ");\n");
       }
       return 1;
@@ -12206,7 +12207,10 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
         emit_indent(b, indent);
         emit_expr(c, cur, b); buf_puts(b, " = sp_str_append_grow(");
         emit_expr(c, cur, b); buf_puts(b, ", ");
-        if (at == TY_INT) { buf_puts(b, "sp_int_codepoint_to_str("); emit_expr(c, arg, b); buf_puts(b, ")"); }
+        if (at == TY_INT) {
+          buf_puts(b, "sp_int_codepoint_to_str_in("); emit_expr(c, cur, b); buf_puts(b, ", ");
+          emit_expr(c, arg, b); buf_puts(b, ")");
+        }
         else if (at == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, arg, b); buf_puts(b, ")"); }
         /* a string-typed arg whose value is really the unresolved-call gate's
            sp_raise_nomethod(...) poly (`s << time_or_nil.strftime(...)`, the
@@ -12499,7 +12503,10 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
         TyKind at = comp_ntype(c, argv[a]);
         emit_indent(b, indent);
         emit_expr(c, recv, b); buf_puts(b, " = sp_str_concat("); emit_expr(c, recv, b); buf_puts(b, ", ");
-        if (at == TY_INT) { buf_puts(b, "sp_int_codepoint_to_str("); emit_expr(c, argv[a], b); buf_puts(b, ")"); }
+        if (at == TY_INT) {
+          buf_puts(b, "sp_int_codepoint_to_str_in("); emit_expr(c, recv, b); buf_puts(b, ", ");
+          emit_expr(c, argv[a], b); buf_puts(b, ")");
+        }
         else if (at == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[a], b); buf_puts(b, ")"); }
         else emit_expr(c, argv[a], b);
         buf_puts(b, ");\n");

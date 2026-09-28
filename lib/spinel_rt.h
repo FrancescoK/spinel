@@ -4630,7 +4630,7 @@ static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b) {
          a RangeError -- the fallthrough read the receiver as a number and
          answered an integer shift instead (#4015) */
       if (b.tag == SP_TAG_INT || b.tag == SP_TAG_BIGINT) {
-        sp_String_append_bin((sp_String *)a.v.p, sp_int_codepoint_to_str(sp_poly_to_i(b)));
+        sp_String_append_bin((sp_String *)a.v.p, sp_int_codepoint_to_str_in(sp_String_cstr((sp_String *)a.v.p), sp_poly_to_i(b)));
         return a;
       }
       return sp_poly_binop_bad("<<", a, b);
@@ -4667,7 +4667,7 @@ static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b) {
      the receiver as a number instead answered an integer shift, so `s << -1`
      gave 0 where CRuby raises RangeError (#4015). */
   if (a.tag == SP_TAG_STR && (b.tag == SP_TAG_INT || b.tag == SP_TAG_BIGINT))
-    return sp_box_str(sp_str_concat(a.v.s, sp_int_codepoint_to_str(sp_poly_to_i(b))));
+    return sp_box_str(sp_str_concat(a.v.s, sp_int_codepoint_to_str_in(a.v.s, sp_poly_to_i(b))));
   /* Integer#<< is Integer's alone (see sp_poly_bitop); Array, String, IO,
      Queue, Proc and a user class were all answered above. */
   if (a.tag != SP_TAG_INT && a.tag != SP_TAG_BIGINT) return sp_poly_binop_bad("<<", a, b);

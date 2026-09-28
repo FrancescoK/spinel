@@ -12833,8 +12833,20 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
            which is right for a C string from getenv and wrong here -- it cut
            String.new("a\0b") down to one byte while the same literal kept all
            three, so a copy silently lost data a literal did not. */
-        if (has_content) { buf_puts(b, "sp_str_dup("); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); }
-        else buf_puts(b, "sp_str_dup_external((&(\"\\xff\")[1]))");
+        /* `encoding:` does change the value: String.new(encoding: BINARY)
+           is an ASCII-8BIT buffer, whose appended Integers are bytes
+           (#5538). It tags the copy the way force_encoding would. */
+        int enc_kw = -1;
+        if (argc >= 1) {
+          const char *lty = nt_type(nt, argv[argc - 1]);
+          if (lty && sp_streq(lty, "KeywordHashNode")) enc_kw = kwh_lookup(nt, argv[argc - 1], "encoding");
+        }
+        Buf nb; memset(&nb, 0, sizeof nb);
+        if (has_content) { buf_puts(&nb, "sp_str_dup("); emit_str_expr(c, argv[0], &nb); buf_puts(&nb, ")"); }
+        else buf_puts(&nb, "sp_str_dup_external((&(\"\\xff\")[1]))");
+        if (enc_kw >= 0) emit_str_force_encoding(c, "force_encoding", nb.p ? nb.p : "", &enc_kw, 1, b);
+        else buf_puts(b, nb.p ? nb.p : "");
+        free(nb.p);
         return 1;
       }
       if (cn && sp_streq(cn, "Object") && argc == 0) {

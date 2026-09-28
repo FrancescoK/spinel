@@ -3109,6 +3109,16 @@ const char *sp_int_codepoint_to_str(sp_int n) {
   sp_str_set_len(s, (size_t)len);  /* byte_len must be the encoded length, not the alloc */
   return s;
 }
+/* The same appended to `recv`: a BINARY receiver takes the Integer as one
+   byte, 0..255, and raises RangeError past it, as CRuby's ASCII-8BIT String
+   does; `"".b << 231` is [231], not the UTF-8 [195, 167] (#5538). */
+const char *sp_int_codepoint_to_str_in(const char *recv, sp_int n) {
+  if (recv && sp_str_is_binary(recv)) {
+    if (n < 0 || n > 255) sp_raise_cls("RangeError", sp_sprintf("%lld out of char range", (long long)n));
+    return sp_bin_char((unsigned char)n);
+  }
+  return sp_int_codepoint_to_str(n);
+}
 /* sp_IntArray lives in sp_array.h (hot core inline) + lib/sp_array.c
    (cold ops). The Integer methods that happen to build an IntArray stay
    here; they call the inline sp_IntArray_new / _push from sp_array.h. */

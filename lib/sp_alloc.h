@@ -847,6 +847,7 @@ static inline sp_bool sp_int_mul_overflow_p(sp_int a, sp_int b, sp_int *r) {
 const char *sp_int_chr(sp_int n);
 const char *sp_int_chr_utf8(sp_int n);
 const char *sp_int_codepoint_to_str(sp_int n);
+const char *sp_int_codepoint_to_str_in(const char *recv, sp_int n);
 sp_IntArray *sp_int_digits(sp_int n, sp_int base);
 sp_int sp_int_bit_length(sp_int n);
 sp_int sp_int_bit_range(sp_int n, sp_int start, sp_int len);

@@ -24,7 +24,6 @@ static void emit_int_array_delete(Compiler *c, const char *arr, int arg, Buf *b)
 #include "analyze.h"
 
 static void emit_str_encode_call(Compiler *c, const char *recv_txt, const int *argv, int argc, Buf *b);
-static void emit_str_force_encoding(Compiler *c, const char *name, const char *r, const int *argv, int argc, Buf *b);
 
 /* Object's identity protocol, text form (defined with its node form at the end of this file). */
 static void emit_native_object_protocol_text(Compiler *c, const char *name, TyKind rt, const char *r, TyKind at, const char *a, Buf *b);
@@ -95,9 +94,13 @@ static void emit_filter_bang_result(const char *name, int trecv, int torig,
 /* String#<< and String#concat take an Integer as a CODEPOINT, not a string:
    `s << 100` appends "d". Sent through the string slot, the integer reached
    sp_str_concat as a char pointer and the program died (#3544). */
-void emit_str_append_arg(Compiler *c, int arg, Buf *b) {
+/* `rtext` is the receiver's C string, already evaluated (a temp or a plain
+   local), or NULL: a binary receiver takes the Integer as one byte (#5538). */
+void emit_str_append_arg(Compiler *c, int arg, const char *rtext, Buf *b) {
   if (comp_ntype(c, arg) == TY_INT) {
-    buf_puts(b, "sp_int_codepoint_to_str("); emit_expr(c, arg, b); buf_puts(b, ")");
+    if (rtext) buf_printf(b, "sp_int_codepoint_to_str_in(%s, ", rtext);
+    else buf_puts(b, "sp_int_codepoint_to_str(");
+    emit_expr(c, arg, b); buf_puts(b, ")");
     return;
   }
   /* A BOXED integer is the same Integer: `s << 112` appends "p" whether or not
@@ -111,8 +114,12 @@ void emit_str_append_arg(Compiler *c, int arg, Buf *b) {
   if (comp_ntype(c, arg) == TY_POLY) {
     int ta = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, arg, b);
-    buf_printf(b, "; _t%d.tag == SP_TAG_INT ? sp_int_codepoint_to_str(_t%d.v.i)"
-                  " : sp_poly_to_s(_t%d); })", ta, ta, ta);
+    if (rtext)
+      buf_printf(b, "; _t%d.tag == SP_TAG_INT ? sp_int_codepoint_to_str_in(%s, _t%d.v.i)"
+                    " : sp_poly_to_s(_t%d); })", ta, rtext, ta, ta);
+    else
+      buf_printf(b, "; _t%d.tag == SP_TAG_INT ? sp_int_codepoint_to_str(_t%d.v.i)"
+                    " : sp_poly_to_s(_t%d); })", ta, ta, ta);
     return;
   }
   emit_str_expr(c, arg, b);
@@ -1103,7 +1110,8 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           else {
             for (int j = 0; j < argc; j++) {
               buf_printf(b, " sp_String_append(_t%d, ", tb2);
-              emit_str_append_arg(c, argv[j], b);
+              { char rt[48]; snprintf(rt, sizeof rt, "sp_String_cstr(_t%d)", tb2);
+                emit_str_append_arg(c, argv[j], rt, b); }
               buf_puts(b, ");");
             }
           }
@@ -1135,7 +1143,8 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         for (int j = nchain; j >= 0; j--) {  /* innermost link first */
           int arg = j > 0 ? chain[j - 1] : argv[0];
           buf_printf(b, " sp_String_append(_t%d, ", tb9);
-          emit_str_append_arg(c, arg, b);
+          { char rt[48]; snprintf(rt, sizeof rt, "sp_String_cstr(_t%d)", tb9);
+            emit_str_append_arg(c, arg, rt, b); }
           buf_puts(b, ");");
         }
         buf_printf(b, " sp_String_cstr(_t%d); })", tb9);
@@ -1148,7 +1157,8 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           buf_puts(b, "sp_str_check_mutable("); emit_expr(c, cur, b); buf_puts(b, "); ");
           emit_expr(c, cur, b); buf_puts(b, " = sp_str_concat(");
           emit_expr(c, cur, b); buf_puts(b, ", ");
-          emit_str_append_arg(c, arg, b);
+          { Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, cur, &rb);
+            emit_str_append_arg(c, arg, rb.p, b); free(rb.p); }
           buf_puts(b, "); ");
         }
         emit_expr(c, cur, b);
@@ -1176,7 +1186,8 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       else {
         for (int j = 0; j < argc; j++) buf_puts(b, "sp_str_concat(");
         buf_printf(b, "_t%d", trc);
-        for (int j = 0; j < argc; j++) { buf_puts(b, ", "); emit_str_append_arg(c, argv[j], b); buf_puts(b, ")"); }
+        { char rt[24]; snprintf(rt, sizeof rt, "_t%d", trc);
+          for (int j = 0; j < argc; j++) { buf_puts(b, ", "); emit_str_append_arg(c, argv[j], rt, b); buf_puts(b, ")"); } }
       }
       buf_puts(b, "; ");
       /* Ruby evaluates the argument(s) before invoking the mutator, so the
@@ -10921,7 +10932,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
    check and the retag, and a receiver that is a call with effects --
    campfire's `request.body.read.force_encoding("UTF-8")`, where `read`
    advances a cursor -- ran twice and retagged the second, empty, read. */
-static void emit_str_force_encoding(Compiler *c, const char *name, const char *r, const int *argv, int argc, Buf *b) {
+void emit_str_force_encoding(Compiler *c, const char *name, const char *r, const int *argv, int argc, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *fe_nm = NULL;
   if (argc >= 1) {
