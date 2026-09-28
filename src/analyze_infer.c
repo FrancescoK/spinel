@@ -5620,11 +5620,12 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       /* The count-taking Array reads on a boxed array. Their value is a new
          array; without a rule they typed nil/void and the call emitted as a
          discarded statement (#3464). rotate's count is optional. */
-      if ((argc == 1 || (argc == 0 && sp_streq(name, "rotate"))) &&
+      if ((argc == 1 || (argc == 0 && (sp_streq(name, "rotate") || sp_streq(name, "shuffle")))) &&
           nt_ref(nt, id, "block") < 0 &&
           (sp_streq(name, "first") || sp_streq(name, "last") ||
            sp_streq(name, "take") || sp_streq(name, "drop") ||
            sp_streq(name, "rotate") || sp_streq(name, "sample") ||
+           (sp_streq(name, "shuffle") && argc == 0) ||
            sp_streq(name, "min") || sp_streq(name, "max"))) {
         int has_user = 0;
         if (!an_builtin_only)
