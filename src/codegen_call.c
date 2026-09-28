@@ -25488,9 +25488,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       }
       else {
         /* an Array, Hash, Range or Symbol has no to_int: CRuby's TypeError,
-           not the value reinterpreted as an integer (#3717) */
+           not the value reinterpreted as an integer (#3717); nil, true and
+           false name themselves, as sp_convert_src_name spells them for the
+           boxed path */
         buf_puts(b, "((void)("); emit_expr(c, av[0], b);
-        buf_puts(b, "), sp_raise_cls(\"TypeError\", sp_sprintf(\"can't convert %s into Integer\", sp_poly_class_name(");
+        buf_puts(b, "), sp_raise_cls(\"TypeError\", sp_sprintf(\"can't convert %s into Integer\", sp_convert_src_name(");
         emit_boxed(c, av[0], b);
         buf_puts(b, "))), (sp_int)0)");
       }
@@ -25541,7 +25543,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         /* a Boolean, Symbol, Array or Hash has no #to_f: CRuby's TypeError,
            not the value reinterpreted as a double (#3888) */
         buf_puts(b, "((void)("); emit_expr(c, av[0], b);
-        buf_puts(b, "), sp_raise_cls(\"TypeError\", sp_sprintf(\"can't convert %s into Float\", sp_poly_class_name(");
+        buf_puts(b, "), sp_raise_cls(\"TypeError\", sp_sprintf(\"can't convert %s into Float\", sp_convert_src_name(");
         emit_boxed(c, av[0], b);
         buf_puts(b, "))), 0.0)");
       }
