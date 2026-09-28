@@ -7394,7 +7394,19 @@ static sp_bool sp_PolyPolyHash_has_value(sp_PolyPolyHash*h,sp_RbVal v){if(!h)ret
 /* defined with the curry machinery below; the key-typed reads and the cold
    index path all apply a curried receiver through it */
 static sp_RbVal sp_curry_call_poly(sp_Curry *c, sp_int argc, const sp_RbVal *args);
+/* Proc#[] and Method#[] are #call: a key of any kind is the one argument
+   (#5545). The Integer-keyed read has its own arm (sp_poly_arr_get_hash_cold). */
+static int sp_poly_is_call_aref(sp_RbVal v) {
+  return v.tag == SP_TAG_OBJ && v.v.p &&
+         (v.cls_id == SP_BUILTIN_PROC || v.cls_id == SP_BUILTIN_METHOD);
+}
+static sp_RbVal sp_poly_call_aref(sp_RbVal v, sp_RbVal arg) {
+  _sp_proc_poly_args[0] = arg;
+  sp_int slot = sp_poly_slot_i(arg);
+  return sp_poly_callable_call(v, 1, &slot);
+}
 static sp_RbVal sp_poly_get_sym(sp_RbVal v, sp_sym key) {
+  if (sp_poly_is_call_aref(v)) return sp_poly_call_aref(v, sp_box_sym(key));
   sp_poly_coll_chk(v, "[]");
   if (v.tag != SP_TAG_OBJ) return sp_box_nil();
   switch (v.cls_id) {
@@ -7787,6 +7799,7 @@ static sp_RbVal sp_poly_get_str(sp_RbVal v, const char *key) {
     const char *s = v.tag == SP_TAG_STR ? (v.v.s ? v.v.s : sp_str_empty) : sp_poly_to_s(v);
     return (key && sp_str_include(s, key)) ? sp_box_str(key) : sp_box_nil();
   }
+  if (sp_poly_is_call_aref(v)) return sp_poly_call_aref(v, sp_box_str(key));
   sp_poly_coll_chk(v, "[]");
   if (v.tag != SP_TAG_OBJ) return sp_box_nil();
   switch (v.cls_id) {

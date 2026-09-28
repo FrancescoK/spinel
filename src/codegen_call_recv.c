@@ -14610,7 +14610,8 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   int has_user_aref2 = 0;
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]") && argc == 2 && !g_poly_builtin_arm)
     for (int k = 0; k < c->nclasses; k++)
-      if (comp_poly_arm_defines_n(c, k, "[]", argc)) { has_user_aref2 = 1; break; }
+      if (comp_poly_arm_defines_n(c, k, "[]", argc) ||
+          (g_cls_tag_skip != id && comp_cmethod_in_chain(c, k, "[]", NULL) >= 0)) { has_user_aref2 = 1; break; }
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]") && argc == 2 && !has_user_aref2) {
     /* The runtime dispatches on the receiver's tag: a string/array does a
        two-arg slice, a bound Method (optcarrot's poke handlers) is called with
@@ -14643,8 +14644,12 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
        If any user class has its own [] method, fall through to the per-class
        poly dispatch (line ~4640) which generates both user and builtin arms. */
     int has_user_aref = 0;
+    /* a class's own `self.[]` counts too: a Class value in the slot is
+       served by the class-method dispatch, which re-emits this read for the
+       values that are not a Class (g_cls_tag_skip) (#5545) */
     for (int k = 0; k < c->nclasses; k++)
-      if (comp_poly_arm_defines_n(c, k, "[]", argc)) { has_user_aref = 1; break; }
+      if (comp_poly_arm_defines_n(c, k, "[]", argc) ||
+          (g_cls_tag_skip != id && comp_cmethod_in_chain(c, k, "[]", NULL) >= 0)) { has_user_aref = 1; break; }
     if (!has_user_aref) {
       if (at == TY_SYMBOL) {
         buf_puts(b, "sp_poly_get_sym("); emit_expr(c, recv, b);
