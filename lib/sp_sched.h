@@ -224,8 +224,12 @@ typedef struct sp_queue {
 sp_queue  *sp_Queue_new(void);
 sp_queue  *sp_SizedQueue_new(sp_int max);          /* SizedQueue.new(max) */
 void       sp_Queue_push(sp_queue *q, sp_RbVal v);  /* #push / #<< / #enq (blocks when full) */
+void       sp_Queue_push_nb(sp_queue *q, sp_RbVal v); /* SizedQueue#push(non_block: true) */
+void       sp_Queue_push_options_check(sp_queue *q, int has_non_block, int has_timeout);
+sp_bool    sp_Queue_push_timeout(sp_queue *q, sp_RbVal v, double seconds); /* false on timeout */
 sp_RbVal   sp_Queue_pop(sp_queue *q);               /* #pop / #shift / #deq (blocks when empty) */
 sp_RbVal   sp_Queue_pop_nb(sp_queue *q);            /* #pop(truthy): no_wait, raises ThreadError on empty */
+sp_RbVal   sp_Queue_pop_timeout(sp_queue *q, double seconds); /* nil on timeout */
 sp_int    sp_Queue_size(sp_queue *q);              /* #size / #length */
 sp_bool   sp_Queue_empty(sp_queue *q);             /* #empty? */
 sp_int    sp_Queue_max(sp_queue *q);               /* SizedQueue#max */
