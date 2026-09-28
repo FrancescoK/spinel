@@ -5534,7 +5534,7 @@ static void emit_bm_abi_args(Buf *b, const char *rb, int abi, const char *sig, i
    `if (<tag/cls is callable>) { <tr> = <expr>; }\nelse ` and returns 1 when
    emitted, 0 (nothing written) otherwise. */
 static int emit_poly_callable_prearm(Compiler *c, const char *name, int argc,
-                                     const int *atmp, const TyKind *atmp_ty,
+                                     const int *atmp, const TyKind *atmp_ty, const char *guard,
                                      int tv, int tr, TyKind ret, Buf *b) {
   if (!name ||
       !(sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]")))
@@ -5689,8 +5689,8 @@ static int emit_poly_callable_prearm(Compiler *c, const char *name, int argc,
      method_legacy_int_abi at bind time; the call site cannot see it. A Method
      that fails either test falls through to the dispatch's NoMethodError
      default rather than being called with an ABI it cannot read. */
-  buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && (_t%d.cls_id == SP_BUILTIN_PROC"
-                " || _t%d.cls_id == SP_BUILTIN_CURRY", tv, tv, tv);
+  buf_printf(b, "if (%s_t%d.tag == SP_TAG_OBJ && (_t%d.cls_id == SP_BUILTIN_PROC"
+                " || _t%d.cls_id == SP_BUILTIN_CURRY", guard ? guard : "", tv, tv, tv);
   /* a Method is admitted on its stamped ABI, or on the thunk its bind site
      synthesized for any count the signature binds (#4542) */
   buf_printf(b, " || (_t%d.cls_id == SP_BUILTIN_METHOD && (", tv);
@@ -6510,6 +6510,68 @@ static void emit_poly_kw_all(Compiler *c, int kwh, int th, Buf *b) {
   }
 }
 
+static int poly_native_arm_call(Compiler *c, int k, const char *name, int n, const int *argv,
+                                const int *atmp, const TyKind *atmp_ty, int tv,
+                                Buf *cb, TyKind *mret) {
+  memset(cb, 0, sizeof *cb);
+  int nmi = comp_native_method_find(c, k, name, n, 0);
+  if (nmi < 0 || c->native_methods[nmi].nargs != n) return 0;
+  NativeMethod *nmet = &c->native_methods[nmi];
+  buf_printf(cb, "%s((%s *)_t%d.v.p", nmet->csym, c->classes[k].c_struct, tv);
+  int ok = 1;
+  for (int ai = 0; ai < n && ok; ai++) {
+    const char *spec = nmet->args[ai];
+    char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[ai]);
+    buf_puts(cb, ", ");
+    if (!spec || sp_streq(spec, "any")) {
+      if (atmp_ty[ai] == TY_POLY) buf_puts(cb, tn);
+      else emit_boxed_text(c, atmp_ty[ai], tn, cb);
+    }
+    else if (sp_streq(spec, "regexp")) {
+      /* a :regexp binds a regex literal at the site or a value
+         typed Regexp, the same pattern pointer (#5360) */
+      int rl = re_lit_index(c, argv[ai]);
+      if (rl >= 0) buf_printf(cb, "sp_re_pat_%d", rl);
+      else if (atmp_ty[ai] == TY_REGEX) buf_puts(cb, tn);
+      else { ok = 0; break; }
+    }
+    else {
+      TyKind aw = ffi_spec_to_ty(spec);
+      if (sp_streq(spec, "text")) aw = TY_STRING;
+      if (aw == TY_UNKNOWN) { ok = 0; break; }
+      if (atmp_ty[ai] == TY_POLY) emit_unbox_text(c, aw, tn, cb);
+      else if (atmp_ty[ai] == aw || (aw == TY_STRING && atmp_ty[ai] == TY_STRBUF)) buf_puts(cb, tn);
+      else if (aw == TY_FLOAT && atmp_ty[ai] == TY_INT) buf_printf(cb, "(sp_float)%s", tn);
+      else { ok = 0; break; }
+    }
+  }
+  if (!ok) { free(cb->p); memset(cb, 0, sizeof *cb); return 0; }
+  buf_puts(cb, ")");
+  if (sp_streq(nmet->ret, "string?")) {
+    Buf wb; memset(&wb, 0, sizeof wb);
+    buf_printf(&wb, "sp_box_nullable_str(%s)", cb->p ? cb->p : "");
+    free(cb->p); *cb = wb;
+  }
+  *mret = sp_streq(nmet->ret, "self") ? ty_object(k) : native_spec_to_ty(nmet->ret);
+  return 1;
+}
+
+static void emit_poly_native_arm_stmt(Compiler *c, const char *call, TyKind mret, TyKind ret,
+                                      int tr, int is_setter_val, Buf *b) {
+  /* a writer in `x = v` is called for effect, as the user-class arms
+     below call it: the value is v, and the setter form declares no
+     result temp to assign */
+  if (mret == TY_NIL || is_setter_val) buf_puts(b, call ? call : "");
+  else {
+    buf_printf(b, "_t%d = ", tr);
+    if (ret == TY_POLY && mret != TY_POLY) emit_boxed_text(c, mret, call, b);
+    else if (ret != TY_POLY && mret == TY_POLY)
+      emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, call, b);
+    else buf_puts(b, call ? call : "");
+  }
+  buf_puts(b, ";");
+}
+
 static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
   /* Re-entered from this very dispatch's builtin-container arm: decline, so
      the call falls through to the builtin emitters the arm is there to
@@ -7023,7 +7085,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         }
       }
       /* a boxed Proc/Curry/Method in a slot a user `call`/`[]` shadows (#4395) */
-      emit_poly_callable_prearm(c, name, 0, NULL, NULL, tv, tr, ret, b);
+      emit_poly_callable_prearm(c, name, 0, NULL, NULL, NULL, tv, tr, ret, b);
       int cls0_d = -1, cls0_rd = -1;
       int cls0_mi = c->nclasses > 0 ? comp_method_in_chain(c, 0, name, &cls0_d) : -1;
       char cls0_exp[48];
@@ -7835,8 +7897,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       /* a native class's methods are its declared bindings (#4504) */
       if (c->classes[k].is_native_class) {
         if (kw_pos && !has_splat_arg && c->classes[k].instantiated) {
-          int nmi = comp_native_method_find(c, k, name, argc, 0);
-          if (nmi >= 0 && c->native_methods[nmi].nargs == argc) ncand++;
+          for (int n = pos_argc; n <= argc; n++) {
+            int nmi = comp_native_method_find(c, k, name, n, 0);
+            if (nmi >= 0 && c->native_methods[nmi].nargs == n) { ncand++; break; }
+          }
         }
         continue;
       }
@@ -8094,7 +8158,12 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
          answers it, and the default raises for every other receiver. */
       if (is_ctryconv) {
         char an[40]; snprintf(an, sizeof an, "_t%d", atmp[0]);
-        buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) { _t%d = sp_poly_class_try_convert(_t%d, ", tv, tr, tv);
+        buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) { ", tv);
+        if (kwall >= 0)
+          buf_printf(b, "if (_t%d->len == 0) { (void)sp_poly_class_try_convert(_t%d, sp_box_nil());"
+                        " sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 0, expected 1)\"); } ",
+                     kwall, tv);
+        buf_printf(b, "_t%d = sp_poly_class_try_convert(_t%d, ", tr, tv);
         /* a pattern temp has no boxed spelling in emit_boxed_text (it boxes
            nil there); the node form's sp_box_regexp is the one to use */
         if (atmp_ty[0] == TY_REGEX) buf_printf(b, "sp_box_regexp(%s)", an);
@@ -8317,8 +8386,16 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
          the keyword split binds by name to a user candidate, so skip it. A
          splatted argument is one temp holding an array, not one temp per
          value, so the positional publish sequence below cannot spread it. */
-      if (kw_pos && !has_splat_arg)
-        emit_poly_callable_prearm(c, name, argc, atmp, atmp_ty, tv, tr, ret, b);
+      if (kw_pos && !has_splat_arg) {
+        if (kwall >= 0) {
+          for (int e = 0; e < 2; e++) {
+            char kg[48];
+            snprintf(kg, sizeof kg, "_t%d->len %s 0 && ", kwall, e ? ">" : "==");
+            emit_poly_callable_prearm(c, name, pos_argc + e, atmp, atmp_ty, kg, tv, tr, ret, b);
+          }
+        }
+        else emit_poly_callable_prearm(c, name, argc, atmp, atmp_ty, NULL, tv, tr, ret, b);
+      }
       else if (splat_a >= 0)
         emit_poly_callable_spread_prearm(c, name, splat_a, atmp, atmp_ty,
                                          stk >= 0 ? stk : atmp[splat_a], tv, tr, ret, b);
@@ -8341,60 +8418,31 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            only: a binding declares no keywords and no splat. */
         if (c->classes[k].is_native_class) {
           if (!kw_pos || has_splat_arg || !c->classes[k].instantiated) continue;
-          int nmi = comp_native_method_find(c, k, name, argc, 0);
-          if (nmi < 0 || c->native_methods[nmi].nargs != argc) continue;
-          NativeMethod *nmet = &c->native_methods[nmi];
-          Buf cb; memset(&cb, 0, sizeof cb);
-          buf_printf(&cb, "%s((%s *)_t%d.v.p", nmet->csym, c->classes[k].c_struct, tv);
-          int ok = 1;
-          for (int ai = 0; ai < argc && ok; ai++) {
-            const char *spec = nmet->args[ai];
-            char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[ai]);
-            buf_puts(&cb, ", ");
-            if (!spec || sp_streq(spec, "any")) {
-              if (atmp_ty[ai] == TY_POLY) buf_puts(&cb, tn);
-              else emit_boxed_text(c, atmp_ty[ai], tn, &cb);
-            }
-            else if (sp_streq(spec, "regexp")) {
-              /* a :regexp binds a regex literal at the site or a value
-                 typed Regexp, the same pattern pointer (#5360) */
-              int rl = re_lit_index(c, argv[ai]);
-              if (rl >= 0) buf_printf(&cb, "sp_re_pat_%d", rl);
-              else if (atmp_ty[ai] == TY_REGEX) buf_puts(&cb, tn);
-              else { ok = 0; break; }
-            }
-            else {
-              TyKind aw = ffi_spec_to_ty(spec);
-              if (sp_streq(spec, "text")) aw = TY_STRING;
-              if (aw == TY_UNKNOWN) { ok = 0; break; }
-              if (atmp_ty[ai] == TY_POLY) emit_unbox_text(c, aw, tn, &cb);
-              else if (atmp_ty[ai] == aw || (aw == TY_STRING && atmp_ty[ai] == TY_STRBUF)) buf_puts(&cb, tn);
-              else if (aw == TY_FLOAT && atmp_ty[ai] == TY_INT) buf_printf(&cb, "(sp_float)%s", tn);
-              else { ok = 0; break; }
-            }
+          Buf cb; TyKind mret = TY_UNKNOWN;
+          if (kwall < 0) {
+            if (!poly_native_arm_call(c, k, name, argc, argv, atmp, atmp_ty, tv, &cb, &mret)) continue;
+            buf_printf(b, " case %d: ", k);
+            emit_poly_native_arm_stmt(c, cb.p, mret, ret, tr, is_setter_val, b);
+            buf_puts(b, " break;");
+            free(cb.p);
+            continue;
           }
-          if (!ok) { free(cb.p); continue; }
-          buf_puts(&cb, ")");
-          if (sp_streq(nmet->ret, "string?")) {
-            Buf wb; memset(&wb, 0, sizeof wb);
-            buf_printf(&wb, "sp_box_nullable_str(%s)", cb.p ? cb.p : "");
-            free(cb.p); cb = wb;
+          Buf arm; memset(&arm, 0, sizeof arm);
+          int fit = 0;
+          buf_printf(&arm, " case %d: if (_t%d->len == 0) { ", k, kwall);
+          for (int n = pos_argc; n <= argc; n++) {
+            if (n == argc) buf_puts(&arm, " } else { ");
+            if (poly_native_arm_call(c, k, name, n, argv, atmp, atmp_ty, tv, &cb, &mret) &&
+                (mret == TY_NIL || is_setter_val || ret == TY_POLY || mret == TY_POLY || mret == ret)) {
+              emit_poly_native_arm_stmt(c, cb.p, mret, ret, tr, is_setter_val, &arm);
+              fit = 1;
+            }
+            else buf_printf(&arm, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d));", name, tv);
+            free(cb.p);
           }
-          TyKind mret = sp_streq(nmet->ret, "self") ? ty_object(k) : native_spec_to_ty(nmet->ret);
-          buf_printf(b, " case %d: ", k);
-          /* a writer in `x = v` is called for effect, as the user-class arms
-             below call it: the value is v, and the setter form declares no
-             result temp to assign */
-          if (mret == TY_NIL || is_setter_val) buf_puts(b, cb.p ? cb.p : "");
-          else {
-            buf_printf(b, "_t%d = ", tr);
-            if (ret == TY_POLY && mret != TY_POLY) emit_boxed_text(c, mret, cb.p, b);
-            else if (ret != TY_POLY && mret == TY_POLY)
-              emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, cb.p, b);
-            else buf_puts(b, cb.p ? cb.p : "");
-          }
-          buf_puts(b, "; break;");
-          free(cb.p);
+          buf_puts(&arm, " } break;");
+          if (fit) buf_puts(b, arm.p);
+          free(arm.p);
           continue;
         }
         int defcls = -1;
