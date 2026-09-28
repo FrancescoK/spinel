@@ -24,8 +24,8 @@ try(:index_re) { ix("aéb", /b/) }
 try(:rindex_arr) { rx([5, 1], 1) }
 try(:rindex_int) { rx("ab", 1) }
 try(:rindex_re) { rx("abab", /b/) }
-try(:index_from_re) { ix2("abab", /b/, 2) }
-try(:rindex_from_re) { rx2("abab", /b/, 2) }
+try(:index_from_re) { ix2(["abab", 1][0], /b/, 2) }
+try(:rindex_from_re) { rx2(["abab", 1][0], /b/, 2) }
 try(:count_int) { ct("ab", 1) }
 try(:count_str) { ct("abca", "a") }
 try(:count_arr) { ct([1, 1], 1) }
@@ -39,3 +39,6 @@ x = ["b", 1]
 try(:include_boxed_str) { inc("ab", x[0]) }
 try(:include_boxed_int) { inc("ab", x[1]) }
 try(:include_arr_boxed) { inc([1], x[1]) }
+# a boxed String receiver with an argument that is only ever a Regexp
+def ixr(o, re) = o.index(re)
+try(:index_boxed_recv_re) { ixr(["abab", 1][0], /b/) }

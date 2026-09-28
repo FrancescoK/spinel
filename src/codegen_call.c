@@ -9402,6 +9402,8 @@ else {
         Buf ab4; memset(&ab4, 0, sizeof ab4);
         { char tn4[32]; snprintf(tn4, sizeof tn4, "_t%d", atmp[0]);
           if (atmp_ty[0] == TY_POLY) buf_puts(&ab4, tn4);
+          /* emit_boxed_text boxes a pattern temp as nil */
+          else if (atmp_ty[0] == TY_REGEX) buf_printf(&ab4, "sp_box_regexp(%s)", tn4);
           else emit_boxed_text(c, atmp_ty[0], tn4, &ab4); }
         buf_puts(b, " case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_STR_ARRAY:"
                     " case SP_BUILTIN_FLT_ARRAY: case SP_BUILTIN_SYM_ARRAY:"
@@ -9722,6 +9724,7 @@ else {
           Buf ab5; memset(&ab5, 0, sizeof ab5);
           { char tn5[32]; snprintf(tn5, sizeof tn5, "_t%d", atmp[0]);
             if (atmp_ty[0] == TY_POLY) buf_puts(&ab5, tn5);
+            else if (atmp_ty[0] == TY_REGEX) buf_printf(&ab5, "sp_box_regexp(%s)", tn5);
             else emit_boxed_text(c, atmp_ty[0], tn5, &ab5); }
           if (argc == 2) {
             char sx[64];

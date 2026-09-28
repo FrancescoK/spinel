@@ -20,3 +20,4 @@
 [:include_boxed_str, true]
 [:include_boxed_int, TypeError, "no implicit conversion of Integer into String"]
 [:include_arr_boxed, true]
+[:index_boxed_recv_re, 1]
