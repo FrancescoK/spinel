@@ -315,6 +315,7 @@ int desugar_block_implicit_rest(Compiler *c);
 int desugar_multi_value_jump(Compiler *c);
 int desugar_forwarding_to_rest_callee(Compiler *c);
 int desugar_anon_block_param(Compiler *c);
+int desugar_singleton_class_define_method(Compiler *c);
 int desugar_define_method_proc_arg(Compiler *c);
 int desugar_define_method_captures(Compiler *c);
 int desugar_define_method_keywords(Compiler *c);

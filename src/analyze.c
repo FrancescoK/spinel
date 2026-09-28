@@ -17696,6 +17696,7 @@ void analyze_program(Compiler *c) {
   rename_redefined_toplevel_defs(c);     /* def f; f; def f -> def f__redef1; f__redef1; def f */
   rename_main_singleton_defs(c);         /* def self.k beside def k -> def self.k__main1 */
   scope_numbered_block_params(c);
+  desugar_singleton_class_define_method(c); /* singleton_class.define_method -> define_singleton_method */
   desugar_define_method_proc_arg(c);     /* define_method(:m, -> { }) -> define_method(:m) { } */
   desugar_define_method_captures(c);     /* class body local a define_method reads -> a global */
   desugar_define_method_keywords(c);     /* define_method(:m) { |k: 1| } -> def m(k: 1) */
