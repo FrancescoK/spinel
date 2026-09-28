@@ -26,8 +26,8 @@ class S; def n(a, *r, b: [a, r.size]) = [a, r, b]; end
 class T; def n(a, *r, b: [r, a]) = [a, r, b]; end
 [S.new, T.new].each { |o| p o.n(1, 2, 3) }
 
-class J; def m(a, b = [puts("J"), a]) = b; end
-class K; def m(a, b = [puts("K"), a]) = b; end
+class J; def m(a, b = [puts("J"), 1]) = b; end
+class K; def m(a, b = [puts("K"), 2]) = b; end
 [J.new, K.new].each { |o| p o.m(4) }
 
 class L; def m(a, b = [a + 1]); puts "L#{a}#{b}"; end; end
