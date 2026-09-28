@@ -21,7 +21,7 @@ plus a scheduling record.
 `sp_thread` (in `sp_sched.h`) carries the fiber, the spawn arg, the return
 value / unhandled-exception triple, the run state
 (`RUNNABLE`/`RUNNING`/`BLOCKED`/`DEAD`), the run-queue and wait-list links, the
-joiner list, thread-local storage, and the sleep/I/O parking fields. Threads are
+joiner list, thread-local storage, and the wait-list/timer fields. Threads are
 kept alive by the scheduler's live-thread registry (`all_next`/`all_prev`), so
 the `Mutex`/`Queue`/`ConditionVariable` structs never need to GC-scan their
 owner/waiter pointers — the registry already roots them.
@@ -77,10 +77,11 @@ green thread from the registry.
 
 A dedicated monitor thread ("sysmon"), off the workers' backs, has three jobs:
 
-1. **Wake sleepers.** `sp_sched_sleep(seconds)` parks the calling thread with a
-   `CLOCK_MONOTONIC` `wake_deadline` and frees its OS worker; the monitor wakes
-   it when the deadline passes. (In the single-threaded build this falls back to
-   a plain blocking sleep.)
+1. **Fire timers.** `Kernel#sleep`, timed I/O waits, and timed synchronization
+   waits append handles to a staging buffer. The monitor batches them into a
+   `CLOCK_MONOTONIC` min-heap, expires its root when due, and periodically
+   compacts canceled handles. (In the single-threaded build, sleep falls back
+   to a plain blocking sleep.)
 2. **Timeslice preemption.** The monitor watches how long each worker has run
    its current green thread (`g_wslot[]`, re-checked every `SP_PREEMPT_TICK` =
    5 ms). Past the ~10 ms quantum it sets the thread's `preempt_request` and
@@ -91,10 +92,9 @@ A dedicated monitor thread ("sysmon"), off the workers' backs, has three jobs:
    green thread on an fd (POLLIN/POLLOUT), freeing its worker; the monitor
    rebuilds a `poll()` set (`g_pfds`) from the I/O-waiter list each tick and
    wakes the thread when the fd is ready. `sp_sched_wait_io_timeout(fd, events,
-   seconds)` is the same park with a `wake_deadline`: the monitor folds it into
-   its poll timeout like a sleeper's and wakes the thread with no revents when
-   the clock passes it, which is how `IO#wait_readable(t)` and a one-io
-   `IO.select` wait without pinning a worker. A self-pipe (`g_sysmon_pipe`) wakes the
+   seconds)` uses the timer heap to wake with no revents when its deadline
+   passes, which is how `IO#wait_readable(t)` and a one-io `IO.select` wait
+   without pinning a worker. A self-pipe (`g_sysmon_pipe`) wakes the
    monitor out of `poll()` when the wait set changes.
 
 The monitor idles on `g_sysmon_cv` when there is nothing to watch and is woken
@@ -113,6 +113,11 @@ busy-waiting, and hold their waiters on intrusive wait lists:
   the producer/consumer hand-off the lazy Phase-0 model could not express.
 - **`ConditionVariable`** — `#wait` releases the mutex, parks on the condvar's
   `waiters`, and re-acquires the mutex on wake; `#signal` / `#broadcast` unpark.
+  A timeout schedules a deadline in the scheduler's staged timer min-heap and
+  follows the same wake-and-reacquire path when it expires. Timed parking uses
+  the same wait-list mechanism as other blocking operations, optionally
+  releasing a mutex, and reports whether the deadline or another wake caused
+  the thread to resume.
 
 ## Status vs. the source
 

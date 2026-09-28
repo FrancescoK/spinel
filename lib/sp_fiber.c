@@ -572,7 +572,7 @@ static void sp_Fiber_scan(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->user_data)sp_gc_
   if(f!=sp_fiber_collecting&&f!=sp_fiber_current&&f->state!=3)sp_fiber_mark_roots(f);}
 sp_Fiber*sp_Fiber_new(void(*body)(sp_Fiber*)){sp_fiber_fault_arm();sp_Fiber*f=(sp_Fiber*)sp_gc_alloc(sizeof(sp_Fiber),sp_Fiber_fin,sp_Fiber_scan);{size_t _g=sp_fiber_guard();f->stack_size=sp_fiber_stack_bytes();
 /* MAP_NORESERVE: the stack is virtual space until touched, and a strict-overcommit host must not charge every fiber the whole of it (#4496) */
-f->stack=(char*)mmap(NULL,_g+f->stack_size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_STACK|MAP_NORESERVE,-1,0);if(f->stack==MAP_FAILED){f->stack=NULL;sp_raise_cls("FiberError","failed to allocate fiber stack");}mprotect(f->stack,_g,PROT_NONE);}f->state=0;f->transferred=0;f->body=body;f->yielded_value=sp_box_nil();f->resumed_value=sp_box_nil();f->user_data=NULL;f->saved_exc_top=0;f->saved_catch_top=0;f->exc_ctx=sp_exc_ctx_new();f->raised=0;f->raised_cls=NULL;f->raised_msg=NULL;f->raised_obj=NULL;f->inject=0;f->inj_cls=NULL;f->inj_msg=NULL;f->inj_obj=NULL;f->storage=NULL;f->saved_roots=NULL;f->saved_nroots=0;f->saved_roots_cap=0;f->fiber_next=NULL;f->fiber_prev=NULL;sp_fiber_list_add(f);sp_fiber_install_gc_hook();if(sp_fiber_current&&sp_fiber_current->storage){sp_Fiber*volatile _froot=f;int _pushed=0;if(sp_gc_nroots<SP_GC_STACK_MAX){sp_gc_roots[sp_gc_nroots++]=(void**)&_froot;_pushed=1;}f->storage=sp_FiberStore_dup((sp_FiberStore*)sp_fiber_current->storage);if(_pushed)sp_gc_nroots--;}
+f->stack=(char*)mmap(NULL,_g+f->stack_size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_STACK|MAP_NORESERVE,-1,0);if(f->stack==MAP_FAILED){f->stack=NULL;sp_raise_cls("FiberError","failed to allocate fiber stack");}mprotect(f->stack,_g,PROT_NONE);}f->state=0;f->transferred=0;f->body=body;f->yielded_value=sp_box_nil();f->resumed_value=sp_box_nil();f->user_data=NULL;f->saved_exc_top=0;f->saved_catch_top=0;f->exc_ctx=sp_exc_ctx_new();f->raised=0;f->raised_cls=NULL;f->raised_msg=NULL;f->raised_obj=NULL;f->inject=0;f->inject_defer=0;f->inj_cls=NULL;f->inj_msg=NULL;f->inj_obj=NULL;f->storage=NULL;f->saved_roots=NULL;f->saved_nroots=0;f->saved_roots_cap=0;f->fiber_next=NULL;f->fiber_prev=NULL;sp_fiber_list_add(f);sp_fiber_install_gc_hook();if(sp_fiber_current&&sp_fiber_current->storage){sp_Fiber*volatile _froot=f;int _pushed=0;if(sp_gc_nroots<SP_GC_STACK_MAX){sp_gc_roots[sp_gc_nroots++]=(void**)&_froot;_pushed=1;}f->storage=sp_FiberStore_dup((sp_FiberStore*)sp_fiber_current->storage);if(_pushed)sp_gc_nroots--;}
 #ifdef SP_TSAN
   if(!sp_fiber_root.tsan_fiber)sp_fiber_root.tsan_fiber=__tsan_get_current_fiber();
   f->tsan_fiber=__tsan_create_fiber(0);f->caller_fiber=NULL;
@@ -638,7 +638,9 @@ static void sp_fiber_consume_inject(sp_Fiber*f){SP_GC_ROOT(f);int kind=sp_fiber_
    yield) delivers it inside the body, where its rescue/ensure can see it. */
 void sp_fiber_set_raise_inject(sp_Fiber*f,const char*cls,const char*msg,void*obj){SP_GC_ROOT(f);SP_GC_ROOT_STR(msg);sp_fiber_inject_publish(f,3,cls,msg,obj);}
 void sp_fiber_set_kill_inject(sp_Fiber*f){SP_GC_ROOT(f);sp_fiber_inject_publish(f,2,NULL,NULL,NULL);}
-void sp_fiber_fire_inject_if_pending(void){sp_Fiber*f=sp_fiber_current;if(f&&SP_INJECT_PEEK(f))sp_fiber_consume_inject(f);}
+void sp_fiber_defer_inject(void){sp_Fiber*f=sp_fiber_current;if(f)f->inject_defer++;}
+void sp_fiber_undefer_inject(void){sp_Fiber*f=sp_fiber_current;if(f&&f->inject_defer)f->inject_defer--;}
+void sp_fiber_fire_inject_if_pending(void){sp_Fiber*f=sp_fiber_current;if(f&&!f->inject_defer&&SP_INJECT_PEEK(f))sp_fiber_consume_inject(f);}
 /* Lock-free peek for the scheduler's pre-park checks (sp_sched_block etc.). */
 int sp_fiber_inject_pending(sp_Fiber*f){return SP_INJECT_PEEK(f)!=0;}
 SP_NORETURN void sp_fiber_raise_kill_self(void){sp_raise_cls(SP_FIBER_KILL_CLS,(&("\xff")[1]));}
@@ -652,7 +654,7 @@ else{f->state=1;sp_ctx_swap(&f->caller_ctx,&f->ctx);}f->resumer=NULL;sp_exc_ctx_
    was never resumed, and a fiber entered via #transfer has no resumer to return
    to (its caller_ctx is unset) -- yielding from either would swap to a garbage
    context, so raise instead (matching CRuby's FiberError). */
-sp_RbVal sp_Fiber_yield(sp_RbVal val){SP_GC_ROOT_RBVAL(val);sp_Fiber*f=sp_fiber_current;if(f==&sp_fiber_root||f->transferred){sp_raise_cls("FiberError","attempt to yield on a not resumed fiber");}f->yielded_value=val;f->state=2;SP_TSAN_SWITCH(f->caller_fiber);sp_ctx_swap(&f->ctx,&f->caller_ctx);if(SP_INJECT_PEEK(f))sp_fiber_consume_inject(f);return f->resumed_value;}
+sp_RbVal sp_Fiber_yield(sp_RbVal val){SP_GC_ROOT_RBVAL(val);sp_Fiber*f=sp_fiber_current;if(f==&sp_fiber_root||f->transferred){sp_raise_cls("FiberError","attempt to yield on a not resumed fiber");}f->yielded_value=val;f->state=2;SP_TSAN_SWITCH(f->caller_fiber);sp_ctx_swap(&f->ctx,&f->caller_ctx);if(!f->inject_defer&&SP_INJECT_PEEK(f))sp_fiber_consume_inject(f);return f->resumed_value;}
 sp_bool sp_Fiber_alive(sp_Fiber*f){return f->state!=3;}
 /* Fiber#raise: queue an exception, then resume the fiber so its suspension point
    (or body entry) raises it. An unhandled raise propagates to this caller via

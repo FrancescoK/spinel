@@ -236,19 +236,212 @@ static void sp_sysmon_wake(void) {
   else if (g_sysmon_pipe[1] >= 0) { char c = 1; ssize_t r = write(g_sysmon_pipe[1], &c, 1); (void)r; }
 }
 
-/* The earliest deadline on either wait list, cached. The monitor used to find
-   it by walking both lists on every turn, which is an O(parked) pass that
-   survived moving the descriptors into the kernel -- and with the event set the
-   turns are more frequent, so the walk became the population term it had been
-   hiding behind. Kept as a minimum here instead: a new deadline lowers it, and
-   only when it actually passes does the monitor walk to expire what is due and
-   recompute. Waking early is harmless; the walk that follows re-derives it. */
+/* The monitor's cached next wake time. Timer insertions lower it; canceling its
+   current minimum clears it so the monitor recomputes from the heap. With the
+   event backend, the monitor can skip rebuilding the I/O poll set until a
+   deadline is due. */
 static double g_nearest = 0.0;   /* 0 = nothing timed */
 static void sp_deadline_added(double d) {   /* PRE: sched lock held */
   if (d <= 0.0) return;
   if (g_nearest == 0.0 || d < g_nearest) {
     g_nearest = d;
     sp_sysmon_wake();   /* it must shorten its wait */
+  }
+}
+
+/* Timers are appended to a staging buffer while green threads park, then
+   inserted into this min-heap together by the monitor. Most waits run to their
+   deadline, so this keeps the park path cheap and amortizes heap repair across
+   the batch, like IO::Event::Timers. Canceled handles are left in place until
+   they reach the root or compaction makes rebuilding cheaper. */
+enum { SP_TIMER_SLEEP, SP_TIMER_IO, SP_TIMER_WAIT };
+struct sp_sched_timer {
+  double deadline;
+  sp_thread *thread;
+  int kind;
+  int active;
+  int in_heap;
+  size_t index;
+};
+#define SP_TIMER_COMPACT_MINIMUM 128
+#define SP_TIMER_HEAPIFY_INSERT_RATIO 2
+static sp_sched_timer **g_timer_heap = NULL;
+static size_t g_timer_heap_len = 0, g_timer_heap_cap = 0;
+static sp_sched_timer **g_timer_scheduled = NULL;
+static size_t g_timer_scheduled_len = 0, g_timer_scheduled_cap = 0;
+static size_t g_timer_cancelled = 0, g_timer_pending = 0;
+static void sp_sched_timer_expire(sp_sched_timer *timer, double now);
+
+static int sp_timer_reserve(sp_sched_timer ***items, size_t *capacity, size_t needed) {
+  if (*capacity >= needed) return 1;
+  size_t nc = *capacity ? *capacity : 16;
+  while (nc < needed) {
+    if (nc > SIZE_MAX / 2) { nc = needed; break; }
+    nc *= 2;
+  }
+  if (nc > SIZE_MAX / sizeof(sp_sched_timer *)) return 0;
+  sp_sched_timer **next = (sp_sched_timer **)realloc(*items, nc * sizeof(sp_sched_timer *));
+  if (!next) return 0;
+  *items = next;
+  *capacity = nc;
+  return 1;
+}
+
+static void sp_timer_swap(size_t a, size_t b) {
+  sp_sched_timer *tmp = g_timer_heap[a];
+  g_timer_heap[a] = g_timer_heap[b];
+  g_timer_heap[b] = tmp;
+  g_timer_heap[a]->index = a;
+  g_timer_heap[b]->index = b;
+}
+
+static void sp_timer_bubble_up(size_t i) {
+  while (i > 0) {
+    size_t parent = (i - 1) / 2;
+    if (g_timer_heap[parent]->deadline <= g_timer_heap[i]->deadline) break;
+    sp_timer_swap(i, parent);
+    i = parent;
+  }
+}
+
+static void sp_timer_bubble_down(size_t i) {
+  for (;;) {
+    size_t left = i * 2 + 1;
+    if (left >= g_timer_heap_len) return;
+    size_t right = left + 1;
+    size_t child = right < g_timer_heap_len &&
+                   g_timer_heap[right]->deadline < g_timer_heap[left]->deadline ? right : left;
+    if (g_timer_heap[i]->deadline <= g_timer_heap[child]->deadline) return;
+    sp_timer_swap(i, child);
+    i = child;
+  }
+}
+
+static void sp_timer_heapify(void) {
+  for (size_t i = 0; i < g_timer_heap_len; i++) {
+    g_timer_heap[i]->in_heap = 1;
+    g_timer_heap[i]->index = i;
+  }
+  if (g_timer_heap_len > 1) {
+    for (size_t i = g_timer_heap_len / 2; i > 0; i--) sp_timer_bubble_down(i - 1);
+  }
+}
+
+static sp_sched_timer *sp_timer_pop_root(void) {
+  if (!g_timer_heap_len) return NULL;
+  sp_sched_timer *root = g_timer_heap[0];
+  sp_sched_timer *last = g_timer_heap[--g_timer_heap_len];
+  if (g_timer_heap_len) {
+    g_timer_heap[0] = last;
+    last->index = 0;
+    sp_timer_bubble_down(0);
+  }
+  root->in_heap = 0;
+  return root;
+}
+
+static sp_sched_timer *sp_timer_schedule(sp_thread *thread, double deadline, int kind) {
+  sp_sched_timer *timer = (sp_sched_timer *)malloc(sizeof(sp_sched_timer));
+  if (!timer) return NULL;
+  if (!sp_timer_reserve(&g_timer_scheduled, &g_timer_scheduled_cap, g_timer_scheduled_len + 1) ||
+      !sp_timer_reserve(&g_timer_heap, &g_timer_heap_cap,
+                        g_timer_heap_len + g_timer_scheduled_len + 1)) {
+    free(timer);
+    return NULL;
+  }
+  timer->deadline = deadline;
+  timer->thread = thread;
+  timer->kind = kind;
+  timer->active = 1;
+  timer->in_heap = 0;
+  timer->index = 0;
+  g_timer_scheduled[g_timer_scheduled_len++] = timer;
+  thread->timer = timer;
+  g_timer_pending++;
+  sp_deadline_added(deadline);
+  return timer;
+}
+
+static void sp_timer_cancel(sp_thread *thread) {
+  sp_sched_timer *timer = thread->timer;
+  if (!timer) return;
+  thread->timer = NULL;
+  if (timer->active) {
+    timer->active = 0;
+    if (g_timer_pending) g_timer_pending--;
+    if (timer->in_heap) g_timer_cancelled++;
+    if (timer->deadline == g_nearest) {
+      g_nearest = 0.0;
+      sp_sysmon_wake();
+    }
+  }
+}
+
+static void sp_timer_flush(void) {
+  if (!g_timer_scheduled_len &&
+      !(g_timer_cancelled >= SP_TIMER_COMPACT_MINIMUM && g_timer_cancelled * 2 > g_timer_heap_len)) return;
+
+  if (g_timer_cancelled >= SP_TIMER_COMPACT_MINIMUM && g_timer_cancelled * 2 > g_timer_heap_len) {
+    size_t write = 0;
+    for (size_t i = 0; i < g_timer_heap_len; i++) {
+      sp_sched_timer *timer = g_timer_heap[i];
+      if (timer->active) g_timer_heap[write++] = timer;
+      else free(timer);
+    }
+    g_timer_heap_len = write;
+    g_timer_cancelled = 0;
+    for (size_t i = 0; i < g_timer_scheduled_len; i++) {
+      sp_sched_timer *timer = g_timer_scheduled[i];
+      if (timer->active) g_timer_heap[g_timer_heap_len++] = timer;
+      else free(timer);
+    }
+    g_timer_scheduled_len = 0;
+    sp_timer_heapify();
+    return;
+  }
+
+  size_t live = 0;
+  for (size_t i = 0; i < g_timer_scheduled_len; i++)
+    if (g_timer_scheduled[i]->active) live++;
+  int rebuild = g_timer_heap_len == 0 || live > g_timer_heap_len * SP_TIMER_HEAPIFY_INSERT_RATIO;
+  for (size_t i = 0; i < g_timer_scheduled_len; i++) {
+    sp_sched_timer *timer = g_timer_scheduled[i];
+    if (!timer->active) { free(timer); continue; }
+    size_t index = g_timer_heap_len++;
+    g_timer_heap[index] = timer;
+    timer->in_heap = 1;
+    timer->index = index;
+    if (!rebuild) sp_timer_bubble_up(index);
+  }
+  g_timer_scheduled_len = 0;
+  if (rebuild) sp_timer_heapify();
+}
+
+static sp_sched_timer *sp_timer_peek(void) {
+  sp_timer_flush();
+  while (g_timer_heap_len && !g_timer_heap[0]->active) {
+    sp_sched_timer *timer = sp_timer_pop_root();
+    if (g_timer_cancelled) g_timer_cancelled--;
+    free(timer);
+  }
+  return g_timer_heap_len ? g_timer_heap[0] : NULL;
+}
+
+static double sp_timer_next_deadline(void) {
+  sp_sched_timer *timer = sp_timer_peek();
+  return timer ? timer->deadline : 0.0;
+}
+
+static void sp_timer_fire_due(double now) {
+  sp_sched_timer *timer;
+  while ((timer = sp_timer_peek()) && timer->deadline <= now) {
+    sp_timer_pop_root();
+    sp_thread *thread = timer->thread;
+    timer->active = 0;
+    if (thread->timer == timer) thread->timer = NULL;
+    if (g_timer_pending) g_timer_pending--;
+    sp_sched_timer_expire(timer, now);
+    free(timer);
   }
 }
 
@@ -941,6 +1134,7 @@ static int sp_ev_dispatch(int rfd, short rev, int only_home) {
     g_mon_readied++;
     for (sp_thread **pp = &g_io_waiters; *pp; pp = &(*pp)->wait_next)
       if (*pp == w) { *pp = w->wait_next; break; }
+    sp_timer_cancel(w);
     sp_ev_drop(w);
     w->wait_next = NULL; w->wait_head = NULL;
     w->io_revents = rev; w->io_fd = -1;
@@ -1256,7 +1450,7 @@ static void sp_sched_globals_mark(void) {
 }
 
 #ifdef SP_THREADS
-static void sp_sched_start_workers(void);   /* defined after run_thread_once */
+static int sp_sched_start_workers(void);   /* defined after run_thread_once */
 #endif
 
 void sp_sched_init(void) {
@@ -1772,12 +1966,12 @@ static void sp_trim_thread_start(void) {}
 #endif
 
 static int sp_worker_count(void);   /* defined below; the pool size */
-static void sp_sched_ensure_workers(void) {
-  if (g_workers_started) return;
+static int sp_sched_ensure_workers(void) {
+  if (g_workers_started) return 1;
   sp_alloc_stress_init();   /* set the stress flags once here, before any helper reads them */
   sp_alloc_worker_tune(sp_worker_count());  /* and size the GC budget for the pool */
+  if (!sp_sched_start_workers()) return 0;
   g_workers_started = 1;
-  sp_sched_start_workers();
   /* Hand parked workers their own slots from here on. Workers spawn lazily, so
      the pool may still be one at this point; the driver itself falls back to
      the serial sweep whenever there is nobody parked to help. */
@@ -1793,6 +1987,7 @@ static void sp_sched_ensure_workers(void) {
   sp_gc_par_mark_hook = sp_sched_par_mark;
   sp_trim_thread_start();
   sp_cs_start_sweepers();
+  return 1;
 }
 #endif
 
@@ -1813,7 +2008,7 @@ static void sp_thread_report(sp_thread *t) {
 }
 
 /* Park/wake primitives (defined below; used by join here). */
-static void       sp_sched_block(sp_thread **waitlist);
+static void       sp_sched_block(sp_thread **waitlist, int defer_inject);
 static sp_thread *sp_sched_wake_one(sp_thread **waitlist);
 
 /* A finished thread's parked joiners become runnable again (the main thread,
@@ -2027,10 +2222,10 @@ static void sp_sched_pump(sp_thread *target, int may_wait) {
        queue is empty do we fall through -- drained, or a deadlock the caller
        observes. */
     int outstanding = (g_nrunning > 0 || g_runnable > 0);
-    /* A sleeper or an I/O waiter is work that may yet become runnable, so an
+    /* A timed wait or an I/O waiter is work that may yet become runnable, so an
        ordinary wait counts it. The exit drain does not: nothing is going to
        ask for it after main has returned. */
-    if (may_wait == 1) outstanding = outstanding || g_sleepers || g_io_waiters;
+    if (may_wait == 1) outstanding = outstanding || g_sleepers || g_io_waiters || g_timer_pending;
     if (may_wait && outstanding) {
 #ifdef SP_EV_BACKEND
       /* Main is worker 0, and threads pin to it -- at SPINEL_WORKERS=1 all of
@@ -2088,7 +2283,8 @@ sp_thread *sp_Thread_spawn_fiber_at(sp_Fiber *f, sp_RbVal arg, const char *file,
 }
 sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
 #ifdef SP_THREADS
-  sp_sched_ensure_workers();   /* first Thread: bring the helper pool + monitor up now */
+  if (!sp_sched_ensure_workers())
+    sp_raise_cls("ThreadError", "failed to start scheduler monitor");
 #endif
   SP_GC_ROOT(f);   /* root the freshly-built fiber across the allocation below */
   SP_GC_ROOT_RBVAL(arg);
@@ -2132,7 +2328,7 @@ static void sp_thread_await(sp_thread *t) {
     if (!dead) sp_raise_cls("ThreadError", "deadlock detected: no runnable thread");
   }
   else {
-    sp_sched_block(&t->joiners);   /* parks on t's joiners; resumes once t is dead */
+    sp_sched_block(&t->joiners, 0);   /* parks on t's joiners; resumes once t is dead */
     SCHED_UNLOCK();
   }
 }
@@ -2154,10 +2350,9 @@ sp_thread *sp_Thread_join(sp_thread *t) {
    Same return type as the no-arg join so one variable can hold either
    call's result.
 
-   The wait is a bounded poll rather than a park, because a deadline has
-   nowhere to live on the joiners list: the monitor walks g_sleepers and
-   g_io_waiters for deadlines, and a thread parked with sp_sched_block sits
-   on neither. Sleeping the whole timeout in one go is what the first cut
+   The wait is a bounded poll rather than a park: joiners do not yet have a
+   timer-specific wake path.
+   Sleeping the whole timeout in one go is what the first cut
    did, and it makes join(limit) a FIXED wait -- `t.join(5)` on a thread
    that finishes in 50ms blocked for five seconds where CRuby returns at
    once. Slicing it keeps the answer prompt (one slice of latency) and the
@@ -2321,7 +2516,7 @@ static int sp_worker_count(void) {
 }
 
 /* The monitor thread (sysmon, design §5). Two jobs, both off the workers' backs:
-   (1) wake Kernel#sleep sleepers when their deadline passes, and (2) enforce the
+   (1) fire scheduler timers (sleep, timed I/O, and timed condition waits), and (2) enforce the
    timeslice -- when a worker has run the same green thread past the quantum, flag
    it for preemption and SIGURG the worker so it yields at its next safepoint. It
    idles on g_sysmon_cv when nothing sleeps and no worker runs a green thread, and
@@ -2358,7 +2553,9 @@ static void *sp_sysmon_main(void *arg) {
         g_lrq_len_max = 0;
       }
     }
-    double nearest = 0.0;
+    sp_timer_flush();
+    sp_timer_fire_due(now);
+    double nearest = sp_timer_next_deadline();
     int npf = 1, nio = 0, busy = 0;
     /* Timeslice enforcement, on every turn: it reads the worker slots, not the
        wait lists, so it is O(workers) and does not belong behind the skip
@@ -2375,50 +2572,24 @@ static void *sp_sysmon_main(void *arg) {
         pthread_kill(g_wslot[i].tid, g_preempt_sig);   /* nudge it to its next safepoint poll */
       }
     }
-    /* The deadline walks are O(parked), and with the descriptors held in the
-       kernel they are the only term left that grows with the population. Skip
-       them while nothing is due: the earliest deadline is cached, and a walk
-       re-derives it whenever one passes (#4317). */
+    /* Rebuilding the poll set walks the I/O waiters and grows with the
+       population. The event backend holds descriptors in the kernel, so skip
+       that walk until a deadline is due; the timer heap still fires due
+       handles above without scanning parked threads. */
     int skip_walks = 0;
 #ifdef SP_EV_BACKEND
     skip_walks = (g_ev_fd >= 0 && !(g_nearest != 0.0 && now >= g_nearest));
 #endif
-    if (skip_walks) nearest = g_nearest;
-    else {
-    for (sp_thread **pp = &g_sleepers; *pp; ) {
-      sp_thread *t = *pp;
-      if (t->wake_deadline <= now) {
-        *pp = t->wait_next; t->wait_next = NULL; t->wait_head = NULL;
-        if (t == &g_main_thread) { t->state = SP_TH_RUNNABLE; SCHED_WAKE_ALL(); }  /* must reach main, not a helper */
-        else if (t->off_cpu) { t->state = SP_TH_RUNNABLE; runq_requeue(t); sp_sched_wake_for(t); }
-        else t->wake_pending = 1;   /* mid-switch; its worker enqueues it (run_thread_once) */
-      }
-      else {
-        if (nearest == 0.0 || t->wake_deadline < nearest) nearest = t->wake_deadline;
-        pp = &t->wait_next;
-      }
+    if (skip_walks) {
+      if (g_nearest != 0.0 && (nearest == 0.0 || g_nearest < nearest)) nearest = g_nearest;
     }
+    else {
     /* Build the I/O poll set: slot 0 is the wake pipe (a registering thread
        writes a byte to break us out of poll early), the rest are parked fds.
-       A waiter with a deadline (sp_sched_wait_io_timeout) is woken here with
-       no revents once the clock passes it, and otherwise pulls the poll
-       timeout in like a sleeper does; wake_deadline is 0 for an open-ended
-       wait. */
+       Timed I/O waiters use the same timer heap as sleeps and timed condition
+       waits; this list is only for readiness registration. */
     for (sp_thread **wp = &g_io_waiters; *wp; ) {
       sp_thread *w = *wp;
-      if (w->wake_deadline > 0.0 && w->wake_deadline <= now) {
-        *wp = w->wait_next; w->wait_next = NULL; w->wait_head = NULL;
-#ifdef SP_EV_BACKEND
-        g_ev_timeouts++;
-        sp_ev_drop(w);
-#endif
-        w->io_revents = 0; w->io_fd = -1;
-        if (w == &g_main_thread) { w->state = SP_TH_RUNNABLE; SCHED_WAKE_ALL(); }
-        else if (w->off_cpu) { w->state = SP_TH_RUNNABLE; runq_requeue(w); sp_sched_wake_for(w); }
-        else w->wake_pending = 1;
-        continue;
-      }
-      if (w->wake_deadline > 0.0 && (nearest == 0.0 || w->wake_deadline < nearest)) nearest = w->wake_deadline;
       wp = &w->wait_next;
       nio++;
 #ifdef SP_EV_BACKEND
@@ -2446,7 +2617,7 @@ static void *sp_sysmon_main(void *arg) {
       g_pths = (sp_thread **)realloc(g_pths, sizeof(sp_thread *) * 16);
       if (g_pfds && g_pths) g_pcap = 16;
     }
-    g_nearest = nearest;   /* re-derived by the walks above */
+    g_nearest = nearest;   /* re-derived from the heap and current I/O waiters */
     }
     int have_io = (nio > 0) || (g_io_waiters != NULL);
     if (nearest == 0.0 && !busy && !have_io) {
@@ -2517,6 +2688,7 @@ static void *sp_sysmon_main(void *arg) {
           if (t->wait_head != &g_io_waiters) continue;   /* unparked meanwhile (e.g. #kill) */
           for (sp_thread **pp = &g_io_waiters; *pp; pp = &(*pp)->wait_next)
             if (*pp == t) { *pp = t->wait_next; break; }
+          sp_timer_cancel(t);
           t->wait_next = NULL; t->wait_head = NULL; t->io_revents = g_pfds[i].revents; t->io_fd = -1;
           if (t == &g_main_thread) { t->state = SP_TH_RUNNABLE; SCHED_WAKE_ALL(); }
           else if (t->off_cpu) { t->state = SP_TH_RUNNABLE; runq_requeue(t); sp_sched_wake_for(t); }
@@ -2547,13 +2719,14 @@ void sp_sched_sleep(double seconds) {
     sp_fiber_fire_inject_if_pending();   /* raises; does not return */
     SCHED_LOCK();
   }
-  self->wake_deadline = sp_monotonic_now() + seconds;
+  if (!sp_timer_schedule(self, sp_monotonic_now() + seconds, SP_TIMER_SLEEP)) {
+    SCHED_UNLOCK();
+    sp_raise_cls("NoMemoryError", "failed to schedule thread timer");
+  }
   self->state = SP_TH_BLOCKED;
   self->off_cpu = 0;
   self->wake_pending = 0;
   self->wait_next = g_sleepers; self->wait_head = &g_sleepers; g_sleepers = self;
-  sp_deadline_added(self->wake_deadline);   /* wakes the monitor iff this is the new earliest */
-  if (g_sysmon_idle) sp_sysmon_wake();
   if (self == &g_main_thread) {
     sp_sched_pump(NULL, 1);   /* main waits (and pumps at N=1) until the monitor wakes it */
     SCHED_UNLOCK();
@@ -2611,17 +2784,22 @@ static int sp_sched_wait_io_impl(int fd, short events, struct pollfd *set, int n
      kernel dropped it at the close that followed) and a read with no
      deadline waited forever: the #4546 test hung on one macOS run in three. */
   if (cancel && *cancel) { SCHED_UNLOCK(); return 1; }
+  sp_ev_waiter *es = NULL;
   if (set) {
-    sp_ev_waiter *es = (sp_ev_waiter *)malloc(sizeof(sp_ev_waiter) * (size_t)n);
+    es = (sp_ev_waiter *)malloc(sizeof(sp_ev_waiter) * (size_t)n);
     if (!es) { SCHED_UNLOCK(); return sp_poll_plain(set, (nfds_t)n, timeout_s); }
     for (int i = 0; i < n; i++) { es[i].t = self; es[i].idx = i; es[i].next = NULL; }
-    self->io_fd = -1; self->io_events = 0; self->io_set = set; self->io_nset = n; self->ev_set = es;
   }
+  if (timeout_s >= 0.0 &&
+      !sp_timer_schedule(self, sp_monotonic_now() + timeout_s, SP_TIMER_IO)) {
+    free(es);
+    SCHED_UNLOCK();
+    return sp_poll_plain(set ? set : &(struct pollfd){.fd = fd, .events = events},
+                         set ? (nfds_t)n : 1, timeout_s);
+  }
+  if (set) { self->io_fd = -1; self->io_events = 0; self->io_set = set; self->io_nset = n; self->ev_set = es; }
   else { self->io_fd = fd; self->io_events = events; }
   self->io_revents = 0;
-  /* 0 = no deadline. Set explicitly: a stale deadline from an earlier
-     Kernel#sleep would otherwise read as this wait's. */
-  self->wake_deadline = timeout_s >= 0.0 ? sp_monotonic_now() + timeout_s : 0.0;
   self->state = SP_TH_BLOCKED;
   self->off_cpu = 0;
   self->wake_pending = 0;
@@ -2637,19 +2815,17 @@ static int sp_sched_wait_io_impl(int fd, short events, struct pollfd *set, int n
        That is what takes the self-pipe write off the park path.
 
        The idle check is NOT part of that saving and must not be folded into
-       it. sp_deadline_added signals only when this deadline is the new
+       it. Timer scheduling signals only when this deadline is the new
        earliest, and a monitor asleep on its condvar is woken by nothing else:
        park with a deadline LATER than a stale g_nearest, while it sleeps, and
        it sleeps through every event that follows. That is a whole-scheduler
        stall, and it is what the first cut of this did -- 16 of 16 threads
        waiting out their select timeout, about one run in twenty. */
-    if (self->wake_deadline > 0.0) sp_deadline_added(self->wake_deadline);
     if (g_sysmon_idle) sp_sysmon_wake();
   }
   else
 #endif
   {
-    if (self->wake_deadline > 0.0) sp_deadline_added(self->wake_deadline);
     sp_sysmon_wake();   /* let the monitor rebuild its poll set */
   }
   if (self == &g_main_thread) {
@@ -2766,12 +2942,10 @@ static int sp_resolve_preempt_signal(void) {
   return SIGURG;
 }
 
-static void sp_sched_start_workers(void) {
-  /* Spawn the monitor thread (Kernel#sleep wakeups) first and set g_sysmon_started
-     before any worker, so a green thread reading the flag in sleep never races
-     its write (pthread_create of the workers is the happens-before edge). The
-     monitor idles on g_sysmon_cv until a thread sleeps; if it fails to spawn,
-     sleep falls back to a plain blocking nanosleep. */
+static int sp_sched_start_workers(void) {
+  /* Spawn the monitor thread (scheduler timers) before any worker. Without it,
+     timed waits cannot be woken by the deadline queue, so do not permit helper
+     workers to run concurrently with the blocking fallback. */
   /* Fix the helper cap before spawning anything, so the monitor and helpers read
      it through the pthread_create happens-before edge (no lock needed). Helpers
      themselves are spawned on demand (sp_sched_maybe_grow), not here -- main
@@ -2802,7 +2976,14 @@ static void sp_sched_start_workers(void) {
     for (int e = 0; e < 2; e++) { int fl = fcntl(g_sysmon_pipe[e], F_GETFL, 0); if (fl >= 0) fcntl(g_sysmon_pipe[e], F_SETFL, fl | O_NONBLOCK); }
   }
   else { g_sysmon_pipe[0] = g_sysmon_pipe[1] = -1; }
-  if (pthread_create(&g_sysmon, NULL, sp_sysmon_main, NULL) == 0) g_sysmon_started = 1;
+  if (pthread_create(&g_sysmon, NULL, sp_sysmon_main, NULL) == 0) {
+    g_sysmon_started = 1;
+    return 1;
+  }
+  if (g_sysmon_pipe[0] >= 0) close(g_sysmon_pipe[0]);
+  if (g_sysmon_pipe[1] >= 0) close(g_sysmon_pipe[1]);
+  g_sysmon_pipe[0] = g_sysmon_pipe[1] = -1;
+  return 0;
 }
 
 /* Create one helper worker (next id). PRE: g_sched_lock held, below the cap, and
@@ -2887,8 +3068,9 @@ void sp_sched_drain(void) {
 
 /* Block the current green thread on `*waitlist` until a wake moves it back to
    runnable. The main thread pumps the scheduler (it cannot transfer away from
-   root); a spawned thread transfers back to the scheduler hub. */
-static void sp_sched_block(sp_thread **waitlist) {   /* PRE/POST: sched lock held */
+   root); a spawned thread transfers back to the scheduler hub. `defer_inject`
+   keeps a condition-wait interruption pending until its caller reacquires m. */
+static void sp_sched_block(sp_thread **waitlist, int defer_inject) {   /* PRE/POST: sched lock held */
   sp_thread *self = g_current;
   /* A #kill/#raise delivered while this thread was RUNNING left its inject
      pending on the fiber (sp_thread_deliver found no wait list to unpark).
@@ -2934,6 +3116,7 @@ static void sp_sched_block(sp_thread **waitlist) {   /* PRE/POST: sched lock hel
        would find an empty handler stack and escape unhandled. */
     void *exc_snap = sp_exc_ctx_new();
     sp_exc_ctx_save(exc_snap);
+    if (defer_inject) sp_fiber_defer_inject();
     SCHED_UNLOCK();   /* drop the lock across the transfer (we run no metadata while parked) */
     sp_Fiber_transfer(sp_fiber_worker_root(), sp_box_nil());
     sp_exc_ctx_load(exc_snap);
@@ -2946,12 +3129,76 @@ static void sp_sched_block(sp_thread **waitlist) {   /* PRE/POST: sched lock hel
   }
 }
 
+#ifdef SP_THREADS
+/* A timed wait reserves its timer and publishes the waiter under the scheduler
+   lock, preserving wake-vs-park atomicity. If mutex is non-NULL, it is checked
+   and released as part of parking (ConditionVariable#wait); interruption stays
+   pending until the caller reacquires it. Other waiters such as Queue#pop pass
+   NULL. Returns -1 if timer storage could not be allocated,
+   0 if the deadline expired, or 1 if another event woke the thread. The caller
+   holds the scheduler lock on return. */
+static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mutex *mutex) {
+  sp_thread *self = g_current;
+  if (mutex && SP_ATOMIC_LOAD(&mutex->owner, __ATOMIC_SEQ_CST) != self) {
+    SCHED_UNLOCK();
+    sp_raise_cls("ThreadError", "Attempt to unlock a mutex which is not locked");
+  }
+  if (self != &g_main_thread && self->fiber && sp_fiber_inject_pending(self->fiber)) {
+    SCHED_UNLOCK();
+    sp_fiber_fire_inject_if_pending();
+    SCHED_LOCK();
+  }
+  self->timer_expired = 0;
+  if (!sp_timer_schedule(self, deadline, SP_TIMER_WAIT)) return -1;
+
+  if (mutex) {
+    SP_ATOMIC_STORE(&mutex->owner, NULL, __ATOMIC_SEQ_CST);
+    if (mutex->waiters) sp_sched_wake_one(&mutex->waiters);
+  }
+  self->state = SP_TH_BLOCKED;
+  self->off_cpu = 0;
+  self->wake_pending = 0;
+  self->wait_head = waitlist;
+  if (self->repark_front) {
+    self->repark_front = 0;
+    self->wait_next = *waitlist;
+    *waitlist = self;
+  }
+  else {
+    self->wait_next = NULL;
+    sp_thread **pp = waitlist;
+    while (*pp) pp = &(*pp)->wait_next;
+    *pp = self;
+  }
+  if (self == &g_main_thread) {
+    sp_sched_pump(NULL, 1);
+    if (self->state != SP_TH_RUNNING) {
+      SCHED_UNLOCK();
+      sp_raise_cls("ThreadError", "deadlock detected: all threads blocked");
+    }
+  }
+  else {
+    void *exc_snap = sp_exc_ctx_new();
+    sp_exc_ctx_save(exc_snap);
+    if (mutex) sp_fiber_defer_inject();
+    SCHED_UNLOCK();
+    sp_Fiber_transfer(sp_fiber_worker_root(), sp_box_nil());
+    sp_exc_ctx_load(exc_snap);
+    sp_exc_ctx_free(exc_snap);
+    if (!mutex) sp_fiber_fire_inject_if_pending();
+    SCHED_LOCK();
+  }
+  return self->timer_expired ? 0 : 1;
+}
+#endif
+
 /* Move one thread off `*waitlist` back onto the run queue (or mark the main
    thread runnable so its pump returns). Returns the woken thread, or NULL. */
 static sp_thread *sp_sched_wake_one(sp_thread **waitlist) {
   sp_thread *t = *waitlist;
   if (!t) return NULL;
   *waitlist = t->wait_next;
+  sp_timer_cancel(t);
   t->wait_next = NULL;
   t->wait_head = NULL;
   if (t == &g_main_thread) { t->state = SP_TH_RUNNABLE; SCHED_WAKE_ALL(); return t; }  /* broadcast: a signal could wake a helper instead of main */
@@ -2964,6 +3211,7 @@ static sp_thread *sp_sched_wake_one(sp_thread **waitlist) {
 /* Remove a parked thread from whatever wait list it sits on (for #kill/#raise). */
 static void sp_sched_unpark(sp_thread *t) {
   if (!t->wait_head) return;
+  sp_timer_cancel(t);
 #ifdef SP_EV_BACKEND
   if (t->wait_head == &g_io_waiters) sp_ev_drop(t);
 #endif
@@ -2972,6 +3220,40 @@ static void sp_sched_unpark(sp_thread *t) {
   t->wait_next = NULL;
   t->wait_head = NULL;
 }
+
+#ifdef SP_THREADS
+static void sp_sched_timer_expire(sp_sched_timer *timer, double now) {
+  (void)now;
+  sp_thread *t = timer->thread;
+  if (!t->wait_head) return;
+  if (timer->kind == SP_TIMER_SLEEP && t->wait_head != &g_sleepers) return;
+  if (timer->kind == SP_TIMER_IO && t->wait_head != &g_io_waiters) return;
+
+  if (timer->kind == SP_TIMER_WAIT) t->timer_expired = 1;
+  if (timer->kind == SP_TIMER_IO) {
+#ifdef SP_EV_BACKEND
+    g_ev_timeouts++;
+#endif
+  }
+  sp_sched_unpark(t);
+  if (timer->kind == SP_TIMER_IO) {
+    t->io_revents = 0;
+    t->io_fd = -1;
+  }
+  if (t == &g_main_thread) {
+    t->state = SP_TH_RUNNABLE;
+    SCHED_WAKE_ALL();
+  }
+  else if (t->off_cpu) {
+    t->state = SP_TH_RUNNABLE;
+    runq_requeue(t);
+    sp_sched_wake_for(t);
+  }
+  else {
+    t->wake_pending = 1;
+  }
+}
+#endif
 
 /* #kill / #raise: deliver an inject to the target so it terminates (running its
    ensures) or raises. The current thread acts on itself immediately; another
@@ -3055,7 +3337,7 @@ void sp_Queue_push(sp_queue *q, sp_RbVal v) { sp_gc_wb((void*)q);
   for (;;) {
     if (q->closed) { SCHED_UNLOCK(); sp_raise_cls("ClosedQueueError", "queue closed"); }
     if (q->max <= 0 || q->len < q->max) break;
-    sp_sched_block(&q->push_waiters);   /* releases+reacquires the lock around its transfer */
+    sp_sched_block(&q->push_waiters, 0);   /* releases+reacquires the lock around its transfer */
   }
   if (q->len == q->cap) {
     sp_int nc = q->cap * 2;
@@ -3077,7 +3359,7 @@ sp_RbVal sp_Queue_pop(sp_queue *q) {
   SCHED_LOCK();
   while (q->len == 0) {
     if (q->closed) { SCHED_UNLOCK(); return sp_box_nil(); }
-    sp_sched_block(&q->pop_waiters);
+    sp_sched_block(&q->pop_waiters, 0);
   }
   sp_RbVal v = q->buf[q->head];
   q->head = (q->head + 1) % q->cap;
@@ -3239,7 +3521,7 @@ void sp_Mutex_lock(sp_mutex *m) {
      decides who is offered the mutex next. */
   double mt0 = sched_lat_enabled() ? sp_monotonic_now() : 0;
   for (;;) {
-    sp_sched_block(&m->waiters);
+    sp_sched_block(&m->waiters, 0);
     expect = NULL;
     if (SP_ATOMIC_CAS(&m->owner, &expect, self, 0,
                                     __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) break;
@@ -3333,23 +3615,26 @@ void sp_CondVar_wait(sp_condvar *cv, sp_mutex *m) {
     SCHED_UNLOCK();
     sp_raise_cls("ThreadError", "Attempt to unlock a mutex which is not locked");
   }
+  if (g_current != &g_main_thread && g_current->fiber &&
+      sp_fiber_inject_pending(g_current->fiber)) {
+    SCHED_UNLOCK();
+    sp_fiber_fire_inject_if_pending();
+    SCHED_LOCK();
+  }
   SP_ATOMIC_STORE(&m->owner, NULL, __ATOMIC_SEQ_CST);
   if (m->waiters) sp_sched_wake_one(&m->waiters);
   double ct0 = sched_lat_enabled() ? sp_monotonic_now() : 0;
-  sp_sched_block(&cv->waiters);                /* park (drops+retakes the lock) */
+  sp_sched_block(&cv->waiters, 1);              /* park (drops+retakes the lock) */
   if (ct0 > 0) sched_hist_add(g_cv_hist, &g_cv_n, &g_cv_max, (sp_monotonic_now() - ct0) * 1e6);
   SCHED_UNLOCK();
   sp_Mutex_lock(m);   /* re-acquire (may block again on the mutex) */
+  sp_fiber_undefer_inject();
+  sp_fiber_fire_inject_if_pending();
 }
 
-/* CRuby's `wait(mutex, 0)`: release the mutex, return without parking. The
-   codegen rejects any timeout other than a literal 0 -- real clock-driven
-   wakeups are not yet supported. The cv->waiters list is threads blocked on
-   this CV, not pending signals, so the nb path does not touch it: a thread
-   that never called #wait cannot be in the waiters list, and one that did
-   call #wait is parked and will not be woken by a 0-timeout drain. */
-void sp_CondVar_wait_nb(sp_condvar *cv, sp_mutex *m) {
-  (void)cv;
+/* The single-threaded runtime (or a threaded program before its monitor
+   starts) has no timer heap to park on. */
+static void sp_CondVar_wait_timeout_blocking(sp_mutex *m, double seconds) {
   SCHED_LOCK();
   if (SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) != g_current) {
     SCHED_UNLOCK();
@@ -3358,7 +3643,69 @@ void sp_CondVar_wait_nb(sp_condvar *cv, sp_mutex *m) {
   SP_ATOMIC_STORE(&m->owner, NULL, __ATOMIC_SEQ_CST);
   if (m->waiters) sp_sched_wake_one(&m->waiters);
   SCHED_UNLOCK();
+  while (seconds > 86400.0) {
+    struct timespec day = {86400, 0};
+    while (nanosleep(&day, &day) == -1 && errno == EINTR) {}
+    seconds -= 86400.0;
+  }
+  struct timespec req = {(time_t)seconds, (long)((seconds - (time_t)seconds) * 1e9)};
+  if (req.tv_nsec >= 1000000000L) { req.tv_sec++; req.tv_nsec -= 1000000000L; }
+  while (nanosleep(&req, &req) == -1 && errno == EINTR) {}
   sp_Mutex_lock(m);
+}
+
+void sp_CondVar_wait_timeout(sp_condvar *cv, sp_mutex *m, double seconds) {
+  if (!(seconds > 0.0)) {
+    sp_CondVar_wait_nb(cv, m);
+    return;
+  }
+#ifdef SP_THREADS
+  /* With no spawned green threads there is no monitor yet. Release the mutex
+     and sleep directly; the main thread is the only possible signaler in this
+     state, so there cannot be a signal to lose. */
+  if (!g_sysmon_started) {
+    sp_CondVar_wait_timeout_blocking(m, seconds);
+    return;
+  }
+  SCHED_LOCK();
+  double ct0 = sched_lat_enabled() ? sp_monotonic_now() : 0;
+  if (sp_sched_block_timeout(&cv->waiters, sp_monotonic_now() + seconds, m) < 0) {
+    SCHED_UNLOCK();
+    sp_raise_cls("NoMemoryError", "failed to schedule condition variable timeout");
+  }
+  if (ct0 > 0) sched_hist_add(g_cv_hist, &g_cv_n, &g_cv_max, (sp_monotonic_now() - ct0) * 1e6);
+  SCHED_UNLOCK();
+  sp_Mutex_lock(m);
+  sp_fiber_undefer_inject();
+  sp_fiber_fire_inject_if_pending();
+#else
+  sp_CondVar_wait_timeout_blocking(m, seconds);
+#endif
+}
+
+/* CRuby's `wait(mutex, 0)`: release the mutex and return without parking.
+   The cv->waiters list is threads blocked on this CV, not pending signals, so
+   this path does not touch it. */
+void sp_CondVar_wait_nb(sp_condvar *cv, sp_mutex *m) {
+  (void)cv;
+  SCHED_LOCK();
+  if (SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) != g_current) {
+    SCHED_UNLOCK();
+    sp_raise_cls("ThreadError", "Attempt to unlock a mutex which is not locked");
+  }
+  if (g_current != &g_main_thread && g_current->fiber &&
+      sp_fiber_inject_pending(g_current->fiber)) {
+    SCHED_UNLOCK();
+    sp_fiber_fire_inject_if_pending();
+    SCHED_LOCK();
+  }
+  sp_fiber_defer_inject();
+  SP_ATOMIC_STORE(&m->owner, NULL, __ATOMIC_SEQ_CST);
+  if (m->waiters) sp_sched_wake_one(&m->waiters);
+  SCHED_UNLOCK();
+  sp_Mutex_lock(m);
+  sp_fiber_undefer_inject();
+  sp_fiber_fire_inject_if_pending();
 }
 
 void sp_CondVar_signal(sp_condvar *cv)    { SCHED_LOCK(); sp_sched_wake_one(&cv->waiters);            SCHED_UNLOCK(); }

@@ -31,6 +31,8 @@ typedef struct sp_ev_waiter {
   struct sp_ev_waiter  *next;
 } sp_ev_waiter;
 
+typedef struct sp_sched_timer sp_sched_timer;
+
 typedef struct sp_thread {
   sp_Fiber         *fiber;       /* the green thread's coroutine; NULL for the main thread (root) */
   sp_RbVal          arg;         /* Thread.new(arg) -> the block's first param, on first run */
@@ -72,7 +74,8 @@ typedef struct sp_thread {
   struct sp_thread **wait_head;  /* head of that wait list, so #kill/#raise can unpark it */
   struct sp_thread *all_next, *all_prev;  /* registry of live threads (GC roots) */
   void             *tls;         /* thread-local storage (Thread#[] / #[]=); lazily allocated */
-  double            wake_deadline; /* CLOCK_MONOTONIC time to wake a sleeping thread (Kernel#sleep) */
+  sp_sched_timer   *timer;       /* active scheduler timer for this wait, if any */
+  unsigned char     timer_expired; /* set when a generic timed wait reaches its deadline */
   int               io_fd;       /* fd this thread is parked on for I/O (-1 = none, scheduler-aware I/O) */
   short             io_events;   /* poll events it is waiting for (POLLIN/POLLOUT) */
   short             io_revents;  /* poll result the monitor delivered when the fd became ready */
@@ -267,7 +270,8 @@ typedef struct sp_condvar {
 
 sp_condvar *sp_CondVar_new(void);
 void        sp_CondVar_wait(sp_condvar *cv, sp_mutex *m);  /* release m, park, re-acquire m */
-void        sp_CondVar_wait_nb(sp_condvar *cv, sp_mutex *m);  /* release m, drain a pending signal, re-acquire m; the 2-arg #wait path */
+void        sp_CondVar_wait_nb(sp_condvar *cv, sp_mutex *m);  /* release m, do not park, re-acquire m */
+void        sp_CondVar_wait_timeout(sp_condvar *cv, sp_mutex *m, double seconds); /* timed #wait */
 void        sp_CondVar_signal(sp_condvar *cv);             /* #signal */
 void        sp_CondVar_broadcast(sp_condvar *cv);          /* #broadcast */
 

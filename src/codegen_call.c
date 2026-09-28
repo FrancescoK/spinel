@@ -2796,13 +2796,9 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && comp_ntype(c, recv) == TY_CONDVAR) {
     if (sp_streq(name, "wait") && argc >= 1 && argc <= 2) {
       /* wait(mutex): release the mutex, park, re-acquire. The 2-arg
-         `wait(mutex, timeout)` form is only supported when the timeout
-         is the literal integer 0; that path routes to the non-blocking
-         callee sp_CondVar_wait_nb (release, do not park, re-acquire).
-         A non-zero constant or a non-constant timeout expression is
-         rejected at compile time because the scheduler has no clock-
-         driven wakeup yet. The rejected cases still evaluate argv[0]
-         for side effects, matching CRuby's argument evaluation order. */
+         `wait(mutex, timeout)` form uses the scheduler's deadline queue.
+         A nil timeout means no deadline, and non-positive timeouts take the
+         existing release-and-reacquire path without parking. */
       int t = ++g_tmp;
       buf_printf(b, "({ sp_condvar *_t%d = ", t); emit_expr(c, recv, b);
       if (argc == 1) {
@@ -2818,12 +2814,34 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
           buf_printf(b, "; sp_CondVar_wait_nb(_t%d, ", t); emit_expr(c, argv[0], b);
           buf_printf(b, "); _t%d; })", t);
         }
+        else if (nt_kind(c->nt, to_arg) == NK_NilNode) {
+          buf_printf(b, "; sp_CondVar_wait(_t%d, ", t); emit_expr(c, argv[0], b);
+          buf_printf(b, "); _t%d; })", t);
+        }
+        else if (comp_ntype(c, to_arg) == TY_NIL) {
+          /* A non-literal nil expression (for example, a method returning
+             nil) still has to run for its side effects, then means no timeout. */
+          int m = ++g_tmp;
+          buf_printf(b, "; sp_mutex *_m%d = ", m); emit_expr(c, argv[0], b);
+          buf_puts(b, "; (void)("); emit_expr(c, to_arg, b);
+          buf_printf(b, "); sp_CondVar_wait(_t%d, _m%d); _t%d; })", t, m, t);
+        }
         else {
-          /* evaluate the timeout for side effects, then raise */
-          buf_printf(b, "; (void)("); emit_expr(c, to_arg, b);
-          buf_printf(b, "); sp_raise_cls(\"NotImplementedError\", "
-                       "\"ConditionVariable#wait with a non-zero or non-constant timeout is not supported in AOT\"); "
-                       "(sp_condvar *)_t%d; })", t);
+          int m = ++g_tmp;
+          buf_printf(b, "; sp_mutex *_m%d = ", m); emit_expr(c, argv[0], b);
+          if (comp_ntype(c, to_arg) == TY_POLY || comp_ntype(c, to_arg) == TY_UNKNOWN) {
+            int timeout = ++g_tmp;
+            buf_printf(b, "; sp_RbVal _timeout%d = ", timeout); emit_boxed(c, to_arg, b);
+            buf_printf(b, "; if (_timeout%d.tag == SP_TAG_NIL) sp_CondVar_wait(_t%d, _m%d); "
+                          "else sp_CondVar_wait_timeout(_t%d, _m%d, sp_poly_to_f_with_rational(_timeout%d)); "
+                          "_t%d; })", timeout, t, m, t, m, timeout, t);
+          }
+          else {
+            int timeout = ++g_tmp;
+            buf_printf(b, "; double _timeout%d = ", timeout); emit_float_expr(c, to_arg, b);
+            buf_printf(b, "; sp_CondVar_wait_timeout(_t%d, _m%d, _timeout%d); _t%d; })",
+                       t, m, timeout, t);
+          }
         }
       }
       return 1;
