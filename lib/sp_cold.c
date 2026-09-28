@@ -2598,25 +2598,28 @@ sp_Enumerator *sp_Enumerator_new_from_items(sp_PolyArray *items) {
 /* The walk is the pair's own: a fiber of its own over a generator source and
    an index of its own over a materialized one, so the source's #next cursor
    is neither read nor moved (`g.with_index.first(4)` then `g.next` answered
-   the fifth element), and an endless cycle's round starts over. */
-typedef struct { sp_Enumerator *src; sp_int off; sp_Fiber *fib; } sp_WiCap;
+   the fifth element), and an endless cycle's round starts over. The source
+   fiber belongs to this run of the pairing fiber, not to the capture every
+   run shares: #next, to_a, first(n) and a walk each run it separately, and
+   one run starting over replaced the fiber another was reading. */
+typedef struct { sp_Enumerator *src; sp_int off; } sp_WiCap;
 static void sp_wi_cap_scan(void *p) {
   sp_WiCap *cap = (sp_WiCap *)p;
   if (cap->src) sp_gc_mark(cap->src);
-  if (cap->fib) sp_gc_mark(cap->fib);
 }
 static void sp_with_index_gen(sp_Fiber *f) {
   sp_WiCap *cap = (sp_WiCap *)f->user_data;
   sp_Enumerator *s = cap->src;
   sp_int i = cap->off, j = 0;
-  sp_gc_wb((void*)cap); cap->fib = NULL;   /* a rewind starts the walk over */
+  sp_Fiber *sf = NULL;
+  SP_GC_ROOT(sf);
   for (;;) {
     sp_RbVal v;
     if (s->gen) {
-      if (!cap->fib) { sp_Fiber *nf = sp_Fiber_new(s->gen); sp_gc_wb((void*)cap); cap->fib = nf; if (s->gen_cap) { sp_gc_wb((void*)nf); nf->user_data = s->gen_cap; } }
-      if (!sp_Fiber_alive(cap->fib)) break;
-      v = sp_Fiber_resume(cap->fib, sp_box_nil());
-      if (!sp_Fiber_alive(cap->fib)) break;
+      if (!sf) { sf = sp_Fiber_new(s->gen); if (s->gen_cap) { sp_gc_wb((void*)sf); sf->user_data = s->gen_cap; } }
+      if (!sp_Fiber_alive(sf)) break;
+      v = sp_Fiber_resume(sf, sp_box_nil());
+      if (!sp_Fiber_alive(sf)) break;
     }
     else {
       if (s->endless && s->items && s->items->len > 0 && j >= s->items->len) j = 0;
