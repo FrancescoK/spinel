@@ -1450,7 +1450,7 @@ static void sp_sched_globals_mark(void) {
 }
 
 #ifdef SP_THREADS
-static void sp_sched_start_workers(void);   /* defined after run_thread_once */
+static int sp_sched_start_workers(void);   /* defined after run_thread_once */
 #endif
 
 void sp_sched_init(void) {
@@ -1966,12 +1966,12 @@ static void sp_trim_thread_start(void) {}
 #endif
 
 static int sp_worker_count(void);   /* defined below; the pool size */
-static void sp_sched_ensure_workers(void) {
-  if (g_workers_started) return;
+static int sp_sched_ensure_workers(void) {
+  if (g_workers_started) return 1;
   sp_alloc_stress_init();   /* set the stress flags once here, before any helper reads them */
   sp_alloc_worker_tune(sp_worker_count());  /* and size the GC budget for the pool */
+  if (!sp_sched_start_workers()) return 0;
   g_workers_started = 1;
-  sp_sched_start_workers();
   /* Hand parked workers their own slots from here on. Workers spawn lazily, so
      the pool may still be one at this point; the driver itself falls back to
      the serial sweep whenever there is nobody parked to help. */
@@ -1987,6 +1987,7 @@ static void sp_sched_ensure_workers(void) {
   sp_gc_par_mark_hook = sp_sched_par_mark;
   sp_trim_thread_start();
   sp_cs_start_sweepers();
+  return 1;
 }
 #endif
 
@@ -2007,7 +2008,7 @@ static void sp_thread_report(sp_thread *t) {
 }
 
 /* Park/wake primitives (defined below; used by join here). */
-static void       sp_sched_block(sp_thread **waitlist);
+static void       sp_sched_block(sp_thread **waitlist, int defer_inject);
 static sp_thread *sp_sched_wake_one(sp_thread **waitlist);
 
 /* A finished thread's parked joiners become runnable again (the main thread,
@@ -2282,7 +2283,8 @@ sp_thread *sp_Thread_spawn_fiber_at(sp_Fiber *f, sp_RbVal arg, const char *file,
 }
 sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
 #ifdef SP_THREADS
-  sp_sched_ensure_workers();   /* first Thread: bring the helper pool + monitor up now */
+  if (!sp_sched_ensure_workers())
+    sp_raise_cls("ThreadError", "failed to start scheduler monitor");
 #endif
   SP_GC_ROOT(f);   /* root the freshly-built fiber across the allocation below */
   SP_GC_ROOT_RBVAL(arg);
@@ -2326,7 +2328,7 @@ static void sp_thread_await(sp_thread *t) {
     if (!dead) sp_raise_cls("ThreadError", "deadlock detected: no runnable thread");
   }
   else {
-    sp_sched_block(&t->joiners);   /* parks on t's joiners; resumes once t is dead */
+    sp_sched_block(&t->joiners, 0);   /* parks on t's joiners; resumes once t is dead */
     SCHED_UNLOCK();
   }
 }
@@ -2940,12 +2942,10 @@ static int sp_resolve_preempt_signal(void) {
   return SIGURG;
 }
 
-static void sp_sched_start_workers(void) {
-  /* Spawn the monitor thread (scheduler timers) first and set g_sysmon_started
-     before any worker, so a green thread reading the flag in sleep never races
-     its write (pthread_create of the workers is the happens-before edge). The
-     monitor idles on g_sysmon_cv until a timer or I/O wait is registered; if it
-     fails to spawn, sleep falls back to a plain blocking nanosleep. */
+static int sp_sched_start_workers(void) {
+  /* Spawn the monitor thread (scheduler timers) before any worker. Without it,
+     timed waits cannot be woken by the deadline queue, so do not permit helper
+     workers to run concurrently with the blocking fallback. */
   /* Fix the helper cap before spawning anything, so the monitor and helpers read
      it through the pthread_create happens-before edge (no lock needed). Helpers
      themselves are spawned on demand (sp_sched_maybe_grow), not here -- main
@@ -2976,7 +2976,14 @@ static void sp_sched_start_workers(void) {
     for (int e = 0; e < 2; e++) { int fl = fcntl(g_sysmon_pipe[e], F_GETFL, 0); if (fl >= 0) fcntl(g_sysmon_pipe[e], F_SETFL, fl | O_NONBLOCK); }
   }
   else { g_sysmon_pipe[0] = g_sysmon_pipe[1] = -1; }
-  if (pthread_create(&g_sysmon, NULL, sp_sysmon_main, NULL) == 0) g_sysmon_started = 1;
+  if (pthread_create(&g_sysmon, NULL, sp_sysmon_main, NULL) == 0) {
+    g_sysmon_started = 1;
+    return 1;
+  }
+  if (g_sysmon_pipe[0] >= 0) close(g_sysmon_pipe[0]);
+  if (g_sysmon_pipe[1] >= 0) close(g_sysmon_pipe[1]);
+  g_sysmon_pipe[0] = g_sysmon_pipe[1] = -1;
+  return 0;
 }
 
 /* Create one helper worker (next id). PRE: g_sched_lock held, below the cap, and
@@ -3061,8 +3068,9 @@ void sp_sched_drain(void) {
 
 /* Block the current green thread on `*waitlist` until a wake moves it back to
    runnable. The main thread pumps the scheduler (it cannot transfer away from
-   root); a spawned thread transfers back to the scheduler hub. */
-static void sp_sched_block(sp_thread **waitlist) {   /* PRE/POST: sched lock held */
+   root); a spawned thread transfers back to the scheduler hub. `defer_inject`
+   keeps a condition-wait interruption pending until its caller reacquires m. */
+static void sp_sched_block(sp_thread **waitlist, int defer_inject) {   /* PRE/POST: sched lock held */
   sp_thread *self = g_current;
   /* A #kill/#raise delivered while this thread was RUNNING left its inject
      pending on the fiber (sp_thread_deliver found no wait list to unpark).
@@ -3108,6 +3116,7 @@ static void sp_sched_block(sp_thread **waitlist) {   /* PRE/POST: sched lock hel
        would find an empty handler stack and escape unhandled. */
     void *exc_snap = sp_exc_ctx_new();
     sp_exc_ctx_save(exc_snap);
+    if (defer_inject) sp_fiber_defer_inject();
     SCHED_UNLOCK();   /* drop the lock across the transfer (we run no metadata while parked) */
     sp_Fiber_transfer(sp_fiber_worker_root(), sp_box_nil());
     sp_exc_ctx_load(exc_snap);
@@ -3123,8 +3132,9 @@ static void sp_sched_block(sp_thread **waitlist) {   /* PRE/POST: sched lock hel
 #ifdef SP_THREADS
 /* A timed wait reserves its timer and publishes the waiter under the scheduler
    lock, preserving wake-vs-park atomicity. If mutex is non-NULL, it is checked
-   and released as part of parking (ConditionVariable#wait); other waiters such
-   as Queue#pop can pass NULL. Returns -1 if timer storage could not be allocated,
+   and released as part of parking (ConditionVariable#wait); interruption stays
+   pending until the caller reacquires it. Other waiters such as Queue#pop pass
+   NULL. Returns -1 if timer storage could not be allocated,
    0 if the deadline expired, or 1 if another event woke the thread. The caller
    holds the scheduler lock on return. */
 static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mutex *mutex) {
@@ -3170,11 +3180,12 @@ static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mute
   else {
     void *exc_snap = sp_exc_ctx_new();
     sp_exc_ctx_save(exc_snap);
+    if (mutex) sp_fiber_defer_inject();
     SCHED_UNLOCK();
     sp_Fiber_transfer(sp_fiber_worker_root(), sp_box_nil());
     sp_exc_ctx_load(exc_snap);
     sp_exc_ctx_free(exc_snap);
-    sp_fiber_fire_inject_if_pending();
+    if (!mutex) sp_fiber_fire_inject_if_pending();
     SCHED_LOCK();
   }
   return self->timer_expired ? 0 : 1;
@@ -3326,7 +3337,7 @@ void sp_Queue_push(sp_queue *q, sp_RbVal v) { sp_gc_wb((void*)q);
   for (;;) {
     if (q->closed) { SCHED_UNLOCK(); sp_raise_cls("ClosedQueueError", "queue closed"); }
     if (q->max <= 0 || q->len < q->max) break;
-    sp_sched_block(&q->push_waiters);   /* releases+reacquires the lock around its transfer */
+    sp_sched_block(&q->push_waiters, 0);   /* releases+reacquires the lock around its transfer */
   }
   if (q->len == q->cap) {
     sp_int nc = q->cap * 2;
@@ -3348,7 +3359,7 @@ sp_RbVal sp_Queue_pop(sp_queue *q) {
   SCHED_LOCK();
   while (q->len == 0) {
     if (q->closed) { SCHED_UNLOCK(); return sp_box_nil(); }
-    sp_sched_block(&q->pop_waiters);
+    sp_sched_block(&q->pop_waiters, 0);
   }
   sp_RbVal v = q->buf[q->head];
   q->head = (q->head + 1) % q->cap;
@@ -3510,7 +3521,7 @@ void sp_Mutex_lock(sp_mutex *m) {
      decides who is offered the mutex next. */
   double mt0 = sched_lat_enabled() ? sp_monotonic_now() : 0;
   for (;;) {
-    sp_sched_block(&m->waiters);
+    sp_sched_block(&m->waiters, 0);
     expect = NULL;
     if (SP_ATOMIC_CAS(&m->owner, &expect, self, 0,
                                     __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) break;
@@ -3604,13 +3615,21 @@ void sp_CondVar_wait(sp_condvar *cv, sp_mutex *m) {
     SCHED_UNLOCK();
     sp_raise_cls("ThreadError", "Attempt to unlock a mutex which is not locked");
   }
+  if (g_current != &g_main_thread && g_current->fiber &&
+      sp_fiber_inject_pending(g_current->fiber)) {
+    SCHED_UNLOCK();
+    sp_fiber_fire_inject_if_pending();
+    SCHED_LOCK();
+  }
   SP_ATOMIC_STORE(&m->owner, NULL, __ATOMIC_SEQ_CST);
   if (m->waiters) sp_sched_wake_one(&m->waiters);
   double ct0 = sched_lat_enabled() ? sp_monotonic_now() : 0;
-  sp_sched_block(&cv->waiters);                /* park (drops+retakes the lock) */
+  sp_sched_block(&cv->waiters, 1);              /* park (drops+retakes the lock) */
   if (ct0 > 0) sched_hist_add(g_cv_hist, &g_cv_n, &g_cv_max, (sp_monotonic_now() - ct0) * 1e6);
   SCHED_UNLOCK();
   sp_Mutex_lock(m);   /* re-acquire (may block again on the mutex) */
+  sp_fiber_undefer_inject();
+  sp_fiber_fire_inject_if_pending();
 }
 
 /* The single-threaded runtime (or a threaded program before its monitor
@@ -3657,6 +3676,8 @@ void sp_CondVar_wait_timeout(sp_condvar *cv, sp_mutex *m, double seconds) {
   if (ct0 > 0) sched_hist_add(g_cv_hist, &g_cv_n, &g_cv_max, (sp_monotonic_now() - ct0) * 1e6);
   SCHED_UNLOCK();
   sp_Mutex_lock(m);
+  sp_fiber_undefer_inject();
+  sp_fiber_fire_inject_if_pending();
 #else
   sp_CondVar_wait_timeout_blocking(m, seconds);
 #endif
@@ -3672,10 +3693,19 @@ void sp_CondVar_wait_nb(sp_condvar *cv, sp_mutex *m) {
     SCHED_UNLOCK();
     sp_raise_cls("ThreadError", "Attempt to unlock a mutex which is not locked");
   }
+  if (g_current != &g_main_thread && g_current->fiber &&
+      sp_fiber_inject_pending(g_current->fiber)) {
+    SCHED_UNLOCK();
+    sp_fiber_fire_inject_if_pending();
+    SCHED_LOCK();
+  }
+  sp_fiber_defer_inject();
   SP_ATOMIC_STORE(&m->owner, NULL, __ATOMIC_SEQ_CST);
   if (m->waiters) sp_sched_wake_one(&m->waiters);
   SCHED_UNLOCK();
   sp_Mutex_lock(m);
+  sp_fiber_undefer_inject();
+  sp_fiber_fire_inject_if_pending();
 }
 
 void sp_CondVar_signal(sp_condvar *cv)    { SCHED_LOCK(); sp_sched_wake_one(&cv->waiters);            SCHED_UNLOCK(); }

@@ -70,3 +70,60 @@ p signal_waiter(5.0)
 
 # A nil timeout remains an indefinite wait and is woken by signal.
 p signal_waiter(nil)
+
+# A non-literal expression inferred as nil is still evaluated and means no
+# timeout. The signal follows the same mutex handshake as the case above.
+$nil_timeout_calls = 0
+def nil_timeout
+  $nil_timeout_calls += 1
+  nil
+end
+
+m = Mutex.new
+cv = ConditionVariable.new
+ready_cv = ConditionVariable.new
+ready = false
+owned = nil
+waiter = Thread.new do
+  m.synchronize do
+    ready = true
+    ready_cv.signal
+    cv.wait(m, nil_timeout)
+    owned = m.owned?
+  end
+end
+m.synchronize do
+  ready_cv.wait(m) until ready
+  cv.signal
+end
+waiter.join
+p [$nil_timeout_calls, owned]
+
+# Thread#raise interrupts a condition wait only after it has reacquired m.
+def interrupt_wait_with_mutex(timed)
+  m = Mutex.new
+  cv = ConditionVariable.new
+  ready_cv = ConditionVariable.new
+  ready = false
+  owned = nil
+  waiter = Thread.new do
+    m.synchronize do
+      ready = true
+      ready_cv.signal
+      begin
+        timed ? cv.wait(m, 10.0) : cv.wait(m)
+      rescue RuntimeError
+        owned = m.owned?
+      end
+    end
+  end
+  m.synchronize { ready_cv.wait(m) until ready }
+  m.synchronize do
+    waiter.raise("interrupt")
+    sleep 0.01
+  end
+  waiter.join
+  owned
+end
+
+p [interrupt_wait_with_mutex(false), interrupt_wait_with_mutex(true)]

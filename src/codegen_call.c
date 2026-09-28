@@ -2721,6 +2721,14 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
           buf_printf(b, "; sp_CondVar_wait(_t%d, ", t); emit_expr(c, argv[0], b);
           buf_printf(b, "); _t%d; })", t);
         }
+        else if (comp_ntype(c, to_arg) == TY_NIL) {
+          /* A non-literal nil expression (for example, a method returning
+             nil) still has to run for its side effects, then means no timeout. */
+          int m = ++g_tmp;
+          buf_printf(b, "; sp_mutex *_m%d = ", m); emit_expr(c, argv[0], b);
+          buf_puts(b, "; (void)("); emit_expr(c, to_arg, b);
+          buf_printf(b, "); sp_CondVar_wait(_t%d, _m%d); _t%d; })", t, m, t);
+        }
         else {
           int m = ++g_tmp;
           buf_printf(b, "; sp_mutex *_m%d = ", m); emit_expr(c, argv[0], b);
