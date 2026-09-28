@@ -1255,6 +1255,7 @@ void emit_scope_decls(Compiler *c, Scope *s, Buf *b);
 int method_is_void(Scope *s);
 void emit_method_cname(Compiler *c, Scope *s, Buf *b);
 void emit_poly_iter_obj_normalize(Compiler *c, int tv, Buf *b);
+void emit_poly_iter_obj_reject(Compiler *c, int tv, const char *name, Buf *b);
 void emit_method_signature(Compiler *c, Scope *s, Buf *b);
 void emit_method(Compiler *c, Scope *s, Buf *b);
 int is_nested_block(const char *ty);

@@ -1,0 +1,24 @@
+[:each, NoMethodError]
+[:map, NoMethodError]
+[:any?, NoMethodError]
+[:count, NoMethodError]
+[:each_with_index, NoMethodError]
+[:reverse_each, NoMethodError]
+[:each, NoMethodError]
+[:map, NoMethodError]
+[:any?, NoMethodError]
+[:count, NoMethodError]
+[:each_with_index, NoMethodError]
+[:reverse_each, NoMethodError]
+3
+4
+[:each, [3, 4]]
+[:map, [3, 4]]
+[:any?, true]
+[:count, 2]
+0
+1
+[:each_with_index, [3, 4]]
+4
+3
+[:reverse_each, [3, 4]]

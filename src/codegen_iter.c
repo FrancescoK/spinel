@@ -4085,6 +4085,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
        freshly-built collection held only by this temp. */
     emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d);\n", ta);
     emit_indent(b, indent); emit_poly_iter_obj_normalize(c, ta, b);
+    emit_indent(b, indent); emit_poly_iter_obj_reject(c, ta, name, b);
     emit_indent(b, indent); buf_printf(b, "sp_poly_iter_check(_t%d, \"%s\");\n", ta, name);
     /* `each { |x| }` over an Enumerator yielding several values in a step
        binds x the first of them; the builtins/ walks (`each { |x| yield x }`)

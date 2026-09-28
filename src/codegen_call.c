@@ -36647,6 +36647,7 @@ else {
     int ta = ++g_tmp, tn = ++g_tmp, tcnt = ++g_tmp, ti = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, b);
     buf_puts(b, "; "); emit_poly_iter_obj_normalize(c, ta, b);
+    emit_poly_iter_obj_reject(c, ta, name, b);
     /* the same receiver check the each emitter makes: nil is no collection,
        and a zero-length loop answered `nil.any?` false and `nil.all?` true
        (#4485) */
@@ -36675,6 +36676,7 @@ else {
     buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, b);
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_Class _t%d = ", ta, tc2); emit_expr(c, argv[0], b);
     buf_puts(b, "; "); emit_poly_iter_obj_normalize(c, ta, b);
+    emit_poly_iter_obj_reject(c, ta, name, b);
     buf_printf(b, "sp_poly_iter_check(_t%d, \"%s\"); ", ta, name);
     buf_printf(b, "sp_int _t%d = sp_poly_arr_len_ex(_t%d); sp_int _t%d = 0;"
                   " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++)"
