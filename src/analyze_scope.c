@@ -5734,6 +5734,29 @@ static int nil_writes_apply(Compiler *c, NilWrites *w) {
   return changed;
 }
 
+int class_has_subclass(Compiler *c, int ocid);
+
+static int sg_writer_class(Compiler *c, int id, int recv) {
+  const NodeTable *nt = c->nt;
+  NodeKind rk = nt_kind(nt, recv);
+  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
+    const char *cn = nt_str(nt, recv, "name");
+    return cn ? comp_class_index(c, cn) : -1;
+  }
+  if (rk == NK_SelfNode) {
+    Scope *s = comp_scope_of(c, id);
+    if (s->is_cmethod) return s->class_id;
+    return s->class_id < 0 ? c->node_cbody[id] : -1;
+  }
+  const char *rn = rk == NK_CallNode ? nt_str(nt, recv, "name") : NULL;
+  if (rn && sp_streq(rn, "class") && nt_ref(nt, recv, "arguments") < 0) {
+    int robj = nt_ref(nt, recv, "receiver");
+    TyKind ot = robj >= 0 ? infer_type(c, robj) : TY_UNKNOWN;
+    if (ty_is_object(ot) && !class_has_subclass(c, ty_object_class(ot))) return ty_object_class(ot);
+  }
+  return -1;
+}
+
 int infer_ivar_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -5940,6 +5963,16 @@ int infer_ivar_types(Compiler *c) {
       TyKind vt = infer_type(c, argv[0]);
       char ivname[256];
       snprintf(ivname, sizeof ivname, "@%s", base);
+      int sgc = sg_writer_class(c, id, recv);
+      if (sgc >= 0 && comp_is_sg_writer(&c->classes[sgc], base)) {
+        ClassInfo *ci = &c->classes[sgc];
+        int iv = comp_is_sg_civ(ci, base) ? comp_ivar_index(ci, ivname) : -1;
+        if (iv < 0 || class_ivar_pinned(ci, ivname)) continue;
+        if (vt == TY_NIL) { nil_write_note(&nilw, sgc, ci->ivars[iv]); continue; }
+        TyKind merged = ty_unify(ci->ivar_types[iv], empty_container_write(c, argv[0], vt, ci->ivar_types[iv]));
+        if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
+        continue;
+      }
       TyKind rt = infer_type(c, recv);
       if (vt == TY_NIL) {
         /* a nil write doesn't pin the ivar type, but it can box it: the

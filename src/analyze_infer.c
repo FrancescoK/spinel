@@ -1670,20 +1670,23 @@ int class_has_subclass(Compiler *c, int ocid);
 static int sg_accessor_type(Compiler *c, int ci, const char *name, TyKind *out) {
   ClassInfo *cls = &c->classes[ci];
   int nlen = (int)strlen(name);
+  char base[256];
+  const char *rn;
   /* setter: name ends with '=' */
   if (nlen > 1 && name[nlen - 1] == '=') {
-    char base[256]; int blen = nlen - 1;
+    int blen = nlen - 1;
     if (blen >= (int)sizeof base) return 0;
     memcpy(base, name, (size_t)blen); base[blen] = '\0';
     if (!comp_is_sg_writer(cls, base)) return 0;
-    *out = TY_VOID;
-    return 1;
+    rn = base;
   }
-  /* an accessor backed by the class-level ivar reads that slot's type;
-     the alias table maps a renamed accessor onto it (#3776) */
-  const char *rn = comp_resolve_alias(c, ci, name);
-  if (!rn) rn = name;
-  if (!comp_is_sg_reader(cls, rn)) return 0;
+  else {
+    /* an accessor backed by the class-level ivar reads that slot's type;
+       the alias table maps a renamed accessor onto it (#3776) */
+    rn = comp_resolve_alias(c, ci, name);
+    if (!rn) rn = name;
+    if (!comp_is_sg_reader(cls, rn)) return 0;
+  }
   *out = TY_POLY;
   if (comp_is_sg_civ(cls, rn)) {
     char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", rn);
@@ -3030,6 +3033,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     Scope *_self = comp_scope_of(c, id);
     int _sg_cid = (_self && _self->is_cmethod && _self->class_id >= 0)
                   ? _self->class_id : g_cbody_class_id;
+    if (_sg_cid < 0 && _self && _self->class_id < 0) _sg_cid = c->node_cbody[id];
     TyKind sgt;
     if (_sg_cid >= 0 && sg_accessor_type(c, _sg_cid, name, &sgt)) return sgt;
   }
