@@ -1,0 +1,36 @@
+P1 AE wrong number of arguments (given 1, expected 2)
+P3 AE wrong number of arguments (given 3, expected 2)
+P0 AE wrong number of arguments (given 0, expected 2)
+P2 ok P 1 2
+Q0 AE wrong number of arguments (given 0, expected 1..3)
+Q4 AE wrong number of arguments (given 4, expected 1..3)
+Q2 ok Q 1
+R0 AE wrong number of arguments (given 0, expected 1+)
+R1 ok R 1
+K1 AE wrong number of arguments (given 1, expected 0; required keyword: k)
+X0 AE wrong number of arguments (given 0, expected 1; required keywords: k, j)
+X1 AE missing keywords: :k, :j
+W2 AE wrong number of arguments (given 2, expected 1)
+W1 ok W 1
+Z1 AE wrong number of arguments (given 1, expected 0)
+Z0 ok Z
+O2 AE wrong number of arguments (given 2, expected 0..1)
+O1 ok O 5
+Sub1 AE wrong number of arguments (given 1, expected 2)
+E2 AE wrong number of arguments (given 2, expected 0..1)
+S3 AE struct size differs
+S1 ok [1, nil]
+D0 AE missing keywords: :x, :y
+D1 AE missing keyword: :y
+D3 AE wrong number of arguments (given 3, expected 0..2)
+D2 ok 1
+KS1 AE wrong number of arguments (given 1, expected 0)
+OS2 AE wrong number of arguments (given 2, expected 1)
+OS1 ok 0
+hP1 AE wrong number of arguments (given 1, expected 2)
+hD1 AE missing keyword: :y
+kP1 AE wrong number of arguments (given 1, expected 2)
+kP0 AE wrong number of arguments (given 0, expected 2)
+kZ1 AE wrong number of arguments (given 1, expected 0)
+kZ0 ok Z
+kD0 AE missing keywords: :x, :y
