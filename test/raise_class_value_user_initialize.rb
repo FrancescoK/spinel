@@ -58,13 +58,14 @@ t { raise k2, nil }
 t { raise k2, 42 }
 t { raise [WrapErr.new("obj"), 1][0], "object" }
 t do
+  explicit = RuntimeError.new("explicit")
   begin
     raise "inner"
   rescue => ie
-    raise [App::Failed][0], "outer", cause: ie
+    raise [App::Failed][0], "outer", cause: explicit
   end
 rescue => e
-  p [e.message, e.cause.message]
+  p [e.message, e.cause.message, e.cause.equal?(explicit)]
 end
 
 a = [StandardError.new("x"), 1]

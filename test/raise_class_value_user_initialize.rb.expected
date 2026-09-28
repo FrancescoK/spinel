@@ -24,7 +24,7 @@
 [WrapErr, "wrapped "]
 [WrapErr, "wrapped 42"]
 [WrapErr, "object"]
-["app: outer", "inner"]
+["app: outer", "explicit", true]
 nil
 nil
 nil
