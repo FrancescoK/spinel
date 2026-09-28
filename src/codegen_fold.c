@@ -7380,11 +7380,12 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
      an undeclared `lv_<sibling>`. Bind each param to a uniquely-named call-site
      temp in order, registering a rename so a later default reads the earlier
      temp, then pass the temps. Restricted to calls with no splat expanding
-     into fixed parameters and no double-splat. A *rest, its posts and a
-     **kwrest are hoisted the way the path below binds them: leaving them out
-     let `def m(n, *r, k: n + r.size)` and `def h(x, z = x * 2, **kw)` emit
-     the default against a parameter nothing at the call site declared. */
-  if (splat_idx < 0 && ds_hash_tmp < 0 &&
+     into fixed parameters. A *rest, its posts and a **kwrest are hoisted the
+     way the path below binds them: leaving them out let
+     `def m(n, *r, k: n + r.size)` and `def h(x, z = x * 2, **kw)` emit the
+     default against a parameter nothing at the call site declared. A keyword
+     a `**h` may supply is read out of h, its default under the same renames. */
+  if (splat_idx < 0 &&
       m->nparams <= 64 && default_refs_earlier_param(c, m)) {
     int uid = ++g_tmp;
     int ren_base = g_nren;
@@ -7428,6 +7429,8 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
         if (pt == TY_POLY) buf_printf(&vb, "sp_box_obj(_t%d, SP_BUILTIN_SYM_POLY_HASH)", krhash);
         else buf_printf(&vb, "_t%d", krhash);
       }
+      else if (provided < 0 && ds_hash_tmp >= 0 && m->pnames[i] && callee_has_kwarg(c, m, m->pnames[i]))
+        emit_ds_param_extract(c, m, i, ds_hash_tmp, ds_hash_type, &vb);
       else emit_arg_or_default(c, m, i, provided, &vb);
       g_nren = active_nren;
       char uniq[48];
