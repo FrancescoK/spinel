@@ -958,9 +958,9 @@ const char *blockless_block_param_call_name(Compiler *c, int id) {
    the args are collected into an array and spread at run time. */
 void emit_proc_yield(Compiler *c, const char *ref, int yargc, const int *yargv, Buf *b) {
   if (call_args_need_spread(c->nt, yargv, yargc)) {
-    int ta = emit_spread_args(c, yargv, yargc);
-    buf_printf(b, "sp_proc_yield_spread(%s, sp_box_poly_array(_t%d), %d)", ref, ta,
-               nt_kind(c->nt, yargv[yargc - 1]) == NK_KeywordHashNode ? 2 : 1);
+    char kwp[24];
+    int ta = emit_spread_args_kw(c, yargv, yargc, kwp, sizeof kwp);
+    buf_printf(b, "sp_proc_yield_spread(%s, sp_box_poly_array(_t%d), %s)", ref, ta, kwp);
     return;
   }
   buf_printf(b, "sp_proc_yield(%s, ", ref);

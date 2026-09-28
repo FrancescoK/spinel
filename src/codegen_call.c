@@ -20997,7 +20997,29 @@ int call_args_need_spread(const NodeTable *nt, const int *argv, int argc) {
   return argc > 0 && kwh_only_spreads(nt, argv[argc - 1]);
 }
 
+/* Like emit_spread_args, and writes to kwpos the C text of what the spread
+   array's last element is, for a proc's keyword parameters (_sp_proc_kwpos):
+   2 keywords, 1 a positional. A trailing `**h` that is empty at run time
+   pushes nothing, so the answer is then a run-time flag. */
+int emit_spread_args_kw(Compiler *c, const int *argv, int argc, char *kwpos, size_t kwsz) {
+  const NodeTable *nt = c->nt;
+  int last_kwh = argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode;
+  if (last_kwh && kwh_only_spreads(nt, argv[argc - 1])) {
+    int tk = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "int _t%d = 1;\n", tk);
+    snprintf(kwpos, kwsz, "_t%d", tk);
+  }
+  else snprintf(kwpos, kwsz, "%d", last_kwh ? 2 : 1);
+  return emit_spread_args_into(c, argv, argc, last_kwh && kwpos[0] == '_' ? kwpos : NULL);
+}
+
 int emit_spread_args(Compiler *c, const int *argv, int argc) {
+  return emit_spread_args_into(c, argv, argc, NULL);
+}
+
+/* kwflag: a C int set to 2 when a trailing keyword-splat-only hash is pushed */
+int emit_spread_args_into(Compiler *c, const int *argv, int argc, const char *kwflag) {
   const NodeTable *nt = c->nt;
   g_needs_proc_poly_argslot = 1;
   int ta = ++g_tmp;
@@ -21020,8 +21042,10 @@ int emit_spread_args(Compiler *c, const int *argv, int argc) {
       emit_boxed(c, argv[k], &ab);
       emit_indent(g_pre, g_indent);
       if (kwh_only_spreads(nt, argv[k]))
-        buf_printf(g_pre, "{ sp_RbVal _kh = %s; if (sp_poly_length(_kh) > 0) sp_PolyArray_push(_t%d, _kh); }\n",
-                   ab.p ? ab.p : "sp_box_nil()", ta);
+        buf_printf(g_pre, "{ sp_RbVal _kh = %s; if (sp_poly_length(_kh) > 0) { sp_PolyArray_push(_t%d, _kh);%s%s%s } }\n",
+                   ab.p ? ab.p : "sp_box_nil()", ta,
+                   kwflag && k == argc - 1 ? " " : "", kwflag && k == argc - 1 ? kwflag : "",
+                   kwflag && k == argc - 1 ? " = 2;" : "");
       else
         buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", ta, ab.p ? ab.p : "sp_box_nil()");
     }
@@ -23154,9 +23178,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
          it as an sp_Proc made a Method call segfault (#3178, #4395). */
       {
         if (call_args_need_spread(nt, argv, argc)) {
-          int ta = emit_spread_args(c, argv, argc);
-          buf_printf(b, "sp_poly_callable_spread(_t%d, sp_box_poly_array(_t%d), %d)", t, ta,
-                     nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? 2 : 1);
+          char kwp[24];
+          int ta = emit_spread_args_kw(c, argv, argc, kwp, sizeof kwp);
+          buf_printf(b, "sp_poly_callable_spread(_t%d, sp_box_poly_array(_t%d), %s)", t, ta, kwp);
           return;
         }
       }
@@ -25057,13 +25081,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
        #2691, #2729 */
     {
       if (call_args_need_spread(nt, argv, argc)) {
-        int ta = emit_spread_args(c, argv, argc);
+        char kwp[24];
+        int ta = emit_spread_args_kw(c, argv, argc, kwp, sizeof kwp);
         buf_puts(b, "((void)sp_proc_call_spread(");
         if (proc_nil_raises) buf_puts(b, "sp_proc_recv(");
         emit_expr(c, recv, b);
         if (proc_nil_raises) buf_printf(b, ", \"%s\")", proc_meth);
-        buf_printf(b, ", sp_box_poly_array(_t%d), %d), ", ta,
-                   nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? 2 : 1);
+        buf_printf(b, ", sp_box_poly_array(_t%d), %s), ", ta, kwp);
         emit_proc_ret_unbox(c, rty, b);
         buf_puts(b, ")");
         return;
