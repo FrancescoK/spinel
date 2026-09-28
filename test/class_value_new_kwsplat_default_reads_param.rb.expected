@@ -1,0 +1,18 @@
+M1 1 true
+M2 2 false
+Solo 6581 nil
+Duo 6582 3
+Solo 8580 nil
+Solo 6581 1
+Duo 6582 2
+Pair [1, 2]
+Pair [1, 5]
+Trio [4, 12]
+Noted [1, 7, 8]
+note 1
+note 2
+Noted [1, 2, 4]
+Noted [2, 9, 3]
+note 2
+note 3
+Noted [2, 4, 6]

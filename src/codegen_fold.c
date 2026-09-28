@@ -6608,6 +6608,19 @@ void emit_kwhash_verify(Compiler *c, Scope *m, int hash_tmp, Buf *out) {
 /* Emit the value for KEYWORD param `i` extracted by name from a materialized
    `**hash` temp, falling back to the param's default when the key is absent.
    Shared by emit_args_filled and emit_dispatch. */
+/* Param i's default as one expression: the statements it hoists run inside
+   it, so only where the default is taken. */
+static void emit_ds_default(Compiler *c, Scope *m, int i, Buf *out) {
+  Buf dp; memset(&dp, 0, sizeof dp);
+  Buf dv; memset(&dv, 0, sizeof dv);
+  Buf *sv_pre = g_pre; g_pre = &dp;
+  emit_arg_or_default(c, m, i, -1, &dv);
+  g_pre = sv_pre;
+  if (dp.p && dp.p[0]) buf_printf(out, "({ %s %s; })", dp.p, dv.p ? dv.p : "0");
+  else buf_puts(out, dv.p ? dv.p : "");
+  free(dp.p); free(dv.p);
+}
+
 void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
                                   TyKind ds_hash_type, Buf *out) {
   const char *hn = ty_hash_cname(ds_hash_type);
@@ -6620,7 +6633,7 @@ void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
     emit_unbox_text(c, pt, "_v", &ub);
     if (m->pdefault && m->pdefault[i] >= 0) {
       Buf db; memset(&db, 0, sizeof db);
-      emit_arg_or_default(c, m, i, -1, &db);
+      emit_ds_default(c, m, i, &db);
       buf_printf(out,
                  "({ sp_bool _f=0; sp_RbVal _v = sp_poly_hash_get_pair_val(_t%d, "
                  "sp_box_sym(sp_sym_intern(\"%s\")), &_f); _f ? (%s) : (%s); })",
@@ -6653,7 +6666,7 @@ void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
        get returns nil and silently drops the callee's default value. */
     if (m->pdefault && m->pdefault[i] >= 0) {
       Buf db; memset(&db, 0, sizeof db);
-      emit_arg_or_default(c, m, i, -1, &db);
+      emit_ds_default(c, m, i, &db);
       buf_printf(out, "(sp_%sHash_has_key(_t%d, sp_sym_intern(\"%s\")) ? (%s) : (%s))",
                  hn, ds_hash_tmp, m->pnames[i],
                  vb.p ? vb.p : "", db.p ? db.p : default_value(pt));
@@ -7397,11 +7410,12 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
      an undeclared `lv_<sibling>`. Bind each param to a uniquely-named call-site
      temp in order, registering a rename so a later default reads the earlier
      temp, then pass the temps. Restricted to calls with no splat expanding
-     into fixed parameters and no double-splat. A *rest, its posts and a
-     **kwrest are hoisted the way the path below binds them: leaving them out
-     let `def m(n, *r, k: n + r.size)` and `def h(x, z = x * 2, **kw)` emit
-     the default against a parameter nothing at the call site declared. */
-  if (splat_idx < 0 && ds_hash_tmp < 0 &&
+     into fixed parameters. A *rest, its posts and a **kwrest are hoisted the
+     way the path below binds them: leaving them out let
+     `def m(n, *r, k: n + r.size)` and `def h(x, z = x * 2, **kw)` emit the
+     default against a parameter nothing at the call site declared. A keyword
+     a `**h` may supply is read out of h, its default under the same renames. */
+  if (splat_idx < 0 &&
       m->nparams <= 64 && default_refs_earlier_param(c, m)) {
     int uid = ++g_tmp;
     int ren_base = g_nren;
@@ -7445,6 +7459,8 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
         if (pt == TY_POLY) buf_printf(&vb, "sp_box_obj(_t%d, SP_BUILTIN_SYM_POLY_HASH)", krhash);
         else buf_printf(&vb, "_t%d", krhash);
       }
+      else if (provided < 0 && ds_hash_tmp >= 0 && m->pnames[i] && callee_has_kwarg(c, m, m->pnames[i]))
+        emit_ds_param_extract(c, m, i, ds_hash_tmp, ds_hash_type, &vb);
       else emit_arg_or_default(c, m, i, provided, &vb);
       g_nren = active_nren;
       char uniq[48];
