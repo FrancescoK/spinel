@@ -488,14 +488,39 @@ static inline const char *sp_str_dup_external(const char *s) {
    pre-evaluated dynamic parts, so one sp_str_alloc_raw serves the whole
    string (previously: one heap string per part + an sp_sprintf pass). */
 #define SP_W_INT_MAX 21  /* -9223372036854775808 */
+/* Decimal digits of u, counted up front so the digits can be written in place
+   at their final position -- no scratch buffer and no second copy. */
+static inline int sp_u64_ndigits(uint64_t u) {
+  int d = 1;
+  for (;;) {
+    if (u < 10) return d;
+    if (u < 100) return d + 1;
+    if (u < 1000) return d + 2;
+    if (u < 10000) return d + 3;
+    u /= 10000; d += 4;
+  }
+}
+/* Write u's digits so the last one lands just before `end`, two at a time from
+   a pair table: half the divisions of the digit-at-a-time loop. */
+static inline void sp_u64_write_back(char *end, uint64_t u) {
+  static const char d2[] =
+    "00010203040506070809101112131415161718192021222324252627282930313233343536373839"
+    "40414243444546474849505152535455565758596061626364656667686970717273747576777879"
+    "8081828384858687888990919293949596979899";
+  while (u >= 100) {
+    unsigned r = (unsigned)(u % 100); u /= 100;
+    end -= 2; end[0] = d2[2 * r]; end[1] = d2[2 * r + 1];
+  }
+  if (u >= 10) { end -= 2; end[0] = d2[2 * u]; end[1] = d2[2 * u + 1]; }
+  else *--end = (char)('0' + u);
+}
 static inline char *sp_w_int(char *p, sp_int n) {
   if (n == SP_INT_NIL) return p;  /* a nil int slot interpolates as "" */
   uint64_t u;
   if (n < 0) { *p++ = '-'; u = (uint64_t)(-(n + 1)) + 1; }
   else u = (uint64_t)n;
-  char tmp[SP_W_INT_MAX]; int i = 0;
-  do { tmp[i++] = (char)('0' + (u % 10)); u /= 10; } while (u > 0);
-  while (i > 0) *p++ = tmp[--i];
+  p += sp_u64_ndigits(u);
+  sp_u64_write_back(p, u);
   return p;
 }
 /* NOTE: s must be a marked spinel string (heap or codegen literal) --
@@ -521,22 +546,18 @@ static inline char *sp_w_bool(char *p, sp_bool v) {
    fixed 32, which is less string-heap pressure per call and so fewer
    collections. */
 static inline const char *sp_int_to_s(sp_int n) {
-  char tmp[24];   /* -9223372036854775808 is 20 characters */
-  int i = (int)sizeof tmp;
   uint64_t u;
   /* negate in unsigned space: -INT64_MIN does not fit in sp_int */
   if (n < 0) u = (uint64_t)(-(n + 1)) + 1; else u = (uint64_t)n;
-  do { tmp[--i] = (char)('0' + (int)(u % 10)); u /= 10; } while (u);
-  if (n < 0) tmp[--i] = '-';
-  size_t len = sizeof tmp - (size_t)i;
-  char *b = sp_str_alloc_raw(len + 1);
-  memcpy(b, tmp + i, len);
-  b[len] = 0;
-  sp_str_set_len(b, len);
-  /* digits and the sign are 7-bit by construction, and set_len clears the
-     flag, so re-assert it: the length and index paths then answer without
-     scanning. */
-  sp_str_mark_ascii7(b);
+  size_t len = (size_t)sp_u64_ndigits(u) + (n < 0);
+  /* sp_str_alloc records the exact length and terminates it, so the digits go
+     straight into the result. */
+  char *b = sp_str_alloc(len);
+  sp_u64_write_back(b + len, u);
+  if (n < 0) b[0] = '-';
+  /* digits and the sign are 7-bit by construction: the length and index paths
+     then answer without scanning. The header is a fresh heap one. */
+  (((sp_str_hdr *)(b - 1)) - 1)->size |= SP_STR_SIZE_ASCII7;
   return b;
 }
 /* Float#to_s (Ruby semantics): the shortest decimal that round-trips, fixed
