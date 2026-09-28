@@ -3542,7 +3542,29 @@ static int class_value_escapes(Compiler *c, int cid) {
   int all = 0;
   for (int u = 0; u < nt->count && !all; u++) {
     NodeKind k = nt_kind(nt, u);
-    if (k == NK_CallNode && name_in(nt_str(nt, u, "name"), reflective)) { all = 1; break; }
+    if (k == NK_CallNode && name_in(nt_str(nt, u, "name"), reflective)) {
+      /* `const_get(:Get)` / `const_get("A::Get")` names the one class it
+         hands out: only that class escapes. Taken as any class, one
+         literal lookup anywhere bound every `k.new(x)` into every class's
+         initialize, and Campfire's BCrypt::Password took an untyped URL
+         (#5217). A name computed at run time can be any class. */
+      if (sp_streq(nt_str(nt, u, "name"), "const_get")) {
+        int an = 0, ag = nt_ref(nt, u, "arguments");
+        const int *av = ag >= 0 ? nt_arr(nt, ag, "arguments", &an) : NULL;
+        NodeKind ak = an >= 1 ? nt_kind(nt, av[0]) : NK_NilNode;
+        const char *lit = NULL;
+        if (an >= 1 && ak == NK_SymbolNode) lit = nt_str(nt, av[0], "value");
+        else if (an >= 1 && ak == NK_StringNode) lit = nt_str(nt, av[0], "content");
+        if (lit) {
+          const char *leaf = strrchr(lit, ':');
+          leaf = leaf ? leaf + 1 : lit;
+          for (int d = 0; d < c->nclasses; d++)
+            if (c->classes[d].name && sp_streq(c->classes[d].name, leaf)) esc[d] = 1;
+          continue;
+        }
+      }
+      all = 1; break;
+    }
     if (k != NK_ConstantReadNode && k != NK_ConstantPathNode && k != NK_SelfNode &&
         k != NK_CallNode) continue;
     if (k == NK_CallNode) {
