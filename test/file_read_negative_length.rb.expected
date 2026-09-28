@@ -1,0 +1,5 @@
+[ArgumentError, "negative length -1 given"]
+[ArgumentError, "negative length -5 given"]
+"ab"
+"cde"
+[ArgumentError, "negative length -1 given"]
