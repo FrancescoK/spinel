@@ -2517,8 +2517,11 @@ static int fi_reaches(Compiler *c, int from, int target, unsigned char *seen,
 /* A callee's parameter defaults are emitted at the call site, so a rescue or
    a block in one of them lands in this body too (a `**h` into `new` fills
    initialize's keyword defaults in place). `new` reaches every initialize:
-   its receiver may be a Class value. */
-static int fi_callee_defaults_unforceable(Compiler *c, int body) {
+   its receiver may be a Class value. A default's own calls fill in their
+   defaults there as well (`def outer(y = inner)` with inner's default
+   rescuing), so the walk follows a default's calls a few levels down. */
+static int fi_callee_defaults_unforceable_at(Compiler *c, int body, int depth) {
+  if (depth > 8) return 1;
   int calls[512]; int nc = 0;
   int sv_trunc = g_fi_trunc;
   g_fi_trunc = 0;
@@ -2540,11 +2543,18 @@ static int fi_callee_defaults_unforceable(Compiler *c, int body) {
     else fi_callees(c, calls[i], cal, &n2, 32);
     for (int k = 0; k < n2; k++) {
       Scope *cs = &c->scopes[cal[k]];
-      for (int q = 0; cs->pdefault && q < cs->nparams; q++)
-        if (cs->pdefault[q] >= 0 && fi_body_unforceable(c, cs->pdefault[q], 0)) return 1;
+      for (int q = 0; cs->pdefault && q < cs->nparams; q++) {
+        if (cs->pdefault[q] < 0) continue;
+        if (fi_body_unforceable(c, cs->pdefault[q], 0)) return 1;
+        if (fi_callee_defaults_unforceable_at(c, cs->pdefault[q], depth + 1)) return 1;
+      }
     }
   }
   return 0;
+}
+
+static int fi_callee_defaults_unforceable(Compiler *c, int body) {
+  return fi_callee_defaults_unforceable_at(c, body, 0);
 }
 
 /* The methods whose defaults one search has walked (see fi_defaults_reach) */
