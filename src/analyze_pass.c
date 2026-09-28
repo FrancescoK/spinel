@@ -3551,7 +3551,7 @@ static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
    an ancestor. `.class`, `superclass` or `singleton_class` handed on, and
    the reflective readers (`const_get`, `subclasses`, an `inherited` hook),
    are taken to hand out any class. */
-static int class_value_escapes(Compiler *c, int cid) {
+int class_value_escapes(Compiler *c, int cid) {
   const NodeTable *nt = c->nt;
   static char *esc = NULL;
   static int esc_n = -1, esc_count = -1, esc_round = -1;
