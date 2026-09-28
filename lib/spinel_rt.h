@@ -9735,6 +9735,25 @@ static int sp_poly_user_include(sp_RbVal recv, sp_RbVal x) {
   for (sp_int i = 0; i < ue->len; i++) if (sp_poly_eq(ue->data[i], x)) return 1;
   return 0;
 }
+/* Enumerable#find_index(value) on a boxed Hash, Range, Enumerator or user
+   Enumerable: the position of the first element == value, SP_INT_NIL when
+   none. Answers 0 when the receiver is none of those (the array kinds have
+   their own arm), so the caller goes on to report the missing method. */
+static int sp_poly_enum_find_index_val(sp_RbVal v, sp_RbVal x, sp_int *out) {
+  if (v.tag != SP_TAG_OBJ) return 0;
+  SP_GC_ROOT_RBVAL(x);
+  sp_PolyArray *items = NULL;
+  if (sp_poly_is_hash_kind(v.cls_id) || v.cls_id == SP_BUILTIN_RANGE ||
+      v.cls_id == SP_BUILTIN_STR_RANGE || v.cls_id == SP_BUILTIN_ENUMERATOR)
+    items = sp_enum_items_from(v);
+  else items = sp_poly_user_elems(v);
+  if (!items) return 0;
+  SP_GC_ROOT(items);
+  *out = SP_INT_NIL;
+  for (sp_int i = 0; i < items->len; i++)
+    if (sp_poly_eq(items->data[i], x)) { *out = i; break; }
+  return 1;
+}
 static sp_RbVal sp_poly_sum_seed(sp_RbVal v, sp_RbVal seed);   /* fwd: the seeded fold */
 static sp_RbVal sp_poly_sum(sp_RbVal v) {
   /* String#sum is a byte checksum, not a container fold: a boxed String fell
