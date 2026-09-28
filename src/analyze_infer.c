@@ -3649,6 +3649,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "status") || sp_streq(name, "[]") || sp_streq(name, "[]=") ||
         sp_streq(name, "name") || sp_streq(name, "name=")) return TY_POLY;
     if (sp_streq(name, "key?") || sp_streq(name, "equal?")) return TY_BOOL;
+    if (sp_streq(name, "keys") && argc == 0) return TY_POLY_ARRAY;
   }
 
   /* Array#push / #append / #unshift / #prepend answer the RECEIVER, and on a

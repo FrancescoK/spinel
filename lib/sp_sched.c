@@ -2471,7 +2471,16 @@ sp_bool sp_Thread_tls_key(sp_thread *t, sp_sym k) {
    the next read of the slot faulted in sp_PolyPolyHash_get (#4311). */
 sp_RbVal sp_Thread_tls_set(sp_thread *t, sp_sym k, sp_RbVal v) {
   sp_tls_map *m = (sp_tls_map *)t->tls;
-  if (m) for (sp_int i = 0; i < m->len; i++) if (m->keys[i] == k) { m->vals[i] = v; sp_gc_wb((void *)m); return v; }
+  if (m) for (sp_int i = 0; i < m->len; i++) if (m->keys[i] == k) {
+    if (v.tag == SP_TAG_NIL) {
+      memmove(&m->keys[i], &m->keys[i + 1], sizeof(sp_sym) * (size_t)(m->len - i - 1));
+      memmove(&m->vals[i], &m->vals[i + 1], sizeof(sp_RbVal) * (size_t)(m->len - i - 1));
+      m->len--;
+      return v;
+    }
+    m->vals[i] = v; sp_gc_wb((void *)m); return v;
+  }
+  if (v.tag == SP_TAG_NIL) return v;
   if (!m) {
     SP_GC_ROOT(t); SP_GC_ROOT_RBVAL(v);
     m = (sp_tls_map *)sp_gc_alloc(sizeof(sp_tls_map), sp_tls_fin, sp_tls_scan);
@@ -2499,6 +2508,14 @@ sp_RbVal sp_Thread_tls_set(sp_thread *t, sp_sym k, sp_RbVal v) {
   m->keys[m->len] = k; m->vals[m->len] = v; m->len++;
   sp_gc_wb((void *)m);
   return v;
+}
+sp_PolyArray *sp_Thread_tls_keys(sp_thread *t) {
+  SP_GC_ROOT(t);
+  sp_PolyArray *a = sp_PolyArray_new();
+  SP_GC_ROOT(a);
+  sp_tls_map *m = (sp_tls_map *)t->tls;
+  if (m) for (sp_int i = 0; i < m->len; i++) sp_PolyArray_push(a, sp_box_sym(m->keys[i]));
+  return a;
 }
 
 #ifdef SP_THREADS
