@@ -13610,6 +13610,21 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
+    /* entries on a poly value the inference typed an Array: the elements,
+       as a new Array, and nil's NoMethodError (sp_poly_entries). A user
+       class with a method or a reader of the name wins the dispatch. */
+    if (sp_streq(name, "entries") && nt_ref(nt, id, "block") < 0 &&
+        comp_ntype(c, id) == TY_POLY_ARRAY) {
+      int has_user_en = 0;
+      if (!g_poly_builtin_arm)
+      for (int kk = 0; kk < c->nclasses && !has_user_en; kk++)
+        if (comp_poly_arm_defines_n(c, kk, name, argc) ||
+            (!c->classes[kk].is_native_class && comp_reader_in_chain(c, kk, name, NULL))) has_user_en = 1;
+      if (!has_user_en) {
+        buf_puts(b, "sp_poly_entries("); emit_expr(c, recv, b); buf_puts(b, ")");
+        return 1;
+      }
+    }
     /* Struct#members on a Struct/Data read out of a container. */
     if (sp_streq(name, "members") && argc == 0 && nt_ref(nt, id, "block") < 0) {
       int has_user_m = 0;
