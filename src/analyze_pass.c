@@ -2643,11 +2643,25 @@ int infer_write_types(Compiler *c) {
             const char *lty_s = nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "";
             if (sp_streq(lty_s, "GlobalVariableTargetNode") || sp_streq(lty_s, "ClassVariableTargetNode"))
               changed |= masgn_unify_elem(c, comp_scope_of(c, id), &lefts[i], 1, st);
+            /* a constant has no slot until a write types it: the first takes
+               the scalar, the rest nil */
+            if (sp_streq(lty_s, "ConstantTargetNode") || sp_streq(lty_s, "ConstantPathTargetNode"))
+              changed |= masgn_unify_elem(c, comp_scope_of(c, id), &lefts[i], 1, i == 0 ? st : TY_POLY);
             if (!sp_streq(lty_s, "LocalVariableTargetNode")) continue;
             const char *lnm = nt_str(nt, lefts[i], "name");
             LocalVar *lv = lnm ? scope_local(comp_scope_of(c, id), lnm) : NULL;
             if (!lv || lv->is_param || lv->is_block_param) continue;
             lv->type = ty_unify(lv->type, st);
+          }
+          /* a target after the splat takes the scalar when no target before
+             it did (`*r, C = 1`), else nil */
+          int rn_s = 0;
+          const int *rights_s = nt_arr(nt, id, "rights", &rn_s);
+          for (int j = 0; j < rn_s; j++) {
+            const char *rty_s = nt_type(nt, rights_s[j]) ? nt_type(nt, rights_s[j]) : "";
+            if (sp_streq(rty_s, "ConstantTargetNode") || sp_streq(rty_s, "ConstantPathTargetNode"))
+              changed |= masgn_unify_elem(c, comp_scope_of(c, id), &rights_s[j], 1,
+                                          j == 0 && ln == 0 ? st : TY_POLY);
           }
           /* the rest target under a scalar RHS collects [scalar] (or stays
              empty when fixed targets consumed it): an ARRAY of the scalar. */
