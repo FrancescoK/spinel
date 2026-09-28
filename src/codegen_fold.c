@@ -6227,16 +6227,24 @@ int rest_bind_argc(Compiler *c, Scope *m, int kwh, int pos_argc) {
    `f(1, **h)` is `f(1)` for an empty h, so `def f(a, b = nil)` keeps b's
    default, `def g(a, b)` is short an argument and `def p(*r, z)` gives z
    the 1. Its parameters bind by a count only the run time knows, from all
-   the arguments gathered (emit_splat_gather), for a parameter list
-   emit_gathered_param can bind: no required parameter after an optional
-   without a rest between them, no default reading an earlier parameter
-   (which the gather would render at the call site) and none synthesized.
-   The rest alone takes such a hash at its tail (rest_kwh_tail), which
-   tests the length itself. */
-int kwh_gathers(Compiler *c, Scope *m, int kwh, int pos_argc) {
-  if (!m || !kwh_only_spreads(c->nt, kwh) || kwh_positional_slot(c, m, kwh, pos_argc) < 0 ||
-      m->cs_synth || (opt_before_required(c, m) && m->rest_idx < 0) ||
-      default_refs_earlier_param(c, m)) return 0;
+   the arguments gathered (emit_splat_gather), for a parameter list with
+   none synthesized. `def hh(a = 5, c)` and `def pd(a, b = a)` bind from it
+   too: `hh(1, **h)` is `[5, 1]` and `pd(1, **h)` `[1, 1]` for an empty h,
+   where they kept the old binding and took the `{}`. So does one no
+   parameter is left for, which the gather's count refuses when it holds a
+   key (`g(1, 2, **h)` on `def g(a, b)`), and one after a splat, whose count
+   is the run time's too (`f(*[], 1, **h)` on `def f(a = nil, b)` binds b
+   the hash). The rest alone takes such a hash at its tail (rest_kwh_tail),
+   which tests the length itself, unless a splat spreads ahead of it. */
+int kwh_gathers(Compiler *c, Scope *m, int kwh, const int *argv, int pos_argc) {
+  if (!m || !kwh_only_spreads(c->nt, kwh) || m->cs_synth) return 0;
+  if (kwh_positional_slot(c, m, kwh, pos_argc) < 0) {
+    int spl = 0;
+    for (int k = 0; argv && k < pos_argc; k++)
+      if (nt_kind(c->nt, argv[k]) == NK_SplatNode) spl = 1;
+    if (m->kwrest_idx >= 0 || callee_declares_kwargs(c, m) || kwh_consumed_by_kwparam(c, m, kwh) ||
+        !(spl || (m->rest_idx < 0 && kwh_arg_param(c, m, pos_argc) < 0))) return 0;
+  }
   for (int i = 0; i < m->nparams; i++)
     if (!m->pnames[i] || (m->pnames[i][0] == '_' && m->pnames[i][1] == '_')) return 0;
   return 1;
@@ -7618,11 +7626,18 @@ static int splat_gather_applies_x(Compiler *c, Scope *m, const int *argv, int po
   int nspl = 0, sk = -1;
   for (int k = 0; k < pos_argc; k++)
     if (nt_kind(nt, argv[k]) == NK_SplatNode) { nspl++; sk = k; }
-  /* a `**` hash that may be no argument at all counts as a splat does */
-  int kg = kwh_gathers(c, m, kwh, pos_argc);
-  if (!kg && (any_splat ? nspl == 0 : (nspl != 1 || sk >= pos_argc - 1))) return 0;
-  if (((m->rest_idx >= 0 || m->kwrest_idx >= 0) && !any_splat && !kg) || m->cs_synth ||
-      (opt_before_required(c, m) && !((any_splat || kg) && m->rest_idx >= 0))) return 0;
+  /* a `**` hash that may be no argument at all counts as a splat does, and
+     so does a trailing splat into a leading optional or a default reading an
+     earlier parameter, a rest beside them or not: `hh(*[1])` on
+     `def hh(a = 5, c)` funds c, which the layout that spreads a splat in
+     place gave to a. A splat a rest's post would read spreads over the
+     posts: `pr(*[1, 2])` on `def pr(*r, z)` binds z the 2 */
+  int kg = kwh_gathers(c, m, kwh, argv, pos_argc);
+  int any = any_splat || opt_before_required(c, m) || default_refs_earlier_param(c, m) ||
+            (m->rest_idx >= 0 && m->npost_rest > 0 && nspl > 0 && sk >= pos_argc - m->npost_rest);
+  if (!kg && (any ? nspl == 0 : (nspl != 1 || sk >= pos_argc - 1))) return 0;
+  if ((m->rest_idx >= 0 && !any && !kg) || (m->kwrest_idx >= 0 && !any_splat && !kg) ||
+      m->cs_synth) return 0;
   int nkw = 0;
   for (int i = 0; i < m->nparams; i++) {
     if (!m->pnames[i] || (m->pnames[i][0] == '_' && m->pnames[i][1] == '_')) return 0;
@@ -7669,7 +7684,7 @@ int emit_splat_gather(Compiler *c, Scope *m, const int *argv, int pos_argc, int 
     free(ab.p);
   }
   Buf kb; memset(&kb, 0, sizeof kb);
-  if (kwh_gathers(c, m, kwh, pos_argc) && emit_kwh_spread_arg(c, kwh, &kb)) {
+  if (kwh_gathers(c, m, kwh, argv, pos_argc) && emit_kwh_spread_arg(c, kwh, &kb)) {
     int kt = ++g_tmp;
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);"
@@ -7712,6 +7727,18 @@ int inline_splat_gather_applies(Compiler *c, Scope *m, const int *argv, int pos_
 
 void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out) {
   int rest = m->rest_idx, npost = rest >= 0 ? m->npost_rest : 0;
+  /* the first parameter funded from the end: a rest's first post, or with a
+     leading optional and no rest the first required after the optionals,
+     which Ruby funds ahead of them (arg_slot_for_param) */
+  int post_from = rest + 1;
+  if (rest < 0 && opt_before_required(c, m)) {
+    int n = m->nparams;
+    while (n > 0 && (n - 1 == m->kwrest_idx || callee_param_is_declared_kwarg(c, m, m->pnames[n - 1]))) n--;
+    post_from = 0;
+    while (post_from < n && (!m->pdefault || m->pdefault[post_from] < 0)) post_from++;
+    while (post_from < n && m->pdefault && m->pdefault[post_from] >= 0) post_from++;
+    npost = n - post_from;
+  }
   if (i == rest) {
     int t = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb);
@@ -7730,8 +7757,9 @@ void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out) {
   TyKind pt = sp ? sp->type : TY_POLY;
   Buf eb; memset(&eb, 0, sizeof eb);
   char raw[80];
-  if (rest >= 0 && i > rest)
-    snprintf(raw, sizeof raw, "sp_PolyArray_get(_t%d, _t%d->len - %d)", ct, ct, rest + npost + 1 - i);
+  int is_post = rest >= 0 ? i > rest : npost > 0 && i >= post_from;
+  if (is_post)
+    snprintf(raw, sizeof raw, "sp_PolyArray_get(_t%d, _t%d->len - %d)", ct, ct, post_from + npost - i);
   else snprintf(raw, sizeof raw, "sp_PolyArray_get(_t%d, %d)", ct, i);
   if (pt != TY_POLY && pt != TY_UNKNOWN) emit_unbox_text(c, pt, raw, &eb);
   else buf_puts(&eb, raw);
@@ -7833,8 +7861,11 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
     splat_all = 1; splat_idx = 0; splat_tmp = emit_splat_gather(c, m, argv, pos_argc, kwh);
     splat_at = TY_POLY_ARRAY;
   }
-  /* a `**` hash that may be no argument: every parameter from the gather */
-  int kwh_gather = splat_all && kwh_gathers(c, m, kwh, pos_argc);
+  /* a `**` hash that may be no argument, a leading optional the gather funds
+     after the requireds, or a rest: every positional parameter from the
+     gather */
+  int gathered = splat_all && (kwh_gathers(c, m, kwh, argv, pos_argc) || opt_before_required(c, m) ||
+                               m->rest_idx >= 0);
   for (int k = 0; k < pos_argc && !splat_all; k++) {
     if (argv && nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "SplatNode")) {
       int need_expand = (m->rest_idx >= 0 && k < m->rest_idx) ||
@@ -7928,8 +7959,10 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
      way the path below binds them: leaving them out let
      `def m(n, *r, k: n + r.size)` and `def h(x, z = x * 2, **kw)` emit the
      default against a parameter nothing at the call site declared. A keyword
-     a `**h` may supply is read out of h, its default under the same renames. */
-  if (splat_idx < 0 &&
+     a `**h` may supply is read out of h, its default under the same renames.
+     A gather binds each positional from the gathered array, its default under
+     the renames too. */
+  if ((splat_idx < 0 || splat_all) &&
       m->nparams <= 64 && default_refs_earlier_param(c, m)) {
     int uid = ++g_tmp;
     int ren_base = g_nren;
@@ -7942,6 +7975,7 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
       int is_rest = i == m->rest_idx, is_kwrest = i == m->kwrest_idx;
       int is_post = m->rest_idx >= 0 && i > m->rest_idx && i <= m->rest_idx + m->npost_rest;
       int is_declkw = m->pnames[i] && callee_param_is_declared_kwarg(c, m, m->pnames[i]);
+      int from_gather = splat_all && !is_kwrest && !is_declkw;
       if (is_post) {
         int aidx = rest_argc - m->npost_rest + (i - m->rest_idx - 1);
         if (argv && aidx >= 0 && aidx < rest_argc) provided = argv[aidx];
@@ -7964,8 +7998,9 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
          OFF -- only a callee default expression should resolve param references
          to the hoisted temps. */
       int active_nren = g_nren;
-      if (provided >= 0 || is_rest || is_kwrest) g_nren = ren_base;
-      if (is_rest)
+      if (!from_gather && (provided >= 0 || is_rest || is_kwrest)) g_nren = ren_base;
+      if (from_gather) emit_gathered_param(c, m, i, splat_tmp, &vb);
+      else if (is_rest)
         emit_rest_pack_kwh(c, i, rest_argc - m->npost_rest, argv,
                            rest_kwh_tail(c, m, kwh, pos_argc), &vb);
       else if (is_kwrest) {
@@ -8099,7 +8134,8 @@ else {
   }
   for (int i = 0; i < m->nparams; i++) {
     buf_puts(out, i == 0 ? lead : ", ");
-    if (kwh_gather) emit_gathered_param(c, m, i, splat_tmp, out);
+    if (gathered && !callee_param_is_declared_kwarg(c, m, m->pnames[i]))
+      emit_gathered_param(c, m, i, splat_tmp, out);
     else if (m->rest_idx >= 0 && i == m->rest_idx) {
       /* rest collects middle args; stop before post-splat params */
       int rest_end = rest_argc - m->npost_rest;
@@ -8664,8 +8700,11 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
     splat_all_d = 1; splat_idx_d = 0; splat_at_d = TY_POLY_ARRAY;
     splat_tmp_d = emit_splat_gather(c, m, argv, pos_argc_d, kwh_d);
   }
-  /* a `**` hash that may be no argument: every parameter from the gather */
-  int kwh_gather_d = splat_all_d && kwh_gathers(c, m, kwh_d, pos_argc_d);
+  /* a `**` hash that may be no argument, a leading optional the gather funds
+     after the requireds, or a rest: every positional parameter from the
+     gather */
+  int gathered_d = splat_all_d && (kwh_gathers(c, m, kwh_d, argv, pos_argc_d) || opt_before_required(c, m) ||
+                                   m->rest_idx >= 0);
   for (int k = 0; m && k < pos_argc_d && !splat_all_d; k++) {
     if (argv && nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "SplatNode") &&
         (m->rest_idx >= 0
@@ -8737,9 +8776,9 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
      spelling and registers the rename. Without it the default emitted the
      callee's `lv_u`, which nothing at the call site declared (#4431). Same
      restriction as the other path: a *rest and a **kwrest are temps like the
-     rest, and are aliased too. */
+     rest, and are aliased too. A gather's parameters are temps as well. */
   int pd_ren_base = g_nren, pd_uid = 0;
-  int pd_active = m && splat_tmp_d < 0 && ds_tmp_d < 0 && default_refs_earlier_param(c, m);
+  int pd_active = m && ((splat_tmp_d < 0 && ds_tmp_d < 0) || splat_all_d) && default_refs_earlier_param(c, m);
   if (pd_active) pd_uid = ++g_tmp;
   for (int k = 0; k < np; k++) {
     atmp[k] = ++g_tmp;
@@ -8758,7 +8797,7 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
       /* the packed arguments are the caller's: no parameter renames */
       int rest_nren_sv = g_nren;
       g_nren = pd_ren_base;
-      if (kwh_gather_d)
+      if (gathered_d)
         emit_gathered_param(c, m, k, splat_tmp_d, &ab);
       else if (splat_tmp_d >= 0)
         emit_rest_from_splat_and_argv(splat_tmp_d, splat_at_d, k - splat_idx_d,
@@ -8859,7 +8898,19 @@ else {
         /* keyword param fed by a forwarded `**hash`: extract by name. */
         emit_ds_param_extract(c, m, k, ds_tmp_d, ds_type_d, &ab);
       }
-      else if (kwh_gather_d) emit_gathered_param(c, m, k, splat_tmp_d, &ab);
+      else if (gathered_d && !is_declkw_d) {
+        /* the default past the gathered count reads the callee's self, as
+           the defaults below do: `def m(a = @x, c)` read the caller's */
+        const char *saved_deref4 = g_self_deref;
+        int saved_emcls4 = g_emitting_class_id;
+        g_self = selfptr;
+        g_self_deref = comp_ty_value_obj(c, ty_object(cid)) ? "." : "->";
+        g_emitting_class_id = m->class_id;
+        emit_gathered_param(c, m, k, splat_tmp_d, &ab);
+        g_self = saved_self;
+        g_self_deref = saved_deref4;
+        g_emitting_class_id = saved_emcls4;
+      }
       else if (splat_tmp_d >= 0 && k >= splat_idx_d && kv < 0 && !is_declkw_d &&
                (m->rest_idx < 0 || k < m->rest_idx)) {
         /* fill this fixed param from the splatted array at offset k-splat_idx.
@@ -8886,7 +8937,16 @@ else {
            by its default, since nrequired also counts a required keyword */
         if (k >= m->nrequired || (m->pdefault && m->pdefault[k] >= 0)) {
           Buf db; memset(&db, 0, sizeof db);
+          /* the default reads the callee's self, as the ones below do */
+          const char *saved_deref5 = g_self_deref;
+          int saved_emcls5 = g_emitting_class_id;
+          g_self = selfptr;
+          g_self_deref = comp_ty_value_obj(c, ty_object(cid)) ? "." : "->";
+          g_emitting_class_id = m->class_id;
           emit_arg_or_default(c, m, k, -1, &db);
+          g_self = saved_self;
+          g_self_deref = saved_deref5;
+          g_emitting_class_id = saved_emcls5;
           TyKind pt = p ? p->type : TY_INT;
           buf_printf(&ab, "(%d < (_t%d ? _t%d->len : 0) ? %s : %s)", off, splat_tmp_d, splat_tmp_d,
                      eb.p ? eb.p : "", db.p ? db.p : default_value(pt));

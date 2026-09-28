@@ -4574,12 +4574,17 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
     if (nt_kind(nt, argv[k]) == NK_SplatNode) remap = 0;
   if (remap) n = max_bind;
   /* a keyword hash no keyword parameter takes is one more positional
-     (#4877): it is counted in the layout, and bound by the hash rule below */
+     (#4877): it is counted in the layout, and bound by the hash rule below.
+     One of `**` spreads alone may be no argument at all, and then the
+     positionals lay out without it (`hh(1, **{})` funds c with the 1): both
+     layouts type the parameters, as for the posts below. */
   int lay_argc = pos_argc;
   if (remap && kwh >= 0 && m->kwrest_idx < 0 && !callee_declares_kwargs(c, m)) lay_argc++;
+  int lay_n = lay_argc > pos_argc && kwh_only_spreads(nt, kwh) ? 2 : 1;
+  for (int l = 0; l < lay_n; l++)
   for (int k = 0; k < n; k++) {
     int arg = k;
-    if (remap && ((arg = arg_slot_for_param(c, m, k, lay_argc)) < 0 || arg >= pos_argc)) continue;
+    if (remap && ((arg = arg_slot_for_param(c, m, k, lay_argc - l)) < 0 || arg >= pos_argc)) continue;
     const char *apty = argv ? nt_type(nt, argv[arg]) : NULL;
     /* A single SplatNode spreads its array across every remaining fixed param,
        not just this position. Bind each from the array's element type so a
