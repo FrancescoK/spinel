@@ -33516,8 +33516,12 @@ else {
     { char srefC[1024];
       if (strbuf_slot_ref(c, recv, srefC, sizeof srefC)) {
         int tC2 = ++g_tmp;
-        buf_printf(b, "({ sp_String *_t%d = %s; sp_String_set_bin(_t%d, (&(\"\\xff\")[1]));"
-                      " sp_String_cstr(_t%d); })", tC2, srefC, tC2, tC2);
+        /* marked to hand out the handle (`r = obj.buf.clear`): the
+           receiver itself, as for the appends */
+        buf_printf(b, "({ sp_String *_t%d = %s; sp_String_set_bin(_t%d, (&(\"\\xff\")[1]));",
+                   tC2, srefC, tC2);
+        if (c->strbuf_box[id]) buf_printf(b, " _t%d; })", tC2);
+        else buf_printf(b, " sp_String_cstr(_t%d); })", tC2);
         return;
       } }
     const char *rty = nt_type(nt, recv);

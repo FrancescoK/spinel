@@ -1107,7 +1107,10 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
               buf_puts(b, ");");
             }
           }
-          buf_printf(b, " sp_String_cstr(_t%d); })", tb2);
+          /* an append marked to hand out the handle (`r = obj.buf << x`)
+             answers the receiver itself; otherwise its String read */
+          if (c->strbuf_box[id]) buf_printf(b, " _t%d; })", tb2);
+          else buf_printf(b, " sp_String_cstr(_t%d); })", tb2);
           return 1;
         }
       }
@@ -1208,7 +1211,10 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           buf_printf(b, "({ sp_String *_t%d = %s; sp_String_set_bin(_t%d, ",
                      tbR, srefR, tbR);
           emit_str_expr(c, argv[0], b);
-          buf_printf(b, "); sp_String_cstr(_t%d); })", tbR);
+          /* marked to hand out the handle (`r = obj.buf.replace(x)`): the
+             receiver itself, as for the appends */
+          if (c->strbuf_box[id]) buf_printf(b, "); _t%d; })", tbR);
+          else buf_printf(b, "); sp_String_cstr(_t%d); })", tbR);
           return 1;
         }
       }
