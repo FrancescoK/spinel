@@ -4234,6 +4234,7 @@ static int emit_poly_pred_value(Compiler *c, int id, const char *tvref,
    poly dispatch only knows user-class arms, so these fell to NoMethodError.
    Emitted as a runtime tag/cls_id check; declined when a user class defines the
    name so the general dispatch (which then has arms) wins. (#3162) */
+static int reopened_owns(Compiler *c, const char *cls, const char *name);   /* below */
 static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -4301,6 +4302,23 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
                     " ? %s((sp_ProcessStatus *)_t%d.v.p)"
                     " : (sp_int)(sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)), 0); })",
                  tv, tv, ps_pid_fn, tv, name, tv);
+      return 1;
+    }
+    /* Process::Tms: the four Float fields the typed arm reads, behind a
+       run-time class check as the Process::Status arms have. Only where the
+       inference typed the call Float (or in the dispatch's default arm), and
+       not where a reopened Object or Kernel owns the name, whose method
+       answers for everything else. */
+    if ((sp_streq(name, "utime") || sp_streq(name, "stime") ||
+         sp_streq(name, "cutime") || sp_streq(name, "cstime")) &&
+        (comp_ntype(c, id) == TY_FLOAT || g_poly_builtin_arm) &&
+        !reopened_owns(c, "Object", name) && !reopened_owns(c, "Kernel", name)) {
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
+      buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_TMS"
+                    " ? ((sp_Tms *)_t%d.v.p)->%s"
+                    " : (sp_float)(sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)), 0.0); })",
+                 tv, tv, tv, name, name, tv);
       return 1;
     }
   }
