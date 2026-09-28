@@ -1206,9 +1206,9 @@ static inline const char *sp_File_read(sp_File *f) {
   return r;
 }
 /* IO#read(n): read up to n bytes from the current position. Returns NULL
-   (nil) at EOF for a positive n, "" for n == 0, and the whole rest for a
-   negative n (treated as the no-count read). A short read produces a
-   string of the bytes actually read.
+   (nil) at EOF for a positive n and "" for n == 0; a negative n raises
+   ArgumentError. A short read produces a string of the bytes actually
+   read.
 
    The result is BINARY whatever mode the handle was opened in -- that is what
    CRuby's read-with-a-length answers, and it is not cosmetic: indexing a text
@@ -1218,9 +1218,10 @@ static inline const char *sp_File_read(sp_File *f) {
    naming "ODES" with a nonsense size, and the renderer then drew 1496 pixels
    out of 76800. */
 static inline const char *sp_File_read_n(sp_File *f, sp_int n) {
+  /* a negative length is CRuby's ArgumentError, checked before the stream */
+  if (n < 0) sp_raise_cls("ArgumentError", sp_sprintf("negative length %lld given", (long long)n));
   SP_IO_OPEN(f);
   sp_io_wait_readable(f);
-  if (n < 0) return sp_File_read(f);
   if (n == 0) return sp_str_empty_binary();
   char *r = sp_str_alloc((size_t)n);
   size_t got = fread(r, 1, (size_t)n, f->fp);
