@@ -11251,6 +11251,14 @@ static sp_RbVal sp_poly_exc_acc(sp_RbVal v, const char *which) {
   if (!strcmp(which, "key"))     return sp_exc_key_acc(e);
   if (!strcmp(which, "receiver")) return sp_exc_receiver_acc(e);
   if (!strcmp(which, "name"))    return sp_exc_name_acc(e);
+  if (!strcmp(which, "backtrace"))
+    return e->backtrace ? sp_box_obj(e->backtrace, SP_BUILTIN_STR_ARRAY) : sp_box_nil();
+  if (!strcmp(which, "cause"))
+    return e->cause ? sp_box_obj(e->cause, SP_BUILTIN_EXCEPTION) : sp_box_nil();
+  if (!strcmp(which, "full_message"))
+    return sp_box_str(sp_sprintf("%s: %s", sp_exc_class_name(e), sp_exc_message(e)));
+  if (!strcmp(which, "detailed_message"))
+    return sp_box_str(sp_sprintf("%s (%s)", sp_exc_message(e), sp_exc_class_name(e)));
   return sp_box_nil();
 }
 static sp_RbVal sp_exc_reason_acc(sp_Exception *e) {

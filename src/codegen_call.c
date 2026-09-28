@@ -10939,6 +10939,58 @@ static int emit_exc_sub_new_arm(Compiler *c, int ci, int argc, const int *atmp, 
   return 1;
 }
 
+/* `raise k, msg` / `raise k` with the class in a variable is `raise k.new(msg)`,
+   as the constant form is: a user exception class with an initialize of its
+   own is constructed through it, so its `super("...")` sets the message. The
+   runtime helper, which only has the class name, takes every other value. */
+static void emit_raise_class_value(Compiler *c, int kn, int mn, Buf *b) {
+  int argc = mn >= 0 ? 1 : 0;
+  int kt = ++g_tmp, mt = ++g_tmp, rt = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", kt); emit_boxed(c, kn, b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", kt);
+  if (mn >= 0) {
+    buf_printf(b, "sp_RbVal _t%d = ", mt); emit_boxed(c, mn, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", mt);
+  }
+  buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); if (_t%d.tag == SP_TAG_CLASS) switch (_t%d.cls_id) {",
+             rt, kt, kt);
+  CtorArityArms aerr = {0};
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    if (is_builtin_reopen(c->classes[ci].name) || c->classes[ci].is_native_class) continue;
+    if (!class_is_exc_subclass(c, ci)) continue;
+    int initm = comp_method_in_chain(c, ci, "initialize", NULL);
+    if (initm < 0 || !c->scopes[initm].reachable) continue;
+    Scope *is = &c->scopes[initm];
+    char am[256];
+    if (ctor_arity_error(c, ci, initm, argc, am, sizeof am)) { ctor_arity_add(&aerr, ci, am); continue; }
+    if (is->yields || ctor_needs_self_defaults(c, initm, argc)) continue;
+    if (ctor_arm_remaps(c, is) ? !ctor_arm_takes(c, is, argc)
+                               : argc < is->nrequired || argc > is->nparams) continue;
+    int pd_uid = default_refs_earlier_param(c, is) ? ++g_tmp : 0, pd_base = g_nren;
+    Buf pdpre; memset(&pdpre, 0, sizeof pdpre);
+    Buf ab; memset(&ab, 0, sizeof ab);
+    Buf *sv_pre = g_pre;
+    if (pd_uid) g_pre = &pdpre;
+    for (int j = 0; j < is->nparams; j++) {
+      if (j) buf_puts(&ab, ", ");
+      Buf ub; memset(&ub, 0, sizeof ub);
+      ctor_arm_remap_arg(c, is, j, argc, &mt, &pdpre, &ub);
+      ctor_arm_arg(c, is, j, ub.p ? ub.p : "", pd_uid, &pdpre, &ab);
+      free(ub.p);
+    }
+    g_nren = pd_base;
+    g_pre = sv_pre;
+    if (ctor_init_takes_block(c, initm)) buf_puts(&ab, is->nparams > 0 ? ", NULL" : "NULL");
+    emit_ctor_arm_case(c, ci, rt, -1, pdpre.p, ab.p ? ab.p : "", b);
+    free(pdpre.p); free(ab.p);
+  }
+  ctor_arity_emit(&aerr, b);
+  buf_printf(b, "default: break; } if (_t%d.tag == SP_TAG_OBJ) sp_raise_exc((sp_Exception *)_t%d.v.p); ",
+             rt, rt);
+  if (mn >= 0) buf_printf(b, "sp_raise_poly_msg(_t%d, _t%d); })", kt, mt);
+  else buf_printf(b, "sp_raise_poly(_t%d); })", kt);
+}
+
 /* The same, for arguments hoisted into the boxed temps `atmp`. */
 static void emit_builtin_new_arms(Compiler *c, int argc, const int *atmp, int rt2, int kt, int boxed,
                                   Buf *b) {
@@ -27648,16 +27700,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
     else if (ac >= 2 && nt_type(nt, av[0]) &&
              (sp_streq(nt_type(nt, av[0]), "ConstantReadNode") || sp_streq(nt_type(nt, av[0]), "ConstantPathNode"))) {
-      /* `raise Cls, arg` on a user exception subclass with ivars is
-         `raise Cls.new(arg)`: construct the object so its ivar is set (and
-         the message comes from the class's initialize/super), then carry it.
+      /* `raise Cls, arg` on a user exception subclass with an initialize is
+         `raise Cls.new(arg)`: construct the object so its ivars are set and
+         the message comes from the class's initialize/super, then carry it.
          A bare-string/builtin exception keeps the (cls, msg) fast path. */
       const char *cn = nt_str(nt, av[0], "name");
       int xc = cn ? comp_class_index(c, cn) : -1;
       int ic = -1;
-      if (xc >= 0 && class_is_exc_subclass(c, xc) && c->classes[xc].nivars > 0)
+      if (xc >= 0 && class_is_exc_subclass(c, xc))
         ic = comp_method_in_chain(c, xc, "initialize", NULL);
-      if (xc >= 0 && ic >= 0 && c->scopes[ic].nparams >= 1) {
+      if (xc >= 0 && ic >= 0 && c->scopes[ic].reachable && c->scopes[ic].nparams >= 1) {
         buf_printf(b, "sp_raise_exc((sp_Exception *)sp_%s_new(", c->classes[xc].c_name);
         /* `raise Cls, msg` only ever supplies the message, but the generated
            constructor keeps its full signature (defaulted positionals and
@@ -27715,10 +27767,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
     else {
       TyKind at = ac > 0 ? comp_ntype(c, av[0]) : TY_UNKNOWN;
-      if (ac >= 2 && (at == TY_EXCEPTION || at == TY_POLY || at == TY_CLASS ||
-                      (ty_is_object(at) && class_is_exc_subclass(c, ty_object_class(at))))) {
-        /* `raise k, msg` with the class (or an exception object) in a
-           variable: the message was dropped and the class name answered */
+      if (ac >= 2 && (at == TY_POLY || at == TY_CLASS))
+        emit_raise_class_value(c, av[0], av[1], b);
+      else if (ac >= 2 && (at == TY_EXCEPTION ||
+                           (ty_is_object(at) && class_is_exc_subclass(c, ty_object_class(at))))) {
+        /* `raise e, msg` with an exception object in a variable: the message
+           was dropped and the class name answered */
         int rk = ++g_tmp, rm = ++g_tmp;
         buf_printf(b, "({ sp_RbVal _t%d = ", rk); emit_boxed(c, av[0], b);
         buf_printf(b, "; sp_RbVal _t%d = ", rm); emit_boxed(c, av[1], b);
@@ -27748,7 +27802,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
            by the codegen when their static type is known (see the
            ty_is_object branch above). Reading parent_cls_name on an
            arbitrary poly-tagged object is a wrong-offset read (segfault). */
-        buf_puts(b, "sp_raise_poly("); emit_boxed(c, av[0], b); buf_puts(b, ")");
+        emit_raise_class_value(c, av[0], -1, b);
       }
       else {
         /* Integer/nil/Array/Symbol/Float/...: valid Ruby, TypeError at
@@ -27971,7 +28025,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       nt_ref(nt, id, "block") < 0 &&
       (sp_streq(name, "message") || sp_streq(name, "result") ||
        sp_streq(name, "errno") ||
-       sp_streq(name, "key") || sp_streq(name, "receiver"))) {
+       sp_streq(name, "key") || sp_streq(name, "receiver") ||
+       sp_streq(name, "backtrace") || sp_streq(name, "cause") ||
+       sp_streq(name, "full_message") || sp_streq(name, "detailed_message"))) {
     int pu = 0;
     for (int k = 0; k < c->nclasses && !pu; k++)
       if (comp_method_in_class(c, k, name) >= 0 ||
@@ -27998,12 +28054,32 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         else buf_printf(b, " : sp_poly_to_s(sp_poly_exc_acc(_t%d, \"message\")); })", t);
         return;
       }
-      /* message infers TY_STRING: unwrap the boxed accessor result */
-      if (sp_streq(name, "message")) buf_puts(b, "sp_poly_to_s(");
+      /* the renderings read the overridden #message, as the typed receiver's do */
+      if ((sp_streq(name, "full_message") || sp_streq(name, "detailed_message")) &&
+          exc_has_user_msg_override(c)) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", t);
+        emit_expr(c, recv, b);
+        buf_printf(b, "; sp_Exception *_e%d = (_t%d.tag == SP_TAG_OBJ && _t%d.v.p && "
+                      "(_t%d.cls_id == SP_BUILTIN_EXCEPTION || sp_is_exc_subclass_cls(_t%d.cls_id)))"
+                      " ? (sp_Exception *)_t%d.v.p : NULL; ", t, t, t, t, t, t);
+        if (sp_streq(name, "full_message"))
+          buf_printf(b, "_e%d ? sp_sprintf(\"%%s: %%s\", sp_exc_class_name(_e%d), sp_user_exc_message(_e%d))",
+                     t, t, t);
+        else
+          buf_printf(b, "_e%d ? sp_sprintf(\"%%s (%%s)\", sp_user_exc_message(_e%d), sp_exc_class_name(_e%d))",
+                     t, t, t);
+        buf_printf(b, " : sp_poly_to_s(sp_poly_exc_acc(_t%d, \"%s\")); })", t, name);
+        return;
+      }
+      /* message and the two renderings infer TY_STRING: unwrap the boxed
+         accessor result */
+      int unwrap = comp_ntype(c, id) == TY_STRING;
+      if (unwrap) buf_puts(b, "sp_poly_to_s(");
       buf_printf(b, "sp_poly_exc_acc(");
       emit_expr(c, recv, b);
       buf_printf(b, ", \"%s\")", name);
-      if (sp_streq(name, "message")) buf_puts(b, ")");
+      if (unwrap) buf_puts(b, ")");
       return;
     }
   }
