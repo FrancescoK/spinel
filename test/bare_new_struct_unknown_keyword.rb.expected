@@ -1,0 +1,40 @@
+[ArgumentError, "unknown keywords: z"]
+[ArgumentError, "unknown keywords: z, w"]
+[ArgumentError, "unknown keywords: z"]
+[1, 2]
+[ArgumentError, "unknown keywords: q"]
+[ArgumentError, "unknown keywords: q"]
+[ArgumentError, "unknown keywords: y"]
+[ArgumentError, "unknown keywords: q"]
+#<struct K a=3, b=4>
+#<struct K a=5, b=nil>
+true
+[ArgumentError, "wrong number of arguments (given 1, expected 0)"]
+[ArgumentError, "unknown keywords: z"]
+#<struct Sub a=3, b=4>
+[ArgumentError, "unknown keywords: zz"]
+[ArgumentError, "unknown keywords: zz"]
+#<struct P a=nil, b=5>
+[ArgumentError, "struct size differs"]
+#<struct P a=1, b=nil>
+#<struct P a=1, b=nil>
+[ArgumentError, "struct size differs"]
+#<struct P a=0, b=1>
+[1, 2, 3, 4, 5, 6]
+[ArgumentError, "missing keywords: :x, :y"]
+[ArgumentError, "missing keyword: :y"]
+[ArgumentError, "missing keyword: :y"]
+[ArgumentError, "unknown keyword: :z"]
+[ArgumentError, "unknown keywords: :z, :w"]
+[ArgumentError, "unknown keyword: :z"]
+[ArgumentError, "unknown keyword: :z"]
+[ArgumentError, "missing keyword: :x"]
+[ArgumentError, "unknown keyword: :q"]
+#<data D x=1, y=2>
+[ArgumentError, "missing keywords: :x, :y"]
+[ArgumentError, "missing keyword: :y"]
+[ArgumentError, "wrong number of arguments (given 3, expected 0..2)"]
+#<data D x=1, y=2>
+#<data D x=1, y=2>
+[1, 2, 3, 4, 5, 6, 7]
+#<struct F a={z: 1}>
