@@ -3312,8 +3312,20 @@ const char *sp_srange_inspect(sp_StrRange r) {
   const char *hi = sp_str_inspect(r.last ? r.last : sp_str_empty);
   return sp_sprintf("%s%s%s", lo, r.excl ? "..." : "..", hi);
 }
+/* A boxed String range holds its two endpoint strings: the box marks them,
+   and they are rooted while it is allocated. With no scanner the endpoints
+   were swept under a live range, and a `("a1".."z1")` read back as
+   `"".."t1"` once a collection had reused them (kw_splat_struct_data_arg_order
+   on the 32-bit target). */
+static void sp_srange_scan(void *p) {
+  sp_StrRange *r = (sp_StrRange *)p;
+  if (r->first) sp_mark_string(r->first);
+  if (r->last) sp_mark_string(r->last);
+}
 sp_RbVal sp_box_srange(sp_StrRange v) {
-  sp_StrRange *p = (sp_StrRange *)sp_gc_alloc(sizeof(sp_StrRange), NULL, NULL);
+  const char *f = v.first, *l = v.last;
+  SP_GC_ROOT_STR(f); SP_GC_ROOT_STR(l);
+  sp_StrRange *p = (sp_StrRange *)sp_gc_alloc(sizeof(sp_StrRange), NULL, sp_srange_scan);
   *p = v;
   return sp_box_obj(p, SP_BUILTIN_STR_RANGE);
 }
