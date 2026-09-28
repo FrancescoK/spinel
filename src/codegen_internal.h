@@ -997,8 +997,12 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type);
 void emit_kw_splat_conv_check(Compiler *c, TyKind t, const char *val);
 /* A `**` operand of a kind that is no Hash but can still be nil at run time
    -- a nilable Integer or Float slot's sentinel, a pointer-backed kind's
-   NULL: its conversion is checked on the boxed value, as a boxed one is. */
-int kw_splat_may_be_nil(Compiler *c, int node);
+   NULL -- or that is true or false, which CRuby's TypeError names by value:
+   its conversion is checked on the boxed value, as a boxed one is. */
+int kw_splat_checked_boxed(Compiler *c, int node);
+/* A `**` operand that raises its TypeError whatever it holds: true or
+   false, or a kind that is no Hash and cannot be nil. */
+int kw_splat_raises(Compiler *c, int node);
 /* The same conversion inline, as a statement of an enclosing `({ ... })`:
    evaluates the `**` operand `node` into `b` and checks it there, for a
    site that evaluates its arguments in its own order. */

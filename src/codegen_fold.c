@@ -6621,9 +6621,15 @@ int emit_kwh_spread_arg(Compiler *c, int kwh, Buf *b) {
    TypeError, or NULL when it may convert: a Hash is itself, nil carries no
    keywords, an object that defines #to_hash was already rewritten to call
    it (desugar_to_hash_splat) and one with method_missing may still answer
-   it, and a boxed value is only known at run time. */
+   it, and a boxed value is only known at run time. true and false raise
+   too, but CRuby names the value, which only their boxed check knows
+   (kw_splat_checked_boxed). */
 static const char *kw_splat_bad_cls(Compiler *c, TyKind t) {
   if (ty_is_hash(t) || t == TY_NIL) return NULL;
+  if (t == TY_BOOL) return "true or false";
+  /* conv_cls_name_of leaves these to the numeric slots, which convert them */
+  if (t == TY_RATIONAL) return "Rational";
+  if (t == TY_COMPLEX) return "Complex";
   if (ty_is_object(t) && (ty_object_class(t) < 0 ||
       comp_method_in_chain(c, ty_object_class(t), "method_missing", NULL) >= 0)) return NULL;
   return conv_cls_name_of(c, t);
@@ -6671,17 +6677,23 @@ static int kw_splat_operand_nilable(Compiler *c, int node, TyKind t) {
 }
 
 /* See codegen_internal.h. */
-int kw_splat_may_be_nil(Compiler *c, int node) {
+int kw_splat_checked_boxed(Compiler *c, int node) {
   TyKind t = comp_ntype(c, node);
-  return kw_splat_bad_cls(c, t) && kw_splat_operand_nilable(c, node, t);
+  return t == TY_BOOL || (kw_splat_bad_cls(c, t) && kw_splat_operand_nilable(c, node, t));
+}
+
+/* See codegen_internal.h. */
+int kw_splat_raises(Compiler *c, int node) {
+  TyKind t = comp_ntype(c, node);
+  return t == TY_BOOL || (kw_splat_bad_cls(c, t) && !kw_splat_operand_nilable(c, node, t));
 }
 
 /* A `**` operand of a kind kw_splat_bad_cls names, evaluated into g_pre where
-   it stands: the TypeError raised outright, or, when the operand may be nil,
-   decided at run time on its boxed value. */
+   it stands: the TypeError raised outright, or, when the operand may be nil
+   or is true or false, decided at run time on its boxed value. */
 static void emit_kw_splat_bad_operand(Compiler *c, int node) {
   Buf hb; memset(&hb, 0, sizeof hb);
-  if (kw_splat_may_be_nil(c, node)) {
+  if (kw_splat_checked_boxed(c, node)) {
     emit_boxed(c, node, &hb);
     emit_kw_splat_conv_check(c, TY_POLY, hb.p ? hb.p : "sp_box_nil()");
   }
@@ -6710,7 +6722,7 @@ void emit_kw_splat_conv_check(Compiler *c, TyKind t, const char *val) {
 /* See codegen_internal.h. */
 void emit_kw_splat_operand_inline(Compiler *c, int node, Buf *b) {
   TyKind t = comp_ntype(c, node);
-  if (t == TY_POLY || kw_splat_may_be_nil(c, node)) {
+  if (t == TY_POLY || kw_splat_checked_boxed(c, node)) {
     buf_puts(b, "sp_kw_splat_conv_check("); emit_boxed(c, node, b);
     buf_printf(b, ", %d); ", kw_splat_user_may_convert(c));
     return;
@@ -6877,11 +6889,14 @@ int emit_ds_hash_merge(Compiler *c, int kwh, int any_key, TyKind *out_type) {
 /* The `**` operand `node`, materialized into temp `tmp`, reads that temp
    wherever the call renders it again: a keyword hash bound to a positional
    or rest parameter builds itself from its operands, which ran the operand
-   a second time. The caller pops the override with its own. */
+   a second time. A `tmp` of -1 is an operand that brings no keywords, run
+   and converted already, which reads as nothing. The caller pops the
+   override with its own. */
 static void ds_operand_reads_temp(int node, int tmp) {
   if (g_n_argov >= MAX_ARG_OVERRIDE) return;
   g_argov_node[g_n_argov] = node;
-  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tmp);
+  if (tmp < 0) snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "((void)0)");
+  else snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tmp);
   g_n_argov++;
 }
 
@@ -6954,10 +6969,10 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type) {
         char tn[32]; snprintf(tn, sizeof tn, "_t%d", ds_hash_tmp);
         emit_kw_splat_conv_check(c, *out_type, tn);
       }
-      else if (kw_splat_may_be_nil(c, inner2)) {
+      else if (kw_splat_checked_boxed(c, inner2)) {
         /* A slot that is no Hash but may hold nil (`**f` where f answers an
-           Integer or nil): boxed, it is checked, binds and is judged as a
-           boxed operand is, so nil carries no keywords. */
+           Integer or nil), or true or false: boxed, it is checked, binds and
+           is judged as a boxed operand is, so nil carries no keywords. */
         *out_type = TY_POLY;
         ds_hash_tmp = ++g_tmp;
         Buf hb; memset(&hb, 0, sizeof hb);
@@ -6971,19 +6986,34 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type) {
         free(hb.p);
         char tn[32]; snprintf(tn, sizeof tn, "_t%d", ds_hash_tmp);
         emit_kw_splat_conv_check(c, TY_POLY, tn);
+        ds_operand_reads_temp(inner2, -1);
       }
       else if (kw_splat_bad_cls(c, *out_type)) {
         /* `**1`: no keywords to bind, only the operand to evaluate and
            CRuby's TypeError to raise before any keyword is checked */
         emit_kw_splat_bad_operand(c, inner2);
+        ds_operand_reads_temp(inner2, -1);
       }
-      else if (*out_type == TY_NIL && nt_kind(nt, inner2) != NK_NilNode) {
-        /* `**f` where f answers nil: no keywords to bind, but f still runs */
-        Buf hb; memset(&hb, 0, sizeof hb);
-        emit_expr(c, inner2, &hb);
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "(void)(%s);\n", hb.p ? hb.p : "0");
-        free(hb.p);
+      else if (*out_type == TY_NIL) {
+        /* `**nil`, or `**f` where f answers nil (f still runs, once): no
+           keywords to bind, so for a callee with keyword parameters an empty
+           hash stands in for it as for `**{}`, and a required keyword it
+           leaves unbound is missing */
+        if (nt_kind(nt, inner2) != NK_NilNode) {
+          Buf hb; memset(&hb, 0, sizeof hb);
+          emit_expr(c, inner2, &hb);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "(void)(%s);\n", hb.p ? hb.p : "0");
+          free(hb.p);
+          ds_operand_reads_temp(inner2, -1);
+        }
+        if (callee_declares_kwargs(c, m)) {
+          *out_type = TY_SYM_POLY_HASH;
+          ds_hash_tmp = ++g_tmp;
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d);\n",
+                     ds_hash_tmp, ds_hash_tmp);
+        }
       }
     }
     else {
@@ -7242,8 +7272,10 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
           continue;
         }
         int src;
-        if (!splat_seen && ds_hash_tmp >= 0) {
-          /* Reuse the first splat's materialized temp. It is declared with
+        if (nsplat3 == 1 && ds_hash_tmp >= 0) {
+          /* Reuse the first splat's materialized temp -- only for the first
+             splat itself: a `**nil` ahead of this one materialized an empty
+             stand-in there, which is not this operand. It is declared with
              ds_hash_type's C type, so it must be SymPoly to flow into
              sp_SymPolyHash_update (the inner3 check above guarantees this
              for the matching first splat; assert it explicitly so the

@@ -1,0 +1,127 @@
+TypeError: no implicit conversion of true into Hash
+TypeError: no implicit conversion of false into Hash
+TypeError: no implicit conversion of true into Hash
+TypeError: no implicit conversion of true into Hash
+TypeError: no implicit conversion of false into Hash
+TypeError: no implicit conversion of true into Hash
+TypeError: no implicit conversion of true into Hash
+TypeError: no implicit conversion of Rational into Hash
+TypeError: no implicit conversion of Complex into Hash
+TypeError: no implicit conversion of false into Hash
+TypeError: no implicit conversion of true into Hash
+TypeError: no implicit conversion of true into Hash
+TypeError: no implicit conversion of true into Hash
+TypeError: no implicit conversion of false into Hash
+TypeError: no implicit conversion of true into Hash
+ArgumentError: missing keyword: :a
+ArgumentError: missing keyword: :a
+ArgumentError: missing keywords: :a, :b
+ArgumentError: missing keyword: :b
+[2, 1, 3]
+ArgumentError: missing keyword: :b
+ArgumentError: missing keywords: :a, :b
+ArgumentError: missing keyword: :a
+[1, {z: 2}]
+0
+{}
+[0, {}]
+{a: 1, z: 2}
+{a: 1, z: 2}
+[1, {z: 2}]
+TypeError: no implicit conversion of true into Hash
+ArgumentError: missing keyword: :a
+TypeError: no implicit conversion of false into Hash
+TypeError: no implicit conversion of true into Hash
+ArgumentError: missing keyword: :a
+3
+[true, nil, false, 1, :yes, 2, :none, :none]
+ArgumentError: missing keyword: :a
+TypeError: no implicit conversion of true into Hash
+ArgumentError: missing keyword: :a
+ArgumentError: missing keyword: :a
+[:sub, 1]
+TypeError: no implicit conversion of true into Hash
+TypeError: no implicit conversion of false into Hash
+ArgumentError: missing keyword: :a
+TypeError: no implicit conversion of true into Hash
+ArgumentError: missing keyword: :a
+TypeError: no implicit conversion of false into Hash
+ArgumentError: missing keyword: :a
+TypeError: no implicit conversion of true into Hash
+TypeError: no implicit conversion of false into Hash
+TypeError: no implicit conversion of true into Hash
+TypeError: no implicit conversion of false into Hash
+[:base, 0]
+ArgumentError: missing keyword: :a
+[:base, 2]
+TypeError: no implicit conversion of true into Hash
+TypeError: no implicit conversion of false into Hash
+[:other, 0]
+ArgumentError: missing keyword: :a
+[:other, 2]
+[[:sub, 3], [:other, 3]]
+TypeError: no implicit conversion of false into Hash
+[1, nil]
+ArgumentError: wrong number of arguments (given 1, expected 2)
+TypeError: no implicit conversion of false into Hash
+TypeError: no implicit conversion of true into Hash
+[[], 1]
+[[1], 2]
+TypeError: no implicit conversion of false into Hash
+[1, [], 2]
+[1, nil]
+TypeError: no implicit conversion of true into Hash
+[1, nil]
+TypeError: no implicit conversion of true into Hash
+#<struct Plain a=1, b=nil>
+TypeError: no implicit conversion of true into Hash
+[[], 1]
+TypeError: no implicit conversion of true into Hash
+[:pos, 1, nil]
+[:pos, 1, nil]
+TypeError: no implicit conversion of false into Hash
+[:pos, [1], 2]
+TypeError: no implicit conversion of true into Hash
+[:other, 1, nil]
+[:other, 1, nil]
+TypeError: no implicit conversion of false into Hash
+[:other, [1], 2]
+[true, nil, false, 1, :yes, 2, :none, :none, 1, 2, :none]
+TypeError: no implicit conversion of Integer into Hash
+TypeError: no implicit conversion of Float into Hash
+TypeError: no implicit conversion of String into Hash
+TypeError: no implicit conversion of Rational into Hash
+TypeError: no implicit conversion of Complex into Hash
+TypeError: no implicit conversion of Array into Hash
+TypeError: no implicit conversion of Foo into Hash
+TypeError: no implicit conversion of Integer into Hash
+[1, nil]
+TypeError: no implicit conversion of Integer into Hash
+[1, nil]
+ArgumentError: wrong number of arguments (given 1, expected 2)
+TypeError: no implicit conversion of Integer into Hash
+TypeError: no implicit conversion of Integer into Hash
+TypeError: no implicit conversion of Rational into Hash
+[[1], 2]
+TypeError: no implicit conversion of String into Hash
+[1, nil]
+TypeError: no implicit conversion of Array into Hash
+[1, nil]
+TypeError: no implicit conversion of Integer into Hash
+TypeError: no implicit conversion of String into Hash
+TypeError: no implicit conversion of Integer into Hash
+[:pos, 1, nil]
+TypeError: no implicit conversion of Foo into Hash
+TypeError: no implicit conversion of Integer into Hash
+[:other, 1, nil]
+TypeError: no implicit conversion of Foo into Hash
+[true, nil, false, 1, :yes, 2, :none, :none, 1, 2, :none, :fi, :fi, :fi, :fi, :fi, :fi, :fi]
+ArgumentError: missing keyword: :b
+[0, 2]
+TypeError: no implicit conversion of true into Hash
+ArgumentError: missing keywords: :x, :y
+TypeError: no implicit conversion of true into Hash
+TypeError: no implicit conversion of false into Hash
+#<struct Opts a=nil, b=nil>
+TypeError: no implicit conversion of true into Hash
+TypeError: no implicit conversion of false into Hash
