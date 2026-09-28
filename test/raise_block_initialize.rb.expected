@@ -1,0 +1,29 @@
+"blk boom"
+"blk boom"
+"blk b"
+"blk b"
+"blk x"
+"yl boom nob"
+[Sub, "yl boom nob"]
+"yl boom nob"
+"yl y nob"
+"yl y nob"
+"yl s nob"
+"yl x b"
+"yl x nob"
+[Base, "base r"]
+[Base, "base base"]
+[Mid, "base mid r"]
+[Mid, "base mid mid"]
+[Own, "base own r"]
+[Own, "base own own"]
+[NoSuper, "NoSuper"]
+[NoSuper, "NoSuper"]
+["base obj", :blk]
+:given
+"NoSuper"
+42
+"r: 2"
+"calc: 2"
+10
+20

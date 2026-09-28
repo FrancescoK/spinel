@@ -6175,8 +6175,14 @@ int kwh_positional_slot(Compiler *c, Scope *m, int kwh, int pos_argc) {
    funded first, so with a leading optional `def h(a = {}, c); h(k: 9)` binds
    `c` and leaves `a` at its default. Answering parameter pos_argc gave `a` the
    hash and `c` nothing. Blind to parameter types: kwh_positional_slot adds
-   whether the parameter can hold the hash, and inference asks here to type it. */
+   whether the parameter can hold the hash, and inference asks here to type it.
+   Past a *rest the last argument is the last post's however many came before
+   it: `def f(*r, z); f(1, k: 9)` binds z the hash and r `[1]`, where asking
+   arg_slot_for_param -- which leaves the posts to its callers -- gave the hash
+   to the rest and z the 1. */
 int kwh_arg_param(Compiler *c, Scope *m, int pos_argc) {
+  if (m && m->rest_idx >= 0 && m->npost_rest > 0 && pos_argc >= 0)
+    return m->rest_idx + m->npost_rest;
   if (!m || pos_argc < 0 || pos_argc >= m->nparams) return -1;
   for (int i = 0; i < m->nparams; i++)
     if (arg_slot_for_param(c, m, i, pos_argc + 1) == pos_argc) return i;
@@ -6208,6 +6214,35 @@ int rest_kwh_tail(Compiler *c, Scope *m, int kwh, int pos_argc) {
      Ruby leaves it empty (found while fixing #4030). */
   if (kwh_positional_slot(c, m, kwh, pos_argc) >= 0) return -1;
   return kwh;
+}
+
+/* The arguments a *rest and its posts are laid out over: the positionals,
+   and the keyword hash too when it binds as the last post, which in argv it
+   follows at argv[pos_argc]. The rest stops npost_rest short of this and
+   each post counts back from it. */
+int rest_bind_argc(Compiler *c, Scope *m, int kwh, int pos_argc) {
+  int slot = kwh_positional_slot(c, m, kwh, pos_argc);
+  return pos_argc + (m && m->rest_idx >= 0 && slot > m->rest_idx);
+}
+
+/* A keyword hash of `**` spreads alone that binds positionally is one
+   argument when the run time finds it non-empty and none when it is empty:
+   `f(1, **h)` is `f(1)` for an empty h, so `def f(a, b = nil)` keeps b's
+   default, `def g(a, b)` is short an argument and `def p(*r, z)` gives z
+   the 1. Its parameters bind by a count only the run time knows, from all
+   the arguments gathered (emit_splat_gather), for a parameter list
+   emit_gathered_param can bind: no required parameter after an optional
+   without a rest between them, no default reading an earlier parameter
+   (which the gather would render at the call site) and none synthesized.
+   The rest alone takes such a hash at its tail (rest_kwh_tail), which
+   tests the length itself. */
+int kwh_gathers(Compiler *c, Scope *m, int kwh, int pos_argc) {
+  if (!m || !kwh_only_spreads(c->nt, kwh) || kwh_positional_slot(c, m, kwh, pos_argc) < 0 ||
+      m->cs_synth || (opt_before_required(c, m) && m->rest_idx < 0) ||
+      default_refs_earlier_param(c, m)) return 0;
+  for (int i = 0; i < m->nparams; i++)
+    if (!m->pnames[i] || (m->pnames[i][0] == '_' && m->pnames[i][1] == '_')) return 0;
+  return 1;
 }
 
 /* Positional arity excludes declared keyword parameters, which are stored in
@@ -6352,23 +6387,26 @@ else {
       free(el.p);
     }
   }
-  if (kwh >= 0) {
-    /* the degraded keyword hash: `**h` passes h itself; a literal kw list
-       boxes as a hash */
-    int en = 0;
-    const int *elms = nt_arr(nt, kwh, "elements", &en);
-    Buf kel; memset(&kel, 0, sizeof kel);
-    if (en == 1 && nt_type(nt, elms[0]) && sp_streq(nt_type(nt, elms[0]), "AssocSplatNode")) {
-      int inner = nt_ref(nt, elms[0], "value");
-      emit_boxed(c, inner, &kel);
-    }
-    else emit_boxed(c, kwh, &kel);
-    if (kwh_only_spreads(nt, kwh))
-      buf_printf(b, " { sp_RbVal _kh = %s; if (sp_poly_length(_kh) > 0) sp_PolyArray_push(_t%d, _kh); }", kel.p ? kel.p : "sp_box_nil()", t);
-    else
-      buf_printf(b, " sp_PolyArray_push(_t%d, %s);", t, kel.p ? kel.p : "sp_box_nil()");
-    free(kel.p);
+  Buf kel; memset(&kel, 0, sizeof kel);
+  if (kwh >= 0 && !kwh_only_spreads(nt, kwh)) {
+    /* the degraded keyword hash: a literal kw list boxes as a hash */
+    emit_boxed(c, kwh, &kel);
+    buf_printf(b, " sp_PolyArray_push(_t%d, %s);", t, kel.p ? kel.p : "sp_box_nil()");
   }
+  else if (kwh >= 0 && emit_kwh_spread_arg(c, kwh, &kel)) {
+    /* `**` spreads alone: a new Hash of their keywords, as CRuby passes, and
+       pushed only when it holds one. Its temp is declared and rooted in the
+       enclosing frame, as the array's is: the push can grow the array, and the
+       hash would be held by nothing but a C local while it collects. */
+    int kt = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil();\n", kt);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", kt);
+    buf_printf(b, " _t%d = %s; if (sp_poly_length(_t%d) > 0) sp_PolyArray_push(_t%d, _t%d);",
+               kt, kel.p ? kel.p : "sp_box_nil()", kt, t, kt);
+  }
+  free(kel.p);
   buf_printf(b, " _t%d; })", t);
 }
 
@@ -6565,6 +6603,23 @@ static int empty_hash_literal(const NodeTable *nt, int id) {
   return n == 0;
 }
 
+/* The one argument a keyword hash that kwh_gathers is when it holds a key:
+   a new Hash of its keywords, boxed, as CRuby passes. Answers 0, emitting
+   nothing, when every operand is a literal `nil` or `{}`, which carry no
+   keyword, so the hash is no argument at all. */
+int emit_kwh_spread_arg(Compiler *c, int kwh, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
+  int any = 0;
+  for (int e = 0; e < en && !any; e++) {
+    int v = nt_ref(nt, el[e], "value");
+    any = v < 0 || !(nt_kind(nt, v) == NK_NilNode ||
+                     (nt_kind(nt, v) == NK_HashNode && empty_hash_literal(nt, v)));
+  }
+  if (any) emit_boxed(c, kwh, b);
+  return any;
+}
+
 /* The class a `**` operand of the settled kind `t` names in CRuby's
    TypeError, or NULL when it may convert: a Hash is itself, nil carries no
    keywords, an object that defines #to_hash was already rewritten to call
@@ -6587,15 +6642,13 @@ static int kw_splat_user_may_convert(Compiler *c) {
   return 0;
 }
 
-/* See codegen_internal.h. */
-int kw_splat_may_be_nil(Compiler *c, int node) {
-  TyKind t = comp_ntype(c, node);
-  if (!kw_splat_bad_cls(c, t)) return 0;
+/* Can the `**` operand `node`, of the settled kind `t`, be nil at run time? */
+static int kw_splat_operand_nilable(Compiler *c, int node, TyKind t) {
   switch (nt_kind(c->nt, node)) {
     case NK_IntegerNode: case NK_FloatNode: case NK_RationalNode: case NK_ImaginaryNode:
     case NK_StringNode: case NK_InterpolatedStringNode: case NK_XStringNode:
     case NK_SymbolNode: case NK_InterpolatedSymbolNode: case NK_ArrayNode:
-    case NK_RangeNode: case NK_RegularExpressionNode: case NK_LambdaNode:
+    case NK_HashNode: case NK_RangeNode: case NK_RegularExpressionNode: case NK_LambdaNode:
     case NK_TrueNode: case NK_FalseNode:
       return 0;   /* a literal is never nil */
     case NK_CallNode: {
@@ -6618,6 +6671,12 @@ int kw_splat_may_be_nil(Compiler *c, int node) {
            nt_kind(c->nt, node) == NK_InstanceVariableReadNode;
   if (t == TY_FLOAT) return call_returns_nullable_int(c, node) || box_nullable_arg(c, node);
   return needs_root(t);   /* a pointer-backed kind holds nil as NULL */
+}
+
+/* See codegen_internal.h. */
+int kw_splat_may_be_nil(Compiler *c, int node) {
+  TyKind t = comp_ntype(c, node);
+  return kw_splat_bad_cls(c, t) && kw_splat_operand_nilable(c, node, t);
 }
 
 /* A `**` operand of a kind kw_splat_bad_cls names, evaluated into g_pre where
@@ -6853,7 +6912,22 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type) {
         emit_indent(g_pre, g_indent);
         emit_ctype(c, *out_type, g_pre);
         buf_printf(g_pre, " _t%d = %s;\n", ds_hash_tmp, hb.p ? hb.p : "");
+        /* A source the call builds (`**opts(i)`) is held by this temp alone,
+           and the binding allocates before it reads it -- the new Hash a
+           positional or rest parameter takes is a copy of it. */
+        if (arg_wants_root(c, *out_type, inner2)) {
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", ds_hash_tmp);
+        }
         free(hb.p);
+        if (kw_splat_operand_nilable(c, inner2, *out_type)) {
+          /* nil (a NULL hash, `**f` where f answers an unset slot) carries
+             no keywords: an empty hash stands in for it, so the keyword
+             check, extraction and keyword-rest read no NULL */
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "SP_GC_ROOT(_t%d); if (!_t%d) _t%d = sp_%sHash_new();\n",
+                     ds_hash_tmp, ds_hash_tmp, ds_hash_tmp, ty_hash_cname(*out_type));
+        }
         ds_operand_reads_temp(inner2, ds_hash_tmp);
       }
       else if (nt_kind(nt, inner2) == NK_HashNode && empty_hash_literal(nt, inner2)) {
@@ -6874,6 +6948,10 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type) {
         emit_expr(c, inner2, &hb);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", ds_hash_tmp, hb.p ? hb.p : "sp_box_nil()");
+        if (arg_wants_root(c, TY_POLY, inner2)) {   /* as above */
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", ds_hash_tmp);
+        }
         free(hb.p);
         ds_operand_reads_temp(inner2, ds_hash_tmp);
         char tn[32]; snprintf(tn, sizeof tn, "_t%d", ds_hash_tmp);
@@ -6889,6 +6967,10 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type) {
         emit_boxed(c, inner2, &hb);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", ds_hash_tmp, hb.p ? hb.p : "sp_box_nil()");
+        if (arg_wants_root(c, TY_POLY, inner2)) {   /* as above */
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", ds_hash_tmp);
+        }
         free(hb.p);
         char tn[32]; snprintf(tn, sizeof tn, "_t%d", ds_hash_tmp);
         emit_kw_splat_conv_check(c, TY_POLY, tn);
@@ -7535,15 +7617,17 @@ static int splat_gather_applies_x(Compiler *c, Scope *m, const int *argv, int po
   int nspl = 0, sk = -1;
   for (int k = 0; k < pos_argc; k++)
     if (nt_kind(nt, argv[k]) == NK_SplatNode) { nspl++; sk = k; }
-  if (any_splat ? nspl == 0 : (nspl != 1 || sk >= pos_argc - 1)) return 0;
-  if (((m->rest_idx >= 0 || m->kwrest_idx >= 0) && !any_splat) || m->cs_synth ||
-      (opt_before_required(c, m) && !(any_splat && m->rest_idx >= 0))) return 0;
+  /* a `**` hash that may be no argument at all counts as a splat does */
+  int kg = kwh_gathers(c, m, kwh, pos_argc);
+  if (!kg && (any_splat ? nspl == 0 : (nspl != 1 || sk >= pos_argc - 1))) return 0;
+  if (((m->rest_idx >= 0 || m->kwrest_idx >= 0) && !any_splat && !kg) || m->cs_synth ||
+      (opt_before_required(c, m) && !((any_splat || kg) && m->rest_idx >= 0))) return 0;
   int nkw = 0;
   for (int i = 0; i < m->nparams; i++) {
     if (!m->pnames[i] || (m->pnames[i][0] == '_' && m->pnames[i][1] == '_')) return 0;
     if (callee_has_kwarg(c, m, m->pnames[i])) nkw++;
   }
-  if (kwh >= 0 && ((nkw == 0 && m->kwrest_idx < 0) || kwh_positional_slot(c, m, kwh, pos_argc) >= 0))
+  if (kwh >= 0 && !kg && ((nkw == 0 && m->kwrest_idx < 0) || kwh_positional_slot(c, m, kwh, pos_argc) >= 0))
     return 0;
   return 1;
 }
@@ -7553,8 +7637,10 @@ static int splat_gather_applies(Compiler *c, Scope *m, const int *argv, int pos_
 }
 
 /* Gather a call's positionals, the splat spread in place, into one rooted
-   PolyArray and refuse a count the parameters cannot take. Returns the temp. */
-int emit_splat_gather(Compiler *c, Scope *m, const int *argv, int pos_argc) {
+   PolyArray and refuse a count the parameters cannot take. A keyword hash
+   that kwh_gathers is the last of them when it is not empty. Returns the
+   temp. */
+int emit_splat_gather(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh) {
   const NodeTable *nt = c->nt;
   int ct = ++g_tmp;
   emit_indent(g_pre, g_indent);
@@ -7581,6 +7667,15 @@ int emit_splat_gather(Compiler *c, Scope *m, const int *argv, int pos_argc) {
     }
     free(ab.p);
   }
+  Buf kb; memset(&kb, 0, sizeof kb);
+  if (kwh_gathers(c, m, kwh, pos_argc) && emit_kwh_spread_arg(c, kwh, &kb)) {
+    int kt = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);"
+                      " if (sp_poly_length(_t%d) > 0) sp_PolyArray_push(_t%d, _t%d);\n",
+               kt, kb.p ? kb.p : "sp_box_nil()", kt, kt, ct, kt);
+  }
+  free(kb.p);
   emit_gather_arity_check(c, m, ct);
   return ct;
 }
@@ -7709,6 +7804,7 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
      `h(1, k: 9)` gives `a` the 1 and `c` the hash. So parameters are mapped
      over this count; the hash itself is argv[pos_argc]. */
   int bind_argc = pos_argc + (kwh_positional_slot(c, m, kwh, pos_argc) >= 0 ? 1 : 0);
+  int rest_argc = rest_bind_argc(c, m, kwh, pos_argc);
   emit_call_arity_check(c, m, argc, argv, 1);
 
   /* Detect double-splat (**hash) inside kwh: AssocSplatNode wrapping a hash expr.
@@ -7733,9 +7829,11 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
      one array, as CRuby does, then check the count and bind from it. */
   int splat_all = 0;
   if (splat_gather_applies(c, m, argv, pos_argc, kwh)) {
-    splat_all = 1; splat_idx = 0; splat_tmp = emit_splat_gather(c, m, argv, pos_argc);
+    splat_all = 1; splat_idx = 0; splat_tmp = emit_splat_gather(c, m, argv, pos_argc, kwh);
     splat_at = TY_POLY_ARRAY;
   }
+  /* a `**` hash that may be no argument: every parameter from the gather */
+  int kwh_gather = splat_all && kwh_gathers(c, m, kwh, pos_argc);
   for (int k = 0; k < pos_argc && !splat_all; k++) {
     if (argv && nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "SplatNode")) {
       int need_expand = (m->rest_idx >= 0 && k < m->rest_idx) ||
@@ -7844,13 +7942,13 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
       int is_post = m->rest_idx >= 0 && i > m->rest_idx && i <= m->rest_idx + m->npost_rest;
       int is_declkw = m->pnames[i] && callee_param_is_declared_kwarg(c, m, m->pnames[i]);
       if (is_post) {
-        int aidx = pos_argc - m->npost_rest + (i - m->rest_idx - 1);
-        if (argv && aidx >= 0 && aidx < pos_argc) provided = argv[aidx];
+        int aidx = rest_argc - m->npost_rest + (i - m->rest_idx - 1);
+        if (argv && aidx >= 0 && aidx < rest_argc) provided = argv[aidx];
       }
       else if (!is_rest && !is_kwrest && !is_declkw) {
         int slot = arg_slot_for_param(c, m, i, bind_argc);
         /* ahead of a rest, only the arguments before the posts */
-        int lim = m->rest_idx >= 0 ? pos_argc - m->npost_rest : pos_argc;
+        int lim = m->rest_idx >= 0 ? rest_argc - m->npost_rest : pos_argc;
         if (slot >= 0 && slot < lim) provided = argv ? argv[slot] : -1;
       }
       /* only a keyword parameter binds a key by name; a keyword hash no
@@ -7867,7 +7965,7 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
       int active_nren = g_nren;
       if (provided >= 0 || is_rest || is_kwrest) g_nren = ren_base;
       if (is_rest)
-        emit_rest_pack_kwh(c, i, pos_argc - m->npost_rest, argv,
+        emit_rest_pack_kwh(c, i, rest_argc - m->npost_rest, argv,
                            rest_kwh_tail(c, m, kwh, pos_argc), &vb);
       else if (is_kwrest) {
         int krhash = emit_kwrest_collect(c, m, kwh, ds_hash_tmp, ds_hash_type, argsNode);
@@ -8000,9 +8098,10 @@ else {
   }
   for (int i = 0; i < m->nparams; i++) {
     buf_puts(out, i == 0 ? lead : ", ");
-    if (m->rest_idx >= 0 && i == m->rest_idx) {
+    if (kwh_gather) emit_gathered_param(c, m, i, splat_tmp, out);
+    else if (m->rest_idx >= 0 && i == m->rest_idx) {
       /* rest collects middle args; stop before post-splat params */
-      int rest_end = pos_argc - m->npost_rest;
+      int rest_end = rest_argc - m->npost_rest;
       if (splat_tmp >= 0) {
         emit_rest_from_splat_and_argv(splat_tmp, splat_at, i - splat_idx,
                                       c, splat_idx + 1, rest_end, argv, out);
@@ -8017,8 +8116,8 @@ else if (m->rest_idx >= 0 && m->npost_rest > 0 && i > m->rest_idx &&
          the posts: a keyword parameter after them binds by name below, where
          it took the last positional instead */
       int post_j = i - m->rest_idx - 1;  /* 0-based index in posts */
-      int argv_idx = pos_argc - m->npost_rest + post_j;
-      if (argv && argv_idx >= 0 && argv_idx < pos_argc)
+      int argv_idx = rest_argc - m->npost_rest + post_j;
+      if (argv && argv_idx >= 0 && argv_idx < rest_argc)
         emit_arg_rooted(c, m, i, argv[argv_idx], out);
       else
         emit_arg_rooted(c, m, i, -1, out);
@@ -8476,6 +8575,7 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
      others past a leading optional (as in emit_args_filled) */
   int kslot_d = m ? kwh_positional_slot(c, m, kwh_d, pos_argc_d) : -1;
   int bind_argc_d = pos_argc_d + (kslot_d >= 0 ? 1 : 0);
+  int rest_argc_d = m ? rest_bind_argc(c, m, kwh_d, pos_argc_d) : pos_argc_d;
   /* The count a rest-parameter target refuses for lack of arguments, by the
      rule the by-name lowering follows: a rest lifts the upper bound, not the
      requirement below it, and `P.new.m` on `def m(x, *y)` ran the body with a
@@ -8493,12 +8593,13 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
      at the tail, leaves their positions to a length only the call knows. The
      binding stays as it was in that case: the rest takes everything spread and
      each post its default, rather than a post fed the spreading node itself,
-     which is not one argument at all. */
+     which is not one argument at all. A hash that keywords take, or that
+     binds as the last post (counted in rest_argc_d), leaves them named. */
   int posts_dyn_d = 0;
-  if (m && m->rest_idx >= 0 && m->npost_rest > 0 && kwh_d >= 0)
-    posts_dyn_d = 1;   /* the hash may degrade to one more positional at the tail */
+  if (m && m->rest_idx >= 0 && m->npost_rest > 0 && rest_kwh_tail(c, m, kwh_d, pos_argc_d) >= 0)
+    posts_dyn_d = 1;   /* the hash degrades to one more positional at the rest's tail */
   if (argv && m && m->rest_idx >= 0 && m->npost_rest > 0 && !posts_dyn_d)
-    for (int k = pos_argc_d - m->npost_rest; k < pos_argc_d; k++) {
+    for (int k = rest_argc_d - m->npost_rest; k < pos_argc_d; k++) {
       const char *at = k >= 0 ? nt_type(nt, argv[k]) : NULL;
       if (at && (sp_streq(at, "SplatNode") || sp_streq(at, "ForwardingArgumentsNode")))
         { posts_dyn_d = 1; break; }
@@ -8560,8 +8661,10 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
   int splat_all_d = 0;
   if (m && splat_gather_applies(c, m, argv, pos_argc_d, kwh_d)) {
     splat_all_d = 1; splat_idx_d = 0; splat_at_d = TY_POLY_ARRAY;
-    splat_tmp_d = emit_splat_gather(c, m, argv, pos_argc_d);
+    splat_tmp_d = emit_splat_gather(c, m, argv, pos_argc_d, kwh_d);
   }
+  /* a `**` hash that may be no argument: every parameter from the gather */
+  int kwh_gather_d = splat_all_d && kwh_gathers(c, m, kwh_d, pos_argc_d);
   for (int k = 0; m && k < pos_argc_d && !splat_all_d; k++) {
     if (argv && nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "SplatNode") &&
         (m->rest_idx >= 0
@@ -8650,11 +8753,13 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
          AFTER the rest are the call's last arguments, so the rest stops before
          them: it collected them too, and each post then read the argument one
          place to its left. */
-      int rest_end_d = posts_dyn_d ? pos_argc_d : pos_argc_d - m->npost_rest;
+      int rest_end_d = posts_dyn_d ? pos_argc_d : rest_argc_d - m->npost_rest;
       /* the packed arguments are the caller's: no parameter renames */
       int rest_nren_sv = g_nren;
       g_nren = pd_ren_base;
-      if (splat_tmp_d >= 0)
+      if (kwh_gather_d)
+        emit_gathered_param(c, m, k, splat_tmp_d, &ab);
+      else if (splat_tmp_d >= 0)
         emit_rest_from_splat_and_argv(splat_tmp_d, splat_at_d, k - splat_idx_d,
                                       c, splat_idx_d + 1, rest_end_d, argv, &ab);
       else
@@ -8722,14 +8827,14 @@ else {
       int is_post_d = m && m->rest_idx >= 0 && m->npost_rest > 0 && !posts_dyn_d &&
                       k > m->rest_idx && k <= m->rest_idx + m->npost_rest;
       if (is_post_d) {
-        int aidx = pos_argc_d - m->npost_rest + (k - m->rest_idx - 1);
+        int aidx = rest_argc_d - m->npost_rest + (k - m->rest_idx - 1);
         _sl = (aidx >= 0 && aidx < pos_argc_d) ? aidx : -1;
       }
       /* the posts are funded from the end, so the parameters ahead of the rest
          reach only the arguments before them: an optional that read past that
          point took the post's argument as well, binding it twice */
       else if (m && m->rest_idx >= 0 && m->npost_rest > 0 && !posts_dyn_d &&
-               k < m->rest_idx && _sl >= pos_argc_d - m->npost_rest)
+               k < m->rest_idx && _sl >= rest_argc_d - m->npost_rest)
         _sl = -1;
       int provided = kv >= 0 ? kv : ((_sl >= 0 && !is_declkw_d) ? argv[_sl] : -1);
       /* Options-hash idiom: a trailing keyword hash whose keys name no
@@ -8753,6 +8858,7 @@ else {
         /* keyword param fed by a forwarded `**hash`: extract by name. */
         emit_ds_param_extract(c, m, k, ds_tmp_d, ds_type_d, &ab);
       }
+      else if (kwh_gather_d) emit_gathered_param(c, m, k, splat_tmp_d, &ab);
       else if (splat_tmp_d >= 0 && k >= splat_idx_d && kv < 0 && !is_declkw_d &&
                (m->rest_idx < 0 || k < m->rest_idx)) {
         /* fill this fixed param from the splatted array at offset k-splat_idx.

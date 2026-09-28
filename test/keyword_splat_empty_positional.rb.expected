@@ -1,0 +1,46 @@
+[1, nil]
+[1, nil]
+[1, nil]
+[1, nil]
+[1, 7]
+"wrong number of arguments (given 1, expected 2)"
+[[1], 2]
+[[1, 2], {k: 1}]
+[[1], 2]
+[1, [], 2, 3]
+[1, [2], 3, {k: 1}]
+[5, [], 1]
+[1, [], {k: 1}]
+[1, nil, 3]
+[1, nil]
+[[1], 2]
+[[1, nil], ["s", nil]]
+arg 1
+hash
+[1, nil]
+[1, nil]
+[1, nil]
+[[1], 2]
+[1, nil]
+[1, nil]
+a [1] 2
+a [1, 2] {k: 1}
+b [1] 2
+b [1, 2] {k: 1}
+[:p, 1, nil]
+[:p, [1], 2]
+[:p, [1, 2], {k: 1}]
+[:q, 1, nil]
+[:q, [1], 2]
+[:q, [1, 2], {k: 1}]
+#<struct S0 x=1, y=nil>
+#<struct S0 x=1, y=nil>
+#<struct S0 x=1, y=nil>
+#<struct S1 x=1>
+"struct size differs"
+[:k1, 1, nil]
+[:k1, 1, nil]
+[:k1, 1, {k: 1}]
+[:k2, 1, nil]
+[:k2, 1, nil]
+[:k2, 1, {k: 1}]

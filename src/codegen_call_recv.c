@@ -3700,6 +3700,14 @@ else {
               if (df_boxed) emit_boxed(c, argv[0], b); else emit_float_expr(c, argv[0], b);
               buf_printf(b, "); !sp_float_is_nil(_t%d) ? sp_box_float(_t%d) : ", tdr, tdr);
             }
+            else if (a0 == TY_POLY) {
+              /* a boxed needle: a String compares, anything else is not
+                 there, as include? and index read it (#4458) */
+              int tv = ++g_tmp;
+              buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
+              buf_printf(b, "; const char *_t%d = _t%d.tag == SP_TAG_STR ? sp_StrArray_delete(%s, _t%d.v.s)"
+                            " : (const char *)0; _t%d ? sp_box_str(_t%d) : ", tdr, tv, rdb.p, tv, tdr, tdr);
+            }
             else {
               buf_printf(b, "({ const char *_t%d = sp_StrArray_delete(%s, ", tdr, rdb.p);
               emit_expr(c, argv[0], b);
@@ -3726,6 +3734,13 @@ else {
         snprintf(tyl, sizeof tyl, "sp_%sArray *", k);
         int cdl = hold_recv_open(c, recv, 0, tyl, "SP_GC_ROOT", b, &rdl);
         if (rt == TY_INT_ARRAY) emit_int_array_delete(c, rdl.p, argv[0], b);
+        else if (rt == TY_STR_ARRAY && a0 == TY_POLY) {
+          /* a boxed needle, read as the block form above reads it */
+          int tv = ++g_tmp;
+          buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
+          buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_StrArray_delete(%s, _t%d.v.s) : (const char *)0; })",
+                     tv, rdl.p, tv);
+        }
         else {
           buf_printf(b, "sp_%sArray_delete%s(%s, ", k, df_boxed ? "_key" : "", rdl.p);
           if (df_boxed) emit_boxed(c, argv[0], b);
@@ -9391,6 +9406,20 @@ static void emit_obj_clamp3(Compiler *c, int recv, int lo, int hi, Buf *b) {
   if (hi >= 0) emit_boxed(c, hi, b); else buf_puts(b, "sp_box_nil()");
   buf_puts(b, "); })");
 }
+
+static void emit_identity_equal(Compiler *c, int recv, int arg, TyKind rt, TyKind a0, Buf *b) {
+  if (a0 == rt) {
+    buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == (");
+    emit_expr(c, arg, b); buf_puts(b, "))");
+  }
+  else if (a0 == TY_POLY) {
+    int te = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", te); emit_boxed(c, arg, b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.v.p == (void*)(", te, te);
+    emit_expr(c, recv, b); buf_puts(b, "); })");
+  }
+  else { buf_puts(b, "(("); emit_expr(c, arg, b); buf_puts(b, "), 0)"); }
+}
 int emit_object_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -9450,17 +9479,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       (sp_streq(name, "equal?") || sp_streq(name, "eql?")) &&
       !user_defines_or_reads(c, name)) {
     TyKind a0 = comp_ntype(c, argv[0]);
-    if (a0 == rt) {
-      buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == (");
-      emit_expr(c, argv[0], b); buf_puts(b, "))");
-    }
-    else if (a0 == TY_POLY) {
-      int te = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", te); emit_boxed(c, argv[0], b);
-      buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.v.p == (void*)(", te, te);
-      emit_expr(c, recv, b); buf_puts(b, "); })");
-    }
-    else { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
+    emit_identity_equal(c, recv, argv[0], rt, a0, b);
     return 1;
   }
   if (recv >= 0 && ty_is_object(rt) && argc == 1 &&
@@ -9469,17 +9488,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       comp_method_in_chain(c, ty_object_class(rt), "eql?", NULL) < 0) {
     TyKind a0 = comp_ntype(c, argv[0]);
     if (!c->classes[ty_object_class(rt)].is_value_type) {
-      if (a0 == rt) {
-        buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == (");
-        emit_expr(c, argv[0], b); buf_puts(b, "))");
-      }
-      else if (a0 == TY_POLY) {
-        int te = ++g_tmp;
-        buf_printf(b, "({ sp_RbVal _t%d = ", te); emit_boxed(c, argv[0], b);
-        buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.v.p == (void*)(", te, te);
-        emit_expr(c, recv, b); buf_puts(b, "); })");
-      }
-      else { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
+      emit_identity_equal(c, recv, argv[0], rt, a0, b);
       return 1;
     }
     if (same_sefree_lvalue(c, recv, argv[0])) { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 1)"); }
@@ -14629,7 +14638,10 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, at != TY_INT ? "sp_poly_index_poly("
                     : expr_is_arr_or_nil(c, recv) ? "sp_poly_arr_get_aon("
                                                   : "sp_poly_arr_get_hash(");
+        int was_at = nt_int(c->nt, id, "was_at", 0);
+        if (was_at) buf_puts(b, "sp_poly_ary_chk(");
         emit_expr(c, recv, b);
+        if (was_at) buf_puts(b, ", \"at\", 0)");
         buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         if (uns) buf_puts(b, ")");
         return 1;
@@ -14660,13 +14672,14 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "join") &&
       !user_defines_or_reads(c, name)) {
     /* the helper renders a non-container as its to_s, which is right for a
-       nested element and wrong for the receiver: nil has no join (#4485) */
+       nested element and wrong for the receiver: nil has no join (#4485),
+       and neither has a Hash, a String or a Range */
     /* a program that spawns threads types this call poly (the receiver may
        be a Thread, whose join answers the thread): the boxed form waits on a
        Thread and joins anything else */
     const char *jfn = comp_ntype(c, id) == TY_POLY ? "sp_poly_join_v" : "sp_poly_join";
-    buf_printf(b, "%s(sp_poly_coll_chk(", jfn); emit_expr(c, recv, b);
-    buf_puts(b, ", \"join\"), "); if (argc >= 1) emit_str_expr_nilable(c, argv[0], b); else buf_puts(b, "sp_str_empty");
+    buf_printf(b, "%s(sp_poly_ary_chk(", jfn); emit_expr(c, recv, b);
+    buf_puts(b, ", \"join\", 0), "); if (argc >= 1) emit_str_expr_nilable(c, argv[0], b); else buf_puts(b, "sp_str_empty");
     buf_puts(b, ")"); return 1;
   }
   /* poly receiver: clamp(lo, hi) tag-dispatches int/float at runtime; the range
