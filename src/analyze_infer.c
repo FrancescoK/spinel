@@ -5255,6 +5255,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
             comp_method_in_chain(c, comp_class_index(c, "Kernel"), name, NULL) >= 0))
         return an_poly_concrete(c, name, TY_CURRY);
       if (argc == 0 && sp_streq(name, "to_proc")) return an_poly_concrete(c, name, TY_POLY);
+      /* Integer#chr(Encoding::X) on a boxed Integer (emit_poly_call) */
+      if (argc == 1 && sp_streq(name, "chr") && nt_type(nt, argv[0]) &&
+          sp_streq(nt_type(nt, argv[0]), "ConstantPathNode"))
+        return an_poly_concrete(c, name, TY_POLY);
       /* String transforms on a boxed value: emit_poly_call routes these
          through sp_poly_to_s and re-boxes the result, so the value stays
          poly (mirrors the codegen list in codegen_call_recv.c). */

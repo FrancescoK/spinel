@@ -19263,6 +19263,24 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   int argc;
   const int *argv = call_args(nt, id, &argc);
+  TyKind rt = recv >= 0 ? comp_recv_type(c, recv) : TY_UNKNOWN;
+  /* chr(Encoding::UTF_8) on a boxed Integer: the codepoint, encoded */
+  if (recv >= 0 && rt == TY_POLY && name && sp_streq(name, "chr") && argc == 1 && !user_defines_or_reads(c, "chr") &&
+      nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantPathNode")) {
+    const char *enm = nt_str(nt, argv[0], "name");
+    int par = nt_ref(nt, argv[0], "parent");
+    const char *parnm = (par >= 0 && nt_type(nt, par) && sp_streq(nt_type(nt, par), "ConstantReadNode"))
+                        ? nt_str(nt, par, "name") : NULL;
+    int utf8 = parnm && sp_streq(parnm, "Encoding") && enm && sp_streq(enm, "UTF_8");
+    int bytes = parnm && sp_streq(parnm, "Encoding") && enm &&
+                (sp_streq(enm, "US_ASCII") || sp_streq(enm, "ASCII_8BIT") || sp_streq(enm, "BINARY"));
+    if (utf8 || bytes) {
+      int tvC = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tvC); emit_boxed(c, recv, b);
+      buf_printf(b, "; sp_box_str(%s(sp_poly_to_i(_t%d))); })", utf8 ? "sp_int_chr_utf8" : "sp_int_chr", tvC);
+      return 1;
+    }
+  }
   (void)nt; (void)argv; (void)recv; (void)argc;
   if (!name) return 0;
   /* NoMethodError gate: an unresolved call on a dynamically-typed receiver
