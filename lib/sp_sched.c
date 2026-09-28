@@ -3376,8 +3376,9 @@ sp_queue *sp_SizedQueue_new(sp_int max) {
 
 void sp_Queue_push_options_check(sp_queue *q, int has_non_block, int has_timeout) {
   if (q->max > 0) return;
-  if (has_timeout) sp_raise_cls("ArgumentError", "unknown keyword: :timeout");
-  if (has_non_block) sp_raise_cls("ArgumentError", "wrong number of arguments (given 2, expected 1)");
+  /* CRuby's Queue#push takes one argument; a timeout: hash counts as one more. */
+  if (has_non_block && has_timeout) sp_raise_cls("ArgumentError", "wrong number of arguments (given 3, expected 1)");
+  if (has_non_block || has_timeout) sp_raise_cls("ArgumentError", "wrong number of arguments (given 2, expected 1)");
 }
 
 static int sp_queue_push_impl(sp_queue *q, sp_RbVal v, int non_block,
@@ -3387,7 +3388,7 @@ static int sp_queue_push_impl(sp_queue *q, sp_RbVal v, int non_block,
      thread's saved roots only cover the shadow stack. */
   SP_GC_ROOT_RBVAL(v);
   SP_GC_ROOT(q);
-  if (timed && seconds < 0.0) sp_raise_cls("ArgumentError", "time interval must not be negative");
+  /* A negative timeout is already expired (CRuby): no ArgumentError. */
   double deadline = timed ? sp_monotonic_now() + seconds : 0.0;
   SCHED_LOCK();
   for (;;) {
@@ -3470,7 +3471,7 @@ sp_RbVal sp_Queue_pop(sp_queue *q) {
 
 sp_RbVal sp_Queue_pop_timeout(sp_queue *q, double seconds) {
   SP_GC_ROOT(q);
-  if (seconds < 0.0) sp_raise_cls("ArgumentError", "time interval must not be negative");
+  /* A negative timeout is already expired (CRuby): no ArgumentError. */
   double deadline = sp_monotonic_now() + seconds;
   SCHED_LOCK();
   while (q->len == 0) {

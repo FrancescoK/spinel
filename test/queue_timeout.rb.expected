@@ -6,14 +6,12 @@ true
 true
 true
 "can't set a timeout if non_block is enabled"
-"time interval must not be negative"
-"unknown keyword: :timeout"
+"wrong number of arguments (given 2, expected 1)"
 true
 :first
 true
 true
 :second
 :third
-"time interval must not be negative"
-:operator
+:negative
 "can't set a timeout if non_block is enabled"

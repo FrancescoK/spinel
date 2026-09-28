@@ -2889,6 +2889,9 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; sp_Queue_push(_t%d, _v%d); _t%d; })", t, v, t);
         return 1;
       }
+      /* The non_block and timeout expressions below may allocate; the pushed
+         value sits only in this C local until the runtime roots it. */
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_v%d)", v);
       int nb = -1;
       if (pos_argc == 2) {
         nb = ++g_tmp;
