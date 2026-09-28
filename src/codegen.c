@@ -12518,6 +12518,7 @@ char *codegen_program(const NodeTable *nt) {
       "  case SP_TAG_BOOL: return v.v.b?((sp_Class){-111}):((sp_Class){-112});\n"
       "  case SP_TAG_NIL: return ((sp_Class){-110});\n"
       "  case SP_TAG_SYM: return ((sp_Class){-103});\n"
+      "  case SP_TAG_CLASS: return sp_class_is_module_val(sp_unbox_class(v))?((sp_Class){-108}):((sp_Class){-109});\n"
       "  case SP_TAG_OBJ: if(v.cls_id>=0)return ((sp_Class){v.cls_id});\n"
       "    if(v.cls_id>=-12)return ((sp_Class){-104});\n"  /* arrays */
       "    if(v.cls_id>=-20||v.cls_id==-34)return ((sp_Class){-105});\n"  /* hashes */

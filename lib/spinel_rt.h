@@ -8763,10 +8763,17 @@ static sp_bool sp_poly_equal(sp_RbVal a, sp_RbVal b) {
    target is resolved inline via sp_class_le on the boxed object's cls_id. */
 static sp_int sp_exc_is_a(volatile struct sp_Exception_s *ve, const char *cn);  /* fwd (#3096) */
 extern const char *(*sp_user_exc_parent_fn)(const char *);  /* fwd: the program's exception parent table */
+static int (*sp_poly_is_a_hook)(sp_RbVal, sp_Class) = NULL;
 static sp_bool sp_poly_kind_of_builtin(sp_RbVal v, const char *cn) {
   if (!cn) return FALSE;
   if (strcmp(cn, "Object") == 0 || strcmp(cn, "BasicObject") == 0 || strcmp(cn, "Kernel") == 0)
     return TRUE;
+  /* a boxed class or module value: every one is a Module, and only the
+     generated class table knows which of them are modules rather than
+     classes */
+  if (v.tag == SP_TAG_CLASS && strcmp(cn, "Module") == 0) return TRUE;
+  if (v.tag == SP_TAG_CLASS && strcmp(cn, "Class") == 0 && sp_poly_is_a_hook)
+    return (sp_bool)(sp_poly_is_a_hook(v, (sp_Class){-109, NULL}) != 0);
   if (strcmp(sp_poly_class_name(v), cn) == 0) return TRUE;  /* exact builtin class */
   /* a boxed IO handle walks its own kind chain (a socket read back out of a
      poly array must still answer BasicSocket / IO) */
@@ -12704,7 +12711,6 @@ static sp_Enumerator *sp_Enumerator_new_cycle(sp_RbVal arr, sp_int n) {
    dispatches through the generated class machinery (installed as a hook by
    sp_tu_init when the program carries it); Regexp matches a String; a Range
    covers numerics; everything else is value equality. */
-static int (*sp_poly_is_a_hook)(sp_RbVal, sp_Class) = NULL;
 static sp_bool sp_poly_case_eq(sp_RbVal pat, sp_RbVal e) {
   if (pat.tag == SP_TAG_CLASS)
     return sp_poly_is_a_hook ? (sp_bool)(sp_poly_is_a_hook(e, sp_unbox_class(pat)) != 0) : 0;

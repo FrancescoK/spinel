@@ -2299,6 +2299,15 @@ void emit_if(Compiler *c, int id, Buf *b, int indent, int is_unless, int tail) {
 
 /* Emit `when ClassName` test against a poly (sp_RbVal) scrutinee temp.
    Returns 1 if the class is known and the check was emitted, 0 otherwise. */
+/* `ClassName === _t<t>` for a Class-typed scrutinee: a class or module value
+   is an instance of Module and the roots, and of Class unless it is a
+   module. */
+void emit_class_val_when(const char *cn, int t, Buf *b) {
+  if (sp_streq(cn, "Class")) buf_printf(b, "!sp_class_is_module_val(_t%d)", t);
+  else buf_puts(b, (sp_streq(cn, "Module") || sp_streq(cn, "Object") ||
+                    sp_streq(cn, "BasicObject") || sp_streq(cn, "Kernel")) ? "1" : "0");
+}
+
 int emit_poly_class_when(Compiler *c, int cond_id, const char *tmp, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *cty = nt_type(nt, cond_id);
@@ -2875,6 +2884,10 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
         return 1;
       }
       buf_puts(b, "0");
+      return 1;
+    }
+    if (pt == TY_CLASS) {
+      emit_class_val_when(cn2, t, b);
       return 1;
     }
     int yes = ty_matches_class(pt, cn2, 0);
@@ -4947,8 +4960,8 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
           }
           else if (cn2 && pt == TY_CLASS) {
             /* `when <ClassName>` is ===: a Class VALUE is an instance only
-               of Class/Module, never of the named class itself. */
-            buf_printf(b, "%d", (sp_streq(cn2, "Class") || sp_streq(cn2, "Module")) ? 1 : 0);
+               of Class/Module and the roots, never of the named class itself. */
+            emit_class_val_when(cn2, t, b);
           }
           else if (cn2 && pt == TY_EXCEPTION) {
             /* an exception scrutinee matches by name up its class chain (#2759) */
@@ -5312,9 +5325,9 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
           if (!emit_obj_class_when(c, pt, cn2, t, b)) buf_puts(b, "0");
         }
         else if (cn2 && pt == TY_CLASS) {
-          /* a Class VALUE is an instance only of Class/Module (see the
-             statement chain's arm) */
-          buf_printf(b, "%d", (sp_streq(cn2, "Class") || sp_streq(cn2, "Module")) ? 1 : 0);
+          /* a Class VALUE is an instance only of Class/Module and the roots
+             (see the statement chain's arm) */
+          emit_class_val_when(cn2, t, b);
         }
         else if (cn2 && pt == TY_EXCEPTION) {
           /* an exception scrutinee matches by name up its class chain (#2759) */

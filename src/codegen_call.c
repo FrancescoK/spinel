@@ -28319,7 +28319,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
                    /* the roots: every object is one, and `Object === x` used to
                       fall past this arm into the missing-method gate */
                    sp_streq(rcn2, "Object") || sp_streq(rcn2, "BasicObject") ||
-                   sp_streq(rcn2, "Kernel"))) {
+                   sp_streq(rcn2, "Kernel") ||
+                   /* a class or module value is an instance of these */
+                   sp_streq(rcn2, "Class") || sp_streq(rcn2, "Module"))) {
         /* Module#=== is `arg.is_a?(self)`. TrueClass/FalseClass receivers read
            the arg's runtime class, so a non-literal boolean matches (#2966).
            (Only these builtins emit as a usable class value here.) */
@@ -28357,12 +28359,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           if (exact) buf_printf(b, "sp_class_is_module_val(_cl%d); })", _clt);
           else buf_printf(b, "1; })");
         }
-        /* Class: user classes only (not modules); builtin Class constant is -109 */
+        /* Class: every class value, builtin or user, but no module */
         else if (sp_streq(cn2, "Class")) {
-          if (exact)
-            buf_printf(b, "(_cl%d.cls_id>=0?!sp_class_is_module_val(_cl%d):(_cl%d.cls_id==-109)); })", _clt, _clt, _clt);
-          else
-            buf_printf(b, "(_cl%d.cls_id>=0?!sp_class_is_module_val(_cl%d):(_cl%d.cls_id==-109||_cl%d.cls_id==-108)); })", _clt, _clt, _clt, _clt);
+          buf_printf(b, "!sp_class_is_module_val(_cl%d); })", _clt);
         }
         else if (sp_streq(cn2, "Object") || sp_streq(cn2, "BasicObject")) {
           buf_printf(b, "1; })");
