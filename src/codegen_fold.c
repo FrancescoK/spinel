@@ -6522,7 +6522,7 @@ int emit_ds_hash_materialize(Compiler *c, int kwh, TyKind *out_type) {
         ds_hash_tmp = ++g_tmp;
         emit_indent(g_pre, g_indent);
         emit_ctype(c, *out_type, g_pre);
-        buf_printf(g_pre, " _t%d = lv_%s;\n", ds_hash_tmp, akw);
+        buf_printf(g_pre, " _t%d = lv_%s;\n", ds_hash_tmp, rename_local(akw));
       }
     }
     break;
@@ -6685,7 +6685,7 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
           if (!akw) continue;
           splat_seen = 1;
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, lv_%s);\n", krhash, akw);
+          buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, lv_%s);\n", krhash, rename_local(akw));
           continue;
         }
         TyKind sty = comp_ntype(c, inner3);
