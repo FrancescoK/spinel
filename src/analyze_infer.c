@@ -7100,6 +7100,9 @@ TyKind infer_uncached(Compiler *c, int id) {
     int en = pos != LLONG_MIN ? multi_return_elem_types(c, nt_ref(nt, id, "receiver"), elems, 16) : 0;
     if (pos < 0) pos += en;
     if (pos >= 0 && pos < en) return elems[pos];
+    /* `x = pair[1]` reads the boxed tuple's element back at its own type */
+    TyKind et = tuple_elem_read_unboxed(c, id);
+    if (et != TY_UNKNOWN && infer_type(c, nt_ref(nt, id, "receiver")) == TY_POLY_ARRAY) return et;
   }
 
   if (nk == NK_IntegerNode)             return nt_str(nt, id, "bigval") ? TY_BIGINT : TY_INT;

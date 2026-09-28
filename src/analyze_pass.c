@@ -1546,22 +1546,43 @@ static TyKind *named_array_slot(Compiler *c, int recv) {
   }
 }
 
-/* The type `node` stores when it is `m[i]` over a method returning a fixed
-   tuple (`def pair = [1, "x"]`) and reads as the boxed element: that element's
-   own type, which is what the store puts in the container. Else `vt`. */
-static TyKind tuple_elem_evidence(Compiler *c, int node, TyKind vt) {
+/* `m[i]` over a method returning a fixed tuple (`def pair = [1, "x"]`), at an
+   integer-literal position inside it: that element's own type, else
+   TY_UNKNOWN. */
+TyKind tuple_elem_read_type(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
-  if (vt != TY_POLY || node < 0 || nt_kind(nt, node) != NK_CallNode) return vt;
+  if (node < 0 || nt_kind(nt, node) != NK_CallNode) return TY_UNKNOWN;
   const char *nm = nt_str(nt, node, "name");
-  if (!nm || !sp_streq(nm, "[]") || nt_ref(nt, node, "block") >= 0) return vt;
+  if (!nm || !sp_streq(nm, "[]") || nt_ref(nt, node, "block") >= 0) return TY_UNKNOWN;
   int args = nt_ref(nt, node, "arguments");
   int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-  if (an != 1 || nt_kind(nt, av[0]) != NK_IntegerNode || nt_str(nt, av[0], "bigval")) return vt;
+  if (an != 1 || nt_kind(nt, av[0]) != NK_IntegerNode || nt_str(nt, av[0], "bigval")) return TY_UNKNOWN;
+  int recv = nt_ref(nt, node, "receiver");
+  if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) return TY_UNKNOWN;
   TyKind elems[16];
-  int en = multi_return_elem_types(c, nt_ref(nt, node, "receiver"), elems, 16);
+  int en = multi_return_elem_types(c, recv, elems, 16);
   long long pos = nt_int(nt, av[0], "value", 0);
   if (pos < 0) pos += en;
-  return (pos >= 0 && pos < en) ? elems[pos] : vt;
+  return (pos >= 0 && pos < en) ? elems[pos] : TY_UNKNOWN;
+}
+
+/* The type a `m[i]` read of a boxed tuple is narrowed to and unboxed as: a
+   scalar or an object, never a container a converting unbox would copy away
+   from the tuple. Else TY_UNKNOWN. */
+TyKind tuple_elem_read_unboxed(Compiler *c, int node) {
+  TyKind et = tuple_elem_read_type(c, node);
+  if (et == TY_INT || et == TY_FLOAT || et == TY_STRING || et == TY_SYMBOL ||
+      et == TY_BOOL || ty_is_object(et)) return et;
+  return TY_UNKNOWN;
+}
+
+/* The type `node` stores when it is `m[i]` over a method returning a fixed
+   tuple and reads as the boxed element: that element's own type, which is
+   what the store puts in the container. Else `vt`. */
+static TyKind tuple_elem_evidence(Compiler *c, int node, TyKind vt) {
+  if (vt != TY_POLY) return vt;
+  TyKind et = tuple_elem_read_type(c, node);
+  return et != TY_UNKNOWN ? et : vt;
 }
 
 /* Folds one piece of container evidence into `slot` (see the usage fold in

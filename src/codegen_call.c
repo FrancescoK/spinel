@@ -18828,6 +18828,18 @@ static int recv_read_before_args(Compiler *c, int id) {
 
 static void emit_call_held(Compiler *c, int id, Buf *b) {
   if (emit_boxed_class_aref(c, id, b)) return;
+  /* a tuple element read typed as the element itself: the read answers the
+     boxed element, unboxed here */
+  { TyKind et = tuple_elem_read_unboxed(c, id);
+    if (et != TY_UNKNOWN && comp_ntype(c, id) == et &&
+        comp_ntype(c, nt_ref(c->nt, id, "receiver")) == TY_POLY_ARRAY) {
+      TyKind old = comp_sn_retype(c, id, TY_POLY);
+      Buf ib = expr_buf(c, id);
+      comp_sn_retype(c, id, old);
+      emit_unbox_text(c, et, ib.p ? ib.p : "sp_box_nil()", b);
+      free(ib.p);
+      return;
+    } }
   int rrecv = recv_read_before_args(c, id);
   if (rrecv >= 0) {
     TyKind rt = comp_ntype(c, rrecv);
