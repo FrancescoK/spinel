@@ -28124,7 +28124,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
          For an inherited cls method specialized into a subclass, the emitting
          class is that subclass, so `new` resolves to the subclass constructor. */
       int new_cls = (g_emitting_class_id >= 0) ? g_emitting_class_id : encl->class_id;
-      if (sp_streq(name, "new")) {
+      /* ...unless the class defines its own `self.new`: bare `new` calls that
+         method, whose value the analysis types (#5405). The sibling class
+         method call below reaches it. */
+      int user_new = sp_streq(name, "new") ? comp_cmethod_in_chain(c, new_cls, "new", NULL) : -1;
+      if (user_new >= 0 && (&c->scopes[user_new] == encl ||
+                            !scope_has_callable_symbol(c, user_new))) user_new = -1;
+      if (sp_streq(name, "new") && user_new < 0) {
         ClassInfo *ncls = &c->classes[new_cls];
         /* a native class's bare `new` uses the declared constructor, exactly
            as the receiver `Klass.new(...)` path does */

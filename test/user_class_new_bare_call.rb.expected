@@ -1,0 +1,9 @@
+:base
+:mid
+[:base, 1, :t]
+[:mid, 5, :t]
+[:mid, 6, :z]
+3
+3
+:base
+:mid

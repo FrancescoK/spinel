@@ -3416,6 +3416,31 @@ static int fwd_fixed_call_arity(const NodeTable *nt, const char *name) {
 }
 /* The shape a forwarding `call` in `def` reaches: `super` the parent's
    method, `new` the constructed class's initialize. */
+/* The shape of a class-level `new` the program defines (`def self.new`, or
+   `def new` in a `class << self` body): a `new(...)` reaches it rather than
+   initialize. -1 when there is none, -2 when two disagree. */
+static int fwd_user_class_new_shape(const NodeTable *nt) {
+  int shape = -1;
+  for (int id = 0; id < nt->count; id++) {
+    int cand[64]; int nc = 0;
+    if (fwd_node_is(nt, id, "DefNode") && nt_ref(nt, id, "receiver") >= 0) cand[nc++] = id;
+    else if (fwd_node_is(nt, id, "SingletonClassNode")) {
+      int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, id, "body"), "body", &bn);
+      for (int k = 0; k < bn && nc < 64; k++) {
+        int dk = fwd_body_def(nt, bv[k]);
+        if (dk >= 0 && nt_ref(nt, dk, "receiver") < 0) cand[nc++] = dk;
+      }
+    }
+    for (int j = 0; j < nc; j++) {
+      const char *nm = nt_str(nt, cand[j], "name");
+      if (!nm || !sp_streq(nm, "new")) continue;
+      int sh = def_shape(nt, cand[j]);
+      if (sh < 0 || (shape >= 0 && sh != shape)) return -2;
+      shape = sh;
+    }
+  }
+  return shape;
+}
 static int fwd_target_shape(const NodeTable *nt, int def, int call, int is_super) {
   const char *name = is_super ? nt_str(nt, def, "name") : nt_str(nt, call, "name");
   if (!name) return -1;
@@ -3424,6 +3449,8 @@ static int fwd_target_shape(const NodeTable *nt, int def, int call, int is_super
   int recv = is_super ? -1 : nt_ref(nt, call, "receiver");
   int cls = fwd_enclosing_class(nt, def);
   char ctx[512] = "";
+  /* a `new` the program defines itself takes the arguments (#5405) */
+  if (!is_super) { int us = fwd_user_class_new_shape(nt); if (us != -1) return us; }
   if (is_super) {
     if (nt_ref(nt, def, "receiver") >= 0 || cls < 0) return -1;
     fwd_lex_ctx(nt, cls, ctx, sizeof ctx);
