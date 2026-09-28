@@ -235,6 +235,7 @@ sp_bool   sp_Queue_empty(sp_queue *q);             /* #empty? */
 sp_int    sp_Queue_max(sp_queue *q);               /* SizedQueue#max */
 void       sp_Queue_close(sp_queue *q);             /* #close */
 sp_bool   sp_Queue_closed(sp_queue *q);            /* #closed? */
+sp_int    sp_Queue_num_waiting(sp_queue *q);       /* #num_waiting */
 void       sp_Queue_clear(sp_queue *q);             /* #clear */
 
 /* ---- Mutex (non-recursive lock; owner + wait list) ----
