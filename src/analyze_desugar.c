@@ -3994,6 +3994,37 @@ static void dmc_walk(NodeTable *nt, int id, int lvl, int in_dm, int cls,
   }
 }
 
+/* `singleton_class.define_method(:m) { }` (or `self.singleton_class.`) in a
+   class or module body -> `define_singleton_method(:m) { }`: self is the
+   class there, so its singleton class is the class's own. */
+int desugar_singleton_class_define_method(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int cls = 0; cls < n0; cls++) {
+    NodeKind ck = nt_kind(nt, cls);
+    if (ck != NK_ClassNode && ck != NK_ModuleNode) continue;
+    int body = nt_ref(nt, cls, "body");
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bv = nt_arr(nt, body, "body", &bn);
+    for (int i = 0; i < bn; i++) {
+      int id = bv[i];
+      const char *cn = nt_kind(nt, id) == NK_CallNode ? nt_str(nt, id, "name") : NULL;
+      int recv = nt_ref(nt, id, "receiver");
+      if (!cn || !sp_streq(cn, "define_method") || recv < 0 || nt_kind(nt, recv) != NK_CallNode) continue;
+      const char *rn = nt_str(nt, recv, "name");
+      int rr = nt_ref(nt, recv, "receiver");
+      if (!rn || !sp_streq(rn, "singleton_class") || nt_ref(nt, recv, "arguments") >= 0 ||
+          nt_ref(nt, recv, "block") >= 0 || (rr >= 0 && nt_kind(nt, rr) != NK_SelfNode)) continue;
+      nt_node_set_ref(nt, id, "receiver", -1);
+      nt_node_set_str(nt, id, "name", "define_singleton_method");
+      nt_node_reset(nt, recv, "NilNode");
+      changed = 1;
+    }
+  }
+  return changed;
+}
+
 /* The BlockNode a Proc literal (`-> { }`, `lambda { }`, `proc { }`,
    `Proc.new { }`) runs, else -1. */
 static int dmp_literal_block(NodeTable *nt, int v) {
