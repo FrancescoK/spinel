@@ -2456,13 +2456,7 @@ int str_append_chain(Compiler *c, int recv, int *chain, int *base) {
   const NodeTable *nt = c->nt;
   int nchain = 0; int cur = recv;
   while (nchain < 64) {
-    while (nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "ParenthesesNode")) {
-      int pb = nt_ref(nt, cur, "body");
-      if (pb < 0) break;
-      int bn = 0; const int *bb = nt_arr(nt, pb, "body", &bn);
-      if (bn != 1) break;
-      cur = bb[0];
-    }
+    cur = unwrap_parens(c, cur);
     const char *cty = nt_type(nt, cur);
     if (!cty || !sp_streq(cty, "CallNode")) break;
     const char *cnm = nt_str(nt, cur, "name");
