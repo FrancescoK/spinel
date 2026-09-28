@@ -655,6 +655,12 @@ static inline void sp_mark_string(const char *s) {
 }
 static inline void sp_mark_rbval(sp_RbVal v) {
   if (v.tag == SP_TAG_STR) sp_mark_string(v.v.s);
+  /* A class boxed by name holds its name: `e.class` of an exception names it
+     with a fresh copy (sp_exc_class_name), a Method's owner likewise, and
+     nothing else keeps that copy -- an Array holding the class printed the
+     next string allocated in its place. Literal names (SPL) are not heap
+     strings and mark as nothing. */
+  else if (v.tag == SP_TAG_CLASS && v.cls_id == SP_CLASS_BY_NAME) sp_mark_string(v.v.s);
   else if (v.tag == SP_TAG_OBJ && v.cls_id != SP_BUILTIN_FOREIGN_PTR &&
            v.cls_id != SP_BUILTIN_REGEX) sp_gc_mark(v.v.p);
   else if (v.tag == SP_TAG_BIGINT) sp_gc_mark(v.v.p);
@@ -667,7 +673,7 @@ static inline void sp_mark_rbval(sp_RbVal v) {
    some live object, marked a cycle longer than needed, which is harmless. */
 static inline void sp_mark_rbval_scratch(sp_RbVal v) {
   const void *h = NULL;
-  if (v.tag == SP_TAG_STR) { if (v.v.s && (unsigned char)v.v.s[-1] == 0xfe) h = ((const sp_str_hdr *)(v.v.s - 1)) - 1; }
+  if (v.tag == SP_TAG_STR || (v.tag == SP_TAG_CLASS && v.cls_id == SP_CLASS_BY_NAME)) { if (v.v.s && (unsigned char)v.v.s[-1] == 0xfe) h = ((const sp_str_hdr *)(v.v.s - 1)) - 1; }
   else if ((v.tag == SP_TAG_OBJ && v.cls_id != SP_BUILTIN_FOREIGN_PTR && v.cls_id != SP_BUILTIN_REGEX) || v.tag == SP_TAG_BIGINT) { if (v.v.p) h = (const char *)v.v.p - sizeof(sp_gc_hdr); }
   if (h && sp_slab_owns(h) && !sp_slab_is_live(h)) return;
   sp_mark_rbval(v);

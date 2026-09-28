@@ -1,0 +1,7 @@
+[TypeError, 40]
+[NoMethodError, 40]
+[ArgumentError, 40]
+[KeyError, 40]
+[ZeroDivisionError, 40]
+[Probe, 40]
+["TypeError", "NoMethodError", "ArgumentError", "KeyError", "ZeroDivisionError", "Probe"]
