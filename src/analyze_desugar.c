@@ -3973,6 +3973,127 @@ static void dmc_walk(NodeTable *nt, int id, int lvl, int in_dm, int cls,
   }
 }
 
+/* The BlockNode a Proc literal (`-> { }`, `lambda { }`, `proc { }`,
+   `Proc.new { }`) runs, else -1. */
+static int dmp_literal_block(NodeTable *nt, int v) {
+  if (v < 0) return -1;
+  if (nt_kind(nt, v) == NK_LambdaNode) return v;
+  if (nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "arguments") >= 0) return -1;
+  const char *nm = nt_str(nt, v, "name");
+  int recv = nt_ref(nt, v, "receiver");
+  int blk = nt_ref(nt, v, "block");
+  if (!nm || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return -1;
+  if (recv < 0 && (sp_streq(nm, "lambda") || sp_streq(nm, "proc"))) return blk;
+  if (recv >= 0 && sp_streq(nm, "new") && nt_kind(nt, recv) == NK_ConstantReadNode &&
+      sp_streq(nt_str(nt, recv, "name"), "Proc")) return blk;
+  return -1;
+}
+
+/* The call a body statement makes: the statement itself, or the one
+   argument of `private`/`protected`/`public` (`private define_method ...`). */
+static int dm_stmt_call(NodeTable *nt, int s) {
+  if (nt_kind(nt, s) != NK_CallNode) return -1;
+  const char *nm = nt_str(nt, s, "name");
+  int args = nt_ref(nt, s, "arguments");
+  int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (nm && nt_ref(nt, s, "receiver") < 0 && an == 1 && nt_kind(nt, av[0]) == NK_CallNode &&
+      (sp_streq(nm, "private") || sp_streq(nm, "protected") || sp_streq(nm, "public")))
+    return av[0];
+  return s;
+}
+
+/* Count the writes of body-level local `nm` in a body's lexical scope. */
+static int dmp_local_writes(NodeTable *nt, int id, int lvl, const char *nm) {
+  if (id < 0) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode ||
+      k == NK_SingletonClassNode) return 0;
+  int lk = dmc_local_kind(k);
+  const char *vn = lk > 0 ? nt_str(nt, id, "name") : NULL;
+  int n = vn && sp_streq(vn, nm) && nt_int(nt, id, "depth", 0) == lvl;
+  if (k == NK_BlockNode || k == NK_LambdaNode) lvl++;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) n += dmp_local_writes(nt, nt_ref_at(nt, id, i), lvl, nm);
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *v = nt_arr_at(nt, id, i, &m);
+    for (int j = 0; j < m; j++) n += dmp_local_writes(nt, v[j], lvl, nm);
+  }
+  return n;
+}
+
+/* `define_method(:m, <proc>)` / `define_method(:m, &<proc>)` in a class,
+   module or `class << self` body, where <proc> is a Proc literal or a body
+   local assigned one once, earlier in the body -> `define_method(:m) { }`
+   with that literal's block. A local keeps its own literal; the method gets
+   a copy. */
+int desugar_define_method_proc_arg(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int cls = 0; cls < n0; cls++) {
+    NodeKind ck = nt_kind(nt, cls);
+    if (ck != NK_ClassNode && ck != NK_ModuleNode && ck != NK_SingletonClassNode) continue;
+    int body = nt_ref(nt, cls, "body");
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bv = nt_arr(nt, body, "body", &bn);
+    for (int i = 0; i < bn; i++) {
+      int id = dm_stmt_call(nt, bv[i]);
+      if (id < 0) continue;
+      const char *cn = nt_str(nt, id, "name");
+      int recv = nt_ref(nt, id, "receiver");
+      if (!cn || (!sp_streq(cn, "define_method") && !sp_streq(cn, "define_singleton_method")) ||
+          (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode)) continue;
+      int args = nt_ref(nt, id, "arguments");
+      int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      int blk = nt_ref(nt, id, "block");
+      int src = -1;
+      if (an == 2 && blk < 0) src = av[1];
+      else if (an == 1 && blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode)
+        src = nt_ref(nt, blk, "expression");
+      if (src < 0) continue;
+      int lit = dmp_literal_block(nt, src), copy = 0;
+      if (lit < 0 && nt_kind(nt, src) == NK_LocalVariableReadNode &&
+          nt_int(nt, src, "depth", 0) == 0) {
+        const char *ln = nt_str(nt, src, "name");
+        for (int j = 0; j < i && ln; j++) {
+          int w = bv[j];
+          if (nt_kind(nt, w) != NK_LocalVariableWriteNode || !sp_streq(nt_str(nt, w, "name"), ln) ||
+              dmp_literal_block(nt, nt_ref(nt, w, "value")) < 0) continue;
+          if (dmp_local_writes(nt, body, 0, ln) != 1) break;
+          int cv = nt_clone_subtree(nt, nt_ref(nt, w, "value"));
+          lit = dmp_literal_block(nt, cv);
+          if (lit >= 0 && lit != cv) nt_node_reset(nt, cv, "NilNode");
+          copy = 1;
+          break;
+        }
+      }
+      if (lit < 0) continue;
+      if (!copy && lit != src) nt_node_reset(nt, src, "NilNode");
+      if (blk >= 0) nt_node_reset(nt, blk, "NilNode");
+      if (nt_kind(nt, lit) == NK_LambdaNode) {
+        /* a lambda holds its ParametersNode directly, a block through a
+           BlockParametersNode */
+        int lp = nt_ref(nt, lit, "parameters");
+        if (lp >= 0 && nt_kind(nt, lp) == NK_ParametersNode) {
+          int bp = fwd_new_node_like(nt, lp, "BlockParametersNode");
+          if (bp >= 0) {
+            nt_node_set_ref(nt, bp, "parameters", lp);
+            nt_node_set_ref(nt, lit, "parameters", bp);
+          }
+        }
+        nt_node_set_type(nt, lit, "BlockNode");
+      }
+      nt_node_set_arr(nt, args, "arguments", av, 1);
+      nt_node_set_ref(nt, id, "block", lit);
+      bv = nt_arr(nt, body, "body", &bn);
+      changed = 1;
+    }
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 /* `class D; x = 5; define_method(:f) { x } end`: a local of a class, module
    or top-level body that a define_method block reads or writes becomes a
    global private to that body, in the body and in every block of it. The
