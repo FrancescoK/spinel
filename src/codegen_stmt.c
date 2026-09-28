@@ -8006,7 +8006,7 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
         emit_boxed(c, nt_ref(nt, yav[0], "expression"), b);
         buf_puts(b, ")");
       }
-      else if (yac == 1) emit_boxed(c, yav[0], b);
+      else if (yac == 1) { buf_puts(b, "sp_yield_one("); emit_boxed(c, yav[0], b); buf_puts(b, ")"); }
       else if (yac > 1) {
         int t = ++g_tmp;
         emit_indent(g_pre, g_indent);

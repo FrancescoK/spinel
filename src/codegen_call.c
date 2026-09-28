@@ -22230,7 +22230,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         emit_boxed(c, nt_ref(nt, av[0], "expression"), b);
         buf_puts(b, ")");
       }
-      else if (ac == 1) emit_boxed(c, av[0], b);
+      else if (ac == 1) { buf_puts(b, "sp_yield_one("); emit_boxed(c, av[0], b); buf_puts(b, ")"); }
       else if (ac > 1) {
         /* y.yield(a, b, ...) yields an array of the values */
         int t = ++g_tmp;

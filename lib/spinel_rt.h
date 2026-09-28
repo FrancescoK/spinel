@@ -13097,16 +13097,31 @@ static sp_Enumerator *sp_enum_pairs_new(sp_RbVal arr) {
   e->yields_pair = TRUE;
   return e;
 }
+/* What a generator step `y << v` / `y.yield(v)` yields: v, as one value.
+   A pack another generator's step made can reach here as an item it
+   handed out (`g.to_a[0]`), and yielded as it is it would read as a step
+   of several values: it goes on as a plain Array of the same values. */
+static SP_NOINLINE sp_RbVal sp_yield_one_unpack(sp_RbVal v) {
+  SP_GC_ROOT_RBVAL(v);
+  sp_PolyArray *src = (sp_PolyArray *)v.v.p;
+  sp_PolyArray *r = sp_PolyArray_new();
+  SP_GC_ROOT(r);
+  for (sp_int i = 0; i < src->len; i++) sp_PolyArray_push(r, src->data[i]);
+  return sp_box_poly_array(r);
+}
+static inline sp_RbVal sp_yield_one(sp_RbVal v) {
+  return SP_UNLIKELY(sp_poly_is_pack(v)) ? sp_yield_one_unpack(v) : v;
+}
 /* What a generator step `y.yield(*xs)` yields: one value for a one-element
    xs (nil for an empty one), a pack of xs's values for more, and a value
    that is no Array as itself. */
 static sp_RbVal sp_yield_splat_pack(sp_RbVal a) SP_UNUSED;
 static sp_RbVal sp_yield_splat_pack(sp_RbVal a) {
-  if (a.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(a.cls_id)) return a;
+  if (a.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(a.cls_id)) return sp_yield_one(a);
   SP_GC_ROOT_RBVAL(a);
   sp_int n = sp_poly_length(a);
   if (n == 0) return sp_box_nil();
-  if (n == 1) return sp_poly_arr_get(a, 0);
+  if (n == 1) return sp_yield_one(sp_poly_arr_get(a, 0));
   sp_PolyArray *r = sp_PolyArray_new_pack();
   SP_GC_ROOT(r);
   for (sp_int i = 0; i < n; i++) sp_PolyArray_push(r, sp_poly_arr_get(a, i));
