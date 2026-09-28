@@ -27,7 +27,7 @@ module Enumerable
       each { |x| yield x, memo }
       memo
     else
-      map { |x| [x, memo] }.each
+      __enum_pairs(map { |x| [x, memo] })
     end
   end
 

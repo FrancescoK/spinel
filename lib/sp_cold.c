@@ -2625,6 +2625,7 @@ sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, sp_int off) {
     cap->src = e; cap->off = off;
     sp_Enumerator *r = sp_Enumerator_new_gen(sp_with_index_gen, cap, e->size);
     r->source = e->source;
+    r->yields_pair = TRUE;
     return r;
   }
   sp_PolyArray *src = e ? e->items : NULL;
@@ -2642,7 +2643,7 @@ sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, sp_int off) {
     sp_PolyArray_push(out, sp_box_poly_array(pair));
   }
   { sp_RbVal src_recv = e ? e->source : sp_box_nil();
-    sp_Enumerator *r = sp_Enumerator_new_from_items(out); r->source = src_recv; return r; }
+    sp_Enumerator *r = sp_Enumerator_new_from_items(out); r->source = src_recv; r->yields_pair = TRUE; return r; }
 }
 sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap, sp_RbVal size) {SP_GC_ROOT_RBVAL(size);
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);

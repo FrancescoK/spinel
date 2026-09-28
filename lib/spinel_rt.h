@@ -12847,6 +12847,57 @@ static sp_Enumerator *sp_enum_chain_new(sp_RbVal arr) {
   e->is_chain = TRUE;
   return e;
 }
+/* What a block of map and its kin binds from one step of an Enumerator,
+   given as the item its materialized form holds: `pair` says the step
+   yielded two values, packed in that item as an Array. A lone `|x|` takes
+   the first of them, a lone `|*r|` all of them. */
+static sp_RbVal sp_yielded_first(sp_bool pair, sp_RbVal v) SP_UNUSED;
+static sp_RbVal sp_yielded_first(sp_bool pair, sp_RbVal v) {
+  if (!pair || v.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(v.cls_id)) return v;
+  return sp_poly_arr_get(v, 0);
+}
+static sp_PolyArray *sp_yielded_args(sp_bool pair, sp_RbVal v) SP_UNUSED;
+static sp_PolyArray *sp_yielded_args(sp_bool pair, sp_RbVal v) {
+  SP_GC_ROOT_RBVAL(v);
+  sp_PolyArray *r = sp_PolyArray_new();
+  SP_GC_ROOT(r);
+  if (pair && v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)) {
+    sp_int n = sp_poly_length(v);
+    for (sp_int i = 0; i < n; i++) sp_PolyArray_push(r, sp_poly_arr_get(v, i));
+  }
+  else sp_PolyArray_push(r, v);
+  return r;
+}
+static sp_bool sp_poly_yields_pair(sp_RbVal v) SP_UNUSED;
+static sp_bool sp_poly_yields_pair(sp_RbVal v) {
+  return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p &&
+         ((sp_Enumerator *)v.v.p)->yields_pair;
+}
+/* sp_Enumerator_to_a with each item as such a block binds it: `as_args`
+   for a lone `|*r|`, else a lone `|x|`. */
+sp_PolyArray *sp_Enumerator_to_a(sp_Enumerator *e);
+static sp_PolyArray *sp_Enumerator_to_a_yielded(sp_Enumerator *e, sp_bool as_args) SP_UNUSED;
+static sp_PolyArray *sp_Enumerator_to_a_yielded(sp_Enumerator *e, sp_bool as_args) {
+  sp_bool pair = e && e->yields_pair;
+  sp_PolyArray *items = sp_Enumerator_to_a(e);
+  SP_GC_ROOT(items);
+  if (!pair && !as_args) return items;
+  for (sp_int i = 0; i < items->len; i++) {
+    sp_RbVal v = as_args ? sp_box_poly_array(sp_yielded_args(pair, items->data[i]))
+                         : sp_yielded_first(pair, items->data[i]);
+    sp_gc_wb((void *)items);
+    items->data[i] = v;
+  }
+  return items;
+}
+/* __enum_pairs(arr): an Enumerator over [element, memo] pairs, each step
+   yielding the two values (a blockless each_with_object, builtins/). */
+static sp_Enumerator *sp_enum_pairs_new(sp_RbVal arr) SP_UNUSED;
+static sp_Enumerator *sp_enum_pairs_new(sp_RbVal arr) {
+  sp_Enumerator *e = sp_Enumerator_new_from(arr);
+  e->yields_pair = TRUE;
+  return e;
+}
 /* A blockless Array#each_with_index enumerator: an [element, index] pair for
    each element (index offset by `off`, as Enumerator#with_index(off) allows). */
 static sp_Enumerator *sp_Enumerator_new_ewi(sp_RbVal arr, sp_int off) {
@@ -12863,7 +12914,7 @@ static sp_Enumerator *sp_Enumerator_new_ewi(sp_RbVal arr, sp_int off) {
     sp_PolyArray_push(pair, sp_box_int(i + off));
     sp_PolyArray_push(pairs, sp_box_poly_array(pair));
   }
-  { sp_Enumerator *e = sp_Enumerator_new_from_items(pairs); e->source = arr; e->meth = SPL("each_with_index"); return e; }
+  { sp_Enumerator *e = sp_Enumerator_new_from_items(pairs); e->source = arr; e->meth = SPL("each_with_index"); e->yields_pair = TRUE; return e; }
 }
 /* A blockless Array#each_index enumerator: the indices 0..len-1. */
 static sp_Enumerator *sp_Enumerator_new_indices(sp_RbVal arr) {

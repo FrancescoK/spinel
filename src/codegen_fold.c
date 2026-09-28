@@ -4324,6 +4324,17 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
        and `nil.map { }` answered [] (#4485) */
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_poly_iter_check(_t%d, \"%s\");\n", trecv2, name);
+    const char *restn2 = block_rest_name(c, block);
+    int has_rest2 = restn2 && *restn2;
+    int np2 = 0; while (block_param_name(c, block, np2)) np2++;
+    /* an Enumerator yielding two values gives a lone `|x|` the first and a
+       lone `|*r|` both (sp_Enumerator.yields_pair) */
+    int tpair2 = 0;
+    if ((np2 == 1 && !has_rest2 && !block_param_is_multi(c, block, 0)) || (np2 == 0 && has_rest2)) {
+      tpair2 = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_bool _t%d = sp_poly_yields_pair(_t%d);\n", tpair2, trecv2);
+    }
     /* a Range walks as its members (#4837) */
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "_t%d = sp_poly_iter_subject(_t%d);\n", trecv2, trecv2);
@@ -4344,9 +4355,6 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     for (int j2 = 0; j2 < bn2; j2++) infer_type(c, bb2[j2]);
     emit_indent(g_pre, g_indent + 1);
     buf_puts(g_pre, "{\n");
-    const char *restn2 = block_rest_name(c, block);
-    int has_rest2 = restn2 && *restn2;
-    int np2 = 0; while (block_param_name(c, block, np2)) np2++;
     if (p0p && np2 >= 2 && !has_rest2 && !block_param_is_multi(c, block, 0)) {
       /* `|k, val|` over a poly hash: each element is a [key, value] pair, so
          auto-splat it across the params (only p0 was bound before, leaving val
@@ -4356,6 +4364,11 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "sp_RbVal _t%d = sp_poly_iter_elem(_t%d, _t%d); SP_GC_ROOT_RBVAL(_t%d);\n",
                  te2, trecv2, ti2, te2);
       emit_autosplat_params(c, block, np2, te2, g_indent + 2);
+    }
+    else if (p0p && tpair2) {
+      emit_indent(g_pre, g_indent + 2);
+      buf_printf(g_pre, "sp_RbVal lv_%s = sp_yielded_first(_t%d, sp_poly_iter_elem(_t%d, _t%d));\n",
+                 p0p, tpair2, trecv2, ti2);
     }
     else if (p0p) {
       emit_indent(g_pre, g_indent + 2);
@@ -4367,7 +4380,12 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "sp_RbVal lv__dummy = sp_poly_iter_elem(_t%d, _t%d); (void)lv__dummy;\n",
                  trecv2, ti2);
     }
-    if (has_rest2) {
+    if (has_rest2 && tpair2) {
+      emit_indent(g_pre, g_indent + 2);
+      buf_printf(g_pre, "lv_%s = sp_yielded_args(_t%d, sp_poly_arr_get_hash(_t%d, _t%d));\n",
+                 rename_local(restn2), tpair2, trecv2, ti2);
+    }
+    else if (has_rest2) {
       /* |*x|: wrap the whole yielded element into the rest array. A leading
          required param over a poly element (|a, *r|) would need runtime array
          distribution (emit_iter_bind_rest returns <0) -- reject loudly rather

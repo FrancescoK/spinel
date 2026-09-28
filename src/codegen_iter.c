@@ -3230,12 +3230,19 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       /* one parameter binds the element; two autosplat an array element,
          or for each_with_index take the element and its index */
       const char *qs[2] = { q0, q1 };
+      /* a lone `|x|` / `|*r|` over an Enumerator yielding two values
+         (desugar's enum_hop_yield_view) */
+      const char *view = ewi_walk ? NULL : nt_str(nt, recv, "enum_yield_view");
       for (int k = 0; k < 2; k++) {
         if (!qs[k]) continue;
         LocalVar *lvq = bsc ? scope_local(bsc, qs[k]) : NULL;
         if (!lvq) continue;
-        char vx[48];
-        if (ewi_walk && k == 1) snprintf(vx, sizeof vx, "sp_box_int(_t%d - 1)", ti2);
+        char vx[96];
+        if (view && sp_streq(view, "first"))
+          snprintf(vx, sizeof vx, "sp_yielded_first(_t%d->yields_pair, _t%d)", te, tv);
+        else if (view)
+          snprintf(vx, sizeof vx, "sp_box_poly_array(sp_yielded_args(_t%d->yields_pair, _t%d))", te, tv);
+        else if (ewi_walk && k == 1) snprintf(vx, sizeof vx, "sp_box_int(_t%d - 1)", ti2);
         else if (q1 && !ewi_walk) snprintf(vx, sizeof vx, "sp_poly_arr_get(_t%d, %d)", tv, k);
         else snprintf(vx, sizeof vx, "_t%d", tv);
         emit_indent(b, indent + 2);
