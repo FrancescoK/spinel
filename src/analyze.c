@@ -7028,10 +7028,11 @@ int desugar_enum_method_recv(Compiler *c) {
        emitter, so they terminate over an INFINITE enumerator; materializing
        the elements first would loop forever (#3590) */
     int enum_lazy_driven = nt_ref(nt, id, "block") >= 0 &&
-        (sp_streq(nm, "find") || sp_streq(nm, "detect") || sp_streq(nm, "take_while"));
+        (sp_streq(nm, "find") || sp_streq(nm, "detect") || sp_streq(nm, "take_while") ||
+         sp_streq(nm, "find_index"));
     /* include?/member? stop at the first hit through the same driver (#3756) */
     if (!enum_lazy_driven && nt_ref(nt, id, "block") < 0 &&
-        (sp_streq(nm, "include?") || sp_streq(nm, "member?"))) {
+        (sp_streq(nm, "include?") || sp_streq(nm, "member?") || sp_streq(nm, "find_index"))) {
       int ia = nt_ref(nt, id, "arguments"); int iac = 0;
       if (ia >= 0) nt_arr(nt, ia, "arguments", &iac);
       if (iac == 1) enum_lazy_driven = 1;

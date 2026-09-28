@@ -3843,6 +3843,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     /* include?/member? scan through the driver and stop at the first hit */
     if ((sp_streq(name, "include?") || sp_streq(name, "member?")) && argc == 1 &&
         nt_ref(nt, id, "block") < 0) return TY_BOOL;
+    /* so does find_index(v), an int or nil */
+    if (sp_streq(name, "find_index") && argc == 1 && nt_ref(nt, id, "block") < 0) return TY_INT;
     if (sp_streq(name, "next_values") || sp_streq(name, "peek_values")) return TY_POLY_ARRAY;   /* #2482 */
     if (sp_streq(name, "+") && argc == 1 && infer_type(c, argv[0]) == TY_ENUMERATOR) return TY_ENUMERATOR;  /* #2481 */
     if (sp_streq(name, "rewind")) return TY_ENUMERATOR;

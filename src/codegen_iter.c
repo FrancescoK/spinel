@@ -1316,6 +1316,29 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
   }}
 
 static int subtree_has_own_redo_ex(const NodeTable *nt, int id, int follow_yield);
+/* Is `arg` yielded by one of the builtins/ methods whose block CRuby hands
+   every value a step of the receiver yields (enum_pair_spread_iter), over
+   a receiver whose steps are known only at run time: a boxed one, or an
+   Enumerator the method walks itself (find_index, one item at a time)?
+   Answers the receiver's type, TY_UNKNOWN for none. */
+static TyKind builtin_yield_self_pair(Compiler *c, int arg) {
+  Scope *s = comp_scope_of(c, arg);
+  if (!s || !s->name || strncmp(s->name, "__enum_", 7) != 0) return TY_UNKNOWN;
+  static const char *const names[] = {
+    "flat_map", "collect_concat", "filter_map", "count", "any?", "all?", "none?", "one?",
+    "find_index", "take_while", NULL };
+  int hit = 0;
+  /* the method's name, or a clone's (`__enum_any?__12`) */
+  for (int k = 0; names[k]; k++) {
+    size_t n = strlen(names[k]);
+    const char *tail = s->name + 7 + n;
+    if (strncmp(s->name + 7, names[k], n) == 0 && (!*tail || strncmp(tail, "__", 2) == 0)) hit = 1;
+  }
+  if (!hit) return TY_UNKNOWN;
+  LocalVar *self = scope_local(s, "__self");
+  if (!self || (self->type != TY_POLY && self->type != TY_ENUMERATOR)) return TY_UNKNOWN;
+  return self->type;
+}
 void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_expr,
                        TyKind want_ty) {
   /* want_ty: the consumer's slot type for the block's value (the YieldNode's
@@ -1378,6 +1401,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
      any rest param) from its elements rather than from the splat AST node. */
   int splat_tmp = -1; TyKind splat_at = TY_UNKNOWN;
   int poly_splat_tmp = -1;   /* a boxed yielded value splatted at run time */
+  TyKind self_ty = TY_UNKNOWN;
   /* A trailing hash made only of `**h` splats, into a block taking no
      keywords, is a positional only when it is non-empty: `yield(1, **{})`
      yields just 1. The count is known at run time, so the arguments are
@@ -1418,6 +1442,25 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "int _fs%d = (_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id));\n",
                  poly_splat_tmp, poly_splat_tmp, poly_splat_tmp);
+      free(pb2.p);
+    }
+    else if (inner < 0 && P == 1 && !O && !Q && !R &&
+             (self_ty = builtin_yield_self_pair(c, yargs[0])) != TY_UNKNOWN) {
+      /* A builtin whose block CRuby hands the values one step of an
+         Enumerator yields, walking a receiver known only at run time: a
+         lone parameter takes the first of a step that yielded several. */
+      poly_splat_tmp = ++g_tmp;
+      Buf pb2; memset(&pb2, 0, sizeof pb2); emit_boxed(c, yargs[0], &pb2);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n",
+                 poly_splat_tmp, pb2.p ? pb2.p : "sp_box_nil()", poly_splat_tmp);
+      emit_indent(g_pre, g_indent);
+      if (self_ty == TY_POLY)
+        buf_printf(g_pre, "int _fs%d = sp_yielded_packed(sp_poly_yields_pair(lv_%s), _t%d);\n",
+                   poly_splat_tmp, rename_local("__self"), poly_splat_tmp);
+      else
+        buf_printf(g_pre, "int _fs%d = sp_yielded_packed(lv_%s ? lv_%s->yields_pair : 0, _t%d);\n",
+                   poly_splat_tmp, rename_local("__self"), rename_local("__self"), poly_splat_tmp);
       free(pb2.p);
     }
     else if (ty_is_array(at) || at == TY_POLY_ARRAY) {
@@ -4043,6 +4086,20 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d);\n", ta);
     emit_indent(b, indent); emit_poly_iter_obj_normalize(c, ta, b);
     emit_indent(b, indent); buf_printf(b, "sp_poly_iter_check(_t%d, \"%s\");\n", ta, name);
+    /* `each { |x| }` over an Enumerator yielding several values in a step
+       binds x the first of them; the builtins/ walks (`each { |x| yield x }`)
+       hand the step on whole */
+    int tpair = 0;
+    {
+      Scope *ss = comp_scope_of(c, id);
+      const char *sn = ss ? ss->name : NULL;
+      const char *rest = block_rest_name(c, block);
+      if (sp_streq(name, "each") && p0 && !block_param_name(c, block, 1) && !(rest && *rest) &&
+          !(sn && strncmp(sn, "__enum", 6) == 0)) {
+        tpair = ++g_tmp;
+        emit_indent(b, indent); buf_printf(b, "int _t%d = sp_poly_yields_pair(_t%d);\n", tpair, ta);
+      }
+    }
     /* an Enumerator (or a String Range) has no element read of its own: walk
        the items it yields, so a Ruby-defined Enumerable method (find, count,
        each_with_object, ...) over a boxed one saw no elements. A generator
@@ -4166,7 +4223,9 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       Scope *e0s = comp_scope_of(c, block);
       LocalVar *e0lv = e0s ? scope_local(e0s, block_param_name(c, block, 0)) : NULL;
       TyKind e0t = (e0lv && e0lv->type != TY_UNKNOWN) ? e0lv->type : TY_POLY;
-      char src[64]; snprintf(src, sizeof src, "sp_poly_each_elem(_t%d, _t%d)", ta, ti);
+      char src[96];
+      if (tpair) snprintf(src, sizeof src, "sp_yielded_first(_t%d, sp_poly_each_elem(_t%d, _t%d))", tpair, ta, ti);
+      else snprintf(src, sizeof src, "sp_poly_each_elem(_t%d, _t%d)", ta, ti);
       emit_indent(b, indent + 1);
       emit_block_param_from_boxed(c, p0, e0t, src, b);
     }

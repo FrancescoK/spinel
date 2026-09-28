@@ -10,6 +10,19 @@
 #include "sp_alloc.h"
 #include "sp_fiber.h"
 
+#define SP_PAIR_EACH   1
+#define SP_PAIR_PACKED 2
+
+/* The Array a generator step that yields several values packs them in: an
+   ordinary poly array, told apart by its scan function so a generator that
+   also yields single values (an Array among them) keeps each step's arity. */
+void sp_PolyArray_pack_scan(void *p);
+sp_PolyArray *sp_PolyArray_new_pack(void);
+static inline sp_bool sp_poly_is_pack(sp_RbVal v) {
+  return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_POLY_ARRAY && v.v.p &&
+         ((sp_gc_hdr *)((char *)v.v.p - sizeof(sp_gc_hdr)))->scan == sp_PolyArray_pack_scan;
+}
+
 typedef struct {
   sp_PolyArray *items; sp_int cursor;   /* materialized mode (items != NULL) */
   void (*gen)(sp_Fiber *);                /* generator body (fiber mode, gen != NULL) */
@@ -37,11 +50,14 @@ typedef struct {
   sp_bool endless;                       /* an argless #cycle: the items are one round, and
                                              #next / #peek start over at their end, so the
                                              enumerator never stops (sp_gc_alloc zero-fills) */
-  sp_bool yields_pair;                   /* each item is the two values one step yields
-                                             (each_with_index, with_index, each_with_object,
-                                             with_object) packed as an Array, which a block
-                                             of map and its kin takes spread
-                                             (sp_gc_alloc zero-fills) */
+  unsigned char yields_pair;             /* SP_PAIR_EACH: each item is the two values one step
+                                             yields (each_with_index, with_index,
+                                             each_with_object, with_object) packed as an Array,
+                                             which a block of map and its kin takes spread;
+                                             SP_PAIR_PACKED: only the items packed by a
+                                             generator step that yielded several values
+                                             (sp_PolyArray_new_pack) are (sp_gc_alloc
+                                             zero-fills) */
   sp_PolyArray *walk_buf;                /* a walker (sp_enum_walker_boxed): the items pulled
                                              so far by an index walk over a generator or
                                              endless source, one at a time; NULL otherwise */
