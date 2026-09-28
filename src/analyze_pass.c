@@ -3,6 +3,7 @@ int callee_has_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_declares_kwargs(Compiler *c, Scope *m);
 int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
 int is_fresh_array(Compiler *c, int v);
+int kwh_only_spreads(const NodeTable *nt, int kwh);
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -4751,11 +4752,18 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
       if (pr != TY_UNKNOWN && p->proc_ret != (int)pr) { p->proc_ret = (int)pr; changed = 1; }
     }
   }
-  /* Post-splat required params: bind from the end of the positional args. */
+  /* Post-splat required params: bind from the end of the positional args.
+     A keyword hash no keyword parameter takes is the last of those, and
+     the hash rule below types the post it lands in. One of `**` spreads
+     alone may be no argument at all, and then the posts take the
+     positionals as they are: both layouts type them. */
   if (m->rest_idx >= 0 && m->npost_rest > 0) {
+    int post_argc = pos_argc + (kwh >= 0 && m->kwrest_idx < 0 && !callee_declares_kwargs(c, m));
+    int layouts = post_argc > pos_argc && kwh_only_spreads(nt, kwh) ? 2 : 1;
+    for (int l = 0; l < layouts; l++)
     for (int j = 0; j < m->npost_rest; j++) {
       int pi = m->rest_idx + 1 + j;
-      int ai = pos_argc - m->npost_rest + j;
+      int ai = post_argc - l - m->npost_rest + j;
       if (pi >= m->nparams || ai < 0 || ai >= pos_argc || !argv) continue;
       LocalVar *p = scope_local(m, m->pnames[pi]);
       if (!p || p->rbs_seeded) continue;
@@ -4852,10 +4860,12 @@ else {
          method on it dereferenced the NULL (#3911). This is the type-inference
          half of the binding rule in kwh_consumed_by_kwparam. */
       /* The parameter is the one the hash funds as one more argument, which
-         with a leading optional is not the one at index pos_argc. */
-      int kslot = pos_argc < max_bind ? kwh_arg_param(c, m, pos_argc) : -1;
+         with a leading optional is not the one at index pos_argc, and past a
+         *rest is its last post. */
+      int kpost = m->rest_idx >= 0 && m->npost_rest > 0;
+      int kslot = pos_argc < max_bind || kpost ? kwh_arg_param(c, m, pos_argc) : -1;
       if (!any_kw_bound && m->kwrest_idx < 0 && !callee_declares_kwargs(c, m) &&
-          kslot >= 0 && kslot < max_bind) {
+          kslot >= 0 && (kslot < max_bind || kpost)) {
         LocalVar *p = m->pnames[kslot] ? scope_local(m, m->pnames[kslot]) : NULL;
         if (p && !p->rbs_seeded) {
           TyKind kwt = infer_type(c, kwh);
