@@ -13948,10 +13948,15 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       /* a typed hash against an empty `{}` literal (whose own type may be
          unknown): equal exactly when the hash is empty */
       if ((ae && ty_is_hash(rt) && ty_hash_cname(rt)) || (re && ty_is_hash(a0) && ty_hash_cname(a0))) {
+        /* evaluated once; a typed hash slot can be NULL (an unassigned
+           @h), which is nil and never equal to a Hash */
         int hs = ae ? recv : argv[0];
-        buf_printf(b, "(sp_%sHash_length(", ty_hash_cname(ae ? rt : a0));
+        TyKind ht = ae ? rt : a0;
+        int th = ++g_tmp;
+        buf_puts(b, "({ "); emit_ctype(c, ht, b); buf_printf(b, " _t%d = ", th);
         emit_expr(c, hs, b);
-        buf_printf(b, ") %s 0)", eq ? "==" : "!=");
+        buf_printf(b, "; _t%d == NULL ? %d : (sp_%sHash_length(_t%d) %s 0); })",
+                   th, eq ? 0 : 1, ty_hash_cname(ht), th, eq ? "==" : "!=");
         return 1;
       }
       if (ty_is_hash(rt) && ty_is_hash(a0)) {

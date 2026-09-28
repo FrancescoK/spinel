@@ -17,3 +17,12 @@ h = {"a" => 1}
 p h == {}
 p h != {"a" => 1}
 p({} == {"a" => 1}, {} != g)
+class Holder
+  def fill = @h = {"k" => 1}
+  def empty? = @h == {}
+  def any? = {} != @h
+end
+hd = Holder.new
+p hd.empty?, hd.any?
+hd.fill
+p hd.empty?, hd.any?
