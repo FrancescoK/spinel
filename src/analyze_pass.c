@@ -2315,7 +2315,7 @@ static int masgn_unify_elem(Compiler *c, Scope *ms, const int *tgts, int n, TyKi
         c->classes[cc].cvar_types[cvx] = mg; changed = 1;
       }
     }
-    else if (sp_streq(lty_ms, "ConstantTargetNode")) {
+    else if (sp_streq(lty_ms, "ConstantTargetNode") || sp_streq(lty_ms, "ConstantPathTargetNode")) {
       const char *cnm_ms = nt_str(nt, tgts[i], "name");
       LocalVar *cv_ms = cnm_ms ? comp_const(c, cnm_ms) : NULL;
       if (!cv_ms) continue;
@@ -2560,7 +2560,7 @@ int infer_write_types(Compiler *c) {
       if (is_io_pair) {
         for (int i = 0; i < 2; i++) {
           const char *lty_io = nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "";
-          if (sp_streq(lty_io, "ConstantTargetNode")) {
+          if (sp_streq(lty_io, "ConstantTargetNode") || sp_streq(lty_io, "ConstantPathTargetNode")) {
             /* `R, W = IO.pipe`: an untyped constant gets no slot to assign */
             const char *cnm_io = nt_str(nt, lefts[i], "name");
             LocalVar *cv_io = cnm_io ? comp_const(c, cnm_io) : NULL;
@@ -2615,7 +2615,7 @@ int infer_write_types(Compiler *c) {
           }
           else if (sp_streq(lty_mr, "GlobalVariableTargetNode") || sp_streq(lty_mr, "ClassVariableTargetNode"))
             changed |= masgn_unify_elem(c, ms_mr, &lefts[i], 1, elems[i]);
-          else if (sp_streq(lty_mr, "ConstantTargetNode")) {
+          else if (sp_streq(lty_mr, "ConstantTargetNode") || sp_streq(lty_mr, "ConstantPathTargetNode")) {
             const char *cnm = nt_str(nt, lefts[i], "name");
             LocalVar *cv = cnm ? comp_const(c, cnm) : NULL;
             if (!cv) continue;
@@ -2765,7 +2765,7 @@ int infer_write_types(Compiler *c) {
         if (!lv || lv->is_param || lv->is_block_param) continue;
         lv->type = ty_unify(lv->type, et);
       }
-      else if (sp_streq(lty, "ConstantTargetNode")) {
+      else if (sp_streq(lty, "ConstantTargetNode") || sp_streq(lty, "ConstantPathTargetNode")) {
         const char *cnm = nt_str(nt, lefts[i], "name");
         LocalVar *cv = cnm ? comp_const(c, cnm) : NULL;
         if (!cv) continue;
@@ -2852,7 +2852,7 @@ int infer_write_types(Compiler *c) {
         if (!lv || lv->is_param || lv->is_block_param) continue;
         lv->type = ty_unify(lv->type, et);
       }
-      else if (sp_streq(rty3, "ConstantTargetNode")) {
+      else if (sp_streq(rty3, "ConstantTargetNode") || sp_streq(rty3, "ConstantPathTargetNode")) {
         const char *cnm2 = nt_str(nt, rights[j], "name");
         LocalVar *cv2 = cnm2 ? comp_const(c, cnm2) : NULL;
         if (!cv2) continue;

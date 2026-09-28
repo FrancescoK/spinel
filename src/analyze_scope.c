@@ -2472,8 +2472,10 @@ void register_globals_consts(Compiler *c) {
     else if (sp_streq(ty, "AliasGlobalVariableNode")) {
       /* already handled in pass 1 */
     }
-    else if (sp_streq(ty, "ConstantTargetNode")) {
-      /* target in a multi-write: A, B = expr (a definite write) */
+    else if (sp_streq(ty, "ConstantTargetNode") || sp_streq(ty, "ConstantPathTargetNode")) {
+      /* target in a multi-write: A, B = expr (a definite write); a path
+         target (`Mod::A, ::B = ...`) interns its leaf name flat, as the
+         path write does */
       const char *nm = nt_str(nt, id, "name");
       if (nm && is_c_ident(nm) && comp_class_index(c, nm) < 0)
         comp_const_intern(c, nm)->const_def_write = 1;
@@ -3695,7 +3697,7 @@ int infer_multiwrite_const_types(Compiler *c) {
     const int *lefts = nt_arr(nt, id, "lefts", &ln);
     for (int i = 0; i < ln; i++) {
       const char *lty = nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "";
-      if (!sp_streq(lty, "ConstantTargetNode")) continue;
+      if (!sp_streq(lty, "ConstantTargetNode") && !sp_streq(lty, "ConstantPathTargetNode")) continue;
       const char *nm = nt_str(nt, lefts[i], "name");
       LocalVar *cv = nm ? comp_const(c, nm) : NULL;
       if (!cv || cv->type == elem) continue;
@@ -3705,7 +3707,7 @@ int infer_multiwrite_const_types(Compiler *c) {
     const int *rights = nt_arr(nt, id, "rights", &rn);
     for (int j = 0; j < rn; j++) {
       const char *rty2 = nt_type(nt, rights[j]) ? nt_type(nt, rights[j]) : "";
-      if (!sp_streq(rty2, "ConstantTargetNode")) continue;
+      if (!sp_streq(rty2, "ConstantTargetNode") && !sp_streq(rty2, "ConstantPathTargetNode")) continue;
       const char *nm = nt_str(nt, rights[j], "name");
       LocalVar *cv = nm ? comp_const(c, nm) : NULL;
       if (!cv || cv->type == elem) continue;
