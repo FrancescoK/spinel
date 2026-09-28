@@ -1230,7 +1230,7 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   else if (lv && ty_is_ptr_array(lv->type) && emit_ptr_array_build(c, v, lv->type, b)) {
     /* built in place at the slot's own container type */
   }
-  else if (is_hash_new && nt_ref(c->nt, v, "block") >= 0) {
+  else if (is_hash_new && nt_ref(c->nt, v, "block") >= 0 && !(lv && lv->type == TY_POLY)) {
     /* Hash.new { |hash, key| ... }: emit through emit_call so the dproc
        function + sp_PolyPolyHash_new_dproc path runs. */
     emit_expr(c, v, b);
@@ -6017,6 +6017,8 @@ static void emit_tail_value(Compiler *c, int node, Buf *b) {
      other branch is `{ a: 1 }`); otherwise the StrPolyHash* return is an
      incompatible pointer type. Same idea as the empty-`[]` array handling. */
   const char *nty = nt_type(c->nt, node);
+  if (nty && sp_streq(nty, "CallNode") && ty_is_array(g_ret_type) && comp_ntype(c, node) == TY_UNKNOWN &&
+      emit_empty_container_for_slot(c, node, g_ret_type, b)) return;
   if (nty && (sp_streq(nty, "HashNode") || sp_streq(nty, "KeywordHashNode")) && ty_is_hash(g_ret_type)) {
     int hc = 0; nt_arr(c->nt, node, "elements", &hc);
     const char *hcn = ty_hash_cname(g_ret_type);

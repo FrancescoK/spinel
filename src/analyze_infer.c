@@ -6961,6 +6961,23 @@ static int branch_diverges(Compiler *c, int b) {
   return k == NK_StatementsNode ? stmts_diverge(c, b) : 0;
 }
 
+/* `Array.new` answers 1 and `Hash.new` (bare, with a default or a capacity,
+   or with a default block) 2: like the empty literals they start with no element type
+   of their own, and infer to TY_UNKNOWN until their use settles one. */
+static int an_empty_container_new(Compiler *c, int b) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, b, "name");
+  int r = nt_ref(nt, b, "receiver");
+  if (!nm || !sp_streq(nm, "new") || r < 0 || nt_kind(nt, r) != NK_ConstantReadNode) return 0;
+  const char *rn = nt_str(nt, r, "name");
+  int a = nt_ref(nt, b, "arguments");
+  int an = 0; if (a >= 0) nt_arr(nt, a, "arguments", &an);
+  if (rn && sp_streq(rn, "Array"))
+    return an == 0 && nt_ref(nt, b, "block") < 0 ? 1 : 0;
+  if (!rn || !sp_streq(rn, "Hash")) return 0;
+  return an <= 1 ? 2 : 0;
+}
+
 /* An empty `[]` / `{}` carries no element type of its own, so it caches
    TY_UNKNOWN, and unifying an arm that ends in one DROPS it: the branch then
    answers whatever the other arms said, and the literal's construction is
@@ -6985,6 +7002,10 @@ static TyKind an_empty_container_tail(Compiler *c, int stmts) {
     nt_arr(nt, tail, "elements", &len);
     if (len == 0) return TY_STR_POLY_HASH;
   }
+  else if (ty && sp_streq(ty, "CallNode")) {
+    int k = an_empty_container_new(c, tail);
+    if (k) return k == 1 ? TY_POLY_ARRAY : TY_STR_POLY_HASH;
+  }
   return TY_UNKNOWN;
 }
 
@@ -7000,7 +7021,7 @@ static TyKind an_branch_ty(Compiler *c, int stmts) {
 }
 
 /* 1 when a value (a branch arm, a write's right side, a returned value) is
-   an empty `[]` literal, 2 for an empty `{}`. */
+   an empty `[]` literal or `Array.new`, 2 for an empty `{}` or `Hash.new`. */
 int an_empty_container_kind(Compiler *c, int b) {
   const NodeTable *nt = c->nt;
   while (b >= 0) {
@@ -7015,7 +7036,7 @@ int an_empty_container_kind(Compiler *c, int b) {
     int n = 0;
     if (k == NK_ArrayNode) { nt_arr(nt, b, "elements", &n); return n == 0 ? 1 : 0; }
     if (k == NK_HashNode) { nt_arr(nt, b, "elements", &n); return n == 0 ? 2 : 0; }
-    return 0;
+    return k == NK_CallNode ? an_empty_container_new(c, b) : 0;
   }
   return 0;
 }
@@ -7923,6 +7944,10 @@ TyKind infer_uncached(Compiler *c, int id) {
         if (rn == 0) rt = TY_STR_POLY_HASH;
       }
       if (rt != TY_UNKNOWN && (lt == TY_NIL || lt == TY_UNKNOWN)) return rt;
+      /* `Array.new` / `Hash.new` are as untyped as the literals, and beside
+         a left of another kind the answer boxes */
+      if (rt == TY_UNKNOWN && an_empty_container_disagrees(an_empty_container_kind(c, rnd), lt))
+        return TY_POLY;
     }
     return ty_unify(lt, rt);  /* value form: a || b -> common type */
   }
