@@ -65,6 +65,37 @@ eval 1
 eval 2
 eval 3
 [1, 2, 2]
+eval 1
+eval 2
+[1, 0, 2, nil]
+eval 1
+eval 2
+eval 3
+[1, 2, 2, nil]
+eval 1
+eval 2
+[1, 0, 0, nil]
+eval 1
+eval 2
+[1, 0, 2, nil]
+eval 1
+eval 2
+[1, 0, 2, :blk]
+eval 1
+eval 2
+[1, 0, 2]
+eval 1
+eval 2
+[1, 0, 2]
+eval 1
+eval 2
+[1, 1]
+eval 1
+eval 2
+[1, {b: 2}]
+eval 1
+eval 2
+[1, {b: 2}]
 #<data Point x=1, y=2>
 #<data Point x=1, y=2>
 #<data Point x=5, y=2>

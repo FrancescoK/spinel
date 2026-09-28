@@ -35,6 +35,17 @@ def k2(x, a: 0, b: 0, &blk) = [x, a, b, blk ? blk.call : nil]
 def yk2(x, a: 0, b: 0) = yield(x, a, b)
 def pos(h) = h
 def rest(*r) = r
+def xrest(x, **r) = [x, r]
+def pos2(x, h) = [x, h]
+
+class Box
+  def initialize(x, a: 0)
+    @v = [x, a]
+  end
+
+  attr_reader :v
+end
+
 def fwd(**) = k(**, **{ b: 8 })
 
 def src(tag, v)
@@ -106,6 +117,16 @@ p k2(src(1, 1), **src(2, g), **src(3, h))
 p k2(src(1, 1), a: src(2, 2), **src(3, g), &proc { :blk })
 p C.new.k2(src(1, 1), a: src(2, 2), **src(3, g))
 p(yk2(src(1, 1), a: src(2, 2), **src(3, g)) { |*v| v })
+p k2(src(1, 1), **src(2, g))
+p k2(src(1, 1), **src(2, g), a: src(3, 2))
+p k2(src(1, 1), **src(2, nil))
+p k2(*src(1, [1]), **src(2, g))
+p k2(src(1, 1), **src(2, g), &proc { :blk })
+p C.new.k2(src(1, 1), **src(2, g))
+p(yk2(src(1, 1), **src(2, g)) { |*v| v })
+p Box.new(src(1, 1), **src(2, h)).v
+p xrest(src(1, 1), **src(2, g))
+p pos2(src(1, 1), **src(2, g))
 
 # a Data or Struct constructor
 hx = { x: 1 }

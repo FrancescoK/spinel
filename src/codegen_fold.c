@@ -6573,7 +6573,23 @@ int kwh_merged(Compiler *c, Scope *m, int kwh) {
 }
 
 /* See codegen_internal.h. */
-void emit_merged_positionals(Compiler *c, const int *argv, int pos_argc) {
+int kwh_runs_ahead(Compiler *c, Scope *m, int kwh) {
+  const NodeTable *nt = c->nt;
+  if (kwh_merged(c, m, kwh)) return 1;
+  if (kwh < 0) return 0;
+  int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
+  for (int e = 0; e < en; e++) {
+    if (nt_kind(nt, el[e]) != NK_AssocSplatNode) continue;
+    int v = nt_ref(nt, el[e], "value");
+    TyKind t = v >= 0 ? comp_ntype(c, v) : TY_UNKNOWN;
+    return v >= 0 && subtree_has_side_effect(c, v) &&
+           (ty_is_hash(t) || t == TY_POLY || t == TY_NIL || kw_splat_bad_cls(c, t));
+  }
+  return 0;
+}
+
+/* See codegen_internal.h. */
+void emit_positionals_first(Compiler *c, const int *argv, int pos_argc) {
   const NodeTable *nt = c->nt;
   for (int k = 0; argv && k < pos_argc && g_n_argov < MAX_ARG_OVERRIDE; k++) {
     int v = argv[k];
@@ -7552,7 +7568,7 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
      Pre-evaluate the hash to a temp so we can do per-param lookups. */
   int kw_merged = kwh_merged(c, m, kwh);
   int argov_saved = g_n_argov;
-  if (kw_merged) emit_merged_positionals(c, argv, pos_argc);
+  if (kwh_runs_ahead(c, m, kwh)) emit_positionals_first(c, argv, pos_argc);
   TyKind ds_hash_type = TY_UNKNOWN;
   int ds_hash_tmp = emit_ds_hash_materialize(c, m, kwh, &ds_hash_type);
   emit_ds_kwarg_check(c, m, kwh, ds_hash_tmp, ds_hash_type);
@@ -8363,7 +8379,7 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
      into a NULL kwrest and let positionals steal keys by name). */
   int kw_merged_d = kwh_merged(c, m, kwh_d);
   int argov_saved_d = g_n_argov;
-  if (kw_merged_d) emit_merged_positionals(c, argv, pos_argc_d);
+  if (m && kwh_runs_ahead(c, m, kwh_d)) emit_positionals_first(c, argv, pos_argc_d);
   TyKind ds_type_d = TY_UNKNOWN;
   int ds_tmp_d = (m && kwh_d >= 0) ? emit_ds_hash_materialize(c, m, kwh_d, &ds_type_d) : -1;
   emit_ds_kwarg_check(c, m, kwh_d, ds_tmp_d, ds_type_d);
