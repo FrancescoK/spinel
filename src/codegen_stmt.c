@@ -11249,13 +11249,7 @@ static int str_append_chain_base(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int cur = id;
   for (;;) {
-    while (nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "ParenthesesNode")) {
-      int pb = nt_ref(nt, cur, "body");
-      if (pb < 0) break;
-      int bn = 0; const int *bb = nt_arr(nt, pb, "body", &bn);
-      if (bn != 1) break;
-      cur = bb[0];
-    }
+    cur = unwrap_parens(c, cur);
     const char *cty = nt_type(nt, cur);
     if (!cty || !sp_streq(cty, "CallNode")) return cur;
     const char *cnm = nt_str(nt, cur, "name");
@@ -12113,13 +12107,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
   if ((sp_streq(name, "<<") || sp_streq(name, "concat")) && argc == 1) {
     int chain[64]; int nchain = 0; int cur = id;
     while (nchain < 64) {
-      while (nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "ParenthesesNode")) {
-        int pb = nt_ref(nt, cur, "body");
-        if (pb < 0) break;
-        int bn = 0; const int *bb = nt_arr(nt, pb, "body", &bn);
-        if (bn != 1) break;
-        cur = bb[0];
-      }
+      cur = unwrap_parens(c, cur);
       const char *cty = nt_type(nt, cur);
       if (!cty || !sp_streq(cty, "CallNode")) break;
       const char *cnm = nt_str(nt, cur, "name");
