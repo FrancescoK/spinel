@@ -4946,6 +4946,11 @@ static int gen_yields_multi(const NodeTable *nt, int id, const char *yname) {
   if (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode") ||
       sp_streq(ty, "SingletonClassNode"))
     return 0;
+  /* a nested block or lambda whose own parameter is named like the yielder
+     yields to that parameter, not to this generator */
+  if ((sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode")) &&
+      subtree_has_param_named_pub(nt, nt_ref(nt, id, "parameters"), yname))
+    return 0;
   if (sp_streq(ty, "CallNode")) {
     const char *nm = nt_str(nt, id, "name");
     int rcv = nt_ref(nt, id, "receiver");

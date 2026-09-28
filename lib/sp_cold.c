@@ -2533,6 +2533,7 @@ void sp_Enumerator_scan(void *p) {
   sp_mark_rbval(e->gen_result);
   sp_mark_rbval(e->source);
   sp_mark_string(e->meth);
+  if (e->walk_buf) sp_gc_mark(e->walk_buf);
 }
 sp_Enumerator *sp_enum_with_src(sp_Enumerator *e, sp_RbVal src, const char *meth) { sp_gc_wb((void*)e);
   e->source = src;

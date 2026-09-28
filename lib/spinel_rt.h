@@ -7858,6 +7858,23 @@ static sp_RbVal sp_poly_iter_subject(sp_RbVal v) {
     return sp_box_poly_array(sp_enum_items_from(v));
   return v;
 }
+/* What a boxed receiver's element-by-element walk reads (the spliced poly
+   each loop, sp_poly_enum_proc): a generator or endless Enumerator as a
+   walker that runs its source one item ahead of the walk, so a block that
+   breaks out (find, any?, a Ruby-defined Enumerable method) stops an
+   endless one where CRuby does; anything else as sp_poly_iter_subject
+   renders it. */
+static sp_RbVal sp_enum_walker_boxed(sp_RbVal v);
+static sp_bool sp_enum_is_walker(sp_RbVal v);
+static sp_int sp_enum_walk_len(sp_RbVal v);
+static sp_RbVal sp_enum_walk_at(sp_RbVal v, sp_int i);
+static sp_RbVal sp_poly_iter_walk(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p) {
+    sp_RbVal w = sp_enum_walker_boxed(v);
+    if (w.tag != SP_TAG_NIL) return w;
+  }
+  return sp_poly_iter_subject(v);
+}
 static void sp_poly_iter_check(sp_RbVal v, const char *m) {
   if (v.tag == SP_TAG_OBJ &&
       (v.cls_id >= 0 || sp_poly_is_array_kind(v.cls_id) ||
@@ -7868,6 +7885,7 @@ static void sp_poly_iter_check(sp_RbVal v, const char *m) {
 }
 static sp_int sp_poly_arr_len_ex(sp_RbVal a) {
   if (a.tag != SP_TAG_OBJ) return 0;
+  if (sp_enum_is_walker(a)) return sp_enum_walk_len(a);
   switch (a.cls_id) {
     case SP_BUILTIN_RANGE: { sp_Range *r = (sp_Range *)a.v.p; sp_int n = r->last - r->first + (r->excl ? 0 : 1); return n > 0 ? n : 0; }
     default:
@@ -7885,6 +7903,7 @@ static sp_int sp_poly_arr_len_ex(sp_RbVal a) {
 static sp_RbVal sp_poly_each_elem(sp_RbVal a, sp_int i) {
   SP_GC_ROOT_RBVAL(a);   /* the boxing arms below allocate */
   if (a.tag != SP_TAG_OBJ) return sp_box_nil();
+  if (sp_enum_is_walker(a)) return sp_enum_walk_at(a, i);
   switch (a.cls_id) {
     case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_FLT_ARRAY:
     case SP_BUILTIN_STR_ARRAY: case SP_BUILTIN_POLY_ARRAY: case SP_BUILTIN_PTR_ARRAY:
@@ -13383,6 +13402,59 @@ static sp_PolyArray *sp_zip_arg(sp_RbVal v) {
 static sp_PolyArray *sp_enum_to_a_boxed(sp_RbVal v) {
   return sp_Enumerator_to_a((sp_Enumerator *)v.v.p);
 }
+/* A walker over a generator or endless Enumerator: a fresh enumerator on
+   the same source with a fiber and cursor of its own (the source's #next
+   position is neither read nor moved), which pulls an item only when the
+   walk asks whether there is one more. Nil for a finite materialized
+   source, which is walked as its items. */
+static sp_RbVal sp_enum_walker_boxed(sp_RbVal v) {
+  sp_Enumerator *e = (sp_Enumerator *)v.v.p;
+  if (!e->gen && !e->endless) return sp_box_nil();
+  SP_GC_ROOT(e);
+  sp_Enumerator *w = sp_Enumerator_dup(e);
+  SP_GC_ROOT(w);
+  w->fib = NULL; w->cursor = 0; w->peeked = FALSE; w->has_feed = FALSE;
+  w->walk_next = 0; w->walk_done = FALSE;
+  sp_PolyArray *buf = sp_PolyArray_new();
+  sp_gc_wb((void *)w); w->walk_buf = buf;
+  return sp_box_obj(w, SP_BUILTIN_ENUMERATOR);
+}
+static sp_bool sp_enum_is_walker(sp_RbVal v) {
+  return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p &&
+         ((sp_Enumerator *)v.v.p)->walk_buf != NULL;
+}
+/* The walk's length so far: one past the index it reads next while the
+   source still has that item, pulling it now if it has not been. */
+static sp_int sp_enum_walk_len(sp_RbVal v) {
+  sp_Enumerator *w = (sp_Enumerator *)v.v.p;
+  SP_GC_ROOT(w);
+  while (!w->walk_done && w->walk_buf->len <= w->walk_next) {
+    sp_RbVal it;
+    if (w->gen) {
+      if (!w->fib) {
+        sp_Fiber *f = sp_Fiber_new(w->gen);
+        sp_gc_wb((void *)w); w->fib = f;
+        if (w->gen_cap) { sp_gc_wb((void *)f); f->user_data = w->gen_cap; }
+      }
+      if (!sp_Fiber_alive(w->fib)) { w->walk_done = TRUE; break; }
+      it = sp_Fiber_resume(w->fib, sp_box_nil());
+      if (!sp_Fiber_alive(w->fib)) { w->walk_done = TRUE; break; }
+    }
+    else {
+      sp_int n = w->items ? w->items->len : 0;
+      if (n == 0 || (!w->endless && w->cursor >= n)) { w->walk_done = TRUE; break; }
+      it = w->items->data[w->cursor % n];
+      w->cursor++;
+    }
+    sp_PolyArray_push(w->walk_buf, it);
+  }
+  return w->walk_buf->len;
+}
+static sp_RbVal sp_enum_walk_at(sp_RbVal v, sp_int i) {
+  sp_Enumerator *w = (sp_Enumerator *)v.v.p;
+  if (i >= w->walk_next) w->walk_next = i + 1;
+  return (i >= 0 && i < w->walk_buf->len) ? w->walk_buf->data[i] : sp_box_nil();
+}
 static sp_RbVal sp_enum_first_boxed(sp_RbVal v) {
   sp_PolyArray *a = sp_Enumerator_take((sp_Enumerator *)v.v.p, 1);
   return a->len > 0 ? a->data[0] : sp_box_nil();
@@ -14008,7 +14080,31 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
        op == SP_PENUM_ANY || op == SP_PENUM_ALL || op == SP_PENUM_NONE);
     /* a `|*r|` block of map takes the values spread */
     spread_pair = sp_poly_yields_pair(recv) && blk && blk->arity < 0 && op == SP_PENUM_MAP;
-    walk = sp_poly_iter_subject(recv);
+    walk = sp_poly_iter_walk(recv);
+    /* The names that can stop early run the block as each item is pulled,
+       so an endless generator stops where CRuby's does. */
+    if (sp_enum_is_walker(walk) &&
+        (op == SP_PENUM_EACH || op == SP_PENUM_EACH_WITH_INDEX || op == SP_PENUM_FIND ||
+         op == SP_PENUM_FIND_INDEX || op == SP_PENUM_ANY || op == SP_PENUM_ALL ||
+         op == SP_PENUM_NONE)) {
+      SP_GC_ROOT_RBVAL(walk);
+      for (sp_int i = 0; i < sp_poly_arr_len_ex(walk); i++) {
+        sp_RbVal e = sp_poly_each_elem(walk, i);
+        sp_RbVal a = first_of_pair ? sp_yielded_first(TRUE, e) : e;
+        switch (op) {
+          case SP_PENUM_EACH: sp_penum_call1(blk, a); break;
+          case SP_PENUM_EACH_WITH_INDEX: sp_penum_call2(blk, a, sp_box_int(i)); break;
+          case SP_PENUM_FIND: if (sp_poly_truthy(sp_penum_call1(blk, a))) return e; break;
+          case SP_PENUM_FIND_INDEX: if (sp_poly_truthy(sp_penum_call1(blk, a))) return sp_box_int(i); break;
+          case SP_PENUM_ANY: if (sp_poly_truthy(sp_penum_call1(blk, a))) return sp_box_bool(TRUE); break;
+          case SP_PENUM_ALL: if (!sp_poly_truthy(sp_penum_call1(blk, a))) return sp_box_bool(FALSE); break;
+          case SP_PENUM_NONE: if (sp_poly_truthy(sp_penum_call1(blk, a))) return sp_box_bool(FALSE); break;
+        }
+      }
+      if (op == SP_PENUM_EACH || op == SP_PENUM_EACH_WITH_INDEX) return recv;
+      if (op == SP_PENUM_FIND || op == SP_PENUM_FIND_INDEX) return sp_box_nil();
+      return sp_box_bool(op != SP_PENUM_ANY);
+    }
   }
   SP_GC_ROOT_RBVAL(walk);
   sp_int n = sp_poly_arr_len_ex(walk);
