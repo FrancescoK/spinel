@@ -1,0 +1,24 @@
+boom
+boom
+#<MyErr: boom>
+MyErr
+true
+true
+false
+true
+true
+true
+sub
+sub
+#<SubErr: sub>
+own to_s
+own to_s
+#<OwnToS: own to_s>
+own message
+std
+rescued boom
+rescued SubErr sub
+in ivar
+hv
+hv
+["x", "s"]

@@ -1903,6 +1903,20 @@ static inline int sp_poly_is_hash_kind(int cls_id);
 static inline const char *sp_poly_inspect(sp_RbVal v);
 static const char *sp_PolyArray_inspect(sp_PolyArray *a);  /* fwd: Array#to_s == inspect */
 static const char *sp_PtrArray_inspect_k(sp_PtrArray *a);   /* fwd: a pointer array by what it holds (#4486) */
+/* Runtime class table: set of cls_ids that are user exception subclasses.
+   Populated by the codegen (src/codegen.c) for every class that
+   `class_is_exc_subclass` returns true. Used by sp_raise_poly and the
+   boxed-value accessors (to_s, ==, message) to verify a boxed object
+   is an exception subclass before reading it as one -- reading the sp_Exception prefix on a non-exception user
+   object is a wrong-offset read (segfault). */
+extern const sp_int sp_exc_subclass_ids[];
+extern const sp_int sp_exc_subclass_count;
+
+static inline int sp_is_exc_subclass_cls(sp_int cls_id) {
+  for (sp_int i = 0; i < sp_exc_subclass_count; i++)
+    if (sp_exc_subclass_ids[i] == cls_id) return 1;
+  return 0;
+}
 static inline const char *sp_poly_to_s(sp_RbVal v) {
   switch (v.tag) {
     /* int-typed nil (SP_INT_NIL) is Ruby nil; nil.to_s is "" -- match it. */
@@ -1950,6 +1964,9 @@ static inline const char *sp_poly_to_s(sp_RbVal v) {
               const char *us = sp_obj_to_s_fn(v.cls_id, v.v.p);
               if (us) return us;
             }
+            /* a user exception subclass boxes under its own class id */
+            if (sp_is_exc_subclass_cls(v.cls_id))
+              return sp_exc_message((volatile struct sp_Exception_s *)v.v.p);
             if (v.v.p == sp_main_obj) return SPL("main");
             return sp_sprintf("#<%s:0x%016llx>", sp_poly_class_name(v),
                               (unsigned long long)(uintptr_t)v.v.p);
@@ -3622,7 +3639,7 @@ static SP_NOINLINE sp_bool sp_poly_eq_slow(sp_RbVal a, sp_RbVal b) {
       return sp_str_eq(_sa, _sb);
     } } if (sp_poly_is_brat(a) || sp_poly_is_brat(b)) { if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) return sp_poly_to_f(a) == sp_poly_to_f(b); int _oka = sp_poly_is_brat(a) || sp_poly_is_rational(a) || a.tag == SP_TAG_INT || a.tag == SP_TAG_BIGINT; int _okb = sp_poly_is_brat(b) || sp_poly_is_rational(b) || b.tag == SP_TAG_INT || b.tag == SP_TAG_BIGINT; return (_oka && _okb) ? (sp_brat_cmp_poly(a, b) == 0) : FALSE; } /* A boxed Rational against a number: sp_poly_numeric_p covers only int/float/bigint, so without this a Rational operand fell through to the tag-equality test below and `Rational(1,1) == 1` answered false (#3382). The BigRational clause above already covers the mixed big cases. */ if (sp_poly_is_rational(a) || sp_poly_is_rational(b)) { int _qa = sp_poly_is_rational(a) || sp_poly_numeric_p(a); int _qb = sp_poly_is_rational(b) || sp_poly_numeric_p(b); if (!(_qa && _qb)) return FALSE; if (sp_poly_is_rational(a) && sp_poly_is_rational(b) && a.v.p && b.v.p) return sp_rational_eq(*(sp_Rational *)a.v.p, *(sp_Rational *)b.v.p); return sp_poly_to_f(a) == sp_poly_to_f(b); } if (a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT) { sp_Bigint *ba = sp_poly_as_bigint(a), *bb = sp_poly_as_bigint(b); if (ba && bb) return sp_bigint_cmp(ba, bb) == 0; if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) return sp_poly_to_f(a) == sp_poly_to_f(b); return FALSE; } /* Two integers compare AS INTEGERS. The numeric fallback below converts both to double, which above 2^53 is lossy: -3145750702635002333 and -3145750702635002395 land on the same double and compared equal, so a poly-slotted Integer `==` answered true for two different numbers. The fallback is for the MIXED int/float case and keeps it. */ if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i == b.v.i; if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) return sp_poly_to_f(a) == sp_poly_to_f(b); if (a.tag != b.tag) return FALSE; switch (a.tag) { case SP_TAG_INT: return a.v.i == b.v.i; case SP_TAG_STR: return (a.v.s == NULL || b.v.s == NULL) ? (a.v.s == b.v.s) : (sp_str_cmp_bytes(a.v.s, b.v.s) == 0); case SP_TAG_FLT: return a.v.f == b.v.f; case SP_TAG_BOOL: return a.v.b == b.v.b; case SP_TAG_NIL: return TRUE; case SP_TAG_SYM: return a.v.i == b.v.i; case SP_TAG_ENCODING: return (a.v.s == NULL || b.v.s == NULL) ? (a.v.s == b.v.s) : (strcmp(a.v.s, b.v.s) == 0); case SP_TAG_OBJ: /* Arrays compare by VALUE across storage kinds: [1,2] boxed as an IntArray equals the same numbers rebuilt as a PolyArray (a splat-rest, a mapped run). Ruby has one Array; the kinds are a storage optimization and must not leak into ==. */ if (sp_poly_is_array_kind(a.cls_id) && sp_poly_is_array_kind(b.cls_id)) { if (a.cls_id == b.cls_id && a.v.p == b.v.p) return TRUE; return sp_poly_eq_deep(a, b); } if (sp_poly_is_hash_kind(a.cls_id) && sp_poly_is_hash_kind(b.cls_id) && a.cls_id != b.cls_id) return sp_poly_eq_deep(a, b); if (a.cls_id != b.cls_id) return FALSE; if (a.v.p == b.v.p) return TRUE; switch (a.cls_id) { case SP_BUILTIN_INT_ARRAY: return sp_IntArray_eq((sp_IntArray*)a.v.p,(sp_IntArray*)b.v.p); case SP_BUILTIN_STR_ARRAY: return sp_StrArray_eq((sp_StrArray*)a.v.p,(sp_StrArray*)b.v.p); case SP_BUILTIN_FLT_ARRAY: return sp_FloatArray_eq((sp_FloatArray*)a.v.p,(sp_FloatArray*)b.v.p); case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_eq((sp_PolyArray*)a.v.p,(sp_PolyArray*)b.v.p); case SP_BUILTIN_TIME: { sp_Time *ta = (sp_Time*)a.v.p, *tb = (sp_Time*)b.v.p; /* two Times read out of containers compare by instant, not by box (#3699) */ return (ta && tb) ? (ta->tv_sec == tb->tv_sec && ta->tv_nsec == tb->tv_nsec) : (ta == tb); } case SP_BUILTIN_RATIONAL: { sp_Rational *ra = (sp_Rational*)a.v.p, *rb = (sp_Rational*)b.v.p; return (ra && rb) ? sp_rational_eq(*ra, *rb) : (ra == rb); } case SP_BUILTIN_TMS: { sp_Tms *ta = (sp_Tms*)a.v.p, *tb = (sp_Tms*)b.v.p; /* Process::Tms is a Struct: field-wise, like its other by-value siblings here */ return (ta && tb) ? (ta->utime == tb->utime && ta->stime == tb->stime && ta->cutime == tb->cutime && ta->cstime == tb->cstime) : (ta == tb); } /* the structural heap handles (Object's identity arm routes a poly operand here: emit_native_object_protocol) */ case SP_BUILTIN_OPENSTRUCT: return sp_OpenStruct_eq((sp_OpenStruct*)a.v.p, (sp_OpenStruct*)b.v.p); case SP_BUILTIN_EXCEPTION: return sp_exc_eq((sp_Exception*)a.v.p, (sp_Exception*)b.v.p); case SP_BUILTIN_IO: return sp_io_eq((sp_File*)a.v.p, (sp_File*)b.v.p); case SP_BUILTIN_COMPLEX: { sp_Complex *ca = (sp_Complex*)a.v.p, *cb = (sp_Complex*)b.v.p; return (ca && cb) ? (ca->re == cb->re && ca->im == cb->im) : (ca == cb); } case SP_BUILTIN_BIG_RATIONAL: { sp_BigRational *ra = (sp_BigRational*)a.v.p, *rb = (sp_BigRational*)b.v.p; return (ra && rb) ? (sp_bigint_cmp(ra->num, rb->num) == 0 && sp_bigint_cmp(ra->den, rb->den) == 0) : (ra == rb); } /* boxed hashes of the same variant compare by value like every other
      container -- the arm was simply missing, so [h] == [h-literal] was
-     pointer identity and always false. */ case SP_BUILTIN_STR_INT_HASH: return sp_StrIntHash_eq((sp_StrIntHash*)a.v.p,(sp_StrIntHash*)b.v.p); case SP_BUILTIN_STR_STR_HASH: return sp_StrStrHash_eq((sp_StrStrHash*)a.v.p,(sp_StrStrHash*)b.v.p); case SP_BUILTIN_INT_STR_HASH: return sp_IntStrHash_eq((sp_IntStrHash*)a.v.p,(sp_IntStrHash*)b.v.p); case SP_BUILTIN_INT_INT_HASH: return sp_IntIntHash_eq((sp_IntIntHash*)a.v.p,(sp_IntIntHash*)b.v.p); case SP_BUILTIN_STR_POLY_HASH: case SP_BUILTIN_SYM_POLY_HASH: case SP_BUILTIN_POLY_POLY_HASH: return sp_poly_eq_deep(a, b); case SP_BUILTIN_RANGE: return sp_range_eq(*(sp_Range*)a.v.p,*(sp_Range*)b.v.p); case SP_BUILTIN_FLOAT_RANGE: { sp_FloatRange *fa=(sp_FloatRange*)a.v.p,*fb=(sp_FloatRange*)b.v.p; return (fa&&fb)?(fa->first==fb->first&&fa->last==fb->last&&fa->excl==fb->excl):(fa==fb); } case SP_BUILTIN_STR_RANGE: { sp_StrRange *sa=(sp_StrRange*)a.v.p,*sb=(sp_StrRange*)b.v.p; if(!sa||!sb)return sa==sb; return sa->excl==sb->excl&&sp_str_eq(sa->first,sb->first)&&sp_str_eq(sa->last,sb->last); } default: return sp_obj_eq_hook ? sp_poly_eq_deep(a, b) : FALSE; } case SP_TAG_CLASS: { const char *an = sp_class_val_name(a), *bn = sp_class_val_name(b); return (an && bn) ? strcmp(an, bn) == 0 : an == bn; } default: return FALSE; } }
+     pointer identity and always false. */ case SP_BUILTIN_STR_INT_HASH: return sp_StrIntHash_eq((sp_StrIntHash*)a.v.p,(sp_StrIntHash*)b.v.p); case SP_BUILTIN_STR_STR_HASH: return sp_StrStrHash_eq((sp_StrStrHash*)a.v.p,(sp_StrStrHash*)b.v.p); case SP_BUILTIN_INT_STR_HASH: return sp_IntStrHash_eq((sp_IntStrHash*)a.v.p,(sp_IntStrHash*)b.v.p); case SP_BUILTIN_INT_INT_HASH: return sp_IntIntHash_eq((sp_IntIntHash*)a.v.p,(sp_IntIntHash*)b.v.p); case SP_BUILTIN_STR_POLY_HASH: case SP_BUILTIN_SYM_POLY_HASH: case SP_BUILTIN_POLY_POLY_HASH: return sp_poly_eq_deep(a, b); case SP_BUILTIN_RANGE: return sp_range_eq(*(sp_Range*)a.v.p,*(sp_Range*)b.v.p); case SP_BUILTIN_FLOAT_RANGE: { sp_FloatRange *fa=(sp_FloatRange*)a.v.p,*fb=(sp_FloatRange*)b.v.p; return (fa&&fb)?(fa->first==fb->first&&fa->last==fb->last&&fa->excl==fb->excl):(fa==fb); } case SP_BUILTIN_STR_RANGE: { sp_StrRange *sa=(sp_StrRange*)a.v.p,*sb=(sp_StrRange*)b.v.p; if(!sa||!sb)return sa==sb; return sa->excl==sb->excl&&sp_str_eq(sa->first,sb->first)&&sp_str_eq(sa->last,sb->last); } default: if (sp_obj_eq_hook) return sp_poly_eq_deep(a, b); /* a user exception subclass boxes under its own class id; with no hook installed nothing overrides its Exception#== */ return sp_is_exc_subclass_cls(a.cls_id) ? sp_exc_eq((sp_Exception*)a.v.p, (sp_Exception*)b.v.p) : FALSE; } case SP_TAG_CLASS: { const char *an = sp_class_val_name(a), *bn = sp_class_val_name(b); return (an && bn) ? strcmp(an, bn) == 0 : an == bn; } default: return FALSE; } }
 /* The == arms that can walk back into the pair they started from: two arrays
    of any storage kinds, two hashes with poly values, and two user objects
    compared field-wise through the generated hook. A pair the comparison is
@@ -11011,20 +11028,6 @@ static void sp_raise_exc(volatile sp_Exception *ve) {
   sp_pending_exc_obj = (void *)e;
   sp_raise_cls(e->cls_name, e->msg);
 }
-/* Runtime class table: set of cls_ids that are user exception subclasses.
-   Populated by the codegen (src/codegen.c) for every class that
-   `class_is_exc_subclass` returns true. Used by sp_raise_poly to
-   verify a boxed object is an exception subclass before re-raising
-   it -- reading the sp_Exception prefix on a non-exception user
-   object is a wrong-offset read (segfault). */
-extern const sp_int sp_exc_subclass_ids[];
-extern const sp_int sp_exc_subclass_count;
-
-static inline int sp_is_exc_subclass_cls(sp_int cls_id) {
-  for (sp_int i = 0; i < sp_exc_subclass_count; i++)
-    if (sp_exc_subclass_ids[i] == cls_id) return 1;
-  return 0;
-}
 
 /* Kernel#raise with a runtime-typed (poly) operand: a String raises
    RuntimeError with it, a carried exception object re-raises as itself,
@@ -11121,7 +11124,10 @@ static sp_RbVal sp_exc_sym_slot(sp_RbVal v) {
   return v;
 }
 static sp_RbVal sp_poly_exc_acc(sp_RbVal v, const char *which) {
-  if (!(v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_EXCEPTION && v.v.p))
+  /* a user exception subclass boxes under its own class id; its object is
+     an sp_Exception all the same */
+  if (!(v.tag == SP_TAG_OBJ && v.v.p &&
+        (v.cls_id == SP_BUILTIN_EXCEPTION || sp_is_exc_subclass_cls(v.cls_id))))
     sp_raise_cls("NoMethodError",
                  sp_sprintf("undefined method '%s' for an instance of %s", which, sp_poly_class_name(v)));
   sp_Exception *e = (sp_Exception *)v.v.p;
