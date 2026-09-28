@@ -2153,7 +2153,7 @@ int static_nil_reader_cond(Compiler *c, int pred) {
    idiom assigned the receiver into the Enumerator-typed result slot of the
    other path and warned on every such method (#3953). 1 = always true,
    0 = always false, -1 = decided at run time. */
-static int static_block_given_cond(Compiler *c, int pred) {
+int static_block_given_cond(Compiler *c, int pred) {
   const NodeTable *nt = c->nt;
   if (pred < 0) return -1;
   /* `unless block` / `if block`, where `block` is the method's own `&block`

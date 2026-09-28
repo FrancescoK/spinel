@@ -3177,13 +3177,25 @@ else {
       else_stmts = nt_ref(nt, sub, "statements");
     int en = 0;
     const int *eb = else_stmts >= 0 ? nt_arr(nt, else_stmts, "body", &en) : NULL;
-    /* A statically-answered defined? or is_a? predicate folds to its live arm:
-       the dead arm may not even type-check against the receiver's storage
-       type. Mirrors emit_if's statement-form fold and the inference fold. */
+    /* A statically-answered defined?, is_a? or block_given? predicate folds to
+       its live arm: the dead arm may not even type-check against the
+       receiver's storage type (a blockless yield has no type of its own).
+       Mirrors emit_if's statement-form fold and the inference fold. */
     {
       int df = comp_defined_guard_false(c, pred);
       int dt = df ? 0 : comp_defined_guard_true(c, pred);
       int known = df ? 0 : (dt ? 1 : static_isa_cond(c, pred));
+      /* a `block_given? ? a : b` pair: the live arm alone, rendered at the
+         result type as the unfolded pair renders each arm */
+      if (known < 0 && !df && !dt && tn == 1 && en == 1) {
+        int bg = static_block_given_cond(c, pred);
+        if (bg >= 0) {
+          TyKind res = comp_ntype(c, id);
+          if (res == TY_VOID || res == TY_NIL) res = TY_POLY;
+          emit_ternary_arm(c, (is_unless ? !bg : bg) ? tb[0] : eb[0], res, b);
+          return;
+        }
+      }
       if (known >= 0) {
         int take_then = is_unless ? !known : known;
         if (!take_then && !is_unless && sub >= 0 && nt_type(nt, sub) &&
