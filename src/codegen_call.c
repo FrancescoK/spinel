@@ -6578,18 +6578,26 @@ static int poly_kw_empty_literal(const NodeTable *nt, int src) {
   return n == 0;
 }
 
+/* A `**` operand that brings no keywords: nil, or one of another class,
+   which is converted where it stands (emit_kw_splat_operand_inline) and
+   raises CRuby's TypeError unless it is nil at run time. */
+static int poly_kw_brings_none(Compiler *c, int src) {
+  return comp_ntype(c, src) == TY_NIL || kw_splat_checked_boxed(c, src) || kw_splat_raises(c, src);
+}
+
 /* Can the keyword hash's `**` element be merged into the arms' one
    keyword hash: a named hash, an anonymous `**`, or a literal? A hash of
    any key merges too: a key that is no Symbol is an unknown keyword to an
    arm, which the arm's check raises, where the whole hash degraded to a
-   positional and every keyword-only arm raised `wrong number of arguments`. */
+   positional and every keyword-only arm raised `wrong number of arguments`.
+   So does an operand that brings no keywords (poly_kw_brings_none). */
 static int poly_kw_splat_ok(Compiler *c, int el) {
   const NodeTable *nt = c->nt;
   int src = nt_ref(nt, el, "value");
   if (src < 0) return poly_anon_kwrest(c, el) != NULL;
   if (poly_kw_empty_literal(nt, src)) return 1;
   TyKind st = comp_ntype(c, src);
-  return st == TY_POLY || ty_is_hash(st);
+  return st == TY_POLY || ty_is_hash(st) || poly_kw_brings_none(c, src);
 }
 
 /* 1 when a `**` of the keyword hash may carry a key that is no Symbol, so
@@ -6599,7 +6607,7 @@ static int poly_kw_any_key(Compiler *c, int kwh) {
   int en = 0; const int *els = nt_arr(nt, kwh, "elements", &en);
   for (int e = 0; e < en; e++) {
     int src = nt_kind(nt, els[e]) == NK_AssocSplatNode ? nt_ref(nt, els[e], "value") : -1;
-    if (src < 0 || poly_kw_empty_literal(nt, src)) continue;
+    if (src < 0 || poly_kw_empty_literal(nt, src) || poly_kw_brings_none(c, src)) continue;
     TyKind st = comp_ntype(c, src);
     if (st == TY_POLY || ty_hash_key(st) != TY_SYMBOL) return 1;
   }
@@ -6624,6 +6632,10 @@ static void emit_poly_kw_all(Compiler *c, int kwh, int th, int any, Buf *b) {
       continue;
     }
     int src = nt_ref(nt, els[e], "value");
+    if (src >= 0 && poly_kw_brings_none(c, src)) {
+      emit_kw_splat_operand_inline(c, src, b);
+      continue;
+    }
     if (any) {
       /* each source, the anonymous `**` too, merged by the walk that keeps
          a key of any class */
@@ -12538,7 +12550,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
                          splat_tmp, hv0.p ? hv0.p : "sp_box_nil()", splat_tmp);
               free(hv0.p);
               char stn[32]; snprintf(stn, sizeof stn, "_t%d", splat_tmp);
-              emit_kw_splat_conv_check(c, kw_splat_may_be_nil(c, splat_h) ? TY_POLY : comp_ntype(c, splat_h), stn);
+              emit_kw_splat_conv_check(c, kw_splat_checked_boxed(c, splat_h) ? TY_POLY : comp_ntype(c, splat_h), stn);
               continue;
             }
             for (int a = 0; vv >= 0 && a < cls->nivars; a++) {

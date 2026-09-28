@@ -7859,6 +7859,18 @@ TyKind infer_uncached(Compiler *c, int id) {
         int nsrc = -1;
         if (sh == TY_UNKNOWN && src >= 0 && nt_kind(nt, src) == NK_HashNode) nt_arr(nt, src, "elements", &nsrc);
         if (nsrc == 0) { empty_spread = 1; continue; }
+        /* nor does an operand of another class: nil carries no keywords, and
+           `**true`, `**1` or an object without #to_hash raise CRuby's
+           TypeError where they stand (a slot that may be nil, only when it
+           is not). A boxed operand, or an object that may still answer
+           #to_hash through method_missing, is known only at run time. */
+        if (!ty_is_hash(sh) && sh != TY_POLY && sh != TY_UNKNOWN && sh != TY_VOID &&
+            !(ty_is_object(sh) && (ty_object_class(sh) < 0 ||
+              comp_method_in_chain(c, ty_object_class(sh), "to_hash", NULL) >= 0 ||
+              comp_method_in_chain(c, ty_object_class(sh), "method_missing", NULL) >= 0))) {
+          empty_spread = 1;
+          continue;
+        }
         if (ty_is_hash(sh)) {
           kt = ty_unify(kt, ty_hash_key(sh));
           vt = ty_unify(vt, ty_hash_val(sh));

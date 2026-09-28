@@ -3131,6 +3131,22 @@ else {
         if (sh == TY_UNKNOWN && src >= 0 && nt_kind(nt, src) == NK_HashNode) nt_arr(nt, src, "elements", &nsrc);
         /* `**{}` adds nothing */
         if (nsrc == 0) continue;
+        if (src >= 0 && (sh == TY_NIL || kw_splat_checked_boxed(c, src) || kw_splat_raises(c, src))) {
+          /* `**nil`, `**true`, `**1`, which inference takes for a spread of
+             nothing: the operand runs where it stands and converts, raising
+             CRuby's TypeError unless it is nil -- or it already has, ahead of
+             the call's keywords (emit_ds_hash_materialize), and reads as
+             nothing here */
+          int ran = nt_kind(nt, src) == NK_NilNode;
+          for (int i = 0; i < g_n_argov && !ran; i++) ran = g_argov_node[i] == src;
+          if (!ran) {
+            Buf sb; memset(&sb, 0, sizeof sb); emit_kw_splat_operand_inline(c, src, &sb);
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "%s\n", sb.p ? sb.p : "");
+            free(sb.p);
+          }
+          continue;
+        }
         if (shn && sp_streq(shn, hn)) {
           /* same-variant source: a direct typed merge. */
           Buf sb; memset(&sb, 0, sizeof sb); emit_expr(c, src, &sb);
