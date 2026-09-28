@@ -21388,6 +21388,19 @@ void analyze_program(Compiler *c) {
     }
   }
 
+  /* Hash#store is []= (desugar_enum_method_recv), but a receiver typed a
+     hash only after the fixpoint -- a boxed parameter every caller of which
+     the binding widened to one hash kind, retyped by the re-narrow -- kept
+     the name, and a typed hash has no other `store` arm. */
+  NT_FOREACH_KIND(c->nt, NK_CallNode, sid) {
+    const char *snm = nt_str(c->nt, sid, "name");
+    if (!snm || !sp_streq(snm, "store") || nt_ref(c->nt, sid, "block") >= 0) continue;
+    int src = nt_ref(c->nt, sid, "receiver"), sa = nt_ref(c->nt, sid, "arguments"), sac = 0;
+    if (sa >= 0) nt_arr(c->nt, sa, "arguments", &sac);
+    if (src >= 0 && sac == 2 && ty_is_hash(comp_ntype(c, src)))
+      nt_node_set_str((NodeTable *)c->nt, sid, "name", "[]=");
+  }
+
   /* Last: the capture pass again, on the settled types. a_block_is_lifted asks
      whether the receiver is poly, and a receiver that widened after the
      earlier run answered no then and yes now -- so codegen routes the call to
