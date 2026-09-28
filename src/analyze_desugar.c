@@ -3714,6 +3714,63 @@ void desugar_extended_module_attrs(Compiler *c) {
    forwarder and materialized there, and its captures of the caller's locals
    were copied by value -- the writes were lost. Named, the param takes the
    same path a `&blk` does (mirrors __anon_kwrest for `**`). */
+/* `define_method(:m) { |a, k: 1, **kw| ... }` in a class body ->
+   `def m(a, k: 1, **kw) ... end`. A defined method takes its keywords as a
+   method does, and the call sites and the method's own binding of them read
+   a DefNode's parameters; the define_method scope registers only its
+   positionals. Blocks without keywords keep the define_method form. */
+int desugar_define_method_keywords(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int cls = 0; cls < n0; cls++) {
+    NodeKind ck = nt_kind(nt, cls);
+    if (ck != NK_ClassNode && ck != NK_ModuleNode && ck != NK_SingletonClassNode) continue;
+    int body = nt_ref(nt, cls, "body");
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bv = nt_arr(nt, body, "body", &bn);
+    for (int i = 0; i < bn; i++) {
+      int id = bv[i];
+      if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "receiver") >= 0) continue;
+      const char *cn = nt_str(nt, id, "name");
+      if (!cn || !sp_streq(cn, "define_method")) continue;
+      int args = nt_ref(nt, id, "arguments");
+      int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      if (an != 1) continue;
+      const char *mname = nt_kind(nt, av[0]) == NK_SymbolNode ? nt_str(nt, av[0], "value")
+                        : nt_kind(nt, av[0]) == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
+      int blk = nt_ref(nt, id, "block");
+      if (!mname || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+      int bp = nt_ref(nt, blk, "parameters");
+      if (bp < 0 || nt_kind(nt, bp) != NK_BlockParametersNode) continue;
+      int pn = nt_ref(nt, bp, "parameters");
+      if (pn < 0) continue;
+      int kn = 0; nt_arr(nt, pn, "keywords", &kn);
+      if (kn == 0 && nt_ref(nt, pn, "keyword_rest") < 0) continue;
+      int def = fwd_new_node_like(nt, id, "DefNode");
+      if (def < 0) continue;
+      nt_node_set_str(nt, def, "name", mname);
+      nt_node_set_ref(nt, def, "parameters", pn);
+      nt_node_set_ref(nt, def, "body", nt_ref(nt, blk, "body"));
+      nt_node_set_ref(nt, def, "receiver", -1);
+      int *nb = malloc(sizeof(int) * (size_t)bn);
+      if (!nb) continue;
+      memcpy(nb, bv, sizeof(int) * (size_t)bn);
+      nb[i] = def;
+      nt_node_set_arr(nt, body, "body", nb, bn);
+      free(nb);
+      bv = nt_arr(nt, body, "body", &bn);
+      /* the parameters and body are the def's alone now: passes that scan
+         every block or call must not reach them through the old nodes */
+      nt_node_reset(nt, blk, "NilNode");
+      nt_node_reset(nt, id, "NilNode");
+      changed = 1;
+    }
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 int desugar_anon_block_param(Compiler *c) {
   static const struct { const char *field, *kind, *name; } anon_params[] = {
     { "block", "BlockParameterNode", "__anon_block" },
@@ -5933,7 +5990,11 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
     int via_enum = m != 0;
     hash_pair = 0;
     if (m == 0) m = bs_yield_count(rt, nm, argc, &elem, &hash_pair);
-    if (m == 0) continue;
+    if (m == 0) {
+      /* no Enumerator passes its block keywords, whatever it yields */
+      if (has_kw && rt == TY_ENUMERATOR && bs_strip_keywords(c, blk, bp, pn)) changed = 1;
+      continue;
+    }
     if (has_kw) {
       if (!bs_strip_keywords(c, blk, bp, pn)) continue;
       changed = 1;

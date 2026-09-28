@@ -9175,6 +9175,12 @@ int infer_block_params(Compiler *c) {
       LocalVar *lv = scope_local_intern(bs, kpn); lv->is_block_param = 1;
       if (kt != TY_UNKNOWN && lv->type != kt) { lv->type = kt; changed = 1; }
     }
+    const char *kwr = block_kwrest_name(c, blk);
+    if (kwr) {
+      LocalVar *lv = scope_local_intern(bs, kwr); lv->is_block_param = 1;
+      TyKind m = ty_unify(lv->type, TY_POLY_POLY_HASH);
+      if (m != lv->type) { lv->type = m; changed = 1; }
+    }
   }
 
   /* Fiber.new { |first| ... }: the block param receives the resume value,

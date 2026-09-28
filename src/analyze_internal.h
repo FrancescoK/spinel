@@ -312,6 +312,7 @@ int desugar_block_implicit_rest(Compiler *c);
 int desugar_multi_value_jump(Compiler *c);
 int desugar_forwarding_to_rest_callee(Compiler *c);
 int desugar_anon_block_param(Compiler *c);
+int desugar_define_method_keywords(Compiler *c);
 void desugar_extended_module_attrs(Compiler *c);
 int desugar_recursive_param_defaults(Compiler *c);
 int desugar_sort_by_with_index(Compiler *c);
@@ -405,6 +406,7 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth, QCWri
 void qualify_colliding_consts(Compiler *c);
 void qc_collect_class_writes(Compiler *c, int node, char (*path)[64], int depth, QCWrite **ws, int *n, int *cap);
 void qualify_colliding_classes(Compiler *c);
+void name_anon_block_kwrest(Compiler *c);
 void rename_shadowing_block_params(Compiler *c);
 void topup_forwarding_arity(Compiler *c);
 void expand_struct_forwarding_super(Compiler *c);
