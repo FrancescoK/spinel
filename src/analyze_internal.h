@@ -413,6 +413,7 @@ void detect_bigint_loop_vars(Compiler *c);
 void propagate_bigint_cascade(Compiler *c);
 void mark_ie_subtree(Compiler *c, int node, int cls);
 void build_ie_map(Compiler *c);
+int ie_block_body(Compiler *c, int blk);
 int ie_class_of(Compiler *c, int node);
 int blkp_params_node(Compiler *c, int create);
 int blkp_binds_param(Compiler *c, int create, const char *name);

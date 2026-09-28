@@ -13726,6 +13726,7 @@ SP_TLS sp_RbVal _sp_proc_poly_args[SP_PROC_ARG_SLOTS];
    here just before sp_proc_call, and the callee's &block-param prologue
    consumes (and clears) it. Same discipline as _sp_proc_poly_args (#2648). */
 static SP_TLS sp_Proc *_sp_proc_blk;
+static SP_TLS void *_sp_ie_self;
 /* What the call site's trailing argument is: 1 a positional (a Hash passed
    as `pr.call(5, {k: 2})`), 2 keywords, 0 not said (a runtime path). The
    boxed channel carries both the same way, and since Ruby 3 a proc binds

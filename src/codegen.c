@@ -6235,7 +6235,10 @@ else if (orecv >= 0 && onm) {
      through _cap (#1436). A heap-object self is captured by pointer; a
      value-type (by-value) self is captured by value in a `sp_X __self_val`
      field. A class-method self has no instance and is left as-is. */
-  int cap_self = bs && bs->class_id >= 0 && !bs->is_cmethod &&
+  int ie_mark = ie_class_of(c, body) == ie_class_of(c, create) ? -1 : ie_class_of(c, body);
+  if (ie_mark < -1) unsupported(c, create, "proc run by instance_eval on more than one class");
+  int ie_cls = ie_mark >= 0 && proc_body_uses_self(c, body, ie_mark) ? ie_mark : -1;
+  int cap_self = ie_cls < 0 && bs && bs->class_id >= 0 && !bs->is_cmethod &&
                  (proc_body_uses_self(c, body, bs->class_id) ||
                   proc_body_uses_self(c, proc_params_node(c, create), bs->class_id));
   /* A class method that takes the receiving class as a leading parameter has
@@ -6243,7 +6246,7 @@ else if (orecv >= 0 && onm) {
      and knows nothing of it, so a sibling class-method call inside the block
      referenced an identifier that is not in scope. Carry it in the capture
      struct, the way instance self is carried (#3797). */
-  int cap_cls = bs && bs->is_cmethod &&
+  int cap_cls = ie_cls < 0 && bs && bs->is_cmethod &&
                 cmethod_takes_self_cls(c, (int)(bs - c->scopes));
   int self_is_value = cap_self && c->classes[bs->class_id].is_value_type;
   const char *self_cls = cap_self ? c->classes[bs->class_id].c_name : NULL;
@@ -6425,6 +6428,9 @@ else if (orecv >= 0 && onm) {
                             comp_scope_of(c, create) == &c->scopes[0]);
   g_pre = NULL; g_indent = 0; g_nren = 0; g_block_id = -1; g_block_nren = 0; g_block_param_name = NULL;
   g_self = "self"; g_result_var = NULL; g_ret_type = ret; g_ensure_depth = 0; g_result_poly = 0;
+  int sv_iec = g_ie_class_id, sv_bcls = bs ? bs->class_id : -1, sv_bcm = bs ? bs->is_cmethod : 0;
+  if (ie_cls >= 0) g_ie_class_id = ie_cls;
+  if (ie_cls >= 0 && sv_bcls >= 0) { bs->class_id = ie_cls; bs->is_cmethod = 0; }
   /* The proc body reads its captured self by value for a value-type class
      (sp_X self) but by pointer otherwise (sp_X *self); ivar access inside the
      body must match. g_self_deref is global, so override it for the body and
@@ -6478,6 +6484,10 @@ else if (orecv >= 0 && onm) {
     buf_printf(pb, "    sp_Class _sp_cls = ((_proc_cap_%d *)_cap)->__self_cls;\n", pid);
     buf_puts(pb, "    (void)_sp_cls;\n");
   }
+  if (ie_cls >= 0)
+    buf_printf(pb, "    sp_%s *self = (sp_%s *)_sp_ie_self; _sp_ie_self = NULL;\n"
+               "    if (!self) sp_raise_cls(\"NotImplementedError\", \"proc bound to instance_eval called without it\");\n",
+               c->classes[ie_cls].c_name, c->classes[ie_cls].c_name);
   /* Lambda: strict arity -- requireds + trailing posts mandatory, optionals
      widen the max, a splat rest lifts it entirely. */
   int has_kwrest = 0, no_kw = 0;
@@ -7001,6 +7011,8 @@ else if (orecv >= 0 && onm) {
   g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block; g_block_nren = sv_bnren;
   g_block_param_name = sv_bpn; g_self = sv_self; g_result_var = sv_rv; g_ret_type = sv_rt;
   g_self_deref = sv_deref;
+  g_ie_class_id = sv_iec;
+  if (bs) { bs->class_id = sv_bcls; bs->is_cmethod = sv_bcm; }
   g_cap_struct = sv_cap_struct; g_cap_names = sv_cap_names; g_ensure_depth = sv_ensure_depth;
   memcpy(g_ensure_stack, sv_estk, sizeof sv_estk);
   g_brk_ser_var = sv_bser; g_brk_skip_id = sv_bskip;
@@ -7012,6 +7024,7 @@ else if (orecv >= 0 && onm) {
   g_rescue_save_depth = sv_rsd;
   g_fn_pr_label = sv_fn_prl; g_fn_pr_var = sv_fn_prv; g_fn_ret_type = sv_fn_rt;
 
+  if (ie_mark >= 0) buf_puts(b, "({ sp_Proc *_pie = ");
   if (ncap == 0 && !cap_self && !cap_cls && !ret_proc && !brk_blk) {
     buf_printf(b, "sp_proc_new_meta((void *)_proc_%d, NULL, NULL, %d, %s, %d, %s)",
                pid, meta_arity, is_lambda ? "TRUE" : "FALSE", meta_count, meta_args);
@@ -7066,6 +7079,7 @@ else if (orecv >= 0 && onm) {
     buf_printf(b, "sp_proc_new_meta((void *)_proc_%d, _capv_%d, _proc_cap_scan_%d, %d, %s, %d, %s)",
                pid, pid, pid, meta_arity, is_lambda ? "TRUE" : "FALSE", meta_count, meta_args);
   }
+  if (ie_mark >= 0) buf_printf(b, "; _pie->ie_cls = %d; _pie; })", ie_mark + 1);
 
   free(params.v); free(used.v); free(locals.v); free(caps.v);
 }
