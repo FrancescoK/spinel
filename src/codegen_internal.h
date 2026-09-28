@@ -264,6 +264,15 @@ extern const char *g_ctor_self_deref;
 extern const char *g_arm_self;
 extern const Scope *g_arm_scope;
 extern int g_arm_depth;
+extern const Scope *g_inl_dflt_scope;
+extern int g_inl_dflt_nren;
+extern const char *g_inl_dflt_self;
+extern const char *g_inl_dflt_deref;
+extern int g_inl_dflt_class;
+extern int g_inl_dflt_depth;
+typedef struct { const Scope *scope; int nren, cls, depth; const char *self, *deref; } InlDflt;
+InlDflt inl_dflt_enter(const Scope *m, int nren, const char *self, const char *deref, int cls);
+void inl_dflt_leave(InlDflt saved);
 extern int g_expr_depth;
 extern int g_proc_toplevel_return;
 extern int g_exc_frame_depth;      /* live begin/rescue setjmp frames (see codegen_util.c) */

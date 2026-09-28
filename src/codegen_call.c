@@ -260,6 +260,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   const char *last_ty = argc2 > 0 ? nt_type(nt, argv2[argc2 - 1]) : NULL;
   int kwh = (last_ty && sp_streq(last_ty, "KeywordHashNode")) ? argv2[argc2 - 1] : -1;
   int pos_argc = kwh >= 0 ? argc2 - 1 : argc2;
+  InlDflt sv_dflt = inl_dflt_enter(m, g_nren, selfbuf, g_self_deref, ci);
   for (int i = 0; i < m->nparams; i++) {
     emit_indent(b, din);
     { char rn[128]; snprintf(rn, sizeof rn, "_y%d_%s", tag, m->pnames[i]);
@@ -322,6 +323,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
     free(park_f); free(park_t);
     buf_puts(b, ";\n");
   }
+  inl_dflt_leave(sv_dflt);
 
   /* The inlined `initialize` body runs in the CONSTRUCTED class's context:
      an implicit-self call inside it (`setup` in `def initialize; setup;

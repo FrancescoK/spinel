@@ -667,6 +667,14 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     }
     free(park_f); free(park_t);
   }
+  char dflt_cm_self[32];
+  const char *dflt_self = recv_self_deref ? selfbuf : NULL, *dflt_deref = recv_self_deref;
+  if (!recv_self_deref && cm_class >= 0) {
+    snprintf(dflt_cm_self, sizeof dflt_cm_self, "((sp_Class){%d})", cm_class);
+    dflt_self = dflt_cm_self;
+  }
+  InlDflt sv_dflt = inl_dflt_enter(m, g_nren, dflt_self, dflt_deref,
+                                   recv_class >= 0 ? recv_class : cm_class);
   for (int i = 0; i < m->nparams; i++) {
     emit_indent(b, din);
     int aliased = i < 32 && (alias_mask & (1u << i));
@@ -777,6 +785,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     free(park_f); free(park_t);
     buf_puts(b, ";\n");
   }
+  inl_dflt_leave(sv_dflt);
 
   /* Now switch into the RECEIVER's context for the method BODY. Both the
      self binding and the emitting-class must move together, and only here

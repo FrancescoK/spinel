@@ -8751,6 +8751,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int argc = 0;
   const int *argv = args >= 0 ? nt_arr(c->nt, args, "arguments", &argc) : NULL;
   int surplus = is_forwarding ? zsuper_rest_surplus(c, s, m) : -1;
+  InlDflt sv_dflt = inl_dflt_enter(m, g_nren, NULL, NULL, -1);
   for (int i = 0; i < m->nparams; i++) {
     emit_indent(b, din);
     { char rn[128]; snprintf(rn, sizeof rn, "_y%d_%s", tag, m->pnames[i]);
@@ -8777,6 +8778,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     g_nren = sv;
     buf_puts(b, ";\n");
   }
+  inl_dflt_leave(sv_dflt);
 
   if (as_expr) {
     TyKind rt = comp_ntype(c, id);
