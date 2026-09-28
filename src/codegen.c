@@ -9844,7 +9844,8 @@ void emit_regex_section(Compiler *c, Buf *b) {
                 "  sp_poly_is_a_hook = sp_poly_is_a;\n"
                 "  sp_class_le_id_fn = sp_class_le_ids;\n"
                 "  sp_class_cmp_fn = sp_class_cmp_rv;\n"
-                "  sp_class_kind_of_name_fn = sp_class_kind_of_name;\n");
+                "  sp_class_kind_of_name_fn = sp_class_kind_of_name;\n"
+                "  sp_class_is_module_fn = sp_class_is_module_val;\n");
   /* an unoptimised build runs its fibers on 1 MB stacks (see g_opt_level);
      SPINEL_FIBER_STACK in the environment still wins */
   if (g_opt_level < 2)

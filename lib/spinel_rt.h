@@ -1998,7 +1998,12 @@ static const char *sp_poly_class_name(sp_RbVal v) {
     case SP_TAG_NIL: return SPL("NilClass");
     case SP_TAG_SYM: return SPL("Symbol");
     case SP_TAG_ENCODING: return SPL("Encoding");
-    case SP_TAG_CLASS: return SPL("Class");
+    case SP_TAG_CLASS: {
+      sp_Class c = sp_unbox_class(v);
+      int m = sp_class_is_module_fn ? sp_class_is_module_fn(c)
+            : (c.cls_id == -114 || c.cls_id == -115 || c.cls_id == -119 || c.cls_id == -162);
+      return m ? SPL("Module") : SPL("Class");
+    }
     case SP_TAG_BIGINT: return SPL("Integer");
     case SP_TAG_OBJ:
       switch (v.cls_id) {
