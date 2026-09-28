@@ -1116,13 +1116,15 @@ const char *sp_str_splice_at(const char *s, sp_int from, sp_int n, const char *v
 static inline const char *sp_File_gets(sp_File *f) {
   SP_IO_OPEN(f);
   sp_io_wait_readable(f);
-  /* heap scratch, NOT a stack buffer: a green thread runs on a 64KB fiber
-     stack (SP_FIBER_STACK_SIZE), which a 64KB local overran straight into
-     the guard page -- `Thread.new { f.gets }` was an instant segfault. */
-  char *buf = (char *)malloc(65536);
-  if (!buf) return NULL;
-  if (!fgets(buf, 65536, f->fp)) { free(buf); return NULL; }
-  size_t n = strlen(buf);
+  /* getline answers the line whole, however long, with its byte count, so a
+     NUL inside it neither ends the line nor drops what follows, as ARGF's
+     gets reads it. It grows its buffer on the heap, so a green thread's
+     fiber stack holds none of the line. */
+  char *buf = NULL;
+  size_t cap = 0;
+  ssize_t got = getline(&buf, &cap, f->fp);
+  if (got < 0) { free(buf); return NULL; }
+  size_t n = (size_t)got;
   char *r = sp_str_alloc(n);
   memcpy(r, buf, n);
   free(buf);
