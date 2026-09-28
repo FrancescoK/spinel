@@ -96,3 +96,10 @@ p pw(%w[a], "b")
 def uw(a, *r) = a.unshift(*r)
 p uw([1], 2, 3)
 p uw(%w[a], "b")
+
+# a rest stored through a parameter two array kinds make boxed: each call's
+# own arguments are checked against its own array
+def insb(a, *r) = a.insert(*r)
+p insb([1, 2], -1, :x, :y)
+p insb(%w[a b], 1, 3)
+p insb([1, 2], 0, 9)
