@@ -611,6 +611,16 @@ static void emit_ie_param_default(Compiler *c, TyKind t, Buf *b) {
   buf_puts(b, default_value(t));
 }
 
+static int ie_forward_absent(Compiler *c, int id, int barg) {
+  const NodeTable *nt = c->nt;
+  if (resolve_forwarded_block(c, barg) < 0) return !g_yield_proc_ref && !g_current_scope_is_lowered;
+  Scope *s = comp_scope_of(c, id);
+  if (!s || !s->is_proc_form || !s->name || !sp_streq(s->name, "initialize#pf")) return 0;
+  int fx = nt_ref(nt, barg, "expression");
+  const char *fn = nt_kind(nt, fx) == NK_LocalVariableReadNode ? nt_str(nt, fx, "name") : NULL;
+  return s->blk_param && (fx < 0 || (fn && sp_streq(fn, s->blk_param)));
+}
+
 /* Print "spinel: <file>:<line>: warning: " for node `id` when
    SPINEL_WARN_UNRESOLVED is set, so a call/constant that silently degrades to
    nil/0 (where CRuby would raise or do real work) can be audited. Returns 1
@@ -10401,13 +10411,66 @@ static void emit_ctor_block_value(Compiler *c, int id, Buf *b) {
   else unsupported(c, id, "forwarding a block of this type into a stored-block initialize");
 }
 
+static int ctor_init_takes_block(Compiler *c, int initm) {
+  if (initm < 0) return 0;
+  Scope *is = &c->scopes[initm];
+  return is->blk_param && is->blk_param[0] && !is->yields;
+}
+
+static int subtree_sees_block(const NodeTable *nt, int node, const char *bname) {
+  NodeKind k = nt_kind(nt, node);
+  switch (k) {
+    case NK_NONE: case NK_DefNode: case NK_ClassNode: case NK_ModuleNode:
+    case NK_SingletonClassNode: return 0;
+    case NK_BlockArgumentNode: case NK_YieldNode: case NK_SuperNode:
+    case NK_ForwardingSuperNode: return 1;
+    case NK_CallNode: {
+      const char *nm = nt_str(nt, node, "name");
+      if (nt_ref(nt, node, "receiver") < 0 && nm &&
+          (sp_streq(nm, "block_given?") || sp_streq(nm, "iterator?") || sp_streq(nm, "binding")))
+        return 1;
+      break;
+    }
+    default: {
+      const char *ty = nt_type(nt, node), *nm = nt_str(nt, node, "name");
+      if (ty && sp_streq(ty, "ForwardingArgumentsNode")) return 1;
+      if (ty && !strncmp(ty, "LocalVariable", 13) && nm && sp_streq(nm, bname)) return 1;
+    }
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++)
+    if (subtree_sees_block(nt, nt_ref_at(nt, node, i), bname)) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, node, i, &n);
+    for (int j = 0; j < n; j++) if (subtree_sees_block(nt, ids[j], bname)) return 1;
+  }
+  return 0;
+}
+
+static int ctor_init_uses_block(Compiler *c, int initm) {
+  Scope *is = &c->scopes[initm];
+  int pn = is->def_node >= 0 ? nt_ref(c->nt, is->def_node, "parameters") : -1;
+  return subtree_sees_block(c->nt, is->body, is->blk_param) ||
+         subtree_sees_block(c->nt, pn, is->blk_param);
+}
+
 /* Hoist the call's block into a rooted temp at the head of a dispatch's
    statement expression, so each arm passes the one proc. Returns the
-   previous g_ctor_blk_tmp for the caller to restore. */
+   previous g_ctor_blk_tmp for the caller to restore. Only a dispatch with
+   an arm that takes the proc makes one: an arm splicing the block into a
+   yielding initialize runs it with the new object as self, a body the
+   caller's self need not be able to compile. */
 static int hoist_ctor_block(Compiler *c, int id, Buf *b) {
   int sv = g_ctor_blk_tmp;
   g_ctor_blk_tmp = -1;
   if (nt_ref(c->nt, id, "block") < 0) return sv;
+  int takes = 0;
+  for (int k = 0; k < c->nclasses && !takes; k++) {
+    int im = comp_method_in_chain(c, k, "initialize", NULL);
+    takes = ctor_init_takes_block(c, im) && ctor_init_uses_block(c, im);
+  }
+  if (!takes) return sv;
   Buf pb; memset(&pb, 0, sizeof pb);
   emit_ctor_block_value(c, id, &pb);
   int t = ++g_tmp;
@@ -10417,11 +10480,25 @@ static int hoist_ctor_block(Compiler *c, int id, Buf *b) {
   return sv;
 }
 
+static int ctor_block_spliceable(Compiler *c, int id) {
+  int blk = nt_ref(c->nt, id, "block");
+  return blk >= 0 && nt_kind(c->nt, resolve_forwarded_block(c, blk)) == NK_BlockNode;
+}
+
+static int ctor_block_splices(Compiler *c, int id) {
+  if (!ctor_block_spliceable(c, id)) return 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    int im = comp_method_in_chain(c, k, "initialize", NULL);
+    if (im >= 0 && c->scopes[im].yields && !c->classes[k].is_struct) return 1;
+  }
+  return 0;
+}
+
 /* Can a Class-value `new` dispatch take this call's block? Each arm hands
    it to its class's `&blk` (emit_ctor_block_slot); a yielding initialize
-   has no such slot and is inlined at static sites only. */
+   has no such slot, and takes a literal spliced into its arm. */
 static int ctor_block_dispatchable(Compiler *c, int id) {
-  if (nt_ref(c->nt, id, "block") < 0) return 1;
+  if (nt_ref(c->nt, id, "block") < 0 || ctor_block_spliceable(c, id)) return 1;
   for (int k = 0; k < c->nclasses; k++) {
     int im = comp_method_in_chain(c, k, "initialize", NULL);
     if (im >= 0 && c->scopes[im].yields) return 0;
@@ -10442,11 +10519,29 @@ static const char *ctor_blk_lead(const Buf *b) {
   return (n && b->p[n - 1] != '(') ? ", " : "";
 }
 static void emit_ctor_block_slot(Compiler *c, int id, int initm, const char *lead, Buf *b) {
-  if (initm < 0) return;
-  Scope *is = &c->scopes[initm];
-  if (!is->blk_param || !is->blk_param[0] || is->yields) return;
+  if (!ctor_init_takes_block(c, initm)) return;
   buf_puts(b, lead);
-  emit_ctor_block_value(c, id, b);
+  if (ctor_init_uses_block(c, initm)) emit_ctor_block_value(c, id, b);
+  else buf_puts(b, "NULL");
+}
+
+static int emit_ctor_splice_arm(Compiler *c, int id, int ci, int initm, int rt2, Buf *b) {
+  if (initm < 0 || !c->scopes[initm].yields || c->classes[ci].is_struct ||
+      comp_class_is_module(c, &c->classes[ci]) || !ctor_block_spliceable(c, id)) return 0;
+  Buf apre; memset(&apre, 0, sizeof apre);
+  Buf yb; memset(&yb, 0, sizeof yb);
+  Buf *sv_pre = g_pre; g_pre = &apre;
+  int ok = emit_ctor_yield_inline(c, id, ci, &yb);
+  g_pre = sv_pre;
+  if (ok && yb.p) {
+    buf_printf(b, "case %d: { %s_t%d=", ci, apre.p ? apre.p : "", rt2);
+    if (c->classes[ci].is_value_type)
+      buf_printf(b, "sp_box_vobj_%s(%s); } break; ", c->classes[ci].c_name, yb.p);
+    else
+      buf_printf(b, "sp_box_obj(%s, %d); } break; ", yb.p, ci);
+  }
+  free(apre.p); free(yb.p);
+  return 1;
 }
 
 /* A plain Struct's generated constructor takes up to one argument per
@@ -10774,6 +10869,7 @@ static void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Bu
        could pass them in the wrong C type. A splat binds every class, and
        keeps every arm. */
     if (!call_has_splat_arg(nt, argv, argc) && !dynamic_new_may_reach(c, id, ci)) continue;
+    if (emit_ctor_splice_arm(c, id, ci, initm, rt2, b)) continue;
     /* the layout's own statements (a keyword check, a hoisted argument)
        belong to this arm: ahead of the switch every arm's check ran for
        every class, and one class's keywords were unknown to the next */
@@ -29571,6 +29667,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   if (!ie_direct && recv < 0) {
     ie_self_cls = ie_implicit_self_class(c, id);
     if (ie_self_cls >= 0) ie_direct = 1;
+    if (ie_self_cls >= 0 && g_emitting_class_id >= 0 && g_emitting_class_id != ie_self_cls &&
+        is_descendant(c, g_emitting_class_id, ie_self_cls))
+      ie_self_cls = g_emitting_class_id;
   }
   if (!ie_direct && recv >= 0 && nt_ref(nt, id, "block") >= 0 && ty_is_object(comp_ntype(c, recv)))
     ie_tramp = comp_trampoline_kind(c, ty_object_class(comp_ntype(c, recv)), name, NULL);
@@ -29590,8 +29689,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     /* `instance_exec(args, &b)` forwarding the enclosing (now-inlined) method's
        block param: the real block is the literal active at the inline splice,
        so resolve the BlockArgumentNode to it (as `inner(&block)` does). */
-    if (blk >= 0 && nt_type(nt, blk) && sp_streq(nt_type(nt, blk), "BlockArgumentNode"))
+    if (blk >= 0 && nt_type(nt, blk) && sp_streq(nt_type(nt, blk), "BlockArgumentNode")) {
+      int is_exec = sp_streq(name, "instance_exec");
+      if (g_block_id < 0 && ie_direct && recv < 0 && (is_exec || argc == 0) &&
+          ie_forward_absent(c, id, blk)) {
+        buf_printf(b, "(sp_raise_cls(\"%s\", \"%s\"), ", is_exec ? "LocalJumpError" : "ArgumentError",
+                   is_exec ? "no block given" : "wrong number of arguments (given 0, expected 1..3)");
+        emit_ie_param_default(c, comp_ntype(c, id), b);
+        buf_puts(b, ")");
+        return;
+      }
       blk = g_block_id;
+    }
     TyKind rtype = ie_self_cls >= 0 ? ty_object(ie_self_cls) : comp_ntype(c, recv);
     if (blk >= 0 && ty_is_object(rtype) &&
         (ie_tramp || comp_method_in_chain(c, ty_object_class(rtype), name, NULL) < 0)) {
@@ -30012,7 +30121,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        A `*splat` goes the same way: the arms below boxed the whole array as
        one argument and bound it to the first parameter. */
     if (call_has_keyword_args(nt, argv, argc) || call_has_splat_arg(nt, argv, argc) ||
-        sole_kwh_reaches_kw_init(c, id, argv, argc)) {
+        sole_kwh_reaches_kw_init(c, id, argv, argc) || ctor_block_splices(c, id)) {
       emit_class_value_new_kw(c, id, recv, 0, b);
       return;
     }
@@ -30210,6 +30319,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int initm = comp_method_in_chain(c, ci, "initialize", NULL);
       if (initm >= 0 && c->scopes[initm].nrequired != 0) continue;
       if (c->classes[ci].is_native_class) continue;
+      if (emit_ctor_splice_arm(c, id, ci, initm, rt2, b)) continue;
       /* A Struct DOES answer a zero-arg `new` -- every member takes nil, which
          is what the constant spelling emits. Skipping it left a local holding
          two anon struct classes (so no single one resolves) with an EMPTY
@@ -30273,7 +30383,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        form above (#4845) -- positionally they bound `k: v` to a parameter;
        likewise a `*splat`, which bound the whole array */
     if (call_has_keyword_args(nt, argv, argc) || call_has_splat_arg(nt, argv, argc) ||
-        sole_kwh_reaches_kw_init(c, id, argv, argc)) {
+        sole_kwh_reaches_kw_init(c, id, argv, argc) || (argc > 0 && ctor_block_splices(c, id))) {
       emit_class_value_new_kw(c, id, recv, 1, b);
       return;
     }
@@ -30299,6 +30409,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int np = initm >= 0 ? c->scopes[initm].nparams : 0;
       int nreq = initm >= 0 ? c->scopes[initm].nrequired : 0;
       int remap = initm >= 0 && ctor_arm_remaps(c, &c->scopes[initm]);
+      if (argc >= nreq && emit_ctor_splice_arm(c, id, ci, initm, rt2, b)) continue;
       /* A Struct or Data class had no arm here at all, so `{0 => S}.fetch(0)
          .new(5)` raised NoMethodError. Its generated constructor takes the
          members positionally, with the exact test the class-value emitter

@@ -2095,8 +2095,17 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "new") &&
       !an_user_defines_method(c, name)) {
     /* a block goes to each class's `&blk`; a yielding initialize has none,
-       and is inlined at static sites only (codegen's ctor_block_dispatchable) */
-    int blk_ok = nt_ref(nt, id, "block") < 0;
+       and takes a literal spliced into its arm -- this one, or the one a
+       yielding method forwarding its own block inlines with (codegen's
+       ctor_block_dispatchable) */
+    int blk = nt_ref(nt, id, "block");
+    int blk_ok = blk < 0 || nt_kind(nt, blk) == NK_BlockNode;
+    if (!blk_ok && nt_kind(nt, blk) == NK_BlockArgumentNode) {
+      Scope *es = comp_scope_of(c, id);
+      int fx = nt_ref(nt, blk, "expression");
+      const char *fn = nt_kind(nt, fx) == NK_LocalVariableReadNode ? nt_str(nt, fx, "name") : NULL;
+      blk_ok = es && es->yields && es->blk_param && (fx < 0 || (fn && sp_streq(fn, es->blk_param)));
+    }
     if (!blk_ok) {
       blk_ok = 1;
       for (int k = 0; k < c->nclasses && blk_ok; k++) {
