@@ -1154,6 +1154,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b);
 int is_nested_block(const char *ty);
 void proc_collect_locals(Compiler *c, int id, NameSet *locals);
 int conv_reads_shared_storage(Compiler *c, int node);
+int emit_array_into_poly_slot(Compiler *c, TyKind slot, int v, Buf *b);
 void proc_collect_used(Compiler *c, int id, NameSet *out);
 int proc_params_node(Compiler *c, int create);
 const char *proc_param_name(Compiler *c, int create, int idx);

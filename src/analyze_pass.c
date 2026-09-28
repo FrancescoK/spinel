@@ -506,6 +506,29 @@ int local_all_writes_empty_array(Compiler *c, Scope *sc, const char *name) {
   return saw;
 }
 
+/* 1 iff every write of local `name` in `sc` is an array literal (and there is
+   one): a value nothing else holds, so rebuilding it as another array kind
+   loses no sharing. */
+static int local_all_writes_array_literal(Compiler *c, Scope *sc, const char *name) {
+  const NodeTable *nt = c->nt;
+  int saw = 0;
+  int si = (int)(sc - c->scopes);
+  for (int r = lw_shared_first(c, name, si); r >= 0; r = lw_shared_next(r)) {
+    int id = lw_shared_node(r);
+    if (comp_scope_of(c, id) != sc) continue;
+    const char *wn = nt_str(nt, id, "name");
+    if (!wn || !sp_streq(wn, name)) continue;
+    if (nt_kind(nt, id) != NK_LocalVariableWriteNode) return 0;
+    int v = nt_ref(nt, id, "value");
+    if (v < 0 || nt_kind(nt, v) != NK_ArrayNode) return 0;
+    int en = 0; const int *ev = nt_arr(nt, v, "elements", &en);
+    for (int k = 0; k < en; k++)
+      if (nt_kind(nt, ev[k]) == NK_SplatNode) return 0;
+    saw = 1;
+  }
+  return saw;
+}
+
 /* Per-pass index of local-variable write nodes keyed by (scope, name). The
    usage-driven promotion scans in infer_write_types ask "does local X in scope
    S have any write / an array-typed write"; without this index each such query
@@ -1494,6 +1517,51 @@ static int widen_aliased_array_ivars(Compiler *c, int node, int cls_id) {
     if (bb && bn > 0) changed |= widen_aliased_array_ivars(c, bb[bn - 1], cls_id);
   }
   return changed;
+}
+
+/* The type slot a global, class-variable or constant read names, or NULL. */
+static TyKind *named_array_slot(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, recv, "name");
+  if (!nm) return NULL;
+  switch (nt_kind(nt, recv)) {
+    case NK_GlobalVariableReadNode: {
+      const char *rn = comp_resolve_gvar(c, nm + 1);
+      LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
+      return lv ? &lv->type : NULL;
+    }
+    case NK_ConstantReadNode: {
+      LocalVar *lv = comp_const(c, nm);
+      return lv ? &lv->type : NULL;
+    }
+    case NK_ClassVariableReadNode: {
+      Scope *s = comp_scope_of(c, recv);
+      int cid = s ? s->class_id : -1;
+      if (cid < 0) cid = comp_class_index(c, "Toplevel");
+      if (cid < 0) return NULL;
+      int idx = comp_cvar_index(&c->classes[cid], nm);
+      return idx >= 0 ? &c->classes[cid].cvar_types[idx] : NULL;
+    }
+    default: return NULL;
+  }
+}
+
+/* The type `node` stores when it is `m[i]` over a method returning a fixed
+   tuple (`def pair = [1, "x"]`) and reads as the boxed element: that element's
+   own type, which is what the store puts in the container. Else `vt`. */
+static TyKind tuple_elem_evidence(Compiler *c, int node, TyKind vt) {
+  const NodeTable *nt = c->nt;
+  if (vt != TY_POLY || node < 0 || nt_kind(nt, node) != NK_CallNode) return vt;
+  const char *nm = nt_str(nt, node, "name");
+  if (!nm || !sp_streq(nm, "[]") || nt_ref(nt, node, "block") >= 0) return vt;
+  int args = nt_ref(nt, node, "arguments");
+  int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an != 1 || nt_kind(nt, av[0]) != NK_IntegerNode || nt_str(nt, av[0], "bigval")) return vt;
+  TyKind elems[16];
+  int en = multi_return_elem_types(c, nt_ref(nt, node, "receiver"), elems, 16);
+  long long pos = nt_int(nt, av[0], "value", 0);
+  if (pos < 0) pos += en;
+  return (pos >= 0 && pos < en) ? elems[pos] : vt;
 }
 
 /* Folds one piece of container evidence into `slot` (see the usage fold in
@@ -2775,7 +2843,8 @@ int infer_write_types(Compiler *c) {
         continue;
       }
       else if (name && sp_streq(name, "[]=") && an == 2) {
-        is_idx_write = 1; kt = infer_type(c, argv[0]); vt = infer_type(c, argv[1]);
+        is_idx_write = 1; kt = infer_type(c, argv[0]);
+        vt = tuple_elem_evidence(c, argv[1], infer_type(c, argv[1]));
         /* a range key is a splice: the RHS contributes element evidence */
         if (kt == TY_RANGE) { is_splice = 1; vt = splice_incoming_elem(c, argv[1]); }
         /* an empty [] / {} literal value carries no element type but is
@@ -2963,7 +3032,17 @@ int infer_write_types(Compiler *c) {
          binding in bind_call_params, the caller's local too). Widening only:
          an UNKNOWN parameter still takes its type from the call site (#2989). */
       if (lv->is_param) {
-        if (!is_push || lv->rbs_seeded) continue;
+        if ((!is_push && !is_idx_write) || lv->rbs_seeded) continue;
+        /* An element write through it stores into the caller's array the
+           same way: `arr[i] = v` is the push's evidence when the key indexes
+           an array. */
+        if (is_idx_write && !is_push) {
+          if (!ty_is_array(lv->type) || lv->type == TY_POLY_ARRAY) continue;
+          if (is_splice || (kt != TY_INT && kt != TY_POLY)) continue;
+          if (vt == TY_UNKNOWN || vt == TY_POLY || vt == ty_array_elem(lv->type)) continue;
+          lv->type = TY_POLY_ARRAY; lv->push_widened = 1; changed = 1;
+          continue;
+        }
         /* A BOXED parameter is the same hazard with the container hidden:
            the callee pushes through it into the caller's own array, and the
            container is not visible here to compare against. Record WHAT is
@@ -3049,6 +3128,21 @@ int infer_write_types(Compiler *c) {
       vt = ivt;
       watch_nm = inm;
       watch_cls = ivar_cls_id;
+    }
+    else if ((is_push || is_idx_write) && rty &&
+             (sp_streq(rty, "GlobalVariableReadNode") || sp_streq(rty, "ClassVariableReadNode") ||
+              sp_streq(rty, "ConstantReadNode"))) {
+      /* `$g[i] = v`, `@@a << v`, `TABLE[i] = v`: the slot is typed from its
+         writes alone, so an element its array kind cannot hold widens it to
+         the general Array here, as it does a local's. Only the widening is
+         taken: seeding or re-keying these slots stays with their write
+         passes, which keep a general Array against a typed array write. */
+      TyKind *nslot = named_array_slot(c, recv);
+      if (!nslot || !ty_is_array(*nslot) || *nslot == TY_POLY_ARRAY) continue;
+      TyKind nt2 = *nslot;
+      fold_container_evidence(&nt2, is_push, is_splice, (TyKind)kt, (TyKind)vt);
+      if (nt2 == TY_POLY_ARRAY) { *nslot = TY_POLY_ARRAY; changed = 1; }
+      continue;
     }
     else if ((is_push || is_idx_write) && rty && sp_streq(rty, "CallNode") &&
              nt_ref(nt, recv, "block") < 0) {
@@ -3396,6 +3490,17 @@ int infer_write_types(Compiler *c) {
       if (lv->type == TY_UNKNOWN || lv->type == TY_POLY || ty_is_hash(lv->type))
         lv->type = TY_POLY_POLY_HASH;
       else lv->poly_hash_pin = 0;
+    }
+
+  /* And for the array-literal local a widened parameter took (poly_array_pin):
+     its literals re-derive a typed array kind every round. */
+  for (int s = 0; s < c->nscopes; s++)
+    for (int i = 0; i < c->scopes[s].nlocals; i++) {
+      LocalVar *lv = &c->scopes[s].locals[i];
+      if (!lv->poly_array_pin) continue;
+      if (lv->type == TY_UNKNOWN || lv->type == TY_POLY || ty_is_array(lv->type))
+        lv->type = TY_POLY_ARRAY;
+      else lv->poly_array_pin = 0;
     }
 
   /* A slot this round could not derive AT ALL keeps what it had. The reset at
@@ -4045,10 +4150,20 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
       Scope *asc = an ? comp_scope_of(c, argv[arg]) : NULL;
       LocalVar *al = asc ? scope_local(asc, an) : NULL;
       if (al && ty_is_array(al->type) && al->type != TY_POLY_ARRAY &&
-          !al->is_param && !al->is_block_param &&
-          local_all_writes_empty_array(c, asc, an)) {
-        al->type = TY_POLY_ARRAY; changed = 1;
+          !al->is_param && !al->is_block_param) {
+        if (local_all_writes_empty_array(c, asc, an)) { al->type = TY_POLY_ARRAY; changed = 1; }
+        else if (local_all_writes_array_literal(c, asc, an)) {
+          al->type = TY_POLY_ARRAY; al->poly_array_pin = 1; changed = 1;
+        }
       }
+    }
+    /* A global, class variable or constant passed there is the same shared
+       array; their write passes keep a general Array once it is one. */
+    if (p->push_widened && apty &&
+        (sp_streq(apty, "GlobalVariableReadNode") || sp_streq(apty, "ClassVariableReadNode") ||
+         sp_streq(apty, "ConstantReadNode"))) {
+      TyKind *ns = named_array_slot(c, argv[arg]);
+      if (ns && ty_is_array(*ns) && *ns != TY_POLY_ARRAY) { *ns = TY_POLY_ARRAY; changed = 1; }
     }
     if (merged == TY_PROC) {
       TyKind pr = proc_ret_of(c, argv[arg]);
