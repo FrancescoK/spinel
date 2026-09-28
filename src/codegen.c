@@ -6577,6 +6577,21 @@ else if (orecv >= 0 && onm) {
       LocalVar *klv = scope_local(bs, kn);
       emit_proc_param_slot(c, pb, kn, cond, arg, dv, missing, klv ? klv->type : TY_POLY);
     }
+    /* with no **kwrest to take them, a key naming no keyword is CRuby's
+       `unknown keyword`, for a proc as for a lambda */
+    int kwr0 = pnk >= 0 ? nt_ref(nt, pnk, "keyword_rest") : -1;
+    if (kwr0 < 0) {
+      buf_puts(pb, "    { static const char *const _pkw[] = {");
+      for (int j = 0; j < nkw2; j++) {
+        const char *kn = nt_str(nt, kwn[j], "name");
+        if (kn) buf_printf(pb, "\"%s\", ", param_public_name(kn));
+      }
+      buf_printf(pb, "0}, *const _pkn[] = {0};%c", 10);
+      buf_printf(pb, "      if (argc > %d && argc <= 16 && _sp_proc_poly_args[argc-1].tag == SP_TAG_OBJ"
+                     " && sp_poly_is_hash_kind(_sp_proc_poly_args[argc-1].cls_id))"
+                     " sp_kwargs_verify(_sp_proc_poly_args[argc-1], _pkw, _pkn, _pkn, 1); }%c",
+                 arity + nposts, 10);
+    }
   }
   /* `&b`: the block the caller attached to .call, delivered on the
      _sp_proc_blk side-channel; nil (NULL) when none was given (#2648). */
