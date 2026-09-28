@@ -4521,7 +4521,7 @@ void proc_collect_used(Compiler *c, int id, NameSet *out) {
      containing one captures that block even though no variable read says so */
   if (sp_streq(ty, "YieldNode")) {
     Scope *ys = comp_scope_of(c, id);
-    if (ys && ys->is_lowered_yield && ys->blk_param && ys->blk_param[0])
+    if (ys && (ys->is_lowered_yield || ys->is_proc_form) && ys->blk_param && ys->blk_param[0])
       nameset_add(out, ys->blk_param);
   }
   int nr = nt_num_refs(c->nt, id);
