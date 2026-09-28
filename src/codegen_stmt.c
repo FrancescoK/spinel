@@ -3262,9 +3262,11 @@ static void emit_pm_body_value(Compiler *c, int stmts, TyKind rt, int cr,
   int n = 0;
   const int *bb = stmts >= 0 ? nt_arr(nt, stmts, "body", &n) : NULL;
   for (int k = 0; k < n - 1; k++) emit_stmt(c, bb[k], b, indent);
+  /* an empty arm is nil: boxed where the result slot is a boxed value, as
+     it is for a poly result and for a case whose only value is nil */
   if (n <= 0) {
     emit_indent(b, indent);
-    buf_printf(b, "_t%d = %s;\n", cr, rt == TY_POLY ? "sp_box_nil()" : default_value(rt));
+    buf_printf(b, "_t%d = %s;\n", cr, rt == TY_POLY || rt == TY_NIL ? "sp_box_nil()" : default_value(rt));
     return;
   }
   int last = bb[n - 1];
@@ -3304,10 +3306,10 @@ static void emit_pm_body_value(Compiler *c, int stmts, TyKind rt, int cr,
   }
   if (lt == TY_NIL || lt == TY_UNKNOWN) {
     /* a valueless last expr (e.g. a bare assignment / void call): run it for
-       its side effect, then default the result. */
+       its side effect, then default the result, nil boxed as above */
     emit_stmt(c, last, b, indent);
     emit_indent(b, indent);
-    buf_printf(b, "_t%d = %s;\n", cr, rt == TY_POLY ? "sp_box_nil()" : default_value(rt));
+    buf_printf(b, "_t%d = %s;\n", cr, rt == TY_POLY || rt == TY_NIL ? "sp_box_nil()" : default_value(rt));
     return;
   }
   Buf le; memset(&le, 0, sizeof le);
