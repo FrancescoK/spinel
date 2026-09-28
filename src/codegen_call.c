@@ -26477,7 +26477,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int ti = ++g_tmp;
       buf_printf(b, "({ sp_Exception *_t%d = (sp_Exception *)(", ti); emit_expr(c, recv, b);
       buf_printf(b, "); const char *_ecn%d = _t%d->cls_name ? _t%d->cls_name : \"Exception\";"
-                    " const char *_emg%d = sp_exc_message(_t%d);"
+                    " const char *_emg%d = sp_exc_to_s_text(_t%d);"
                     " (!_emg%d || !*_emg%d) ? _ecn%d"
                     " : sp_sprintf(\"#<%%s: %%s>\", _ecn%d, _emg%d); })",
                  ti, ti, ti, ti, ti, ti, ti, ti, ti, ti);
@@ -26541,10 +26541,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_Exception *_t%d = (sp_Exception *)(%s);\n", tfm, rbm.p ? rbm.p : "");
         free(rbm.p);
+        const char *mfn = exc_has_user_msg_override(c) ? "sp_user_exc_message" : "sp_exc_message";
         if (sp_streq(name, "full_message"))
-          buf_printf(b, "sp_sprintf(\"%%s: %%s\", sp_exc_class_name(_t%d), sp_exc_message(_t%d))", tfm, tfm);
+          buf_printf(b, "sp_sprintf(\"%%s: %%s\", sp_exc_class_name(_t%d), %s(_t%d))", tfm, mfn, tfm);
         else
-          buf_printf(b, "sp_sprintf(\"%%s (%%s)\", sp_exc_message(_t%d), sp_exc_class_name(_t%d))", tfm, tfm);
+          buf_printf(b, "sp_sprintf(\"%%s (%%s)\", %s(_t%d), sp_exc_class_name(_t%d))", mfn, tfm, tfm);
       }
       return;
     }
@@ -26563,6 +26564,19 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         if (mi8 >= 0 && (TyKind)c->scopes[mi8].ret != TY_STRING &&
             (TyKind)c->scopes[mi8].ret != TY_UNKNOWN)
           own = mi8;
+      }
+      /* a subclass overriding a String #to_s is picked at run time by the
+         cls_name-keyed dispatcher below */
+      if (own >= 0 && sp_streq(name, "to_s") && (TyKind)c->scopes[own].ret == TY_STRING) {
+        int sub_str = 0, sub_other = 0;
+        for (int k = 0; k < c->nclasses; k++) {
+          if (k == xcm || !is_descendant(c, k, xcm)) continue;
+          int ko = comp_method_in_class(c, k, "to_s");
+          if (ko < 0) continue;
+          if ((TyKind)c->scopes[ko].ret == TY_STRING) sub_str = 1;
+          else sub_other = 1;
+        }
+        if (sub_str && !sub_other) own = -1;
       }
       if (own >= 0) {
         int defc = xcm;
@@ -26659,6 +26673,22 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           comp_reader_in_chain(c, k, name, NULL)) pu = 1;
     if (!pu) {
       if (sp_streq(name, "name")) g_uses_symbols = 1;  /* may intern a recovered name */
+      /* a user exception's #to_s is what #message answers, so a boxed
+         exception goes through the override dispatcher */
+      if (sp_streq(name, "message") &&
+          (exc_has_user_msg_override(c) || exc_has_nonstring_msg_override(c))) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", t);
+        emit_expr(c, recv, b);
+        buf_printf(b, "; (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_EXCEPTION && _t%d.v.p) ? ",
+                   t, t, t);
+        if (exc_has_nonstring_msg_override(c))
+          buf_printf(b, "sp_poly_to_s(sp_user_exc_message_v((sp_Exception *)_t%d.v.p))", t);
+        else
+          buf_printf(b, "sp_user_exc_message((sp_Exception *)_t%d.v.p)", t);
+        buf_printf(b, " : sp_poly_to_s(sp_poly_exc_acc(_t%d, \"message\")); })", t);
+        return;
+      }
       /* message infers TY_STRING: unwrap the boxed accessor result */
       if (sp_streq(name, "message")) buf_puts(b, "sp_poly_to_s(");
       buf_printf(b, "sp_poly_exc_acc(");
@@ -26758,8 +26788,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       /* an exception with no message of its own inspects as just the class
          name, as CRuby's does (#3713) */
       /* an empty message renders as the bare class name (#3713) */
-      buf_printf(b, "); _t%d ? (sp_exc_message(_t%d) && *sp_exc_message(_t%d)"
-                    " ? sp_sprintf(\"#<%%s: %%s>\", sp_exc_class_name(_t%d), sp_exc_message(_t%d))"
+      buf_printf(b, "); _t%d ? (sp_exc_to_s_text(_t%d) && *sp_exc_to_s_text(_t%d)"
+                    " ? sp_sprintf(\"#<%%s: %%s>\", sp_exc_class_name(_t%d), sp_exc_to_s_text(_t%d))"
                     " : sp_exc_class_name(_t%d))"
                     " : (&(\"\\xff\" \"nil\")[1]); })", ei, ei, ei, ei, ei, ei);
       return;
@@ -26826,8 +26856,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(g_pre, "sp_Exception *_t%d = ", t);
       buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
       /* an empty message renders as the bare class name (#3713) */
-      buf_printf(b, "(_t%d ? (sp_exc_message(_t%d) && *sp_exc_message(_t%d)"
-                    " ? sp_sprintf(\"#<%%s: %%s>\", sp_exc_class_name(_t%d), sp_exc_message(_t%d))"
+      buf_printf(b, "(_t%d ? (sp_exc_to_s_text(_t%d) && *sp_exc_to_s_text(_t%d)"
+                    " ? sp_sprintf(\"#<%%s: %%s>\", sp_exc_class_name(_t%d), sp_exc_to_s_text(_t%d))"
                     " : sp_exc_class_name(_t%d)) : \"nil\")", t, t, t, t, t, t);
       return;
     }
@@ -27174,7 +27204,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           buf_puts(b, "({ ");
           if (unified == TY_POLY) buf_puts(b, "sp_RbVal");
           else emit_ctype(c, unified, b);
-          buf_printf(b, " _t%d; switch ((%s)->cls_id) {", rtmp, objptr.p ? objptr.p : "");
+          buf_printf(b, " _t%d; switch (", rtmp);
+          emit_obj_dispatch_key(c, cid, objptr.p ? objptr.p : "", b);
+          buf_puts(b, ") {");
           for (int k = 0; k < c->nclasses; k++) {
             if (!is_descendant(c, k, cid)) continue;
             int kmi = comp_cmethod_in_chain(c, k, name, NULL);

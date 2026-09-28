@@ -1,0 +1,31 @@
+top
+top
+#<WriteError: top>
+deep!
+deep!
+#<DeepError: deep!>
+code 3
+code 3
+#<CodeSub: code 3>
+plain
+plain
+#<RuntimeError: plain>
+base
+top
+top
+#<WriteError: top>
+top (WriteError)
+deep
+deep!
+deep!
+#<DeepError: deep!>
+deep! (DeepError)
+deepest
+deep!
+deep!
+#<DeepestError: deep!>
+deep! (DeepestError)
+sub7
+code 7
+7
+top
