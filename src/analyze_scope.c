@@ -5300,8 +5300,12 @@ void inherit_members(Compiler *c) {
     done[i] = 1; progressed = 1;
     ClassInfo *pc = &c->classes[p];
     /* a subclass of a Struct is a Struct: it keeps the members, the positional
-       constructor and the member face (#3576) */
-    if (pc->is_struct && !ci->is_struct && !ci->is_data) ci->is_struct = 1;
+       constructor and the member face (#3576); a subclass of a Data class is
+       a Data class */
+    if (pc->is_struct && !ci->is_struct && !ci->is_data) {
+      ci->is_struct = 1;
+      ci->is_data = pc->is_data;
+    }
 
     char **old = ci->ivars; TyKind *oldt = ci->ivar_types; int oldn = ci->nivars;
     /* The per-slot side fields ride along with the names: this rebuild runs
