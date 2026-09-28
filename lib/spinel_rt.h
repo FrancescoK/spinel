@@ -11969,6 +11969,22 @@ static sp_PolyArray *sp_poly_to_a_arr(sp_RbVal v) {
   sp_raise_nomethod(sp_nomethod_msg("to_a", v));
   return NULL;
 }
+/* Enumerable#entries on a boxed receiver: an Array's elements, a Hash's
+   [key, value] pairs, an Integer or String Range's members, an Enumerator's
+   values and a Struct's members, always in a new Array (an Array's to_a
+   answers the Array itself); anything else raises NoMethodError naming
+   entries, nil among them, which has to_a but not entries. */
+static sp_PolyArray *sp_poly_entries(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ &&
+      (sp_poly_is_array_kind(v.cls_id) || sp_poly_is_hash_kind(v.cls_id) ||
+       v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE ||
+       (v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p)))
+    return sp_enum_items_from(v);
+  sp_RbVal sv = sp_poly_struct_values(v);
+  if (sv.tag == SP_TAG_OBJ && sv.cls_id == SP_BUILTIN_POLY_ARRAY) return (sp_PolyArray *)sv.v.p;
+  sp_raise_nomethod(sp_nomethod_msg("entries", v));
+  return NULL;
+}
 
 /* `to_h` on a boxed receiver. A Hash answers ITSELF -- CRuby returns self, so
    there is nothing to build and no copy to make. Every other kind goes through
