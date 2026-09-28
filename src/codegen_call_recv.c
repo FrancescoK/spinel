@@ -13485,6 +13485,34 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         if (ch) buf_puts(b, "; })");
         return 1;
       }
+      /* a splat beside other keys (`dig(*path, :k)`): the keys in order,
+         each splat's elements in its place, walked as plain keys are
+         (sp_poly_dig_n) on a Hash or an Array; any other receiver raises
+         the NoMethodError it raised before */
+      {
+        Buf rb; int ch = hold_recv_open(c, recv, 1, "sp_RbVal", "SP_GC_ROOT_RBVAL", b, &rb);
+        int tk = ++g_tmp, tr = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tk, tk);
+        for (int a = 0; a < argc; a++) {
+          if (nt_kind(nt, argv[a]) == NK_SplatNode) {
+            int ts = ++g_tmp;
+            buf_printf(b, "{ sp_PolyArray *_t%d = sp_poly_to_poly_array(", ts); emit_boxed(c, argv[a], b);
+            buf_printf(b, "); SP_GC_ROOT(_t%d); for (sp_int _i = 0; _i < _t%d->len; _i++)"
+                          " sp_PolyArray_push(_t%d, _t%d->data[_i]); } ", ts, ts, tk, ts);
+          }
+          else {
+            buf_printf(b, "sp_PolyArray_push(_t%d, ", tk); emit_boxed(c, argv[a], b); buf_puts(b, "); ");
+          }
+        }
+        buf_printf(b, "sp_RbVal _t%d = %s; _t%d.tag == SP_TAG_OBJ &&"
+                      " (sp_poly_is_hash_kind(_t%d.cls_id) || sp_poly_is_array_kind(_t%d.cls_id))"
+                      " ? sp_poly_dig_n(_t%d, _t%d->len, _t%d->data)"
+                      " : (sp_raise_nomethod(sp_nomethod_msg(\"dig\", _t%d)), sp_box_nil()); })",
+                   tr, rb.p, tr, tr, tr, tr, tk, tk, tr);
+        free(rb.p);
+        if (ch) buf_puts(b, "; })");
+        return 1;
+      }
     }
   }
   /* The one-argument numeric methods, the same rule the no-argument table
