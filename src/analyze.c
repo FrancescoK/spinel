@@ -14036,10 +14036,38 @@ static int narrow_params_from_arrays(Compiler *c) {
   if (!elem || !ok || !saw) { free(off); free(elem); free(ok); free(saw); return 0; }
   for (int i = 0; i < total; i++) { elem[i] = TY_UNKNOWN; ok[i] = 1; }
 
+  /* The unique scope of each method name, hashed once: resolving it per call
+     site scanned every scope, and a pass over every call site grew
+     quadratically with the program (scale-test). */
+  int nb = 1; while (nb < 2 * c->nscopes + 2) nb <<= 1;
+  int *hs = (int *)malloc(sizeof(int) * (size_t)nb);   /* scope index, -1 empty */
+  int *hv = (int *)malloc(sizeof(int) * (size_t)nb);   /* unique scope or -1 */
+  if (!hs || !hv) { free(hs); free(hv); free(off); free(elem); free(ok); free(saw); return 0; }
+  for (int i = 0; i < nb; i++) hs[i] = -1;
+  for (int i = 1; i < c->nscopes; i++) {
+    const char *sn = c->scopes[i].name;
+    if (!sn) continue;
+    unsigned h = 2166136261u; for (const char *q = sn; *q; q++) { h ^= (unsigned char)*q; h *= 16777619u; }
+    for (unsigned k = h & (unsigned)(nb - 1);; k = (k + 1) & (unsigned)(nb - 1)) {
+      if (hs[k] < 0) { hs[k] = i; hv[k] = i; break; }
+      if (sp_streq(c->scopes[hs[k]].name, sn)) { hv[k] = -1; break; }
+    }
+  }
   for (int u = 0; u < nt->count; u++) {
     if (nt_kind(nt, u) != NK_CallNode) continue;
     int tgt[2], ntg = 0;
-    an_call_targets_of(c, u, tgt, &ntg);
+    { const char *un = nt_str(nt, u, "name");
+      int byname = -1;
+      if (un) {
+        unsigned h = 2166136261u; for (const char *q = un; *q; q++) { h ^= (unsigned char)*q; h *= 16777619u; }
+        for (unsigned k = h & (unsigned)(nb - 1); hs[k] >= 0; k = (k + 1) & (unsigned)(nb - 1))
+          if (sp_streq(c->scopes[hs[k]].name, un)) { byname = hv[k]; break; }
+      }
+      /* the by-name arm here; a `K.new` call also takes the constructor arm
+         an_call_targets_of resolves (only `new` calls reach its scan) */
+      if (un && sp_streq(un, "new")) an_call_targets_of(c, u, tgt, &ntg);
+      else if (byname >= 0) tgt[ntg++] = byname;
+    }
     for (int t = 0; t < ntg; t++) {
       int mi = tgt[t];
       if (mi < 0 || mi >= c->nscopes || off[mi] < 0) continue;
@@ -14108,7 +14136,7 @@ static int narrow_params_from_arrays(Compiler *c) {
       any = 1;
     }
   }
-  free(off); free(elem); free(ok); free(saw);
+  free(off); free(elem); free(ok); free(saw); free(hs); free(hv);
   return any;
 }
 
