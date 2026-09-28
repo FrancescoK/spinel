@@ -3545,6 +3545,9 @@ static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
     if (pk == NK_ClassNode || pk == NK_ModuleNode || pk == NK_ConstantPathNode ||
         pk == NK_RescueNode)
       return 0;
+    /* the `self` of `def self.m` names where m is defined; it is no value
+       (taken as one, every class with a class method escaped, #5272) */
+    if (pk == NK_DefNode && nt_ref(nt, p, "receiver") == u) return 0;
     if (pk == NK_CallNode) {
       if (nt_ref(nt, p, "receiver") == u) return chosen || name_in(nt_str(nt, p, "name"), passes_recv);
       return 1;
@@ -3586,17 +3589,33 @@ int class_value_escapes(Compiler *c, int cid) {
   }
   esc_n = c->nclasses; esc_count = nt->count; esc_round = g_fixpoint_rounds;
   for (int u = 0; u < nt->count; u++) parent[u] = body_self[u] = -1;
+  /* parents come from a walk down from the root: a desugar that repoints a
+     call's receiver past its parentheses leaves the old ParenthesesNode
+     holding the same child, and read off every node that child's parent
+     was the orphan, so `(c ? A : B).new` never reached the call and A stayed
+     unconstructed (#5272) */
+  {
+    int *stack = (int *)malloc(sizeof(int) * nn);
+    int sp = 0;
+    if (!stack) { free(parent); free(body_self); free(esc); esc = NULL; return 1; }
+    if (nt->root_id >= 0 && nt->root_id < nt->count) stack[sp++] = nt->root_id;
+    while (sp > 0) {
+      int u = stack[--sp];
+      int nr = nt_num_refs(nt, u);
+      for (int i = 0; i < nr; i++) {
+        int ch = nt_ref_at(nt, u, i);
+        if (ch >= 0 && ch < nt->count && parent[ch] < 0 && ch != nt->root_id) { parent[ch] = u; stack[sp++] = ch; }
+      }
+      int na = nt_num_arrs(nt, u);
+      for (int i = 0; i < na; i++) {
+        int n = 0; const int *ids = nt_arr_at(nt, u, i, &n);
+        for (int j = 0; j < n; j++)
+          if (ids[j] >= 0 && ids[j] < nt->count && parent[ids[j]] < 0 && ids[j] != nt->root_id) { parent[ids[j]] = u; stack[sp++] = ids[j]; }
+      }
+    }
+    free(stack);
+  }
   for (int u = 0; u < nt->count; u++) {
-    int nr = nt_num_refs(nt, u);
-    for (int i = 0; i < nr; i++) {
-      int ch = nt_ref_at(nt, u, i);
-      if (ch >= 0 && ch < nt->count) parent[ch] = u;
-    }
-    int na = nt_num_arrs(nt, u);
-    for (int i = 0; i < na; i++) {
-      int n = 0; const int *ids = nt_arr_at(nt, u, i, &n);
-      for (int j = 0; j < n; j++) if (ids[j] >= 0 && ids[j] < nt->count) parent[ids[j]] = u;
-    }
     NodeKind k = nt_kind(nt, u);
     if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) {
       int owner = -2;   /* a singleton class body's self: any class */
