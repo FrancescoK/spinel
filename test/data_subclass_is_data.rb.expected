@@ -1,0 +1,22 @@
+#<data Y x=1, y=2>
+#<data Y x=1, y=2>
+#<data Y x=3, y=4>
+{x: 1, y: 2}
+true
+true
+true
+#<data Y x=1, y=5>
+{x: 1}
+[:x, :y]
+true
+true
+false
+3
+1
+#<data W x=5, y=10>
+"hi5"
+true
+#<data V x=7, y=8>
+V(7, 8)
+#<data V x=0, y=8>
+#<data Z a=3>
