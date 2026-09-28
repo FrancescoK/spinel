@@ -5764,10 +5764,11 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
       if (ty_is_array(elem)) dyn = 1;
       else if (elem == TY_POLY) dyn = 2;
     }
-    /* a rest alone is bound right unless a pair or an Array is spread, or
-       the slice emitters, which refuse it, are the ones binding it */
-    int slices = sp_streq(nm, "each_slice") || sp_streq(nm, "each_cons");
-    if (s.O == 0 && s.Q == 0 && !splat && !ty_is_hash(rt) && !slices) continue;
+    /* a rest beside the leading requireds of a two-value yield is bound
+       right; a lone rest over ONE yielded value never spreads it (`|*r|`
+       gets `[x]` even when x is an Array), which the emitters got wrong for
+       an Array element, so that shape is always lowered here */
+    if (s.O == 0 && s.Q == 0 && !splat && m != 1 && !ty_is_hash(rt)) continue;
     if (s.O == 0 && s.Q == 0 && splat && !hash_pair && !dyn) continue;
 
     BsB b = { nt, 1 };

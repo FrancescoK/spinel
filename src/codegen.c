@@ -6565,13 +6565,15 @@ else if (orecv >= 0 && onm) {
       const char *kpty = nt_type(nt, kwn[j]);
       int dv = (kpty && sp_streq(kpty, "OptionalKeywordParameterNode"))
                  ? nt_ref(nt, kwn[j], "value") : -1;
-      int sym_id = comp_sym_intern(c, kn);
+      char key[128];
+      snprintf(key, sizeof key, "%s", param_public_name(kn));
+      int sym_id = comp_sym_intern(c, key);
       char cond[128], arg[128], missing[160];
       snprintf(cond, sizeof cond, "argc > 0 && sp_poly_has_key(_sp_proc_poly_args[argc-1], sp_box_sym((sp_sym)%d))", sym_id);
       snprintf(arg, sizeof arg, "sp_poly_index_poly(_sp_proc_poly_args[argc-1], sp_box_sym((sp_sym)%d))", sym_id);
       /* A required keyword absent from the call raises ArgumentError (mirrors the
          method-keyword arm); an optional one falls back to its default. */
-      snprintf(missing, sizeof missing, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), sp_box_nil())", kn);
+      snprintf(missing, sizeof missing, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), sp_box_nil())", key);
       LocalVar *klv = scope_local(bs, kn);
       emit_proc_param_slot(c, pb, kn, cond, arg, dv, missing, klv ? klv->type : TY_POLY);
     }
