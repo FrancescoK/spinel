@@ -253,6 +253,7 @@ int local_all_writes_empty_array(Compiler *c, Scope *sc, const char *name);
 int infer_param_hash_value(Compiler *c);
 int bind_call_params(Compiler *c, int call_id, int mi);
 int param_src_misfits(Compiler *c, LocalVar *p, TyKind ct, const int *argv, int argc);
+int unassigned_param_read(Compiler *c, Scope *sc, int n);
 int param_rest_misfits(Compiler *c, Scope *m, LocalVar *p, TyKind ct, const int *argv, int an);
 int opt_before_required(Compiler *c, Scope *m);                 /* codegen_fold.c */
 int arg_slot_for_param(Compiler *c, Scope *m, int idx, int argc); /* codegen_fold.c */
