@@ -1,0 +1,12 @@
+true
+true
+true
+false
+true
+false
+:Foo
+:bar
+[true, true]
+[true, true, true]
+"undefined method 'start_with?' for nil"
+"undefined method 'intern' for nil"
