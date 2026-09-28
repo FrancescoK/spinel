@@ -1685,6 +1685,41 @@ int desugar_dynamic_send(Compiler *c) {
   return changed;
 }
 
+int desugar_dynamic_method(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode || !sp_streq(nt_str(nt, id, "name"), "method")) continue;
+    int recv = nt_ref(nt, id, "receiver"), args = nt_ref(nt, id, "arguments"), argc = 0, dn = 0;
+    if (args >= 0) nt_arr(nt, args, "arguments", &argc);
+    nt_arr(nt, id, "dyn_send_arms", &dn);
+    if (recv < 0 || argc != 1 || dn > 0 || method_sym_arg(c, id)) continue;
+    TyKind rt = infer_type(c, recv);
+    if (!ty_is_object(rt) || comp_method_in_chain(c, ty_object_class(rt), "method", NULL) >= 0) continue;
+    char **own = NULL;
+    int nown = dsend_receiver_names(c, ty_object_class(rt), 1, &own), base = nt->count;
+    int *arms = (int *)malloc(sizeof(int) * (size_t)(nown > 0 ? nown : 1));
+    for (int k = 0; k < nown; k++) {
+      int sym = nt_new_node(nt, "SymbolNode"), na = nt_new_node(nt, "ArgumentsNode");
+      arms[k] = nt_new_node(nt, "CallNode");
+      nt_node_set_str(nt, sym, "value", own[k]);
+      nt_node_set_arr(nt, na, "arguments", &sym, 1);
+      nt_node_set_ref(nt, arms[k], "receiver", recv);
+      nt_node_set_str(nt, arms[k], "name", "method");
+      nt_node_set_str(nt, arms[k], "dyn_name", own[k]);
+      nt_node_set_ref(nt, arms[k], "arguments", na);
+      comp_sym_intern(c, own[k]);
+      free(own[k]);
+    }
+    nt_node_set_arr(nt, id, "dyn_send_arms", arms, nown);
+    free(arms); free(own);
+    comp_grow_node_arrays(c);
+    for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[id];
+    changed = 1;
+  }
+  return changed;
+}
+
 /* `recv.respond_to?(:m)` with an explicit receiver and a literal method name:
    synthesize a probe `recv.m` call. The analyze fixpoint types the probe with
    the ordinary resolver, so its inferred type tells codegen whether spinel can
