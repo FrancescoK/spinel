@@ -2259,7 +2259,8 @@ int method_recv_node(Compiler *c, int recv) {
       method_recv_node(c, nt_ref(nt, recv, "receiver")) >= 0)
     return recv;
   const char *rty = nt_type(nt, recv);
-  if (rty && sp_streq(rty, "LocalVariableReadNode")) {
+  static int depth;
+  if (rty && sp_streq(rty, "LocalVariableReadNode") && depth < 32) {
     const char *vn = nt_str(nt, recv, "name");
     Scope *sc = comp_scope_of(c, recv);
     NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
@@ -2269,7 +2270,9 @@ int method_recv_node(Compiler *c, int recv) {
       int val = nt_ref(nt, w, "value");
       /* resolve the written expression with the same rules as a direct
          receiver (sees through bind/dup/clone chains, super_method) */
+      depth++;
       int inner = method_recv_node(c, val);
+      depth--;
       if (inner >= 0) return inner;
     }
   }
