@@ -12762,15 +12762,20 @@ char *codegen_program(const NodeTable *nt) {
      index, so a poly dispatch over a user exception class's own method keys
      it through this map instead (emit_poly_dispatch_key's exc_cand): its
      class name to that index, the arm's struct being the exception header
-     followed by the class's ivars (#5093). */
+     followed by the class's ivars (#5093). The name an exception carries is
+     its qualified Ruby name ("Storage::WriteError"), as class_ruby_name
+     gives it, not the class table's short name. */
   { int any_exc = 0;
     for (int i = 0; i < c->nclasses && !any_exc; i++) any_exc = class_is_exc_subclass(c, i);
     if (any_exc) {
       buf_puts(&b, "SP_UNUSED static int sp_exc_user_cls_id(sp_RbVal v){\n");
       buf_puts(&b, "  const char *n = v.v.p ? ((sp_Exception *)v.v.p)->cls_name : NULL;\n  if (!n) return 0x7fffffff;\n");
       for (int i = 0; i < c->nclasses; i++) {
-        if (!class_is_exc_subclass(c, i) || !c->classes[i].name) continue;
-        buf_printf(&b, "  if (strcmp(n, \"%s\") == 0) return %d;\n", c->classes[i].name, i);
+        if (!class_is_exc_subclass(c, i)) continue;
+        const char *qn = class_ruby_name(c, i);
+        if (!qn) qn = c->classes[i].name;
+        if (!qn) continue;
+        buf_printf(&b, "  if (strcmp(n, \"%s\") == 0) return %d;\n", qn, i);
       }
       buf_puts(&b, "  return 0x7fffffff;\n}\n");
     } }
