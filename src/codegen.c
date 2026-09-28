@@ -8852,6 +8852,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
       }
     }
   }
+  InlDflt sv_dflt = inl_dflt_enter(m, g_nren, NULL, NULL, -1);
   if (!is_forwarding) {
     int pargc = argc;
     if (argc > 0 && nt_kind(c->nt, argv[argc - 1]) == NK_KeywordHashNode) pargc = argc - 1;
@@ -8886,6 +8887,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     g_nren = sv;
     buf_puts(b, ";\n");
   }
+  inl_dflt_leave(sv_dflt);
 
   if (as_expr) {
     TyKind rt = comp_ntype(c, id);

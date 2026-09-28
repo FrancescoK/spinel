@@ -5444,9 +5444,37 @@ static void emit_pd_cell_alias(Compiler *c, LocalVar *plv, const char *uniq) {
   else buf_printf(g_pre, "*_cell_%s = lv_%s;\n", uniq, uniq);
 }
 
+/* A default of a method spliced in place (see g_inl_dflt_scope) is callee
+   code: an earlier parameter is the inline's renamed local, and self is the
+   receiver. Setup the default hoists would land ahead of the whole call,
+   before those parameters are bound, so it stays inside the value. */
+static void emit_inlined_default(Compiler *c, Scope *m, int idx, Buf *out) {
+  int sv_nren = g_nren, sv_indent = g_indent, sv_cls = g_emitting_class_id;
+  const char *sv_self = g_self, *sv_deref = g_self_deref;
+  Buf *sv_pre = g_pre;
+  g_nren = g_inl_dflt_nren;
+  if (g_inl_dflt_self) { g_self = g_inl_dflt_self; g_self_deref = g_inl_dflt_deref; }
+  if (g_inl_dflt_class >= 0) g_emitting_class_id = g_inl_dflt_class;
+  g_inl_dflt_scope = NULL;
+  Buf pre; memset(&pre, 0, sizeof pre);
+  Buf val; memset(&val, 0, sizeof val);
+  g_pre = &pre; g_indent = 0;
+  emit_arg_or_default_at(c, m, idx, -1, &val);
+  g_pre = sv_pre; g_indent = sv_indent;
+  g_inl_dflt_scope = m;
+  g_nren = sv_nren; g_self = sv_self; g_self_deref = sv_deref; g_emitting_class_id = sv_cls;
+  if (pre.len) buf_printf(out, "({\n%s%s; })", pre.p, val.p ? val.p : "");
+  else buf_puts(out, val.p ? val.p : "");
+  free(pre.p); free(val.p);
+}
+
 /* A default a dispatch arm omits runs on the receiver as the arm's class: the
    caller's self may be another class, or none at all at top level (#4873). */
 void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out) {
+  if (provided < 0 && g_inl_dflt_scope == m && g_inl_dflt_depth == g_expr_depth && m->pdefault && m->pdefault[idx] >= 0) {
+    emit_inlined_default(c, m, idx, out);
+    return;
+  }
   if (provided >= 0 || !g_arm_self || g_arm_scope != m || g_arm_depth != g_expr_depth ||
       !m->pdefault || m->pdefault[idx] < 0) {
     emit_arg_or_default_at(c, m, idx, provided, out);

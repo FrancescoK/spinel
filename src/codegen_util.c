@@ -526,6 +526,29 @@ const char *g_ctor_self_deref = NULL;
 const char *g_arm_self = NULL;
 const Scope *g_arm_scope = NULL;
 int g_arm_depth = -1;
+/* While an inliner binds one parameter of the method it splices: that method's
+   scope, the rename depth at which its own locals (the parameters bound so
+   far) resolve, and the receiver its body runs on (NULL keeps the caller's).
+   A default is callee code, so it reads the earlier parameters under their
+   inlined names and self as the receiver. A call nested in an argument sits
+   deeper than the binding and is not this one. */
+const Scope *g_inl_dflt_scope = NULL;
+int g_inl_dflt_nren = 0;
+const char *g_inl_dflt_self = NULL;
+const char *g_inl_dflt_deref = NULL;
+int g_inl_dflt_class = -1;
+int g_inl_dflt_depth = -1;
+InlDflt inl_dflt_enter(const Scope *m, int nren, const char *self, const char *deref, int cls) {
+  InlDflt sv = { g_inl_dflt_scope, g_inl_dflt_nren, g_inl_dflt_class, g_inl_dflt_depth,
+                 g_inl_dflt_self, g_inl_dflt_deref };
+  g_inl_dflt_scope = m; g_inl_dflt_nren = nren; g_inl_dflt_class = cls;
+  g_inl_dflt_depth = g_expr_depth; g_inl_dflt_self = self; g_inl_dflt_deref = deref;
+  return sv;
+}
+void inl_dflt_leave(InlDflt sv) {
+  g_inl_dflt_scope = sv.scope; g_inl_dflt_nren = sv.nren; g_inl_dflt_class = sv.cls;
+  g_inl_dflt_depth = sv.depth; g_inl_dflt_self = sv.self; g_inl_dflt_deref = sv.deref;
+}
 /* Emitting the body of a non-lambda proc created at top level: a `return`
    there is a TOP-LEVEL return, which ends the script (#3663). */
 int g_proc_toplevel_return = 0;
