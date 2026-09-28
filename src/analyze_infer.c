@@ -7635,8 +7635,21 @@ TyKind infer_uncached(Compiler *c, int id) {
     Scope *s = comp_scope_of(c, id);
     int cls_id = (s->class_id >= 0) ? s->class_id : an_ie_class_id;
     if (cls_id < 0) cls_id = ie_class_of(c, id);
-    /* an instance_eval/exec body in a class method reads the receiver's ivar */
-    if (s->is_cmethod && ie_class_of(c, id) >= 0) cls_id = ie_class_of(c, id);
+    /* an instance_eval/exec body in a method reads the receiver's ivar */
+    if (ie_class_of(c, id) >= 0) cls_id = ie_class_of(c, id);
+    /* ... and on a boxed receiver, the ivar of each class it can hold */
+    if (ie_class_of(c, id) < -1 && nm) {
+      int pk[64], npk = ie_poly_classes_at(c, id, pk, 64);
+      TyKind pr = TY_UNKNOWN;
+      for (int i = 0; i < npk; i++) {
+        ClassInfo *pci = &c->classes[pk[i]];
+        int piv = comp_ivar_index(pci, nm);
+        if (piv < 0) continue;
+        TyKind t = pci->ivar_types[piv] == TY_STRBUF ? TY_STRING : pci->ivar_types[piv];
+        pr = pr == TY_UNKNOWN ? t : ty_unify(pr, t);
+      }
+      if (npk > 0) return pr;
+    }
     if (cls_id < 0) cls_id = comp_class_index(c, "Toplevel");
     if (cls_id < 0) return TY_UNKNOWN;
     ClassInfo *ci = &c->classes[cls_id];

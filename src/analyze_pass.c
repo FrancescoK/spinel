@@ -7123,6 +7123,42 @@ static void ie_subtree_retarget(Compiler *c, int root, const char *tmp, int dept
   }
 }
 
+/* Give each receiverless call in an instance_eval/exec body (other than a
+   Kernel global) a `self` receiver, so a body the splice below declines still
+   dispatches it on the rebound self rather than on main. Skips nested
+   class/module/def bodies and nested self-rebinding blocks. */
+static int ie_subtree_self_calls(Compiler *c, int root, int depth) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  if (root < 0 || root >= nt->count || depth > 200) return 0;
+  NodeKind k = nt_kind(nt, root);
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_DefNode || k == NK_SingletonClassNode) return 0;
+  int changed = 0, skip = -1;
+  if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, root, "name");
+    if (nm && nt_ref(nt, root, "receiver") < 0 && !ie_kernel_global(nm) &&
+        comp_method_index(c, nm) < 0) {
+      int sn = nt_new_node(nt, "SelfNode");
+      if (sn < 0) return 0;
+      comp_grow_node_arrays(c);
+      c->nscope[sn] = c->nscope[root];
+      nt_node_set_ref(nt, root, "receiver", sn);
+      changed = 1;
+    }
+    if (nm && (sp_streq(nm, "instance_eval") || sp_streq(nm, "instance_exec"))) skip = nt_ref(nt, root, "block");
+  }
+  int nr = nt_num_refs(nt, root);
+  for (int i = 0; i < nr; i++) {
+    int ch = nt_ref_at(nt, root, i);
+    if (ch != skip) changed |= ie_subtree_self_calls(c, ch, depth + 1);
+  }
+  int na = nt_num_arrs(nt, root);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, root, i, &n);
+    for (int j = 0; j < n; j++) changed |= ie_subtree_self_calls(c, ids[j], depth + 1);
+  }
+  return changed;
+}
+
 /* instance_eval / instance_exec with a block on a BUILTIN receiver: splice the
    body inline with self bound to a temp (#2634). User-object receivers keep
    the dedicated codegen path (ie_direct), which handles their ivars/methods.
@@ -7154,6 +7190,7 @@ int desugar_instance_eval_builtin(Compiler *c) {
     int body = nt_ref(nt, blk, "body");
     if (body < 0) continue;
     if (subtree_has_kind(nt, body, NK_DefNode, 0)) continue;
+    changed |= ie_subtree_self_calls(c, body, 0);
 
     int is_exec = sp_streq(nm, "instance_exec");
     /* pvals[k]: the node bound to parameter pnames[k] -- a call argument, a
