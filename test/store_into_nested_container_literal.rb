@@ -47,3 +47,11 @@ p e
 f = [{"q" => 1}]
 f[0]["r"] = :s
 p f
+
+# several values in one push, unshift or insert
+m = [[1], [2]]
+m[0].push(2, "x")
+m[1].unshift(:s, 3)
+n = [[1, 2]]
+n[0].insert(1, 5, "y")
+p m, n

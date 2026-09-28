@@ -3281,8 +3281,14 @@ int infer_write_types(Compiler *c) {
       int src = local_hash_alias_source(c, &lw_ix, recv);
       if (src >= 0) { recv = src; rty = nt_type(nt, src); }
     }
-    if ((is_push || is_idx_write) && !elem_splat_index)
-      changed |= widen_nested_literals(c, recv, is_push, is_splice, (TyKind)kt, (TyKind)vt);
+    if ((is_push || is_idx_write) && !elem_splat_index) {
+      /* each pushed value is its own evidence (`a[0].push(2, "x")`) */
+      if (elem_argv && elem_an - elem_from > 1)
+        for (int ai = elem_from; ai < elem_an; ai++)
+          changed |= widen_nested_literals(c, recv, is_push, is_splice, (TyKind)kt, push_elem_ty(c, elem_argv[ai]));
+      else
+        changed |= widen_nested_literals(c, recv, is_push, is_splice, (TyKind)kt, (TyKind)vt);
+    }
     /* fold into a local's type or an ivar's type (an empty `@buf=[]` filled by
        `@buf << x` infers its element type the same way a local does) */
     TyKind *slot = NULL;
