@@ -2189,6 +2189,9 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	$(SPINEL) test/infer/param_narrow_super_route.rb -c --no-line-map -o "$$tmp/psr.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (param_narrow_super_route: -c)"; ok=0; }; \
 	grep -q 'sp_Holder_initialize(sp_Holder \*self, sp_RbVal lv_v)' "$$tmp/psr.c" || { echo "infer-test: FAIL (a parameter reached by super was narrowed from the visible calls alone)"; ok=0; }; \
 	grep -q 'sp_Plain_initialize(sp_Plain \*self, sp_int lv_v)' "$$tmp/psr.c" || { echo "infer-test: FAIL (the super guard stopped an unrelated parameter narrowing)"; ok=0; }; \
+	$(SPINEL) test/infer/ivar_typed_array_meets_boxed_array.rb -c --no-line-map -o "$$tmp/tmb.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (ivar_typed_array_meets_boxed_array: -c)"; ok=0; }; \
+	grep -q 'sp_PolyArray \* iv_xs;' "$$tmp/tmb.c" || { echo "infer-test: FAIL (#5521 a slot holding only Arrays widened to a boxed value)"; ok=0; }; \
+	grep -q 'sp_RbVal iv_ys;' "$$tmp/tmb.c" || { echo "infer-test: FAIL (#4196 two typed array kinds no longer box)"; ok=0; }; \
 	$(SPINEL) test/infer/typed_array_elem_arg_types_param.rb -c --no-line-map -o "$$tmp/tae.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (typed_array_elem_arg_types_param: -c)"; ok=0; }; \
 	grep -q 'sp_Plan_write_column(sp_Plan \*self, sp_int lv_wcol)' "$$tmp/tae.c" || { echo "infer-test: FAIL (an int-array element passed as an argument left the parameter boxed)"; ok=0; }; \
 	grep -q 'sp_Plan_shout(sp_Plan \*self, const char \* lv_s)' "$$tmp/tae.c" || { echo "infer-test: FAIL (a String-array element passed as an argument left the parameter boxed)"; ok=0; }; \
