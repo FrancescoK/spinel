@@ -94,6 +94,8 @@ int an_poly_raw_argc(const char *name);
    C temp, so the call must be typed for what both can hold. */
 int an_user_ret_disagrees(Compiler *c, const char *name, TyKind want);
 int an_ty_holds_nil(TyKind t);
+int an_empty_container_kind(Compiler *c, int b);
+int an_empty_container_disagrees(int kind, TyKind other);
 int an_chunk_family_to_a(Compiler *c, int id);
 const char *an_regex_lit_src(Compiler *c, int nid);
 int str_in(const char *s, const char *const *set);

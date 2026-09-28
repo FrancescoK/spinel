@@ -3253,6 +3253,17 @@ static int node_is_empty_hash_producer(Compiler *c, int node) {
   return 0;
 }
 
+/* The type a write of `vt` from `vnode` brings to a slot now typed `slot`. An
+   empty `[]` / `{}` has no type of its own yet, and unified it took the
+   slot's: `@x = 1; @x = {}` stored the hash pointer in an Integer slot.
+   Against a slot of another kind it is a container all the same, so the slot
+   boxes, as an if/else with an empty-literal arm does. */
+static TyKind empty_container_write(Compiler *c, int vnode, TyKind vt, TyKind slot) {
+  if (vt == TY_UNKNOWN && an_empty_container_disagrees(an_empty_container_kind(c, vnode), slot))
+    return TY_POLY;
+  return vt;
+}
+
 /* The type a slot holding `cur` takes when it is also written nil. A slot
    whose C form has a nil of its own (NULL, or the Integer/Float sentinel)
    keeps its type; a bool, a Symbol, a Class, a Rational and a Complex have no
@@ -3294,6 +3305,7 @@ int infer_global_const_types(Compiler *c) {
           if (en == 0) vt = TY_POLY_ARRAY;
         }
       }
+      if (lv) vt = empty_container_write(c, vnode, vt, lv->type);
       if (vt == TY_NIL) {
         if (lv && nil_write_type(lv->type) != lv->type) { lv->type = nil_write_type(lv->type); changed = 1; }
         continue;
@@ -5563,6 +5575,8 @@ int infer_ivar_types(Compiler *c) {
                       sp_streq(op2, "+")) && vt == ci->ivar_types[iv])))
           vt = ci->ivar_types[iv];
       }
+      if (!sp_streq(ty, "InstanceVariableOperatorWriteNode"))
+        vt = empty_container_write(c, vnode, vt, ci->ivar_types[iv]);
       /* A narrowed int table is pinned: its own write reads TY_POLY_ARRAY,
          and the two array kinds unify to the plain poly SCALAR -- re-deriving
          it here would replace the narrowed type with something strictly
@@ -5681,7 +5695,7 @@ int infer_ivar_types(Compiler *c) {
         if (!comp_is_writer(ci, base)) continue;
         int iv = comp_ivar_index(ci, ivname);
         if (iv < 0 || class_ivar_pinned(ci, ivname)) continue;
-        TyKind merged = ty_unify(ci->ivar_types[iv], vt);
+        TyKind merged = ty_unify(ci->ivar_types[iv], empty_container_write(c, argv[0], vt, ci->ivar_types[iv]));
         if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
       }
       else {
@@ -5704,7 +5718,7 @@ int infer_ivar_types(Compiler *c) {
         ClassInfo *ci = &c->classes[only];
         int iv = comp_ivar_index(ci, ivname);
         if (iv < 0 || class_ivar_pinned(ci, ivname)) continue;
-        TyKind merged = ty_unify(ci->ivar_types[iv], vt);
+        TyKind merged = ty_unify(ci->ivar_types[iv], empty_container_write(c, argv[0], vt, ci->ivar_types[iv]));
         if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
       }
     }
