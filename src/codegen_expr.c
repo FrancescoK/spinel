@@ -2203,6 +2203,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     buf_printf(b, "(cvar_%s_%s = ", c->classes[cid].name, nm + 2);
     if (emit_empty_container_for_slot(c, v, ct, b)) { /* emitted at the slot's type */ }
     else if (ct == TY_POLY) emit_boxed(c, v, b);
+    else if (emit_array_into_poly_slot(c, ct, v, b)) { }
     else emit_expr(c, v, b);
     buf_puts(b, ")");
     return;

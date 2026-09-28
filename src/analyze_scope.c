@@ -3439,6 +3439,14 @@ static TyKind empty_container_write(Compiler *c, int vnode, TyKind vt, TyKind sl
    written both. The ivar, cvar and gvar write passes skipped every nil write,
    so such a slot kept the bare type and its nil read back as false (or the
    zero Symbol): `@v.nil?` folded to false and `p @v` printed false. */
+/* 1 iff a write of `vt` leaves a slot typed `cur` as it is: a slot an element
+   write widened to the general Array takes any array written into it as one
+   (the write converts it), where the join of two array kinds is the scalar
+   poly box. */
+static int keep_general_array(TyKind cur, TyKind vt) {
+  return cur == TY_POLY_ARRAY && ty_is_array(vt);
+}
+
 static TyKind nil_write_type(TyKind cur) {
   return an_ty_holds_nil(cur) ? cur : TY_POLY;
 }
@@ -3616,7 +3624,7 @@ int infer_global_const_types(Compiler *c) {
       continue;
     }
     if (!lv) continue;
-    TyKind merged = ty_unify(lv->type, vt);
+    TyKind merged = keep_general_array(lv->type, vt) ? lv->type : ty_unify(lv->type, vt);
     if (merged != lv->type) { lv->type = merged; changed = 1; }
   }
   return changed;
@@ -5539,7 +5547,7 @@ static int cvar_note_write(Compiler *c, ClassInfo *ci, int id) {
     if (vt == TY_NIL) vt = nil_write_type(cur);
     if (vt == TY_NIL) return changed;
   }
-  TyKind merged = ty_unify(cur, vt);
+  TyKind merged = keep_general_array(cur, vt) ? cur : ty_unify(cur, vt);
   if (merged != cur) { ci->cvar_types[idx] = merged; changed = 1; }
   return changed;
 }

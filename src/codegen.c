@@ -4460,6 +4460,23 @@ int conv_reads_shared_storage(Compiler *c, int node) {
   return 0;
 }
 
+/* Emits typed-array value `v` rebuilt as the general Array a slot typed
+   `slot` holds, and returns 1; returns 0 (nothing emitted) where no
+   conversion applies. */
+int emit_array_into_poly_slot(Compiler *c, TyKind slot, int v, Buf *b) {
+  TyKind vt = comp_ntype(c, v);
+  const char *k = vt == TY_INT_ARRAY ? "int" : vt == TY_STR_ARRAY ? "str"
+                : vt == TY_FLOAT_ARRAY ? "float" : NULL;
+  if (slot != TY_POLY_ARRAY || !k) return 0;
+  if (conv_reads_shared_storage(c, v))
+    unsupported(c, v, "widening a typed array READ into a poly slot "
+                      "(the conversion copies, so writes would not be shared)");
+  buf_printf(b, "sp_PolyArray_from_%s_array(", k);
+  emit_expr(c, v, b);
+  buf_puts(b, ")");
+  return 1;
+}
+
 void proc_collect_used(Compiler *c, int id, NameSet *out) {
   if (id < 0) return;
   const char *ty = nt_type(c->nt, id);

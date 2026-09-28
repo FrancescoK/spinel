@@ -157,6 +157,11 @@ typedef struct {
                        Durable, like oa_pin: the slot's own element writes
                        re-derive a narrower kind every round, and the binding
                        widened it back -- to the cap. */
+  int poly_array_pin; /* a local whose writes are all array literals, handed
+                       to a parameter an element write widened to the general
+                       Array: the reverse binding types it that Array, and the
+                       type is re-asserted each round, as poly_hash_pin is,
+                       since the literals re-derive the narrower kind. */
   TyKind oa_pin;    /* the pointer-array type the narrowing pass gave this slot,
                        re-asserted on every fixpoint round. infer_write_types
                        clears every local back to UNKNOWN and re-derives it from
