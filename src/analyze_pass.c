@@ -3167,6 +3167,7 @@ int infer_write_types(Compiler *c) {
          ivar array filled only from outside kept its empty literal's default
          and every element read back as an Integer (#3781). */
       int gcid = -1, cside = 0;
+      int gcids[16], ngc = 0;
       int grecv = nt_ref(nt, recv, "receiver");
       if (grecv >= 0 && nt_kind(nt, grecv) == NK_ConstantReadNode) {
         /* `Tbl.cache[k] = v`: the class-side getter */
@@ -3178,19 +3179,33 @@ int infer_write_types(Compiler *c) {
       else if (grecv >= 0 && !(nt_type(nt, grecv) && sp_streq(nt_type(nt, grecv), "SelfNode"))) {
         TyKind grt = infer_type(c, grecv);
         gcid = ty_is_object(grt) ? ty_object_class(grt) : -1;
-        if (gcid < 0 && !is_push) continue;
+        /* An index write through a receiver of a known non-object type is
+           no user getter's; a boxed or still-settling one may be any class
+           that owns the getter. */
+        if (gcid < 0 && !is_push && grt != TY_POLY && grt != TY_UNKNOWN) continue;
         /* The receiver's own type may still be settling (a block parameter over
            an array whose element type is what this evidence decides). Fall back
            to the class that owns this getter when exactly one does -- with no
            ambiguity there is nothing else it could be. */
         if (gcid < 0) {
           int owner = -1, nown = 0;
-          for (int k = 0; k < c->nclasses && nown < 2; k++) {
+          for (int k = 0; k < c->nclasses && nown <= 16; k++) {
             int kd = -1;
-            if (comp_reader_in_chain(c, k, mname, &kd)) { if (kd == k) { owner = k; nown++; } }
-            else if (comp_method_in_class(c, k, mname) >= 0) { owner = k; nown++; }
+            int owns = comp_reader_in_chain(c, k, mname, &kd) ? kd == k
+                                                              : comp_method_in_class(c, k, mname) >= 0;
+            if (!owns) continue;
+            owner = k;
+            if (nown < 16) gcids[nown] = k;
+            nown++;
           }
-          if (nown != 1) {
+          /* `[a, b].each { |o| o.cache[k] = v }`: the receiver is any of the
+             owners, so each owner's getter ivar takes the write, as a write
+             through a typed receiver would (the targets below). */
+          if (!is_push && nown != 1) {
+            if (nown == 0 || nown > 16) continue;
+            ngc = nown;
+          }
+          else if (nown != 1) {
             /* Several classes own this getter and the receiver's class is only
                known at run time: apply the evidence to EVERY owner. Leaving
                them narrow stored a boxed object into an int-array slot, and the
@@ -3235,14 +3250,27 @@ int infer_write_types(Compiler *c) {
         gcid = caller->class_id;
         cside = caller->is_cmethod;
       }
-      if (gcid < 0 || gcid >= c->nclasses) continue;
+      if (ngc == 0) {
+        if (gcid < 0 || gcid >= c->nclasses) continue;
+        gcids[ngc++] = gcid;
+      }
       /* The write lands in whichever ivar the getter returns, and a subclass
          override can return another one: credit the ivar of every class the
          call can dispatch to, the same evidence `@c[k] = v` in that getter's
          class would be. A class whose getter is not a plain ivar read (or
          `||=`) keeps its container to itself and takes none. */
-      int tcls[16]; const char *tiv[16];
-      int ntg = getter_ivar_targets(c, gcid, cside, mname, tcls, tiv, 16);
+      int tcls[32]; const char *tiv[32];
+      int ntg = 0;
+      for (int gi = 0; gi < ngc; gi++) {
+        int gcls[16]; const char *giv[16];
+        int ng = getter_ivar_targets(c, gcids[gi], cside, mname, gcls, giv, 16);
+        for (int j = 0; j < ng && ntg < 32; j++) {
+          int seen = 0;
+          for (int t = 0; t < ntg && !seen; t++)
+            seen = tcls[t] == gcls[j] && sp_streq(tiv[t], giv[j]);
+          if (!seen) { tcls[ntg] = gcls[j]; tiv[ntg] = giv[j]; ntg++; }
+        }
+      }
       if (ntg <= 0) continue;
       /* a shared-mutable string spends its handle at a typed array's boundary,
          so the element slot stays a plain string (#3227) */
