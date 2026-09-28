@@ -10334,6 +10334,13 @@ int infer_block_params(Compiler *c) {
     else if ((sp_streq(name, "times") || sp_streq(name, "upto") ||
          sp_streq(name, "downto")) && rt == TY_INT)
       pt = TY_INT;
+    /* on a boxed receiver the block runs through the dispatch with its
+       argument boxed; typed during inference, not only when emitted, so what
+       the block computes from it is typed too (left unknown, `v = i * 10`
+       contributed nothing and `v` came out a String beside `v = "s"`) */
+    else if ((sp_streq(name, "times") || sp_streq(name, "upto") ||
+              sp_streq(name, "downto") || sp_streq(name, "step")) && rt == TY_POLY)
+      pt = TY_POLY;
     else if (rt == TY_POLY && sp_streq(name, "each_line"))
       pt = TY_STRING;  /* File/IO object yielding lines */
     else if (rt == TY_POLY && sp_streq(name, "each_byte"))
