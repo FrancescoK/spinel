@@ -26474,13 +26474,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        object renderer had no idea and printed "#<Object>" (#3713) */
     if (sp_streq(name, "inspect") && argc == 0 &&
         comp_method_in_chain(c, ty_object_class(comp_ntype(c, recv)), "inspect", NULL) < 0) {
-      int ti = ++g_tmp;
-      buf_printf(b, "({ sp_Exception *_t%d = (sp_Exception *)(", ti); emit_expr(c, recv, b);
-      buf_printf(b, "); const char *_ecn%d = _t%d->cls_name ? _t%d->cls_name : \"Exception\";"
-                    " const char *_emg%d = sp_exc_to_s_text(_t%d);"
-                    " (!_emg%d || !*_emg%d) ? _ecn%d"
-                    " : sp_sprintf(\"#<%%s: %%s>\", _ecn%d, _emg%d); })",
-                 ti, ti, ti, ti, ti, ti, ti, ti, ti, ti);
+      buf_puts(b, "sp_exc_inspect((void *)("); emit_expr(c, recv, b); buf_puts(b, "))");
       return;
     }
     /* the accessors every exception carries: an instance of a user subclass is
@@ -26682,11 +26676,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         emit_expr(c, recv, b);
         buf_printf(b, "; (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_EXCEPTION && _t%d.v.p) ? ",
                    t, t, t);
-        if (exc_has_nonstring_msg_override(c))
-          buf_printf(b, "sp_poly_to_s(sp_user_exc_message_v((sp_Exception *)_t%d.v.p))", t);
-        else
-          buf_printf(b, "sp_user_exc_message((sp_Exception *)_t%d.v.p)", t);
-        buf_printf(b, " : sp_poly_to_s(sp_poly_exc_acc(_t%d, \"message\")); })", t);
+        int boxed = comp_ntype(c, id) == TY_POLY;
+        const char *arm = exc_has_nonstring_msg_override(c)
+          ? (boxed ? "sp_user_exc_message_v(%s)" : "sp_poly_to_s(sp_user_exc_message_v(%s))")
+          : (boxed ? "sp_box_str(sp_user_exc_message(%s))" : "sp_user_exc_message(%s)");
+        char ep[64];
+        snprintf(ep, sizeof ep, "(sp_Exception *)_t%d.v.p", t);
+        buf_printf(b, arm, ep);
+        if (boxed) buf_printf(b, " : sp_poly_exc_acc(_t%d, \"message\"); })", t);
+        else buf_printf(b, " : sp_poly_to_s(sp_poly_exc_acc(_t%d, \"message\")); })", t);
         return;
       }
       /* message infers TY_STRING: unwrap the boxed accessor result */
@@ -26783,15 +26781,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       }
     }
     if (sp_streq(name, "inspect") && argc == 0) {
-      int ei = ++g_tmp;
-      buf_printf(b, "({ sp_Exception *_t%d = (sp_Exception *)(", ei); emit_expr(c, recv, b);
-      /* an exception with no message of its own inspects as just the class
-         name, as CRuby's does (#3713) */
       /* an empty message renders as the bare class name (#3713) */
-      buf_printf(b, "); _t%d ? (sp_exc_to_s_text(_t%d) && *sp_exc_to_s_text(_t%d)"
-                    " ? sp_sprintf(\"#<%%s: %%s>\", sp_exc_class_name(_t%d), sp_exc_to_s_text(_t%d))"
-                    " : sp_exc_class_name(_t%d))"
-                    " : (&(\"\\xff\" \"nil\")[1]); })", ei, ei, ei, ei, ei, ei);
+      buf_puts(b, "sp_exc_inspect((void *)("); emit_expr(c, recv, b); buf_puts(b, "))");
       return;
     }
     if (sp_streq(name, "message") || sp_streq(name, "to_s") || sp_streq(name, "to_str")) {
@@ -26856,9 +26847,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(g_pre, "sp_Exception *_t%d = ", t);
       buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
       /* an empty message renders as the bare class name (#3713) */
-      buf_printf(b, "(_t%d ? (sp_exc_to_s_text(_t%d) && *sp_exc_to_s_text(_t%d)"
-                    " ? sp_sprintf(\"#<%%s: %%s>\", sp_exc_class_name(_t%d), sp_exc_to_s_text(_t%d))"
-                    " : sp_exc_class_name(_t%d)) : \"nil\")", t, t, t, t, t, t);
+      buf_printf(b, "sp_exc_inspect((void *)_t%d)", t);
       return;
     }
     if (sp_streq(name, "class")) {  /* a Class carried by name (complete for every exception class) */

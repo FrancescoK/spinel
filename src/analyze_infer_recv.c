@@ -1855,7 +1855,8 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       (sp_streq(name, "message") || sp_streq(name, "result") ||
        sp_streq(name, "errno") ||
        sp_streq(name, "key") || sp_streq(name, "receiver")))
-    { *out = sp_streq(name, "message") ? TY_STRING : TY_POLY; return 1; }
+    { *out = (sp_streq(name, "message") && !exc_has_nonstring_msg_override(c)) ? TY_STRING : TY_POLY;
+      return 1; }
   /* Integer / Time accessors, Proc#arity on a poly value read out of a
      container: an int-returning builtin the poly-builtin dispatch handles at
      runtime; type it int so the result is not boxed to nil (#3162). */

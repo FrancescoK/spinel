@@ -504,9 +504,12 @@ const char *sp_exc_signm_acc(sp_Exception *e) {SP_GC_ROOT(e);
    dispatch a container read or a `p` of a user subclass goes through (#3813). */
 const char *sp_exc_inspect(void *p) {
   sp_Exception *e = (sp_Exception *)p;
-  if (!e) return "nil";
-  const char *cn = e->cls_name ? e->cls_name : "Exception";
+  if (!e) return SPL("nil");
+  SP_GC_ROOT(e);
   const char *msg = sp_exc_to_s_text(e);
+  SP_GC_ROOT(msg);
+  const char *cn = sp_exc_class_name(e);
+  SP_GC_ROOT(cn);
   return (!msg || !*msg) ? cn : sp_sprintf("#<%s: %s>", cn, msg);
 }
 
