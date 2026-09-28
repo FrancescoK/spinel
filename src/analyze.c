@@ -1038,6 +1038,20 @@ static int a_scope_forwards_block_to_keeper(Compiler *c, int mi, int depth) {
 static int a_block_forwarded_to_proc(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
+  /* `super(x) { }` in a proc-form clone reaches the yielding parent's clone,
+     which takes the literal block as a real proc */
+  if (ty && (sp_streq(ty, "SuperNode") || sp_streq(ty, "ForwardingSuperNode"))) {
+    int sblk = nt_ref(nt, id, "block");
+    if (sblk < 0 || nt_kind(nt, sblk) != NK_BlockNode) return 0;
+    Scope *s = comp_scope_of(c, id);
+    if (!s || !s->is_proc_form || s->class_id < 0 || !s->name) return 0;
+    int p = c->classes[s->class_id].parent;
+    if (p < 0) return 0;
+    const char *u = comp_super_name(c, p, s->name, s->is_cmethod);
+    int tmi = s->is_cmethod ? comp_cmethod_in_chain(c, p, u, NULL)
+                            : comp_method_in_chain(c, p, u, NULL);
+    return tmi >= 0 && c->scopes[tmi].is_proc_form;
+  }
   if (!ty || !sp_streq(ty, "CallNode")) return 0;
   int blk = nt_ref(nt, id, "block");
   const char *bty = blk >= 0 ? nt_type(nt, blk) : NULL;
