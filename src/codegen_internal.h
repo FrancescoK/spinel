@@ -965,11 +965,15 @@ int kwh_merged(Compiler *c, Scope *m, int kwh);
    lone one does in emit_ds_hash_materialize. Returns the temp id and sets
    *out_type to TY_SYM_POLY_HASH. */
 int emit_ds_hash_merge(Compiler *c, int kwh, TyKind *out_type);
-/* The positional arguments of a kwh_merged call, evaluated in order into
-   rooted temps ahead of its merged keyword hash, as CRuby evaluates them
-   ahead of the keywords: each one that has an effect is pushed onto the
-   g_argov overrides, for the caller to pop once it has bound the call. */
-void emit_merged_positionals(Compiler *c, const int *argv, int pos_argc);
+/* True when emit_ds_hash_materialize runs keyword code with an effect ahead
+   of the call's positionals: a kwh_merged call's merged hash, or a first
+   `**` operand with a side effect that it evaluates. */
+int kwh_runs_ahead(Compiler *c, Scope *m, int kwh);
+/* The positional arguments of such a call, evaluated in order into rooted
+   temps ahead of its keywords, as CRuby evaluates them: each one that has an
+   effect is pushed onto the g_argov overrides, for the caller to pop once it
+   has bound the call. */
+void emit_positionals_first(Compiler *c, const int *argv, int pos_argc);
 int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type);
 /* The TypeError CRuby raises for a `**` operand that is neither a Hash, nil
    nor convertible with #to_hash, emitted into g_pre ahead of any keyword
