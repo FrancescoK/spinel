@@ -388,6 +388,8 @@ class Pathname
   # mkdir -p: every missing ancestor, then self. A path that already exists as
   # a directory is not an error.
   def mkpath
+    # an empty path names no directory: Dir.mkdir raises what CRuby raises
+    Dir.mkdir(@path) if @path.empty?
     descend.each do |dir|
       Dir.mkdir(dir.to_s) unless dir.directory?
     end
