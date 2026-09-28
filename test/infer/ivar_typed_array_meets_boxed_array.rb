@@ -53,3 +53,38 @@ m.ints([1, 2])
 p m.peek
 m.floats([1.5, 2.5])
 p m.peek
+
+# The same rule on the transplanted copies of a module's ivar. A module
+# included into several classes gets one slot per class, and the copies are
+# merged on their own path -- which did not carry the rule at all, so the
+# copy that saw the typed array first came out sp_RbVal while its siblings
+# stayed sp_PolyArray *: three copies of one module ivar, disagreeing.
+module Holder
+  def seed
+    @items = []
+  end
+  def add(n)
+    @items << n
+  end
+  def replace(a)
+    @items = a
+  end
+  def peek
+    @items
+  end
+end
+class Counter
+  include Holder
+  def initialize; seed; end
+end
+class Mixer
+  include Holder
+  def initialize; seed; end
+end
+cn = Counter.new
+cn.add(1)
+cn.add(2)
+p cn.peek
+mx = Mixer.new
+mx.replace([1, "two", 3.0])
+p mx.peek

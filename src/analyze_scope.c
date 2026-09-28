@@ -5773,6 +5773,30 @@ static int sg_writer_class(Compiler *c, int id, int recv) {
   return -1;
 }
 
+/* Unify an ivar slot's type with a written value's, keeping a slot that only
+   ever holds an Array an ARRAY.
+
+   ty_unify answers the plain poly SCALAR for two array kinds. That boxes the
+   slot and sends every push through sp_poly_shl, where a foreign element was
+   silently coerced to the typed array's own kind (`[0, 0]` for a pushed
+   "one", #4196). When either side is already the boxed ARRAY the answer is
+   the boxed ARRAY: both sides are Arrays, so nothing is lost by saying so.
+
+   Two TYPED kinds still box. Their readers were typed from the writes, and
+   the box is what keeps them consistent.
+
+   Either operand may be the boxed one. The slot is the typed array and the
+   value the boxed one whenever the #5499 re-narrow has reset the slot: its
+   pushes re-fold to `int_array` before the pushed value re-settles, and the
+   next write of a boxed array then met it (#5521). */
+static TyKind ivar_merge_with_write(TyKind slot, TyKind vt) {
+  TyKind m = ty_unify(slot, vt);
+  if (m == TY_POLY && ty_is_array(slot) && ty_is_array(vt) &&
+      (slot == TY_POLY_ARRAY || vt == TY_POLY_ARRAY))
+    return TY_POLY_ARRAY;
+  return m;
+}
+
 int infer_ivar_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -5915,25 +5939,7 @@ int infer_ivar_types(Compiler *c) {
          worse, and a parameter bound from `@t[k][j]` would take poly for
          good (parameters only widen). */
       if (!class_ivar_pinned(ci, nm) && !ci->ivar_int_table[iv]) {
-        TyKind merged = ty_unify(ci->ivar_types[iv], vt);
-        /* A poly-ARRAY slot stays one under a typed-array write: the
-           push-widening pass (or the element-write arm) chose the poly ARRAY
-           on element evidence, and ty_unify would answer the plain poly
-           SCALAR -- which boxed the slot and sent every push through
-           sp_poly_shl, where a foreign element was silently coerced to the
-           typed array's own kind (`[0, 0]` for a pushed "one", #4196). Two
-           typed kinds still box: their readers were typed from the writes,
-           and the box is what keeps them consistent. */
-        /* and the same the other way round: the slot may be the TYPED array
-           and the boxed one the value being written, which is what a slot
-           re-derived by the #5499 re-narrow looks like -- its pushes fold to
-           `int_array` before the pushed value re-settles, and the next write
-           of a boxed array then unified the two array kinds to the plain poly
-           SCALAR. The slot only ever holds an Array either way, so the answer
-           is the boxed ARRAY, not a boxed value (#5521). */
-        if (merged == TY_POLY && ty_is_array(ci->ivar_types[iv]) && ty_is_array(vt) &&
-            (ci->ivar_types[iv] == TY_POLY_ARRAY || vt == TY_POLY_ARRAY))
-          merged = TY_POLY_ARRAY;
+        TyKind merged = ivar_merge_with_write(ci->ivar_types[iv], vt);
         sp_ivwatch(nm, "ivar_write_merge", ci->ivar_types[iv], merged);
         if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
       }
@@ -5952,7 +5958,7 @@ int infer_ivar_types(Compiler *c) {
           ClassInfo *tc = &c->classes[ts->class_id];
           if (class_ivar_pinned(tc, nm)) continue;
           int tiv = comp_ivar_intern(tc, nm);
-          TyKind tmerged = ty_unify(tc->ivar_types[tiv], vt);
+          TyKind tmerged = ivar_merge_with_write(tc->ivar_types[tiv], vt);
           sp_ivwatch(nm, "transplant_merge", tc->ivar_types[tiv], tmerged);
           if (tmerged != tc->ivar_types[tiv]) { tc->ivar_types[tiv] = tmerged; changed = 1; }
         }
