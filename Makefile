@@ -999,6 +999,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (super(...) into a yielding parent with an optional compiled)"; ok=0; \
 	else grep -q "the forwarded arguments cannot leave one out" "$$tmp/fy.out" || \
 	  { echo "reject-test: FAIL (super(...) into a yielding parent rejected without saying why)"; sed -n 1,5p "$$tmp/fy.out"; ok=0; }; fi; \
+	t=test/reject/forwarding_builtin_uneven_calls.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/fb.c" >"$$tmp/fb.out" 2>&1; then \
+	  echo "reject-test: FAIL (... into a builtin from calls of different arities compiled)"; ok=0; \
+	else grep -q "forwarded into a builtin method, from calls that do not all pass the same number" "$$tmp/fb.out" || \
+	  { echo "reject-test: FAIL (... into a builtin rejected without saying why)"; sed -n 1,5p "$$tmp/fb.out"; ok=0; }; fi; \
 	t=test/reject/class_then_module.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/m.c" >"$$tmp/m.out" 2>&1; then \
 	  echo "reject-test: FAIL (#4309: a constant declared class and then module compiled)"; ok=0; \
