@@ -2012,16 +2012,44 @@ int blkp_params_node(Compiler *c, int create) {
   return pn;
 }
 
+/* Does parameter node `p` bind `name`, directly or inside a destructuring
+   `(a, (b, *c))`? */
+static int blkp_param_binds(const NodeTable *nt, int p, const char *name) {
+  if (p < 0) return 0;
+  const char *pty = nt_type(nt, p);
+  if (pty && sp_streq(pty, "MultiTargetNode")) {
+    const char *arrs[2] = { "lefts", "rights" };
+    for (int a = 0; a < 2; a++) {
+      int n = 0; const int *ids = nt_arr(nt, p, arrs[a], &n);
+      for (int i = 0; i < n; i++) if (blkp_param_binds(nt, ids[i], name)) return 1;
+    }
+    int r = nt_ref(nt, p, "rest");
+    if (r >= 0 && blkp_param_binds(nt, nt_ref(nt, r, "expression"), name)) return 1;
+    return 0;
+  }
+  const char *pn = nt_str(nt, p, "name");
+  return pn && sp_streq(pn, name);
+}
+
 int blkp_binds_param(Compiler *c, int create, const char *name) {
+  const NodeTable *nt = c->nt;
+  int bp = nt_ref(nt, create, "parameters");
+  if (bp >= 0 && nt_type(nt, bp) && sp_streq(nt_type(nt, bp), "BlockParametersNode")) {
+    int ln = 0; const int *locs = nt_arr(nt, bp, "locals", &ln);
+    for (int i = 0; i < ln; i++) if (blkp_param_binds(nt, locs[i], name)) return 1;
+  }
   int pn = blkp_params_node(c, create);
   if (pn < 0) return 0;
-  const char *pty = nt_type(c->nt, pn);
+  const char *pty = nt_type(nt, pn);
   if (!pty || !sp_streq(pty, "ParametersNode")) return 0;
-  int rn = 0; const int *reqs = nt_arr(c->nt, pn, "requireds", &rn);
-  for (int i = 0; i < rn; i++) {
-    const char *p = nt_str(c->nt, reqs[i], "name");
-    if (p && sp_streq(p, name)) return 1;
+  const char *arrs[4] = { "requireds", "optionals", "posts", "keywords" };
+  for (int a = 0; a < 4; a++) {
+    int n = 0; const int *ids = nt_arr(nt, pn, arrs[a], &n);
+    for (int i = 0; i < n; i++) if (blkp_param_binds(nt, ids[i], name)) return 1;
   }
+  const char *refs[3] = { "rest", "keyword_rest", "block" };
+  for (int a = 0; a < 3; a++)
+    if (blkp_param_binds(nt, nt_ref(nt, pn, refs[a]), name)) return 1;
   return 0;
 }
 
@@ -2791,7 +2819,7 @@ static void numbered_rename_reads(NodeTable *nt, int id, const char *from,
    emit_block_locals_reset nils every name in it that is not a parameter, so a
    stale entry there nils the renamed slot right after the bind, once per
    iteration, and the body reads nil. */
-static void numbered_rename_locals_str(NodeTable *nt, int L, const char *from, const char *to) {
+void numbered_rename_locals_str(NodeTable *nt, int L, const char *from, const char *to) {
   const char *locs = nt_str(nt, L, "locals");
   if (!locs || !*locs) return;
   size_t flen = strlen(from), cap = strlen(locs) + strlen(to) + 8, w = 0;
@@ -2934,6 +2962,8 @@ void rename_shadowing_block_params(Compiler *c) {
       if (kwr >= 0 && ne < 128 && nt_type(nt, kwr) &&
           sp_streq(nt_type(nt, kwr), "KeywordRestParameterNode") &&
           nt_str(nt, kwr, "name")) extras[ne++] = kwr;
+      int bpr = nt_ref(nt, pn, "block");
+      if (bpr >= 0 && ne < 128 && nt_str(nt, bpr, "name")) extras[ne++] = bpr;
     }
     /* block-locals (`; a, b`) live only in the BlockNode's comma-joined `locals`
        string; a block may carry them with no required params (`{ |; x| ... }`),

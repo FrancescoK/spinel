@@ -390,6 +390,7 @@ int blkp_binds_param(Compiler *c, int create, const char *name);
 int lv_node_is_named_ref(const char *ty);
 int lv_node_is_write(const char *ty);
 void blkp_rewrite_refs(Compiler *c, int node, const char *oldn, const char *newn);
+void numbered_rename_locals_str(NodeTable *nt, int L, const char *from, const char *to);
 void blkp_mark_subtree(const NodeTable *nt, int node, char *marks);
 int blkp_needs_rename(Compiler *c, int L);
 void qc_collect_writes(Compiler *c, int node, char (*path)[64], int depth, QCWrite **ws, int *n, int *cap);
