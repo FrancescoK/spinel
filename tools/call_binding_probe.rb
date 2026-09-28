@@ -39,7 +39,8 @@
 # (compiler-failure), a crash, a timeout, an interaction.
 #
 # Output, under DIR (default build/call-binding-probe; the tool writes only
-# its own files there and will not take a directory holding others):
+# its own files there, will not take a directory holding others, and runs
+# one at a time in it):
 # summary.txt (coverage, findings by tier and label, the failure rate of every
 # factor level, the findings in families by the difference they make and in
 # shapes by the factors they need) and <label>/case_<id>.rb, each finding's
@@ -515,8 +516,17 @@ end
 if RUBY_VERSION < "4.0"
   warn "call_binding_probe: ruby #{RUBY_VERSION} words its messages its own way; spinel follows 4.0"
 end
-if File.directory?(out) && !Dir.empty?(out) && !File.exist?(File.join(out, "summary.txt"))
+# A directory the tool wrote holds its summary, or at least its lock (a run
+# stopped before the summary was begun); any other files are someone else's.
+if File.directory?(out) && !Dir.empty?(out) && %w[summary.txt .lock].none? { |f| File.exist?(File.join(out, f)) }
   warn "call_binding_probe: #{out} holds files the tool did not write; give --out an empty or new directory"
+  exit 4
+end
+FileUtils.mkdir_p(out)
+# one run at a time in a directory: another run's cleanup would take this one's findings
+lock = File.open(File.join(out, ".lock"), File::RDWR | File::CREAT)
+unless lock.flock(File::LOCK_EX | File::LOCK_NB)
+  warn "call_binding_probe: another run is using #{out}; give --out another directory"
   exit 4
 end
 
@@ -534,7 +544,7 @@ begin
                "#{strength}-way combinations of levels; #{want - got} were not taken"
   end
   (LABELS + %w[work summary.txt]).each { |p| FileUtils.rm_rf(File.join(out, p)) }
-  FileUtils.mkdir_p(out)
+  File.write(File.join(out, "summary.txt"), "run in progress\n")
   work = keep ? File.join(out, "work") : Dir.mktmpdir("call-binding-probe")
   FileUtils.mkdir_p(work)
   probe = Probe.new(spinel, RbConfig.ruby, timeout, work)
@@ -555,7 +565,8 @@ begin
   probe.findings.sort_by! { |f| f.c.id }
   wrong = probe.findings.select { |f| probe.tier(f) == "wrong" }
   bad_ids = wrong.reject { |f| f.label == "interaction" }.to_h { |f| [f.c.id, true] }
-  report = "spinel: #{`#{spinel} --version 2>/dev/null`.strip}\nruby: #{RUBY_DESCRIPTION}\n#{coverage}\n" +
+  version = IO.popen([spinel, "--version"], err: File::NULL, &:read).strip
+  report = "spinel: #{version}\nruby: #{RUBY_DESCRIPTION}\n#{coverage}\n" +
            probe.summary(cases, bad_ids)
   if reduce && !probe.findings.empty?
     $stderr.puts "reducing #{probe.findings.size} findings"

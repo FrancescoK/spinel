@@ -108,20 +108,21 @@ difference -- to the factors it needs; a later finding that makes the same
 difference and takes every level an earlier one needs is filed under it
 rather than reduced again (its own program kept under `absorbed/`; which
 findings are filed together can differ with `--jobs`). `summary.txt` under
-`--out` (default `build/call-binding-probe/`) reports three tiers: `wrong`
-(another answer, exception, order or exit status; C that does not build; a
-compiler that fails without naming a construct; a crash; a timeout; two
-cases that only fail together), `refused` (an `unsupported` construct, a gap
-by the terms of [`limitations.md`](../docs/limitations.md)) and `documented`
-(a difference limitations.md gives as the answer, cited). Findings come in
-families by the difference they make and shapes by the factors they need,
-with the reduced case of each shape as a program of its own. It is a probe
-to run by hand, not a gate: a pairwise run (`--strength 2`, about 300 cases)
-takes ten to thirty minutes, most of it reducing findings, and a 3-way run
-about ten times that. The answers are compared as they print, exception
-messages included, so the reference is the `ruby` whose wording Spinel
-follows (4.0); `SPINEL` names the compiler to probe (default `./spinel`).
-Exit status 0 is no wrong answer, 1 a wrong answer, 4 the tool's own error.
+`--out` (default `build/call-binding-probe/`, one run at a time) reports
+three tiers: `wrong` (another answer, exception, order or exit status; C
+that does not build; a compiler that fails without naming a construct; a
+crash; a timeout; two cases that only fail together), `refused` (an
+`unsupported` construct, a gap by the terms of
+[`limitations.md`](../docs/limitations.md)) and `documented` (a difference
+limitations.md gives as the answer, cited). Findings come in families by the
+difference they make and shapes by the factors they need, with the reduced
+case of each shape as a program of its own. It is a probe to run by hand,
+not a gate: a pairwise run (`--strength 2`, about 300 cases) takes ten to
+thirty minutes, most of it reducing findings, and a 3-way run about ten
+times that. The answers are compared as they print, exception messages
+included, so the reference is the `ruby` whose wording Spinel follows (4.0);
+`SPINEL` names the compiler to probe (default `./spinel`). Exit status 0 is
+no wrong answer, 1 a wrong answer, 4 the tool's own error.
 
 ## Adding a tool
 
