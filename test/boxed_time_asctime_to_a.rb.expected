@@ -1,0 +1,5 @@
+"Mon Jan  5 00:00:01 1970"
+[1, 0, 0, 5, 1, 1970, 1, 5, false, "UTC"]
+"Sun Jan  2 12:30:00 2000"
+true
+"undefined method 'asctime' for an instance of String"

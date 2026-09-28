@@ -1950,6 +1950,10 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         ((sp_streq(name, "iso8601") || sp_streq(name, "xmlschema")) &&
          sp_feature_enabled("time")))
       { *out = TY_STRING; return 1; }
+    /* asctime: only where no class of the program's own has a method or a
+       reader of the name */
+    if (sp_streq(name, "asctime") && !an_user_defines_or_reads(c, name))
+      { *out = TY_STRING; return 1; }
     if (sp_streq(name, "subsec")) { *out = TY_POLY; return 1; }
   }
   /* iso8601(n) / xmlschema(n) on a boxed Time: the fraction-digits form the
