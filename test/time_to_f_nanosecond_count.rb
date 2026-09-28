@@ -1,3 +1,4 @@
+# spinel: int64 -- epoch milliseconds (1.79e12) are past a 32-bit Integer; not run on a 32-bit target
 # Time#to_f and Time - Time answer the whole nanosecond count as a Float
 # divided by 1e9, as CRuby does, so a value can sit just below its decimal
 # form and epoch milliseconds (t.to_f * 1000).to_i match CRuby's.
