@@ -9740,6 +9740,22 @@ else {
           }
           free(ab5.p);
         }
+        /* find_index(value) over the other Enumerables: a Hash's pairs, a
+           Range's members, an Enumerator's values, a user Enumerable's
+           elements. Anything else still reports the missing method. */
+        else if (is_arr_index && argc == 1) {
+          int tsi = ++g_tmp;
+          Buf ab7; memset(&ab7, 0, sizeof ab7);
+          { char tn7[32]; snprintf(tn7, sizeof tn7, "_t%d", atmp[0]);
+            if (atmp_ty[0] == TY_POLY) buf_puts(&ab7, tn7);
+            else emit_boxed_text(c, atmp_ty[0], tn7, &ab7); }
+          buf_printf(b, " { sp_int _t%d; if (sp_poly_enum_find_index_val(_t%d, %s, &_t%d)) { _t%d = ",
+                     tsi, tv, ab7.p ? ab7.p : "sp_box_nil()", tsi, tr);
+          if (ret == TY_INT) buf_printf(b, "_t%d", tsi);
+          else buf_printf(b, "(_t%d == SP_INT_NIL ? sp_box_nil() : sp_box_int(_t%d))", tsi, tsi);
+          buf_puts(b, "; break; } }");
+          free(ab7.p);
+        }
         /* a receiver no arm above claimed may still be a builtin that answers
            the name (Array#shift(n) under a user shift(n), #4831): ask the
            builtin surface before raising. Only where the default is still
