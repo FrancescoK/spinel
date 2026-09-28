@@ -21339,6 +21339,32 @@ static int ie_body_writes_ivar(const NodeTable *nt, int node) {
   return 0;
 }
 
+/* Does the body still make a receiverless call that one of the candidate
+   classes answers? A literal block's calls were given a `self` receiver
+   (desugar_instance_eval_builtin); a forwarded block's were not, and only a
+   class that answers them can run it. */
+static int ie_body_bare_call(Compiler *c, int node, const int *cand, int nc) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return 0;
+  if (k == NK_CallNode && nt_ref(nt, node, "receiver") < 0) {
+    const char *nm = nt_str(nt, node, "name");
+    for (int i = 0; nm && i < nc; i++)
+      if (comp_method_in_chain(c, cand[i], nm, NULL) >= 0 || comp_reader_in_chain(c, cand[i], nm, NULL))
+        return 1;
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++)
+    if (ie_body_bare_call(c, nt_ref_at(nt, node, i), cand, nc)) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, node, i, &m);
+    for (int j = 0; j < m; j++) if (ie_body_bare_call(c, ids[j], cand, nc)) return 1;
+  }
+  return 0;
+}
+
 static int g_ie_poly_node = -1;
 static int emit_ie_poly(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -21414,9 +21440,11 @@ static int emit_ie_poly(Compiler *c, int id, Buf *b) {
     free(ab.p); free(vb.p);
     arms++;
   }
-  /* A body that only reads ivars runs on any other receiver too, where they
-     read nil: the non-object path, with self the boxed receiver. */
-  if (need == name && !ie_body_writes_ivar(nt, body)) {
+  /* A body that writes no ivar runs on any other receiver too: the
+     non-object path, with self the boxed receiver, where its ivars read nil
+     and its self calls go through the poly dispatch -- a builtin value
+     answers to_s/inspect there, and one that lacks the method raises. */
+  if (!ie_body_writes_ivar(nt, body) && (need == name || !ie_body_bare_call(c, body, cand, nc))) {
     Buf ab; memset(&ab, 0, sizeof ab);
     Buf *sv_pre = g_pre; int sv_ind = g_indent;
     g_pre = &ab; g_indent = sv_ind + 1;

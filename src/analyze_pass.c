@@ -7188,6 +7188,16 @@ int desugar_instance_eval_builtin(Compiler *c) {
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;
     TyKind rt = infer_type(c, recv);
+    /* a boxed receiver: a receiverless call names the receiver's method, so
+       it takes a `self` receiver and the poly dispatch answers it for a
+       builtin value too; the body is spliced per class at emit time */
+    if (rt == TY_POLY) {
+      int blk = nt_ref(nt, id, "block");
+      int body = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode ? nt_ref(nt, blk, "body") : -1;
+      if (body >= 0 && !subtree_has_kind(nt, body, NK_DefNode, 0))
+        changed |= ie_subtree_self_calls(c, body, NULL, 0);
+      continue;
+    }
     /* builtin value receivers only; user objects ride ie_direct, and an
        unresolved receiver may still become one */
     if (!(rt == TY_STRING || rt == TY_INT || rt == TY_FLOAT || rt == TY_SYMBOL ||
