@@ -1,0 +1,5 @@
+[TypeError, "no implicit conversion of nil into String"]
+[TypeError, "no implicit conversion of nil into String"]
+[NoMethodError, "undefined method '+' for nil"]
+[NoMethodError, "undefined method '+' for nil"]
+"n1n2n3"
