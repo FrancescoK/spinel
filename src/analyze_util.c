@@ -1261,6 +1261,46 @@ static int yvt_callee_index(Compiler *c, int cid) {
   return rmi;
 }
 
+/* Do the literal keywords of a `new` call fit an initialize with parameters
+   `pn`? A required keyword the call leaves out, or a key the initialize does
+   not take with no `**rest`, gives that class no dispatch arm, so the call's
+   block is not the one its initialize yields to. A `**h` in the call can
+   carry any key and is taken as fitting. */
+static int yvt_new_keywords_fit(const NodeTable *nt, const int *av, int an, int pn) {
+  int nkw = 0;
+  const int *kws = pn >= 0 ? nt_arr(nt, pn, "keywords", &nkw) : NULL;
+  int kwrest = pn >= 0 ? nt_ref(nt, pn, "keyword_rest") : -1;
+  int ne = 0; const int *els = NULL;
+  for (int i = 0; i < an; i++)
+    if (nt_kind(nt, av[i]) == NK_KeywordHashNode) els = nt_arr(nt, av[i], "elements", &ne);
+  for (int e = 0; e < ne; e++) if (nt_kind(nt, els[e]) == NK_AssocSplatNode) return 1;
+  if (nkw == 0 && kwrest < 0) return 1;  /* the keywords are one more positional */
+  for (int j = 0; j < nkw; j++) {
+    const char *kty = nt_type(nt, kws[j]), *kn = nt_str(nt, kws[j], "name");
+    if (!kty || !sp_streq(kty, "RequiredKeywordParameterNode") || !kn) continue;
+    int given = 0;
+    for (int e = 0; e < ne && !given; e++) {
+      int key = nt_ref(nt, els[e], "key");
+      const char *gn = key >= 0 && nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
+      given = gn && sp_streq(gn, kn);
+    }
+    if (!given) return 0;
+  }
+  if (kwrest >= 0) return 1;
+  for (int e = 0; e < ne; e++) {
+    int key = nt_ref(nt, els[e], "key");
+    const char *gn = key >= 0 && nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
+    if (!gn) continue;
+    int known = 0;
+    for (int j = 0; j < nkw && !known; j++) {
+      const char *kn = nt_str(nt, kws[j], "name");
+      known = kn && sp_streq(kn, gn);
+    }
+    if (!known) return 0;
+  }
+  return 1;
+}
+
 static int yvt_reaches(Compiler *c, int cid, int mi) {
   if (yvt_callee_index(c, cid) == mi) return 1;
   const NodeTable *nt = c->nt;
@@ -1286,6 +1326,7 @@ static int yvt_reaches(Compiler *c, int cid, int mi) {
   if (pn >= 0) { nt_arr(nt, pn, "requireds", &nreq); nt_arr(nt, pn, "optionals", &nopt); nt_arr(nt, pn, "posts", &npost); }
   if (!splat && npos < nreq + npost) return 0;
   if (!splat && (pn < 0 || nt_ref(nt, pn, "rest") < 0) && npos > nreq + npost + nopt) return 0;
+  if (!splat && !yvt_new_keywords_fit(nt, av, an, pn)) return 0;
   for (int k = 0; k < c->nclasses; k++)
     if (!c->classes[k].is_struct && comp_method_in_chain(c, k, "initialize", NULL) == mi) return 1;
   return 0;
