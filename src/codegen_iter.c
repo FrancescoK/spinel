@@ -961,6 +961,19 @@ const char *blockless_block_param_call_name(Compiler *c, int id) {
   return (nm && sp_streq(nm, "[]")) ? "[]" : wn ? wn : "call";
 }
 
+/* The call of a block proc `ref` with the yielded args. A splat, or a
+   trailing `**h` that passes nothing when empty, makes the count dynamic:
+   the args are collected into an array and spread at run time. */
+void emit_proc_yield(Compiler *c, const char *ref, int yargc, const int *yargv, Buf *b) {
+  if (call_args_need_spread(c->nt, yargv, yargc)) {
+    int ta = emit_spread_args(c, yargv, yargc);
+    buf_printf(b, "sp_proc_yield_spread(%s, sp_box_poly_array(_t%d))", ref, ta);
+    return;
+  }
+  buf_printf(b, "sp_proc_yield(%s, ", ref);
+  emit_proc_call_args(c, yargc, yargv, b, 1);
+}
+
 /* Emit a call to the forwarded real-proc block (g_yield_proc_ref) with the
    given args -- shared by `yield` and `<blk>.call` inside a method inlined with
    a forwarded materialized proc. as_expr=0 emits a statement (value discarded);
@@ -972,14 +985,13 @@ void emit_yield_proc_call(Compiler *c, int args_node, TyKind result_ty, Buf *b, 
   const int *yargv = args_node >= 0 ? nt_arr(nt, args_node, "arguments", &yargc) : NULL;
   if (!as_expr) {
     emit_indent(b, indent);
-    buf_printf(b, "sp_proc_yield(%s, ", g_yield_proc_ref);
-    emit_proc_call_args(c, yargc, yargv, b, 1);
+    emit_proc_yield(c, g_yield_proc_ref, yargc, yargv, b);
     buf_puts(b, ";\n");
     return;
   }
   Buf cb; memset(&cb, 0, sizeof cb);
-  buf_printf(&cb, "((void)sp_proc_yield(%s, ", g_yield_proc_ref);
-  emit_proc_call_args(c, yargc, yargv, &cb, 1);
+  buf_puts(&cb, "((void)");
+  emit_proc_yield(c, g_yield_proc_ref, yargc, yargv, &cb);
   buf_puts(&cb, ", _sp_proc_poly_ret)");
   /* The result rides a single global, so two yields in one expression race:
      C does not sequence a call's arguments, and `yield(1) + yield(2)` could
@@ -1152,7 +1164,22 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
      any rest param) from its elements rather than from the splat AST node. */
   int splat_tmp = -1; TyKind splat_at = TY_UNKNOWN;
   int poly_splat_tmp = -1;   /* a boxed yielded value splatted at run time */
-  if (yc == 1 && yargs) {
+  /* A trailing hash made only of `**h` splats, into a block taking no
+     keywords, is a positional only when it is non-empty: `yield(1, **{})`
+     yields just 1. The count is known at run time, so the arguments are
+     collected into an array and bound as a splat. */
+  if (ykw < 0 && yc > 0 && yargs && kwh_only_spreads(nt, yargs[yc - 1])) {
+    splat_at = TY_POLY_ARRAY;
+    splat_tmp = emit_spread_args(c, yargs, yc);
+    if (yc == 2 && block_lead_only(c, blk)) {
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "if (_t%d->len == 1) { sp_RbVal _e = sp_PolyArray_get(_t%d, 0); "
+                        "if (_e.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_e.cls_id)) "
+                        "_t%d = sp_poly_to_poly_array(_e); }\n",
+                 splat_tmp, splat_tmp, splat_tmp);
+    }
+  }
+  if (splat_tmp < 0 && yc == 1 && yargs) {
     int inner = -1;
     if (nt_type(nt, yargs[0]) && sp_streq(nt_type(nt, yargs[0]), "SplatNode"))
       inner = nt_ref(nt, yargs[0], "expression");

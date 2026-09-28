@@ -1237,10 +1237,9 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
   if (nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "YieldNode") && g_current_scope_is_lowered) {
     int yargs = nt_ref(c->nt, node, "arguments");
     int yargc = 0; const int *yargv = yargs >= 0 ? nt_arr(c->nt, yargs, "arguments", &yargc) : NULL;
-    buf_puts(b, "((void)sp_proc_yield(");
-    emit_yblk_ref(b);
-    buf_puts(b, ", ");
-    emit_proc_call_args(c, yargc, yargv, b, 1);
+    buf_puts(b, "((void)");
+    { Buf rb; memset(&rb, 0, sizeof rb); emit_yblk_ref(&rb);
+      emit_proc_yield(c, rb.p ? rb.p : "NULL", yargc, yargv, b); free(rb.p); }
     buf_puts(b, ", _sp_proc_poly_ret)");
     return;
   }

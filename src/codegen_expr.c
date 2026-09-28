@@ -2002,12 +2002,9 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
          raw carrier bits from the slot (v.i aliases the pointer/int value),
          matching this lowered method's sp_int raw-carrier ABI -- the call site
          casts back to the yield's inferred type, exactly as before. */
-      buf_puts(b, "((void)sp_proc_yield(");
-      emit_yblk_ref(b);
-      buf_puts(b, ", ");
-      /* force_poly=1: a rest/post-taking block recovers arguments from the boxed
-         side-channel, and this callee's signature is unknown here. */
-      emit_proc_call_args(c, yargc, yargv, b, 1);
+      buf_puts(b, "((void)");
+      { Buf rb; memset(&rb, 0, sizeof rb); emit_yblk_ref(&rb);
+        emit_proc_yield(c, rb.p ? rb.p : "NULL", yargc, yargv, b); free(rb.p); }
       /* `.v.i` is the raw carrier the lowered method's own sp_int ABI wants,
          and the call site casts it back. A consumer whose slot is the BOXED
          value -- a Thread body's yielded_value, which is an sp_RbVal -- needs
