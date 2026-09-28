@@ -7306,7 +7306,8 @@ static int desugar_for_enumerable(Compiler *c) {
        which is what a single-left MultiTarget already means. */
     int idxn = nt_ref(nt, id, "index");
     const char *ixt = idxn >= 0 ? nt_type(nt, idxn) : NULL;
-    if (c->classes[cid].enum_yield_arity > 1 && ixt && !sp_streq(ixt, "MultiTargetNode")) {
+    if (c->classes[cid].enum_yield_arity > 1 && ixt && !sp_streq(ixt, "MultiTargetNode") &&
+        !nt_int(nt, id, "for_packed", 0)) {
       int mt = nt_new_node(nt, "MultiTargetNode");
       nt_node_set_arr(nt, mt, "lefts", &idxn, 1);
       nt_node_set_ref(nt, id, "index", mt);
@@ -16207,6 +16208,7 @@ void analyze_program(Compiler *c) {
   desugar_block_implicit_rest(c);        /* |x,| -> |x, __implicit_rest| (destructures) */
   desugar_multi_value_jump(c);           /* return *a, b -> return [*a, b] */
   desugar_block_destructure_params(c);   /* |a,(b,c),d| -> flat param + `b,c = __destr` */
+  desugar_for_nonlocal_index(c);         /* for $g in xs -> for __for in xs; $g = __for */
   desugar_enumerator_produce(c);         /* Enumerator.produce -> fiber generator */
   desugar_recursive_param_defaults(c);   /* def m(x, y = m(..)) -> default helper method */
   qualify_colliding_consts(c);

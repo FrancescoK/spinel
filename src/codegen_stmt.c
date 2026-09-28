@@ -5622,18 +5622,23 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
       if (lpoly) buf_puts(b, ")");
       buf_printf(b, "; _t%d %s _t%d; _t%d++) {\n", tc, excl ? "<" : "<=", thi, tc);
       emit_indent(b, indent + 2);
-      buf_printf(b, "lv_%s = sp_box_int(_t%d);\n", vn, tc);
+      emit_local_ref(c, idx, vn, b); buf_printf(b, " = sp_box_int(_t%d);\n", tc);
       emit_loop_body(c, body, b, indent + 2);
       emit_indent(b, indent + 1); buf_puts(b, "}\n");
       emit_indent(b, indent); buf_puts(b, "}\n");
       return;
     }
+    /* The counter is a temp, so the local keeps the last value the loop
+       bound rather than the one past the end. */
+    int tc = ++g_tmp;
     emit_indent(b, indent + 1);
-    buf_printf(b, "for (lv_%s = ", vn);
+    buf_printf(b, "for (sp_int _t%d = ", tc);
     if (lpoly) buf_puts(b, "sp_poly_to_i(");
     emit_expr(c, lref, b);
     if (lpoly) buf_puts(b, ")");
-    buf_printf(b, "; lv_%s %s _t%d; lv_%s++) {\n", vn, excl ? "<" : "<=", thi, vn);
+    buf_printf(b, "; _t%d %s _t%d; _t%d++) {\n", tc, excl ? "<" : "<=", thi, tc);
+    emit_indent(b, indent + 2);
+    emit_local_ref(c, idx, vn, b); buf_printf(b, " = _t%d;\n", tc);
     emit_loop_body(c, body, b, indent + 2);
     emit_indent(b, indent + 1); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
@@ -5667,13 +5672,13 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
                     scope_local(comp_scope_of(c, idx), lnm)->type : TY_POLY;
         emit_indent(b, indent + 2);
         if (vt == TY_INT || vt == TY_UNKNOWN)
-          buf_printf(b, "lv_%s = sp_unbox_int(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
+          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_int(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
         else if (vt == TY_FLOAT)
-          buf_printf(b, "lv_%s = sp_unbox_float(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
+          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_float(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
         else if (vt == TY_STRING)
-          buf_printf(b, "lv_%s = sp_unbox_str(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
+          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_str(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
         else
-          buf_printf(b, "lv_%s = sp_poly_massign_get(_t%d, %d);\n", lnm, tv, i);
+          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_poly_massign_get(_t%d, %d);\n", tv, i); }
       }
       emit_loop_body(c, body, b, indent + 2);
       emit_indent(b, indent + 1); buf_puts(b, "}\n");
@@ -5695,12 +5700,12 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
       if (flv && flv->type == TY_POLY && et2 != TY_POLY && et2 != TY_UNKNOWN) {
         char el2[96];
         snprintf(el2, sizeof el2, "sp_%sArray_get(_t%d, _t%d)", k ? k : "Poly", ta, ti);
-        buf_printf(b, "lv_%s = ", vn);
+        emit_local_ref(c, idx, vn, b); buf_puts(b, " = ");
         emit_boxed_text(c, et2, el2, b);
         buf_puts(b, ";\n");
       }
       else
-        buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", vn, k ? k : "Poly", ta, ti);
+        { emit_local_ref(c, idx, vn, b); buf_printf(b, " = sp_%sArray_get(_t%d, _t%d);\n", k ? k : "Poly", ta, ti); }
     }
     emit_loop_body(c, body, b, indent + 2);
     emit_indent(b, indent + 1); buf_puts(b, "}\n");
@@ -5740,13 +5745,13 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
         TyKind vt3 = dlv ? dlv->type : TY_POLY;
         emit_indent(b, indent + 2);
         if (vt3 == TY_INT || vt3 == TY_UNKNOWN)
-          buf_printf(b, "lv_%s = sp_unbox_int(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
+          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_int(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
         else if (vt3 == TY_FLOAT)
-          buf_printf(b, "lv_%s = sp_unbox_float(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
+          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_float(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
         else if (vt3 == TY_STRING)
-          buf_printf(b, "lv_%s = sp_unbox_str(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
+          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_str(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
         else
-          buf_printf(b, "lv_%s = sp_poly_massign_get(_t%d, %d);\n", lnm, tv, i);
+          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_poly_massign_get(_t%d, %d);\n", tv, i); }
       }
     }
     else if (vn) {
@@ -5754,7 +5759,7 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
       TyKind ivt = ilv ? ilv->type : TY_POLY;
       char el[64]; snprintf(el, sizeof el, "sp_PolyArray_get(_t%d, _t%d)", ta, ti);
       emit_indent(b, indent + 2);
-      buf_printf(b, "lv_%s = ", vn);
+      emit_local_ref(c, idx, vn, b); buf_puts(b, " = ");
       if (ivt == TY_POLY || ivt == TY_UNKNOWN) buf_puts(b, el);
       else emit_unbox_text(c, ivt, el, b);
       buf_puts(b, ";\n");
@@ -5788,18 +5793,18 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
                        scope_local(comp_scope_of(c, idx), lnm)->type : TY_POLY;
           emit_indent(b, indent + 2);
           if (vt2 == TY_INT || vt2 == TY_UNKNOWN)
-            buf_printf(b, "lv_%s = sp_unbox_int(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
+            { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_int(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
           else if (vt2 == TY_FLOAT)
-            buf_printf(b, "lv_%s = sp_unbox_float(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
+            { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_float(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
           else if (vt2 == TY_STRING)
-            buf_printf(b, "lv_%s = sp_unbox_str(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
+            { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_str(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
           else
-            buf_printf(b, "lv_%s = sp_poly_massign_get(_t%d, %d);\n", lnm, tv, i);
+            { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_poly_massign_get(_t%d, %d);\n", tv, i); }
         }
       }
       else {
         emit_indent(b, indent + 2);
-        buf_printf(b, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", vn, ta, ti);
+        emit_local_ref(c, idx, vn, b); buf_printf(b, " = sp_PolyArray_get(_t%d, _t%d);\n", ta, ti);
       }
       emit_loop_body(c, body, b, indent + 2);
       emit_indent(b, indent + 1); buf_puts(b, "}\n");

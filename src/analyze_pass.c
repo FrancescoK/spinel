@@ -7804,6 +7804,125 @@ int desugar_block_destructure_params(Compiler *c) {
   return changed;
 }
 
+/* The assignment of `rd` to a single `for` target that is not a local: a
+   global, instance, class variable or constant write, or the writer call an
+   attribute or index target stands for. -1 for a target it cannot write. */
+static int dfi_single_write(NodeTable *nt, int tgt, int rd) {
+  const char *ty = nt_type(nt, tgt);
+  if (!ty) return -1;
+  static const char *const vars[][2] = {
+    {"GlobalVariableTargetNode", "GlobalVariableWriteNode"},
+    {"InstanceVariableTargetNode", "InstanceVariableWriteNode"},
+    {"ClassVariableTargetNode", "ClassVariableWriteNode"},
+    {"ConstantTargetNode", "ConstantWriteNode"},
+  };
+  for (size_t i = 0; i < sizeof vars / sizeof vars[0]; i++) {
+    if (!sp_streq(ty, vars[i][0])) continue;
+    const char *nm = nt_str(nt, tgt, "name");
+    if (!nm) return -1;
+    char nmbuf[256]; snprintf(nmbuf, sizeof nmbuf, "%s", nm);
+    int w = nt_new_node(nt, vars[i][1]);
+    if (w < 0) return -1;
+    nt_node_set_str(nt, w, "name", nmbuf);
+    nt_node_set_ref(nt, w, "value", rd);
+    return w;
+  }
+  int is_attr = sp_streq(ty, "CallTargetNode"), is_index = sp_streq(ty, "IndexTargetNode");
+  if (!is_attr && !is_index) return -1;
+  int recv = nt_ref(nt, tgt, "receiver");
+  char nmbuf[256];
+  if (is_attr) {
+    const char *nm = nt_str(nt, tgt, "name");
+    if (!nm) return -1;
+    snprintf(nmbuf, sizeof nmbuf, "%s", nm);
+  }
+  else snprintf(nmbuf, sizeof nmbuf, "[]=");
+  int oargs = is_index ? nt_ref(nt, tgt, "arguments") : -1;
+  int on = 0; const int *oa = oargs >= 0 ? nt_arr(nt, oargs, "arguments", &on) : NULL;
+  int *av = malloc(sizeof(int) * (on + 1));
+  if (!av) return -1;
+  for (int i = 0; i < on; i++) av[i] = oa[i];
+  av[on] = rd;
+  int an = nt_new_node(nt, "ArgumentsNode");
+  int call = an >= 0 ? nt_new_node(nt, "CallNode") : -1;
+  if (call < 0) { free(av); return -1; }
+  nt_node_set_arr(nt, an, "arguments", av, on + 1);
+  free(av);
+  nt_node_set_str(nt, call, "name", nmbuf);
+  nt_node_set_ref(nt, call, "receiver", recv);
+  nt_node_set_ref(nt, call, "arguments", an);
+  nt_node_set_ref(nt, call, "block", -1);
+  nt_node_set_str(nt, call, "call_operator", ".");
+  return call;
+}
+
+/* Whether a `for` index binds only plain locals, which the loop assigns
+   itself: one local, or a flat list of them. */
+static int dfi_local_index(NodeTable *nt, int idx) {
+  const char *ty = nt_type(nt, idx);
+  if (!ty) return 1;
+  if (sp_streq(ty, "LocalVariableTargetNode")) return 1;
+  if (!sp_streq(ty, "MultiTargetNode")) return 0;
+  if (nt_ref(nt, idx, "rest") >= 0) return 0;
+  int rn = 0; nt_arr(nt, idx, "rights", &rn);
+  if (rn > 0) return 0;
+  int ln = 0; const int *l = nt_arr(nt, idx, "lefts", &ln);
+  for (int i = 0; i < ln; i++) {
+    const char *lt = nt_type(nt, l[i]);
+    if (!lt || !sp_streq(lt, "LocalVariableTargetNode")) return 0;
+  }
+  return 1;
+}
+
+/* `for $g in coll`, `for @a, o.b in coll`, `for (a, b), *c in coll`: the loop
+   assigns only plain locals, so any other index binds a fresh local and the
+   body opens by assigning it to the real target -- a plain write for one
+   target, a multiple assignment for several. */
+int desugar_for_nonlocal_index(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int F = 0; F < n0; F++) {
+    const char *ty = nt_type(nt, F);
+    if (!ty || !sp_streq(ty, "ForNode")) continue;
+    int idx = nt_ref(nt, F, "index");
+    if (idx < 0 || dfi_local_index(nt, idx)) continue;
+    char nm[48]; snprintf(nm, sizeof nm, "__for_%d", F);
+    int lt = nt_new_node(nt, "LocalVariableTargetNode");
+    int rd = lt >= 0 ? nt_new_node(nt, "LocalVariableReadNode") : -1;
+    if (rd < 0) continue;
+    nt_node_set_str(nt, lt, "name", nm);
+    nt_node_set_str(nt, rd, "name", nm);
+    int w;
+    const char *ity = nt_type(nt, idx);
+    if (sp_streq(ity, "MultiTargetNode")) {
+      w = nt_new_node(nt, "MultiWriteNode");
+      if (w < 0 || !bdp_fill_targets(nt, idx, w)) continue;
+      nt_node_set_ref(nt, w, "value", rd);
+      nt_node_set_int(nt, F, "for_packed", 1);
+    }
+    else w = dfi_single_write(nt, idx, rd);
+    if (w < 0) continue;
+    int body = nt_ref(nt, F, "statements");
+    int on = 0; const int *ob = body >= 0 ? nt_arr(nt, body, "body", &on) : NULL;
+    int *bb = malloc(sizeof(int) * (on + 1));
+    if (!bb) continue;
+    bb[0] = w;
+    for (int i = 0; i < on; i++) bb[i + 1] = ob[i];
+    if (body < 0) {
+      body = nt_new_node(nt, "StatementsNode");
+      if (body < 0) { free(bb); continue; }
+      nt_node_set_ref(nt, F, "statements", body);
+    }
+    nt_node_set_arr(nt, body, "body", bb, on + 1);
+    free(bb);
+    nt_node_set_ref(nt, F, "index", lt);
+    changed = 1;
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 /* Propagate `proc.call(args)` argument types onto the proc literal `create`'s
    required params: a concrete arg overrides a param still at its bare-int
    default (the fallback guess, no real evidence), otherwise unify. Returns 1 if
