@@ -2581,6 +2581,10 @@ int infer_write_types(Compiler *c) {
         for (int i = rstart; i < rend; i++)
           rest_elem = ty_unify(rest_elem, infer_type(c, els[i]));
         TyKind rest_arr = (rest_elem != TY_UNKNOWN) ? ty_array_of(rest_elem) : TY_INT_ARRAY;
+        /* a literal holding a splat (`g, *r = *xs`) has no fixed positions:
+           the rest slices the array it builds */
+        for (int i = 0; i < en; i++)
+          if (nt_kind(nt, els[i]) == NK_SplatNode) { rest_arr = infer_type(c, value); break; }
         LocalVar *lv = rnm ? scope_local(comp_scope_of(c, id), rnm) : NULL;
         if (lv && !lv->is_param && !lv->is_block_param)
           lv->type = ty_unify(lv->type, rest_arr);
