@@ -223,6 +223,7 @@ void unmark_referenced_module_sources(Compiler *c);
 void register_extends(Compiler *c);
 int cmethod_has_bare_new(Compiler *c, int mi);
 int cmethod_needs_specialization(Compiler *c, int mi, int ci, int def_cls, int *has_new);
+int class_value_escapes(Compiler *c, int cid);
 void specialize_inherited_cls_new(Compiler *c);
 void register_prepends(Compiler *c);
 void inherit_members(Compiler *c);

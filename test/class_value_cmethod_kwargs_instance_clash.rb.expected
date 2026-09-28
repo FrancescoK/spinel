@@ -1,0 +1,8 @@
+wav out 44100 16
+WAV O2 1 8
+wav-probe p 2
+aiff out 44100 24
+AIFF O2 1 8
+aiff-probe p 2
+drive x 1
+drive-probe y 3

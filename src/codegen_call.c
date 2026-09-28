@@ -760,6 +760,8 @@ static void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_
    `if (tag == SP_TAG_CLASS) { switch ... } else ` and returns 1 when any arm
    was built; emits nothing and returns 0 otherwise. */
 static int cls_arm_takes_argc(Scope *s, int argc);
+static int poly_arm_count(Compiler *c, Scope *m, int kwh, int pos_argc, int splat_a,
+                          char *exp, size_t n);
 /* The call's literal block as one rooted proc temp, ahead of a dispatch whose
    arms share it (only one arm runs), or -1 when there is none to build. A
    forwarded `&blk` is left to emit_cmethod_block_arg, which passes it through. */
@@ -777,8 +779,37 @@ static int hoist_call_block_proc(Compiler *c, int id) {
   free(pb.p);
   return t;
 }
+/* The keyword argument of the call's keyword hash naming parameter `pn`, or
+   -1. */
+static int kwh_elem_named(Compiler *c, int kwn, const int *kwels, const char *pn) {
+  for (int e = 0; e < kwn; e++) {
+    int key = nt_ref(c->nt, kwels[e], "key");
+    const char *kn = key >= 0 ? nt_str(c->nt, key, "value") : NULL;
+    if (kn && pn && sp_streq(kn, pn)) return e;
+  }
+  return -1;
+}
+/* A class-method arm taking the call's keyword hash: every key names one of
+   its declared keyword parameters and every required one is given. A **kw or
+   a hash collapsing into a positional has no arm here. */
+static int cls_arm_takes_kwh(Compiler *c, Scope *ks, int kwn, const int *kwels) {
+  if (ks->kwrest_idx >= 0) return 0;
+  for (int e = 0; e < kwn; e++) {
+    int key = nt_ref(c->nt, kwels[e], "key");
+    const char *kn = key >= 0 ? nt_str(c->nt, key, "value") : NULL;
+    if (!kn || !callee_param_is_declared_kwarg(c, ks, kn)) return 0;
+  }
+  for (int a = 0; a < ks->nparams; a++) {
+    const char *pn = ks->pnames ? ks->pnames[a] : NULL;
+    if (!pn || !callee_param_is_declared_kwarg(c, ks, pn)) continue;
+    if ((!ks->pdefault || ks->pdefault[a] < 0) && kwh_elem_named(c, kwn, kwels, pn) < 0) return 0;
+  }
+  return 1;
+}
 static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int argc,
                                       const int *atmp, const TyKind *atmp_ty,
+                                      int kwh, int kwn, const int *kwels,
+                                      const int *kwtmp, const TyKind *kwty,
                                       int tv, int tr, TyKind ret, int blk_tmp, Buf *b) {
   int ccls8[64], cmi8[64], nc8 = 0, wants_blk = 0;
   int ncc8 = 0;
@@ -797,11 +828,25 @@ static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int
        to the default raise */
     if (ks->yields || ks->rest_idx >= 0) continue;
     if (ks->blk_param && ks->blk_param[0]) wants_blk = 1;
-    if (!cls_arm_takes_argc(ks, argc)) continue;
+    if (kwh >= 0) {
+      char kexp[48];
+      if (!cls_arm_takes_kwh(c, ks, kwn, kwels) ||
+          poly_arm_count(c, ks, kwh, argc, -1, kexp, sizeof kexp) <= 0) continue;
+    }
+    else if (!cls_arm_takes_argc(ks, argc)) continue;
     /* a param and its argument temp both concretely typed but different is a
        hard C error, not a coercion: that class cannot be this call's target */
     int incompat8 = 0;
     for (int a = 0; a < ks->nparams && !incompat8; a++) {
+      const char *kpn = ks->pnames ? ks->pnames[a] : NULL;
+      if (kwh >= 0 && kpn && callee_param_is_declared_kwarg(c, ks, kpn)) {
+        int e = kwh_elem_named(c, kwn, kwels, kpn);
+        LocalVar *kp = e >= 0 ? scope_local(ks, kpn) : NULL;
+        TyKind kpt = kp ? kp->type : TY_POLY;
+        if (e >= 0 && kpt != TY_POLY && kpt != TY_UNKNOWN && kwty[e] != TY_POLY &&
+            kwty[e] != TY_UNKNOWN && kpt != kwty[e]) incompat8 = 1;
+        continue;
+      }
       int slot = arg_slot_for_param(c, ks, a, argc);
       if (slot < 0 || slot >= argc || !atmp_ty) continue;
       LocalVar *pp = ks->pnames && ks->pnames[a] ? scope_local(ks, ks->pnames[a]) : NULL;
@@ -830,10 +875,13 @@ static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int
       LocalVar *pp = ks->pnames && ks->pnames[a] ? scope_local(ks, ks->pnames[a]) : NULL;
       TyKind pt = pp ? pp->type : TY_POLY;
       if (pt == TY_UNKNOWN) pt = TY_POLY;
-      int slot = arg_slot_for_param(c, ks, a, argc);
-      if (slot >= 0 && slot < argc && atmp) {
-        char at[32]; snprintf(at, sizeof at, "_t%d", atmp[slot]);
-        TyKind at0 = atmp_ty ? atmp_ty[slot] : TY_POLY;
+      const char *kpn = ks->pnames ? ks->pnames[a] : NULL;
+      int kw = kwh >= 0 && kpn && callee_param_is_declared_kwarg(c, ks, kpn);
+      int e = kw ? kwh_elem_named(c, kwn, kwels, kpn) : -1;
+      int slot = kw ? -1 : arg_slot_for_param(c, ks, a, argc);
+      if (e >= 0 || (slot >= 0 && slot < argc && atmp)) {
+        char at[32]; snprintf(at, sizeof at, "_t%d", e >= 0 ? kwtmp[e] : atmp[slot]);
+        TyKind at0 = e >= 0 ? kwty[e] : atmp_ty ? atmp_ty[slot] : TY_POLY;
         /* the temp holds the argument in its own C type; box it up for a poly
            param, hand it raw to a matching one, unbox a poly temp down */
         if (at0 == TY_POLY && pt == TY_POLY) buf_puts(&cb, at);
@@ -6581,7 +6629,8 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                       (c->classes[0].instantiated || class_is_prim_reopen(c, 0));
       /* a class-valued receiver dispatches class-side, ahead of the instance
          arms (#4218) */
-      emit_poly_cls_value_prearm(c, id, name, 0, NULL, NULL, tv, tr, ret, blk_tmp0, b);
+      emit_poly_cls_value_prearm(c, id, name, 0, NULL, NULL, -1, 0, NULL, NULL, NULL,
+                                 tv, tr, ret, blk_tmp0, b);
       /* a primitive-reopen candidate needs the tag-mapping key (#4219) */
       int prim_cand0 = 0;
       for (int k = 0; k < c->nclasses && !prim_cand0; k++) {
@@ -7809,10 +7858,11 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                                     exp0, sizeof exp0) != 0;
       }
       /* a class-valued receiver dispatches class-side, ahead of the instance
-         arms (#4218). Positional calls only: the keyword-hash split binds by
-         name against a specific candidate, which this pre-arm does not do. */
-      if (kwh < 0 && splat_a < 0)
-        emit_poly_cls_value_prearm(c, id, name, argc, atmp, atmp_ty, tv, tr, ret, blk_tmp2, b);
+         arms (#4218). A keyword hash binds by name to each candidate's
+         declared keyword parameters. */
+      if (splat_a < 0)
+        emit_poly_cls_value_prearm(c, id, name, pos_argc, atmp, atmp_ty, kwh, kwn, kwels,
+                                   kwtmp, kwty, tv, tr, ret, blk_tmp2, b);
       /* a primitive-reopen candidate needs the tag-mapping key (#4219) */
       int prim_cand2 = 0;
       for (int k = 0; k < c->nclasses && !prim_cand2; k++) {
