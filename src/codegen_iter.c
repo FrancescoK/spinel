@@ -2368,7 +2368,8 @@ static int call_targets_yielding_method(Compiler *c, int id) {
   int mi = -1;
   if (recv < 0) {
     Scope *encl = comp_scope_of(c, id);
-    if ((!encl || encl->class_id < 0) && g_class_body_id >= 0)
+    if (g_ie_class_id >= 0) mi = comp_method_in_chain(c, g_ie_class_id, name, NULL);
+    if (mi < 0 && (!encl || encl->class_id < 0) && g_class_body_id >= 0)
       mi = comp_cmethod_in_chain(c, g_class_body_id, name, NULL);
     if (mi < 0) mi = comp_method_index(c, name);
     if (mi < 0 && encl && encl->class_id >= 0) {
