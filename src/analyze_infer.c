@@ -3690,6 +3690,26 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     return TY_POLY_ARRAY;
   }
 
+  /* String#to_i(base) is the only builtin to_i that takes an argument, and
+     the poly emitter answers it as an sp_int (the String arm, else
+     ArgumentError). A program class's zero-arity to_i does not reach that
+     call, so its return must not widen this one: widened, the consumer
+     boxed a value the emitter had produced unboxed -- `buf << s.to_i(16)`
+     passed an intptr_t where an sp_RbVal was expected. Poly only when a
+     program class does answer a one-argument to_i. */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "to_i")) {
+    for (int k = 0; k < c->nclasses; k++) {
+      if (c->classes[k].is_native_class) {
+        if (comp_poly_arm_defines_n(c, k, name, argc)) return TY_POLY;
+        continue;
+      }
+      int mi = comp_method_in_chain(c, k, name, NULL);
+      if (mi >= 0 && (c->scopes[mi].nparams >= 1 || c->scopes[mi].rest_idx >= 0))
+        return TY_POLY;
+    }
+    return TY_INT;
+  }
+
   /* TY_QUEUE instance methods */
   if (recv >= 0 && rt == TY_QUEUE) {
     if (sp_streq(name, "pop") || sp_streq(name, "shift") || sp_streq(name, "deq")) return TY_POLY;
