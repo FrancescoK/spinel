@@ -1,0 +1,7 @@
+5
+undefined method 'at' for an instance of Hash
+undefined method 'at' for an instance of String
+undefined method 'at' for an instance of Hash
+undefined method 'at' for an instance of Symbol
+undefined method 'at' for an instance of Hash
+[0, 0, 0, "k", "k", :t]

@@ -19951,18 +19951,54 @@ static int emit_at_without_array(Compiler *c, int id, Buf *b) {
   if (recv < 0) return 0;
   TyKind rt = comp_ntype(c, recv);
   if (rt == TY_POLY) {
-    if (g_at_chk_id == id || sn_guard_pending(c, id) || g_n_argov >= MAX_ARG_OVERRIDE) return 0;
+    if (g_at_chk_id == id || sn_guard_pending(c, id)) return 0;
+    int args = nt_ref(nt, id, "arguments");
+    int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    /* CRuby evaluates the arguments before it finds no #at: an argument that
+       can run code is held in a temp ahead of the check, like the receiver */
+    int nhold = 0;
+    for (int i = 0; i < argc; i++) {
+      TyKind at = comp_ntype(c, argv[i]);
+      if (subtree_has_side_effect(c, argv[i]) && at != TY_NIL && at != TY_VOID && at != TY_UNKNOWN) nhold++;
+    }
+    if (g_n_argov + 1 + nhold > MAX_ARG_OVERRIDE) {
+      /* no override slots left: a receiver that reads the same twice is
+         checked in place, ahead of the read */
+      if (subtree_has_side_effect(c, recv)) return 0;
+      buf_puts(b, "({ sp_poly_ary_chk(");
+      emit_expr(c, recv, b);
+      buf_puts(b, ", \"at\", 0); ");
+      int sv_chk = g_at_chk_id; g_at_chk_id = id;
+      emit_call_held(c, id, b);
+      g_at_chk_id = sv_chk;
+      buf_puts(b, "; })");
+      return 1;
+    }
+    int sv_n = g_n_argov;
     int t = ++g_tmp;
-    buf_printf(b, "({ sp_RbVal _t%d = sp_poly_ary_chk(", t);
+    buf_printf(b, "({ sp_RbVal _t%d = ", t);
     emit_expr(c, recv, b);
-    buf_printf(b, ", \"at\", 0); SP_GC_ROOT_RBVAL(_t%d); ", t);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", t);
+    for (int i = 0; i < argc; i++) {
+      TyKind at = comp_ntype(c, argv[i]);
+      if (!subtree_has_side_effect(c, argv[i]) || at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN) continue;
+      int ta = ++g_tmp;
+      emit_ctype(c, at, b);
+      buf_printf(b, " _t%d = ", ta);
+      emit_expr(c, argv[i], b);
+      buf_puts(b, "; ");
+      g_argov_node[g_n_argov] = argv[i];
+      snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
+      g_n_argov++;
+    }
+    buf_printf(b, "sp_poly_ary_chk(_t%d, \"at\", 0); ", t);
     g_argov_node[g_n_argov] = recv;
     snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", t);
     g_n_argov++;
     int sv_chk = g_at_chk_id; g_at_chk_id = id;
     emit_call_held(c, id, b);
     g_at_chk_id = sv_chk;
-    g_n_argov--;
+    g_n_argov = sv_n;
     buf_puts(b, "; })");
     return 1;
   }
