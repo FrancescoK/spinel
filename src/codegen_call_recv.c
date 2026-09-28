@@ -1014,7 +1014,13 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
      string -- or nil for the no-change bang contract -- and reassigns an
      lvalue receiver (value-semantics strings). The transform reuses the
      non-bang emitter through a temporary node rename. */
-  if (rt == TY_STRING && recv >= 0) {
+  /* TY_STRBUF as well: a reader whose ivar became the shared handle answers
+     the handle type, and every arm below is a String operation that
+     strbuf_slot_ref already knows how to reach through one. Without it the
+     value form of `obj.buf << x` matched no arm at all and was refused,
+     while the statement form -- which asks strbuf_slot_ref directly, not the
+     node type -- compiled. */
+  if ((rt == TY_STRING || rt == TY_STRBUF) && recv >= 0) {
     static const struct { const char *bang, *plain; int nil_nc; } SBANG[] = {
       {"gsub!", "gsub", 1}, {"sub!", "sub", 1}, {"upcase!", "upcase", 1},
       {"downcase!", "downcase", 1}, {"capitalize!", "capitalize", 1},

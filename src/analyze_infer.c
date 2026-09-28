@@ -1897,6 +1897,15 @@ static TyKind infer_call_inner(Compiler *c, int id) {
                                     sp_streq(name, "prepend") || sp_streq(name, "replace") ||
                                     sp_streq(name, "insert") || sp_streq(name, "clear"))))
     rt = TY_STRING;
+  /* The appenders keep the handle as the RECEIVER type above, so the in-place
+     arms are chosen; the call's own value is still the ordinary String read
+     (`sp_String_cstr(...)`), which is what the value-form emitter writes. Left
+     out of the String rows by that exclusion, `obj.buf << x` in value position
+     inferred TY_UNKNOWN and was boxed as `(expr, sp_box_nil())` -- the append
+     ran and the method answered nil. */
+  if (rt == TY_STRBUF && recv >= 0 && argc == 1 && name &&
+      (sp_streq(name, "<<") || sp_streq(name, "concat") || sp_streq(name, "prepend")))
+    return TY_STRING;
   /* A boxed-value hash whose values are all one class: its value reads are
      that class (nil included, as a NULL pointer), and `values` an array of it
      (#4846). */
