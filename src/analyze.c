@@ -11511,8 +11511,35 @@ static int an_any_scope_by_name(Compiler *c, const char *nm) {
 /* Unique method scope index by name across the program, or -1 (absent or
    defined more than once). Scope 0 is the top level (name NULL). */
 static int an_unique_scope_by_name(Compiler *c, const char *nm) {
-  int found = -1;
   if (!nm) return -1;
+  /* The cached form an_any_scope_by_name already has, on the same epoch and
+     for the same reason: asked per call site, the scan is (sites x scopes).
+     The `any` variant got a table when that showed up in rubys #5035; this one
+     was left a scan, and it is what the call-target resolution behind the
+     parameter and strbuf passes asks for every CallNode. A name seen twice
+     records -1: not unique is the answer, not a miss. */
+  if (comp_scope_index_is_frozen()) {
+    static ANameHash names; static int *uniq = NULL; static int nuniq, stamp_n = -1;
+    static unsigned stamp_gen;
+    if (stamp_n != c->nscopes || stamp_gen != comp_scope_index_gen()) {
+      anh_free(&names); memset(&names, 0, sizeof names);
+      free(uniq); uniq = NULL; nuniq = 0;
+      int cap = 0;
+      for (int i = 1; i < c->nscopes; i++) {
+        const char *sn = c->scopes[i].name;
+        if (!sn) continue;
+        int k = anh_find(&names, sn);
+        if (k >= 0) { uniq[k] = -1; continue; }
+        if (nuniq == cap) { cap = cap ? cap * 2 : 256; uniq = realloc(uniq, sizeof(int) * (size_t)cap); }
+        uniq[nuniq++] = i;
+        anh_add(&names, sn);
+      }
+      stamp_n = c->nscopes; stamp_gen = comp_scope_index_gen();
+    }
+    int k = anh_find(&names, nm);
+    return k >= 0 ? uniq[k] : -1;
+  }
+  int found = -1;
   for (int i = 1; i < c->nscopes; i++) {
     Scope *s = &c->scopes[i];
     if (!s->name || !sp_streq(s->name, nm)) continue;
@@ -14036,6 +14063,22 @@ static int narrow_params_from_arrays(Compiler *c) {
   if (!elem || !ok || !saw) { free(off); free(elem); free(ok); free(saw); return 0; }
   for (int i = 0; i < total; i++) { elem[i] = TY_UNKNOWN; ok[i] = 1; }
 
+  /* Names reached by a route the call scan cannot see. `super` reaches the
+     parent's method of the SAME name with no CallNode naming it, and the
+     runtime protocols (and an extension entry) call with arguments no site in
+     the program supplies. Narrowing such a parameter from the calls that ARE
+     visible declares an ABI the other route does not honour -- and for
+     `initialize`, which resolves through `K.new` rather than by unique name,
+     that is reachable: a subclass whose `super(s)` passes a String to a
+     parameter narrowed to sp_int from `Holder.new(@col[q])` does not compile. */
+  ANameHash supern; memset(&supern, 0, sizeof supern);
+  for (int u = 0; u < nt->count; u++) {
+    NodeKind sk = nt_kind(nt, u);
+    if (sk != NK_SuperNode && sk != NK_ForwardingSuperNode) continue;
+    Scope *ss = comp_scope_of(c, u);
+    if (ss && ss->name && !anh_has(&supern, ss->name)) anh_add(&supern, ss->name);
+  }
+
   /* The unique scope of each method name, hashed once: resolving it per call
      site scanned every scope, and a pass over every call site grew
      quadratically with the program (scale-test). */
@@ -14093,7 +14136,13 @@ static int narrow_params_from_arrays(Compiler *c) {
           Scope *ls = ln ? comp_scope_of(c, a) : NULL;
           LocalVar *lv = ls ? scope_local(ls, ln) : NULL;
           TyKind lt = lv ? lv->type : TY_UNKNOWN;
-          if (!lv || lt == TY_UNKNOWN || lt == TY_POLY || lt == TY_VOID || lt == TY_NIL)
+          /* only a type an ELEMENT READ can hand back -- the kinds `ec` above
+             produces. Any concrete type is not enough: TY_STRBUF is a storage
+             refinement a mutable-string local carries without coming from an
+             element, and narrowing the parameter to it declares an sp_String *
+             where the ordinary local read hands a const char *. */
+          if (!lv || !(lt == TY_INT || lt == TY_FLOAT || lt == TY_STRING ||
+                       lt == TY_INT_ARRAY || lt == TY_FLOAT_ARRAY || ty_is_object(lt)))
             { ok[slot] = 0; continue; }
           if (!saw[slot]) { elem[slot] = lt; saw[slot] = 1; }
           else if (elem[slot] != lt) ok[slot] = 0;
@@ -14127,6 +14176,9 @@ static int narrow_params_from_arrays(Compiler *c) {
       int slot = off[mi] + pj;
       if (!ok[slot] || !saw[slot] || elem[slot] == TY_UNKNOWN) continue;
       if (!m->pnames[pj]) continue;
+      if (m->name && (method_name_implicitly_invoked(m->name) ||
+                      anh_has(&supern, m->name))) continue;
+      if (m->is_ext_entry) continue;
       LocalVar *p = scope_local(m, m->pnames[pj]);
       if (!p || p->type != TY_POLY) continue;
       if (p->is_block_param || p->rbs_seeded || p->poly_dispatch_widened) continue;
@@ -14136,6 +14188,7 @@ static int narrow_params_from_arrays(Compiler *c) {
       any = 1;
     }
   }
+  anh_free(&supern);
   free(off); free(elem); free(ok); free(saw); free(hs); free(hv);
   return any;
 }
