@@ -8972,8 +8972,10 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   if (!is_forwarding) {
     int pargc = argc;
     if (argc > 0 && nt_kind(c->nt, argv[argc - 1]) == NK_KeywordHashNode) pargc = argc - 1;
-    int splat_gather = inline_splat_gather_applies(c, m, argv, pargc, pargc < argc ? argv[pargc] : -1);
-    emit_inline_bind_params(c, m, args, argv, argc, splat_gather, 0, tag, saved_nren, din, b);
+    ArgLayout L;
+    arg_layout(c, m, argv, pargc, pargc < argc ? argv[pargc] : -1, 1, &L);
+    emit_inline_bind_params(c, m, args, argv, argc, &L, 0, tag, saved_nren, din, b);
+    arg_layout_free(&L);
   }
   int zgather = -1;
   if (is_forwarding) {

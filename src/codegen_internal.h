@@ -520,15 +520,39 @@ void emit_rat_coerce(Compiler *c, int node, Buf *b);
 void emit_super(Compiler *c, int id, Buf *b);
 int  emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr);
 void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out);
-/* A splat among an inlined call's positionals: gather them all into one
-   PolyArray and bind each positional parameter from it (see
-   emit_args_filled's gather). */
-int inline_splat_gather_applies(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh);
-int emit_splat_gather(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh);
+/* Where one positional parameter's value comes from, in a call's layout. */
+typedef enum {
+  ARG_BY_NAME,    /* a keyword parameter or the **kwrest: bound by name */
+  ARG_DEFAULT,    /* no argument reaches it: its default */
+  ARG_NODE,       /* the argument argv[arg] */
+  ARG_KWH,        /* the keyword hash, one more positional argument */
+  ARG_ELEM,       /* element `arg` of the splat spread in place, or of the gather */
+  ARG_REST,       /* the rest: what the layout leaves between the others */
+  ARG_GATHERED,   /* the gather's element by its run-time count (emit_gathered_param) */
+} ArgFrom;
+/* The positional layout of one call into one callee (arg_layout, codegen_fold.c):
+   decided once, read by each binder that walks the parameters. */
+typedef struct {
+  int kwh, pos_argc;    /* the trailing keyword hash (-1) and the positionals ahead of it */
+  int kwh_slot;         /* the parameter the hash binds as a positional (kwh_positional_slot) */
+  int bind_argc;        /* the positionals, and the hash when it binds as one */
+  int rest_argc;        /* the arguments a rest and its posts are laid out over (rest_bind_argc) */
+  int rest_kwh;         /* the hash a rest takes at its tail (rest_kwh_tail) */
+  int gather;           /* the count is the run time's: every positional from one array */
+  int gather_kwh;       /* the gather's last element is the hash: 1 when it holds a key, 2 always */
+  int splat;            /* static: the argv index of the splat spread in place, or -1 */
+  int n;
+  ArgFrom *from;        /* per parameter */
+  int *arg;             /* ARG_NODE: the argv index; ARG_ELEM: the element index */
+} ArgLayout;
+void arg_layout(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh, int inlined,
+                ArgLayout *L);
+void arg_layout_free(ArgLayout *L);
+int emit_splat_gather(Compiler *c, Scope *m, const int *argv, const ArgLayout *L);
 void emit_gather_arity_check(Compiler *c, Scope *m, int ct);
 void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out);
 void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, int argc,
-                             int splat_gather, unsigned alias_mask, int tag, int saved_nren,
+                             const ArgLayout *L, unsigned alias_mask, int tag, int saved_nren,
                              int din, Buf *b);
 /* A splat operand whose static type is nil or a scalar: Ruby spreads nil to
    nothing and any of the others to itself. */

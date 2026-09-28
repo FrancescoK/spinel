@@ -219,7 +219,7 @@ int block_call_takes_class_dispatch(Compiler *c, int id) {
    packed, as the ordinary call paths bind them. The expansion's renames
    above saved_nren are hidden while argument code is emitted. */
 void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, int argc,
-                             int splat_gather, unsigned alias_mask, int tag, int saved_nren,
+                             const ArgLayout *L, unsigned alias_mask, int tag, int saved_nren,
                              int din, Buf *b) {
   const NodeTable *nt = c->nt;
   /* `bar(...)` inside a `def foo(...)` forwarder: bind this (inlined) target's
@@ -267,10 +267,8 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
      this since #3191; this one looked the keys up by parameter NAME only, so
      `opts` kept its default and every `assert_select(sel, count: 0)` in a
      yielding helper asserted presence instead (#4436). */
-  int kwh_slot = kwh_positional_slot(c, m, kwh, pos_argc);
-  int rest_argc = rest_bind_argc(c, m, kwh, pos_argc);
   int gather_tmp = -1;
-  if (splat_gather && !fwd_encl) gather_tmp = emit_splat_gather(c, m, argv, pos_argc, kwh);
+  if (L->gather && !fwd_encl) gather_tmp = emit_splat_gather(c, m, argv, L);
   ren_unpark(&park0);
   for (int i = 0; i < m->nparams; i++) {
     emit_indent(b, din);
@@ -300,40 +298,36 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
       if (mt == TY_POLY && et != TY_POLY) emit_boxed_text(c, et, txt, b);
       else buf_puts(b, txt);
     }
-    else if (gather_tmp >= 0 && i != m->kwrest_idx &&
-             !callee_param_is_declared_kwarg(c, m, m->pnames[i]))
+    else if (gather_tmp >= 0 && L->from[i] == ARG_GATHERED)
       emit_gathered_param(c, m, i, gather_tmp, b);
     /* A rest param collects the middle arguments into an Array. Without this
        the first argument was assigned straight into the rest slot -- a
        pointer of the wrong type, so the rest read back empty (or crashed).
        A keyword hash no parameter takes is its last element, as on the other
        call paths; it was dropped here, `rs(a: 1) { }` binding `[]`. */
-    else if (m->rest_idx >= 0 && i == m->rest_idx)
-      emit_rest_pack_kwh(c, i, rest_argc - m->npost_rest, argv,
-                         rest_kwh_tail(c, m, kwh, pos_argc), b);
-    else if (m->rest_idx >= 0 && i > m->rest_idx && i <= m->rest_idx + m->npost_rest) {
-      int post_j = i - m->rest_idx - 1;   /* 0-based index among the posts */
-      int argv_idx = rest_argc - m->npost_rest + post_j;
-      emit_arg_or_default(c, m, i,
-                          (argv && argv_idx >= 0 && argv_idx < rest_argc) ? argv[argv_idx] : -1, b);
-    }
+    else if (L->from[i] == ARG_REST)
+      emit_rest_pack_kwh(c, i, L->rest_argc - m->npost_rest, argv, L->rest_kwh, b);
+    /* a post, from the end of the call's arguments */
+    else if (m->rest_idx >= 0 && i > m->rest_idx && i <= m->rest_idx + m->npost_rest)
+      emit_arg_or_default(c, m, i, L->from[i] == ARG_NODE ? argv[L->arg[i]] : -1, b);
     /* Anything past the rest that is not one of its posts is a keyword (or
        **kwrest) param: it binds by name, never positionally. */
-    else if (aliased && nt_kind(nt, argv[i]) == NK_InstanceVariableReadNode) {
+    else if (aliased && nt_kind(nt, argv[L->arg[i]]) == NK_InstanceVariableReadNode) {
       /* the slot itself, and the owner pinned as a byref call pins it: the
          store lands inside this expansion, past any dirty bit (#4378) */
-      const char *ivn = nt_str(nt, argv[i], "name");
+      const char *ivn = nt_str(nt, argv[L->arg[i]], "name");
       buf_printf(b, "%s%siv_%s); sp_gc_pin_remembered((void *)%s)", g_self, g_self_deref, iv_c(ivn + 1), g_self);
     }
     else if (aliased) {
-      emit_expr(c, argv[i], b); buf_puts(b, ")");
+      int av = argv[L->arg[i]];
+      emit_expr(c, av, b); buf_puts(b, ")");
       /* The caller's variable may be a heap cell (captured by a proc): the
          body will store through it from inside this expansion, which is the
          placement a dirty bit cannot cover, so pin the cell as a byref call
          would (#4391); a stack slot, or a cell the caller itself was lent,
          is not ours to pin. */
-      { const char *avn = nt_str(nt, argv[i], "name");
-        LocalVar *alv = avn ? scope_local(comp_scope_of(c, argv[i]), avn) : NULL;
+      { const char *avn = nt_str(nt, av, "name");
+        LocalVar *alv = avn ? scope_local(comp_scope_of(c, av), avn) : NULL;
         if (alv && alv->is_cell && !alv->byref_out && !alv->inline_alias &&
             !(g_cap_struct && g_cap_names && nameset_has(g_cap_names, avn)))
           buf_printf(b, "; sp_gc_pin_remembered((void *)_cell_%s)", rename_local(avn));
@@ -350,10 +344,9 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
     /* a keyword or **kwrest param never takes a positional: a surplus one
        (refused above) bound `ykw(1, 2)`'s 2 into the kwrest's hash slot, a
        C type error */
-    else if (i < pos_argc && !(m->rest_idx >= 0 && i > m->rest_idx) && i != m->kwrest_idx &&
-             !callee_param_is_declared_kwarg(c, m, m->pnames[i]))
-      emit_arg_or_default(c, m, i, argv[i], b);
-    else if (i == kwh_slot)
+    else if (L->from[i] == ARG_NODE)
+      emit_arg_or_default(c, m, i, argv[L->arg[i]], b);
+    else if (L->from[i] == ARG_KWH)
       emit_arg_or_default(c, m, i, kwh, b);
     else {
       int kv = kwh >= 0 && !kw_merged ? kwh_lookup(nt, kwh, m->pnames[i]) : -1;
@@ -707,20 +700,21 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int argc = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   unsigned alias_mask = 0;
-  int splat_gather = 0;
+  ArgLayout L;
   {
     int pargc = argc;
     if (argc > 0 && argv && nt_type(nt, argv[argc - 1]) &&
         sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) pargc = argc - 1;
-    splat_gather = inline_splat_gather_applies(c, m, argv, pargc, pargc < argc ? argv[pargc] : -1);
-    for (int i = 0; i < m->nparams && i < 32 && !splat_gather; i++) {
-      if (i >= pargc || (m->rest_idx >= 0 && i >= m->rest_idx)) continue;
-      NodeKind ak = nt_kind(nt, argv[i]);
+    arg_layout(c, m, argv, pargc, pargc < argc ? argv[pargc] : -1, 1, &L);
+    for (int i = 0; i < m->nparams && i < 32 && !L.gather; i++) {
+      if (L.from[i] != ARG_NODE || L.arg[i] >= pargc || (m->rest_idx >= 0 && i >= m->rest_idx)) continue;
+      int an = argv[L.arg[i]];
+      NodeKind ak = nt_kind(nt, an);
       if (ak == NK_InstanceVariableReadNode) {
         /* an ivar buffer: the object's own slot, from an instance method of a
            heap class (a value type is a struct copy with no slot to lend) */
-        Scope *as = comp_scope_of(c, argv[i]);
-        if (!as || as->class_id < 0 || as->is_cmethod || comp_ntype(c, argv[i]) != TY_STRING ||
+        Scope *as = comp_scope_of(c, an);
+        if (!as || as->class_id < 0 || as->is_cmethod || comp_ntype(c, an) != TY_STRING ||
             comp_ty_value_obj(c, ty_object(as->class_id)) || !g_self) continue;
       }
       else if (ak != NK_LocalVariableReadNode) continue;
@@ -768,7 +762,8 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   }
   InlDflt sv_dflt = inl_dflt_enter(m, g_nren, dflt_self, dflt_deref,
                                    recv_class >= 0 ? recv_class : cm_class);
-  emit_inline_bind_params(c, m, args, argv, argc, splat_gather, alias_mask, tag, saved_nren, din, b);
+  emit_inline_bind_params(c, m, args, argv, argc, &L, alias_mask, tag, saved_nren, din, b);
+  arg_layout_free(&L);
   inl_dflt_leave(sv_dflt);
 
   /* Now switch into the RECEIVER's context for the method BODY. Both the
@@ -1417,6 +1412,24 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
                  splat_tmp, splat_tmp, splat_tmp);
     }
   }
+  /* A splat beside other yielded values spreads by a length only the run
+     time knows, as a method call's gather does (arg_layout): the values go
+     into one array, bound as a splat. Each parameter took the value at its
+     own index, the splat's whole array among them, so `yield(*s, 2)` bound
+     the array into the first parameter (a C type error for a typed one)
+     and `yield(*[], 1)` bound nil. A lone value left is auto-splatted as a
+     lone yielded Array would be. */
+  else if (yc > 1 && yargs && call_args_need_spread(nt, yargs, yc)) {
+    splat_at = TY_POLY_ARRAY;
+    splat_tmp = emit_spread_args(c, yargs, yc);
+    if (P + O + Q > 1 || (P + O + Q >= 1 && R)) {
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "if (_t%d->len == 1) { sp_RbVal _e = sp_PolyArray_get(_t%d, 0); "
+                        "if (_e.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_e.cls_id)) "
+                        "_t%d = sp_poly_to_poly_array(_e); }\n",
+                 splat_tmp, splat_tmp, splat_tmp);
+    }
+  }
   if (splat_tmp < 0 && yc == 1 && yargs) {
     int inner = -1;
     if (nt_type(nt, yargs[0]) && sp_streq(nt_type(nt, yargs[0]), "SplatNode"))
@@ -1473,6 +1486,15 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", splat_tmp);
       free(sb.p);
+      /* the one value a splat leaves is auto-splatted, as a lone yielded
+         Array is: `yield(*[[1, 2]])` into `|a, b|` binds 1 and 2 */
+      if (inner != yargs[0] && at == TY_POLY_ARRAY && (P + O + Q > 1 || (P + O + Q >= 1 && R))) {
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "if (_t%d && _t%d->len == 1) { sp_RbVal _e = sp_PolyArray_get(_t%d, 0); "
+                          "if (_e.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_e.cls_id)) "
+                          "_t%d = sp_poly_to_poly_array(_e); }\n",
+                   splat_tmp, splat_tmp, splat_tmp, splat_tmp);
+      }
     }
   }
   if (as_expr) buf_puts(b, "({ ");

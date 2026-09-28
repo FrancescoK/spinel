@@ -272,15 +272,16 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   const char *last_ty = argc2 > 0 ? nt_type(nt, argv2[argc2 - 1]) : NULL;
   int kwh = (last_ty && sp_streq(last_ty, "KeywordHashNode")) ? argv2[argc2 - 1] : -1;
   int pos_argc = kwh >= 0 ? argc2 - 1 : argc2;
-  int rest_argc = rest_bind_argc(c, m, kwh, pos_argc);
+  ArgLayout L;
+  arg_layout(c, m, argv2, pos_argc, kwh, 1, &L);
   /* a `**` hash that may be no argument, or a splat: every parameter from
      the gather, call-site code like each argument below */
   int gather_tmp = -1;
-  if (inline_splat_gather_applies(c, m, argv2, pos_argc, kwh)) {
+  if (L.gather) {
     RenPark park = ren_park(saved_nren);
     const char *svs = g_self, *svd = g_self_deref;
     g_self = saved_self; g_self_deref = saved_self_deref;
-    gather_tmp = emit_splat_gather(c, m, argv2, pos_argc, kwh);
+    gather_tmp = emit_splat_gather(c, m, argv2, &L);
     g_self = svs; g_self_deref = svd;
     ren_unpark(&park);
   }
@@ -290,11 +291,10 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
     { char rn[128]; snprintf(rn, sizeof rn, "_y%d_%s", tag, m->pnames[i]);
       emit_inlined_param_target(c, m, m->pnames[i], rn, b); }
     /* A param past the rest binds by name, never positionally. */
-    int past_rest = m->rest_idx >= 0 && i > m->rest_idx;
-    int provided = (i < pos_argc && !past_rest) ? argv2[i] : -1;
+    int provided = L.from[i] == ARG_NODE ? argv2[L.arg[i]] : L.from[i] == ARG_KWH ? kwh : -1;
     /* Only bind from the keyword hash when the param was not already filled
        positionally -- otherwise a same-named key would clobber the positional. */
-    if (kwh >= 0 && (i >= pos_argc || past_rest)) {
+    if (kwh >= 0 && provided < 0) {
       int kv = kwh_lookup(nt, kwh, m->pnames[i]);
       if (kv >= 0) provided = kv;
     }
@@ -318,17 +318,10 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
     /* A rest param collects the middle arguments into an Array rather than
        taking one of them straight into its slot, a keyword hash no parameter
        takes included. */
-    if (gather_tmp >= 0 && i != m->kwrest_idx && !callee_param_is_declared_kwarg(c, m, m->pnames[i]))
+    if (gather_tmp >= 0 && L.from[i] == ARG_GATHERED)
       emit_gathered_param(c, m, i, gather_tmp, b);
-    else if (m->rest_idx >= 0 && i == m->rest_idx)
-      emit_rest_pack_kwh(c, i, rest_argc - m->npost_rest, argv2,
-                         rest_kwh_tail(c, m, kwh, pos_argc), b);
-    else if (m->rest_idx >= 0 && i > m->rest_idx && i <= m->rest_idx + m->npost_rest) {
-      int post_j = i - m->rest_idx - 1;   /* 0-based index among the posts */
-      int argv_idx = rest_argc - m->npost_rest + post_j;
-      emit_arg_or_default(c, m, i,
-                          (argv2 && argv_idx >= 0 && argv_idx < rest_argc) ? argv2[argv_idx] : -1, b);
-    }
+    else if (L.from[i] == ARG_REST)
+      emit_rest_pack_kwh(c, i, L.rest_argc - m->npost_rest, argv2, L.rest_kwh, b);
     else emit_arg_or_default(c, m, i, provided, b);
     g_self = svs; g_self_deref = svd;
     ren_unpark(&park);
@@ -336,6 +329,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   }
   inl_dflt_leave(sv_dflt);
   g_n_argov = argov_saved;
+  arg_layout_free(&L);
 
   /* The inlined `initialize` body runs in the CONSTRUCTED class's context:
      an implicit-self call inside it (`setup` in `def initialize; setup;
@@ -10661,6 +10655,13 @@ int splat_operand_ok(Compiler *c, int node) {
     return ok;
   }
   TyKind t = comp_ntype(c, node);
+  /* an empty `[]` carries no element type and stays untyped; emit_boxed
+     gives it the poly form, as the method binders' splat takes it */
+  int n = 0;
+  if (t == TY_UNKNOWN && nt_kind(c->nt, node) == NK_ArrayNode) {
+    nt_arr(c->nt, node, "elements", &n);
+    if (n == 0) return 1;
+  }
   return ty_is_array(t) || t == TY_POLY || splat_operand_is_scalar(t);
 }
 void emit_splat_operand_array(Compiler *c, int node, Buf *b) {
@@ -10725,7 +10726,8 @@ static void emit_struct_splat_new(Compiler *c, ClassInfo *cls, int psplat, int k
    count is still only known at run time, so gather every argument into one
    array in order and spread that, as a sole splat does. Returns 0 (emitting
    nothing) when a splat operand has no array form. */
-static int emit_struct_mixed_splat_new(Compiler *c, ClassInfo *cls, const int *argv, int argc, Buf *b) {
+static int emit_struct_mixed_splat_new(Compiler *c, ClassInfo *cls, const int *argv, int argc,
+                                       int kw_init, Buf *b) {
   const NodeTable *nt = c->nt;
   for (int a = 0; a < argc; a++) {
     if (nt_kind(nt, argv[a]) != NK_SplatNode) continue;
@@ -10768,7 +10770,7 @@ static int emit_struct_mixed_splat_new(Compiler *c, ClassInfo *cls, const int *a
     }
   }
   buf_printf(&ab, " _t%d; })", ta);
-  emit_struct_spread_new(c, cls, ab.p, 0, b);
+  emit_struct_spread_new(c, cls, ab.p, kw_init, b);
   free(ab.p);
   return 1;
 }
@@ -12126,8 +12128,15 @@ static int emit_struct_new_early(Compiler *c, int ci, int argc, const int *argv,
   int kw_splat = kwh_has_splat(nt, kwh);
   /* a keyword_init Struct takes keywords and nothing else: CRuby answers
      "wrong number of arguments" for a positional call, where these were
-     being bound to the members in order */
-  if (kwh < 0 && argc > 0 && cls->kw_init > 0 && !cls->is_data) {
+     being bound to the members in order. A splat's count is the run time's
+     (`K.new(*[])` is no argument): the spread below checks it. */
+  int spreads = call_has_splat_arg(nt, argv, argc);
+  for (int a = 0; spreads && a < argc; a++)
+    if (nt_kind(nt, argv[a]) == NK_SplatNode) {
+      int op = nt_ref(nt, argv[a], "expression");
+      if (!splat_operand_ok(c, op >= 0 ? op : argv[a])) spreads = 0;
+    }
+  if (kwh < 0 && argc > 0 && cls->kw_init > 0 && !cls->is_data && !spreads) {
     buf_puts(b, "({ ");
     for (int e2 = 0; e2 < argc; e2++) {
       buf_puts(b, "(void)("); emit_boxed(c, argv[e2], b); buf_puts(b, "); ");
@@ -12237,12 +12246,15 @@ static int emit_struct_new_early(Compiler *c, int ci, int argc, const int *argv,
   {
     int psplat = (kwh < 0 && argc == 1 && nt_type(nt, argv[0]) &&
                   sp_streq(nt_type(nt, argv[0]), "SplatNode")) ? nt_ref(nt, argv[0], "expression") : -1;
-    if (psplat >= 0 && ty_is_array(comp_ntype(c, psplat))) {
-      emit_struct_splat_new(c, cls, psplat, 0, b);
+    int kwi = cls->kw_init > 0 && !cls->is_data;
+    /* any operand with an array form, as the gather takes it: `S.new(*[])`
+       and `S.new(*nil)` bound the splat as one member */
+    if (psplat >= 0 && splat_operand_ok(c, psplat)) {
+      emit_struct_splat_new(c, cls, psplat, kwi, b);
       return 1;
     }
     if (kwh < 0 && argc > 1 && call_has_splat_arg(nt, argv, argc) &&
-        emit_struct_mixed_splat_new(c, cls, argv, argc, b))
+        emit_struct_mixed_splat_new(c, cls, argv, argc, kwi, b))
       return 1;
   }
   /* Data.new validates its arguments strictly (unlike Struct, which

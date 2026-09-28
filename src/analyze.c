@@ -15063,6 +15063,9 @@ int make_yield_proc_forms(Compiler *c) {
     dst->nparams = src->nparams;
     dst->nrequired = src->nrequired;
     dst->rest_idx = src->rest_idx;
+    /* the posts too: without them the clone's layout took a rest's post for
+       a keyword, bound by name */
+    dst->npost_rest = src->npost_rest;
     dst->kwrest_idx = src->kwrest_idx;
     if (src->nparams > 0) {
       dst->pnames = (char **)calloc((size_t)src->nparams, sizeof(char *));
