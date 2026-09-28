@@ -2092,7 +2092,9 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
     "to_s", "inspect", "class", "nil?", "dup", "clone", "freeze", "frozen?",
     "hash", "==", "!=", "equal?", "eql?", "object_id", "respond_to?", "is_a?",
     "kind_of?", "instance_of?", "itself", "tap", "then", "send", "__send__",
-    "public_send", "method", "methods", "display", "yield_self", NULL };
+    "public_send", "method", "methods", "display", "yield_self", "===", "to_enum",
+    "enum_for", "instance_variables", "instance_variable_get", "instance_variable_set",
+    "instance_variable_defined?", "singleton_class", "extend", NULL };
   static const char *const enumm[] = {
     "each", "each_with_index", "each_with_object", "map", "collect", "select",
     "filter", "reject", "find", "detect", "reduce", "inject", "to_a", "size",
