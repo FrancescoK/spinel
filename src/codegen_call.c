@@ -26568,7 +26568,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (at == TY_STRING) { emit_expr(c, av[0], b); }
       else if (at == TY_INT) { buf_puts(b, "sp_int_to_s("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       else if (at == TY_FLOAT) { buf_puts(b, "sp_float_to_s("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
-      else if (at == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
+      /* a boxed object answering #to_str converts through it
+         (sp_poly_check_str), as a typed one does below, and only then through
+         #to_s; the root here holds it across both, where sp_poly_check_str
+         holds it only across #to_str */
+      else if (at == TY_POLY) {
+        int ts = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", ts); emit_expr(c, av[0], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); const char *_s%d = sp_poly_check_str(_t%d);"
+                      " _s%d ? _s%d : sp_poly_to_s(_t%d); })", ts, ts, ts, ts, ts, ts);
+      }
       else if (at == TY_BOOL) { buf_puts(b, "("); emit_expr(c, av[0], b); buf_puts(b, " ? \"true\" : \"false\")"); }
       else if (at == TY_SYMBOL) { buf_puts(b, "sp_sym_to_s("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       else if (at == TY_NIL || at == TY_UNKNOWN) { buf_puts(b, "sp_poly_to_s(sp_box_nil())"); }
