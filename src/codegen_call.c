@@ -8384,10 +8384,26 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
          handle -- so this arm widens its own guard and reads the bytes with
          sp_poly_recv_s. Without it a heap String fell through to the cls_id
          switch and answered false, silently (#4279). */
-      if (is_include && infer_type(c, argv[0]) == TY_STRING)
+      /* String answers include? alone (member?/key? are NoMethodError), and
+         its argument must be a String: another class is CRuby's TypeError,
+         and a boxed one is checked at run time. */
+      if (is_include && !sp_streq(name, "include?"))
+        buf_printf(b, "if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) sp_raise_poly_nomethod(\"%s\", _t%d);\nelse ",
+                   tv, tv, name, tv);
+      else if (is_include && infer_type(c, argv[0]) == TY_STRING)
         buf_printf(b, "if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) { _t%d = %ssp_str_include(sp_poly_recv_s(_t%d, \"include?\"), _t%d)%s; }\nelse ",
                    tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "", tv, atmp[0],
                    ret == TY_POLY ? ")" : "");
+      else if (is_include) {
+        Buf ab6; memset(&ab6, 0, sizeof ab6);
+        char tn6[24]; snprintf(tn6, sizeof tn6, "_t%d", atmp[0]);
+        if (atmp_ty[0] == TY_POLY) buf_puts(&ab6, tn6);
+        else emit_boxed_text(c, atmp_ty[0], tn6, &ab6);
+        buf_printf(b, "if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) { _t%d = %ssp_str_include(sp_poly_recv_s(_t%d, \"include?\"), sp_poly_arg_str_chk(sp_poly_strbuf_deref(%s)))%s; }\nelse ",
+                   tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "", tv, ab6.p ? ab6.p : "sp_box_nil()",
+                   ret == TY_POLY ? ")" : "");
+        free(ab6.p);
+      }
       /* delete(chars) on a TAG_STR receiver: String#delete, boxed when the
          dispatch result stays poly. */
       if (is_strdel && (ret == TY_POLY || ret == TY_STRING)) {
@@ -9393,6 +9409,8 @@ else {
         Buf ab4; memset(&ab4, 0, sizeof ab4);
         { char tn4[32]; snprintf(tn4, sizeof tn4, "_t%d", atmp[0]);
           if (atmp_ty[0] == TY_POLY) buf_puts(&ab4, tn4);
+          /* emit_boxed_text boxes a pattern temp as nil */
+          else if (atmp_ty[0] == TY_REGEX) buf_printf(&ab4, "sp_box_regexp(%s)", tn4);
           else emit_boxed_text(c, atmp_ty[0], tn4, &ab4); }
         buf_puts(b, " case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_STR_ARRAY:"
                     " case SP_BUILTIN_FLT_ARRAY: case SP_BUILTIN_SYM_ARRAY:"
@@ -9713,6 +9731,7 @@ else {
           Buf ab5; memset(&ab5, 0, sizeof ab5);
           { char tn5[32]; snprintf(tn5, sizeof tn5, "_t%d", atmp[0]);
             if (atmp_ty[0] == TY_POLY) buf_puts(&ab5, tn5);
+            else if (atmp_ty[0] == TY_REGEX) buf_printf(&ab5, "sp_box_regexp(%s)", tn5);
             else emit_boxed_text(c, atmp_ty[0], tn5, &ab5); }
           if (argc == 2) {
             char sx[64];

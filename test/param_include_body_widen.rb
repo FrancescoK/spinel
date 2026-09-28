@@ -34,5 +34,10 @@ b.v = [:a, :b]
 puts consume(b.v)
 b.v = {x: 1, y: 2}
 puts consume(b.v)
+# a String takes only a String: a Symbol is CRuby's TypeError
 b.v = "abc"
-puts consume(b.v)
+begin
+  puts consume(b.v)
+rescue TypeError => e
+  puts e.class
+end

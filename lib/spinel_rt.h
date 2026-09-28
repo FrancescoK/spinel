@@ -9442,11 +9442,16 @@ sp_bool sp_poly_cbi_p(sp_RbVal v);
    SP_INT_NIL when absent. The receiver switch that serves the array kinds
    dispatches on cls_id, which a String box does not carry, so its default arm
    routes here before reporting a missing method (#3445). */
+/* The pattern is a String or a Regexp; anything else is CRuby's TypeError
+   (it was read as "absent" and answered nil). */
 static sp_int sp_poly_str_index_val(sp_RbVal v, sp_RbVal sub, int from_end) {
   sp_RbVal s = sp_poly_strbuf_deref(v), a = sp_poly_strbuf_deref(sub);
-  if (a.tag != SP_TAG_STR) return SP_INT_NIL;
   const char *sp = s.v.s ? s.v.s : (&("\xff")[1]);
-  const char *ap = a.v.s ? a.v.s : (&("\xff")[1]);
+  if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_REGEX && a.v.p)
+    return from_end ? sp_re_rindex_opt((mrb_regexp_pattern *)a.v.p, sp)
+                    : sp_re_index_from_opt((mrb_regexp_pattern *)a.v.p, sp, 0);
+  const char *ap = sp_poly_arg_str_chk(a);
+  if (!ap) ap = (&("\xff")[1]);
   return from_end ? sp_str_rindex_opt(sp, ap) : sp_str_index_opt(sp, ap);
 }
 /* the two-argument String#index/#rindex on a boxed receiver: the search starts
@@ -9455,9 +9460,12 @@ static sp_int sp_poly_str_index_val(sp_RbVal v, sp_RbVal sub, int from_end) {
 static sp_int sp_poly_str_index_from_val(sp_RbVal v, sp_RbVal sub, sp_int start,
                                          int from_end) {
   sp_RbVal s = sp_poly_strbuf_deref(v), a = sp_poly_strbuf_deref(sub);
-  if (a.tag != SP_TAG_STR) return SP_INT_NIL;
   const char *sp = s.v.s ? s.v.s : (&("\xff")[1]);
-  const char *ap = a.v.s ? a.v.s : (&("\xff")[1]);
+  if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_REGEX && a.v.p)
+    return from_end ? sp_re_rindex_from_opt((mrb_regexp_pattern *)a.v.p, sp, start)
+                    : sp_re_index_from_opt((mrb_regexp_pattern *)a.v.p, sp, start);
+  const char *ap = sp_poly_arg_str_chk(a);
+  if (!ap) ap = (&("\xff")[1]);
   if (!from_end) return sp_str_index_from_opt(sp, ap, start);
   { sp_int n = sp_str_rindex_from(sp, ap, start); return n < 0 ? SP_INT_NIL : n; }
 }
@@ -9467,8 +9475,8 @@ static sp_int sp_poly_count_val(sp_RbVal v, sp_RbVal x) {
      for every argument (#3446). */
   if (v.tag == SP_TAG_STR || sp_poly_is_strbuf(v)) {
     sp_RbVal s = sp_poly_strbuf_deref(v), a = sp_poly_strbuf_deref(x);
-    if (a.tag != SP_TAG_STR) return 0;
-    return sp_str_count(s.v.s ? s.v.s : (&("\xff")[1]), a.v.s ? a.v.s : (&("\xff")[1]));
+    const char *ap = sp_poly_arg_str_chk(a);
+    return sp_str_count(s.v.s ? s.v.s : (&("\xff")[1]), ap ? ap : (&("\xff")[1]));
   }
   if (v.tag != SP_TAG_OBJ) return 0;
   /* A Hash counts its [key, value] pairs, a Range its members and an
