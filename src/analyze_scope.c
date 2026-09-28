@@ -816,11 +816,18 @@ void desugar_class_reopen(Compiler *c) {
 /* A statement of a `class << self` body: a def is a class method of
    `target_class`, also one inside an if/unless/else there (`class << self;
    if cond; def m; end; else; def m; end; end`, as Loofah defines its entry
-   points, #5358). Anything else is walked as usual. */
+   points, #5358). A define_method there is a class method too. Anything
+   else is walked as usual. */
+static int g_dm_sclass;
 static void sclass_walk_stmt(Compiler *c, int s, int scope_idx, int target_class, int depth) {
   const NodeTable *nt = c->nt;
   if (s < 0 || s >= nt->count) return;
   NodeKind k = nt_kind(nt, s);
+  if (k == NK_CallNode && dm_registerable_name(nt, s)) {
+    g_dm_sclass = 1;
+    walk_scope(c, s, scope_idx, target_class);
+    return;
+  }
   if (k == NK_DefNode && nt_ref(nt, s, "receiver") < 0) {
     const char *name = nt_str(nt, s, "name");
     if (!name) return;
@@ -860,6 +867,8 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
   const char *ty = nt_type(c->nt, id);
   int child = scope_idx;
   int child_class = class_id;
+  int dm_sclass = g_dm_sclass;
+  g_dm_sclass = 0;
 
   /* `class << self; def X; ...; end; end` -- treat body defs as class methods. */
   if (ty && sp_streq(ty, "SingletonClassNode")) {
@@ -1009,7 +1018,7 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
        a class constant receiver, `self` in a class body, or no receiver (the
        enclosing class). An arbitrary-instance singleton has no compile-time
        class, so it is not registered (the later call rejects). */
-    int dm_cmethod = 0, dm_cls = class_id, dm_ok = dm_is_dm, dm_defer = 0;
+    int dm_cmethod = dm_is_dm && dm_sclass, dm_cls = class_id, dm_ok = dm_is_dm, dm_defer = 0;
     if (dm_is_dsm) {
       dm_cmethod = 1;
       const char *dsm_rty = dm_recv >= 0 ? nt_type(c->nt, dm_recv) : NULL;
