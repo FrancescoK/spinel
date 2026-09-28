@@ -15682,7 +15682,9 @@ static int splat_local_len(Compiler *c, int ex, int callid) {
   return writes == 1 ? len : -1;
 }
 /* How many arguments the builtin requires, for a splat whose length only the
-   run time knows. Only the required count: an optional trailing parameter
+   run time knows and that splat_dispatch_on_length declined (a block, `&.`, a
+   user method of the name that cannot take every count). Only the required
+   count: an optional trailing parameter
    (`fetch`'s default, `split`'s limit) cannot be chosen without knowing the
    length, and reading one that the array may not carry would pass nil where
    Ruby passes nothing. -1 for a name with no single answer. */
@@ -15732,6 +15734,218 @@ static int splat_recv_is_builtin_literal(NodeTable *nt, int id) {
          sp_streq(t, "IntegerNode") || sp_streq(t, "FloatNode") ||
          sp_streq(t, "SymbolNode") || sp_streq(t, "RangeNode");
 }
+/* The argument counts a builtin takes, over every builtin receiver that has
+   the method: `fetch` is Hash's and Array's (key, default), `[]` is Hash's
+   one argument and Array's or String's two. A variadic method (String#count,
+   #delete, #start_with?) is dispatched up to a cap. 0 for an unlisted name. */
+static int splat_builtin_range(const char *name, int *lo, int *hi, int *variadic) {
+  static const struct { const char *name; int lo, hi, variadic; } tab[] = {
+    { "fetch", 1, 2, 0 }, { "store", 2, 2, 0 }, { "delete", 1, 8, 1 }, { "insert", 1, 8, 1 },
+    { "sub", 2, 2, 0 }, { "sub!", 2, 2, 0 }, { "gsub", 2, 2, 0 }, { "gsub!", 2, 2, 0 },
+    { "[]", 1, 2, 0 }, { "[]=", 2, 3, 0 },
+    { "key?", 1, 1, 0 }, { "has_key?", 1, 1, 0 }, { "include?", 1, 1, 0 },
+    { "member?", 1, 1, 0 }, { "value?", 1, 1, 0 }, { "has_value?", 1, 1, 0 },
+    { "index", 1, 2, 0 }, { "rindex", 1, 2, 0 }, { "count", 0, 8, 1 },
+    { "split", 0, 2, 0 }, { "join", 0, 1, 0 },
+    { "start_with?", 0, 8, 1 }, { "end_with?", 0, 8, 1 },
+    { "tr", 2, 2, 0 }, { "tr_s", 2, 2, 0 },
+    { "first", 0, 1, 0 }, { "last", 0, 1, 0 }, { "sum", 0, 1, 0 },
+    { "ljust", 1, 2, 0 }, { "rjust", 1, 2, 0 }, { "center", 1, 2, 0 },
+    { "to_s", 0, 1, 0 },
+    { NULL, 0, 0, 0 }
+  };
+  for (int i = 0; tab[i].name; i++)
+    if (sp_streq(name, tab[i].name)) {
+      if (lo) *lo = tab[i].lo;
+      if (hi) *hi = tab[i].hi;
+      if (variadic) *variadic = tab[i].variadic;
+      return 1;
+    }
+  return 0;
+}
+/* A node that can be copied into each arm of the dispatch without being
+   evaluated more than once, or out of order, in the arm that runs. */
+static int splat_leaf_node(NodeTable *nt, int id) {
+  switch (nt_kind(nt, id)) {
+    case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode:
+    case NK_ConstantReadNode: case NK_SelfNode: case NK_SymbolNode:
+    case NK_IntegerNode: case NK_FloatNode: case NK_StringNode:
+    case NK_NilNode: case NK_TrueNode: case NK_FalseNode:
+      return 1;
+    default:
+      return 0;
+  }
+}
+/* `recv.m(pre, *a, post)` where a's length is only known at run time and m
+   is a builtin taking lo..hi arguments. Expanding to the required count
+   dropped every optional argument (`h.fetch(*[:k, 0])` ran fetch(:k) and
+   raised KeyError), so branch on the length instead:
+
+     (t = recv; a.length == 1 ? t.m(a[0]) : a.length == 2 ? t.m(a[0], a[1])
+                                          : raise ArgumentError, "...")
+
+   The receiver, and any fixed argument that is not a leaf, is bound to a
+   temporary first so it is evaluated once. Returns 0, leaving the call to
+   the old expansion, when some user method of the name could not take every
+   count in the range. */
+static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int argc,
+                                    int sp_at, int ex) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  const char *cnm = nt_str(nt, id, "name");
+  int lo, hi, variadic;
+  if (!cnm || !splat_builtin_range(cnm, &lo, &hi, &variadic)) return 0;
+  if (nt_ref(nt, id, "block") >= 0) return 0;
+  /* insert(i, *objs) spreads at run time (emit_array_splat_mutator) */
+  if (sp_streq(cnm, "insert") && sp_at > 0) return 0;
+  const char *cop = nt_str(nt, id, "call_operator");
+  if (cop && sp_streq(cop, "&.")) return 0;
+  if (nt_kind(nt, ex) != NK_LocalVariableReadNode) return 0;
+  const char *anm = nt_str(nt, ex, "name");
+  if (!anm) return 0;
+  long long adepth = nt_int(nt, ex, "depth", 0);
+  int recv = nt_ref(nt, id, "receiver");
+  /* a receiverless call is self's method, never one of these builtins */
+  if (recv < 0) return 0;
+  /* a user method of the name that takes more than hi arguments (a rest
+     parameter) or cannot take some count in the range may own the call */
+  if (!splat_recv_is_builtin_literal(nt, id)) {
+    for (int k = lo; k <= hi; k++)
+      if (splat_user_method_rejects(c, cnm, k)) return 0;
+    for (int si = 0; si < c->nscopes; si++)
+      if (c->scopes[si].name && sp_streq(c->scopes[si].name, cnm) &&
+          (c->scopes[si].rest_idx >= 0 || c->scopes[si].nparams > hi)) return 0;
+  }
+  int fixed = argc - 1;
+  int base = nt->count;
+  int encl = c->nscope[id];
+  int pre[32];
+  int npre = 0;
+  char tn[48];
+  if (!splat_leaf_node(nt, recv)) {
+    snprintf(tn, sizeof tn, "__splr%d", id);
+    int w = nt_new_node(nt, "LocalVariableWriteNode");
+    nt_node_set_str(nt, w, "name", tn);
+    nt_node_set_int(nt, w, "depth", 0);
+    nt_node_set_ref(nt, w, "value", recv);
+    pre[npre++] = w;
+    recv = nt_new_node(nt, "LocalVariableReadNode");
+    nt_node_set_str(nt, recv, "name", tn);
+    nt_node_set_int(nt, recv, "depth", 0);
+  }
+  int fargs[24];
+  for (int k = 0; k < argc; k++) {
+    fargs[k] = argv[k];
+    if (k == sp_at || splat_leaf_node(nt, argv[k])) continue;
+    snprintf(tn, sizeof tn, "__spla%d_%d", id, k);
+    int w = nt_new_node(nt, "LocalVariableWriteNode");
+    nt_node_set_str(nt, w, "name", tn);
+    nt_node_set_int(nt, w, "depth", 0);
+    nt_node_set_ref(nt, w, "value", argv[k]);
+    pre[npre++] = w;
+    fargs[k] = nt_new_node(nt, "LocalVariableReadNode");
+    nt_node_set_str(nt, fargs[k], "name", tn);
+    nt_node_set_int(nt, fargs[k], "depth", 0);
+  }
+  /* the else arm: a count outside the range */
+  char msg[160];
+  if (variadic)
+    snprintf(msg, sizeof msg, "spinel: a splat of more than %d arguments into %s is not supported",
+             hi - fixed, cnm);
+  else if (lo == hi)
+    snprintf(msg, sizeof msg, "wrong number of arguments (expected %d)", lo);
+  else
+    snprintf(msg, sizeof msg, "wrong number of arguments (expected %d..%d)", lo, hi);
+  int ecn = nt_new_node(nt, "ConstantReadNode");
+  nt_node_set_str(nt, ecn, "name", variadic ? "NotImplementedError" : "ArgumentError");
+  int emn = nt_new_node(nt, "StringNode");
+  nt_node_set_str(nt, emn, "content", msg);
+  int ea[2] = { ecn, emn };
+  int eargs = nt_new_node(nt, "ArgumentsNode");
+  nt_node_set_arr(nt, eargs, "arguments", ea, 2);
+  int arm = nt_new_node(nt, "CallNode");
+  nt_node_set_str(nt, arm, "name", "raise");
+  nt_node_set_ref(nt, arm, "receiver", -1);
+  nt_node_set_ref(nt, arm, "arguments", eargs);
+  nt_node_set_ref(nt, arm, "block", -1);
+  /* built from the longest count down, each arm the else of the next */
+  int first_len = lo - fixed < 0 ? 0 : lo - fixed;
+  for (int len = hi - fixed; len >= first_len; len--) {
+    int args[32];
+    int m = 0;
+    for (int k = 0; k < argc; k++) {
+      if (k != sp_at) {
+        args[m++] = nt_clone_subtree(nt, fargs[k]);
+        continue;
+      }
+      for (int i = 0; i < len; i++) {
+        int rd = nt_new_node(nt, "LocalVariableReadNode");
+        nt_node_set_str(nt, rd, "name", anm);
+        nt_node_set_int(nt, rd, "depth", adepth);
+        int ix = nt_new_node(nt, "IntegerNode");
+        nt_node_set_int(nt, ix, "value", i);
+        int ia = nt_new_node(nt, "ArgumentsNode");
+        nt_node_set_arr(nt, ia, "arguments", &ix, 1);
+        int el = nt_new_node(nt, "CallNode");
+        nt_node_set_str(nt, el, "name", "[]");
+        nt_node_set_ref(nt, el, "receiver", rd);
+        nt_node_set_ref(nt, el, "arguments", ia);
+        nt_node_set_ref(nt, el, "block", -1);
+        args[m++] = el;
+      }
+    }
+    int cl = nt_new_node(nt, "CallNode");
+    nt_node_set_str(nt, cl, "name", cnm);
+    nt_node_set_ref(nt, cl, "receiver", nt_clone_subtree(nt, recv));
+    nt_node_set_ref(nt, cl, "block", -1);
+    int an = -1;
+    if (m > 0) {
+      an = nt_new_node(nt, "ArgumentsNode");
+      nt_node_set_arr(nt, an, "arguments", args, m);
+    }
+    nt_node_set_ref(nt, cl, "arguments", an);
+    int ard = nt_new_node(nt, "LocalVariableReadNode");
+    nt_node_set_str(nt, ard, "name", anm);
+    nt_node_set_int(nt, ard, "depth", adepth);
+    int alen = nt_new_node(nt, "CallNode");
+    nt_node_set_str(nt, alen, "name", "length");
+    nt_node_set_ref(nt, alen, "receiver", ard);
+    nt_node_set_ref(nt, alen, "arguments", -1);
+    nt_node_set_ref(nt, alen, "block", -1);
+    int lit = nt_new_node(nt, "IntegerNode");
+    nt_node_set_int(nt, lit, "value", len);
+    int la = nt_new_node(nt, "ArgumentsNode");
+    nt_node_set_arr(nt, la, "arguments", &lit, 1);
+    int pred = nt_new_node(nt, "CallNode");
+    nt_node_set_str(nt, pred, "name", "==");
+    nt_node_set_ref(nt, pred, "receiver", alen);
+    nt_node_set_ref(nt, pred, "arguments", la);
+    nt_node_set_ref(nt, pred, "block", -1);
+    int ts = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, ts, "body", &cl, 1);
+    int es = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, es, "body", &arm, 1);
+    int en = nt_new_node(nt, "ElseNode");
+    nt_node_set_ref(nt, en, "statements", es);
+    int ifn = nt_new_node(nt, "IfNode");
+    nt_node_set_ref(nt, ifn, "predicate", pred);
+    nt_node_set_ref(nt, ifn, "statements", ts);
+    nt_node_set_ref(nt, ifn, "subsequent", en);
+    arm = ifn;
+  }
+  pre[npre++] = arm;
+  int stmts = nt_new_node(nt, "StatementsNode");
+  nt_node_set_arr(nt, stmts, "body", pre, npre);
+  int paren = nt_new_node(nt, "ParenthesesNode");
+  nt_node_set_ref(nt, paren, "body", stmts);
+  /* the call becomes a transparent alias of the dispatch's value */
+  nt_node_set_str(nt, id, "name", "itself");
+  nt_node_set_ref(nt, id, "receiver", paren);
+  nt_node_set_ref(nt, id, "block", -1);
+  nt_node_set_ref(nt, id, "arguments", -1);
+  comp_grow_node_arrays(c);
+  for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+  return 1;
+}
 static void expand_static_splat_args(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int count = nt->count;
@@ -15773,7 +15987,7 @@ static void expand_static_splat_args(Compiler *c) {
     int listed = 0;
     for (int j = 0; fixed_arity_builtins[j]; j++)
       if (sp_streq(cnm, fixed_arity_builtins[j])) { listed = 1; break; }
-    if (!listed) continue;
+    if (!listed && !splat_builtin_range(cnm, NULL, NULL, NULL)) continue;
     /* ...but the name has to BE the builtin. A receiverless call to a
        top-level `def count(*args)` is the user's own variadic method, and
        expanding its splat to the builtin's arity handed it one element where
@@ -15796,6 +16010,10 @@ static void expand_static_splat_args(Compiler *c) {
     }
     else if (sp_streq(ext, "LocalVariableReadNode")) n = splat_local_len(c, ex, id);
     else continue;
+    if (n < 0 && splat_dispatch_on_length(c, id, argv, argc, sp_at, ex)) continue;
+    /* the optional-argument builtins added for the dispatch keep their old
+       unexpanded form where it declines */
+    if (n < 0 && !listed) continue;
     if (n < 0) {
       /* The length is not static -- the usual case being a splat forwarded
          from a parameter, `def f(keys); h.fetch(*keys); end`. The builtin's
