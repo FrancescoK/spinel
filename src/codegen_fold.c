@@ -2017,6 +2017,34 @@ int emit_chunk_while_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* Bind a chunk / slice_before / slice_after block's params to element ti of
+   the snapshot ta, on the line the caller has indented. A block of two or
+   more params over a poly snapshot splats an element that is an Array across
+   the first two, as CRuby's yield of one value does (a Hash's [key, value]
+   pairs); any other element binds the first, with the second nil. The second
+   is written only where it has a C declaration (`_2` beside `_1` and `_3`
+   has none) and is not the first's own name (`|_, _|`). */
+static void emit_chunk_elem_bind(Compiler *c, int ta, int ti, const char *p0,
+                                 const char *p1, int p1_declared, TyKind at0, int pin_poly) {
+  char gv[48]; snprintf(gv, sizeof gv, "sp_PolyArray_get(_t%d, _t%d)", ta, ti);
+  if (pin_poly && p1) {
+    int te = ++g_tmp;
+    buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", te, gv, te);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "int _fs%d = (_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id));\n", te, te, te);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "lv_%s = _fs%d ? sp_poly_index_poly(_t%d, sp_box_int(0)) : _t%d;\n", p0, te, te, te);
+    if (p1_declared && !sp_streq(p0, p1)) {
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "lv_%s = _fs%d ? sp_poly_index_poly(_t%d, sp_box_int(1)) : sp_box_nil();\n", p1, te, te);
+    }
+    return;
+  }
+  buf_printf(g_pre, "lv_%s = ", p0);
+  if (at0 == TY_POLY) buf_puts(g_pre, gv); else emit_unbox_text(c, at0, gv, g_pre);
+  buf_puts(g_pre, ";\n");
+}
+
 /* Core of the chunk-family emissions: emit the runs poly-array (or [key,
    run] pairs for chunk) for the chunk-family call node `ck` into g_pre and
    return its temp id (-1 when the shape is not servable). The receiver may
@@ -2114,12 +2142,7 @@ static int emit_chunk_family_runs(Compiler *c, int ck) {
   if (is_ck) {
     int tk = ++g_tmp;
     emit_indent(g_pre, g_indent + 1);
-    {
-      char gv[48]; snprintf(gv, sizeof gv, "sp_PolyArray_get(_t%d, _t%d)", ta, ti);
-      buf_printf(g_pre, "lv_%s = ", p0);
-      if (at0 == TY_POLY) buf_puts(g_pre, gv); else emit_unbox_text(c, at0, gv, g_pre);
-      buf_puts(g_pre, ";\n");
-    }
+    emit_chunk_elem_bind(c, ta, ti, p0, p1, ptb != TY_UNKNOWN, at0, pin_poly);
     for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
     int save = g_indent; g_indent += 1;
     Buf kb; memset(&kb, 0, sizeof kb); emit_boxed(c, bb[bn - 1], &kb); g_indent = save;
@@ -2144,12 +2167,7 @@ static int emit_chunk_family_runs(Compiler *c, int ck) {
        after a true element */
     int tc = ++g_tmp;
     emit_indent(g_pre, g_indent + 1);
-    {
-      char gv[48]; snprintf(gv, sizeof gv, "sp_PolyArray_get(_t%d, _t%d)", ta, ti);
-      buf_printf(g_pre, "lv_%s = ", p0);
-      if (at0 == TY_POLY) buf_puts(g_pre, gv); else emit_unbox_text(c, at0, gv, g_pre);
-      buf_puts(g_pre, ";\n");
-    }
+    emit_chunk_elem_bind(c, ta, ti, p0, p1, ptb != TY_UNKNOWN, at0, pin_poly);
     for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
     int save = g_indent; g_indent += 1;
     Buf cb; memset(&cb, 0, sizeof cb); emit_cond(c, bb[bn - 1], &cb); g_indent = save;
