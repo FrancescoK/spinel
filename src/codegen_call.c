@@ -22702,7 +22702,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
               emit_str_literal(b, "rest");
               buf_printf(b, ")));"
                             " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4);
-              emit_str_literal(b, nt_str(nt, rest4, "name"));
+              emit_str_literal(b, sp_streq(nt_str(nt, rest4, "name"), "__anon_rest") ? "*" : nt_str(nt, rest4, "name"));
               buf_printf(b, ")));"
                             " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }", tr4, tp4);
             }
@@ -22736,7 +22736,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           emit_str_literal(b, "keyrest");
           buf_printf(b, ")));"
                         " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4);
-          emit_str_literal(b, nt_str(nt, kwr4, "name"));
+          emit_str_literal(b, sp_streq(nt_str(nt, kwr4, "name"), "__anon_kwrest") ? "**" : nt_str(nt, kwr4, "name"));
           buf_printf(b, ")));"
                         " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }", tr4, tp4);
         }
@@ -33512,7 +33512,7 @@ else {
   }
 
   /* String#concat with no arguments returns the receiver unchanged (#2309) */
-  if (recv >= 0 && rt == TY_STRING && sp_streq(name, "concat") && argc == 0) {
+  if (recv >= 0 && (rt == TY_STRING || rt == TY_STRBUF) && sp_streq(name, "concat") && argc == 0) {
     /* zero-argument concat returns the receiver, but CRuby checks frozen
        first -- the empty append is still a mutation attempt (#3339). The
        receiver once: a call with effects must not run twice. */
@@ -33523,15 +33523,23 @@ else {
   }
   /* String#clear consumed as a value: empty the assignable receiver in place
      and yield the now-empty string (#2332) */
-  if (recv >= 0 && rt == TY_STRING && sp_streq(name, "clear") && argc == 0) {
+  /* TY_STRBUF too: a reader handing out the shared handle is still a String
+     receiver, and the strbuf_slot_ref arm just below is the one written for
+     it. Gated on TY_STRING alone, the value form of `obj.buf.clear` matched
+     nothing, cleared nothing and answered nil. */
+  if (recv >= 0 && (rt == TY_STRING || rt == TY_STRBUF) && sp_streq(name, "clear") && argc == 0) {
     /* A shared-mutable receiver owns a buffer: empty it in place and answer
        the same string, as CRuby does. Its read is a copy out of the handle,
        not an lvalue, so the reassignment below did not even compile. */
     { char srefC[1024];
       if (strbuf_slot_ref(c, recv, srefC, sizeof srefC)) {
         int tC2 = ++g_tmp;
-        buf_printf(b, "({ sp_String *_t%d = %s; sp_String_set_bin(_t%d, (&(\"\\xff\")[1]));"
-                      " sp_String_cstr(_t%d); })", tC2, srefC, tC2, tC2);
+        /* marked to hand out the handle (`r = obj.buf.clear`): the
+           receiver itself, as for the appends */
+        buf_printf(b, "({ sp_String *_t%d = %s; sp_String_set_bin(_t%d, (&(\"\\xff\")[1]));",
+                   tC2, srefC, tC2);
+        if (c->strbuf_box[id]) buf_printf(b, " _t%d; })", tC2);
+        else buf_printf(b, " sp_String_cstr(_t%d); })", tC2);
         return;
       } }
     const char *rty = nt_type(nt, recv);

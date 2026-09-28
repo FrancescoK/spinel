@@ -10532,6 +10532,15 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
      a receiver with its own [] / []= is called for both */
   const char *names[3] = { nm, NULL, NULL };
   int k0 = nt_kind(nt, id);
+  char resolved[32];
+  if (k0 == NK_CallNode && nm) {
+    int r = nt_ref(nt, id, "receiver");
+    NodeKind rk = r >= 0 ? nt_kind(nt, r) : NK_NONE;
+    const char *cn = (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) ? nt_str(nt, r, "name") : NULL;
+    int k = cn ? comp_class_index(c, cn) : -1;
+    int mi = k >= 0 ? comp_cmethod_in_chain(c, k, nm, NULL) : -1;
+    if (mi >= 0) { snprintf(resolved, sizeof resolved, "\x01%d", mi); names[0] = resolved; }
+  }
   if (k0 == NK_IndexOperatorWriteNode || k0 == NK_IndexOrWriteNode || k0 == NK_IndexAndWriteNode) {
     names[1] = "[]"; names[2] = "[]=";
   }
