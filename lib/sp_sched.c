@@ -3349,16 +3349,55 @@ sp_queue *sp_SizedQueue_new(sp_int max) {
   return q;
 }
 
-void sp_Queue_push(sp_queue *q, sp_RbVal v) { sp_gc_wb((void*)q);
+void sp_Queue_push_options_check(sp_queue *q, int has_non_block, int has_timeout) {
+  if (q->max > 0) return;
+  if (has_timeout) sp_raise_cls("ArgumentError", "unknown keyword: :timeout");
+  if (has_non_block) sp_raise_cls("ArgumentError", "wrong number of arguments (given 2, expected 1)");
+}
+
+static int sp_queue_push_impl(sp_queue *q, sp_RbVal v, int non_block,
+                              int timed, double seconds) { sp_gc_wb((void*)q);
   /* On a full SizedQueue, block until a #pop frees a slot. Root v across the
      block: it lives in this (possibly suspended) frame, and the parking
      thread's saved roots only cover the shadow stack. */
   SP_GC_ROOT_RBVAL(v);
+  SP_GC_ROOT(q);
+  if (timed && seconds < 0.0) sp_raise_cls("ArgumentError", "time interval must not be negative");
+  double deadline = timed ? sp_monotonic_now() + seconds : 0.0;
   SCHED_LOCK();
   for (;;) {
     if (q->closed) { SCHED_UNLOCK(); sp_raise_cls("ClosedQueueError", "queue closed"); }
     if (q->max <= 0 || q->len < q->max) break;
-    sp_sched_block(&q->push_waiters, 0);   /* releases+reacquires the lock around its transfer */
+    if (non_block) { SCHED_UNLOCK(); sp_raise_cls("ThreadError", "queue full"); }
+    if (timed && !(seconds > 0.0)) { SCHED_UNLOCK(); return 0; }
+    if (timed) {
+#ifdef SP_THREADS
+      if (!g_sysmon_started) {
+        /* Before the first Thread, no green thread can free a slot. There is
+           no monitor to fire a timer, so wait directly and check the queue. */
+        SCHED_UNLOCK();
+        double remaining = deadline - sp_monotonic_now();
+        if (remaining > 0.0) sp_sched_sleep(remaining);
+        SCHED_LOCK();
+        if (q->max > 0 && q->len >= q->max) { SCHED_UNLOCK(); return 0; }
+      }
+      else {
+        int woken = sp_sched_block_timeout(&q->push_waiters, deadline, NULL);
+        if (woken < 0) {
+          SCHED_UNLOCK();
+          sp_raise_cls("NoMemoryError", "failed to schedule queue timeout");
+        }
+        if (!woken) { SCHED_UNLOCK(); return 0; }
+      }
+#else
+      SCHED_UNLOCK();
+      double remaining = deadline - sp_monotonic_now();
+      if (remaining > 0.0) sp_sleep((sp_float)remaining);
+      SCHED_LOCK();
+      if (q->max > 0 && q->len >= q->max) { SCHED_UNLOCK(); return 0; }
+#endif
+    }
+    else sp_sched_block(&q->push_waiters, 0); /* releases+reacquires lock around transfer */
   }
   if (q->len == q->cap) {
     sp_int nc = q->cap * 2;
@@ -3372,11 +3411,25 @@ void sp_Queue_push(sp_queue *q, sp_RbVal v) { sp_gc_wb((void*)q);
   q->len++;
   sp_sched_wake_one(&q->pop_waiters);   /* hand the new value to a waiting popper */
   SCHED_UNLOCK();
+  return 1;
+}
+
+void sp_Queue_push(sp_queue *q, sp_RbVal v) {
+  (void)sp_queue_push_impl(q, v, 0, 0, 0.0);
+}
+
+void sp_Queue_push_nb(sp_queue *q, sp_RbVal v) {
+  (void)sp_queue_push_impl(q, v, 1, 0, 0.0);
+}
+
+sp_bool sp_Queue_push_timeout(sp_queue *q, sp_RbVal v, double seconds) {
+  return sp_queue_push_impl(q, v, 0, 1, seconds);
 }
 
 sp_RbVal sp_Queue_pop(sp_queue *q) {
   /* Block until an element is available. A closed, drained queue returns nil
      rather than blocking forever (CRuby behaviour). */
+  SP_GC_ROOT(q);
   SCHED_LOCK();
   while (q->len == 0) {
     if (q->closed) { SCHED_UNLOCK(); return sp_box_nil(); }
@@ -3386,6 +3439,46 @@ sp_RbVal sp_Queue_pop(sp_queue *q) {
   q->head = (q->head + 1) % q->cap;
   q->len--;
   if (q->max > 0) sp_sched_wake_one(&q->push_waiters);   /* a slot freed up */
+  SCHED_UNLOCK();
+  return v;
+}
+
+sp_RbVal sp_Queue_pop_timeout(sp_queue *q, double seconds) {
+  SP_GC_ROOT(q);
+  if (seconds < 0.0) sp_raise_cls("ArgumentError", "time interval must not be negative");
+  double deadline = sp_monotonic_now() + seconds;
+  SCHED_LOCK();
+  while (q->len == 0) {
+    if (q->closed || !(seconds > 0.0)) { SCHED_UNLOCK(); return sp_box_nil(); }
+#ifdef SP_THREADS
+    if (!g_sysmon_started) {
+      /* Before the first Thread, no green thread can add an item. */
+      SCHED_UNLOCK();
+      double remaining = deadline - sp_monotonic_now();
+      if (remaining > 0.0) sp_sched_sleep(remaining);
+      SCHED_LOCK();
+      if (q->len == 0) { SCHED_UNLOCK(); return sp_box_nil(); }
+    }
+    else {
+      int woken = sp_sched_block_timeout(&q->pop_waiters, deadline, NULL);
+      if (woken < 0) {
+        SCHED_UNLOCK();
+        sp_raise_cls("NoMemoryError", "failed to schedule queue timeout");
+      }
+      if (!woken) { SCHED_UNLOCK(); return sp_box_nil(); }
+    }
+#else
+    SCHED_UNLOCK();
+    double remaining = deadline - sp_monotonic_now();
+    if (remaining > 0.0) sp_sleep((sp_float)remaining);
+    SCHED_LOCK();
+    if (q->len == 0) { SCHED_UNLOCK(); return sp_box_nil(); }
+#endif
+  }
+  sp_RbVal v = q->buf[q->head];
+  q->head = (q->head + 1) % q->cap;
+  q->len--;
+  if (q->max > 0) sp_sched_wake_one(&q->push_waiters);
   SCHED_UNLOCK();
   return v;
 }

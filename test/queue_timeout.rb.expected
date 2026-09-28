@@ -1,0 +1,19 @@
+true
+true
+true
+:ready
+:arrived
+true
+true
+"can't set a timeout if non_block is enabled"
+"time interval must not be negative"
+"unknown keyword: :timeout"
+true
+:first
+true
+true
+:second
+:third
+"time interval must not be negative"
+:operator
+"can't set a timeout if non_block is enabled"

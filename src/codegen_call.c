@@ -2875,36 +2875,84 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
 
   /* Queue instance methods (a thread-safe FIFO on the scheduler) */
   if (recv >= 0 && comp_ntype(c, recv) == TY_QUEUE) {
-    if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "enq")) && argc == 1) {
+    int kwh = argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+    int pos_argc = kwh >= 0 ? argc - 1 : argc;
+    int timeout_arg = kwh >= 0 ? struct_kwarg_value(c, kwh, "timeout") : -1;
+    if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "enq")) &&
+        pos_argc >= 1 && pos_argc <= 2) {
+      int timed = timeout_arg >= 0;
       int t = ++g_tmp;
       buf_printf(b, "({ sp_queue *_t%d = ", t); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_Queue_push(_t%d, ", t); emit_boxed(c, argv[0], b);
-      buf_printf(b, "); _t%d; })", t);
+      int v = ++g_tmp;
+      buf_printf(b, "; sp_RbVal _v%d = ", v); emit_boxed(c, argv[0], b);
+      if (!timed && pos_argc == 1) {
+        buf_printf(b, "; sp_Queue_push(_t%d, _v%d); _t%d; })", t, v, t);
+        return 1;
+      }
+      int nb = -1;
+      if (pos_argc == 2) {
+        nb = ++g_tmp;
+        buf_printf(b, "; sp_RbVal _nb%d = ", nb); emit_boxed(c, argv[1], b);
+      }
+      if (!timed) {
+        if (nb < 0) buf_printf(b, "; sp_Queue_push(_t%d, _v%d); _t%d; })", t, v, t);
+        else buf_printf(b, "; sp_Queue_push_options_check(_t%d, 1, 0); sp_poly_truthy(_nb%d) ? (sp_Queue_push_nb(_t%d, _v%d), _t%d) : (sp_Queue_push(_t%d, _v%d), _t%d); })",
+                        t, nb, t, v, t, t, v, t);
+        return 1;
+      }
+      int to = ++g_tmp;
+      buf_printf(b, "; sp_RbVal _timeout%d = ", to); emit_boxed(c, timeout_arg, b);
+      buf_puts(b, "; ");
+      buf_printf(b, "sp_Queue_push_options_check(_t%d, %d, 1); ", t, nb >= 0);
+      if (nb >= 0) buf_printf(b, "if (sp_poly_truthy(_nb%d) && sp_poly_truthy(_timeout%d)) sp_raise_cls(\"ArgumentError\", \"can't set a timeout if non_block is enabled\"); ", nb, to);
+      buf_printf(b, "_timeout%d.tag == SP_TAG_NIL ? ", to);
+      if (nb >= 0) buf_printf(b, "(sp_poly_truthy(_nb%d) ? (sp_Queue_push_nb(_t%d, _v%d), _t%d) : (sp_Queue_push(_t%d, _v%d), _t%d)) : ", nb, t, v, t, t, v, t);
+      else buf_printf(b, "(sp_Queue_push(_t%d, _v%d), _t%d) : ", t, v, t);
+      buf_printf(b, "(sp_Queue_push_timeout(_t%d, _v%d, sp_poly_to_f_with_rational(_timeout%d)) ? _t%d : NULL); })",
+                 t, v, to, t);
       return 1;
     }
-    if ((sp_streq(name, "pop") || sp_streq(name, "shift") || sp_streq(name, "deq")) && argc == 0) {
-      buf_puts(b, "sp_Queue_pop("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    /* #pop(non_block). A truthy argument selects no_wait (ThreadError on an
-       empty queue); `false`/`nil` KEEP BLOCKING, exactly like the bare pop --
-       a consumer written `pop(false)` waits for its producer in CRuby, and
-       raising there would break the pairing. A literal picks the helper at
-       compile time; anything else decides at run time by its own truthiness,
-       and the argument expression is evaluated either way (its side effects
-       are the caller's). */
-    if ((sp_streq(name, "pop") || sp_streq(name, "shift") || sp_streq(name, "deq")) && argc == 1) {
-      const char *aty = nt_type(nt, argv[0]);
-      if (aty && (sp_streq(aty, "FalseNode") || sp_streq(aty, "NilNode"))) {
+    if ((sp_streq(name, "pop") || sp_streq(name, "shift") || sp_streq(name, "deq")) &&
+        pos_argc <= 1) {
+      int timed = timeout_arg >= 0;
+      if (!timed && pos_argc == 0) {
         buf_puts(b, "sp_Queue_pop("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
       }
-      if (aty && sp_streq(aty, "TrueNode")) {
-        buf_puts(b, "sp_Queue_pop_nb("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+      /* Keep the literal non_block cases on their direct runtime arms. A
+         false/nil literal means blocking; true means no_wait. */
+      if (!timed && pos_argc == 1) {
+        const char *aty = nt_type(nt, argv[0]);
+        if (aty && (sp_streq(aty, "FalseNode") || sp_streq(aty, "NilNode"))) {
+          int q = ++g_tmp;
+          buf_printf(b, "({ sp_queue *_q%d = ", q); emit_expr(c, recv, b);
+          buf_printf(b, "; sp_Queue_pop(_q%d); })", q); return 1;
+        }
+        if (aty && sp_streq(aty, "TrueNode")) {
+          int q = ++g_tmp;
+          buf_printf(b, "({ sp_queue *_q%d = ", q); emit_expr(c, recv, b);
+          buf_printf(b, "; sp_Queue_pop_nb(_q%d); })", q); return 1;
+        }
       }
-      int tq = ++g_tmp, ta = ++g_tmp;
-      buf_printf(b, "({ sp_queue *_t%d = ", tq); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_RbVal _t%d = ", ta); emit_boxed(c, argv[0], b);
-      buf_printf(b, "; sp_poly_truthy(_t%d) ? sp_Queue_pop_nb(_t%d) : sp_Queue_pop(_t%d); })",
-                 ta, tq, tq);
+      int q = ++g_tmp;
+      buf_printf(b, "({ sp_queue *_q%d = ", q); emit_expr(c, recv, b);
+      int nb = -1;
+      if (pos_argc == 1) {
+        nb = ++g_tmp;
+        buf_printf(b, "; sp_RbVal _nb%d = ", nb); emit_boxed(c, argv[0], b);
+      }
+      if (!timed) {
+        if (nb < 0) buf_printf(b, "; sp_Queue_pop(_q%d); })", q);
+        else buf_printf(b, "; sp_poly_truthy(_nb%d) ? sp_Queue_pop_nb(_q%d) : sp_Queue_pop(_q%d); })", nb, q, q);
+        return 1;
+      }
+      int to = ++g_tmp;
+      buf_printf(b, "; sp_RbVal _timeout%d = ", to); emit_boxed(c, timeout_arg, b);
+      buf_puts(b, "; ");
+      if (nb >= 0) buf_printf(b, "if (sp_poly_truthy(_nb%d) && sp_poly_truthy(_timeout%d)) sp_raise_cls(\"ArgumentError\", \"can't set a timeout if non_block is enabled\"); ", nb, to);
+      buf_printf(b, "_timeout%d.tag == SP_TAG_NIL ? ", to);
+      if (nb >= 0) buf_printf(b, "(sp_poly_truthy(_nb%d) ? sp_Queue_pop_nb(_q%d) : sp_Queue_pop(_q%d)) : ", nb, q, q);
+      else buf_printf(b, "sp_Queue_pop(_q%d) : ", q);
+      buf_printf(b, "sp_Queue_pop_timeout(_q%d, sp_poly_to_f_with_rational(_timeout%d)); })", q, to);
       return 1;
     }
     if ((sp_streq(name, "size") || sp_streq(name, "length")) && argc == 0) {
@@ -15665,13 +15713,16 @@ sp_builtin_arity_spec_tbl[] = {
   {"Queue","close",0,0,NULL,"0",0,0,NULL,"0"},
   {"Queue","closed?",0,0,NULL,"0",0,0,NULL,"0"},
   {"Queue","deq",0,1,NULL,"0..1",0,1,NULL,"0..1"},
+  {"Queue","enq",1,2,"1..2","1..2",1,2,"1..2","1..2"},
   {"Queue","empty?",0,0,NULL,"0",0,0,NULL,"0"},
   {"Queue","length",0,0,NULL,"0",0,0,NULL,"0"},
   {"Queue","marshal_dump",0,0,NULL,"0",0,0,NULL,"0"},
   {"Queue","num_waiting",0,0,NULL,"0",0,0,NULL,"0"},
   {"Queue","pop",0,1,NULL,"0..1",0,1,NULL,"0..1"},
+  {"Queue","push",1,2,"1..2","1..2",1,2,"1..2","1..2"},
   {"Queue","shift",0,1,NULL,"0..1",0,1,NULL,"0..1"},
   {"Queue","size",0,0,NULL,"0",0,0,NULL,"0"},
+  {"Queue","<<",1,2,"1..2","1..2",1,2,"1..2","1..2"},
   {"ConditionVariable","broadcast",0,0,NULL,"0",0,0,NULL,"0"},
   {"ConditionVariable","marshal_dump",0,0,NULL,"0",0,0,NULL,"0"},
   {"ConditionVariable","signal",0,0,NULL,"0",0,0,NULL,"0"},
