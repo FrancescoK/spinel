@@ -7552,8 +7552,13 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_SelfNode) {
     Scope *s = comp_scope_of(c, id);
     int self_cls = s->class_id;
-    /* inside a class method, bare `self` is the Class object (#2443) */
-    if (self_cls >= 0 && s->is_cmethod) return TY_CLASS;
+    /* inside a class method, bare `self` is the Class object (#2443) --
+       unless an instance_eval/exec block there rebinds it to an object */
+    if (self_cls >= 0 && s->is_cmethod) {
+      int iec = ie_class_of(c, id);
+      if (iec < 0) return TY_CLASS;
+      self_cls = iec;
+    }
     /* `self` inside an instance_eval/exec block is the rebound receiver. */
     if (self_cls < 0) self_cls = (an_ie_class_id >= 0) ? an_ie_class_id : ie_class_of(c, id);
     if (self_cls < 0) return TY_POLY;   /* main, a boxed Object (#4926), or a boxed receiver */
@@ -7572,6 +7577,8 @@ TyKind infer_uncached(Compiler *c, int id) {
     Scope *s = comp_scope_of(c, id);
     int cls_id = (s->class_id >= 0) ? s->class_id : an_ie_class_id;
     if (cls_id < 0) cls_id = ie_class_of(c, id);
+    /* an instance_eval/exec body in a class method reads the receiver's ivar */
+    if (s->is_cmethod && ie_class_of(c, id) >= 0) cls_id = ie_class_of(c, id);
     if (cls_id < 0) cls_id = comp_class_index(c, "Toplevel");
     if (cls_id < 0) return TY_UNKNOWN;
     ClassInfo *ci = &c->classes[cls_id];

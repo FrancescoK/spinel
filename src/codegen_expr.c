@@ -1774,6 +1774,17 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       emit_obj_upcast_prefix(c, ivt2, comp_ntype(c, v), b);
       emit_expr(c, v, b);
     }
+    /* The expression's value is the slot read back, at the node's own type:
+       a write retyped for an instance_exec receiver (ie_body_retype) is typed
+       by its value, `:sym`, while a poly slot reads back boxed. */
+    { TyKind wt = comp_ntype(c, id);
+      if (ivt2 == TY_POLY && wt != TY_POLY && wt != TY_UNKNOWN && wt != TY_VOID && wt != TY_NIL &&
+          is_scalar_ret(wt)) {
+        buf_puts(b, "; ");
+        emit_unbox_text(c, wt, ref2e, b);
+        buf_puts(b, "; })");
+        return;
+      } }
     buf_printf(b, "; %s; })", ref2e);
     return;
   }

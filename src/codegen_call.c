@@ -30158,6 +30158,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       const char *saved_self2 = g_self; g_self = selfbuf;
       const char *saved_deref2 = g_self_deref; g_self_deref = self_is_val ? "." : "->";
       int saved_ie = g_ie_class_id; g_ie_class_id = cls_id;
+      /* In a class method the block's self is still the receiver object, so
+         its `@x` is that object's ivar, not the class-level one the method's
+         own `@x` names: Phlex's `object.instance_exec { @_content_block =
+         block }` in `self.new` wrote the class and the object never saw it.
+         The splice runs as an instance method of the receiver's class. */
+      Scope *ie_sc = comp_scope_of(c, id);
+      int ie_flip = ie_sc && ie_sc->is_cmethod;
+      int ie_sv_cm = ie_flip ? ie_sc->is_cmethod : 0, ie_sv_cls = ie_flip ? ie_sc->class_id : -1;
+      if (ie_flip) { ie_sc->is_cmethod = 0; ie_sc->class_id = cls_id; }
       /* Bind the block params (interned in the enclosing scope, declared
          there): instance_exec assigns the call-site args; instance_eval
          yields the receiver to each param. */
@@ -30379,6 +30388,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         g_ie_discard_value = saved_discard;
       }
       g_ie_class_id = saved_ie;
+      if (ie_flip) { ie_sc->is_cmethod = ie_sv_cm; ie_sc->class_id = ie_sv_cls; }
       g_self = saved_self2;
       g_self_deref = saved_deref2;
       if (scalar_res) buf_printf(b, "_t%d", tres);

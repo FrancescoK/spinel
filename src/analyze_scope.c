@@ -5840,6 +5840,28 @@ int infer_ivar_types(Compiler *c) {
         continue;
       }
       if (vt == TY_NIL) continue;
+      /* Inside an instance_eval/exec body the ivar is the receiver's, whatever
+         the enclosing scope is -- a class method's own `@x` would otherwise
+         take the write (Phlex's `object.instance_exec { @content = block }`
+         in `self.new`). A poly receiver writes each class it can be. */
+      /* (Only from a class method: at top level the codegen keeps reading
+         the Toplevel slot's type for such a write, which it has always had.) */
+      { int iec = s->is_cmethod ? ie_class_of(c, id) : -1;
+        if (iec >= 0) cls_id2 = iec;
+        else if (iec < -1 && !sp_streq(ty, "InstanceVariableOperatorWriteNode")) {
+          int pk[64], npk = ie_poly_classes_at(c, id, pk, 64);
+          for (int q = 0; q < npk; q++) {
+            ClassInfo *pci = &c->classes[pk[q]];
+            int old_pn = pci->nivars;
+            int piv = comp_ivar_intern(pci, nm);
+            if (pci->nivars != old_pn) changed = 1;
+            if (class_ivar_pinned(pci, nm) || pci->ivar_int_table[piv]) continue;
+            TyKind pvt = empty_container_write(c, vnode, vt, pci->ivar_types[piv]);
+            TyKind pm = ty_unify(pci->ivar_types[piv], pvt);
+            if (pm != pci->ivar_types[piv]) { pci->ivar_types[piv] = pm; changed = 1; }
+          }
+          if (npk > 0) continue;
+        } }
       if (cls_id2 < 0) {
         /* Top-level method: track ivars in the Toplevel pseudo-class */
         int old_nc = c->nclasses;

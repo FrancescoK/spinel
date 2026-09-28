@@ -1716,6 +1716,38 @@ static int ie_self_call_names(Compiler *c, int node, const char **names, int n, 
   return n;
 }
 
+/* The ivars an instance_eval/exec body reads or writes on its self, outside
+   nested defs and nested self-rebinding blocks. */
+static int ie_ivar_names(Compiler *c, int node, const char **names, int n, int max) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return n;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return n;
+  const char *ty = nt_type(nt, node);
+  if (ty && strncmp(ty, "InstanceVariable", 16) == 0) {
+    const char *nm = nt_str(nt, node, "name");
+    int seen = 0;
+    for (int i = 0; nm && i < n; i++) if (sp_streq(names[i], nm)) seen = 1;
+    if (nm && !seen && n < max) names[n++] = nm;
+  }
+  int skip = -1;
+  if (k == NK_CallNode) {
+    const char *cn = nt_str(nt, node, "name");
+    if (cn && (sp_streq(cn, "instance_eval") || sp_streq(cn, "instance_exec"))) skip = nt_ref(nt, node, "block");
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) {
+    int ch = nt_ref_at(nt, node, i);
+    if (ch != skip) n = ie_ivar_names(c, ch, names, n, max);
+  }
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, node, i, &m);
+    for (int j = 0; j < m; j++) n = ie_ivar_names(c, ids[j], names, n, max);
+  }
+  return n;
+}
+
 static int ie_class_answers(Compiler *c, int k, const char *nm) {
   return comp_method_in_chain(c, k, nm, NULL) >= 0 || comp_reader_in_chain(c, k, nm, NULL);
 }
@@ -1740,13 +1772,26 @@ int ie_poly_self_classes(Compiler *c, const char *name, int body, int *out, int 
       if (ie_poly_class_ok(c, k) && ie_class_answers(c, k, names[i])) { ask[nask++] = i; break; }
     }
   }
-  if (nask == 0) return 0;
-  if (need) *need = names[ask[0]];
+  /* A body that makes no such call but reads or writes ivars on its self
+   (`object.instance_exec { @content = block }`, Phlex's SGML.new) runs on
+   the classes that own every one of them. */
+  const char *ivs[64]; int niv = 0;
+  if (nask == 0) {
+    /* (from a class method, where the ivar attribution follows the receiver;
+       a top-level body keeps its Toplevel slots) */
+    Scope *bs = body >= 0 ? comp_scope_of(c, body) : NULL;
+    if (!bs || !bs->is_cmethod) return 0;
+    niv = ie_ivar_names(c, body, ivs, 0, 64);
+    if (niv == 0 || niv == 64) return 0;
+    if (need) *need = name;
+  }
+  else if (need) *need = names[ask[0]];
   int n = 0;
   for (int k = 0; k < c->nclasses && n < max; k++) {
     if (!ie_poly_class_ok(c, k) || comp_method_in_chain(c, k, name, NULL) >= 0) continue;
     int all = 1;
     for (int i = 0; i < nask && all; i++) all = ie_class_answers(c, k, names[ask[i]]);
+    for (int i = 0; i < niv && all; i++) all = comp_ivar_index(&c->classes[k], ivs[i]) >= 0;
     if (all) out[n++] = k;
   }
   return n;
