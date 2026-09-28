@@ -2968,6 +2968,13 @@ sp_int sp_File_truncate(sp_File *f, sp_int n);
    File, a pipe end or IO.for_fd out of the same Hash raises CRuby's
    NoMethodError. `n == SP_INT_NIL` is the blockless #truncate, which CRuby
    answers with the arity error for a File. */
+/* a boxed File::Stat: the handle a stat or lstat made */
+sp_int sp_stat_size(sp_File *f);
+sp_int sp_stat_pred(sp_File *f, sp_int kind);
+static sp_bool sp_poly_io_is_stat(sp_RbVal v) {
+  sp_File *f = v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO ? (sp_File *)v.v.p : NULL;
+  return f && f->mode && (strcmp(f->mode, "stat") == 0 || strcmp(f->mode, "lstat") == 0);
+}
 static sp_bool sp_poly_io_owns(sp_RbVal v) {
   return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO && v.v.p && ((sp_File *)v.v.p)->is_file;
 }
@@ -2982,6 +2989,8 @@ static sp_int sp_poly_size(sp_RbVal v) {
       sp_poly_is_user_obj(v))
     sp_raise_poly_nomethod("size", v);
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO) {
+    /* a File::Stat rides the handle: its size is the stat's */
+    if (sp_poly_io_is_stat(v)) return sp_stat_size((sp_File *)v.v.p);
     if (!sp_poly_io_owns(v)) sp_raise_poly_nomethod("size", v);
     return sp_File_size((sp_File *)v.v.p);
   }
@@ -3344,7 +3353,10 @@ static sp_bool sp_poly_integer_p(sp_RbVal v) {
 }
 /* Complex#zero? is `self == 0`: both parts zero. It has no #positive? /
    #negative?, so only this one gets the arm. */
-static sp_bool sp_poly_zero_p(sp_RbVal v) { if (v.tag == SP_TAG_INT) return v.v.i == 0; if (v.tag == SP_TAG_FLT) return v.v.f == 0.0; if (v.tag == SP_TAG_BIGINT) return sp_bigint_sign((sp_Bigint *)v.v.p) == 0; if (sp_poly_is_rat_kind(v)) return sp_poly_rat_sign(v) == 0; if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p) { sp_Complex *_cz = (sp_Complex *)v.v.p; return _cz->re == 0.0 && _cz->im == 0.0; } sp_raise_poly_nomethod("zero?", v); }
+static sp_bool sp_poly_zero_p(sp_RbVal v) { if (v.tag == SP_TAG_INT) return v.v.i == 0; if (v.tag == SP_TAG_FLT) return v.v.f == 0.0; if (v.tag == SP_TAG_BIGINT) return sp_bigint_sign((sp_Bigint *)v.v.p) == 0; if (sp_poly_is_rat_kind(v)) return sp_poly_rat_sign(v) == 0; if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p) { sp_Complex *_cz = (sp_Complex *)v.v.p; return _cz->re == 0.0 && _cz->im == 0.0; }
+  /* a boxed File::Stat: an empty file, as the TY_IO arm's zero? answers */
+  if (sp_poly_io_is_stat(v)) return sp_stat_pred((sp_File *)v.v.p, 1) != 0;
+  sp_raise_poly_nomethod("zero?", v); }
 /* Complex#conjugate / #conj on a boxed value: negate the imaginary part; a real
    number (numeric/rational) is its own conjugate. */
 static sp_RbVal sp_poly_conjugate(sp_RbVal v) {

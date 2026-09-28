@@ -10512,6 +10512,26 @@ static void emit_stat_handle_only(int th, const char *name, Buf *b) {
              th, th, th, name, th);
 }
 
+/* File::Stat's numeric fields, which the TY_IO arms answer for the handle a
+   stat is carried in; a field's index is its slot in sp_stat_field. */
+static const char *const boxed_stat_sfield[] = { "uid", "gid", "nlink", "dev", "ino",
+                                                 "blksize", "blocks", "rdev", NULL };
+/* Only a stat's handle has these: a File, a pipe or a standard stream
+   raises CRuby's NoMethodError. */
+static void emit_stat_fields_guard(int th, const char *name, Buf *b) {
+  buf_printf(b, "if (!(_t%d->mode && (strcmp(_t%d->mode, \"stat\") == 0 || "
+                "strcmp(_t%d->mode, \"lstat\") == 0))) "
+                "sp_raise_poly_nomethod(\"%s\", sp_box_obj(_t%d, SP_BUILTIN_IO)); ",
+             th, th, th, name, th);
+}
+/* mode or one of those fields */
+static int boxed_stat_name(const char *name) {
+  if (sp_streq(name, "mode")) return 1;
+  for (int k = 0; boxed_stat_sfield[k]; k++)
+    if (sp_streq(name, boxed_stat_sfield[k])) return 1;
+  return 0;
+}
+
 /* The descriptor controls a boxed IO answers, at CRuby's arities: pos= and
    flock one argument, sysseek and fcntl one or two, advise one to three. */
 static int boxed_desc_control_arity(const char *name, int argc) {
@@ -26933,6 +26953,11 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
        /* the descriptor surface a boxed handle needs as much as a typed one:
           an fd table is a mixed Hash (0/1/2 an IO, the rest Files), so every
           one of these reached the unresolved-call gate (#4611) */
+       /* File::Stat's mode and numeric fields: a stat read out of a
+          container is the same boxed handle. Not where a class method may
+          own the name, or an OpenStruct may carry it as a field. */
+       (argc == 0 && boxed_stat_name(name) && !class_method_named(c, name) &&
+        !sp_feature_required("ostruct")) ||
        sp_streq(name, "stat") || sp_streq(name, "seek") || sp_streq(name, "tell") ||
        sp_streq(name, "pos") || sp_streq(name, "pread") || sp_streq(name, "pwrite") ||
        sp_streq(name, "fsync") || sp_streq(name, "fdatasync") ||
@@ -27176,6 +27201,18 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "tty?") || sp_streq(name, "isatty"))
         buf_printf(b, "sp_File_tty_p(_t%d); })", tio2);
       else if (sp_streq(name, "winsize")) buf_printf(b, "sp_File_winsize(_t%d); })", tio2);
+      /* a stat's mode and fields, answered as the TY_IO arms answer them,
+         for a stat's handle only */
+      else if (sp_streq(name, "mode")) {
+        emit_stat_fields_guard(tio2, name, b);
+        buf_printf(b, "sp_stat_mode(_t%d); })", tio2);
+      }
+      else if (boxed_stat_name(name)) {
+        int k = 0;
+        while (boxed_stat_sfield[k] && !sp_streq(name, boxed_stat_sfield[k])) k++;
+        emit_stat_fields_guard(tio2, name, b);
+        buf_printf(b, "sp_stat_field(_t%d, %d); })", tio2, k);
+      }
       else if (sp_streq(name, "path") || sp_streq(name, "to_path"))
         buf_printf(b, "sp_File_path(_t%d); })", tio2);
       else if (sp_streq(name, "readlines")) buf_printf(b, "sp_File_readlines(_t%d); })", tio2);
