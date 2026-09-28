@@ -5135,6 +5135,95 @@ static int bs_bind_dynamic(BsB *b, const BsShape *s, const char *ary, int copy_d
   return n;
 }
 
+/* Prepend the statements pro[0..np) to the block's body. */
+static int bs_prepend(BsB *b, int blk, const int *pro, int np) {
+  NodeTable *nt = b->nt;
+  int body = nt_ref(nt, blk, "body");
+  int on = 0;
+  const int *old = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &on) : NULL;
+  int *all = (int *)malloc(sizeof(int) * (size_t)(np + on + 1));
+  if (!all) return -1;
+  memcpy(all, pro, sizeof(int) * (size_t)np);
+  int na = np;
+  if (old) { memcpy(all + na, old, sizeof(int) * (size_t)on); na += on; }
+  else all[na++] = body >= 0 ? body : bs_new(b, "NilNode");
+  int nbody = bs_stmts(b, all, na);
+  free(all);
+  return nbody;
+}
+
+/* A builtin yields no keywords and no block, so a block's keyword
+   parameters take their defaults (a required one raises), `**kw` is {} and
+   `&b` nil. They do not count toward spreading a yielded Array either, so
+   they leave the parameter list and a prologue binds them. */
+static int bs_strip_keywords(Compiler *c, int blk, int bp, int pn) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int kn = 0;
+  const int *kwa = nt_arr(nt, pn, "keywords", &kn);
+  int kr = nt_ref(nt, pn, "keyword_rest");
+  int bl = nt_ref(nt, pn, "block");
+  if (kn > 16) return 0;
+  int kws[16];
+  for (int i = 0; i < kn; i++) kws[i] = kwa[i];
+  BsB b = { nt, 1 };
+  int base = nt->count;
+  int pro[20]; int np = 0;
+  char names[512]; int missing = 0, mo = 0;
+  for (int i = 0; i < kn; i++) {
+    if (!fwd_node_is(nt, kws[i], "RequiredKeywordParameterNode")) continue;
+    const char *kname = nt_str(nt, kws[i], "name");
+    if (!kname) return 0;
+    mo += snprintf(names + mo, sizeof names - (size_t)mo, "%s:%s", missing ? ", " : "", kname);
+    if (mo >= (int)sizeof names) return 0;
+    missing++;
+  }
+  if (missing) {
+    char msg[600];
+    snprintf(msg, sizeof msg, "missing keyword%s: %s", missing > 1 ? "s" : "", names);
+    int ea[2] = { bs_new(&b, "ConstantReadNode"), bs_new(&b, "StringNode") };
+    if (ea[0] >= 0) nt_node_set_str(nt, ea[0], "name", "ArgumentError");
+    if (ea[1] >= 0) nt_node_set_str(nt, ea[1], "content", msg);
+    pro[np++] = bs_call(&b, -1, "raise", ea, 2);
+  }
+  for (int i = 0; i < kn; i++)
+    if (fwd_node_is(nt, kws[i], "OptionalKeywordParameterNode"))
+      pro[np++] = bs_write(&b, nt_str(nt, kws[i], "name"), nt_ref(nt, kws[i], "value"));
+  const char *krn = kr >= 0 && nt_kind(nt, kr) == NK_KeywordRestParameterNode ? nt_str(nt, kr, "name") : NULL;
+  if (krn && *krn) {
+    int h = bs_new(&b, "HashNode");
+    if (h >= 0) nt_node_set_arr(nt, h, "elements", NULL, 0);
+    pro[np++] = bs_write(&b, krn, h);
+  }
+  const char *bln = bl >= 0 ? nt_str(nt, bl, "name") : NULL;
+  if (bln && *bln) pro[np++] = bs_write(&b, bln, bs_new(&b, "NilNode"));
+  for (int i = 0; i < np; i++) if (pro[i] < 0) b.ok = 0;
+  int nbody = np ? bs_prepend(&b, blk, pro, np) : nt_ref(nt, blk, "body");
+  if (!b.ok || (np && nbody < 0)) return 0;
+  nt_node_set_arr(nt, pn, "keywords", NULL, 0);
+  nt_node_set_ref(nt, pn, "keyword_rest", -1);
+  nt_node_set_ref(nt, pn, "block", -1);
+  int left = 0;
+  const char *arrs[3] = { "requireds", "optionals", "posts" };
+  for (int k = 0; k < 3; k++) { int n = 0; nt_arr(nt, pn, arrs[k], &n); left += n; }
+  if (left == 0 && nt_ref(nt, pn, "rest") < 0) nt_node_set_ref(nt, bp, "parameters", -1);
+  nt_node_set_ref(nt, blk, "body", nbody);
+  comp_grow_node_arrays(c);
+  for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[blk];
+  Scope *bs = comp_scope_of(c, blk);
+  /* the keywords are plain locals of this block now, kept apart from any
+     other scope's local of the same name */
+  for (int i = 0; i < kn; i++) {
+    char kname[160];
+    snprintf(kname, sizeof kname, "%s__bp%d", nt_str(nt, kws[i], "name"), blk);
+    blkp_rewrite_refs(c, nbody, nt_str(nt, kws[i], "name"), kname);
+    numbered_rename_locals_str(nt, blk, nt_str(nt, kws[i], "name"), kname);
+    scope_local_intern(bs, kname);
+  }
+  if (krn && *krn) scope_local_intern(bs, krn);
+  if (bln && *bln) scope_local_intern(bs, bln);
+  return 1;
+}
+
 /* A block given to a builtin iterator with a parameter list the typed
    emitters do not distribute: optionals (`|c, a = 10|`), posts (`|*r, c|`),
    or a rest a yielded pair or Array is spread across. The emitters bind the
@@ -5167,12 +5256,10 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
     s.post = nt_arr(nt, pn, "posts", &s.Q);
     s.rest = nt_ref(nt, pn, "rest");
     if (s.rest >= 0 && nt_kind(nt, s.rest) != NK_RestParameterNode) s.rest = -1;
-    if (s.O == 0 && s.Q == 0 && s.rest < 0) continue;
-    if (nt_ref(nt, pn, "keyword_rest") >= 0 || nt_ref(nt, pn, "block") >= 0) continue;
-    { int kn = 0; nt_arr(nt, pn, "keywords", &kn); if (kn) continue; }
-    int bad = s.P + s.O + s.Q > 12;
-    for (int i = 0; i < s.P; i++) if (nt_kind(nt, s.pre[i]) != NK_RequiredParameterNode) bad = 1;
-    for (int i = 0; i < s.Q; i++) if (nt_kind(nt, s.post[i]) != NK_RequiredParameterNode) bad = 1;
+    int kn = 0; nt_arr(nt, pn, "keywords", &kn);
+    int has_kw = kn || nt_ref(nt, pn, "keyword_rest") >= 0 || nt_ref(nt, pn, "block") >= 0;
+    if (s.O == 0 && s.Q == 0 && s.rest < 0 && !has_kw) continue;
+    int bad = 0;
     const char *cop = nt_str(nt, id, "call_operator");
     if (cop && sp_streq(cop, "&.")) bad = 1;
     int args = nt_ref(nt, id, "arguments");
@@ -5186,6 +5273,18 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
     TyKind elem; int hash_pair;
     int m = bs_yield_count(rt, nm, argc, &elem, &hash_pair);
     if (m == 0) continue;
+    if (has_kw) {
+      if (!bs_strip_keywords(c, blk, bp, pn)) continue;
+      changed = 1;
+      if (s.O == 0 && s.Q == 0 && s.rest < 0) continue;
+      s.pre = nt_arr(nt, pn, "requireds", &s.P);
+      s.opt = nt_arr(nt, pn, "optionals", &s.O);
+      s.post = nt_arr(nt, pn, "posts", &s.Q);
+    }
+    bad = s.P + s.O + s.Q > 12;
+    for (int i = 0; i < s.P; i++) if (nt_kind(nt, s.pre[i]) != NK_RequiredParameterNode) bad = 1;
+    for (int i = 0; i < s.Q; i++) if (nt_kind(nt, s.post[i]) != NK_RequiredParameterNode) bad = 1;
+    if (bad) continue;
     int slots = s.P + s.O + s.Q;
     int splat = m == 1 && (slots > 1 || (slots >= 1 && s.rest >= 0));
     int dyn = 0;   /* 1: the value is an Array; 2: tested at run time */
@@ -5225,17 +5324,7 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
       pro[np++] = bs_if(&b, pred, dw, nd, sw, ns);
     }
     for (int i = 0; i < np; i++) if (pro[i] < 0) b.ok = 0;
-    int body = nt_ref(nt, blk, "body");
-    int on = 0;
-    const int *old = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &on) : NULL;
-    int *all = (int *)malloc(sizeof(int) * (size_t)(np + on + 1));
-    if (!all) return changed;
-    memcpy(all, pro, sizeof(int) * (size_t)np);
-    int na = np;
-    if (old) { memcpy(all + na, old, sizeof(int) * (size_t)on); na += on; }
-    else all[na++] = body >= 0 ? body : bs_new(&b, "NilNode");
-    int nbody = bs_stmts(&b, all, na);
-    free(all);
+    int nbody = bs_prepend(&b, blk, pro, np);
     int npn = bs_new(&b, "ParametersNode");
     if (!b.ok || npn < 0 || nbody < 0) return changed;
     nt_node_set_arr(nt, npn, "requireds", reqs, m);

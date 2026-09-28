@@ -2779,7 +2779,7 @@ static void numbered_rename_reads(NodeTable *nt, int id, const char *from,
    emit_block_locals_reset nils every name in it that is not a parameter, so a
    stale entry there nils the renamed slot right after the bind, once per
    iteration, and the body reads nil. */
-static void numbered_rename_locals_str(NodeTable *nt, int L, const char *from, const char *to) {
+void numbered_rename_locals_str(NodeTable *nt, int L, const char *from, const char *to) {
   const char *locs = nt_str(nt, L, "locals");
   if (!locs || !*locs) return;
   size_t flen = strlen(from), cap = strlen(locs) + strlen(to) + 8, w = 0;
@@ -2922,6 +2922,8 @@ void rename_shadowing_block_params(Compiler *c) {
       if (kwr >= 0 && ne < 128 && nt_type(nt, kwr) &&
           sp_streq(nt_type(nt, kwr), "KeywordRestParameterNode") &&
           nt_str(nt, kwr, "name")) extras[ne++] = kwr;
+      int bpr = nt_ref(nt, pn, "block");
+      if (bpr >= 0 && ne < 128 && nt_str(nt, bpr, "name")) extras[ne++] = bpr;
     }
     /* block-locals (`; a, b`) live only in the BlockNode's comma-joined `locals`
        string; a block may carry them with no required params (`{ |; x| ... }`),
