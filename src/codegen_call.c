@@ -4785,6 +4785,31 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
                tv, tv, tv, tv);
     return 1;
   }
+  /* curry(n) on a boxed Proc, where the call is typed a Curry and no reopened
+     Object or Kernel has a curry, which answers for every other receiver: the count
+     converted at run time, as the typed arm converts a boxed one
+     (sp_curry_new_v), and a lambda's count checked against the most its
+     parameter list takes, read off the kinds the Proc carries
+     (sp_proc_curry_max) */
+  if (sp_streq(name, "curry") && argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode &&
+      comp_ntype(c, id) == TY_CURRY &&
+      !(comp_class_index(c, "Object") >= 0 &&
+        comp_method_in_chain(c, comp_class_index(c, "Object"), name, NULL) >= 0) &&
+      !(comp_class_index(c, "Kernel") >= 0 &&
+        comp_method_in_chain(c, comp_class_index(c, "Kernel"), name, NULL) >= 0)) {
+    int tv = ++g_tmp, tn = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", tv, tn); emit_boxed(c, argv[0], b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_PROC"
+                  " ? sp_curry_new_v((sp_Proc *)_t%d.v.p, _t%d,"
+                  " sp_proc_curry_max((sp_Proc *)_t%d.v.p, (sp_sym)%d, (sp_sym)%d, (sp_sym)%d,"
+                  " (sp_sym)%d, (sp_sym)%d, (sp_sym)%d))"
+                  " : (sp_Curry *)(sp_raise_nomethod(sp_nomethod_msg(\"curry\", _t%d)), (void *)0); })",
+               tv, tv, tv, tn, tv, comp_sym_intern(c, "req"), comp_sym_intern(c, "opt"),
+               comp_sym_intern(c, "rest"), comp_sym_intern(c, "key"), comp_sym_intern(c, "keyreq"),
+               comp_sym_intern(c, "keyrest"), tv);
+    return 1;
+  }
   /* Integer#to_s(base): base-N string of a poly integer. A Bignum answers in
      the base too -- it reached here as a heap value, not as a different
      method, and falling through to sp_poly_to_s rendered 2**70 in decimal
