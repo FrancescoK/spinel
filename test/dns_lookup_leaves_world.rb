@@ -31,8 +31,7 @@ end
 
 p lookups.map(&:value)
 churn.each(&:join)
-# TCPSocket.new resolves too. It connects here, alone, because concurrent
-# connects hit an unrelated ECONNREFUSED.
+# TCPSocket.new resolves too.
 c = TCPSocket.new("localhost", port)
 srv.accept.close
 c.close
