@@ -5448,7 +5448,10 @@ static void emit_pd_cell_alias(Compiler *c, LocalVar *plv, const char *uniq) {
    code: an earlier parameter is the inline's renamed local, and self is the
    receiver. Setup the default hoists would land ahead of the whole call,
    before those parameters are bound, so it stays inside the value. */
+static const Scope *g_inl_dflt_on_recv = NULL;
 static void emit_inlined_default(Compiler *c, Scope *m, int idx, Buf *out) {
+  const Scope *sv_on_recv = g_inl_dflt_on_recv;
+  g_inl_dflt_on_recv = g_inl_dflt_self ? m : NULL;
   int sv_nren = g_nren, sv_indent = g_indent, sv_cls = g_emitting_class_id;
   const char *sv_self = g_self, *sv_deref = g_self_deref;
   Buf *sv_pre = g_pre;
@@ -5459,7 +5462,14 @@ static void emit_inlined_default(Compiler *c, Scope *m, int idx, Buf *out) {
   Buf pre; memset(&pre, 0, sizeof pre);
   Buf val; memset(&val, 0, sizeof val);
   g_pre = &pre; g_indent = 0;
+  /* a class method inherited by the receiving class builds that class's
+     object where the slot is typed with the defining class's */
+  LocalVar *pv = m->pnames[idx] ? scope_local(m, m->pnames[idx]) : NULL;
+  if (pv && ty_is_object(pv->type) && !comp_ty_value_obj(c, pv->type) &&
+      g_emitting_class_id != ty_object_class(pv->type))
+    buf_printf(&val, "(sp_%s *)", c->classes[ty_object_class(pv->type)].c_name);
   emit_arg_or_default_at(c, m, idx, -1, &val);
+  g_inl_dflt_on_recv = sv_on_recv;
   g_pre = sv_pre; g_indent = sv_indent;
   g_inl_dflt_scope = m;
   g_nren = sv_nren; g_self = sv_self; g_self_deref = sv_deref; g_emitting_class_id = sv_cls;
@@ -5912,7 +5922,9 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
   const char *sv_self_dv = g_self, *sv_deref_dv = g_self_deref;
   int sv_emcls_dv = g_emitting_class_id;
   char dv_self9[32];
-  if (dv >= 0 && m->class_id >= 0 && m->is_cmethod) {
+  /* an inlined class method's default already runs on the class it was
+     called on, which may inherit it (emit_inlined_default) */
+  if (dv >= 0 && m->class_id >= 0 && m->is_cmethod && g_inl_dflt_on_recv != m) {
     snprintf(dv_self9, sizeof dv_self9, "((sp_Class){%d})", m->class_id);
     g_self = dv_self9;
   }
