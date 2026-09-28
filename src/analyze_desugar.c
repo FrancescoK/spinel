@@ -56,7 +56,7 @@ int desugar_builtin_class_var_recv(Compiler *c) {
   int changed = 0;
   int n0 = nt->count;
 
-  /* Index every LocalVariableWriteNode by (variable name, scope) once, so
+  /* Index every local write by (variable name, scope) once, so
      resolving a receiver's static class scans only the writes that could
      actually bind it instead of the whole node table per receiver. Turns the
      pass from O(receivers * N) into O(N) -- the quadratic that stalled the
@@ -72,7 +72,7 @@ int desugar_builtin_class_var_recv(Compiler *c) {
   for (int i = 0; i < nbuckets; i++) head[i] = -1;
   unsigned mask = (unsigned)nbuckets - 1;
   for (int w = 0; w < n0; w++) {
-    if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+    if (!comp_is_local_write(nt_kind(nt, w))) continue;
     const char *wn = nt_str(nt, w, "name");
     if (!wn) continue;
     unsigned h = bcv_key_hash(wn, comp_scope_of(c, w)) & mask;
@@ -95,6 +95,7 @@ int desugar_builtin_class_var_recv(Compiler *c) {
     for (int w = head[h]; w >= 0; w = wnext[w]) {
       const char *wn = nt_str(nt, w, "name");
       if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
+      if (!local_write_binds_value(nt_kind(nt, w))) { bail = 1; break; }
       int val = nt_ref(nt, w, "value");
       const char *vcn = (val >= 0 && nt_kind(nt, val) == NK_ConstantReadNode)
                         ? nt_str(nt, val, "name") : NULL;
