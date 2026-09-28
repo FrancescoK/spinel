@@ -17013,6 +17013,70 @@ static int blk_param_escapes(Compiler *c, Scope *ms) {
 }
 
 
+/* Is every value this ivar is assigned or pushed a SCALAR?
+
+   The re-narrow may reset a boxed ARRAY slot only when nothing it holds is
+   itself an array. A table is boxed for reasons its re-derivation cannot see:
+   `@banks[0] = pattern`, where the row handed back is a boxed row read out of
+   another boxed table, keeps @banks boxed, and re-deriving it from the rows'
+   own kinds narrows it to a table of int arrays -- the boxed row is then taken
+   as a bare sp_IntArray * and read back as garbage (test/ivar_table_boxed_row_store).
+   A slot holding scalars has no such hidden reason: its poly_array is the fold
+   of its pushes, which is exactly what the re-run recomputes. */
+static int an_ivar_elems_all_scalar(Compiler *c, int cid, const char *ivn) {
+  const NodeTable *nt = c->nt;
+  if (!ivn) return 0;
+  for (int u = 0; u < nt->count; u++) {
+    NodeKind k = nt_kind(nt, u);
+    int val = -1;
+    if (k == NK_InstanceVariableWriteNode) {
+      const char *n = nt_str(nt, u, "name");
+      if (!n || !sp_streq(n, ivn) || an_ivar_owner(c, u) != cid) continue;
+      /* the CONTAINER, not an element: what disqualifies the slot is an
+         element that is itself an array, so ask what this assignment's array
+         holds rather than that it is one */
+      int av0 = nt_ref(nt, u, "value");
+      if (av0 < 0) continue;
+      const char *at0 = nt_type(nt, av0);
+      if (at0 && sp_streq(at0, "ArrayNode")) {
+        int en = 0; const int *els = nt_arr(nt, av0, "elements", &en);
+        for (int e = 0; e < en && els; e++) {
+          const char *et = nt_type(nt, els[e]);
+          if (et && (sp_streq(et, "ArrayNode") || sp_streq(et, "SplatNode"))) return 0;
+          TyKind ety = infer_type(c, els[e]);
+          if (ty_is_array(ety) || ety == TY_POLY_ARRAY) return 0;
+        }
+      }
+      TyKind ct = infer_type(c, av0);
+      if (ty_is_array(ct)) {
+        TyKind et2 = ty_array_elem(ct);
+        if (ty_is_array(et2) || et2 == TY_POLY_ARRAY) return 0;
+      }
+      continue;
+    }
+    else if (k == NK_CallNode) {
+      const char *pn = nt_str(nt, u, "name");
+      if (!pn || !(sp_streq(pn, "<<") || sp_streq(pn, "push") || sp_streq(pn, "append") ||
+                   sp_streq(pn, "unshift") || sp_streq(pn, "[]="))) continue;
+      int recv = nt_ref(nt, u, "receiver");
+      if (recv < 0 || nt_kind(nt, recv) != NK_InstanceVariableReadNode) continue;
+      const char *n = nt_str(nt, recv, "name");
+      if (!n || !sp_streq(n, ivn) || an_ivar_owner(c, recv) != cid) continue;
+      int a = nt_ref(nt, u, "arguments"); int an = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+      if (!av || an <= 0) continue;
+      val = av[an - 1];
+    }
+    else continue;
+    if (val < 0) continue;
+    const char *vt = nt_type(nt, val);
+    if (vt && (sp_streq(vt, "ArrayNode") || sp_streq(vt, "SplatNode"))) return 0;
+    TyKind t = infer_type(c, val);
+    if (ty_is_array(t) || t == TY_POLY_ARRAY) return 0;
+  }
+  return 1;
+}
+
 void analyze_program(Compiler *c) {
   comp_poly_candidates_reset();
   comp_descendants_reset();
@@ -18051,10 +18115,21 @@ void analyze_program(Compiler *c) {
     int *recCi = (int *)malloc(sizeof(int) * rcap), *recIv = (int *)malloc(sizeof(int) * rcap);
     for (int ci = 0; ci < c->nclasses; ci++)
       for (int iv = 0; iv < c->classes[ci].nivars; iv++)
-        if (c->classes[ci].ivar_types[iv] == TY_POLY &&
+        /* TY_POLY_ARRAY joins TY_POLY: a container slot locks to the boxed
+           ARRAY the same way a scalar locks to the boxed value, and for the
+           same reason -- `@f << x` folded the push while `x` was still
+           untyped, so the slot took poly_array on evidence that had not
+           settled, and `@f = Array.new(0, 0.0)` unified with it to poly_array
+           rather than the float array it names. Resetting only TY_POLY left
+           exactly the container case the re-narrow exists for out of it. A
+           slot whose pushes really do disagree re-widens on the re-run, as a
+           heterogeneous scalar does. */
+        if ((c->classes[ci].ivar_types[iv] == TY_POLY ||
+             (c->classes[ci].ivar_types[iv] == TY_POLY_ARRAY &&
+              an_ivar_elems_all_scalar(c, ci, c->classes[ci].ivars[iv]))) &&
             (!c->classes[ci].ivars[iv] ||
              !class_ivar_pinned(&c->classes[ci], c->classes[ci].ivars[iv]))) {
-          const char *_n = c->classes[ci].ivars[iv]; sp_ivwatch(_n && _n[0]=='@' ? _n+1 : _n, "renarrow_reset", TY_POLY, TY_UNKNOWN);
+          const char *_n = c->classes[ci].ivars[iv]; sp_ivwatch(_n && _n[0]=='@' ? _n+1 : _n, "renarrow_reset", c->classes[ci].ivar_types[iv], TY_UNKNOWN);
           c->classes[ci].ivar_types[iv] = TY_UNKNOWN; any = 1;
           if (nrec >= rcap) { rcap *= 2; recCi = realloc(recCi, sizeof(int) * rcap); recIv = realloc(recIv, sizeof(int) * rcap); }
           recCi[nrec] = ci; recIv[nrec] = iv; nrec++;
