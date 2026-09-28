@@ -9391,6 +9391,20 @@ static void emit_obj_clamp3(Compiler *c, int recv, int lo, int hi, Buf *b) {
   if (hi >= 0) emit_boxed(c, hi, b); else buf_puts(b, "sp_box_nil()");
   buf_puts(b, "); })");
 }
+
+static void emit_identity_equal(Compiler *c, int recv, int arg, TyKind rt, TyKind a0, Buf *b) {
+  if (a0 == rt) {
+    buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == (");
+    emit_expr(c, arg, b); buf_puts(b, "))");
+  }
+  else if (a0 == TY_POLY) {
+    int te = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", te); emit_boxed(c, arg, b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.v.p == (void*)(", te, te);
+    emit_expr(c, recv, b); buf_puts(b, "); })");
+  }
+  else { buf_puts(b, "(("); emit_expr(c, arg, b); buf_puts(b, "), 0)"); }
+}
 int emit_object_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -9450,17 +9464,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       (sp_streq(name, "equal?") || sp_streq(name, "eql?")) &&
       !user_defines_or_reads(c, name)) {
     TyKind a0 = comp_ntype(c, argv[0]);
-    if (a0 == rt) {
-      buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == (");
-      emit_expr(c, argv[0], b); buf_puts(b, "))");
-    }
-    else if (a0 == TY_POLY) {
-      int te = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", te); emit_boxed(c, argv[0], b);
-      buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.v.p == (void*)(", te, te);
-      emit_expr(c, recv, b); buf_puts(b, "); })");
-    }
-    else { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
+    emit_identity_equal(c, recv, argv[0], rt, a0, b);
     return 1;
   }
   if (recv >= 0 && ty_is_object(rt) && argc == 1 &&
@@ -9469,17 +9473,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       comp_method_in_chain(c, ty_object_class(rt), "eql?", NULL) < 0) {
     TyKind a0 = comp_ntype(c, argv[0]);
     if (!c->classes[ty_object_class(rt)].is_value_type) {
-      if (a0 == rt) {
-        buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == (");
-        emit_expr(c, argv[0], b); buf_puts(b, "))");
-      }
-      else if (a0 == TY_POLY) {
-        int te = ++g_tmp;
-        buf_printf(b, "({ sp_RbVal _t%d = ", te); emit_boxed(c, argv[0], b);
-        buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.v.p == (void*)(", te, te);
-        emit_expr(c, recv, b); buf_puts(b, "); })");
-      }
-      else { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
+      emit_identity_equal(c, recv, argv[0], rt, a0, b);
       return 1;
     }
     if (same_sefree_lvalue(c, recv, argv[0])) { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 1)"); }
