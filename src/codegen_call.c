@@ -10007,7 +10007,7 @@ static int emit_struct_mixed_splat_new(Compiler *c, ClassInfo *cls, const int *a
    lists, which say which of pnames are keywords. A `*splat` has a run-time
    length: the positionals beside it only bound the count from above, and the
    layout checks the rest when the call runs. */
-static int init_accepts_kw_call(Compiler *c, int initm, const int *argv, int argc) {
+int init_accepts_kw_call(Compiler *c, int initm, const int *argv, int argc) {
   const NodeTable *nt = c->nt;
   Scope *sc = &c->scopes[initm];
   int pn = sc->def_node >= 0 ? nt_ref(nt, sc->def_node, "parameters") : -1;
@@ -10244,6 +10244,7 @@ static int emit_ctor_splice_arm(Compiler *c, int id, int ci, int initm, int rt2,
     else
       buf_printf(b, "sp_box_obj(%s, %d); } break; ", yb.p, ci);
   }
+  else unsupported(c, id, "splicing this block into a yielding initialize on a Class value");
   free(apre.p); free(yb.p);
   return 1;
 }

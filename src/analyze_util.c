@@ -1250,6 +1250,8 @@ static int yvt_callee_index(Compiler *c, int cid) {
   return rmi;
 }
 
+int init_accepts_kw_call(Compiler *c, int initm, const int *argv, int argc);
+
 static int yvt_reaches(Compiler *c, int cid, int mi) {
   if (yvt_callee_index(c, cid) == mi) return 1;
   const NodeTable *nt = c->nt;
@@ -1264,17 +1266,7 @@ static int yvt_reaches(Compiler *c, int cid, int mi) {
   if (rt != TY_POLY && !(rt == TY_CLASS && class_var_static_ci(c, crecv) < 0)) return 0;
   int a = nt_ref(nt, cid, "arguments");
   int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-  int npos = 0, splat = 0;
-  for (int i = 0; i < an; i++) {
-    NodeKind k = nt_kind(nt, av[i]);
-    if (k == NK_SplatNode) splat = 1;
-    else if (k != NK_KeywordHashNode && k != NK_BlockArgumentNode) npos++;
-  }
-  int pn = c->scopes[mi].def_node >= 0 ? nt_ref(nt, c->scopes[mi].def_node, "parameters") : -1;
-  int nreq = 0, nopt = 0, npost = 0;
-  if (pn >= 0) { nt_arr(nt, pn, "requireds", &nreq); nt_arr(nt, pn, "optionals", &nopt); nt_arr(nt, pn, "posts", &npost); }
-  if (!splat && npos < nreq + npost) return 0;
-  if (!splat && (pn < 0 || nt_ref(nt, pn, "rest") < 0) && npos > nreq + npost + nopt) return 0;
+  if (!init_accepts_kw_call(c, mi, av, an)) return 0;
   for (int k = 0; k < c->nclasses; k++)
     if (!c->classes[k].is_struct && comp_method_in_chain(c, k, "initialize", NULL) == mi) return 1;
   return 0;
