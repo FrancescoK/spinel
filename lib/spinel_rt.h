@@ -4998,8 +4998,15 @@ static void sp_poly_arr_writeback(sp_RbVal orig, sp_PolyArray *work) {
   }
 }
 static sp_PolyArray *sp_enum_items_from(sp_RbVal v);   /* fwd: hash -> [key, value] pairs */
+static sp_PolyArray *sp_enum_to_a_boxed(sp_RbVal v);   /* fwd: drain an enumerator */
 static sp_PolyArray *sp_poly_arr_recv(sp_RbVal v, const char *m) {
   if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)) return sp_poly_to_poly_array(v);
+  /* An Enumerator walks the items it yields, a multi-value step as the
+     packed Array a one-param block of select/find/reduce takes. Array's own
+     mutators and each_index are not Enumerable, and still raise. */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p &&
+      m[0] && m[strlen(m) - 1] != '!' && strcmp(m, "each_index") != 0)
+    return sp_enum_to_a_boxed(v);
   /* an Integer or String Range enumerates its members: select / filter /
      reject on a boxed one raised NoMethodError naming Range (#4837) */
   if (v.tag == SP_TAG_OBJ && (v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE))
@@ -10055,6 +10062,7 @@ static sp_SymPolyHash *sp_time_deconstruct_all(sp_Time t) {
   sp_SymPolyHash_set(h, sp_sym_intern("zone"), sp_box_str(sp_time_zone(t)));
   return h;
 }
+static sp_RbVal sp_enum_first_boxed(sp_RbVal v);   /* fwd: an Enumerator's first item */
 static sp_RbVal sp_poly_first(sp_RbVal v) {
   sp_poly_coll_chk(v, "first");
   if (v.tag == SP_TAG_STR || v.tag == SP_TAG_SYM || sp_poly_is_strbuf(v))
@@ -10073,6 +10081,9 @@ static sp_RbVal sp_poly_first(sp_RbVal v) {
      nil (a boxed 1.5..2.5 reaching a run-time-typed callable, #4804) */
   if (v.cls_id == SP_BUILTIN_FLOAT_RANGE) return sp_box_float(((sp_FloatRange *)v.v.p)->first);
   if (v.cls_id == SP_BUILTIN_STR_RANGE) return sp_box_str(((sp_StrRange *)v.v.p)->first);
+  /* an Enumerator answers the first item it yields, running a generator
+     only that far */
+  if (v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p) return sp_enum_first_boxed(v);
   { sp_PolyArray *ue = sp_poly_user_elems(v);
     if (ue) return ue->len > 0 ? ue->data[0] : sp_box_nil(); }
   return sp_poly_arr_get(v, 0);
@@ -13053,6 +13064,13 @@ static sp_Enumerator *sp_enum_pairs_new(sp_RbVal arr) {
   e->yields_pair = TRUE;
   return e;
 }
+/* An Enumerator.new generator whose body yields several values in a step
+   (`y.yield(a, b)`): the fiber packs each such step as an Array. */
+static sp_Enumerator *sp_enum_mark_pair(sp_Enumerator *e) SP_UNUSED;
+static sp_Enumerator *sp_enum_mark_pair(sp_Enumerator *e) {
+  e->yields_pair = TRUE;
+  return e;
+}
 /* A blockless Array#each_with_index enumerator: an [element, index] pair for
    each element (index offset by `off`, as Enumerator#with_index(off) allows). */
 static sp_Enumerator *sp_Enumerator_new_ewi(sp_RbVal arr, sp_int off) {
@@ -13364,6 +13382,10 @@ static sp_PolyArray *sp_zip_arg(sp_RbVal v) {
    here down (#3843). */
 static sp_PolyArray *sp_enum_to_a_boxed(sp_RbVal v) {
   return sp_Enumerator_to_a((sp_Enumerator *)v.v.p);
+}
+static sp_RbVal sp_enum_first_boxed(sp_RbVal v) {
+  sp_PolyArray *a = sp_Enumerator_take((sp_Enumerator *)v.v.p, 1);
+  return a->len > 0 ? a->data[0] : sp_box_nil();
 }
 static sp_RbVal sp_enum_next_boxed(sp_RbVal v) {
   return sp_Enumerator_next((sp_Enumerator *)v.v.p);
@@ -13963,6 +13985,7 @@ static sp_RbVal sp_class_value_new_fallback(sp_RbVal cls, const char *cn, sp_int
   sp_raise_nomethod(sp_nomethod_msg("new", cls));
   return sp_box_nil();
 }
+static void sp_proc_call_spread(sp_Proc *p, sp_RbVal arr, int kwpos);
 static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
   SP_GC_ROOT_RBVAL(recv);
   /* The block is this loop's only handle on its own captures: the caller's
@@ -13973,9 +13996,26 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
   /* sp_poly_arr_len_ex / sp_poly_each_elem, the pair the spliced poly-each
      loop uses: they render a Hash entry as a boxed [k, v] pair, so a hash
      receiver walks its entries here exactly as it would there. */
-  sp_int n = sp_poly_arr_len_ex(recv);
+  /* An Enumerator walks the items it yields. A step that yields several
+     values is one packed item; map and the predicates hand a one-param block
+     its first value, as CRuby's multi-value yield does, where select, find
+     and sort_by hand it the packed Array. */
+  sp_RbVal walk = recv;
+  sp_bool first_of_pair = FALSE, spread_pair = FALSE;
+  if (recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_ENUMERATOR) {
+    first_of_pair = sp_poly_yields_pair(recv) && blk && blk->arity == 1 &&
+      (op == SP_PENUM_MAP || op == SP_PENUM_FIND_INDEX || op == SP_PENUM_COUNT ||
+       op == SP_PENUM_ANY || op == SP_PENUM_ALL || op == SP_PENUM_NONE);
+    /* a `|*r|` block of map takes the values spread */
+    spread_pair = sp_poly_yields_pair(recv) && blk && blk->arity < 0 && op == SP_PENUM_MAP;
+    walk = sp_poly_iter_subject(recv);
+  }
+  SP_GC_ROOT_RBVAL(walk);
+  sp_int n = sp_poly_arr_len_ex(walk);
   sp_PolyArray *src = sp_PolyArray_new(); SP_GC_ROOT(src);
-  for (sp_int i = 0; i < n; i++) sp_PolyArray_push(src, sp_poly_each_elem(recv, i));
+  for (sp_int i = 0; i < n; i++) sp_PolyArray_push(src, sp_poly_each_elem(walk, i));
+  if (first_of_pair)
+    for (sp_int i = 0; i < n; i++) { sp_gc_wb((void *)src); src->data[i] = sp_yielded_first(TRUE, src->data[i]); }
   switch (op) {
     case SP_PENUM_EACH:
       for (sp_int i = 0; i < n; i++) sp_penum_call1(blk, src->data[i]);
@@ -13985,7 +14025,15 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
       return recv;
     case SP_PENUM_MAP: {
       sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
-      for (sp_int i = 0; i < n; i++) sp_PolyArray_push(out, sp_penum_call1(blk, src->data[i]));
+      for (sp_int i = 0; i < n; i++) {
+        sp_RbVal e = src->data[i];
+        if (spread_pair && e.tag == SP_TAG_OBJ && sp_poly_is_array_kind(e.cls_id)) {
+          _sp_proc_poly_ret = sp_box_nil();
+          sp_proc_call_spread(blk, e, 0);
+          sp_PolyArray_push(out, _sp_proc_poly_ret);
+        }
+        else sp_PolyArray_push(out, sp_penum_call1(blk, e));
+      }
       return sp_box_poly_array(out);
     }
     case SP_PENUM_SELECT: case SP_PENUM_REJECT: {
