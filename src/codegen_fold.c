@@ -6525,6 +6525,57 @@ static int kw_splat_user_may_convert(Compiler *c) {
 }
 
 /* See codegen_internal.h. */
+int kw_splat_may_be_nil(Compiler *c, int node) {
+  TyKind t = comp_ntype(c, node);
+  if (!kw_splat_bad_cls(c, t)) return 0;
+  switch (nt_kind(c->nt, node)) {
+    case NK_IntegerNode: case NK_FloatNode: case NK_RationalNode: case NK_ImaginaryNode:
+    case NK_StringNode: case NK_InterpolatedStringNode: case NK_XStringNode:
+    case NK_SymbolNode: case NK_InterpolatedSymbolNode: case NK_ArrayNode:
+    case NK_RangeNode: case NK_RegularExpressionNode: case NK_LambdaNode:
+    case NK_TrueNode: case NK_FalseNode:
+      return 0;   /* a literal is never nil */
+    case NK_CallNode: {
+      /* nor is the object `Foo.new` builds, short of a `def self.new` */
+      const char *cn = nt_str(c->nt, node, "name");
+      int rcv = nt_ref(c->nt, node, "receiver");
+      if (cn && sp_streq(cn, "new") && rcv >= 0 &&
+          (nt_kind(c->nt, rcv) == NK_ConstantReadNode || nt_kind(c->nt, rcv) == NK_ConstantPathNode)) {
+        int ci = comp_class_index(c, nt_str(c->nt, rcv, "name"));
+        if (ci >= 0 && comp_cmethod_in_chain(c, ci, "new", NULL) < 0) return 0;
+      }
+      break;
+    }
+    default: break;
+  }
+  /* the reading emit_boxed boxes a scalar by: its sentinel where the value
+     is nilable */
+  if (t == TY_INT)
+    return call_returns_nullable_int(c, node) || box_nullable_arg(c, node) ||
+           nt_kind(c->nt, node) == NK_InstanceVariableReadNode;
+  if (t == TY_FLOAT) return call_returns_nullable_int(c, node) || box_nullable_arg(c, node);
+  return needs_root(t);   /* a pointer-backed kind holds nil as NULL */
+}
+
+/* A `**` operand of a kind kw_splat_bad_cls names, evaluated into g_pre where
+   it stands: the TypeError raised outright, or, when the operand may be nil,
+   decided at run time on its boxed value. */
+static void emit_kw_splat_bad_operand(Compiler *c, int node) {
+  Buf hb; memset(&hb, 0, sizeof hb);
+  if (kw_splat_may_be_nil(c, node)) {
+    emit_boxed(c, node, &hb);
+    emit_kw_splat_conv_check(c, TY_POLY, hb.p ? hb.p : "sp_box_nil()");
+  }
+  else {
+    emit_expr(c, node, &hb);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "(void)(%s);\n", hb.p ? hb.p : "0");
+    emit_kw_splat_conv_check(c, comp_ntype(c, node), NULL);
+  }
+  free(hb.p);
+}
+
+/* See codegen_internal.h. */
 void emit_kw_splat_conv_check(Compiler *c, TyKind t, const char *val) {
   if (t == TY_POLY) {
     emit_indent(g_pre, g_indent);
@@ -6540,7 +6591,7 @@ void emit_kw_splat_conv_check(Compiler *c, TyKind t, const char *val) {
 /* See codegen_internal.h. */
 void emit_kw_splat_operand_inline(Compiler *c, int node, Buf *b) {
   TyKind t = comp_ntype(c, node);
-  if (t == TY_POLY) {
+  if (t == TY_POLY || kw_splat_may_be_nil(c, node)) {
     buf_puts(b, "sp_kw_splat_conv_check("); emit_boxed(c, node, b);
     buf_printf(b, ", %d); ", kw_splat_user_may_convert(c));
     return;
@@ -6664,10 +6715,12 @@ int emit_ds_hash_merge(Compiler *c, int kwh, TyKind *out_type) {
                !(nt_kind(nt, v) == NK_HashNode && empty_hash_literal(nt, v))) {
         /* no keywords to merge (`**f` answering nil, `**1`): only the operand
            to evaluate and, for another class, CRuby's TypeError to raise */
-        emit_expr(c, v, &vb);
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "(void)(%s);\n", vb.p ? vb.p : "0");
-        emit_kw_splat_conv_check(c, t, NULL);
+        if (kw_splat_bad_cls(c, t)) emit_kw_splat_bad_operand(c, v);
+        else {
+          emit_expr(c, v, &vb);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "(void)(%s);\n", vb.p ? vb.p : "0");
+        }
       }
     }
     free(vb.p);
@@ -6736,15 +6789,24 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type) {
         char tn[32]; snprintf(tn, sizeof tn, "_t%d", ds_hash_tmp);
         emit_kw_splat_conv_check(c, *out_type, tn);
       }
+      else if (kw_splat_may_be_nil(c, inner2)) {
+        /* A slot that is no Hash but may hold nil (`**f` where f answers an
+           Integer or nil): boxed, it is checked, binds and is judged as a
+           boxed operand is, so nil carries no keywords. */
+        *out_type = TY_POLY;
+        ds_hash_tmp = ++g_tmp;
+        Buf hb; memset(&hb, 0, sizeof hb);
+        emit_boxed(c, inner2, &hb);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", ds_hash_tmp, hb.p ? hb.p : "sp_box_nil()");
+        free(hb.p);
+        char tn[32]; snprintf(tn, sizeof tn, "_t%d", ds_hash_tmp);
+        emit_kw_splat_conv_check(c, TY_POLY, tn);
+      }
       else if (kw_splat_bad_cls(c, *out_type)) {
         /* `**1`: no keywords to bind, only the operand to evaluate and
            CRuby's TypeError to raise before any keyword is checked */
-        Buf hb; memset(&hb, 0, sizeof hb);
-        emit_expr(c, inner2, &hb);
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "(void)(%s);\n", hb.p ? hb.p : "0");
-        free(hb.p);
-        emit_kw_splat_conv_check(c, *out_type, NULL);
+        emit_kw_splat_bad_operand(c, inner2);
       }
       else if (*out_type == TY_NIL && nt_kind(nt, inner2) != NK_NilNode) {
         /* `**f` where f answers nil: no keywords to bind, but f still runs */
@@ -6984,12 +7046,7 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
         }
         if (bad3 && nsplat3 > 1) {
           /* a later operand of another class raises where it stands */
-          Buf hb; memset(&hb, 0, sizeof hb);
-          emit_expr(c, inner3, &hb);
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "(void)(%s);\n", hb.p ? hb.p : "0");
-          free(hb.p);
-          emit_kw_splat_conv_check(c, sty, NULL);
+          emit_kw_splat_bad_operand(c, inner3);
         }
         if (sty == TY_NIL || bad3) continue;
         if (sty == TY_POLY) {

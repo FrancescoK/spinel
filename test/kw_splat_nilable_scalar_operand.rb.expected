@@ -1,0 +1,31 @@
+[0, 0]
+[0, 0]
+[0, 0]
+[0, 0]
+[0, 0]
+TypeError: no implicit conversion of Integer into Hash
+TypeError: no implicit conversion of Float into Hash
+TypeError: no implicit conversion of String into Hash
+ArgumentError: missing keyword: :a
+[0, 0]
+TypeError: no implicit conversion of String into Hash
+0
+TypeError: no implicit conversion of Integer into Hash
+0
+TypeError: no implicit conversion of Integer into Hash
+{}
+TypeError: no implicit conversion of String into Hash
+[0, {}]
+{a: 1}
+TypeError: no implicit conversion of Integer into Hash
+[1, 2]
+[5, 0]
+TypeError: no implicit conversion of Float into Hash
+ArgumentError: missing keywords: :x, :y
+#<struct Opts a=nil, b=nil>
+#<struct Plain a=nil, b=nil>
+TypeError: no implicit conversion of Integer into Hash
+ArgumentError: unknown keywords: z
+TypeError: no implicit conversion of Integer into Hash
+TypeError: no implicit conversion of Integer into Hash
+TypeError: no implicit conversion of String into Hash
