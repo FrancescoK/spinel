@@ -132,6 +132,11 @@ typedef struct {
                        value an element write through this BOXED parameter
                        stores, unified as boxed_push_elem is: the evidence
                        the binding checks a caller's hash against. */
+  int boxed_rest_push; /* (params, boxed) one past the first element of the
+                       method's rest parameter that a push, unshift or insert
+                       through this BOXED parameter stores, or 0: the rest
+                       collects them boxed, so the binding checks each call's
+                       own rest arguments against the caller's array. */
   int const_def_write; /* (consts) has a definite (non-or/and) assignment; an
                           or/and-write-only const is nil-defaulted (poly) so its
                           `||=` truthiness check fires on first use */

@@ -1804,6 +1804,7 @@ LocalVar *scope_local_intern(Scope *s, const char *name) {
   lv->boxed_push_elem = TY_UNKNOWN;
   lv->boxed_store_key = TY_UNKNOWN;
   lv->boxed_store_val = TY_UNKNOWN;
+  lv->boxed_rest_push = 0;
   return lv;
 }
 

@@ -2034,7 +2034,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       (sp_streq(name, "pop") || sp_streq(name, "shift")))
     { *out = TY_POLY; return 1; }
   /* Array#insert on a poly value: in-place, returns the receiver (boxed). */
-  if (recv >= 0 && rt == TY_POLY && argc == 2 && nt_ref(nt, id, "block") < 0 &&
+  if (recv >= 0 && rt == TY_POLY && argc >= 1 && nt_ref(nt, id, "block") < 0 &&
       !an_user_defines_method(c, name) && sp_streq(name, "insert"))
     { *out = TY_POLY; return 1; }
   /* Time accessors on a poly value (a Time read out of a container): the

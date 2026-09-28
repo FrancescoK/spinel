@@ -5595,7 +5595,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
           nt_ref(nt, id, "block") < 0 &&
           (sp_streq(name, "first") || sp_streq(name, "last") ||
            sp_streq(name, "take") || sp_streq(name, "drop") ||
-           sp_streq(name, "rotate") || sp_streq(name, "sample"))) {
+           sp_streq(name, "rotate") || sp_streq(name, "sample") ||
+           sp_streq(name, "min") || sp_streq(name, "max"))) {
         int has_user = 0;
         if (!an_builtin_only)
         for (int k = 0; k < c->nclasses && !has_user; k++)

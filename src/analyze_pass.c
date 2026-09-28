@@ -1369,6 +1369,145 @@ static int call_target_scope(Compiler *c, int id) {
   return -1;
 }
 
+/* Would an element of kind t be a foreign value in an array of `elem`? A boxed
+   value is decided at run time and exempt, as it is for a single push. */
+static int elem_is_foreign(TyKind t, TyKind elem) {
+  return t != TY_UNKNOWN && t != TY_POLY && t != TY_POLY_ARRAY && t != elem;
+}
+
+/* Does argument node store an element foreign to an array of `elem`? A
+   splatted array stores its elements. One splatted into a rest parameter is
+   boxed to match it, so an array literal, or a local every write of which is
+   one, is read by its elements. */
+static int literal_elems_foreign(Compiler *c, int lit, TyKind elem) {
+  int en = 0;
+  const int *els = nt_arr(c->nt, lit, "elements", &en);
+  for (int e = 0; e < en; e++)
+    if (nt_kind(c->nt, els[e]) != NK_SplatNode && elem_is_foreign(push_elem_ty(c, els[e]), elem)) return 1;
+  return 0;
+}
+static int push_arg_foreign(Compiler *c, int node, TyKind elem) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, node) != NK_SplatNode) return elem_is_foreign(push_elem_ty(c, node), elem);
+  int ex = nt_ref(nt, node, "expression");
+  if (ex < 0) return 0;
+  if (nt_kind(nt, ex) == NK_ArrayNode) return literal_elems_foreign(c, ex, elem);
+  if (nt_kind(nt, ex) == NK_LocalVariableReadNode) {
+    const char *an = nt_str(nt, ex, "name");
+    Scope *asc = an ? comp_scope_of(c, ex) : NULL;
+    LocalVar *al = asc ? scope_local(asc, an) : NULL;
+    if (al && !al->is_param && !al->is_block_param && local_all_writes_array_literal(c, asc, an)) {
+      int si = (int)(asc - c->scopes);
+      for (int r = lw_shared_first(c, an, si); r >= 0; r = lw_shared_next(r)) {
+        int w = lw_shared_node(r);
+        if (nt_kind(nt, w) != NK_LocalVariableWriteNode || comp_scope_of(c, w) != asc ||
+            !sp_streq(nt_str(nt, w, "name"), an)) continue;
+        int v = nt_ref(nt, w, "value");
+        if (v >= 0 && nt_kind(nt, v) == NK_ArrayNode && literal_elems_foreign(c, v, elem)) return 1;
+      }
+      return 0;
+    }
+  }
+  TyKind at = infer_type(c, ex);
+  return ty_is_array(at) && elem_is_foreign(ty_array_elem(at), elem);
+}
+
+/* Does some call of scope si pass its rest parameter an element foreign to an
+   array of `elem`? The rest parameter collects them boxed, so its own type
+   says nothing; the arguments at the call sites do: the rest's elements from
+   `skip` on (insert's index is passed over), or only element `only` when it
+   is not -1. A splat before the rest's position leaves the positions
+   unknown, and every argument from it on is read. */
+static int call_rest_args_foreign(Compiler *c, Scope *m, const int *argv, int an,
+                                  int skip, int only, TyKind elem) {
+  const NodeTable *nt = c->nt;
+  if (!argv || m->rest_idx < 0) return 0;
+  if (an > 0 && nt_kind(nt, argv[an - 1]) == NK_KeywordHashNode &&
+      (callee_declares_kwargs(c, m) || m->kwrest_idx >= 0)) an--;
+  int at = m->rest_idx + (only >= 0 ? only : skip);
+  int from = at, to = an - m->npost_rest;
+  if (only >= 0 && from + 1 < to) to = from + 1;
+  for (int k = 0; k < an && k < at; k++)
+    if (nt_kind(nt, argv[k]) == NK_SplatNode) { from = k; to = an; break; }
+  for (int k = from; k < to; k++)
+    if (push_arg_foreign(c, argv[k], elem)) return 1;
+  return 0;
+}
+static int rest_args_foreign(Compiler *c, int si, int skip, int only, TyKind elem) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[si];
+  if (m->rest_idx < 0 || !m->name) return 0;
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, m->name) || call_target_scope(c, id) != si) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0;
+    const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (call_rest_args_foreign(c, m, argv, an, skip, only, elem)) return 1;
+  }
+  return 0;
+}
+
+/* Is argument a of scope sc its rest parameter splatted (answers 0) or one
+   element of it, `rest[k]` (answers k)? -1 for anything else. */
+static int rest_elem_arg(Compiler *c, Scope *sc, int a) {
+  const NodeTable *nt = c->nt;
+  const char *rest = sc->rest_idx >= 0 ? sc->pnames[sc->rest_idx] : NULL;
+  if (!rest) return -1;
+  int ex = -1, k = 0;
+  if (nt_kind(nt, a) == NK_SplatNode) ex = nt_ref(nt, a, "expression");
+  else if (nt_kind(nt, a) == NK_CallNode && sp_streq(nt_str(nt, a, "name"), "[]")) {
+    int ia = nt_ref(nt, a, "arguments");
+    int in = 0;
+    const int *iv = ia >= 0 ? nt_arr(nt, ia, "arguments", &in) : NULL;
+    if (in != 1 || nt_kind(nt, iv[0]) != NK_IntegerNode) return -1;
+    k = (int)nt_int(nt, iv[0], "value", -1);
+    if (k < 0) return -1;
+    ex = nt_ref(nt, a, "receiver");
+  }
+  if (ex < 0 || nt_kind(nt, ex) != NK_LocalVariableReadNode ||
+      nt_int(nt, ex, "depth", 0) != 0 || !sp_streq(nt_str(nt, ex, "name"), rest)) return -1;
+  return k;
+}
+
+/* The first element of sc's rest parameter the value arguments store, or -1. */
+static int rest_push_first(Compiler *c, Scope *sc, const int *argv, int an,
+                           int from, int splat_index) {
+  int first = -1;
+  for (int ai = from; ai < an; ai++) {
+    int k = rest_elem_arg(c, sc, argv[ai]);
+    if (k < 0) continue;
+    if (nt_kind(c->nt, argv[ai]) == NK_SplatNode && splat_index && ai == 0) k = 1;
+    if (first < 0 || k < first) first = k;
+  }
+  return first;
+}
+
+/* Do the values a push, unshift or insert through a typed array parameter
+   stores include one its elements cannot hold? Each argument is its own
+   evidence: unified, a Symbol and a String read as one boxed value and were
+   exempt. A splat of the method's own rest parameter is read at the method's
+   call sites. */
+static int param_push_args_foreign(Compiler *c, Scope *sc, const int *argv, int an,
+                                   int from, int splat_index, TyKind elem) {
+  const NodeTable *nt = c->nt;
+  int si = (int)(sc - c->scopes);
+  for (int ai = from; ai < an; ai++) {
+    int a = argv[ai];
+    /* `rest[k]` is what a splat of runtime length into a builtin expands to */
+    int k = rest_elem_arg(c, sc, a);
+    if (k >= 0) {
+      int whole = nt_kind(nt, a) == NK_SplatNode;
+      if (rest_args_foreign(c, si, whole && splat_index && ai == 0, whole ? -1 : k, elem)) return 1;
+      continue;
+    }
+    if (splat_index) continue;
+    if (push_arg_foreign(c, a, elem)) return 1;
+  }
+  return 0;
+}
+
 static int flows_container(Compiler *c, int node, int depth) {
   if (node < 0 || depth > 6) return 0;
   const NodeTable *nt = c->nt;
@@ -2797,6 +2936,9 @@ int infer_write_types(Compiler *c) {
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
     int recv, kt = TY_UNKNOWN, vt = TY_UNKNOWN, is_push = 0, is_idx_write = 0, is_splice = 0;
+    /* the value arguments of a push/unshift/insert, each its own evidence */
+    const int *elem_argv = NULL;
+    int elem_from = 0, elem_an = 0, elem_splat_index = 0;
     if (sp_streq(ty, "CallNode")) {
       recv = nt_ref(nt, id, "receiver");
       const char *name = nt_str(nt, id, "name");
@@ -2819,19 +2961,25 @@ int infer_write_types(Compiler *c) {
         if (sp_streq(name, "<<") && recv >= 0 &&
             (an_user_defines_method(c, "<<") || an_native_defines_method(c, "<<")) &&
             !recv_has_array_write(c, recv)) continue;
-        is_push = 1; vt = push_elem_ty(c, argv[0]);
+        is_push = 1; elem_argv = argv; elem_an = an; vt = push_elem_ty(c, argv[0]);
         for (int ai = 1; ai < an; ai++) vt = ty_unify(vt, push_elem_ty(c, argv[ai]));
       }
       else if (name && (sp_streq(name, "unshift") || sp_streq(name, "prepend")) && an >= 1) {
         /* unshift(v, ...): every argument is element evidence, like push
            (a foreign value used to store its raw bits into the typed slots) */
-        is_push = 1; vt = push_elem_ty(c, argv[0]);
+        is_push = 1; elem_argv = argv; elem_an = an; vt = push_elem_ty(c, argv[0]);
         for (int ai = 1; ai < an; ai++) vt = ty_unify(vt, push_elem_ty(c, argv[ai]));
       }
       else if (name && sp_streq(name, "insert") && an >= 2) {
         /* insert(i, v, ...): the values from position 1 on are evidence */
-        is_push = 1; vt = push_elem_ty(c, argv[1]);
+        is_push = 1; elem_argv = argv; elem_an = an; elem_from = 1; vt = push_elem_ty(c, argv[1]);
         for (int ai = 2; ai < an; ai++) vt = ty_unify(vt, push_elem_ty(c, argv[ai]));
+      }
+      else if (name && sp_streq(name, "insert") && an == 1 &&
+               nt_kind(nt, argv[0]) == NK_SplatNode) {
+        /* insert(*a): the index rides in the splat, ahead of the values; only
+           a container parameter reads this, through the call sites */
+        elem_argv = argv; elem_an = an; elem_splat_index = 1;
       }
       else if (name && sp_streq(name, "concat") && an == 1) {
         /* concat(other): the other array's elements splice in */
@@ -3037,6 +3185,7 @@ int infer_write_types(Compiler *c) {
       continue;
     }
     if (recv < 0) continue;
+    if (elem_splat_index && nt_kind(nt, recv) != NK_LocalVariableReadNode) continue;
     const char *rty = nt_type(nt, recv);
     /* `(@h ||= {})[k] = v` fills @h exactly as `@h ||= {}; @h[k] = v` does,
        and so does a write through a getter whose value is that or-write.
@@ -3082,7 +3231,7 @@ int infer_write_types(Compiler *c) {
          binding in bind_call_params, the caller's local too). Widening only:
          an UNKNOWN parameter still takes its type from the call site (#2989). */
       if (lv->is_param) {
-        if ((!is_push && !is_idx_write) || lv->rbs_seeded) continue;
+        if ((!is_push && !is_idx_write && !elem_splat_index) || lv->rbs_seeded) continue;
         /* A boxed parameter records what an element write stores, for the
            binding to check each caller's container against; an Integer key
            indexes an array as a push appends to one. A boxed key or value
@@ -3136,6 +3285,12 @@ int infer_write_types(Compiler *c) {
            what keeps an ivar that really does hold ints in its typed
            representation. */
         if (lv->type == TY_POLY) {
+          if (elem_argv) {
+            int rf = rest_push_first(c, lsc, elem_argv, elem_an, elem_from, elem_splat_index);
+            if (rf >= 0 && (lv->boxed_rest_push == 0 || rf + 1 < lv->boxed_rest_push)) {
+              lv->boxed_rest_push = rf + 1; changed = 1;
+            }
+          }
           if (vt != TY_UNKNOWN) {
             TyKind was = lv->boxed_push_elem;
             TyKind now = (was == TY_UNKNOWN) ? vt : (was == vt ? was : TY_POLY);
@@ -3149,11 +3304,14 @@ int infer_write_types(Compiler *c) {
            a foreign one with TypeError (#4481). Widening the parameter to the
            general Array instead made every typed caller copy its array into
            the call, which is the copy #4480 refuses. */
-        if (vt == TY_UNKNOWN || vt == TY_POLY || vt == TY_POLY_ARRAY ||
-            vt == ty_array_elem(lv->type)) continue;
+        if (!(elem_argv && param_push_args_foreign(c, lsc, elem_argv, elem_an, elem_from,
+                                                   elem_splat_index, ty_array_elem(lv->type))) &&
+            (vt == TY_UNKNOWN || vt == TY_POLY || vt == TY_POLY_ARRAY ||
+             vt == ty_array_elem(lv->type))) continue;
         lv->type = TY_POLY_ARRAY; lv->push_widened = 1; changed = 1;
         continue;
       }
+      if (elem_splat_index) continue;
       /* A bare `x[i]` read OR an `x[i] = v` element assignment must not promote
          `x` to a hash if `x` elsewhere gets an array-typed write (`x = a.split`
          etc.): it is an array indexed/assigned by position, and the hash type
@@ -4468,6 +4626,9 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
        writes through it are checked here, against each caller's own. */
     if (p->type == TY_POLY && ty_is_array(at) && at != TY_POLY_ARRAY &&
         p->boxed_push_elem != TY_UNKNOWN && p->boxed_push_elem != ty_array_elem(at))
+      changed |= widen_arg_array(c, argv[arg]);
+    if (p->type == TY_POLY && ty_is_array(at) && at != TY_POLY_ARRAY && p->boxed_rest_push > 0 &&
+        call_rest_args_foreign(c, m, argv, argc, p->boxed_rest_push - 1, -1, ty_array_elem(at)))
       changed |= widen_arg_array(c, argv[arg]);
     if (p->type == TY_POLY && ty_is_hash(at) && at != TY_POLY_POLY_HASH &&
         p->boxed_store_key != TY_UNKNOWN) {
