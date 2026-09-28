@@ -2699,7 +2699,8 @@ int infer_write_types(Compiler *c) {
           const int *rights_s = nt_arr(nt, id, "rights", &rn_s);
           for (int j = 0; j < rn_s; j++) {
             const char *rty_s = nt_type(nt, rights_s[j]) ? nt_type(nt, rights_s[j]) : "";
-            if (sp_streq(rty_s, "ConstantTargetNode") || sp_streq(rty_s, "ConstantPathTargetNode"))
+            if (sp_streq(rty_s, "ConstantTargetNode") || sp_streq(rty_s, "ConstantPathTargetNode") ||
+                sp_streq(rty_s, "ClassVariableTargetNode"))
               changed |= masgn_unify_elem(c, comp_scope_of(c, id), &rights_s[j], 1,
                                           j == 0 && ln == 0 ? st : TY_POLY);
           }

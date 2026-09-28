@@ -5648,6 +5648,18 @@ int infer_cvar_types(Compiler *c) {
     if (s->class_id < 0) continue;
     if (cvar_note_write(c, &c->classes[s->class_id], id)) changed = 1;
   }
+  /* A multiple-assignment target (`@@a, *@@r = ...`), in a method or a class
+     body and on either side of a splat, declares its cvar too; the elements'
+     types reach the slot through infer_write_types. */
+  NT_FOREACH_KIND(nt, NK_ClassVariableTargetNode, id) {
+    Scope *s = comp_scope_of(c, id);
+    int cc = s && s->class_id >= 0 ? s->class_id : id < c->node_cap ? c->node_cbody[id] : -1;
+    const char *nm = nt_str(nt, id, "name");
+    if (cc < 0 || !nm) continue;
+    int old_n = c->classes[cc].ncvars;
+    comp_cvar_intern(&c->classes[cc], nm);
+    if (c->classes[cc].ncvars != old_n) changed = 1;
+  }
   /* Pass 2.5: `Klass.class_variable_set(:@@name, v)` with a literal name
      DECLARES the cvar when the class has no such write -- CRuby creates it on
      the fly, and the codegen store needs a registered global to hit (#2719). */
