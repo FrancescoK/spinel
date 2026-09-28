@@ -10313,6 +10313,46 @@ static int emit_user_new_arm(Compiler *c, int id, int ci, int argc, const int *a
   return 1;
 }
 
+/* The builtin arms and the default of a Class-value `new` switch on the
+   class `_t<kt>` (an sp_Class, or a boxed value when `boxed`), writing the
+   boxed result to `_t<rt2>`: String, Array, Hash and Object construct
+   through sp_builtin_class_new, a builtin exception class through
+   sp_class_value_new_fallback, which raises NoMethodError for any other.
+   Each arm runs `pre` and then passes `argc_txt` boxed arguments at
+   `argv_txt`; the block is the hoisted g_ctor_blk_tmp. */
+static void emit_builtin_new_arms_text(const char *pre, const char *argc_txt, const char *argv_txt,
+                                       int rt2, int kt, int boxed, Buf *b) {
+  static const struct { const char *name; char kind; } bnew[] = {
+    { "String", 'S' }, { "Array", 'A' }, { "Hash", 'H' }, { "Object", 'O' },
+  };
+  char blk[24] = "NULL";
+  if (g_ctor_blk_tmp >= 0) snprintf(blk, sizeof blk, "_t%d", g_ctor_blk_tmp);
+  for (size_t k = 0; k < sizeof bnew / sizeof bnew[0]; k++)
+    buf_printf(b, "case %d: { %s_t%d = sp_builtin_class_new('%c', %s, %s, %s); } break; ",
+               builtin_class_id(bnew[k].name), pre, rt2, bnew[k].kind, argc_txt, argv_txt, blk);
+  if (boxed)
+    buf_printf(b, "default: { %s_t%d = sp_class_value_new_fallback(_t%d, _t%d.tag == SP_TAG_CLASS ? "
+                  "sp_class_to_s(sp_unbox_class(_t%d)) : NULL, %s, %s); } ",
+               pre, rt2, kt, kt, kt, argc_txt, argv_txt);
+  else
+    buf_printf(b, "default: { %s_t%d = sp_class_value_new_fallback(sp_box_class(_t%d), sp_class_to_s(_t%d), %s, %s); } ",
+               pre, rt2, kt, kt, argc_txt, argv_txt);
+}
+
+/* The same, for arguments hoisted into the boxed temps `atmp`. */
+static void emit_builtin_new_arms(int argc, const int *atmp, int rt2, int kt, int boxed, Buf *b) {
+  Buf ab; memset(&ab, 0, sizeof ab);
+  if (argc == 0) buf_puts(&ab, "NULL");
+  else {
+    buf_puts(&ab, "(sp_RbVal[]){");
+    for (int a = 0; a < argc; a++) buf_printf(&ab, "%s_t%d", a ? ", " : "", atmp[a]);
+    buf_puts(&ab, "}");
+  }
+  char nb[24]; snprintf(nb, sizeof nb, "%d", argc);
+  emit_builtin_new_arms_text("", nb, ab.p, rt2, kt, boxed, b);
+  free(ab.p);
+}
+
 static int call_sole_literal_kwh(const NodeTable *nt, const int *argv, int argc);
 static TyKind struct_member_slot_type(ClassInfo *k, const char *name);
 static int emit_struct_kw_new_arm(Compiler *c, int ci, int kwh, int htmp, const char *pre,
@@ -10510,7 +10550,25 @@ static void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Bu
                  aval.p ? aval.p : "", ci);
     free(apre.p); free(aval.p);
   }
-  if (boxed)
+  /* `k.new(*args)`: a builtin class takes the spread array's elements */
+  if (sole_splat >= 0 && splat_operand_ok(c, sole_splat)) {
+    int tsa = ++g_tmp;
+    Buf spre; memset(&spre, 0, sizeof spre);
+    Buf sv; memset(&sv, 0, sizeof sv);
+    Buf *sv_pre = g_pre; g_pre = &spre;
+    emit_splat_operand_array(c, sole_splat, &sv);
+    g_pre = sv_pre;
+    Buf pre; memset(&pre, 0, sizeof pre);
+    buf_printf(&pre, "%s sp_PolyArray *_t%d = %s; SP_GC_ROOT(_t%d); ",
+               spre.p ? spre.p : "", tsa, sv.p ? sv.p : "sp_PolyArray_new()", tsa);
+    char an[32], av[32];
+    snprintf(an, sizeof an, "_t%d->len", tsa);
+    snprintf(av, sizeof av, "_t%d->data", tsa);
+    emit_builtin_new_arms_text(pre.p, an, av, rt2, kt, boxed, b);
+    buf_printf(b, "} _t%d; })", rt2);
+    free(spre.p); free(sv.p); free(pre.p);
+  }
+  else if (boxed)
     buf_printf(b, "default: sp_raise_nomethod(sp_nomethod_msg(\"new\", _t%d)); } _t%d; })", kt, rt2);
   else
     buf_printf(b, "default: sp_raise_nomethod(sp_nomethod_msg(\"new\", sp_box_class(_t%d))); } _t%d; })", kt, rt2);
@@ -29631,8 +29689,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        this the seed fell out unchanged and the caller got nil, which is how
        #4417 presented: no crash, no diagnostic, a nil that only misbehaves
        later. */
-    buf_printf(b, "default: sp_raise_nomethod(sp_nomethod_msg(\"new\", sp_box_class(_t%d))); } _t%d; })",
-               kt, rt2);
+    emit_builtin_new_arms(argc, atmp, rt2, kt, 0, b);
+    buf_printf(b, "} _t%d; })", rt2);
     g_ctor_blk_tmp = sv_cbt;
     free(atmp);
     return;
@@ -29715,6 +29773,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
                    ci, rt2, c->classes[ci].c_name, args9, ci);
       free(ab9.p);
     }
+    emit_builtin_new_arms(0, NULL, rt2, kt, 0, b);
     buf_printf(b, "} _t%d; })", rt2);
     g_ctor_blk_tmp = sv_cbt;
     return;
@@ -29875,7 +29934,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       emit_ctor_arm_case(c, ci, rt2, self_t, pdpre.p, ab.p ? ab.p : "", b);
       free(pdpre.p); free(ab.p);
     }
-    buf_printf(b, "default: sp_raise_nomethod(sp_nomethod_msg(\"new\", _t%d)); } _t%d; })", kt, rt2);
+    emit_builtin_new_arms(argc, atmp, rt2, kt, 1, b);
+    buf_printf(b, "} _t%d; })", rt2);
     g_ctor_blk_tmp = sv_cbt;
     free(atmp);
     return;
