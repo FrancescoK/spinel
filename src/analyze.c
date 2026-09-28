@@ -5581,6 +5581,8 @@ static int desugar_symbol_string_methods(Compiler *c) {
     if (!hit) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || infer_type(c, recv) != TY_SYMBOL) continue;
+    /* an `at` desugar_array_at rewrote: Symbol has #[] but no #at */
+    if (nt_int(nt, id, "was_at", 0)) continue;
     /* Symbol#<=> is defined only between Symbols: reading both sides as text
        would make :a <=> "a" answer 0 where Ruby answers nil, so leave a
        non-Symbol operand alone and let codegen emit the nil (#3081). */

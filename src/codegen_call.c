@@ -19887,7 +19887,55 @@ static int recv_read_before_args(Compiler *c, int id) {
   return effect ? recv : -1;
 }
 
+/* `recv.at(i)` that desugar_array_at rewrote to `[]` before the receiver's
+   type was known. A Hash, a String, a Symbol, a Range and a scalar have no
+   #at, though some answer #[]: a receiver typed as one raises, and a boxed
+   receiver is checked before the index read picks an arm for the key. */
+static int g_at_chk_id = -1;
+static int emit_at_without_array(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (!nt_int(nt, id, "was_at", 0)) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (rt == TY_POLY) {
+    if (g_at_chk_id == id || sn_guard_pending(c, id) || g_n_argov >= MAX_ARG_OVERRIDE) return 0;
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = sp_poly_ary_chk(", t);
+    emit_expr(c, recv, b);
+    buf_printf(b, ", \"at\", 0); SP_GC_ROOT_RBVAL(_t%d); ", t);
+    g_argov_node[g_n_argov] = recv;
+    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", t);
+    g_n_argov++;
+    int sv_chk = g_at_chk_id; g_at_chk_id = id;
+    emit_call_held(c, id, b);
+    g_at_chk_id = sv_chk;
+    g_n_argov--;
+    buf_puts(b, "; })");
+    return 1;
+  }
+  if (!(ty_is_hash(rt) || rt == TY_STRING || rt == TY_STRBUF || rt == TY_SYMBOL ||
+        rt == TY_INT || rt == TY_BIGINT || rt == TY_FLOAT || rt == TY_NIL ||
+        rt == TY_BOOL || rt == TY_RANGE || rt == TY_FLOAT_RANGE || rt == TY_STR_RANGE))
+    return 0;
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  TyKind ret = comp_ntype(c, id);
+  int t = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", t);
+  if (rt == TY_SYMBOL) { buf_puts(b, "sp_box_sym("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+  else emit_boxed(c, recv, b);
+  const char *op = nt_str(nt, id, "call_operator");
+  if (op && sp_streq(op, "&.")) buf_printf(b, "; if (_t%d.tag != SP_TAG_NIL) { ", t);
+  else buf_puts(b, "; { ");
+  for (int i = 0; i < argc; i++) { buf_puts(b, "(void)("); emit_expr(c, argv[i], b); buf_puts(b, "); "); }
+  buf_printf(b, "sp_raise_poly_nomethod(\"at\", _t%d); } %s; })", t,
+             ret == TY_RANGE ? "(sp_Range){0}" : default_value(ret));
+  return 1;
+}
+
 static void emit_call_held(Compiler *c, int id, Buf *b) {
+  if (emit_at_without_array(c, id, b)) return;
   if (emit_boxed_class_aref(c, id, b)) return;
   /* a tuple element read typed as the element itself: the read answers the
      boxed element, unboxed here */

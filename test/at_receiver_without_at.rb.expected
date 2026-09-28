@@ -1,0 +1,34 @@
+undefined method 'at' for an instance of Hash
+undefined method 'at' for an instance of Hash
+undefined method 'at' for an instance of Hash
+undefined method 'at' for an instance of String
+undefined method 'at' for an instance of Hash
+undefined method 'at' for an instance of Hash
+undefined method 'at' for an instance of Hash
+undefined method 'at' for an instance of Integer
+undefined method 'at' for an instance of Hash
+5
+undefined method 'at' for an instance of String
+undefined method 'at' for an instance of Hash
+undefined method 'at' for an instance of String
+undefined method 'at' for an instance of Symbol
+undefined method 'at' for an instance of Integer
+undefined method 'at' for nil
+2
+3
+[2]
+nil
+9
+undefined method 'at' for an instance of Hash
+:done
+undefined method 'at' for an instance of String
+3
+undefined method 'at' for an instance of Hash
+1.5
+[1, 2]
+:a
+undefined method 'at' for an instance of Symbol
+undefined method 'at' for an instance of Hash
+nil
+nil
+NoMethodError

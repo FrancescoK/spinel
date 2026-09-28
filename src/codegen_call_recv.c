@@ -14670,10 +14670,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, at != TY_INT ? "sp_poly_index_poly("
                     : expr_is_arr_or_nil(c, recv) ? "sp_poly_arr_get_aon("
                                                   : "sp_poly_arr_get_hash(");
-        int was_at = nt_int(c->nt, id, "was_at", 0);
-        if (was_at) buf_puts(b, "sp_poly_ary_chk(");
         emit_expr(c, recv, b);
-        if (was_at) buf_puts(b, ", \"at\", 0)");
         buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         if (uns) buf_puts(b, ")");
         return 1;
