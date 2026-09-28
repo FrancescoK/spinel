@@ -3677,6 +3677,14 @@ else {
               if (df_boxed) emit_boxed(c, argv[0], b); else emit_float_expr(c, argv[0], b);
               buf_printf(b, "); !sp_float_is_nil(_t%d) ? sp_box_float(_t%d) : ", tdr, tdr);
             }
+            else if (a0 == TY_POLY) {
+              /* a boxed needle: a String compares, anything else is not
+                 there, as include? and index read it (#4458) */
+              int tv = ++g_tmp;
+              buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
+              buf_printf(b, "; const char *_t%d = _t%d.tag == SP_TAG_STR ? sp_StrArray_delete(%s, _t%d.v.s)"
+                            " : (const char *)0; _t%d ? sp_box_str(_t%d) : ", tdr, tv, rdb.p, tv, tdr, tdr);
+            }
             else {
               buf_printf(b, "({ const char *_t%d = sp_StrArray_delete(%s, ", tdr, rdb.p);
               emit_expr(c, argv[0], b);
@@ -3703,6 +3711,13 @@ else {
         snprintf(tyl, sizeof tyl, "sp_%sArray *", k);
         int cdl = hold_recv_open(c, recv, 0, tyl, "SP_GC_ROOT", b, &rdl);
         if (rt == TY_INT_ARRAY) emit_int_array_delete(c, rdl.p, argv[0], b);
+        else if (rt == TY_STR_ARRAY && a0 == TY_POLY) {
+          /* a boxed needle, read as the block form above reads it */
+          int tv = ++g_tmp;
+          buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
+          buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_StrArray_delete(%s, _t%d.v.s) : (const char *)0; })",
+                     tv, rdl.p, tv);
+        }
         else {
           buf_printf(b, "sp_%sArray_delete%s(%s, ", k, df_boxed ? "_key" : "", rdl.p);
           if (df_boxed) emit_boxed(c, argv[0], b);
