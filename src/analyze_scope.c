@@ -332,6 +332,64 @@ void topup_forwarding_arity(Compiler *c) {
   }
 }
 
+/* `super(...)` in a Struct or Data initialize reaches the built-in one that
+   sets the members, which has no method scope to forward into. Spell the
+   forward out from the synthesized params, `super(__fwd_0, .., k: k)`, so it
+   sets the members as the same explicit super would. */
+void expand_struct_forwarding_super(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_SuperNode) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an == 0 || !nt_type(nt, av[an - 1]) ||
+        !sp_streq(nt_type(nt, av[an - 1]), "ForwardingArgumentsNode")) continue;
+    int si = id < c->node_cap ? c->nscope[id] : -1;
+    if (si <= 0 || si >= c->nscopes) continue;
+    Scope *s = &c->scopes[si];
+    if (s->is_cmethod || s->class_id < 0 || !s->name || !sp_streq(s->name, "initialize") ||
+        !scope_is_forwarding(c, s)) continue;
+    ClassInfo *cls = &c->classes[s->class_id];
+    if (!cls->is_struct && !cls->is_data) continue;
+    if (cls->parent >= 0 && comp_method_in_chain(c, cls->parent, "initialize", NULL) >= 0) continue;
+    int pn = nt_ref(nt, s->def_node, "parameters");
+    int nreq = 0, nopt = 0;
+    nt_arr(nt, pn, "requireds", &nreq);
+    nt_arr(nt, pn, "optionals", &nopt);
+    int first = nt->count;
+    int *na = malloc(sizeof(int) * (size_t)(an + s->nparams + 1));
+    int *kels = malloc(sizeof(int) * (size_t)(s->nparams + 1));
+    if (!na || !kels) { free(na); free(kels); continue; }
+    int nn = 0, nk = 0;
+    for (int a = 0; a < an - 1; a++) na[nn++] = av[a];
+    for (int p = nreq + nopt; p < s->nparams; p++) {
+      const char *nm = s->pnames[p];
+      if (!nm || p == s->rest_idx || p == s->kwrest_idx) continue;
+      int lr = nt_new_node(nt, "LocalVariableReadNode");
+      nt_node_set_str(nt, lr, "name", nm);
+      nt_node_set_int(nt, lr, "depth", 0);
+      if (strncmp(nm, "__fwd_", 6) == 0) { na[nn++] = lr; continue; }
+      int sy = nt_new_node(nt, "SymbolNode");
+      nt_node_set_str(nt, sy, "value", nm);
+      int as = nt_new_node(nt, "AssocNode");
+      nt_node_set_ref(nt, as, "key", sy);
+      nt_node_set_ref(nt, as, "value", lr);
+      kels[nk++] = as;
+    }
+    if (nk > 0) {
+      int kwh = nt_new_node(nt, "KeywordHashNode");
+      nt_node_set_arr(nt, kwh, "elements", kels, nk);
+      na[nn++] = kwh;
+    }
+    nt_node_set_arr(nt, args, "arguments", na, nn);
+    free(na); free(kels);
+    comp_grow_node_arrays(c);
+    for (int k = first; k < nt->count; k++) c->nscope[k] = si;
+  }
+}
+
 void walk_scope(Compiler *c, int id, int scope_idx, int class_id);
 
 /* String form of an int/string/symbol literal node, for compile-time

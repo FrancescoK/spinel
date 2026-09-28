@@ -3723,6 +3723,58 @@ static void desugar_struct_index_ctor(Compiler *c) {
   }
 }
 
+/* Data.new hands its positional arguments to initialize as keywords named by
+   the members in order, so a user `def initialize(x:, y: 5)` is reached by
+   `D.new(1, 2)` too. Rewrite such a call to `D.new(x: 1, y: 2)`; a Data
+   class without its own initialize fills the members positionally already. */
+static void desugar_data_positional_new(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "new")) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    NodeKind rk = nt_kind(nt, recv);
+    if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) continue;
+    int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+    if (ci < 0 || comp_method_in_chain(c, ci, "initialize", NULL) < 0) continue;
+    int dc = ci;
+    for (int g = 0; dc >= 0 && !c->classes[dc].is_data && g < 64; g++) dc = c->classes[dc].parent;
+    if (dc < 0 || !c->classes[dc].is_data) continue;
+    ClassInfo *dcls = &c->classes[dc];
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an == 0 || an > dcls->nivars) continue;
+    int plain = 1;
+    for (int a = 0; a < an && plain; a++) {
+      NodeKind k = nt_kind(nt, av[a]);
+      plain = k != NK_SplatNode && k != NK_KeywordHashNode && k != NK_BlockArgumentNode &&
+              !(nt_type(nt, av[a]) && sp_streq(nt_type(nt, av[a]), "ForwardingArgumentsNode"));
+    }
+    if (!plain) continue;
+    int *els = malloc(sizeof(int) * (size_t)an);
+    if (!els) continue;
+    int first = nt->count;
+    int kwh = nt_new_node(nt, "KeywordHashNode");
+    for (int a = 0; a < an; a++) {
+      int sy = nt_new_node(nt, "SymbolNode");
+      nt_node_set_str(nt, sy, "value", dcls->ivars[a] + 1);
+      int as = nt_new_node(nt, "AssocNode");
+      nt_node_set_ref(nt, as, "key", sy);
+      nt_node_set_ref(nt, as, "value", av[a]);
+      els[a] = as;
+    }
+    nt_node_set_arr(nt, kwh, "elements", els, an);
+    nt_node_set_arr(nt, args, "arguments", &kwh, 1);
+    free(els);
+    int sc = id < c->node_cap ? c->nscope[id] : 0;
+    comp_grow_node_arrays(c);
+    for (int k = first; k < nt->count; k++) c->nscope[k] = sc;
+  }
+}
+
 static void synth_struct_each(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int ncls0 = c->nclasses;
@@ -15979,7 +16031,9 @@ void analyze_program(Compiler *c) {
   }
 
   resolve_parents(c);
+  desugar_data_positional_new(c);
   topup_forwarding_arity(c);
+  expand_struct_forwarding_super(c);
   inherit_members(c);
   register_includes(c);
   register_include_attrs(c);
