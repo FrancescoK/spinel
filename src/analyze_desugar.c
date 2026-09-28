@@ -4109,6 +4109,32 @@ static int dmp_local_writes(NodeTable *nt, int id, int lvl, const char *nm) {
   return n;
 }
 
+/* `define_method(:m, instance_method(:x))` -> `alias_method(:m, :x)`: both
+   copy x's current body under the new name. */
+static int dmp_instance_method_alias(NodeTable *nt, int call, const char *cn, int src, int blk) {
+  if (!sp_streq(cn, "define_method") || blk >= 0 || nt_kind(nt, src) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, src, "name");
+  int recv = nt_ref(nt, src, "receiver");
+  if (!nm || !sp_streq(nm, "instance_method") || nt_ref(nt, src, "block") >= 0 ||
+      (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode)) return 0;
+  int sargs = nt_ref(nt, src, "arguments");
+  int sn = 0; const int *sv = sargs >= 0 ? nt_arr(nt, sargs, "arguments", &sn) : NULL;
+  if (sn != 1 || nt_kind(nt, sv[0]) != NK_SymbolNode) return 0;
+  int args = nt_ref(nt, call, "arguments");
+  int an = 0; const int *av = nt_arr(nt, args, "arguments", &an);
+  if (nt_kind(nt, av[0]) == NK_StringNode) {
+    char mname[256];
+    snprintf(mname, sizeof mname, "%s", nt_str(nt, av[0], "content"));
+    nt_node_set_type(nt, av[0], "SymbolNode");
+    nt_node_set_str(nt, av[0], "value", mname);
+  }
+  int na[2] = { av[0], sv[0] };
+  nt_node_set_arr(nt, args, "arguments", na, 2);
+  nt_node_set_str(nt, call, "name", "alias_method");
+  nt_node_reset(nt, src, "NilNode");
+  return 1;
+}
+
 /* `define_method(:m, <proc>)` / `define_method(:m, &<proc>)` in a class,
    module or `class << self` body, where <proc> is a Proc literal or a body
    local assigned one once, earlier in the body -> `define_method(:m) { }`
@@ -4139,6 +4165,27 @@ int desugar_define_method_proc_arg(Compiler *c) {
       else if (an == 1 && blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode)
         src = nt_ref(nt, blk, "expression");
       if (src < 0) continue;
+      if (dmp_instance_method_alias(nt, id, cn, src, blk)) {
+        changed = 1;
+        if (bv[i] == id) continue;
+        /* `private define_method(:m, ...)` -> `alias_method(:m, :x); private :m` */
+        int vis = bv[i];
+        int aa = nt_ref(nt, id, "arguments");
+        int an2 = 0; const int *av2 = nt_arr(nt, aa, "arguments", &an2);
+        int name = nt_clone_subtree(nt, av2[0]);
+        int *nb = malloc(sizeof(int) * (size_t)(bn + 1));
+        if (!nb || name < 0) { free(nb); continue; }
+        memcpy(nb, bv, sizeof(int) * (size_t)i);
+        nb[i] = id;
+        nb[i + 1] = vis;
+        memcpy(nb + i + 2, bv + i + 1, sizeof(int) * (size_t)(bn - i - 1));
+        nt_node_set_arr(nt, body, "body", nb, bn + 1);
+        free(nb);
+        nt_node_set_arr(nt, nt_ref(nt, vis, "arguments"), "arguments", &name, 1);
+        bv = nt_arr(nt, body, "body", &bn);
+        i++;
+        continue;
+      }
       int lit = dmp_literal_block(nt, src), copy = 0;
       if (lit < 0 && nt_kind(nt, src) == NK_LocalVariableReadNode &&
           nt_int(nt, src, "depth", 0) == 0) {
