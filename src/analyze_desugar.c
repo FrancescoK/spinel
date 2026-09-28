@@ -6302,6 +6302,48 @@ static int sym_proc_blockify_op(Compiler *c, int id) {
   return 1;
 }
 
+/* Whether some user class has a block-taking method `nm`, which a poly
+   receiver reaches through the class-id dispatch
+   (poly_block_call_needs_dispatch) rather than the poly map loop. */
+static int user_block_method(Compiler *c, const char *nm) {
+  for (int k = 0; k < c->nclasses; k++) {
+    int mi = comp_method_in_chain(c, k, nm, NULL);
+    if (mi < 0) continue;
+    Scope *m = &c->scopes[mi];
+    if (m->yields || (m->blk_param && m->blk_param[0])) return 1;
+  }
+  return 0;
+}
+
+/* `&:m` block `blk` as one taking every yielded value, for a call the
+   class-id dispatch may serve: it lifts the block, so a user method
+   yielding two values reaches it without sym_proc_pair.
+   { |*__spr_N| __spr_N.length > 1 ? __spr_N[0].m(__spr_N[1]) : __spr_N[0].m } */
+static int sym_proc_rest_view(Compiler *c, int blk, const char *mn) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int pn = nt_ref(nt, nt_ref(nt, blk, "parameters"), "parameters");
+  char rn[48]; snprintf(rn, sizeof rn, "__spr_%d", blk);
+  BsB b = { nt, 1 };
+  int base = nt->count;
+  int rest = bs_new(&b, "RestParameterNode");
+  if (rest < 0) return 0;
+  nt_node_set_str(nt, rest, "name", rn);
+  int second = bs_index(&b, rn, 1);
+  int two = bs_call(&b, bs_index(&b, rn, 0), mn, &second, 1);
+  int one = bs_call(&b, bs_index(&b, rn, 0), mn, NULL, 0);
+  int body = bs_if(&b, bs_len_gt(&b, rn, 1), &two, 1, &one, 1);
+  int stmts = bs_stmts(&b, &body, 1);
+  if (!b.ok || stmts < 0) return 0;
+  nt_node_set_arr(nt, pn, "requireds", NULL, 0);
+  nt_node_set_ref(nt, pn, "rest", rest);
+  nt_node_set_ref(nt, blk, "body", stmts);
+  comp_grow_node_arrays(c);
+  for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[blk];
+  LocalVar *lv = scope_local_intern(comp_scope_of(c, blk), rn);
+  if (lv) lv->is_block_param = 1;
+  return 1;
+}
+
 /* `&:m` of a map over a receiver known only at run time: an Enumerator
    yielding two values calls m on the first with the second, which the
    poly map loop decides per call by the flag it carries
@@ -6318,6 +6360,7 @@ int sym_proc_poly_pair_view(Compiler *c, int id) {
   int blk = nt_ref(nt, id, "block");
   const char *mn = nt_kind(nt, blk) == NK_BlockNode ? sym_proc_block_name(nt, blk) : NULL;
   if (!mn || nt_ref(nt, blk, "sym_proc_pair") >= 0) return changed;
+  if (user_block_method(c, nm)) return sym_proc_rest_view(c, blk, mn) | changed;
   int pn = nt_ref(nt, nt_ref(nt, blk, "parameters"), "parameters");
   int P = 0; const int *pre = nt_arr(nt, pn, "requireds", &P);
   const char *xn = nt_str(nt, pre[0], "name");
