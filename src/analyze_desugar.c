@@ -1559,7 +1559,7 @@ int desugar_dynamic_send(Compiler *c) {
           for (int k = 0; k < nrn; k++) { if (!anh_has(&answers, rn[k])) anh_add(&answers, rn[k]); else free(rn[k]); }
           free(rn);
         }
-        for (int k = 0; k < ncand && npick < 1024; k++)
+        for (int k = 0; k < ncand; k++)
           if (anh_has(&answers, cand[k])) picked[npick++] = cand[k];
         for (int k = 0; k < ncand && npick < 256; k++)
           if (!anh_has(&answers, cand[k])) picked[npick++] = cand[k];
