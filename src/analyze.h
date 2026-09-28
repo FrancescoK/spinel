@@ -37,6 +37,7 @@ int an_re_has_captures(const char *src);
 int an_send_name_is_computed(Compiler *c, int arg);
 int an_str_mutator_name(const char *nm);
 int an_indexed_each_source(const NodeTable *nt, int recv);
+void an_node_dir(const NodeTable *nt, int id, char *dir, size_t cap);
 
 /* Infer (and cache) the type of node `id`. Used during analysis; codegen
    reads the cached results via comp_ntype. */
