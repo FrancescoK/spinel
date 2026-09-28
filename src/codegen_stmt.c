@@ -8330,6 +8330,7 @@ else {
     else if (ivt2 == TY_BOOL || ivt2 == TY_STRING) snprintf(cond2, sizeof cond2, "%s%s", is_or ? "!" : "", ref2);
     else if (ivt2 == TY_INT) snprintf(cond2, sizeof cond2, "%s %s= SP_INT_NIL", ref2, is_or ? "=" : "!");
     else if (ivt2 == TY_SYMBOL) snprintf(cond2, sizeof cond2, "%s %s= (sp_sym)-1", ref2, is_or ? "=" : "!");   /* nilable symbol: (sp_sym)-1 is the nil sentinel */
+    else if (ivt2 == TY_CLASS) snprintf(cond2, sizeof cond2, "%ssp_class_nil_p(%s)", is_or ? "" : "!", ref2);
     /* a pointer-backed ivar (fiber/proc/object/array/hash/...) reads falsy
        when NULL, so `@x ||= v` is `if (!@x) @x = v` (e.g. PPU's
        `@fiber ||= Fiber.new { ... }`). Without this the init was dropped. */
@@ -9467,6 +9468,7 @@ else {
       if (lv->type == TY_INT)          buf_printf(b, "%s != SP_INT_NIL", gref);
       else if (lv->type == TY_FLOAT)   buf_printf(b, "!sp_float_is_nil(%s)", gref);
       else if (lv->type == TY_POLY)    buf_printf(b, "sp_poly_truthy(%s)", gref);
+      else if (lv->type == TY_CLASS)   buf_printf(b, "!sp_class_nil_p(%s)", gref);
       else                             buf_puts(b, gref);
       if (is_or) buf_puts(b, ")");
       buf_printf(b, ") { gv_%s = ", rn);

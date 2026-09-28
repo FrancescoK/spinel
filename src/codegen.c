@@ -1685,7 +1685,7 @@ void declare_local_named(Compiler *c, Buf *b, LocalVar *lv, const char *name, in
     case TY_OPENSTRUCT: buf_puts(&cty, "sp_OpenStruct *"); init = "NULL"; ptr = 1; break;
     case TY_STRING: buf_puts(&cty, "const char *"); init = "NULL"; ptr = 1; break;  /* nil until assigned (#3295) */
     case TY_POLY:   buf_puts(&cty, "sp_RbVal"); init = "sp_box_nil()"; break;
-    case TY_CLASS:  buf_puts(&cty, "sp_Class"); init = "((sp_Class){-1})"; break;
+    case TY_CLASS:  buf_puts(&cty, "sp_Class"); init = "SP_CLASS_NIL"; break;
     default:
       if (comp_ty_value_obj(c, t)) { emit_ctype(c, t, &cty); init = "{0}"; ptr = 0; }
       else if (is_scalar_ret(t) && t != TY_UNKNOWN) { emit_ctype(c, t, &cty); init = "NULL"; ptr = 1; }
@@ -7074,6 +7074,9 @@ static const char *ivar_scalar_nil_init(TyKind t) {
      (#3210). */
   if (t == TY_INT) return "SP_INT_NIL";
   if (t == TY_SYMBOL) return "((sp_sym)-1)";
+  /* a Class slot's zero pattern is class index 0, a real class: `@k ||= String`
+     kept it and answered the first class of the program (#5357) */
+  if (t == TY_CLASS) return "SP_CLASS_NIL";
   return NULL;
 }
 

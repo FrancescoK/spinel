@@ -1742,6 +1742,8 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         snprintf(condb, sizeof condb, "%s %s= SP_INT_NIL", ref3, is_or ? "=" : "!");
       else if (ivt3 == TY_SYMBOL)   /* nilable symbol: (sp_sym)-1 is the nil sentinel */
         snprintf(condb, sizeof condb, "%s %s= (sp_sym)-1", ref3, is_or ? "=" : "!");
+      else if (ivt3 == TY_CLASS)   /* a Class slot's nil is SP_CLASS_NIL (#5357) */
+        snprintf(condb, sizeof condb, "%ssp_class_nil_p(%s)", is_or ? "" : "!", ref3);
       /* a pointer-backed ivar (object/array/hash/fiber/proc/...) reads falsy
          when NULL, so `@x ||= v` is `if (!@x) @x = v` and `@x &&= v` is
          `if (@x) @x = v`. Falling through to a bare read dropped the init when

@@ -1931,7 +1931,7 @@ const char *default_value(TyKind t) {
     case TY_ARGF:    return "NULL";
     case TY_ENUMERATOR: return "NULL";
     case TY_POLY:    return "sp_box_nil()";
-    case TY_CLASS:   return "((sp_Class){-1})";
+    case TY_CLASS:   return "(SP_CLASS_NIL)";   /* a struct value: callers test for the leading paren */
     default:        return (ty_is_hash(t) || ty_is_object(t) || ty_is_obj_array(t)) ? "NULL" : "0";
   }
 }
