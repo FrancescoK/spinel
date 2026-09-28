@@ -55,3 +55,18 @@ p s
 hh = [{a: 1}, 2]
 hh.each { |o| o[:b] = 2 if o.is_a?(Hash) }
 p hh
+
+# A method that hands the receiver on (a block argument, its own result)
+# must hand on the element, not a copy of it.
+r = [[3, 1], "s"]
+r.each { |o| o.tap { |a| a.push(1) } if o.is_a?(Array) }
+r.each { |o| o.then { |a| a.push(2) } if o.is_a?(Array) }
+r.each { |o| o.yield_self { |a| a.push(3) } if o.is_a?(Array) }
+r.each { |o| o.itself.push(4) if o.is_a?(Array) }
+r.each { |o| p o.itself.equal?(r[0]) if o.is_a?(Array) }
+r.each { |o| o.send(:push, 5) if o.is_a?(Array) }
+r.each { |o| o.public_send(:push, 6) if o.is_a?(Array) }
+r.each { |o| o.dup.push(0) if o.is_a?(Array) }
+r.each { |o| o.select { |e| e > 1 }.push(0) if o.is_a?(Array) }
+r.each { |o| p [o.size, o.first, o.sum, o.include?(3), o.join("-"), o.map { |e| e + 1 }] if o.is_a?(Array) }
+p r
