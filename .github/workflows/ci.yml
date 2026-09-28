@@ -6,6 +6,14 @@ on:
   pull_request:
     branches: [master]
 
+# One run per branch at a time: a push that supersedes a queued or running
+# run cancels it. Every run is 13 jobs against a small runner pool, and a
+# busy afternoon queued 22 master runs and several per PR branch, so a
+# result arrived hours late; only the newest commit of a branch matters.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # The corpus is what a job's wall time is made of (six minutes of the
   # eight on a 4-vCPU runner), so each lane runs it as three parallel
