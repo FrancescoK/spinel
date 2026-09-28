@@ -5924,7 +5924,15 @@ int infer_ivar_types(Compiler *c) {
            typed array's own kind (`[0, 0]` for a pushed "one", #4196). Two
            typed kinds still box: their readers were typed from the writes,
            and the box is what keeps them consistent. */
-        if (merged == TY_POLY && ci->ivar_types[iv] == TY_POLY_ARRAY && ty_is_array(vt))
+        /* and the same the other way round: the slot may be the TYPED array
+           and the boxed one the value being written, which is what a slot
+           re-derived by the #5499 re-narrow looks like -- its pushes fold to
+           `int_array` before the pushed value re-settles, and the next write
+           of a boxed array then unified the two array kinds to the plain poly
+           SCALAR. The slot only ever holds an Array either way, so the answer
+           is the boxed ARRAY, not a boxed value (#5521). */
+        if (merged == TY_POLY && ty_is_array(ci->ivar_types[iv]) && ty_is_array(vt) &&
+            (ci->ivar_types[iv] == TY_POLY_ARRAY || vt == TY_POLY_ARRAY))
           merged = TY_POLY_ARRAY;
         sp_ivwatch(nm, "ivar_write_merge", ci->ivar_types[iv], merged);
         if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
