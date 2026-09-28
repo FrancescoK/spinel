@@ -2055,6 +2055,7 @@ int comp_cbody_call_mi(Compiler *c, int id, const char *name) {
 
 TyKind proc_call_ret(Compiler *c, int recv) {
   TyKind r = proc_ret_of(c, recv);
+  if (r == TY_UNKNOWN && g_infer_optimistic) return TY_UNKNOWN;
   return r == TY_UNKNOWN ? TY_POLY : r;
 }
 
