@@ -4844,18 +4844,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
       nt_ref(nt, recv, "block") < 0) {
-    const char *rn = nt_str(nt, recv, "name");
-    int chain_arr = -1;
-    if (rn && sp_streq(rn, "each_with_index")) {
-      chain_arr = nt_ref(nt, recv, "receiver");
-    }
-    else if (rn && sp_streq(rn, "with_index")) {
-      int wir = nt_ref(nt, recv, "receiver");
-      if (wir >= 0 && nt_type(nt, wir) && sp_streq(nt_type(nt, wir), "CallNode") &&
-          nt_str(nt, wir, "name") && sp_streq(nt_str(nt, wir, "name"), "each") &&
-          nt_ref(nt, wir, "block") < 0)
-        chain_arr = nt_ref(nt, wir, "receiver");
-    }
+    int chain_arr = an_indexed_each_source(nt, recv);
     TyKind chain_at = chain_arr >= 0 ? infer_type(c, chain_arr) : TY_UNKNOWN;
     if (ty_is_array(chain_at)) {
       TyKind elem = ty_array_elem(chain_at);
