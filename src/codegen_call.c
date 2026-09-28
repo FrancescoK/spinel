@@ -624,6 +624,53 @@ static void emit_ie_param_default(Compiler *c, TyKind t, Buf *b) {
   buf_puts(b, default_value(t));
 }
 
+/* instance_exec's optional block parameters take the positional args past the
+   `npar` requireds, or their defaults; a `*rest` collects the args past those
+   into a poly array (#2957); keyword parameters and `**rest` bind from the
+   call's trailing keyword hash `kwh`. */
+static void emit_ie_rest_kw_binds(Compiler *c, int id, int blk, int pnode, int npar,
+                                  const int *iav, int iac, int kwh) {
+  const NodeTable *nt = c->nt;
+  int on = 0; const int *opts = pnode >= 0 ? nt_arr(nt, pnode, "optionals", &on) : NULL;
+  for (int k = 0; k < on; k++) {
+    const char *opn = nt_str(nt, opts[k], "name");
+    LocalVar *olv = opn ? scope_local(comp_scope_of(c, opts[k]), opn) : NULL;
+    int vn = npar + k < iac ? iav[npar + k] : nt_ref(nt, opts[k], "value");
+    if (!olv || olv->type == TY_UNKNOWN || vn < 0) continue;
+    Buf vb; memset(&vb, 0, sizeof vb);
+    if (olv->type == TY_POLY) emit_boxed(c, vn, &vb);
+    else if (comp_ntype(c, vn) == TY_POLY) {
+      Buf eb = expr_buf(c, vn);
+      emit_unbox_text(c, olv->type, eb.p ? eb.p : "", &vb); free(eb.p);
+    }
+    else emit_expr(c, vn, &vb);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "lv_%s = %s;\n", rename_local(opn), vb.p ? vb.p : "0");
+    free(vb.p);
+  }
+  npar += on;
+  int restp = pnode >= 0 ? nt_ref(nt, pnode, "rest") : -1;
+  if (restp >= 0 && nt_type(nt, restp) && sp_streq(nt_type(nt, restp), "RestParameterNode")) {
+    const char *rpn = nt_str(nt, restp, "name");
+    LocalVar *rlv = rpn ? scope_local(comp_scope_of(c, restp), rpn) : NULL;
+    if (rpn && rlv && rlv->type != TY_UNKNOWN) {
+      int rta = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", rta, rta);
+      for (int p = npar; p < iac; p++) {
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", rta);
+        emit_boxed(c, iav[p], g_pre);
+        buf_puts(g_pre, ");\n");
+      }
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "lv_%s = _t%d;\n", rename_local(rpn), rta);
+    }
+  }
+  if (block_keyword_name(c, blk, 0) || block_kwrest_name(c, blk))
+    emit_block_kw_binds(c, blk, kwh, comp_scope_of(c, id), g_pre, g_indent, 0, NULL);
+}
+
 static int ie_forward_absent(Compiler *c, int id, int barg) {
   const NodeTable *nt = c->nt;
   if (resolve_forwarded_block(c, barg) < 0) return !g_yield_proc_ref && !g_current_scope_is_lowered;
@@ -8509,6 +8556,23 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         }
         else emit_poly_callable_prearm(c, name, argc, atmp, atmp_ty, NULL, tv, tr, ret,
                                        argc == 0 ? 0 : nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? 2 : 1, b);
+      }
+      else if (kwh >= 0 && !has_splat_arg &&
+               (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]")) &&
+               argc <= SP_PROC_ARG_SLOTS) {
+        /* The keyword split has no hash for a callable to take: build one
+           from the per-key temps, only when the slot holds a callable, and
+           pass it as the trailing argument marked as keywords. */
+        int kht = ++g_tmp;
+        buf_printf(b, "sp_SymPolyHash *_t%d = NULL; SP_GC_ROOT(_t%d); "
+                      "if (_t%d.tag == SP_TAG_OBJ && (_t%d.cls_id == SP_BUILTIN_PROC"
+                      " || _t%d.cls_id == SP_BUILTIN_CURRY || _t%d.cls_id == SP_BUILTIN_METHOD)) _t%d = ",
+                   kht, kht, tv, tv, tv, tv, kht);
+        emit_kwh_sym_hash(c, &kw, NULL, b);
+        buf_puts(b, "; ");
+        atmp[pos_argc] = kht;
+        atmp_ty[pos_argc] = TY_SYM_POLY_HASH;
+        emit_poly_callable_prearm(c, name, argc, atmp, atmp_ty, NULL, tv, tr, ret, 2, b);
       }
       else if (splat_a >= 0)
         emit_poly_callable_spread_prearm(c, name, splat_a, atmp, atmp_ty,
@@ -20603,12 +20667,10 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
      publishes. Bound one C argument per slot, `m.to_proc.call(1, 2)` on
      `def r(*v)` read the Integer as the array and crashed, `def o(a, b =
      2)` called with one answered from an unset b, and a wrong count went
-     through unchecked. A required keyword parameter, a required one after
-     the rest, more parameters than the
-     channel's 16 slots, or a bound builtin's wrapper keep the plain
-     positional binding; a declared OPTIONAL keyword parameter takes its
-     default (the proc ABI carries no keywords) and the rest of the
-     signature binds as usual. */
+     through unchecked. A `**kwrest`, a post-rest positional, more
+     parameters than the channel's 16 slots, or a bound builtin's wrapper
+     keep the plain positional binding; a declared keyword parameter binds
+     from the call's keyword hash, or takes its default. */
   int bind = tm->kwrest_idx < 0 && tm->npost_rest == 0 && !tm->cs_synth && !bam_wrapper(tm) &&
              np - shift <= SP_PROC_ARG_SLOTS;
   int nreq = 0, nfixed = 0;
@@ -20616,26 +20678,21 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
     if (k == tm->rest_idx) continue;
     if (!tm->pnames[k] || (tm->pnames[k][0] == '_' && tm->pnames[k][1] == '_')) { bind = 0; break; }
     if (callee_has_kwarg(c, tm, tm->pnames[k])) {
-      /* A declared optional keyword param is not positional and the proc
-         ABI cannot carry a keyword, so it always takes its default and
-         does not count against the positional range. A required keyword
-         (no default), or a parameter whose name merely collides with a
-         keyword (ambiguous positional binding), still declines. */
-      if (callee_param_is_declared_kwarg(c, tm, tm->pnames[k]) &&
-          tm->pdefault && tm->pdefault[k] >= 0) continue;
+      /* A declared keyword param is not positional: it binds from the
+         call's keyword hash and does not count against the positional
+         range. A parameter whose name merely collides with a keyword
+         (ambiguous positional binding) declines. */
+      if (callee_param_is_declared_kwarg(c, tm, tm->pnames[k])) continue;
       bind = 0; break;
     }
     nfixed++;
     if (!tm->pdefault || tm->pdefault[k] < 0) nreq++;
   }
   /* Whether the target declares any keyword parameter, and whether one of
-     them is required. A required keyword can never be supplied through the
-     proc ABI (it carries no keywords), so the whole trampoline declines. A
-     target with only OPTIONAL keywords keeps working for a keyword-less
-     call (each takes its default), but a runtime trailing keyword hash has
-     no positional slot and used to be read as the next parameter's sp_int
-     (`def m(a, b = a + 1, c: 3)` called `m.to_proc.call(1, c: 5)` answered
-     `[1, <garbage>, 3]`); a runtime guard below declines that shape. */
+     them is required. The binding trampoline takes the call's trailing
+     keyword hash off the positionals (see _sp_proc_kwpos) and binds each
+     keyword from it; the positional-only arm below cannot, so a required
+     keyword declines there. */
   int has_any_kw = 0, has_req_kw = 0;
   for (int k = shift; k < np; k++) {
     if (!tm->pnames[k] || !callee_param_is_declared_kwarg(c, tm, tm->pnames[k])) continue;
@@ -20644,7 +20701,7 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
   }
   /* a float/poly parameter, or the rest's surplus, reads back from the
      boxed side-channel the call site publishes */
-  int needs_slot = boxed_src;
+  int needs_slot = boxed_src || (bind && has_any_kw);
   for (int k = shift; k < np; k++) {
     LocalVar *pp = scope_local(tm, tm->pnames[k]);
     TyKind pt = pp ? pp->type : TY_INT;
@@ -20668,7 +20725,7 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
   if (tm->rest_idx >= 0) {
     if (tm->npost_rest > 0 || tm->kwrest_idx >= 0) mtp_rest_drops_tail = 1;
     else for (int ri = tm->rest_idx + 1; ri < tm->nparams; ri++)
-      if (tm->pnames && tm->pnames[ri] &&
+      if (!bind && tm->pnames && tm->pnames[ri] &&
           callee_param_is_declared_kwarg(c, tm, tm->pnames[ri]) &&
           !(tm->pdefault && tm->pdefault[ri] >= 0)) { mtp_rest_drops_tail = 1; break; }
   }
@@ -20721,11 +20778,11 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
      shapes above are declined. */
   /* A `**kwrest` target cannot ride the fixed positional cast at all: the
      bind==0 arm below reads the kwrest slot straight from `args[]`, which
-     no proc call fills (the proc ABI carries no keywords), so a bare
+     no proc call fills, so a bare
      `m.to_proc.call(1)` read an uninitialized register as the
      sp_SymPolyHash* and the callee dereferenced it -- a SIGSEGV. Decline
      it as the rest-tail shapes above are declined. */
-  int tramp_declines = mtp_rest_drops_tail || tm->kwrest_idx >= 0 || has_req_kw ||
+  int tramp_declines = mtp_rest_drops_tail || tm->kwrest_idx >= 0 || (has_req_kw && !bind) ||
                        default_writes_body_local(c, tm) ||
                        callee_param_rename_overflow(c, tm) ||
                        np - shift > SP_PROC_ARG_SLOTS;
@@ -20745,10 +20802,38 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
   }
   else {
   if (bind) {
-    char expb[32];
-    if (tm->rest_idx >= 0) snprintf(expb, sizeof expb, "%d+", nreq);
-    else if (nreq == nfixed) snprintf(expb, sizeof expb, "%d", nfixed);
-    else snprintf(expb, sizeof expb, "%d..%d", nreq, nfixed);
+    /* The trailing argument is keywords when the call site passed it as
+       keywords (_sp_proc_kwpos); a caller that does not say has a trailing
+       Hash past the required positionals taken as keywords, as a proc
+       prologue does. */
+    if (has_any_kw)
+      buf_printf(pb, "  int _sp_kwpos = _sp_proc_kwpos; _sp_proc_kwpos = 0;\n"
+                     "  sp_int _sp_haskw = argc > 0 && argc <= SP_PROC_ARG_SLOTS && _sp_kwpos != 1"
+                     " && (_sp_kwpos == 2 || argc > %d)"
+                     " && _sp_proc_poly_args[argc-1].tag == SP_TAG_OBJ"
+                     " && sp_poly_is_hash_kind(_sp_proc_poly_args[argc-1].cls_id);\n"
+                     "  sp_RbVal _sp_kwh = _sp_haskw ? _sp_proc_poly_args[argc-1] : sp_box_nil();"
+                     " SP_GC_ROOT_RBVAL(_sp_kwh);\n"
+                     "  argc -= _sp_haskw;\n", nreq);
+    else buf_puts(pb, "  _sp_proc_kwpos = 0;\n");
+    char expb[320];
+    size_t eo;
+    if (tm->rest_idx >= 0) eo = (size_t)snprintf(expb, sizeof expb, "%d+", nreq);
+    else if (nreq == nfixed) eo = (size_t)snprintf(expb, sizeof expb, "%d", nfixed);
+    else eo = (size_t)snprintf(expb, sizeof expb, "%d..%d", nreq, nfixed);
+    /* CRuby names the required keywords in a positional-count error */
+    int nrk = 0;
+    for (int k = shift; k < np; k++)
+      if (tm->pnames[k] && callee_param_is_declared_kwarg(c, tm, tm->pnames[k]) &&
+          !(tm->pdefault && tm->pdefault[k] >= 0)) nrk++;
+    for (int k = shift, first = 1; k < np && nrk > 0 && eo < sizeof expb; k++) {
+      if (!tm->pnames[k] || !callee_param_is_declared_kwarg(c, tm, tm->pnames[k]) ||
+          (tm->pdefault && tm->pdefault[k] >= 0)) continue;
+      eo += (size_t)snprintf(expb + eo, sizeof expb - eo, "%s%s",
+                             first ? (nrk > 1 ? "; required keywords: " : "; required keyword: ") : ", ",
+                             tm->pnames[k]);
+      first = 0;
+    }
     if (nreq > 0 || tm->rest_idx < 0) {
       buf_printf(pb, "  if (argc < %d", nreq);
       if (tm->rest_idx < 0) buf_printf(pb, " || argc > %d", nfixed);
@@ -20756,18 +20841,21 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
                      " (given %%lld, expected %s)\", (long long)argc); SP_GC_ROOT_STR(_e);"
                      " sp_raise_cls(\"ArgumentError\", _e); }\n", expb);
     }
-    /* A trailing runtime keyword hash cannot be placed: the proc ABI has
-       no keyword channel, so it reaches the trampoline as one more
-       positional argument and would be bound to the next parameter's
-       C slot. The call site publishes it boxed on the side-channel, so
-       detect it and decline, matching the required-keyword / kwrest
-       declines. (An explicit braced positional hash is indistinguishable
-       here and declines too -- safe, and the same limitation the
-       generated keyword-proc body has.) */
+    /* a required keyword the hash lacks is CRuby's `missing keyword`, and
+       with no **kwrest to take them, a key naming no keyword is its
+       `unknown keyword`, both before any default runs */
     if (has_any_kw) {
-      buf_puts(pb, "  if (argc > 0) { sp_RbVal _kh = _sp_proc_poly_args[argc - 1];"
-                   " if (_kh.tag == SP_TAG_OBJ && _kh.v.p && sp_poly_is_hash_kind(_kh.cls_id))"
-                   " { sp_raise_cls(\"NoMethodError\", \"undefined method 'call' for an instance of Method\"); return 0; } }\n");
+      buf_puts(pb, "  { static const char *const _pkw[] = {");
+      for (int k = shift; k < np; k++)
+        if (tm->pnames[k] && callee_param_is_declared_kwarg(c, tm, tm->pnames[k]))
+          buf_printf(pb, "\"%s\", ", tm->pnames[k]);
+      buf_puts(pb, "0}, *const _pkr[] = {");
+      for (int k = shift; k < np; k++)
+        if (tm->pnames[k] && callee_param_is_declared_kwarg(c, tm, tm->pnames[k]) &&
+            !(tm->pdefault && tm->pdefault[k] >= 0))
+          buf_printf(pb, "\"%s\", ", tm->pnames[k]);
+      buf_puts(pb, "0}, *const _pkn[] = {0};\n"
+                   "    sp_kwargs_verify(_sp_kwh, _pkw, _pkr, _pkn, 1); }\n");
     }
     int _pd_base = g_nren;
     for (int k = shift; k < np; k++) {
@@ -20787,14 +20875,10 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
       LocalVar *pp = scope_local(tm, tm->pnames[k]);
       TyKind pt = pp ? pp->type : TY_INT;
       char slot[48]; snprintf(slot, sizeof slot, "_sp_proc_poly_args[%d]", j);
-      /* A declared optional keyword parameter cannot ride the positional
-         proc ABI, so it ALWAYS takes its default. A rest parameter leaves
-         the count unchecked above, so without forcing the default the
-         `argc > j` arm below would capture a surplus positional argument
-         that belongs to the rest array (`def m(a, *r, c: 3)` answered
-         `[1, [2, 9], 9]` for `call(1, 2, 9)`). */
-      int force_def = tm->pnames[k] && tm->pdefault && tm->pdefault[k] >= 0 &&
-                      callee_param_is_declared_kwarg(c, tm, tm->pnames[k]);
+      /* A declared keyword parameter binds from the keyword hash, never
+         from a positional slot, which may belong to a rest array
+         (`def m(a, *r, c: 3)` called `call(1, 2, 9)`). */
+      int is_kw = tm->pnames[k] && callee_param_is_declared_kwarg(c, tm, tm->pnames[k]);
       /* A non-literal default is evaluated in this generated frame too: its
          helper statements are captured so the `if (argc > j)` else-branch
          runs them (inside the function body, where the roots live), and
@@ -20832,12 +20916,20 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
         g_line_map = sv_lm2;
       }
       buf_puts(pb, "  "); emit_ctype(c, pt, pb);
-      if (force_def) {
-        buf_printf(pb, " _a%d;\n  { ", j);
-        if (dpre.p) buf_puts(pb, dpre.p);
-        buf_printf(pb, "_a%d = ", j);
-        buf_puts(pb, dexpr.p ? dexpr.p : default_value(pt));
-        buf_puts(pb, "; }\n");
+      if (is_kw) {
+        char kv[96];
+        int ksym = comp_sym_intern(c, tm->pnames[k]);
+        snprintf(kv, sizeof kv, "sp_poly_index_poly(_sp_kwh, sp_box_sym((sp_sym)%d))", ksym);
+        buf_printf(pb, " _a%d;\n  if (_sp_haskw && sp_poly_has_key(_sp_kwh, sp_box_sym((sp_sym)%d))) _a%d = ",
+                   j, ksym, j);
+        if (thunk_param_ok(c, pt)) emit_thunk_unbox(c, pt, kv, pb);
+        else emit_unbox_text(c, pt, kv, pb);
+        buf_puts(pb, ";\n  else { ");
+        if (hasdef) {
+          if (dpre.p) buf_puts(pb, dpre.p);
+          buf_printf(pb, "_a%d = %s; }\n", j, dexpr.p ? dexpr.p : default_value(pt));
+        }
+        else buf_printf(pb, "_a%d = %s; }\n", j, pt == TY_RANGE ? "(sp_Range){0}" : default_value(pt));
       }
       else {
         buf_printf(pb, " _a%d;\n  if (argc > %d) _a%d = ", j, j, j);
@@ -20887,7 +20979,8 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
     g_nren = _pd_base;
     /* the channel is consumed, as a lambda body leaves it */
     if (needs_slot)
-      buf_puts(pb, "  for (sp_int _i = 0; _i < argc && _i < 16; _i++) _sp_proc_poly_args[_i] = sp_box_nil();\n");
+      buf_printf(pb, "  for (sp_int _i = 0; _i < argc%s && _i < 16; _i++) _sp_proc_poly_args[_i] = sp_box_nil();\n",
+                 bind && has_any_kw ? " + _sp_haskw" : "");
   }
   /* The call expression. The syntactic presence of a receiver does not
      say whether the Method bound a self: `Klass.method(:cm)` names a
@@ -30602,6 +30695,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       int nnp = 0; const int *nreqs = npnode >= 0 ? nt_arr(nt, npnode, "requireds", &nnp) : NULL;
       int niargs = nt_ref(nt, id, "arguments");
       int niac = 0; const int *niav = niargs >= 0 ? nt_arr(nt, niargs, "arguments", &niac) : NULL;
+      int nkwh = nexec ? ie_call_kwhash(c, id) : -1;
+      if (nkwh >= 0) niac -= 1;
       int nbody = nt_ref(nt, nblk, "body");
       int nbn = 0; const int *nbb = nbody >= 0 ? nt_arr(nt, nbody, "body", &nbn) : NULL;
       int tself = ++g_tmp;
@@ -30622,6 +30717,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         else { if (ppoly) buf_printf(g_pre, "_t%d", tself); else emit_ie_param_default(c, plv->type, g_pre); }
         buf_puts(g_pre, ";\n");
       }
+      emit_ie_rest_kw_binds(c, id, nblk, nexec ? npnode : -1, nnp, niav, niac, nkwh);
       TyKind nbt = nbn > 0 ? comp_ntype(c, nbb[nbn - 1]) : TY_NIL;
       const char *sv_self = g_self, *sv_deref = g_self_deref;
       char selfb[32]; snprintf(selfb, sizeof selfb, "_t%d", tself);
@@ -30863,30 +30959,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           }
           buf_puts(g_pre, pdecl ? ";\n" : ");\n");
         }
-        /* a rest param (`*xs`) collects the call-site args past the requireds
-           into a poly array (#2957). Only the plain positional-args form: the
-           auto-splat and trampoline paths distribute their args differently. */
-        int restp = (is_exec && !as_kind && tramp_argc < 0 && pnode >= 0)
-                    ? nt_ref(nt, pnode, "rest") : -1;
-        if (restp >= 0 && nt_type(nt, restp) && sp_streq(nt_type(nt, restp), "RestParameterNode")) {
-          const char *rpn = nt_str(nt, restp, "name");
-          LocalVar *rlv = rpn ? scope_local(comp_scope_of(c, restp), rpn) : NULL;
-          if (rpn && rlv && rlv->type != TY_UNKNOWN) {
-            int rta = ++g_tmp;
-            emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", rta, rta);
-            for (int p = npar; p < iac; p++) {
-              emit_indent(g_pre, g_indent);
-              buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", rta);
-              emit_boxed(c, iav[p], g_pre);
-              buf_puts(g_pre, ");\n");
-            }
-            emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "lv_%s = _t%d;\n", rename_local(rpn), rta);
-          }
-        }
-        if (block_keyword_name(c, blk, 0) || block_kwrest_name(c, blk))
-          emit_block_kw_binds(c, blk, ie_kwhash, comp_scope_of(c, id), g_pre, g_indent, 0, NULL);
+        /* Only the plain positional-args form binds a `*rest`: the auto-splat
+           and trampoline paths distribute their args differently. */
+        int plain = is_exec && !as_kind && tramp_argc < 0;
+        emit_ie_rest_kw_binds(c, id, blk, plain ? pnode : -1, npar, iav, iac, ie_kwhash);
         }
       }
       if (ie_bn > 0) {
