@@ -3514,15 +3514,21 @@ static int fwd_subtree_max(const NodeTable *nt, int id) {
     for (int k = 0; k < nd->a[j].n; k++) { int m = fwd_subtree_max(nt, nd->a[j].ids[k]); if (m > mx) mx = m; }
   return mx;
 }
-static int fwd_subtree_yields(const NodeTable *nt, int def) {
-  int hi = fwd_subtree_max(nt, def);
-  for (int id = def; id <= hi; id++) {
-    if (fwd_node_is(nt, id, "YieldNode")) return 1;
-    if (fwd_node_is(nt, id, "CallNode")) {
-      const char *nm = nt_str(nt, id, "name");
-      if (nm && sp_streq(nm, "block_given?")) return 1;
-    }
+/* Walked through the references, not swept as an id range: a forwarder this
+   pass has rewritten holds its new `*` / `**` parameters at the end of the
+   table, and the ids in between belong to other methods (whose `yield`
+   would make it look block-taking). */
+static int fwd_subtree_yields(const NodeTable *nt, int id) {
+  if (id < 0 || id >= nt->count) return 0;
+  if (fwd_node_is(nt, id, "YieldNode")) return 1;
+  if (fwd_node_is(nt, id, "CallNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    if (nm && sp_streq(nm, "block_given?")) return 1;
   }
+  const SpNode *nd = &nt->nodes[id];
+  for (int j = 0; j < nd->nr; j++) if (fwd_subtree_yields(nt, nd->r[j].ref)) return 1;
+  for (int j = 0; j < nd->na; j++)
+    for (int k = 0; k < nd->a[j].n; k++) if (fwd_subtree_yields(nt, nd->a[j].ids[k])) return 1;
   return 0;
 }
 static int fwd_subtree_uses_yield_or_block(const NodeTable *nt, int def) {
