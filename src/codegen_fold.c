@@ -1023,7 +1023,7 @@ void emit_autosplat_params(Compiler *c, int block, int np, int elem_temp, int in
     /* an unused param has no C declaration; the element read is pure (#2734) */
     if (!lvp || lvp->type == TY_UNKNOWN) continue;
     TyKind pty = lvp ? lvp->type : TY_POLY;
-    char src[96]; snprintf(src, sizeof src, "sp_poly_index_poly(_t%d, sp_box_int(%d))", elem_temp, pj);
+    char src[96]; snprintf(src, sizeof src, "sp_poly_massign_get(_t%d, %d)", elem_temp, pj);
     emit_indent(g_pre, indent); buf_printf(g_pre, "lv_%s = ", pnr);
     Buf cv; memset(&cv, 0, sizeof cv); flatmap_coerce_from_poly(pty, src, &cv);
     buf_puts(g_pre, cv.p ? cv.p : src); free(cv.p); buf_puts(g_pre, ";\n");
@@ -1412,7 +1412,7 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
         for (int pj = 0; pj < nps; pj++) {
           const char *pn = block_param_name(c, block, pj);
           LocalVar *plv = (pn && bsc) ? scope_local(bsc, pn) : NULL;
-          if (plv) buf_printf(b, "lv_%s = sp_poly_index_poly(_t%d, sp_box_int(%d)); ", rename_local(pn), te, pj);
+          if (plv) buf_printf(b, "lv_%s = sp_poly_massign_get(_t%d, %d); ", rename_local(pn), te, pj);
         }
       }
       else if (p0) buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d); ", p0, k, ta, ti);
@@ -1499,7 +1499,7 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
         LocalVar *plv = (pn && bsc) ? scope_local(bsc, pn) : NULL;
         if (!plv) continue;
         char src[96];
-        snprintf(src, sizeof src, "sp_poly_index_poly(_t%d, sp_box_int(%d))", te, pj);
+        snprintf(src, sizeof src, "sp_poly_massign_get(_t%d, %d)", te, pj);
         buf_printf(b, "lv_%s = ", rename_local(pn));
         if (plv->type == TY_POLY || plv->type == TY_UNKNOWN) buf_puts(b, src);
         else emit_unbox_text(c, plv->type, src, b);
@@ -2920,7 +2920,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
     for (int li = 0; li < lc2; li++) {
       const char *ln = block_param_multi_leaf(c, block, 1, li);
       if (!ln) continue;
-      buf_printf(b, "sp_RbVal lv_%s = sp_poly_index_poly(_t%d, sp_box_int(%d)); (void)lv_%s; ",
+      buf_printf(b, "sp_RbVal lv_%s = sp_poly_massign_get(_t%d, %d); (void)lv_%s; ",
                  rename_local(ln), te2, li, rename_local(ln));
     }
   }
@@ -4342,7 +4342,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     if ((np2 == 1 && !has_rest2 && !block_param_is_multi(c, block, 0)) || (np2 == 0 && has_rest2)) {
       tpair2 = ++g_tmp;
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_bool _t%d = sp_poly_yields_pair(_t%d);\n", tpair2, trecv2);
+      buf_printf(g_pre, "int _t%d = sp_poly_yields_pair(_t%d);\n", tpair2, trecv2);
     }
     /* a Range walks as its members (#4837) */
     emit_indent(g_pre, g_indent);
@@ -4383,8 +4383,8 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
       emit_indent(g_pre, g_indent + 2);
       buf_printf(g_pre, "sp_RbVal lv_%s = sp_yielded_first(_t%d, _t%d);\n", p0p, tpair2, te3);
       emit_indent(g_pre, g_indent + 2);
-      buf_printf(g_pre, "sp_RbVal lv_%s = _t%d ? sp_poly_arr_get(_t%d, 1) : sp_box_nil();\n",
-                 rename_local(nt_str(nt, block, "sym_proc_arg")), tpair2, te3);
+      buf_printf(g_pre, "sp_RbVal lv_%s = sp_yielded_packed(_t%d, _t%d) ? sp_poly_arr_get(_t%d, 1) : sp_box_nil();\n",
+                 rename_local(nt_str(nt, block, "sym_proc_arg")), tpair2, te3, te3);
     }
     else if (p0p && tpair2) {
       emit_indent(g_pre, g_indent + 2);
@@ -4873,7 +4873,7 @@ int emit_enum_find_expr(Compiler *c, int id, Buf *b) {
   }
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "sp_Enumerator *_t%d = %s; SP_GC_ROOT(_t%d);\n", te, rb.p ? rb.p : "", te);
+  buf_printf(g_pre, "sp_Enumerator *_t%d = sp_enum_fresh_run(%s); SP_GC_ROOT(_t%d);\n", te, rb.p ? rb.p : "", te);
   free(rb.p);
   emit_indent(g_pre, g_indent);
   /* take_while collects the passing prefix; find/detect keep one element;
@@ -4903,13 +4903,17 @@ int emit_enum_find_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, din);
     buf_printf(g_pre, "if (sp_poly_eq(_t%d, _t%d)) { _t%d = TRUE; break; }\n", tv, tneedle, tres);
   }
-  /* bind block params: two params autosplat an array element; one binds it */
+  /* bind block params: two params autosplat an array element; one binds it,
+     or for take_while the first of the values a step yielded */
   LocalVar *lv0f = p0_orig && bsc ? scope_local(bsc, p0_orig) : NULL;
   if (p0 && lv0f) {   /* a discard param (`_`) has no declared local: skip */
     TyKind pt0 = lv0f->type;
     emit_indent(g_pre, din);
     buf_printf(g_pre, "lv_%s = ", p0);
-    { char vx[32]; snprintf(vx, sizeof vx, p1 ? "sp_poly_arr_get(_t%d, 0)" : "_t%d", tv);
+    { char vx[96];
+      if (p1) snprintf(vx, sizeof vx, "sp_poly_massign_get(_t%d, 0)", tv);
+      else if (take) snprintf(vx, sizeof vx, "sp_yielded_first(_t%d->yields_pair, _t%d)", te, tv);
+      else snprintf(vx, sizeof vx, "_t%d", tv);
       if (pt0 == TY_POLY) buf_puts(g_pre, vx);
       else emit_unbox_text(c, pt0, vx, g_pre); }
     buf_puts(g_pre, ";\n");
@@ -4919,7 +4923,7 @@ int emit_enum_find_expr(Compiler *c, int id, Buf *b) {
     TyKind pt1 = lv1f->type;
     emit_indent(g_pre, din);
     buf_printf(g_pre, "lv_%s = ", p1);
-    { char vx[32]; snprintf(vx, sizeof vx, "sp_poly_arr_get(_t%d, 1)", tv);
+    { char vx[48]; snprintf(vx, sizeof vx, "sp_poly_massign_get(_t%d, 1)", tv);
       if (pt1 == TY_POLY) buf_puts(g_pre, vx);
       else emit_unbox_text(c, pt1, vx, g_pre); }
     buf_puts(g_pre, ";\n");

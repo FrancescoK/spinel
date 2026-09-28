@@ -2522,6 +2522,17 @@ sp_Enumerator *sp_Enumerator_dup(sp_Enumerator *e) {SP_GC_ROOT(e);
   *d = *e;
   return d;
 }
+void sp_PolyArray_pack_scan(void *p) {
+  sp_PolyArray *a = (sp_PolyArray *)p;
+  for (sp_int i = 0; i < a->len; i++) sp_mark_rbval(a->data[i]);
+}
+/* never pooled: a recycled pack would come back as an ordinary array still
+   carrying the pack's scan function */
+sp_PolyArray *sp_PolyArray_new_pack(void) {
+  sp_PolyArray *a = (sp_PolyArray *)sp_gc_alloc(sizeof(sp_PolyArray), NULL, sp_PolyArray_pack_scan);
+  a->data = a->inl; a->cap = SP_POLYARR_INLINE; a->len = 0;
+  return a;
+}
 void sp_Enumerator_scan(void *p) {
   sp_Enumerator *e = (sp_Enumerator *)p;
   if (e->items) sp_gc_mark(e->items);

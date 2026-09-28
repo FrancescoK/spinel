@@ -9396,6 +9396,15 @@ else {
         if (ret == TY_INT) buf_printf(b, "_t%d", tix);
         else buf_printf(b, "(_t%d == SP_INT_NIL ? sp_box_nil() : sp_box_int(_t%d))", tix, tix);
         buf_puts(b, "; break; }");
+        /* an Enumerator's find_index walks it only as far as the hit */
+        if (sp_streq(name, "find_index")) {
+          int tix2 = ++g_tmp;
+          buf_printf(b, " case SP_BUILTIN_ENUMERATOR: { sp_int _t%d = sp_enum_find_index_val(_t%d, %s); _t%d = ",
+                     tix2, tv, ab4.p ? ab4.p : "sp_box_nil()", tr);
+          if (ret == TY_INT) buf_printf(b, "_t%d", tix2);
+          else buf_printf(b, "(_t%d == SP_INT_NIL ? sp_box_nil() : sp_box_int(_t%d))", tix2, tix2);
+          buf_puts(b, "; break; }");
+        }
         free(ab4.p);
       }
       if (is_intersect) {
@@ -22215,12 +22224,18 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       int ar = nt_ref(nt, id, "arguments");
       int ac = 0; const int *av = ar >= 0 ? nt_arr(nt, ar, "arguments", &ac) : NULL;
       buf_puts(b, "sp_Fiber_yield(");
-      if (ac == 1) emit_boxed(c, av[0], b);
+      /* y.yield(*xs) yields as many values as xs holds */
+      if (ac == 1 && nt_kind(nt, av[0]) == NK_SplatNode) {
+        buf_puts(b, "sp_yield_splat_pack(");
+        emit_boxed(c, nt_ref(nt, av[0], "expression"), b);
+        buf_puts(b, ")");
+      }
+      else if (ac == 1) emit_boxed(c, av[0], b);
       else if (ac > 1) {
         /* y.yield(a, b, ...) yields an array of the values */
         int t = ++g_tmp;
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", t, t);
+        buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new_pack(); SP_GC_ROOT(_t%d);\n", t, t);
         for (int k = 0; k < ac; k++) {
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", t); emit_boxed(c, av[k], g_pre); buf_puts(g_pre, ");\n");
@@ -25816,6 +25831,18 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* Enumerator instance methods: #next / #peek (raise StopIteration past the
      end), #rewind (reset, returns self), #size. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_ENUMERATOR) {
+    /* find_index(v) walks it only as far as the hit, so an endless one
+       answers too */
+    if (sp_streq(name, "find_index") && argc == 1 && nt_ref(nt, id, "block") < 0) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_int _t%d = sp_enum_find_index_val(sp_box_obj(", t);
+      emit_expr(c, recv, b);
+      buf_puts(b, ", SP_BUILTIN_ENUMERATOR), ");
+      emit_boxed(c, argv[0], b);
+      if (comp_ntype(c, id) == TY_INT) buf_printf(b, "); _t%d; })", t);
+      else buf_printf(b, "); _t%d == SP_INT_NIL ? sp_box_nil() : sp_box_int(_t%d); })", t, t);
+      return;
+    }
     if (sp_streq(name, "next") && argc == 0) {
       buf_puts(b, "sp_Enumerator_next("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
