@@ -3409,6 +3409,20 @@ static TyKind slot_hash_variant_from_writes(Compiler *c, NodeKind rk, const char
   return want;
 }
 
+/* `$g = x || {}` (or `Hash.new`): the fallback hash takes the variant the
+   slot's own `[]=` writes imply, as a bare `{}` does, and answers it. Else
+   TY_UNKNOWN. */
+static TyKind cvar_hash_variant_from_writes(Compiler *c, const char *cvname, int dflt);
+static TyKind fallback_hash_variant(Compiler *c, int vnode, NodeKind rk, const char *sname, int *changed) {
+  int fb = an_or_empty_hash_fallback(c, vnode);
+  if (fb < 0 || !c->hash_want || fb >= c->node_cap) return TY_UNKNOWN;
+  TyKind hv = rk == NK_ClassVariableReadNode ? cvar_hash_variant_from_writes(c, sname, -1)
+                                             : slot_hash_variant_from_writes(c, rk, sname, -1);
+  if (!ty_is_hash(hv)) return TY_UNKNOWN;
+  if (c->hash_want[fb] != hv) { c->hash_want[fb] = hv; *changed = 1; }
+  return hv;
+}
+
 /* 1 iff `node` is an empty-hash producer: a bare `{}` or `Hash.new` (with no
    size/default args), which yields no key/value type of its own. */
 static int node_is_empty_hash_producer(Compiler *c, int node) {
@@ -3491,6 +3505,10 @@ int infer_global_const_types(Compiler *c) {
          the variant implied by the global's `[]=` writes so it gets a slot. */
       if (!ty_is_hash(vt) && rn && node_is_empty_hash_producer(c, vnode)) {
         TyKind hv = slot_hash_variant_from_writes(c, NK_GlobalVariableReadNode, rn, hash_new_default_arg(c, vnode));
+        if (ty_is_hash(hv)) vt = hv;
+      }
+      if (rn) {
+        TyKind hv = fallback_hash_variant(c, vnode, NK_GlobalVariableReadNode, rn, &changed);
         if (ty_is_hash(hv)) vt = hv;
       }
       /* an empty `[]` RHS leaves vt UNKNOWN (no element type); a global still
@@ -5568,6 +5586,8 @@ static int cvar_note_write(Compiler *c, ClassInfo *ci, int id) {
     if (vt == TY_NIL || vt == TY_UNKNOWN) return changed;
   } else {
     vt = cvar_empty_container_type(c, vnode, nm, infer_type(c, vnode));
+    { TyKind hv = fallback_hash_variant(c, vnode, NK_ClassVariableReadNode, nm, &changed);
+      if (ty_is_hash(hv)) vt = hv; }
     if (vt == TY_NIL) vt = nil_write_type(cur);
     if (vt == TY_NIL) return changed;
   }

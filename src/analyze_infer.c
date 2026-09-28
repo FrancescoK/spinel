@@ -7078,6 +7078,19 @@ int an_empty_container_kind(Compiler *c, int b) {
   }
   return 0;
 }
+/* `x || {}` / `x || Hash.new` with a nil (or not yet typed) left: the nil-guard
+   fallback, whose value is the empty hash on the right. That producer, else
+   -1. */
+int an_or_empty_hash_fallback(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || nt_kind(nt, node) != NK_OrNode) return -1;
+  int r = nt_ref(nt, node, "right");
+  if (r < 0 || nt_kind(nt, r) == NK_ArrayNode || !node_is_empty_container(nt, r)) return -1;
+  if (nt_kind(nt, r) == NK_CallNode && an_empty_container_new(c, r) != 2) return -1;
+  TyKind lt = infer_type(c, nt_ref(nt, node, "left"));
+  return (lt == TY_NIL || lt == TY_UNKNOWN) ? r : -1;
+}
+
 /* the other arm's (or the slot's other writes') settled type is not the
    empty literal's kind of container */
 int an_empty_container_disagrees(int kind, TyKind other) {
@@ -7104,6 +7117,9 @@ TyKind infer_uncached(Compiler *c, int id) {
     int en = pos != LLONG_MIN ? multi_return_elem_types(c, nt_ref(nt, id, "receiver"), elems, 16) : 0;
     if (pos < 0) pos += en;
     if (pos >= 0 && pos < en) return elems[pos];
+    /* `x = pair[1]` reads the boxed tuple's element back at its own type */
+    TyKind et = tuple_elem_read_unboxed(c, id);
+    if (et != TY_UNKNOWN && infer_type(c, nt_ref(nt, id, "receiver")) == TY_POLY_ARRAY) return et;
   }
 
   if (nk == NK_IntegerNode)             return nt_str(nt, id, "bigval") ? TY_BIGINT : TY_INT;
@@ -7982,7 +7998,10 @@ TyKind infer_uncached(Compiler *c, int id) {
        rather than the union: `nil_valued || []` is the nil-guard fallback,
        where the literal is the value the expression yields and unifying it
        with nil typed the whole thing nil, so `.size` on it raised
-       NoMethodError (#3462). */
+       NoMethodError (#3462). An empty `{}` whose slot's key writes chose its
+       variant is the same fallback. */
+    if (ty_is_hash(rt) && (lt == TY_NIL || lt == TY_UNKNOWN) && an_empty_container_kind(c, rnd) == 2)
+      return rt;
     if (rt == TY_UNKNOWN && rnd >= 0) {
       const char *rty = nt_type(nt, rnd);
       int rn = 0;
@@ -8000,8 +8019,12 @@ TyKind infer_uncached(Compiler *c, int id) {
          the answer boxes */
       if (rt == TY_UNKNOWN) {
         int ek = an_empty_container_kind(c, rnd);
-        if (ek && nk == NK_OrNode && (lt == TY_NIL || lt == TY_UNKNOWN))
+        if (ek && nk == NK_OrNode && (lt == TY_NIL || lt == TY_UNKNOWN)) {
+          /* the variant the slot's key writes chose (mark_empty_hash_key_ctx) */
+          if (ek == 2 && c->hash_want && rnd < c->node_cap && ty_is_hash(c->hash_want[rnd]))
+            return c->hash_want[rnd];
           return ek == 1 ? TY_POLY_ARRAY : TY_STR_POLY_HASH;
+        }
         if (an_empty_container_disagrees(ek, lt)) return TY_POLY;
       }
     }

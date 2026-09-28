@@ -47,6 +47,8 @@ TyKind infer_type(Compiler *c, int id);
    boundary. Valid only after analyze_program has settled the marking. */
 int nullable_int_value(Compiler *c, int id);
 int nullable_int_elem_read(Compiler *c, int call);
+TyKind tuple_elem_read_type(Compiler *c, int node);
+TyKind tuple_elem_read_unboxed(Compiler *c, int node);
 
 /* Re-infer every node of the subtree at `id` (children first), refreshing the
    whole type cache under the CURRENT scope-local types. The shadow-typing
