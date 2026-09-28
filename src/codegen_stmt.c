@@ -9002,9 +9002,15 @@ else {
            value really is an instance of that class. An Integer in the same
            slot takes the numeric path, as it does everywhere else a poly
            receiver dispatches to a user arm (#3733). */
+        /* ...the bit and shift operators as well: with one user `|` in the
+           program an Integer slot was read as that class's object and the
+           program crashed (#5469) */
         const char *pnum = sp_streq(op, "+") ? "sp_poly_add" : sp_streq(op, "-") ? "sp_poly_sub"
                          : sp_streq(op, "*") ? "sp_poly_mul" : sp_streq(op, "/") ? "sp_poly_div"
-                         : sp_streq(op, "%") ? "sp_poly_mod" : NULL;
+                         : sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "|") ? "sp_poly_bor"
+                         : sp_streq(op, "&") ? "sp_poly_band" : sp_streq(op, "^") ? "sp_poly_bxor"
+                         : sp_streq(op, "<<") ? "sp_poly_shl" : sp_streq(op, ">>") ? "sp_poly_shr"
+                         : sp_streq(op, "**") ? "sp_poly_pow" : NULL;
         if (pnum) buf_printf(b, "%s = ((%s).tag == SP_TAG_OBJ && (%s).cls_id == %d) ? ",
                              ref, ref, ref, poly_defcls);
         else buf_printf(b, "%s = ", ref);
