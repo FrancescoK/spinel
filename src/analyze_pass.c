@@ -2154,8 +2154,46 @@ static int ivar_has_array_write(Compiler *c, const LWIndex *ivw, int cls, const 
   return 0;
 }
 
+static int widen_arg_hash(Compiler *c, int arg);
+static int widen_arg_array(Compiler *c, int arg);
+
+/* Widens the parameters class `cls` assigns `inm` (`@c = a`) to the
+   general Array, as a push through the parameter itself would, with its
+   callers' arrays. */
+static int widen_ivar_array_params(Compiler *c, const LWIndex *ivw, int cls, const char *inm) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int r = ivw_index_first(ivw, inm); r >= 0; r = ivw->next[r]) {
+    int wi = ivw->node[r];
+    const char *wnm = nt_str(nt, wi, "name");
+    if (!wnm || !sp_streq(wnm, inm) || nt_kind(nt, wi) != NK_InstanceVariableWriteNode) continue;
+    Scope *ws = comp_scope_of(c, wi);
+    if (!ws || ws->class_id != cls) continue;
+    int wv = nt_ref(nt, wi, "value");
+    if (unassigned_param_read(c, ws, wv) >= 0) changed |= widen_arg_array(c, wv);
+  }
+  return changed;
+}
+
+/* 1 when class `cls` assigns `inm` one of its methods' own parameters
+   (`@c = h`): the ivar holds the caller's hash. */
+static int ivar_has_param_write(Compiler *c, const LWIndex *ivw, int cls, const char *inm) {
+  const NodeTable *nt = c->nt;
+  for (int r = ivw_index_first(ivw, inm); r >= 0; r = ivw->next[r]) {
+    int wi = ivw->node[r];
+    const char *wnm = nt_str(nt, wi, "name");
+    if (!wnm || !sp_streq(wnm, inm) || nt_kind(nt, wi) != NK_InstanceVariableWriteNode) continue;
+    Scope *ws = comp_scope_of(c, wi);
+    if (!ws || ws->class_id != cls) continue;
+    if (unassigned_param_read(c, ws, nt_ref(nt, wi, "value")) >= 0) return 1;
+  }
+  return 0;
+}
+
 /* Marks every hash literal class `cls` assigns to `inm` (`@c = {}`,
-   `@c ||= {}`) the poly-keyed variant. */
+   `@c ||= {}`) the poly-keyed variant. A parameter it is assigned
+   (`@c = h`) is its caller's hash, and widens as a store through the
+   parameter itself would, with its callers' hashes. */
 static void widen_ivar_hash_literals(Compiler *c, const LWIndex *ivw, int cls, const char *inm) {
   const NodeTable *nt = c->nt;
   if (!c->hash_want) return;
@@ -2168,6 +2206,8 @@ static void widen_ivar_hash_literals(Compiler *c, const LWIndex *ivw, int cls, c
     int wv = nt_ref(nt, wi, "value");
     if (wv >= 0 && wv < c->node_cap && nt_kind(nt, wv) == NK_HashNode)
       c->hash_want[wv] = TY_POLY_POLY_HASH;
+    else if (unassigned_param_read(c, ws, wv) >= 0)
+      widen_arg_hash(c, wv);
   }
 }
 
@@ -3587,6 +3627,8 @@ int infer_write_types(Compiler *c) {
         }
         sp_ivwatch(tiv[ti], is_push ? "getter_push" : "getter_idxwrite", tbefore, *tslot);
         if (*tslot != tbefore) changed = 1;
+        if (tbefore != TY_POLY_ARRAY && *tslot == TY_POLY_ARRAY)
+          changed |= widen_ivar_array_params(c, &ivw_ix, tcls[ti], tiv[ti]);
       }
       free(tcls); free(tiv);
       continue;
@@ -3611,11 +3653,14 @@ int infer_write_types(Compiler *c) {
        does: other sites (a getter's `c[1] = 2`) settled the key, and the fold
        refusing a Symbol key into an Integer-keyed slot -- or trading the key
        for a String one -- left the direct write to a hash that cannot hold
-       it. */
+       it. So does any other variant change of an ivar assigned a parameter:
+       the parameter is typed by its callers, and can only follow to the
+       poly-keyed variant. */
     if (watch_nm && !is_push && !is_splice && ty_is_hash(before) &&
         before != TY_POLY_POLY_HASH &&
         ((!fits && kt != TY_UNKNOWN && vt != TY_UNKNOWN) ||
-         (ty_is_hash(*slot) && ty_hash_key(*slot) != ty_hash_key(before)))) {
+         (ty_is_hash(*slot) && ty_hash_key(*slot) != ty_hash_key(before)) ||
+         (*slot != before && ivar_has_param_write(c, &ivw_ix, watch_cls, watch_nm)))) {
       *slot = TY_POLY_POLY_HASH;
       widen_ivar_hash_literals(c, &ivw_ix, watch_cls, watch_nm);
       sp_ivwatch(watch_nm, "usage_idxwrite_misfit", before, *slot);
@@ -3625,6 +3670,8 @@ int infer_write_types(Compiler *c) {
     if (!fits) continue;
     sp_ivwatch(watch_nm, is_push ? "usage_push" : (is_idx_write ? "usage_idxwrite" : "usage_read"), before, *slot);
     if (*slot != before && !slot_reset) changed = 1;
+    if (watch_nm && before != TY_POLY_ARRAY && *slot == TY_POLY_ARRAY)
+      changed |= widen_ivar_array_params(c, &ivw_ix, watch_cls, watch_nm);
     /* A LOCAL that widened to the poly array under a push and whose writes
        read ivar arrays (directly, or through a conditional's arms) is an
        ALIAS of those arrays: widen the sources too, or the local's read
