@@ -3706,6 +3706,103 @@ void desugar_extended_module_attrs(Compiler *c) {
   }
 }
 
+static const struct { NodeKind local; const char *global; } dmc_kinds[] = {
+  { NK_LocalVariableReadNode, "GlobalVariableReadNode" },
+  { NK_LocalVariableWriteNode, "GlobalVariableWriteNode" },
+  { NK_LocalVariableTargetNode, "GlobalVariableTargetNode" },
+  { NK_LocalVariableOperatorWriteNode, "GlobalVariableOperatorWriteNode" },
+  { NK_LocalVariableOrWriteNode, "GlobalVariableOrWriteNode" },
+  { NK_LocalVariableAndWriteNode, "GlobalVariableAndWriteNode" },
+};
+
+static int dmc_local_kind(NodeKind k) {
+  for (size_t i = 0; i < sizeof dmc_kinds / sizeof dmc_kinds[0]; i++)
+    if (dmc_kinds[i].local == k) return (int)i;
+  return -1;
+}
+
+typedef struct { char **names; int n, cap; } DmcNames;
+
+static int dmc_has(const DmcNames *s, const char *nm) {
+  for (int i = 0; i < s->n; i++) if (sp_streq(s->names[i], nm)) return 1;
+  return 0;
+}
+
+/* Walk a body's lexical scope, not into a def or a nested class. `lvl`
+   counts the blocks entered, so a local whose depth equals it is the body's
+   own. Unset `rewrite` collects those referenced inside a define_method
+   block; set, it retypes every reference to a collected name into the
+   body's global. */
+static void dmc_walk(NodeTable *nt, int id, int lvl, int in_dm, int cls,
+                     DmcNames *s, int rewrite) {
+  if (id < 0) return;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode ||
+      k == NK_SingletonClassNode) return;
+  int lk = dmc_local_kind(k);
+  const char *nm = lk >= 0 ? nt_str(nt, id, "name") : NULL;
+  if (nm && nt_int(nt, id, "depth", 0) == lvl) {
+    if (!rewrite && in_dm && !dmc_has(s, nm)) {
+      if (s->n >= s->cap) {
+        s->cap = s->cap ? s->cap * 2 : 8;
+        s->names = realloc(s->names, sizeof(char *) * (size_t)s->cap);
+      }
+      s->names[s->n++] = strdup(nm);
+    }
+    else if (rewrite && dmc_has(s, nm)) {
+      char gname[256];
+      snprintf(gname, sizeof gname, "$__dmcap%d_%s", cls, nm);
+      nt_node_set_type(nt, id, dmc_kinds[lk].global);
+      nt_node_set_str(nt, id, "name", gname);
+    }
+  }
+  if (k == NK_BlockNode || k == NK_LambdaNode) lvl++;
+  int dm_blk = -1;
+  if (k == NK_CallNode) {
+    const char *cn = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver");
+    if (cn && (sp_streq(cn, "define_method") || sp_streq(cn, "define_singleton_method")) &&
+        (recv < 0 || nt_kind(nt, recv) == NK_SelfNode))
+      dm_blk = nt_ref(nt, id, "block");
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) {
+    int r = nt_ref_at(nt, id, i);
+    dmc_walk(nt, r, lvl, in_dm || (r >= 0 && r == dm_blk), cls, s, rewrite);
+  }
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *v = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++) dmc_walk(nt, v[j], lvl, in_dm, cls, s, rewrite);
+  }
+}
+
+/* `class D; x = 5; define_method(:f) { x } end`: a local of a class, module
+   or top-level body that a define_method block reads or writes becomes a
+   global private to that body, in the body and in every block of it. The
+   body runs once, so the global is the local's one binding. */
+int desugar_define_method_captures(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int cls = 0; cls < n0; cls++) {
+    NodeKind ck = nt_kind(nt, cls);
+    int body = cls == nt->root_id ? nt_ref(nt, cls, "statements")
+             : ck == NK_ClassNode || ck == NK_ModuleNode || ck == NK_SingletonClassNode
+             ? nt_ref(nt, cls, "body") : -1;
+    if (body < 0) continue;
+    DmcNames s = { 0 };
+    dmc_walk(nt, body, 0, 0, cls, &s, 0);
+    if (s.n) {
+      dmc_walk(nt, body, 0, 0, cls, &s, 1);
+      changed = 1;
+    }
+    for (int i = 0; i < s.n; i++) free(s.names[i]);
+    free(s.names);
+  }
+  return changed;
+}
+
 /* `def m(&) = keep(&)` -> `def m(&__anon_block) = keep(&__anon_block)`.
    An anonymous `&` had no name, so it was always yield-inlined: the analysis
    that decides whether a named &blk escapes (and must stay a real sp_Proc *
