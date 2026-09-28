@@ -3212,26 +3212,31 @@ static int any_call_passes_block(const NodeTable *nt, const char *name) {
    method's synthetic block param. A nested def/class/module is a scope of its
    own (its `&` is its own method's); a block or lambda inside the body shares
    the method's block param. */
-static int anon_block_fwd_rewrite(Compiler *c, int node) {
+static int anon_fwd_rewrite(Compiler *c, int node, int parent, unsigned anon) {
   NodeTable *nt = (NodeTable *)c->nt;
   if (node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode ||
       k == NK_SingletonClassNode) return 0;
-  int changed = 0;
-  if (k == NK_BlockArgumentNode && nt_ref(nt, node, "expression") < 0) {
+  const char *pty = parent >= 0 ? nt_type(nt, parent) : NULL;
+  const char *nm = NULL, *field = NULL;
+  if ((anon & 1) && k == NK_BlockArgumentNode) nm = "__anon_block", field = "expression";
+  else if ((anon & 2) && k == NK_SplatNode && pty &&
+           (sp_streq(pty, "ArgumentsNode") || sp_streq(pty, "ArrayNode")))
+    nm = "__anon_rest", field = "expression";
+  else if ((anon & 4) && k == NK_AssocSplatNode) nm = "__anon_kwrest", field = "value";
+  if (nm && nt_ref(nt, node, field) < 0) {
     int rd = nt_new_node(nt, "LocalVariableReadNode");
-    if (rd >= 0) {
-      nt_node_set_str(nt, rd, "name", "__anon_block");
-      nt_node_set_int(nt, rd, "depth", 0);
-      nt_node_set_ref(nt, node, "expression", rd);
-      comp_grow_node_arrays(c);
-      changed = 1;
-    }
-    return changed;
+    if (rd < 0) return 0;
+    nt_node_set_str(nt, rd, "name", nm);
+    nt_node_set_int(nt, rd, "depth", 0);
+    nt_node_set_ref(nt, node, field, rd);
+    comp_grow_node_arrays(c);
+    return 1;
   }
+  int changed = 0;
   int nr = nt_num_refs(nt, node);
-  for (int i = 0; i < nr; i++) changed |= anon_block_fwd_rewrite(c, nt_ref_at(nt, node, i));
+  for (int i = 0; i < nr; i++) changed |= anon_fwd_rewrite(c, nt_ref_at(nt, node, i), node, anon);
   int na = nt_num_arrs(nt, node);
   for (int i = 0; i < na; i++) {
     int n = 0;
@@ -3240,7 +3245,7 @@ static int anon_block_fwd_rewrite(Compiler *c, int node) {
     int *cp = n > 0 ? (int *)malloc(sizeof(int) * (size_t)n) : NULL;
     if (n > 0 && !cp) continue;
     if (n > 0) memcpy(cp, ids, sizeof(int) * (size_t)n);
-    for (int j = 0; j < n; j++) changed |= anon_block_fwd_rewrite(c, cp[j]);
+    for (int j = 0; j < n; j++) changed |= anon_fwd_rewrite(c, cp[j], node, anon);
     free(cp);
   }
   return changed;
@@ -3353,18 +3358,29 @@ void desugar_extended_module_attrs(Compiler *c) {
    were copied by value -- the writes were lost. Named, the param takes the
    same path a `&blk` does (mirrors __anon_kwrest for `**`). */
 int desugar_anon_block_param(Compiler *c) {
+  static const struct { const char *field, *kind, *name; } anon_params[] = {
+    { "block", "BlockParameterNode", "__anon_block" },
+    { "rest", "RestParameterNode", "__anon_rest" },
+    { "keyword_rest", "KeywordRestParameterNode", "__anon_kwrest" },
+  };
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_DefNode) continue;
     int pn = nt_ref(nt, id, "parameters");
-    int bp = pn >= 0 ? nt_ref(nt, pn, "block") : -1;
-    if (bp < 0 || nt_kind(nt, bp) != NK_BlockParameterNode) continue;
-    const char *bn = nt_str(nt, bp, "name");
-    if (bn && bn[0]) continue;
-    nt_node_set_str(nt, bp, "name", "__anon_block");
-    anon_block_fwd_rewrite(c, nt_ref(nt, id, "body"));
+    if (pn < 0) continue;
+    unsigned anon = 0;
+    for (unsigned a = 0; a < 3; a++) {
+      int p = nt_ref(nt, pn, anon_params[a].field);
+      const char *pty = p >= 0 ? nt_type(nt, p) : NULL;
+      const char *bn = p >= 0 ? nt_str(nt, p, "name") : NULL;
+      if (!pty || !sp_streq(pty, anon_params[a].kind) || (bn && bn[0])) continue;
+      nt_node_set_str(nt, p, "name", anon_params[a].name);
+      anon |= 1u << a;
+    }
+    if (!anon) continue;
+    anon_fwd_rewrite(c, nt_ref(nt, id, "body"), id, anon);
     changed = 1;
   }
   return changed;

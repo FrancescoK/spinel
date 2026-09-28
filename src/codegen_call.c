@@ -22684,7 +22684,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
               emit_str_literal(b, "rest");
               buf_printf(b, ")));"
                             " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4);
-              emit_str_literal(b, nt_str(nt, rest4, "name"));
+              emit_str_literal(b, sp_streq(nt_str(nt, rest4, "name"), "__anon_rest") ? "*" : nt_str(nt, rest4, "name"));
               buf_printf(b, ")));"
                             " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }", tr4, tp4);
             }
@@ -22718,7 +22718,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           emit_str_literal(b, "keyrest");
           buf_printf(b, ")));"
                         " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4);
-          emit_str_literal(b, nt_str(nt, kwr4, "name"));
+          emit_str_literal(b, sp_streq(nt_str(nt, kwr4, "name"), "__anon_kwrest") ? "**" : nt_str(nt, kwr4, "name"));
           buf_printf(b, ")));"
                         " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }", tr4, tp4);
         }
