@@ -1,0 +1,24 @@
+[1, nil]
+[1]
+[:lam, 1]
+[:one, 1]
+[:arg_error, "wrong number of arguments (given 1, expected 2)"]
+[:user, [1], {}]
+[1, {a: 1}]
+[1, {a: 1}]
+[:two, 1, {a: 1}]
+[:user, [1], {a: 1}]
+[]
+:none
+[:user, [], {}]
+[{a: 1}]
+"x\nx\n{a: 1}\n"
+[[["x"], {}], [["x"], {a: 1}]]
+0
+"llo"
+[:sink, [2], {}]
+[:sink, [2], {a: 1}]
+[:arg_error, "wrong number of arguments (given 0, expected 1)"]
+nil
+{a: 1}
+:no_method
