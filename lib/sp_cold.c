@@ -1754,14 +1754,10 @@ sp_int sp_File_sysseek(sp_File *f, sp_int off, sp_int whence) {
   fseek(f->fp, (long)off, whence == 1 ? SEEK_CUR : whence == 2 ? SEEK_END : SEEK_SET);
   return (sp_int)ftell(f->fp);
 }
-/* A flock without LOCK_NB can wait for as long as another holder keeps the
-   lock, and that holder may be a thread of this program that must allocate
-   before it unlocks. The wait leaves the world, as a `blocking: true` FFI call
-   does, so a collection raised meanwhile does not wait for it: otherwise the
-   collector waits on the flock, and the flock on the holder the collector has
-   stopped. The descriptor is read before leaving; the call touches nothing
-   else. A signal (the preemption one included) retries the wait rather than
-   answering false. */
+/* A blocking flock may be waiting on another thread of this program,
+   and that thread may need a GC before it can unlock. So we leave the
+   world while we wait, like a `blocking: true` FFI call, and the GC
+   doesn't wait for us. EINTR retries instead of failing. */
 sp_int sp_File_flock(sp_File *f, sp_int op) {
   SP_IO_OPEN(f);
   int fd = fileno(f->fp);
