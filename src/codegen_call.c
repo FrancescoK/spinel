@@ -267,6 +267,18 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   const char *last_ty = argc2 > 0 ? nt_type(nt, argv2[argc2 - 1]) : NULL;
   int kwh = (last_ty && sp_streq(last_ty, "KeywordHashNode")) ? argv2[argc2 - 1] : -1;
   int pos_argc = kwh >= 0 ? argc2 - 1 : argc2;
+  int rest_argc = rest_bind_argc(c, m, kwh, pos_argc);
+  /* a `**` hash that may be no argument: every parameter from the gather,
+     call-site code like each argument below */
+  int gather_tmp = -1;
+  if (kwh_gathers(c, m, kwh, pos_argc)) {
+    RenPark park = ren_park(saved_nren);
+    const char *svs = g_self, *svd = g_self_deref;
+    g_self = saved_self; g_self_deref = saved_self_deref;
+    gather_tmp = emit_splat_gather(c, m, argv2, pos_argc, kwh);
+    g_self = svs; g_self_deref = svd;
+    ren_unpark(&park);
+  }
   InlDflt sv_dflt = inl_dflt_enter(m, g_nren, selfbuf, g_self_deref, ci);
   for (int i = 0; i < m->nparams; i++) {
     emit_indent(b, din);
@@ -301,14 +313,15 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
     /* A rest param collects the middle arguments into an Array rather than
        taking one of them straight into its slot, a keyword hash no parameter
        takes included. */
-    if (m->rest_idx >= 0 && i == m->rest_idx)
-      emit_rest_pack_kwh(c, i, pos_argc - m->npost_rest, argv2,
+    if (gather_tmp >= 0) emit_gathered_param(c, m, i, gather_tmp, b);
+    else if (m->rest_idx >= 0 && i == m->rest_idx)
+      emit_rest_pack_kwh(c, i, rest_argc - m->npost_rest, argv2,
                          rest_kwh_tail(c, m, kwh, pos_argc), b);
     else if (m->rest_idx >= 0 && i > m->rest_idx && i <= m->rest_idx + m->npost_rest) {
       int post_j = i - m->rest_idx - 1;   /* 0-based index among the posts */
-      int argv_idx = pos_argc - m->npost_rest + post_j;
+      int argv_idx = rest_argc - m->npost_rest + post_j;
       emit_arg_or_default(c, m, i,
-                          (argv2 && argv_idx >= 0 && argv_idx < pos_argc) ? argv2[argv_idx] : -1, b);
+                          (argv2 && argv_idx >= 0 && argv_idx < rest_argc) ? argv2[argv_idx] : -1, b);
     }
     else emit_arg_or_default(c, m, i, provided, b);
     g_self = svs; g_self_deref = svd;
@@ -8642,7 +8655,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         else if (self2_struct) g_self_deref = "->";
         int r_idx = ms->rest_idx;
         int npost = ms->npost_rest;
-        int rest_end = pos_argc - npost;   /* where the *rest collection stops */
+        int rest_end = rest_bind_argc(c, ms, kwh, pos_argc) - npost;   /* where the *rest collection stops */
         /* A default reading an earlier parameter (`def g(u, v = u.upcase)`)
            is evaluated in the callee, where that parameter is bound. This arm
            spells each argument inline, so the default read the callee's
@@ -8663,11 +8676,38 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            every arm and read the arm's `_pd` locals before any declared them. */
         Buf *sv_arm_pre = g_pre;
         g_pre = &pdpre;
+        /* a `**` hash that may be no argument: this arm binds every parameter
+           from the call's temps gathered, the hash last when it is not empty.
+           A hash this split did not take as keywords is the last temp. */
+        int gather_arm = -1;
+        int gkwh = argv[argc - 1], gpos = argc - 1;
+        if (splat_a < 0 && kwh_gathers(c, ms, gkwh, gpos)) {
+          gather_arm = ++g_tmp;
+          buf_printf(&pdpre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", gather_arm, gather_arm);
+          for (int a2 = 0; a2 <= gpos; a2++) {
+            char tn[32]; snprintf(tn, sizeof tn, "_t%d", a2 < gpos || kwall < 0 ? atmp[a2] : kwall);
+            TyKind gty = a2 < gpos || kwall < 0 ? atmp_ty[a2] : TY_SYM_POLY_HASH;
+            Buf eb; memset(&eb, 0, sizeof eb);
+            if (gty == TY_POLY) buf_puts(&eb, tn);
+            else emit_boxed_text(c, gty, tn, &eb);
+            if (a2 < gpos)
+              buf_printf(&pdpre, " sp_PolyArray_push(_t%d, %s);", gather_arm, eb.p ? eb.p : "sp_box_nil()");
+            else {
+              int kt = ++g_tmp;
+              buf_printf(&pdpre, " sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);"
+                                 " if (sp_poly_length(_t%d) > 0) sp_PolyArray_push(_t%d, _t%d);\n",
+                         kt, eb.p ? eb.p : "sp_box_nil()", kt, kt, gather_arm, kt);
+            }
+            free(eb.p);
+          }
+          emit_gather_arity_check(c, ms, gather_arm);
+        }
         for (int a = 0; a < mnp; a++) {
           buf_puts(&cb, ", ");
           Buf pa; memset(&pa, 0, sizeof pa);
           const char *pnm = ms->pnames ? ms->pnames[a] : NULL;
           do {
+          if (gather_arm >= 0) { emit_gathered_param(c, ms, a, gather_arm, &pa); continue; }
           /* a **kwrest param collects the keywords no declared keyword param
              consumed (#3268), and is an empty hash when the call passed none;
              a declared keyword binds by NAME, unmatched ones taking the
@@ -11228,8 +11268,12 @@ static void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Bu
     Buf *sv_pre = g_pre; g_pre = &apre;
     /* An initialize that takes no keywords, reached with `**h`: the layout
        drops the splat, which is right only when h is empty. A non-empty one
-       is one argument too many, CRuby's ArgumentError (#4849). */
-    if (!init_takes_keywords(c, initm)) {
+       is one argument too many, CRuby's ArgumentError (#4849) -- unless a
+       positional parameter takes it, which the layout judges itself
+       (kwh_gathers). */
+    int lkwh = argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+    if (!init_takes_keywords(c, initm) &&
+        !kwh_gathers(c, &c->scopes[initm], lkwh, lkwh >= 0 ? argc - 1 : argc)) {
       int npos = 0, nreq = 0, nopt = 0;
       for (int a = 0; a < argc; a++) {
         NodeKind ak = nt_kind(nt, argv[a]);
@@ -12157,10 +12201,15 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             return 1;
           }
         }
+        /* A Struct's trailing `**` spreads alone are one more positional
+           member when they hold a key at run time and none when they are
+           empty: `S.new(1, **{})` is `S.new(1)`. */
+        int spread_tail = kwh < 0 && argc > 1 && !cls->is_data && cls->kw_init != 1 &&
+                          kwh_only_spreads(nt, argv[argc - 1]);
         /* more positional args than members is a struct-size ArgumentError
            (fewer are allowed for Struct: nil fill); evaluate args first for
            any side effects, then raise before constructing */
-        if (kwh < 0 && argc > cls->nivars) {
+        if (kwh < 0 && argc > cls->nivars && !(spread_tail && argc - 1 == cls->nivars)) {
           buf_puts(b, "({ ");
           for (int a2 = 0; a2 < argc; a2++) { buf_puts(b, "(void)("); emit_boxed(c, argv[a2], b); buf_puts(b, "); "); }
           buf_puts(b, "sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"struct size differs\")[1])); ");
@@ -12228,6 +12277,10 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           }
           if (cls->is_data || cls->kw_init != -1) emit_struct_kw_check(c, cls, splat_tmp, merged ? -1 : kwh);
         }
+        /* the spreads past the last member: evaluated after the members,
+           and too many arguments when they hold a key */
+        int spread_over = spread_tail && argc - 1 == cls->nivars ? ++g_tmp : -1;
+        if (spread_over >= 0) buf_printf(b, "({ sp_%s *_t%d = ", cls->c_name, spread_over);
         buf_printf(b, "sp_%s_new(", cls->c_name);
         for (int a = 0; a < cls->nivars; a++) {
           if (a) buf_puts(b, ", ");
@@ -12235,6 +12288,25 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           if (kwh >= 0) vnode = merged ? -1 : struct_kwarg_value(c, kwh, cls->ivars[a] + 1);
           else if (a < argc) vnode = argv[a];
           if (lit_tmp && lit_tmp[a] >= 0) buf_printf(b, "_t%d", lit_tmp[a]);
+          else if (spread_tail && a == argc - 1) {
+            /* the spread hash, or nil when it came out empty */
+            Buf kb; memset(&kb, 0, sizeof kb);
+            if (emit_kwh_spread_arg(c, vnode, &kb)) {
+              int kt = ++g_tmp;
+              char hv[64];
+              snprintf(hv, sizeof hv, "(sp_poly_length(_t%d) ? _t%d : sp_box_nil())", kt, kt);
+              Buf mv; memset(&mv, 0, sizeof mv);
+              buf_printf(&mv, "({ sp_RbVal _t%d = %s; ", kt, kb.p ? kb.p : "sp_box_nil()");
+              emit_unbox_text(c, cls->ivar_types[a], hv, &mv);
+              buf_puts(&mv, "; })");
+              if (arg_wants_root(c, cls->ivar_types[a], -1))
+                emit_rooted_operand(c, cls->ivar_types[a], -1, mv.p, b);
+              else buf_puts(b, mv.p);
+              free(mv.p);
+            }
+            else buf_puts(b, default_value(cls->ivar_types[a]));
+            free(kb.p);
+          }
           else if (vnode >= 0) {
             /* Hoist a heap-backed member value into a rooted temp: a sibling
                member expression evaluated after it can collect (`Outer.new(
@@ -12260,6 +12332,15 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           else buf_puts(b, default_value(cls->ivar_types[a]));
         }
         buf_puts(b, ")");
+        if (spread_over >= 0) {
+          Buf kb; memset(&kb, 0, sizeof kb);
+          buf_puts(b, "; ");
+          if (emit_kwh_spread_arg(c, argv[argc - 1], &kb))
+            buf_printf(b, "if (sp_poly_length(%s) > 0) sp_raise_cls(\"ArgumentError\","
+                          " (&(\"\\xff\" \"struct size differs\")[1])); ", kb.p);
+          buf_printf(b, "_t%d; })", spread_over);
+          free(kb.p);
+        }
         free(lit_tmp);
         return 1;
       }

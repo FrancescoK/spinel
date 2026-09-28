@@ -519,7 +519,7 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
    PolyArray and bind each positional parameter from it (see
    emit_args_filled's gather). */
 int inline_splat_gather_applies(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh);
-int emit_splat_gather(Compiler *c, Scope *m, const int *argv, int pos_argc);
+int emit_splat_gather(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh);
 void emit_gather_arity_check(Compiler *c, Scope *m, int ct);
 void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out);
 void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, int argc,
@@ -1015,6 +1015,9 @@ void emit_block_param_from_boxed(Compiler *c, const char *pname, TyKind pt, cons
 void emit_rest_pack(Compiler *c, int from, int pos_argc, const int *argv, Buf *b);
 void emit_rest_pack_kwh(Compiler *c, int from, int pos_argc, const int *argv, int kwh, Buf *b);
 int rest_kwh_tail(Compiler *c, Scope *m, int kwh, int pos_argc);
+int rest_bind_argc(Compiler *c, Scope *m, int kwh, int pos_argc);
+int kwh_gathers(Compiler *c, Scope *m, int kwh, int pos_argc);
+int emit_kwh_spread_arg(Compiler *c, int kwh, Buf *b);
 int kwh_positional_slot(Compiler *c, Scope *m, int kwh, int pos_argc);
 int kwh_arg_param(Compiler *c, Scope *m, int pos_argc);
 /* An anonymous `*` forwarding the enclosing method's rest: its C expression. */

@@ -267,8 +267,9 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
      `opts` kept its default and every `assert_select(sel, count: 0)` in a
      yielding helper asserted presence instead (#4436). */
   int kwh_slot = kwh_positional_slot(c, m, kwh, pos_argc);
+  int rest_argc = rest_bind_argc(c, m, kwh, pos_argc);
   int gather_tmp = -1;
-  if (splat_gather && !fwd_encl) gather_tmp = emit_splat_gather(c, m, argv, pos_argc);
+  if (splat_gather && !fwd_encl) gather_tmp = emit_splat_gather(c, m, argv, pos_argc, kwh);
   ren_unpark(&park0);
   for (int i = 0; i < m->nparams; i++) {
     emit_indent(b, din);
@@ -307,13 +308,13 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
        A keyword hash no parameter takes is its last element, as on the other
        call paths; it was dropped here, `rs(a: 1) { }` binding `[]`. */
     else if (m->rest_idx >= 0 && i == m->rest_idx)
-      emit_rest_pack_kwh(c, i, pos_argc - m->npost_rest, argv,
+      emit_rest_pack_kwh(c, i, rest_argc - m->npost_rest, argv,
                          rest_kwh_tail(c, m, kwh, pos_argc), b);
     else if (m->rest_idx >= 0 && i > m->rest_idx && i <= m->rest_idx + m->npost_rest) {
       int post_j = i - m->rest_idx - 1;   /* 0-based index among the posts */
-      int argv_idx = pos_argc - m->npost_rest + post_j;
+      int argv_idx = rest_argc - m->npost_rest + post_j;
       emit_arg_or_default(c, m, i,
-                          (argv && argv_idx >= 0 && argv_idx < pos_argc) ? argv[argv_idx] : -1, b);
+                          (argv && argv_idx >= 0 && argv_idx < rest_argc) ? argv[argv_idx] : -1, b);
     }
     /* Anything past the rest that is not one of its posts is a keyword (or
        **kwrest) param: it binds by name, never positionally. */
