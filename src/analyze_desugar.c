@@ -867,6 +867,88 @@ int desugar_body_self_call(Compiler *c) {
   return changed;
 }
 
+/* ---- `module Kernel` reopened at the top level ----------------------------
+   Kernel is mixed into Object, so a method the reopening defines is a bare
+   call from every scope -- activesupport's core_ext/kernel/reporting.rb adds
+   silence_warnings, called from a module method as `silence_warnings { ... }`.
+   A top-level def is exactly that in Spinel's model, so the reopening's bare
+   defs move to the program root, in place of the module (which is dropped
+   once only its defs and visibility markers are left; anything else keeps a
+   module of the rest). reporting.rb is `module_function`, which makes the
+   methods callable on the module too: a `Kernel.m(...)` naming a hoisted
+   method drops its receiver, as the builtin Kernel functions do. */
+static int kr_is_visibility_marker(const NodeTable *nt, int st) {
+  if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "receiver") >= 0 ||
+      nt_ref(nt, st, "arguments") >= 0 || nt_ref(nt, st, "block") >= 0) return 0;
+  const char *nm = nt_str(nt, st, "name");
+  return nm && (sp_streq(nm, "module_function") || sp_streq(nm, "private") ||
+                sp_streq(nm, "public") || sp_streq(nm, "protected"));
+}
+int desugar_kernel_reopen(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int root = nt->root_id;
+  int top = root >= 0 ? nt_ref(nt, root, "statements") : -1;
+  if (top < 0) return 0;
+  int tn = 0; const int *tb0 = nt_arr(nt, top, "body", &tn);
+  if (!tb0 || tn == 0) return 0;
+  int n0 = nt->count;
+  int hoisted = 0;
+  for (int i = 0; i < tn; i++) {
+    int st = tb0[i];
+    int cp = nt_kind(nt, st) == NK_ModuleNode ? nt_ref(nt, st, "constant_path") : -1;
+    if (cp < 0 || nt_kind(nt, cp) != NK_ConstantReadNode) continue;
+    const char *mn = nt_str(nt, cp, "name");
+    if (!mn || !sp_streq(mn, "Kernel")) continue;
+    int body = nt_ref(nt, st, "body");
+    int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    for (int k = 0; k < bn; k++)
+      if (nt_kind(nt, bb[k]) == NK_DefNode && nt_ref(nt, bb[k], "receiver") < 0) hoisted++;
+  }
+  if (!hoisted) return 0;
+  enum { KR_MAX = 256 };
+  const char *names[KR_MAX]; int nn = 0;
+  int *tb = (int *)malloc(sizeof(int) * (size_t)tn);
+  int *nb = (int *)malloc(sizeof(int) * (size_t)(tn + hoisted));
+  if (!tb || !nb) { free(tb); free(nb); return 0; }
+  memcpy(tb, tb0, sizeof(int) * (size_t)tn);
+  int nbn = 0;
+  for (int i = 0; i < tn; i++) {
+    int st = tb[i];
+    int cp = nt_kind(nt, st) == NK_ModuleNode ? nt_ref(nt, st, "constant_path") : -1;
+    const char *mn = cp >= 0 && nt_kind(nt, cp) == NK_ConstantReadNode ? nt_str(nt, cp, "name") : NULL;
+    int body = mn && sp_streq(mn, "Kernel") ? nt_ref(nt, st, "body") : -1;
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) { nb[nbn++] = st; continue; }
+    int bn = 0; const int *bb0 = nt_arr(nt, body, "body", &bn);
+    int *rest = (int *)malloc(sizeof(int) * (size_t)(bn + 1));
+    if (!rest) { nb[nbn++] = st; continue; }
+    int nrest = 0;
+    for (int k = 0; k < bn; k++) {
+      int d = bb0[k];
+      if (nt_kind(nt, d) == NK_DefNode && nt_ref(nt, d, "receiver") < 0) {
+        nb[nbn++] = d;
+        if (nn < KR_MAX && nt_str(nt, d, "name")) names[nn++] = nt_str(nt, d, "name");
+      }
+      else if (!kr_is_visibility_marker(nt, d)) rest[nrest++] = d;
+    }
+    if (nrest) { nt_node_set_arr(nt, body, "body", rest, nrest); nb[nbn++] = st; }
+    free(rest);
+  }
+  nt_node_set_arr(nt, top, "body", nb, nbn);
+  free(tb); free(nb);
+  /* Kernel.silence_warnings { } -> silence_warnings { } */
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) continue;
+    const char *rn = nt_str(nt, recv, "name"), *cn = nt_str(nt, id, "name");
+    if (!rn || !cn || !sp_streq(rn, "Kernel")) continue;
+    for (int k = 0; k < nn; k++)
+      if (sp_streq(names[k], cn)) { nt_node_set_ref(nt, id, "receiver", -1); break; }
+  }
+  comp_grow_node_arrays(c);
+  return 1;
+}
+
 /* Proc#>> / #<< with a Method operand: wrap the Method side in #to_proc at the
    AST, so composition always runs proc-to-proc. The to_proc emission builds a
    real trampoline proc that publishes its boxed result through the return

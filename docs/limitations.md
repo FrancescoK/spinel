@@ -956,6 +956,13 @@ it are qualified by their module path before the collision can happen, the
 way a nested `class Array` already was. activesupport's
 `ActiveSupport::JSON::Encoding` is the shape. Builtin *modules*
 (`Comparable`, `Kernel`, `Math`, …) reopen normally at any nesting level.
+The methods a top-level `module Kernel` reopening defines are modelled as
+top-level defs (Kernel is mixed into Object, so they are bare calls from
+every scope), and a `Kernel.m(...)` naming one drops its receiver, as the
+builtin Kernel functions do; activesupport's `silence_warnings { ... }` is
+the shape. With an explicit object receiver (`obj.twice(2)`, legal in
+CRuby since Kernel's methods are public) such a method is not reached: the
+call compiles and raises `NoMethodError` at run time.
 
 #### String-named `Struct` (the `Struct::Name` form)
 
