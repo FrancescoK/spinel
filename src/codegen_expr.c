@@ -3249,10 +3249,11 @@ else {
     if (tn == 1 && en == 1) {
       TyKind res = comp_ntype(c, id);
       /* A void/nil-typed if (e.g. an arm that is a writer call, doom's
-         `self.fullscreen = value if respond_to?(...)`) has no C storage
-         type -- emit_ctype would declare `void _tN` -- so hold the result
-         boxed; void arms degrade to nil. */
-      if (res == TY_VOID || res == TY_NIL) res = TY_POLY;
+         `self.fullscreen = value if respond_to?(...)`), or an untyped one
+         whose every arm diverges, has no C storage type -- emit_ctype would
+         declare `void _tN` -- so hold the result boxed; void arms degrade
+         to nil. */
+      if (res == TY_VOID || res == TY_NIL || res == TY_UNKNOWN) res = TY_POLY;
       /* Emit each arm with a CAPTURED prelude: an arm whose sub-expressions
          hoist statements (a rooted call argument, a constructed receiver, ...)
          cannot ride a flat C ternary -- a shared prelude would evaluate BOTH

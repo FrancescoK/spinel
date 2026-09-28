@@ -11161,6 +11161,26 @@ SP_NORETURN SP_COLD static void sp_raise_poly(sp_RbVal v) {
   }
   sp_raise_cls("TypeError", "exception class/object expected");
 }
+/* Kernel#raise(klass_or_exc, msg) with a runtime-typed first operand: a Class
+   value raises that class with the message, an exception object raises
+   exc.exception(msg). A nil message falls back to the class name. */
+SP_NORETURN SP_COLD static void sp_raise_poly_msg(sp_RbVal v, sp_RbVal m) {
+  const char *msg = m.tag == SP_TAG_NIL ? NULL
+                  : sp_exc_msg_given(m.tag == SP_TAG_STR ? m.v.s : sp_poly_to_s(m));
+  if (v.tag == SP_TAG_OBJ && v.v.p &&
+      (v.cls_id == SP_BUILTIN_EXCEPTION || sp_is_exc_subclass_cls(v.cls_id))) {
+    if (!msg) sp_raise_exc((volatile sp_Exception *)v.v.p);
+    sp_raise_exc((volatile sp_Exception *)sp_exc_exception((sp_Exception *)v.v.p, msg));
+  }
+  if (v.tag == SP_TAG_CLASS) {
+    const char *cn = sp_class_val_name(v);
+    if (cn && *cn && (!strcmp(cn, "Exception") ||
+                      (sp_user_exc_parent_fn && sp_user_exc_parent_fn(cn)) ||
+                      sp_exc_parent_of_name(cn)))
+      sp_raise_cls(cn, msg ? msg : sp_str_empty);
+  }
+  sp_raise_cls("TypeError", "exception class/object expected");
+}
 /* Raise StopIteration carrying the iteration's return value as #result. Built as
    a carried object so a `rescue StopIteration => e` binding reads e.result; a
    generator supplies the value, a plain past-the-end #next raises with nil. */
