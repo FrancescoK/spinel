@@ -1,0 +1,16 @@
+1
+10
+3
+[:a, 0]
+[:b, 1]
+[:c, 0]
+[:d, -2]
+[:e, -1]
+[:r, 0]
+5
+8
+8
+7
+101
+[NameError, "undefined method 'zz' for class 'V'"]
+[NameError, "undefined method 'zz' for class 'W'"]

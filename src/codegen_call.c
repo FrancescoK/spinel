@@ -2661,7 +2661,7 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
   int args = nt_ref(nt, id, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   if (argc < 1 || !argv) return 0;
-  int sym = argv[0];
+  int sym = argv[0], mo = sp_streq(nt_str(nt, id, "name"), "method");
   TyKind st = comp_ntype(c, sym);
   int t = ++g_tmp;
   buf_printf(b, "({ sp_sym _t%d = ", t);
@@ -2682,7 +2682,8 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
     int arm = arms[k];
     TyKind at = comp_ntype(c, arm);
     if (at == TY_UNKNOWN || at == TY_VOID) continue;     /* did not resolve on this receiver/arity */
-    const char *nm = nt_str(nt, arm, "name");
+    if (mo && method_obj_target_mi(c, arm) < 0) continue;
+    const char *nm = nt_str(nt, arm, mo ? "dyn_name" : "name");
     if (!nm) continue;
     /* Emit the arm into private buffers under a silent probe: a method that
        resolves by type but not by codegen (e.g. wrong arity for a builtin)
@@ -2712,6 +2713,12 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
       buf_puts(b, "; }\nelse ");
     }
     free(pre.p); free(body.p);
+  }
+  if (mo) {
+    buf_printf(b, "{ sp_raise_cls(\"NameError\", sp_sprintf(\"undefined method '%%s' for class '%%s'\", sp_sym_to_s(_t%d), sp_poly_class_name(", t);
+    emit_boxed(c, nt_ref(nt, id, "receiver"), b);
+    buf_printf(b, "))); _r%d = sp_box_nil(); } _r%d; })", t, t);
+    return 1;
   }
   buf_printf(b, "{ sp_raise_cls(\"NoMethodError\", sp_sprintf(\"undefined method '%%s'\", sp_sym_to_s(_t%d))); _r%d = sp_box_nil(); } _r%d; })", t, t, t);
   return 1;
