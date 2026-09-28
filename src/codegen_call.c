@@ -8743,7 +8743,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           buf_printf(&pdpre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", gather_arm, gather_arm);
           for (int a2 = 0; a2 <= gpos; a2++) {
             char tn[32]; snprintf(tn, sizeof tn, "_t%d", a2 < gpos || kwall < 0 ? atmp[a2] : kwall);
-            TyKind gty = a2 < gpos || kwall < 0 ? atmp_ty[a2] : TY_SYM_POLY_HASH;
+            /* kwall is a PolyPolyHash when a `**` may carry a key of any
+               class (poly_kw_any_key), a SymPolyHash otherwise */
+            TyKind gty = a2 < gpos || kwall < 0 ? atmp_ty[a2]
+                       : kwall_any ? TY_POLY_POLY_HASH : TY_SYM_POLY_HASH;
             Buf eb; memset(&eb, 0, sizeof eb);
             if (gty == TY_POLY) buf_puts(&eb, tn);
             else emit_boxed_text(c, gty, tn, &eb);
