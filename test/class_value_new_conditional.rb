@@ -58,3 +58,10 @@ puts [Ko, Kp][k].new(k: k)
 
 puts (ARGV.empty? ? Ho : Ko).new(k: k)
 puts (ARGV.empty? ? Ko : Ho).new(k: k)
+
+KwS = Struct.new(:k)
+PosS = Struct.new(:a, :b, keyword_init: false)
+p KwS.new(k: 1).k
+p PosS.new(1, 2).a
+p (ARGV.empty? ? KwS : Ko).new(k: "s").k
+p (ARGV.empty? ? PosS : Ko).new(k: k).to_a

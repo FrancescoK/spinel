@@ -10053,6 +10053,7 @@ static int emit_user_new_arm(Compiler *c, int id, int ci, int argc, const int *a
 }
 
 static int call_sole_literal_kwh(const NodeTable *nt, const int *argv, int argc);
+static TyKind struct_member_slot_type(ClassInfo *k, const char *name);
 static int emit_struct_kw_new_arm(Compiler *c, int ci, int kwh, int htmp, const char *pre,
                                   int rt2, Buf *b);
 
@@ -10106,6 +10107,30 @@ static void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Bu
         buf_printf(&pre, "{ %s sp_RbVal _t%d = %s; ", hpre.p ? hpre.p : "", ht, hv.p ? hv.p : "sp_box_nil()");
         emit_struct_kw_new_arm(c, ci, kwh, ht, pre.p, rt2, b);
         free(pre.p); free(hpre.p); free(hv.p);
+        continue;
+      }
+      /* a keyword_init: false Struct takes the Hash as its first member, and
+         nil for the rest */
+      if (initm < 0 && kwh >= 0 && c->classes[ci].nreaders > 0 && c->classes[ci].kw_init < 0 &&
+          !c->classes[ci].is_data &&
+          struct_member_slot_type(&c->classes[ci], c->classes[ci].readers[0]) == TY_POLY) {
+        ClassInfo *k = &c->classes[ci];
+        Buf hpre; memset(&hpre, 0, sizeof hpre);
+        Buf hv; memset(&hv, 0, sizeof hv);
+        Buf *sv_pre = g_pre; g_pre = &hpre;
+        emit_boxed(c, kwh, &hv);
+        g_pre = sv_pre;
+        buf_printf(b, "case %d: { %s _t%d=", ci, hpre.p ? hpre.p : "", rt2);
+        if (k->is_value_type) buf_printf(b, "sp_box_vobj_%s(sp_%s_new(", k->c_name, k->c_name);
+        else buf_printf(b, "sp_box_obj(sp_%s_new(", k->c_name);
+        buf_puts(b, hv.p ? hv.p : "sp_box_nil()");
+        for (int j = 1; j < k->nreaders; j++) {
+          TyKind pt = struct_member_slot_type(k, k->readers[j]);
+          buf_printf(b, ", %s", pt == TY_POLY ? "sp_box_nil()" : default_value(pt));
+        }
+        if (k->is_value_type) buf_puts(b, ")); } break; ");
+        else buf_printf(b, "), %d); } break; ", ci);
+        free(hpre.p); free(hv.p);
         continue;
       }
       if (initm >= 0 || sole_splat < 0 || !splat_operand_ok(c, sole_splat)) continue;

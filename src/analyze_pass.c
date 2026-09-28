@@ -3674,6 +3674,34 @@ static int bind_dynamic_new_initializers(Compiler *c, int call_id) {
   for (int k = 0; k < c->nclasses; k++) {
     if (!dynamic_new_may_reach(c, call_id, k)) continue;
     int imi = comp_method_in_chain(c, k, "initialize", NULL);
+    /* A Struct or Data built by its generated constructor from `k.new(a: 1)`:
+       a member a keyword names with a value of another type than the one
+       the member has is boxed, as the arm would read the value as the
+       member's type. A keyword_init: false Struct takes the Hash as its
+       first member. */
+    ClassInfo *sk = &c->classes[k];
+    if (imi < 0 && sk->is_struct && kwh && npos == 0) {
+      int kh = -1;
+      for (int a = 0; a < argc; a++) if (nt_kind(nt, av[a]) == NK_KeywordHashNode) kh = av[a];
+      int ne = 0; const int *els = nt_arr(nt, kh, "elements", &ne);
+      for (int a = 0; a < sk->nivars; a++) {
+        if (class_ivar_pinned(sk, sk->ivars[a])) continue;
+        TyKind mt = sk->ivar_types[a];
+        if (mt == TY_UNKNOWN || mt == TY_POLY) continue;
+        TyKind at = TY_UNKNOWN;
+        if (sk->kw_init >= 0 || sk->is_data) {
+          for (int e = 0; e < ne; e++) {
+            int key = nt_ref(nt, els[e], "key");
+            const char *kn = key >= 0 && nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
+            if (kn && sp_streq(kn, sk->ivars[a] + 1)) at = infer_type(c, nt_ref(nt, els[e], "value"));
+          }
+        }
+        else if (a == 0) at = TY_POLY;
+        if (at == TY_UNKNOWN || at == mt) continue;
+        sk->ivar_types[a] = TY_POLY; changed = 1;
+      }
+      continue;
+    }
     if (imi < 0 || imi >= c->nscopes || seen[imi]) continue;
     seen[imi] = 1;
     int pn = c->scopes[imi].def_node >= 0 ? nt_ref(nt, c->scopes[imi].def_node, "parameters") : -1;
