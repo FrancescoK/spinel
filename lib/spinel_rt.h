@@ -12024,6 +12024,16 @@ static sp_PolyArray *sp_enum_items_from(sp_RbVal v) {
   }
   return sp_PolyArray_new();
 }
+/* The items each_with_index walks on a boxed receiver: an Array's elements,
+   and a Hash's [key, value] pairs, a Range's members or an Enumerator's
+   values (sp_enum_items_from); anything else, as before, none. */
+static sp_PolyArray *sp_poly_ewi_items(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ &&
+      (sp_poly_is_hash_kind(v.cls_id) || v.cls_id == SP_BUILTIN_RANGE ||
+       v.cls_id == SP_BUILTIN_STR_RANGE || (v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p)))
+    return sp_enum_items_from(v);
+  return sp_poly_to_poly_array(v);
+}
 /* Poly-receiver #to_a: nil is the empty array, arrays and hashes materialize
    through sp_enum_items_from (a hash yields its [key, value] pairs), and any
    other value raises CRuby's NoMethodError. */
