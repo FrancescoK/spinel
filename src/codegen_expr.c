@@ -3114,6 +3114,10 @@ else {
         int src = nt_ref(nt, els[j], "value");
         TyKind sh = src >= 0 ? comp_ntype(c, src) : TY_UNKNOWN;
         const char *shn = ty_hash_cname(sh);
+        int nsrc = -1;
+        if (sh == TY_UNKNOWN && src >= 0 && nt_kind(nt, src) == NK_HashNode) nt_arr(nt, src, "elements", &nsrc);
+        /* `**{}` adds nothing */
+        if (nsrc == 0) continue;
         if (shn && sp_streq(shn, hn)) {
           /* same-variant source: a direct typed merge. */
           Buf sb; memset(&sb, 0, sizeof sb); emit_expr(c, src, &sb);
