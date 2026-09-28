@@ -713,6 +713,9 @@ static void emit_ternary_arm(Compiler *c, int nd, TyKind res, Buf *b) {
     emit_bigint_operand_ext(c, nd, b);
     return;
   }
+  if ((ty_is_array(res) || ty_is_hash(res)) && bty && sp_streq(bty, "CallNode") &&
+      comp_ntype(c, nd) == TY_UNKNOWN && emit_empty_container_for_slot(c, nd, res, b))
+    return;
   if (ty_is_array(res) && bty && sp_streq(bty, "ArrayNode")) {
     int bn = 0; nt_arr(nt, nd, "elements", &bn);
     if (bn == 0) {

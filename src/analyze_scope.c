@@ -3402,7 +3402,7 @@ static int node_is_empty_hash_producer(Compiler *c, int node) {
     const char *rn = nt_str(nt, r, "name");
     if (!rn || !sp_streq(rn, "Hash")) return 0;
     int a = nt_ref(nt, node, "arguments");
-    int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    int an = 0; if (a >= 0) nt_arr(nt, a, "arguments", &an);
     if (nt_ref(nt, node, "block") >= 0) return 0;
     if (an == 0) return 1;
     /* `Hash.new(default)` starts just as empty as `Hash.new`: the argument is
@@ -3411,12 +3411,9 @@ static int node_is_empty_hash_producer(Compiler *c, int node) {
        call that read it typed as nil and its VALUE was discarded -- `$g =
        Hash.new(0); $g["b"] = 1; $g["b"]` printed nil -- and a constant
        assigned one did not build at all. A keyword-hash argument is not a
-       default (it is `Hash.new(capacity: n)`), as hash_new_default_arg says. */
-    if (an == 1 && av) {
-      const char *aty = nt_type(nt, av[0]);
-      return !(aty && sp_streq(aty, "KeywordHashNode"));
-    }
-    return 0;
+       default but `Hash.new(capacity: n)`, which starts empty all the same;
+       hash_new_default_arg tells the two apart. */
+    return an == 1;
   }
   return 0;
 }
@@ -5467,7 +5464,7 @@ static int recv_is_cvar(Compiler *c, int recv, const char *cvname) {
   return 0;
 }
 
-static TyKind cvar_hash_variant_from_writes(Compiler *c, const char *cvname) {
+static TyKind cvar_hash_variant_from_writes(Compiler *c, const char *cvname, int dflt) {
   const NodeTable *nt = c->nt;
   TyKind kt = TY_UNKNOWN, vt = TY_UNKNOWN;
   int saw = 0;
@@ -5489,6 +5486,8 @@ static TyKind cvar_hash_variant_from_writes(Compiler *c, const char *cvname) {
     vt = ty_unify(vt, infer_type(c, opw ? nt_ref(nt, w, "value") : wav[1]));
     saw = 1;
   }
+  /* the default is a value the hash answers, as for a global's */
+  if (dflt >= 0) { vt = ty_unify(vt, hash_default_value_ty(c, dflt)); saw = 1; }
   /* No resolved index-write: the slot still has to be declarable, so take the
      variant a bare `{}` emits rather than leaving it typeless. */
   if (!saw) return TY_STR_POLY_HASH;
@@ -5502,7 +5501,7 @@ static TyKind cvar_hash_variant_from_writes(Compiler *c, const char *cvname) {
 static TyKind cvar_empty_container_type(Compiler *c, int vnode, const char *nm, TyKind vt) {
   if (vnode < 0 || !nm) return vt;
   if (!ty_is_hash(vt) && node_is_empty_hash_producer(c, vnode))
-    return cvar_hash_variant_from_writes(c, nm);
+    return cvar_hash_variant_from_writes(c, nm, hash_new_default_arg(c, vnode));
   if (vt == TY_UNKNOWN && nt_kind(c->nt, vnode) == NK_ArrayNode) {
     int en = 0; nt_arr(c->nt, vnode, "elements", &en);
     /* an empty `[]` holds whatever is pushed later, so a poly array (#3263) */

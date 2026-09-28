@@ -2235,6 +2235,12 @@ int infer_write_types(Compiler *c) {
           if (an_empty_container_disagrees(an_empty_container_kind(c, val_id), newt))
             newt = TY_POLY;
         }
+        else if (an_empty_container_kind(c, val_id)) {
+          LocalVar *lv2 = scope_local(comp_scope_of(c, id), nm);
+          TyKind gr = lv2 ? (TyKind)lv2->gc_root : TY_UNKNOWN;
+          if (gr == TY_POLY || an_empty_container_disagrees(an_empty_container_kind(c, val_id), gr))
+            newt = TY_POLY;
+        }
         /* `d = h.dup/clone`: inherit receiver's hash type from prior iteration */
         if (newt == TY_UNKNOWN) {
           const char *rvty2 = nt_type(nt, val_id);
@@ -10570,6 +10576,11 @@ int infer_return_types(Compiler *c) {
     TyKind r = empty_body ? TY_POLY
              : tail_unreachable ? ret_acc[s]
              : infer_type(c, sc->body);
+    /* a bare `Array.new` tail returns the poly array a marked `[]` tail
+       does (mark_empty_literal_tails) */
+    if (r == TY_UNKNOWN && !empty_body && !(has_ret && has_ret[s]) &&
+        an_empty_container_kind(c, sc->body) == 1)
+      r = TY_POLY_ARRAY;
     /* A yielding method whose body ends in `if block_given? ... else ... end`
        has two values, one per call form, and the inliner keeps only the arm a
        call site takes: the block arm types the call with a block, the else
