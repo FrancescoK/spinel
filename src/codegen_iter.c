@@ -502,7 +502,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
              g_block_param_name && sp_streq(pn, g_block_param_name)) {
       /* nothing to forward: fall through with block = -1 below */
     }
-    else if (no_encl && plv && plv->type == TY_PROC) {
+    else if (no_encl && plv && plv->type == TY_PROC && !plv->is_cell) {
       snprintf(yprocbuf, sizeof yprocbuf, "lv_%s", rename_local(pn));
       fwd_yield_proc = yprocbuf;
     }
