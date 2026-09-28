@@ -4360,6 +4360,8 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     TyKind csaved2 = clv2 ? clv2->type : TY_UNKNOWN;
     if (clv2) clv2->type = TY_POLY;
     for (int j2 = 0; j2 < bn2; j2++) infer_type(c, bb2[j2]);
+    int spair = tpair2 && np2 == 1 && nt_str(nt, block, "sym_proc_arg") ? nt_ref(nt, block, "sym_proc_pair") : -1;
+    if (spair >= 0) infer_type(c, spair);
     emit_indent(g_pre, g_indent + 1);
     buf_puts(g_pre, "{\n");
     if (p0p && np2 >= 2 && !has_rest2 && !block_param_is_multi(c, block, 0)) {
@@ -4371,6 +4373,16 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "sp_RbVal _t%d = sp_poly_iter_elem(_t%d, _t%d); SP_GC_ROOT_RBVAL(_t%d);\n",
                  te2, trecv2, ti2, te2);
       emit_autosplat_params(c, block, np2, te2, g_indent + 2);
+    }
+    else if (p0p && tpair2 && spair >= 0) {
+      int te3 = ++g_tmp;
+      emit_indent(g_pre, g_indent + 2);
+      buf_printf(g_pre, "sp_RbVal _t%d = sp_poly_iter_elem(_t%d, _t%d);\n", te3, trecv2, ti2);
+      emit_indent(g_pre, g_indent + 2);
+      buf_printf(g_pre, "sp_RbVal lv_%s = sp_yielded_first(_t%d, _t%d);\n", p0p, tpair2, te3);
+      emit_indent(g_pre, g_indent + 2);
+      buf_printf(g_pre, "sp_RbVal lv_%s = _t%d ? sp_poly_arr_get(_t%d, 1) : sp_box_nil();\n",
+                 rename_local(nt_str(nt, block, "sym_proc_arg")), tpair2, te3);
     }
     else if (p0p && tpair2) {
       emit_indent(g_pre, g_indent + 2);
@@ -4406,7 +4418,40 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     for (int j2 = 0; j2 < bn2 - 1; j2++) emit_stmt(c, bb2[j2], g_pre, g_indent + 2);
     int saveIndent2 = g_indent; g_indent = g_indent + 2;
     Buf vb2; memset(&vb2, 0, sizeof vb2);
-    if (bn2 < 1) buf_puts(&vb2, "sp_box_nil()");
+    if (spair >= 0 && bn2 >= 1) {
+      /* the call with the second value, when this Enumerator yields two */
+      int tv3 = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      if (res_poly2) buf_puts(g_pre, "sp_RbVal");
+      else emit_ctype(c, ty_array_elem(restype2), g_pre);
+      buf_printf(g_pre, " _t%d;\n", tv3);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "if (_t%d) {\n", tpair2);
+      g_indent++;
+      Buf pv; memset(&pv, 0, sizeof pv);
+      emit_boxed(c, spair, &pv);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "_t%d = ", tv3);
+      if (res_poly2) buf_puts(g_pre, pv.p ? pv.p : "sp_box_nil()");
+      else emit_unbox_text(c, ty_array_elem(restype2), pv.p ? pv.p : "sp_box_nil()", g_pre);
+      buf_puts(g_pre, ";\n");
+      free(pv.p);
+      g_indent--;
+      emit_indent(g_pre, g_indent);
+      buf_puts(g_pre, "} else {\n");
+      g_indent++;
+      Buf ov; memset(&ov, 0, sizeof ov);
+      if (res_poly2) emit_boxed(c, bb2[bn2 - 1], &ov);
+      else emit_expr(c, bb2[bn2 - 1], &ov);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "_t%d = %s;\n", tv3, ov.p ? ov.p : "");
+      free(ov.p);
+      g_indent--;
+      emit_indent(g_pre, g_indent);
+      buf_puts(g_pre, "}\n");
+      buf_printf(&vb2, "_t%d", tv3);
+    }
+    else if (bn2 < 1) buf_puts(&vb2, "sp_box_nil()");
     else if (res_poly2) emit_boxed(c, bb2[bn2 - 1], &vb2);
     else emit_expr(c, bb2[bn2 - 1], &vb2);
     g_indent = saveIndent2;

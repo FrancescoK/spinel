@@ -361,6 +361,7 @@ int desugar_builtin_iter_block_shapes(Compiler *c);
 int desugar_enum_pair_lone_param(Compiler *c);
 void mark_sym_proc_blocks(Compiler *c);
 void enum_hop_yield_view(Compiler *c, int id, int hop);
+int sym_proc_poly_pair_view(Compiler *c, int id);
 int desugar_to_h_block(Compiler *c);
 TyKind return_node_type(Compiler *c, int id);
 int infer_return_types(Compiler *c);
