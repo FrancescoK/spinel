@@ -27603,7 +27603,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
     else {
       TyKind at = ac > 0 ? comp_ntype(c, av[0]) : TY_UNKNOWN;
-      if (at == TY_EXCEPTION)
+      if (ac >= 2 && (at == TY_EXCEPTION || at == TY_POLY || at == TY_CLASS ||
+                      (ty_is_object(at) && class_is_exc_subclass(c, ty_object_class(at))))) {
+        /* `raise k, msg` with the class (or an exception object) in a
+           variable: the message was dropped and the class name answered */
+        int rk = ++g_tmp, rm = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", rk); emit_boxed(c, av[0], b);
+        buf_printf(b, "; sp_RbVal _t%d = ", rm); emit_boxed(c, av[1], b);
+        buf_printf(b, "; sp_raise_poly_msg(_t%d, _t%d); })", rk, rm);
+      }
+      else if (at == TY_EXCEPTION)
         { buf_puts(b, "sp_raise_exc((sp_Exception *)("); emit_expr(c, av[0], b); buf_puts(b, "))"); }
       else if (ty_is_object(at) && class_is_exc_subclass(c, ty_object_class(at)))
         /* an exception-subclass INSTANCE in a variable raises as itself */

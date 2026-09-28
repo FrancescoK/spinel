@@ -1,0 +1,18 @@
+#<ArgumentError: boom>
+#<MyErr: mine>
+#<ArgumentError: b2>
+#<RuntimeError: loc>
+#<MyErr: loc2>
+#<TypeError: iv>
+#<MyErr: inst>
+#<ArgumentError: arr>
+#<MyErr: arr>
+#<MyErr: replaced>
+#<ArgumentError: y0>
+#<ArgumentError: x0>
+#<RuntimeError: 42>
+#<RuntimeError: RuntimeError>
+RuntimeError
+#<TypeError: exception class/object expected>
+#<Sub: sub>
+#<KeyError: k>
