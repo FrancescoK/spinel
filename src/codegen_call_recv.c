@@ -3243,16 +3243,27 @@ else {
           buf_printf(b, "({ sp_IntArray *_t%d = ", t);
           if (held) { emit_expr(c, recv, b); buf_puts(b, ";"); }
           else emit_recv_rooted(c, recv, t, "SP_GC_ROOT", b);
+          /* the arguments left to right into temporaries, then prepended in
+             reverse, as the Float branch below does */
+          for (int a = 0; a < argc; a++) {
+            buf_printf(b, " sp_int _u%d_%d = ", t, a); emit_typed_elem_value(c, argv[a], TY_INT, b); buf_puts(b, ";");
+          }
           for (int a = argc - 1; a >= 0; a--) {
-            buf_printf(b, " sp_IntArray_unshift(_t%d, ", t); emit_typed_elem_value(c, argv[a], TY_INT, b); buf_puts(b, ");");
+            buf_printf(b, " sp_IntArray_unshift(_t%d, _u%d_%d);", t, t, a);
           }
         }
         else if (rt == TY_STR_ARRAY) {
           buf_printf(b, "({ sp_StrArray *_t%d = ", t);
           if (held) { emit_expr(c, recv, b); buf_puts(b, ";"); }
           else emit_recv_rooted(c, recv, t, "SP_GC_ROOT", b);
+          /* every argument before the first insert, each rooted across the
+             later ones, then inserted in order */
           for (int a = 0; a < argc; a++) {
-            buf_printf(b, " sp_StrArray_insert(_t%d, %d, ", t, a); emit_typed_elem_value(c, argv[a], TY_STRING, b); buf_puts(b, ");");
+            buf_printf(b, " const char *_u%d_%d = ", t, a); emit_typed_elem_value(c, argv[a], TY_STRING, b);
+            buf_printf(b, "; SP_GC_ROOT_STR(_u%d_%d);", t, a);
+          }
+          for (int a = 0; a < argc; a++) {
+            buf_printf(b, " sp_StrArray_insert(_t%d, %d, _u%d_%d);", t, a, t, a);
           }
         }
         else {
