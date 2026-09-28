@@ -37203,7 +37203,7 @@ else {
         /* When the slot is poly but the rhs has no type yet (e.g. `{}`),
            emit a boxed value so the sp_RbVal temp initialises correctly. */
         if (unbox_poly_val) {
-          const char *fn = hvt == TY_STRING ? "sp_poly_to_s" : hvt == TY_INT ? "sp_poly_to_i" : "sp_poly_to_f";
+          const char *fn = hvt == TY_STRING ? "sp_poly_hval_s" : hvt == TY_INT ? "sp_poly_hval_i" : "sp_poly_hval_f";
           buf_printf(b, "%s(", fn); emit_expr(c, argv[1], b); buf_puts(b, ")");
         }
         else if (coerce_unknown_val) emit_unresolved_coerced(c, argv[1], hvt, b);

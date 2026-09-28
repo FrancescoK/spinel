@@ -11893,19 +11893,29 @@ const char *hash_order_val(TyKind t, int tr, int ti) {
 /* The key of a hash store, as the kind's set takes it. Shared with the
    expression form in codegen_call.c. */
 void emit_hash_store_key(Compiler *c, int key, TyKind rt, Buf *b) {
-  if (rt == TY_POLY_POLY_HASH) emit_boxed(c, key, b);
-  else emit_hash_key(c, key, ty_hash_key(rt), b);
+  if (rt == TY_POLY_POLY_HASH) { emit_boxed(c, key, b); return; }
+  /* A poly key is checked against the variant's key kind: a lookup of
+     another kind misses, a store of one cannot be held. */
+  TyKind kt = ty_hash_key(rt);
+  const char *fn = kt == TY_STRING ? "sp_poly_hkey_s" : kt == TY_INT ? "sp_poly_hkey_i"
+                 : kt == TY_SYMBOL ? "sp_poly_hkey_sym" : NULL;
+  if (fn && comp_ntype(c, key) == TY_POLY) {
+    buf_printf(b, "%s(", fn); emit_expr(c, key, b); buf_puts(b, ")");
+    return;
+  }
+  emit_hash_key(c, key, kt, b);
 }
 /* The value of a hash store, as the kind's set takes it. */
 static void emit_hash_store_val(Compiler *c, int val, TyKind rt, Buf *b) {
   if (ty_hash_val(rt) == TY_POLY) { emit_boxed(c, val, b); return; }
   /* A poly value (holds the hash's value type at runtime, e.g. a String?
-     guarded non-nil) into a typed-value hash: coerce to its element
-     representation, as the typed-array `[]=` path does. */
+     guarded non-nil) into a typed-value hash: unbox to its element
+     representation, refusing one of another kind as the typed-array `[]=`
+     path does. */
   TyKind hvt = ty_hash_val(rt), vt = comp_ntype(c, val);
-  if (vt == TY_POLY && hvt == TY_STRING) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, val, b); buf_puts(b, ")"); }
-  else if (vt == TY_POLY && hvt == TY_INT) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")"); }
-  else if (vt == TY_POLY && hvt == TY_FLOAT) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, val, b); buf_puts(b, ")"); }
+  if (vt == TY_POLY && hvt == TY_STRING) { buf_puts(b, "sp_poly_hval_s("); emit_expr(c, val, b); buf_puts(b, ")"); }
+  else if (vt == TY_POLY && hvt == TY_INT) { buf_puts(b, "sp_poly_hval_i("); emit_expr(c, val, b); buf_puts(b, ")"); }
+  else if (vt == TY_POLY && hvt == TY_FLOAT) { buf_puts(b, "sp_poly_hval_f("); emit_expr(c, val, b); buf_puts(b, ")"); }
   else emit_expr(c, val, b);
 }
 

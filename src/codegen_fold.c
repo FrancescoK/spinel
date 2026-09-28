@@ -5707,6 +5707,26 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
      sp_RbVal rather than a raw value (or `void` temp). */
   if (p && pt == TY_UNKNOWN) pt = TY_POLY;
   if (provided >= 0) {
+    /* A typed array into a boxed parameter the method stores an element
+       into that the array cannot hold: the store promotes a copy, and the
+       caller's array never sees it. The binding widens the arrays it can see
+       built; a literal or a new array is storage nobody else holds, and the
+       rest are refused rather than miscompiled. */
+    if (pt == TY_POLY && c->store_misfit_arg && provided < c->node_cap && c->store_misfit_arg[provided] &&
+        !is_fresh_array(c, provided)) {
+      TyKind at = comp_ntype(c, provided);
+      if (at == TY_INT_ARRAY || at == TY_STR_ARRAY || at == TY_FLOAT_ARRAY) {
+        const char *ek = at == TY_INT_ARRAY ? "Integer" : at == TY_STR_ARRAY ? "String" : "Float";
+        char msg[512];
+        snprintf(msg, sizeof msg,
+                 "an Array[%s] is passed to `%s`'s parameter `%s`, which the method stores elements of "
+                 "other kinds into: the caller's array cannot hold them, and the store would go to a "
+                 "copy it never sees. Build the argument from an array literal the call can see, so it "
+                 "is widened with the parameter.",
+                 ek, m->name ? m->name : "?", m->pnames[idx]);
+        unsupported_feature(c, provided, msg);
+      }
+    }
     if (pt == TY_POLY) emit_boxed(c, provided, out);   /* box into a poly param */
     else {
       TyKind at = comp_ntype(c, provided);

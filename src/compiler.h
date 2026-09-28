@@ -132,6 +132,12 @@ typedef struct {
                        value an element write through this BOXED parameter
                        stores, unified as boxed_push_elem is: the evidence
                        the binding checks a caller's hash against. */
+  unsigned long long store_key_src, store_val_src; /* (params, containers)
+                       bit j set: an element write through this parameter
+                       stores the method's own positional parameter j as
+                       the key (value). Boxed when the callers disagree, so
+                       the binding checks each call's argument j against the
+                       container instead. */
   int const_def_write; /* (consts) has a definite (non-or/and) assignment; an
                           or/and-write-only const is nil-defaulted (poly) so its
                           `||=` truthiness check fires on first use */
@@ -584,6 +590,10 @@ typedef struct {
   char *empty_arr_recv; /* [node_cap] empty `[]` used as a direct receiver/interpolation -> TY_POLY_ARRAY */
   char *empty_hash_recv; /* [node_cap] empty `{}` used as a direct receiver/interpolation -> TY_STR_POLY_HASH */
   char *empty_hash_arg;  /* [node_cap] empty `{}` passed as a user-method arg -> TY_POLY_POLY_HASH */
+  char *store_misfit_arg; /* [node_cap] a typed array passed to a boxed parameter
+                          the method stores an element into that the array
+                          cannot hold: codegen refuses it unless the binding
+                          widened it */
   TyKind *hash_want; /* [node_cap] variant a hash literal should take from its use context (#3040) */
   TyKind *arr_want;  /* [node_cap] array kind a node takes from its use context
                         rather than from its own contents: an empty `[]`

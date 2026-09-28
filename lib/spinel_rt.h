@@ -4479,6 +4479,45 @@ static const char *sp_poly_elem_s(sp_RbVal v) {
   if (v.tag == SP_TAG_NIL) return NULL;
   sp_raise_typed_elem(v, "String");
 }
+/* The same rules for a key or a value a TYPED hash is asked to store: the
+   compiler settled the hash's variant and did not widen it for this store.
+   Loud, as sp_poly_typed_hash_store_miss is, not a key or value converted
+   to the variant's kind ("z" stored as 0). A typed key has no nil. */
+SP_NORETURN SP_COLD static void sp_raise_typed_hash_part(sp_RbVal v, const char *part, const char *kind) {
+  sp_exc_stage_recv(v);
+  sp_raise_cls("TypeError", sp_sprintf("cannot store %s as a %s of a hash Spinel typed with %s %ss (the hash was not widened for this store)",
+                                       sp_poly_class_name(v), part, kind, part));
+}
+static sp_int sp_poly_hval_i(sp_RbVal v) {
+  if (v.tag == SP_TAG_INT) return v.v.i;
+  if (v.tag == SP_TAG_NIL) return SP_INT_NIL;
+  sp_raise_typed_hash_part(v, "value", "Integer");
+}
+static sp_float sp_poly_hval_f(sp_RbVal v) {
+  if (v.tag == SP_TAG_FLT) return v.v.f;
+  if (v.tag == SP_TAG_INT) return (sp_float)v.v.i;
+  if (v.tag == SP_TAG_NIL) return sp_float_nil();
+  sp_raise_typed_hash_part(v, "value", "Float");
+}
+static const char *sp_poly_hval_s(sp_RbVal v) {
+  if (v.tag == SP_TAG_STR) return v.v.s;
+  if (sp_poly_is_strbuf(v)) return sp_poly_strbuf_deref(v).v.s;
+  if (v.tag == SP_TAG_NIL) return NULL;
+  sp_raise_typed_hash_part(v, "value", "String");
+}
+static sp_int sp_poly_hkey_i(sp_RbVal v) {
+  if (v.tag == SP_TAG_INT) return v.v.i;
+  sp_raise_typed_hash_part(v, "key", "Integer");
+}
+static const char *sp_poly_hkey_s(sp_RbVal v) {
+  if (v.tag == SP_TAG_STR && v.v.s) return v.v.s;
+  if (sp_poly_is_strbuf(v)) return sp_poly_strbuf_deref(v).v.s;
+  sp_raise_typed_hash_part(v, "key", "String");
+}
+static sp_sym sp_poly_hkey_sym(sp_RbVal v) {
+  if (v.tag == SP_TAG_SYM) return (sp_sym)v.v.i;
+  sp_raise_typed_hash_part(v, "key", "Symbol");
+}
 /* A boxed array of any kind, re-laid as a typed array one element at a time
    under the rules above: the source of a typed-array splice whose RHS is only
    known at run time to be an array (a poly array from `poly.first(n)`). */

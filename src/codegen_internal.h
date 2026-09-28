@@ -949,6 +949,7 @@ int kwh_lookup(const NodeTable *nt, int kwh, const char *kname);
 int callee_has_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_declares_kwargs(Compiler *c, Scope *m);
+int is_fresh_array(Compiler *c, int v);
 /* True when the keyword hash `kwh` passes keywords from more than one source
    that may carry the same key -- two `**` operands, or a literal Symbol key
    ahead of one -- and every literal key is a Symbol. Its keywords then bind
