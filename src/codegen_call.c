@@ -27832,7 +27832,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* exception accessors on a POLY receiver (an exception rescued into a
      union-typed local): runtime unbox-and-delegate, but only when no user
      class defines the name (which would need the poly method dispatch)
-     (#3120, #3122) */
+     (#3120, #3122). That dispatch's builtin default arm, for a receiver
+     none of those classes own, lands here too. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_POLY && argc == 0 &&
       nt_ref(nt, id, "block") < 0 &&
       (sp_streq(name, "message") || sp_streq(name, "result") ||
@@ -27842,7 +27843,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     for (int k = 0; k < c->nclasses && !pu; k++)
       if (comp_method_in_class(c, k, name) >= 0 ||
           comp_reader_in_chain(c, k, name, NULL)) pu = 1;
-    if (!pu) {
+    if (!pu || g_poly_builtin_arm) {
       if (sp_streq(name, "name")) g_uses_symbols = 1;  /* may intern a recovered name */
       /* a user exception's #to_s is what #message answers, so a boxed
          exception goes through the override dispatcher */
@@ -27851,8 +27852,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         int t = ++g_tmp;
         buf_printf(b, "({ sp_RbVal _t%d = ", t);
         emit_expr(c, recv, b);
-        buf_printf(b, "; (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_EXCEPTION && _t%d.v.p) ? ",
-                   t, t, t);
+        buf_printf(b, "; (_t%d.tag == SP_TAG_OBJ && _t%d.v.p && (_t%d.cls_id == SP_BUILTIN_EXCEPTION"
+                   " || sp_is_exc_subclass_cls(_t%d.cls_id))) ? ", t, t, t, t);
         int boxed = comp_ntype(c, id) == TY_POLY;
         const char *arm = exc_has_nonstring_msg_override(c)
           ? (boxed ? "sp_user_exc_message_v(%s)" : "sp_poly_to_s(sp_user_exc_message_v(%s))")

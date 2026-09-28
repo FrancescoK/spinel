@@ -9900,6 +9900,15 @@ static void emit_obj_valeq_dispatch(Compiler *c, Buf *b) {
     }
     buf_puts(b, "; }\n");
   }
+  /* A user exception subclass keeps Exception#== (same class and message)
+     unless it defines its own. */
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *ci = &c->classes[k];
+    if (!ci->instantiated || !class_is_exc_subclass(c, k)) continue;
+    if (comp_method_in_chain(c, k, "==", NULL) >= 0) continue;
+    buf_printf(b, "    case %d: return sp_exc_eq((sp_Exception *)a.v.p, (sp_Exception *)b.v.p);\n",
+               comp_class_index(c, ci->name));
+  }
   /* A class with a reachable user-defined `==`: dispatch to it so Array#include?
      / #index / uniq (all through sp_poly_eq -> this hook) honor value equality.
      sp_poly_eq only consults the hook when both operands share a cls_id, so `a`
