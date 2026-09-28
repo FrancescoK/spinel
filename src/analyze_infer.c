@@ -3758,7 +3758,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* The same names on a BOXED status -- which is how one normally arrives,
      since waitpid2 answers an Array and its second element is read out of a
      poly container. emit_poly_builtin_method already emits the unboxed scalar
-     for exactly these seven (behind a runtime cls_id check), so without the
+     for exactly these seven, and a Process::Tms's four times (behind a runtime
+     cls_id check), so without the
      matching rule here the two sides disagreed: `"exit #{st.exitstatus}"`
      asked sp_poly_to_s for a poly the emitter had produced as an sp_int. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 &&
@@ -3770,6 +3771,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "exitstatus") || sp_streq(name, "termsig") ||
         sp_streq(name, "pid"))
       return TY_INT;
+    /* and a boxed Process::Tms's four CPU times, as on a typed one */
+    if (sp_streq(name, "utime") || sp_streq(name, "stime") ||
+        sp_streq(name, "cutime") || sp_streq(name, "cstime"))
+      return TY_FLOAT;
   }
   /* OpenStruct: dynamic members. A member read (any name, arg-less, no
      writer) or `[sym]` returns a boxed value; a writer / `[]=` returns the
