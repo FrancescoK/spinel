@@ -9727,17 +9727,7 @@ static sp_PolyArray *sp_poly_user_elems(sp_RbVal v) {
   if (a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(a.cls_id)) return sp_poly_to_poly_array(a);
   return NULL;
 }
-/* Enumerator#find_index(v): the walk stops at the first hit, so an endless
-   one answers too. SP_INT_NIL for no hit. */
 static sp_int sp_enum_find_index_val(sp_RbVal recv, sp_RbVal x) SP_UNUSED;
-static sp_int sp_enum_find_index_val(sp_RbVal recv, sp_RbVal x) {
-  SP_GC_ROOT_RBVAL(x);
-  sp_RbVal w = sp_poly_iter_walk(recv);
-  SP_GC_ROOT_RBVAL(w);
-  for (sp_int i = 0; i < sp_poly_arr_len_ex(w); i++)
-    if (sp_poly_eq(sp_poly_each_elem(w, i), x)) return i;
-  return SP_INT_NIL;
-}
 static int sp_poly_user_include(sp_RbVal recv, sp_RbVal x) {
   /* an Enumerator stops at the first hit, so an endless one answers too */
   if (recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_ENUMERATOR && recv.v.p)
@@ -13502,6 +13492,30 @@ static SP_COLD SP_NOINLINE sp_RbVal sp_enum_walk_at(sp_RbVal v, sp_int i) {
   sp_Enumerator *w = (sp_Enumerator *)v.v.p;
   if (i >= w->walk_next) w->walk_next = i + 1;
   return (i >= 0 && i < w->walk_buf->len) ? w->walk_buf->data[i] : sp_box_nil();
+}
+/* Enumerator#find_index(v), and include? by way of it: a run of its own
+   pulls one item at a time and keeps none it has passed, so an endless one
+   answers at the hit without holding the prefix. SP_INT_NIL for no hit; an
+   argless cycle is searched over one round. */
+static sp_int sp_enum_find_index_val(sp_RbVal recv, sp_RbVal x) {
+  SP_GC_ROOT_RBVAL(recv);
+  SP_GC_ROOT_RBVAL(x);
+  sp_Enumerator *e = (sp_Enumerator *)recv.v.p;
+  if (e->gen) {
+    sp_Fiber *f = sp_Fiber_new(e->gen);
+    SP_GC_ROOT(f);
+    if (e->gen_cap) { sp_gc_wb((void *)f); f->user_data = e->gen_cap; }
+    for (sp_int i = 0; ; i++) {
+      if (!sp_Fiber_alive(f)) break;
+      sp_RbVal v = sp_Fiber_resume(f, sp_box_nil());
+      if (!sp_Fiber_alive(f)) break;
+      if (sp_poly_eq(v, x)) return i;
+    }
+    return SP_INT_NIL;
+  }
+  for (sp_int i = 0; e->items && i < e->items->len; i++)
+    if (sp_poly_eq(e->items->data[i], x)) return i;
+  return SP_INT_NIL;
 }
 static sp_PolyArray *sp_enum_take_boxed(sp_RbVal v, sp_int n) {
   return sp_Enumerator_take((sp_Enumerator *)v.v.p, n);
