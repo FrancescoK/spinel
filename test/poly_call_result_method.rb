@@ -1,15 +1,10 @@
 # Regression (#4395): a poly `.call` result is typed poly (the slot may hold a
-# Proc, whose return is dynamic), so `o.method(:sym)` on that result can no
-# longer resolve a concrete target. Before the poly `.call` result was typed
-# dynamic, the receiver kept the user `call` method's return type and the bind
-# resolved; that was unsound when the slot held a Proc, and the dynamic type
-# made the bind's `(void *)(<poly expr>)` self slot fail to compile
-# ("cannot convert to a pointer type"). A poly receiver has never had a
-# callable address to bind, so the bind now raises CRuby's NoMethodError
-# instead of failing the C build. A concrete receiver still binds and calls.
-#
-# The snapshot is hand-written: the poly case diverges from CRuby only by
-# raising (a documented limitation), so it cannot come from reference Ruby.
+# Proc, whose return is dynamic), so `o.method(:sym)` on that result has no
+# concrete target to bind. The bind's `(void *)(<poly expr>)` self slot once
+# failed to compile ("cannot convert to a pointer type"). A boxed receiver now
+# binds a wrapper that carries it and dispatches the call at run time, so the
+# Method works as it does in CRuby, and a concrete receiver still binds
+# directly.
 
 class Obj
   def foo(x) = x + 1

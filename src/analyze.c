@@ -5103,9 +5103,14 @@ static int desugar_builtin_method_obj(Compiler *c) {
       }
       if (!obj_accessor) continue;                    /* real def / non-accessor: handled elsewhere */
     }
-    else if (rt == TY_UNKNOWN || rt == TY_POLY || rt == TY_VOID || rt == TY_NIL ||
+    else if (rt == TY_UNKNOWN || rt == TY_VOID || rt == TY_NIL ||
              rt == TY_CLASS || rt == TY_METHOD || rt == TY_PROC)
       continue;
+    /* A boxed receiver is not a C pointer the Method's self slot can carry:
+       the wrapper takes it inside a one-element array instead,
+       `def __bam_<id>(__bam_r, ...) = __bam_r[0].<sym>(...)`, and the call
+       goes through the poly dispatch (codegen boxes the self, bam_poly). */
+    int poly_self = rt == TY_POLY;
     /* the typed-array (kind, op) trampoline path owns these */
     if (ty_is_array(rt) && sp_streq(sym, "push")) continue;
     if (comp_method_index(c, sym) >= 0) continue;     /* a same-named top-level def wins */
@@ -5149,6 +5154,17 @@ static int desugar_builtin_method_obj(Compiler *c) {
     nt_node_set_arr(nt, params, "requireds", preqs, 1 + nfwd);
     int rread = nt_new_node(nt, "LocalVariableReadNode");
     nt_node_set_str(nt, rread, "name", "__bam_r");
+    if (poly_self) {
+      int zero = nt_new_node(nt, "IntegerNode");
+      nt_node_set_int(nt, zero, "value", 0);
+      int zargs = nt_new_node(nt, "ArgumentsNode");
+      nt_node_set_arr(nt, zargs, "arguments", &zero, 1);
+      int elem = nt_new_node(nt, "CallNode");
+      nt_node_set_str(nt, elem, "name", "[]");
+      nt_node_set_ref(nt, elem, "receiver", rread);
+      nt_node_set_ref(nt, elem, "arguments", zargs);
+      rread = elem;
+    }
     int call = nt_new_node(nt, "CallNode");
     nt_node_set_str(nt, call, "name", sym);
     nt_node_set_ref(nt, call, "receiver", rread);
@@ -5168,6 +5184,7 @@ static int desugar_builtin_method_obj(Compiler *c) {
     nt_node_set_str(nt, def, "name", wname);
     nt_node_set_ref(nt, def, "parameters", params);
     nt_node_set_ref(nt, def, "body", body);
+    if (poly_self) nt_node_set_int(nt, def, "bam_poly", 1);
     Scope *ws = comp_scope_new(c, wname, def);
     ws->class_id = -1;
     ws->body = body;
@@ -5175,7 +5192,7 @@ static int desugar_builtin_method_obj(Compiler *c) {
     scope_add_param(ws, "__bam_r", -1);
     for (int k = 0; k < nfwd; k++) scope_add_param(ws, aname[k], -1);
     LocalVar *plv = scope_local(ws, "__bam_r");
-    if (plv) { plv->type = rt; plv->rbs_seeded = 1; }  /* pin: no call sites exist */
+    if (plv) { plv->type = poly_self ? TY_POLY_ARRAY : rt; plv->rbs_seeded = 1; }  /* pin: no call sites exist */
     comp_grow_node_arrays(c);
     walk_scope(c, body, ws_idx, -1);
     /* retarget the Method at the wrapper */
