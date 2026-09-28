@@ -7220,17 +7220,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
         emit_boxed_text(c, g_ret_type, rv, b);
         buf_puts(b, "; return 0; }\n");
       }
-      /* a fiber body is `static void`: see g_c_ret_void */
-      else if (has_retval && g_c_ret_void) buf_printf(b, "if (_retf%d) return;\n", eid);
-      else if (has_retval) buf_printf(b, "if (_retf%d) return _retv%d;\n", eid, eid);
-      else if (g_in_proc_body && g_result_var && g_result_poly)
-        buf_printf(b, "if (_retf%d) { %s = sp_box_nil(); return 0; }\n", eid, g_result_var);
-      else if (g_c_ret_void) buf_printf(b, "if (_retf%d) return;\n", eid);
-      else if (g_ret_type == TY_POLY) buf_printf(b, "if (_retf%d) return sp_box_nil();\n", eid);
-      else if (g_ret_type == TY_UNKNOWN) buf_printf(b, "if (_retf%d) return 0;\n", eid); /* main() */
-      /* a proc body returns sp_int: see the sibling in codegen_iter.c */
-      else if (g_in_proc_body) buf_printf(b, "if (_retf%d) return 0;\n", eid);
-      else buf_printf(b, "if (_retf%d) return;\n", eid);
+      else emit_retf_return(eid, has_retval, b);
       /* Unhandled exception: re-raise using the saved class/message. */
       emit_indent(b, indent);
       buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_raise_cls(_exccls%d, _excmsg%d); }\n", eid, eid, eid, eid);
