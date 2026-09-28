@@ -507,9 +507,12 @@ int sp_net_connect(const char *host, int port) {
     snprintf(portbuf, sizeof(portbuf), "%d", port);
     if (sp_net_resolve(host, portbuf, &hints, &res) != 0) return -1;
 
+    /* A Thread#raise or #kill wakes a parked connect, but is held back
+       until the socket and the address list are freed. */
+    sp_fiber_defer_inject();
     int fd = -1;
-    struct addrinfo *ai;
-    for (ai = res; ai != NULL; ai = ai->ai_next) {
+    for (struct addrinfo *ai = res; ai != NULL; ai = ai->ai_next) {
+        if (sp_fiber_current && sp_fiber_inject_pending(sp_fiber_current)) break;
         fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (fd < 0) continue;
         if (sp_net_connect_wait(fd, ai->ai_addr, ai->ai_addrlen) == 0) break;
@@ -517,7 +520,11 @@ int sp_net_connect(const char *host, int port) {
         fd = -1;
     }
     freeaddrinfo(res);
-    if (fd < 0) return -1;
+    sp_fiber_undefer_inject();
+    if (fd < 0) {
+        sp_fiber_fire_inject_if_pending();
+        return -1;
+    }
 
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
