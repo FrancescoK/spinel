@@ -36498,6 +36498,12 @@ else {
     else if (sp_streq(name, ">")) cfn = "sp_poly_gt";
     else if (sp_streq(name, "<=")) cfn = "sp_poly_le";
     else if (sp_streq(name, ">=")) cfn = "sp_poly_ge";
+    /* a user operator that answers a non-bool goes through the dispatch */
+    if (cfn && comp_ntype(c, id) == TY_POLY && user_defines_or_reads(c, name)) {
+      buf_printf(b, "sp_poly_relop_v(\"%s\", ", name); emit_boxed(c, recv, b); buf_puts(b, ", ");
+      emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      return;
+    }
     if (cfn) {
       buf_printf(b, "%s(", cfn); emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
       return;

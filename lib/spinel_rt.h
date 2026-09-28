@@ -3896,6 +3896,15 @@ static sp_bool sp_poly_lt(sp_RbVal a, sp_RbVal b) { SP_POLY_NIL_RECV("<"); SP_PO
 static sp_bool sp_poly_le(sp_RbVal a, sp_RbVal b) { SP_POLY_NIL_RECV("<="); SP_POLY_CLASS_CMP(<=); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i <= b.v.i;   /* see sp_poly_eq */ SP_POLY_USER_CMP("<="); SP_POLY_COERCE_CMP("<="); if ((sp_poly_num_is_nan(a) || sp_poly_num_is_nan(b)) && sp_poly_tower_p(a) && sp_poly_tower_p(b)) return FALSE; sp_bool comparable; sp_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp <= 0; }
 static sp_bool sp_poly_gt(sp_RbVal a, sp_RbVal b) { SP_POLY_NIL_RECV(">"); SP_POLY_CLASS_CMP(>); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i > b.v.i;   /* see sp_poly_eq */ SP_POLY_USER_CMP(">"); SP_POLY_COERCE_CMP(">"); if ((sp_poly_num_is_nan(a) || sp_poly_num_is_nan(b)) && sp_poly_tower_p(a) && sp_poly_tower_p(b)) return FALSE; sp_bool comparable; sp_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp > 0; }
 static sp_bool sp_poly_ge(sp_RbVal a, sp_RbVal b) { SP_POLY_NIL_RECV(">="); SP_POLY_CLASS_CMP(>=); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i >= b.v.i;   /* see sp_poly_eq */ SP_POLY_USER_CMP(">="); SP_POLY_COERCE_CMP(">="); if ((sp_poly_num_is_nan(a) || sp_poly_num_is_nan(b)) && sp_poly_tower_p(a) && sp_poly_tower_p(b)) return FALSE; sp_bool comparable; sp_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp >= 0; }
+/* `a < b` etc. where a user class's operator may answer a non-bool (ruby-vips'
+   Image#> builds an image): the user method's own value, else the builtin
+   comparison boxed. */
+static sp_RbVal sp_poly_relop_v(const char *op, sp_RbVal a, sp_RbVal b) {
+  sp_RbVal u;
+  if (sp_poly_user_cmp(op, a, b, &u)) return u;
+  if (op[0] == '<') return sp_box_bool(op[1] == '=' ? sp_poly_le(a, b) : sp_poly_lt(a, b));
+  return sp_box_bool(op[1] == '=' ? sp_poly_ge(a, b) : sp_poly_gt(a, b));
+}
 /* Comparable#between? is defined on `<=>` alone: CRuby computes
    `(self <=> min) >= 0 && (self <=> max) <= 0` and raises "comparison failed"
    when either answers nil. Lowering it to `>=` and `<=` instead would

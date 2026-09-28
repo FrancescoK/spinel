@@ -5094,6 +5094,19 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if ((sp_streq(name, "include?") || sp_streq(name, "member?")) &&
         an_user_ret_disagrees(c, name, TY_BOOL))
       return TY_POLY;   /* the user arm answers something a bool cannot hold */
+    /* a user comparison operator answering something other than a bool
+       (ruby-vips' Image#> builds an image) makes the boxed call's answer
+       that value, not the builtin comparison's bool */
+    if (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
+        sp_streq(name, ">=")) {
+      for (int k = 0; k < c->nclasses; k++) {
+        if (c->classes[k].is_native_class) continue;
+        int mi = comp_method_in_chain(c, k, name, NULL);
+        if (mi < 0 || mi >= c->nscopes) continue;
+        TyKind ur = (TyKind)c->scopes[mi].ret;
+        if (ty_is_object(ur) || ur == TY_POLY) return TY_POLY;
+      }
+    }
     if (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
         sp_streq(name, ">=") || sp_streq(name, "==") || sp_streq(name, "!=") ||
         sp_streq(name, "nil?") || sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
