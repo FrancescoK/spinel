@@ -5147,7 +5147,7 @@ static sp_RbVal sp_bm_call_boxed(void *m, sp_int n) {
   sp_method_proc_tramp(m, n < 16 ? n : 16, slots);
   return _sp_proc_poly_ret;
 }
-static sp_RbVal sp_poly_callable_spread(sp_RbVal v, sp_RbVal arr);
+static sp_RbVal sp_poly_callable_spread(sp_RbVal v, sp_RbVal arr, int kwpos);
 static sp_RbVal sp_poly_slice(sp_RbVal a, sp_int start, sp_int len) {
   if (a.tag == SP_TAG_STR) return sp_box_nullable_str(sp_str_sub_range(a.v.s ? a.v.s : "", start, len));
   /* A shared-string handle is a String: slicing is non-mutating, so it answers
@@ -13310,6 +13310,12 @@ SP_TLS sp_RbVal _sp_proc_poly_args[SP_PROC_ARG_SLOTS];
    here just before sp_proc_call, and the callee's &block-param prologue
    consumes (and clears) it. Same discipline as _sp_proc_poly_args (#2648). */
 static SP_TLS sp_Proc *_sp_proc_blk;
+/* What the call site's trailing argument is: 1 a positional (a Hash passed
+   as `pr.call(5, {k: 2})`), 2 keywords, 0 not said (a runtime path). The
+   boxed channel carries both the same way, and since Ruby 3 a proc binds
+   keywords only from a keyword argument. Every proc prologue consumes (and
+   clears) it, the same discipline as _sp_proc_blk. */
+static SP_TLS int _sp_proc_kwpos;
 /* ---- --rbs seed assertions (-DSP_RBS_CHECK) ----------------------------
    A seed is trusted, never verified (docs/rbs-extract.md): the analyzer pins
    the slot and codegen narrows whatever arrives into it, so a signature the
@@ -14102,7 +14108,7 @@ static sp_RbVal sp_env_filter_bang_opt(sp_Proc *p, int keep) {
   if (sp_env_filter_core(p, keep) == 0) return sp_box_nil();
   return sp_box_obj(sp_env_to_h(), SP_BUILTIN_STR_STR_HASH);
 }
-static void sp_proc_call_spread(sp_Proc *p, sp_RbVal arr) { SP_GC_ROOT(p);
+static void sp_proc_call_spread(sp_Proc *p, sp_RbVal arr, int kwpos) { SP_GC_ROOT(p);
   if (!p || !p->fn) return;
   sp_int n = sp_poly_length(arr);
   sp_int fill = n > 16 ? 16 : n;
@@ -14124,16 +14130,17 @@ static void sp_proc_call_spread(sp_Proc *p, sp_RbVal arr) { SP_GC_ROOT(p);
      `_sp_proc_poly_args[argc-1]`), so it keeps the clamp. A Hash default proc
      shares the scan hook but is not a lambda. */
   sp_int pass = (p->cap_scan == sp_bm_cap_scan && p->lambda_p) ? n : fill;
+  _sp_proc_kwpos = kwpos;
   sp_proc_call(p, pass, slots);
 }
 /* sp_proc_yield with an argument list whose length is known only at run
    time (a splat, or a `**h` that passes nothing when empty) */
-static void sp_proc_yield_spread(sp_Proc *p, sp_RbVal arr) {
+static void sp_proc_yield_spread(sp_Proc *p, sp_RbVal arr, int kwpos) {
   if (!p) {
     sp_exc_stage_key(sp_box_str((&("\xff" "noreason")[1])));
     sp_raise_cls("LocalJumpError", "no block given (yield)");
   }
-  sp_proc_call_spread(p, arr);
+  sp_proc_call_spread(p, arr, kwpos);
 }
 /* Enumerator#size (CRuby's ary2sv-independent size protocol): a materialized
    enumerator reports its snapshot length; a generator reports its stored size --
@@ -14317,7 +14324,9 @@ static sp_Proc *sp_curry_to_proc(sp_Curry *cy) {
 /* Call a boxed callable. A Proc runs; a curried Proc (which a poly slot now
    carries, #3885) takes the arguments and realizes once it has them, the way
    the typed `curry[x]` path does. */
-static sp_RbVal sp_poly_callable_call(sp_RbVal v, sp_int n, const sp_int *args) {
+/* kwpos: what the call site's trailing argument is, for a Proc's keyword
+   parameters (_sp_proc_kwpos); 0 when the caller does not say */
+static sp_RbVal sp_poly_callable_call_kw(sp_RbVal v, sp_int n, const sp_int *args, int kwpos) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_CURRY)
     return sp_curry_call_poly((sp_Curry *)v.v.p, n < 16 ? n : 16, _sp_proc_poly_args);
   /* A bound Method that fell through a call arm's own gate still has the
@@ -14340,8 +14349,12 @@ static sp_RbVal sp_poly_callable_call(sp_RbVal v, sp_int n, const sp_int *args) 
     sp_raise_cls("NoMethodError", sp_nomethod_msg("call", v));
   sp_int slots[16];
   for (sp_int i = 0; i < n && i < 16; i++) slots[i] = args[i];
+  _sp_proc_kwpos = kwpos;
   sp_proc_call((sp_Proc *)v.v.p, n, slots);
   return _sp_proc_poly_ret;
+}
+static sp_RbVal sp_poly_callable_call(sp_RbVal v, sp_int n, const sp_int *args) {
+  return sp_poly_callable_call_kw(v, n, args, 0);
 }
 
 /* Call a boxed callable with a dynamic (spread) argument list. Unlike the
@@ -14354,7 +14367,7 @@ static sp_RbVal sp_poly_callable_call(sp_RbVal v, sp_int n, const sp_int *args) 
    A Method with more than 16 arguments has no slot to land in and declines --
    the trampoline's own `argc > 16` guard never sees the overlong count if this
    helper clamps first. */
-static sp_RbVal sp_poly_callable_spread(sp_RbVal v, sp_RbVal arr) {
+static sp_RbVal sp_poly_callable_spread(sp_RbVal v, sp_RbVal arr, int kwpos) {
   if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id == SP_BUILTIN_CURRY) {
     sp_int n = sp_poly_length(arr);
     sp_RbVal args[16];
@@ -14392,7 +14405,7 @@ static sp_RbVal sp_poly_callable_spread(sp_RbVal v, sp_RbVal arr) {
     return _sp_proc_poly_ret;
   }
   if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id == SP_BUILTIN_PROC) {
-    sp_proc_call_spread((sp_Proc *)v.v.p, arr);
+    sp_proc_call_spread((sp_Proc *)v.v.p, arr, kwpos);
     return _sp_proc_poly_ret;
   }
   sp_raise_cls("NoMethodError", sp_nomethod_msg("call", v));

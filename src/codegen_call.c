@@ -1678,6 +1678,10 @@ void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int for
     if (at == TY_POLY || at == TY_FLOAT || proc_slot_via_poly(c, at)) any_poly = 1;
   }
   buf_printf(b, "%d, ", argc);
+  /* a trailing argument that is not a keyword argument is positional even
+     when it is a Hash; the callee's keyword parameters must not bind from it */
+  int kwpos = nargs == 0 || nargs < argc ? 0
+            : nt_kind(c->nt, argv[argc - 1]) == NK_KeywordHashNode ? 2 : 1;
   if (any_poly) {
     g_needs_proc_poly_argslot = 1;  /* channel array now lives in spinel_rt.h */
     /* Each argument is evaluated once into a natural-typed temp so it can be
@@ -1720,6 +1724,7 @@ void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int for
       if (storable) emit_boxed_text(c, at, tn, b); else buf_puts(b, "sp_box_nil()");
       buf_puts(b, ", ");
     }
+    if (kwpos) buf_printf(b, "_sp_proc_kwpos = %d, ", kwpos);
     buf_puts(b, "(sp_int[16]){");
     for (int k = 0; k < nargs; k++) {
       TyKind at = comp_ntype(c, argv[k]);
@@ -1737,6 +1742,7 @@ void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int for
     buf_puts(b, "}))");
   }
   else {
+    if (kwpos) buf_printf(b, "(_sp_proc_kwpos = %d, ", kwpos);
     buf_puts(b, "(sp_int[16]){");
     for (int k = 0; k < nargs; k++) {
       if (k) buf_puts(b, ", ");
@@ -1744,7 +1750,7 @@ void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int for
       else emit_expr(c, argv[k], b);
     }
     if (nargs == 0) buf_puts(b, "0");  /* C99: no empty initializer list */
-    buf_puts(b, "})");
+    buf_puts(b, kwpos ? "}))" : "})");
   }
 }
 
@@ -5547,12 +5553,13 @@ static void emit_bm_abi_args(Buf *b, const char *rb, int abi, const char *sig, i
    pre-existing (unsupported) dispatch path here rather than published as one
    argument -- the fast path with no user `call` spreads a splat through
    sp_poly_callable_spread, but this pre-arm's positional publish sequence has
-   no way to spread an array into per-position slots. Emits
+   no way to spread an array into per-position slots. kwpos says what the
+   trailing argument is (_sp_proc_kwpos). Emits
    `if (<tag/cls is callable>) { <tr> = <expr>; }\nelse ` and returns 1 when
    emitted, 0 (nothing written) otherwise. */
 static int emit_poly_callable_prearm(Compiler *c, const char *name, int argc,
                                      const int *atmp, const TyKind *atmp_ty, const char *guard,
-                                     int tv, int tr, TyKind ret, Buf *b) {
+                                     int tv, int tr, TyKind ret, int kwpos, Buf *b) {
   if (!name ||
       !(sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]")))
     return 0;
@@ -5689,10 +5696,10 @@ static int emit_poly_callable_prearm(Compiler *c, const char *name, int argc,
   buf_puts(&eb, ")");
   /* Proc/Curry go through the callable helper, which raises NoMethodError for
      anything that is not a Proc rather than reading it as one. */
-  buf_printf(&eb, " : sp_poly_callable_call(_t%d, %d, (sp_int[16]){", tv, argc);
+  buf_printf(&eb, " : sp_poly_callable_call_kw(_t%d, %d, (sp_int[16]){", tv, argc);
   for (int k = 0; k < argc; k++) { if (k) buf_puts(&eb, ", "); PA_SLOT(k); }
   if (argc == 0) buf_puts(&eb, "0");
-  buf_puts(&eb, "}))");
+  buf_printf(&eb, "}, %d))", kwpos);
   if (pubs.p) buf_puts(&eb, ")");
   #undef PA_SLOT
   #undef PA_MARG
@@ -5748,7 +5755,7 @@ static int emit_poly_callable_spread_prearm(Compiler *c, const char *name, int s
   }
   buf_printf(b, " sp_PolyArray_append_all(_t%d, _t%d); _t%d = ", ta, st, tr);
   char call[96];
-  snprintf(call, sizeof call, "sp_poly_callable_spread(_t%d, sp_box_poly_array(_t%d))", tv, ta);
+  snprintf(call, sizeof call, "sp_poly_callable_spread(_t%d, sp_box_poly_array(_t%d), 0)", tv, ta);
   if (ret == TY_POLY) buf_puts(b, call);
   else emit_unbox_poly_ret(c, ret, call, b);
   buf_puts(b, "; }\nelse ");
@@ -7102,7 +7109,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         }
       }
       /* a boxed Proc/Curry/Method in a slot a user `call`/`[]` shadows (#4395) */
-      emit_poly_callable_prearm(c, name, 0, NULL, NULL, NULL, tv, tr, ret, b);
+      emit_poly_callable_prearm(c, name, 0, NULL, NULL, NULL, tv, tr, ret, 0, b);
       int cls0_d = -1, cls0_rd = -1;
       int cls0_mi = c->nclasses > 0 ? comp_method_in_chain(c, 0, name, &cls0_d) : -1;
       char cls0_exp[48];
@@ -8409,10 +8416,12 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           for (int e = 0; e < 2; e++) {
             char kg[48];
             snprintf(kg, sizeof kg, "_t%d->len %s 0 && ", kwall, e ? ">" : "==");
-            emit_poly_callable_prearm(c, name, pos_argc + e, atmp, atmp_ty, kg, tv, tr, ret, b);
+            emit_poly_callable_prearm(c, name, pos_argc + e, atmp, atmp_ty, kg, tv, tr, ret,
+                                      e ? 2 : pos_argc > 0 ? 1 : 0, b);
           }
         }
-        else emit_poly_callable_prearm(c, name, argc, atmp, atmp_ty, NULL, tv, tr, ret, b);
+        else emit_poly_callable_prearm(c, name, argc, atmp, atmp_ty, NULL, tv, tr, ret,
+                                       argc == 0 ? 0 : nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? 2 : 1, b);
       }
       else if (splat_a >= 0)
         emit_poly_callable_spread_prearm(c, name, splat_a, atmp, atmp_ty,
@@ -22997,7 +23006,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       {
         if (call_args_need_spread(nt, argv, argc)) {
           int ta = emit_spread_args(c, argv, argc);
-          buf_printf(b, "sp_poly_callable_spread(_t%d, sp_box_poly_array(_t%d))", t, ta);
+          buf_printf(b, "sp_poly_callable_spread(_t%d, sp_box_poly_array(_t%d), %d)", t, ta,
+                     nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? 2 : 1);
           return;
         }
       }
@@ -23167,13 +23177,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
          single type. */
       /* through the callable helper, so a curried Proc in the slot takes its
          arguments instead of being read as an sp_Proc (#3885) */
-      buf_printf(b, " : sp_poly_callable_call(_t%d, %d, (sp_int[16]){", t, argc);
+      buf_printf(b, " : sp_poly_callable_call_kw(_t%d, %d, (sp_int[16]){", t, argc);
       for (int k = 0; k < argc; k++) {
         if (k) buf_puts(b, ", ");
         EMIT_POLY_CALL_SLOT(k);
       }
       if (argc == 0) buf_puts(b, "0");  /* C99: no empty initializer list */
-      buf_puts(b, "}))");
+      buf_printf(b, "}, %d))", argc == 0 ? 0 : nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? 2 : 1);
       if (pubs.p) buf_puts(b, ")");
       free(pubs.p);
       #undef EMIT_POLY_CALL_MARG
@@ -24903,7 +24913,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         if (proc_nil_raises) buf_puts(b, "sp_proc_recv(");
         emit_expr(c, recv, b);
         if (proc_nil_raises) buf_printf(b, ", \"%s\")", proc_meth);
-        buf_printf(b, ", sp_box_poly_array(_t%d)), ", ta);
+        buf_printf(b, ", sp_box_poly_array(_t%d), %d), ", ta,
+                   nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? 2 : 1);
         emit_proc_ret_unbox(c, rty, b);
         buf_puts(b, ")");
         return;
