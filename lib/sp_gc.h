@@ -628,6 +628,9 @@ extern sp_RbVal (*sp_class_cmp_fn)(sp_RbVal a, sp_RbVal b);
 /* the same walk from a user class id, matching the ancestor by the NAME the
    runtime reader holds (sp_class_kind_of_name in the generated program) */
 extern int (*sp_class_kind_of_name_fn)(int cls, const char *name);
+/* is a class value a module? (sp_class_is_module_val in the generated
+   program; NULL leaves only the builtin modules known) */
+extern int (*sp_class_is_module_fn)(sp_Class c);
 
 /* ---- Hot inline mark helpers (inlined into both sides) ----
  * String tag bytes: 0xfe heap-unmarked -> 0xfc marked; others skipped. */
