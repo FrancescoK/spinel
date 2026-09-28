@@ -1,3 +1,4 @@
+# spinel: int64 -- Integer#size == 8 assumes a 64-bit Integer; not run on a 32-bit target
 # respond_to? on an Integer read out of a container answers true for size,
 # and on an Array for values_at, as on a typed one.
 i = [5, "s"][0]
