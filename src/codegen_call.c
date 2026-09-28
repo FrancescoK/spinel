@@ -19909,7 +19909,19 @@ static int emit_at_without_array(Compiler *c, int id, Buf *b) {
       TyKind at = comp_ntype(c, argv[i]);
       if (subtree_has_side_effect(c, argv[i]) && at != TY_NIL && at != TY_VOID && at != TY_UNKNOWN) nhold++;
     }
-    if (g_n_argov + 1 + nhold > MAX_ARG_OVERRIDE) return 0;
+    if (g_n_argov + 1 + nhold > MAX_ARG_OVERRIDE) {
+      /* no override slots left: a receiver that reads the same twice is
+         checked in place, ahead of the read */
+      if (subtree_has_side_effect(c, recv)) return 0;
+      buf_puts(b, "({ sp_poly_ary_chk(");
+      emit_expr(c, recv, b);
+      buf_puts(b, ", \"at\", 0); ");
+      int sv_chk = g_at_chk_id; g_at_chk_id = id;
+      emit_call_held(c, id, b);
+      g_at_chk_id = sv_chk;
+      buf_puts(b, "; })");
+      return 1;
+    }
     int sv_n = g_n_argov;
     int t = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", t);
