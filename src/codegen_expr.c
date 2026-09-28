@@ -230,7 +230,8 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         buf_puts(&conv, "sp_str_or_empty("); EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (t == TY_FLOAT) {
-        buf_puts(&conv, "sp_float_to_s(");
+        /* and a float slot's nil sentinel writes nothing too */
+        buf_puts(&conv, "sp_float_opt_to_s(");
         EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (t == TY_BOOL) {
