@@ -506,6 +506,29 @@ int local_all_writes_empty_array(Compiler *c, Scope *sc, const char *name) {
   return saw;
 }
 
+/* 1 iff every write of local `name` in `sc` is an array literal (and there is
+   one): a value nothing else holds, so rebuilding it as another array kind
+   loses no sharing. */
+static int local_all_writes_array_literal(Compiler *c, Scope *sc, const char *name) {
+  const NodeTable *nt = c->nt;
+  int saw = 0;
+  int si = (int)(sc - c->scopes);
+  for (int r = lw_shared_first(c, name, si); r >= 0; r = lw_shared_next(r)) {
+    int id = lw_shared_node(r);
+    if (comp_scope_of(c, id) != sc) continue;
+    const char *wn = nt_str(nt, id, "name");
+    if (!wn || !sp_streq(wn, name)) continue;
+    if (nt_kind(nt, id) != NK_LocalVariableWriteNode) return 0;
+    int v = nt_ref(nt, id, "value");
+    if (v < 0 || nt_kind(nt, v) != NK_ArrayNode) return 0;
+    int en = 0; const int *ev = nt_arr(nt, v, "elements", &en);
+    for (int k = 0; k < en; k++)
+      if (nt_kind(nt, ev[k]) == NK_SplatNode) return 0;
+    saw = 1;
+  }
+  return saw;
+}
+
 /* Per-pass index of local-variable write nodes keyed by (scope, name). The
    usage-driven promotion scans in infer_write_types ask "does local X in scope
    S have any write / an array-typed write"; without this index each such query
@@ -1496,6 +1519,51 @@ static int widen_aliased_array_ivars(Compiler *c, int node, int cls_id) {
   return changed;
 }
 
+/* The type slot a global, class-variable or constant read names, or NULL. */
+static TyKind *named_array_slot(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, recv, "name");
+  if (!nm) return NULL;
+  switch (nt_kind(nt, recv)) {
+    case NK_GlobalVariableReadNode: {
+      const char *rn = comp_resolve_gvar(c, nm + 1);
+      LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
+      return lv ? &lv->type : NULL;
+    }
+    case NK_ConstantReadNode: {
+      LocalVar *lv = comp_const(c, nm);
+      return lv ? &lv->type : NULL;
+    }
+    case NK_ClassVariableReadNode: {
+      Scope *s = comp_scope_of(c, recv);
+      int cid = s ? s->class_id : -1;
+      if (cid < 0) cid = comp_class_index(c, "Toplevel");
+      if (cid < 0) return NULL;
+      int idx = comp_cvar_index(&c->classes[cid], nm);
+      return idx >= 0 ? &c->classes[cid].cvar_types[idx] : NULL;
+    }
+    default: return NULL;
+  }
+}
+
+/* The type `node` stores when it is `m[i]` over a method returning a fixed
+   tuple (`def pair = [1, "x"]`) and reads as the boxed element: that element's
+   own type, which is what the store puts in the container. Else `vt`. */
+static TyKind tuple_elem_evidence(Compiler *c, int node, TyKind vt) {
+  const NodeTable *nt = c->nt;
+  if (vt != TY_POLY || node < 0 || nt_kind(nt, node) != NK_CallNode) return vt;
+  const char *nm = nt_str(nt, node, "name");
+  if (!nm || !sp_streq(nm, "[]") || nt_ref(nt, node, "block") >= 0) return vt;
+  int args = nt_ref(nt, node, "arguments");
+  int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an != 1 || nt_kind(nt, av[0]) != NK_IntegerNode || nt_str(nt, av[0], "bigval")) return vt;
+  TyKind elems[16];
+  int en = multi_return_elem_types(c, nt_ref(nt, node, "receiver"), elems, 16);
+  long long pos = nt_int(nt, av[0], "value", 0);
+  if (pos < 0) pos += en;
+  return (pos >= 0 && pos < en) ? elems[pos] : vt;
+}
+
 /* Folds one piece of container evidence into `slot` (see the usage fold in
    infer_write_types). Returns 0 where the evidence does not apply to the
    slot, leaving it untouched. */
@@ -2167,6 +2235,12 @@ int infer_write_types(Compiler *c) {
           if (an_empty_container_disagrees(an_empty_container_kind(c, val_id), newt))
             newt = TY_POLY;
         }
+        else if (an_empty_container_kind(c, val_id)) {
+          LocalVar *lv2 = scope_local(comp_scope_of(c, id), nm);
+          TyKind gr = lv2 ? (TyKind)lv2->gc_root : TY_UNKNOWN;
+          if (gr == TY_POLY || an_empty_container_disagrees(an_empty_container_kind(c, val_id), gr))
+            newt = TY_POLY;
+        }
         /* `d = h.dup/clone`: inherit receiver's hash type from prior iteration */
         if (newt == TY_UNKNOWN) {
           const char *rvty2 = nt_type(nt, val_id);
@@ -2775,7 +2849,8 @@ int infer_write_types(Compiler *c) {
         continue;
       }
       else if (name && sp_streq(name, "[]=") && an == 2) {
-        is_idx_write = 1; kt = infer_type(c, argv[0]); vt = infer_type(c, argv[1]);
+        is_idx_write = 1; kt = infer_type(c, argv[0]);
+        vt = tuple_elem_evidence(c, argv[1], infer_type(c, argv[1]));
         /* a range key is a splice: the RHS contributes element evidence */
         if (kt == TY_RANGE) { is_splice = 1; vt = splice_incoming_elem(c, argv[1]); }
         /* an empty [] / {} literal value carries no element type but is
@@ -2963,7 +3038,17 @@ int infer_write_types(Compiler *c) {
          binding in bind_call_params, the caller's local too). Widening only:
          an UNKNOWN parameter still takes its type from the call site (#2989). */
       if (lv->is_param) {
-        if (!is_push || lv->rbs_seeded) continue;
+        if ((!is_push && !is_idx_write) || lv->rbs_seeded) continue;
+        /* An element write through it stores into the caller's array the
+           same way: `arr[i] = v` is the push's evidence when the key indexes
+           an array. */
+        if (is_idx_write && !is_push) {
+          if (!ty_is_array(lv->type) || lv->type == TY_POLY_ARRAY) continue;
+          if (is_splice || (kt != TY_INT && kt != TY_POLY)) continue;
+          if (vt == TY_UNKNOWN || vt == TY_POLY || vt == ty_array_elem(lv->type)) continue;
+          lv->type = TY_POLY_ARRAY; lv->push_widened = 1; changed = 1;
+          continue;
+        }
         /* A BOXED parameter is the same hazard with the container hidden:
            the callee pushes through it into the caller's own array, and the
            container is not visible here to compare against. Record WHAT is
@@ -3049,6 +3134,21 @@ int infer_write_types(Compiler *c) {
       vt = ivt;
       watch_nm = inm;
       watch_cls = ivar_cls_id;
+    }
+    else if ((is_push || is_idx_write) && rty &&
+             (sp_streq(rty, "GlobalVariableReadNode") || sp_streq(rty, "ClassVariableReadNode") ||
+              sp_streq(rty, "ConstantReadNode"))) {
+      /* `$g[i] = v`, `@@a << v`, `TABLE[i] = v`: the slot is typed from its
+         writes alone, so an element its array kind cannot hold widens it to
+         the general Array here, as it does a local's. Only the widening is
+         taken: seeding or re-keying these slots stays with their write
+         passes, which keep a general Array against a typed array write. */
+      TyKind *nslot = named_array_slot(c, recv);
+      if (!nslot || !ty_is_array(*nslot) || *nslot == TY_POLY_ARRAY) continue;
+      TyKind nt2 = *nslot;
+      fold_container_evidence(&nt2, is_push, is_splice, (TyKind)kt, (TyKind)vt);
+      if (nt2 == TY_POLY_ARRAY) { *nslot = TY_POLY_ARRAY; changed = 1; }
+      continue;
     }
     else if ((is_push || is_idx_write) && rty && sp_streq(rty, "CallNode") &&
              nt_ref(nt, recv, "block") < 0) {
@@ -3396,6 +3496,17 @@ int infer_write_types(Compiler *c) {
       if (lv->type == TY_UNKNOWN || lv->type == TY_POLY || ty_is_hash(lv->type))
         lv->type = TY_POLY_POLY_HASH;
       else lv->poly_hash_pin = 0;
+    }
+
+  /* And for the array-literal local a widened parameter took (poly_array_pin):
+     its literals re-derive a typed array kind every round. */
+  for (int s = 0; s < c->nscopes; s++)
+    for (int i = 0; i < c->scopes[s].nlocals; i++) {
+      LocalVar *lv = &c->scopes[s].locals[i];
+      if (!lv->poly_array_pin) continue;
+      if (lv->type == TY_UNKNOWN || lv->type == TY_POLY || ty_is_array(lv->type))
+        lv->type = TY_POLY_ARRAY;
+      else lv->poly_array_pin = 0;
     }
 
   /* A slot this round could not derive AT ALL keeps what it had. The reset at
@@ -4121,10 +4232,20 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
       Scope *asc = an ? comp_scope_of(c, argv[arg]) : NULL;
       LocalVar *al = asc ? scope_local(asc, an) : NULL;
       if (al && ty_is_array(al->type) && al->type != TY_POLY_ARRAY &&
-          !al->is_param && !al->is_block_param &&
-          local_all_writes_empty_array(c, asc, an)) {
-        al->type = TY_POLY_ARRAY; changed = 1;
+          !al->is_param && !al->is_block_param) {
+        if (local_all_writes_empty_array(c, asc, an)) { al->type = TY_POLY_ARRAY; changed = 1; }
+        else if (local_all_writes_array_literal(c, asc, an)) {
+          al->type = TY_POLY_ARRAY; al->poly_array_pin = 1; changed = 1;
+        }
       }
+    }
+    /* A global, class variable or constant passed there is the same shared
+       array; their write passes keep a general Array once it is one. */
+    if (p->push_widened && apty &&
+        (sp_streq(apty, "GlobalVariableReadNode") || sp_streq(apty, "ClassVariableReadNode") ||
+         sp_streq(apty, "ConstantReadNode"))) {
+      TyKind *ns = named_array_slot(c, argv[arg]);
+      if (ns && ty_is_array(*ns) && *ns != TY_POLY_ARRAY) { *ns = TY_POLY_ARRAY; changed = 1; }
     }
     if (merged == TY_PROC) {
       TyKind pr = proc_ret_of(c, argv[arg]);
@@ -5135,6 +5256,24 @@ int infer_param_types(Compiler *c) {
         Scope *pm = &c->scopes[pmi];
         int n = s->nparams < pm->nparams ? s->nparams : pm->nparams;
         if (pm->rest_idx >= 0 && n > pm->rest_idx) n = pm->rest_idx;
+        /* a `*rest` here spreads across the parent's fixed parameters from
+           its own index on, as a `super(*rest)` does */
+        int srest = s->rest_idx;
+        if (srest >= 0 && srest < n && s->pnames[srest]) {
+          LocalVar *rv = scope_local(s, s->pnames[srest]);
+          TyKind rt = rv ? rv->type : TY_UNKNOWN;
+          TyKind at = ty_is_array(rt) ? ty_array_elem(rt) : TY_POLY;
+          if (at == TY_VOID || at == TY_NIL || at == TY_UNKNOWN) at = TY_POLY;
+          int max_bind = pm->nparams;
+          if (pm->rest_idx >= 0 && max_bind > pm->rest_idx) max_bind = pm->rest_idx;
+          if (pm->kwrest_idx >= 0 && max_bind > pm->kwrest_idx) max_bind = pm->kwrest_idx;
+          for (int pk = srest; rt != TY_UNKNOWN && pk < max_bind; pk++) {
+            LocalVar *p = pm->pnames[pk] ? scope_local(pm, pm->pnames[pk]) : NULL;
+            if (!p || p->rbs_seeded || callee_param_is_declared_kwarg(c, pm, pm->pnames[pk])) continue;
+            changed |= slot_take(c, p, at, id);
+          }
+          n = srest;
+        }
         for (int k = 0; k < n; k++) {
           LocalVar *src = scope_local(s, s->pnames[k]);
           LocalVar *dst = scope_local(pm, pm->pnames[k]);
@@ -7804,6 +7943,125 @@ int desugar_block_destructure_params(Compiler *c) {
   return changed;
 }
 
+/* The assignment of `rd` to a single `for` target that is not a local: a
+   global, instance, class variable or constant write, or the writer call an
+   attribute or index target stands for. -1 for a target it cannot write. */
+static int dfi_single_write(NodeTable *nt, int tgt, int rd) {
+  const char *ty = nt_type(nt, tgt);
+  if (!ty) return -1;
+  static const char *const vars[][2] = {
+    {"GlobalVariableTargetNode", "GlobalVariableWriteNode"},
+    {"InstanceVariableTargetNode", "InstanceVariableWriteNode"},
+    {"ClassVariableTargetNode", "ClassVariableWriteNode"},
+    {"ConstantTargetNode", "ConstantWriteNode"},
+  };
+  for (size_t i = 0; i < sizeof vars / sizeof vars[0]; i++) {
+    if (!sp_streq(ty, vars[i][0])) continue;
+    const char *nm = nt_str(nt, tgt, "name");
+    if (!nm) return -1;
+    char nmbuf[256]; snprintf(nmbuf, sizeof nmbuf, "%s", nm);
+    int w = nt_new_node(nt, vars[i][1]);
+    if (w < 0) return -1;
+    nt_node_set_str(nt, w, "name", nmbuf);
+    nt_node_set_ref(nt, w, "value", rd);
+    return w;
+  }
+  int is_attr = sp_streq(ty, "CallTargetNode"), is_index = sp_streq(ty, "IndexTargetNode");
+  if (!is_attr && !is_index) return -1;
+  int recv = nt_ref(nt, tgt, "receiver");
+  char nmbuf[256];
+  if (is_attr) {
+    const char *nm = nt_str(nt, tgt, "name");
+    if (!nm) return -1;
+    snprintf(nmbuf, sizeof nmbuf, "%s", nm);
+  }
+  else snprintf(nmbuf, sizeof nmbuf, "[]=");
+  int oargs = is_index ? nt_ref(nt, tgt, "arguments") : -1;
+  int on = 0; const int *oa = oargs >= 0 ? nt_arr(nt, oargs, "arguments", &on) : NULL;
+  int *av = malloc(sizeof(int) * (on + 1));
+  if (!av) return -1;
+  for (int i = 0; i < on; i++) av[i] = oa[i];
+  av[on] = rd;
+  int an = nt_new_node(nt, "ArgumentsNode");
+  int call = an >= 0 ? nt_new_node(nt, "CallNode") : -1;
+  if (call < 0) { free(av); return -1; }
+  nt_node_set_arr(nt, an, "arguments", av, on + 1);
+  free(av);
+  nt_node_set_str(nt, call, "name", nmbuf);
+  nt_node_set_ref(nt, call, "receiver", recv);
+  nt_node_set_ref(nt, call, "arguments", an);
+  nt_node_set_ref(nt, call, "block", -1);
+  nt_node_set_str(nt, call, "call_operator", ".");
+  return call;
+}
+
+/* Whether a `for` index binds only plain locals, which the loop assigns
+   itself: one local, or a flat list of them. */
+static int dfi_local_index(NodeTable *nt, int idx) {
+  const char *ty = nt_type(nt, idx);
+  if (!ty) return 1;
+  if (sp_streq(ty, "LocalVariableTargetNode")) return 1;
+  if (!sp_streq(ty, "MultiTargetNode")) return 0;
+  if (nt_ref(nt, idx, "rest") >= 0) return 0;
+  int rn = 0; nt_arr(nt, idx, "rights", &rn);
+  if (rn > 0) return 0;
+  int ln = 0; const int *l = nt_arr(nt, idx, "lefts", &ln);
+  for (int i = 0; i < ln; i++) {
+    const char *lt = nt_type(nt, l[i]);
+    if (!lt || !sp_streq(lt, "LocalVariableTargetNode")) return 0;
+  }
+  return 1;
+}
+
+/* `for $g in coll`, `for @a, o.b in coll`, `for (a, b), *c in coll`: the loop
+   assigns only plain locals, so any other index binds a fresh local and the
+   body opens by assigning it to the real target -- a plain write for one
+   target, a multiple assignment for several. */
+int desugar_for_nonlocal_index(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int F = 0; F < n0; F++) {
+    const char *ty = nt_type(nt, F);
+    if (!ty || !sp_streq(ty, "ForNode")) continue;
+    int idx = nt_ref(nt, F, "index");
+    if (idx < 0 || dfi_local_index(nt, idx)) continue;
+    char nm[48]; snprintf(nm, sizeof nm, "__for_%d", F);
+    int lt = nt_new_node(nt, "LocalVariableTargetNode");
+    int rd = lt >= 0 ? nt_new_node(nt, "LocalVariableReadNode") : -1;
+    if (rd < 0) continue;
+    nt_node_set_str(nt, lt, "name", nm);
+    nt_node_set_str(nt, rd, "name", nm);
+    int w;
+    const char *ity = nt_type(nt, idx);
+    if (sp_streq(ity, "MultiTargetNode")) {
+      w = nt_new_node(nt, "MultiWriteNode");
+      if (w < 0 || !bdp_fill_targets(nt, idx, w)) continue;
+      nt_node_set_ref(nt, w, "value", rd);
+      nt_node_set_int(nt, F, "for_packed", 1);
+    }
+    else w = dfi_single_write(nt, idx, rd);
+    if (w < 0) continue;
+    int body = nt_ref(nt, F, "statements");
+    int on = 0; const int *ob = body >= 0 ? nt_arr(nt, body, "body", &on) : NULL;
+    int *bb = malloc(sizeof(int) * (on + 1));
+    if (!bb) continue;
+    bb[0] = w;
+    for (int i = 0; i < on; i++) bb[i + 1] = ob[i];
+    if (body < 0) {
+      body = nt_new_node(nt, "StatementsNode");
+      if (body < 0) { free(bb); continue; }
+      nt_node_set_ref(nt, F, "statements", body);
+    }
+    nt_node_set_arr(nt, body, "body", bb, on + 1);
+    free(bb);
+    nt_node_set_ref(nt, F, "index", lt);
+    changed = 1;
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 /* Propagate `proc.call(args)` argument types onto the proc literal `create`'s
    required params: a concrete arg overrides a param still at its bare-int
    default (the fallback guess, no real evidence), otherwise unify. Returns 1 if
@@ -10318,6 +10576,11 @@ int infer_return_types(Compiler *c) {
     TyKind r = empty_body ? TY_POLY
              : tail_unreachable ? ret_acc[s]
              : infer_type(c, sc->body);
+    /* a bare `Array.new` tail returns the poly array a marked `[]` tail
+       does (mark_empty_literal_tails) */
+    if (r == TY_UNKNOWN && !empty_body && !(has_ret && has_ret[s]) &&
+        an_empty_container_kind(c, sc->body) == 1)
+      r = TY_POLY_ARRAY;
     /* A yielding method whose body ends in `if block_given? ... else ... end`
        has two values, one per call form, and the inliner keeps only the arm a
        call site takes: the block arm types the call with a block, the else

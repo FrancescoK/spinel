@@ -1,0 +1,8 @@
+[[:opt, :a], [:opt, :b]]
+[[:req, :a], [:opt, :b]]
+[[:opt, :a], [:opt, :b]]
+[[:opt, :a], [:opt, :b]]
+[[:opt, :x], [:opt, :y]]
+[[:req, :x], [:req, :y]]
+[[:req, :x], [:req, :y]]
+"undefined method 'parameters' for nil"

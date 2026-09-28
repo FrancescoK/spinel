@@ -6,6 +6,29 @@
 # The elapsed-time assertions are deliberately loose (a whole second either
 # way) so this pins the shape and not the machine.
 
+# Self-join must fail immediately, including before any thread has started the
+# scheduler's timer monitor. Exercise the timed, untimed, and value paths.
+begin
+  Thread.current.join(1)
+  puts false
+rescue ThreadError
+  puts true
+end
+
+begin
+  Thread.current.join
+  puts false
+rescue ThreadError
+  puts true
+end
+
+begin
+  Thread.current.value
+  puts false
+rescue ThreadError
+  puts true
+end
+
 t0 = Time.now
 quick = Thread.new { sleep 0.05 }
 r = quick.join(5)

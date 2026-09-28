@@ -1,0 +1,15 @@
+String
+"hey"
+"foo"
+"abc"
+"foo"
+[0, 10, 20]
+"x"
+Object
+"foo"
+[:z, :z]
+"q"
+[String, Array, Object]
+"X!"
+"hi"
+"obj"

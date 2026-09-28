@@ -1,0 +1,26 @@
+Module
+"Module"
+Module
+Class
+Class
+Cmp
+Cmp
+Cmp
+true
+false
+true
+false
+true
+false
+[Module, Class, Class, Module]
+Module
+Module
+false
+true
+true
+[Module, Integer]
+module
+Module
+Module
+Class
+Module

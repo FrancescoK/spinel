@@ -1272,22 +1272,46 @@ int emit_empty_container_for_slot(Compiler *c, int v, TyKind slot, Buf *b) {
     buf_printf(b, "sp_%sHash_new()", hcn);
     return 1;
   }
-  /* `Hash.new` with no arguments or block is the same empty producer, and the
-     typed slot needs the same fresh `sp_XHash_new()` rather than the boxed
-     value the untyped call would emit (the global write says this too). */
-  if (sp_streq(vty, "CallNode") && ty_is_hash(slot)) {
+  /* `Hash.new` (bare, with a default or a capacity) and a bare `Array.new` are the same
+     empty producers, and the typed slot needs the same fresh container rather
+     than the boxed value the untyped call would emit (the global write says
+     this too). */
+  if (sp_streq(vty, "CallNode") && nt_ref(nt, v, "block") < 0) {
     const char *cn = nt_str(nt, v, "name");
     int r = nt_ref(nt, v, "receiver");
     const char *rn = (r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode) ? nt_str(nt, r, "name") : NULL;
+    if (!cn || !rn || !sp_streq(cn, "new")) return 0;
     int a = nt_ref(nt, v, "arguments");
-    int an = 0; if (a >= 0) nt_arr(nt, v, "arguments", &an);
-    if (cn && rn && sp_streq(cn, "new") && sp_streq(rn, "Hash") && an == 0 &&
-        nt_ref(nt, v, "block") < 0) {
-      const char *hcn = ty_hash_cname(slot);
-      if (!hcn) return 0;
-      buf_printf(b, "sp_%sHash_new()", hcn);
+    int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (sp_streq(rn, "Array") && an == 0) {
+      if (slot == TY_POLY_ARRAY) { buf_puts(b, "sp_PolyArray_new()"); return 1; }
+      if (ty_is_ptr_array(slot)) { buf_puts(b, "sp_PtrArray_new()"); return 1; }
+      if (array_kind(slot)) { buf_printf(b, "sp_%sArray_new()", array_kind(slot)); return 1; }
+      return 0;
+    }
+    const char *hcn = ty_is_hash(slot) ? ty_hash_cname(slot) : NULL;
+    if (!hcn || !sp_streq(rn, "Hash") || an > 1) return 0;
+    if (an == 1 && nt_kind(nt, av[0]) == NK_KeywordHashNode) {
+      /* `capacity:` sizes nothing here, but its value is still evaluated */
+      int en = 0; const int *el = nt_arr(nt, av[0], "elements", &en);
+      buf_puts(b, "(");
+      for (int i = 0; i < en; i++) {
+        int ev = nt_kind(nt, el[i]) == NK_AssocNode ? nt_ref(nt, el[i], "value") : el[i];
+        buf_puts(b, "(void)("); emit_expr(c, ev, b); buf_puts(b, "), ");
+      }
+      buf_printf(b, "sp_%sHash_new())", hcn);
       return 1;
     }
+    if (an == 1 && nt_kind(nt, av[0]) == NK_NilNode) an = 0;
+    if (an == 0) { buf_printf(b, "sp_%sHash_new()", hcn); return 1; }
+    TyKind hv = ty_hash_val(slot), dt = comp_ntype(c, av[0]);
+    if (hv != TY_POLY && dt != TY_UNKNOWN && dt != hv && !(hv == TY_FLOAT && dt == TY_INT))
+      unsupported(c, v, "a Hash.new default of another type than the typed hash slot's values");
+    buf_printf(b, "sp_%sHash_new_with_default(", hcn);
+    if (ty_hash_val(slot) == TY_POLY) emit_boxed(c, av[0], b);
+    else emit_expr(c, av[0], b);
+    buf_puts(b, ")");
+    return 1;
   }
   return 0;
 }

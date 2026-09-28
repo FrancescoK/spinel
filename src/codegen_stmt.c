@@ -1148,7 +1148,7 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   int hn = 0;
   int is_empty_hash = vty && sp_streq(vty, "HashNode") && (nt_arr(c->nt, v, "elements", &hn), hn == 0);
   /* h = Hash.new / Hash.new(default) */
-  int is_hash_new = 0, hash_new_default = -1;
+  int is_hash_new = 0, hash_new_default = -1, hash_new_capacity = 0;
   if (vty && sp_streq(vty, "CallNode") && sp_streq(nt_str(c->nt, v, "name") ? nt_str(c->nt, v, "name") : "", "new")) {
     int hr = nt_ref(c->nt, v, "receiver");
     const char *hrt = hr >= 0 ? nt_type(c->nt, hr) : NULL;
@@ -1158,7 +1158,9 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
       int ha = nt_ref(c->nt, v, "arguments");
       int hac = 0;
       const int *hav = ha >= 0 ? nt_arr(c->nt, ha, "arguments", &hac) : NULL;
-      if (hac >= 1) hash_new_default = hav[0];
+      /* `Hash.new(capacity: n)` has no default: the hash is its keywords */
+      if (hac >= 1 && nt_kind(c->nt, hav[0]) == NK_KeywordHashNode) hash_new_capacity = 1;
+      else if (hac >= 1) hash_new_default = hav[0];
     }
   }
 
@@ -1230,10 +1232,14 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   else if (lv && ty_is_ptr_array(lv->type) && emit_ptr_array_build(c, v, lv->type, b)) {
     /* built in place at the slot's own container type */
   }
-  else if (is_hash_new && nt_ref(c->nt, v, "block") >= 0) {
+  else if (is_hash_new && nt_ref(c->nt, v, "block") >= 0 && !(lv && lv->type == TY_POLY)) {
     /* Hash.new { |hash, key| ... }: emit through emit_call so the dproc
        function + sp_PolyPolyHash_new_dproc path runs. */
     emit_expr(c, v, b);
+  }
+  else if (hash_new_capacity && lv && ty_hash_cname(lv->type) &&
+           emit_empty_container_for_slot(c, v, lv->type, b)) {
+    /* built at the slot's variant, the capacity evaluated */
   }
   else if ((is_empty_hash || is_hash_new) && lv && ty_hash_cname(lv->type)) {
     const char *hcn = ty_hash_cname(lv->type);
@@ -1576,6 +1582,24 @@ int emit_array_op_assign(Compiler *c, const char *lval, TyKind t,
   return 0;
 }
 
+/* The new value of an Integer or Float slot that is not a C lvalue (an array
+   or hash element, a native attribute) under `slot OP= rhs`, through the
+   helpers the binary form uses: the raw C operator skipped the overflow check
+   on `+ - *`, truncated `/` and `%` toward zero where Ruby floors, and had no
+   `**` at all. Answers 0, emitting nothing, for a boxed rhs or any other
+   element type or operator. */
+static int iow_scalar_fold(TyKind et, const char *op, TyKind vt, const char *slot,
+                           const char *rhs, Buf *b) {
+  const char *fn = NULL;
+  if (vt == TY_POLY) return 0;
+  if (et == TY_INT) fn = int_arith_fn(op);
+  else if (et == TY_FLOAT && sp_streq(op, "%")) fn = vt == TY_INT ? "sp_fmod_intdiv" : "sp_fmod";
+  else if (et == TY_FLOAT && sp_streq(op, "**")) fn = "sp_float_pow";
+  if (!fn) return 0;
+  buf_printf(b, "%s(%s, %s)", fn, slot, rhs);
+  return 1;
+}
+
 /* The scalar arms of `x OP= v` -- Integer, Bignum, Float -- on any slot a
    plain C lvalue names: a local, a global, a class variable, an ivar. `lval`
    names the slot and `t` its type. The global and class variable forms had
@@ -1596,7 +1620,13 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
   int bitop = t == TY_INT && (sp_streq(op, "<<") || sp_streq(op, ">>") ||
                               sp_streq(op, "|") || sp_streq(op, "&") || sp_streq(op, "^"));
   int fop = t == TY_FLOAT && (sp_streq(op, "+") || sp_streq(op, "-") ||
-                              sp_streq(op, "*") || sp_streq(op, "/"));
+                              sp_streq(op, "*") || sp_streq(op, "/") ||
+                              sp_streq(op, "%") || sp_streq(op, "**"));
+  /* Float `%` and `**` have no C operator: they take the helpers the binary
+     form uses (floored modulo, a raising pow for a Complex result) */
+  const char *ffn = !fop ? NULL
+                  : sp_streq(op, "**") ? "sp_float_pow"
+                  : sp_streq(op, "%") ? (vt == TY_INT ? "sp_fmod_intdiv" : "sp_fmod") : NULL;
   if (!fn && !bitop && !fop) return 0;
   /* A `<<=` by a literal count that overflows every nonzero receiver (>= 63)
      or a negative count routes through sp_int_shl, mirroring the binary gate. */
@@ -1634,6 +1664,7 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
      binary `x << y` path). */
   if (fn) buf_printf(b, "%s = %s(%s, %s);", lval, fn, src, rhs);
   else if (bitop) buf_printf(b, "%s = (%s %s (%s));", lval, src, op, rhs);
+  else if (ffn) buf_printf(b, "%s = %s(%s, %s);", lval, ffn, src, rhs);
   else if (src == lval) buf_printf(b, "%s %s= %s;", lval, op, rhs);
   else buf_printf(b, "%s = %s %s (%s);", lval, src, op, rhs);
   op_assign_slot_end(src, lval, b);
@@ -2299,6 +2330,15 @@ void emit_if(Compiler *c, int id, Buf *b, int indent, int is_unless, int tail) {
 
 /* Emit `when ClassName` test against a poly (sp_RbVal) scrutinee temp.
    Returns 1 if the class is known and the check was emitted, 0 otherwise. */
+/* `ClassName === _t<t>` for a Class-typed scrutinee: a class or module value
+   is an instance of Module and the roots, and of Class unless it is a
+   module. */
+void emit_class_val_when(const char *cn, int t, Buf *b) {
+  if (sp_streq(cn, "Class")) buf_printf(b, "!sp_class_is_module_val(_t%d)", t);
+  else buf_puts(b, (sp_streq(cn, "Module") || sp_streq(cn, "Object") ||
+                    sp_streq(cn, "BasicObject") || sp_streq(cn, "Kernel")) ? "1" : "0");
+}
+
 int emit_poly_class_when(Compiler *c, int cond_id, const char *tmp, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *cty = nt_type(nt, cond_id);
@@ -2875,6 +2915,10 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
         return 1;
       }
       buf_puts(b, "0");
+      return 1;
+    }
+    if (pt == TY_CLASS) {
+      emit_class_val_when(cn2, t, b);
       return 1;
     }
     int yes = ty_matches_class(pt, cn2, 0);
@@ -4947,8 +4991,8 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
           }
           else if (cn2 && pt == TY_CLASS) {
             /* `when <ClassName>` is ===: a Class VALUE is an instance only
-               of Class/Module, never of the named class itself. */
-            buf_printf(b, "%d", (sp_streq(cn2, "Class") || sp_streq(cn2, "Module")) ? 1 : 0);
+               of Class/Module and the roots, never of the named class itself. */
+            emit_class_val_when(cn2, t, b);
           }
           else if (cn2 && pt == TY_EXCEPTION) {
             /* an exception scrutinee matches by name up its class chain (#2759) */
@@ -5312,9 +5356,9 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
           if (!emit_obj_class_when(c, pt, cn2, t, b)) buf_puts(b, "0");
         }
         else if (cn2 && pt == TY_CLASS) {
-          /* a Class VALUE is an instance only of Class/Module (see the
-             statement chain's arm) */
-          buf_printf(b, "%d", (sp_streq(cn2, "Class") || sp_streq(cn2, "Module")) ? 1 : 0);
+          /* a Class VALUE is an instance only of Class/Module and the roots
+             (see the statement chain's arm) */
+          emit_class_val_when(cn2, t, b);
         }
         else if (cn2 && pt == TY_EXCEPTION) {
           /* an exception scrutinee matches by name up its class chain (#2759) */
@@ -5622,18 +5666,23 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
       if (lpoly) buf_puts(b, ")");
       buf_printf(b, "; _t%d %s _t%d; _t%d++) {\n", tc, excl ? "<" : "<=", thi, tc);
       emit_indent(b, indent + 2);
-      buf_printf(b, "lv_%s = sp_box_int(_t%d);\n", vn, tc);
+      emit_local_ref(c, idx, vn, b); buf_printf(b, " = sp_box_int(_t%d);\n", tc);
       emit_loop_body(c, body, b, indent + 2);
       emit_indent(b, indent + 1); buf_puts(b, "}\n");
       emit_indent(b, indent); buf_puts(b, "}\n");
       return;
     }
+    /* The counter is a temp, so the local keeps the last value the loop
+       bound rather than the one past the end. */
+    int tc = ++g_tmp;
     emit_indent(b, indent + 1);
-    buf_printf(b, "for (lv_%s = ", vn);
+    buf_printf(b, "for (sp_int _t%d = ", tc);
     if (lpoly) buf_puts(b, "sp_poly_to_i(");
     emit_expr(c, lref, b);
     if (lpoly) buf_puts(b, ")");
-    buf_printf(b, "; lv_%s %s _t%d; lv_%s++) {\n", vn, excl ? "<" : "<=", thi, vn);
+    buf_printf(b, "; _t%d %s _t%d; _t%d++) {\n", tc, excl ? "<" : "<=", thi, tc);
+    emit_indent(b, indent + 2);
+    emit_local_ref(c, idx, vn, b); buf_printf(b, " = _t%d;\n", tc);
     emit_loop_body(c, body, b, indent + 2);
     emit_indent(b, indent + 1); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
@@ -5667,13 +5716,13 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
                     scope_local(comp_scope_of(c, idx), lnm)->type : TY_POLY;
         emit_indent(b, indent + 2);
         if (vt == TY_INT || vt == TY_UNKNOWN)
-          buf_printf(b, "lv_%s = sp_unbox_int(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
+          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_int(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
         else if (vt == TY_FLOAT)
-          buf_printf(b, "lv_%s = sp_unbox_float(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
+          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_float(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
         else if (vt == TY_STRING)
-          buf_printf(b, "lv_%s = sp_unbox_str(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
+          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_str(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
         else
-          buf_printf(b, "lv_%s = sp_poly_massign_get(_t%d, %d);\n", lnm, tv, i);
+          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_poly_massign_get(_t%d, %d);\n", tv, i); }
       }
       emit_loop_body(c, body, b, indent + 2);
       emit_indent(b, indent + 1); buf_puts(b, "}\n");
@@ -5695,12 +5744,12 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
       if (flv && flv->type == TY_POLY && et2 != TY_POLY && et2 != TY_UNKNOWN) {
         char el2[96];
         snprintf(el2, sizeof el2, "sp_%sArray_get(_t%d, _t%d)", k ? k : "Poly", ta, ti);
-        buf_printf(b, "lv_%s = ", vn);
+        emit_local_ref(c, idx, vn, b); buf_puts(b, " = ");
         emit_boxed_text(c, et2, el2, b);
         buf_puts(b, ";\n");
       }
       else
-        buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", vn, k ? k : "Poly", ta, ti);
+        { emit_local_ref(c, idx, vn, b); buf_printf(b, " = sp_%sArray_get(_t%d, _t%d);\n", k ? k : "Poly", ta, ti); }
     }
     emit_loop_body(c, body, b, indent + 2);
     emit_indent(b, indent + 1); buf_puts(b, "}\n");
@@ -5740,13 +5789,13 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
         TyKind vt3 = dlv ? dlv->type : TY_POLY;
         emit_indent(b, indent + 2);
         if (vt3 == TY_INT || vt3 == TY_UNKNOWN)
-          buf_printf(b, "lv_%s = sp_unbox_int(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
+          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_int(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
         else if (vt3 == TY_FLOAT)
-          buf_printf(b, "lv_%s = sp_unbox_float(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
+          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_float(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
         else if (vt3 == TY_STRING)
-          buf_printf(b, "lv_%s = sp_unbox_str(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
+          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_str(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
         else
-          buf_printf(b, "lv_%s = sp_poly_massign_get(_t%d, %d);\n", lnm, tv, i);
+          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_poly_massign_get(_t%d, %d);\n", tv, i); }
       }
     }
     else if (vn) {
@@ -5754,7 +5803,7 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
       TyKind ivt = ilv ? ilv->type : TY_POLY;
       char el[64]; snprintf(el, sizeof el, "sp_PolyArray_get(_t%d, _t%d)", ta, ti);
       emit_indent(b, indent + 2);
-      buf_printf(b, "lv_%s = ", vn);
+      emit_local_ref(c, idx, vn, b); buf_puts(b, " = ");
       if (ivt == TY_POLY || ivt == TY_UNKNOWN) buf_puts(b, el);
       else emit_unbox_text(c, ivt, el, b);
       buf_puts(b, ";\n");
@@ -5788,18 +5837,18 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
                        scope_local(comp_scope_of(c, idx), lnm)->type : TY_POLY;
           emit_indent(b, indent + 2);
           if (vt2 == TY_INT || vt2 == TY_UNKNOWN)
-            buf_printf(b, "lv_%s = sp_unbox_int(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
+            { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_int(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
           else if (vt2 == TY_FLOAT)
-            buf_printf(b, "lv_%s = sp_unbox_float(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
+            { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_float(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
           else if (vt2 == TY_STRING)
-            buf_printf(b, "lv_%s = sp_unbox_str(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
+            { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_str(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
           else
-            buf_printf(b, "lv_%s = sp_poly_massign_get(_t%d, %d);\n", lnm, tv, i);
+            { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_poly_massign_get(_t%d, %d);\n", tv, i); }
         }
       }
       else {
         emit_indent(b, indent + 2);
-        buf_printf(b, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", vn, ta, ti);
+        emit_local_ref(c, idx, vn, b); buf_printf(b, " = sp_PolyArray_get(_t%d, _t%d);\n", ta, ti);
       }
       emit_loop_body(c, body, b, indent + 2);
       emit_indent(b, indent + 1); buf_puts(b, "}\n");
@@ -6017,6 +6066,9 @@ static void emit_tail_value(Compiler *c, int node, Buf *b) {
      other branch is `{ a: 1 }`); otherwise the StrPolyHash* return is an
      incompatible pointer type. Same idea as the empty-`[]` array handling. */
   const char *nty = nt_type(c->nt, node);
+  { TyKind slot = (g_result_var && g_result_ty != TY_UNKNOWN) ? g_result_ty : g_ret_type;
+    if (nty && sp_streq(nty, "CallNode") && ty_is_array(slot) && comp_ntype(c, node) == TY_UNKNOWN &&
+        emit_empty_container_for_slot(c, node, slot, b)) return; }
   if (nty && (sp_streq(nty, "HashNode") || sp_streq(nty, "KeywordHashNode")) && ty_is_hash(g_ret_type)) {
     int hc = 0; nt_arr(c->nt, node, "elements", &hc);
     const char *hcn = ty_hash_cname(g_ret_type);
@@ -8517,6 +8569,11 @@ else {
       free(_ck.p);
       free(_rb.p);
     }
+    else if (comp_ntype(c, v) == TY_UNKNOWN && (ty_is_array(ivt) || ty_is_hash(ivt)) &&
+             emit_empty_container_for_slot(c, v, ivt, b)) {
+      /* an untyped `Hash.new` / `Array.new` (a top-level ivar's, which no use
+         typed) is built at the slot's type, not taken for a raising call */
+    }
     else if (ivt != TY_POLY && ivt != TY_UNKNOWN && comp_ntype(c, v) == TY_UNKNOWN) {
       /* an unresolved call typed TY_UNKNOWN whose value is the gate's
          sp_raise_nomethod(...) poly token, assigned to a typed ivar slot
@@ -8546,6 +8603,7 @@ else {
     buf_printf(b, "cvar_%s_%s = ", c->classes[sc].name, nm + 2);
     if (emit_empty_container_for_slot(c, v, ct, b)) { /* emitted at the slot's type */ }
     else if (ct == TY_POLY) emit_boxed(c, v, b);
+    else if (emit_array_into_poly_slot(c, ct, v, b)) { }
     /* an int into a bigint slot promotes at the boundary, as everywhere else */
     else if (ct == TY_BIGINT && comp_ntype(c, v) != TY_BIGINT) emit_bigint_operand_ext(c, v, b);
     else emit_expr(c, v, b);
@@ -8850,7 +8908,8 @@ else {
                     : op && sp_streq(op, "-") ? "sp_poly_sub"
                     : op && sp_streq(op, "*") ? "sp_poly_mul"
                     : op && sp_streq(op, "/") ? "sp_poly_div"
-                    : op && sp_streq(op, "%") ? "sp_poly_mod" : NULL;
+                    : op && sp_streq(op, "%") ? "sp_poly_mod"
+                    : op && sp_streq(op, "**") ? "sp_poly_pow" : NULL;
     int bitop = op && (sp_streq(op, "<<") || sp_streq(op, ">>") ||
                        sp_streq(op, "|") || sp_streq(op, "&") || sp_streq(op, "^"));
     int rdcls = -1;
@@ -8915,6 +8974,8 @@ else {
           unsupported(c, id, "call operator write (operator on an array attribute)");
       }
       else {
+        char lval[400]; snprintf(lval, sizeof lval, "_t%d%siv_%s", trecv, acc, rn);
+        if (emit_scalar_op_assign(c, lval, ivt, op, val, 1, b)) return;
         buf_printf(b, "_t%d%siv_%s = _t%d%siv_%s %s ", trecv, acc, rn, trecv, acc, rn, op ? op : "+");
         if (rhst == TY_POLY && (ivt == TY_INT || ivt == TY_BOOL)) {
           buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")");
@@ -8982,6 +9043,16 @@ else {
           if (rhst == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")"); }
           else emit_expr(c, val, b);
           buf_puts(b, ")));\n");
+        }
+        else if (rhst != TY_POLY && !bitop) {
+          char slot[300]; snprintf(slot, sizeof slot, "%s(_t%d)", nrm->csym, trecv);
+          Buf rb; memset(&rb, 0, sizeof rb);
+          emit_expr(c, val, &rb);
+          buf_printf(b, "%s(_t%d, ", nwm->csym, trecv);
+          if (!iow_scalar_fold(nint ? TY_INT : TY_FLOAT, op, rhst, slot, rb.p ? rb.p : "", b))
+            buf_printf(b, "%s %s (%s)", slot, op, rb.p ? rb.p : "");
+          buf_puts(b, ");\n");
+          free(rb.p);
         }
         else {
           buf_printf(b, "%s(_t%d, %s(_t%d) %s ", nwm->csym, trecv, nrm->csym, trecv, op);
@@ -9065,6 +9136,11 @@ else {
           buf_puts(b, "))); break; }\n");
         }
         else {
+          char lval[320]; snprintf(lval, sizeof lval, "_o->iv_%s", rn);
+          if (emit_scalar_op_assign(c, lval, ivt, op, val, 0, b)) {
+            emit_indent(b, indent + 1); buf_puts(b, "break; }\n");
+            continue;
+          }
           buf_puts(b, "_o->iv_"); buf_puts(b, rn); buf_puts(b, " = _o->iv_"); buf_puts(b, rn);
           buf_printf(b, " %s ", op ? op : "+");
           if (rhst == TY_POLY && (ivt == TY_INT || ivt == TY_BOOL)) {
@@ -9142,6 +9218,7 @@ else {
        fresh `sp_XHash_new()`, not the boxed sp_RbVal emit_expr would produce for
        the untyped Hash.new call (#3205). */
     int v_hash_dflt = -1;   /* `$g = Hash.new(default)`: the default's node */
+    int v_hash_cap = 0;     /* `$g = Hash.new(capacity: n)` */
     if (vty && sp_streq(vty, "CallNode") && ty_is_hash(lv->type) &&
         nt_str(nt, v, "name") && sp_streq(nt_str(nt, v, "name"), "new") &&
         nt_ref(nt, v, "block") < 0) {
@@ -9164,6 +9241,7 @@ else {
           v_hash_dflt = hash_new_default_arg(c, v);
           if (nt_kind(nt, v_hash_dflt) == NK_NilNode) v_hash_dflt = -1;   /* Hash.new(nil) is Hash.new */
         }
+        else v_hash_cap = han == 1;
       }
     }
     if (vty && sp_streq(vty, "NilNode"))
@@ -9185,6 +9263,9 @@ else {
         buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_new(); _t%d->frozen = 1; _t%d; })",
                    array_kind(lv->type), _ft, array_kind(lv->type), _ft, _ft); }
       else buf_printf(b, "sp_%sArray_new()", array_kind(lv->type));
+    }
+    else if (v_hash_cap && emit_empty_container_for_slot(c, v, lv->type, b)) {
+      /* built at the slot's variant, the capacity evaluated */
     }
     else if (v_empty_hash && ty_is_hash(lv->type)) {
       const char *hcn = ty_hash_cname(lv->type);
@@ -9553,13 +9634,11 @@ else {
             buf_puts(b, ");\n");
           }
           emit_indent(b, indent);
-          if (rest_var) { emit_local_ref(c, id, rest_var, b); buf_printf(b, " = _t%d;\n", tr0); }
-          else {
-            char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr0);
-            buf_printf(b, "gv_%s = ", rest_gvar);
-            masgn_conv(c, rlv0 ? rlv0->type : rat0, rat0, rx, b);
-            buf_puts(b, ";\n");
-          }
+          char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr0);
+          if (rest_var) { emit_local_ref(c, id, rest_var, b); buf_puts(b, " = "); }
+          else buf_printf(b, "gv_%s = ", rest_gvar);
+          masgn_conv(c, rlv0 ? rlv0->type : rat0, rat0, rx, b);
+          buf_puts(b, ";\n");
           if (ln == 0 && rn == 0) return;
         }
         for (int i = 0; i < ln; i++) {
@@ -9908,14 +9987,12 @@ else {
             buf_printf(b, "for (sp_int _t%d = %dLL; _t%d < _t%d - %dLL; _t%d++) sp_PolyArray_push(_t%d, sp_poly_massign_get(_t%d, _t%d));\n",
                        ti, ln, ti, tn, rn, ti, tr, tarr, ti);
             emit_indent(b, indent);
-            if (rest_var) { emit_local_ref(c, id, rest_var, b); buf_printf(b, " = _t%d;\n", tr); }
-            else {
-              char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr);
-              LocalVar *rg = comp_gvar(c, rest_gvar);
-              buf_printf(b, "gv_%s = ", rest_gvar);
-              masgn_conv(c, rg ? rg->type : TY_POLY_ARRAY, TY_POLY_ARRAY, rx, b);
-              buf_puts(b, ";\n");
-            }
+            char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr);
+            LocalVar *rg = rest_var ? scope_local(comp_scope_of(c, id), rest_var) : comp_gvar(c, rest_gvar);
+            if (rest_var) { emit_local_ref(c, id, rest_var, b); buf_puts(b, " = "); }
+            else buf_printf(b, "gv_%s = ", rest_gvar);
+            masgn_conv(c, rg ? rg->type : TY_POLY_ARRAY, TY_POLY_ARRAY, rx, b);
+            buf_puts(b, ";\n");
           }
           for (int j = 0; j < rn; j++) {
             const char *lty = nt_type(nt, rights[j]);
@@ -10258,9 +10335,21 @@ else {
       else if (lty && sp_streq(lty, "GlobalVariableTargetNode")) {
         const char *gnm = nt_str(nt, lefts[i], "name");
         const char *rn2 = gnm ? comp_resolve_gvar(c, gnm + 1) : NULL;
-        if (!rn2 || !comp_gvar(c, rn2)) { unsupported(c, id, "multiple assignment global target"); continue; }
+        LocalVar *gv2 = rn2 ? comp_gvar(c, rn2) : NULL;
+        if (!gv2) { unsupported(c, id, "multiple assignment global target"); continue; }
         emit_indent(b, indent);
-        buf_printf(b, "gv_%s = _t%d;\n", rn2, tmps[i]);
+        buf_printf(b, "gv_%s = ", rn2);
+        /* a boxed global (widened under --int-overflow=promote) boxes the
+           typed element, as the ivar target above does */
+        TyKind gvalt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
+        if (gv2->type == TY_POLY && gvalt != TY_POLY) {
+          char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmps[i]);
+          Buf bx; memset(&bx, 0, sizeof bx);
+          emit_boxed_text(c, gvalt, expr, &bx);
+          buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+        }
+        else buf_printf(b, "_t%d", tmps[i]);
+        buf_puts(b, ";\n");
       }
       else if (lty && sp_streq(lty, "IndexTargetNode")) {
         int recv_id = nt_ref(nt, lefts[i], "receiver");
@@ -10381,14 +10470,23 @@ else {
       }
       else unsupported(c, id, "multiple assignment target");
     }
-    /* build and assign rest (splat) target */
-    if (rest_var) {
+    /* build and assign rest (splat) target. A slot that is not a typed
+       array -- a poly local or global -- takes an array typed by the
+       elements, boxed into it. */
+    LocalVar *rest_slot = rest_var ? scope_local(comp_scope_of(c, id), rest_var)
+                        : rest_gvar ? comp_gvar(c, rest_gvar) : NULL;
+    if (rest_var || rest_slot) {
       int rstart = ln, rend = en - rn;
       if (rend < rstart) rend = rstart;
-      Scope *rscope = comp_scope_of(c, id);
-      LocalVar *rlv = scope_local(rscope, rest_var);
-      TyKind rest_arr_t = rlv ? rlv->type : TY_INT_ARRAY;
-      if (!ty_is_array(rest_arr_t)) rest_arr_t = TY_INT_ARRAY;
+      TyKind slot_t = rest_slot ? rest_slot->type : TY_INT_ARRAY;
+      TyKind rest_arr_t = slot_t;
+      if (slot_t == TY_POLY) {
+        TyKind et = rend > rstart ? tmpts[rstart] : TY_POLY;
+        for (int i = rstart + 1; i < rend; i++)
+          if (tmpts[i] != et) et = TY_POLY;
+        rest_arr_t = ty_array_of(et);
+      }
+      else if (!ty_is_array(rest_arr_t)) rest_arr_t = TY_INT_ARRAY;
       const char *k = (rest_arr_t == TY_POLY_ARRAY) ? "Poly" : array_kind(rest_arr_t);
       if (!k) k = "Int";
       int tr = ++g_tmp;
@@ -10396,10 +10494,9 @@ else {
       buf_printf(b, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", k, tr, k, tr);
       if (rest_arr_t == TY_POLY_ARRAY) {
         for (int i = rstart; i < rend; i++) {
-          TyKind et = comp_ntype(c, els[i]);
           char tmp_expr[32]; snprintf(tmp_expr, sizeof tmp_expr, "_t%d", tmps[i]);
           Buf bx; memset(&bx, 0, sizeof bx);
-          emit_boxed_text(c, et, tmp_expr, &bx);
+          emit_boxed_text(c, tmpts[i], tmp_expr, &bx);
           emit_indent(b, indent);
           buf_printf(b, "sp_PolyArray_push(_t%d, %s);\n", tr, bx.p ? bx.p : "sp_box_nil()");
           free(bx.p);
@@ -10411,26 +10508,12 @@ else {
           buf_printf(b, "sp_%sArray_push(_t%d, _t%d);\n", k, tr, tmps[i]);
         }
       }
+      char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr);
       emit_indent(b, indent);
-      buf_printf(b, "lv_%s = _t%d;\n", rename_local(rest_var), tr);
-    }
-    if (rest_gvar && comp_gvar(c, rest_gvar)) {
-      int rstart = ln, rend = en - rn;
-      if (rend < rstart) rend = rstart;
-      LocalVar *glv_r = comp_gvar(c, rest_gvar);
-      TyKind rest_arr_t = glv_r ? glv_r->type : TY_INT_ARRAY;
-      if (!ty_is_array(rest_arr_t)) rest_arr_t = TY_INT_ARRAY;
-      const char *k = (rest_arr_t == TY_POLY_ARRAY) ? "Poly" : array_kind(rest_arr_t);
-      if (!k) k = "Int";
-      int tr = ++g_tmp;
-      emit_indent(b, indent);
-      buf_printf(b, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", k, tr, k, tr);
-      for (int i = rstart; i < rend; i++) {
-        emit_indent(b, indent);
-        buf_printf(b, "sp_%sArray_push(_t%d, _t%d);\n", k, tr, tmps[i]);
-      }
-      emit_indent(b, indent);
-      buf_printf(b, "gv_%s = _t%d;\n", rest_gvar, tr);
+      if (rest_var) buf_printf(b, "lv_%s = ", rename_local(rest_var));
+      else buf_printf(b, "gv_%s = ", rest_gvar);
+      masgn_conv(c, slot_t == TY_POLY ? TY_POLY : rest_arr_t, rest_arr_t, rx, b);
+      buf_puts(b, ";\n");
     }
     /* assign rights (post-splat fixed targets). They fill left-to-right starting
        just past the splat's actual length (max(0, en-ln-rn)); a target whose
@@ -11415,6 +11498,11 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
      poly -- needs coercing. (Only for a real return slot, not a begin/rescue
      result var, which stays poly.) */
   else if (!g_result_var && tail_needs_unbox(vty, g_ret_type)) emit_unbox_node(c, g_ret_type, id, b);
+  /* an untyped `Array.new` / `Hash.new` is built at the result slot's type,
+     not taken for a raising call */
+  else if (g_result_var && !g_result_poly && !is_subst && vty == TY_UNKNOWN &&
+           (ty_is_array(g_result_ty) || ty_is_hash(g_result_ty)) &&
+           emit_empty_container_for_slot(c, id, g_result_ty, b)) { }
   /* A void tail value (a rescue arm ending in `puts`, or a void-returning
      method call) feeding a non-poly result slot: the begin/rescue value
      unified to a nullable pointer, so evaluate the tail for effect and yield
@@ -12775,7 +12863,10 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     const char *pf = vt == TY_POLY ?
         (sp_streq(op, "+") ? "sp_poly_add" : sp_streq(op, "-") ? "sp_poly_sub" :
          sp_streq(op, "*") ? "sp_poly_mul" : sp_streq(op, "/") ? "sp_poly_div" :
-         sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "**") ? "sp_poly_pow" : NULL) : NULL;
+         sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "**") ? "sp_poly_pow" :
+         sp_streq(op, "<<") ? "sp_poly_shl" : sp_streq(op, ">>") ? "sp_poly_shr" :
+         sp_streq(op, "&") ? "sp_poly_band" : sp_streq(op, "|") ? "sp_poly_bor" :
+         sp_streq(op, "^") ? "sp_poly_bxor" : NULL) : NULL;
     int eff = g_pre && subtree_has_side_effect(c, v);
     char slot[64];
     snprintf(slot, sizeof slot, "sp_%sHash_get(_t%d, _t%d)", hn, ta, tb);
@@ -12785,6 +12876,7 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     /* a poly-valued slot folds via the dynamic operator on boxed operands */
     if (vt == TY_STRING && sp_streq(op, "+")) buf_printf(b, "sp_str_concat(%s, %s)", slot, rhs);
     else if (pf) buf_printf(b, "%s(%s, %s)", pf, slot, rhs);
+    else if (iow_scalar_fold(vt, op, comp_ntype(c, v), slot, rhs, b)) { }
     else buf_printf(b, "%s %s (%s)", slot, op, rhs);
     free(rhs);
     buf_puts(b, "; ");
@@ -12854,6 +12946,7 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     }
     /* shift/bitwise on an int slot with a poly RHS: unbox the RHS */
     else if (vt == TY_POLY) buf_printf(b, "%s %s sp_poly_to_i(%s)", slot, op, rhs);
+    else if (iow_scalar_fold(ty_array_elem(rt), op, vt, slot, rhs, b)) { }
     else buf_printf(b, "%s %s (%s)", slot, op, rhs);
     free(rhs);
     buf_puts(b, "); }\n");

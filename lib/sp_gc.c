@@ -99,6 +99,7 @@ const char *(*sp_obj_cls_name_fn)(int cls_id) = NULL;
 int (*sp_class_le_id_fn)(int sub, int super) = NULL;
 sp_RbVal (*sp_class_cmp_fn)(sp_RbVal a, sp_RbVal b) = NULL;
 int (*sp_class_kind_of_name_fn)(int cls, const char *name) = NULL;
+int (*sp_class_is_module_fn)(sp_Class c) = NULL;
 sp_marshal_vt sp_marshal_v = {0};   /* filled by the generated TU (sp_tu_init) */
 
 /* The concurrent sweep (sp_sched.c): start takes the lists the barrier

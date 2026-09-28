@@ -422,6 +422,13 @@ int is_void_call(const char *name) {
     "raise", "warn", "printf", NULL};
   return str_in(name, set);
 }
+/* 1 for a local-write kind whose `value` is what the local then holds (a
+   plain write, or `||=`/`&&=`, which bind it or keep the old one); 0 for a
+   multiple-assignment, for, rescue or pattern target and for `op=`. */
+int local_write_binds_value(NodeKind k) {
+  return k == NK_LocalVariableWriteNode || k == NK_LocalVariableOrWriteNode ||
+         k == NK_LocalVariableAndWriteNode;
+}
 /* A local variable that statically holds exactly one user class (every write
    in its scope assigns the same class constant) resolves to that class index;
    -1 when dynamic. Lets `k = Klass; k.new(...)` and `k.members` dispatch
@@ -443,6 +450,9 @@ int class_var_static_ci(Compiler *c, int node) {
   for (int w = comp_lvw_first_sc(c, (int)(sc - c->scopes), vn); w >= 0; w = comp_lvw_next_sc(c, w)) {
     const char *wn = nt_str(nt, w, "name");
     if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
+    /* a multiple-assignment, for, rescue or pattern target, or an op-write,
+       binds a value no constant names; `||=`/`&&=` bind theirs or keep one */
+    if (!local_write_binds_value(nt_kind(nt, w))) return -1;
     int val = nt_ref(nt, w, "value");
     const char *vty = val >= 0 ? nt_type(nt, val) : NULL;
     int ci = (vty && sp_streq(vty, "ConstantReadNode"))
@@ -485,6 +495,7 @@ const char *builtin_class_var_static_name(Compiler *c, int node) {
   for (int w = comp_lvw_first(c, vn); w >= 0; w = comp_lvw_next(c, w)) {
     const char *wn = nt_str(nt, w, "name");
     if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
+    if (!local_write_binds_value(nt_kind(nt, w))) return NULL;
     int val = nt_ref(nt, w, "value");
     const char *cn = (val >= 0 && nt_kind(nt, val) == NK_ConstantReadNode)
                      ? nt_str(nt, val, "name") : NULL;
@@ -2044,6 +2055,7 @@ int comp_cbody_call_mi(Compiler *c, int id, const char *name) {
 
 TyKind proc_call_ret(Compiler *c, int recv) {
   TyKind r = proc_ret_of(c, recv);
+  if (r == TY_UNKNOWN && g_infer_optimistic) return TY_UNKNOWN;
   return r == TY_UNKNOWN ? TY_POLY : r;
 }
 

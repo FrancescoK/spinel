@@ -1001,6 +1001,25 @@ int call_is_setter_assign(const NodeTable *nt, int id) {
   const char *ve = nt_str(nt, id, "vis_enforce");
   return !(sb && sb[0] == '1') && !(ve && ve[0] == '1');
 }
+/* The view a `parameters(lambda: v)` call asks for when v is the literal
+   true (1), false (0) or nil (-1, the receiver's own): -2 for any other
+   argument list. */
+int proc_parameters_lambda_mode(const NodeTable *nt, int argc, const int *argv) {
+  if (argc != 1 || !nt_type(nt, argv[0]) || !sp_streq(nt_type(nt, argv[0]), "KeywordHashNode"))
+    return -2;
+  int en = 0; const int *elems = nt_arr(nt, argv[0], "elements", &en);
+  if (en != 1) return -2;
+  int key = nt_ref(nt, elems[0], "key");
+  const char *kn = key >= 0 ? nt_str(nt, key, "unescaped") : NULL;
+  if (!kn && key >= 0) kn = nt_str(nt, key, "value");
+  int val = nt_ref(nt, elems[0], "value");
+  const char *vty = val >= 0 ? nt_type(nt, val) : NULL;
+  if (!kn || !sp_streq(kn, "lambda") || !vty) return -2;
+  if (sp_streq(vty, "TrueNode")) return 1;
+  if (sp_streq(vty, "FalseNode")) return 0;
+  if (sp_streq(vty, "NilNode")) return -1;
+  return -2;
+}
 /* The attribute a setter name writes: "x=" -> "x". 0 when the name is not a
    plain setter or does not fit. */
 int setter_base_name(const char *name, char *out, size_t cap) {
@@ -1466,6 +1485,11 @@ static unsigned lvw_hash(const char *s) {
   while (*s) { h ^= (unsigned char)*s++; h *= 16777619u; }
   return h;
 }
+int comp_is_local_write(NodeKind k) {
+  return k == NK_LocalVariableWriteNode || k == NK_LocalVariableTargetNode ||
+         k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode ||
+         k == NK_LocalVariableOperatorWriteNode;
+}
 static void lvw_build(Compiler *c) {
   free(c->lvw_head); free(c->lvw_next);
   int n = c->nt->count;
@@ -1484,7 +1508,7 @@ static void lvw_build(Compiler *c) {
   for (int b = 0; b < nb; b++) c->lvw_head[b] = -1;
   for (int w = 0; w < n; w++) {
     c->lvw_next[w] = -1;
-    if (nt_kind(c->nt, w) != NK_LocalVariableWriteNode) continue;
+    if (!comp_is_local_write(nt_kind(c->nt, w))) continue;
     const char *wn = nt_str(c->nt, w, "name");
     if (!wn) continue;
     unsigned b = lvw_hash(wn) & (unsigned)(nb - 1);
@@ -1527,7 +1551,7 @@ static void lvws_build(Compiler *c) {
   for (int b = 0; b < nb; b++) c->lvws_head[b] = -1;
   for (int w = 0; w < n; w++) {
     c->lvws_next[w] = -1;
-    if (nt_kind(c->nt, w) != NK_LocalVariableWriteNode) continue;
+    if (!comp_is_local_write(nt_kind(c->nt, w))) continue;
     const char *wn = nt_str(c->nt, w, "name");
     if (!wn) continue;
     int si = (w < c->nt->count && c->nscope) ? c->nscope[w] : 0;
@@ -1770,6 +1794,7 @@ LocalVar *scope_local_intern(Scope *s, const char *name) {
   lv->str_shared = 0;
   lv->str_append = 0;
   lv->poly_hash_pin = 0;
+  lv->poly_array_pin = 0;
   lv->nullable_int = 0;
   lv->bounded_counter = 0;
   lv->nullable_int_elem = 0;
@@ -1984,6 +2009,23 @@ int poly_string_read_p(const char *name) {
   return 0;
 }
 
+/* The class `self.class` at `recv` names when only one class can answer it:
+   an instance method of a class no other class inherits from. In a
+   superclass or a module it is whichever class the receiver has at run time.
+   -1 when recv is not `self.class` or names no single class. */
+int self_class_static_ci(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) return -1;
+  const char *cn = nt_str(nt, recv, "name");
+  int cr = nt_ref(nt, recv, "receiver");
+  if (!cn || !sp_streq(cn, "class") || cr < 0 || nt_kind(nt, cr) != NK_SelfNode) return -1;
+  Scope *s = comp_scope_of(c, recv);
+  int cid = s ? s->class_id : -1;
+  if (cid < 0 || nt_kind(nt, c->classes[cid].def_node) == NK_ModuleNode) return -1;
+  for (int j = 0; j < c->nclasses; j++) if (c->classes[j].parent == cid) return -1;
+  return cid;
+}
+
 /* A Class-valued receiver that carries its class only at run time: a variable,
    or a call whose result is a class (`Job.set(1).run(2)` -- ActiveJob's chained
    `set`). Excludes a constant receiver and an accessor call, which resolve
@@ -2004,12 +2046,10 @@ int class_recv_is_dynamic(Compiler *c, int recv) {
       sp_streq(rty, "AndNode") || sp_streq(rty, "OrNode"))
     return 1;
   if (!sp_streq(rty, "CallNode")) return 0;
-  /* `self.class` resolves to the enclosing class statically and has its own
-     arms on both sides; treating it as dynamic would steal them. */
-  { const char *cn = nt_str(nt, recv, "name");
-    int cr = nt_ref(nt, recv, "receiver");
-    if (cn && sp_streq(cn, "class") && cr >= 0 && nt_type(nt, cr) &&
-        sp_streq(nt_type(nt, cr), "SelfNode")) return 0; }
+  /* `self.class` in a class with no subclass resolves to that class
+     statically and has its own arms on both sides; treating it as dynamic
+     would steal them. */
+  if (self_class_static_ci(c, recv) >= 0) return 0;
   if (comp_sg_reader_const(c, recv) >= 0) return 0;
   { int cand[4]; if (comp_sg_reader_candidates(c, recv, cand, 4) >= 2) return 0; }
   return 1;

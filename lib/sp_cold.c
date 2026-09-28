@@ -1575,6 +1575,7 @@ sp_StrArray *sp_bt_format(void **buf, int n) {
 #include <fcntl.h>
 #include <sys/file.h>
 #include <pwd.h>
+#include "sp_sched.h"   /* sp_native_enter / sp_native_leave for a waiting flock */
 #include <sys/wait.h>
 
 /* ---- File / Dir surface ops moved from spinel_rt.h ----
@@ -1753,9 +1754,22 @@ sp_int sp_File_sysseek(sp_File *f, sp_int off, sp_int whence) {
   fseek(f->fp, (long)off, whence == 1 ? SEEK_CUR : whence == 2 ? SEEK_END : SEEK_SET);
   return (sp_int)ftell(f->fp);
 }
+/* A blocking flock may be waiting on another thread of this program,
+   and that thread may need a GC before it can unlock. So we leave the
+   world while we wait, like a `blocking: true` FFI call, and the GC
+   doesn't wait for us. EINTR retries instead of failing. */
 sp_int sp_File_flock(sp_File *f, sp_int op) {
   SP_IO_OPEN(f);
-  return flock(fileno(f->fp), (int)op) == 0 ? 0 : 1;
+  int fd = fileno(f->fp);
+  int r;
+  if (op & LOCK_NB) {
+    r = flock(fd, (int)op);
+  } else {
+    sp_native_enter();
+    while ((r = flock(fd, (int)op)) != 0 && errno == EINTR) {}
+    sp_native_leave();
+  }
+  return r == 0 ? 0 : 1;
 }
 sp_int sp_File_fsync(sp_File *f) {
   SP_IO_OPEN(f);

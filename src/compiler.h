@@ -157,6 +157,11 @@ typedef struct {
                        Durable, like oa_pin: the slot's own element writes
                        re-derive a narrower kind every round, and the binding
                        widened it back -- to the cap. */
+  int poly_array_pin; /* a local whose writes are all array literals, handed
+                       to a parameter an element write widened to the general
+                       Array: the reverse binding types it that Array, and the
+                       type is re-asserted each round, as poly_hash_pin is,
+                       since the literals re-derive the narrower kind. */
   TyKind oa_pin;    /* the pointer-array type the narrowing pass gave this slot,
                        re-asserted on every fixpoint round. infer_write_types
                        clears every local back to UNKNOWN and re-derives it from
@@ -734,11 +739,14 @@ int comp_scalar_literal_chain_bottom(const NodeTable *nt, int v);
 Scope *comp_scope_new(Compiler *c, const char *name, int def_node);
 Scope *comp_scope_of(Compiler *c, int node_id);        /* owning scope */
 
-/* Walk the LocalVariableWriteNodes that bind `name`, newest id first. The
+/* Walk the local-variable writes that bind `name`, newest id first: plain
+   writes, multiple-assignment/for/rescue/pattern targets, and ||= &&= op=
+   writes, so a caller filters the kinds it wants. The
    alternative -- scanning the whole node table per query -- is what made
    resolving `k = Klass; k.new` quadratic on class-heavy programs. The index is
    keyed on name alone and revalidated against nt->version, so the scope of
    each write is still read fresh at every visit. */
+int comp_is_local_write(NodeKind k);
 int comp_lvw_first(Compiler *c, const char *name);
 int comp_lvw_next(const Compiler *c, int w);
 int comp_lvw_first_sc(Compiler *c, int scope_idx, const char *name);
@@ -932,6 +940,7 @@ int        comp_is_reader(ClassInfo *ci, const char *name);
 int        comp_is_writer(ClassInfo *ci, const char *name);
 int        name_is_plain_setter(const char *name);
 int        call_is_setter_assign(const NodeTable *nt, int id);
+int        proc_parameters_lambda_mode(const NodeTable *nt, int argc, const int *argv);
 int        self_is_main(Compiler *c, int node);
 int        setter_base_name(const char *name, char *out, size_t cap);
 void       comp_add_undef(ClassInfo *ci, const char *name);
@@ -1029,6 +1038,7 @@ int poly_string_read_p(const char *name);
    variable, or a call returning a class); 0 for a constant or accessor
    receiver, which resolve statically (#3415). */
 int class_recv_is_dynamic(Compiler *c, int recv);
+int self_class_static_ci(Compiler *c, int recv);  /* self.class naming one class */
 
 /* An ivar whose type came from an --rbs seed (class_pin_ivar). Codegen reads
    it to decide where a seed assertion belongs (#3412). */

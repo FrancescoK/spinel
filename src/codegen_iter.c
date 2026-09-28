@@ -221,6 +221,182 @@ int block_call_takes_class_dispatch(Compiler *c, int id) {
   return mi >= 0 && c->scopes[mi].yields && takes_class_dispatch(c, mi, cls, name);
 }
 
+/* Bind an inlined yielding method's parameters from a call's arguments:
+   a splat spread at run time, a keyword hash by name, a rest and its posts
+   packed, as the ordinary call paths bind them. The expansion's renames
+   above saved_nren are hidden while argument code is emitted. */
+void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, int argc,
+                             int splat_gather, unsigned alias_mask, int tag, int saved_nren,
+                             int din, Buf *b) {
+  const NodeTable *nt = c->nt;
+  /* `bar(...)` inside a `def foo(...)` forwarder: bind this (inlined) target's
+     params from the enclosing forwarder's synth __fwd_* params, not from a
+     literal ForwardingArgumentsNode (which has no value of its own). */
+  Scope *fwd_encl = NULL;
+  if (argc == 1 && argv && nt_type(nt, argv[0]) &&
+      sp_streq(nt_type(nt, argv[0]), "ForwardingArgumentsNode"))
+    fwd_encl = comp_scope_of(c, argv[0]);
+  /* A trailing keyword-hash arg binds by param name, not positionally. */
+  int kwh = -1, pos_argc = argc;
+  if (argc > 0 && argv && nt_type(nt, argv[argc - 1]) &&
+      sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
+    kwh = argv[argc - 1]; pos_argc = argc - 1;
+  }
+  /* A `**hash` inside the keyword-hash arg (`m(**h)`) carries no literal keys,
+     so keyword params bind from a runtime lookup on the materialized hash, the
+     same way emit_dispatch/emit_args_filled do -- without this each keyword
+     param fell through to a fabricated default. */
+  TyKind ds_type = TY_UNKNOWN;
+  int ds_tmp = emit_ds_hash_materialize(c, kwh, &ds_type);
+  emit_ds_kwarg_check(c, m, kwh, ds_tmp, ds_type);
+  /* The count and the keys, by the rule the ordinary call path follows. The
+     loop below walks the PARAMETERS, so an argument none of them reads --
+     a key naming no parameter (#4419), a positional past the last one --
+     was simply dropped, and a missing one bound its zero value: `y1 { }` on
+     `def y1(x)` ran with x padded, `y(1, 2) { }` on `def y(x, k: 1)`
+     dropped the 2. A `...` forward carries the forwarder's own params. */
+  if (fwd_encl) emit_unknown_kwarg_raise(c, m, kwh);
+  else emit_call_arity_check(c, m, argc, argv, 1);
+  /* The options-hash idiom: a braceless keyword hash no keyword parameter
+     claims packs into the first unfilled positional (`def check(sel, opts =
+     nil)` called `check(".x", count: 0)`). The other two call paths have done
+     this since #3191; this one looked the keys up by parameter NAME only, so
+     `opts` kept its default and every `assert_select(sel, count: 0)` in a
+     yielding helper asserted presence instead (#4436). */
+  int kwh_slot = kwh_positional_slot(c, m, kwh, pos_argc);
+  int gather_tmp = -1;
+  if (splat_gather && !fwd_encl) {
+    /* call-site code, like each argument below: this inline's renames are
+       off, and an inlined call inside a splat operand pushes its own at this
+       depth, so the entries are parked across the gather */
+    int sv0 = g_nren, park_n = sv0 - saved_nren;
+    char (*park_f)[96] = park_n > 0 ? malloc(sizeof(char[96]) * (size_t)park_n) : NULL;
+    char (*park_t)[112] = park_n > 0 ? malloc(sizeof(char[112]) * (size_t)park_n) : NULL;
+    if (park_f && park_t) {
+      memcpy(park_f, g_ren_from + saved_nren, sizeof(char[96]) * (size_t)park_n);
+      memcpy(park_t, g_ren_to + saved_nren, sizeof(char[112]) * (size_t)park_n);
+    }
+    g_nren = saved_nren;
+    gather_tmp = emit_splat_gather(c, m, argv, pos_argc);
+    g_nren = sv0;
+    if (park_f && park_t) {
+      memcpy(g_ren_from + saved_nren, park_f, sizeof(char[96]) * (size_t)park_n);
+      memcpy(g_ren_to + saved_nren, park_t, sizeof(char[112]) * (size_t)park_n);
+    }
+    free(park_f); free(park_t);
+  }
+  for (int i = 0; i < m->nparams; i++) {
+    emit_indent(b, din);
+    int aliased = i < 32 && (alias_mask & (1u << i));
+    if (aliased) buf_printf(b, "const char **_cell__y%d_%s = &(", tag, m->pnames[i]);
+    else { char rn[128]; snprintf(rn, sizeof rn, "_y%d_%s", tag, m->pnames[i]);
+      emit_inlined_param_target(c, m, m->pnames[i], rn, b); }
+    /* hide THIS inline's renames only: args are call-site expressions,
+       and the call site may itself be an outer inlined body whose locals
+       are renamed (nested yield-method inlines) -- zeroing the whole
+       table emitted the unrenamed lv_<name> (undeclared identifier, or a
+       silent capture of a same-named caller local). */
+    int sv = g_nren;
+    /* The argument expression is call-site code, so the callee's renames are
+       switched off for it. A nested inline INSIDE that expression pushes its
+       own entries at this very depth and overwrites the callee's, so restoring
+       the count alone brought back another method's names -- this body then
+       emitted the unrenamed `lv_<name>` for whatever had been clobbered, which
+       nothing declares (#3943). Park the entries across the argument, not just
+       the count. */
+    int park_n = sv - saved_nren;
+    char (*park_f)[96] = NULL; char (*park_t)[112] = NULL;
+    if (park_n > 0) {
+      park_f = (char (*)[96])malloc(sizeof(char[96]) * (size_t)park_n);
+      park_t = (char (*)[112])malloc(sizeof(char[112]) * (size_t)park_n);
+      if (park_f && park_t) {
+        memcpy(park_f, g_ren_from + saved_nren, sizeof(char[96]) * (size_t)park_n);
+        memcpy(park_t, g_ren_to + saved_nren, sizeof(char[112]) * (size_t)park_n);
+      }
+      else { free(park_f); free(park_t); park_f = NULL; park_t = NULL; }
+    }
+    g_nren = saved_nren;
+    if (fwd_encl && i < fwd_encl->nparams) {
+      LocalVar *ep = scope_local(fwd_encl, fwd_encl->pnames[i]);
+      LocalVar *mp = scope_local(m, m->pnames[i]);
+      TyKind et = ep ? ep->type : TY_POLY;
+      TyKind mt = mp ? mp->type : TY_POLY;
+      char txt[128]; snprintf(txt, sizeof txt, "lv_%s", rename_local(fwd_encl->pnames[i]));
+      if (mt == TY_POLY && et != TY_POLY) emit_boxed_text(c, et, txt, b);
+      else buf_puts(b, txt);
+    }
+    else if (gather_tmp >= 0 && i != m->kwrest_idx &&
+             !callee_param_is_declared_kwarg(c, m, m->pnames[i]))
+      emit_gathered_param(c, m, i, gather_tmp, b);
+    /* A rest param collects the middle arguments into an Array. Without this
+       the first argument was assigned straight into the rest slot -- a
+       pointer of the wrong type, so the rest read back empty (or crashed). */
+    else if (m->rest_idx >= 0 && i == m->rest_idx)
+      emit_rest_pack_kwh(c, i, pos_argc - m->npost_rest, argv, -1, b);
+    else if (m->rest_idx >= 0 && i > m->rest_idx && i <= m->rest_idx + m->npost_rest) {
+      int post_j = i - m->rest_idx - 1;   /* 0-based index among the posts */
+      int argv_idx = pos_argc - m->npost_rest + post_j;
+      emit_arg_or_default(c, m, i,
+                          (argv && argv_idx >= 0 && argv_idx < pos_argc) ? argv[argv_idx] : -1, b);
+    }
+    /* Anything past the rest that is not one of its posts is a keyword (or
+       **kwrest) param: it binds by name, never positionally. */
+    else if (aliased && nt_kind(nt, argv[i]) == NK_InstanceVariableReadNode) {
+      /* the slot itself, and the owner pinned as a byref call pins it: the
+         store lands inside this expansion, past any dirty bit (#4378) */
+      const char *ivn = nt_str(nt, argv[i], "name");
+      buf_printf(b, "%s%siv_%s); sp_gc_pin_remembered((void *)%s)", g_self, g_self_deref, iv_c(ivn + 1), g_self);
+    }
+    else if (aliased) {
+      emit_expr(c, argv[i], b); buf_puts(b, ")");
+      /* The caller's variable may be a heap cell (captured by a proc): the
+         body will store through it from inside this expansion, which is the
+         placement a dirty bit cannot cover, so pin the cell as a byref call
+         would (#4391); a stack slot, or a cell the caller itself was lent,
+         is not ours to pin. */
+      { const char *avn = nt_str(nt, argv[i], "name");
+        LocalVar *alv = avn ? scope_local(comp_scope_of(c, argv[i]), avn) : NULL;
+        if (alv && alv->is_cell && !alv->byref_out && !alv->inline_alias &&
+            !(g_cap_struct && g_cap_names && nameset_has(g_cap_names, avn)))
+          buf_printf(b, "; sp_gc_pin_remembered((void *)_cell_%s)", rename_local(avn));
+      }
+    }
+    /* a **kwrest collects the keywords no declared keyword param takes, as
+       on the other call paths; it bound its nil default here */
+    else if (i == m->kwrest_idx) {
+      int krhash = emit_kwrest_collect(c, m, kwh, ds_tmp, ds_type, args);
+      LocalVar *krp = scope_local(m, m->pnames[i]);
+      if (krp && krp->type == TY_POLY) buf_printf(b, "sp_box_obj(_t%d, SP_BUILTIN_SYM_POLY_HASH)", krhash);
+      else buf_printf(b, "_t%d", krhash);
+    }
+    /* a keyword or **kwrest param never takes a positional: a surplus one
+       (refused above) bound `ykw(1, 2)`'s 2 into the kwrest's hash slot, a
+       C type error */
+    else if (i < pos_argc && !(m->rest_idx >= 0 && i > m->rest_idx) && i != m->kwrest_idx &&
+             !callee_param_is_declared_kwarg(c, m, m->pnames[i]))
+      emit_arg_or_default(c, m, i, argv[i], b);
+    else if (i == kwh_slot)
+      emit_arg_or_default(c, m, i, kwh, b);
+    else {
+      int kv = kwh >= 0 ? kwh_lookup(nt, kwh, m->pnames[i]) : -1;
+      /* No literal key for this keyword param, but a `**hash` was splatted:
+         extract it by name from the materialized hash (falls back to the
+         param default when the key is absent). */
+      if (kv < 0 && ds_tmp >= 0 && callee_has_kwarg(c, m, m->pnames[i]))
+        emit_ds_param_extract(c, m, i, ds_tmp, ds_type, b);
+      else
+        emit_arg_or_default(c, m, i, kv, b);
+    }
+    g_nren = sv;
+    if (park_f && park_t) {
+      memcpy(g_ren_from + saved_nren, park_f, sizeof(char[96]) * (size_t)park_n);
+      memcpy(g_ren_to + saved_nren, park_t, sizeof(char[112]) * (size_t)park_n);
+    }
+    free(park_f); free(park_t);
+    buf_puts(b, ";\n");
+  }
+}
+
 int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -610,63 +786,6 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     emit_inlined_local_decl(c, lv, rn, b, din);
   }
 
-  /* bind params to call args (args are in the call-site scope: renames off) */
-  /* `bar(...)` inside a `def foo(...)` forwarder: bind this (inlined) target's
-     params from the enclosing forwarder's synth __fwd_* params, not from a
-     literal ForwardingArgumentsNode (which has no value of its own). */
-  Scope *fwd_encl = NULL;
-  if (argc == 1 && argv && nt_type(nt, argv[0]) &&
-      sp_streq(nt_type(nt, argv[0]), "ForwardingArgumentsNode"))
-    fwd_encl = comp_scope_of(c, argv[0]);
-  /* A trailing keyword-hash arg binds by param name, not positionally. */
-  int kwh = -1, pos_argc = argc;
-  if (argc > 0 && argv && nt_type(nt, argv[argc - 1]) &&
-      sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
-    kwh = argv[argc - 1]; pos_argc = argc - 1;
-  }
-  /* A `**hash` inside the keyword-hash arg (`m(**h)`) carries no literal keys,
-     so keyword params bind from a runtime lookup on the materialized hash, the
-     same way emit_dispatch/emit_args_filled do -- without this each keyword
-     param fell through to a fabricated default. */
-  TyKind ds_type = TY_UNKNOWN;
-  int ds_tmp = emit_ds_hash_materialize(c, kwh, &ds_type);
-  emit_ds_kwarg_check(c, m, kwh, ds_tmp, ds_type);
-  /* The count and the keys, by the rule the ordinary call path follows. The
-     loop below walks the PARAMETERS, so an argument none of them reads --
-     a key naming no parameter (#4419), a positional past the last one --
-     was simply dropped, and a missing one bound its zero value: `y1 { }` on
-     `def y1(x)` ran with x padded, `y(1, 2) { }` on `def y(x, k: 1)`
-     dropped the 2. A `...` forward carries the forwarder's own params. */
-  if (fwd_encl) emit_unknown_kwarg_raise(c, m, kwh);
-  else emit_call_arity_check(c, m, argc, argv, 1);
-  /* The options-hash idiom: a braceless keyword hash no keyword parameter
-     claims packs into the first unfilled positional (`def check(sel, opts =
-     nil)` called `check(".x", count: 0)`). The other two call paths have done
-     this since #3191; this one looked the keys up by parameter NAME only, so
-     `opts` kept its default and every `assert_select(sel, count: 0)` in a
-     yielding helper asserted presence instead (#4436). */
-  int kwh_slot = kwh_positional_slot(c, m, kwh, pos_argc);
-  int gather_tmp = -1;
-  if (splat_gather && !fwd_encl) {
-    /* call-site code, like each argument below: this inline's renames are
-       off, and an inlined call inside a splat operand pushes its own at this
-       depth, so the entries are parked across the gather */
-    int sv0 = g_nren, park_n = sv0 - saved_nren;
-    char (*park_f)[96] = park_n > 0 ? malloc(sizeof(char[96]) * (size_t)park_n) : NULL;
-    char (*park_t)[112] = park_n > 0 ? malloc(sizeof(char[112]) * (size_t)park_n) : NULL;
-    if (park_f && park_t) {
-      memcpy(park_f, g_ren_from + saved_nren, sizeof(char[96]) * (size_t)park_n);
-      memcpy(park_t, g_ren_to + saved_nren, sizeof(char[112]) * (size_t)park_n);
-    }
-    g_nren = saved_nren;
-    gather_tmp = emit_splat_gather(c, m, argv, pos_argc);
-    g_nren = sv0;
-    if (park_f && park_t) {
-      memcpy(g_ren_from + saved_nren, park_f, sizeof(char[96]) * (size_t)park_n);
-      memcpy(g_ren_to + saved_nren, park_t, sizeof(char[112]) * (size_t)park_n);
-    }
-    free(park_f); free(park_t);
-  }
   char dflt_cm_self[32];
   const char *dflt_self = recv_self_deref ? selfbuf : NULL, *dflt_deref = recv_self_deref;
   if (!recv_self_deref && cm_class >= 0) {
@@ -675,116 +794,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   }
   InlDflt sv_dflt = inl_dflt_enter(m, g_nren, dflt_self, dflt_deref,
                                    recv_class >= 0 ? recv_class : cm_class);
-  for (int i = 0; i < m->nparams; i++) {
-    emit_indent(b, din);
-    int aliased = i < 32 && (alias_mask & (1u << i));
-    if (aliased) buf_printf(b, "const char **_cell__y%d_%s = &(", tag, m->pnames[i]);
-    else { char rn[128]; snprintf(rn, sizeof rn, "_y%d_%s", tag, m->pnames[i]);
-      emit_inlined_param_target(c, m, m->pnames[i], rn, b); }
-    /* hide THIS inline's renames only: args are call-site expressions,
-       and the call site may itself be an outer inlined body whose locals
-       are renamed (nested yield-method inlines) -- zeroing the whole
-       table emitted the unrenamed lv_<name> (undeclared identifier, or a
-       silent capture of a same-named caller local). */
-    int sv = g_nren;
-    /* The argument expression is call-site code, so the callee's renames are
-       switched off for it. A nested inline INSIDE that expression pushes its
-       own entries at this very depth and overwrites the callee's, so restoring
-       the count alone brought back another method's names -- this body then
-       emitted the unrenamed `lv_<name>` for whatever had been clobbered, which
-       nothing declares (#3943). Park the entries across the argument, not just
-       the count. */
-    int park_n = sv - saved_nren;
-    char (*park_f)[96] = NULL; char (*park_t)[112] = NULL;
-    if (park_n > 0) {
-      park_f = (char (*)[96])malloc(sizeof(char[96]) * (size_t)park_n);
-      park_t = (char (*)[112])malloc(sizeof(char[112]) * (size_t)park_n);
-      if (park_f && park_t) {
-        memcpy(park_f, g_ren_from + saved_nren, sizeof(char[96]) * (size_t)park_n);
-        memcpy(park_t, g_ren_to + saved_nren, sizeof(char[112]) * (size_t)park_n);
-      }
-      else { free(park_f); free(park_t); park_f = NULL; park_t = NULL; }
-    }
-    g_nren = saved_nren;
-    if (fwd_encl && i < fwd_encl->nparams) {
-      LocalVar *ep = scope_local(fwd_encl, fwd_encl->pnames[i]);
-      LocalVar *mp = scope_local(m, m->pnames[i]);
-      TyKind et = ep ? ep->type : TY_POLY;
-      TyKind mt = mp ? mp->type : TY_POLY;
-      char txt[80]; snprintf(txt, sizeof txt, "lv_%s", fwd_encl->pnames[i]);
-      if (mt == TY_POLY && et != TY_POLY) emit_boxed_text(c, et, txt, b);
-      else buf_puts(b, txt);
-    }
-    else if (gather_tmp >= 0 && i != m->kwrest_idx &&
-             !callee_param_is_declared_kwarg(c, m, m->pnames[i]))
-      emit_gathered_param(c, m, i, gather_tmp, b);
-    /* A rest param collects the middle arguments into an Array. Without this
-       the first argument was assigned straight into the rest slot -- a
-       pointer of the wrong type, so the rest read back empty (or crashed). */
-    else if (m->rest_idx >= 0 && i == m->rest_idx)
-      emit_rest_pack_kwh(c, i, pos_argc - m->npost_rest, argv, -1, b);
-    else if (m->rest_idx >= 0 && i > m->rest_idx && i <= m->rest_idx + m->npost_rest) {
-      int post_j = i - m->rest_idx - 1;   /* 0-based index among the posts */
-      int argv_idx = pos_argc - m->npost_rest + post_j;
-      emit_arg_or_default(c, m, i,
-                          (argv && argv_idx >= 0 && argv_idx < pos_argc) ? argv[argv_idx] : -1, b);
-    }
-    /* Anything past the rest that is not one of its posts is a keyword (or
-       **kwrest) param: it binds by name, never positionally. */
-    else if (aliased && nt_kind(nt, argv[i]) == NK_InstanceVariableReadNode) {
-      /* the slot itself, and the owner pinned as a byref call pins it: the
-         store lands inside this expansion, past any dirty bit (#4378) */
-      const char *ivn = nt_str(nt, argv[i], "name");
-      buf_printf(b, "%s%siv_%s); sp_gc_pin_remembered((void *)%s)", g_self, g_self_deref, iv_c(ivn + 1), g_self);
-    }
-    else if (aliased) {
-      emit_expr(c, argv[i], b); buf_puts(b, ")");
-      /* The caller's variable may be a heap cell (captured by a proc): the
-         body will store through it from inside this expansion, which is the
-         placement a dirty bit cannot cover, so pin the cell as a byref call
-         would (#4391); a stack slot, or a cell the caller itself was lent,
-         is not ours to pin. */
-      { const char *avn = nt_str(nt, argv[i], "name");
-        LocalVar *alv = avn ? scope_local(comp_scope_of(c, argv[i]), avn) : NULL;
-        if (alv && alv->is_cell && !alv->byref_out && !alv->inline_alias &&
-            !(g_cap_struct && g_cap_names && nameset_has(g_cap_names, avn)))
-          buf_printf(b, "; sp_gc_pin_remembered((void *)_cell_%s)", rename_local(avn));
-      }
-    }
-    /* a **kwrest collects the keywords no declared keyword param takes, as
-       on the other call paths; it bound its nil default here */
-    else if (i == m->kwrest_idx) {
-      int krhash = emit_kwrest_collect(c, m, kwh, ds_tmp, ds_type, args);
-      LocalVar *krp = scope_local(m, m->pnames[i]);
-      if (krp && krp->type == TY_POLY) buf_printf(b, "sp_box_obj(_t%d, SP_BUILTIN_SYM_POLY_HASH)", krhash);
-      else buf_printf(b, "_t%d", krhash);
-    }
-    /* a keyword or **kwrest param never takes a positional: a surplus one
-       (refused above) bound `ykw(1, 2)`'s 2 into the kwrest's hash slot, a
-       C type error */
-    else if (i < pos_argc && !(m->rest_idx >= 0 && i > m->rest_idx) && i != m->kwrest_idx &&
-             !callee_param_is_declared_kwarg(c, m, m->pnames[i]))
-      emit_arg_or_default(c, m, i, argv[i], b);
-    else if (i == kwh_slot)
-      emit_arg_or_default(c, m, i, kwh, b);
-    else {
-      int kv = kwh >= 0 ? kwh_lookup(nt, kwh, m->pnames[i]) : -1;
-      /* No literal key for this keyword param, but a `**hash` was splatted:
-         extract it by name from the materialized hash (falls back to the
-         param default when the key is absent). */
-      if (kv < 0 && ds_tmp >= 0 && callee_has_kwarg(c, m, m->pnames[i]))
-        emit_ds_param_extract(c, m, i, ds_tmp, ds_type, b);
-      else
-        emit_arg_or_default(c, m, i, kv, b);
-    }
-    g_nren = sv;
-    if (park_f && park_t) {
-      memcpy(g_ren_from + saved_nren, park_f, sizeof(char[96]) * (size_t)park_n);
-      memcpy(g_ren_to + saved_nren, park_t, sizeof(char[112]) * (size_t)park_n);
-    }
-    free(park_f); free(park_t);
-    buf_puts(b, ";\n");
-  }
+  emit_inline_bind_params(c, m, args, argv, argc, splat_gather, alias_mask, tag, saved_nren, din, b);
   inl_dflt_leave(sv_dflt);
 
   /* Now switch into the RECEIVER's context for the method BODY. Both the

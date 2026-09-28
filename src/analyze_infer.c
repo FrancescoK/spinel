@@ -2820,11 +2820,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_CLASS && sp_streq(name, "new") &&
       nt_type(nt, recv) && !sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       !sp_streq(nt_type(nt, recv), "ConstantPathNode")) {
-    int _is_self_class = (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "class") &&
-      nt_ref(nt, recv, "receiver") >= 0 &&
-      nt_type(nt, nt_ref(nt, recv, "receiver")) &&
-      sp_streq(nt_type(nt, nt_ref(nt, recv, "receiver")), "SelfNode"));
+    int _is_self_class = self_class_static_ci(c, recv) >= 0;
     /* a local statically holding one STRUCT class (k = Struct.new(..) /
        k = StructKlass) falls through to the static-class .new arms below --
        its typed member accessors then dispatch statically. A plain class
@@ -3108,13 +3104,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode"))
     return TY_POLY_ARRAY;
 
-  /* self.class.new(...) -> an instance of the enclosing class */
-  if (recv >= 0 && sp_streq(name, "new") && nt_type(nt, recv) &&
-      sp_streq(nt_type(nt, recv), "CallNode") && nt_str(nt, recv, "name") &&
-      sp_streq(nt_str(nt, recv, "name"), "class")) {
-    Scope *self = comp_scope_of(c, id);
-    if (self && self->class_id >= 0) return ty_object(self->class_id);
-  }
+  /* self.class.new(...) in a class no class inherits from -> an instance of it */
+  if (recv >= 0 && sp_streq(name, "new") && self_class_static_ci(c, recv) >= 0)
+    return ty_object(self_class_static_ci(c, recv));
 
   /* Class#allocate -> a bare instance of that class (no initialize run). */
   if (recv >= 0 && sp_streq(name, "allocate") && argc == 0) {
@@ -3758,7 +3750,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* The same names on a BOXED status -- which is how one normally arrives,
      since waitpid2 answers an Array and its second element is read out of a
      poly container. emit_poly_builtin_method already emits the unboxed scalar
-     for exactly these seven (behind a runtime cls_id check), so without the
+     for exactly these seven, and a Process::Tms's four times (behind a runtime
+     cls_id check), so without the
      matching rule here the two sides disagreed: `"exit #{st.exitstatus}"`
      asked sp_poly_to_s for a poly the emitter had produced as an sp_int. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 &&
@@ -3770,6 +3763,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "exitstatus") || sp_streq(name, "termsig") ||
         sp_streq(name, "pid"))
       return TY_INT;
+    /* and a boxed Process::Tms's four CPU times, as on a typed one */
+    if (sp_streq(name, "utime") || sp_streq(name, "stime") ||
+        sp_streq(name, "cutime") || sp_streq(name, "cstime"))
+      return TY_FLOAT;
   }
   /* OpenStruct: dynamic members. A member read (any name, arg-less, no
      writer) or `[sym]` returns a boxed value; a writer / `[]=` returns the
@@ -5173,6 +5170,15 @@ static TyKind infer_call_inner(Compiler *c, int id) {
          result is a boxed value -- so the static type stays poly (#2401). */
       if (argc == 1 && (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^")))
         return an_poly_concrete(c, name, TY_POLY);
+      /* parameters(lambda: true/false/nil), read by proc_parameters_lambda_mode,
+         is an Array, as the no-argument call is, unless a class method of the
+         name exists (a boxed Class may be the receiver) */
+      if (sp_streq(name, "parameters") && proc_parameters_lambda_mode(nt, argc, argv) != -2) {
+        int pcm = 0;
+        for (int k = 0; k < c->nclasses && !pcm; k++)
+          if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) pcm = 1;
+        if (!pcm) return an_poly_concrete(c, name, TY_POLY_ARRAY);
+      }
       /* poly.arity on a Method read out of a container: the stamped arity, an
          Integer (#3231). */
       if (argc == 0 && sp_streq(name, "arity")) return an_poly_concrete(c, name, TY_INT);
@@ -5180,6 +5186,14 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       if (argc == 0 && sp_streq(name, "lambda?")) return an_poly_concrete(c, name, TY_BOOL);
       if (argc == 0 && sp_streq(name, "parameters")) return an_poly_concrete(c, name, TY_POLY_ARRAY);
       if (argc == 0 && sp_streq(name, "curry")) return an_poly_concrete(c, name, TY_CURRY);
+      /* the count form too, but not where a reopened Object or Kernel has a
+         curry, which answers for every receiver the Proc arm does not */
+      if (argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode && sp_streq(name, "curry") &&
+          !(comp_class_index(c, "Object") >= 0 &&
+            comp_method_in_chain(c, comp_class_index(c, "Object"), name, NULL) >= 0) &&
+          !(comp_class_index(c, "Kernel") >= 0 &&
+            comp_method_in_chain(c, comp_class_index(c, "Kernel"), name, NULL) >= 0))
+        return an_poly_concrete(c, name, TY_CURRY);
       if (argc == 0 && sp_streq(name, "to_proc")) return an_poly_concrete(c, name, TY_POLY);
       /* String transforms on a boxed value: emit_poly_call routes these
          through sp_poly_to_s and re-boxes the result, so the value stays
@@ -6981,6 +6995,23 @@ static int branch_diverges(Compiler *c, int b) {
   return k == NK_StatementsNode ? stmts_diverge(c, b) : 0;
 }
 
+/* `Array.new` answers 1 and `Hash.new` (bare, with a default or a capacity,
+   or with a default block) 2: like the empty literals they start with no element type
+   of their own, and infer to TY_UNKNOWN until their use settles one. */
+static int an_empty_container_new(Compiler *c, int b) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, b, "name");
+  int r = nt_ref(nt, b, "receiver");
+  if (!nm || !sp_streq(nm, "new") || r < 0 || nt_kind(nt, r) != NK_ConstantReadNode) return 0;
+  const char *rn = nt_str(nt, r, "name");
+  int a = nt_ref(nt, b, "arguments");
+  int an = 0; if (a >= 0) nt_arr(nt, a, "arguments", &an);
+  if (rn && sp_streq(rn, "Array"))
+    return an == 0 && nt_ref(nt, b, "block") < 0 ? 1 : 0;
+  if (!rn || !sp_streq(rn, "Hash")) return 0;
+  return an <= 1 ? 2 : 0;
+}
+
 /* An empty `[]` / `{}` carries no element type of its own, so it caches
    TY_UNKNOWN, and unifying an arm that ends in one DROPS it: the branch then
    answers whatever the other arms said, and the literal's construction is
@@ -7005,6 +7036,10 @@ static TyKind an_empty_container_tail(Compiler *c, int stmts) {
     nt_arr(nt, tail, "elements", &len);
     if (len == 0) return TY_STR_POLY_HASH;
   }
+  else if (ty && sp_streq(ty, "CallNode")) {
+    int k = an_empty_container_new(c, tail);
+    if (k) return k == 1 ? TY_POLY_ARRAY : TY_STR_POLY_HASH;
+  }
   return TY_UNKNOWN;
 }
 
@@ -7020,7 +7055,7 @@ static TyKind an_branch_ty(Compiler *c, int stmts) {
 }
 
 /* 1 when a value (a branch arm, a write's right side, a returned value) is
-   an empty `[]` literal, 2 for an empty `{}`. */
+   an empty `[]` literal or `Array.new`, 2 for an empty `{}` or `Hash.new`. */
 int an_empty_container_kind(Compiler *c, int b) {
   const NodeTable *nt = c->nt;
   while (b >= 0) {
@@ -7035,7 +7070,7 @@ int an_empty_container_kind(Compiler *c, int b) {
     int n = 0;
     if (k == NK_ArrayNode) { nt_arr(nt, b, "elements", &n); return n == 0 ? 1 : 0; }
     if (k == NK_HashNode) { nt_arr(nt, b, "elements", &n); return n == 0 ? 2 : 0; }
-    return 0;
+    return k == NK_CallNode ? an_empty_container_new(c, b) : 0;
   }
   return 0;
 }
@@ -7943,6 +7978,15 @@ TyKind infer_uncached(Compiler *c, int id) {
         if (rn == 0) rt = TY_STR_POLY_HASH;
       }
       if (rt != TY_UNKNOWN && (lt == TY_NIL || lt == TY_UNKNOWN)) return rt;
+      /* `Array.new` / `Hash.new` are as untyped as the literals: the nil-guard
+         fallback of `||` is the container, and beside a left of another kind
+         the answer boxes */
+      if (rt == TY_UNKNOWN) {
+        int ek = an_empty_container_kind(c, rnd);
+        if (ek && nk == NK_OrNode && (lt == TY_NIL || lt == TY_UNKNOWN))
+          return ek == 1 ? TY_POLY_ARRAY : TY_STR_POLY_HASH;
+        if (an_empty_container_disagrees(ek, lt)) return TY_POLY;
+      }
     }
     return ty_unify(lt, rt);  /* value form: a || b -> common type */
   }

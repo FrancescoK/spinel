@@ -517,7 +517,11 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
    emit_args_filled's gather). */
 int inline_splat_gather_applies(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh);
 int emit_splat_gather(Compiler *c, Scope *m, const int *argv, int pos_argc);
+void emit_gather_arity_check(Compiler *c, Scope *m, int ct);
 void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out);
+void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, int argc,
+                             int splat_gather, unsigned alias_mask, int tag, int saved_nren,
+                             int din, Buf *b);
 /* A splat operand whose static type is nil or a scalar: Ruby spreads nil to
    nothing and any of the others to itself. */
 int splat_operand_is_scalar(TyKind t);
@@ -926,6 +930,7 @@ void emit_autosplat_params(Compiler *c, int block, int np, int elem_temp, int in
 int poly_block_call_needs_dispatch(Compiler *c, int id);
 void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b);
 void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out);
+int declare_default_locals(Compiler *c, Scope *m, int dnode);
 int arg_wants_root(Compiler *c, TyKind pt, int provided);
 void emit_rooted_operand(Compiler *c, TyKind pt, int provided, const char *expr, Buf *out);
 int arg_slot_for_param(Compiler *c, Scope *m, int idx, int argc);
@@ -1080,6 +1085,7 @@ int static_block_given_cond(Compiler *c, int pred);
 int static_nil_ivar_cond(Compiler *c, int pred);
 void emit_if(Compiler *c, int id, Buf *b, int indent, int is_unless, int tail);
 int emit_poly_class_when(Compiler *c, int cond_id, const char *tmp, Buf *b);
+void emit_class_val_when(const char *cn, int t, Buf *b);
 void emit_pm_eq(Compiler *c, int t, TyKind pt, int valnode, Buf *b);
 int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b);
 void emit_pm_bind_pattern(Compiler *c, int pat, const char *src_poly, int indent, Buf *b, Scope *sc);
@@ -1164,6 +1170,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b);
 int is_nested_block(const char *ty);
 void proc_collect_locals(Compiler *c, int id, NameSet *locals);
 int conv_reads_shared_storage(Compiler *c, int node);
+int emit_array_into_poly_slot(Compiler *c, TyKind slot, int v, Buf *b);
 void proc_collect_used(Compiler *c, int id, NameSet *out);
 int proc_params_node(Compiler *c, int create);
 const char *proc_param_name(Compiler *c, int create, int idx);

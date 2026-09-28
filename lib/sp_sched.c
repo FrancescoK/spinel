@@ -2010,6 +2010,9 @@ static void sp_thread_report(sp_thread *t) {
 /* Park/wake primitives (defined below; used by join here). */
 static void       sp_sched_block(sp_thread **waitlist, int defer_inject);
 static sp_thread *sp_sched_wake_one(sp_thread **waitlist);
+#ifdef SP_THREADS
+static int        sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mutex *mutex);
+#endif
 
 /* A finished thread's parked joiners become runnable again (the main thread,
    if it was waiting, is released by the pump's target check, not the queue). */
@@ -2315,9 +2318,17 @@ sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
   return t;
 }
 
+/* Joining the current thread can never finish. Reject it before attempting to
+   park, including on the main thread before the timer monitor has started. */
+static void sp_thread_check_join_target(sp_thread *t) {
+  if (t == g_current)
+    sp_raise_cls("ThreadError", "Target thread must not be current thread");
+}
+
 /* Block the calling thread until `t` is dead. The main thread pumps the queue;
    a spawned thread parks on t's joiners and yields to the scheduler. */
 static void sp_thread_await(sp_thread *t) {
+  sp_thread_check_join_target(t);
   SCHED_LOCK();
   if (t->state == SP_TH_DEAD) { SCHED_UNLOCK(); return; }
   sp_thread *self = g_current;
@@ -2348,34 +2359,48 @@ sp_thread *sp_Thread_join(sp_thread *t) {
 /* CRuby's Thread#join(limit): wait at most `seconds` for the thread to
    finish, answering the thread when it does and NULL (nil) on timeout.
    Same return type as the no-arg join so one variable can hold either
-   call's result.
-
-   The wait is a bounded poll rather than a park: joiners do not yet have a
-   timer-specific wake path.
-   Sleeping the whole timeout in one go is what the first cut
-   did, and it makes join(limit) a FIXED wait -- `t.join(5)` on a thread
-   that finishes in 50ms blocked for five seconds where CRuby returns at
-   once. Slicing it keeps the answer prompt (one slice of latency) and the
-   scheduler running other threads inside each sp_sleep. */
-#define SP_JOIN_POLL_SLICE 0.002
+   call's result. */
 sp_thread *sp_Thread_join_timeout(sp_thread *t, double seconds) {
+  sp_thread_check_join_target(t);
   SCHED_LOCK();
-  int dead = (t->state == SP_TH_DEAD);
-  SCHED_UNLOCK();
-  if (dead) { sp_thread_reraise_if_exc(t); return t; }
-  if (!(seconds > 0)) return NULL;   /* also catches a NaN limit */
+  if (t->state == SP_TH_DEAD) {
+    SCHED_UNLOCK();
+    sp_thread_reraise_if_exc(t);
+    return t;
+  }
+  if (!(seconds > 0)) {
+    SCHED_UNLOCK();
+    return NULL;   /* also catches a NaN limit */
+  }
 
+#ifdef SP_THREADS
+  int woken = sp_sched_block_timeout(&t->joiners, sp_monotonic_now() + seconds, NULL);
+  if (woken < 0) {
+    SCHED_UNLOCK();
+    sp_raise_cls("NoMemoryError", "failed to schedule thread join timeout");
+  }
+  SCHED_UNLOCK();
+  if (!woken) return NULL;
+  sp_thread_reraise_if_exc(t);
+  return t;
+#else
+  SCHED_UNLOCK();
+  /* Without the monitor thread there is no timer queue to park on. Keep the
+     single-worker build responsive by yielding in short sleeps until either
+     the target finishes or the deadline passes. */
+  const double poll_slice = 0.002;
   double deadline = sp_monotonic_now() + seconds;
   for (;;) {
     double left = deadline - sp_monotonic_now();
     if (left <= 0) break;
-    sp_sleep(left < SP_JOIN_POLL_SLICE ? (sp_float)left : (sp_float)SP_JOIN_POLL_SLICE);
+    sp_sleep(left < poll_slice ? (sp_float)left : (sp_float)poll_slice);
     SCHED_LOCK();
-    dead = (t->state == SP_TH_DEAD);
+    int dead = (t->state == SP_TH_DEAD);
     SCHED_UNLOCK();
     if (dead) { sp_thread_reraise_if_exc(t); return t; }
   }
   return NULL;
+#endif
 }
 
 sp_RbVal sp_Thread_value(sp_thread *t) {
@@ -3349,16 +3374,56 @@ sp_queue *sp_SizedQueue_new(sp_int max) {
   return q;
 }
 
-void sp_Queue_push(sp_queue *q, sp_RbVal v) { sp_gc_wb((void*)q);
+void sp_Queue_push_options_check(sp_queue *q, int has_non_block, int has_timeout) {
+  if (q->max > 0) return;
+  /* CRuby's Queue#push takes one argument; a timeout: hash counts as one more. */
+  if (has_non_block && has_timeout) sp_raise_cls("ArgumentError", "wrong number of arguments (given 3, expected 1)");
+  if (has_non_block || has_timeout) sp_raise_cls("ArgumentError", "wrong number of arguments (given 2, expected 1)");
+}
+
+static int sp_queue_push_impl(sp_queue *q, sp_RbVal v, int non_block,
+                              int timed, double seconds) { sp_gc_wb((void*)q);
   /* On a full SizedQueue, block until a #pop frees a slot. Root v across the
      block: it lives in this (possibly suspended) frame, and the parking
      thread's saved roots only cover the shadow stack. */
   SP_GC_ROOT_RBVAL(v);
+  SP_GC_ROOT(q);
+  /* A negative timeout is already expired (CRuby): no ArgumentError. */
+  double deadline = timed ? sp_monotonic_now() + seconds : 0.0;
   SCHED_LOCK();
   for (;;) {
     if (q->closed) { SCHED_UNLOCK(); sp_raise_cls("ClosedQueueError", "queue closed"); }
     if (q->max <= 0 || q->len < q->max) break;
-    sp_sched_block(&q->push_waiters, 0);   /* releases+reacquires the lock around its transfer */
+    if (non_block) { SCHED_UNLOCK(); sp_raise_cls("ThreadError", "queue full"); }
+    if (timed && !(seconds > 0.0)) { SCHED_UNLOCK(); return 0; }
+    if (timed) {
+#ifdef SP_THREADS
+      if (!g_sysmon_started) {
+        /* Before the first Thread, no green thread can free a slot. There is
+           no monitor to fire a timer, so wait directly and check the queue. */
+        SCHED_UNLOCK();
+        double remaining = deadline - sp_monotonic_now();
+        if (remaining > 0.0) sp_sched_sleep(remaining);
+        SCHED_LOCK();
+        if (q->max > 0 && q->len >= q->max) { SCHED_UNLOCK(); return 0; }
+      }
+      else {
+        int woken = sp_sched_block_timeout(&q->push_waiters, deadline, NULL);
+        if (woken < 0) {
+          SCHED_UNLOCK();
+          sp_raise_cls("NoMemoryError", "failed to schedule queue timeout");
+        }
+        if (!woken) { SCHED_UNLOCK(); return 0; }
+      }
+#else
+      SCHED_UNLOCK();
+      double remaining = deadline - sp_monotonic_now();
+      if (remaining > 0.0) sp_sleep((sp_float)remaining);
+      SCHED_LOCK();
+      if (q->max > 0 && q->len >= q->max) { SCHED_UNLOCK(); return 0; }
+#endif
+    }
+    else sp_sched_block(&q->push_waiters, 0); /* releases+reacquires lock around transfer */
   }
   if (q->len == q->cap) {
     sp_int nc = q->cap * 2;
@@ -3372,11 +3437,25 @@ void sp_Queue_push(sp_queue *q, sp_RbVal v) { sp_gc_wb((void*)q);
   q->len++;
   sp_sched_wake_one(&q->pop_waiters);   /* hand the new value to a waiting popper */
   SCHED_UNLOCK();
+  return 1;
+}
+
+void sp_Queue_push(sp_queue *q, sp_RbVal v) {
+  (void)sp_queue_push_impl(q, v, 0, 0, 0.0);
+}
+
+void sp_Queue_push_nb(sp_queue *q, sp_RbVal v) {
+  (void)sp_queue_push_impl(q, v, 1, 0, 0.0);
+}
+
+sp_bool sp_Queue_push_timeout(sp_queue *q, sp_RbVal v, double seconds) {
+  return sp_queue_push_impl(q, v, 0, 1, seconds);
 }
 
 sp_RbVal sp_Queue_pop(sp_queue *q) {
   /* Block until an element is available. A closed, drained queue returns nil
      rather than blocking forever (CRuby behaviour). */
+  SP_GC_ROOT(q);
   SCHED_LOCK();
   while (q->len == 0) {
     if (q->closed) { SCHED_UNLOCK(); return sp_box_nil(); }
@@ -3386,6 +3465,46 @@ sp_RbVal sp_Queue_pop(sp_queue *q) {
   q->head = (q->head + 1) % q->cap;
   q->len--;
   if (q->max > 0) sp_sched_wake_one(&q->push_waiters);   /* a slot freed up */
+  SCHED_UNLOCK();
+  return v;
+}
+
+sp_RbVal sp_Queue_pop_timeout(sp_queue *q, double seconds) {
+  SP_GC_ROOT(q);
+  /* A negative timeout is already expired (CRuby): no ArgumentError. */
+  double deadline = sp_monotonic_now() + seconds;
+  SCHED_LOCK();
+  while (q->len == 0) {
+    if (q->closed || !(seconds > 0.0)) { SCHED_UNLOCK(); return sp_box_nil(); }
+#ifdef SP_THREADS
+    if (!g_sysmon_started) {
+      /* Before the first Thread, no green thread can add an item. */
+      SCHED_UNLOCK();
+      double remaining = deadline - sp_monotonic_now();
+      if (remaining > 0.0) sp_sched_sleep(remaining);
+      SCHED_LOCK();
+      if (q->len == 0) { SCHED_UNLOCK(); return sp_box_nil(); }
+    }
+    else {
+      int woken = sp_sched_block_timeout(&q->pop_waiters, deadline, NULL);
+      if (woken < 0) {
+        SCHED_UNLOCK();
+        sp_raise_cls("NoMemoryError", "failed to schedule queue timeout");
+      }
+      if (!woken) { SCHED_UNLOCK(); return sp_box_nil(); }
+    }
+#else
+    SCHED_UNLOCK();
+    double remaining = deadline - sp_monotonic_now();
+    if (remaining > 0.0) sp_sleep((sp_float)remaining);
+    SCHED_LOCK();
+    if (q->len == 0) { SCHED_UNLOCK(); return sp_box_nil(); }
+#endif
+  }
+  sp_RbVal v = q->buf[q->head];
+  q->head = (q->head + 1) % q->cap;
+  q->len--;
+  if (q->max > 0) sp_sched_wake_one(&q->push_waiters);
   SCHED_UNLOCK();
   return v;
 }

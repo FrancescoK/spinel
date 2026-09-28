@@ -1998,7 +1998,12 @@ static const char *sp_poly_class_name(sp_RbVal v) {
     case SP_TAG_NIL: return SPL("NilClass");
     case SP_TAG_SYM: return SPL("Symbol");
     case SP_TAG_ENCODING: return SPL("Encoding");
-    case SP_TAG_CLASS: return SPL("Class");
+    case SP_TAG_CLASS: {
+      sp_Class c = sp_unbox_class(v);
+      int m = sp_class_is_module_fn ? sp_class_is_module_fn(c)
+            : (c.cls_id == -114 || c.cls_id == -115 || c.cls_id == -119 || c.cls_id == -162);
+      return m ? SPL("Module") : SPL("Class");
+    }
     case SP_TAG_BIGINT: return SPL("Integer");
     case SP_TAG_OBJ:
       switch (v.cls_id) {
@@ -8763,11 +8768,20 @@ static sp_bool sp_poly_equal(sp_RbVal a, sp_RbVal b) {
    target is resolved inline via sp_class_le on the boxed object's cls_id. */
 static sp_int sp_exc_is_a(volatile struct sp_Exception_s *ve, const char *cn);  /* fwd (#3096) */
 extern const char *(*sp_user_exc_parent_fn)(const char *);  /* fwd: the program's exception parent table */
+static int (*sp_poly_is_a_hook)(sp_RbVal, sp_Class) = NULL;
 static sp_bool sp_poly_kind_of_builtin(sp_RbVal v, const char *cn) {
   if (!cn) return FALSE;
   if (strcmp(cn, "Object") == 0 || strcmp(cn, "BasicObject") == 0 || strcmp(cn, "Kernel") == 0)
     return TRUE;
+  /* a boxed class or module value: every one is a Module, and only the
+     generated class table knows which of them are modules rather than
+     classes */
+  if (v.tag == SP_TAG_CLASS && strcmp(cn, "Module") == 0) return TRUE;
+  if (v.tag == SP_TAG_CLASS && strcmp(cn, "Class") == 0 && sp_poly_is_a_hook)
+    return (sp_bool)(sp_poly_is_a_hook(v, (sp_Class){-109, NULL}) != 0);
   if (strcmp(sp_poly_class_name(v), cn) == 0) return TRUE;  /* exact builtin class */
+  /* a class is a Module too: Class < Module */
+  if (strcmp(cn, "Module") == 0) return v.tag == SP_TAG_CLASS;
   /* a boxed IO handle walks its own kind chain (a socket read back out of a
      poly array must still answer BasicSocket / IO) */
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO)
@@ -9938,7 +9952,8 @@ static sp_RbVal sp_poly_join_timeout(sp_RbVal v, double seconds, const char *arg
 
 /* `alive?` and `status` on a boxed Thread (or `alive?` on a boxed Fiber):
    the names a pool's `@workers.all? { |w| !w.alive? }` reaches through an
-   Array element (#4463). A value of any other kind has no such method. */
+   Array element (#4463). A value of any other kind has no such method,
+   but for a SystemExit's `status` (sp_poly_thread_status below). */
 sp_bool  sp_Thread_alive(sp_thread *t);
 sp_RbVal sp_Thread_status(sp_thread *t);
 sp_bool  sp_Fiber_alive(sp_Fiber *f);
@@ -9961,6 +9976,11 @@ static sp_RbVal sp_poly_thread_kill(sp_RbVal v) {
 }
 static sp_RbVal sp_poly_thread_status(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_THREAD) return sp_Thread_status((sp_thread *)v.v.p);
+  /* a SystemExit's exit status, as the typed accessor reads it; any other
+     exception keeps the NoMethodError below, which carries its receiver */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_EXCEPTION && v.v.p &&
+      sp_exc_cls_matches(((sp_Exception *)v.v.p)->cls_name, "SystemExit"))
+    return sp_box_int(sp_exc_status_acc((sp_Exception *)v.v.p));
   sp_raise_nomethod(sp_nomethod_msg("status", v));
   return sp_box_nil();
 }
@@ -12731,6 +12751,27 @@ static sp_Enumerator *sp_Enumerator_new_indices(sp_RbVal arr) {
   for (sp_int i = 0; i < n; i++) sp_PolyArray_push(idx, sp_box_int(i));
   { sp_Enumerator *e = sp_Enumerator_new_from_items(idx); e->source = arr; e->meth = SPL("each_index"); return e; }
 }
+/* Time#to_a on a boxed receiver: [sec, min, hour, mday, mon, year, wday,
+   yday, isdst, zone], as the typed Time#to_a answers; any other value's to_a
+   is sp_poly_to_a_arr's. Only the `to_a` call itself answers through here --
+   the other callers of sp_poly_to_a_arr (a `for` loop, `deconstruct`, the
+   Enumerable names) keep a Time's NoMethodError, as CRuby raises. */
+static sp_PolyArray *sp_poly_to_a_call(sp_RbVal v) {
+  if (!(v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_TIME && v.v.p)) return sp_poly_to_a_arr(v);
+  sp_Time t = *(sp_Time *)v.v.p;
+  sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a);
+  sp_PolyArray_push(a, sp_box_int(sp_time_sec(t)));
+  sp_PolyArray_push(a, sp_box_int(sp_time_min(t)));
+  sp_PolyArray_push(a, sp_box_int(sp_time_hour(t)));
+  sp_PolyArray_push(a, sp_box_int(sp_time_mday(t)));
+  sp_PolyArray_push(a, sp_box_int(sp_time_mon(t)));
+  sp_PolyArray_push(a, sp_box_int(sp_time_year(t)));
+  sp_PolyArray_push(a, sp_box_int(sp_time_wday(t)));
+  sp_PolyArray_push(a, sp_box_int(sp_time_yday(t)));
+  sp_PolyArray_push(a, sp_box_bool(sp_time_isdst(t) != 0));
+  sp_PolyArray_push(a, sp_box_str(sp_time_zone(t)));
+  return a;
+}
 /* Array#each_slice(n) with no block: a materialized Enumerator whose items are
    the consecutive non-overlapping slices of length n (the last may be short).
    `slice` is block-scoped, so its GC root pops each iteration; `out` keeps the
@@ -12789,7 +12830,6 @@ static sp_Enumerator *sp_poly_cycle_n(sp_RbVal v, sp_int n) {
    dispatches through the generated class machinery (installed as a hook by
    sp_tu_init when the program carries it); Regexp matches a String; a Range
    covers numerics; everything else is value equality. */
-static int (*sp_poly_is_a_hook)(sp_RbVal, sp_Class) = NULL;
 static sp_bool sp_poly_case_eq(sp_RbVal pat, sp_RbVal e) {
   if (pat.tag == SP_TAG_CLASS)
     return sp_poly_is_a_hook ? (sp_bool)(sp_poly_is_a_hook(e, sp_unbox_class(pat)) != 0) : 0;
@@ -13513,6 +13553,71 @@ static sp_RbVal sp_penum_call2(sp_Proc *blk, sp_RbVal v, sp_RbVal w) {
   sp_proc_call(blk, 2, a);
   return _sp_proc_poly_ret;
 }
+/* `new` on a Class value that turns out at run time to be String, Array,
+   Hash or Object (`kind` 'S', 'A', 'H', 'O'), with the call's arguments
+   boxed: what the constant spelling constructs, boxed. */
+static sp_RbVal sp_dyn_hash_dproc(sp_PolyPolyHash *h, sp_RbVal key, void *self) {
+  return sp_penum_call2((sp_Proc *)self, sp_box_obj(h, SP_BUILTIN_POLY_POLY_HASH), key);
+}
+static void sp_dyn_new_arity(sp_int given, sp_int max) {
+  if (given <= max) return;
+  if (max == 0)
+    sp_raise_cls("ArgumentError", sp_sprintf("wrong number of arguments (given %lld, expected 0)", (long long)given));
+  sp_raise_cls("ArgumentError", sp_sprintf("wrong number of arguments (given %lld, expected 0..%lld)",
+                                           (long long)given, (long long)max));
+}
+static sp_RbVal sp_builtin_class_new(int kind, sp_int argc, const sp_RbVal *av, sp_Proc *blk) {
+  SP_GC_ROOT(blk);
+  switch (kind) {
+  case 'S': {
+    sp_dyn_new_arity(argc, 1);
+    if (argc == 0) return sp_box_str(sp_str_dup_external((&("\xff")[1])));
+    sp_RbVal s = sp_poly_is_strbuf(av[0]) ? sp_poly_strbuf_deref(av[0]) : av[0];
+    if (s.tag != SP_TAG_STR)
+      sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into String", sp_poly_class_name(s)));
+    return sp_box_str(sp_str_dup(s.v.s));
+  }
+  case 'A': {
+    sp_dyn_new_arity(argc, 2);
+    sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
+    if (argc == 0) return sp_box_poly_array(r);
+    if (argc == 1 && av[0].tag == SP_TAG_OBJ && sp_poly_is_array_kind(av[0].cls_id)) {
+      sp_int n = sp_poly_length(av[0]);
+      for (sp_int i = 0; i < n; i++) sp_PolyArray_push(r, sp_poly_arr_get(av[0], i));
+      return sp_box_poly_array(r);
+    }
+    if (av[0].tag != SP_TAG_INT)
+      sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Integer", sp_poly_class_name(av[0])));
+    if (av[0].v.i < 0) sp_raise_cls("ArgumentError", "negative array size");
+    for (sp_int i = 0; i < av[0].v.i; i++)
+      sp_PolyArray_push(r, blk ? sp_penum_call1(blk, sp_box_int(i)) : argc == 2 ? av[1] : sp_box_nil());
+    return sp_box_poly_array(r);
+  }
+  case 'H': {
+    sp_dyn_new_arity(argc, blk ? 0 : 1);
+    sp_PolyPolyHash *h = blk ? sp_PolyPolyHash_new_dproc(sp_dyn_hash_dproc, blk)
+                       : argc ? sp_PolyPolyHash_new_with_default(av[0]) : sp_PolyPolyHash_new();
+    return sp_box_obj(h, SP_BUILTIN_POLY_POLY_HASH);
+  }
+  default:
+    sp_dyn_new_arity(argc, 0);
+    return sp_box_obj(sp_Object_new(), SP_BUILTIN_OBJECT);
+  }
+}
+/* The default arm of those dispatches: `cls` (named `cn`) is a builtin
+   exception class, constructed as `RuntimeError.new(msg)` is, or a class
+   the program cannot construct through a class value. */
+static sp_RbVal sp_class_value_new_fallback(sp_RbVal cls, const char *cn, sp_int argc, const sp_RbVal *av) {
+  if (cn && (!strcmp(cn, "Exception") || sp_exc_parent_of_name(cn))) {
+    sp_dyn_new_arity(argc, 1);
+    const char *msg = sp_str_empty;
+    if (argc == 1 && av[0].tag != SP_TAG_NIL)
+      msg = sp_exc_msg_given(av[0].tag == SP_TAG_STR ? av[0].v.s : sp_poly_to_s(av[0]));
+    return sp_box_obj(sp_exc_new(cn, msg), SP_BUILTIN_EXCEPTION);
+  }
+  sp_raise_nomethod(sp_nomethod_msg("new", cls));
+  return sp_box_nil();
+}
 static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
   SP_GC_ROOT_RBVAL(recv);
   /* The block is this loop's only handle on its own captures: the caller's
@@ -13896,6 +14001,23 @@ static sp_RbVal sp_curry_realize_poly(sp_Curry *c) {
    reaches the target's arity, and answer the new curry boxed otherwise. The
    static paths kept answering a Curry for a saturating call, so a method taking
    a curried Proc returned a Proc where CRuby returns the value (#4068). */
+/* The most arguments curry(n) may name for a Proc, read off the kinds its
+   parameter list carries, as curry_count_max reads a visible definition: its
+   req and opt parameters, and one more for any keywords, or -1 (no most)
+   where it has a rest or carries no kinds. The kind ids are the generated
+   program's. */
+static sp_int sp_proc_curry_max(sp_Proc *p, sp_sym req_id, sp_sym opt_id, sp_sym rest_id,
+                                sp_sym key_id, sp_sym keyreq_id, sp_sym keyrest_id) {
+  if (!p || p->param_count <= 0 || !p->param_kinds) return -1;
+  sp_int n = 0, kw = 0;
+  for (sp_int i = 0; i < p->param_count; i++) {
+    sp_sym k = p->param_kinds[i];
+    if (k == rest_id) return -1;
+    if (k == req_id || k == opt_id) n++;
+    if (k == key_id || k == keyreq_id || k == keyrest_id) kw = 1;
+  }
+  return n + kw;
+}
 /* Proc#curry with a count that arrives BOXED (an untyped slot, a container
    read): nil is no count, everything else converts through the Integer
    argument protocol -- CRuby's to_int, the user-object bridge and its exact
