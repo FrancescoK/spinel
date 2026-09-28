@@ -19464,6 +19464,18 @@ void analyze_program(Compiler *c) {
      enclosing locals never got heap cells (#3166). Re-run the capture pass now
      that the yields flags are final; it only sets is_cell and is idempotent. */
   if (lowered_recursive_yield) mark_proc_captures(c);
+  for (int again = 1; again; ) {
+    again = 0;
+    for (int mi = 1; mi < c->nscopes; mi++) {
+      Scope *m = &c->scopes[mi];
+      LocalVar *bl = m->yields && m->blk_param && m->blk_param[0] ? scope_local(m, m->blk_param) : NULL;
+      if (!bl || !bl->is_cell || scope_has_yield_node(c, m)) continue;
+      m->yields = 0;
+      if (m->ret_noblock != TY_UNKNOWN) { m->ret = ty_unify(m->ret, m->ret_noblock); m->ret_noblock = TY_UNKNOWN; }
+      again = 1;
+    }
+    if (again) mark_proc_captures(c);
+  }
 
   /* Post-fixpoint: propagate include-copy param types back to the source
      scope so the final infer_type scan (which uses comp_scope_of, mapping
