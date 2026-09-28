@@ -9323,6 +9323,7 @@ else {
          `fetch` to the matching hash storage, boxing the value into the poly
          result. */
       int is_aref = sp_streq(name, "[]") && argc == 1 && splat_a < 0;
+      int is_aref2 = sp_streq(name, "[]") && argc == 2 && splat_a < 0;
       int is_fetch = sp_streq(name, "fetch") && (argc == 1 || argc == 2) && splat_a < 0;
       if ((is_aref || is_fetch) && infer_type(c, argv[0]) == TY_STRING) {
         TyKind trt = is_scalar_ret(ret) ? ret : TY_INT;  /* the result temp's type */
@@ -9457,7 +9458,7 @@ else {
          `"abc".include?(:x)` is a TypeError in CRuby, not a NoMethodError --
          so those names keep their existing answer rather than gain a
          mislabelled raise (#3394). */
-      if (!is_pred && !is_strftime && !is_aref && !is_fetch && !is_include &&
+      if (!is_pred && !is_strftime && !is_aref && !is_aref2 && !is_fetch && !is_include &&
           !is_push && !is_cover && !is_gcdlcm && !is_strdel && !is_strsplit &&
           !is_pdelete && !is_pdig && !is_pvalues_at && !is_pfirstn && !is_pmerge) {
         buf_puts(b, " default:");
@@ -9718,6 +9719,25 @@ else {
            call answered the result temp's zero initializer, silently. */
         else buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
         free(mb.p);
+      }
+      /* `x[a, b]` beside a user class's own two-argument `[]`: a String or
+         Array receiver slices, a Proc or bound Method is called, as the
+         dispatch-free form does (#5522). */
+      else if (is_aref2) {
+        Buf ab2; memset(&ab2, 0, sizeof ab2);
+        for (int a = 0; a < 2; a++) {
+          char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
+          if (a) buf_puts(&ab2, ", ");
+          if (atmp_ty[a] == TY_POLY) buf_puts(&ab2, tn);
+          else emit_boxed_text(c, atmp_ty[a], tn, &ab2);
+        }
+        char gen[400];
+        snprintf(gen, sizeof gen, "sp_poly_slice_or_call(_t%d, %s)", tv, ab2.p ? ab2.p : "sp_box_nil(), sp_box_nil()");
+        if (ret == TY_POLY) buf_printf(b, " default: _t%d = %s; break;", tr, gen);
+        else { buf_printf(b, " default: _t%d = ", tr);
+               emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, gen, b);
+               buf_puts(b, "; break;"); }
+        free(ab2.p);
       }
       else if (is_aref || is_fetch) {
         Buf kb; memset(&kb, 0, sizeof kb);

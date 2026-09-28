@@ -14579,7 +14579,14 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   }
   /* poly receiver: [] with symbol or string key -> runtime dispatch */
   /* poly receiver: arr[start, len] -> sp_poly_slice (string or typed array) */
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]") && argc == 2) {
+  /* A user class of its own two-argument [] takes the per-class poly
+     dispatch, which emits its arm beside the builtin ones, as the one-argument
+     form below does: the slice read answered nil for a Grid (#5522). */
+  int has_user_aref2 = 0;
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]") && argc == 2 && !g_poly_builtin_arm)
+    for (int k = 0; k < c->nclasses; k++)
+      if (comp_poly_arm_defines_n(c, k, "[]", argc)) { has_user_aref2 = 1; break; }
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]") && argc == 2 && !has_user_aref2) {
     /* The runtime dispatches on the receiver's tag: a string/array does a
        two-arg slice, a bound Method (optcarrot's poke handlers) is called with
        both int args. Both operands are raw integers. */
