@@ -1004,7 +1004,7 @@ int kw_splat_may_be_nil(Compiler *c, int node);
    site that evaluates its arguments in its own order. */
 void emit_kw_splat_operand_inline(Compiler *c, int node, Buf *b);
 void emit_ds_kwarg_check(Compiler *c, Scope *m, int kwh, int ds_hash_tmp, TyKind ds_hash_type);
-void emit_kwhash_verify(Compiler *c, Scope *m, int hash_tmp, Buf *out);
+void emit_kwhash_verify(Compiler *c, Scope *m, int hash_tmp, TyKind hash_type, Buf *out);
 void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
                            TyKind ds_hash_type, Buf *out);
 /* analyze-side helpers also called from codegen (defined in analyze_util.c /
