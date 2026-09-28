@@ -9945,7 +9945,8 @@ static sp_RbVal sp_poly_join_timeout(sp_RbVal v, double seconds, const char *arg
 
 /* `alive?` and `status` on a boxed Thread (or `alive?` on a boxed Fiber):
    the names a pool's `@workers.all? { |w| !w.alive? }` reaches through an
-   Array element (#4463). A value of any other kind has no such method. */
+   Array element (#4463). A value of any other kind has no such method,
+   but for a SystemExit's `status` (sp_poly_thread_status below). */
 sp_bool  sp_Thread_alive(sp_thread *t);
 sp_RbVal sp_Thread_status(sp_thread *t);
 sp_bool  sp_Fiber_alive(sp_Fiber *f);
@@ -9968,6 +9969,11 @@ static sp_RbVal sp_poly_thread_kill(sp_RbVal v) {
 }
 static sp_RbVal sp_poly_thread_status(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_THREAD) return sp_Thread_status((sp_thread *)v.v.p);
+  /* a SystemExit's exit status, as the typed accessor reads it; any other
+     exception keeps the NoMethodError below, which carries its receiver */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_EXCEPTION && v.v.p &&
+      sp_exc_cls_matches(((sp_Exception *)v.v.p)->cls_name, "SystemExit"))
+    return sp_box_int(sp_exc_status_acc((sp_Exception *)v.v.p));
   sp_raise_nomethod(sp_nomethod_msg("status", v));
   return sp_box_nil();
 }

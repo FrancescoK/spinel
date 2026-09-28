@@ -1,0 +1,7 @@
+2
+false
+[0, true]
+[0, true, 1, false]
+"undefined method 'status' for an instance of RuntimeError"
+"undefined method 'success?' for an instance of RuntimeError"
+true
