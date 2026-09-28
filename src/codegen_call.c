@@ -11003,7 +11003,7 @@ static void emit_raise_class_value(Compiler *c, int kn, int mn, Buf *b) {
     Scope *is = &c->scopes[initm];
     char am[256];
     if (ctor_arity_error(c, ci, initm, argc, am, sizeof am)) { ctor_arity_add(&aerr, ci, am); continue; }
-    if (is->yields || ctor_needs_self_defaults(c, initm, argc)) continue;
+    if ((is->yields && ctor_init_proc_form(c, ci) < 0) || ctor_needs_self_defaults(c, initm, argc)) continue;
     if (ctor_arm_remaps(c, is) ? !ctor_arm_takes(c, is, argc)
                                : argc < is->nrequired || argc > is->nparams) continue;
     int pd_uid = default_refs_earlier_param(c, is) ? ++g_tmp : 0, pd_base = g_nren;
@@ -12267,6 +12267,9 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         /* user exception subclass: use the generated constructor */
         if (class_is_exc_subclass(c, ci)) {
           int initm = comp_method_in_chain(c, ci, "initialize", NULL);
+          /* a yielding initialize takes this site's block the way any class's does */
+          if (initm >= 0 && c->scopes[initm].yields && nt_ref(nt, id, "block") >= 0 &&
+              (emit_ctor_yield_inline(c, id, ci, b) || emit_ctor_new_with_proc(c, id, ci, b))) return 1;
           if (initm >= 0) {
             /* user initialize: sp_ClassName_new(args) calls initialize which calls super(msg) */
             buf_printf(b, "sp_%s_new(", c->classes[ci].c_name);
@@ -27788,6 +27791,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (xc >= 0 && ic >= 0 && c->scopes[ic].reachable) {
         buf_printf(b, "sp_raise_exc((sp_Exception *)sp_%s_new(", c->classes[xc].c_name);
         emit_args_filled(c, ic, -1, "", b);
+        if (ctor_init_takes_block(c, ic)) buf_puts(b, c->scopes[ic].nparams > 0 ? ", NULL" : "NULL");
         buf_puts(b, "))");
       }
       else if ((xc >= 0 && !class_is_exc_subclass(c, xc)) ||
@@ -27829,6 +27833,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           buf_puts(b, ", ");
           emit_arg_or_default(c, im, pk, -1, b);
         }
+        if (ctor_init_takes_block(c, ic)) buf_puts(b, ", NULL");
         buf_puts(b, "))");
       }
       else if ((xc >= 0 && !class_is_exc_subclass(c, xc)) ||
