@@ -5598,6 +5598,19 @@ int infer_param_types(Compiler *c) {
           }
         }
       }
+      /* `raise k, arg` with the class in a variable: every exception class
+         whose value can reach k is constructed from arg the same way */
+      else if (ran >= 2 && nt_kind(nt, rav[1]) != NK_KeywordHashNode) {
+        TyKind kt = infer_type(c, rav[0]);
+        TyKind at = kt == TY_CLASS || kt == TY_POLY ? infer_type(c, rav[1]) : TY_UNKNOWN;
+        for (int rci = 0; at != TY_UNKNOWN && rci < c->nclasses; rci++) {
+          if (!class_is_exc_subclass(c, rci) || !class_value_escapes(c, rci)) continue;
+          int imi = comp_method_in_chain(c, rci, "initialize", NULL);
+          if (imi < 0 || c->scopes[imi].nparams < 1) continue;
+          LocalVar *ip = scope_local(&c->scopes[imi], c->scopes[imi].pnames[0]);
+          if (ip && !ip->rbs_seeded) changed |= slot_take(c, ip, at, rav[1]);
+        }
+      }
     }
 
     /* `obj.dup` / `obj.clone` for a user object call the class's initialize_copy

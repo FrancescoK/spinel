@@ -1891,14 +1891,17 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       nt_ref(nt, id, "block") >= 0 && !an_user_defines_method(c, name))
     { *out = TY_POLY; return 1; }
   /* exception accessors on a poly receiver (an exception rescued into a
-     union-typed local) delegate at runtime; message is a String, the rest
-     carry boxed values (#3120, #3122). */
+     union-typed local) delegate at runtime; message and its renderings are
+     Strings, the rest carry boxed values (#3120, #3122). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       !an_user_defines_method(c, name) &&
       (sp_streq(name, "message") || sp_streq(name, "result") ||
        sp_streq(name, "errno") ||
-       sp_streq(name, "key") || sp_streq(name, "receiver")))
-    { *out = (sp_streq(name, "message") && !exc_has_nonstring_msg_override(c)) ? TY_STRING : TY_POLY;
+       sp_streq(name, "key") || sp_streq(name, "receiver") ||
+       sp_streq(name, "backtrace") || sp_streq(name, "cause") ||
+       sp_streq(name, "full_message") || sp_streq(name, "detailed_message")))
+    { *out = (sp_streq(name, "message") && !exc_has_nonstring_msg_override(c)) ||
+             sp_streq(name, "full_message") || sp_streq(name, "detailed_message") ? TY_STRING : TY_POLY;
       return 1; }
   /* Integer / Time accessors, Proc#arity on a poly value read out of a
      container: an int-returning builtin the poly-builtin dispatch handles at

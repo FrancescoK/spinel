@@ -1,0 +1,33 @@
+[WrapErr, "wrapped boom"]
+[WrapErr, "wrapped dflt"]
+[NoDflt, "nd:boom"]
+[ArgumentError, "wrong number of arguments (given 0, expected 1)"]
+[CodeErr, "boom [7]"]
+[CodeErr, "code err [7]"]
+[SubWrap, "wrapped boom"]
+[SubWrap, "wrapped dflt"]
+[Plain, "boom"]
+[Plain, "Plain"]
+[ArgumentError, "wrong number of arguments (given 1, expected 0)"]
+[ZeroArg, "zero"]
+[Rest, "rest boom 0"]
+[Rest, "rest r 0"]
+[App::Failed, "app: boom"]
+[App::Failed, "app: failed"]
+[RuntimeError, "boom"]
+[TypeError, "exception class/object expected"]
+[WrapErr, "wrapped literal"]
+[WrapErr, "wrapped "]
+[WrapErr, "wrapped dflt"]
+[WrapErr, "wrapped ivar"]
+[SubWrap, "wrapped dflt"]
+[WrapErr, "wrapped "]
+[WrapErr, "wrapped 42"]
+[WrapErr, "object"]
+["app: outer", "inner"]
+nil
+nil
+nil
+"over! (Over)"
+Array
+nil
