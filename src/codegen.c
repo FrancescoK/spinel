@@ -5668,18 +5668,34 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
    they run in the else branch, and the slot is rooted: an allocated default
    has no other reference. */
 static void emit_proc_param_slot(Compiler *c, Buf *pb, const char *name, const char *cond,
-                                 const char *arg, int dv, const char *fallback) {
+                                 const char *arg, int dv, const char *fallback, TyKind lt) {
   Buf dpre = {0}, dval = {0};
   Buf *sv_pre = g_pre; int sv_ind = g_indent;
   g_pre = &dpre; g_indent = 3;
   if (dv >= 0) emit_boxed(c, dv, &dval); else buf_puts(&dval, fallback);
   g_pre = sv_pre; g_indent = sv_ind;
-  buf_printf(pb, "    sp_RbVal lv_%s;\n", name);
-  buf_printf(pb, "    if (%s) lv_%s = %s;\n", cond, name, arg);
+  /* A block lifted into a proc keeps the static type the enclosing scope gave
+     its parameter, so the boxed slot is unboxed into that type. */
+  int typed = lt == TY_INT || lt == TY_FLOAT || lt == TY_BOOL || lt == TY_SYMBOL ||
+              lt == TY_STRING || lt == TY_POLY_POLY_HASH || lt == TY_SYM_POLY_HASH ||
+              lt == TY_STR_POLY_HASH;
+  const char *slot = typed ? "_pv_" : "lv_";
+  buf_printf(pb, "    sp_RbVal %s%s;\n", slot, name);
+  buf_printf(pb, "    if (%s) %s%s = %s;\n", cond, slot, name, arg);
   buf_puts(pb, "    else {\n");
   if (dpre.p) buf_puts(pb, dpre.p);
-  buf_printf(pb, "      lv_%s = %s;\n    }\n", name, dval.p ? dval.p : "sp_box_nil()");
-  buf_printf(pb, "    SP_GC_ROOT_RBVAL(lv_%s); (void)lv_%s;\n", name, name);
+  buf_printf(pb, "      %s%s = %s;\n    }\n", slot, name, dval.p ? dval.p : "sp_box_nil()");
+  buf_printf(pb, "    SP_GC_ROOT_RBVAL(%s%s); (void)%s%s;\n", slot, name, slot, name);
+  if (typed) {
+    char src[160];
+    snprintf(src, sizeof src, "_pv_%s", name);
+    Buf ub = {0};
+    emit_unbox_text(c, lt, src, &ub);
+    buf_printf(pb, "    %s lv_%s = %s;", c_type_name(lt), name, ub.p);
+    if (proc_slot_is_ptr(lt)) buf_printf(pb, " SP_GC_ROOT(lv_%s);", name);
+    buf_printf(pb, " (void)lv_%s;\n", name);
+    free(ub.p);
+  }
   free(dpre.p); free(dval.p);
 }
 
@@ -5734,12 +5750,11 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
         if (bpn0) nameset_add(&params, bpn0);
       }
     }
-    /* `**kw` binds the whole trailing kwargs hash in the prologue below --
-       only the collect-all form; alongside named keywords the remainder split
-       is not implemented, so that mix keeps the old diagnostic (#2648) */
+    /* `**kw` binds the trailing kwargs hash in the prologue below, less the
+       named keywords when there are any */
     int kwrest0 = pn0 >= 0 ? nt_ref(nt, pn0, "keyword_rest") : -1;
     const char *kwrty0 = kwrest0 >= 0 ? nt_type(nt, kwrest0) : NULL;
-    if (kwrty0 && sp_streq(kwrty0, "KeywordRestParameterNode") && nkw == 0) {
+    if (kwrty0 && sp_streq(kwrty0, "KeywordRestParameterNode")) {
       const char *krn = nt_str(nt, kwrest0, "name");
       if (krn) nameset_add(&params, krn);
     }
@@ -6517,7 +6532,9 @@ else if (orecv >= 0 && onm) {
       char cond[96], arg[64];
       snprintf(cond, sizeof cond, "%d + %d < argc - %d && %d + %d < 16", arity, j, nposts, arity, j);
       snprintf(arg, sizeof arg, "_sp_proc_poly_args[%d + %d]", arity, j);
-      emit_proc_param_slot(c, pb, on, cond, arg, proc_opt_value(c, create, j), "sp_box_nil()");
+      { LocalVar *olv = scope_local(bs, on);
+        emit_proc_param_slot(c, pb, on, cond, arg, proc_opt_value(c, create, j), "sp_box_nil()",
+                             olv ? olv->type : TY_POLY); }
     }
     if (restn && restn[0]) {
       buf_printf(pb, "    sp_PolyArray *lv_%s = sp_PolyArray_new(); SP_GC_ROOT(lv_%s);\n", restn, restn);
@@ -6556,7 +6573,8 @@ else if (orecv >= 0 && onm) {
       /* A required keyword absent from the call raises ArgumentError (mirrors the
          method-keyword arm); an optional one falls back to its default. */
       snprintf(missing, sizeof missing, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), sp_box_nil())", kn);
-      emit_proc_param_slot(c, pb, kn, cond, arg, dv, missing);
+      LocalVar *klv = scope_local(bs, kn);
+      emit_proc_param_slot(c, pb, kn, cond, arg, dv, missing, klv ? klv->type : TY_POLY);
     }
   }
   /* `&b`: the block the caller attached to .call, delivered on the
@@ -6572,22 +6590,46 @@ else if (orecv >= 0 && onm) {
                  bpn, bpn, 10);
     }
   }
-  /* `**kw` (no named keywords alongside): the whole trailing kwargs hash, or
-     an empty hash when the caller passed none (#2648). */
+  /* `**kw`: the whole trailing kwargs hash, or an empty hash when the caller
+     passed none (#2648). Alongside named keywords it is a copy without them.
+     A block lifted into a proc can have its kwrest typed as a concrete hash
+     by the enclosing scope, so the boxed hash is unboxed into that type. */
   {
     int pnr = proc_params_node(c, create);
     int kwr = pnr >= 0 ? nt_ref(nt, pnr, "keyword_rest") : -1;
     const char *kwrty = kwr >= 0 ? nt_type(nt, kwr) : NULL;
-    if (kwrty && sp_streq(kwrty, "KeywordRestParameterNode") && nkw == 0) {
-      const char *krn = nt_str(nt, kwr, "name");
-      if (krn) {
-        g_needs_proc_poly_argslot = 1;
-        buf_printf(pb, "    sp_RbVal lv_%s = (argc > 0 && _sp_proc_poly_args[argc-1].tag == SP_TAG_OBJ"
+    const char *krn = kwrty && sp_streq(kwrty, "KeywordRestParameterNode") ? nt_str(nt, kwr, "name") : NULL;
+    if (krn) {
+      g_needs_proc_poly_argslot = 1;
+      if (nkw > 0) {
+        buf_printf(pb, "    sp_RbVal _kwr_%s = sp_box_obj(sp_poly_hash_merge(sp_box_nil(), argc > 0 ? _sp_proc_poly_args[argc-1] : sp_box_nil()),"
+                       " SP_BUILTIN_POLY_POLY_HASH); SP_GC_ROOT_RBVAL(_kwr_%s);%c", krn, krn, 10);
+        int nkw3 = 0;
+        const int *kwn3 = nt_arr(nt, pnr, "keywords", &nkw3);
+        for (int j = 0; j < nkw3; j++) {
+          const char *kn = nt_str(nt, kwn3[j], "name");
+          if (kn) buf_printf(pb, "    sp_PolyPolyHash_delete((sp_PolyPolyHash *)_kwr_%s.v.p, sp_box_sym((sp_sym)%d));%c",
+                             krn, comp_sym_intern(c, kn), 10);
+        }
+      }
+      else
+        buf_printf(pb, "    sp_RbVal _kwr_%s = (argc > 0 && _sp_proc_poly_args[argc-1].tag == SP_TAG_OBJ"
                        " && sp_poly_is_hash_kind(_sp_proc_poly_args[argc-1].cls_id))"
                        " ? _sp_proc_poly_args[argc-1]"
                        " : sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH);"
-                       " SP_GC_ROOT_RBVAL(lv_%s); (void)lv_%s;%c", krn, krn, krn, 10);   /* the empty hash is held by nothing else */
+                       " SP_GC_ROOT_RBVAL(_kwr_%s);%c", krn, krn, 10);   /* the empty hash is held by nothing else */
+      LocalVar *klv = scope_local(bs, krn);
+      TyKind kty = klv ? klv->type : TY_POLY;
+      if (kty == TY_POLY_POLY_HASH || kty == TY_SYM_POLY_HASH || kty == TY_STR_POLY_HASH) {
+        char src[160];
+        snprintf(src, sizeof src, "_kwr_%s", krn);
+        Buf ub = {0};
+        emit_unbox_text(c, kty, src, &ub);
+        buf_printf(pb, "    %s lv_%s = %s; SP_GC_ROOT(lv_%s); (void)lv_%s;%c",
+                   c_type_name(kty), krn, ub.p, krn, krn, 10);
+        free(ub.p);
       }
+      else buf_printf(pb, "    sp_RbVal lv_%s = _kwr_%s; (void)lv_%s;%c", krn, krn, krn, 10);
     }
   }
   /* The boxed-argument and result channels are GC roots, and nothing cleared
