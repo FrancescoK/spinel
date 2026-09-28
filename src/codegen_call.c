@@ -32275,6 +32275,21 @@ else {
       buf_printf(b, "; !sp_file_directory(_t%d) && sp_file_exist(_t%d); })", tfp, tfp); return;
     }
     if ((sp_streq(name, "delete") || sp_streq(name, "unlink")) && argc >= 1) {
+      /* a lone splat: every path of the Array converted and checked before
+         the first unlink, as the several-path form below does, and the count
+         answered */
+      if (argc == 1 && nt_kind(nt, argv[0]) == NK_SplatNode) {
+        int tl = ++g_tmp, tq = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_poly_to_poly_array(", tl); emit_boxed(c, argv[0], b);
+        buf_printf(b, "); SP_GC_ROOT(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                      " for (sp_int _i = 0; _i < _t%d->len; _i++)"
+                      " sp_PolyArray_push(_t%d, sp_box_str(sp_poly_arg_path(_t%d->data[_i])));"
+                      " for (sp_int _i = 0; _i < _t%d->len; _i++) sp_file_path_check(_t%d->data[_i].v.s);"
+                      " for (sp_int _i = 0; _i < _t%d->len; _i++) sp_file_delete(_t%d->data[_i].v.s);"
+                      " _t%d->len; })",
+                   tl, tq, tq, tl, tq, tl, tq, tq, tq, tq, tq);
+        return;
+      }
       if (argc == 1) {
         buf_puts(b, "({ sp_file_delete("); emit_path_expr(c, argv[0], b);
         buf_puts(b, "); (sp_int)1; })"); return;

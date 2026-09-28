@@ -1,0 +1,9 @@
+3
+[false, false, false]
+2
+false
+Errno::ENOENT
+false
+Errno::ENOENT
+[false, false, true]
+"a/b/c"
