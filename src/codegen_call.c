@@ -10177,6 +10177,134 @@ static int struct_nil_fills(const ClassInfo *k) {
   return k->is_struct && !k->is_data && k->kw_init <= 0;
 }
 
+/* Appends the names to `out`, joined by ", ", each prefixed by `pre` (":"
+   for CRuby's missing-keyword list). */
+static void arity_names(char *out, size_t n, const char *pre, const char *const *names, int nn) {
+  for (int i = 0; i < nn; i++) {
+    size_t l = strlen(out);
+    snprintf(out + l, n - l, "%s%s%s", i ? ", " : "", pre, names[i]);
+  }
+}
+
+/* The ArgumentError CRuby raises when class ci's constructor is given `argc`
+   positional arguments and nothing else, written into `msg`; 0 when that
+   call constructs, or when the constructor is not one whose arity the
+   compiler knows (a module, an exception or builtin subclass, `...`). */
+static int ctor_arity_error(Compiler *c, int ci, int initm, int argc, char *msg, size_t n) {
+  const NodeTable *nt = c->nt;
+  ClassInfo *k = &c->classes[ci];
+  int cdn = k->def_node;
+  if (cdn >= 0 && nt_kind(nt, cdn) == NK_ModuleNode) return 0;
+  msg[0] = 0;
+  if (initm < 0) {
+    if (k->is_struct) {
+      int nm = k->nreaders;
+      if (nm <= 0) return 0;
+      if (k->is_data) {
+        if (argc > nm) {
+          snprintf(msg, n, "wrong number of arguments (given %d, expected 0..%d)", argc, nm);
+          return 1;
+        }
+        if (argc < nm) {
+          snprintf(msg, n, "missing keyword%s: ", nm - argc > 1 ? "s" : "");
+          arity_names(msg, n, ":", (const char *const *)k->readers + argc, nm - argc);
+          return 1;
+        }
+        return 0;
+      }
+      if (k->kw_init > 0 && argc > 0) {
+        snprintf(msg, n, "wrong number of arguments (given %d, expected 0)", argc);
+        return 1;
+      }
+      return 0;
+    }
+    if (argc == 0) return 0;
+    if (class_is_exc_subclass(c, ci)) {
+      if (argc == 1) return 0;
+      snprintf(msg, n, "wrong number of arguments (given %d, expected 0..1)", argc);
+      return 1;
+    }
+    for (int p = ci, guard = 0; p >= 0 && guard < 256; p = c->classes[p].parent, guard++) {
+      int dn = c->classes[p].def_node;
+      if (dn < 0) return 0;
+      if (c->classes[p].parent < 0 && nt_kind(nt, dn) == NK_ClassNode &&
+          nt_ref(nt, dn, "superclass") >= 0) return 0;
+    }
+    snprintf(msg, n, "wrong number of arguments (given %d, expected 0)", argc);
+    return 1;
+  }
+  int dn = c->scopes[initm].def_node;
+  if (dn < 0 || nt_kind(nt, dn) != NK_DefNode) return 0;
+  int pn = nt_ref(nt, dn, "parameters");
+  int req = 0, opt = 0, rest = 0, nkw = 0;
+  const char *kws[32];
+  if (pn >= 0) {
+    int nr = 0, np2 = 0, nk = 0;
+    nt_arr(nt, pn, "requireds", &nr);
+    nt_arr(nt, pn, "posts", &np2);
+    nt_arr(nt, pn, "optionals", &opt);
+    req = nr + np2;
+    rest = nt_ref(nt, pn, "rest") >= 0;
+    int kr = nt_ref(nt, pn, "keyword_rest");
+    if (kr >= 0 && nt_type(nt, kr) && sp_streq(nt_type(nt, kr), "ForwardingParameterNode")) return 0;
+    const int *kwn = nt_arr(nt, pn, "keywords", &nk);
+    for (int i = 0; i < nk; i++) {
+      if (!nt_type(nt, kwn[i]) || !sp_streq(nt_type(nt, kwn[i]), "RequiredKeywordParameterNode")) continue;
+      const char *kn = nt_str(nt, kwn[i], "name");
+      if (!kn || nkw == (int)(sizeof kws / sizeof kws[0])) return 0;
+      kws[nkw++] = kn;
+    }
+  }
+  if (argc < req || (!rest && argc > req + opt)) {
+    if (rest) snprintf(msg, n, "wrong number of arguments (given %d, expected %d+", argc, req);
+    else if (opt) snprintf(msg, n, "wrong number of arguments (given %d, expected %d..%d", argc, req, req + opt);
+    else snprintf(msg, n, "wrong number of arguments (given %d, expected %d", argc, req);
+    if (nkw) {
+      size_t l = strlen(msg);
+      snprintf(msg + l, n - l, "; required keyword%s: ", nkw > 1 ? "s" : "");
+      arity_names(msg, n, "", kws, nkw);
+    }
+    size_t l = strlen(msg);
+    snprintf(msg + l, n - l, ")");
+    return 1;
+  }
+  if (nkw) {
+    snprintf(msg, n, "missing keyword%s: ", nkw > 1 ? "s" : "");
+    arity_names(msg, n, ":", kws, nkw);
+    return 1;
+  }
+  return 0;
+}
+
+/* The classes a `k.new(...)` switch gives an ArgumentError arm, grouped by
+   message so each message is emitted once. */
+typedef struct { char msg[256]; int *cis; int ncis; } CtorArityArm;
+typedef struct { CtorArityArm *arms; int narms; } CtorArityArms;
+
+static void ctor_arity_add(CtorArityArms *g, int ci, const char *msg) {
+  CtorArityArm *a = NULL;
+  for (int i = 0; i < g->narms && !a; i++)
+    if (sp_streq(g->arms[i].msg, msg)) a = &g->arms[i];
+  if (!a) {
+    g->arms = realloc(g->arms, (size_t)(g->narms + 1) * sizeof *g->arms);
+    a = &g->arms[g->narms++];
+    snprintf(a->msg, sizeof a->msg, "%s", msg);
+    a->cis = NULL; a->ncis = 0;
+  }
+  a->cis = realloc(a->cis, (size_t)(a->ncis + 1) * sizeof *a->cis);
+  a->cis[a->ncis++] = ci;
+}
+
+static void ctor_arity_emit(CtorArityArms *g, Buf *b) {
+  for (int i = 0; i < g->narms; i++) {
+    for (int j = 0; j < g->arms[i].ncis; j++) buf_printf(b, "case %d: ", g->arms[i].cis[j]);
+    buf_printf(b, "sp_raise_cls(\"ArgumentError\", \"%s\"); break; ", g->arms[i].msg);
+    free(g->arms[i].cis);
+  }
+  free(g->arms);
+  g->arms = NULL; g->narms = 0;
+}
+
 /* A class that defines its own `self.new` is built by it, whatever it
    answers: `k.new(...)` on a Class value calls that method, as a static
    `K.new(...)` always has. The `new` dispatches below gave every class a
@@ -29498,10 +29626,20 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", atmp[a]);
     }
     buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); switch(_t%d.cls_id){", rt2, kt);
+    CtorArityArms aerr = {0};
+    int kwh_arg = 0;
+    for (int a = 0; a < argc; a++) if (nt_kind(nt, argv[a]) == NK_KeywordHashNode) kwh_arg = 1;
     for (int ci = 0; ci < c->nclasses; ci++) {
       if (is_builtin_reopen(c->classes[ci].name) || c->classes[ci].is_native_class) continue;
       if (emit_user_new_arm(c, id, ci, argc, atmp, 1, rt2, b)) continue;
       int initm = comp_method_in_chain(c, ci, "initialize", NULL);
+      /* a class whose constructor takes some other count: CRuby's
+         ArgumentError, where the default arm raised NoMethodError */
+      { char am[256];
+        if (!kwh_arg && ctor_arity_error(c, ci, initm, argc, am, sizeof am)) {
+          ctor_arity_add(&aerr, ci, am);
+          continue;
+        } }
       int np = initm >= 0 ? c->scopes[initm].nparams : 0;
       int nreq = initm >= 0 ? c->scopes[initm].nrequired : 0;
       /* A Struct or Data class has a GENERATED constructor taking its members
@@ -29631,6 +29769,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        this the seed fell out unchanged and the caller got nil, which is how
        #4417 presented: no crash, no diagnostic, a nil that only misbehaves
        later. */
+    ctor_arity_emit(&aerr, b);
     buf_printf(b, "default: sp_raise_nomethod(sp_nomethod_msg(\"new\", sp_box_class(_t%d))); } _t%d; })",
                kt, rt2);
     g_ctor_blk_tmp = sv_cbt;
@@ -29654,6 +29793,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     int sv_cbt = hoist_ctor_block(c, id, b);
     buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); ", rt2);
     buf_printf(b, "switch(_t%d.cls_id){", kt);
+    CtorArityArms aerr = {0};
     for (int ci = 0; ci < c->nclasses; ci++) {
       if (is_builtin_reopen(c->classes[ci].name)) continue;
       /* A MODULE has no `new`, and no constructor is emitted for one: giving it
@@ -29664,10 +29804,14 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         if (mdt && sp_streq(mdt, "ModuleNode")) continue; }
       if (emit_user_new_arm(c, id, ci, 0, NULL, 1, rt2, b)) continue;
       /* a zero-arg .new can only construct a class whose initialize takes no
-         required args; an arg-requiring ctor would be an ArgumentError in MRI,
-         and its C function has parameters -- omit its arm (a runtime cls_id for
-         it lands in the sp_box_nil default), matching MRI's raise. (#2450) */
+         required args; an arg-requiring ctor is CRuby's ArgumentError, and its
+         C function has parameters, so its arm raises (#2450) */
       int initm = comp_method_in_chain(c, ci, "initialize", NULL);
+      { char am[256];
+        if (!c->classes[ci].is_native_class && ctor_arity_error(c, ci, initm, 0, am, sizeof am)) {
+          ctor_arity_add(&aerr, ci, am);
+          continue;
+        } }
       if (initm >= 0 && c->scopes[initm].nrequired != 0) continue;
       if (c->classes[ci].is_native_class) continue;
       /* A Struct DOES answer a zero-arg `new` -- every member takes nil, which
@@ -29715,6 +29859,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
                    ci, rt2, c->classes[ci].c_name, args9, ci);
       free(ab9.p);
     }
+    ctor_arity_emit(&aerr, b);
     buf_printf(b, "} _t%d; })", rt2);
     g_ctor_blk_tmp = sv_cbt;
     return;
@@ -29746,15 +29891,23 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "sp_RbVal _t%d = ", atmp[a]); emit_boxed(c, argv[a], b); buf_puts(b, "; ");
     }
     buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); switch(_t%d.cls_id){", rt2, kt);
+    CtorArityArms aerr = {0};
+    int kwh_arg = 0;
+    for (int a = 0; a < argc; a++) if (nt_kind(nt, argv[a]) == NK_KeywordHashNode) kwh_arg = 1;
     for (int ci = 0; ci < c->nclasses; ci++) {
       if (is_builtin_reopen(c->classes[ci].name) || c->classes[ci].is_native_class) continue;
       /* a class built by its own `self.new` may never be instantiated at all */
       if (emit_user_new_arm(c, id, ci, argc, atmp, 1, rt2, b)) continue;
+      int initm = comp_method_in_chain(c, ci, "initialize", NULL);
+      { char am[256];   /* as in the Class-valued form above */
+        if (!kwh_arg && ctor_arity_error(c, ci, initm, argc, am, sizeof am)) {
+          ctor_arity_add(&aerr, ci, am);
+          continue;
+        } }
       if (!c->classes[ci].instantiated) continue;
       { int mdn = c->classes[ci].def_node;   /* a module has no `new` (#3965) */
         const char *mdt = mdn >= 0 ? nt_type(nt, mdn) : NULL;
         if (mdt && sp_streq(mdt, "ModuleNode")) continue; }
-      int initm = comp_method_in_chain(c, ci, "initialize", NULL);
       int np = initm >= 0 ? c->scopes[initm].nparams : 0;
       int nreq = initm >= 0 ? c->scopes[initm].nrequired : 0;
       /* A Struct or Data class had no arm here at all, so `{0 => S}.fetch(0)
@@ -29875,6 +30028,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       emit_ctor_arm_case(c, ci, rt2, self_t, pdpre.p, ab.p ? ab.p : "", b);
       free(pdpre.p); free(ab.p);
     }
+    ctor_arity_emit(&aerr, b);
     buf_printf(b, "default: sp_raise_nomethod(sp_nomethod_msg(\"new\", _t%d)); } _t%d; })", kt, rt2);
     g_ctor_blk_tmp = sv_cbt;
     free(atmp);
