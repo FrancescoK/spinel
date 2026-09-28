@@ -210,9 +210,30 @@ void anh_add(ANameHash *st, const char *nm) {
 void anh_free(ANameHash *st) { free(st->key); free(st->next); free(st->head); }
 
 static int cr_class_is_ancestor(Compiler *c, int sup, int cls) {
-  for (int k = cls, hops = 0; k >= 0 && k < c->nclasses && hops < 64; k = c->classes[k].parent, hops++)
+  for (int k = cls, hops = 0; k >= 0 && k < c->nclasses && hops < c->nclasses; k = c->classes[k].parent, hops++)
     if (k == sup) return 1;
   return 0;
+}
+
+static int cr_has_super(const NodeTable *nt, int id) {
+  if (id < 0) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_SuperNode || k == NK_ForwardingSuperNode) return 1;
+  if (k == NK_DefNode) return 0;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) if (cr_has_super(nt, nt_ref_at(nt, id, i))) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int nn = 0; const int *ids = nt_arr_at(nt, id, i, &nn);
+    for (int j = 0; j < nn; j++) if (cr_has_super(nt, ids[j])) return 1;
+  }
+  return 0;
+}
+
+static int cr_scope_has_super(Compiler *c, int s) {
+  const Scope *sc = &c->scopes[s];
+  return cr_has_super(c->nt, sc->body) ||
+         (sc->def_node >= 0 && cr_has_super(c->nt, nt_ref(c->nt, sc->def_node, "parameters")));
 }
 
 void compute_reachable(Compiler *c) {
@@ -310,7 +331,7 @@ void compute_reachable(Compiler *c) {
   /* Helper: mark a name reachable -- all scopes with that name join the BFS. */
   #define MARK_NAME(NM) do { const char *_mn=(NM); if(_mn && _mn[0]=='\x01'){ int _t=atoi(_mn+1); \
       if(_t>=0 && _t<c->nscopes && !c->scopes[_t].reachable){ c->scopes[_t].reachable=1; queue[qtail++]=_t; \
-        for(int _u=SN_FIRST(c->scopes[_t].name);_u>=0;_u=sn_link[_u]) \
+        if(cr_scope_has_super(c, _t)) for(int _u=SN_FIRST(c->scopes[_t].name);_u>=0;_u=sn_link[_u]) \
           if(!c->scopes[_u].reachable && c->scopes[_u].is_cmethod && cr_class_is_ancestor(c, c->scopes[_u].class_id, c->scopes[_t].class_id)) \
             { c->scopes[_u].reachable=1; queue[qtail++]=_u; } } } \
     else if(_mn && _mn[0]=='\x02'){ if(!anh_has(&cn_set,_mn)){ CN_ADD(_mn); \
