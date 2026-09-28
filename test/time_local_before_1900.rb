@@ -1,3 +1,4 @@
+# spinel: int64 -- a year before 1901 is outside a 32-bit time_t; not run on a 32-bit target
 # macOS mktime refuses years before 1900; the fields must still round-trip.
 t = Time.local(1883, 12, 31, 19, 0, 0)
 p [t.year, t.month, t.day, t.hour, t.min, t.sec]
