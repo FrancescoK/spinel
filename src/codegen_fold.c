@@ -6531,6 +6531,14 @@ int emit_ds_hash_materialize(Compiler *c, int kwh, TyKind *out_type) {
         free(hb.p);
         emit_kw_splat_conv_check(c, *out_type, NULL);
       }
+      else if (*out_type == TY_NIL && nt_kind(nt, inner2) != NK_NilNode) {
+        /* `**f` where f answers nil: no keywords to bind, but f still runs */
+        Buf hb; memset(&hb, 0, sizeof hb);
+        emit_expr(c, inner2, &hb);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "(void)(%s);\n", hb.p ? hb.p : "0");
+        free(hb.p);
+      }
     }
     else {
       /* Anonymous `**`: materialize the enclosing __anon_kwrest (SymPolyHash)
@@ -6741,6 +6749,14 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
         /* `**nil` carries no keywords, and a first operand of another
            class already raised where emit_ds_hash_materialize evaluated it */
         const char *bad3 = kw_splat_bad_cls(c, sty);
+        if (sty == TY_NIL && nsplat3 > 1 && nt_kind(nt, inner3) != NK_NilNode) {
+          /* a later operand answering nil still runs */
+          Buf hb; memset(&hb, 0, sizeof hb);
+          emit_expr(c, inner3, &hb);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "(void)(%s);\n", hb.p ? hb.p : "0");
+          free(hb.p);
+        }
         if (bad3 && nsplat3 > 1) {
           /* a later operand of another class raises where it stands */
           Buf hb; memset(&hb, 0, sizeof hb);
