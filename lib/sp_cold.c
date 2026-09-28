@@ -2016,9 +2016,8 @@ void sp_file_stat_scan(void *p) {
 }
 sp_File *sp_file_stat_handle(const char *path) {SP_GC_ROOT_STR(path);
   struct stat st;
-  if (stat(path ? path : "", &st) != 0)
-    sp_raise_cls("Errno::ENOENT",
-                 sp_sprintf("No such file or directory @ rb_file_s_stat - %s", path ? path : ""));
+  /* the errno's own class and message, as File.atime and File.mtime raise */
+  if (stat(path ? path : "", &st) != 0) sp_file_raise_errno("rb_file_s_stat", path ? path : "");
   sp_File *f = (sp_File *)sp_gc_alloc(sizeof(sp_File), NULL, sp_file_stat_scan);
   SP_GC_ROOT(f);   /* the sprintf below allocates, and nothing else holds the fresh handle */
   f->fp = NULL;
@@ -2033,9 +2032,7 @@ sp_File *sp_file_stat_handle(const char *path) {SP_GC_ROOT_STR(path);
    accessors below read it with lstat(2). (#2986) */
 sp_File *sp_file_lstat_handle(const char *path) {SP_GC_ROOT_STR(path);
   struct stat st;
-  if (lstat(path ? path : "", &st) != 0)
-    sp_raise_cls("Errno::ENOENT",
-                 sp_sprintf("No such file or directory @ rb_file_s_lstat - %s", path ? path : ""));
+  if (lstat(path ? path : "", &st) != 0) sp_file_raise_errno("rb_file_s_lstat", path ? path : "");
   sp_File *f = (sp_File *)sp_gc_alloc(sizeof(sp_File), NULL, sp_file_stat_scan);
   SP_GC_ROOT(f);
   f->fp = NULL;
