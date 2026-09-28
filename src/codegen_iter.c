@@ -415,7 +415,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     const char *cname = (rty && (sp_streq(rty, "ConstantReadNode") ||
                                  sp_streq(rty, "ConstantPathNode")))
                         ? nt_str(nt, recv, "name") : NULL;
-    int ci = cname ? comp_class_index(c, cname) : -1;
+    int ci = cname ? comp_class_index(c, cname) : self_class_static_ci(c, recv);
     if (ci >= 0) {
       /* Cls.method with a yield block: look up as a class method */
       mi = comp_cmethod_in_chain(c, ci, name, NULL);

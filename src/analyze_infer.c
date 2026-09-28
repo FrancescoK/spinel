@@ -4211,8 +4211,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      second site miscompiled through it). */
   if (recv >= 0) {
     const char *rty = nt_type(nt, recv);
-    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
-      int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+    int sci = self_class_static_ci(c, recv);
+    if (sci >= 0 || (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))) {
+      int ci = sci >= 0 ? sci : comp_class_index(c, nt_str(nt, recv, "name"));
       if (ci >= 0) {
         int mi = comp_cmethod_in_chain(c, ci, name, NULL);
         if (mi >= 0) return method_call_ret(c, mi, id);
