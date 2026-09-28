@@ -10976,6 +10976,34 @@ static int sole_kwh_reaches_kw_init(Compiler *c, int id, const int *argv, int ar
   return 0;
 }
 
+/* The value of a `**h` argument element, boxed; an anonymous `**` is the
+   enclosing method's own keyword rest. */
+static void emit_kwsplat_boxed(Compiler *c, int id, int el, Buf *b) {
+  int sv = nt_ref(c->nt, el, "value");
+  if (sv >= 0) { emit_boxed(c, sv, b); return; }
+  Scope *es = comp_scope_of(c, id);
+  const char *kn = (es && es->kwrest_idx >= 0) ? es->pnames[es->kwrest_idx] : NULL;
+  LocalVar *kl = kn ? scope_local(es, kn) : NULL;
+  if (!kl) { buf_puts(b, "sp_box_nil()"); return; }
+  Buf lr; memset(&lr, 0, sizeof lr);
+  emit_local_ref(c, el, kn, &lr);
+  emit_boxed_text(c, kl->type, lr.p ? lr.p : "0", b);
+  free(lr.p);
+}
+
+/* For `k.new(*r, **h)`: raise CRuby's ArgumentError when h is not empty,
+   the keywords being one argument more than the `len` positionals a
+   constructor taking none of them has. */
+static void emit_kwsplat_empty_check(Compiler *c, int id, int kwh, const char *len, Buf *b) {
+  int en = 0; const int *els = nt_arr(c->nt, kwh, "elements", &en);
+  for (int e = 0; e < en; e++) {
+    buf_puts(b, "if (sp_poly_length(");
+    emit_kwsplat_boxed(c, id, els[e], b);
+    buf_printf(b, ") != 0) sp_raise_cls(\"ArgumentError\", sp_sprintf(\"wrong number of arguments "
+                  "(given %%lld, expected 0)\", (long long)(%s) + 1)); ", len);
+  }
+}
+
 static void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b) {
   const NodeTable *nt = c->nt;
   int argc; const int *argv = call_args(nt, id, &argc);
@@ -10988,6 +11016,21 @@ static void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Bu
      `*` forwarding the method's rest (`k.new(*)`) */
   int sole_splat = argc == 1 && nt_kind(nt, argv[0]) == NK_SplatNode ? nt_ref(nt, argv[0], "expression") : -1;
   if (argc == 1 && sole_splat < 0 && nt_kind(nt, argv[0]) == NK_SplatNode) sole_splat = argv[0];
+  /* `k.new(*r, **h)`, as a `...` forward becomes: the rest spreads as a sole
+     splat does, into a constructor that takes no keywords once h is checked
+     empty */
+  int kw_splat = -1, kw_hash = -1;
+  if (argc == 2 && nt_kind(nt, argv[0]) == NK_SplatNode && nt_kind(nt, argv[1]) == NK_KeywordHashNode) {
+    int en = 0; const int *els = nt_arr(nt, argv[1], "elements", &en);
+    int all = en > 0;
+    for (int e = 0; e < en; e++) if (nt_kind(nt, els[e]) != NK_AssocSplatNode) all = 0;
+    if (all) {
+      kw_hash = argv[1];
+      kw_splat = nt_ref(nt, argv[0], "expression");
+      if (kw_splat < 0) kw_splat = argv[0];
+    }
+  }
+  int spl = sole_splat >= 0 ? sole_splat : kw_splat;
   for (int ci = 0; ci < c->nclasses; ci++) {
     if (is_builtin_reopen(c->classes[ci].name) || c->classes[ci].is_native_class) continue;
     if (emit_user_new_arm(c, id, ci, argc, NULL, 0, rt2, b)) continue;
@@ -11054,15 +11097,20 @@ static void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Bu
     if (initm < 0) {
       int mdn = c->classes[ci].def_node;
       const char *mdt = mdn >= 0 ? nt_type(nt, mdn) : NULL;
-      if (sole_splat < 0 || !splat_operand_ok(c, sole_splat) ||
+      if (spl < 0 || !splat_operand_ok(c, spl) ||
           (mdt && sp_streq(mdt, "ModuleNode")) || class_is_exc_subclass(c, ci) ||
           comp_cmethod_in_chain(c, ci, "new", NULL) >= 0) continue;
       int tsa = ++g_tmp;
       buf_printf(b, "case %d: { sp_PolyArray *_t%d = ", ci, tsa);
-      emit_splat_operand_array(c, sole_splat, b);
-      buf_printf(b, "; SP_GC_ROOT(_t%d); if (sp_PolyArray_length(_t%d) != 0) sp_raise_cls(\"ArgumentError\", "
+      emit_splat_operand_array(c, spl, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); ", tsa);
+      if (sole_splat < 0) {
+        char len[48]; snprintf(len, sizeof len, "sp_PolyArray_length(_t%d)", tsa);
+        emit_kwsplat_empty_check(c, id, kw_hash, len, b);
+      }
+      buf_printf(b, "if (sp_PolyArray_length(_t%d) != 0) sp_raise_cls(\"ArgumentError\", "
                  "sp_sprintf(\"wrong number of arguments (given %%lld, expected 0)\", "
-                 "(long long)sp_PolyArray_length(_t%d))); _t%d=", tsa, tsa, tsa, rt2);
+                 "(long long)sp_PolyArray_length(_t%d))); _t%d=", tsa, tsa, rt2);
       if (c->classes[ci].is_value_type)
         buf_printf(b, "sp_box_vobj_%s(sp_%s_new()); } break; ", c->classes[ci].c_name, c->classes[ci].c_name);
       else
@@ -11109,22 +11157,8 @@ static void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Bu
         int en = 0; const int *els = nt_arr(nt, argv[a], "elements", &en);
         for (int e = 0; e < en; e++) {
           if (nt_kind(nt, els[e]) != NK_AssocSplatNode) continue;
-          int sv = nt_ref(nt, els[e], "value");
           buf_puts(&apre, "if (sp_poly_length(");
-          if (sv >= 0) emit_boxed(c, sv, &apre);
-          else {
-            /* anonymous `**`: the enclosing method's own keyword rest */
-            Scope *es = comp_scope_of(c, id);
-            const char *kn = (es && es->kwrest_idx >= 0) ? es->pnames[es->kwrest_idx] : NULL;
-            LocalVar *kl = kn ? scope_local(es, kn) : NULL;
-            if (!kl) { buf_puts(&apre, "sp_box_nil()"); }
-            else {
-              Buf lr; memset(&lr, 0, sizeof lr);
-              emit_local_ref(c, els[e], kn, &lr);
-              emit_boxed_text(c, kl->type, lr.p ? lr.p : "0", &apre);
-              free(lr.p);
-            }
-          }
+          emit_kwsplat_boxed(c, id, els[e], &apre);
           buf_printf(&apre, ") != 0) sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given %d, expected %s)\"); ",
                      npos + 1, expect);
         }
@@ -11157,16 +11191,20 @@ static void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Bu
     free(apre.p); free(aval.p);
   }
   /* `k.new(*args)`: a builtin class takes the spread array's elements */
-  if (sole_splat >= 0 && splat_operand_ok(c, sole_splat)) {
+  if (spl >= 0 && splat_operand_ok(c, spl)) {
     int tsa = ++g_tmp;
     Buf spre; memset(&spre, 0, sizeof spre);
     Buf sv; memset(&sv, 0, sizeof sv);
     Buf *sv_pre = g_pre; g_pre = &spre;
-    emit_splat_operand_array(c, sole_splat, &sv);
+    emit_splat_operand_array(c, spl, &sv);
     g_pre = sv_pre;
     Buf pre; memset(&pre, 0, sizeof pre);
     buf_printf(&pre, "%s sp_PolyArray *_t%d = %s; SP_GC_ROOT(_t%d); ",
                spre.p ? spre.p : "", tsa, sv.p ? sv.p : "sp_PolyArray_new()", tsa);
+    if (sole_splat < 0) {
+      char len[48]; snprintf(len, sizeof len, "_t%d->len", tsa);
+      emit_kwsplat_empty_check(c, id, kw_hash, len, &pre);
+    }
     char an[32], av[32];
     snprintf(an, sizeof an, "_t%d->len", tsa);
     snprintf(av, sizeof av, "_t%d->data", tsa);

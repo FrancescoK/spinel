@@ -3222,6 +3222,12 @@ static int def_shape_by_name(const NodeTable *nt, const char *name) {
   }
   return shape;
 }
+static int fwd_any_def_named(const NodeTable *nt, const char *name) {
+  for (int id = 0; id < nt->count; id++)
+    if (fwd_node_is(nt, id, "DefNode") && nt_str(nt, id, "name") &&
+        sp_streq(nt_str(nt, id, "name"), name)) return 1;
+  return 0;
+}
 static void fwd_key_add(char *key, size_t cap, const char *seg) {
   size_t n = strlen(key);
   if (n < cap) snprintf(key + n, cap - n, "%s::", seg ? seg : "");
@@ -3358,12 +3364,60 @@ static int fwd_enclosing_class(const NodeTable *nt, int def) {
     if (fwd_node_is(nt, id, "ClassNode") && fwd_body_holds(nt, id, def)) return id;
   return -1;
 }
+/* The shape `k.new(...)` reaches when `k` is a class held in a value: the
+   one every initialize has, or else every channel some initialize takes,
+   and a positional rest when no class defines one. A class-value `new`
+   passing `**` has no arm for a Struct or Data class, so the keyword
+   channel is refused where one could be the receiver. */
+static int fwd_class_value_new_shape(const NodeTable *nt) {
+  int sh = def_shape_by_name(nt, "initialize");
+  if (sh == -1 && !fwd_any_def_named(nt, "initialize")) return 1;
+  if (sh != -2) return sh;
+  int shape = 1;
+  for (int id = 0; id < nt->count; id++) {
+    const char *nm = nt_str(nt, id, "name");
+    int dsh = fwd_node_is(nt, id, "DefNode") && nm && sp_streq(nm, "initialize") ? def_shape(nt, id) : -1;
+    if (dsh >= 0) shape |= dsh;
+  }
+  if (!(shape & 2)) return shape;
+  for (int id = 0; id < nt->count; id++) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!fwd_node_is(nt, id, "CallNode") || !nm || !(sp_streq(nm, "define") || sp_streq(nm, "new")))
+      continue;
+    const char *rn = nt_str(nt, nt_ref(nt, id, "receiver"), "name");
+    if (rn && (sp_streq(rn, "Struct") || sp_streq(rn, "Data"))) return -2;
+  }
+  return shape;
+}
+/* A name no def declares is a builtin's. Its arity is the C function's, so
+   a rest spread into it has no count to bind by: the forwarder takes the
+   arguments its callers pass as fixed parameters instead. */
+#define FWD_BUILTIN 8
+/* The number of arguments every call of `name` passes: -1 when they differ
+   or one passes a splat, keywords or a `...` of its own, -2 when there is no
+   call. */
+static int fwd_fixed_call_arity(const NodeTable *nt, const char *name) {
+  int n = -2;
+  for (int id = 0; id < nt->count; id++) {
+    if (!fwd_node_is(nt, id, "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, name)) continue;
+    int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &ac);
+    for (int k = 0; k < ac; k++)
+      if (fwd_node_is(nt, av[k], "SplatNode") || fwd_node_is(nt, av[k], "KeywordHashNode") ||
+          fwd_node_is(nt, av[k], "ForwardingArgumentsNode")) return -1;
+    if (n != -2 && ac != n) return -1;
+    n = ac;
+  }
+  return n;
+}
 /* The shape a forwarding `call` in `def` reaches: `super` the parent's
    method, `new` the constructed class's initialize. */
 static int fwd_target_shape(const NodeTable *nt, int def, int call, int is_super) {
   const char *name = is_super ? nt_str(nt, def, "name") : nt_str(nt, call, "name");
   if (!name) return -1;
-  if (!is_super && !sp_streq(name, "new")) return def_shape_by_name(nt, name);
+  if (!is_super && !sp_streq(name, "new"))
+    return fwd_any_def_named(nt, name) ? def_shape_by_name(nt, name) : FWD_BUILTIN;
   int recv = is_super ? -1 : nt_ref(nt, call, "receiver");
   int cls = fwd_enclosing_class(nt, def);
   char ctx[512] = "";
@@ -3382,7 +3436,7 @@ static int fwd_target_shape(const NodeTable *nt, int def, int call, int is_super
     fwd_lex_ctx(nt, def, ctx, sizeof ctx);
     return fwd_class_method_shape(nt, ctx, recv, NULL, "initialize");
   }
-  return def_shape_by_name(nt, "initialize");
+  return fwd_class_value_new_shape(nt);
 }
 static int fwd_new_node_like(NodeTable *nt, int like, const char *ty) {
   int id = nt_new_node(nt, ty);
@@ -3591,6 +3645,13 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
     int hi = fwd_subtree_max(nt, def) + 1;
     int calls[n0]; int ncalls = 0; int shape = 0; int ok = 1;
     int nfwd_args = 0;
+    int nreq = 0; const int *reqs = nt_arr(nt, pn, "requireds", &nreq);
+    int nopt = 0; const int *opts = nt_arr(nt, pn, "optionals", &nopt);
+    int nlead = nreq + nopt;
+    for (int i = 0; i < nreq; i++)
+      if (!fwd_node_is(nt, reqs[i], "RequiredParameterNode")) nlead = -1;
+    int leads[nlead + 1 > 0 ? nlead + 1 : 1];
+    for (int i = 0; i < nlead; i++) leads[i] = i < nreq ? reqs[i] : opts[i - nreq];
     for (int id = def + 1; id < hi && id < n0; id++) {
       /* a bare `super` forwards everything, as `super(...)` does */
       int is_zsuper = fwd_node_is(nt, id, "ForwardingSuperNode");
@@ -3606,17 +3667,49 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
       int is_new = cn && sp_streq(cn, "new");
       if (is_new) cn = "initialize";
       int sh = fwd_target_shape(nt, def, id, is_super);
-      /* a yielding initialize or parent keeps the __fwd_N model */
-      if ((is_new || is_super) && sh >= 0 && (sh & 4) && fwd_any_def_yields(nt, cn)) { ok = 0; break; }
+      if (sh == FWD_BUILTIN) {
+        int arity = fwd_fixed_call_arity(nt, dname);
+        if (arity == -2) { ok = 0; break; }
+        if (arity < 0)
+          unsupported_feature(c, id, "`...` forwarded into a builtin method, from calls that do not all "
+                                     "pass the same number of positional arguments");
+      }
+      int recv = is_super ? -1 : nt_ref(nt, id, "receiver");
+      if (is_new && sh == -2 && recv >= 0 && !fwd_node_is(nt, recv, "SelfNode") &&
+          !fwd_node_is(nt, recv, "ConstantReadNode") && !fwd_node_is(nt, recv, "ConstantPathNode"))
+        unsupported_feature(c, id, "`...` forwarded to `new` on a class value, where an initialize "
+                                   "takes keywords and a Struct or Data class could be constructed");
+      /* A yielding initialize or parent keeps the __fwd_N model, which
+         forwards only a `super(...)` that passes nothing before the `...` */
+      if (is_zsuper && nlead < 0) { ok = 0; break; }
+      int lead = is_zsuper ? nlead : ac - 1;
+      if ((is_new || (is_super && !lead)) && sh >= 0 && (sh & 4) && fwd_any_def_yields(nt, cn)) {
+        ok = 0; break;
+      }
       if (sh < 0 || nt_ref(nt, id, "block") >= 0) { ok = 0; break; }
       if (ncalls && sh != shape) { ok = 0; break; }
       shape = sh;
       calls[ncalls++] = id;
     }
-    if (!ok || !ncalls || nfwd_args != ncalls || !(shape & 3)) continue;
+    if (!ok || !ncalls || nfwd_args != ncalls || !(shape & (3 | FWD_BUILTIN))) continue;
     /* the block rides along as an anonymous `&` */
     int fwd_block = (shape & 4) || any_call_passes_block(nt, dname);
     int base = nt->count;
+    /* def m(a, ...) -> def m(a, __fwdb_0, __fwdb_1) for the two arguments
+       its callers pass on, after any optionals, which they then fill */
+    int nfixed = 0;
+    if (shape == FWD_BUILTIN) {
+      nfixed = fwd_fixed_call_arity(nt, dname) - nlead;
+      if (nfixed < 0) nfixed = 0;
+      int np[nreq + nfixed + 1], nn = 0;
+      if (!nopt) for (int i = 0; i < nreq; i++) np[nn++] = leads[i];
+      for (int i = 0; i < nfixed; i++) {
+        char nm[32]; snprintf(nm, sizeof nm, "__fwdb_%d", i);
+        np[nn] = fwd_new_node_like(nt, pn, "RequiredParameterNode");
+        nt_node_set_str(nt, np[nn++], "name", nm);
+      }
+      if (nfixed) nt_node_set_arr(nt, pn, nopt ? "posts" : "requireds", np, nn);
+    }
     /* def m(a, ...) -> def m(a, *, **) */
     if (shape & 1) {
       int rp = fwd_new_node_like(nt, pn, "RestParameterNode");
@@ -3648,11 +3741,29 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
         nt_node_set_int(nt, call, "node_col", col);
         nt_node_set_ref(nt, call, "arguments", fargs);
         nt_node_set_ref(nt, call, "block", -1);
+        /* a bare super passes the leading parameters too, as their current values */
+        int la[nlead + 1];
+        for (int i = 0; i < nlead; i++) {
+          la[i] = fwd_new_node_like(nt, call, "LocalVariableReadNode");
+          if (la[i] < 0) break;
+          nt_node_set_str(nt, la[i], "name", nt_str(nt, leads[i], "name"));
+          nt_node_set_int(nt, la[i], "depth", 0);
+        }
+        /* a placeholder for the `...` the loop below drops */
+        la[nlead] = fwd_new_node_like(nt, call, "ForwardingArgumentsNode");
+        nt_node_set_arr(nt, fargs, "arguments", la, nlead + 1);
       }
       int args = nt_ref(nt, call, "arguments");
       int ac = 0; const int *av = nt_arr(nt, args, "arguments", &ac);
-      int nargs[ac + 2]; int nn = 0;
+      int nargs[ac + nfixed + 2]; int nn = 0;
       for (int i = 0; i < ac - 1; i++) nargs[nn++] = av[i];
+      for (int i = 0; i < nfixed; i++) {
+        char nm[32]; snprintf(nm, sizeof nm, "__fwdb_%d", i);
+        int rd = fwd_new_node_like(nt, call, "LocalVariableReadNode");
+        nt_node_set_str(nt, rd, "name", nm);
+        nt_node_set_int(nt, rd, "depth", 0);
+        nargs[nn++] = rd;
+      }
       if (shape & 1) {
         int sp = fwd_new_node_like(nt, call, "SplatNode");
         if (sp < 0) continue;
