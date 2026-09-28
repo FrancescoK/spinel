@@ -12243,9 +12243,14 @@ static int strbuf_container_store_values(Compiler *c, int w, const char *contn, 
 }
 /* What a walk over the values stored into a container does with each one:
    demand it into a shared handle, or ask whether it is (provably not) a
-   string. */
-enum { SB_DEMAND, SB_HAS_STRING, SB_HAS_NONSTRING };
+   string. The bits above SB_KIND_MASK count how many container levels lie
+   between the walked expression and the strings: `r[0][0] << "!"` walks `r`
+   one level out, so the values stored into r are themselves containers whose
+   stores are walked in turn. */
+enum { SB_DEMAND, SB_HAS_STRING, SB_HAS_NONSTRING, SB_KIND_MASK = 3, SB_NEST1 = 4 };
+#define SB_KIND(m) ((m) & SB_KIND_MASK)
 static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mode);
+static int strbuf_store_leaf(Compiler *c, int sn, int depth, int mode);
 /* Some value stored into this container is a string (mode SB_HAS_STRING), or
    provably NOT one (SB_HAS_NONSTRING): a local bound from a method result or
    another variable answers for what that expression built. */
@@ -12255,13 +12260,9 @@ static int strbuf_container_stores_kind(Compiler *c, const char *contn, Scope *c
   if (depth > 8) return 0;
   for (int w = 0; w < nt->count; w++) {
     int stores[64];
-    int nst = strbuf_container_store_values(c, w, contn, conts, mode == SB_HAS_STRING, stores);
-    for (int e = 0; e < nst; e++) {
-      TyKind st = stores[e] >= 0 ? infer_type(c, stores[e]) : TY_UNKNOWN;
-      if (mode == SB_HAS_STRING && (st == TY_STRING || st == TY_STRBUF)) return 1;
-      if (mode == SB_HAS_NONSTRING && st != TY_UNKNOWN && st != TY_POLY &&
-          st != TY_STRING && st != TY_STRBUF) return 1;
-    }
+    int nst = strbuf_container_store_values(c, w, contn, conts, SB_KIND(mode) == SB_HAS_STRING, stores);
+    for (int e = 0; e < nst; e++)
+      if (strbuf_store_leaf(c, stores[e], depth, mode)) return 1;
     if (nst == 0 && nt_kind(nt, w) == NK_LocalVariableWriteNode) {
       const char *wn = nt_str(nt, w, "name");
       if (wn && sp_streq(wn, contn) && comp_scope_of(c, w) == conts &&
@@ -12411,14 +12412,30 @@ static int strbuf_demand_value_leaves(Compiler *c, int node, int depth);
 /* One value stored into a container whose elements are mutated through it:
    an eligible string local promotes, a string expression marks for a
    fresh-handle wrap at the store site. */
-static int strbuf_demand_store_leaf(Compiler *c, int sn) {
+static int strbuf_block_param_source_walk(Compiler *c, const char *vn, Scope *vs,
+                                          int depth, int mode, int leaf);
+static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
   const NodeTable *nt = c->nt;
   if (sn < 0 || c->strbuf_box[sn]) return 0;
   if (nt_kind(nt, sn) == NK_LocalVariableReadNode) {
     const char *snm = nt_str(nt, sn, "name");
     Scope *sns = comp_scope_of(c, sn);
     LocalVar *snv = (snm && sns) ? scope_local(sns, snm) : NULL;
-    if (!snv || !strbuf_slot_eligible(c, snm, sns, snv)) return 0;
+    if (!snv) return 0;
+    /* a block parameter is what the iterator hands it: those strings are
+       the ones stored */
+    if (snv->is_block_param)
+      return strbuf_block_param_source_walk(c, snm, sns, depth, SB_DEMAND, 1);
+    /* a method parameter stores the caller's string: the parameter becomes
+       a handle, and the byref/handle pass pulls each caller's argument in */
+    if (snv->is_param && !snv->is_cell &&
+        an_param_idx(sns, snm) >= 0 &&
+        (snv->type == TY_STRING || snv->type == TY_STRBUF)) {
+      snv->type = TY_STRBUF; snv->str_shared = 1; snv->byref_out = 0;
+      c->strbuf_box[sn] = 1;
+      return 1;
+    }
+    if (!strbuf_slot_eligible(c, snm, sns, snv)) return 0;
     if (strbuf_mut_kind(c, snm, sns) < 0) return 0;
     snv->type = TY_STRBUF; snv->str_shared = 1;
     c->strbuf_box[sn] = 1;
@@ -12430,13 +12447,15 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn) {
   c->strbuf_box[sn] = 1;
   return 1;
 }
-static int strbuf_store_leaf(Compiler *c, int sn, int mode) {
-  if (mode == SB_DEMAND) return strbuf_demand_store_leaf(c, sn);
+static int strbuf_store_leaf(Compiler *c, int sn, int depth, int mode) {
+  if (mode >= SB_NEST1) return strbuf_container_source_walk(c, sn, depth + 1, mode - SB_NEST1);
+  if (mode == SB_DEMAND) return strbuf_demand_store_leaf(c, sn, depth);
   TyKind st = sn >= 0 ? infer_type(c, sn) : TY_UNKNOWN;
   if (mode == SB_HAS_STRING) return st == TY_STRING || st == TY_STRBUF;
   return st != TY_UNKNOWN && st != TY_POLY && st != TY_STRING && st != TY_STRBUF;
 }
-static int strbuf_demand_container_stores_here(Compiler *c, const char *contn, Scope *conts, int depth) {
+static int strbuf_demand_container_stores_here(Compiler *c, const char *contn, Scope *conts,
+                                               int depth, int mode) {
   const NodeTable *nt = c->nt;
   int changed = 0;
   if (depth > 8) return 0;
@@ -12448,13 +12467,13 @@ static int strbuf_demand_container_stores_here(Compiler *c, const char *contn, S
       int stores[64];
       int nst = strbuf_container_store_values(c, sns0[si], contn, conts, 1, stores);
       for (int e3 = 0; e3 < nst; e3++)
-        changed |= strbuf_demand_store_leaf(c, stores[e3]);
+        changed |= strbuf_store_leaf(c, stores[e3], depth, mode);
       /* bound from a method result, an ivar or another local: the container
          is whatever that expression built (`x = mk; x[0] << "q"`) */
       if (nst == 0 && nt_kind(nt, sns0[si]) == NK_LocalVariableWriteNode) {
         const char *wn = nt_str(nt, sns0[si], "name");
         if (wn && sp_streq(wn, contn) && comp_scope_of(c, sns0[si]) == conts)
-          changed |= strbuf_container_source_walk(c, nt_ref(nt, sns0[si], "value"), depth + 1, SB_DEMAND);
+          changed |= strbuf_container_source_walk(c, nt_ref(nt, sns0[si], "value"), depth + 1, mode);
       }
     }
   return changed;
@@ -12470,7 +12489,9 @@ static int strbuf_demand_container_stores_here(Compiler *c, const char *contn, S
    store site: its string elements mark for the handle wrap directly. */
 static int an_call_targets_scope(Compiler *c, int u, int mi2, Scope *m2);
 static int an_class_dynamic_new_risk(Compiler *c, int cid);
-static int strbuf_demand_param_container_stores(Compiler *c, const char *pn, Scope *ps, int depth) {
+static int strbuf_demand_local_container(Compiler *c, const char *vn, Scope *vs, int depth, int mode);
+static int strbuf_demand_param_container_stores(Compiler *c, const char *pn, Scope *ps,
+                                                int depth, int mode) {
   const NodeTable *nt = c->nt;
   int changed = 0;
   if (depth > 8 || !ps || !pn) return 0;
@@ -12494,11 +12515,11 @@ static int strbuf_demand_param_container_stores(Compiler *c, const char *pn, Sco
       LocalVar *alv = avs ? scope_local(avs, avn) : NULL;
       if (!alv) continue;
       if (alv->is_param && !alv->is_block_param)
-        changed |= strbuf_demand_param_container_stores(c, avn, avs, depth + 1);
+        changed |= strbuf_demand_param_container_stores(c, avn, avs, depth + 1, mode);
       else if (ty_is_array(alv->type) || ty_is_hash(alv->type) || alv->type == TY_UNKNOWN)
-        changed |= strbuf_demand_container_stores_here(c, avn, avs, depth + 1);
+        changed |= strbuf_demand_local_container(c, avn, avs, depth + 1, mode);
     }
-    else if (ak == NK_ArrayNode) {
+    else if (ak == NK_ArrayNode && mode == SB_DEMAND) {
       int en = 0; const int *el = nt_arr(nt, an, "elements", &en);
       for (int e = 0; e < en; e++) {
         int sn = el[e];
@@ -12508,14 +12529,78 @@ static int strbuf_demand_param_container_stores(Compiler *c, const char *pn, Sco
         c->strbuf_box[sn] = 1; changed = 1;
       }
     }
-    else changed |= strbuf_container_source_walk(c, an, depth + 1, SB_DEMAND);
+    else changed |= strbuf_container_source_walk(c, an, depth + 1, mode);
   }
   return changed;
 }
-static int strbuf_demand_container_stores(Compiler *c, const char *contn, Scope *conts) {
-  int changed = strbuf_demand_container_stores_here(c, contn, conts, 0);
-  changed |= strbuf_demand_param_container_stores(c, contn, conts, 0);
+/* A block parameter names what the iterator hands the block: the receiver
+   itself for `tap`/`then`, an element of it for `each`/`map`/..., and the
+   memo for each_with_object's second parameter. With `leaf` the parameter
+   is itself the value stored, not a container of them. */
+static int strbuf_block_param_source_walk(Compiler *c, const char *vn, Scope *vs,
+                                          int depth, int mode, int leaf) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  if (depth > 8) return 0;
+  for (int w = comp_kind_first(c, NK_CallNode); w >= 0; w = comp_kind_next(c, w)) {
+    if (nt_kind(nt, w) != NK_CallNode) continue;
+    int blk = nt_ref(nt, w, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || comp_scope_of(c, blk) != vs) continue;
+    int k = 0;
+    const char *bp = NULL;
+    for (; k < 4; k++) {
+      bp = block_param_name(c, blk, k);
+      if (!bp || sp_streq(bp, vn)) break;
+    }
+    if (k >= 4 || !bp) continue;
+    const char *itn = nt_str(nt, w, "name");
+    int recv = nt_ref(nt, w, "receiver");
+    int a = nt_ref(nt, w, "arguments");
+    int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (!itn) continue;
+    /* the builtin's own copy carries the receiver as its first argument
+       (desugar_builtin_enum_calls) */
+    char nb[128];
+    if (recv < 0 && strncmp(itn, "__enum_", 7) == 0 && an >= 1) {
+      const char *bn = itn + 7;
+      const char *sep = strstr(bn, "__");
+      if (!sep || (size_t)(sep - bn) >= sizeof nb) continue;
+      memcpy(nb, bn, (size_t)(sep - bn)); nb[sep - bn] = 0;
+      itn = nb; recv = av[0]; av++; an--;
+    }
+    if (recv < 0) continue;
+    int self = -1;
+    if (k == 0 && (sp_streq(itn, "tap") || sp_streq(itn, "then") || sp_streq(itn, "yield_self")))
+      self = recv;
+    else if (k == 1 && sp_streq(itn, "each_with_object") && an >= 1)
+      self = av[0];
+    if (self >= 0) {
+      changed |= leaf ? strbuf_store_leaf(c, self, depth + 1, mode)
+                      : strbuf_container_source_walk(c, self, depth + 1, mode);
+      continue;
+    }
+    int elem = ty_is_hash(infer_type(c, recv))
+      ? (k == 1 && (sp_streq(itn, "each") || sp_streq(itn, "each_pair"))) ||
+        (k == 0 && sp_streq(itn, "each_value"))
+      : k == 0 && strbuf_elem_first_iterator(itn);
+    if (elem)
+      changed |= strbuf_container_source_walk(c, recv, depth + 1, leaf ? mode : mode + SB_NEST1);
+  }
   return changed;
+}
+/* The stores into container local (vn, vs): its own, and for a parameter
+   or a block parameter, those of what the caller or the iterator binds it
+   to. */
+static int strbuf_demand_local_container(Compiler *c, const char *vn, Scope *vs, int depth, int mode) {
+  LocalVar *lv = scope_local(vs, vn);
+  if (!lv || depth > 8) return 0;
+  int changed = strbuf_demand_container_stores_here(c, vn, vs, depth, mode);
+  if (lv->is_block_param) changed |= strbuf_block_param_source_walk(c, vn, vs, depth, mode, 0);
+  else if (lv->is_param) changed |= strbuf_demand_param_container_stores(c, vn, vs, depth, mode);
+  return changed;
+}
+static int strbuf_demand_container_stores(Compiler *c, const char *contn, Scope *conts) {
+  return strbuf_demand_local_container(c, contn, conts, 0, SB_DEMAND);
 }
 
 /* The values stored into container ivar (cid, ivn): what is written to it,
@@ -12541,12 +12626,63 @@ static int strbuf_ivar_source_walk(Compiler *c, int cid, const char *ivn, int de
     int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     if (sp_streq(wcn, "<<") || sp_streq(wcn, "push") ||
         sp_streq(wcn, "append") || sp_streq(wcn, "unshift")) {
-      for (int e = 0; e < an; e++) changed |= strbuf_store_leaf(c, av[e], mode);
+      for (int e = 0; e < an; e++) changed |= strbuf_store_leaf(c, av[e], depth, mode);
     }
     else if (sp_streq(wcn, "[]=") && an >= 2)
-      changed |= strbuf_store_leaf(c, av[an - 1], mode);
+      changed |= strbuf_store_leaf(c, av[an - 1], depth, mode);
   }
   return changed;
+}
+/* A builtin call whose result holds the receiver's own element objects,
+   as CRuby's shallow copies and element reads do: `a + b`, `a.dup`, `a[0,
+   2]`, `a.select { }` are new arrays over the same strings, and `a[0]`,
+   `a.first`, `h.fetch(k)` are one of them -- one container level further in.
+   Answers 1 (with *changed filled) when `node` is such a call. */
+static int strbuf_elem_sharing_call(Compiler *c, int node, int depth, int mode, int *changed) {
+  static const char *const same[] = {
+    "dup", "clone", "to_a", "to_ary", "entries", "values", "itself", "freeze",
+    "take", "drop", "select", "filter", "reject", "find_all", "sort", "sort_by",
+    "reverse", "rotate", "uniq", "compact", "shuffle", "take_while",
+    "drop_while", "values_at", "+", "-", "&", "|", "*",
+    "concat", "merge", "union", "difference", "intersection", NULL };
+  static const char *const elem[] = {
+    "fetch", "find", "detect", "min", "max", "min_by", "max_by", "pop", "shift",
+    "at", NULL };
+  const NodeTable *nt = c->nt;
+  const char *mn = nt_str(nt, node, "name");
+  int recv = nt_ref(nt, node, "receiver");
+  if (!mn || recv < 0) return 0;
+  TyKind rt = infer_type(c, recv);
+  if (!ty_is_array(rt) && !ty_is_hash(rt)) return 0;
+  int a = nt_ref(nt, node, "arguments");
+  int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  int nest = -1;
+  if (sp_streq(mn, "[]") || sp_streq(mn, "slice"))
+    nest = (an == 1 && nt_kind(nt, av[0]) != NK_RangeNode) || ty_is_hash(rt) ? 1 : 0;
+  else if (sp_streq(mn, "first") || sp_streq(mn, "last") || sp_streq(mn, "sample"))
+    nest = an == 0 ? 1 : 0;
+  else if (sp_streq(mn, "dig")) nest = an;
+  else if (sp_streq(mn, "flatten")) {
+    /* one level flattened: the result holds elements of both depths */
+    *changed |= strbuf_container_source_walk(c, recv, depth + 1, mode + SB_NEST1);
+    nest = 0;
+  }
+  else if (sp_streq(mn, "<<") || sp_streq(mn, "push") || sp_streq(mn, "append") ||
+           sp_streq(mn, "unshift")) {
+    for (int e = 0; e < an; e++) *changed |= strbuf_store_leaf(c, av[e], depth, mode);
+    nest = 0;
+  }
+  else {
+    for (int k = 0; same[k] && nest < 0; k++) if (sp_streq(mn, same[k])) nest = 0;
+    for (int k = 0; elem[k] && nest < 0; k++) if (sp_streq(mn, elem[k])) nest = 1;
+  }
+  if (nest < 0) return 0;
+  *changed |= strbuf_container_source_walk(c, recv, depth + 1, mode + nest * SB_NEST1);
+  /* the operands of a combining call contribute their elements as well */
+  if (nest == 0 && (sp_streq(mn, "+") || sp_streq(mn, "|") || sp_streq(mn, "concat") ||
+                    sp_streq(mn, "merge") || sp_streq(mn, "union")))
+    for (int e = 0; e < an; e++) *changed |= strbuf_container_source_walk(c, av[e], depth + 1, mode);
+  return 1;
 }
 /* The values stored into the container that expression `node` evaluates to
    -- a literal's elements, a collecting block's tail, the stores into a
@@ -12561,14 +12697,14 @@ static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mo
   switch (nt_kind(nt, node)) {
     case NK_ArrayNode: {
       int en = 0; const int *el = nt_arr(nt, node, "elements", &en);
-      for (int e = 0; e < en; e++) changed |= strbuf_store_leaf(c, el[e], mode);
+      for (int e = 0; e < en; e++) changed |= strbuf_store_leaf(c, el[e], depth, mode);
       return changed;
     }
     case NK_HashNode: case NK_KeywordHashNode: {
       int en = 0; const int *el = nt_arr(nt, node, "elements", &en);
       for (int e = 0; e < en; e++)
         if (nt_kind(nt, el[e]) == NK_AssocNode)
-          changed |= strbuf_store_leaf(c, nt_ref(nt, el[e], "value"), mode);
+          changed |= strbuf_store_leaf(c, nt_ref(nt, el[e], "value"), depth, mode);
       return changed;
     }
     case NK_ParenthesesNode:
@@ -12593,11 +12729,9 @@ static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mo
       Scope *vs = vn ? comp_scope_of(c, node) : NULL;
       LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
       if (!lv) return 0;
-      if (mode != SB_DEMAND)
+      if (SB_KIND(mode) != SB_DEMAND)
         return lv->is_param ? 0 : strbuf_container_stores_kind(c, vn, vs, depth + 1, mode);
-      if (lv->is_param && !lv->is_block_param)
-        return strbuf_demand_param_container_stores(c, vn, vs, depth + 1);
-      return strbuf_demand_container_stores_here(c, vn, vs, depth + 1);
+      return strbuf_demand_local_container(c, vn, vs, depth + 1, mode);
     }
     case NK_InstanceVariableReadNode: {
       const char *ivn = nt_str(nt, node, "name");
@@ -12619,11 +12753,13 @@ static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mo
     }
     case NK_CallNode: {
       int tail = strbuf_map_block_tail(c, node);
-      if (tail >= 0) return mode == SB_HAS_NONSTRING ? 0 : strbuf_store_leaf(c, tail, mode);
+      if (tail >= 0) return SB_KIND(mode) == SB_HAS_NONSTRING ? 0 : strbuf_store_leaf(c, tail, depth, mode);
       const char *mn = nt_str(nt, node, "name");
       if (!mn) return 0;
       int recv = nt_ref(nt, node, "receiver");
       int blk = nt_ref(nt, node, "block");
+      int nsh = strbuf_elem_sharing_call(c, node, depth, mode, &changed);
+      if (nsh) return changed;
       /* an attr_reader has no body to walk: its ivar is the container */
       { char ivb[300]; int defc = -1;
         const char *riv = an_reader_ivar_of(c, node, &defc, ivb, sizeof ivb);
@@ -12631,11 +12767,11 @@ static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mo
       /* `Array.new(n) { ... }` fills the array with its block's tail */
       if (sp_streq(mn, "new") && recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
           nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Array")) {
-        if (mode == SB_HAS_NONSTRING || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return 0;
+        if (SB_KIND(mode) == SB_HAS_NONSTRING || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return 0;
         int body = nt_ref(nt, blk, "body");
         if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) return 0;
         int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
-        return bn > 0 ? strbuf_store_leaf(c, bb[bn - 1], mode) : 0;
+        return bn > 0 ? strbuf_store_leaf(c, bb[bn - 1], depth, mode) : 0;
       }
       if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode &&
           !ty_is_object(infer_type(c, recv))) return 0;
@@ -13200,15 +13336,18 @@ static int promote_shared_stored_strings(Compiler *c) {
     /* an element of a method result, an ivar, a reader: `mk[1] << x` */
     if (nt_kind(nt, cont) != NK_LocalVariableReadNode) {
       TyKind ct = infer_type(c, cont);
-      if (ty_is_array(ct) || ty_is_hash(ct))
+      /* or an element of another container (`r[0][0] << "!"`), boxed */
+      if (ty_is_array(ct) || ty_is_hash(ct) || container_elem_read_p(nt, cont))
         changed |= strbuf_container_source_walk(c, cont, 0, SB_DEMAND);
       continue;
     }
     const char *contn = nt_str(nt, cont, "name");
     Scope *conts = contn ? comp_scope_of(c, cont) : NULL;
     LocalVar *contv = (contn && conts) ? scope_local(conts, contn) : NULL;
+    /* a block parameter bound to boxed elements is POLY, whatever it holds */
     if (!contv || (!ty_is_array(contv->type) && !ty_is_hash(contv->type) &&
-                   contv->type != TY_UNKNOWN)) continue;
+                   contv->type != TY_UNKNOWN &&
+                   !(contv->type == TY_POLY && contv->is_block_param))) continue;
     changed |= strbuf_demand_container_stores(c, contn, conts);
   }
 
@@ -14350,6 +14489,19 @@ static int mark_reader_identity_operands(Compiler *c) {
     for (int side = 0; side < 2; side++) {
       int opnd = side == 0 ? av[0] : recv;
       if (opnd < 0 || c->strbuf_box[opnd] || c->strbuf_handle_demand[opnd]) continue;
+      /* a local the handle pass above made shared: its read is marked the
+         way the in-fixpoint rule marks one shared by then */
+      if (side == 0 && nt_kind(nt, opnd) == NK_LocalVariableReadNode) {
+        const char *vn = nt_str(nt, opnd, "name");
+        Scope *vs = vn ? comp_scope_of(c, opnd) : NULL;
+        LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+        if (lv && lv->str_shared && lv->type == TY_STRBUF) {
+          c->strbuf_box[opnd] = 1;
+          comp_sn_retype(c, opnd, TY_STRBUF);
+          changed = 1;
+        }
+        continue;
+      }
       char ivb[300]; int defc = -1;
       const char *ivn = an_reader_ivar_of(c, opnd, &defc, ivb, sizeof ivb);
       if (!ivn || defc < 0) continue;

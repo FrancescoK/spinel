@@ -1491,6 +1491,27 @@ int an_ty_holds_nil(TyKind t) {
            t == TY_RATIONAL || t == TY_COMPLEX);
 }
 
+/* Is the array call `id` answers mutated in place: the receiver of an Array
+   mutator, or written to a local that is? */
+static int an_to_a_result_mutated(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  for (int q = comp_kind_first(c, NK_CallNode); q >= 0; q = comp_kind_next(c, q))
+    if (nt_kind(nt, q) == NK_CallNode && nt_ref(nt, q, "receiver") == id &&
+        array_mutator_name(nt_str(nt, q, "name"))) return 1;
+  for (int w = comp_kind_first(c, NK_LocalVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode || nt_ref(nt, w, "value") != id) continue;
+    const char *wn = nt_str(nt, w, "name");
+    Scope *ws = comp_scope_of(c, w);
+    for (int q = comp_kind_first(c, NK_CallNode); wn && q >= 0; q = comp_kind_next(c, q)) {
+      if (nt_kind(nt, q) != NK_CallNode) continue;
+      int r = nt_ref(nt, q, "receiver");
+      if (r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode || comp_scope_of(c, r) != ws) continue;
+      const char *rn = nt_str(nt, r, "name");
+      if (rn && sp_streq(rn, wn) && array_mutator_name(nt_str(nt, q, "name"))) return 1;
+    }
+  }
+  return 0;
+}
 /* The answer the poly-receiver section reaches, filtered through the question
    above. Every concrete type that section returns becomes the C type of the ONE
    temp the dispatch accumulates into, and a user class's arm writes its own
@@ -1719,6 +1740,20 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   const int *argv = NULL;
   if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
   if (!name) return TY_UNKNOWN;
+
+  /* Array#to_a and #to_ary answer the receiver itself, and a boxed typed
+     array can only hand out a converted copy as an sp_PolyArray. Where that
+     answer is mutated in place, keep it boxed, so the mutation reaches the
+     array the receiver holds. */
+  if (recv >= 0 && argc == 0 && (sp_streq(name, "to_a") || sp_streq(name, "to_ary")) &&
+      nt_ref(nt, id, "block") < 0 && infer_type(c, recv) == TY_POLY &&
+      an_to_a_result_mutated(c, id)) {
+    int has_user = 0;
+    if (!an_builtin_only)
+      for (int k = 0; k < c->nclasses && !has_user; k++)
+        if (comp_poly_arm_defines_n(c, k, name, argc)) has_user = 1;
+    if (!has_user) return TY_POLY;
+  }
 
   /* `Module.accessor.cmethod(...)` where the singleton accessor statically
      folds to a constant: dispatch as that constant's class method. This has to
