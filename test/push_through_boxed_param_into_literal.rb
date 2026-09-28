@@ -28,5 +28,8 @@ p w(Array.new(2, 0))
 p w([3, 4].select(&:odd?))
 p w(([5]))
 
-def h(x) = x["k"] = :v
+def h(x)
+  x["k"] = :v
+  x
+end
 p h(({"a" => 1}))
