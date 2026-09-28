@@ -1,0 +1,8 @@
+#<struct T a=1, b=2>
+2.5
+#<data E a=1, b=2>
+4
+#<struct S a=1, b=2>
+#<struct W a=1, b="k">
+#<struct U a=10, b=2, c=3>
+#<struct V a=2, b=nil>

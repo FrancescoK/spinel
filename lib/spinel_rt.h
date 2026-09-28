@@ -9254,7 +9254,8 @@ static sp_RbVal sp_poly_slot_set_key(sp_RbVal outer, sp_int oidx, sp_RbVal key, 
 sp_bool sp_poly_cbi_p(sp_RbVal v) SP_UNUSED;
 /* sp_poly_cbi_p: moved to lib/sp_cold.c */
 sp_bool sp_poly_cbi_p(sp_RbVal v);
-/* boxed-array count(v): value-equality element count (0 for non-arrays) */
+/* boxed count(v): value-equality element count over an Array, a Hash, a
+   Range or an Enumerator (0 for anything else) */
 /* String#index / #rindex on a boxed receiver: the byte offset of a substring,
    SP_INT_NIL when absent. The receiver switch that serves the array kinds
    dispatches on cls_id, which a String box does not carry, so its default arm
@@ -9287,7 +9288,20 @@ static sp_int sp_poly_count_val(sp_RbVal v, sp_RbVal x) {
     if (a.tag != SP_TAG_STR) return 0;
     return sp_str_count(s.v.s ? s.v.s : (&("\xff")[1]), a.v.s ? a.v.s : (&("\xff")[1]));
   }
-  if (v.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(v.cls_id)) return 0;
+  if (v.tag != SP_TAG_OBJ) return 0;
+  /* A Hash counts its [key, value] pairs, a Range its members and an
+     Enumerator its values (sp_enum_items_from), as the typed receivers do;
+     each answered 0 before. */
+  if (sp_poly_is_hash_kind(v.cls_id) || v.cls_id == SP_BUILTIN_RANGE ||
+      v.cls_id == SP_BUILTIN_STR_RANGE || v.cls_id == SP_BUILTIN_ENUMERATOR) {
+    SP_GC_ROOT_RBVAL(x);
+    sp_PolyArray *items = sp_enum_items_from(v);
+    SP_GC_ROOT(items);
+    sp_int cnt = 0;
+    for (sp_int i = 0; i < items->len; i++) if (sp_poly_eq(items->data[i], x)) cnt++;
+    return cnt;
+  }
+  if (!sp_poly_is_array_kind(v.cls_id)) return 0;
   sp_int n = sp_poly_length(v), cnt = 0;
   for (sp_int i = 0; i < n; i++) if (sp_poly_eq(sp_poly_arr_get(v, i), x)) cnt++;
   return cnt;

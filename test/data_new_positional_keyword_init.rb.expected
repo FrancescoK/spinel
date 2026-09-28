@@ -1,0 +1,12 @@
+#<data D x=1, y=2>
+#<data D x=1, y=5>
+#<data D x=3, y=5>
+#<data D x=4, y=5>
+#<data F x=1.0, y="s">
+7.0
+#<data X a=1, b=[]>
+#<data X a=1, b=[2]>
+#<data H a=2, b=2>
+#<data K a=4, b=1>
+#<data K a=0, b=1>
+#<data P a=1, b=2>

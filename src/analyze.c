@@ -3723,6 +3723,58 @@ static void desugar_struct_index_ctor(Compiler *c) {
   }
 }
 
+/* Data.new hands its positional arguments to initialize as keywords named by
+   the members in order, so a user `def initialize(x:, y: 5)` is reached by
+   `D.new(1, 2)` too. Rewrite such a call to `D.new(x: 1, y: 2)`; a Data
+   class without its own initialize fills the members positionally already. */
+static void desugar_data_positional_new(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "new")) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    NodeKind rk = nt_kind(nt, recv);
+    if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) continue;
+    int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+    if (ci < 0 || comp_method_in_chain(c, ci, "initialize", NULL) < 0) continue;
+    int dc = ci;
+    for (int g = 0; dc >= 0 && !c->classes[dc].is_data && g < 64; g++) dc = c->classes[dc].parent;
+    if (dc < 0 || !c->classes[dc].is_data) continue;
+    ClassInfo *dcls = &c->classes[dc];
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an == 0 || an > dcls->nivars) continue;
+    int plain = 1;
+    for (int a = 0; a < an && plain; a++) {
+      NodeKind k = nt_kind(nt, av[a]);
+      plain = k != NK_SplatNode && k != NK_KeywordHashNode && k != NK_BlockArgumentNode &&
+              !(nt_type(nt, av[a]) && sp_streq(nt_type(nt, av[a]), "ForwardingArgumentsNode"));
+    }
+    if (!plain) continue;
+    int *els = malloc(sizeof(int) * (size_t)an);
+    if (!els) continue;
+    int first = nt->count;
+    int kwh = nt_new_node(nt, "KeywordHashNode");
+    for (int a = 0; a < an; a++) {
+      int sy = nt_new_node(nt, "SymbolNode");
+      nt_node_set_str(nt, sy, "value", dcls->ivars[a] + 1);
+      int as = nt_new_node(nt, "AssocNode");
+      nt_node_set_ref(nt, as, "key", sy);
+      nt_node_set_ref(nt, as, "value", av[a]);
+      els[a] = as;
+    }
+    nt_node_set_arr(nt, kwh, "elements", els, an);
+    nt_node_set_arr(nt, args, "arguments", &kwh, 1);
+    free(els);
+    int sc = id < c->node_cap ? c->nscope[id] : 0;
+    comp_grow_node_arrays(c);
+    for (int k = first; k < nt->count; k++) c->nscope[k] = sc;
+  }
+}
+
 static void synth_struct_each(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int ncls0 = c->nclasses;
@@ -11564,12 +11616,15 @@ static void sb_mut_tab_note(SbMutTab *t, const char *name, int key, signed char 
   if (slot && (v < 0 || *slot == 0)) *slot = v;
 }
 
-static void sb_mut_tabs_build(Compiler *c, SbMutTab *lt, SbMutTab *it, int toplevel) {
+static void sb_mut_tabs_build(Compiler *c, SbMutTab *lt, SbMutTab *it, SbMutTab *at,
+                              SbMutTab *iat, int toplevel) {
   const NodeTable *nt = c->nt;
   int ncalls = 0;
   nt_nodes_of_kind(nt, NK_CallNode, &ncalls);
   sb_mut_tab_init(lt, ncalls);
   sb_mut_tab_init(it, ncalls);
+  sb_mut_tab_init(at, ncalls);
+  sb_mut_tab_init(iat, ncalls);
   NT_FOREACH_KIND(nt, NK_CallNode, u) {
     int ur = nt_ref(nt, u, "receiver");
     if (ur < 0) continue;
@@ -11581,8 +11636,10 @@ static void sb_mut_tabs_build(Compiler *c, SbMutTab *lt, SbMutTab *it, int tople
     size_t ul = strlen(un);
     Scope *us = comp_scope_of(c, ur);
     if (rk == NK_LocalVariableReadNode) {
-      if (sp_str_mutator(un, SP_MUT_LOCAL))
+      if (sp_str_mutator(un, SP_MUT_LOCAL)) {
         sb_mut_tab_note(lt, urn, us ? (int)(us - c->scopes) : -1, 1);
+        sb_mut_tab_note(at, urn, us ? (int)(us - c->scopes) : -1, 1);
+      }
       else if (ul > 0 && un[ul - 1] == '!')
         sb_mut_tab_note(lt, urn, us ? (int)(us - c->scopes) : -1, -1);
       continue;
@@ -11593,14 +11650,14 @@ static void sb_mut_tabs_build(Compiler *c, SbMutTab *lt, SbMutTab *it, int tople
        (`obj.name << x`) then landed in a copy. */
     if (sp_str_mutator(un, SP_MUT_IVAR)) v = 1;
     else if (ul > 0 && un[ul - 1] == '!') v = -1;
-    else continue;
     int ucid = -1;
     if (us && !us->is_cmethod) ucid = us->class_id >= 0 ? us->class_id : toplevel;
-    sb_mut_tab_note(it, urn, ucid, v);
+    if (sp_str_mutator(un, SP_MUT_LOCAL)) sb_mut_tab_note(iat, urn, ucid, 1);
+    if (v) sb_mut_tab_note(it, urn, ucid, v);
   }
 }
 
-static SbMutTab sb_local_mut_tab, sb_ivar_mut_tab;
+static SbMutTab sb_local_mut_tab, sb_ivar_mut_tab, sb_local_anymut_tab, sb_ivar_anymut_tab;
 static const NodeTable *sb_mut_nt = NULL;
 static int sb_mut_ntc = -1;
 static int sb_mut_toplevel = -1;
@@ -11621,8 +11678,12 @@ static void sb_mut_tabs_sync(Compiler *c) {
       sb_mut_ntc == c->nt->count && sb_mut_ntver == c->nt->version &&
       sb_mut_gen == gen && sb_mut_toplevel == toplevel)
     return;
-  if (sb_mut_nt) { sb_mut_tab_free(&sb_local_mut_tab); sb_mut_tab_free(&sb_ivar_mut_tab); }
-  sb_mut_tabs_build(c, &sb_local_mut_tab, &sb_ivar_mut_tab, toplevel);
+  if (sb_mut_nt) {
+    sb_mut_tab_free(&sb_local_mut_tab); sb_mut_tab_free(&sb_ivar_mut_tab);
+    sb_mut_tab_free(&sb_local_anymut_tab); sb_mut_tab_free(&sb_ivar_anymut_tab);
+  }
+  sb_mut_tabs_build(c, &sb_local_mut_tab, &sb_ivar_mut_tab, &sb_local_anymut_tab,
+                    &sb_ivar_anymut_tab, toplevel);
   sb_mut_nt = c->nt; sb_mut_ntc = c->nt->count; sb_mut_ntver = c->nt->version;
   sb_mut_gen = gen; sb_mut_toplevel = toplevel;
 }
@@ -11636,6 +11697,24 @@ static int strbuf_mut_kind(Compiler *c, const char *vn, Scope *vs) {
   signed char *v = sb_mut_tab_slot(&sb_local_mut_tab, vn,
                                    vs ? (int)(vs - c->scopes) : -1, 0);
   return v ? *v : 0;
+}
+/* Is local `vn` in scope `vs` the receiver of any String in-place mutator,
+   whatever other bang methods it also receives? A poly local answers an
+   Array's map! as readily as a String's upcase!, so the -1 that keeps a
+   typed string slot out of the handle set says nothing about it. */
+static int strbuf_any_str_mut(Compiler *c, const char *vn, Scope *vs) {
+  if (!vn) return 0;
+  sb_mut_tabs_sync(c);
+  signed char *v = sb_mut_tab_slot(&sb_local_anymut_tab, vn,
+                                   vs ? (int)(vs - c->scopes) : -1, 0);
+  return v && *v == 1;
+}
+/* The same for ivar `nm` of class `cid`. */
+static int strbuf_ivar_any_str_mut(Compiler *c, int cid, const char *nm) {
+  if (!nm) return 0;
+  sb_mut_tabs_sync(c);
+  signed char *v = sb_mut_tab_slot(&sb_ivar_anymut_tab, nm, cid, 0);
+  return v && *v == 1;
 }
 /* In-place mutation status of ivar `nm` of class `cid` (same contract as
    strbuf_mut_kind). The supported set is narrower: the shadow-copy shim
@@ -12035,6 +12114,7 @@ static const int *sb_store_nodes(Compiler *c, const char *nm, Scope *sc, int *n)
     if (e->sc == sc && sp_streq(e->name, nm)) { *n = e->n; return e->ids; }
   *n = 0; return NULL;
 }
+static int strbuf_demand_value_leaves(Compiler *c, int node, int depth);
 static int strbuf_demand_container_stores_here(Compiler *c, const char *contn, Scope *conts) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -12060,6 +12140,7 @@ static int strbuf_demand_container_stores_here(Compiler *c, const char *contn, S
         }
         else {
           TyKind st2 = infer_type(c, sn);
+          if (st2 == TY_POLY) { changed |= strbuf_demand_value_leaves(c, sn, 0); continue; }
           if (st2 != TY_STRING && st2 != TY_STRBUF) continue;
           c->strbuf_box[sn] = 1; changed = 1;
         }
@@ -12407,6 +12488,121 @@ static int an_param_mutated_in_place(Compiler *c, int mi, int pi) {
     if (urn && sp_streq(urn, pn)) return 1;
   }
   return 0;
+}
+
+/* The writes of a poly local, ivar or global, each demanded in turn: the
+   variable is another name for whatever was written to it. */
+static int strbuf_demand_local_writes(Compiler *c, const char *vn, Scope *vs, int depth) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  if (!vn || !vs) return 0;
+  for (int w = comp_lvw_first_sc(c, (int)(vs - c->scopes), vn); w >= 0; w = comp_lvw_next_sc(c, w)) {
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode || comp_scope_of(c, w) != vs) continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, vn)) continue;
+    changed |= strbuf_demand_value_leaves(c, nt_ref(nt, w, "value"), depth);
+  }
+  return changed;
+}
+static int strbuf_demand_ivar_writes(Compiler *c, int cid, const char *ivn, int depth) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int w = comp_kind_first(c, NK_InstanceVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
+    if (nt_kind(nt, w) != NK_InstanceVariableWriteNode) continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, ivn) || an_ivar_owner(c, w) != cid) continue;
+    changed |= strbuf_demand_value_leaves(c, nt_ref(nt, w, "value"), depth);
+  }
+  return changed;
+}
+static int strbuf_demand_gvar_writes(Compiler *c, const char *grn, int depth) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int w = comp_kind_first(c, NK_GlobalVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
+    if (nt_kind(nt, w) != NK_GlobalVariableWriteNode) continue;
+    const char *wn = nt_str(nt, w, "name");
+    const char *wrn = wn ? comp_resolve_gvar(c, wn + 1) : NULL;
+    if (!wrn || !sp_streq(wrn, grn)) continue;
+    changed |= strbuf_demand_value_leaves(c, nt_ref(nt, w, "value"), depth);
+  }
+  return changed;
+}
+static int strbuf_poly_ivar_read(Compiler *c, int node, int *cid) {
+  const char *ivn = nt_str(c->nt, node, "name");
+  *cid = ivn ? an_ivar_owner(c, node) : -1;
+  if (*cid < 0) return 0;
+  int iv = comp_ivar_index(&c->classes[*cid], ivn);
+  return iv >= 0 && c->classes[*cid].ivar_types[iv] == TY_POLY;
+}
+static LocalVar *strbuf_poly_gvar(Compiler *c, int node, const char **grn) {
+  const char *gn = nt_str(c->nt, node, "name");
+  *grn = gn ? comp_resolve_gvar(c, gn + 1) : NULL;
+  LocalVar *glv = *grn ? comp_gvar(c, *grn) : NULL;
+  return glv && glv->type == TY_POLY ? glv : NULL;
+}
+
+/* Demand the String values `node` can evaluate to into shared handles,
+   through the branches of a conditional and the writes of a poly variable
+   it reads: a string-valued expression marks for a fresh-handle wrap, an
+   eligible string local promotes. */
+static int strbuf_demand_value_leaves(Compiler *c, int node, int depth) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || depth > 16) return 0;
+  switch (nt_kind(nt, node)) {
+    case NK_CaseNode: case NK_CaseMatchNode: {
+      int changed = 0;
+      int nw = 0; const int *whens = nt_arr(nt, node, "conditions", &nw);
+      for (int w = 0; w < nw; w++)
+        changed |= strbuf_demand_value_leaves(c, nt_ref(nt, whens[w], "statements"), depth + 1);
+      return changed | strbuf_demand_value_leaves(c, nt_ref(nt, node, "else_clause"), depth + 1);
+    }
+    case NK_InstanceVariableReadNode: {
+      int cid;
+      if (!strbuf_poly_ivar_read(c, node, &cid)) return 0;
+      return strbuf_demand_ivar_writes(c, cid, nt_str(nt, node, "name"), depth + 4);
+    }
+    case NK_GlobalVariableReadNode: {
+      const char *grn;
+      if (!strbuf_poly_gvar(c, node, &grn)) return 0;
+      return strbuf_demand_gvar_writes(c, grn, depth + 4);
+    }
+    case NK_StatementsNode: {
+      int n = 0; const int *b = nt_arr(nt, node, "body", &n);
+      return n > 0 ? strbuf_demand_value_leaves(c, b[n - 1], depth + 1) : 0;
+    }
+    case NK_ParenthesesNode:
+      return strbuf_demand_value_leaves(c, nt_ref(nt, node, "body"), depth + 1);
+    case NK_ElseNode:
+      return strbuf_demand_value_leaves(c, nt_ref(nt, node, "statements"), depth + 1);
+    case NK_IfNode:
+      return strbuf_demand_value_leaves(c, nt_ref(nt, node, "statements"), depth + 1) |
+             strbuf_demand_value_leaves(c, nt_ref(nt, node, "subsequent"), depth + 1);
+    case NK_UnlessNode:
+      return strbuf_demand_value_leaves(c, nt_ref(nt, node, "statements"), depth + 1) |
+             strbuf_demand_value_leaves(c, nt_ref(nt, node, "else_clause"), depth + 1);
+    case NK_OrNode: case NK_AndNode:
+      return strbuf_demand_value_leaves(c, nt_ref(nt, node, "left"), depth + 1) |
+             strbuf_demand_value_leaves(c, nt_ref(nt, node, "right"), depth + 1);
+    case NK_LocalVariableReadNode: {
+      if (c->strbuf_box[node]) return 0;
+      const char *vn = nt_str(nt, node, "name");
+      Scope *vs = vn ? comp_scope_of(c, node) : NULL;
+      LocalVar *vlv = vs ? scope_local(vs, vn) : NULL;
+      if (vlv && vlv->type == TY_POLY && !vlv->is_param)
+        return strbuf_demand_local_writes(c, vn, vs, depth + 4);
+      if (!vlv || !strbuf_slot_eligible(c, vn, vs, vlv)) return 0;
+      if (strbuf_mut_kind(c, vn, vs) < 0) return 0;
+      vlv->type = TY_STRBUF; vlv->str_shared = 1;
+      c->strbuf_box[node] = 1;
+      return 1;
+    }
+    default: {
+      if (c->strbuf_box[node]) return 0;
+      if (infer_type(c, node) != TY_STRING) return 0;
+      c->strbuf_box[node] = 1;
+      return 1;
+    }
+  }
 }
 
 static int promote_shared_stored_strings(Compiler *c) {
@@ -13081,6 +13277,62 @@ static int promote_shared_stored_strings(Compiler *c) {
     if (!c->strbuf_box[wv]) { c->strbuf_box[wv] = 1; changed = 1; }
     if (llv5->type != TY_POLY && (llv5->type != TY_STRBUF || !llv5->str_shared))
       {  llv5->type = TY_STRBUF; llv5->str_shared = 1; changed = 1;  }
+  }
+  /* A poly local or ivar a String mutator runs on (`x = c ? "s".dup : [1];
+     x.replace("z")`), directly or through a callee's parameter: the string
+     it may hold has to be a handle, or the runtime mutator has no buffer to
+     write through -- replace and clear did nothing, the others rebound the
+     variable alone and every alias kept the old string. Demand the String
+     values written to it into handles. */
+  if (!g_infer_optimistic) {
+    for (int w = comp_kind_first(c, NK_LocalVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+      const char *pn = nt_str(nt, w, "name");
+      Scope *ps = pn ? comp_scope_of(c, w) : NULL;
+      LocalVar *plv = ps ? scope_local(ps, pn) : NULL;
+      if (!plv || plv->type != TY_POLY) continue;
+      if (!strbuf_any_str_mut(c, pn, ps)) continue;
+      changed |= strbuf_demand_value_leaves(c, nt_ref(nt, w, "value"), 0);
+    }
+    for (int w = comp_kind_first(c, NK_InstanceVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
+      if (nt_kind(nt, w) != NK_InstanceVariableWriteNode) continue;
+      const char *ivn = nt_str(nt, w, "name");
+      int icid = ivn ? an_ivar_owner(c, w) : -1;
+      if (icid < 0) continue;
+      int iv = comp_ivar_index(&c->classes[icid], ivn);
+      if (iv < 0 || c->classes[icid].ivar_types[iv] != TY_POLY) continue;
+      if (!strbuf_ivar_any_str_mut(c, icid, ivn)) continue;
+      changed |= strbuf_demand_value_leaves(c, nt_ref(nt, w, "value"), 0);
+    }
+    for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
+      if (nt_kind(nt, u) != NK_CallNode) continue;
+      int ur = nt_ref(nt, u, "receiver");
+      if (ur >= 0 && nt_kind(nt, ur) == NK_GlobalVariableReadNode &&
+          sp_str_mutator(nt_str(nt, u, "name"), SP_MUT_LOCAL)) {
+        changed |= strbuf_demand_value_leaves(c, ur, 0);
+        continue;
+      }
+      /* an argument the callee mutates in place: the method a receiverless
+         or constant call names, or the one an object receiver's class has */
+      int cmi = -1;
+      if (ur < 0 || nt_kind(nt, ur) == NK_SelfNode || nt_kind(nt, ur) == NK_ConstantReadNode ||
+          nt_kind(nt, ur) == NK_ConstantPathNode)
+        cmi = an_any_scope_by_name(c, nt_str(nt, u, "name"));
+      else {
+        TyKind rt = infer_type(c, ur);
+        const char *un = nt_str(nt, u, "name");
+        if (ty_is_object(rt) && un) cmi = comp_method_in_class(c, ty_object_class(rt), un);
+      }
+      if (cmi < 0) continue;
+      int cargs = nt_ref(nt, u, "arguments");
+      int cargc = 0;
+      const int *cargv = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cargc) : NULL;
+      for (int j = 0; j < cargc && j < c->scopes[cmi].nparams; j++) {
+        if (infer_type(c, cargv[j]) != TY_POLY) continue;
+        if (!an_param_mutated_in_place(c, cmi, j)) continue;
+        changed |= strbuf_demand_value_leaves(c, cargv[j], 0);
+      }
+    }
   }
   return changed;
 }
@@ -15979,7 +16231,9 @@ void analyze_program(Compiler *c) {
   }
 
   resolve_parents(c);
+  desugar_data_positional_new(c);
   topup_forwarding_arity(c);
+  expand_struct_forwarding_super(c);
   inherit_members(c);
   register_includes(c);
   register_include_attrs(c);
