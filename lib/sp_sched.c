@@ -3198,7 +3198,9 @@ static sp_thread *sp_sched_wake_one(sp_thread **waitlist) {
   sp_thread *t = *waitlist;
   if (!t) return NULL;
   *waitlist = t->wait_next;
+#ifdef SP_THREADS
   sp_timer_cancel(t);
+#endif
   t->wait_next = NULL;
   t->wait_head = NULL;
   if (t == &g_main_thread) { t->state = SP_TH_RUNNABLE; SCHED_WAKE_ALL(); return t; }  /* broadcast: a signal could wake a helper instead of main */
@@ -3211,7 +3213,9 @@ static sp_thread *sp_sched_wake_one(sp_thread **waitlist) {
 /* Remove a parked thread from whatever wait list it sits on (for #kill/#raise). */
 static void sp_sched_unpark(sp_thread *t) {
   if (!t->wait_head) return;
+#ifdef SP_THREADS
   sp_timer_cancel(t);
+#endif
 #ifdef SP_EV_BACKEND
   if (t->wait_head == &g_io_waiters) sp_ev_drop(t);
 #endif
