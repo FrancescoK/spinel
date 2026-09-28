@@ -3502,9 +3502,13 @@ static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
 static int class_value_escapes(Compiler *c, int cid) {
   const NodeTable *nt = c->nt;
   static char *esc = NULL;
-  static int esc_n = -1, esc_count = -1;
+  static int esc_n = -1, esc_count = -1, esc_round = -1;
+  extern int g_fixpoint_rounds;
   if (cid < 0 || cid >= c->nclasses) return 1;
-  if (esc && esc_n == c->nclasses && esc_count == nt->count) return esc[cid];
+  /* recomputed once per fixpoint round: the receiver types the `.class`
+     narrowing below reads settle as the rounds go */
+  if (esc && esc_n == c->nclasses && esc_count == nt->count && esc_round == g_fixpoint_rounds)
+    return esc[cid];
   free(esc);
   esc = (char *)calloc((size_t)(c->nclasses > 0 ? c->nclasses : 1), 1);
   size_t nn = (size_t)(nt->count > 0 ? nt->count : 1);
@@ -3513,7 +3517,7 @@ static int class_value_escapes(Compiler *c, int cid) {
   if (!esc || !parent || !body_self) {
     free(parent); free(body_self); free(esc); esc = NULL; return 1;
   }
-  esc_n = c->nclasses; esc_count = nt->count;
+  esc_n = c->nclasses; esc_count = nt->count; esc_round = g_fixpoint_rounds;
   for (int u = 0; u < nt->count; u++) parent[u] = body_self[u] = -1;
   for (int u = 0; u < nt->count; u++) {
     int nr = nt_num_refs(nt, u);
@@ -3580,7 +3584,39 @@ static int class_value_escapes(Compiler *c, int cid) {
                              sp_streq(un, "singleton_class")))) continue;
     }
     if (!value_handed_on(nt, parent, u)) continue;
-    if (k == NK_CallNode) { all = 1; break; }
+    if (k == NK_CallNode) {
+      /* `x.class` handed on names x's class or a subclass of it, when x is
+         known: `Sanitizer.new.class` returned from a method let every class
+         escape, and Campfire's BCrypt::Password took an untyped URL from an
+         unrelated `k.new(url)` (#5271). `K.superclass` names K's ancestors.
+         A receiver of no known class still hands out any class. */
+      const char *un = nt_str(nt, u, "name");
+      int rc = nt_ref(nt, u, "receiver");
+      int from = -1;
+      if (un && rc >= 0 && sp_streq(un, "class")) {
+        if (nt_kind(nt, rc) == NK_CallNode && nt_str(nt, rc, "name") &&
+            sp_streq(nt_str(nt, rc, "name"), "new")) {
+          int rr = nt_ref(nt, rc, "receiver");
+          if (rr >= 0 && (nt_kind(nt, rr) == NK_ConstantReadNode || nt_kind(nt, rr) == NK_ConstantPathNode))
+            from = comp_class_index(c, nt_str(nt, rr, "name"));
+        }
+        if (from < 0) { TyKind rt = infer_type(c, rc); if (ty_is_object(rt)) from = ty_object_class(rt); }
+        if (from >= 0) {
+          for (int d = 0; d < c->nclasses; d++)
+            if (d == from || is_descendant(c, d, from)) esc[d] = 1;
+          continue;
+        }
+      }
+      else if (un && rc >= 0 && sp_streq(un, "superclass") &&
+               (nt_kind(nt, rc) == NK_ConstantReadNode || nt_kind(nt, rc) == NK_ConstantPathNode)) {
+        int ci = comp_class_index(c, nt_str(nt, rc, "name"));
+        if (ci >= 0) {
+          for (int a = c->classes[ci].parent; a >= 0; a = c->classes[a].parent) esc[a] = 1;
+          continue;
+        }
+      }
+      all = 1; break;
+    }
     if (k != NK_SelfNode) {
       const char *cn = nt_str(nt, u, "name");
       for (int d = 0; cn && d < c->nclasses; d++)
@@ -3621,6 +3657,17 @@ int dynamic_new_may_reach(Compiler *c, int call_id, int cid) {
     if (sp_streq(nt_str(nt, recv, "name"), "class") &&
         (of < 0 || nt_kind(nt, of) == NK_SelfNode) && s && !s->is_cmethod && s->class_id >= 0)
       self_cid = s->class_id;
+    /* `x.class.new` with x of a known class: that class or a subclass */
+    else if (sp_streq(nt_str(nt, recv, "name"), "class") && of >= 0 && ty_is_object(infer_type(c, of)))
+      self_cid = ty_object_class(infer_type(c, of));
+    /* `K.superclass.new`: an ancestor of K (#5271) */
+    else if (sp_streq(nt_str(nt, recv, "name"), "superclass") && of >= 0 &&
+             (nt_kind(nt, of) == NK_ConstantReadNode || nt_kind(nt, of) == NK_ConstantPathNode) &&
+             comp_class_index(c, nt_str(nt, of, "name")) >= 0) {
+      for (int a = c->classes[comp_class_index(c, nt_str(nt, of, "name"))].parent; a >= 0; a = c->classes[a].parent)
+        if (a == cid) return 1;
+      return 0;
+    }
     else return 1;
   }
   if (self_cid >= 0) return cid == self_cid || is_descendant(c, cid, self_cid);
