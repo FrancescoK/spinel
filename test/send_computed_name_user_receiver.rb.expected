@@ -1,0 +1,14 @@
+[:ignite, [], {}]
+true
+[:ignite, [1], {x: 2}]
+[:bang, "idling"]
+5
+5
+Vehicle
+true
+statement send of an unknown name raised
+value send of an unknown name raised
+[:ignite, [1], {}]
+"idling"
+[:boat, [1]]
+"moored"
