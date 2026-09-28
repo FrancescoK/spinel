@@ -6190,7 +6190,7 @@ void mark_sym_proc_blocks(Compiler *c) {
     if (P != 1 || O || Q || kn || nt_ref(nt, pn, "rest") >= 0 || nt_ref(nt, pn, "keyword_rest") >= 0 ||
         nt_ref(nt, pn, "block") >= 0) continue;
     const char *pnm = nt_str(nt, pre[0], "name");
-    if (nt_kind(nt, pre[0]) != NK_RequiredParameterNode || !pnm || !sp_streq(pnm, "_spx")) continue;
+    if (nt_kind(nt, pre[0]) != NK_RequiredParameterNode || !pnm) continue;
     int body = nt_ref(nt, blk, "body");
     int bn = 0;
     const int *bv = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -6200,7 +6200,7 @@ void mark_sym_proc_blocks(Compiler *c) {
     const char *mn = nt_str(nt, bv[0], "name");
     int an = 0; int a = nt_ref(nt, bv[0], "arguments");
     if (a >= 0) nt_arr(nt, a, "arguments", &an);
-    if (!rn || !sp_streq(rn, "_spx") || an || !mn || !(mn[0] == '_' || isalpha((unsigned char)mn[0])))
+    if (!rn || !sp_streq(rn, pnm) || an || !mn || !(mn[0] == '_' || isalpha((unsigned char)mn[0])))
       continue;
     nt_node_set_str(nt, blk, "sym_proc", mn);
   }
@@ -6216,10 +6216,50 @@ static const char *sym_proc_block_name(const NodeTable *nt, int blk) {
   return P == 1 ? mn : NULL;
 }
 
-/* `_spx.m(<second>)` */
-static int sym_proc_call2(BsB *b, const char *mn, int second) {
-  int call = bs_call(b, bs_read(b, "_spx"), mn, &second, 1);
+/* `<recv>.m(<second>)` */
+static int sym_proc_call2(BsB *b, const char *recv, const char *mn, int second) {
+  int call = bs_call(b, bs_read(b, recv), mn, &second, 1);
   return second < 0 ? -1 : call;
+}
+
+/* An operator symbol (`&:+`) stays a BlockArgumentNode, which spinel_parse.c
+   does not spell as a block. Over a chain yielding two values it calls the
+   operator on the first with the second: { |__spa_N, __spb_N| __spa_N + __spb_N }. */
+static int desugar_enum_pair_op_sym(Compiler *c, int id, int recv, int blk, const char *nm) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int ex = nt_ref(nt, blk, "expression");
+  const char *mn = ex >= 0 && nt_kind(nt, ex) == NK_SymbolNode ? nt_str(nt, ex, "value") : NULL;
+  TyKind elem;
+  if (!mn || !*mn || bs_enum_yield_count(c, recv, nm, 0, &elem) != 2) return 0;
+  char pa[48], pb[48];
+  snprintf(pa, sizeof pa, "__spa_%d", blk);
+  snprintf(pb, sizeof pb, "__spb_%d", blk);
+  BsB b = { nt, 1 };
+  int base = nt->count;
+  int reqs[2] = { bs_new(&b, "RequiredParameterNode"), bs_new(&b, "RequiredParameterNode") };
+  if (!b.ok) return 0;
+  nt_node_set_str(nt, reqs[0], "name", pa);
+  nt_node_set_str(nt, reqs[1], "name", pb);
+  int second = bs_read(&b, pb);
+  int call = bs_call(&b, bs_read(&b, pa), mn, &second, 1);
+  int body = bs_stmts(&b, &call, 1);
+  int params = bs_new(&b, "ParametersNode");
+  int bparams = bs_new(&b, "BlockParametersNode");
+  int blocknode = bs_new(&b, "BlockNode");
+  if (!b.ok) return 0;
+  nt_node_set_arr(nt, params, "requireds", reqs, 2);
+  nt_node_set_ref(nt, bparams, "parameters", params);
+  nt_node_set_ref(nt, blocknode, "parameters", bparams);
+  nt_node_set_ref(nt, blocknode, "body", body);
+  nt_node_set_ref(nt, id, "block", blocknode);
+  comp_grow_node_arrays(c);
+  for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[id];
+  Scope *bs = comp_scope_of(c, blocknode);
+  for (int k = 0; k < 2; k++) {
+    LocalVar *lv = scope_local_intern(bs, k ? pb : pa);
+    if (lv) lv->is_block_param = 1;
+  }
+  return 1;
 }
 
 /* Over a chain whose source the analysis sees yielding two values
@@ -6238,9 +6278,14 @@ int desugar_enum_pair_lone_param(Compiler *c) {
     int recv = nt_ref(nt, id, "receiver");
     int blk = nt_ref(nt, id, "block");
     const char *nm = nt_str(nt, id, "name");
-    if (recv < 0 || blk < 0 || !nm || nt_kind(nt, blk) != NK_BlockNode) continue;
+    if (recv < 0 || blk < 0 || !nm) continue;
     int args = nt_ref(nt, id, "arguments");
     int argc = 0; if (args >= 0) nt_arr(nt, args, "arguments", &argc);
+    if (nt_kind(nt, blk) == NK_BlockArgumentNode && !argc) {
+      changed |= desugar_enum_pair_op_sym(c, id, recv, blk, nm);
+      continue;
+    }
+    if (nt_kind(nt, blk) != NK_BlockNode) continue;
     int bp = nt_ref(nt, blk, "parameters");
     if (argc || bp < 0) continue;
     int numbered = nt_kind(nt, bp) == NK_NumberedParametersNode;
@@ -6276,7 +6321,7 @@ int desugar_enum_pair_lone_param(Compiler *c) {
     if (reqs[1] < 0) return changed;
     nt_node_set_str(nt, reqs[1], "name", an);
     if (mn) {
-      int call = sym_proc_call2(&b, mn, bs_read(&b, an));
+      int call = sym_proc_call2(&b, nt_str(nt, pre[0], "name"), mn, bs_read(&b, an));
       int nbody = bs_stmts(&b, &call, 1);
       if (!b.ok || nbody < 0) return changed;
       nt_node_set_ref(nt, blk, "body", nbody);
@@ -6318,6 +6363,7 @@ void enum_hop_yield_view(Compiler *c, int id, int hop) {
   int pn = -1;
   int lone_req = 0;   /* |x| */
   int lone_rest = -1; /* |*r| */
+  const char *xn = NULL;
   if (bp >= 0 && nt_kind(nt, bp) == NK_NumberedParametersNode)
     lone_req = nt_int(nt, bp, "maximum", 0) == 1;
   else if (bp >= 0 && nt_type(nt, bp) && sp_streq(nt_type(nt, bp), "ItParametersNode"))
@@ -6329,22 +6375,25 @@ void enum_hop_yield_view(Compiler *c, int id, int hop) {
     nt_arr(nt, pn, "optionals", &O); nt_arr(nt, pn, "posts", &Q); nt_arr(nt, pn, "keywords", &kn);
     int rest = nt_ref(nt, pn, "rest");
     if (O || Q || kn || nt_ref(nt, pn, "keyword_rest") >= 0 || nt_ref(nt, pn, "block") >= 0) return;
-    if (P == 1 && rest < 0 && nt_kind(nt, pre[0]) == NK_RequiredParameterNode) lone_req = 1;
+    if (P == 1 && rest < 0 && nt_kind(nt, pre[0]) == NK_RequiredParameterNode) {
+      lone_req = 1;
+      xn = nt_str(nt, pre[0], "name");
+    }
     else if (P == 0 && rest >= 0 && nt_kind(nt, rest) == NK_RestParameterNode) {
       const char *rn = nt_str(nt, rest, "name");
       if (rn && *rn) lone_rest = rest;
     }
   }
   int req = -1;
-  if (mn) {
-    /* { |__spa| _spx = __spa[0]; __spa.length > 1 ? _spx.m(__spa[1]) : _spx.m } */
+  if (mn && xn) {
+    /* { |__spa| x = __spa[0]; __spa.length > 1 ? x.m(__spa[1]) : x.m } */
     char an[48]; snprintf(an, sizeof an, "__spa_%d", blk);
     req = bs_new(&b, "RequiredParameterNode");
     if (req < 0) return;
     nt_node_set_str(nt, req, "name", an);
-    int two = sym_proc_call2(&b, mn, bs_index(&b, an, 1));
-    int one = bs_call(&b, bs_read(&b, "_spx"), mn, NULL, 0);
-    int pro[2] = { bs_write(&b, "_spx", bs_index(&b, an, 0)),
+    int two = sym_proc_call2(&b, xn, mn, bs_index(&b, an, 1));
+    int one = bs_call(&b, bs_read(&b, xn), mn, NULL, 0);
+    int pro[2] = { bs_write(&b, xn, bs_index(&b, an, 0)),
                    bs_if(&b, bs_len_gt(&b, an, 1), &two, 1, &one, 1) };
     int nbody = bs_stmts(&b, pro, 2);
     if (!b.ok || nbody < 0) return;
@@ -6369,5 +6418,5 @@ void enum_hop_yield_view(Compiler *c, int id, int hop) {
   Scope *bs = comp_scope_of(c, blk);
   LocalVar *lv = scope_local_intern(bs, nt_str(nt, req, "name"));
   if (lv) lv->is_block_param = 1;
-  if (mn) scope_local_intern(bs, "_spx");
+  if (mn && xn) scope_local_intern(bs, xn);
 }
