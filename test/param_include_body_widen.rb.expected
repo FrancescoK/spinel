@@ -2,4 +2,4 @@ NoMethodError
 true
 false
 true
-false
+TypeError
