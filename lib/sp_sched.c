@@ -3530,6 +3530,15 @@ sp_int  sp_Queue_size(sp_queue *q)   { SCHED_LOCK(); sp_int n = q->len;       SC
 sp_bool sp_Queue_empty(sp_queue *q)  { SCHED_LOCK(); sp_bool e = q->len == 0;  SCHED_UNLOCK(); return e; }
 sp_int  sp_Queue_max(sp_queue *q)    { SCHED_LOCK(); sp_int m = q->max;        SCHED_UNLOCK(); return m; }
 sp_bool sp_Queue_closed(sp_queue *q) { SCHED_LOCK(); sp_bool c = q->closed != 0; SCHED_UNLOCK(); return c; }
+/* Threads parked in #pop, plus in #push on a full SizedQueue. */
+sp_int  sp_Queue_num_waiting(sp_queue *q) {
+  SCHED_LOCK();
+  sp_int n = 0;
+  for (sp_thread *t = q->pop_waiters; t; t = t->wait_next) n++;
+  for (sp_thread *t = q->push_waiters; t; t = t->wait_next) n++;
+  SCHED_UNLOCK();
+  return n;
+}
 void     sp_Queue_clear(sp_queue *q)  {
   SCHED_LOCK();
   q->head = q->len = 0;

@@ -2968,6 +2968,9 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "max") && argc == 0) {
       buf_puts(b, "sp_Queue_max("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
     }
+    if (sp_streq(name, "num_waiting") && argc == 0) {
+      buf_puts(b, "sp_Queue_num_waiting("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
     if (sp_streq(name, "empty?") && argc == 0) {
       buf_puts(b, "sp_Queue_empty("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
     }

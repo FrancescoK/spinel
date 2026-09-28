@@ -3711,7 +3711,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "pop") || sp_streq(name, "shift") || sp_streq(name, "deq")) return TY_POLY;
     if (sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "enq") ||
         sp_streq(name, "close") || sp_streq(name, "clear")) return TY_QUEUE;   /* return self */
-    if (sp_streq(name, "size") || sp_streq(name, "length") || sp_streq(name, "max")) return TY_INT;
+    if (sp_streq(name, "size") || sp_streq(name, "length") || sp_streq(name, "max") ||
+        sp_streq(name, "num_waiting")) return TY_INT;
     if (sp_streq(name, "empty?") || sp_streq(name, "closed?")) return TY_BOOL;
   }
 
