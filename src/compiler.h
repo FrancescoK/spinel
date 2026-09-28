@@ -138,6 +138,11 @@ typedef struct {
                        the key (value). Boxed when the callers disagree, so
                        the binding checks each call's argument j against the
                        container instead. */
+  int store_rest_src; /* (params, containers) one past the first element of the
+                       method's rest parameter that a push, unshift or insert
+                       through this parameter stores, or 0: the rest
+                       collects them boxed, so the binding checks each call's
+                       own rest arguments against the container. */
   int const_def_write; /* (consts) has a definite (non-or/and) assignment; an
                           or/and-write-only const is nil-defaulted (poly) so its
                           `||=` truthiness check fires on first use */

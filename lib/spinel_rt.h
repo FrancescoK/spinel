@@ -2967,6 +2967,11 @@ static sp_int sp_poly_size(sp_RbVal v) {
     return sp_File_size((sp_File *)v.v.p);
   }
   if (v.tag == SP_TAG_INT) return (sp_int)sizeof(sp_int);
+  /* an Integer Range's size is its member count, which sp_poly_length has no
+     arm for (a Range has no #length) and answered 0; a String Range's is nil */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p)
+    return sp_range_count(*(sp_Range *)v.v.p);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STR_RANGE) return SP_INT_NIL;
   if (v.tag == SP_TAG_BIGINT) {
     sp_Bigint *bg = (sp_Bigint *)v.v.p;
     sp_int bits = bg ? (sp_int)sp_bigint_bit_length(bg) : 0;
@@ -7641,6 +7646,32 @@ static sp_RbVal sp_poly_insert(sp_RbVal v, sp_int i, sp_RbVal x) {
   sp_raise_nomethod(sp_nomethod_msg("insert", v));
   return sp_box_nil();
 }
+/* Array#insert with any number of values after the index: they go in
+   consecutively from the resolved index, so a negative one is resolved
+   against the length once, before the first of them. With none the array
+   answers itself. String#insert takes exactly one. */
+static sp_RbVal sp_poly_insert_n(sp_RbVal v, sp_int i, sp_PolyArray *xs) {
+  sp_int n = xs->len;
+  if (v.tag == SP_TAG_STR || sp_poly_is_strbuf(v)) {
+    if (n != 1)
+      sp_raise_cls("ArgumentError", sp_sprintf("wrong number of arguments (given %lld, expected 2)", (long long)(n + 1)));
+    return sp_poly_insert(v, i, xs->data[0]);
+  }
+  if (!(v.tag == SP_TAG_OBJ && v.v.p && sp_poly_is_array_kind(v.cls_id)))
+    sp_raise_nomethod(sp_nomethod_msg("insert", v));
+  if (n == 0) return v;
+  if (n == 1) return sp_poly_insert(v, i, xs->data[0]);
+  if (i < 0) {
+    sp_int len = sp_poly_length(v);
+    if (i + len + 1 < 0)
+      sp_raise_cls("IndexError", sp_sprintf("index %lld too small for array; minimum: %lld",
+                                            (long long)i, (long long)(-(len + 1))));
+    i += len + 1;
+  }
+  SP_GC_ROOT_RBVAL(v);
+  for (sp_int k = 0; k < n; k++) v = sp_poly_insert(v, i + k, xs->data[k]);
+  return v;
+}
 /* Array#delete_at on a poly value: in-place removal at an index through the
    runtime kind dispatch; the removed element boxed, nil when out of range. */
 static sp_RbVal sp_poly_delete_at(sp_RbVal v, sp_int i) {
@@ -9758,12 +9789,16 @@ static sp_RbVal sp_poly_arr_span(sp_RbVal v, sp_int from, sp_int n) {
 }
 /* The span helpers below read ITEMS, and a generator-backed Enumerator has
    none until it runs: `e.take(1)` on one answered [] where CRuby answers its
-   first element. Materialize the enumerator first; every other receiver is
-   already its own subject. */
+   first element. Materialize the enumerator first. A Range has no #length
+   for sp_poly_length to answer, so `last(n)` and `drop(n)` on one saw no
+   members and answered []: it materializes to its members too. Every other
+   receiver is already its own subject. */
 static sp_PolyArray *sp_enum_to_a_boxed(sp_RbVal v);   /* fwd: drain an enumerator */
 static sp_RbVal sp_poly_span_subject(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p)
     return sp_box_poly_array(sp_enum_to_a_boxed(v));
+  if (v.tag == SP_TAG_OBJ && (v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE) && v.v.p)
+    return sp_box_poly_array(sp_poly_to_a_arr(v));
   return v;
 }
 static sp_RbVal sp_poly_arr_take(sp_RbVal v, sp_int n) {
@@ -9784,6 +9819,9 @@ static sp_RbVal sp_poly_arr_take(sp_RbVal v, sp_int n) {
 }
 static sp_RbVal sp_poly_arr_last_n(sp_RbVal v, sp_int n) {
   if (n < 0) sp_raise_cls("ArgumentError", "negative array size");
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p &&
+      ((sp_Range *)v.v.p)->last == INTPTR_MAX)
+    sp_raise_cls("RangeError", "cannot get the last element of endless range");
   v = sp_poly_span_subject(v);
   sp_int alen = sp_poly_length(v);
   if (n > alen) n = alen;
@@ -9795,6 +9833,15 @@ static sp_RbVal sp_poly_arr_drop(sp_RbVal v, sp_int n) {
   sp_int alen = sp_poly_length(v);
   if (n > alen) n = alen;
   return sp_poly_arr_span(v, n, alen - n);
+}
+/* Blockless, argless `count` on a boxed receiver: a Range or an Enumerator
+   counts its members, which sp_poly_length alone answered 0 for. nil has no
+   count (#4485). */
+static sp_int sp_poly_count(sp_RbVal v) {
+  sp_poly_coll_chk(v, "count");
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p)
+    return sp_range_count(*(sp_Range *)v.v.p);
+  return sp_poly_length(sp_poly_span_subject(v));
 }
 static sp_RbVal sp_poly_arr_rotate(sp_RbVal v, sp_int n) {
   SP_GC_ROOT_RBVAL(v);
@@ -12703,6 +12750,21 @@ static sp_PolyArray *sp_poly_sort(sp_RbVal v) {
     return sp_PolyArray_sort_pairs(sp_poly_to_a_arr(v));
   return sp_PolyArray_sort(sp_poly_arr_recv(v, "sort"));
 }
+/* min(n) / max(n) on a boxed receiver: the n smallest ascending, or the n
+   largest descending. */
+static sp_RbVal sp_poly_arr_min_max_n(sp_RbVal v, sp_int n, int want_max) {
+  if (n < 0) sp_raise_cls("ArgumentError", sp_sprintf("negative size (%lld)", (long long)n));
+  v = sp_poly_span_subject(v);
+  SP_GC_ROOT_RBVAL(v);
+  sp_PolyArray *s = (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id))
+    ? sp_PolyArray_sort_pairs(sp_poly_to_a_arr(v))
+    : sp_PolyArray_sort(sp_poly_arr_recv(v, want_max ? "max" : "min"));
+  SP_GC_ROOT(s);
+  if (want_max) sp_PolyArray_reverse_bang(s);
+  return sp_box_poly_array(sp_PolyArray_slice(s, 0, n));
+}
+static sp_RbVal sp_poly_arr_min_n(sp_RbVal v, sp_int n) { return sp_poly_arr_min_max_n(v, n, 0); }
+static sp_RbVal sp_poly_arr_max_n(sp_RbVal v, sp_int n) { return sp_poly_arr_min_max_n(v, n, 1); }
 /* Enumerable#uniq on a boxed value (an array read out of a poly container or
    an ivar that widened): the distinct elements, in first-seen order. Any
    non-array tag is CRuby's NoMethodError, through sp_poly_arr_recv. */

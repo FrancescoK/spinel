@@ -13754,9 +13754,8 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         }
       }
       if (!has_user_cnt && argc == 0 && cblk < 0) {
-        /* nil has no count; sp_poly_length alone answered 0 for it (#4485) */
-        buf_puts(b, "sp_poly_length(sp_poly_coll_chk("); emit_expr(c, recv, b);
-        buf_puts(b, ", \"count\"))");
+        buf_puts(b, "sp_poly_count("); emit_expr(c, recv, b);
+        buf_puts(b, ")");
         return 1;
       }
     }

@@ -5046,7 +5046,7 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
      spliced contents -- so an lvalue receiver takes the result back, the way
      the typed String mutators do (#3445). An array receiver is mutated
      through its pointer and answers itself, so the write-back is a no-op. */
-  if (sp_streq(name, "insert") && argc == 2) {
+  if (sp_streq(name, "insert") && argc >= 1) {
     const char *rvti = nt_type(nt, recv);
     if (rvti && (sp_streq(rvti, "LocalVariableReadNode") ||
                  sp_streq(rvti, "InstanceVariableReadNode"))) {
@@ -5054,13 +5054,31 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
       emit_expr(c, recv, b);
       buf_puts(b, " = ");
     }
-    buf_puts(b, "sp_poly_insert(");
-    emit_expr(c, recv, b);
-    buf_puts(b, ", ");
-    emit_int_expr(c, argv[0], b);
-    buf_puts(b, ", ");
-    emit_boxed(c, argv[1], b);
-    buf_puts(b, ")");
+    if (argc == 2) {
+      buf_puts(b, "sp_poly_insert(");
+      emit_expr(c, recv, b);
+      buf_puts(b, ", ");
+      emit_int_expr(c, argv[0], b);
+      buf_puts(b, ", ");
+      emit_boxed(c, argv[1], b);
+      buf_puts(b, ")");
+    }
+    else {
+      /* Array#insert takes any number of values; each is boxed straight into
+         a rooted list, in source order after the receiver and the index */
+      int tr = ++g_tmp, ti = ++g_tmp, ta = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tr);
+      emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_int _t%d = ", tr, ti);
+      emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
+      for (int k = 1; k < argc; k++) {
+        buf_printf(b, " sp_PolyArray_push(_t%d, ", ta);
+        emit_boxed(c, argv[k], b);
+        buf_puts(b, ");");
+      }
+      buf_printf(b, " sp_poly_insert_n(_t%d, _t%d, _t%d); })", tr, ti, ta);
+    }
     if (rvti && (sp_streq(rvti, "LocalVariableReadNode") ||
                  sp_streq(rvti, "InstanceVariableReadNode")))
       buf_puts(b, ")");
@@ -8014,9 +8032,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             unsupported(c, id, "a splat before other arguments into a method called on a value of more than one type");
           splat_a = a;
         }
-        /* the builtin arms below read their argument temps one value each */
+        /* the builtin arms below read their argument temps one value each,
+           but push and unshift, which spread the splat's temp themselves */
         is_index = is_fetch = is_include = is_intersect = is_arr_index = 0;
-        is_push = is_unshift = is_strdel = is_strpart = is_strsplit = is_pred = 0;
+        is_strdel = is_strpart = is_strsplit = is_pred = 0;
         is_strftime = is_cover = is_gcdlcm = is_pfirstn = 0;
         /* the class-side pre-arm fills its parameters one temp each */
         for (int k = 0; k < c->nclasses; k++) {
@@ -8958,6 +8977,13 @@ else {
            Answers the receiver, like push. */
         buf_puts(b, " case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_STR_ARRAY: case SP_BUILTIN_FLT_ARRAY: case SP_BUILTIN_POLY_ARRAY: case SP_BUILTIN_PTR_ARRAY:");
         for (int a = 0; a < argc; a++) {
+          if (a == splat_a) {
+            int ti = ++g_tmp;
+            buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)"
+                          " sp_poly_insert(_t%d, %d + _t%d, sp_PolyArray_get(_t%d, _t%d));",
+                       ti, ti, atmp[a], ti, tv, a, ti, atmp[a], ti);
+            continue;
+          }
           char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
           Buf ab; memset(&ab, 0, sizeof ab);
           if (atmp_ty[a] == TY_POLY) buf_puts(&ab, tn);
@@ -8974,6 +9000,13 @@ else {
            receiver, so yield it when the result is used (chained). */
         buf_puts(b, " case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_STR_ARRAY: case SP_BUILTIN_FLT_ARRAY: case SP_BUILTIN_POLY_ARRAY: case SP_BUILTIN_PTR_ARRAY:");
         for (int a = 0; a < argc; a++) {
+          if (a == splat_a) {
+            int ti = ++g_tmp;
+            buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)"
+                          " sp_poly_shl(_t%d, sp_PolyArray_get(_t%d, _t%d));",
+                       ti, ti, atmp[a], ti, tv, atmp[a], ti);
+            continue;
+          }
           char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
           Buf ab; memset(&ab, 0, sizeof ab);
           if (atmp_ty[a] == TY_POLY) buf_puts(&ab, tn);
@@ -8990,6 +9023,13 @@ else {
         buf_printf(b, " default: if (!(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_QUEUE))"
                       " sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d));", tv, tv, name, tv);
         for (int a = 0; a < argc; a++) {
+          if (a == splat_a) {
+            int ti = ++g_tmp;
+            buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)"
+                          " sp_poly_shl(_t%d, sp_PolyArray_get(_t%d, _t%d));",
+                       ti, ti, atmp[a], ti, tv, atmp[a], ti);
+            continue;
+          }
           char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
           Buf ab; memset(&ab, 0, sizeof ab);
           if (atmp_ty[a] == TY_POLY) buf_puts(&ab, tn);
@@ -36523,6 +36563,8 @@ else {
     else if (sp_streq(name, "drop")) pn9 = "sp_poly_arr_drop";
     else if (sp_streq(name, "rotate")) pn9 = "sp_poly_arr_rotate";
     else if (sp_streq(name, "sample")) pn9 = "sp_poly_arr_sample_n";
+    else if (sp_streq(name, "min")) pn9 = "sp_poly_arr_min_n";
+    else if (sp_streq(name, "max")) pn9 = "sp_poly_arr_max_n";
     if (pn9) {
       int ncand9 = 0;
       if (!g_poly_builtin_arm)
