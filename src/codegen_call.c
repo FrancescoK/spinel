@@ -30181,23 +30181,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             buf_printf(g_pre, "lv_%s = _t%d;\n", rename_local(rpn), rta);
           }
         }
-        /* keyword block params: each binds to its matched `k: v` value, or to
-           the default expr when an optional keyword is omitted. */
-        int nkw = 0; const int *kws = pnode >= 0 ? nt_arr(nt, pnode, "keywords", &nkw) : NULL;
-        for (int k = 0; k < nkw; k++) {
-          const char *kpn = nt_str(nt, kws[k], "name");
-          if (!kpn) continue;
-          int vn = ie_kwhash_value(c, ie_kwhash, kpn);
-          if (vn < 0) vn = nt_ref(nt, kws[k], "value");  /* omitted optional -> default */
-          LocalVar *kplv = scope_local(comp_scope_of(c, id), kpn);
-          int kppoly = kplv && kplv->type == TY_POLY;
-          Buf vb; memset(&vb, 0, sizeof vb);
-          if (vn >= 0) { if (kppoly) emit_boxed(c, vn, &vb); else emit_expr(c, vn, &vb); }
-          else buf_puts(&vb, "0");
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "lv_%s = %s;\n", rename_local(kpn), vb.p ? vb.p : "0");
-          free(vb.p);
-        }
+        if (block_keyword_name(c, blk, 0) || block_kwrest_name(c, blk))
+          emit_block_kw_binds(c, blk, ie_kwhash, comp_scope_of(c, id), g_pre, g_indent, 0, NULL);
         }
       }
       if (ie_bn > 0) {
