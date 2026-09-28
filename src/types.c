@@ -48,6 +48,7 @@ static const PolyFace ty_poly_face_tbl[] = {
      writes its result back into a typed original. */
   {"sort!", PF_ARRAY | PF_MUT, 0, 0, -1}, {"sort_by!", PF_ARRAY | PF_MUT, 0, 0, 1},
   {"rotate!", PF_ARRAY | PF_MUT, 0, 1, 0}, {"uniq!", PF_ARRAY | PF_MUT, 0, 0, -1},
+  {"shuffle!", PF_ARRAY | PF_MUT, 0, 0, 0},
   {"flatten!", PF_ARRAY | PF_MUT, 0, 1, 0}, {"fill", PF_ARRAY | PF_MUT, 1, 3, 0},
   {"to_ary", PF_ARRAY, 0, 0, 0}, {"transpose", PF_ARRAY, 0, 0, 0},
   /* and the Enumerable names that had no arm at all */
