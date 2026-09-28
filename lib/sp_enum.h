@@ -42,6 +42,11 @@ typedef struct {
                                              with_object) packed as an Array, which a block
                                              of map and its kin takes spread
                                              (sp_gc_alloc zero-fills) */
+  sp_PolyArray *walk_buf;                /* a walker (sp_enum_walker_boxed): the items pulled
+                                             so far by an index walk over a generator or
+                                             endless source, one at a time; NULL otherwise */
+  sp_int walk_next;                      /* the walk's next index: how far it has read */
+  sp_bool walk_done;                     /* the source has no more items */
 } sp_Enumerator;
 
 #endif
