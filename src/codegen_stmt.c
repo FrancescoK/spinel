@@ -12868,7 +12868,10 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     const char *pf = vt == TY_POLY ?
         (sp_streq(op, "+") ? "sp_poly_add" : sp_streq(op, "-") ? "sp_poly_sub" :
          sp_streq(op, "*") ? "sp_poly_mul" : sp_streq(op, "/") ? "sp_poly_div" :
-         sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "**") ? "sp_poly_pow" : NULL) : NULL;
+         sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "**") ? "sp_poly_pow" :
+         sp_streq(op, "<<") ? "sp_poly_shl" : sp_streq(op, ">>") ? "sp_poly_shr" :
+         sp_streq(op, "&") ? "sp_poly_band" : sp_streq(op, "|") ? "sp_poly_bor" :
+         sp_streq(op, "^") ? "sp_poly_bxor" : NULL) : NULL;
     int eff = g_pre && subtree_has_side_effect(c, v);
     char slot[64];
     snprintf(slot, sizeof slot, "sp_%sHash_get(_t%d, _t%d)", hn, ta, tb);
