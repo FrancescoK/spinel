@@ -13,11 +13,34 @@
 /* Required-param count of a forwarded callable expression `ex`, or -1 if it
    cannot be determined statically. Chooses the hash-pair calling convention: a
    1-param callable receives the [k,v] pair as one array, a 2-param one is called
-   positionally (matching CRuby's proc auto-splat of the yielded pair). */
-static int fwd_callable_arity(Compiler *c, int ex) {
+   positionally (matching CRuby's proc auto-splat of the yielded pair). With
+   `shape`, also whether the callable is a lambda or a Method, which take the
+   pair as strictly as a method does, and its Proc#arity (the required count,
+   or its complement when an optional or a rest follows). */
+typedef struct { int strict; int arity; } FwdShape;
+static int params_arity(const NodeTable *nt, int pn) {
+  int rn = 0, on = 0, qn = 0;
+  nt_arr(nt, pn, "requireds", &rn);
+  nt_arr(nt, pn, "optionals", &on);
+  nt_arr(nt, pn, "posts", &qn);
+  return (on > 0 || nt_ref(nt, pn, "rest") >= 0) ? -(rn + qn) - 1 : rn + qn;
+}
+static int fwd_callable_arity(Compiler *c, int ex, FwdShape *shape) {
   NodeTable *nt = (NodeTable *)c->nt;
   const char *exty = nt_type(nt, ex);
   if (!exty) return -1;
+  /* `method(:m)`: a Method is as strict as the def it names */
+  if (shape && sp_streq(exty, "CallNode") && nt_str(nt, ex, "name") &&
+      sp_streq(nt_str(nt, ex, "name"), "method")) {
+    int mi = method_obj_target_mi(c, ex);
+    int dn = mi >= 0 ? c->scopes[mi].def_node : -1;
+    int pn = dn >= 0 ? nt_ref(nt, dn, "parameters") : -1;
+    if (dn < 0) return -1;
+    shape->strict = 1;
+    shape->arity = pn >= 0 ? params_arity(nt, pn) : 0;
+    int rn = 0; if (pn >= 0) nt_arr(nt, pn, "requireds", &rn);
+    return rn;
+  }
   int create = -1;
   if (sp_streq(exty, "LambdaNode") || is_proc_create(c, ex)) create = ex;
   else if (sp_streq(exty, "LocalVariableReadNode")) {
@@ -36,6 +59,12 @@ static int fwd_callable_arity(Compiler *c, int ex) {
   int pn = a_proc_params_node(c, create);
   if (pn < 0) return -1;
   int rn = 0; nt_arr(nt, pn, "requireds", &rn);
+  if (shape) {
+    const char *cty = nt_type(nt, create);
+    const char *cn = nt_str(nt, create, "name");
+    shape->strict = sp_streq(cty, "LambdaNode") || (cn && sp_streq(cn, "lambda"));
+    shape->arity = params_arity(nt, pn);
+  }
   return rn;
 }
 
@@ -2484,6 +2513,15 @@ static int fwd_poly_recv_one_param_iter(const char *name) {
   return 0;
 }
 
+/* Hash's own select, filter, reject and to_h yield the key and the value as
+   two values, where `each` and the Enumerable iterators yield the [k, v] pair
+   as one: a proc taking |x| gets the key alone, and a lambda or Method of two
+   parameters takes both. */
+static int hash_two_value_iter(const char *name) {
+  return sp_streq(name, "select") || sp_streq(name, "filter") ||
+         sp_streq(name, "reject") || sp_streq(name, "to_h");
+}
+
 /* Over an Enumerator that yields two values, these pass both on to their
    block as two; the other block iterators pack them into one Array. */
 static int enum_pair_spread_iter(const char *name) {
@@ -2575,6 +2613,111 @@ static int fwd_blk_param_read_elsewhere(Compiler *c, Scope *ms, const char *name
   return 0;
 }
 
+/* `recv.each(&callable)` whose callable is not a plain read (`h.map(&a[0])`,
+   `h.map(&mk)`): the forward re-reads the callable per element, which an
+   expression that calls something cannot be, so the forward declined and the
+   call raised NoMethodError at run time. The callable goes into a temp the
+   forward reads, assigned in the receiver's place, `(t = callable;
+   recv).each(&t)`, so it runs once. Ahead of the receiver is its source
+   position whenever nothing before it can act: desugar_block_arg_order has
+   already put every operand of a call where something can into temps of its
+   own, in source order, the callable a plain read among them. *ex becomes a
+   read of the temp. */
+static void fwd_hoist_callable(Compiler *c, int id, int blk, int *ex) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  char tn[48];
+  snprintf(tn, sizeof tn, "__fwdc_%d", id);
+  int w = nt_new_node(nt, "LocalVariableWriteNode");
+  nt_node_set_str(nt, w, "name", tn);
+  nt_node_set_ref(nt, w, "value", *ex);
+  scope_local_intern(comp_scope_of(c, id), tn);
+  int r = nt_new_node(nt, "LocalVariableReadNode");
+  nt_node_set_str(nt, r, "name", tn);
+  nt_node_set_ref(nt, blk, "expression", r);
+  *ex = r;
+  /* a `to_a` the call is routed through (enum_hop, enum_recv) stays the
+     call's receiver, and a call answering its receiving Enumerator answers
+     the parentheses now (enum_self_result) */
+  int owner = id, recv = nt_ref(nt, id, "receiver");
+  while (nt_kind(nt, recv) == NK_CallNode &&
+         (nt_str(nt, recv, "enum_hop") || nt_str(nt, recv, "enum_recv"))) {
+    owner = recv;
+    recv = nt_ref(nt, recv, "receiver");
+  }
+  int stmts[2] = { w, recv };
+  int body = nt_new_node(nt, "StatementsNode");
+  nt_node_set_arr(nt, body, "body", stmts, 2);
+  int paren = nt_new_node(nt, "ParenthesesNode");
+  nt_node_set_ref(nt, paren, "body", body);
+  nt_node_set_ref(nt, owner, "receiver", paren);
+  if (nt_int(nt, id, "enum_self_result", -1) == recv) nt_node_set_int(nt, id, "enum_self_result", paren);
+}
+
+/* `recv.name(arg)` (no argument for -1), for the forwards built below */
+static int fwd_new_call(NodeTable *nt, int recv, const char *name, int arg) {
+  int call = nt_new_node(nt, "CallNode");
+  nt_node_set_ref(nt, call, "receiver", recv);
+  nt_node_set_str(nt, call, "name", name);
+  int args = -1;
+  if (arg >= 0) {
+    args = nt_new_node(nt, "ArgumentsNode");
+    nt_node_set_arr(nt, args, "arguments", &arg, 1);
+  }
+  nt_node_set_ref(nt, call, "arguments", args);
+  nt_node_set_ref(nt, call, "block", -1);
+  return call;
+}
+static int fwd_new_int(NodeTable *nt, int v) {
+  int n = nt_new_node(nt, "IntegerNode");
+  nt_node_set_int(nt, n, "value", v);
+  return n;
+}
+
+/* The call a Hash iterator's forward makes to a callable whose parameters it
+   cannot see, `pair` handing it the [k, v] pair: map spreads the pair for more
+   than one required parameter, `q.arity >= 2 || q.arity < -2 ? q.call(k, v) :
+   pair`, and find for a Proc (a lambda included) that would auto-splat it,
+   `q.is_a?(Proc) && (q.arity >= 2 || q.arity < -1) ? ...`. The Proc test is
+   left out where the callable is known to be one. */
+static int fwd_arity_pick(NodeTable *nt, int ex, int id, int pair, int find, int proc_test) {
+  int ge = fwd_new_call(nt, fwd_new_call(nt, nt_clone_subtree(nt, ex), "arity", -1), ">=", fwd_new_int(nt, 2));
+  int lt = fwd_new_call(nt, fwd_new_call(nt, nt_clone_subtree(nt, ex), "arity", -1), "<",
+                        fwd_new_int(nt, find ? -1 : -2));
+  int cond = nt_new_node(nt, "OrNode");
+  nt_node_set_ref(nt, cond, "left", ge);
+  nt_node_set_ref(nt, cond, "right", lt);
+  if (proc_test) {
+    int pc = nt_new_node(nt, "ConstantReadNode");
+    nt_node_set_str(nt, pc, "name", "Proc");
+    int both = nt_new_node(nt, "AndNode");
+    nt_node_set_ref(nt, both, "left", fwd_new_call(nt, nt_clone_subtree(nt, ex), "is_a?", pc));
+    nt_node_set_ref(nt, both, "right", cond);
+    cond = both;
+  }
+  int kv[2];
+  char pn[48];
+  for (int k = 0; k < 2; k++) {
+    snprintf(pn, sizeof pn, "__fwd_%d_%d", id, k);
+    kv[k] = nt_new_node(nt, "LocalVariableReadNode");
+    nt_node_set_str(nt, kv[k], "name", pn);
+  }
+  int twoargs = nt_new_node(nt, "ArgumentsNode");
+  nt_node_set_arr(nt, twoargs, "arguments", kv, 2);
+  int two = fwd_new_call(nt, nt_clone_subtree(nt, ex), "call", -1);
+  nt_node_set_ref(nt, two, "arguments", twoargs);
+  int then = nt_new_node(nt, "StatementsNode");
+  nt_node_set_arr(nt, then, "body", &two, 1);
+  int other = nt_new_node(nt, "StatementsNode");
+  nt_node_set_arr(nt, other, "body", &pair, 1);
+  int els = nt_new_node(nt, "ElseNode");
+  nt_node_set_ref(nt, els, "statements", other);
+  int pick = nt_new_node(nt, "IfNode");
+  nt_node_set_ref(nt, pick, "predicate", cond);
+  nt_node_set_ref(nt, pick, "statements", then);
+  nt_node_set_ref(nt, pick, "subsequent", els);
+  return pick;
+}
+
 int desugar_value_callable_forwards(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -2594,6 +2737,7 @@ int desugar_value_callable_forwards(Compiler *c) {
        `{ |__fwd..| yield __fwd.. }` here, exactly as a named `&blk` becomes
        `{ |__fwd..| blk.call(__fwd..) }` below, and the yield does the rest. */
     int anon = ex < 0;
+    int hoist = 0;
     TyKind ct = TY_UNKNOWN;
     /* A named `&blk` forwarded from the method that declared it is the
        method's own block just as an anonymous `&` is: `blk.call(x)` inside a
@@ -2629,13 +2773,14 @@ int desugar_value_callable_forwards(Compiler *c) {
     /* `&->(x){...}`: an inline lambda literal, equivalent to the block itself;
        building it per element has no observable side effect */
     int inline_lambda = sp_streq(exty, "LambdaNode");
-    if (!simple_ref && !method_obj && !inline_lambda) continue;
+    /* any other expression is evaluated once, into a temp the forward
+       re-reads (fwd_hoist_callable) */
+    hoist = !simple_ref && !method_obj && !inline_lambda;
     ct = infer_type(c, ex);
     /* A poly local can hold a callable produced by an operation whose static
        type stays poly -- e.g. `procs.reduce(:>>)`, a composed Proc. Forward it
-       as a value callable too (its `.call` dispatches at runtime); restricted
-       to a bare local/ivar read so re-evaluation is side-effect-free (#3167). */
-    if (ct != TY_PROC && ct != TY_METHOD && !(ct == TY_POLY && simple_ref)) continue;
+       as a value callable too (its `.call` dispatches at runtime) (#3167). */
+    if (ct != TY_PROC && ct != TY_METHOD && ct != TY_POLY) continue;
     }
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;
@@ -2706,39 +2851,51 @@ int desugar_value_callable_forwards(Compiler *c) {
       if (arity < 1) continue;  /* not a context-free iterator (or recv unresolved) */
     }
 
-    /* Hash forwarding. A Method object takes any hash iterator's yield directly
-       through its array ABI (the [k,v] pair as one array for `each`, the bare
-       key/value for `each_key`/`each_value`). A proc/lambda VALUE is reliable
-       only for the `each` pair forwarded to a single param, whose pair-array
-       type the call-site inference recovers (a container overriding the bare-int
-       default). Every other hash + proc/lambda combination -- inline lambdas
-       (cloned, no write to type from), multi-param procs (CRuby auto-splat), and
-       the scalar `each_key`/`each_value` yields -- needs cross-procedural param
-       typing not yet modeled, so decline to the pre-existing path. */
+    /* Hash forwarding. Hash's own select, filter, reject and to_h yield the
+       key and the value as two, and they go on as two to whatever takes them.
+       The other iterators yield the [k, v] pair. A Method object takes it
+       through its array ABI (the pair as one array for `each`, the bare
+       key/value for `each_key`/`each_value`). */
     int wrap_pair = 0;
-    if (ty_is_hash(rt) && anon) {
+    int spread = 0, find_proc_test = 0;   /* spread -1: chosen at run time */
+    if (ty_is_hash(rt) && hash_two_value_iter(name)) wrap_pair = 0;
+    else if (ty_is_hash(rt) && anon) {
       /* a yield hands the pair as one array, which the caller's block
          auto-splats into |k, v| or takes whole as |pair|, as Hash#each does */
       wrap_pair = (arity == 2);
     }
-    else if (ty_is_hash(rt)) {
-      if (ct == TY_METHOD) {
-        wrap_pair = (arity == 2);  /* each: pair as array; each_key/value: bare value */
+    else if (ty_is_hash(rt) && arity == 2) {
+      /* The pair as one array, or the key and the value as two, as CRuby
+         hands them. A Proc auto-splats the pair where it runs, so for one
+         taking |k, v| the two are the same; the call-site inference types a
+         visible Proc's params better from two. A lambda or a Method takes
+         the pair strictly, and raises for a second required parameter,
+         except through map, whose block of more than one required parameter
+         takes the key and the value (a Method's too), and find, which
+         treats a lambda as a Proc and a Method strictly. A callable whose
+         parameters are not visible here -- one boxed in a poly slot, or a
+         Proc a method returned -- gets the pair, or has map and find ask
+         its arity at run time. Declined for want of a static arity, `h.map
+         (&q)` stayed in its &-form, and the call raised NoMethodError at
+         run time. */
+      int is_map = sp_streq(name, "map") || sp_streq(name, "collect");
+      int is_find = sp_streq(name, "find") || sp_streq(name, "detect");
+      FwdShape sh = { 0, 0 };
+      int cpc = fwd_callable_arity(c, ex, &sh);
+      if (cpc < 0) {
+        spread = (is_map || (is_find && ct != TY_METHOD)) ? -1 : 0;
+        find_proc_test = is_find && ct == TY_POLY;
       }
-      else {
-        /* a proc/lambda (value or inline): the call-site inference types its
-           params from the forwarded call. `each` to a 1-param callable gets the
-           [k,v] pair as one array; to a 2-param one, k and v positionally
-           (auto-splat by arity); each_key/each_value pass the bare key/value. */
-        int cpc = fwd_callable_arity(c, ex);
-        if (arity == 2 && cpc == 1) wrap_pair = 1;
-        else if (arity == 2 && cpc == 2) wrap_pair = 0;
-        else if (arity == 1) wrap_pair = 0;
-        else continue;  /* arity-2 with unresolved callable arity */
-      }
+      else if (!sh.strict) spread = cpc == 2;
+      else if (is_map) spread = sh.arity >= 2 || sh.arity < -2;
+      else if (is_find) spread = ct != TY_METHOD && (sh.arity >= 2 || sh.arity < -1);
+      else spread = 0;
+      wrap_pair = spread != 1;
     }
+    else if (ty_is_hash(rt)) wrap_pair = 0;   /* each_key/each_value: the bare key/value */
 
     int base = nt->count;
+    if (hoist) fwd_hoist_callable(c, id, blk, &ex);
     int proc_clone = anon ? -1 : nt_clone_subtree(nt, ex);  /* re-read the proc per element */
     if (!anon && proc_clone < 0) continue;
 
@@ -2772,12 +2929,12 @@ int desugar_value_callable_forwards(Compiler *c) {
       nt_node_set_ref(nt, callnode, "arguments", callargs);
     }
     else {
-      callnode = nt_new_node(nt, "CallNode");
-      nt_node_set_ref(nt, callnode, "receiver", proc_clone);
-      nt_node_set_str(nt, callnode, "name", "call");
+      callnode = fwd_new_call(nt, proc_clone, "call", -1);
       nt_node_set_ref(nt, callnode, "arguments", callargs);
-      nt_node_set_ref(nt, callnode, "block", -1);
     }
+    if (spread < 0 && callnode >= 0)
+      callnode = fwd_arity_pick(nt, ex, id, callnode, sp_streq(name, "find") || sp_streq(name, "detect"),
+                                find_proc_test);
 
     int body = nt_new_node(nt, "StatementsNode");
     nt_node_set_arr(nt, body, "body", &callnode, 1);
