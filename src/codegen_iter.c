@@ -3131,22 +3131,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
     }
     if (has_retval && g_in_proc_body && g_result_var && g_result_poly)
       buf_printf(b, "if (_retf%d) { %s = _retv%d; return 0; }\n", eid, g_result_var, eid);
-    /* A fiber body is `static void`: returning the value there is a C
-       constraint violation (GCC 14 rejects it), and the value had nowhere to
-       go anyway -- a void function's caller cannot read it. Drop it and
-       return, which is what the generated code already did in practice. */
-    else if (has_retval && g_c_ret_void) buf_printf(b, "if (_retf%d) return;\n", eid);
-    else if (has_retval) buf_printf(b, "if (_retf%d) return _retv%d;\n", eid, eid);
-    else if (g_in_proc_body && g_result_var && g_result_poly)
-      buf_printf(b, "if (_retf%d) { %s = sp_box_nil(); return 0; }\n", eid, g_result_var);
-    else if (g_c_ret_void) buf_printf(b, "if (_retf%d) return;\n", eid);
-    else if (g_ret_type == TY_POLY) buf_printf(b, "if (_retf%d) return sp_box_nil();\n", eid);
-    else if (g_ret_type == TY_UNKNOWN) buf_printf(b, "if (_retf%d) return 0;\n", eid);
-    /* a proc body's C function returns sp_int (the value rides
-       _sp_proc_poly_ret), so a bare `return;` there is a mismatch the other
-       way -- and leaves the returned int indeterminate. Its tail returns 0. */
-    else if (g_in_proc_body) buf_printf(b, "if (_retf%d) return 0;\n", eid);
-    else buf_printf(b, "if (_retf%d) return;\n", eid);
+    else emit_retf_return(eid, has_retval, b);
     emit_indent(b, indent);
     buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_raise_cls(_exccls%d, _excmsg%d); }\n", eid, eid, eid, eid);
   }
