@@ -3130,11 +3130,13 @@ int desugar_enumerable_via_to_a(Compiler *c) {
   return changed;
 }
 
-/* `def m(a, ...) = callee(a, ...)` with a rest/kwrest callee becomes
-   `def m(a, *, **) = callee(a, *, **)`. The __fwd_N model (#1288) binds the
-   callee's params positionally, which is exact for fixed params and flattens
-   a rest/kwrest. `*` / `**` follow the callee's params; blocks are not
-   forwarded by this form, so any block involvement keeps the __fwd_N model. */
+/* `def m(a, ...) = callee(a, ...)` becomes `def m(a, *, **, &) =
+   callee(a, *, **, &)`, and so do `super(...)`, a bare `super` and
+   `new(...)`. The __fwd_N model (#1288) binds the callee's params
+   positionally: it flattens a rest/kwrest, fills an argument the caller
+   left out with nil where the callee has a default, and carries no block.
+   `*` / `**` follow the callee's params, and `&` is added when the callee
+   takes a block or a caller passes one. */
 static int fwd_node_is(const NodeTable *nt, int id, const char *ty) {
   return id >= 0 && nt_type(nt, id) && sp_streq(nt_type(nt, id), ty);
 }
@@ -3148,9 +3150,7 @@ static int fwd_subtree_max(const NodeTable *nt, int id) {
     for (int k = 0; k < nd->a[j].n; k++) { int m = fwd_subtree_max(nt, nd->a[j].ids[k]); if (m > mx) mx = m; }
   return mx;
 }
-static int fwd_subtree_uses_yield_or_block(const NodeTable *nt, int def) {
-  int pn = nt_ref(nt, def, "parameters");
-  if (pn >= 0 && nt_ref(nt, pn, "block") >= 0) return 1;
+static int fwd_subtree_yields(const NodeTable *nt, int def) {
   int hi = fwd_subtree_max(nt, def);
   for (int id = def; id <= hi; id++) {
     if (fwd_node_is(nt, id, "YieldNode")) return 1;
@@ -3161,36 +3161,213 @@ static int fwd_subtree_uses_yield_or_block(const NodeTable *nt, int def) {
   }
   return 0;
 }
+static int fwd_subtree_uses_yield_or_block(const NodeTable *nt, int def) {
+  int pn = nt_ref(nt, def, "parameters");
+  if (pn >= 0 && nt_ref(nt, pn, "block") >= 0) return 1;
+  return fwd_subtree_yields(nt, def);
+}
+static int fwd_any_def_yields(const NodeTable *nt, const char *name) {
+  for (int id = 0; id < nt->count; id++)
+    if (fwd_node_is(nt, id, "DefNode") && nt_str(nt, id, "name") &&
+        sp_streq(nt_str(nt, id, "name"), name) && fwd_subtree_yields(nt, id)) return 1;
+  return 0;
+}
 /* bit 1 = positional forwarding, bit 2 = keyword forwarding, bit 4 =
    block/yield; -1 no def, -2 defs disagree. Fixed parameters count too:
    forwarding to `def f(*a, k: 0)` needs both channels, as does forwarding to
-   `def f(x, **k)`. */
+   `def f(x, **k)`. A `def m(...)` forwarder is -1: it takes whatever shape
+   its own target has. */
+static int def_shape(const NodeTable *nt, int id) {
+  int pn = nt_ref(nt, id, "parameters");
+  if (pn >= 0 && fwd_node_is(nt, nt_ref(nt, pn, "keyword_rest"), "ForwardingParameterNode")) return -1;
+  int sh = 0;
+  if (pn >= 0) {
+    int rn = 0; nt_arr(nt, pn, "requireds", &rn);
+    int on = 0; nt_arr(nt, pn, "optionals", &on);
+    int postn = 0; nt_arr(nt, pn, "posts", &postn);
+    int kn = 0; nt_arr(nt, pn, "keywords", &kn);
+    if (rn > 0 || on > 0 || postn > 0) sh |= 1;
+    if (kn > 0) sh |= 2;
+    if (fwd_node_is(nt, nt_ref(nt, pn, "rest"), "RestParameterNode")) sh |= 1;
+    if (fwd_node_is(nt, nt_ref(nt, pn, "keyword_rest"), "KeywordRestParameterNode")) sh |= 2;
+  }
+  if (fwd_subtree_uses_yield_or_block(nt, id)) sh |= 4;
+  return sh;
+}
 static int def_shape_by_name(const NodeTable *nt, const char *name) {
   int shape = -1;
   for (int id = 0; id < nt->count; id++) {
     if (!fwd_node_is(nt, id, "DefNode")) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, name)) continue;
-    int pn = nt_ref(nt, id, "parameters");
-    /* a `def m(...)` forwarder of the same name passes its args on: it takes
-       whatever shape its own target has */
-    if (pn >= 0 && fwd_node_is(nt, nt_ref(nt, pn, "keyword_rest"), "ForwardingParameterNode")) continue;
-    int sh = 0;
-    if (pn >= 0) {
-      int rn = 0; nt_arr(nt, pn, "requireds", &rn);
-      int on = 0; nt_arr(nt, pn, "optionals", &on);
-      int postn = 0; nt_arr(nt, pn, "posts", &postn);
-      int kn = 0; nt_arr(nt, pn, "keywords", &kn);
-      if (rn > 0 || on > 0 || postn > 0) sh |= 1;
-      if (kn > 0) sh |= 2;
-      if (fwd_node_is(nt, nt_ref(nt, pn, "rest"), "RestParameterNode")) sh |= 1;
-      if (fwd_node_is(nt, nt_ref(nt, pn, "keyword_rest"), "KeywordRestParameterNode")) sh |= 2;
-    }
-    if (fwd_subtree_uses_yield_or_block(nt, id)) sh |= 4;
+    int sh = def_shape(nt, id);
+    if (sh < 0) continue;
     if (shape >= 0 && shape != sh) return -2;
     shape = sh;
   }
   return shape;
+}
+static void fwd_key_add(char *key, size_t cap, const char *seg) {
+  size_t n = strlen(key);
+  if (n < cap) snprintf(key + n, cap - n, "%s::", seg ? seg : "");
+}
+static void fwd_path_key(const NodeTable *nt, int path, char *key, size_t cap) {
+  if (!fwd_node_is(nt, path, "ConstantPathNode")) return;
+  int par = nt_ref(nt, path, "parent");
+  fwd_path_key(nt, par, key, cap);
+  fwd_key_add(key, cap, par >= 0 ? nt_str(nt, par, "name") : NULL);
+}
+/* A body statement as the def it declares: the statement itself, or the
+   one argument of a receiverless `private def m ...` (also protected, public
+   and module_function), which declares the same method. -1 otherwise. */
+static int fwd_body_def(const NodeTable *nt, int st) {
+  if (fwd_node_is(nt, st, "DefNode")) return st;
+  if (!fwd_node_is(nt, st, "CallNode") || nt_ref(nt, st, "receiver") >= 0) return -1;
+  const char *nm = nt_str(nt, st, "name");
+  if (!nm || !(sp_streq(nm, "private") || sp_streq(nm, "protected") ||
+               sp_streq(nm, "public") || sp_streq(nm, "module_function"))) return -1;
+  int an = 0; const int *av = nt_arr(nt, nt_ref(nt, st, "arguments"), "arguments", &an);
+  return an == 1 && fwd_node_is(nt, av[0], "DefNode") ? av[0] : -1;
+}
+/* Does the body of class or module `ct` hold `id` as one of its statements,
+   or as a def a visibility call wraps? */
+static int fwd_body_holds(const NodeTable *nt, int ct, int id) {
+  int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, ct, "body"), "body", &bn);
+  for (int k = 0; k < bn; k++)
+    if (bv[k] == id || fwd_body_def(nt, bv[k]) == id) return 1;
+  return 0;
+}
+static void fwd_ns_key(const NodeTable *nt, int id, char *key, size_t cap);
+/* The lexical namespace a node sits in: its enclosing classes and modules. */
+static void fwd_lex_ctx(const NodeTable *nt, int id, char *key, size_t cap) {
+  for (int ct = 0; ct < id; ct++) {
+    if (!fwd_node_is(nt, ct, "ClassNode") && !fwd_node_is(nt, ct, "ModuleNode")) continue;
+    if (!fwd_body_holds(nt, ct, id)) continue;
+    fwd_ns_key(nt, ct, key, cap);
+    fwd_key_add(key, cap, nt_str(nt, nt_ref(nt, ct, "constant_path"), "name"));
+    break;
+  }
+}
+/* The namespace a class or module node is opened in: its lexical namespace
+   and the qualifier of its own path. */
+static void fwd_ns_key(const NodeTable *nt, int id, char *key, size_t cap) {
+  fwd_lex_ctx(nt, id, key, cap);
+  fwd_path_key(nt, nt_ref(nt, id, "constant_path"), key, cap);
+}
+/* The namespace key of the class `ref` (a constant node, or `refname` when
+   ref < 0) names when read in namespace `ctx`: looked up, with any
+   qualifier of its path, in ctx and then each enclosing namespace out to the
+   top. A name the lexical walk does not reach (a class an enclosing module
+   includes, `module N; include Lib; class C < Base`) is the one class of that
+   name when there is exactly one. 0 when no class is found. */
+static int fwd_resolve_class(const NodeTable *nt, const char *ctx, int ref, const char *refname,
+                             char *out, size_t cap) {
+  const char *cls = ref >= 0 ? nt_str(nt, ref, "name") : refname;
+  if (!cls) return 0;
+  if (ref >= 0 && !fwd_node_is(nt, ref, "ConstantReadNode") &&
+      !fwd_node_is(nt, ref, "ConstantPathNode")) return 0;
+  char qual[512] = "", prefix[512], cand[1024], key[512];
+  fwd_path_key(nt, ref, qual, sizeof qual);
+  snprintf(prefix, sizeof prefix, "%s", ctx);
+  for (;;) {
+    snprintf(cand, sizeof cand, "%s%s", prefix, qual);
+    for (int id = 0; id < nt->count; id++) {
+      if (!fwd_node_is(nt, id, "ClassNode")) continue;
+      const char *cn = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+      if (!cn || !sp_streq(cn, cls)) continue;
+      key[0] = '\0';
+      fwd_ns_key(nt, id, key, sizeof key);
+      if (sp_streq(key, cand)) { snprintf(out, cap, "%s", key); return 1; }
+    }
+    if (!prefix[0]) break;
+    size_t n = strlen(prefix) - 2;
+    while (n >= 2 && !(prefix[n - 1] == ':' && prefix[n - 2] == ':')) n--;
+    prefix[n >= 2 ? n : 0] = '\0';
+  }
+  int only = -1;
+  for (int id = 0; id < nt->count; id++) {
+    if (!fwd_node_is(nt, id, "ClassNode")) continue;
+    const char *cn = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+    if (!cn || !sp_streq(cn, cls)) continue;
+    key[0] = '\0';
+    fwd_ns_key(nt, id, key, sizeof key);
+    if (only >= 0 && !sp_streq(out, key)) return 0;   /* two classes of that name */
+    only = id;
+    snprintf(out, cap, "%s", key);
+  }
+  return only >= 0;
+}
+/* The shape of instance method `name` as the class `ref` names from
+   namespace `ctx` (or its nearest superclass defining it) has it. Classes
+   are matched by namespace and name, before any scope exists. */
+static int fwd_class_method_shape(const NodeTable *nt, const char *ctx, int ref,
+                                  const char *refname, const char *name) {
+  char at[512], key[512];
+  snprintf(at, sizeof at, "%s", ctx);
+  for (int depth = 0; depth < 16; depth++) {
+    char found[512];
+    if (!fwd_resolve_class(nt, at, ref, refname, found, sizeof found)) return -1;
+    const char *cls = ref >= 0 ? nt_str(nt, ref, "name") : refname;
+    int shape = -1, next = -1, next_cls = -1;
+    for (int id = 0; id < nt->count; id++) {
+      if (!fwd_node_is(nt, id, "ClassNode")) continue;
+      const char *cn = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+      if (!cn || !sp_streq(cn, cls)) continue;
+      key[0] = '\0';
+      fwd_ns_key(nt, id, key, sizeof key);
+      if (!sp_streq(key, found)) continue;
+      if (next < 0 && nt_ref(nt, id, "superclass") >= 0) { next = nt_ref(nt, id, "superclass"); next_cls = id; }
+      int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, id, "body"), "body", &bn);
+      for (int k = 0; k < bn; k++) {
+        int dk = fwd_body_def(nt, bv[k]);
+        if (dk < 0 || nt_ref(nt, dk, "receiver") >= 0) continue;
+        const char *dn = nt_str(nt, dk, "name");
+        if (!dn || !sp_streq(dn, name)) continue;
+        int sh = def_shape(nt, dk);
+        if (sh < 0 || (shape >= 0 && sh != shape)) return -2;
+        shape = sh;
+      }
+    }
+    if (shape >= 0) return shape;
+    if (next < 0) return -1;
+    at[0] = '\0';
+    fwd_lex_ctx(nt, next_cls, at, sizeof at);
+    ref = next; refname = NULL;
+  }
+  return -1;
+}
+/* The ClassNode whose body holds `def` directly or under a visibility call,
+   or -1. */
+static int fwd_enclosing_class(const NodeTable *nt, int def) {
+  for (int id = 0; id < def; id++)
+    if (fwd_node_is(nt, id, "ClassNode") && fwd_body_holds(nt, id, def)) return id;
+  return -1;
+}
+/* The shape a forwarding `call` in `def` reaches: `super` the parent's
+   method, `new` the constructed class's initialize. */
+static int fwd_target_shape(const NodeTable *nt, int def, int call, int is_super) {
+  const char *name = is_super ? nt_str(nt, def, "name") : nt_str(nt, call, "name");
+  if (!name) return -1;
+  if (!is_super && !sp_streq(name, "new")) return def_shape_by_name(nt, name);
+  int recv = is_super ? -1 : nt_ref(nt, call, "receiver");
+  int cls = fwd_enclosing_class(nt, def);
+  char ctx[512] = "";
+  if (is_super) {
+    if (nt_ref(nt, def, "receiver") >= 0 || cls < 0) return -1;
+    fwd_lex_ctx(nt, cls, ctx, sizeof ctx);
+    return fwd_class_method_shape(nt, ctx, nt_ref(nt, cls, "superclass"), NULL, name);
+  }
+  if (recv < 0 || fwd_node_is(nt, recv, "SelfNode")) {
+    if (nt_ref(nt, def, "receiver") < 0 || cls < 0) return -1;
+    fwd_ns_key(nt, cls, ctx, sizeof ctx);
+    return fwd_class_method_shape(nt, ctx, -1, nt_str(nt, nt_ref(nt, cls, "constant_path"), "name"),
+                                  "initialize");
+  }
+  if (fwd_node_is(nt, recv, "ConstantReadNode") || fwd_node_is(nt, recv, "ConstantPathNode")) {
+    fwd_lex_ctx(nt, def, ctx, sizeof ctx);
+    return fwd_class_method_shape(nt, ctx, recv, NULL, "initialize");
+  }
+  return def_shape_by_name(nt, "initialize");
 }
 static int fwd_new_node_like(NodeTable *nt, int like, const char *ty) {
   int id = nt_new_node(nt, ty);
@@ -3212,26 +3389,31 @@ static int any_call_passes_block(const NodeTable *nt, const char *name) {
    method's synthetic block param. A nested def/class/module is a scope of its
    own (its `&` is its own method's); a block or lambda inside the body shares
    the method's block param. */
-static int anon_block_fwd_rewrite(Compiler *c, int node) {
+static int anon_fwd_rewrite(Compiler *c, int node, int parent, unsigned anon) {
   NodeTable *nt = (NodeTable *)c->nt;
   if (node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode ||
       k == NK_SingletonClassNode) return 0;
-  int changed = 0;
-  if (k == NK_BlockArgumentNode && nt_ref(nt, node, "expression") < 0) {
+  const char *pty = parent >= 0 ? nt_type(nt, parent) : NULL;
+  const char *nm = NULL, *field = NULL;
+  if ((anon & 1) && k == NK_BlockArgumentNode) nm = "__anon_block", field = "expression";
+  else if ((anon & 2) && k == NK_SplatNode && pty &&
+           (sp_streq(pty, "ArgumentsNode") || sp_streq(pty, "ArrayNode")))
+    nm = "__anon_rest", field = "expression";
+  else if ((anon & 4) && k == NK_AssocSplatNode) nm = "__anon_kwrest", field = "value";
+  if (nm && nt_ref(nt, node, field) < 0) {
     int rd = nt_new_node(nt, "LocalVariableReadNode");
-    if (rd >= 0) {
-      nt_node_set_str(nt, rd, "name", "__anon_block");
-      nt_node_set_int(nt, rd, "depth", 0);
-      nt_node_set_ref(nt, node, "expression", rd);
-      comp_grow_node_arrays(c);
-      changed = 1;
-    }
-    return changed;
+    if (rd < 0) return 0;
+    nt_node_set_str(nt, rd, "name", nm);
+    nt_node_set_int(nt, rd, "depth", 0);
+    nt_node_set_ref(nt, node, field, rd);
+    comp_grow_node_arrays(c);
+    return 1;
   }
+  int changed = 0;
   int nr = nt_num_refs(nt, node);
-  for (int i = 0; i < nr; i++) changed |= anon_block_fwd_rewrite(c, nt_ref_at(nt, node, i));
+  for (int i = 0; i < nr; i++) changed |= anon_fwd_rewrite(c, nt_ref_at(nt, node, i), node, anon);
   int na = nt_num_arrs(nt, node);
   for (int i = 0; i < na; i++) {
     int n = 0;
@@ -3240,7 +3422,7 @@ static int anon_block_fwd_rewrite(Compiler *c, int node) {
     int *cp = n > 0 ? (int *)malloc(sizeof(int) * (size_t)n) : NULL;
     if (n > 0 && !cp) continue;
     if (n > 0) memcpy(cp, ids, sizeof(int) * (size_t)n);
-    for (int j = 0; j < n; j++) changed |= anon_block_fwd_rewrite(c, cp[j]);
+    for (int j = 0; j < n; j++) changed |= anon_fwd_rewrite(c, cp[j], node, anon);
     free(cp);
   }
   return changed;
@@ -3353,18 +3535,29 @@ void desugar_extended_module_attrs(Compiler *c) {
    were copied by value -- the writes were lost. Named, the param takes the
    same path a `&blk` does (mirrors __anon_kwrest for `**`). */
 int desugar_anon_block_param(Compiler *c) {
+  static const struct { const char *field, *kind, *name; } anon_params[] = {
+    { "block", "BlockParameterNode", "__anon_block" },
+    { "rest", "RestParameterNode", "__anon_rest" },
+    { "keyword_rest", "KeywordRestParameterNode", "__anon_kwrest" },
+  };
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_DefNode) continue;
     int pn = nt_ref(nt, id, "parameters");
-    int bp = pn >= 0 ? nt_ref(nt, pn, "block") : -1;
-    if (bp < 0 || nt_kind(nt, bp) != NK_BlockParameterNode) continue;
-    const char *bn = nt_str(nt, bp, "name");
-    if (bn && bn[0]) continue;
-    nt_node_set_str(nt, bp, "name", "__anon_block");
-    anon_block_fwd_rewrite(c, nt_ref(nt, id, "body"));
+    if (pn < 0) continue;
+    unsigned anon = 0;
+    for (unsigned a = 0; a < 3; a++) {
+      int p = nt_ref(nt, pn, anon_params[a].field);
+      const char *pty = p >= 0 ? nt_type(nt, p) : NULL;
+      const char *bn = p >= 0 ? nt_str(nt, p, "name") : NULL;
+      if (!pty || !sp_streq(pty, anon_params[a].kind) || (bn && bn[0])) continue;
+      nt_node_set_str(nt, p, "name", anon_params[a].name);
+      anon |= 1u << a;
+    }
+    if (!anon) continue;
+    anon_fwd_rewrite(c, nt_ref(nt, id, "body"), id, anon);
     changed = 1;
   }
   return changed;
@@ -3382,20 +3575,32 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
     if (!dname) continue;
     int hi = fwd_subtree_max(nt, def) + 1;
     int calls[n0]; int ncalls = 0; int shape = 0; int ok = 1;
+    int nfwd_args = 0;
     for (int id = def + 1; id < hi && id < n0; id++) {
-      if (!fwd_node_is(nt, id, "CallNode")) continue;
+      /* a bare `super` forwards everything, as `super(...)` does */
+      int is_zsuper = fwd_node_is(nt, id, "ForwardingSuperNode");
+      if (is_zsuper || fwd_node_is(nt, id, "ForwardingArgumentsNode")) nfwd_args++;
+      int is_super = is_zsuper || fwd_node_is(nt, id, "SuperNode");
+      if (!is_super && !fwd_node_is(nt, id, "CallNode")) continue;
       int args = nt_ref(nt, id, "arguments");
       int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
-      if (ac < 1 || !av || !fwd_node_is(nt, av[ac - 1], "ForwardingArgumentsNode")) continue;
-      const char *cn = nt_str(nt, id, "name");
-      int sh = cn ? def_shape_by_name(nt, cn) : -1;
+      if (!is_zsuper && (ac < 1 || !av || !fwd_node_is(nt, av[ac - 1], "ForwardingArgumentsNode"))) continue;
+      /* `super(...)` reaches the parent's method of this name, and `new(...)`
+         the constructed class's initialize */
+      const char *cn = is_super ? dname : nt_str(nt, id, "name");
+      int is_new = cn && sp_streq(cn, "new");
+      if (is_new) cn = "initialize";
+      int sh = fwd_target_shape(nt, def, id, is_super);
+      /* a yielding initialize or parent keeps the __fwd_N model */
+      if ((is_new || is_super) && sh >= 0 && (sh & 4) && fwd_any_def_yields(nt, cn)) { ok = 0; break; }
       if (sh < 0 || nt_ref(nt, id, "block") >= 0) { ok = 0; break; }
       if (ncalls && sh != shape) { ok = 0; break; }
       shape = sh;
       calls[ncalls++] = id;
     }
-    if (!ok || !ncalls || !(shape & 3) || (shape & 4)) continue;
-    if (any_call_passes_block(nt, dname)) continue;
+    if (!ok || !ncalls || nfwd_args != ncalls || !(shape & 3)) continue;
+    /* the block rides along as an anonymous `&` */
+    int fwd_block = (shape & 4) || any_call_passes_block(nt, dname);
     int base = nt->count;
     /* def m(a, ...) -> def m(a, *, **) */
     if (shape & 1) {
@@ -3408,12 +3613,30 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
       if (kp < 0) continue;
       nt_node_set_ref(nt, pn, "keyword_rest", kp);
     } else nt_node_set_ref(nt, pn, "keyword_rest", -1);
-    /* callee(x, ...) -> callee(x, *, **) */
+    if (fwd_block) {
+      int bp = fwd_new_node_like(nt, pn, "BlockParameterNode");
+      if (bp < 0) continue;
+      nt_node_set_ref(nt, pn, "block", bp);
+    }
+    /* callee(x, ...) -> callee(x, *, **, &) */
     for (int k = 0; k < ncalls; k++) {
       int call = calls[k];
+      if (fwd_node_is(nt, call, "ForwardingSuperNode")) {
+        int line = (int)nt_int(nt, call, "node_line", 0);
+        int file = (int)nt_int(nt, call, "node_file", 0);
+        int col = (int)nt_int(nt, call, "node_col", 0);
+        int fargs = fwd_new_node_like(nt, call, "ArgumentsNode");
+        if (fargs < 0) continue;
+        nt_node_reset(nt, call, "SuperNode");
+        nt_node_set_int(nt, call, "node_line", line);
+        nt_node_set_int(nt, call, "node_file", file);
+        nt_node_set_int(nt, call, "node_col", col);
+        nt_node_set_ref(nt, call, "arguments", fargs);
+        nt_node_set_ref(nt, call, "block", -1);
+      }
       int args = nt_ref(nt, call, "arguments");
       int ac = 0; const int *av = nt_arr(nt, args, "arguments", &ac);
-      int nargs[ac + 1]; int nn = 0;
+      int nargs[ac + 2]; int nn = 0;
       for (int i = 0; i < ac - 1; i++) nargs[nn++] = av[i];
       if (shape & 1) {
         int sp = fwd_new_node_like(nt, call, "SplatNode");
@@ -3430,6 +3653,12 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
         nargs[nn++] = kh;
       }
       nt_node_set_arr(nt, args, "arguments", nargs, nn);
+      if (fwd_block) {
+        int ba = fwd_new_node_like(nt, call, "BlockArgumentNode");
+        if (ba < 0) continue;
+        nt_node_set_ref(nt, ba, "expression", -1);
+        nt_node_set_ref(nt, call, "block", ba);
+      }
     }
     comp_grow_node_arrays(c);
     for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[def];
