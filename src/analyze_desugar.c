@@ -3217,15 +3217,32 @@ static void fwd_path_key(const NodeTable *nt, int path, char *key, size_t cap) {
   fwd_path_key(nt, par, key, cap);
   fwd_key_add(key, cap, par >= 0 ? nt_str(nt, par, "name") : NULL);
 }
+/* A body statement as the def it declares: the statement itself, or the
+   one argument of a receiverless `private def m ...` (also protected, public
+   and module_function), which declares the same method. -1 otherwise. */
+static int fwd_body_def(const NodeTable *nt, int st) {
+  if (fwd_node_is(nt, st, "DefNode")) return st;
+  if (!fwd_node_is(nt, st, "CallNode") || nt_ref(nt, st, "receiver") >= 0) return -1;
+  const char *nm = nt_str(nt, st, "name");
+  if (!nm || !(sp_streq(nm, "private") || sp_streq(nm, "protected") ||
+               sp_streq(nm, "public") || sp_streq(nm, "module_function"))) return -1;
+  int an = 0; const int *av = nt_arr(nt, nt_ref(nt, st, "arguments"), "arguments", &an);
+  return an == 1 && fwd_node_is(nt, av[0], "DefNode") ? av[0] : -1;
+}
+/* Does the body of class or module `ct` hold `id` as one of its statements,
+   or as a def a visibility call wraps? */
+static int fwd_body_holds(const NodeTable *nt, int ct, int id) {
+  int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, ct, "body"), "body", &bn);
+  for (int k = 0; k < bn; k++)
+    if (bv[k] == id || fwd_body_def(nt, bv[k]) == id) return 1;
+  return 0;
+}
 static void fwd_ns_key(const NodeTable *nt, int id, char *key, size_t cap);
 /* The lexical namespace a node sits in: its enclosing classes and modules. */
 static void fwd_lex_ctx(const NodeTable *nt, int id, char *key, size_t cap) {
   for (int ct = 0; ct < id; ct++) {
     if (!fwd_node_is(nt, ct, "ClassNode") && !fwd_node_is(nt, ct, "ModuleNode")) continue;
-    int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, ct, "body"), "body", &bn);
-    int in = 0;
-    for (int k = 0; k < bn && !in; k++) in = bv[k] == id;
-    if (!in) continue;
+    if (!fwd_body_holds(nt, ct, id)) continue;
     fwd_ns_key(nt, ct, key, cap);
     fwd_key_add(key, cap, nt_str(nt, nt_ref(nt, ct, "constant_path"), "name"));
     break;
@@ -3240,7 +3257,9 @@ static void fwd_ns_key(const NodeTable *nt, int id, char *key, size_t cap) {
 /* The namespace key of the class `ref` (a constant node, or `refname` when
    ref < 0) names when read in namespace `ctx`: looked up, with any
    qualifier of its path, in ctx and then each enclosing namespace out to the
-   top. 0 when no class of that key is opened. */
+   top. A name the lexical walk does not reach (a class an enclosing module
+   includes, `module N; include Lib; class C < Base`) is the one class of that
+   name when there is exactly one. 0 when no class is found. */
 static int fwd_resolve_class(const NodeTable *nt, const char *ctx, int ref, const char *refname,
                              char *out, size_t cap) {
   const char *cls = ref >= 0 ? nt_str(nt, ref, "name") : refname;
@@ -3260,11 +3279,23 @@ static int fwd_resolve_class(const NodeTable *nt, const char *ctx, int ref, cons
       fwd_ns_key(nt, id, key, sizeof key);
       if (sp_streq(key, cand)) { snprintf(out, cap, "%s", key); return 1; }
     }
-    if (!prefix[0]) return 0;
+    if (!prefix[0]) break;
     size_t n = strlen(prefix) - 2;
     while (n >= 2 && !(prefix[n - 1] == ':' && prefix[n - 2] == ':')) n--;
     prefix[n >= 2 ? n : 0] = '\0';
   }
+  int only = -1;
+  for (int id = 0; id < nt->count; id++) {
+    if (!fwd_node_is(nt, id, "ClassNode")) continue;
+    const char *cn = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+    if (!cn || !sp_streq(cn, cls)) continue;
+    key[0] = '\0';
+    fwd_ns_key(nt, id, key, sizeof key);
+    if (only >= 0 && !sp_streq(out, key)) return 0;   /* two classes of that name */
+    only = id;
+    snprintf(out, cap, "%s", key);
+  }
+  return only >= 0;
 }
 /* The shape of instance method `name` as the class `ref` names from
    namespace `ctx` (or its nearest superclass defining it) has it. Classes
@@ -3288,10 +3319,11 @@ static int fwd_class_method_shape(const NodeTable *nt, const char *ctx, int ref,
       if (next < 0 && nt_ref(nt, id, "superclass") >= 0) { next = nt_ref(nt, id, "superclass"); next_cls = id; }
       int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, id, "body"), "body", &bn);
       for (int k = 0; k < bn; k++) {
-        if (!fwd_node_is(nt, bv[k], "DefNode") || nt_ref(nt, bv[k], "receiver") >= 0) continue;
-        const char *dn = nt_str(nt, bv[k], "name");
+        int dk = fwd_body_def(nt, bv[k]);
+        if (dk < 0 || nt_ref(nt, dk, "receiver") >= 0) continue;
+        const char *dn = nt_str(nt, dk, "name");
         if (!dn || !sp_streq(dn, name)) continue;
-        int sh = def_shape(nt, bv[k]);
+        int sh = def_shape(nt, dk);
         if (sh < 0 || (shape >= 0 && sh != shape)) return -2;
         shape = sh;
       }
@@ -3304,13 +3336,11 @@ static int fwd_class_method_shape(const NodeTable *nt, const char *ctx, int ref,
   }
   return -1;
 }
-/* The ClassNode whose body holds `def` directly, or -1. */
+/* The ClassNode whose body holds `def` directly or under a visibility call,
+   or -1. */
 static int fwd_enclosing_class(const NodeTable *nt, int def) {
-  for (int id = 0; id < def; id++) {
-    if (!fwd_node_is(nt, id, "ClassNode")) continue;
-    int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, id, "body"), "body", &bn);
-    for (int k = 0; k < bn; k++) if (bv[k] == def) return id;
-  }
+  for (int id = 0; id < def; id++)
+    if (fwd_node_is(nt, id, "ClassNode") && fwd_body_holds(nt, id, def)) return id;
   return -1;
 }
 /* The shape a forwarding `call` in `def` reaches: `super` the parent's
