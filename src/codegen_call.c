@@ -6323,6 +6323,76 @@ static void emit_poly_splat_param(Compiler *c, Scope *ms, int a, int sa, int st,
   free(eb.p);
 }
 
+/* The enclosing method's anonymous keyword rest, which a bare `**` forwards,
+   or NULL outside such a method. */
+static LocalVar *poly_anon_kwrest(Compiler *c, int node) {
+  Scope *sc = comp_scope_of(c, node);
+  if (!sc || sc->kwrest_idx < 0 || sc->kwrest_idx >= sc->nparams || !sc->pnames) return NULL;
+  const char *nm = sc->pnames[sc->kwrest_idx];
+  return nm && sp_streq(nm, "__anon_kwrest") ? scope_local(sc, nm) : NULL;
+}
+
+static int poly_kw_empty_literal(const NodeTable *nt, int src) {
+  int n = 0;
+  if (nt_kind(nt, src) != NK_HashNode) return 0;
+  nt_arr(nt, src, "elements", &n);
+  return n == 0;
+}
+
+/* Can the keyword hash's `**` element be merged into the arms' one
+   Symbol-keyed hash: a named hash, an anonymous `**`, or a literal? */
+static int poly_kw_splat_ok(Compiler *c, int el) {
+  const NodeTable *nt = c->nt;
+  int src = nt_ref(nt, el, "value");
+  if (src < 0) return poly_anon_kwrest(c, el) != NULL;
+  if (poly_kw_empty_literal(nt, src)) return 1;
+  TyKind st = comp_ntype(c, src);
+  return st == TY_POLY || (ty_is_hash(st) && ty_hash_key(st) == TY_SYMBOL);
+}
+
+/* The call's keywords as one Symbol-keyed hash, in order, so a later key
+   wins as it does in CRuby. */
+static void emit_poly_kw_all(Compiler *c, int kwh, int th, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int en = 0; const int *els = nt_arr(nt, kwh, "elements", &en);
+  buf_printf(b, "sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d); ", th, th);
+  for (int e = 0; e < en; e++) {
+    if (nt_kind(nt, els[e]) != NK_AssocSplatNode) {
+      int key = nt_ref(nt, els[e], "key");
+      buf_printf(b, "sp_SymPolyHash_set(_t%d, (sp_sym)%d, ", th,
+                 comp_sym_intern(c, nt_str(nt, key, "value")));
+      emit_boxed(c, nt_ref(nt, els[e], "value"), b);
+      buf_puts(b, "); ");
+      continue;
+    }
+    int src = nt_ref(nt, els[e], "value");
+    if (src < 0) {
+      LocalVar *kl = poly_anon_kwrest(c, els[e]);
+      Buf lr; memset(&lr, 0, sizeof lr);
+      emit_local_ref(c, els[e], "__anon_kwrest", &lr);
+      if (kl->type == TY_SYM_POLY_HASH)
+        buf_printf(b, "sp_SymPolyHash_update(_t%d, %s); ", th, lr.p ? lr.p : "NULL");
+      else {
+        buf_printf(b, "sp_kwrest_merge_poly(_t%d, ", th);
+        emit_boxed_text(c, kl->type, lr.p ? lr.p : "0", b);
+        buf_puts(b, "); ");
+      }
+      free(lr.p);
+      continue;
+    }
+    if (poly_kw_empty_literal(nt, src)) continue;
+    if (comp_ntype(c, src) == TY_SYM_POLY_HASH) {
+      buf_printf(b, "sp_SymPolyHash_update(_t%d, ", th);
+      emit_expr(c, src, b);
+    }
+    else {
+      buf_printf(b, "sp_kwrest_merge_poly(_t%d, ", th);
+      emit_boxed(c, src, b);
+    }
+    buf_puts(b, "); ");
+  }
+}
+
 static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
   /* Re-entered from this very dispatch's builtin-container arm: decline, so
      the call falls through to the builtin emitters the arm is there to
@@ -7612,8 +7682,8 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
     /* A trailing KeywordHashNode carries the call's keyword arguments: split
        it off so the user-method arms match keyword params by NAME, not by
        position (the whole hash used to flow into the *rest / first keyword
-       slot, garbling both -- #3268). Only a plain sym-keyed literal is
-       recognized. */
+       slot, garbling both -- #3268). Symbol keys and `**` of a named hash,
+       an anonymous `**` or a literal are recognized. */
     int kwh = -1, pos_argc = argc, kw_ds = 0;
     { const char *l_ty = nt_type(nt, argv[argc - 1]);
       if (l_ty && sp_streq(l_ty, "KeywordHashNode")) {
@@ -7621,8 +7691,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         int plain = en > 0, nds = 0;
         for (int e = 0; e < en; e++) {
           if (nt_kind(nt, els[e]) == NK_AssocSplatNode) {
-            int src = nt_ref(nt, els[e], "value");
-            if (src < 0 || comp_ntype(c, src) != TY_SYM_POLY_HASH) { plain = 0; break; }
+            if (!poly_kw_splat_ok(c, els[e])) { plain = 0; break; }
             nds++;
             continue;
           }
@@ -7630,7 +7699,6 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
           if (!kty || !sp_streq(kty, "SymbolNode")) { plain = 0; break; }
         }
-        if (nds && comp_ntype(c, argv[argc - 1]) != TY_SYM_POLY_HASH) plain = 0;
         if (plain) { kwh = argv[argc - 1]; pos_argc = argc - 1; kw_ds = nds > 0; }
       }
     }
@@ -7816,8 +7884,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       if (kw_ds) {
         kwall = atmp[pos_argc] = ++g_tmp;
         atmp_ty[pos_argc] = TY_SYM_POLY_HASH;
-        buf_printf(b, "sp_SymPolyHash *_t%d = ", kwall); emit_expr(c, kwh, b);
-        buf_printf(b, "; SP_GC_ROOT(_t%d); ", kwall);
+        emit_poly_kw_all(c, kwh, kwall, b);
       }
       else if (kwh >= 0) {
         kwels = nt_arr(nt, kwh, "elements", &kwn);
