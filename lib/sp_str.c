@@ -1070,16 +1070,28 @@ const char*sp_str_gsub(const char*s,const char*pat,const char*rep){SP_GC_ROOT_ST
 }
 /* `s.index(sub)` -- leftmost occurrence; returns a codepoint offset (not a
    byte offset), or -1 if not found. */
-sp_int sp_str_index(const char*s,const char*sub){if(!s)sp_nil_recv("index");if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");const char*f=sp_bytestr(s,sp_str_byte_len(s),sub,sp_str_byte_len(sub));if(!f)return -1;sp_int n=0;const char*p=s;while(p<f){p+=sp_utf8_advance(p);n++;}return n;}
+/* The characters from `from` up to `to` inside s, and the byte offset of
+   character n: one unit per byte for a BINARY string, whatever its bytes
+   spell in UTF-8, so `"\xC3\xA9\xFF".b.index("\xFF".b)` is 2 (#5535). */
+static sp_int sp_str_units_between(const char *s, const char *from, const char *to) {
+  if (sp_str_is_binary(s)) return (sp_int)(to - from);
+  sp_int n = 0;
+  while (from < to) { from += sp_utf8_advance(from); n++; }
+  return n;
+}
+static size_t sp_str_unit_offset(const char *s, sp_int n) {
+  return sp_str_is_binary(s) ? (size_t)n : sp_utf8_byte_offset(s, n);
+}
+sp_int sp_str_index(const char*s,const char*sub){if(!s)sp_nil_recv("index");if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");const char*f=sp_bytestr(s,sp_str_byte_len(s),sub,sp_str_byte_len(sub));if(!f)return -1;return sp_str_units_between(s,s,f);}
 /* Issue #758: NULL guard + bound the start so a negative result from
    sp_str_index doesn't underflow the source pointer. */
-sp_int sp_str_index_from(const char*s,const char*sub,sp_int start){if(!s)sp_nil_recv("index");sp_int cl=sp_str_length(s);if(start<0)start+=cl;if(start<0)start=0;if(start>cl)return -1;size_t boff=sp_utf8_byte_offset(s,start);const char*f=sp_bytestr(s+boff,sp_str_byte_len(s)-boff,sub,sp_str_byte_len(sub));if(!f)return -1;sp_int n=start;const char*p=s+boff;while(p<f){p+=sp_utf8_advance(p);n++;}return n;}
+sp_int sp_str_index_from(const char*s,const char*sub,sp_int start){if(!s)sp_nil_recv("index");sp_int cl=sp_str_length(s);if(start<0)start+=cl;if(start<0)start=0;if(start>cl)return -1;size_t boff=sp_str_unit_offset(s,start);const char*f=sp_bytestr(s+boff,sp_str_byte_len(s)-boff,sub,sp_str_byte_len(sub));if(!f)return -1;return start+sp_str_units_between(s,s+boff,f);}
 /* `s.rindex(sub)` -- rightmost occurrence of sub; returns a codepoint
    offset, or -1 if not found. Empty sub matches at the end. */
-sp_int sp_str_rindex(const char*s,const char*sub){if(!s)sp_nil_recv("rindex");if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");size_t sl=sp_str_byte_len(sub);if(sl==0)return sp_str_length(s);size_t hn=sp_str_byte_len(s);const char*end=s+hn;const char*last=NULL;const char*p=s;while(p<end){const char*f=sp_bytestr(p,(size_t)(end-p),sub,sl);if(!f)break;last=f;p=f+1;}if(!last)return -1;sp_int n=0;const char*q=s;while(q<last){q+=sp_utf8_advance(q);n++;}return n;}
+sp_int sp_str_rindex(const char*s,const char*sub){if(!s)sp_nil_recv("rindex");if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");size_t sl=sp_str_byte_len(sub);if(sl==0)return sp_str_length(s);size_t hn=sp_str_byte_len(s);const char*end=s+hn;const char*last=NULL;const char*p=s;while(p<end){const char*f=sp_bytestr(p,(size_t)(end-p),sub,sl);if(!f)break;last=f;p=f+1;}if(!last)return -1;return sp_str_units_between(s,s,last);}
 /* `s.rindex(sub, pos)` -- rightmost occurrence at or before codepoint pos.
    Negative pos counts back from the char length; nil (SP_INT_NIL) on miss. */
-sp_int sp_str_rindex_from(const char*s,const char*sub,sp_int pos){if(!s)sp_nil_recv("rindex");if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");sp_int cl=sp_str_length(s);if(pos<0)pos=cl+pos;if(pos<0)return SP_INT_NIL;size_t sl=sp_str_byte_len(sub);if(sl==0){if(pos>=cl)return cl;return pos;}size_t hn=sp_str_byte_len(s);const char*end=s+hn;const char*p=s;sp_int best=-1;const char*r=s;sp_int cur_n=0;while(p<end){const char*f=sp_bytestr(p,(size_t)(end-p),sub,sl);if(!f)break;while(r<f){r+=sp_utf8_advance(r);cur_n++;}if(cur_n>pos)break;best=cur_n;p=f+1;}return best<0?SP_INT_NIL:best;}
+sp_int sp_str_rindex_from(const char*s,const char*sub,sp_int pos){if(!s)sp_nil_recv("rindex");if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");sp_int cl=sp_str_length(s);if(pos<0)pos=cl+pos;if(pos<0)return SP_INT_NIL;size_t sl=sp_str_byte_len(sub);if(sl==0){if(pos>=cl)return cl;return pos;}size_t hn=sp_str_byte_len(s);const char*end=s+hn;const char*p=s;sp_int best=-1;const char*r=s;sp_int cur_n=0;while(p<end){const char*f=sp_bytestr(p,(size_t)(end-p),sub,sl);if(!f)break;cur_n+=sp_str_units_between(s,r,f);r=f;if(cur_n>pos)break;best=cur_n;p=f+1;}return best<0?SP_INT_NIL:best;}
 /* byteindex/byterindex: like index/rindex but the result and the start/pos
    arguments are BYTE offsets, not codepoint indices. Byte-oriented throughout
    (sp_bytestr), so no utf8 walk is needed. nil (SP_INT_NIL) on miss. */
