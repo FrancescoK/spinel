@@ -85,3 +85,50 @@ h = {k: ARGV.empty? ? "abc".dup : [1]}
 e = h[:k]
 h[:k].replace("q")
 p h, e
+
+source = ARGV.empty? ? "abc".dup : [1]
+target = source
+target.replace("src")
+p source, target
+
+n = ARGV.size + 1
+x = case n when 1 then "abc".dup else [1] end
+y = x
+x.replace("when")
+p x, y
+
+x = case n
+    in 1 then "abc".dup
+    else [1]
+    end
+y = x
+x.replace("in")
+p x, y
+
+class Changer
+  def change(v) = v.replace("changed")
+end
+x = ARGV.empty? ? "abc".dup : [1]
+y = x
+Changer.new.change(x)
+p x, y
+
+def mutate(v) = v.replace("mutated")
+
+class IvarArg
+  def initialize
+    @v = ARGV.empty? ? "abc".dup : [1]
+  end
+
+  def go
+    alias_ref = @v
+    mutate(@v)
+    p @v, alias_ref
+  end
+end
+IvarArg.new.go
+
+$ga = ARGV.empty? ? "abc".dup : [1]
+gy = $ga
+mutate($ga)
+p $ga, gy
