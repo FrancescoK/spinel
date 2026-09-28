@@ -1029,6 +1029,7 @@ int poly_string_read_p(const char *name);
    variable, or a call returning a class); 0 for a constant or accessor
    receiver, which resolve statically (#3415). */
 int class_recv_is_dynamic(Compiler *c, int recv);
+int self_class_static_ci(Compiler *c, int recv);  /* self.class naming one class */
 
 /* An ivar whose type came from an --rbs seed (class_pin_ivar). Codegen reads
    it to decide where a seed assertion belongs (#3412). */
