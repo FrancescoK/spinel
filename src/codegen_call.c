@@ -2774,7 +2774,7 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
         (sp_streq(name, "[]=") && argc == 2)) {
       int tt = ++g_tmp, tk = ++g_tmp, tv = ++g_tmp;
       buf_printf(b, "({ sp_thread *_t%d = ", tt); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_RbVal _t%d = ", tk); emit_boxed(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", tt, tk); emit_boxed(c, argv[0], b);
       buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tk);
       if (argc == 2) {
         buf_printf(b, " sp_RbVal _t%d = ", tv); emit_boxed(c, argv[1], b);
