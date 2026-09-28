@@ -7901,6 +7901,11 @@ TyKind infer_uncached(Compiler *c, int id) {
     int mi = s->is_cmethod ? comp_cmethod_in_chain(c, p, uname, NULL)
                            : comp_method_in_chain(c, p, uname, NULL);
     if (mi < 0) return TY_UNKNOWN;
+    /* `super(x) { }`: the literal block is spliced into the yielding parent
+       like a call's, so the super answers what that call would */
+    int sblk = nt_ref(nt, id, "block");
+    if (c->scopes[mi].yields && sblk >= 0 && nt_kind(nt, sblk) == NK_BlockNode)
+      return method_call_ret(c, mi, id);
     TyKind sret = (TyKind)c->scopes[mi].ret;
     /* A yielding parent's return is whatever its yield produces, decided per
        call site, so its own `ret` stays unknown. The block reaching it is the
