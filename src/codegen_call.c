@@ -12816,12 +12816,17 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             emit_expr(c, bb[bi], &sb);
             emit_indent(g_pre, g_indent); buf_puts(g_pre, sb.p ? sb.p : ""); buf_puts(g_pre, ";\n"); free(sb.p);
           }
-          emit_expr(c, bb[bn - 1], &vb);
+          /* a tail marked for the shared handle boxes through emit_boxed,
+             which wraps the plain string it evaluates to in a fresh handle */
+          int tail_strbuf = sp_streq(k, "Poly") && comp_ntype(c, bb[bn - 1]) == TY_STRBUF;
+          if (tail_strbuf) emit_boxed(c, bb[bn - 1], &vb);
+          else emit_expr(c, bb[bn - 1], &vb);
           emit_indent(g_pre, g_indent);
           if (sp_streq(k, "Poly")) {
             buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", tr);
             TyKind vt = comp_ntype(c, bb[bn - 1]);
-            if (vt == TY_UNKNOWN) {
+            if (tail_strbuf) buf_puts(g_pre, vb.p ? vb.p : "sp_box_nil()");
+            else if (vt == TY_UNKNOWN) {
               /* comp_ntype may return UNKNOWN for e.g. empty [] literals.
                  emit_boxed handles those correctly (no extra g_pre side effects
                  for side-effect-free expressions like empty array literals). */
