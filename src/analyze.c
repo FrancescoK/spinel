@@ -11217,6 +11217,12 @@ static int widen_mixed_key_hash_slots(Compiler *c) {
          decide; only a plain store and `||=` / `&&=` name the value. */
       int vnode = is_call ? av[1] : wkinds[wk] == NK_IndexOperatorWriteNode ? -1 : nt_ref(nt, id, "value");
       unsigned vb = vnode >= 0 ? hash_value_class_bit(infer_type(c, vnode)) : 0;
+      /* A boxed parameter of the storing method is boxed because its
+         callers pass values of more than one class: the typed setter cannot
+         convert them all. */
+      if (!vb && vnode >= 0 && infer_type(c, vnode) == TY_POLY &&
+          unassigned_param_read(c, comp_scope_of(c, vnode), vnode) >= 0)
+        vb = 8u;
       int f = -1;
       for (int q = 0; q < ns; q++) if (hash_key_slot_same(c, &slots[q], &hs, 0)) { f = q; break; }
       if (f < 0) {

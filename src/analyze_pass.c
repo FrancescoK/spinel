@@ -627,7 +627,7 @@ int lw_shared_next(int rec) { return lw_shared_ix.next[rec]; }
 /* The position of the positional parameter of method scope `sc` that `n`
    reads, when the body never assigns it (so the read is what the call
    passed); -1 otherwise. */
-static int unassigned_param_read(Compiler *c, Scope *sc, int n) {
+int unassigned_param_read(Compiler *c, Scope *sc, int n) {
   const NodeTable *nt = c->nt;
   if (!sc || n < 0 || nt_kind(nt, n) != NK_LocalVariableReadNode || comp_scope_of(c, n) != sc) return -1;
   const char *nm = nt_str(nt, n, "name");
