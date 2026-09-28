@@ -121,7 +121,10 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
          value. Run the leading statements for side effects; if sN is itself an
          assignment, perform it and read the assigned variable back as the value. */
       char vexpr[48]; vexpr[0] = 0;
-      for (int si = 0; si + 1 < bn; si++) emit_stmt(c, body[si], g_pre, g_indent);
+      /* ...into this part's place in `decls`, in order with the parts around
+         it: hoisted to g_pre they ran before the whole enclosing expression,
+         so `"#{x}" + "#{x = "b"}"` read x after the assignment (#5574) */
+      for (int si = 0; si + 1 < bn; si++) emit_stmt(c, body[si], &decls, 0);
       const char *ety = expr >= 0 ? nt_type(nt, expr) : NULL;
       TyKind t = comp_ntype(c, expr);
       /* Interpolation is `to_s`, so a program that REOPENED the part's class
@@ -174,13 +177,13 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
       }
       if (ety && (sp_streq(ety, "LocalVariableWriteNode") || sp_streq(ety, "LocalVariableOperatorWriteNode") ||
                   sp_streq(ety, "LocalVariableOrWriteNode") || sp_streq(ety, "LocalVariableAndWriteNode"))) {
-        emit_stmt(c, expr, g_pre, g_indent);
+        emit_stmt(c, expr, &decls, 0);
         const char *vn = nt_str(nt, expr, "name");
         LocalVar *lvp = vn ? scope_local(comp_scope_of(c, expr), vn) : NULL;
         if (lvp) t = lvp->type;
         int tv = ++g_tmp;
-        emit_indent(g_pre, g_indent); emit_ctype(c, t, g_pre);
-        buf_printf(g_pre, " _t%d = ", tv); emit_local_ref(c, expr, vn, g_pre); buf_puts(g_pre, ";\n");
+        emit_ctype(c, t, &decls);
+        buf_printf(&decls, " _t%d = ", tv); emit_local_ref(c, expr, vn, &decls); buf_puts(&decls, "; ");
         snprintf(vexpr, sizeof vexpr, "_t%d", tv);
       }
       /* Build this part's conversion expression. Bounded scalars keep their
