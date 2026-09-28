@@ -10434,6 +10434,13 @@ static int ctor_block_dispatchable(Compiler *c, int id) {
    out put a call with too few arguments into every such arm -- a class the
    receiver was never going to be stopped the build (#4855). `lead` is the
    separator after the positional arguments. */
+/* "" when the argument list is still empty (nothing written since the open
+   paren), ", " otherwise -- the separator emit_ctor_block_slot needs when the
+   caller cannot count what emit_args_filled wrote. */
+static const char *ctor_blk_lead(const Buf *b) {
+  size_t n = b->p ? strlen(b->p) : 0;
+  return (n && b->p[n - 1] != '(') ? ", " : "";
+}
 static void emit_ctor_block_slot(Compiler *c, int id, int initm, const char *lead, Buf *b) {
   if (initm < 0) return;
   Scope *is = &c->scopes[initm];
@@ -10465,8 +10472,12 @@ static int emit_user_new_arm(Compiler *c, int id, int ci, int argc, const int *a
   if (kmi < 0) return 0;
   Scope *ks = &c->scopes[kmi];
   if (!scope_has_callable_symbol(c, kmi)) return 1;   /* no symbol: the default raises */
-  if (ks->yields || (ks->blk_param && ks->blk_param[0]))
-    unsupported(c, id, "`new` on a Class value reaching a user `self.new` that takes a block");
+  /* A `self.new` that YIELDS has no proc parameter to hand the block to --
+     it is spliced at its yields, which this arm cannot do. One that keeps a
+     named `&blk` takes it as a trailing C parameter, exactly as a stored-block
+     initialize does (emit_ctor_block_slot), so the arm passes it below. */
+  if (ks->yields)
+    unsupported(c, id, "`new` on a Class value reaching a user `self.new` that yields");
   /* A sole keyword hash reaches the hoisting emitters (it is the Struct
      member form there) as one boxed temp; a method declaring keywords binds
      them from it by name, and its positionals from the rest. */
@@ -10568,6 +10579,12 @@ static int emit_user_new_arm(Compiler *c, int id, int ci, int argc, const int *a
     Buf *sv_pre = g_pre; g_pre = &apre;
     emit_args_filled(c, kmi, nt_ref(c->nt, id, "arguments"), lead, &cb);
     g_pre = sv_pre;
+  }
+  /* the trailing block slot, as emit_ctor_block_slot appends it for a
+     stored-block initialize */
+  if (ks->blk_param && ks->blk_param[0] && !ks->yields) {
+    buf_puts(&cb, (cb.p && cb.p[strlen(cb.p) - 1] != '(') ? ", " : lead);
+    emit_ctor_block_value(c, id, &cb);
   }
   buf_puts(&cb, ")");
   TyKind kr = (TyKind)ks->ret;
@@ -10970,6 +10987,64 @@ static int emit_struct_kw_new_arm(Compiler *c, int ci, int kwh, int htmp, const 
 /* One construction of class `ci` for `super` in a `self.new` (Class#new):
    the call's arguments laid out for ci's initialize, or with a bare `super`
    the method's own parameters, in order. */
+/* A bare `super` in a `self.new` that only forwards (`*a, **k, &blk`):
+   build class `ci` from the rest array and the keyword-rest hash the wrapper
+   holds, which is what the explicit `super(*a, **k, &blk)` spelling does. */
+static void emit_super_new_forward(Compiler *c, int id, int ci, Scope *s,
+                                   int initm, Buf *b) {
+  ClassInfo *k = &c->classes[ci];
+  if (initm < 0) {
+    buf_printf(b, "sp_%s_new()", k->c_name);
+    return;
+  }
+  Scope *is = &c->scopes[initm];
+  const char *restn = s->rest_idx >= 0 ? s->pnames[s->rest_idx] : NULL;
+  const char *kwn = s->kwrest_idx >= 0 ? s->pnames[s->kwrest_idx] : NULL;
+  buf_printf(b, "sp_%s_new(", k->c_name);
+  int pos = 0;
+  for (int i = 0; i < is->nparams; i++) {
+    if (i) buf_puts(b, ", ");
+    const char *pn = is->pnames ? is->pnames[i] : NULL;
+    LocalVar *dv = pn ? scope_local(is, pn) : NULL;
+    TyKind dt = dv ? dv->type : TY_POLY;
+    if (dt == TY_UNKNOWN) dt = TY_POLY;
+    if (pn && callee_param_is_declared_kwarg(c, is, pn)) {
+      if (!kwn) { emit_arg_or_default(c, is, i, -1, b); continue; }
+      buf_puts(b, "({ sp_bool _kwh; sp_RbVal _kwr = sp_poly_hash_probe(sp_box_obj(lv_");
+      buf_printf(b, "%s, SP_BUILTIN_SYM_POLY_HASH), sp_box_sym(sp_sym_intern(\"%s\")), &_kwh); _kwh ? ",
+                 rename_local(kwn), pn);
+      if (dt == TY_POLY) buf_puts(b, "_kwr");
+      else emit_unbox_text(c, dt, "_kwr", b);
+      buf_puts(b, " : ");
+      emit_arg_or_default(c, is, i, -1, b);
+      buf_puts(b, "; })");
+      continue;
+    }
+    if (!restn) { emit_arg_or_default(c, is, i, -1, b); continue; }
+    char elem[256];
+    snprintf(elem, sizeof elem, "sp_PolyArray_get(lv_%s, %d)", rename_local(restn), pos);
+    char guarded[640];
+    Buf db; memset(&db, 0, sizeof db);
+    emit_arg_or_default(c, is, i, -1, &db);
+    Buf vb; memset(&vb, 0, sizeof vb);
+    if (dt == TY_POLY) buf_puts(&vb, elem);
+    else emit_unbox_text(c, dt, elem, &vb);
+    snprintf(guarded, sizeof guarded, "(sp_PolyArray_length(lv_%s) > %d ? %s : %s)",
+             rename_local(restn), pos, vb.p ? vb.p : "sp_box_nil()", db.p ? db.p : "0");
+    buf_puts(b, guarded);
+    free(db.p); free(vb.p);
+    pos++;
+  }
+  /* the wrapper's own `&blk`, which a bare super forwards; emit_ctor_block_slot
+     reads the CALL's block node and a ForwardingSuperNode has none */
+  if (is->blk_param && is->blk_param[0] && !is->yields) {
+    if (is->nparams > 0) buf_puts(b, ", ");
+    if (s->blk_param && s->blk_param[0]) buf_printf(b, "lv_%s", rename_local(s->blk_param));
+    else buf_puts(b, "NULL");
+  }
+  buf_puts(b, ")");
+}
+
 static void emit_super_new_ctor(Compiler *c, int id, int ci, Buf *b) {
   const NodeTable *nt = c->nt;
   ClassInfo *k = &c->classes[ci];
@@ -10980,6 +11055,18 @@ static void emit_super_new_ctor(Compiler *c, int id, int ci, Buf *b) {
   int argc = 0; if (argsn >= 0) nt_arr(nt, argsn, "arguments", &argc);
   if (nt_kind(nt, id) == NK_ForwardingSuperNode) {
     Scope *s = comp_scope_of(c, id);
+    /* A pure forwarder -- `def self.new(*a, **k, &blk) ... super end` -- means
+       exactly what `super(*a, **k, &blk)` means, and that spelling already
+       compiles. Fill the constructor from the rest array and the keyword-rest
+       hash the wrapper is holding. Anything else mixed in (named parameters
+       beside the splats) keeps the refusal: there is no one mapping then. */
+    int fwd_only = (s->rest_idx >= 0 || s->kwrest_idx >= 0 ||
+                    (s->blk_param && s->blk_param[0]));
+    if (fwd_only) {
+      for (int i = 0; i < s->nparams; i++)
+        if (i != s->rest_idx && i != s->kwrest_idx) { fwd_only = 0; break; }
+    }
+    if (fwd_only) { emit_super_new_forward(c, id, ci, s, initm, b); return; }
     if (s->rest_idx >= 0 || s->kwrest_idx >= 0 || (s->blk_param && s->blk_param[0]))
       unsupported(c, id, "bare super in `self.new` with a rest, keyword-rest or block parameter");
     for (int i = 0; i < s->nparams; i++)
@@ -11010,7 +11097,19 @@ static void emit_super_new_ctor(Compiler *c, int id, int ci, Buf *b) {
     buf_puts(b, ")");
     return;
   }
-  if (initm < 0 && argc > 0) {
+  /* A splat or a keyword splat carries a count nobody knows here:
+     `super(*a, **k)` forwarding an empty rest and an empty kwrest is zero
+     arguments at run time, and counting the two nodes raised ArgumentError
+     on a call that is correct. */
+  int sp_unknown_argc = 0;
+  if (argsn >= 0) {
+    int sac = 0; const int *sav = nt_arr(nt, argsn, "arguments", &sac);
+    for (int a = 0; a < sac; a++) {
+      NodeKind ak = nt_kind(nt, sav[a]);
+      if (ak == NK_SplatNode || ak == NK_KeywordHashNode) { sp_unknown_argc = 1; break; }
+    }
+  }
+  if (initm < 0 && argc > 0 && !sp_unknown_argc) {
     buf_printf(b, "(sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given %d, expected 0)\"), %s)",
                argc, default_value(ty_object(ci)));
     return;
@@ -11612,6 +11711,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           buf_puts(b, "(");
           const char *ld = emit_cmethod_self_cls_arg(c, ucnew, ci, b);
           emit_args_filled(c, ucnew, nt_ref(nt, id, "arguments"), ld, b);
+          emit_ctor_block_slot(c, id, ucnew, ctor_blk_lead(b), b);
           buf_puts(b, ")");
           return 1;
         }
@@ -30419,6 +30519,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_puts(b, "(");
         const char *ld = emit_cmethod_self_cls_arg(c, ucnew, ci, b);   /* #4217 */
         emit_args_filled(c, ucnew, nt_ref(nt, id, "arguments"), ld, b);
+        /* a `self.new` that keeps a named `&blk` takes it as a trailing C
+           parameter, the same slot a stored-block initialize gets; leaving it
+           out emitted a call with one argument too few and the C build stopped */
+        emit_ctor_block_slot(c, id, ucnew, ctor_blk_lead(b), b);
         buf_puts(b, ")");
         return;
       }

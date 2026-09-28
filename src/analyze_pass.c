@@ -5233,6 +5233,20 @@ int infer_param_types(Compiler *c) {
           if (imi < 0) continue;
           if (sp_streq(ty, "SuperNode")) { changed |= bind_call_params(c, id, imi); continue; }
           Scope *im = &c->scopes[imi];
+          /* A forwarder (`def self.new(*a, **k, &blk) ... super end`) passes
+             the CONTENTS of its rest array and keyword-rest hash on, not the
+             containers: mapping parameter q to parameter q typed the
+             constructor's first parameter as the array itself. What arrives
+             is decided at run time, so every parameter takes a boxed value. */
+          if (s->rest_idx >= 0 || s->kwrest_idx >= 0) {
+            for (int q = 0; q < im->nparams; q++) {
+              LocalVar *dst = scope_local(im, im->pnames[q]);
+              if (!dst || dst->rbs_seeded) continue;
+              TyKind mg = ty_unify(dst->type, TY_POLY);
+              if (mg != dst->type) { dst->type = mg; changed = 1; }
+            }
+            continue;
+          }
           for (int q = 0; q < s->nparams && q < im->nparams; q++) {
             LocalVar *src = scope_local(s, s->pnames[q]);
             LocalVar *dst = scope_local(im, im->pnames[q]);
