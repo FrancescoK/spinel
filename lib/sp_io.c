@@ -1494,6 +1494,13 @@ void sp_File_advise(sp_File *f, const char *kind, sp_int off, sp_int len) {
    the side it does not have raises; half-closing the side it IS just closes
    the handle, which is what CRuby does. */
 void sp_File_close_half(sp_File *f, sp_bool reading) {SP_GC_ROOT(f);
+  /* a closed File or pipe answers nil, as CRuby's IO#close_read and
+     #close_write do, ahead of the duplex check; a closed socket raises, as
+     BasicSocket's do */
+  if (f && f->closed) {
+    if (f->is_sock) sp_io_raise_closed();
+    return;
+  }
   const char *m = (f && f->mode) ? f->mode : "r";
   sp_bool writable = strchr(m, 'w') || strchr(m, 'a') || strchr(m, '+');
   sp_bool readable = strchr(m, 'r') || strchr(m, '+');
