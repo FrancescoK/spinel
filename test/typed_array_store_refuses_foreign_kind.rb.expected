@@ -1,12 +1,10 @@
-int<<str: TypeError: cannot store String into an Array[Integer]: a typed array holds one kind of element
+[1, "z"]
+[1, 2.5]
+[1.5, "z"]
+[1.5, 2]
+["a", 7]
+int<<str held: TypeError: cannot store String into an Array[Integer]: a typed array holds one kind of element
 [1]
-int<<float: TypeError: cannot store Float into an Array[Integer]: a typed array holds one kind of element
-[1]
-flt<<str: TypeError: cannot store String into an Array[Float]: a typed array holds one kind of element
-[1.5]
-[1.5, 2.0]
-str<<int: TypeError: cannot store Integer into an Array[String]: a typed array holds one kind of element
-["a"]
 ["a", nil]
 []=: TypeError: cannot store String into an Array[Integer]: a typed array holds one kind of element
 [0, 0]

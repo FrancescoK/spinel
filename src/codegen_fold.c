@@ -28,20 +28,45 @@ int resolve_forwarded_block(Compiler *c, int block) {
   return forwards_param ? g_block_id : block;
 }
 
+/* The value of a `&expr` block argument as the sp_Proc * a `&blk`
+   parameter takes: a Proc as itself, a boxed value through
+   sp_poly_to_block (nil is no block), a Method through its trampoline
+   proc. Writes nothing and returns 0 for any other type. Each site that
+   hands a block argument to a real `&blk` parameter goes through here;
+   they each had the Proc arm alone and passed NULL for the rest, so the
+   method ran without its block and the expression was never evaluated. */
+int emit_block_arg_proc(Compiler *c, int fe, Buf *b) {
+  TyKind t = comp_ntype(c, fe);
+  if (t == TY_PROC) { emit_expr(c, fe, b); return 1; }
+  if (t == TY_POLY) {
+    buf_puts(b, "sp_poly_to_block("); emit_boxed(c, fe, b); buf_puts(b, ")");
+    return 1;
+  }
+  if (t == TY_METHOD) {
+    /* rooted across the proc's allocation, as Method#to_proc roots it */
+    int tp = ++g_tmp;
+    buf_printf(b, "({ sp_BoundMethod *_t%d = ", tp);
+    emit_expr(c, fe, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); sp_method_to_proc(_t%d); })", tp, tp);
+    return 1;
+  }
+  return 0;
+}
+
 /* A BlockArgumentNode that survives resolve_forwarded_block has no inline
-   block to splice: it forwards a REAL proc -- a TY_PROC expression (`&block`
-   from a real-function body, e.g. a self-recursive block method), or the
-   caller's own proc param via anonymous `&`. Write that proc expression (or
-   NULL) into b and return 1; return 0 when blk_node isn't that shape (a
-   literal block, for emit_proc_literal). Mirrors the same branch in
-   emit_cmethod_block_arg. */
+   block to splice: it forwards a REAL proc -- a proc-valued expression
+   (`&block` from a real-function body, e.g. a self-recursive block method;
+   see emit_block_arg_proc), or the caller's own proc param via anonymous
+   `&`. Write that proc expression (or NULL) into b and return 1; return 0
+   when blk_node isn't that shape (a literal block, for emit_proc_literal).
+   Mirrors the same branch in emit_cmethod_block_arg. */
 int emit_forwarded_proc_arg(Compiler *c, int blk_node, Buf *b) {
   const NodeTable *nt = c->nt;
   if (blk_node < 0) return 0;
   const char *ty = nt_type(nt, blk_node);
   if (!ty || !sp_streq(ty, "BlockArgumentNode")) return 0;
   int fe = nt_ref(nt, blk_node, "expression");
-  if (fe >= 0 && comp_ntype(c, fe) == TY_PROC) { emit_expr(c, fe, b); return 1; }
+  if (fe >= 0 && emit_block_arg_proc(c, fe, b)) return 1;
   if (fe < 0) {
     /* anonymous `&`: the BlockArgumentNode sits in the caller's body, so its
        scope is the caller -- forward that method's own proc param */
@@ -5707,6 +5732,26 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
      sp_RbVal rather than a raw value (or `void` temp). */
   if (p && pt == TY_UNKNOWN) pt = TY_POLY;
   if (provided >= 0) {
+    /* A typed array into a boxed parameter the method stores an element
+       into that the array cannot hold: the store promotes a copy, and the
+       caller's array never sees it. The binding widens the arrays it can see
+       built; a literal or a new array is storage nobody else holds, and the
+       rest are refused rather than miscompiled. */
+    if (pt == TY_POLY && c->store_misfit_arg && provided < c->node_cap && c->store_misfit_arg[provided] &&
+        !is_fresh_array(c, provided)) {
+      TyKind at = comp_ntype(c, provided);
+      if (at == TY_INT_ARRAY || at == TY_STR_ARRAY || at == TY_FLOAT_ARRAY) {
+        const char *ek = at == TY_INT_ARRAY ? "Integer" : at == TY_STR_ARRAY ? "String" : "Float";
+        char msg[512];
+        snprintf(msg, sizeof msg,
+                 "an Array[%s] is passed to `%s`'s parameter `%s`, which the method stores elements of "
+                 "other kinds into: the caller's array cannot hold them, and the store would go to a "
+                 "copy it never sees. Build the argument from an array literal the call can see, so it "
+                 "is widened with the parameter.",
+                 ek, m->name ? m->name : "?", m->pnames[idx]);
+        unsupported_feature(c, provided, msg);
+      }
+    }
     if (pt == TY_POLY) emit_boxed(c, provided, out);   /* box into a poly param */
     else {
       TyKind at = comp_ntype(c, provided);
@@ -6525,6 +6570,57 @@ static int kw_splat_user_may_convert(Compiler *c) {
 }
 
 /* See codegen_internal.h. */
+int kw_splat_may_be_nil(Compiler *c, int node) {
+  TyKind t = comp_ntype(c, node);
+  if (!kw_splat_bad_cls(c, t)) return 0;
+  switch (nt_kind(c->nt, node)) {
+    case NK_IntegerNode: case NK_FloatNode: case NK_RationalNode: case NK_ImaginaryNode:
+    case NK_StringNode: case NK_InterpolatedStringNode: case NK_XStringNode:
+    case NK_SymbolNode: case NK_InterpolatedSymbolNode: case NK_ArrayNode:
+    case NK_RangeNode: case NK_RegularExpressionNode: case NK_LambdaNode:
+    case NK_TrueNode: case NK_FalseNode:
+      return 0;   /* a literal is never nil */
+    case NK_CallNode: {
+      /* nor is the object `Foo.new` builds, short of a `def self.new` */
+      const char *cn = nt_str(c->nt, node, "name");
+      int rcv = nt_ref(c->nt, node, "receiver");
+      if (cn && sp_streq(cn, "new") && rcv >= 0 &&
+          (nt_kind(c->nt, rcv) == NK_ConstantReadNode || nt_kind(c->nt, rcv) == NK_ConstantPathNode)) {
+        int ci = comp_class_index(c, nt_str(c->nt, rcv, "name"));
+        if (ci >= 0 && comp_cmethod_in_chain(c, ci, "new", NULL) < 0) return 0;
+      }
+      break;
+    }
+    default: break;
+  }
+  /* the reading emit_boxed boxes a scalar by: its sentinel where the value
+     is nilable */
+  if (t == TY_INT)
+    return call_returns_nullable_int(c, node) || box_nullable_arg(c, node) ||
+           nt_kind(c->nt, node) == NK_InstanceVariableReadNode;
+  if (t == TY_FLOAT) return call_returns_nullable_int(c, node) || box_nullable_arg(c, node);
+  return needs_root(t);   /* a pointer-backed kind holds nil as NULL */
+}
+
+/* A `**` operand of a kind kw_splat_bad_cls names, evaluated into g_pre where
+   it stands: the TypeError raised outright, or, when the operand may be nil,
+   decided at run time on its boxed value. */
+static void emit_kw_splat_bad_operand(Compiler *c, int node) {
+  Buf hb; memset(&hb, 0, sizeof hb);
+  if (kw_splat_may_be_nil(c, node)) {
+    emit_boxed(c, node, &hb);
+    emit_kw_splat_conv_check(c, TY_POLY, hb.p ? hb.p : "sp_box_nil()");
+  }
+  else {
+    emit_expr(c, node, &hb);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "(void)(%s);\n", hb.p ? hb.p : "0");
+    emit_kw_splat_conv_check(c, comp_ntype(c, node), NULL);
+  }
+  free(hb.p);
+}
+
+/* See codegen_internal.h. */
 void emit_kw_splat_conv_check(Compiler *c, TyKind t, const char *val) {
   if (t == TY_POLY) {
     emit_indent(g_pre, g_indent);
@@ -6540,7 +6636,7 @@ void emit_kw_splat_conv_check(Compiler *c, TyKind t, const char *val) {
 /* See codegen_internal.h. */
 void emit_kw_splat_operand_inline(Compiler *c, int node, Buf *b) {
   TyKind t = comp_ntype(c, node);
-  if (t == TY_POLY) {
+  if (t == TY_POLY || kw_splat_may_be_nil(c, node)) {
     buf_puts(b, "sp_kw_splat_conv_check("); emit_boxed(c, node, b);
     buf_printf(b, ", %d); ", kw_splat_user_may_convert(c));
     return;
@@ -6565,6 +6661,14 @@ int kwh_sources_overlap(const NodeTable *nt, int kwh) {
     lit = 1;
   }
   return merge;
+}
+
+/* See codegen_internal.h. */
+int kwh_has_splat(const NodeTable *nt, int kwh) {
+  int en = 0; const int *el = kwh >= 0 ? nt_arr(nt, kwh, "elements", &en) : NULL;
+  for (int e = 0; e < en; e++)
+    if (nt_kind(nt, el[e]) == NK_AssocSplatNode) return 1;
+  return 0;
 }
 
 /* See codegen_internal.h. */
@@ -6616,35 +6720,53 @@ void emit_positionals_first(Compiler *c, const int *argv, int pos_argc) {
 }
 
 /* See codegen_internal.h. */
-int emit_ds_hash_merge(Compiler *c, int kwh, TyKind *out_type) {
+int emit_ds_hash_merge(Compiler *c, int kwh, int any_key, TyKind *out_type) {
   const NodeTable *nt = c->nt;
   int mh = ++g_tmp;
-  *out_type = TY_SYM_POLY_HASH;
+  const char *hk = any_key ? "PolyPoly" : "SymPoly";
+  *out_type = any_key ? TY_POLY_POLY_HASH : TY_SYM_POLY_HASH;
   emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d);\n", mh, mh);
+  buf_printf(g_pre, "sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);\n", hk, mh, hk, mh);
   int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
   for (int e = 0; e < en; e++) {
     int v = nt_ref(nt, el[e], "value");
     /* each source renders into a side buffer first: a literal drains its
        own construction into g_pre, which must land before the line using it */
     Buf vb; memset(&vb, 0, sizeof vb);
-    if (nt_kind(nt, el[e]) != NK_AssocSplatNode) {
+    int key = nt_ref(nt, el[e], "key");
+    if (nt_kind(nt, el[e]) != NK_AssocSplatNode && any_key && nt_kind(nt, key) != NK_SymbolNode) {
+      /* a key of another class, into the hash that takes any: a computed
+         one runs ahead of its value, into a rooted temp */
+      int kt = ++g_tmp;
+      Buf kb; memset(&kb, 0, sizeof kb);
+      emit_boxed(c, key, &kb);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", kt, kb.p ? kb.p : "sp_box_nil()", kt);
+      free(kb.p);
       emit_boxed(c, v, &vb);
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_SymPolyHash_set(_t%d, sp_sym_intern(\"%s\"), %s);\n", mh,
-                 nt_str(nt, nt_ref(nt, el[e], "key"), "value"), vb.p ? vb.p : "sp_box_nil()");
+      buf_printf(g_pre, "sp_PolyPolyHash_set(_t%d, _t%d, %s);\n", mh, kt, vb.p ? vb.p : "sp_box_nil()");
+    }
+    else if (nt_kind(nt, el[e]) != NK_AssocSplatNode) {
+      emit_boxed(c, v, &vb);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, any_key ? "sp_PolyPolyHash_set(_t%d, sp_box_sym(sp_sym_intern(\"%s\")), %s);\n"
+                                : "sp_SymPolyHash_set(_t%d, sp_sym_intern(\"%s\"), %s);\n", mh,
+                 nt_str(nt, key, "value"), vb.p ? vb.p : "sp_box_nil()");
     }
     else if (v < 0) {
       const char *akw = anon_kwrest_name(c, el[e]);
       if (akw) {
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, lv_%s);\n", mh, rename_local(akw));
+        if (any_key) buf_printf(g_pre, "sp_kw_merge_any(_t%d, sp_box_obj(lv_%s, SP_BUILTIN_SYM_POLY_HASH));\n",
+                                mh, rename_local(akw));
+        else buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, lv_%s);\n", mh, rename_local(akw));
       }
     }
     else {
       TyKind t = comp_ntype(c, v);
       const char *hn = ty_hash_cname(t);
-      if (hn && sp_streq(hn, "SymPoly")) {
+      if (!any_key && hn && sp_streq(hn, "SymPoly")) {
         int src = ++g_tmp;
         emit_expr(c, v, &vb);
         emit_indent(g_pre, g_indent);
@@ -6658,16 +6780,19 @@ int emit_ds_hash_merge(Compiler *c, int kwh, TyKind *out_type) {
            TypeError for anything else that is not a Hash */
         emit_boxed(c, v, &vb);
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_kwrest_merge_poly(_t%d, %s);\n", mh, vb.p ? vb.p : "sp_box_nil()");
+        buf_printf(g_pre, "%s(_t%d, %s);\n", any_key ? "sp_kw_merge_any" : "sp_kwrest_merge_poly",
+                   mh, vb.p ? vb.p : "sp_box_nil()");
       }
       else if (nt_kind(nt, v) != NK_NilNode &&
                !(nt_kind(nt, v) == NK_HashNode && empty_hash_literal(nt, v))) {
         /* no keywords to merge (`**f` answering nil, `**1`): only the operand
            to evaluate and, for another class, CRuby's TypeError to raise */
-        emit_expr(c, v, &vb);
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "(void)(%s);\n", vb.p ? vb.p : "0");
-        emit_kw_splat_conv_check(c, t, NULL);
+        if (kw_splat_bad_cls(c, t)) emit_kw_splat_bad_operand(c, v);
+        else {
+          emit_expr(c, v, &vb);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "(void)(%s);\n", vb.p ? vb.p : "0");
+        }
       }
     }
     free(vb.p);
@@ -6691,7 +6816,7 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type) {
   int ds_hash_tmp = -1;
   *out_type = TY_UNKNOWN;
   if (kwh < 0) return -1;
-  if (kwh_merged(c, m, kwh)) return emit_ds_hash_merge(c, kwh, out_type);
+  if (kwh_merged(c, m, kwh)) return emit_ds_hash_merge(c, kwh, 0, out_type);
   int en2 = 0; const int *elems2 = nt_arr(nt, kwh, "elements", &en2);
   for (int e = 0; e < en2; e++) {
     const char *ety2 = nt_type(nt, elems2[e]);
@@ -6736,15 +6861,24 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type) {
         char tn[32]; snprintf(tn, sizeof tn, "_t%d", ds_hash_tmp);
         emit_kw_splat_conv_check(c, *out_type, tn);
       }
+      else if (kw_splat_may_be_nil(c, inner2)) {
+        /* A slot that is no Hash but may hold nil (`**f` where f answers an
+           Integer or nil): boxed, it is checked, binds and is judged as a
+           boxed operand is, so nil carries no keywords. */
+        *out_type = TY_POLY;
+        ds_hash_tmp = ++g_tmp;
+        Buf hb; memset(&hb, 0, sizeof hb);
+        emit_boxed(c, inner2, &hb);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", ds_hash_tmp, hb.p ? hb.p : "sp_box_nil()");
+        free(hb.p);
+        char tn[32]; snprintf(tn, sizeof tn, "_t%d", ds_hash_tmp);
+        emit_kw_splat_conv_check(c, TY_POLY, tn);
+      }
       else if (kw_splat_bad_cls(c, *out_type)) {
         /* `**1`: no keywords to bind, only the operand to evaluate and
            CRuby's TypeError to raise before any keyword is checked */
-        Buf hb; memset(&hb, 0, sizeof hb);
-        emit_expr(c, inner2, &hb);
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "(void)(%s);\n", hb.p ? hb.p : "0");
-        free(hb.p);
-        emit_kw_splat_conv_check(c, *out_type, NULL);
+        emit_kw_splat_bad_operand(c, inner2);
       }
       else if (*out_type == TY_NIL && nt_kind(nt, inner2) != NK_NilNode) {
         /* `**f` where f answers nil: no keywords to bind, but f still runs */
@@ -6984,12 +7118,7 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
         }
         if (bad3 && nsplat3 > 1) {
           /* a later operand of another class raises where it stands */
-          Buf hb; memset(&hb, 0, sizeof hb);
-          emit_expr(c, inner3, &hb);
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "(void)(%s);\n", hb.p ? hb.p : "0");
-          free(hb.p);
-          emit_kw_splat_conv_check(c, sty, NULL);
+          emit_kw_splat_bad_operand(c, inner3);
         }
         if (sty == TY_NIL || bad3) continue;
         if (sty == TY_POLY) {

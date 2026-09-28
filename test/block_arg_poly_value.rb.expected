@@ -1,0 +1,35 @@
+pos
+blk
+[1, 2, 0, :blk]
+pos
+blk
+[1, :blk]
+blk
+[1, 0, 0, :blk]
+blk
+6
+blk
+[1, :blk]
+blk
+[1, 2, :blk]
+blk
+[1, :blk]
+[1, :blk]
+[1, :blk]
+[1, :blk]
+[1, :blk]
+[1, nil]
+[1, :blk]
+[1, nil]
+[1, :blk]
+[1, nil]
+[1, :meth]
+10
+13
+13
+13
+13
+14
+14
+14
+20

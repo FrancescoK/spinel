@@ -1,0 +1,12 @@
+["a"]
+[["a"], 0]
+[["made"], 1]
+[{k: 1}, "anon", 7, :draft, Box, 1.5, true]
+true
+["v"]
+["v"]
+nil
+"y"
+#<struct Pair left=[1], right="r">
+nil
+true

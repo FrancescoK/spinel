@@ -1,0 +1,41 @@
+pos
+h
+ArgumentError: wrong number of arguments (given 2, expected 0)
+pos
+y
+ArgumentError: wrong number of arguments (given 2, expected 0)
+pos
+p2
+y
+ArgumentError: wrong number of arguments (given 3, expected 0)
+pos
+z
+h
+ArgumentError: wrong number of arguments (given 2, expected 0)
+pos
+h
+TypeError: no implicit conversion of Integer into Hash
+pos
+z
+h
+TypeError: no implicit conversion of Integer into Hash
+pos
+ArgumentError: missing keyword: :y
+pos
+p2
+#<data Point x=1, y=2>
+pos
+p2
+#<data Point x=1, y=2>
+ArgumentError: wrong number of arguments (given 3, expected 0..2)
+pos
+ArgumentError: missing keyword: :y
+ArgumentError: missing keywords: :x, :y
+a
+b
+c
+ArgumentError: wrong number of arguments (given 3, expected 0..2)
+ArgumentError: wrong number of arguments (given 2, expected 0..1)
+ArgumentError: wrong number of arguments (given 1, expected 0)
+x
+ArgumentError: missing keyword: :y

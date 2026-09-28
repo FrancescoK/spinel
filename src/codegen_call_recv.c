@@ -3255,16 +3255,27 @@ else {
           buf_printf(b, "({ sp_IntArray *_t%d = ", t);
           if (held) { emit_expr(c, recv, b); buf_puts(b, ";"); }
           else emit_recv_rooted(c, recv, t, "SP_GC_ROOT", b);
+          /* the arguments left to right into temporaries, then prepended in
+             reverse, as the Float branch below does */
+          for (int a = 0; a < argc; a++) {
+            buf_printf(b, " sp_int _u%d_%d = ", t, a); emit_typed_elem_value(c, argv[a], TY_INT, b); buf_puts(b, ";");
+          }
           for (int a = argc - 1; a >= 0; a--) {
-            buf_printf(b, " sp_IntArray_unshift(_t%d, ", t); emit_typed_elem_value(c, argv[a], TY_INT, b); buf_puts(b, ");");
+            buf_printf(b, " sp_IntArray_unshift(_t%d, _u%d_%d);", t, t, a);
           }
         }
         else if (rt == TY_STR_ARRAY) {
           buf_printf(b, "({ sp_StrArray *_t%d = ", t);
           if (held) { emit_expr(c, recv, b); buf_puts(b, ";"); }
           else emit_recv_rooted(c, recv, t, "SP_GC_ROOT", b);
+          /* every argument before the first insert, each rooted across the
+             later ones, then inserted in order */
           for (int a = 0; a < argc; a++) {
-            buf_printf(b, " sp_StrArray_insert(_t%d, %d, ", t, a); emit_typed_elem_value(c, argv[a], TY_STRING, b); buf_puts(b, ");");
+            buf_printf(b, " const char *_u%d_%d = ", t, a); emit_typed_elem_value(c, argv[a], TY_STRING, b);
+            buf_printf(b, "; SP_GC_ROOT_STR(_u%d_%d);", t, a);
+          }
+          for (int a = 0; a < argc; a++) {
+            buf_printf(b, " sp_StrArray_insert(_t%d, %d, _u%d_%d);", t, a, t, a);
           }
         }
         else {
@@ -5133,11 +5144,18 @@ else {
         /* rooted across the range, as the typed arm is */
         buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_recv_rooted(c, recv, ta, "SP_GC_ROOT", b);
         buf_printf(b, "sp_Range _t%d = ", tr); emit_expr(c, argv[0], b);
-        buf_printf(b, "; sp_int _t%d = _t%d.first < 0 ? _t%d.first + (_t%d ? _t%d->len : 0) : _t%d.first;",
-                   tf, tr, tr, ta, ta, tr);
-        buf_printf(b, " sp_int _t%d = (_t%d.last < 0 ? _t%d.last + (_t%d ? _t%d->len : 0) : _t%d.last) - _t%d + (_t%d.excl ? 0 : 1);",
-                   tn, tr, tr, ta, ta, tr, tf, tr);
-        buf_printf(b, " sp_PolyArray_slice_bang(_t%d, _t%d, _t%d < 0 ? 0 : _t%d); })", ta, tf, tn, tn);
+        /* a beginless bound starts at 0 and an endless one runs to the end,
+           as the typed arm resolves them */
+        buf_printf(b, "; sp_int _t%d = _t%d.first == INTPTR_MIN ? 0"
+                      " : (_t%d.first < 0 ? _t%d.first + (_t%d ? _t%d->len : 0) : _t%d.first);",
+                   tf, tr, tr, tr, ta, ta, tr);
+        buf_printf(b, " sp_int _t%d = _t%d.last == INTPTR_MAX ? ((_t%d ? _t%d->len : 0) - _t%d)"
+                      " : ((_t%d.last < 0 ? _t%d.last + (_t%d ? _t%d->len : 0) : _t%d.last) - _t%d + (_t%d.excl ? 0 : 1));",
+                   tn, tr, ta, ta, tf, tr, tr, ta, ta, tr, tf, tr);
+        /* a start still negative lies before the first element: passed as
+           given, the runtime answers nil for it (after its frozen check) */
+        buf_printf(b, " sp_PolyArray_slice_bang(_t%d, _t%d < 0 ? _t%d - (_t%d ? _t%d->len : 0) : _t%d,"
+                      " _t%d < 0 ? 0 : _t%d); })", ta, tf, tf, ta, ta, tf, tn, tn);
         return 1;
       }
       if (sp_streq(name, "slice!") && argc == 1) {
@@ -5402,6 +5420,21 @@ static int hash_lit_empty(const NodeTable *nt, int n) {
   if (!ty || !(sp_streq(ty, "HashNode") || sp_streq(ty, "KeywordHashNode"))) return 0;
   int en = 0; nt_arr(nt, n, "elements", &en);
   return en == 0;
+}
+
+static void emit_blk_value_as(Compiler *c, int blk, TyKind vt, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int bbody = nt_ref(nt, blk, "body");
+  int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
+  int bval = bn > 0 ? bb[bn - 1] : -1;
+  buf_puts(b, "({ ");
+  for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
+  if (bval >= 0) {
+    if (vt == TY_POLY && comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, b);
+    else emit_expr(c, bval, b);
+  }
+  else buf_puts(b, vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
+  buf_puts(b, "; })");
 }
 
 int emit_hash_call(Compiler *c, int id, Buf *b) {
@@ -6361,19 +6394,7 @@ else {
           if (bp1) buf_printf(b, " lv_%s = sp_%sHash_get(_t%d, _t%d);", rename_local(bp1), hn, tr, tk);
           if (bp2) buf_printf(b, " lv_%s = sp_%sHash_get(_t%d, _t%d);", rename_local(bp2), hn, to, tk);
           buf_printf(b, " sp_%sHash_set(_t%d, _t%d, ", hn, tr, tk);
-          {
-            int bbody = nt_ref(nt, blk, "body");
-            int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
-            int bval = bn > 0 ? bb[bn - 1] : -1;
-            buf_puts(b, "({ ");
-            for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
-            if (bval >= 0) {
-              if (vt == TY_POLY && comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, b);
-              else emit_expr(c, bval, b);
-            }
-            else buf_puts(b, vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
-            buf_puts(b, "; })");
-          }
+          emit_blk_value_as(c, blk, vt, b);
           buf_printf(b, "); }\nelse { sp_%sHash_set(_t%d, _t%d, sp_%sHash_get(_t%d, _t%d)); }", hn, tr, tk, hn, to, tk);
         }
         else {
@@ -6473,19 +6494,7 @@ else {
         if (bp1) buf_printf(b, " lv_%s = sp_%sHash_get(_t%d, _t%d);", rename_local(bp1), hn, tr, tk);
         if (bp2) buf_printf(b, " lv_%s = sp_%sHash_get(_t%d, _t%d);", rename_local(bp2), hn, to, tk);
         buf_printf(b, " sp_%sHash_set(_t%d, _t%d, ", hn, tr, tk);
-        {
-          int bbody = nt_ref(nt, blk, "body");
-          int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
-          int bval = bn > 0 ? bb[bn - 1] : -1;
-          buf_puts(b, "({ ");
-          for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
-          if (bval >= 0) {
-            if (vt == TY_POLY && comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, b);
-            else emit_expr(c, bval, b);
-          }
-          else buf_puts(b, vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
-          buf_puts(b, "; })");
-        }
+        emit_blk_value_as(c, blk, vt, b);
         buf_printf(b, "); }\nelse { sp_%sHash_set(_t%d, _t%d, sp_%sHash_get(_t%d, _t%d)); } }", hn, tr, tk, hn, to, tk);
         buf_printf(b, " _t%d; })", tr);
         return 1;

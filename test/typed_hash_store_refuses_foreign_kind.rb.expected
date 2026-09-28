@@ -1,0 +1,8 @@
+value: TypeError: cannot store String as a value of a hash Spinel typed with Integer values (the hash was not widened for this store)
+{"a" => 1, "q" => 1}
+{"a" => 1, "q" => 1, "n" => nil}
+key: TypeError: cannot store Symbol as a key of a hash Spinel typed with String keys (the hash was not widened for this store)
+{"a" => 1, "k" => 5}
+"z"
+expr value int: TypeError: cannot store Integer as a value of a hash Spinel typed with String values (the hash was not widened for this store)
+{"a" => "b", "c" => "z"}

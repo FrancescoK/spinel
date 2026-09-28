@@ -2445,6 +2445,39 @@ static int fwd_poly_recv_one_param_iter(const char *name) {
   return 0;
 }
 
+/* Over an Enumerator that yields two values, these pass both on to their
+   block as two; the other block iterators pack them into one Array. */
+static int enum_pair_spread_iter(const char *name) {
+  static const char *const names[] = {
+    "map", "collect", "flat_map", "collect_concat", "filter_map", "count", "take_while",
+    "find_index", "any?", "all?", "none?", "one?", "each", "uniq", NULL };
+  for (int k = 0; names[k]; k++) if (sp_streq(name, names[k])) return 1;
+  return 0;
+}
+
+/* `e.with_index(off) { }` / `e.with_object(memo) { }`: the element and the
+   index or memo, as two values. */
+static int fwd_with_index_call(const NodeTable *nt, int id) {
+  const char *nm = nt_str(nt, id, "name");
+  int a = nt_ref(nt, id, "arguments");
+  int n = 0; if (a >= 0) nt_arr(nt, a, "arguments", &n);
+  return nm && ((sp_streq(nm, "with_index") && n <= 1) || (sp_streq(nm, "with_object") && n == 1));
+}
+
+int enum_pair_source_call(const NodeTable *nt, int recv) {
+  if (recv < 0 || nt_kind(nt, recv) != NK_CallNode || nt_ref(nt, recv, "block") >= 0) return 0;
+  const char *rn = nt_str(nt, recv, "name");
+  /* the to_a an Enumerator's block call is routed through (enum_hop) */
+  if (rn && sp_streq(rn, "to_a") && nt_str(nt, recv, "enum_hop"))
+    return enum_pair_source_call(nt, nt_ref(nt, recv, "receiver"));
+  int ra = nt_ref(nt, recv, "arguments");
+  int rc = 0; if (ra >= 0) nt_arr(nt, ra, "arguments", &rc);
+  if (!rn) return 0;
+  return (sp_streq(rn, "each_with_index") && rc == 0) ||
+         (sp_streq(rn, "with_index") && rc <= 1) ||
+         ((sp_streq(rn, "each_with_object") || sp_streq(rn, "with_object")) && rc == 1);
+}
+
 /* The anonymous `&` of the method around call `id`, once every forward
    through it has become a yielding block, names nothing any more: drop it,
    so the method is the plain yielding method the same body spells by hand
@@ -2621,6 +2654,13 @@ int desugar_value_callable_forwards(Compiler *c) {
          `{ |__fwd| yield __fwd }` with a poly parameter. */
       arity = 1;
       pty[0] = TY_POLY;
+    }
+    else if ((enum_pair_source_call(nt, recv) && enum_pair_spread_iter(name)) ||
+             fwd_with_index_call(nt, id)) {
+      /* `a.each_with_index.map(&)`, `a.map.with_index(&)`: two values are
+         yielded, and passed on as two (a lone `*r` takes both spread) */
+      arity = 2;
+      pty[0] = pty[1] = TY_UNKNOWN;
     }
     else {
       arity = ty_block_yield(rt, name, pty, 4);
@@ -5583,6 +5623,47 @@ static int bs_yield_count(TyKind rt, const char *nm, int argc, TyKind *elem, int
   return 0;
 }
 
+/* bs_yield_count for a call on an Enumerator. with_index / with_object yield
+   the element and the index or memo. Over one that yields two values, the
+   methods that pass what `each` yields straight to the block yield both,
+   and the rest yield them packed as one [element, index] Array. */
+static int bs_enum_yield_count(Compiler *c, int recv, const char *nm, int argc, TyKind *elem) {
+  static const char *const packed[] = {
+    "select", "filter", "find_all", "reject", "sort_by", "find", "detect", "group_by",
+    "min_by", "max_by", "minmax_by", "each_entry", "partition", "drop_while", "sum", NULL };
+  const NodeTable *nt = c->nt;
+  *elem = TY_UNKNOWN;
+  if ((sp_streq(nm, "with_index") && argc <= 1) || (sp_streq(nm, "with_object") && argc == 1)) {
+    if (infer_type(c, recv) == TY_ENUMERATOR) return 2;
+    /* `arr.map.with_index { }`: the blockless map is typed as the chain it
+       heads rather than as an Enumerator */
+    int src = nt_kind(nt, recv) == NK_CallNode && nt_ref(nt, recv, "block") < 0 ? nt_ref(nt, recv, "receiver") : -1;
+    TyKind st = src >= 0 ? infer_type(c, src) : TY_UNKNOWN;
+    return (ty_is_array(st) || ty_is_obj_array(st) || ty_is_hash(st) || st == TY_RANGE) ? 2 : 0;
+  }
+  if (argc != 0) return 0;
+  /* each_slice(n) / each_cons(n) yield one Array per step, which their
+     chain emitters bind to the leading parameter and nothing else */
+  if (nt_kind(nt, recv) == NK_CallNode && nt_ref(nt, recv, "block") < 0 &&
+      infer_type(c, recv) == TY_ENUMERATOR) {
+    const char *rn = nt_str(nt, recv, "name");
+    int ra = nt_ref(nt, recv, "arguments");
+    int rc = 0; if (ra >= 0) nt_arr(nt, ra, "arguments", &rc);
+    if (rn && rc == 1 && (sp_streq(rn, "each_slice") || sp_streq(rn, "each_cons"))) {
+      int known = enum_pair_spread_iter(nm);
+      for (int k = 0; packed[k]; k++) if (sp_streq(nm, packed[k])) known = 1;
+      if (!known) return 0;
+      *elem = TY_POLY_ARRAY;
+      return 1;
+    }
+  }
+  if (!enum_pair_source_call(nt, recv)) return 0;
+  if (infer_type(c, recv) != TY_ENUMERATOR && !nt_str(nt, recv, "enum_hop")) return 0;
+  if (enum_pair_spread_iter(nm)) return 2;
+  for (int k = 0; packed[k]; k++) if (sp_streq(nm, packed[k])) { *elem = TY_POLY_ARRAY; return 1; }
+  return 0;
+}
+
 typedef struct {
   NodeTable *nt;
   int ok;
@@ -5825,23 +5906,36 @@ static int bs_strip_keywords(Compiler *c, int blk, int bp, int pn) {
   return 1;
 }
 
-/* A block an Enumerator runs: one given to a method of an Enumerator value
-   (`a.each_with_index.map { }`), or to `with_index` / `with_object` on a
-   blockless builtin iterator (`a.map.with_index { }`), whose receiver is not
-   typed yet. Neither passes the block keywords. */
-static int bs_enum_iter(Compiler *c, int recv, TyKind rt, const char *nm) {
-  const NodeTable *nt = c->nt;
-  if (rt == TY_ENUMERATOR) return 1;
-  if (!sp_streq(nm, "with_index") && !sp_streq(nm, "each_with_index") &&
-      !sp_streq(nm, "with_object") && !sp_streq(nm, "each_with_object")) return 0;
-  if (nt_kind(nt, recv) != NK_CallNode || nt_ref(nt, recv, "block") >= 0) return 0;
-  int rr = nt_ref(nt, recv, "receiver");
-  const char *rn = nt_str(nt, recv, "name");
-  if (rr < 0 || !rn) return 0;
-  int ra = nt_ref(nt, recv, "arguments");
-  int rargc = 0; if (ra >= 0) nt_arr(nt, ra, "arguments", &rargc);
-  TyKind elem; int hash_pair;
-  return bs_yield_count(infer_type(c, rr), rn, rargc, &elem, &hash_pair) > 0;
+/* `enum.map(*a, &b)`: an Enumerator's block iterators take no arguments, so
+   a splat forwarded into one (`def m(*, &) = e.map(*, &)`) can only be
+   empty. The Array forms already ignore it; over an Enumerator the arms that
+   type and emit these calls counted it as an argument, answering nil. */
+int desugar_enum_iter_splat_args(Compiler *c) {
+  static const char *const names[] = {
+    "map", "collect", "flat_map", "collect_concat", "filter_map", "take_while",
+    "find_index", "each", "uniq", "select", "filter", "find_all", "reject", "sort_by",
+    "group_by", "min_by", "max_by", "minmax_by", "each_entry", "partition", "drop_while",
+    "each_with_index", NULL };
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  int changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    int args = nt_ref(nt, id, "arguments");
+    if (recv < 0 || args < 0 || nt_ref(nt, id, "block") < 0) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int known = 0;
+    for (int k = 0; nm && names[k]; k++) if (sp_streq(nm, names[k])) known = 1;
+    if (!known) continue;
+    int argc = 0; const int *av = nt_arr(nt, args, "arguments", &argc);
+    int only_splats = argc > 0;
+    for (int k = 0; k < argc; k++) if (nt_kind(nt, av[k]) != NK_SplatNode) only_splats = 0;
+    if (!only_splats || infer_type(c, recv) != TY_ENUMERATOR) continue;
+    nt_node_set_ref(nt, id, "arguments", -1);
+    changed = 1;
+  }
+  return changed;
 }
 
 /* A block given to a builtin iterator with a parameter list the typed
@@ -5891,9 +5985,13 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
     if (bad) continue;
     TyKind rt = infer_type(c, recv);
     TyKind elem; int hash_pair;
-    int m = bs_yield_count(rt, nm, argc, &elem, &hash_pair);
+    int m = bs_enum_yield_count(c, recv, nm, argc, &elem);
+    int via_enum = m != 0;
+    hash_pair = 0;
+    if (m == 0) m = bs_yield_count(rt, nm, argc, &elem, &hash_pair);
     if (m == 0) {
-      if (has_kw && bs_enum_iter(c, recv, rt, nm) && bs_strip_keywords(c, blk, bp, pn)) changed = 1;
+      /* no Enumerator passes its block keywords, whatever it yields */
+      if (has_kw && rt == TY_ENUMERATOR && bs_strip_keywords(c, blk, bp, pn)) changed = 1;
       continue;
     }
     if (has_kw) {
@@ -5920,8 +6018,9 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
     /* a rest beside the leading requireds of a two-value yield is bound
        right; a lone rest over ONE yielded value never spreads it (`|*r|`
        gets `[x]` even when x is an Array), which the emitters got wrong for
-       an Array element, so that shape is always lowered here */
-    if (s.O == 0 && s.Q == 0 && !splat && m != 1 && !ty_is_hash(rt)) continue;
+       an Array element, so that shape is always lowered here; the chain
+       emitters over an Enumerator bind no rest right, so there it is too */
+    if (s.O == 0 && s.Q == 0 && !splat && m != 1 && !ty_is_hash(rt) && !via_enum) continue;
     if (s.O == 0 && s.Q == 0 && splat && !hash_pair && !dyn) continue;
 
     BsB b = { nt, 1 };

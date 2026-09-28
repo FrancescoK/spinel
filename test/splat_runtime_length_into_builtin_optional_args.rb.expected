@@ -1,0 +1,28 @@
+3
+1
+9
+2
+fetch with no arguments: ArgumentError
+5
+[1, 2]
+1
+[2, 3]
+3
+4
+1
+[2, 3]
+4
+"ell"
+["a", "b,c"]
+["a", "b"]
+true
+1
+"1-2"
+"12"
+"ab***"
+13
+"ff"
+[9, 3]
+7
+1
+["dflt1", "dflt2"]

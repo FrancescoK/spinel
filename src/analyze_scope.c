@@ -42,6 +42,19 @@ static int forwarding_call_arity(Compiler *c, const char *mname) {
   return maxarg;
 }
 
+static void add_kwhash_key_params(const NodeTable *nt, Scope *s, int kwh) {
+  int en = 0; const int *els = nt_arr(nt, kwh, "elements", &en);
+  for (int e = 0; e < en; e++) {
+    int key = nt_ref(nt, els[e], "key");
+    const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
+    const char *kn = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
+    if (!kn) continue;
+    int dup = 0;
+    for (int p = 0; p < s->nparams; p++) if (s->pnames[p] && sp_streq(s->pnames[p], kn)) { dup = 1; break; }
+    if (!dup) scope_add_param(s, kn, -1);
+  }
+}
+
 void collect_def_params(Compiler *c, int def_id, Scope *s) {
   int pn = nt_ref(c->nt, def_id, "parameters");
   if (pn < 0) return;
@@ -166,16 +179,7 @@ void collect_def_params(Compiler *c, int def_id, Scope *s) {
         int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
         if (an == 0 || !nt_type(nt, av[an - 1]) ||
             !sp_streq(nt_type(nt, av[an - 1]), "KeywordHashNode")) continue;
-        int en = 0; const int *els = nt_arr(nt, av[an - 1], "elements", &en);
-        for (int e = 0; e < en; e++) {
-          int key = nt_ref(nt, els[e], "key");
-          const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
-          const char *kn = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
-          if (!kn) continue;
-          int dup = 0;
-          for (int p = 0; p < s->nparams; p++) if (s->pnames[p] && sp_streq(s->pnames[p], kn)) { dup = 1; break; }
-          if (!dup) scope_add_param(s, kn, -1);
-        }
+        add_kwhash_key_params(nt, s, av[an - 1]);
       }
     }
   }
@@ -283,16 +287,7 @@ static void initialize_forwarding_params(Compiler *c, int init) {
       char nm[24]; snprintf(nm, sizeof nm, "__fwd_%d", nfwd++);
       scope_add_param(s, nm, -1);
     }
-    int en = 0; const int *els = kwh >= 0 ? nt_arr(nt, kwh, "elements", &en) : NULL;
-    for (int e = 0; e < en; e++) {
-      int key = nt_ref(nt, els[e], "key");
-      const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
-      const char *kn = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
-      if (!kn) continue;
-      int dup = 0;
-      for (int p = 0; p < s->nparams; p++) if (s->pnames[p] && sp_streq(s->pnames[p], kn)) { dup = 1; break; }
-      if (!dup) scope_add_param(s, kn, -1);
-    }
+    if (kwh >= 0) add_kwhash_key_params(nt, s, kwh);
   }
   {
     int tgt = forwarding_target_idx(c, s);

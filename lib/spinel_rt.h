@@ -4479,6 +4479,45 @@ static const char *sp_poly_elem_s(sp_RbVal v) {
   if (v.tag == SP_TAG_NIL) return NULL;
   sp_raise_typed_elem(v, "String");
 }
+/* The same rules for a key or a value a TYPED hash is asked to store: the
+   compiler settled the hash's variant and did not widen it for this store.
+   Loud, as sp_poly_typed_hash_store_miss is, not a key or value converted
+   to the variant's kind ("z" stored as 0). A typed key has no nil. */
+SP_NORETURN SP_COLD static void sp_raise_typed_hash_part(sp_RbVal v, const char *part, const char *kind) {
+  sp_exc_stage_recv(v);
+  sp_raise_cls("TypeError", sp_sprintf("cannot store %s as a %s of a hash Spinel typed with %s %ss (the hash was not widened for this store)",
+                                       sp_poly_class_name(v), part, kind, part));
+}
+static sp_int sp_poly_hval_i(sp_RbVal v) {
+  if (v.tag == SP_TAG_INT) return v.v.i;
+  if (v.tag == SP_TAG_NIL) return SP_INT_NIL;
+  sp_raise_typed_hash_part(v, "value", "Integer");
+}
+static sp_float sp_poly_hval_f(sp_RbVal v) {
+  if (v.tag == SP_TAG_FLT) return v.v.f;
+  if (v.tag == SP_TAG_INT) return (sp_float)v.v.i;
+  if (v.tag == SP_TAG_NIL) return sp_float_nil();
+  sp_raise_typed_hash_part(v, "value", "Float");
+}
+static const char *sp_poly_hval_s(sp_RbVal v) {
+  if (v.tag == SP_TAG_STR) return v.v.s;
+  if (sp_poly_is_strbuf(v)) return sp_poly_strbuf_deref(v).v.s;
+  if (v.tag == SP_TAG_NIL) return NULL;
+  sp_raise_typed_hash_part(v, "value", "String");
+}
+static sp_int sp_poly_hkey_i(sp_RbVal v) {
+  if (v.tag == SP_TAG_INT) return v.v.i;
+  sp_raise_typed_hash_part(v, "key", "Integer");
+}
+static const char *sp_poly_hkey_s(sp_RbVal v) {
+  if (v.tag == SP_TAG_STR && v.v.s) return v.v.s;
+  if (sp_poly_is_strbuf(v)) return sp_poly_strbuf_deref(v).v.s;
+  sp_raise_typed_hash_part(v, "key", "String");
+}
+static sp_sym sp_poly_hkey_sym(sp_RbVal v) {
+  if (v.tag == SP_TAG_SYM) return (sp_sym)v.v.i;
+  sp_raise_typed_hash_part(v, "key", "Symbol");
+}
 /* A boxed array of any kind, re-laid as a typed array one element at a time
    under the rules above: the source of a typed-array splice whose RHS is only
    known at run time to be an array (a poly array from `poly.first(n)`). */
@@ -9354,38 +9393,69 @@ case SP_BUILTIN_IO:{sp_int sp_file_size(const char*);sp_File*_f=(sp_File*)v.v.p;
 case SP_BUILTIN_STRBUF: return (sp_int)((sp_String *)v.v.p)->len;   /* live length (#3227) */
 /* a user object with #to_a (a container-read Set, #3234): its element count */
 default: if (sp_obj_to_a_fn) { sp_RbVal _a = sp_obj_to_a_fn(v); if (_a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_a.cls_id)) return sp_poly_length(_a); } return 0;}}
+/* The member a constructor's keyword key names: a Symbol's name, or a
+   String's, which CRuby takes for the member of that name too; NULL for a
+   key of any other class. */
+static const char *sp_kw_key_name(sp_RbVal k) {
+  if (k.tag == SP_TAG_SYM || k.tag == SP_TAG_STR ||
+      (k.tag == SP_TAG_OBJ && k.cls_id == SP_BUILTIN_STRBUF)) return sp_poly_to_s(k);
+  return NULL;
+}
+/* Member `name` of a Data or Struct built from the keyword hash `h`, as
+   CRuby sets the members walking the hash: the value of the last key that
+   names it, a Symbol or a String; nil when none does. */
+static sp_RbVal sp_kw_member_val(sp_RbVal h, const char *name) {
+  SP_GC_ROOT_RBVAL(h);
+  sp_RbVal r = sp_box_nil();
+  sp_int nk = sp_poly_length(h);
+  for (sp_int j = 0; j < nk; j++) {
+    sp_RbVal k, v;
+    sp_poly_hash_pair(h, j, &k, &v);
+    const char *kn = sp_kw_key_name(k);
+    if (kn && strcmp(kn, name) == 0) r = v;
+  }
+  return r;
+}
 /* The keys a `**h` into a Data or keyword Struct constructor must answer for,
    checked as CRuby checks them (#5175): a Data member neither a literal key
    nor the hash names is missing, and a key the hash carries that names no
-   member is unknown, Data's before Struct's wording. `lit[i]` says member i
-   was given by a literal key. Without this the member read nil and the key
-   was dropped. */
+   member is unknown, Data's before Struct's wording. A String key names a
+   member as a Symbol does, and a Data key that is neither is CRuby's
+   TypeError, ahead of both. `lit[i]` says member i was given by a literal
+   key. Without this the member read nil and the key was dropped. */
 static void sp_kw_splat_check(sp_RbVal h, const char *const *mem, int n,
                               const unsigned char *lit, int is_data) {
   SP_GC_ROOT_RBVAL(h);
   char buf[1024]; size_t len = 0; int cnt = 0;
   buf[0] = 0;
+  sp_int nk = sp_poly_length(h);
   if (is_data) {
+    for (sp_int j = 0; j < nk; j++) {
+      sp_RbVal k, v;
+      sp_poly_hash_pair(h, j, &k, &v);
+      if (!sp_kw_key_name(k))
+        sp_raise_cls("TypeError", sp_sprintf("%s is not a symbol nor a string", sp_poly_inspect(k)));
+    }
     for (int i = 0; i < n; i++) {
       if (lit[i]) continue;
-      sp_bool f = 0;
-      (void)sp_poly_hash_get_pair_val(h, sp_box_sym(sp_sym_intern(mem[i])), &f);
+      int f = 0;
+      for (sp_int j = 0; j < nk && !f; j++) {
+        sp_RbVal k, v;
+        sp_poly_hash_pair(h, j, &k, &v);
+        f = strcmp(sp_kw_key_name(k), mem[i]) == 0;
+      }
       if (f) continue;
       if (len < sizeof buf) len += (size_t)snprintf(buf + len, sizeof buf - len, "%s:%s", cnt ? ", " : "", mem[i]);
       cnt++;
     }
     if (cnt) sp_raise_cls("ArgumentError", sp_sprintf("missing keyword%s: %s", cnt > 1 ? "s" : "", buf));
   }
-  sp_int nk = sp_poly_length(h);
   for (sp_int j = 0; j < nk; j++) {
-    sp_RbVal pr = sp_poly_each_elem(h, j);
-    if (pr.tag != SP_TAG_OBJ || pr.cls_id != SP_BUILTIN_POLY_ARRAY) continue;
-    sp_RbVal k = sp_PolyArray_get((sp_PolyArray *)pr.v.p, 0);
+    sp_RbVal k, v;
+    sp_poly_hash_pair(h, j, &k, &v);
+    const char *kn = sp_kw_key_name(k);
     int known = 0;
-    if (k.tag == SP_TAG_SYM) {
-      const char *kn = sp_poly_to_s(k);
-      for (int i = 0; i < n && !known; i++) known = strcmp(kn, mem[i]) == 0;
-    }
+    for (int i = 0; kn && i < n && !known; i++) known = strcmp(kn, mem[i]) == 0;
     if (known) continue;
     if (len < sizeof buf) len += (size_t)snprintf(buf + len, sizeof buf - len, "%s%s", cnt ? ", " : "",
                                                   is_data ? sp_poly_inspect(k) : sp_poly_to_s(k));
@@ -10117,6 +10187,22 @@ static void sp_kwrest_merge_poly(sp_SymPolyHash *dst, sp_RbVal h) {
     sp_SymPolyHash_set(dst, (sp_sym)k.v.i, v);
   }
 }
+/* sp_kwrest_merge_poly into a hash of any key: the keywords of a Data or
+   Struct construction, merged in source order, keep a String key, which
+   the member reads and sp_kw_splat_check take by name and a keyword_init:
+   false Struct keeps in its Hash. */
+static void sp_kw_merge_any(sp_PolyPolyHash *dst, sp_RbVal h) {
+  if (h.tag == SP_TAG_NIL) return;
+  if (h.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(h.cls_id))
+    sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Hash", sp_convert_src_name(h)));
+  SP_GC_ROOT(dst); SP_GC_ROOT_RBVAL(h);
+  sp_int n = sp_poly_length(h);
+  for (sp_int i = 0; i < n; i++) {
+    sp_RbVal k, v;
+    sp_poly_hash_pair(h, i, &k, &v);
+    sp_PolyPolyHash_set(dst, k, v);
+  }
+}
 static sp_PolyArray *sp_poly_values(sp_RbVal v) {
   /* a Struct read out of a container answers its member values, as the typed
      Struct does; it fell to the raise below */
@@ -10655,6 +10741,9 @@ static sp_Proc *sp_poly_to_proc(sp_RbVal v) {
      block wherever a proc would (#3864) */
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_CURRY)
     return sp_curry_to_proc((sp_Curry *)v.v.p);
+  /* a Method converts through Method#to_proc, as CRuby's `&m` does */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_METHOD)
+    return sp_method_to_proc((sp_BoundMethod *)v.v.p);
   sp_raise_cls("TypeError", "callable object is expected");
   return NULL;
 }
@@ -11069,6 +11158,26 @@ SP_NORETURN SP_COLD static void sp_raise_poly(sp_RbVal v) {
                       (sp_user_exc_parent_fn && sp_user_exc_parent_fn(cn)) ||
                       sp_exc_parent_of_name(cn)))
       sp_raise_cls(cn, sp_str_empty);
+  }
+  sp_raise_cls("TypeError", "exception class/object expected");
+}
+/* Kernel#raise(klass_or_exc, msg) with a runtime-typed first operand: a Class
+   value raises that class with the message, an exception object raises
+   exc.exception(msg). A nil message falls back to the class name. */
+SP_NORETURN SP_COLD static void sp_raise_poly_msg(sp_RbVal v, sp_RbVal m) {
+  const char *msg = m.tag == SP_TAG_NIL ? NULL
+                  : sp_exc_msg_given(m.tag == SP_TAG_STR ? m.v.s : sp_poly_to_s(m));
+  if (v.tag == SP_TAG_OBJ && v.v.p &&
+      (v.cls_id == SP_BUILTIN_EXCEPTION || sp_is_exc_subclass_cls(v.cls_id))) {
+    if (!msg) sp_raise_exc((volatile sp_Exception *)v.v.p);
+    sp_raise_exc((volatile sp_Exception *)sp_exc_exception((sp_Exception *)v.v.p, msg));
+  }
+  if (v.tag == SP_TAG_CLASS) {
+    const char *cn = sp_class_val_name(v);
+    if (cn && *cn && (!strcmp(cn, "Exception") ||
+                      (sp_user_exc_parent_fn && sp_user_exc_parent_fn(cn)) ||
+                      sp_exc_parent_of_name(cn)))
+      sp_raise_cls(cn, msg ? msg : sp_str_empty);
   }
   sp_raise_cls("TypeError", "exception class/object expected");
 }

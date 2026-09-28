@@ -4879,6 +4879,18 @@ static void emit_case_obj_eq(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
   }
 }
 
+static void emit_when_boxed_test(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
+  char subjp[32]; snprintf(subjp, sizeof subjp, "_t%d", t);
+  int tpw = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", tpw); emit_boxed(c, cond, b);
+  buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_PROC"
+                " ? sp_poly_truthy(sp_penum_call1((sp_Proc *)_t%d.v.p, ", tpw, tpw, tpw);
+  if (pt == TY_POLY) buf_puts(b, subjp); else emit_boxed_text(c, pt, subjp, b);
+  buf_printf(b, ")) : sp_poly_eq(_t%d, ", tpw);
+  if (pt == TY_POLY) buf_puts(b, subjp); else emit_boxed_text(c, pt, subjp, b);
+  buf_puts(b, "); })");
+}
+
 void emit_case(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int pred = nt_ref(nt, id, "predicate");
@@ -4997,17 +5009,7 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
              subject, via the proc-call ABI (mirrors the case-as-value arm) */
           /* a Proc read out of a container arrives boxed: dispatch on the tag
              so it is CALLED and not compared (#3683) */
-          else if (comp_ntype(c, conds[j]) == TY_POLY) {
-            char subjp[32]; snprintf(subjp, sizeof subjp, "_t%d", t);
-            int tpw = ++g_tmp;
-            buf_printf(b, "({ sp_RbVal _t%d = ", tpw); emit_boxed(c, conds[j], b);
-            buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_PROC"
-                          " ? sp_poly_truthy(sp_penum_call1((sp_Proc *)_t%d.v.p, ", tpw, tpw, tpw);
-            if (pt == TY_POLY) buf_puts(b, subjp); else emit_boxed_text(c, pt, subjp, b);
-            buf_printf(b, ")) : sp_poly_eq(_t%d, ", tpw);
-            if (pt == TY_POLY) buf_puts(b, subjp); else emit_boxed_text(c, pt, subjp, b);
-            buf_puts(b, "); })");
-          }
+          else if (comp_ntype(c, conds[j]) == TY_POLY) emit_when_boxed_test(c, conds[j], t, pt, b);
           else if (comp_ntype(c, conds[j]) == TY_PROC) {
             g_needs_proc_poly_argslot = 1;
             char subj9[32]; snprintf(subj9, sizeof subj9, "_t%d", t);
@@ -5511,17 +5513,7 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
                  emit_when_lambda_inline(c, conds[j], t, pt, b)) { /* literal lambda inlined */ }
         /* a Proc read out of a container arrives boxed: dispatch on the tag so
            it is CALLED and not compared (#3683) */
-        else if (comp_ntype(c, conds[j]) == TY_POLY) {
-          char subjp[32]; snprintf(subjp, sizeof subjp, "_t%d", t);
-          int tpw = ++g_tmp;
-          buf_printf(b, "({ sp_RbVal _t%d = ", tpw); emit_boxed(c, conds[j], b);
-          buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_PROC"
-                        " ? sp_poly_truthy(sp_penum_call1((sp_Proc *)_t%d.v.p, ", tpw, tpw, tpw);
-          if (pt == TY_POLY) buf_puts(b, subjp); else emit_boxed_text(c, pt, subjp, b);
-          buf_printf(b, ")) : sp_poly_eq(_t%d, ", tpw);
-          if (pt == TY_POLY) buf_puts(b, subjp); else emit_boxed_text(c, pt, subjp, b);
-          buf_puts(b, "); })");
-        }
+        else if (comp_ntype(c, conds[j]) == TY_POLY) emit_when_boxed_test(c, conds[j], t, pt, b);
         else if (comp_ntype(c, conds[j]) == TY_PROC) {
           /* `when <proc>`: Proc#=== calls the proc with the subject. The
              subject is published both in the sp_int slot (typed callee
@@ -7435,7 +7427,7 @@ static int emit_nullable_int_ternary(Compiler *c, int v, Buf *b) {
    `@reg ||= {}` built an sp_StrPolyHash for a slot the poly-keyed writes had
    already made sp_PolyPolyHash, and the C stopped on the pointer types
    (#4111). Returns 1 when it emitted the literal. */
-static int emit_empty_literal_as(Compiler *c, int v, TyKind slot, Buf *b) {
+int emit_empty_literal_as(Compiler *c, int v, TyKind slot, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
   if (!vty) return 0;
@@ -8550,29 +8542,11 @@ else {
     emit_indent(b, indent);
     buf_puts(b, "{ ");
     emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, "; ");
-    char lhs[300], cond[400];
-    if (ivt == TY_POLY) {
-      snprintf(lhs, sizeof lhs, "((sp_%s *)_t%d.v.p)->iv_%s", c->classes[class_id].c_name, tr, attr);
-      snprintf(cond, sizeof cond, "%ssp_poly_truthy(%s)", is_or ? "!" : "", lhs);
-      emit_orw_guard(c, v, 1, cond, lhs, 1, 0, b); buf_puts(b, "; }\n");
-    }
-    else if (ivt == TY_BOOL) {
-      snprintf(lhs, sizeof lhs, "_t%d->iv_%s", tr, iv_c(attr));
-      snprintf(cond, sizeof cond, "%s%s", is_or ? "!" : "", lhs);
-      emit_orw_guard(c, v, 0, cond, lhs, 1, 0, b); buf_puts(b, "; }\n");
-    }
-    else if (ivt == TY_INT) {
-      /* nullable-int slot: nil is SP_INT_NIL (false does not inhabit an int
-         slot) -- ||= assigns exactly when nil, &&= exactly when not. */
-      snprintf(lhs, sizeof lhs, "_t%d->iv_%s", tr, attr);
-      snprintf(cond, sizeof cond, "%s %s SP_INT_NIL", lhs, is_or ? "==" : "!=");
-      emit_orw_guard(c, v, 0, cond, lhs, 1, 0, b); buf_puts(b, "; }\n");
-    }
-    else if (!is_or) {  /* &&= on always-truthy type: always assign */
-      snprintf(lhs, sizeof lhs, "_t%d->iv_%s", tr, iv_c(attr));
-      emit_orw_guard(c, v, 0, NULL, lhs, 1, 0, b); buf_puts(b, "; }\n");
-    }
-    else { buf_puts(b, "}\n"); }  /* ||= on always-truthy type: no-op, but receiver evaluated */
+    /* The receiver is a typed object pointer, so the slot is read through
+       it, and the guard is the ivar's own: a pointer-backed attribute that
+       was never assigned is NULL, not truthy (#5428). */
+    char lhs[300]; snprintf(lhs, sizeof lhs, "_t%d->iv_%s", tr, iv_c(attr));
+    buf_puts(b, "(void)"); emit_slot_orw_value(c, ivt, lhs, v, is_or, b); buf_puts(b, "; }\n");
     return;
   }
   if (sp_streq(ty, "InstanceVariableWriteNode")) {
@@ -11709,6 +11683,13 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   else if (g_result_var && !g_result_poly && !is_subst && vty == TY_UNKNOWN &&
            (ty_is_array(g_result_ty) || ty_is_hash(g_result_ty)) &&
            emit_empty_container_for_slot(c, id, g_result_ty, b)) { }
+  /* A boxed call value feeding a typed result slot (an inlined method whose
+     tail forwards its block into a builtin answering boxed) is unboxed into
+     it, as a return slot's is, not dropped for the slot's nil below. */
+  else if (g_result_var && !g_result_poly && !is_subst && vty == TY_POLY &&
+           sp_streq(ty, "CallNode") && g_result_ty != TY_UNKNOWN &&
+           g_result_ty != TY_VOID && g_result_ty != TY_NIL)
+    emit_unbox_node(c, g_result_ty, id, b);
   /* A void tail value (a rescue arm ending in `puts`, or a void-returning
      method call) feeding a non-poly result slot: the begin/rescue value
      unified to a nullable pointer, so evaluate the tail for effect and yield
@@ -11893,19 +11874,29 @@ const char *hash_order_val(TyKind t, int tr, int ti) {
 /* The key of a hash store, as the kind's set takes it. Shared with the
    expression form in codegen_call.c. */
 void emit_hash_store_key(Compiler *c, int key, TyKind rt, Buf *b) {
-  if (rt == TY_POLY_POLY_HASH) emit_boxed(c, key, b);
-  else emit_hash_key(c, key, ty_hash_key(rt), b);
+  if (rt == TY_POLY_POLY_HASH) { emit_boxed(c, key, b); return; }
+  /* A poly key is checked against the variant's key kind: a lookup of
+     another kind misses, a store of one cannot be held. */
+  TyKind kt = ty_hash_key(rt);
+  const char *fn = kt == TY_STRING ? "sp_poly_hkey_s" : kt == TY_INT ? "sp_poly_hkey_i"
+                 : kt == TY_SYMBOL ? "sp_poly_hkey_sym" : NULL;
+  if (fn && comp_ntype(c, key) == TY_POLY) {
+    buf_printf(b, "%s(", fn); emit_expr(c, key, b); buf_puts(b, ")");
+    return;
+  }
+  emit_hash_key(c, key, kt, b);
 }
 /* The value of a hash store, as the kind's set takes it. */
 static void emit_hash_store_val(Compiler *c, int val, TyKind rt, Buf *b) {
   if (ty_hash_val(rt) == TY_POLY) { emit_boxed(c, val, b); return; }
   /* A poly value (holds the hash's value type at runtime, e.g. a String?
-     guarded non-nil) into a typed-value hash: coerce to its element
-     representation, as the typed-array `[]=` path does. */
+     guarded non-nil) into a typed-value hash: unbox to its element
+     representation, refusing one of another kind as the typed-array `[]=`
+     path does. */
   TyKind hvt = ty_hash_val(rt), vt = comp_ntype(c, val);
-  if (vt == TY_POLY && hvt == TY_STRING) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, val, b); buf_puts(b, ")"); }
-  else if (vt == TY_POLY && hvt == TY_INT) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")"); }
-  else if (vt == TY_POLY && hvt == TY_FLOAT) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, val, b); buf_puts(b, ")"); }
+  if (vt == TY_POLY && hvt == TY_STRING) { buf_puts(b, "sp_poly_hval_s("); emit_expr(c, val, b); buf_puts(b, ")"); }
+  else if (vt == TY_POLY && hvt == TY_INT) { buf_puts(b, "sp_poly_hval_i("); emit_expr(c, val, b); buf_puts(b, ")"); }
+  else if (vt == TY_POLY && hvt == TY_FLOAT) { buf_puts(b, "sp_poly_hval_f("); emit_expr(c, val, b); buf_puts(b, ")"); }
   else emit_expr(c, val, b);
 }
 

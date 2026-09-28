@@ -107,6 +107,9 @@ extern int  g_tmp;
 #define MAX_RENAME 128
 extern char g_ren_from[MAX_RENAME][96];
 extern char g_ren_to[MAX_RENAME][112];
+typedef struct { int sv, from, n; char (*f)[96]; char (*t)[112]; } RenPark;
+RenPark ren_park(int from);
+void ren_unpark(RenPark *p);
 const char *strbuf_local_name(Compiler *c, int recv);
 int strbuf_ivar_owner(Compiler *c, int node);
 /* The shared-mutable shim (codegen_stmt.c) re-runs a value-semantics mutator
@@ -564,6 +567,8 @@ void emit_unbox_nilable_text(Compiler *c, TyKind t, const char *expr, Buf *b);
    emits the reader/writer pair as an expression, or answers 0 to leave the
    caller's direct-ivar shapes alone. See codegen_expr.c. */
 void emit_orw_guard(Compiler *c, int v, int boxed, const char *cond, const char *lhs, int value_form, int indent, Buf *b);
+void emit_slot_orw_value(Compiler *c, TyKind t, const char *ref, int v, int is_or, Buf *b);
+int emit_empty_literal_as(Compiler *c, int v, TyKind slot, Buf *b);
 int emit_call_or_write_via_methods(Compiler *c, int id, int is_or, Buf *b);
 /* Wrap a boxed expression in the --rbs seed assertion (a no-op macro without
    -DSP_RBS_CHECK) before it narrows into a seeded slot. */
@@ -865,6 +870,7 @@ void scope_proc_form_end(Compiler *c, int s);
 int scope_has_callable_symbol(Compiler *c, int s);
 int scope_toplevel_included(Compiler *c, int s);
 int emit_forwarded_proc_arg(Compiler *c, int blk_node, Buf *b);
+int emit_block_arg_proc(Compiler *c, int fe, Buf *b);
 void emit_obj_dispatch_key(Compiler *c, int cid, const char *selfptr, Buf *b);
 int struct_kwarg_value(Compiler *c, int kwh, const char *name);
 /* Value-equality family: operands in the same nonzero family compare by value;
@@ -949,6 +955,7 @@ int kwh_lookup(const NodeTable *nt, int kwh, const char *kname);
 int callee_has_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_declares_kwargs(Compiler *c, Scope *m);
+int is_fresh_array(Compiler *c, int v);
 /* True when the keyword hash `kwh` passes keywords from more than one source
    that may carry the same key -- two `**` operands, or a literal Symbol key
    ahead of one -- and every literal key is a Symbol. Its keywords then bind
@@ -956,6 +963,8 @@ int callee_declares_kwargs(Compiler *c, Scope *m);
    binds them; a lone `**` with literal keys only after it binds each keyword
    from its own source, since a literal after it always wins. */
 int kwh_sources_overlap(const NodeTable *nt, int kwh);
+/* True when the keyword hash `kwh` has a `**` operand. */
+int kwh_has_splat(const NodeTable *nt, int kwh);
 /* kwh_sources_overlap, for a call into `m`, which declares keyword params. */
 int kwh_merged(Compiler *c, Scope *m, int kwh);
 /* The keywords of such a `kwh` merged into one fresh, rooted SymPolyHash in
@@ -963,8 +972,10 @@ int kwh_merged(Compiler *c, Scope *m, int kwh);
    emit_kwrest_collect merges them: each value and `**` operand is evaluated
    once, where it stands, and an operand of another class raises there, as a
    lone one does in emit_ds_hash_materialize. Returns the temp id and sets
-   *out_type to TY_SYM_POLY_HASH. */
-int emit_ds_hash_merge(Compiler *c, int kwh, TyKind *out_type);
+   *out_type to TY_SYM_POLY_HASH -- or, with `any_key`, merges into a
+   PolyPolyHash that keeps a String or other key, literal or an operand's,
+   as a Data or Struct construction needs (TY_POLY_POLY_HASH). */
+int emit_ds_hash_merge(Compiler *c, int kwh, int any_key, TyKind *out_type);
 /* True when emit_ds_hash_materialize runs keyword code with an effect ahead
    of the call's positionals: a kwh_merged call's merged hash, or a first
    `**` operand with a side effect that it evaluates. */
@@ -980,6 +991,10 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type);
    check: a settled kind of another class raises outright, and a boxed one
    (TY_POLY) is checked at run time on `val`, its evaluated value. */
 void emit_kw_splat_conv_check(Compiler *c, TyKind t, const char *val);
+/* A `**` operand of a kind that is no Hash but can still be nil at run time
+   -- a nilable Integer or Float slot's sentinel, a pointer-backed kind's
+   NULL: its conversion is checked on the boxed value, as a boxed one is. */
+int kw_splat_may_be_nil(Compiler *c, int node);
 /* The same conversion inline, as a statement of an enclosing `({ ... })`:
    evaluates the `**` operand `node` into `b` and checks it there, for a
    site that evaluates its arguments in its own order. */

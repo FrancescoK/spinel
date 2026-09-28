@@ -251,6 +251,7 @@ void intern_block_params(Compiler *c);
 int local_all_writes_empty_array(Compiler *c, Scope *sc, const char *name);
 int infer_param_hash_value(Compiler *c);
 int bind_call_params(Compiler *c, int call_id, int mi);
+int param_src_misfits(Compiler *c, LocalVar *p, TyKind ct, const int *argv, int argc);
 int opt_before_required(Compiler *c, Scope *m);                 /* codegen_fold.c */
 int arg_slot_for_param(Compiler *c, Scope *m, int idx, int argc); /* codegen_fold.c */
 /* The type a READ of ivar slot `iv` yields (a shared-mutable string slot
@@ -353,6 +354,7 @@ int desugar_symbol_to_proc_call(Compiler *c);
 int desugar_call_op_write(Compiler *c);
 int desugar_array_at(Compiler *c);
 int desugar_array_first_last(Compiler *c);
+int desugar_enum_iter_splat_args(Compiler *c);
 int desugar_builtin_iter_block_shapes(Compiler *c);
 int desugar_to_h_block(Compiler *c);
 TyKind return_node_type(Compiler *c, int id);
