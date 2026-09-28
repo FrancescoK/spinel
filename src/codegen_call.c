@@ -10874,6 +10874,27 @@ static void emit_builtin_new_arms_text(Compiler *c, const char *pre, const char 
                pre, rt2, kt, kt, argc_txt, argv_txt);
 }
 
+/* The arm of a Class-value `new` switch for a user exception class without
+   its own initialize: built as the static `MyError.new(msg)` is, from the
+   message argument `_t<atmp[0]>` when there is one. */
+static int emit_exc_sub_new_arm(Compiler *c, int ci, int argc, const int *atmp, int rt2, Buf *b) {
+  if (!class_is_exc_subclass(c, ci) || comp_method_in_chain(c, ci, "initialize", NULL) >= 0) return 0;
+  const char *cn = class_ruby_name(c, ci); if (!cn) cn = c->classes[ci].name;
+  buf_printf(b, "case %d: { sp_dyn_new_arity(%d, 1); const char *_m = ", ci, argc);
+  if (argc >= 1)
+    buf_printf(b, "_t%d.tag == SP_TAG_NIL ? (&(\"\\xff\")[1]) : sp_exc_msg_given("
+                  "_t%d.tag == SP_TAG_STR ? _t%d.v.s : sp_poly_to_s(_t%d)); ",
+               atmp[0], atmp[0], atmp[0], atmp[0]);
+  else buf_puts(b, "(&(\"\\xff\")[1]); ");
+  if (c->classes[ci].nivars > 0)
+    buf_printf(b, "_t%d = sp_box_obj(sp_exc_new_sub_sized(sizeof(sp_%s), \"%s\", _m), %d); } break; ",
+               rt2, c->classes[ci].c_name, cn, ci);
+  else
+    buf_printf(b, "_t%d = sp_box_obj(sp_exc_new_sub(\"%s\", \"%s\", _m), %d); } break; ",
+               rt2, cn, exc_builtin_parent(c, ci), ci);
+  return 1;
+}
+
 /* The same, for arguments hoisted into the boxed temps `atmp`. */
 static void emit_builtin_new_arms(Compiler *c, int argc, const int *atmp, int rt2, int kt, int boxed,
                                   Buf *b) {
@@ -30306,6 +30327,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     for (int ci = 0; ci < c->nclasses; ci++) {
       if (is_builtin_reopen(c->classes[ci].name) || c->classes[ci].is_native_class) continue;
       if (emit_user_new_arm(c, id, ci, argc, atmp, 1, rt2, b)) continue;
+      if (emit_exc_sub_new_arm(c, ci, argc, atmp, rt2, b)) continue;
       int initm = comp_method_in_chain(c, ci, "initialize", NULL);
       /* a class whose constructor takes some other count: CRuby's
          ArgumentError, where the default arm raised NoMethodError */
@@ -30587,6 +30609,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (is_builtin_reopen(c->classes[ci].name) || c->classes[ci].is_native_class) continue;
       /* a class built by its own `self.new` may never be instantiated at all */
       if (emit_user_new_arm(c, id, ci, argc, atmp, 1, rt2, b)) continue;
+      if (emit_exc_sub_new_arm(c, ci, argc, atmp, rt2, b)) continue;
       int initm = comp_method_in_chain(c, ci, "initialize", NULL);
       { char am[256];   /* as in the Class-valued form above */
         if (!kwh_arg && ctor_arity_error(c, ci, initm, argc, am, sizeof am)) {
@@ -30626,7 +30649,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
          optional: the arm fills each with its default, exactly as the
          statically-known `Klass.new` does. */
       if (argc == 0 && nreq == 0 && np > 0) {
-        if (class_is_exc_subclass(c, ci)) continue;
+        if (class_is_exc_subclass(c, ci) && ctor_needs_self_defaults(c, initm, 0)) continue;
         buf_printf(b, "case %d: _t%d=", ci, rt2);
         if (ctor_needs_self_defaults(c, initm, 0)) {
           buf_printf(b, c->classes[ci].is_value_type ? "sp_box_vobj_%s(" : "sp_box_obj(",

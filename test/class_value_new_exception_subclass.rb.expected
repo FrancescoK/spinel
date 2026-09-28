@@ -1,0 +1,16 @@
+AppError: boom
+AppError: AppError
+AppError: AppError
+AppError: 42
+CodedError: coded
+DefaultError: given
+DefaultError: default message
+Outer::Inner: nested
+wrong number of arguments (given 2, expected 0..1)
+AppError: typed
+DefaultError: default message
+Outer::Inner rescued
+undefined method 'new' for class Integer
+undefined method 'new' for module Mixin
+undefined method 'new' for module Comparable
+undefined method 'bogus' for class Integer

@@ -3127,22 +3127,20 @@ static SP_NOINLINE SP_COLD void sp_raise_frozen_hash_at(void *h, int cls_id) {
    way CRuby dispatches on the class. A tag whose class does not define the
    method raises CRuby's NoMethodError (e.g. `1.nan?`, `"x".abs`). */
 SP_NORETURN SP_COLD static void sp_raise_poly_nomethod(const char *m, sp_RbVal v) {
-  sp_exc_stage_recv(v);
-  /* nil, true and false read as themselves in CRuby's message, as the sibling
-     builder below already spells them */
-  const char *d = (v.tag == SP_TAG_NIL) ? SPL("nil")
-                : (v.tag == SP_TAG_BOOL) ? (v.v.i ? SPL("true") : SPL("false"))
-                : sp_sprintf("an instance of %s", sp_poly_class_name(v));
-  sp_raise_cls("NoMethodError", sp_sprintf("undefined method '%s' for %s", m, d));
+  sp_raise_cls("NoMethodError", sp_nomethod_msg(m, v));
 }
 /* CRuby-shaped NoMethodError text for an unresolved call on a runtime value:
-   nil/true/false read as themselves, anything else as "an instance of
-   <Class>". Only builds the message -- the caller keeps the recognizable
-   sp_raise_nomethod(...) form the coercion paths key on. */
+   nil/true/false read as themselves, a class or module as "class <Name>" or
+   "module <Name>", anything else as "an instance of <Class>". Only builds the
+   message -- the caller keeps the recognizable sp_raise_nomethod(...) form
+   the coercion paths key on. */
 SP_COLD static const char *sp_nomethod_msg(const char *m, sp_RbVal v) {
   sp_exc_stage_recv(v);
   const char *d = (v.tag == SP_TAG_NIL) ? "nil"
                 : (v.tag == SP_TAG_BOOL) ? (v.v.i ? "true" : "false")
+                : (v.tag == SP_TAG_CLASS)
+                  ? sp_sprintf("%s %s", strcmp(sp_poly_class_name(v), "Module") ? "class" : "module",
+                               sp_class_val_name(v))
                 : sp_sprintf("an instance of %s", sp_poly_class_name(v));
   return sp_sprintf("undefined method '%s' for %s", m, d);
 }
