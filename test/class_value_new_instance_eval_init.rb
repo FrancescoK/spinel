@@ -31,7 +31,7 @@ p Mm.new(3) { ev 4; ev 5 }.e
 p [Named, Nn].first.new(1) { ev 2; ev 3 }.e
 
 # a class value whose type is Class, not a boxed value
-k2 = ARGV.empty? ? Mm : Nn
+k2 = ARGV.empty? ? Mm : Named
 p k2.new(7) { ev 8 }.e
 
 class Ex
