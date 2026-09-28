@@ -19656,6 +19656,20 @@ void analyze_program(Compiler *c) {
       ivar_backstop_changed = 1;
     }
   }
+  /* A class variable never assigned a typed value -- activesupport's
+     `mattr_accessor :parse_json_times`, declared nil and set by nobody in
+     the program -- has no C storage type either, and fell to an Integer
+     slot whose reader was refused in a condition. Such a slot always reads
+     nil: give it the boxed-nil poly global, as the ivar above. */
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    ClassInfo *cl = &c->classes[ci];
+    for (int cv = 0; cv < cl->ncvars; cv++) {
+      TyKind t = cl->cvar_types[cv];
+      if (t != TY_UNKNOWN && t != TY_VOID && t != TY_NIL) continue;
+      cl->cvar_types[cv] = TY_POLY;
+      ivar_backstop_changed = 1;
+    }
+  }
 
   /* An attr_reader/attr_accessor ivar typed via a writer call (scalar type),
      but whose class has no initialize that writes it, starts nil on fresh
