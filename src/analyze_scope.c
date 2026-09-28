@@ -5882,6 +5882,15 @@ int infer_ivar_types(Compiler *c) {
       int old_ni = ci->nivars;
       int iv = comp_ivar_intern(ci, nm);
       if (ci->nivars != old_ni) changed = 1;  /* new ivar registered, need another pass */
+      /* `@x |= v`, `&=`, `^=` on a slot nothing has typed yet: the slot is nil
+         there, and NilClass#| answers true, #& false, #^ v's truthiness -- not
+         an Integer. Taking v's type made it an int slot, and `nil | 256` ORed
+         the nil sentinel's bits into a large negative number (#5470). */
+      if (sp_streq(ty, "InstanceVariableOperatorWriteNode") && ci->ivar_types[iv] == TY_UNKNOWN &&
+          !class_ivar_pinned(ci, nm)) {
+        const char *bo = nt_str(nt, id, "binary_operator");
+        if (bo && (sp_streq(bo, "|") || sp_streq(bo, "&") || sp_streq(bo, "^"))) vt = TY_POLY;
+      }
       /* For operator-write (@b += rhs), vt is the RHS type, not the result type.
          When the slot holds a user object, the result is the method's return type. */
       if (sp_streq(ty, "InstanceVariableOperatorWriteNode") && ty_is_object(ci->ivar_types[iv])) {
