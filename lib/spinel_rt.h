@@ -9354,38 +9354,69 @@ case SP_BUILTIN_IO:{sp_int sp_file_size(const char*);sp_File*_f=(sp_File*)v.v.p;
 case SP_BUILTIN_STRBUF: return (sp_int)((sp_String *)v.v.p)->len;   /* live length (#3227) */
 /* a user object with #to_a (a container-read Set, #3234): its element count */
 default: if (sp_obj_to_a_fn) { sp_RbVal _a = sp_obj_to_a_fn(v); if (_a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_a.cls_id)) return sp_poly_length(_a); } return 0;}}
+/* The member a constructor's keyword key names: a Symbol's name, or a
+   String's, which CRuby takes for the member of that name too; NULL for a
+   key of any other class. */
+static const char *sp_kw_key_name(sp_RbVal k) {
+  if (k.tag == SP_TAG_SYM || k.tag == SP_TAG_STR ||
+      (k.tag == SP_TAG_OBJ && k.cls_id == SP_BUILTIN_STRBUF)) return sp_poly_to_s(k);
+  return NULL;
+}
+/* Member `name` of a Data or Struct built from the keyword hash `h`, as
+   CRuby sets the members walking the hash: the value of the last key that
+   names it, a Symbol or a String; nil when none does. */
+static sp_RbVal sp_kw_member_val(sp_RbVal h, const char *name) {
+  SP_GC_ROOT_RBVAL(h);
+  sp_RbVal r = sp_box_nil();
+  sp_int nk = sp_poly_length(h);
+  for (sp_int j = 0; j < nk; j++) {
+    sp_RbVal k, v;
+    sp_poly_hash_pair(h, j, &k, &v);
+    const char *kn = sp_kw_key_name(k);
+    if (kn && strcmp(kn, name) == 0) r = v;
+  }
+  return r;
+}
 /* The keys a `**h` into a Data or keyword Struct constructor must answer for,
    checked as CRuby checks them (#5175): a Data member neither a literal key
    nor the hash names is missing, and a key the hash carries that names no
-   member is unknown, Data's before Struct's wording. `lit[i]` says member i
-   was given by a literal key. Without this the member read nil and the key
-   was dropped. */
+   member is unknown, Data's before Struct's wording. A String key names a
+   member as a Symbol does, and a Data key that is neither is CRuby's
+   TypeError, ahead of both. `lit[i]` says member i was given by a literal
+   key. Without this the member read nil and the key was dropped. */
 static void sp_kw_splat_check(sp_RbVal h, const char *const *mem, int n,
                               const unsigned char *lit, int is_data) {
   SP_GC_ROOT_RBVAL(h);
   char buf[1024]; size_t len = 0; int cnt = 0;
   buf[0] = 0;
+  sp_int nk = sp_poly_length(h);
   if (is_data) {
+    for (sp_int j = 0; j < nk; j++) {
+      sp_RbVal k, v;
+      sp_poly_hash_pair(h, j, &k, &v);
+      if (!sp_kw_key_name(k))
+        sp_raise_cls("TypeError", sp_sprintf("%s is not a symbol nor a string", sp_poly_inspect(k)));
+    }
     for (int i = 0; i < n; i++) {
       if (lit[i]) continue;
-      sp_bool f = 0;
-      (void)sp_poly_hash_get_pair_val(h, sp_box_sym(sp_sym_intern(mem[i])), &f);
+      int f = 0;
+      for (sp_int j = 0; j < nk && !f; j++) {
+        sp_RbVal k, v;
+        sp_poly_hash_pair(h, j, &k, &v);
+        f = strcmp(sp_kw_key_name(k), mem[i]) == 0;
+      }
       if (f) continue;
       if (len < sizeof buf) len += (size_t)snprintf(buf + len, sizeof buf - len, "%s:%s", cnt ? ", " : "", mem[i]);
       cnt++;
     }
     if (cnt) sp_raise_cls("ArgumentError", sp_sprintf("missing keyword%s: %s", cnt > 1 ? "s" : "", buf));
   }
-  sp_int nk = sp_poly_length(h);
   for (sp_int j = 0; j < nk; j++) {
-    sp_RbVal pr = sp_poly_each_elem(h, j);
-    if (pr.tag != SP_TAG_OBJ || pr.cls_id != SP_BUILTIN_POLY_ARRAY) continue;
-    sp_RbVal k = sp_PolyArray_get((sp_PolyArray *)pr.v.p, 0);
+    sp_RbVal k, v;
+    sp_poly_hash_pair(h, j, &k, &v);
+    const char *kn = sp_kw_key_name(k);
     int known = 0;
-    if (k.tag == SP_TAG_SYM) {
-      const char *kn = sp_poly_to_s(k);
-      for (int i = 0; i < n && !known; i++) known = strcmp(kn, mem[i]) == 0;
-    }
+    for (int i = 0; kn && i < n && !known; i++) known = strcmp(kn, mem[i]) == 0;
     if (known) continue;
     if (len < sizeof buf) len += (size_t)snprintf(buf + len, sizeof buf - len, "%s%s", cnt ? ", " : "",
                                                   is_data ? sp_poly_inspect(k) : sp_poly_to_s(k));
@@ -10115,6 +10146,22 @@ static void sp_kwrest_merge_poly(sp_SymPolyHash *dst, sp_RbVal h) {
     sp_poly_hash_pair(h, i, &k, &v);
     if (k.tag != SP_TAG_SYM) sp_poly_typed_hash_store_miss(k, v, "Symbol", NULL);
     sp_SymPolyHash_set(dst, (sp_sym)k.v.i, v);
+  }
+}
+/* sp_kwrest_merge_poly into a hash of any key: the keywords of a Data or
+   Struct construction, merged in source order, keep a String key, which
+   the member reads and sp_kw_splat_check take by name and a keyword_init:
+   false Struct keeps in its Hash. */
+static void sp_kw_merge_any(sp_PolyPolyHash *dst, sp_RbVal h) {
+  if (h.tag == SP_TAG_NIL) return;
+  if (h.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(h.cls_id))
+    sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Hash", sp_convert_src_name(h)));
+  SP_GC_ROOT(dst); SP_GC_ROOT_RBVAL(h);
+  sp_int n = sp_poly_length(h);
+  for (sp_int i = 0; i < n; i++) {
+    sp_RbVal k, v;
+    sp_poly_hash_pair(h, i, &k, &v);
+    sp_PolyPolyHash_set(dst, k, v);
   }
 }
 static sp_PolyArray *sp_poly_values(sp_RbVal v) {

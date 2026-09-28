@@ -960,6 +960,8 @@ int callee_declares_kwargs(Compiler *c, Scope *m);
    binds them; a lone `**` with literal keys only after it binds each keyword
    from its own source, since a literal after it always wins. */
 int kwh_sources_overlap(const NodeTable *nt, int kwh);
+/* True when the keyword hash `kwh` has a `**` operand. */
+int kwh_has_splat(const NodeTable *nt, int kwh);
 /* kwh_sources_overlap, for a call into `m`, which declares keyword params. */
 int kwh_merged(Compiler *c, Scope *m, int kwh);
 /* The keywords of such a `kwh` merged into one fresh, rooted SymPolyHash in
@@ -967,8 +969,10 @@ int kwh_merged(Compiler *c, Scope *m, int kwh);
    emit_kwrest_collect merges them: each value and `**` operand is evaluated
    once, where it stands, and an operand of another class raises there, as a
    lone one does in emit_ds_hash_materialize. Returns the temp id and sets
-   *out_type to TY_SYM_POLY_HASH. */
-int emit_ds_hash_merge(Compiler *c, int kwh, TyKind *out_type);
+   *out_type to TY_SYM_POLY_HASH -- or, with `any_key`, merges into a
+   PolyPolyHash that keeps a String or other key, literal or an operand's,
+   as a Data or Struct construction needs (TY_POLY_POLY_HASH). */
+int emit_ds_hash_merge(Compiler *c, int kwh, int any_key, TyKind *out_type);
 /* True when emit_ds_hash_materialize runs keyword code with an effect ahead
    of the call's positionals: a kwh_merged call's merged hash, or a first
    `**` operand with a side effect that it evaluates. */
