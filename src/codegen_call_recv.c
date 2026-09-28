@@ -5144,11 +5144,18 @@ else {
         /* rooted across the range, as the typed arm is */
         buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_recv_rooted(c, recv, ta, "SP_GC_ROOT", b);
         buf_printf(b, "sp_Range _t%d = ", tr); emit_expr(c, argv[0], b);
-        buf_printf(b, "; sp_int _t%d = _t%d.first < 0 ? _t%d.first + (_t%d ? _t%d->len : 0) : _t%d.first;",
-                   tf, tr, tr, ta, ta, tr);
-        buf_printf(b, " sp_int _t%d = (_t%d.last < 0 ? _t%d.last + (_t%d ? _t%d->len : 0) : _t%d.last) - _t%d + (_t%d.excl ? 0 : 1);",
-                   tn, tr, tr, ta, ta, tr, tf, tr);
-        buf_printf(b, " sp_PolyArray_slice_bang(_t%d, _t%d, _t%d < 0 ? 0 : _t%d); })", ta, tf, tn, tn);
+        /* a beginless bound starts at 0 and an endless one runs to the end,
+           as the typed arm resolves them */
+        buf_printf(b, "; sp_int _t%d = _t%d.first == INTPTR_MIN ? 0"
+                      " : (_t%d.first < 0 ? _t%d.first + (_t%d ? _t%d->len : 0) : _t%d.first);",
+                   tf, tr, tr, tr, ta, ta, tr);
+        buf_printf(b, " sp_int _t%d = _t%d.last == INTPTR_MAX ? ((_t%d ? _t%d->len : 0) - _t%d)"
+                      " : ((_t%d.last < 0 ? _t%d.last + (_t%d ? _t%d->len : 0) : _t%d.last) - _t%d + (_t%d.excl ? 0 : 1));",
+                   tn, tr, ta, ta, tf, tr, tr, ta, ta, tr, tf, tr);
+        /* a start still negative lies before the first element: passed as
+           given, the runtime answers nil for it (after its frozen check) */
+        buf_printf(b, " sp_PolyArray_slice_bang(_t%d, _t%d < 0 ? _t%d - (_t%d ? _t%d->len : 0) : _t%d,"
+                      " _t%d < 0 ? 0 : _t%d); })", ta, tf, tf, ta, ta, tf, tn, tn);
         return 1;
       }
       if (sp_streq(name, "slice!") && argc == 1) {
