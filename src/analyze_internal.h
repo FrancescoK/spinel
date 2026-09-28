@@ -353,6 +353,7 @@ int desugar_symbol_to_proc_call(Compiler *c);
 int desugar_call_op_write(Compiler *c);
 int desugar_array_at(Compiler *c);
 int desugar_array_first_last(Compiler *c);
+int desugar_enum_iter_splat_args(Compiler *c);
 int desugar_builtin_iter_block_shapes(Compiler *c);
 int desugar_to_h_block(Compiler *c);
 TyKind return_node_type(Compiler *c, int id);
