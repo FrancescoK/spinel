@@ -1,0 +1,61 @@
+[[:x, 1]]
+true
+1
+nil
+false
+:x
+1
+false
+1
+nil
+true
+[:x, 1]
+[:y, nil]
+2
+1
+[:x, 1]
+1
+nil
+[[[:x, 1]], [[:y, nil]]]
+:x
+:y
+[:x, 1]
+:x
+:y
+[:y, nil]
+1
+nil
+{1 => [[:x, 1]], nil => [[:y, nil]]}
+1
+true
+1
+nil
+false
+[1]
+false
+1
+nil
+3
+false
+1
+nil
+3
+2
+1
+1
+1
+nil
+3
+[[1, 3], [nil]]
+1
+3
+1
+1
+3
+3
+true
+true
+{true => [1, 3]}
+10
+20
+[10, 20]
