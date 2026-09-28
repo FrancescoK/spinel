@@ -988,6 +988,86 @@ void emit_orw_guard(Compiler *c, int v, int boxed, const char *cond, const char 
   free(vpre.p); free(vval.p);
 }
 
+/* `REF ||= v` / `REF &&= v` on a typed slot of kind T, as a value: the
+   guard tests the slot kind's own nil (NULL for a pointer-backed slot, a
+   sentinel for Integer and Symbol) and the RHS converts to the slot's kind.
+   Shared by an ivar and by a generated attribute read through a typed
+   receiver, which had its own partial copy and lost the write (#5428). */
+void emit_slot_orw_value(Compiler *c, TyKind t, const char *ref, int v, int is_or, Buf *b) {
+  /* The RHS is rendered with its setup captured: the statements a composite
+     RHS spills to g_pre (a hash literal's fills, a block-taking call's loop)
+     would otherwise run unconditionally, ahead of the guard, so
+     `@map ||= { 0 => T.new }` built the table on every call and discarded
+     it, and a RHS that succeeds once and raises afterwards raised on the
+     second call where CRuby answered the memo (#4513). The setup is spliced
+     inside the conditional, where it runs only when the assignment is
+     taken. The poly arm did this already; every slot kind does now. */
+  Buf vpre; memset(&vpre, 0, sizeof vpre);
+  Buf vval; memset(&vval, 0, sizeof vval);
+  const char *cond = NULL;
+  char condb[400];
+  int unconditional = 0;
+  if (t == TY_POLY) {
+    Buf *saved_pre = g_pre; g_pre = &vpre;
+    emit_boxed(c, v, &vval);
+    g_pre = saved_pre;
+    snprintf(condb, sizeof condb, "%ssp_poly_truthy(%s)", is_or ? "!" : "", ref);
+    cond = condb;
+    if (!vval.p) buf_puts(&vval, "sp_box_nil()");
+  }
+  else {
+    Buf *saved_pre = g_pre; g_pre = &vpre;
+    /* an empty `[]`/`{}` takes the slot's variant; its own inferred one
+       comes from reads elsewhere, not from this slot (#4111) */
+    if (!emit_empty_literal_as(c, v, t, &vval))
+      emit_array_store_value(c, t, v, &vval);   /* a seed-pinned kind converts */
+    g_pre = saved_pre;
+    if (t == TY_BOOL || t == TY_STRING)
+      snprintf(condb, sizeof condb, "%s%s", is_or ? "!" : "", ref);
+    else if (t == TY_INT)
+      snprintf(condb, sizeof condb, "%s %s= SP_INT_NIL", ref, is_or ? "=" : "!");
+    else if (t == TY_SYMBOL)   /* nilable symbol: (sp_sym)-1 is the nil sentinel */
+      snprintf(condb, sizeof condb, "%s %s= (sp_sym)-1", ref, is_or ? "=" : "!");
+    else if (t == TY_CLASS)   /* a Class slot's nil is SP_CLASS_NIL (#5357) */
+      snprintf(condb, sizeof condb, "%ssp_class_nil_p(%s)", is_or ? "" : "!", ref);
+    /* a pointer-backed slot (object/array/hash/fiber/proc/...) reads falsy
+       when NULL, so `@x ||= v` is `if (!@x) @x = v` and `@x &&= v` is
+       `if (@x) @x = v`. Falling through to a bare read dropped the init when
+       this or-write was the RHS of a poly-receiver setter switch (#1447). */
+    else if (ty_is_object(t) || ty_is_array(t) || ty_is_hash(t) ||
+             t == TY_FIBER || t == TY_THREAD || t == TY_QUEUE || t == TY_MUTEX || t == TY_CONDVAR || t == TY_PROC || t == TY_IO ||
+             t == TY_MATCHDATA || t == TY_EXCEPTION || t == TY_REGEX) {
+      snprintf(condb, sizeof condb, "%s%s", is_or ? "!" : "", ref);
+      /* an unresolved-call RHS (`@x ||= recv.map{...}` where recv typed
+         poly/unknown) is a raise-all returning sp_RbVal; into a pointer-backed
+         slot, keep the raise for effect but yield the slot's typed NULL so the
+         assignment compiles -- the raise aborts before the NULL is reached
+         (#2457). */
+      const char *ivtxt = vval.p ? vval.p : "";
+      if (strncmp(ivtxt, "sp_raise_nomethod(", 18) == 0 ||
+          strncmp(ivtxt, "(sp_raise_cls(", 14) == 0) {
+        Buf w; memset(&w, 0, sizeof w);
+        buf_printf(&w, "(%s, %s)", ivtxt, default_value(t));
+        free(vval.p); vval = w;
+      }
+    }
+    else if (!is_or) unconditional = 1;
+    else { free(vpre.p); free(vval.p); buf_puts(b, ref); return; }
+    if (!unconditional) cond = condb;
+  }
+  if (unconditional) {
+    buf_puts(b, "({ ");
+    if (vpre.p) buf_puts(b, vpre.p);
+    buf_printf(b, "%s = %s; %s; })", ref, vval.p ? vval.p : "", ref);
+  }
+  else {
+    buf_printf(b, "({ if (%s) { ", cond);
+    if (vpre.p) buf_puts(b, vpre.p);
+    buf_printf(b, "%s = %s; } %s; })", ref, vval.p ? vval.p : "", ref);
+  }
+  free(vpre.p); free(vval.p);
+}
+
 int emit_call_or_write_via_methods(Compiler *c, int id, int is_or, Buf *b) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver");
@@ -1711,75 +1791,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       snprintf(ref3, sizeof ref3, "civ_%s_%s", c->classes[cid3].name, iv_c(nm + 1));
     else
       snprintf(ref3, sizeof ref3, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
-    /* The RHS is rendered with its setup captured: the statements a composite
-       RHS spills to g_pre (a hash literal's fills, a block-taking call's loop)
-       would otherwise run unconditionally, ahead of the guard, so
-       `@map ||= { 0 => T.new }` built the table on every call and discarded
-       it, and a RHS that succeeds once and raises afterwards raised on the
-       second call where CRuby answered the memo (#4513). The setup is spliced
-       inside the conditional, where it runs only when the assignment is
-       taken. The poly arm did this already; every slot kind does now. */
-    Buf vpre; memset(&vpre, 0, sizeof vpre);
-    Buf vval; memset(&vval, 0, sizeof vval);
-    const char *cond = NULL;
-    char condb[400];
-    int unconditional = 0;
-    if (ivt3 == TY_POLY) {
-      Buf *saved_pre = g_pre; g_pre = &vpre;
-      emit_boxed(c, v, &vval);
-      g_pre = saved_pre;
-      snprintf(condb, sizeof condb, "%ssp_poly_truthy(%s)", is_or ? "!" : "", ref3);
-      cond = condb;
-      if (!vval.p) buf_puts(&vval, "sp_box_nil()");
-    }
-    else {
-      Buf *saved_pre = g_pre; g_pre = &vpre;
-      emit_array_store_value(c, ivt3, v, &vval);   /* a seed-pinned kind converts */
-      g_pre = saved_pre;
-      if (ivt3 == TY_BOOL || ivt3 == TY_STRING)
-        snprintf(condb, sizeof condb, "%s%s", is_or ? "!" : "", ref3);
-      else if (ivt3 == TY_INT)
-        snprintf(condb, sizeof condb, "%s %s= SP_INT_NIL", ref3, is_or ? "=" : "!");
-      else if (ivt3 == TY_SYMBOL)   /* nilable symbol: (sp_sym)-1 is the nil sentinel */
-        snprintf(condb, sizeof condb, "%s %s= (sp_sym)-1", ref3, is_or ? "=" : "!");
-      else if (ivt3 == TY_CLASS)   /* a Class slot's nil is SP_CLASS_NIL (#5357) */
-        snprintf(condb, sizeof condb, "%ssp_class_nil_p(%s)", is_or ? "" : "!", ref3);
-      /* a pointer-backed ivar (object/array/hash/fiber/proc/...) reads falsy
-         when NULL, so `@x ||= v` is `if (!@x) @x = v` and `@x &&= v` is
-         `if (@x) @x = v`. Falling through to a bare read dropped the init when
-         this or-write was the RHS of a poly-receiver setter switch (#1447). */
-      else if (ty_is_object(ivt3) || ty_is_array(ivt3) || ty_is_hash(ivt3) ||
-               ivt3 == TY_FIBER || ivt3 == TY_THREAD || ivt3 == TY_QUEUE || ivt3 == TY_MUTEX || ivt3 == TY_CONDVAR || ivt3 == TY_PROC || ivt3 == TY_IO ||
-               ivt3 == TY_MATCHDATA || ivt3 == TY_EXCEPTION || ivt3 == TY_REGEX) {
-        snprintf(condb, sizeof condb, "%s%s", is_or ? "!" : "", ref3);
-        /* an unresolved-call RHS (`@x ||= recv.map{...}` where recv typed
-           poly/unknown) is a raise-all returning sp_RbVal; into a pointer-backed
-           slot, keep the raise for effect but yield the slot's typed NULL so the
-           assignment compiles -- the raise aborts before the NULL is reached
-           (#2457). */
-        const char *ivtxt = vval.p ? vval.p : "";
-        if (strncmp(ivtxt, "sp_raise_nomethod(", 18) == 0 ||
-            strncmp(ivtxt, "(sp_raise_cls(", 14) == 0) {
-          Buf w; memset(&w, 0, sizeof w);
-          buf_printf(&w, "(%s, %s)", ivtxt, default_value(ivt3));
-          free(vval.p); vval = w;
-        }
-      }
-      else if (!is_or) unconditional = 1;
-      else { free(vpre.p); free(vval.p); buf_puts(b, ref3); return; }
-      if (!unconditional) cond = condb;
-    }
-    if (unconditional) {
-      buf_puts(b, "({ ");
-      if (vpre.p) buf_puts(b, vpre.p);
-      buf_printf(b, "%s = %s; %s; })", ref3, vval.p ? vval.p : "", ref3);
-    }
-    else {
-      buf_printf(b, "({ if (%s) { ", cond);
-      if (vpre.p) buf_puts(b, vpre.p);
-      buf_printf(b, "%s = %s; } %s; })", ref3, vval.p ? vval.p : "", ref3);
-    }
-    free(vpre.p); free(vval.p);
+    emit_slot_orw_value(c, ivt3, ref3, v, is_or, b);
     return;
   }
   if (sp_streq(ty, "LocalVariableOrWriteNode") || sp_streq(ty, "LocalVariableAndWriteNode")) {
@@ -3819,7 +3831,7 @@ else {
   if (sp_streq(ty, "CallOrWriteNode") || sp_streq(ty, "CallAndWriteNode")) {
     /* value position `x = (a.v ||= 5)`: run the conditional write, then read
        the attribute back as the expression's value (the assigned-or-existing
-       one, matching CRuby). Mirrors the statement arm's shapes. */
+       one, matching CRuby). The guard is the ivar's own (emit_slot_orw_value). */
     int is_or = sp_streq(ty, "CallOrWriteNode");
     int recv = nt_ref(nt, id, "receiver");
     const char *attr = nt_str(nt, id, "name");
@@ -3834,31 +3846,9 @@ else {
       int tr = ++g_tmp;
       buf_puts(b, "({ ");
       emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, "; ");
-      char lhs[300]; snprintf(lhs, sizeof lhs, "_t%d->iv_%s", tr, attr);
-      char cond[400];
-      if (ivt == TY_POLY) {
-        snprintf(cond, sizeof cond, "%ssp_poly_truthy(%s)", is_or ? "!" : "", lhs);
-        emit_orw_guard(c, v, 1, cond, lhs, 1, 0, b);
-        buf_puts(b, "; })");
-      }
-      else if (ivt == TY_BOOL) {
-        snprintf(cond, sizeof cond, "%s%s", is_or ? "!" : "", lhs);
-        emit_orw_guard(c, v, 0, cond, lhs, 1, 0, b);
-        buf_puts(b, "; })");
-      }
-      else if (ivt == TY_INT) {
-        /* a nullable-int slot: nil is the SP_INT_NIL sentinel (false does not
-           inhabit an int slot), so ||= assigns exactly when the slot is nil
-           and &&= exactly when it is not. */
-        snprintf(cond, sizeof cond, "%s %s SP_INT_NIL", lhs, is_or ? "==" : "!=");
-        emit_orw_guard(c, v, 0, cond, lhs, 1, 0, b);
-        buf_puts(b, "; })");
-      }
-      else if (!is_or) {
-        emit_orw_guard(c, v, 0, NULL, lhs, 1, 0, b);
-        buf_puts(b, "; })");
-      }
-      else buf_printf(b, "%s; })", lhs);
+      char lhs[300]; snprintf(lhs, sizeof lhs, "_t%d->iv_%s", tr, iv_c(attr));
+      emit_slot_orw_value(c, ivt, lhs, v, is_or, b);
+      buf_puts(b, "; })");
       return;
     }
   }

@@ -7435,7 +7435,7 @@ static int emit_nullable_int_ternary(Compiler *c, int v, Buf *b) {
    `@reg ||= {}` built an sp_StrPolyHash for a slot the poly-keyed writes had
    already made sp_PolyPolyHash, and the C stopped on the pointer types
    (#4111). Returns 1 when it emitted the literal. */
-static int emit_empty_literal_as(Compiler *c, int v, TyKind slot, Buf *b) {
+int emit_empty_literal_as(Compiler *c, int v, TyKind slot, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
   if (!vty) return 0;
@@ -8550,29 +8550,11 @@ else {
     emit_indent(b, indent);
     buf_puts(b, "{ ");
     emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, "; ");
-    char lhs[300], cond[400];
-    if (ivt == TY_POLY) {
-      snprintf(lhs, sizeof lhs, "((sp_%s *)_t%d.v.p)->iv_%s", c->classes[class_id].c_name, tr, attr);
-      snprintf(cond, sizeof cond, "%ssp_poly_truthy(%s)", is_or ? "!" : "", lhs);
-      emit_orw_guard(c, v, 1, cond, lhs, 1, 0, b); buf_puts(b, "; }\n");
-    }
-    else if (ivt == TY_BOOL) {
-      snprintf(lhs, sizeof lhs, "_t%d->iv_%s", tr, iv_c(attr));
-      snprintf(cond, sizeof cond, "%s%s", is_or ? "!" : "", lhs);
-      emit_orw_guard(c, v, 0, cond, lhs, 1, 0, b); buf_puts(b, "; }\n");
-    }
-    else if (ivt == TY_INT) {
-      /* nullable-int slot: nil is SP_INT_NIL (false does not inhabit an int
-         slot) -- ||= assigns exactly when nil, &&= exactly when not. */
-      snprintf(lhs, sizeof lhs, "_t%d->iv_%s", tr, attr);
-      snprintf(cond, sizeof cond, "%s %s SP_INT_NIL", lhs, is_or ? "==" : "!=");
-      emit_orw_guard(c, v, 0, cond, lhs, 1, 0, b); buf_puts(b, "; }\n");
-    }
-    else if (!is_or) {  /* &&= on always-truthy type: always assign */
-      snprintf(lhs, sizeof lhs, "_t%d->iv_%s", tr, iv_c(attr));
-      emit_orw_guard(c, v, 0, NULL, lhs, 1, 0, b); buf_puts(b, "; }\n");
-    }
-    else { buf_puts(b, "}\n"); }  /* ||= on always-truthy type: no-op, but receiver evaluated */
+    /* The receiver is a typed object pointer, so the slot is read through
+       it, and the guard is the ivar's own: a pointer-backed attribute that
+       was never assigned is NULL, not truthy (#5428). */
+    char lhs[300]; snprintf(lhs, sizeof lhs, "_t%d->iv_%s", tr, iv_c(attr));
+    buf_puts(b, "(void)"); emit_slot_orw_value(c, ivt, lhs, v, is_or, b); buf_puts(b, "; }\n");
     return;
   }
   if (sp_streq(ty, "InstanceVariableWriteNode")) {
