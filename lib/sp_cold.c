@@ -271,6 +271,16 @@ const char *sp_file_readlink(const char *path) {SP_GC_ROOT_STR(path);
    raising while it is on; the caller reads it back and answers nil (#3893). */
 sp_bool sp_convert_soft = 0;
 sp_bool sp_convert_failed = 0;
+/* A rational-syntax denominator written as digits that reads zero raises
+   ZeroDivisionError, as CRuby's does, with `exception: false` too. The raise
+   leaves the parse before its caller clears sp_convert_soft, so it is
+   cleared here first. */
+static void sp_str_to_c_zero_den(const char *dp, double d) {
+  if (d == 0.0 && *dp >= '0' && *dp <= '9') {
+    sp_convert_soft = 0;
+    sp_raise_cls("ZeroDivisionError", "divided by 0");
+  }
+}
 static sp_Complex sp_str_to_c_impl(const char *s, int strict) {
   double re = 0, im = 0;
   int parsed = 0;
@@ -283,14 +293,14 @@ static sp_Complex sp_str_to_c_impl(const char *s, int strict) {
     if (end != p) {
       parsed = 1;
       /* rational-syntax component "n/d" */
-      if (*end == '/') { const char *dp = end + 1; char *de = NULL; double d = strtod(dp, &de); if (de != dp) { a /= d; end = de; } }
+      if (*end == '/') { const char *dp = end + 1; char *de = NULL; double d = strtod(dp, &de); if (de != dp) { sp_str_to_c_zero_den(dp, d); a /= d; end = de; } }
       if (*end == 'i') { im = a; fin = end + 1; }
       else {
         re = a;
         const char *q = end;
         double b2 = strtod(q, &end);
         if (end != q) {
-          if (*end == '/') { const char *dp = end + 1; char *de = NULL; double d = strtod(dp, &de); if (de != dp) { b2 /= d; end = de; } }
+          if (*end == '/') { const char *dp = end + 1; char *de = NULL; double d = strtod(dp, &de); if (de != dp) { sp_str_to_c_zero_den(dp, d); b2 /= d; end = de; } }
           if (*end == 'i') { im = b2; fin = end + 1; }
           else fin = q;   /* an imaginary number without the 'i' suffix ("1+2") is invalid */
         }
