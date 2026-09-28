@@ -3092,18 +3092,85 @@ static int def_shape_by_name(const NodeTable *nt, const char *name) {
   }
   return shape;
 }
-/* The shape of instance method `name` as class `cls` (or its nearest
-   superclass defining it) has it. Classes are matched by their last name
-   segment, before any scope exists. */
-static int fwd_class_method_shape(const NodeTable *nt, const char *cls, const char *name) {
-  for (int depth = 0; cls && depth < 16; depth++) {
-    int shape = -1;
-    const char *next = NULL;
+static void fwd_key_add(char *key, size_t cap, const char *seg) {
+  size_t n = strlen(key);
+  if (n < cap) snprintf(key + n, cap - n, "%s::", seg ? seg : "");
+}
+static void fwd_path_key(const NodeTable *nt, int path, char *key, size_t cap) {
+  if (!fwd_node_is(nt, path, "ConstantPathNode")) return;
+  int par = nt_ref(nt, path, "parent");
+  fwd_path_key(nt, par, key, cap);
+  fwd_key_add(key, cap, par >= 0 ? nt_str(nt, par, "name") : NULL);
+}
+static void fwd_ns_key(const NodeTable *nt, int id, char *key, size_t cap);
+/* The lexical namespace a node sits in: its enclosing classes and modules. */
+static void fwd_lex_ctx(const NodeTable *nt, int id, char *key, size_t cap) {
+  for (int ct = 0; ct < id; ct++) {
+    if (!fwd_node_is(nt, ct, "ClassNode") && !fwd_node_is(nt, ct, "ModuleNode")) continue;
+    int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, ct, "body"), "body", &bn);
+    int in = 0;
+    for (int k = 0; k < bn && !in; k++) in = bv[k] == id;
+    if (!in) continue;
+    fwd_ns_key(nt, ct, key, cap);
+    fwd_key_add(key, cap, nt_str(nt, nt_ref(nt, ct, "constant_path"), "name"));
+    break;
+  }
+}
+/* The namespace a class or module node is opened in: its lexical namespace
+   and the qualifier of its own path. */
+static void fwd_ns_key(const NodeTable *nt, int id, char *key, size_t cap) {
+  fwd_lex_ctx(nt, id, key, cap);
+  fwd_path_key(nt, nt_ref(nt, id, "constant_path"), key, cap);
+}
+/* The namespace key of the class `ref` (a constant node, or `refname` when
+   ref < 0) names when read in namespace `ctx`: looked up, with any
+   qualifier of its path, in ctx and then each enclosing namespace out to the
+   top. 0 when no class of that key is opened. */
+static int fwd_resolve_class(const NodeTable *nt, const char *ctx, int ref, const char *refname,
+                             char *out, size_t cap) {
+  const char *cls = ref >= 0 ? nt_str(nt, ref, "name") : refname;
+  if (!cls) return 0;
+  if (ref >= 0 && !fwd_node_is(nt, ref, "ConstantReadNode") &&
+      !fwd_node_is(nt, ref, "ConstantPathNode")) return 0;
+  char qual[512] = "", prefix[512], cand[1024], key[512];
+  fwd_path_key(nt, ref, qual, sizeof qual);
+  snprintf(prefix, sizeof prefix, "%s", ctx);
+  for (;;) {
+    snprintf(cand, sizeof cand, "%s%s", prefix, qual);
     for (int id = 0; id < nt->count; id++) {
       if (!fwd_node_is(nt, id, "ClassNode")) continue;
       const char *cn = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
       if (!cn || !sp_streq(cn, cls)) continue;
-      if (!next) next = nt_str(nt, nt_ref(nt, id, "superclass"), "name");
+      key[0] = '\0';
+      fwd_ns_key(nt, id, key, sizeof key);
+      if (sp_streq(key, cand)) { snprintf(out, cap, "%s", key); return 1; }
+    }
+    if (!prefix[0]) return 0;
+    size_t n = strlen(prefix) - 2;
+    while (n >= 2 && !(prefix[n - 1] == ':' && prefix[n - 2] == ':')) n--;
+    prefix[n >= 2 ? n : 0] = '\0';
+  }
+}
+/* The shape of instance method `name` as the class `ref` names from
+   namespace `ctx` (or its nearest superclass defining it) has it. Classes
+   are matched by namespace and name, before any scope exists. */
+static int fwd_class_method_shape(const NodeTable *nt, const char *ctx, int ref,
+                                  const char *refname, const char *name) {
+  char at[512], key[512];
+  snprintf(at, sizeof at, "%s", ctx);
+  for (int depth = 0; depth < 16; depth++) {
+    char found[512];
+    if (!fwd_resolve_class(nt, at, ref, refname, found, sizeof found)) return -1;
+    const char *cls = ref >= 0 ? nt_str(nt, ref, "name") : refname;
+    int shape = -1, next = -1, next_cls = -1;
+    for (int id = 0; id < nt->count; id++) {
+      if (!fwd_node_is(nt, id, "ClassNode")) continue;
+      const char *cn = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+      if (!cn || !sp_streq(cn, cls)) continue;
+      key[0] = '\0';
+      fwd_ns_key(nt, id, key, sizeof key);
+      if (!sp_streq(key, found)) continue;
+      if (next < 0 && nt_ref(nt, id, "superclass") >= 0) { next = nt_ref(nt, id, "superclass"); next_cls = id; }
       int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, id, "body"), "body", &bn);
       for (int k = 0; k < bn; k++) {
         if (!fwd_node_is(nt, bv[k], "DefNode") || nt_ref(nt, bv[k], "receiver") >= 0) continue;
@@ -3115,7 +3182,10 @@ static int fwd_class_method_shape(const NodeTable *nt, const char *cls, const ch
       }
     }
     if (shape >= 0) return shape;
-    cls = next;
+    if (next < 0) return -1;
+    at[0] = '\0';
+    fwd_lex_ctx(nt, next_cls, at, sizeof at);
+    ref = next; refname = NULL;
   }
   return -1;
 }
@@ -3136,17 +3206,23 @@ static int fwd_target_shape(const NodeTable *nt, int def, int call, int is_super
   if (!is_super && !sp_streq(name, "new")) return def_shape_by_name(nt, name);
   int recv = is_super ? -1 : nt_ref(nt, call, "receiver");
   int cls = fwd_enclosing_class(nt, def);
-  const char *cn = cls >= 0 ? nt_str(nt, nt_ref(nt, cls, "constant_path"), "name") : NULL;
+  char ctx[512] = "";
   if (is_super) {
     if (nt_ref(nt, def, "receiver") >= 0 || cls < 0) return -1;
-    return fwd_class_method_shape(nt, nt_str(nt, nt_ref(nt, cls, "superclass"), "name"), name);
+    fwd_lex_ctx(nt, cls, ctx, sizeof ctx);
+    return fwd_class_method_shape(nt, ctx, nt_ref(nt, cls, "superclass"), NULL, name);
   }
   if (recv < 0 || fwd_node_is(nt, recv, "SelfNode")) {
-    if (nt_ref(nt, def, "receiver") < 0) return -1;
+    if (nt_ref(nt, def, "receiver") < 0 || cls < 0) return -1;
+    fwd_ns_key(nt, cls, ctx, sizeof ctx);
+    return fwd_class_method_shape(nt, ctx, -1, nt_str(nt, nt_ref(nt, cls, "constant_path"), "name"),
+                                  "initialize");
   }
-  else if (fwd_node_is(nt, recv, "ConstantReadNode")) cn = nt_str(nt, recv, "name");
-  else return def_shape_by_name(nt, "initialize");
-  return fwd_class_method_shape(nt, cn, "initialize");
+  if (fwd_node_is(nt, recv, "ConstantReadNode") || fwd_node_is(nt, recv, "ConstantPathNode")) {
+    fwd_lex_ctx(nt, def, ctx, sizeof ctx);
+    return fwd_class_method_shape(nt, ctx, recv, NULL, "initialize");
+  }
+  return def_shape_by_name(nt, "initialize");
 }
 static int fwd_new_node_like(NodeTable *nt, int like, const char *ty) {
   int id = nt_new_node(nt, ty);

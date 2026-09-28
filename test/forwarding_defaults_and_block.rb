@@ -75,3 +75,26 @@ end
 
 p KwBase.new.go
 p KwSub.new.go(k: 3)
+
+# classes of one name in two namespaces: the super target is found through
+# A's own chain, not the other Base
+module NsA
+  class Grand
+    def run(x = 0) = [:grand, x]
+  end
+  class Base < Grand
+  end
+end
+module NsB
+  class Base
+    def run(k: 0) = [:b, k]
+  end
+end
+module NsA
+  class Child < Base
+    def run(...) = super(...)
+  end
+end
+p NsA::Child.new.run(1)
+p NsA::Child.new.run
+p NsB::Base.new.run(k: 2)
