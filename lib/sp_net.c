@@ -470,6 +470,28 @@ int sp_net_shutdown(int fd, int how) {
     return shutdown(fd, how);
 }
 
+/* A connect to a host that doesn't answer can take over a minute. With
+   threads we park until it finishes instead of holding the worker. A
+   signal doesn't cancel a connect, so on EINTR we wait for it too. */
+static int sp_net_connect_wait(int fd, const struct sockaddr *sa, socklen_t len) {
+#ifdef SP_THREADS
+    sp_net_set_nonblock(fd);
+#endif
+    if (connect(fd, sa, len) == 0) return 0;
+    if (errno != EINPROGRESS && errno != EINTR) return -1;
+#ifdef SP_THREADS
+    if (!sp_sched_wait_io(fd, POLLOUT)) return -1;
+#else
+    struct pollfd pf = { fd, POLLOUT, 0 };
+    while (poll(&pf, 1, -1) < 0) if (errno != EINTR) return -1;
+#endif
+    int err = 0;
+    socklen_t elen = sizeof err;
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &elen) != 0) return -1;
+    if (err) { errno = err; return -1; }
+    return 0;
+}
+
 int sp_net_connect(const char *host, int port) {
     if (port < 0 || port > 65535) return -1;
     /* A client that never listens still needs SIGPIPE ignored: a write
@@ -490,7 +512,7 @@ int sp_net_connect(const char *host, int port) {
     for (ai = res; ai != NULL; ai = ai->ai_next) {
         fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (fd < 0) continue;
-        if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) break;
+        if (sp_net_connect_wait(fd, ai->ai_addr, ai->ai_addrlen) == 0) break;
         close(fd);
         fd = -1;
     }
@@ -499,11 +521,6 @@ int sp_net_connect(const char *host, int port) {
 
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-#ifdef SP_THREADS
-    /* Non-blocking so recv/send park the green thread instead of blocking the
-       worker (the connect itself stays blocking -- it completes promptly). */
-    sp_net_set_nonblock(fd);
-#endif
     return fd;
 }
 
