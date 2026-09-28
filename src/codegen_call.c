@@ -221,10 +221,17 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
      match the deref to the storage: "." for a value-type local, "->" for a
      pointer. */
   /* the body is spliced below, so only the allocation: sp_X_new would run
-     it a second time through the clone */
+     it a second time through the clone. Its parameters go unused and take
+     zeros; the arguments and defaults are evaluated once, by the binding
+     below. */
   buf_printf(b, "sp_%s %s_t%d = sp_%s_new%s(", c->classes[ci].c_name, is_val ? "" : "*", st,
              c->classes[ci].c_name, ctor_init_proc_form(c, ci) >= 0 ? "_noinit" : "");
-  emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
+  for (int i = 0; i < m->nparams; i++) {
+    LocalVar *p = scope_local(m, m->pnames[i]);
+    buf_puts(b, i ? ", (" : "(");
+    emit_ctype(c, (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY, b);
+    buf_puts(b, "){0}");
+  }
   buf_puts(b, ");\n");
   /* The constructor rooted the fresh object for its own extent only: it
      returns before the inlined body below runs, and that body allocates (an
