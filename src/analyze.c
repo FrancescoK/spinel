@@ -17715,8 +17715,10 @@ void analyze_program(Compiler *c) {
       int np = sc1->nparams < sc2->nparams ? sc1->nparams : sc2->nparams;
       for (int k = 0; k < np; k++) {
         /* a rest collects its arguments into an array whatever the other
-           method has in that slot (#4871) */
-        if (k == sc1->rest_idx || k == sc2->rest_idx) continue;
+           method has in that slot (#4871), and a **kwrest its keywords into
+           a hash */
+        if (k == sc1->rest_idx || k == sc2->rest_idx ||
+            k == sc1->kwrest_idx || k == sc2->kwrest_idx) continue;
         LocalVar *p1 = scope_local(sc1, sc1->pnames[k]);
         LocalVar *p2 = scope_local(sc2, sc2->pnames[k]);
         if (!p1 || !p2) continue;
