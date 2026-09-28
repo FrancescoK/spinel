@@ -1369,6 +1369,27 @@ int desugar_engine_branches(Compiler *c) {
     nt_node_set_ref(nt, id, dead, -1);
     changed = 1;
   }
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_StatementsNode) continue;
+    int n = 0; const int *st = nt_arr(nt, id, "body", &n);
+    for (int k = 0; k < n - 1; k++) {
+      NodeKind sk = nt_kind(nt, st[k]);
+      int pred = sk == NK_IfNode || sk == NK_UnlessNode ? nt_ref(nt, st[k], "predicate") : -1;
+      if (pred < 0 || nt_int(nt, pred, "engine_check", 0) <= 0 ||
+          (nt_kind(nt, pred) == NK_TrueNode) != (sk == NK_IfNode)) continue;
+      int body = nt_ref(nt, st[k], "statements");
+      int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+      if (bn == 0 || nt_kind(nt, bb[bn - 1]) != NK_ReturnNode) continue;
+      int *keep = malloc(sizeof(int) * (size_t)n);
+      if (!keep) break;
+      memcpy(keep, st, sizeof(int) * (size_t)n);
+      for (int j = k + 1; j < n; j++) engine_blank(nt, keep[j]);
+      nt_node_set_arr(nt, id, "body", keep, k + 1);
+      free(keep);
+      changed = 1;
+      break;
+    }
+  }
   return changed;
 }
 
