@@ -5644,12 +5644,25 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
     emit_indent(b, indent);
     buf_puts(b, "do {\n");
     emit_loop_body(c, body, b, indent + 1);
+    /* The guard's preludes (see below) run with it after every pass, inside
+       the condition, where a `next` (a C continue) lands too. Routed through
+       g_pre they ran once, ahead of the loop, and the guard never changed. */
+    Buf cpre;  memset(&cpre, 0, sizeof cpre);
+    Buf ccond; memset(&ccond, 0, sizeof ccond);
+    Buf *sv_pre = g_pre; int sv_ind = g_indent;
+    g_pre = &cpre; g_indent = indent + 1;
+    emit_cond(c, pred, &ccond);
+    g_pre = sv_pre; g_indent = sv_ind;
+    int has_pre = cpre.p && cpre.p[0];
     emit_indent(b, indent);
     buf_puts(b, "} while (");
+    if (has_pre) { buf_puts(b, "({\n"); buf_puts(b, cpre.p); emit_indent(b, indent + 1); }
     if (is_until) buf_puts(b, "!(");
-    emit_cond(c, pred, b);
+    buf_puts(b, ccond.p ? ccond.p : "0");
     if (is_until) buf_puts(b, ")");
+    if (has_pre) buf_puts(b, "; })");
     buf_puts(b, ");\n");
+    free(cpre.p); free(ccond.p);
     return;
   }
   /* Hoist a loop-invariant string length out of the loop: if the predicate

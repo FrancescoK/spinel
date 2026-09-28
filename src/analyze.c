@@ -5709,6 +5709,14 @@ static int desugar_hash_block_arg(Compiler *c) {
   return changed;
 }
 
+/* Does iterator `nm` call its block with two values -- an accumulator and
+   the element, or the two it compares -- so that a Symbol's block sends the
+   second to the first? */
+static int block_arg_takes_two(const char *nm) {
+  return nm && (sp_streq(nm, "reduce") || sp_streq(nm, "inject") || sp_streq(nm, "sort") ||
+                sp_streq(nm, "min") || sp_streq(nm, "max") || sp_streq(nm, "minmax"));
+}
+
 static int desugar_symbol_var_block_arg(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -5730,10 +5738,7 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
     }
     if (ex < 0 || !nt_type(nt, ex) || !sp_streq(nt_type(nt, ex), "LocalVariableReadNode")) continue;
     if (infer_type(c, ex) != TY_SYMBOL) continue;
-    int two = 0;
-    if (!is_toproc && nm)
-      two = sp_streq(nm, "reduce") || sp_streq(nm, "inject") || sp_streq(nm, "sort") ||
-            sp_streq(nm, "min") || sp_streq(nm, "max") || sp_streq(nm, "minmax");
+    int two = !is_toproc && block_arg_takes_two(nm);
     char pa[32], pb[32];
     snprintf(pa, sizeof pa, "__svp_a_%d", id);
     snprintf(pb, sizeof pb, "__svp_b_%d", id);
@@ -16340,10 +16345,10 @@ static int bo_may_act(const NodeTable *nt, int e) {
     return 1;
   }
 }
-/* A copy of call `id`'s fields into a fresh CallNode (the children are shared,
-   not cloned). */
+/* A copy of call `id`'s fields into a fresh node of its kind, a CallNode or a
+   SuperNode (the children are shared, not cloned). */
 static int bo_shallow_copy(NodeTable *nt, int id) {
-  int nc = nt_new_node(nt, "CallNode");
+  int nc = nt_new_node(nt, nt_kind(nt, id) == NK_SuperNode ? "SuperNode" : "CallNode");
   if (nc < 0) return -1;
   const SpNode *nd = &nt->nodes[id];
   for (int j = 0; j < nd->ns; j++) nt_node_set_str(nt, nc, nd->s[j].key, nd->s[j].val);
@@ -16452,6 +16457,252 @@ static void desugar_block_arg_order(Compiler *c) {
     int encl = c->nscope[id];
     for (int j = first; j < nt->count; j++) c->nscope[j] = encl;
   }
+}
+
+/* `m(&v)` where v is a boxed value that can be a Symbol: `&:name` is lowered
+   to the block `{ |_spx| _spx.name }` before parsing, but a Symbol that a poly
+   value holds is known only at run time, and sp_poly_to_block refused it with
+   TypeError. The Symbols the value can hold are the literals that flow into
+   it, as far as psb_collect reads them off the source; each gets the proc
+   `&:name` would have made, and the value picks its own at run time. The call
+   becomes, as desugar_block_arg_order's does,
+     (__psym_N = v; __psblk_N = :a == __psym_N ? proc { |x| x.a } : ... : __psym_N;
+      m(&__psblk_N))
+   so the value is read where the call runs -- in its branch, each time round
+   its loop -- and every site that takes a boxed block argument reads a plain
+   local. A value that is not one of those Symbols is passed on as it was: a
+   Proc, a Method or nil converts as before, and a Symbol that arrived some
+   other way (a parameter, an ivar, a method's result) still raises TypeError.
+   A Symbol-typed value that is not a local (`&(c ? :a : :b)`) takes the same
+   rewrite; with no literal in sight it is only bound to __psym_N, which
+   desugar_symbol_var_block_arg then sends as it sends any Symbol local. */
+#define PSB_MAX 64
+typedef struct { const char *v[PSB_MAX]; int n; } PsbSyms;
+
+/* The names the `&:name` shorthand lowers (see spinel_parse.c): an
+   identifier with an optional `?` or `!`, and the unary operators, whose
+   `-x` is the call `x.-@` once parsed. */
+static void psb_add(PsbSyms *s, const char *v) {
+  size_t i = 0;
+  if (!v || (v[0] >= '0' && v[0] <= '9') || s->n == PSB_MAX) return;
+  while (v[i] == '_' || (v[i] >= 'a' && v[i] <= 'z') || (v[i] >= 'A' && v[i] <= 'Z') ||
+         (v[i] >= '0' && v[i] <= '9')) i++;
+  if (i > 0 && (v[i] == '?' || v[i] == '!')) i++;
+  if ((i == 0 || v[i]) && !sp_streq(v, "-@") && !sp_streq(v, "+@") && !sp_streq(v, "~")) return;
+  for (int k = 0; k < s->n; k++) if (sp_streq(s->v[k], v)) return;
+  s->v[s->n++] = v;
+}
+
+/* The Symbol literals `node` can evaluate to -- or, with `elems`, that the
+   Array it evaluates to can hold: a literal, an element read out of an Array
+   literal, a local's or a constant's assignments, and the arms of a
+   conditional. */
+static void psb_collect(Compiler *c, int node, int elems, PsbSyms *s, int depth) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || depth > 8) return;
+  switch (nt_kind(nt, node)) {
+  case NK_SymbolNode:
+    if (!elems) psb_add(s, nt_str(nt, node, "value"));
+    return;
+  case NK_ArrayNode:
+    if (elems) {
+      int en = 0; const int *els = nt_arr(nt, node, "elements", &en);
+      for (int e = 0; e < en; e++) psb_collect(c, els[e], 0, s, depth + 1);
+    }
+    return;
+  case NK_CallNode: {
+    const char *nm = nt_str(nt, node, "name");
+    if (!elems && nm && (sp_streq(nm, "[]") || sp_streq(nm, "first") || sp_streq(nm, "last") ||
+                         sp_streq(nm, "sample") || sp_streq(nm, "fetch") || sp_streq(nm, "at")))
+      psb_collect(c, nt_ref(nt, node, "receiver"), 1, s, depth + 1);
+    return;
+  }
+  case NK_LocalVariableReadNode: {
+    const char *vn = nt_str(nt, node, "name");
+    NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+      const char *wn = nt_str(nt, w, "name");
+      if (vn && wn && sp_streq(wn, vn) && c->nscope[w] == c->nscope[node])
+        psb_collect(c, nt_ref(nt, w, "value"), elems, s, depth + 1);
+    }
+    return;
+  }
+  case NK_ConstantReadNode: {
+    const char *cn = nt_str(nt, node, "name");
+    NT_FOREACH_KIND(nt, NK_ConstantWriteNode, w) {
+      const char *wn = nt_str(nt, w, "name");
+      if (cn && wn && sp_streq(wn, cn)) psb_collect(c, nt_ref(nt, w, "value"), elems, s, depth + 1);
+    }
+    return;
+  }
+  case NK_IfNode:
+    psb_collect(c, nt_ref(nt, node, "statements"), elems, s, depth + 1);
+    psb_collect(c, nt_ref(nt, node, "subsequent"), elems, s, depth + 1);
+    return;
+  case NK_ElseNode:
+    psb_collect(c, nt_ref(nt, node, "statements"), elems, s, depth + 1);
+    return;
+  case NK_ParenthesesNode:
+    psb_collect(c, nt_ref(nt, node, "body"), elems, s, depth + 1);
+    return;
+  case NK_StatementsNode: {
+    int bn = 0; const int *body = nt_arr(nt, node, "body", &bn);
+    if (bn > 0) psb_collect(c, body[bn - 1], elems, s, depth + 1);
+    return;
+  }
+  case NK_OrNode: case NK_AndNode:
+    psb_collect(c, nt_ref(nt, node, "left"), elems, s, depth + 1);
+    psb_collect(c, nt_ref(nt, node, "right"), elems, s, depth + 1);
+    return;
+  default:
+    return;
+  }
+}
+
+/* A new local read or write of `name`. */
+static int psb_local(NodeTable *nt, const char *type, const char *name) {
+  int n = nt_new_node(nt, type);
+  nt_node_set_str(nt, n, "name", name);
+  nt_node_set_int(nt, n, "depth", 0);
+  return n;
+}
+
+/* `proc { |x| x.name }` -- the block `&:name` lowers to -- or, for an iterator
+   that calls its block with two values, `proc { |x, y| x.name(y) }`. Its
+   parameters are boxed: whichever site the value reaches calls it, and
+   through a builtin iterator's forward nothing types them, which then
+   defaulted to an Integer (`[pt].map(&v)` called `x` on one). */
+static int psb_symbol_proc(Compiler *c, Scope *sc, const char *name, int two, const char *pfx) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int req[2], args = -1;
+  char pn[2][64];
+  for (int k = 0; k < 1 + two; k++) {
+    snprintf(pn[k], sizeof pn[k], "%s_%c", pfx, 'a' + k);
+    req[k] = nt_new_node(nt, "RequiredParameterNode");
+    nt_node_set_str(nt, req[k], "name", pn[k]);
+    LocalVar *lv = scope_local_intern(sc, pn[k]);
+    if (lv) { lv->is_block_param = 1; lv->type = TY_POLY; }
+  }
+  int params = nt_new_node(nt, "ParametersNode");
+  nt_node_set_arr(nt, params, "requireds", req, 1 + two);
+  int bparams = nt_new_node(nt, "BlockParametersNode");
+  nt_node_set_ref(nt, bparams, "parameters", params);
+  if (two) {
+    int y = psb_local(nt, "LocalVariableReadNode", pn[1]);
+    args = nt_new_node(nt, "ArgumentsNode");
+    nt_node_set_arr(nt, args, "arguments", &y, 1);
+  }
+  int send = nt_new_node(nt, "CallNode");
+  nt_node_set_str(nt, send, "name", name);
+  nt_node_set_ref(nt, send, "receiver", psb_local(nt, "LocalVariableReadNode", pn[0]));
+  nt_node_set_ref(nt, send, "arguments", args);
+  int body = nt_new_node(nt, "StatementsNode");
+  nt_node_set_arr(nt, body, "body", &send, 1);
+  int blk = nt_new_node(nt, "BlockNode");
+  nt_node_set_ref(nt, blk, "parameters", bparams);
+  nt_node_set_ref(nt, blk, "body", body);
+  int pr = nt_new_node(nt, "CallNode");
+  nt_node_set_str(nt, pr, "name", "proc");
+  nt_node_set_ref(nt, pr, "block", blk);
+  return pr;
+}
+
+static int desugar_poly_symbol_block_arg(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_CallNode && k != NK_SuperNode) continue;
+    int ba = nt_ref(nt, id, "block");
+    if (ba < 0 || nt_kind(nt, ba) != NK_BlockArgumentNode) continue;
+    if (nt_int(nt, ba, "psb_done", 0)) continue;   /* its own value reads the Symbols again */
+    /* `r&.m(&v)` evaluates v only when r is not nil, and the parentheses
+       would read it first */
+    const char *cop = nt_str(nt, id, "call_operator");
+    if (cop && sp_streq(cop, "&.")) continue;
+    int ex = nt_ref(nt, ba, "expression");
+    if (ex < 0) continue;
+    /* A Symbol-typed value too: a local is desugar_symbol_var_block_arg's
+       and a literal `&:+` the operator lowerings', but anything else had no
+       arm at the sites and ran the method without its block. */
+    TyKind et = infer_type(c, ex);
+    NodeKind ek = nt_kind(nt, ex);
+    if (et != TY_POLY &&
+        (et != TY_SYMBOL || ek == NK_LocalVariableReadNode || ek == NK_SymbolNode)) continue;
+    PsbSyms syms; syms.n = 0;
+    psb_collect(c, ex, 0, &syms, 0);
+    /* a Symbol from nowhere this reads is still a Symbol: named by a local,
+       desugar_symbol_var_block_arg sends it */
+    if (syms.n == 0 && et != TY_SYMBOL) continue;
+    Scope *sc = comp_scope_of(c, id);
+    if (!sc) continue;
+    int first = nt->count;
+    int two = k == NK_CallNode && block_arg_takes_two(nt_str(nt, id, "name"));
+    char vn[48], bn[48];
+    snprintf(vn, sizeof vn, "__psym_%d", id);
+    snprintf(bn, sizeof bn, "__psblk_%d", id);
+    int stm[3], ns = 0;
+    int w1 = psb_local(nt, "LocalVariableWriteNode", vn);
+    nt_node_set_ref(nt, w1, "value", ex);
+    stm[ns++] = w1;
+    const char *passed = vn;
+    if (syms.n > 0) {
+      /* built from the last arm up: `... : __psym_N` */
+      int tail = psb_local(nt, "LocalVariableReadNode", vn);
+      int tst = nt_new_node(nt, "StatementsNode");
+      nt_node_set_arr(nt, tst, "body", &tail, 1);
+      int arm = nt_new_node(nt, "ElseNode");
+      nt_node_set_ref(nt, arm, "statements", tst);
+      for (int j = syms.n - 1; j >= 0; j--) {
+        char pfx[64];
+        snprintf(pfx, sizeof pfx, "__psym_%d_%d", id, j);
+        int pr = psb_symbol_proc(c, sc, syms.v[j], two, pfx);
+        /* :name == __psym_N */
+        int sy = nt_new_node(nt, "SymbolNode");
+        nt_node_set_str(nt, sy, "value", syms.v[j]);
+        int rv = psb_local(nt, "LocalVariableReadNode", vn);
+        int eqa = nt_new_node(nt, "ArgumentsNode");
+        nt_node_set_arr(nt, eqa, "arguments", &rv, 1);
+        int eq = nt_new_node(nt, "CallNode");
+        nt_node_set_str(nt, eq, "name", "==");
+        nt_node_set_ref(nt, eq, "receiver", sy);
+        nt_node_set_ref(nt, eq, "arguments", eqa);
+        int ast = nt_new_node(nt, "StatementsNode");
+        nt_node_set_arr(nt, ast, "body", &pr, 1);
+        int ifn = nt_new_node(nt, "IfNode");
+        nt_node_set_ref(nt, ifn, "predicate", eq);
+        nt_node_set_ref(nt, ifn, "statements", ast);
+        nt_node_set_ref(nt, ifn, "subsequent", arm);
+        arm = ifn;
+      }
+      int w2 = psb_local(nt, "LocalVariableWriteNode", bn);
+      nt_node_set_ref(nt, w2, "value", arm);
+      stm[ns++] = w2;
+      passed = bn;
+    }
+    nt_node_set_ref(nt, ba, "expression", psb_local(nt, "LocalVariableReadNode", passed));
+    nt_node_set_int(nt, ba, "psb_done", 1);
+    int nc = bo_shallow_copy(nt, id);
+    if (nc < 0) continue;
+    stm[ns++] = nc;
+    int stmts = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, stmts, "body", stm, ns);
+    /* the node keeps its id, line and file: the parentheses */
+    long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0),
+              col = nt_int(nt, id, "node_col", 0);
+    nt_node_reset(nt, id, "ParenthesesNode");
+    nt_node_set_int(nt, id, "node_line", line);
+    nt_node_set_int(nt, id, "node_file", file);
+    nt_node_set_int(nt, id, "node_col", col);
+    nt_node_set_ref(nt, id, "body", stmts);
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = first; j < nt->count; j++) c->nscope[j] = encl;
+    scope_local_intern(sc, vn)->type = syms.n > 0 ? TY_POLY : TY_SYMBOL;
+    if (syms.n > 0) scope_local_intern(sc, bn)->type = TY_POLY;
+    changed = 1;
+  }
+  return changed;
 }
 
 /* A top-level `def self.k` is a singleton method of main, and a top-level
@@ -17521,6 +17772,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_sym_to_proc_call(c);         /* :m.to_proc.call(r, a) -> r.m(a) */
     ch |= desugar_reduce_method_symbol(c);     /* reduce(:gcd) -> reduce { |a,x| a.gcd(x) } */
     ch |= desugar_symbol_var_block_arg(c);     /* m(&sym_var) -> m { |x| x.send(sym_var) } */
+    ch |= desugar_poly_symbol_block_arg(c);    /* m(&poly) -> each literal Symbol its own proc */
     ch |= desugar_kernel_method_block_arg(c);  /* m(&method(:Integer)) -> m { |x| Integer(x) } */
     ch |= desugar_empty_block_body(c);         /* m { } -> m { nil } */
     ch |= desugar_hash_block_arg(c);           /* m(&hash) -> m { |x| hash[x] } */

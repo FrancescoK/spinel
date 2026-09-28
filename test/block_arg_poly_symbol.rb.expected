@@ -1,0 +1,64 @@
+"3"
+"3"
+[2, 3]
+4
+4
+[2, 3]
+4
+4
+4
+4
+4
+[1, 2]
+8
+6
+"7"
+70
+:none
+8
+6
+"7"
+70
+:none
+4
+[true, false, true]
+[2]
+6
+50
+:none
+[3, 2, 1]
+undefined method 'nope' for an instance of Integer
+"3"
+4
+"3"
+4
+["1", "2"]
+[2, 3]
+"3"
+"3"
+"3"
+"3"
+4
+2
+[0, 1]
+4
+4
+[2, 3]
+[1, 2, 3]
+6
+36
+false
+false
+false
+false
+true
+:skipped
+:skipped
+:skipped
+:skipped
+:ok
+nil
+3
+3
+3
+2
