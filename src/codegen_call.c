@@ -36742,7 +36742,8 @@ else {
     int ts = ++g_tmp, ti = ++g_tmp;
     Buf rb = expr_buf(c, recv);
     int is_line = sp_streq(name, "each_line") || sp_streq(name, "lines");
-    int is_byte = sp_streq(name, "each_byte") || sp_streq(name, "bytes") || sp_streq(name, "codepoints");
+    int is_byte = sp_streq(name, "each_byte") || sp_streq(name, "bytes");
+    int is_cp = sp_streq(name, "codepoints");
     Scope *cs_ech = p0 ? comp_scope_of(c, id) : NULL;
     LocalVar *clv_ech = (p0 && cs_ech) ? scope_local(cs_ech, p0) : NULL;
     int p0_box_poly_ech = clv_ech && clv_ech->type == TY_POLY;
@@ -36789,6 +36790,17 @@ else {
       if (p0) {
         if (p0_box_poly_ech) buf_printf(b, "lv_%s = sp_box_str(sp_StrArray_get(_t%d, _t%d)); ", p0, tl, ti);
         else buf_printf(b, "lv_%s = sp_StrArray_get(_t%d, _t%d); ", p0, tl, ti);
+      }
+    }
+    /* codepoints yields each character's codepoint, not each byte: the String
+       walked to its byte length as #chars walks it (sp_str_codepoints_all) */
+    else if (is_cp) {
+      int tc = ++g_tmp;
+      buf_printf(b, "sp_IntArray *_t%d = sp_str_codepoints_all(_t%d); SP_GC_ROOT(_t%d); ", tc, ts, tc);
+      buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_IntArray_length(_t%d); _t%d++) { ", ti, ti, tc, ti);
+      if (p0) {
+        if (p0_box_poly_ech) buf_printf(b, "lv_%s = sp_box_int(sp_IntArray_get(_t%d, _t%d)); ", p0, tc, ti);
+        else buf_printf(b, "lv_%s = sp_IntArray_get(_t%d, _t%d); ", p0, tc, ti);
       }
     }
     else if (is_byte) {

@@ -172,6 +172,7 @@ sp_int sp_str_count(const char*s,const char*chars);
 sp_int sp_str_count_n(const char*s,const char**chars,sp_int n);
 sp_int sp_str_sum_bits(const char*s,sp_int bits);   /* String#sum(bits=16) */
 sp_IntArray*sp_str_codepoints(const char*s);
+sp_IntArray*sp_str_codepoints_all(const char*s);
 sp_StrArray*sp_str_chars(const char*s);
 const char*sp_str_tr(const char*s,const char*from,const char*to);
 const char*sp_str_tr_s(const char*s,const char*from,const char*to);
