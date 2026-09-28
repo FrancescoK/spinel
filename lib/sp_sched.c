@@ -2010,6 +2010,9 @@ static void sp_thread_report(sp_thread *t) {
 /* Park/wake primitives (defined below; used by join here). */
 static void       sp_sched_block(sp_thread **waitlist, int defer_inject);
 static sp_thread *sp_sched_wake_one(sp_thread **waitlist);
+#ifdef SP_THREADS
+static int        sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mutex *mutex);
+#endif
 
 /* A finished thread's parked joiners become runnable again (the main thread,
    if it was waiting, is released by the pump's target check, not the queue). */
@@ -2315,9 +2318,17 @@ sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
   return t;
 }
 
+/* Joining the current thread can never finish. Reject it before attempting to
+   park, including on the main thread before the timer monitor has started. */
+static void sp_thread_check_join_target(sp_thread *t) {
+  if (t == g_current)
+    sp_raise_cls("ThreadError", "Target thread must not be current thread");
+}
+
 /* Block the calling thread until `t` is dead. The main thread pumps the queue;
    a spawned thread parks on t's joiners and yields to the scheduler. */
 static void sp_thread_await(sp_thread *t) {
+  sp_thread_check_join_target(t);
   SCHED_LOCK();
   if (t->state == SP_TH_DEAD) { SCHED_UNLOCK(); return; }
   sp_thread *self = g_current;
@@ -2348,34 +2359,48 @@ sp_thread *sp_Thread_join(sp_thread *t) {
 /* CRuby's Thread#join(limit): wait at most `seconds` for the thread to
    finish, answering the thread when it does and NULL (nil) on timeout.
    Same return type as the no-arg join so one variable can hold either
-   call's result.
-
-   The wait is a bounded poll rather than a park: joiners do not yet have a
-   timer-specific wake path.
-   Sleeping the whole timeout in one go is what the first cut
-   did, and it makes join(limit) a FIXED wait -- `t.join(5)` on a thread
-   that finishes in 50ms blocked for five seconds where CRuby returns at
-   once. Slicing it keeps the answer prompt (one slice of latency) and the
-   scheduler running other threads inside each sp_sleep. */
-#define SP_JOIN_POLL_SLICE 0.002
+   call's result. */
 sp_thread *sp_Thread_join_timeout(sp_thread *t, double seconds) {
+  sp_thread_check_join_target(t);
   SCHED_LOCK();
-  int dead = (t->state == SP_TH_DEAD);
-  SCHED_UNLOCK();
-  if (dead) { sp_thread_reraise_if_exc(t); return t; }
-  if (!(seconds > 0)) return NULL;   /* also catches a NaN limit */
+  if (t->state == SP_TH_DEAD) {
+    SCHED_UNLOCK();
+    sp_thread_reraise_if_exc(t);
+    return t;
+  }
+  if (!(seconds > 0)) {
+    SCHED_UNLOCK();
+    return NULL;   /* also catches a NaN limit */
+  }
 
+#ifdef SP_THREADS
+  int woken = sp_sched_block_timeout(&t->joiners, sp_monotonic_now() + seconds, NULL);
+  if (woken < 0) {
+    SCHED_UNLOCK();
+    sp_raise_cls("NoMemoryError", "failed to schedule thread join timeout");
+  }
+  SCHED_UNLOCK();
+  if (!woken) return NULL;
+  sp_thread_reraise_if_exc(t);
+  return t;
+#else
+  SCHED_UNLOCK();
+  /* Without the monitor thread there is no timer queue to park on. Keep the
+     single-worker build responsive by yielding in short sleeps until either
+     the target finishes or the deadline passes. */
+  const double poll_slice = 0.002;
   double deadline = sp_monotonic_now() + seconds;
   for (;;) {
     double left = deadline - sp_monotonic_now();
     if (left <= 0) break;
-    sp_sleep(left < SP_JOIN_POLL_SLICE ? (sp_float)left : (sp_float)SP_JOIN_POLL_SLICE);
+    sp_sleep(left < poll_slice ? (sp_float)left : (sp_float)poll_slice);
     SCHED_LOCK();
-    dead = (t->state == SP_TH_DEAD);
+    int dead = (t->state == SP_TH_DEAD);
     SCHED_UNLOCK();
     if (dead) { sp_thread_reraise_if_exc(t); return t; }
   }
   return NULL;
+#endif
 }
 
 sp_RbVal sp_Thread_value(sp_thread *t) {
