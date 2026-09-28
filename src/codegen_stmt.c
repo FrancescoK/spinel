@@ -7757,6 +7757,12 @@ static void masgn_conv(Compiler *c, TyKind st, TyKind vt, const char *val, Buf *
   else if (vt == TY_POLY && st != TY_POLY && st != TY_UNKNOWN) emit_unbox_text(c, st, val, b);
   else buf_puts(b, val);
 }
+/* A tuple element with no value of its own (nil, or a call that answers
+   none): its temp holds a boxed nil, and a typed slot takes its own nil. */
+static int masgn_nil_el(Compiler *c, int el) {
+  TyKind t = comp_ntype(c, el);
+  return t == TY_NIL || t == TY_VOID;
+}
 /* The `[]=` of an object receiver type taking a key and a value: its method
    scope, the class defining it and its key parameter's type; -1 when none. */
 static int masgn_index_writer(Compiler *c, TyKind rt, int *cdef, TyKind *kt) {
@@ -10496,7 +10502,7 @@ else {
           char rv[32]; snprintf(rv, sizeof rv, "_t%d", tmps[i]);
           if (comp_method_in_chain(c, rc2, setnm, NULL) < 0)
             unsupported(c, id, "multiple assignment call target no writer");
-          else masgn_store(c, id, lefts[i], rv, tmpts ? tmpts[i] : comp_ntype(c, els[i]), ttr[i], ttk[i], indent, b);
+          else masgn_store(c, id, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
           continue;
         }
         char ivn2[260]; snprintf(ivn2, sizeof ivn2, "@%s", base2);
@@ -10512,14 +10518,9 @@ else {
           emit_indent(b, indent);
           buf_printf(b, "(%s)->iv_%s = ", rb.p ? rb.p : "", iv_c(base2)); free(rb.p);
         }
-        TyKind valt2 = comp_ntype(c, els[i]);
-        if (ivt2 == TY_POLY && valt2 != TY_POLY) {
-          char expr2[32]; snprintf(expr2, sizeof expr2, "_t%d", tmps[i]);
-          Buf bx2; memset(&bx2, 0, sizeof bx2);
-          emit_boxed_text(c, valt2, expr2, &bx2);
-          buf_puts(b, bx2.p ? bx2.p : "sp_box_nil()"); free(bx2.p);
-        }
-        else buf_printf(b, "_t%d", tmps[i]);
+        /* a nil element lands the slot's own nil, not the boxed temp */
+        char expr2[32]; snprintf(expr2, sizeof expr2, "_t%d", tmps[i]);
+        masgn_conv(c, ivt2, tmpts[i], masgn_nil_el(c, els[i]) ? NULL : expr2, b);
         buf_puts(b, ";\n");
       }
       else if (lty && sp_streq(lty, "MultiTargetNode")) {
@@ -10574,7 +10575,7 @@ else {
         TyKind recv_t = comp_ntype(c, recv_id);
         if (ty_is_object(recv_t)) {
           char rv[32]; snprintf(rv, sizeof rv, "_t%d", tmps[i]);
-          masgn_store(c, id, lefts[i], rv, tmpts ? tmpts[i] : comp_ntype(c, els[i]), ttr[i], ttk[i], indent, b);
+          masgn_store(c, id, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
           continue;
         }
         emit_indent(b, indent);
