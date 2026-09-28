@@ -1,0 +1,6 @@
+["ab", "ab"]
+[{k: "hi"}, "hi"]
+["WX", "WX"]
+["pat", "pat"]
+FrozenError
+"lit"
