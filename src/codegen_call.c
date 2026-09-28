@@ -24454,8 +24454,11 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "autoclose?") && argc == 0) {
       buf_printf(b, "sp_File_autoclose_p(%s)", r); free(rb.p); return;
     }
+    /* a closed handle raises, as CRuby's pid checks the stream first */
     if (sp_streq(name, "pid") && argc == 0) {
-      buf_printf(b, "({ (void)%s; sp_box_nil(); })", r); free(rb.p); return;
+      int tp = ++g_tmp;
+      buf_printf(b, "({ sp_File *_t%d = %s; SP_IO_OPEN(_t%d); sp_box_nil(); })", tp, r, tp);
+      free(rb.p); return;
     }
     if (sp_streq(name, "to_i") && argc == 0) {
       buf_printf(b, "sp_File_fileno(%s)", r); free(rb.p); return;
