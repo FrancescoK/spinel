@@ -10231,20 +10231,6 @@ else {
       }
       unsupported(c, id, "multiple assignment");
     }
-    if (rest_nid < 0 && en < ln + rn) {
-      /* Under-filled literal RHS (`a, b, c = [10, 20]` -> c is nil). The tail
-         loop below nil-fills missing local-variable targets; a non-local target
-         past the supplied count isn't wired for that, so reject those loudly
-         rather than silently skip the assignment. (rn>0 needs trailing elements
-         a short RHS can't provide.) */
-      if (rn > 0) { unsupported(c, id, "multiple assignment"); return; }
-      for (int i = en; i < ln; i++) {
-        const char *lty = nt_type(nt, lefts[i]);
-        if (lty && sp_streq(lty, "ConstantTargetNode") && nt_str(nt, lefts[i], "name") &&
-            comp_const(c, nt_str(nt, lefts[i], "name"))) continue;
-        if (!lty || !sp_streq(lty, "LocalVariableTargetNode")) { unsupported(c, id, "multiple assignment"); return; }
-      }
-    }
     /* A store that can run user code -- the general hash's key hooks, a
        receiver typed at run time -- or that allocates -- the rest array, a
        value that is a by-value struct into a slot that boxes it -- comes
@@ -10379,14 +10365,9 @@ else {
             buf_printf(b, " = %s;\n", nilv);
           }
         }
-        else if (lty && sp_streq(lty, "ConstantTargetNode")) {
-          const char *cnm_u = nt_str(nt, lefts[i], "name");
-          LocalVar *cv_u = cnm_u ? comp_const(c, cnm_u) : NULL;
-          if (cv_u) {
-            emit_indent(b, indent);
-            buf_printf(b, "cst_%s = %s;\n", cnm_u, nil_sentinel(cv_u->type));
-          }
-        }
+        /* every other target past the supplied elements takes nil */
+        else if (!masgn_store(c, id, lefts[i], NULL, TY_NIL, ttr[i], ttk[i], indent, b))
+          unsupported(c, id, "multiple assignment target");
         continue;
       }
       if (lty && sp_streq(lty, "LocalVariableTargetNode")) {
@@ -10778,13 +10759,6 @@ else {
           }
           else buf_puts(b, default_value(tt));
           buf_puts(b, ";\n");
-        }
-      }
-      else if ((sp_streq(lty, "ConstantPathTargetNode") || sp_streq(lty, "ConstantTargetNode")) &&
-               rnm_j && comp_const(c, rnm_j)) {
-        emit_indent(b, indent);
-        if (ridx >= 0 && ridx < en) {
-          buf_printf(b, "cst_%s = _t%d;\n", rnm_j, tmps[ridx]);
         }
       }
       else if (sp_streq(lty, "InstanceVariableTargetNode") && rnm_j &&
