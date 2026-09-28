@@ -57,8 +57,11 @@ module URI
       @query.nil? || @query.empty? ? p : "#{p}?#{@query}"
     end
 
+    # the host without the brackets an IPv6 address carries in a URI, as
+    # CRuby's URI::Generic#hostname answers it
     def hostname
-      @host
+      v = @host
+      v && v.start_with?("[") && v.end_with?("]") ? v[1..-2] : v
     end
 
     def to_s
