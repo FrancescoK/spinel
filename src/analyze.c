@@ -15920,7 +15920,6 @@ void analyze_program(Compiler *c) {
   rewrite_const_alias_receivers(c);
   reject_env_value_uses(c);
   register_ffi_decls(c);
-  topup_forwarding_arity(c);
 
   /* rescue variables (`rescue => e`) are typed as exception objects. When the
      arm names exactly one user exception subclass that carries ivars, type the
@@ -15973,6 +15972,7 @@ void analyze_program(Compiler *c) {
   }
 
   resolve_parents(c);
+  topup_forwarding_arity(c);
   inherit_members(c);
   register_includes(c);
   register_include_attrs(c);
