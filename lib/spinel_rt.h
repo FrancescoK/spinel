@@ -9956,6 +9956,15 @@ static sp_RbVal sp_poly_arr_rotate(sp_RbVal v, sp_int n) {
   sp_PolyArray_rotate_bang(r, n);
   return sp_box_poly_array(r);
 }
+/* Array#shuffle on a boxed receiver: a shuffled copy, as a boxed array. */
+static sp_RbVal sp_poly_arr_shuffle(sp_RbVal v) {
+  sp_poly_ary_chk(v, "shuffle", 0);
+  SP_GC_ROOT_RBVAL(v);
+  sp_PolyArray *r = sp_PolyArray_dup(sp_poly_to_a_arr(v));
+  SP_GC_ROOT(r);
+  sp_PolyArray_shuffle_bang(r);
+  return sp_box_poly_array(r);
+}
 static sp_RbVal sp_poly_arr_sample_n(sp_RbVal v, sp_int n) {
   sp_poly_ary_chk(v, "sample", 0);
   if (n < 0) sp_raise_cls("ArgumentError", "negative sample number");

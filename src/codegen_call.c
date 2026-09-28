@@ -37369,7 +37369,7 @@ else {
      nested Array or Hash answers Array to #class but had no arm for these, so
      they raised NoMethodError (#3464). rotate's count is optional. */
   if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 &&
-      (argc == 1 || (argc == 0 && sp_streq(name, "rotate")))) {
+      (argc == 1 || (argc == 0 && (sp_streq(name, "rotate") || sp_streq(name, "shuffle"))))) {
     const char *pn9 = NULL;
     if (sp_streq(name, "first") || sp_streq(name, "take")) pn9 = "sp_poly_arr_take";
     else if (sp_streq(name, "last")) pn9 = "sp_poly_arr_last_n";
@@ -37378,6 +37378,7 @@ else {
     else if (sp_streq(name, "sample")) pn9 = "sp_poly_arr_sample_n";
     else if (sp_streq(name, "min")) pn9 = "sp_poly_arr_min_n";
     else if (sp_streq(name, "max")) pn9 = "sp_poly_arr_max_n";
+    else if (sp_streq(name, "shuffle") && argc == 0) pn9 = "sp_poly_arr_shuffle";
     if (pn9) {
       int ncand9 = 0;
       if (!g_poly_builtin_arm)
@@ -37389,10 +37390,9 @@ else {
         buf_printf(&cb9, "%s(", pn9);
         { Buf rb9; memset(&rb9, 0, sizeof rb9); emit_expr(c, recv, &rb9);
           buf_puts(&cb9, rb9.p ? rb9.p : "sp_box_nil()"); free(rb9.p); }
-        buf_puts(&cb9, ", ");
         if (argc == 1) { Buf nb9; memset(&nb9, 0, sizeof nb9); emit_int_expr(c, argv[0], &nb9);
-                         buf_puts(&cb9, nb9.p ? nb9.p : "0"); free(nb9.p); }
-        else buf_puts(&cb9, "1");
+                         buf_puts(&cb9, ", "); buf_puts(&cb9, nb9.p ? nb9.p : "0"); free(nb9.p); }
+        else if (!sp_streq(name, "shuffle")) buf_puts(&cb9, ", 1");   /* rotate's default count */
         buf_puts(&cb9, ")");
         /* the helpers answer a boxed poly array; a slot typed as the array
            itself takes the pointer out of the box */
