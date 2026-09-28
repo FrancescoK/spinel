@@ -4363,6 +4363,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     if (clv2) clv2->type = TY_POLY;
     for (int j2 = 0; j2 < bn2; j2++) infer_type(c, bb2[j2]);
     int spair = tpair2 && np2 == 1 && nt_str(nt, block, "sym_proc_arg") ? nt_ref(nt, block, "sym_proc_pair") : -1;
+    int tpacked2 = 0;
     if (spair >= 0) infer_type(c, spair);
     emit_indent(g_pre, g_indent + 1);
     buf_puts(g_pre, "{\n");
@@ -4377,14 +4378,18 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
       emit_autosplat_params(c, block, np2, te2, g_indent + 2);
     }
     else if (p0p && tpair2 && spair >= 0) {
+      /* whether this step yielded several values, which picks the call */
       int te3 = ++g_tmp;
+      tpacked2 = ++g_tmp;
       emit_indent(g_pre, g_indent + 2);
       buf_printf(g_pre, "sp_RbVal _t%d = sp_poly_iter_elem(_t%d, _t%d);\n", te3, trecv2, ti2);
       emit_indent(g_pre, g_indent + 2);
+      buf_printf(g_pre, "int _t%d = sp_yielded_packed(_t%d, _t%d);\n", tpacked2, tpair2, te3);
+      emit_indent(g_pre, g_indent + 2);
       buf_printf(g_pre, "sp_RbVal lv_%s = sp_yielded_first(_t%d, _t%d);\n", p0p, tpair2, te3);
       emit_indent(g_pre, g_indent + 2);
-      buf_printf(g_pre, "sp_RbVal lv_%s = sp_yielded_packed(_t%d, _t%d) ? sp_poly_arr_get(_t%d, 1) : sp_box_nil();\n",
-                 rename_local(nt_str(nt, block, "sym_proc_arg")), tpair2, te3, te3);
+      buf_printf(g_pre, "sp_RbVal lv_%s = _t%d ? sp_poly_arr_get(_t%d, 1) : sp_box_nil();\n",
+                 rename_local(nt_str(nt, block, "sym_proc_arg")), tpacked2, te3);
     }
     else if (p0p && tpair2) {
       emit_indent(g_pre, g_indent + 2);
@@ -4428,7 +4433,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
       else emit_ctype(c, ty_array_elem(restype2), g_pre);
       buf_printf(g_pre, " _t%d;\n", tv3);
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "if (_t%d) {\n", tpair2);
+      buf_printf(g_pre, "if (_t%d) {\n", tpacked2 ? tpacked2 : tpair2);
       g_indent++;
       Buf pv; memset(&pv, 0, sizeof pv);
       emit_boxed(c, spair, &pv);
