@@ -2815,19 +2815,15 @@ int infer_write_types(Compiler *c) {
       }
     }
     /* Under-filled literal RHS (`a, b, c = [1, 2]`): targets past the supplied
-       elements land nil, so widen those locals to poly like a plain `x = nil`. */
+       elements land nil, so widen them to poly like a plain `x = nil`. */
     Scope *usc = comp_scope_of(c, id);
     for (int i = en; i < ln; i++) {
       const char *lty = nt_type(nt, lefts[i]);
-      if (lty && sp_streq(lty, "ConstantTargetNode")) {
-        const char *cnm_u = nt_str(nt, lefts[i], "name");
-        LocalVar *cv_u = cnm_u ? comp_const(c, cnm_u) : NULL;
-        if (!cv_u) continue;
-        TyKind mg_u = ty_unify(cv_u->type, TY_POLY);
-        if (mg_u != cv_u->type) { cv_u->type = mg_u; changed = 1; }
+      if (lty && !sp_streq(lty, "LocalVariableTargetNode")) {
+        changed |= masgn_unify_elem(c, usc, &lefts[i], 1, TY_POLY);
         continue;
       }
-      if (!lty || !sp_streq(lty, "LocalVariableTargetNode")) continue;
+      if (!lty) continue;
       const char *lnm = nt_str(nt, lefts[i], "name");
       LocalVar *lv = lnm ? scope_local(usc, lnm) : NULL;
       if (!lv || lv->is_param || lv->is_block_param) continue;
