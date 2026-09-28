@@ -1286,9 +1286,12 @@ int desugar_engine_branches(Compiler *c) {
      leave every check alone then. */
   for (int id = 0; id < n0; id++) {
     NodeKind k = nt_kind(nt, id);
-    if (k != NK_ConstantWriteNode && k != NK_ConstantPathWriteNode) continue;
-    const char *wn = nt_str(nt, id, "name");
-    if (k == NK_ConstantPathWriteNode) { int t = nt_ref(nt, id, "target"); wn = t >= 0 ? nt_str(nt, t, "name") : NULL; }
+    if (k != NK_ConstantWriteNode && k != NK_ConstantAndWriteNode && k != NK_ConstantOperatorWriteNode &&
+        k != NK_ConstantTargetNode && k != NK_ConstantPathWriteNode && k != NK_ConstantPathOrWriteNode &&
+        k != NK_ConstantPathAndWriteNode && k != NK_ConstantPathOperatorWriteNode &&
+        k != NK_ConstantPathTargetNode) continue;
+    int t = nt_ref(nt, id, "target");
+    const char *wn = t >= 0 ? nt_str(nt, t, "name") : nt_str(nt, id, "name");
     if (wn && sp_streq(wn, "RUBY_ENGINE")) return 0;
   }
   for (int id = 0; id < n0; id++) {
