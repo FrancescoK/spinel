@@ -1575,6 +1575,7 @@ sp_StrArray *sp_bt_format(void **buf, int n) {
 #include <fcntl.h>
 #include <sys/file.h>
 #include <pwd.h>
+#include "sp_sched.h"   /* sp_native_enter / sp_native_leave for a waiting flock */
 #include <sys/wait.h>
 
 /* ---- File / Dir surface ops moved from spinel_rt.h ----
@@ -1753,9 +1754,26 @@ sp_int sp_File_sysseek(sp_File *f, sp_int off, sp_int whence) {
   fseek(f->fp, (long)off, whence == 1 ? SEEK_CUR : whence == 2 ? SEEK_END : SEEK_SET);
   return (sp_int)ftell(f->fp);
 }
+/* A flock without LOCK_NB can wait for as long as another holder keeps the
+   lock, and that holder may be a thread of this program that must allocate
+   before it unlocks. The wait leaves the world, as a `blocking: true` FFI call
+   does, so a collection raised meanwhile does not wait for it: otherwise the
+   collector waits on the flock, and the flock on the holder the collector has
+   stopped. The descriptor is read before leaving; the call touches nothing
+   else. A signal (the preemption one included) retries the wait rather than
+   answering false. */
 sp_int sp_File_flock(sp_File *f, sp_int op) {
   SP_IO_OPEN(f);
-  return flock(fileno(f->fp), (int)op) == 0 ? 0 : 1;
+  int fd = fileno(f->fp);
+  int r;
+  if (op & LOCK_NB) {
+    r = flock(fd, (int)op);
+  } else {
+    sp_native_enter();
+    while ((r = flock(fd, (int)op)) != 0 && errno == EINTR) {}
+    sp_native_leave();
+  }
+  return r == 0 ? 0 : 1;
 }
 sp_int sp_File_fsync(sp_File *f) {
   SP_IO_OPEN(f);
