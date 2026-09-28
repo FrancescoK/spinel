@@ -1639,6 +1639,7 @@ int desugar_dynamic_send(Compiler *c) {
          unreachable and the send raises. Mark them as owned. */
       nt_node_set_int(nt, call, "dyn_arm", 1);
       nt_node_set_ref(nt, call, "arguments", na);
+      if (computed && nt_ref(nt, id, "block") >= 0) nt_node_set_ref(nt, call, "block", nt_ref(nt, id, "block"));
       /* public_send arms enforce visibility at the dispatch site */
       if (sp_streq(nm, "public_send")) nt_node_set_str(nt, call, "vis_enforce", "1");
       arms[narm++] = call;
