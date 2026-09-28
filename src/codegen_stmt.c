@@ -9719,11 +9719,14 @@ else {
     /* A splat among the RHS elements (`*a = *x`, `a, b = 1, *rest`) makes the
        tuple statically unsized: drop the per-element-temp tuple path and let
        the runtime-destructure path evaluate the whole ArrayNode (the literal
-       emitter splices splats) and slice it. */
+       emitter splices splats) and slice it. An empty literal (`a, *r = []`)
+       stays a tuple, of no elements: every target takes nil and a splat
+       target an empty array. */
+    int tuple = vty && sp_streq(vty, "ArrayNode");
     if (els) {
       for (int i = 0; i < en; i++) {
         const char *ety0 = nt_type(nt, els[i]);
-        if (ety0 && sp_streq(ety0, "SplatNode")) { els = NULL; en = 0; break; }
+        if (ety0 && sp_streq(ety0, "SplatNode")) { els = NULL; en = 0; tuple = 0; break; }
       }
     }
     int rn = 0;
@@ -9797,7 +9800,7 @@ else {
         else if (index) ttk[i] = masgn_hoist_part(c, k, poly_r || ty_is_array(rt) ? TY_INT : ty_hash_key(rt), hb);
       }
     }
-    if (!els) {
+    if (!tuple) {
       /* scalar RHS (`a, b = 1`): the first target takes the value, the rest
          their slot default (Ruby gives nil; we land the typed zero). A call /
          super / yield can return a multi-value tuple, so those are excluded
