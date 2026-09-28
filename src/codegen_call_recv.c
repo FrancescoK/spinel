@@ -13271,7 +13271,8 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     return 1;
   }
 
-  /* poly receiver count(v): value-equality element count over a boxed array */
+  /* poly receiver count(v): value-equality element count over a boxed Array,
+     Hash, Range or Enumerator (sp_poly_count_val) */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "count") &&
       nt_ref(nt, id, "block") < 0) {
     /* Only a user definition that can TAKE one positional argument blocks
