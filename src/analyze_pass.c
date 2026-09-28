@@ -705,7 +705,7 @@ static int subtree_has_return(const NodeTable *nt, int root, int skip) {
   return 0;
 }
 
-static int multi_return_elem_types(Compiler *c, int value, TyKind *out, int max) {
+int multi_return_elem_types(Compiler *c, int value, TyKind *out, int max) {
   const NodeTable *nt = c->nt;
   const char *vty = nt_type(nt, value);
   if (!vty || !sp_streq(vty, "CallNode")) return 0;

@@ -1,5 +1,6 @@
 #include "analyze_internal.h"
 #include <stdint.h>
+#include <limits.h>
 
 /* Per-iteration memo for the (cid, ivname) full-table-scan narrow helpers
    below. Each is O(nodes); they are queried once per `@ivar[i]` expression,
@@ -7022,6 +7023,16 @@ TyKind infer_uncached(Compiler *c, int id) {
      the node kind: a container-stored local read, a demanded string literal
      element, or a demanded call-result store (#3227). */
   if (c->strbuf_box[id]) return TY_STRBUF;
+  /* a multiple assignment's element, read back for desugar_masgn_store_evidence:
+     a method returning a fixed tuple answers that element's own type (a
+     negative position counts from the end) */
+  if (nk == NK_CallNode) {
+    long long pos = nt_int(nt, id, "masgn_elem", LLONG_MIN);
+    TyKind elems[16];
+    int en = pos != LLONG_MIN ? multi_return_elem_types(c, nt_ref(nt, id, "receiver"), elems, 16) : 0;
+    if (pos < 0) pos += en;
+    if (pos >= 0 && pos < en) return elems[pos];
+  }
 
   if (nk == NK_IntegerNode)             return nt_str(nt, id, "bigval") ? TY_BIGINT : TY_INT;
   if (nk == NK_FloatNode)               return TY_FLOAT;

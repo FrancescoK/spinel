@@ -7627,7 +7627,12 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
       masgn_part(c, recv, recv_tmp, b); buf_puts(b, ", ");
       if (key_tmp >= 0) buf_printf(b, "_t%d", key_tmp); else emit_int_expr(c, argv[0], b);
       buf_puts(b, ", ");
-      masgn_conv(c, rt == TY_POLY_ARRAY ? TY_POLY : ty_array_elem(rt), vt, val, b);
+      /* a boxed value a typed array cannot hold is refused, as the single
+         store refuses it (#4481) */
+      TyKind et = rt == TY_POLY_ARRAY ? TY_POLY : ty_array_elem(rt);
+      if (val && vt == TY_POLY && (et == TY_INT || et == TY_FLOAT || et == TY_STRING))
+        buf_printf(b, "sp_poly_elem_%c(%s)", et == TY_INT ? 'i' : et == TY_FLOAT ? 'f' : 's', val);
+      else masgn_conv(c, et, vt, val, b);
       buf_puts(b, ");\n");
     }
     else if (rt == TY_POLY || rt == TY_UNKNOWN) {
@@ -10288,8 +10293,9 @@ else {
                the sink, as the single store does (#4733) */
             TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
             TyKind et = ty_array_elem(recv_t);
-            if (valt == TY_POLY && et == TY_INT) buf_printf(b, "sp_poly_to_i(_t%d)", tmps[i]);
-            else if (valt == TY_POLY && et == TY_FLOAT) buf_printf(b, "sp_poly_to_f(_t%d)", tmps[i]);
+            if (valt == TY_POLY && et == TY_INT) buf_printf(b, "sp_poly_elem_i(_t%d)", tmps[i]);
+            else if (valt == TY_POLY && et == TY_FLOAT) buf_printf(b, "sp_poly_elem_f(_t%d)", tmps[i]);
+            else if (valt == TY_POLY && et == TY_STRING) buf_printf(b, "sp_poly_elem_s(_t%d)", tmps[i]);
             else buf_printf(b, "_t%d", tmps[i]);
           }
           buf_puts(b, ");\n");
@@ -10491,6 +10497,13 @@ else {
         }
         else buf_puts(b, default_value(ivt2 != TY_UNKNOWN ? ivt2 : TY_INT));
         buf_puts(b, ";\n");
+      }
+      else {
+        char rv[32];
+        if (ridx >= 0) snprintf(rv, sizeof rv, "_t%d", tmps[ridx]);
+        TyKind rvt = ridx >= 0 ? (tmpts ? tmpts[ridx] : comp_ntype(c, els[ridx])) : TY_NIL;
+        if (!masgn_store(c, id, rights[j], ridx >= 0 ? rv : NULL, rvt, -1, -1, indent, b))
+          unsupported(c, id, "multiple assignment target");
       }
     }
     return;
