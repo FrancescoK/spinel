@@ -1466,6 +1466,11 @@ static unsigned lvw_hash(const char *s) {
   while (*s) { h ^= (unsigned char)*s++; h *= 16777619u; }
   return h;
 }
+int comp_is_local_write(NodeKind k) {
+  return k == NK_LocalVariableWriteNode || k == NK_LocalVariableTargetNode ||
+         k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode ||
+         k == NK_LocalVariableOperatorWriteNode;
+}
 static void lvw_build(Compiler *c) {
   free(c->lvw_head); free(c->lvw_next);
   int n = c->nt->count;
@@ -1484,7 +1489,7 @@ static void lvw_build(Compiler *c) {
   for (int b = 0; b < nb; b++) c->lvw_head[b] = -1;
   for (int w = 0; w < n; w++) {
     c->lvw_next[w] = -1;
-    if (nt_kind(c->nt, w) != NK_LocalVariableWriteNode) continue;
+    if (!comp_is_local_write(nt_kind(c->nt, w))) continue;
     const char *wn = nt_str(c->nt, w, "name");
     if (!wn) continue;
     unsigned b = lvw_hash(wn) & (unsigned)(nb - 1);
@@ -1527,7 +1532,7 @@ static void lvws_build(Compiler *c) {
   for (int b = 0; b < nb; b++) c->lvws_head[b] = -1;
   for (int w = 0; w < n; w++) {
     c->lvws_next[w] = -1;
-    if (nt_kind(c->nt, w) != NK_LocalVariableWriteNode) continue;
+    if (!comp_is_local_write(nt_kind(c->nt, w))) continue;
     const char *wn = nt_str(c->nt, w, "name");
     if (!wn) continue;
     int si = (w < c->nt->count && c->nscope) ? c->nscope[w] : 0;

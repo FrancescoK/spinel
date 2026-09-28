@@ -334,6 +334,7 @@ int desugar_user_not_match(Compiler *c);
 int desugar_env_enum(Compiler *c);
 int desugar_dir_surface(Compiler *c);
 const char *builtin_class_var_static_name(Compiler *c, int node);
+int local_write_binds_value(NodeKind k);
 int desugar_enumerable_chain(Compiler *c);
 int desugar_implicit_send(Compiler *c);
 int desugar_public_send_recv(Compiler *c);

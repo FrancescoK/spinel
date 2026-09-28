@@ -734,11 +734,14 @@ int comp_scalar_literal_chain_bottom(const NodeTable *nt, int v);
 Scope *comp_scope_new(Compiler *c, const char *name, int def_node);
 Scope *comp_scope_of(Compiler *c, int node_id);        /* owning scope */
 
-/* Walk the LocalVariableWriteNodes that bind `name`, newest id first. The
+/* Walk the local-variable writes that bind `name`, newest id first: plain
+   writes, multiple-assignment/for/rescue/pattern targets, and ||= &&= op=
+   writes, so a caller filters the kinds it wants. The
    alternative -- scanning the whole node table per query -- is what made
    resolving `k = Klass; k.new` quadratic on class-heavy programs. The index is
    keyed on name alone and revalidated against nt->version, so the scope of
    each write is still read fresh at every visit. */
+int comp_is_local_write(NodeKind k);
 int comp_lvw_first(Compiler *c, const char *name);
 int comp_lvw_next(const Compiler *c, int w);
 int comp_lvw_first_sc(Compiler *c, int scope_idx, const char *name);
