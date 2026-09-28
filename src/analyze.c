@@ -9723,6 +9723,29 @@ static const char *isa_guard_local(Compiler *c, int pred, Scope *s, TyKind *out_
   return pn;
 }
 
+/* Array methods that neither change the receiver nor hand it on: the result
+   is a new object or a plain value, and a block sees elements, never the
+   receiver. (each, each_with_index, each_slice, each_cons, product,
+   combination and permutation return the receiver when given a block.) */
+static int isa_array_read_only(const char *nm) {
+  static const char *const R[] = {
+    "length", "size", "count", "empty?", "any?", "all?", "none?", "one?",
+    "first", "last", "[]", "at", "dig", "fetch", "slice", "take", "drop",
+    "take_while", "drop_while", "include?", "member?", "index", "find_index",
+    "rindex", "sum", "min", "max", "minmax", "min_by", "max_by", "sort",
+    "sort_by", "map", "collect", "flat_map", "collect_concat", "select",
+    "filter", "find_all", "reject", "filter_map", "find", "detect",
+    "partition", "group_by", "chunk_while", "slice_when", "zip",
+    "join", "inspect", "to_s", "hash", "==", "!=", "eql?", "<=>", "+", "-",
+    "*", "&", "|", "uniq", "compact", "flatten", "reverse", "rotate",
+    "values_at", "assoc", "rassoc", "pack", "tally", "inject", "reduce",
+    "each_with_object", "to_h", "transpose", "grep", "grep_v", "bsearch",
+    "sample", "shuffle", NULL };
+  if (!nm) return 0;
+  for (int i = 0; R[i]; i++) if (sp_streq(nm, R[i])) return 1;
+  return 0;
+}
+
 /* Like nng_mark_reads, but a bare read that is a direct ELEMENT of an array
    or hash literal stays unnarrowed: narrowing it retypes the container literal
    (`[v]` becomes a typed array), which cascades into the container's consumers
@@ -9730,11 +9753,12 @@ static const char *isa_guard_local(Compiler *c, int pred, Scope *s, TyKind *out_
    ~2-3%% fps) -- the array-typing lesson. Dispatch on v itself still narrows.
 
    An Array-narrowed read is a poly-array COPY of whatever typed array the box
-   holds, so it narrows only as the receiver of a call that reads the array.
-   A mutator (`v.push(x)`, `v[i] += 1`) grew the copy and left the array the
-   box points at unchanged; a read handed on (an argument, an assignment, a
-   return) or asked for its identity carried the copy away. Those keep the
-   poly box, which dispatches on the original. */
+   holds, so it narrows only as the receiver of a method that reads the array
+   without handing the receiver on (isa_array_read_only). A mutator
+   (`v.push(x)`, `v[i] += 1`) grew the copy and left the array the box points
+   at unchanged; a read handed on (an argument, an assignment, a return, a
+   `tap` / `then` block, `itself`, `to_a`) or asked for its identity carried
+   the copy away. Those keep the poly box, which dispatches on the original. */
 static void isa_mark_reads(Compiler *c, int root, Scope *s, const char *pn, TyKind t) {
   if (root < 0) return;
   const NodeTable *nt = c->nt;
@@ -9750,9 +9774,7 @@ static void isa_mark_reads(Compiler *c, int root, Scope *s, const char *pn, TyKi
     const char *cn = nt_str(nt, root, "name");
     const char *rn = recv >= 0 && nt_kind(nt, recv) == NK_LocalVariableReadNode
                      ? nt_str(nt, recv, "name") : NULL;
-    if (rn && sp_streq(rn, pn) && comp_scope_of(c, recv) == s && cn &&
-        !sp_array_mutator(cn) && !sp_streq(cn, "equal?") && !sp_streq(cn, "object_id") &&
-        !sp_streq(cn, "__id__") && !sp_streq(cn, "freeze") && !sp_streq(cn, "frozen?"))
+    if (rn && sp_streq(rn, pn) && comp_scope_of(c, recv) == s && isa_array_read_only(cn))
       c->nilnarrow[recv] = t;
   }
   int is_container = ty && (sp_streq(ty, "ArrayNode") || sp_streq(ty, "HashNode"));

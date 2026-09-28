@@ -574,18 +574,6 @@ int sp_str_mutator(const char *nm, unsigned want) {
   return 0;
 }
 
-/* The Array methods that rewrite their receiver in place. */
-int sp_array_mutator(const char *nm) {
-  size_t l = nm ? strlen(nm) : 0;
-  if (!l) return 0;
-  static const char *const M[] = {
-    "<<", "push", "append", "unshift", "prepend", "insert", "concat", "fill",
-    "clear", "delete", "delete_at", "pop", "shift", "replace", "[]=", "keep_if",
-    "delete_if", "slice!", NULL };
-  for (int i = 0; M[i]; i++) if (sp_streq(nm, M[i])) return 1;
-  return nm[l - 1] == '!';
-}
-
 int lazy_stage_name(const char *nm) {
   static const char *const ST[] = {
     /* re-lazy on an already-lazy chain is transparent */
