@@ -994,6 +994,16 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a singleton def on an untraceable receiver compiled)"; ok=0; \
 	else grep -q "singleton method that needs a self, on a receiver that is not one user-class instance" "$$tmp/r.out" || \
 	  { echo "reject-test: FAIL (rejected without saying why)"; sed -n 1,5p "$$tmp/r.out"; ok=0; }; fi; \
+	t=test/reject/forwarding_initialize_uneven_new.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/fu.c" >"$$tmp/fu.out" 2>&1; then \
+	  echo "reject-test: FAIL (uneven new sites into a forwarding initialize compiled)"; ok=0; \
+	else grep -q "different numbers of arguments to a class whose initialize forwards" "$$tmp/fu.out" || \
+	  { echo "reject-test: FAIL (uneven new sites rejected without saying why)"; sed -n 1,5p "$$tmp/fu.out"; ok=0; }; fi; \
+	t=test/reject/forwarding_initialize_splat_new.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/fs.c" >"$$tmp/fs.out" 2>&1; then \
+	  echo "reject-test: FAIL (a splat into a forwarding initialize's new compiled)"; ok=0; \
+	else grep -q "a splat argument to .new. of a class whose initialize forwards" "$$tmp/fs.out" || \
+	  { echo "reject-test: FAIL (splat new rejected without saying why)"; sed -n 1,5p "$$tmp/fs.out"; ok=0; }; fi; \
 	t=test/reject/class_then_module.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/m.c" >"$$tmp/m.out" 2>&1; then \
 	  echo "reject-test: FAIL (#4309: a constant declared class and then module compiled)"; ok=0; \

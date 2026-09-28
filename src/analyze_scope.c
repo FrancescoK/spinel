@@ -252,6 +252,14 @@ static void initialize_forwarding_params(Compiler *c, int init) {
   int nfwd = 0;
   for (int p = 0; p < s->nparams; p++)
     if (s->pnames[p] && strncmp(s->pnames[p], "__fwd_", 6) == 0) nfwd++;
+  /* The synthesized parameters are as many as the widest `new` site passes,
+     and a narrower site fills the rest with nil, which the forward then
+     hands to the parent in place of a default it should have left alone
+     (`B.new(1)` beside `B.new(1, 5)` into `initialize(a, b = 2)` gave
+     [1, nil]); a splat has no count to size them by, and a parent *rest
+     takes what remains. None of these has a right answer in this model, so
+     they are refused rather than compiled wrong. */
+  int pos_min = -1, pos_max = -1;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty || !sp_streq(ty, "CallNode") || !new_site_reaches(c, id, init)) continue;
@@ -261,6 +269,16 @@ static void initialize_forwarding_params(Compiler *c, int init) {
     int kwh = an > 0 && nt_type(nt, av[an - 1]) &&
               sp_streq(nt_type(nt, av[an - 1]), "KeywordHashNode") ? av[an - 1] : -1;
     int pos = kwh >= 0 ? an - 1 : an;
+    for (int k = 0; k < pos; k++)
+      if (nt_kind(nt, av[k]) == NK_SplatNode)
+        unsupported_feature(c, id, "a splat argument to `new` of a class whose initialize forwards `...`: "
+                                   "the forward's parameters are sized from the call's argument count");
+    if (pos_min < 0 || pos < pos_min) pos_min = pos;
+    if (pos > pos_max) pos_max = pos;
+    if (pos_min != pos_max)
+      unsupported_feature(c, id, "`new` sites passing different numbers of arguments to a class whose "
+                                 "initialize forwards `...`: a shorter call would pass nil where the parent "
+                                 "expects its default");
     while (nfwd < pos - lead) {
       char nm[24]; snprintf(nm, sizeof nm, "__fwd_%d", nfwd++);
       scope_add_param(s, nm, -1);
@@ -275,6 +293,12 @@ static void initialize_forwarding_params(Compiler *c, int init) {
       for (int p = 0; p < s->nparams; p++) if (s->pnames[p] && sp_streq(s->pnames[p], kn)) { dup = 1; break; }
       if (!dup) scope_add_param(s, kn, -1);
     }
+  }
+  {
+    int tgt = forwarding_target_idx(c, s);
+    if (tgt >= 0 && tgt != init && c->scopes[tgt].rest_idx >= 0)
+      unsupported_feature(c, s->def_node, "an initialize forwarding `...` to a parent initialize with a *rest "
+                                          "parameter: the forward's fixed parameters cannot fill a rest");
   }
 }
 
