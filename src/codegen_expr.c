@@ -3055,6 +3055,8 @@ else {
           buf_printf(g_pre, "{ sp_IntArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_%sArray_push(_t%d, _sa->data[_sa->start+_si]); }\n", ep, k, t);
         else if (it == TY_STR_ARRAY && sp_streq(k, "Str"))
           buf_printf(g_pre, "{ sp_StrArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_%sArray_push(_t%d, _sa->data[_si]); }\n", ep, k, t);
+        else if (it == TY_FLOAT_ARRAY && sp_streq(k, "Float"))
+          buf_printf(g_pre, "{ sp_FloatArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_FloatArray_push(_t%d, _sa->data[_si]); }\n", ep, t);
         else if (it == TY_NIL)
           /* a statically-nil splat contributes nothing (`[*nil]` == []) */
           buf_printf(g_pre, ";\n");

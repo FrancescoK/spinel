@@ -2616,6 +2616,53 @@ int desugar_block_implicit_rest(Compiler *c) {
   return changed;
 }
 
+/* `return a, *b, c` / `break a, *b` / `next a, b` hand back one array:
+   CRuby reads them as `return [a, *b, c]`. Wrap the arguments in that
+   ArrayNode so the array-literal builders splice the splat and every
+   value consumer sees one argument. The per-jump builders pushed each
+   argument boxed, a splat as one nested array, and `next` kept only the
+   first argument. A splat-free `return` / `break` keeps its own path.
+   `yield a, *b` and `blk.call(a, *b)` become `yield(*[a, *b])`, which the
+   block binder already spreads; it bound each argument to one parameter,
+   the splat's whole array included. */
+int desugar_multi_value_jump(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    int is_call = k == NK_CallNode && nt_ref(nt, id, "receiver") >= 0 &&
+                  nt_ref(nt, id, "block") < 0 && sp_streq(nt_str(nt, id, "name"), "call");
+    if (k != NK_ReturnNode && k != NK_BreakNode && k != NK_NextNode && k != NK_YieldNode && !is_call) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int n = 0; const int *a = args >= 0 ? nt_arr(nt, args, "arguments", &n) : NULL;
+    if (!a || n < 2) continue;
+    int splat = 0, other = 0;
+    for (int j = 0; j < n; j++) {
+      NodeKind ak = nt_kind(nt, a[j]);
+      if (ak == NK_SplatNode && nt_ref(nt, a[j], "expression") < 0) other = 1;
+      else if (ak == NK_SplatNode) splat = 1;
+      else if (ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) other = 1;
+    }
+    if (other || (!splat && k != NK_NextNode)) continue;
+    int arr = nt_new_node(nt, "ArrayNode");
+    int wrap = (k == NK_YieldNode || is_call) ? nt_new_node(nt, "SplatNode") : arr;
+    if (arr < 0 || wrap < 0) continue;
+    int lk[2] = { arr, wrap };
+    for (int j = 0; j < 2; j++) {
+      nt_node_set_int(nt, lk[j], "node_line", nt_int(nt, id, "node_line", 0));
+      nt_node_set_int(nt, lk[j], "node_file", nt_int(nt, id, "node_file", 0));
+      nt_node_set_int(nt, lk[j], "node_col", nt_int(nt, id, "node_col", 0));
+    }
+    nt_node_set_arr(nt, arr, "elements", a, n);
+    if (wrap != arr) nt_node_set_ref(nt, wrap, "expression", arr);
+    nt_node_set_arr(nt, args, "arguments", &wrap, 1);
+    comp_grow_node_arrays(c);
+    changed = 1;
+  }
+  return changed;
+}
+
 /* `::Name` (a ConstantPathNode with no parent) is the top-level constant
    `Name`. The analyzer resolves a bare ConstantReadNode everywhere -- the
    class census, the builtin receivers (ENV, File, Math), the exception

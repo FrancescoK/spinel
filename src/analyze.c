@@ -15898,6 +15898,7 @@ void analyze_program(Compiler *c) {
   desugar_forwarding_to_rest_callee(c);  /* def m(...) = f(*a, **k) -> anon *, ** */
   desugar_anon_block_param(c);           /* def m(&) = f(&) -> &__anon_block */
   desugar_block_implicit_rest(c);        /* |x,| -> |x, __implicit_rest| (destructures) */
+  desugar_multi_value_jump(c);           /* return *a, b -> return [*a, b] */
   desugar_block_destructure_params(c);   /* |a,(b,c),d| -> flat param + `b,c = __destr` */
   desugar_enumerator_produce(c);         /* Enumerator.produce -> fiber generator */
   desugar_recursive_param_defaults(c);   /* def m(x, y = m(..)) -> default helper method */
