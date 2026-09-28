@@ -33494,7 +33494,7 @@ else {
   }
 
   /* String#concat with no arguments returns the receiver unchanged (#2309) */
-  if (recv >= 0 && rt == TY_STRING && sp_streq(name, "concat") && argc == 0) {
+  if (recv >= 0 && (rt == TY_STRING || rt == TY_STRBUF) && sp_streq(name, "concat") && argc == 0) {
     /* zero-argument concat returns the receiver, but CRuby checks frozen
        first -- the empty append is still a mutation attempt (#3339). The
        receiver once: a call with effects must not run twice. */
@@ -33505,7 +33505,11 @@ else {
   }
   /* String#clear consumed as a value: empty the assignable receiver in place
      and yield the now-empty string (#2332) */
-  if (recv >= 0 && rt == TY_STRING && sp_streq(name, "clear") && argc == 0) {
+  /* TY_STRBUF too: a reader handing out the shared handle is still a String
+     receiver, and the strbuf_slot_ref arm just below is the one written for
+     it. Gated on TY_STRING alone, the value form of `obj.buf.clear` matched
+     nothing, cleared nothing and answered nil. */
+  if (recv >= 0 && (rt == TY_STRING || rt == TY_STRBUF) && sp_streq(name, "clear") && argc == 0) {
     /* A shared-mutable receiver owns a buffer: empty it in place and answer
        the same string, as CRuby does. Its read is a copy out of the handle,
        not an lvalue, so the reassignment below did not even compile. */
