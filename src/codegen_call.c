@@ -9688,7 +9688,7 @@ static int boxed_desc_control_arity(const char *name, int argc) {
    by Ruby's rule (nil to [], any other value to [v]). */
 /* `node` may also be an anonymous `*` itself (a SplatNode with no operand),
    which forwards the enclosing method's rest array. */
-static int splat_operand_ok(Compiler *c, int node) {
+int splat_operand_ok(Compiler *c, int node) {
   if (nt_kind(c->nt, node) == NK_SplatNode) {
     Buf ab; memset(&ab, 0, sizeof ab);
     int ok = emit_anon_rest_ref(c, node, &ab);
@@ -9698,7 +9698,7 @@ static int splat_operand_ok(Compiler *c, int node) {
   TyKind t = comp_ntype(c, node);
   return ty_is_array(t) || t == TY_POLY || splat_operand_is_scalar(t);
 }
-static void emit_splat_operand_array(Compiler *c, int node, Buf *b) {
+void emit_splat_operand_array(Compiler *c, int node, Buf *b) {
   if (nt_kind(c->nt, node) == NK_SplatNode && emit_anon_rest_ref(c, node, b)) return;
   int spread = !ty_is_array(comp_ntype(c, node));
   buf_puts(b, spread ? "sp_poly_to_poly_array(sp_splat_to_array(" : "sp_poly_to_poly_array(");

@@ -1,0 +1,19 @@
+3
+2
+3
+nil
+"struct size differs"
+[1, 2]
+[nil, 7]
+#<data D x=1, y=9>
+[1, 2]
+[3, 4]
+#<data D2 x=2, y=4>
+20
+[0, 1, 2]
+#<struct S3 a=1, b="x">
+[5, 6]
+[5, 6]
+#<data D3 x=1, y=2>
+"missing keyword: :y"
+#<data D4 x=3, y="s">

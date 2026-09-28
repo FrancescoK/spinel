@@ -8763,6 +8763,92 @@ static void emit_zsuper_arg(Compiler *c, TyKind st, TyKind dt, const char *pname
   free(_bx.p);
 }
 
+/* `super(*a)` / `super(**h)` in a Struct or Data initialize: how many values
+   arrive, and under which names, is known only when it runs. Gather the
+   positionals into one array and the keywords into one hash, and set each
+   member from them as Struct#initialize / Data#initialize would: by name for
+   Data, a keyword_init Struct, or a plain Struct given keywords alone, else
+   by position. Taking the splat as the first member's value failed in C, and
+   a `**h` supplied no member at all. */
+static void emit_struct_super_spread(Compiler *c, ClassInfo *cls, const int *argv, int argc, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int kwh = argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+  int npos = kwh >= 0 ? argc - 1 : argc;
+  int ta = ++g_tmp, tl = ++g_tmp, th = ++g_tmp, tk = ++g_tmp;
+  buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
+  for (int a = 0; a < npos; a++) {
+    if (nt_kind(nt, argv[a]) == NK_SplatNode) {
+      int op = nt_ref(nt, argv[a], "expression");
+      buf_printf(b, " sp_PolyArray_append_all(_t%d, ", ta);
+      emit_splat_operand_array(c, op >= 0 ? op : argv[a], b);
+      buf_puts(b, ");");
+    }
+    else {
+      buf_printf(b, " sp_PolyArray_push(_t%d, ", ta);
+      emit_boxed(c, argv[a], b);
+      buf_puts(b, ");");
+    }
+  }
+  buf_printf(b, " sp_RbVal _t%d = ", th);
+  int kn = 0;
+  const int *ke = kwh >= 0 ? nt_arr(nt, kwh, "elements", &kn) : NULL;
+  Scope *sc = comp_scope_of(c, kwh >= 0 ? kwh : argv[0]);
+  if (kn == 1 && nt_kind(nt, ke[0]) == NK_AssocSplatNode && nt_ref(nt, ke[0], "value") < 0 &&
+      sc->kwrest_idx >= 0 && sc->kwrest_idx < sc->nparams && sc->pnames[sc->kwrest_idx]) {
+    const char *kr = sc->pnames[sc->kwrest_idx];
+    LocalVar *kv = scope_local(sc, kr);
+    char src[64]; snprintf(src, sizeof src, "lv_%s", rename_local(kr));
+    emit_boxed_text(c, kv && kv->type != TY_UNKNOWN ? kv->type : TY_SYM_POLY_HASH, src, b);
+  }
+  else if (kwh >= 0) emit_boxed(c, kwh, b);
+  else buf_puts(b, "sp_box_nil()");
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", th);
+  int keyed = cls->is_data || cls->kw_init > 0;
+  const char *hash_given = kwh >= 0 ? "_t%d.tag != SP_TAG_NIL && sp_poly_length(_t%d) > 0" : "0";
+  if (keyed) {
+    buf_printf(b, " sp_int _t%d = sp_PolyArray_length(_t%d);", tl, ta);
+    buf_printf(b, " if (_t%d != 0) sp_raise_cls(\"ArgumentError\", sp_sprintf(\"wrong number of arguments (given %%lld, expected 0)\", (long long)_t%d));", tl, tl);
+    buf_printf(b, " sp_bool _t%d = 1;", tk);
+  }
+  else {
+    buf_printf(b, " sp_bool _t%d = ", tk);
+    if (cls->kw_init == 0 && kwh >= 0) {
+      buf_printf(b, "sp_PolyArray_length(_t%d) == 0 && (", ta);
+      buf_printf(b, hash_given, th, th);
+      buf_puts(b, ");");
+    }
+    else buf_puts(b, "0;");
+    if (kwh >= 0) {
+      buf_printf(b, " if (!_t%d && (", tk);
+      buf_printf(b, hash_given, th, th);
+      buf_printf(b, ")) sp_PolyArray_push(_t%d, _t%d);", ta, th);
+    }
+    buf_printf(b, " sp_int _t%d = sp_PolyArray_length(_t%d);", tl, ta);
+    buf_printf(b, " if (_t%d > %d) sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"struct size differs\")[1]));", tl, cls->nivars);
+  }
+  for (int a = 0; a < cls->nivars; a++) {
+    const char *mname = cls->ivars[a] + 1;
+    Buf ev; memset(&ev, 0, sizeof ev);
+    buf_printf(&ev, "(_t%d ? ", tk);
+    if (kwh >= 0) {
+      buf_printf(&ev, "({ sp_bool _f; sp_RbVal _v = _t%d.tag != SP_TAG_NIL ? sp_poly_hash_probe(_t%d, sp_box_sym(sp_sym_intern(\"%s\")), &_f) : (_f = 0, sp_box_nil()); _f ? _v : ",
+                 th, th, mname);
+      if (cls->is_data) buf_printf(&ev, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), sp_box_nil())", mname);
+      else buf_puts(&ev, "sp_box_nil()");
+      buf_puts(&ev, "; })");
+    }
+    else if (cls->is_data) buf_printf(&ev, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), sp_box_nil())", mname);
+    else buf_puts(&ev, "sp_box_nil()");
+    buf_printf(&ev, " : (%d < _t%d ? sp_PolyArray_get(_t%d, %d) : sp_box_nil()))", a, tl, ta, a);
+    buf_printf(b, " %s->iv_%s = ", g_self, mname);
+    if (cls->ivar_types[a] == TY_POLY) buf_puts(b, ev.p);
+    else emit_unbox_nilable_text(c, cls->ivar_types[a], ev.p, b);
+    buf_puts(b, ";");
+    free(ev.p);
+  }
+  buf_puts(b, " sp_box_nil(); })");
+}
+
 void emit_super(Compiler *c, int id, Buf *b) {
   Scope *s = comp_scope_of(c, id);
   if (s->class_id < 0 || !s->name) { unsupported(c, id, "super (not in a method)"); return; }
@@ -8905,6 +8991,13 @@ void emit_super(Compiler *c, int id, Buf *b) {
          drop the whole hash into the first (scalar) member slot. */
       int kwh = (!is_fwd && an == 1 && sargv && nt_type(c->nt, sargv[0]) &&
                  sp_streq(nt_type(c->nt, sargv[0]), "KeywordHashNode")) ? sargv[0] : -1;
+      if (!is_fwd && struct_super_spreads(c, args_id)) {
+        Buf sb; memset(&sb, 0, sizeof sb);
+        emit_struct_super_spread(c, cls, sargv, an, &sb);
+        buf_printf(b, "((void)%s, %s)", sb.p, default_value(comp_ntype(c, id)));
+        free(sb.p);
+        return;
+      }
       int cnt = (kwh >= 0 || is_fwd) ? cls->nivars : an;
       buf_puts(b, "(");
       for (int a = 0; a < cls->nivars && a < cnt; a++) {
