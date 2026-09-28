@@ -11238,6 +11238,7 @@ static void reject_runtime_send(Compiler *c) {
     int is_send = 0;
     for (int k = 0; names[k]; k++) if (sp_streq(nm, names[k])) { is_send = 1; break; }
     if (!is_send) continue;
+    if (nt_int(nt, id, "rt_probe", 0)) continue;  /* analysis-only respond_to? probe */
     int args = nt_ref(nt, id, "arguments");
     if (args < 0) continue;
     int ac = 0; const int *av = nt_arr(nt, args, "arguments", &ac);
