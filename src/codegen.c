@@ -12618,6 +12618,8 @@ char *codegen_program(const NodeTable *nt) {
       "static sp_Class sp_poly_get_class(sp_RbVal v){\n"
       "  switch(v.tag){\n"
       "  case SP_TAG_INT: return ((sp_Class){-100});\n"
+      /* a Bignum is an Integer too, to grep, all? and === */
+      "  case SP_TAG_BIGINT: return ((sp_Class){-100});\n"
       "  case SP_TAG_STR: return ((sp_Class){-102});\n"
       "  case SP_TAG_FLT: return ((sp_Class){-101});\n"
       "  case SP_TAG_BOOL: return v.v.b?((sp_Class){-111}):((sp_Class){-112});\n"
