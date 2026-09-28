@@ -271,6 +271,16 @@ const char *sp_file_readlink(const char *path) {SP_GC_ROOT_STR(path);
    raising while it is on; the caller reads it back and answers nil (#3893). */
 sp_bool sp_convert_soft = 0;
 sp_bool sp_convert_failed = 0;
+/* A rational-syntax denominator written as digits that reads zero raises
+   ZeroDivisionError, as CRuby's does, with `exception: false` too. The raise
+   leaves the parse before its caller clears sp_convert_soft, so it is
+   cleared here first. */
+static void sp_str_to_c_zero_den(const char *dp, double d) {
+  if (d == 0.0 && *dp >= '0' && *dp <= '9') {
+    sp_convert_soft = 0;
+    sp_raise_cls("ZeroDivisionError", "divided by 0");
+  }
+}
 static sp_Complex sp_str_to_c_impl(const char *s, int strict) {
   double re = 0, im = 0;
   int parsed = 0;
@@ -283,14 +293,14 @@ static sp_Complex sp_str_to_c_impl(const char *s, int strict) {
     if (end != p) {
       parsed = 1;
       /* rational-syntax component "n/d" */
-      if (*end == '/') { const char *dp = end + 1; char *de = NULL; double d = strtod(dp, &de); if (de != dp) { a /= d; end = de; } }
+      if (*end == '/') { const char *dp = end + 1; char *de = NULL; double d = strtod(dp, &de); if (de != dp) { sp_str_to_c_zero_den(dp, d); a /= d; end = de; } }
       if (*end == 'i') { im = a; fin = end + 1; }
       else {
         re = a;
         const char *q = end;
         double b2 = strtod(q, &end);
         if (end != q) {
-          if (*end == '/') { const char *dp = end + 1; char *de = NULL; double d = strtod(dp, &de); if (de != dp) { b2 /= d; end = de; } }
+          if (*end == '/') { const char *dp = end + 1; char *de = NULL; double d = strtod(dp, &de); if (de != dp) { sp_str_to_c_zero_den(dp, d); b2 /= d; end = de; } }
           if (*end == 'i') { im = b2; fin = end + 1; }
           else fin = q;   /* an imaginary number without the 'i' suffix ("1+2") is invalid */
         }
@@ -3302,8 +3312,20 @@ const char *sp_srange_inspect(sp_StrRange r) {
   const char *hi = sp_str_inspect(r.last ? r.last : sp_str_empty);
   return sp_sprintf("%s%s%s", lo, r.excl ? "..." : "..", hi);
 }
+/* A boxed String range holds its two endpoint strings: the box marks them,
+   and they are rooted while it is allocated. With no scanner the endpoints
+   were swept under a live range, and a `("a1".."z1")` read back as
+   `"".."t1"` once a collection had reused them (kw_splat_struct_data_arg_order
+   on the 32-bit target). */
+static void sp_srange_scan(void *p) {
+  sp_StrRange *r = (sp_StrRange *)p;
+  if (r->first) sp_mark_string(r->first);
+  if (r->last) sp_mark_string(r->last);
+}
 sp_RbVal sp_box_srange(sp_StrRange v) {
-  sp_StrRange *p = (sp_StrRange *)sp_gc_alloc(sizeof(sp_StrRange), NULL, NULL);
+  const char *f = v.first, *l = v.last;
+  SP_GC_ROOT_STR(f); SP_GC_ROOT_STR(l);
+  sp_StrRange *p = (sp_StrRange *)sp_gc_alloc(sizeof(sp_StrRange), NULL, sp_srange_scan);
   *p = v;
   return sp_box_obj(p, SP_BUILTIN_STR_RANGE);
 }

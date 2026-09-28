@@ -171,17 +171,19 @@ typedef struct {
   uint64_t *wyoung[SP_SLAB_NCLS];   /* the cached word in this epoch's young bitmap */
   uint64_t *wpin[SP_SLAB_NCLS];     /* the same word of the pin bitmap */
   uint64_t *wfin[SP_SLAB_NCLS];     /* the same word of the fin bitmap */
+  uint64_t *wstr[SP_SLAB_NCLS];     /* the same word of the str bitmap */
   char *wbase[SP_SLAB_NCLS];        /* slot 0 of that word */
   char *rnext[2][SP_SLAB_NCLS];     /* the run's next slot, per kind */
   char *rend[2][SP_SLAB_NCLS];      /* one past the run's last slot */
   char *rbase[2][SP_SLAB_NCLS];     /* slot 0 of the run's word (the fin bit is computed from it) */
   uint64_t *rclaim[2][SP_SLAB_NCLS];   /* the word the run was claimed in (unclaimed from there at a release) */
   uint64_t *rfin[2][SP_SLAB_NCLS];     /* the run's word in the fin bitmap */
+  uint64_t *rstr[2][SP_SLAB_NCLS];     /* the run's word in the str bitmap */
   sp_slab_chunk *owned;              /* every chunk this worker carved, doubly linked */
   long taken;        /* chunks this worker started allocating into since the last release */
   int taken_cls[SP_SLAB_NCLS];   /* the same, per class: what each class will need again next cycle */
   int sweeping;      /* a sweep of this worker's chunks is running (the release waits it out) */
-  char _pad[64 - ((14 * SP_SLAB_NCLS * sizeof(void *) + SP_SLAB_NCLS * (sizeof(uint64_t) + sizeof(int)) + sizeof(void *) + sizeof(long) + sizeof(int)) % 64)];
+  char _pad[64 - ((19 * SP_SLAB_NCLS * sizeof(void *) + SP_SLAB_NCLS * (sizeof(uint64_t) + sizeof(int)) + sizeof(void *) + sizeof(long) + sizeof(int)) % 64)];
 } sp_slab_worker;
 
 static sp_slab_worker sp_slab_wk[SP_SLAB_NWK];
@@ -440,6 +442,7 @@ static int sp_slab_run(sp_slab_worker *wk, int cls, int payload) {
     wk->rbase[payload][cls] = wk->wbase[cls];
     wk->rclaim[payload][cls] = claim;
     wk->rfin[payload][cls] = wk->wfin[cls];
+    wk->rstr[payload][cls] = wk->wstr[cls];
     return 1;
   }
   return 0;
@@ -469,6 +472,7 @@ static inline void *sp_slab_take(sp_slab_worker *wk, int cls, sp_slab_chunk *ch,
     wk->wyoung[cls] = &bm->young[e][w];
     wk->wpin[cls] = &bm->pin[w];
     wk->wfin[cls] = &bm->fin[w];
+    wk->wstr[cls] = &bm->str[w];
     wk->wbase[cls] = sp_slab_chunk_base(ch) + (size_t)(w << 6) * csize;
     if (sp_slab_run(wk, cls, payload)) {
       char *p = wk->rnext[payload][cls];
@@ -735,7 +739,22 @@ void *sp_slab_alloc(size_t need) {
   if (SP_EXPECT(sp_slab_verify_on, 0)) sp_slab_note(p, 1);
   return p;
 }
+/* A heap string: the bump of sp_slab_alloc_in with the str bit set in the
+   word cached beside the run, the way an object's fin bit is. Locating the
+   slot from its address instead (chunk, bitmap, word, bit) was two thirds of
+   the cost of allocating a short string. */
 void *sp_slab_alloc_str(size_t need) {
+  if (SP_EXPECT(sp_slab_on > 0 && need <= SP_SLAB_MAX && !sp_slab_verify_on, 1)) {
+    int cls = sp_slab_cls_of[(need + 15) >> 4];
+    sp_slab_worker *wk = &sp_slab_wk[SP_SLAB_WID()];
+    char *q = wk->rnext[0][cls];
+    if (SP_EXPECT(q != wk->rend[0][cls], 1)) {
+      wk->rnext[0][cls] = q + sp_slab_csize[cls];
+      unsigned i = (unsigned)(((uint64_t)(size_t)(q - wk->rbase[0][cls]) * sp_slab_recip[cls]) >> 32);
+      bm_or(wk->rstr[0][cls], (uint64_t)1 << i);
+      return q;
+    }
+  }
   void *p = sp_slab_alloc_in(need, 0, 0, 0);
   if (sp_slab_on > 0 && sp_slab_owns(p)) {
     sp_slab_loc l; sp_slab_locate(p, &l);

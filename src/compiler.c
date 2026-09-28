@@ -835,27 +835,25 @@ static int const_top_level_walk(Compiler *c, int node, const char *cn, int depth
   }
   return 0;
 }
-static int const_name_resolves_top_level(Compiler *c, const char *cn) {
-  if (!cn) return 0;
-  static const char *const builtins2[] = {
+int comp_is_wellknown_const(const char *cn) {
+  static const char *const wellknown[] = {
     "Object", "BasicObject", "Kernel", "Module", "Class", "Array", "Hash",
     "String", "Integer", "Float", "Symbol", "Regexp", "Range", "NilClass",
     "TrueClass", "FalseClass", "Numeric", "Comparable", "Enumerable",
     "IO", "File", "Dir", "Math", "GC", "Process", "ENV", "ARGV",
     "STDOUT", "STDERR", "STDIN", NULL };
-  for (int bi = 0; builtins2[bi]; bi++) if (sp_streq(cn, builtins2[bi])) return 1;
+  for (int bi = 0; wellknown[bi]; bi++) if (sp_streq(cn, wellknown[bi])) return 1;
+  return 0;
+}
+static int const_name_resolves_top_level(Compiler *c, const char *cn) {
+  if (!cn) return 0;
+  if (comp_is_wellknown_const(cn)) return 1;
   return const_top_level_walk(c, c->nt->root_id, cn, 0);
 }
 static int const_name_resolves(Compiler *c, const char *cn) {
   if (!cn) return 0;
   if (comp_const(c, cn) || comp_class_index(c, cn) >= 0) return 1;
-  static const char *const builtins[] = {
-    "Object", "BasicObject", "Kernel", "Module", "Class", "Array", "Hash",
-    "String", "Integer", "Float", "Symbol", "Regexp", "Range", "NilClass",
-    "TrueClass", "FalseClass", "Numeric", "Comparable", "Enumerable",
-    "IO", "File", "Dir", "Math", "GC", "Process", "ENV", "ARGV",
-    "STDOUT", "STDERR", "STDIN", NULL };
-  for (int bi = 0; builtins[bi]; bi++) if (sp_streq(cn, builtins[bi])) return 1;
+  if (comp_is_wellknown_const(cn)) return 1;
   return 0;
 }
 
@@ -1864,9 +1862,12 @@ const char *comp_prep_user_name(const char *name) {
    which is callable, since only a yielding method is inlined away. */
 const char *comp_super_name(Compiler *c, int parent, const char *name, int is_cmethod) {
   const char *u = comp_prep_user_name(name);
-  if (!u || parent < 0) return u;
+  if (!u) return u;
   size_t n = strlen(u);
   if (n <= 3 || strcmp(u + n - 3, "#pf") != 0) return u;
+  /* a class whose parent is builtin (Object, StandardError) supers into the
+     plain method, which the super emitter answers for itself */
+  if (parent < 0) goto plain;
   /* The nearest ancestor that defines the method decides: its own clone when
      it yields, else its plain method. Asking the chain for the clone found a
      grandparent's and skipped a parent that overrides without yielding
@@ -1887,6 +1888,7 @@ const char *comp_super_name(Compiler *c, int parent, const char *name, int is_cm
                          : comp_method_in_chain(c, parent, u, NULL);
     if (any >= 0) return u;
   }
+plain:;
   static struct pf_base { char *from, *to; struct pf_base *next; } *cache;
   for (struct pf_base *e = cache; e; e = e->next)
     if (strcmp(e->from, u) == 0) return e->to;

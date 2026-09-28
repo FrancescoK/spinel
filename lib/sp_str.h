@@ -136,6 +136,7 @@ sp_int sp_str_length_m(const char *s);
 sp_int sp_str_bytesize_m(const char *s);
 sp_bool sp_str_empty_p(const char *s);
 const char *sp_str_plus(const char *a, const char *b);
+const char *sp_str_plus_lit(const char *a, const char *lit, size_t ll);
 sp_int sp_str_count_chars(const char *s, size_t bl);
 sp_int sp_str_length(const char*s);
 sp_int sp_str_ord(const char*s);

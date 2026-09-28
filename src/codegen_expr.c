@@ -11,14 +11,7 @@ static int subtree_has_unresolved_const(Compiler *c, int id) {
     const char *cn = nt_str(c->nt, id, "name");
     if (!cn) return 0;
     if (comp_const(c, cn) || comp_class_index(c, cn) >= 0) return 0;
-    static const char *const wellknown[] = {
-      "Object", "BasicObject", "Kernel", "Module", "Class", "Array", "Hash",
-      "String", "Integer", "Float", "Symbol", "Regexp", "Range", "NilClass",
-      "TrueClass", "FalseClass", "Numeric", "Comparable", "Enumerable",
-      "IO", "File", "Dir", "Math", "GC", "Process", "ENV", "ARGV",
-      "STDOUT", "STDERR", "STDIN", NULL };
-    for (int bi = 0; wellknown[bi]; bi++)
-      if (sp_streq(cn, wellknown[bi])) return 0;
+    if (comp_is_wellknown_const(cn)) return 0;
     return 1;
   }
   int nr = nt_num_refs(c->nt, id);
@@ -1019,7 +1012,11 @@ void emit_slot_orw_value(Compiler *c, TyKind t, const char *ref, int v, int is_o
     Buf *saved_pre = g_pre; g_pre = &vpre;
     /* an empty `[]`/`{}` takes the slot's variant; its own inferred one
        comes from reads elsewhere, not from this slot (#4111) */
-    if (!emit_empty_literal_as(c, v, t, &vval))
+    if (t == TY_BIGINT && comp_ntype(c, v) != TY_BIGINT && ty_is_numeric(comp_ntype(c, v))) {
+      /* an Integer into a Bignum slot is promoted, as a plain ivar write does */
+      buf_puts(&vval, "sp_bigint_new_int("); emit_int_expr(c, v, &vval); buf_puts(&vval, ")");
+    }
+    else if (!emit_empty_literal_as(c, v, t, &vval))
       emit_array_store_value(c, t, v, &vval);   /* a seed-pinned kind converts */
     g_pre = saved_pre;
     if (t == TY_BOOL || t == TY_STRING)
@@ -1030,11 +1027,13 @@ void emit_slot_orw_value(Compiler *c, TyKind t, const char *ref, int v, int is_o
       snprintf(condb, sizeof condb, "%s %s= (sp_sym)-1", ref, is_or ? "=" : "!");
     else if (t == TY_CLASS)   /* a Class slot's nil is SP_CLASS_NIL (#5357) */
       snprintf(condb, sizeof condb, "%ssp_class_nil_p(%s)", is_or ? "" : "!", ref);
-    /* a pointer-backed slot (object/array/hash/fiber/proc/...) reads falsy
+    else if (t == TY_FLOAT)   /* a Float slot's nil is the SP_FLOAT_NIL bit pattern */
+      snprintf(condb, sizeof condb, "%ssp_float_is_nil(%s)", is_or ? "" : "!", ref);
+    /* a pointer-backed slot (object/array/hash/Bignum/fiber/proc/...) reads falsy
        when NULL, so `@x ||= v` is `if (!@x) @x = v` and `@x &&= v` is
        `if (@x) @x = v`. Falling through to a bare read dropped the init when
        this or-write was the RHS of a poly-receiver setter switch (#1447). */
-    else if (ty_is_object(t) || ty_is_array(t) || ty_is_hash(t) ||
+    else if (ty_is_object(t) || ty_is_array(t) || ty_is_hash(t) || t == TY_BIGINT ||
              t == TY_FIBER || t == TY_THREAD || t == TY_QUEUE || t == TY_MUTEX || t == TY_CONDVAR || t == TY_PROC || t == TY_IO ||
              t == TY_MATCHDATA || t == TY_EXCEPTION || t == TY_REGEX) {
       snprintf(condb, sizeof condb, "%s%s", is_or ? "!" : "", ref);
@@ -2780,19 +2779,9 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       }
       else if (sp_streq(vt, "ConstantReadNode")) {
         const char *cn = nt_str(nt, v, "name");
-        static const char *const builtins[] = {
-          "Object", "BasicObject", "Kernel", "Module", "Class", "Array", "Hash",
-          "String", "Integer", "Float", "Symbol", "Regexp", "Range", "NilClass",
-          "TrueClass", "FalseClass", "Numeric", "Comparable", "Enumerable",
-          "IO", "File", "Dir", "Math", "GC", "Process", "ENV", "ARGV",
-          "STDOUT", "STDERR", "STDIN", NULL
-        };
         if (cn) {
           if (comp_const(c, cn) || comp_class_index(c, cn) >= 0) res = "constant";
-          if (!res) {
-            for (int bi = 0; builtins[bi]; bi++)
-              if (sp_streq(cn, builtins[bi])) { res = "constant"; break; }
-          }
+          if (!res && comp_is_wellknown_const(cn)) res = "constant";
           /* exception classes are constants too (#2767) */
           if (!res && (is_builtin_exception_name(cn) || is_builtin_class_name(cn)))
             res = "constant";

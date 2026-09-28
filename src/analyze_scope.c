@@ -653,6 +653,20 @@ void collect_compiler_state(Compiler *c, int id, int class_id) {
   }
 }
 
+/* The literal name a receiverless `define_method(:m, ...)` call defines, else NULL. */
+static const char *dm_defined_name(const NodeTable *nt, int call) {
+  const char *nm = nt_str(nt, call, "name");
+  if (!nm || !sp_streq(nm, "define_method") || nt_ref(nt, call, "receiver") >= 0) return NULL;
+  int args = nt_ref(nt, call, "arguments");
+  int an = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an < 1) return NULL;
+  const char *aty = nt_type(nt, argv[0]);
+  if (aty && sp_streq(aty, "SymbolNode")) return nt_str(nt, argv[0], "value");
+  if (aty && sp_streq(aty, "StringNode")) return nt_str(nt, argv[0], "content");
+  return NULL;
+}
+
 /* If `id` is a receiverless `define_method(:lit) { }` that walk_scope will
    register as a method scope, return that literal method name; else NULL.
    walk_scope only registers when the name is a literal symbol/string AND a block
@@ -662,18 +676,8 @@ void collect_compiler_state(Compiler *c, int id, int class_id) {
    pure reopen -- which would no-op the whole call and drop it without a diagnostic. */
 static const char *dm_registerable_name(const NodeTable *nt, int id) {
   const char *ty = nt_type(nt, id);
-  if (!ty || !sp_streq(ty, "CallNode")) return NULL;
-  const char *nm = nt_str(nt, id, "name");
-  if (!nm || !sp_streq(nm, "define_method") || nt_ref(nt, id, "receiver") >= 0) return NULL;
-  if (nt_ref(nt, id, "block") < 0) return NULL;
-  int args = nt_ref(nt, id, "arguments");
-  int na = 0;
-  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &na) : NULL;
-  if (na < 1) return NULL;
-  const char *aty = nt_type(nt, argv[0]);
-  if (aty && sp_streq(aty, "SymbolNode")) return nt_str(nt, argv[0], "value");
-  if (aty && sp_streq(aty, "StringNode")) return nt_str(nt, argv[0], "content");
-  return NULL;
+  if (!ty || !sp_streq(ty, "CallNode") || nt_ref(nt, id, "block") < 0) return NULL;
+  return dm_defined_name(nt, id);
 }
 
 /* `Klass.class_eval { ... }` / `Klass.module_eval { ... }` (and the bare/`self.`
@@ -1246,6 +1250,8 @@ static void register_method_visibility_body(Compiler *c, ClassInfo *cls, int bod
     if (!sp_streq(sty, "CallNode") || nt_ref(nt, s, "receiver") >= 0) continue;
     const char *nm = nt_str(nt, s, "name");
     if (!nm) continue;
+    const char *dmn = dm_defined_name(nt, s);
+    if (dmn) { comp_method_vis_set(cls, dmn, cur); continue; }
     int kind = sp_streq(nm, "private")   ? SP_VIS_PRIVATE   :
                sp_streq(nm, "protected") ? SP_VIS_PROTECTED :
                sp_streq(nm, "public")    ? SP_VIS_PUBLIC : -1;
@@ -1264,7 +1270,9 @@ static void register_method_visibility_body(Compiler *c, ClassInfo *cls, int bod
             comp_method_vis_set(cls, dn, kind);
         }
         else if (aty && sp_streq(aty, "CallNode")) {
-          vis_apply_attr(c, cls, argv[i], kind);  /* private attr_reader :x */
+          const char *dn = dm_defined_name(nt, argv[i]);
+          if (dn) comp_method_vis_set(cls, dn, kind);  /* private define_method(:m) { } */
+          else vis_apply_attr(c, cls, argv[i], kind);  /* private attr_reader :x */
         }
       }
       continue;
@@ -1524,7 +1532,7 @@ void register_struct_members(Compiler *c, ClassInfo *cls, int val) {
         char siv[256]; snprintf(siv, sizeof siv, "@%s", sm);
         comp_ivar_intern(cls, siv);
         comp_add_reader(cls, sm);
-        comp_add_writer(cls, sm);
+        if (!cls->is_data) comp_add_writer(cls, sm);
       }
       continue;
     }
@@ -1534,7 +1542,8 @@ void register_struct_members(Compiler *c, ClassInfo *cls, int val) {
     char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", m);
     comp_ivar_intern(cls, ivn);
     comp_add_reader(cls, m);
-    comp_add_writer(cls, m);
+    /* a Data member is read-only: no `x=` to call, answer or list */
+    if (!cls->is_data) comp_add_writer(cls, m);
   }
 }
 
@@ -5873,6 +5882,15 @@ int infer_ivar_types(Compiler *c) {
       int old_ni = ci->nivars;
       int iv = comp_ivar_intern(ci, nm);
       if (ci->nivars != old_ni) changed = 1;  /* new ivar registered, need another pass */
+      /* `@x |= v`, `&=`, `^=` on a slot nothing has typed yet: the slot is nil
+         there, and NilClass#| answers true, #& false, #^ v's truthiness -- not
+         an Integer. Taking v's type made it an int slot, and `nil | 256` ORed
+         the nil sentinel's bits into a large negative number (#5470). */
+      if (sp_streq(ty, "InstanceVariableOperatorWriteNode") && ci->ivar_types[iv] == TY_UNKNOWN &&
+          !class_ivar_pinned(ci, nm)) {
+        const char *bo = nt_str(nt, id, "binary_operator");
+        if (bo && (sp_streq(bo, "|") || sp_streq(bo, "&") || sp_streq(bo, "^"))) vt = TY_POLY;
+      }
       /* For operator-write (@b += rhs), vt is the RHS type, not the result type.
          When the slot holds a user object, the result is the method's return type. */
       if (sp_streq(ty, "InstanceVariableOperatorWriteNode") && ty_is_object(ci->ivar_types[iv])) {

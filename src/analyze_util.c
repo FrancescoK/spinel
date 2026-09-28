@@ -2441,3 +2441,15 @@ int an_send_name_is_computed(Compiler *c, int arg) {
   }
   return 0;
 }
+
+int an_indexed_each_source(const NodeTable *nt, int recv) {
+  const char *rn = nt_str(nt, recv, "name");
+  if (rn && sp_streq(rn, "each_with_index")) return nt_ref(nt, recv, "receiver");
+  if (!rn || !sp_streq(rn, "with_index")) return -1;
+  int wir = nt_ref(nt, recv, "receiver");
+  if (wir >= 0 && nt_type(nt, wir) && sp_streq(nt_type(nt, wir), "CallNode") &&
+      nt_str(nt, wir, "name") && sp_streq(nt_str(nt, wir, "name"), "each") &&
+      nt_ref(nt, wir, "block") < 0)
+    return nt_ref(nt, wir, "receiver");
+  return -1;
+}

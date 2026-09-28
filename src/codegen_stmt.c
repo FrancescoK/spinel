@@ -5114,6 +5114,11 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
           else if (pt == TY_STRING && emit_when_string_range(c, conds[j], t, b)) {
             /* emitted the lexicographic cover check */
           }
+          /* an Integer Range never covers an Array or a Hash: evaluate the
+             arm for its effects and answer false */
+          else if (comp_ntype(c, conds[j]) == TY_RANGE && (ty_is_array(pt) || ty_is_hash(pt))) {
+            buf_printf(b, "((void)_t%d, (void)(", t); emit_expr(c, conds[j], b); buf_puts(b, "), 0)");
+          }
           else if (comp_ntype(c, conds[j]) == TY_RANGE && pt != TY_STRING) {
             /* `when lo..hi` is range membership, not equality */
             int tr = ++g_tmp;
@@ -5471,6 +5476,9 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
         else if (pt == TY_STRING && emit_when_string_range(c, conds[j], t, b)) {
           /* emitted the lexicographic cover check */
         }
+        else if (comp_ntype(c, conds[j]) == TY_RANGE && (ty_is_array(pt) || ty_is_hash(pt))) {
+          buf_printf(b, "((void)_t%d, (void)(", t); emit_expr(c, conds[j], b); buf_puts(b, "), 0)");
+        }
         else if (comp_ntype(c, conds[j]) == TY_RANGE && pt != TY_STRING) {
           int tr = ++g_tmp;
           buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, conds[j], b);
@@ -5644,12 +5652,25 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
     emit_indent(b, indent);
     buf_puts(b, "do {\n");
     emit_loop_body(c, body, b, indent + 1);
+    /* The guard's preludes (see below) run with it after every pass, inside
+       the condition, where a `next` (a C continue) lands too. Routed through
+       g_pre they ran once, ahead of the loop, and the guard never changed. */
+    Buf cpre;  memset(&cpre, 0, sizeof cpre);
+    Buf ccond; memset(&ccond, 0, sizeof ccond);
+    Buf *sv_pre = g_pre; int sv_ind = g_indent;
+    g_pre = &cpre; g_indent = indent + 1;
+    emit_cond(c, pred, &ccond);
+    g_pre = sv_pre; g_indent = sv_ind;
+    int has_pre = cpre.p && cpre.p[0];
     emit_indent(b, indent);
     buf_puts(b, "} while (");
+    if (has_pre) { buf_puts(b, "({\n"); buf_puts(b, cpre.p); emit_indent(b, indent + 1); }
     if (is_until) buf_puts(b, "!(");
-    emit_cond(c, pred, b);
+    buf_puts(b, ccond.p ? ccond.p : "0");
     if (is_until) buf_puts(b, ")");
+    if (has_pre) buf_puts(b, "; })");
     buf_puts(b, ");\n");
+    free(cpre.p); free(ccond.p);
     return;
   }
   /* Hoist a loop-invariant string length out of the loop: if the predicate
@@ -8491,6 +8512,9 @@ else {
         emitted_lit = emit_empty_literal_as(c, v, ivt2, &vval);
         if (!emitted_lit) emit_array_store_value(c, ivt2, v, &vval);   /* a seed-pinned kind converts */
       }
+      else if (ivt2 == TY_BIGINT && comp_ntype(c, v) != TY_BIGINT && ty_is_numeric(comp_ntype(c, v))) {
+        buf_puts(&vval, "sp_bigint_new_int("); emit_int_expr(c, v, &vval); buf_puts(&vval, ")");
+      }
       else emit_expr(c, v, &vval);
       g_pre = saved_pre;
     }
@@ -8499,10 +8523,11 @@ else {
     else if (ivt2 == TY_INT) snprintf(cond2, sizeof cond2, "%s %s= SP_INT_NIL", ref2, is_or ? "=" : "!");
     else if (ivt2 == TY_SYMBOL) snprintf(cond2, sizeof cond2, "%s %s= (sp_sym)-1", ref2, is_or ? "=" : "!");   /* nilable symbol: (sp_sym)-1 is the nil sentinel */
     else if (ivt2 == TY_CLASS) snprintf(cond2, sizeof cond2, "%ssp_class_nil_p(%s)", is_or ? "" : "!", ref2);
+    else if (ivt2 == TY_FLOAT) snprintf(cond2, sizeof cond2, "%ssp_float_is_nil(%s)", is_or ? "" : "!", ref2);   /* nil is SP_FLOAT_NIL */
     /* a pointer-backed ivar (fiber/proc/object/array/hash/...) reads falsy
        when NULL, so `@x ||= v` is `if (!@x) @x = v` (e.g. PPU's
        `@fiber ||= Fiber.new { ... }`). Without this the init was dropped. */
-    else if (ty_is_object(ivt2) || ty_is_array(ivt2) || ty_is_hash(ivt2) ||
+    else if (ty_is_object(ivt2) || ty_is_array(ivt2) || ty_is_hash(ivt2) || ivt2 == TY_BIGINT ||
              ivt2 == TY_FIBER || ivt2 == TY_THREAD || ivt2 == TY_QUEUE || ivt2 == TY_MUTEX || ivt2 == TY_CONDVAR || ivt2 == TY_PROC || ivt2 == TY_IO ||
              ivt2 == TY_MATCHDATA || ivt2 == TY_EXCEPTION || ivt2 == TY_REGEX)
       snprintf(cond2, sizeof cond2, "%s%s", is_or ? "!" : "", ref2);
@@ -8977,9 +9002,15 @@ else {
            value really is an instance of that class. An Integer in the same
            slot takes the numeric path, as it does everywhere else a poly
            receiver dispatches to a user arm (#3733). */
+        /* ...the bit and shift operators as well: with one user `|` in the
+           program an Integer slot was read as that class's object and the
+           program crashed (#5469) */
         const char *pnum = sp_streq(op, "+") ? "sp_poly_add" : sp_streq(op, "-") ? "sp_poly_sub"
                          : sp_streq(op, "*") ? "sp_poly_mul" : sp_streq(op, "/") ? "sp_poly_div"
-                         : sp_streq(op, "%") ? "sp_poly_mod" : NULL;
+                         : sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "|") ? "sp_poly_bor"
+                         : sp_streq(op, "&") ? "sp_poly_band" : sp_streq(op, "^") ? "sp_poly_bxor"
+                         : sp_streq(op, "<<") ? "sp_poly_shl" : sp_streq(op, ">>") ? "sp_poly_shr"
+                         : sp_streq(op, "**") ? "sp_poly_pow" : NULL;
         if (pnum) buf_printf(b, "%s = ((%s).tag == SP_TAG_OBJ && (%s).cls_id == %d) ? ",
                              ref, ref, ref, poly_defcls);
         else buf_printf(b, "%s = ", ref);
@@ -11218,13 +11249,7 @@ static int str_append_chain_base(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int cur = id;
   for (;;) {
-    while (nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "ParenthesesNode")) {
-      int pb = nt_ref(nt, cur, "body");
-      if (pb < 0) break;
-      int bn = 0; const int *bb = nt_arr(nt, pb, "body", &bn);
-      if (bn != 1) break;
-      cur = bb[0];
-    }
+    cur = unwrap_parens(c, cur);
     const char *cty = nt_type(nt, cur);
     if (!cty || !sp_streq(cty, "CallNode")) return cur;
     const char *cnm = nt_str(nt, cur, "name");
@@ -12082,13 +12107,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
   if ((sp_streq(name, "<<") || sp_streq(name, "concat")) && argc == 1) {
     int chain[64]; int nchain = 0; int cur = id;
     while (nchain < 64) {
-      while (nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "ParenthesesNode")) {
-        int pb = nt_ref(nt, cur, "body");
-        if (pb < 0) break;
-        int bn = 0; const int *bb = nt_arr(nt, pb, "body", &bn);
-        if (bn != 1) break;
-        cur = bb[0];
-      }
+      cur = unwrap_parens(c, cur);
       const char *cty = nt_type(nt, cur);
       if (!cty || !sp_streq(cty, "CallNode")) break;
       const char *cnm = nt_str(nt, cur, "name");

@@ -73,13 +73,6 @@ static int g_inline_depth = 0;
    The alias is a pointer to the caller's slot, declared under the callee's
    renamed cell name, and the parameter's is_cell is held at 1 while the
    expansion is emitted so the body reads and writes through it. */
-static int inline_str_mutator_name(const char *nm) {
-  size_t l = nm ? strlen(nm) : 0;
-  if (!l) return 0;
-  return sp_streq(nm, "<<") || sp_streq(nm, "concat") || sp_streq(nm, "replace") ||
-         sp_streq(nm, "prepend") || sp_streq(nm, "insert") || sp_streq(nm, "clear") ||
-         sp_streq(nm, "[]=") || (l > 1 && nm[l - 1] == '!');
-}
 /* Does scope mi's body rebind `name`? 0 = never; 1 = only by plain
    assignment (`io = String.new(...)`), which the alias survives: the store
    repoints the cell at a private local, so the caller's variable keeps what
@@ -112,7 +105,7 @@ static int inline_param_mutated(Compiler *c, int mi, const char *name) {
     int r = nt_ref(nt, q, "receiver");
     if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode) {
       const char *rn = nt_str(nt, r, "name");
-      if (rn && sp_streq(rn, name) && inline_str_mutator_name(nt_str(nt, q, "name"))) return 1;
+      if (rn && sp_streq(rn, name) && an_str_mutator_name(nt_str(nt, q, "name"))) return 1;
     }
     int aa = nt_ref(nt, q, "arguments"); int an = 0;
     const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &an) : NULL;
@@ -134,7 +127,7 @@ static int subtree_mutates_local(const NodeTable *nt, int id, const char *name) 
     int r = nt_ref(nt, id, "receiver");
     if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode) {
       const char *rn = nt_str(nt, r, "name");
-      if (rn && sp_streq(rn, name) && inline_str_mutator_name(nt_str(nt, id, "name"))) return 1;
+      if (rn && sp_streq(rn, name) && an_str_mutator_name(nt_str(nt, id, "name"))) return 1;
     }
   }
   int nr = nt_num_refs(nt, id);
@@ -274,8 +267,9 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
      `opts` kept its default and every `assert_select(sel, count: 0)` in a
      yielding helper asserted presence instead (#4436). */
   int kwh_slot = kwh_positional_slot(c, m, kwh, pos_argc);
+  int rest_argc = rest_bind_argc(c, m, kwh, pos_argc);
   int gather_tmp = -1;
-  if (splat_gather && !fwd_encl) gather_tmp = emit_splat_gather(c, m, argv, pos_argc);
+  if (splat_gather && !fwd_encl) gather_tmp = emit_splat_gather(c, m, argv, pos_argc, kwh);
   ren_unpark(&park0);
   for (int i = 0; i < m->nparams; i++) {
     emit_indent(b, din);
@@ -314,13 +308,13 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
        A keyword hash no parameter takes is its last element, as on the other
        call paths; it was dropped here, `rs(a: 1) { }` binding `[]`. */
     else if (m->rest_idx >= 0 && i == m->rest_idx)
-      emit_rest_pack_kwh(c, i, pos_argc - m->npost_rest, argv,
+      emit_rest_pack_kwh(c, i, rest_argc - m->npost_rest, argv,
                          rest_kwh_tail(c, m, kwh, pos_argc), b);
     else if (m->rest_idx >= 0 && i > m->rest_idx && i <= m->rest_idx + m->npost_rest) {
       int post_j = i - m->rest_idx - 1;   /* 0-based index among the posts */
-      int argv_idx = pos_argc - m->npost_rest + post_j;
+      int argv_idx = rest_argc - m->npost_rest + post_j;
       emit_arg_or_default(c, m, i,
-                          (argv && argv_idx >= 0 && argv_idx < pos_argc) ? argv[argv_idx] : -1, b);
+                          (argv && argv_idx >= 0 && argv_idx < rest_argc) ? argv[argv_idx] : -1, b);
     }
     /* Anything past the rest that is not one of its posts is a keyword (or
        **kwrest) param: it binds by name, never positionally. */

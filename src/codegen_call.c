@@ -267,6 +267,18 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   const char *last_ty = argc2 > 0 ? nt_type(nt, argv2[argc2 - 1]) : NULL;
   int kwh = (last_ty && sp_streq(last_ty, "KeywordHashNode")) ? argv2[argc2 - 1] : -1;
   int pos_argc = kwh >= 0 ? argc2 - 1 : argc2;
+  int rest_argc = rest_bind_argc(c, m, kwh, pos_argc);
+  /* a `**` hash that may be no argument: every parameter from the gather,
+     call-site code like each argument below */
+  int gather_tmp = -1;
+  if (kwh_gathers(c, m, kwh, pos_argc)) {
+    RenPark park = ren_park(saved_nren);
+    const char *svs = g_self, *svd = g_self_deref;
+    g_self = saved_self; g_self_deref = saved_self_deref;
+    gather_tmp = emit_splat_gather(c, m, argv2, pos_argc, kwh);
+    g_self = svs; g_self_deref = svd;
+    ren_unpark(&park);
+  }
   InlDflt sv_dflt = inl_dflt_enter(m, g_nren, selfbuf, g_self_deref, ci);
   for (int i = 0; i < m->nparams; i++) {
     emit_indent(b, din);
@@ -301,14 +313,15 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
     /* A rest param collects the middle arguments into an Array rather than
        taking one of them straight into its slot, a keyword hash no parameter
        takes included. */
-    if (m->rest_idx >= 0 && i == m->rest_idx)
-      emit_rest_pack_kwh(c, i, pos_argc - m->npost_rest, argv2,
+    if (gather_tmp >= 0) emit_gathered_param(c, m, i, gather_tmp, b);
+    else if (m->rest_idx >= 0 && i == m->rest_idx)
+      emit_rest_pack_kwh(c, i, rest_argc - m->npost_rest, argv2,
                          rest_kwh_tail(c, m, kwh, pos_argc), b);
     else if (m->rest_idx >= 0 && i > m->rest_idx && i <= m->rest_idx + m->npost_rest) {
       int post_j = i - m->rest_idx - 1;   /* 0-based index among the posts */
-      int argv_idx = pos_argc - m->npost_rest + post_j;
+      int argv_idx = rest_argc - m->npost_rest + post_j;
       emit_arg_or_default(c, m, i,
-                          (argv2 && argv_idx >= 0 && argv_idx < pos_argc) ? argv2[argv_idx] : -1, b);
+                          (argv2 && argv_idx >= 0 && argv_idx < rest_argc) ? argv2[argv_idx] : -1, b);
     }
     else emit_arg_or_default(c, m, i, provided, b);
     g_self = svs; g_self_deref = svd;
@@ -8651,7 +8664,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         else if (self2_struct) g_self_deref = "->";
         int r_idx = ms->rest_idx;
         int npost = ms->npost_rest;
-        int rest_end = pos_argc - npost;   /* where the *rest collection stops */
+        int rest_end = rest_bind_argc(c, ms, kwh, pos_argc) - npost;   /* where the *rest collection stops */
         /* A default reading an earlier parameter (`def g(u, v = u.upcase)`)
            is evaluated in the callee, where that parameter is bound. This arm
            spells each argument inline, so the default read the callee's
@@ -8672,11 +8685,38 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            every arm and read the arm's `_pd` locals before any declared them. */
         Buf *sv_arm_pre = g_pre;
         g_pre = &pdpre;
+        /* a `**` hash that may be no argument: this arm binds every parameter
+           from the call's temps gathered, the hash last when it is not empty.
+           A hash this split did not take as keywords is the last temp. */
+        int gather_arm = -1;
+        int gkwh = argv[argc - 1], gpos = argc - 1;
+        if (splat_a < 0 && kwh_gathers(c, ms, gkwh, gpos)) {
+          gather_arm = ++g_tmp;
+          buf_printf(&pdpre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", gather_arm, gather_arm);
+          for (int a2 = 0; a2 <= gpos; a2++) {
+            char tn[32]; snprintf(tn, sizeof tn, "_t%d", a2 < gpos || kwall < 0 ? atmp[a2] : kwall);
+            TyKind gty = a2 < gpos || kwall < 0 ? atmp_ty[a2] : TY_SYM_POLY_HASH;
+            Buf eb; memset(&eb, 0, sizeof eb);
+            if (gty == TY_POLY) buf_puts(&eb, tn);
+            else emit_boxed_text(c, gty, tn, &eb);
+            if (a2 < gpos)
+              buf_printf(&pdpre, " sp_PolyArray_push(_t%d, %s);", gather_arm, eb.p ? eb.p : "sp_box_nil()");
+            else {
+              int kt = ++g_tmp;
+              buf_printf(&pdpre, " sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);"
+                                 " if (sp_poly_length(_t%d) > 0) sp_PolyArray_push(_t%d, _t%d);\n",
+                         kt, eb.p ? eb.p : "sp_box_nil()", kt, kt, gather_arm, kt);
+            }
+            free(eb.p);
+          }
+          emit_gather_arity_check(c, ms, gather_arm);
+        }
         for (int a = 0; a < mnp; a++) {
           buf_puts(&cb, ", ");
           Buf pa; memset(&pa, 0, sizeof pa);
           const char *pnm = ms->pnames ? ms->pnames[a] : NULL;
           do {
+          if (gather_arm >= 0) { emit_gathered_param(c, ms, a, gather_arm, &pa); continue; }
           /* a **kwrest param collects the keywords no declared keyword param
              consumed (#3268), and is an empty hash when the call passed none;
              a declared keyword binds by NAME, unmatched ones taking the
@@ -11012,7 +11052,7 @@ static void emit_raise_class_value(Compiler *c, int kn, int mn, Buf *b) {
     Scope *is = &c->scopes[initm];
     char am[256];
     if (ctor_arity_error(c, ci, initm, argc, am, sizeof am)) { ctor_arity_add(&aerr, ci, am); continue; }
-    if (is->yields || ctor_needs_self_defaults(c, initm, argc)) continue;
+    if ((is->yields && ctor_init_proc_form(c, ci) < 0) || ctor_needs_self_defaults(c, initm, argc)) continue;
     if (ctor_arm_remaps(c, is) ? !ctor_arm_takes(c, is, argc)
                                : argc < is->nrequired || argc > is->nparams) continue;
     int pd_uid = default_refs_earlier_param(c, is) ? ++g_tmp : 0, pd_base = g_nren;
@@ -11237,8 +11277,12 @@ static void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Bu
     Buf *sv_pre = g_pre; g_pre = &apre;
     /* An initialize that takes no keywords, reached with `**h`: the layout
        drops the splat, which is right only when h is empty. A non-empty one
-       is one argument too many, CRuby's ArgumentError (#4849). */
-    if (!init_takes_keywords(c, initm)) {
+       is one argument too many, CRuby's ArgumentError (#4849) -- unless a
+       positional parameter takes it, which the layout judges itself
+       (kwh_gathers). */
+    int lkwh = argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+    if (!init_takes_keywords(c, initm) &&
+        !kwh_gathers(c, &c->scopes[initm], lkwh, lkwh >= 0 ? argc - 1 : argc)) {
       int npos = 0, nreq = 0, nopt = 0;
       for (int a = 0; a < argc; a++) {
         NodeKind ak = nt_kind(nt, argv[a]);
@@ -11670,6 +11714,66 @@ static int sym_name_plain(const char *s) {
   return 1;
 }
 
+/* True when the literal keywords of `kwh` into the Data or Struct `cls`
+   bind only at run time, from the constructor's merged hash: a key that is
+   not a Symbol names its member there -- a String by name, a Struct's
+   other key by index -- and a member's key written twice binds its last
+   value, every value evaluated in source order, as CRuby binds them. */
+static int struct_kw_binds_late(Compiler *c, ClassInfo *cls, int kwh) {
+  const NodeTable *nt = c->nt;
+  int n = 0; const int *el = nt_arr(nt, kwh, "elements", &n);
+  for (int e = 0; e < n; e++) {
+    if (nt_kind(nt, el[e]) != NK_AssocNode) continue;
+    int key = nt_ref(nt, el[e], "key");
+    if (nt_kind(nt, key) != NK_SymbolNode) return 1;
+    const char *kn = nt_str(nt, key, "value");
+    char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", kn);
+    if (comp_ivar_index(cls, ivn) < 0) continue;
+    for (int e2 = e + 1; e2 < n; e2++) {
+      int k2 = nt_ref(nt, el[e2], "key");
+      if (nt_kind(nt, el[e2]) == NK_AssocNode && nt_kind(nt, k2) == NK_SymbolNode &&
+          sp_streq(nt_str(nt, k2, "value"), kn)) return 1;
+    }
+  }
+  return 0;
+}
+/* The keywords of a Data or Struct construction, `kwh`, merged in source
+   order into one hash that takes any key (emit_ds_hash_merge), boxed into
+   a rooted temp: its id. */
+static int emit_struct_kw_hash(Compiler *c, int kwh) {
+  TyKind mty; int mh = emit_ds_hash_merge(c, kwh, 1, &mty);
+  char mhn[32]; snprintf(mhn, sizeof mhn, "_t%d", mh);
+  int ht = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_RbVal _t%d = ", ht);
+  emit_boxed_text(c, mty, mhn, g_pre);
+  buf_printf(g_pre, "; SP_GC_ROOT_RBVAL(_t%d);\n", ht);
+  return ht;
+}
+/* The keyword hash in temp `ht` checked against the members of `cls` as
+   CRuby checks it (sp_kw_splat_check), which leaves in `ht` the hash the
+   members read. With `kwh`, a member one of its literal keys names is
+   given; with -1 every key is in the hash. */
+static void emit_struct_kw_check(Compiler *c, ClassInfo *cls, int ht, int kwh) {
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "_t%d = sp_kw_splat_check(_t%d, (const char *const[]){", ht, ht);
+  for (int a = 0; a < cls->nivars; a++) buf_printf(g_pre, "%s\"%s\"", a ? ", " : "", cls->ivars[a] + 1);
+  if (cls->nivars == 0) buf_puts(g_pre, "\"\"");
+  buf_puts(g_pre, "}, ");
+  buf_printf(g_pre, "%d, (const unsigned char[]){", cls->nivars);
+  for (int a = 0; a < cls->nivars; a++)
+    buf_printf(g_pre, "%s%d", a ? ", " : "", kwh >= 0 && struct_kwarg_value(c, kwh, cls->ivars[a] + 1) >= 0);
+  if (cls->nivars == 0) buf_puts(g_pre, "0");
+  buf_printf(g_pre, "}, %d);\n", cls->is_data ? 1 : 0);
+}
+/* Member `a` of `cls` read out of the keyword hash in temp `ht`, in the
+   type every key that may name it brings (struct_new_types_members): nil
+   when no key names it or the last one is nil. */
+static void emit_struct_kw_member(Compiler *c, ClassInfo *cls, int a, int ht, Buf *b) {
+  char gv[256];
+  snprintf(gv, sizeof gv, "sp_kw_member_val(_t%d, \"%s\")", ht, cls->ivars[a] + 1);
+  emit_unbox_nilable_text(c, cls->ivar_types[a], gv, b);
+}
 static int emit_class_new_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -11891,7 +11995,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
            member none names, are known only at run time, where CRuby names a
            missing member ahead of an unknown key: such a key goes into the
            merged hash the run-time check judges (below), as does a literal
-           key that is not a Symbol. */
+           key that is not a Symbol (struct_kw_binds_late). */
         int nunk = 0, nonsym = 0;
         if (kwh >= 0 && cls->kw_init != -1) {
           int data_words = cls->is_data;
@@ -11918,7 +12022,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             unames[nunk] = kn;
             buf_printf(&unk, "%s%s%s", nunk++ ? ", " : "", data_words ? ":" : "", kn);
           }
-          if (nunk && !kw_splat) {
+          if (nunk && !kw_splat && !nonsym) {
             buf_puts(b, "({ ");
             for (int e2 = 0; e2 < nke; e2++) {
               /* a computed key runs before its value, as in CRuby */
@@ -11973,6 +12077,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           }
           free(unk.p); free(unames);
         }
+        int late = kwh >= 0 && cls->kw_init != -1 && struct_kw_binds_late(c, cls, kwh);
         /* `X.new(*arr)`: a sole positional splat spreads the array across the
            members at run time -- static arity can't see the count, so it would
            otherwise raise ArgumentError. Data requires an exact count; Struct
@@ -11991,13 +12096,14 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         /* Data.new validates its arguments strictly (unlike Struct, which
            nil-fills): exact positional count, or a keyword for every member and
            no extras; a mix of positional and keyword is an error. A `**splat`
-           has non-literal keys, so its check is deferred to run time (#2661). */
+           has non-literal keys, so its check is deferred to run time (#2661),
+           as is that of the other keywords the merged hash below takes. */
         if (cls->is_data) {
           int mixed = 0;
           for (int a = 0; kwh < 0 && a < argc; a++)
             if (nt_type(nt, argv[a]) && sp_streq(nt_type(nt, argv[a]), "KeywordHashNode")) mixed = 1;
           int bad = 0;
-          if (!kw_splat) {
+          if (!kw_splat && !late) {
             if (kwh < 0) bad = mixed || argc != cls->nivars;
             else {
               int present = 0;
@@ -12104,10 +12210,15 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             return 1;
           }
         }
+        /* A Struct's trailing `**` spreads alone are one more positional
+           member when they hold a key at run time and none when they are
+           empty: `S.new(1, **{})` is `S.new(1)`. */
+        int spread_tail = kwh < 0 && argc > 1 && !cls->is_data && cls->kw_init != 1 &&
+                          kwh_only_spreads(nt, argv[argc - 1]);
         /* more positional args than members is a struct-size ArgumentError
            (fewer are allowed for Struct: nil fill); evaluate args first for
            any side effects, then raise before constructing */
-        if (kwh < 0 && argc > cls->nivars) {
+        if (kwh < 0 && argc > cls->nivars && !(spread_tail && argc - 1 == cls->nivars)) {
           buf_puts(b, "({ ");
           for (int a2 = 0; a2 < argc; a2++) { buf_puts(b, "(void)("); emit_boxed(c, argv[a2], b); buf_puts(b, "); "); }
           buf_puts(b, "sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"struct size differs\")[1])); ");
@@ -12145,22 +12256,15 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
            judges with the hash's own, and those of a keyword_init: false
            Struct, whose first member the merged hash is. That hash takes any
            key: a String one names a member as a Symbol does (the members
-           read sp_kw_member_val), and a keyword_init: false Struct keeps it. */
+           read sp_kw_member_val), and a keyword_init: false Struct keeps it.
+           Literal keywords alone merge too when they bind late. */
         int splat_tmp = -1;
         int *lit_tmp = NULL;
-        int merged = splat_h >= 0 && (cls->kw_init == -1 || nunk || nonsym || kwh_sources_overlap(nt, kwh));
-        if (splat_h >= 0) {
+        int merged = (splat_h >= 0 && (cls->kw_init == -1 || nunk || kwh_sources_overlap(nt, kwh))) || late;
+        if (splat_h >= 0 || merged) {
           lit_tmp = malloc(sizeof(int) * (size_t)(cls->nivars > 0 ? cls->nivars : 1));
           for (int a = 0; a < cls->nivars; a++) lit_tmp[a] = -1;
-          if (merged) {
-            TyKind mty; int mh = emit_ds_hash_merge(c, kwh, 1, &mty);
-            char mhn[32]; snprintf(mhn, sizeof mhn, "_t%d", mh);
-            splat_tmp = ++g_tmp;
-            emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "sp_RbVal _t%d = ", splat_tmp);
-            emit_boxed_text(c, mty, mhn, g_pre);
-            buf_printf(g_pre, "; SP_GC_ROOT_RBVAL(_t%d);\n", splat_tmp);
-          }
+          if (merged) splat_tmp = emit_struct_kw_hash(c, kwh);
           int nkp; const int *elsp = nt_arr(nt, kwh, "elements", &nkp);
           for (int i = 0; i < nkp && !merged; i++) {
             int vv = nt_ref(nt, elsp[i], "value");
@@ -12180,19 +12284,12 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
               lit_tmp[a] = emit_struct_member_temp(c, cls, a, vv);
             }
           }
-          if (cls->is_data || cls->kw_init != -1) {
-            emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "sp_kw_splat_check(_t%d, (const char *const[]){", splat_tmp);
-            for (int a = 0; a < cls->nivars; a++) buf_printf(g_pre, "%s\"%s\"", a ? ", " : "", cls->ivars[a] + 1);
-            if (cls->nivars == 0) buf_puts(g_pre, "\"\"");
-            buf_puts(g_pre, "}, ");
-            buf_printf(g_pre, "%d, (const unsigned char[]){", cls->nivars);
-            for (int a = 0; a < cls->nivars; a++)
-              buf_printf(g_pre, "%s%d", a ? ", " : "", !merged && struct_kwarg_value(c, kwh, cls->ivars[a] + 1) >= 0);
-            if (cls->nivars == 0) buf_puts(g_pre, "0");
-            buf_printf(g_pre, "}, %d);\n", cls->is_data ? 1 : 0);
-          }
+          if (cls->is_data || cls->kw_init != -1) emit_struct_kw_check(c, cls, splat_tmp, merged ? -1 : kwh);
         }
+        /* the spreads past the last member: evaluated after the members,
+           and too many arguments when they hold a key */
+        int spread_over = spread_tail && argc - 1 == cls->nivars ? ++g_tmp : -1;
+        if (spread_over >= 0) buf_printf(b, "({ sp_%s *_t%d = ", cls->c_name, spread_over);
         buf_printf(b, "sp_%s_new(", cls->c_name);
         for (int a = 0; a < cls->nivars; a++) {
           if (a) buf_puts(b, ", ");
@@ -12200,6 +12297,25 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           if (kwh >= 0) vnode = merged ? -1 : struct_kwarg_value(c, kwh, cls->ivars[a] + 1);
           else if (a < argc) vnode = argv[a];
           if (lit_tmp && lit_tmp[a] >= 0) buf_printf(b, "_t%d", lit_tmp[a]);
+          else if (spread_tail && a == argc - 1) {
+            /* the spread hash, or nil when it came out empty */
+            Buf kb; memset(&kb, 0, sizeof kb);
+            if (emit_kwh_spread_arg(c, vnode, &kb)) {
+              int kt = ++g_tmp;
+              char hv[64];
+              snprintf(hv, sizeof hv, "(sp_poly_length(_t%d) ? _t%d : sp_box_nil())", kt, kt);
+              Buf mv; memset(&mv, 0, sizeof mv);
+              buf_printf(&mv, "({ sp_RbVal _t%d = %s; ", kt, kb.p ? kb.p : "sp_box_nil()");
+              emit_unbox_text(c, cls->ivar_types[a], hv, &mv);
+              buf_puts(&mv, "; })");
+              if (arg_wants_root(c, cls->ivar_types[a], -1))
+                emit_rooted_operand(c, cls->ivar_types[a], -1, mv.p, b);
+              else buf_puts(b, mv.p);
+              free(mv.p);
+            }
+            else buf_puts(b, default_value(cls->ivar_types[a]));
+            free(kb.p);
+          }
           else if (vnode >= 0) {
             /* Hoist a heap-backed member value into a rooted temp: a sibling
                member expression evaluated after it can collect (`Outer.new(
@@ -12213,7 +12329,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             else buf_puts(b, mv.p ? mv.p : "");
             free(mv.p);
           }
-          else if (splat_h >= 0 && cls->kw_init == -1) {
+          else if (splat_tmp >= 0 && cls->kw_init == -1) {
             /* the merged hash, or nil when no keyword came (`**{}`, `**nil`),
                and nil for the members after it */
             char hv[128];
@@ -12221,16 +12337,19 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             if (a == 0) emit_unbox_text(c, cls->ivar_types[a], hv, b);
             else buf_puts(b, default_value(cls->ivar_types[a]));
           }
-          else if (splat_h >= 0) {
-            /* a member a merged literal key supplies keeps that key's type */
-            char gv[256];
-            snprintf(gv, sizeof gv, "sp_kw_member_val(_t%d, \"%s\")",
-                     splat_tmp, cls->ivars[a] + 1);
-            emit_unbox_text(c, cls->ivar_types[a], gv, b);
-          }
+          else if (splat_tmp >= 0) emit_struct_kw_member(c, cls, a, splat_tmp, b);
           else buf_puts(b, default_value(cls->ivar_types[a]));
         }
         buf_puts(b, ")");
+        if (spread_over >= 0) {
+          Buf kb; memset(&kb, 0, sizeof kb);
+          buf_puts(b, "; ");
+          if (emit_kwh_spread_arg(c, argv[argc - 1], &kb))
+            buf_printf(b, "if (sp_poly_length(%s) > 0) sp_raise_cls(\"ArgumentError\","
+                          " (&(\"\\xff\" \"struct size differs\")[1])); ", kb.p);
+          buf_printf(b, "_t%d; })", spread_over);
+          free(kb.p);
+        }
         free(lit_tmp);
         return 1;
       }
@@ -12238,6 +12357,9 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         /* user exception subclass: use the generated constructor */
         if (class_is_exc_subclass(c, ci)) {
           int initm = comp_method_in_chain(c, ci, "initialize", NULL);
+          /* a yielding initialize takes this site's block the way any class's does */
+          if (initm >= 0 && c->scopes[initm].yields && nt_ref(nt, id, "block") >= 0 &&
+              (emit_ctor_yield_inline(c, id, ci, b) || emit_ctor_new_with_proc(c, id, ci, b))) return 1;
           if (initm >= 0) {
             /* user initialize: sp_ClassName_new(args) calls initialize which calls super(msg) */
             buf_printf(b, "sp_%s_new(", c->classes[ci].c_name);
@@ -14239,6 +14361,20 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
       /* emit_str_expr coerces both a TY_POLY operand (sp_poly_to_s) and the
          unresolved-call gate's sp_raise_nomethod(...) (which is sp_RbVal, not a
          const char*) to a C string, so a raise-all operand type-checks (#2457). */
+      /* `str + "lit"`: the literal cannot allocate and its byte length is
+         known here, so only the receiver needs evaluating (sp_str_plus_lit
+         roots it across its own allocation). */
+      {
+        const char *lt = nt_type(nt, argv[0]);
+        if (lt && sp_streq(lt, "StringNode")) {
+          const char *sc = nt_str(nt, argv[0], "content");
+          buf_puts(b, "sp_str_plus_lit(");
+          emit_str_expr(c, recv, b); buf_puts(b, ", ");
+          emit_expr(c, argv[0], b);
+          buf_printf(b, ", %zu)", sc ? nt_str_len(nt, argv[0], "content") : (size_t)0);
+          return 1;
+        }
+      }
       if (subtree_may_allocate(nt, recv) || subtree_may_allocate(nt, argv[0])) {
         int ta = ++g_tmp, tb = ++g_tmp;
         buf_printf(b, "({ const char *_t%d = ", ta); emit_str_expr(c, recv, b);
@@ -19603,6 +19739,19 @@ static int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
   if (dispatch_cid < 0) return 0;
   if (comp_reader_in_chain(c, dispatch_cid, name, NULL)) {
     const char *rn = comp_resolve_alias(c, dispatch_cid, name);
+    /* A shared-mutable slot reads out as a GC copy, as the reader with an
+       explicit receiver reads it: the raw handle in a plain string context
+       (`v.dup`, `v.upcase` in the class's own method) did not build. A call
+       marked to hand out the handle keeps it. */
+    char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", rn);
+    int ivi = comp_ivar_index(&c->classes[dispatch_cid], ivn);
+    if (ivi >= 0 && c->classes[dispatch_cid].ivar_types[ivi] == TY_STRBUF &&
+        !(id < c->node_cap && (c->strbuf_box[id] || c->strbuf_handle_demand[id]))) {
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_String *_t%d = %s%siv_%s; _t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; })",
+                 tv, g_self, g_self_deref, iv_c(rn), tv, tv);
+      return 1;
+    }
     buf_printf(b, "%s%siv_%s", g_self, g_self_deref, iv_c(rn));
     return 1;
   }
@@ -25377,6 +25526,20 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* ARGF pseudo-IO methods: read the ARGV files (or stdin) in sequence. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_ARGF) {
     if (sp_streq(name, "read")) { buf_puts(b, "sp_argf_read()"); return; }
+    /* `chomp:` read as IO#gets reads it (emit_gets_sep_args): the flag
+       first, then the line, whose ending "\n" or "\r\n" goes when the flag
+       holds (a last line without "\n" keeps its "\r") */
+    int chomp_kw = argc == 1 && nt_kind(nt, argv[0]) == NK_KeywordHashNode
+                   ? struct_kwarg_value(c, argv[0], "chomp") : -1;
+    if ((sp_streq(name, "gets") || sp_streq(name, "readline")) && chomp_kw >= 0) {
+      int tf = ++g_tmp, tl = ++g_tmp;
+      buf_printf(b, "({ int _t%d = ", tf);
+      emit_kw_flag(c, chomp_kw, b);
+      buf_printf(b, "; const char *_t%d = sp_argf_gets(); SP_GC_ROOT_STR(_t%d);"
+                    " _t%d && _t%d && sp_str_byte_len(_t%d) > 0 && _t%d[sp_str_byte_len(_t%d) - 1] == '\\n'"
+                    " ? sp_str_chomp(_t%d) : _t%d; })", tl, tl, tl, tf, tl, tl, tl, tl, tl);
+      return;
+    }
     if (sp_streq(name, "gets") || sp_streq(name, "readline")) { buf_puts(b, "sp_argf_gets()"); return; }
     if (sp_streq(name, "readlines") || sp_streq(name, "to_a")) { buf_puts(b, "sp_argf_readlines()"); return; }
     if (sp_streq(name, "filename") || sp_streq(name, "path")) { buf_puts(b, "sp_argf_filename()"); return; }
@@ -26026,8 +26189,11 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "autoclose?") && argc == 0) {
       buf_printf(b, "sp_File_autoclose_p(%s)", r); free(rb.p); return;
     }
+    /* a closed handle raises, as CRuby's pid checks the stream first */
     if (sp_streq(name, "pid") && argc == 0) {
-      buf_printf(b, "({ (void)%s; sp_box_nil(); })", r); free(rb.p); return;
+      int tp = ++g_tmp;
+      buf_printf(b, "({ sp_File *_t%d = %s; SP_IO_OPEN(_t%d); sp_box_nil(); })", tp, r, tp);
+      free(rb.p); return;
     }
     if (sp_streq(name, "to_i") && argc == 0) {
       buf_printf(b, "sp_File_fileno(%s)", r); free(rb.p); return;
@@ -27198,9 +27364,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       }
       else {
         /* an Array, Hash, Range or Symbol has no to_int: CRuby's TypeError,
-           not the value reinterpreted as an integer (#3717) */
+           not the value reinterpreted as an integer (#3717); nil, true and
+           false name themselves, as sp_convert_src_name spells them for the
+           boxed path */
         buf_puts(b, "((void)("); emit_expr(c, av[0], b);
-        buf_puts(b, "), sp_raise_cls(\"TypeError\", sp_sprintf(\"can't convert %s into Integer\", sp_poly_class_name(");
+        buf_puts(b, "), sp_raise_cls(\"TypeError\", sp_sprintf(\"can't convert %s into Integer\", sp_convert_src_name(");
         emit_boxed(c, av[0], b);
         buf_puts(b, "))), (sp_int)0)");
       }
@@ -27251,7 +27419,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         /* a Boolean, Symbol, Array or Hash has no #to_f: CRuby's TypeError,
            not the value reinterpreted as a double (#3888) */
         buf_puts(b, "((void)("); emit_expr(c, av[0], b);
-        buf_puts(b, "), sp_raise_cls(\"TypeError\", sp_sprintf(\"can't convert %s into Float\", sp_poly_class_name(");
+        buf_puts(b, "), sp_raise_cls(\"TypeError\", sp_sprintf(\"can't convert %s into Float\", sp_convert_src_name(");
         emit_boxed(c, av[0], b);
         buf_puts(b, "))), 0.0)");
       }
@@ -27734,6 +27902,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (xc >= 0 && ic >= 0 && c->scopes[ic].reachable) {
         buf_printf(b, "sp_raise_exc((sp_Exception *)sp_%s_new(", c->classes[xc].c_name);
         emit_args_filled(c, ic, -1, "", b);
+        if (ctor_init_takes_block(c, ic)) buf_puts(b, c->scopes[ic].nparams > 0 ? ", NULL" : "NULL");
         buf_puts(b, "))");
       }
       else if ((xc >= 0 && !class_is_exc_subclass(c, xc)) ||
@@ -27775,6 +27944,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           buf_puts(b, ", ");
           emit_arg_or_default(c, im, pk, -1, b);
         }
+        if (ctor_init_takes_block(c, ic)) buf_puts(b, ", NULL");
         buf_puts(b, "))");
       }
       else if ((xc >= 0 && !class_is_exc_subclass(c, xc)) ||
@@ -28406,6 +28576,14 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             if (kwh_has_splat(nt, kwh)) kwf_mh = emit_ds_hash_merge(c, kwh, 1, &mty);
             kwh = -1;
           }
+          /* keywords beside a `**`, or binding late, merge into one hash the
+             members read and the run-time check judges, as in the receiver
+             path */
+          int kw_ht = -1;
+          if (kwh >= 0 && (kwh_has_splat(nt, kwh) || struct_kw_binds_late(c, ncls, kwh))) {
+            kw_ht = emit_struct_kw_hash(c, kwh);
+            emit_struct_kw_check(c, ncls, kw_ht, -1);
+          }
           buf_printf(b, "sp_%s_new(", ncls->c_name);
           for (int a = 0; a < ncls->nivars; a++) {
             if (a) buf_puts(b, ", ");
@@ -28419,6 +28597,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
               if (a == 0) emit_unbox_text(c, ncls->ivar_types[a], hv, b);
               else buf_puts(b, default_value(ncls->ivar_types[a]));
             }
+            else if (kw_ht >= 0) emit_struct_kw_member(c, ncls, a, kw_ht, b);
             else if (vnode >= 0) {
               if (ncls->ivar_types[a] == TY_POLY && comp_ntype(c, vnode) != TY_POLY) emit_boxed(c, vnode, b);
               /* and the reverse: a poly value into a concrete member slot

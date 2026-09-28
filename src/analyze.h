@@ -35,6 +35,8 @@ void analyze_program(Compiler *c);
    nested arrays for capturing patterns, which the str_array path can't model. */
 int an_re_has_captures(const char *src);
 int an_send_name_is_computed(Compiler *c, int arg);
+int an_str_mutator_name(const char *nm);
+int an_indexed_each_source(const NodeTable *nt, int recv);
 
 /* Infer (and cache) the type of node `id`. Used during analysis; codegen
    reads the cached results via comp_ntype. */

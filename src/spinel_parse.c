@@ -722,6 +722,7 @@ static int flatten(pm_node_t *node) {
     pm_local_variable_write_node_t *n = (pm_local_variable_write_node_t *)node;
     N("LocalVariableWriteNode");
     NAME("name", n->name);
+    I("depth", n->depth);
     R("value", n->value);
     break;
   }
@@ -729,12 +730,14 @@ static int flatten(pm_node_t *node) {
     pm_local_variable_read_node_t *n = (pm_local_variable_read_node_t *)node;
     N("LocalVariableReadNode");
     NAME("name", n->name);
+    I("depth", n->depth);
     break;
   }
   case PM_LOCAL_VARIABLE_OPERATOR_WRITE_NODE: {
     pm_local_variable_operator_write_node_t *n = (pm_local_variable_operator_write_node_t *)node;
     N("LocalVariableOperatorWriteNode");
     NAME("name", n->name);
+    I("depth", n->depth);
     NAME("binary_operator", n->binary_operator);
     R("value", n->value);
     break;
@@ -743,6 +746,7 @@ static int flatten(pm_node_t *node) {
     pm_local_variable_or_write_node_t *n = (pm_local_variable_or_write_node_t *)node;
     N("LocalVariableOrWriteNode");
     NAME("name", n->name);
+    I("depth", n->depth);
     R("value", n->value);
     break;
   }
@@ -750,6 +754,7 @@ static int flatten(pm_node_t *node) {
     pm_local_variable_and_write_node_t *n = (pm_local_variable_and_write_node_t *)node;
     N("LocalVariableAndWriteNode");
     NAME("name", n->name);
+    I("depth", n->depth);
     R("value", n->value);
     break;
   }
@@ -757,6 +762,7 @@ static int flatten(pm_node_t *node) {
     pm_local_variable_target_node_t *n = (pm_local_variable_target_node_t *)node;
     N("LocalVariableTargetNode");
     NAME("name", n->name);
+    I("depth", n->depth);
     break;
   }
   case PM_INSTANCE_VARIABLE_WRITE_NODE: {

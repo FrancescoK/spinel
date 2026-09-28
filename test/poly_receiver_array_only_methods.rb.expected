@@ -1,0 +1,77 @@
+== Array
+last(n): [2]
+last: 2
+first: 3
+first(n): [3]
+rotate: [1, 2, 3]
+rotate(n): [1, 2, 3]
+sample: Integer
+sample(n): 1
+values_at: [3]
+flatten: [3, 1, 2]
+length: 3
+count: 3
+join: "3,1,2"
+at: 3
+== Hash
+last(n): NoMethodError
+last: NoMethodError
+first: [:a, 1]
+first(n): [[:a, 1]]
+rotate: NoMethodError
+rotate(n): NoMethodError
+sample: NoMethodError
+sample(n): NoMethodError
+values_at: [nil]
+flatten: [:a, 1, :b, 2]
+length: 2
+count: 2
+join: NoMethodError
+at: NoMethodError
+== Range
+last(n): [3]
+last: 3
+first: 1
+first(n): [1]
+rotate: NoMethodError
+rotate(n): NoMethodError
+sample: NoMethodError
+sample(n): NoMethodError
+values_at: NoMethodError
+flatten: NoMethodError
+length: NoMethodError
+count: 3
+join: NoMethodError
+at: NoMethodError
+== String
+last(n): NoMethodError
+last: NoMethodError
+first: NoMethodError
+first(n): NoMethodError
+rotate: NoMethodError
+rotate(n): NoMethodError
+sample: NoMethodError
+sample(n): NoMethodError
+values_at: NoMethodError
+flatten: NoMethodError
+length: 3
+count: ArgumentError wrong number of arguments (given 0, expected 1+)
+join: NoMethodError
+at: NoMethodError
+== Integer
+last(n): NoMethodError
+last: NoMethodError
+first: NoMethodError
+first(n): NoMethodError
+rotate: NoMethodError
+rotate(n): NoMethodError
+sample: NoMethodError
+sample(n): NoMethodError
+values_at: NoMethodError
+flatten: NoMethodError
+length: NoMethodError
+count: NoMethodError
+join: NoMethodError
+at: NoMethodError
+[2]
+ivar: NoMethodError

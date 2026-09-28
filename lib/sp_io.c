@@ -1420,7 +1420,10 @@ sp_bool sp_File_autoclose_p(sp_File *f) { SP_IO_OPEN(f); return !f->no_autoclose
 void sp_File_set_autoclose(sp_File *f, sp_bool on) { SP_IO_OPEN(f); f->no_autoclose = !on; }
 /* IO#reopen(io): rebind this handle's descriptor onto the other stream. */
 sp_File *sp_File_reopen_io(sp_File *f, sp_File *other) {SP_GC_ROOT(f);SP_GC_ROOT(other); sp_gc_wb((void*)f);
-  if (!f || !f->fp || f->closed || !other || !other->fp || other->closed) return f;
+  if (!f || !other) return f;
+  /* a closed handle on either side is CRuby's IOError, not a quiet no-op */
+  SP_IO_OPEN(f);
+  SP_IO_OPEN(other);
   fflush(f->fp);
   fflush(other->fp);
   if (dup2(fileno(other->fp), fileno(f->fp)) < 0)
