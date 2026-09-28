@@ -2849,9 +2849,14 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "eql?") || sp_streq(name, "!=") ||
                       sp_streq(name, "==="))) return TY_BOOL;
     /* Class ordering is tri-state: true/false when related, nil when the two
-       classes have no subclass relationship (CRuby). <=> is -1/0/1 or nil. */
+       classes have no subclass relationship (CRuby). <=> is -1/0/1 or nil.
+       A class that defines the operator itself answers with its own method's
+       type, from the class-method dispatch below. */
     if (argc == 1 && (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
-                      sp_streq(name, ">=") || sp_streq(name, "<=>"))) return TY_POLY;
+                      sp_streq(name, ">=") || sp_streq(name, "<=>"))) {
+      int oci = class_recv_static_ci(c, recv);
+      if (oci < 0 || comp_cmethod_in_chain(c, oci, name, NULL) < 0) return TY_POLY;
+    }
     if (argc == 0 && sp_streq(name, "ancestors")) return TY_POLY_ARRAY;
     if (argc == 0 && sp_streq(name, "subclasses")) return TY_POLY_ARRAY;
     if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) return TY_BOOL;
@@ -5480,14 +5485,19 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         if (sp_streq(name, "nan?") || sp_streq(name, "finite?") ||
             sp_streq(name, "zero?") || sp_streq(name, "positive?") ||
             sp_streq(name, "negative?")) return an_poly_concrete(c, name, TY_BOOL);
-        /* a class method of the name leaves the call to the Class-receiver
-           rule below (#3215); the builtin-only derivation, which shapes the
-           dispatch's default (Float) arm, still answers Float */
+        /* A class method of the name is a boxed Class's, dispatched on the
+           class tag (#3215) beside the Float helper: the call is still Float
+           while every such method answers Float (or is not settled yet), and
+           poly once one answers something else. The builtin-only derivation,
+           which shapes the dispatch's default arm, answers Float. */
         if (sp_streq(name, "next_float") || sp_streq(name, "prev_float")) {
-          int cm = 0;
-          for (int k = 0; k < c->nclasses && !cm && !an_builtin_only; k++)
-            if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) cm = 1;
-          if (!cm) return an_poly_concrete(c, name, TY_FLOAT);
+          int cm_other = 0;
+          for (int k = 0; k < c->nclasses && !cm_other && !an_builtin_only; k++) {
+            int mi = comp_cmethod_in_chain(c, k, name, NULL);
+            if (mi >= 0 && c->scopes[mi].ret != TY_FLOAT && c->scopes[mi].ret != TY_UNKNOWN)
+              cm_other = 1;
+          }
+          return an_poly_concrete(c, name, cm_other ? TY_POLY : TY_FLOAT);
         }
         if (sp_streq(name, "abs") || sp_streq(name, "infinite?") ||
             sp_streq(name, "floor") || sp_streq(name, "ceil") ||

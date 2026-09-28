@@ -115,6 +115,24 @@ static int re_src_has_backref(const char *s) {
   return 0;
 }
 
+static void emit_ctor_block_value(Compiler *c, int id, Buf *b);
+
+/* `new(..., &pr)` into a yielding initialize, the proc known only at run time
+   (emit_ctor_yield_inline declined it): the constructor that hands it to the
+   initialize's proc-form clone. 0 when the class has no such clone. */
+static int emit_ctor_new_with_proc(Compiler *c, int id, int ci, Buf *b) {
+  int blk = nt_ref(c->nt, id, "block");
+  if (blk < 0 || nt_kind(c->nt, blk) != NK_BlockArgumentNode) return 0;
+  if (ctor_init_proc_form(c, ci) < 0) return 0;
+  int initm = comp_method_in_chain(c, ci, "initialize", NULL);
+  buf_printf(b, "sp_%s_new_blk(", c->classes[ci].c_name);
+  emit_args_filled(c, initm, nt_ref(c->nt, id, "arguments"), "", b);
+  if (c->scopes[initm].nparams > 0) buf_puts(b, ", ");
+  emit_ctor_block_value(c, id, b);
+  buf_puts(b, ")");
+  return 1;
+}
+
 int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");
@@ -130,11 +148,19 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
      code and `block_given?` folds to false, matching a blockless `new`. */
   int fwd_block = 0;
   if (block >= 0 && nt_type(nt, block) && sp_streq(nt_type(nt, block), "BlockArgumentNode")) {
-    /* only inheritable when an enclosing block is actually in scope (an inlined
-       method's forwarded block); with none live there is nothing to yield to and
-       the plain-constructor fallback is correct. */
-    if (g_block_id < 0) return 0;
-    fwd_block = 1;
+    /* `&b` naming the inlined method's block parameter (or an anonymous `&`)
+       is its caller's block, or none when the caller gave none: then this is
+       the no-block construction, as `&nil` is. Any other proc is known only at
+       run time and goes to the constructor that takes one
+       (emit_ctor_new_with_proc). */
+    int rb = resolve_forwarded_block(c, block);
+    int bexpr = nt_ref(nt, block, "expression");
+    if (rb != block) {
+      block = rb;
+      fwd_block = rb >= 0;
+    }
+    else if (bexpr >= 0 && nt_kind(nt, bexpr) == NK_NilNode) block = -1;
+    else return 0;
   }
   else if (block >= 0 && (!nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode"))) return 0;
   int mi = comp_method_in_chain(c, ci, "initialize", NULL);
@@ -789,6 +815,33 @@ static int hoist_call_block_proc(Compiler *c, int id) {
   free(pb.p);
   return t;
 }
+/* The keyword argument of the call's keyword hash naming parameter `pn`, or
+   -1. */
+static int kwh_elem_named(Compiler *c, int kwn, const int *kwels, const char *pn) {
+  for (int e = 0; e < kwn; e++) {
+    int key = nt_ref(c->nt, kwels[e], "key");
+    const char *kn = key >= 0 ? nt_str(c->nt, key, "value") : NULL;
+    if (kn && pn && sp_streq(kn, pn)) return e;
+  }
+  return -1;
+}
+/* A class-method arm taking the call's keyword hash: every key names one of
+   its declared keyword parameters and every required one is given. A **kw or
+   a hash collapsing into a positional has no arm here. */
+static int cls_arm_takes_kwh(Compiler *c, Scope *ks, int kwn, const int *kwels) {
+  if (ks->kwrest_idx >= 0) return 0;
+  for (int e = 0; e < kwn; e++) {
+    int key = nt_ref(c->nt, kwels[e], "key");
+    const char *kn = key >= 0 ? nt_str(c->nt, key, "value") : NULL;
+    if (!kn || !callee_param_is_declared_kwarg(c, ks, kn)) return 0;
+  }
+  for (int a = 0; a < ks->nparams; a++) {
+    const char *pn = ks->pnames ? ks->pnames[a] : NULL;
+    if (!pn || !callee_param_is_declared_kwarg(c, ks, pn)) continue;
+    if ((!ks->pdefault || ks->pdefault[a] < 0) && kwh_elem_named(c, kwn, kwels, pn) < 0) return 0;
+  }
+  return 1;
+}
 static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int argc,
                                       const int *atmp, const TyKind *atmp_ty,
                                       const PolyKw *kw, int tv, int tr, TyKind ret, int blk_tmp, Buf *b) {
@@ -811,13 +864,29 @@ static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int
     if (ks->yields || ks->rest_idx >= 0) continue;
     if (ks->blk_param && ks->blk_param[0]) wants_blk = 1;
     if (kwh < 0 && !cls_arm_takes_argc(ks, argc)) continue;
-    { char exp8[48];
-      if (kwh >= 0 && poly_arm_count(c, ks, kwh, argc, -1, exp8, sizeof exp8) <= 0) continue; }
+    if (kwh >= 0) {
+      char kexp[48];
+      if (poly_arm_count(c, ks, kwh, argc, -1, kexp, sizeof kexp) <= 0) continue;
+      /* a literal keyword hash into declared keywords names only them and
+         gives every required one (#5267); a `**h`, a **kwrest and a hash
+         collapsing into a positional are judged by the arm instead */
+      if (kw->kwall < 0 && ks->kwrest_idx < 0 && kwh_positional_slot(c, ks, kwh, argc) < 0 &&
+          !cls_arm_takes_kwh(c, ks, kw->kwn, kw->kwels)) continue;
+    }
     /* a param and its argument temp both concretely typed but different is a
        hard C error, not a coercion: that class cannot be this call's target */
     int incompat8 = 0;
     int kslot8 = kwh_positional_slot(c, ks, kwh, argc);
     for (int a = 0; a < ks->nparams && !incompat8; a++) {
+      const char *kpn = ks->pnames ? ks->pnames[a] : NULL;
+      if (kwh >= 0 && kw->kwall < 0 && kpn && callee_param_is_declared_kwarg(c, ks, kpn)) {
+        int e = kwh_elem_named(c, kw->kwn, kw->kwels, kpn);
+        LocalVar *kp = e >= 0 ? scope_local(ks, kpn) : NULL;
+        TyKind kpt = kp ? kp->type : TY_POLY;
+        if (e >= 0 && kpt != TY_POLY && kpt != TY_UNKNOWN && kw->kwty[e] != TY_POLY &&
+            kw->kwty[e] != TY_UNKNOWN && kpt != kw->kwty[e]) incompat8 = 1;
+        continue;
+      }
       LocalVar *pp = ks->pnames && ks->pnames[a] ? scope_local(ks, ks->pnames[a]) : NULL;
       TyKind pt = pp ? pp->type : TY_POLY;
       if (a == kslot8 && ty_is_hash(pt) && pt != TY_SYM_POLY_HASH) incompat8 = 1;
@@ -9932,6 +10001,17 @@ static int init_accepts_kw_call(Compiler *c, int initm, const int *argv, int arg
     else if (k == NK_SplatNode) psplat = 1;
     else npos++;
   }
+  /* No keywords taken: literal keywords are one more positional, a Hash */
+  if (kwh >= 0 && nkw == 0 && !has_kwrest) {
+    int ne0 = 0; const int *els0 = nt_arr(nt, kwh, "elements", &ne0);
+    int lit = ne0 > 0;
+    for (int e = 0; e < ne0 && lit; e++) lit = nt_kind(nt, els0[e]) != NK_AssocSplatNode;
+    if (lit) {
+      npos++;
+      if (!psplat && npos < nreq + npost) return 0;
+      return has_rest || npos <= nreq + npost + nopt;
+    }
+  }
   if (!psplat && npos < nreq + npost) return 0;
   if (!has_rest && npos > nreq + npost + nopt) return 0;
   int ne = 0;
@@ -10196,6 +10276,24 @@ static int emit_user_new_arm(Compiler *c, int id, int ci, int argc, const int *a
   return 1;
 }
 
+static int call_sole_literal_kwh(const NodeTable *nt, const int *argv, int argc);
+static TyKind struct_member_slot_type(ClassInfo *k, const char *name);
+static int emit_struct_kw_new_arm(Compiler *c, int ci, int kwh, int htmp, const char *pre,
+                                  int rt2, Buf *b);
+
+/* `klass.new(k: v)`, a sole keyword hash, where a class the call can reach
+   has an initialize taking keywords: the positional arms bound the whole
+   hash to its first parameter, so the call is laid out by name instead. */
+static int sole_kwh_reaches_kw_init(Compiler *c, int id, const int *argv, int argc) {
+  if (argc != 1 || !argv || nt_kind(c->nt, argv[0]) != NK_KeywordHashNode) return 0;
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    if (is_builtin_reopen(c->classes[ci].name) || c->classes[ci].is_native_class) continue;
+    int initm = comp_method_in_chain(c, ci, "initialize", NULL);
+    if (initm >= 0 && init_takes_keywords(c, initm) && dynamic_new_may_reach(c, id, ci)) return 1;
+  }
+  return 0;
+}
+
 static void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b) {
   const NodeTable *nt = c->nt;
   int argc; const int *argv = call_args(nt, id, &argc);
@@ -10218,6 +10316,47 @@ static void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Bu
        constructs it. One with its own initialize is laid out below; a
        yielding one is spliced at static sites only, and gets no arm. */
     if (c->classes[ci].is_struct && (initm < 0 || c->scopes[initm].yields)) {
+      /* `k.new(a: 1)`: the keywords name the members, the hash evaluated
+         in the arm */
+      int kwh = call_sole_literal_kwh(nt, argv, argc);
+      if (initm < 0 && kwh >= 0 && c->classes[ci].nreaders > 0 &&
+          (c->classes[ci].is_data || c->classes[ci].kw_init >= 0)) {
+        int ht = ++g_tmp;
+        Buf hpre; memset(&hpre, 0, sizeof hpre);
+        Buf hv; memset(&hv, 0, sizeof hv);
+        Buf *sv_pre = g_pre; g_pre = &hpre;
+        emit_boxed(c, kwh, &hv);
+        g_pre = sv_pre;
+        Buf pre; memset(&pre, 0, sizeof pre);
+        buf_printf(&pre, "{ %s sp_RbVal _t%d = %s; ", hpre.p ? hpre.p : "", ht, hv.p ? hv.p : "sp_box_nil()");
+        emit_struct_kw_new_arm(c, ci, kwh, ht, pre.p, rt2, b);
+        free(pre.p); free(hpre.p); free(hv.p);
+        continue;
+      }
+      /* a keyword_init: false Struct takes the Hash as its first member, and
+         nil for the rest */
+      if (initm < 0 && kwh >= 0 && c->classes[ci].nreaders > 0 && c->classes[ci].kw_init < 0 &&
+          !c->classes[ci].is_data &&
+          struct_member_slot_type(&c->classes[ci], c->classes[ci].readers[0]) == TY_POLY) {
+        ClassInfo *k = &c->classes[ci];
+        Buf hpre; memset(&hpre, 0, sizeof hpre);
+        Buf hv; memset(&hv, 0, sizeof hv);
+        Buf *sv_pre = g_pre; g_pre = &hpre;
+        emit_boxed(c, kwh, &hv);
+        g_pre = sv_pre;
+        buf_printf(b, "case %d: { %s _t%d=", ci, hpre.p ? hpre.p : "", rt2);
+        if (k->is_value_type) buf_printf(b, "sp_box_vobj_%s(sp_%s_new(", k->c_name, k->c_name);
+        else buf_printf(b, "sp_box_obj(sp_%s_new(", k->c_name);
+        buf_puts(b, hv.p ? hv.p : "sp_box_nil()");
+        for (int j = 1; j < k->nreaders; j++) {
+          TyKind pt = struct_member_slot_type(k, k->readers[j]);
+          buf_printf(b, ", %s", pt == TY_POLY ? "sp_box_nil()" : default_value(pt));
+        }
+        if (k->is_value_type) buf_puts(b, ")); } break; ");
+        else buf_printf(b, "), %d); } break; ", ci);
+        free(hpre.p); free(hv.p);
+        continue;
+      }
       if (initm >= 0 || sole_splat < 0 || !splat_operand_ok(c, sole_splat)) continue;
       buf_printf(b, "case %d: _t%d=", ci, rt2);
       if (c->classes[ci].is_value_type) buf_printf(b, "sp_box_vobj_%s(", c->classes[ci].c_name);
@@ -10383,8 +10522,10 @@ static TyKind struct_member_slot_type(ClassInfo *k, const char *name) {
    emitting nothing, when a member's name is not an identifier (a message
    would have to quote it), and when a member the compiler has typed is
    named by a value of another type or of a type it does not know: the
-   value would be read as the member's type. */
-static int emit_struct_kw_new_arm(Compiler *c, int ci, int kwh, int htmp, int rt2, Buf *b) {
+   value would be read as the member's type. `pre`, when given, opens the
+   arm with a block evaluating the hash, which the arm closes. */
+static int emit_struct_kw_new_arm(Compiler *c, int ci, int kwh, int htmp, const char *pre,
+                                  int rt2, Buf *b) {
   const NodeTable *nt = c->nt;
   ClassInfo *k = &c->classes[ci];
   int ne = 0; const int *els = nt_arr(nt, kwh, "elements", &ne);
@@ -10420,7 +10561,7 @@ static int emit_struct_kw_new_arm(Compiler *c, int ci, int kwh, int htmp, int rt
     if (seen) continue;
     buf_printf(&unk, "%s%s%s", nunk++ ? ", " : "", k->is_data ? ":" : "", kn);
   }
-  buf_printf(b, "case %d: ", ci);
+  buf_printf(b, "case %d: %s", ci, pre ? pre : "");
   if (nmiss)
     buf_printf(b, "sp_raise_cls(\"ArgumentError\", \"missing keyword%s: %s\"); break;",
                nmiss > 1 ? "s" : "", miss.p);
@@ -10447,6 +10588,7 @@ static int emit_struct_kw_new_arm(Compiler *c, int ci, int kwh, int htmp, int rt
     if (k->is_value_type) buf_puts(b, ")); break;");
     else buf_printf(b, "),%d); break;", ci);
   }
+  if (pre) buf_puts(b, " } ");
   free(miss.p); free(unk.p);
   return 1;
 }
@@ -11086,7 +11228,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         }
         /* yielding initialize: inline its body at the call site (the block
            feeds the yields; the emitted constructor only allocates) */
-        if (emit_ctor_yield_inline(c, id, ci, b)) return 1;
+        if (emit_ctor_yield_inline(c, id, ci, b) || emit_ctor_new_with_proc(c, id, ci, b)) return 1;
         /* user-defined def self.new takes precedence over the constructor */
         int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
         if (ucnew >= 0) {
@@ -27066,7 +27208,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
            allocates, so without the inline the body's @ivar writes vanish
            (with or without a block at this site) */
         if (initm >= 0 && c->scopes[initm].yields &&
-            emit_ctor_yield_inline(c, id, new_cls, b)) return;
+            (emit_ctor_yield_inline(c, id, new_cls, b) || emit_ctor_new_with_proc(c, id, new_cls, b))) return;
         buf_printf(b, "sp_%s_new(", ncls->c_name);
         if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
         if (initm >= 0) emit_ctor_block_slot(c, id, initm, c->scopes[initm].nparams > 0 ? ", " : "", b);
@@ -27807,11 +27949,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   /* Module#< / <= / > / >= / <=> with one side boxed: a class value read out
      of an Array or Hash ordered against a class, or a class ordered against
-     a boxed operand. Answered at run time with the tri-state result. */
+     a boxed operand. Answered at run time with the tri-state result. A class
+     that defines the operator itself (`def self.<(o)`) keeps its own method,
+     which the class-method dispatch below calls. */
   if (recv >= 0 && argc == 1 && (is_cmp_op(name) || sp_streq(name, "<=>")) &&
       comp_ntype(c, id) == TY_POLY) {
     TyKind crt = comp_ntype(c, recv), cat = comp_ntype(c, argv[0]);
-    if ((crt == TY_CLASS && cat != TY_CLASS) || (crt == TY_POLY && cat == TY_CLASS)) {
+    int own_op = 0;
+    if (crt == TY_CLASS) {
+      int oci = class_recv_static_ci(c, recv);
+      own_op = oci >= 0 && comp_cmethod_in_chain(c, oci, name, NULL) >= 0;
+    }
+    if (!own_op && ((crt == TY_CLASS && cat != TY_CLASS) || (crt == TY_POLY && cat == TY_CLASS))) {
       int op = sp_streq(name, "<") ? 0 : sp_streq(name, "<=") ? 1 :
                sp_streq(name, ">") ? 2 : sp_streq(name, ">=") ? 3 : 4;
       buf_puts(b, "sp_class_op_rv("); emit_boxed(c, recv, b);
@@ -29277,7 +29426,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        uses. The arguments are evaluated inside the arm taken, once.
        A `*splat` goes the same way: the arms below boxed the whole array as
        one argument and bound it to the first parameter. */
-    if (call_has_keyword_args(nt, argv, argc) || call_has_splat_arg(nt, argv, argc)) {
+    if (call_has_keyword_args(nt, argv, argc) || call_has_splat_arg(nt, argv, argc) ||
+        sole_kwh_reaches_kw_init(c, id, argv, argc)) {
       emit_class_value_new_kw(c, id, recv, 0, b);
       return;
     }
@@ -29523,7 +29673,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     /* keyword arguments: laid out per class by name, as in the Class-valued
        form above (#4845) -- positionally they bound `k: v` to a parameter;
        likewise a `*splat`, which bound the whole array */
-    if (call_has_keyword_args(nt, argv, argc) || call_has_splat_arg(nt, argv, argc)) {
+    if (call_has_keyword_args(nt, argv, argc) || call_has_splat_arg(nt, argv, argc) ||
+        sole_kwh_reaches_kw_init(c, id, argv, argc)) {
       emit_class_value_new_kw(c, id, recv, 1, b);
       return;
     }
@@ -29567,7 +29718,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
          declines. */
       if (gen_ctor && kwh >= 0 && c->classes[ci].nreaders > 0 &&
           (c->classes[ci].is_data || c->classes[ci].kw_init >= 0)) {
-        if (emit_struct_kw_new_arm(c, ci, kwh, atmp[0], rt2, b)) continue;
+        if (emit_struct_kw_new_arm(c, ci, kwh, atmp[0], NULL, rt2, b)) continue;
       }
       /* A zero-arg construction also reaches a constructor whose params are all
          optional: the arm fills each with its default, exactly as the
