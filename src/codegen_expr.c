@@ -2999,7 +2999,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
             /* `*poly`: whether it holds an array is only known at runtime, so
                splice one level if it is an array, drop nil, else push as-is
                (CRuby splat semantics). */
-            buf_printf(g_pre, "{ sp_RbVal _sv = %s; if (!sp_poly_nil_p(_sv)) sp_PolyArray_flatten_into_n(_t%d, _sv, 1); }\n", ep, t);
+            buf_printf(g_pre, "{ sp_RbVal _sv = %s; if (_sv.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_sv.cls_id)) _sv = sp_box_poly_array(sp_poly_to_a_arr(_sv)); if (!sp_poly_nil_p(_sv)) sp_PolyArray_flatten_into_n(_t%d, _sv, 1); }\n", ep, t);
           else if (it == TY_NIL)
             /* a statically-nil splat contributes nothing (`[*nil]` == []) */
             buf_printf(g_pre, ";\n");

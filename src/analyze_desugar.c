@@ -2208,6 +2208,47 @@ int desugar_to_hash_splat(Compiler *c) {
   return changed;
 }
 
+/* `[*h]`, `x = *h`, `f(*h)` with a Hash, a Struct, or an object defining #to_a:
+   a splat converts its operand through #to_a, so a Hash spreads its [k, v]
+   pairs rather than landing as one element. Rewrite the operand to
+   `h.to_a` so the array splat paths see an array. */
+int desugar_splat_to_a(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_SplatNode) continue;
+    int val = nt_ref(nt, id, "expression");
+    if (val < 0) continue;
+    const char *vty = nt_type(nt, val);
+    if (!vty || strstr(vty, "TargetNode")) continue;
+    if (sp_streq(vty, "CallNode") && nt_str(nt, val, "name") &&
+        sp_streq(nt_str(nt, val, "name"), "to_a")) continue;
+    TyKind t = infer_type(c, val);
+    if (!ty_is_hash(t) && !sp_streq(vty, "HashNode")) {
+      if (!ty_is_object(t)) continue;
+      int cid = ty_object_class(t);
+      if (cid < 0) continue;
+      int st = 0;
+      for (int k = cid; k >= 0 && !st; k = c->classes[k].parent) st = c->classes[k].is_struct;
+      if (!st && comp_method_in_chain(c, cid, "to_a", NULL) < 0) continue;
+    }
+    int base = nt->count;
+    int call = nt_new_node(nt, "CallNode");
+    if (call < 0) continue;
+    nt_node_set_ref(nt, call, "receiver", val);
+    nt_node_set_str(nt, call, "name", "to_a");
+    nt_node_set_ref(nt, call, "arguments", -1);
+    nt_node_set_ref(nt, call, "block", -1);
+    nt_node_set_ref(nt, id, "expression", call);
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    changed = 1;
+  }
+  return changed;
+}
+
 /* `def lz; [1,2,3].lazy.map { }; end; lz.first` -- a lazy chain returned from a
    parameterless method. A lazy value has no runtime representation to return,
    so the method body is not emittable at all; splice a clone of the chain into
