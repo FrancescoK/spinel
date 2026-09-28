@@ -3661,6 +3661,8 @@ static void sp_CondVar_wait_timeout_blocking(sp_mutex *m, double seconds) {
 }
 
 sp_RbVal sp_CondVar_wait_timeout(sp_condvar *cv, sp_mutex *m, double seconds) {
+  /* CRuby checks the interval before it lets go of the mutex */
+  if (seconds < 0.0) sp_raise_cls("ArgumentError", "time interval must not be negative");
   if (!(seconds > 0.0)) return sp_CondVar_wait_nb(cv, m);
 #ifdef SP_THREADS
   /* With no spawned green threads there is no monitor yet. Release the mutex

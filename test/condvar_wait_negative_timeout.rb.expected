@@ -1,0 +1,6 @@
+[ArgumentError, "time interval must not be negative", true]
+[ArgumentError, "time interval must not be negative", true]
+[ArgumentError, "time interval must not be negative", true]
+false
+[ArgumentError, "time interval must not be negative", true]
+:no_raise
