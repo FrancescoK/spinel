@@ -5485,14 +5485,19 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         if (sp_streq(name, "nan?") || sp_streq(name, "finite?") ||
             sp_streq(name, "zero?") || sp_streq(name, "positive?") ||
             sp_streq(name, "negative?")) return an_poly_concrete(c, name, TY_BOOL);
-        /* a class method of the name leaves the call to the Class-receiver
-           rule below (#3215); the builtin-only derivation, which shapes the
-           dispatch's default (Float) arm, still answers Float */
+        /* A class method of the name is a boxed Class's, dispatched on the
+           class tag (#3215) beside the Float helper: the call is still Float
+           while every such method answers Float (or is not settled yet), and
+           poly once one answers something else. The builtin-only derivation,
+           which shapes the dispatch's default arm, answers Float. */
         if (sp_streq(name, "next_float") || sp_streq(name, "prev_float")) {
-          int cm = 0;
-          for (int k = 0; k < c->nclasses && !cm && !an_builtin_only; k++)
-            if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) cm = 1;
-          if (!cm) return an_poly_concrete(c, name, TY_FLOAT);
+          int cm_other = 0;
+          for (int k = 0; k < c->nclasses && !cm_other && !an_builtin_only; k++) {
+            int mi = comp_cmethod_in_chain(c, k, name, NULL);
+            if (mi >= 0 && c->scopes[mi].ret != TY_FLOAT && c->scopes[mi].ret != TY_UNKNOWN)
+              cm_other = 1;
+          }
+          return an_poly_concrete(c, name, cm_other ? TY_POLY : TY_FLOAT);
         }
         if (sp_streq(name, "abs") || sp_streq(name, "infinite?") ||
             sp_streq(name, "floor") || sp_streq(name, "ceil") ||

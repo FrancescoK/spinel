@@ -13842,16 +13842,33 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         sp_streq(name, "end")         ? "sp_poly_range_end" :
         sp_streq(name, "exclude_end?") ? "sp_poly_range_exclude_end_p" : NULL;
       if (pfn) {
-        int has_user = 0;
+        int nf = sp_streq(name, "next_float") || sp_streq(name, "prev_float");
+        int has_user = 0, has_cm = 0;
         if (!g_poly_builtin_arm)
-        for (int kk = 0; kk < c->nclasses && !has_user; kk++)
+        for (int kk = 0; kk < c->nclasses && !has_user; kk++) {
           if (comp_poly_arm_defines_n(c, kk, name, argc) ||
-              (!c->classes[kk].is_native_class && comp_reader_in_chain(c, kk, name, NULL)) ||
-              /* a class method of these names may be a boxed Class's */
-              ((sp_streq(name, "next_float") || sp_streq(name, "prev_float")) &&
-               comp_cmethod_in_chain(c, kk, name, NULL) >= 0)) has_user = 1;
+              (!c->classes[kk].is_native_class && comp_reader_in_chain(c, kk, name, NULL))) has_user = 1;
+          if (nf && comp_cmethod_in_chain(c, kk, name, NULL) >= 0) has_cm = 1;
+        }
+        /* A class method of next_float / prev_float is a boxed Class's: the
+           class-tag dispatch (#3215) takes that receiver, and its not-a-Class
+           arm comes back here (g_cls_tag_skip) for the Float helper. A call
+           typed Float takes that dispatch through a poly slot. */
+        if (!has_user && has_cm && g_cls_tag_skip != id) {
+          TyKind rty = comp_ntype(c, id);
+          if (rty != TY_FLOAT) return 0;
+          Buf pb2; memset(&pb2, 0, sizeof pb2);
+          c->ntype[id] = TY_POLY;
+          emit_expr(c, id, &pb2);
+          c->ntype[id] = rty;
+          emit_unbox_text(c, TY_FLOAT, pb2.p ? pb2.p : "sp_box_nil()", b);
+          free(pb2.p);
+          return 1;
+        }
         if (!has_user) {
-          buf_printf(b, "%s(", pfn); emit_expr(c, recv, b); buf_puts(b, ")");
+          int boxf = nf && comp_ntype(c, id) == TY_POLY;
+          buf_printf(b, "%s%s(", boxf ? "sp_box_float(" : "", pfn); emit_expr(c, recv, b);
+          buf_puts(b, boxf ? "))" : ")");
           return 1;
         }
       }
