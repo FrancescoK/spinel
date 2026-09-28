@@ -38,3 +38,18 @@ def run3(buffer)
   p(st.output_buffer.prepend("<"))
 end
 run3(+"")
+
+# the rest of the in-place mutators that answer the receiver: they take the
+# same route, and each one's value form matched nothing either. `clear` was
+# the worst of them -- it cleared nothing and answered nil.
+def run4(buffer)
+  st = St.new(buffer)
+  st.output_buffer << "ab"
+  p(st.output_buffer.insert(1, "Z"))
+  p(st.output_buffer.replace("qq"))
+  p(st.output_buffer.clear)
+  p(st.output_buffer << "end")
+end
+c = +""
+run4(c)
+p c

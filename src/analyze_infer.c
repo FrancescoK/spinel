@@ -1903,8 +1903,11 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      out of the String rows by that exclusion, `obj.buf << x` in value position
      inferred TY_UNKNOWN and was boxed as `(expr, sp_box_nil())` -- the append
      ran and the method answered nil. */
-  if (rt == TY_STRBUF && recv >= 0 && argc == 1 && name &&
-      (sp_streq(name, "<<") || sp_streq(name, "concat") || sp_streq(name, "prepend")))
+  if (rt == TY_STRBUF && recv >= 0 && name &&
+      ((argc == 1 && (sp_streq(name, "<<") || sp_streq(name, "concat") ||
+                      sp_streq(name, "prepend") || sp_streq(name, "replace"))) ||
+       (argc == 2 && sp_streq(name, "insert")) ||
+       (argc == 0 && sp_streq(name, "clear"))))
     return TY_STRING;
   /* A boxed-value hash whose values are all one class: its value reads are
      that class (nil included, as a NULL pointer), and `values` an array of it
