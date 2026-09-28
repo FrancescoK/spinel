@@ -5631,9 +5631,14 @@ static int emit_poly_callable_prearm(Compiler *c, const char *name, int argc,
      function, so those same slots would hand it 0 or an int where it expects
      a float / by-value struct. method_ok below therefore keeps METHOD out of
      the outer test whenever an argument cannot ride the sp_int ABI. */
+  /* A bound Method's legacy slot really is the int it reads, so an object
+     there converts (or raises) through sp_poly_to_i. A Proc reads a poly
+     parameter from the boxed channel, so its slot is speculative and must
+     not raise for an object without #to_int: sp_poly_slot_i. */
+  const char *pa_conv = "sp_poly_to_i";
   #define PA_SLOT(k) do { \
     TyKind _at = atmp_ty[k]; \
-    if (_at == TY_POLY) buf_printf(&eb, "sp_poly_to_i(_t%d)", atmp[k]); \
+    if (_at == TY_POLY) buf_printf(&eb, "%s(_t%d)", pa_conv, atmp[k]); \
     else if (proc_slot_is_ptr(_at) || _at == TY_PROC) buf_printf(&eb, "(sp_int)(uintptr_t)_t%d", atmp[k]); \
     else if (_at == TY_FLOAT || proc_slot_via_poly(c, _at)) buf_puts(&eb, "0"); \
     else buf_printf(&eb, "_t%d", atmp[k]); \
@@ -5710,6 +5715,7 @@ static int emit_poly_callable_prearm(Compiler *c, const char *name, int argc,
   /* Proc/Curry go through the callable helper, which raises NoMethodError for
      anything that is not a Proc rather than reading it as one. */
   buf_printf(&eb, " : sp_poly_callable_call_kw(_t%d, %d, (sp_int[16]){", tv, argc);
+  pa_conv = "sp_poly_slot_i";
   for (int k = 0; k < argc; k++) { if (k) buf_puts(&eb, ", "); PA_SLOT(k); }
   if (argc == 0) buf_puts(&eb, "0");
   buf_printf(&eb, "}, %d))", kwpos);
@@ -23234,10 +23240,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           free(inner.p); free(valb.p);
         }
       }
+      /* sp_poly_to_i for a bound Method's legacy slot, sp_poly_slot_i for
+         the Proc's speculative one (see PA_SLOT) */
+      const char *pc_conv = "sp_poly_to_i";
       #define EMIT_POLY_CALL_SLOT(k) do { \
         TyKind _at = comp_ntype(c, argv[k]); \
         if (aptmp) { \
-          if (_at == TY_POLY) buf_printf(b, "sp_poly_to_i(_t%d)", aptmp[k]); \
+          if (_at == TY_POLY) buf_printf(b, "%s(_t%d)", pc_conv, aptmp[k]); \
           else if (proc_slot_is_ptr(_at) || _at == TY_PROC) buf_printf(b, "(sp_int)(uintptr_t)_t%d", aptmp[k]); \
           /* A value carried by the boxed side channel takes a placeholder in \
              the legacy sp_int slot: a Float does not fit the integer \
@@ -23351,6 +23360,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       /* through the callable helper, so a curried Proc in the slot takes its
          arguments instead of being read as an sp_Proc (#3885) */
       buf_printf(b, " : sp_poly_callable_call_kw(_t%d, %d, (sp_int[16]){", t, argc);
+      pc_conv = "sp_poly_slot_i";
       for (int k = 0; k < argc; k++) {
         if (k) buf_puts(b, ", ");
         EMIT_POLY_CALL_SLOT(k);
