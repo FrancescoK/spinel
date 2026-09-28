@@ -9203,3 +9203,100 @@ int desugar_object_method_builtin_overrides(Compiler *c) {
   if (changed) comp_grow_node_arrays(c);
   return changed;
 }
+
+/* ---- a parameter default that assigns a local the body reads ----
+   `def index_with(default = (no_default = true))` (activesupport's
+   Enumerable#index_with) tells an omitted argument from a passed one by the
+   local its default leaves behind: set when the default ran, nil otherwise.
+   A default is evaluated at the call site, where that local has no way into
+   the callee; so the callee runs this default itself. The parameter takes a
+   private symbol as its default, the locals are declared nil ahead of the
+   body, and a guard binds the parameter from the original default when it
+   sees the symbol:
+     def m(p = :__sp_absent)
+       no_default = nil
+       p = (no_default = true) if p == :__sp_absent
+       ...
+   The parameter's type widens by the symbol; a default whose locals the
+   body never reads keeps the call-site model. */
+static void pdl_collect_writes(const NodeTable *nt, int id, const char **out, int cap, int *n) {
+  if (id < 0 || *n >= cap) return;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
+      k == NK_BlockNode || k == NK_LambdaNode) return;
+  if (k == NK_LocalVariableWriteNode || k == NK_LocalVariableTargetNode ||
+      k == NK_LocalVariableOperatorWriteNode || k == NK_LocalVariableOrWriteNode ||
+      k == NK_LocalVariableAndWriteNode) {
+    const char *nm = nt_str(nt, id, "name");
+    int dup = 0;
+    for (int i = 0; nm && i < *n; i++) if (sp_streq(out[i], nm)) { dup = 1; break; }
+    if (nm && !dup) out[(*n)++] = nm;
+  }
+  const SpNode *nd = &nt->nodes[id];
+  for (int j = 0; j < nd->nr; j++) pdl_collect_writes(nt, nd->r[j].ref, out, cap, n);
+  for (int j = 0; j < nd->na; j++)
+    for (int k2 = 0; k2 < nd->a[j].n; k2++) pdl_collect_writes(nt, nd->a[j].ids[k2], out, cap, n);
+}
+static int pdl_body_reads(const NodeTable *nt, int id, const char **names, int n) {
+  if (id < 0) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return 0;
+  if (k == NK_LocalVariableReadNode || k == NK_LocalVariableOperatorWriteNode ||
+      k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode) {
+    const char *nm = nt_str(nt, id, "name");
+    for (int i = 0; nm && i < n; i++) if (sp_streq(names[i], nm)) return 1;
+  }
+  const SpNode *nd = &nt->nodes[id];
+  for (int j = 0; j < nd->nr; j++) if (pdl_body_reads(nt, nd->r[j].ref, names, n)) return 1;
+  for (int j = 0; j < nd->na; j++)
+    for (int k2 = 0; k2 < nd->a[j].n; k2++) if (pdl_body_reads(nt, nd->a[j].ids[k2], names, n)) return 1;
+  return 0;
+}
+int desugar_param_default_assigns_local(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int def = 0; def < n0; def++) {
+    if (!fwd_node_is(nt, def, "DefNode")) continue;
+    int ps[256]; int np = rd_params(nt, def, ps, 256);
+    int pro[64]; int npro = 0;
+    for (int i = 0; i < np && npro < 60; i++) {
+      if (!fwd_node_is(nt, ps[i], "OptionalParameterNode") &&
+          !fwd_node_is(nt, ps[i], "OptionalKeywordParameterNode")) continue;
+      int v = nt_ref(nt, ps[i], "value");
+      const char *pname = nt_str(nt, ps[i], "name");
+      if (v < 0 || !pname) continue;
+      const char *names[32]; int nn = 0;
+      pdl_collect_writes(nt, v, names, 32, &nn);
+      if (!nn || !pdl_body_reads(nt, nt_ref(nt, def, "body"), names, nn)) continue;
+      BsB b = { nt, 1 };
+      long long line = nt_int(nt, ps[i], "node_line", 0);
+      for (int k = 0; k < nn && npro < 60; k++) {
+        int w = bs_write(&b, names[k], bs_new(&b, "NilNode"));
+        if (w >= 0) nt_node_set_int(nt, w, "node_line", line);
+        pro[npro++] = w;
+      }
+      int sym = bs_new(&b, "SymbolNode");
+      if (sym >= 0) nt_node_set_str(nt, sym, "value", "__sp_absent");
+      int sym2 = bs_new(&b, "SymbolNode");
+      if (sym2 >= 0) nt_node_set_str(nt, sym2, "value", "__sp_absent");
+      int pred = bs_call(&b, bs_read(&b, pname), "==", &sym2, 1);
+      int bind = bs_write(&b, pname, v);
+      int guard = bs_if(&b, pred, &bind, 1, NULL, 0);
+      if (!b.ok || sym < 0 || pred < 0 || bind < 0 || guard < 0) continue;
+      nt_node_set_int(nt, pred, "node_line", line);
+      nt_node_set_int(nt, bind, "node_line", line);
+      nt_node_set_int(nt, guard, "node_line", line);
+      pro[npro++] = guard;
+      nt_node_set_ref(nt, ps[i], "value", sym);
+    }
+    if (!npro) continue;
+    BsB b = { nt, 1 };
+    int nbody = bs_prepend(&b, def, pro, npro);
+    if (nbody < 0 || !b.ok) continue;
+    nt_node_set_ref(nt, def, "body", nbody);
+    changed = 1;
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}

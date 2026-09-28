@@ -317,16 +317,16 @@ expect_nome("iarr_poly_push_multi") { [ia9.method(:push)][0].call(8, 9) }
 puts ia9.inspect
 
 
-# A parameter default that WRITES a method-scope local the body READS cannot be
-# answered from the bound call-site frame: the default runs there while the
-# body reads its own zeroed slot, so `def m(a, c = (z = a + 1; z)); z; end`
-# answered 0 where CRuby answers 6. The direct call is a C compile failure for
-# the same shape; these two routes decline instead of answering the zero.
+# A parameter default that WRITES a method-scope local the body READS: the
+# callee runs such a default itself (the parameter takes a sentinel default
+# and a guard binds it from the original), so the bound routes answer CRuby's
+# 6 for `def m(a, c = (z = a + 1; z)); z; end` -- they used to decline, as the
+# default ran in the call-site frame while the body read its own zeroed slot.
 class DefaultBodyLocal
   def m(a, c = (z = a + 1; z)) = z
 end
-expect_nome("default_body_local_call")   { DefaultBodyLocal.new.method(:m).call(5) }
-expect_nome("default_body_local_toproc") { DefaultBodyLocal.new.method(:m).to_proc.call(5) }
+puts "default_body_local_call: #{DefaultBodyLocal.new.method(:m).call(5)}"
+puts "default_body_local_toproc: #{DefaultBodyLocal.new.method(:m).to_proc.call(5)}"
 
 # A caller local spelled exactly like the frame's old rename prefix must not be
 # captured by the callee-local declaration; the unique name now begins with an

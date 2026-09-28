@@ -73,8 +73,8 @@ iarr_get_over: 1
 iarr_set_over: 9 [9, 2, 3]
 iarr_poly_push_multi: NoMethodError
 [1, 2]
-default_body_local_call: NoMethodError
-default_body_local_toproc: NoMethodError
+default_body_local_call: 6
+default_body_local_toproc: 6
 [100]
 [6]
 long_param_call: NoMethodError

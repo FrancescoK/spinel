@@ -18314,6 +18314,7 @@ void analyze_program(Compiler *c) {
   desugar_block_destructure_params(c);   /* |a,(b,c),d| -> flat param + `b,c = __destr` */
   desugar_for_nonlocal_index(c);         /* for $g in xs -> for __for in xs; $g = __for */
   desugar_enumerator_produce(c);         /* Enumerator.produce -> fiber generator */
+  desugar_param_default_assigns_local(c); /* def m(p = (x = e)) reading x -> sentinel + callee guard */
   desugar_recursive_param_defaults(c);   /* def m(x, y = m(..)) -> default helper method */
   qualify_colliding_consts(c);
   qualify_colliding_classes(c);
