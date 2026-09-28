@@ -3317,6 +3317,30 @@ static sp_bool sp_poly_range_exclude_end_p(sp_RbVal v) {
 }
 static sp_bool sp_poly_positive_p(sp_RbVal v) { if (v.tag == SP_TAG_INT) return v.v.i > 0; if (v.tag == SP_TAG_FLT) return v.v.f > 0.0; if (v.tag == SP_TAG_BIGINT) return sp_bigint_sign((sp_Bigint *)v.v.p) > 0; if (sp_poly_is_rat_kind(v)) return sp_poly_rat_sign(v) > 0; sp_raise_poly_nomethod("positive?", v); }
 static sp_bool sp_poly_negative_p(sp_RbVal v) { if (v.tag == SP_TAG_INT) return v.v.i < 0; if (v.tag == SP_TAG_FLT) return v.v.f < 0.0; if (v.tag == SP_TAG_BIGINT) return sp_bigint_sign((sp_Bigint *)v.v.p) < 0; if (sp_poly_is_rat_kind(v)) return sp_poly_rat_sign(v) < 0; sp_raise_poly_nomethod("negative?", v); }
+/* Numeric#arg (angle, phase) and #rect (rectangular) on a boxed number, as
+   the typed arms answer them: a Complex its atan2(im, re) and its [re, im],
+   a real number 0, or pi when negative, and [self, 0]. `m` is the name
+   called, for the NoMethodError anything else raises. */
+static sp_RbVal sp_poly_arg(sp_RbVal v, const char *m) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX) { sp_Complex *c = (sp_Complex *)v.v.p; return sp_box_float(atan2(c->im, c->re)); }
+  if (sp_poly_numeric_p(v) || sp_poly_is_rat_kind(v)) return sp_poly_negative_p(v) ? sp_box_float(3.141592653589793) : sp_box_int(0);
+  sp_raise_poly_nomethod(m, v);
+}
+static sp_PolyArray *sp_poly_rect(sp_RbVal v, const char *m) {
+  int cx = v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX;
+  if (!cx && !sp_poly_numeric_p(v) && !sp_poly_is_rat_kind(v)) sp_raise_poly_nomethod(m, v);
+  sp_RbVal re = v, im = sp_box_int(0);
+  if (cx) {
+    sp_Complex c = *(sp_Complex *)v.v.p;
+    re = sp_complex_comp_v(c.re, c.fl & SP_CPLX_RE_F);
+    im = sp_complex_comp_v(c.im, c.fl & SP_CPLX_IM_F);
+  }
+  SP_GC_ROOT_RBVAL(re);
+  sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a);
+  sp_PolyArray_push(a, re);
+  sp_PolyArray_push(a, im);
+  return a;
+}
 /* abs of a negative int goes through SP_POLY_INT_OP(sub, 0, x): plain -x is
    UB for INT_MIN; promote mode boxes it as a bigint, wrap mode keeps the
    documented wrapping C arithmetic. fabs covers -0.0 -> 0.0 too. */
