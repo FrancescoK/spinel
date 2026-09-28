@@ -7127,16 +7127,26 @@ static void ie_subtree_retarget(Compiler *c, int root, const char *tmp, int dept
    Kernel global) a `self` receiver, so a body the splice below declines still
    dispatches it on the rebound self rather than on main. Skips nested
    class/module/def bodies and nested self-rebinding blocks. */
-static int ie_subtree_self_calls(Compiler *c, int root, int depth) {
+static int ie_subtree_self_calls(Compiler *c, int root, const char *cls, int depth) {
   NodeTable *nt = (NodeTable *)c->nt;
   if (root < 0 || root >= nt->count || depth > 200) return 0;
   NodeKind k = nt_kind(nt, root);
   if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_DefNode || k == NK_SingletonClassNode) return 0;
+  /* this self is the receiver, not main: `self.m` keeps its receiver even
+     where a top-level def `m` exists (desugar_main_self_call) */
+  if (k == NK_SelfNode) {
+    if (!nt_int(nt, root, "ie_self", 0)) nt_node_set_int(nt, root, "ie_self", 1);
+    return 0;
+  }
   int changed = 0, skip = -1;
   if (k == NK_CallNode) {
     const char *nm = nt_str(nt, root, "name");
-    if (nm && nt_ref(nt, root, "receiver") < 0 && !ie_kernel_global(nm) &&
-        comp_method_index(c, nm) < 0) {
+    /* the receiver's own method binds ahead of a top-level def (a private
+       Object method) or the Kernel one of that name */
+    int answers = nm && ((cls && builtin_method_known(cls, nm)) ||
+                         (builtin_object_method_known(nm) && comp_method_index(c, nm) < 0));
+    if (nm && nt_ref(nt, root, "receiver") < 0 &&
+        (answers || (!ie_kernel_global(nm) && comp_method_index(c, nm) < 0))) {
       int sn = nt_new_node(nt, "SelfNode");
       if (sn < 0) return 0;
       comp_grow_node_arrays(c);
@@ -7149,12 +7159,12 @@ static int ie_subtree_self_calls(Compiler *c, int root, int depth) {
   int nr = nt_num_refs(nt, root);
   for (int i = 0; i < nr; i++) {
     int ch = nt_ref_at(nt, root, i);
-    if (ch != skip) changed |= ie_subtree_self_calls(c, ch, depth + 1);
+    if (ch != skip) changed |= ie_subtree_self_calls(c, ch, cls, depth + 1);
   }
   int na = nt_num_arrs(nt, root);
   for (int i = 0; i < na; i++) {
     int n = 0; const int *ids = nt_arr_at(nt, root, i, &n);
-    for (int j = 0; j < n; j++) changed |= ie_subtree_self_calls(c, ids[j], depth + 1);
+    for (int j = 0; j < n; j++) changed |= ie_subtree_self_calls(c, ids[j], cls, depth + 1);
   }
   return changed;
 }
@@ -7190,7 +7200,13 @@ int desugar_instance_eval_builtin(Compiler *c) {
     int body = nt_ref(nt, blk, "body");
     if (body < 0) continue;
     if (subtree_has_kind(nt, body, NK_DefNode, 0)) continue;
-    changed |= ie_subtree_self_calls(c, body, 0);
+    {
+      const char *rcls = ty_is_array(rt) ? "Array" : ty_is_hash(rt) ? "Hash"
+                       : rt == TY_RANGE ? "Range" : rt == TY_TIME ? "Time"
+                       : rt == TY_REGEX ? "Regexp" : rt == TY_COMPLEX ? "Complex"
+                       : rt == TY_RATIONAL ? "Rational" : builtin_class_of_type(rt);
+      changed |= ie_subtree_self_calls(c, body, rcls, 0);
+    }
 
     int is_exec = sp_streq(nm, "instance_exec");
     /* pvals[k]: the node bound to parameter pnames[k] -- a call argument, a

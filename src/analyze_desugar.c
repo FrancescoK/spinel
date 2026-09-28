@@ -1934,7 +1934,7 @@ int desugar_main_self_call(Compiler *c) {
     if (recv < 0 || nt_kind(nt, recv) != NK_SelfNode) continue;
     const char *cop = nt_str(nt, id, "call_operator");
     if (cop && sp_streq(cop, "&.")) continue;
-    if (!self_is_main(c, recv)) continue;
+    if (!self_is_main(c, recv) || nt_int(nt, recv, "ie_self", 0)) continue;
     if (comp_method_index(c, name) < 0) continue;   /* no top-level def */
     nt_node_set_ref(nt, id, "receiver", -1);
     changed = 1;
