@@ -107,6 +107,9 @@ extern int  g_tmp;
 #define MAX_RENAME 128
 extern char g_ren_from[MAX_RENAME][96];
 extern char g_ren_to[MAX_RENAME][112];
+typedef struct { int sv, from, n; char (*f)[96]; char (*t)[112]; } RenPark;
+RenPark ren_park(int from);
+void ren_unpark(RenPark *p);
 const char *strbuf_local_name(Compiler *c, int recv);
 int strbuf_ivar_owner(Compiler *c, int node);
 /* The shared-mutable shim (codegen_stmt.c) re-runs a value-semantics mutator
