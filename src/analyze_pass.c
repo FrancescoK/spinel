@@ -3444,8 +3444,10 @@ static int name_in(const char *n, const char *const *set) {
    does not hand its receiver on, an interpolated part, the argument of an
    output, comparison or type-test call, the parent of a `K::X` path, a class
    definition's name or superclass, a `when` or `rescue` clause, a statement
-   whose value is dropped. A conditional, `and`/`or`, parentheses or a block
-   of statements passes its last value up to be asked the same. */
+   whose value is dropped. A conditional, `case` arm, `and`/`or`,
+   parentheses or a block of statements passes its last value up to be asked
+   the same; a value chosen by a conditional, `case` or `and`/`or` is handed
+   on to the receiver it becomes, as that receiver is no longer one class. */
 static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
   static const char *const passes_recv[] = {
     "method", "public_method", "send", "public_send", "__send__", "then", "tap",
@@ -3455,6 +3457,7 @@ static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
     "puts", "print", "p", "pp", "warn", "raise", "format", "sprintf", "printf",
     "is_a?", "kind_of?", "instance_of?", "include", "extend", "prepend",
     "include?", "==", "!=", "===", "equal?", "eql?", "<", "<=", ">", ">=", "<=>", NULL };
+  int chosen = 0;
   for (int depth = 0; depth < 400; depth++) {
     int p = parent[u];
     if (p < 0) return 0;
@@ -3465,21 +3468,33 @@ static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
       if (n > 0 && body[n - 1] != u) return 0;
       u = p; continue;
     }
-    if (pk == NK_ParenthesesNode || pk == NK_IfNode || pk == NK_UnlessNode ||
-        pk == NK_AndNode || pk == NK_OrNode || pk == NK_BeginNode ||
-        (pt && (sp_streq(pt, "ElseNode") || sp_streq(pt, "EmbeddedStatementsNode")))) {
+    if (pk == NK_ParenthesesNode || pk == NK_BeginNode ||
+        (pt && sp_streq(pt, "EmbeddedStatementsNode"))) {
       u = p; continue;
+    }
+    if (pk == NK_IfNode || pk == NK_UnlessNode || pk == NK_AndNode || pk == NK_OrNode ||
+        (pt && sp_streq(pt, "ElseNode"))) {
+      if ((pk == NK_IfNode || pk == NK_UnlessNode) && nt_ref(nt, p, "predicate") == u) return 0;
+      chosen = 1; u = p; continue;
+    }
+    if (pt && (sp_streq(pt, "WhenNode") || sp_streq(pt, "InNode"))) {
+      if (nt_ref(nt, p, "statements") != u) return 0;
+      chosen = 1; u = p; continue;
+    }
+    if (pt && (sp_streq(pt, "CaseNode") || sp_streq(pt, "CaseMatchNode"))) {
+      if (nt_ref(nt, p, "predicate") == u) return 0;
+      chosen = 1; u = p; continue;
     }
     if (pt && (sp_streq(pt, "InterpolatedStringNode") || sp_streq(pt, "InterpolatedSymbolNode") ||
                sp_streq(pt, "InterpolatedXStringNode") ||
-               sp_streq(pt, "InterpolatedRegularExpressionNode") || sp_streq(pt, "WhenNode") ||
+               sp_streq(pt, "InterpolatedRegularExpressionNode") ||
                sp_streq(pt, "ProgramNode")))
       return 0;
     if (pk == NK_ClassNode || pk == NK_ModuleNode || pk == NK_ConstantPathNode ||
         pk == NK_RescueNode)
       return 0;
     if (pk == NK_CallNode) {
-      if (nt_ref(nt, p, "receiver") == u) return name_in(nt_str(nt, p, "name"), passes_recv);
+      if (nt_ref(nt, p, "receiver") == u) return chosen || name_in(nt_str(nt, p, "name"), passes_recv);
       return 1;
     }
     if (pt && sp_streq(pt, "ArgumentsNode")) {
@@ -3537,6 +3552,35 @@ static int class_value_escapes(Compiler *c, int cid) {
       mark_body_self(nt, nt_ref(nt, u, "body"), owner, body_self, 0);
     }
   }
+  /* A node a rewrite unwrapped (`(c ? A : B).new` taking the conditional as
+     its receiver) still has the parent it had inside the node left behind,
+     which leads nowhere: the tree hanging from the program gives the parent
+     the code has. */
+  int *stack = (int *)malloc(sizeof(int) * nn);
+  char *seen = (char *)calloc(nn, 1);
+  if (stack && seen && nt->root_id >= 0 && nt->root_id < nt->count) {
+    int sp = 0;
+    stack[sp++] = nt->root_id; seen[nt->root_id] = 1;
+    while (sp > 0) {
+      int u = stack[--sp];
+      int nr = nt_num_refs(nt, u);
+      for (int i = 0; i < nr; i++) {
+        int ch = nt_ref_at(nt, u, i);
+        if (ch < 0 || ch >= nt->count || seen[ch]) continue;
+        seen[ch] = 1; parent[ch] = u; stack[sp++] = ch;
+      }
+      int na = nt_num_arrs(nt, u);
+      for (int i = 0; i < na; i++) {
+        int n = 0; const int *ids = nt_arr_at(nt, u, i, &n);
+        for (int j = 0; j < n; j++) {
+          int ch = ids[j];
+          if (ch < 0 || ch >= nt->count || seen[ch]) continue;
+          seen[ch] = 1; parent[ch] = u; stack[sp++] = ch;
+        }
+      }
+    }
+  }
+  free(stack); free(seen);
   static const char *const reflective[] = {
     "inherited", "const_get", "subclasses", "descendants", "each_object", NULL };
   int all = 0;
@@ -3615,10 +3659,15 @@ static int bind_dynamic_new_initializers(Compiler *c, int call_id) {
   int an = nt_ref(nt, call_id, "arguments");
   int argc = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &argc) : NULL;
-  int npos = 0;
+  int npos = 0, kwh = 0;
   for (int k = 0; k < argc; k++) {
     NodeKind ak = nt_kind(nt, av[k]);
-    if (ak != NK_KeywordHashNode && ak != NK_BlockArgumentNode) npos++;
+    if (ak == NK_KeywordHashNode) {
+      int ne = 0; const int *els = nt_arr(nt, av[k], "elements", &ne);
+      kwh = ne > 0;
+      for (int e = 0; e < ne; e++) if (nt_kind(nt, els[e]) == NK_AssocSplatNode) kwh = 0;
+    }
+    else if (ak != NK_BlockArgumentNode) npos++;
   }
   int changed = 0;
   int *seen = (int *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), sizeof(int));
@@ -3628,15 +3677,20 @@ static int bind_dynamic_new_initializers(Compiler *c, int call_id) {
     if (imi < 0 || imi >= c->nscopes || seen[imi]) continue;
     seen[imi] = 1;
     int pn = c->scopes[imi].def_node >= 0 ? nt_ref(nt, c->scopes[imi].def_node, "parameters") : -1;
-    int nreq = 0, nopt = 0, npost = 0, rest = -1;
+    int nreq = 0, nopt = 0, npost = 0, nkw = 0, rest = -1, kwrest = -1;
     if (pn >= 0) {
       nt_arr(nt, pn, "requireds", &nreq);
       nt_arr(nt, pn, "optionals", &nopt);
       nt_arr(nt, pn, "posts", &npost);
+      nt_arr(nt, pn, "keywords", &nkw);
       rest = nt_ref(nt, pn, "rest");
+      kwrest = nt_ref(nt, pn, "keyword_rest");
     }
     nreq += npost;
-    if (npos < nreq || (rest < 0 && npos > nreq + nopt)) continue;
+    /* an initialize taking no keywords takes literal ones as one more
+       positional */
+    int n = npos + (kwh && nkw == 0 && kwrest < 0);
+    if (n < nreq || (rest < 0 && n > nreq + nopt)) continue;
     changed |= bind_call_params(c, call_id, imi);
   }
   free(seen);
