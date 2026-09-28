@@ -13093,10 +13093,18 @@ static sp_bool sp_yielded_packed(int pair, sp_RbVal v) {
   if (pair == SP_PAIR_PACKED) return sp_poly_is_pack(v);
   return pair && v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id);
 }
-static sp_RbVal sp_yielded_first(int pair, sp_RbVal v) SP_UNUSED;
-static sp_RbVal sp_yielded_first(int pair, sp_RbVal v) {
+static SP_COLD SP_NOINLINE sp_RbVal sp_yielded_first_packed(int pair, sp_RbVal v) SP_UNUSED;
+static SP_COLD SP_NOINLINE sp_RbVal sp_yielded_first_packed(int pair, sp_RbVal v) {
   if (!sp_yielded_packed(pair, v)) return v;
   return sp_poly_arr_get(v, 0);
+}
+/* Called once per element of a boxed each loop, where the receiver is almost
+   always no pair source at all: that case answers inline, and the packed
+   test stays out of the loop's code. */
+static inline sp_RbVal sp_yielded_first(int pair, sp_RbVal v) SP_UNUSED;
+static inline sp_RbVal sp_yielded_first(int pair, sp_RbVal v) {
+  if (SP_EXPECT(!pair, 1)) return v;
+  return sp_yielded_first_packed(pair, v);
 }
 static sp_PolyArray *sp_yielded_args(int pair, sp_RbVal v) SP_UNUSED;
 static sp_PolyArray *sp_yielded_args(int pair, sp_RbVal v) {
