@@ -7184,6 +7184,11 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
       const char *rn = class_ruby_name(c, cid); if (!rn) rn = ci->name;
       buf_printf(b, "static const char *sp_%s_inspect(sp_%s *self) {\n", ci->c_name, ci->c_name);
       buf_puts(b, "  if (!self) return \"nil\";\n");
+      /* the String built below allocates while the members are still to be
+         read, and the caller may hold the object only in an unrooted temp
+         (`p D.make(1)`): swept at the first allocation, the members read
+         freed memory under SPINEL_GC_STRESS=1 */
+      if (!ci->is_value_type) buf_puts(b, "  SP_GC_ROOT(self);\n");
       /* A member can hold the struct itself (`s.a = s`), and this function
          renders a member of its own class by calling straight back into
          itself. Stop at the object the render is already inside, as CRuby's
