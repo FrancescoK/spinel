@@ -1,0 +1,19 @@
+nilf ran
+[0, 0]
+nilf ran
+{}
+nilf ran
+[0, {}]
+nilf ran
+{a: 1}
+nilf ran
+{a: 1}
+nilf ran
+#<struct Plain a=nil, b=nil>
+[0, 0]
+{}
+nilf ran
+[0, 0]
+nilf ran
+[0, 0]
+8
