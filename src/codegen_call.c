@@ -14352,6 +14352,20 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
       /* emit_str_expr coerces both a TY_POLY operand (sp_poly_to_s) and the
          unresolved-call gate's sp_raise_nomethod(...) (which is sp_RbVal, not a
          const char*) to a C string, so a raise-all operand type-checks (#2457). */
+      /* `str + "lit"`: the literal cannot allocate and its byte length is
+         known here, so only the receiver needs evaluating (sp_str_plus_lit
+         roots it across its own allocation). */
+      {
+        const char *lt = nt_type(nt, argv[0]);
+        if (lt && sp_streq(lt, "StringNode")) {
+          const char *sc = nt_str(nt, argv[0], "content");
+          buf_puts(b, "sp_str_plus_lit(");
+          emit_str_expr(c, recv, b); buf_puts(b, ", ");
+          emit_expr(c, argv[0], b);
+          buf_printf(b, ", %zu)", sc ? nt_str_len(nt, argv[0], "content") : (size_t)0);
+          return 1;
+        }
+      }
       if (subtree_may_allocate(nt, recv) || subtree_may_allocate(nt, argv[0])) {
         int ta = ++g_tmp, tb = ++g_tmp;
         buf_printf(b, "({ const char *_t%d = ", ta); emit_str_expr(c, recv, b);

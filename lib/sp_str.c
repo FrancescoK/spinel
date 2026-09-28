@@ -160,6 +160,19 @@ const char*sp_str_plus(const char*a,const char*b){SP_GC_ROOT_STR(a);SP_GC_ROOT_S
   if(!b)sp_raise_cls("TypeError","no implicit conversion of nil into String");
   return sp_str_concat(a,b);
 }
+/* `str + "lit"`: the codegen knows the literal's byte length, and a source
+   literal is never BINARY, so this skips the literal's header decode and
+   encoding check, the nil-to-empty fixups, and the second call frame
+   sp_str_plus spends before sp_str_concat. */
+const char *sp_str_plus_lit(const char *a, const char *lit, size_t ll) {
+  if (!a) sp_nil_recv("+");
+  SP_GC_ROOT_STR(a);
+  size_t la = sp_str_byte_len(a);
+  char *r = sp_str_alloc(la + ll);
+  memcpy(r, a, la);
+  memcpy(r + la, lit, ll);
+  return sp_str_bin_from(r, a);
+}
 /* FrozenError naming the receiver, matching CRuby's
    "can't modify frozen String: \"abc\"" message shape. */
 void sp_exc_stage_recv(sp_RbVal v);   /* generated TU: stages FrozenError#receiver */
