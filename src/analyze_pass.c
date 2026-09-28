@@ -2760,7 +2760,8 @@ int infer_write_types(Compiler *c) {
       if (sp_streq(lty, "LocalVariableTargetNode")) {
         const char *lnm = nt_str(nt, lefts[i], "name");
         TyKind et = infer_type(c, els[i]);
-        if (et == TY_NIL) continue;
+        /* a nil element widens its target, as `x = nil` does */
+        if (et == TY_NIL) et = TY_POLY;
         LocalVar *lv = lnm ? scope_local(comp_scope_of(c, id), lnm) : NULL;
         if (!lv || lv->is_param || lv->is_block_param) continue;
         lv->type = ty_unify(lv->type, et);
@@ -2782,11 +2783,16 @@ int infer_write_types(Compiler *c) {
         int iv_idx = ivnm ? comp_ivar_index(&c->classes[iv_cid], ivnm) : -1;
         if (iv_idx < 0 || class_ivar_pinned(&c->classes[iv_cid], ivnm)) continue;
         TyKind et = infer_type(c, els[i]);
-        if (et == TY_NIL) continue;
+        if (et == TY_NIL) et = TY_POLY;
         TyKind mg = ty_unify(c->classes[iv_cid].ivar_types[iv_idx], et);
         if (mg != c->classes[iv_cid].ivar_types[iv_idx]) {
           c->classes[iv_cid].ivar_types[iv_idx] = mg; changed = 1;
         }
+      }
+      else if (sp_streq(lty, "GlobalVariableTargetNode") || sp_streq(lty, "ClassVariableTargetNode")) {
+        TyKind et = infer_type(c, els[i]);
+        if (et == TY_NIL) et = TY_POLY;
+        changed |= masgn_unify_elem(c, comp_scope_of(c, id), &lefts[i], 1, et);
       }
       else if (sp_streq(lty, "MultiTargetNode")) {
         /* (b, c) nested target: inner RHS must be an ArrayNode literal */
@@ -2844,7 +2850,7 @@ int infer_write_types(Compiler *c) {
       }
       else {
         et = infer_type(c, els[ridx]);
-        if (et == TY_NIL) continue;
+        if (et == TY_NIL) et = TY_POLY;
       }
       if (sp_streq(rty3, "LocalVariableTargetNode")) {
         const char *rnm2 = nt_str(nt, rights[j], "name");
@@ -2859,6 +2865,8 @@ int infer_write_types(Compiler *c) {
         TyKind mg3 = ty_unify(cv2->type, et);
         if (mg3 != cv2->type) { cv2->type = mg3; changed = 1; }
       }
+      else if (sp_streq(rty3, "GlobalVariableTargetNode") || sp_streq(rty3, "ClassVariableTargetNode"))
+        changed |= masgn_unify_elem(c, comp_scope_of(c, id), &rights[j], 1, et);
       else if (sp_streq(rty3, "InstanceVariableTargetNode")) {
         Scope *iv_sc3 = comp_scope_of(c, id);
         int iv_cid3 = iv_sc3 ? iv_sc3->class_id : -1;
