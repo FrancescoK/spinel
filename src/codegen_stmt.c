@@ -9629,13 +9629,11 @@ else {
             buf_puts(b, ");\n");
           }
           emit_indent(b, indent);
-          if (rest_var) { emit_local_ref(c, id, rest_var, b); buf_printf(b, " = _t%d;\n", tr0); }
-          else {
-            char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr0);
-            buf_printf(b, "gv_%s = ", rest_gvar);
-            masgn_conv(c, rlv0 ? rlv0->type : rat0, rat0, rx, b);
-            buf_puts(b, ";\n");
-          }
+          char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr0);
+          if (rest_var) { emit_local_ref(c, id, rest_var, b); buf_puts(b, " = "); }
+          else buf_printf(b, "gv_%s = ", rest_gvar);
+          masgn_conv(c, rlv0 ? rlv0->type : rat0, rat0, rx, b);
+          buf_puts(b, ";\n");
           if (ln == 0 && rn == 0) return;
         }
         for (int i = 0; i < ln; i++) {
@@ -9984,14 +9982,12 @@ else {
             buf_printf(b, "for (sp_int _t%d = %dLL; _t%d < _t%d - %dLL; _t%d++) sp_PolyArray_push(_t%d, sp_poly_massign_get(_t%d, _t%d));\n",
                        ti, ln, ti, tn, rn, ti, tr, tarr, ti);
             emit_indent(b, indent);
-            if (rest_var) { emit_local_ref(c, id, rest_var, b); buf_printf(b, " = _t%d;\n", tr); }
-            else {
-              char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr);
-              LocalVar *rg = comp_gvar(c, rest_gvar);
-              buf_printf(b, "gv_%s = ", rest_gvar);
-              masgn_conv(c, rg ? rg->type : TY_POLY_ARRAY, TY_POLY_ARRAY, rx, b);
-              buf_puts(b, ";\n");
-            }
+            char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr);
+            LocalVar *rg = rest_var ? scope_local(comp_scope_of(c, id), rest_var) : comp_gvar(c, rest_gvar);
+            if (rest_var) { emit_local_ref(c, id, rest_var, b); buf_puts(b, " = "); }
+            else buf_printf(b, "gv_%s = ", rest_gvar);
+            masgn_conv(c, rg ? rg->type : TY_POLY_ARRAY, TY_POLY_ARRAY, rx, b);
+            buf_puts(b, ";\n");
           }
           for (int j = 0; j < rn; j++) {
             const char *lty = nt_type(nt, rights[j]);
@@ -10469,14 +10465,23 @@ else {
       }
       else unsupported(c, id, "multiple assignment target");
     }
-    /* build and assign rest (splat) target */
-    if (rest_var) {
+    /* build and assign rest (splat) target. A slot that is not a typed
+       array -- a poly local or global -- takes an array typed by the
+       elements, boxed into it. */
+    LocalVar *rest_slot = rest_var ? scope_local(comp_scope_of(c, id), rest_var)
+                        : rest_gvar ? comp_gvar(c, rest_gvar) : NULL;
+    if (rest_var || rest_slot) {
       int rstart = ln, rend = en - rn;
       if (rend < rstart) rend = rstart;
-      Scope *rscope = comp_scope_of(c, id);
-      LocalVar *rlv = scope_local(rscope, rest_var);
-      TyKind rest_arr_t = rlv ? rlv->type : TY_INT_ARRAY;
-      if (!ty_is_array(rest_arr_t)) rest_arr_t = TY_INT_ARRAY;
+      TyKind slot_t = rest_slot ? rest_slot->type : TY_INT_ARRAY;
+      TyKind rest_arr_t = slot_t;
+      if (slot_t == TY_POLY) {
+        TyKind et = rend > rstart ? tmpts[rstart] : TY_POLY;
+        for (int i = rstart + 1; i < rend; i++)
+          if (tmpts[i] != et) et = TY_POLY;
+        rest_arr_t = ty_array_of(et);
+      }
+      else if (!ty_is_array(rest_arr_t)) rest_arr_t = TY_INT_ARRAY;
       const char *k = (rest_arr_t == TY_POLY_ARRAY) ? "Poly" : array_kind(rest_arr_t);
       if (!k) k = "Int";
       int tr = ++g_tmp;
@@ -10484,10 +10489,9 @@ else {
       buf_printf(b, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", k, tr, k, tr);
       if (rest_arr_t == TY_POLY_ARRAY) {
         for (int i = rstart; i < rend; i++) {
-          TyKind et = comp_ntype(c, els[i]);
           char tmp_expr[32]; snprintf(tmp_expr, sizeof tmp_expr, "_t%d", tmps[i]);
           Buf bx; memset(&bx, 0, sizeof bx);
-          emit_boxed_text(c, et, tmp_expr, &bx);
+          emit_boxed_text(c, tmpts[i], tmp_expr, &bx);
           emit_indent(b, indent);
           buf_printf(b, "sp_PolyArray_push(_t%d, %s);\n", tr, bx.p ? bx.p : "sp_box_nil()");
           free(bx.p);
@@ -10499,26 +10503,12 @@ else {
           buf_printf(b, "sp_%sArray_push(_t%d, _t%d);\n", k, tr, tmps[i]);
         }
       }
+      char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr);
       emit_indent(b, indent);
-      buf_printf(b, "lv_%s = _t%d;\n", rename_local(rest_var), tr);
-    }
-    if (rest_gvar && comp_gvar(c, rest_gvar)) {
-      int rstart = ln, rend = en - rn;
-      if (rend < rstart) rend = rstart;
-      LocalVar *glv_r = comp_gvar(c, rest_gvar);
-      TyKind rest_arr_t = glv_r ? glv_r->type : TY_INT_ARRAY;
-      if (!ty_is_array(rest_arr_t)) rest_arr_t = TY_INT_ARRAY;
-      const char *k = (rest_arr_t == TY_POLY_ARRAY) ? "Poly" : array_kind(rest_arr_t);
-      if (!k) k = "Int";
-      int tr = ++g_tmp;
-      emit_indent(b, indent);
-      buf_printf(b, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", k, tr, k, tr);
-      for (int i = rstart; i < rend; i++) {
-        emit_indent(b, indent);
-        buf_printf(b, "sp_%sArray_push(_t%d, _t%d);\n", k, tr, tmps[i]);
-      }
-      emit_indent(b, indent);
-      buf_printf(b, "gv_%s = _t%d;\n", rest_gvar, tr);
+      if (rest_var) buf_printf(b, "lv_%s = ", rename_local(rest_var));
+      else buf_printf(b, "gv_%s = ", rest_gvar);
+      masgn_conv(c, slot_t == TY_POLY ? TY_POLY : rest_arr_t, rest_arr_t, rx, b);
+      buf_puts(b, ";\n");
     }
     /* assign rights (post-splat fixed targets). They fill left-to-right starting
        just past the splat's actual length (max(0, en-ln-rn)); a target whose
