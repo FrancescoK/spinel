@@ -8347,10 +8347,12 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
               else emit_boxed_text(c, atmp_ty[ai], tn, &cb);
             }
             else if (sp_streq(spec, "regexp")) {
-              /* a :regexp binds a regex LITERAL at the site, nothing else */
+              /* a :regexp binds a regex literal at the site or a value
+                 typed Regexp, the same pattern pointer (#5360) */
               int rl = re_lit_index(c, argv[ai]);
-              if (rl < 0) { ok = 0; break; }
-              buf_printf(&cb, "sp_re_pat_%d", rl);
+              if (rl >= 0) buf_printf(&cb, "sp_re_pat_%d", rl);
+              else if (atmp_ty[ai] == TY_REGEX) buf_puts(&cb, tn);
+              else { ok = 0; break; }
             }
             else {
               TyKind aw = ffi_spec_to_ty(spec);

@@ -10502,12 +10502,15 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       for (int a = 0; a < nta; a++) natys[a] = comp_ntype(c, argv[a]);
       int nm = comp_native_method_find_typed(c, cid, name, argc, 0, nta == argc ? natys : NULL);
       if (nm >= 0) {
-        /* a :regexp arg binds only to a regex LITERAL at the call site (it
-           compiles to the generated sp_re_pat_<n> pattern); anything else
-           falls through to the generic paths. */
+        /* a :regexp arg binds to a regex literal at the call site (it
+           compiles to the generated sp_re_pat_<n> pattern) or to any value
+           typed Regexp, which is the same pattern pointer: a parameter or a
+           constant holding one (`@s.scan(pat)`, Crass's RE_WHITESPACE,
+           #5360); anything else falls through to the generic paths. */
         NativeMethod *mre = &c->native_methods[nm];
         for (int ai = 0; ai < mre->nargs && ai < argc; ai++) {
-          if (!sp_streq(mre->args[ai], "regexp") || re_lit_index(c, argv[ai]) >= 0) continue;
+          if (!sp_streq(mre->args[ai], "regexp") || re_lit_index(c, argv[ai]) >= 0 ||
+              comp_ntype(c, argv[ai]) == TY_REGEX) continue;
           /* a nil / true / false where the binding wants a pattern is CRuby's
              TypeError (StringScanner accepts String patterns, so its wording
              is the String one), not a missing method */
@@ -10564,8 +10567,9 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           buf_puts(b, ", ");
           TyKind aw = ffi_spec_to_ty(m->args[ai]);
           if (sp_streq(m->args[ai], "any")) emit_boxed(c, argv[ai], b);
-          else if (sp_streq(m->args[ai], "regexp"))
+          else if (sp_streq(m->args[ai], "regexp") && re_lit_index(c, argv[ai]) >= 0)
             buf_printf(b, "sp_re_pat_%d", re_lit_index(c, argv[ai]));
+          else if (sp_streq(m->args[ai], "regexp")) emit_expr(c, argv[ai], b);
           /* a write payload is the operand's #to_s, as IO#write takes it */
           else if (sp_streq(m->args[ai], "text")) emit_to_s_expr(c, argv[ai], b);
           /* the typed-slot emitters carry the implicit conversion protocol
