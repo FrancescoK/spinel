@@ -7550,14 +7550,21 @@ int default_refs_earlier_param(Compiler *c, Scope *m) {
    CRuby), once the call's arguments `argv` have run, and the argument slots
    still fill with their compat pads below, reading what ran. */
 static void args_raise(Compiler *c, const int *argv, int argc, const char *fmt, ...) {
-  char msg[256];
+  char msg[512];
   va_list ap; va_start(ap, fmt);
   vsnprintf(msg, sizeof msg, fmt, ap);
   va_end(ap);
   /* CRuby evaluates every argument before the callee refuses them */
   emit_args_in_source_order(c, argv, argc, g_pre);
   emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "sp_raise_cls(\"ArgumentError\", \"%s\");\n", msg);
+  /* a key the message names (`"q\"z"`) may carry what a C literal escapes */
+  buf_puts(g_pre, "sp_raise_cls(\"ArgumentError\", \"");
+  for (const unsigned char *p = (const unsigned char *)msg; *p; p++) {
+    if (*p == '"' || *p == '\\') buf_printf(g_pre, "\\%c", *p);
+    else if (*p < 0x20 || *p == 0x7f) buf_printf(g_pre, "\\%03o", *p);
+    else buf_printf(g_pre, "%c", *p);
+  }
+  buf_puts(g_pre, "\");\n");
 }
 
 /* A keyword key the callee has no parameter for. CRuby raises before the body
@@ -7581,21 +7588,46 @@ int emit_unknown_kwarg_raise(Compiler *c, Scope *m, const int *argv, int argc) {
     if (m->pnames[i] && callee_has_kwarg(c, m, m->pnames[i]) &&
         kwh_lookup(nt, kwh, m->pnames[i]) >= 0) kw_matches = 1;
   if (!kw_matches) return 0;
+  /* CRuby names every key the hash holds that no keyword takes, once each,
+     in the order the hash first holds it, as #inspect writes it. A key only
+     the run time knows (a computed one) leaves the list to the first
+     unknown Symbol. */
   int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
+  char unk[512] = "", first[300] = "";
+  int nunk = 0, nsym = 0, spelled = 1;
   for (int e = 0; e < en; e++) {
     int key = el ? nt_ref(nt, el[e], "key") : -1;
     const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
-    const char *kn = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
-    if (!kn) continue;
+    int is_sym = kty && sp_streq(kty, "SymbolNode"), is_str = kty && sp_streq(kty, "StringNode");
+    const char *kn = is_sym ? nt_str(nt, key, "value") : is_str ? nt_str(nt, key, "content") : NULL;
+    if (!kn) { if (key >= 0) spelled = 0; continue; }
     int found = 0;
     /* a key names a keyword parameter or nothing: a positional parameter of
        the same name does not take it (`def f(x, k: 1)` called `f(1, x: 2)`
        is "unknown keyword: :x") */
-    for (int i = 0; i < m->nparams; i++)
+    for (int i = 0; i < m->nparams && is_sym; i++)
       if (m->pnames[i] && sp_streq(m->pnames[i], kn) && callee_has_kwarg(c, m, kn)) { found = 1; break; }
-    if (!found) { args_raise(c, argv, argc, "unknown keyword: :%s", kn); return 1; }
+    if (found) continue;
+    /* a key written twice is one key of the hash, where it first stands */
+    int dup = 0;
+    for (int e2 = 0; e2 < e && !dup; e2++) {
+      int k2 = nt_ref(nt, el[e2], "key");
+      const char *t2 = k2 >= 0 ? nt_type(nt, k2) : NULL;
+      const char *n2 = t2 && sp_streq(t2, kty) ? nt_str(nt, k2, is_sym ? "value" : "content") : NULL;
+      dup = n2 && sp_streq(n2, kn);
+    }
+    if (dup) continue;
+    char iv[300];
+    kw_key_inspect(kn, is_sym, iv, sizeof iv);
+    if (is_sym && !nsym++) snprintf(first, sizeof first, "%s", iv);
+    kw_names_add(unk, sizeof unk, &nunk, iv);
   }
-  return 0;
+  if (!nsym) return 0;
+  char msg[600];
+  if (spelled) kw_error_message(msg, sizeof msg, "unknown", nunk, unk);
+  else kw_error_message(msg, sizeof msg, "unknown", 1, first);
+  args_raise(c, argv, argc, "%s", msg);
+  return 1;
 }
 
 /* The positional count a rest-parameter method requires, when a call that
@@ -7627,10 +7659,23 @@ static int emit_rest_given_count(int lead, int splat_tmp) {
 }
 /* The run-time half of the rest shortfall check: refuse the measured count. */
 static void emit_rest_shortfall_raise(int given_tmp, int req) {
+  char gv[32]; snprintf(gv, sizeof gv, "_t%d", given_tmp);
   emit_indent(g_pre, g_indent);
-  buf_printf(g_pre,
-             "if (_t%d < %d) sp_raise_cls(\"ArgumentError\", sp_sprintf(\"wrong number of arguments (given %%lld, expected %d+)\", (long long)_t%d));\n",
-             given_tmp, req, req, given_tmp);
+  emit_arity_check(g_pre, gv, req, -1, NULL);
+  buf_puts(g_pre, ";\n");
+}
+/* The count check of a call whose positional count only the run time knows
+   (a splat, a gather), the C expression `given`, against `m`'s positional
+   parameters -- keywords apart, and named in the message as CRuby names
+   them. */
+static void emit_positional_count_check(Compiler *c, Scope *m, const char *given) {
+  int pos_required = 0, pos_params = 0;
+  positional_arity(c, m, &pos_required, &pos_params);
+  char kw[256];
+  scope_arity_kw_suffix(c, m, kw, sizeof kw);
+  emit_indent(g_pre, g_indent);
+  emit_arity_check(g_pre, given, pos_required, m->rest_idx >= 0 ? -1 : pos_params, kw);
+  buf_puts(g_pre, ";\n");
 }
 
 /* True when `m` is a synthesized receiverless Kernel wrapper
@@ -7693,6 +7738,12 @@ void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv, int
     for (int e = 0; e < en2; e++)
       if (el2 && nt_type(nt, el2[e]) && sp_streq(nt_type(nt, el2[e]), "AssocSplatNode")) { has_ds = 1; break; }
   }
+  /* A `**nil` method refuses a literal keyword before it counts anything */
+  if (kwh >= 0 && scope_refuses_keywords(c, m)) {
+    int en3 = 0; const int *el3 = nt_arr(nt, kwh, "elements", &en3);
+    for (int e = 0; e < en3; e++)
+      if (nt_kind(nt, el3[e]) == NK_AssocNode) { args_raise(c, argv, argc, "no keywords accepted"); return; }
+  }
   int synth = 0, nfixed = 0, nreq = 0;
   for (int i = 0; i < m->nparams; i++) {
     /* A __bam_ wrapper's parameters are REAL call arguments here: a
@@ -7713,14 +7764,21 @@ void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv, int
     nfixed++;
     if (!m->pdefault || m->pdefault[i] < 0) nreq++;
   }
+  /* CRuby names the callee's required keywords in every count error:
+     `def h(x, k:)` called `h(k: 3)` is "(given 0, expected 1; required
+     keyword: k)" */
+  char kwsuf[256], msg[512];
+  scope_arity_kw_suffix(c, m, kwsuf, sizeof kwsuf);
   /* A target with a rest parameter has no upper bound, so only its shortfall
      is judged: `def f(a, *r)` called bare ran the body with a padded a. */
   int rest_req = rest_shortfall_required(c, m);
   if (!has_splat && !has_ds && rest_req >= 0) {
     if (judge_rest) {
       int eff_pos = pos_argc + (kwh >= 0 ? 1 : 0);
-      if (eff_pos < rest_req)
-        args_raise(c, argv, argc, "wrong number of arguments (given %d, expected %d+)", eff_pos, rest_req);
+      if (eff_pos < rest_req) {
+        arity_message(msg, sizeof msg, eff_pos, rest_req, -1, kwsuf);
+        args_raise(c, argv, argc, "%s", msg);
+      }
     }
   }
   /* A `**kw` takes every keyword, so only the positional count is judged:
@@ -7728,10 +7786,8 @@ void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv, int
      never a positional argument here (kwh_positional_slot). */
   else if (!has_splat && !synth && m->rest_idx < 0 && m->kwrest_idx >= 0 && !m->cs_synth) {
     if (pos_argc > nfixed || pos_argc < nreq) {
-      if (nreq == nfixed)
-        args_raise(c, argv, argc, "wrong number of arguments (given %d, expected %d)", pos_argc, nfixed);
-      else
-        args_raise(c, argv, argc, "wrong number of arguments (given %d, expected %d..%d)", pos_argc, nreq, nfixed);
+      arity_message(msg, sizeof msg, pos_argc, nreq, nfixed, kwsuf);
+      args_raise(c, argv, argc, "%s", msg);
     }
   }
   else if (!has_splat && !has_ds && !synth &&
@@ -7748,35 +7804,16 @@ void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv, int
         if (m->pnames[i] && callee_has_kwarg(c, m, m->pnames[i]) &&
             kwh_lookup(nt, kwh, m->pnames[i]) >= 0) { kw_matches = 1; break; }
     int eff_pos = pos_argc + ((kwh >= 0 && !kw_matches) ? 1 : 0);
-    char expbuf2[32];
-    if (nreq == nfixed) snprintf(expbuf2, sizeof expbuf2, "%d", nfixed);
-    else snprintf(expbuf2, sizeof expbuf2, "%d..%d", nreq, nfixed);
-    /* CRuby names the required keywords in a positional-count error:
-       `def h(x, k:)` called `h(k: 3)` is "(given 0, expected 1; required
-       keyword: k)" */
-    char kwsuf[256] = "";
-    { int pn = m->def_node >= 0 ? nt_ref(nt, m->def_node, "parameters") : -1;
-      int kn = 0; const int *kws = pn >= 0 ? nt_arr(nt, pn, "keywords", &kn) : NULL;
-      int nrk = 0; size_t off = 0;
-      for (int j = 0; j < kn; j++) if (nt_type(nt, kws[j]) && sp_streq(nt_type(nt, kws[j]), "RequiredKeywordParameterNode")) nrk++;
-      if (nrk > 0) {
-        off = (size_t)snprintf(kwsuf, sizeof kwsuf, "; required keyword%s: ", nrk > 1 ? "s" : "");
-        int first = 1;
-        for (int j = 0; j < kn && off < sizeof kwsuf; j++) {
-          if (!nt_type(nt, kws[j]) || !sp_streq(nt_type(nt, kws[j]), "RequiredKeywordParameterNode")) continue;
-          const char *kpn = nt_str(nt, kws[j], "name");
-          off += (size_t)snprintf(kwsuf + off, sizeof kwsuf - off, "%s%s", first ? "" : ", ", kpn ? kpn : "?");
-          first = 0;
-        }
-      } }
+    arity_message(msg, sizeof msg, eff_pos, nreq, nfixed, kwsuf);
     int raised = 0;
     if (eff_pos > nfixed && !bam_variadic_kernel(nt, m)) {
-      args_raise(c, argv, argc, "wrong number of arguments (given %d, expected %s%s)", eff_pos, expbuf2, kwsuf);
+      args_raise(c, argv, argc, "%s", msg);
       raised = 1;
     }
     /* CRuby's order: the positional count, then a missing keyword, then an
        unknown one. Two passes over the parameters, positional then keyword,
        and the unknown-key check last. */
+    char miss[512] = ""; int nmiss = 0;
     for (int pass = 0; pass < 2 && !raised; pass++)
     for (int i = 0; i < m->nparams && !raised; i++) {
       /* only a keyword parameter is supplied by a key: a positional one that
@@ -7792,10 +7829,19 @@ void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv, int
       if (i < eff_pos && !lead_opt) continue;
       if (m->pdefault && m->pdefault[i] >= 0) continue;
       if (is_kw && kw_matches && kwh_lookup(nt, kwh, m->pnames[i]) >= 0) continue;
-      if (is_kw)
-        args_raise(c, argv, argc, "missing keyword: :%s", m->pnames[i] ? m->pnames[i] : "?");
-      else
-        args_raise(c, argv, argc, "wrong number of arguments (given %d, expected %s%s)", eff_pos, expbuf2, kwsuf);
+      /* every required keyword the call leaves out is named, in one
+         message */
+      if (is_kw) {
+        char iv[300]; snprintf(iv, sizeof iv, ":%s", m->pnames[i] ? m->pnames[i] : "?");
+        kw_names_add(miss, sizeof miss, &nmiss, iv);
+        continue;
+      }
+      args_raise(c, argv, argc, "%s", msg);
+      raised = 1;
+    }
+    if (!raised && nmiss) {
+      kw_error_message(msg, sizeof msg, "missing", nmiss, miss);
+      args_raise(c, argv, argc, "%s", msg);
       raised = 1;
     }
     if (!raised && emit_unknown_kwarg_raise(c, m, argv, argc)) raised = 1;
@@ -8020,9 +8066,14 @@ int emit_splat_gather(Compiler *c, Scope *m, const int *argv, const ArgLayout *L
   else if (L->gather_kwh == 1 && emit_kwh_spread_arg(c, kwh, &kb)) {
     int kt = ++g_tmp;
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);"
-                      " if (sp_poly_length(_t%d) > 0) sp_PolyArray_push(_t%d, _t%d);\n",
-               kt, kb.p ? kb.p : "sp_box_nil()", kt, kt, ct, kt);
+    if (scope_refuses_keywords(c, m))
+      buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);"
+                        " if (sp_poly_length(_t%d) > 0) sp_raise_cls(\"ArgumentError\", \"no keywords accepted\");\n",
+                 kt, kb.p ? kb.p : "sp_box_nil()", kt, kt);
+    else
+      buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);"
+                        " if (sp_poly_length(_t%d) > 0) sp_PolyArray_push(_t%d, _t%d);\n",
+                 kt, kb.p ? kb.p : "sp_box_nil()", kt, kt, ct, kt);
   }
   free(kb.p);
   emit_gather_arity_check(c, m, ct);
@@ -8031,22 +8082,8 @@ int emit_splat_gather(Compiler *c, Scope *m, const int *argv, const ArgLayout *L
 
 /* Refuse a gathered positional count the parameters cannot take. */
 void emit_gather_arity_check(Compiler *c, Scope *m, int ct) {
-  int pos_required = 0, pos_params = 0;
-  positional_arity(c, m, &pos_required, &pos_params);
-  if (m->rest_idx >= 0) {
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre,
-               "if (_t%d->len < %d) sp_raise_cls(\"ArgumentError\", sp_sprintf(\"wrong number of arguments (given %%lld, expected %d+)\", (long long)_t%d->len));\n",
-               ct, pos_required, pos_required, ct);
-    return;
-  }
-  char expbuf[48];
-  if (pos_required == pos_params) snprintf(expbuf, sizeof expbuf, "expected %d", pos_params);
-  else snprintf(expbuf, sizeof expbuf, "expected %d..%d", pos_required, pos_params);
-  emit_indent(g_pre, g_indent);
-  buf_printf(g_pre,
-             "if (_t%d->len < %d || _t%d->len > %d) sp_raise_cls(\"ArgumentError\", sp_sprintf(\"wrong number of arguments (given %%lld, %s)\", (long long)_t%d->len));\n",
-             ct, pos_required, ct, pos_params, expbuf, ct);
+  char gv[32]; snprintf(gv, sizeof gv, "_t%d->len", ct);
+  emit_positional_count_check(c, m, gv);
 }
 
 /* Positional parameter i from the emit_splat_gather temp, by the count it
@@ -8240,20 +8277,11 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
              Only emit when the splat is the last positional group, so the
              total given count is `splat_idx + array length`. */
           if (m->rest_idx < 0 && k == pos_argc - 1) {
-            int pos_required = 0, pos_params = 0;
-            positional_arity(c, m, &pos_required, &pos_params);
-            char expbuf[48];
-            if (pos_required == pos_params)
-              snprintf(expbuf, sizeof expbuf, "expected %d", pos_params);
-            else
-              snprintf(expbuf, sizeof expbuf, "expected %d..%d", pos_required, pos_params);
             int gv = ++g_tmp;
             emit_indent(g_pre, g_indent);
             buf_printf(g_pre, "sp_int _t%d = %d + (_t%d ? _t%d->len : 0);\n", gv, splat_idx, splat_tmp, splat_tmp);
-            emit_indent(g_pre, g_indent);
-            buf_printf(g_pre,
-                       "if (_t%d < %d || _t%d > %d) sp_raise_cls(\"ArgumentError\", sp_sprintf(\"wrong number of arguments (given %%lld, %s)\", (long long)_t%d));\n",
-                       gv, pos_required, gv, pos_params, expbuf, gv);
+            char gvn[32]; snprintf(gvn, sizeof gvn, "_t%d", gv);
+            emit_positional_count_check(c, m, gvn);
           }
         }
       }
@@ -9023,20 +9051,11 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
         if (m->rest_idx >= 0 && rest_req_d >= 0 && kwh_d < 0 && k == pos_argc_d - 1)
           rest_given_d = emit_rest_given_count(splat_idx_d, splat_tmp_d);
         else if (m->rest_idx < 0 && k == pos_argc_d - 1) {
-          int pos_required = 0, pos_params = 0;
-          positional_arity(c, m, &pos_required, &pos_params);
-          char expbuf[48];
-          if (pos_required == pos_params)
-            snprintf(expbuf, sizeof expbuf, "expected %d", pos_params);
-          else
-            snprintf(expbuf, sizeof expbuf, "expected %d..%d", pos_required, pos_params);
           int gv = ++g_tmp;
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "sp_int _t%d = %d + (_t%d ? _t%d->len : 0);\n", gv, splat_idx_d, splat_tmp_d, splat_tmp_d);
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre,
-                     "if (_t%d < %d || _t%d > %d) sp_raise_cls(\"ArgumentError\", sp_sprintf(\"wrong number of arguments (given %%lld, %s)\", (long long)_t%d));\n",
-                     gv, pos_required, gv, pos_params, expbuf, gv);
+          char gvn[32]; snprintf(gvn, sizeof gvn, "_t%d", gv);
+          emit_positional_count_check(c, m, gvn);
         }
       }
       break;
@@ -9308,9 +9327,10 @@ else {
   int eff_pos_d = pos_argc_d + (kwh_d >= 0 ? 1 : 0);
   if (rest_given_d >= 0) emit_rest_shortfall_raise(rest_given_d, rest_req_d);
   if (rest_req_d >= 0 && !dyn_argc_d && eff_pos_d < rest_req_d) {
+    char am[512];
+    arity_message(am, sizeof am, eff_pos_d, rest_req_d, -1, NULL);
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given %d, expected %d+)\");\n",
-               eff_pos_d, rest_req_d);
+    buf_printf(g_pre, "sp_raise_cls(\"ArgumentError\", \"%s\");\n", am);
   }
   /* &block param that escapes: pre-evaluate the block as sp_Proc * temp.
      When the call site has no block, blk_tmp stays -1 and we pass NULL. */
@@ -9374,8 +9394,9 @@ else {
        the way the class-method dispatch does. */
     { int areq = !dyn_argc_d ? rest_shortfall_required(c, &c->scopes[kmi]) : -1;
       if (areq >= 0 && eff_pos_d < areq) {
-        buf_printf(b, " case %d: sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given %d, expected %d+)\"); break;",
-                   k, eff_pos_d, areq);
+        char am[512];
+        arity_message(am, sizeof am, eff_pos_d, areq, -1, NULL);
+        buf_printf(b, " case %d: sp_raise_cls(\"ArgumentError\", \"%s\"); break;", k, am);
         continue;
       } }
     TyKind arm_ret = (TyKind)c->scopes[kmi].ret;

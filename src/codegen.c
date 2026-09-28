@@ -6399,10 +6399,14 @@ else if (orecv >= 0 && onm) {
      `lambda { _1 }.call("a")` was rejected as taking two. Only the
      no-parameters-node form (`-> { _1 }`) has them outside `arity`. */
   int num_extra = proc_numbered_params_node(c, create) < 0 ? nnumbered : 0;
-  if (is_lambda) buf_printf(pb, "    sp_proc_lambda_arity_check(argc, %d, %d, %s, %s);\n",
-                            arity + nposts + num_extra, nopts,
-                            proc_has_rest(c, create) ? "TRUE" : "FALSE",
-                            "FALSE");
+  if (is_lambda) {
+    int lreq = arity + nposts + num_extra;
+    char kw[256];
+    arity_kw_suffix(nt, proc_params_node(c, create), kw, sizeof kw);
+    buf_puts(pb, "    ");
+    emit_arity_check(pb, "argc", lreq, proc_has_rest(c, create) ? -1 : lreq + nopts, kw);
+    buf_puts(pb, ";\n");
+  }
   /* CRuby proc auto-splat: a single Array passed to a non-lambda proc taking
      more than one positional is destructured across the parameters. Rewrite
      the argument view (both the sp_int[] slots and the boxed side-channel)
@@ -6655,6 +6659,56 @@ else if (orecv >= 0 && onm) {
     int pnk = proc_params_node(c, create);
     int nkw2 = 0;
     const int *kwn = pnk >= 0 ? nt_arr(nt, pnk, "keywords", &nkw2) : NULL;
+    /* CRuby judges the keywords before any binds or any default runs: every
+       required one the hash lacks is `missing` in one message, and then,
+       with no **kwrest to take them, every key naming no keyword is
+       `unknown`, for a proc as for a lambda. Bound one by one, only the
+       first missing keyword was named. */
+    int kwr0 = pnk >= 0 ? nt_ref(nt, pnk, "keyword_rest") : -1;
+    { int nreqkw = 0;
+      for (int j = 0; j < nkw2; j++)
+        if (nt_type(nt, kwn[j]) && sp_streq(nt_type(nt, kwn[j]), "RequiredKeywordParameterNode")) nreqkw++;
+      if (kwr0 < 0 || nreqkw) {
+        buf_puts(pb, "    { static const char *const _pkw[] = {");
+        for (int j = 0; j < nkw2; j++) {
+          const char *kn = nt_str(nt, kwn[j], "name");
+          if (kn) buf_printf(pb, "\"%s\", ", param_public_name(kn));
+        }
+        buf_puts(pb, "0}, *const _pkr[] = {");
+        for (int j = 0; j < nkw2; j++) {
+          const char *kn = nt_str(nt, kwn[j], "name");
+          if (kn && nt_type(nt, kwn[j]) && sp_streq(nt_type(nt, kwn[j]), "RequiredKeywordParameterNode"))
+            buf_printf(pb, "\"%s\", ", param_public_name(kn));
+        }
+        buf_printf(pb, "0}, *const _pkn[] = {0};%c", 10);
+        /* judged without building anything on the path that binds: the
+           unknown-key check walks the hash as it did, and a keyword rest
+           only looks when a required key is absent */
+        buf_puts(pb, "      if (_sp_haskw) { if (1");
+        if (kwr0 >= 0) {
+          buf_puts(pb, " && (0");
+          for (int j = 0; j < nkw2; j++) {
+            const char *kn = nt_str(nt, kwn[j], "name");
+            if (kn && nt_type(nt, kwn[j]) && sp_streq(nt_type(nt, kwn[j]), "RequiredKeywordParameterNode"))
+              buf_printf(pb, " || !sp_poly_has_key(_sp_kwh, sp_box_sym((sp_sym)%d))",
+                         comp_sym_intern(c, param_public_name(kn)));
+          }
+          buf_puts(pb, ")");
+        }
+        buf_printf(pb, ") sp_kwargs_verify(_sp_kwh, _pkw, _pkr, _pkn, %d); }%c", kwr0 < 0, 10);
+        if (nreqkw) {
+          char miss[512] = "", km[600]; int nm = 0;
+          for (int j = 0; j < nkw2; j++) {
+            const char *kn = nt_str(nt, kwn[j], "name");
+            if (!kn || !nt_type(nt, kwn[j]) || !sp_streq(nt_type(nt, kwn[j]), "RequiredKeywordParameterNode")) continue;
+            char iv[300]; snprintf(iv, sizeof iv, ":%s", param_public_name(kn));
+            kw_names_add(miss, sizeof miss, &nm, iv);
+          }
+          kw_error_message(km, sizeof km, "missing", nm, miss);
+          buf_printf(pb, "      else sp_raise_cls(\"ArgumentError\", \"%s\");%c", km, 10);
+        }
+        buf_printf(pb, "    }%c", 10);
+      } }
     for (int j = 0; j < nkw2; j++) {
       const char *kn = nt_str(nt, kwn[j], "name");
       if (!kn) continue;
@@ -6672,18 +6726,6 @@ else if (orecv >= 0 && onm) {
       snprintf(missing, sizeof missing, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), sp_box_nil())", key);
       LocalVar *klv = scope_local(bs, kn);
       emit_proc_param_slot(c, pb, kn, cond, arg, dv, missing, klv ? klv->type : TY_POLY);
-    }
-    /* with no **kwrest to take them, a key naming no keyword is CRuby's
-       `unknown keyword`, for a proc as for a lambda */
-    int kwr0 = pnk >= 0 ? nt_ref(nt, pnk, "keyword_rest") : -1;
-    if (kwr0 < 0) {
-      buf_puts(pb, "    { static const char *const _pkw[] = {");
-      for (int j = 0; j < nkw2; j++) {
-        const char *kn = nt_str(nt, kwn[j], "name");
-        if (kn) buf_printf(pb, "\"%s\", ", param_public_name(kn));
-      }
-      buf_printf(pb, "0}, *const _pkn[] = {0};%c", 10);
-      buf_printf(pb, "      if (_sp_haskw) sp_kwargs_verify(_sp_kwh, _pkw, _pkn, _pkn, 1); }%c", 10);
     }
   }
   /* `&b`: the block the caller attached to .call, delivered on the
@@ -9124,8 +9166,20 @@ static void emit_struct_super_spread(Compiler *c, ClassInfo *cls, const int *arg
   const char *hash_given = kwh >= 0 ? "_t%d.tag != SP_TAG_NIL && sp_poly_length(_t%d) > 0" : "0";
   if (keyed) {
     buf_printf(b, " sp_int _t%d = sp_PolyArray_length(_t%d);", tl, ta);
-    buf_printf(b, " if (_t%d != 0) sp_raise_cls(\"ArgumentError\", sp_sprintf(\"wrong number of arguments (given %%lld, expected 0)\", (long long)_t%d));", tl, tl);
+    { char gv[32]; snprintf(gv, sizeof gv, "_t%d", tl);
+      buf_puts(b, " ");
+      emit_arity_check(b, gv, 0, 0, NULL);
+      buf_puts(b, ";"); }
     buf_printf(b, " sp_bool _t%d = 1;", tk);
+    /* every member the keywords leave out is named in one message, as
+       Data#initialize names them */
+    if (cls->is_data && cls->nivars > 0) {
+      Buf ml; memset(&ml, 0, sizeof ml);
+      for (int a = 0; a < cls->nivars; a++) buf_printf(&ml, "\"%s\", ", cls->ivars[a] + 1);
+      buf_printf(b, " sp_kwargs_verify(_t%d, (const char *const[]){%s0}, (const char *const[]){%s0},"
+                    " (const char *const[]){0}, 0);", th, ml.p, ml.p);
+      free(ml.p);
+    }
   }
   else {
     buf_printf(b, " sp_bool _t%d = ", tk);
@@ -9323,6 +9377,17 @@ void emit_super(Compiler *c, int id, Buf *b) {
         return;
       }
       int cnt = (kwh >= 0 || is_fwd) ? cls->nivars : an;
+      /* the members a keyword super leaves out, all named in one message */
+      char kmiss[600] = "";
+      if (kwh >= 0) {
+        char ml[512] = ""; int nm = 0;
+        for (int a = 0; a < cls->nivars; a++)
+          if (struct_kwarg_value(c, kwh, cls->ivars[a] + 1) < 0) {
+            char iv[300]; snprintf(iv, sizeof iv, ":%s", cls->ivars[a] + 1);
+            kw_names_add(ml, sizeof ml, &nm, iv);
+          }
+        if (nm) kw_error_message(kmiss, sizeof kmiss, "missing", nm, ml);
+      }
       buf_puts(b, "(");
       for (int a = 0; a < cls->nivars && a < cnt; a++) {
         TyKind ivt = cls->ivar_types[a];
@@ -9357,8 +9422,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
                still type-checks against the member slot -- a value-type-object
                member is an inline struct, so `NULL` won't assign; give it the
                compound-literal zero instead. */
-            buf_printf(b, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), ",
-                       cls->ivars[a] + 1);
+            buf_printf(b, "(sp_raise_cls(\"ArgumentError\", \"%s\"), ", kmiss);
             if (comp_ty_value_obj(c, ivt))
               buf_printf(b, "(sp_%s){0})", c->classes[ty_object_class(ivt)].c_name);
             else

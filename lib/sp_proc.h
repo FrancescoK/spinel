@@ -51,7 +51,6 @@ sp_Proc *sp_proc_new(void *fn, void *cap, void (*cap_scan)(void *));
 sp_int sp_proc_arity(sp_Proc *p);
 sp_bool sp_proc_lambda_p(sp_Proc *p);
 const char *sp_proc_inspect(sp_Proc *p);
-void sp_proc_lambda_arity_check(sp_int argc, sp_int req, sp_int opt, sp_bool has_rest, sp_bool has_kw);
 sp_PolyArray *sp_proc_parameters_ids(sp_Proc *p, int mode, sp_sym req_id, sp_sym opt_id);
 sp_PolyArray *sp_proc_parameters(sp_Proc *p);
 void sp_curry_scan(void *p);

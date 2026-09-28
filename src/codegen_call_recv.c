@@ -10109,21 +10109,41 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       }
       if (wkwh >= 0) {
         int en = 0; const int *els = nt_arr(nt, wkwh, "elements", &en);
+        /* an unknown member keyword is a runtime ArgumentError in CRuby (not a
+           compile error): evaluate the receiver, then raise, naming every
+           key no member takes, once each, as #inspect writes it (#2664) */
+        char unk[512] = ""; int nunk = 0, spelled = 1;
         for (int e = 0; e < en; e++) {
           if (nt_type(nt, els[e]) && sp_streq(nt_type(nt, els[e]), "AssocSplatNode")) continue;
           int key = nt_ref(nt, els[e], "key");
           const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
-          const char *kn = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
+          int is_sym = kty && sp_streq(kty, "SymbolNode"), is_str = kty && sp_streq(kty, "StringNode");
+          const char *kn = is_sym ? nt_str(nt, key, "value") : is_str ? nt_str(nt, key, "content") : NULL;
           char ivn[256];
           if (kn) snprintf(ivn, sizeof ivn, "@%s", kn);
-          /* an unknown member keyword is a runtime ArgumentError in CRuby (not a
-             compile error): evaluate the receiver, then raise. (#2664) */
-          if (!kn || comp_ivar_index(sc, ivn) < 0) {
-            buf_puts(b, "({ (void)("); emit_expr(c, recv, b);
-            buf_printf(b, "); sp_raise_cls(\"ArgumentError\", \"unknown keyword: :%s\"); (sp_%s *)NULL; })",
-                       kn ? kn : "?", sc->c_name);
-            return 1;
+          if (is_sym && comp_ivar_index(sc, ivn) >= 0) continue;
+          if (!kn) { spelled = 0; continue; }
+          int dup = 0;
+          for (int e2 = 0; e2 < e && !dup; e2++) {
+            int k2 = nt_ref(nt, els[e2], "key");
+            const char *t2 = k2 >= 0 ? nt_type(nt, k2) : NULL;
+            const char *n2 = t2 && sp_streq(t2, kty) ? nt_str(nt, k2, is_sym ? "value" : "content") : NULL;
+            dup = n2 && sp_streq(n2, kn);
           }
+          if (dup) continue;
+          char iv[300];
+          kw_key_inspect(kn, is_sym, iv, sizeof iv);
+          kw_names_add(unk, sizeof unk, &nunk, iv);
+        }
+        if (nunk || !spelled) {
+          char km[600];
+          if (nunk && spelled) kw_error_message(km, sizeof km, "unknown", nunk, unk);
+          else snprintf(km, sizeof km, "unknown keyword: :?");
+          buf_puts(b, "({ (void)("); emit_expr(c, recv, b);
+          buf_puts(b, "); sp_raise_cls(\"ArgumentError\", ");
+          emit_str_literal(b, km);
+          buf_printf(b, "); (sp_%s *)NULL; })", sc->c_name);
+          return 1;
         }
       }
       int t = ++g_tmp;
