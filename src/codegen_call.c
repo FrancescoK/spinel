@@ -292,9 +292,11 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
     const char *svs = g_self, *svd = g_self_deref;
     g_self = saved_self; g_self_deref = saved_self_deref;
     /* A rest param collects the middle arguments into an Array rather than
-       taking one of them straight into its slot. */
+       taking one of them straight into its slot, a keyword hash no parameter
+       takes included. */
     if (m->rest_idx >= 0 && i == m->rest_idx)
-      emit_rest_pack_kwh(c, i, pos_argc - m->npost_rest, argv2, -1, b);
+      emit_rest_pack_kwh(c, i, pos_argc - m->npost_rest, argv2,
+                         rest_kwh_tail(c, m, kwh, pos_argc), b);
     else if (m->rest_idx >= 0 && i > m->rest_idx && i <= m->rest_idx + m->npost_rest) {
       int post_j = i - m->rest_idx - 1;   /* 0-based index among the posts */
       int argv_idx = pos_argc - m->npost_rest + post_j;
