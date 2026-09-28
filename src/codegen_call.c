@@ -4251,7 +4251,8 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
      sp_int for the accessors, with -1 as the nil sentinel for
      exitstatus/termsig), and the call-site codegen auto-boxes to
      sp_RbVal (or sp_box_nil for the -1 case) according to the
-     analyze-infer return type. */
+     analyze-infer return type. A boxed SystemExit answers `success?` there
+     too. */
   if (argc == 0) {
     const char *ps_int_fn = NULL;     /* takes the int status word, returns sp_int */
     const char *ps_bool_fn = NULL;    /* same input, returns sp_bool (0/1) */
@@ -4270,10 +4271,16 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
       int tv = ++g_tmp, tr2 = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
       buf_printf(b, "; int _t%d = _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_PROCESS_STATUS"
-                    " ? %s(((sp_ProcessStatus *)_t%d.v.p)->status)"
-                    " : (int)(sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)), 0);"
+                    " ? %s(((sp_ProcessStatus *)_t%d.v.p)->status)",
+                 tr2, tv, tv, ps_tri_fn, tv);
+      /* a SystemExit answers success? too, as the typed accessor reads it;
+         any other exception keeps the NoMethodError, with its receiver */
+      buf_printf(b, " : _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_EXCEPTION && _t%d.v.p"
+                    " && sp_exc_cls_matches(((sp_Exception *)_t%d.v.p)->cls_name, \"SystemExit\")"
+                    " ? (int)sp_exc_success_acc((sp_Exception *)_t%d.v.p)", tv, tv, tv, tv, tv);
+      buf_printf(b, " : (int)(sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)), 0);"
                     " _t%d < 0 ? sp_box_nil() : sp_box_bool((sp_bool)_t%d); })",
-                 tr2, tv, tv, ps_tri_fn, tv, name, tv, tr2, tr2);
+                 name, tv, tr2, tr2);
       return 1;
     }
     if (ps_bool_fn) {
