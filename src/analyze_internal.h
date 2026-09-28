@@ -394,6 +394,7 @@ void qc_collect_class_writes(Compiler *c, int node, char (*path)[64], int depth,
 void qualify_colliding_classes(Compiler *c);
 void rename_shadowing_block_params(Compiler *c);
 void topup_forwarding_arity(Compiler *c);
+void expand_struct_forwarding_super(Compiler *c);
 /* Defined in codegen.c; the analyzer uses it to specialize/type a
    `rescue <UserExc> => e` binding (#1415). */
 int class_is_exc_subclass(Compiler *c, int ci);
