@@ -2117,7 +2117,9 @@ void build_ie_map(Compiler *c) {
     g_ie_node_class = grown;
     g_ie_node_class_cap = nt->count;
   }
-  for (int i = 0; i < nt->count; i++) g_ie_node_class[i] = -1;
+  int *pend = malloc(sizeof(int) * (size_t)nt->count);
+  for (int i = 0; i < nt->count; i++) g_ie_node_class[i] = pend[i] = -1;
+  for (int pass = 0; pass < 2; pass++)
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty || !sp_streq(ty, "CallNode")) continue;
@@ -2125,7 +2127,7 @@ void build_ie_map(Compiler *c) {
     if (!nm) continue;
     int recv = nt_ref(nt, id, "receiver");
     int blk = nt_ref(nt, id, "block");
-    if (blk < 0) continue;
+    if (blk < 0 || (!pass && nt_kind(nt, blk) != NK_BlockArgumentNode)) continue;
     int cls;
     if (recv < 0) {
       /* receiverless instance_eval/exec inside an instance method: self. */
@@ -2147,10 +2149,12 @@ void build_ie_map(Compiler *c) {
       }
     }
     int body = ie_block_body(c, blk);
-    if (body >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode && g_ie_node_class[body] != -1 &&
-        g_ie_node_class[body] != cls) cls = -2 - id;
-    if (body >= 0) mark_ie_subtree(c, body, cls);
+    if (body < 0) continue;
+    if (pass) pend[body] = pend[body] == -1 || pend[body] == cls ? cls : -2 - id;
+    mark_ie_subtree(c, body, pass ? pend[body] : cls);
   }
+  for (int i = 0; i < nt->count; i++) if (pend[i] != -1) mark_ie_subtree(c, i, pend[i]);
+  free(pend);
 }
 
 /* The receiver class for a node inside an instance_eval/exec block, or -1. */

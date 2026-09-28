@@ -6238,9 +6238,10 @@ else if (orecv >= 0 && onm) {
   int ie_mark = ie_class_of(c, body) == ie_class_of(c, create) ? -1 : ie_class_of(c, body);
   if (ie_mark < -1) unsupported(c, create, "proc run by instance_eval on more than one class");
   int ie_cls = ie_mark >= 0 && proc_body_uses_self(c, body, ie_mark) ? ie_mark : -1;
-  int cap_self = ie_cls < 0 && bs && bs->class_id >= 0 && !bs->is_cmethod &&
-                 (proc_body_uses_self(c, body, bs->class_id) ||
-                  proc_body_uses_self(c, proc_params_node(c, create), bs->class_id));
+  int scls = g_ie_class_id >= 0 ? g_ie_class_id : bs && !bs->is_cmethod ? bs->class_id : -1;
+  int cap_self = ie_cls < 0 && scls >= 0 &&
+                 (proc_body_uses_self(c, body, scls) ||
+                  proc_body_uses_self(c, proc_params_node(c, create), scls));
   /* A class method that takes the receiving class as a leading parameter has
      it in `_sp_cls`; a lifted block's function signature is (_cap, argc, args)
      and knows nothing of it, so a sibling class-method call inside the block
@@ -6248,8 +6249,8 @@ else if (orecv >= 0 && onm) {
      struct, the way instance self is carried (#3797). */
   int cap_cls = ie_cls < 0 && bs && bs->is_cmethod &&
                 cmethod_takes_self_cls(c, (int)(bs - c->scopes));
-  int self_is_value = cap_self && c->classes[bs->class_id].is_value_type;
-  const char *self_cls = cap_self ? c->classes[bs->class_id].c_name : NULL;
+  int self_is_value = cap_self && c->classes[scls].is_value_type;
+  const char *self_cls = cap_self ? c->classes[scls].c_name : NULL;
 
   /* parameter metadata for Proc#parameters: every parameter kind in signature
      order. Positionals (leading + post) are :req for a lambda and :opt for a
@@ -6391,7 +6392,7 @@ else if (orecv >= 0 && onm) {
       buf_printf(&g_procs, "  if (_c->c_%s) sp_gc_mark((void *)_c->c_%s);\n", caps.v[i], caps.v[i]);
     }
     if (cap_self && self_is_value) {
-      if (class_needs_scan(&c->classes[bs->class_id]))
+      if (class_needs_scan(&c->classes[scls]))
         buf_printf(&g_procs, "  sp_%s__gc_scan(&_c->__self_val);\n", self_cls);
     }
     else if (cap_self) buf_puts(&g_procs, "  if (_c->__self) sp_gc_mark(_c->__self);\n");
