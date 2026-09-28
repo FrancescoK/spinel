@@ -73,13 +73,6 @@ static int g_inline_depth = 0;
    The alias is a pointer to the caller's slot, declared under the callee's
    renamed cell name, and the parameter's is_cell is held at 1 while the
    expansion is emitted so the body reads and writes through it. */
-static int inline_str_mutator_name(const char *nm) {
-  size_t l = nm ? strlen(nm) : 0;
-  if (!l) return 0;
-  return sp_streq(nm, "<<") || sp_streq(nm, "concat") || sp_streq(nm, "replace") ||
-         sp_streq(nm, "prepend") || sp_streq(nm, "insert") || sp_streq(nm, "clear") ||
-         sp_streq(nm, "[]=") || (l > 1 && nm[l - 1] == '!');
-}
 /* Does scope mi's body rebind `name`? 0 = never; 1 = only by plain
    assignment (`io = String.new(...)`), which the alias survives: the store
    repoints the cell at a private local, so the caller's variable keeps what
@@ -112,7 +105,7 @@ static int inline_param_mutated(Compiler *c, int mi, const char *name) {
     int r = nt_ref(nt, q, "receiver");
     if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode) {
       const char *rn = nt_str(nt, r, "name");
-      if (rn && sp_streq(rn, name) && inline_str_mutator_name(nt_str(nt, q, "name"))) return 1;
+      if (rn && sp_streq(rn, name) && an_str_mutator_name(nt_str(nt, q, "name"))) return 1;
     }
     int aa = nt_ref(nt, q, "arguments"); int an = 0;
     const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &an) : NULL;
@@ -134,7 +127,7 @@ static int subtree_mutates_local(const NodeTable *nt, int id, const char *name) 
     int r = nt_ref(nt, id, "receiver");
     if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode) {
       const char *rn = nt_str(nt, r, "name");
-      if (rn && sp_streq(rn, name) && inline_str_mutator_name(nt_str(nt, id, "name"))) return 1;
+      if (rn && sp_streq(rn, name) && an_str_mutator_name(nt_str(nt, id, "name"))) return 1;
     }
   }
   int nr = nt_num_refs(nt, id);

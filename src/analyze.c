@@ -11421,7 +11421,7 @@ static void mark_empty_hash_receivers(Compiler *c) {
      another method's byref slot (fixpoint), and is never PLAIN-reassigned:
      CRuby `s = ...` rebinds the local invisibly to the caller, which a
      write-through cell would wrongly propagate. */
-static int an_str_mutator_name(const char *nm) {
+int an_str_mutator_name(const char *nm) {
   size_t l = nm ? strlen(nm) : 0;
   if (!l) return 0;
   return sp_streq(nm, "<<") || sp_streq(nm, "concat") || sp_streq(nm, "replace") ||
