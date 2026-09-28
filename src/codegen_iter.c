@@ -3971,6 +3971,10 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d);\n", ta);
     emit_indent(b, indent); emit_poly_iter_obj_normalize(c, ta, b);
     emit_indent(b, indent); buf_printf(b, "sp_poly_iter_check(_t%d, \"%s\");\n", ta, name);
+    /* an Enumerator (or a String Range) has no element read of its own: walk
+       the items it yields, so a Ruby-defined Enumerable method (find, count,
+       each_with_object, ...) over a boxed one saw no elements */
+    emit_indent(b, indent); buf_printf(b, "_t%d = sp_poly_iter_subject(_t%d);\n", ta, ta);
     emit_indent(b, indent); buf_printf(b, "sp_int _t%d = sp_poly_arr_len_ex(_t%d);\n", tn, ta);
     emit_indent(b, indent);
     if (sp_streq(name, "reverse_each"))

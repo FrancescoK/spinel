@@ -7140,7 +7140,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           /* an Integer Range walks through the same helper (its length and
              members are known to it); without it a boxed Range fell to the
              user-class switch's NoMethodError (#4840) */
-          buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && (sp_poly_is_array_kind(_t%d.cls_id) || sp_poly_is_hash_kind(_t%d.cls_id) || _t%d.cls_id == SP_BUILTIN_RANGE)) { _t%d = ", tv, tv, tv, tv, tr);
+          buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && (sp_poly_is_array_kind(_t%d.cls_id) || sp_poly_is_hash_kind(_t%d.cls_id) || _t%d.cls_id == SP_BUILTIN_RANGE || _t%d.cls_id == SP_BUILTIN_ENUMERATOR)) { _t%d = ", tv, tv, tv, tv, tv, tr);
           if (ret == TY_POLY) buf_puts(b, pcall);
           else emit_unbox_text(c, ret, pcall, b);
           buf_puts(b, "; }\nelse ");

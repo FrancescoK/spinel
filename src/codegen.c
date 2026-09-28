@@ -4935,6 +4935,39 @@ static int stmt_is_yielder_push(Compiler *c, int id, const char *yname) {
 }
 
 
+/* Does a generator body yield several values in one step -- `y.yield(a, b)`,
+   or a splatted `y.yield(*xs)` on its yielder `yname`? The
+   fiber packs such a step as an Array, which the enumerator must then mark
+   yields_pair so a `|*r|` block takes it spread and a `|x|` block its first. */
+static int gen_yields_multi(const NodeTable *nt, int id, const char *yname) {
+  if (id < 0 || !yname) return 0;
+  const char *ty = nt_type(nt, id);
+  if (!ty) return 0;
+  if (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode") ||
+      sp_streq(ty, "SingletonClassNode"))
+    return 0;
+  if (sp_streq(ty, "CallNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    int rcv = nt_ref(nt, id, "receiver");
+    if (nm && sp_streq(nm, "yield") && rcv >= 0 &&
+        nt_type(nt, rcv) && sp_streq(nt_type(nt, rcv), "LocalVariableReadNode") &&
+        nt_str(nt, rcv, "name") && sp_streq(nt_str(nt, rcv, "name"), yname)) {
+      int ar = nt_ref(nt, id, "arguments");
+      int ac = 0; const int *av = ar >= 0 ? nt_arr(nt, ar, "arguments", &ac) : NULL;
+      if (ac > 1) return 1;
+      if (ac == 1 && nt_type(nt, av[0]) && sp_streq(nt_type(nt, av[0]), "SplatNode")) return 1;
+    }
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) if (gen_yields_multi(nt, nt_ref_at(nt, id, i), yname)) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int k = 0; k < n; k++) if (gen_yields_multi(nt, ids[k], yname)) return 1;
+  }
+  return 0;
+}
+
 void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   nd_stamp(nt_ref(c->nt, id, "block"), ND_BLOCK_PROC);   /* the body is a function of its own */
   const NodeTable *nt = c->nt;
@@ -5378,6 +5411,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
      If there are captures, allocate a GC-managed capture struct, fill it,
      assign to fiber->user_data, then return the fiber.
      Without captures: just sp_Fiber_new(fname). */
+  int gen_multi = as_gen && gen_yields_multi(nt, body, bp0);
   if (ncap > 0 || cap_self) {
     int tc = ++g_tmp;
     /* For a generator the fiber is created lazily by the enumerator, so only the
@@ -5427,9 +5461,9 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
     }
     free(cap_rn);
     if (as_gen) {
-      buf_printf(b, "sp_Enumerator_new_gen(%s, _t%d, ", fname, tc);
+      buf_printf(b, "%ssp_Enumerator_new_gen(%s, _t%d, ", gen_multi ? "sp_enum_mark_pair(" : "", fname, tc);
       emit_enum_size_arg(c, size_node, b);
-      buf_puts(b, ")");
+      buf_puts(b, gen_multi ? "))" : ")");
     }
     else {
       emit_indent(g_pre, g_indent);
@@ -5438,9 +5472,9 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
     }
   }
   else if (as_gen) {
-    buf_printf(b, "sp_Enumerator_new_gen(%s, NULL, ", fname);
+    buf_printf(b, "%ssp_Enumerator_new_gen(%s, NULL, ", gen_multi ? "sp_enum_mark_pair(" : "", fname);
     emit_enum_size_arg(c, size_node, b);
-    buf_puts(b, ")");
+    buf_puts(b, gen_multi ? "))" : ")");
   }
   else {
     buf_printf(b, "sp_Fiber_new(%s)", fname);
