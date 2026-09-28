@@ -14363,12 +14363,31 @@ static int an_class_dynamic_new_risk(Compiler *c, int cid) {
        does -- then ask each class once. */
     unsigned long long seen = 0;   /* bit k: some unpinnable `new` passes k */
     int seen_any = 0;              /* a shape we cannot count, or one over 63 */
+    /* A receiverless `new` inside `def self.m` is `self.new`. It constructs
+       the enclosing class -- or a descendant, when the class method is
+       inherited -- and never an unrelated one, so its shape does not belong
+       in the free-floating census. Counted there, its ARITY alone cost every
+       class that takes that many parameters: a five-argument `new(a, b, c, d,
+       e)` in one class's own factory method put an unrelated five-parameter
+       class out of reach of the handle-argument evidence, and a mutable
+       String that class retained was then copied at the call, so the caller's
+       later writes never reached it. Held per owner and folded into that
+       owner's subtree below. */
+    unsigned long long *selfseen = (unsigned long long *)calloc(
+        (size_t)(c->nclasses > 0 ? c->nclasses : 1), sizeof(unsigned long long));
+    unsigned char *selfany = (unsigned char *)calloc(
+        (size_t)(c->nclasses > 0 ? c->nclasses : 1), 1);
     for (int u = 0; u < nt->count; u++) {
       if (nt_kind(nt, u) != NK_CallNode) continue;
       const char *un = nt_str(nt, u, "name");
       if (!un || !sp_streq(un, "new")) continue;
       int rc = nt_ref(nt, u, "receiver");
       if (rc >= 0 && nt_kind(nt, rc) == NK_ConstantReadNode) continue;  /* pinned */
+      int selfowner = -1;
+      if (rc < 0 && selfseen && selfany) {
+        Scope *csc = comp_scope_of(c, u);
+        if (csc && csc->is_cmethod && csc->class_id >= 0) selfowner = csc->class_id;
+      }
       int argsN = nt_ref(nt, u, "arguments");
       int argc = 0;
       const int *argv = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &argc) : NULL;
@@ -14379,12 +14398,30 @@ static int an_class_dynamic_new_risk(Compiler *c, int cid) {
         if (ak == NK_BlockArgumentNode) continue;
         npos++;
       }
-      if (uncountable || npos >= 64) seen_any = 1;
+      if (selfowner >= 0) {
+        if (uncountable || npos >= 64) selfany[selfowner] = 1;
+        else selfseen[selfowner] |= 1ULL << npos;
+      }
+      else if (uncountable || npos >= 64) seen_any = 1;
       else seen |= 1ULL << npos;
     }
-    if (seen_any || seen) {
+    /* push each owner's `self.new` shapes down its subtree, once, so the
+       per-class test below is a lookup rather than an ancestor walk */
+    int self_any_seen = 0;
+    if (selfseen && selfany) {
+      for (int oc = 0; oc < c->nclasses; oc++) {
+        if (!selfseen[oc] && !selfany[oc]) continue;
+        self_any_seen = 1;
+        int nd = 0; const int *ds = comp_descendants(c, oc, &nd);
+        for (int d = 0; d < nd && ds; d++) {
+          selfseen[ds[d]] |= selfseen[oc];
+          selfany[ds[d]] |= selfany[oc];
+        }
+      }
+    }
+    if (seen_any || seen || self_any_seen) {
       for (int ci = 0; ci < c->nclasses; ci++) {
-        if (seen_any) { risk[ci] = 1; continue; }
+        if (seen_any || (selfany && selfany[ci])) { risk[ci] = 1; continue; }
         int mi = comp_method_in_class(c, ci, "initialize");
         if (mi < 0) continue;        /* no initialize: no parameter to protect */
         int pn = (mi < c->nscopes && c->scopes[mi].def_node >= 0)
@@ -14412,9 +14449,10 @@ static int an_class_dynamic_new_risk(Compiler *c, int cid) {
           accept = (hi - nreq >= 63) ? (~0ULL << nreq)
                                      : (((1ULL << (hi - nreq + 1)) - 1) << nreq);
         }
-        if (seen & accept) risk[ci] = 1;
+        if ((seen | (selfseen ? selfseen[ci] : 0ULL)) & accept) risk[ci] = 1;
       }
     }
+    free(selfseen); free(selfany);
   }
   return risk[cid] != 0;
 }
