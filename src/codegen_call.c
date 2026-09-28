@@ -18253,9 +18253,12 @@ static int arity_violation(Compiler *c, int id, char *exp, size_t n, int *eval_r
   return 1;
 }
 
+static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][32]);
 int builtin_arity_violation(Compiler *c, int id) {
   char exp[32]; int eval_recv;
-  return arity_violation(c, id, exp, sizeof exp, &eval_recv);
+  if (arity_violation(c, id, exp, sizeof exp, &eval_recv)) return 1;
+  const char *tests[10]; char exps[10][32];
+  return poly_arity_plan(c, id, tests, exps) > 0;
 }
 
 /* The raise for a count a method refuses: the receiver (when asked) and the
@@ -18281,9 +18284,114 @@ static void emit_wrong_count(Compiler *c, int id, const char *exp, int eval_recv
              given, exp, dv ? dv : "0");
 }
 
+
+/* The same decision for a boxed receiver: the count is wrong for every
+   builtin class that has the method (and for Object's row, which a user
+   object answers with), and no program class, top-level def or reopened
+   builtin can take the call instead. Which error CRuby raises then depends
+   on the class the receiver has at run time: ArgumentError with that
+   class's range where it has the method, NoMethodError where it has not.
+   Fills the classes' runtime tests and ranges; answers how many. */
+#define POLY_ARITY_MAX 10
+static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][32]) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!name || recv < 0 || comp_ntype(c, recv) != TY_POLY) return 0;
+  const char *safe_op = nt_str(nt, id, "call_operator");
+  if (safe_op && sp_streq(safe_op, "&.")) return 0;
+  int blk = nt_ref(nt, id, "block");
+  int with_block = 0;
+  if (blk >= 0) {
+    const char *bt = nt_type(nt, blk);
+    if (bt && sp_streq(bt, "BlockArgumentNode")) return 0;
+    with_block = 1;
+  }
+  int anode = nt_ref(nt, id, "arguments");
+  int argc = 0; const int *argv = anode >= 0 ? nt_arr(nt, anode, "arguments", &argc) : NULL;
+  for (int i = 0; i < argc; i++) {
+    const char *at = nt_type(nt, argv[i]);
+    if (at && (sp_streq(at, "SplatNode") || sp_streq(at, "KeywordHashNode") ||
+               sp_streq(at, "ForwardingArgumentsNode") ||
+               sp_streq(at, "BlockArgumentNode")))
+      return 0;
+  }
+  if (recv_user_defines(c, name) || comp_method_index(c, name) >= 0) return 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_is_reader(&c->classes[k], name) || comp_is_writer(&c->classes[k], name) ||
+        comp_method_in_chain(c, k, "method_missing", NULL) >= 0) return 0;
+  static const char *const CLS[POLY_ARITY_MAX] = {
+    "String", "Integer", "Float", "Symbol", "Array", "Hash", "Range",
+    "NilClass", "TrueClass", "Object" };
+  static const char *const TST[POLY_ARITY_MAX] = {
+    "_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)",
+    "_t%d.tag == SP_TAG_INT || _t%d.tag == SP_TAG_BIGINT",
+    "_t%d.tag == SP_TAG_FLT && _t%d.tag == SP_TAG_FLT",
+    "_t%d.tag == SP_TAG_SYM && _t%d.tag == SP_TAG_SYM",
+    "_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)",
+    "_t%d.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_t%d.cls_id)",
+    "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE",
+    "_t%d.tag == SP_TAG_NIL && _t%d.tag == SP_TAG_NIL",
+    "_t%d.tag == SP_TAG_BOOL && _t%d.tag == SP_TAG_BOOL",
+    "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0" };
+  const SpAritySpec *itbl = sp_builtin_arity_spec_tbl;
+  if (reopened_owns(c, "Object", name) || reopened_owns(c, "Kernel", name) ||
+      reopened_owns(c, "Comparable", name) || reopened_owns(c, "Enumerable", name) ||
+      reopened_owns(c, "FalseClass", name) || reopened_owns(c, "Numeric", name))
+    return 0;
+  int n = 0;
+  for (int q = 0; q < POLY_ARITY_MAX; q++) {
+    if (reopened_owns(c, CLS[q], name)) return 0;
+    char exp[32]; exp[0] = 0;
+    int row = (q < POLY_ARITY_MAX - 1 && arity_spec_row(itbl, CLS[q], name, with_block, argc, exp, sizeof exp)) ||
+              arity_spec_row(itbl, "Object", name, with_block, argc, exp, sizeof exp);
+    if (!row) {
+      /* the spec leaves out a method with nothing to enforce (any count) or
+         a count it could not prove; the arity dump still knows the method */
+      int a;
+      if (!builtin_method_arity(CLS[q], name, &a) && !builtin_method_arity("Object", name, &a))
+        continue;                 /* no such method: NoMethodError there */
+      if (a < 0 || a == argc) return 0;
+      snprintf(exp, sizeof exp, "%d", a);
+    }
+    if (!exp[0]) return 0;        /* this class takes the count */
+    tests[n] = TST[q];
+    snprintf(exps[n], 32, "%s", exp);
+    n++;
+  }
+  return n;
+}
+
+static int emit_poly_arity_guard(Compiler *c, int id, Buf *b) {
+  const char *tests[POLY_ARITY_MAX]; char exps[POLY_ARITY_MAX][32];
+  int n = poly_arity_plan(c, id, tests, exps);
+  if (n == 0) return 0;
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  int anode = nt_ref(nt, id, "arguments");
+  int argc = 0; const int *argv = anode >= 0 ? nt_arr(nt, anode, "arguments", &argc) : NULL;
+  const char *dv = default_value(comp_ntype(c, id));
+  int tv = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", tv);
+  emit_boxed(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
+  for (int i = 0; i < argc; i++) {
+    buf_puts(b, "(void)("); emit_expr(c, argv[i], b); buf_puts(b, "); ");
+  }
+  for (int q = 0; q < n; q++) {
+    buf_puts(b, q ? "else if (" : "if (");
+    buf_printf(b, tests[q], tv, tv);
+    buf_printf(b, ") sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given %d, expected %s)\"); ",
+               argc, exps[q]);
+  }
+  buf_printf(b, "else sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); %s; })", name, tv, dv ? dv : "0");
+  return 1;
+}
+
 int emit_builtin_arity_guard(Compiler *c, int id, Buf *b) {
   char exp[32]; int eval_recv;
-  if (!arity_violation(c, id, exp, sizeof exp, &eval_recv)) return 0;
+  if (!arity_violation(c, id, exp, sizeof exp, &eval_recv)) return emit_poly_arity_guard(c, id, b);
   emit_wrong_count(c, id, exp, eval_recv, -1, b);
   return 1;
 }
