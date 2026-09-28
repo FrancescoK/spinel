@@ -1,0 +1,56 @@
+#<struct Named a=1, b=2>
+#<struct Named a=1, b=2>
+#<struct Named a=nil, b=2>
+#<struct Named a=2, b=nil>
+ArgumentError: unknown keywords: -3
+ArgumentError: unknown keywords: 2
+ArgumentError: unknown keywords: 5, z
+ArgumentError: unknown keywords: z, 5
+ArgumentError: unknown keywords: z
+#<struct Plain a=1, b=2>
+#<struct Plain a=nil, b=2>
+ArgumentError: unknown keywords: 5
+#<struct Named a=3, b=nil>
+#<struct Named a=1, b=nil>
+#<struct Named a=1, b=4>
+#<struct Named a=nil, b=4>
+lit 1
+lit 2
+lit 3
+#<struct Named a=3, b=2>
+#<struct Named a=nil, b=2>
+#<struct Named a=5, b=7>
+ArgumentError: unknown keywords: 5
+ArgumentError: unknown keywords: z, 5
+#<struct Plain a=1, b=2>
+#<struct Plain a=2, b=nil>
+#<struct Named a=nil, b=2>
+#<struct Named a=2, b=nil>
+ArgumentError: unknown keywords: 3, z
+#<struct Named a=nil, b=2>
+#<struct Named a=nil, b=2>
+TypeError: no implicit conversion from nil to integer
+TypeError: no implicit conversion of true into Integer
+TypeError: 1 is not a symbol nor a string
+TypeError: 1 is not a symbol nor a string
+lit 1
+lit 2
+lit 3
+TypeError: 1 is not a symbol nor a string
+#<struct Loose a={1 => 2}, b=nil>
+#<struct Loose a={1 => 2, b: 3}, b=nil>
+"S"
+3.5
+nil
+#<struct Made a=nil, b="s">
+#<struct Made a=1, b=2>
+ArgumentError: unknown keywords: 2
+TypeError: 1 is not a symbol nor a string
+#<struct Named a=5, b=nil>
+#<struct Named a=5, b=nil>
+#<struct Plain a=5, b=2>
+#<struct Named a=6, b=nil>
+1
+#<struct Named a=3, b=nil>
+#<struct Named a=2, b=nil>
+[6]

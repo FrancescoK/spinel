@@ -11661,6 +11661,66 @@ static int sym_name_plain(const char *s) {
   return 1;
 }
 
+/* True when the literal keywords of `kwh` into the Data or Struct `cls`
+   bind only at run time, from the constructor's merged hash: a key that is
+   not a Symbol names its member there -- a String by name, a Struct's
+   other key by index -- and a member's key written twice binds its last
+   value, every value evaluated in source order, as CRuby binds them. */
+static int struct_kw_binds_late(Compiler *c, ClassInfo *cls, int kwh) {
+  const NodeTable *nt = c->nt;
+  int n = 0; const int *el = nt_arr(nt, kwh, "elements", &n);
+  for (int e = 0; e < n; e++) {
+    if (nt_kind(nt, el[e]) != NK_AssocNode) continue;
+    int key = nt_ref(nt, el[e], "key");
+    if (nt_kind(nt, key) != NK_SymbolNode) return 1;
+    const char *kn = nt_str(nt, key, "value");
+    char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", kn);
+    if (comp_ivar_index(cls, ivn) < 0) continue;
+    for (int e2 = e + 1; e2 < n; e2++) {
+      int k2 = nt_ref(nt, el[e2], "key");
+      if (nt_kind(nt, el[e2]) == NK_AssocNode && nt_kind(nt, k2) == NK_SymbolNode &&
+          sp_streq(nt_str(nt, k2, "value"), kn)) return 1;
+    }
+  }
+  return 0;
+}
+/* The keywords of a Data or Struct construction, `kwh`, merged in source
+   order into one hash that takes any key (emit_ds_hash_merge), boxed into
+   a rooted temp: its id. */
+static int emit_struct_kw_hash(Compiler *c, int kwh) {
+  TyKind mty; int mh = emit_ds_hash_merge(c, kwh, 1, &mty);
+  char mhn[32]; snprintf(mhn, sizeof mhn, "_t%d", mh);
+  int ht = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_RbVal _t%d = ", ht);
+  emit_boxed_text(c, mty, mhn, g_pre);
+  buf_printf(g_pre, "; SP_GC_ROOT_RBVAL(_t%d);\n", ht);
+  return ht;
+}
+/* The keyword hash in temp `ht` checked against the members of `cls` as
+   CRuby checks it (sp_kw_splat_check), which leaves in `ht` the hash the
+   members read. With `kwh`, a member one of its literal keys names is
+   given; with -1 every key is in the hash. */
+static void emit_struct_kw_check(Compiler *c, ClassInfo *cls, int ht, int kwh) {
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "_t%d = sp_kw_splat_check(_t%d, (const char *const[]){", ht, ht);
+  for (int a = 0; a < cls->nivars; a++) buf_printf(g_pre, "%s\"%s\"", a ? ", " : "", cls->ivars[a] + 1);
+  if (cls->nivars == 0) buf_puts(g_pre, "\"\"");
+  buf_puts(g_pre, "}, ");
+  buf_printf(g_pre, "%d, (const unsigned char[]){", cls->nivars);
+  for (int a = 0; a < cls->nivars; a++)
+    buf_printf(g_pre, "%s%d", a ? ", " : "", kwh >= 0 && struct_kwarg_value(c, kwh, cls->ivars[a] + 1) >= 0);
+  if (cls->nivars == 0) buf_puts(g_pre, "0");
+  buf_printf(g_pre, "}, %d);\n", cls->is_data ? 1 : 0);
+}
+/* Member `a` of `cls` read out of the keyword hash in temp `ht`, in the
+   type every key that may name it brings (struct_new_types_members): nil
+   when no key names it or the last one is nil. */
+static void emit_struct_kw_member(Compiler *c, ClassInfo *cls, int a, int ht, Buf *b) {
+  char gv[256];
+  snprintf(gv, sizeof gv, "sp_kw_member_val(_t%d, \"%s\")", ht, cls->ivars[a] + 1);
+  emit_unbox_nilable_text(c, cls->ivar_types[a], gv, b);
+}
 static int emit_class_new_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -11882,7 +11942,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
            member none names, are known only at run time, where CRuby names a
            missing member ahead of an unknown key: such a key goes into the
            merged hash the run-time check judges (below), as does a literal
-           key that is not a Symbol. */
+           key that is not a Symbol (struct_kw_binds_late). */
         int nunk = 0, nonsym = 0;
         if (kwh >= 0 && cls->kw_init != -1) {
           int data_words = cls->is_data;
@@ -11909,7 +11969,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             unames[nunk] = kn;
             buf_printf(&unk, "%s%s%s", nunk++ ? ", " : "", data_words ? ":" : "", kn);
           }
-          if (nunk && !kw_splat) {
+          if (nunk && !kw_splat && !nonsym) {
             buf_puts(b, "({ ");
             for (int e2 = 0; e2 < nke; e2++) {
               /* a computed key runs before its value, as in CRuby */
@@ -11964,6 +12024,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           }
           free(unk.p); free(unames);
         }
+        int late = kwh >= 0 && cls->kw_init != -1 && struct_kw_binds_late(c, cls, kwh);
         /* `X.new(*arr)`: a sole positional splat spreads the array across the
            members at run time -- static arity can't see the count, so it would
            otherwise raise ArgumentError. Data requires an exact count; Struct
@@ -11982,13 +12043,14 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         /* Data.new validates its arguments strictly (unlike Struct, which
            nil-fills): exact positional count, or a keyword for every member and
            no extras; a mix of positional and keyword is an error. A `**splat`
-           has non-literal keys, so its check is deferred to run time (#2661). */
+           has non-literal keys, so its check is deferred to run time (#2661),
+           as is that of the other keywords the merged hash below takes. */
         if (cls->is_data) {
           int mixed = 0;
           for (int a = 0; kwh < 0 && a < argc; a++)
             if (nt_type(nt, argv[a]) && sp_streq(nt_type(nt, argv[a]), "KeywordHashNode")) mixed = 1;
           int bad = 0;
-          if (!kw_splat) {
+          if (!kw_splat && !late) {
             if (kwh < 0) bad = mixed || argc != cls->nivars;
             else {
               int present = 0;
@@ -12136,22 +12198,15 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
            judges with the hash's own, and those of a keyword_init: false
            Struct, whose first member the merged hash is. That hash takes any
            key: a String one names a member as a Symbol does (the members
-           read sp_kw_member_val), and a keyword_init: false Struct keeps it. */
+           read sp_kw_member_val), and a keyword_init: false Struct keeps it.
+           Literal keywords alone merge too when they bind late. */
         int splat_tmp = -1;
         int *lit_tmp = NULL;
-        int merged = splat_h >= 0 && (cls->kw_init == -1 || nunk || nonsym || kwh_sources_overlap(nt, kwh));
-        if (splat_h >= 0) {
+        int merged = (splat_h >= 0 && (cls->kw_init == -1 || nunk || kwh_sources_overlap(nt, kwh))) || late;
+        if (splat_h >= 0 || merged) {
           lit_tmp = malloc(sizeof(int) * (size_t)(cls->nivars > 0 ? cls->nivars : 1));
           for (int a = 0; a < cls->nivars; a++) lit_tmp[a] = -1;
-          if (merged) {
-            TyKind mty; int mh = emit_ds_hash_merge(c, kwh, 1, &mty);
-            char mhn[32]; snprintf(mhn, sizeof mhn, "_t%d", mh);
-            splat_tmp = ++g_tmp;
-            emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "sp_RbVal _t%d = ", splat_tmp);
-            emit_boxed_text(c, mty, mhn, g_pre);
-            buf_printf(g_pre, "; SP_GC_ROOT_RBVAL(_t%d);\n", splat_tmp);
-          }
+          if (merged) splat_tmp = emit_struct_kw_hash(c, kwh);
           int nkp; const int *elsp = nt_arr(nt, kwh, "elements", &nkp);
           for (int i = 0; i < nkp && !merged; i++) {
             int vv = nt_ref(nt, elsp[i], "value");
@@ -12171,18 +12226,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
               lit_tmp[a] = emit_struct_member_temp(c, cls, a, vv);
             }
           }
-          if (cls->is_data || cls->kw_init != -1) {
-            emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "sp_kw_splat_check(_t%d, (const char *const[]){", splat_tmp);
-            for (int a = 0; a < cls->nivars; a++) buf_printf(g_pre, "%s\"%s\"", a ? ", " : "", cls->ivars[a] + 1);
-            if (cls->nivars == 0) buf_puts(g_pre, "\"\"");
-            buf_puts(g_pre, "}, ");
-            buf_printf(g_pre, "%d, (const unsigned char[]){", cls->nivars);
-            for (int a = 0; a < cls->nivars; a++)
-              buf_printf(g_pre, "%s%d", a ? ", " : "", !merged && struct_kwarg_value(c, kwh, cls->ivars[a] + 1) >= 0);
-            if (cls->nivars == 0) buf_puts(g_pre, "0");
-            buf_printf(g_pre, "}, %d);\n", cls->is_data ? 1 : 0);
-          }
+          if (cls->is_data || cls->kw_init != -1) emit_struct_kw_check(c, cls, splat_tmp, merged ? -1 : kwh);
         }
         buf_printf(b, "sp_%s_new(", cls->c_name);
         for (int a = 0; a < cls->nivars; a++) {
@@ -12204,7 +12248,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             else buf_puts(b, mv.p ? mv.p : "");
             free(mv.p);
           }
-          else if (splat_h >= 0 && cls->kw_init == -1) {
+          else if (splat_tmp >= 0 && cls->kw_init == -1) {
             /* the merged hash, or nil when no keyword came (`**{}`, `**nil`),
                and nil for the members after it */
             char hv[128];
@@ -12212,13 +12256,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             if (a == 0) emit_unbox_text(c, cls->ivar_types[a], hv, b);
             else buf_puts(b, default_value(cls->ivar_types[a]));
           }
-          else if (splat_h >= 0) {
-            /* a member a merged literal key supplies keeps that key's type */
-            char gv[256];
-            snprintf(gv, sizeof gv, "sp_kw_member_val(_t%d, \"%s\")",
-                     splat_tmp, cls->ivars[a] + 1);
-            emit_unbox_text(c, cls->ivar_types[a], gv, b);
-          }
+          else if (splat_tmp >= 0) emit_struct_kw_member(c, cls, a, splat_tmp, b);
           else buf_puts(b, default_value(cls->ivar_types[a]));
         }
         buf_puts(b, ")");
@@ -28395,6 +28433,14 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             if (kwh_has_splat(nt, kwh)) kwf_mh = emit_ds_hash_merge(c, kwh, 1, &mty);
             kwh = -1;
           }
+          /* keywords beside a `**`, or binding late, merge into one hash the
+             members read and the run-time check judges, as in the receiver
+             path */
+          int kw_ht = -1;
+          if (kwh >= 0 && (kwh_has_splat(nt, kwh) || struct_kw_binds_late(c, ncls, kwh))) {
+            kw_ht = emit_struct_kw_hash(c, kwh);
+            emit_struct_kw_check(c, ncls, kw_ht, -1);
+          }
           buf_printf(b, "sp_%s_new(", ncls->c_name);
           for (int a = 0; a < ncls->nivars; a++) {
             if (a) buf_puts(b, ", ");
@@ -28408,6 +28454,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
               if (a == 0) emit_unbox_text(c, ncls->ivar_types[a], hv, b);
               else buf_puts(b, default_value(ncls->ivar_types[a]));
             }
+            else if (kw_ht >= 0) emit_struct_kw_member(c, ncls, a, kw_ht, b);
             else if (vnode >= 0) {
               if (ncls->ivar_types[a] == TY_POLY && comp_ntype(c, vnode) != TY_POLY) emit_boxed(c, vnode, b);
               /* and the reverse: a poly value into a concrete member slot

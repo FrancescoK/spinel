@@ -1,0 +1,67 @@
+#<data Point x=2, y=3>
+lit 1
+lit 3
+lit 2
+#<data Point x=2, y=3>
+ArgumentError: missing keyword: :y
+lit 1
+lit 2
+lit 3
+ArgumentError: missing keyword: :y
+ArgumentError: unknown keyword: :z
+lit 1
+lit 2
+#<struct Named a=2, b=3>
+#<struct Named a=2, b=nil>
+lit 1
+lit 2
+lit 3
+ArgumentError: unknown keywords: z
+lit 1
+lit 2
+#<struct Plain a=2, b=3>
+#<struct Plain a=2, b=nil>
+lit 1
+lit 2
+#<data Point x=2, y=3>
+lit 1
+lit 2
+#<data Point x=2, y=3>
+lit 1
+lit 2
+#<struct Named a=2, b=3>
+lit 1
+lit 2
+#<struct Named a=2, b=3>
+lit 1
+lit 2
+#<struct Plain a=2, b=3>
+lit 1
+lit 2
+#<struct Plain a=2, b=3>
+"s"
+"s"
+2.5
+#<struct Named a=nil, b=nil>
+#<data Point x=nil, y=2>
+3
+#<struct Wide a="s", b=nil>
+#<struct Wide a=1, b=2>
+#<struct WidePlain a=[1], b=nil>
+#<data WidePoint x=:s, y=2>
+#<data WidePoint x=1, y=2>
+2
+3
+2
+2
+lit 1
+lit s
+#<struct Made a="s", b=nil>
+#<struct Made a="t", b=2>
+ArgumentError: unknown keywords: z
+#<data MadePoint x=2, y=3>
+#<data MadePoint x=nil, y=2>
+ArgumentError: missing keyword: :y
+[4]
+0
+[5]

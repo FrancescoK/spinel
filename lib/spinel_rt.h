@@ -9432,9 +9432,22 @@ static const char *sp_kw_key_name(sp_RbVal k) {
       (k.tag == SP_TAG_OBJ && k.cls_id == SP_BUILTIN_STRBUF)) return sp_poly_to_s(k);
   return NULL;
 }
+/* The member of the `n` a Struct constructor's keyword key that is not a
+   Symbol or String indexes, as CRuby's rb_struct_pos takes one: converted
+   as an Integer argument is (a Float truncating, nil a TypeError, a Bignum
+   a RangeError) and counted from the end when negative; -1 when out of
+   range, with the index in `*idx` for the error to name. */
+static int sp_kw_key_pos(sp_RbVal k, int n, sp_int *idx) {
+  if (k.tag == SP_TAG_BIGINT) sp_raise_cls("RangeError", "bignum too big to convert into 'long'");
+  sp_int i = sp_poly_arg_int_chk(k);
+  *idx = i;
+  if (i < 0) i += n;
+  return i >= 0 && i < n ? (int)i : -1;
+}
 /* Member `name` of a Data or Struct built from the keyword hash `h`, as
    CRuby sets the members walking the hash: the value of the last key that
-   names it, a Symbol or a String; nil when none does. */
+   names it, a Symbol or a String; nil when none does. A key that indexes a
+   member is named by sp_kw_splat_check first. */
 static sp_RbVal sp_kw_member_val(sp_RbVal h, const char *name) {
   SP_GC_ROOT_RBVAL(h);
   sp_RbVal r = sp_box_nil();
@@ -9452,10 +9465,14 @@ static sp_RbVal sp_kw_member_val(sp_RbVal h, const char *name) {
    nor the hash names is missing, and a key the hash carries that names no
    member is unknown, Data's before Struct's wording. A String key names a
    member as a Symbol does, and a Data key that is neither is CRuby's
-   TypeError, ahead of both. `lit[i]` says member i was given by a literal
-   key. Without this the member read nil and the key was dropped. */
-static void sp_kw_splat_check(sp_RbVal h, const char *const *mem, int n,
-                              const unsigned char *lit, int is_data) {
+   TypeError, ahead of both, where a Struct's indexes one (sp_kw_key_pos).
+   `lit[i]` says member i was given by a literal key. Without this the
+   member read nil and the key was dropped. Answers `h`, or, when a key
+   indexes a member, a copy of it keyed by the members' names, in which
+   sp_kw_member_val finds them: each key converts once, here, as in CRuby,
+   where a #to_int can answer anew. */
+static sp_RbVal sp_kw_splat_check(sp_RbVal h, const char *const *mem, int n,
+                                  const unsigned char *lit, int is_data) {
   SP_GC_ROOT_RBVAL(h);
   char buf[1024]; size_t len = 0; int cnt = 0;
   buf[0] = 0;
@@ -9481,19 +9498,32 @@ static void sp_kw_splat_check(sp_RbVal h, const char *const *mem, int n,
     }
     if (cnt) sp_raise_cls("ArgumentError", sp_sprintf("missing keyword%s: %s", cnt > 1 ? "s" : "", buf));
   }
+  sp_PolyPolyHash *named = NULL;
+  SP_GC_ROOT(named);
+  for (sp_int j = 0; j < nk && !is_data && !named; j++) {
+    sp_RbVal k, v;
+    sp_poly_hash_pair(h, j, &k, &v);
+    if (!sp_kw_key_name(k)) named = sp_PolyPolyHash_new();
+  }
   for (sp_int j = 0; j < nk; j++) {
     sp_RbVal k, v;
     sp_poly_hash_pair(h, j, &k, &v);
     const char *kn = sp_kw_key_name(k);
-    int known = 0;
-    for (int i = 0; kn && i < n && !known; i++) known = strcmp(kn, mem[i]) == 0;
-    if (known) continue;
+    int at = -1;
+    sp_int idx = 0;
+    for (int i = 0; kn && i < n && at < 0; i++) if (strcmp(kn, mem[i]) == 0) at = i;
+    if (!kn) at = sp_kw_key_pos(k, n, &idx);
+    if (at >= 0) {
+      if (named) sp_PolyPolyHash_set(named, sp_box_sym(sp_sym_intern(mem[at])), v);
+      continue;
+    }
     if (len < sizeof buf) len += (size_t)snprintf(buf + len, sizeof buf - len, "%s%s", cnt ? ", " : "",
-                                                  is_data ? sp_poly_inspect(k) : sp_poly_to_s(k));
+                                                  is_data ? sp_poly_inspect(k) : kn ? kn : sp_int_to_s(idx));
     cnt++;
   }
   if (cnt) sp_raise_cls("ArgumentError", is_data ? sp_sprintf("unknown keyword%s: %s", cnt > 1 ? "s" : "", buf)
                                                  : sp_sprintf("unknown keywords: %s", buf));
+  return named ? sp_box_obj(named, SP_BUILTIN_POLY_POLY_HASH) : h;
 }
 /* A boxed `**` operand, converted the way CRuby converts one before any
    keyword is bound or checked: nil carries no keywords and a Hash is
