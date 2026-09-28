@@ -24076,7 +24076,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
        failing the build. A poly `<recv>.method` never bound a real target
        (the emitted fn was 0), so this only moves the failure from the C
        compiler to a clean runtime error. */
-    if (recv >= 0 && comp_ntype(c, recv) == TY_POLY) {
+    int bam_poly = mi >= 0 && c->scopes[mi].def_node >= 0 &&
+                   nt_int(nt, c->scopes[mi].def_node, "bam_poly", 0);
+    if (recv >= 0 && comp_ntype(c, recv) == TY_POLY && !bam_poly) {
       buf_puts(b, "({ sp_RbVal _rpm = ");
       emit_expr(c, recv, b);
       buf_puts(b, "; SP_GC_ROOT_RBVAL(_rpm); sp_raise_cls(\"NoMethodError\", sp_nomethod_msg(");
@@ -24123,7 +24125,21 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     int self_is_str = 0, self_rooted = 0;
     int self_receiver = (recv >= 0 && comp_ntype(c, recv) != TY_CLASS);
     int self_tmp = 0;
-    if (self_receiver) {
+    int tbr = 0;
+    if (self_receiver && bam_poly) {
+      /* the receiver rides the self slot inside a one-element PolyArray,
+         which the synthesized wrapper reads back as __bam_r[0] */
+      tbr = ++g_tmp;
+      self_tmp = ++g_tmp;
+      self_kind = "SP_BM_SELF_OBJ";
+      self_rooted = 1;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tbr);
+      emit_boxed(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); void *_t%d = (void *)sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                    " sp_PolyArray_push((sp_PolyArray *)_t%d, _t%d); ",
+                 tbr, self_tmp, self_tmp, self_tmp, tbr);
+    }
+    else if (self_receiver) {
       TyKind rt2 = comp_ntype(c, recv);
       /* A Method binds to whatever the receiver is, and a number is not a
          reference the collector can follow. */
@@ -24289,7 +24305,29 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       }
     }
     emit_str_literal(b, disp);
-    { int ar; if (mi >= 0 && method_scope_arity(c, mi, &ar)) buf_printf(b, ", (sp_int)%d", ar);
+    { int ar;
+      if (tbr > 0) {
+        /* the builtin's own arity, by the class the receiver has at run
+           time; the wrapper's parameters are the call sites' plumbing */
+        static const char *const PCLS[] = { "String", "Array", "Hash", "Integer", "Float", "Symbol", "Range", NULL };
+        static const char *const PTST[] = {
+          "_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)",
+          "_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)",
+          "_t%d.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_t%d.cls_id)",
+          "_t%d.tag == SP_TAG_INT && _t%d.tag == SP_TAG_INT",
+          "_t%d.tag == SP_TAG_FLT && _t%d.tag == SP_TAG_FLT",
+          "_t%d.tag == SP_TAG_SYM && _t%d.tag == SP_TAG_SYM",
+          "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE" };
+        int fallback = method_scope_arity(c, mi, &ar) ? ar : -1;
+        buf_puts(b, ", (sp_int)(");
+        for (int q = 0; PCLS[q]; q++) {
+          int ba;
+          if (!builtin_method_arity(PCLS[q], disp, &ba)) continue;
+          buf_puts(b, "("); buf_printf(b, PTST[q], tbr, tbr); buf_printf(b, ") ? %d : ", ba);
+        }
+        buf_printf(b, "%d)", fallback);
+      }
+      else if (mi >= 0 && method_scope_arity(c, mi, &ar)) buf_printf(b, ", (sp_int)%d", ar);
       else if (bop_is_adapter) {
         /* An adapter has no method scope: stamp CRuby's arity for the Array op
            it stands in for (`push`/`[]`/`[]=` are all -1), not SP_INT_NIL. */
@@ -24627,6 +24665,15 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
        name from the wrapper body's tail call. */
     int is_bam = target >= 0 && c->scopes[target].name &&
                  strncmp(c->scopes[target].name, "__bam_", 6) == 0;
+    /* a boxed receiver's wrapper: the Method carries the arity its receiver's
+       run-time class gave it */
+    if (is_bam && c->scopes[target].def_node >= 0 &&
+        nt_int(nt, c->scopes[target].def_node, "bam_poly", 0)) {
+      buf_puts(b, "(");
+      emit_expr(c, recv, b);
+      buf_puts(b, ")->arity");
+      return;
+    }
     if ((target < 0 || is_bam) && mn >= 0) {
       const char *msym = method_sym_arg(c, mn);
       if (is_bam) {
