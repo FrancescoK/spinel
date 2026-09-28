@@ -4362,6 +4362,7 @@ static int want_poly_hash(Compiler *c, int v) {
    own callers. Returns 1 on a change. */
 static int widen_arg_hash(Compiler *c, int arg) {
   const NodeTable *nt = c->nt;
+  arg = unwrap_parens(c, arg);
   NodeKind ak = nt_kind(nt, arg);
   if (ak == NK_HashNode) return want_poly_hash(c, arg);
   const char *an = nt_str(nt, arg, "name");
@@ -4469,7 +4470,13 @@ int is_fresh_array(Compiler *c, int v) {
    a change. */
 static int widen_arg_array(Compiler *c, int arg) {
   const NodeTable *nt = c->nt;
+  arg = unwrap_parens(c, arg);
   NodeKind ak = nt_kind(nt, arg);
+  if (ak == NK_ArrayNode) {
+    if (!c->arr_want || arg >= c->node_cap || !is_fresh_array(c, arg) || c->arr_want[arg] == TY_POLY_ARRAY) return 0;
+    c->arr_want[arg] = TY_POLY_ARRAY;
+    return 1;
+  }
   if (ak == NK_LocalVariableReadNode) {
     const char *an = nt_str(nt, arg, "name");
     Scope *asc = an ? comp_scope_of(c, arg) : NULL;

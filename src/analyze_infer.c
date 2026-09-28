@@ -7807,6 +7807,10 @@ TyKind infer_uncached(Compiler *c, int id) {
         return c->arr_want[id];
       return TY_UNKNOWN;  /* empty: element type comes from usage */
     }
+    /* A callee stores elements of another kind into the literal it is
+       passed (widen_arg_array). */
+    if (c->arr_want && id < c->node_cap && c->arr_want[id] == TY_POLY_ARRAY)
+      return TY_POLY_ARRAY;
     TyKind e = TY_UNKNOWN;
     for (int k = 0; k < n; k++) {
       TyKind et = infer_type(c, els[k]);
