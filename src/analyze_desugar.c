@@ -1653,6 +1653,7 @@ int desugar_dynamic_send(Compiler *c) {
     int base = nt->count;
     int *arms = (int *)malloc(sizeof(int) * (size_t)(nuse > 0 ? nuse : 1)); int narm = 0;
     for (int k = 0; k < nuse; k++) {
+      if (sp_streq(use[k], "initialize") || sp_streq(use[k], "initialize_copy")) continue;
       int na = nt_new_node(nt, "ArgumentsNode"); if (na < 0) break;
       if (nrest) nt_node_set_arr(nt, na, "arguments", rest, nrest);
       int call = nt_new_node(nt, "CallNode"); if (call < 0) break;
