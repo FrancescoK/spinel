@@ -1,0 +1,5 @@
+5
+[10, 20, 4]
+[4, 8, 5]
+["zz", ArgumentError]
+"caller e"

@@ -19295,12 +19295,29 @@ static int default_writes_body_local(Compiler *c, Scope *tm) {
   return 0;
 }
 
+/* 1 iff node kind `ty` names a local variable or a parameter: a method call,
+   a constant or an ivar also carries a `name`, and the callee may have a
+   local of that spelling (`b = a.size` beside `size = 3`). */
+static int default_names_local(const char *ty) {
+  static const char *const kinds[] = {
+    "LocalVariableReadNode", "LocalVariableWriteNode", "LocalVariableTargetNode",
+    "LocalVariableOperatorWriteNode", "LocalVariableOrWriteNode",
+    "LocalVariableAndWriteNode", "RequiredParameterNode", "OptionalParameterNode",
+    "RestParameterNode", "RequiredKeywordParameterNode",
+    "OptionalKeywordParameterNode", "KeywordRestParameterNode", "BlockParameterNode",
+  };
+  if (!ty) return 0;
+  for (size_t i = 0; i < sizeof kinds / sizeof kinds[0]; i++)
+    if (sp_streq(ty, kinds[i])) return 1;
+  return 0;
+}
+
 static void default_collect_names(Compiler *c, int id, const char **out, int cap, int *n) {
   if (id < 0 || *n >= cap) return;
   const char *ty = nt_type(c->nt, id);
   if (ty && (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") ||
              sp_streq(ty, "ModuleNode") || sp_streq(ty, "SingletonClassNode"))) return;
-  const char *nm = nt_str(c->nt, id, "name");
+  const char *nm = default_names_local(ty) ? nt_str(c->nt, id, "name") : NULL;
   if (nm) {
     int dup = 0;
     for (int i = 0; i < *n; i++) if (sp_streq(out[i], nm)) { dup = 1; break; }
