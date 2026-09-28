@@ -2318,9 +2318,17 @@ sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
   return t;
 }
 
+/* Joining the current thread can never finish. Reject it before attempting to
+   park, including on the main thread before the timer monitor has started. */
+static void sp_thread_check_join_target(sp_thread *t) {
+  if (t == g_current)
+    sp_raise_cls("ThreadError", "Target thread must not be current thread");
+}
+
 /* Block the calling thread until `t` is dead. The main thread pumps the queue;
    a spawned thread parks on t's joiners and yields to the scheduler. */
 static void sp_thread_await(sp_thread *t) {
+  sp_thread_check_join_target(t);
   SCHED_LOCK();
   if (t->state == SP_TH_DEAD) { SCHED_UNLOCK(); return; }
   sp_thread *self = g_current;
@@ -2353,6 +2361,7 @@ sp_thread *sp_Thread_join(sp_thread *t) {
    Same return type as the no-arg join so one variable can hold either
    call's result. */
 sp_thread *sp_Thread_join_timeout(sp_thread *t, double seconds) {
+  sp_thread_check_join_target(t);
   SCHED_LOCK();
   if (t->state == SP_TH_DEAD) {
     SCHED_UNLOCK();
