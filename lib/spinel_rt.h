@@ -13407,7 +13407,7 @@ static sp_PolyArray *sp_enum_to_a_boxed(sp_RbVal v) {
    position is neither read nor moved), which pulls an item only when the
    walk asks whether there is one more. Nil for a finite materialized
    source, which is walked as its items. */
-static sp_RbVal sp_enum_walker_boxed(sp_RbVal v) {
+static SP_COLD SP_NOINLINE sp_RbVal sp_enum_walker_boxed(sp_RbVal v) {
   sp_Enumerator *e = (sp_Enumerator *)v.v.p;
   if (!e->gen && !e->endless) return sp_box_nil();
   SP_GC_ROOT(e);
@@ -13425,7 +13425,7 @@ static sp_bool sp_enum_is_walker(sp_RbVal v) {
 }
 /* The walk's length so far: one past the index it reads next while the
    source still has that item, pulling it now if it has not been. */
-static sp_int sp_enum_walk_len(sp_RbVal v) {
+static SP_COLD SP_NOINLINE sp_int sp_enum_walk_len(sp_RbVal v) {
   sp_Enumerator *w = (sp_Enumerator *)v.v.p;
   SP_GC_ROOT(w);
   while (!w->walk_done && w->walk_buf->len <= w->walk_next) {
@@ -13450,7 +13450,7 @@ static sp_int sp_enum_walk_len(sp_RbVal v) {
   }
   return w->walk_buf->len;
 }
-static sp_RbVal sp_enum_walk_at(sp_RbVal v, sp_int i) {
+static SP_COLD SP_NOINLINE sp_RbVal sp_enum_walk_at(sp_RbVal v, sp_int i) {
   sp_Enumerator *w = (sp_Enumerator *)v.v.p;
   if (i >= w->walk_next) w->walk_next = i + 1;
   return (i >= 0 && i < w->walk_buf->len) ? w->walk_buf->data[i] : sp_box_nil();
