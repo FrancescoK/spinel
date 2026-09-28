@@ -32453,7 +32453,8 @@ else {
       buf_printf(b, "({ const char *_t%d = ", tfp); emit_path_expr(c, argv[0], b);
       buf_printf(b, "; !sp_file_directory(_t%d) && sp_file_exist(_t%d); })", tfp, tfp); return;
     }
-    if ((sp_streq(name, "delete") || sp_streq(name, "unlink")) && argc >= 1) {
+    if ((sp_streq(name, "delete") || sp_streq(name, "unlink")) &&
+        (argc >= 1 || sp_streq(nt_str(nt, recv, "name"), "File"))) {
       /* a lone splat: every path of the Array converted and checked before
          the first unlink, as the several-path form below does, and the count
          answered */
@@ -32476,7 +32477,9 @@ else {
       /* several paths: every one is evaluated, rooted and checked for nil
          before the first unlink, as CRuby converts them all first -- now
          that a failing path raises, it must not skip a later argument's
-         effects, and a nil among them must not cost the earlier files */
+         effects, and a nil among them must not cost the earlier files.
+         `File.delete` with no path deletes nothing and answers 0; the
+         guard keeps FileTest out of that form. */
       int td = ++g_tmp;
       buf_puts(b, "({ ");
       for (int k = 0; k < argc; k++) {
