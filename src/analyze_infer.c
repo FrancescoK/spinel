@@ -7566,6 +7566,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     const char *nm = nt_str(nt, id, "name");
     Scope *s = comp_scope_of(c, id);
     int cid = s->class_id;
+    if (cid < 0 && id < c->node_cap) cid = c->node_cbody[id];
     if (cid < 0) cid = comp_class_index(c, "Toplevel");
     if (cid < 0) return TY_UNKNOWN;
     int idx = nm ? comp_cvar_index(&c->classes[cid], nm) : -1;

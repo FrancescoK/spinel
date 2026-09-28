@@ -7624,6 +7624,49 @@ static void masgn_conv(Compiler *c, TyKind st, TyKind vt, const char *val, Buf *
   else if (vt == TY_POLY && st != TY_POLY && st != TY_UNKNOWN) emit_unbox_text(c, st, val, b);
   else buf_puts(b, val);
 }
+/* The `[]=` of an object receiver type taking a key and a value: its method
+   scope, the class defining it and its key parameter's type; -1 when none. */
+static int masgn_index_writer(Compiler *c, TyKind rt, int *cdef, TyKind *kt) {
+  int dc = -1;
+  int wmi = comp_method_in_chain(c, ty_object_class(rt), "[]=", &dc);
+  if (wmi < 0 || dc < 0 || c->scopes[wmi].nparams != 2) return -1;
+  if (cdef) *cdef = dc;
+  if (kt) {
+    LocalVar *kp = scope_local(&c->scopes[wmi], c->scopes[wmi].pnames[0]);
+    *kt = kp ? kp->type : TY_UNKNOWN;
+  }
+  return wmi;
+}
+/* An index target's key as the `[]=` key parameter of type `kt` takes it. */
+static void masgn_index_key(Compiler *c, int key, TyKind kt, Buf *b) {
+  if (kt == TY_POLY && comp_ntype(c, key) != TY_POLY) emit_boxed(c, key, b);
+  else if (kt == TY_INT) emit_int_expr(c, key, b);
+  else emit_expr(c, key, b);
+}
+/* The C slot type of a variable or constant target masgn_store writes, or
+   TY_UNKNOWN for a target that is not one. */
+static TyKind masgn_slot_type(Compiler *c, int id, int tgt) {
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, tgt), *nm = nt_str(nt, tgt, "name");
+  if (!ty || !nm) return TY_UNKNOWN;
+  if (sp_streq(ty, "InstanceVariableTargetNode")) {
+    char lhs[320]; int cid = -1;
+    if (!masgn_ivar_home(c, id, nm, lhs, sizeof lhs, &cid)) return TY_UNKNOWN;
+    int ix = comp_ivar_index(&c->classes[cid], nm);
+    return ix >= 0 ? c->classes[cid].ivar_types[ix] : TY_UNKNOWN;
+  }
+  if (sp_streq(ty, "ClassVariableTargetNode")) {
+    Scope *sc = comp_scope_of(c, id);
+    int cid = (sc && sc->class_id >= 0) ? sc->class_id : g_class_body_id;
+    int cx = cid >= 0 ? comp_cvar_index(&c->classes[cid], nm) : -1;
+    return cx >= 0 ? c->classes[cid].cvar_types[cx] : TY_UNKNOWN;
+  }
+  if (sp_streq(ty, "ConstantTargetNode") || sp_streq(ty, "ConstantPathTargetNode")) {
+    LocalVar *cv = comp_const(c, nm);
+    return cv ? cv->type : TY_UNKNOWN;
+  }
+  return TY_UNKNOWN;
+}
 /* Store `val` (of type `vt`, NULL for nil) into a multiple-assignment target
    the arms destructuring a run-time value reach that is not a local: an
    instance, global or class variable, an index or an attribute. `recv_tmp`
@@ -7662,6 +7705,15 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
     emit_indent(b, indent);
     buf_printf(b, "cvar_%s_%s = ", c->classes[cid].name, nm + 2);
     masgn_conv(c, c->classes[cid].cvar_types[cx], vt, val, b);
+    buf_puts(b, ";\n");
+    return 1;
+  }
+  if ((sp_streq(ty, "ConstantTargetNode") || sp_streq(ty, "ConstantPathTargetNode")) && nm) {
+    LocalVar *cv = comp_const(c, nm);
+    if (!cv) { unsupported(c, id, "multiple assignment constant target"); return 1; }
+    emit_indent(b, indent);
+    buf_printf(b, "cst_%s = ", nm);
+    masgn_conv(c, cv->type, vt, val, b);
     buf_puts(b, ";\n");
     return 1;
   }
@@ -7714,6 +7766,20 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
       else emit_expr(c, argv[0], b);
       buf_puts(b, ", ");
       masgn_conv(c, ty_hash_val(rt), vt, val, b);
+      buf_puts(b, ");\n");
+    }
+    else if (ty_is_object(rt) && masgn_index_writer(c, rt, NULL, NULL) >= 0) {
+      int cdef = -1; TyKind kt = TY_UNKNOWN;
+      int wmi = masgn_index_writer(c, rt, &cdef, &kt);
+      Scope *ws = &c->scopes[wmi];
+      LocalVar *vp = scope_local(ws, ws->pnames[1]);
+      emit_indent(b, indent);
+      buf_printf(b, "sp_%s_%s((sp_%s *)", c->classes[cdef].c_name, mc(ws->name), c->classes[cdef].c_name);
+      masgn_part(c, recv, recv_tmp, b); buf_puts(b, ", ");
+      if (key_tmp >= 0) buf_printf(b, "_t%d", key_tmp);
+      else masgn_index_key(c, argv[0], kt, b);
+      buf_puts(b, ", ");
+      masgn_conv(c, vp ? vp->type : vt, vt, val, b);
       buf_puts(b, ");\n");
     }
     else unsupported(c, id, "multiple assignment index target non-array/hash");
@@ -9532,6 +9598,7 @@ else {
     int rest_inner = -1;
     const char *rest_var = NULL;
     const char *rest_gvar = NULL;  /* global variable name (without $) for *$rest */
+    int rest_tgt = -1;             /* any other splat target node */
     if (rest_nid >= 0) {
       const char *rsty = nt_type(nt, rest_nid);
       if (rsty && sp_streq(rsty, "SplatNode"))
@@ -9545,10 +9612,11 @@ else {
           if (!rest_gvar || !comp_gvar(c, rest_gvar))
             unsupported(c, id, "multiple assignment: a splat into an untyped global");
         }
-        /* a splat into anything else has no store below: say so rather
-           than leave the slot nil (`@a, *@rest = xs` answered nil for @rest) */
+        /* any other target -- an instance or class variable, a constant, an
+           attribute or an index -- takes the collected array through
+           masgn_store */
         else if (!sp_streq(nt_type(nt, rest_inner), "SplatNode"))
-          unsupported(c, id, "multiple assignment: a splat target that is not a local or global variable");
+          rest_tgt = rest_inner;
       }
     }
     /* Ruby evaluates each target's receiver and index before any value, left
@@ -9586,10 +9654,13 @@ else {
         int index = sp_streq(nt_type(nt, lefts[i]), "IndexTargetNode");
         TyKind rt = comp_ntype(c, r);
         int poly_r = index && (rt == TY_POLY || rt == TY_UNKNOWN);
-        if (index && (k < 0 || !(poly_r || ty_is_array(rt) || (ty_is_hash(rt) && ty_hash_cname(rt))))) continue;
+        TyKind okt = TY_UNKNOWN;
+        int obj_ix = index && ty_is_object(rt) && masgn_index_writer(c, rt, NULL, &okt) >= 0;
+        if (index && (k < 0 || !(poly_r || obj_ix || ty_is_array(rt) || (ty_is_hash(rt) && ty_hash_cname(rt))))) continue;
         if (!index && !ty_is_object(rt)) continue;
         ttr[i] = masgn_hoist_part(c, r, poly_r ? TY_POLY : rt, hb);
-        if (index) ttk[i] = masgn_hoist_part(c, k, poly_r || ty_is_array(rt) ? TY_INT : ty_hash_key(rt), hb);
+        if (obj_ix) ttk[i] = masgn_hoist_part(c, k, okt == TY_UNKNOWN ? comp_ntype(c, k) : okt, hb);
+        else if (index) ttk[i] = masgn_hoist_part(c, k, poly_r || ty_is_array(rt) ? TY_INT : ty_hash_key(rt), hb);
       }
     }
     if (!els) {
@@ -9611,36 +9682,6 @@ else {
          so it must take the runtime-destructure path below, not the
          scalar fill -- which handed the whole array to the first target. */
       if (vty && !multi_src && !ty_is_array(st) && !ty_is_hash(st) && st != TY_UNKNOWN && st != TY_POLY) {
-        /* rest target under a scalar RHS: `*a = 5` collects [5]; with fixed
-           targets present (`a, *r = 5`) the scalar goes to the first target
-           and the rest is empty. */
-        if (rest_var || rest_gvar) {
-          Scope *rsc0 = comp_scope_of(c, id);
-          LocalVar *rlv0 = rest_var ? scope_local(rsc0, rest_var) : comp_gvar(c, rest_gvar);
-          TyKind rat0 = rlv0 && ty_is_array(rlv0->type) ? rlv0->type : TY_POLY_ARRAY;
-          const char *rk0 = (rat0 == TY_POLY_ARRAY) ? "Poly" : array_kind(rat0);
-          if (!rk0) rk0 = "Poly";
-          int tr0 = ++g_tmp;
-          emit_indent(b, indent);
-          buf_printf(b, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", rk0, tr0, rk0, tr0);
-          /* The scalar goes into the rest ONLY when there are no fixed targets on
-             either side (`*a = 5` -> [5]); with post-rest targets (`*a, b = 1`)
-             the value aligns to the end and the rest stays empty. */
-          if (ln == 0 && rn == 0) {
-            emit_indent(b, indent);
-            buf_printf(b, "sp_%sArray_push(_t%d, ", rk0, tr0);
-            if (rat0 == TY_POLY_ARRAY) emit_boxed(c, value, b);
-            else emit_expr(c, value, b);
-            buf_puts(b, ");\n");
-          }
-          emit_indent(b, indent);
-          char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr0);
-          if (rest_var) { emit_local_ref(c, id, rest_var, b); buf_puts(b, " = "); }
-          else buf_printf(b, "gv_%s = ", rest_gvar);
-          masgn_conv(c, rlv0 ? rlv0->type : rat0, rat0, rx, b);
-          buf_puts(b, ";\n");
-          if (ln == 0 && rn == 0) return;
-        }
         for (int i = 0; i < ln; i++) {
           const char *lty = nt_type(nt, lefts[i]);
           /* an instance-variable target: the first takes the value, the rest
@@ -9684,6 +9725,40 @@ else {
             buf_puts(b, nil_sentinel(tt));
           }
           buf_puts(b, ";\n");
+        }
+        /* rest target under a scalar RHS: `*a = 5` collects [5]; with fixed
+           targets present (`a, *r = 5`) the scalar goes to the first target
+           and the rest is empty. */
+        if (rest_var || rest_gvar || rest_tgt >= 0) {
+          Scope *rsc0 = comp_scope_of(c, id);
+          LocalVar *rlv0 = rest_var ? scope_local(rsc0, rest_var) : rest_gvar ? comp_gvar(c, rest_gvar) : NULL;
+          TyKind rst0 = rlv0 ? rlv0->type : masgn_slot_type(c, id, rest_tgt);
+          TyKind rat0 = ty_is_array(rst0) ? rst0 : TY_POLY_ARRAY;
+          const char *rk0 = (rat0 == TY_POLY_ARRAY) ? "Poly" : array_kind(rat0);
+          if (!rk0) rk0 = "Poly";
+          int tr0 = ++g_tmp;
+          emit_indent(b, indent);
+          buf_printf(b, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", rk0, tr0, rk0, tr0);
+          /* The scalar goes into the rest ONLY when there are no fixed targets on
+             either side (`*a = 5` -> [5]); with post-rest targets (`*a, b = 1`)
+             the value aligns to the end and the rest stays empty. */
+          if (ln == 0 && rn == 0) {
+            emit_indent(b, indent);
+            buf_printf(b, "sp_%sArray_push(_t%d, ", rk0, tr0);
+            if (rat0 == TY_POLY_ARRAY) emit_boxed(c, value, b);
+            else emit_expr(c, value, b);
+            buf_puts(b, ");\n");
+          }
+          char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr0);
+          if (rest_tgt >= 0) masgn_store(c, id, rest_tgt, rx, rat0, -1, -1, indent, b);
+          else {
+            emit_indent(b, indent);
+            if (rest_var) { emit_local_ref(c, id, rest_var, b); buf_puts(b, " = "); }
+            else buf_printf(b, "gv_%s = ", rest_gvar);
+            masgn_conv(c, rlv0 ? rlv0->type : rat0, rat0, rx, b);
+            buf_puts(b, ";\n");
+          }
+          if (ln == 0 && rn == 0) return;
         }
         /* Post-rest targets under a scalar RHS (`*a, b, c = 1`): the empty rest
            leaves the single value to fill the rights left-to-right, so the first
@@ -9798,10 +9873,12 @@ else {
               unsupported(c, id, "multiple assignment target");
           }
         }
-        if (rest_var || rest_gvar) {
+        if (rest_var || rest_gvar || rest_tgt >= 0) {
           Scope *rscope = comp_scope_of(c, id);
-          LocalVar *rlv = rest_var ? scope_local(rscope, rest_var) : comp_gvar(c, rest_gvar);
-          TyKind rest_arr_t = rlv ? rlv->type : st;
+          LocalVar *rlv = rest_var ? scope_local(rscope, rest_var) : rest_gvar ? comp_gvar(c, rest_gvar) : NULL;
+          TyKind rslot = rlv ? rlv->type : rest_tgt >= 0 ? masgn_slot_type(c, id, rest_tgt) : st;
+          if (rest_tgt >= 0 && rslot == TY_UNKNOWN) rslot = st;
+          TyKind rest_arr_t = rslot;
           if (!ty_is_array(rest_arr_t)) rest_arr_t = st;
           const char *rk = (rest_arr_t == TY_POLY_ARRAY) ? "Poly" : array_kind(rest_arr_t);
           if (!rk) rk = k;
@@ -9818,21 +9895,27 @@ else {
                      k, tr, k, tarr, ln, tarr, ln + rn, tarr, ln + rn);
           emit_indent(b, indent);
           buf_printf(b, "SP_GC_ROOT(_t%d);\n", tr);
-          emit_indent(b, indent);
-          if (rest_var) emit_local_ref(c, id, rest_var, b); else buf_printf(b, "gv_%s", rest_gvar);
-          buf_puts(b, " = ");
-          if (rlv && rlv->type == TY_POLY) {
+          Buf rv; memset(&rv, 0, sizeof rv);
+          TyKind rvt = rest_arr_t;
+          if (rslot == TY_POLY) {
             char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr);
-            masgn_conv(c, TY_POLY, st, rx, b);
-            buf_puts(b, ";\n");
+            masgn_conv(c, TY_POLY, st, rx, &rv);
+            rvt = TY_POLY;
           }
-          else if (sp_streq(rk, k)) buf_printf(b, "_t%d;\n", tr);
+          else if (sp_streq(rk, k)) buf_printf(&rv, "_t%d", tr);
           else if (sp_streq(k, "Poly"))
-            buf_printf(b, "sp_%sArray_from_poly_array(_t%d);\n",
+            buf_printf(&rv, "sp_%sArray_from_poly_array(_t%d)",
                        sp_streq(rk, "Int") ? "Int" : sp_streq(rk, "Str") ? "Str" : "Float", tr);
           else if (sp_streq(rk, "Poly"))
-            buf_printf(b, "sp_%sArray_to_poly%s(_t%d);\n", k, sp_streq(k, "Str") ? "_fmt" : "", tr);
-          else buf_printf(b, "_t%d;\n", tr);
+            buf_printf(&rv, "sp_%sArray_to_poly%s(_t%d)", k, sp_streq(k, "Str") ? "_fmt" : "", tr);
+          else buf_printf(&rv, "_t%d", tr);
+          if (rest_tgt >= 0) masgn_store(c, id, rest_tgt, rv.p ? rv.p : "", rvt, -1, -1, indent, b);
+          else {
+            emit_indent(b, indent);
+            if (rest_var) emit_local_ref(c, id, rest_var, b); else buf_printf(b, "gv_%s", rest_gvar);
+            buf_printf(b, " = %s;\n", rv.p ? rv.p : "");
+          }
+          free(rv.p);
         }
         for (int j = 0; j < rn; j++) {
           const char *lty = nt_type(nt, rights[j]);
@@ -9975,24 +10058,27 @@ else {
         }
         /* rest (`b, *r = <poly>`) + post-splat rights, mirroring the typed-array
            branch but reading the boxed value via sp_poly_arr_get / _len. */
-        if (rest_var || rest_gvar || rn > 0) {
+        if (rest_var || rest_gvar || rest_tgt >= 0 || rn > 0) {
           int tn = ++g_tmp;
           emit_indent(b, indent);
           buf_printf(b, "sp_int _t%d = sp_poly_massign_len(_t%d);\n", tn, tarr);
-          if (rest_var || rest_gvar) {
+          if (rest_var || rest_gvar || rest_tgt >= 0) {
             int tr = ++g_tmp, ti = ++g_tmp;
             emit_indent(b, indent);
             buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tr, tr);
             emit_indent(b, indent);
             buf_printf(b, "for (sp_int _t%d = %dLL; _t%d < _t%d - %dLL; _t%d++) sp_PolyArray_push(_t%d, sp_poly_massign_get(_t%d, _t%d));\n",
                        ti, ln, ti, tn, rn, ti, tr, tarr, ti);
-            emit_indent(b, indent);
             char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr);
-            LocalVar *rg = rest_var ? scope_local(comp_scope_of(c, id), rest_var) : comp_gvar(c, rest_gvar);
-            if (rest_var) { emit_local_ref(c, id, rest_var, b); buf_puts(b, " = "); }
-            else buf_printf(b, "gv_%s = ", rest_gvar);
-            masgn_conv(c, rg ? rg->type : TY_POLY_ARRAY, TY_POLY_ARRAY, rx, b);
-            buf_puts(b, ";\n");
+            if (rest_tgt >= 0) masgn_store(c, id, rest_tgt, rx, TY_POLY_ARRAY, -1, -1, indent, b);
+            else {
+              emit_indent(b, indent);
+              LocalVar *rg = rest_var ? scope_local(comp_scope_of(c, id), rest_var) : comp_gvar(c, rest_gvar);
+              if (rest_var) { emit_local_ref(c, id, rest_var, b); buf_puts(b, " = "); }
+              else buf_printf(b, "gv_%s = ", rest_gvar);
+              masgn_conv(c, rg ? rg->type : TY_POLY_ARRAY, TY_POLY_ARRAY, rx, b);
+              buf_puts(b, ";\n");
+            }
           }
           for (int j = 0; j < rn; j++) {
             const char *lty = nt_type(nt, rights[j]);
@@ -10042,7 +10128,7 @@ else {
        value that is a by-value struct into a slot that boxes it -- comes
        after every value is built and after the targets before it have taken
        theirs, so it can collect what an earlier target dropped. */
-    int store_alloc = rest_var || rest_gvar;
+    int store_alloc = rest_var || rest_gvar || rest_tgt >= 0;
     for (int i = 0; i < ln && !store_alloc; i++) {
       int r, k;
       masgn_target_parts(nt, lefts[i], &r, &k);
@@ -10283,8 +10369,14 @@ else {
           { unsupported(c, id, "multiple assignment call target non-object"); continue; }
         char base2[256]; memcpy(base2, setnm, snlen - 1); base2[snlen - 1] = '\0';
         int rc2 = ty_object_class(rt2);
-        if (!comp_writer_in_chain(c, rc2, base2, NULL))
-          { unsupported(c, id, "multiple assignment call target no writer"); continue; }
+        if (!comp_writer_in_chain(c, rc2, base2, NULL)) {
+          /* a writer defined with `def x=` runs as a call */
+          char rv[32]; snprintf(rv, sizeof rv, "_t%d", tmps[i]);
+          if (comp_method_in_chain(c, rc2, setnm, NULL) < 0)
+            unsupported(c, id, "multiple assignment call target no writer");
+          else masgn_store(c, id, lefts[i], rv, tmpts ? tmpts[i] : comp_ntype(c, els[i]), ttr[i], ttk[i], indent, b);
+          continue;
+        }
         char ivn2[260]; snprintf(ivn2, sizeof ivn2, "@%s", base2);
         int defc2 = -1; comp_writer_in_chain(c, rc2, base2, &defc2);
         int iv2 = comp_ivar_index(&c->classes[defc2 < 0 ? rc2 : defc2], ivn2);
@@ -10358,6 +10450,11 @@ else {
         const int *idx_argv = idx_args >= 0 ? nt_arr(nt, idx_args, "arguments", &idx_argc) : NULL;
         if (recv_id < 0 || idx_argc < 1) { unsupported(c, id, "multiple assignment index target"); continue; }
         TyKind recv_t = comp_ntype(c, recv_id);
+        if (ty_is_object(recv_t)) {
+          char rv[32]; snprintf(rv, sizeof rv, "_t%d", tmps[i]);
+          masgn_store(c, id, lefts[i], rv, tmpts ? tmpts[i] : comp_ntype(c, els[i]), ttr[i], ttk[i], indent, b);
+          continue;
+        }
         emit_indent(b, indent);
         if (ty_is_array(recv_t)) {
           /* a Range index stores a slice, which this arm has no call for */
@@ -10475,10 +10572,14 @@ else {
        elements, boxed into it. */
     LocalVar *rest_slot = rest_var ? scope_local(comp_scope_of(c, id), rest_var)
                         : rest_gvar ? comp_gvar(c, rest_gvar) : NULL;
-    if (rest_var || rest_slot) {
+    if (rest_var || rest_slot || rest_tgt >= 0) {
       int rstart = ln, rend = en - rn;
       if (rend < rstart) rend = rstart;
       TyKind slot_t = rest_slot ? rest_slot->type : TY_INT_ARRAY;
+      if (rest_tgt >= 0) {
+        slot_t = masgn_slot_type(c, id, rest_tgt);
+        if (!ty_is_array(slot_t)) slot_t = TY_POLY;
+      }
       TyKind rest_arr_t = slot_t;
       if (slot_t == TY_POLY) {
         TyKind et = rend > rstart ? tmpts[rstart] : TY_POLY;
@@ -10509,11 +10610,14 @@ else {
         }
       }
       char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr);
-      emit_indent(b, indent);
-      if (rest_var) buf_printf(b, "lv_%s = ", rename_local(rest_var));
-      else buf_printf(b, "gv_%s = ", rest_gvar);
-      masgn_conv(c, slot_t == TY_POLY ? TY_POLY : rest_arr_t, rest_arr_t, rx, b);
-      buf_puts(b, ";\n");
+      if (rest_tgt >= 0) masgn_store(c, id, rest_tgt, rx, rest_arr_t, -1, -1, indent, b);
+      else {
+        emit_indent(b, indent);
+        if (rest_var) buf_printf(b, "lv_%s = ", rename_local(rest_var));
+        else buf_printf(b, "gv_%s = ", rest_gvar);
+        masgn_conv(c, slot_t == TY_POLY ? TY_POLY : rest_arr_t, rest_arr_t, rx, b);
+        buf_puts(b, ";\n");
+      }
     }
     /* assign rights (post-splat fixed targets). They fill left-to-right starting
        just past the splat's actual length (max(0, en-ln-rn)); a target whose

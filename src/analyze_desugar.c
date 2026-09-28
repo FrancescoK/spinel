@@ -227,94 +227,6 @@ int desugar_ie_bare_object_calls(Compiler *c) {
   return changed;
 }
 
-/* `b["href"], title = rhs` where b is a user object: the index target is
-   b's own []=, which the multiple-assignment emitter has no arm for -- a
-   literal right side was refused and a computed one dropped the write. As
-   a statement, it is `__mwi, title = rhs; b["href"] = __mwi`. Only a
-   receiver and index that evaluating later cannot change (a variable, self,
-   a constant, a literal), so moving the store past the right side keeps
-   the order observable. */
-static int masgn_stable_operand(const NodeTable *nt, int n) {
-  switch (nt_kind(nt, n)) {
-  case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode: case NK_SelfNode:
-  case NK_ConstantReadNode: case NK_IntegerNode: case NK_StringNode: case NK_SymbolNode:
-  case NK_NilNode: case NK_TrueNode: case NK_FalseNode:
-    return 1;
-  default:
-    return 0;
-  }
-}
-int desugar_masgn_object_index(Compiler *c) {
-  NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0;
-  int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_MultiWriteNode || id >= c->node_cap) continue;
-    int ln = 0; const int *ls = nt_arr(nt, id, "lefts", &ln);
-    for (int j = 0; j < ln; j++) {
-      int tgt = ls[j];
-      if (nt_kind(nt, tgt) != NK_IndexTargetNode) continue;
-      int recv = nt_ref(nt, tgt, "receiver");
-      int anode = nt_ref(nt, tgt, "arguments");
-      if (recv < 0 || !ty_is_object(infer_type(c, recv)) || !masgn_stable_operand(nt, recv)) continue;
-      int an = 0; const int *av = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
-      int stable = an > 0;
-      for (int k = 0; k < an && stable; k++) stable = masgn_stable_operand(nt, av[k]);
-      if (!stable) continue;
-      /* the statement list holding the multiple assignment */
-      int stmts = -1, pos = -1;
-      NT_FOREACH_KIND(nt, NK_StatementsNode, sn) {
-        int bn = 0; const int *bb = nt_arr(nt, sn, "body", &bn);
-        for (int k = 0; k < bn; k++) if (bb[k] == id) { stmts = sn; pos = k; }
-        if (stmts >= 0) break;
-      }
-      if (stmts < 0) continue;
-      char tmp[48]; snprintf(tmp, sizeof tmp, "__mwi_%d_%d", id, j);
-      int lt = nt_new_node(nt, "LocalVariableTargetNode");
-      int lr = nt_new_node(nt, "LocalVariableReadNode");
-      int nargs = nt_new_node(nt, "ArgumentsNode");
-      int call = nt_new_node(nt, "CallNode");
-      if (lt < 0 || lr < 0 || nargs < 0 || call < 0) continue;
-      nt_node_set_str(nt, lt, "name", tmp);
-      nt_node_set_str(nt, lr, "name", tmp);
-      int *na = malloc(sizeof(int) * (size_t)(an + 1));
-      if (!na) continue;
-      for (int k = 0; k < an; k++) na[k] = av[k];
-      na[an] = lr;
-      nt_node_set_arr(nt, nargs, "arguments", na, an + 1);
-      free(na);
-      nt_node_set_ref(nt, call, "receiver", recv);
-      nt_node_set_str(nt, call, "name", "[]=");
-      nt_node_set_ref(nt, call, "arguments", nargs);
-      nt_node_set_ref(nt, call, "block", -1);
-      int line = (int)nt_int(nt, id, "node_line", 0);
-      if (line) nt_node_set_int(nt, call, "node_line", line);
-      /* the target becomes the temp; the store follows the statement */
-      int *nl = malloc(sizeof(int) * (size_t)ln);
-      if (!nl) continue;
-      for (int k = 0; k < ln; k++) nl[k] = ls[k];
-      nl[j] = lt;
-      nt_node_set_arr(nt, id, "lefts", nl, ln);
-      free(nl);
-      int bn = 0; const int *bb = nt_arr(nt, stmts, "body", &bn);
-      int *nb = malloc(sizeof(int) * (size_t)(bn + 1));
-      if (!nb) continue;
-      for (int k = 0, o = 0; k < bn; k++) { nb[o++] = bb[k]; if (k == pos) nb[o++] = call; }
-      nt_node_set_arr(nt, stmts, "body", nb, bn + 1);
-      free(nb);
-      comp_grow_node_arrays(c);
-      int made[] = { lt, lr, nargs, call };
-      for (int k = 0; k < 4; k++) { c->nscope[made[k]] = c->nscope[id]; c->node_cbody[made[k]] = c->node_cbody[id]; }
-      Scope *sc = comp_scope_of(c, id);
-      if (sc) scope_local_intern(sc, tmp);
-      changed = 1;
-      /* the lefts array was replaced; reread it before the next target */
-      ls = nt_arr(nt, id, "lefts", &ln);
-    }
-  }
-  return changed;
-}
-
 /* `h[k], o.x = v, w` stores through `[]=` and `x=` just as `h[k] = v` and
    `o.x = w` do, but the passes that widen a container's key and element
    types, or an attribute's slot, from those stores only look at CallNodes:
@@ -388,6 +300,10 @@ int desugar_masgn_store_evidence(Compiler *c) {
       want |= nt_kind(nt, ls[j]) == NK_IndexTargetNode || nt_kind(nt, ls[j]) == NK_CallTargetNode;
     for (int j = 0; j < rn; j++)
       want |= nt_kind(nt, rs[j]) == NK_IndexTargetNode || nt_kind(nt, rs[j]) == NK_CallTargetNode;
+    int rest = nt_ref(nt, id, "rest");
+    int rtgt = rest >= 0 && nt_kind(nt, rest) == NK_SplatNode ? nt_ref(nt, rest, "expression") : -1;
+    if (rtgt >= 0 && nt_kind(nt, rtgt) != NK_IndexTargetNode && nt_kind(nt, rtgt) != NK_CallTargetNode) rtgt = -1;
+    want |= rtgt >= 0;
     if (!want) continue;
     int value = nt_ref(nt, id, "value");
     if (value < 0) continue;
@@ -420,6 +336,27 @@ int desugar_masgn_store_evidence(Compiler *c) {
       long long pos = tuple ? (en - rn + j < ln ? -1 : en - rn + j)
                     : scalar ? (j == 0 && ln == 0 ? 0 : -1) : j - rn;
       changed |= masgn_ev_store(c, id, tgt, masgn_ev_value(nt, value, tuple, en, els, scalar, pos));
+    }
+    /* a splat target takes the array of what the fixed targets leave: the
+       tuple's middle, the scalar alone, or a run-time array's slice, typed
+       as the array itself */
+    if (rtgt >= 0) {
+      int rv = -1;
+      if (tuple || scalar) {
+        if (tuple) nt_arr(nt, value, "elements", &en);
+        int from = tuple ? ln : 0;
+        int to = tuple ? en - rn : ln == 0 && rn == 0 ? 1 : 0;
+        if (to > from) {
+          int *ra = malloc(sizeof(int) * (size_t)(to - from));
+          const int *els = tuple ? nt_arr(nt, value, "elements", &en) : NULL;
+          for (int k = from; ra && k < to; k++) ra[k - from] = tuple ? els[k] : value;
+          rv = ra ? nt_new_node(nt, "ArrayNode") : -1;
+          if (rv >= 0) nt_node_set_arr(nt, rv, "elements", ra, to - from);
+          free(ra);
+        }
+      }
+      else rv = value;
+      changed |= masgn_ev_store(c, id, rtgt, rv);
     }
     comp_grow_node_arrays(c);
     for (int k = n_before; k < nt->count; k++) {

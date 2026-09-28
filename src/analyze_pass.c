@@ -2134,13 +2134,16 @@ static int masgn_unify_elem(Compiler *c, Scope *ms, const int *tgts, int n, TyKi
       TyKind mg = ty_unify(glv->type, elem);
       if (mg != glv->type) { glv->type = mg; changed = 1; }
     }
-    else if (sp_streq(lty_ms, "ClassVariableTargetNode") && ms && ms->class_id >= 0) {
+    else if (sp_streq(lty_ms, "ClassVariableTargetNode")) {
+      /* in a method, its class; in a class body, the body's */
+      int cc = ms && ms->class_id >= 0 ? ms->class_id
+             : tgts[i] < c->node_cap ? c->node_cbody[tgts[i]] : -1;
       const char *cvnm = nt_str(nt, tgts[i], "name");
-      int cvx = cvnm ? comp_cvar_index(&c->classes[ms->class_id], cvnm) : -1;
+      int cvx = cc >= 0 && cvnm ? comp_cvar_index(&c->classes[cc], cvnm) : -1;
       if (cvx < 0) continue;
-      TyKind mg = ty_unify(c->classes[ms->class_id].cvar_types[cvx], elem);
-      if (mg != c->classes[ms->class_id].cvar_types[cvx]) {
-        c->classes[ms->class_id].cvar_types[cvx] = mg; changed = 1;
+      TyKind mg = ty_unify(c->classes[cc].cvar_types[cvx], elem);
+      if (mg != c->classes[cc].cvar_types[cvx]) {
+        c->classes[cc].cvar_types[cvx] = mg; changed = 1;
       }
     }
     else if (sp_streq(lty_ms, "ConstantTargetNode")) {
@@ -2483,7 +2486,7 @@ int infer_write_types(Compiler *c) {
           if (rest_ms >= 0 && nt_type(nt, rest_ms) && sp_streq(nt_type(nt, rest_ms), "SplatNode")) {
             int rin_ms = nt_ref(nt, rest_ms, "expression");
             if (rin_ms >= 0 && nt_type(nt, rin_ms) &&
-                sp_streq(nt_type(nt, rin_ms), "GlobalVariableTargetNode")) {
+                !sp_streq(nt_type(nt, rin_ms), "LocalVariableTargetNode")) {
               TyKind rat = ty_array_of(st);
               changed |= masgn_unify_elem(c, comp_scope_of(c, id), &rin_ms, 1,
                                           rat == TY_UNKNOWN ? TY_POLY_ARRAY : rat);
@@ -2536,7 +2539,7 @@ int infer_write_types(Compiler *c) {
           int rin_p = (rest_p >= 0 && nt_type(nt, rest_p) && sp_streq(nt_type(nt, rest_p), "SplatNode"))
                       ? nt_ref(nt, rest_p, "expression") : -1;
           if (st == TY_POLY && rin_p >= 0 && nt_type(nt, rin_p) &&
-              sp_streq(nt_type(nt, rin_p), "GlobalVariableTargetNode"))
+              !sp_streq(nt_type(nt, rin_p), "LocalVariableTargetNode"))
             changed |= masgn_unify_elem(c, ms_poly, &rin_p, 1, TY_POLY_ARRAY);
         }
         if (ty_is_array(st)) {
@@ -2559,8 +2562,7 @@ int infer_write_types(Compiler *c) {
               if (lv3 && !lv3->is_param && !lv3->is_block_param)
                 lv3->type = ty_unify(lv3->type, st);
             }
-            else if (inner2 >= 0 && nt_type(nt, inner2) &&
-                     sp_streq(nt_type(nt, inner2), "GlobalVariableTargetNode"))
+            else if (inner2 >= 0 && nt_type(nt, inner2))
               changed |= masgn_unify_elem(c, ms_arr, &inner2, 1, st);
           }
         }
@@ -2710,6 +2712,19 @@ int infer_write_types(Compiler *c) {
         LocalVar *lv = rnm ? scope_local(comp_scope_of(c, id), rnm) : NULL;
         if (lv && !lv->is_param && !lv->is_block_param)
           lv->type = ty_unify(lv->type, rest_arr);
+      }
+      /* an instance or class variable or a constant takes the same array */
+      else if (inner >= 0 && nt_type(nt, inner) &&
+               !sp_streq(nt_type(nt, inner), "GlobalVariableTargetNode")) {
+        int rstart = ln, rend = en - rn;
+        if (rend < rstart) rend = rstart;
+        TyKind rest_elem = TY_UNKNOWN;
+        for (int i = rstart; i < rend; i++)
+          rest_elem = ty_unify(rest_elem, infer_type(c, els[i]));
+        TyKind rest_arr = rest_elem != TY_UNKNOWN ? ty_array_of(rest_elem) : TY_POLY_ARRAY;
+        for (int i = 0; i < en; i++)
+          if (nt_kind(nt, els[i]) == NK_SplatNode) { rest_arr = infer_type(c, value); break; }
+        changed |= masgn_unify_elem(c, comp_scope_of(c, id), &inner, 1, rest_arr);
       }
     }
   }
@@ -10862,6 +10877,9 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
       }
     }
   }
+  /* a multiple assignment's attribute or index target calls its writer */
+  else if (sp_streq(ty, "CallTargetNode")) nm = nt_str(nt, id, "name");
+  else if (sp_streq(ty, "IndexTargetNode")) nm = "[]=";
   else {
     size_t tl = strlen(ty);
     if (tl > 17 && (sp_streq(ty + tl - 17, "OperatorWriteNode")))
