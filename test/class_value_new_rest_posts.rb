@@ -38,3 +38,20 @@ puts M[:d].new(7, 8, 9).show
 puts M[:h].new(7).show
 k = ARGV.empty? ? D : G
 puts k.new(1, 2).show
+
+class Q
+  def initialize(a, b = 2, *r, c) = (@s = [a, b, r, c].inspect)
+  def show = @s
+end
+class R
+  def initialize(a = 1, b = 2, *r, c) = (@s = [a, b, r, c].inspect)
+  def show = @s
+end
+N = [Q, R]
+puts N[0].new(10, 20).show
+puts N[0].new(10, 20, 30).show
+puts N[0].new(10, 20, 30, 40).show
+puts N[1].new(10).show
+puts N[1].new(10, 20).show
+puts N[1].new(10, 20, 30).show
+puts N[1].new(10, 20, 30, 40).show
