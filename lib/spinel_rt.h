@@ -2921,12 +2921,30 @@ static SP_INLINE sp_RbVal sp_poly_coll_chk(sp_RbVal v, const char *m) {
     sp_raise_poly_nomethod(m, v);
   return v;
 }
+/* An Array method Hash and String lack (last, rotate, sample, join, ...)
+   reached through a boxed receiver. The span helpers read any collection as
+   its elements, so a Hash answered its [k, v] pairs and a String or Range its
+   members where CRuby raises NoMethodError. `range_ok` lets a Range through
+   for the names Range defines (last, last(n)). A user object or an
+   Enumerator is left to the helper. */
+static SP_INLINE sp_RbVal sp_poly_ary_chk(sp_RbVal v, const char *m, int range_ok) {
+  sp_poly_coll_chk(v, m);
+  if (v.tag == SP_TAG_STR || v.tag == SP_TAG_SYM || sp_poly_is_strbuf(v) ||
+      (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id)) ||
+      (!range_ok && v.tag == SP_TAG_OBJ &&
+       (v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE ||
+        v.cls_id == SP_BUILTIN_FLOAT_RANGE)))
+    sp_raise_poly_nomethod(m, v);
+  return v;
+}
 /* `length` on a boxed receiver: nil, a number and a user object have none, and
    sp_poly_length answers 0 for all three -- so `v.length` on a nil read out of
    a hash miss answered 0 instead of raising NoMethodError (#3974). */
 static sp_int sp_poly_length_m(sp_RbVal v) {
   if (v.tag == SP_TAG_NIL || v.tag == SP_TAG_INT || v.tag == SP_TAG_FLT ||
-      v.tag == SP_TAG_BIGINT || v.tag == SP_TAG_BOOL || sp_poly_is_user_obj(v))
+      v.tag == SP_TAG_BIGINT || v.tag == SP_TAG_BOOL || sp_poly_is_user_obj(v) ||
+      (v.tag == SP_TAG_OBJ && (v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE ||
+                               v.cls_id == SP_BUILTIN_FLOAT_RANGE)))
     sp_raise_poly_nomethod("length", v);
   /* String#length is CHARACTERS. sp_poly_length answers the byte count, which
      is what its container and iteration callers want and what a boxed string
@@ -9848,6 +9866,7 @@ static sp_RbVal sp_poly_arr_take(sp_RbVal v, sp_int n) {
   return sp_poly_arr_span(v, 0, n > alen ? alen : n);
 }
 static sp_RbVal sp_poly_arr_last_n(sp_RbVal v, sp_int n) {
+  sp_poly_ary_chk(v, "last", 1);
   if (n < 0) sp_raise_cls("ArgumentError", "negative array size");
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p &&
       ((sp_Range *)v.v.p)->last == INTPTR_MAX)
@@ -9869,11 +9888,15 @@ static sp_RbVal sp_poly_arr_drop(sp_RbVal v, sp_int n) {
    count (#4485). */
 static sp_int sp_poly_count(sp_RbVal v) {
   sp_poly_coll_chk(v, "count");
+  /* String#count needs the character set to count */
+  if (v.tag == SP_TAG_STR || sp_poly_is_strbuf(v))
+    sp_raise_cls("ArgumentError", "wrong number of arguments (given 0, expected 1+)");
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p)
     return sp_range_count(*(sp_Range *)v.v.p);
   return sp_poly_length(sp_poly_span_subject(v));
 }
 static sp_RbVal sp_poly_arr_rotate(sp_RbVal v, sp_int n) {
+  sp_poly_ary_chk(v, "rotate", 0);
   SP_GC_ROOT_RBVAL(v);
   sp_PolyArray *r = sp_PolyArray_dup(sp_poly_to_a_arr(v));
   SP_GC_ROOT(r);
@@ -9881,6 +9904,7 @@ static sp_RbVal sp_poly_arr_rotate(sp_RbVal v, sp_int n) {
   return sp_box_poly_array(r);
 }
 static sp_RbVal sp_poly_arr_sample_n(sp_RbVal v, sp_int n) {
+  sp_poly_ary_chk(v, "sample", 0);
   if (n < 0) sp_raise_cls("ArgumentError", "negative sample number");
   SP_GC_ROOT_RBVAL(v);
   sp_PolyArray *r = sp_PolyArray_dup(sp_poly_to_a_arr(v));
@@ -9900,6 +9924,7 @@ static sp_RbVal sp_poly_struct_values(sp_RbVal v) {
 /* Array#values_at indexes; Hash#values_at looks the keys up. */
 static sp_RbVal sp_poly_arr_values_at(sp_RbVal v, sp_PolyArray *idx) {
   sp_poly_coll_chk(v, "values_at");
+  if (!(v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id))) sp_poly_ary_chk(v, "values_at", 0);
   SP_GC_ROOT_RBVAL(v); SP_GC_ROOT(idx);
   /* a Struct read out of a container answers its members at the offsets, as
      the typed Struct does; its length read as 0 here, so every offset was nil */
@@ -10007,6 +10032,8 @@ static sp_SymPolyHash *sp_time_deconstruct_all(sp_Time t) {
 }
 static sp_RbVal sp_poly_first(sp_RbVal v) {
   sp_poly_coll_chk(v, "first");
+  if (v.tag == SP_TAG_STR || v.tag == SP_TAG_SYM || sp_poly_is_strbuf(v))
+    sp_raise_poly_nomethod("first", v);
   if (v.tag != SP_TAG_OBJ) return sp_box_nil();
   { sp_PolyArray *ps = sp_poly_hash_pairs_or_null(v);
     if (ps) return ps->len > 0 ? ps->data[0] : sp_box_nil(); }
@@ -10026,7 +10053,7 @@ static sp_RbVal sp_poly_first(sp_RbVal v) {
   return sp_poly_arr_get(v, 0);
 }
 static sp_RbVal sp_poly_last(sp_RbVal v) {
-  sp_poly_coll_chk(v, "last");
+  sp_poly_ary_chk(v, "last", 1);
   /* Range#last is the end, exclusivity untouched: (1...5).last is 5. A
      stepped range's last is the last element it enumerates. Before the
      user_elems read, which materializes the Range and would answer the
@@ -10061,6 +10088,7 @@ static sp_RbVal sp_poly_first_n(sp_RbVal v, sp_int n) {
   return sp_box_poly_array(out);
 }
 static sp_RbVal sp_poly_last_n(sp_RbVal v, sp_int n) {
+  sp_poly_ary_chk(v, "last", 1);
   sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
   if (n < 0) sp_raise_cls("ArgumentError", "negative array size");
   sp_int len = sp_poly_arr_len_ex(v);
@@ -10069,6 +10097,7 @@ static sp_RbVal sp_poly_last_n(sp_RbVal v, sp_int n) {
   return sp_box_poly_array(out);
 }
 static sp_RbVal sp_poly_sample(sp_RbVal v) {
+  sp_poly_ary_chk(v, "sample", 0);
   sp_int n = sp_poly_length(v);
   return n > 0 ? sp_poly_arr_get(v, sp_krand_below(n)) : sp_box_nil();
 }
@@ -12825,6 +12854,7 @@ static sp_RbVal sp_poly_compact_val(sp_RbVal v) {
   return sp_box_poly_array(sp_poly_compact(v));
 }
 static sp_PolyArray *sp_poly_flatten(sp_RbVal v) {
+  if (!(v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id))) sp_poly_ary_chk(v, "flatten", 0);
   sp_PolyArray *src = sp_poly_arr_recv(v, "flatten");
   SP_GC_ROOT(src);
   return sp_PolyArray_flatten(src);

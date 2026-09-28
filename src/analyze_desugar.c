@@ -1785,6 +1785,9 @@ int desugar_array_at(Compiler *c) {
        slice form a call CRuby answers with a TypeError (#3924). */
     { TyKind aat = infer_type(c, argv[0]);
       if (aat == TY_RANGE || aat == TY_FLOAT_RANGE || aat == TY_STR_RANGE) continue; }
+    /* a receiver that turns out boxed may be a Hash or a String, which have #[] but
+       no #at: the index read checks the receiver first */
+    nt_node_set_int(nt, id, "was_at", 1);
     nt_node_set_str(nt, id, "name", "[]");
     changed = 1;
   }

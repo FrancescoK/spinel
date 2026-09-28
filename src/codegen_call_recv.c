@@ -14623,7 +14623,10 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, at != TY_INT ? "sp_poly_index_poly("
                     : expr_is_arr_or_nil(c, recv) ? "sp_poly_arr_get_aon("
                                                   : "sp_poly_arr_get_hash(");
+        int was_at = nt_int(c->nt, id, "was_at", 0);
+        if (was_at) buf_puts(b, "sp_poly_ary_chk(");
         emit_expr(c, recv, b);
+        if (was_at) buf_puts(b, ", \"at\", 0)");
         buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         if (uns) buf_puts(b, ")");
         return 1;
@@ -14654,13 +14657,14 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "join") &&
       !user_defines_or_reads(c, name)) {
     /* the helper renders a non-container as its to_s, which is right for a
-       nested element and wrong for the receiver: nil has no join (#4485) */
+       nested element and wrong for the receiver: nil has no join (#4485),
+       and neither has a Hash, a String or a Range */
     /* a program that spawns threads types this call poly (the receiver may
        be a Thread, whose join answers the thread): the boxed form waits on a
        Thread and joins anything else */
     const char *jfn = comp_ntype(c, id) == TY_POLY ? "sp_poly_join_v" : "sp_poly_join";
-    buf_printf(b, "%s(sp_poly_coll_chk(", jfn); emit_expr(c, recv, b);
-    buf_puts(b, ", \"join\"), "); if (argc >= 1) emit_str_expr_nilable(c, argv[0], b); else buf_puts(b, "sp_str_empty");
+    buf_printf(b, "%s(sp_poly_ary_chk(", jfn); emit_expr(c, recv, b);
+    buf_puts(b, ", \"join\", 0), "); if (argc >= 1) emit_str_expr_nilable(c, argv[0], b); else buf_puts(b, "sp_str_empty");
     buf_puts(b, ")"); return 1;
   }
   /* poly receiver: clamp(lo, hi) tag-dispatches int/float at runtime; the range
