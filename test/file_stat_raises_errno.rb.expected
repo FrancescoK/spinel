@@ -1,0 +1,7 @@
+stat enotdir => Errno::ENOTDIR: Not a directory @ rb_file_s_stat
+lstat enotdir => Errno::ENOTDIR: Not a directory @ rb_file_s_lstat
+stat toolong => Errno::ENAMETOOLONG: File name too long @ rb_file_s_stat
+stat enoent => Errno::ENOENT: No such file or directory @ rb_file_s_stat
+lstat enoent => Errno::ENOENT: No such file or directory @ rb_file_s_lstat
+stat eloop => Errno::ELOOP: Too many levels of symbolic links @ rb_file_s_stat
+stat ok => 5
