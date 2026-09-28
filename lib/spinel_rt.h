@@ -4436,6 +4436,10 @@ static sp_RbVal sp_poly_neg(sp_RbVal a) {
   if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_COMPLEX)
     return sp_box_complex(sp_complex_neg(sp_poly_as_complex(a)));
   if (sp_poly_is_brat(a)) return sp_brat_sub_poly(sp_box_int(0), a);
+  /* String#-@ on a boxed String: its frozen, deduplicated form, as the typed
+     path answers (it was negated as an Integer, answering 0) */
+  if (a.tag == SP_TAG_STR) return sp_box_str(sp_str_uminus_val(a.v.s));
+  if (sp_poly_is_strbuf(a)) return sp_box_str(sp_str_uminus_val(sp_poly_strbuf_deref(a).v.s));
   return sp_box_int(-sp_poly_to_i(a));
 }
 
