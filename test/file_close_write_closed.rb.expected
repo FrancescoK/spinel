@@ -1,0 +1,6 @@
+nil
+nil
+[IOError, "closing non-duplex IO for writing"]
+nil
+nil
+[IOError, "closed stream"]
