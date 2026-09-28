@@ -5684,6 +5684,9 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
     }
   }
   proc_collect_used(c, body, &used);
+  /* an optional or keyword default runs in this fn too, so what it reads is
+     captured like a body read */
+  proc_collect_used(c, proc_params_node(c, create), &used);
   /* How many numbered parameters the proc declares. Read off the node rather
      than off the names used in the body: proc_param_name answers them now, so
      `arity` already counts them and the old "arity == 0" gate never fired --
@@ -5718,6 +5721,7 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
      nested block in the proc is classified as body-local, not flagged as an
      uncaptured outer variable. */
   collect_locals_deep(c, body, &locals);
+  collect_locals_deep(c, proc_params_node(c, create), &locals);
   for (int u = 0; u < used.n; u++) {
     const char *nm = used.v[u];
     if (nameset_has(&params, nm)) continue;
@@ -5973,7 +5977,8 @@ else if (orecv >= 0 && onm) {
      value-type (by-value) self is captured by value in a `sp_X __self_val`
      field. A class-method self has no instance and is left as-is. */
   int cap_self = bs && bs->class_id >= 0 && !bs->is_cmethod &&
-                 proc_body_uses_self(c, body, bs->class_id);
+                 (proc_body_uses_self(c, body, bs->class_id) ||
+                  proc_body_uses_self(c, proc_params_node(c, create), bs->class_id));
   /* A class method that takes the receiving class as a leading parameter has
      it in `_sp_cls`; a lifted block's function signature is (_cap, argc, args)
      and knows nothing of it, so a sibling class-method call inside the block
@@ -6403,6 +6408,15 @@ else if (orecv >= 0 && onm) {
      callee's static types. CRuby non-lambda distribution: leading requireds
      from the front, posts from the back, the remainder (possibly empty) is
      the rest; missing posts bind nil. */
+  /* A local a default binds (a block param in `x = a.map { |i| i }`) is
+     declared ahead of the optional and keyword slots that evaluate it. */
+  NameSet dlocals = {0};
+  collect_locals_deep(c, proc_params_node(c, create), &dlocals);
+  for (int i = 0; i < dlocals.n; i++) {
+    LocalVar *lv = scope_local(bs, dlocals.v[i]);
+    if (nameset_has(&params, dlocals.v[i])) continue;
+    if (lv && lv->type != TY_UNKNOWN && !lv->is_cell) declare_local(c, pb, lv, 0);
+  }
   if ((restn && restn[0]) || nposts > 0 || nopts > 0 || nnumbered > 0) {
     g_needs_proc_poly_argslot = 1;  /* channel array now lives in spinel_rt.h */
     /* Only the no-parameters-node form (`-> { _1 }`) binds here. Where the
@@ -6435,6 +6449,7 @@ else if (orecv >= 0 && onm) {
           if (nameset_has(&params, dused.v[u2])) refs_param = 1;
         free(dused.v);
         if (refs_param) {
+          free(dlocals.v);
           unsupported(c, create, "proc optional default referencing another parameter (later slice)");
           return;
         } }
@@ -6531,9 +6546,10 @@ else if (orecv >= 0 && onm) {
     /* skip virtual &block slots (TY_UNKNOWN) but allow rescue-bind vars (TY_EXCEPTION) */
     /* a reassigned PARAMETER is already bound by the arg prologue above --
        re-declaring it is a C redefinition (#3309) */
-    if (nameset_has(&params, locals.v[i])) continue;
+    if (nameset_has(&params, locals.v[i]) || nameset_has(&dlocals, locals.v[i])) continue;
     if (lv && lv->type != TY_UNKNOWN && !lv->is_cell) declare_local(c, pb, lv, 0);
   }
+  free(dlocals.v);
   if (ret_ptr) {
     /* launder a heap-pointer return through the sp_int slot: emit the body's
        leading statements, then a prelude-wrapped `return (sp_int)(uintptr_t)(<value>)`.

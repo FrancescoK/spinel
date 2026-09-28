@@ -1300,6 +1300,8 @@ void mark_proc_captures(Compiler *c) {
     }
     if (pn >= 0) { int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn); for (int k = 0; k < rn; k++) aname_add(&params, nt_str(nt, reqs[k], "name")); }
     a_collect_used(c, body, &used);
+    /* an optional or keyword default is evaluated in the proc's frame */
+    a_collect_used(c, pn, &used);
     Scope *es = &c->scopes[encl];
     for (int u = 0; u < used.n; u++) {
       const char *nm = used.v[u];
