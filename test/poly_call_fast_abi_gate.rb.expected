@@ -65,8 +65,8 @@ adapter_get_proc_short: ArgumentError
 [1, 2]
 rest_kw_static: NoMethodError
 rest_post_static: NoMethodError
-rest_kw_toproc: NoMethodError
-rest_kw_toproc_short: NoMethodError
+rest_kw_toproc: ArgumentError: missing keyword: :c
+rest_kw_toproc_short: ArgumentError: missing keyword: :c
 rest_post_toproc: NoMethodError
 rest_kwrest_toproc: NoMethodError
 iarr_get_over: 1
@@ -93,11 +93,11 @@ toproc_rest_over: no raise
 kwrest_toproc_empty: NoMethodError
 kwrest_toproc_kw: NoMethodError
 [1, 2, 3]
-toproc_opt_kw: NoMethodError
-toproc_kw_no_opt: ArgumentError
-toproc_rest_kw: NoMethodError
-toproc_req_kw: NoMethodError
-toproc_req_nokw: NoMethodError
+toproc_opt_kw: no raise
+toproc_kw_no_opt: no raise
+toproc_rest_kw: no raise
+toproc_req_kw: no raise
+toproc_req_nokw: ArgumentError: missing keyword: :c
 class_value_call: NoMethodError
 class_value_toproc: NoMethodError
 class_value_poly: NoMethodError

@@ -286,13 +286,12 @@ class RestTail
 end
 expect_nome("rest_kw_static")   { RestTail.new.method(:m).call(1, 2, 3) }
 expect_nome("rest_post_static") { RestTail.new.method(:p).call(1, 2, 3) }
-# The same rest-tail targets decline through Method#to_proc: the trampoline's
-# fixed positional binding read the trailing parameter's register from args[]
-# and handed the keyword hash pointer (or an unset register) to the callee,
-# whose prologue rooted it -- a SIGSEGV. A missing argument read the same way
-# instead of raising CRuby's ArgumentError, so the decline must not depend on
-# the call's count. An OPTIONAL keyword after the rest is the exception: it
-# always takes its default and is handled (see poly_method_return_kinds.rb).
+# Through Method#to_proc the trampoline binds a keyword after the rest from
+# the call's keyword hash, so a required one the call omits is CRuby's
+# `missing keyword` whatever the positional count. The post-rest positional
+# still declines: the trampoline's fixed positional binding read the trailing
+# parameter's register from args[] and handed an unset register to the
+# callee, whose prologue rooted it -- a SIGSEGV.
 expect_nome("rest_kw_toproc")      { RestTail.new.method(:req).to_proc.call(1, 2, 3) }
 expect_nome("rest_kw_toproc_short") { RestTail.new.method(:req).to_proc.call(1) }
 expect_nome("rest_post_toproc")   { RestTail.new.method(:p).to_proc.call(1, 2, 3) }
@@ -428,22 +427,18 @@ end
 expect_nome("kwrest_toproc_empty") { KwRestProc.new.method(:m).to_proc.call(1) }
 expect_nome("kwrest_toproc_kw")    { KwRestProc.new.method(:m).to_proc.call(1, z: 2) }
 
-# A declared keyword parameter cannot be supplied through the proc ABI: the
-# trailing keyword hash reaches the trampoline as one more positional and was
-# bound to the next parameter's sp_int slot (`def m(a, b = a + 1, c: 3)`
-# answered `[1, <garbage>, 3]` for `.to_proc.call(1, c: 5)`). The keyword-less
-# call still takes the defaults; a runtime trailing hash and every REQUIRED
-# keyword target decline.
+# A declared keyword parameter binds from the call's trailing keyword hash,
+# which the trampoline takes off the positionals (the hash used to be bound
+# to the next parameter's sp_int slot: `def m(a, b = a + 1, c: 3)` answered
+# `[1, <garbage>, 3]` for `.to_proc.call(1, c: 5)`, and was then declined).
+# A required keyword the call omits is CRuby's `missing keyword`.
 class KwProc
   def opt(a, b = a + 1, c: 3) = [a, b, c]
   def rest(a, *r, c: 3) = [a, r, c]
   def req(a, c:) = [a, c]
 end
-# A target with no spare optional positional has no slot for the trailing
-# keyword hash: the positional count guard fires first (CRuby's ArgumentError
-# shape) rather than the keyword decline. Both are exceptions, never a
-# positional read of the hash; pin the class so a future change cannot
-# silently start accepting it.
+# A target with no spare optional positional: the keyword hash is not
+# counted as one, so the call binds.
 class KwNoOptProc
   def m(a, c: 3) = [a, c]
 end

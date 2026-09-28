@@ -7151,20 +7151,82 @@ int desugar_instance_eval_builtin(Compiler *c) {
     if (subtree_has_kind(nt, body, NK_DefNode, 0)) continue;
 
     int is_exec = sp_streq(nm, "instance_exec");
-    const char *pnames[8]; int np = 0;
+    /* pvals[k]: the node bound to parameter pnames[k] -- a call argument, a
+       keyword argument's value, or the parameter's own default */
+    const char *pnames[16]; int pvals[16], pdef[16] = {0}, pnew[16] = {0}; int np = 0;
     {
       int bparams = nt_ref(nt, blk, "parameters");
       int params = bparams >= 0 ? nt_ref(nt, bparams, "parameters") : -1;
       int rn = 0; const int *reqs = params >= 0 ? nt_arr(nt, params, "requireds", &rn) : NULL;
+      int on = 0; const int *opts = params >= 0 ? nt_arr(nt, params, "optionals", &on) : NULL;
+      int kn = 0; const int *kws = params >= 0 ? nt_arr(nt, params, "keywords", &kn) : NULL;
       int an2 = nt_ref(nt, id, "arguments");
-      int ac2 = 0; nt_arr(nt, an2 >= 0 ? an2 : -1, "arguments", &ac2);
-      if (is_exec) { if (rn > 8 || rn != ac2) continue; }
+      int ac2 = 0; const int *av2 = nt_arr(nt, an2 >= 0 ? an2 : -1, "arguments", &ac2);
+      /* A trailing `k: v` hash binds keyword parameters. Only literal symbol
+         keys that each name a keyword, and cover the required ones, are
+         bound here; any other keyword shape, a `**rest` taking keywords, or
+         parameters after a `*rest` take the codegen path, which checks and
+         binds them at run time. */
+      int kwh = is_exec && ac2 > 0 && nt_kind(nt, av2[ac2 - 1]) == NK_KeywordHashNode ? av2[ac2 - 1] : -1;
+      int pac = kwh >= 0 ? ac2 - 1 : ac2;
+      int restp = params >= 0 ? nt_ref(nt, params, "rest") : -1;
+      if (restp >= 0 && nt_kind(nt, restp) != NK_RestParameterNode) restp = -1;
+      int kwrp = params >= 0 ? nt_ref(nt, params, "keyword_rest") : -1;
+      int postn = 0; if (params >= 0) nt_arr(nt, params, "posts", &postn);
+      if ((on > 0 || kn > 0 || restp >= 0 || kwrp >= 0 || postn > 0) && !is_exec) continue;
+      if (postn > 0 || (kwrp >= 0 && (kwh >= 0 || nt_kind(nt, kwrp) != NK_KeywordRestParameterNode)))
+        continue;
+      if (restp >= 0 && !nt_str(nt, restp, "name")) continue;
+      if (is_exec) {
+        if (rn + on + kn + 2 > 16 || pac < rn || (pac > rn + on && restp < 0)) continue;
+      }
       else { if (ac2 != 0 || rn > 1) continue; }   /* instance_eval { |s| }: s = self */
       int ok = 1;
-      for (int k = 0; k < rn && ok; k++)
-        if (!(pnames[k] = nt_str(nt, reqs[k], "name"))) ok = 0;
+      for (int k = 0; k < rn && ok; k++) {
+        if (!(pnames[np] = nt_str(nt, reqs[k], "name"))) ok = 0;
+        pvals[np++] = is_exec ? av2[k] : -1;
+      }
+      for (int k = 0; k < on && ok; k++) {
+        if (!(pnames[np] = nt_str(nt, opts[k], "name"))) ok = 0;
+        pdef[np] = rn + k >= pac;
+        pvals[np] = pdef[np] ? nt_ref(nt, opts[k], "value") : av2[rn + k];
+        np++;
+      }
+      /* The binds run in parameter order, so the call's arguments must all
+         come before any default: a keyword argument following a used default,
+         or keyword arguments out of parameter order, take the codegen path. */
+      int defaulted = pac < rn + on, kmatched = 0;
+      int ken = 0; const int *kels = kwh >= 0 ? nt_arr(nt, kwh, "elements", &ken) : NULL;
+      for (int k = 0; k < kn && ok; k++) {
+        if (!(pnames[np] = nt_str(nt, kws[k], "name"))) { ok = 0; break; }
+        int v = ie_kwhash_value(c, kwh, pnames[np]);
+        if (v >= 0) {
+          if (defaulted || kmatched >= ken || nt_ref(nt, kels[kmatched], "value") != v) ok = 0;
+          kmatched++;
+        }
+        else {
+          v = nt_kind(nt, kws[k]) == NK_OptionalKeywordParameterNode ? nt_ref(nt, kws[k], "value") : -1;
+          defaulted = pdef[np] = 1;
+        }
+        if (v < 0) ok = 0;
+        pvals[np++] = v;
+      }
+      if (ok && kmatched != ken) ok = 0;
+      /* `*rest` takes the positional arguments past the others, `**rest`
+         an empty Hash when the call passes no keywords */
+      if (ok && restp >= 0) {
+        int ra = nt_new_node(nt, "ArrayNode");
+        if (ra < 0) continue;
+        if (pac > rn + on) nt_node_set_arr(nt, ra, "elements", av2 + rn + on, pac - rn - on);
+        pnames[np] = nt_str(nt, restp, "name"); pnew[np] = 1; pvals[np++] = ra;
+      }
+      if (ok && kwrp >= 0) {
+        int hn = nt_new_node(nt, "HashNode");
+        if (hn < 0) continue;
+        if (!(pnames[np] = nt_str(nt, kwrp, "name"))) ok = 0;
+        pnew[np] = 1; pvals[np++] = hn;
+      }
       if (!ok) continue;
-      np = rn;
     }
 
     char tmp[32];
@@ -7183,9 +7245,11 @@ int desugar_instance_eval_builtin(Compiler *c) {
       lv->rbs_seeded = 1;
     }
     ie_subtree_retarget(c, body, tmp, 0);
+    for (int k = 0; k < np; k++)
+      if (pdef[k]) ie_subtree_retarget(c, pvals[k], tmp, 0);
 
     int base = nt->count;
-    int items[8 + 66]; int ni = 0;
+    int items[16 + 66]; int ni = 0;
     /* bind the receiver first (evaluated once), then the params */
     int wrecv = nt_new_node(nt, "LocalVariableWriteNode");
     if (wrecv < 0) continue;
@@ -7193,16 +7257,18 @@ int desugar_instance_eval_builtin(Compiler *c) {
     nt_node_set_ref(nt, wrecv, "value", recv);
     items[ni++] = wrecv;
     if (is_exec) {
-      int an2 = nt_ref(nt, id, "arguments");
-      int ac2 = 0; const int *av2 = nt_arr(nt, an2, "arguments", &ac2);
       for (int k = 0; k < np; k++) {
         /* an unused param never gets a C declaration; splice the arg bare so
-           its side effects still run (#2734) */
-        if (!ie_subtree_uses_local(nt, body, pnames[k], 0)) { items[ni++] = av2[k]; continue; }
+           its side effects still run (#2734). A later default reading it is
+           a use. */
+        int used = ie_subtree_uses_local(nt, body, pnames[k], 0);
+        for (int j = k + 1; j < np && !used; j++)
+          used = ie_subtree_uses_local(nt, pvals[j], pnames[k], 0);
+        if (!used) { items[ni++] = pvals[k]; continue; }
         int w = nt_new_node(nt, "LocalVariableWriteNode");
         if (w < 0) { ni = -1; break; }
         nt_node_set_str(nt, w, "name", pnames[k]);
-        nt_node_set_ref(nt, w, "value", av2[k]);
+        nt_node_set_ref(nt, w, "value", pvals[k]);
         items[ni++] = w;
       }
     }
@@ -7241,6 +7307,10 @@ int desugar_instance_eval_builtin(Compiler *c) {
     int encl = c->nscope[id];
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
     rehome_block_body(c, body, encl);
+    for (int k = 0; k < np; k++) {
+      if (pdef[k]) rehome_block_body(c, pvals[k], encl);
+      if (pnew[k]) c->nscope[pvals[k]] = encl;
+    }
     changed = 1;
   }
   return changed;
@@ -9326,6 +9396,17 @@ int infer_block_params(Compiler *c) {
       if (!p) continue;
       int an = tramp_argc >= 0 ? ie_tramp_effective_arg(c, id, k) : (k < iac ? iav[k] : -1);
       if (an < 0) continue;
+      TyKind at = infer_type(c, an);
+      LocalVar *lv = scope_local_intern(bs, p); lv->is_block_param = 1;
+      if (at != TY_UNKNOWN && lv->type != at) { lv->type = at; changed = 1; }
+    }
+    /* optional block params (`|a, b = 3|`) take the next args, or their
+       default's type when the call passes too few */
+    int onp = 0; const int *opts = tramp_argc < 0 ? nt_arr(nt, pnode, "optionals", &onp) : NULL;
+    for (int k = 0; k < onp; k++) {
+      const char *p = nt_str(nt, opts[k], "name");
+      int an = rnp + k < iac ? iav[rnp + k] : nt_ref(nt, opts[k], "value");
+      if (!p || an < 0) continue;
       TyKind at = infer_type(c, an);
       LocalVar *lv = scope_local_intern(bs, p); lv->is_block_param = 1;
       if (at != TY_UNKNOWN && lv->type != at) { lv->type = at; changed = 1; }
