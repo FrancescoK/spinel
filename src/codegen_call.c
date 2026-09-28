@@ -18439,8 +18439,9 @@ static int emit_poly_isa_test(Compiler *c, const char *cn, const char *v, int ex
       if (first) buf_puts(b, "0");
       buf_puts(b, "))");
     }
-    /* a builtin ancestor not covered above (Object/BasicObject/Kernel are
-       universal; Numeric/Comparable/Enumerable are module mixins; Rational,
+    /* a builtin ancestor not covered above (Object/BasicObject/Kernel hold
+       for every value but a BasicObject.new, which is only a BasicObject;
+       Numeric/Comparable/Enumerable are module mixins; Rational,
        Complex, Regexp, Proc and friends have a cls_id but no class-table
        entry): defer to the runtime ancestry helper rather than a blanket
        false. */

@@ -12684,6 +12684,8 @@ char *codegen_program(const NodeTable *nt) {
       "  case SP_TAG_OBJ: if(v.cls_id>=0)return ((sp_Class){v.cls_id});\n"
       "    if(v.cls_id>=-12)return ((sp_Class){-104});\n"  /* arrays */
       "    if(v.cls_id>=-20||v.cls_id==-34)return ((sp_Class){-105});\n"  /* hashes */
+      /* a BasicObject.new is a BasicObject, not an Object or a Kernel */
+      "    if(v.cls_id==SP_BUILTIN_BASIC_OBJECT)return ((sp_Class){-117});\n"
       "    return ((sp_Class){-116});\n"
       "  default: return ((sp_Class){-116});\n"
       "  }\n}\n"
