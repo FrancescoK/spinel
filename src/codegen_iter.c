@@ -628,8 +628,11 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      so keyword params bind from a runtime lookup on the materialized hash, the
      same way emit_dispatch/emit_args_filled do -- without this each keyword
      param fell through to a fabricated default. */
+  int kw_merged = kwh_merged(c, m, kwh);
+  int argov_saved = g_n_argov;
+  if (kw_merged) emit_merged_positionals(c, argv, pos_argc);
   TyKind ds_type = TY_UNKNOWN;
-  int ds_tmp = emit_ds_hash_materialize(c, kwh, &ds_type);
+  int ds_tmp = emit_ds_hash_materialize(c, m, kwh, &ds_type);
   emit_ds_kwarg_check(c, m, kwh, ds_tmp, ds_type);
   /* The count and the keys, by the rule the ordinary call path follows. The
      loop below walks the PARAMETERS, so an argument none of them reads --
@@ -760,7 +763,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     else if (i == kwh_slot)
       emit_arg_or_default(c, m, i, kwh, b);
     else {
-      int kv = kwh >= 0 ? kwh_lookup(nt, kwh, m->pnames[i]) : -1;
+      int kv = kwh >= 0 && !kw_merged ? kwh_lookup(nt, kwh, m->pnames[i]) : -1;
       /* No literal key for this keyword param, but a `**hash` was splatted:
          extract it by name from the materialized hash (falls back to the
          param default when the key is absent). */
@@ -777,6 +780,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     free(park_f); free(park_t);
     buf_puts(b, ";\n");
   }
+  g_n_argov = argov_saved;
 
   /* Now switch into the RECEIVER's context for the method BODY. Both the
      self binding and the emitting-class must move together, and only here

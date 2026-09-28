@@ -932,7 +932,28 @@ int kwh_lookup(const NodeTable *nt, int kwh, const char *kname);
 int callee_has_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_declares_kwargs(Compiler *c, Scope *m);
-int emit_ds_hash_materialize(Compiler *c, int kwh, TyKind *out_type);
+/* True when the keyword hash `kwh` passes keywords from more than one source
+   that may carry the same key -- two `**` operands, or a literal Symbol key
+   ahead of one -- and every literal key is a Symbol. Its keywords then bind
+   from one hash merging every source in order, a later key winning, as CRuby
+   binds them; a lone `**` with literal keys only after it binds each keyword
+   from its own source, since a literal after it always wins. */
+int kwh_sources_overlap(const NodeTable *nt, int kwh);
+/* kwh_sources_overlap, for a call into `m`, which declares keyword params. */
+int kwh_merged(Compiler *c, Scope *m, int kwh);
+/* The keywords of such a `kwh` merged into one fresh, rooted SymPolyHash in
+   source order, a later key replacing an earlier one, the way
+   emit_kwrest_collect merges them: each value and `**` operand is evaluated
+   once, where it stands, and an operand of another class raises there, as a
+   lone one does in emit_ds_hash_materialize. Returns the temp id and sets
+   *out_type to TY_SYM_POLY_HASH. */
+int emit_ds_hash_merge(Compiler *c, int kwh, TyKind *out_type);
+/* The positional arguments of a kwh_merged call, evaluated in order into
+   rooted temps ahead of its merged keyword hash, as CRuby evaluates them
+   ahead of the keywords: each one that has an effect is pushed onto the
+   g_argov overrides, for the caller to pop once it has bound the call. */
+void emit_merged_positionals(Compiler *c, const int *argv, int pos_argc);
+int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type);
 /* The TypeError CRuby raises for a `**` operand that is neither a Hash, nil
    nor convertible with #to_hash, emitted into g_pre ahead of any keyword
    check: a settled kind of another class raises outright, and a boxed one

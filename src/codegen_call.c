@@ -11145,14 +11145,29 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
            types along with it, in source order, and the check follows them
            all, as CRuby evaluates every argument before the constructor
            looks at one: a value left in the call ran after the hash, and not
-           at all when the check raised. */
+           at all when the check raised. Keywords from several sources that
+           may name the same member -- two `**` operands, or a literal key
+           ahead of one -- merge into one hash in source order, a later key
+           winning, and the members and the check read that hash alone; the
+           splat above named only the last operand. keyword_init: false keeps
+           its reading. */
         int splat_tmp = -1;
         int *lit_tmp = NULL;
+        int merged = cls->kw_init != -1 && kwh_sources_overlap(nt, kwh);
         if (splat_h >= 0) {
           lit_tmp = malloc(sizeof(int) * (size_t)(cls->nivars > 0 ? cls->nivars : 1));
           for (int a = 0; a < cls->nivars; a++) lit_tmp[a] = -1;
+          if (merged) {
+            TyKind mty; int mh = emit_ds_hash_merge(c, kwh, &mty);
+            char mhn[32]; snprintf(mhn, sizeof mhn, "_t%d", mh);
+            splat_tmp = ++g_tmp;
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "sp_RbVal _t%d = ", splat_tmp);
+            emit_boxed_text(c, mty, mhn, g_pre);
+            buf_printf(g_pre, "; SP_GC_ROOT_RBVAL(_t%d);\n", splat_tmp);
+          }
           int nkp; const int *elsp = nt_arr(nt, kwh, "elements", &nkp);
-          for (int i = 0; i < nkp; i++) {
+          for (int i = 0; i < nkp && !merged; i++) {
             int vv = nt_ref(nt, elsp[i], "value");
             if (vv == splat_h) {
               Buf hv0; memset(&hv0, 0, sizeof hv0); emit_boxed(c, splat_h, &hv0);
@@ -11189,7 +11204,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             buf_puts(g_pre, "}, ");
             buf_printf(g_pre, "%d, (const unsigned char[]){", cls->nivars);
             for (int a = 0; a < cls->nivars; a++)
-              buf_printf(g_pre, "%s%d", a ? ", " : "", struct_kwarg_value(c, kwh, cls->ivars[a] + 1) >= 0);
+              buf_printf(g_pre, "%s%d", a ? ", " : "", !merged && struct_kwarg_value(c, kwh, cls->ivars[a] + 1) >= 0);
             if (cls->nivars == 0) buf_puts(g_pre, "0");
             buf_printf(g_pre, "}, %d);\n", cls->is_data ? 1 : 0);
           }
@@ -11198,7 +11213,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         for (int a = 0; a < cls->nivars; a++) {
           if (a) buf_puts(b, ", ");
           int vnode = -1;
-          if (kwh >= 0) vnode = struct_kwarg_value(c, kwh, cls->ivars[a] + 1);
+          if (kwh >= 0) vnode = merged ? -1 : struct_kwarg_value(c, kwh, cls->ivars[a] + 1);
           else if (a < argc) vnode = argv[a];
           if (lit_tmp && lit_tmp[a] >= 0) buf_printf(b, "_t%d", lit_tmp[a]);
           else if (vnode >= 0) {
@@ -11215,8 +11230,11 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             free(mv.p);
           }
           else if (splat_h >= 0) {
-            buf_printf(b, "sp_poly_hash_get_pair_val(_t%d, sp_box_sym(sp_sym_intern(\"%s\")), &(sp_bool){0})",
-                       splat_tmp, cls->ivars[a] + 1);
+            /* a member a merged literal key supplies keeps that key's type */
+            char gv[256];
+            snprintf(gv, sizeof gv, "sp_poly_hash_get_pair_val(_t%d, sp_box_sym(sp_sym_intern(\"%s\")), &(sp_bool){0})",
+                     splat_tmp, cls->ivars[a] + 1);
+            emit_unbox_text(c, cls->ivar_types[a], gv, b);
           }
           else buf_puts(b, default_value(cls->ivar_types[a]));
         }
