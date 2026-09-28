@@ -412,7 +412,7 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
        (nil $! outside a rescue) prints "nil". */
     int tv = ++g_tmp;
     buf_printf(b, "{ sp_Exception *_t%d = ", tv); emit_expr(c, arg, b);
-    buf_printf(b, "; sp_puts_line(_t%d ? sp_sprintf(\"#<%%s: %%s>\", sp_exc_class_name(_t%d), sp_exc_message(_t%d)) : \"nil\"); }\n", tv, tv, tv);
+    buf_printf(b, "; sp_puts_line(sp_exc_inspect((void *)_t%d)); }\n", tv);
   }
   else if (ty_is_array(t) && array_kind(t)) {
     buf_printf(b, "sp_puts_line(sp_%sArray_inspect(", array_kind(t));
@@ -572,7 +572,7 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     /* boxed-path inspect: NULL prints nil, else #<Class: message> */
     int ev = ++g_tmp;
     buf_printf(b, "{ sp_Exception *_t%d = (sp_Exception *)(", ev); emit_expr(c, arg, b);
-    buf_printf(b, "); sp_puts_line(_t%d ? sp_sprintf(\"#<%%s: %%s>\", sp_exc_class_name(_t%d), sp_exc_message(_t%d)) : \"nil\"); }\n", ev, ev, ev);
+    buf_printf(b, "); sp_puts_line(sp_exc_inspect((void *)_t%d)); }\n", ev);
   }
   else if (t == TY_MUTEX || t == TY_QUEUE || t == TY_CONDVAR) {
     /* the concurrency handles render as Object's default does (#4421) */

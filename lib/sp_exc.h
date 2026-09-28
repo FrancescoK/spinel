@@ -91,6 +91,10 @@ int sp_exc_exit_status(void *obj);
 sp_Exception *sp_exc_exception(sp_Exception *e, const char *msg);
 const char *sp_exc_class_name(volatile sp_Exception *ve);
 const char *sp_exc_message(volatile sp_Exception *ve);
+/* #to_s as #inspect renders it: a user override (the generated program's
+   sp_user_exc_to_s, installed in the hook) else the stored message */
+extern const char *(*sp_user_exc_to_s_fn)(sp_Exception *);
+const char *sp_exc_to_s_text(sp_Exception *e);
 const char *sp_exc_inspect(void *p);   /* #<Cls: msg>, for the inspect dispatch */
 sp_Exception *sp_exc_cause(volatile sp_Exception *ve);
 sp_RbVal sp_exc_result(volatile sp_Exception *ve);
