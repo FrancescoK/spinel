@@ -1576,6 +1576,24 @@ int emit_array_op_assign(Compiler *c, const char *lval, TyKind t,
   return 0;
 }
 
+/* The new value of an Integer or Float slot that is not a C lvalue (an array
+   or hash element, a native attribute) under `slot OP= rhs`, through the
+   helpers the binary form uses: the raw C operator skipped the overflow check
+   on `+ - *`, truncated `/` and `%` toward zero where Ruby floors, and had no
+   `**` at all. Answers 0, emitting nothing, for a boxed rhs or any other
+   element type or operator. */
+static int iow_scalar_fold(TyKind et, const char *op, TyKind vt, const char *slot,
+                           const char *rhs, Buf *b) {
+  const char *fn = NULL;
+  if (vt == TY_POLY) return 0;
+  if (et == TY_INT) fn = int_arith_fn(op);
+  else if (et == TY_FLOAT && sp_streq(op, "%")) fn = vt == TY_INT ? "sp_fmod_intdiv" : "sp_fmod";
+  else if (et == TY_FLOAT && sp_streq(op, "**")) fn = "sp_float_pow";
+  if (!fn) return 0;
+  buf_printf(b, "%s(%s, %s)", fn, slot, rhs);
+  return 1;
+}
+
 /* The scalar arms of `x OP= v` -- Integer, Bignum, Float -- on any slot a
    plain C lvalue names: a local, a global, a class variable, an ivar. `lval`
    names the slot and `t` its type. The global and class variable forms had
@@ -1596,7 +1614,13 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
   int bitop = t == TY_INT && (sp_streq(op, "<<") || sp_streq(op, ">>") ||
                               sp_streq(op, "|") || sp_streq(op, "&") || sp_streq(op, "^"));
   int fop = t == TY_FLOAT && (sp_streq(op, "+") || sp_streq(op, "-") ||
-                              sp_streq(op, "*") || sp_streq(op, "/"));
+                              sp_streq(op, "*") || sp_streq(op, "/") ||
+                              sp_streq(op, "%") || sp_streq(op, "**"));
+  /* Float `%` and `**` have no C operator: they take the helpers the binary
+     form uses (floored modulo, a raising pow for a Complex result) */
+  const char *ffn = !fop ? NULL
+                  : sp_streq(op, "**") ? "sp_float_pow"
+                  : sp_streq(op, "%") ? (vt == TY_INT ? "sp_fmod_intdiv" : "sp_fmod") : NULL;
   if (!fn && !bitop && !fop) return 0;
   /* A `<<=` by a literal count that overflows every nonzero receiver (>= 63)
      or a negative count routes through sp_int_shl, mirroring the binary gate. */
@@ -1634,6 +1658,7 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
      binary `x << y` path). */
   if (fn) buf_printf(b, "%s = %s(%s, %s);", lval, fn, src, rhs);
   else if (bitop) buf_printf(b, "%s = (%s %s (%s));", lval, src, op, rhs);
+  else if (ffn) buf_printf(b, "%s = %s(%s, %s);", lval, ffn, src, rhs);
   else if (src == lval) buf_printf(b, "%s %s= %s;", lval, op, rhs);
   else buf_printf(b, "%s = %s %s (%s);", lval, src, op, rhs);
   op_assign_slot_end(src, lval, b);
@@ -8864,7 +8889,8 @@ else {
                     : op && sp_streq(op, "-") ? "sp_poly_sub"
                     : op && sp_streq(op, "*") ? "sp_poly_mul"
                     : op && sp_streq(op, "/") ? "sp_poly_div"
-                    : op && sp_streq(op, "%") ? "sp_poly_mod" : NULL;
+                    : op && sp_streq(op, "%") ? "sp_poly_mod"
+                    : op && sp_streq(op, "**") ? "sp_poly_pow" : NULL;
     int bitop = op && (sp_streq(op, "<<") || sp_streq(op, ">>") ||
                        sp_streq(op, "|") || sp_streq(op, "&") || sp_streq(op, "^"));
     int rdcls = -1;
@@ -8929,6 +8955,8 @@ else {
           unsupported(c, id, "call operator write (operator on an array attribute)");
       }
       else {
+        char lval[400]; snprintf(lval, sizeof lval, "_t%d%siv_%s", trecv, acc, rn);
+        if (emit_scalar_op_assign(c, lval, ivt, op, val, 1, b)) return;
         buf_printf(b, "_t%d%siv_%s = _t%d%siv_%s %s ", trecv, acc, rn, trecv, acc, rn, op ? op : "+");
         if (rhst == TY_POLY && (ivt == TY_INT || ivt == TY_BOOL)) {
           buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")");
@@ -8996,6 +9024,16 @@ else {
           if (rhst == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")"); }
           else emit_expr(c, val, b);
           buf_puts(b, ")));\n");
+        }
+        else if (rhst != TY_POLY && !bitop) {
+          char slot[300]; snprintf(slot, sizeof slot, "%s(_t%d)", nrm->csym, trecv);
+          Buf rb; memset(&rb, 0, sizeof rb);
+          emit_expr(c, val, &rb);
+          buf_printf(b, "%s(_t%d, ", nwm->csym, trecv);
+          if (!iow_scalar_fold(nint ? TY_INT : TY_FLOAT, op, rhst, slot, rb.p ? rb.p : "", b))
+            buf_printf(b, "%s %s (%s)", slot, op, rb.p ? rb.p : "");
+          buf_puts(b, ");\n");
+          free(rb.p);
         }
         else {
           buf_printf(b, "%s(_t%d, %s(_t%d) %s ", nwm->csym, trecv, nrm->csym, trecv, op);
@@ -9079,6 +9117,11 @@ else {
           buf_puts(b, "))); break; }\n");
         }
         else {
+          char lval[320]; snprintf(lval, sizeof lval, "_o->iv_%s", rn);
+          if (emit_scalar_op_assign(c, lval, ivt, op, val, 0, b)) {
+            emit_indent(b, indent + 1); buf_puts(b, "break; }\n");
+            continue;
+          }
           buf_puts(b, "_o->iv_"); buf_puts(b, rn); buf_puts(b, " = _o->iv_"); buf_puts(b, rn);
           buf_printf(b, " %s ", op ? op : "+");
           if (rhst == TY_POLY && (ivt == TY_INT || ivt == TY_BOOL)) {
@@ -10272,9 +10315,21 @@ else {
       else if (lty && sp_streq(lty, "GlobalVariableTargetNode")) {
         const char *gnm = nt_str(nt, lefts[i], "name");
         const char *rn2 = gnm ? comp_resolve_gvar(c, gnm + 1) : NULL;
-        if (!rn2 || !comp_gvar(c, rn2)) { unsupported(c, id, "multiple assignment global target"); continue; }
+        LocalVar *gv2 = rn2 ? comp_gvar(c, rn2) : NULL;
+        if (!gv2) { unsupported(c, id, "multiple assignment global target"); continue; }
         emit_indent(b, indent);
-        buf_printf(b, "gv_%s = _t%d;\n", rn2, tmps[i]);
+        buf_printf(b, "gv_%s = ", rn2);
+        /* a boxed global (widened under --int-overflow=promote) boxes the
+           typed element, as the ivar target above does */
+        TyKind gvalt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
+        if (gv2->type == TY_POLY && gvalt != TY_POLY) {
+          char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmps[i]);
+          Buf bx; memset(&bx, 0, sizeof bx);
+          emit_boxed_text(c, gvalt, expr, &bx);
+          buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+        }
+        else buf_printf(b, "_t%d", tmps[i]);
+        buf_puts(b, ";\n");
       }
       else if (lty && sp_streq(lty, "IndexTargetNode")) {
         int recv_id = nt_ref(nt, lefts[i], "receiver");
@@ -12799,6 +12854,7 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     /* a poly-valued slot folds via the dynamic operator on boxed operands */
     if (vt == TY_STRING && sp_streq(op, "+")) buf_printf(b, "sp_str_concat(%s, %s)", slot, rhs);
     else if (pf) buf_printf(b, "%s(%s, %s)", pf, slot, rhs);
+    else if (iow_scalar_fold(vt, op, comp_ntype(c, v), slot, rhs, b)) { }
     else buf_printf(b, "%s %s (%s)", slot, op, rhs);
     free(rhs);
     buf_puts(b, "; ");
@@ -12868,6 +12924,7 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     }
     /* shift/bitwise on an int slot with a poly RHS: unbox the RHS */
     else if (vt == TY_POLY) buf_printf(b, "%s %s sp_poly_to_i(%s)", slot, op, rhs);
+    else if (iow_scalar_fold(ty_array_elem(rt), op, vt, slot, rhs, b)) { }
     else buf_printf(b, "%s %s (%s)", slot, op, rhs);
     free(rhs);
     buf_puts(b, "); }\n");

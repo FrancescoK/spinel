@@ -18368,12 +18368,12 @@ void analyze_program(Compiler *c) {
   }
 
   /* --int-overflow=promote: widen every statically-int slot (param / return /
-     local / ivar / cvar) to poly so an arithmetic result that overflows int64
-     can be carried as a boxed bigint (sp_poly_add/mul promote at runtime). A
-     poly slot still holds a small value inline (SP_TAG_INT, no heap), so this is
-     far cheaper than the legacy "everything becomes sp_Bigint*" widen. Done
-     after the fixpoint and before the final node-type cache so reads pick up the
-     widened slot types. TY_BIGINT loop vars (detect_bigint_loop_vars) stay
+     local / ivar / cvar / global) to poly so an arithmetic result that
+     overflows int64 can be carried as a boxed bigint (sp_poly_add/mul promote
+     at runtime). A poly slot still holds a small value inline (SP_TAG_INT, no
+     heap), so this is far cheaper than the legacy "everything becomes
+     sp_Bigint*" widen. Done after the fixpoint and before the final node-type
+     cache so reads pick up the widened slot types. TY_BIGINT loop vars (detect_bigint_loop_vars) stay
      bigint. EXPERIMENTAL: gated by g_promote_mode; default/wrap untouched. */
   if (g_promote_mode) {
     for (int s = 0; s < c->nscopes; s++) {
@@ -18424,6 +18424,8 @@ void analyze_program(Compiler *c) {
       for (int i = 0; i < cl->ncvars; i++)
         if (cl->cvar_types[i] == TY_INT) cl->cvar_types[i] = TY_POLY;
     }
+    for (int i = 0; i < c->ngvars; i++)
+      if (c->gvars[i].type == TY_INT) c->gvars[i].type = TY_POLY;
   }
 
   /* narrow monomorphic object arrays (POLY_ARRAY -> obj-pointer array) before
