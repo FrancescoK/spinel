@@ -1,0 +1,7 @@
+[:hash, TypeError, "Array can't be coerced into Integer"]
+[:empty_hash, 0]
+[:str_array, TypeError, "String can't be coerced into Integer"]
+[:empty_str_array, 0]
+[:int_array, 3]
+[:sym_array, TypeError, ":a can't be coerced into Integer"]
+[:range, 6]
