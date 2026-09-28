@@ -6297,15 +6297,18 @@ else if (orecv >= 0 && onm) {
   }
   /* Lambda: strict arity -- requireds + trailing posts mandatory, optionals
      widen the max, a splat rest lifts it entirely. */
-  int has_kwrest = 0;
+  int has_kwrest = 0, no_kw = 0;
   { int pnk = proc_params_node(c, create);
-    if (pnk >= 0 && nt_ref(nt, pnk, "keyword_rest") >= 0) has_kwrest = 1; }
+    int kwr = pnk >= 0 ? nt_ref(nt, pnk, "keyword_rest") : -1;
+    if (kwr >= 0) has_kwrest = 1;
+    if (kwr >= 0 && nt_type(nt, kwr) && sp_streq(nt_type(nt, kwr), "NoKeywordsParameterNode")) no_kw = 1; }
   /* The trailing argument is keywords when it is a Hash the call site passed
      as keywords (_sp_proc_kwpos, read before anything below can call another
      proc, and cleared whatever this proc's shape is). A caller that does not
      say -- a runtime path -- has it taken as keywords only past the required
      positionals. The keywords are taken out of the positional count, so an
-     optional, a rest or a post never binds the keyword hash. */
+     optional, a rest or a post never binds the keyword hash. A `**nil` proc
+     takes keywords only from a call site that passed them, and refuses them. */
   int has_kwp = nkw > 0 || has_kwrest;
   if (has_kwp) {
     g_needs_proc_poly_argslot = 1;
@@ -6316,7 +6319,10 @@ else if (orecv >= 0 && onm) {
                    " && sp_poly_is_hash_kind(_sp_proc_poly_args[argc-1].cls_id);\n"
                    "    sp_RbVal _sp_kwh = _sp_haskw ? _sp_proc_poly_args[argc-1] : sp_box_nil();"
                    " SP_GC_ROOT_RBVAL(_sp_kwh);\n"
-                   "    argc -= _sp_haskw;\n", arity + nposts);
+                   "    argc -= _sp_haskw;\n", no_kw ? 16 : arity + nposts);
+    if (no_kw)
+      buf_puts(pb, "    if (_sp_haskw && sp_poly_length(_sp_kwh) > 0)"
+                   " sp_raise_cls(\"ArgumentError\", \"no keywords accepted\");\n");
   }
   else buf_puts(pb, "    _sp_proc_kwpos = 0;\n");
   /* `arity` counts numbered parameters when the block carries a
