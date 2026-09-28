@@ -15313,6 +15313,13 @@ static void expand_static_splat_args(Compiler *c) {
        the program passed none: `count(*[])` answered 1 (#4298). A call with a
        receiver still reaches the builtin, so only the bare form declines. */
     if (nt_ref(nt, id, "receiver") < 0 && comp_method_index(c, cnm) >= 0) continue;
+    /* Nor is `File.delete(*paths)` the listed `delete` (Hash#delete's): it
+       takes any number of paths, and its File arm spreads a lone splat */
+    if (argc == 1 && sp_streq(cnm, "delete")) {
+      int fr = nt_ref(nt, id, "receiver");
+      const char *frn = fr >= 0 && nt_kind(nt, fr) == NK_ConstantReadNode ? nt_str(nt, fr, "name") : NULL;
+      if (frn && sp_streq(frn, "File")) continue;
+    }
     int ex = nt_ref(nt, argv[sp_at], "expression");
     if (ex < 0) continue;
     const char *ext = nt_type(nt, ex);
