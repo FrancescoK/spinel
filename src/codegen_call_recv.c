@@ -7708,6 +7708,17 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
                       " _t%d < 0 ? SP_INT_NIL : sp_str_byte_to_char(_t%d, _t%d); })",
                    tsi, r, tmi, re_lit_index(c, argv[0]), tsi, tmi, tsi, tmi);
       }
+      /* a Regexp held in a variable or parameter rather than written inline */
+      else if ((sp_streq(name, "index") || sp_streq(name, "rindex")) && (argc == 1 || argc == 2) &&
+               comp_ntype(c, argv[0]) == TY_REGEX) {
+        int tsr = ++g_tmp;
+        buf_printf(b, "({ const char *_t%d = %s; sp_re_%sindex_%s(", tsr, r,
+                   sp_streq(name, "rindex") ? "r" : "", argc == 2 || name[0] == 'i' ? "from_opt" : "opt");
+        emit_expr(c, argv[0], b); buf_printf(b, ", _t%d", tsr);
+        if (argc == 2) { buf_puts(b, ", "); emit_int_expr(c, argv[1], b); }
+        else if (name[0] == 'i') buf_puts(b, ", 0");
+        buf_puts(b, "); })");
+      }
       else if (sp_streq(name, "index") && argc == 1) {
         /* nil-on-miss carried as the SP_INT_NIL sentinel (a nullable int) */
         buf_printf(b, "sp_str_index_opt(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
