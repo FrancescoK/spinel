@@ -2162,7 +2162,7 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	awk '/^static .*sp_Board_[a-z_]*\(.*\) \{$$/ {b=1} b {print} b && /^}/ {b=0}' "$$tmp/pab.c" > "$$tmp/pab_board.c"; \
 	[ -s "$$tmp/pab_board.c" ] && ! grep -q 'sp_brk_push' "$$tmp/pab_board.c" || { echo "infer-test: FAIL (#4916 a break out of a walk over an object array pays a setjmp)"; ok=0; }; \
 	$(SPINEL) test/infer/poly_dispatch_out_of_line.rb -c --no-line-map -o "$$tmp/pdl.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_dispatch_out_of_line: -c)"; ok=0; }; \
-	[ "$$(grep -c '^static .*sp_pd_[0-9]*(sp_RbVal _t0) {' "$$tmp/pdl.c")" = 1 ] && [ "$$(grep -o '= sp_pd_[0-9]*(' "$$tmp/pdl.c" | wc -l)" = 2 ] || { echo "infer-test: FAIL (#4847 a poly dispatch is not one shared out-of-line function)"; ok=0; }; \
+	[ "$$(grep -c '^static .*sp_pd_[0-9]*(sp_RbVal _t0) {' "$$tmp/pdl.c")" = 1 ] && [ "$$(grep -o '= sp_pd_[0-9]*(' "$$tmp/pdl.c" | wc -l | tr -d ' ')" = 2 ] || { echo "infer-test: FAIL (#4847 a poly dispatch is not one shared out-of-line function)"; ok=0; }; \
 	$(SPINEL) test/infer/poly_dispatch_out_of_line.rb -c -o "$$tmp/pdl_lm.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_dispatch_out_of_line: -c with line map)"; ok=0; }; \
 	awk '/^#line /{seen=1; d=1; next} seen && !d && !c && !/^#/ {bad++} {d=0; c=/\\$$/} END{exit bad>0}' "$$tmp/pdl_lm.c" || { echo "infer-test: FAIL (#4940 a C line after a statement's first is not re-anchored to its Ruby line)"; ok=0; }; \
 	grep -B1 '^static .*sp_pd_[0-9]*(sp_RbVal _t0) {' "$$tmp/pdl_lm.c" | grep -q '^#line 12 "test/infer/poly_dispatch_out_of_line.rb"' || { echo "infer-test: FAIL (#4928 an out-of-line dispatch function does not name the call site it came from)"; ok=0; }; \
