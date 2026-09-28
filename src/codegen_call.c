@@ -8565,6 +8565,11 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         int takes_kw = callee_declares_kwargs(c, ms) || ms->kwrest_idx >= 0;
         const PolyKw *kw_arm = stk >= 0 && !takes_kw ? NULL : &kw;
         int st_arm = splat_a < 0 ? -1 : stk >= 0 && !takes_kw ? stk : atmp[splat_a];
+        /* A default's hoisted statements (`b = [a + 1]` builds its array
+           ahead) belong to this arm: hoisted above the switch they ran for
+           every arm and read the arm's `_pd` locals before any declared them. */
+        Buf *sv_arm_pre = g_pre;
+        g_pre = &pdpre;
         for (int a = 0; a < mnp; a++) {
           buf_puts(&cb, ", ");
           Buf pa; memset(&pa, 0, sizeof pa);
@@ -8686,6 +8691,7 @@ else {
           else buf_puts(&cb, pa.p ? pa.p : "");
           free(pa.p);
         }
+        g_pre = sv_arm_pre;
         g_nren = pd_ren_base;
         g_self = saved_self; g_self_deref = saved_deref;
         if (c->scopes[mi].nparams == 0 && c->scopes[mi].blk_param &&
@@ -8697,7 +8703,7 @@ else {
         }
         else emit_cmethod_block_arg(c, id, &c->scopes[mi], blk_tmp2, &cb);
         buf_puts(&cb, ")");
-        if (pd_arm) {
+        if (pd_arm || pdpre.len > 0) {
           /* the bindings and the call in one statement expression, so the
              arm stays a single expression for the boxing below */
           Buf wb; memset(&wb, 0, sizeof wb);
