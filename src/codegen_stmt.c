@@ -4891,6 +4891,13 @@ static void emit_when_boxed_test(Compiler *c, int cond, int t, TyKind pt, Buf *b
   buf_puts(b, "); })");
 }
 
+/* A subjectless `when` condition that `emit_cond` does not test: a splat
+   (`when *list`) and a value of no known type (`when []`) are emitted as
+   they were. */
+static int subjless_cond_raw(Compiler *c, int cond) {
+  return nt_kind(c->nt, cond) == NK_SplatNode || comp_ntype(c, cond) == TY_UNKNOWN;
+}
+
 void emit_case(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int pred = nt_ref(nt, id, "predicate");
@@ -5218,8 +5225,14 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
           } /* close else { int reidx... } */
         }
       }
+      /* no subject: the arm is a condition, tested for Ruby truthiness as
+         `if` tests it (a class, 0 and "" are true); a splat, and a value
+         of no known type, keep the raw value */
       else {
-        buf_puts(b, "("); emit_expr(c, conds[j], b); buf_puts(b, ")");
+        buf_puts(b, "(");
+        if (subjless_cond_raw(c, conds[j])) emit_expr(c, conds[j], b);
+        else emit_cond(c, conds[j], b);
+        buf_puts(b, ")");
       }
     }
     buf_puts(b, ") {\n");
@@ -5561,7 +5574,12 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
         else emit_case_obj_eq(c, conds[j], t, pt, b);
         } /* close non-ConstantReadNode else */
       }
-      else { buf_puts(b, "("); emit_expr(c, conds[j], b); buf_puts(b, ")"); }
+      else {
+        buf_puts(b, "(");
+        if (subjless_cond_raw(c, conds[j])) emit_expr(c, conds[j], b);
+        else emit_cond(c, conds[j], b);
+        buf_puts(b, ")");
+      }
     }
     buf_puts(b, ") { ");
     emit_case_branch_value(c, nt_ref(nt, wn, "statements"), rt, cr, b);
