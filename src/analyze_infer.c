@@ -5170,6 +5170,15 @@ static TyKind infer_call_inner(Compiler *c, int id) {
          result is a boxed value -- so the static type stays poly (#2401). */
       if (argc == 1 && (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^")))
         return an_poly_concrete(c, name, TY_POLY);
+      /* parameters(lambda: true/false/nil), read by proc_parameters_lambda_mode,
+         is an Array, as the no-argument call is, unless a class method of the
+         name exists (a boxed Class may be the receiver) */
+      if (sp_streq(name, "parameters") && proc_parameters_lambda_mode(nt, argc, argv) != -2) {
+        int pcm = 0;
+        for (int k = 0; k < c->nclasses && !pcm; k++)
+          if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) pcm = 1;
+        if (!pcm) return an_poly_concrete(c, name, TY_POLY_ARRAY);
+      }
       /* poly.arity on a Method read out of a container: the stamped arity, an
          Integer (#3231). */
       if (argc == 0 && sp_streq(name, "arity")) return an_poly_concrete(c, name, TY_INT);

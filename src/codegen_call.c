@@ -4776,6 +4776,24 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
                tv, tv, tv, tv, comp_sym_intern(c, "req"), comp_sym_intern(c, "opt"), tv, tv, tv, tv);
     return 1;
   }
+  /* parameters(lambda: true/false/nil) on a boxed Proc, where the call is
+     typed an Array and no class method of the name exists (a boxed Class may
+     be the receiver): the view the literal asks for, as the typed arm reads
+     it; anything else raises as before */
+  { int pmode = sp_streq(name, "parameters") ? proc_parameters_lambda_mode(nt, argc, argv) : -2;
+    int pcm = 0;
+    for (int kk = 0; kk < c->nclasses && !pcm && pmode != -2; kk++)
+      if (comp_cmethod_in_chain(c, kk, name, NULL) >= 0) pcm = 1;
+    if (pmode != -2 && !pcm && comp_ntype(c, id) == TY_POLY_ARRAY) {
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_PROC"
+                    " ? sp_proc_parameters_ids((sp_Proc *)_t%d.v.p, %d, (sp_sym)%d, (sp_sym)%d)"
+                    " : (sp_PolyArray *)(sp_raise_nomethod(sp_nomethod_msg(\"parameters\", _t%d)), (void *)0); })",
+                 tv, tv, tv, tv, pmode, comp_sym_intern(c, "req"), comp_sym_intern(c, "opt"), tv);
+      return 1;
+    }
+  }
   if (sp_streq(name, "curry") && argc == 0) {
     int tv = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);

@@ -1001,6 +1001,25 @@ int call_is_setter_assign(const NodeTable *nt, int id) {
   const char *ve = nt_str(nt, id, "vis_enforce");
   return !(sb && sb[0] == '1') && !(ve && ve[0] == '1');
 }
+/* The view a `parameters(lambda: v)` call asks for when v is the literal
+   true (1), false (0) or nil (-1, the receiver's own): -2 for any other
+   argument list. */
+int proc_parameters_lambda_mode(const NodeTable *nt, int argc, const int *argv) {
+  if (argc != 1 || !nt_type(nt, argv[0]) || !sp_streq(nt_type(nt, argv[0]), "KeywordHashNode"))
+    return -2;
+  int en = 0; const int *elems = nt_arr(nt, argv[0], "elements", &en);
+  if (en != 1) return -2;
+  int key = nt_ref(nt, elems[0], "key");
+  const char *kn = key >= 0 ? nt_str(nt, key, "unescaped") : NULL;
+  if (!kn && key >= 0) kn = nt_str(nt, key, "value");
+  int val = nt_ref(nt, elems[0], "value");
+  const char *vty = val >= 0 ? nt_type(nt, val) : NULL;
+  if (!kn || !sp_streq(kn, "lambda") || !vty) return -2;
+  if (sp_streq(vty, "TrueNode")) return 1;
+  if (sp_streq(vty, "FalseNode")) return 0;
+  if (sp_streq(vty, "NilNode")) return -1;
+  return -2;
+}
 /* The attribute a setter name writes: "x=" -> "x". 0 when the name is not a
    plain setter or does not fit. */
 int setter_base_name(const char *name, char *out, size_t cap) {
