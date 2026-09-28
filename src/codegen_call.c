@@ -1459,6 +1459,10 @@ int diag_user_defines(Compiler *c, const char *name) {
    is a private method of Object that no explicit receiver reaches, so it
    leaves a builtin's arm in place (`def uniq(o) = o.uniq`). */
 int recv_user_defines(Compiler *c, const char *name) {
+  /* inside a poly dispatch's builtin arm the value is not a user object: the
+     arm re-enters the call's emission for a genuine Array or Hash, and the
+     user class owning the name (a Set#flatten) is not a candidate there */
+  if (g_poly_builtin_arm) return 0;
   for (int uk = 0; uk < c->nclasses; uk++) {
     if (comp_method_in_chain(c, uk, name, NULL) >= 0) return 1;
     if (comp_cmethod_in_chain(c, uk, name, NULL) >= 0) return 1;
