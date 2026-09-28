@@ -4256,8 +4256,13 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
         Scope *bsc = comp_scope_of(c, block);
         LocalVar *plv = bsc ? scope_local(bsc, block_param_name(c, block, 0)) : NULL;
         if (plv && plv->type != TY_UNKNOWN) {
+          /* A parameter typed from an earlier, narrower answer of the
+             receiver (a String array, before the method returning it widened
+             to a boxed one) takes the element unboxed, as the destructuring
+             binding above does (#5521). */
+          char src[64]; snprintf(src, sizeof src, "sp_PolyArray_get(_t%d, _t%d)", ta, t);
           emit_indent(b, indent + 1);
-          buf_printf(b, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", p0, ta, t);
+          emit_block_param_from_boxed(c, p0, plv->type, src, b);
         }
       }
     }
