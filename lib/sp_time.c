@@ -151,6 +151,17 @@ static void sp_time_check_args(int64_t mo, int64_t d, int64_t h, int64_t mi, int
   if (s  < 0 || s  > 60) sp_raise_cls("ArgumentError", "sec out of range");
 }
 
+static int64_t sp_time_civil_epoch(int64_t y, int64_t mo, int64_t d,
+                                   int64_t h, int64_t mi, int64_t s);
+
+/* Not mktime(gmtime(s)) - s: macOS mktime answers -1 for any year before 1900. */
+static int32_t sp_time_local_offset(time_t s) {
+  struct tm *l = localtime(&s);
+  if (!l) return 0;
+  return (int32_t)(sp_time_civil_epoch(l->tm_year + 1900, l->tm_mon + 1, l->tm_mday,
+                                       l->tm_hour, l->tm_min, l->tm_sec) - (int64_t)s);
+}
+
 sp_Time sp_time_new(int64_t y, int64_t mo, int64_t d,
                     int64_t h, int64_t mi, int64_t s) {
   sp_time_check_args(mo, d, h, mi, s);
@@ -163,7 +174,15 @@ sp_Time sp_time_new(int64_t y, int64_t mo, int64_t d,
   tm.tm_min  = (int)mi;
   tm.tm_sec  = (int)s;
   tm.tm_isdst = -1;
+  tm.tm_wday = -1;
   time_t e = mktime(&tm);
+  if (e == (time_t)-1 && tm.tm_wday == -1) {
+    /* Not the -1 epoch: mktime refused the year (macOS, before 1900); resolve via localtime, twice to settle an offset change. */
+    int64_t guess = sp_time_civil_epoch(y, mo, d, h, mi, s);
+    int64_t epoch = guess - sp_time_local_offset((time_t)guess);
+    epoch = guess - sp_time_local_offset((time_t)epoch);
+    return (sp_Time){ epoch, 0, 0 };
+  }
   return (sp_Time){ (int64_t)e, 0, 0 };
 }
 
@@ -372,9 +391,9 @@ sp_Time sp_time_getlocal_off(sp_Time t, int64_t off) {
 }
 
 /* is_utc selects gmtime vs localtime, off is UTC offset in seconds,
-   zbuf is the timezone abbreviation (8 bytes). mktime(gmtime(s))-s
-   is the portable offset technique (MSVCRT's %z emits the timezone
-   name, not ±HHMM). */
+   zbuf is the timezone abbreviation (8 bytes). The offset is computed
+   (sp_time_local_offset), not read from %z: MSVCRT's %z emits the
+   timezone name, not ±HHMM. */
 void sp_time_vtm(sp_Time t, struct tm *bd, int32_t *off, char *zbuf) {
   time_t s = (time_t)t.tv_sec;
   if (t.is_utc == 2) {
@@ -397,11 +416,7 @@ else {
     struct tm *l = localtime(&s);
     if (l) { *bd = *l; }
 else { memset(bd, 0, sizeof(*bd)); }
-    if (off) {
-      struct tm gm = *gmtime(&s);
-      gm.tm_isdst = -1;
-      *off = (int32_t)(s - (time_t)mktime(&gm));
-    }
+    if (off) *off = sp_time_local_offset(s);
     if (zbuf) {
       if (strftime(zbuf, 8, "%Z", bd) == 0) zbuf[0] = 0;
     }
@@ -438,10 +453,7 @@ sp_Time sp_time_add(sp_Time t, double secs) {
 static long sp_time_offset_sec(sp_Time t) {
   if (t.is_utc == 2) return t.utc_off;   /* fixed offset (Time.at in:) */
   if (t.is_utc) return 0;
-  time_t s = (time_t)t.tv_sec;
-  struct tm gm = *gmtime(&s);
-  gm.tm_isdst = -1;
-  return (long)(s - mktime(&gm));
+  return (long)sp_time_local_offset((time_t)t.tv_sec);
 }
 
 /* Ruby-compatible strftime: C strftime handles the standard directives, but
