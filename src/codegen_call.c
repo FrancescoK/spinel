@@ -25511,8 +25511,32 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         }
         return;
       }
+      /* a Dir read out of a container reaches this arm by name: path,
+         to_path, read, tell (and pos), fileno and close are its own methods
+         too, so a Dir answers them through the typed Dir arm's helpers, and
+         anything else goes on to the IO handle */
+      const char *dirfn = NULL;
+      if (argc == 0) {
+        if (sp_streq(name, "path") || sp_streq(name, "to_path")) dirfn = "sp_Dir_path";
+        else if (sp_streq(name, "read")) dirfn = "sp_Dir_read";
+        else if (sp_streq(name, "tell") || sp_streq(name, "pos")) dirfn = "sp_Dir_tell";
+        else if (sp_streq(name, "fileno")) dirfn = "sp_Dir_fileno";
+        else if (sp_streq(name, "close")) dirfn = "sp_Dir_close";
+      }
+      int tdr = 0;
+      if (dirfn) {
+        tdr = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", tdr);
+        emit_boxed(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_DIR ? ",
+                   tdr, tdr, tdr);
+        /* close answers the IO arm's sp_int: the Dir's nil is dropped */
+        if (sp_streq(name, "close")) buf_printf(b, "((void)sp_Dir_close((sp_Dir *)_t%d.v.p), (sp_int)0) : ", tdr);
+        else buf_printf(b, "%s((sp_Dir *)_t%d.v.p) : ", dirfn, tdr);
+      }
       buf_printf(b, "({ sp_File *_t%d = sp_poly_as_io(", tio2);
-      emit_boxed(c, recv, b);
+      if (dirfn) buf_printf(b, "_t%d", tdr);
+      else emit_boxed(c, recv, b);
       buf_printf(b, ", \"%s\"); ", name);
       if (sp_streq(name, "write") && argc >= 1) {
         /* Same String/non-String split as the TY_IO arm: a String knows its own
@@ -25696,6 +25720,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "close")) buf_printf(b, "sp_File_close(_t%d); })", tio2);
       else if (sp_streq(name, "flush")) buf_printf(b, "sp_File_flush(_t%d); })", tio2);
       else buf_printf(b, "sp_File_fileno(_t%d); })", tio2);
+      if (dirfn) buf_puts(b, "; })");
       return;
     }
   }
