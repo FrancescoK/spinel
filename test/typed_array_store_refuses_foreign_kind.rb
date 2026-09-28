@@ -9,7 +9,9 @@ def try(label)
 rescue TypeError => e
   puts "#{label}: TypeError: #{e.message}"
 end
-# the boxed dispatch (out is a general slot: the call sites disagree)
+# the boxed dispatch (out is a general slot: the call sites disagree). An
+# array built where the call can see it widens with the parameter and holds
+# what CRuby's does; one a method hands over stays typed and refuses.
 def collect(out, src)
   i = 0
   while i < src.length
@@ -22,6 +24,8 @@ b = Array.new(0, 0);    try("int<<float") { collect(b, [1, 2.5]) };    p b
 c = Array.new(0, 0.0);  try("flt<<str")   { collect(c, [1.5, "z"]) };  p c
 c2 = Array.new(0, 0.0); try("flt<<int")   { collect(c2, [1.5, 2]) };   p c2
 d = Array.new(0, "");   try("str<<int")   { collect(d, ["a", 7]) };    p d
+def ints = Array.new(0, 0)
+a2 = ints;              try("int<<str held") { collect(a2, [1, "z"]) }; p a2
 d2 = Array.new(0, "");  try("str<<nil")   { collect(d2, ["a", nil]) }; p d2
 # the static stores (out is the typed array itself)
 def set_first(out, src) = out[0] = src[1]

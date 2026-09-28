@@ -1025,6 +1025,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (#4480: a typed array copied into a mutated general-Array parameter compiled)"; ok=0; \
 	else grep -q "which the method mutates" "$$tmp/tp.out" || \
 	  { echo "reject-test: FAIL (#4480: rejected without saying why)"; sed -n 1,5p "$$tmp/tp.out"; ok=0; }; fi; \
+	t=test/reject/typed_array_held_into_boxed_param_store.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/tb.c" >"$$tmp/tb.out" 2>&1; then \
+	  echo "reject-test: FAIL (a typed array held by the caller, stored into through a boxed parameter, compiled)"; ok=0; \
+	else grep -q "which the method stores elements of other kinds into" "$$tmp/tb.out" || \
+	  { echo "reject-test: FAIL (a held typed array into a boxed parameter's store rejected without saying why)"; sed -n 1,5p "$$tmp/tb.out"; ok=0; }; fi; \
 	t=test/reject/const_get_runtime_name.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/cg.c" >"$$tmp/cg.out" 2>&1; then \
 	  echo "reject-test: FAIL (a const_get with a run-time name compiled)"; ok=0; \

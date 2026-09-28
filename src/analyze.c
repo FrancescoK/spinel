@@ -7955,7 +7955,7 @@ static void widen_ivars_from_pushed_params(Compiler *c) {
          hold what the callee pushes, so an int array stays an int array. */
       int boxed_hazard = 0;
       if (!p->push_widened) {
-        if (p->type != TY_POLY || p->boxed_push_elem == TY_UNKNOWN) continue;
+        if (p->type != TY_POLY || (p->boxed_push_elem == TY_UNKNOWN && !p->store_val_src)) continue;
         boxed_hazard = 1;
       }
       const char *aty = nt_type(nt, av[k]);
@@ -7976,7 +7976,8 @@ static void widen_ivars_from_pushed_params(Compiler *c) {
       if (ivi < 0) continue;
       TyKind ivt = acls->ivar_types[ivi];
       if (!ty_is_array(ivt) || ivt == TY_POLY_ARRAY) continue;
-      if (boxed_hazard && ty_array_elem(ivt) == p->boxed_push_elem) continue;
+      if (boxed_hazard && (p->boxed_push_elem == TY_UNKNOWN || ty_array_elem(ivt) == p->boxed_push_elem) &&
+          !param_src_misfits(c, p, ivt, av, an)) continue;
       acls->ivar_types[ivi] = TY_POLY_ARRAY;
     }
   }
