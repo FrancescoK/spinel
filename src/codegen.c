@@ -2201,7 +2201,7 @@ void emit_poly_iter_obj_reject(Compiler *c, int tv, const char *name, Buf *b) {
     ClassInfo *ci = &c->classes[k];
     if (!ci->instantiated || ci->is_native_class || is_builtin_reopen(ci->name)) continue;
     int bp = class_builtin_superclass(c, k);
-    if (bp != -116 && bp != -146) continue;
+    if (bp != -116 && bp != -117 && bp != -146) continue;
     if (comp_method_in_chain(c, k, "each", NULL) >= 0 ||
         comp_method_in_chain(c, k, "to_a", NULL) >= 0 ||
         comp_method_in_chain(c, k, name, NULL) >= 0 ||
