@@ -29738,9 +29738,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      Value-type objects copy by value already; exception subclasses use distinct
      allocation, so both stay on the identity path. */
   if (recv >= 0 && (sp_streq(name, "dup") || sp_streq(name, "clone")) &&
-      /* a generated READER of the name owns it, as in CRuby (#4190) */
+      /* a generated READER of the name owns it, as in CRuby (#4190), and so
+         does a method the class defines itself: Nokogiri's Node#dup is a deep
+         copy, and the built-in shallow copy took its place (#5450) */
       !(ty_is_object(comp_ntype(c, recv)) &&
-        comp_resolve_member(c, ty_object_class(comp_ntype(c, recv)), name, 0, NULL, NULL) == SP_MEMBER_ATTR)) {
+        comp_resolve_member(c, ty_object_class(comp_ntype(c, recv)), name, 0, NULL, NULL) != SP_MEMBER_NONE)) {
     int dargs = nt_ref(nt, id, "arguments");
     int dargc = 0; const int *dargv = dargs >= 0 ? nt_arr(nt, dargs, "arguments", &dargc) : NULL;
     TyKind drt = comp_ntype(c, recv);
@@ -29847,9 +29849,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   if (recv >= 0 &&
       (sp_streq(name, "freeze") || sp_streq(name, "itself") ||
        sp_streq(name, "dup") || sp_streq(name, "clone")) &&
-      /* a generated READER of the name owns it, as in CRuby (#4190) */
+      /* a generated READER of the name owns it, as in CRuby (#4190), and so
+         does a method the class defines itself: Nokogiri's Node#dup is a deep
+         copy, and the built-in shallow copy took its place (#5450) */
       !(ty_is_object(comp_ntype(c, recv)) &&
-        comp_resolve_member(c, ty_object_class(comp_ntype(c, recv)), name, 0, NULL, NULL) == SP_MEMBER_ATTR)) {
+        comp_resolve_member(c, ty_object_class(comp_ntype(c, recv)), name, 0, NULL, NULL) != SP_MEMBER_NONE)) {
     int args = nt_ref(nt, id, "arguments");
     int argc0 = 0; if (args >= 0) nt_arr(nt, args, "arguments", &argc0);
     /* hash, string, array, and native-bound object dup/clone require real
