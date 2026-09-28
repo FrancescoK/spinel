@@ -536,7 +536,9 @@ void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv, int
 /* Collect a call's keywords no declared keyword parameter takes into a fresh
    sp_SymPolyHash temp for a `**kwrest` parameter; returns the temp id. */
 int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp, TyKind ds_hash_type, int argsNode);
-int emit_unknown_kwarg_raise(Compiler *c, Scope *m, int kwh);
+/* The `unknown keyword` raise for a call's keyword hash, the last of its
+   arguments `argv`, into `m`, once those have run (emit_call_arity_check). */
+int emit_unknown_kwarg_raise(Compiler *c, Scope *m, const int *argv, int argc);
 /* The argument of a String append (`<<` / `concat`), rendered for the append.
    An Integer -- typed OR boxed -- is a CODEPOINT, not its decimal digits. Shared
    because the rule was written twice and the second copy only had the typed half
@@ -954,19 +956,29 @@ int opt_before_required(Compiler *c, Scope *m);
 /* `(sp_Parent *)` when an object value flows into an ancestor-typed slot; the
    layouts match by construction, but C needs the cast spelled (#3418). */
 void emit_obj_upcast_prefix(Compiler *c, TyKind slot, TyKind val, Buf *b);
-/* Value node for keyword `name` inside a KeywordHashNode, or -1. */
+/* Value node for keyword `name` inside a KeywordHashNode, the last when the
+   key is written twice, or -1. */
 int kwh_lookup(const NodeTable *nt, int kwh, const char *kname);
 int callee_has_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_declares_kwargs(Compiler *c, Scope *m);
 int is_fresh_array(Compiler *c, int v);
 /* True when the keyword hash `kwh` passes keywords from more than one source
-   that may carry the same key -- two `**` operands, or a literal Symbol key
-   ahead of one -- and every literal key is a Symbol. Its keywords then bind
-   from one hash merging every source in order, a later key winning, as CRuby
-   binds them; a lone `**` with literal keys only after it binds each keyword
-   from its own source, since a literal after it always wins. */
+   that may carry the same key -- two `**` operands, a literal Symbol key
+   ahead of one, or a literal key written twice -- and every literal key is a
+   Symbol. Its keywords then bind from one hash merging every source in
+   order, a later key winning, as CRuby binds them; a lone `**` with literal
+   keys only after it binds each keyword from its own source, since a literal
+   after it always wins. */
 int kwh_sources_overlap(const NodeTable *nt, int kwh);
+/* True when element `e` of the braceless hash `kwh` is dropped from the hash
+   it builds: CRuby compiles a hash of Symbol keys alone with each key once,
+   at the place it is last written, so an earlier pair's value runs for its
+   effect alone (emit_dropped_value). With a `**` or another kind of key the
+   hash is built at run time, and a key keeps its first place. */
+int kwh_elem_dropped(const NodeTable *nt, int kwh, int e);
+/* The value `v` of such a pair, evaluated into `b` for its effect. */
+void emit_dropped_value(Compiler *c, int v, Buf *b);
 /* True when the keyword hash `kwh` has a `**` operand. */
 int kwh_has_splat(const NodeTable *nt, int kwh);
 /* kwh_sources_overlap, for a call into `m`, which declares keyword params. */
@@ -989,6 +1001,20 @@ int kwh_runs_ahead(Compiler *c, Scope *m, int kwh);
    effect is pushed onto the g_argov overrides, for the caller to pop once it
    has bound the call. */
 void emit_positionals_first(Compiler *c, const int *argv, int pos_argc);
+/* True when the literal keys of the keyword hash `kwh` into `m` do not come
+   in the order `m` binds them: a key names a keyword parameter ahead of an
+   earlier key's, or the one before it again, or a keyword parameter after a
+   key the `**kw` rest takes. The bindings run in parameter order, so such a
+   call's arguments run first (emit_args_in_source_order). */
+int kwh_out_of_order(Compiler *c, Scope *m, int kwh);
+/* The arguments of a call that binds them in parameter order -- a
+   Method#call, an inlined yielding initialize, or one a static check refuses
+   -- evaluated in source order, keywords included and each value of a key
+   written twice, into rooted temps written into `b` and pushed onto the
+   g_argov overrides as emit_positionals_first pushes them, for the caller to
+   pop once it has bound the call. A nil value runs for its effect alone and
+   reads as 0. */
+void emit_args_in_source_order(Compiler *c, const int *argv, int argc, Buf *b);
 int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type);
 /* The TypeError CRuby raises for a `**` operand that is neither a Hash, nil
    nor convertible with #to_hash, emitted into g_pre ahead of any keyword

@@ -1821,12 +1821,13 @@ size_t block_param_written_len(const char *name) {
 }
 
 /* In a call-site KeywordHashNode (`k: 9, j: 2`), the value node bound to the
-   keyword `name`, or -1. Used to match keyword block params. */
+   keyword `name` -- the last when the key is written twice, as CRuby binds
+   it -- or -1. Used to match keyword block params. */
 int ie_kwhash_value(Compiler *c, int kwhash, const char *name) {
   const NodeTable *nt = c->nt;
   if (kwhash < 0 || !name) return -1;
   size_t nlen = block_param_written_len(name);
-  int en = 0; const int *els = nt_arr(nt, kwhash, "elements", &en);
+  int en = 0, v = -1; const int *els = nt_arr(nt, kwhash, "elements", &en);
   for (int i = 0; i < en; i++) {
     const char *ety = nt_type(nt, els[i]);
     if (!ety || !sp_streq(ety, "AssocNode")) continue;
@@ -1834,9 +1835,9 @@ int ie_kwhash_value(Compiler *c, int kwhash, const char *name) {
     const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
     if (!kty || !sp_streq(kty, "SymbolNode")) continue;
     const char *kn = nt_str(nt, key, "value");
-    if (kn && strlen(kn) == nlen && !strncmp(kn, name, nlen)) return nt_ref(nt, els[i], "value");
+    if (kn && strlen(kn) == nlen && !strncmp(kn, name, nlen)) v = nt_ref(nt, els[i], "value");
   }
-  return -1;
+  return v;
 }
 
 /* The trailing KeywordHashNode of a call's arguments (`k: 1`), or -1. */
