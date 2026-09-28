@@ -1777,10 +1777,6 @@ int ie_poly_self_classes(Compiler *c, const char *name, int body, int *out, int 
    the classes that own every one of them. */
   const char *ivs[64]; int niv = 0;
   if (nask == 0) {
-    /* (from a class method, where the ivar attribution follows the receiver;
-       a top-level body keeps its Toplevel slots) */
-    Scope *bs = body >= 0 ? comp_scope_of(c, body) : NULL;
-    if (!bs || !bs->is_cmethod) return 0;
     niv = ie_ivar_names(c, body, ivs, 0, 64);
     if (niv == 0 || niv == 64) return 0;
     if (need) *need = name;

@@ -5845,10 +5845,11 @@ int infer_ivar_types(Compiler *c) {
          the enclosing scope is -- a class method's own `@x` would otherwise
          take the write (Phlex's `object.instance_exec { @content = block }`
          in `self.new`). A poly receiver writes each class it can be. */
-      /* (Only from a class method: at top level the codegen keeps reading
-         the Toplevel slot's type for such a write, which it has always had.) */
-      { int iec = s->is_cmethod ? ie_class_of(c, id) : -1;
-        if (iec >= 0) cls_id2 = iec;
+      /* (A one-class receiver only from a method: at top level the codegen
+         keeps reading the Toplevel slot's type for such a write, which it
+         has always had.) */
+      { int iec = ie_class_of(c, id);
+        if (iec >= 0 && s->class_id >= 0) cls_id2 = iec;
         else if (iec < -1 && !sp_streq(ty, "InstanceVariableOperatorWriteNode")) {
           int pk[64], npk = ie_poly_classes_at(c, id, pk, 64);
           for (int q = 0; q < npk; q++) {

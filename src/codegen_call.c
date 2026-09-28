@@ -644,10 +644,11 @@ static void emit_ie_rest_kw_binds(Compiler *c, int id, int blk, int pnode, int n
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", rta, rta);
       for (int p = npar; p < iac; p++) {
+        Buf eb; memset(&eb, 0, sizeof eb);
+        emit_boxed(c, iav[p], &eb);
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", rta);
-        emit_boxed(c, iav[p], g_pre);
-        buf_puts(g_pre, ");\n");
+        buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", rta, eb.p ? eb.p : "sp_box_nil()");
+        free(eb.p);
       }
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "lv_%s = _t%d;\n", rename_local(rpn), rta);
@@ -21109,6 +21110,23 @@ static int poly_binop_recv_temp(Compiler *c, int recv, int arg, Buf *b, int *stm
   return t;
 }
 
+static int ie_body_writes_ivar(const NodeTable *nt, int node) {
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableOrWriteNode ||
+      k == NK_InstanceVariableAndWriteNode || k == NK_InstanceVariableOperatorWriteNode ||
+      k == NK_InstanceVariableTargetNode) return 1;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++)
+    if (ie_body_writes_ivar(nt, nt_ref_at(nt, node, i))) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, node, i, &m);
+    for (int j = 0; j < m; j++) if (ie_body_writes_ivar(nt, ids[j])) return 1;
+  }
+  return 0;
+}
+
 static int g_ie_poly_node = -1;
 static int emit_ie_poly(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -21169,6 +21187,7 @@ static int emit_ie_poly(Compiler *c, int id, Buf *b) {
       emit_indent(g_pre, g_indent + 1);
       buf_printf(g_pre, "_t%d = ", tr);
       if (vty == ret) buf_puts(g_pre, vt);
+      else if (ret == TY_POLY_ARRAY && array_to_poly_fn(vty)) buf_printf(g_pre, "%s(%s)", array_to_poly_fn(vty), vt);
       else if (ret == TY_POLY) emit_boxed_text(c, vty, vt, g_pre);
       else if (vty == TY_POLY) emit_unbox_text(c, ret, vt, g_pre);
       else {
@@ -21182,6 +21201,37 @@ static int emit_ie_poly(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
     free(ab.p); free(vb.p);
     arms++;
+  }
+  /* A body that only reads ivars runs on any other receiver too, where they
+     read nil: the non-object path, with self the boxed receiver. */
+  if (need == name && !ie_body_writes_ivar(nt, body)) {
+    Buf ab; memset(&ab, 0, sizeof ab);
+    Buf *sv_pre = g_pre; int sv_ind = g_indent;
+    g_pre = &ab; g_indent = sv_ind + 1;
+    int sv_node = g_ie_poly_node; g_ie_poly_node = id;
+    int sv_disc = g_ie_discard_value; g_ie_discard_value = !keep;
+    int sv_nil = g_ie_nil_ivars; g_ie_nil_ivars = 1;
+    Buf vb; memset(&vb, 0, sizeof vb);
+    emit_call(c, id, &vb);
+    g_ie_nil_ivars = sv_nil;
+    g_ie_discard_value = sv_disc;
+    g_ie_poly_node = sv_node;
+    g_pre = sv_pre; g_indent = sv_ind;
+    emit_indent(g_pre, g_indent);
+    buf_puts(g_pre, arms ? "else {\n" : "{\n");
+    buf_puts(g_pre, ab.p ? ab.p : "");
+    TyKind vty = bn > 0 ? comp_ntype(c, bb[bn - 1]) : TY_NIL;
+    if (ret == TY_POLY && vty != TY_POLY) vty = TY_POLY;
+    emit_indent(g_pre, g_indent + 1);
+    if (keep && vty == ret && vb.p) buf_printf(g_pre, "_t%d = %s;\n", tr, vb.p);
+    else if (keep && ret == TY_POLY_ARRAY && array_to_poly_fn(vty) && vb.p)
+      buf_printf(g_pre, "_t%d = %s(%s);\n", tr, array_to_poly_fn(vty), vb.p);
+    else buf_printf(g_pre, "(void)(%s);\n", vb.p ? vb.p : "0");
+    emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+    free(ab.p); free(vb.p);
+    nd_stamp(id, ND_SWITCH);
+    buf_printf(b, "_t%d", keep ? tr : tv);
+    return 1;
   }
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "%ssp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d));\n", arms ? "else " : "", need, tv);
@@ -30609,22 +30659,28 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       int nbody = nt_ref(nt, nblk, "body");
       int nbn = 0; const int *nbb = nbody >= 0 ? nt_arr(nt, nbody, "body", &nbn) : NULL;
       int tself = ++g_tmp;
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_RbVal _t%d = ", tself); emit_boxed(c, recv, g_pre); buf_puts(g_pre, ";\n");
+      {
+        Buf rb; memset(&rb, 0, sizeof rb);
+        emit_boxed(c, recv, &rb);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", tself, rb.p ? rb.p : "sp_box_nil()");
+        free(rb.p);
+      }
       for (int p = 0; p < nnp; p++) {
         const char *pn = nreqs ? nt_str(nt, nreqs[p], "name") : NULL;
         if (!pn) continue;
         LocalVar *plv = scope_local(comp_scope_of(c, nreqs[p]), pn);
         if (!plv || plv->type == TY_UNKNOWN) continue;   /* unused param */
         int ppoly = plv->type == TY_POLY;
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "lv_%s = ", rename_local(pn));
+        Buf vb; memset(&vb, 0, sizeof vb);
         if (nexec) {
-          if (p < niac) { if (ppoly) emit_boxed(c, niav[p], g_pre); else emit_expr(c, niav[p], g_pre); }
-          else emit_ie_param_default(c, plv->type, g_pre);
+          if (p < niac) { if (ppoly) emit_boxed(c, niav[p], &vb); else emit_expr(c, niav[p], &vb); }
+          else emit_ie_param_default(c, plv->type, &vb);
         }
-        else { if (ppoly) buf_printf(g_pre, "_t%d", tself); else emit_ie_param_default(c, plv->type, g_pre); }
-        buf_puts(g_pre, ";\n");
+        else { if (ppoly) buf_printf(&vb, "_t%d", tself); else emit_ie_param_default(c, plv->type, &vb); }
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "lv_%s = %s;\n", rename_local(pn), vb.p ? vb.p : "0");
+        free(vb.p);
       }
       emit_ie_rest_kw_binds(c, id, nblk, nexec ? npnode : -1, nnp, niav, niac, nkwh);
       TyKind nbt = nbn > 0 ? comp_ntype(c, nbb[nbn - 1]) : TY_NIL;

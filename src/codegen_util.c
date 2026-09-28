@@ -474,6 +474,7 @@ const char *g_dm_subst_name = NULL;
 int g_dm_subst_node = -1;
 int g_ie_class_id = -1;
 int g_ie_discard_value = 0;
+int g_ie_nil_ivars = 0;
 const char *g_rescue_cls = NULL, *g_rescue_msg = NULL;
 const char *g_retry_label = NULL;
 int g_redo_stack[64];

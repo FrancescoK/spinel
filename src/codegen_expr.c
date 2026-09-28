@@ -2171,6 +2171,12 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
   if (sp_streq(ty, "InstanceVariableReadNode")) {
     const char *nm = nt_str(nt, id, "name");  /* "@x" */
     Scope *cs = comp_scope_of(c, id);
+    if (g_ie_nil_ivars) {
+      TyKind it = comp_ntype(c, id);
+      const char *nv = nil_value(it);
+      buf_puts(b, nv ? nv : default_value(it));
+      return;
+    }
     /* inside a shared-mutable shim over THIS slot: both the reads and the
        arm's own write-back go to the shadow (see codegen_internal.h) */
     if (g_sb_iv_name && nm && sp_streq(nm, g_sb_iv_name) &&
