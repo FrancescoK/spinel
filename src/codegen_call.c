@@ -273,10 +273,10 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   int kwh = (last_ty && sp_streq(last_ty, "KeywordHashNode")) ? argv2[argc2 - 1] : -1;
   int pos_argc = kwh >= 0 ? argc2 - 1 : argc2;
   int rest_argc = rest_bind_argc(c, m, kwh, pos_argc);
-  /* a `**` hash that may be no argument: every parameter from the gather,
-     call-site code like each argument below */
+  /* a `**` hash that may be no argument, or a splat: every parameter from
+     the gather, call-site code like each argument below */
   int gather_tmp = -1;
-  if (kwh_gathers(c, m, kwh, pos_argc)) {
+  if (inline_splat_gather_applies(c, m, argv2, pos_argc, kwh)) {
     RenPark park = ren_park(saved_nren);
     const char *svs = g_self, *svd = g_self_deref;
     g_self = saved_self; g_self_deref = saved_self_deref;
@@ -318,7 +318,8 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
     /* A rest param collects the middle arguments into an Array rather than
        taking one of them straight into its slot, a keyword hash no parameter
        takes included. */
-    if (gather_tmp >= 0) emit_gathered_param(c, m, i, gather_tmp, b);
+    if (gather_tmp >= 0 && i != m->kwrest_idx && !callee_param_is_declared_kwarg(c, m, m->pnames[i]))
+      emit_gathered_param(c, m, i, gather_tmp, b);
     else if (m->rest_idx >= 0 && i == m->rest_idx)
       emit_rest_pack_kwh(c, i, rest_argc - m->npost_rest, argv2,
                          rest_kwh_tail(c, m, kwh, pos_argc), b);
@@ -8826,10 +8827,13 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         g_pre = &pdpre;
         /* a `**` hash that may be no argument: this arm binds every parameter
            from the call's temps gathered, the hash last when it is not empty.
-           A hash this split did not take as keywords is the last temp. */
+           A hash this split did not take as keywords is the last temp. One
+           no parameter is left for, the arm's own checks refuse when it
+           holds a key (emit_poly_kw_arm_checks). */
         int gather_arm = -1;
         int gkwh = argv[argc - 1], gpos = argc - 1;
-        if (splat_a < 0 && kwh_gathers(c, ms, gkwh, gpos)) {
+        if (splat_a < 0 && kwh_gathers(c, ms, gkwh, argv, gpos) &&
+            kwh_positional_slot(c, ms, gkwh, gpos) >= 0) {
           gather_arm = ++g_tmp;
           buf_printf(&pdpre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", gather_arm, gather_arm);
           for (int a2 = 0; a2 <= gpos; a2++) {
@@ -8858,7 +8862,13 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           Buf pa; memset(&pa, 0, sizeof pa);
           const char *pnm = ms->pnames ? ms->pnames[a] : NULL;
           do {
-          if (gather_arm >= 0) { emit_gathered_param(c, ms, a, gather_arm, &pa); continue; }
+          if (gather_arm >= 0) {
+            /* a default reads this receiver, as the one below does */
+            g_self = selfdbuf2;
+            emit_gathered_param(c, ms, a, gather_arm, &pa);
+            g_self = saved_self;
+            continue;
+          }
           /* a **kwrest param collects the keywords no declared keyword param
              consumed (#3268), and is an empty hash when the call passed none;
              a declared keyword binds by NAME, unmatched ones taking the
@@ -10635,6 +10645,25 @@ static int emit_struct_mixed_splat_new(Compiler *c, ClassInfo *cls, const int *a
       emit_splat_operand_array(c, op >= 0 ? op : argv[a], &ab);
       buf_puts(&ab, ");");
     }
+    else if (nt_kind(nt, argv[a]) == NK_KeywordHashNode && kwh_only_spreads(nt, argv[a]) &&
+             cls->kw_init != 1) {
+      /* `**` spreads alone are no argument when they are empty:
+         `S.new(*[1], **{})` is `S.new(1)`. Holding a key they are one more
+         member of a Struct, and keywords beside positionals to a Data,
+         which takes none of them (`given N, expected 0`). */
+      Buf kb; memset(&kb, 0, sizeof kb);
+      if (emit_kwh_spread_arg(c, argv[a], &kb)) {
+        int kt = ++g_tmp;
+        buf_printf(&ab, " sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);", kt, kb.p ? kb.p : "sp_box_nil()", kt);
+        if (cls->is_data)
+          buf_printf(&ab, " if (sp_poly_length(_t%d) > 0) sp_raise_cls(\"ArgumentError\", sp_sprintf("
+                          "\"wrong number of arguments (given %%lld, expected 0)\", (long long)_t%d->len + 1));",
+                     kt, ta);
+        else
+          buf_printf(&ab, " if (sp_poly_length(_t%d) > 0) sp_PolyArray_push(_t%d, _t%d);", kt, ta, kt);
+      }
+      free(kb.p);
+    }
     else {
       buf_printf(&ab, " sp_PolyArray_push(_t%d, ", ta);
       emit_boxed(c, argv[a], &ab);
@@ -11486,12 +11515,12 @@ static void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Bu
     Buf *sv_pre = g_pre; g_pre = &apre;
     /* An initialize that takes no keywords, reached with `**h`: the layout
        drops the splat, which is right only when h is empty. A non-empty one
-       is one argument too many, CRuby's ArgumentError (#4849) -- unless a
-       positional parameter takes it, which the layout judges itself
-       (kwh_gathers). */
+       is one argument too many, CRuby's ArgumentError (#4849) -- unless the
+       layout judges it itself (kwh_gathers): a positional parameter takes
+       it, or the gather's count refuses it. */
     int lkwh = argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
     if (!init_takes_keywords(c, initm) &&
-        !kwh_gathers(c, &c->scopes[initm], lkwh, lkwh >= 0 ? argc - 1 : argc)) {
+        !kwh_gathers(c, &c->scopes[initm], lkwh, argv, lkwh >= 0 ? argc - 1 : argc)) {
       int npos = 0, nreq = 0, nopt = 0;
       for (int a = 0; a < argc; a++) {
         NodeKind ak = nt_kind(nt, argv[a]);
