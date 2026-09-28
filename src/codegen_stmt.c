@@ -5447,6 +5447,10 @@ static int find_hoistable_strlen(Compiler *c, int root) {
   if (root < 0) return -1;
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, root);
+  /* a block's parameters and locals take a new value on every call of it,
+     and an outer local may be reassigned inside it: nothing read inside
+     one is hoisted */
+  if (ty && (sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode"))) return -1;
   if (ty && sp_streq(ty, "CallNode")) {
     const char *nm = nt_str(nt, root, "name");
     int recv = nt_ref(nt, root, "receiver");
@@ -5522,7 +5526,8 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
     return;
   }
   /* Hoist a loop-invariant string length out of the loop: if the predicate
-     tests `s.length`/`s.size` for a string local `s` the body never mutates,
+     tests `s.length`/`s.size` for a string local `s` that neither the body
+     nor the predicate itself mutates,
      compute strlen once before the loop and reuse it (avoids O(n) strlen per
      iteration). Save/restore the outer hoist state for nested loops. */
   const char *sv_hvar = g_hoist_len_var, *sv_hrecv = g_hoist_len_recv;
@@ -5530,7 +5535,7 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   int hr = find_hoistable_strlen(c, pred);
   if (hr >= 0) {
     const char *hn = nt_str(nt, hr, "name");
-    if (hn && !subtree_mutates_local(c, body, hn)) {
+    if (hn && !subtree_mutates_local(c, body, hn) && !subtree_mutates_local(c, pred, hn)) {
       int ht = ++g_tmp;
       emit_indent(b, indent);
       buf_printf(b, "sp_int _t%d = sp_str_length_m(", ht); emit_expr(c, hr, b); buf_puts(b, ");\n");
