@@ -13083,6 +13083,20 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
   }
+  /* to_a / to_ary typed boxed where the answer is mutated
+     (an_to_a_result_mutated): an Array answers itself, not the face's copy */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+      (sp_streq(name, "to_a") || sp_streq(name, "to_ary")) && comp_ntype(c, id) == TY_POLY) {
+    int has_user = 0;
+    if (!g_poly_builtin_arm)
+      for (int kk = 0; kk < c->nclasses && !has_user; kk++)
+        if (comp_poly_arm_defines_n(c, kk, name, argc)) has_user = 1;
+    if (!has_user) {
+      buf_printf(b, "sp_poly_to_a_self(\"%s\", ", name);
+      emit_expr(c, recv, b); buf_puts(b, ")");
+      return 1;
+    }
+  }
   /* The face table (types.h): unbox the receiver to the kind that owns the
      name, retype the receiver node and re-enter the same call, so the typed
      emitter IS the implementation and the inference, which answered under

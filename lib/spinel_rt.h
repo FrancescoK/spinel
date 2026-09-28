@@ -13079,6 +13079,14 @@ static sp_PolyArray *sp_poly_to_a_call(sp_RbVal v) {
   sp_PolyArray_push(a, sp_box_str(sp_time_zone(t)));
   return a;
 }
+/* to_a / to_ary on a boxed value, answered boxed: an Array of any
+   representation is itself, as CRuby's Array#to_a is; to_a on anything
+   else materializes as sp_poly_to_a_call does, and to_ary is Array's alone. */
+static sp_RbVal sp_poly_to_a_self(const char *m, sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)) return v;
+  if (strcmp(m, "to_a") != 0) sp_raise_nomethod(sp_nomethod_msg(m, v));
+  return sp_box_poly_array(sp_poly_to_a_call(v));
+}
 /* Array#each_slice(n) with no block: a materialized Enumerator whose items are
    the consecutive non-overlapping slices of length n (the last may be short).
    `slice` is block-scoped, so its GC root pops each iteration; `out` keeps the
