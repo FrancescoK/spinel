@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <limits.h>
 #include "analyze_internal.h"
 
 
@@ -14739,6 +14740,10 @@ static int elem_miss_call(Compiler *c, int v) {
         nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) return 1;
     return 0;
   }
+  /* the element a multiple assignment hands one of its targets, read back
+     only as type evidence (desugar_masgn_store_evidence): it is no more a
+     miss there than it is for the assignment's local and ivar targets */
+  if (nt_int(nt, v, "masgn_elem", LLONG_MIN) != LLONG_MIN) return 0;
   if (sp_streq(nm, "[]") || sp_streq(nm, "at")) return argc == 1 && blk < 0;
   if (sp_streq(nm, "dig")) return argc >= 1;
   if (sp_streq(nm, "first") || sp_streq(nm, "last") || sp_streq(nm, "sample"))
