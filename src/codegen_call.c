@@ -2680,8 +2680,15 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
   if (argc < 1 || !argv) return 0;
   int sym = argv[0], mo = sp_streq(nt_str(nt, id, "name"), "method");
   TyKind st = comp_ntype(c, sym);
-  int t = ++g_tmp;
-  buf_printf(b, "({ sp_sym _t%d = ", t);
+  int t = ++g_tmp, recv = nt_ref(nt, id, "receiver"), sv_nargov = g_n_argov;
+  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  buf_puts(b, "({ ");
+  if (rt != TY_UNKNOWN && rt != TY_VOID && subtree_has_side_effect(c, recv) && g_n_argov < MAX_ARG_OVERRIDE) {
+    int tr = ++g_tmp;
+    emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, "; "); emit_gc_root_tmp(c, rt, tr, b);
+    g_argov_node[g_n_argov] = recv; snprintf(g_argov_text[g_n_argov++], sizeof g_argov_text[0], "_t%d", tr);
+  }
+  buf_printf(b, "sp_sym _t%d = ", t);
   if (st == TY_SYMBOL) emit_expr(c, sym, b);
   else if (st == TY_STRING) { buf_puts(b, "sp_sym_intern("); emit_expr(c, sym, b); buf_puts(b, ")"); }
   else {
@@ -2733,11 +2740,11 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
   }
   if (mo) {
     buf_printf(b, "{ sp_raise_cls(\"NameError\", sp_sprintf(\"undefined method '%%s' for class '%%s'\", sp_sym_to_s(_t%d), sp_poly_class_name(", t);
-    emit_boxed(c, nt_ref(nt, id, "receiver"), b);
+    emit_boxed(c, recv, b);
     buf_printf(b, "))); _r%d = sp_box_nil(); } _r%d; })", t, t);
-    return 1;
   }
-  buf_printf(b, "{ sp_raise_cls(\"NoMethodError\", sp_sprintf(\"undefined method '%%s'\", sp_sym_to_s(_t%d))); _r%d = sp_box_nil(); } _r%d; })", t, t, t);
+  else buf_printf(b, "{ sp_raise_cls(\"NoMethodError\", sp_sprintf(\"undefined method '%%s'\", sp_sym_to_s(_t%d))); _r%d = sp_box_nil(); } _r%d; })", t, t, t);
+  g_n_argov = sv_nargov;
   return 1;
 }
 

@@ -1,0 +1,23 @@
+recv
+name
+1
+recv
+name
+arg
+arg
+112
+recv
+name
+3
+false
+recv
+name
+undefined method 'zz' for class 'V'
+recv
+name
+NoMethodError
+recv
+name
+recv
+name
+[7, 9]
