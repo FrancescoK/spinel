@@ -6431,10 +6431,12 @@ int callee_declares_kwargs(Compiler *c, Scope *m) {
 }
 
 /* Materialize the first `**hash` source inside `kwh` (a KeywordHashNode) into
-   a typed temp so per-param extraction / kwrest collection can read it.
-   Returns the temp id, or -1 when kwh carries no double-splat (or its source
-   is not a known hash). Sets *out_type to the materialized hash's type.
-   Shared by emit_args_filled and emit_dispatch. */
+   a typed temp so per-param extraction / kwrest collection can read it -- or,
+   for a call into callee `m` that kwh_merged, every keyword source merged
+   into one SymPolyHash. Returns the temp id, or -1 when kwh carries no
+   double-splat (or its source is not a known hash). Sets *out_type to the
+   materialized hash's type. Shared by emit_args_filled, emit_dispatch and
+   emit_inline_call_x. */
 static int empty_hash_literal(const NodeTable *nt, int id) {
   int n = 0;
   nt_arr(nt, id, "elements", &n);
@@ -6489,11 +6491,132 @@ void emit_kw_splat_operand_inline(Compiler *c, int node, Buf *b) {
   if (cn) buf_printf(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into Hash\"); ", cn);
 }
 
-int emit_ds_hash_materialize(Compiler *c, int kwh, TyKind *out_type) {
+/* See codegen_internal.h. */
+int kwh_sources_overlap(const NodeTable *nt, int kwh) {
+  if (kwh < 0) return 0;
+  int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
+  int nsplat = 0, lit = 0, merge = 0;
+  for (int e = 0; e < en; e++) {
+    if (nt_kind(nt, el[e]) == NK_AssocSplatNode) {
+      if (nsplat++ || lit) merge = 1;
+      continue;
+    }
+    int key = nt_ref(nt, el[e], "key");
+    if (key < 0 || nt_kind(nt, key) != NK_SymbolNode) return 0;
+    lit = 1;
+  }
+  return merge;
+}
+
+/* See codegen_internal.h. */
+int kwh_merged(Compiler *c, Scope *m, int kwh) {
+  return callee_declares_kwargs(c, m) && kwh_sources_overlap(c->nt, kwh);
+}
+
+/* See codegen_internal.h. */
+void emit_merged_positionals(Compiler *c, const int *argv, int pos_argc) {
+  const NodeTable *nt = c->nt;
+  for (int k = 0; argv && k < pos_argc && g_n_argov < MAX_ARG_OVERRIDE; k++) {
+    int v = argv[k];
+    if (nt_kind(nt, v) == NK_SplatNode) v = nt_ref(nt, v, "expression");
+    else if (nt_kind(nt, v) == NK_BlockArgumentNode) continue;   /* runs last */
+    if (v < 0 || !subtree_has_side_effect(c, v)) continue;
+    TyKind at = comp_ntype(c, v);
+    if (!ty_is_object(at) && !c_type_name(at)) continue;   /* a raise: no value */
+    int t = ++g_tmp;
+    Buf hb; memset(&hb, 0, sizeof hb);
+    emit_expr(c, v, &hb);
+    emit_indent(g_pre, g_indent);
+    if (at == TY_POLY) buf_puts(g_pre, "sp_RbVal");
+    else emit_ctype(c, at, g_pre);
+    buf_printf(g_pre, " _t%d = %s;", t, hb.p ? hb.p : default_value(at));
+    if (at == TY_POLY) buf_printf(g_pre, " SP_GC_ROOT_RBVAL(_t%d);", t);
+    else if (needs_root(at)) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", t);
+    buf_puts(g_pre, "\n");
+    free(hb.p);
+    g_argov_node[g_n_argov] = v;
+    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", t);
+    g_n_argov++;
+  }
+}
+
+/* See codegen_internal.h. */
+int emit_ds_hash_merge(Compiler *c, int kwh, TyKind *out_type) {
+  const NodeTable *nt = c->nt;
+  int mh = ++g_tmp;
+  *out_type = TY_SYM_POLY_HASH;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d);\n", mh, mh);
+  int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
+  for (int e = 0; e < en; e++) {
+    int v = nt_ref(nt, el[e], "value");
+    /* each source renders into a side buffer first: a literal drains its
+       own construction into g_pre, which must land before the line using it */
+    Buf vb; memset(&vb, 0, sizeof vb);
+    if (nt_kind(nt, el[e]) != NK_AssocSplatNode) {
+      emit_boxed(c, v, &vb);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_SymPolyHash_set(_t%d, sp_sym_intern(\"%s\"), %s);\n", mh,
+                 nt_str(nt, nt_ref(nt, el[e], "key"), "value"), vb.p ? vb.p : "sp_box_nil()");
+    }
+    else if (v < 0) {
+      const char *akw = anon_kwrest_name(c, el[e]);
+      if (akw) {
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, lv_%s);\n", mh, rename_local(akw));
+      }
+    }
+    else {
+      TyKind t = comp_ntype(c, v);
+      const char *hn = ty_hash_cname(t);
+      if (hn && sp_streq(hn, "SymPoly")) {
+        int src = ++g_tmp;
+        emit_expr(c, v, &vb);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_SymPolyHash *_t%d = %s; SP_GC_ROOT(_t%d);\n", src, vb.p ? vb.p : "", src);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, _t%d);\n", mh, src);
+      }
+      else if (ty_is_hash(t) || t == TY_POLY) {
+        /* another hash kind, or one only known at run time: merged by a
+           runtime walk, which takes nil as no keywords and raises CRuby's
+           TypeError for anything else that is not a Hash */
+        emit_boxed(c, v, &vb);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_kwrest_merge_poly(_t%d, %s);\n", mh, vb.p ? vb.p : "sp_box_nil()");
+      }
+      else if (nt_kind(nt, v) != NK_NilNode &&
+               !(nt_kind(nt, v) == NK_HashNode && empty_hash_literal(nt, v))) {
+        /* no keywords to merge (`**f` answering nil, `**1`): only the operand
+           to evaluate and, for another class, CRuby's TypeError to raise */
+        emit_expr(c, v, &vb);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "(void)(%s);\n", vb.p ? vb.p : "0");
+        emit_kw_splat_conv_check(c, t, NULL);
+      }
+    }
+    free(vb.p);
+  }
+  return mh;
+}
+
+/* The `**` operand `node`, materialized into temp `tmp`, reads that temp
+   wherever the call renders it again: a keyword hash bound to a positional
+   or rest parameter builds itself from its operands, which ran the operand
+   a second time. The caller pops the override with its own. */
+static void ds_operand_reads_temp(int node, int tmp) {
+  if (g_n_argov >= MAX_ARG_OVERRIDE) return;
+  g_argov_node[g_n_argov] = node;
+  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tmp);
+  g_n_argov++;
+}
+
+int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type) {
   const NodeTable *nt = c->nt;
   int ds_hash_tmp = -1;
   *out_type = TY_UNKNOWN;
   if (kwh < 0) return -1;
+  if (kwh_merged(c, m, kwh)) return emit_ds_hash_merge(c, kwh, out_type);
   int en2 = 0; const int *elems2 = nt_arr(nt, kwh, "elements", &en2);
   for (int e = 0; e < en2; e++) {
     const char *ety2 = nt_type(nt, elems2[e]);
@@ -6513,6 +6636,7 @@ int emit_ds_hash_materialize(Compiler *c, int kwh, TyKind *out_type) {
         emit_ctype(c, *out_type, g_pre);
         buf_printf(g_pre, " _t%d = %s;\n", ds_hash_tmp, hb.p ? hb.p : "");
         free(hb.p);
+        ds_operand_reads_temp(inner2, ds_hash_tmp);
       }
       else if (nt_kind(nt, inner2) == NK_HashNode && empty_hash_literal(nt, inner2)) {
         /* `**{}` types as no hash at all; it carries no keywords */
@@ -6533,6 +6657,7 @@ int emit_ds_hash_materialize(Compiler *c, int kwh, TyKind *out_type) {
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", ds_hash_tmp, hb.p ? hb.p : "sp_box_nil()");
         free(hb.p);
+        ds_operand_reads_temp(inner2, ds_hash_tmp);
         char tn[32]; snprintf(tn, sizeof tn, "_t%d", ds_hash_tmp);
         emit_kw_splat_conv_check(c, *out_type, tn);
       }
@@ -6595,8 +6720,8 @@ static void kw_param_names(const NodeTable *nt, const int *kws, int kn, int requ
    raises `unknown keyword`. The static checks in emit_call_arity_check stand
    aside for a call with a `**`, which left `f(**{})` against `def f(k:)`
    binding nil and `f(z: 2, **h)` dropping the z, and the object-receiver and
-   inlined calls ran no check at all. A call splatting several hashes
-   materializes only the first, so it is not judged here. */
+   inlined calls ran no check at all. A call kwh_merged has every key, the
+   literal ones too, in its merged hash, which is checked alone. */
 void emit_ds_kwarg_check(Compiler *c, Scope *m, int kwh, int ds_hash_tmp, TyKind ds_hash_type) {
   const NodeTable *nt = c->nt;
   if (ds_hash_tmp < 0 || kwh < 0 || !m || m->def_node < 0) return;
@@ -6605,10 +6730,10 @@ void emit_ds_kwarg_check(Compiler *c, Scope *m, int kwh, int ds_hash_tmp, TyKind
   int kn = 0; const int *kws = pn >= 0 ? nt_arr(nt, pn, "keywords", &kn) : NULL;
   if (kn == 0) return;
   int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
-  int nsplat = 0;
+  int nsplat = 0, merged = kwh_merged(c, m, kwh);
   for (int e = 0; e < en; e++)
     if (nt_kind(nt, el[e]) == NK_AssocSplatNode) nsplat++;
-  if (nsplat != 1) return;
+  if (nsplat != 1 && !merged) return;
   int chk = ++g_tmp;
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "static const char *const _kw%d[] = {", chk);
@@ -6616,7 +6741,7 @@ void emit_ds_kwarg_check(Compiler *c, Scope *m, int kwh, int ds_hash_tmp, TyKind
   buf_printf(g_pre, "0}, *const _kr%d[] = {", chk);
   kw_param_names(nt, kws, kn, 1, g_pre);
   buf_printf(g_pre, "0}, *const _kl%d[] = {", chk);
-  for (int e = 0; e < en; e++) {
+  for (int e = 0; e < en && !merged; e++) {
     int key = nt_ref(nt, el[e], "key");
     const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
     const char *kname = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
@@ -6742,8 +6867,14 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
   buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", krhash);
   if (kwh >= 0) {
     int en3 = 0; const int *elems3 = nt_arr(nt, kwh, "elements", &en3);
-    int splat_seen = 0, nsplat3 = 0;
-    for (int e3 = 0; e3 < en3; e3++) {
+    int splat_seen = 0, nsplat3 = 0, merged = kwh_merged(c, m, kwh);
+    if (merged) {
+      /* every source is already merged, in order, into the materialized hash */
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, _t%d);\n", krhash, ds_hash_tmp);
+      splat_seen = 1;
+    }
+    for (int e3 = 0; e3 < en3 && !merged; e3++) {
       const char *ety3 = nt_type(nt, elems3[e3]);
       if (ety3 && sp_streq(ety3, "AssocSplatNode")) {
         nsplat3++;
@@ -7356,8 +7487,11 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
 
   /* Detect double-splat (**hash) inside kwh: AssocSplatNode wrapping a hash expr.
      Pre-evaluate the hash to a temp so we can do per-param lookups. */
+  int kw_merged = kwh_merged(c, m, kwh);
+  int argov_saved = g_n_argov;
+  if (kw_merged) emit_merged_positionals(c, argv, pos_argc);
   TyKind ds_hash_type = TY_UNKNOWN;
-  int ds_hash_tmp = emit_ds_hash_materialize(c, kwh, &ds_hash_type);
+  int ds_hash_tmp = emit_ds_hash_materialize(c, m, kwh, &ds_hash_type);
   emit_ds_kwarg_check(c, m, kwh, ds_hash_tmp, ds_hash_type);
 
   /* Find the first SplatNode in positional args. If it comes before rest_idx
@@ -7496,7 +7630,7 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
       /* only a keyword parameter binds a key by name; a keyword hash no
          parameter takes is one more positional argument, and fills the
          first unfilled slot -- the rules the path below follows (#4869) */
-      if (provided < 0 && kwh >= 0 && m->pnames[i] && callee_has_kwarg(c, m, m->pnames[i]))
+      if (provided < 0 && kwh >= 0 && !kw_merged && m->pnames[i] && callee_has_kwarg(c, m, m->pnames[i]))
         provided = kwh_lookup(nt, kwh, m->pnames[i]);
       if (provided < 0 && !is_rest && !is_kwrest && kwh_positional_slot(c, m, kwh, pos_argc) == i)
         provided = kwh;
@@ -7558,10 +7692,10 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
       buf_puts(out, i == 0 ? lead : ", ");
       buf_puts(out, tmpnames[i]);
     }
+    g_n_argov = argov_saved;
     return;
   }
 
-  int argov_saved = g_n_argov;
   if (splat_idx < 0 && kwh < 0 && argv) {
     /* Ruby evaluates arguments left to right; C leaves a call's operand order
        unspecified (gcc walks it right to left). Once two arguments can observe
@@ -7734,7 +7868,7 @@ else {
          positional below, not steal the key from the kwargs. Same rule the
          keyword-rest collection applies via callee_has_kwarg. */
       int is_kwparam = m->pnames[i] && callee_has_kwarg(c, m, m->pnames[i]);
-      int kv = (kwh >= 0 && is_kwparam) ? kwh_lookup(nt, kwh, m->pnames[i]) : -1;
+      int kv = (kwh >= 0 && is_kwparam && !kw_merged) ? kwh_lookup(nt, kwh, m->pnames[i]) : -1;
       if (kv >= 0) {
         emit_arg_rooted(c, m, i, kv, out);
       }
@@ -8164,8 +8298,11 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
      from it and a `**kwrest` callee param collects it -- the same handling
      emit_args_filled applies (previously this path dropped every keyword
      into a NULL kwrest and let positionals steal keys by name). */
+  int kw_merged_d = kwh_merged(c, m, kwh_d);
+  int argov_saved_d = g_n_argov;
+  if (kw_merged_d) emit_merged_positionals(c, argv, pos_argc_d);
   TyKind ds_type_d = TY_UNKNOWN;
-  int ds_tmp_d = (m && kwh_d >= 0) ? emit_ds_hash_materialize(c, kwh_d, &ds_type_d) : -1;
+  int ds_tmp_d = (m && kwh_d >= 0) ? emit_ds_hash_materialize(c, m, kwh_d, &ds_type_d) : -1;
   emit_ds_kwarg_check(c, m, kwh_d, ds_tmp_d, ds_type_d);
   int np = m ? m->nparams : pos_argc_d;
   /* evaluate each param value (provided arg or default) into a temp so the
@@ -8342,7 +8479,7 @@ else {
          name happens to match must take the provided positional instead
          (mirrors emit_args_filled). */
       int is_kwp_d = m && m->pnames[k] && callee_has_kwarg(c, m, m->pnames[k]);
-      int kv = (m && kwh_d >= 0 && is_kwp_d) ? kwh_lookup(nt, kwh_d, m->pnames[k]) : -1;
+      int kv = (m && kwh_d >= 0 && is_kwp_d && !kw_merged_d) ? kwh_lookup(nt, kwh_d, m->pnames[k]) : -1;
       /* A declared keyword param is never bound by position: `def fn(*opts,
          ivar: false)` called `fn("a", "b")` must leave ivar at its default, not
          steal the last positional (which the rest already collected) (#3204).
@@ -8495,6 +8632,7 @@ else {
     free(ab.p);
   }
   g_nren = pd_ren_base;   /* the renames served the defaults only */
+  g_n_argov = argov_saved_d;
 
   /* Too few arguments for a rest-parameter target: CRuby's ArgumentError,
      where the body ran with the missing parameters padded out. The raise sits
