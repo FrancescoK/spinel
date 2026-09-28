@@ -2097,7 +2097,10 @@ static int sp_stat_pathless(sp_File *f) {
 }
 sp_File *sp_io_stat_handle(sp_File *f) {SP_GC_ROOT(f);
   SP_IO_OPEN(f);
-  if (f->path && f->path[0]) return sp_file_stat_handle(f->path);
+  /* a standard stream's "<STDOUT>" is a placeholder, not a path: fstat it,
+     as a handle opened from a descriptor is; a File opened by a name that
+     starts with '<' still goes by its path */
+  if (f->path && f->path[0] && (f->path[0] != '<' || f->is_file)) return sp_file_stat_handle(f->path);
   struct stat st;
   if (fstat(fileno(f->fp), &st) != 0)
     sp_raise_cls("Errno::EBADF", "Bad file descriptor");
