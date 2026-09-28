@@ -90,6 +90,15 @@ static void sp_crypto_sha256_block(uint32_t H[8], const uint8_t b[64]) {
     H[4]+=se; H[5]+=sf; H[6]+=sg; H[7]+=sh;
 }
 
+static void sp_crypto_store_be32(uint8_t *out, const uint32_t *H, int n) {
+    for (int i = 0; i < n; i++) {
+        out[i*4]   = (uint8_t)(H[i] >> 24);
+        out[i*4+1] = (uint8_t)(H[i] >> 16);
+        out[i*4+2] = (uint8_t)(H[i] >> 8);
+        out[i*4+3] = (uint8_t)(H[i]);
+    }
+}
+
 static void sp_crypto_sha256(const uint8_t *msg, size_t len, uint8_t out[32]) {
     uint32_t H[8] = {
         0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
@@ -112,12 +121,7 @@ else {
     uint64_t bits = (uint64_t)len * 8;
     for (i = 0; i < 8; i++) buf[56 + i] = (uint8_t)(bits >> (56 - 8*i));
     sp_crypto_sha256_block(H, buf);
-    for (i = 0; i < 8; i++) {
-        out[i*4]   = (uint8_t)(H[i] >> 24);
-        out[i*4+1] = (uint8_t)(H[i] >> 16);
-        out[i*4+2] = (uint8_t)(H[i] >> 8);
-        out[i*4+3] = (uint8_t)(H[i]);
-    }
+    sp_crypto_store_be32(out, H, 8);
 }
 
 /* ---------- SHA-1 ----------
@@ -171,12 +175,7 @@ else {
     uint64_t bits = (uint64_t)len * 8;
     for (i = 0; i < 8; i++) buf[56 + i] = (uint8_t)(bits >> (56 - 8*i));
     sp_crypto_sha1_block(H, buf);
-    for (i = 0; i < 5; i++) {
-        out[i*4]   = (uint8_t)(H[i] >> 24);
-        out[i*4+1] = (uint8_t)(H[i] >> 16);
-        out[i*4+2] = (uint8_t)(H[i] >> 8);
-        out[i*4+3] = (uint8_t)(H[i]);
-    }
+    sp_crypto_store_be32(out, H, 5);
 }
 
 static SP_TLS char sp_crypto_sha256_hex_buf[65];
@@ -493,12 +492,7 @@ else {
         uint64_t bits = (uint64_t)(64 + 32) * 8;
         for (i = 0; i < 8; i++) buf[56 + i] = (uint8_t)(bits >> (56 - 8*i));
         sp_crypto_sha256_block(H, buf);
-        for (i = 0; i < 8; i++) {
-            out[i*4]   = (uint8_t)(H[i] >> 24);
-            out[i*4+1] = (uint8_t)(H[i] >> 16);
-            out[i*4+2] = (uint8_t)(H[i] >> 8);
-            out[i*4+3] = (uint8_t)(H[i]);
-        }
+        sp_crypto_store_be32(out, H, 8);
     }
 }
 
@@ -600,12 +594,7 @@ else {
         uint64_t bits = (uint64_t)(64 + 20) * 8;
         for (i = 0; i < 8; i++) buf[56 + i] = (uint8_t)(bits >> (56 - 8*i));
         sp_crypto_sha1_block(H, buf);
-        for (i = 0; i < 5; i++) {
-            out[i*4]   = (uint8_t)(H[i] >> 24);
-            out[i*4+1] = (uint8_t)(H[i] >> 16);
-            out[i*4+2] = (uint8_t)(H[i] >> 8);
-            out[i*4+3] = (uint8_t)(H[i]);
-        }
+        sp_crypto_store_be32(out, H, 5);
     }
 }
 
