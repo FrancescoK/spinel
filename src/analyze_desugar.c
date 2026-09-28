@@ -1207,6 +1207,63 @@ int desugar_binding_lvget(Compiler *c) {
   return changed;
 }
 
+
+static void engine_blank(NodeTable *nt, int id) {
+  if (id < 0 || id >= nt->count) return;
+  int nr = nt_num_refs(nt, id);
+  for (int j = 0; j < nr; j++) engine_blank(nt, nt_ref_at(nt, id, j));
+  int na = nt_num_arrs(nt, id);
+  for (int j = 0; j < na; j++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, j, &n);
+    int *copy = n > 0 ? (int *)malloc(sizeof(int) * (size_t)n) : NULL;
+    if (copy) memcpy(copy, ids, sizeof(int) * (size_t)n);
+    for (int k = 0; k < n; k++) engine_blank(nt, copy[k]);
+    free(copy);
+  }
+  nt_node_reset(nt, id, "NilNode");
+}
+
+int desugar_engine_branches(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  int changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *op = nt_str(nt, id, "name");
+    if (!op || (!sp_streq(op, "==") && !sp_streq(op, "!="))) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    int args = nt_ref(nt, id, "arguments");
+    int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+    if (recv < 0 || ac != 1 || !av) continue;
+    int cn = recv, sn = av[0];
+    if (nt_kind(nt, cn) != NK_ConstantReadNode) { cn = av[0]; sn = recv; }
+    if (nt_kind(nt, cn) != NK_ConstantReadNode || nt_kind(nt, sn) != NK_StringNode) continue;
+    const char *cname = nt_str(nt, cn, "name");
+    const char *sv = nt_str(nt, sn, "content");
+    if (!cname || !sv || !sp_streq(cname, "RUBY_ENGINE")) continue;
+    int truth = sp_streq(sv, "spinel") == sp_streq(op, "==");
+    engine_blank(nt, recv);
+    engine_blank(nt, args);
+    nt_node_reset(nt, id, truth ? "TrueNode" : "FalseNode");
+    nt_node_set_int(nt, id, "engine_check", 1);
+    changed = 1;
+  }
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_IfNode && k != NK_UnlessNode) continue;
+    int pred = nt_ref(nt, id, "predicate");
+    if (pred < 0 || nt_int(nt, pred, "engine_check", 0) <= 0) continue;
+    int runs_statements = (nt_kind(nt, pred) == NK_TrueNode) == (k == NK_IfNode);
+    const char *dead = runs_statements ? (k == NK_IfNode ? "subsequent" : "else_clause") : "statements";
+    int d = nt_ref(nt, id, dead);
+    if (d < 0) continue;
+    engine_blank(nt, d);
+    nt_node_set_ref(nt, id, dead, -1);
+    changed = 1;
+  }
+  return changed;
+}
+
 /* `recv.send(name_expr, args)` with a NON-literal name and an explicit receiver:
    lower it to a static dispatch over the method names that appear as symbol
    literals in the program. For each candidate name `m` we synthesize an ordinary

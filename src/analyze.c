@@ -15872,6 +15872,7 @@ void analyze_program(Compiler *c) {
     }
   }
   desugar_root_scoped_constants(c);      /* ::Name -> Name (#4801) */
+  desugar_engine_branches(c);
   desugar_class_reopen(c);               /* class Class / Class.class_eval -> a module */
   desugar_extended_module_attrs(c);
   /* builtins/enumerable.rb, spliced by the parser: its definitions become
