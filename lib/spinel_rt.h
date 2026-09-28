@@ -13880,6 +13880,15 @@ static void sp_proc_call_spread(sp_Proc *p, sp_RbVal arr) { SP_GC_ROOT(p);
   sp_int pass = (p->cap_scan == sp_bm_cap_scan && p->lambda_p) ? n : fill;
   sp_proc_call(p, pass, slots);
 }
+/* sp_proc_yield with an argument list whose length is known only at run
+   time (a splat, or a `**h` that passes nothing when empty) */
+static void sp_proc_yield_spread(sp_Proc *p, sp_RbVal arr) {
+  if (!p) {
+    sp_exc_stage_key(sp_box_str((&("\xff" "noreason")[1])));
+    sp_raise_cls("LocalJumpError", "no block given (yield)");
+  }
+  sp_proc_call_spread(p, arr);
+}
 /* Enumerator#size (CRuby's ary2sv-independent size protocol): a materialized
    enumerator reports its snapshot length; a generator reports its stored size --
    calling it (no args) when it is a Proc and publishing through the boxed-return

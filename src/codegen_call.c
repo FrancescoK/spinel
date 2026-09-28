@@ -20155,13 +20155,13 @@ static int emit_ie_poly(Compiler *c, int id, Buf *b) {
 /* the value read of a one-class hash being emitted in its boxed form */
 static int g_hv_read_node = -1;
 
-static int call_args_need_spread(const NodeTable *nt, const int *argv, int argc) {
+int call_args_need_spread(const NodeTable *nt, const int *argv, int argc) {
   for (int k = 0; k < argc; k++)
     if (nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "SplatNode")) return 1;
   return argc > 0 && kwh_only_spreads(nt, argv[argc - 1]);
 }
 
-static int emit_spread_args(Compiler *c, const int *argv, int argc) {
+int emit_spread_args(Compiler *c, const int *argv, int argc) {
   const NodeTable *nt = c->nt;
   g_needs_proc_poly_argslot = 1;
   int ta = ++g_tmp;

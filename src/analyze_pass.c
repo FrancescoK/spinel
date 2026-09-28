@@ -5984,6 +5984,18 @@ int block_rest_marker(Compiler *c, int block) {
   return nt_ref(c->nt, pn, "rest") >= 0;
 }
 
+/* A block taking only leading requireds -- two or more, or one and a
+   trailing comma. CRuby auto-splats a lone Array into such a block even
+   when the yield passed an (empty) `**h`; any other shape keeps it whole. */
+int block_lead_only(Compiler *c, int block) {
+  if (block_opt_name(c, block, 0) || block_post_name(c, block, 0)) return 0;
+  int P = 0; while (block_param_name(c, block, P)) P++;
+  if (!block_rest_marker(c, block)) return P > 1;
+  int pn = nt_ref(c->nt, nt_ref(c->nt, block, "parameters"), "parameters");
+  const char *rt = nt_type(c->nt, nt_ref(c->nt, pn, "rest"));
+  return P >= 1 && rt && sp_streq(rt, "ImplicitRestNode");
+}
+
 /* Name of a block's `**kw` keyword-rest parameter, or NULL (also NULL for
    the anonymous `**`). */
 const char *block_kwrest_name(Compiler *c, int block) {
@@ -8432,9 +8444,25 @@ static int pure_block_param(Compiler *c, Scope *s, const char *name) {
    whether the optional gets an element or its default. Otherwise the
    requireds before and after the optionals are filled first and the
    optionals take what is left. */
+/* A trailing hash of only `**h` splats, yielded to a block taking no
+   keywords, is a positional only when it is non-empty at run time, so the
+   yield's arity is yc or yc - 1. */
+static int yield_tail_kwsplat(Compiler *c, int block, const int *yv, int yc) {
+  const NodeTable *nt = c->nt;
+  if (yc < 1 || !yv || nt_kind(nt, yv[yc - 1]) != NK_KeywordHashNode) return 0;
+  if (block_keyword_name(c, block, 0) || block_kwrest_name(c, block)) return 0;
+  int en = 0; const int *els = nt_arr(nt, yv[yc - 1], "elements", &en);
+  for (int e = 0; e < en; e++)
+    if (nt_kind(nt, els[e]) != NK_AssocSplatNode) return 0;
+  return en > 0;
+}
+
 static TyKind block_opt_yield_type(Compiler *c, int block, const int *yv, int yc,
                                    int p_pre, int p_opt, int p_post, int oi, TyKind dt) {
   const NodeTable *nt = c->nt;
+  if (yield_tail_kwsplat(c, block, yv, yc))
+    return ty_unify(block_opt_yield_type(c, block, yv, yc - 1, p_pre, p_opt, p_post, oi, dt),
+                    oi < yc - p_pre - p_post ? infer_type(c, yv[p_pre + oi]) : dt);
   int slots = p_pre + p_opt + p_post;
   if (yc == 1 && (slots > 1 || (slots >= 1 && block_rest_marker(c, block))) &&
       !(nt_type(nt, yv[0]) && sp_streq(nt_type(nt, yv[0]), "SplatNode"))) {
@@ -9109,7 +9137,8 @@ int infer_block_params(Compiler *c) {
         int p_opt = 0; while (block_opt_name(c, block, p_opt)) p_opt++;
         int p_post = 0; while (block_post_name(c, block, p_post)) p_post++;
         TyKind as_elem = TY_UNKNOWN;
-        if (yc == 1 &&
+        if ((yc == 1 || (yc == 2 && yield_tail_kwsplat(c, block, yargs, yc) &&
+                         block_lead_only(c, block))) &&
             (p_pre + p_opt + p_post > 1 ||
              (p_pre + p_opt + p_post >= 1 && block_rest_marker(c, block))) &&
             !(nt_type(nt, yargs[0]) && sp_streq(nt_type(nt, yargs[0]), "SplatNode"))) {
@@ -9148,12 +9177,13 @@ int infer_block_params(Compiler *c) {
         }
         /* Params beyond the first yield's arity might still be nil if there
            are other yields with fewer args. Find the min yield arity. */
-        int min_yc = yc;
+        int min_yc = yc - yield_tail_kwsplat(c, block, yargs, yc);
         NT_FOREACH_KIND(nt, NK_YieldNode, _yi) {
           if (c->nscope[_yi] != yld_mi) continue;
           int _ya = nt_ref(nt, _yi, "arguments");
           int _yc = 0;
-          if (_ya >= 0) nt_arr(nt, _ya, "arguments", &_yc);
+          const int *_yv = _ya >= 0 ? nt_arr(nt, _ya, "arguments", &_yc) : NULL;
+          _yc -= yield_tail_kwsplat(c, block, _yv, _yc);
           if (_yc < min_yc) min_yc = _yc;
         }
         /* Block params at index >= min_yc can receive nil -- widen to poly. */
