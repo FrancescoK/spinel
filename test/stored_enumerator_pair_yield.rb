@@ -70,3 +70,11 @@ p s.map(&:first)
 t = [[1, 2]].each
 p t.map { |*x| x }
 p t.map { |a| a }
+
+# a block the program spells like the `&:m` shorthand is still a plain block
+hs = {a: 1}.each_with_index
+p hs.map { |_spx| _spx.first }
+es = [[1, 2]].each_with_index
+p es.map { |_spx| _spx.last }
+p({a: 1}.each_with_index.map { |_spx| _spx.first })
+p [[1, 2]].each_with_index.map { |_spx| _spx.last }

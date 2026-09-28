@@ -358,7 +358,7 @@ int desugar_array_at(Compiler *c);
 int desugar_array_first_last(Compiler *c);
 int desugar_enum_iter_splat_args(Compiler *c);
 int desugar_builtin_iter_block_shapes(Compiler *c);
-int desugar_enum_pair_sym_block(Compiler *c);
+int desugar_enum_pair_lone_param(Compiler *c);
 void mark_sym_proc_blocks(Compiler *c);
 void enum_hop_yield_view(Compiler *c, int id, int hop);
 int desugar_to_h_block(Compiler *c);

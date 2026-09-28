@@ -116,6 +116,7 @@ static void out_add(const char *fmt, ...) {
 
 /* ---- Name from constant pool ---- */
 static const pm_parser_t *g_parser;
+static int sym_proc_block_starts_at(size_t off);
 static const char *g_source_file = "";
 static char *g_source_file_escaped = NULL;  /* escape_str(g_source_file), set once at init */
 /* Debug builds: when SPINEL_DEBUG=1, flatten() emits a per-node
@@ -1254,6 +1255,8 @@ static int flatten(pm_node_t *node) {
   case PM_BLOCK_NODE: {
     pm_block_node_t *n = (pm_block_node_t *)node;
     N("BlockNode");
+    if (sym_proc_block_starts_at((size_t)(node->location.start - g_parser->start)))
+      I("sym_proc_block", 1);
     /* Block-local variables (params + first-assigned-inside): Ruby scoping
        makes non-param locals FRESH on every block invocation; codegen needs
        the list to reset them per iteration in fused loops. */
@@ -3144,6 +3147,31 @@ static int sp_is_method_name_char(char c) {
          c == '%' || c == '[' || c == ']';
 }
 
+/* Where rewrite_syntax_sugar wrote the `{` / `do` of each block it made
+   from `&:sym`, in the buffer Prism parses: flatten marks those BlockNodes
+   (sym_proc_block), which a user's own `{ |_spx| _spx.m }` is not. The
+   offsets are recorded in increasing order. */
+static size_t *g_sym_proc_offs;
+static size_t g_sym_proc_n, g_sym_proc_cap;
+static void sym_proc_block_at(size_t off) {
+  if (g_sym_proc_n == g_sym_proc_cap) {
+    size_t nc = g_sym_proc_cap ? g_sym_proc_cap * 2 : 16;
+    size_t *no = realloc(g_sym_proc_offs, nc * sizeof(size_t));
+    if (!no) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+    g_sym_proc_offs = no; g_sym_proc_cap = nc;
+  }
+  g_sym_proc_offs[g_sym_proc_n++] = off;
+}
+static int sym_proc_block_starts_at(size_t off) {
+  size_t lo = 0, hi = g_sym_proc_n;
+  while (lo < hi) {
+    size_t mid = (lo + hi) / 2;
+    if (g_sym_proc_offs[mid] == off) return 1;
+    if (g_sym_proc_offs[mid] < off) lo = mid + 1; else hi = mid;
+  }
+  return 0;
+}
+
 static char *rewrite_syntax_sugar(char *source) {
   /* Rewrite .send(:foo, args) / .send("foo", args) → .foo(args) */
   /* Rewrite &:symbol → { |_spx| _spx.symbol } */
@@ -3656,6 +3684,7 @@ static char *rewrite_syntax_sugar(char *source) {
                            source[i] == '\n' || source[i] == '\r')) i++;
         if (i < len && source[i] == ')') i++;
         else i = after_sym;
+        sym_proc_block_at(oi + 1);
         if (unary_pfx) { OUT_STR(" { |_spx| "); OUT_STR(unary_pfx); OUT_STR("_spx"); }
         else { OUT_STR(" { |_spx| _spx.");
           { size_t k; for (k = 0; k < name_len; k++) OUT_CHAR(source[ns + k]); } }
@@ -3676,6 +3705,7 @@ static char *rewrite_syntax_sugar(char *source) {
         if (i < len && source[i] == ')') {
           i++;
           OUT_CHAR(')');
+          sym_proc_block_at(oi + 1);
           if (unary_pfx) { OUT_STR(" { |_spx| "); OUT_STR(unary_pfx); OUT_STR("_spx"); }
           else { OUT_STR(" { |_spx| _spx.");
             { size_t k; for (k = 0; k < name_len; k++) OUT_CHAR(source[ns + k]); } }
@@ -3683,6 +3713,7 @@ static char *rewrite_syntax_sugar(char *source) {
         }
 else {
           i = after_sym;
+          sym_proc_block_at(oi + 1);
           if (unary_pfx) { OUT_STR(" do |_spx| "); OUT_STR(unary_pfx); OUT_STR("_spx"); }
           else { OUT_STR(" do |_spx| _spx.");
             { size_t k; for (k = 0; k < name_len; k++) OUT_CHAR(source[ns + k]); } }
@@ -3692,6 +3723,7 @@ else {
       }
       /* Command-position sole arg (`m &:s`): the brace binds as a
          block (no comma precedes it). */
+      sym_proc_block_at(oi + 1);
       OUT_STR(" { |_spx| _spx.");
       { size_t k; for (k = 0; k < name_len; k++) OUT_CHAR(source[ns + k]); }
       OUT_STR(" }");

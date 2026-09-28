@@ -6173,12 +6173,14 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
   return changed;
 }
 
-/* `&:m` reaches here as `{ |_spx| _spx.m }` (spinel_parse.c). The block
-   is marked with m before a desugar rewrites the call (`_spx.first` ->
-   `_spx[0]`), for the shapes below that pass it a second value. */
+/* `&:m` reaches here as `{ |_spx| _spx.m }`, a block spinel_parse.c marks
+   sym_proc_block (a user's own block spelled the same is not one). The
+   block is marked with m before a desugar rewrites the call (`_spx.first`
+   -> `_spx[0]`), for the shapes below that pass it a second value. */
 void mark_sym_proc_blocks(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   NT_FOREACH_KIND(nt, NK_BlockNode, blk) {
+    if (!nt_int(nt, blk, "sym_proc_block", 0)) continue;
     int bp = nt_ref(nt, blk, "parameters");
     int pn = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
     if (pn < 0) continue;
@@ -6220,10 +6222,14 @@ static int sym_proc_call2(BsB *b, const char *mn, int second) {
   return second < 0 ? -1 : call;
 }
 
-/* `&:m` over a chain whose source the analysis sees yielding two values
-   (bs_enum_yield_count) calls m on the first with the second as its
-   argument: { |_spx, __spx1| _spx.m(__spx1) }. */
-int desugar_enum_pair_sym_block(Compiler *c) {
+/* Over a chain whose source the analysis sees yielding two values
+   (bs_enum_yield_count), a block of one parameter takes the first value,
+   as CRuby binds two yielded values to `|a|`, `_1` or `it`; the chain
+   emitters bind a lone parameter to the packed pair. The block takes the
+   second value as a parameter of its own: { |a, __spx1| }. `&:m` also
+   calls m on the first with the second as its argument:
+   { |_spx, __spx1| _spx.m(__spx1) }. */
+int desugar_enum_pair_lone_param(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
   int changed = 0;
@@ -6235,23 +6241,47 @@ int desugar_enum_pair_sym_block(Compiler *c) {
     if (recv < 0 || blk < 0 || !nm || nt_kind(nt, blk) != NK_BlockNode) continue;
     int args = nt_ref(nt, id, "arguments");
     int argc = 0; if (args >= 0) nt_arr(nt, args, "arguments", &argc);
-    if (argc) continue;
-    const char *mn = sym_proc_block_name(nt, blk);
+    int bp = nt_ref(nt, blk, "parameters");
+    if (argc || bp < 0) continue;
+    int numbered = nt_kind(nt, bp) == NK_NumberedParametersNode;
+    int pn = -1;
+    if (numbered) {
+      if (nt_int(nt, bp, "maximum", 0) != 1) continue;
+    }
+    else {
+      pn = nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
+      if (pn < 0) continue;
+      int P = 0, O = 0, Q = 0, kn = 0;
+      const int *pre = nt_arr(nt, pn, "requireds", &P);
+      nt_arr(nt, pn, "optionals", &O); nt_arr(nt, pn, "posts", &Q); nt_arr(nt, pn, "keywords", &kn);
+      if (P != 1 || O || Q || kn || nt_ref(nt, pn, "rest") >= 0 || nt_ref(nt, pn, "keyword_rest") >= 0 ||
+          nt_ref(nt, pn, "block") >= 0 || nt_kind(nt, pre[0]) != NK_RequiredParameterNode) continue;
+    }
     TyKind elem;
-    if (!mn || bs_enum_yield_count(c, recv, nm, 0, &elem) != 2) continue;
+    if (bs_enum_yield_count(c, recv, nm, 0, &elem) != 2) continue;
+    char an[48]; snprintf(an, sizeof an, "__spx1_%d", blk);
+    if (numbered) {
+      nt_node_set_int(nt, bp, "maximum", 2);
+      nt_node_set_str(nt, bp, "n2", an);
+      LocalVar *lv = scope_local_intern(comp_scope_of(c, blk), an);
+      if (lv) lv->is_block_param = 1;
+      changed = 1;
+      continue;
+    }
+    const char *mn = sym_proc_block_name(nt, blk);
     BsB b = { nt, 1 };
     int base = nt->count;
-    int pn = nt_ref(nt, nt_ref(nt, blk, "parameters"), "parameters");
     int P = 0; const int *pre = nt_arr(nt, pn, "requireds", &P);
-    char an[48]; snprintf(an, sizeof an, "__spx1_%d", blk);
     int reqs[2] = { pre[0], bs_new(&b, "RequiredParameterNode") };
     if (reqs[1] < 0) return changed;
     nt_node_set_str(nt, reqs[1], "name", an);
-    int call = sym_proc_call2(&b, mn, bs_read(&b, an));
-    int nbody = bs_stmts(&b, &call, 1);
-    if (!b.ok || nbody < 0) return changed;
+    if (mn) {
+      int call = sym_proc_call2(&b, mn, bs_read(&b, an));
+      int nbody = bs_stmts(&b, &call, 1);
+      if (!b.ok || nbody < 0) return changed;
+      nt_node_set_ref(nt, blk, "body", nbody);
+    }
     nt_node_set_arr(nt, pn, "requireds", reqs, 2);
-    nt_node_set_ref(nt, blk, "body", nbody);
     comp_grow_node_arrays(c);
     for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[blk];
     LocalVar *lv = scope_local_intern(comp_scope_of(c, blk), an);
