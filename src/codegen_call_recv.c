@@ -14581,7 +14581,8 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "sp_poly_pack("); emit_expr(c, recv, b);
     buf_puts(b, ", ");
     /* a boxed format unboxes to the const char * slot */
-    if (comp_ntype(c, argv[0]) == TY_POLY) emit_str_expr(c, argv[0], b);
+    TyKind fmt_t = comp_ntype(c, argv[0]);
+    if (fmt_t == TY_POLY || fmt_t == TY_UNKNOWN) emit_str_expr(c, argv[0], b);
     else emit_expr(c, argv[0], b);
     buf_puts(b, ")");
     return 1;

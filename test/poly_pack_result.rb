@@ -33,3 +33,9 @@ p z.pack("a3a3")
 bytes = [72, 105]
 s = bytes.map { |b| b }.pack("C*")
 p s
+
+begin
+  p x.pack(missing_format)
+rescue NameError => e
+  puts e.class
+end
