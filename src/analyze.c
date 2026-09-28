@@ -16186,6 +16186,12 @@ static int propagate_ivars_up(Compiler *c) {
    stays a real function taking it, and its block_given? asks whether it is
    NULL. Made inline-only for its block_given?, the stored `blk` named a local
    the splice never declared (Benchmark::Job#item: `@list << [label, blk]`). */
+static int scope_has_yield_node(Compiler *c, Scope *ms) {
+  for (int id = 0; id < c->nt->count; id++)
+    if (nt_kind(c->nt, id) == NK_YieldNode && comp_scope_of(c, id) == ms) return 1;
+  return 0;
+}
+
 static int blk_param_escapes(Compiler *c, Scope *ms) {
   const NodeTable *nt = c->nt;
   if (!ms || !ms->blk_param || !ms->blk_param[0] || ms->def_node < 0) return 0;
@@ -16445,8 +16451,16 @@ void analyze_program(Compiler *c) {
       const char *rty = r >= 0 ? nt_type(c->nt, r) : NULL;
       int self_or_none = r < 0 || (rty && sp_streq(rty, "SelfNode"));
       const char *nm = nt_str(c->nt, id, "name");
+      /* ...unless the method keeps its named &blk as a real parameter: it
+         stores or hands it on (blk_param_escapes), or calls itself, which no
+         inlining can terminate while the function form, the proc forwarded
+         down the recursion, is plain C recursion (#5377). Its block_given?
+         then asks whether that parameter is NULL. */
+      Scope *bgs = comp_scope_of(c, id);
       if (self_or_none && nm && sp_streq(nm, "block_given?") &&
-          !blk_param_escapes(c, comp_scope_of(c, id))) comp_scope_of(c, id)->yields = 1;
+          !blk_param_escapes(c, bgs) &&
+          !(bgs && bgs->blk_param && bgs->blk_param[0] && !scope_has_yield_node(c, bgs) &&
+            scope_calls_itself(c, (int)(bgs - c->scopes)))) bgs->yields = 1;
     }
   }
   /* A method whose `super` lands on a yielding parent yields too. The parent
