@@ -10587,16 +10587,23 @@ static int emit_user_new_arm(Compiler *c, int id, int ci, int argc, const int *a
    sp_class_value_new_fallback, which raises NoMethodError for any other.
    Each arm runs `pre` and then passes `argc_txt` boxed arguments at
    `argv_txt`; the block is the hoisted g_ctor_blk_tmp. */
-static void emit_builtin_new_arms_text(const char *pre, const char *argc_txt, const char *argv_txt,
-                                       int rt2, int kt, int boxed, Buf *b) {
+static void emit_builtin_new_arms_text(Compiler *c, const char *pre, const char *argc_txt,
+                                       const char *argv_txt, int rt2, int kt, int boxed, Buf *b) {
   static const struct { const char *name; char kind; } bnew[] = {
     { "String", 'S' }, { "Array", 'A' }, { "Hash", 'H' }, { "Object", 'O' },
   };
   char blk[24] = "NULL";
   if (g_ctor_blk_tmp >= 0) snprintf(blk, sizeof blk, "_t%d", g_ctor_blk_tmp);
-  for (size_t k = 0; k < sizeof bnew / sizeof bnew[0]; k++)
-    buf_printf(b, "case %d: { %s_t%d = sp_builtin_class_new('%c', %s, %s, %s); } break; ",
-               builtin_class_id(bnew[k].name), pre, rt2, bnew[k].kind, argc_txt, argv_txt, blk);
+  for (size_t k = 0; k < sizeof bnew / sizeof bnew[0]; k++) {
+    buf_printf(b, "case %d: ", builtin_class_id(bnew[k].name));
+    /* a reopened builtin (`class String ... end`) names the class by its
+       own class index, and the user-class arms skip it */
+    for (int ci = 0; ci < c->nclasses; ci++)
+      if (is_builtin_reopen(c->classes[ci].name) && sp_streq(c->classes[ci].name, bnew[k].name))
+        buf_printf(b, "case %d: ", ci);
+    buf_printf(b, "{ %s_t%d = sp_builtin_class_new('%c', %s, %s, %s); } break; ",
+               pre, rt2, bnew[k].kind, argc_txt, argv_txt, blk);
+  }
   if (boxed)
     buf_printf(b, "default: { %s_t%d = sp_class_value_new_fallback(_t%d, _t%d.tag == SP_TAG_CLASS ? "
                   "sp_class_to_s(sp_unbox_class(_t%d)) : NULL, %s, %s); } ",
@@ -10607,7 +10614,8 @@ static void emit_builtin_new_arms_text(const char *pre, const char *argc_txt, co
 }
 
 /* The same, for arguments hoisted into the boxed temps `atmp`. */
-static void emit_builtin_new_arms(int argc, const int *atmp, int rt2, int kt, int boxed, Buf *b) {
+static void emit_builtin_new_arms(Compiler *c, int argc, const int *atmp, int rt2, int kt, int boxed,
+                                  Buf *b) {
   Buf ab; memset(&ab, 0, sizeof ab);
   if (argc == 0) buf_puts(&ab, "NULL");
   else {
@@ -10616,7 +10624,7 @@ static void emit_builtin_new_arms(int argc, const int *atmp, int rt2, int kt, in
     buf_puts(&ab, "}");
   }
   char nb[24]; snprintf(nb, sizeof nb, "%d", argc);
-  emit_builtin_new_arms_text("", nb, ab.p, rt2, kt, boxed, b);
+  emit_builtin_new_arms_text(c, "", nb, ab.p, rt2, kt, boxed, b);
   free(ab.p);
 }
 
@@ -10831,7 +10839,7 @@ static void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Bu
     char an[32], av[32];
     snprintf(an, sizeof an, "_t%d->len", tsa);
     snprintf(av, sizeof av, "_t%d->data", tsa);
-    emit_builtin_new_arms_text(pre.p, an, av, rt2, kt, boxed, b);
+    emit_builtin_new_arms_text(c, pre.p, an, av, rt2, kt, boxed, b);
     buf_printf(b, "} _t%d; })", rt2);
     free(spre.p); free(sv.p); free(pre.p);
   }
@@ -30033,7 +30041,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        this the seed fell out unchanged and the caller got nil, which is how
        #4417 presented: no crash, no diagnostic, a nil that only misbehaves
        later. */
-    emit_builtin_new_arms(argc, atmp, rt2, kt, 0, b);
+    emit_builtin_new_arms(c, argc, atmp, rt2, kt, 0, b);
     buf_printf(b, "} _t%d; })", rt2);
     g_ctor_blk_tmp = sv_cbt;
     free(atmp);
@@ -30117,7 +30125,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
                    ci, rt2, c->classes[ci].c_name, args9, ci);
       free(ab9.p);
     }
-    emit_builtin_new_arms(0, NULL, rt2, kt, 0, b);
+    emit_builtin_new_arms(c, 0, NULL, rt2, kt, 0, b);
     buf_printf(b, "} _t%d; })", rt2);
     g_ctor_blk_tmp = sv_cbt;
     return;
@@ -30291,7 +30299,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       emit_ctor_arm_case(c, ci, rt2, self_t, pdpre.p, ab.p ? ab.p : "", b);
       free(pdpre.p); free(ab.p);
     }
-    emit_builtin_new_arms(argc, atmp, rt2, kt, 1, b);
+    emit_builtin_new_arms(c, argc, atmp, rt2, kt, 1, b);
     buf_printf(b, "} _t%d; })", rt2);
     g_ctor_blk_tmp = sv_cbt;
     free(atmp);
