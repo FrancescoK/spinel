@@ -76,6 +76,7 @@ module IOBufferPackage
   native_method :__get_x,   [:int, :int], :any, "sp_IOBuffer_get_x"
   native_method :__set_i,   [:int, :int, :int], :int, "sp_IOBuffer_set_i"
   native_method :__set_f,   [:int, :int, :float], :int, "sp_IOBuffer_set_f"
+  native_method :__set_v,   [:int, :int, :any], :int, "sp_IOBuffer_set_v"
   native_method :__lock,    [], :self, "sp_IOBuffer_lock"
   native_method :__unlock,  [], :self, "sp_IOBuffer_unlock"
   native_method :__become_for, [:string], :self, "sp_IOBuffer_become_for"
