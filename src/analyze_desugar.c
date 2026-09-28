@@ -7134,3 +7134,35 @@ void enum_hop_yield_view(Compiler *c, int id, int hop) {
   if (lv) lv->is_block_param = 1;
   if (mn && xn) scope_local_intern(bs, xn);
 }
+
+/* `case x when 0..0.05` -- an Integer begin with a fractional Float end. The
+   integer range representation truncates the end (and the tested Float),
+   which is right for iterating `1..5.5` but wrong for matching: a `when`
+   only matches, so its range becomes the Float range it compares as. */
+int desugar_when_int_float_ranges(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  for (int w = 0; w < nt->count; w++) {
+    const char *wty = nt_type(nt, w);
+    if (!wty || !sp_streq(wty, "WhenNode")) continue;
+    int n = 0; const int *conds = nt_arr(nt, w, "conditions", &n);
+    for (int i = 0; i < n; i++) {
+      int r = conds[i];
+      if (nt_kind(nt, r) != NK_RangeNode) continue;
+      int lo = nt_ref(nt, r, "left"), hi = nt_ref(nt, r, "right");
+      if (lo < 0 || hi < 0 || nt_kind(nt, lo) != NK_IntegerNode || nt_kind(nt, hi) != NK_FloatNode) continue;
+      const char *fv = nt_content(nt, hi);
+      double d = fv ? atof(fv) : 0.0;
+      if (d == (double)(long long)d) continue;
+      long long iv = (long long)nt_int(nt, lo, "value", 0);
+      char buf[48]; snprintf(buf, sizeof buf, "%lld.0", iv);
+      int line = (int)nt_int(nt, lo, "node_line", 0), file = (int)nt_int(nt, lo, "node_file", 0);
+      nt_node_reset(nt, lo, "FloatNode");
+      nt_node_set_content(nt, lo, buf);
+      if (line) nt_node_set_int(nt, lo, "node_line", line);
+      if (file) nt_node_set_int(nt, lo, "node_file", file);
+      changed = 1;
+    }
+  }
+  return changed;
+}
