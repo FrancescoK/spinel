@@ -5549,6 +5549,7 @@ static TyKind lambda_nonlocal_return_ty(Compiler *c, int id) {
    the suffix while the positional ones were stripped (#4045). */
 static const char *param_public_name(const char *n) {
   if (!n) return n;
+  if (!strncmp(n, "__blk_kwrest", 12)) return "**";   /* name_anon_block_kwrest */
   const char *p = strstr(n, "__bp");
   if (!p) return n;
   { const char *q = p + 4;

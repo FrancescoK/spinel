@@ -401,6 +401,7 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth, QCWri
 void qualify_colliding_consts(Compiler *c);
 void qc_collect_class_writes(Compiler *c, int node, char (*path)[64], int depth, QCWrite **ws, int *n, int *cap);
 void qualify_colliding_classes(Compiler *c);
+void name_anon_block_kwrest(Compiler *c);
 void rename_shadowing_block_params(Compiler *c);
 void topup_forwarding_arity(Compiler *c);
 void expand_struct_forwarding_super(Compiler *c);

@@ -1,0 +1,49 @@
+[1, 4, {}]
+[1, 4, {z: 5}]
+[1, 0, {}]
+[1, 4, {z: 1}]
+"unknown keyword: :q"
+"missing keyword: :k"
+"unknown keyword: :q"
+"unknown keyword: :q"
+"unknown keywords: :q, :r"
+"unknown keyword: :q"
+"unknown keyword: :q"
+"unknown keyword: :q"
+"unknown keyword: :q"
+[1, {q: 1}]
+2
+[5, 1]
+3
+5
+[1, 3]
+[1, 2]
+[1, 2]
+[1, 1, {}]
+[1, 2, {z: 3}]
+{a: 1}
+1
+[1, 7]
+[[:key, :w]]
+"unknown keyword: :q"
+"missing keyword: :w"
+[10, 12]
+[10, 12]
+[11, 13]
+[[1, 0], [2, 1]]
+[[[1], 9], [[2], 9]]
+[[:a, 1, 0, 9]]
+[[10, {}], [12, {}]]
+"missing keyword: :w"
+1
+1
+7
+3
+[3, []]
+1
+1
+1
+[4]
+1
+[[:opt, :a], [:keyrest, :**]]
+[[:keyrest, :**]]

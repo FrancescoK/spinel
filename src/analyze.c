@@ -2991,6 +2991,26 @@ static void blkp_collect_destructured(const NodeTable *nt, int id, int *out, int
   blkp_collect_destructured(nt, nt_ref(nt, id, "rest"), out, n, cap);
 }
 
+/* A block's or lambda's anonymous `**` takes every keyword no named one
+   does, as a `**kw` would; named after its block, it is one to every binder
+   that builds a keyword-rest and skips the unknown-keyword check for it. */
+void name_anon_block_kwrest(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_BlockNode && nt_kind(nt, id) != NK_LambdaNode) continue;
+    int bp = nt_ref(nt, id, "parameters");
+    if (bp < 0 || nt_kind(nt, bp) != NK_BlockParametersNode) continue;
+    int pn = nt_ref(nt, bp, "parameters");
+    int kr = pn >= 0 ? nt_ref(nt, pn, "keyword_rest") : -1;
+    if (kr < 0 || nt_kind(nt, kr) != NK_KeywordRestParameterNode) continue;
+    const char *kn = nt_str(nt, kr, "name");
+    if (kn && kn[0]) continue;
+    char nm[48];
+    snprintf(nm, sizeof nm, "__blk_kwrest%d", id);
+    nt_node_set_str(nt, kr, "name", nm);
+  }
+}
+
 void rename_shadowing_block_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int n = nt->count;
@@ -16366,6 +16386,7 @@ void analyze_program(Compiler *c) {
   rename_main_singleton_defs(c);         /* def self.k beside def k -> def self.k__main1 */
   scope_numbered_block_params(c);
   desugar_define_method_keywords(c);     /* define_method(:m) { |k: 1| } -> def m(k: 1) */
+  name_anon_block_kwrest(c);
   rename_shadowing_block_params(c);
   /* `:m.to_proc.call(r, a)` -> `r.m(a)`, before the to_proc rewrite below
      turns the receiver into a fixed-arity lambda (#3097). */
@@ -17094,7 +17115,7 @@ void analyze_program(Compiler *c) {
     if (kwrest >= 0) {
       comp_sym_intern(c, "keyrest");
       const char *nm = nt_str(c->nt, kwrest, "name");
-      comp_sym_intern(c, nm ? nm : "**");
+      comp_sym_intern(c, nm && strncmp(nm, "__blk_kwrest", 12) ? nm : "**");
     }
     int bpar = nt_ref(c->nt, pn, "block");
     if (bpar >= 0) {
