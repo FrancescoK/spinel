@@ -4132,6 +4132,18 @@ static void scope_copy_params(Scope *dst, const Scope *src) {
     if (dst->pnames[p]) {
       LocalVar *lv = scope_local_intern(dst, dst->pnames[p]);
       lv->is_param = 1;
+      /* A splat / double-splat parameter is typed by construction when the
+         source scope is built (a poly array / a hash), not by any call site,
+         so nothing re-derives it for the clone: carry it over. Left UNKNOWN,
+         `*args` in a method transplanted by `extend`/`include` typed every
+         use of args as nothing and the method's return with it. */
+      if (p == src->rest_idx || p == src->kwrest_idx) {
+        for (int L = 0; L < src->nlocals; L++)
+          if (src->locals[L].name && sp_streq(src->locals[L].name, dst->pnames[p])) {
+            if (lv->type == TY_UNKNOWN) lv->type = src->locals[L].type;
+            break;
+          }
+      }
     }
   }
 }
