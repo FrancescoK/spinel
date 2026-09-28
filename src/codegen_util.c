@@ -1071,7 +1071,7 @@ static int subtree_has_param_named(const NodeTable *nt, int id, const char *nm) 
     if (pn) {
       size_t nl = strlen(nm);
       if (sp_streq(pn, nm)) return 1;
-      if (!strncmp(pn, nm, nl) && !strncmp(pn + nl, "__bp", 4)) return 1;
+      if (block_param_written_len(pn) == nl && !strncmp(pn, nm, nl)) return 1;
     }
   }
   int nr = nt_num_refs(nt, id);

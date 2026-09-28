@@ -6821,9 +6821,8 @@ void check_block_rest_support(Compiler *c) {
     if (!(ty_is_array(rt) || ty_is_hash(rt) || rt == TY_RANGE || rt == TY_INT ||
           rt == TY_ENUMERATOR || rt == TY_STRING)) continue;
     {
-      /* strip the internal __bp rename suffix from the reported param name */
-      char disp[128]; snprintf(disp, sizeof disp, "%s", rn);
-      char *bp = strstr(disp, "__bp"); if (bp) *bp = 0;
+      /* report the param as written, not the shadow rename's slot name */
+      char disp[128]; snprintf(disp, sizeof disp, "%.*s", (int)block_param_written_len(rn), rn);
       fprintf(stderr, "spinel: %s:%d: a block splat parameter (*%s) is not supported by the `%s` lowering\n",
               nt->source_file ? nt->source_file : "source.rb",
               (int)nt_int(nt, id, "node_line", 0), disp, nm);

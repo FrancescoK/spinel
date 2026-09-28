@@ -5543,20 +5543,15 @@ static TyKind lambda_nonlocal_return_ty(Compiler *c, int id) {
 /* The name a parameter shows in #parameters: a block parameter renamed to
    avoid a scope collision carries a `__bp<N>` suffix that is ours, not the
    program's (#3679). */
-/* Strip the shadow rename's `__bp<N>` suffix: `Proc#parameters` reports the
+/* Drop the suffix the shadow rename recorded: `Proc#parameters` reports the
    name the program wrote, not the slot the rename invented. EVERY parameter
    kind has to go through this -- rest, keyword, keyword-rest and block leaked
    the suffix while the positional ones were stripped (#4045). */
 static const char *param_public_name(const char *n) {
   if (!n) return n;
   if (!strncmp(n, "__blk_kwrest", 12)) return "**";   /* name_anon_block_kwrest */
-  const char *p = strstr(n, "__bp");
-  if (!p) return n;
-  { const char *q = p + 4;
-    if (!*q) return n;
-    while (*q >= '0' && *q <= '9') q++;
-    if (*q) return n; }
-  { size_t len = (size_t)(p - n);
+  if (!block_param_is_renamed(n)) return n;
+  { size_t len = block_param_written_len(n);
     static char buf[128];
     if (len >= sizeof buf) len = sizeof buf - 1;
     memcpy(buf, n, len); buf[len] = 0;
