@@ -2514,6 +2514,39 @@ static void fi_collect_calls(Compiler *c, int id, int *out, int *n, int max, int
 static int fi_reaches(Compiler *c, int from, int target, unsigned char *seen,
                       unsigned char *cand, int depth);
 
+/* A callee's parameter defaults are emitted at the call site, so a rescue or
+   a block in one of them lands in this body too (a `**h` into `new` fills
+   initialize's keyword defaults in place). `new` reaches every initialize:
+   its receiver may be a Class value. */
+static int fi_callee_defaults_unforceable(Compiler *c, int body) {
+  int calls[512]; int nc = 0;
+  int sv_trunc = g_fi_trunc;
+  g_fi_trunc = 0;
+  fi_collect_calls(c, body, calls, &nc, 512, 0);
+  int cut = g_fi_trunc;
+  g_fi_trunc = sv_trunc;
+  if (cut) return 1;
+  for (int i = 0; i < nc; i++) {
+    const char *nm = nt_str(c->nt, calls[i], "name");
+    int cal[32]; int n2 = 0;
+    if (nm && sp_streq(nm, "new")) {
+      for (int si = 0; si < c->nscopes; si++) {
+        Scope *m = &c->scopes[si];
+        if (!m->name || m->is_cmethod || !sp_streq(m->name, "initialize")) continue;
+        if (n2 >= 32) return 1;
+        cal[n2++] = si;
+      }
+    }
+    else fi_callees(c, calls[i], cal, &n2, 32);
+    for (int k = 0; k < n2; k++) {
+      Scope *cs = &c->scopes[cal[k]];
+      for (int q = 0; cs->pdefault && q < cs->nparams; q++)
+        if (cs->pdefault[q] >= 0 && fi_body_unforceable(c, cs->pdefault[q], 0)) return 1;
+    }
+  }
+  return 0;
+}
+
 /* The methods whose defaults one search has walked (see fi_defaults_reach) */
 static unsigned char *g_fi_dseen;
 
@@ -2674,6 +2707,7 @@ static void fi_build(Compiler *c) {
     g_mih_limit_override = sv; g_mih_callers_override = sv2;
     if (!ok) continue;
     if (fi_body_unforceable(c, m->body, 0)) continue;
+    if (fi_callee_defaults_unforceable(c, m->body)) continue;
     if (fi_body_has_loop(c, m->body, 0)) continue;
     /* A default moved into a method of its own (#4900) calls back into the
        method whose default it is, and that call emits the default -- a call
