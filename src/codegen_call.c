@@ -247,15 +247,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   int din = g_indent + 1;
 
   /* declare the initialize body's locals under renamed names */
-  for (int i = 0; i < m->nlocals; i++) {
-    LocalVar *lv = &m->locals[i];
-    if (m->blk_param && lv->name && sp_streq(lv->name, m->blk_param)) continue;
-    snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", lv->name);
-    snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_y%d_%s", tag, lv->name);
-    const char *rn = g_ren_to[g_nren];
-    g_nren++;
-    emit_inlined_local_decl(c, lv, rn, b, din);
-  }
+  emit_inlined_locals(c, m, tag, b, din);
 
   /* bind params to the call args (call-site scope: renames off) */
   int args = nt_ref(nt, id, "arguments");

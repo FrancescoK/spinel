@@ -5637,6 +5637,18 @@ void emit_inlined_local_decl(Compiler *c, LocalVar *lv, const char *rn, Buf *b, 
   buf_puts(b, ";\n");
 }
 
+void emit_inlined_locals(Compiler *c, Scope *m, int tag, Buf *b, int din) {
+  for (int i = 0; i < m->nlocals; i++) {
+    LocalVar *lv = &m->locals[i];
+    if (m->blk_param && lv->name && sp_streq(lv->name, m->blk_param)) continue;
+    snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", lv->name);
+    snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_y%d_%s", tag, lv->name);
+    const char *rn = g_ren_to[g_nren];
+    g_nren++;
+    emit_inlined_local_decl(c, lv, rn, b, din);
+  }
+}
+
 static void emit_proc_literal_here(Compiler *c, int create, Buf *b);
 
 /* The block an inline spliced in (g_block_id) is caller code: it runs under the
@@ -8876,15 +8888,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   else { emit_indent(b, indent); buf_puts(b, "{\n"); }
   int din = indent + 1;
 
-  for (int i = 0; i < m->nlocals; i++) {
-    LocalVar *lv = &m->locals[i];
-    if (m->blk_param && lv->name && sp_streq(lv->name, m->blk_param)) continue;
-    snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", lv->name);
-    snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_y%d_%s", tag, lv->name);
-    const char *rn = g_ren_to[g_nren];
-    g_nren++;
-    emit_inlined_local_decl(c, lv, rn, b, din);
-  }
+  emit_inlined_locals(c, m, tag, b, din);
 
   const char *ty = nt_type(c->nt, id);
   int is_forwarding = ty && sp_streq(ty, "ForwardingSuperNode");
