@@ -1575,6 +1575,16 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        sp_streq(name, "squeeze")) &&
       !an_user_defines_or_reads(c, name))
     { *out = TY_STRING; return 1; }
+  /* poly.pack(fmt): the emitter's sp_poly_pack answers a String whatever array
+     kind the box holds. Untyped, the call was nil and the packed string was
+     dropped. A user object as the format is left untyped, as the emitter
+     leaves it to the user dispatch (#4319). */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      sp_streq(name, "pack") && !an_user_defines_or_reads(c, name)) {
+    TyKind fmt_t = infer_type(c, argv[0]);
+    if (fmt_t == TY_STRING || fmt_t == TY_POLY || fmt_t == TY_UNKNOWN)
+      { *out = TY_STRING; return 1; }
+  }
   /* The String-only surface on a boxed receiver: the names no other class
      answers, so the result type is the one the typed String path gives. Names
      Array or Enumerable share (index, count, sum) stay untyped here and go

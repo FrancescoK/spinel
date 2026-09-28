@@ -14589,7 +14589,12 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "pack") && argc == 1 &&
       !user_defines_or_reads(c, name)) {
     buf_puts(b, "sp_poly_pack("); emit_expr(c, recv, b);
-    buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+    buf_puts(b, ", ");
+    /* a boxed format unboxes to the const char * slot */
+    TyKind fmt_t = comp_ntype(c, argv[0]);
+    if (fmt_t == TY_POLY || fmt_t == TY_UNKNOWN) emit_str_expr(c, argv[0], b);
+    else emit_expr(c, argv[0], b);
+    buf_puts(b, ")");
     return 1;
   }
   /* poly receiver: delete(chars) -> String#delete on the unboxed payload.
