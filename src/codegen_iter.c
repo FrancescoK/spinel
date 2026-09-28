@@ -272,21 +272,9 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
     /* call-site code, like each argument below: this inline's renames are
        off, and an inlined call inside a splat operand pushes its own at this
        depth, so the entries are parked across the gather */
-    int sv0 = g_nren, park_n = sv0 - saved_nren;
-    char (*park_f)[96] = park_n > 0 ? malloc(sizeof(char[96]) * (size_t)park_n) : NULL;
-    char (*park_t)[112] = park_n > 0 ? malloc(sizeof(char[112]) * (size_t)park_n) : NULL;
-    if (park_f && park_t) {
-      memcpy(park_f, g_ren_from + saved_nren, sizeof(char[96]) * (size_t)park_n);
-      memcpy(park_t, g_ren_to + saved_nren, sizeof(char[112]) * (size_t)park_n);
-    }
-    g_nren = saved_nren;
+    RenPark park = ren_park(saved_nren);
     gather_tmp = emit_splat_gather(c, m, argv, pos_argc);
-    g_nren = sv0;
-    if (park_f && park_t) {
-      memcpy(g_ren_from + saved_nren, park_f, sizeof(char[96]) * (size_t)park_n);
-      memcpy(g_ren_to + saved_nren, park_t, sizeof(char[112]) * (size_t)park_n);
-    }
-    free(park_f); free(park_t);
+    ren_unpark(&park);
   }
   for (int i = 0; i < m->nparams; i++) {
     emit_indent(b, din);
@@ -299,7 +287,6 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
        are renamed (nested yield-method inlines) -- zeroing the whole
        table emitted the unrenamed lv_<name> (undeclared identifier, or a
        silent capture of a same-named caller local). */
-    int sv = g_nren;
     /* The argument expression is call-site code, so the callee's renames are
        switched off for it. A nested inline INSIDE that expression pushes its
        own entries at this very depth and overwrites the callee's, so restoring
@@ -307,18 +294,7 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
        emitted the unrenamed `lv_<name>` for whatever had been clobbered, which
        nothing declares (#3943). Park the entries across the argument, not just
        the count. */
-    int park_n = sv - saved_nren;
-    char (*park_f)[96] = NULL; char (*park_t)[112] = NULL;
-    if (park_n > 0) {
-      park_f = (char (*)[96])malloc(sizeof(char[96]) * (size_t)park_n);
-      park_t = (char (*)[112])malloc(sizeof(char[112]) * (size_t)park_n);
-      if (park_f && park_t) {
-        memcpy(park_f, g_ren_from + saved_nren, sizeof(char[96]) * (size_t)park_n);
-        memcpy(park_t, g_ren_to + saved_nren, sizeof(char[112]) * (size_t)park_n);
-      }
-      else { free(park_f); free(park_t); park_f = NULL; park_t = NULL; }
-    }
-    g_nren = saved_nren;
+    RenPark park = ren_park(saved_nren);
     if (fwd_encl && i < fwd_encl->nparams) {
       LocalVar *ep = scope_local(fwd_encl, fwd_encl->pnames[i]);
       LocalVar *mp = scope_local(m, m->pnames[i]);
@@ -390,12 +366,7 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
       else
         emit_arg_or_default(c, m, i, kv, b);
     }
-    g_nren = sv;
-    if (park_f && park_t) {
-      memcpy(g_ren_from + saved_nren, park_f, sizeof(char[96]) * (size_t)park_n);
-      memcpy(g_ren_to + saved_nren, park_t, sizeof(char[112]) * (size_t)park_n);
-    }
-    free(park_f); free(park_t);
+    ren_unpark(&park);
     buf_puts(b, ";\n");
   }
   g_n_argov = argov_saved;
