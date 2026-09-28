@@ -6113,6 +6113,11 @@ static int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *
       return 0;
   TyKind bt = (c->poly_builtin_ty && id < c->node_cap)
                 ? c->poly_builtin_ty[id] : TY_UNKNOWN;
+  /* `to_s` / `inspect` answer a String on every builtin receiver, with or
+     without an argument (Integer#to_s(base)); the analysis types them by the
+     object protocol and never records the builtin answer. */
+  if (bt == TY_UNKNOWN && argc <= 1 && (sp_streq(name, "to_s") || sp_streq(name, "inspect")))
+    bt = TY_STRING;
   if (bt == TY_UNKNOWN) return 0;
   if (ret != TY_POLY && bt != ret) return 0;
   int slot = g_n_argov++;
