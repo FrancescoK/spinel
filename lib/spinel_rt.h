@@ -12731,6 +12731,26 @@ static sp_Enumerator *sp_Enumerator_new_cycle(sp_RbVal arr, sp_int n) {
     for (sp_int i = 0; i < len; i++) sp_PolyArray_push(out, items->data[i]);
   { sp_Enumerator *e = sp_Enumerator_new_from_items(out); e->source = arr; return e; }
 }
+/* blockless cycle(n) on a boxed receiver: an Array's, a Hash's, an Integer
+   or String Range's or an Enumerator's items repeated n times, the
+   Enumerator the typed arms build; anything else raises NoMethodError
+   naming cycle. */
+/* cycle(n)'s count where the compiler types it anything but Integer: the
+   conversion of an Integer argument (sp_poly_arg_int_chk), and the
+   RangeError CRuby raises for a Bignum, which no count can be. */
+static sp_int sp_poly_cycle_count(sp_RbVal n) {
+  if (n.tag == SP_TAG_BIGINT) sp_raise_cls("RangeError", "bignum too big to convert into 'long'");
+  return sp_poly_arg_int_chk(n);
+}
+static sp_Enumerator *sp_poly_cycle_n(sp_RbVal v, sp_int n) {
+  if (v.tag == SP_TAG_OBJ &&
+      (sp_poly_is_array_kind(v.cls_id) || sp_poly_is_hash_kind(v.cls_id) ||
+       v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE ||
+       (v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p)))
+    return sp_Enumerator_new_cycle(v, n);
+  sp_raise_nomethod(sp_nomethod_msg("cycle", v));
+  return NULL;
+}
 /* slice_before/slice_after with a pattern VALUE: start a new group before
    (after) each element == pattern. Groups are poly arrays. */
 /* Generic `pattern === element` on boxed values (#2847): a Class pattern
