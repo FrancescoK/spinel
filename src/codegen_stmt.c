@@ -7364,6 +7364,19 @@ static int emit_empty_literal_as(Compiler *c, int v, TyKind slot, Buf *b) {
     buf_printf(b, "sp_%sHash_new()", hcn);
     return 1;
   }
+  /* a bare `Array.new` / `Hash.new` is as empty as the literal */
+  if (sp_streq(vty, "CallNode") && node_is_empty_container(nt, v)) {
+    const char *rn = nt_str(nt, nt_ref(nt, v, "receiver"), "name");
+    if (rn && sp_streq(rn, "Hash") && ty_is_hash(slot) && ty_hash_cname(slot)) {
+      buf_printf(b, "sp_%sHash_new()", ty_hash_cname(slot));
+      return 1;
+    }
+    if (rn && sp_streq(rn, "Array")) {
+      if (ty_is_ptr_array(slot))   { buf_puts(b, "sp_PtrArray_new()");  return 1; }
+      if (slot == TY_POLY_ARRAY)   { buf_puts(b, "sp_PolyArray_new()"); return 1; }
+      if (array_kind(slot)) { buf_printf(b, "sp_%sArray_new()", array_kind(slot)); return 1; }
+    }
+  }
   return 0;
 }
 

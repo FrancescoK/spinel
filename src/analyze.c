@@ -10476,6 +10476,7 @@ static void mark_mixed_key_hash_locals(Compiler *c) {
   for (int id = 0; id < nt->count; id++) {
     if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
     int val = nt_ref(nt, id, "value");
+    { int fb = an_or_empty_hash_fallback(c, val); if (fb >= 0) val = fb; }
     const char *vt = val >= 0 ? nt_type(nt, val) : NULL;
     int hash_new = 0;
     if (vt && sp_streq(vt, "CallNode") && nt_str(nt, val, "name") &&
@@ -10541,6 +10542,18 @@ static void mark_mixed_key_hash_locals(Compiler *c) {
    that key selects, instead of the StrPolyHash fallback that would coerce a
    Symbol key to a String (#3028) or emit ill-typed C for an Integer one
    (#3029). Values stay poly: the empty literal says nothing about them. */
+/* The empty hash a slot write stores when its value is `{}` itself or the
+   nil-guard fallback `x || {}` / `x || Hash.new`, else -1. */
+static int empty_hash_write_lit(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (v < 0) return -1;
+  if (nt_kind(nt, v) == NK_HashNode) {
+    int en = 0; nt_arr(nt, v, "elements", &en);
+    return en == 0 ? v : -1;
+  }
+  return an_or_empty_hash_fallback(c, v);
+}
+
 static int mark_empty_hash_key_ctx(Compiler *c) {
   int changed = 0;
   if (!c->hash_want) return 0;
@@ -10713,10 +10726,8 @@ static int mark_empty_hash_key_ctx(Compiler *c) {
         const char *wn = nt_str(nt, w, "name");
         Scope *ws = comp_scope_of(c, w);
         if (!wn || !sp_streq(wn, ivn) || !ws || ws->class_id != rcid) continue;
-        int wv = nt_ref(nt, w, "value");
-        if (wv < 0 || wv >= c->node_cap || nt_kind(nt, wv) != NK_HashNode) continue;
-        int en2 = 0; nt_arr(nt, wv, "elements", &en2);
-        if (en2 != 0) continue;
+        int wv = empty_hash_write_lit(c, nt_ref(nt, w, "value"));
+        if (wv < 0 || wv >= c->node_cap) continue;
         /* An earlier context won -- unless THIS one is the poly-keyed variant.
            The key sites can disagree (`@h[k] = v` where k is a block param of
            a poly iteration reads as poly on one round and as the default
@@ -10753,21 +10764,27 @@ static int mark_empty_hash_key_ctx(Compiler *c) {
       changed = 1;
       break;
     }
-    if (!local_all_writes_empty_hash(c, sc, ln)) continue;
     /* Walk only the writes of local `ln` in this scope (index bucket) rather
        than rescanning the whole table per read site (see the ivar case). */
     int si = (int)(sc - c->scopes);
-    for (int r = lw_shared_first(c, ln, si); r >= 0; r = lw_shared_next(r)) {
-      int w = lw_shared_node(r);
-      if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
-      const char *wn = nt_str(nt, w, "name");
-      if (!wn || !sp_streq(wn, ln) || comp_scope_of(c, w) != sc) continue;
-      int wv = nt_ref(nt, w, "value");
-      if (wv >= 0 && wv < c->node_cap && nt_kind(nt, wv) == NK_HashNode &&
-          !ty_is_hash(c->hash_want[wv])) {
-        c->hash_want[wv] = want;
-        changed = 1;
+    int all_empty = 0;
+    for (int pass = 0; pass < 2; pass++) {
+      for (int r = lw_shared_first(c, ln, si); r >= 0; r = lw_shared_next(r)) {
+        int w = lw_shared_node(r);
+        if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+        const char *wn = nt_str(nt, w, "name");
+        if (!wn || !sp_streq(wn, ln) || comp_scope_of(c, w) != sc) continue;
+        int wv = empty_hash_write_lit(c, nt_ref(nt, w, "value"));
+        if (pass == 0) {
+          if (wv < 0) { all_empty = 0; break; }
+          all_empty = 1;
+        }
+        else if (wv < c->node_cap && !ty_is_hash(c->hash_want[wv])) {
+          c->hash_want[wv] = want;
+          changed = 1;
+        }
       }
+      if (!all_empty) break;
     }
   }
   free((void *)tp_name);
@@ -10928,6 +10945,7 @@ static int widen_mixed_key_hash_slots(Compiler *c) {
   for (size_t vk = 0; ns > 0 && vk < sizeof(vkinds) / sizeof(vkinds[0]); vk++) {
     NT_FOREACH_KIND(nt, vkinds[vk], id) {
       int val = nt_ref(nt, id, "value");
+      { int fb = an_or_empty_hash_fallback(c, val); if (fb >= 0) val = fb; }
       if (val < 0 || val >= c->node_cap || c->hash_want[val] == TY_POLY_POLY_HASH) continue;
       NodeKind vkd = nt_kind(nt, val);
       if (vkd == NK_CallNode) {
