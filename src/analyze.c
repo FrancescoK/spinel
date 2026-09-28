@@ -917,6 +917,21 @@ int a_block_is_lifted(Compiler *c, int id) {
         if (mi < 0) mi = comp_cmethod_in_chain(c, self->class_id, name, NULL);
       }
     }
+    /* self may be an instance of a subclass whose override of the method
+       takes the block (a Phlex component's view_template): the call then
+       dispatches on the runtime class and the block becomes a real proc,
+       which needs cells for what it captures even when the method resolved
+       here ignores its block (#5381). A spurious cell is only a missed
+       optimization. */
+    Scope *sself = comp_scope_of(c, id);
+    if (sself && sself->class_id >= 0 && !sself->is_cmethod) {
+      for (int k = 0; k < c->nclasses; k++) {
+        if (k == sself->class_id || !is_descendant(c, k, sself->class_id)) continue;
+        int mk = comp_method_in_chain(c, k, name, NULL);
+        if (mk < 0 || mk == mi) continue;
+        if (c->scopes[mk].yields || (c->scopes[mk].blk_param && c->scopes[mk].blk_param[0])) return 1;
+      }
+    }
   }
 else {
     const char *rty = nt_type(nt, recv);
