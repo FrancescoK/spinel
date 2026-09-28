@@ -2937,6 +2937,7 @@ int infer_write_types(Compiler *c) {
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
     int recv, kt = TY_UNKNOWN, vt = TY_UNKNOWN, is_push = 0, is_idx_write = 0, is_splice = 0;
+    int is_merge = 0;  /* merge!/update: kt and vt are the merged hashes' */
     /* the value arguments of a push/unshift/insert, each its own evidence */
     const int *elem_argv = NULL;
     int elem_from = 0, elem_an = 0, elem_splat_index = 0;
@@ -3078,6 +3079,7 @@ int infer_write_types(Compiler *c) {
           vt = ty_unify(vt, ty_hash_val(mai));
         }
         if (!is_idx_write) continue;
+        is_merge = 1;
       }
       else if (name && sp_streq(name, "[]=") && an == 3) {
         /* a[start, len] = rhs: a splice over the (start, len) span */
@@ -3263,9 +3265,11 @@ int infer_write_types(Compiler *c) {
            binding to check each caller's container against; an Integer key
            indexes an array as a push appends to one. A boxed key or value
            is exempt, as it is for a typed parameter. */
+        /* A merged hash's boxed keys or values are of kinds nothing here
+           knows, not one boxed value the setter converts: evidence. */
         if (is_idx_write && !is_push && !is_splice && lv->type == TY_POLY) {
-          if (vt == TY_UNKNOWN || vt == TY_POLY) continue;
-          int hkey = kt != TY_UNKNOWN && kt != TY_POLY;
+          if (vt == TY_UNKNOWN || (vt == TY_POLY && !is_merge)) continue;
+          int hkey = kt != TY_UNKNOWN && (kt != TY_POLY || is_merge);
           TyKind *ev[3] = { hkey ? &lv->boxed_store_key : NULL, hkey ? &lv->boxed_store_val : NULL,
                             (kt == TY_INT || kt == TY_POLY) ? &lv->boxed_push_elem : NULL };
           TyKind got[3] = { kt, vt, vt };
@@ -3283,8 +3287,8 @@ int infer_write_types(Compiler *c) {
            exempt, as it is for an ivar's hash: the typed setter converts it. */
         if (is_idx_write && !is_push && !is_splice && ty_is_hash(lv->type) &&
             lv->type != TY_POLY_POLY_HASH) {
-          TyKind hkt = kt == TY_POLY ? ty_hash_key(lv->type) : kt;
-          TyKind hvt = vt == TY_POLY ? ty_hash_val(lv->type) : vt;
+          TyKind hkt = kt == TY_POLY && !is_merge ? ty_hash_key(lv->type) : kt;
+          TyKind hvt = vt == TY_POLY && !is_merge ? ty_hash_val(lv->type) : vt;
           if (hkt == TY_UNKNOWN || hvt == TY_UNKNOWN) continue;
           TyKind folded = lv->type;
           int fits = fold_container_evidence(&folded, 0, 0, hkt, hvt);
