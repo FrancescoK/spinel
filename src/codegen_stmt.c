@@ -2393,6 +2393,19 @@ void emit_pm_eq(Compiler *c, int t, TyKind pt, int valnode, Buf *b) {
   else if (pt == TY_STRING) {
     buf_printf(b, "sp_str_eq(_t%d, ", t); emit_expr(c, valnode, b); buf_puts(b, ")");
   }
+  /* an Array, a Hash or a Bignum subject is matched by the value's ===,
+     which for those is ==, not by the pointers both sides hold; the value
+     is rooted across the comparison, whose == may allocate */
+  else if (ty_is_array(pt) || ty_is_hash(pt) || pt == TY_BIGINT) {
+    char sn[24]; snprintf(sn, sizeof sn, "_t%d", t);
+    int tp = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tp);
+    if (comp_ntype(c, valnode) != TY_POLY) emit_boxed(c, valnode, b);
+    else emit_expr(c, valnode, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_poly_eq(", tp);
+    emit_boxed_text(c, pt, sn, b);
+    buf_printf(b, ", _t%d); })", tp);
+  }
   else {
     buf_printf(b, "(_t%d == ", t);
     if (comp_ntype(c, valnode) == TY_POLY) {
