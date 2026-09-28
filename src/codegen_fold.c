@@ -7161,6 +7161,12 @@ int emit_splat_gather(Compiler *c, Scope *m, const int *argv, int pos_argc) {
     }
     free(ab.p);
   }
+  emit_gather_arity_check(c, m, ct);
+  return ct;
+}
+
+/* Refuse a gathered positional count the parameters cannot take. */
+void emit_gather_arity_check(Compiler *c, Scope *m, int ct) {
   int pos_required = 0, pos_params = 0;
   positional_arity(c, m, &pos_required, &pos_params);
   if (m->rest_idx >= 0) {
@@ -7168,7 +7174,7 @@ int emit_splat_gather(Compiler *c, Scope *m, const int *argv, int pos_argc) {
     buf_printf(g_pre,
                "if (_t%d->len < %d) sp_raise_cls(\"ArgumentError\", sp_sprintf(\"wrong number of arguments (given %%lld, expected %d+)\", (long long)_t%d->len));\n",
                ct, pos_required, pos_required, ct);
-    return ct;
+    return;
   }
   char expbuf[48];
   if (pos_required == pos_params) snprintf(expbuf, sizeof expbuf, "expected %d", pos_params);
@@ -7177,7 +7183,6 @@ int emit_splat_gather(Compiler *c, Scope *m, const int *argv, int pos_argc) {
   buf_printf(g_pre,
              "if (_t%d->len < %d || _t%d->len > %d) sp_raise_cls(\"ArgumentError\", sp_sprintf(\"wrong number of arguments (given %%lld, %s)\", (long long)_t%d->len));\n",
              ct, pos_required, ct, pos_params, expbuf, ct);
-  return ct;
 }
 
 /* The inlined yield path binds parameters one by one from the argument

@@ -508,7 +508,11 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
    emit_args_filled's gather). */
 int inline_splat_gather_applies(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh);
 int emit_splat_gather(Compiler *c, Scope *m, const int *argv, int pos_argc);
+void emit_gather_arity_check(Compiler *c, Scope *m, int ct);
 void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out);
+void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, int argc,
+                             int splat_gather, unsigned alias_mask, int tag, int saved_nren,
+                             int din, Buf *b);
 /* A splat operand whose static type is nil or a scalar: Ruby spreads nil to
    nothing and any of the others to itself. */
 int splat_operand_is_scalar(TyKind t);
