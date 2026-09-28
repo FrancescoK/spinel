@@ -12846,6 +12846,16 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       else if (vt == TY_POLY && et == TY_STRING) { buf_puts(b, "sp_poly_elem_s("); emit_expr(c, argv[a], b); buf_puts(b, ")"); }
       else if (vt == TY_POLY && et == TY_INT) { buf_puts(b, "sp_poly_elem_i("); emit_expr(c, argv[a], b); buf_puts(b, ")"); }
       else if (vt == TY_POLY && et == TY_FLOAT) { buf_puts(b, "sp_poly_elem_f("); emit_expr(c, argv[a], b); buf_puts(b, ")"); }
+      /* an Array, a Hash or an object into an Integer, Float or String
+         array: refused at run time, as a boxed one is (sp_raise_typed_elem).
+         Passed raw, the pointer did not compile -- an arm of a dynamic send
+         over a typed block parameter (`two { |a, b| a.send(s, b) }` with a
+         `:push` anywhere in the program) reached here. */
+      else if ((et == TY_INT || et == TY_FLOAT || et == TY_STRING) &&
+               (ty_is_array(vt) || ty_is_obj_array(vt) || ty_is_hash(vt) || ty_is_object(vt))) {
+        buf_puts(b, et == TY_INT ? "sp_poly_elem_i(" : et == TY_FLOAT ? "sp_poly_elem_f(" : "sp_poly_elem_s(");
+        emit_boxed(c, argv[a], b); buf_puts(b, ")");
+      }
       /* A shared-mutable string (#3227) reads as its sp_String* handle. A
          typed array's element slot is a plain const char*, so the handle has
          to be spent here -- pushed raw it went in as a struct pointer that the

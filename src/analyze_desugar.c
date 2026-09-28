@@ -584,6 +584,9 @@ int desugar_int_enum_with_index(Compiler *c) {
   return changed;
 }
 
+/* reduce(&pr) -> reduce { |a, b| pr.call(a, b) }, and so for the comparators
+   sort, sort!, min, max and minmax, whose emitters read a block's body too
+   and ran a Proc block argument as if no block were given. */
 int desugar_reduce_proc_arg(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -591,7 +594,9 @@ int desugar_reduce_proc_arg(Compiler *c) {
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || (!sp_streq(nm, "reduce") && !sp_streq(nm, "inject"))) continue;
+    if (!nm || (!sp_streq(nm, "reduce") && !sp_streq(nm, "inject") && !sp_streq(nm, "sort") &&
+                !sp_streq(nm, "sort!") && !sp_streq(nm, "min") && !sp_streq(nm, "max") &&
+                !sp_streq(nm, "minmax"))) continue;
     if (nt_ref(nt, id, "receiver") < 0) continue;
     int blk = nt_ref(nt, id, "block");
     if (blk < 0 || nt_kind(nt, blk) != NK_BlockArgumentNode) continue;
@@ -609,6 +614,13 @@ int desugar_reduce_proc_arg(Compiler *c) {
                           sp_streq(exty, "InstanceVariableReadNode") ||
                           sp_streq(exty, "LambdaNode"));
     if (!simple || infer_type(c, ex) != TY_PROC) continue;
+    /* the method's own `&b` handed on is nil when its caller gave no block,
+       and a comparator then compares by <=>: the forward keeps it */
+    if (!sp_streq(nm, "reduce") && !sp_streq(nm, "inject") && nt_kind(nt, ex) == NK_LocalVariableReadNode) {
+      Scope *es = comp_scope_of(c, ex);
+      const char *en = nt_str(nt, ex, "name");
+      if (es && es->blk_param && en && sp_streq(es->blk_param, en)) continue;
+    }
 
     int base = nt->count;
     char pn[2][40]; int reqs[2], reads[2];
@@ -6246,15 +6258,130 @@ static int sym_proc_call2(BsB *b, const char *recv, const char *mn, int second) 
   return second < 0 ? -1 : call;
 }
 
+/* The values the body under `node` passes its method's block, as every
+   `yield` and every call of the `&b` named `bpn` agree (-1 when none is
+   there yet); -2 when two disagree, one spreads a splat, or `b` is read for
+   anything but a call. `*calls` counts those calls, `*reads` every read of b. */
+static int block_values_in(const NodeTable *nt, int node, const char *bpn, int n, int *calls, int *reads) {
+  if (node < 0 || node >= nt->count || n == -2) return n;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return n;
+  int args = -2;
+  if (k == NK_YieldNode) args = nt_ref(nt, node, "arguments");
+  else if (bpn && k == NK_LocalVariableReadNode && sp_streq(nt_str(nt, node, "name"), bpn)) (*reads)++;
+  else if (bpn && k == NK_CallNode) {
+    int r = nt_ref(nt, node, "receiver");
+    const char *cn = nt_str(nt, node, "name");
+    if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && sp_streq(nt_str(nt, r, "name"), bpn) &&
+        cn && (sp_streq(cn, "call") || sp_streq(cn, "yield") || sp_streq(cn, "()") || sp_streq(cn, "[]"))) {
+      (*calls)++;
+      args = nt_ref(nt, node, "arguments");
+    }
+  }
+  if (args != -2) {
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    for (int j = 0; j < an; j++) {
+      NodeKind ak = nt_kind(nt, av[j]);
+      const char *aty = nt_type(nt, av[j]);
+      if (ak == NK_SplatNode || ak == NK_BlockArgumentNode ||
+          (aty && sp_streq(aty, "ForwardingArgumentsNode"))) return -2;
+    }
+    if (n >= 0 && n != an) return -2;
+    n = an;
+  }
+  const SpNode *nd = &nt->nodes[node];
+  for (int j = 0; j < nd->nr; j++) n = block_values_in(nt, nd->r[j].ref, bpn, n, calls, reads);
+  for (int j = 0; j < nd->na; j++)
+    for (int q = 0; q < nd->a[j].n; q++) n = block_values_in(nt, nd->a[j].ids[q], bpn, n, calls, reads);
+  return n;
+}
+
+/* For a call `id` of a method of the program, how many values it passes its
+   block when that is more than one and its body agrees on it, else 0; -1
+   when the call reaches no method of the program. */
+static int user_block_values(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  if (nt_kind(nt, id) != NK_CallNode || (nm && strncmp(nm, "__enum_", 7) == 0)) return -1;
+  int mi = backprop_call_target(c, id);
+  if (mi < 0 || mi >= c->nscopes) return -1;
+  const Scope *ms = &c->scopes[mi];
+  const char *bpn = ms->blk_param;
+  if (bpn && !*bpn) return 0;   /* an anonymous `&` is only handed on */
+  int calls = 0, reads = 0;
+  int n = block_values_in(nt, ms->def_node >= 0 ? nt_ref(nt, ms->def_node, "body") : -1,
+                          bpn, -1, &calls, &reads);
+  return n >= 2 && n <= 8 && reads == calls ? n : 0;
+}
+
+/* How many values the call `id` passes a Symbol's block, when it is more
+   than one, so that the block sends the rest to the first, as Symbol#to_proc
+   does; 0 otherwise. A method of the program passes what its body yields, or
+   hands its `&b`, when every such site agrees. A builtin iterator passes two
+   when it calls its block with an accumulator and the element, the two it
+   compares, an element and its index or memo, or a Hash's key and value. A
+   call desugar_builtin_enum_calls moved onto its builtin's copy
+   (`__enum_inject__N(recv, ...)`) answers by the name it had. */
+int sym_block_values(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  char nb[64];
+  if (nm && recv < 0 && argc >= 1 && strncmp(nm, "__enum_", 7) == 0) {
+    const char *sep = strstr(nm + 7, "__");
+    if (!sep || (size_t)(sep - nm - 7) >= sizeof nb) return 0;
+    memcpy(nb, nm + 7, (size_t)(sep - nm - 7)); nb[sep - nm - 7] = 0;
+    nm = nb; recv = av[0]; argc--;
+  }
+  else {
+    int n = user_block_values(c, id);
+    if (n >= 0) return n;
+  }
+  if (!nm) return 0;
+  if (sp_streq(nm, "reduce") || sp_streq(nm, "inject") || sp_streq(nm, "sort") ||
+      sp_streq(nm, "sort!") || sp_streq(nm, "min") || sp_streq(nm, "max") || sp_streq(nm, "minmax") ||
+      sp_streq(nm, "chunk_while") || sp_streq(nm, "slice_when"))
+    return 2;
+  TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
+  if (ty_is_hash(rt) && sp_streq(nm, "to_h") && argc == 0) return 2;
+  TyKind elem; int hash_pair;
+  return recv >= 0 && bs_yield_count(rt, nm, argc, &elem, &hash_pair) == 2 ? 2 : 0;
+}
+
+/* Does comparator `nm` (sort, min, max, minmax) over `recv` compare
+   elements no typed emitter compares itself -- Arrays, a Hash's pairs,
+   objects, a receiver known only at run time -- so that an operator symbol
+   has to become its block? Over Integers, Floats and Strings the emitters
+   compare the elements directly. */
+static int op_sym_comparator(Compiler *c, int recv, const char *nm) {
+  if (!sp_streq(nm, "sort") && !sp_streq(nm, "sort!") && !sp_streq(nm, "min") &&
+      !sp_streq(nm, "max") && !sp_streq(nm, "minmax")) return 0;
+  TyKind rt = infer_type(c, recv);
+  if (ty_is_hash(rt) || rt == TY_POLY) return 1;
+  if (!ty_is_array(rt) && !ty_is_obj_array(rt)) return 0;
+  TyKind et = ty_array_elem(rt);
+  return et != TY_INT && et != TY_FLOAT && et != TY_STRING;
+}
+
 /* An operator symbol (`&:+`) stays a BlockArgumentNode, which spinel_parse.c
-   does not spell as a block. Over a chain yielding two values it calls the
-   operator on the first with the second: { |__spa_N, __spb_N| __spa_N + __spb_N }. */
-static int desugar_enum_pair_op_sym(Compiler *c, int id, int recv, int blk, const char *nm) {
+   does not spell as a block. Over a chain yielding two values, a method of
+   the program or a builtin iterator that does (each_with_object, a Hash's
+   select), or a comparator over elements its emitter does not compare
+   (op_sym_comparator), it calls the operator on the first with the second:
+   { |__spa_N, __spb_N| __spa_N + __spb_N }. reduce and inject keep theirs
+   for the fold emitters. */
+static int desugar_enum_pair_op_sym(Compiler *c, int id, int recv, int blk, const char *nm, int argc) {
   NodeTable *nt = (NodeTable *)c->nt;
   int ex = nt_ref(nt, blk, "expression");
   const char *mn = ex >= 0 && nt_kind(nt, ex) == NK_SymbolNode ? nt_str(nt, ex, "value") : NULL;
-  TyKind elem;
-  if (!mn || !*mn || bs_enum_yield_count(c, recv, nm, 0, &elem) != 2) return 0;
+  TyKind elem; int hash_pair;
+  if (!mn || !*mn) return 0;
+  if (user_block_values(c, id) != 2 &&
+      (recv < 0 || (bs_enum_yield_count(c, recv, nm, argc, &elem) != 2 &&
+                    bs_yield_count(infer_type(c, recv), nm, argc, &elem, &hash_pair) != 2 &&
+                    !op_sym_comparator(c, recv, nm)))) return 0;
   char pa[48], pb[48];
   snprintf(pa, sizeof pa, "__spa_%d", blk);
   snprintf(pb, sizeof pb, "__spb_%d", blk);
@@ -6409,7 +6536,10 @@ int sym_proc_poly_pair_view(Compiler *c, int id) {
    emitters bind a lone parameter to the packed pair. The block takes the
    second value as a parameter of its own: { |a, __spx1| }. `&:m` also
    calls m on the first with the second as its argument:
-   { |_spx, __spx1| _spx.m(__spx1) }. */
+   { |_spx, __spx1| _spx.m(__spx1) }. So does `&:m` over a call that passes
+   its block more than one value itself (sym_block_values), with or without
+   its arguments, taking as many: `inject(&:concat)` called acc.concat with
+   nothing. */
 int desugar_enum_pair_lone_param(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
@@ -6419,16 +6549,19 @@ int desugar_enum_pair_lone_param(Compiler *c) {
     int recv = nt_ref(nt, id, "receiver");
     int blk = nt_ref(nt, id, "block");
     const char *nm = nt_str(nt, id, "name");
-    if (recv < 0 || blk < 0 || !nm) continue;
+    if (blk < 0 || !nm) continue;
+    int sym_n = nt_kind(nt, blk) == NK_BlockNode && sym_proc_block_name(nt, blk) ?
+                sym_block_values(c, id) : 0;
+    if (recv < 0 && !sym_n && nt_kind(nt, blk) != NK_BlockArgumentNode) continue;
     int args = nt_ref(nt, id, "arguments");
     int argc = 0; if (args >= 0) nt_arr(nt, args, "arguments", &argc);
-    if (nt_kind(nt, blk) == NK_BlockArgumentNode && !argc) {
-      changed |= desugar_enum_pair_op_sym(c, id, recv, blk, nm);
+    if (nt_kind(nt, blk) == NK_BlockArgumentNode) {
+      changed |= desugar_enum_pair_op_sym(c, id, recv, blk, nm, argc);
       continue;
     }
     if (nt_kind(nt, blk) != NK_BlockNode) continue;
     int bp = nt_ref(nt, blk, "parameters");
-    if (argc || bp < 0) continue;
+    if ((argc && !sym_n) || bp < 0) continue;
     int numbered = nt_kind(nt, bp) == NK_NumberedParametersNode;
     int pn = -1;
     if (numbered) {
@@ -6444,7 +6577,7 @@ int desugar_enum_pair_lone_param(Compiler *c) {
           nt_ref(nt, pn, "block") >= 0 || nt_kind(nt, pre[0]) != NK_RequiredParameterNode) continue;
     }
     TyKind elem;
-    if (bs_enum_yield_count(c, recv, nm, 0, &elem) != 2) continue;
+    if (!sym_n && bs_enum_yield_count(c, recv, nm, 0, &elem) != 2) continue;
     char an[48]; snprintf(an, sizeof an, "__spx1_%d", blk);
     if (numbered) {
       nt_node_set_int(nt, bp, "maximum", 2);
@@ -6457,21 +6590,31 @@ int desugar_enum_pair_lone_param(Compiler *c) {
     const char *mn = sym_proc_block_name(nt, blk);
     BsB b = { nt, 1 };
     int base = nt->count;
+    int m = sym_n ? sym_n : 2;
+    char ans[8][48];
     int P = 0; const int *pre = nt_arr(nt, pn, "requireds", &P);
-    int reqs[2] = { pre[0], bs_new(&b, "RequiredParameterNode") };
-    if (reqs[1] < 0) return changed;
-    nt_node_set_str(nt, reqs[1], "name", an);
+    int reqs[8] = { pre[0] }, reads[8];
+    for (int k = 1; k < m; k++) {
+      if (k == 1) snprintf(ans[k], sizeof ans[k], "%s", an);
+      else snprintf(ans[k], sizeof ans[k], "__spx%d_%d", k, blk);
+      reqs[k] = bs_new(&b, "RequiredParameterNode");
+      if (reqs[k] < 0) return changed;
+      nt_node_set_str(nt, reqs[k], "name", ans[k]);
+      reads[k] = bs_read(&b, ans[k]);
+    }
     if (mn) {
-      int call = sym_proc_call2(&b, nt_str(nt, pre[0], "name"), mn, bs_read(&b, an));
+      int call = bs_call(&b, bs_read(&b, nt_str(nt, pre[0], "name")), mn, reads + 1, m - 1);
       int nbody = bs_stmts(&b, &call, 1);
       if (!b.ok || nbody < 0) return changed;
       nt_node_set_ref(nt, blk, "body", nbody);
     }
-    nt_node_set_arr(nt, pn, "requireds", reqs, 2);
+    nt_node_set_arr(nt, pn, "requireds", reqs, m);
     comp_grow_node_arrays(c);
     for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[blk];
-    LocalVar *lv = scope_local_intern(comp_scope_of(c, blk), an);
-    if (lv) lv->is_block_param = 1;
+    for (int k = 1; k < m; k++) {
+      LocalVar *lv = scope_local_intern(comp_scope_of(c, blk), ans[k]);
+      if (lv) lv->is_block_param = 1;
+    }
     changed = 1;
   }
   return changed;

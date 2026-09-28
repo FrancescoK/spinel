@@ -2024,7 +2024,9 @@ int emit_chunk_while_expr(Compiler *c, int id, Buf *b) {
   if (lvb) lvb->type = TY_INT;
   for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 2);
   int save = g_indent; g_indent += 2;
-  Buf cb; memset(&cb, 0, sizeof cb); emit_expr(c, bb[bn - 1], &cb); g_indent = save;
+  /* the block's value by Ruby's truth: a boxed one (`a.send(s, b)`) is no C
+     scalar, and an Integer one is true even at 0 */
+  Buf cb; memset(&cb, 0, sizeof cb); emit_cond(c, bb[bn - 1], &cb); g_indent = save;
   if (lva) lva->type = pta;
   if (lvb) lvb->type = ptb;
   emit_indent(g_pre, g_indent + 2);
