@@ -2849,9 +2849,14 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "eql?") || sp_streq(name, "!=") ||
                       sp_streq(name, "==="))) return TY_BOOL;
     /* Class ordering is tri-state: true/false when related, nil when the two
-       classes have no subclass relationship (CRuby). <=> is -1/0/1 or nil. */
+       classes have no subclass relationship (CRuby). <=> is -1/0/1 or nil.
+       A class that defines the operator itself answers with its own method's
+       type, from the class-method dispatch below. */
     if (argc == 1 && (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
-                      sp_streq(name, ">=") || sp_streq(name, "<=>"))) return TY_POLY;
+                      sp_streq(name, ">=") || sp_streq(name, "<=>"))) {
+      int oci = class_recv_static_ci(c, recv);
+      if (oci < 0 || comp_cmethod_in_chain(c, oci, name, NULL) < 0) return TY_POLY;
+    }
     if (argc == 0 && sp_streq(name, "ancestors")) return TY_POLY_ARRAY;
     if (argc == 0 && sp_streq(name, "subclasses")) return TY_POLY_ARRAY;
     if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) return TY_BOOL;

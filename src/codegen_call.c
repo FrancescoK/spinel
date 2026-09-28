@@ -27853,11 +27853,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   /* Module#< / <= / > / >= / <=> with one side boxed: a class value read out
      of an Array or Hash ordered against a class, or a class ordered against
-     a boxed operand. Answered at run time with the tri-state result. */
+     a boxed operand. Answered at run time with the tri-state result. A class
+     that defines the operator itself (`def self.<(o)`) keeps its own method,
+     which the class-method dispatch below calls. */
   if (recv >= 0 && argc == 1 && (is_cmp_op(name) || sp_streq(name, "<=>")) &&
       comp_ntype(c, id) == TY_POLY) {
     TyKind crt = comp_ntype(c, recv), cat = comp_ntype(c, argv[0]);
-    if ((crt == TY_CLASS && cat != TY_CLASS) || (crt == TY_POLY && cat == TY_CLASS)) {
+    int own_op = 0;
+    if (crt == TY_CLASS) {
+      int oci = class_recv_static_ci(c, recv);
+      own_op = oci >= 0 && comp_cmethod_in_chain(c, oci, name, NULL) >= 0;
+    }
+    if (!own_op && ((crt == TY_CLASS && cat != TY_CLASS) || (crt == TY_POLY && cat == TY_CLASS))) {
       int op = sp_streq(name, "<") ? 0 : sp_streq(name, "<=") ? 1 :
                sp_streq(name, ">") ? 2 : sp_streq(name, ">=") ? 3 : 4;
       buf_puts(b, "sp_class_op_rv("); emit_boxed(c, recv, b);
