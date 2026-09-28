@@ -29,12 +29,31 @@
 #include <signal.h>
 #include <sys/un.h>   /* UNIXSocket / UNIXServer */
 #include <stddef.h>   /* offsetof (sockaddr_un packed length) */
+#include "sp_sched.h"  /* sp_native_enter / sp_native_leave */
 
 #define SP_NET_BUFSIZE 65536
 
 /* ---------- graceful shutdown ---------- */
 
 static volatile sig_atomic_t sp_net_term_flag = 0;
+
+/* A DNS lookup can take seconds, so we leave the world while it runs and
+   the GC doesn't wait for us. The host is copied first, since a GC may
+   run meanwhile and nothing may be rooting it. */
+static int sp_net_resolve(const char *host, const char *port,
+                          const struct addrinfo *hints, struct addrinfo **res) {
+    char buf[NI_MAXHOST];
+    if (host) {
+        if (strlen(host) >= sizeof buf) return EAI_NONAME;   /* longer than any DNS name */
+        strcpy(buf, host);
+        host = buf;
+    }
+    sp_native_enter();
+    int rc = getaddrinfo(host, port, hints, res);
+    sp_native_leave();
+    return rc;
+}
+
 /* Self-pipe: the term handler writes a byte here so a blocked accept (via
  * poll) wakes even when the signal lands in the check-then-accept window. */
 static int sp_net_sigpipe[2] = {-1, -1};
@@ -105,7 +124,7 @@ int sp_net_listen_host(const char *host, int port, int backlog) {
     hints.ai_flags    = AI_PASSIVE;
     char portbuf[16];
     snprintf(portbuf, sizeof(portbuf), "%d", port);
-    if (getaddrinfo((host && *host) ? host : NULL, portbuf, &hints, &res) != 0) return -1;
+    if (sp_net_resolve((host && *host) ? host : NULL, portbuf, &hints, &res) != 0) return -1;
     int fd = -1;
     for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
         fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
@@ -274,7 +293,7 @@ static struct addrinfo *sp_net_udp_resolve(int fd, const char *host, int port,
     char portbuf[16];
     snprintf(portbuf, sizeof(portbuf), "%d", port);
     *head = NULL;
-    if (getaddrinfo((host && *host) ? host : NULL, portbuf, &hints, head) != 0) return NULL;
+    if (sp_net_resolve((host && *host) ? host : NULL, portbuf, &hints, head) != 0) return NULL;
     return *head;
 }
 int sp_net_udp_bind(int fd, const char *host, int port) {SP_GC_ROOT_STR(host);
@@ -404,7 +423,7 @@ int sp_net_getaddrinfo_at(const char *host, int port, int socktype, int idx,
     hints.ai_socktype = socktype > 0 ? socktype : 0;
     char portbuf[16];
     snprintf(portbuf, sizeof(portbuf), "%d", port);
-    if (getaddrinfo((host && *host) ? host : NULL, portbuf, &hints, &res) != 0) return -1;
+    if (sp_net_resolve((host && *host) ? host : NULL, portbuf, &hints, &res) != 0) return -1;
     int i = 0, rc = -1;
     for (ai = res; ai; ai = ai->ai_next, i++) {
         if (i != idx) continue;
@@ -464,7 +483,7 @@ int sp_net_connect(const char *host, int port) {
 
     char portbuf[16];
     snprintf(portbuf, sizeof(portbuf), "%d", port);
-    if (getaddrinfo(host, portbuf, &hints, &res) != 0) return -1;
+    if (sp_net_resolve(host, portbuf, &hints, &res) != 0) return -1;
 
     int fd = -1;
     struct addrinfo *ai;
@@ -925,7 +944,7 @@ int sp_net_pack_sockaddr_in(const char *host, int port, void *out, int cap) {
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo((host && *host) ? host : NULL, portbuf, &hints, &res) != 0 || !res)
+    if (sp_net_resolve((host && *host) ? host : NULL, portbuf, &hints, &res) != 0 || !res)
         return -1;
     int len = (int)res->ai_addrlen;
     if (len > cap) { freeaddrinfo(res); return -1; }
