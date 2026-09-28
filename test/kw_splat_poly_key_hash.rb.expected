@@ -1,0 +1,44 @@
+[3, 2]
+ArgumentError: unknown keyword: 1
+ArgumentError: unknown keyword: "a"
+ArgumentError: missing keyword: :a
+ArgumentError: unknown keywords: 1, :c
+[3, 2]
+ArgumentError: unknown keyword: "b"
+[3, 2]
+ArgumentError: unknown keyword: 1
+[:box_c, 3, 2]
+ArgumentError: unknown keyword: "b"
+ArgumentError: unknown keyword: 1
+#<struct KwStruct a=3, b=2>
+#<struct KwStruct a="s", b=2>
+#<struct PlainStruct a=1, b=2>
+#<data Point a=3, b=2>
+#<data Point a=9, b=1>
+ArgumentError: unknown keyword: "b"
+ArgumentError: unknown keyword: "b"
+ArgumentError: unknown keyword: "b"
+#<data Point a=5, b=6>
+[:box, 3, 2]
+ArgumentError: unknown keyword: 1
+ArgumentError: unknown keyword: "a"
+ArgumentError: unknown keyword: "b"
+[:box, {a: 1, "b" => 2}]
+[:box, [{a: "s", 1 => 2}]]
+[:box, [1], {a: 1, "b" => 2}]
+[:box, 7]
+[:box, 3, 2]
+[:bag, 3, 2]
+ArgumentError: unknown keyword: 1
+ArgumentError: unknown keyword: "a"
+ArgumentError: unknown keyword: "b"
+[:bag, {a: 1, "b" => 2}]
+[:bag, [{a: "s", 1 => 2}]]
+[:bag, [1], {a: 1, "b" => 2}]
+[:bag, 7]
+[:bag, 3, 2]
+[:box_c, 3, 2]
+ArgumentError: unknown keyword: "b"
+[:bag_c, 3, 2]
+ArgumentError: unknown keyword: "b"
+[2450, 50]
