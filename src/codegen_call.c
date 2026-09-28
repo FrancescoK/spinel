@@ -7061,7 +7061,11 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            C symbol on the cast receiver, coercing the result into the slot. */
         if (c->classes[k].is_native_class) {
           int nmi = comp_native_method_find(c, k, name, 0, 0);
-          if (nmi >= 0) {
+          /* only a binding that takes no argument: the lookup falls back to
+             any arity, and StringScanner#peek(len) beside two user `peek`s
+             got an arm calling it with none, which C refused (#5359). A
+             receiver of that class then lands in the default arm. */
+          if (nmi >= 0 && c->native_methods[nmi].nargs == 0) {
             NativeMethod *nmet = &c->native_methods[nmi];
             char nbuf[300];
             if (sp_streq(nmet->ret, "string?"))
@@ -7079,6 +7083,11 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             }
             buf_puts(b, "; break;");
           }
+          /* one that needs arguments is CRuby's ArgumentError for this call */
+          else if (nmi >= 0 && c->native_methods[nmi].nargs > 0 && c->classes[k].instantiated)
+            buf_printf(b, " case %d: sp_raise_cls(\"ArgumentError\", "
+                          "\"wrong number of arguments (given 0, expected %d)\"); break;",
+                       k, c->native_methods[nmi].nargs);
           continue;
         }
         int defcls = -1;
