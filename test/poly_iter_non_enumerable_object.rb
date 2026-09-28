@@ -2,6 +2,7 @@
 # (each, map, any?, ...) raises NoMethodError; it is not walked as an
 # empty container.
 class Foo; end
+class Bare < BasicObject; end
 D = Data.define(:x, :y)
 
 def try(label)
@@ -11,7 +12,7 @@ rescue NoMethodError => e
   p [label, e.class]
 end
 
-[Foo.new, D.new(x: 1, y: 2), [3, 4]].each do |x|
+[Foo.new, Bare.new, D.new(x: 1, y: 2), [3, 4]].each do |x|
   try(:each) { x.each { |v| p v } }
   try(:map) { x.map { |v| v } }
   try(:any?) { x.any? }

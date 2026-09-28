@@ -10,6 +10,12 @@
 [:count, NoMethodError]
 [:each_with_index, NoMethodError]
 [:reverse_each, NoMethodError]
+[:each, NoMethodError]
+[:map, NoMethodError]
+[:any?, NoMethodError]
+[:count, NoMethodError]
+[:each_with_index, NoMethodError]
+[:reverse_each, NoMethodError]
 3
 4
 [:each, [3, 4]]
