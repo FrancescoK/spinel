@@ -7944,10 +7944,15 @@ TyKind infer_uncached(Compiler *c, int id) {
         if (rn == 0) rt = TY_STR_POLY_HASH;
       }
       if (rt != TY_UNKNOWN && (lt == TY_NIL || lt == TY_UNKNOWN)) return rt;
-      /* `Array.new` / `Hash.new` are as untyped as the literals, and beside
-         a left of another kind the answer boxes */
-      if (rt == TY_UNKNOWN && an_empty_container_disagrees(an_empty_container_kind(c, rnd), lt))
-        return TY_POLY;
+      /* `Array.new` / `Hash.new` are as untyped as the literals: the nil-guard
+         fallback of `||` is the container, and beside a left of another kind
+         the answer boxes */
+      if (rt == TY_UNKNOWN) {
+        int ek = an_empty_container_kind(c, rnd);
+        if (ek && nk == NK_OrNode && (lt == TY_NIL || lt == TY_UNKNOWN))
+          return ek == 1 ? TY_POLY_ARRAY : TY_STR_POLY_HASH;
+        if (an_empty_container_disagrees(ek, lt)) return TY_POLY;
+      }
     }
     return ty_unify(lt, rt);  /* value form: a || b -> common type */
   }

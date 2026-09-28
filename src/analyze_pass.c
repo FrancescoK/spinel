@@ -10324,6 +10324,11 @@ int infer_return_types(Compiler *c) {
     TyKind r = empty_body ? TY_POLY
              : tail_unreachable ? ret_acc[s]
              : infer_type(c, sc->body);
+    /* a bare `Array.new` tail returns the poly array a marked `[]` tail
+       does (mark_empty_literal_tails) */
+    if (r == TY_UNKNOWN && !empty_body && !(has_ret && has_ret[s]) &&
+        an_empty_container_kind(c, sc->body) == 1)
+      r = TY_POLY_ARRAY;
     /* A yielding method whose body ends in `if block_given? ... else ... end`
        has two values, one per call form, and the inliner keeps only the arm a
        call site takes: the block arm types the call with a block, the else

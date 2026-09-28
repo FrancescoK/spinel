@@ -61,3 +61,47 @@ class Tally
   def self.go; p @@h[:zz]; @@h[:a] += 1; p @@h; end
 end
 Tally.go
+
+# the nil-guard fallback of || is the container
+n1 = nil || Array.new; n1 << 1; p n1
+n2 = nil || Hash.new; n2["k"] = 2; p n2
+n3 = 1 && Hash.new; p n3
+
+# a capacity: keyword is evaluated, and is not a default
+def capacity_of(tag); puts "capacity #{tag}"; 8; end
+cap_l = Hash.new(capacity: 4); cap_l[:a] = 1; p cap_l[:zz]; p cap_l
+$cap_g = Hash.new(capacity: 4); $cap_g[:a] = 1; p $cap_g[:zz]; p $cap_g
+cap_t = rand > 2 ? {a: 1} : Hash.new(capacity: capacity_of("arm")); p cap_t
+class CapHolder
+  @@h = Hash.new(capacity: capacity_of("cvar"))
+  def self.go; @@h["a"] = 1; p @@h; end
+end
+CapHolder.go
+
+# a default of another type than the written values widens the values
+class Missing
+  @@h = Hash.new("missing")
+  def self.go; @@h["a"] = 1; p @@h["a"]; p @@h["zz"]; p @@h; end
+end
+Missing.go
+
+# an inlined yielding method's value is built at its own result type
+def fresh_list
+  yield
+  Array.new
+end
+def maybe_list(b)
+  yield
+  b ? ["x"] : Array.new
+end
+def uses_fresh
+  a = fresh_list { 1 }
+  a << "s"
+  b = maybe_list(false) { 1 }
+  b << "t"
+  p a, b
+  [1.5]
+end
+p uses_fresh
+def make_list = Array.new
+ml = make_list; ml << :a; p ml

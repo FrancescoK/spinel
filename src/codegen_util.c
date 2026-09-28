@@ -1249,7 +1249,7 @@ int emit_empty_container_for_slot(Compiler *c, int v, TyKind slot, Buf *b) {
     buf_printf(b, "sp_%sHash_new()", hcn);
     return 1;
   }
-  /* `Hash.new` (bare or with a default) and a bare `Array.new` are the same
+  /* `Hash.new` (bare, with a default or a capacity) and a bare `Array.new` are the same
      empty producers, and the typed slot needs the same fresh container rather
      than the boxed value the untyped call would emit (the global write says
      this too). */
@@ -1268,8 +1268,22 @@ int emit_empty_container_for_slot(Compiler *c, int v, TyKind slot, Buf *b) {
     }
     const char *hcn = ty_is_hash(slot) ? ty_hash_cname(slot) : NULL;
     if (!hcn || !sp_streq(rn, "Hash") || an > 1) return 0;
-    if (an == 1 && (nt_kind(nt, av[0]) == NK_KeywordHashNode || nt_kind(nt, av[0]) == NK_NilNode)) an = 0;
+    if (an == 1 && nt_kind(nt, av[0]) == NK_KeywordHashNode) {
+      /* `capacity:` sizes nothing here, but its value is still evaluated */
+      int en = 0; const int *el = nt_arr(nt, av[0], "elements", &en);
+      buf_puts(b, "(");
+      for (int i = 0; i < en; i++) {
+        int ev = nt_kind(nt, el[i]) == NK_AssocNode ? nt_ref(nt, el[i], "value") : el[i];
+        buf_puts(b, "(void)("); emit_expr(c, ev, b); buf_puts(b, "), ");
+      }
+      buf_printf(b, "sp_%sHash_new())", hcn);
+      return 1;
+    }
+    if (an == 1 && nt_kind(nt, av[0]) == NK_NilNode) an = 0;
     if (an == 0) { buf_printf(b, "sp_%sHash_new()", hcn); return 1; }
+    TyKind hv = ty_hash_val(slot), dt = comp_ntype(c, av[0]);
+    if (hv != TY_POLY && dt != TY_UNKNOWN && dt != hv && !(hv == TY_FLOAT && dt == TY_INT))
+      unsupported(c, v, "a Hash.new default of another type than the typed hash slot's values");
     buf_printf(b, "sp_%sHash_new_with_default(", hcn);
     if (ty_hash_val(slot) == TY_POLY) emit_boxed(c, av[0], b);
     else emit_expr(c, av[0], b);

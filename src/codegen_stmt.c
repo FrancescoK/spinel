@@ -1148,7 +1148,7 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   int hn = 0;
   int is_empty_hash = vty && sp_streq(vty, "HashNode") && (nt_arr(c->nt, v, "elements", &hn), hn == 0);
   /* h = Hash.new / Hash.new(default) */
-  int is_hash_new = 0, hash_new_default = -1;
+  int is_hash_new = 0, hash_new_default = -1, hash_new_capacity = 0;
   if (vty && sp_streq(vty, "CallNode") && sp_streq(nt_str(c->nt, v, "name") ? nt_str(c->nt, v, "name") : "", "new")) {
     int hr = nt_ref(c->nt, v, "receiver");
     const char *hrt = hr >= 0 ? nt_type(c->nt, hr) : NULL;
@@ -1158,7 +1158,9 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
       int ha = nt_ref(c->nt, v, "arguments");
       int hac = 0;
       const int *hav = ha >= 0 ? nt_arr(c->nt, ha, "arguments", &hac) : NULL;
-      if (hac >= 1) hash_new_default = hav[0];
+      /* `Hash.new(capacity: n)` has no default: the hash is its keywords */
+      if (hac >= 1 && nt_kind(c->nt, hav[0]) == NK_KeywordHashNode) hash_new_capacity = 1;
+      else if (hac >= 1) hash_new_default = hav[0];
     }
   }
 
@@ -1234,6 +1236,10 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
     /* Hash.new { |hash, key| ... }: emit through emit_call so the dproc
        function + sp_PolyPolyHash_new_dproc path runs. */
     emit_expr(c, v, b);
+  }
+  else if (hash_new_capacity && lv && ty_hash_cname(lv->type) &&
+           emit_empty_container_for_slot(c, v, lv->type, b)) {
+    /* built at the slot's variant, the capacity evaluated */
   }
   else if ((is_empty_hash || is_hash_new) && lv && ty_hash_cname(lv->type)) {
     const char *hcn = ty_hash_cname(lv->type);
@@ -6017,8 +6023,9 @@ static void emit_tail_value(Compiler *c, int node, Buf *b) {
      other branch is `{ a: 1 }`); otherwise the StrPolyHash* return is an
      incompatible pointer type. Same idea as the empty-`[]` array handling. */
   const char *nty = nt_type(c->nt, node);
-  if (nty && sp_streq(nty, "CallNode") && ty_is_array(g_ret_type) && comp_ntype(c, node) == TY_UNKNOWN &&
-      emit_empty_container_for_slot(c, node, g_ret_type, b)) return;
+  { TyKind slot = (g_result_var && g_result_ty != TY_UNKNOWN) ? g_result_ty : g_ret_type;
+    if (nty && sp_streq(nty, "CallNode") && ty_is_array(slot) && comp_ntype(c, node) == TY_UNKNOWN &&
+        emit_empty_container_for_slot(c, node, slot, b)) return; }
   if (nty && (sp_streq(nty, "HashNode") || sp_streq(nty, "KeywordHashNode")) && ty_is_hash(g_ret_type)) {
     int hc = 0; nt_arr(c->nt, node, "elements", &hc);
     const char *hcn = ty_hash_cname(g_ret_type);
@@ -9144,6 +9151,7 @@ else {
        fresh `sp_XHash_new()`, not the boxed sp_RbVal emit_expr would produce for
        the untyped Hash.new call (#3205). */
     int v_hash_dflt = -1;   /* `$g = Hash.new(default)`: the default's node */
+    int v_hash_cap = 0;     /* `$g = Hash.new(capacity: n)` */
     if (vty && sp_streq(vty, "CallNode") && ty_is_hash(lv->type) &&
         nt_str(nt, v, "name") && sp_streq(nt_str(nt, v, "name"), "new") &&
         nt_ref(nt, v, "block") < 0) {
@@ -9166,6 +9174,7 @@ else {
           v_hash_dflt = hash_new_default_arg(c, v);
           if (nt_kind(nt, v_hash_dflt) == NK_NilNode) v_hash_dflt = -1;   /* Hash.new(nil) is Hash.new */
         }
+        else v_hash_cap = han == 1;
       }
     }
     if (vty && sp_streq(vty, "NilNode"))
@@ -9187,6 +9196,9 @@ else {
         buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_new(); _t%d->frozen = 1; _t%d; })",
                    array_kind(lv->type), _ft, array_kind(lv->type), _ft, _ft); }
       else buf_printf(b, "sp_%sArray_new()", array_kind(lv->type));
+    }
+    else if (v_hash_cap && emit_empty_container_for_slot(c, v, lv->type, b)) {
+      /* built at the slot's variant, the capacity evaluated */
     }
     else if (v_empty_hash && ty_is_hash(lv->type)) {
       const char *hcn = ty_hash_cname(lv->type);
@@ -11417,6 +11429,11 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
      poly -- needs coercing. (Only for a real return slot, not a begin/rescue
      result var, which stays poly.) */
   else if (!g_result_var && tail_needs_unbox(vty, g_ret_type)) emit_unbox_node(c, g_ret_type, id, b);
+  /* an untyped `Array.new` / `Hash.new` is built at the result slot's type,
+     not taken for a raising call */
+  else if (g_result_var && !g_result_poly && !is_subst && vty == TY_UNKNOWN &&
+           (ty_is_array(g_result_ty) || ty_is_hash(g_result_ty)) &&
+           emit_empty_container_for_slot(c, id, g_result_ty, b)) { }
   /* A void tail value (a rescue arm ending in `puts`, or a void-returning
      method call) feeding a non-poly result slot: the begin/rescue value
      unified to a nullable pointer, so evaluate the tail for effect and yield

@@ -45,3 +45,21 @@
 {a: 1}
 5
 {a: 6}
+[1]
+{"k" => 2}
+{}
+nil
+{a: 1}
+nil
+{a: 1}
+capacity arm
+{}
+capacity cvar
+{"a" => 1}
+1
+"missing"
+{"a" => 1}
+["s"]
+["t"]
+[1.5]
+[:a]
