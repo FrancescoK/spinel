@@ -1763,11 +1763,24 @@ static int ie_poly_mark(Compiler *c, int id, TyKind rt) {
   return n == 1 ? k[0] : n > 1 ? -2 - id : -1;
 }
 
+/* The length of the name a block parameter was written with: `k__bp12`, as
+   rename_shadowing_block_params leaves a keyword that shadows an outer local,
+   is still the keyword `k`. */
+size_t block_param_written_len(const char *name) {
+  size_t n = strlen(name);
+  const char *sfx = strstr(name, "__bp");
+  if (!sfx || !sfx[4]) return n;
+  const char *q = sfx + 4;
+  while (*q >= '0' && *q <= '9') q++;
+  return *q ? n : (size_t)(sfx - name);
+}
+
 /* In a call-site KeywordHashNode (`k: 9, j: 2`), the value node bound to the
-   keyword `name`, or -1. Used to match instance_exec keyword block params. */
+   keyword `name`, or -1. Used to match keyword block params. */
 int ie_kwhash_value(Compiler *c, int kwhash, const char *name) {
   const NodeTable *nt = c->nt;
   if (kwhash < 0 || !name) return -1;
+  size_t nlen = block_param_written_len(name);
   int en = 0; const int *els = nt_arr(nt, kwhash, "elements", &en);
   for (int i = 0; i < en; i++) {
     const char *ety = nt_type(nt, els[i]);
@@ -1776,7 +1789,7 @@ int ie_kwhash_value(Compiler *c, int kwhash, const char *name) {
     const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
     if (!kty || !sp_streq(kty, "SymbolNode")) continue;
     const char *kn = nt_str(nt, key, "value");
-    if (kn && sp_streq(kn, name)) return nt_ref(nt, els[i], "value");
+    if (kn && strlen(kn) == nlen && !strncmp(kn, name, nlen)) return nt_ref(nt, els[i], "value");
   }
   return -1;
 }
@@ -2092,6 +2105,18 @@ int blkp_binds_param(Compiler *c, int create, const char *name) {
   if (bp >= 0 && nt_type(nt, bp) && sp_streq(nt_type(nt, bp), "BlockParametersNode")) {
     int ln = 0; const int *locs = nt_arr(nt, bp, "locals", &ln);
     for (int i = 0; i < ln; i++) if (blkp_param_binds(nt, locs[i], name)) return 1;
+  }
+  /* A block-local (`|b; q|`) is only in the block's comma-joined `locals`
+     string, which lists every name new to the block; an outer name the
+     block merely reads or writes is not in it. */
+  const char *ls = nt_str(nt, create, "locals");
+  size_t nl = strlen(name);
+  for (const char *p = ls; p && *p; ) {
+    const char *e = strchr(p, ',');
+    size_t seg = e ? (size_t)(e - p) : strlen(p);
+    if (seg == nl && !strncmp(p, name, nl)) return 1;
+    if (!e) break;
+    p = e + 1;
   }
   int pn = blkp_params_node(c, create);
   if (pn < 0) return 0;
@@ -3036,9 +3061,7 @@ void rename_shadowing_block_params(Compiler *c) {
         if (opts[q] >= 0 && nt_type(nt, opts[q]) &&
             sp_streq(nt_type(nt, opts[q]), "OptionalParameterNode") &&
             nt_str(nt, opts[q], "name")) extras[ne++] = opts[q];
-      /* a lambda's keywords as well (a block's are renamed by
-         bs_strip_keywords where a builtin iterator binds them) */
-      int kwn = 0; const int *kws = is_lambda ? nt_arr(nt, pn, "keywords", &kwn) : NULL;
+      int kwn = 0; const int *kws = nt_arr(nt, pn, "keywords", &kwn);
       for (int q = 0; q < kwn && ne < 128; q++)
         if (kws[q] >= 0 && is_name_binding_param(nt_type(nt, kws[q])) &&
             nt_str(nt, kws[q], "name")) extras[ne++] = kws[q];
@@ -6877,6 +6900,8 @@ int desugar_enum_method_recv(Compiler *c) {
          (codegen): an endless Enumerator has no array to read */
       if ((sp_streq(nm, "each") || sp_streq(nm, "each_with_index")) && nt_ref(nt, id, "block") >= 0)
         nt_node_set_str(nt, wrap, "enum_each_wrap", "1");
+      /* the call still yields what the Enumerator yields (enum_pair_source_call) */
+      nt_node_set_str(nt, wrap, "enum_hop", "1");
       nt_node_set_str(nt, wrap, "name", "to_a");
       nt_node_set_ref(nt, wrap, "receiver", recv);
       nt_node_set_ref(nt, id, "receiver", wrap);
@@ -7932,7 +7957,7 @@ static void widen_ivars_from_pushed_params(Compiler *c) {
          hold what the callee pushes, so an int array stays an int array. */
       int boxed_hazard = 0;
       if (!p->push_widened) {
-        if (p->type != TY_POLY || p->boxed_push_elem == TY_UNKNOWN) continue;
+        if (p->type != TY_POLY || (p->boxed_push_elem == TY_UNKNOWN && !p->store_val_src && !p->store_rest_src)) continue;
         boxed_hazard = 1;
       }
       const char *aty = nt_type(nt, av[k]);
@@ -7953,7 +7978,8 @@ static void widen_ivars_from_pushed_params(Compiler *c) {
       if (ivi < 0) continue;
       TyKind ivt = acls->ivar_types[ivi];
       if (!ty_is_array(ivt) || ivt == TY_POLY_ARRAY) continue;
-      if (boxed_hazard && ty_array_elem(ivt) == p->boxed_push_elem) continue;
+      if (boxed_hazard && (p->boxed_push_elem == TY_UNKNOWN || ty_array_elem(ivt) == p->boxed_push_elem) &&
+          !param_src_misfits(c, p, ivt, av, an) && !param_rest_misfits(c, m, p, ivt, av, an)) continue;
       acls->ivar_types[ivi] = TY_POLY_ARRAY;
     }
   }
@@ -17371,6 +17397,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_include_math(c);             /* include Math: sqrt(x) -> Math.sqrt(x) */
     ch |= desugar_kernel_recv(c);              /* Kernel.puts x -> puts x */
     ch |= desugar_class_literal_ctors(c);      /* Array[a,b] -> [a,b]; Range.new -> (a..b) */
+    ch |= desugar_enum_iter_splat_args(c);     /* enum.map(*a, &b) -> enum.map(&b) */
     ch |= desugar_builtin_iter_block_shapes(c);  /* [1].each { |c, a = 10| } -> { |v| c = v; a = 10 } */
     ch |= desugar_multi_yield_map_param(c);    /* multi-yield each: map's |x| takes the 1st */
     ch |= desugar_enum_walk_calls(c);          /* enum.map { break } -> __enumw_map(enum) { } */
@@ -19659,7 +19686,8 @@ void analyze_program(Compiler *c) {
       }
     }
     if (sp_streq(ty, "LocalVariableWriteNode") || sp_streq(ty, "LocalVariableOrWriteNode") ||
-        sp_streq(ty, "LocalVariableAndWriteNode")) {
+        sp_streq(ty, "LocalVariableAndWriteNode") ||
+        sp_streq(ty, "OptionalParameterNode") || sp_streq(ty, "OptionalKeywordParameterNode")) {
       int v2 = nt_ref(c->nt, id, "value");
       if (v2 >= 0 && nt_type(c->nt, v2) && sp_streq(nt_type(c->nt, v2), "NilNode")) {
         const char *nm2 = nt_str(c->nt, id, "name");
@@ -19714,18 +19742,6 @@ void analyze_program(Compiler *c) {
         }
         if (nil_arm) {
           int q = ty_object_class(t2);
-          if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0;
-        }
-      }
-    }
-    if (sp_streq(ty, "OptionalParameterNode") || sp_streq(ty, "OptionalKeywordParameterNode")) {
-      int v2 = nt_ref(c->nt, id, "value");
-      if (v2 >= 0 && nt_type(c->nt, v2) && sp_streq(nt_type(c->nt, v2), "NilNode")) {
-        const char *nm2 = nt_str(c->nt, id, "name");
-        Scope *s2 = comp_scope_of(c, id);
-        LocalVar *lv2 = (nm2 && s2) ? scope_local(s2, nm2) : NULL;
-        if (lv2 && ty_is_object(lv2->type)) {
-          int q = ty_object_class(lv2->type);
           if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0;
         }
       }

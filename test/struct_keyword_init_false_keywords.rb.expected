@@ -1,0 +1,32 @@
+#<struct S3 x={x: 1}, y=nil>
+#<struct S3 x={x: 1, y: 2}, y=nil>
+#<struct S3 x={z: 1}, y=nil>
+#<struct S1 x={x: 1}>
+#<struct S3 x={x: 1}, y=nil>
+#<struct S3 x={z: 1, b: 2}, y=nil>
+lit 1
+lit 3
+#<struct S3 x={z: 1, b: 2, w: 3}, y=nil>
+#<struct S3 x={a: 2}, y=nil>
+#<struct S3 x={a: 1}, y=nil>
+#<struct S3 x={b: 2, c: 3}, y=nil>
+#<struct S3 x=nil, y=nil>
+#<struct S3 x=nil, y=nil>
+#<struct S3 x=nil, y=nil>
+#<struct S3 x={"q" => 1}, y=nil>
+#<struct S3 x={"s" => 1}, y=nil>
+#<struct S3 x={z: 1, "s" => 1}, y=nil>
+#<struct S3 x={"s" => 1, z: 1}, y=nil>
+lit 1
+#<struct S3 x={"q" => 1, b: 2}, y=nil>
+lit 1
+TypeError: no implicit conversion of Integer into Hash
+#<struct S3 x=1, y={y: 2}>
+ArgumentError: struct size differs
+2
+nil
+[:k, :b]
+#<struct Opts x={x: 1}, y=nil>
+#<struct Opts x={z: 1, b: 2}, y=nil>
+#<struct Opts x={b: 2}, y=nil>
+#<struct Opts x=nil, y=nil>

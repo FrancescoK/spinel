@@ -7,7 +7,7 @@ on:
     branches: [master]
 
 # One run per branch at a time: a push that supersedes a queued or running
-# run cancels it. Every run is 13 jobs against a small runner pool, and a
+# run cancels it. Every run was 13 jobs against a small runner pool, and a
 # busy afternoon queued 22 master runs and several per PR branch, so a
 # result arrived hours late; only the newest commit of a branch matters.
 concurrency:
@@ -16,22 +16,24 @@ concurrency:
 
 jobs:
   # The corpus is what a job's wall time is made of (six minutes of the
-  # eight on a 4-vCPU runner), so each lane runs it as three parallel
-  # slices (make's TEST_SHARD=k/3, by position in the sorted list). Slice 1
-  # also carries the C-side test legs and, on Linux/gcc, the property gates,
-  # the benchmarks and optcarrot; the other slices run the corpus alone.
+  # eight on a 4-vCPU runner). Only the Linux/gcc lane splits it, into two
+  # slices (make's TEST_SHARD=k/n, by position in the sorted list), since
+  # its slice 1 also carries the property gates, the benchmarks and
+  # optcarrot; every other lane runs the whole corpus in one job. Three
+  # slices per lane made a run 13 jobs, and with several pushes an hour
+  # the runner pool, not the tests, set the latency: results arrived hours
+  # after their commit. Slice 1 of each lane carries the C-side test legs.
   posix:
-    name: ${{ matrix.os }} / ${{ matrix.cc }} (${{ matrix.shard }}/3)
+    name: ${{ matrix.os }} / ${{ matrix.cc }} (${{ matrix.shard }}/${{ matrix.nshards }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        cc: [gcc, clang]
-        shard: [1, 2, 3]
-        exclude:
-          - os: macos-latest
-            cc: gcc
+        include:
+          - { os: ubuntu-latest, cc: gcc, shard: 1, nshards: 2 }
+          - { os: ubuntu-latest, cc: gcc, shard: 2, nshards: 2 }
+          - { os: ubuntu-latest, cc: clang, shard: 1, nshards: 1 }
+          - { os: macos-latest, cc: clang, shard: 1, nshards: 1 }
     env:
       # `sccache <cc>` wrapper. sccache forwards through to the
       # underlying compiler when its cache misses, so this stays
@@ -125,7 +127,7 @@ jobs:
         # the -m32 lane paid until it got the same wrapper. The override
         # is kept as the spelling of the opt level per compiler; NO_CCACHE=1
         # would be the way to actually unwrap.
-        run: make -j$(getconf _NPROCESSORS_ONLN) ${{ matrix.shard == 1 && 'test' || 'test-corpus' }} TEST_SHARD=${{ matrix.shard }}/3 ${{ matrix.cc == 'clang' && 'OPT=-O0 CC=clang' || 'OPT=-O1 CC=gcc' }}
+        run: make -j$(getconf _NPROCESSORS_ONLN) ${{ matrix.shard == 1 && 'test' || 'test-corpus' }} TEST_SHARD=${{ matrix.shard }}/${{ matrix.nshards }} ${{ matrix.cc == 'clang' && 'OPT=-O0 CC=clang' || 'OPT=-O1 CC=gcc' }}
 
       # Inference/allocation property gates. These assert the SHAPE of the
       # generated C -- that a slot keeps its typed representation, that the
@@ -195,12 +197,8 @@ jobs:
   # -m32 flag is part of sccache's key, so this lane's entries never
   # collide with the 64-bit gcc lane's.
   linux32:
-    name: ubuntu-latest / gcc -m32 (${{ matrix.shard }}/3)
+    name: ubuntu-latest / gcc -m32
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3]
     env:
       CC: sccache gcc -m32
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
@@ -216,8 +214,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .sccache
-          key: sccache-ubuntu-latest-gcc-m32-${{ matrix.shard }}-${{ github.run_id }}
-          restore-keys: sccache-ubuntu-latest-gcc-m32-${{ matrix.shard }}-
+          key: sccache-ubuntu-latest-gcc-m32-${{ github.run_id }}
+          restore-keys: sccache-ubuntu-latest-gcc-m32-
 
       - name: Pre-start sccache server
         run: sccache --start-server
@@ -240,7 +238,7 @@ jobs:
         run: make -j$(getconf _NPROCESSORS_ONLN) all
 
       - name: Run the test corpus as 32-bit programs
-        run: make -j$(getconf _NPROCESSORS_ONLN) test-corpus TEST_SHARD=${{ matrix.shard }}/3 OPT=-O1
+        run: make -j$(getconf _NPROCESSORS_ONLN) test-corpus OPT=-O1
 
       - name: sccache stats
         if: always()

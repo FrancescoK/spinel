@@ -40,6 +40,10 @@ int an_send_name_is_computed(Compiler *c, int arg);
    reads the cached results via comp_ntype. */
 TyKind infer_type(Compiler *c, int id);
 
+/* `recv` is a blockless call making an Enumerator that yields two values per
+   element: each_with_index, with_index, each_with_object, with_object. */
+int enum_pair_source_call(const NodeTable *nt, int recv);
+
 /* True when node `id`'s value, held in an unboxed scalar slot, can be the
    reserved nil sentinel (SP_INT_NIL / the float twin). The slot type alone
    cannot say -- an `Integer?` and an `Integer` are both TY_INT -- so codegen
@@ -154,6 +158,7 @@ void ie_body_restore(Compiler *c, int *snap);
 /* instance_exec keyword-arg helpers: the call's trailing KeywordHashNode (or
    -1), and the value node bound to a keyword name within it (or -1). */
 int ie_call_kwhash(Compiler *c, int id);
+size_t block_param_written_len(const char *name);
 int ie_kwhash_value(Compiler *c, int kwhash, const char *name);
 
 /* instance_exec trampoline body-arg resolution (mixed local/ivar/literal args):

@@ -2,6 +2,7 @@
 int callee_has_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_declares_kwargs(Compiler *c, Scope *m);
 int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
+int is_fresh_array(Compiler *c, int v);
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -506,10 +507,10 @@ int local_all_writes_empty_array(Compiler *c, Scope *sc, const char *name) {
   return saw;
 }
 
-/* 1 iff every write of local `name` in `sc` is an array literal (and there is
+/* 1 iff every write of local `name` in `sc` builds a new array (and there is
    one): a value nothing else holds, so rebuilding it as another array kind
    loses no sharing. */
-static int local_all_writes_array_literal(Compiler *c, Scope *sc, const char *name) {
+static int local_all_writes_fresh_array(Compiler *c, Scope *sc, const char *name) {
   const NodeTable *nt = c->nt;
   int saw = 0;
   int si = (int)(sc - c->scopes);
@@ -519,11 +520,7 @@ static int local_all_writes_array_literal(Compiler *c, Scope *sc, const char *na
     const char *wn = nt_str(nt, id, "name");
     if (!wn || !sp_streq(wn, name)) continue;
     if (nt_kind(nt, id) != NK_LocalVariableWriteNode) return 0;
-    int v = nt_ref(nt, id, "value");
-    if (v < 0 || nt_kind(nt, v) != NK_ArrayNode) return 0;
-    int en = 0; const int *ev = nt_arr(nt, v, "elements", &en);
-    for (int k = 0; k < en; k++)
-      if (nt_kind(nt, ev[k]) == NK_SplatNode) return 0;
+    if (!is_fresh_array(c, nt_ref(nt, id, "value"))) return 0;
     saw = 1;
   }
   return saw;
@@ -625,6 +622,34 @@ int lw_shared_first(Compiler *c, const char *name, int scope) {
 }
 int lw_shared_node(int rec) { return lw_shared_ix.node[rec]; }
 int lw_shared_next(int rec) { return lw_shared_ix.next[rec]; }
+
+/* The position of the positional parameter of method scope `sc` that `n`
+   reads, when the body never assigns it (so the read is what the call
+   passed); -1 otherwise. */
+static int unassigned_param_read(Compiler *c, Scope *sc, int n) {
+  const NodeTable *nt = c->nt;
+  if (!sc || n < 0 || nt_kind(nt, n) != NK_LocalVariableReadNode || comp_scope_of(c, n) != sc) return -1;
+  const char *nm = nt_str(nt, n, "name");
+  if (!nm) return -1;
+  int k = 0;
+  while (k < sc->nparams && !(sc->pnames[k] && sp_streq(sc->pnames[k], nm))) k++;
+  if (k >= sc->nparams || k >= 64) return -1;
+  if ((sc->rest_idx >= 0 && k >= sc->rest_idx) || (sc->kwrest_idx >= 0 && k >= sc->kwrest_idx)) return -1;
+  if (callee_param_is_declared_kwarg(c, sc, nm)) return -1;
+  int si = (int)(sc - c->scopes);
+  for (int r = lw_shared_first(c, nm, si); r >= 0; r = lw_shared_next(r)) {
+    int w = lw_shared_node(r);
+    if (comp_scope_of(c, w) == sc && sp_streq(nt_str(nt, w, "name"), nm)) return -1;
+  }
+  return k;
+}
+
+/* Sets bit `k` of `*mask`; 1 when it was clear. */
+static int mask_add(unsigned long long *mask, int k) {
+  if (k < 0 || (*mask >> k) & 1ULL) return 0;
+  *mask |= 1ULL << k;
+  return 1;
+}
 
 /* Per-pass index of instance-variable write nodes keyed by ivar name -- the
    ivar analogue of LWIndex. The usage-driven promotion scans below ask "does
@@ -1396,57 +1421,23 @@ static int push_arg_foreign(Compiler *c, int node, TyKind elem) {
     const char *an = nt_str(nt, ex, "name");
     Scope *asc = an ? comp_scope_of(c, ex) : NULL;
     LocalVar *al = asc ? scope_local(asc, an) : NULL;
-    if (al && !al->is_param && !al->is_block_param && local_all_writes_array_literal(c, asc, an)) {
-      int si = (int)(asc - c->scopes);
+    if (al && !al->is_param && !al->is_block_param) {
+      int si = (int)(asc - c->scopes), saw = 0, foreign = 0;
       for (int r = lw_shared_first(c, an, si); r >= 0; r = lw_shared_next(r)) {
         int w = lw_shared_node(r);
-        if (nt_kind(nt, w) != NK_LocalVariableWriteNode || comp_scope_of(c, w) != asc ||
-            !sp_streq(nt_str(nt, w, "name"), an)) continue;
+        if (comp_scope_of(c, w) != asc || !sp_streq(nt_str(nt, w, "name"), an)) continue;
         int v = nt_ref(nt, w, "value");
-        if (v >= 0 && nt_kind(nt, v) == NK_ArrayNode && literal_elems_foreign(c, v, elem)) return 1;
+        if (nt_kind(nt, w) != NK_LocalVariableWriteNode || v < 0 || nt_kind(nt, v) != NK_ArrayNode) {
+          saw = 0; break;
+        }
+        saw = 1;
+        foreign |= literal_elems_foreign(c, v, elem);
       }
-      return 0;
+      if (saw) return foreign;
     }
   }
   TyKind at = infer_type(c, ex);
   return ty_is_array(at) && elem_is_foreign(ty_array_elem(at), elem);
-}
-
-/* Does some call of scope si pass its rest parameter an element foreign to an
-   array of `elem`? The rest parameter collects them boxed, so its own type
-   says nothing; the arguments at the call sites do: the rest's elements from
-   `skip` on (insert's index is passed over), or only element `only` when it
-   is not -1. A splat before the rest's position leaves the positions
-   unknown, and every argument from it on is read. */
-static int call_rest_args_foreign(Compiler *c, Scope *m, const int *argv, int an,
-                                  int skip, int only, TyKind elem) {
-  const NodeTable *nt = c->nt;
-  if (!argv || m->rest_idx < 0) return 0;
-  if (an > 0 && nt_kind(nt, argv[an - 1]) == NK_KeywordHashNode &&
-      (callee_declares_kwargs(c, m) || m->kwrest_idx >= 0)) an--;
-  int at = m->rest_idx + (only >= 0 ? only : skip);
-  int from = at, to = an - m->npost_rest;
-  if (only >= 0 && from + 1 < to) to = from + 1;
-  for (int k = 0; k < an && k < at; k++)
-    if (nt_kind(nt, argv[k]) == NK_SplatNode) { from = k; to = an; break; }
-  for (int k = from; k < to; k++)
-    if (push_arg_foreign(c, argv[k], elem)) return 1;
-  return 0;
-}
-static int rest_args_foreign(Compiler *c, int si, int skip, int only, TyKind elem) {
-  const NodeTable *nt = c->nt;
-  Scope *m = &c->scopes[si];
-  if (m->rest_idx < 0 || !m->name) return 0;
-  for (int id = 0; id < nt->count; id++) {
-    if (nt_kind(nt, id) != NK_CallNode) continue;
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, m->name) || call_target_scope(c, id) != si) continue;
-    int args = nt_ref(nt, id, "arguments");
-    int an = 0;
-    const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    if (call_rest_args_foreign(c, m, argv, an, skip, only, elem)) return 1;
-  }
-  return 0;
 }
 
 /* Is argument a of scope sc its rest parameter splatted (answers 0) or one
@@ -1487,24 +1478,33 @@ static int rest_push_first(Compiler *c, Scope *sc, const int *argv, int an,
 /* Do the values a push, unshift or insert through a typed array parameter
    stores include one its elements cannot hold? Each argument is its own
    evidence: unified, a Symbol and a String read as one boxed value and were
-   exempt. A splat of the method's own rest parameter is read at the method's
-   call sites. */
+   exempt. The rest parameter's elements are the binding's to check
+   (param_rest_misfits). */
 static int param_push_args_foreign(Compiler *c, Scope *sc, const int *argv, int an,
                                    int from, int splat_index, TyKind elem) {
+  if (splat_index) return 0;
+  for (int ai = from; ai < an; ai++)
+    if (rest_elem_arg(c, sc, argv[ai]) < 0 && push_arg_foreign(c, argv[ai], elem)) return 1;
+  return 0;
+}
+
+/* 1 when a call passing `argv` to method m has parameter `p` store into an
+   array of type `ct` an element of m's rest parameter that `ct` cannot hold
+   (p's store_rest_src): the rest collects its elements boxed, but this call's
+   arguments for it have types. A splat before the rest's position leaves the
+   positions unknown, and every argument from it on is read. */
+int param_rest_misfits(Compiler *c, Scope *m, LocalVar *p, TyKind ct, const int *argv, int an) {
   const NodeTable *nt = c->nt;
-  int si = (int)(sc - c->scopes);
-  for (int ai = from; ai < an; ai++) {
-    int a = argv[ai];
-    /* `rest[k]` is what a splat of runtime length into a builtin expands to */
-    int k = rest_elem_arg(c, sc, a);
-    if (k >= 0) {
-      int whole = nt_kind(nt, a) == NK_SplatNode;
-      if (rest_args_foreign(c, si, whole && splat_index && ai == 0, whole ? -1 : k, elem)) return 1;
-      continue;
-    }
-    if (splat_index) continue;
-    if (push_arg_foreign(c, a, elem)) return 1;
-  }
+  if (!p || !argv || p->store_rest_src <= 0 || m->rest_idx < 0) return 0;
+  if (!ty_is_array(ct) || ct == TY_POLY_ARRAY) return 0;
+  if (an > 0 && nt_kind(nt, argv[an - 1]) == NK_KeywordHashNode &&
+      (callee_declares_kwargs(c, m) || m->kwrest_idx >= 0)) an--;
+  int at = m->rest_idx + p->store_rest_src - 1;
+  int from = at, to = an - m->npost_rest;
+  for (int k = 0; k < an && k < at; k++)
+    if (nt_kind(nt, argv[k]) == NK_SplatNode) { from = k; to = an; break; }
+  for (int k = from; k < to; k++)
+    if (push_arg_foreign(c, argv[k], ty_array_elem(ct))) return 1;
   return 0;
 }
 
@@ -2939,6 +2939,7 @@ int infer_write_types(Compiler *c) {
     /* the value arguments of a push/unshift/insert, each its own evidence */
     const int *elem_argv = NULL;
     int elem_from = 0, elem_an = 0, elem_splat_index = 0;
+    int knode = -1, vnode = -1;  /* the stored key and value, for a plain store */
     if (sp_streq(ty, "CallNode")) {
       recv = nt_ref(nt, id, "receiver");
       const char *name = nt_str(nt, id, "name");
@@ -2963,6 +2964,7 @@ int infer_write_types(Compiler *c) {
             !recv_has_array_write(c, recv)) continue;
         is_push = 1; elem_argv = argv; elem_an = an; vt = push_elem_ty(c, argv[0]);
         for (int ai = 1; ai < an; ai++) vt = ty_unify(vt, push_elem_ty(c, argv[ai]));
+        if (an == 1) vnode = argv[0];
       }
       else if (name && (sp_streq(name, "unshift") || sp_streq(name, "prepend")) && an >= 1) {
         /* unshift(v, ...): every argument is element evidence, like push
@@ -3043,6 +3045,7 @@ int infer_write_types(Compiler *c) {
       else if (name && sp_streq(name, "[]=") && an == 2) {
         is_idx_write = 1; kt = infer_type(c, argv[0]);
         vt = tuple_elem_evidence(c, argv[1], infer_type(c, argv[1]));
+        knode = argv[0]; vnode = argv[1];
         /* a range key is a splice: the RHS contributes element evidence */
         if (kt == TY_RANGE) { is_splice = 1; vt = splice_incoming_elem(c, argv[1]); }
         /* an empty [] / {} literal value carries no element type but is
@@ -3059,6 +3062,7 @@ int infer_write_types(Compiler *c) {
       else if (name && sp_streq(name, "store") && an == 2) {
         /* Hash#store is []= (#2433) */
         is_idx_write = 1; kt = infer_type(c, argv[0]); vt = infer_type(c, argv[1]);
+        knode = argv[0]; vnode = argv[1];
       }
       else if (name && (sp_streq(name, "merge!") || sp_streq(name, "update")) && an >= 1) {
         /* merging hashes into an empty-{} local writes their keys/values:
@@ -3180,6 +3184,8 @@ int infer_write_types(Compiler *c) {
       const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
       if (an != 1) continue;
       kt = infer_type(c, argv[0]); vt = infer_type(c, nt_ref(nt, id, "value"));
+      knode = argv[0];
+      if (!sp_streq(ty, "IndexOperatorWriteNode")) vnode = nt_ref(nt, id, "value");
     }
     else {
       continue;
@@ -3232,6 +3238,26 @@ int infer_write_types(Compiler *c) {
          an UNKNOWN parameter still takes its type from the call site (#2989). */
       if (lv->is_param) {
         if ((!is_push && !is_idx_write && !elem_splat_index) || lv->rbs_seeded) continue;
+        /* A boxed key or value is exempt below. When it is another parameter
+           of the method, boxed because its callers disagree, each call's
+           argument for it is still in hand at the binding: record which
+           parameter it is, for the binding to check (param_src_misfits). */
+        if (!is_splice && vt == TY_POLY)
+          changed |= mask_add(&lv->store_val_src, unassigned_param_read(c, lsc, vnode));
+        if (!is_splice && !is_push && kt == TY_POLY)
+          changed |= mask_add(&lv->store_key_src, unassigned_param_read(c, lsc, knode));
+        /* Each value a push, unshift or insert stores is its own evidence,
+           and a store of the rest parameter's elements is checked at the
+           binding against each call's own rest arguments. */
+        if (elem_argv) {
+          for (int ai = elem_from; ai < elem_an && !elem_splat_index; ai++)
+            if (push_elem_ty(c, elem_argv[ai]) == TY_POLY)
+              changed |= mask_add(&lv->store_val_src, unassigned_param_read(c, lsc, elem_argv[ai]));
+          int rf = rest_push_first(c, lsc, elem_argv, elem_an, elem_from, elem_splat_index);
+          if (rf >= 0 && (lv->store_rest_src == 0 || rf + 1 < lv->store_rest_src)) {
+            lv->store_rest_src = rf + 1; changed = 1;
+          }
+        }
         /* A boxed parameter records what an element write stores, for the
            binding to check each caller's container against; an Integer key
            indexes an array as a push appends to one. A boxed key or value
@@ -3285,12 +3311,6 @@ int infer_write_types(Compiler *c) {
            what keeps an ivar that really does hold ints in its typed
            representation. */
         if (lv->type == TY_POLY) {
-          if (elem_argv) {
-            int rf = rest_push_first(c, lsc, elem_argv, elem_an, elem_from, elem_splat_index);
-            if (rf >= 0 && (lv->boxed_rest_push == 0 || rf + 1 < lv->boxed_rest_push)) {
-              lv->boxed_rest_push = rf + 1; changed = 1;
-            }
-          }
           if (vt != TY_UNKNOWN) {
             TyKind was = lv->boxed_push_elem;
             TyKind now = (was == TY_UNKNOWN) ? vt : (was == vt ? was : TY_POLY);
@@ -4408,6 +4428,37 @@ static int widen_arg_hash(Compiler *c, int arg) {
   return 1;
 }
 
+/* 1 when `v` builds a new array nothing else holds: a literal, `Array.new`,
+   or a builtin that answers a new array. */
+int is_fresh_array(Compiler *c, int v) {
+  static const char *const fresh[] = {
+    "map", "collect", "flat_map", "collect_concat", "filter_map", "select", "filter",
+    "reject", "sort", "sort_by", "reverse", "uniq", "compact", "flatten", "zip",
+    "split", "chars", "bytes", "lines", "scan", "keys", "values", "dup",
+    "take", "drop", "take_while", "drop_while", "rotate", "shuffle", "each_slice",
+    "each_cons", "+", "-", "*", "&", "|", NULL };
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (v < 0) return 0;
+  if (nt_kind(nt, v) == NK_ArrayNode) {
+    int en = 0; const int *ev = nt_arr(nt, v, "elements", &en);
+    for (int k = 0; k < en; k++)
+      if (nt_kind(nt, ev[k]) == NK_SplatNode) return 0;
+    return 1;
+  }
+  if (nt_kind(nt, v) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  int r = nt_ref(nt, v, "receiver");
+  if (!nm || r < 0 || !ty_is_array(infer_type(c, v))) return 0;
+  if (nt_kind(nt, r) == NK_ConstantReadNode)
+    return sp_streq(nm, "new") && sp_streq(nt_str(nt, r, "name"), "Array");
+  TyKind rt = infer_type(c, r);
+  if (rt == TY_UNKNOWN || rt == TY_POLY || ty_is_object(rt)) return 0;
+  if (sp_streq(nm, "to_a")) return !ty_is_array(rt);
+  for (int k = 0; fresh[k]; k++) if (sp_streq(nm, fresh[k])) return 1;
+  return 0;
+}
+
 /* A callee stores into the array argument `arg` names an element its kind
    cannot hold: the caller's own array has to be the general Array. Widens
    a local every write of which is an array literal (pinned, since the
@@ -4429,7 +4480,7 @@ static int widen_arg_array(Compiler *c, int arg) {
       return 1;
     }
     if (local_all_writes_empty_array(c, asc, an)) { al->type = TY_POLY_ARRAY; return 1; }
-    if (local_all_writes_array_literal(c, asc, an)) {
+    if (local_all_writes_fresh_array(c, asc, an)) {
       al->type = TY_POLY_ARRAY; al->poly_array_pin = 1; return 1;
     }
     return 0;
@@ -4437,6 +4488,35 @@ static int widen_arg_array(Compiler *c, int arg) {
   if (ak == NK_GlobalVariableReadNode || ak == NK_ClassVariableReadNode || ak == NK_ConstantReadNode) {
     TyKind *ns = named_array_slot(c, arg);
     if (ns && ty_is_array(*ns) && *ns != TY_POLY_ARRAY) { *ns = TY_POLY_ARRAY; return 1; }
+  }
+  return 0;
+}
+
+/* 1 when a call passing `argv` has parameter `p` store into a container of
+   type `ct` a key or value that `ct` cannot hold, where the method takes that
+   key or value from another of its parameters (p's store_key_src and
+   store_val_src): boxed, since its callers disagree, but this call's
+   argument for it has a type. */
+int param_src_misfits(Compiler *c, LocalVar *p, TyKind ct, const int *argv, int argc) {
+  if (!p || !argv || !(p->store_key_src | p->store_val_src)) return 0;
+  int arr = ty_is_array(ct) && ct != TY_POLY_ARRAY;
+  if (!arr && !(ty_is_hash(ct) && ct != TY_POLY_POLY_HASH)) return 0;
+  for (int j = 0; j < argc && j < 64; j++) {
+    NodeKind ak = nt_kind(c->nt, argv[j]);
+    if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
+    int isk = (int)((p->store_key_src >> j) & 1ULL), isv = (int)((p->store_val_src >> j) & 1ULL);
+    if (!isk && !isv) continue;
+    TyKind t = infer_type(c, argv[j]);
+    if (t == TY_STRBUF) t = TY_STRING;
+    if (t == TY_UNKNOWN || t == TY_POLY || t == TY_VOID) continue;
+    if (arr) {
+      if (isv && t != ty_array_elem(ct)) return 1;
+      continue;
+    }
+    TyKind f = ct;
+    if (isk && (!fold_container_evidence(&f, 0, 0, t, ty_hash_val(ct)) || f != ct)) return 1;
+    f = ct;
+    if (isv && (!fold_container_evidence(&f, 0, 0, ty_hash_key(ct), t) || f != ct)) return 1;
   }
   return 0;
 }
@@ -4611,6 +4691,30 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
         al->type = TY_POLY_POLY_HASH; al->poly_hash_pin = 1; changed = 1;
       }
     }
+    /* A key or value the method stores through a typed container parameter
+       from another of its parameters is checked against this call's
+       argument for it: one the container cannot hold widens it, as a
+       literal of that kind does in infer_write_types. */
+    int src_misfit = !remap && (param_src_misfits(c, p, p->type == TY_POLY ? at : p->type, argv, pos_argc) ||
+                                 param_rest_misfits(c, m, p, p->type == TY_POLY ? at : p->type, argv, argc));
+    /* A caller that hands its own parameters on, as the container and as
+       the key or value, stores them the same way: record it on the caller's
+       container parameter, for its own callers' binding to check. */
+    if (!remap && (p->store_key_src | p->store_val_src)) {
+      Scope *cs = comp_scope_of(c, call_id);
+      int ck = unassigned_param_read(c, cs, argv[arg]);
+      LocalVar *cp = ck >= 0 ? scope_local(cs, cs->pnames[ck]) : NULL;
+      for (int j = 0; cp && !cp->rbs_seeded && j < pos_argc && j < 64; j++) {
+        if (nt_kind(nt, argv[j]) == NK_SplatNode) break;
+        int cj = unassigned_param_read(c, cs, argv[j]);
+        if ((p->store_key_src >> j) & 1ULL) changed |= mask_add(&cp->store_key_src, cj);
+        if ((p->store_val_src >> j) & 1ULL) changed |= mask_add(&cp->store_val_src, cj);
+      }
+    }
+    if (src_misfit && p->type != TY_POLY) {
+      p->type = ty_is_array(p->type) ? TY_POLY_ARRAY : TY_POLY_POLY_HASH;
+      p->push_widened = 1; changed = 1;
+    }
     /* Reverse binding for an ARRAY argument: the callee mutates the very array
        the caller holds, so a push inside the method that widened the parameter
        to a poly array widens the caller's local too. Without this the caller
@@ -4623,18 +4727,24 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
     if (p->push_widened && p->type == TY_POLY_POLY_HASH && ty_is_hash(at))
       changed |= widen_arg_hash(c, argv[arg]);
     /* A BOXED parameter hides the container from its callee, so the element
-       writes through it are checked here, against each caller's own. */
+       writes through it are checked here, against each caller's own. An
+       array the binding cannot widen, where a store of a known kind cannot
+       fit it, is marked for codegen, which refuses it: the store would
+       promote a copy the caller never sees. A boxed store is left to run
+       time, where it may well fit. */
     if (p->type == TY_POLY && ty_is_array(at) && at != TY_POLY_ARRAY &&
-        p->boxed_push_elem != TY_UNKNOWN && p->boxed_push_elem != ty_array_elem(at))
-      changed |= widen_arg_array(c, argv[arg]);
-    if (p->type == TY_POLY && ty_is_array(at) && at != TY_POLY_ARRAY && p->boxed_rest_push > 0 &&
-        call_rest_args_foreign(c, m, argv, argc, p->boxed_rest_push - 1, -1, ty_array_elem(at)))
-      changed |= widen_arg_array(c, argv[arg]);
+        ((p->boxed_push_elem != TY_UNKNOWN && p->boxed_push_elem != ty_array_elem(at)) || src_misfit)) {
+      int w = widen_arg_array(c, argv[arg]);
+      changed |= w;
+      if (!w && (src_misfit || p->boxed_push_elem != TY_POLY) && c->store_misfit_arg && argv[arg] < c->node_cap)
+        c->store_misfit_arg[argv[arg]] = 1;
+    }
     if (p->type == TY_POLY && ty_is_hash(at) && at != TY_POLY_POLY_HASH &&
-        p->boxed_store_key != TY_UNKNOWN) {
+        (p->boxed_store_key != TY_UNKNOWN || src_misfit)) {
       TyKind folded = at;
-      int fits = fold_container_evidence(&folded, 0, 0, p->boxed_store_key, p->boxed_store_val);
-      if (!fits || folded != at) changed |= widen_arg_hash(c, argv[arg]);
+      int fits = p->boxed_store_key == TY_UNKNOWN ||
+                 fold_container_evidence(&folded, 0, 0, p->boxed_store_key, p->boxed_store_val);
+      if (src_misfit || !fits || folded != at) changed |= widen_arg_hash(c, argv[arg]);
     }
     if (merged == TY_PROC) {
       TyKind pr = proc_ret_of(c, argv[arg]);
@@ -5548,6 +5658,11 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
     for (int e = 0; e < kn; e++)
       if (nt_kind(nt, ke[e]) == NK_AssocSplatNode) kw_splat = 1;
   }
+  /* A keyword_init: false Struct takes the keywords as one positional Hash,
+     its first member. With a `**` that Hash is nil when no keyword came, so
+     the member is boxed, and the members after it are left nil. */
+  int kwf = cls->kw_init == -1;
+  if (kwf && !kw_splat) kwh = -1;
   for (int a = 0; a < cls->nivars; a++) {
     /* a member not supplied at this construction can be nil */
     const char *mname = cls->ivars[a] + 1;
@@ -5555,7 +5670,7 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
     const int *ke = kwh >= 0 ? nt_arr(nt, kwh, "elements", &kn) : NULL;
     int vnode = -1;
     if (kwh >= 0) {
-      for (int e = 0; e < kn; e++) {
+      for (int e = 0; e < kn && !kwf; e++) {
         int key = nt_ref(nt, ke[e], "key");
         if (key >= 0 && nt_type(nt, key) && sp_streq(nt_type(nt, key), "SymbolNode") &&
             nt_str(nt, key, "value") && sp_streq(nt_str(nt, key, "value"), mname)) { vnode = nt_ref(nt, ke[e], "value"); break; }
@@ -5563,7 +5678,7 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
     }
     else if (a < an) vnode = argv[a];
     if (class_ivar_pinned(cls, cls->ivars[a])) continue;
-    if ((splat_at >= 0 && a >= splat_at) || (kw_splat && vnode < 0)) {
+    if ((splat_at >= 0 && a >= splat_at) || (kw_splat && vnode < 0 && (!kwf || a == 0))) {
       TyKind sm = ty_unify(cls->ivar_types[a], TY_POLY);
       if (sm != cls->ivar_types[a]) { cls->ivar_types[a] = sm; changed = 1; }
       continue;

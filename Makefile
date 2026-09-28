@@ -1025,6 +1025,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (#4480: a typed array copied into a mutated general-Array parameter compiled)"; ok=0; \
 	else grep -q "which the method mutates" "$$tmp/tp.out" || \
 	  { echo "reject-test: FAIL (#4480: rejected without saying why)"; sed -n 1,5p "$$tmp/tp.out"; ok=0; }; fi; \
+	t=test/reject/typed_array_held_into_boxed_param_store.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/tb.c" >"$$tmp/tb.out" 2>&1; then \
+	  echo "reject-test: FAIL (a typed array held by the caller, stored into through a boxed parameter, compiled)"; ok=0; \
+	else grep -q "which the method stores elements of other kinds into" "$$tmp/tb.out" || \
+	  { echo "reject-test: FAIL (a held typed array into a boxed parameter's store rejected without saying why)"; sed -n 1,5p "$$tmp/tb.out"; ok=0; }; fi; \
 	t=test/reject/const_get_runtime_name.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/cg.c" >"$$tmp/cg.out" 2>&1; then \
 	  echo "reject-test: FAIL (a const_get with a run-time name compiled)"; ok=0; \
@@ -2168,6 +2173,7 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -q 'sp_PolyPolyHash \* iv_traps;' "$$tmp/hos.c" && grep -q 'sp_PolyPolyHash \* iv_hooks;' "$$tmp/hos.c" || { echo "infer-test: FAIL (#4889 an index write into (@h ||= {}) left @h boxed)"; ok=0; }; \
 	grep -q 'sp_OrwMem_poke(sp_OrwMem \*self, sp_int lv_addr, sp_int lv_value)' "$$tmp/hos.c" || { echo "infer-test: FAIL (#4889 a Hash index write widened an unrelated user []=)"; ok=0; }; \
 	SPINEL_SPLIT_STRICT=1 $(SPINEL) --jobs=3 test/dispatch_override_param_list.rb -o "$$tmp/split" >/dev/null 2>&1 && "$$tmp/split" | cmp -s - test/dispatch_override_param_list.rb.expected || { echo "infer-test: FAIL (#4847 --jobs=3 split build)"; ok=0; }; \
+	$(SPINEL) test/io_buffer_set_value_boxed.rb -c --no-line-map -o "$$tmp/iob.c" >/dev/null 2>&1 && $(CC) -fsyntax-only -Werror=implicit-function-declaration -Ilib "$$tmp/iob.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (the emitted C calls an IO::Buffer function it does not declare)"; ok=0; }; \
 	$(SPINEL) test/poly_array_break_no_setjmp.rb -c --no-line-map -o "$$tmp/pab.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_array_break_no_setjmp: -c)"; ok=0; }; \
 	awk '/^static .*sp_Board_[a-z_]*\(.*\) \{$$/ {b=1} b {print} b && /^}/ {b=0}' "$$tmp/pab.c" > "$$tmp/pab_board.c"; \
 	[ -s "$$tmp/pab_board.c" ] && ! grep -q 'sp_brk_push' "$$tmp/pab_board.c" || { echo "infer-test: FAIL (#4916 a break out of a walk over an object array pays a setjmp)"; ok=0; }; \

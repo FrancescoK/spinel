@@ -302,6 +302,30 @@ char g_ren_from[MAX_RENAME][96];
 char g_ren_to[MAX_RENAME][112];
 int  g_nren = 0;
 int  g_block_id = -1;
+
+RenPark ren_park(int from) {
+  RenPark p = { g_nren, from, g_nren - from, NULL, NULL };
+  if (p.n > 0) {
+    p.f = (char (*)[96])malloc(sizeof(char[96]) * (size_t)p.n);
+    p.t = (char (*)[112])malloc(sizeof(char[112]) * (size_t)p.n);
+    if (p.f && p.t) {
+      memcpy(p.f, g_ren_from + from, sizeof(char[96]) * (size_t)p.n);
+      memcpy(p.t, g_ren_to + from, sizeof(char[112]) * (size_t)p.n);
+    }
+    else { free(p.f); free(p.t); p.f = NULL; p.t = NULL; }
+  }
+  g_nren = from;
+  return p;
+}
+
+void ren_unpark(RenPark *p) {
+  g_nren = p->sv;
+  if (p->f && p->t) {
+    memcpy(g_ren_from + p->from, p->f, sizeof(char[96]) * (size_t)p->n);
+    memcpy(g_ren_to + p->from, p->t, sizeof(char[112]) * (size_t)p->n);
+  }
+  free(p->f); free(p->t);
+}
 /* comp_ntype's yield hook: while a literal block is spliced, a YieldNode's
    value is THAT block's tail, not the union the node cache holds over every
    call site -- a second site whose block answers another class was compiled
