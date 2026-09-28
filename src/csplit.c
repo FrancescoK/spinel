@@ -106,6 +106,52 @@ static void ident_before(const char *t, size_t lo, size_t p, char *out, size_t o
   memcpy(out, t + p, l); out[l] = 0;
 }
 
+/* Does the word at [w, w+wl) introduce a trailing attribute group? */
+static int is_attr_word(const char *w, size_t wl) {
+  return (wl == 13 && memcmp(w, "__attribute__", 13) == 0) ||
+         (wl == 7 && memcmp(w, "__asm__", 7) == 0) ||
+         (wl == 5 && memcmp(w, "__asm", 5) == 0) ||
+         (wl == 3 && memcmp(w, "asm", 3) == 0);
+}
+
+/* The end of [st, en) with any trailing attribute groups -- `__attribute__
+   ((...))`, `__asm__ (...)` -- and the whitespace around them dropped, so
+   what is left ends at the declaration's own last character. The system
+   headers a program reaches through put a trailing attribute in both places
+   this reader decides something from the last character: macOS spells a
+   constant `static const uuid_t UUID_NULL __attribute__ ((unused)) = {...}`
+   (<uuid/uuid.h>, via <pwd.h>) and a tag `struct __darwin_arm_sve_z_state
+   {...} __attribute__((aligned(4)))` (<mach/machine/_structs.h>). Scanned
+   forwards, so a `(` inside a string literal is not a paren (#4847). */
+static size_t trim_trailing_attrs(const char *t, size_t st, size_t en) {
+  size_t keep = st;
+  for (size_t i = st; i < en; ) {
+    char ch = t[i];
+    if (ch == '"' || ch == '\'') { i = skip_lit(t, en, i); keep = i; continue; }
+    if (!is_idch(ch)) {
+      i++;
+      if (ch != ' ' && ch != '\n' && ch != '\t' && ch != '\r') keep = i;
+      continue;
+    }
+    size_t s = i;
+    while (i < en && is_idch(t[i])) i++;
+    if (is_attr_word(t + s, i - s)) {
+      while (i < en && (t[i] == ' ' || t[i] == '\n' || t[i] == '\t')) i++;
+      if (i < en && t[i] == '(') {
+        int d = 0;
+        for (; i < en; i++) {
+          if (t[i] == '"' || t[i] == '\'') { i = skip_lit(t, en, i) - 1; continue; }
+          if (t[i] == '(') d++;
+          else if (t[i] == ')' && --d == 0) { i++; break; }
+        }
+      }
+      continue;   /* an attribute is not the declaration's own content */
+    }
+    keep = i;
+  }
+  return keep;
+}
+
 /* The item's leading words, past __extension__. */
 static int starts_with_word(const char *t, size_t st, size_t en, const char *w) {
   size_t i = st;
@@ -348,8 +394,7 @@ int c_split(const char *pre_path, const char *out_dir, int nparts,
              starts_with_word(t, x->st, en, "enum")) {
       /* `struct X { ... };` or `struct X;` declares a tag; anything with a
          declarator after it (`struct X x;`) is a variable */
-      size_t p = en - 1;   /* the `;` */
-      while (p > x->st && (t[p - 1] == ' ' || t[p - 1] == '\n' || t[p - 1] == '\t')) p--;
+      size_t p = trim_trailing_attrs(t, x->st, en - 1);   /* before the `;` */
       int words = 0;
       for (size_t q = x->st; q < en; ) {
         if (t[q] == '"' || t[q] == '\'') { q = skip_lit(t, en, q); continue; }
@@ -398,7 +443,7 @@ int c_split(const char *pre_path, const char *out_dir, int nparts,
         if (e > r && e - r < sizeof x->name) { memcpy(x->name, t + r, e - r); x->name[e - r] = 0; }
         break;
       }
-      if (!x->name[0]) ident_before(t, x->st, lim, x->name, sizeof x->name);
+      if (!x->name[0]) ident_before(t, x->st, trim_trailing_attrs(t, x->st, lim), x->name, sizeof x->name);
       if (!x->name[0]) { ok = 0; break; }
     }
     nit++;
