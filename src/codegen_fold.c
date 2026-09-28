@@ -3213,7 +3213,8 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   TyKind rt = comp_ntype(c, arr);
   /* A union-typed source (e.g. a `= []`-defaulted param, inferred poly) is
      materialized to a poly array, so the [elem, index] pair enumerator drains
-     it the same as a typed array with poly elements. */
+     it the same as a typed array with poly elements; a Hash, a Range or an
+     Enumerator there gives its items (sp_poly_ewi_items). */
   int poly_src = (rt == TY_POLY);
   if (poly_src) rt = TY_POLY_ARRAY;
   if (!ty_is_array(rt)) return 0;
@@ -3253,7 +3254,7 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   Buf rb; memset(&rb, 0, sizeof rb);
   if (poly_src) {
     Buf bx; memset(&bx, 0, sizeof bx); emit_boxed(c, arr, &bx);
-    buf_printf(&rb, "sp_poly_to_poly_array(%s)", bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+    buf_printf(&rb, "sp_poly_ewi_items(%s)", bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
   }
   else emit_expr(c, arr, &rb);
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
