@@ -21338,9 +21338,19 @@ static int emit_ie_poly(Compiler *c, int id, Buf *b) {
     g_pre = &ab; g_indent = sv_ind + 1;
     int sv_node = g_ie_poly_node; g_ie_poly_node = id;
     int sv_disc = g_ie_discard_value; g_ie_discard_value = !keep;
-    int sv_nil = g_ie_nil_ivars; g_ie_nil_ivars = 1;
+    int sv_nil = g_ie_nil_ivars; g_ie_nil_ivars = id + 1;
+    /* the receiver already evaluated into _t<tv> for the dispatch */
+    g_argov_node[g_n_argov] = recv;
+    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tv);
+    g_n_argov++;
+    /* typed as the boxed self, not as a lone candidate class */
+    int *fsnap = ie_body_retype(c, body, -2 - id);
+    if (fsnap) infer_subtree(c, body);
     Buf vb; memset(&vb, 0, sizeof vb);
     emit_call(c, id, &vb);
+    TyKind vty = bn > 0 ? comp_ntype(c, bb[bn - 1]) : TY_NIL;
+    ie_body_restore(c, fsnap);
+    g_n_argov--;
     g_ie_nil_ivars = sv_nil;
     g_ie_discard_value = sv_disc;
     g_ie_poly_node = sv_node;
@@ -21348,7 +21358,6 @@ static int emit_ie_poly(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent);
     buf_puts(g_pre, arms ? "else {\n" : "{\n");
     buf_puts(g_pre, ab.p ? ab.p : "");
-    TyKind vty = bn > 0 ? comp_ntype(c, bb[bn - 1]) : TY_NIL;
     if (ret == TY_POLY && vty != TY_POLY) vty = TY_POLY;
     emit_indent(g_pre, g_indent + 1);
     if (keep && vty == ret && vb.p) buf_printf(g_pre, "_t%d = %s;\n", tr, vb.p);
@@ -30825,6 +30834,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   }
 
   int ie_direct = recv >= 0 && (sp_streq(name, "instance_eval") || sp_streq(name, "instance_exec"));
+  /* a nested block's ivars are its own receiver's */
+  if (ie_direct && g_ie_nil_ivars && g_ie_nil_ivars != id + 1) {
+    int sv_nil = g_ie_nil_ivars; g_ie_nil_ivars = 0;
+    emit_call(c, id, b);
+    g_ie_nil_ivars = sv_nil;
+    return;
+  }
   if (ie_direct && g_ie_poly_node != id && comp_ntype(c, recv) == TY_POLY && emit_ie_poly(c, id, b))
     return;
   /* instance_eval/exec on a non-object receiver (nil, a scalar): the block runs

@@ -217,7 +217,8 @@ extern int g_ie_class_id;
    block's value is discarded, so the last statement emits as a statement
    (not coerced to an expression, which would fail for e.g. a trailing puts). */
 extern int g_ie_discard_value;
-/* an instance_eval/exec body run on a receiver without ivars: they read nil */
+/* an instance_eval/exec body run on a receiver without ivars: they read nil
+   (the call id + 1, 0 when off) */
 extern int g_ie_nil_ivars;
 /* While emitting a rescue handler: the C var names holding the caught
    exception's class/message, so a bare `raise` can re-raise. */
