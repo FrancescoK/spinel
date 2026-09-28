@@ -26096,7 +26096,21 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         emit_int_expr(c, argv[0], b);
         buf_printf(b, "); lv_%s = _t%d; _t%d; })", bnm ? rename_local(bnm) : "?", trd, trd);
       }
-      else { buf_puts(b, "sp_File_read_n("); buf_puts(b, r); buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else {
+        /* read(nil) is read with no length: the rest of the stream */
+        TyKind lt0 = comp_ntype(c, argv[0]);
+        if (lt0 == TY_NIL) {
+          buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b);
+          buf_printf(b, "); sp_File_read(%s); })", r);
+        }
+        else if (lt0 == TY_POLY) {
+          int tl = ++g_tmp;
+          buf_printf(b, "({ sp_RbVal _t%d = ", tl); emit_boxed(c, argv[0], b);
+          buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? sp_File_read(%s) : sp_File_read_n(%s, sp_poly_arg_int_chk(_t%d)); })",
+                     tl, r, r, tl);
+        }
+        else { buf_puts(b, "sp_File_read_n("); buf_puts(b, r); buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+      }
       free(rb.p); return;
     }
     if (sp_streq(name, "gets") || sp_streq(name, "readline")) {
