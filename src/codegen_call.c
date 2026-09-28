@@ -10460,7 +10460,10 @@ static int ctor_init_uses_block(Compiler *c, int initm) {
    previous g_ctor_blk_tmp for the caller to restore. Only a dispatch with
    an arm that takes the proc makes one: an arm splicing the block into a
    yielding initialize runs it with the new object as self, a body the
-   caller's self need not be able to compile. */
+   caller's self need not be able to compile. The builtin arms (`Array.new(n)
+   { }`, `Hash.new { }`) take the proc too, so a dispatch no class splices
+   into makes it for them. */
+static int ctor_block_splices(Compiler *c, int id);
 static int hoist_ctor_block(Compiler *c, int id, Buf *b) {
   int sv = g_ctor_blk_tmp;
   g_ctor_blk_tmp = -1;
@@ -10470,7 +10473,7 @@ static int hoist_ctor_block(Compiler *c, int id, Buf *b) {
     int im = comp_method_in_chain(c, k, "initialize", NULL);
     takes = ctor_init_takes_block(c, im) && ctor_init_uses_block(c, im);
   }
-  if (!takes) return sv;
+  if (!takes && ctor_block_splices(c, id)) return sv;
   Buf pb; memset(&pb, 0, sizeof pb);
   emit_ctor_block_value(c, id, &pb);
   int t = ++g_tmp;
