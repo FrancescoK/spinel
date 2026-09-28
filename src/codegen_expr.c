@@ -11,14 +11,7 @@ static int subtree_has_unresolved_const(Compiler *c, int id) {
     const char *cn = nt_str(c->nt, id, "name");
     if (!cn) return 0;
     if (comp_const(c, cn) || comp_class_index(c, cn) >= 0) return 0;
-    static const char *const wellknown[] = {
-      "Object", "BasicObject", "Kernel", "Module", "Class", "Array", "Hash",
-      "String", "Integer", "Float", "Symbol", "Regexp", "Range", "NilClass",
-      "TrueClass", "FalseClass", "Numeric", "Comparable", "Enumerable",
-      "IO", "File", "Dir", "Math", "GC", "Process", "ENV", "ARGV",
-      "STDOUT", "STDERR", "STDIN", NULL };
-    for (int bi = 0; wellknown[bi]; bi++)
-      if (sp_streq(cn, wellknown[bi])) return 0;
+    if (comp_is_wellknown_const(cn)) return 0;
     return 1;
   }
   int nr = nt_num_refs(c->nt, id);
@@ -2786,19 +2779,9 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       }
       else if (sp_streq(vt, "ConstantReadNode")) {
         const char *cn = nt_str(nt, v, "name");
-        static const char *const builtins[] = {
-          "Object", "BasicObject", "Kernel", "Module", "Class", "Array", "Hash",
-          "String", "Integer", "Float", "Symbol", "Regexp", "Range", "NilClass",
-          "TrueClass", "FalseClass", "Numeric", "Comparable", "Enumerable",
-          "IO", "File", "Dir", "Math", "GC", "Process", "ENV", "ARGV",
-          "STDOUT", "STDERR", "STDIN", NULL
-        };
         if (cn) {
           if (comp_const(c, cn) || comp_class_index(c, cn) >= 0) res = "constant";
-          if (!res) {
-            for (int bi = 0; builtins[bi]; bi++)
-              if (sp_streq(cn, builtins[bi])) { res = "constant"; break; }
-          }
+          if (!res && comp_is_wellknown_const(cn)) res = "constant";
           /* exception classes are constants too (#2767) */
           if (!res && (is_builtin_exception_name(cn) || is_builtin_class_name(cn)))
             res = "constant";
