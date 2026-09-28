@@ -4150,10 +4150,12 @@ int desugar_define_method_captures(Compiler *c) {
    were copied by value -- the writes were lost. Named, the param takes the
    same path a `&blk` does (mirrors __anon_kwrest for `**`). */
 /* `define_method(:m) { |a, k: 1, **kw| ... }` in a class body ->
-   `def m(a, k: 1, **kw) ... end`. A defined method takes its keywords as a
-   method does, and the call sites and the method's own binding of them read
-   a DefNode's parameters; the define_method scope registers only its
-   positionals. Blocks without keywords keep the define_method form. */
+   `def m(a, k: 1, **kw) ... end`, and `define_singleton_method` -> `def
+   self.m`. A defined method takes its keywords, rest, post and block
+   parameters as a method does, and the call sites and the method's own
+   binding of them read a DefNode's parameters; the define_method scope
+   registers only its required and optional positionals. Blocks with only
+   those keep the define_method form. */
 int desugar_define_method_keywords(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -4165,10 +4167,13 @@ int desugar_define_method_keywords(Compiler *c) {
     if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
     int bn = 0; const int *bv = nt_arr(nt, body, "body", &bn);
     for (int i = 0; i < bn; i++) {
-      int id = bv[i];
-      if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "receiver") >= 0) continue;
+      int id = dm_stmt_call(nt, bv[i]);
+      if (id < 0) continue;
       const char *cn = nt_str(nt, id, "name");
-      if (!cn || !sp_streq(cn, "define_method")) continue;
+      int recv = nt_ref(nt, id, "receiver");
+      int single = cn && sp_streq(cn, "define_singleton_method") && ck != NK_SingletonClassNode &&
+                   (recv < 0 || nt_kind(nt, recv) == NK_SelfNode);
+      if (!cn || (!single && (!sp_streq(cn, "define_method") || recv >= 0))) continue;
       int args = nt_ref(nt, id, "arguments");
       int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
       if (an != 1) continue;
@@ -4180,21 +4185,33 @@ int desugar_define_method_keywords(Compiler *c) {
       if (bp < 0 || nt_kind(nt, bp) != NK_BlockParametersNode) continue;
       int pn = nt_ref(nt, bp, "parameters");
       if (pn < 0) continue;
-      int kn = 0; nt_arr(nt, pn, "keywords", &kn);
-      if (kn == 0 && nt_ref(nt, pn, "keyword_rest") < 0) continue;
+      int kn = 0, pon = 0;
+      nt_arr(nt, pn, "keywords", &kn);
+      nt_arr(nt, pn, "posts", &pon);
+      int rest = nt_ref(nt, pn, "rest");
+      if (kn == 0 && pon == 0 && nt_ref(nt, pn, "keyword_rest") < 0 && nt_ref(nt, pn, "block") < 0 &&
+          (rest < 0 || nt_kind(nt, rest) != NK_RestParameterNode)) continue;
+      if (single && id != bv[i]) continue;
       int def = fwd_new_node_like(nt, id, "DefNode");
-      if (def < 0) continue;
+      int dself = single ? fwd_new_node_like(nt, id, "SelfNode") : -1;
+      if (def < 0 || (single && dself < 0)) continue;
       nt_node_set_str(nt, def, "name", mname);
       nt_node_set_ref(nt, def, "parameters", pn);
       nt_node_set_ref(nt, def, "body", nt_ref(nt, blk, "body"));
-      nt_node_set_ref(nt, def, "receiver", -1);
-      int *nb = malloc(sizeof(int) * (size_t)bn);
-      if (!nb) continue;
-      memcpy(nb, bv, sizeof(int) * (size_t)bn);
-      nb[i] = def;
-      nt_node_set_arr(nt, body, "body", nb, bn);
-      free(nb);
-      bv = nt_arr(nt, body, "body", &bn);
+      nt_node_set_ref(nt, def, "receiver", dself);
+      if (id != bv[i]) {
+        /* `private define_method(...)` -> `private def ...` */
+        nt_node_set_arr(nt, nt_ref(nt, bv[i], "arguments"), "arguments", &def, 1);
+      }
+      else {
+        int *nb = malloc(sizeof(int) * (size_t)bn);
+        if (!nb) continue;
+        memcpy(nb, bv, sizeof(int) * (size_t)bn);
+        nb[i] = def;
+        nt_node_set_arr(nt, body, "body", nb, bn);
+        free(nb);
+        bv = nt_arr(nt, body, "body", &bn);
+      }
       /* the parameters and body are the def's alone now: passes that scan
          every block or call must not reach them through the old nodes */
       nt_node_reset(nt, blk, "NilNode");
