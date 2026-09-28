@@ -9885,12 +9885,36 @@ static int attr_writer_named(Compiler *c, const char *name) {
   return 0;
 }
 
+/* File::Stat's predicates, which the TY_IO arms answer for the handle a stat
+   is carried in: the mode predicates by their slot in sp_stat_pred (zero?,
+   slot 1, has its own poly arm), the type predicates by theirs in
+   sp_stat_type_pred plus 100. -1 for any other name. */
+static int boxed_stat_pred(const char *name) {
+  static const char *const spred[] = { "pipe?", "", "readable?", "writable?",
+                                       "executable?", "blockdev?", "chardev?",
+                                       "size?", NULL };
+  static const char *const tpred[] = { "file?", "directory?", "symlink?",
+                                       "owned?", "grpowned?", "setuid?",
+                                       "setgid?", "sticky?", "socket?", NULL };
+  for (int k = 0; spred[k]; k++) if (spred[k][0] && sp_streq(name, spred[k])) return k;
+  for (int k = 0; tpred[k]; k++) if (sp_streq(name, tpred[k])) return 100 + k;
+  return -1;
+}
+
 /* A File::Stat rides in the same boxed handle as an IO (its mode "stat" or
    "lstat") and answers none of the IO methods: CRuby's NoMethodError. */
 static void emit_stat_handle_nomethod(int th, int tv, const char *name, Buf *b) {
   buf_printf(b, "if (_t%d->mode && (strcmp(_t%d->mode, \"stat\") == 0 || "
                 "strcmp(_t%d->mode, \"lstat\") == 0)) sp_raise_poly_nomethod(\"%s\", _t%d); ",
              th, th, th, name, tv);
+}
+/* The reverse: File::Stat's own methods, which a File, a pipe or a standard
+   stream does not have: CRuby's NoMethodError for any handle not a stat's. */
+static void emit_stat_handle_only(int th, const char *name, Buf *b) {
+  buf_printf(b, "if (!(_t%d->mode && (strcmp(_t%d->mode, \"stat\") == 0 || "
+                "strcmp(_t%d->mode, \"lstat\") == 0))) "
+                "sp_raise_poly_nomethod(\"%s\", sp_box_obj(_t%d, SP_BUILTIN_IO)); ",
+             th, th, th, name, th);
 }
 
 /* The descriptor controls a boxed IO answers, at CRuby's arities: pos= and
@@ -25359,7 +25383,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           a condition it was refused as non-bool. IO#wait stays off the list,
           ConditionVariable#wait shares the name. */
        ((sp_streq(name, "wait_readable") || sp_streq(name, "wait_writable") ||
-         sp_streq(name, "wait_priority")) && argc <= 1))) {
+         sp_streq(name, "wait_priority")) && argc <= 1) ||
+       /* File::Stat's predicates: a stat read out of a container is the
+          same boxed handle. Not where a class method may own the name. */
+       (argc == 0 && boxed_stat_pred(name) >= 0 && !class_method_named(c, name)))) {
     int iocand = 0;
     for (int k = 0; k < c->nclasses && !iocand; k++) {
       /* a native class's methods are its declared bindings, which is the
@@ -25565,6 +25592,16 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_File_path(_t%d); })", tio2);
       else if (sp_streq(name, "readlines")) buf_printf(b, "sp_File_readlines(_t%d); })", tio2);
       else if (sp_streq(name, "rewind")) buf_printf(b, "sp_File_rewind(_t%d); })", tio2);
+      /* a stat's predicates, answered as the TY_IO arms answer them, for a
+         stat's handle only */
+      else if (argc == 0 && boxed_stat_pred(name) >= 100) {
+        emit_stat_handle_only(tio2, name, b);
+        buf_printf(b, "sp_stat_type_pred(_t%d, %d); })", tio2, boxed_stat_pred(name) - 100);
+      }
+      else if (argc == 0 && boxed_stat_pred(name) >= 0) {
+        emit_stat_handle_only(tio2, name, b);
+        buf_printf(b, "sp_stat_pred(_t%d, %d); })", tio2, boxed_stat_pred(name));
+      }
       /* the same answers the typed-receiver arms give (#2792 semantics):
          sync reads the handle kind, sync= flushes on a truthy value and
          answers it (#4229) */

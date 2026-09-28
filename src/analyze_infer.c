@@ -5667,6 +5667,22 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         return an_poly_concrete(c, name, TY_STRING);
       if (sp_streq(name, "readlines")) return an_poly_concrete(c, name, TY_STR_ARRAY);
       if (sp_streq(name, "rewind")) return an_poly_concrete(c, name, TY_INT);
+      /* a stat's predicates, as the TY_IO arms type them, where the poly-IO
+         arm emits them (not where a class method may own the name): size?
+         is the int-or-nil count */
+      int stat_pred_cm = 0;
+      for (int k = 0; k < c->nclasses && !stat_pred_cm; k++)
+        if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) stat_pred_cm = 1;
+      if (argc == 0 && !stat_pred_cm && sp_streq(name, "size?")) return an_poly_concrete(c, name, TY_INT);
+      if (argc == 0 && !stat_pred_cm && (sp_streq(name, "pipe?") || sp_streq(name, "readable?") ||
+                        sp_streq(name, "writable?") || sp_streq(name, "executable?") ||
+                        sp_streq(name, "blockdev?") || sp_streq(name, "chardev?") ||
+                        sp_streq(name, "file?") || sp_streq(name, "directory?") ||
+                        sp_streq(name, "symlink?") || sp_streq(name, "owned?") ||
+                        sp_streq(name, "grpowned?") || sp_streq(name, "setuid?") ||
+                        sp_streq(name, "setgid?") || sp_streq(name, "sticky?") ||
+                        sp_streq(name, "socket?")))
+        return an_poly_concrete(c, name, TY_BOOL);
       if (sp_streq(name, "puts") || sp_streq(name, "print") || sp_streq(name, "putc"))
         return an_poly_concrete(c, name, TY_NIL);
       /* printf answers the boxed nil the TY_IO arm answers */
