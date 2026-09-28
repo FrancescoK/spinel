@@ -13999,6 +13999,119 @@ static int an_call_targets_scope(Compiler *c, int u, int mi2, Scope *m2) {
   return comp_method_in_class(c, cid, "initialize") == mi2;
 }
 
+/* The parameter twin of narrow_locals_from_arrays.
+
+   An array's element type is only known HERE, after the fixpoint: while it was
+   still TY_POLY_ARRAY every read of it answered poly. narrow_locals_from_arrays
+   repairs the local that took that answer -- `b = arr[i]` becomes the element
+   type once `arr` narrows. A parameter handed the same expression,
+   `f(arr[i])`, had no such repair: it bound the poly, the later narrowing never
+   reached it, and the callee boxed every use of a value the caller holds
+   unboxed. `@col[q]` passed to `write_column(wcol)` made `wcol * 4` an
+   sp_poly_mul with a boxed argument and a GC root slot, beside a local holding
+   that same element as a plain sp_int.
+
+   Sound for the same reason the binding that produced the poly was: the
+   parameter is re-derived from the arguments at the call sites
+   infer_param_types itself binds from. The extra condition is that the
+   parameter is not WRITTEN in the callee -- a write is a contribution only the
+   fixpoint saw, and re-deriving from the arguments alone would drop it. Every
+   argument must be an index read of an array that narrowed to the SAME element
+   type, as the local rule insists of every write. */
+static int narrow_params_from_arrays(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (c->nscopes <= 0) return 0;
+  int *off = (int *)malloc(sizeof(int) * (size_t)c->nscopes);
+  if (!off) return 0;
+  int total = 0;
+  for (int i = 0; i < c->nscopes; i++) {
+    int np = c->scopes[i].nparams;
+    if (np <= 0) { off[i] = -1; continue; }
+    off[i] = total; total += np;
+  }
+  if (total <= 0) { free(off); return 0; }
+  TyKind *elem = (TyKind *)malloc(sizeof(TyKind) * (size_t)total);
+  signed char *ok = (signed char *)malloc((size_t)total);
+  signed char *saw = (signed char *)calloc((size_t)total, 1);
+  if (!elem || !ok || !saw) { free(off); free(elem); free(ok); free(saw); return 0; }
+  for (int i = 0; i < total; i++) { elem[i] = TY_UNKNOWN; ok[i] = 1; }
+
+  for (int u = 0; u < nt->count; u++) {
+    if (nt_kind(nt, u) != NK_CallNode) continue;
+    int tgt[2], ntg = 0;
+    an_call_targets_of(c, u, tgt, &ntg);
+    for (int t = 0; t < ntg; t++) {
+      int mi = tgt[t];
+      if (mi < 0 || mi >= c->nscopes || off[mi] < 0) continue;
+      int np = c->scopes[mi].nparams;
+      int argsN = nt_ref(nt, u, "arguments");
+      int argc = 0;
+      const int *argv = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &argc) : NULL;
+      for (int pj = 0; pj < np; pj++) {
+        int slot = off[mi] + pj;
+        if (!ok[slot]) continue;
+        /* a call site that does not supply this position says nothing this
+           pass can read (a default, a splat): give the slot up */
+        if (!argv || pj >= argc) { ok[slot] = 0; continue; }
+        int a = argv[pj];
+        const char *aty = nt_type(nt, a);
+        /* A local holding the element is the same evidence one step on:
+           narrow_locals_from_arrays has just given it the element type, and
+           `w = arr[i]; f(w)` is how a caller's own repair reads. Taken from
+           the slot rather than infer_type, whose node cache still answers the
+           poly this pass exists to undo. */
+        if (aty && sp_streq(aty, "LocalVariableReadNode")) {
+          const char *ln = nt_str(nt, a, "name");
+          Scope *ls = ln ? comp_scope_of(c, a) : NULL;
+          LocalVar *lv = ls ? scope_local(ls, ln) : NULL;
+          TyKind lt = lv ? lv->type : TY_UNKNOWN;
+          if (!lv || lt == TY_UNKNOWN || lt == TY_POLY || lt == TY_VOID || lt == TY_NIL)
+            { ok[slot] = 0; continue; }
+          if (!saw[slot]) { elem[slot] = lt; saw[slot] = 1; }
+          else if (elem[slot] != lt) ok[slot] = 0;
+          continue;
+        }
+        if (!aty || !sp_streq(aty, "CallNode")) { ok[slot] = 0; continue; }
+        const char *cn = nt_str(nt, a, "name");
+        int crecv = nt_ref(nt, a, "receiver");
+        int can = 0; { int ca = nt_ref(nt, a, "arguments"); if (ca >= 0) nt_arr(nt, ca, "arguments", &can); }
+        int idx_op = cn && (sp_streq(cn, "[]") || sp_streq(cn, "at")) && can == 1;
+        int end_op = cn && (sp_streq(cn, "first") || sp_streq(cn, "last")) && can == 0;
+        if ((!idx_op && !end_op) || crecv < 0) { ok[slot] = 0; continue; }
+        TyKind rt = infer_type(c, crecv);
+        TyKind ec = ty_is_obj_array(rt) ? ty_object(ty_obj_array_class(rt))
+                  : (rt == TY_INT_ARRAY_ARRAY) ? TY_INT_ARRAY
+                  : (rt == TY_FLOAT_ARRAY_ARRAY) ? TY_FLOAT_ARRAY
+                  : (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY || rt == TY_STR_ARRAY)
+                    ? ty_array_elem(rt) : TY_UNKNOWN;
+        if (ec == TY_UNKNOWN) { ok[slot] = 0; continue; }
+        if (!saw[slot]) { elem[slot] = ec; saw[slot] = 1; }
+        else if (elem[slot] != ec) ok[slot] = 0;
+      }
+    }
+  }
+
+  int any = 0;
+  for (int mi = 0; mi < c->nscopes; mi++) {
+    if (off[mi] < 0) continue;
+    Scope *m = &c->scopes[mi];
+    for (int pj = 0; pj < m->nparams; pj++) {
+      int slot = off[mi] + pj;
+      if (!ok[slot] || !saw[slot] || elem[slot] == TY_UNKNOWN) continue;
+      if (!m->pnames[pj]) continue;
+      LocalVar *p = scope_local(m, m->pnames[pj]);
+      if (!p || p->type != TY_POLY) continue;
+      if (p->is_block_param || p->rbs_seeded || p->poly_dispatch_widened) continue;
+      if (m->body >= 0 && blkp_name_written(c, m->body, p->name)) continue;
+      p->type = elem[slot];
+      p->oa_pin = elem[slot];
+      any = 1;
+    }
+  }
+  free(off); free(elem); free(ok); free(saw);
+  return any;
+}
+
 /* `obj.reader.equal?(x)` and `x.equal?(obj.reader)` ask whether two names are
    one object, and a reader that hands out a reading of the slot answers no for
    an object that IS shared. The in-fixpoint rule beside the container stores
@@ -19211,6 +19324,9 @@ void analyze_program(Compiler *c) {
   narrow_int_table_ivars(c);
   narrow_object_arrays(c);
   narrow_locals_from_arrays(c);
+  /* after the locals: a parameter can be fed an element the local rule has
+     just narrowed, and both read the settled array types */
+  narrow_params_from_arrays(c);
   /* An --rbs `Array[Class]` ivar seed the pass could not honour is said so,
      rather than dropped without a word (#4444): the array is used in a way
      its unboxed form has no emitter for, or read from outside the class's
