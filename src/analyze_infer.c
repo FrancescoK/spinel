@@ -2086,7 +2086,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      symbols as a generic Array. #deconstruct is the member values (like to_a). */
   if (recv >= 0 && (sp_streq(name, "members") || sp_streq(name, "deconstruct")) &&
       argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name) && infer_type(c, recv) == TY_POLY)
+      !an_user_recv_defines_method(c, name) && infer_type(c, recv) == TY_POLY)
     return TY_POLY_ARRAY;
   /* `poly.reject/select/filter { }` on a value only known to be an array at
      runtime (read out of a poly container): a filtered generic Array. */

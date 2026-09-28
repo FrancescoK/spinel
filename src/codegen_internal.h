@@ -1110,6 +1110,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b);
 int diagnose_eval_call(Compiler *c, int id);
 int diagnose_unsupported_call(Compiler *c, int id);
 int diag_user_defines(Compiler *c, const char *name);
+int recv_user_defines(Compiler *c, const char *name);
 int user_defines_or_reads(Compiler *c, const char *name);
 const char *array_index_bad_class(Compiler *c, int id);
 extern int g_poly_builtin_arm;  /* emitting a poly dispatch's builtin arm */

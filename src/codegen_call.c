@@ -1442,11 +1442,18 @@ static int emit_clock_id(Compiler *c, int node, Buf *b) {
 }
 
 int diag_user_defines(Compiler *c, const char *name) {
+  return recv_user_defines(c, name) || comp_method_index(c, name) >= 0;
+}
+
+/* diag_user_defines for a call with an explicit receiver: a top-level def
+   is a private method of Object that no explicit receiver reaches, so it
+   leaves a builtin's arm in place (`def uniq(o) = o.uniq`). */
+int recv_user_defines(Compiler *c, const char *name) {
   for (int uk = 0; uk < c->nclasses; uk++) {
     if (comp_method_in_chain(c, uk, name, NULL) >= 0) return 1;
     if (comp_cmethod_in_chain(c, uk, name, NULL) >= 0) return 1;
   }
-  return comp_method_index(c, name) >= 0;
+  return 0;
 }
 
 /* Like diag_user_defines, but also counts an attr_reader / Struct / Data member
@@ -6763,7 +6770,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
     /* A class-tagged poly value answers these with its class name (#2656); only
        when no user class defines them, or that user method is the real target. */
     int is_class_named = (sp_streq(name, "name") || sp_streq(name, "to_s") ||
-                          sp_streq(name, "inspect")) && !diag_user_defines(c, name);
+                          sp_streq(name, "inspect")) && !recv_user_defines(c, name);
     /* The Module reflection a class-tagged poly value answers. `ancestors` and
        friends had an arm only for a receiver typed TY_CLASS -- a constant --
        so iterating an Array of classes and asking the block parameter left the
@@ -6775,7 +6782,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                             (g_gen_cls_answers && nt_ref(nt, id, "block") < 0 &&
                              (sp_streq(name, "subclasses") || sp_streq(name, "allocate") ||
                               sp_streq(name, "keyword_init?")))) &&
-                           !diag_user_defines(c, name);
+                           !recv_user_defines(c, name);
     int is_pred = nt_ref(nt, id, "block") < 0 && poly_pred_kind(name, 0);
     /* When ostruct is in the program a bare `obj.reader` on a poly value may be
        an OpenStruct member access (any name) -- read it at runtime (#3197).
@@ -6793,7 +6800,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
     /* `rewind` on a poly stream (a param unioning StringIO and IO, #3257):
        both are builtins/native classes with no user arm, so without this
        pre-arm the call was silently dropped. */
-    int is_io_rewind = sp_streq(name, "rewind") && !diag_user_defines(c, name);
+    int is_io_rewind = sp_streq(name, "rewind") && !recv_user_defines(c, name);
     /* to_a on a poly value that is really a builtin hash/array (a yield-result
        union of an rbs-seeded Hash and a class instance, #3278): the user-class
        switch has no builtin arm, so the hash fell through to the nil seed. */
@@ -8148,15 +8155,15 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         is_ppack = 0; is_pjoin = 0;
       }
     }
-    int is_cover = sp_streq(name, "cover?") && argc == 1 && !diag_user_defines(c, name);
-    int is_gcdlcm = sp_streq(name, "gcdlcm") && argc == 1 && !diag_user_defines(c, name);
+    int is_cover = sp_streq(name, "cover?") && argc == 1 && !recv_user_defines(c, name);
+    int is_gcdlcm = sp_streq(name, "gcdlcm") && argc == 1 && !recv_user_defines(c, name);
     /* try_convert on a class known only at run time: a constant receiver
        has its typed emitter, but `[Array, 0][0].try_convert(x)` reached no
        arm at all and the call lowered to the unresolved-method raise. The
        runtime answers by the class's name, as the typed emitters answer by
        the constant's (#2325, #2585). */
     int is_ctryconv = sp_streq(name, "try_convert") && argc == 1 && !has_splat_arg && kw_pos &&
-                      nt_ref(nt, id, "block") < 0 && !diag_user_defines(c, name) &&
+                      nt_ref(nt, id, "block") < 0 && !recv_user_defines(c, name) &&
                       comp_ntype(c, id) == TY_POLY;
     /* An Integer-only arithmetic name: force the switch open even when
        no user class is a CANDIDATE AT THIS CALL SITE'S ARITY -- a colliding

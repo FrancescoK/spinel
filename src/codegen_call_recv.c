@@ -1530,7 +1530,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
   /* uniq on a bare poly value that is an array at runtime (an ivar assigned a
      caller-splat rest array widens to poly): the distinct elements (#3341). */
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "uniq") && argc == 0 &&
-      nt_ref(nt, id, "block") < 0 && !diag_user_defines(c, name)) {
+      nt_ref(nt, id, "block") < 0 && !recv_user_defines(c, name)) {
     buf_puts(b, "sp_poly_uniq("); emit_expr(c, recv, b); buf_puts(b, ")");
     return 1;
   }
@@ -1539,7 +1539,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
      Array -- which is what the receiver was (#3423). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       (sp_streq(name, "compact") || sp_streq(name, "flatten")) &&
-      !diag_user_defines(c, name)) {
+      !recv_user_defines(c, name)) {
     /* compact keeps the receiver's kind (a Hash drops its nil VALUES and stays
        a Hash), so it answers boxed; flatten is an Array either way. */
     buf_printf(b, "sp_poly_%s(", sp_streq(name, "compact") ? "compact_val" : "flatten");
@@ -14472,7 +14472,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
      `[]=` below does. A name some class defines as a method instead takes
      the user-method dispatch, which yields the value itself. */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && name_is_plain_setter(name) &&
-      nt_ref(nt, id, "block") < 0 && !diag_user_defines(c, name)) {
+      nt_ref(nt, id, "block") < 0 && !recv_user_defines(c, name)) {
     char base[256];
     int ncand = 0;
     if (setter_base_name(name, base, sizeof base))

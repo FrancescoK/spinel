@@ -1650,6 +1650,16 @@ int an_native_defines_method(Compiler *c, const char *name) {
         sp_streq(c->native_methods[i].name, name)) return 1;
   return 0;
 }
+/* an_user_defines_method for a call with an explicit receiver: a top-level
+   def is a private method of Object, which no explicit receiver reaches, so
+   it does not take the name from a builtin (`def uniq(o) = o.uniq`). */
+int an_user_recv_defines_method(Compiler *c, const char *name) {
+  if (!an_user_defines_method(c, name)) return 0;
+  if (comp_method_index(c, name) < 0) return 1;
+  for (int uk = 0; uk < c->nclasses; uk++)
+    if (comp_method_in_chain(c, uk, name, NULL) >= 0) return 1;
+  return 0;
+}
 int an_user_defines_method(Compiler *c, const char *name) {
   if (an_builtin_only_p()) return 0;   /* deriving the builtin-only answer (#3459) */
   if (!name) return 0;
