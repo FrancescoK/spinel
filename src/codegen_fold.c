@@ -5395,16 +5395,6 @@ int arg_slot_for_param(Compiler *c, Scope *m, int idx, int argc) {
    on, positionally, into a method whose parameter is mutated the same way
    (depth-limited)? Asked about a poly-array parameter a caller wants to
    pass a TYPED array to. */
-static int array_mutator_name(const char *nm) {
-  size_t l = nm ? strlen(nm) : 0;
-  if (!l) return 0;
-  static const char *const M[] = {
-    "<<", "push", "append", "unshift", "prepend", "insert", "concat", "fill",
-    "clear", "delete", "delete_at", "pop", "shift", "replace", "[]=", "keep_if",
-    "delete_if", "slice!", NULL };
-  for (int i = 0; M[i]; i++) if (sp_streq(nm, M[i])) return 1;
-  return nm[l - 1] == '!';
-}
 static int scope_mutates_array_local(Compiler *c, int mi, const char *name, int depth) {
   const NodeTable *nt = c->nt;
   if (depth > 3 || mi < 0) return 0;
@@ -5413,7 +5403,7 @@ static int scope_mutates_array_local(Compiler *c, int mi, const char *name, int 
     int r = nt_ref(nt, q, "receiver");
     if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode) {
       const char *rn = nt_str(nt, r, "name");
-      if (rn && sp_streq(rn, name) && array_mutator_name(nt_str(nt, q, "name"))) return 1;
+      if (rn && sp_streq(rn, name) && sp_array_mutator(nt_str(nt, q, "name"))) return 1;
     }
     /* passed on: only a receiverless (or self) call to a user method resolves
        statically enough to follow */

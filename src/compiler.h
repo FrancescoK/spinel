@@ -869,6 +869,8 @@ const char *sym_static_value(Compiler *c, int node);  /* SymbolNode or sole-symb
 #define SP_MUT_NARROW    8u  /* guard-narrowed poly re-route: also no append_as_bytes */
 /* 1 iff `nm` is a String in-place mutator serviceable at every site in `want`. */
 int sp_str_mutator(const char *nm, unsigned want);
+/* 1 iff `nm` is an Array method that rewrites its receiver in place. */
+int sp_array_mutator(const char *nm);
 /* 1 iff `nm` is a stage that keeps a lazy chain lazy -- the set
    emit_lazy_pipeline_expr can fuse, plus a re-lazy. The recognizer, the
    write-suppression walk and the pipeline walker must agree on it: #3318,

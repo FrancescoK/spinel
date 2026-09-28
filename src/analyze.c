@@ -9727,16 +9727,33 @@ static const char *isa_guard_local(Compiler *c, int pred, Scope *s, TyKind *out_
    or hash literal stays unnarrowed: narrowing it retypes the container literal
    (`[v]` becomes a typed array), which cascades into the container's consumers
    and is layout-hostile on hot programs (optcarrot's add_mappings ternary cost
-   ~2-3%% fps) -- the array-typing lesson. Dispatch on v itself still narrows. */
+   ~2-3%% fps) -- the array-typing lesson. Dispatch on v itself still narrows.
+
+   An Array-narrowed read is a poly-array COPY of whatever typed array the box
+   holds, so it narrows only as the receiver of a call that reads the array.
+   A mutator (`v.push(x)`, `v[i] += 1`) grew the copy and left the array the
+   box points at unchanged; a read handed on (an argument, an assignment, a
+   return) or asked for its identity carried the copy away. Those keep the
+   poly box, which dispatches on the original. */
 static void isa_mark_reads(Compiler *c, int root, Scope *s, const char *pn, TyKind t) {
   if (root < 0) return;
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, root);
   if (ty && sp_streq(ty, "LocalVariableReadNode")) {
     const char *nm = nt_str(nt, root, "name");
-    if (nm && sp_streq(nm, pn) && comp_scope_of(c, root) == s)
+    if (nm && sp_streq(nm, pn) && comp_scope_of(c, root) == s && t != TY_POLY_ARRAY)
       c->nilnarrow[root] = t;
     return;
+  }
+  if (t == TY_POLY_ARRAY && ty && nt_kind(nt, root) == NK_CallNode) {
+    int recv = nt_ref(nt, root, "receiver");
+    const char *cn = nt_str(nt, root, "name");
+    const char *rn = recv >= 0 && nt_kind(nt, recv) == NK_LocalVariableReadNode
+                     ? nt_str(nt, recv, "name") : NULL;
+    if (rn && sp_streq(rn, pn) && comp_scope_of(c, recv) == s && cn &&
+        !sp_array_mutator(cn) && !sp_streq(cn, "equal?") && !sp_streq(cn, "object_id") &&
+        !sp_streq(cn, "__id__") && !sp_streq(cn, "freeze") && !sp_streq(cn, "frozen?"))
+      c->nilnarrow[recv] = t;
   }
   int is_container = ty && (sp_streq(ty, "ArrayNode") || sp_streq(ty, "HashNode"));
   int nr = nt_num_refs(nt, root);
