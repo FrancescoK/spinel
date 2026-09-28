@@ -1431,25 +1431,33 @@ static void dsend_add_name(char ***names, int *n, int *cap, ANameHash *seen, con
   anh_add(seen, (*names)[*n - 1]);
 }
 
-static int dsend_receiver_names(Compiler *c, int cls, char ***out) {
+/* The names an instance of `cls` answers. A receiver typed `cls` may hold
+   an instance of any subclass (`self` in a base-class method that sends
+   "on_#{ev}" to a hook only the subclass defines), so with `subclasses`
+   set every descendant's methods, readers, writers and aliases count too. */
+static int dsend_receiver_names(Compiler *c, int cls, int subclasses, char ***out) {
   static const char *const object_methods[] = { "to_s", "inspect", "class", "hash", "frozen?", "nil?",
     "==", "!=", "equal?", "eql?", "respond_to?", "is_a?", "kind_of?", "instance_of?", "freeze", "dup",
     "itself", "object_id", NULL };
   char **names = NULL; int n = 0, cap = 0;
   ANameHash seen; memset(&seen, 0, sizeof seen);
-  for (int s = 0; s < c->nscopes; s++) {
-    const Scope *sc = &c->scopes[s];
-    if (!sc->name || sc->is_cmethod || sc->class_id < 0) continue;
-    if (sp_streq(sc->name, "initialize") || sp_streq(sc->name, "initialize_copy")) continue;
-    if (comp_method_in_chain(c, cls, sc->name, NULL) >= 0) dsend_add_name(&names, &n, &cap, &seen, sc->name);
-  }
-  for (int k = cls; k >= 0 && k < c->nclasses; k = c->classes[k].parent) {
-    ClassInfo *cl = &c->classes[k];
-    for (int r = 0; r < cl->nreaders; r++) dsend_add_name(&names, &n, &cap, &seen, cl->readers[r]);
-    for (int w = 0; w < cl->nwriters; w++) {
-      char wn[256];
-      snprintf(wn, sizeof wn, "%s=", cl->writers[w]);
-      dsend_add_name(&names, &n, &cap, &seen, wn);
+  for (int d = 0; d < c->nclasses; d++) {
+    if (d != cls && !(subclasses && is_descendant(c, d, cls))) continue;
+    for (int s = 0; s < c->nscopes; s++) {
+      const Scope *sc = &c->scopes[s];
+      if (!sc->name || sc->is_cmethod || sc->class_id < 0) continue;
+      if (sp_streq(sc->name, "initialize") || sp_streq(sc->name, "initialize_copy")) continue;
+      if (comp_method_in_chain(c, d, sc->name, NULL) >= 0) dsend_add_name(&names, &n, &cap, &seen, sc->name);
+    }
+    for (int k = d; k >= 0 && k < c->nclasses; k = c->classes[k].parent) {
+      ClassInfo *cl = &c->classes[k];
+      for (int r = 0; r < cl->nreaders; r++) dsend_add_name(&names, &n, &cap, &seen, cl->readers[r]);
+      for (int w = 0; w < cl->nwriters; w++) {
+        char wn[256];
+        snprintf(wn, sizeof wn, "%s=", cl->writers[w]);
+        dsend_add_name(&names, &n, &cap, &seen, wn);
+      }
+      for (int a = 0; a < cl->naliases; a++) dsend_add_name(&names, &n, &cap, &seen, cl->alias_new[a]);
     }
   }
   for (int k = 0; object_methods[k]; k++) dsend_add_name(&names, &n, &cap, &seen, object_methods[k]);
@@ -1600,12 +1608,12 @@ int desugar_dynamic_send(Compiler *c) {
     int computed = an_send_name_is_computed(c, argv[0]);
     if (computed) {
       TyKind rt = infer_type(c, recv);
-      if (ty_is_object(rt)) nown = dsend_receiver_names(c, ty_object_class(rt), &own);
+      if (ty_is_object(rt)) nown = dsend_receiver_names(c, ty_object_class(rt), 1, &own);
       else if (rt == TY_POLY || rt == TY_UNKNOWN) {
         int cap = 0; ANameHash seen; memset(&seen, 0, sizeof seen);
         for (int k = 0; k < c->nclasses; k++) {
           if (comp_class_is_module(c, &c->classes[k])) continue;
-          char **kn = NULL; int nk = dsend_receiver_names(c, k, &kn);
+          char **kn = NULL; int nk = dsend_receiver_names(c, k, 0, &kn);
           for (int j = 0; j < nk; j++) { dsend_add_name(&own, &nown, &cap, &seen, kn[j]); free(kn[j]); }
           free(kn);
         }
