@@ -8288,15 +8288,15 @@ static SP_NOINLINE sp_RbVal sp_poly_arr_get_hash_cold(sp_RbVal a, sp_int i) {
     return sp_StrPolyHash_get((sp_StrPolyHash*)a.v.p, sp_sym_name_fn ? sp_sym_name_fn((sp_sym)i) : "");
 
   if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_INT_INT_HASH) {
-    sp_IntIntHash *h = (sp_IntIntHash *)a.v.p;
-    return sp_IntIntHash_has_key(h, i) ? sp_box_int(sp_IntIntHash_get(h, i)) : sp_box_nil();
+    /* a miss answers the hash's default, nil for a plain hash (#5544) */
+    sp_int v = sp_IntIntHash_get_opt((sp_IntIntHash *)a.v.p, i);
+    return v == SP_INT_NIL ? sp_box_nil() : sp_box_int(v);
   }
   /* The other integer-keyed variants read the same way: a nested hash whose
      keys are Integers answered nil through a boxed #[] because only the
      int->int one had an arm (#3822). */
   if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_INT_STR_HASH) {
-    sp_IntStrHash *h = (sp_IntStrHash *)a.v.p;
-    return sp_IntStrHash_has_key(h, i) ? sp_box_str(sp_IntStrHash_get(h, i)) : sp_box_nil();
+    return sp_box_nullable_str(sp_IntStrHash_get((sp_IntStrHash *)a.v.p, i));
   }
   /* a curried Proc read out of a container: [] applies the argument,
      realizing once the accumulator reaches its count */
@@ -8482,14 +8482,13 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
      rather than nil (#3509). Those storages cannot hold an Integer key at all,
      so the answer is nil; the two that can look it up. */
   if (idx.tag == SP_TAG_INT && recv.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(recv.cls_id)) {
+    /* a miss answers the hash's default, nil for a plain hash (#5544) */
     if (recv.cls_id == SP_BUILTIN_INT_INT_HASH) {
-      sp_IntIntHash *h = (sp_IntIntHash *)recv.v.p;
-      return sp_IntIntHash_has_key(h, i) ? sp_box_int(sp_IntIntHash_get(h, i)) : sp_box_nil();
+      sp_int v = sp_IntIntHash_get_opt((sp_IntIntHash *)recv.v.p, i);
+      return v == SP_INT_NIL ? sp_box_nil() : sp_box_int(v);
     }
-    if (recv.cls_id == SP_BUILTIN_INT_STR_HASH) {
-      sp_IntStrHash *h = (sp_IntStrHash *)recv.v.p;
-      return sp_IntStrHash_has_key(h, i) ? sp_box_str(sp_IntStrHash_get(h, i)) : sp_box_nil();
-    }
+    if (recv.cls_id == SP_BUILTIN_INT_STR_HASH)
+      return sp_box_nullable_str(sp_IntStrHash_get((sp_IntStrHash *)recv.v.p, i));
     return sp_box_nil();
   }
   /* Integer#[]: one bit of the receiver, a Bignum's included (#4665) */

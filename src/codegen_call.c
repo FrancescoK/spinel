@@ -9444,6 +9444,16 @@ else {
           if (ret != TY_POLY && HV[hvi].vt != trt) continue;
           char getx[200];
           snprintf(getx, sizeof getx, "sp_%sHash_get((sp_%sHash *)_t%d.v.p, _t%d)", HV[hvi].hn, HV[hvi].hn, tv, atmp[0]);
+          /* `[]` answers the hash's default on a miss, which the storage's
+             own read already knows: the has_key gate below is fetch's, and
+             in front of `[]` it answered nil for a Hash.new("") (#5544) */
+          if (is_aref) {
+            char gx[96]; snprintf(gx, sizeof gx, "sp_poly_get_str(_t%d, _t%d)", tv, atmp[0]);
+            buf_printf(b, " case %s: _t%d = ", HV[hvi].cls, tr);
+            if (ret == TY_POLY) buf_puts(b, gx); else emit_unbox_text(c, trt, gx, b);
+            buf_puts(b, "; break;");
+            continue;
+          }
           buf_printf(b, " case %s: _t%d = sp_%sHash_has_key((sp_%sHash *)_t%d.v.p, _t%d) ? ",
                      HV[hvi].cls, tr, HV[hvi].hn, HV[hvi].hn, tv, atmp[0]);
           if (ret == TY_POLY) emit_boxed_text(c, HV[hvi].vt, getx, b); else buf_puts(b, getx);
