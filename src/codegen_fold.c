@@ -5957,10 +5957,11 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
              parameter appended to the copy and the caller's array never
              changed, silently (#4480). Until the parameter can take the
              typed array by reference, refuse the shape rather than
-             miscompile it. An array literal is storage nobody else holds,
-             so its copy is the only one there is. */
+             miscompile it. An array literal, or a new array a builtin
+             answers, is storage nobody else holds, so its copy is the only
+             one there is. */
           if (m && idx >= 0 && idx < m->nparams && m->pnames[idx] &&
-              nt_kind(c->nt, provided) != NK_ArrayNode &&
+              nt_kind(c->nt, provided) != NK_ArrayNode && !is_fresh_array(c, provided) &&
               scope_mutates_array_local(c, (int)(m - c->scopes), m->pnames[idx], 0)) {
             char msg[512];
             snprintf(msg, sizeof msg,
