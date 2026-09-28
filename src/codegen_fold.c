@@ -7894,6 +7894,16 @@ static void emit_dispatch_arm_call(Compiler *c, int kd, int kmi, const char *sel
   free(apre.p); free(call.p);
 }
 
+/* The runtime class a virtual dispatch switches on. A user exception is an
+   sp_Exception, whose header carries no cls_id, so it keys by its class
+   name through sp_exc_user_cls_id. */
+void emit_obj_dispatch_key(Compiler *c, int cid, const char *selfptr, Buf *b) {
+  if (cid >= 0 && class_is_exc_subclass(c, cid))
+    buf_printf(b, "sp_exc_user_cls_id(sp_box_obj((void *)(%s), SP_BUILTIN_EXCEPTION))", selfptr);
+  else
+    buf_printf(b, "(%s)->cls_id", selfptr);
+}
+
 /* The dispatch switch for arms that disagree on their parameters: each arm
    binds the call's arguments by its own method's list, the way a direct call
    to that method would, defaults and arity check included. The argument
@@ -7924,7 +7934,9 @@ static void emit_dispatch_per_arm(Compiler *c, int cid, const char *name, const 
   int rtmp = ++g_tmp;
   buf_puts(b, "({ ");
   emit_ctype(c, disp_ret, b);
-  buf_printf(b, " _t%d; switch ((%s)->cls_id) {", rtmp, selfptr);
+  buf_printf(b, " _t%d; switch (", rtmp);
+  emit_obj_dispatch_key(c, cid, selfptr, b);
+  buf_puts(b, ") {");
   for (int k = 0; k < c->nclasses; k++) {
     if (!is_descendant(c, k, cid)) continue;
     int kd = -1;
@@ -8477,7 +8489,9 @@ else {
   int rtmp = ++g_tmp;
   buf_puts(b, "({ ");
   emit_ctype(c, disp_ret, b);
-  buf_printf(b, " _t%d; switch ((%s)->cls_id) {", rtmp, selfptr);
+  buf_printf(b, " _t%d; switch (", rtmp);
+  emit_obj_dispatch_key(c, cid, selfptr, b);
+  buf_puts(b, ") {");
   for (int k = 0; k < c->nclasses; k++) {
     if (!is_descendant(c, k, cid)) continue;
     int kd = -1;
