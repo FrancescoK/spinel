@@ -13945,6 +13945,15 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       int ae = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "HashNode") &&
                ({ int _n = 0; nt_arr(nt, argv[0], "elements", &_n); _n == 0; });
       if (re && ae) { buf_puts(b, eq ? "1" : "0"); return 1; }
+      /* a typed hash against an empty `{}` literal (whose own type may be
+         unknown): equal exactly when the hash is empty */
+      if ((ae && ty_is_hash(rt) && ty_hash_cname(rt)) || (re && ty_is_hash(a0) && ty_hash_cname(a0))) {
+        int hs = ae ? recv : argv[0];
+        buf_printf(b, "(sp_%sHash_length(", ty_hash_cname(ae ? rt : a0));
+        emit_expr(c, hs, b);
+        buf_printf(b, ") %s 0)", eq ? "==" : "!=");
+        return 1;
+      }
       if (ty_is_hash(rt) && ty_is_hash(a0)) {
         if (rt == a0) {
           /* same typed hash: use the dedicated equality function */
