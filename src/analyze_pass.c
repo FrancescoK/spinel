@@ -4788,6 +4788,36 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
         if (!p || p->rbs_seeded) continue;
         changed |= slot_take(c, p, at, argv[arg]);
       }
+      /* What comes after it lands where the splats' run-time lengths put it
+         (codegen gathers such a call, arg_layout): each later argument, and
+         a keyword hash no keyword parameter takes as the last of them, may
+         reach any parameter from its own index less the splats ahead of it,
+         which may be empty. Typed at its own index alone, or not at all,
+         `f(*[1], "x")` on `def f(a, b)` bound the String into an Integer b,
+         and `m(*s, k: 1)` on `def m(a, *r)` could not give a the hash. */
+      int nspl = 1;
+      int kwh_pos = kwh >= 0 && m->kwrest_idx < 0 && !callee_declares_kwargs(c, m);
+      for (int j = arg + 1; argv && j <= pos_argc; j++) {
+        int an = j < pos_argc ? argv[j] : (kwh_pos ? kwh : -1);
+        if (an < 0 || nt_kind(nt, an) == NK_BlockArgumentNode) continue;
+        TyKind jt;
+        if (nt_kind(nt, an) == NK_SplatNode) {
+          int jin = nt_ref(nt, an, "expression");
+          TyKind ja = jin >= 0 ? infer_type(c, jin) : TY_UNKNOWN;
+          jt = ty_is_array(ja) ? ty_array_elem(ja) : TY_POLY;
+          if (jt == TY_VOID || jt == TY_NIL) jt = TY_POLY;
+        }
+        else jt = infer_type(c, an);
+        if (jt == TY_VOID) jt = TY_POLY;
+        for (int pk = j - nspl; jt != TY_UNKNOWN && pk < max_bind; pk++) {
+          LocalVar *p = pk >= 0 && m->pnames[pk] ? scope_local(m, m->pnames[pk]) : NULL;
+          if (!p || p->rbs_seeded) continue;
+          TyKind pt = jt;
+          if (pt == TY_NIL && p->type != TY_UNKNOWN && p->type != TY_NIL && !ty_is_object(p->type)) pt = TY_POLY;
+          changed |= slot_take(c, p, pt, an);
+        }
+        if (nt_kind(nt, an) == NK_SplatNode) nspl++;
+      }
       break;
     }
     TyKind at = infer_type(c, argv[arg]);
@@ -10163,6 +10193,26 @@ int infer_block_params(Compiler *c) {
             TyKind m = ty_unify(lv->type, TY_POLY_POLY_HASH);
             if (m != lv->type) { lv->type = m; changed = 1; }
           }
+        }
+        /* A splat beside other yielded values spreads by a length only the
+           run time knows (emit_block_invoke gathers them), so any value may
+           reach any positional parameter: each is the boxed slot. Typed by
+           its index, `yield(*[1, 2], 3, **h)` gave `|a, b, c = 0, k:|` a
+           Hash c from the keywords. */
+        {
+          int ypos = yc - (ykw >= 0 && (block_keyword_name(c, block, 0) || block_kwrest_name(c, block)));
+          int spread = 0;
+          for (int k = 0; ypos > 1 && k < ypos; k++)
+            if (nt_kind(nt, yargs[k]) == NK_SplatNode) spread = 1;
+          for (int g = 0; spread && g < 3; g++)
+            for (int k = 0; ; k++) {
+              const char *pp = g == 0 ? block_param_name(c, block, k)
+                             : g == 1 ? block_opt_name(c, block, k) : block_post_name(c, block, k);
+              if (!pp) break;
+              LocalVar *lv = scope_local_intern(bs, pp); lv->is_block_param = 1;
+              TyKind m = ty_unify(lv->type, TY_POLY);
+              if (m != lv->type) { lv->type = m; changed = 1; }
+            }
         }
         continue;
       }
