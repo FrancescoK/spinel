@@ -1,0 +1,6 @@
+[ArgumentError, "invalid %-encoding (%zz)"]
+[ArgumentError, "invalid %-encoding (a%2)"]
+[ArgumentError, "invalid %-encoding (%)"]
+[ArgumentError, "invalid %-encoding (ab%1g)"]
+[ArgumentError, "invalid %-encoding (%-1)"]
+"a b c//"
