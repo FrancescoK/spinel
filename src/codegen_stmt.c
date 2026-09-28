@@ -8569,6 +8569,11 @@ else {
       free(_ck.p);
       free(_rb.p);
     }
+    else if (comp_ntype(c, v) == TY_UNKNOWN && (ty_is_array(ivt) || ty_is_hash(ivt)) &&
+             emit_empty_container_for_slot(c, v, ivt, b)) {
+      /* an untyped `Hash.new` / `Array.new` (a top-level ivar's, which no use
+         typed) is built at the slot's type, not taken for a raising call */
+    }
     else if (ivt != TY_POLY && ivt != TY_UNKNOWN && comp_ntype(c, v) == TY_UNKNOWN) {
       /* an unresolved call typed TY_UNKNOWN whose value is the gate's
          sp_raise_nomethod(...) poly token, assigned to a typed ivar slot
