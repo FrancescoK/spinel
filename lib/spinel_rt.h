@@ -9759,7 +9759,12 @@ static sp_RbVal sp_poly_sum(sp_RbVal v) {
     /* an Enumerator's seedless sum is its sum(0), as in CRuby: from the
        first Float on, compensated */
     case SP_BUILTIN_ENUMERATOR: return sp_poly_sum_seed(v, sp_box_int(0));
+    /* a Hash sums its [key, value] pairs and a String/Symbol array its
+       elements, from 0: CRuby's TypeError unless empty, not a silent 0 */
+    case SP_BUILTIN_STR_ARRAY: case SP_BUILTIN_SYM_ARRAY:
+      return sp_PolyArray_sum_poly(sp_poly_to_poly_array(v));
     default: {
+      if (sp_poly_is_hash_kind(v.cls_id)) return sp_PolyArray_sum_poly(sp_enum_items_from(v));
       sp_PolyArray *ue = sp_poly_user_elems(v);
       return ue ? sp_PolyArray_sum_poly(ue) : sp_box_int(0);
     }
