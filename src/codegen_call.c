@@ -19594,6 +19594,19 @@ static int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
   if (dispatch_cid < 0) return 0;
   if (comp_reader_in_chain(c, dispatch_cid, name, NULL)) {
     const char *rn = comp_resolve_alias(c, dispatch_cid, name);
+    /* A shared-mutable slot reads out as a GC copy, as the reader with an
+       explicit receiver reads it: the raw handle in a plain string context
+       (`v.dup`, `v.upcase` in the class's own method) did not build. A call
+       marked to hand out the handle keeps it. */
+    char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", rn);
+    int ivi = comp_ivar_index(&c->classes[dispatch_cid], ivn);
+    if (ivi >= 0 && c->classes[dispatch_cid].ivar_types[ivi] == TY_STRBUF &&
+        !(id < c->node_cap && (c->strbuf_box[id] || c->strbuf_handle_demand[id]))) {
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_String *_t%d = %s%siv_%s; _t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; })",
+                 tv, g_self, g_self_deref, iv_c(rn), tv, tv);
+      return 1;
+    }
     buf_printf(b, "%s%siv_%s", g_self, g_self_deref, iv_c(rn));
     return 1;
   }
