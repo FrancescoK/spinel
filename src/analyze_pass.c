@@ -1927,6 +1927,14 @@ static int getter_ivar_targets(Compiler *c, int cid, int cside, const char *mnam
   return n;
 }
 
+/* Does class `k` itself define the instance getter `mname`, as a method or
+   an attr_reader (not one it inherits)? */
+static int class_owns_getter(Compiler *c, int k, const char *mname) {
+  int kd = -1;
+  if (comp_reader_in_chain(c, k, mname, &kd)) return kd == k;
+  return comp_method_in_class(c, k, mname) >= 0;
+}
+
 /* The getter call or ivar read a hash local aliases: `x` read at `recv`,
    whose only write in its scope is `x = @c` or `x = recv.getter`, where the
    getter answers an ivar (getter_ivar_targets). -1 otherwise. */
@@ -3167,7 +3175,7 @@ int infer_write_types(Compiler *c) {
          ivar array filled only from outside kept its empty literal's default
          and every element read back as an Integer (#3781). */
       int gcid = -1, cside = 0;
-      int gcids[16], ngc = 0;
+      int all_owners = 0;
       int grecv = nt_ref(nt, recv, "receiver");
       if (grecv >= 0 && nt_kind(nt, grecv) == NK_ConstantReadNode) {
         /* `Tbl.cache[k] = v`: the class-side getter */
@@ -3189,21 +3197,17 @@ int infer_write_types(Compiler *c) {
            ambiguity there is nothing else it could be. */
         if (gcid < 0) {
           int owner = -1, nown = 0;
-          for (int k = 0; k < c->nclasses && nown <= 16; k++) {
-            int kd = -1;
-            int owns = comp_reader_in_chain(c, k, mname, &kd) ? kd == k
-                                                              : comp_method_in_class(c, k, mname) >= 0;
-            if (!owns) continue;
+          for (int k = 0; k < c->nclasses && (nown < 2 || !is_push); k++) {
+            if (!class_owns_getter(c, k, mname)) continue;
             owner = k;
-            if (nown < 16) gcids[nown] = k;
             nown++;
           }
           /* `[a, b].each { |o| o.cache[k] = v }`: the receiver is any of the
              owners, so each owner's getter ivar takes the write, as a write
              through a typed receiver would (the targets below). */
           if (!is_push && nown != 1) {
-            if (nown == 0 || nown > 16) continue;
-            ngc = nown;
+            if (nown == 0) continue;
+            all_owners = 1;
           }
           else if (nown != 1) {
             /* Several classes own this getter and the receiver's class is only
@@ -3250,28 +3254,31 @@ int infer_write_types(Compiler *c) {
         gcid = caller->class_id;
         cside = caller->is_cmethod;
       }
-      if (ngc == 0) {
-        if (gcid < 0 || gcid >= c->nclasses) continue;
-        gcids[ngc++] = gcid;
-      }
+      if (!all_owners && (gcid < 0 || gcid >= c->nclasses)) continue;
       /* The write lands in whichever ivar the getter returns, and a subclass
          override can return another one: credit the ivar of every class the
          call can dispatch to, the same evidence `@c[k] = v` in that getter's
          class would be. A class whose getter is not a plain ivar read (or
-         `||=`) keeps its container to itself and takes none. */
-      int tcls[32]; const char *tiv[32];
+         `||=`) keeps its container to itself and takes none. Sized for every
+         (class, ivar) pair, so no target is dropped. */
+      int cap = 1;
+      for (int k = 0; k < c->nclasses; k++) cap += c->classes[k].nivars;
+      int *tcls = malloc(sizeof(int) * cap * 2);
+      const char **tiv = malloc(sizeof(const char *) * cap * 2);
+      int *gcls = tcls + cap;
+      const char **giv = tiv + cap;
       int ntg = 0;
-      for (int gi = 0; gi < ngc; gi++) {
-        int gcls[16]; const char *giv[16];
-        int ng = getter_ivar_targets(c, gcids[gi], cside, mname, gcls, giv, 16);
-        for (int j = 0; j < ng && ntg < 32; j++) {
+      for (int k = all_owners ? 0 : gcid; k < (all_owners ? c->nclasses : gcid + 1); k++) {
+        if (all_owners && !class_owns_getter(c, k, mname)) continue;
+        int ng = getter_ivar_targets(c, k, cside, mname, gcls, giv, cap);
+        for (int j = 0; j < ng; j++) {
           int seen = 0;
           for (int t = 0; t < ntg && !seen; t++)
             seen = tcls[t] == gcls[j] && sp_streq(tiv[t], giv[j]);
           if (!seen) { tcls[ntg] = gcls[j]; tiv[ntg] = giv[j]; ntg++; }
         }
       }
-      if (ntg <= 0) continue;
+      if (ntg <= 0) { free(tcls); free(tiv); continue; }
       /* a shared-mutable string spends its handle at a typed array's boundary,
          so the element slot stays a plain string (#3227) */
       if (is_push && vt == TY_STRBUF) vt = TY_STRING;
@@ -3315,6 +3322,7 @@ int infer_write_types(Compiler *c) {
         sp_ivwatch(tiv[ti], is_push ? "getter_push" : "getter_idxwrite", tbefore, *tslot);
         if (*tslot != tbefore) changed = 1;
       }
+      free(tcls); free(tiv);
       continue;
     }
     else continue;
