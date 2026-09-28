@@ -6838,7 +6838,7 @@ int desugar_enum_method_recv(Compiler *c) {
       int prv = nt_ref(nt, id, "receiver");
       TyKind prt = prv >= 0 ? infer_type(c, prv) : TY_UNKNOWN;
       int pcid = ty_is_object(prt) ? ty_object_class(prt) : -1;
-      if (pcid >= 0 && pcid < c->nclasses && c->classes[pcid].is_struct) {
+      if (pcid >= 0 && pcid < c->nclasses && c->classes[pcid].is_struct && !c->classes[pcid].is_data) {
         int wrap = nt_new_node(nt, "CallNode");
         if (wrap >= 0) {
           nt_node_set_str(nt, wrap, "name", "to_h");
