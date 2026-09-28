@@ -1073,8 +1073,7 @@ static int name_is_synth_method(Compiler *c, const char *m) {
 
 /* Enumerable's public instance methods, for respond_to? on a user class
    that includes the module (served through the __enum_to_a redirect). */
-int name_is_enumerable_module_method(const char *m) {
-  static const char *const em[] = {
+static const char *const enumerable_names[] = {
     "each", "map", "collect", "select", "filter", "reject", "find",
     "detect", "find_all", "find_index", "reduce", "inject", "to_a",
     "entries", "sort", "sort_by", "min", "max", "min_by", "max_by",
@@ -1085,7 +1084,8 @@ int name_is_enumerable_module_method(const char *m) {
     "zip", "any?", "all?", "none?", "one?", "chunk", "chunk_while",
     "slice_when", "slice_before", "slice_after", "filter_map", "uniq",
     "to_h", "lazy", "cycle", "reverse_each", "to_set", NULL };
-  for (int i = 0; em[i]; i++) if (sp_streq(m, em[i])) return 1;
+int name_is_enumerable_module_method(const char *m) {
+  for (int i = 0; enumerable_names[i]; i++) if (sp_streq(m, enumerable_names[i])) return 1;
   return 0;
 }
 
@@ -1099,10 +1099,10 @@ static int cmp_operand_may_be_nil(Compiler *c, int id) {
 }
 /* Comparable's instance methods, for respond_to? on a user class that mixes it
    in (spinel keys the mixin off the presence of a user `<=>`). */
-static int name_is_comparable_module_method(const char *m) {
-  static const char *const cm[] = {
+static const char *const comparable_names[] = {
     "<", ">", "<=", ">=", "==", "between?", "clamp", NULL };
-  for (int i = 0; cm[i]; i++) if (sp_streq(m, cm[i])) return 1;
+static int name_is_comparable_module_method(const char *m) {
+  for (int i = 0; comparable_names[i]; i++) if (sp_streq(m, comparable_names[i])) return 1;
   return 0;
 }
 
@@ -15286,6 +15286,9 @@ static int class_struct_kind(Compiler *c, int cid) {
   return 0;
 }
 
+static const char *const struct_names[] = {
+    "to_a", "values", "values_at", "dig", "each", "each_pair", "size",
+    "length", "[]", "[]=", NULL };
 /* The names an instance answers respond_to? for without an entry in its
    class's method table: Enumerable's once the class includes the module
    and has the `each` it serves (the synthesized __enum_to_a marks any
@@ -15307,10 +15310,7 @@ static int class_implicit_responds(Compiler *c, int cid, const char *qm) {
   if (sp_streq(qm, "members") || sp_streq(qm, "to_h") ||
       sp_streq(qm, "deconstruct") || sp_streq(qm, "deconstruct_keys")) return 1;
   if (sk == 2) return sp_streq(qm, "with");
-  static const char *const sm[] = {
-    "to_a", "values", "values_at", "dig", "each", "each_pair", "size",
-    "length", "[]", "[]=", NULL };
-  for (int i = 0; sm[i]; i++) if (sp_streq(qm, sm[i])) return 1;
+  for (int i = 0; struct_names[i]; i++) if (sp_streq(qm, struct_names[i])) return 1;
   return 0;
 }
 
@@ -15540,6 +15540,12 @@ static int rt_probe_answer(Compiler *c, int id, int *yes) {
   for (int p = 0; p < pn; p++)
     if (comp_ntype(c, probes[p]) != TY_UNKNOWN) { *yes = 1; break; }
   return 1;
+}
+static void emit_responds_name(Compiler *c, int k, const char *nm, int tv, Buf *b) {
+  if (name_is_synth_method(c, nm) || sp_streq(nm, "initialize") || sp_streq(nm, "initialize_copy")) return;
+  buf_printf(b, "(!strcmp(_n%d, \"", tv);
+  emit_c_escaped(b, nm);
+  buf_printf(b, "\") && (_a%d || %d)) || ", tv, comp_method_vis_in_chain(c, k, nm) == SP_VIS_PUBLIC);
 }
 
 /* The Class/Module surface every class object carries, `new` included (a
@@ -35676,6 +35682,41 @@ else {
         }
       }
       if (resolved) { buf_printf(b, "%d", yes); return; }
+    }
+    else if (recv >= 0 && rt != TY_CLASS && nt_kind(nt, argv[0]) != NK_SplatNode && !any_class_defines(c, "respond_to?")) {
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, recv, b);
+      buf_printf(b, "; const char *_n%d = sp_poly_to_s(", tv); emit_boxed(c, argv[0], b);
+      buf_printf(b, "); sp_bool _a%d = ", tv);
+      if (argc >= 2) emit_cond(c, argv[1], b); else buf_puts(b, "0");
+      buf_printf(b, "; (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0 && (", tv, tv);
+      for (int k = 0; k < c->nclasses; k++) {
+        if (comp_class_is_module(c, &c->classes[k])) continue;
+        buf_printf(b, "(_t%d.cls_id == %d && (", tv, k);
+        for (int s = 0; s < c->nscopes; s++)
+          if (c->scopes[s].name && !c->scopes[s].is_cmethod && !c->scopes[s].is_proc_form &&
+              comp_method_in_chain(c, k, c->scopes[s].name, NULL) == s)
+            emit_responds_name(c, k, c->scopes[s].name, tv, b);
+        for (int p = k; p >= 0; p = c->classes[p].parent) {
+          ClassInfo *cl = &c->classes[p];
+          for (int r = 0; r < cl->nreaders; r++) emit_responds_name(c, k, cl->readers[r], tv, b);
+          for (int w = 0; w < cl->nwriters; w++) {
+            char wn[256];
+            snprintf(wn, sizeof wn, "%s=", cl->writers[w]);
+            emit_responds_name(c, k, wn, tv, b);
+          }
+          for (int a = 0; a < cl->naliases; a++) emit_responds_name(c, k, cl->alias_new[a], tv, b);
+        }
+        const char *const *imp[] = { enumerable_names, comparable_names, struct_names,
+                                     (const char *const[]){ "members", "to_h", "deconstruct", "deconstruct_keys", "with", NULL } };
+        for (int l = 0; l < 4; l++)
+          for (int i = 0; imp[l][i]; i++)
+            if (class_implicit_responds(c, k, imp[l][i])) emit_responds_name(c, k, imp[l][i], tv, b);
+        buf_puts(b, "0)) || ");
+      }
+      buf_printf(b, "0)) || (_a%d && (!strcmp(_n%d, \"initialize\") || !strcmp(_n%d, \"initialize_copy\"))) || "
+                 "sp_poly_responds_builtin(_t%d, _n%d); })", tv, tv, tv, tv, tv);
+      return;
     }
   }
 
