@@ -3062,6 +3062,39 @@ int infer_write_types(Compiler *c) {
          an UNKNOWN parameter still takes its type from the call site (#2989). */
       if (lv->is_param) {
         if ((!is_push && !is_idx_write) || lv->rbs_seeded) continue;
+        /* A boxed parameter records what an element write stores, for the
+           binding to check each caller's container against; an Integer key
+           indexes an array as a push appends to one. A boxed key or value
+           is exempt, as it is for a typed parameter. */
+        if (is_idx_write && !is_push && !is_splice && lv->type == TY_POLY) {
+          if (vt == TY_UNKNOWN || vt == TY_POLY) continue;
+          int hkey = kt != TY_UNKNOWN && kt != TY_POLY;
+          TyKind *ev[3] = { hkey ? &lv->boxed_store_key : NULL, hkey ? &lv->boxed_store_val : NULL,
+                            (kt == TY_INT || kt == TY_POLY) ? &lv->boxed_push_elem : NULL };
+          TyKind got[3] = { kt, vt, vt };
+          for (int e = 0; e < 3; e++) {
+            if (!ev[e]) continue;
+            TyKind was = *ev[e];
+            TyKind now = was == TY_UNKNOWN ? got[e] : (was == got[e] ? was : TY_POLY);
+            if (now != was) { *ev[e] = now; changed = 1; }
+          }
+          continue;
+        }
+        /* A typed hash parameter is the caller's hash: a key or a value its
+           variant cannot hold widens it to the poly-keyed variant, and the
+           binding widens the caller's hash with it. A boxed key or value is
+           exempt, as it is for an ivar's hash: the typed setter converts it. */
+        if (is_idx_write && !is_push && !is_splice && ty_is_hash(lv->type) &&
+            lv->type != TY_POLY_POLY_HASH) {
+          TyKind hkt = kt == TY_POLY ? ty_hash_key(lv->type) : kt;
+          TyKind hvt = vt == TY_POLY ? ty_hash_val(lv->type) : vt;
+          if (hkt == TY_UNKNOWN || hvt == TY_UNKNOWN) continue;
+          TyKind folded = lv->type;
+          int fits = fold_container_evidence(&folded, 0, 0, hkt, hvt);
+          if (fits && folded == lv->type) continue;
+          lv->type = TY_POLY_POLY_HASH; lv->push_widened = 1; changed = 1;
+          continue;
+        }
         /* An element write through it stores into the caller's array the
            same way: `arr[i] = v` is the push's evidence when the key indexes
            an array. */
@@ -4104,6 +4137,131 @@ static int bind_dynamic_new_initializers(Compiler *c, int call_id) {
 }
 
 /* Unify a call's argument types into method scope `mi`'s parameters. */
+/* 1 iff `v` builds a new hash: a literal or `Hash.new`. */
+static int is_fresh_hash(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (v < 0) return 0;
+  if (nt_kind(nt, v) == NK_HashNode) return 1;
+  if (nt_kind(nt, v) != NK_CallNode || !sp_streq(nt_str(nt, v, "name"), "new")) return 0;
+  int r = nt_ref(nt, v, "receiver");
+  return r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode && sp_streq(nt_str(nt, r, "name"), "Hash");
+}
+
+/* Marks hash literal `v` the poly-keyed variant; 1 on a change. */
+static int want_poly_hash(Compiler *c, int v) {
+  if (!c->hash_want || v < 0 || v >= c->node_cap || nt_kind(c->nt, v) != NK_HashNode) return 0;
+  if (c->hash_want[v] == TY_POLY_POLY_HASH) return 0;
+  c->hash_want[v] = TY_POLY_POLY_HASH;
+  return 1;
+}
+
+/* A callee stores into the hash argument `arg` names what its variant cannot
+   hold: the caller's own hash has to be the poly-keyed variant. Widens the
+   hashes the argument's slot is built from, and the slot, where every write
+   of it builds a new hash; a parameter widens as the callee's did, for its
+   own callers. Returns 1 on a change. */
+static int widen_arg_hash(Compiler *c, int arg) {
+  const NodeTable *nt = c->nt;
+  NodeKind ak = nt_kind(nt, arg);
+  if (ak == NK_HashNode) return want_poly_hash(c, arg);
+  const char *an = nt_str(nt, arg, "name");
+  Scope *asc = an ? comp_scope_of(c, arg) : NULL;
+  if (!asc) return 0;
+  NodeKind wk;
+  TyKind *slot = NULL;
+  int cid = -1;
+  if (ak == NK_LocalVariableReadNode) {
+    LocalVar *al = scope_local(asc, an);
+    if (!al || al->is_block_param || !ty_is_hash(al->type) || al->type == TY_POLY_POLY_HASH) return 0;
+    if (al->is_param) {
+      if (al->rbs_seeded) return 0;
+      al->type = TY_POLY_POLY_HASH; al->push_widened = 1;
+      return 1;
+    }
+    int si = (int)(asc - c->scopes), saw = 0;
+    for (int r = lw_shared_first(c, an, si); r >= 0; r = lw_shared_next(r)) {
+      int w = lw_shared_node(r);
+      if (comp_scope_of(c, w) != asc || !sp_streq(nt_str(nt, w, "name"), an)) continue;
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode || !is_fresh_hash(c, nt_ref(nt, w, "value"))) return 0;
+      saw = 1;
+    }
+    if (!saw) return 0;
+    for (int r = lw_shared_first(c, an, si); r >= 0; r = lw_shared_next(r)) {
+      int w = lw_shared_node(r);
+      if (comp_scope_of(c, w) == asc && sp_streq(nt_str(nt, w, "name"), an))
+        want_poly_hash(c, nt_ref(nt, w, "value"));
+    }
+    al->type = TY_POLY_POLY_HASH; al->poly_hash_pin = 1;
+    return 1;
+  }
+  if (ak == NK_InstanceVariableReadNode) {
+    cid = asc->class_id >= 0 ? asc->class_id : comp_class_index(c, "Toplevel");
+    int ivi = cid >= 0 ? comp_ivar_index(&c->classes[cid], an) : -1;
+    if (ivi < 0) return 0;
+    slot = &c->classes[cid].ivar_types[ivi];
+    wk = NK_InstanceVariableWriteNode;
+  }
+  else if (ak == NK_GlobalVariableReadNode || ak == NK_ClassVariableReadNode ||
+           ak == NK_ConstantReadNode) {
+    slot = named_array_slot(c, arg);
+    wk = ak == NK_GlobalVariableReadNode ? NK_GlobalVariableWriteNode
+       : ak == NK_ClassVariableReadNode ? NK_ClassVariableWriteNode : NK_ConstantWriteNode;
+    if (ak == NK_ClassVariableReadNode) cid = asc->class_id >= 0 ? asc->class_id : comp_class_index(c, "Toplevel");
+  }
+  else return 0;
+  if (!slot || !ty_is_hash(*slot) || *slot == TY_POLY_POLY_HASH) return 0;
+  int saw = 0;
+  for (int pass = 0; pass < 2; pass++) {
+    NT_FOREACH_KIND(nt, wk, w) {
+      if (!sp_streq(nt_str(nt, w, "name"), an)) continue;
+      if (cid >= 0) {
+        Scope *ws = comp_scope_of(c, w);
+        int wc = ws && ws->class_id >= 0 ? ws->class_id : comp_class_index(c, "Toplevel");
+        if (wc != cid) continue;
+      }
+      int v = nt_ref(nt, w, "value");
+      if (pass == 0) { if (!is_fresh_hash(c, v)) return 0; saw = 1; }
+      else want_poly_hash(c, v);
+    }
+    if (!saw) return 0;
+  }
+  *slot = TY_POLY_POLY_HASH;
+  return 1;
+}
+
+/* A callee stores into the array argument `arg` names an element its kind
+   cannot hold: the caller's own array has to be the general Array. Widens
+   a local every write of which is an array literal (pinned, since the
+   literals re-derive the narrow kind), or a global, class variable or
+   constant, whose write passes keep a general Array once it is one. A
+   parameter widens as the callee's did, for its own callers. Returns 1 on
+   a change. */
+static int widen_arg_array(Compiler *c, int arg) {
+  const NodeTable *nt = c->nt;
+  NodeKind ak = nt_kind(nt, arg);
+  if (ak == NK_LocalVariableReadNode) {
+    const char *an = nt_str(nt, arg, "name");
+    Scope *asc = an ? comp_scope_of(c, arg) : NULL;
+    LocalVar *al = asc ? scope_local(asc, an) : NULL;
+    if (!al || !ty_is_array(al->type) || al->type == TY_POLY_ARRAY || al->is_block_param) return 0;
+    if (al->is_param) {
+      if (al->rbs_seeded) return 0;
+      al->type = TY_POLY_ARRAY; al->push_widened = 1;
+      return 1;
+    }
+    if (local_all_writes_empty_array(c, asc, an)) { al->type = TY_POLY_ARRAY; return 1; }
+    if (local_all_writes_array_literal(c, asc, an)) {
+      al->type = TY_POLY_ARRAY; al->poly_array_pin = 1; return 1;
+    }
+    return 0;
+  }
+  if (ak == NK_GlobalVariableReadNode || ak == NK_ClassVariableReadNode || ak == NK_ConstantReadNode) {
+    TyKind *ns = named_array_slot(c, arg);
+    if (ns && ty_is_array(*ns) && *ns != TY_POLY_ARRAY) { *ns = TY_POLY_ARRAY; return 1; }
+  }
+  return 0;
+}
+
 int bind_call_params(Compiler *c, int call_id, int mi) {
   if (mi < 0) return 0;
   const NodeTable *nt = c->nt;
@@ -4229,6 +4387,8 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
        fixpoint's cap (#4962). */
     if (p->push_widened && ty_is_array(at))
       merged = TY_POLY_ARRAY;
+    else if (p->push_widened && p->type == TY_POLY_POLY_HASH && ty_is_hash(at))
+      merged = TY_POLY_POLY_HASH;
     else if (ty_is_array(p->type) && ty_is_array(at) && p->type != at)
       /* Two array kinds meet as the poly SCALAR, not the poly ARRAY: the
          boxed value keeps its concrete array class, so the callee's array
@@ -4277,26 +4437,22 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
        to a poly array widens the caller's local too. Without this the caller
        kept its narrow element type and the in-method push emitted an
        ill-typed sp_StrArray_push of a symbol (#2989). Only the widening
-       direction, only to the poly array, so it stays monotonic. */
-    if (p->push_widened && apty && sp_streq(apty, "LocalVariableReadNode")) {
-      const char *an = nt_str(nt, argv[arg], "name");
-      Scope *asc = an ? comp_scope_of(c, argv[arg]) : NULL;
-      LocalVar *al = asc ? scope_local(asc, an) : NULL;
-      if (al && ty_is_array(al->type) && al->type != TY_POLY_ARRAY &&
-          !al->is_param && !al->is_block_param) {
-        if (local_all_writes_empty_array(c, asc, an)) { al->type = TY_POLY_ARRAY; changed = 1; }
-        else if (local_all_writes_array_literal(c, asc, an)) {
-          al->type = TY_POLY_ARRAY; al->poly_array_pin = 1; changed = 1;
-        }
-      }
-    }
-    /* A global, class variable or constant passed there is the same shared
-       array; their write passes keep a general Array once it is one. */
-    if (p->push_widened && apty &&
-        (sp_streq(apty, "GlobalVariableReadNode") || sp_streq(apty, "ClassVariableReadNode") ||
-         sp_streq(apty, "ConstantReadNode"))) {
-      TyKind *ns = named_array_slot(c, argv[arg]);
-      if (ns && ty_is_array(*ns) && *ns != TY_POLY_ARRAY) { *ns = TY_POLY_ARRAY; changed = 1; }
+       direction, only to the poly array, so it stays monotonic. A hash
+       parameter a foreign store widened widens the caller's hash the same
+       way. */
+    if (p->push_widened && p->type != TY_POLY_POLY_HASH) changed |= widen_arg_array(c, argv[arg]);
+    if (p->push_widened && p->type == TY_POLY_POLY_HASH && ty_is_hash(at))
+      changed |= widen_arg_hash(c, argv[arg]);
+    /* A BOXED parameter hides the container from its callee, so the element
+       writes through it are checked here, against each caller's own. */
+    if (p->type == TY_POLY && ty_is_array(at) && at != TY_POLY_ARRAY &&
+        p->boxed_push_elem != TY_UNKNOWN && p->boxed_push_elem != ty_array_elem(at))
+      changed |= widen_arg_array(c, argv[arg]);
+    if (p->type == TY_POLY && ty_is_hash(at) && at != TY_POLY_POLY_HASH &&
+        p->boxed_store_key != TY_UNKNOWN) {
+      TyKind folded = at;
+      int fits = fold_container_evidence(&folded, 0, 0, p->boxed_store_key, p->boxed_store_val);
+      if (!fits || folded != at) changed |= widen_arg_hash(c, argv[arg]);
     }
     if (merged == TY_PROC) {
       TyKind pr = proc_ret_of(c, argv[arg]);
