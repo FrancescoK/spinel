@@ -30025,7 +30025,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       nt_type(nt, recv) &&
       !sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       !sp_streq(nt_type(nt, recv), "ConstantPathNode") &&
-      class_var_static_ci(c, recv) < 0 &&
+      class_var_static_ci(c, recv) < 0 && self_class_static_ci(c, recv) < 0 &&
       argc == 0) {
     int kt = ++g_tmp, rt2 = ++g_tmp;
     buf_printf(b, "({ sp_Class _t%d = ", kt); emit_expr(c, recv, b); buf_printf(b, "; ");
@@ -30299,25 +30299,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
   }
 
-  if (recv >= 0 && sp_streq(name, "new") && nt_type(nt, recv) &&
-      sp_streq(nt_type(nt, recv), "CallNode") && nt_str(nt, recv, "name") &&
-      sp_streq(nt_str(nt, recv, "name"), "class")) {
-    Scope *self = comp_scope_of(c, id);
-    int cid = self ? self->class_id : -1;
-    int has_sub = 0;
-    for (int j = 0; cid >= 0 && j < c->nclasses; j++) if (c->classes[j].parent == cid) { has_sub = 1; break; }
-    if (cid >= 0 && !has_sub) {
-      buf_printf(b, "sp_%s_new(", c->classes[cid].c_name);
-      /* the arguments converted to initialize's parameter types, as
-         `V.new(...)` does: an `x.to_i` narrowed to sp_int passed raw into a
-         poly parameter did not compile (#4534) */
-      int initm = comp_method_in_chain(c, cid, "initialize", NULL);
-      if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
-      else for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_expr(c, argv[a], b); }
-      if (initm >= 0) emit_ctor_block_slot(c, id, initm, c->scopes[initm].nparams > 0 ? ", " : "", b);
-      buf_puts(b, ")");
-      return;
-    }
+  if (recv >= 0 && sp_streq(name, "new") && self_class_static_ci(c, recv) >= 0) {
+    int cid = self_class_static_ci(c, recv);
+    buf_printf(b, "sp_%s_new(", c->classes[cid].c_name);
+    /* the arguments converted to initialize's parameter types, as
+       `V.new(...)` does: an `x.to_i` narrowed to sp_int passed raw into a
+       poly parameter did not compile (#4534) */
+    int initm = comp_method_in_chain(c, cid, "initialize", NULL);
+    if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
+    else for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_expr(c, argv[a], b); }
+    if (initm >= 0) emit_ctor_block_slot(c, id, initm, c->scopes[initm].nparams > 0 ? ", " : "", b);
+    buf_puts(b, ")");
+    return;
   }
 
   /* namespaced class M::Sub.new -> check for user-defined `def self.new` first,

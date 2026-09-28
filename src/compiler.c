@@ -1990,6 +1990,23 @@ int poly_string_read_p(const char *name) {
   return 0;
 }
 
+/* The class `self.class` at `recv` names when only one class can answer it:
+   an instance method of a class no other class inherits from. In a
+   superclass or a module it is whichever class the receiver has at run time.
+   -1 when recv is not `self.class` or names no single class. */
+int self_class_static_ci(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) return -1;
+  const char *cn = nt_str(nt, recv, "name");
+  int cr = nt_ref(nt, recv, "receiver");
+  if (!cn || !sp_streq(cn, "class") || cr < 0 || nt_kind(nt, cr) != NK_SelfNode) return -1;
+  Scope *s = comp_scope_of(c, recv);
+  int cid = s ? s->class_id : -1;
+  if (cid < 0 || nt_kind(nt, c->classes[cid].def_node) == NK_ModuleNode) return -1;
+  for (int j = 0; j < c->nclasses; j++) if (c->classes[j].parent == cid) return -1;
+  return cid;
+}
+
 /* A Class-valued receiver that carries its class only at run time: a variable,
    or a call whose result is a class (`Job.set(1).run(2)` -- ActiveJob's chained
    `set`). Excludes a constant receiver and an accessor call, which resolve
@@ -2010,12 +2027,10 @@ int class_recv_is_dynamic(Compiler *c, int recv) {
       sp_streq(rty, "AndNode") || sp_streq(rty, "OrNode"))
     return 1;
   if (!sp_streq(rty, "CallNode")) return 0;
-  /* `self.class` resolves to the enclosing class statically and has its own
-     arms on both sides; treating it as dynamic would steal them. */
-  { const char *cn = nt_str(nt, recv, "name");
-    int cr = nt_ref(nt, recv, "receiver");
-    if (cn && sp_streq(cn, "class") && cr >= 0 && nt_type(nt, cr) &&
-        sp_streq(nt_type(nt, cr), "SelfNode")) return 0; }
+  /* `self.class` in a class with no subclass resolves to that class
+     statically and has its own arms on both sides; treating it as dynamic
+     would steal them. */
+  if (self_class_static_ci(c, recv) >= 0) return 0;
   if (comp_sg_reader_const(c, recv) >= 0) return 0;
   { int cand[4]; if (comp_sg_reader_candidates(c, recv, cand, 4) >= 2) return 0; }
   return 1;

@@ -2820,11 +2820,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_CLASS && sp_streq(name, "new") &&
       nt_type(nt, recv) && !sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       !sp_streq(nt_type(nt, recv), "ConstantPathNode")) {
-    int _is_self_class = (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "class") &&
-      nt_ref(nt, recv, "receiver") >= 0 &&
-      nt_type(nt, nt_ref(nt, recv, "receiver")) &&
-      sp_streq(nt_type(nt, nt_ref(nt, recv, "receiver")), "SelfNode"));
+    int _is_self_class = self_class_static_ci(c, recv) >= 0;
     /* a local statically holding one STRUCT class (k = Struct.new(..) /
        k = StructKlass) falls through to the static-class .new arms below --
        its typed member accessors then dispatch statically. A plain class
@@ -3108,13 +3104,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode"))
     return TY_POLY_ARRAY;
 
-  /* self.class.new(...) -> an instance of the enclosing class */
-  if (recv >= 0 && sp_streq(name, "new") && nt_type(nt, recv) &&
-      sp_streq(nt_type(nt, recv), "CallNode") && nt_str(nt, recv, "name") &&
-      sp_streq(nt_str(nt, recv, "name"), "class")) {
-    Scope *self = comp_scope_of(c, id);
-    if (self && self->class_id >= 0) return ty_object(self->class_id);
-  }
+  /* self.class.new(...) in a class no class inherits from -> an instance of it */
+  if (recv >= 0 && sp_streq(name, "new") && self_class_static_ci(c, recv) >= 0)
+    return ty_object(self_class_static_ci(c, recv));
 
   /* Class#allocate -> a bare instance of that class (no initialize run). */
   if (recv >= 0 && sp_streq(name, "allocate") && argc == 0) {
