@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <limits.h>
 #include "analyze_internal.h"
 
 
@@ -13067,6 +13068,39 @@ static int promote_shared_stored_strings(Compiler *c) {
     if (llv2->type != TY_POLY && (llv2->type != TY_STRBUF || !llv2->str_shared))
       {  llv2->type = TY_STRBUF; llv2->str_shared = 1; changed = 1;  }
   }
+  /* `r = obj.buf << x`: an append (or replace, clear) answers its receiver,
+     so where that is a
+     reader handing out the handle (marked by the reader-mutation pass
+     above), r holds the same handle -- a later `r << y` reaches obj.buf and
+     r.equal?(obj.buf). Mark each append of the chain so it emits the handle,
+     and promote the local. An append left unmarked (a tail return, an
+     argument) still answers the String read. */
+  for (int w = 0; w < nt->count; w++) {
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+    int links[16]; int nl = 0;
+    int cur = nt_ref(nt, w, "value");
+    while (cur >= 0 && nl < 16 && nt_kind(nt, cur) == NK_CallNode &&
+           nt_ref(nt, cur, "block") < 0) {
+      const char *an = nt_str(nt, cur, "name");
+      int aa = nt_ref(nt, cur, "arguments"); int aac = 0;
+      if (aa >= 0) nt_arr(nt, aa, "arguments", &aac);
+      if (!an || !((aac == 1 && (sp_streq(an, "<<") || sp_streq(an, "concat") ||
+                                 sp_streq(an, "prepend") || sp_streq(an, "replace"))) ||
+                   (aac == 0 && sp_streq(an, "clear")))) break;
+      links[nl++] = cur;
+      cur = nt_ref(nt, cur, "receiver");
+    }
+    if (nl == 0 || cur < 0 || nt_kind(nt, cur) != NK_CallNode || !c->strbuf_box[cur]) continue;
+    const char *lname3 = nt_str(nt, w, "name");
+    Scope *ls3 = comp_scope_of(c, w);
+    LocalVar *llv3 = (lname3 && ls3) ? scope_local(ls3, lname3) : NULL;
+    if (!llv3 || !strbuf_slot_eligible_shape(c, lname3, ls3, llv3)) continue;
+    if (llv3->type != TY_UNKNOWN && llv3->type != TY_STRING && llv3->type != TY_STRBUF) continue;
+    for (int k = 0; k < nl; k++)
+      if (!c->strbuf_box[links[k]]) { c->strbuf_box[links[k]] = 1; changed = 1; }
+    if (llv3->type != TY_STRBUF || !llv3->str_shared)
+      {  llv3->type = TY_STRBUF; llv3->str_shared = 1; changed = 1;  }
+  }
   /* iteration-variable mutation: `arr.each { |x| x << "!" }` mutates the
      ELEMENT through the block binding, so the container's stored strings
      become handles and the block param binds the handle (#3227 P6). Every
@@ -14739,6 +14773,10 @@ static int elem_miss_call(Compiler *c, int v) {
         nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) return 1;
     return 0;
   }
+  /* the element a multiple assignment hands one of its targets, read back
+     only as type evidence (desugar_masgn_store_evidence): it is no more a
+     miss there than it is for the assignment's local and ivar targets */
+  if (nt_int(nt, v, "masgn_elem", LLONG_MIN) != LLONG_MIN) return 0;
   if (sp_streq(nm, "[]") || sp_streq(nm, "at")) return argc == 1 && blk < 0;
   if (sp_streq(nm, "dig")) return argc >= 1;
   if (sp_streq(nm, "first") || sp_streq(nm, "last") || sp_streq(nm, "sample"))
