@@ -13758,6 +13758,23 @@ static sp_RbVal sp_curry_realize_poly(sp_Curry *c) {
    reaches the target's arity, and answer the new curry boxed otherwise. The
    static paths kept answering a Curry for a saturating call, so a method taking
    a curried Proc returned a Proc where CRuby returns the value (#4068). */
+/* The most arguments curry(n) may name for a Proc, read off the kinds its
+   parameter list carries, as curry_count_max reads a visible definition: its
+   req and opt parameters, and one more for any keywords, or -1 (no most)
+   where it has a rest or carries no kinds. The kind ids are the generated
+   program's. */
+static sp_int sp_proc_curry_max(sp_Proc *p, sp_sym req_id, sp_sym opt_id, sp_sym rest_id,
+                                sp_sym key_id, sp_sym keyreq_id, sp_sym keyrest_id) {
+  if (!p || p->param_count <= 0 || !p->param_kinds) return -1;
+  sp_int n = 0, kw = 0;
+  for (sp_int i = 0; i < p->param_count; i++) {
+    sp_sym k = p->param_kinds[i];
+    if (k == rest_id) return -1;
+    if (k == req_id || k == opt_id) n++;
+    if (k == key_id || k == keyreq_id || k == keyrest_id) kw = 1;
+  }
+  return n + kw;
+}
 /* Proc#curry with a count that arrives BOXED (an untyped slot, a container
    read): nil is no count, everything else converts through the Integer
    argument protocol -- CRuby's to_int, the user-object bridge and its exact

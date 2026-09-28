@@ -1,0 +1,12 @@
+6
+30
+10
+6
+15
+42
+"wrong number of arguments (given 3, expected 2)"
+3
+"wrong number of arguments (given 3, expected 1..2)"
+true
+"wrong number of arguments (given 3, expected 1..2)"
+"undefined method 'curry' for nil"

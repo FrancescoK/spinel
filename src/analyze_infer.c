@@ -5132,6 +5132,14 @@ else {
       if (argc == 0 && sp_streq(name, "lambda?")) return an_poly_concrete(c, name, TY_BOOL);
       if (argc == 0 && sp_streq(name, "parameters")) return an_poly_concrete(c, name, TY_POLY_ARRAY);
       if (argc == 0 && sp_streq(name, "curry")) return an_poly_concrete(c, name, TY_CURRY);
+      /* the count form too, but not where a reopened Object or Kernel has a
+         curry, which answers for every receiver the Proc arm does not */
+      if (argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode && sp_streq(name, "curry") &&
+          !(comp_class_index(c, "Object") >= 0 &&
+            comp_method_in_chain(c, comp_class_index(c, "Object"), name, NULL) >= 0) &&
+          !(comp_class_index(c, "Kernel") >= 0 &&
+            comp_method_in_chain(c, comp_class_index(c, "Kernel"), name, NULL) >= 0))
+        return an_poly_concrete(c, name, TY_CURRY);
       if (argc == 0 && sp_streq(name, "to_proc")) return an_poly_concrete(c, name, TY_POLY);
       /* String transforms on a boxed value: emit_poly_call routes these
          through sp_poly_to_s and re-boxes the result, so the value stays
