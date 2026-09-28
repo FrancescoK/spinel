@@ -126,7 +126,12 @@ typedef struct {
                        container is invisible at the call site when the
                        parameter arrives poly, so the caller's slot cannot be
                        checked there; this carries the evidence out to the
-                       ivar-widening pass, which knows both sides. */
+                       ivar-widening pass, which knows both sides. An
+                       Integer-keyed element write counts as a push. */
+  TyKind boxed_store_key, boxed_store_val; /* (params, boxed) the key and the
+                       value an element write through this BOXED parameter
+                       stores, unified as boxed_push_elem is: the evidence
+                       the binding checks a caller's hash against. */
   int const_def_write; /* (consts) has a definite (non-or/and) assignment; an
                           or/and-write-only const is nil-defaulted (poly) so its
                           `||=` truthiness check fires on first use */

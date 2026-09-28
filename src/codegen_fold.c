@@ -5732,6 +5732,24 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
           const char *hn = ty_hash_cname(pt);
           if (hn) { buf_printf(out, "sp_%sHash_new()", hn); return; }
         }
+        /* A typed hash into a parameter the method stores foreign keys or
+           values into (push_widened): the binding widens the caller's hash
+           where it can see how it is built, and a copy would drop the
+           stores, so the rest are refused rather than miscompiled. */
+        if (pt == TY_POLY_POLY_HASH && ty_is_hash(at) && at != TY_POLY_POLY_HASH &&
+            m && idx >= 0 && idx < m->nparams && m->pnames[idx]) {
+          LocalVar *hp = scope_local(m, m->pnames[idx]);
+          if (hp && hp->push_widened) {
+            char msg[512];
+            snprintf(msg, sizeof msg,
+                     "a typed Hash is passed to `%s`'s parameter `%s`, which the method stores keys or "
+                     "values of other types into: the caller's hash cannot hold them, and a converted copy "
+                     "would not see the stores. Build the argument from a hash literal the call can see, "
+                     "so it is widened with the parameter.",
+                     m->name ? m->name : "?", m->pnames[idx]);
+            unsupported_feature(c, provided, msg);
+          }
+        }
         /* A concrete str-keyed hash arg (StrStrHash / StrIntHash) into a
            poly-valued hash param (StrPolyHash): the two structs store values
            differently (const char* / sp_int vs sp_RbVal), so a raw pointer
