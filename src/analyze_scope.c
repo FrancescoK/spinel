@@ -814,6 +814,46 @@ void desugar_class_reopen(Compiler *c) {
   }
 }
 
+/* A statement of a `class << self` body: a def is a class method of
+   `target_class`, also one inside an if/unless/else there (`class << self;
+   if cond; def m; end; else; def m; end; end`, as Loofah defines its entry
+   points, #5358). Anything else is walked as usual. */
+static void sclass_walk_stmt(Compiler *c, int s, int scope_idx, int target_class, int depth) {
+  const NodeTable *nt = c->nt;
+  if (s < 0 || s >= nt->count) return;
+  NodeKind k = nt_kind(nt, s);
+  if (k == NK_DefNode && nt_ref(nt, s, "receiver") < 0) {
+    const char *name = nt_str(nt, s, "name");
+    if (!name) return;
+    Scope *sc = comp_scope_new(c, name, s);
+    int new_idx = c->nscopes - 1;
+    sc->body = nt_ref(nt, s, "body");
+    sc->class_id = target_class;
+    sc->is_cmethod = 1;
+    collect_def_params(c, s, sc);
+    /* Assign scope to the def node and its body */
+    c->nscope[s] = new_idx;
+    c->node_cbody[s] = g_cbody_class_id;
+    if (sc->body >= 0) walk_scope(c, sc->body, new_idx, target_class);
+    return;
+  }
+  const char *ty = nt_type(nt, s);
+  int cond = k == NK_IfNode || k == NK_UnlessNode || k == NK_StatementsNode ||
+             (ty && sp_streq(ty, "ElseNode"));
+  if (!cond || depth > 64) { walk_scope(c, s, scope_idx, target_class); return; }
+  c->nscope[s] = scope_idx;
+  c->node_cbody[s] = g_cbody_class_id;
+  if (k == NK_StatementsNode) {
+    int n = 0; const int *b = nt_arr(nt, s, "body", &n);
+    for (int i = 0; i < n; i++) sclass_walk_stmt(c, b[i], scope_idx, target_class, depth + 1);
+    return;
+  }
+  walk_scope(c, nt_ref(nt, s, "predicate"), scope_idx, target_class);
+  sclass_walk_stmt(c, nt_ref(nt, s, "statements"), scope_idx, target_class, depth + 1);
+  sclass_walk_stmt(c, nt_ref(nt, s, "subsequent"), scope_idx, target_class, depth + 1);
+  sclass_walk_stmt(c, nt_ref(nt, s, "else_clause"), scope_idx, target_class, depth + 1);
+}
+
 void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
   if (id < 0 || id >= c->nt->count) return;
   c->nscope[id] = scope_idx;
@@ -854,22 +894,7 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
           int s = stmts[k];
           const char *sty = nt_type(c->nt, s);
           if (!sty) continue;
-          if (sp_streq(sty, "DefNode")) {
-            const char *name = nt_str(c->nt, s, "name");
-            if (!name) continue;
-            Scope *sc = comp_scope_new(c, name, s);
-            int new_idx = c->nscopes - 1;
-            sc->body = nt_ref(c->nt, s, "body");
-            sc->class_id = target_class;
-            sc->is_cmethod = 1;
-            collect_def_params(c, s, sc);
-            /* Assign scope to the def node and its body */
-            c->nscope[s] = new_idx;
-            if (sc->body >= 0) walk_scope(c, sc->body, new_idx, target_class);
-          }
-          else {
-            walk_scope(c, s, scope_idx, target_class);
-          }
+          sclass_walk_stmt(c, s, scope_idx, target_class, 0);
         }
         c->nscope[id] = scope_idx;
         c->nscope[sbody] = scope_idx;
