@@ -5768,6 +5768,25 @@ static int bs_strip_keywords(Compiler *c, int blk, int bp, int pn) {
   return 1;
 }
 
+/* A block an Enumerator runs: one given to a method of an Enumerator value
+   (`a.each_with_index.map { }`), or to `with_index` / `with_object` on a
+   blockless builtin iterator (`a.map.with_index { }`), whose receiver is not
+   typed yet. Neither passes the block keywords. */
+static int bs_enum_iter(Compiler *c, int recv, TyKind rt, const char *nm) {
+  const NodeTable *nt = c->nt;
+  if (rt == TY_ENUMERATOR) return 1;
+  if (!sp_streq(nm, "with_index") && !sp_streq(nm, "each_with_index") &&
+      !sp_streq(nm, "with_object") && !sp_streq(nm, "each_with_object")) return 0;
+  if (nt_kind(nt, recv) != NK_CallNode || nt_ref(nt, recv, "block") >= 0) return 0;
+  int rr = nt_ref(nt, recv, "receiver");
+  const char *rn = nt_str(nt, recv, "name");
+  if (rr < 0 || !rn) return 0;
+  int ra = nt_ref(nt, recv, "arguments");
+  int rargc = 0; if (ra >= 0) nt_arr(nt, ra, "arguments", &rargc);
+  TyKind elem; int hash_pair;
+  return bs_yield_count(infer_type(c, rr), rn, rargc, &elem, &hash_pair) > 0;
+}
+
 /* A block given to a builtin iterator with a parameter list the typed
    emitters do not distribute: optionals (`|c, a = 10|`), posts (`|*r, c|`),
    or a rest a yielded pair or Array is spread across. The emitters bind the
@@ -5816,7 +5835,10 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
     TyKind rt = infer_type(c, recv);
     TyKind elem; int hash_pair;
     int m = bs_yield_count(rt, nm, argc, &elem, &hash_pair);
-    if (m == 0) continue;
+    if (m == 0) {
+      if (has_kw && bs_enum_iter(c, recv, rt, nm) && bs_strip_keywords(c, blk, bp, pn)) changed = 1;
+      continue;
+    }
     if (has_kw) {
       if (!bs_strip_keywords(c, blk, bp, pn)) continue;
       changed = 1;
