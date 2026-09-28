@@ -25379,6 +25379,20 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* ARGF pseudo-IO methods: read the ARGV files (or stdin) in sequence. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_ARGF) {
     if (sp_streq(name, "read")) { buf_puts(b, "sp_argf_read()"); return; }
+    /* `chomp:` read as IO#gets reads it (emit_gets_sep_args): the flag
+       first, then the line, whose ending "\n" or "\r\n" goes when the flag
+       holds (a last line without "\n" keeps its "\r") */
+    int chomp_kw = argc == 1 && nt_kind(nt, argv[0]) == NK_KeywordHashNode
+                   ? struct_kwarg_value(c, argv[0], "chomp") : -1;
+    if ((sp_streq(name, "gets") || sp_streq(name, "readline")) && chomp_kw >= 0) {
+      int tf = ++g_tmp, tl = ++g_tmp;
+      buf_printf(b, "({ int _t%d = ", tf);
+      emit_kw_flag(c, chomp_kw, b);
+      buf_printf(b, "; const char *_t%d = sp_argf_gets(); SP_GC_ROOT_STR(_t%d);"
+                    " _t%d && _t%d && sp_str_byte_len(_t%d) > 0 && _t%d[sp_str_byte_len(_t%d) - 1] == '\\n'"
+                    " ? sp_str_chomp(_t%d) : _t%d; })", tl, tl, tl, tf, tl, tl, tl, tl, tl);
+      return;
+    }
     if (sp_streq(name, "gets") || sp_streq(name, "readline")) { buf_puts(b, "sp_argf_gets()"); return; }
     if (sp_streq(name, "readlines") || sp_streq(name, "to_a")) { buf_puts(b, "sp_argf_readlines()"); return; }
     if (sp_streq(name, "filename") || sp_streq(name, "path")) { buf_puts(b, "sp_argf_filename()"); return; }
