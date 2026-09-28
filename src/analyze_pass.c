@@ -3,6 +3,7 @@ int callee_has_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_declares_kwargs(Compiler *c, Scope *m);
 int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
 int is_fresh_array(Compiler *c, int v);
+static int widen_nested_literals(Compiler *c, int recv, int is_push, int is_splice, TyKind kt, TyKind vt);
 int kwh_only_spreads(const NodeTable *nt, int kwh);
 #include <stdio.h>
 #include <stdlib.h>
@@ -3281,6 +3282,14 @@ int infer_write_types(Compiler *c) {
       int src = local_hash_alias_source(c, &lw_ix, recv);
       if (src >= 0) { recv = src; rty = nt_type(nt, src); }
     }
+    if ((is_push || is_idx_write) && !elem_splat_index) {
+      /* each pushed value is its own evidence (`a[0].push(2, "x")`) */
+      if (elem_argv && elem_an - elem_from > 1)
+        for (int ai = elem_from; ai < elem_an; ai++)
+          changed |= widen_nested_literals(c, recv, is_push, is_splice, (TyKind)kt, push_elem_ty(c, elem_argv[ai]));
+      else
+        changed |= widen_nested_literals(c, recv, is_push, is_splice, (TyKind)kt, (TyKind)vt);
+    }
     /* fold into a local's type or an ivar's type (an empty `@buf=[]` filled by
        `@buf << x` infers its element type the same way a local does) */
     TyKind *slot = NULL;
@@ -4529,6 +4538,107 @@ int is_fresh_array(Compiler *c, int v) {
   if (sp_streq(nm, "to_a")) return !ty_is_array(rt);
   for (int k = 0; fresh[k]; k++) if (sp_streq(nm, fresh[k])) return 1;
   return 0;
+}
+
+/* Collects into out[] the container literals `n` can evaluate to, as far
+   as the program shows: a literal itself, the literals a variable is
+   assigned, and, for an element read `x[k]` (`fetch`, `first`, `last`),
+   the container-literal elements of those `x` can be. Returns the count. */
+static int container_literals(Compiler *c, int n, int *out, int nout, int cap, int depth) {
+  const NodeTable *nt = c->nt;
+  n = unwrap_parens(c, n);
+  if (n < 0 || depth > 4 || nout >= cap) return nout;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_ArrayNode || k == NK_HashNode) {
+    for (int q = 0; q < nout; q++) if (out[q] == n) return nout;
+    out[nout++] = n;
+    return nout;
+  }
+  const char *nm = nt_str(nt, n, "name");
+  if (!nm) return nout;
+  if (k == NK_CallNode) {
+    int r = nt_ref(nt, n, "receiver"), a = nt_ref(nt, n, "arguments"), an = 0;
+    if (a >= 0) nt_arr(nt, a, "arguments", &an);
+    int elem_read = (sp_streq(nm, "[]") && an == 1) || (sp_streq(nm, "fetch") && an >= 1) ||
+                    ((sp_streq(nm, "first") || sp_streq(nm, "last")) && an == 0);
+    if (r < 0 || !elem_read || nt_ref(nt, n, "block") >= 0) return nout;
+    int outer[32];
+    int no = container_literals(c, r, outer, 0, 32, depth + 1);
+    for (int q = 0; q < no; q++) {
+      int en = 0; const int *ev = nt_arr(nt, outer[q], "elements", &en);
+      for (int e = 0; e < en; e++) {
+        int el = nt_kind(nt, ev[e]) == NK_AssocNode ? nt_ref(nt, ev[e], "value") : ev[e];
+        NodeKind ek = nt_kind(nt, el);
+        if (ek == NK_ArrayNode || ek == NK_HashNode) nout = container_literals(c, el, out, nout, cap, depth + 1);
+      }
+    }
+    return nout;
+  }
+  Scope *sc = comp_scope_of(c, n);
+  if (!sc) return nout;
+  if (k == NK_LocalVariableReadNode) {
+    int si = (int)(sc - c->scopes);
+    for (int r = lw_shared_first(c, nm, si); r >= 0; r = lw_shared_next(r)) {
+      int w = lw_shared_node(r);
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode || comp_scope_of(c, w) != sc ||
+          !sp_streq(nt_str(nt, w, "name"), nm)) continue;
+      nout = container_literals(c, nt_ref(nt, w, "value"), out, nout, cap, depth + 1);
+    }
+    return nout;
+  }
+  NodeKind wk = k == NK_InstanceVariableReadNode ? NK_InstanceVariableWriteNode
+              : k == NK_GlobalVariableReadNode ? NK_GlobalVariableWriteNode
+              : k == NK_ClassVariableReadNode ? NK_ClassVariableWriteNode
+              : k == NK_ConstantReadNode ? NK_ConstantWriteNode : NK_NONE;
+  if (wk == NK_NONE) return nout;
+  int cid = -1;
+  if (k == NK_InstanceVariableReadNode || k == NK_ClassVariableReadNode)
+    cid = sc->class_id >= 0 ? sc->class_id : comp_class_index(c, "Toplevel");
+  NT_FOREACH_KIND(nt, wk, w) {
+    if (!sp_streq(nt_str(nt, w, "name"), nm)) continue;
+    if (cid >= 0) {
+      Scope *ws = comp_scope_of(c, w);
+      int wc = ws && ws->class_id >= 0 ? ws->class_id : comp_class_index(c, "Toplevel");
+      if (wc != cid) continue;
+    }
+    nout = container_literals(c, nt_ref(nt, w, "value"), out, nout, cap, depth + 1);
+  }
+  return nout;
+}
+
+/* An element write or push whose receiver is an element read (`y[k][j] = v`,
+   `a[0] << v`) stores into a container literal nested in another: widens
+   each such literal the evidence does not fit, as a store through a
+   variable holding it would. A boxed value is exempt, as it is there.
+   Returns 1 on a change. */
+static int widen_nested_literals(Compiler *c, int recv, int is_push, int is_splice, TyKind kt, TyKind vt) {
+  const NodeTable *nt = c->nt;
+  int r = unwrap_parens(c, recv);
+  if (r < 0 || nt_kind(nt, r) != NK_CallNode) return 0;
+  int lits[32];
+  int nl = container_literals(c, r, lits, 0, 32, 0);
+  int changed = 0;
+  for (int q = 0; q < nl; q++) {
+    int l = lits[q];
+    TyKind lt = infer_type(c, l);
+    if (nt_kind(nt, l) == NK_HashNode) {
+      if (is_push || is_splice || lt == TY_POLY_POLY_HASH || kt == TY_UNKNOWN || vt == TY_UNKNOWN) continue;
+      TyKind hvt = vt == TY_POLY && ty_is_hash(lt) ? ty_hash_val(lt) : vt;
+      TyKind folded = ty_is_hash(lt) ? lt : TY_UNKNOWN;
+      int fits = fold_container_evidence(&folded, 0, 0, kt, hvt);
+      if (ty_is_hash(lt) && fits && folded == lt) continue;
+      changed |= want_poly_hash(c, l);
+    }
+    else {
+      if (lt == TY_POLY_ARRAY || vt == TY_UNKNOWN || vt == TY_POLY) continue;
+      if (!is_push && kt != TY_INT && kt != TY_POLY) continue;
+      if (ty_is_array(lt) && vt == ty_array_elem(lt)) continue;
+      if (!c->arr_want || l >= c->node_cap || c->arr_want[l] == TY_POLY_ARRAY) continue;
+      c->arr_want[l] = TY_POLY_ARRAY;
+      changed = 1;
+    }
+  }
+  return changed;
 }
 
 /* A callee stores into the array argument `arg` names an element its kind
