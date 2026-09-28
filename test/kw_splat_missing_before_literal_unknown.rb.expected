@@ -1,0 +1,41 @@
+lit 1
+hx
+ArgumentError: missing keyword: :y
+hx
+lit 1
+ArgumentError: missing keyword: :y
+hx
+ArgumentError: missing keyword: :y
+ArgumentError: missing keywords: :x, :y
+ArgumentError: unknown keyword: :z
+ArgumentError: unknown keywords: :z, :w
+lit 1
+TypeError: no implicit conversion of Integer into Hash
+ArgumentError: unknown keywords: z, w
+ArgumentError: unknown keywords: w, z
+ArgumentError: unknown keywords: z
+lit 1
+TypeError: no implicit conversion of Integer into Hash
+ArgumentError: unknown keywords: z
+ArgumentError: unknown keywords: z
+ArgumentError: unknown keywords: z, s
+#<struct Named a=1, b=1>
+#<struct Named a=1, b=nil>
+ArgumentError: unknown keywords: s
+#<data Point x=1, y=2>
+#<data Point x=1, y=2>
+ArgumentError: unknown keyword: "s"
+ArgumentError: unknown keywords: :z, "s"
+ArgumentError: missing keywords: :x, :y
+#<data Point x=1, y=3>
+#<data Point x=1, y=4>
+TypeError: 1 is not a symbol nor a string
+lit 1
+ArgumentError: unknown keywords: q
+ArgumentError: unknown keyword: "q"
+lit 1
+lit 2
+ArgumentError: missing keywords: :x, :y
+ArgumentError: missing keyword: :y
+ArgumentError: unknown keyword: :z
+ArgumentError: unknown keywords: z

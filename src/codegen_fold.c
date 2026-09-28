@@ -6568,6 +6568,14 @@ int kwh_sources_overlap(const NodeTable *nt, int kwh) {
 }
 
 /* See codegen_internal.h. */
+int kwh_has_splat(const NodeTable *nt, int kwh) {
+  int en = 0; const int *el = kwh >= 0 ? nt_arr(nt, kwh, "elements", &en) : NULL;
+  for (int e = 0; e < en; e++)
+    if (nt_kind(nt, el[e]) == NK_AssocSplatNode) return 1;
+  return 0;
+}
+
+/* See codegen_internal.h. */
 int kwh_merged(Compiler *c, Scope *m, int kwh) {
   return callee_declares_kwargs(c, m) && kwh_sources_overlap(c->nt, kwh);
 }
@@ -6616,35 +6624,53 @@ void emit_positionals_first(Compiler *c, const int *argv, int pos_argc) {
 }
 
 /* See codegen_internal.h. */
-int emit_ds_hash_merge(Compiler *c, int kwh, TyKind *out_type) {
+int emit_ds_hash_merge(Compiler *c, int kwh, int any_key, TyKind *out_type) {
   const NodeTable *nt = c->nt;
   int mh = ++g_tmp;
-  *out_type = TY_SYM_POLY_HASH;
+  const char *hk = any_key ? "PolyPoly" : "SymPoly";
+  *out_type = any_key ? TY_POLY_POLY_HASH : TY_SYM_POLY_HASH;
   emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d);\n", mh, mh);
+  buf_printf(g_pre, "sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);\n", hk, mh, hk, mh);
   int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
   for (int e = 0; e < en; e++) {
     int v = nt_ref(nt, el[e], "value");
     /* each source renders into a side buffer first: a literal drains its
        own construction into g_pre, which must land before the line using it */
     Buf vb; memset(&vb, 0, sizeof vb);
-    if (nt_kind(nt, el[e]) != NK_AssocSplatNode) {
+    int key = nt_ref(nt, el[e], "key");
+    if (nt_kind(nt, el[e]) != NK_AssocSplatNode && any_key && nt_kind(nt, key) != NK_SymbolNode) {
+      /* a key of another class, into the hash that takes any: a computed
+         one runs ahead of its value, into a rooted temp */
+      int kt = ++g_tmp;
+      Buf kb; memset(&kb, 0, sizeof kb);
+      emit_boxed(c, key, &kb);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", kt, kb.p ? kb.p : "sp_box_nil()", kt);
+      free(kb.p);
       emit_boxed(c, v, &vb);
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_SymPolyHash_set(_t%d, sp_sym_intern(\"%s\"), %s);\n", mh,
-                 nt_str(nt, nt_ref(nt, el[e], "key"), "value"), vb.p ? vb.p : "sp_box_nil()");
+      buf_printf(g_pre, "sp_PolyPolyHash_set(_t%d, _t%d, %s);\n", mh, kt, vb.p ? vb.p : "sp_box_nil()");
+    }
+    else if (nt_kind(nt, el[e]) != NK_AssocSplatNode) {
+      emit_boxed(c, v, &vb);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, any_key ? "sp_PolyPolyHash_set(_t%d, sp_box_sym(sp_sym_intern(\"%s\")), %s);\n"
+                                : "sp_SymPolyHash_set(_t%d, sp_sym_intern(\"%s\"), %s);\n", mh,
+                 nt_str(nt, key, "value"), vb.p ? vb.p : "sp_box_nil()");
     }
     else if (v < 0) {
       const char *akw = anon_kwrest_name(c, el[e]);
       if (akw) {
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, lv_%s);\n", mh, rename_local(akw));
+        if (any_key) buf_printf(g_pre, "sp_kw_merge_any(_t%d, sp_box_obj(lv_%s, SP_BUILTIN_SYM_POLY_HASH));\n",
+                                mh, rename_local(akw));
+        else buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, lv_%s);\n", mh, rename_local(akw));
       }
     }
     else {
       TyKind t = comp_ntype(c, v);
       const char *hn = ty_hash_cname(t);
-      if (hn && sp_streq(hn, "SymPoly")) {
+      if (!any_key && hn && sp_streq(hn, "SymPoly")) {
         int src = ++g_tmp;
         emit_expr(c, v, &vb);
         emit_indent(g_pre, g_indent);
@@ -6658,7 +6684,8 @@ int emit_ds_hash_merge(Compiler *c, int kwh, TyKind *out_type) {
            TypeError for anything else that is not a Hash */
         emit_boxed(c, v, &vb);
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_kwrest_merge_poly(_t%d, %s);\n", mh, vb.p ? vb.p : "sp_box_nil()");
+        buf_printf(g_pre, "%s(_t%d, %s);\n", any_key ? "sp_kw_merge_any" : "sp_kwrest_merge_poly",
+                   mh, vb.p ? vb.p : "sp_box_nil()");
       }
       else if (nt_kind(nt, v) != NK_NilNode &&
                !(nt_kind(nt, v) == NK_HashNode && empty_hash_literal(nt, v))) {
@@ -6691,7 +6718,7 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type) {
   int ds_hash_tmp = -1;
   *out_type = TY_UNKNOWN;
   if (kwh < 0) return -1;
-  if (kwh_merged(c, m, kwh)) return emit_ds_hash_merge(c, kwh, out_type);
+  if (kwh_merged(c, m, kwh)) return emit_ds_hash_merge(c, kwh, 0, out_type);
   int en2 = 0; const int *elems2 = nt_arr(nt, kwh, "elements", &en2);
   for (int e = 0; e < en2; e++) {
     const char *ety2 = nt_type(nt, elems2[e]);

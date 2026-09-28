@@ -5387,6 +5387,11 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
     for (int e = 0; e < kn; e++)
       if (nt_kind(nt, ke[e]) == NK_AssocSplatNode) kw_splat = 1;
   }
+  /* A keyword_init: false Struct takes the keywords as one positional Hash,
+     its first member. With a `**` that Hash is nil when no keyword came, so
+     the member is boxed, and the members after it are left nil. */
+  int kwf = cls->kw_init == -1;
+  if (kwf && !kw_splat) kwh = -1;
   for (int a = 0; a < cls->nivars; a++) {
     /* a member not supplied at this construction can be nil */
     const char *mname = cls->ivars[a] + 1;
@@ -5394,7 +5399,7 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
     const int *ke = kwh >= 0 ? nt_arr(nt, kwh, "elements", &kn) : NULL;
     int vnode = -1;
     if (kwh >= 0) {
-      for (int e = 0; e < kn; e++) {
+      for (int e = 0; e < kn && !kwf; e++) {
         int key = nt_ref(nt, ke[e], "key");
         if (key >= 0 && nt_type(nt, key) && sp_streq(nt_type(nt, key), "SymbolNode") &&
             nt_str(nt, key, "value") && sp_streq(nt_str(nt, key, "value"), mname)) { vnode = nt_ref(nt, ke[e], "value"); break; }
@@ -5402,7 +5407,7 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
     }
     else if (a < an) vnode = argv[a];
     if (class_ivar_pinned(cls, cls->ivars[a])) continue;
-    if ((splat_at >= 0 && a >= splat_at) || (kw_splat && vnode < 0)) {
+    if ((splat_at >= 0 && a >= splat_at) || (kw_splat && vnode < 0 && (!kwf || a == 0))) {
       TyKind sm = ty_unify(cls->ivar_types[a], TY_POLY);
       if (sm != cls->ivar_types[a]) { cls->ivar_types[a] = sm; changed = 1; }
       continue;

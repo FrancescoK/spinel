@@ -11542,6 +11542,25 @@ static void emit_struct_member_value(Compiler *c, ClassInfo *cls, int a, int vno
     emit_expr_slot(c, vnode, cls->ivar_types[a], mv);
   else emit_unresolved_coerced(c, vnode, cls->ivar_types[a], mv);
 }
+
+/* `vnode` as member `a`, evaluated into a rooted temp of the member's type
+   in g_pre, where the arguments of a construction run ahead of the check
+   on them. Returns the temp's id. */
+static int emit_struct_member_temp(Compiler *c, ClassInfo *cls, int a, int vnode) {
+  TyKind mt = cls->ivar_types[a];
+  Buf lv; memset(&lv, 0, sizeof lv); emit_struct_member_value(c, cls, a, vnode, &lv);
+  int t = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  emit_ctype(c, mt, g_pre);
+  buf_printf(g_pre, " _t%d = %s;", t, lv.p ? lv.p : default_value(mt));
+  if (mt == TY_POLY) buf_printf(g_pre, " SP_GC_ROOT_RBVAL(_t%d);", t);
+  else if (mt == TY_STR_RANGE)   /* two GC strings by value, as a String range local */
+    buf_printf(g_pre, " SP_GC_ROOT_STR(_t%d.first); SP_GC_ROOT_STR(_t%d.last);", t, t);
+  else if (needs_root(mt)) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", t);
+  buf_puts(g_pre, "\n");
+  free(lv.p);
+  return t;
+}
 /* Does Symbol#inspect show `name` bare, as `:name`? True for an ASCII
    identifier with an optional trailing `?`, `!` or `=`; anything else is
    left to sp_sym_inspect_name, which quotes where CRuby does. */
@@ -11746,6 +11765,12 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           return 1;
         }
         int kwh = (argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) ? argv[0] : -1;
+        /* A keyword_init: false Struct takes its keywords as one positional
+           Hash, its first member: a key naming a member binds nothing and a
+           key naming none is no error. Literal keywords alone are that Hash
+           as a positional argument; with a `**` they merge into it below. */
+        int kw_splat = kwh_has_splat(nt, kwh);
+        if (cls->kw_init == -1 && !kw_splat) kwh = -1;
         /* a keyword_init Struct takes keywords and nothing else: CRuby answers
            "wrong number of arguments" for a positional call, where these were
            being bound to the members in order */
@@ -11764,25 +11789,29 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
            order, and each such key is named in CRuby's words: Data's
            `unknown keyword: :z` / `unknown keywords: :z, :w`, a Struct's
            `unknown keywords: z, w`; a key written twice is named once, where
-           it last appears. keyword_init: false (where CRuby takes the
-           keywords as one positional Hash) keeps its earlier answer: the
-           first such key, as `unknown keyword: :z`. */
-        if (kwh >= 0) {
-          int kwf = cls->kw_init == -1, data_words = cls->is_data || kwf;
+           it last appears, and a Data member no key names is missing ahead of
+           them all. Beside a `**` the keys it brings, and so a Data
+           member none names, are known only at run time, where CRuby names a
+           missing member ahead of an unknown key: such a key goes into the
+           merged hash the run-time check judges (below), as does a literal
+           key that is not a Symbol. */
+        int nunk = 0, nonsym = 0;
+        if (kwh >= 0 && cls->kw_init != -1) {
+          int data_words = cls->is_data;
           int nke = 0; const int *elke = nt_arr(nt, kwh, "elements", &nke);
           Buf unk; memset(&unk, 0, sizeof unk);
-          int nunk = 0, plain = 1;
+          int plain = 1;
           const char **unames = malloc(sizeof(char *) * (size_t)(nke > 0 ? nke : 1));
           for (int e = 0; e < nke; e++) {
             if (!(nt_type(nt, elke[e]) && sp_streq(nt_type(nt, elke[e]), "AssocNode"))) continue;
             int key = nt_ref(nt, elke[e], "key");
             const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
             const char *kn = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
-            if (!kn) continue;
+            if (!kn) { nonsym = 1; continue; }
             char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", kn);
-            if (comp_ivar_index(cls, ivn) >= 0 || (kwf && nunk)) continue;
+            if (comp_ivar_index(cls, ivn) >= 0) continue;
             int seen = 0;
-            for (int e2 = e + 1; !kwf && e2 < nke && !seen; e2++) {
+            for (int e2 = e + 1; e2 < nke && !seen; e2++) {
               int k2 = nt_ref(nt, elke[e2], "key");
               seen = k2 >= 0 && nt_type(nt, k2) && sp_streq(nt_type(nt, k2), "SymbolNode") &&
                      sp_streq(nt_str(nt, k2, "value"), kn);
@@ -11792,29 +11821,39 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             unames[nunk] = kn;
             buf_printf(&unk, "%s%s%s", nunk++ ? ", " : "", data_words ? ":" : "", kn);
           }
-          if (nunk) {
+          if (nunk && !kw_splat) {
             buf_puts(b, "({ ");
             for (int e2 = 0; e2 < nke; e2++) {
-              int splat_el = nt_kind(nt, elke[e2]) == NK_AssocSplatNode;
-              if (kwf && !splat_el && !(nt_type(nt, elke[e2]) && sp_streq(nt_type(nt, elke[e2]), "AssocNode"))) continue;
               /* a computed key runs before its value, as in CRuby */
-              int kk = kwf ? -1 : nt_ref(nt, elke[e2], "key");
+              int kk = nt_ref(nt, elke[e2], "key");
               if (kk >= 0 && nt_kind(nt, kk) != NK_SymbolNode && nt_kind(nt, kk) != NK_StringNode) {
                 buf_puts(b, "(void)("); emit_boxed(c, kk, b); buf_puts(b, "); ");
               }
               int vv = nt_ref(nt, elke[e2], "value");
-              /* a `**` operand converts where it stands, so one that is not
-                 a Hash raises its TypeError ahead of the unknown key */
-              if (vv >= 0 && splat_el)
-                emit_kw_splat_operand_inline(c, vv, b);
-              else if (vv >= 0) { buf_puts(b, "(void)("); emit_boxed(c, vv, b); buf_puts(b, "); "); }
+              if (vv >= 0) { buf_puts(b, "(void)("); emit_boxed(c, vv, b); buf_puts(b, "); "); }
             }
+            /* A Data names a member no key names ahead of any unknown key,
+               as CRuby checks the missing ones first; a Struct has no missing
+               member. Known here when every key is a Symbol literal. */
+            Buf miss; memset(&miss, 0, sizeof miss);
+            int nmiss = 0, sym_keys = 1;
+            for (int e2 = 0; e2 < nke; e2++)
+              if (nt_kind(nt, nt_ref(nt, elke[e2], "key")) != NK_SymbolNode) sym_keys = 0;
+            for (int a = 0; cls->is_data && sym_keys && a < cls->nivars; a++)
+              if (struct_kwarg_value(c, kwh, cls->ivars[a] + 1) < 0)
+                buf_printf(&miss, "%s:%s", nmiss++ ? ", " : "", cls->ivars[a] + 1);
             /* The names go into a C string literal, escaped. Data names a key
                by its inspect, which quotes one that is not a plain identifier
                (`:"q\"z"`); that one is inspected at run time. */
             const char *pl = (nunk > 1 || !data_words) ? "s" : "";
             buf_puts(b, "sp_raise_cls(\"ArgumentError\", ");
-            if (plain) {
+            if (nmiss) {
+              Buf msg; memset(&msg, 0, sizeof msg);
+              buf_printf(&msg, "missing keyword%s: %s", nmiss > 1 ? "s" : "", miss.p);
+              emit_str_literal(b, msg.p);
+              free(msg.p);
+            }
+            else if (plain) {
               Buf msg; memset(&msg, 0, sizeof msg);
               buf_printf(&msg, "unknown keyword%s: %s", pl, unk.p);
               emit_str_literal(b, msg.p);
@@ -11832,7 +11871,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
               buf_puts(b, ")");
             }
             buf_printf(b, "); (sp_%s *)0; })", cls->c_name);
-            free(unk.p); free(unames);
+            free(unk.p); free(unames); free(miss.p);
             return 1;
           }
           free(unk.p); free(unames);
@@ -11857,12 +11896,6 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
            no extras; a mix of positional and keyword is an error. A `**splat`
            has non-literal keys, so its check is deferred to run time (#2661). */
         if (cls->is_data) {
-          int kw_splat = 0;
-          if (kwh >= 0) {
-            int nk0; const int *els0 = nt_arr(nt, kwh, "elements", &nk0);
-            for (int i = 0; i < nk0; i++)
-              if (!(nt_type(nt, els0[i]) && sp_streq(nt_type(nt, els0[i]), "AssocNode"))) kw_splat = 1;
-          }
           int mixed = 0;
           for (int a = 0; kwh < 0 && a < argc; a++)
             if (nt_type(nt, argv[a]) && sp_streq(nt_type(nt, argv[a]), "KeywordHashNode")) mixed = 1;
@@ -11878,22 +11911,99 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             }
           }
           if (bad) {
+            /* Every argument runs first, in order, a `**` operand converting
+               where it stands, and the error is CRuby's: positionals beside
+               keywords are `wrong number of arguments (given N, expected 0)`,
+               the keywords counting as one Hash; positionals alone are too
+               many, `(given N, expected 0..M)`, or too few, and the members
+               they leave are missing, as are those keywords alone leave
+               unnamed. Keywords that
+               are only `**` operands count only when a key comes out of them
+               at run time; with none the positionals stand alone, and build
+               the Data when they are all its members. A positional `*` leaves
+               the count unknown. */
+            int npos = kwh >= 0 ? 0 : argc - mixed, lit_kw = 0, spread = 0;
+            for (int a = 0; a < argc; a++) {
+              if (nt_kind(nt, argv[a]) == NK_SplatNode) spread = 1;
+              int nk2 = 0; const int *els2 = nt_kind(nt, argv[a]) == NK_KeywordHashNode ? nt_arr(nt, argv[a], "elements", &nk2) : NULL;
+              for (int i = 0; i < nk2; i++) if (nt_kind(nt, els2[i]) == NK_AssocNode) lit_kw = 1;
+            }
+            Buf msg; memset(&msg, 0, sizeof msg);
+            if (spread) buf_puts(&msg, "wrong number of arguments");
+            else if (mixed && lit_kw) buf_printf(&msg, "wrong number of arguments (given %d, expected 0)", npos + 1);
+            else if (kwh < 0) {
+              char am[512];
+              if (ctor_arity_error(c, ci, -1, npos, am, sizeof am)) buf_puts(&msg, am);
+              /* a Data of no members, which ctor_arity_error leaves alone */
+              else if (npos > cls->nivars)
+                buf_printf(&msg, "wrong number of arguments (given %d, expected 0)", npos);
+            }
+            else {
+              Buf miss; memset(&miss, 0, sizeof miss);
+              int nmiss = 0;
+              for (int a = 0; a < cls->nivars; a++)
+                if (struct_kwarg_value(c, kwh, cls->ivars[a] + 1) < 0)
+                  buf_printf(&miss, "%s:%s", nmiss++ ? ", " : "", cls->ivars[a] + 1);
+              if (nmiss) buf_printf(&msg, "missing keyword%s: %s", nmiss > 1 ? "s" : "", miss.p);
+              else buf_puts(&msg, "wrong number of arguments");
+              free(miss.p);
+            }
+            if (mixed && !lit_kw && !spread) {
+              int *pt = calloc((size_t)(npos > 0 ? npos : 1), sizeof(int));
+              for (int a = 0; a < npos; a++) {
+                if (a < cls->nivars) { pt[a] = emit_struct_member_temp(c, cls, a, argv[a]); continue; }
+                Buf ev; memset(&ev, 0, sizeof ev); emit_boxed(c, argv[a], &ev);
+                emit_indent(g_pre, g_indent);
+                buf_printf(g_pre, "(void)(%s);\n", ev.p ? ev.p : "0");
+                free(ev.p);
+              }
+              TyKind mty; int mh = emit_ds_hash_merge(c, argv[npos], 1, &mty);
+              emit_indent(g_pre, g_indent);
+              buf_printf(g_pre, "if (sp_PolyPolyHash_length(_t%d)) sp_raise_cls(\"ArgumentError\", ", mh);
+              Buf given; memset(&given, 0, sizeof given);
+              buf_printf(&given, "wrong number of arguments (given %d, expected 0)", npos + 1);
+              emit_str_literal(g_pre, given.p);
+              buf_puts(g_pre, ");\n");
+              free(given.p);
+              if (msg.p) {
+                emit_indent(g_pre, g_indent);
+                buf_puts(g_pre, "sp_raise_cls(\"ArgumentError\", ");
+                emit_str_literal(g_pre, msg.p);
+                buf_puts(g_pre, ");\n");
+              }
+              buf_printf(b, "sp_%s_new(", cls->c_name);
+              for (int a = 0; a < cls->nivars; a++) {
+                if (a) buf_puts(b, ", ");
+                if (!msg.p) buf_printf(b, "_t%d", pt[a]);
+                else buf_puts(b, default_value(cls->ivar_types[a]));
+              }
+              buf_puts(b, ")");
+              free(pt); free(msg.p);
+              return 1;
+            }
             buf_puts(b, "({ ");
             for (int a = 0; a < argc; a++) {
-              if (nt_type(nt, argv[a]) && sp_streq(nt_type(nt, argv[a]), "KeywordHashNode")) {
-                int nk2; const int *els2 = nt_arr(nt, argv[a], "elements", &nk2);
-                for (int i = 0; i < nk2; i++)
-                  if (nt_type(nt, els2[i]) && sp_streq(nt_type(nt, els2[i]), "AssocNode")) {
-                    int vv = nt_ref(nt, els2[i], "value");
-                    if (vv >= 0) { buf_puts(b, "(void)("); emit_boxed(c, vv, b); buf_puts(b, "); "); }
-                  }
+              if (nt_kind(nt, argv[a]) != NK_KeywordHashNode) {
+                buf_puts(b, "(void)("); emit_boxed(c, argv[a], b); buf_puts(b, "); ");
+                continue;
               }
-              else { buf_puts(b, "(void)("); emit_boxed(c, argv[a], b); buf_puts(b, "); "); }
+              int nk2; const int *els2 = nt_arr(nt, argv[a], "elements", &nk2);
+              for (int i = 0; i < nk2; i++) {
+                /* a computed key runs before its value, as in CRuby */
+                int kk = nt_ref(nt, els2[i], "key"), vv = nt_ref(nt, els2[i], "value");
+                if (kk >= 0 && nt_kind(nt, kk) != NK_SymbolNode && nt_kind(nt, kk) != NK_StringNode) {
+                  buf_puts(b, "(void)("); emit_boxed(c, kk, b); buf_puts(b, "); ");
+                }
+                if (vv >= 0 && nt_kind(nt, els2[i]) == NK_AssocSplatNode) emit_kw_splat_operand_inline(c, vv, b);
+                else if (vv >= 0) { buf_puts(b, "(void)("); emit_boxed(c, vv, b); buf_puts(b, "); "); }
+              }
             }
-            buf_puts(b, "sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"wrong number of arguments\")[1])); ");
-            buf_printf(b, "sp_%s_new(", cls->c_name);
+            buf_puts(b, "sp_raise_cls(\"ArgumentError\", ");
+            emit_str_literal(b, msg.p);
+            buf_printf(b, "); sp_%s_new(", cls->c_name);
             for (int a = 0; a < cls->nivars; a++) { if (a) buf_puts(b, ", "); buf_puts(b, default_value(cls->ivar_types[a])); }
             buf_puts(b, "); })");
+            free(msg.p);
             return 1;
           }
         }
@@ -11933,16 +12043,20 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
            may name the same member -- two `**` operands, or a literal key
            ahead of one -- merge into one hash in source order, a later key
            winning, and the members and the check read that hash alone; the
-           splat above named only the last operand. keyword_init: false keeps
-           its reading. */
+           splat above named only the last operand. So do the keywords beside
+           a literal key naming no member or not a Symbol, which the check
+           judges with the hash's own, and those of a keyword_init: false
+           Struct, whose first member the merged hash is. That hash takes any
+           key: a String one names a member as a Symbol does (the members
+           read sp_kw_member_val), and a keyword_init: false Struct keeps it. */
         int splat_tmp = -1;
         int *lit_tmp = NULL;
-        int merged = cls->kw_init != -1 && kwh_sources_overlap(nt, kwh);
+        int merged = splat_h >= 0 && (cls->kw_init == -1 || nunk || nonsym || kwh_sources_overlap(nt, kwh));
         if (splat_h >= 0) {
           lit_tmp = malloc(sizeof(int) * (size_t)(cls->nivars > 0 ? cls->nivars : 1));
           for (int a = 0; a < cls->nivars; a++) lit_tmp[a] = -1;
           if (merged) {
-            TyKind mty; int mh = emit_ds_hash_merge(c, kwh, &mty);
+            TyKind mty; int mh = emit_ds_hash_merge(c, kwh, 1, &mty);
             char mhn[32]; snprintf(mhn, sizeof mhn, "_t%d", mh);
             splat_tmp = ++g_tmp;
             emit_indent(g_pre, g_indent);
@@ -11966,18 +12080,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             }
             for (int a = 0; vv >= 0 && a < cls->nivars; a++) {
               if (struct_kwarg_value(c, kwh, cls->ivars[a] + 1) != vv) continue;
-              TyKind mt = cls->ivar_types[a];
-              Buf lv; memset(&lv, 0, sizeof lv); emit_struct_member_value(c, cls, a, vv, &lv);
-              lit_tmp[a] = ++g_tmp;
-              emit_indent(g_pre, g_indent);
-              emit_ctype(c, mt, g_pre);
-              buf_printf(g_pre, " _t%d = %s;", lit_tmp[a], lv.p ? lv.p : default_value(mt));
-              if (mt == TY_POLY) buf_printf(g_pre, " SP_GC_ROOT_RBVAL(_t%d);", lit_tmp[a]);
-              else if (mt == TY_STR_RANGE)   /* two GC strings by value, as a String range local */
-                buf_printf(g_pre, " SP_GC_ROOT_STR(_t%d.first); SP_GC_ROOT_STR(_t%d.last);", lit_tmp[a], lit_tmp[a]);
-              else if (needs_root(mt)) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", lit_tmp[a]);
-              buf_puts(g_pre, "\n");
-              free(lv.p);
+              lit_tmp[a] = emit_struct_member_temp(c, cls, a, vv);
             }
           }
           if (cls->is_data || cls->kw_init != -1) {
@@ -12013,10 +12116,18 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             else buf_puts(b, mv.p ? mv.p : "");
             free(mv.p);
           }
+          else if (splat_h >= 0 && cls->kw_init == -1) {
+            /* the merged hash, or nil when no keyword came (`**{}`, `**nil`),
+               and nil for the members after it */
+            char hv[128];
+            snprintf(hv, sizeof hv, "(sp_poly_length(_t%d) ? _t%d : sp_box_nil())", splat_tmp, splat_tmp);
+            if (a == 0) emit_unbox_text(c, cls->ivar_types[a], hv, b);
+            else buf_puts(b, default_value(cls->ivar_types[a]));
+          }
           else if (splat_h >= 0) {
             /* a member a merged literal key supplies keeps that key's type */
             char gv[256];
-            snprintf(gv, sizeof gv, "sp_poly_hash_get_pair_val(_t%d, sp_box_sym(sp_sym_intern(\"%s\")), &(sp_bool){0})",
+            snprintf(gv, sizeof gv, "sp_kw_member_val(_t%d, \"%s\")",
                      splat_tmp, cls->ivars[a] + 1);
             emit_unbox_text(c, cls->ivar_types[a], gv, b);
           }
@@ -28149,13 +28260,29 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           int sargc; const int *sargv = call_args(nt, id, &sargc);
           int kwh = (sargc == 1 && nt_type(nt, sargv[0]) &&
                      sp_streq(nt_type(nt, sargv[0]), "KeywordHashNode")) ? sargv[0] : -1;
+          /* a keyword_init: false Struct takes the keywords as one positional
+             Hash, its first member: with a `**` they merge into it, nil when
+             none came, as in the receiver path */
+          int kwf_mh = -1;
+          if (kwh >= 0 && ncls->kw_init == -1) {
+            TyKind mty;
+            if (kwh_has_splat(nt, kwh)) kwf_mh = emit_ds_hash_merge(c, kwh, 1, &mty);
+            kwh = -1;
+          }
           buf_printf(b, "sp_%s_new(", ncls->c_name);
           for (int a = 0; a < ncls->nivars; a++) {
             if (a) buf_puts(b, ", ");
             int vnode = -1;
             if (kwh >= 0) vnode = struct_kwarg_value(c, kwh, ncls->ivars[a] + 1);
             else if (a < sargc) vnode = sargv[a];
-            if (vnode >= 0) {
+            if (kwf_mh >= 0) {
+              char hv[160];
+              snprintf(hv, sizeof hv, "(sp_PolyPolyHash_length(_t%d) ? sp_box_obj(_t%d, SP_BUILTIN_POLY_POLY_HASH) : sp_box_nil())",
+                       kwf_mh, kwf_mh);
+              if (a == 0) emit_unbox_text(c, ncls->ivar_types[a], hv, b);
+              else buf_puts(b, default_value(ncls->ivar_types[a]));
+            }
+            else if (vnode >= 0) {
               if (ncls->ivar_types[a] == TY_POLY && comp_ntype(c, vnode) != TY_POLY) emit_boxed(c, vnode, b);
               /* and the reverse: a poly value into a concrete member slot
                  (#4348), the same coercion the receiver path does */
