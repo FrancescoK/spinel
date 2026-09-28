@@ -9531,6 +9531,11 @@ static const char *sp_kw_key_name(sp_RbVal k) {
       (k.tag == SP_TAG_OBJ && k.cls_id == SP_BUILTIN_STRBUF)) return sp_poly_to_s(k);
   return NULL;
 }
+static const char *sp_poly_to_name(sp_RbVal k) {
+  const char *n = sp_kw_key_name(k);
+  if (!n) sp_raise_cls("TypeError", sp_sprintf("%s is not a symbol nor a string", sp_poly_inspect(k)));
+  return n;
+}
 /* The member of the `n` a Struct constructor's keyword key that is not a
    Symbol or String indexes, as CRuby's rb_struct_pos takes one: converted
    as an Integer argument is (a Float truncating, nil a TypeError, a Bignum
@@ -9580,8 +9585,7 @@ static sp_RbVal sp_kw_splat_check(sp_RbVal h, const char *const *mem, int n,
     for (sp_int j = 0; j < nk; j++) {
       sp_RbVal k, v;
       sp_poly_hash_pair(h, j, &k, &v);
-      if (!sp_kw_key_name(k))
-        sp_raise_cls("TypeError", sp_sprintf("%s is not a symbol nor a string", sp_poly_inspect(k)));
+      sp_poly_to_name(k);
     }
     for (int i = 0; i < n; i++) {
       if (lit && lit[i]) continue;

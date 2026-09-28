@@ -36157,7 +36157,7 @@ else {
     else if (recv >= 0 && rt != TY_CLASS && nt_kind(nt, argv[0]) != NK_SplatNode && !any_class_defines(c, "respond_to?")) {
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, recv, b);
-      buf_printf(b, "; const char *_n%d = sp_poly_to_s(", tv); emit_boxed(c, argv[0], b);
+      buf_printf(b, "; const char *_n%d = sp_poly_to_name(", tv); emit_boxed(c, argv[0], b);
       buf_printf(b, "); sp_bool _a%d = ", tv);
       if (argc >= 2) emit_cond(c, argv[1], b); else buf_puts(b, "0");
       buf_printf(b, "; (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0 && (", tv, tv);
@@ -36168,6 +36168,9 @@ else {
           if (c->scopes[s].name && !c->scopes[s].is_cmethod && !c->scopes[s].is_proc_form &&
               comp_method_in_chain(c, k, c->scopes[s].name, NULL) == s)
             emit_responds_name(c, k, c->scopes[s].name, tv, b);
+        for (int m = 0; m < c->n_native_methods; m++)
+          if (c->native_methods[m].class_id == k && !c->native_methods[m].kind)
+            emit_responds_name(c, k, c->native_methods[m].name, tv, b);
         for (int p = k; p >= 0; p = c->classes[p].parent) {
           ClassInfo *cl = &c->classes[p];
           for (int r = 0; r < cl->nreaders; r++) emit_responds_name(c, k, cl->readers[r], tv, b);
