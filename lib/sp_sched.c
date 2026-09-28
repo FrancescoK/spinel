@@ -3355,15 +3355,27 @@ static int sp_queue_push_impl(sp_queue *q, sp_RbVal v, int non_block,
     if (timed && !(seconds > 0.0)) { SCHED_UNLOCK(); return 0; }
     if (timed) {
 #ifdef SP_THREADS
-      int woken = sp_sched_block_timeout(&q->push_waiters, deadline, NULL);
-      if (woken < 0) {
+      if (!g_sysmon_started) {
+        /* Before the first Thread, no green thread can free a slot. There is
+           no monitor to fire a timer, so wait directly and check the queue. */
         SCHED_UNLOCK();
-        sp_raise_cls("NoMemoryError", "failed to schedule queue timeout");
+        double remaining = deadline - sp_monotonic_now();
+        if (remaining > 0.0) sp_sched_sleep(remaining);
+        SCHED_LOCK();
+        if (q->max > 0 && q->len >= q->max) { SCHED_UNLOCK(); return 0; }
       }
-      if (!woken) { SCHED_UNLOCK(); return 0; }
+      else {
+        int woken = sp_sched_block_timeout(&q->push_waiters, deadline, NULL);
+        if (woken < 0) {
+          SCHED_UNLOCK();
+          sp_raise_cls("NoMemoryError", "failed to schedule queue timeout");
+        }
+        if (!woken) { SCHED_UNLOCK(); return 0; }
+      }
 #else
       SCHED_UNLOCK();
-      sp_sched_sleep(seconds);
+      double remaining = deadline - sp_monotonic_now();
+      if (remaining > 0.0) sp_sleep((sp_float)remaining);
       SCHED_LOCK();
       if (q->max > 0 && q->len >= q->max) { SCHED_UNLOCK(); return 0; }
 #endif
@@ -3422,15 +3434,26 @@ sp_RbVal sp_Queue_pop_timeout(sp_queue *q, double seconds) {
   while (q->len == 0) {
     if (q->closed || !(seconds > 0.0)) { SCHED_UNLOCK(); return sp_box_nil(); }
 #ifdef SP_THREADS
-    int woken = sp_sched_block_timeout(&q->pop_waiters, deadline, NULL);
-    if (woken < 0) {
+    if (!g_sysmon_started) {
+      /* Before the first Thread, no green thread can add an item. */
       SCHED_UNLOCK();
-      sp_raise_cls("NoMemoryError", "failed to schedule queue timeout");
+      double remaining = deadline - sp_monotonic_now();
+      if (remaining > 0.0) sp_sched_sleep(remaining);
+      SCHED_LOCK();
+      if (q->len == 0) { SCHED_UNLOCK(); return sp_box_nil(); }
     }
-    if (!woken) { SCHED_UNLOCK(); return sp_box_nil(); }
+    else {
+      int woken = sp_sched_block_timeout(&q->pop_waiters, deadline, NULL);
+      if (woken < 0) {
+        SCHED_UNLOCK();
+        sp_raise_cls("NoMemoryError", "failed to schedule queue timeout");
+      }
+      if (!woken) { SCHED_UNLOCK(); return sp_box_nil(); }
+    }
 #else
     SCHED_UNLOCK();
-    sp_sched_sleep(seconds);
+    double remaining = deadline - sp_monotonic_now();
+    if (remaining > 0.0) sp_sleep((sp_float)remaining);
     SCHED_LOCK();
     if (q->len == 0) { SCHED_UNLOCK(); return sp_box_nil(); }
 #endif
