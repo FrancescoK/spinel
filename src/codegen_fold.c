@@ -6761,6 +6761,10 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
           continue;
         }
         TyKind sty = comp_ntype(c, inner3);
+        /* `**{}` carries no keywords */
+        { int nsrc = -1;
+          if (sty == TY_UNKNOWN && nt_kind(nt, inner3) == NK_HashNode) nt_arr(nt, inner3, "elements", &nsrc);
+          if (nsrc == 0) { splat_seen = 1; continue; } }
         /* `**nil` carries no keywords, and a first operand of another
            class already raised where emit_ds_hash_materialize evaluated it */
         const char *bad3 = kw_splat_bad_cls(c, sty);

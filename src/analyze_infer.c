@@ -7760,6 +7760,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (c->hash_want && id < c->node_cap && c->hash_want[id] == TY_POLY_POLY_HASH)
       return TY_POLY_POLY_HASH;
     TyKind kt = TY_UNKNOWN, vt = TY_UNKNOWN;
+    int empty_spread = 0;
     for (int k = 0; k < n; k++) {
       const char *aty = nt_type(nt, els[k]);
       if (aty && sp_streq(aty, "AssocSplatNode")) {
@@ -7768,6 +7769,10 @@ TyKind infer_uncached(Compiler *c, int id) {
            erasing to UNKNOWN. */
         int src = nt_ref(nt, els[k], "value");
         TyKind sh = src >= 0 ? infer_type(c, src) : TY_UNKNOWN;
+        /* `**{}` spreads nothing, so it leaves the key/value types alone */
+        int nsrc = -1;
+        if (sh == TY_UNKNOWN && src >= 0 && nt_kind(nt, src) == NK_HashNode) nt_arr(nt, src, "elements", &nsrc);
+        if (nsrc == 0) { empty_spread = 1; continue; }
         if (ty_is_hash(sh)) {
           kt = ty_unify(kt, ty_hash_key(sh));
           vt = ty_unify(vt, ty_hash_val(sh));
@@ -7817,6 +7822,8 @@ TyKind infer_uncached(Compiler *c, int id) {
       if (kt == TY_STRING) return TY_STR_POLY_HASH;
       return TY_POLY_POLY_HASH;
     }
+    /* keyword arguments are symbol-keyed */
+    if (empty_spread && kt == TY_UNKNOWN) return nk == NK_KeywordHashNode ? TY_SYM_POLY_HASH : TY_POLY_POLY_HASH;
     return hv;
   }
   if (nk == NK_DefNode) return TY_SYMBOL;  /* `def` evaluates to :name */
