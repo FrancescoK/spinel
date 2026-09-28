@@ -6262,6 +6262,80 @@ static int desugar_enum_pair_op_sym(Compiler *c, int id, int recv, int blk, cons
   return 1;
 }
 
+/* An operator symbol block argument (`&:+`, `&:[]`) of call `id` as the
+   block spinel_parse.c spells a named one: { |_spx| _spx.+() }, marked
+   sym_proc. Only for a receiver whose shape is settled at run time, where
+   the block is reshaped to call the operator with the second value too. */
+static int sym_proc_blockify_op(Compiler *c, int id) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int blk = nt_ref(nt, id, "block");
+  int ex = blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode ? nt_ref(nt, blk, "expression") : -1;
+  const char *mn = ex >= 0 && nt_kind(nt, ex) == NK_SymbolNode ? nt_str(nt, ex, "value") : NULL;
+  if (!mn || !*mn || mn[0] == '_' || isalpha((unsigned char)mn[0])) return 0;
+  static const char *const ops[] = {
+    "+", "-", "*", "/", "%", "**", "==", "!=", "<", ">", "<=", ">=", "<=>", "===", "=~",
+    "<<", ">>", "&", "|", "^", "[]", NULL };
+  int known = 0;
+  for (int k = 0; ops[k]; k++) if (sp_streq(mn, ops[k])) known = 1;
+  if (!known) return 0;
+  BsB b = { nt, 1 };
+  int base = nt->count;
+  int req = bs_new(&b, "RequiredParameterNode");
+  if (req < 0) return 0;
+  nt_node_set_str(nt, req, "name", "_spx");
+  int call = bs_call(&b, bs_read(&b, "_spx"), mn, NULL, 0);
+  int body = bs_stmts(&b, &call, 1);
+  int params = bs_new(&b, "ParametersNode");
+  int bparams = bs_new(&b, "BlockParametersNode");
+  int blocknode = bs_new(&b, "BlockNode");
+  if (!b.ok) return 0;
+  nt_node_set_arr(nt, params, "requireds", &req, 1);
+  nt_node_set_ref(nt, bparams, "parameters", params);
+  nt_node_set_ref(nt, blocknode, "parameters", bparams);
+  nt_node_set_ref(nt, blocknode, "body", body);
+  nt_node_set_str(nt, blocknode, "sym_proc", mn);
+  nt_node_set_ref(nt, id, "block", blocknode);
+  comp_grow_node_arrays(c);
+  for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[id];
+  LocalVar *lv = scope_local_intern(comp_scope_of(c, blocknode), "_spx");
+  if (lv) lv->is_block_param = 1;
+  return 1;
+}
+
+/* `&:m` of a map over a receiver known only at run time: an Enumerator
+   yielding two values calls m on the first with the second, which the
+   poly map loop decides per call by the flag it carries
+   (sp_poly_yields_pair). The block keeps its one-value body and gains
+   that call as `sym_proc_pair`, over a parameter `sym_proc_arg` of its
+   own: { |_spx| _spx.m } + _spx.m(__spy_N). */
+int sym_proc_poly_pair_view(Compiler *c, int id) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0; if (args >= 0) nt_arr(nt, args, "arguments", &argc);
+  if (!nm || argc || ty_iter_shape(nm) != TY_ITER_MAP || nt_ref(nt, id, "block") < 0) return 0;
+  int changed = sym_proc_blockify_op(c, id);
+  int blk = nt_ref(nt, id, "block");
+  const char *mn = nt_kind(nt, blk) == NK_BlockNode ? sym_proc_block_name(nt, blk) : NULL;
+  if (!mn || nt_ref(nt, blk, "sym_proc_pair") >= 0) return changed;
+  int pn = nt_ref(nt, nt_ref(nt, blk, "parameters"), "parameters");
+  int P = 0; const int *pre = nt_arr(nt, pn, "requireds", &P);
+  const char *xn = nt_str(nt, pre[0], "name");
+  if (!xn) return changed;
+  char an[48]; snprintf(an, sizeof an, "__spy_%d", blk);
+  BsB b = { nt, 1 };
+  int base = nt->count;
+  int call = sym_proc_call2(&b, xn, mn, bs_read(&b, an));
+  if (!b.ok || call < 0) return changed;
+  nt_node_set_ref(nt, blk, "sym_proc_pair", call);
+  nt_node_set_str(nt, blk, "sym_proc_arg", an);
+  comp_grow_node_arrays(c);
+  for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[blk];
+  LocalVar *lv = scope_local_intern(comp_scope_of(c, blk), an);
+  if (lv) { lv->is_block_param = 1; lv->type = TY_POLY; }
+  return 1;
+}
+
 /* Over a chain whose source the analysis sees yielding two values
    (bs_enum_yield_count), a block of one parameter takes the first value,
    as CRuby binds two yielded values to `|a|`, `_1` or `it`; the chain
@@ -6347,8 +6421,7 @@ void enum_hop_yield_view(Compiler *c, int id, int hop) {
   NodeTable *nt = (NodeTable *)c->nt;
   int blk = nt_ref(nt, id, "block");
   const char *nm = nt_str(nt, id, "name");
-  if (blk < 0 || !nm || nt_kind(nt, blk) != NK_BlockNode || !enum_pair_spread_iter(nm) ||
-      enum_pair_source_call(nt, hop)) return;
+  if (blk < 0 || !nm || !enum_pair_spread_iter(nm) || enum_pair_source_call(nt, hop)) return;
   /* the builtins' own walks (builtins/, `each { |x| yield x }`) hand the
      packed item on as the one value their block takes */
   const char *sn = comp_scope_of(c, id)->name;
@@ -6356,6 +6429,8 @@ void enum_hop_yield_view(Compiler *c, int id, int hop) {
   int args = nt_ref(nt, id, "arguments");
   int argc = 0; if (args >= 0) nt_arr(nt, args, "arguments", &argc);
   if (argc) return;
+  if (sym_proc_blockify_op(c, id)) blk = nt_ref(nt, id, "block");
+  if (nt_kind(nt, blk) != NK_BlockNode) return;
   const char *mn = sym_proc_block_name(nt, blk);
   BsB b = { nt, 1 };
   int base = nt->count;

@@ -6830,6 +6830,7 @@ int desugar_enum_method_recv(Compiler *c) {
       if (rn && sp_streq(rn, "__enum_to_a")) continue;
     }
     TyKind rt = infer_type(c, recv);
+    if (rt == TY_POLY && sym_proc_poly_pair_view(c, id)) changed = 1;
     /* A materialized Enumerator delegates its block-driven Enumerable methods to
        its element array: `enum.map { }` -> `enum.to_a.map { }`. Only block forms
        need this; the blockless terminals (to_a, next, size, first) are emitted
