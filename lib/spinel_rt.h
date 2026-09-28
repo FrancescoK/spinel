@@ -9492,6 +9492,7 @@ static int sp_poly_user_include(sp_RbVal recv, sp_RbVal x) {
   for (sp_int i = 0; i < ue->len; i++) if (sp_poly_eq(ue->data[i], x)) return 1;
   return 0;
 }
+static sp_RbVal sp_poly_sum_seed(sp_RbVal v, sp_RbVal seed);   /* fwd: the seeded fold */
 static sp_RbVal sp_poly_sum(sp_RbVal v) {
   /* String#sum is a byte checksum, not a container fold: a boxed String fell
      past the switch below and answered 0 (#3446). */
@@ -9512,6 +9513,9 @@ static sp_RbVal sp_poly_sum(sp_RbVal v) {
       SP_GC_ROOT(ia);
       return sp_box_int(sp_IntArray_sum(ia, 0));
     }
+    /* an Enumerator's seedless sum is its sum(0), as in CRuby: from the
+       first Float on, compensated */
+    case SP_BUILTIN_ENUMERATOR: return sp_poly_sum_seed(v, sp_box_int(0));
     default: {
       sp_PolyArray *ue = sp_poly_user_elems(v);
       return ue ? sp_PolyArray_sum_poly(ue) : sp_box_int(0);
