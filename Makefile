@@ -2185,6 +2185,9 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -B1 '^static .*sp_pd_[0-9]*(sp_RbVal _t0) {' "$$tmp/pdl_lm.c" | grep -q '^#line 12 "test/infer/poly_dispatch_out_of_line.rb"' || { echo "infer-test: FAIL (#4928 an out-of-line dispatch function does not name the call site it came from)"; ok=0; }; \
 	$(SPINEL) test/infer/tally_typed.rb -c --no-line-map -o "$$tmp/tly.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (tally_typed: -c)"; ok=0; }; \
 	grep -q '^static inline sp_IntIntHash \* sp___enum_tally__[0-9]*(' "$$tmp/tly.c" && grep -q '^static inline sp_StrIntHash \* sp___enum_tally__[0-9]*(' "$$tmp/tly.c" || { echo "infer-test: FAIL (tally over a typed array answers a boxed hash)"; ok=0; }; \
+	$(SPINEL) test/infer/param_narrow_super_route.rb -c --no-line-map -o "$$tmp/psr.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (param_narrow_super_route: -c)"; ok=0; }; \
+	grep -q 'sp_Holder_initialize(sp_Holder \*self, sp_RbVal lv_v)' "$$tmp/psr.c" || { echo "infer-test: FAIL (a parameter reached by super was narrowed from the visible calls alone)"; ok=0; }; \
+	grep -q 'sp_Plain_initialize(sp_Plain \*self, sp_int lv_v)' "$$tmp/psr.c" || { echo "infer-test: FAIL (the super guard stopped an unrelated parameter narrowing)"; ok=0; }; \
 	$(SPINEL) test/infer/typed_array_elem_arg_types_param.rb -c --no-line-map -o "$$tmp/tae.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (typed_array_elem_arg_types_param: -c)"; ok=0; }; \
 	grep -q 'sp_Plan_write_column(sp_Plan \*self, sp_int lv_wcol)' "$$tmp/tae.c" || { echo "infer-test: FAIL (an int-array element passed as an argument left the parameter boxed)"; ok=0; }; \
 	grep -q 'sp_Plan_shout(sp_Plan \*self, const char \* lv_s)' "$$tmp/tae.c" || { echo "infer-test: FAIL (a String-array element passed as an argument left the parameter boxed)"; ok=0; }; \
