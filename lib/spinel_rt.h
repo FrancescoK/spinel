@@ -8780,6 +8780,8 @@ static sp_bool sp_poly_kind_of_builtin(sp_RbVal v, const char *cn) {
   if (v.tag == SP_TAG_CLASS && strcmp(cn, "Class") == 0 && sp_poly_is_a_hook)
     return (sp_bool)(sp_poly_is_a_hook(v, (sp_Class){-109, NULL}) != 0);
   if (strcmp(sp_poly_class_name(v), cn) == 0) return TRUE;  /* exact builtin class */
+  /* a class is a Module too: Class < Module */
+  if (strcmp(cn, "Module") == 0) return v.tag == SP_TAG_CLASS;
   /* a boxed IO handle walks its own kind chain (a socket read back out of a
      poly array must still answer BasicSocket / IO) */
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO)
