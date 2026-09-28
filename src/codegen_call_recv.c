@@ -1014,7 +1014,13 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
      string -- or nil for the no-change bang contract -- and reassigns an
      lvalue receiver (value-semantics strings). The transform reuses the
      non-bang emitter through a temporary node rename. */
-  if (rt == TY_STRING && recv >= 0) {
+  /* TY_STRBUF as well: a reader whose ivar became the shared handle answers
+     the handle type, and every arm below is a String operation that
+     strbuf_slot_ref already knows how to reach through one. Without it the
+     value form of `obj.buf << x` matched no arm at all and was refused,
+     while the statement form -- which asks strbuf_slot_ref directly, not the
+     node type -- compiled. */
+  if ((rt == TY_STRING || rt == TY_STRBUF) && recv >= 0) {
     static const struct { const char *bang, *plain; int nil_nc; } SBANG[] = {
       {"gsub!", "gsub", 1}, {"sub!", "sub", 1}, {"upcase!", "upcase", 1},
       {"downcase!", "downcase", 1}, {"capitalize!", "capitalize", 1},
@@ -1101,7 +1107,10 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
               buf_puts(b, ");");
             }
           }
-          buf_printf(b, " sp_String_cstr(_t%d); })", tb2);
+          /* an append marked to hand out the handle (`r = obj.buf << x`)
+             answers the receiver itself; otherwise its String read */
+          if (c->strbuf_box[id]) buf_printf(b, " _t%d; })", tb2);
+          else buf_printf(b, " sp_String_cstr(_t%d); })", tb2);
           return 1;
         }
       }
@@ -1202,7 +1211,10 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           buf_printf(b, "({ sp_String *_t%d = %s; sp_String_set_bin(_t%d, ",
                      tbR, srefR, tbR);
           emit_str_expr(c, argv[0], b);
-          buf_printf(b, "); sp_String_cstr(_t%d); })", tbR);
+          /* marked to hand out the handle (`r = obj.buf.replace(x)`): the
+             receiver itself, as for the appends */
+          if (c->strbuf_box[id]) buf_printf(b, "); _t%d; })", tbR);
+          else buf_printf(b, "); sp_String_cstr(_t%d); })", tbR);
           return 1;
         }
       }
@@ -13598,6 +13610,21 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
+    /* entries on a poly value the inference typed an Array: the elements,
+       as a new Array, and nil's NoMethodError (sp_poly_entries). A user
+       class with a method or a reader of the name wins the dispatch. */
+    if (sp_streq(name, "entries") && nt_ref(nt, id, "block") < 0 &&
+        comp_ntype(c, id) == TY_POLY_ARRAY) {
+      int has_user_en = 0;
+      if (!g_poly_builtin_arm)
+      for (int kk = 0; kk < c->nclasses && !has_user_en; kk++)
+        if (comp_poly_arm_defines_n(c, kk, name, argc) ||
+            (!c->classes[kk].is_native_class && comp_reader_in_chain(c, kk, name, NULL))) has_user_en = 1;
+      if (!has_user_en) {
+        buf_puts(b, "sp_poly_entries("); emit_expr(c, recv, b); buf_puts(b, ")");
+        return 1;
+      }
+    }
     /* Struct#members on a Struct/Data read out of a container. */
     if (sp_streq(name, "members") && argc == 0 && nt_ref(nt, id, "block") < 0) {
       int has_user_m = 0;
@@ -14066,6 +14093,33 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
     if (sp_streq(name, "freeze"))     { buf_puts(b, "sp_poly_freeze("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+  }
+  /* blockless cycle(n) on a poly value: the Enumerator over its items
+     repeated n times that the typed arms build (sp_poly_cycle_n), the
+     receiver held across the count, and a count the compiler types anything
+     but Integer converted at run time (sp_poly_cycle_count). A class of the
+     program's own with a method or a class method of the name wins via poly
+     dispatch, and a cycle on Object, which answers for every receiver the
+     dispatch does not, keeps its universal fallback. */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "cycle") &&
+      nt_ref(nt, id, "block") < 0 && nt_kind(nt, argv[0]) != NK_SplatNode) {
+    int oci = comp_class_index(c, "Object");
+    int has_user = oci >= 0 && comp_method_in_chain(c, oci, name, NULL) >= 0;
+    if (!g_poly_builtin_arm)
+    for (int kk = 0; kk < c->nclasses && !has_user; kk++)
+      if (comp_poly_arm_defines_n(c, kk, name, argc) ||
+          comp_cmethod_in_chain(c, kk, name, NULL) >= 0) has_user = 1;
+    if (!has_user) {
+      Buf rcn;
+      int ccn = hold_recv_open(c, recv, 1, "sp_RbVal", "SP_GC_ROOT_RBVAL", b, &rcn);
+      buf_printf(b, "sp_poly_cycle_n(%s, ", rcn.p);
+      if (comp_ntype(c, argv[0]) == TY_INT) emit_int_expr(c, argv[0], b);
+      else { buf_printf(b, "sp_poly_cycle_count(%s, ", rcn.p); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
+      buf_puts(b, ")");
+      free(rcn.p);
+      if (ccn) buf_puts(b, "; })");
+      return 1;
+    }
   }
   /* Hash#merge(other) { |key, old, new| }: the block decides the value for a
      key both hashes carry. Walk the other hash's pairs into a copy of the

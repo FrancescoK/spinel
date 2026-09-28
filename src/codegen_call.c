@@ -2770,6 +2770,24 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "sp_Thread_tls_key("); emit_expr(c, recv, b); buf_puts(b, ", ");
       emit_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
     }
+    if (((sp_streq(name, "[]") || sp_streq(name, "key?")) && argc == 1) ||
+        (sp_streq(name, "[]=") && argc == 2)) {
+      int tt = ++g_tmp, tk = ++g_tmp, tv = ++g_tmp;
+      buf_printf(b, "({ sp_thread *_t%d = ", tt); emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", tt, tk); emit_boxed(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tk);
+      if (argc == 2) {
+        buf_printf(b, " sp_RbVal _t%d = ", tv); emit_boxed(c, argv[1], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tv);
+      }
+      buf_printf(b, " sp_Thread_tls_%s(_t%d, sp_thread_local_key(_t%d)",
+                 argc == 2 ? "set" : sp_streq(name, "[]") ? "get" : "key", tt, tk);
+      if (argc == 2) buf_printf(b, ", _t%d", tv);
+      buf_puts(b, "); })"); return 1;
+    }
+    if (sp_streq(name, "keys") && argc == 0) {
+      buf_puts(b, "sp_Thread_tls_keys("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
   }
 
   /* Mutex instance methods. synchronize is handled by the generic block handler
@@ -26738,13 +26756,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        object renderer had no idea and printed "#<Object>" (#3713) */
     if (sp_streq(name, "inspect") && argc == 0 &&
         comp_method_in_chain(c, ty_object_class(comp_ntype(c, recv)), "inspect", NULL) < 0) {
-      int ti = ++g_tmp;
-      buf_printf(b, "({ sp_Exception *_t%d = (sp_Exception *)(", ti); emit_expr(c, recv, b);
-      buf_printf(b, "); const char *_ecn%d = _t%d->cls_name ? _t%d->cls_name : \"Exception\";"
-                    " const char *_emg%d = sp_exc_message(_t%d);"
-                    " (!_emg%d || !*_emg%d) ? _ecn%d"
-                    " : sp_sprintf(\"#<%%s: %%s>\", _ecn%d, _emg%d); })",
-                 ti, ti, ti, ti, ti, ti, ti, ti, ti, ti);
+      buf_puts(b, "sp_exc_inspect((void *)("); emit_expr(c, recv, b); buf_puts(b, "))");
       return;
     }
     /* the accessors every exception carries: an instance of a user subclass is
@@ -26805,10 +26817,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_Exception *_t%d = (sp_Exception *)(%s);\n", tfm, rbm.p ? rbm.p : "");
         free(rbm.p);
+        const char *mfn = exc_has_user_msg_override(c) ? "sp_user_exc_message" : "sp_exc_message";
         if (sp_streq(name, "full_message"))
-          buf_printf(b, "sp_sprintf(\"%%s: %%s\", sp_exc_class_name(_t%d), sp_exc_message(_t%d))", tfm, tfm);
+          buf_printf(b, "sp_sprintf(\"%%s: %%s\", sp_exc_class_name(_t%d), %s(_t%d))", tfm, mfn, tfm);
         else
-          buf_printf(b, "sp_sprintf(\"%%s (%%s)\", sp_exc_message(_t%d), sp_exc_class_name(_t%d))", tfm, tfm);
+          buf_printf(b, "sp_sprintf(\"%%s (%%s)\", %s(_t%d), sp_exc_class_name(_t%d))", mfn, tfm, tfm);
       }
       return;
     }
@@ -26827,6 +26840,19 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         if (mi8 >= 0 && (TyKind)c->scopes[mi8].ret != TY_STRING &&
             (TyKind)c->scopes[mi8].ret != TY_UNKNOWN)
           own = mi8;
+      }
+      /* a subclass overriding a String #to_s is picked at run time by the
+         cls_name-keyed dispatcher below */
+      if (own >= 0 && sp_streq(name, "to_s") && (TyKind)c->scopes[own].ret == TY_STRING) {
+        int sub_str = 0, sub_other = 0;
+        for (int k = 0; k < c->nclasses; k++) {
+          if (k == xcm || !is_descendant(c, k, xcm)) continue;
+          int ko = comp_method_in_class(c, k, "to_s");
+          if (ko < 0) continue;
+          if ((TyKind)c->scopes[ko].ret == TY_STRING) sub_str = 1;
+          else sub_other = 1;
+        }
+        if (sub_str && !sub_other) own = -1;
       }
       if (own >= 0) {
         int defc = xcm;
@@ -26923,6 +26949,26 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           comp_reader_in_chain(c, k, name, NULL)) pu = 1;
     if (!pu) {
       if (sp_streq(name, "name")) g_uses_symbols = 1;  /* may intern a recovered name */
+      /* a user exception's #to_s is what #message answers, so a boxed
+         exception goes through the override dispatcher */
+      if (sp_streq(name, "message") &&
+          (exc_has_user_msg_override(c) || exc_has_nonstring_msg_override(c))) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", t);
+        emit_expr(c, recv, b);
+        buf_printf(b, "; (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_EXCEPTION && _t%d.v.p) ? ",
+                   t, t, t);
+        int boxed = comp_ntype(c, id) == TY_POLY;
+        const char *arm = exc_has_nonstring_msg_override(c)
+          ? (boxed ? "sp_user_exc_message_v(%s)" : "sp_poly_to_s(sp_user_exc_message_v(%s))")
+          : (boxed ? "sp_box_str(sp_user_exc_message(%s))" : "sp_user_exc_message(%s)");
+        char ep[64];
+        snprintf(ep, sizeof ep, "(sp_Exception *)_t%d.v.p", t);
+        buf_printf(b, arm, ep);
+        if (boxed) buf_printf(b, " : sp_poly_exc_acc(_t%d, \"message\"); })", t);
+        else buf_printf(b, " : sp_poly_to_s(sp_poly_exc_acc(_t%d, \"message\")); })", t);
+        return;
+      }
       /* message infers TY_STRING: unwrap the boxed accessor result */
       if (sp_streq(name, "message")) buf_puts(b, "sp_poly_to_s(");
       buf_printf(b, "sp_poly_exc_acc(");
@@ -27017,15 +27063,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       }
     }
     if (sp_streq(name, "inspect") && argc == 0) {
-      int ei = ++g_tmp;
-      buf_printf(b, "({ sp_Exception *_t%d = (sp_Exception *)(", ei); emit_expr(c, recv, b);
-      /* an exception with no message of its own inspects as just the class
-         name, as CRuby's does (#3713) */
       /* an empty message renders as the bare class name (#3713) */
-      buf_printf(b, "); _t%d ? (sp_exc_message(_t%d) && *sp_exc_message(_t%d)"
-                    " ? sp_sprintf(\"#<%%s: %%s>\", sp_exc_class_name(_t%d), sp_exc_message(_t%d))"
-                    " : sp_exc_class_name(_t%d))"
-                    " : (&(\"\\xff\" \"nil\")[1]); })", ei, ei, ei, ei, ei, ei);
+      buf_puts(b, "sp_exc_inspect((void *)("); emit_expr(c, recv, b); buf_puts(b, "))");
       return;
     }
     if (sp_streq(name, "message") || sp_streq(name, "to_s") || sp_streq(name, "to_str")) {
@@ -27090,9 +27129,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(g_pre, "sp_Exception *_t%d = ", t);
       buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
       /* an empty message renders as the bare class name (#3713) */
-      buf_printf(b, "(_t%d ? (sp_exc_message(_t%d) && *sp_exc_message(_t%d)"
-                    " ? sp_sprintf(\"#<%%s: %%s>\", sp_exc_class_name(_t%d), sp_exc_message(_t%d))"
-                    " : sp_exc_class_name(_t%d)) : \"nil\")", t, t, t, t, t, t);
+      buf_printf(b, "sp_exc_inspect((void *)_t%d)", t);
       return;
     }
     if (sp_streq(name, "class")) {  /* a Class carried by name (complete for every exception class) */
@@ -27438,7 +27475,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           buf_puts(b, "({ ");
           if (unified == TY_POLY) buf_puts(b, "sp_RbVal");
           else emit_ctype(c, unified, b);
-          buf_printf(b, " _t%d; switch ((%s)->cls_id) {", rtmp, objptr.p ? objptr.p : "");
+          buf_printf(b, " _t%d; switch (", rtmp);
+          emit_obj_dispatch_key(c, cid, objptr.p ? objptr.p : "", b);
+          buf_puts(b, ") {");
           for (int k = 0; k < c->nclasses; k++) {
             if (!is_descendant(c, k, cid)) continue;
             int kmi = comp_cmethod_in_chain(c, k, name, NULL);
@@ -33494,7 +33533,7 @@ else {
   }
 
   /* String#concat with no arguments returns the receiver unchanged (#2309) */
-  if (recv >= 0 && rt == TY_STRING && sp_streq(name, "concat") && argc == 0) {
+  if (recv >= 0 && (rt == TY_STRING || rt == TY_STRBUF) && sp_streq(name, "concat") && argc == 0) {
     /* zero-argument concat returns the receiver, but CRuby checks frozen
        first -- the empty append is still a mutation attempt (#3339). The
        receiver once: a call with effects must not run twice. */
@@ -33505,15 +33544,23 @@ else {
   }
   /* String#clear consumed as a value: empty the assignable receiver in place
      and yield the now-empty string (#2332) */
-  if (recv >= 0 && rt == TY_STRING && sp_streq(name, "clear") && argc == 0) {
+  /* TY_STRBUF too: a reader handing out the shared handle is still a String
+     receiver, and the strbuf_slot_ref arm just below is the one written for
+     it. Gated on TY_STRING alone, the value form of `obj.buf.clear` matched
+     nothing, cleared nothing and answered nil. */
+  if (recv >= 0 && (rt == TY_STRING || rt == TY_STRBUF) && sp_streq(name, "clear") && argc == 0) {
     /* A shared-mutable receiver owns a buffer: empty it in place and answer
        the same string, as CRuby does. Its read is a copy out of the handle,
        not an lvalue, so the reassignment below did not even compile. */
     { char srefC[1024];
       if (strbuf_slot_ref(c, recv, srefC, sizeof srefC)) {
         int tC2 = ++g_tmp;
-        buf_printf(b, "({ sp_String *_t%d = %s; sp_String_set_bin(_t%d, (&(\"\\xff\")[1]));"
-                      " sp_String_cstr(_t%d); })", tC2, srefC, tC2, tC2);
+        /* marked to hand out the handle (`r = obj.buf.clear`): the
+           receiver itself, as for the appends */
+        buf_printf(b, "({ sp_String *_t%d = %s; sp_String_set_bin(_t%d, (&(\"\\xff\")[1]));",
+                   tC2, srefC, tC2);
+        if (c->strbuf_box[id]) buf_printf(b, " _t%d; })", tC2);
+        else buf_printf(b, " sp_String_cstr(_t%d); })", tC2);
         return;
       } }
     const char *rty = nt_type(nt, recv);

@@ -1538,6 +1538,20 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      since Set#hash is exactly that loop (#4728). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && sp_streq(name, "hash"))
     { *out = TY_INT; return 1; }
+  /* blockless cycle(n) on a boxed receiver: the Enumerator sp_poly_cycle_n
+     builds, unless a class of the program's own has a method or a class
+     method of the name, the test emit_poly_call makes. The builtin-only
+     derivation, which shapes the dispatch's default arm, answers either way,
+     but for a cycle on Object, whose universal fallback that arm keeps. */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "cycle") &&
+      nt_ref(nt, id, "block") < 0 && nt_kind(nt, argv[0]) != NK_SplatNode) {
+    int oci = comp_class_index(c, "Object");
+    int own = oci >= 0 && comp_method_in_chain(c, oci, name, NULL) >= 0;
+    for (int k = 0; k < c->nclasses && !own && !an_builtin_only_p(); k++)
+      if (comp_poly_arm_defines_n(c, k, name, argc) ||
+          comp_cmethod_in_chain(c, k, name, NULL) >= 0) own = 1;
+    if (!own) { *out = TY_ENUMERATOR; return 1; }
+  }
   /* #name is a class name (a String) for a boxed Class and the method name (a
      Symbol) for a boxed Method, so where the program builds Method objects at
      all the static result is poly (#3692) */
@@ -1884,7 +1898,8 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       (sp_streq(name, "message") || sp_streq(name, "result") ||
        sp_streq(name, "errno") ||
        sp_streq(name, "key") || sp_streq(name, "receiver")))
-    { *out = sp_streq(name, "message") ? TY_STRING : TY_POLY; return 1; }
+    { *out = (sp_streq(name, "message") && !exc_has_nonstring_msg_override(c)) ? TY_STRING : TY_POLY;
+      return 1; }
   /* Integer / Time accessors, Proc#arity on a poly value read out of a
      container: an int-returning builtin the poly-builtin dispatch handles at
      runtime; type it int so the result is not boxed to nil (#3162). */

@@ -3213,7 +3213,8 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   TyKind rt = comp_ntype(c, arr);
   /* A union-typed source (e.g. a `= []`-defaulted param, inferred poly) is
      materialized to a poly array, so the [elem, index] pair enumerator drains
-     it the same as a typed array with poly elements. */
+     it the same as a typed array with poly elements; a Hash, a Range or an
+     Enumerator there gives its items (sp_poly_ewi_items). */
   int poly_src = (rt == TY_POLY);
   if (poly_src) rt = TY_POLY_ARRAY;
   if (!ty_is_array(rt)) return 0;
@@ -3253,7 +3254,7 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   Buf rb; memset(&rb, 0, sizeof rb);
   if (poly_src) {
     Buf bx; memset(&bx, 0, sizeof bx); emit_boxed(c, arr, &bx);
-    buf_printf(&rb, "sp_poly_to_poly_array(%s)", bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+    buf_printf(&rb, "sp_poly_ewi_items(%s)", bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
   }
   else emit_expr(c, arr, &rb);
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
@@ -6522,7 +6523,7 @@ int emit_ds_hash_materialize(Compiler *c, int kwh, TyKind *out_type) {
         ds_hash_tmp = ++g_tmp;
         emit_indent(g_pre, g_indent);
         emit_ctype(c, *out_type, g_pre);
-        buf_printf(g_pre, " _t%d = lv_%s;\n", ds_hash_tmp, akw);
+        buf_printf(g_pre, " _t%d = lv_%s;\n", ds_hash_tmp, rename_local(akw));
       }
     }
     break;
@@ -6608,6 +6609,19 @@ void emit_kwhash_verify(Compiler *c, Scope *m, int hash_tmp, Buf *out) {
 /* Emit the value for KEYWORD param `i` extracted by name from a materialized
    `**hash` temp, falling back to the param's default when the key is absent.
    Shared by emit_args_filled and emit_dispatch. */
+/* Param i's default as one expression: the statements it hoists run inside
+   it, so only where the default is taken. */
+static void emit_ds_default(Compiler *c, Scope *m, int i, Buf *out) {
+  Buf dp; memset(&dp, 0, sizeof dp);
+  Buf dv; memset(&dv, 0, sizeof dv);
+  Buf *sv_pre = g_pre; g_pre = &dp;
+  emit_arg_or_default(c, m, i, -1, &dv);
+  g_pre = sv_pre;
+  if (dp.p && dp.p[0]) buf_printf(out, "({ %s %s; })", dp.p, dv.p ? dv.p : "0");
+  else buf_puts(out, dv.p ? dv.p : "");
+  free(dp.p); free(dv.p);
+}
+
 void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
                                   TyKind ds_hash_type, Buf *out) {
   const char *hn = ty_hash_cname(ds_hash_type);
@@ -6620,7 +6634,7 @@ void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
     emit_unbox_text(c, pt, "_v", &ub);
     if (m->pdefault && m->pdefault[i] >= 0) {
       Buf db; memset(&db, 0, sizeof db);
-      emit_arg_or_default(c, m, i, -1, &db);
+      emit_ds_default(c, m, i, &db);
       buf_printf(out,
                  "({ sp_bool _f=0; sp_RbVal _v = sp_poly_hash_get_pair_val(_t%d, "
                  "sp_box_sym(sp_sym_intern(\"%s\")), &_f); _f ? (%s) : (%s); })",
@@ -6653,7 +6667,7 @@ void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
        get returns nil and silently drops the callee's default value. */
     if (m->pdefault && m->pdefault[i] >= 0) {
       Buf db; memset(&db, 0, sizeof db);
-      emit_arg_or_default(c, m, i, -1, &db);
+      emit_ds_default(c, m, i, &db);
       buf_printf(out, "(sp_%sHash_has_key(_t%d, sp_sym_intern(\"%s\")) ? (%s) : (%s))",
                  hn, ds_hash_tmp, m->pnames[i],
                  vb.p ? vb.p : "", db.p ? db.p : default_value(pt));
@@ -6702,7 +6716,7 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
           if (!akw) continue;
           splat_seen = 1;
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, lv_%s);\n", krhash, akw);
+          buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, lv_%s);\n", krhash, rename_local(akw));
           continue;
         }
         TyKind sty = comp_ntype(c, inner3);
@@ -7402,11 +7416,12 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
      an undeclared `lv_<sibling>`. Bind each param to a uniquely-named call-site
      temp in order, registering a rename so a later default reads the earlier
      temp, then pass the temps. Restricted to calls with no splat expanding
-     into fixed parameters and no double-splat. A *rest, its posts and a
-     **kwrest are hoisted the way the path below binds them: leaving them out
-     let `def m(n, *r, k: n + r.size)` and `def h(x, z = x * 2, **kw)` emit
-     the default against a parameter nothing at the call site declared. */
-  if (splat_idx < 0 && ds_hash_tmp < 0 &&
+     into fixed parameters. A *rest, its posts and a **kwrest are hoisted the
+     way the path below binds them: leaving them out let
+     `def m(n, *r, k: n + r.size)` and `def h(x, z = x * 2, **kw)` emit the
+     default against a parameter nothing at the call site declared. A keyword
+     a `**h` may supply is read out of h, its default under the same renames. */
+  if (splat_idx < 0 &&
       m->nparams <= 64 && default_refs_earlier_param(c, m)) {
     int uid = ++g_tmp;
     int ren_base = g_nren;
@@ -7450,6 +7465,8 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
         if (pt == TY_POLY) buf_printf(&vb, "sp_box_obj(_t%d, SP_BUILTIN_SYM_POLY_HASH)", krhash);
         else buf_printf(&vb, "_t%d", krhash);
       }
+      else if (provided < 0 && ds_hash_tmp >= 0 && m->pnames[i] && callee_has_kwarg(c, m, m->pnames[i]))
+        emit_ds_param_extract(c, m, i, ds_hash_tmp, ds_hash_type, &vb);
       else emit_arg_or_default(c, m, i, provided, &vb);
       g_nren = active_nren;
       char uniq[48];
@@ -7883,6 +7900,16 @@ static void emit_dispatch_arm_call(Compiler *c, int kd, int kmi, const char *sel
   free(apre.p); free(call.p);
 }
 
+/* The runtime class a virtual dispatch switches on. A user exception is an
+   sp_Exception, whose header carries no cls_id, so it keys by its class
+   name through sp_exc_user_cls_id. */
+void emit_obj_dispatch_key(Compiler *c, int cid, const char *selfptr, Buf *b) {
+  if (cid >= 0 && class_is_exc_subclass(c, cid))
+    buf_printf(b, "sp_exc_user_cls_id(sp_box_obj((void *)(%s), SP_BUILTIN_EXCEPTION))", selfptr);
+  else
+    buf_printf(b, "(%s)->cls_id", selfptr);
+}
+
 /* The dispatch switch for arms that disagree on their parameters: each arm
    binds the call's arguments by its own method's list, the way a direct call
    to that method would, defaults and arity check included. The argument
@@ -7913,7 +7940,9 @@ static void emit_dispatch_per_arm(Compiler *c, int cid, const char *name, const 
   int rtmp = ++g_tmp;
   buf_puts(b, "({ ");
   emit_ctype(c, disp_ret, b);
-  buf_printf(b, " _t%d; switch ((%s)->cls_id) {", rtmp, selfptr);
+  buf_printf(b, " _t%d; switch (", rtmp);
+  emit_obj_dispatch_key(c, cid, selfptr, b);
+  buf_puts(b, ") {");
   for (int k = 0; k < c->nclasses; k++) {
     if (!is_descendant(c, k, cid)) continue;
     int kd = -1;
@@ -8466,7 +8495,9 @@ else {
   int rtmp = ++g_tmp;
   buf_puts(b, "({ ");
   emit_ctype(c, disp_ret, b);
-  buf_printf(b, " _t%d; switch ((%s)->cls_id) {", rtmp, selfptr);
+  buf_printf(b, " _t%d; switch (", rtmp);
+  emit_obj_dispatch_key(c, cid, selfptr, b);
+  buf_puts(b, ") {");
   for (int k = 0; k < c->nclasses; k++) {
     if (!is_descendant(c, k, cid)) continue;
     int kd = -1;

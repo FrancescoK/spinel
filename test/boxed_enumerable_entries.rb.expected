@@ -1,0 +1,11 @@
+[1, 2, 4]
+[[1, 2, 4], false]
+[[:k, 1], [:j, 2]]
+[1, 2, 3]
+["a", "b", "c"]
+[5, 6]
+[7, 8]
+[200, [199, "s"]]
+"undefined method 'entries' for an instance of D"
+"undefined method 'entries' for an instance of String"
+"undefined method 'entries' for nil"

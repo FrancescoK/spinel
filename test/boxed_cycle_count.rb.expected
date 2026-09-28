@@ -1,0 +1,14 @@
+Enumerator
+[1, 2, 4, 1, 2, 4]
+[1, 2, 4, 1]
+[]
+[1, 2, 3, 1, 2, 3]
+["a", "b", "a", "b"]
+[[:k, 1], [:k, 1]]
+[10, 20, 10, 20]
+9
+"wheel 3"
+[5, 6, 5, 6]
+[200, [199, "s", 199, "s"]]
+"undefined method 'cycle' for an instance of String"
+"undefined method 'cycle' for nil"

@@ -853,6 +853,7 @@ void scope_proc_form_end(Compiler *c, int s);
 int scope_has_callable_symbol(Compiler *c, int s);
 int scope_toplevel_included(Compiler *c, int s);
 int emit_forwarded_proc_arg(Compiler *c, int blk_node, Buf *b);
+void emit_obj_dispatch_key(Compiler *c, int cid, const char *selfptr, Buf *b);
 int struct_kwarg_value(Compiler *c, int kwh, const char *name);
 /* Value-equality family: operands in the same nonzero family compare by value;
    different nonzero families are never == (Ruby does no cross-type coercion,

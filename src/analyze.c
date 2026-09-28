@@ -13068,6 +13068,39 @@ static int promote_shared_stored_strings(Compiler *c) {
     if (llv2->type != TY_POLY && (llv2->type != TY_STRBUF || !llv2->str_shared))
       {  llv2->type = TY_STRBUF; llv2->str_shared = 1; changed = 1;  }
   }
+  /* `r = obj.buf << x`: an append (or replace, clear) answers its receiver,
+     so where that is a
+     reader handing out the handle (marked by the reader-mutation pass
+     above), r holds the same handle -- a later `r << y` reaches obj.buf and
+     r.equal?(obj.buf). Mark each append of the chain so it emits the handle,
+     and promote the local. An append left unmarked (a tail return, an
+     argument) still answers the String read. */
+  for (int w = 0; w < nt->count; w++) {
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+    int links[16]; int nl = 0;
+    int cur = nt_ref(nt, w, "value");
+    while (cur >= 0 && nl < 16 && nt_kind(nt, cur) == NK_CallNode &&
+           nt_ref(nt, cur, "block") < 0) {
+      const char *an = nt_str(nt, cur, "name");
+      int aa = nt_ref(nt, cur, "arguments"); int aac = 0;
+      if (aa >= 0) nt_arr(nt, aa, "arguments", &aac);
+      if (!an || !((aac == 1 && (sp_streq(an, "<<") || sp_streq(an, "concat") ||
+                                 sp_streq(an, "prepend") || sp_streq(an, "replace"))) ||
+                   (aac == 0 && sp_streq(an, "clear")))) break;
+      links[nl++] = cur;
+      cur = nt_ref(nt, cur, "receiver");
+    }
+    if (nl == 0 || cur < 0 || nt_kind(nt, cur) != NK_CallNode || !c->strbuf_box[cur]) continue;
+    const char *lname3 = nt_str(nt, w, "name");
+    Scope *ls3 = comp_scope_of(c, w);
+    LocalVar *llv3 = (lname3 && ls3) ? scope_local(ls3, lname3) : NULL;
+    if (!llv3 || !strbuf_slot_eligible_shape(c, lname3, ls3, llv3)) continue;
+    if (llv3->type != TY_UNKNOWN && llv3->type != TY_STRING && llv3->type != TY_STRBUF) continue;
+    for (int k = 0; k < nl; k++)
+      if (!c->strbuf_box[links[k]]) { c->strbuf_box[links[k]] = 1; changed = 1; }
+    if (llv3->type != TY_STRBUF || !llv3->str_shared)
+      {  llv3->type = TY_STRBUF; llv3->str_shared = 1; changed = 1;  }
+  }
   /* iteration-variable mutation: `arr.each { |x| x << "!" }` mutates the
      ELEMENT through the block binding, so the container's stored strings
      become handles and the block param binds the handle (#3227 P6). Every
@@ -17720,8 +17753,10 @@ void analyze_program(Compiler *c) {
       int np = sc1->nparams < sc2->nparams ? sc1->nparams : sc2->nparams;
       for (int k = 0; k < np; k++) {
         /* a rest collects its arguments into an array whatever the other
-           method has in that slot (#4871) */
-        if (k == sc1->rest_idx || k == sc2->rest_idx) continue;
+           method has in that slot (#4871), and a **kwrest its keywords into
+           a hash */
+        if (k == sc1->rest_idx || k == sc2->rest_idx ||
+            k == sc1->kwrest_idx || k == sc2->kwrest_idx) continue;
         LocalVar *p1 = scope_local(sc1, sc1->pnames[k]);
         LocalVar *p2 = scope_local(sc2, sc2->pnames[k]);
         if (!p1 || !p2) continue;

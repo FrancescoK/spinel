@@ -6489,7 +6489,7 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
         case SP_BUILTIN_BIG_RATIONAL:  return sp_brat_inspect((sp_BigRational *)v.v.p);
         case SP_BUILTIN_REGEX:     return sp_re_inspect_str(v.v.p);
         case SP_BUILTIN_MATCHDATA: return sp_MatchData_inspect((sp_MatchData *)v.v.p);
-        case SP_BUILTIN_EXCEPTION: return sp_sprintf("#<%s: %s>", sp_exc_class_name((volatile struct sp_Exception_s *)v.v.p), sp_exc_message((volatile struct sp_Exception_s *)v.v.p));
+        case SP_BUILTIN_EXCEPTION: return sp_exc_inspect(v.v.p);
         case SP_BUILTIN_STR_INT_HASH:  return sp_StrIntHash_inspect((sp_StrIntHash *)v.v.p);
         case SP_BUILTIN_STR_STR_HASH:  return sp_StrStrHash_inspect((sp_StrStrHash *)v.v.p);
         case SP_BUILTIN_INT_STR_HASH:  return sp_IntStrHash_inspect((sp_IntStrHash *)v.v.p);
@@ -9904,6 +9904,21 @@ static sp_RbVal sp_poly_fiber_value(sp_RbVal v) {
    codegen emits direct symbol references (sp_Thread_join_timeout) so
    the signatures must be visible here. */
 sp_thread *sp_Thread_join_timeout(sp_thread *t, double seconds);
+sp_PolyArray *sp_Thread_tls_keys(sp_thread *t);
+
+#if defined(SPINEL_EXT_HOST) || defined(SPINEL_EXT_KERNEL)
+sp_sym sp_sym_intern_n(const char *s, size_t n);
+#else
+static sp_sym sp_sym_intern_n(const char *s, size_t n);
+#endif
+static sp_sym sp_thread_local_key(sp_RbVal k) {
+  k = sp_poly_strbuf_deref(k);
+  SP_GC_ROOT_RBVAL(k);
+  if (k.tag == SP_TAG_SYM) return (sp_sym)k.v.i;
+  if (k.tag == SP_TAG_STR && k.v.s) return sp_sym_intern_n(k.v.s, sp_str_byte_len(k.v.s));
+  sp_raise_cls("TypeError", sp_sprintf("%s is not a symbol nor a string", sp_poly_inspect(k)));
+  return (sp_sym)0;
+}
 
 /* `poly.join(<number>)` can only be Thread#join(limit): Array#join with a
    numeric separator is a TypeError in CRuby, so a numeric argument leaves no
@@ -12009,6 +12024,16 @@ static sp_PolyArray *sp_enum_items_from(sp_RbVal v) {
   }
   return sp_PolyArray_new();
 }
+/* The items each_with_index walks on a boxed receiver: an Array's elements,
+   and a Hash's [key, value] pairs, a Range's members or an Enumerator's
+   values (sp_enum_items_from); anything else, as before, none. */
+static sp_PolyArray *sp_poly_ewi_items(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ &&
+      (sp_poly_is_hash_kind(v.cls_id) || v.cls_id == SP_BUILTIN_RANGE ||
+       v.cls_id == SP_BUILTIN_STR_RANGE || (v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p)))
+    return sp_enum_items_from(v);
+  return sp_poly_to_poly_array(v);
+}
 /* Poly-receiver #to_a: nil is the empty array, arrays and hashes materialize
    through sp_enum_items_from (a hash yields its [key, value] pairs), and any
    other value raises CRuby's NoMethodError. */
@@ -12038,6 +12063,22 @@ static sp_PolyArray *sp_poly_to_a_arr(sp_RbVal v) {
   { sp_PolyArray *ue = sp_poly_user_elems(v);
     if (ue) return ue; }
   sp_raise_nomethod(sp_nomethod_msg("to_a", v));
+  return NULL;
+}
+/* Enumerable#entries on a boxed receiver: an Array's elements, a Hash's
+   [key, value] pairs, an Integer or String Range's members, an Enumerator's
+   values and a Struct's members, always in a new Array (an Array's to_a
+   answers the Array itself); anything else raises NoMethodError naming
+   entries, nil among them, which has to_a but not entries. */
+static sp_PolyArray *sp_poly_entries(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ &&
+      (sp_poly_is_array_kind(v.cls_id) || sp_poly_is_hash_kind(v.cls_id) ||
+       v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE ||
+       (v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p)))
+    return sp_enum_items_from(v);
+  sp_RbVal sv = sp_poly_struct_values(v);
+  if (sv.tag == SP_TAG_OBJ && sv.cls_id == SP_BUILTIN_POLY_ARRAY) return (sp_PolyArray *)sv.v.p;
+  sp_raise_nomethod(sp_nomethod_msg("entries", v));
   return NULL;
 }
 
@@ -12715,6 +12756,32 @@ static sp_Enumerator *sp_Enumerator_new_cycle(sp_RbVal arr, sp_int n) {
   for (sp_int r = 0; r < n; r++)
     for (sp_int i = 0; i < len; i++) sp_PolyArray_push(out, items->data[i]);
   { sp_Enumerator *e = sp_Enumerator_new_from_items(out); e->source = arr; return e; }
+}
+/* blockless cycle(n) on a boxed receiver: an Array's, a Hash's, an Integer
+   or String Range's or an Enumerator's items repeated n times, the
+   Enumerator the typed arms build; anything else raises NoMethodError
+   naming cycle. */
+static void sp_poly_cycle_recv_chk(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ &&
+      (sp_poly_is_array_kind(v.cls_id) || sp_poly_is_hash_kind(v.cls_id) ||
+       v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE ||
+       (v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p)))
+    return;
+  sp_raise_nomethod(sp_nomethod_msg("cycle", v));
+}
+/* cycle(n)'s count where the compiler types it anything but Integer: the
+   conversion of an Integer argument (sp_poly_arg_int_chk), and the
+   RangeError CRuby raises for a Bignum, which no count can be. The receiver
+   is checked first: a receiver without cycle raises NoMethodError before
+   its argument is converted, as in CRuby. */
+static sp_int sp_poly_cycle_count(sp_RbVal v, sp_RbVal n) {
+  sp_poly_cycle_recv_chk(v);
+  if (n.tag == SP_TAG_BIGINT) sp_raise_cls("RangeError", "bignum too big to convert into 'long'");
+  return sp_poly_arg_int_chk(n);
+}
+static sp_Enumerator *sp_poly_cycle_n(sp_RbVal v, sp_int n) {
+  sp_poly_cycle_recv_chk(v);
+  return sp_Enumerator_new_cycle(v, n);
 }
 /* slice_before/slice_after with a pattern VALUE: start a new group before
    (after) each element == pattern. Groups are poly arrays. */
@@ -14090,6 +14157,7 @@ static inline const char *sp_poly_pack(sp_RbVal recv, const char *fmt) {
 static const char *sp_sym_to_s(sp_sym id) { (void)id; return sp_str_empty; }
 static const char *sp_class_to_s(sp_Class c) { return c.name ? c.name : sp_str_empty; }
 static sp_sym sp_sym_intern(const char *s) { (void)s; return (sp_sym)0; }
+static sp_sym sp_sym_intern_n(const char *s, size_t n) { (void)s; (void)n; return (sp_sym)0; }
 #endif
 
 #endif /* SP_RUNTIME_H */
