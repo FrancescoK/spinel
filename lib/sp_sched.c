@@ -3609,7 +3609,8 @@ sp_condvar *sp_CondVar_new(void) {
   return cv;
 }
 
-void sp_CondVar_wait(sp_condvar *cv, sp_mutex *m) {
+sp_RbVal sp_CondVar_wait(sp_condvar *cv, sp_mutex *m) {
+  time_t beg = time(NULL);
   /* Release the mutex and park on the CV atomically under the one lock, so a
      concurrent #signal cannot slip in between and be lost. The mutex unlock is
      inlined (its hand-off + ownership check) since sp_Mutex_unlock would take
@@ -3634,6 +3635,7 @@ void sp_CondVar_wait(sp_condvar *cv, sp_mutex *m) {
   sp_Mutex_lock(m);   /* re-acquire (may block again on the mutex) */
   sp_fiber_undefer_inject();
   sp_fiber_fire_inject_if_pending();
+  return sp_box_int((sp_int)(time(NULL) - beg));
 }
 
 /* The single-threaded runtime (or a threaded program before its monitor
@@ -3658,22 +3660,21 @@ static void sp_CondVar_wait_timeout_blocking(sp_mutex *m, double seconds) {
   sp_Mutex_lock(m);
 }
 
-void sp_CondVar_wait_timeout(sp_condvar *cv, sp_mutex *m, double seconds) {
-  if (!(seconds > 0.0)) {
-    sp_CondVar_wait_nb(cv, m);
-    return;
-  }
+sp_RbVal sp_CondVar_wait_timeout(sp_condvar *cv, sp_mutex *m, double seconds) {
+  if (!(seconds > 0.0)) return sp_CondVar_wait_nb(cv, m);
 #ifdef SP_THREADS
   /* With no spawned green threads there is no monitor yet. Release the mutex
      and sleep directly; the main thread is the only possible signaler in this
-     state, so there cannot be a signal to lose. */
+     state, so there cannot be a signal to lose, and the wait always times out. */
   if (!g_sysmon_started) {
     sp_CondVar_wait_timeout_blocking(m, seconds);
-    return;
+    return sp_box_nil();
   }
+  time_t beg = time(NULL);
   SCHED_LOCK();
   double ct0 = sched_lat_enabled() ? sp_monotonic_now() : 0;
-  if (sp_sched_block_timeout(&cv->waiters, sp_monotonic_now() + seconds, m) < 0) {
+  int woken = sp_sched_block_timeout(&cv->waiters, sp_monotonic_now() + seconds, m);
+  if (woken < 0) {
     SCHED_UNLOCK();
     sp_raise_cls("NoMemoryError", "failed to schedule condition variable timeout");
   }
@@ -3682,15 +3683,17 @@ void sp_CondVar_wait_timeout(sp_condvar *cv, sp_mutex *m, double seconds) {
   sp_Mutex_lock(m);
   sp_fiber_undefer_inject();
   sp_fiber_fire_inject_if_pending();
+  return woken ? sp_box_int((sp_int)(time(NULL) - beg)) : sp_box_nil();
 #else
   sp_CondVar_wait_timeout_blocking(m, seconds);
+  return sp_box_nil();
 #endif
 }
 
 /* CRuby's `wait(mutex, 0)`: release the mutex and return without parking.
    The cv->waiters list is threads blocked on this CV, not pending signals, so
    this path does not touch it. */
-void sp_CondVar_wait_nb(sp_condvar *cv, sp_mutex *m) {
+sp_RbVal sp_CondVar_wait_nb(sp_condvar *cv, sp_mutex *m) {
   (void)cv;
   SCHED_LOCK();
   if (SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) != g_current) {
@@ -3710,6 +3713,7 @@ void sp_CondVar_wait_nb(sp_condvar *cv, sp_mutex *m) {
   sp_Mutex_lock(m);
   sp_fiber_undefer_inject();
   sp_fiber_fire_inject_if_pending();
+  return sp_box_nil();
 }
 
 void sp_CondVar_signal(sp_condvar *cv)    { SCHED_LOCK(); sp_sched_wake_one(&cv->waiters);            SCHED_UNLOCK(); }

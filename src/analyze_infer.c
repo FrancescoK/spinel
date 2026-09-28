@@ -3694,7 +3694,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   /* TY_CONDVAR instance methods */
   if (recv >= 0 && rt == TY_CONDVAR) {
-    if (sp_streq(name, "wait") || sp_streq(name, "signal") || sp_streq(name, "broadcast")) return TY_CONDVAR;
+    /* #wait answers nil (timed out) or the Integer seconds slept, as CRuby */
+    if (sp_streq(name, "wait")) return TY_POLY;
+    if (sp_streq(name, "signal") || sp_streq(name, "broadcast")) return TY_CONDVAR;
   }
 
   /* Process::Tms accessors: four cumulative CPU times, all Float (#3044) */

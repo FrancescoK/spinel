@@ -2798,12 +2798,13 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
       /* wait(mutex): release the mutex, park, re-acquire. The 2-arg
          `wait(mutex, timeout)` form uses the scheduler's deadline queue.
          A nil timeout means no deadline, and non-positive timeouts take the
-         existing release-and-reacquire path without parking. */
+         existing release-and-reacquire path without parking. The value is
+         the runtime's answer: nil on a timeout, else the seconds slept. */
       int t = ++g_tmp;
       buf_printf(b, "({ sp_condvar *_t%d = ", t); emit_expr(c, recv, b);
       if (argc == 1) {
         buf_printf(b, "; sp_CondVar_wait(_t%d, ", t); emit_expr(c, argv[0], b);
-        buf_printf(b, "); _t%d; })", t);
+        buf_puts(b, "); })");
       }
       else {
         /* argv[0] is the mutex, argv[1] is the timeout */
@@ -2812,11 +2813,11 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
         if (aty && sp_streq(aty, "IntegerNode") &&
             (int)nt_int(c->nt, to_arg, "value", 0) == 0) {
           buf_printf(b, "; sp_CondVar_wait_nb(_t%d, ", t); emit_expr(c, argv[0], b);
-          buf_printf(b, "); _t%d; })", t);
+          buf_puts(b, "); })");
         }
         else if (nt_kind(c->nt, to_arg) == NK_NilNode) {
           buf_printf(b, "; sp_CondVar_wait(_t%d, ", t); emit_expr(c, argv[0], b);
-          buf_printf(b, "); _t%d; })", t);
+          buf_puts(b, "); })");
         }
         else if (comp_ntype(c, to_arg) == TY_NIL) {
           /* A non-literal nil expression (for example, a method returning
@@ -2824,7 +2825,7 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
           int m = ++g_tmp;
           buf_printf(b, "; sp_mutex *_m%d = ", m); emit_expr(c, argv[0], b);
           buf_puts(b, "; (void)("); emit_expr(c, to_arg, b);
-          buf_printf(b, "); sp_CondVar_wait(_t%d, _m%d); _t%d; })", t, m, t);
+          buf_printf(b, "); sp_CondVar_wait(_t%d, _m%d); })", t, m);
         }
         else {
           int m = ++g_tmp;
@@ -2832,15 +2833,15 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
           if (comp_ntype(c, to_arg) == TY_POLY || comp_ntype(c, to_arg) == TY_UNKNOWN) {
             int timeout = ++g_tmp;
             buf_printf(b, "; sp_RbVal _timeout%d = ", timeout); emit_boxed(c, to_arg, b);
-            buf_printf(b, "; if (_timeout%d.tag == SP_TAG_NIL) sp_CondVar_wait(_t%d, _m%d); "
-                          "else sp_CondVar_wait_timeout(_t%d, _m%d, sp_poly_to_f_with_rational(_timeout%d)); "
-                          "_t%d; })", timeout, t, m, t, m, timeout, t);
+            buf_printf(b, "; _timeout%d.tag == SP_TAG_NIL ? sp_CondVar_wait(_t%d, _m%d) "
+                          ": sp_CondVar_wait_timeout(_t%d, _m%d, sp_poly_to_f_with_rational(_timeout%d)); })",
+                       timeout, t, m, t, m, timeout);
           }
           else {
             int timeout = ++g_tmp;
             buf_printf(b, "; double _timeout%d = ", timeout); emit_float_expr(c, to_arg, b);
-            buf_printf(b, "; sp_CondVar_wait_timeout(_t%d, _m%d, _timeout%d); _t%d; })",
-                       t, m, timeout, t);
+            buf_printf(b, "; sp_CondVar_wait_timeout(_t%d, _m%d, _timeout%d); })",
+                       t, m, timeout);
           }
         }
       }

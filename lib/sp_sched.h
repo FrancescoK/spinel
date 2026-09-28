@@ -269,9 +269,11 @@ typedef struct sp_condvar {
 } sp_condvar;
 
 sp_condvar *sp_CondVar_new(void);
-void        sp_CondVar_wait(sp_condvar *cv, sp_mutex *m);  /* release m, park, re-acquire m */
-void        sp_CondVar_wait_nb(sp_condvar *cv, sp_mutex *m);  /* release m, do not park, re-acquire m */
-void        sp_CondVar_wait_timeout(sp_condvar *cv, sp_mutex *m, double seconds); /* timed #wait */
+/* #wait answers what CRuby's Mutex#sleep answers: nil when a timeout ran out,
+   otherwise the whole seconds slept (time(2) after less time(2) before). */
+sp_RbVal    sp_CondVar_wait(sp_condvar *cv, sp_mutex *m);  /* release m, park, re-acquire m */
+sp_RbVal    sp_CondVar_wait_nb(sp_condvar *cv, sp_mutex *m);  /* release m, do not park, re-acquire m */
+sp_RbVal    sp_CondVar_wait_timeout(sp_condvar *cv, sp_mutex *m, double seconds); /* timed #wait */
 void        sp_CondVar_signal(sp_condvar *cv);             /* #signal */
 void        sp_CondVar_broadcast(sp_condvar *cv);          /* #broadcast */
 
