@@ -208,6 +208,12 @@ void anh_add(ANameHash *st, const char *nm) {
 }
 void anh_free(ANameHash *st) { free(st->key); free(st->next); free(st->head); }
 
+static int cr_class_is_ancestor(Compiler *c, int sup, int cls) {
+  for (int k = cls, hops = 0; k >= 0 && k < c->nclasses && hops < 64; k = c->classes[k].parent, hops++)
+    if (k == sup) return 1;
+  return 0;
+}
+
 void compute_reachable(Compiler *c) {
   /* Build per-scope call sets (CallNode names, not entering nested DefNodes). */
   char ***scope_calls = calloc((size_t)c->nscopes, sizeof(char **));
@@ -301,7 +307,12 @@ void compute_reachable(Compiler *c) {
     called_names[cn_n++]=strdup(_n); anh_add(&cn_set,called_names[cn_n-1]);} } while(0)
 
   /* Helper: mark a name reachable -- all scopes with that name join the BFS. */
-  #define MARK_NAME(NM) do { const char *_mn=(NM); if(_mn && !anh_has(&cn_set,_mn)){ CN_ADD(_mn); \
+  #define MARK_NAME(NM) do { const char *_mn=(NM); if(_mn && _mn[0]=='\x01'){ int _t=atoi(_mn+1); \
+      if(_t>=0 && _t<c->nscopes && !c->scopes[_t].reachable){ c->scopes[_t].reachable=1; queue[qtail++]=_t; \
+        for(int _u=SN_FIRST(c->scopes[_t].name);_u>=0;_u=sn_link[_u]) \
+          if(!c->scopes[_u].reachable && c->scopes[_u].is_cmethod && cr_class_is_ancestor(c, c->scopes[_u].class_id, c->scopes[_t].class_id)) \
+            { c->scopes[_u].reachable=1; queue[qtail++]=_u; } } } \
+    else if(_mn && !anh_has(&cn_set,_mn)){ CN_ADD(_mn); \
     for(int _t=SN_FIRST(_mn);_t>=0;_t=sn_link[_t]) \
       if(!c->scopes[_t].reachable) \
         { c->scopes[_t].reachable=1; queue[qtail++]=_t; } } } while(0)
