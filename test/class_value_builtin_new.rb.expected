@@ -1,0 +1,42 @@
+""
+[]
+Hash
+Object
+[nil, nil, nil]
+"x"
+0
+""
+Foo!
+""
+[]
+String
+Array
+[0, 10]
+"abab"
+{ab: "abab"}
+["z", "z"]
+[1, 2]
+1
+[]
+""
+[nil]
+"q"
+[0, 0]
+7
+"abc"
+#<RuntimeError: x>
+#<ArgumentError: x>
+#<RuntimeError: RuntimeError>
+#<ArgumentError: ArgumentError>
+"negative array size"
+"no implicit conversion of Integer into String"
+"wrong number of arguments (given 1, expected 0)"
+NoMethodError
+""
+"x"
+[0, 0]
+[]
+5
+#<RuntimeError: boom>
+3
+[nil]

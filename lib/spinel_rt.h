@@ -13428,6 +13428,71 @@ static sp_RbVal sp_penum_call2(sp_Proc *blk, sp_RbVal v, sp_RbVal w) {
   sp_proc_call(blk, 2, a);
   return _sp_proc_poly_ret;
 }
+/* `new` on a Class value that turns out at run time to be String, Array,
+   Hash or Object (`kind` 'S', 'A', 'H', 'O'), with the call's arguments
+   boxed: what the constant spelling constructs, boxed. */
+static sp_RbVal sp_dyn_hash_dproc(sp_PolyPolyHash *h, sp_RbVal key, void *self) {
+  return sp_penum_call2((sp_Proc *)self, sp_box_obj(h, SP_BUILTIN_POLY_POLY_HASH), key);
+}
+static void sp_dyn_new_arity(sp_int given, sp_int max) {
+  if (given <= max) return;
+  if (max == 0)
+    sp_raise_cls("ArgumentError", sp_sprintf("wrong number of arguments (given %lld, expected 0)", (long long)given));
+  sp_raise_cls("ArgumentError", sp_sprintf("wrong number of arguments (given %lld, expected 0..%lld)",
+                                           (long long)given, (long long)max));
+}
+static sp_RbVal sp_builtin_class_new(int kind, sp_int argc, const sp_RbVal *av, sp_Proc *blk) {
+  SP_GC_ROOT(blk);
+  switch (kind) {
+  case 'S': {
+    sp_dyn_new_arity(argc, 1);
+    if (argc == 0) return sp_box_str(sp_str_dup_external((&("\xff")[1])));
+    sp_RbVal s = sp_poly_is_strbuf(av[0]) ? sp_poly_strbuf_deref(av[0]) : av[0];
+    if (s.tag != SP_TAG_STR)
+      sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into String", sp_poly_class_name(s)));
+    return sp_box_str(sp_str_dup(s.v.s));
+  }
+  case 'A': {
+    sp_dyn_new_arity(argc, 2);
+    sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
+    if (argc == 0) return sp_box_poly_array(r);
+    if (argc == 1 && av[0].tag == SP_TAG_OBJ && sp_poly_is_array_kind(av[0].cls_id)) {
+      sp_int n = sp_poly_length(av[0]);
+      for (sp_int i = 0; i < n; i++) sp_PolyArray_push(r, sp_poly_arr_get(av[0], i));
+      return sp_box_poly_array(r);
+    }
+    if (av[0].tag != SP_TAG_INT)
+      sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Integer", sp_poly_class_name(av[0])));
+    if (av[0].v.i < 0) sp_raise_cls("ArgumentError", "negative array size");
+    for (sp_int i = 0; i < av[0].v.i; i++)
+      sp_PolyArray_push(r, blk ? sp_penum_call1(blk, sp_box_int(i)) : argc == 2 ? av[1] : sp_box_nil());
+    return sp_box_poly_array(r);
+  }
+  case 'H': {
+    sp_dyn_new_arity(argc, blk ? 0 : 1);
+    sp_PolyPolyHash *h = blk ? sp_PolyPolyHash_new_dproc(sp_dyn_hash_dproc, blk)
+                       : argc ? sp_PolyPolyHash_new_with_default(av[0]) : sp_PolyPolyHash_new();
+    return sp_box_obj(h, SP_BUILTIN_POLY_POLY_HASH);
+  }
+  default:
+    sp_dyn_new_arity(argc, 0);
+    return sp_box_obj(sp_Object_new(), SP_BUILTIN_OBJECT);
+  }
+}
+/* The default arm of those dispatches: `cls` (named `cn`) is a builtin
+   exception class, constructed as `RuntimeError.new(msg)` is, or a class
+   the program cannot construct through a class value. */
+static sp_RbVal sp_class_value_new_fallback(sp_RbVal cls, const char *cn, sp_int argc, const sp_RbVal *av) {
+  if (cn && (!strcmp(cn, "Exception") || sp_exc_parent_of_name(cn))) {
+    sp_dyn_new_arity(argc, 1);
+    const char *msg = sp_str_empty;
+    if (argc == 1 && av[0].tag != SP_TAG_NIL)
+      msg = sp_exc_msg_given(av[0].tag == SP_TAG_STR ? av[0].v.s : sp_poly_to_s(av[0]));
+    return sp_box_obj(sp_exc_new(cn, msg), SP_BUILTIN_EXCEPTION);
+  }
+  sp_raise_nomethod(sp_nomethod_msg("new", cls));
+  return sp_box_nil();
+}
 static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
   SP_GC_ROOT_RBVAL(recv);
   /* The block is this loop's only handle on its own captures: the caller's
