@@ -5647,6 +5647,14 @@ static void emit_arg_or_default_at(Compiler *c, Scope *m, int idx, int provided,
 static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provided, Buf *out) {
   LocalVar *p = scope_local(m, m->pnames[idx]);
   TyKind pt = p ? p->type : TY_INT;
+  /* An omitted `*rest` is an empty Array, not a NULL the body reads as nil:
+     a dispatch arm that calls with no arguments (the boxed `call` switch)
+     fills every parameter through here. */
+  if (provided < 0 && idx == m->rest_idx && ty_is_array(pt) && !ty_is_obj_array(pt) &&
+      !(p && p->byref_out)) {
+    const char *k = (pt == TY_POLY_ARRAY) ? "Poly" : array_kind(pt);
+    if (k) { buf_printf(out, "sp_%sArray_new()", k); return; }
+  }
   /* A nil-typed argument (a void call, an always-nil method) into a pointer
      parameter: evaluated for its effects, it passes the pointer's nil. Raw,
      the void call or its sp_int 0 was a C type error (#4930). */
