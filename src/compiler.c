@@ -1858,9 +1858,12 @@ const char *comp_prep_user_name(const char *name) {
    which is callable, since only a yielding method is inlined away. */
 const char *comp_super_name(Compiler *c, int parent, const char *name, int is_cmethod) {
   const char *u = comp_prep_user_name(name);
-  if (!u || parent < 0) return u;
+  if (!u) return u;
   size_t n = strlen(u);
   if (n <= 3 || strcmp(u + n - 3, "#pf") != 0) return u;
+  /* a class whose parent is builtin (Object, StandardError) supers into the
+     plain method, which the super emitter answers for itself */
+  if (parent < 0) goto plain;
   /* The nearest ancestor that defines the method decides: its own clone when
      it yields, else its plain method. Asking the chain for the clone found a
      grandparent's and skipped a parent that overrides without yielding
@@ -1881,6 +1884,7 @@ const char *comp_super_name(Compiler *c, int parent, const char *name, int is_cm
                          : comp_method_in_chain(c, parent, u, NULL);
     if (any >= 0) return u;
   }
+plain:;
   static struct pf_base { char *from, *to; struct pf_base *next; } *cache;
   for (struct pf_base *e = cache; e; e = e->next)
     if (strcmp(e->from, u) == 0) return e->to;

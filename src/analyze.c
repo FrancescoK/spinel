@@ -14231,7 +14231,11 @@ int make_yield_proc_forms(Compiler *c) {
         (c->classes[src->class_id].is_struct || c->classes[src->class_id].is_value_type)) continue;
     if (src->is_transplanted_source || !src->name) continue;
     if (src->body < 0) continue;
-    if (!pf_wanted(c, src->name) && !pf_in_class_dispatch(c, src)) continue;
+    /* an exception class is built through sp_X_new by raise, rescue's
+       re-raise and its own `new` sites alike, none of which splice the body */
+    int exc_init = sp_streq(src->name, "initialize") && !src->is_cmethod &&
+                   class_is_exc_subclass(c, src->class_id);
+    if (!exc_init && !pf_wanted(c, src->name) && !pf_in_class_dispatch(c, src)) continue;
     /* A method the program reopens has two definitions in the scope table
        and the last one wins (comp_method_in_class): only that one gets the
        clone. Cloning the first left the poly dispatch arm running the
