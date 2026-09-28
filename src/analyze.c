@@ -2944,6 +2944,28 @@ static int is_name_binding_param(const char *ty) {
                 sp_streq(ty, "BlockParameterNode"));
 }
 
+/* The names a destructuring parameter (`|(a, (b, *c))|`) binds: the
+   RequiredParameterNode leaves under its MultiTargetNode / SplatNode. */
+static void blkp_collect_destructured(const NodeTable *nt, int id, int *out, int *n, int cap) {
+  const char *ty = id >= 0 ? nt_type(nt, id) : NULL;
+  if (!ty) return;
+  if (sp_streq(ty, "RequiredParameterNode")) {
+    if (*n < cap && nt_str(nt, id, "name")) out[(*n)++] = id;
+    return;
+  }
+  if (sp_streq(ty, "SplatNode")) {
+    blkp_collect_destructured(nt, nt_ref(nt, id, "expression"), out, n, cap);
+    return;
+  }
+  if (!sp_streq(ty, "MultiTargetNode")) return;
+  static const char *const parts[] = { "lefts", "rights" };
+  for (int k = 0; k < 2; k++) {
+    int m = 0; const int *ids = nt_arr(nt, id, parts[k], &m);
+    for (int i = 0; i < m; i++) blkp_collect_destructured(nt, ids[i], out, n, cap);
+  }
+  blkp_collect_destructured(nt, nt_ref(nt, id, "rest"), out, n, cap);
+}
+
 void rename_shadowing_block_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int n = nt->count;
@@ -3004,15 +3026,22 @@ void rename_shadowing_block_params(Compiler *c) {
       if (rref >= 0 && nt_type(nt, rref) && sp_streq(nt_type(nt, rref), "RestParameterNode") &&
           nt_str(nt, rref, "name")) extras[ne++] = rref;
       int pon = 0; const int *posts = nt_arr(nt, pn, "posts", &pon);
-      for (int q = 0; q < pon && ne < 128; q++)
-        if (posts[q] >= 0 && nt_type(nt, posts[q]) &&
-            sp_streq(nt_type(nt, posts[q]), "RequiredParameterNode") &&
-            nt_str(nt, posts[q], "name")) extras[ne++] = posts[q];
+      for (int q = 0; q < pon; q++) blkp_collect_destructured(nt, posts[q], extras, &ne, 128);
+      /* a destructured required (`|(b, j)|`) binds its leaves like any other */
+      for (int q = 0; q < rn; q++)
+        if (reqs[q] >= 0 && nt_type(nt, reqs[q]) && sp_streq(nt_type(nt, reqs[q]), "MultiTargetNode"))
+          blkp_collect_destructured(nt, reqs[q], extras, &ne, 128);
       int oon = 0; const int *opts = nt_arr(nt, pn, "optionals", &oon);
       for (int q = 0; q < oon && ne < 128; q++)
         if (opts[q] >= 0 && nt_type(nt, opts[q]) &&
             sp_streq(nt_type(nt, opts[q]), "OptionalParameterNode") &&
             nt_str(nt, opts[q], "name")) extras[ne++] = opts[q];
+      /* a lambda's keywords as well (a block's are renamed by
+         bs_strip_keywords where a builtin iterator binds them) */
+      int kwn = 0; const int *kws = is_lambda ? nt_arr(nt, pn, "keywords", &kwn) : NULL;
+      for (int q = 0; q < kwn && ne < 128; q++)
+        if (kws[q] >= 0 && is_name_binding_param(nt_type(nt, kws[q])) &&
+            nt_str(nt, kws[q], "name")) extras[ne++] = kws[q];
       int kwr = nt_ref(nt, pn, "keyword_rest");
       if (kwr >= 0 && ne < 128 && nt_type(nt, kwr) &&
           sp_streq(nt_type(nt, kwr), "KeywordRestParameterNode") &&

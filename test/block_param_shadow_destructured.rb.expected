@@ -1,0 +1,24 @@
+3
+1
+"b"
+"outer"
+[1, 2, 0]
+9
+1
+:v
+6
+0
+3
+1
+3
+1
+2
+1
+3
+4
+"outer"
+5
+[[:keyreq, :k]]
+"missing keyword: :k"
+[1, 2, 3]
+"outer"
