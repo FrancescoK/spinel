@@ -6437,6 +6437,9 @@ int infer_param_types(Compiler *c) {
         const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
         for (int pi = 0; pi < npc; pi++)
           changed |= bind_call_params(c, id, pcs[pi].mi);
+        pcs = comp_cmethod_candidates(c, name, &npc);
+        for (int pi = 0; pi < npc; pi++)
+          changed |= bind_call_params(c, id, pcs[pi].mi);
       }
     }
   }
