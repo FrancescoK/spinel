@@ -4979,6 +4979,11 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
           else if (pt == TY_STRING && emit_when_string_range(c, conds[j], t, b)) {
             /* emitted the lexicographic cover check */
           }
+          /* an Integer Range never covers an Array or a Hash: evaluate the
+             arm for its effects and answer false */
+          else if (comp_ntype(c, conds[j]) == TY_RANGE && (ty_is_array(pt) || ty_is_hash(pt))) {
+            buf_printf(b, "((void)_t%d, (void)(", t); emit_expr(c, conds[j], b); buf_puts(b, "), 0)");
+          }
           else if (comp_ntype(c, conds[j]) == TY_RANGE && pt != TY_STRING) {
             /* `when lo..hi` is range membership, not equality */
             int tr = ++g_tmp;
@@ -5334,6 +5339,9 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
         else if (reidx >= 0 && pt == TY_SYMBOL) { buf_printf(b, "sp_re_case_eq(sp_re_pat_%d, sp_box_sym(_t%d))", reidx, t); }
         else if (pt == TY_STRING && emit_when_string_range(c, conds[j], t, b)) {
           /* emitted the lexicographic cover check */
+        }
+        else if (comp_ntype(c, conds[j]) == TY_RANGE && (ty_is_array(pt) || ty_is_hash(pt))) {
+          buf_printf(b, "((void)_t%d, (void)(", t); emit_expr(c, conds[j], b); buf_puts(b, "), 0)");
         }
         else if (comp_ntype(c, conds[j]) == TY_RANGE && pt != TY_STRING) {
           int tr = ++g_tmp;
