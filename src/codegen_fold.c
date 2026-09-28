@@ -7394,21 +7394,22 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
           emit_kw_splat_bad_operand(c, inner3);
         }
         if (sty == TY_NIL || bad3) continue;
-        if (sty == TY_POLY) {
+        const char *shn = ty_hash_cname(sty);
+        if (sty == TY_POLY || (shn && !sp_streq(shn, "SymPoly"))) {
           /* A Hash only known at run time (a value read out of a poly-valued
              hash): its entries are merged by a runtime walk. */
           Buf pb; memset(&pb, 0, sizeof pb);
-          if (!splat_seen && ds_hash_tmp >= 0 && ds_hash_type == TY_POLY)
-            buf_printf(&pb, "_t%d", ds_hash_tmp);
-          else
-            emit_expr(c, inner3, &pb);
+          if (!splat_seen && ds_hash_tmp >= 0 && ds_hash_type == sty) {
+            char tn[32]; snprintf(tn, sizeof tn, "_t%d", ds_hash_tmp);
+            emit_boxed_text(c, sty, tn, &pb);
+          }
+          else emit_boxed(c, inner3, &pb);
           splat_seen = 1;
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "sp_kwrest_merge_poly(_t%d, %s);\n", krhash, pb.p ? pb.p : "sp_box_nil()");
           free(pb.p);
           continue;
         }
-        const char *shn = ty_hash_cname(sty);
         if (!shn || !sp_streq(shn, "SymPoly")) {
           unsupported(c, argsNode, "double-splat forward of a non-symbol-keyed hash into a keyword-rest parameter");
           continue;
