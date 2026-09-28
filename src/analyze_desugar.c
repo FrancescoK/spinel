@@ -3416,30 +3416,59 @@ static int fwd_fixed_call_arity(const NodeTable *nt, const char *name) {
 }
 /* The shape a forwarding `call` in `def` reaches: `super` the parent's
    method, `new` the constructed class's initialize. */
-/* The shape of a class-level `new` the program defines (`def self.new`, or
-   `def new` in a `class << self` body): a `new(...)` reaches it rather than
-   initialize. -1 when there is none, -2 when two disagree. */
-static int fwd_user_class_new_shape(const NodeTable *nt) {
-  int shape = -1;
-  for (int id = 0; id < nt->count; id++) {
-    int cand[64]; int nc = 0;
-    if (fwd_node_is(nt, id, "DefNode") && nt_ref(nt, id, "receiver") >= 0) cand[nc++] = id;
-    else if (fwd_node_is(nt, id, "SingletonClassNode")) {
-      int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, id, "body"), "body", &bn);
-      for (int k = 0; k < bn && nc < 64; k++) {
-        int dk = fwd_body_def(nt, bv[k]);
-        if (dk >= 0 && nt_ref(nt, dk, "receiver") < 0) cand[nc++] = dk;
-      }
-    }
-    for (int j = 0; j < nc; j++) {
-      const char *nm = nt_str(nt, cand[j], "name");
-      if (!nm || !sp_streq(nm, "new")) continue;
-      int sh = def_shape(nt, cand[j]);
-      if (sh < 0 || (shape >= 0 && sh != shape)) return -2;
-      shape = sh;
+/* The shape of the class-level `new` class `cname` or an ancestor defines
+   (`def self.new`, or `def new` in its `class << self`): a `new(...)` on that
+   class reaches it rather than initialize. -1 when none does, -2 when two
+   definitions in one class disagree. Classes are matched by their last name
+   segment, as the superclass links are followed. */
+/* The ClassNode whose `class << self` body holds `def`, or -1. */
+static int fwd_sclass_owner(const NodeTable *nt, int def) {
+  for (int id = 0; id < def; id++) {
+    if (!fwd_node_is(nt, id, "ClassNode")) continue;
+    int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, id, "body"), "body", &bn);
+    for (int k = 0; k < bn; k++) {
+      if (!fwd_node_is(nt, bv[k], "SingletonClassNode") ||
+          !fwd_node_is(nt, nt_ref(nt, bv[k], "expression"), "SelfNode")) continue;
+      int sn = 0; const int *sv = nt_arr(nt, nt_ref(nt, bv[k], "body"), "body", &sn);
+      for (int j = 0; j < sn; j++) if (fwd_body_def(nt, sv[j]) == def) return id;
     }
   }
-  return shape;
+  return -1;
+}
+static int fwd_class_new_shape_of(const NodeTable *nt, const char *cname) {
+  for (int depth = 0; cname && depth < 32; depth++) {
+    int shape = -1; const char *super_name = NULL;
+    for (int id = 0; id < nt->count; id++) {
+      if (!fwd_node_is(nt, id, "ClassNode")) continue;
+      const char *cn = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+      if (!cn || !sp_streq(cn, cname)) continue;
+      int sc = nt_ref(nt, id, "superclass");
+      if (!super_name && sc >= 0) super_name = nt_str(nt, sc, "name");
+      int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, id, "body"), "body", &bn);
+      for (int k = 0; k < bn; k++) {
+        int cand[64]; int nc = 0;
+        int dk = fwd_body_def(nt, bv[k]);
+        if (dk >= 0 && fwd_node_is(nt, nt_ref(nt, dk, "receiver"), "SelfNode")) cand[nc++] = dk;
+        else if (fwd_node_is(nt, bv[k], "SingletonClassNode")) {
+          int sn = 0; const int *sv = nt_arr(nt, nt_ref(nt, bv[k], "body"), "body", &sn);
+          for (int j = 0; j < sn && nc < 64; j++) {
+            int sd = fwd_body_def(nt, sv[j]);
+            if (sd >= 0 && nt_ref(nt, sd, "receiver") < 0) cand[nc++] = sd;
+          }
+        }
+        for (int j = 0; j < nc; j++) {
+          const char *nm = nt_str(nt, cand[j], "name");
+          if (!nm || !sp_streq(nm, "new")) continue;
+          int sh = def_shape(nt, cand[j]);
+          if (sh < 0 || (shape >= 0 && sh != shape)) return -2;
+          shape = sh;
+        }
+      }
+    }
+    if (shape != -1) return shape;
+    cname = super_name;
+  }
+  return -1;
 }
 static int fwd_target_shape(const NodeTable *nt, int def, int call, int is_super) {
   const char *name = is_super ? nt_str(nt, def, "name") : nt_str(nt, call, "name");
@@ -3449,8 +3478,20 @@ static int fwd_target_shape(const NodeTable *nt, int def, int call, int is_super
   int recv = is_super ? -1 : nt_ref(nt, call, "receiver");
   int cls = fwd_enclosing_class(nt, def);
   char ctx[512] = "";
-  /* a `new` the program defines itself takes the arguments (#5405) */
-  if (!is_super) { int us = fwd_user_class_new_shape(nt); if (us != -1) return us; }
+  /* a `new` the class defines itself takes the arguments (#5405, #5410);
+     a forwarder in `class << self` belongs to the class around that body */
+  if (!is_super && (recv < 0 || fwd_node_is(nt, recv, "SelfNode"))) {
+    int owner = nt_ref(nt, def, "receiver") >= 0 ? cls : fwd_sclass_owner(nt, def);
+    if (owner >= 0) {
+      int us = fwd_class_new_shape_of(nt, nt_str(nt, nt_ref(nt, owner, "constant_path"), "name"));
+      if (us != -1) return us;
+    }
+  }
+  if (!is_super && recv >= 0 &&
+      (fwd_node_is(nt, recv, "ConstantReadNode") || fwd_node_is(nt, recv, "ConstantPathNode"))) {
+    int us = fwd_class_new_shape_of(nt, nt_str(nt, recv, "name"));
+    if (us != -1) return us;
+  }
   if (is_super) {
     if (nt_ref(nt, def, "receiver") >= 0 || cls < 0) return -1;
     fwd_lex_ctx(nt, cls, ctx, sizeof ctx);

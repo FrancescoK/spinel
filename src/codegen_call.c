@@ -28220,6 +28220,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         if (slot_t == TY_POLY && kr != TY_POLY && kr != TY_UNKNOWN && kr != TY_VOID &&
             !method_is_void(ms))
           emit_boxed_text(c, kr, cb.p ? cb.p : "", b);
+        /* ...and the other way: a user `self.new` answers a boxed object
+           where the site is typed as the class it builds (#5409) */
+        else if (kr == TY_POLY && slot_t != TY_POLY && slot_t != TY_UNKNOWN &&
+                 slot_t != TY_VOID && is_scalar_ret(slot_t))
+          emit_unbox_text(c, slot_t, cb.p ? cb.p : "sp_box_nil()", b);
         else
           buf_puts(b, cb.p ? cb.p : "");
         free(cb.p);
