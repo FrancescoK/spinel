@@ -641,13 +641,18 @@ sp_StrArray *sp_file_readlines(const char *path) {SP_GC_ROOT_STR(path);
   SP_GC_ROOT(a);
   FILE *_fp = fopen(path ? path : "", "r");
   if (!_fp) return a;
-  char _buf[4096];
-  while (fgets(_buf, (int)sizeof(_buf), _fp)) {
-    size_t _l = strlen(_buf);
+  /* getline answers each line whole, however long, as ARGF's gets reads it */
+  char *_buf = NULL;
+  size_t _cap = 0;
+  ssize_t _n;
+  while ((_n = getline(&_buf, &_cap, _fp)) >= 0) {
+    size_t _l = (size_t)_n;
     char *_r = sp_str_alloc_raw(_l + 1);
-    memcpy(_r, _buf, _l + 1);
+    memcpy(_r, _buf, _l); _r[_l] = '\0';
+    sp_str_set_len(_r, _l);
     sp_StrArray_push(a, _r);
   }
+  free(_buf);
   fclose(_fp);
   return a;
 }
@@ -657,15 +662,19 @@ sp_StrArray *sp_file_readlines_chomp(const char *path) {SP_GC_ROOT_STR(path);
   SP_GC_ROOT(a);
   FILE *_fp = fopen(path ? path : "", "r");
   if (!_fp) return a;
-  char _buf[4096];
-  while (fgets(_buf, (int)sizeof(_buf), _fp)) {
-    size_t _l = strlen(_buf);
+  char *_buf = NULL;
+  size_t _cap = 0;
+  ssize_t _n;
+  while ((_n = getline(&_buf, &_cap, _fp)) >= 0) {
+    size_t _l = (size_t)_n;
     if (_l > 0 && _buf[_l-1] == '\n') { _buf[--_l] = '\0'; }
     if (_l > 0 && _buf[_l-1] == '\r') { _buf[--_l] = '\0'; }
     char *_r = sp_str_alloc_raw(_l + 1);
-    memcpy(_r, _buf, _l + 1);
+    memcpy(_r, _buf, _l); _r[_l] = '\0';
+    sp_str_set_len(_r, _l);
     sp_StrArray_push(a, _r);
   }
+  free(_buf);
   fclose(_fp);
   return a;
 }
