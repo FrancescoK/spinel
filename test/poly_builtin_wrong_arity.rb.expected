@@ -23,3 +23,9 @@
 [:size1, ArgumentError, "wrong number of arguments (given 1, expected 0)"]
 [:plus0, NoMethodError]
 [:size1, NoMethodError]
+9
+{5 => 0}
+[1]
+[:hash_key0, ArgumentError, "wrong number of arguments (given 0, expected 1)"]
+:a
+[:hash_key1, :ran]

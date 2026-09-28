@@ -32,3 +32,16 @@ x.each do |o|
   try(:plus0) { o.+() }
   try(:size1) { o.size(1) }
 end
+
+# A name another builtin answers at this count is not a wrong count there:
+# an exception's own accessors (Hash#key takes one argument, KeyError#key
+# none) keep answering through a boxed receiver.
+ke = begin; { 5 => 0 }.fetch(9); rescue KeyError => z; z; end
+si = [1].each
+si.next
+st = begin; si.next; rescue StopIteration => z; z; end
+errs = [ke, st, { a: 1 }]
+p errs[0].key, errs[0].receiver
+p errs[1].result
+try(:hash_key0) { errs[2].key }
+try(:hash_key1) { p errs[2].key(1) }

@@ -18362,36 +18362,46 @@ static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][
   return n;
 }
 
+/* The raise is only for the classes the plan names: a boxed value of any
+   other kind -- an exception answering its own `key` or `result`, a Time, a
+   native object -- takes the ordinary dispatch, re-entered below with the
+   receiver already evaluated into the temp. */
+static int g_poly_arity_node = -1;
 static int emit_poly_arity_guard(Compiler *c, int id, Buf *b) {
+  if (g_poly_arity_node == id || g_n_argov >= MAX_ARG_OVERRIDE) return 0;
   const char *tests[POLY_ARITY_MAX]; char exps[POLY_ARITY_MAX][32];
   int n = poly_arity_plan(c, id, tests, exps);
   if (n == 0) return 0;
   const NodeTable *nt = c->nt;
-  const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   int anode = nt_ref(nt, id, "arguments");
-  int argc = 0; const int *argv = anode >= 0 ? nt_arr(nt, anode, "arguments", &argc) : NULL;
-  const char *dv = default_value(comp_ntype(c, id));
-  int tv = ++g_tmp;
-  buf_printf(b, "({ sp_RbVal _t%d = ", tv);
-  emit_boxed(c, recv, b);
-  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
-  for (int i = 0; i < argc; i++) {
-    buf_puts(b, "(void)("); emit_expr(c, argv[i], b); buf_puts(b, "); ");
-  }
+  int argc = 0;
+  if (anode >= 0) nt_arr(nt, anode, "arguments", &argc);
+  int tv = hoist_boxed_rooted(c, recv);
+  emit_indent(g_pre, g_indent);
   for (int q = 0; q < n; q++) {
-    buf_puts(b, q ? "else if (" : "if (");
-    buf_printf(b, tests[q], tv, tv);
-    buf_printf(b, ") sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given %d, expected %s)\"); ",
+    buf_puts(g_pre, q ? "else if (" : "if (");
+    buf_printf(g_pre, tests[q], tv, tv);
+    /* the arguments are not evaluated first, as CRuby does: rendered here,
+       their own hoisted statements would run on the dispatch path too */
+    buf_puts(g_pre, ") { ");
+    buf_printf(g_pre, "sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given %d, expected %s)\"); }\n",
                argc, exps[q]);
+    if (q + 1 < n) emit_indent(g_pre, g_indent);
   }
-  buf_printf(b, "else sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); %s; })", name, tv, dv ? dv : "0");
+  g_argov_node[g_n_argov] = recv;
+  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tv);
+  g_n_argov++;
+  int sv = g_poly_arity_node; g_poly_arity_node = id;
+  emit_call(c, id, b);
+  g_poly_arity_node = sv;
+  g_n_argov--;
   return 1;
 }
 
 int emit_builtin_arity_guard(Compiler *c, int id, Buf *b) {
   char exp[32]; int eval_recv;
-  if (!arity_violation(c, id, exp, sizeof exp, &eval_recv)) return emit_poly_arity_guard(c, id, b);
+  if (!arity_violation(c, id, exp, sizeof exp, &eval_recv)) return 0;
   emit_wrong_count(c, id, exp, eval_recv, -1, b);
   return 1;
 }
@@ -22224,6 +22234,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* A provably wrong argument count raises before any type guard, as CRuby
      checks arity at dispatch (defined above). */
   if (emit_builtin_arity_guard(c, id, b)) return;
+  /* ...and on a boxed receiver, for the classes that reject the count */
+  if (emit_poly_arity_guard(c, id, b)) return;
   /* An argument whose static class the method cannot take (defined above). */
   if (emit_arg_type_guards(c, id, b)) return;
   /* Operands in Ruby's order, each held across the call (defined above). */
