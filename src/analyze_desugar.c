@@ -1430,6 +1430,12 @@ static void dsend_add_name(char ***names, int *n, int *cap, ANameHash *seen, con
   anh_add(seen, (*names)[*n - 1]);
 }
 
+static int dsend_below(Compiler *c, int k, int anc) {
+  for (; k >= 0 && k < c->nclasses; k = c->classes[k].parent)
+    if (k == anc) return 1;
+  return 0;
+}
+
 static int dsend_receiver_names(Compiler *c, int cls, char ***out) {
   static const char *const object_methods[] = { "to_s", "inspect", "class", "hash", "frozen?", "nil?",
     "==", "!=", "equal?", "eql?", "respond_to?", "is_a?", "kind_of?", "instance_of?", "freeze", "dup",
@@ -1440,9 +1446,11 @@ static int dsend_receiver_names(Compiler *c, int cls, char ***out) {
     const Scope *sc = &c->scopes[s];
     if (!sc->name || sc->is_cmethod || sc->class_id < 0) continue;
     if (sp_streq(sc->name, "initialize") || sp_streq(sc->name, "initialize_copy")) continue;
-    if (comp_method_in_chain(c, cls, sc->name, NULL) >= 0) dsend_add_name(&names, &n, &cap, &seen, sc->name);
+    if (comp_method_in_chain(c, cls, sc->name, NULL) >= 0 || dsend_below(c, sc->class_id, cls))
+      dsend_add_name(&names, &n, &cap, &seen, sc->name);
   }
-  for (int k = cls; k >= 0 && k < c->nclasses; k = c->classes[k].parent) {
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!dsend_below(c, cls, k) && !dsend_below(c, k, cls)) continue;
     ClassInfo *cl = &c->classes[k];
     for (int r = 0; r < cl->nreaders; r++) dsend_add_name(&names, &n, &cap, &seen, cl->readers[r]);
     for (int w = 0; w < cl->nwriters; w++) {
@@ -1450,6 +1458,7 @@ static int dsend_receiver_names(Compiler *c, int cls, char ***out) {
       snprintf(wn, sizeof wn, "%s=", cl->writers[w]);
       dsend_add_name(&names, &n, &cap, &seen, wn);
     }
+    for (int a = 0; a < cl->naliases; a++) dsend_add_name(&names, &n, &cap, &seen, cl->alias_new[a]);
   }
   for (int k = 0; object_methods[k]; k++) dsend_add_name(&names, &n, &cap, &seen, object_methods[k]);
   anh_free(&seen);
@@ -1630,6 +1639,7 @@ int desugar_dynamic_send(Compiler *c) {
          unreachable and the send raises. Mark them as owned. */
       nt_node_set_int(nt, call, "dyn_arm", 1);
       nt_node_set_ref(nt, call, "arguments", na);
+      if (computed && nt_ref(nt, id, "block") >= 0) nt_node_set_ref(nt, call, "block", nt_ref(nt, id, "block"));
       /* public_send arms enforce visibility at the dispatch site */
       if (sp_streq(nm, "public_send")) nt_node_set_str(nt, call, "vis_enforce", "1");
       arms[narm++] = call;

@@ -45,3 +45,19 @@ end
   p o.send("ig" + "nite", 1)
   p o.send("st#{"ate"}")
 end
+
+class Greeter
+  def greet = yield(3)
+  def name = "g"
+  alias nickname name
+end
+p Greeter.new.send("gre" + "et") { |x| x * 2 }
+p Greeter.new.send("nick" + "name")
+
+class Parent
+  def choose = send("ch" + "ild")
+end
+class Child < Parent
+  def child = :kid
+end
+p Child.new.choose
