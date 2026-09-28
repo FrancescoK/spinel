@@ -877,8 +877,14 @@ int desugar_body_self_call(Compiler *c) {
    target. `extend self` keeps the instance defs exactly as written and adds
    a `def self.<name>` clone of each beside them, before any scope exists;
    the `extend self` statement itself is then dropped. The statement may sit
-   before or after the defs. activesupport's Inflector is the shape, reached
-   from its autoloader as `Inflector.underscore(full)`. */
+   before or after the defs, and in any reopening of the module: it extends
+   the module object, so every method of the module counts, wherever its body
+   was reopened (Inflector's transliterate.rb, loaded before the methods.rb
+   that carries the `extend self`, defines parameterize). activesupport's
+   Inflector is the shape, reached from its autoloader as
+   `Inflector.underscore(full)`. */
+static void fwd_ns_key(const NodeTable *nt, int id, char *key, size_t cap);
+static void fwd_key_add(char *key, size_t cap, const char *seg);
 static int xs_is_extend_self(const NodeTable *nt, int st) {
   if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "receiver") >= 0) return 0;
   const char *nm = nt_str(nt, st, "name");
@@ -887,16 +893,42 @@ static int xs_is_extend_self(const NodeTable *nt, int st) {
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   return an == 1 && av && nt_kind(nt, av[0]) == NK_SelfNode;
 }
+/* the module's own key: the namespace it is opened in and its name */
+static void xs_module_key(const NodeTable *nt, int mod, char *key, size_t cap) {
+  key[0] = 0;
+  fwd_ns_key(nt, mod, key, cap);
+  fwd_key_add(key, cap, nt_str(nt, nt_ref(nt, mod, "constant_path"), "name"));
+}
+static int xs_body_extends_self(const NodeTable *nt, int mod) {
+  int body = nt_ref(nt, mod, "body");
+  if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) return 0;
+  int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+  for (int i = 0; i < bn; i++) if (xs_is_extend_self(nt, bb[i])) return 1;
+  return 0;
+}
 int desugar_extend_self(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
+  /* The namespace keys of the modules some body of which carries the
+     statement, taken before any body is rewritten (the statement is dropped
+     as its body is), so a reopening after that body still finds it; a
+     same-named module elsewhere has another key. */
+  enum { XS_MAX = 256 };
+  char keys[XS_MAX][512]; int nkeys = 0;
+  for (int id = 0; id < n0 && nkeys < XS_MAX; id++) {
+    if (nt_kind(nt, id) != NK_ModuleNode || !xs_body_extends_self(nt, id)) continue;
+    xs_module_key(nt, id, keys[nkeys], sizeof keys[nkeys]);
+    nkeys++;
+  }
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_ModuleNode) continue;
     int body = nt_ref(nt, id, "body");
     if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
     int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+    char key[512];
+    xs_module_key(nt, id, key, sizeof key);
     int has = 0;
-    for (int i = 0; i < bn && !has; i++) if (xs_is_extend_self(nt, bb[i])) has = 1;
+    for (int k = 0; k < nkeys && !has; k++) if (sp_streq(keys[k], key)) has = 1;
     if (!has) continue;
     int *nb = (int *)malloc(sizeof(int) * (size_t)(bn * 2 + 1)); int nbn = 0;
     int *old = (int *)malloc(sizeof(int) * (size_t)bn);
