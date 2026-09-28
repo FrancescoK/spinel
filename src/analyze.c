@@ -16365,6 +16365,7 @@ void analyze_program(Compiler *c) {
   rename_redefined_toplevel_defs(c);     /* def f; f; def f -> def f__redef1; f__redef1; def f */
   rename_main_singleton_defs(c);         /* def self.k beside def k -> def self.k__main1 */
   scope_numbered_block_params(c);
+  desugar_define_method_keywords(c);     /* define_method(:m) { |k: 1| } -> def m(k: 1) */
   rename_shadowing_block_params(c);
   /* `:m.to_proc.call(r, a)` -> `r.m(a)`, before the to_proc rewrite below
      turns the receiver into a fixed-arity lambda (#3097). */

@@ -311,6 +311,7 @@ int desugar_block_implicit_rest(Compiler *c);
 int desugar_multi_value_jump(Compiler *c);
 int desugar_forwarding_to_rest_callee(Compiler *c);
 int desugar_anon_block_param(Compiler *c);
+int desugar_define_method_keywords(Compiler *c);
 void desugar_extended_module_attrs(Compiler *c);
 int desugar_recursive_param_defaults(Compiler *c);
 int desugar_sort_by_with_index(Compiler *c);
