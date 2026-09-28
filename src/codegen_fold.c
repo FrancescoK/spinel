@@ -6537,6 +6537,15 @@ static int ds_hash_keys_not_symbols(TyKind t) {
   return k == TY_STRING || k == TY_INT;
 }
 
+static void kw_param_names(const NodeTable *nt, const int *kws, int kn, int required, Buf *out) {
+  for (int ki = 0; ki < kn; ki++) {
+    const char *kpn = nt_str(nt, kws[ki], "name");
+    const char *kty = nt_type(nt, kws[ki]);
+    if (kpn && (!required || (kty && sp_streq(kty, "RequiredKeywordParameterNode"))))
+      buf_printf(out, "\"%s\", ", kpn);
+  }
+}
+
 /* The keywords of a call carrying a `**hash`, checked at run time against the
    callee's keyword params the way CRuby checks them: a required keyword that
    neither a literal key nor the hash supplies raises `missing keyword`, and
@@ -6561,17 +6570,9 @@ void emit_ds_kwarg_check(Compiler *c, Scope *m, int kwh, int ds_hash_tmp, TyKind
   int chk = ++g_tmp;
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "static const char *const _kw%d[] = {", chk);
-  for (int ki = 0; ki < kn; ki++) {
-    const char *kpn = nt_str(nt, kws[ki], "name");
-    if (kpn) buf_printf(g_pre, "\"%s\", ", kpn);
-  }
+  kw_param_names(nt, kws, kn, 0, g_pre);
   buf_printf(g_pre, "0}, *const _kr%d[] = {", chk);
-  for (int ki = 0; ki < kn; ki++) {
-    const char *kpn = nt_str(nt, kws[ki], "name");
-    const char *kty = nt_type(nt, kws[ki]);
-    if (kpn && kty && sp_streq(kty, "RequiredKeywordParameterNode"))
-      buf_printf(g_pre, "\"%s\", ", kpn);
-  }
+  kw_param_names(nt, kws, kn, 1, g_pre);
   buf_printf(g_pre, "0}, *const _kl%d[] = {", chk);
   for (int e = 0; e < en; e++) {
     int key = nt_ref(nt, el[e], "key");
@@ -6586,6 +6587,22 @@ void emit_ds_kwarg_check(Compiler *c, Scope *m, int kwh, int ds_hash_tmp, TyKind
   if (ds_hash_type == TY_POLY) buf_puts(g_pre, tn);
   else emit_boxed_text(c, ds_hash_type, tn, g_pre);
   buf_printf(g_pre, ", _kw%d, _kr%d, _kl%d, %d);\n", chk, chk, chk, m->kwrest_idx < 0);
+}
+
+void emit_kwhash_verify(Compiler *c, Scope *m, int hash_tmp, Buf *out) {
+  const NodeTable *nt = c->nt;
+  if (!m || m->def_node < 0) return;
+  int pn = nt_ref(nt, m->def_node, "parameters");
+  int kn = 0; const int *kws = pn >= 0 ? nt_arr(nt, pn, "keywords", &kn) : NULL;
+  if (kn == 0) return;
+  char tn[32]; snprintf(tn, sizeof tn, "_t%d", hash_tmp);
+  buf_puts(out, "sp_kwargs_verify(");
+  emit_boxed_text(c, TY_SYM_POLY_HASH, tn, out);
+  buf_puts(out, ", (const char *const[]){");
+  kw_param_names(nt, kws, kn, 0, out);
+  buf_puts(out, "0}, (const char *const[]){");
+  kw_param_names(nt, kws, kn, 1, out);
+  buf_printf(out, "0}, (const char *const[]){0}, %d); ", m->kwrest_idx < 0);
 }
 
 /* Emit the value for KEYWORD param `i` extracted by name from a materialized

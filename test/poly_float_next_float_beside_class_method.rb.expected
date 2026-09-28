@@ -1,0 +1,9 @@
+1.5000000000000002
+"cls"
+1.5000000000000002
+true
+1.4999999999999998
+-2.5
+[2.5, -1.5]
+"undefined method 'next_float' for an instance of Integer"
+NoMethodError

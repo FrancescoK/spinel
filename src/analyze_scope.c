@@ -252,6 +252,14 @@ static void initialize_forwarding_params(Compiler *c, int init) {
   int nfwd = 0;
   for (int p = 0; p < s->nparams; p++)
     if (s->pnames[p] && strncmp(s->pnames[p], "__fwd_", 6) == 0) nfwd++;
+  /* The synthesized parameters are as many as the widest `new` site passes,
+     and a narrower site fills the rest with nil, which the forward then
+     hands to the parent in place of a default it should have left alone
+     (`B.new(1)` beside `B.new(1, 5)` into `initialize(a, b = 2)` gave
+     [1, nil]); a splat has no count to size them by, and a parent *rest
+     takes what remains. None of these has a right answer in this model, so
+     they are refused rather than compiled wrong. */
+  int pos_min = -1, pos_max = -1;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty || !sp_streq(ty, "CallNode") || !new_site_reaches(c, id, init)) continue;
@@ -261,6 +269,16 @@ static void initialize_forwarding_params(Compiler *c, int init) {
     int kwh = an > 0 && nt_type(nt, av[an - 1]) &&
               sp_streq(nt_type(nt, av[an - 1]), "KeywordHashNode") ? av[an - 1] : -1;
     int pos = kwh >= 0 ? an - 1 : an;
+    for (int k = 0; k < pos; k++)
+      if (nt_kind(nt, av[k]) == NK_SplatNode)
+        unsupported_feature(c, id, "a splat argument to `new` of a class whose initialize forwards `...`: "
+                                   "the forward's parameters are sized from the call's argument count");
+    if (pos_min < 0 || pos < pos_min) pos_min = pos;
+    if (pos > pos_max) pos_max = pos;
+    if (pos_min != pos_max)
+      unsupported_feature(c, id, "`new` sites passing different numbers of arguments to a class whose "
+                                 "initialize forwards `...`: a shorter call would pass nil where the parent "
+                                 "expects its default");
     while (nfwd < pos - lead) {
       char nm[24]; snprintf(nm, sizeof nm, "__fwd_%d", nfwd++);
       scope_add_param(s, nm, -1);
@@ -275,6 +293,12 @@ static void initialize_forwarding_params(Compiler *c, int init) {
       for (int p = 0; p < s->nparams; p++) if (s->pnames[p] && sp_streq(s->pnames[p], kn)) { dup = 1; break; }
       if (!dup) scope_add_param(s, kn, -1);
     }
+  }
+  {
+    int tgt = forwarding_target_idx(c, s);
+    if (tgt >= 0 && tgt != init && c->scopes[tgt].rest_idx >= 0)
+      unsupported_feature(c, s->def_node, "an initialize forwarding `...` to a parent initialize with a *rest "
+                                          "parameter: the forward's fixed parameters cannot fill a rest");
   }
 }
 
@@ -305,6 +329,64 @@ void topup_forwarding_arity(Compiler *c) {
         changed = 1;
       }
     }
+  }
+}
+
+/* `super(...)` in a Struct or Data initialize reaches the built-in one that
+   sets the members, which has no method scope to forward into. Spell the
+   forward out from the synthesized params, `super(__fwd_0, .., k: k)`, so it
+   sets the members as the same explicit super would. */
+void expand_struct_forwarding_super(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_SuperNode) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an == 0 || !nt_type(nt, av[an - 1]) ||
+        !sp_streq(nt_type(nt, av[an - 1]), "ForwardingArgumentsNode")) continue;
+    int si = id < c->node_cap ? c->nscope[id] : -1;
+    if (si <= 0 || si >= c->nscopes) continue;
+    Scope *s = &c->scopes[si];
+    if (s->is_cmethod || s->class_id < 0 || !s->name || !sp_streq(s->name, "initialize") ||
+        !scope_is_forwarding(c, s)) continue;
+    ClassInfo *cls = &c->classes[s->class_id];
+    if (!cls->is_struct && !cls->is_data) continue;
+    if (cls->parent >= 0 && comp_method_in_chain(c, cls->parent, "initialize", NULL) >= 0) continue;
+    int pn = nt_ref(nt, s->def_node, "parameters");
+    int nreq = 0, nopt = 0;
+    nt_arr(nt, pn, "requireds", &nreq);
+    nt_arr(nt, pn, "optionals", &nopt);
+    int first = nt->count;
+    int *na = malloc(sizeof(int) * (size_t)(an + s->nparams + 1));
+    int *kels = malloc(sizeof(int) * (size_t)(s->nparams + 1));
+    if (!na || !kels) { free(na); free(kels); continue; }
+    int nn = 0, nk = 0;
+    for (int a = 0; a < an - 1; a++) na[nn++] = av[a];
+    for (int p = nreq + nopt; p < s->nparams; p++) {
+      const char *nm = s->pnames[p];
+      if (!nm || p == s->rest_idx || p == s->kwrest_idx) continue;
+      int lr = nt_new_node(nt, "LocalVariableReadNode");
+      nt_node_set_str(nt, lr, "name", nm);
+      nt_node_set_int(nt, lr, "depth", 0);
+      if (strncmp(nm, "__fwd_", 6) == 0) { na[nn++] = lr; continue; }
+      int sy = nt_new_node(nt, "SymbolNode");
+      nt_node_set_str(nt, sy, "value", nm);
+      int as = nt_new_node(nt, "AssocNode");
+      nt_node_set_ref(nt, as, "key", sy);
+      nt_node_set_ref(nt, as, "value", lr);
+      kels[nk++] = as;
+    }
+    if (nk > 0) {
+      int kwh = nt_new_node(nt, "KeywordHashNode");
+      nt_node_set_arr(nt, kwh, "elements", kels, nk);
+      na[nn++] = kwh;
+    }
+    nt_node_set_arr(nt, args, "arguments", na, nn);
+    free(na); free(kels);
+    comp_grow_node_arrays(c);
+    for (int k = first; k < nt->count; k++) c->nscope[k] = si;
   }
 }
 
@@ -4783,6 +4865,15 @@ static int cmethod_needs_specialization_d(Compiler *c, int mi, int ci, int def_c
    the cloned body's implicit-self call rebinds to ci's copy instead of staying
    on the base -- that transitive rebind is the #1451 fix. The ci-already-owns
    guard makes this idempotent and terminates mutually-recursive cmethods. */
+static int body_tail_is_bare_new(const NodeTable *nt, int body) {
+  int n = 0;
+  const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+  int tail = st && n > 0 ? st[n - 1] : body;
+  if (tail < 0 || nt_kind(nt, tail) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, tail, "name");
+  int r = nt_ref(nt, tail, "receiver");
+  return nm && sp_streq(nm, "new") && (r < 0 || nt_kind(nt, r) == NK_SelfNode);
+}
 static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci) {
   if (comp_cmethod_in_class(c, ci, c->scopes[mi].name) >= 0) return;
   NodeTable *nt = (NodeTable *)c->nt;
@@ -4804,10 +4895,12 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci) {
   dst->nrequired = src->nrequired;
   dst->rest_idx = src->rest_idx;
   dst->kwrest_idx = src->kwrest_idx;
-  /* A bare-`new` create method returns the specialized subclass instance, so
-     pin its return type. Other specializations let normal return inference
-     compute the type from the cloned, ci-attributed body. */
-  if (has_new) {
+  /* A create method ending in its bare `new` returns the specialized subclass
+     instance, so pin its return type. One that only builds an instance on the
+     way to some other value (`w = new(p); w.finish`), and every other
+     specialization, lets normal return inference compute the type from the
+     cloned, ci-attributed body. */
+  if (has_new && body_tail_is_bare_new(nt, new_body)) {
     dst->ret = ty_object(ci);
     dst->ret_specialized = 1;
   }
@@ -4831,6 +4924,23 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci) {
     if (cmethod_needs_specialization(c, sub_mi, ci, sub_def, &sub_new))
       specialize_cmethod_for(c, sub_mi, sub_def, ci);
   }
+}
+
+/* Is `name` called anywhere on a receiver that is neither a constant nor self,
+   one that may hold a Class value known only at run time? */
+static int name_called_on_dynamic_recv(Compiler *c, const char *name, int node_count) {
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < node_count; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, name)) continue;
+    int r = nt_ref(nt, id, "receiver");
+    if (r < 0) continue;
+    NodeKind rk = nt_kind(nt, r);
+    if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode || rk == NK_SelfNode) continue;
+    return 1;
+  }
+  return 0;
 }
 
 /* `Subclass.create` where `create` is an inherited class method whose body
@@ -4916,6 +5026,34 @@ void specialize_inherited_cls_new(Compiler *c) {
        (#1451). nscopes growth below stands in for the old did_clone flag. */
     specialize_cmethod_for(c, mi, def_cls, ci);
   }
+  /* A Class value the analysis cannot pin (`CONTAINERS.fetch(ext).open`)
+     runs an inherited class method on whichever class it holds, so its bare
+     `new` must construct that class. Each class escaping as a value gets its
+     own copy once a call on a non-constant receiver names the method. The
+     targets are chosen before any copy exists: a copy made for an
+     intermediate class would otherwise hide the original from its
+     subclasses. */
+  for (int mi = 1; mi < snap; mi++) {
+    if (!c->scopes[mi].is_cmethod || !c->scopes[mi].name || c->scopes[mi].class_id < 0) continue;
+    int def_cls = c->scopes[mi].class_id;
+    const char *mname = c->scopes[mi].name;
+    int *tgt = NULL, ntgt = 0;
+    for (int k = 0; k < c->nclasses; k++) {
+      if (k == def_cls || !is_descendant(c, k, def_cls) || !class_value_escapes(c, k)) continue;
+      /* the original, or a copy made above for an intermediate class */
+      int kmi = comp_cmethod_in_chain(c, k, mname, NULL);
+      if (kmi != mi && (kmi < snap || c->scopes[kmi].def_node != c->scopes[mi].def_node ||
+                        c->scopes[kmi].class_id == k)) continue;
+      int has_new = 0;
+      if (!cmethod_needs_specialization(c, mi, k, def_cls, &has_new)) continue;
+      int *nt2 = realloc(tgt, sizeof(int) * (size_t)(ntgt + 1));
+      if (!nt2) break;
+      tgt = nt2; tgt[ntgt++] = k;
+    }
+    if (ntgt > 0 && name_called_on_dynamic_recv(c, mname, node_count))
+      for (int t = 0; t < ntgt; t++) specialize_cmethod_for(c, mi, def_cls, tgt[t]);
+    free(tgt);
+  }
   did_clone = (c->nscopes > snap);
   /* Index of every CallNode with a constant receiver, built once: the
      called-direct check below otherwise rescans all nodes per shadowed cmethod
@@ -4994,6 +5132,10 @@ void specialize_inherited_cls_new(Compiler *c) {
       const char *rn4 = nt_str(nt, r4, "name");
       if (rn4 && sp_streq(rn4, "class")) called_direct = 1;
     }
+    /* ... or if the defining class itself escapes as a value a dynamic
+       receiver's call can reach */
+    if (!called_direct && class_value_escapes(c, src->class_id) &&
+        name_called_on_dynamic_recv(c, src->name, node_count)) called_direct = 1;
     if (!called_direct) src->is_transplanted_source = 1;
   }
   free(ccall);

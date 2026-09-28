@@ -2058,6 +2058,23 @@ static int masgn_unify_elem(Compiler *c, Scope *ms, const int *tgts, int n, TyKi
         c->classes[ms->class_id].ivar_types[iv_ms] = mg; changed = 1;
       }
     }
+    else if (sp_streq(lty_ms, "GlobalVariableTargetNode")) {
+      const char *gnm = nt_str(nt, tgts[i], "name");
+      const char *grn = gnm ? comp_resolve_gvar(c, gnm + 1) : NULL;
+      LocalVar *glv = grn ? comp_gvar(c, grn) : NULL;
+      if (!glv) continue;
+      TyKind mg = ty_unify(glv->type, elem);
+      if (mg != glv->type) { glv->type = mg; changed = 1; }
+    }
+    else if (sp_streq(lty_ms, "ClassVariableTargetNode") && ms && ms->class_id >= 0) {
+      const char *cvnm = nt_str(nt, tgts[i], "name");
+      int cvx = cvnm ? comp_cvar_index(&c->classes[ms->class_id], cvnm) : -1;
+      if (cvx < 0) continue;
+      TyKind mg = ty_unify(c->classes[ms->class_id].cvar_types[cvx], elem);
+      if (mg != c->classes[ms->class_id].cvar_types[cvx]) {
+        c->classes[ms->class_id].cvar_types[cvx] = mg; changed = 1;
+      }
+    }
     else if (sp_streq(lty_ms, "ConstantTargetNode")) {
       const char *cnm_ms = nt_str(nt, tgts[i], "name");
       LocalVar *cv_ms = cnm_ms ? comp_const(c, cnm_ms) : NULL;
@@ -2307,6 +2324,8 @@ int infer_write_types(Compiler *c) {
             }
             continue;
           }
+          if (sp_streq(lty_io, "GlobalVariableTargetNode"))
+            changed |= masgn_unify_elem(c, comp_scope_of(c, id), &lefts[i], 1, TY_IO);
           if (!sp_streq(lty_io, "LocalVariableTargetNode")) continue;
           const char *lnm = nt_str(nt, lefts[i], "name");
           LocalVar *lv = lnm ? scope_local_intern(comp_scope_of(c, id), lnm) : NULL;
@@ -2348,6 +2367,8 @@ int infer_write_types(Compiler *c) {
               c->classes[ms_mr->class_id].ivar_types[ivx] = mg; changed = 1;
             }
           }
+          else if (sp_streq(lty_mr, "GlobalVariableTargetNode") || sp_streq(lty_mr, "ClassVariableTargetNode"))
+            changed |= masgn_unify_elem(c, ms_mr, &lefts[i], 1, elems[i]);
           else if (sp_streq(lty_mr, "ConstantTargetNode")) {
             const char *cnm = nt_str(nt, lefts[i], "name");
             LocalVar *cv = cnm ? comp_const(c, cnm) : NULL;
@@ -2373,7 +2394,10 @@ int infer_write_types(Compiler *c) {
         TyKind st = infer_type(c, value);
         if (st != TY_UNKNOWN && st != TY_NIL && !ty_is_array(st) && !ty_is_hash(st)) {
           for (int i = 0; i < ln; i++) {
-            if (!sp_streq(nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "", "LocalVariableTargetNode")) continue;
+            const char *lty_s = nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "";
+            if (sp_streq(lty_s, "GlobalVariableTargetNode") || sp_streq(lty_s, "ClassVariableTargetNode"))
+              changed |= masgn_unify_elem(c, comp_scope_of(c, id), &lefts[i], 1, st);
+            if (!sp_streq(lty_s, "LocalVariableTargetNode")) continue;
             const char *lnm = nt_str(nt, lefts[i], "name");
             LocalVar *lv = lnm ? scope_local(comp_scope_of(c, id), lnm) : NULL;
             if (!lv || lv->is_param || lv->is_block_param) continue;
@@ -2384,6 +2408,12 @@ int infer_write_types(Compiler *c) {
           int rest_ms = nt_ref(nt, id, "rest");
           if (rest_ms >= 0 && nt_type(nt, rest_ms) && sp_streq(nt_type(nt, rest_ms), "SplatNode")) {
             int rin_ms = nt_ref(nt, rest_ms, "expression");
+            if (rin_ms >= 0 && nt_type(nt, rin_ms) &&
+                sp_streq(nt_type(nt, rin_ms), "GlobalVariableTargetNode")) {
+              TyKind rat = ty_array_of(st);
+              changed |= masgn_unify_elem(c, comp_scope_of(c, id), &rin_ms, 1,
+                                          rat == TY_UNKNOWN ? TY_POLY_ARRAY : rat);
+            }
             if (rin_ms >= 0 && nt_type(nt, rin_ms) &&
                 sp_streq(nt_type(nt, rin_ms), "LocalVariableTargetNode")) {
               const char *rnm_ms = nt_str(nt, rin_ms, "name");
@@ -2418,7 +2448,22 @@ int infer_write_types(Compiler *c) {
                  transition is a real change. */
               if (mg_p != lv_p->type) { lv_p->type = mg_p; if (lv_p->rbs_seeded) changed = 1; }
             }
+            else if (sp_streq(lty_p, "GlobalVariableTargetNode") || sp_streq(lty_p, "ClassVariableTargetNode"))
+              changed |= masgn_unify_elem(c, ms_poly, &lefts[i], 1, TY_POLY);
           }
+          int rn_p = 0;
+          const int *rights_p = nt_arr(nt, id, "rights", &rn_p);
+          for (int j = 0; j < rn_p; j++) {
+            const char *rty_p = nt_type(nt, rights_p[j]) ? nt_type(nt, rights_p[j]) : "";
+            if (sp_streq(rty_p, "GlobalVariableTargetNode") || sp_streq(rty_p, "ClassVariableTargetNode"))
+              changed |= masgn_unify_elem(c, ms_poly, &rights_p[j], 1, TY_POLY);
+          }
+          int rest_p = nt_ref(nt, id, "rest");
+          int rin_p = (rest_p >= 0 && nt_type(nt, rest_p) && sp_streq(nt_type(nt, rest_p), "SplatNode"))
+                      ? nt_ref(nt, rest_p, "expression") : -1;
+          if (st == TY_POLY && rin_p >= 0 && nt_type(nt, rin_p) &&
+              sp_streq(nt_type(nt, rin_p), "GlobalVariableTargetNode"))
+            changed |= masgn_unify_elem(c, ms_poly, &rin_p, 1, TY_POLY_ARRAY);
         }
         if (ty_is_array(st)) {
           TyKind elem = ty_array_elem(st);
@@ -2440,6 +2485,9 @@ int infer_write_types(Compiler *c) {
               if (lv3 && !lv3->is_param && !lv3->is_block_param)
                 lv3->type = ty_unify(lv3->type, st);
             }
+            else if (inner2 >= 0 && nt_type(nt, inner2) &&
+                     sp_streq(nt_type(nt, inner2), "GlobalVariableTargetNode"))
+              changed |= masgn_unify_elem(c, ms_arr, &inner2, 1, st);
           }
         }
       }
@@ -2581,6 +2629,10 @@ int infer_write_types(Compiler *c) {
         for (int i = rstart; i < rend; i++)
           rest_elem = ty_unify(rest_elem, infer_type(c, els[i]));
         TyKind rest_arr = (rest_elem != TY_UNKNOWN) ? ty_array_of(rest_elem) : TY_INT_ARRAY;
+        /* a literal holding a splat (`g, *r = *xs`) has no fixed positions:
+           the rest slices the array it builds */
+        for (int i = 0; i < en; i++)
+          if (nt_kind(nt, els[i]) == NK_SplatNode) { rest_arr = infer_type(c, value); break; }
         LocalVar *lv = rnm ? scope_local(comp_scope_of(c, id), rnm) : NULL;
         if (lv && !lv->is_param && !lv->is_block_param)
           lv->type = ty_unify(lv->type, rest_arr);
@@ -3444,8 +3496,10 @@ static int name_in(const char *n, const char *const *set) {
    does not hand its receiver on, an interpolated part, the argument of an
    output, comparison or type-test call, the parent of a `K::X` path, a class
    definition's name or superclass, a `when` or `rescue` clause, a statement
-   whose value is dropped. A conditional, `and`/`or`, parentheses or a block
-   of statements passes its last value up to be asked the same. */
+   whose value is dropped. A conditional, `case` arm, `and`/`or`,
+   parentheses or a block of statements passes its last value up to be asked
+   the same; a value chosen by a conditional, `case` or `and`/`or` is handed
+   on to the receiver it becomes, as that receiver is no longer one class. */
 static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
   static const char *const passes_recv[] = {
     "method", "public_method", "send", "public_send", "__send__", "then", "tap",
@@ -3455,6 +3509,7 @@ static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
     "puts", "print", "p", "pp", "warn", "raise", "format", "sprintf", "printf",
     "is_a?", "kind_of?", "instance_of?", "include", "extend", "prepend",
     "include?", "==", "!=", "===", "equal?", "eql?", "<", "<=", ">", ">=", "<=>", NULL };
+  int chosen = 0;
   for (int depth = 0; depth < 400; depth++) {
     int p = parent[u];
     if (p < 0) return 0;
@@ -3465,21 +3520,36 @@ static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
       if (n > 0 && body[n - 1] != u) return 0;
       u = p; continue;
     }
-    if (pk == NK_ParenthesesNode || pk == NK_IfNode || pk == NK_UnlessNode ||
-        pk == NK_AndNode || pk == NK_OrNode || pk == NK_BeginNode ||
-        (pt && (sp_streq(pt, "ElseNode") || sp_streq(pt, "EmbeddedStatementsNode")))) {
+    if (pk == NK_ParenthesesNode || pk == NK_BeginNode ||
+        (pt && sp_streq(pt, "EmbeddedStatementsNode"))) {
       u = p; continue;
+    }
+    if (pk == NK_IfNode || pk == NK_UnlessNode || pk == NK_AndNode || pk == NK_OrNode ||
+        (pt && sp_streq(pt, "ElseNode"))) {
+      if ((pk == NK_IfNode || pk == NK_UnlessNode) && nt_ref(nt, p, "predicate") == u) return 0;
+      chosen = 1; u = p; continue;
+    }
+    if (pt && (sp_streq(pt, "WhenNode") || sp_streq(pt, "InNode"))) {
+      if (nt_ref(nt, p, "statements") != u) return 0;
+      chosen = 1; u = p; continue;
+    }
+    if (pt && (sp_streq(pt, "CaseNode") || sp_streq(pt, "CaseMatchNode"))) {
+      if (nt_ref(nt, p, "predicate") == u) return 0;
+      chosen = 1; u = p; continue;
     }
     if (pt && (sp_streq(pt, "InterpolatedStringNode") || sp_streq(pt, "InterpolatedSymbolNode") ||
                sp_streq(pt, "InterpolatedXStringNode") ||
-               sp_streq(pt, "InterpolatedRegularExpressionNode") || sp_streq(pt, "WhenNode") ||
+               sp_streq(pt, "InterpolatedRegularExpressionNode") ||
                sp_streq(pt, "ProgramNode")))
       return 0;
     if (pk == NK_ClassNode || pk == NK_ModuleNode || pk == NK_ConstantPathNode ||
         pk == NK_RescueNode)
       return 0;
+    /* the `self` of `def self.m` names where m is defined; it is no value
+       (taken as one, every class with a class method escaped, #5272) */
+    if (pk == NK_DefNode && nt_ref(nt, p, "receiver") == u) return 0;
     if (pk == NK_CallNode) {
-      if (nt_ref(nt, p, "receiver") == u) return name_in(nt_str(nt, p, "name"), passes_recv);
+      if (nt_ref(nt, p, "receiver") == u) return chosen || name_in(nt_str(nt, p, "name"), passes_recv);
       return 1;
     }
     if (pt && sp_streq(pt, "ArgumentsNode")) {
@@ -3499,7 +3569,7 @@ static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
    an ancestor. `.class`, `superclass` or `singleton_class` handed on, and
    the reflective readers (`const_get`, `subclasses`, an `inherited` hook),
    are taken to hand out any class. */
-static int class_value_escapes(Compiler *c, int cid) {
+int class_value_escapes(Compiler *c, int cid) {
   const NodeTable *nt = c->nt;
   static char *esc = NULL;
   static int esc_n = -1, esc_count = -1, esc_round = -1;
@@ -3519,17 +3589,33 @@ static int class_value_escapes(Compiler *c, int cid) {
   }
   esc_n = c->nclasses; esc_count = nt->count; esc_round = g_fixpoint_rounds;
   for (int u = 0; u < nt->count; u++) parent[u] = body_self[u] = -1;
+  /* parents come from a walk down from the root: a desugar that repoints a
+     call's receiver past its parentheses leaves the old ParenthesesNode
+     holding the same child, and read off every node that child's parent
+     was the orphan, so `(c ? A : B).new` never reached the call and A stayed
+     unconstructed (#5272) */
+  {
+    int *stack = (int *)malloc(sizeof(int) * nn);
+    int sp = 0;
+    if (!stack) { free(parent); free(body_self); free(esc); esc = NULL; return 1; }
+    if (nt->root_id >= 0 && nt->root_id < nt->count) stack[sp++] = nt->root_id;
+    while (sp > 0) {
+      int u = stack[--sp];
+      int nr = nt_num_refs(nt, u);
+      for (int i = 0; i < nr; i++) {
+        int ch = nt_ref_at(nt, u, i);
+        if (ch >= 0 && ch < nt->count && parent[ch] < 0 && ch != nt->root_id) { parent[ch] = u; stack[sp++] = ch; }
+      }
+      int na = nt_num_arrs(nt, u);
+      for (int i = 0; i < na; i++) {
+        int n = 0; const int *ids = nt_arr_at(nt, u, i, &n);
+        for (int j = 0; j < n; j++)
+          if (ids[j] >= 0 && ids[j] < nt->count && parent[ids[j]] < 0 && ids[j] != nt->root_id) { parent[ids[j]] = u; stack[sp++] = ids[j]; }
+      }
+    }
+    free(stack);
+  }
   for (int u = 0; u < nt->count; u++) {
-    int nr = nt_num_refs(nt, u);
-    for (int i = 0; i < nr; i++) {
-      int ch = nt_ref_at(nt, u, i);
-      if (ch >= 0 && ch < nt->count) parent[ch] = u;
-    }
-    int na = nt_num_arrs(nt, u);
-    for (int i = 0; i < na; i++) {
-      int n = 0; const int *ids = nt_arr_at(nt, u, i, &n);
-      for (int j = 0; j < n; j++) if (ids[j] >= 0 && ids[j] < nt->count) parent[ids[j]] = u;
-    }
     NodeKind k = nt_kind(nt, u);
     if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) {
       int owner = -2;   /* a singleton class body's self: any class */
@@ -3541,6 +3627,35 @@ static int class_value_escapes(Compiler *c, int cid) {
       mark_body_self(nt, nt_ref(nt, u, "body"), owner, body_self, 0);
     }
   }
+  /* A node a rewrite unwrapped (`(c ? A : B).new` taking the conditional as
+     its receiver) still has the parent it had inside the node left behind,
+     which leads nowhere: the tree hanging from the program gives the parent
+     the code has. */
+  int *stack = (int *)malloc(sizeof(int) * nn);
+  char *seen = (char *)calloc(nn, 1);
+  if (stack && seen && nt->root_id >= 0 && nt->root_id < nt->count) {
+    int sp = 0;
+    stack[sp++] = nt->root_id; seen[nt->root_id] = 1;
+    while (sp > 0) {
+      int u = stack[--sp];
+      int nr = nt_num_refs(nt, u);
+      for (int i = 0; i < nr; i++) {
+        int ch = nt_ref_at(nt, u, i);
+        if (ch < 0 || ch >= nt->count || seen[ch]) continue;
+        seen[ch] = 1; parent[ch] = u; stack[sp++] = ch;
+      }
+      int na = nt_num_arrs(nt, u);
+      for (int i = 0; i < na; i++) {
+        int n = 0; const int *ids = nt_arr_at(nt, u, i, &n);
+        for (int j = 0; j < n; j++) {
+          int ch = ids[j];
+          if (ch < 0 || ch >= nt->count || seen[ch]) continue;
+          seen[ch] = 1; parent[ch] = u; stack[sp++] = ch;
+        }
+      }
+    }
+  }
+  free(stack); free(seen);
   static const char *const reflective[] = {
     "inherited", "const_get", "subclasses", "descendants", "each_object", NULL };
   int all = 0;
@@ -3684,28 +3799,66 @@ static int bind_dynamic_new_initializers(Compiler *c, int call_id) {
   int an = nt_ref(nt, call_id, "arguments");
   int argc = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &argc) : NULL;
-  int npos = 0;
+  int npos = 0, kwh = 0;
   for (int k = 0; k < argc; k++) {
     NodeKind ak = nt_kind(nt, av[k]);
-    if (ak != NK_KeywordHashNode && ak != NK_BlockArgumentNode) npos++;
+    if (ak == NK_KeywordHashNode) {
+      int ne = 0; const int *els = nt_arr(nt, av[k], "elements", &ne);
+      kwh = ne > 0;
+      for (int e = 0; e < ne; e++) if (nt_kind(nt, els[e]) == NK_AssocSplatNode) kwh = 0;
+    }
+    else if (ak != NK_BlockArgumentNode) npos++;
   }
   int changed = 0;
   int *seen = (int *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), sizeof(int));
   for (int k = 0; k < c->nclasses; k++) {
     if (!dynamic_new_may_reach(c, call_id, k)) continue;
     int imi = comp_method_in_chain(c, k, "initialize", NULL);
+    /* A Struct or Data built by its generated constructor from `k.new(a: 1)`:
+       a member a keyword names with a value of another type than the one
+       the member has is boxed, as the arm would read the value as the
+       member's type. A keyword_init: false Struct takes the Hash as its
+       first member. */
+    ClassInfo *sk = &c->classes[k];
+    if (imi < 0 && sk->is_struct && kwh && npos == 0) {
+      int kh = -1;
+      for (int a = 0; a < argc; a++) if (nt_kind(nt, av[a]) == NK_KeywordHashNode) kh = av[a];
+      int ne = 0; const int *els = nt_arr(nt, kh, "elements", &ne);
+      for (int a = 0; a < sk->nivars; a++) {
+        if (class_ivar_pinned(sk, sk->ivars[a])) continue;
+        TyKind mt = sk->ivar_types[a];
+        if (mt == TY_UNKNOWN || mt == TY_POLY) continue;
+        TyKind at = TY_UNKNOWN;
+        if (sk->kw_init >= 0 || sk->is_data) {
+          for (int e = 0; e < ne; e++) {
+            int key = nt_ref(nt, els[e], "key");
+            const char *kn = key >= 0 && nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
+            if (kn && sp_streq(kn, sk->ivars[a] + 1)) at = infer_type(c, nt_ref(nt, els[e], "value"));
+          }
+        }
+        else if (a == 0) at = TY_POLY;
+        if (at == TY_UNKNOWN || at == mt) continue;
+        sk->ivar_types[a] = TY_POLY; changed = 1;
+      }
+      continue;
+    }
     if (imi < 0 || imi >= c->nscopes || seen[imi]) continue;
     seen[imi] = 1;
     int pn = c->scopes[imi].def_node >= 0 ? nt_ref(nt, c->scopes[imi].def_node, "parameters") : -1;
-    int nreq = 0, nopt = 0, npost = 0, rest = -1;
+    int nreq = 0, nopt = 0, npost = 0, nkw = 0, rest = -1, kwrest = -1;
     if (pn >= 0) {
       nt_arr(nt, pn, "requireds", &nreq);
       nt_arr(nt, pn, "optionals", &nopt);
       nt_arr(nt, pn, "posts", &npost);
+      nt_arr(nt, pn, "keywords", &nkw);
       rest = nt_ref(nt, pn, "rest");
+      kwrest = nt_ref(nt, pn, "keyword_rest");
     }
     nreq += npost;
-    if (npos < nreq || (rest < 0 && npos > nreq + nopt)) continue;
+    /* an initialize taking no keywords takes literal ones as one more
+       positional */
+    int n = npos + (kwh && nkw == 0 && kwrest < 0);
+    if (n < nreq || (rest < 0 && n > nreq + nopt)) continue;
     changed |= bind_call_params(c, call_id, imi);
   }
   free(seen);

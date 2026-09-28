@@ -2208,6 +2208,47 @@ int desugar_to_hash_splat(Compiler *c) {
   return changed;
 }
 
+/* `[*h]`, `x = *h`, `f(*h)` with a Hash, a Struct, or an object defining #to_a:
+   a splat converts its operand through #to_a, so a Hash spreads its [k, v]
+   pairs rather than landing as one element. Rewrite the operand to
+   `h.to_a` so the array splat paths see an array. */
+int desugar_splat_to_a(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_SplatNode) continue;
+    int val = nt_ref(nt, id, "expression");
+    if (val < 0) continue;
+    const char *vty = nt_type(nt, val);
+    if (!vty || strstr(vty, "TargetNode")) continue;
+    if (sp_streq(vty, "CallNode") && nt_str(nt, val, "name") &&
+        sp_streq(nt_str(nt, val, "name"), "to_a")) continue;
+    TyKind t = infer_type(c, val);
+    if (!ty_is_hash(t) && !sp_streq(vty, "HashNode")) {
+      if (!ty_is_object(t)) continue;
+      int cid = ty_object_class(t);
+      if (cid < 0) continue;
+      int st = 0;
+      for (int k = cid; k >= 0 && !st; k = c->classes[k].parent) st = c->classes[k].is_struct;
+      if (!st && comp_method_in_chain(c, cid, "to_a", NULL) < 0) continue;
+    }
+    int base = nt->count;
+    int call = nt_new_node(nt, "CallNode");
+    if (call < 0) continue;
+    nt_node_set_ref(nt, call, "receiver", val);
+    nt_node_set_str(nt, call, "name", "to_a");
+    nt_node_set_ref(nt, call, "arguments", -1);
+    nt_node_set_ref(nt, call, "block", -1);
+    nt_node_set_ref(nt, id, "expression", call);
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    changed = 1;
+  }
+  return changed;
+}
+
 /* `def lz; [1,2,3].lazy.map { }; end; lz.first` -- a lazy chain returned from a
    parameterless method. A lazy value has no runtime representation to return,
    so the method body is not emittable at all; splice a clone of the chain into
@@ -2613,6 +2654,53 @@ int desugar_block_implicit_rest(Compiler *c) {
     changed = 1;
   }
   free(is_lambda_params);
+  return changed;
+}
+
+/* `return a, *b, c` / `break a, *b` / `next a, b` hand back one array:
+   CRuby reads them as `return [a, *b, c]`. Wrap the arguments in that
+   ArrayNode so the array-literal builders splice the splat and every
+   value consumer sees one argument. The per-jump builders pushed each
+   argument boxed, a splat as one nested array, and `next` kept only the
+   first argument. A splat-free `return` / `break` keeps its own path.
+   `yield a, *b` and `blk.call(a, *b)` become `yield(*[a, *b])`, which the
+   block binder already spreads; it bound each argument to one parameter,
+   the splat's whole array included. */
+int desugar_multi_value_jump(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    int is_call = k == NK_CallNode && nt_ref(nt, id, "receiver") >= 0 &&
+                  nt_ref(nt, id, "block") < 0 && sp_streq(nt_str(nt, id, "name"), "call");
+    if (k != NK_ReturnNode && k != NK_BreakNode && k != NK_NextNode && k != NK_YieldNode && !is_call) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int n = 0; const int *a = args >= 0 ? nt_arr(nt, args, "arguments", &n) : NULL;
+    if (!a || n < 2) continue;
+    int splat = 0, other = 0;
+    for (int j = 0; j < n; j++) {
+      NodeKind ak = nt_kind(nt, a[j]);
+      if (ak == NK_SplatNode && nt_ref(nt, a[j], "expression") < 0) other = 1;
+      else if (ak == NK_SplatNode) splat = 1;
+      else if (ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) other = 1;
+    }
+    if (other || (!splat && k != NK_NextNode)) continue;
+    int arr = nt_new_node(nt, "ArrayNode");
+    int wrap = (k == NK_YieldNode || is_call) ? nt_new_node(nt, "SplatNode") : arr;
+    if (arr < 0 || wrap < 0) continue;
+    int lk[2] = { arr, wrap };
+    for (int j = 0; j < 2; j++) {
+      nt_node_set_int(nt, lk[j], "node_line", nt_int(nt, id, "node_line", 0));
+      nt_node_set_int(nt, lk[j], "node_file", nt_int(nt, id, "node_file", 0));
+      nt_node_set_int(nt, lk[j], "node_col", nt_int(nt, id, "node_col", 0));
+    }
+    nt_node_set_arr(nt, arr, "elements", a, n);
+    if (wrap != arr) nt_node_set_ref(nt, wrap, "expression", arr);
+    nt_node_set_arr(nt, args, "arguments", &wrap, 1);
+    comp_grow_node_arrays(c);
+    changed = 1;
+  }
   return changed;
 }
 

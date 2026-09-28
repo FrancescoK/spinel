@@ -1568,6 +1568,25 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       (sp_streq(name, "real") || sp_streq(name, "imaginary") || sp_streq(name, "imag")) &&
       !an_user_defines_method(c, name))
     { *out = TY_POLY; return 1; }
+  /* Numeric#arg / #angle / #phase (0, pi or a Complex's angle) and #rect /
+     #rectangular (a pair) on a poly value, where the dispatch answers them
+     (sp_poly_arg, sp_poly_rect): unless a class of the program's own has a
+     method, a reader or a class method of the name, the test emit_poly_call
+     makes. The builtin-only derivation, which shapes the dispatch's default
+     arm, answers them either way, as that arm does. */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 &&
+      (sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase") ||
+       sp_streq(name, "rect") || sp_streq(name, "rectangular"))) {
+    int own = 0;
+    for (int k = 0; k < c->nclasses && !own && !an_builtin_only_p(); k++)
+      if (comp_poly_arm_defines_n(c, k, name, argc) ||
+          (!c->classes[k].is_native_class && comp_reader_in_chain(c, k, name, NULL)) ||
+          comp_cmethod_in_chain(c, k, name, NULL) >= 0) own = 1;
+    if (!own) {
+      *out = (sp_streq(name, "rect") || sp_streq(name, "rectangular")) ? TY_POLY_ARRAY : TY_POLY;
+      return 1;
+    }
+  }
   /* poly.delete_prefix / #delete_suffix answer a String, like the zero-arg
      transforms beside them (#3436). */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
@@ -1575,6 +1594,16 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        sp_streq(name, "squeeze")) &&
       !an_user_defines_or_reads(c, name))
     { *out = TY_STRING; return 1; }
+  /* poly.pack(fmt): the emitter's sp_poly_pack answers a String whatever array
+     kind the box holds. Untyped, the call was nil and the packed string was
+     dropped. A user object as the format is left untyped, as the emitter
+     leaves it to the user dispatch (#4319). */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      sp_streq(name, "pack") && !an_user_defines_or_reads(c, name)) {
+    TyKind fmt_t = infer_type(c, argv[0]);
+    if (fmt_t == TY_STRING || fmt_t == TY_POLY || fmt_t == TY_UNKNOWN)
+      { *out = TY_STRING; return 1; }
+  }
   /* The String-only surface on a boxed receiver: the names no other class
      answers, so the result type is the one the typed String path gives. Names
      Array or Enumerable share (index, count, sum) stay untyped here and go

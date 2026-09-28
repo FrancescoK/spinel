@@ -1,0 +1,7 @@
+"UTF-8"
+true
+["UTF-8", true]
+"Foo"
+[true, String]
+"Integer"
+["ASCII-8BIT", "x", "String"]

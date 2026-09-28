@@ -1,0 +1,23 @@
+WAV
+wav out 44100 0
+wav m 1 0
+WAV
+WAV/w
+Wav64
+wav64 out 44100 0
+wav64 m 1 0
+Wav64
+Wav64/w64
+AIFF
+aiff out 44100 0
+own m
+AIFF
+AIFF/a
+writer k 1 0
+wav k 1 0
+Wav64
+WAV
+wav d 2 0
+AIFF
+3
+5

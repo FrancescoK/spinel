@@ -459,6 +459,17 @@ int class_var_static_ci(Compiler *c, int node) {
   }
   return found;
 }
+/* The user class a class-valued receiver names at compile time: a constant
+   (`Foo`, or the leaf of `Outer::Foo`) or a local that holds one class;
+   -1 when it is only known at run time. */
+int class_recv_static_ci(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, node);
+  if (ty && (sp_streq(ty, "ConstantReadNode") || sp_streq(ty, "ConstantPathNode")) &&
+      nt_str(nt, node, "name"))
+    return comp_class_index(c, nt_str(nt, node, "name"));
+  return class_var_static_ci(c, node);
+}
 
 /* A local variable that statically holds exactly one BUILTIN class constant
    (every write in its scope assigns the same builtin class name): that name,

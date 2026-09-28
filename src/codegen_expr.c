@@ -2999,7 +2999,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
             /* `*poly`: whether it holds an array is only known at runtime, so
                splice one level if it is an array, drop nil, else push as-is
                (CRuby splat semantics). */
-            buf_printf(g_pre, "{ sp_RbVal _sv = %s; if (!sp_poly_nil_p(_sv)) sp_PolyArray_flatten_into_n(_t%d, _sv, 1); }\n", ep, t);
+            buf_printf(g_pre, "{ sp_RbVal _sv = %s; if (_sv.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_sv.cls_id)) _sv = sp_box_poly_array(sp_poly_to_a_arr(_sv)); if (!sp_poly_nil_p(_sv)) sp_PolyArray_flatten_into_n(_t%d, _sv, 1); }\n", ep, t);
           else if (it == TY_NIL)
             /* a statically-nil splat contributes nothing (`[*nil]` == []) */
             buf_printf(g_pre, ";\n");
@@ -3055,6 +3055,8 @@ else {
           buf_printf(g_pre, "{ sp_IntArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_%sArray_push(_t%d, _sa->data[_sa->start+_si]); }\n", ep, k, t);
         else if (it == TY_STR_ARRAY && sp_streq(k, "Str"))
           buf_printf(g_pre, "{ sp_StrArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_%sArray_push(_t%d, _sa->data[_si]); }\n", ep, k, t);
+        else if (it == TY_FLOAT_ARRAY && sp_streq(k, "Float"))
+          buf_printf(g_pre, "{ sp_FloatArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_FloatArray_push(_t%d, _sa->data[_si]); }\n", ep, t);
         else if (it == TY_NIL)
           /* a statically-nil splat contributes nothing (`[*nil]` == []) */
           buf_printf(g_pre, ";\n");
@@ -3175,13 +3177,25 @@ else {
       else_stmts = nt_ref(nt, sub, "statements");
     int en = 0;
     const int *eb = else_stmts >= 0 ? nt_arr(nt, else_stmts, "body", &en) : NULL;
-    /* A statically-answered defined? or is_a? predicate folds to its live arm:
-       the dead arm may not even type-check against the receiver's storage
-       type. Mirrors emit_if's statement-form fold and the inference fold. */
+    /* A statically-answered defined?, is_a? or block_given? predicate folds to
+       its live arm: the dead arm may not even type-check against the
+       receiver's storage type (a blockless yield has no type of its own).
+       Mirrors emit_if's statement-form fold and the inference fold. */
     {
       int df = comp_defined_guard_false(c, pred);
       int dt = df ? 0 : comp_defined_guard_true(c, pred);
       int known = df ? 0 : (dt ? 1 : static_isa_cond(c, pred));
+      /* a `block_given? ? a : b` pair: the live arm alone, rendered at the
+         result type as the unfolded pair renders each arm */
+      if (known < 0 && !df && !dt && tn == 1 && en == 1) {
+        int bg = static_block_given_cond(c, pred);
+        if (bg >= 0) {
+          TyKind res = comp_ntype(c, id);
+          if (res == TY_VOID || res == TY_NIL) res = TY_POLY;
+          emit_ternary_arm(c, (is_unless ? !bg : bg) ? tb[0] : eb[0], res, b);
+          return;
+        }
+      }
       if (known >= 0) {
         int take_then = is_unless ? !known : known;
         if (!take_then && !is_unless && sub >= 0 && nt_type(nt, sub) &&

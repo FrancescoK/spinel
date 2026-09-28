@@ -1,0 +1,8 @@
+1.5000000000000002
+1.4999999999999998
+[5.0e-324, -5.0e-324]
+[Infinity, 1.7976931348623155e+308]
+[Infinity, 1.7976931348623157e+308]
+[true, true]
+[true, true]
+["undefined method 'next_float' for an instance of Integer", []]

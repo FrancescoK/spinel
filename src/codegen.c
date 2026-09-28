@@ -5684,6 +5684,9 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
     }
   }
   proc_collect_used(c, body, &used);
+  /* an optional or keyword default runs in this fn too, so what it reads is
+     captured like a body read */
+  proc_collect_used(c, proc_params_node(c, create), &used);
   /* How many numbered parameters the proc declares. Read off the node rather
      than off the names used in the body: proc_param_name answers them now, so
      `arity` already counts them and the old "arity == 0" gate never fired --
@@ -5718,6 +5721,7 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
      nested block in the proc is classified as body-local, not flagged as an
      uncaptured outer variable. */
   collect_locals_deep(c, body, &locals);
+  collect_locals_deep(c, proc_params_node(c, create), &locals);
   for (int u = 0; u < used.n; u++) {
     const char *nm = used.v[u];
     if (nameset_has(&params, nm)) continue;
@@ -5973,7 +5977,8 @@ else if (orecv >= 0 && onm) {
      value-type (by-value) self is captured by value in a `sp_X __self_val`
      field. A class-method self has no instance and is left as-is. */
   int cap_self = bs && bs->class_id >= 0 && !bs->is_cmethod &&
-                 proc_body_uses_self(c, body, bs->class_id);
+                 (proc_body_uses_self(c, body, bs->class_id) ||
+                  proc_body_uses_self(c, proc_params_node(c, create), bs->class_id));
   /* A class method that takes the receiving class as a leading parameter has
      it in `_sp_cls`; a lifted block's function signature is (_cap, argc, args)
      and knows nothing of it, so a sibling class-method call inside the block
@@ -6403,6 +6408,15 @@ else if (orecv >= 0 && onm) {
      callee's static types. CRuby non-lambda distribution: leading requireds
      from the front, posts from the back, the remainder (possibly empty) is
      the rest; missing posts bind nil. */
+  /* A local a default binds (a block param in `x = a.map { |i| i }`) is
+     declared ahead of the optional and keyword slots that evaluate it. */
+  NameSet dlocals = {0};
+  collect_locals_deep(c, proc_params_node(c, create), &dlocals);
+  for (int i = 0; i < dlocals.n; i++) {
+    LocalVar *lv = scope_local(bs, dlocals.v[i]);
+    if (nameset_has(&params, dlocals.v[i])) continue;
+    if (lv && lv->type != TY_UNKNOWN && !lv->is_cell) declare_local(c, pb, lv, 0);
+  }
   if ((restn && restn[0]) || nposts > 0 || nopts > 0 || nnumbered > 0) {
     g_needs_proc_poly_argslot = 1;  /* channel array now lives in spinel_rt.h */
     /* Only the no-parameters-node form (`-> { _1 }`) binds here. Where the
@@ -6435,6 +6449,7 @@ else if (orecv >= 0 && onm) {
           if (nameset_has(&params, dused.v[u2])) refs_param = 1;
         free(dused.v);
         if (refs_param) {
+          free(dlocals.v);
           unsupported(c, create, "proc optional default referencing another parameter (later slice)");
           return;
         } }
@@ -6531,9 +6546,10 @@ else if (orecv >= 0 && onm) {
     /* skip virtual &block slots (TY_UNKNOWN) but allow rescue-bind vars (TY_EXCEPTION) */
     /* a reassigned PARAMETER is already bound by the arg prologue above --
        re-declaring it is a C redefinition (#3309) */
-    if (nameset_has(&params, locals.v[i])) continue;
+    if (nameset_has(&params, locals.v[i]) || nameset_has(&dlocals, locals.v[i])) continue;
     if (lv && lv->type != TY_UNKNOWN && !lv->is_cell) declare_local(c, pb, lv, 0);
   }
+  free(dlocals.v);
   if (ret_ptr) {
     /* launder a heap-pointer return through the sp_int slot: emit the body's
        leading statements, then a prelude-wrapped `return (sp_int)(uintptr_t)(<value>)`.
@@ -7168,6 +7184,11 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
       const char *rn = class_ruby_name(c, cid); if (!rn) rn = ci->name;
       buf_printf(b, "static const char *sp_%s_inspect(sp_%s *self) {\n", ci->c_name, ci->c_name);
       buf_puts(b, "  if (!self) return \"nil\";\n");
+      /* the String built below allocates while the members are still to be
+         read, and the caller may hold the object only in an unrooted temp
+         (`p D.make(1)`): swept at the first allocation, the members read
+         freed memory under SPINEL_GC_STRESS=1 */
+      if (!ci->is_value_type) buf_puts(b, "  SP_GC_ROOT(self);\n");
       /* A member can hold the struct itself (`s.a = s`), and this function
          renders a member of its own class by calling straight back into
          itself. Stop at the object the render is already inside, as CRuby's
@@ -7381,18 +7402,17 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   }
   buf_puts(b, "  return self;\n}\n");
   if (init_pf < 0) return;
-  /* the full constructor: allocate, then run the body through the clone. No
-     block reaches a constructor called this way. */
+  /* the full constructor: allocate, then run the body through the clone,
+     which takes the block as a proc. sp_X_new_blk is for a `new(..., &pr)`
+     whose proc is known only at run time; sp_X_new passes none. */
   Scope *s = &c->scopes[init], *pf = &c->scopes[init_pf];
-  buf_printf(b, "static sp_%s *sp_%s_new(", ci->c_name, ci->c_name);
+  buf_printf(b, "static sp_%s *sp_%s_new_blk(", ci->c_name, ci->c_name);
   for (int i = 0; i < s->nparams; i++) {
-    if (i) buf_puts(b, ", ");
     LocalVar *p = scope_local(s, s->pnames[i]);
     emit_ctype(c, (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY, b);
-    buf_printf(b, " lv_%s", s->pnames[i]);
+    buf_printf(b, " lv_%s, ", s->pnames[i]);
   }
-  if (s->nparams == 0) buf_puts(b, "void");
-  buf_printf(b, ") {\n  sp_%s *self = sp_%s_new_noinit(", ci->c_name, ci->c_name);
+  buf_printf(b, "sp_Proc *_sp_blk) {\n  sp_%s *self = sp_%s_new_noinit(", ci->c_name, ci->c_name);
   for (int i = 0; i < s->nparams; i++) buf_printf(b, "%slv_%s", i ? ", " : "", s->pnames[i]);
   buf_puts(b, ");\n  SP_GC_ROOT(self);\n");
   buf_printf(b, "  (void)sp_%s_%s(", c->classes[initcls].c_name, mc(pf->name));
@@ -7409,7 +7429,18 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
     else if (pt == TY_POLY && qt != TY_POLY) emit_unbox_text(c, qt, ln, b);
     else buf_puts(b, ln);
   }
-  buf_puts(b, ", NULL);\n  return self;\n}\n");
+  buf_puts(b, ", _sp_blk);\n  return self;\n}\n");
+  buf_printf(b, "static sp_%s *sp_%s_new(", ci->c_name, ci->c_name);
+  for (int i = 0; i < s->nparams; i++) {
+    if (i) buf_puts(b, ", ");
+    LocalVar *p = scope_local(s, s->pnames[i]);
+    emit_ctype(c, (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY, b);
+    buf_printf(b, " lv_%s", s->pnames[i]);
+  }
+  if (s->nparams == 0) buf_puts(b, "void");
+  buf_printf(b, ") {\n  return sp_%s_new_blk(", ci->c_name);
+  for (int i = 0; i < s->nparams; i++) buf_printf(b, "lv_%s, ", s->pnames[i]);
+  buf_puts(b, "NULL);\n}\n");
 }
 
 /* Emit a statement-expression that allocates an instance of class `cid` with
@@ -9812,6 +9843,7 @@ void emit_regex_section(Compiler *c, Buf *b) {
                 "  sp_user_exc_modules_fn = sp_user_exc_modules;\n"
                 "  sp_poly_is_a_hook = sp_poly_is_a;\n"
                 "  sp_class_le_id_fn = sp_class_le_ids;\n"
+                "  sp_class_cmp_fn = sp_class_cmp_rv;\n"
                 "  sp_class_kind_of_name_fn = sp_class_kind_of_name;\n");
   /* an unoptimised build runs its fibers on 1 MB stacks (see g_opt_level);
      SPINEL_FIBER_STACK in the environment still wins */
@@ -12500,6 +12532,36 @@ char *codegen_program(const NodeTable *nt) {
       "    return sp_poly_kind_of_builtin(obj, sp_class_to_s(klass));\n"
       "  if (klass.name) return sp_poly_is_a_dyn(obj, sp_box_class(klass), 0);\n"
       "  return sp_class_le(sp_poly_get_class(obj),klass);\n}\n");
+    /* Module#< / <= / > / >= / <=> where an operand is boxed: the tri-state
+       answer of sp_class_lt3 and friends, TypeError for a non-class operand
+       (nil for <=>), and the ordinary poly comparison when the receiver turns
+       out not to be a class. The runtime reaches the same answer through
+       sp_class_cmp_fn. */
+    buf_puts(&b,
+      "static sp_RbVal sp_class_cmp_rv(sp_RbVal a, sp_RbVal b){return sp_class_cmp3(sp_unbox_class(a),sp_unbox_class(b));}\n"
+      "static sp_RbVal sp_class_op_rv(sp_RbVal a, sp_RbVal b, int op) SP_UNUSED;\n"
+      "static sp_RbVal sp_class_op_rv(sp_RbVal a, sp_RbVal b, int op){\n"
+      "  if(a.tag!=SP_TAG_CLASS){\n"
+      "    switch(op){\n"
+      "    case 0: return sp_box_bool(sp_poly_lt(a,b));\n"
+      "    case 1: return sp_box_bool(sp_poly_le(a,b));\n"
+      "    case 2: return sp_box_bool(sp_poly_gt(a,b));\n"
+      "    case 3: return sp_box_bool(sp_poly_ge(a,b));\n"
+      "    default: { sp_int r=sp_poly_spaceship(a,b); return r==SP_INT_NIL?sp_box_nil():sp_box_int(r); }\n"
+      "    }\n"
+      "  }\n"
+      "  if(b.tag!=SP_TAG_CLASS){\n"
+      "    if(op==4)return sp_box_nil();\n"
+      "    sp_raise_cls(\"TypeError\",\"compared with non class/module\");\n"
+      "  }\n"
+      "  sp_Class x=sp_unbox_class(a),y=sp_unbox_class(b);\n"
+      "  switch(op){\n"
+      "  case 0: return sp_class_lt3(x,y);\n"
+      "  case 1: return sp_class_le3(x,y);\n"
+      "  case 2: return sp_class_gt3(x,y);\n"
+      "  case 3: return sp_class_ge3(x,y);\n"
+      "  default: return sp_class_cmp3(x,y);\n"
+      "  }\n}\n");
     for (int ci = 0; ci < c->nclasses; ci++) { free(cls_incs[ci]); free(cls_preps[ci]); }
     free(cls_incs); free(cls_nincs); free(cls_preps); free(cls_npreps);
   }
@@ -12869,6 +12931,13 @@ char *codegen_program(const NodeTable *nt) {
         }
         if (s->nparams == 0) buf_puts(&b, "void");
         buf_puts(&b, ");\n");
+        buf_printf(&b, "static sp_%s *sp_%s_new_blk(", ci->c_name, ci->c_name);
+        for (int m = 0; m < s->nparams; m++) {
+          LocalVar *p = scope_local(s, s->pnames[m]);
+          emit_ctype(c, (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY, &b);
+          buf_puts(&b, ", ");
+        }
+        buf_puts(&b, "sp_Proc *);\n");
       }
     }
   }

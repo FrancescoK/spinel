@@ -223,6 +223,7 @@ void unmark_referenced_module_sources(Compiler *c);
 void register_extends(Compiler *c);
 int cmethod_has_bare_new(Compiler *c, int mi);
 int cmethod_needs_specialization(Compiler *c, int mi, int ci, int def_cls, int *has_new);
+int class_value_escapes(Compiler *c, int cid);
 void specialize_inherited_cls_new(Compiler *c);
 void register_prepends(Compiler *c);
 void inherit_members(Compiler *c);
@@ -282,6 +283,7 @@ int infer_block_params(Compiler *c);
 int desugar_to_proc_block_arg(Compiler *c);
 int desugar_proc_expr_block_arg(Compiler *c);
 int desugar_to_hash_splat(Compiler *c);
+int desugar_splat_to_a(Compiler *c);
 int desugar_lazy_method_call(Compiler *c);
 int desugar_value_callable_forwards(Compiler *c);
 int desugar_root_scoped_constants(Compiler *c);
@@ -303,6 +305,7 @@ int builtin_enum_name_index(const char *name);
 int an_class_includes_enumerable(Compiler *c, int ci);
 int desugar_block_destructure_params(Compiler *c);
 int desugar_block_implicit_rest(Compiler *c);
+int desugar_multi_value_jump(Compiler *c);
 int desugar_forwarding_to_rest_callee(Compiler *c);
 int desugar_anon_block_param(Compiler *c);
 void desugar_extended_module_attrs(Compiler *c);
@@ -394,6 +397,7 @@ void qc_collect_class_writes(Compiler *c, int node, char (*path)[64], int depth,
 void qualify_colliding_classes(Compiler *c);
 void rename_shadowing_block_params(Compiler *c);
 void topup_forwarding_arity(Compiler *c);
+void expand_struct_forwarding_super(Compiler *c);
 /* Defined in codegen.c; the analyzer uses it to specialize/type a
    `rescue <UserExc> => e` binding (#1415). */
 int class_is_exc_subclass(Compiler *c, int ci);

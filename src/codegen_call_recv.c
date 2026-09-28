@@ -13777,9 +13777,30 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
       }
     }
+    /* Numeric#arg / #angle / #phase and #rect / #rectangular on a poly value,
+       answered as the typed arms answer them. A user method, reader or class
+       method of the same name wins via poly dispatch. */
+    if ((sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase") ||
+         sp_streq(name, "rect") || sp_streq(name, "rectangular")) && argc == 0) {
+      int has_user = 0;
+      if (!g_poly_builtin_arm)
+      for (int kk = 0; kk < c->nclasses && !has_user; kk++)
+        if (comp_poly_arm_defines_n(c, kk, name, argc) ||
+            (!c->classes[kk].is_native_class && comp_reader_in_chain(c, kk, name, NULL)) ||
+            comp_cmethod_in_chain(c, kk, name, NULL) >= 0) has_user = 1;
+      if (!has_user) {
+        buf_printf(b, "%s(", sp_streq(name, "rect") || sp_streq(name, "rectangular") ? "sp_poly_rect" : "sp_poly_arg");
+        emit_expr(c, recv, b); buf_printf(b, ", \"%s\")", name); return 1;
+      }
+    }
     /* String#to_sym interns; Symbol#to_sym is identity; every other tag raises
-       CRuby's NoMethodError. A user class defining to_sym wins via poly dispatch. */
-    if (sp_streq(name, "to_sym")) {
+       CRuby's NoMethodError. A user class defining to_sym wins via poly dispatch.
+       `intern` answers as `to_sym` does on both, and stands aside, as the
+       arm did not exist for it before, wherever the dispatch reads the name
+       some other way: a user reader (an attr_reader, a Struct member) or an
+       OpenStruct member when ostruct is loaded (#3197). */
+    int intern_read = sp_streq(name, "intern") && (sp_feature_required("ostruct") || user_defines_or_reads(c, name));
+    if (sp_streq(name, "to_sym") || (sp_streq(name, "intern") && !intern_read)) {
       int has_user = 0;
       if (!g_poly_builtin_arm)
       for (int kk = 0; kk < c->nclasses && !has_user; kk++)
@@ -13801,8 +13822,8 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, ")");
         buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d.tag == SP_TAG_STR ? sp_sym_intern_n(_t%d.v.s, sp_str_byte_len(_t%d.v.s))"
                       " : (_t%d.tag == SP_TAG_SYM ? (sp_sym)_t%d.v.i"
-                      " : (sp_raise_poly_nomethod(\"to_sym\", _t%d), (sp_sym)0)); })",
-                   t, t, t, t, t, t, t);
+                      " : (sp_raise_poly_nomethod(\"%s\", _t%d), (sp_sym)0)); })",
+                   t, t, t, t, t, t, name, t);
         if (box_sym) buf_puts(b, ")");
         return 1;
       }
@@ -13813,6 +13834,8 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     {
       const char *pfn =
         sp_streq(name, "nan?")      ? "sp_poly_nan_p" :
+        sp_streq(name, "next_float") ? "sp_poly_next_float" :
+        sp_streq(name, "prev_float") ? "sp_poly_prev_float" :
         sp_streq(name, "finite?")   ? "sp_poly_finite_p" :
         sp_streq(name, "infinite?") ? "sp_poly_infinite" :
         sp_streq(name, "zero?")     ? "sp_poly_zero_p" :
@@ -13835,13 +13858,33 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         sp_streq(name, "end")         ? "sp_poly_range_end" :
         sp_streq(name, "exclude_end?") ? "sp_poly_range_exclude_end_p" : NULL;
       if (pfn) {
-        int has_user = 0;
+        int nf = sp_streq(name, "next_float") || sp_streq(name, "prev_float");
+        int has_user = 0, has_cm = 0;
         if (!g_poly_builtin_arm)
-        for (int kk = 0; kk < c->nclasses && !has_user; kk++)
+        for (int kk = 0; kk < c->nclasses && !has_user; kk++) {
           if (comp_poly_arm_defines_n(c, kk, name, argc) ||
               (!c->classes[kk].is_native_class && comp_reader_in_chain(c, kk, name, NULL))) has_user = 1;
+          if (nf && comp_cmethod_in_chain(c, kk, name, NULL) >= 0) has_cm = 1;
+        }
+        /* A class method of next_float / prev_float is a boxed Class's: the
+           class-tag dispatch (#3215) takes that receiver, and its not-a-Class
+           arm comes back here (g_cls_tag_skip) for the Float helper. A call
+           typed Float takes that dispatch through a poly slot. */
+        if (!has_user && has_cm && g_cls_tag_skip != id) {
+          TyKind rty = comp_ntype(c, id);
+          if (rty != TY_FLOAT) return 0;
+          Buf pb2; memset(&pb2, 0, sizeof pb2);
+          c->ntype[id] = TY_POLY;
+          emit_expr(c, id, &pb2);
+          c->ntype[id] = rty;
+          emit_unbox_text(c, TY_FLOAT, pb2.p ? pb2.p : "sp_box_nil()", b);
+          free(pb2.p);
+          return 1;
+        }
         if (!has_user) {
-          buf_printf(b, "%s(", pfn); emit_expr(c, recv, b); buf_puts(b, ")");
+          int boxf = nf && comp_ntype(c, id) == TY_POLY;
+          buf_printf(b, "%s%s(", boxf ? "sp_box_float(" : "", pfn); emit_expr(c, recv, b);
+          buf_puts(b, boxf ? "))" : ")");
           return 1;
         }
       }
@@ -14579,7 +14622,12 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "pack") && argc == 1 &&
       !user_defines_or_reads(c, name)) {
     buf_puts(b, "sp_poly_pack("); emit_expr(c, recv, b);
-    buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+    buf_puts(b, ", ");
+    /* a boxed format unboxes to the const char * slot */
+    TyKind fmt_t = comp_ntype(c, argv[0]);
+    if (fmt_t == TY_POLY || fmt_t == TY_UNKNOWN) emit_str_expr(c, argv[0], b);
+    else emit_expr(c, argv[0], b);
+    buf_puts(b, ")");
     return 1;
   }
   /* poly receiver: delete(chars) -> String#delete on the unboxed payload.

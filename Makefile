@@ -994,6 +994,16 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a singleton def on an untraceable receiver compiled)"; ok=0; \
 	else grep -q "singleton method that needs a self, on a receiver that is not one user-class instance" "$$tmp/r.out" || \
 	  { echo "reject-test: FAIL (rejected without saying why)"; sed -n 1,5p "$$tmp/r.out"; ok=0; }; fi; \
+	t=test/reject/forwarding_initialize_uneven_new.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/fu.c" >"$$tmp/fu.out" 2>&1; then \
+	  echo "reject-test: FAIL (uneven new sites into a forwarding initialize compiled)"; ok=0; \
+	else grep -q "different numbers of arguments to a class whose initialize forwards" "$$tmp/fu.out" || \
+	  { echo "reject-test: FAIL (uneven new sites rejected without saying why)"; sed -n 1,5p "$$tmp/fu.out"; ok=0; }; fi; \
+	t=test/reject/forwarding_initialize_splat_new.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/fs.c" >"$$tmp/fs.out" 2>&1; then \
+	  echo "reject-test: FAIL (a splat into a forwarding initialize's new compiled)"; ok=0; \
+	else grep -q "a splat argument to .new. of a class whose initialize forwards" "$$tmp/fs.out" || \
+	  { echo "reject-test: FAIL (splat new rejected without saying why)"; sed -n 1,5p "$$tmp/fs.out"; ok=0; }; fi; \
 	t=test/reject/class_then_module.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/m.c" >"$$tmp/m.out" 2>&1; then \
 	  echo "reject-test: FAIL (#4309: a constant declared class and then module compiled)"; ok=0; \
@@ -2221,6 +2231,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -Eq 'sp_Digest_initialize\(sp_Digest \*self, const char \* lv_raw_hash\)' "$$tmp/ckr.c" || { echo "infer-test: FAIL (a handed-on .class of a known receiver let a class-value new reach every class)"; grep -E 'sp_Digest_initialize\(' "$$tmp/ckr.c" | head -1; ok=0; }; \
 	$(SPINEL) test/infer/const_get_literal_reach.rb -c --no-line-map -o "$$tmp/cgl.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile const_get_literal_reach)"; exit 1; }; \
 	grep -Eq 'sp_Digest_initialize\(sp_Digest \*self, const char \* lv_raw_hash\)' "$$tmp/cgl.c" || { echo "infer-test: FAIL (a literal const_get let a class-value new reach every class's initialize)"; grep -E 'sp_Digest_initialize\(' "$$tmp/cgl.c" | head -1; ok=0; }; \
+	$(SPINEL) test/class_method_self_is_no_escape.rb -c --no-line-map -o "$$tmp/cms.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile class_method_self_is_no_escape)"; exit 1; }; \
+	grep -Eq 'sp_Digest_initialize\(sp_Digest \*self, const char \* lv_raw_hash\)' "$$tmp/cms.c" || { echo "infer-test: FAIL (the self of def self.m let a class-value new reach every class with a class method)"; grep -E 'sp_Digest_initialize\(' "$$tmp/cms.c" | head -1; ok=0; }; \
 	$(SPINEL) test/infer/unsettled_index_write.rb -c --no-line-map -o "$$tmp/u.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile unsettled_index_write)"; exit 1; }; \
 	grep -Eq 'static (inline )?((__attribute__\(\(always_inline\)\)|SP_ALWAYS_INLINE) )?sp_int sp_M_s_mul\(sp_int [A-Za-z_]+, sp_int [A-Za-z_]+\)' "$$tmp/u.c" || { echo "infer-test: FAIL (an int-keyed []= on an unsettled slot poisoned the call graph)"; grep -E 'sp_M_s_mul\(' "$$tmp/u.c" | head -1; ok=0; }; \
 	grep -Eq 'sp_IntArray \* *lv_xs' "$$tmp/u.c" || { echo "infer-test: FAIL (the mapped array did not settle to an int array)"; ok=0; }; \
