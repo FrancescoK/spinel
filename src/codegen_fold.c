@@ -5752,8 +5752,11 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
           buf_printf(out, "_cell_%s", rename_local(vn));
           return;
         }
+        /* The cast drops the `volatile` a local live across a rescue's
+           setjmp is declared with (`const char *volatile lv_x`), as the GC
+           root macros do for the same slot. */
         if (clv && clv->type == TY_STRING) {
-          buf_printf(out, "&lv_%s", rename_local(vn));
+          buf_printf(out, "(const char **)&lv_%s", rename_local(vn));
           return;
         }
       }
