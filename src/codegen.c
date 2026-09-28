@@ -212,9 +212,12 @@ void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
   if (ty_is_object(t)) {
     int oc = ty_object_class(t);
     const char *rn = class_ruby_name(c, oc);
-    buf_printf(b, "(%s *)sp_poly_unbox_cls(%s, %d, ", class_ctype(c, oc), expr, oc);
+    /* a value-type instance is a by-value struct boxed behind a heap copy
+       (sp_box_vobj_<C>), so it unboxes by dereferencing */
+    int vobj = comp_ty_value_obj(c, t);
+    buf_printf(b, "%s(%s *)sp_poly_unbox_cls(%s, %d, ", vobj ? "(*" : "", class_ctype(c, oc), expr, oc);
     emit_str_literal(b, rn ? rn : c->classes[oc].name);
-    buf_puts(b, ")");
+    buf_puts(b, vobj ? "))" : ")");
     return;
   }
   const char *cn = c_type_name(t);
@@ -12757,6 +12760,10 @@ char *codegen_program(const NodeTable *nt) {
         buf_puts(&b, ");\n");
       }
       else buf_printf(&b, "static sp_%s %ssp_%s_new(void);\n", ci->c_name, star, ci->c_name);
+      /* a proc body emitted ahead of the constructor definitions may box a
+         value-type instance into its poly return slot */
+      if (ci->is_value_type)
+        buf_printf(&b, "SP_UNUSED static sp_RbVal sp_box_vobj_%s(sp_%s v);\n", ci->c_name, ci->c_name);
       /* the allocation-only half, for the sites that splice the body */
       if (ctor_init_proc_form(c, i) >= 0) {
         buf_printf(&b, "static sp_%s *sp_%s_new_noinit(", ci->c_name, ci->c_name);
