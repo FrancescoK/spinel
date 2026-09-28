@@ -6610,7 +6610,7 @@ else if (orecv >= 0 && onm) {
         for (int j = 0; j < nkw3; j++) {
           const char *kn = nt_str(nt, kwn3[j], "name");
           if (kn) buf_printf(pb, "    sp_PolyPolyHash_delete((sp_PolyPolyHash *)_kwr_%s.v.p, sp_box_sym((sp_sym)%d));%c",
-                             krn, comp_sym_intern(c, kn), 10);
+                             krn, comp_sym_intern(c, param_public_name(kn)), 10);
         }
       }
       else
