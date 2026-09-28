@@ -1,6 +1,15 @@
 # Timeout keywords on Queue#pop and SizedQueue#push. The scheduler wait is
 # bounded by one deadline, and aliases share the same behavior.
 
+# A positive timeout must work before Thread.new starts the scheduler timer
+# monitor. Keep these as the first operations in this process.
+startup_queue = Queue.new
+p startup_queue.pop(timeout: 0.01).nil?
+
+startup_sized_queue = SizedQueue.new(1)
+startup_sized_queue.push(:full)
+p startup_sized_queue.push(:timed_out, timeout: 0.01).nil?
+
 q = Queue.new
 p q.pop(timeout: 0).nil?
 q.push(:ready)
