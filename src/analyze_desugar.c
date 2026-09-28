@@ -1227,6 +1227,17 @@ int desugar_engine_branches(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
   int changed = 0;
+  /* A program that defines a RUBY_ENGINE of its own (a shim module's
+     `RUBY_ENGINE = "jruby"`) reads that one where it is in scope, so the
+     fold, which knows only the global, would answer for the wrong constant:
+     leave every check alone then. */
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_ConstantWriteNode && k != NK_ConstantPathWriteNode) continue;
+    const char *wn = nt_str(nt, id, "name");
+    if (k == NK_ConstantPathWriteNode) { int t = nt_ref(nt, id, "target"); wn = t >= 0 ? nt_str(nt, t, "name") : NULL; }
+    if (wn && sp_streq(wn, "RUBY_ENGINE")) return 0;
+  }
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *op = nt_str(nt, id, "name");
