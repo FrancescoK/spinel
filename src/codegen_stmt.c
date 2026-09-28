@@ -4879,6 +4879,18 @@ static void emit_case_obj_eq(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
   }
 }
 
+static void emit_when_boxed_test(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
+  char subjp[32]; snprintf(subjp, sizeof subjp, "_t%d", t);
+  int tpw = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", tpw); emit_boxed(c, cond, b);
+  buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_PROC"
+                " ? sp_poly_truthy(sp_penum_call1((sp_Proc *)_t%d.v.p, ", tpw, tpw, tpw);
+  if (pt == TY_POLY) buf_puts(b, subjp); else emit_boxed_text(c, pt, subjp, b);
+  buf_printf(b, ")) : sp_poly_eq(_t%d, ", tpw);
+  if (pt == TY_POLY) buf_puts(b, subjp); else emit_boxed_text(c, pt, subjp, b);
+  buf_puts(b, "); })");
+}
+
 void emit_case(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int pred = nt_ref(nt, id, "predicate");
@@ -4997,17 +5009,7 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
              subject, via the proc-call ABI (mirrors the case-as-value arm) */
           /* a Proc read out of a container arrives boxed: dispatch on the tag
              so it is CALLED and not compared (#3683) */
-          else if (comp_ntype(c, conds[j]) == TY_POLY) {
-            char subjp[32]; snprintf(subjp, sizeof subjp, "_t%d", t);
-            int tpw = ++g_tmp;
-            buf_printf(b, "({ sp_RbVal _t%d = ", tpw); emit_boxed(c, conds[j], b);
-            buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_PROC"
-                          " ? sp_poly_truthy(sp_penum_call1((sp_Proc *)_t%d.v.p, ", tpw, tpw, tpw);
-            if (pt == TY_POLY) buf_puts(b, subjp); else emit_boxed_text(c, pt, subjp, b);
-            buf_printf(b, ")) : sp_poly_eq(_t%d, ", tpw);
-            if (pt == TY_POLY) buf_puts(b, subjp); else emit_boxed_text(c, pt, subjp, b);
-            buf_puts(b, "); })");
-          }
+          else if (comp_ntype(c, conds[j]) == TY_POLY) emit_when_boxed_test(c, conds[j], t, pt, b);
           else if (comp_ntype(c, conds[j]) == TY_PROC) {
             g_needs_proc_poly_argslot = 1;
             char subj9[32]; snprintf(subj9, sizeof subj9, "_t%d", t);
@@ -5511,17 +5513,7 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
                  emit_when_lambda_inline(c, conds[j], t, pt, b)) { /* literal lambda inlined */ }
         /* a Proc read out of a container arrives boxed: dispatch on the tag so
            it is CALLED and not compared (#3683) */
-        else if (comp_ntype(c, conds[j]) == TY_POLY) {
-          char subjp[32]; snprintf(subjp, sizeof subjp, "_t%d", t);
-          int tpw = ++g_tmp;
-          buf_printf(b, "({ sp_RbVal _t%d = ", tpw); emit_boxed(c, conds[j], b);
-          buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_PROC"
-                        " ? sp_poly_truthy(sp_penum_call1((sp_Proc *)_t%d.v.p, ", tpw, tpw, tpw);
-          if (pt == TY_POLY) buf_puts(b, subjp); else emit_boxed_text(c, pt, subjp, b);
-          buf_printf(b, ")) : sp_poly_eq(_t%d, ", tpw);
-          if (pt == TY_POLY) buf_puts(b, subjp); else emit_boxed_text(c, pt, subjp, b);
-          buf_puts(b, "); })");
-        }
+        else if (comp_ntype(c, conds[j]) == TY_POLY) emit_when_boxed_test(c, conds[j], t, pt, b);
         else if (comp_ntype(c, conds[j]) == TY_PROC) {
           /* `when <proc>`: Proc#=== calls the proc with the subject. The
              subject is published both in the sp_int slot (typed callee
