@@ -12268,16 +12268,38 @@ static int strbuf_container_store_values(Compiler *c, int w, const char *contn, 
   }
   return nst;
 }
-static int strbuf_container_stores_string(Compiler *c, const char *contn, Scope *conts) {
-  for (int w = 0; w < c->nt->count; w++) {
+/* What a walk over the values stored into a container does with each one:
+   demand it into a shared handle, or ask whether it is (provably not) a
+   string. */
+enum { SB_DEMAND, SB_HAS_STRING, SB_HAS_NONSTRING };
+static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mode);
+/* Some value stored into this container is a string (mode SB_HAS_STRING), or
+   provably NOT one (SB_HAS_NONSTRING): a local bound from a method result or
+   another variable answers for what that expression built. */
+static int strbuf_container_stores_kind(Compiler *c, const char *contn, Scope *conts,
+                                        int depth, int mode) {
+  const NodeTable *nt = c->nt;
+  if (depth > 8) return 0;
+  for (int w = 0; w < nt->count; w++) {
     int stores[64];
-    int nst = strbuf_container_store_values(c, w, contn, conts, 1, stores);
+    int nst = strbuf_container_store_values(c, w, contn, conts, mode == SB_HAS_STRING, stores);
     for (int e = 0; e < nst; e++) {
       TyKind st = stores[e] >= 0 ? infer_type(c, stores[e]) : TY_UNKNOWN;
-      if (st == TY_STRING || st == TY_STRBUF) return 1;
+      if (mode == SB_HAS_STRING && (st == TY_STRING || st == TY_STRBUF)) return 1;
+      if (mode == SB_HAS_NONSTRING && st != TY_UNKNOWN && st != TY_POLY &&
+          st != TY_STRING && st != TY_STRBUF) return 1;
+    }
+    if (nst == 0 && nt_kind(nt, w) == NK_LocalVariableWriteNode) {
+      const char *wn = nt_str(nt, w, "name");
+      if (wn && sp_streq(wn, contn) && comp_scope_of(c, w) == conts &&
+          strbuf_container_source_walk(c, nt_ref(nt, w, "value"), depth + 1, mode))
+        return 1;
     }
   }
   return 0;
+}
+static int strbuf_container_stores_string(Compiler *c, const char *contn, Scope *conts) {
+  return strbuf_container_stores_kind(c, contn, conts, 0, SB_HAS_STRING);
 }
 /* The complement of the test above: some value stored into this container is
    provably NOT a string. Such a container is heterogeneous, so a local bound
@@ -12286,17 +12308,7 @@ static int strbuf_container_stores_string(Compiler *c, const char *contn, Scope 
    whose type the analysis actually knows counts -- an UNKNOWN one says
    nothing, and answering yes on it would give up the promotion everywhere. */
 static int strbuf_container_stores_nonstring(Compiler *c, const char *contn, Scope *conts) {
-  for (int w = 0; w < c->nt->count; w++) {
-    int stores[64];
-    int nst = strbuf_container_store_values(c, w, contn, conts, 0, stores);
-    for (int e = 0; e < nst; e++) {
-      TyKind st = stores[e] >= 0 ? infer_type(c, stores[e]) : TY_UNKNOWN;
-      if (st == TY_UNKNOWN || st == TY_POLY || st == TY_STRING || st == TY_STRBUF)
-        continue;
-      return 1;
-    }
-  }
-  return 0;
+  return strbuf_container_stores_kind(c, contn, conts, 0, SB_HAS_NONSTRING);
 }
 /* Is every write of local `rn` (read at `recv`) an array literal? Then the
    local BUILT its array and a widened slot keeps naming it; bound from an
@@ -12423,9 +12435,38 @@ static const int *sb_store_nodes(Compiler *c, const char *nm, Scope *sc, int *n)
   *n = 0; return NULL;
 }
 static int strbuf_demand_value_leaves(Compiler *c, int node, int depth);
-static int strbuf_demand_container_stores_here(Compiler *c, const char *contn, Scope *conts) {
+/* One value stored into a container whose elements are mutated through it:
+   an eligible string local promotes, a string expression marks for a
+   fresh-handle wrap at the store site. */
+static int strbuf_demand_store_leaf(Compiler *c, int sn) {
+  const NodeTable *nt = c->nt;
+  if (sn < 0 || c->strbuf_box[sn]) return 0;
+  if (nt_kind(nt, sn) == NK_LocalVariableReadNode) {
+    const char *snm = nt_str(nt, sn, "name");
+    Scope *sns = comp_scope_of(c, sn);
+    LocalVar *snv = (snm && sns) ? scope_local(sns, snm) : NULL;
+    if (!snv || !strbuf_slot_eligible(c, snm, sns, snv)) return 0;
+    if (strbuf_mut_kind(c, snm, sns) < 0) return 0;
+    snv->type = TY_STRBUF; snv->str_shared = 1;
+    c->strbuf_box[sn] = 1;
+    return 1;
+  }
+  TyKind st2 = infer_type(c, sn);
+  if (st2 == TY_POLY) return strbuf_demand_value_leaves(c, sn, 0);
+  if (st2 != TY_STRING && st2 != TY_STRBUF) return 0;
+  c->strbuf_box[sn] = 1;
+  return 1;
+}
+static int strbuf_store_leaf(Compiler *c, int sn, int mode) {
+  if (mode == SB_DEMAND) return strbuf_demand_store_leaf(c, sn);
+  TyKind st = sn >= 0 ? infer_type(c, sn) : TY_UNKNOWN;
+  if (mode == SB_HAS_STRING) return st == TY_STRING || st == TY_STRBUF;
+  return st != TY_UNKNOWN && st != TY_POLY && st != TY_STRING && st != TY_STRBUF;
+}
+static int strbuf_demand_container_stores_here(Compiler *c, const char *contn, Scope *conts, int depth) {
   const NodeTable *nt = c->nt;
   int changed = 0;
+  if (depth > 8) return 0;
     /* every store into this container local (same scope): array/hash
        literal writes, push/<<, []= */
     int nsn = 0;
@@ -12433,25 +12474,14 @@ static int strbuf_demand_container_stores_here(Compiler *c, const char *contn, S
     for (int si = 0; si < nsn; si++) {
       int stores[64];
       int nst = strbuf_container_store_values(c, sns0[si], contn, conts, 1, stores);
-      for (int e3 = 0; e3 < nst; e3++) {
-        int sn = stores[e3];
-        if (sn < 0 || c->strbuf_box[sn]) continue;
-        NodeKind sk = nt_kind(nt, sn);
-        if (sk == NK_LocalVariableReadNode) {
-          const char *snm = nt_str(nt, sn, "name");
-          Scope *sns = comp_scope_of(c, sn);
-          LocalVar *snv = (snm && sns) ? scope_local(sns, snm) : NULL;
-          if (!snv || !strbuf_slot_eligible(c, snm, sns, snv)) continue;
-          if (strbuf_mut_kind(c, snm, sns) < 0) continue;
-          snv->type = TY_STRBUF; snv->str_shared = 1;
-          c->strbuf_box[sn] = 1; changed = 1;
-        }
-        else {
-          TyKind st2 = infer_type(c, sn);
-          if (st2 == TY_POLY) { changed |= strbuf_demand_value_leaves(c, sn, 0); continue; }
-          if (st2 != TY_STRING && st2 != TY_STRBUF) continue;
-          c->strbuf_box[sn] = 1; changed = 1;
-        }
+      for (int e3 = 0; e3 < nst; e3++)
+        changed |= strbuf_demand_store_leaf(c, stores[e3]);
+      /* bound from a method result, an ivar or another local: the container
+         is whatever that expression built (`x = mk; x[0] << "q"`) */
+      if (nst == 0 && nt_kind(nt, sns0[si]) == NK_LocalVariableWriteNode) {
+        const char *wn = nt_str(nt, sns0[si], "name");
+        if (wn && sp_streq(wn, contn) && comp_scope_of(c, sns0[si]) == conts)
+          changed |= strbuf_container_source_walk(c, nt_ref(nt, sns0[si], "value"), depth + 1, SB_DEMAND);
       }
     }
   return changed;
@@ -12493,7 +12523,7 @@ static int strbuf_demand_param_container_stores(Compiler *c, const char *pn, Sco
       if (alv->is_param && !alv->is_block_param)
         changed |= strbuf_demand_param_container_stores(c, avn, avs, depth + 1);
       else if (ty_is_array(alv->type) || ty_is_hash(alv->type) || alv->type == TY_UNKNOWN)
-        changed |= strbuf_demand_container_stores_here(c, avn, avs);
+        changed |= strbuf_demand_container_stores_here(c, avn, avs, depth + 1);
     }
     else if (ak == NK_ArrayNode) {
       int en = 0; const int *el = nt_arr(nt, an, "elements", &en);
@@ -12505,13 +12535,160 @@ static int strbuf_demand_param_container_stores(Compiler *c, const char *pn, Sco
         c->strbuf_box[sn] = 1; changed = 1;
       }
     }
+    else changed |= strbuf_container_source_walk(c, an, depth + 1, SB_DEMAND);
   }
   return changed;
 }
 static int strbuf_demand_container_stores(Compiler *c, const char *contn, Scope *conts) {
-  int changed = strbuf_demand_container_stores_here(c, contn, conts);
+  int changed = strbuf_demand_container_stores_here(c, contn, conts, 0);
   changed |= strbuf_demand_param_container_stores(c, contn, conts, 0);
   return changed;
+}
+
+/* The values stored into container ivar (cid, ivn): what is written to it,
+   and what is pushed or []='d into it. */
+static int strbuf_ivar_source_walk(Compiler *c, int cid, const char *ivn, int depth, int mode) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int w = comp_kind_first(c, NK_InstanceVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
+    if (nt_kind(nt, w) != NK_InstanceVariableWriteNode) continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, ivn) || an_ivar_owner(c, w) != cid) continue;
+    changed |= strbuf_container_source_walk(c, nt_ref(nt, w, "value"), depth + 1, mode);
+  }
+  for (int w = comp_kind_first(c, NK_CallNode); w >= 0; w = comp_kind_next(c, w)) {
+    if (nt_kind(nt, w) != NK_CallNode) continue;
+    int r = nt_ref(nt, w, "receiver");
+    if (r < 0 || nt_kind(nt, r) != NK_InstanceVariableReadNode) continue;
+    const char *rn = nt_str(nt, r, "name");
+    if (!rn || !sp_streq(rn, ivn) || an_ivar_owner(c, r) != cid) continue;
+    const char *wcn = nt_str(nt, w, "name");
+    if (!wcn) continue;
+    int a = nt_ref(nt, w, "arguments");
+    int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (sp_streq(wcn, "<<") || sp_streq(wcn, "push") ||
+        sp_streq(wcn, "append") || sp_streq(wcn, "unshift")) {
+      for (int e = 0; e < an; e++) changed |= strbuf_store_leaf(c, av[e], mode);
+    }
+    else if (sp_streq(wcn, "[]=") && an >= 2)
+      changed |= strbuf_store_leaf(c, av[an - 1], mode);
+  }
+  return changed;
+}
+/* The values stored into the container that expression `node` evaluates to
+   -- a literal's elements, a collecting block's tail, the stores into a
+   local, ivar or global, the return tails of the user methods a call can
+   reach -- each demanded into a shared handle or tested, per `mode`. Without
+   following those, a mutation through an element of a method's result (`x =
+   mk; x[1] << "q"`) landed in a copy. */
+static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mode) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || depth > 8) return 0;
+  int changed = 0;
+  switch (nt_kind(nt, node)) {
+    case NK_ArrayNode: {
+      int en = 0; const int *el = nt_arr(nt, node, "elements", &en);
+      for (int e = 0; e < en; e++) changed |= strbuf_store_leaf(c, el[e], mode);
+      return changed;
+    }
+    case NK_HashNode: case NK_KeywordHashNode: {
+      int en = 0; const int *el = nt_arr(nt, node, "elements", &en);
+      for (int e = 0; e < en; e++)
+        if (nt_kind(nt, el[e]) == NK_AssocNode)
+          changed |= strbuf_store_leaf(c, nt_ref(nt, el[e], "value"), mode);
+      return changed;
+    }
+    case NK_ParenthesesNode:
+      return strbuf_container_source_walk(c, nt_ref(nt, node, "body"), depth + 1, mode);
+    case NK_StatementsNode: {
+      int n = 0; const int *b = nt_arr(nt, node, "body", &n);
+      return n > 0 ? strbuf_container_source_walk(c, b[n - 1], depth + 1, mode) : 0;
+    }
+    case NK_ElseNode:
+      return strbuf_container_source_walk(c, nt_ref(nt, node, "statements"), depth + 1, mode);
+    case NK_IfNode:
+      return strbuf_container_source_walk(c, nt_ref(nt, node, "statements"), depth + 1, mode) |
+             strbuf_container_source_walk(c, nt_ref(nt, node, "subsequent"), depth + 1, mode);
+    case NK_UnlessNode:
+      return strbuf_container_source_walk(c, nt_ref(nt, node, "statements"), depth + 1, mode) |
+             strbuf_container_source_walk(c, nt_ref(nt, node, "else_clause"), depth + 1, mode);
+    case NK_OrNode: case NK_AndNode:
+      return strbuf_container_source_walk(c, nt_ref(nt, node, "left"), depth + 1, mode) |
+             strbuf_container_source_walk(c, nt_ref(nt, node, "right"), depth + 1, mode);
+    case NK_LocalVariableReadNode: {
+      const char *vn = nt_str(nt, node, "name");
+      Scope *vs = vn ? comp_scope_of(c, node) : NULL;
+      LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+      if (!lv) return 0;
+      if (mode != SB_DEMAND)
+        return lv->is_param ? 0 : strbuf_container_stores_kind(c, vn, vs, depth + 1, mode);
+      if (lv->is_param && !lv->is_block_param)
+        return strbuf_demand_param_container_stores(c, vn, vs, depth + 1);
+      return strbuf_demand_container_stores_here(c, vn, vs, depth + 1);
+    }
+    case NK_InstanceVariableReadNode: {
+      const char *ivn = nt_str(nt, node, "name");
+      int cid = ivn ? an_ivar_owner(c, node) : -1;
+      return cid < 0 ? 0 : strbuf_ivar_source_walk(c, cid, ivn, depth + 1, mode);
+    }
+    case NK_GlobalVariableReadNode: {
+      const char *gn = nt_str(nt, node, "name");
+      const char *grn = gn ? comp_resolve_gvar(c, gn + 1) : NULL;
+      if (!grn) return 0;
+      for (int w = comp_kind_first(c, NK_GlobalVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
+        if (nt_kind(nt, w) != NK_GlobalVariableWriteNode) continue;
+        const char *wn = nt_str(nt, w, "name");
+        const char *wrn = wn ? comp_resolve_gvar(c, wn + 1) : NULL;
+        if (!wrn || !sp_streq(wrn, grn)) continue;
+        changed |= strbuf_container_source_walk(c, nt_ref(nt, w, "value"), depth + 1, mode);
+      }
+      return changed;
+    }
+    case NK_CallNode: {
+      int tail = strbuf_map_block_tail(c, node);
+      if (tail >= 0) return mode == SB_HAS_NONSTRING ? 0 : strbuf_store_leaf(c, tail, mode);
+      const char *mn = nt_str(nt, node, "name");
+      if (!mn) return 0;
+      int recv = nt_ref(nt, node, "receiver");
+      int blk = nt_ref(nt, node, "block");
+      /* an attr_reader has no body to walk: its ivar is the container */
+      { char ivb[300]; int defc = -1;
+        const char *riv = an_reader_ivar_of(c, node, &defc, ivb, sizeof ivb);
+        if (riv && defc >= 0) return strbuf_ivar_source_walk(c, defc, riv, depth + 1, mode); }
+      /* `Array.new(n) { ... }` fills the array with its block's tail */
+      if (sp_streq(mn, "new") && recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
+          nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Array")) {
+        if (mode == SB_HAS_NONSTRING || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return 0;
+        int body = nt_ref(nt, blk, "body");
+        if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) return 0;
+        int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+        return bn > 0 ? strbuf_store_leaf(c, bb[bn - 1], mode) : 0;
+      }
+      if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode &&
+          !ty_is_object(infer_type(c, recv))) return 0;
+      /* every user method of the name: a call resolves by name */
+      for (int mi = 1; mi < c->nscopes; mi++) {
+        Scope *m = &c->scopes[mi];
+        if (!m->name || !sp_streq(m->name, mn)) continue;
+        int last = scope_body_last(c, mi);
+        /* `def mk = yield`: this call's own block builds the container */
+        if (last >= 0 && nt_kind(nt, last) == NK_YieldNode) {
+          if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode)
+            changed |= strbuf_container_source_walk(c, nt_ref(nt, blk, "body"), depth + 1, mode);
+        }
+        else changed |= strbuf_container_source_walk(c, last, depth + 1, mode);
+        for (int u = comp_kind_first(c, NK_ReturnNode); u >= 0; u = comp_kind_next(c, u)) {
+          if (nt_kind(nt, u) != NK_ReturnNode || comp_scope_of(c, u) != m) continue;
+          int ra = nt_ref(nt, u, "arguments");
+          int rn2 = 0; const int *rv2 = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn2) : NULL;
+          if (rn2 == 1) changed |= strbuf_container_source_walk(c, rv2[0], depth + 1, mode);
+        }
+      }
+      return changed;
+    }
+    default:
+      return 0;
+  }
 }
 
 /* Slot-shape eligibility for the shared handle: parameters, cells, byref
@@ -13046,7 +13223,14 @@ static int promote_shared_stored_strings(Compiler *c) {
        reach the container the same way (#4013) */
     if (!container_elem_read_p(nt, mrecv)) continue;
     int cont = nt_ref(nt, mrecv, "receiver");
-    if (cont < 0 || nt_kind(nt, cont) != NK_LocalVariableReadNode) continue;
+    if (cont < 0) continue;
+    /* an element of a method result, an ivar, a reader: `mk[1] << x` */
+    if (nt_kind(nt, cont) != NK_LocalVariableReadNode) {
+      TyKind ct = infer_type(c, cont);
+      if (ty_is_array(ct) || ty_is_hash(ct))
+        changed |= strbuf_container_source_walk(c, cont, 0, SB_DEMAND);
+      continue;
+    }
     const char *contn = nt_str(nt, cont, "name");
     Scope *conts = contn ? comp_scope_of(c, cont) : NULL;
     LocalVar *contv = (contn && conts) ? scope_local(conts, contn) : NULL;
