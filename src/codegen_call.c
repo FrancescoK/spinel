@@ -7890,7 +7890,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           }
           TyKind mret = sp_streq(nmet->ret, "self") ? ty_object(k) : native_spec_to_ty(nmet->ret);
           buf_printf(b, " case %d: ", k);
-          if (mret == TY_NIL) buf_puts(b, cb.p ? cb.p : "");
+          /* a writer in `x = v` is called for effect, as the user-class arms
+             below call it: the value is v, and the setter form declares no
+             result temp to assign */
+          if (mret == TY_NIL || is_setter_val) buf_puts(b, cb.p ? cb.p : "");
           else {
             buf_printf(b, "_t%d = ", tr);
             if (ret == TY_POLY && mret != TY_POLY) emit_boxed_text(c, mret, cb.p, b);
