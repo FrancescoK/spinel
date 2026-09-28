@@ -6100,19 +6100,20 @@ else if (dty && sp_streq(dty, "NilNode")) {
 
 /* Emit a comma-separated argument list filling defaults for omitted
    optional params. `lead` is prepended before the first arg. */
-/* Find the value node for keyword param named `kname` in a KeywordHashNode `kwh`. */
+/* Find the value node for keyword param named `kname` in a KeywordHashNode
+   `kwh`: the last one when the key is written twice, as CRuby binds it. */
 int kwh_lookup(const NodeTable *nt, int kwh, const char *kname) {
   if (kwh < 0 || !kname) return -1;
-  int en = 0;
+  int en = 0, v = -1;
   const int *elems = nt_arr(nt, kwh, "elements", &en);
   for (int e = 0; e < en; e++) {
     int key = nt_ref(nt, elems[e], "key");
     if (key < 0) continue;
     const char *kty = nt_type(nt, key);
     const char *kn = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
-    if (kn && sp_streq(kn, kname)) return nt_ref(nt, elems[e], "value");
+    if (kn && sp_streq(kn, kname)) v = nt_ref(nt, elems[e], "value");
   }
-  return -1;
+  return v;
 }
 
 /* Emit a PolyArray expression that collects call args[from..pos_argc-1].
@@ -6733,8 +6734,35 @@ int kwh_sources_overlap(const NodeTable *nt, int kwh) {
     int key = nt_ref(nt, el[e], "key");
     if (key < 0 || nt_kind(nt, key) != NK_SymbolNode) return 0;
     lit = 1;
+    for (int e2 = 0; e2 < e && !merge; e2++) {
+      int k2 = nt_ref(nt, el[e2], "key");
+      if (nt_kind(nt, el[e2]) == NK_AssocNode && nt_kind(nt, k2) == NK_SymbolNode &&
+          sp_streq(nt_str(nt, k2, "value"), nt_str(nt, key, "value"))) merge = 1;
+    }
   }
   return merge;
+}
+
+/* See codegen_internal.h. */
+int kwh_elem_dropped(const NodeTable *nt, int kwh, int e) {
+  if (kwh < 0 || nt_kind(nt, kwh) != NK_KeywordHashNode) return 0;
+  int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
+  for (int i = 0; i < en; i++)
+    if (nt_kind(nt, el[i]) != NK_AssocNode || nt_kind(nt, nt_ref(nt, el[i], "key")) != NK_SymbolNode) return 0;
+  const char *kn = nt_str(nt, nt_ref(nt, el[e], "key"), "value");
+  for (int i = e + 1; i < en; i++)
+    if (sp_streq(nt_str(nt, nt_ref(nt, el[i], "key"), "value"), kn)) return 1;
+  return 0;
+}
+
+/* See codegen_internal.h. */
+void emit_dropped_value(Compiler *c, int v, Buf *b) {
+  if (v < 0 || !subtree_has_side_effect(c, v)) return;
+  Buf vb; memset(&vb, 0, sizeof vb);
+  emit_expr(c, v, &vb);
+  emit_indent(b, g_indent);
+  buf_printf(b, "(void)(%s);\n", vb.p ? vb.p : "0");
+  free(vb.p);
 }
 
 /* See codegen_internal.h. */
@@ -6767,6 +6795,27 @@ int kwh_runs_ahead(Compiler *c, Scope *m, int kwh) {
 }
 
 /* See codegen_internal.h. */
+int kwh_out_of_order(Compiler *c, Scope *m, int kwh) {
+  const NodeTable *nt = c->nt;
+  if (!m || kwh < 0 || nt_kind(nt, kwh) != NK_KeywordHashNode ||
+      (!callee_declares_kwargs(c, m) && m->kwrest_idx < 0)) return 0;
+  int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
+  int last = -1;
+  for (int e = 0; e < en; e++) {
+    int key = nt_ref(nt, el[e], "key");
+    if (nt_kind(nt, el[e]) != NK_AssocNode || nt_kind(nt, key) != NK_SymbolNode) continue;
+    const char *kn = nt_str(nt, key, "value");
+    /* a key no keyword parameter names goes to the `**kw` rest, bound last */
+    int at = m->nparams;
+    for (int i = 0; i < m->nparams; i++)
+      if (m->pnames[i] && sp_streq(m->pnames[i], kn) && callee_has_kwarg(c, m, kn)) { at = i; break; }
+    if (at < last || (at == last && at < m->nparams)) return 1;
+    last = at;
+  }
+  return 0;
+}
+
+/* See codegen_internal.h. */
 void emit_positionals_first(Compiler *c, const int *argv, int pos_argc) {
   const NodeTable *nt = c->nt;
   for (int k = 0; argv && k < pos_argc && g_n_argov < MAX_ARG_OVERRIDE; k++) {
@@ -6791,6 +6840,44 @@ void emit_positionals_first(Compiler *c, const int *argv, int pos_argc) {
     snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", t);
     g_n_argov++;
   }
+}
+
+/* The argument `v` of a call binding in parameter order, evaluated ahead of
+   the binding into a rooted temp its uses read, as emit_positionals_first
+   evaluates one. A value with no C type -- nil -- is evaluated for its effect
+   alone, and its uses read a 0 the binding takes as nil. */
+static void emit_arg_first(Compiler *c, int v, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int x = nt_kind(nt, v) == NK_SplatNode ? nt_ref(nt, v, "expression") : v;
+  if (x < 0 || nt_kind(nt, v) == NK_BlockArgumentNode || !subtree_has_side_effect(c, x)) return;
+  TyKind at = comp_ntype(c, x);
+  if (ty_is_object(at) || c_type_name(at) || g_n_argov >= MAX_ARG_OVERRIDE) {
+    emit_positionals_first(c, &v, 1);
+    return;
+  }
+  Buf vb; memset(&vb, 0, sizeof vb);
+  emit_expr(c, x, &vb);
+  emit_indent(b, g_indent);
+  buf_printf(b, "(void)(%s);\n", vb.p ? vb.p : "0");
+  free(vb.p);
+  g_argov_node[g_n_argov] = x;
+  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "0");
+  g_n_argov++;
+}
+
+/* See codegen_internal.h. */
+void emit_args_in_source_order(Compiler *c, const int *argv, int argc, Buf *b) {
+  const NodeTable *nt = c->nt;
+  Buf *sv_pre = g_pre; g_pre = b;
+  for (int k = 0; argv && k < argc; k++) {
+    if (nt_kind(nt, argv[k]) != NK_KeywordHashNode) { emit_arg_first(c, argv[k], b); continue; }
+    int kn = 0; const int *kv = nt_arr(nt, argv[k], "elements", &kn);
+    for (int e = 0; e < kn; e++) {
+      int v = nt_ref(nt, kv[e], "value");
+      if (v >= 0) emit_arg_first(c, v, b);
+    }
+  }
+  g_pre = sv_pre;
 }
 
 /* See codegen_internal.h. */
@@ -6821,6 +6908,8 @@ int emit_ds_hash_merge(Compiler *c, int kwh, int any_key, TyKind *out_type) {
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_PolyPolyHash_set(_t%d, _t%d, %s);\n", mh, kt, vb.p ? vb.p : "sp_box_nil()");
     }
+    else if (nt_kind(nt, el[e]) != NK_AssocSplatNode && kwh_elem_dropped(nt, kwh, e))
+      emit_dropped_value(c, v, g_pre);
     else if (nt_kind(nt, el[e]) != NK_AssocSplatNode) {
       emit_boxed(c, v, &vb);
       emit_indent(g_pre, g_indent);
@@ -7283,6 +7372,7 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
          to that param, not the keyword-rest. A positional param of the
          same name does not consume it. */
       if (callee_has_kwarg(c, m, kname3)) continue;
+      if (kwh_elem_dropped(nt, kwh, e3)) { emit_dropped_value(c, val3, g_pre); continue; }
       /* Render the boxed value into a side buffer first: an Array/Hash literal
          value drains its own construction (`_tN = ..._new(); push...`) into
          g_pre, which must land BEFORE -- not inside -- the set line (#3111). */
@@ -7352,12 +7442,15 @@ int default_refs_earlier_param(Compiler *c, Scope *m) {
 
 /* Inject a runtime ArgumentError ahead of the call statement: the raise
    fires exactly when the bad call would run (dead code stays silent, like
-   CRuby), and the argument slots still fill with their compat pads below. */
-static void args_raise(const char *fmt, ...) {
+   CRuby), once the call's arguments `argv` have run, and the argument slots
+   still fill with their compat pads below, reading what ran. */
+static void args_raise(Compiler *c, const int *argv, int argc, const char *fmt, ...) {
   char msg[256];
   va_list ap; va_start(ap, fmt);
   vsnprintf(msg, sizeof msg, fmt, ap);
   va_end(ap);
+  /* CRuby evaluates every argument before the callee refuses them */
+  emit_args_in_source_order(c, argv, argc, g_pre);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_raise_cls(\"ArgumentError\", \"%s\");\n", msg);
 }
@@ -7374,8 +7467,9 @@ static void args_raise(const char *fmt, ...) {
    Guarded by kw_matches for the same reason the caller is: with no key naming a
    keyword parameter the hash is an ordinary positional argument, and its keys
    are data rather than keywords. */
-int emit_unknown_kwarg_raise(Compiler *c, Scope *m, int kwh) {
+int emit_unknown_kwarg_raise(Compiler *c, Scope *m, const int *argv, int argc) {
   const NodeTable *nt = c->nt;
+  int kwh = argc > 0 && argv && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
   if (!m || kwh < 0 || m->kwrest_idx >= 0) return 0;
   int kw_matches = callee_declares_kwargs(c, m);
   for (int i = 0; i < m->nparams && !kw_matches; i++)
@@ -7394,7 +7488,7 @@ int emit_unknown_kwarg_raise(Compiler *c, Scope *m, int kwh) {
        is "unknown keyword: :x") */
     for (int i = 0; i < m->nparams; i++)
       if (m->pnames[i] && sp_streq(m->pnames[i], kn) && callee_has_kwarg(c, m, kn)) { found = 1; break; }
-    if (!found) { args_raise("unknown keyword: :%s", kn); return 1; }
+    if (!found) { args_raise(c, argv, argc, "unknown keyword: :%s", kn); return 1; }
   }
   return 0;
 }
@@ -7521,7 +7615,7 @@ void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv, int
     if (judge_rest) {
       int eff_pos = pos_argc + (kwh >= 0 ? 1 : 0);
       if (eff_pos < rest_req)
-        args_raise("wrong number of arguments (given %d, expected %d+)", eff_pos, rest_req);
+        args_raise(c, argv, argc, "wrong number of arguments (given %d, expected %d+)", eff_pos, rest_req);
     }
   }
   /* A `**kw` takes every keyword, so only the positional count is judged:
@@ -7530,9 +7624,9 @@ void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv, int
   else if (!has_splat && !synth && m->rest_idx < 0 && m->kwrest_idx >= 0 && !m->cs_synth) {
     if (pos_argc > nfixed || pos_argc < nreq) {
       if (nreq == nfixed)
-        args_raise("wrong number of arguments (given %d, expected %d)", pos_argc, nfixed);
+        args_raise(c, argv, argc, "wrong number of arguments (given %d, expected %d)", pos_argc, nfixed);
       else
-        args_raise("wrong number of arguments (given %d, expected %d..%d)", pos_argc, nreq, nfixed);
+        args_raise(c, argv, argc, "wrong number of arguments (given %d, expected %d..%d)", pos_argc, nreq, nfixed);
     }
   }
   else if (!has_splat && !has_ds && !synth &&
@@ -7572,7 +7666,7 @@ void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv, int
       } }
     int raised = 0;
     if (eff_pos > nfixed && !bam_variadic_kernel(nt, m)) {
-      args_raise("wrong number of arguments (given %d, expected %s%s)", eff_pos, expbuf2, kwsuf);
+      args_raise(c, argv, argc, "wrong number of arguments (given %d, expected %s%s)", eff_pos, expbuf2, kwsuf);
       raised = 1;
     }
     /* CRuby's order: the positional count, then a missing keyword, then an
@@ -7594,12 +7688,12 @@ void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv, int
       if (m->pdefault && m->pdefault[i] >= 0) continue;
       if (is_kw && kw_matches && kwh_lookup(nt, kwh, m->pnames[i]) >= 0) continue;
       if (is_kw)
-        args_raise("missing keyword: :%s", m->pnames[i] ? m->pnames[i] : "?");
+        args_raise(c, argv, argc, "missing keyword: :%s", m->pnames[i] ? m->pnames[i] : "?");
       else
-        args_raise("wrong number of arguments (given %d, expected %s%s)", eff_pos, expbuf2, kwsuf);
+        args_raise(c, argv, argc, "wrong number of arguments (given %d, expected %s%s)", eff_pos, expbuf2, kwsuf);
       raised = 1;
     }
-    if (!raised && emit_unknown_kwarg_raise(c, m, kwh)) raised = 1;
+    if (!raised && emit_unknown_kwarg_raise(c, m, argv, argc)) raised = 1;
   }
 }
 
@@ -7806,13 +7900,14 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
      over this count; the hash itself is argv[pos_argc]. */
   int bind_argc = pos_argc + (kwh_positional_slot(c, m, kwh, pos_argc) >= 0 ? 1 : 0);
   int rest_argc = rest_bind_argc(c, m, kwh, pos_argc);
+  int argov_saved = g_n_argov;
   emit_call_arity_check(c, m, argc, argv, 1);
 
   /* Detect double-splat (**hash) inside kwh: AssocSplatNode wrapping a hash expr.
      Pre-evaluate the hash to a temp so we can do per-param lookups. */
   int kw_merged = kwh_merged(c, m, kwh);
-  int argov_saved = g_n_argov;
   if (kwh_runs_ahead(c, m, kwh)) emit_positionals_first(c, argv, pos_argc);
+  else if (kwh_out_of_order(c, m, kwh)) emit_args_in_source_order(c, argv, argc, g_pre);
   TyKind ds_hash_type = TY_UNKNOWN;
   int ds_hash_tmp = emit_ds_hash_materialize(c, m, kwh, &ds_hash_type);
   emit_ds_kwarg_check(c, m, kwh, ds_hash_tmp, ds_hash_type);
@@ -8537,6 +8632,7 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
   /* Arity check, the free-function path's own: an over- or under-supplied
      instance call went through with the extra arguments simply dropped
      (#3677). A rest target's shortfall is measured below, with the splat. */
+  int argov_saved_d = g_n_argov;
   if (m && (argv || argc == 0)) {
     int skip = 0;
     for (int k = 0; k < argc && argv && !skip; k++) {
@@ -8627,8 +8723,8 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
      emit_args_filled applies (previously this path dropped every keyword
      into a NULL kwrest and let positionals steal keys by name). */
   int kw_merged_d = kwh_merged(c, m, kwh_d);
-  int argov_saved_d = g_n_argov;
   if (m && kwh_runs_ahead(c, m, kwh_d)) emit_positionals_first(c, argv, pos_argc_d);
+  else if (kwh_out_of_order(c, m, kwh_d)) emit_args_in_source_order(c, argv, argc, g_pre);
   TyKind ds_type_d = TY_UNKNOWN;
   int ds_tmp_d = (m && kwh_d >= 0) ? emit_ds_hash_materialize(c, m, kwh_d, &ds_type_d) : -1;
   emit_ds_kwarg_check(c, m, kwh_d, ds_tmp_d, ds_type_d);

@@ -215,6 +215,19 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
 
   int st = ++g_tmp;
   buf_puts(b, "({\n");
+  /* The binding below runs in parameter order, but CRuby evaluates the
+     arguments in source order, and each value of a key written twice though
+     only the last binds: a call whose keywords are out of parameter order
+     runs its arguments first, in order, into temps the binding reads through
+     the g_argov overrides. */
+  int argov_saved = g_n_argov;
+  int cargs = nt_ref(nt, id, "arguments");
+  int cargc = 0; const int *cargv = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cargc) : NULL;
+  if (cargc > 0 && kwh_out_of_order(c, m, cargv[cargc - 1])) {
+    g_indent++;
+    emit_args_in_source_order(c, cargv, cargc, b);
+    g_indent--;
+  }
   emit_indent(b, g_indent + 1);
   /* A value-type class returns sp_X by value from sp_X_new; a heap class returns
      sp_X *. The inlined body reaches its ivars through g_self + g_self_deref, so
@@ -321,6 +334,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
     buf_puts(b, ";\n");
   }
   inl_dflt_leave(sv_dflt);
+  g_n_argov = argov_saved;
 
   /* The inlined `initialize` body runs in the CONSTRUCTED class's context:
      an implicit-self call inside it (`setup` in `def initialize; setup;
@@ -5154,7 +5168,7 @@ static void emit_kwh_sym_fill(Compiler *c, int th, const PolyKw *kw, Scope *skip
   for (int e = 0; e < kw->kwn; e++) {
     int key = nt_ref(nt, kw->kwels[e], "key");
     const char *kn = key >= 0 ? nt_str(nt, key, "value") : NULL;
-    if (!kn) continue;
+    if (!kn || kwh_elem_dropped(nt, kw->kwh, e)) continue;
     if (skip_kw && callee_param_is_declared_kwarg(c, skip_kw, kn)) continue;
     char tn[32]; snprintf(tn, sizeof tn, "_t%d", kw->kwtmp[e]);
     Buf eb; memset(&eb, 0, sizeof eb);
@@ -5206,11 +5220,13 @@ static int emit_poly_kw_param(Compiler *c, Scope *ms, int a, const PolyKw *kw,
   if (!pnm || !callee_param_is_declared_kwarg(c, ms, pnm)) return 0;
   const char *saved_self = g_self;
   if (selfp) g_self = selfp;
+  /* a key written twice binds its last value, as CRuby binds it; each
+     value already ran once, in order, into its temp */
   int e_found = -1;
   for (int e = 0; kw && e < kw->kwn; e++) {
     int key = nt_ref(nt, kw->kwels[e], "key");
     const char *kn = key >= 0 ? nt_str(nt, key, "value") : NULL;
-    if (kn && sp_streq(kn, pnm)) { e_found = e; break; }
+    if (kn && sp_streq(kn, pnm)) e_found = e;
   }
   if (kw && kw->kwall >= 0)
     emit_ds_param_extract(c, ms, a, kw->kwall, kw->kwall_any ? TY_POLY_POLY_HASH : TY_SYM_POLY_HASH, pa);
@@ -5252,7 +5268,8 @@ static int kwh_fills_slot(Compiler *c, Scope *m, int kwh, int pos_argc) {
    them, and the candidate filter compared that against pos_argc alone --
    so `resume(user_agent:, ip_address:)` looked arity-impossible for
    `s.resume(user_agent: ..., ip_address: ...)`, every arm dropped, and the
-   call lowered to the unresolved raise (#4205). */
+   call lowered to the unresolved raise (#4205). A key written twice names
+   its parameter once. */
 static int kwh_named_kwarg_fills(Compiler *c, Scope *m, int kwh) {
   if (!m || kwh < 0) return 0;
   const NodeTable *nt = c->nt;
@@ -5267,6 +5284,10 @@ static int kwh_named_kwarg_fills(Compiler *c, Scope *m, int kwh) {
     }
     int key = nt_ref(nt, els[e], "key");
     const char *kn = key >= 0 ? nt_str(nt, key, "value") : NULL;
+    for (int e2 = 0; kn && e2 < e; e2++) {
+      int k2 = nt_ref(nt, els[e2], "key");
+      if (k2 >= 0 && nt_str(nt, k2, "value") && sp_streq(nt_str(nt, k2, "value"), kn)) kn = NULL;
+    }
     if (kn && callee_param_is_declared_kwarg(c, m, kn)) n++;
   }
   return n;
@@ -24894,6 +24915,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       eargc = rest_at + 1;
       goto bm_emit_call;
     }
+    /* The slots below run in parameter order, but CRuby evaluates the
+       arguments in source order, and each value of a key written twice though
+       the binding above kept only the last: a call whose keywords are out of
+       parameter order runs its arguments first, in order, into temps the
+       slots read through the g_argov overrides. */
+    int argov_saved = g_n_argov;
+    if (psrc && argc > 0 && kwh_out_of_order(c, tm, argv[argc - 1])) emit_args_in_source_order(c, argv, argc, b);
     /* Hoist each argument into a temp so both call arms (self-ful / self-less)
        reference it without re-evaluating (#3252). */
     for (int k = 0; k < eargc; k++) {
@@ -25021,6 +25049,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       }
       buf_puts(b, "; ");
     }
+    g_n_argov = argov_saved;
     /* A top-level def has a self-less C ABI (fn(args)); an object-bound method
        is fn(self, args). The bound method carries a NULL self for the former. */
   bm_emit_call:;

@@ -249,6 +249,7 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
   int kw_merged = kwh_merged(c, m, kwh);
   int argov_saved = g_n_argov;
   if (kwh_runs_ahead(c, m, kwh)) emit_positionals_first(c, argv, pos_argc);
+  else if (kwh_out_of_order(c, m, kwh)) emit_args_in_source_order(c, argv, argc, g_pre);
   TyKind ds_type = TY_UNKNOWN;
   int ds_tmp = emit_ds_hash_materialize(c, m, kwh, &ds_type);
   emit_ds_kwarg_check(c, m, kwh, ds_tmp, ds_type);
@@ -258,7 +259,7 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
      was simply dropped, and a missing one bound its zero value: `y1 { }` on
      `def y1(x)` ran with x padded, `y(1, 2) { }` on `def y(x, k: 1)`
      dropped the 2. A `...` forward carries the forwarder's own params. */
-  if (fwd_encl) emit_unknown_kwarg_raise(c, m, kwh);
+  if (fwd_encl) emit_unknown_kwarg_raise(c, m, argv, argc);
   else emit_call_arity_check(c, m, argc, argv, 1);
   /* The options-hash idiom: a braceless keyword hash no keyword parameter
      claims packs into the first unfilled positional (`def check(sel, opts =
@@ -1020,6 +1021,30 @@ static const char *block_kw_key(const char *kp, char *buf, size_t n) {
   return buf;
 }
 
+/* True when the literal keys of the yielded keyword hash `ykw` do not come in
+   the order the keyword params of block `blk` bind them, as kwh_out_of_order
+   judges a method's: one names a param ahead of an earlier key's, or the one
+   before it again, or a param after a key the `**kw` rest takes. */
+static int ykw_out_of_order(Compiler *c, int blk, int ykw) {
+  const NodeTable *nt = c->nt;
+  int nkw = 0; while (block_keyword_name(c, blk, nkw)) nkw++;
+  int en = 0; const int *el = nt_arr(nt, ykw, "elements", &en);
+  int last = -1;
+  for (int e = 0; e < en; e++) {
+    int key = nt_ref(nt, el[e], "key");
+    if (nt_kind(nt, el[e]) != NK_AssocNode || nt_kind(nt, key) != NK_SymbolNode) continue;
+    const char *kn = nt_str(nt, key, "value");
+    int at = nkw;
+    for (int ki = 0; ki < nkw; ki++) {
+      char knb[160];
+      if (sp_streq(block_kw_key(block_keyword_name(c, blk, ki), knb, sizeof knb), kn)) { at = ki; break; }
+    }
+    if (at < last || (at == last && at < nkw)) return 1;
+    last = at;
+  }
+  return 0;
+}
+
 static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
   TyKind at = comp_ntype(c, node);
   /* an empty `{}` / `[]` stays untyped, and emit_boxed gives it the poly form */
@@ -1253,6 +1278,12 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
           int kn2 = nt_ref(nt, els2[e2], "key");
           int vn2 = nt_ref(nt, els2[e2], "value");
           if (kn2 < 0 || vn2 < 0) continue;
+          if (kwh_elem_dropped(nt, ykw, e2)) {
+            Buf *sv_pre = g_pre; g_pre = b;
+            emit_dropped_value(c, vn2, b);
+            g_pre = sv_pre;
+            continue;
+          }
           /* a pair consumed by a named keyword param stays out of the rest */
           const char *ksym = nt_type(nt, kn2) && sp_streq(nt_type(nt, kn2), "SymbolNode")
                                ? nt_str(nt, kn2, "value") : NULL;
@@ -1301,6 +1332,13 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     ykw = yargs[yc - 1];
     yc--;
   }
+  /* The params bind in their own order, but CRuby evaluates the yielded
+     values in source order, and each value of a key written twice though
+     only the last binds: keywords out of the params' order run first, the
+     positionals ahead of them, into temps the binds read. */
+  int argov_saved = g_n_argov;
+  if (ykw >= 0 && !kwh_has_splat(nt, ykw) && ykw_out_of_order(c, blk, ykw))
+    emit_args_in_source_order(c, yargs, yc + 1, g_pre);
   Scope *bsc = comp_scope_of(c, blk);
   LocalVar *yalias_lv[16]; int yalias_n = 0, yalias_open = 0;
   /* The spliced body and the block's own parameter NAMES resolve at the
@@ -1993,6 +2031,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     }
     buf_puts(b, "})");
   }
+  g_n_argov = argov_saved;
   free(bi.pf); free(bi.pt);
   #undef BI_BLOCK_SIDE
   #undef BI_METHOD_SIDE

@@ -3117,6 +3117,7 @@ else {
     int poly_poly = (ht == TY_POLY_POLY_HASH);
     for (int j = 0; j < n; j++) {
       const char *ety = nt_type(nt, els[j]);
+      if (kwh_elem_dropped(nt, id, j)) { emit_dropped_value(c, nt_ref(nt, els[j], "value"), g_pre); continue; }
       if (ety && sp_streq(ety, "AssocSplatNode")) {
         /* `**h`: merge the spread hash into the fresh literal. In `{ **h, k: v }`
            the splat is emitted before the explicit assocs, so a following key

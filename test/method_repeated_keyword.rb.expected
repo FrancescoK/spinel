@@ -1,0 +1,230 @@
+lit 1
+lit 2
+[2, 0]
+lit 1
+lit 2
+lit 3
+[2, 3]
+[2, 0]
+replaced
+[2, 0]
+lit 1
+lit 2
+lit 3
+[3, 1]
+lit 1
+lit 2
+lit 3
+lit 4
+[3, {z: 4}]
+lit 1
+lit 2
+{z: 2}
+lit 5
+lit 6
+[6, 6]
+lit 0
+lit 1
+lit 2
+[0, 2]
+lit 1
+lit 2
+[2, 0]
+lit 1
+lit 2
+[0, 2]
+lit 1
+lit 2
+[2, 0]
+lit 1
+lit 2
+[2, 0]
+lit 1
+lit 2
+[2, 0]
+lit 5
+lit 6
+[6, 0]
+lit 1
+lit 2
+[2, 0]
+lit 1
+lit 2
+[2, 0]
+lit 1
+lit 2
+[2, 0]
+lit 1
+lit 2
+[2, 0]
+lit 1
+lit 2
+lit 2
+lit 3
+[3, 0]
+lit 1
+lit 2
+[2, 0]
+lit 1
+lit 2
+[2, 0]
+lit 1
+lit 2
+[2, 0]
+lit 1
+lit 2
+[2, 0]
+lit 1
+lit 2
+lit 3
+[2, 3]
+replaced
+[2, 0]
+lit 1
+lit 2
+[2, 0]
+lit 1
+lit 2
+[2, 9]
+lit 1
+lit 2
+[2, 9]
+lit 1
+lit 2
+[2, 9]
+lit 1
+lit 2
+[7, 0]
+lit 1
+lit 2
+lit 3
+lit 4
+[2, {b: 9, z: 4}]
+lit 1
+lit 2
+{z: 2, b: 9}
+lit 1
+lit 2
+[2, 0]
+lit 1
+lit 2
+[2, 1]
+nil b
+lit 1
+[1, nil]
+nil b
+lit 2
+[2, nil]
+lit 1
+lit 3
+[3, 1]
+lit 1
+lit 2
+[2, {z: 1}]
+lit 3
+lit 4
+[4, 3]
+nil b
+lit 5
+[5, nil]
+lit 1
+lit 6
+[6, 1]
+nil b
+lit 7
+[7, nil]
+lit 1
+lit 8
+[8, 1]
+lit 1
+lit 2
+2
+lit 0
+lit 1
+lit 2
+lit 3
+[0, 2, 3]
+lit 1
+lit 2
+lit 3
+[3, {z: 2}]
+2
+nil b
+lit 4
+[4, nil]
+lit 1
+lit 2
+2
+lit 1
+lit 2
+2
+lit 1
+lit 2
+lit 3
+[2, 3]
+lit 1
+ArgumentError: missing keyword: :a
+lit 2
+ArgumentError: missing keyword: :a
+lit 3
+lit 4
+lit 5
+ArgumentError: unknown keyword: :z
+lit 6
+ArgumentError: missing keyword: :a
+lit 7
+ArgumentError: missing keyword: :a
+lit 8
+ArgumentError: missing keyword: :a
+lit 9
+ArgumentError: missing keyword: :a
+lit 10
+ArgumentError: unknown keyword: :z
+lit 11
+lit 12
+ArgumentError: wrong number of arguments (given 2, expected 1)
+lit 13
+lit 14
+ArgumentError: wrong number of arguments (given 1, expected 0; required keyword: a)
+lit 1
+lit 2
+[1, {a: 2}]
+lit 1
+lit 2
+[[1], {a: 2}]
+lit 1
+lit 2
+lit 3
+[0, {a: 2, b: 3}]
+lit 1
+lit 2
+[1, {a: 2}]
+lit 1
+lit 2
+[1, {a: 2}]
+lit 1
+lit 2
+[1, {a: 2, b: 9}]
+lit 1
+lit 2
+lit 3
+{a: 2, b: 3}
+{b: 9, a: 2}
+[1, {b: 3, "a" => 2}]
+lit 1
+lit 2
+lit 3
+[0, {z: 2, b: 3}]
+lit 1
+lit 2
+lit 3
+{a: 2, b: 3}
+lit 1
+lit 2
+lit 3
+[{a: 2, b: 3}]
+lit 1
+lit 2
+lit 3
+{q: 2, z: 3}
+{b: 3, a: 2}
