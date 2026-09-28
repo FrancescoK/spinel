@@ -5038,6 +5038,42 @@ void specialize_inherited_cls_new(Compiler *c) {
     if (!ty || !sp_streq(ty, "CallNode")) continue;
     int recv = nt_ref(nt, id, "receiver");
     int ci = -1;
+    /* `self.class.m` in an instance method: the receiver is whichever class
+       the instance has at run time -- the defining class or any descendant.
+       An inherited class method reading class-level @ivars must bind to that
+       class's storage, so each descendant gets its own copy (the dispatch
+       switches on cls_id to reach it). FFI::Struct's `self.class.layout`
+       from `#[]` is the shape: every Struct subclass holds its own layout. */
+    if (recv >= 0 && nt_kind(nt, recv) == NK_CallNode) {
+      const char *rn = nt_str(nt, recv, "name");
+      int rr = nt_ref(nt, recv, "receiver");
+      const char *mname = nt_str(nt, id, "name");
+      Scope *encl = comp_scope_of(c, id);
+      if (rn && sp_streq(rn, "class") && rr >= 0 && nt_kind(nt, rr) == NK_SelfNode &&
+          mname && !sp_streq(mname, "new") && encl && !encl->is_cmethod && encl->class_id >= 0 &&
+          nt_kind(nt, c->classes[encl->class_id].def_node) != NK_ModuleNode) {
+        int base = encl->class_id;
+        for (int k = 0; k < c->nclasses; k++) {
+          if (k == base || !is_descendant(c, k, base)) continue;
+          if (comp_cmethod_in_class(c, k, mname) >= 0) continue;
+          int def_cls = -1;
+          int mi = comp_cmethod_in_chain(c, k, mname, &def_cls);
+          if (mi < 0 || def_cls == k) continue;
+          if (mi >= snap) {
+            int orig = -1;
+            for (int o = 1; o < snap; o++)
+              if (c->scopes[o].def_node == c->scopes[mi].def_node && c->scopes[o].is_cmethod) { orig = o; break; }
+            if (orig < 0) continue;
+            mi = orig; def_cls = c->scopes[orig].class_id;
+            if (def_cls == k) continue;
+          }
+          int has_new = 0;
+          if (cmethod_needs_specialization(c, mi, k, def_cls, &has_new))
+            specialize_cmethod_for(c, mi, def_cls, k);
+        }
+      }
+      continue;
+    }
     if (recv < 0 ||
         (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode"))) {
       /* a bare (or explicit-self: this pass runs before the desugar that
