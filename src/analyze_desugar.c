@@ -314,6 +314,121 @@ int desugar_masgn_object_index(Compiler *c) {
   return changed;
 }
 
+/* `h[k], o.x = v, w` stores through `[]=` and `x=` just as `h[k] = v` and
+   `o.x = w` do, but the passes that widen a container's key and element
+   types, or an attribute's slot, from those stores only look at CallNodes:
+   an index or attribute target of a multiple assignment was no evidence at
+   all, so `h[cnt[0]], h[:k] = 1, "x"` built a symbol-keyed hash that dropped
+   the integer key, and `a[0], a[2] = 1, "x"` stored a string into an int
+   array. Each such target gets a detached `recv[k] = v` / `recv.x = v`
+   CallNode, never in a statement list and so never emitted, whose value is
+   the element the target receives: the tuple's element, nil past its end, or
+   `rhs[i]` for a run-time array. The multiple assignment itself still does
+   the store. A run-time right side waits until its type is known. */
+static int masgn_ev_value(NodeTable *nt, int value, int tuple, int en, const int *els,
+                          int scalar, long long pos) {
+  if (tuple) {
+    if (pos >= 0 && pos < en) return els[pos];
+    return nt_new_node(nt, "NilNode");
+  }
+  if (scalar) return pos == 0 ? value : nt_new_node(nt, "NilNode");
+  int ix = nt_new_node(nt, "IntegerNode");
+  int ia = nt_new_node(nt, "ArgumentsNode");
+  int rd = nt_new_node(nt, "CallNode");
+  if (ix < 0 || ia < 0 || rd < 0) return -1;
+  nt_node_set_int(nt, ix, "value", pos);
+  nt_node_set_arr(nt, ia, "arguments", &ix, 1);
+  nt_node_set_ref(nt, rd, "receiver", value);
+  nt_node_set_str(nt, rd, "name", "[]");
+  nt_node_set_ref(nt, rd, "arguments", ia);
+  nt_node_set_ref(nt, rd, "block", -1);
+  nt_node_set_int(nt, rd, "masgn_elem", pos);
+  return rd;
+}
+static int masgn_ev_store(Compiler *c, int id, int tgt, int val) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  NodeKind k = nt_kind(nt, tgt);
+  if ((k != NK_IndexTargetNode && k != NK_CallTargetNode) || val < 0) return 0;
+  int recv = nt_ref(nt, tgt, "receiver");
+  if (recv < 0) return 0;
+  int an = 0;
+  int anode = k == NK_IndexTargetNode ? nt_ref(nt, tgt, "arguments") : -1;
+  const int *av = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+  if (k == NK_IndexTargetNode && an < 1) return 0;
+  const char *nm = k == NK_IndexTargetNode ? "[]=" : nt_str(nt, tgt, "name");
+  if (!nm) return 0;
+  int nargs = nt_new_node(nt, "ArgumentsNode");
+  int call = nt_new_node(nt, "CallNode");
+  int *na = malloc(sizeof(int) * (size_t)(an + 1));
+  if (nargs < 0 || call < 0 || !na) { free(na); return 0; }
+  for (int j = 0; j < an; j++) na[j] = av[j];
+  na[an] = val;
+  nt_node_set_arr(nt, nargs, "arguments", na, an + 1);
+  free(na);
+  nt_node_set_ref(nt, call, "receiver", recv);
+  nt_node_set_str(nt, call, "name", nm);
+  nt_node_set_ref(nt, call, "arguments", nargs);
+  nt_node_set_ref(nt, call, "block", -1);
+  int line = (int)nt_int(nt, id, "node_line", 0);
+  if (line) nt_node_set_int(nt, call, "node_line", line);
+  return 1;
+}
+int desugar_masgn_store_evidence(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_MultiWriteNode || id >= c->node_cap) continue;
+    if (nt_int(nt, id, "masgn_ev", 0)) continue;
+    int ln = 0; const int *ls = nt_arr(nt, id, "lefts", &ln);
+    int rn = 0; const int *rs = nt_arr(nt, id, "rights", &rn);
+    int want = 0;
+    for (int j = 0; j < ln; j++)
+      want |= nt_kind(nt, ls[j]) == NK_IndexTargetNode || nt_kind(nt, ls[j]) == NK_CallTargetNode;
+    for (int j = 0; j < rn; j++)
+      want |= nt_kind(nt, rs[j]) == NK_IndexTargetNode || nt_kind(nt, rs[j]) == NK_CallTargetNode;
+    if (!want) continue;
+    int value = nt_ref(nt, id, "value");
+    if (value < 0) continue;
+    int tuple = masgn_tuple_rhs(nt, value), en = 0, scalar = 0;
+    if (!tuple) {
+      TyKind st = infer_type(c, value);
+      if (st == TY_UNKNOWN) continue;
+      if (ty_is_object(st)) { nt_node_set_int(nt, id, "masgn_ev", 1); continue; }
+      scalar = st != TY_POLY && !ty_is_array(st);
+    }
+    nt_node_set_int(nt, id, "masgn_ev", 1);
+    int n_before = nt->count;
+    /* the arrays are reread: every new node may move the table */
+    for (int j = 0; j < ln; j++) {
+      ls = nt_arr(nt, id, "lefts", &ln);
+      const int *els = tuple ? nt_arr(nt, value, "elements", &en) : NULL;
+      int tgt = ls[j];
+      NodeKind tk = nt_kind(nt, tgt);
+      if (tk != NK_IndexTargetNode && tk != NK_CallTargetNode) continue;
+      changed |= masgn_ev_store(c, id, tgt, masgn_ev_value(nt, value, tuple, en, els, scalar, j));
+    }
+    for (int j = 0; j < rn; j++) {
+      rs = nt_arr(nt, id, "rights", &rn);
+      const int *els = tuple ? nt_arr(nt, value, "elements", &en) : NULL;
+      int tgt = rs[j];
+      NodeKind tk = nt_kind(nt, tgt);
+      if (tk != NK_IndexTargetNode && tk != NK_CallTargetNode) continue;
+      /* a right target takes the element counted from the end, never one a
+         left target already took */
+      long long pos = tuple ? (en - rn + j < ln ? -1 : en - rn + j)
+                    : scalar ? (j == 0 && ln == 0 ? 0 : -1) : j - rn;
+      changed |= masgn_ev_store(c, id, tgt, masgn_ev_value(nt, value, tuple, en, els, scalar, pos));
+    }
+    comp_grow_node_arrays(c);
+    for (int k = n_before; k < nt->count; k++) {
+      c->nscope[k] = c->nscope[id];
+      c->node_cbody[k] = c->node_cbody[id];
+    }
+  }
+  return changed;
+}
+
 /* Proc#>> / #<< with a Method operand: wrap the Method side in #to_proc at the
    AST, so composition always runs proc-to-proc. The to_proc emission builds a
    real trampoline proc that publishes its boxed result through the return
