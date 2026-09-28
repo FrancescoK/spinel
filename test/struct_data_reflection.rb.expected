@@ -1,0 +1,47 @@
+[:x, :x=, :y, :y=]
+[:x, :y]
+[:a, :a=, :hi]
+[:a, :hi]
+[:t]
+[:e]
+[:each, :q, :q2, :r, :z]
+[:<=>, :w]
+[:x, :x=, :y, :y=]
+[:s]
+false
+true
+false
+false
+false
+false
+true
+false
+true
+true
+true
+false
+false
+true
+true
+false
+false
+true
+false
+true
+true
+false
+true
+false
+[:[], :[]=, :all?, :any?, :chain, :chunk, :chunk_while, :collect, :collect_concat, :compact, :count, :cycle, :deconstruct, :deconstruct_keys, :detect, :dig, :drop, :drop_while, :each, :each_cons, :each_entry, :each_pair, :each_slice, :each_with_index, :each_with_object, :entries, :filter, :filter_map, :find, :find_all, :find_index, :first, :flat_map, :grep, :grep_v, :group_by, :include?, :inject, :lazy, :length, :map, :max, :max_by, :member?, :members, :min, :min_by, :minmax, :minmax_by, :none?, :one?, :partition, :reduce, :reject, :reverse_each, :select, :size, :slice_after, :slice_before, :slice_when, :sort, :sort_by, :sum, :take, :take_while, :tally, :to_a, :to_h, :to_set, :uniq, :values, :values_at, :x, :x=, :y, :y=, :zip]
+[:deconstruct, :deconstruct_keys, :members, :to_h, :with, :x, :y]
+[:[], :[]=, :a, :a=, :all?, :any?, :chain, :chunk, :chunk_while, :collect, :collect_concat, :compact, :count, :cycle, :deconstruct, :deconstruct_keys, :detect, :dig, :drop, :drop_while, :each, :each_cons, :each_entry, :each_pair, :each_slice, :each_with_index, :each_with_object, :entries, :filter, :filter_map, :find, :find_all, :find_index, :first, :flat_map, :grep, :grep_v, :group_by, :include?, :inject, :lazy, :length, :map, :max, :max_by, :member?, :members, :min, :min_by, :minmax, :minmax_by, :none?, :one?, :partition, :reduce, :reject, :reverse_each, :select, :size, :slice_after, :slice_before, :slice_when, :sort, :sort_by, :sum, :t, :take, :take_while, :tally, :to_a, :to_h, :to_set, :uniq, :values, :values_at, :zip]
+[:a, :deconstruct, :deconstruct_keys, :e, :members, :to_h, :with]
+[:<, :<=, :>, :>=, :between?, :clamp, :each, :greet, :q, :q2, :r, :w, :z]
+[:<, :<=, :>, :>=, :between?, :clamp, :each, :greet, :q, :q2, :w, :z]
+[:!, :!=, :!~, :<=>, :==, :===, :__id__, :__send__, :class, :clone, :define_singleton_method, :display, :dup, :enum_for, :eql?, :equal?, :extend, :freeze, :frozen?, :hash, :inspect, :instance_eval, :instance_exec, :instance_of?, :instance_variable_defined?, :instance_variable_get, :instance_variable_set, :instance_variables, :is_a?, :itself, :kind_of?, :method, :methods, :nil?, :object_id, :private_methods, :protected_methods, :public_method, :public_methods, :public_send, :remove_instance_variable, :respond_to?, :send, :singleton_class, :singleton_method, :singleton_methods, :tap, :then, :to_enum, :to_s, :yield_self]
+[]
+[]
+[:k]
+true
+[1, 2]
+1

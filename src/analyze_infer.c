@@ -1358,6 +1358,25 @@ int reduce_tail_from_acc(Compiler *c, int tail, const char *accp) {
   return 0;
 }
 
+/* obj.methods / public_methods / singleton_methods on an instance of `cid`:
+   listable ahead of time when the class does not define the name itself and
+   every ancestor is a user class whose whole method surface spinel knows --
+   not an exception, a native class, or a class whose superclass is a
+   builtin. */
+int an_object_methods_listable(Compiler *c, int cid, const char *name) {
+  const NodeTable *nt = c->nt;
+  if (cid < 0 || cid >= c->nclasses || class_is_exc_subclass(c, cid)) return 0;
+  if (comp_method_in_chain(c, cid, name, NULL) >= 0) return 0;
+  for (int k = cid, g = 0; k >= 0 && g <= c->nclasses; k = c->classes[k].parent, g++) {
+    if (c->classes[k].is_native_class) return 0;
+    if (c->classes[k].parent < 0 && !c->classes[k].is_struct) {
+      int dn = c->classes[k].def_node;
+      if (dn >= 0 && nt_kind(nt, dn) == NK_ClassNode && nt_ref(nt, dn, "superclass") >= 0) return 0;
+    }
+  }
+  return 1;
+}
+
 /* Does the program build Method objects (`method(:x)` / `instance_method(:x)`)?
    Only then can a boxed value answering #name be a Method (#3692). */
 int an_program_builds_methods(Compiler *c) {
@@ -3901,6 +3920,11 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* Object#instance_variables: a static symbol list for a typed object */
   if (recv >= 0 && ty_is_object(rt) && argc == 0 &&
       sp_streq(name, "instance_variables"))
+    return TY_POLY_ARRAY;
+  if (recv >= 0 && ty_is_object(rt) && argc == 0 &&
+      (sp_streq(name, "methods") || sp_streq(name, "public_methods") ||
+       sp_streq(name, "singleton_methods")) &&
+      an_object_methods_listable(c, ty_object_class(rt), name))
     return TY_POLY_ARRAY;
 
   /* Kernel#puts / #print return nil; typed so the value form composes. */
