@@ -6569,15 +6569,13 @@ static int kw_splat_user_may_convert(Compiler *c) {
   return 0;
 }
 
-/* See codegen_internal.h. */
-int kw_splat_may_be_nil(Compiler *c, int node) {
-  TyKind t = comp_ntype(c, node);
-  if (!kw_splat_bad_cls(c, t)) return 0;
+/* Can the `**` operand `node`, of the settled kind `t`, be nil at run time? */
+static int kw_splat_operand_nilable(Compiler *c, int node, TyKind t) {
   switch (nt_kind(c->nt, node)) {
     case NK_IntegerNode: case NK_FloatNode: case NK_RationalNode: case NK_ImaginaryNode:
     case NK_StringNode: case NK_InterpolatedStringNode: case NK_XStringNode:
     case NK_SymbolNode: case NK_InterpolatedSymbolNode: case NK_ArrayNode:
-    case NK_RangeNode: case NK_RegularExpressionNode: case NK_LambdaNode:
+    case NK_HashNode: case NK_RangeNode: case NK_RegularExpressionNode: case NK_LambdaNode:
     case NK_TrueNode: case NK_FalseNode:
       return 0;   /* a literal is never nil */
     case NK_CallNode: {
@@ -6600,6 +6598,12 @@ int kw_splat_may_be_nil(Compiler *c, int node) {
            nt_kind(c->nt, node) == NK_InstanceVariableReadNode;
   if (t == TY_FLOAT) return call_returns_nullable_int(c, node) || box_nullable_arg(c, node);
   return needs_root(t);   /* a pointer-backed kind holds nil as NULL */
+}
+
+/* See codegen_internal.h. */
+int kw_splat_may_be_nil(Compiler *c, int node) {
+  TyKind t = comp_ntype(c, node);
+  return kw_splat_bad_cls(c, t) && kw_splat_operand_nilable(c, node, t);
 }
 
 /* A `**` operand of a kind kw_splat_bad_cls names, evaluated into g_pre where
@@ -6836,6 +6840,14 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type) {
         emit_ctype(c, *out_type, g_pre);
         buf_printf(g_pre, " _t%d = %s;\n", ds_hash_tmp, hb.p ? hb.p : "");
         free(hb.p);
+        if (kw_splat_operand_nilable(c, inner2, *out_type)) {
+          /* nil (a NULL hash, `**f` where f answers an unset slot) carries
+             no keywords: an empty hash stands in for it, so the keyword
+             check, extraction and keyword-rest read no NULL */
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "SP_GC_ROOT(_t%d); if (!_t%d) _t%d = sp_%sHash_new();\n",
+                     ds_hash_tmp, ds_hash_tmp, ds_hash_tmp, ty_hash_cname(*out_type));
+        }
         ds_operand_reads_temp(inner2, ds_hash_tmp);
       }
       else if (nt_kind(nt, inner2) == NK_HashNode && empty_hash_literal(nt, inner2)) {
