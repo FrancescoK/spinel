@@ -6019,9 +6019,9 @@ static int bs_strip_keywords(Compiler *c, int blk, int bp, int pn) {
      other scope's local of the same name */
   for (int i = 0; i < kn; i++) {
     const char *wn = nt_str(nt, kws[i], "name");
-    if (block_param_written_len(wn) != strlen(wn)) { scope_local_intern(bs, wn); continue; }
+    if (block_param_is_renamed(wn)) { scope_local_intern(bs, wn); continue; }
     char kname[160];
-    snprintf(kname, sizeof kname, "%s__bp%d", wn, blk);
+    block_param_invent_name(nt, kname, sizeof kname, wn, blk);
     blkp_rewrite_refs(c, nbody, nt_str(nt, kws[i], "name"), kname);
     numbered_rename_locals_str(nt, blk, nt_str(nt, kws[i], "name"), kname);
     scope_local_intern(bs, kname);

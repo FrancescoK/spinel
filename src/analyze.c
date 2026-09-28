@@ -1804,16 +1804,100 @@ static int ie_poly_mark(Compiler *c, int id, TyKind rt) {
   return n == 1 ? k[0] : n > 1 ? -2 - id : -1;
 }
 
-/* The length of the name a block parameter was written with: `k__bp12`, as
-   rename_shadowing_block_params leaves a keyword that shadows an outer local,
-   is still the keyword `k`. */
+/* The names the shadow rename invents (`k__bp12` for a keyword `k`), each with
+   the length of the name the program wrote. Only a name recorded here is an
+   invented one: a program can write `k__bp12` itself, and that name is its
+   own. */
+static struct { char **name; size_t *len; unsigned mask; int n; } bp_renames;
+static const NodeTable *bp_user_nt;
+static char **bp_user_names;
+static int bp_user_n;
+
+static unsigned bp_rename_hash(const char *s) {
+  unsigned h = 2166136261u;
+  while (*s) { h ^= (unsigned char)*s++; h *= 16777619u; }
+  return h;
+}
+
+static int bp_rename_slot(const char *name) {
+  if (!bp_renames.name || !name) return -1;
+  unsigned i = bp_rename_hash(name) & bp_renames.mask;
+  while (bp_renames.name[i]) {
+    if (sp_streq(bp_renames.name[i], name)) return (int)i;
+    i = (i + 1) & bp_renames.mask;
+  }
+  return -1;
+}
+
+static void bp_rename_insert(char *name, size_t len) {
+  unsigned i = bp_rename_hash(name) & bp_renames.mask;
+  while (bp_renames.name[i]) i = (i + 1) & bp_renames.mask;
+  bp_renames.name[i] = name;
+  bp_renames.len[i] = len;
+}
+
+static void bp_rename_record(const char *name, size_t len) {
+  int s = bp_rename_slot(name);
+  if (s >= 0) { bp_renames.len[s] = len; return; }
+  unsigned ocap = bp_renames.name ? bp_renames.mask + 1 : 0;
+  if ((unsigned)(bp_renames.n + 1) * 2 > ocap) {
+    char **on = bp_renames.name;
+    size_t *ol = bp_renames.len;
+    unsigned cap = ocap ? ocap * 2 : 64;
+    bp_renames.name = calloc(cap, sizeof(char *));
+    bp_renames.len = calloc(cap, sizeof(size_t));
+    bp_renames.mask = cap - 1;
+    for (unsigned i = 0; i < ocap; i++) if (on[i]) bp_rename_insert(on[i], ol[i]);
+    free(on);
+    free(ol);
+  }
+  bp_rename_insert(strdup(name), len);
+  bp_renames.n++;
+}
+
+int block_param_is_renamed(const char *name) {
+  return bp_rename_slot(name) >= 0;
+}
+
+/* The length of the name a block parameter was written with: an invented
+   `k__bp12` is still the keyword `k`; any other name is its whole self. */
 size_t block_param_written_len(const char *name) {
-  size_t n = strlen(name);
-  const char *sfx = strstr(name, "__bp");
-  if (!sfx || !sfx[4]) return n;
-  const char *q = sfx + 4;
-  while (*q >= '0' && *q <= '9') q++;
-  return *q ? n : (size_t)(sfx - name);
+  int s = bp_rename_slot(name);
+  return s >= 0 ? bp_renames.len[s] : strlen(name);
+}
+
+/* True when the program itself uses `name`. Only a name with `__bp` in it can
+   clash with an invented one, so those are collected once. */
+static int bp_user_uses(const NodeTable *nt, const char *name) {
+  if (bp_user_nt != nt) {
+    bp_user_nt = nt;
+    for (int i = 0; i < bp_user_n; i++) free(bp_user_names[i]);
+    free(bp_user_names);
+    bp_user_names = NULL;
+    bp_user_n = 0;
+    int cap = 0;
+    for (int id = 0; id < nt->count; id++) {
+      const char *nm = nt_str(nt, id, "name");
+      if (!nm || !strstr(nm, "__bp") || block_param_is_renamed(nm)) continue;
+      if (bp_user_n == cap) {
+        cap = cap ? cap * 2 : 8;
+        bp_user_names = realloc(bp_user_names, (size_t)cap * sizeof(char *));
+      }
+      bp_user_names[bp_user_n++] = strdup(nm);
+    }
+  }
+  for (int i = 0; i < bp_user_n; i++) if (sp_streq(bp_user_names[i], name)) return 1;
+  return 0;
+}
+
+/* Invent the slot name for the parameter `written` of block `blk` and record
+   it, stepping past a name the program already uses. */
+void block_param_invent_name(const NodeTable *nt, char *buf, size_t n,
+                             const char *written, int blk) {
+  snprintf(buf, n, "%s__bp%d", written, blk);
+  for (int k = 1; bp_user_uses(nt, buf); k++)
+    snprintf(buf, n, "%s__bp%d_%d", written, blk, k);
+  bp_rename_record(buf, strlen(written));
 }
 
 /* In a call-site KeywordHashNode (`k: 9, j: 2`), the value node bound to the
@@ -2644,7 +2728,7 @@ typedef struct { const BlkpIdx *ix; int all; int i; } BlkpScan;
 static BlkpScan blkp_scan(const BlkpIdx *ix, const char *name) {
   BlkpScan sc;
   sc.ix = ix;
-  sc.all = strstr(name, "__bp") != NULL;
+  sc.all = block_param_is_renamed(name);
   sc.i = sc.all ? 0 : ix->head[blkp_name_hash(name) & ix->mask];
   return sc;
 }
@@ -2724,7 +2808,7 @@ static void rename_shadowing_block_locals(Compiler *c, int L, int pn, int body,
     const char *emit = tok;
     if (!params_bind_name(nt, pn, tok) &&
         name_written_outside(nt, tok, ix, inbody, gen)) {
-      snprintf(newn, sizeof newn, "%s__bp%d", tok, L);
+      block_param_invent_name(nt, newn, sizeof newn, tok, L);
       blkp_rewrite_refs(c, body, tok, newn);
       emit = newn;
       changed = 1;
@@ -3181,7 +3265,7 @@ void rename_shadowing_block_params(Compiler *c) {
       if (!collide) continue;
       char oldn[160], newn[176];
       snprintf(oldn, sizeof oldn, "%s", p);   /* copy: nt_set_str frees p's storage */
-      snprintf(newn, sizeof newn, "%s__bp%d", oldn, L);
+      block_param_invent_name(nt, newn, sizeof newn, oldn, L);
       /* `Proc#parameters` reports the name the program wrote, and the emitter
          recovers it by stripping this suffix -- but a stripped name that
          appears nowhere else is not in the generated symbol table, so interning
@@ -5493,6 +5577,8 @@ static int desugar_symbol_string_methods(Compiler *c) {
     if (!hit) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || infer_type(c, recv) != TY_SYMBOL) continue;
+    /* an `at` desugar_array_at rewrote: Symbol has #[] but no #at */
+    if (nt_int(nt, id, "was_at", 0)) continue;
     /* Symbol#<=> is defined only between Symbols: reading both sides as text
        would make :a <=> "a" answer 0 where Ruby answers nil, so leave a
        non-Symbol operand alone and let codegen emit the nil (#3081). */

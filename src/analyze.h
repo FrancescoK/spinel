@@ -162,6 +162,9 @@ void ie_body_restore(Compiler *c, int *snap);
    -1), and the value node bound to a keyword name within it (or -1). */
 int ie_call_kwhash(Compiler *c, int id);
 size_t block_param_written_len(const char *name);
+int block_param_is_renamed(const char *name);
+void block_param_invent_name(const NodeTable *nt, char *buf, size_t n,
+                             const char *written, int blk);
 int ie_kwhash_value(Compiler *c, int kwhash, const char *name);
 
 /* instance_exec trampoline body-arg resolution (mixed local/ivar/literal args):

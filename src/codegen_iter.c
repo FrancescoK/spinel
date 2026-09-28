@@ -1013,11 +1013,10 @@ void emit_yield_proc_call(Compiler *c, int args_node, TyKind result_ty, Buf *b, 
 /* Emit a block-arg source node coerced to the block param's slot type,
    mirroring the box/unbox handling of the requireds binding arm. */
 /* The keyword a block keyword param answers to: its name without the
-   `__bp<N>` suffix a block-param rename gives it. */
+   `__bp<N>` suffix a block-param rename recorded for it. */
 static const char *block_kw_key(const char *kp, char *buf, size_t n) {
-  const char *s = kp ? strstr(kp, "__bp") : NULL;
-  if (!s) return kp;
-  snprintf(buf, n, "%.*s", (int)(s - kp), kp);
+  if (!kp || !block_param_is_renamed(kp)) return kp;
+  snprintf(buf, n, "%.*s", (int)block_param_written_len(kp), kp);
   return buf;
 }
 
@@ -1291,9 +1290,8 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
           for (int ki2 = 0; ksym; ki2++) {
             const char *kp2 = block_keyword_name(c, blk, ki2);
             if (!kp2) break;
-            if (sp_streq(kp2, ksym) ||
-                (strstr(kp2, "__bp") && !strncmp(kp2, ksym, strlen(ksym)) &&
-                 !strncmp(kp2 + strlen(ksym), "__bp", 4))) { consumed = 1; break; }
+            char knb2[128];
+            if (sp_streq(block_kw_key(kp2, knb2, sizeof knb2), ksym)) { consumed = 1; break; }
           }
           if (consumed) continue;
           if (!as_expr) emit_indent(b, indent);

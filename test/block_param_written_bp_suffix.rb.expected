@@ -1,0 +1,14 @@
+1
+[[:opt, :x__bp3], [:opt, :y__bp4], [:rest, :r__bp5]]
+[[:opt, :a__bp1], [:keyreq, :k__bp2], [:key, :j__bp3], [:keyrest, :o__bp4], [:block, :b__bp5]]
+[[:req], [:req, :f__bp8]]
+1
+1
+2
+[[:opt, :x], [:opt, :x__bp1]]
+[7, 3]
+0
+10
+[1, {b: 2}]
+[0, {a__bp9: 1, b: 2}]
+1
