@@ -10659,6 +10659,11 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
+    if (argc == 0 && ty_is_object(rt) &&
+        (sp_streq(name, "methods") || sp_streq(name, "public_methods") ||
+         sp_streq(name, "singleton_methods")) &&
+        emit_object_methods_reflection(c, recv, ty_object_class(rt), name, b))
+      return 1;
     if ((sp_streq(name, "instance_variable_get") || sp_streq(name, "instance_variable_set")) &&
         argc >= 1 && nt_type(nt, argv[0]) &&
         (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {

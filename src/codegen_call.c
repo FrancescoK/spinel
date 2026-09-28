@@ -1042,6 +1042,22 @@ static int name_is_synth_method(Compiler *c, const char *m) {
   /* `__inc <n> <name>`: the shadow copy of an included module's method, kept
      so an override can reach it through super (#3738) */
   if (strncmp(m, "__inc ", 6) == 0) return 1;
+  /* `m#pf`, the proc-form clone of a yielding method: `#` is never part of a
+     Ruby method name */
+  if (strchr(m, '#')) return 1;
+  /* `__to_enum_<m>`, the Enumerator generator for `to_enum(:m)`
+     (synth_to_enum_generators): it shares the DefNode of the method it
+     wraps, which a user method of that name never does */
+  if (strncmp(m, "__to_enum_", 10) == 0) {
+    for (int si = 0; si < c->nscopes; si++) {
+      Scope *s = &c->scopes[si];
+      if (!s->name || !sp_streq(s->name, m) || s->def_node < 0) continue;
+      for (int sj = 0; sj < c->nscopes; sj++)
+        if (c->scopes[sj].name && sp_streq(c->scopes[sj].name, m + 10) &&
+            c->scopes[sj].def_node == s->def_node) return 1;
+    }
+    return 0;
+  }
   /* a parameter default moved into a method of its own
      (desugar_recursive_param_defaults, #4900): known by the mark on its
      DefNode rather than its name, which the desugar picks so that no method
@@ -15252,6 +15268,17 @@ static int class_mixes_in(Compiler *c, int cid, const char *mod, int depth) {
   }
   return 0;
 }
+/* 1 for a class whose chain reaches a Struct.new class, 2 for a Data.define
+   one, 0 otherwise. */
+static int class_struct_kind(Compiler *c, int cid) {
+  for (int g = 0; cid >= 0 && cid < c->nclasses && g <= c->nclasses; g++) {
+    if (c->classes[cid].is_data) return 2;
+    if (c->classes[cid].is_struct) return 1;
+    cid = c->classes[cid].parent;
+  }
+  return 0;
+}
+
 /* The names an instance answers respond_to? for without an entry in its
    class's method table: Enumerable's once the class includes the module
    and has the `each` it serves (the synthesized __enum_to_a marks any
@@ -15264,19 +15291,226 @@ static int class_mixes_in(Compiler *c, int cid, const char *mod, int depth) {
 static int class_implicit_responds(Compiler *c, int cid, const char *qm) {
   if (comp_method_in_chain(c, cid, "__enum_to_a", NULL) >= 0 &&
       name_is_enumerable_module_method(qm) &&
-      (c->classes[cid].is_struct || class_mixes_in(c, cid, "Enumerable", 0))) return 1;
+      (class_struct_kind(c, cid) == 1 || class_mixes_in(c, cid, "Enumerable", 0))) return 1;
   if (comp_method_in_chain(c, cid, "<=>", NULL) >= 0 &&
       name_is_comparable_module_method(qm) &&
       class_mixes_in(c, cid, "Comparable", 0)) return 1;
-  if (!c->classes[cid].is_struct && !c->classes[cid].is_data) return 0;
+  int sk = class_struct_kind(c, cid);
+  if (!sk) return 0;
   if (sp_streq(qm, "members") || sp_streq(qm, "to_h") ||
       sp_streq(qm, "deconstruct") || sp_streq(qm, "deconstruct_keys")) return 1;
-  if (c->classes[cid].is_data) return sp_streq(qm, "with");
+  if (sk == 2) return sp_streq(qm, "with");
   static const char *const sm[] = {
     "to_a", "values", "values_at", "dig", "each", "each_pair", "size",
     "length", "[]", "[]=", NULL };
   for (int i = 0; sm[i]; i++) if (sp_streq(qm, sm[i])) return 1;
   return 0;
+}
+
+/* An iterator synth_struct_each generated (each, each_pair,
+   each_with_index). A Struct inherits those names from Struct and
+   Enumerable rather than defining them itself, and a Data has none. */
+static int scope_is_struct_synth(Compiler *c, int si) {
+  if (si < 0 || si >= c->nscopes) return 0;
+  int dn = c->scopes[si].def_node;
+  return dn >= 0 && nt_str(c->nt, dn, "synth") != NULL;
+}
+
+/* A method in `cid`'s chain that reflection must not report: a
+   compiler-synthesized helper, or a generated Struct iterator on a Data
+   class. */
+static int method_hidden_from_reflection(Compiler *c, int cid, const char *m) {
+  if (name_is_synth_method(c, m)) return 1;
+  if (class_struct_kind(c, cid) != 2) return 0;
+  int mi = comp_method_in_chain(c, cid, m, NULL);
+  return mi >= 0 && scope_is_struct_synth(c, mi);
+}
+
+/* An ordered, de-duplicated list of method names for the reflection folds.
+   A name is recorded once, at its first (most derived) sighting, and listed
+   only if that sighting was visible, so a subclass that makes an inherited
+   method private hides the ancestor's public one. */
+typedef struct { char **v; unsigned char *show; int n, cap; } ReflNames;
+
+static void refl_note(ReflNames *r, const char *m, int show) {
+  for (int i = 0; i < r->n; i++) if (sp_streq(r->v[i], m)) return;
+  if (r->n >= r->cap) {
+    r->cap = r->cap ? r->cap * 2 : 32;
+    r->v = realloc(r->v, sizeof(char *) * (size_t)r->cap);
+    r->show = realloc(r->show, (size_t)r->cap);
+    if (!r->v || !r->show) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  r->v[r->n] = strdup(m);
+  r->show[r->n] = (unsigned char)(show != 0);
+  r->n++;
+}
+
+static void refl_free(ReflNames *r) {
+  for (int i = 0; i < r->n; i++) free(r->v[i]);
+  free(r->v); free(r->show);
+}
+
+static int refl_vis_wanted(int v, int pub, int prot, int priv) {
+  return (v == SP_VIS_PUBLIC && pub) || (v == SP_VIS_PROTECTED && prot) ||
+         (v == SP_VIS_PRIVATE && priv);
+}
+
+/* The visibility `ci` gives its own method `m`: its own declaration, else
+   the including module's for a copied-in method, else public. */
+static int refl_own_vis(Compiler *c, int ci, int si, const char *m) {
+  ClassInfo *k = &c->classes[ci];
+  for (int i = 0; i < k->nvis; i++)
+    if (sp_streq(k->vis_names[i], m)) return k->vis_kinds[i];
+  int om = si >= 0 ? c->scopes[si].origin_module_ci - 1 : -1;
+  if (om >= 0 && om < c->nclasses) return comp_method_vis(&c->classes[om], m);
+  return SP_VIS_PUBLIC;
+}
+
+/* `class T < Struct.new(:a)` is registered as the struct itself, but its
+   member accessors belong to the anonymous superclass. */
+static int refl_member_of_struct_superclass(Compiler *c, int ci, const char *m) {
+  const NodeTable *nt = c->nt;
+  int dn = c->classes[ci].def_node;
+  if (!c->classes[ci].is_struct || dn < 0 || nt_kind(nt, dn) != NK_ClassNode) return 0;
+  int sup = nt_ref(nt, dn, "superclass");
+  int args = sup >= 0 && nt_kind(nt, sup) == NK_CallNode ? nt_ref(nt, sup, "arguments") : -1;
+  int an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  for (int i = 0; i < an; i++)
+    if (nt_kind(nt, av[i]) == NK_SymbolNode && nt_str(nt, av[i], "value") &&
+        sp_streq(nt_str(nt, av[i], "value"), m)) return 1;
+  return 0;
+}
+
+/* The instance methods class `ci` itself defines, as
+   Module#instance_methods(false) sees them: its defs, aliases and attribute
+   accessors, without the helpers the compiler synthesizes or a Struct's
+   generated iterators. A method copied in from an included module belongs
+   to the module, and a `class T < Struct.new(:a)` member accessor to the
+   anonymous superclass, so both are listed only with `with_modules` (the
+   whole-chain walk of Object#methods). */
+static void refl_own_instance_methods(Compiler *c, int ci, int pub, int prot, int priv,
+                                      int with_modules, ReflNames *r) {
+  ClassInfo *k = &c->classes[ci];
+  int parent = k->parent;
+  for (int si = 0; si < c->nscopes; si++) {
+    Scope *s = &c->scopes[si];
+    if (s->class_id != ci || s->is_cmethod || !s->name || !s->name[0]) continue;
+    if (strncmp(s->name, "__prep_", 7) == 0) continue;
+    if (name_is_synth_method(c, s->name) || scope_is_struct_synth(c, si)) continue;
+    if (s->origin_module_ci > 0 && !with_modules) continue;
+    refl_note(r, s->name, refl_vis_wanted(refl_own_vis(c, ci, si, s->name), pub, prot, priv));
+  }
+  for (int i = 0; i < k->naliases; i++) {
+    const char *an = k->alias_new[i];
+    if (!an || name_is_synth_method(c, an)) continue;
+    int v = SP_VIS_PUBLIC, own = 0;
+    for (int j = 0; j < k->nvis; j++)
+      if (sp_streq(k->vis_names[j], an)) { v = k->vis_kinds[j]; own = 1; break; }
+    if (!own) v = comp_method_vis_in_chain(c, ci, an);
+    refl_note(r, an, refl_vis_wanted(v, pub, prot, priv));
+  }
+  /* accessors are flattened into descendants, so "own" is present here and
+     absent from the parent chain */
+  for (int i = 0; i < k->nreaders; i++) {
+    const char *rn = k->readers[i];
+    if (parent >= 0 && comp_reader_in_chain(c, parent, rn, NULL)) continue;
+    if (!with_modules && refl_member_of_struct_superclass(c, ci, rn)) continue;
+    refl_note(r, rn, refl_vis_wanted(comp_method_vis(k, rn), pub, prot, priv));
+  }
+  for (int i = 0; i < k->nwriters; i++) {
+    if (parent >= 0 && comp_writer_in_chain(c, parent, k->writers[i], NULL)) continue;
+    if (!with_modules && refl_member_of_struct_superclass(c, ci, k->writers[i])) continue;
+    char wn[256]; snprintf(wn, sizeof wn, "%s=", k->writers[i]);
+    refl_note(r, wn, refl_vis_wanted(comp_method_vis(k, wn), pub, prot, priv));
+  }
+}
+
+/* The names an instance of `cid` answers Object#methods (pub+prot) or
+   #public_methods (pub) with: its class chain's own methods, then the core
+   Struct/Data, Enumerable and Comparable surfaces it carries, then Object's.
+   `singleton_only` stops at the singleton links (Object#singleton_methods). */
+static void refl_object_methods(Compiler *c, int cid, int pub, int prot, int singleton_only,
+                                ReflNames *r) {
+  for (int k = cid, g = 0; k >= 0 && g <= c->nclasses; k = c->classes[k].parent, g++) {
+    if (singleton_only && !c->classes[k].is_singleton_of) break;
+    refl_own_instance_methods(c, k, pub, prot, 0, 1, r);
+  }
+  if (singleton_only) return;
+  static const char *const structm[] = {
+    "==", "[]", "[]=", "deconstruct", "deconstruct_keys", "dig", "each", "each_pair",
+    "eql?", "filter", "hash", "inspect", "length", "members", "select", "size",
+    "to_a", "to_h", "to_s", "values", "values_at", NULL };
+  static const char *const datam[] = {
+    "==", "deconstruct", "deconstruct_keys", "eql?", "hash", "inspect", "members",
+    "to_h", "to_s", "with", NULL };
+  static const char *const enumm[] = {
+    "all?", "any?", "chain", "chunk", "chunk_while", "collect", "collect_concat",
+    "compact", "count", "cycle", "detect", "drop", "drop_while", "each_cons",
+    "each_entry", "each_slice", "each_with_index", "each_with_object", "entries",
+    "filter", "filter_map", "find", "find_all", "find_index", "first", "flat_map",
+    "grep", "grep_v", "group_by", "include?", "inject", "lazy", "map", "max",
+    "max_by", "member?", "min", "min_by", "minmax", "minmax_by", "none?", "one?",
+    "partition", "reduce", "reject", "reverse_each", "select", "slice_after",
+    "slice_before", "slice_when", "sort", "sort_by", "sum", "take", "take_while",
+    "tally", "to_a", "to_h", "to_set", "uniq", "zip", NULL };
+  static const char *const cmpm[] = {
+    "<", "<=", "==", ">", ">=", "between?", "clamp", NULL };
+  static const char *const objm[] = {
+    "!", "!=", "!~", "<=>", "==", "===", "__id__", "__send__", "class", "clone",
+    "define_singleton_method", "display", "dup", "enum_for", "eql?", "equal?",
+    "extend", "freeze", "frozen?", "hash", "inspect", "instance_eval",
+    "instance_exec", "instance_of?", "instance_variable_defined?",
+    "instance_variable_get", "instance_variable_set", "instance_variables",
+    "is_a?", "itself", "kind_of?", "method", "methods", "nil?", "object_id",
+    "private_methods", "protected_methods", "public_method", "public_methods",
+    "public_send", "remove_instance_variable", "respond_to?", "send",
+    "singleton_class", "singleton_method", "singleton_methods", "tap", "then",
+    "to_enum", "to_s", "yield_self", NULL };
+  int sk = class_struct_kind(c, cid);
+  const char *const *core[4] = {
+    sk == 1 ? structm : sk == 2 ? datam : NULL,
+    sk == 1 || class_mixes_in(c, cid, "Enumerable", 0) ? enumm : NULL,
+    class_mixes_in(c, cid, "Comparable", 0) ? cmpm : NULL,
+    objm };
+  for (int t = 0; t < 4; t++)
+    for (int i = 0; core[t] && core[t][i]; i++) refl_note(r, core[t][i], pub);
+}
+
+/* Emit the listed names of `r` as a PolyArray of symbols. Interned at run
+   time: a name the source never spells is not in the generated symbol
+   table. */
+static void refl_emit_sym_array(Compiler *c, int cid, ReflNames *r, Buf *b) {
+  int ta = ++g_tmp;
+  buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", ta, ta);
+  for (int i = 0; i < r->n; i++) {
+    if (!r->show[i]) continue;
+    if (cid >= 0 && comp_is_undeffed_in_chain(c, cid, r->v[i])) continue;
+    buf_printf(b, "sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", ta);
+    emit_str_literal(b, r->v[i]);
+    buf_puts(b, "))); ");
+  }
+  buf_printf(b, "_t%d; })", ta);
+}
+
+/* obj.methods / obj.public_methods / obj.singleton_methods on a typed user
+   object: the class chain is static, so the list is too. The receiver is
+   evaluated for its effects. */
+int emit_object_methods_reflection(Compiler *c, int recv, int cid, const char *name, Buf *b) {
+  int pub = 1, prot = 0, sg = 0;
+  if (sp_streq(name, "methods")) prot = 1;
+  else if (sp_streq(name, "singleton_methods")) { prot = 1; sg = 1; }
+  else if (!sp_streq(name, "public_methods")) return 0;
+  if (!an_object_methods_listable(c, cid, name)) return 0;
+  ReflNames r = {0};
+  refl_object_methods(c, cid, pub, prot, sg, &r);
+  buf_puts(b, "({ (void)(");
+  emit_expr(c, recv, b);
+  buf_puts(b, "); ");
+  refl_emit_sym_array(c, cid, &r, b);
+  buf_puts(b, "; })");
+  refl_free(&r);
+  return 1;
 }
 /* Does any user class answer respond_to?(qm) at run time, through a method of
    its own or a name it carries implicitly? Decides whether a boxed receiver
@@ -30304,42 +30538,15 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                           ? nt_str(nt, recv, "name") : NULL;
         int ci2 = cn2 ? comp_class_index(c, cn2) : -1;
         if (ci2 >= 0) {
-          ClassInfo *ci3 = &c->classes[ci2];
-          /* Build a real sp_PolyArray of boxed symbols so the declared
-             TY_POLY_ARRAY type matches the runtime value -- chained ops like
-             `.map(&:to_s).sort` then iterate it correctly (a boxed SYM_ARRAY
-             obj is opaque to the poly-array path and iterated as empty). */
-          int ta = ++g_tmp;
-          buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", ta, ta);
-          /* user-defined instance methods */
-          for (int si = 0; si < c->nscopes; si++) {
-            Scope *s = &c->scopes[si];
-            if (s->class_id != ci2 || s->is_cmethod) continue;
-            if (!s->name || !s->name[0]) continue;
-            /* skip shadow methods and compiler-synthesized helpers */
-            if (strncmp(s->name, "__prep_", 7) == 0) continue;
-            if (name_is_synth_method(c, s->name)) continue;
-            int v = comp_method_vis(ci3, s->name);
-            if (!((v == SP_VIS_PUBLIC && im_pub) || (v == SP_VIS_PROTECTED && im_prot) ||
-                  (v == SP_VIS_PRIVATE && im_priv))) continue;
-            buf_printf(b, "sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(\"%s\"))); ", ta, s->name);
-          }
-          /* attr_readers */
-          for (int ri = 0; ri < ci3->nreaders; ri++) {
-            int v = comp_method_vis(ci3, ci3->readers[ri]);
-            if (!((v == SP_VIS_PUBLIC && im_pub) || (v == SP_VIS_PROTECTED && im_prot) ||
-                  (v == SP_VIS_PRIVATE && im_priv))) continue;
-            buf_printf(b, "sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(\"%s\"))); ", ta, ci3->readers[ri]);
-          }
-          /* attr_writers (looked up + emitted as "name=") */
-          for (int wi = 0; wi < ci3->nwriters; wi++) {
-            char wn[256]; snprintf(wn, sizeof wn, "%s=", ci3->writers[wi]);
-            int v = comp_method_vis(ci3, wn);
-            if (!((v == SP_VIS_PUBLIC && im_pub) || (v == SP_VIS_PROTECTED && im_prot) ||
-                  (v == SP_VIS_PRIVATE && im_priv))) continue;
-            buf_printf(b, "sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(\"%s\"))); ", ta, wn);
-          }
-          buf_printf(b, "sp_box_poly_array(_t%d); })", ta);
+          ReflNames r = {0};
+          refl_own_instance_methods(c, ci2, im_pub, im_prot, im_priv, 0, &r);
+          /* a real sp_PolyArray of boxed symbols, so chained ops like
+             `.map(&:to_s).sort` iterate it (a boxed SYM_ARRAY obj is opaque
+             to the poly-array path and iterated as empty) */
+          buf_puts(b, "sp_box_poly_array(");
+          refl_emit_sym_array(c, ci2, &r, b);
+          buf_puts(b, ")");
+          refl_free(&r);
           return;
         }
       }
@@ -35347,7 +35554,8 @@ else {
           int is_wr = ql > 0 && qm[ql - 1] == '=';
           char wbase[256]; wbase[0] = '\0';
           if (is_wr && ql - 1 < sizeof wbase) { memcpy(wbase, qm, ql - 1); wbase[ql - 1] = '\0'; }
-          int found = comp_method_in_chain(c, cid, qm, NULL) >= 0 ||
+          int found = (comp_method_in_chain(c, cid, qm, NULL) >= 0 &&
+                       !method_hidden_from_reflection(c, cid, qm)) ||
                       comp_reader_in_chain(c, cid, qm, NULL) ||
                       (is_wr && comp_writer_in_chain(c, cid, wbase, NULL));
           /* the names the class answers without a method-table entry: an
@@ -35384,7 +35592,8 @@ else {
               yes = class_responds_to(c, cid, qm);
             }
             else {
-              int found = comp_method_in_chain(c, cid, qm, NULL) >= 0 ||
+              int found = (comp_method_in_chain(c, cid, qm, NULL) >= 0 &&
+                           !method_hidden_from_reflection(c, cid, qm)) ||
                           comp_reader_in_chain(c, cid, qm, NULL) ||
                           (is_wr && comp_writer_in_chain(c, cid, wbase, NULL));
               if (!found) { resolved = 1; yes = 0; }
@@ -35427,7 +35636,8 @@ else {
           if (is_wr) { memcpy(wbase, qm, ql - 1); wbase[ql - 1] = '\0'; }
           int first = 1;
           for (int k = 0; k < c->nclasses; k++) {
-            int has = comp_method_in_chain(c, k, qm, NULL) >= 0 ||
+            int has = (comp_method_in_chain(c, k, qm, NULL) >= 0 &&
+                       !method_hidden_from_reflection(c, k, qm)) ||
                       comp_reader_in_chain(c, k, qm, NULL) ||
                       (is_wr && comp_writer_in_chain(c, k, wbase, NULL)) ||
                       (c->classes[k].is_native_class &&
@@ -35504,6 +35714,10 @@ else {
       int parent = c->classes[ci].parent;
       int mc = -1;
       int mi = comp_method_in_chain(c, ci, qm, &mc);
+      /* a generated Struct iterator is Struct's or Enumerable's, never the
+         class's own, and a Data class has none */
+      if (mi >= 0 && scope_is_struct_synth(c, mi) &&
+          (!inherit || class_struct_kind(c, ci) == 2)) mi = -1;
       int found;
       if (inherit) {
         found = mi >= 0 || comp_reader_in_chain(c, ci, qm, NULL) ||
@@ -35513,10 +35727,13 @@ else {
         /* attr readers/writers are flattened into descendants at analyze
            time, so "own" means present here but not in the parent chain */
         int rd_own = comp_is_reader(&c->classes[ci], qm) &&
-                     (parent < 0 || !comp_reader_in_chain(c, parent, qm, NULL));
+                     (parent < 0 || !comp_reader_in_chain(c, parent, qm, NULL)) &&
+                     !refl_member_of_struct_superclass(c, ci, qm);
         int wr_own = is_setter && comp_is_writer(&c->classes[ci], base) &&
-                     (parent < 0 || !comp_writer_in_chain(c, parent, base, NULL));
-        found = (mi >= 0 && mc == ci) || rd_own || wr_own;
+                     (parent < 0 || !comp_writer_in_chain(c, parent, base, NULL)) &&
+                     !refl_member_of_struct_superclass(c, ci, base);
+        /* a method copied in from an included module is the module's */
+        found = (mi >= 0 && mc == ci && c->scopes[mi].origin_module_ci == 0) || rd_own || wr_own;
       }
       /* Methods inherited from Object/Kernel are defined on every class. With
          `inherit` (the default) method_defined? must report the public ones as
