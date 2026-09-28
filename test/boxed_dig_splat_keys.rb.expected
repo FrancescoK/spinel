@@ -1,0 +1,12 @@
+1
+6
+5
+1
+nil
+nil
+20
+[:a, :b]
+[5, 6]
+[TypeError, "Integer does not have #dig method"]
+[NoMethodError, "undefined method 'dig' for nil"]
+[NoMethodError, "undefined method 'dig' for an instance of String"]
