@@ -58,3 +58,17 @@ def y; yield 1; end
 y { |a, &b| p b }
 b = 3
 p b
+
+# a nested block, lambda or def binding the same name keeps its own
+[1].each { |a, q: 1| [2].each { |b, q: 2| p q }; p q }
+[1].each { |a, q: 1| [2].each { |b, q: 2| p q; q += 10; p q }; p q }
+[1].each { |a, q: 1| [2].each { |q| p q }; p q }
+[1].each { |a, q: 1| [2].each { |b, q = 5| p q }; p q }
+[1].each { |a, q: 1| [2].each { |b, *q| p q }; p q }
+[1].each { |a, q: 1| [2].each { |b, **q| p q }; p q }
+[1].each { |a, q: 1| [2].each { |b, &q| p q }; p q }
+[1].each { |a, q: 1| [2].each { |b; q| q = 9; p q }; p q }
+[1].each { |a, q: 1| f = ->(q: 3) { q }; p f.call; p f.call(q: 4); p q }
+[1].each { |a, q: 1| def m(q: 5) = q; p m; p q }
+[1].each { |a, q: 1| y { |b, q: 6| p q }; p q }
+[1].each { |a, q: 1| [2].each { |b| p q; q = 7 }; p q }
