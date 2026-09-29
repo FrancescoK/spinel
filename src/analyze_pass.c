@@ -2611,6 +2611,19 @@ int infer_write_types(Compiler *c) {
       for (int i = 0; i < ln; i++) changed |= masgn_nested_poly(c, comp_scope_of(c, id), lefts[i]);
       for (int j = 0; j < rn_n; j++) changed |= masgn_nested_poly(c, comp_scope_of(c, id), rights_n[j]);
     }
+    /* an empty `{}` on the right, whole or as one of the values, has no
+       slot to take its variant from: it is the general boxed-key hash */
+    {
+      int vn = 1;
+      const int *vs = &value;
+      if (masgn_tuple_rhs(nt, value)) vs = nt_arr(nt, value, "elements", &vn);
+      for (int i = 0; i < vn; i++) {
+        int hv = vs[i], hen = 0;
+        if (hv < 0 || hv >= c->node_cap || nt_kind(nt, hv) != NK_HashNode || !c->hash_want) continue;
+        nt_arr(nt, hv, "elements", &hen);
+        if (hen == 0 && !ty_is_hash(c->hash_want[hv])) { c->hash_want[hv] = TY_POLY_POLY_HASH; changed = 1; }
+      }
+    }
     const char *vty = nt_type(nt, value);
     /* `r, w = IO.pipe` / `a, b = Socket.pair(...)` -> both targets are IO
        handles. The general path below reads a USER method's multi-value
@@ -2767,8 +2780,11 @@ int infer_write_types(Compiler *c) {
       /* any expression returning a typed array: assign element types to targets */
       if (value >= 0) {
         TyKind st = infer_type(c, value);
-        /* poly RHS: destructure gives poly elements */
-        if (st == TY_POLY || st == TY_POLY_ARRAY) {
+        /* poly RHS: destructure gives poly elements. So does a hash, or a
+           scalar from a call (which could have answered an array): codegen
+           boxes it and destructures it at run time as itself. */
+        if (st == TY_POLY || st == TY_POLY_ARRAY ||
+            (st != TY_UNKNOWN && !ty_is_array(st) && (ty_is_hash(st) || multi_src))) {
           Scope *ms_poly = comp_scope_of(c, id);
           for (int i = 0; i < ln; i++) {
             const char *lty_p = nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "";
