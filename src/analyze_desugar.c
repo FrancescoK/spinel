@@ -7356,11 +7356,11 @@ int desugar_alias_method_string_names(Compiler *c) {
       if (nt_kind(nt, av[i]) != NK_StringNode) continue;
       const char *s = alias_literal_name(nt, av[i]);
       if (!s) continue;
-      char buf[256];
-      snprintf(buf, sizeof buf, "%s", s);
+      char *name = strdup(s);
       nt_node_reset(nt, av[i], "SymbolNode");
-      nt_node_set_str(nt, av[i], "value", buf);
-      comp_sym_intern(c, buf);
+      nt_node_set_str(nt, av[i], "value", name);
+      comp_sym_intern(c, name);
+      free(name);
       changed = 1;
     }
   }
