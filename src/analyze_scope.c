@@ -2342,6 +2342,17 @@ void register_aliases_body(Compiler *c, ClassInfo *cls, int body) {
     }
     else if (sp_streq(sty, "CallNode")) {
       const char *nm = nt_str(nt, s, "name");
+      /* `private alias_method :a, :b` defines the alias it wraps */
+      if (nm && nt_ref(nt, s, "receiver") < 0 &&
+          (sp_streq(nm, "private") || sp_streq(nm, "protected") || sp_streq(nm, "public"))) {
+        int pa = nt_ref(nt, s, "arguments");
+        int pn = 0;
+        const int *pv = pa >= 0 ? nt_arr(nt, pa, "arguments", &pn) : NULL;
+        if (pn == 1 && nt_kind(nt, pv[0]) == NK_CallNode && nt_ref(nt, pv[0], "receiver") < 0) {
+          s = pv[0];
+          nm = nt_str(nt, s, "name");
+        }
+      }
       if (!nm || !sp_streq(nm, "alias_method")) continue;
       int args = nt_ref(nt, s, "arguments");
       int an = 0;

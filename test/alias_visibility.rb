@@ -22,6 +22,7 @@ class A
   def via = rr
   def z2 = 2
   private alias_method :pz2, :z2
+  def via2 = pz2
 end
 chk { A.new.pz }
 chk { A.new.qz }
@@ -30,6 +31,7 @@ chk { A.new.rr }
 p A.new.via
 p A.new.z
 chk { A.new.pz2 }
+p A.new.via2
 p A.new.z2
 p A.private_method_defined?(:pz), A.public_method_defined?(:z)
 p A.protected_method_defined?(:qz)
