@@ -1,6 +1,10 @@
 #include <limits.h>
 #include "codegen_internal.h"
 
+/* classes whose pool a proc or fiber body has declared, per program */
+static unsigned char *g_pool_fwd = NULL;
+static int g_pool_fwd_n = 0;
+
 /* A reference-backed builtin (IO/Fiber/Thread/Queue/Mutex/ConditionVariable/
    Enumerator/Exception/Proc/Method) is a genuinely nilable C pointer: an unset
    ivar, a `return nil` method, or a cache miss yields NULL. It must box via
@@ -5146,6 +5150,9 @@ static int gen_yields_multi(const NodeTable *nt, int id, const char *yname) {
   return 0;
 }
 
+/* emitting a fiber body, which lands in g_procs ahead of the constructors */
+static int g_in_fiber_body = 0;
+
 void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   nd_stamp(nt_ref(c->nt, id, "block"), ND_BLOCK_PROC);   /* the body is a function of its own */
   const NodeTable *nt = c->nt;
@@ -5322,6 +5329,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
      scope). */
   Buf body_buf = {0};
   Buf *pb = &body_buf;
+  g_in_fiber_body++;
   buf_printf(pb, "static void %s(sp_Fiber *_fb) {\n", fname);
   buf_puts(pb, "    SP_GC_SAVE();\n");
   size_t fib_frame_ins = pb->len;
@@ -5575,6 +5583,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
      precede this definition there; both sit at file scope. */
   buf_puts(&g_procs, body_buf.p ? body_buf.p : "");
   free(body_buf.p);
+  g_in_fiber_body--;
 
   /* Restore emission state */
   g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block; g_block_nren = sv_bnren;
@@ -7878,6 +7887,21 @@ void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b) {
     buf_printf(b, " _t%d; })", t);
   }
   else {
+    /* A proc or fiber body is written out ahead of the classes'
+       constructors, and so ahead of the SP_POOL_DEFINE this names: declare
+       the pool to it (a Class value's `new` built inline in a block did not
+       compile). */
+    if (g_in_proc_body || g_in_fiber_body) {
+      if (g_pool_fwd_n < c->nclasses) {
+        g_pool_fwd = realloc(g_pool_fwd, (size_t)c->nclasses);
+        memset(g_pool_fwd + g_pool_fwd_n, 0, (size_t)(c->nclasses - g_pool_fwd_n));
+        g_pool_fwd_n = c->nclasses;
+      }
+      if (!g_pool_fwd[cid]) {
+        g_pool_fwd[cid] = 1;
+        buf_printf(&g_proc_protos, "SP_POOL_DECLARE(%s)\n", ci->c_name);
+      }
+    }
     /* No SP_GC_ROOT needed: allocate runs no initialize, so nothing after the
        SP_POOL_NEW allocates (memset and sp_box_nil are non-allocating), and the
        fresh pointer is consumed by the enclosing expression with no intervening
@@ -12485,6 +12509,7 @@ char *codegen_program(const NodeTable *nt) {
   Buf b; memset(&b, 0, sizeof b);
   memset(&g_procs, 0, sizeof g_procs);
   memset(&g_proc_protos, 0, sizeof g_proc_protos);
+  if (g_pool_fwd) memset(g_pool_fwd, 0, (size_t)g_pool_fwd_n);
   g_proc_counter = 0;
   g_needs_at_exit = 0;
   g_re_count = 0;
@@ -14146,6 +14171,7 @@ char *codegen_program(const NodeTable *nt) {
   memset(&g_pd_protos, 0, sizeof g_pd_protos); memset(&g_pd_defs, 0, sizeof g_pd_defs);
   memset(&g_procs, 0, sizeof g_procs);
   memset(&g_proc_protos, 0, sizeof g_proc_protos);
+  if (g_pool_fwd) memset(g_pool_fwd, 0, (size_t)g_pool_fwd_n);
   g_needs_proc_poly_argslot = 0;
 
   if (g_ext_init_name) {
