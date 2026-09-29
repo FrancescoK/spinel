@@ -1377,6 +1377,25 @@ int an_object_methods_listable(Compiler *c, int cid, const char *name) {
   return 1;
 }
 
+/* Klass.singleton_methods: listable ahead of time when the class does not
+   define the name itself and every ancestor is a user class spinel knows the
+   class methods of -- not a Struct/Data (whose generated class methods are
+   not scopes), an exception, a native class, or a builtin's subclass. */
+int an_class_singleton_methods_listable(Compiler *c, int cid) {
+  const NodeTable *nt = c->nt;
+  if (cid < 0 || cid >= c->nclasses || class_is_exc_subclass(c, cid)) return 0;
+  if (comp_cmethod_in_chain(c, cid, "singleton_methods", NULL) >= 0) return 0;
+  for (int k = cid, g = 0; k >= 0 && g <= c->nclasses; k = c->classes[k].parent, g++) {
+    ClassInfo *ci = &c->classes[k];
+    if (ci->is_native_class || ci->is_struct || ci->is_data) return 0;
+    if (ci->parent < 0) {
+      int dn = ci->def_node;
+      if (dn >= 0 && nt_kind(nt, dn) == NK_ClassNode && nt_ref(nt, dn, "superclass") >= 0) return 0;
+    }
+  }
+  return 1;
+}
+
 /* Does the program build Method objects (`method(:x)` / `instance_method(:x)`)?
    Only then can a boxed value answering #name be a Method (#3692). */
 int an_program_builds_methods(Compiler *c) {
@@ -2937,6 +2956,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
                       sp_streq(name, "public_instance_methods") ||
                       sp_streq(name, "private_instance_methods") ||
                       sp_streq(name, "protected_instance_methods"))) return TY_POLY;
+    if (argc <= 1 && sp_streq(name, "singleton_methods") &&
+        nt_kind(nt, recv) == NK_ConstantReadNode &&
+        an_class_singleton_methods_listable(c, comp_class_index(c, nt_str(nt, recv, "name"))))
+      return TY_POLY;
     /* a user class method on a Class-typed value carried in a plain variable
        (`model.table_name`): unify the return types of every user class
        defining it (poly on disagreement). A constant/accessor receiver keeps

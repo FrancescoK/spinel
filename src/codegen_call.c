@@ -15862,6 +15862,47 @@ static void refl_object_methods(Compiler *c, int cid, int pub, int prot, int sin
     for (int i = 0; core[t] && core[t][i]; i++) refl_note(r, core[t][i], pub);
 }
 
+/* A class method cloned from another class's `def` (an extended module's
+   method, or an inherited one specialized for a subclass) shares the source
+   scope's def node; the source comes first. */
+static int refl_scope_is_copy(Compiler *c, int si) {
+  Scope *s = &c->scopes[si];
+  if (s->origin_module_ci > 0) return 1;
+  if (s->def_node < 0) return 0;
+  for (int j = 0; j < si; j++)
+    if (c->scopes[j].def_node == s->def_node && c->scopes[j].class_id != s->class_id) return 1;
+  return 0;
+}
+
+/* The names Klass.singleton_methods lists: the class methods `ci` defines
+   (defs, `class << self` aliases and accessors), then with `all` those of
+   its superclasses and extended modules. */
+static void refl_class_singleton_methods(Compiler *c, int ci, int all, ReflNames *r) {
+  for (int k = ci, g = 0; k >= 0 && g <= c->nclasses; k = c->classes[k].parent, g++) {
+    ClassInfo *kc = &c->classes[k];
+    for (int si = 0; si < c->nscopes; si++) {
+      Scope *s = &c->scopes[si];
+      if (s->class_id != k || !s->is_cmethod || !s->name || !s->name[0]) continue;
+      if (strncmp(s->name, "__", 2) == 0 || name_is_synth_method(c, s->name)) continue;
+      if (!all && refl_scope_is_copy(c, si)) continue;
+      refl_note(r, s->name, 1);
+    }
+    for (int i = 0; i < kc->naliases; i++) {
+      const char *an = kc->alias_new[i];
+      if (!an || name_is_synth_method(c, an)) continue;
+      const char *od = comp_resolve_alias(c, k, an);
+      if (comp_cmethod_in_chain(c, k, od, NULL) >= 0 && comp_method_in_chain(c, k, od, NULL) < 0)
+        refl_note(r, an, 1);
+    }
+    for (int i = 0; i < kc->nsg_readers; i++) refl_note(r, kc->sg_readers[i], 1);
+    for (int i = 0; i < kc->nsg_writers; i++) {
+      char wn[256]; snprintf(wn, sizeof wn, "%s=", kc->sg_writers[i]);
+      refl_note(r, wn, 1);
+    }
+    if (!all) break;
+  }
+}
+
 /* Emit the listed names of `r` as a PolyArray of symbols. Interned at run
    time: a name the source never spells is not in the generated symbol
    table. */
@@ -31077,6 +31118,24 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           refl_free(&r);
           return;
         }
+      }
+    }
+    /* ClassName.singleton_methods / singleton_methods(false): the class
+       methods the program defines, a compile-time list like the one above. */
+    if (sp_streq(name, "singleton_methods") && argc <= 1) {
+      const char *cn2 = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")
+                        ? nt_str(nt, recv, "name") : NULL;
+      int ci2 = cn2 ? comp_class_index(c, cn2) : -1;
+      int all = argc == 0 || nt_kind(nt, argv[0]) == NK_TrueNode;
+      if (ci2 >= 0 && (argc == 0 || all || nt_kind(nt, argv[0]) == NK_FalseNode) &&
+          an_class_singleton_methods_listable(c, ci2)) {
+        ReflNames r = {0};
+        refl_class_singleton_methods(c, ci2, all, &r);
+        buf_puts(b, "sp_box_poly_array(");
+        refl_emit_sym_array(c, -1, &r, b);
+        buf_puts(b, ")");
+        refl_free(&r);
+        return;
       }
     }
     /* `equal?` joins them: a class is one object per name, so identity and
