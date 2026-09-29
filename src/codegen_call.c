@@ -29835,6 +29835,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         else if (kr == TY_POLY && slot_t != TY_POLY && slot_t != TY_UNKNOWN &&
                  slot_t != TY_VOID && is_scalar_ret(slot_t))
           emit_unbox_text(c, slot_t, cb.p ? cb.p : "sp_box_nil()", b);
+        /* a sibling that only raises (no value) where the site wants one */
+        else if (slot_t == TY_POLY && method_is_void(ms))
+          buf_printf(b, "(%s, sp_box_nil())", cb.p ? cb.p : "0");
         else
           buf_puts(b, cb.p ? cb.p : "");
         free(cb.p);

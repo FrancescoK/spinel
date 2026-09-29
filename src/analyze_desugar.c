@@ -7166,3 +7166,205 @@ int desugar_when_int_float_ranges(Compiler *c) {
   }
   return changed;
 }
+
+/* ---- `const_get :Name` on self in a class method ----------------------------
+ *
+ *   class GObject
+ *     class << self
+ *       def ffi_managed_struct = const_get(:ManagedStruct)
+ *     end
+ *   end
+ *   class Image < GObject
+ *     class ManagedStruct < GObject::ManagedStruct; end
+ *   end
+ *
+ * The literal name resolves against whichever class self is at run time, so
+ * each class that defines `Name` in its body (and the method's own class) gets
+ *
+ *   def self.__spinel_cg_Name = Name
+ *
+ * and the call becomes `__spinel_cg_Name` on self: class-method dispatch then
+ * picks the nearest definition, as the ancestor lookup would. */
+/* the text of a literal Symbol or String argument, else NULL */
+static const char *scg_literal_name(const NodeTable *nt, int node) {
+  if (node < 0) return NULL;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_SymbolNode) return nt_str(nt, node, "value");
+  if (k == NK_StringNode) {
+    const char *u = nt_str(nt, node, "unescaped");
+    return u ? u : nt_str(nt, node, "content");
+  }
+  return NULL;
+}
+
+static int scg_str(NodeTable *nt, int like, const char *s) {
+  int n = fwd_new_node_like(nt, like, "StringNode");
+  if (n < 0) return -1;
+  nt_node_set_str(nt, n, "unescaped", s);
+  nt_node_set_str(nt, n, "content", s);
+  return n;
+}
+
+static void scg_add_def_body(NodeTable *nt, int cls, const char *cname, int like, int raising);
+static void scg_add_def(NodeTable *nt, int cls, const char *cname, int like) {
+  scg_add_def_body(nt, cls, cname, like, 0);
+}
+static void scg_add_def_body(NodeTable *nt, int cls, const char *cname, int like, int raising) {
+  int body = nt_ref(nt, cls, "body");
+  if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) {
+    int nb = fwd_new_node_like(nt, like, "StatementsNode");
+    nt_node_set_arr(nt, nb, "body", NULL, 0);
+    nt_node_set_ref(nt, cls, "body", nb);
+    body = nb;
+  }
+  char mname[256]; snprintf(mname, sizeof mname, "__spinel_cg_%s", cname);
+  int bn = 0; const int *bs = nt_arr(nt, body, "body", &bn);
+  for (int k = 0; k < bn; k++)
+    if (nt_kind(nt, bs[k]) == NK_DefNode && nt_str(nt, bs[k], "name") &&
+        sp_streq(nt_str(nt, bs[k], "name"), mname)) return;
+  int d = fwd_new_node_like(nt, like, "DefNode");
+  int db = fwd_new_node_like(nt, like, "StatementsNode");
+  if (raising) {
+    /* raise NameError, "uninitialized constant X"; nil */
+    int rc = fwd_new_node_like(nt, like, "CallNode");
+    int ra = fwd_new_node_like(nt, like, "ArgumentsNode");
+    int ne = fwd_new_node_like(nt, like, "ConstantReadNode");
+    nt_node_set_str(nt, ne, "name", "NameError");
+    char msg[300]; snprintf(msg, sizeof msg, "uninitialized constant %s", cname);
+    int av[2] = { ne, scg_str(nt, like, msg) };
+    nt_node_set_arr(nt, ra, "arguments", av, 2);
+    nt_node_set_str(nt, rc, "name", "raise");
+    nt_node_set_ref(nt, rc, "arguments", ra);
+    int nl = fwd_new_node_like(nt, like, "NilNode");
+    int bb[2] = { rc, nl };
+    nt_node_set_arr(nt, db, "body", bb, 2);
+  }
+  else {
+    int cr = fwd_new_node_like(nt, like, "ConstantReadNode");
+    nt_node_set_str(nt, cr, "name", cname);
+    nt_node_set_arr(nt, db, "body", &cr, 1);
+  }
+  nt_node_set_str(nt, d, "name", mname);
+  nt_node_set_ref(nt, d, "receiver", fwd_new_node_like(nt, like, "SelfNode"));
+  nt_node_set_ref(nt, d, "body", db);
+  int *out = malloc(sizeof(int) * (size_t)(bn + 1));
+  out[0] = d;
+  if (bn) memcpy(out + 1, bs, sizeof(int) * (size_t)bn);
+  nt_node_set_arr(nt, body, "body", out, bn + 1);
+  free(out);
+}
+
+static int scg_stmts_define(const NodeTable *nt, int body, const char *cname, int depth);
+static int scg_body_defines(const NodeTable *nt, int cls, const char *cname) {
+  return scg_stmts_define(nt, nt_ref(nt, cls, "body"), cname, 0);
+}
+static int scg_stmts_define(const NodeTable *nt, int body, const char *cname, int depth) {
+  if (depth > 8) return 0;
+  int n = 0; const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+  for (int k = 0; k < n; k++) {
+    NodeKind sk = nt_kind(nt, st[k]);
+    if (sk == NK_IfNode || sk == NK_UnlessNode) {
+      if (scg_stmts_define(nt, nt_ref(nt, st[k], "statements"), cname, depth + 1)) return 1;
+      int e = nt_ref(nt, st[k], sk == NK_IfNode ? "subsequent" : "else_clause");
+      if (e >= 0 && nt_kind(nt, e) == NK_ElseNode && scg_stmts_define(nt, nt_ref(nt, e, "statements"), cname, depth + 1)) return 1;
+      continue;
+    }
+    const char *cn = NULL;
+    if (sk == NK_ConstantWriteNode || sk == NK_ConstantOrWriteNode) cn = nt_str(nt, st[k], "name");
+    else if (sk == NK_ClassNode || sk == NK_ModuleNode) {
+      int ccp = nt_ref(nt, st[k], "constant_path");
+      cn = ccp >= 0 ? nt_str(nt, ccp, "name") : NULL;
+    }
+    if (cn && sp_streq(cn, cname)) return 1;
+  }
+  return 0;
+}
+
+int desugar_self_const_get(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  int *parent = NULL;
+  for (int id = 0; id < n0; id++) {
+    /* `self::NAME` in a class method, `self.class::NAME` in an instance
+       method: the same lookup */
+    int cpath = 0, cls_recv = -1;
+    const char *cname = NULL;
+    if (nt_kind(nt, id) == NK_ConstantPathNode) {
+      int par = nt_ref(nt, id, "parent");
+      if (par < 0) continue;
+      if (nt_kind(nt, par) == NK_SelfNode) cpath = 1;
+      else if (nt_kind(nt, par) == NK_CallNode && nt_str(nt, par, "name") &&
+               sp_streq(nt_str(nt, par, "name"), "class") && nt_ref(nt, par, "arguments") < 0 &&
+               nt_ref(nt, par, "receiver") >= 0 && nt_kind(nt, nt_ref(nt, par, "receiver")) == NK_SelfNode) {
+        cpath = 2; cls_recv = par;
+      }
+      else continue;
+      cname = nt_str(nt, id, "name");
+    }
+    else {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "const_get")) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an < 1 || an > 2) continue;
+    cname = scg_literal_name(nt, av[0]);
+    }
+    if (!cname || !cname[0] || cname[0] < 'A' || cname[0] > 'Z' || strstr(cname, "::")) continue;
+    if (!parent) parent = an_parent_map(nt);
+    if (!parent) break;
+    /* the enclosing def must be a class method: `def self.m` or a def in
+       `class << self`; then the class it belongs to */
+    int p = parent[id], def = -1;
+    while (p >= 0 && nt_kind(nt, p) != NK_DefNode) {
+      NodeKind pk = nt_kind(nt, p);
+      if (pk == NK_ClassNode || pk == NK_ModuleNode || pk == NK_SingletonClassNode) break;
+      p = parent[p];
+    }
+    if (p < 0 || nt_kind(nt, p) != NK_DefNode) continue;
+    def = p;
+    int dr = nt_ref(nt, def, "receiver");
+    int is_cm = dr >= 0 && nt_kind(nt, dr) == NK_SelfNode;
+    p = parent[def];
+    while (p >= 0 && nt_kind(nt, p) != NK_ClassNode && nt_kind(nt, p) != NK_ModuleNode &&
+           nt_kind(nt, p) != NK_SingletonClassNode) p = parent[p];
+    if (p >= 0 && nt_kind(nt, p) == NK_SingletonClassNode) {
+      int ex = nt_ref(nt, p, "expression");
+      if (dr >= 0 || ex < 0 || nt_kind(nt, ex) != NK_SelfNode) continue;
+      is_cm = 1;
+      p = parent[p];
+      while (p >= 0 && nt_kind(nt, p) != NK_ClassNode && nt_kind(nt, p) != NK_ModuleNode) p = parent[p];
+    }
+    if (p < 0 || (cpath == 2 ? is_cm : !is_cm)) continue;
+    int owner = p;
+    /* every class body that defines the name */
+    int others = 0;
+    for (int m = 0; m < n0; m++) {
+      NodeKind mk = nt_kind(nt, m);
+      if ((mk != NK_ClassNode && mk != NK_ModuleNode) || m == owner) continue;
+      if (scg_body_defines(nt, m, cname)) { scg_add_def(nt, m, cname, id); others = 1; }
+    }
+    /* the method's own class answers through its lexical scope -- unless it
+       leaves the name to its subclasses (an abstract `self::KEYBYTES`), where
+       a reader of a constant defined nowhere would only raise */
+    if (!others || scg_body_defines(nt, owner, cname)) scg_add_def(nt, owner, cname, id);
+    else scg_add_def_body(nt, owner, cname, id, 1);
+    char mname[256]; snprintf(mname, sizeof mname, "__spinel_cg_%s", cname);
+    if (cpath) {
+      int line = (int)nt_int(nt, id, "node_line", 0);
+      int file = (int)nt_int(nt, id, "node_file", 0);
+      nt_node_reset(nt, id, "CallNode");
+      if (line) nt_node_set_int(nt, id, "node_line", line);
+      if (file) nt_node_set_int(nt, id, "node_file", file);
+      if (cls_recv >= 0) nt_node_set_ref(nt, id, "receiver", cls_recv);
+    }
+    nt_node_set_str(nt, id, "name", mname);
+    nt_node_set_ref(nt, id, "arguments", -1);
+    changed = 1;
+  }
+  free(parent);
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
