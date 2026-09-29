@@ -17695,6 +17695,7 @@ void analyze_program(Compiler *c) {
   desugar_reassigned_block_params(c);   /* |p| p = other -> |p__bpin| p = p__bpin; p = other */
   desugar_class_reopen(c);               /* class Class / Class.class_eval -> a module */
   desugar_class_new_blocks(c);           /* X = Class.new(B) do..end -> class X < B; ..; end */
+  desugar_included_hooks(c);             /* include M / extend M -> M.included/extended(base)'s body */
   desugar_extended_module_attrs(c);
   /* builtins/enumerable.rb, spliced by the parser: its definitions become
      the receiver-taking top-level functions before any scope is built */
