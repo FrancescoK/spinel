@@ -42,3 +42,20 @@ tf.transfer(7, 8)
 
 boxed = [Fiber.new { |a| p a }, 1][0]
 boxed.resume(3, 4)
+
+# splats of a variable: the count is only known at run time
+n1 = [nil]; n12 = [1, 2]; nn = [[1, 2]]; n23 = [2, 3]; ne = []
+sa = Fiber.new { |*x| p x }
+sa.resume(*n1)
+sb = Fiber.new { |x| p x }
+sb.resume(*n12)
+sc = Fiber.new { |*x| p x }
+sc.resume(*nn)
+sd = Fiber.new { Fiber.yield(1, *n23); Fiber.yield(*ne, 4); Fiber.yield(*ne) }
+3.times { p sd.resume }
+se = Fiber.new { |*x| p x }
+se.resume(0, *n12)
+st = Fiber.new { |x| p x; root.transfer }
+st.transfer(*n12)
+sx = [Fiber.new { |*x| p x }, 1][0]
+sx.resume(*n1)
