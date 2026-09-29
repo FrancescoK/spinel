@@ -8066,6 +8066,23 @@ static void emit_massign_poly_target(Compiler *c, int id, int tgt, const char *v
   }
 }
 
+static void emit_break_value(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int bargs = nt_ref(nt, id, "arguments");
+  int bvargc = 0; const int *bvargs = bargs >= 0 ? nt_arr(nt, bargs, "arguments", &bvargc) : NULL;
+  if (bvargc == 0) buf_puts(b, "sp_box_nil()");
+  else if (bvargc == 1) emit_boxed(c, bvargs[0], b);
+  else {
+    /* `break a, b, ...` returns an array of the values */
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", t, t);
+    for (int k = 0; k < bvargc; k++) {
+      buf_printf(b, "sp_PolyArray_push(_t%d, ", t); emit_boxed(c, bvargs[k], b); buf_puts(b, "); ");
+    }
+    buf_printf(b, "sp_box_poly_array(_t%d); })", t);
+  }
+}
+
 void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -11026,18 +11043,9 @@ else {
        with its own break rule (a lambda's break returns from the lambda), so
        leave those to the arms below: g_proc_body_kind marks them. */
     if (!g_brk_ser_var && g_c_ret_void && g_c_loop_depth == 0 && g_proc_body_kind == 0) {
-      int bargs2 = nt_ref(nt, id, "arguments");
-      int bn2 = 0; const int *bv2 = bargs2 >= 0 ? nt_arr(nt, bargs2, "arguments", &bn2) : NULL;
       emit_indent(b, indent);
       buf_puts(b, "sp_brk_throw(-1, ");
-      if (bn2 == 0) buf_puts(b, "sp_box_nil()");
-      else if (bn2 == 1) emit_boxed(c, bv2[0], b);
-      else {
-        int t2 = ++g_tmp;
-        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", t2, t2);
-        for (int k = 0; k < bn2; k++) { buf_printf(b, "sp_PolyArray_push(_t%d, ", t2); emit_boxed(c, bv2[k], b); buf_puts(b, "); "); }
-        buf_printf(b, "sp_box_poly_array(_t%d); })", t2);
-      }
+      emit_break_value(c, id, b);
       buf_puts(b, ");\n");
       return;
     }
@@ -11047,8 +11055,6 @@ else {
          longjmp, so register-allocated locals mutated in the block keep
          their values. Ensure-crossing breaks longjmp via sp_brk_throw so the
          ensure bodies run (accepting the catch/throw-class register hazard). */
-      int bargs = nt_ref(nt, id, "arguments");
-      int bvargc = 0; const int *bvargs = bargs >= 0 ? nt_arr(nt, bargs, "arguments", &bvargc) : NULL;
       int light = strncmp(g_brk_ser_var, "_brklt", 6) == 0;   /* a wrapper with no setjmp scope */
       int brk_goto = (g_ensure_depth == g_brk_ensure_base) &&
                      (g_exc_frame_depth == g_brk_exc_base) &&
@@ -11064,17 +11070,7 @@ else {
       if (brk_goto && light) buf_printf(b, "_brkv%s = ", sfx);
       else if (brk_goto) buf_printf(b, "sp_brk_val[_brkslot%s - 1] = ", sfx);
       else buf_printf(b, "sp_brk_throw(%s, ", g_brk_ser_var);
-      if (bvargc == 0) buf_puts(b, "sp_box_nil()");
-      else if (bvargc == 1) emit_boxed(c, bvargs[0], b);
-      else {
-        /* `break a, b, ...` returns an array of the values */
-        int t = ++g_tmp;
-        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", t, t);
-        for (int k = 0; k < bvargc; k++) {
-          buf_printf(b, "sp_PolyArray_push(_t%d, ", t); emit_boxed(c, bvargs[k], b); buf_puts(b, "); ");
-        }
-        buf_printf(b, "sp_box_poly_array(_t%d); })", t);
-      }
+      emit_break_value(c, id, b);
       if (brk_goto) { buf_puts(b, "; "); emit_cur_exc_restore(b, g_brk_exc_base); buf_printf(b, "goto _brklbl%s;\n", sfx); }
       else buf_puts(b, ");\n");
       return;
@@ -11087,20 +11083,9 @@ else {
        not the lambda -- fall through to the plain C break below. */
     if (g_proc_body_kind == 1 && g_c_loop_depth == 0) {
       if (g_result_var && g_ensure_depth == 0) {
-        int bargs = nt_ref(nt, id, "arguments");
-        int bvargc = 0; const int *bvargs = bargs >= 0 ? nt_arr(nt, bargs, "arguments", &bvargc) : NULL;
         emit_indent(b, indent);
         buf_printf(b, "{ %s = ", g_result_var);
-        if (bvargc == 0) buf_puts(b, "sp_box_nil()");
-        else if (bvargc == 1) emit_boxed(c, bvargs[0], b);
-        else {
-          int t = ++g_tmp;
-          buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", t, t);
-          for (int k = 0; k < bvargc; k++) {
-            buf_printf(b, "sp_PolyArray_push(_t%d, ", t); emit_boxed(c, bvargs[k], b); buf_puts(b, "); ");
-          }
-          buf_printf(b, "sp_box_poly_array(_t%d); })", t);
-        }
+        emit_break_value(c, id, b);
         buf_puts(b, "; return 0; }\n");
         return;
       }
@@ -11111,19 +11096,8 @@ else {
        scope's serial; a dead/foreign scope raises LocalJumpError. A C loop
        inside the proc owns its own break, as above. */
     if (g_proc_body_kind == 2 && g_c_loop_depth == 0 && g_proc_brk_home) {
-      int bargs = nt_ref(nt, id, "arguments");
-      int bvargc = 0; const int *bvargs = bargs >= 0 ? nt_arr(nt, bargs, "arguments", &bvargc) : NULL;
       emit_indent(b, indent); buf_printf(b, "sp_brk_throw(%s, ", g_proc_brk_home);
-      if (bvargc == 0) buf_puts(b, "sp_box_nil()");
-      else if (bvargc == 1) emit_boxed(c, bvargs[0], b);
-      else {
-        int t = ++g_tmp;
-        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", t, t);
-        for (int k = 0; k < bvargc; k++) {
-          buf_printf(b, "sp_PolyArray_push(_t%d, ", t); emit_boxed(c, bvargs[k], b); buf_puts(b, "); ");
-        }
-        buf_printf(b, "sp_box_poly_array(_t%d); })", t);
-      }
+      emit_break_value(c, id, b);
       buf_puts(b, ");\n");
       return;
     }
