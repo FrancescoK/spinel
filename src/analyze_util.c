@@ -1288,6 +1288,19 @@ static int yvt_callee_index(Compiler *c, int cid) {
 
 int init_accepts_kw_call(Compiler *c, int initm, const int *argv, int argc);
 
+/* A block-passing call whose receiver is poly, named like instance method
+   `mi`: yvt_callee_index cannot resolve it, yet codegen dispatches it on the
+   receiver's class at run time and may land on `mi` with this block. */
+static int yvt_poly_recv_may_reach(Compiler *c, int cid, int mi) {
+  const NodeTable *nt = c->nt;
+  const char *cn = nt_str(nt, cid, "name");
+  const char *mn = c->scopes[mi].name;
+  int crecv = nt_ref(nt, cid, "receiver");
+  if (!cn || !mn || !sp_streq(cn, mn) || crecv < 0) return 0;
+  if (c->scopes[mi].class_id < 0 || c->scopes[mi].is_cmethod) return 0;
+  return infer_type(c, crecv) == TY_POLY;
+}
+
 static int yvt_reaches(Compiler *c, int cid, int mi) {
   if (yvt_callee_index(c, cid) == mi) return 1;
   const NodeTable *nt = c->nt;
@@ -1354,7 +1367,7 @@ TyKind yield_value_type(Compiler *c, int mi) {
 
   const NodeTable *nt = c->nt;
   TyKind result = TY_UNKNOWN;
-  int pf_fwd = 0;
+  int pf_fwd = 0, poly_site = 0;
   if (yvt_nt != nt || yvt_ntc != nt->count) yvt_build(c);
   YvtIt yit; yvt_it_init(c, &yit, mi);
   for (int ii; (ii = yvt_it_next(&yit)) >= 0; ) {
@@ -1367,7 +1380,10 @@ TyKind yield_value_type(Compiler *c, int mi) {
     /* skip calls that live inside method mi itself (recursive self-calls);
        only external call sites provide a concrete block value type */
     if ((int)(comp_scope_of(c, cid) - c->scopes) == mi) continue;
-    if (!yvt_reaches(c, cid, mi)) continue;
+    if (!yvt_reaches(c, cid, mi)) {
+      if (yvt_poly_recv_may_reach(c, cid, mi)) poly_site = 1;
+      continue;
+    }
     /* `mi(&b)` / `mi(...)`: the call forwards the block of its enclosing
        method rather than passing a literal. The value `mi` yields is then
        whatever that forwarded block produces -- the enclosing method's
@@ -1448,6 +1464,12 @@ TyKind yield_value_type(Compiler *c, int mi) {
      only through a Method) hands on a real proc no literal types: its value
      is poly, where an unknown one unboxed it into the other arm's slot. */
   if (result == TY_UNKNOWN && pf_fwd) result = TY_POLY;
+  /* The only calls were on a poly receiver (a proc parameter, a value out of a
+     poly collection). They still run this method with their block, and the
+     yield reads that block's value boxed, so it is poly. Left unknown, a local
+     assigned from the yield (`found = yield(row)`) typed from its other writes
+     alone: a nil, so the method returned nil and threw the value away. */
+  if (result == TY_UNKNOWN && poly_site) result = TY_POLY;
   g_yvt_depth--;
   return result;
 }
