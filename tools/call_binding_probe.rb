@@ -6,7 +6,9 @@
 #
 # Takes the cases of tools/call_binding_gen.rb -- a covering array of strength
 # T (default 3) over its factors, or N random rows -- runs them B to a program
-# under CRuby and under spinel, and compares each case's lines. A program
+# under CRuby and under spinel, and compares each case's lines. The cases of
+# one program share the mode spinel compiles them in (the `mode` factor:
+# --int-overflow=promote or not), so the batches are made per mode. A program
 # spinel refuses, whose C does not build, that crashes or that runs out of
 # time is split in halves until one case carries the failure; a difference
 # seen in a program is confirmed on its case alone. A failure no single case
@@ -147,7 +149,11 @@ class Probe
     raise "CRuby did not run #{base}.rb to its end" if timed_out || !status.success?
     out = File.read(base + ".out")
     # a name the generator defines, undefined: the program is wrong, not spinel
-    if (bad = out[/NameError: undefined local variable or method '(?:blk|[a-z])\d+(?:_\d+)?'[^\n]*/])
+    # (a local, a helper method it calls -- g, q, w, y -- or a class or module)
+    undefined = Regexp.union(/NameError: undefined local variable or method '(?:blk|[a-z])\d+(?:_\d+)?'[^\n]*/,
+                             /NoMethodError: undefined method '[gqwy]\d+(?:_\d+)?'[^\n]*/,
+                             /NameError: uninitialized constant [A-Z]+\d+(?:_\d+)?[^\n]*/)
+    if (bad = out[undefined])
       raise CallBindingGen::GeneratorError, "a generated program reads a name it does not define (#{bad})"
     end
     by_case(out)
@@ -157,7 +163,8 @@ class Probe
   def spinel(cases)
     base = scratch("sp")
     File.write(base + ".rb", CallBindingGen.program(cases))
-    status, timed_out = run_timed([@spinel, base + ".rb", "-o", base + ".bin"], 600, base + ".build", base + ".build")
+    argv = [@spinel, *CallBindingGen.flags(cases), base + ".rb", "-o", base + ".bin"]
+    status, timed_out = run_timed(argv, 600, base + ".build", base + ".build")
     build = File.read(base + ".build")
     unless !timed_out && status.success?
       # C that does not build first: its diagnostics can quote generated C
@@ -290,13 +297,14 @@ class Probe
   end
 
   # The cases one step simpler than `c`: a factor at its simplest level, or a
-  # count one less.
+  # count one less. A step the case cannot take (a bare super's child is at
+  # least the parent's list) renders `c` again and is no step.
   def simpler(c)
     CallBindingGen::NAMES.flat_map do |f|
       next [] if c.realized[f] == CallBindingGen::SIMPLEST[f]
       steps = [CallBindingGen::SIMPLEST[f]]
       steps.unshift(c.realized[f] - 1) if c.realized[f].is_a?(Integer) && c.realized[f] > 1
-      steps.map { |l| CallBindingGen.render(c.id, c.realized.merge(f => l)) }
+      steps.map { |l| CallBindingGen.render(c.id, c.realized.merge(f => l)) }.reject { |s| s.realized == c.realized }
     end
   end
 
@@ -526,7 +534,8 @@ begin
   FileUtils.mkdir_p(work)
   probe = Probe.new(spinel, RbConfig.ruby, timeout, work)
   queue = Queue.new
-  cases.each_slice(batch) { |b| queue << b }
+  # one mode to a program
+  cases.group_by { |c| c.realized[:mode] }.each_value { |cs| cs.each_slice(batch) { |b| queue << b } }
   done = 0
   progress = Mutex.new
   Array.new(jobs) do
