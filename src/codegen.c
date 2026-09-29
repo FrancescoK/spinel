@@ -2507,7 +2507,7 @@ static int fi_first_scope_named(Compiler *c, const char *nm) {
 
 /* Every user method a call could reach: by the receiver's class when it names
    one, by the bare name when the receiver is boxed or absent. */
-static void fi_callees(Compiler *c, int callnode, int *out, int *n, int max) {
+static void fi_callees_walk(Compiler *c, int callnode, int *out, int *n, int max) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, callnode, "name");
   if (!nm) return;
@@ -2563,18 +2563,108 @@ static int fi_body_unforceable(Compiler *c, int id, int depth) {
 static int g_fi_trunc;
 
 /* Collect every call node in a method's body subtree. */
-static void fi_collect_calls(Compiler *c, int id, int *out, int *n, int max, int depth) {
+static void fi_collect_calls_walk(Compiler *c, int id, int *out, int *n, int max, int depth) {
   const NodeTable *nt = c->nt;
   if (id < 0) return;
   if (depth > 4096 || *n >= max) { g_fi_trunc = 1; return; }
   if (nt_kind(nt, id) == NK_CallNode) out[(*n)++] = id;
   int nr = nt_num_refs(nt, id);
-  for (int i = 0; i < nr; i++) fi_collect_calls(c, nt_ref_at(nt, id, i), out, n, max, depth + 1);
+  for (int i = 0; i < nr; i++) fi_collect_calls_walk(c, nt_ref_at(nt, id, i), out, n, max, depth + 1);
   int na = nt_num_arrs(nt, id);
   for (int i = 0; i < na; i++) {
     int cn = 0; const int *ids = nt_arr_at(nt, id, i, &cn);
-    for (int j = 0; j < cn; j++) fi_collect_calls(c, ids[j], out, n, max, depth + 1);
+    for (int j = 0; j < cn; j++) fi_collect_calls_walk(c, ids[j], out, n, max, depth + 1);
   }
+}
+
+/* Not re-walked per ask: fi_build's fixpoints re-list every body's calls and callees on each of up to 256 rounds. */
+typedef struct { int a, b, n, trunc; int *ids; } FiMemo;
+static FiMemo *g_fi_memo;
+static int g_fi_memo_cap, g_fi_memo_n, g_fi_memo_on;
+
+static void fi_memo_reset(int on) {
+  for (int i = 0; i < g_fi_memo_cap; i++) if (g_fi_memo[i].ids) free(g_fi_memo[i].ids);
+  free(g_fi_memo);
+  g_fi_memo = NULL;
+  g_fi_memo_cap = g_fi_memo_n = 0;
+  g_fi_memo_on = on;
+}
+
+static unsigned fi_memo_hash(int a, int b, int cap) {
+  return ((unsigned)a * 2654435761u ^ (unsigned)b * 40503u) & (unsigned)(cap - 1);
+}
+
+static FiMemo *fi_memo_slot(int a, int b) {
+  if (g_fi_memo_n * 2 >= g_fi_memo_cap) {
+    int cap = g_fi_memo_cap ? g_fi_memo_cap * 2 : 1024;
+    FiMemo *grown = (FiMemo *)calloc((size_t)cap, sizeof(FiMemo));
+    if (!grown) return NULL;
+    for (int i = 0; i < cap; i++) grown[i].n = -1;
+    for (int i = 0; i < g_fi_memo_cap; i++) {
+      if (g_fi_memo[i].n < 0) continue;
+      unsigned h = fi_memo_hash(g_fi_memo[i].a, g_fi_memo[i].b, cap);
+      while (grown[h].n >= 0) h = (h + 1) & (unsigned)(cap - 1);
+      grown[h] = g_fi_memo[i];
+    }
+    free(g_fi_memo);
+    g_fi_memo = grown;
+    g_fi_memo_cap = cap;
+  }
+  unsigned h = fi_memo_hash(a, b, g_fi_memo_cap);
+  while (g_fi_memo[h].n >= 0) {
+    if (g_fi_memo[h].a == a && g_fi_memo[h].b == b) return &g_fi_memo[h];
+    h = (h + 1) & (unsigned)(g_fi_memo_cap - 1);
+  }
+  g_fi_memo[h].a = a;
+  g_fi_memo[h].b = b;
+  return &g_fi_memo[h];
+}
+
+static int fi_memo_store(FiMemo *m, const int *ids, int n, int trunc) {
+  m->ids = (int *)malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+  if (!m->ids) return 0;
+  memcpy(m->ids, ids, sizeof(int) * (size_t)n);
+  m->n = n;
+  m->trunc = trunc;
+  g_fi_memo_n++;
+  return 1;
+}
+
+static void fi_collect_calls(Compiler *c, int id, int *out, int *n, int max, int depth) {
+  if (!g_fi_memo_on || depth != 0 || *n != 0 || id < 0) { fi_collect_calls_walk(c, id, out, n, max, depth); return; }
+  FiMemo *m = fi_memo_slot(id, max);
+  if (m && m->n >= 0) {
+    memcpy(out, m->ids, sizeof(int) * (size_t)m->n);
+    *n = m->n;
+    if (m->trunc) g_fi_trunc = 1;
+    return;
+  }
+  int sv = g_fi_trunc;
+  g_fi_trunc = 0;
+  fi_collect_calls_walk(c, id, out, n, max, depth);
+  int t = g_fi_trunc;
+  g_fi_trunc = sv | t;
+  if (m) fi_memo_store(m, out, *n, t);
+}
+
+/* Not listed per `max`: a smaller one is a prefix of the full list, since the walk appends in scope order. */
+static void fi_callees(Compiler *c, int callnode, int *out, int *n, int max) {
+  enum { FI_CALLEES_FULL = 65536 };
+  if (!g_fi_memo_on || *n != 0 || max > FI_CALLEES_FULL) { fi_callees_walk(c, callnode, out, n, max); return; }
+  FiMemo *m = fi_memo_slot(callnode, -1);
+  if (m && m->n < 0) {
+    int *full = (int *)malloc(sizeof(int) * FI_CALLEES_FULL);
+    if (!full) { fi_callees_walk(c, callnode, out, n, max); return; }
+    int fn = 0;
+    fi_callees_walk(c, callnode, full, &fn, FI_CALLEES_FULL);
+    int ok = fi_memo_store(m, full, fn, 0);
+    free(full);
+    if (!ok) { fi_callees_walk(c, callnode, out, n, max); return; }
+  }
+  if (!m) { fi_callees_walk(c, callnode, out, n, max); return; }
+  int k = m->n < max ? m->n : max;
+  memcpy(out, m->ids, sizeof(int) * (size_t)k);
+  *n = k;
 }
 
 static int fi_reaches(Compiler *c, int from, int target, unsigned char *seen,
@@ -2793,6 +2883,7 @@ static int fi_all_calls(Compiler *c, int body, int **buf, int *cap, int *nc) {
 
 static void fi_build(Compiler *c) {
   const NodeTable *nt = c->nt;
+  fi_memo_reset(1);
   free(g_fi_state);
   g_fi_state = (unsigned char *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), 1);
   g_fi_nscopes = c->nscopes; g_fi_nt = nt; g_fi_ntcount = nt->count;
@@ -3035,6 +3126,7 @@ static void fi_build(Compiler *c) {
   }
   for (int si = 0; si < c->nscopes; si++) g_fi_state[si] = cand[si] ? 1 : 2;
   free(cand);
+  fi_memo_reset(0);
 }
 
 static int method_inline_force(Compiler *c, Scope *s) {
