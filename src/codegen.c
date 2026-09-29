@@ -13149,7 +13149,11 @@ char *codegen_program(const NodeTable *nt) {
       /* a String builder (a shared-mutable String handle) is a String; a
          box with no handle is not one */
       "    if(v.cls_id==SP_BUILTIN_STRBUF&&v.v.p)return ((sp_Class){-102});\n"
-      "    if(v.cls_id>=-12)return ((sp_Class){-104});\n"  /* arrays */
+      "    if(sp_poly_is_array_kind(v.cls_id))return ((sp_Class){-104});\n"
+      "    if(v.cls_id==SP_BUILTIN_RANGE||v.cls_id==SP_BUILTIN_STR_RANGE)return ((sp_Class){-106});\n"
+      "    if(v.cls_id==SP_BUILTIN_TIME)return ((sp_Class){-107});\n"
+      "    if(v.cls_id==SP_BUILTIN_PROC)return ((sp_Class){-118});\n"
+      "    if(v.cls_id>=-12)return ((sp_Class){-116});\n"
       "    if(v.cls_id>=-20||v.cls_id==-34)return ((sp_Class){-105});\n"  /* hashes */
       /* a BasicObject.new is a BasicObject, not an Object or a Kernel */
       "    if(v.cls_id==SP_BUILTIN_BASIC_OBJECT)return ((sp_Class){-117});\n"
