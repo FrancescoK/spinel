@@ -13631,6 +13631,12 @@ char *codegen_program(const NodeTable *nt) {
     for (int j = 0; j < ci->nsg_readers; j++)
       buf_printf(&b, "static sp_RbVal sg_%s_%s = {SP_TAG_NIL, 0, {0}};\n",
                  ci->name, ci->sg_readers[j]);
+    /* a writer-only accessor (`attr_writer :level`) has a slot of its own
+       too: the setter wrote to an undeclared name */
+    for (int j = 0; j < ci->nsg_writers; j++)
+      if (!comp_is_sg_reader(ci, ci->sg_writers[j]))
+        buf_printf(&b, "static sp_RbVal sg_%s_%s = {SP_TAG_NIL, 0, {0}};\n",
+                   ci->name, ci->sg_writers[j]);
   }
 
   /* module/class-level instance variables (accessed from a `def self.X`):
@@ -14000,6 +14006,9 @@ char *codegen_program(const NodeTable *nt) {
       }
       for (int j = 0; j < ci->nsg_readers; j++)
         buf_printf(&mk, "  sp_mark_rbval(sg_%s_%s);\n", ci->name, ci->sg_readers[j]);
+      for (int j = 0; j < ci->nsg_writers; j++)
+        if (!comp_is_sg_reader(ci, ci->sg_writers[j]))
+          buf_printf(&mk, "  sp_mark_rbval(sg_%s_%s);\n", ci->name, ci->sg_writers[j]);
       /* class variables are file-scope statics too; one that alone holds an
          object (`@@a |= [x]` rebinding it) was freed under it (#4864) */
       for (int j = 0; j < ci->ncvars; j++) {
