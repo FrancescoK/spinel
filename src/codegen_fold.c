@@ -8605,11 +8605,19 @@ static void emit_elem_param(Compiler *c, Scope *m, int i, int off, int tmp, TyKi
     emit_boxed_text(c, set, raw.p ? raw.p : "0", &eb); free(raw.p);
   }
   else emit_array_elem_at(at, tmp, off, &eb);
-  /* the gathered positionals are boxed: a typed parameter unboxes */
-  if (gathered && sp && sp->type != TY_POLY && sp->type != TY_UNKNOWN) {
+  /* The gathered positionals are boxed, and so is an element of a boxed
+     splat spread in place (a poly array, or a scalar the splat normalized
+     into one): a typed parameter unboxes. Inference widens a parameter a
+     boxed splat reaches to poly, unless an --rbs seed pins it, so the pinned
+     one is where a boxed element met a typed slot and the C did not compile;
+     the seed is asserted there, as for a boxed argument (#3412). */
+  if ((gathered || set == TY_POLY) && sp && sp->type != TY_POLY && sp->type != TY_UNKNOWN) {
+    Buf ck; memset(&ck, 0, sizeof ck);
+    if (sp->rbs_seeded) emit_rbs_checked_text(c, sp->type, m->pnames[i], eb.p ? eb.p : "sp_box_nil()", &ck);
+    else buf_puts(&ck, eb.p ? eb.p : "sp_box_nil()");
     Buf ub; memset(&ub, 0, sizeof ub);
-    emit_unbox_nilable_text(c, sp->type, eb.p ? eb.p : "sp_box_nil()", &ub);
-    free(eb.p); eb = ub;
+    emit_unbox_nilable_text(c, sp->type, ck.p, &ub);
+    free(ck.p); free(eb.p); eb = ub;
   }
   /* An optional param may fall past the end of a (runtime-sized) splat
      array; the arity check guarantees the required params are present, so
