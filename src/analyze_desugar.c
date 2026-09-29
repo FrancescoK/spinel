@@ -438,6 +438,35 @@ int desugar_masgn_store_evidence(Compiler *c) {
   return changed;
 }
 
+/* ---- `self.m(...)` in a class or module body --------------------------------
+   A statement of a class or module body runs with `self` the class object,
+   so `self.m(...)` there is the class's own method: activesupport's
+   IsolatedExecutionState sets `self.isolation_level = :thread` in its body
+   after defining the writer in `class << self`. The call's receiver becomes
+   the class's constant, which the class-method dispatch already serves
+   (`Mod.m`); the bare `m` form was served all along. Runs in the fixpoint,
+   after the scope pass has recorded each node's enclosing body. */
+int desugar_body_self_call(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || nt_kind(nt, recv) != NK_SelfNode) continue;
+    int cb = self_class_body(c, recv);
+    if (cb < 0 || !c->classes[cb].name) continue;
+    long long line = nt_int(nt, recv, "node_line", 0), file = nt_int(nt, recv, "node_file", 0),
+              col = nt_int(nt, recv, "node_col", 0);
+    nt_node_reset(nt, recv, "ConstantReadNode");
+    nt_node_set_str(nt, recv, "name", c->classes[cb].name);
+    nt_node_set_int(nt, recv, "node_line", line);
+    nt_node_set_int(nt, recv, "node_file", file);
+    nt_node_set_int(nt, recv, "node_col", col);
+    changed = 1;
+  }
+  return changed;
+}
+
 /* Proc#>> / #<< with a Method operand: wrap the Method side in #to_proc at the
    AST, so composition always runs proc-to-proc. The to_proc emission builds a
    real trampoline proc that publishes its boxed result through the return
