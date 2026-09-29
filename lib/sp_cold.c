@@ -1612,7 +1612,7 @@ sp_int sp_File_getbyte(sp_File *f);
 sp_RbVal sp_File_ungetc(sp_File *f, sp_RbVal v);
 const char *sp_File_readpartial(sp_File *f, sp_int n);
 sp_int sp_File_sysseek(sp_File *f, sp_int off, sp_int whence);
-sp_int sp_File_flock(sp_File *f, sp_int op);
+sp_RbVal sp_File_flock(sp_File *f, sp_int op);
 sp_int sp_File_fsync(sp_File *f);
 sp_RbVal sp_File_putc(sp_File *f, sp_RbVal v);
 const char *sp_file_ftype(const char *path);
@@ -1777,7 +1777,7 @@ sp_int sp_File_sysseek(sp_File *f, sp_int off, sp_int whence) {
    and that thread may need a GC before it can unlock. So we leave the
    world while we wait, like a `blocking: true` FFI call, and the GC
    doesn't wait for us. EINTR retries instead of failing. */
-sp_int sp_File_flock(sp_File *f, sp_int op) {
+sp_RbVal sp_File_flock(sp_File *f, sp_int op) {
   SP_IO_OPEN(f);
   int fd = fileno(f->fp);
   int r;
@@ -1788,7 +1788,10 @@ sp_int sp_File_flock(sp_File *f, sp_int op) {
     while ((r = flock(fd, (int)op)) != 0 && errno == EINTR) {}
     sp_native_leave();
   }
-  return r == 0 ? 0 : 1;
+  if (r == 0) return sp_box_int(0);
+  /* a LOCK_NB request on a held lock answers false, as CRuby's does */
+  if ((op & LOCK_NB) && (errno == EWOULDBLOCK || errno == EAGAIN)) return sp_box_bool(0);
+  sp_file_raise_errno("rb_file_flock", f->path);
 }
 sp_int sp_File_fsync(sp_File *f) {
   SP_IO_OPEN(f);

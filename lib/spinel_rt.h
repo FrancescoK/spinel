@@ -1184,7 +1184,7 @@ static inline const char *sp_File_pread(sp_File *f, sp_int len, sp_int off) {
   return buf;
 }
 sp_int sp_File_sysseek(sp_File *f, sp_int off, sp_int whence);
-sp_int sp_File_flock(sp_File *f, sp_int op);
+sp_RbVal sp_File_flock(sp_File *f, sp_int op);
 sp_int sp_File_fsync(sp_File *f);
 /* IO#putc: write one character (Integer byte or a String's first char),
    returning the argument */
