@@ -600,6 +600,12 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
       buf_printf(b, "); sp_puts_line(_po ? sp_obj_inspect_sw(%d, _po) : \"nil\"); }\n", cid);
     }
   }
+  else if (ty_is_ptr_array(t) || ty_is_obj_array(t)) {
+    /* a nested numeric table or an array of objects renders through its
+       boxed form, as its #inspect does */
+    buf_puts(b, "sp_puts_line(sp_poly_inspect("); emit_boxed(c, arg, b);
+    buf_puts(b, "));\n");
+  }
   else {
     if (!diagnose_eval_call(c, arg) && !diagnose_unsupported_call(c, arg))
       unsupported(c, arg, "p argument");

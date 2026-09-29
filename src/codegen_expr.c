@@ -305,6 +305,16 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         EMIT_IV(); buf_puts(&conv, ")");
         if (ret_poly) buf_puts(&conv, ")");
       }
+      else if (ty_is_ptr_array(t) || ty_is_obj_array(t)) {
+        Buf ivb; memset(&ivb, 0, sizeof ivb);
+        if (vexpr[0]) buf_puts(&ivb, vexpr);
+        else if (iv_pre) buf_puts(&ivb, iv_pre);
+        else emit_expr(c, expr, &ivb);
+        buf_puts(&conv, "sp_poly_inspect(");
+        emit_boxed_text(c, t, ivb.p ? ivb.p : "NULL", &conv);
+        buf_puts(&conv, ")");
+        free(ivb.p);
+      }
       else if (t == TY_CLASS) {
         buf_puts(&conv, "sp_class_to_s(");
         EMIT_IV(); buf_puts(&conv, ")");
