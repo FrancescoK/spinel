@@ -6270,14 +6270,14 @@ int kwh_arg_param(Compiler *c, Scope *m, int pos_argc) {
    after both. A call path that packs a rest asks here rather than
    reimplementing the test. */
 int rest_kwh_tail(Compiler *c, Scope *m, int kwh, int pos_argc) {
-  if (kwh < 0 || !m || m->kwrest_idx >= 0) return -1;
-  /* A callee declaring keyword params takes the hash as keywords whatever
-     its keys, a `**h` (named or anonymous) included, which has none to find
-     by name. */
-  if (callee_declares_kwargs(c, m)) return -1;
+  /* A callee taking keywords takes the hash as keywords whatever its keys,
+     a `**h` (named or anonymous) included, which has none to find by name;
+     a `**nil` one binds it nowhere. */
+  if (kwh < 0 || !m || kwh_consumed_by_kwparam(c, m, kwh)) return -1;
+  /* a `...` forwarder binds a key by name to the parameter synthesized for it */
   for (int i = 0; i < m->nparams; i++)
     if (m->pnames[i] && callee_has_kwarg(c, m, m->pnames[i]) &&
-        kwh_lookup(c->nt, kwh, m->pnames[i]) >= 0) return -1;   /* a keyword param takes it */
+        kwh_lookup(c->nt, kwh, m->pnames[i]) >= 0) return -1;
   /* Ruby funds POSITIONAL parameters before the rest, so a hash that collapses
      into an unfilled positional slot never reaches the rest as well. Both took
      it: `def f(condition = nil, *args); f(k: 1)` gave args `[{k: 1}]` where
@@ -6315,7 +6315,7 @@ int kwh_gathers(Compiler *c, Scope *m, int kwh, const int *argv, int pos_argc) {
     int spl = 0;
     for (int k = 0; argv && k < pos_argc; k++)
       if (nt_kind(c->nt, argv[k]) == NK_SplatNode) spl = 1;
-    if (m->kwrest_idx >= 0 || callee_declares_kwargs(c, m) || kwh_consumed_by_kwparam(c, m, kwh) ||
+    if (kwh_consumed_by_kwparam(c, m, kwh) ||
         !(spl || (m->rest_idx < 0 && kwh_arg_param(c, m, pos_argc) < 0))) return 0;
   }
   for (int i = 0; i < m->nparams; i++)
@@ -6348,16 +6348,15 @@ static void positional_arity(Compiler *c, Scope *m, int *required, int *total) {
    the options-hash collapse is written in two call paths. */
 static int kwh_consumed_by_kwparam(Compiler *c, Scope *m, int kwh) {
   if (kwh < 0 || !m) return 0;
-  /* A `**kwrest` takes every keyword the call passed, so none of them is a
-     positional hash argument. Without this, `def f(a = nil, **kw); f(k: 1)`
-     bound the keyword hash to `a` as well as to `kw`, and any branch testing
-     `a.nil?` took the wrong path (#3808). */
-  if (m->kwrest_idx >= 0) return 1;
-  /* A callee declaring a keyword parameter takes the hash as keywords
-     whatever its keys: a `**h` has no key to match by name, and a key no
-     parameter names is an unknown keyword. Matching keys by name bound
-     `f(1, **h)` against `def f(a, b = 5, k: 1)` to b as well. */
-  return callee_declares_kwargs(c, m);
+  /* What the hash is, is the plan's (kw_plan): keywords for a callee that
+     takes any -- a `**kwrest` takes every one, so `def f(a = nil, **kw);
+     f(k: 1)` bound the hash to `a` as well (#3808), and a declared keyword
+     takes a `**h` with no key to match by name, which bound `f(1, **h)`
+     against `def f(a, b = 5, k: 1)` to b as well -- and nothing a `**nil`
+     callee binds: holding a key the call is refused. */
+  KwPlan P;
+  kw_plan(c, m, kwh, &P);
+  return P.role == KWH_KEYWORDS || P.role == KWH_REFUSED;
 }
 
 void emit_rest_pack(Compiler *c, int from, int pos_argc, const int *argv, Buf *b) {
@@ -7082,12 +7081,43 @@ static void ds_operand_reads_temp(int node, int tmp) {
   g_n_argov++;
 }
 
+/* `s` as a C string literal: a key a message names (`"q\"z"`) may carry
+   what a C literal escapes. */
+static void emit_c_str(Buf *b, const char *s) {
+  buf_puts(b, "\"");
+  for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+    if (*p == '"' || *p == '\\') buf_printf(b, "\\%c", *p);
+    else if (*p < 0x20 || *p == 0x7f) buf_printf(b, "\\%03o", *p);
+    else buf_printf(b, "%c", *p);
+  }
+  buf_puts(b, "\"");
+}
+
+/* Can a `**` operand of `kwh` bring a key that is no Symbol: one of a hash
+   kind keyed by something else, or only known at run time? */
+static int kwh_spreads_any_key(Compiler *c, int kwh) {
+  const NodeTable *nt = c->nt;
+  int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
+  for (int e = 0; e < en; e++) {
+    int v = nt_kind(nt, el[e]) == NK_AssocSplatNode ? nt_ref(nt, el[e], "value") : -1;
+    TyKind t = v >= 0 ? comp_ntype(c, v) : TY_UNKNOWN;
+    if (t == TY_POLY || (ty_is_hash(t) && ty_hash_key(t) != TY_SYMBOL)) return 1;
+  }
+  return 0;
+}
+
 int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type) {
   const NodeTable *nt = c->nt;
   int ds_hash_tmp = -1;
   *out_type = TY_UNKNOWN;
   if (kwh < 0) return -1;
-  if (kwh_merged(c, m, kwh)) return emit_ds_hash_merge(c, kwh, 0, out_type);
+  /* A `**` that may bring a key other than a Symbol merges into a hash
+     taking any key, for a callee without a `**kwrest`, where such a key can
+     only be unknown and the check names it: merged into the Symbol-keyed
+     one it raised a TypeError instead (`def m(k:)` called `m(k: 1, **{"s"
+     => 2})`). A `**kwrest` keeps the Symbol-keyed hash it collects. */
+  if (kwh_merged(c, m, kwh))
+    return emit_ds_hash_merge(c, kwh, m->kwrest_idx < 0 && kwh_spreads_any_key(c, kwh), out_type);
   int en2 = 0; const int *elems2 = nt_arr(nt, kwh, "elements", &en2);
   for (int e = 0; e < en2; e++) {
     const char *ety2 = nt_type(nt, elems2[e]);
@@ -7266,12 +7296,36 @@ void emit_ds_kwarg_check(Compiler *c, Scope *m, int kwh, int ds_hash_tmp, TyKind
     if (kname) buf_printf(g_pre, "\"%s\", ", kname);
   }
   buf_puts(g_pre, "0};\n");
+  /* A literal key that is no Symbol is unknown to a callee without a
+     `**kwrest` as surely as one no keyword names, and CRuby names each in
+     the order the hash holds it, ahead of those the `**` brings: the plan's
+     list, inspected here, stands for the literal keys (kw_plan). */
+  KwPlan P;
+  kw_plan(c, m, kwh, &P);
+  int strkey = 0;
+  for (int e = 0; e < en && !merged; e++)
+    if (nt_kind(nt, el[e]) == NK_AssocNode && nt_kind(nt, nt_ref(nt, el[e], "key")) == NK_StringNode) strkey = 1;
+  if (strkey && m->kwrest_idx < 0) {
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "static const char *const _ku%d[] = {", chk);
+    for (int u = 0; u < P.nunknown && u < 32; u++) {
+      int key = nt_ref(nt, el[P.unknown_el[u]], "key");
+      int is_sym = nt_kind(nt, key) == NK_SymbolNode;
+      char iv[300];
+      kw_key_inspect(nt_str(nt, key, is_sym ? "value" : "content"), is_sym, iv, sizeof iv);
+      emit_c_str(g_pre, iv);
+      buf_puts(g_pre, ", ");
+    }
+    buf_puts(g_pre, "0};\n");
+  }
   char tn[32]; snprintf(tn, sizeof tn, "_t%d", ds_hash_tmp);
   emit_indent(g_pre, g_indent);
-  buf_puts(g_pre, "sp_kwargs_verify(");
+  buf_puts(g_pre, strkey && m->kwrest_idx < 0 ? "sp_kwargs_verify_lit(" : "sp_kwargs_verify(");
   if (ds_hash_type == TY_POLY) buf_puts(g_pre, tn);
   else emit_boxed_text(c, ds_hash_type, tn, g_pre);
-  buf_printf(g_pre, ", _kw%d, _kr%d, _kl%d, %d);\n", chk, chk, chk, m->kwrest_idx < 0);
+  buf_printf(g_pre, ", _kw%d, _kr%d, _kl%d, ", chk, chk, chk);
+  if (strkey && m->kwrest_idx < 0) buf_printf(g_pre, "_ku%d, ", chk);
+  buf_printf(g_pre, "%d);\n", m->kwrest_idx < 0);
 }
 
 void emit_kwhash_verify(Compiler *c, Scope *m, int hash_tmp, TyKind hash_type, Buf *out) {
@@ -7566,6 +7620,34 @@ int default_refs_earlier_param(Compiler *c, Scope *m) {
   return 0;
 }
 
+static void emit_argument_error(const char *msg);
+/* See codegen_internal.h. CRuby evaluates every argument before the callee
+   refuses them or judges a keyword, and converts each `**` operand where it
+   stands, so its TypeError comes ahead of the values after it and of any
+   count: `def m` called `m("s" => 1, **true)` is no implicit conversion of
+   true, and `m(**h, **1, **src)` never runs src. Each value runs into the
+   temp its uses read (emit_args_in_source_order). */
+void emit_args_run(Compiler *c, const int *argv, int argc) {
+  const NodeTable *nt = c->nt;
+  for (int k = 0; argv && k < argc; k++) {
+    if (nt_kind(nt, argv[k]) != NK_KeywordHashNode) { emit_args_in_source_order(c, &argv[k], 1, g_pre); continue; }
+    int en = 0; const int *el = nt_arr(nt, argv[k], "elements", &en);
+    for (int e = 0; e < en; e++) {
+      int v = nt_ref(nt, el[e], "value");
+      if (v < 0) continue;
+      emit_arg_first(c, v, g_pre);
+      if (nt_kind(nt, el[e]) != NK_AssocSplatNode) continue;
+      TyKind t = comp_ntype(c, v);
+      if (t == TY_POLY) {
+        Buf hb; memset(&hb, 0, sizeof hb);
+        emit_boxed(c, v, &hb);
+        emit_kw_splat_conv_check(c, TY_POLY, hb.p ? hb.p : "sp_box_nil()");
+        free(hb.p);
+      }
+      else if (kw_splat_bad_cls(c, t)) emit_kw_splat_bad_operand(c, v);
+    }
+  }
+}
 /* Inject a runtime ArgumentError ahead of the call statement: the raise
    fires exactly when the bad call would run (dead code stays silent, like
    CRuby), once the call's arguments `argv` have run, and the argument slots
@@ -7575,78 +7657,141 @@ static void args_raise(Compiler *c, const int *argv, int argc, const char *fmt, 
   va_list ap; va_start(ap, fmt);
   vsnprintf(msg, sizeof msg, fmt, ap);
   va_end(ap);
-  /* CRuby evaluates every argument before the callee refuses them */
-  emit_args_in_source_order(c, argv, argc, g_pre);
+  emit_args_run(c, argv, argc);
+  emit_argument_error(msg);
+}
+/* The raise of that ArgumentError, its arguments already run. */
+static void emit_argument_error(const char *msg) {
   emit_indent(g_pre, g_indent);
-  /* a key the message names (`"q\"z"`) may carry what a C literal escapes */
-  buf_puts(g_pre, "sp_raise_cls(\"ArgumentError\", \"");
-  for (const unsigned char *p = (const unsigned char *)msg; *p; p++) {
-    if (*p == '"' || *p == '\\') buf_printf(g_pre, "\\%c", *p);
-    else if (*p < 0x20 || *p == 0x7f) buf_printf(g_pre, "\\%03o", *p);
-    else buf_printf(g_pre, "%c", *p);
-  }
-  buf_puts(g_pre, "\");\n");
+  buf_puts(g_pre, "sp_raise_cls(\"ArgumentError\", ");
+  emit_c_str(g_pre, msg);
+  buf_puts(g_pre, ");\n");
 }
 
-/* A keyword key the callee has no parameter for. CRuby raises before the body
-   runs, and so does the ordinary call path -- but a call that is INLINED has no
-   function to hand an argument list to, and its parameter binding walks the
-   PARAMETERS looking for keys rather than the keys looking for parameters. A
-   key nobody claimed was therefore never read and never complained about: the
-   DNS-rebinding pin `Net::HTTP.start(..., ipaddr: ip)` carries went out with
-   the keyword silently gone (#4419).
-   Shared rather than duplicated because a rule in two places is a rule that
-   drifts, and the two paths already disagreed. Returns 1 when it raised.
-   Guarded by kw_matches for the same reason the caller is: with no key naming a
-   keyword parameter the hash is an ordinary positional argument, and its keys
-   are data rather than keywords. */
-int emit_unknown_kwarg_raise(Compiler *c, Scope *m, const int *argv, int argc) {
+/* The keyword decisions of a call into `m`, taken once: every binder read
+   them off the hash on its own, each by a different subset of the rules, so
+   a `**` beside the positionals was counted by one and not another, a String
+   key was never checked, and a rest or a `**kwrest` beside a required
+   keyword stood the missing-keyword check down.
+
+   What the hash is comes first. A callee that declares a keyword or a
+   `**kwrest` takes it as keywords, whatever its keys and whatever
+   its `**` operands hold: it never counts as a positional, so `def r(a, k:)`
+   called `r(**{k: 5})` is short a positional. A `**nil` callee refuses it.
+   Any other callee takes it as one more positional Hash, which counts one
+   when a literal key is in it and, made of `**` spreads alone, one only when
+   the run time finds a key in it (`f(1, **{})` is `f(1)`).
+
+   Then the keywords the call gets wrong in a way known here, for a callee
+   declaring keywords: each required keyword no literal key names, when no
+   `**` may name it (the run time checks those that may, emit_ds_kwarg_check),
+   and, without a `**kwrest`, each literal key no keyword parameter takes --
+   a String one as much as a Symbol: `def f(a, k: 0)` called `f(1, "s" => 1)`
+   is `unknown keyword: "s"`. A key written twice is named once, where it
+   first stands; a computed key is the run time's (`computed`). */
+void kw_plan(Compiler *c, Scope *m, int kwh, KwPlan *P) {
   const NodeTable *nt = c->nt;
-  int kwh = argc > 0 && argv && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
-  if (!m || kwh < 0 || m->kwrest_idx >= 0) return 0;
-  int kw_matches = callee_declares_kwargs(c, m);
-  for (int i = 0; i < m->nparams && !kw_matches; i++)
-    if (m->pnames[i] && callee_has_kwarg(c, m, m->pnames[i]) &&
-        kwh_lookup(nt, kwh, m->pnames[i]) >= 0) kw_matches = 1;
-  if (!kw_matches) return 0;
-  /* CRuby names every key the hash holds that no keyword takes, once each,
-     in the order the hash first holds it, as #inspect writes it. A key only
-     the run time knows (a computed one) leaves the list to the first
-     unknown Symbol. */
-  int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
-  char unk[512] = "", first[300] = "";
-  int nunk = 0, nsym = 0, spelled = 1;
+  memset(P, 0, sizeof *P);
+  P->kwh = kwh;
+  if (!m) return;
+  int en = 0; const int *el = kwh >= 0 ? nt_arr(nt, kwh, "elements", &en) : NULL;
   for (int e = 0; e < en; e++) {
-    int key = el ? nt_ref(nt, el[e], "key") : -1;
-    const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
-    int is_sym = kty && sp_streq(kty, "SymbolNode"), is_str = kty && sp_streq(kty, "StringNode");
+    if (nt_kind(nt, el[e]) == NK_AssocSplatNode) {
+      P->spread = 1;
+      /* a `**` whose conversion may refuse it: `**true`, or a value only the
+         run time knows */
+      int v = nt_ref(nt, el[e], "value");
+      TyKind t = v >= 0 ? comp_ntype(c, v) : TY_UNKNOWN;
+      if (v >= 0 && (t == TY_POLY || kw_splat_bad_cls(c, t))) P->args_first = 1;
+      continue;
+    }
+    P->literal = 1;
+    int key = nt_ref(nt, el[e], "key");
+    if (key >= 0 && nt_kind(nt, key) != NK_SymbolNode && nt_kind(nt, key) != NK_StringNode) P->computed = 1;
+  }
+  int pn = m->def_node >= 0 ? nt_ref(nt, m->def_node, "parameters") : -1;
+  int declares = callee_declares_kwargs(c, m);
+  /* CRuby runs every argument before it converts a `**` or judges a
+     keyword: when the run time does either, the arguments run first, in
+     source order, and the check reads what they left (emit_ds_kwarg_check
+     ran ahead of the positionals and the literal values after the `**`) */
+  if (P->spread && declares) P->args_first = 1;
+  if (kwh < 0) P->role = KWH_NONE;
+  else if (scope_refuses_keywords(c, m)) P->role = KWH_REFUSED;
+  else if (declares || m->kwrest_idx >= 0) P->role = KWH_KEYWORDS;
+  else {
+    P->role = KWH_POSITIONAL;
+    P->count = P->literal ? KWC_ONE : KWC_NONEMPTY;
+  }
+  if (!declares) return;
+  int kn = 0; const int *kws = nt_arr(nt, pn, "keywords", &kn);
+  for (int i = 0; i < kn && !P->spread; i++) {
+    const char *kty = nt_type(nt, kws[i]);
+    const char *kpn = nt_str(nt, kws[i], "name");
+    if (!kty || !sp_streq(kty, "RequiredKeywordParameterNode") || !kpn || kwh_lookup(nt, kwh, kpn) >= 0) continue;
+    char iv[300];
+    kw_key_inspect(kpn, 1, iv, sizeof iv);
+    kw_names_add(P->missing, sizeof P->missing, &P->nmissing, iv);
+  }
+  if (m->kwrest_idx >= 0) return;
+  for (int e = 0; e < en; e++) {
+    int key = nt_ref(nt, el[e], "key");
+    int is_sym = key >= 0 && nt_kind(nt, key) == NK_SymbolNode;
+    int is_str = key >= 0 && nt_kind(nt, key) == NK_StringNode;
     const char *kn = is_sym ? nt_str(nt, key, "value") : is_str ? nt_str(nt, key, "content") : NULL;
-    if (!kn) { if (key >= 0) spelled = 0; continue; }
-    int found = 0;
+    if (!kn) continue;
     /* a key names a keyword parameter or nothing: a positional parameter of
        the same name does not take it (`def f(x, k: 1)` called `f(1, x: 2)`
        is "unknown keyword: :x") */
-    for (int i = 0; i < m->nparams && is_sym; i++)
-      if (m->pnames[i] && sp_streq(m->pnames[i], kn) && callee_has_kwarg(c, m, kn)) { found = 1; break; }
-    if (found) continue;
-    /* a key written twice is one key of the hash, where it first stands */
+    if (is_sym && callee_param_is_declared_kwarg(c, m, kn)) continue;
     int dup = 0;
     for (int e2 = 0; e2 < e && !dup; e2++) {
       int k2 = nt_ref(nt, el[e2], "key");
-      const char *t2 = k2 >= 0 ? nt_type(nt, k2) : NULL;
-      const char *n2 = t2 && sp_streq(t2, kty) ? nt_str(nt, k2, is_sym ? "value" : "content") : NULL;
+      const char *n2 = k2 >= 0 && nt_kind(nt, k2) == nt_kind(nt, key)
+                         ? nt_str(nt, k2, is_sym ? "value" : "content") : NULL;
       dup = n2 && sp_streq(n2, kn);
     }
     if (dup) continue;
     char iv[300];
     kw_key_inspect(kn, is_sym, iv, sizeof iv);
-    if (is_sym && !nsym++) snprintf(first, sizeof first, "%s", iv);
-    kw_names_add(unk, sizeof unk, &nunk, iv);
+    if (is_sym && !P->first_sym[0]) snprintf(P->first_sym, sizeof P->first_sym, "%s", iv);
+    if (P->nunknown < 32) P->unknown_el[P->nunknown] = e;
+    kw_names_add(P->unknown, sizeof P->unknown, &P->nunknown, iv);
   }
-  if (!nsym) return 0;
+}
+
+/* The keyword error a plan finds here, in CRuby's order -- a missing
+   keyword ahead of an unknown one -- into `msg`; 0 when it finds none. A
+   literal key no keyword takes beside a `**` is the run time's to name, with
+   the keys the `**` brings (emit_ds_kwarg_check). */
+static int kw_plan_error(const KwPlan *P, char *msg, size_t n) {
+  if (P->nmissing) {
+    kw_error_message(msg, n, "missing", P->nmissing, P->missing);
+    return 1;
+  }
+  if (!P->nunknown || P->spread) return 0;
+  if (!P->computed) kw_error_message(msg, n, "unknown", P->nunknown, P->unknown);
+  else if (P->first_sym[0]) kw_error_message(msg, n, "unknown", 1, P->first_sym);
+  else return 0;
+  return 1;
+}
+
+/* The `unknown keyword` raise for a call's keyword hash, the last of its
+   arguments `argv`, into `m`, once those have run: the plan's (kw_plan). A
+   call that is INLINED walks the parameters looking for keys rather than the
+   keys looking for parameters, so a key nobody claimed was never read: the
+   DNS-rebinding pin `Net::HTTP.start(..., ipaddr: ip)` carries went out with
+   the keyword silently gone (#4419). CRuby names every such key once, in the
+   order the hash first holds it; beside a key only the run time knows, the
+   first unknown Symbol alone is named here. Returns 1 when it raised. */
+int emit_unknown_kwarg_raise(Compiler *c, Scope *m, const int *argv, int argc) {
+  const NodeTable *nt = c->nt;
+  int kwh = argc > 0 && argv && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+  KwPlan P;
+  kw_plan(c, m, kwh, &P);
+  P.nmissing = 0;
   char msg[600];
-  if (spelled) kw_error_message(msg, sizeof msg, "unknown", nunk, unk);
-  else kw_error_message(msg, sizeof msg, "unknown", 1, first);
+  if (!kw_plan_error(&P, msg, sizeof msg)) return 0;
   args_raise(c, argv, argc, "%s", msg);
   return 1;
 }
@@ -7668,6 +7813,21 @@ int rest_shortfall_required(Compiler *c, Scope *m) {
     if (!m->pdefault || m->pdefault[i] < 0) nreq++;
   }
   return nreq;
+}
+
+/* The positional count a rest target requires of a call, or -1 when it is
+   not judged: rest_shortfall_required, and for a callee taking keywords,
+   whose hash is never a positional (kw_plan), its positionals without a
+   default -- where the keyword parameters stood the check down. */
+static int rest_required_for(Compiler *c, Scope *m) {
+  int r = rest_shortfall_required(c, m);
+  if (r >= 0 || m->rest_idx < 0 || m->cs_synth) return r;
+  if (!callee_declares_kwargs(c, m) && m->kwrest_idx < 0) return -1;
+  for (int i = 0; i < m->nparams; i++)
+    if (!m->pnames[i] || (m->pnames[i][0] == '_' && m->pnames[i][1] == '_')) return -1;
+  int req = 0, tot = 0;
+  positional_arity(c, m, &req, &tot);
+  return req;
 }
 
 /* The count a call with a trailing splat supplies, in a temp: `lead` positional
@@ -7725,45 +7885,91 @@ int splat_operand_is_scalar(TyKind t) {
          t == TY_STRBUF || t == TY_SYMBOL || t == TY_BOOL;
 }
 
+/* The positional count of a call with a splat among its positionals, as
+   the run time measures it, into `b`: each splat's length, one for each
+   other positional, and the one a keyword hash adds that is a positional
+   Hash with a literal key (kw_plan). */
+static void emit_rt_positional_count(Compiler *c, const int *argv, int pos_argc, const KwPlan *P,
+                                     Buf *b) {
+  const NodeTable *nt = c->nt;
+  int fixed = P->count == KWC_ONE;
+  buf_puts(b, "(");
+  for (int k = 0; argv && k < pos_argc; k++) {
+    if (nt_kind(nt, argv[k]) == NK_BlockArgumentNode) continue;
+    if (nt_kind(nt, argv[k]) != NK_SplatNode) { fixed++; continue; }
+    int op = nt_ref(nt, argv[k], "expression");
+    if (op < 0) {
+      Buf ab; memset(&ab, 0, sizeof ab);
+      if (emit_anon_rest_ref(c, argv[k], &ab)) buf_printf(b, "sp_PolyArray_length(%s) + ", ab.p);
+      free(ab.p);
+      continue;
+    }
+    buf_puts(b, "sp_PolyArray_length(");
+    emit_splat_operand_array(c, op, b);
+    buf_puts(b, ") + ");
+  }
+  buf_printf(b, "%d)", fixed);
+}
+
+/* A splat past every parameter of a callee without a rest binds nowhere,
+   and no binder measured it: `def m(a)` called `m(1, *x)` ran with x's
+   elements dropped, and `def n` called `n(*[], k: 1)` with the positional
+   Hash too. Its count is judged here, the keyword hash counted as the plan
+   says, once the arguments have run. */
+void emit_unreached_splat_count(Compiler *c, Scope *m, const int *argv, int argc, int pos_argc,
+                                const KwPlan *P) {
+  emit_args_in_source_order(c, argv, argc, g_pre);
+  Buf gb; memset(&gb, 0, sizeof gb);
+  emit_rt_positional_count(c, argv, pos_argc, P, &gb);
+  emit_positional_count_check(c, m, gb.p);
+  free(gb.p);
+}
+
 /* Arity / keyword validation, in CRuby's words, raised at RUNTIME just
    before the call would run (dead code stays silent, matching CRuby;
-   the argument slots keep their compat pads). Only fully static shapes
-   are checked: any splat, a double-splat into a target without `**kw`, a
-   synthesized scope, or synthesized (__-prefixed, e.g. forwarding) params
-   skip; a rest target has only its shortfall judged, a `**kw` target only
-   its positional count. For a callee declaring no keyword parameter, a
-   keyword hash none of whose keys names a parameter collapses into one
-   positional hash argument (the Ruby options-hash idiom) and is counted
-   as such rather than keyword-checked.
-   One rule for the direct call (emit_args_filled) and the instance dispatch
-   (emit_dispatch): the dispatch kept its own count, which took keyword
-   parameters for positional slots and skipped every keyword hash, so
-   `obj.m(3, 4)` against `def m(x, k: 1)` bound silently where `m(3, 4)`
-   raised. `judge_rest` is off for the dispatch, which measures a rest
-   target's shortfall itself. The inlined yield path (emit_inline_call_x)
-   asks here too. */
+   the argument slots keep their compat pads), once every argument has run.
+   CRuby's order: a `**nil` callee refuses keywords, then the positional
+   count, then a missing keyword, then an unknown one. What the keyword hash
+   is, what it adds to the count and which keywords the call gets wrong are
+   the plan's (kw_plan). The count is judged here when it is known here: no
+   splat among the positionals, and a hash that counts nothing or one; a
+   synthesized scope or synthesized (__-prefixed, e.g. forwarding) params
+   skip. A rest target has only its shortfall judged, which the dispatch
+   (`judge_rest` off) measures itself where rest_shortfall_required judges
+   it. A keyword error the plan finds after a splat is raised
+   once the run time has judged the count, which CRuby judges first:
+   `def m(k:)` called `m(*[])` is missing k, called `m(*[1])` given 1.
+   One rule for the direct call (emit_args_filled), the instance dispatch
+   (emit_dispatch) and the inlined yield path (emit_inline_call_x): the
+   dispatch kept its own count, which took keyword parameters for positional
+   slots and skipped every keyword hash, so `obj.m(3, 4)` against
+   `def m(x, k: 1)` bound silently where `m(3, 4)` raised. */
 void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv, int judge_rest) {
   const NodeTable *nt = c->nt;
   int kwh = -1;
   int pos_argc = argc;
-  if (argc > 0 && argv && nt_type(nt, argv[argc - 1]) &&
-      sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
+  if (argc > 0 && argv && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) {
     kwh = argv[argc - 1];
     pos_argc = argc - 1;
   }
-  int has_splat = 0, has_ds = 0;
-  for (int k = 0; k < pos_argc; k++)
-    if (argv && nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "SplatNode")) { has_splat = 1; break; }
-  if (kwh >= 0) {
-    int en2 = 0; const int *el2 = nt_arr(nt, kwh, "elements", &en2);
-    for (int e = 0; e < en2; e++)
-      if (el2 && nt_type(nt, el2[e]) && sp_streq(nt_type(nt, el2[e]), "AssocSplatNode")) { has_ds = 1; break; }
-  }
-  /* A `**nil` method refuses a literal keyword before it counts anything */
-  if (kwh >= 0 && scope_refuses_keywords(c, m)) {
-    int en3 = 0; const int *el3 = nt_arr(nt, kwh, "elements", &en3);
-    for (int e = 0; e < en3; e++)
-      if (nt_kind(nt, el3[e]) == NK_AssocNode) { args_raise(c, argv, argc, "no keywords accepted"); return; }
+  int has_splat = 0;
+  for (int k = 0; k < pos_argc && !has_splat; k++)
+    if (argv && nt_kind(nt, argv[k]) == NK_SplatNode) has_splat = 1;
+  KwPlan P;
+  kw_plan(c, m, kwh, &P);
+  /* A `**nil` method refuses a keyword before it counts anything: a literal
+     key here, `**` spreads when the run time finds a key in them. Either way
+     the hash binds nowhere (kwh_consumed_by_kwparam). */
+  if (P.role == KWH_REFUSED) {
+    if (P.literal) { args_raise(c, argv, argc, "no keywords accepted"); return; }
+    Buf kb; memset(&kb, 0, sizeof kb);
+    emit_args_in_source_order(c, argv, argc, g_pre);
+    if (emit_kwh_spread_arg(c, kwh, &kb)) {
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "if (sp_poly_length(%s) > 0) sp_raise_cls(\"ArgumentError\", \"no keywords accepted\");\n",
+                 kb.p);
+    }
+    free(kb.p);
   }
   int synth = 0, nfixed = 0, nreq = 0;
   for (int i = 0; i < m->nparams; i++) {
@@ -7780,93 +7986,51 @@ void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv, int
         strncmp(m->pnames[i], "__bam_", 6) != 0) { synth = 1; break; }
     /* Keyword parameters share pnames[] with the positional ones but are
        no positional slot: counting them let `def m(x, k: 1)` take `m(3, 4)`
-       and bind the 4 nowhere. */
-    if (i == m->kwrest_idx || callee_param_is_declared_kwarg(c, m, m->pnames[i])) continue;
+       and bind the 4 nowhere. The rest is no slot either. */
+    if (i == m->kwrest_idx || i == m->rest_idx || callee_param_is_declared_kwarg(c, m, m->pnames[i])) continue;
     nfixed++;
     if (!m->pdefault || m->pdefault[i] < 0) nreq++;
   }
+  /* a `(...)` forwarder takes whatever its call passes on, through the
+     parameters synthesized for its call sites */
+  int pn = m->def_node >= 0 ? nt_ref(nt, m->def_node, "parameters") : -1;
+  int kwr = pn >= 0 ? nt_ref(nt, pn, "keyword_rest") : -1;
+  if (kwr >= 0 && nt_type(nt, kwr) && sp_streq(nt_type(nt, kwr), "ForwardingParameterNode")) return;
+  if (synth || m->cs_synth) return;
   /* CRuby names the callee's required keywords in every count error:
      `def h(x, k:)` called `h(k: 3)` is "(given 0, expected 1; required
      keyword: k)" */
   char kwsuf[256], msg[512];
   scope_arity_kw_suffix(c, m, kwsuf, sizeof kwsuf);
-  /* A target with a rest parameter has no upper bound, so only its shortfall
-     is judged: `def f(a, *r)` called bare ran the body with a padded a. */
-  int rest_req = rest_shortfall_required(c, m);
-  if (!has_splat && !has_ds && rest_req >= 0) {
-    if (judge_rest) {
-      int eff_pos = pos_argc + (kwh >= 0 ? 1 : 0);
-      if (eff_pos < rest_req) {
-        arity_message(msg, sizeof msg, eff_pos, rest_req, -1, kwsuf);
-        args_raise(c, argv, argc, "%s", msg);
-      }
+  if (!has_splat && P.count != KWC_NONEMPTY) {
+    /* A keyword hash that is keywords is no positional, `**` spreads among
+       them too: `def r(a, k:)` called `r(**{k: 5})` is given 0. With a rest
+       there is no upper bound: `def f(a, *r)` called bare ran the body with
+       a padded a. */
+    int given = pos_argc + P.count;
+    int over = m->rest_idx < 0 && given > nfixed && !bam_variadic_kernel(nt, m);
+    /* the dispatch measures a rest target's shortfall where
+       rest_shortfall_required judges it, not beside keywords */
+    int under = given < nreq && (m->rest_idx < 0 || judge_rest || rest_shortfall_required(c, m) < 0);
+    if (over || under) {
+      arity_message(msg, sizeof msg, given, nreq, m->rest_idx >= 0 ? -1 : nfixed, kwsuf);
+      args_raise(c, argv, argc, "%s", msg);
+      return;
     }
   }
-  /* A `**kw` takes every keyword, so only the positional count is judged:
-     `def f(x, **kw)` called `f(3, 4)` dropped the 4. The keyword hash is
-     never a positional argument here (kwh_positional_slot). */
-  else if (!has_splat && !synth && m->rest_idx < 0 && m->kwrest_idx >= 0 && !m->cs_synth) {
-    if (pos_argc > nfixed || pos_argc < nreq) {
-      arity_message(msg, sizeof msg, pos_argc, nreq, nfixed, kwsuf);
-      args_raise(c, argv, argc, "%s", msg);
-    }
+  if (!kw_plan_error(&P, msg, sizeof msg)) return;
+  if (has_splat) {
+    /* the count first, as the run time measures it, once the arguments
+       have run */
+    emit_args_run(c, argv, argc);
+    Buf gb; memset(&gb, 0, sizeof gb);
+    emit_rt_positional_count(c, argv, pos_argc, &P, &gb);
+    emit_positional_count_check(c, m, gb.p);
+    free(gb.p);
+    emit_argument_error(msg);
+    return;
   }
-  else if (!has_splat && !has_ds && !synth &&
-      m->rest_idx < 0 && m->kwrest_idx < 0 && !m->cs_synth) {
-    int kw_matches = kwh >= 0 && callee_declares_kwargs(c, m);
-    if (kwh >= 0 && !kw_matches)
-      for (int i = 0; i < m->nparams; i++)
-        /* A key binds by name only to a parameter that IS a keyword. A
-           positional parameter merely SHARING the name takes the whole hash
-           positionally, the way any other unconsumed keyword hash does --
-           `def f(attrs); f(attrs: 1)` answers `{attrs: 1}` in Ruby and
-           answered 0 here, because the name match made the call look like it
-           supplied no positional argument at all. */
-        if (m->pnames[i] && callee_has_kwarg(c, m, m->pnames[i]) &&
-            kwh_lookup(nt, kwh, m->pnames[i]) >= 0) { kw_matches = 1; break; }
-    int eff_pos = pos_argc + ((kwh >= 0 && !kw_matches) ? 1 : 0);
-    arity_message(msg, sizeof msg, eff_pos, nreq, nfixed, kwsuf);
-    int raised = 0;
-    if (eff_pos > nfixed && !bam_variadic_kernel(nt, m)) {
-      args_raise(c, argv, argc, "%s", msg);
-      raised = 1;
-    }
-    /* CRuby's order: the positional count, then a missing keyword, then an
-       unknown one. Two passes over the parameters, positional then keyword,
-       and the unknown-key check last. */
-    char miss[512] = ""; int nmiss = 0;
-    for (int pass = 0; pass < 2 && !raised; pass++)
-    for (int i = 0; i < m->nparams && !raised; i++) {
-      /* only a keyword parameter is supplied by a key: a positional one that
-         shares the key's name is still missing (`def f(x, k: 1)` called
-         `f(x: 2)` is short a positional, CRuby's "given 0, expected 1") */
-      int is_kw = m->pnames[i] && callee_has_kwarg(c, m, m->pnames[i]);
-      if (is_kw != pass) continue;
-      /* With a leading optional the shortfall is a count, not a position:
-         this parameter may be undefaulted and still funded, because the
-         required ones are covered first. */
-      int lead_opt = opt_before_required(c, m);
-      if (lead_opt && arg_slot_for_param(c, m, i, eff_pos) >= 0) continue;
-      if (i < eff_pos && !lead_opt) continue;
-      if (m->pdefault && m->pdefault[i] >= 0) continue;
-      if (is_kw && kw_matches && kwh_lookup(nt, kwh, m->pnames[i]) >= 0) continue;
-      /* every required keyword the call leaves out is named, in one
-         message */
-      if (is_kw) {
-        char iv[300]; snprintf(iv, sizeof iv, ":%s", m->pnames[i] ? m->pnames[i] : "?");
-        kw_names_add(miss, sizeof miss, &nmiss, iv);
-        continue;
-      }
-      args_raise(c, argv, argc, "%s", msg);
-      raised = 1;
-    }
-    if (!raised && nmiss) {
-      kw_error_message(msg, sizeof msg, "missing", nmiss, miss);
-      args_raise(c, argv, argc, "%s", msg);
-      raised = 1;
-    }
-    if (!raised && emit_unknown_kwarg_raise(c, m, argv, argc)) raised = 1;
-  }
+  args_raise(c, argv, argc, "%s", msg);
 }
 
 /* The positional layout of one call into one callee: which argument, splat
@@ -7892,7 +8056,7 @@ void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv, int
    Where one of them cannot, the call keeps the static layout it had. */
 static int kwh_rides_gather(Compiler *c, Scope *m, int kwh, const int *argv, int pos_argc) {
   const NodeTable *nt = c->nt;
-  if (kwh < 0 || kwh_only_spreads(nt, kwh) || m->kwrest_idx >= 0 || callee_declares_kwargs(c, m)) return 0;
+  if (kwh < 0 || kwh_only_spreads(nt, kwh) || kwh_consumed_by_kwparam(c, m, kwh)) return 0;
   int fk = -1;
   for (int k = 0; k < pos_argc && fk < 0; k++)
     if (nt_kind(nt, argv[k]) == NK_SplatNode) fk = k;
@@ -7944,7 +8108,7 @@ static int arg_layout_gathers(Compiler *c, Scope *m, const int *argv, int pos_ar
       !(m->rest_idx >= 0 && m->npost_rest > 0 && sk >= pos_argc - m->npost_rest))
     return 0;
   /* a literal hash is keywords, or the gather carries it */
-  if (kwh >= 0 && !rides && m->kwrest_idx < 0 && !callee_declares_kwargs(c, m)) return 0;
+  if (kwh >= 0 && !rides && !kwh_consumed_by_kwparam(c, m, kwh)) return 0;
   return 1;
 }
 
@@ -7977,6 +8141,32 @@ void arg_layout(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh, i
   L->bind_argc = pos_argc + (L->kwh_slot >= 0 ? 1 : 0);
   L->rest_argc = rest_bind_argc(c, m, kwh, pos_argc);
   L->rest_kwh = rest_kwh_tail(c, m, kwh, pos_argc);
+  kw_plan(c, m, kwh, &L->kw);
+  /* a splat leaves the count to the run time, which judges it before the
+     keywords, their values run */
+  for (int k = 0; kwh >= 0 && argv && k < pos_argc; k++)
+    if (nt_kind(nt, argv[k]) == NK_SplatNode) L->kw.args_first = 1;
+  /* ... which matters only where another argument than a lone `**` operand
+     has an effect to run out of place, and not for a hash merged in source
+     order (kwh_merged), whose positionals already run first
+     (kwh_runs_ahead) and whose sources merge converting each in turn */
+  if (L->kw.args_first && kwh_merged(c, m, kwh)) L->kw.args_first = 0;
+  if (L->kw.args_first) {
+    int neff = 0, spread_eff = 0;
+    for (int k = 0; argv && k < pos_argc; k++) {
+      int v = nt_kind(nt, argv[k]) == NK_SplatNode ? nt_ref(nt, argv[k], "expression") : argv[k];
+      if (v >= 0 && nt_kind(nt, v) != NK_BlockArgumentNode && subtree_has_side_effect(c, v)) neff++;
+    }
+    int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
+    for (int e = 0; e < en; e++) {
+      int v = nt_ref(nt, el[e], "value"), key = nt_ref(nt, el[e], "key");
+      if (key >= 0 && subtree_has_side_effect(c, key)) neff++;
+      if (v < 0 || !subtree_has_side_effect(c, v)) continue;
+      neff++;
+      if (nt_kind(nt, el[e]) == NK_AssocSplatNode) spread_eff++;
+    }
+    if (neff == 0 || (neff == 1 && spread_eff == 1)) L->kw.args_first = 0;
+  }
   L->gather = arg_layout_gathers(c, m, argv, pos_argc, kwh, inlined);
   if (L->gather) {
     if (kwh_gathers(c, m, kwh, argv, pos_argc)) L->gather_kwh = 1;
@@ -8087,14 +8277,9 @@ int emit_splat_gather(Compiler *c, Scope *m, const int *argv, const ArgLayout *L
   else if (L->gather_kwh == 1 && emit_kwh_spread_arg(c, kwh, &kb)) {
     int kt = ++g_tmp;
     emit_indent(g_pre, g_indent);
-    if (scope_refuses_keywords(c, m))
-      buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);"
-                        " if (sp_poly_length(_t%d) > 0) sp_raise_cls(\"ArgumentError\", \"no keywords accepted\");\n",
-                 kt, kb.p ? kb.p : "sp_box_nil()", kt, kt);
-    else
-      buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);"
-                        " if (sp_poly_length(_t%d) > 0) sp_PolyArray_push(_t%d, _t%d);\n",
-                 kt, kb.p ? kb.p : "sp_box_nil()", kt, kt, ct, kt);
+    buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);"
+                      " if (sp_poly_length(_t%d) > 0) sp_PolyArray_push(_t%d, _t%d);\n",
+               kt, kb.p ? kb.p : "sp_box_nil()", kt, kt, ct, kt);
   }
   free(kb.p);
   emit_gather_arity_check(c, m, ct);
@@ -8226,11 +8411,11 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
   /* Detect double-splat (**hash) inside kwh: AssocSplatNode wrapping a hash expr.
      Pre-evaluate the hash to a temp so we can do per-param lookups. */
   int kw_merged = kwh_merged(c, m, kwh);
-  if (kwh_runs_ahead(c, m, kwh)) emit_positionals_first(c, argv, pos_argc);
+  if (L.kw.args_first) emit_args_run(c, argv, argc);
+  else if (kwh_runs_ahead(c, m, kwh)) emit_positionals_first(c, argv, pos_argc);
   else if (kwh_out_of_order(c, m, kwh)) emit_args_in_source_order(c, argv, argc, g_pre);
   TyKind ds_hash_type = TY_UNKNOWN;
   int ds_hash_tmp = emit_ds_hash_materialize(c, m, kwh, &ds_hash_type);
-  emit_ds_kwarg_check(c, m, kwh, ds_hash_tmp, ds_hash_type);
 
   /* Find the first SplatNode in positional args. If it comes before rest_idx
      (or before nparams for rest-less methods), pre-evaluate it to a temp so
@@ -8287,11 +8472,15 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
           buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", splat_tmp);
           free(anon.p);
           /* A rest target's shortfall, when the count is in the splat: the
-             same rule the static check below applies, judged at run time. */
-          if (m->rest_idx >= 0 && kwh < 0 && k == pos_argc - 1) {
-            int rreq = rest_shortfall_required(c, m);
-            if (rreq >= 0)
-              emit_rest_shortfall_raise(emit_rest_given_count(splat_idx, splat_tmp), rreq);
+             same rule the static check applies, judged at run time. A hash
+             the callee takes as keywords is no positional (kw_plan), so
+             keywords beside the rest no longer stand it down: `def m(a,
+             *r, k: 1)` called `m(*[])` is given 0. */
+          if (m->rest_idx >= 0 && L.kw.count == KWC_NONE && k == pos_argc - 1 &&
+              rest_required_for(c, m) >= 0) {
+            char gvn[32];
+            snprintf(gvn, sizeof gvn, "_t%d", emit_rest_given_count(splat_idx, splat_tmp));
+            emit_positional_count_check(c, m, gvn);
           }
           /* Arity check: splatting into a fixed-arity (no-rest) method must
              supply a valid element count, else CRuby raises ArgumentError.
@@ -8300,15 +8489,21 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
           if (m->rest_idx < 0 && k == pos_argc - 1) {
             int gv = ++g_tmp;
             emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "sp_int _t%d = %d + (_t%d ? _t%d->len : 0);\n", gv, splat_idx, splat_tmp, splat_tmp);
+            /* a positional Hash of literal keys is one more argument */
+            buf_printf(g_pre, "sp_int _t%d = %d + (_t%d ? _t%d->len : 0);\n", gv,
+                       splat_idx + (L.kw.count == KWC_ONE), splat_tmp, splat_tmp);
             char gvn[32]; snprintf(gvn, sizeof gvn, "_t%d", gv);
             emit_positional_count_check(c, m, gvn);
           }
         }
       }
+      else if (m->rest_idx < 0) emit_unreached_splat_count(c, m, argv, argc, pos_argc, &L.kw);
       break;
     }
   }
+  /* the keywords a `**` brings, judged once the count has been: CRuby
+     counts first, so `def r(a, k:)` called `r(*[], **h)` is given 0 */
+  emit_ds_kwarg_check(c, m, kwh, ds_hash_tmp, ds_hash_type);
   /* GC hazard: a freshly-allocated heap argument sits in an unrooted C
      temporary while the rest of the call is evaluated AND while the callee
      runs. Either a later argument or the callee's own body can trigger a
@@ -8991,11 +9186,11 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
      emit_args_filled applies (previously this path dropped every keyword
      into a NULL kwrest and let positionals steal keys by name). */
   int kw_merged_d = kwh_merged(c, m, kwh_d);
-  if (m && kwh_runs_ahead(c, m, kwh_d)) emit_positionals_first(c, argv, pos_argc_d);
+  if (m && L.kw.args_first) emit_args_run(c, argv, argc);
+  else if (m && kwh_runs_ahead(c, m, kwh_d)) emit_positionals_first(c, argv, pos_argc_d);
   else if (kwh_out_of_order(c, m, kwh_d)) emit_args_in_source_order(c, argv, argc, g_pre);
   TyKind ds_type_d = TY_UNKNOWN;
   int ds_tmp_d = (m && kwh_d >= 0) ? emit_ds_hash_materialize(c, m, kwh_d, &ds_type_d) : -1;
-  emit_ds_kwarg_check(c, m, kwh_d, ds_tmp_d, ds_type_d);
   int np = m ? m->nparams : pos_argc_d;
   /* evaluate each param value (provided arg or default) into a temp so the
      virtual-dispatch cases reuse them without re-evaluating */
@@ -9074,14 +9269,21 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
         else if (m->rest_idx < 0 && k == pos_argc_d - 1) {
           int gv = ++g_tmp;
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_int _t%d = %d + (_t%d ? _t%d->len : 0);\n", gv, splat_idx_d, splat_tmp_d, splat_tmp_d);
+          buf_printf(g_pre, "sp_int _t%d = %d + (_t%d ? _t%d->len : 0);\n", gv,
+                     splat_idx_d + (L.kw.count == KWC_ONE), splat_tmp_d, splat_tmp_d);
           char gvn[32]; snprintf(gvn, sizeof gvn, "_t%d", gv);
           emit_positional_count_check(c, m, gvn);
         }
       }
       break;
     }
+    if (argv && m->rest_idx < 0 && nt_kind(nt, argv[k]) == NK_SplatNode) {
+      emit_unreached_splat_count(c, m, argv, argc, pos_argc_d, &L.kw);
+      break;
+    }
   }
+  /* the keywords a `**` brings, once the count has been judged */
+  emit_ds_kwarg_check(c, m, kwh_d, ds_tmp_d, ds_type_d);
   /* A default that reads an earlier parameter (`def g(u, v = u.upcase)`)
      evaluates in the callee, where that parameter is bound; here it is filled
      at the call site. emit_args_filled hoists every parameter into a named

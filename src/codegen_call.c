@@ -10828,6 +10828,27 @@ static void emit_data_spread_kw(ClassInfo *cls, int ta, int kt, Buf *ab) {
     buf_printf(ab, " sp_PolyArray_push(_t%d, sp_kw_member_val(_t%d, \"%s\"));", ta, kt, cls->ivars[m] + 1);
   buf_puts(ab, " }");
 }
+/* Keywords, in rooted temp `kt`, a Struct taking them (keyword_init: true,
+   or unspecified) is given beside a `*` whose elements are gathered in array
+   temp `ta`: whether they are keywords is the run time's, as the count is.
+   CRuby takes a call of keywords alone as keywords, so with no positional
+   they bind the members by name, checked as it checks them
+   (sp_kw_splat_check), pushed in the members' order as though written
+   positionally: `S.new(*[], k1: 1)` is `S.new(k1: 1)`, where it was given 1.
+   Beside a positional a keyword_init Struct is given one more argument, and
+   any other takes them as its next member, a Hash. A keyword_init Struct
+   given positionals alone is given too many. */
+static void emit_struct_spread_kw(ClassInfo *cls, int kw_init, int ta, int kt, Buf *ab) {
+  buf_printf(ab, " if (sp_poly_length(_t%d) > 0) { if (_t%d->len == 0) { _t%d = sp_kw_splat_check(_t%d, ",
+             kt, ta, kt, kt);
+  emit_data_members(cls, ab);
+  buf_printf(ab, ", %d, NULL, 0);", cls->nivars);
+  for (int m = 0; m < cls->nivars; m++)
+    buf_printf(ab, " sp_PolyArray_push(_t%d, sp_kw_member_val(_t%d, \"%s\"));", ta, kt, cls->ivars[m] + 1);
+  if (kw_init) buf_printf(ab, " } else sp_raise_arity(_t%d->len + 1, 0, 0, NULL); }", ta);
+  else buf_printf(ab, " } else sp_PolyArray_push(_t%d, _t%d); }", ta, kt);
+  if (kw_init) buf_printf(ab, " else sp_arity_check(_t%d->len, 0, 0, NULL);", ta);
+}
 /* `X.new(0, *rest)` / `X.new(*mid, last)`: positionals beside a splat. The
    count is still only known at run time, so gather every argument into one
    array in order and spread that, as a sole splat does. Returns 0 (emitting
@@ -10873,6 +10894,13 @@ static int emit_struct_mixed_splat_new(Compiler *c, ClassInfo *cls, const int *a
          CRuby judges them once the count is known: beside positionals, or
          by name */
       emit_data_spread_kw(cls, ta, emit_struct_kw_hash(c, argv[a]), &ab);
+    }
+    else if (nt_kind(nt, argv[a]) == NK_KeywordHashNode && cls->kw_init != -1) {
+      /* keywords a Struct taking them is given beside a `*`, merged in
+         source order into one hash that takes any key, bind by name when
+         the `*` leaves no positional (emit_struct_spread_kw) */
+      emit_struct_spread_kw(cls, kw_init, ta, emit_struct_kw_hash(c, argv[a]), &ab);
+      kw_init = 0;   /* judged there */
     }
     else if (nt_kind(nt, argv[a]) == NK_KeywordHashNode && kwh_only_spreads(nt, argv[a])) {
       /* `**` spreads alone are no argument when they are empty:

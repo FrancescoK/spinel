@@ -1400,7 +1400,8 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/keyword_splat_rest_copy.rb \
                   test/kw_splat_poly_key_hash.rb \
                   test/kw_splat_true_false_nil_operand.rb \
-                  test/call_positional_layout.rb
+                  test/call_positional_layout.rb \
+                  test/keyword_binding_plan.rb
 
 # Each program runs with the minor mark off and on and must answer the same;
 # then once more under the generational verifier with stress on (every
