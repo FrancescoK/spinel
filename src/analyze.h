@@ -169,6 +169,7 @@ int block_param_is_renamed(const char *name);
 void block_param_invent_name(const NodeTable *nt, char *buf, size_t n,
                              const char *written, int blk);
 int ie_kwhash_value(Compiler *c, int kwhash, const char *name);
+TyKind ie_kwhash_computed_type(Compiler *c, int kwhash);
 
 /* instance_exec trampoline body-arg resolution (mixed local/ivar/literal args):
    effective arg count, and the node to bind/emit for the p-th block param
