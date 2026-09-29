@@ -19674,21 +19674,6 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
         int ncap = c->nclasses > 0 ? c->nclasses : 1;
         int *ccls = malloc(sizeof(int) * 4 * (size_t)ncap);
         int *cmi = ccls + ncap, *cdef = cmi + ncap, *cpf = cdef + ncap, nc = 0;
-        int cargc = 0, csplat = 0;
-        { int ca = nt_ref(nt, id, "arguments");
-          const int *cav = ca >= 0 ? nt_arr(nt, ca, "arguments", &cargc) : NULL;
-          for (int a = 0; a < cargc; a++) {
-            const char *aty5 = cav ? nt_type(nt, cav[a]) : NULL;
-            if (aty5 && sp_streq(aty5, "SplatNode")) csplat = 1;
-            /* a double splat: the raise stands down for it, a plain keyword
-               hash still counts as one positional */
-            if (aty5 && sp_streq(aty5, "KeywordHashNode")) {
-              int en5 = 0; const int *el5 = nt_arr(nt, cav[a], "elements", &en5);
-              for (int e = 0; e < en5; e++)
-                if (el5 && nt_type(nt, el5[e]) && sp_streq(nt_type(nt, el5[e]), "AssocSplatNode"))
-                  csplat = 1;
-            }
-          } }
         for (int k = 0; k < c->nclasses; k++) {
           int dc = -1;
           int mi = comp_cmethod_in_chain(c, k, nm, &dc);
@@ -19698,20 +19683,13 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           int pfk = scope_proc_form_of(c, mi);
           if (pfk >= 0 && !proc_form_live(c, pfk)) pfk = -1;
           if (!scope_has_callable_symbol(c, mi) && pfk < 0) continue;
-          /* A class method that cannot take this call's arguments is not a
-             candidate: emitting its arm put the arity raise in the prelude,
-             where it fired before the tag was even tested (#3520). A rest
-             parameter lifts the upper bound, not the shortfall -- and a splat
-             or double splat at the site makes the count dynamic, so a rest
-             candidate is kept then, its arm carrying no count check that
-             could fire. A fixed-arity candidate's arm checks a trailing
-             splat's length at run time in that same prelude, so which of
-             those arms may be emitted is the question it always was; their
-             counting stands. */
-          { Scope *cs4 = &c->scopes[mi];
-            int rreq = rest_shortfall_required(c, cs4);
-            if (cs4->rest_idx < 0 ? (cargc > cs4->nparams || cargc < cs4->nrequired)
-                                  : (!csplat && cargc < rreq)) continue; }
+          /* A class method that cannot take this call's arguments is still
+             the one a value of its class calls: CRuby raises its
+             ArgumentError there, once the arguments have run. Dropping the
+             candidate (#3520, where the arm's raise sat in the statement's
+             prelude and fired before the tag was tested) sent that class to
+             the default's NoMethodError; each arm now keeps its prelude to
+             itself (below). */
           ccls[nc] = k; cmi[nc] = mi; cdef[nc] = dc; cpf[nc] = pfk; nc++;
         }
         if (nc > 0) {
@@ -19738,20 +19716,95 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
             const int *hav = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &hargc) : NULL;
             /* the keywords' values too, and a computed key, in source order:
                each arm rendered its own keyword hash, so `z: lit(3)` ran once
-               per candidate class. A `**` operand keeps its own path. */
-            int hn[64], nhn = 0;
-            for (int a = 0; hav && a < hargc && nhn < 64; a++) {
-              if (nt_kind(nt, hav[a]) != NK_KeywordHashNode) { hn[nhn++] = hav[a]; continue; }
+               per candidate class. A `*` or `**` operand takes its place
+               among them (hds marks the `**` one): left to the arm, it ran
+               after every value hoisted here -- `o.m(*lg(a), k: lg(2))` ran
+               lg(2) first -- and a `**true` raised its TypeError only once
+               the values written after it had run. */
+            int ncap = 0;
+            for (int a = 0; hav && a < hargc; a++) {
+              int en = 1;
+              if (nt_kind(nt, hav[a]) == NK_KeywordHashNode) nt_arr(nt, hav[a], "elements", &en);
+              ncap += 2 * en;
+            }
+            int *hn = malloc(sizeof(int) * (size_t)(ncap + 1)), nhn = 0;
+            char *hds = malloc((size_t)(ncap + 1));
+            for (int a = 0; hav && a < hargc; a++) {
+              if (nt_kind(nt, hav[a]) == NK_SplatNode) {
+                int x = nt_ref(nt, hav[a], "expression");
+                if (x >= 0) { hds[nhn] = 0; hn[nhn++] = x; }
+                continue;
+              }
+              if (nt_kind(nt, hav[a]) != NK_KeywordHashNode) { hds[nhn] = 0; hn[nhn++] = hav[a]; continue; }
               int en = 0; const int *el = nt_arr(nt, hav[a], "elements", &en);
-              for (int e = 0; e < en && nhn < 63; e++) {
+              for (int e = 0; e < en; e++) {
+                int v = nt_ref(nt, el[e], "value");
+                if (nt_kind(nt, el[e]) == NK_AssocSplatNode) {
+                  if (v >= 0) { hds[nhn] = 1; hn[nhn++] = v; }
+                  continue;
+                }
                 if (nt_kind(nt, el[e]) != NK_AssocNode) continue;
-                int key = nt_ref(nt, el[e], "key"), v = nt_ref(nt, el[e], "value");
-                if (key >= 0) hn[nhn++] = key;
-                if (v >= 0) hn[nhn++] = v;
+                int key = nt_ref(nt, el[e], "key");
+                if (key >= 0) { hds[nhn] = 0; hn[nhn++] = key; }
+                if (v >= 0) { hds[nhn] = 0; hn[nhn++] = v; }
               }
             }
-            for (int a = 0; a < nhn && hoisted_n < 64; a++) {
+            /* A `**` operand with an effect must find an override slot: left
+               to the arm, a hash bound positionally renders it a second time
+               once the table is full. So those slots are held back from the
+               other values, which past the table's room stay in the arm,
+               run once there. */
+            int ds_left = 0;
+            for (int a = 0; a < nhn; a++) {
+              TyKind vt = hds[a] ? comp_ntype(c, hn[a]) : TY_UNKNOWN;
+              if (hds[a] && subtree_has_side_effect(c, hn[a]) &&
+                  (ty_is_object(vt) || c_type_name(vt) || vt == TY_POLY)) ds_left++;
+            }
+            for (int a = 0; a < nhn; a++) {
               const char *aty = nt_type(nt, hn[a]);
+              if (hds[a]) {
+                /* A `**` operand runs where it stands, into a temp of its own
+                   type -- the keyword binders judge a `**` by that type, and
+                   a boxed one reached a hash literal typed for the spread of
+                   nothing a `**true` is -- and converts there, even when
+                   reading it has no effect: `**true` raises its TypeError
+                   before the values written after it run. */
+                int v = hn[a];
+                TyKind vt = comp_ntype(c, v);
+                int conv = vt == TY_POLY || kw_splat_raises(c, v) || kw_splat_checked_boxed(c, v);
+                int eff = subtree_has_side_effect(c, v);
+                if (!conv && !eff) continue;
+                if (eff) {
+                  if (!ty_is_object(vt) && !c_type_name(vt) && vt != TY_POLY) continue;
+                  ds_left--;
+                  if (g_n_argov >= MAX_ARG_OVERRIDE || hoisted_n >= 64) continue;
+                  int ht = ++g_tmp;
+                  Buf vb; memset(&vb, 0, sizeof vb);
+                  emit_expr(c, v, &vb);
+                  emit_indent(g_pre, g_indent);
+                  if (vt == TY_POLY) buf_puts(g_pre, "sp_RbVal");
+                  else emit_ctype(c, vt, g_pre);
+                  buf_printf(g_pre, " _t%d = %s;", ht, vb.p ? vb.p : default_value(vt));
+                  if (vt == TY_POLY) buf_printf(g_pre, " SP_GC_ROOT_RBVAL(_t%d);", ht);
+                  else if (needs_root(vt)) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", ht);
+                  buf_puts(g_pre, "\n");
+                  free(vb.p);
+                  hoisted_sv[hoisted_n] = g_n_argov;
+                  hoisted_ty[hoisted_n] = vt;
+                  g_argov_node[g_n_argov] = v;
+                  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ht);
+                  g_n_argov++;
+                  hoisted_n++;
+                }
+                if (conv) {
+                  Buf cb2; memset(&cb2, 0, sizeof cb2);
+                  emit_kw_splat_operand_inline(c, v, &cb2);
+                  emit_indent(g_pre, g_indent);
+                  buf_printf(g_pre, "%s\n", cb2.p ? cb2.p : "");
+                  free(cb2.p);
+                }
+                continue;
+              }
               if (!aty || sp_streq(aty, "SplatNode") || sp_streq(aty, "KeywordHashNode") ||
                   sp_streq(aty, "BlockArgumentNode") || sp_streq(aty, "ForwardingArgumentsNode") ||
                   sp_streq(aty, "LocalVariableReadNode") || sp_streq(aty, "InstanceVariableReadNode") ||
@@ -19760,7 +19813,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
                   sp_streq(aty, "SymbolNode") || sp_streq(aty, "NilNode") ||
                   sp_streq(aty, "TrueNode") || sp_streq(aty, "FalseNode"))
                 continue;
-              if (g_n_argov >= MAX_ARG_OVERRIDE) break;
+              if (g_n_argov + ds_left >= MAX_ARG_OVERRIDE || hoisted_n + ds_left >= 64) continue;
               int ht = hoist_boxed_rooted(c, hn[a]);
               hoisted_sv[hoisted_n] = g_n_argov;
               hoisted_ty[hoisted_n] = c->ntype[hn[a]];
@@ -19769,7 +19822,8 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
               g_n_argov++;
               c->ntype[hn[a]] = TY_POLY;
               hoisted_n++;
-            } }
+            }
+            free(hn); free(hds); }
           int wants_blk = 0, blk_tmp = -1;
           for (int k = 0; k < nc; k++) {
             Scope *ks = &c->scopes[cpf[k] >= 0 ? cpf[k] : cmi[k]];
@@ -19788,12 +19842,23 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
             int ksym = cpf[k] >= 0 ? cpf[k] : cmi[k];
             buf_printf(&cb, "sp_%s_s_%s(", c->classes[cdef[k]].c_name, mc(c->scopes[ksym].name));
             const char *leadk = rarm ? (buf_puts(&cb, rcls), ", ") : emit_cmethod_self_cls_arg(c, ksym, ccls[k], &cb);
+            /* What the binding puts ahead of the call -- a count or keyword
+               check and its ArgumentError, a splat's gather, a `**` merge --
+               belongs to this arm alone: in the statement's prelude it ran
+               for a value of every class, before the tag was tested, so one
+               candidate's refusal raised for another's value. */
+            Buf apre; memset(&apre, 0, sizeof apre);
+            Buf *sv_pre = g_pre; g_pre = &apre;
             emit_args_filled(c, ksym, argsN, leadk, &cb);
             emit_cmethod_block_arg(c, id, &c->scopes[ksym], blk_tmp, &cb);
+            g_pre = sv_pre;
             buf_puts(&cb, ")");
             TyKind mret = (TyKind)c->scopes[ksym].ret;
+            if (apre.p && apre.p[0]) { buf_puts(b, "({ "); buf_puts(b, apre.p); }
             if (mret == TY_POLY) buf_puts(b, cb.p ? cb.p : "sp_box_nil()");
             else emit_boxed_text(c, mret, cb.p ? cb.p : "0", b);
+            if (apre.p && apre.p[0]) buf_puts(b, "; })");
+            free(apre.p);
             free(cb.p);
             buf_puts(b, " : ");
           }
