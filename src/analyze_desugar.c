@@ -8468,3 +8468,153 @@ int desugar_builtin_reopen_self_calls(Compiler *c) {
   if (changed) comp_grow_node_arrays(c);
   return changed;
 }
+
+/* ---- methods added to a builtin class with no native self ----------------
+ *
+ *   class Hash
+ *     def two = size * 2
+ *   end
+ *   {a: 1}.two
+ *
+ * A method added to Hash, Time, Range, ... has no arm on the builtin
+ * receiver: dispatch on those values reaches Object's methods (whose self is
+ * the value, boxed) and the reopened scalars (String, Integer, ...), which
+ * take their unboxed self. Each such method becomes Object's, guarded by the
+ * class it was added to:
+ *
+ *   class Object
+ *     def two = if is_a?(Hash) then size * 2
+ *               else raise NoMethodError, "undefined method 'two'" end
+ *   end
+ */
+static const char *mo_guard_class(const char *cn) {
+  static const char *const B[] = { "Hash", "Time", "Range", "Regexp", "Proc", "Date",
+    "DateTime", "Rational", "Complex", NULL };
+  for (int i = 0; B[i]; i++) if (sp_streq(B[i], cn)) return B[i];
+  return NULL;
+}
+
+static int mo_guard_pred(NodeTable *nt, int like, const char *cn) {
+  int call = fwd_new_node_like(nt, like, "CallNode");
+  int args = fwd_new_node_like(nt, like, "ArgumentsNode");
+  nt_node_set_ref(nt, call, "receiver", fwd_new_node_like(nt, like, "SelfNode"));
+  nt_node_set_str(nt, call, "name", "is_a?");
+  int arg = fwd_new_node_like(nt, like, "ConstantReadNode");
+  nt_node_set_str(nt, arg, "name", cn);
+  nt_node_set_arr(nt, args, "arguments", &arg, 1);
+  nt_node_set_ref(nt, call, "arguments", args);
+  return call;
+}
+
+static int mo_str(NodeTable *nt, int like, const char *s) {
+  int n = fwd_new_node_like(nt, like, "StringNode");
+  if (n < 0) return -1;
+  nt_node_set_str(nt, n, "unescaped", s);
+  nt_node_set_str(nt, n, "content", s);
+  return n;
+}
+
+static int mo_object_defines(const NodeTable *nt, int n0, const char *mname) {
+  for (int m = 0; m < n0; m++) {
+    if (nt_kind(nt, m) != NK_ClassNode) continue;
+    int cp = nt_ref(nt, m, "constant_path");
+    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (!cn || !sp_streq(cn, "Object")) continue;
+    int b = nt_ref(nt, m, "body");
+    int bn = 0; const int *bs = b >= 0 ? nt_arr(nt, b, "body", &bn) : NULL;
+    for (int k = 0; k < bn; k++) {
+      const char *dn = nt_kind(nt, bs[k]) == NK_DefNode && nt_ref(nt, bs[k], "receiver") < 0
+                       ? nt_str(nt, bs[k], "name") : NULL;
+      if (dn && sp_streq(dn, mname)) return 1;
+    }
+  }
+  return 0;
+}
+
+/* A builtin class body left with nothing in it disappears, so no user class
+   of a builtin's name is defined (`class Time` would clash with the runtime's
+   Time). */
+int desugar_builtin_reopen_methods(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  int root = nt->root_id;
+  int rst = root >= 0 ? nt_ref(nt, root, "statements") : -1;
+  if (rst < 0) return 0;
+  for (int m = 0; m < n0; m++) {
+    if (nt_kind(nt, m) != NK_ClassNode) continue;
+    int cp = nt_ref(nt, m, "constant_path");
+    if (cp < 0 || nt_kind(nt, cp) != NK_ConstantReadNode) continue;
+    const char *cn = nt_str(nt, cp, "name");
+    const char *g = cn ? mo_guard_class(cn) : NULL;
+    if (!g) continue;
+    /* a program's own class of the name (with a superclass) is its own */
+    if (nt_ref(nt, m, "superclass") >= 0) continue;
+    int b = nt_ref(nt, m, "body");
+    int bn = 0; const int *bs = b >= 0 ? nt_arr(nt, b, "body", &bn) : NULL;
+    int *keep = malloc(sizeof(int) * (size_t)(bn ? bn : 1)); int nk = 0;
+    for (int k = 0; k < bn; k++) {
+      int d = bs[k];
+      if (nt_kind(nt, d) != NK_DefNode || nt_ref(nt, d, "receiver") >= 0) { keep[nk++] = d; continue; }
+      /* def m(...) = if is_a?(K) then body else raise NoMethodError, "..." end,
+         in a fresh `class Object` at the top level */
+      const char *mname = nt_str(nt, d, "name");
+      /* Object's own method of the name would be replaced: left as it was */
+      if (!mname || mo_object_defines(nt, n0, mname)) { keep[nk++] = d; continue; }
+      int body = nt_ref(nt, d, "body");
+      int st = body;
+      if (st >= 0 && nt_kind(nt, st) != NK_StatementsNode) {
+        st = fwd_new_node_like(nt, d, "StatementsNode");
+        nt_node_set_arr(nt, st, "body", &body, 1);
+      }
+      if (st < 0) {
+        st = fwd_new_node_like(nt, d, "StatementsNode");
+        int nl = fwd_new_node_like(nt, d, "NilNode");
+        nt_node_set_arr(nt, st, "body", &nl, 1);
+      }
+      int ifn = fwd_new_node_like(nt, d, "IfNode");
+      nt_node_set_ref(nt, ifn, "predicate", mo_guard_pred(nt, d, g));
+      nt_node_set_ref(nt, ifn, "statements", st);
+      int els = fwd_new_node_like(nt, d, "ElseNode");
+      int est = fwd_new_node_like(nt, d, "StatementsNode");
+      int rc = fwd_new_node_like(nt, d, "CallNode");
+      int ra = fwd_new_node_like(nt, d, "ArgumentsNode");
+      int ne = fwd_new_node_like(nt, d, "ConstantReadNode");
+      nt_node_set_str(nt, ne, "name", "NoMethodError");
+      char msg[300]; snprintf(msg, sizeof msg, "undefined method '%s'", mname);
+      int av[2] = { ne, mo_str(nt, d, msg) };
+      nt_node_set_arr(nt, ra, "arguments", av, 2);
+      nt_node_set_str(nt, rc, "name", "raise");
+      nt_node_set_ref(nt, rc, "arguments", ra);
+      nt_node_set_arr(nt, est, "body", &rc, 1);
+      nt_node_set_ref(nt, els, "statements", est);
+      nt_node_set_ref(nt, ifn, "subsequent", els);
+      int nb = fwd_new_node_like(nt, d, "StatementsNode");
+      nt_node_set_arr(nt, nb, "body", &ifn, 1);
+      nt_node_set_ref(nt, d, "body", nb);
+      int oc = fwd_new_node_like(nt, d, "ClassNode");
+      int ocp = fwd_new_node_like(nt, d, "ConstantReadNode");
+      nt_node_set_str(nt, ocp, "name", "Object");
+      nt_node_set_ref(nt, oc, "constant_path", ocp);
+      int ob = fwd_new_node_like(nt, d, "StatementsNode");
+      nt_node_set_arr(nt, ob, "body", &d, 1);
+      nt_node_set_ref(nt, oc, "body", ob);
+      /* before the program's own statements, as the class body would be */
+      int rn = 0; const int *rs = nt_arr(nt, rst, "body", &rn);
+      int *nr = malloc(sizeof(int) * (size_t)(rn + 1));
+      nr[0] = oc;
+      if (rn) memcpy(nr + 1, rs, sizeof(int) * (size_t)rn);
+      nt_node_set_arr(nt, rst, "body", nr, rn + 1);
+      free(nr);
+      changed = 1;
+    }
+    if (nk != bn) nt_node_set_arr(nt, b, "body", keep, nk);
+    free(keep);
+    if (nk == 0 && b >= 0) {
+      /* nothing left: the reopening itself goes */
+      nt_node_reset(nt, m, "NilNode");
+      changed = 1;
+    }
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
