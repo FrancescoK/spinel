@@ -3454,7 +3454,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
         else if (view)
           snprintf(vx, sizeof vx, "sp_box_poly_array(sp_yielded_args(_t%d->yields_pair, _t%d))", te, tv);
         else if (ewi_walk && k == 1) snprintf(vx, sizeof vx, "sp_box_int(_t%d - 1)", ti2);
-        else if (q1 && !ewi_walk) snprintf(vx, sizeof vx, "sp_poly_arr_get(_t%d, %d)", tv, k);
+        else if (q1 && !ewi_walk) snprintf(vx, sizeof vx, "sp_poly_massign_get(_t%d, %d)", tv, k);
         else snprintf(vx, sizeof vx, "_t%d", tv);
         emit_indent(b, indent + 2);
         buf_printf(b, "lv_%s = ", rename_local(qs[k]));
