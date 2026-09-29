@@ -1205,6 +1205,7 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
     char srefV[1024];
     if (lv->str_shared && strbuf_slot_ref(c, v, srefV, sizeof srefV))
       buf_puts(b, srefV);
+    else if (lv->str_shared && emit_strbuf_ivar_write_handle(c, v, b)) { }
     else if (comp_ntype(c, v) == TY_STRBUF) {
       /* a demand-marked read (a reader call, a container element) already
          yields the handle: alias it directly (#3227 P5) */

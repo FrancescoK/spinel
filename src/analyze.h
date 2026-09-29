@@ -39,6 +39,8 @@ int an_str_mutator_name(const char *nm);
 int an_indexed_each_source(const NodeTable *nt, int recv);
 void an_node_dir(const NodeTable *nt, int id, char *dir, size_t cap);
 const char *an_memo_reader_ivar(Compiler *c, int mi);
+/* The ivar read/write node a local write's value aliases, or -1 */
+int strbuf_ivar_alias_value(const NodeTable *nt, int v);
 
 /* Infer (and cache) the type of node `id`. Used during analysis; codegen
    reads the cached results via comp_ntype. */
