@@ -80,6 +80,19 @@ int emit_forwarded_proc_arg(Compiler *c, int blk_node, Buf *b) {
   return 1;
 }
 
+static int emit_blk_proc_tmp(Compiler *c, int blk_node) {
+  int blk_tmp = ++g_tmp;
+  Buf pb; memset(&pb, 0, sizeof pb);
+  if (!emit_forwarded_proc_arg(c, blk_node, &pb))
+    emit_proc_literal(c, blk_node, &pb);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp, pb.p ? pb.p : "NULL");
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", blk_tmp);
+  free(pb.p);
+  return blk_tmp;
+}
+
 void emit_method_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -108,16 +121,7 @@ void emit_method_call(Compiler *c, int id, Buf *b) {
     int wrote_args = m->nparams > 0;
     if (wrote_args) buf_puts(b, ", ");
     if (blk_node >= 0) {
-      int blk_tmp = ++g_tmp;
-      Buf pb; memset(&pb, 0, sizeof pb);
-      if (!emit_forwarded_proc_arg(c, blk_node, &pb))
-        emit_proc_literal(c, blk_node, &pb);
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp, pb.p ? pb.p : "NULL");
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", blk_tmp);
-      free(pb.p);
-      buf_printf(b, "_t%d", blk_tmp);
+      buf_printf(b, "_t%d", emit_blk_proc_tmp(c, blk_node));
     }
     else {
       buf_puts(b, "NULL");
@@ -9271,17 +9275,7 @@ static void emit_dispatch_per_arm(Compiler *c, int cid, const char *name, const 
   }
   int blk_tmp = -1;
   if (want_blk) blk_node = resolve_forwarded_block(c, blk_node);
-  if (want_blk && blk_node >= 0) {
-    blk_tmp = ++g_tmp;
-    Buf pb; memset(&pb, 0, sizeof pb);
-    if (!emit_forwarded_proc_arg(c, blk_node, &pb))
-      emit_proc_literal(c, blk_node, &pb);
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp, pb.p ? pb.p : "NULL");
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", blk_tmp);
-    free(pb.p);
-  }
+  if (want_blk && blk_node >= 0) blk_tmp = emit_blk_proc_tmp(c, blk_node);
   int rtmp = ++g_tmp;
   buf_puts(b, "({ ");
   emit_ctype(c, disp_ret, b);
@@ -9731,17 +9725,7 @@ else {
   int blk_tmp = -1;
   int needs_blk_arg = m && m->blk_param && m->blk_param[0] && !m->yields;
   if (needs_blk_arg) blk_node = resolve_forwarded_block(c, blk_node);
-  if (needs_blk_arg && blk_node >= 0) {
-    blk_tmp = ++g_tmp;
-    Buf pb; memset(&pb, 0, sizeof pb);
-    if (!emit_forwarded_proc_arg(c, blk_node, &pb))
-      emit_proc_literal(c, blk_node, &pb);
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp, pb.p ? pb.p : "NULL");
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", blk_tmp);
-    free(pb.p);
-  }
+  if (needs_blk_arg && blk_node >= 0) blk_tmp = emit_blk_proc_tmp(c, blk_node);
 
   /* The aliased name may differ from the defining method's real name. */
   const char *mname = m ? m->name : name;
