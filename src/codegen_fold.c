@@ -7016,18 +7016,11 @@ static void emit_arg_temp(Compiler *c, int v) {
 }
 
 /* See codegen_internal.h. */
-void emit_positionals_first(Compiler *c, const int *argv, int pos_argc) {
-  const NodeTable *nt = c->nt;
-  for (int k = 0; argv && k < pos_argc; k++) {
-    int v = argv[k];
-    if (nt_kind(nt, v) == NK_SplatNode) v = nt_ref(nt, v, "expression");
-    else if (nt_kind(nt, v) == NK_BlockArgumentNode) continue;   /* runs last */
-    if (v < 0 || !subtree_has_side_effect(c, v)) continue;
-    TyKind at = comp_ntype(c, v);
-    if (!ty_is_object(at) && !c_type_name(at)) continue;   /* a raise: no value */
-    emit_arg_temp(c, v);
-  }
+int arg_ran_first(int node, int from) {
+  for (int i = from; i < g_n_argov; i++) if (g_argov_node[i] == node) return 1;
+  return 0;
 }
+
 
 /* Can `after` give the variable `x` reads another value before the binding
    reads it? A local only by assigning it; an instance, global or class
@@ -7048,8 +7041,7 @@ static int read_rebound_by(Compiler *c, int x, int after) {
 }
 
 /* The argument `v` of a call binding in parameter order, evaluated ahead of
-   the binding into a rooted temp its uses read, as emit_positionals_first
-   evaluates one. A value with no C type -- nil -- is evaluated for its effect
+   the binding into a rooted temp its uses read (emit_arg_temp). A value with no C type -- nil -- is evaluated for its effect
    alone, and its uses read a 0 the binding takes as nil. A read with no
    effect of its own is taken too when `rebound` says a later value can
    change what it reads (read_rebound_by): `m(b: x, a: (x = 2))` bound b the
@@ -7864,10 +7856,12 @@ void emit_args_run(Compiler *c, const int *argv, int argc) {
     if (!ds[i]) continue;
     TyKind t = comp_ntype(c, v);
     if (t == TY_POLY) {
-      Buf hb; memset(&hb, 0, sizeof hb);
-      emit_boxed(c, v, &hb);
-      emit_kw_splat_conv_check(c, TY_POLY, hb.p ? hb.p : "sp_box_nil()");
-      free(hb.p);
+      /* converted into the temp the binding reads, which merges the Hash
+         (or nil) it holds: converted apart, the binding converted the
+         operand again and a #to_hash ran twice */
+      if (!arg_ran_first(v, 0)) emit_arg_temp(c, v);
+      for (int o = g_n_argov - 1; o >= 0; o--)
+        if (g_argov_node[o] == v) { emit_kw_splat_conv_temp(c, g_argov_text[o]); break; }
     }
     else if (kw_splat_bad_cls(c, t)) emit_kw_splat_bad_operand(c, v);
   }
@@ -8798,8 +8792,7 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
   /* Detect double-splat (**hash) inside kwh: AssocSplatNode wrapping a hash expr.
      Pre-evaluate the hash to a temp so we can do per-param lookups. */
   int kw_merged = kwh_merged(c, m, kwh);
-  if (L.kw.args_first) emit_args_run(c, argv, argc);
-  else if (kwh_runs_ahead(c, m, kwh)) emit_positionals_first(c, argv, pos_argc);
+  if (L.kw.args_first || kwh_runs_ahead(c, m, kwh)) emit_args_run(c, argv, argc);
   else if (kwh_out_of_order(c, m, kwh)) emit_args_in_source_order(c, argv, argc, g_pre);
   /* the splat spread in place runs into its temp ahead of the call, so the
      arguments written to its left run first, into theirs: `m(lg(1), *lg(a))`
@@ -9488,8 +9481,7 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
      emit_args_filled applies (previously this path dropped every keyword
      into a NULL kwrest and let positionals steal keys by name). */
   int kw_merged_d = kwh_merged(c, pm, kwh_d);
-  if (pm && L.kw.args_first) emit_args_run(c, argv, argc);
-  else if (pm && kwh_runs_ahead(c, pm, kwh_d)) emit_positionals_first(c, argv, pos_argc_d);
+  if (pm && (L.kw.args_first || kwh_runs_ahead(c, pm, kwh_d))) emit_args_run(c, argv, argc);
   else if (kwh_out_of_order(c, pm, kwh_d)) emit_args_in_source_order(c, argv, argc, g_pre);
   /* the arguments to the left of a splat spread in place run ahead of it */
   else if (L.splat > 0) emit_args_in_source_order(c, argv, L.splat, g_pre);

@@ -165,7 +165,7 @@ extern char (*g_argov_text)[16];
 extern int  g_n_argov;
 /* Room for one more override whatever the fill, for a site that must run
    every argument of a call ahead of it, however many there are
-   (emit_positionals_first and its kin): the table grows, keeping
+   (emit_args_run and its kin): the table grows, keeping
    MAX_ARG_OVERRIDE entries free past the fill for the sites that check. */
 void argov_reserve(void);
 /* The setter call (`obj.x = v`) emit_stmt is lowering: nothing reads its value,
@@ -541,8 +541,15 @@ void positional_arity(Compiler *c, Scope *m, int *required, int *total);
 void emit_unreached_splat_count(Compiler *c, Scope *m, const int *argv, int argc, int pos_argc,
                                 const KwPlan *P);
 /* Every argument of a call run ahead of it, in source order, each `**`
-   operand converted where it stands (codegen_fold.c). */
+   operand converted where it stands (codegen_fold.c): a call planned so
+   (KwPlan.args_first) or whose keywords run ahead (kwh_runs_ahead). Only
+   the positionals, the keywords' reads went unguarded against a `**` that
+   rewrites them, and a nil value, skipped as if it were a raise, ran after
+   the keywords, or never when their check raised. */
 void emit_args_run(Compiler *c, const int *argv, int argc);
+/* Has the argument `node` run already, into the temp an override from
+   the `from`th on names? */
+int arg_ran_first(int node, int from);
 int emit_splat_gather(Compiler *c, Scope *m, const int *argv, const ArgLayout *L);
 void emit_gather_arity_check(Compiler *c, Scope *m, int ct);
 void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out);
@@ -1065,11 +1072,6 @@ int emit_ds_hash_merge(Compiler *c, int kwh, int any_key, TyKind *out_type);
    of the call's positionals: a kwh_merged call's merged hash, or a first
    `**` operand with a side effect that it evaluates. */
 int kwh_runs_ahead(Compiler *c, Scope *m, int kwh);
-/* The positional arguments of such a call, evaluated in order into rooted
-   temps ahead of its keywords, as CRuby evaluates them: each one that has an
-   effect is pushed onto the g_argov overrides, for the caller to pop once it
-   has bound the call. */
-void emit_positionals_first(Compiler *c, const int *argv, int pos_argc);
 /* True when the literal keys of the keyword hash `kwh` into `m` do not come
    in the order `m` binds them: a key names a keyword parameter ahead of an
    earlier key's, or the one before it again, or a keyword parameter after a
@@ -1080,10 +1082,10 @@ int kwh_out_of_order(Compiler *c, Scope *m, int kwh);
    Method#call, an inlined yielding initialize, or one a static check refuses
    -- evaluated in source order, keywords included and each value of a key
    written twice, into rooted temps written into `b` and pushed onto the
-   g_argov overrides as emit_positionals_first pushes them, for the caller to
-   pop once it has bound the call. A nil value runs for its effect alone and
-   reads as 0. A read of a variable a later value can give another value is
-   taken too, as CRuby reads it at its place. */
+   g_argov overrides, for the caller to pop once it has bound the call. A
+   nil value runs for its effect alone and reads as 0. A read of a variable
+   a later value can give another value is taken too, as CRuby reads it at
+   its place. */
 void emit_args_in_source_order(Compiler *c, const int *argv, int argc, Buf *b);
 /* emit_args_in_source_order, where the nodes `after` also run ahead of the
    binding reading the values -- a block's defaults -- and so can change what

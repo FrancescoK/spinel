@@ -1243,10 +1243,13 @@ int call_returns_nullable_int(Compiler *c, int node) {
 void emit_boxed(Compiler *c, int node, Buf *b) {
   /* Parentheses are transparent: box the inner expression directly so a
      wrapped yield (`out << (yield x)`) reaches the per-call-site yield boxing
-     below rather than being boxed by the shared node type (#2454). */
+     below rather than being boxed by the shared node type (#2454). Not a
+     call argument that already ran into a temp (the g_argov overrides name
+     the parenthesized node): unwrapped, the inner expression ran again,
+     `m(**(lg(h)))` beside keywords that run ahead running lg twice. */
   {
     const char *pty = nt_type(c->nt, node);
-    if (pty && sp_streq(pty, "ParenthesesNode")) {
+    if (pty && sp_streq(pty, "ParenthesesNode") && !arg_ran_first(node, 0)) {
       int pbody = nt_ref(c->nt, node, "body"); int pbn = 0;
       const int *pbd = pbody >= 0 ? nt_arr(c->nt, pbody, "body", &pbn) : NULL;
       if (pbn == 1) { emit_boxed(c, pbd[0], b); return; }
