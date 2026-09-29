@@ -2942,6 +2942,14 @@ int desugar_value_callable_forwards(Compiler *c) {
       arity = 2;
       pty[0] = pty[1] = TY_UNKNOWN;
     }
+    else if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode && sp_streq(name, "new") &&
+             nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Array")) {
+      /* Array.new(n, &blk): the block takes each index. Left in its &-form,
+         the builder's loop has no block body to run and the array came out
+         empty. */
+      arity = 1;
+      pty[0] = TY_INT;
+    }
     else {
       arity = ty_block_yield(rt, name, pty, 4);
       if (arity < 1) continue;  /* not a context-free iterator (or recv unresolved) */
