@@ -20000,6 +20000,25 @@ void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b) {
   }
 }
 
+/* `Const.m(...)` on a BUILTIN class constant whose closed method table has no
+   `m`: the program's NoMethodError, raised when the call runs, which the gate
+   below emits and a `rescue` can catch. A builtin the program merely reopens
+   (activesupport's seven `class Time` bodies) keeps that closed table for the
+   names no reopening defines: `::Time.zone` without active_support/time
+   loaded is that NoMethodError, not a refusal of the build. A user class
+   keeps the hard compile error: there the missing method is a genuine gap in
+   the program's own code. */
+int call_on_builtin_class_missing(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  const char *name = nt_str(nt, id, "name");
+  if (recv < 0 || !name || comp_ntype(c, recv) != TY_CLASS || !nt_type(nt, recv) ||
+      !sp_streq(nt_type(nt, recv), "ConstantReadNode")) return 0;
+  const char *rcn = nt_str(nt, recv, "name");
+  if (!rcn || builtin_class_id(rcn) == 0) return 0;
+  int rci = comp_class_index(c, rcn);
+  return rci < 0 || comp_cmethod_in_chain(c, rci, name, NULL) < 0;
+}
 int emit_unresolved_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -20111,12 +20130,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
        build over -- and a `rescue` around it must be able to catch it. A USER
        class keeps the hard compile error: there the missing method is a genuine
        gap in the program's own code. */
-    int grt_builtin_cls = 0;
-    if (grt == TY_CLASS && nt_type(nt, recv) &&
-        sp_streq(nt_type(nt, recv), "ConstantReadNode")) {
-      const char *rcn = nt_str(nt, recv, "name");
-      grt_builtin_cls = rcn && comp_class_index(c, rcn) < 0 && builtin_class_id(rcn) != 0;
-    }
+    int grt_builtin_cls = call_on_builtin_class_missing(c, id);
     /* A Hash that arrives boxed -- a Fiber#resume value, a seedless
        Array#reduce, a container read -- keeps its whole read-only
        Hash/Enumerable face. Nothing above claimed the name, so normalize the

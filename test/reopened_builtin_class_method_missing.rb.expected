@@ -1,0 +1,5 @@
+0 in UTC
+undefined method 'zone' for class Time
+undefined method 'find_zone!' for class Time
+true
+undefined method 'zone' for class Time
