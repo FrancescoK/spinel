@@ -4709,6 +4709,53 @@ int param_src_misfits(Compiler *c, LocalVar *p, TyKind ct, const int *argv, int 
   return 0;
 }
 
+/* Can the keyword hash `kwh` of a call bring a key that is no Symbol: a
+   String or other literal key, a computed one answering something else, or
+   a `**` of a hash keyed by another class, of one known only at run time,
+   or of an enclosing `**kwrest` that takes any key already? */
+static int kwh_brings_other_key(Compiler *c, int kwh) {
+  const NodeTable *nt = c->nt;
+  int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
+  for (int e = 0; e < en; e++) {
+    if (nt_kind(nt, el[e]) == NK_AssocNode) {
+      int key = nt_ref(nt, el[e], "key");
+      if (key < 0 || nt_kind(nt, key) == NK_SymbolNode) continue;
+      /* a computed key whose class is not settled yet waits for it */
+      TyKind kt = infer_type(c, key);
+      if (kt != TY_UNKNOWN && kt != TY_SYMBOL) return 1;
+      continue;
+    }
+    if (nt_kind(nt, el[e]) != NK_AssocSplatNode) continue;
+    int v = nt_ref(nt, el[e], "value");
+    TyKind t = TY_UNKNOWN;
+    if (v >= 0) t = infer_type(c, v);
+    else {
+      /* an anonymous `**` forwards the enclosing method's `**` */
+      Scope *esc = comp_scope_of(c, el[e]);
+      LocalVar *ek = esc && esc->kwrest_idx >= 0 && esc->pnames[esc->kwrest_idx]
+                     ? scope_local(esc, esc->pnames[esc->kwrest_idx]) : NULL;
+      if (ek) t = ek->type;
+    }
+    if (t == TY_POLY || (ty_is_hash(t) && ty_hash_key(t) != TY_SYMBOL)) return 1;
+  }
+  return 0;
+}
+
+/* A `**kwrest` parameter is a Symbol-keyed hash (sp_SymPolyHash), the fast
+   path every keyword the call names by a Symbol fills. A key of another
+   class reaches it too -- `def rr(**k); rr("s" => 1)` answers `{"s" => 1}`
+   -- and the Symbol-keyed hash dropped such a key or raised on it, so a
+   call that may bring one widens the parameter to a hash taking any key
+   (TY_POLY_POLY_HASH), which every collector then fills. Only widened,
+   never back: a method one call reaches with a String key takes any key
+   from every call. */
+static int widen_kwrest_any_key(Compiler *c, Scope *m, int node) {
+  if (m->kwrest_idx < 0 || !m->pnames[m->kwrest_idx]) return 0;
+  LocalVar *p = scope_local(m, m->pnames[m->kwrest_idx]);
+  if (!p || p->rbs_seeded || p->type != TY_SYM_POLY_HASH) return 0;
+  return slot_set(c, p, TY_POLY_POLY_HASH, TY_POLY_POLY_HASH, node);
+}
+
 int bind_call_params(Compiler *c, int call_id, int mi) {
   if (mi < 0) return 0;
   const NodeTable *nt = c->nt;
@@ -4742,6 +4789,8 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
     kwh = argv[argc - 1];
     pos_argc = argc - 1;
   }
+  if (kwh >= 0 && m->kwrest_idx >= 0 && kwh_brings_other_key(c, kwh))
+    changed |= widen_kwrest_any_key(c, m, kwh);
   /* Don't bind individual args to the *rest slot; it stays TY_POLY_ARRAY.
      Neither does a positional argument reach a `**kwrest` slot: only a
      keyword hash does (below). Binding one there mis-typed the kwrest as the

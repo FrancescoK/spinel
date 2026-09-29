@@ -621,8 +621,12 @@ void kw_names_add(char *list, size_t n, int *count, const char *inspected);
    a Symbol's shows bare. */
 void kw_key_inspect(const char *kn, int is_sym, char *out, size_t n);
 int sym_name_plain(const char *s);
+/* True when `m`'s `**kwrest` takes a key of any class (TY_POLY_POLY_HASH):
+   some call may bring it one that is no Symbol (bind_call_params). */
+int kwrest_any_key(Compiler *c, const Scope *m);
 /* Collect a call's keywords no declared keyword parameter takes into a fresh
-   sp_SymPolyHash temp for a `**kwrest` parameter; returns the temp id. */
+   temp of the hash `m`'s `**kwrest` is (sp_SymPolyHash, or sp_PolyPolyHash
+   when kwrest_any_key); returns the temp id. */
 int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp, TyKind ds_hash_type, int argsNode);
 /* The `unknown keyword` raise for a call's keyword hash, the last of its
    arguments `argv`, into `m`, once those have run (emit_call_arity_check). */
@@ -1080,7 +1084,8 @@ int kwh_merged(Compiler *c, Scope *m, int kwh);
    lone one does in emit_ds_hash_materialize. Returns the temp id and sets
    *out_type to TY_SYM_POLY_HASH -- or, with `any_key`, merges into a
    PolyPolyHash that keeps a String or other key, literal or an operand's,
-   as a Data or Struct construction needs (TY_POLY_POLY_HASH). */
+   as a Data or Struct construction and a `**kwrest` of any key
+   (kwrest_any_key) need (TY_POLY_POLY_HASH). */
 int emit_ds_hash_merge(Compiler *c, int kwh, int any_key, TyKind *out_type);
 /* True when emit_ds_hash_materialize runs keyword code with an effect ahead
    of the call's positionals: a kwh_merged call's merged hash, or a first

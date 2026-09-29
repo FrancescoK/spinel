@@ -8888,7 +8888,7 @@ static void emit_zsuper_param_fill(Compiler *c, Scope *pm, int i, Buf *b) {
   if (!is_rest && !is_kwrest) { emit_arg_or_default(c, pm, i, -1, b); return; }
   LocalVar *p = pm->pnames[i] ? scope_local(pm, pm->pnames[i]) : NULL;
   int poly = !p || p->type == TY_POLY || p->type == TY_UNKNOWN;
-  const char *cty = is_rest ? "sp_PolyArray" : "sp_SymPolyHash";
+  const char *cty = is_rest ? "sp_PolyArray" : p && p->type == TY_POLY_POLY_HASH ? "sp_PolyPolyHash" : "sp_SymPolyHash";
   int t = ++g_tmp;
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "%s *_t%d = %s_new();\n", cty, t, cty);

@@ -5307,19 +5307,23 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
    per-key temps the dispatch already evaluated. `skip_kw` (an arm, or NULL)
    drops the keys that arm's declared keyword parameters took. Written once:
    the kwrest collection, the *rest tail, the positional collapse and the
-   builtin Hash arm all want the same object. */
-static void emit_kwh_sym_fill(Compiler *c, int th, const PolyKw *kw, Scope *skip_kw, Buf *out) {
+   builtin Hash arm all want the same object. With `any`, `th` is a hash of
+   any key instead, for a `**kwrest` that takes one (kwrest_any_key). */
+static void emit_kwh_sym_fill(Compiler *c, int th, const PolyKw *kw, Scope *skip_kw, int any, Buf *out) {
   const NodeTable *nt = c->nt;
   if (!kw) return;
   if (kw->kwall >= 0) {
-    if (kw->kwall_any)
+    if (any && kw->kwall_any) buf_printf(out, " sp_PolyPolyHash_update(_t%d, _t%d);", th, kw->kwall);
+    else if (any) buf_printf(out, " sp_kw_merge_any(_t%d, sp_box_obj(_t%d, SP_BUILTIN_SYM_POLY_HASH));", th, kw->kwall);
+    else if (kw->kwall_any)
       buf_printf(out, " sp_kwrest_merge_poly(_t%d, sp_box_obj(_t%d, SP_BUILTIN_POLY_POLY_HASH));", th, kw->kwall);
     else buf_printf(out, " sp_SymPolyHash_update(_t%d, _t%d);", th, kw->kwall);
     int pn = skip_kw && skip_kw->def_node >= 0 ? nt_ref(nt, skip_kw->def_node, "parameters") : -1;
     int kn = 0; const int *kws = pn >= 0 ? nt_arr(nt, pn, "keywords", &kn) : NULL;
     for (int k = 0; k < kn; k++) {
       const char *kpn = nt_str(nt, kws[k], "name");
-      if (kpn) buf_printf(out, " sp_SymPolyHash_delete(_t%d, (sp_sym)%d);", th, comp_sym_intern(c, kpn));
+      if (kpn) buf_printf(out, any ? " sp_PolyPolyHash_delete(_t%d, sp_box_sym((sp_sym)%d));"
+                                   : " sp_SymPolyHash_delete(_t%d, (sp_sym)%d);", th, comp_sym_intern(c, kpn));
     }
     return;
   }
@@ -5332,7 +5336,8 @@ static void emit_kwh_sym_fill(Compiler *c, int th, const PolyKw *kw, Scope *skip
     Buf eb; memset(&eb, 0, sizeof eb);
     if (kw->kwty[e] == TY_POLY) buf_puts(&eb, tn);
     else emit_boxed_text(c, kw->kwty[e], tn, &eb);
-    buf_printf(out, " sp_SymPolyHash_set(_t%d, (sp_sym)%d, %s);", th,
+    buf_printf(out, any ? " sp_PolyPolyHash_set(_t%d, sp_box_sym((sp_sym)%d), %s);"
+                        : " sp_SymPolyHash_set(_t%d, (sp_sym)%d, %s);", th,
                comp_sym_intern(c, kn), eb.p ? eb.p : "sp_box_nil()");
     free(eb.p);
   }
@@ -5341,7 +5346,7 @@ static void emit_kwh_sym_fill(Compiler *c, int th, const PolyKw *kw, Scope *skip
 static void emit_kwh_sym_hash(Compiler *c, const PolyKw *kw, Scope *skip_kw, Buf *out) {
   int th = ++g_tmp;
   buf_printf(out, "({ sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d);", th, th);
-  emit_kwh_sym_fill(c, th, kw, skip_kw, out);
+  emit_kwh_sym_fill(c, th, kw, skip_kw, 0, out);
   buf_printf(out, " _t%d; })", th);
 }
 
@@ -5368,6 +5373,14 @@ static int emit_poly_kw_param(Compiler *c, Scope *ms, int a, const PolyKw *kw,
      below has nothing to give it, and the arm handed the callee NULL */
   if (a == ms->kwrest_idx) {
     LocalVar *krp = pnm ? scope_local(ms, pnm) : NULL;
+    if (kwrest_any_key(c, ms)) {
+      /* a rest some call brings a key of another class takes any key */
+      int th = ++g_tmp;
+      buf_printf(pa, "({ sp_PolyPolyHash *_t%d = sp_PolyPolyHash_new(); SP_GC_ROOT(_t%d);", th, th);
+      emit_kwh_sym_fill(c, th, kw, ms, 1, pa);
+      buf_printf(pa, " _t%d; })", th);
+      return 1;
+    }
     if (krp && krp->type == TY_POLY) buf_puts(pa, "sp_box_obj(");
     emit_kwh_sym_hash(c, kw, ms, pa);
     if (krp && krp->type == TY_POLY) buf_puts(pa, ", SP_BUILTIN_SYM_POLY_HASH)");
@@ -10500,7 +10513,7 @@ static void ctor_arm_remap_arg(Compiler *c, Scope *is, int j, int argc, const in
   }
   if (j == is->kwrest_idx) {
     if (pt == TY_POLY) emit_boxed_text(c, TY_SYM_POLY_HASH, "sp_SymPolyHash_new()", out);
-    else buf_puts(out, "sp_SymPolyHash_new()");
+    else buf_puts(out, pt == TY_POLY_POLY_HASH ? "sp_PolyPolyHash_new()" : "sp_SymPolyHash_new()");
     return;
   }
   int slot = ctor_arm_slot(c, is, j, argc);
@@ -11454,7 +11467,7 @@ static int emit_user_new_arm(Compiler *c, int id, int ci, int argc, const int *a
       }
       if (a == ks->kwrest_idx) {   /* no keywords reach it: an empty hash */
         if (pt == TY_POLY) emit_boxed_text(c, TY_SYM_POLY_HASH, "sp_SymPolyHash_new()", &cb);
-        else buf_puts(&cb, "sp_SymPolyHash_new()");
+        else buf_puts(&cb, pt == TY_POLY_POLY_HASH ? "sp_PolyPolyHash_new()" : "sp_SymPolyHash_new()");
         continue;
       }
       if (slot >= 0 && slot < pos_argc) {
@@ -26072,7 +26085,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         else if (tm && tm->kwrest_idx >= 0 && k + shift == tm->kwrest_idx) {
           if (pp && pp->type == TY_POLY)
             buf_puts(b, "sp_box_obj(sp_SymPolyHash_new(), SP_BUILTIN_SYM_POLY_HASH)");
-          else buf_puts(b, "sp_SymPolyHash_new()");
+          else buf_puts(b, pp && pp->type == TY_POLY_POLY_HASH ? "sp_PolyPolyHash_new()" : "sp_SymPolyHash_new()");
         }
         else buf_puts(b, dexpr.p ? dexpr.p : default_value(pp ? pp->type : TY_INT));
         free(dpre.p); free(dexpr.p);
