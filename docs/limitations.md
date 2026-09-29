@@ -942,18 +942,18 @@ precision as well) carry the NUL and its tail, as do `IO#write`,
 prints `\u0000`. `test/embedded_nul_method_partition.rb` pins which
 method is which, and `test/format_interp_binary.rb` the formatting.
 
-#### Nested modules named after a builtin class
+#### Modules named after a builtin class
 
 `module Encoding` at the top level is CRuby's `TypeError` (`Encoding is not a
 module`) and Spinel reports the same error at compile time. A *nested*
 `module Foo::Encoding` (or `class Foo; module Encoding; end; end`) is legal
-CRuby -- it names a fresh constant -- but Spinel's generated C type for a class
-or module is its bare tail name, which collides with the runtime's own
-`sp_Encoding` type. Spinel refuses these at compile time with
-`unsupported module name '<Name>': collides with the builtin class of that
-name` instead of failing with a raw C error. Renaming the nested module
-avoids it. Builtin *modules* (`Comparable`, `Kernel`, `Math`, …) reopen
-normally at any nesting level.
+CRuby -- it names a fresh constant -- and compiles: Spinel's generated C type
+for a class or module is its bare tail name, which would collide with the
+runtime's own `sp_Encoding`, so the nested definition and every reference to
+it are qualified by their module path before the collision can happen, the
+way a nested `class Array` already was. activesupport's
+`ActiveSupport::JSON::Encoding` is the shape. Builtin *modules*
+(`Comparable`, `Kernel`, `Math`, …) reopen normally at any nesting level.
 
 #### String-named `Struct` (the `Struct::Name` form)
 
