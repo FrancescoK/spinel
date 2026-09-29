@@ -2860,7 +2860,7 @@ static void emit_fiber_pass_value(Compiler *c, int argc, const int *argv, Buf *b
    because sp_exc_class_name/_message are TU-static (unreachable from the
    runtime), so the runtime takes (cls, msg, obj). `ctype` is the receiver's
    C type, `pfx` the temp-name letter, `fn` the runtime raise function. */
-static void emit_concurrency_raise(Compiler *c, int recv, int argc, const int *argv,
+static void emit_concurrency_raise(Compiler *c, const char *rtext, int argc, const int *argv,
                                    const char *ctype, char pfx, const char *fn, Buf *b) {
   const NodeTable *nt = c->nt;
   TyKind a0t = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
@@ -2871,13 +2871,13 @@ static void emit_concurrency_raise(Compiler *c, int recv, int argc, const int *a
     (ty_is_object(a0t) && class_is_exc_subclass(c, ty_object_class(a0t)));
   if (argc >= 1 && arg0_exc) {
     int t = ++g_tmp;
-    buf_printf(b, "({ %s *_%cr%d = ", ctype, pfx, t); emit_expr(c, recv, b);
+    buf_printf(b, "({ %s *_%cr%d = %s", ctype, pfx, t, rtext);
     buf_printf(b, "; sp_Exception *_%ce%d = (sp_Exception *)(", pfx, t); emit_expr(c, argv[0], b);
     buf_printf(b, "); %s(_%cr%d, sp_exc_class_name(_%ce%d), sp_exc_message(_%ce%d), _%ce%d); })",
                fn, pfx, t, pfx, t, pfx, t, pfx, t);
     return;
   }
-  buf_printf(b, "%s(", fn); emit_expr(c, recv, b); buf_puts(b, ", ");
+  buf_printf(b, "%s(%s, ", fn, rtext);
   if (arg0_const) {
     buf_printf(b, "\"%s\", ", nt_str(nt, argv[0], "name"));
     if (argc >= 2) emit_expr(c, argv[1], b); else buf_puts(b, "(&(\"\\xff\")[1])");
@@ -2952,7 +2952,9 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ") == (void *)("); emit_expr(c, argv[0], b); buf_puts(b, "))"); return 1;
     }
     if (sp_streq(name, "raise")) {
-      emit_concurrency_raise(c, recv, argc, argv, "sp_thread", 't', "sp_Thread_raise", b);
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      emit_concurrency_raise(c, rb.p ? rb.p : "NULL", argc, argv, "sp_thread", 't', "sp_Thread_raise", b);
+      free(rb.p);
       return 1;
     }
     /* thread-local storage: t[:key] / t[:key]=v / t.key?(:key) (symbol keys) */
@@ -3229,7 +3231,9 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
     if (sp_streq(name, "raise")) {
-      emit_concurrency_raise(c, recv, argc, argv, "sp_Fiber", 'f', "sp_Fiber_raise", b);
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      emit_concurrency_raise(c, rb.p ? rb.p : "NULL", argc, argv, "sp_Fiber", 'f', "sp_Fiber_raise", b);
+      free(rb.p);
       return 1;
     }
   }
@@ -38368,6 +38372,37 @@ else {
       return;
     }
   }
+  /* resume / transfer / raise on a boxed Fiber (one read out of an Array, or
+     a local that was nil first). Anything else in the slot raises
+     NoMethodError at run time. */
+  if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 &&
+      (sp_streq(name, "resume") || sp_streq(name, "transfer") ||
+       (sp_streq(name, "raise") && argc <= 3))) {
+    int ncand = 0;
+    if (!g_poly_builtin_arm)
+      for (int k = 0; k < c->nclasses; k++)
+        if (comp_poly_arm_defines_n(c, k, name, argc) ||
+            (!c->classes[k].is_native_class && comp_reader_in_chain(c, k, name, NULL))) ncand++;
+    if (ncand == 0) {
+      Buf fv; memset(&fv, 0, sizeof fv);
+      int tf = ++g_tmp;
+      buf_printf(&fv, "({ sp_Fiber *_t%d = sp_poly_as_fiber(", tf);
+      emit_boxed(c, recv, &fv);
+      buf_printf(&fv, ", \"%s\"); SP_GC_ROOT(_t%d); ", name, tf);
+      char ft[32]; snprintf(ft, sizeof ft, "_t%d", tf);
+      if (sp_streq(name, "raise"))
+        emit_concurrency_raise(c, ft, argc, argv, "sp_Fiber", 'f', "sp_Fiber_raise", &fv);
+      else {
+        buf_printf(&fv, "sp_Fiber_%s(_t%d, ", name, tf);
+        emit_fiber_pass_value(c, argc, argv, &fv);
+        buf_puts(&fv, ")");
+      }
+      buf_puts(&fv, "; })");
+      emit_unbox_text(c, comp_ntype(c, id), fv.p, b);
+      free(fv.p);
+      return;
+    }
+  }
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0) {
     const char *pm = NULL;
     if (sp_streq(name, "sum")) pm = "sp_poly_sum";
@@ -38378,7 +38413,7 @@ else {
     else if (sp_streq(name, "sample")) pm = "sp_poly_sample";
     /* a Thread (Fiber-modelled) carried through a poly slot: #value/#resume/#join
        dispatch on the boxed Fiber when no user class defines the name (#1261). */
-    else if (sp_streq(name, "value") || sp_streq(name, "resume")) pm = "sp_poly_fiber_value";
+    else if (sp_streq(name, "value")) pm = "sp_poly_fiber_value";
     else if (sp_streq(name, "join")) pm = "sp_poly_fiber_join";
     /* and #alive? / #status, which a pool polls through its worker Array
        (#4463); these answer their own C types, not a boxed value */
