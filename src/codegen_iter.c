@@ -4555,10 +4555,14 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
        array (a widened slot, #4188): the element binds boxed into it, the
        way the shadowed outer's would (the take_while of a Ruby definition
        whose block parameter widened assigned a const char * to it) */
+    int to_strbuf = outer && outer->type == TY_STRBUF && et == TY_STRING;
     if (!box_to_poly && p0 && et != TY_POLY) {
       Scope *bsc = comp_scope_of(c, block);
       LocalVar *blv = bsc ? scope_local(bsc, p0_orig ? p0_orig : p0) : NULL;
       if (blv && blv->type == TY_POLY) box_to_poly = 1;
+      /* a slot a mutating callee made a String buffer takes a String
+         element as one, as a plain assignment to it does (#6038) */
+      if (blv && blv->type == TY_STRBUF && et == TY_STRING) to_strbuf = 1;
     }
     int ts = 0;
     if (outer) {
@@ -4628,6 +4632,10 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
         emit_boxed_text(c, et, src.p ? src.p : "", b);
         free(src.p);
         buf_puts(b, ";\n");
+      }
+      else if (to_strbuf) {
+        buf_printf(b, "lv_%s = sp_String_new_shared(sp_StrArray_get(", p0);
+        buf_puts(b, rb.p); buf_printf(b, ", _t%d));\n", t);
       }
       else {
         buf_printf(b, "lv_%s = sp_%sArray_get(", p0, k);
