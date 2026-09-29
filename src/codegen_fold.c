@@ -6738,6 +6738,10 @@ int emit_kwh_spread_arg(Compiler *c, int kwh, Buf *b) {
 static const char *kw_splat_bad_cls(Compiler *c, TyKind t) {
   if (ty_is_hash(t) || t == TY_NIL) return NULL;
   if (t == TY_BOOL) return "true or false";
+  /* a Class or Module value has no #to_hash; it may be nil, which its
+     boxed check tells apart (kw_splat_operand_nilable) and which names a
+     Module as one */
+  if (t == TY_CLASS) return "Class";
   /* conv_cls_name_of leaves these to the numeric slots, which convert them */
   if (t == TY_RATIONAL) return "Rational";
   if (t == TY_COMPLEX) return "Complex";
@@ -6791,6 +6795,9 @@ static int kw_splat_operand_nilable(Compiler *c, int node, TyKind t) {
     return call_returns_nullable_int(c, node) || box_nullable_arg(c, node) ||
            nt_kind(c->nt, node) == NK_InstanceVariableReadNode;
   if (t == TY_FLOAT) return call_returns_nullable_int(c, node) || box_nullable_arg(c, node);
+  /* a Class value holds nil as SP_CLASS_NIL (`BasicObject.superclass`),
+     which it boxes as nil (sp_box_class) */
+  if (t == TY_CLASS) return 1;
   return needs_root(t);   /* a pointer-backed kind holds nil as NULL */
 }
 
