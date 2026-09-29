@@ -3851,11 +3851,15 @@ static int emit_md_deconstruct_keys(Buf *b, int indent, const char *md) {
   return dk;
 }
 
+static void emit_boxed_src(Compiler *c, TyKind t, const char *src, Buf *b) {
+  Buf bx; memset(&bx, 0, sizeof bx);
+  emit_boxed_text(c, t, src, &bx);
+  buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+}
+
 static void emit_boxed_tmp(Compiler *c, TyKind t, int tmp, Buf *b) {
   char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmp);
-  Buf bx; memset(&bx, 0, sizeof bx);
-  emit_boxed_text(c, t, expr, &bx);
-  buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+  emit_boxed_src(c, t, expr, b);
 }
 
 /* `=> name` binding: lv_<lnm> = _t<t>, boxed when the local is poly. */
@@ -4569,11 +4573,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         buf_printf(b, "lv_%s = ", rename_local(lnm));
         LocalVar *plv = scope_local(comp_scope_of(c, id), lnm);
         char gx[64]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, arm_t, i);
-        if (plv && plv->type == TY_POLY && !sp_streq(k, "Poly")) {
-          Buf bx; memset(&bx, 0, sizeof bx);
-          emit_boxed_text(c, ty_array_elem(arr_t), gx, &bx);
-          buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-        }
+        if (plv && plv->type == TY_POLY && !sp_streq(k, "Poly")) emit_boxed_src(c, ty_array_elem(arr_t), gx, b);
         else buf_puts(b, gx);
         buf_puts(b, ";\n");
       }
@@ -4593,11 +4593,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
             buf_printf(b, "lv_%s = ", rename_local(rnm));
             /* a local shared with another arm of a different array kind holds
                the slice boxed, as the required bindings above already do */
-            if (rlv && rlv->type == TY_POLY && !sp_streq(k, "Poly")) {
-              Buf bx; memset(&bx, 0, sizeof bx);
-              emit_boxed_text(c, arr_t, sx, &bx);
-              buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-            }
+            if (rlv && rlv->type == TY_POLY && !sp_streq(k, "Poly")) emit_boxed_src(c, arr_t, sx, b);
             else buf_puts(b, sx);
             buf_puts(b, ";\n");
           }
@@ -4618,11 +4614,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         buf_printf(b, "lv_%s = ", rename_local(lnm));
         LocalVar *plv = scope_local(comp_scope_of(c, id), lnm);
         char gx[80]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, _t%d->len - %lldLL)", k, arm_t, arm_t, (long long)(npost - j));
-        if (plv && plv->type == TY_POLY && !sp_streq(k, "Poly")) {
-          Buf bx; memset(&bx, 0, sizeof bx);
-          emit_boxed_text(c, ty_array_elem(arr_t), gx, &bx);
-          buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-        }
+        if (plv && plv->type == TY_POLY && !sp_streq(k, "Poly")) emit_boxed_src(c, ty_array_elem(arr_t), gx, b);
         else buf_puts(b, gx);
         buf_puts(b, ";\n");
       }
@@ -4664,11 +4656,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
           emit_indent(b, body_indent);
           buf_printf(b, "lv_%s = ", rename_local(lnm));
           LocalVar *plv = scope_local(comp_scope_of(c, id), lnm);
-          if (plv && plv->type == TY_POLY && !sp_streq(find_k, "Poly")) {
-            Buf bx; memset(&bx, 0, sizeof bx);
-            emit_boxed_text(c, ty_array_elem(pt), gx, &bx);
-            buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-          }
+          if (plv && plv->type == TY_POLY && !sp_streq(find_k, "Poly")) emit_boxed_src(c, ty_array_elem(pt), gx, b);
           else buf_puts(b, gx);
           buf_puts(b, ";\n");
         }
@@ -7879,11 +7867,7 @@ static void masgn_part(Compiler *c, int node, int tmp, Buf *b) {
    `val` is Ruby nil. */
 static void masgn_conv(Compiler *c, TyKind st, TyKind vt, const char *val, Buf *b) {
   if (!val) { buf_puts(b, nil_sentinel(st == TY_UNKNOWN ? TY_POLY : st)); return; }
-  if (st == TY_POLY && vt != TY_POLY) {
-    Buf bx; memset(&bx, 0, sizeof bx);
-    emit_boxed_text(c, vt, val, &bx);
-    buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-  }
+  if (st == TY_POLY && vt != TY_POLY) emit_boxed_src(c, vt, val, b);
   else if (vt == TY_POLY && st == TY_INT) buf_printf(b, "sp_poly_to_i(%s)", val);
   else if (vt == TY_POLY && st == TY_FLOAT) buf_printf(b, "sp_poly_to_f(%s)", val);
   else if (vt == TY_POLY && st != TY_POLY && st != TY_UNKNOWN) emit_unbox_text(c, st, val, b);
@@ -10180,11 +10164,7 @@ else {
             LocalVar *llv = lvn ? scope_local(rt_scope, lvn) : NULL;
             TyKind ltt = llv ? llv->type : comp_ntype(c, lefts[i]);
             char gx[64]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
-            if (ltt == TY_POLY && !sp_streq(k, "Poly")) {
-              Buf bx; memset(&bx, 0, sizeof bx);
-              emit_boxed_text(c, elem, gx, &bx);
-              buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-            }
+            if (ltt == TY_POLY && !sp_streq(k, "Poly")) emit_boxed_src(c, elem, gx, b);
             else if (sp_streq(k, "Poly") && ltt != TY_POLY && ltt != TY_UNKNOWN) {
               /* typed target from a poly tuple (known multi-value return) */
               emit_unbox_text(c, ltt, gx, b);
@@ -10201,11 +10181,7 @@ else {
             int iv_rt = comp_ivar_index(&c->classes[iv_home_cid], ivnm);
             if (iv_rt >= 0) ivt = c->classes[iv_home_cid].ivar_types[iv_rt];
             buf_printf(b, "%s = ", iv_lhs);
-            if (ivt == TY_POLY && elem != TY_POLY) {
-              Buf bx; memset(&bx, 0, sizeof bx);
-              emit_boxed_text(c, elem, get_expr, &bx);
-              buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-            }
+            if (ivt == TY_POLY && elem != TY_POLY) emit_boxed_src(c, elem, get_expr, b);
             else if (sp_streq(k, "Poly") && ivt != TY_POLY && ivt != TY_UNKNOWN) {
               /* typed target from a poly tuple (known multi-value return) */
               emit_unbox_text(c, ivt, get_expr, b);
@@ -10938,11 +10914,7 @@ else {
         else {
           buf_printf(b, "lv_%s = ", rename_local(rnm_j));
           TyKind tt = comp_ntype(c, rights[j]);
-          if (rjpoly) {
-            Buf bx; memset(&bx, 0, sizeof bx);
-            emit_boxed_text(c, tt, default_value(tt), &bx);
-            buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-          }
+          if (rjpoly) emit_boxed_src(c, tt, default_value(tt), b);
           else buf_puts(b, default_value(tt));
           buf_puts(b, ";\n");
         }
