@@ -5129,6 +5129,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "result")) return TY_POLY;          /* StopIteration#result, nil otherwise */
     if (sp_streq(name, "errno")) return TY_POLY;           /* SystemCallError#errno: the Errno:: class's number, nil for the parent (#4560) */
     if (sp_streq(name, "name")) return TY_POLY;            /* NameError#name, nil otherwise */
+    if (sp_streq(name, "path")) return TY_POLY;            /* LoadError#path: nil (no runtime-raised LoadError carries one) */
     if (sp_streq(name, "dup") || sp_streq(name, "clone")) return rt;  /* a copy keeps the (subclass) type */
     if (sp_streq(name, "key") || sp_streq(name, "receiver") || sp_streq(name, "args") ||
         sp_streq(name, "reason") || sp_streq(name, "exit_value") ||

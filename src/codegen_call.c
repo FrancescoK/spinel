@@ -30026,6 +30026,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "success?")) accfn = "sp_exc_success_acc";
       else if (sp_streq(name, "signo")) accfn = "sp_exc_signo_acc";
       else if (sp_streq(name, "signm")) accfn = "sp_exc_signm_acc";
+      /* LoadError#path: a require is resolved at compile time, so no
+         LoadError the program raises carries a path -- nil, as a LoadError
+         raised by hand answers in CRuby */
+      if (sp_streq(name, "path")) {
+        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_box_nil())");
+        return;
+      }
       if (accfn) {
         if (sp_streq(name, "reason") || sp_streq(name, "tag") || sp_streq(name, "key"))
           g_uses_symbols = 1;  /* staged names intern back to symbols */
