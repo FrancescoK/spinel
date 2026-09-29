@@ -6837,6 +6837,72 @@ int infer_param_types(Compiler *c) {
   return changed;
 }
 
+/* The type a `for` loop binds to its index variable: position `pos` of a
+   `for a, b in coll` destructure, or -1 for a single index. TY_UNKNOWN while
+   the collection is not typed yet. */
+static TyKind for_bound_type(Compiler *c, int coll, int pos) {
+  TyKind ct = infer_type(c, coll);
+  if (pos >= 0) {
+    /* the element type of the inner array, or poly when the collection's
+       element is not a concrete typed array */
+    if (ty_is_array(ct)) {
+      TyKind et = ty_array_elem(ct);
+      if (ty_is_array(et)) return ty_array_elem(et);
+    }
+    return TY_POLY;
+  }
+  if (ct == TY_RANGE) return TY_INT;
+  if (ty_is_array(ct)) return ty_array_elem(ct);
+  if (ct == TY_POLY || ty_is_hash(ct)) return TY_POLY;
+  return TY_UNKNOWN;
+}
+
+static int is_for_index_target(const NodeTable *nt, int node) {
+  NT_FOREACH_KIND(nt, NK_ForNode, f) {
+    int idx = nt_ref(nt, f, "index");
+    if (idx == node) return 1;
+    const char *ity = idx >= 0 ? nt_type(nt, idx) : NULL;
+    if (!ity || !sp_streq(ity, "MultiTargetNode")) continue;
+    int ln = 0;
+    const int *lefts = nt_arr(nt, idx, "lefts", &ln);
+    for (int i = 0; i < ln; i++) if (lefts[i] == node) return 1;
+  }
+  return 0;
+}
+
+/* Folds into `et` the type of every other write to the `for`-bound local
+   `lv`. infer_write_types leaves iteration-bound locals alone, so without
+   this a `t = "x"` after `for t in [7]` assigned a String into the loop's
+   sp_int slot. */
+static TyKind for_local_other_writes(Compiler *c, LocalVar *lv, const char *vn, TyKind et) {
+  const NodeTable *nt = c->nt;
+  for (int w = 0; w < nt->count; w++) {
+    NodeKind k = nt_kind(nt, w);
+    int is_op = k == NK_LocalVariableOperatorWriteNode || k == NK_LocalVariableOrWriteNode ||
+                k == NK_LocalVariableAndWriteNode;
+    int is_tgt = k == NK_LocalVariableTargetNode;
+    if (k != NK_LocalVariableWriteNode && !is_op && !is_tgt) continue;
+    const char *nm = nt_str(nt, w, "name");
+    if (!nm || !sp_streq(nm, vn) || scope_local(comp_scope_of(c, w), nm) != lv) continue;
+    TyKind wt;
+    if (is_tgt) {
+      if (is_for_index_target(nt, w)) continue;
+      wt = TY_POLY;
+    }
+    else {
+      int val = nt_ref(nt, w, "value");
+      wt = comp_nil_chain_bottom(nt, val) >= 0 ? TY_NIL : infer_type(c, val);
+      if (is_op && wt != TY_UNKNOWN && wt != et) wt = TY_POLY;
+    }
+    if (wt == TY_UNKNOWN || wt == TY_VOID) continue;
+    TyKind u = ty_unify(et, wt);
+    /* a nullable scalar needs the nil-sentinel marking a plain local gets */
+    if (wt == TY_NIL && (u == TY_INT || u == TY_FLOAT)) u = TY_POLY;
+    et = u;
+  }
+  return et;
+}
+
 /* `for x in coll` binds x to the collection's element type (int for a
    range, the array element type for an array). */
 int infer_for_index(Compiler *c) {
@@ -6846,53 +6912,42 @@ int infer_for_index(Compiler *c) {
     int idx = nt_ref(nt, id, "index");
     int coll = nt_ref(nt, id, "collection");
     if (idx < 0 || coll < 0) continue;
-    const char *idx_ty = nt_type(nt, idx);
-    /* for a, b in coll: MultiTargetNode with LocalVariableTargetNode children */
-    if (idx_ty && sp_streq(idx_ty, "MultiTargetNode")) {
-      int ln = 0;
-      const int *lefts = nt_arr(nt, idx, "lefts", &ln);
-      TyKind ct2 = infer_type(c, coll);
-      /* Each destructured variable gets the element type of the inner array,
-         or TY_POLY if the collection element is not a concrete typed array. */
-      TyKind inner = TY_POLY;
-      if (ty_is_array(ct2)) {
-        TyKind et2 = ty_array_elem(ct2);
-        if (ty_is_array(et2)) inner = ty_array_elem(et2);
-      }
-      Scope *ms = comp_scope_of(c, idx);
-      for (int i = 0; i < ln; i++) {
-        const char *lnm = nt_str(nt, lefts[i], "name");
-        if (!lnm) continue;
-        LocalVar *lv = scope_local_intern(ms, lnm);
-        lv->is_block_param = 1;
-        if (lv->type != inner) { lv->type = inner; changed = 1; }
-      }
-      continue;
-    }
-    const char *vn = nt_str(nt, idx, "name");
-    if (!vn) continue;
+    int ln = 1;
+    const int *lefts = &idx;
+    if (nt_kind(nt, idx) == NK_MultiTargetNode) lefts = nt_arr(nt, idx, "lefts", &ln);
     Scope *isc = comp_scope_of(c, idx);
-    /* Every `for` binding this NAME in this scope writes the same C slot, so
-       the slot has to hold all of their element types. Typed from one loop
-       alone -- whichever the pass reached last -- the other one assigned a
-       String element into an sp_int slot (#4168). */
-    TyKind et = TY_UNKNOWN;
-    int seen = 0;
-    NT_FOREACH_KIND(nt, NK_ForNode, jd) {
-      int jx = nt_ref(nt, jd, "index"), jc = nt_ref(nt, jd, "collection");
-      if (jx < 0 || jc < 0) continue;
-      const char *jn = nt_str(nt, jx, "name");
-      if (!jn || !sp_streq(jn, vn) || comp_scope_of(c, jx) != isc) continue;
-      TyKind jt = infer_type(c, jc);
-      TyKind je = jt == TY_RANGE ? TY_INT : ty_is_array(jt) ? ty_array_elem(jt) : TY_UNKNOWN;
-      if (je == TY_UNKNOWN) continue;
-      et = seen ? ty_unify(et, je) : je;
-      seen = 1;
+    for (int i = 0; i < ln; i++) {
+      const char *vn = nt_str(nt, lefts[i], "name");
+      if (!vn) continue;
+      /* Every `for` binding this NAME in this scope writes the same C slot,
+         alone or as part of a destructure, so the slot has to hold all of
+         their element types. Typed from one loop alone -- whichever the pass
+         reached last -- the other one assigned a String element into an
+         sp_int slot (#4168). */
+      TyKind et = TY_UNKNOWN;
+      int seen = 0;
+      NT_FOREACH_KIND(nt, NK_ForNode, jd) {
+        int jx = nt_ref(nt, jd, "index"), jc = nt_ref(nt, jd, "collection");
+        if (jx < 0 || jc < 0 || comp_scope_of(c, jx) != isc) continue;
+        int jn = 1;
+        const int *jl = &jx;
+        int jmulti = nt_kind(nt, jx) == NK_MultiTargetNode;
+        if (jmulti) jl = nt_arr(nt, jx, "lefts", &jn);
+        for (int j = 0; j < jn; j++) {
+          const char *nm = nt_str(nt, jl[j], "name");
+          if (!nm || !sp_streq(nm, vn)) continue;
+          TyKind je = for_bound_type(c, jc, jmulti ? j : -1);
+          if (je == TY_UNKNOWN) continue;
+          et = seen ? ty_unify(et, je) : je;
+          seen = 1;
+        }
+      }
+      if (!seen || et == TY_UNKNOWN) continue;
+      LocalVar *lv = scope_local_intern(isc, vn);
+      lv->is_block_param = 1;  /* iteration-bound: survives the write-types reset */
+      et = for_local_other_writes(c, lv, vn, et);
+      if (lv->type != et) { lv->type = et; changed = 1; }
     }
-    if (!seen || et == TY_UNKNOWN) continue;
-    LocalVar *lv = scope_local_intern(isc, vn);
-    lv->is_block_param = 1;  /* iteration-bound: survives the write-types reset */
-    if (lv->type != et) { lv->type = et; changed = 1; }
   }
   return changed;
 }
