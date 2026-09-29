@@ -3345,7 +3345,7 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
       int classpat = pm_hash_value_class(nt, vchk);
       emit_indent(hs, hi);
       buf_printf(hs, "_t%d = _t%d && sp_%sHash_has_key(_t%d, ", hcond, hcond, hn, t);
-      emit_expr(c, key, hs); buf_puts(hs, ");\n");
+      emit_hash_key(c, key, ty_hash_key(pt), hs); buf_puts(hs, ");\n");
       if (classpat == PM_HASH_VAL_REJECT) {
         /* fetch the value into a typed temp and AND in the recursive check
            (validated to succeed above) */
@@ -3354,7 +3354,7 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
         buf_puts(hs, "{ ");
         emit_ctype(c, hvt, hs);
         buf_printf(hs, " _t%d = sp_%sHash_get(_t%d, ", vtmp, hn, t);
-        emit_expr(c, key, hs); buf_puts(hs, "); ");
+        emit_hash_key(c, key, ty_hash_key(pt), hs); buf_puts(hs, "); ");
         Buf vc; memset(&vc, 0, sizeof vc);
         emit_pm_cond(c, vchk, vtmp, hvt, &vc);
         buf_printf(hs, "_t%d = _t%d && (%s); }\n", hcond, hcond, vc.p ? vc.p : "1");
@@ -3366,7 +3366,7 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
         int vtmp = ++g_tmp;
         emit_indent(hs, hi);
         buf_printf(hs, "{ sp_RbVal _t%d = sp_%sHash_get(_t%d, ", vtmp, hn, t);
-        emit_expr(c, key, hs); buf_puts(hs, "); ");
+        emit_hash_key(c, key, ty_hash_key(pt), hs); buf_puts(hs, "); ");
         char vn[24]; snprintf(vn, sizeof vn, "_t%d", vtmp);
         Buf cw; memset(&cw, 0, sizeof cw);
         emit_poly_class_when(c, classpat, vn, &cw);   /* validated to succeed above */
@@ -4148,7 +4148,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
           }
           emit_indent(b, indent + 1);
           buf_printf(b, "_t%d = _t%d && sp_%sHash_has_key(_t%d, ", hcond, hcond, hn, arm_t);
-          emit_expr(c, key, b); buf_puts(b, ");\n");
+          emit_hash_key(c, key, ty_hash_key(arm_pt), b); buf_puts(b, ");\n");
           /* value sub-pattern: `k: 0`, `k: Class`, `k: 1 | 2`, `k: PAT => v`,
              a nested container pattern... -- fetch the value and recurse into
              the general matcher. A bare LV target is a pure binding (bound
@@ -4163,7 +4163,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
             emit_indent(b, indent + 1);
             emit_ctype(c, hvt, b);
             buf_printf(b, " _t%d = sp_%sHash_get(_t%d, ", vtmp, hn, arm_t);
-            emit_expr(c, key, b); buf_puts(b, ");\n");
+            emit_hash_key(c, key, ty_hash_key(arm_pt), b); buf_puts(b, ");\n");
             Buf vcb = {NULL, 0, 0};
             int hv = emit_pm_cond(c, vchk, vtmp, hvt, &vcb);
             if (!hv) unsupported(c, vchk, "hash-pattern value sub-form");
@@ -4327,7 +4327,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
                sp_streq(nt_type(nt, vsub), "FindPatternNode"))) {
             Buf vg; memset(&vg, 0, sizeof vg);
             buf_printf(&vg, "sp_%sHash_get(_t%d, ", hn, arm_t);
-            emit_expr(c, key, &vg); buf_puts(&vg, ")");
+            emit_hash_key(c, key, ty_hash_key(arm_pt), &vg); buf_puts(&vg, ")");
             emit_indent(b, body_indent); buf_puts(b, "{\n");
             emit_pm_bind_container_poly(c, vsub, vg.p, body_indent + 1, b, hsc);
             emit_indent(b, body_indent); buf_puts(b, "}\n");
@@ -4353,7 +4353,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
             emit_indent(b, body_indent); buf_puts(b, "{\n");
             emit_indent(b, body_indent + 1);
             buf_printf(b, "sp_RbVal _t%d = sp_%sHash_get(_t%d, ", vtmp, hn, arm_t);
-            emit_expr(c, key, b); buf_puts(b, ");\n");
+            emit_hash_key(c, key, ty_hash_key(arm_pt), b); buf_puts(b, ");\n");
             char vn[24]; snprintf(vn, sizeof vn, "_t%d", vtmp);
             emit_pm_typed_assign(c, hsc, lnm, vn, b, body_indent + 1);
             emit_indent(b, body_indent); buf_puts(b, "}\n");
@@ -4361,7 +4361,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
           else {
             emit_indent(b, body_indent);
             buf_printf(b, "lv_%s = sp_%sHash_get(_t%d, ", rename_local(lnm), hn, arm_t);
-            emit_expr(c, key, b); buf_puts(b, ");\n");
+            emit_hash_key(c, key, ty_hash_key(arm_pt), b); buf_puts(b, ");\n");
           }
         }
         /* `**rest`: copy every pair whose key is not among the listed ones */
