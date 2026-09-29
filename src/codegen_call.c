@@ -7120,6 +7120,25 @@ static void emit_poly_native_arm_stmt(Compiler *c, const char *call, TyKind mret
   buf_puts(b, ";");
 }
 
+static void emit_builtin_len_cases(Buf *b, int tr, int tv, const char *open, const char *close) {
+  buf_printf(b, " case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_SYM_ARRAY: _t%d = %ssp_IntArray_length((sp_IntArray *)_t%d.v.p)%s; break;", tr, open, tv, close);
+  buf_printf(b, " case SP_BUILTIN_STR_ARRAY: _t%d = %ssp_StrArray_length((sp_StrArray *)_t%d.v.p)%s; break;", tr, open, tv, close);
+  buf_printf(b, " case SP_BUILTIN_FLT_ARRAY: _t%d = %ssp_FloatArray_length((sp_FloatArray *)_t%d.v.p)%s; break;", tr, open, tv, close);
+  buf_printf(b, " case SP_BUILTIN_POLY_ARRAY: _t%d = %ssp_PolyArray_length((sp_PolyArray *)_t%d.v.p)%s; break;", tr, open, tv, close);
+  buf_printf(b, " case SP_BUILTIN_PTR_ARRAY: _t%d = %ssp_PtrArray_length((sp_PtrArray *)_t%d.v.p)%s; break;", tr, open, tv, close);
+  buf_printf(b, " case SP_BUILTIN_POLY_POLY_HASH: _t%d = %s((sp_PolyPolyHash *)_t%d.v.p)->len%s; break;", tr, open, tv, close);
+  buf_printf(b, " case SP_BUILTIN_SYM_POLY_HASH: _t%d = %s((sp_SymPolyHash *)_t%d.v.p)->len%s; break;", tr, open, tv, close);
+  buf_printf(b, " case SP_BUILTIN_STR_POLY_HASH: _t%d = %s((sp_StrPolyHash *)_t%d.v.p)->len%s; break;", tr, open, tv, close);
+  /* scalar-valued str/int-keyed hashes (a `params = {}` filled with a
+     computed String key is a StrStrHash) reach a poly `.length` dispatch
+     once any user `#length` exists -- without these arms the switch missed
+     the cls_id and returned the seed 0 (#1614). */
+  buf_printf(b, " case SP_BUILTIN_STR_STR_HASH: _t%d = %s((sp_StrStrHash *)_t%d.v.p)->len%s; break;", tr, open, tv, close);
+  buf_printf(b, " case SP_BUILTIN_STR_INT_HASH: _t%d = %s((sp_StrIntHash *)_t%d.v.p)->len%s; break;", tr, open, tv, close);
+  buf_printf(b, " case SP_BUILTIN_INT_STR_HASH: _t%d = %s((sp_IntStrHash *)_t%d.v.p)->len%s; break;", tr, open, tv, close);
+  buf_printf(b, " case SP_BUILTIN_INT_INT_HASH: _t%d = %s((sp_IntIntHash *)_t%d.v.p)->len%s; break;", tr, open, tv, close);
+}
+
 static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
   /* Re-entered from this very dispatch's builtin-container arm: decline, so
      the call falls through to the builtin emitters the arm is there to
@@ -7835,24 +7854,8 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         }
       }
       /* built-in array receivers reaching a length-like poly dispatch */
-      if (sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "count")) {
-        buf_printf(b, " case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_SYM_ARRAY: _t%d = %ssp_IntArray_length((sp_IntArray *)_t%d.v.p)%s; break;", tr, bopen, tv, bclose);
-        buf_printf(b, " case SP_BUILTIN_STR_ARRAY: _t%d = %ssp_StrArray_length((sp_StrArray *)_t%d.v.p)%s; break;", tr, bopen, tv, bclose);
-        buf_printf(b, " case SP_BUILTIN_FLT_ARRAY: _t%d = %ssp_FloatArray_length((sp_FloatArray *)_t%d.v.p)%s; break;", tr, bopen, tv, bclose);
-        buf_printf(b, " case SP_BUILTIN_POLY_ARRAY: _t%d = %ssp_PolyArray_length((sp_PolyArray *)_t%d.v.p)%s; break;", tr, bopen, tv, bclose);
-        buf_printf(b, " case SP_BUILTIN_PTR_ARRAY: _t%d = %ssp_PtrArray_length((sp_PtrArray *)_t%d.v.p)%s; break;", tr, bopen, tv, bclose);
-        buf_printf(b, " case SP_BUILTIN_POLY_POLY_HASH: _t%d = %s((sp_PolyPolyHash *)_t%d.v.p)->len%s; break;", tr, bopen, tv, bclose);
-        buf_printf(b, " case SP_BUILTIN_SYM_POLY_HASH: _t%d = %s((sp_SymPolyHash *)_t%d.v.p)->len%s; break;", tr, bopen, tv, bclose);
-        buf_printf(b, " case SP_BUILTIN_STR_POLY_HASH: _t%d = %s((sp_StrPolyHash *)_t%d.v.p)->len%s; break;", tr, bopen, tv, bclose);
-        /* scalar-valued str/int-keyed hashes (a `params = {}` filled with a
-           computed String key is a StrStrHash) reach a poly `.length` dispatch
-           once any user `#length` exists -- without these arms the switch missed
-           the cls_id and returned the seed 0 (#1614). */
-        buf_printf(b, " case SP_BUILTIN_STR_STR_HASH: _t%d = %s((sp_StrStrHash *)_t%d.v.p)->len%s; break;", tr, bopen, tv, bclose);
-        buf_printf(b, " case SP_BUILTIN_STR_INT_HASH: _t%d = %s((sp_StrIntHash *)_t%d.v.p)->len%s; break;", tr, bopen, tv, bclose);
-        buf_printf(b, " case SP_BUILTIN_INT_STR_HASH: _t%d = %s((sp_IntStrHash *)_t%d.v.p)->len%s; break;", tr, bopen, tv, bclose);
-        buf_printf(b, " case SP_BUILTIN_INT_INT_HASH: _t%d = %s((sp_IntIntHash *)_t%d.v.p)->len%s; break;", tr, bopen, tv, bclose);
-      }
+      if (sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "count"))
+        emit_builtin_len_cases(b, tr, tv, bopen, bclose);
       /* built-in container receivers reaching a poly clear dispatch (a seeded
          boxed ivar array): empty in place through the runtime kind dispatch;
          without these arms the switch missed the cls_id and silently kept
@@ -7871,20 +7874,8 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           buf_printf(b, " sp_poly_clear(_t%d); break;", tv);
       }
       /* built-in array / hash receivers reaching a poly empty? dispatch (#1438) */
-      if (is_empty) {
-        buf_printf(b, " case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_SYM_ARRAY: _t%d = %ssp_IntArray_length((sp_IntArray *)_t%d.v.p) == 0%s; break;", tr, ebopen, tv, ebclose);
-        buf_printf(b, " case SP_BUILTIN_STR_ARRAY: _t%d = %ssp_StrArray_length((sp_StrArray *)_t%d.v.p) == 0%s; break;", tr, ebopen, tv, ebclose);
-        buf_printf(b, " case SP_BUILTIN_FLT_ARRAY: _t%d = %ssp_FloatArray_length((sp_FloatArray *)_t%d.v.p) == 0%s; break;", tr, ebopen, tv, ebclose);
-        buf_printf(b, " case SP_BUILTIN_POLY_ARRAY: _t%d = %ssp_PolyArray_length((sp_PolyArray *)_t%d.v.p) == 0%s; break;", tr, ebopen, tv, ebclose);
-        buf_printf(b, " case SP_BUILTIN_PTR_ARRAY: _t%d = %ssp_PtrArray_length((sp_PtrArray *)_t%d.v.p) == 0%s; break;", tr, ebopen, tv, ebclose);
-        buf_printf(b, " case SP_BUILTIN_POLY_POLY_HASH: _t%d = %s((sp_PolyPolyHash *)_t%d.v.p)->len == 0%s; break;", tr, ebopen, tv, ebclose);
-        buf_printf(b, " case SP_BUILTIN_SYM_POLY_HASH: _t%d = %s((sp_SymPolyHash *)_t%d.v.p)->len == 0%s; break;", tr, ebopen, tv, ebclose);
-        buf_printf(b, " case SP_BUILTIN_STR_POLY_HASH: _t%d = %s((sp_StrPolyHash *)_t%d.v.p)->len == 0%s; break;", tr, ebopen, tv, ebclose);
-        buf_printf(b, " case SP_BUILTIN_STR_STR_HASH: _t%d = %s((sp_StrStrHash *)_t%d.v.p)->len == 0%s; break;", tr, ebopen, tv, ebclose);
-        buf_printf(b, " case SP_BUILTIN_STR_INT_HASH: _t%d = %s((sp_StrIntHash *)_t%d.v.p)->len == 0%s; break;", tr, ebopen, tv, ebclose);
-        buf_printf(b, " case SP_BUILTIN_INT_STR_HASH: _t%d = %s((sp_IntStrHash *)_t%d.v.p)->len == 0%s; break;", tr, ebopen, tv, ebclose);
-        buf_printf(b, " case SP_BUILTIN_INT_INT_HASH: _t%d = %s((sp_IntIntHash *)_t%d.v.p)->len == 0%s; break;", tr, ebopen, tv, ebclose);
-      }
+      if (is_empty)
+        emit_builtin_len_cases(b, tr, tv, ebopen, ret == TY_POLY ? " == 0)" : " == 0");
       /* Container reads on a builtin receiver that reached this dispatch only
          because a user class happens to own the name. The user arms are above;
          without an arm of its own the switch left every builtin tag on the
