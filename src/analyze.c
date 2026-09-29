@@ -4108,6 +4108,86 @@ static void desugar_enumerator_produce(Compiler *c) {
   }
 }
 
+/* An endless String range (`("a"..)`) iterates by String#succ forever, so it
+   has no element array for the String-range methods to ride: they raised
+   RangeError. Its iteration, as a literal receiver, is rewritten (before
+   desugar_enumerator_produce) onto the generator that walks the same
+   sequence:
+     ("a"..).take(3)     -> Enumerator.produce("a") { |__sv| __sv.succ }.take(3)
+     ("a"..).step(2) { } -> Enumerator.produce("a") { |__sv| 2.times { __sv = __sv.succ }; __sv }.each { }
+   A step that is not a positive Integer literal is left alone. */
+static void desugar_endless_str_range_iter(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  static const char *const iters[] = {
+    "each", "first", "take", "lazy", "each_slice", "each_cons", "each_with_index",
+    "find", "detect", "find_index", "take_while", "step", "%", NULL };
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver");
+    if (!nm || recv < 0) continue;
+    int it = 0;
+    for (int j = 0; iters[j]; j++) if (sp_streq(nm, iters[j])) { it = 1; break; }
+    if (!it) continue;
+    int rng = recv;
+    while (rng >= 0 && nt_kind(nt, rng) == NK_ParenthesesNode) {
+      int pb = nt_ref(nt, rng, "body");
+      int pn = 0;
+      const int *pv = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
+      rng = pv && pn == 1 ? pv[0] : -1;
+    }
+    if (rng < 0 || nt_kind(nt, rng) != NK_RangeNode || nt_ref(nt, rng, "right") >= 0) continue;
+    int left = nt_ref(nt, rng, "left");
+    if (left < 0 || (nt_kind(nt, left) != NK_StringNode &&
+                     nt_kind(nt, left) != NK_InterpolatedStringNode)) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    /* `first` bare is the begin endpoint, which the range answers itself */
+    if (sp_streq(nm, "first") && an == 0) continue;
+    long long step = 1;
+    int is_step = sp_streq(nm, "step") || sp_streq(nm, "%");
+    if (is_step) {
+      if (an != 1 || !av || nt_kind(nt, av[0]) != NK_IntegerNode) continue;
+      step = nt_int(nt, av[0], "value", 0);
+      if (step <= 0) continue;
+    }
+    int nxt = te_call(nt, te_lvread(nt, "__sv"), "succ", -1, -1);
+    int pbody;
+    if (step == 1) pbody = te_stmts1(nt, nxt);
+    else {
+      int adv = te_stmts1(nt, te_lvwrite(nt, "__sv", nxt));
+      int tblk = nt_new_node(nt, "BlockNode"); nt_node_set_ref(nt, tblk, "body", adv);
+      int stmts[2] = { te_call(nt, te_int(nt, step), "times", -1, tblk), te_lvread(nt, "__sv") };
+      pbody = nt_new_node(nt, "StatementsNode"); nt_node_set_arr(nt, pbody, "body", stmts, 2);
+    }
+    int preq = nt_new_node(nt, "RequiredParameterNode"); nt_node_set_str(nt, preq, "name", "__sv");
+    int pparams = nt_new_node(nt, "ParametersNode"); nt_node_set_arr(nt, pparams, "requireds", &preq, 1);
+    int pbp = nt_new_node(nt, "BlockParametersNode"); nt_node_set_ref(nt, pbp, "parameters", pparams);
+    int pblk = nt_new_node(nt, "BlockNode");
+    nt_node_set_ref(nt, pblk, "parameters", pbp);
+    nt_node_set_ref(nt, pblk, "body", pbody);
+    nt_node_set_ref(nt, rng, "left", -1);
+    /* a blockless each or step is the generator itself */
+    if ((sp_streq(nm, "each") || is_step) && nt_ref(nt, id, "block") < 0) {
+      nt_node_set_ref(nt, id, "receiver", te_const(nt, "Enumerator"));
+      nt_node_set_str(nt, id, "name", "produce");
+      nt_node_set_ref(nt, id, "arguments", te_args1(nt, left));
+      nt_node_set_ref(nt, id, "block", pblk);
+      comp_grow_node_arrays(c);
+      continue;
+    }
+    int prod = te_call(nt, te_const(nt, "Enumerator"), "produce", te_args1(nt, left), pblk);
+    nt_node_set_ref(nt, id, "receiver", prod);
+    /* the stride lives in the generator: what is left is the walk */
+    if (is_step) {
+      nt_node_set_str(nt, id, "name", "each");
+      nt_node_set_ref(nt, id, "arguments", -1);
+    }
+    comp_grow_node_arrays(c);
+  }
+}
+
 /* Synthesize, on every class that defines an instance `#each` that yields, a
    helper method
 
@@ -18316,6 +18396,7 @@ void analyze_program(Compiler *c) {
   desugar_multi_value_jump(c);           /* return *a, b -> return [*a, b] */
   desugar_block_destructure_params(c);   /* |a,(b,c),d| -> flat param + `b,c = __destr` */
   desugar_for_nonlocal_index(c);         /* for $g in xs -> for __for in xs; $g = __for */
+  desugar_endless_str_range_iter(c);     /* ("a"..).take(3) -> Enumerator.produce("a") { succ }.take(3) */
   desugar_enumerator_produce(c);         /* Enumerator.produce -> fiber generator */
   desugar_recursive_param_defaults(c);   /* def m(x, y = m(..)) -> default helper method */
   qualify_colliding_consts(c);
