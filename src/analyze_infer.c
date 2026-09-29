@@ -1521,12 +1521,15 @@ int an_chunk_family_to_a(Compiler *c, int id) {
 
 /* Can this type's C slot hold a nil of its own? Integer and Float have their
    sentinels; String, the arrays and every reference object have NULL. A bool, a
-   Symbol, a Class, a Rational and a Complex have no such value, so a nil in one
-   of those slots has to be boxed. Stated once: the `&.` widening below asks the
-   same question, and the two copies would drift. */
+   Symbol, a Class, a Rational, a Complex, and the by-value Range and Time
+   structs have no such value, so a nil in one of those slots has to be boxed.
+   Stated once: the `&.` widening below asks the same question, and the two
+   copies would drift. */
 int an_ty_holds_nil(TyKind t) {
   return !(t == TY_BOOL || t == TY_CLASS || t == TY_SYMBOL ||
-           t == TY_RATIONAL || t == TY_COMPLEX);
+           t == TY_RATIONAL || t == TY_COMPLEX ||
+           t == TY_RANGE || t == TY_FLOAT_RANGE || t == TY_STR_RANGE ||
+           t == TY_TIME || t == TY_TMS);
 }
 
 /* Is the array call `id` answers mutated in place: the receiver of an Array
