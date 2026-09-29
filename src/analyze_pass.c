@@ -7295,7 +7295,14 @@ int block_site_args(Compiler *c, int si, int site, int call) {
     const char *vn = v >= 0 && nt_kind(nt, v) == NK_LocalVariableReadNode ? nt_str(nt, v, "name") : NULL;
     if (!vn || !m->pnames[j] || !sp_streq(vn, m->pnames[j])) return a;
   }
-  return nt_ref(nt, call, "arguments");
+  /* keywords the call passes reach the block as keywords only through the
+     method's own `**kw`; without one the rest collects them as a Hash, a
+     positional (`def run(*a, &b) = b.call(*a); run(1, k: "x") { |x, k: 0| }`
+     binds k = 0), and the site is read as it stands */
+  int ca = nt_ref(nt, call, "arguments"), cc = 0;
+  const int *cv = ca >= 0 ? nt_arr(nt, ca, "arguments", &cc) : NULL;
+  if (m->kwrest_idx < 0 && cc > 0 && nt_kind(nt, cv[cc - 1]) == NK_KeywordHashNode) return a;
+  return ca;
 }
 
 /* A block's (or a proc literal's) parameters as its binders count them.
@@ -7469,7 +7476,10 @@ void block_site_types(Compiler *c, const BlockSig *s, const int *av, int ac,
       int oi = i - P;
       if (gather) { may = nmax - P - Q > oi; sure = nmin - P - Q > oi; t = may ? e : TY_UNKNOWN; }
       else { may = sure = oi < ot; t = may ? bs_value(c, av[P + oi]) : TY_UNKNOWN; }
-      if (!sure) {
+      /* a gathered count is read at run time, and the binding keeps the
+         default in its other arm even where the values are sure to reach
+         the optional (`yield(*[1, 2])` into `|a, b = "d"|`) */
+      if (!sure || gather) {
         int opn = 0; const int *opts = nt_arr(nt, s->pn, "optionals", &opn);
         t = bs_join(t, bs_value(c, nt_ref(nt, opts[oi], "value")));
       }
