@@ -57,3 +57,9 @@ p $gh
 e = {"a" => 1}
 e.update("a" => 2) { |_k, o, n| o + n }
 p e
+
+a = {"a" => 1}
+a.update("a" => 2) { [] }
+p a
+z = {"a" => 1}
+p z.merge("a" => 2) { {} }

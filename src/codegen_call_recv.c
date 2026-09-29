@@ -5491,6 +5491,67 @@ static void emit_blk_value_as(Compiler *c, int blk, TyKind vt, Buf *b) {
   buf_puts(b, "; })");
 }
 
+/* Hash#merge(other) { |key, old, new| } built as the general boxed hash:
+   walk the other hash's pairs into a boxed copy of the receiver, consulting
+   the block on a collision. Answers 0 for an empty block. */
+static int emit_merge_block_boxed(Compiler *c, int id, int recv, int arg, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int mblk = nt_ref(nt, id, "block");
+  int mbody = nt_ref(nt, mblk, "body");
+  int mbn = 0; const int *mbb = mbody >= 0 ? nt_arr(nt, mbody, "body", &mbn) : NULL;
+  if (mbn > 0) {
+    const char *mp[3];
+    for (int i = 0; i < 3; i++) {
+      const char *pn = block_param_name(c, mblk, i);
+      mp[i] = pn ? rename_local(pn) : NULL;
+    }
+    /* the block sees three boxed values */
+    Scope *ms = comp_scope_of(c, mblk);
+    LocalVar *mlv[3]; TyKind msave[3];
+    for (int i = 0; i < 3; i++) {
+      const char *pn = block_param_name(c, mblk, i);
+      mlv[i] = (ms && pn) ? scope_local(ms, pn) : NULL;
+      msave[i] = mlv[i] ? mlv[i]->type : TY_UNKNOWN;
+      if (mlv[i]) mlv[i]->type = TY_POLY;
+    }
+    for (int j = 0; j < mbn; j++) infer_subtree(c, mbb[j]);
+    int ta = ++g_tmp, tb = ++g_tmp, tr = ++g_tmp, tp = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", ta, tb); emit_boxed(c, arg, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tb);
+    buf_printf(b, " sp_PolyPolyHash *_t%d = sp_poly_hash_merge(_t%d, sp_box_nil()); SP_GC_ROOT(_t%d);",
+               tr, ta, tr);
+    buf_printf(b, " sp_PolyArray *_t%d = sp_poly_to_a_arr(_t%d); SP_GC_ROOT(_t%d);", tp, tb, tp);
+    buf_printf(b, " for (sp_int _t%d = 0; _t%d && _t%d < sp_PolyArray_length(_t%d); _t%d++) {",
+               ti, tp, ti, tp, ti);
+    buf_printf(b, " sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);", tk, tp, ti);
+    buf_printf(b, " sp_RbVal _tk%d = sp_poly_arr_get(_t%d, 0), _tv%d = sp_poly_arr_get(_t%d, 1);",
+               tk, tk, tk, tk);
+    buf_printf(b, " if (sp_PolyPolyHash_has_key(_t%d, _tk%d)) {", tr, tk);
+    if (mp[0]) buf_printf(b, " sp_RbVal lv_%s = _tk%d;", mp[0], tk);
+    if (mp[1]) buf_printf(b, " sp_RbVal lv_%s = sp_PolyPolyHash_get(_t%d, _tk%d);", mp[1], tr, tk);
+    if (mp[2]) buf_printf(b, " sp_RbVal lv_%s = _tv%d;", mp[2], tk);
+    { Buf *saved_pre = g_pre; g_pre = b;
+      for (int j = 0; j < mbn - 1; j++) { emit_stmt(c, mbb[j], b, 0); buf_puts(b, " "); }
+      /* the tail's own prelude (an interpolation temp) has to land BEFORE
+         the set call, so render the value into its own buffer while g_pre
+         still points at the statement stream */
+      Buf tailv; memset(&tailv, 0, sizeof tailv);
+      emit_boxed(c, mbb[mbn - 1], &tailv);
+      g_pre = saved_pre;
+      buf_printf(b, " sp_PolyPolyHash_set(_t%d, _tk%d, %s); }",
+                 tr, tk, tailv.p ? tailv.p : "sp_box_nil()");
+      free(tailv.p); }
+    /* newline before `else`: the arm above ends with `}`, and the two would
+       otherwise concatenate into the `} else` form the C style forbids */
+    buf_printf(b, "\nelse sp_PolyPolyHash_set(_t%d, _tk%d, _tv%d); }", tr, tk, tk);
+    buf_printf(b, " _t%d; })", tr);
+    for (int i = 0; i < 3; i++) if (mlv[i]) mlv[i]->type = msave[i];
+    return 1;
+  }
+  return 0;
+}
+
 int emit_hash_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -6559,9 +6620,15 @@ else {
         buf_printf(b, " _t%d; })", tr);
         return 1;
       }
-      /* A block whose value the receiver's variant cannot hold types the
-         result as the general boxed hash, which the boxed merge-with-block
-         arm builds; this one builds the receiver's own variant. */
+      /* A merge with a block typed as the general boxed hash (a block value
+         or an argument the receiver's variant cannot hold) builds that hash.
+         The boxed-receiver arm usually takes it first; it stands aside when
+         a user class defines or reads `merge`. */
+      if (sp_streq(name, "merge") && argc == 1 && nt_ref(nt, id, "block") >= 0 &&
+          comp_ntype(c, id) == TY_POLY_POLY_HASH && rt != TY_POLY_POLY_HASH &&
+          emit_merge_block_boxed(c, id, recv, argv[0], b))
+        return 1;
+      /* merge with a block, typed as the receiver's own variant */
       if (sp_streq(name, "merge") && argc == 1 && nt_ref(nt, id, "block") >= 0 &&
           comp_ntype(c, id) == rt) {
         /* merge(other) { |k, v1, v2| } -- conflict-resolution block. The
@@ -14470,59 +14537,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && (rt == TY_POLY || (ty_is_hash(rt) && rt != TY_POLY_POLY_HASH)) &&
       sp_streq(name, "merge") && argc == 1 &&
       nt_ref(nt, id, "block") >= 0 && !user_defines_or_reads(c, "merge")) {
-    int mblk = nt_ref(nt, id, "block");
-    int mbody = nt_ref(nt, mblk, "body");
-    int mbn = 0; const int *mbb = mbody >= 0 ? nt_arr(nt, mbody, "body", &mbn) : NULL;
-    if (mbn > 0) {
-      const char *mp[3];
-      for (int i = 0; i < 3; i++) {
-        const char *pn = block_param_name(c, mblk, i);
-        mp[i] = pn ? rename_local(pn) : NULL;
-      }
-      /* the block sees three boxed values */
-      Scope *ms = comp_scope_of(c, mblk);
-      LocalVar *mlv[3]; TyKind msave[3];
-      for (int i = 0; i < 3; i++) {
-        const char *pn = block_param_name(c, mblk, i);
-        mlv[i] = (ms && pn) ? scope_local(ms, pn) : NULL;
-        msave[i] = mlv[i] ? mlv[i]->type : TY_UNKNOWN;
-        if (mlv[i]) mlv[i]->type = TY_POLY;
-      }
-      for (int j = 0; j < mbn; j++) infer_subtree(c, mbb[j]);
-      int ta = ++g_tmp, tb = ++g_tmp, tr = ++g_tmp, tp = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, b);
-      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", ta, tb); emit_boxed(c, argv[0], b);
-      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tb);
-      buf_printf(b, " sp_PolyPolyHash *_t%d = sp_poly_hash_merge(_t%d, sp_box_nil()); SP_GC_ROOT(_t%d);",
-                 tr, ta, tr);
-      buf_printf(b, " sp_PolyArray *_t%d = sp_poly_to_a_arr(_t%d); SP_GC_ROOT(_t%d);", tp, tb, tp);
-      buf_printf(b, " for (sp_int _t%d = 0; _t%d && _t%d < sp_PolyArray_length(_t%d); _t%d++) {",
-                 ti, tp, ti, tp, ti);
-      buf_printf(b, " sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);", tk, tp, ti);
-      buf_printf(b, " sp_RbVal _tk%d = sp_poly_arr_get(_t%d, 0), _tv%d = sp_poly_arr_get(_t%d, 1);",
-                 tk, tk, tk, tk);
-      buf_printf(b, " if (sp_PolyPolyHash_has_key(_t%d, _tk%d)) {", tr, tk);
-      if (mp[0]) buf_printf(b, " sp_RbVal lv_%s = _tk%d;", mp[0], tk);
-      if (mp[1]) buf_printf(b, " sp_RbVal lv_%s = sp_PolyPolyHash_get(_t%d, _tk%d);", mp[1], tr, tk);
-      if (mp[2]) buf_printf(b, " sp_RbVal lv_%s = _tv%d;", mp[2], tk);
-      { Buf *saved_pre = g_pre; g_pre = b;
-        for (int j = 0; j < mbn - 1; j++) { emit_stmt(c, mbb[j], b, 0); buf_puts(b, " "); }
-        /* the tail's own prelude (an interpolation temp) has to land BEFORE
-           the set call, so render the value into its own buffer while g_pre
-           still points at the statement stream */
-        Buf tailv; memset(&tailv, 0, sizeof tailv);
-        emit_boxed(c, mbb[mbn - 1], &tailv);
-        g_pre = saved_pre;
-        buf_printf(b, " sp_PolyPolyHash_set(_t%d, _tk%d, %s); }",
-                   tr, tk, tailv.p ? tailv.p : "sp_box_nil()");
-        free(tailv.p); }
-      /* newline before `else`: the arm above ends with `}`, and the two would
-         otherwise concatenate into the `} else` form the C style forbids */
-      buf_printf(b, "\nelse sp_PolyPolyHash_set(_t%d, _tk%d, _tv%d); }", tr, tk, tk);
-      buf_printf(b, " _t%d; })", tr);
-      for (int i = 0; i < 3; i++) if (mlv[i]) mlv[i]->type = msave[i];
-      return 1;
-    }
+    if (emit_merge_block_boxed(c, id, recv, argv[0], b)) return 1;
   }
   /* poly.ljust/rjust/center(width[, pad]): a String read from a container
      widened to poly. Pad via sp_poly_to_s and re-box (#3222). Outside the
