@@ -8221,7 +8221,9 @@ TyKind infer_uncached(Compiler *c, int id) {
          the build instead. Poly makes the slot a boxed carrier, and each
          inlined site boxes its own value. */
       NT_FOREACH_KIND(nt, NK_BeginNode, w) {
-        if (nt_ref(nt, w, "ensure_clause") < 0) continue;
+        /* a rescue frame the same: its value slot takes the body's value or
+           the rescue arm's, `def guarded; yield; rescue; "rescued"; end` */
+        if (nt_ref(nt, w, "ensure_clause") < 0 && nt_ref(nt, w, "rescue_clause") < 0) continue;
         int st = nt_ref(nt, w, "statements");
         if (st < 0) continue;
         int bn = 0; const int *bs = nt_arr(nt, st, "body", &bn);
