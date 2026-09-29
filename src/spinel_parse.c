@@ -3044,9 +3044,9 @@ static int sp_lib_is_native(const char *name) {
    no-ops (the feature is already loaded), so the require-gate tolerates them
    rather than failing with "cannot load such file". */
 static int sp_require_tolerated(const char *name) {
-  /* "ffi": the builtin FFI DSL accepts the ffi gem's spellings
-     (attach_function/callback, :string/:pointer/... types, extend
-     FFI::Library as a no-op), so the require is satisfied natively.
+  /* "ffi", where the bundled package is not built (no libffi): the builtin
+     FFI DSL accepts the ffi gem's spellings (attach_function/callback,
+     :string/:pointer/... types, extend FFI::Library as a no-op).
      "rational" / "complex": both classes are built in, so the require has
      nothing to load and nothing to warn about -- CRuby satisfies them
      silently for the same reason (#3455). */
@@ -3525,6 +3525,17 @@ else {
           /* dev binary one level below the repo root (build/spinel) */
           snprintf(gp, sizeof(gp), "%.*s/../packages/%s/%s.rb", base_len, lib_dir, first, lib_name);
           content = read_file(gp);
+        }
+        /* the ffi package is glue over the system libffi, built only where
+           that is installed: without its object the require stays the
+           builtin DSL's (the tolerated no-op below) */
+        if (content && strcmp(lib_name, "ffi") == 0) {
+          char op[1200];
+          snprintf(op, sizeof op, "%.*s", (int)(strlen(gp) - strlen("ffi.rb")), gp);
+          strncat(op, "sp_ffi.o", sizeof op - strlen(op) - 1);
+          FILE *of = fopen(op, "rb");
+          if (of) fclose(of);
+          else { free(content); content = NULL; }
         }
         if (content) snprintf(lib_path, sizeof(lib_path), "%s", gp);
       }

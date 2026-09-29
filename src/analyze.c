@@ -18211,6 +18211,7 @@ void analyze_program(Compiler *c) {
   desugar_builtin_reopen_methods(c);     /* class Hash; def m -> Object#m guarded by is_a?(Hash) */
   desugar_body_ivars(c);                 /* module-body @x read / in a block -> Mod.__spinel_civget_x */
   desugar_extended_module_attrs(c);
+  desugar_ffi_library_functions(c);   /* attach_function :f -> def self.f (the ffi gem) */
   /* builtins/enumerable.rb, spliced by the parser: its definitions become
      the receiver-taking top-level functions before any scope is built */
   desugar_builtins(c);
@@ -18356,6 +18357,8 @@ void analyze_program(Compiler *c) {
       }
     }
   }
+
+  rewrite_ffi_dynamic_calls(c);   /* Mod.Name / bare Name with no def -> the attached-function table */
 
   /* `iterator?` is the deprecated alias of `block_given?`; rename it up front
      (implicit/self receiver) so the block-aware marking and codegen below serve

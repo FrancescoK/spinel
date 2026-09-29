@@ -1,0 +1,4 @@
+"direct"
+"variable"
+[97, 98, 99, 0]
+NotImplementedError: cannot set array field

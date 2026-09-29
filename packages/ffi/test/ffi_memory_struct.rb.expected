@@ -1,0 +1,29 @@
+"deadbeef"
+-2
+1.5
+16
+4
+"abcd"
+[1.25, 2.5, 3.75]
+2.5
+"hello"
+6
+IndexError
+true
+true
+32
+8
+16
+[:origin, :size, :tag, :vals]
+7
+10
+"box"
+[0, 42, 0]
+4
+"3f800000"
+12
+8
+7
+12345678901
+42
+done

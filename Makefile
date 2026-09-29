@@ -140,6 +140,35 @@ BUNDLED_NATIVE_OBJS = packages/json/sp_json.o packages/stringio/sp_stringio.o pa
 ifeq ($(OPENSSL_AVAILABLE),yes)
 BUNDLED_NATIVE_OBJS += packages/openssl/sp_openssl.o
 endif
+# ffi is glue over the SYSTEM libffi (and dlopen), so like openssl it is built
+# only where the headers are: without its object `require "ffi"` is the
+# builtin FFI DSL's, as before the package. -lffi reaches the link line
+# through ffi.rb's ffi_lib. The probe compiles the real file.
+LIBFFI_PREFIX := $(firstword $(wildcard $(shell brew --prefix libffi 2>/dev/null)))
+LIBFFI_CPPFLAGS := $(shell pkg-config --cflags libffi 2>/dev/null)
+LIBFFI_LIBDIR := $(patsubst -L%,%,$(firstword $(filter -L%,$(shell pkg-config --libs-only-L libffi 2>/dev/null))))
+# No pkg-config entry: a Homebrew keg is still a known place to look.
+ifeq ($(strip $(LIBFFI_CPPFLAGS)$(LIBFFI_LIBDIR)),)
+ifneq ($(LIBFFI_PREFIX),)
+LIBFFI_CPPFLAGS := -I$(LIBFFI_PREFIX)/include
+LIBFFI_LIBDIR := $(LIBFFI_PREFIX)/lib
+endif
+endif
+FFI_AVAILABLE := $(shell printf 'int main(void){return 0;}\n' > /tmp/sp_ffi_probe.c 2>/dev/null && $(CC) /tmp/sp_ffi_probe.c $(if $(LIBFFI_LIBDIR),-L$(LIBFFI_LIBDIR)) -lffi -o /tmp/sp_ffi_probe >/dev/null 2>&1 && $(CC) $(LIBFFI_CPPFLAGS) -fsyntax-only -Ilib -Ipackages/ffi packages/ffi/sp_ffi.c >/dev/null 2>&1 && echo yes)
+# A libffi outside the default search path: the -lffi that ffi.rb's ffi_lib
+# puts on a program's link line, and the loader at run time, need the
+# directory too -- exported for the same reasons as OPENSSL_PREFIX's above.
+ifneq ($(LIBFFI_LIBDIR),)
+export LIBRARY_PATH := $(LIBFFI_LIBDIR)$(if $(LIBRARY_PATH),:$(LIBRARY_PATH))
+export LD_LIBRARY_PATH := $(LIBFFI_LIBDIR)$(if $(LD_LIBRARY_PATH),:$(LD_LIBRARY_PATH))
+endif
+# The package lays out pointers and `long` as 64-bit: not on a 32-bit target.
+ifeq ($(SPINEL_INT_BITS),32)
+FFI_AVAILABLE := no
+endif
+ifeq ($(FFI_AVAILABLE),yes)
+BUNDLED_NATIVE_OBJS += packages/ffi/sp_ffi.o
+endif
 # Threaded variant of every bundled package object. A program that uses threads
 # compiles its TU (and links the runtime archive) with -DSP_THREADS, which makes
 # the runtime's per-worker globals thread-local; a package object built without
@@ -430,6 +459,13 @@ packages/openssl/sp_openssl_mt.o: packages/openssl/sp_openssl.c \
                                   lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(PKG_MT_FLAGS) $(OPENSSL_CPPFLAGS) -Ilib -Ipackages/openssl packages/openssl/sp_openssl.c -o $@
 
+packages/ffi/sp_ffi.o: packages/ffi/sp_ffi.c \
+                       lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(LIBFFI_CPPFLAGS) -Ilib -Ipackages/ffi packages/ffi/sp_ffi.c -o $@
+packages/ffi/sp_ffi_mt.o: packages/ffi/sp_ffi.c \
+                          lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(PKG_MT_FLAGS) $(LIBFFI_CPPFLAGS) -Ilib -Ipackages/ffi packages/ffi/sp_ffi.c -o $@
+
 # stringio is a native-bound spin package (Path B typed object): the struct,
 # every method, and the header live in the package; the compiler knows it only
 # through the native_* declarations in stringio.rb.
@@ -580,7 +616,7 @@ $(SP_RT_WASI_LIB): $(RE_WASI_OBJ) $(WASI_SHIM_OBJ) $(addprefix build/wasm32-wasi
 	@mkdir -p $(@D)
 	rm -f $@ && $(WASI_AR) rcs $@ $^
 
-BUNDLED_NATIVE_WASI_OBJS = $(patsubst %.o,%_wasi.o,$(filter-out packages/openssl/%,$(BUNDLED_NATIVE_OBJS)))
+BUNDLED_NATIVE_WASI_OBJS = $(patsubst %.o,%_wasi.o,$(filter-out packages/openssl/% packages/ffi/%,$(BUNDLED_NATIVE_OBJS)))
 packages/%_wasi.o: packages/%.c lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h $(WASI_SHIM_HDRS)
 	$(WASI_CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(WASI_CFLAGS) -Ilib -I$(@D) $< -o $@
 
@@ -722,6 +758,9 @@ PKG_TESTS := $(wildcard packages/*/test/*.rb)
 # same probe, and `require "openssl"` is then an unsatisfiable require.
 ifneq ($(OPENSSL_AVAILABLE),yes)
 PKG_TESTS := $(filter-out packages/openssl/test/%.rb,$(PKG_TESTS))
+endif
+ifneq ($(FFI_AVAILABLE),yes)
+PKG_TESTS := $(filter-out packages/ffi/test/%.rb,$(PKG_TESTS))
 endif
 ifeq ($(SPINEL_INT_BITS),32)   # the same first-line marker as test/*.rb
 PKG_TESTS := $(filter-out $(shell grep -l '^\# spinel: int64' packages/*/test/*.rb),$(PKG_TESTS))
