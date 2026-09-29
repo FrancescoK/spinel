@@ -25186,6 +25186,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           if (!builtin_method_arity(PCLS[q], disp, &ba)) continue;
           buf_puts(b, "("); buf_printf(b, PTST[q], tbr, tbr); buf_printf(b, ") ? %d : ", ba);
         }
+        for (int k = 0; k < c->nclasses; k++)
+          if (method_scope_arity(c, comp_method_in_chain(c, k, disp, NULL), &ar) && ar != fallback)
+            buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d) ? %d : ", tbr, tbr, k, ar);
         buf_printf(b, "%d)", fallback);
       }
       else if (mi >= 0 && method_scope_arity(c, mi, &ar)) buf_printf(b, ", (sp_int)%d", ar);

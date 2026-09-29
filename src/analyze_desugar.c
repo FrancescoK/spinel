@@ -1486,7 +1486,7 @@ static int dsend_receiver_names(Compiler *c, int cls, int subclasses, char ***ou
   char **names = NULL; int n = 0, cap = 0;
   ANameHash seen; memset(&seen, 0, sizeof seen);
   for (int d = 0; d < c->nclasses; d++) {
-    if (d != cls && !(subclasses && is_descendant(c, d, cls))) continue;
+    if (cls < 0 ? comp_class_is_module(c, &c->classes[d]) : d != cls && !(subclasses && is_descendant(c, d, cls))) continue;
     for (int s = 0; s < c->nscopes; s++) {
       const Scope *sc = &c->scopes[s];
       if (!sc->name || sc->is_cmethod || sc->class_id < 0) continue;
@@ -1738,9 +1738,12 @@ int desugar_dynamic_method(Compiler *c) {
     nt_arr(nt, id, "dyn_send_arms", &dn);
     if (recv < 0 || argc != 1 || dn > 0 || method_sym_arg(c, id)) continue;
     TyKind rt = infer_type(c, recv);
-    if (!ty_is_object(rt) || comp_method_in_chain(c, ty_object_class(rt), "method", NULL) >= 0) continue;
+    int cls = ty_is_object(rt) ? ty_object_class(rt) : -1, own_method = 0;
+    for (int k = 0; k < c->nclasses; k++)
+      if ((cls < 0 || k == cls) && comp_method_in_chain(c, k, "method", NULL) >= 0) own_method = 1;
+    if ((cls < 0 && rt != TY_POLY) || own_method) continue;
     char **own = NULL;
-    int nown = dsend_receiver_names(c, ty_object_class(rt), 1, &own), base = nt->count;
+    int nown = dsend_receiver_names(c, cls, 1, &own), base = nt->count;
     int *arms = (int *)malloc(sizeof(int) * (size_t)(nown > 0 ? nown : 1));
     for (int k = 0; k < nown; k++) {
       int sym = nt_new_node(nt, "SymbolNode"), na = nt_new_node(nt, "ArgumentsNode");
@@ -1750,6 +1753,7 @@ int desugar_dynamic_method(Compiler *c) {
       nt_node_set_ref(nt, arms[k], "receiver", recv);
       nt_node_set_str(nt, arms[k], "name", "method");
       nt_node_set_str(nt, arms[k], "dyn_name", own[k]);
+      nt_node_set_int(nt, arms[k], "dyn_of", id);
       nt_node_set_ref(nt, arms[k], "arguments", na);
       comp_sym_intern(c, own[k]);
       free(own[k]);
