@@ -13340,7 +13340,12 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       }
       if (cn && sp_streq(cn, "Thread") && nt_ref(nt, id, "block") < 0) {
         /* Thread.new without a block is a ThreadError, not a NameError (#2978) */
-        buf_printf(b, "(sp_raise_cls(\"ThreadError\", (&(\"\\xff\" \"must be created with a block\")[1])), %s)",
+        buf_printf(b, "(sp_raise_cls(\"ThreadError\", (&(\"\\xff\" \"must be called with a block\")[1])), %s)",
+                   default_value(comp_ntype(c, id)));
+        return 1;
+      }
+      if (cn && sp_streq(cn, "Fiber") && nt_ref(nt, id, "block") < 0) {
+        buf_printf(b, "(sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"tried to create Proc object without a block\")[1])), %s)",
                    default_value(comp_ntype(c, id)));
         return 1;
       }
