@@ -594,20 +594,38 @@ int comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_c
   return -1;
 }
 
-void comp_method_vis_set(ClassInfo *ci, const char *name, int kind) {
+static void vis_table_set(char ***names, int **kinds, int *n, int *cap, const char *name, int kind) {
   if (!name) return;
-  for (int i = 0; i < ci->nvis; i++)
-    if (sp_streq(ci->vis_names[i], name)) { ci->vis_kinds[i] = kind; return; }
-  if (ci->nvis >= ci->cvis) {
-    ci->cvis = ci->cvis ? ci->cvis * 2 : 8;
-    char **nn = realloc(ci->vis_names, sizeof(char *) * (size_t)ci->cvis);
-    int *nk = realloc(ci->vis_kinds, sizeof(int) * (size_t)ci->cvis);
+  for (int i = 0; i < *n; i++)
+    if (sp_streq((*names)[i], name)) { (*kinds)[i] = kind; return; }
+  if (*n >= *cap) {
+    *cap = *cap ? *cap * 2 : 8;
+    char **nn = realloc(*names, sizeof(char *) * (size_t)*cap);
+    int *nk = realloc(*kinds, sizeof(int) * (size_t)*cap);
     if (!nn || !nk) { fprintf(stderr, "out of memory\n"); exit(1); }
-    ci->vis_names = nn; ci->vis_kinds = nk;
+    *names = nn; *kinds = nk;
   }
-  ci->vis_names[ci->nvis] = strdup(name);
-  ci->vis_kinds[ci->nvis] = kind;
-  ci->nvis++;
+  (*names)[*n] = strdup(name);
+  (*kinds)[*n] = kind;
+  (*n)++;
+}
+
+void comp_method_vis_set(ClassInfo *ci, const char *name, int kind) {
+  vis_table_set(&ci->vis_names, &ci->vis_kinds, &ci->nvis, &ci->cvis, name, kind);
+}
+
+void comp_cmethod_vis_set(ClassInfo *ci, const char *name, int kind) {
+  vis_table_set(&ci->cm_vis_names, &ci->cm_vis_kinds, &ci->ncm_vis, &ci->ccm_vis, name, kind);
+}
+
+int comp_cmethod_vis_declared(Compiler *c, int class_id, const char *name, int *at) {
+  if (!name) return SP_VIS_PUBLIC;
+  for (int cid = class_id; cid >= 0; cid = c->classes[cid].parent) {
+    ClassInfo *ci = &c->classes[cid];
+    for (int i = 0; i < ci->ncm_vis; i++)
+      if (sp_streq(ci->cm_vis_names[i], name)) { if (at) *at = cid; return ci->cm_vis_kinds[i]; }
+  }
+  return SP_VIS_PUBLIC;
 }
 
 int comp_method_vis(ClassInfo *ci, const char *name) {

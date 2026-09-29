@@ -1,0 +1,28 @@
+"hi"
+private method 'new' called for class Single
+11
+2
+3
+5
+private method 'a' called for class Kid
+private method 'd' called for class Base
+private method 'a' called for class Base
+1
+private method 'd' called for class Base
+6
+6
+4
+private method 'helper' called for class Cfg
+private method 'secret=' called for class Cfg
+5
+7
+private method 'inner' called for module Util
+false
+true
+true
+false
+false
+[false, true, true]
+private method 'q' called for module M
+1
+protected method 'pz' called for class E

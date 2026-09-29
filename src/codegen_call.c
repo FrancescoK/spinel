@@ -19331,6 +19331,35 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
    private method. Emits the raise as an expression and answers 1 when the
    call is refused; the receiver still evaluates for its effects, and the
    never-taken comma value keeps the expression's static type. */
+/* The class-method side of emit_vis_refusal: a receiver that names one class
+   at compile time (`E.y`, `k = E; k.y`, `self.class.y`) against the
+   visibility `class << self` / `private_class_method` recorded. A protected
+   class method admits a caller whose self is that class or a subclass, that
+   is, a class method of one. */
+static int emit_cmethod_vis_refusal(Compiler *c, int id, int vrecv, const char *vnm, int plain, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int cid = class_recv_static_ci(c, vrecv);
+  if (cid < 0) cid = self_class_static_ci(c, vrecv);
+  if (cid < 0 || cid >= c->nclasses) return 0;
+  int owner = -1;
+  int vis = comp_cmethod_vis_declared(c, cid, vnm, &owner);
+  if (vis == SP_VIS_PROTECTED && plain) {
+    Scope *cs = comp_scope_of(c, id);
+    int caller = (cs && cs->is_cmethod) ? cs->class_id : -1;
+    if (caller >= 0 && owner >= 0 && is_descendant(c, caller, owner)) vis = SP_VIS_PUBLIC;
+  }
+  if (vis == SP_VIS_PUBLIC) return 0;
+  const char *vrn = class_ruby_name(c, cid) ? class_ruby_name(c, cid) : c->classes[cid].name;
+  int is_mod = nt_kind(nt, c->classes[cid].def_node) == NK_ModuleNode;
+  buf_puts(b, "(");
+  { int vac; const int *vav = call_args(nt, id, &vac);
+    for (int k = 0; k < vac; k++) { buf_puts(b, "(void)("); emit_expr(c, vav[k], b); buf_puts(b, "), "); } }
+  buf_printf(b, "sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for %s %s\")[1])), %s)",
+             vis == SP_VIS_PRIVATE ? "private" : "protected", vnm, is_mod ? "module" : "class", vrn,
+             default_value(comp_ntype(c, id)));
+  return 1;
+}
+
 int emit_vis_refusal(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   int vrecv = nt_ref(nt, id, "receiver");
@@ -19349,6 +19378,7 @@ int emit_vis_refusal(Compiler *c, int id, Buf *b) {
     Scope *vs = comp_scope_of(c, id);
     if (vs && vs->class_id >= 0 && !vs->is_cmethod) vcid = vs->class_id;
   }
+  if (vnm && vcid < 0 && vrecv >= 0) return emit_cmethod_vis_refusal(c, id, vrecv, vnm, plain, b);
   if (!vnm || vcid < 0) return 0;
   int owner = -1;
   int vis = comp_method_vis_declared(c, vcid, vnm, &owner);
@@ -35587,7 +35617,13 @@ else {
               sp_streq(qm, "new")) { resolved = 1; yes = 1; }
           else if (!resolved && rcn && sp_streq(rcn, "Data") && ci < 0 &&
                    sp_streq(qm, "define")) { resolved = 1; yes = 1; }
-          else if (ci >= 0) { resolved = 1; yes = class_responds_to(c, ci, qm); }
+          else if (ci >= 0) {
+            resolved = 1;
+            yes = class_responds_to(c, ci, qm);
+            /* a private/protected class method answers only to include_all */
+            if (yes && foldable && comp_cmethod_vis_declared(c, ci, qm, NULL) != SP_VIS_PUBLIC)
+              yes = include_all;
+          }
           /* A core class or module (String, Integer, Comparable, Thread) has no
              user class entry, and stopping here left the call unresolved -- it
              then raised NoMethodError, or was rejected outright by the front
@@ -35638,6 +35674,8 @@ else {
                  builtin Class/Module capabilities (:new, :name, ...). */
               resolved = 1;
               yes = class_responds_to(c, cid, qm);
+              if (yes && foldable && comp_cmethod_vis_declared(c, cid, qm, NULL) != SP_VIS_PUBLIC)
+                yes = include_all;
             }
             else {
               int found = (comp_method_in_chain(c, cid, qm, NULL) >= 0 &&
