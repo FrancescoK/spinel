@@ -76,6 +76,7 @@ typedef struct sp_thread {
   void             *tls;         /* thread-local storage (Thread#[] / #[]=); lazily allocated */
   sp_sched_timer   *timer;       /* active scheduler timer for this wait, if any */
   unsigned char     timer_expired; /* set when a generic timed wait reaches its deadline */
+  unsigned char     woken;         /* Thread#wakeup ended its sleep early */
   int               io_fd;       /* fd this thread is parked on for I/O (-1 = none, scheduler-aware I/O) */
   short             io_events;   /* poll events it is waiting for (POLLIN/POLLOUT) */
   short             io_revents;  /* poll result the monitor delivered when the fd became ready */
@@ -101,6 +102,11 @@ sp_RbVal   sp_Thread_value(sp_thread *t);
 sp_thread *sp_Thread_kill(sp_thread *t);  /* #kill / #exit / #terminate */
 sp_thread *sp_Thread_raise(sp_thread *t, const char *cls, const char *msg, void *obj);  /* #raise */
 void       sp_Thread_pass(void);          /* Thread.pass: cooperative yield */
+void       sp_Thread_stop(void);          /* Thread.stop: sleep until #wakeup */
+sp_thread *sp_Thread_wakeup(sp_thread *t);  /* #wakeup */
+sp_thread *sp_Thread_run(sp_thread *t);     /* #run: #wakeup, then pass */
+sp_bool    sp_Thread_stop_p(sp_thread *t);  /* #stop?: dead or asleep */
+void       sp_sched_sleep_forever(void);  /* a bare Kernel#sleep */
 /* Kernel#sleep(seconds): park the calling thread and free its OS worker for other
    green threads; a monitor thread wakes it after the duration. Falls back to a
    plain blocking sleep only in the single-threaded build (spinel_rt.h). */
@@ -108,6 +114,7 @@ void       sp_sched_sleep(double seconds);
 int        sp_sched_other_threads_live(void);
 int        sp_sched_wait_child(int pid, int *status);
 void       sp_sleep(sp_float s);   /* Kernel#sleep; relocated from spinel_rt.h to lib/sp_cold.c */
+void       sp_sleep_forever(void);  /* a bare Kernel#sleep, until Thread#wakeup */
 /* Scheduler-aware blocking I/O: park the calling green thread until `fd` is ready
    for `events` (POLLIN/POLLOUT), freeing its OS worker for other threads; the
    monitor polls the fd and wakes it. Returns 1 to retry the syscall (fd ready or
@@ -264,6 +271,7 @@ const char *sp_Mutex_class_name(sp_mutex *m); /* "Monitor" or "Thread::Mutex" */
 const char *sp_Queue_class_name(sp_queue *q);  /* "Thread::SizedQueue" or "Thread::Queue" */
 void       sp_Mutex_lock(sp_mutex *m);
 void       sp_Mutex_unlock(sp_mutex *m);
+sp_RbVal   sp_Mutex_sleep(sp_mutex *m, int has_timeout, double timeout);  /* #sleep / #sleep(t) */
 sp_bool   sp_Mutex_try_lock(sp_mutex *m);   /* #try_lock: true if acquired */
 sp_bool   sp_Mutex_locked(sp_mutex *m);     /* #locked? */
 sp_bool   sp_Mutex_owned(sp_mutex *m);      /* #owned? */

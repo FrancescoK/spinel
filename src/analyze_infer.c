@@ -3660,7 +3660,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "current")) return TY_THREAD;
       if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "main")) return TY_THREAD;
       if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "list")) return TY_POLY_ARRAY;
-      if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "pass")) return TY_NIL;
+      if (cn2 && sp_streq(cn2, "Thread") && (sp_streq(name, "pass") || sp_streq(name, "stop"))) return TY_NIL;
       if (cn2 && sp_streq(cn2, "Thread") &&
           (sp_streq(name, "report_on_exception") || sp_streq(name, "report_on_exception="))) return TY_BOOL;
       if (cn2 && sp_streq(cn2, "Fiber") && sp_streq(name, "current")) return TY_FIBER;
@@ -3713,7 +3713,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "value")) return TY_POLY;
     if (sp_streq(name, "join") || sp_streq(name, "kill") || sp_streq(name, "exit") ||
         sp_streq(name, "terminate") || sp_streq(name, "raise")) return TY_THREAD;   /* return self */
-    if (sp_streq(name, "alive?")) return TY_BOOL;
+    if (sp_streq(name, "alive?") || sp_streq(name, "stop?")) return TY_BOOL;
+    if (sp_streq(name, "wakeup") || sp_streq(name, "run")) return TY_THREAD;   /* return self */
     if (sp_streq(name, "report_on_exception") || sp_streq(name, "report_on_exception=")) return TY_BOOL;
     if (sp_streq(name, "status") || sp_streq(name, "[]") || sp_streq(name, "[]=") ||
         sp_streq(name, "name") || sp_streq(name, "name=")) return TY_POLY;
@@ -3788,6 +3789,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "lock") || sp_streq(name, "unlock")) return TY_MUTEX;   /* return self */
     if (sp_streq(name, "try_lock") || sp_streq(name, "locked?") || sp_streq(name, "owned?")) return TY_BOOL;
     if (sp_streq(name, "synchronize")) return TY_POLY;   /* the block's result */
+    if (sp_streq(name, "sleep")) return TY_POLY;   /* nil on a timeout, else the seconds */
   }
 
   /* TY_CONDVAR instance methods */

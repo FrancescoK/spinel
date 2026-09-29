@@ -2899,6 +2899,12 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
     if ((sp_streq(name, "kill") || sp_streq(name, "exit") || sp_streq(name, "terminate")) && argc == 0) {
       buf_puts(b, "sp_Thread_kill("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
     }
+    if ((sp_streq(name, "wakeup") || sp_streq(name, "run")) && argc == 0) {
+      buf_printf(b, "sp_Thread_%s(", name); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+    if (sp_streq(name, "stop?") && argc == 0) {
+      buf_puts(b, "sp_Thread_stop_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
     if (sp_streq(name, "equal?") && argc == 1 && comp_ntype(c, argv[0]) == TY_THREAD) {
       buf_puts(b, "((void *)("); emit_expr(c, recv, b);
       buf_puts(b, ") == (void *)("); emit_expr(c, argv[0], b); buf_puts(b, "))"); return 1;
@@ -2957,6 +2963,27 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
     }
     if (sp_streq(name, "owned?") && argc == 0) {
       buf_puts(b, "sp_Mutex_owned("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+    /* #sleep / #sleep(timeout): nil (or no argument) sleeps until #wakeup */
+    if (sp_streq(name, "sleep") && argc <= 1) {
+      TyKind st = argc == 1 ? comp_ntype(c, argv[0]) : TY_NIL;
+      int tm = ++g_tmp;
+      buf_printf(b, "({ sp_mutex *_t%d = ", tm); emit_expr(c, recv, b); buf_puts(b, "; ");
+      if (argc == 0) buf_printf(b, "sp_Mutex_sleep(_t%d, 0, 0.0); })", tm);
+      else if (st == TY_INT || st == TY_FLOAT) {
+        buf_printf(b, "sp_Mutex_sleep(_t%d, 1, (double)(", tm); emit_expr(c, argv[0], b); buf_puts(b, ")); })");
+      }
+      else if (st == TY_NIL) {
+        buf_puts(b, "(void)("); emit_expr(c, argv[0], b);
+        buf_printf(b, "); sp_Mutex_sleep(_t%d, 0, 0.0); })", tm);
+      }
+      else {   /* a boxed timeout: nil means none */
+        int ta = ++g_tmp;
+        buf_printf(b, "sp_RbVal _t%d = ", ta); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; sp_Mutex_sleep(_t%d, _t%d.tag != SP_TAG_NIL, _t%d.tag == SP_TAG_NIL ? 0.0 : sp_poly_to_f(_t%d)); })",
+                   tm, ta, ta, ta);
+      }
+      return 1;
     }
   }
 
@@ -17456,6 +17483,7 @@ sp_builtin_arity_spec_tbl[] = {
   {"Mutex","lock",0,0,NULL,"0",0,0,NULL,"0"},
   {"Mutex","locked?",0,0,NULL,"0",0,0,NULL,"0"},
   {"Mutex","owned?",0,0,NULL,"0",0,0,NULL,"0"},
+  {"Mutex","sleep",0,1,NULL,"0..1",0,1,NULL,"0..1"},
   {"Mutex","synchronize",0,0,NULL,"0",0,0,NULL,"0"},
   {"Mutex","try_lock",0,0,NULL,"0",0,0,NULL,"0"},
   {"Mutex","unlock",0,0,NULL,"0",0,0,NULL,"0"},
@@ -29125,17 +29153,16 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
        (nt_type(nt, recv) &&
         (sp_streq(nt_type(nt, recv), "ConstantReadNode") || sp_streq(nt_type(nt, recv), "ConstantPathNode")) &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Kernel")))) {
-    if (argc == 0) { buf_puts(b, "((void)sp_sleep(0.0), (sp_int)0)"); return; }
+    /* a bare sleep, and sleep(nil), sleep until Thread#wakeup */
+    if (argc == 0) { buf_puts(b, "(sp_sleep_forever(), (sp_int)0)"); return; }
     TyKind st = comp_ntype(c, argv[0]);
+    if (st == TY_NIL) {
+      buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_sleep_forever(), (sp_int)0)");
+      return;
+    }
     buf_puts(b, "((void)sp_sleep(");
     if (st == TY_INT) { buf_puts(b, "(double)"); emit_expr(c, argv[0], b); }
     else if (st == TY_POLY) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (st == TY_NIL) {
-      /* CRuby's sleep(nil) sleeps forever, as bare sleep does; both take the
-         no-op shape here (sp_sleep returns at once for a non-positive
-         duration), so nil follows the bare form rather than raising */
-      buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b); buf_puts(b, "); 0.0; })");
-    }
     else if (st == TY_BOOL) {
       buf_puts(b, "({ sp_raise_cls(\"TypeError\", (");
       emit_expr(c, argv[0], b);
@@ -33324,6 +33351,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     if (tcn && sp_streq(tcn, "Thread") && sp_streq(name, "pass") && argc == 0) {
       /* Thread.pass yields the scheduler and evaluates to nil. */
       buf_puts(b, "(sp_Thread_pass(), sp_box_nil())"); return;
+    }
+    if (tcn && sp_streq(tcn, "Thread") && sp_streq(name, "stop") && argc == 0) {
+      /* Thread.stop sleeps until #wakeup and evaluates to nil. */
+      buf_puts(b, "(sp_Thread_stop(), sp_box_nil())"); return;
     }
     if (tcn && sp_streq(tcn, "Thread") && sp_streq(name, "report_on_exception=") && argc == 1) {
       buf_puts(b, "sp_Thread_set_report_default("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
