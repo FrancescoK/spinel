@@ -56,3 +56,13 @@ alias ta tm
 alias tb tm
 def tm = 2
 p ta, tb, tm
+
+# a def between the reader and the alias is the definition in effect
+class ReaderThenDef
+  def initialize = @v = 5
+  attr_reader :v
+  def v = 7
+  alias old_v v
+  def v = 40
+end
+p ReaderThenDef.new.old_v, ReaderThenDef.new.v

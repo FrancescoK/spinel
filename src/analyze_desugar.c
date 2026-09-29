@@ -7428,7 +7428,13 @@ int desugar_inherited_aliases(Compiler *c) {
  * `attr_reader :v; alias v1 v; def v = 40`: v1 is the reader, but a name
  * mapping resolves to the later `def`. The alias becomes `def v1 = @v`. */
 static int ra_body_declares_reader(const NodeTable *nt, const int *st, int upto, const char *meth) {
+  int in_effect = 0;
   for (int k = 0; k < upto; k++) {
+    if (nt_kind(nt, st[k]) == NK_DefNode && nt_ref(nt, st[k], "receiver") < 0 &&
+        nt_str(nt, st[k], "name") && sp_streq(nt_str(nt, st[k], "name"), meth)) {
+      in_effect = 0;
+      continue;
+    }
     if (nt_kind(nt, st[k]) != NK_CallNode || nt_ref(nt, st[k], "receiver") >= 0) continue;
     const char *cn = nt_str(nt, st[k], "name");
     if (!cn || !(sp_streq(cn, "attr_reader") || sp_streq(cn, "attr_accessor"))) continue;
@@ -7436,10 +7442,10 @@ static int ra_body_declares_reader(const NodeTable *nt, const int *st, int upto,
     int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
     for (int i = 0; i < ac; i++) {
       const char *a = alias_literal_name(nt, av[i]);
-      if (a && sp_streq(a, meth)) return 1;
+      if (a && sp_streq(a, meth)) in_effect = 1;
     }
   }
-  return 0;
+  return in_effect;
 }
 
 int desugar_reader_aliases_before_redef(Compiler *c) {
@@ -7469,8 +7475,8 @@ int desugar_reader_aliases_before_redef(Compiler *c) {
         if (nt_kind(nt, st[j]) == NK_DefNode && nt_ref(nt, st[j], "receiver") < 0 &&
             nt_str(nt, st[j], "name") && sp_streq(nt_str(nt, st[j], "name"), od)) later = 1;
       if (!later) continue;
-      char nwc[256], ivc[257];
-      snprintf(nwc, sizeof nwc, "%s", nw); snprintf(ivc, sizeof ivc, "@%s", od);
+      char *nwc = strdup(nw), *ivc = malloc(strlen(od) + 2);
+      ivc[0] = '@'; strcpy(ivc + 1, od);
       nt_node_reset(nt, s, "DefNode");
       int rd = fwd_new_node_like(nt, s, "InstanceVariableReadNode");
       nt_node_set_str(nt, rd, "name", ivc);
@@ -7480,6 +7486,7 @@ int desugar_reader_aliases_before_redef(Compiler *c) {
       nt_node_set_ref(nt, s, "parameters", -1);
       nt_node_set_ref(nt, s, "body", bd);
       nt_node_set_ref(nt, s, "receiver", -1);
+      free(nwc); free(ivc);
       changed = 1;
     }
   }
