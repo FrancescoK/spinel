@@ -4064,8 +4064,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         sp_streq(name, "socket?") ||
         sp_streq(name, "==") || sp_streq(name, "equal?") || sp_streq(name, "eql?"))
       return TY_BOOL;
+    if (sp_streq(name, "flock")) return TY_POLY;   /* 0, or false for a held LOCK_NB */
     if (sp_streq(name, "fileno") || sp_streq(name, "to_i") || sp_streq(name, "lineno") ||
-        sp_streq(name, "lineno=") || sp_streq(name, "pos=") || sp_streq(name, "flock") ||
+        sp_streq(name, "lineno=") || sp_streq(name, "pos=") ||
         sp_streq(name, "truncate") ||
         sp_streq(name, "fsync") || sp_streq(name, "fdatasync") || sp_streq(name, "getbyte") ||
         (sp_streq(name, "chown") && argc == 2) ||   /* (#3104) */
@@ -5759,7 +5760,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
               (!c->classes[k].is_native_class && comp_is_reader(&c->classes[k], name)) ||
               (wbase[0] && comp_writer_in_chain(c, k, wbase, NULL)))
             owned = 1;
-        if (!owned) return sp_streq(name, "advise") ? TY_POLY : TY_INT;
+        if (!owned) return (sp_streq(name, "advise") || sp_streq(name, "flock")) ? TY_POLY : TY_INT;
       }
       /* The rest of the names the poly-IO arm emits. Left untyped, the call
          read as valueless and the emitted value was DISCARDED -- `@fds[k].path`
