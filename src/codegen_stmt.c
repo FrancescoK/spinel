@@ -4974,6 +4974,22 @@ static void emit_when_splat_test(Compiler *c, int cond, int t, TyKind pt, Buf *b
   buf_puts(b, ")");
 }
 
+static void emit_when_proc_test(Compiler *c, int cond, int typed_t, TyKind typed_pt, Buf *b) {
+  g_needs_proc_poly_argslot = 1;
+  char subj[32]; snprintf(subj, sizeof subj, "_t%d", typed_t);
+  buf_puts(b, "({ _sp_proc_poly_args[0] = ");
+  if (typed_pt == TY_POLY) buf_puts(b, subj);
+  else emit_boxed_text(c, typed_pt, subj, b);
+  buf_puts(b, "; sp_poly_truthy(((void)sp_proc_call(");
+  emit_expr(c, cond, b);
+  buf_puts(b, ", 1, (sp_int[16]){");
+  if (typed_pt == TY_POLY) buf_printf(b, "sp_poly_to_i(%s)", subj);
+  else if (proc_slot_is_ptr(typed_pt)) buf_printf(b, "(sp_int)(uintptr_t)%s", subj);
+  else if (typed_pt == TY_FLOAT) buf_puts(b, "0");
+  else buf_puts(b, subj);
+  buf_puts(b, "}), _sp_proc_poly_ret)); })");
+}
+
 /* A subjectless `when` condition that `emit_cond` does not test: a splat
    (`when *list`) and a value of no known type (`when []`) are emitted as
    they were. */
@@ -5110,21 +5126,7 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
           /* a Proc read out of a container arrives boxed: dispatch on the tag
              so it is CALLED and not compared (#3683) */
           else if (comp_ntype(c, conds[j]) == TY_POLY) emit_when_boxed_test(c, conds[j], t, pt, b);
-          else if (comp_ntype(c, conds[j]) == TY_PROC) {
-            g_needs_proc_poly_argslot = 1;
-            char subj9[32]; snprintf(subj9, sizeof subj9, "_t%d", typed_t);
-            buf_puts(b, "({ _sp_proc_poly_args[0] = ");
-            if (typed_pt == TY_POLY) buf_puts(b, subj9);
-            else emit_boxed_text(c, typed_pt, subj9, b);
-            buf_puts(b, "; sp_poly_truthy(((void)sp_proc_call(");
-            emit_expr(c, conds[j], b);
-            buf_puts(b, ", 1, (sp_int[16]){");
-            if (typed_pt == TY_POLY) buf_printf(b, "sp_poly_to_i(%s)", subj9);
-            else if (proc_slot_is_ptr(typed_pt)) buf_printf(b, "(sp_int)(uintptr_t)%s", subj9);
-            else if (typed_pt == TY_FLOAT) buf_puts(b, "0");
-            else buf_puts(b, subj9);
-            buf_puts(b, "}), _sp_proc_poly_ret)); })");
-          }
+          else if (comp_ntype(c, conds[j]) == TY_PROC) emit_when_proc_test(c, conds[j], typed_t, typed_pt, b);
           /* `when *arr`: membership -- any element of the splatted array
              matching the scrutinee selects this branch (value equality;
              a Class/Regexp element inside a splat is not #===-dispatched). */
@@ -5618,19 +5620,7 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
              subject is published both in the sp_int slot (typed callee
              param) and boxed on the side-channel (poly callee param), like
              the force_poly proc-call path. */
-          g_needs_proc_poly_argslot = 1;
-          char subj[32]; snprintf(subj, sizeof subj, "_t%d", typed_t);
-          buf_puts(b, "({ _sp_proc_poly_args[0] = ");
-          if (typed_pt == TY_POLY) buf_puts(b, subj);
-          else emit_boxed_text(c, typed_pt, subj, b);
-          buf_puts(b, "; sp_poly_truthy(((void)sp_proc_call(");
-          emit_expr(c, conds[j], b);
-          buf_puts(b, ", 1, (sp_int[16]){");
-          if (typed_pt == TY_POLY) buf_printf(b, "sp_poly_to_i(%s)", subj);
-          else if (proc_slot_is_ptr(typed_pt)) buf_printf(b, "(sp_int)(uintptr_t)%s", subj);
-          else if (typed_pt == TY_FLOAT) buf_puts(b, "0");
-          else buf_puts(b, subj);
-          buf_puts(b, "}), _sp_proc_poly_ret)); })");
+          emit_when_proc_test(c, conds[j], typed_t, typed_pt, b);
         }
         else if (pt == TY_STRING) {
           /* an arm of another type can never be `===` a String (see the sibling
