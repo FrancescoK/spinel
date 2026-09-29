@@ -790,6 +790,9 @@ void a_collect_used(Compiler *c, int id, ANameSet *out) {
     if (ys && ys->is_lowered_yield && ys->blk_param && ys->blk_param[0])
       aname_add(out, ys->blk_param);
   }
+  Scope *fs = sp_streq(ty, "ForwardingSuperNode") ? comp_scope_of(c, id) : NULL;
+  for (int i = 0; fs && i < fs->nparams; i++) aname_add(out, fs->pnames[i]);
+  if (fs && fs->blk_param && fs->blk_param[0]) aname_add(out, fs->blk_param);
   int nr = nt_num_refs(c->nt, id);
   for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (ch >= 0) a_collect_used(c, ch, out); }
   int na = nt_num_arrs(c->nt, id);

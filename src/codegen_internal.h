@@ -717,6 +717,7 @@ void nameset_add(NameSet *s, const char *nm);
    enclosing scope -> `(*_cell_x)`; otherwise the plain `lv_x`. Reads and
    writes share this (a cell deref is a valid lvalue). */
 void emit_local_ref(Compiler *c, int scope_node, const char *name, Buf *b);
+void emit_scope_local_ref(Compiler *c, Scope *s, const char *name, Buf *b);
 void emit_typed_elem_value(Compiler *c, int node, TyKind et, Buf *b);
 void emit_block_locals_reset(Compiler *c, int blk, Buf *b, int indent);
 const char *resolve_class_alias(Compiler *c, const char *cname);

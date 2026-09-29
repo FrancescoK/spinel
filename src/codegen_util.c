@@ -1005,18 +1005,21 @@ void emit_typed_elem_value(Compiler *c, int node, TyKind et, Buf *b) {
   else emit_expr(c, node, b);
 }
 void emit_local_ref(Compiler *c, int scope_node, const char *name, Buf *b) {
+  emit_scope_local_ref(c, scope_node >= 0 ? comp_scope_of(c, scope_node) : NULL, name, b);
+}
+void emit_scope_local_ref(Compiler *c, Scope *s, const char *name, Buf *b) {
   if (g_cap_struct && g_cap_names && nameset_has(g_cap_names, name)) {
     /* A TY_PROC capture is stored as (sp_int)(uintptr_t)sp_Proc* in the cell.
        Cast it back to sp_Proc* so call sites work. A heap-object cell is a real
        typed pointer, so its deref is already the right lvalue (no cast). */
-    LocalVar *clv = scope_node >= 0 ? scope_local(comp_scope_of(c, scope_node), name) : NULL;
+    LocalVar *clv = s ? scope_local(s, name) : NULL;
     if (clv && clv->type == TY_PROC)
       buf_printf(b, "(sp_Proc *)(uintptr_t)(*((%s *)_cap)->c_%s)", g_cap_struct, name);
     else
       buf_printf(b, "(*((%s *)_cap)->c_%s)", g_cap_struct, name);
     return;
   }
-  LocalVar *lv = scope_node >= 0 ? scope_local(comp_scope_of(c, scope_node), name) : NULL;
+  LocalVar *lv = s ? scope_local(s, name) : NULL;
   if (lv && lv->is_cell) {
     /* Through the rename map, exactly as the plain form below: a method
        INLINED at its call site renames its locals, and the cell form did not
