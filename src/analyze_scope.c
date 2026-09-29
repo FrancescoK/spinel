@@ -4578,7 +4578,7 @@ void process_include_body(Compiler *c, int ci, int body_node) {
              the module method is the super target: copy it under a shadow name
              and chain to it so emit_super reaches it via the prepend-super path.
              Otherwise the module method is simply shadowed -- nothing to emit. */
-          if (!scope_body_has_super(c, own)) continue;
+          if (!scope_body_has_super(c, own)) { if (!src->is_module_function) src->is_transplanted_source = 1; continue; }
           const char *existing = comp_prep_chain_target(c, ci, src->name);
           /* spaces keep the shadow unwritable in Ruby source, so an explicit
              `obj.__inc_0_tag` finds nothing and raises; mc() folds them back
