@@ -1,0 +1,40 @@
+splat lit: wrong number of arguments (given 0, expected 1; required keyword: k1)
+splat var: wrong number of arguments (given 0, expected 1; required keyword: k1)
+splat mid: wrong number of arguments (given 2, expected 1; required keyword: k1)
+gather: wrong number of arguments (given 3, expected 1..2; required keywords: k, j)
+lambda: wrong number of arguments (given 1, expected 0; required keyword: k1)
+lambda rest: wrong number of arguments (given 0, expected 1+; required keyword: k)
+poly arm: wrong number of arguments (given 0, expected 1; required keyword: k)
+poly none: wrong number of arguments (given 0, expected 1..2; required keywords: k, j)
+poly splat: wrong number of arguments (given 3, expected 1; required keyword: k)
+missing: missing keywords: :k, :j
+missing one: missing keyword: :j
+unknown: unknown keywords: :z, :y
+unknown str: unknown keywords: "s", :z
+unknown quoted: unknown keywords: :"a b", :z
+dispatch: missing keywords: :k, :j
+proc: missing keywords: :k, :j
+kw splat: unknown keywords: :z, :y
+class value: missing keywords: :k, :j
+data super: missing keywords: :b, :c
+data with: unknown keywords: :z, :y, "s"
+nokw boxed: no keywords accepted
+nokw literal: no keywords accepted
+nokw count: no keywords accepted
+nokw empty: ok []
+kwinit splat: wrong number of arguments (given 2, expected 0)
+kwinit nil: wrong number of arguments (given 1, expected 0)
+kwinit mid: wrong number of arguments (given 1, expected 0)
+data short: missing keyword: :k1
+data empty: missing keyword: :k1
+data kw: unknown keyword: :z
+data str: unknown keyword: "s"
+data dup: unknown keyword: :y
+data empty kw: missing keyword: :k1
+data mixed: wrong number of arguments (given 2, expected 0)
+data long: wrong number of arguments (given 3, expected 0..2)
+data none: wrong number of arguments (given 1, expected 0)
+data builds: ok #<data D2 a=1, b=2>
+data builds str: ok #<data D2 a=1, b=2>
+data builds pos: ok #<data D2 a=1, b=2>
+data by name: ok #<data D1 k1=1>

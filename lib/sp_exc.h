@@ -123,4 +123,20 @@ sp_Exception *sp_signal_exc_new_m(sp_RbVal sig, const char *msg);
 sp_Exception *sp_signal_exc_new(sp_RbVal sig);
 sp_Exception *sp_interrupt_new(const char *msg);
 
+/* ---- The arity ArgumentError every binder raises: CRuby's words for a
+   positional count the callee cannot take (rb_arity_error_new): `given G,
+   expected N` for an exact count, `N..M` with optionals, `N+` past a rest
+   (max < 0). `kw` is NULL or the "; required keyword(s): a, b" CRuby appends
+   for a callee with required keywords (argument_arity_error, vm_args.c) --
+   a fact of the signature the compiler spells (arity_kw_suffix), so the
+   run-time count and the compile-time one read the same. ---- */
+SP_NORETURN void sp_raise_arity(sp_int given, sp_int min, sp_int max, const char *kw);
+static inline void sp_arity_check(sp_int given, sp_int min, sp_int max, const char *kw) {
+  if (given < min || (max >= 0 && given > max)) sp_raise_arity(given, min, max, kw);
+}
+/* The keyword ArgumentErrors in CRuby's words (argument_kw_error): `kind`
+   "missing" or "unknown", naming the `count` keywords in `names`, each
+   already inspected and joined by ", ". */
+SP_NORETURN void sp_raise_kw_error(const char *kind, sp_int count, const char *names);
+
 #endif

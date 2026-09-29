@@ -3047,3 +3047,139 @@ void emit_retf_return(int eid, int has_retval, Buf *b) {
   else if (g_in_proc_body) buf_printf(b, "if (_retf%d) return 0;\n", eid);
   else buf_printf(b, "if (_retf%d) return;\n", eid);
 }
+
+/* ---- The arity ArgumentError: one builder for every binder ----
+   CRuby words a positional count its callee cannot take the same way
+   whichever path bound the call (rb_arity_error_new): "wrong number of
+   arguments (given G, expected E)", E being `N` for an exact count, `N..M`
+   with optionals and `N+` past a rest -- and for a callee with required
+   keywords argument_arity_error (vm_args.c) appends "; required keyword:
+   k" / "; required keywords: k, j", naming every one of them whether the
+   call supplied it or not. Each binder spelled its own copy, and the
+   copies drifted: the splat and gather counts, lambdas and the poly arms
+   left the keywords out. The counts the compiler knows are written here;
+   those only the run time knows go through sp_raise_arity (lib/sp_exc.c),
+   which takes the same suffix. max < 0 is no upper bound. */
+void arity_expected(char *out, size_t n, int min, int max) {
+  if (min == max) snprintf(out, n, "%d", min);
+  else if (max < 0) snprintf(out, n, "%d+", min);
+  else snprintf(out, n, "%d..%d", min, max);
+}
+void arity_message(char *out, size_t n, int given, int min, int max, const char *kw) {
+  char exp[48];
+  arity_expected(exp, sizeof exp, min, max);
+  snprintf(out, n, "wrong number of arguments (given %d, expected %s%s)", given, exp, kw ? kw : "");
+}
+static int param_is_required_kw(const NodeTable *nt, int p) {
+  const char *t = nt_type(nt, p);
+  return t && sp_streq(t, "RequiredKeywordParameterNode");
+}
+/* The required-keyword suffix of a parameter list: a def's ParametersNode or
+   a block's BlockParametersNode. "" when it has none. */
+void arity_kw_suffix(const NodeTable *nt, int params, char *out, size_t n) {
+  out[0] = 0;
+  if (params >= 0 && nt_kind(nt, params) == NK_BlockParametersNode)
+    params = nt_ref(nt, params, "parameters");
+  if (params < 0) return;
+  int nk = 0; const int *kws = nt_arr(nt, params, "keywords", &nk);
+  int nreq = 0;
+  for (int i = 0; i < nk; i++) if (param_is_required_kw(nt, kws[i])) nreq++;
+  if (!nreq) return;
+  size_t off = (size_t)snprintf(out, n, "; required keyword%s: ", nreq > 1 ? "s" : "");
+  for (int i = 0, first = 1; i < nk && off < n; i++) {
+    if (!param_is_required_kw(nt, kws[i])) continue;
+    /* a block parameter's rename suffix (`k__bp3`) is ours, not the name */
+    const char *kn = nt_str(nt, kws[i], "name");
+    if (!kn) kn = "?";
+    int kl = block_param_is_renamed(kn) ? (int)block_param_written_len(kn) : (int)strlen(kn);
+    off += (size_t)snprintf(out + off, n - off, "%s%.*s", first ? "" : ", ", kl, kn);
+    first = 0;
+  }
+}
+/* The suffix of method (or block) scope `m`, read off its own definition. */
+void scope_arity_kw_suffix(Compiler *c, const Scope *m, char *out, size_t n) {
+  out[0] = 0;
+  if (!m || m->def_node < 0) return;
+  arity_kw_suffix(c->nt, nt_ref(c->nt, m->def_node, "parameters"), out, n);
+}
+/* The raise of a count only the run time knows, the C expression `given`,
+   as one statement. */
+void emit_arity_raise(Buf *b, const char *given, int min, int max, const char *kw) {
+  buf_printf(b, "sp_raise_arity(%s, %d, %d, ", given, min, max);
+  if (kw && kw[0]) buf_printf(b, "\"%s\")", kw);
+  else buf_puts(b, "NULL)");
+}
+/* The check and raise of such a count, as one statement. */
+void emit_arity_check(Buf *b, const char *given, int min, int max, const char *kw) {
+  buf_printf(b, "sp_arity_check(%s, %d, %d, ", given, min, max);
+  if (kw && kw[0]) buf_printf(b, "\"%s\")", kw);
+  else buf_puts(b, "NULL)");
+}
+/* Does method (or block) scope `m` say `**nil`? It refuses any keyword --
+   CRuby's "no keywords accepted", ahead of its count -- where a method
+   declaring no keyword parameter would take them as a positional Hash. */
+int scope_refuses_keywords(Compiler *c, const Scope *m) {
+  if (!m || m->def_node < 0) return 0;
+  int pn = nt_ref(c->nt, m->def_node, "parameters");
+  if (pn >= 0 && nt_kind(c->nt, pn) == NK_BlockParametersNode) pn = nt_ref(c->nt, pn, "parameters");
+  int kr = pn >= 0 ? nt_ref(c->nt, pn, "keyword_rest") : -1;
+  return kr >= 0 && nt_type(c->nt, kr) && sp_streq(nt_type(c->nt, kr), "NoKeywordsParameterNode");
+}
+
+/* ---- The keyword ArgumentErrors, one builder beside the arity one ----
+   CRuby names the keywords a call gets wrong in one message each way
+   (argument_kw_error, vm_args.c): "missing keyword: :a" / "missing
+   keywords: :a, :b" for the required ones the call leaves out, and then
+   "unknown keyword(s): ..." for the keys naming no parameter, every one as
+   its #inspect writes it. `names` is that list, joined by ", ". The run
+   time spells the same through sp_raise_kw_error. */
+void kw_error_message(char *out, size_t n, const char *kind, int count, const char *names) {
+  snprintf(out, n, "%s keyword%s: %s", kind, count > 1 ? "s" : "", names);
+}
+/* Appends one name, already inspected, to such a list. */
+void kw_names_add(char *list, size_t n, int *count, const char *inspected) {
+  size_t l = strlen(list);
+  if (l < n) snprintf(list + l, n - l, "%s%s", *count ? ", " : "", inspected);
+  (*count)++;
+}
+/* Does Symbol#inspect show `name` bare, as `:name`? True for an ASCII
+   identifier with an optional trailing `?`, `!` or `=`; anything else
+   #inspect quotes (sp_sym_inspect_name, kw_key_inspect). */
+int sym_name_plain(const char *s) {
+  if (!s || !((*s >= 'a' && *s <= 'z') || (*s >= 'A' && *s <= 'Z') || *s == '_')) return 0;
+  for (s++; *s; s++) {
+    if ((*s >= 'a' && *s <= 'z') || (*s >= 'A' && *s <= 'Z') || (*s >= '0' && *s <= '9') || *s == '_') continue;
+    return (*s == '?' || *s == '!' || *s == '=') && !s[1];
+  }
+  return 1;
+}
+/* A literal key as #inspect writes it: a Symbol `:name`, quoted where the
+   name is no identifier (`:"a b"`), a String quoted, with the escapes
+   String#inspect makes. */
+void kw_key_inspect(const char *kn, int is_sym, char *out, size_t n) {
+  size_t o = 0;
+  int quote = !is_sym || !sym_name_plain(kn);
+  o += (size_t)snprintf(out + o, n - o, "%s%s", is_sym ? ":" : "", quote ? "\"" : "");
+  for (const unsigned char *p = (const unsigned char *)kn; *p && o < n; p++) {
+    const char *esc = NULL; char hx[8];
+    switch (*p) {
+      case '"': esc = quote ? "\\\"" : NULL; break;
+      case '\\': esc = "\\\\"; break;
+      case '\n': esc = "\\n"; break;
+      case '\t': esc = "\\t"; break;
+      case '\r': esc = "\\r"; break;
+      case '\f': esc = "\\f"; break;
+      case '\v': esc = "\\v"; break;
+      case '\b': esc = "\\b"; break;
+      case '\a': esc = "\\a"; break;
+      case 0x1b: esc = "\\e"; break;
+      case '#': esc = (p[1] == '{' || p[1] == '$' || p[1] == '@') ? "\\#" : NULL; break;
+      default:
+        if (*p < 0x20 || *p == 0x7f) { snprintf(hx, sizeof hx, "\\x%02X", *p); esc = hx; }
+    }
+    if (esc) o += (size_t)snprintf(out + o, n - o, "%s", esc);
+    else out[o++] = (char)*p;
+  }
+  if (o < n) snprintf(out + o, n - o, "%s", quote ? "\"" : "");
+  else out[n - 1] = 0;
+}

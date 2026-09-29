@@ -562,6 +562,25 @@ int splat_operand_is_scalar(TyKind t);
    walks parameters looking for keys and so could not see an unclaimed one
    (#4419). */
 void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv, int judge_rest);
+/* The arity ArgumentError, in CRuby's words, for every binder (codegen_util.c):
+   the expected range (max < 0 for no upper bound), the whole message, the
+   callee's "; required keyword(s): ..." suffix, and the run-time raise and
+   check of a count only the run time knows (sp_raise_arity). */
+void arity_expected(char *out, size_t n, int min, int max);
+void arity_message(char *out, size_t n, int given, int min, int max, const char *kw);
+void arity_kw_suffix(const NodeTable *nt, int params, char *out, size_t n);
+void scope_arity_kw_suffix(Compiler *c, const Scope *m, char *out, size_t n);
+void emit_arity_raise(Buf *b, const char *given, int min, int max, const char *kw);
+void emit_arity_check(Buf *b, const char *given, int min, int max, const char *kw);
+int scope_refuses_keywords(Compiler *c, const Scope *m);
+/* The keyword ArgumentErrors, `kind` "missing" or "unknown", naming `count`
+   keywords already inspected and joined in `names` (codegen_util.c). */
+void kw_error_message(char *out, size_t n, const char *kind, int count, const char *names);
+void kw_names_add(char *list, size_t n, int *count, const char *inspected);
+/* A literal Symbol (is_sym) or String key as #inspect writes it, and whether
+   a Symbol's shows bare. */
+void kw_key_inspect(const char *kn, int is_sym, char *out, size_t n);
+int sym_name_plain(const char *s);
 /* Collect a call's keywords no declared keyword parameter takes into a fresh
    sp_SymPolyHash temp for a `**kwrest` parameter; returns the temp id. */
 int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp, TyKind ds_hash_type, int argsNode);

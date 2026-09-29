@@ -517,3 +517,30 @@ const char *(*sp_user_exc_to_s_fn)(sp_Exception *) = NULL;
 const char *sp_exc_to_s_text(sp_Exception *e) {
   return sp_user_exc_to_s_fn ? sp_user_exc_to_s_fn(e) : sp_exc_message(e);
 }
+
+/* CRuby's arity ArgumentError (sp_exc.h): the message is built once here for
+   every count only the run time knows, as arity_message builds it for the
+   counts the compiler sees. */
+SP_NORETURN void sp_raise_arity(sp_int given, sp_int min, sp_int max, const char *kw) {
+  const char *msg;
+  if (!kw) kw = "";
+  if (min == max)
+    msg = sp_sprintf("wrong number of arguments (given %lld, expected %lld%s)",
+                     (long long)given, (long long)min, kw);
+  else if (max < 0)
+    msg = sp_sprintf("wrong number of arguments (given %lld, expected %lld+%s)",
+                     (long long)given, (long long)min, kw);
+  else
+    msg = sp_sprintf("wrong number of arguments (given %lld, expected %lld..%lld%s)",
+                     (long long)given, (long long)min, (long long)max, kw);
+  /* the message lives on the collected heap and the raise allocates */
+  SP_GC_ROOT_STR(msg);
+  sp_raise_cls("ArgumentError", msg);
+}
+/* The keyword ArgumentErrors (sp_exc.h), as kw_error_message spells them
+   for the lists the compiler sees. */
+SP_NORETURN void sp_raise_kw_error(const char *kind, sp_int count, const char *names) {
+  const char *msg = sp_sprintf("%s keyword%s: %s", kind, count > 1 ? "s" : "", names);
+  SP_GC_ROOT_STR(msg);
+  sp_raise_cls("ArgumentError", msg);
+}

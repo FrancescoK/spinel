@@ -7055,7 +7055,7 @@ static void sp_kwargs_check(sp_SymPolyHash *h, const char *const *allowed) {
     cnt++;
   }
   if (cnt == 0) return;
-  sp_raise_cls("ArgumentError", sp_sprintf("unknown keyword%s: %s", cnt > 1 ? "s" : "", list));
+  sp_raise_kw_error("unknown", cnt, list);
 }
 /* Hash#delete for sym_poly_hash. Removes key and re-tombstones the
    slot, shifting probe-chain successors backward and dropping the
@@ -9579,7 +9579,7 @@ static sp_RbVal sp_kw_splat_check(sp_RbVal h, const char *const *mem, int n,
         sp_raise_cls("TypeError", sp_sprintf("%s is not a symbol nor a string", sp_poly_inspect(k)));
     }
     for (int i = 0; i < n; i++) {
-      if (lit[i]) continue;
+      if (lit && lit[i]) continue;
       int f = 0;
       for (sp_int j = 0; j < nk && !f; j++) {
         sp_RbVal k, v;
@@ -9590,7 +9590,7 @@ static sp_RbVal sp_kw_splat_check(sp_RbVal h, const char *const *mem, int n,
       if (len < sizeof buf) len += (size_t)snprintf(buf + len, sizeof buf - len, "%s:%s", cnt ? ", " : "", mem[i]);
       cnt++;
     }
-    if (cnt) sp_raise_cls("ArgumentError", sp_sprintf("missing keyword%s: %s", cnt > 1 ? "s" : "", buf));
+    if (cnt) sp_raise_kw_error("missing", cnt, buf);
   }
   sp_PolyPolyHash *named = NULL;
   SP_GC_ROOT(named);
@@ -9615,9 +9615,33 @@ static sp_RbVal sp_kw_splat_check(sp_RbVal h, const char *const *mem, int n,
                                                   is_data ? sp_poly_inspect(k) : kn ? kn : sp_int_to_s(idx));
     cnt++;
   }
-  if (cnt) sp_raise_cls("ArgumentError", is_data ? sp_sprintf("unknown keyword%s: %s", cnt > 1 ? "s" : "", buf)
-                                                 : sp_sprintf("unknown keywords: %s", buf));
+  /* a Struct's own wording names its keys bare and always plural
+     (rb_struct_initialize_m) */
+  if (cnt && is_data) sp_raise_kw_error("unknown", cnt, buf);
+  if (cnt) sp_raise_cls("ArgumentError", sp_sprintf("unknown keywords: %s", buf));
   return named ? sp_box_obj(named, SP_BUILTIN_POLY_POLY_HASH) : h;
+}
+/* Data.new's refusal of `npos` positional arguments beside the keyword hash
+   `kw` (nil or empty for none), in CRuby's words, for a count only the run
+   time knows (a `*` among the arguments): keywords beside positionals are
+   `given N+1, expected 0` (rb_data_s_new); keywords alone are checked by
+   name (sp_kw_splat_check); positionals alone are too many, `given N,
+   expected 0..M`, or leave the members after them missing (the Hash
+   rb_data_s_new builds of them). Returns when the call constructs. */
+static void sp_data_new_check(sp_int npos, sp_RbVal kw, const char *const *mem, int n) {
+  SP_GC_ROOT_RBVAL(kw);
+  if (sp_poly_length(kw) > 0) {
+    if (npos > 0) sp_raise_arity(npos + 1, 0, 0, NULL);
+    (void)sp_kw_splat_check(kw, mem, n, NULL, 1);
+    return;
+  }
+  sp_arity_check(npos, 0, n, NULL);
+  if (npos >= n) return;
+  char buf[1024]; size_t len = 0;
+  buf[0] = 0;
+  for (int i = (int)npos; i < n; i++)
+    if (len < sizeof buf) len += (size_t)snprintf(buf + len, sizeof buf - len, "%s:%s", i > npos ? ", " : "", mem[i]);
+  sp_raise_kw_error("missing", n - npos, buf);
 }
 /* A boxed `**` operand, converted the way CRuby converts one before any
    keyword is bound or checked: nil carries no keywords and a Hash is
@@ -10383,7 +10407,7 @@ static void sp_kwargs_verify(sp_RbVal h, const char *const *allowed, const char 
       if (k->data[i].tag == SP_TAG_SYM && !strcmp(sp_sym_to_s((sp_sym)k->data[i].v.i), *r)) found = 1;
     if (!found) sp_kwargs_list_add(list, &n, &cnt, sp_sprintf(":%s", *r));
   }
-  if (cnt) sp_raise_cls("ArgumentError", sp_sprintf("missing keyword%s: %s", cnt > 1 ? "s" : "", list));
+  if (cnt) sp_raise_kw_error("missing", cnt, list);
   if (!check_unknown) return;
   for (const char *const *l = lit; *l; l++)
     if (!sp_kwargs_name_in(*l, allowed)) sp_kwargs_list_add(list, &n, &cnt, sp_sprintf(":%s", *l));
@@ -10394,7 +10418,7 @@ static void sp_kwargs_verify(sp_RbVal h, const char *const *allowed, const char 
     }
     sp_kwargs_list_add(list, &n, &cnt, sp_poly_inspect(k->data[i]));
   }
-  if (cnt) sp_raise_cls("ArgumentError", sp_sprintf("unknown keyword%s: %s", cnt > 1 ? "s" : "", list));
+  if (cnt) sp_raise_kw_error("unknown", cnt, list);
 }
 /* `**h` into a **kwrest, where h is a Hash only known at run time: merge its
    entries into the keyword-rest being collected. nil carries no keywords, as
@@ -11126,9 +11150,7 @@ static sp_RbVal sp_round_half_kwsplat(sp_RbVal h) {
     }
     nunk++;
   }
-  if (nunk)
-    sp_raise_cls("ArgumentError",
-                 sp_sprintf("unknown keyword%s: %s", nunk > 1 ? "s" : "", unk));
+  if (nunk) sp_raise_kw_error("unknown", nunk, unk);
   return mode;
 }
 
@@ -14145,11 +14167,7 @@ static sp_RbVal sp_dyn_hash_dproc(sp_PolyPolyHash *h, sp_RbVal key, void *self) 
   return sp_penum_call2((sp_Proc *)self, sp_box_obj(h, SP_BUILTIN_POLY_POLY_HASH), key);
 }
 static void sp_dyn_new_arity(sp_int given, sp_int max) {
-  if (given <= max) return;
-  if (max == 0)
-    sp_raise_cls("ArgumentError", sp_sprintf("wrong number of arguments (given %lld, expected 0)", (long long)given));
-  sp_raise_cls("ArgumentError", sp_sprintf("wrong number of arguments (given %lld, expected 0..%lld)",
-                                           (long long)given, (long long)max));
+  sp_arity_check(given, 0, max, NULL);
 }
 static sp_RbVal sp_builtin_class_new(int kind, sp_int argc, const sp_RbVal *av, sp_Proc *blk) {
   SP_GC_ROOT(blk);
@@ -14555,9 +14573,8 @@ static sp_int sp_proc_compose_fn(void *cap, sp_int argc, sp_int *args) {
   /* CRuby enforces the FIRST-CALLED function's arity on the composed call
      (`(f << g).call(x)` runs g first, so g's arity governs) -- for a LAMBDA;
      a plain proc adjusts, as everywhere else. */
-  if (c->inner && c->inner->lambda_p && c->inner->arity >= 0 && argc != c->inner->arity)
-    sp_raise_cls("ArgumentError", sp_sprintf("wrong number of arguments (given %lld, expected %lld)",
-                                             (long long)argc, (long long)c->inner->arity));
+  if (c->inner && c->inner->lambda_p && c->inner->arity >= 0)
+    sp_arity_check(argc, c->inner->arity, c->inner->arity, NULL);
   sp_int inner_args[16] = {0};
   sp_int inner_argc = argc > 16 ? 16 : argc;
   for (sp_int _i = 0; _i < inner_argc; _i++) inner_args[_i] = args ? args[_i] : 0;
@@ -14570,9 +14587,8 @@ static sp_int sp_proc_compose_fn(void *cap, sp_int argc, sp_int *args) {
   sp_RbVal mid = _sp_proc_poly_ret;
   /* the outer function always receives the single threaded value; CRuby
      raises when a lambda's arity disagrees (`(f >> g)` reaching a 2-ary g). */
-  if (c->outer && c->outer->lambda_p && c->outer->arity >= 0 && c->outer->arity != 1)
-    sp_raise_cls("ArgumentError", sp_sprintf("wrong number of arguments (given 1, expected %lld)",
-                                             (long long)c->outer->arity));
+  if (c->outer && c->outer->lambda_p && c->outer->arity >= 0)
+    sp_arity_check(1, c->outer->arity, c->outer->arity, NULL);
   sp_int outer_args[16] = {0};
   /* Thread the intermediate on the sp_int slot too: a concrete-typed outer
      parameter reads it there, so a heap value (string/array/object) must pass
