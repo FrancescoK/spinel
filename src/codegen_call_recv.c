@@ -1794,6 +1794,20 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     buf_printf(b, "_t%d", tself);
     return 1;
   }
+  /* Blockless each_slice(n) / each_cons(n) on a boxed receiver: a boxed
+     generator or endless Enumerator regroups as it is pulled (materializing
+     it never returned), anything else through its elements as below. */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      (sp_streq(name, "each_cons") || sp_streq(name, "each_slice")) &&
+      comp_ntype(c, id) == TY_ENUMERATOR && !user_defines_or_reads(c, name)) {
+    int te = ++g_tmp;
+    Buf eb; memset(&eb, 0, sizeof eb); emit_expr(c, recv, &eb);
+    Buf nb; memset(&nb, 0, sizeof nb); emit_int_expr(c, argv[0], &nb);
+    buf_printf(b, "({ sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); sp_poly_regroup(_t%d, %s, %d); })",
+               te, eb.p ? eb.p : "sp_box_nil()", te, te, nb.p ? nb.p : "0", sp_streq(name, "each_cons"));
+    free(eb.p); free(nb.p);
+    return 1;
+  }
   /* `poly.sort_by { |k, v| ... }` where poly is a hash/array read out of a
      container: materialize its elements (a hash yields [k, v] pairs) as a poly
      array and re-dispatch as an array sort_by -- the array path's 2-param

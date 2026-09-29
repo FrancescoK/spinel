@@ -2612,6 +2612,20 @@ static void sp_wi_cap_scan(void *p) {
   sp_WiCap *cap = (sp_WiCap *)p;
   if (cap->src) sp_gc_mark(cap->src);
 }
+/* The next item of a run over source `s` that owns its fiber `*sf` (rooted
+   by the caller) and its cursor `*j`; FALSE once the source is spent. */
+static sp_bool sp_src_run_pull(sp_Enumerator *s, sp_Fiber **sf, sp_int *j, sp_RbVal *out) {
+  if (s->gen) {
+    if (!*sf) { *sf = sp_Fiber_new(s->gen); if (s->gen_cap) { sp_gc_wb((void*)*sf); (*sf)->user_data = s->gen_cap; } }
+    if (!sp_Fiber_alive(*sf)) return FALSE;
+    *out = sp_Fiber_resume(*sf, sp_box_nil());
+    return sp_Fiber_alive(*sf);
+  }
+  if (s->endless && s->items && s->items->len > 0 && *j >= s->items->len) *j = 0;
+  if (!s->items || *j >= s->items->len) return FALSE;
+  *out = s->items->data[(*j)++];
+  return TRUE;
+}
 static void sp_with_index_gen(sp_Fiber *f) {
   sp_WiCap *cap = (sp_WiCap *)f->user_data;
   sp_Enumerator *s = cap->src;
@@ -2620,17 +2634,7 @@ static void sp_with_index_gen(sp_Fiber *f) {
   SP_GC_ROOT(sf);
   for (;;) {
     sp_RbVal v;
-    if (s->gen) {
-      if (!sf) { sf = sp_Fiber_new(s->gen); if (s->gen_cap) { sp_gc_wb((void*)sf); sf->user_data = s->gen_cap; } }
-      if (!sp_Fiber_alive(sf)) break;
-      v = sp_Fiber_resume(sf, sp_box_nil());
-      if (!sp_Fiber_alive(sf)) break;
-    }
-    else {
-      if (s->endless && s->items && s->items->len > 0 && j >= s->items->len) j = 0;
-      if (!s->items || j >= s->items->len) break;
-      v = s->items->data[j++];
-    }
+    if (!sp_src_run_pull(s, &sf, &j, &v)) break;
     sp_PolyArray *pair = sp_PolyArray_new();
     SP_GC_ROOT(pair);
     sp_PolyArray_push(pair, v);
@@ -2682,6 +2686,49 @@ sp_Enumerator *sp_Enumerator_cycle_gen(sp_Enumerator *e) {
   sp_Enumerator *r = sp_Enumerator_new_gen(sp_cycle_gen, cap, sp_box_nil());
   r->yields_pair = e->yields_pair;
   r->source = e->source;
+  return r;
+}
+/* Blockless each_slice(n) / each_cons(n) over a generator or an endless
+   source: the groups are made as a run pulls the source, one group per
+   step, so an endless source answers first(n) (materializing it never
+   returned). A run owns its source fiber, as with_index's does. */
+typedef struct { sp_Enumerator *src; sp_int n; sp_bool cons; } sp_RgCap;
+static void sp_rg_cap_scan(void *p) {
+  sp_RgCap *cap = (sp_RgCap *)p;
+  if (cap->src) sp_gc_mark(cap->src);
+}
+static void sp_regroup_gen(sp_Fiber *f) {
+  sp_RgCap *cap = (sp_RgCap *)f->user_data;
+  sp_Enumerator *s = cap->src;
+  sp_int j = 0;
+  sp_Fiber *sf = NULL;
+  SP_GC_ROOT(sf);
+  sp_PolyArray *win = sp_PolyArray_new();
+  SP_GC_ROOT(win);
+  for (;;) {
+    sp_RbVal v;
+    if (!sp_src_run_pull(s, &sf, &j, &v)) break;
+    sp_PolyArray_push(win, v);
+    if (win->len < cap->n) continue;
+    sp_PolyArray *g = sp_PolyArray_new();
+    SP_GC_ROOT(g);
+    for (sp_int k = 0; k < win->len; k++) sp_PolyArray_push(g, win->data[k]);
+    if (cap->cons) { memmove(win->data, win->data + 1, (size_t)(win->len - 1) * sizeof(sp_RbVal)); win->len--; }
+    else win->len = 0;
+    sp_Fiber_yield(sp_box_poly_array(g));
+  }
+  /* a slice run ends on its short last group, as each_slice's does */
+  if (!cap->cons && win->len > 0) sp_Fiber_yield(sp_box_poly_array(win));
+}
+sp_Enumerator *sp_Enumerator_regroup_gen(sp_Enumerator *e, sp_int n, sp_bool cons) {
+  SP_GC_ROOT(e);
+  sp_RgCap *cap = (sp_RgCap *)sp_gc_alloc(sizeof(sp_RgCap), NULL, sp_rg_cap_scan);
+  SP_GC_ROOT(cap);
+  cap->src = e; cap->n = n; cap->cons = cons;
+  sp_Enumerator *r = sp_Enumerator_new_gen(sp_regroup_gen, cap, sp_box_nil());
+  SP_GC_ROOT(r);
+  r->source = e->source;
+  r->meth = sp_sprintf(cons ? "each_cons(%lld)" : "each_slice(%lld)", (long long)n);
   return r;
 }
 sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, sp_int off) {
