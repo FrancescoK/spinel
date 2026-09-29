@@ -5643,6 +5643,17 @@ static sp_bool sp_PolyArray_include_eql(sp_PolyArray *a, sp_RbVal v) { if (!a) r
 static sp_PolyArray *sp_PolyArray_intersect(sp_PolyArray *a, sp_PolyArray *b) { SP_GC_ROOT(a); SP_GC_ROOT(b); sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (!a || !b) return r; for (sp_int i = 0; i < a->len; i++) { sp_RbVal v = a->data[i]; if (sp_PolyArray_include_eql(b, v) && !sp_PolyArray_include_eql(r, v)) sp_PolyArray_push(r, v); } return r; }
 /* intersect? predicate: early-exit, no allocation (matches CRuby's non-building Array#intersect?). */
 static sp_bool sp_PolyArray_intersect_p(sp_PolyArray *a, sp_PolyArray *b) { if (!a || !b) return 0; for (sp_int i = 0; i < a->len; i++) if (sp_PolyArray_include_eql(b, a->data[i])) return 1; return 0; }
+/* Array#intersect? on two boxed arrays of any storage kind. Coercing both to
+   poly arrays built two fresh copies a call, and as sibling arguments the
+   second one's allocation collected the first. Only the argument, which the
+   walk scans once per receiver element, is coerced (a poly array is taken
+   as-is) and rooted; the receiver is read in place. */
+static sp_bool sp_poly_intersect_p(sp_RbVal a, sp_RbVal b) {
+  sp_PolyArray *pb = sp_poly_to_poly_array(b); SP_GC_ROOT(pb);
+  sp_int na = sp_poly_arr_len(a);
+  for (sp_int i = 0; i < na; i++) if (sp_PolyArray_include_eql(pb, sp_poly_arr_get(a, i))) return 1;
+  return 0;
+}
 static sp_PolyArray *sp_PolyArray_union(sp_PolyArray *a, sp_PolyArray *b) { SP_GC_ROOT(a); SP_GC_ROOT(b); sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (a) for (sp_int i = 0; i < a->len; i++) { sp_RbVal v = a->data[i]; if (!sp_PolyArray_include_eql(r, v)) sp_PolyArray_push(r, v); } if (b) for (sp_int i = 0; i < b->len; i++) { sp_RbVal v = b->data[i]; if (!sp_PolyArray_include_eql(r, v)) sp_PolyArray_push(r, v); } return r; }
 static sp_PolyArray *sp_PolyArray_difference(sp_PolyArray *a, sp_PolyArray *b) { SP_GC_ROOT(a); SP_GC_ROOT(b); sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (!a) return r; for (sp_int i = 0; i < a->len; i++) { sp_RbVal v = a->data[i]; if (!sp_PolyArray_include_eql(b, v)) sp_PolyArray_push(r, v); } return r; }
 /* Array#compact for poly_array: keep elements whose tag is not SP_TAG_NIL. */

@@ -9591,7 +9591,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                     " case SP_BUILTIN_POLY_ARRAY: case SP_BUILTIN_PTR_ARRAY: "); 
         buf_printf(b, "_t%d = ", tr);
         if (ret == TY_POLY) buf_puts(b, "sp_box_bool(");
-        buf_printf(b, "sp_PolyArray_intersect_p(sp_poly_to_poly_array(_t%d), sp_poly_to_poly_array(%s))", tv, abox);
+        buf_printf(b, "sp_poly_intersect_p(_t%d, %s)", tv, abox);
         if (ret == TY_POLY) buf_puts(b, ")");
         buf_puts(b, "; break;");
       }

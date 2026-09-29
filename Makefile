@@ -1394,6 +1394,7 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/gc_root_frame_slots.rb \
                   test/keyword_splat_rest_copy.rb \
                   test/kw_splat_poly_key_hash.rb \
+                  test/poly_array_intersect.rb \
                   test/kw_splat_true_false_nil_operand.rb \
                   test/call_positional_layout.rb \
                   test/keyword_binding_plan.rb \
