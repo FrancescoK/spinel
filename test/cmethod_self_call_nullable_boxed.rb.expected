@@ -6,3 +6,6 @@ falsy
 nil
 true
 1.5
+2
+nil
+true

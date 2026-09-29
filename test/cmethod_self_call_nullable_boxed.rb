@@ -30,3 +30,13 @@ class Gauge
 end
 Gauge.take(:none)
 p Gauge.read([0].first), Gauge.read([0].first).nil?, Gauge.read([3].first)
+
+# a same-named top-level def does not stand in for the class method
+def pick(k) = k + 1
+class Picker
+  def self.pick(k) = k.zero? ? nil : k
+  def self.read(v) = Setup.new(reu: pick(v))
+end
+p pick(1)
+r = Picker.read([0].first).reu
+p r, r.nil?
