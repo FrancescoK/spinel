@@ -7480,8 +7480,7 @@ TyKind infer_uncached(Compiler *c, int id) {
   }
   if (nk == NK_GlobalVariableOperatorWriteNode) {
     /* `$g += v` evaluates to the updated value (the local/ivar op-write forms
-       above already do; #1484). Plain `$g = v` and `||=`/`&&=` stay untyped
-       statements, mirroring the local-variable policy. */
+       above already do; #1484). */
     const char *nm = nt_str(nt, id, "name");
     const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
     LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
@@ -7491,6 +7490,14 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (ty_is_numeric(ct) && ty_is_numeric(vt))
       return (ct == TY_FLOAT || vt == TY_FLOAT) ? TY_FLOAT : TY_INT;
     return ct != TY_UNKNOWN ? ct : vt;
+  }
+  if (nk == NK_GlobalVariableOrWriteNode || nk == NK_GlobalVariableAndWriteNode) {
+    /* `$g ||= v` evaluates to the slot after the guarded write */
+    const char *nm = nt_str(nt, id, "name");
+    const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
+    LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
+    TyKind ct = lv ? lv->type : TY_UNKNOWN;
+    return ct != TY_UNKNOWN ? ct : infer_type(c, nt_ref(nt, id, "value"));
   }
   if (nk == NK_ConstantReadNode) {
     const char *nm = nt_str(nt, id, "name");
