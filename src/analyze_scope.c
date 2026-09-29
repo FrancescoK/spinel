@@ -2296,22 +2296,77 @@ static int alias_pred_const(const NodeTable *nt, int pred) {
 
 /* Collect `alias new old` (AliasMethodNode) and `alias_method :new, :old`
    (CallNode) statements in class bodies into the class alias table. */
+/* A name an alias bound while a `def` of that same name is still to come in
+   the class: up to that def the name means the aliased body, after it the def
+   does, so the alias table (which would outlive the def) cannot hold it. */
+typedef struct { int cid; char *name; char *target; int until; } AliasPending;
+static AliasPending *g_alias_pending;
+static int g_nalias_pending, g_calias_pending;
+
+/* The first `def name` of class cid after node `at`, or -1. Matched by the
+   DefNode's own name, which outlives a capture's rename of the scope. */
+static int alias_def_after(Compiler *c, int cid, const char *name, int at) {
+  const NodeTable *nt = c->nt;
+  int first = -1;
+  for (int si = 1; si < c->nscopes; si++) {
+    Scope *sc = &c->scopes[si];
+    if (sc->class_id != cid || sc->is_cmethod || sc->def_node <= at) continue;
+    if (nt_kind(nt, sc->def_node) != NK_DefNode) continue;
+    const char *dn = nt_str(nt, sc->def_node, "name");
+    if (dn && sp_streq(dn, name) && (first < 0 || sc->def_node < first)) first = sc->def_node;
+  }
+  return first;
+}
+
+static const char *alias_pending_target(int cid, const char *name, int at) {
+  const char *t = NULL;
+  for (int i = 0; i < g_nalias_pending; i++) {
+    AliasPending *ap = &g_alias_pending[i];
+    if (ap->cid == cid && at < ap->until && sp_streq(ap->name, name)) t = ap->target;
+  }
+  return t;
+}
+
+/* Bind alias `nw` to method name `target`: an alias-table entry, or, when the
+   class defines `nw` again later, a pending binding that ends at that def. */
+static void alias_bind(Compiler *c, ClassInfo *cls, int cid, const char *nw, const char *target, int alias_node) {
+  int redef = alias_def_after(c, cid, nw, alias_node);
+  if (redef < 0) { comp_add_alias_from(cls, nw, target, alias_node); return; }
+  if (g_nalias_pending >= g_calias_pending) {
+    g_calias_pending = g_calias_pending ? g_calias_pending * 2 : 8;
+    g_alias_pending = realloc(g_alias_pending, sizeof *g_alias_pending * (size_t)g_calias_pending);
+    if (!g_alias_pending) { fprintf(stderr, "out of memory\n"); exit(1); }
+  }
+  AliasPending *ap = &g_alias_pending[g_nalias_pending++];
+  ap->cid = cid; ap->name = strdup(nw); ap->target = strdup(target); ap->until = redef;
+}
+
 /* An alias captures the definition in effect where it appears. When the target
    is redefined LATER in the same body, a name mapping would resolve to the new
-   definition, so the earlier one is renamed to the alias instead -- which is
-   what the alias actually names (#3737). Returns 1 when it did that. A second
-   alias of that same definition finds it by its `def` name, already renamed to
-   the first alias, and names the first alias instead. */
+   definition, so the earlier one is renamed to the alias instead (#3737), and
+   later aliases of that definition map to that name. When the class defines
+   the alias's own name again later, the definition is renamed to
+   `<name>#<n>` instead, a name no Ruby `def` can take, so redefining that
+   alias leaves the other aliases on the captured body; the alias itself is
+   bound only until its redefinition. Returns 1 when it registered the alias
+   itself. */
 static int alias_capture_earlier_def(Compiler *c, ClassInfo *cls,
                                      const char *nw, const char *od, int alias_node) {
   if (!nw || !od || !cls->name) return 0;
   int cid = comp_class_index(c, cls->name);
   if (cid < 0) return 0;
+  const char *pending = alias_pending_target(cid, od, alias_node);
+  if (pending) {
+    char *pt = strdup(pending);
+    alias_bind(c, cls, cid, nw, pt, alias_node);
+    free(pt);
+    return 1;
+  }
   const NodeTable *nt = c->nt;
   int before = -1, after = 0;
   for (int si = 1; si < c->nscopes; si++) {
     Scope *sc = &c->scopes[si];
-    if (sc->class_id != cid || sc->is_cmethod || !sc->name) continue;
+    if (sc->class_id != cid || sc->is_cmethod || sc->is_proc_form || !sc->name) continue;
     const char *dn = sc->def_node >= 0 && nt_kind(nt, sc->def_node) == NK_DefNode
                      ? nt_str(nt, sc->def_node, "name") : NULL;
     if (!sp_streq(sc->name, od) && !(dn && sp_streq(dn, od))) continue;
@@ -2320,13 +2375,22 @@ static int alias_capture_earlier_def(Compiler *c, ClassInfo *cls,
     }
     else after = 1;
   }
-  if (before < 0 || !after) return 0;
-  if (!sp_streq(c->scopes[before].name, od)) {
-    comp_add_alias_from(cls, nw, c->scopes[before].name, alias_node);
+  if (before < 0 || !after) {
+    if (alias_def_after(c, cid, nw, alias_node) < 0) return 0;
+    alias_bind(c, cls, cid, nw, before >= 0 ? c->scopes[before].name : od, alias_node);
     return 1;
   }
-  free(c->scopes[before].name);
-  c->scopes[before].name = strdup(nw);
+  if (sp_streq(c->scopes[before].name, od)) {
+    int nw_redef = alias_def_after(c, cid, nw, alias_node) >= 0;
+    char hidden[512];
+    snprintf(hidden, sizeof hidden, "%s#%d", od, alias_node);
+    free(c->scopes[before].name);
+    c->scopes[before].name = strdup(nw_redef ? hidden : nw);
+    if (!nw_redef) return 1;
+  }
+  char *target = strdup(c->scopes[before].name);
+  alias_bind(c, cls, cid, nw, target, alias_node);
+  free(target);
   return 1;
 }
 
