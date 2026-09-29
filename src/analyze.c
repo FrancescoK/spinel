@@ -2008,6 +2008,7 @@ int ie_tramp_effective_arg(Compiler *c, int caller_id, int p) {
 }
 
 static int ie_forward_target(Compiler *c, int cls, int cm, const char *name, int receiverless);
+static int ie_class_value_target(Compiler *c, int id, int recv, TyKind rt, int blk);
 static int ie_forward_hops;
 
 static int ie_forward_find(Compiler *c, int node, const Scope *s, int self_cls, int depth) {
@@ -2032,6 +2033,7 @@ static int ie_forward_find(Compiler *c, int node, const Scope *s, int self_cls, 
         else if (ie_forward_hops < 8) {
           ie_forward_hops++;
           int t = ie_forward_target(c, rcls, cm, cn, r < 0);
+          if (t < 0 && rt == TY_POLY) t = ie_class_value_target(c, node, r, rt, barg);
           ie_forward_hops--;
           if (t >= 0) return t;
         }

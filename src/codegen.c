@@ -4206,19 +4206,18 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   }
 
   if (s->cs_synth) { emit_compiler_state_method(c, s, b); return; }
-  /* instance_eval/exec trampolines are inlined at every call site; the
-     method body itself is an unreachable stub (matches the legacy compiler). */
-  if (s->class_id >= 0 && !s->is_cmethod && s->name &&
+  if (s->class_id >= 0 && !s->is_cmethod && s->name && c->classes[s->class_id].is_value_type &&
       comp_trampoline_kind(c, s->class_id, s->name, NULL)) {
     emit_method_signature(c, s, b);
+    buf_puts(b, " {\n  sp_raise_cls(\"NotImplementedError\", \"instance_eval of a proc on a by-value object\");\n");
     if (method_is_void(s)) {
       /* A `return <value>;` in a void function is a constraint violation that
          MinGW gcc flags under -Werror (-Wno-all doesn't cover -Wreturn-type
          there); emit an empty body instead. */
-      buf_puts(b, " {\n}\n");
+      buf_puts(b, "}\n");
     }
     else {
-      buf_puts(b, " {\n  return ");
+      buf_puts(b, "  return ");
       if (ty_is_object(s->ret)) buf_puts(b, "NULL");
       else buf_puts(b, default_value(s->ret));
       buf_puts(b, ";\n}\n");
