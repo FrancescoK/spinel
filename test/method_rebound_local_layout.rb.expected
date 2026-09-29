@@ -1,0 +1,58 @@
+[:c, [1], 2]
+arg [1]
+arg 2
+[:c, [1], 2]
+[:c, [1], {z: 2}]
+[[1], 2]
+[[1], {z: 2}]
+[:c, {v: 1}]
+[:c, 51]
+[:c, 51]
+[{v: 1}]
+[51]
+#<ArgumentError: wrong number of arguments (given 3, expected 2)>
+#<ArgumentError: wrong number of arguments (given 3, expected 2)>
+#<ArgumentError: wrong number of arguments (given 3, expected 2)>
+#<ArgumentError: no keywords accepted>
+#<ArgumentError: no keywords accepted>
+[:c, [1, 2]]
+[:c, []]
+#<ArgumentError: no keywords accepted>
+#<ArgumentError: no keywords accepted>
+[:c, 0, 70, [:blk, 0]]
+[:c, 0, 1, [:pr, 0]]
+[:c, 0, 2, "0"]
+[:c, 0, 70, nil]
+[0, 70, [:blk, 0]]
+[0, 1, [:pr, 0]]
+[0, 70, nil]
+[:c, 1, 2]
+:none
+[1, 2]
+:none
+[:c, {k: 5}, 0]
+#<ArgumentError: no keywords accepted>
+[:c, {k: 5}, 0]
+#<RuntimeError: boom 1 2>
+:none
+[:c, {k: 5}, 0]
+[{k: 5}, 0]
+#<RuntimeError: top 1 3>
+:none
+[{k: 5}, 0]
+[:c, 1, 3, [4], 9, 7, 5, {z: 8}]
+[:c, 1, 2, [], 9, 0, 5, {}]
+#<ArgumentError: missing keyword: :d>
+#<ArgumentError: wrong number of arguments (given 1, expected 2+; required keyword: d)>
+[1, 3, [4], 9, 7, 5, {z: 8}]
+[1, 2, [], 9, 0, 5, {}]
+#<ArgumentError: missing keyword: :d>
+[:c, "s1"]
+[:c, "s2"]
+["s1"]
+[1.5]
+[[:c, [1, 2], 3], [[1, 2], 3], [[], 3]]
+#<ArgumentError: no keywords accepted>
+#<ArgumentError: no keywords accepted>
+[:c, [1], 2]
+[[1], 2]

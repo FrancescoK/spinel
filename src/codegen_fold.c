@@ -80,6 +80,19 @@ int emit_forwarded_proc_arg(Compiler *c, int blk_node, Buf *b) {
   return 1;
 }
 
+static int emit_blk_proc_tmp(Compiler *c, int blk_node) {
+  int blk_tmp = ++g_tmp;
+  Buf pb; memset(&pb, 0, sizeof pb);
+  if (!emit_forwarded_proc_arg(c, blk_node, &pb))
+    emit_proc_literal(c, blk_node, &pb);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp, pb.p ? pb.p : "NULL");
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", blk_tmp);
+  free(pb.p);
+  return blk_tmp;
+}
+
 void emit_method_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -108,16 +121,7 @@ void emit_method_call(Compiler *c, int id, Buf *b) {
     int wrote_args = m->nparams > 0;
     if (wrote_args) buf_puts(b, ", ");
     if (blk_node >= 0) {
-      int blk_tmp = ++g_tmp;
-      Buf pb; memset(&pb, 0, sizeof pb);
-      if (!emit_forwarded_proc_arg(c, blk_node, &pb))
-        emit_proc_literal(c, blk_node, &pb);
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp, pb.p ? pb.p : "NULL");
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", blk_tmp);
-      free(pb.p);
-      buf_printf(b, "_t%d", blk_tmp);
+      buf_printf(b, "_t%d", emit_blk_proc_tmp(c, blk_node));
     }
     else {
       buf_puts(b, "NULL");
@@ -1265,7 +1269,14 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_int _t%d = sp_re_caps[1] - _t%d;\n", tme, tpos);
   }
   emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_String_append_bin(_t%d, sp_str_substr(_t%d + _t%d, 0, _t%d));\n", tout, ts, tpos, tms);
-  if (p0) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_str_substr(_t%d + _t%d, _t%d, _t%d - _t%d);\n", p0, ts, tpos, tms, tme, tms); }
+  if (p0) {
+    Scope *ps = comp_scope_of(c, block);
+    LocalVar *plv = ps ? scope_local(ps, block_param_name(c, block, 0)) : NULL;
+    int box = plv && plv->type == TY_POLY;
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "lv_%s = %ssp_str_substr(_t%d + _t%d, _t%d, _t%d - _t%d)%s;\n",
+               p0, box ? "sp_box_str(" : "", ts, tpos, tms, tme, tms, box ? ")" : "");
+  }
   for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
   int save = g_indent; g_indent++;
   /* CRuby stringifies a non-string block value (gsub { 2 } -> "2"): box a
@@ -2719,8 +2730,14 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   /* |acc, (a, b)|: the element (an array, e.g. a hash's [k, v] pair)
      destructures across the second param's leaves */
   int p1_multi = !p1_orig && rt == TY_POLY_ARRAY && block_param_is_multi(c, block, 1);
-  if (!p0_orig || (!p1_orig && !p1_multi)) return 0;
-  const char *p0 = rename_local(p0_orig);
+  /* A block of fewer parameters (`{ 5 }`, `|s|`, `|*|`, `|s, *|`) takes
+     what it names of the (accumulator, element) pair and drops the rest,
+     as a proc does. A named rest or an optional parameter would collect
+     or default the missing ones, which this binding does not do. */
+  int short_ok = !block_rest_name(c, block) && !block_opt_name(c, block, 0);
+  if ((!p0_orig && !short_ok) || (!p1_orig && !p1_multi && !short_ok)) return 0;
+  if (!p0_orig && p1_orig) return 0;
+  const char *p0 = p0_orig ? rename_local(p0_orig) : NULL;
   const char *p1 = p1_orig ? rename_local(p1_orig) : NULL;
   int bbody = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
@@ -2805,7 +2822,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
      accumulator shadow the loop installs below, and widen. */
   if (init >= 0 && ty_is_array(acc_ty) && acc_ty != TY_POLY_ARRAY) {
     Scope *psc = comp_scope_of(c, block);
-    LocalVar *pl0 = psc ? scope_local(psc, p0_orig) : NULL;
+    LocalVar *pl0 = (psc && p0_orig) ? scope_local(psc, p0_orig) : NULL;
     LocalVar *pl1 = (psc && p1_orig) ? scope_local(psc, p1_orig) : NULL;
     TyKind s0 = pl0 ? pl0->type : TY_UNKNOWN, s1 = pl1 ? pl1->type : TY_UNKNOWN;
     if (pl0) pl0->type = acc_ty;
@@ -2839,7 +2856,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
      Look ahead with the same shadow and widen before the slot is declared. */
   if (g_promote_mode && ty_is_numeric(acc_ty) && acc_ty != TY_BIGINT) {
     Scope *lsc = comp_scope_of(c, block);
-    LocalVar *l0 = lsc ? scope_local(lsc, p0_orig) : NULL;
+    LocalVar *l0 = (lsc && p0_orig) ? scope_local(lsc, p0_orig) : NULL;
     LocalVar *l1 = (lsc && p1_orig) ? scope_local(lsc, p1_orig) : NULL;
     TyKind s0 = l0 ? l0->type : TY_UNKNOWN, s1 = l1 ? l1->type : TY_UNKNOWN;
     if (l0) l0->type = acc_ty;
@@ -2908,7 +2925,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   /* Temporarily override block param types to match acc_ty/et so the body
      expression uses the correct C types (same pattern as emit_sort_cmp_expr). */
   Scope *rsc = comp_scope_of(c, block);
-  LocalVar *rlv0 = rsc ? scope_local(rsc, p0_orig) : NULL;
+  LocalVar *rlv0 = (rsc && p0_orig) ? scope_local(rsc, p0_orig) : NULL;
   LocalVar *rlv1 = (rsc && p1_orig) ? scope_local(rsc, p1_orig) : NULL;
   TyKind rpt0 = rlv0 ? rlv0->type : TY_UNKNOWN;
   TyKind rpt1 = rlv1 ? rlv1->type : TY_UNKNOWN;
@@ -2918,7 +2935,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   buf_printf(b, "for (sp_int _t%d = %d; _t%d < sp_%sArray_length(_t%d); _t%d++) { ",
              ti, start, ti, k, ta, ti);
   buf_puts(b, "{ ");
-  emit_ctype(c, acc_ty, b); buf_printf(b, " lv_%s = _t%d; ", p0, tacc);
+  if (p0) { emit_ctype(c, acc_ty, b); buf_printf(b, " lv_%s = _t%d; ", p0, tacc); }
   if (p1_multi) {
     int te2 = ++g_tmp;
     buf_printf(b, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d); ", te2, ta, ti);
@@ -2930,6 +2947,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
                  rename_local(ln), te2, li, rename_local(ln));
     }
   }
+  else if (!p1) { }
   else if (nested) { emit_ctype(c, et, b); buf_printf(b, " lv_%s = (sp_IntArray *)sp_PolyArray_get(_t%d, _t%d).v.p; ", p1, ta, ti); }
   else { emit_ctype(c, et, b); buf_printf(b, " lv_%s = sp_%sArray_get(_t%d, _t%d); ", p1, k, ta, ti); }
   /* `next v` inside a fold block sets the accumulator and moves on, so point
@@ -3514,7 +3532,7 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
      only thing refusing them did was drop the call to the unresolved-call
      raise: NoMethodError for `sort_by` on an Array (#4061). */
   if (kt != TY_INT && kt != TY_FLOAT && kt != TY_STRING && kt != TY_POLY &&
-      kt != TY_SYMBOL && kt != TY_VOID && kt != TY_NIL &&
+      kt != TY_SYMBOL && kt != TY_VOID && kt != TY_NIL && kt != TY_BOOL &&
       kt != TY_RATIONAL && kt != TY_BIGINT && !ty_is_array(kt)) return 0;
 
   /* Schwartzian transform: compute each element's sort key exactly once (CRuby
@@ -5650,6 +5668,20 @@ static void emit_arg_or_default_at(Compiler *c, Scope *m, int idx, int provided,
   g_open_defaults--;
 }
 
+/* A byref parameter (LocalVar.byref_out) takes a slot, and a value with no
+   caller variable behind it -- a literal, an expression, a default, what a
+   binder pulls out of a splat, a gather or a `**` hash -- has none to lend:
+   it binds into a rooted temp and the temp's address is passed. The callee's
+   appends stay in the temp, as the pre-byref value ABI kept them. */
+void emit_lent_temp(const char *val, Buf *out) {
+  int t = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "const char *_t%d = %s;\n", t, val ? val : "NULL");
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
+  buf_printf(out, "&_t%d", t);
+}
+
 static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provided, Buf *out) {
   LocalVar *p = scope_local(m, m->pnames[idx]);
   TyKind pt = p ? p->type : TY_INT;
@@ -5809,12 +5841,7 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
     p->byref_out = 0;   /* reenter for the plain coerced value */
     emit_arg_or_default(c, m, idx, provided, &ab);
     p->byref_out = 1;
-    int t = ++g_tmp;
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "const char *_t%d = %s;\n", t, ab.p ? ab.p : "NULL");
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
-    buf_printf(out, "&_t%d", t);
+    emit_lent_temp(ab.p, out);
     free(ab.p);
     return;
   }
@@ -7002,23 +7029,24 @@ static void emit_arg_temp(Compiler *c, int v) {
 }
 
 /* See codegen_internal.h. */
-void emit_positionals_first(Compiler *c, const int *argv, int pos_argc) {
-  const NodeTable *nt = c->nt;
-  for (int k = 0; argv && k < pos_argc; k++) {
-    int v = argv[k];
-    if (nt_kind(nt, v) == NK_SplatNode) v = nt_ref(nt, v, "expression");
-    else if (nt_kind(nt, v) == NK_BlockArgumentNode) continue;   /* runs last */
-    if (v < 0 || !subtree_has_side_effect(c, v)) continue;
-    TyKind at = comp_ntype(c, v);
-    if (!ty_is_object(at) && !c_type_name(at)) continue;   /* a raise: no value */
-    emit_arg_temp(c, v);
-  }
+int arg_ran_first(int node, int from) {
+  for (int i = from; i < g_n_argov; i++) if (g_argov_node[i] == node) return 1;
+  return 0;
 }
 
-/* Can `after` give the variable `x` reads another value before the binding
-   reads it? A local only by assigning it; an instance, global or class
-   variable by any effect, a call among them. Anything else is no read. */
-static int read_rebound_by(Compiler *c, int x, int after) {
+/* The temp an argument that ran first reads (arg_ran_first) from the
+   `from`th override on, when `text` is its slot's rendering of it, the temp
+   unconverted; -1 otherwise. */
+static int ran_first_temp(int node, int from, const char *text) {
+  for (int i = from; text && i < g_n_argov; i++) {
+    int t;
+    if (g_argov_node[i] == node && sp_streq(g_argov_text[i], text) && sscanf(text, "_t%d", &t) == 1) return t;
+  }
+  return -1;
+}
+
+/* See codegen_internal.h. */
+int read_rebound_by(Compiler *c, int x, int after) {
   const NodeTable *nt = c->nt;
   if (after < 0) return 0;
   switch (nt_kind(nt, x)) {
@@ -7026,16 +7054,39 @@ static int read_rebound_by(Compiler *c, int x, int after) {
       const char *nm = nt_str(nt, x, "name");
       return nm && subtree_writes_local(c, after, nm);
     }
-    case NK_InstanceVariableReadNode: case NK_GlobalVariableReadNode:
-    case NK_ClassVariableReadNode:
+    case NK_InstanceVariableReadNode: {
+      /* a later argument written in the same method, where self is the
+         method's own (not a block run under another self), that calls no
+         method of self's that assigns it cannot change it: `m(@head,
+         tick)` reads @head in place when tick only counts */
+      const char *iv = nt_str(nt, x, "name");
+      Scope *xs = comp_scope_of(c, x);
+      if (iv && xs && !xs->is_cmethod && xs->class_id >= 0 && xs == comp_scope_of(c, after) &&
+          g_self && sp_streq(g_self, "self"))
+        return subtree_may_write_ivar(c, after, iv, xs->class_id, 0);
       return subtree_has_side_effect(c, after);
-    default: return 0;
+    }
+    case NK_GlobalVariableReadNode: case NK_ClassVariableReadNode:
+      return subtree_has_side_effect(c, after);
+    /* a block's body reads when it runs, not where it is written */
+    case NK_BlockNode: case NK_LambdaNode: return 0;
+    default: {
+      /* a value built of reads reads each where it is written: `m(*[x, 2],
+         k: (x = 3))` spread the Array built after the keyword ran */
+      if (x < 0) return 0;
+      for (int i = 0; i < nt_num_refs(nt, x); i++)
+        if (read_rebound_by(c, nt_ref_at(nt, x, i), after)) return 1;
+      for (int i = 0; i < nt_num_arrs(nt, x); i++) {
+        int n = 0; const int *ids = nt_arr_at(nt, x, i, &n);
+        for (int j = 0; j < n; j++) if (read_rebound_by(c, ids[j], after)) return 1;
+      }
+      return 0;
+    }
   }
 }
 
 /* The argument `v` of a call binding in parameter order, evaluated ahead of
-   the binding into a rooted temp its uses read, as emit_positionals_first
-   evaluates one. A value with no C type -- nil -- is evaluated for its effect
+   the binding into a rooted temp its uses read (emit_arg_temp). A value with no C type -- nil -- is evaluated for its effect
    alone, and its uses read a 0 the binding takes as nil. A read with no
    effect of its own is taken too when `rebound` says a later value can
    change what it reads (read_rebound_by): `m(b: x, a: (x = 2))` bound b the
@@ -7044,6 +7095,9 @@ static void emit_arg_first(Compiler *c, int v, int rebound, Buf *b) {
   const NodeTable *nt = c->nt;
   int x = nt_kind(nt, v) == NK_SplatNode ? nt_ref(nt, v, "expression") : v;
   if (x < 0 || nt_kind(nt, v) == NK_BlockArgumentNode) return;
+  /* one a hoist around the call ran already reads its temp: a class
+     value's arms bind what the dispatch hoisted */
+  if (arg_ran_first(x, 0)) return;
   int effect = subtree_has_side_effect(c, x);
   if (!effect && !rebound) return;
   TyKind at = comp_ntype(c, x);
@@ -7114,6 +7168,39 @@ int args_order_matters(Compiler *c, const int *argv, int argc, const int *after,
   }
   free(vals); free(ds);
   return matters;
+}
+
+/* The defaults a call into `m` may fill at its site, where the binding
+   renders them in their parameters' slots: each optional's, and each
+   keyword's no literal key of `kwh` names. The caller frees them. */
+static int *call_site_defaults(Compiler *c, Scope *m, int kwh, int *n) {
+  int *d = malloc(sizeof(int) * (size_t)((m ? m->nparams : 0) + 1)), nd = 0;
+  for (int i = 0; m && m->pdefault && i < m->nparams; i++) {
+    if (m->pdefault[i] < 0) continue;
+    if (kwh >= 0 && m->pnames[i] && callee_has_kwarg(c, m, m->pnames[i]) &&
+        kwh_lookup(c->nt, kwh, m->pnames[i]) >= 0) continue;
+    d[nd++] = m->pdefault[i];
+  }
+  *n = nd;
+  return d;
+}
+
+/* See codegen_internal.h. */
+int emit_args_before_binding(Compiler *c, Scope *m, const int *argv, int argc, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int kwh = argc > 0 && argv && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+  int nd = 0, *dfl = call_site_defaults(c, m, kwh, &nd);
+  int nv = 0, ev = 0, ed = 0, run = 0; char *ds = NULL;
+  int *vals = source_values(nt, argv, argc, &nv, &ds);
+  for (int i = 0; i < nv; i++) {
+    ev += subtree_has_side_effect(c, vals[i]);
+    if (value_rebound(c, vals, nv, i, dfl, nd)) run = 1;
+  }
+  for (int i = 0; i < nd; i++) ed += subtree_has_side_effect(c, dfl[i]);
+  if ((ev && ed) || (kwh >= 0 && ev > 1) || kwh_out_of_order(c, m, kwh)) run = 1;
+  if (run) emit_args_before(c, argv, argc, dfl, nd, b);
+  free(vals); free(ds); free(dfl);
+  return run;
 }
 
 /* See codegen_internal.h. */
@@ -7470,17 +7557,26 @@ void emit_ds_kwarg_check(Compiler *c, Scope *m, int kwh, int ds_hash_tmp, TyKind
   buf_puts(g_pre, "0};\n");
   /* A literal key that is no Symbol is unknown to a callee without a
      `**kwrest` as surely as one no keyword names, and CRuby names each in
-     the order the hash holds it, ahead of those the `**` brings: the plan's
-     list, inspected here, stands for the literal keys (kw_plan). */
+     the order the hash holds it: the plan's list, inspected here, stands
+     for the literal keys (kw_plan). Those written after the `**` come
+     after the keys it brings (`f(**{z: 2}, y: 3)` is `unknown keywords:
+     :z, :y`), so a call writing one there says how many stand ahead of it
+     (sp_kwargs_verify_at). */
   KwPlan P;
   kw_plan(c, m, kwh, &P);
-  int strkey = 0;
-  for (int e = 0; e < en && !merged; e++)
+  int strkey = 0, splat_el = -1, nbefore = 0;
+  for (int e = 0; e < en && !merged; e++) {
+    if (nt_kind(nt, el[e]) == NK_AssocSplatNode && splat_el < 0) splat_el = e;
     if (nt_kind(nt, el[e]) == NK_AssocNode && nt_kind(nt, nt_ref(nt, el[e], "key")) == NK_StringNode) strkey = 1;
-  if (strkey && m->kwrest_idx < 0) {
+  }
+  int nunk = P.nunknown < 32 ? P.nunknown : 32;
+  while (nbefore < nunk && P.unknown_el[nbefore] < splat_el) nbefore++;
+  int after = !merged && nbefore < nunk;
+  int listed = (strkey || after) && m->kwrest_idx < 0;
+  if (listed) {
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "static const char *const _ku%d[] = {", chk);
-    for (int u = 0; u < P.nunknown && u < 32; u++) {
+    for (int u = 0; u < nunk; u++) {
       int key = nt_ref(nt, el[P.unknown_el[u]], "key");
       int is_sym = nt_kind(nt, key) == NK_SymbolNode;
       char iv[300];
@@ -7492,11 +7588,12 @@ void emit_ds_kwarg_check(Compiler *c, Scope *m, int kwh, int ds_hash_tmp, TyKind
   }
   char tn[32]; snprintf(tn, sizeof tn, "_t%d", ds_hash_tmp);
   emit_indent(g_pre, g_indent);
-  buf_puts(g_pre, strkey && m->kwrest_idx < 0 ? "sp_kwargs_verify_lit(" : "sp_kwargs_verify(");
+  buf_puts(g_pre, !listed ? "sp_kwargs_verify(" : after ? "sp_kwargs_verify_at(" : "sp_kwargs_verify_lit(");
   if (ds_hash_type == TY_POLY) buf_puts(g_pre, tn);
   else emit_boxed_text(c, ds_hash_type, tn, g_pre);
   buf_printf(g_pre, ", _kw%d, _kr%d, _kl%d, ", chk, chk, chk);
-  if (strkey && m->kwrest_idx < 0) buf_printf(g_pre, "_ku%d, ", chk);
+  if (listed) buf_printf(g_pre, "_ku%d, ", chk);
+  if (listed && after) buf_printf(g_pre, "%d, ", nbefore);
   buf_printf(g_pre, "%d);\n", m->kwrest_idx < 0);
 }
 
@@ -7536,12 +7633,21 @@ void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
                                   TyKind ds_hash_type, Buf *out) {
   const char *hn = ty_hash_cname(ds_hash_type);
   LocalVar *plv = scope_local(m, m->pnames[i]);
+  if (plv && plv->byref_out) {
+    Buf vb; memset(&vb, 0, sizeof vb);
+    plv->byref_out = 0;
+    emit_ds_param_extract(c, m, i, ds_hash_tmp, ds_hash_type, &vb);
+    plv->byref_out = 1;
+    emit_lent_temp(vb.p, out);
+    free(vb.p);
+    return;
+  }
   TyKind pt = plv ? plv->type : TY_INT;
   if (ds_hash_type == TY_POLY) {
     /* Bare-poly `**` source (a Hash only known at run time): pull each keyword
        by a runtime key lookup, unboxing to the param type. (#2885) */
     Buf ub; memset(&ub, 0, sizeof ub);
-    emit_unbox_text(c, pt, "_v", &ub);
+    emit_unbox_nilable_text(c, pt, "_v", &ub);
     if (m->pdefault && m->pdefault[i] >= 0) {
       Buf db; memset(&db, 0, sizeof db);
       emit_ds_default(c, m, i, &db);
@@ -7574,7 +7680,7 @@ void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
              "sp_box_sym(sp_sym_intern(\"%s\"))" : "sp_sym_intern(\"%s\")", m->pnames[i]);
     char get_expr[256];
     snprintf(get_expr, sizeof get_expr, "sp_%sHash_get(_t%d, %s)", hn, ds_hash_tmp, key);
-    if (hval == TY_POLY) emit_unbox_text(c, pt, get_expr, &vb);
+    if (hval == TY_POLY) emit_unbox_nilable_text(c, pt, get_expr, &vb);
     else buf_puts(&vb, get_expr);
     /* An optional keyword param (one with a default) whose key may be
        absent from the forwarded hash falls back to its default: a bare
@@ -7850,10 +7956,12 @@ void emit_args_run(Compiler *c, const int *argv, int argc) {
     if (!ds[i]) continue;
     TyKind t = comp_ntype(c, v);
     if (t == TY_POLY) {
-      Buf hb; memset(&hb, 0, sizeof hb);
-      emit_boxed(c, v, &hb);
-      emit_kw_splat_conv_check(c, TY_POLY, hb.p ? hb.p : "sp_box_nil()");
-      free(hb.p);
+      /* converted into the temp the binding reads, which merges the Hash
+         (or nil) it holds: converted apart, the binding converted the
+         operand again and a #to_hash ran twice */
+      if (!arg_ran_first(v, 0)) emit_arg_temp(c, v);
+      for (int o = g_n_argov - 1; o >= 0; o--)
+        if (g_argov_node[o] == v) { emit_kw_splat_conv_temp(c, g_argov_text[o]); break; }
     }
     else if (kw_splat_bad_cls(c, t)) emit_kw_splat_bad_operand(c, v);
   }
@@ -8479,6 +8587,135 @@ int arg_layout_plain_arg(Compiler *c, Scope *m, int pos_argc, int i) {
   return a;
 }
 
+/* The argument node call `call` binds parameter i of m to, by the layout the
+   binders follow: the positional placed there, or the value of the keyword
+   naming it (the last one written). -1 when no one node is the parameter's
+   value -- a default, a splat's element, a value out of a `**` or a merged
+   hash; `*spread` (when asked) then names the splat's or the `**`'s operand
+   the value comes out of, or -1. What the analysis reads to follow a String
+   into the parameter that mutates it: indexing the call's arguments by the
+   parameter's position read a keyword hash, or the argument beside a rest,
+   for a keyword or a post. */
+int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread) {
+  const NodeTable *nt = c->nt;
+  if (spread) *spread = -1;
+  if (!m || i < 0 || i >= m->nparams) return -1;
+  int args = nt_ref(nt, call, "arguments");
+  int argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  int kwh = -1, pos_argc = argc, nsplat = 0, splat = -1;
+  if (argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) { kwh = argv[argc - 1]; pos_argc--; }
+  for (int k = 0; k < pos_argc; k++) {
+    NodeKind ak = nt_kind(nt, argv[k]);
+    if (nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "ForwardingArgumentsNode")) return -1;
+    if (ak == NK_SplatNode) { nsplat++; splat = argv[k]; }
+  }
+  /* plain arguments into required positionals alone: the one layout there is */
+  if (kwh < 0 && !nsplat && m->rest_idx < 0 && m->kwrest_idx < 0) {
+    int plain = 1;
+    for (int k = 0; k < m->nparams && plain; k++)
+      if ((m->pdefault && m->pdefault[k] >= 0) ||
+          (m->pnames[k] && callee_param_is_declared_kwarg(c, m, m->pnames[k]))) plain = 0;
+    if (plain) return i < argc ? argv[i] : -1;
+  }
+  ArgLayout L;
+  arg_layout(c, m, argv, pos_argc, kwh, 0, &L);
+  int a = -1;
+  const char *pn = m->pnames[i];
+  if (L.from[i] == ARG_NODE) a = argv[L.arg[i]];
+  else if (L.from[i] == ARG_ELEM || L.from[i] == ARG_GATHERED) {
+    if (nsplat == 1 && spread) *spread = nt_ref(nt, splat, "expression");
+    /* Splats of array literals alone (`m(*[], s)`, `m(*[s])`) have a count
+       the program states: the arguments they spread are the elements, laid
+       out as if written in their place. */
+    int flat_n = 0, ok = 1;
+    for (int k = 0; k < pos_argc && ok; k++) {
+      if (nt_kind(nt, argv[k]) != NK_SplatNode) { flat_n++; continue; }
+      int lit = nt_ref(nt, argv[k], "expression");
+      int en = 0; const int *el = lit >= 0 && nt_kind(nt, lit) == NK_ArrayNode ? nt_arr(nt, lit, "elements", &en) : NULL;
+      if (!el && !(lit >= 0 && nt_kind(nt, lit) == NK_ArrayNode)) { ok = 0; break; }
+      for (int e = 0; e < en; e++) if (nt_kind(nt, el[e]) == NK_SplatNode) ok = 0;
+      flat_n += en;
+    }
+    if (ok) {
+      int *flat = malloc(sizeof(int) * (size_t)(flat_n + 1)), f = 0;
+      for (int k = 0; k < pos_argc; k++) {
+        if (nt_kind(nt, argv[k]) != NK_SplatNode) { flat[f++] = argv[k]; continue; }
+        int en = 0; const int *el = nt_arr(nt, nt_ref(nt, argv[k], "expression"), "elements", &en);
+        for (int e = 0; e < en; e++) flat[f++] = el[e];
+      }
+      if (kwh >= 0) flat[f] = kwh;
+      ArgLayout F;
+      arg_layout(c, m, flat, flat_n, kwh, 0, &F);
+      if (F.from[i] == ARG_NODE) a = flat[F.arg[i]];
+      arg_layout_free(&F);
+      free(flat);
+    }
+  }
+  else if (L.from[i] == ARG_BY_NAME && i != m->kwrest_idx && pn && kwh >= 0 &&
+           callee_has_kwarg(c, m, pn)) {
+    int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
+    int nds = 0, ds = -1;
+    for (int e = 0; e < en; e++)
+      if (nt_kind(nt, el[e]) == NK_AssocSplatNode) { nds++; ds = el[e]; }
+    if (!kwh_merged(c, m, kwh)) a = kwh_lookup(nt, kwh, pn);
+    if (a < 0 && nds == 1 && spread) *spread = nt_ref(nt, ds, "value");
+  }
+  arg_layout_free(&L);
+  return a;
+}
+
+/* How far from the end of the positionals parameter j of m takes its value,
+   whatever their count: a post (behind a rest or an optional) the one as far
+   from the last, and any positional of a method that takes a fixed count.
+   0 when the count decides. */
+static int positional_offset_from_end(Compiler *c, Scope *m, int j) {
+  int end = 0, fixed = m->rest_idx < 0;
+  while (end < m->nparams && end != m->kwrest_idx &&
+         !callee_param_is_declared_kwarg(c, m, m->pnames[end])) {
+    if (m->pdefault && m->pdefault[end] >= 0) fixed = 0;
+    end++;
+  }
+  if (j < 0 || j >= end || j == m->rest_idx) return 0;
+  return fixed || j >= end - m->npost_rest ? end - j : 0;
+}
+
+/* The parameter of s whose value a bare `super` in s hands parameter j of pm,
+   or -1: a keyword the like-named keyword, a positional by the layout of s's
+   positionals over pm's (as zsuper_begin lays them), and around s's rest,
+   where the gather holds them in order, the one at j when pm takes element j
+   there, or s's post as far from the gather's end as pm's parameter j takes
+   it. What the byref analysis follows through a bare super, and what the
+   gathered bare super lends. */
+int zsuper_param_source(Compiler *c, Scope *s, Scope *pm, int j) {
+  if (!s || !pm || j < 0 || j >= pm->nparams || !pm->pnames[j] || j == pm->kwrest_idx) return -1;
+  if (callee_param_is_declared_kwarg(c, pm, pm->pnames[j])) {
+    if (!callee_param_is_declared_kwarg(c, s, pm->pnames[j])) return -1;
+    for (int k = 0; k < s->nparams; k++)
+      if (s->pnames[k] && sp_streq(s->pnames[k], pm->pnames[j])) return k;
+    return -1;
+  }
+  int npos = 0;
+  while (npos < s->nparams && npos != s->rest_idx && npos != s->kwrest_idx &&
+         !callee_param_is_declared_kwarg(c, s, s->pnames[npos])) npos++;
+  if (s->rest_idx >= 0) {
+    if (j < npos && j != pm->rest_idx && !(pm->rest_idx >= 0 && j > pm->rest_idx) &&
+        !(pm->rest_idx < 0 && opt_before_required(c, pm))) return j;
+    /* The gather ends with s's posts, and a parameter of pm taking an
+       element as far from the end is one of them: `def m(a, *r, last) =
+       super` into a parent's `m(a, *r, last)`. Not when s's keywords would
+       ride at the gather's end, as the hash of a parent that takes none. */
+    int off = positional_offset_from_end(c, pm, j);
+    int s_kw = s->kwrest_idx >= 0;
+    for (int k = npos; k < s->nparams && !s_kw; k++)
+      if (k != s->rest_idx && callee_param_is_declared_kwarg(c, s, s->pnames[k])) s_kw = 1;
+    if (off < 1 || off > s->npost_rest || !s->pnames[s->rest_idx] ||
+        (s_kw && !callee_declares_kwargs(c, pm) && pm->kwrest_idx < 0)) return -1;
+    return s->rest_idx + s->npost_rest + 1 - off;
+  }
+  return arg_layout_plain_arg(c, pm, npos, j);
+}
+
 /* Gather a call's positionals, the splat spread in place, into one rooted
    PolyArray and refuse a count the parameters cannot take. The keyword hash
    is the last of them where the layout says (gather_kwh): one of `**`
@@ -8589,6 +8826,15 @@ void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out) {
     return;
   }
   LocalVar *sp = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
+  if (sp && sp->byref_out) {
+    Buf vb; memset(&vb, 0, sizeof vb);
+    sp->byref_out = 0;
+    emit_gathered_param(c, m, i, ct, &vb);
+    sp->byref_out = 1;
+    emit_lent_temp(vb.p, out);
+    free(vb.p);
+    return;
+  }
   TyKind pt = sp ? sp->type : TY_POLY;
   Buf eb; memset(&eb, 0, sizeof eb);
   char raw[128];
@@ -8666,6 +8912,17 @@ static int emit_splat_given_count(Compiler *c, Scope *m, const ArgLayout *L, int
 static void emit_elem_param(Compiler *c, Scope *m, int i, int off, int tmp, TyKind at, int gathered,
                             Buf *out) {
   LocalVar *sp = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
+  if (sp && sp->byref_out) {
+    /* an element (or the default it falls back to) has no caller variable
+       to write back to: bind the value, then lend a temp */
+    Buf vb; memset(&vb, 0, sizeof vb);
+    sp->byref_out = 0;
+    emit_elem_param(c, m, i, off, tmp, at, gathered, &vb);
+    sp->byref_out = 1;
+    emit_lent_temp(vb.p, out);
+    free(vb.p);
+    return;
+  }
   TyKind set = ty_array_elem(at);
   Buf eb; memset(&eb, 0, sizeof eb);
   if (sp && sp->type == TY_POLY && set != TY_POLY && set != TY_UNKNOWN) {
@@ -8702,26 +8959,21 @@ static void emit_elem_param(Compiler *c, Scope *m, int i, int off, int tmp, TyKi
                eb.p ? eb.p : "", db.p ? db.p : default_value(pt));
     free(db.p);
   }
-  else if (sp && sp->byref_out) {
-    /* a splat element filling a byref out-param slot has no caller
-       variable to write back to: pass a rooted temp's address (the
-       mutation stays local, like the pre-byref behavior). */
-    int bt = ++g_tmp;
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "const char *_t%d = %s;\n", bt, eb.p ? eb.p : "NULL");
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", bt);
-    buf_printf(out, "&_t%d", bt);
-  }
   else buf_puts(out, eb.p ? eb.p : "");
   free(eb.p);
 }
 
 void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out) {
+  int argc = 0;
+  const int *argv = argsNode >= 0 ? nt_arr(c->nt, argsNode, "arguments", &argc) : NULL;
+  emit_args_filled_argv(c, callee_idx, argv, argc, argsNode, lead, out);
+}
+
+/* See codegen_internal.h. */
+void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int argc, int argsNode,
+                           const char *lead, Buf *out) {
   Scope *m = &c->scopes[callee_idx];
   const NodeTable *nt = c->nt;
-  int argc = 0;
-  const int *argv = argsNode >= 0 ? nt_arr(nt, argsNode, "arguments", &argc) : NULL;
   /* `bar(...)`: the ArgumentsNode holds a single ForwardingArgumentsNode.
      Forward the enclosing `def foo(...)` method's synthesized __fwd_* params
      directly to the callee, positionally (#1288). The compiler already knows
@@ -8784,13 +9036,12 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
   /* Detect double-splat (**hash) inside kwh: AssocSplatNode wrapping a hash expr.
      Pre-evaluate the hash to a temp so we can do per-param lookups. */
   int kw_merged = kwh_merged(c, m, kwh);
-  if (L.kw.args_first) emit_args_run(c, argv, argc);
-  else if (kwh_runs_ahead(c, m, kwh)) emit_positionals_first(c, argv, pos_argc);
-  else if (kwh_out_of_order(c, m, kwh)) emit_args_in_source_order(c, argv, argc, g_pre);
+  if (L.kw.args_first || kwh_runs_ahead(c, m, kwh)) emit_args_run(c, argv, argc);
   /* the splat spread in place runs into its temp ahead of the call, so the
      arguments written to its left run first, into theirs: `m(lg(1), *lg(a))`
      ran lg(a) first */
-  else if (L.splat > 0) emit_args_in_source_order(c, argv, L.splat, g_pre);
+  else if (!emit_args_before_binding(c, m, argv, argc, g_pre) && L.splat > 0)
+    emit_args_in_source_order(c, argv, L.splat, g_pre);
   TyKind ds_hash_type = TY_UNKNOWN;
   int ds_hash_tmp = emit_ds_hash_materialize(c, m, kwh, &ds_hash_type);
 
@@ -8959,6 +9210,8 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
          double-evaluates it and emits an ill-typed sp_RbVal temp (the splat
          lowers to sp_PolyArray*) (#3242) */
       if (aty && sp_streq(aty, "SplatNode")) continue;
+      /* one the call ran first (emit_args_before_binding) reads its temp */
+      if (arg_ran_first(argv[k], argov_saved)) continue;
       /* a bare read is already rooted where it lives */
       if (aty && (sp_streq(aty, "LocalVariableReadNode") ||
                   sp_streq(aty, "InstanceVariableReadNode") ||
@@ -9162,8 +9415,11 @@ static int dispatch_arms_disagree(Compiler *c, int cid, const char *name) {
     int kmi = dispatch_arm_scope(c, comp_method_in_chain(c, k, name, &kd));
     if (kmi < 0) continue;
     Scope *s = &c->scopes[kmi];
-    /* a clone always takes the block, which the shared path never passes */
-    if (s->is_proc_form) return 1;
+    /* a clone always takes the block, which the shared path never passes; nor
+       does it pass one to an arm declaring `&blk` (a bare super's forwarding
+       slot included), so `A.new.m(2) { }` with every arm taking it called
+       each with one argument short */
+    if (s->is_proc_form || arm_takes_blk(s)) return 1;
     if (!first) { first = s; }
     if (s == first) continue;
     if (s->nparams != first->nparams || s->rest_idx != first->rest_idx ||
@@ -9254,17 +9510,7 @@ static void emit_dispatch_per_arm(Compiler *c, int cid, const char *name, const 
   }
   int blk_tmp = -1;
   if (want_blk) blk_node = resolve_forwarded_block(c, blk_node);
-  if (want_blk && blk_node >= 0) {
-    blk_tmp = ++g_tmp;
-    Buf pb; memset(&pb, 0, sizeof pb);
-    if (!emit_forwarded_proc_arg(c, blk_node, &pb))
-      emit_proc_literal(c, blk_node, &pb);
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp, pb.p ? pb.p : "NULL");
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", blk_tmp);
-    free(pb.p);
-  }
+  if (want_blk && blk_node >= 0) blk_tmp = emit_blk_proc_tmp(c, blk_node);
   int rtmp = ++g_tmp;
   buf_puts(b, "({ ");
   emit_ctype(c, disp_ret, b);
@@ -9471,11 +9717,10 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
      emit_args_filled applies (previously this path dropped every keyword
      into a NULL kwrest and let positionals steal keys by name). */
   int kw_merged_d = kwh_merged(c, pm, kwh_d);
-  if (pm && L.kw.args_first) emit_args_run(c, argv, argc);
-  else if (pm && kwh_runs_ahead(c, pm, kwh_d)) emit_positionals_first(c, argv, pos_argc_d);
-  else if (kwh_out_of_order(c, pm, kwh_d)) emit_args_in_source_order(c, argv, argc, g_pre);
+  if (pm && (L.kw.args_first || kwh_runs_ahead(c, pm, kwh_d))) emit_args_run(c, argv, argc);
   /* the arguments to the left of a splat spread in place run ahead of it */
-  else if (L.splat > 0) emit_args_in_source_order(c, argv, L.splat, g_pre);
+  else if (!emit_args_before_binding(c, pm, argv, argc, g_pre) && L.splat > 0)
+    emit_args_in_source_order(c, argv, L.splat, g_pre);
   TyKind ds_type_d = TY_UNKNOWN;
   int ds_tmp_d = (pm && kwh_d >= 0) ? emit_ds_hash_materialize(c, pm, kwh_d, &ds_type_d) : -1;
   int np = pm ? pm->nparams : pos_argc_d;
@@ -9525,9 +9770,12 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
      spelling and registers the rename. Without it the default emitted the
      callee's `lv_u`, which nothing at the call site declared (#4431). Same
      restriction as the other path: a *rest and a **kwrest are temps like the
-     rest, and are aliased too. A gather's parameters are temps as well. */
+     rest, and are aliased too. A gather's parameters are temps as well, and
+     so is a keyword read out of a `**`'s hash (emit_ds_param_extract), its
+     default under the renames: leaving a call with a `**` out emitted
+     `C.new.m(1, **h)` into `def m(p1, p2 = p1, **kw)` against `lv_p1`. */
   int pd_ren_base = g_nren, pd_uid = 0;
-  int pd_active = pm && ((splat_tmp_d < 0 && ds_tmp_d < 0) || L.gather) && default_refs_earlier_param(c, pm);
+  int pd_active = pm && (splat_tmp_d < 0 || L.gather) && default_refs_earlier_param(c, pm);
   if (pd_active) pd_uid = ++g_tmp;
   for (int k = 0; k < np; k++) {
     atmp[k] = ++g_tmp;
@@ -9661,10 +9909,10 @@ else {
       TyKind att = p ? p->type : comp_ntype(c, k < argc ? argv[k] : -1);
       if (p && att == TY_UNKNOWN) att = TY_POLY;  /* poly in the callee signature */
       atmp_ty[k] = att;
-      emit_indent(g_pre, g_indent);
       /* A byref out-param takes the SLOT's address, so its temp is a
          `const char **`, not the parameter's own type. */
       if (p && p->byref_out) {
+        emit_indent(g_pre, g_indent);
         emit_ctype(c, att, g_pre);
         buf_printf(g_pre, " *_t%d = ", atmp[k]);
         buf_puts(g_pre, ab.p ? ab.p : ""); buf_puts(g_pre, ";\n");
@@ -9679,13 +9927,21 @@ else {
         }
         continue;
       }
-      emit_ctype(c, att, g_pre);
-      buf_printf(g_pre, " _t%d = ", atmp[k]);
-      buf_puts(g_pre, ab.p ? ab.p : ""); buf_puts(g_pre, ";\n");
-      /* Root heap-typed arg temps: evaluating a later argument may allocate
-         and collect an earlier one still sitting in its temp. */
-      if (att == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", atmp[k]); }
-      else if (needs_root(att)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", atmp[k]); }
+      /* an argument the call ran first (emit_args_before_binding) is its
+         rooted temp already, when the slot takes it unconverted */
+      int ran_t = provided >= 0 && comp_ntype(c, provided) == att
+                    ? ran_first_temp(provided, argov_saved_d, ab.p) : -1;
+      if (ran_t >= 0) atmp[k] = ran_t;
+      else {
+        emit_indent(g_pre, g_indent);
+        emit_ctype(c, att, g_pre);
+        buf_printf(g_pre, " _t%d = ", atmp[k]);
+        buf_puts(g_pre, ab.p ? ab.p : ""); buf_puts(g_pre, ";\n");
+        /* Root heap-typed arg temps: evaluating a later argument may allocate
+           and collect an earlier one still sitting in its temp. */
+        if (att == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", atmp[k]); }
+        else if (needs_root(att)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", atmp[k]); }
+      }
       if (pd_active && pm->pnames[k] && g_nren < MAX_RENAME) {
         /* alias the temp (already rooted) under the rename's spelling, and
            register the rename AFTER it so only a LATER default reads it */
@@ -9714,17 +9970,7 @@ else {
   int blk_tmp = -1;
   int needs_blk_arg = m && m->blk_param && m->blk_param[0] && !m->yields;
   if (needs_blk_arg) blk_node = resolve_forwarded_block(c, blk_node);
-  if (needs_blk_arg && blk_node >= 0) {
-    blk_tmp = ++g_tmp;
-    Buf pb; memset(&pb, 0, sizeof pb);
-    if (!emit_forwarded_proc_arg(c, blk_node, &pb))
-      emit_proc_literal(c, blk_node, &pb);
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp, pb.p ? pb.p : "NULL");
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", blk_tmp);
-    free(pb.p);
-  }
+  if (needs_blk_arg && blk_node >= 0) blk_tmp = emit_blk_proc_tmp(c, blk_node);
 
   /* The aliased name may differ from the defining method's real name. */
   const char *mname = m ? m->name : name;

@@ -714,7 +714,7 @@ const char *sp_crypto_b64url_decode(const char *src) {SP_GC_ROOT_STR(src);
     while (n > 0 && src[n - 1] == '=') n--;  /* tolerate padded input */
     size_t i = 0, j = 0;
     if (n / 4 * 3 + 3 > SPC_B64U_BUFSIZE) {
-        sp_crypto_b64u_dec_buf[0] = '\0';
+        sp_crypto_b64u_dec_buf[0] = '\0'; sp_ffi_bin_len = 0;
         return sp_crypto_b64u_dec_buf;
     }
     while (i + 4 <= n) {
@@ -723,7 +723,7 @@ const char *sp_crypto_b64url_decode(const char *src) {SP_GC_ROOT_STR(src);
         int c = sp_crypto_b64u_val(src[i+2]);
         int d = sp_crypto_b64u_val(src[i+3]);
         if (a < 0 || b < 0 || c < 0 || d < 0) {
-            sp_crypto_b64u_dec_buf[0] = '\0';
+            sp_crypto_b64u_dec_buf[0] = '\0'; sp_ffi_bin_len = 0;
             return sp_crypto_b64u_dec_buf;
         }
         uint32_t v = (uint32_t)a << 18 | (uint32_t)b << 12
@@ -737,18 +737,19 @@ const char *sp_crypto_b64url_decode(const char *src) {SP_GC_ROOT_STR(src);
     if (rem == 2) {
         int a = sp_crypto_b64u_val(src[i]);
         int b = sp_crypto_b64u_val(src[i+1]);
-        if (a < 0 || b < 0) { sp_crypto_b64u_dec_buf[0] = '\0'; return sp_crypto_b64u_dec_buf; }
+        if (a < 0 || b < 0) { sp_crypto_b64u_dec_buf[0] = '\0'; sp_ffi_bin_len = 0; return sp_crypto_b64u_dec_buf; }
         sp_crypto_b64u_dec_buf[j++] = (a << 2) | (b >> 4);
     }
 else if (rem == 3) {
         int a = sp_crypto_b64u_val(src[i]);
         int b = sp_crypto_b64u_val(src[i+1]);
         int c = sp_crypto_b64u_val(src[i+2]);
-        if (a < 0 || b < 0 || c < 0) { sp_crypto_b64u_dec_buf[0] = '\0'; return sp_crypto_b64u_dec_buf; }
+        if (a < 0 || b < 0 || c < 0) { sp_crypto_b64u_dec_buf[0] = '\0'; sp_ffi_bin_len = 0; return sp_crypto_b64u_dec_buf; }
         sp_crypto_b64u_dec_buf[j++] = (a << 2) | (b >> 4);
         sp_crypto_b64u_dec_buf[j++] = ((b & 0xf) << 4) | (c >> 2);
     }
     sp_crypto_b64u_dec_buf[j] = '\0';
+    sp_ffi_bin_len = (int)j;   /* the decoded bytes may hold a NUL: bind it `:binstr` */
     return sp_crypto_b64u_dec_buf;
 }
 

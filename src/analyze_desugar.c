@@ -1139,6 +1139,7 @@ int desugar_public_send_recv(Compiler *c) {
     comp_grow_node_arrays(c);
     int encl = c->nscope[id];
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    expand_static_splat_args(c, id, id + 1);
     changed = 1;
   }
   return changed;
@@ -1486,7 +1487,7 @@ static int dsend_receiver_names(Compiler *c, int cls, int subclasses, char ***ou
   char **names = NULL; int n = 0, cap = 0;
   ANameHash seen; memset(&seen, 0, sizeof seen);
   for (int d = 0; d < c->nclasses; d++) {
-    if (d != cls && !(subclasses && is_descendant(c, d, cls))) continue;
+    if (cls < 0 ? comp_class_is_module(c, &c->classes[d]) : d != cls && !(subclasses && is_descendant(c, d, cls))) continue;
     for (int s = 0; s < c->nscopes; s++) {
       const Scope *sc = &c->scopes[s];
       if (!sc->name || sc->is_cmethod || sc->class_id < 0) continue;
@@ -1706,6 +1707,7 @@ int desugar_dynamic_send(Compiler *c) {
          desugar that rewrites the name (`first` -> `[]`) leaves the arm
          unreachable and the send raises. Mark them as owned. */
       nt_node_set_int(nt, call, "dyn_arm", 1);
+      nt_node_set_str(nt, call, "dyn_name", use[k]);
       nt_node_set_ref(nt, call, "arguments", na);
       if (computed && nt_ref(nt, id, "block") >= 0) nt_node_set_ref(nt, call, "block", nt_ref(nt, id, "block"));
       /* public_send arms enforce visibility at the dispatch site */
@@ -1720,6 +1722,7 @@ int desugar_dynamic_send(Compiler *c) {
     comp_grow_node_arrays(c);
     int encl = c->nscope[id];
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    expand_static_splat_args(c, base, nt->count);
     changed = 1;
   }
   free(picked);
@@ -1738,9 +1741,11 @@ int desugar_dynamic_method(Compiler *c) {
     nt_arr(nt, id, "dyn_send_arms", &dn);
     if (recv < 0 || argc != 1 || dn > 0 || method_sym_arg(c, id)) continue;
     TyKind rt = infer_type(c, recv);
-    if (!ty_is_object(rt) || comp_method_in_chain(c, ty_object_class(rt), "method", NULL) >= 0) continue;
+    int cls = ty_is_object(rt) ? ty_object_class(rt) : -1, own_method = 0;
+    if (cls >= 0) own_method = comp_method_in_chain(c, cls, "method", NULL) >= 0;
+    if ((cls < 0 && rt != TY_POLY) || own_method) continue;
     char **own = NULL;
-    int nown = dsend_receiver_names(c, ty_object_class(rt), 1, &own), base = nt->count;
+    int nown = dsend_receiver_names(c, cls, 1, &own), base = nt->count;
     int *arms = (int *)malloc(sizeof(int) * (size_t)(nown > 0 ? nown : 1));
     for (int k = 0; k < nown; k++) {
       int sym = nt_new_node(nt, "SymbolNode"), na = nt_new_node(nt, "ArgumentsNode");
@@ -1750,6 +1755,7 @@ int desugar_dynamic_method(Compiler *c) {
       nt_node_set_ref(nt, arms[k], "receiver", recv);
       nt_node_set_str(nt, arms[k], "name", "method");
       nt_node_set_str(nt, arms[k], "dyn_name", own[k]);
+      nt_node_set_int(nt, arms[k], "dyn_of", id);
       nt_node_set_ref(nt, arms[k], "arguments", na);
       comp_sym_intern(c, own[k]);
       free(own[k]);
@@ -3548,6 +3554,13 @@ static int def_shape(const NodeTable *nt, int id) {
     if (kn > 0) sh |= 2;
     if (fwd_node_is(nt, nt_ref(nt, pn, "rest"), "RestParameterNode")) sh |= 1;
     if (fwd_node_is(nt, nt_ref(nt, pn, "keyword_rest"), "KeywordRestParameterNode")) sh |= 2;
+    /* A `**nil` method takes no keyword, but it has to see the keywords a
+       forward passes to refuse them: without the `**` channel `...` carried
+       them into the rest as a positional Hash, so `def w(...) = m(...)`
+       into `def m(a, **nil)` raised a wrong count for `w(1, z: 3)`, and
+       bound the Hash into an optional where m had one, instead of CRuby's
+       "no keywords accepted". An empty `**` passes nothing to refuse. */
+    if (fwd_node_is(nt, nt_ref(nt, pn, "keyword_rest"), "NoKeywordsParameterNode")) sh |= 2;
   }
   if (fwd_subtree_uses_yield_or_block(nt, id)) sh |= 4;
   return sh;
@@ -4464,7 +4477,11 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
          forwards only a `super(...)` that passes nothing before the `...` */
       if (is_zsuper && nlead < 0) { ok = 0; break; }
       int lead = is_zsuper ? nlead : ac - 1;
-      if ((is_new || (is_super && !lead)) && sh >= 0 && (sh & 4) && fwd_any_def_yields(nt, cn)) {
+      /* A Class value's `new` builds a yielding initialize through its proc
+         form, which takes the block as the `&` this rewrite passes. */
+      int dyn_new = is_new && recv >= 0 && !fwd_node_is(nt, recv, "SelfNode") &&
+                    !fwd_node_is(nt, recv, "ConstantReadNode") && !fwd_node_is(nt, recv, "ConstantPathNode");
+      if ((is_new || (is_super && !lead)) && !dyn_new && sh >= 0 && (sh & 4) && fwd_any_def_yields(nt, cn)) {
         ok = 0; break;
       }
       if (sh < 0 || nt_ref(nt, id, "block") >= 0) { ok = 0; break; }
@@ -4472,6 +4489,12 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
       shape = sh;
       calls[ncalls++] = id;
     }
+    /* A target taking no argument at all forwards the two channels too:
+       its own count check has to see what the call passes, which the
+       __fwd_N model binds into slots it hands nowhere, so `w(1)` and
+       `w(*[], **{"s" => 1})` into `def m()` answered where CRuby raises
+       a wrong count */
+    if (ok && shape == 0) shape = 3;
     if (!ok || !ncalls || nfwd_args != ncalls || !(shape & (3 | FWD_BUILTIN))) continue;
     /* the block rides along as an anonymous `&` */
     int fwd_block = (shape & 4) || any_call_passes_block(nt, dname);

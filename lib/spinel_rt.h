@@ -776,6 +776,14 @@ static inline sp_gc_hdr *sp_pool_try_pop(sp_gc_hdr **head) {
    cheap as a pop, and a pooled header is one the sweep must touch dead to
    run its recycler, where an unpooled one dies in its chunk's bitmap
    untouched (lib/sp_slab.c). The pool keeps serving the malloc fallback. */
+/* What SP_POOL_NEW reads, for a function written ahead of SP_POOL_DEFINE:
+   tentative definitions the definition completes. */
+#define SP_POOL_DECLARE(CLS) \
+  static sp_gc_hdr *sp_##CLS##_pool_head; \
+  static long sp_##CLS##_pool_count; \
+  static long sp_##CLS##_pool_pops; \
+  static void sp_##CLS##_pool_recycle(sp_gc_hdr *h);
+
 #define SP_POOL_NEW(CLS, SCAN) (__extension__ ({ \
   sp_##CLS *_p; \
   sp_gc_hdr *_h = sp_slab_on > 0 ? NULL : sp_pool_try_pop(&sp_##CLS##_pool_head); \
@@ -1379,6 +1387,22 @@ static void sp_mark_at_exit_hooks(void);
 /* External linkage: lib/sp_gc.c's sp_gc_mark_all reaches this by name. */
 extern SP_TLS sp_RbVal _sp_proc_poly_args[SP_PROC_ARG_SLOTS];   /* the proc calling convention's side channel, defined below */
 extern SP_TLS sp_RbVal _sp_proc_poly_ret;
+/* The block passed to a first-class proc's .call { } (#2648). It is the
+   call's own: sp_proc_call_blk sets it immediately before entering the proc
+   body, and every other entry, sp_proc_call, sets it to NULL, so a body
+   finds here the block of the call that entered it and never one an
+   earlier call left behind. A `&b` prologue, or a Method#to_proc
+   trampoline that passes one on, reads it first thing, before anything
+   it runs can enter another proc; any other body ignores it. A block
+   published ahead of the call and consumed only by a body with `&b`
+   leaked into the next such body that ran without one (`f.call(1) { }`
+   into a `proc { |a| }`, then `g.call(2)` bound it), and an argument that
+   called a `&b` proc took the block meant for the outer call. The caller
+   keeps the block rooted for the call's extent. Defined below, beside the
+   other channels of this ABI, and like them one variable in an extension
+   host too: sp_proc_call_blk, inlined into the host's TU, and the kernel's
+   sp_proc_call and proc bodies must meet in the same slot. */
+extern SP_TLS sp_Proc *_sp_proc_blk;
 static void sp_re_mark_globals(void) {
   /* The sub-markers below are static and inline away, so a fault in one of
      them reports as this frame with nothing to distinguish them. Under verify,
@@ -1759,6 +1783,7 @@ static inline void sp_poly_puts(sp_RbVal v) {
         }
         case SP_BUILTIN_RANGE: puts(sp_Range_inspect((sp_Range *)v.v.p)); break;
         case SP_BUILTIN_FLOAT_RANGE: puts(sp_frange_inspect(*(sp_FloatRange *)v.v.p)); break;
+        case SP_BUILTIN_STR_RANGE: puts(sp_srange_to_s(*(sp_StrRange *)v.v.p)); break;
         case SP_BUILTIN_TIME: puts(sp_Time_to_s((sp_Time *)v.v.p)); break;
         case SP_BUILTIN_STRBUF: puts(sp_String_cstr((sp_String *)v.v.p)); break;
         case SP_BUILTIN_COMPLEX: puts(sp_complex_to_s(*(sp_Complex *)v.v.p)); break;
@@ -1944,6 +1969,7 @@ static inline const char *sp_poly_to_s(sp_RbVal v) {
         case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_inspect((sp_PolyArray *)v.v.p);
         case SP_BUILTIN_RANGE: return sp_Range_inspect((sp_Range *)v.v.p);
         case SP_BUILTIN_FLOAT_RANGE: return sp_frange_inspect(*(sp_FloatRange *)v.v.p);
+        case SP_BUILTIN_STR_RANGE: return sp_srange_to_s(*(sp_StrRange *)v.v.p);
         case SP_BUILTIN_TIME: return sp_Time_to_s((sp_Time *)v.v.p);
         case SP_BUILTIN_STRBUF: return sp_String_cstr((sp_String *)v.v.p);   /* live buffer (#3227) */
         case SP_BUILTIN_METHOD: return sp_method_desc_cstr((sp_BoundMethod *)v.v.p);
@@ -5203,6 +5229,7 @@ sp_int sp_method_proc_tramp(void *cap, sp_int argc, sp_int *args);
 static sp_RbVal sp_bm_call_boxed(void *m, sp_int n) {
   sp_int slots[16];
   for (sp_int i = 0; i < n && i < 16; i++) slots[i] = _sp_proc_poly_args[i].v.i;
+  _sp_proc_blk = NULL;   /* entered as sp_proc_call enters a proc: no block */
   sp_method_proc_tramp(m, n < 16 ? n : 16, slots);
   return _sp_proc_poly_ret;
 }
@@ -5643,6 +5670,17 @@ static sp_bool sp_PolyArray_include_eql(sp_PolyArray *a, sp_RbVal v) { if (!a) r
 static sp_PolyArray *sp_PolyArray_intersect(sp_PolyArray *a, sp_PolyArray *b) { SP_GC_ROOT(a); SP_GC_ROOT(b); sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (!a || !b) return r; for (sp_int i = 0; i < a->len; i++) { sp_RbVal v = a->data[i]; if (sp_PolyArray_include_eql(b, v) && !sp_PolyArray_include_eql(r, v)) sp_PolyArray_push(r, v); } return r; }
 /* intersect? predicate: early-exit, no allocation (matches CRuby's non-building Array#intersect?). */
 static sp_bool sp_PolyArray_intersect_p(sp_PolyArray *a, sp_PolyArray *b) { if (!a || !b) return 0; for (sp_int i = 0; i < a->len; i++) if (sp_PolyArray_include_eql(b, a->data[i])) return 1; return 0; }
+/* Array#intersect? on two boxed arrays of any storage kind. Coercing both to
+   poly arrays built two fresh copies a call, and as sibling arguments the
+   second one's allocation collected the first. Only the argument, which the
+   walk scans once per receiver element, is coerced (a poly array is taken
+   as-is) and rooted; the receiver is read in place. */
+static sp_bool sp_poly_intersect_p(sp_RbVal a, sp_RbVal b) {
+  sp_PolyArray *pb = sp_poly_to_poly_array(b); SP_GC_ROOT(pb);
+  sp_int na = sp_poly_arr_len(a);
+  for (sp_int i = 0; i < na; i++) if (sp_PolyArray_include_eql(pb, sp_poly_arr_get(a, i))) return 1;
+  return 0;
+}
 static sp_PolyArray *sp_PolyArray_union(sp_PolyArray *a, sp_PolyArray *b) { SP_GC_ROOT(a); SP_GC_ROOT(b); sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (a) for (sp_int i = 0; i < a->len; i++) { sp_RbVal v = a->data[i]; if (!sp_PolyArray_include_eql(r, v)) sp_PolyArray_push(r, v); } if (b) for (sp_int i = 0; i < b->len; i++) { sp_RbVal v = b->data[i]; if (!sp_PolyArray_include_eql(r, v)) sp_PolyArray_push(r, v); } return r; }
 static sp_PolyArray *sp_PolyArray_difference(sp_PolyArray *a, sp_PolyArray *b) { SP_GC_ROOT(a); SP_GC_ROOT(b); sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (!a) return r; for (sp_int i = 0; i < a->len; i++) { sp_RbVal v = a->data[i]; if (!sp_PolyArray_include_eql(b, v)) sp_PolyArray_push(r, v); } return r; }
 /* Array#compact for poly_array: keep elements whose tag is not SP_TAG_NIL. */
@@ -6611,6 +6649,7 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
         case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_inspect((sp_PolyArray *)v.v.p);
         case SP_BUILTIN_RANGE:     return sp_Range_inspect((sp_Range *)v.v.p);
         case SP_BUILTIN_FLOAT_RANGE: return sp_frange_inspect(*(sp_FloatRange *)v.v.p);
+        case SP_BUILTIN_STR_RANGE: return sp_srange_inspect(*(sp_StrRange *)v.v.p);
         case SP_BUILTIN_TIME:      return sp_Time_inspect((sp_Time *)v.v.p);
       case SP_BUILTIN_STRBUF: return sp_str_inspect(sp_String_cstr((sp_String *)v.v.p));   /* (#3227) */
       case SP_BUILTIN_METHOD: return sp_method_desc_cstr((sp_BoundMethod *)v.v.p);
@@ -10473,10 +10512,15 @@ static void sp_kwargs_list_add(char *list, int *n, int *cnt, const char *item) {
    raises `missing keyword`, then, unless a **kwrest takes the extras
    (`check_unknown` 0), a key naming no parameter raises `unknown keyword`.
    `unk`, when given, is the literal keys no keyword takes, already
-   inspected -- String ones among them, which `lit` cannot spell -- named
-   ahead of those of the `**`. */
-static void sp_kwargs_verify_lit(sp_RbVal h, const char *const *allowed, const char *const *required,
-                                 const char *const *lit, const char *const *unk, int check_unknown) {
+   inspected -- String ones among them, which `lit` cannot spell -- in the
+   order the call writes them. CRuby names the unknown keys in the order
+   of the hash they make: the first `nbefore` of `unk` (all of them when
+   it is negative), written ahead of the `**`, then the `**`'s own keys,
+   then those written after it, save a key the `**` holds, which keeps the
+   `**`'s place. */
+static void sp_kwargs_verify_at(sp_RbVal h, const char *const *allowed, const char *const *required,
+                                const char *const *lit, const char *const *unk, int nbefore,
+                                int check_unknown) {
   sp_PolyArray *k = sp_poly_length(h) > 0 ? sp_poly_keys(h) : sp_PolyArray_new(); SP_GC_ROOT(k);
   char list[256]; int n = 0, cnt = 0;
   list[0] = 0;
@@ -10488,19 +10532,35 @@ static void sp_kwargs_verify_lit(sp_RbVal h, const char *const *allowed, const c
   }
   if (cnt) sp_raise_kw_error("missing", cnt, list);
   if (!check_unknown) return;
-  for (const char *const *u = unk; u && *u; u++) sp_kwargs_list_add(list, &n, &cnt, *u);
+  int nunk = 0;
+  for (const char *const *u = unk; u && *u; u++) nunk++;
+  int nb = nbefore < 0 || nbefore > nunk ? nunk : nbefore;
+  for (int u = 0; u < nb; u++) sp_kwargs_list_add(list, &n, &cnt, unk[u]);
   for (const char *const *l = lit; !unk && *l; l++)
     if (!sp_kwargs_name_in(*l, allowed)) sp_kwargs_list_add(list, &n, &cnt, sp_sprintf(":%s", *l));
   for (sp_int i = 0; i < k->len; i++) {
+    const char *iv = sp_poly_inspect(k->data[i]);
+    int later = 0;   /* a key written after the `**` too: named here, where the `**` holds it */
+    for (int u = nb; u < nunk && !later; u++) later = !strcmp(iv, unk[u]);
     if (k->data[i].tag == SP_TAG_SYM) {
       const char *nm = sp_sym_to_s((sp_sym)k->data[i].v.i);
-      if (sp_kwargs_name_in(nm, allowed) || sp_kwargs_name_in(nm, lit)) continue;
+      if (sp_kwargs_name_in(nm, allowed) || (!later && sp_kwargs_name_in(nm, lit))) continue;
     }
-    const char *iv = sp_poly_inspect(k->data[i]);
-    if (unk && sp_kwargs_name_in(iv, unk)) continue;   /* a literal key's, named already */
+    int ahead = 0;   /* a literal key's ahead of the `**`, named already */
+    for (int u = 0; u < nb && !ahead; u++) ahead = !strcmp(iv, unk[u]);
+    if (ahead) continue;
     sp_kwargs_list_add(list, &n, &cnt, iv);
   }
+  for (int u = nb; u < nunk; u++) {
+    int in_hash = 0;
+    for (sp_int i = 0; i < k->len && !in_hash; i++) in_hash = !strcmp(sp_poly_inspect(k->data[i]), unk[u]);
+    if (!in_hash) sp_kwargs_list_add(list, &n, &cnt, unk[u]);
+  }
   if (cnt) sp_raise_kw_error("unknown", cnt, list);
+}
+static void sp_kwargs_verify_lit(sp_RbVal h, const char *const *allowed, const char *const *required,
+                                 const char *const *lit, const char *const *unk, int check_unknown) {
+  sp_kwargs_verify_at(h, allowed, required, lit, unk, -1, check_unknown);
 }
 static void sp_kwargs_verify(sp_RbVal h, const char *const *allowed, const char *const *required,
                              const char *const *lit, int check_unknown) {
@@ -13844,17 +13904,34 @@ extern SP_TLS sp_RbVal _sp_proc_poly_args[SP_PROC_ARG_SLOTS];
 #else
 SP_TLS sp_RbVal _sp_proc_poly_args[SP_PROC_ARG_SLOTS];
 #endif
-/* The block passed to a first-class proc's .call { }: the caller publishes it
-   here just before sp_proc_call, and the callee's &block-param prologue
-   consumes (and clears) it. Same discipline as _sp_proc_poly_args (#2648). */
-static SP_TLS sp_Proc *_sp_proc_blk;
+/* The block channel (_sp_proc_blk, declared above): the kernel TU owns it. */
+#ifndef SPINEL_EXT_HOST
+SP_TLS sp_Proc *_sp_proc_blk;
+#endif
 static SP_TLS void *_sp_ie_self;
 /* What the call site's trailing argument is: 1 a positional (a Hash passed
-   as `pr.call(5, {k: 2})`), 2 keywords, 0 not said (a runtime path). The
-   boxed channel carries both the same way, and since Ruby 3 a proc binds
-   keywords only from a keyword argument. Every proc prologue consumes (and
-   clears) it, the same discipline as _sp_proc_blk. */
+   as `pr.call(5, {k: 2})`), 2 keywords, 3 keywords that came to nothing
+   (an empty `**h`, which passes no argument), 0 not said (a runtime path).
+   The boxed channel carries both the same way, and since Ruby 3 a proc
+   binds keywords only from a keyword argument. Every proc prologue
+   consumes (and clears) it, the same discipline as _sp_proc_blk. */
 static SP_TLS int _sp_proc_kwpos;
+/* CRuby's proc distribution of n positional values into P leading
+   requireds, O optionals, Q posts and a rest marker R, at run time (the
+   compiler's block_fill decides it when n is static): *ot is how many
+   optionals take a value, *ps the index of the first post's value (past n,
+   the posts bind nil). Requireds (leading and post) take theirs first, the
+   optionals what remains left to right, a rest the middle; values past
+   them all are dropped. */
+static inline void sp_proc_fill(sp_int P, sp_int O, sp_int Q, int R, sp_int n, sp_int *ot, sp_int *ps) {
+  sp_int o = n - P - Q;
+  if (o < 0) o = 0;
+  if (o > O) o = O;
+  sp_int rl = R ? n - P - o - Q : 0;
+  if (rl < 0) rl = 0;
+  *ot = o;
+  *ps = P + o + rl;
+}
 /* ---- --rbs seed assertions (-DSP_RBS_CHECK) ----------------------------
    A seed is trusted, never verified (docs/rbs-extract.md): the analyzer pins
    the slot and codegen narrows whatever arrives into it, so a signature the
@@ -13887,8 +13964,14 @@ static sp_RbVal sp_rbs_check(sp_RbVal v, int want, const char *slot, const char 
 #ifdef SPINEL_EXT_HOST
 sp_int sp_proc_call(sp_Proc *p, sp_int argc, sp_int *args);
 #else
-sp_int sp_proc_call(sp_Proc *p, sp_int argc, sp_int *args) { if (!p || !p->fn) return 0; if (!args) { sp_int noargs[16] = {0}; return ((sp_int (*)(void *, sp_int, sp_int *))p->fn)(p->cap, 0, noargs); } return ((sp_int (*)(void *, sp_int, sp_int *))p->fn)(p->cap, argc, args); }
+sp_int sp_proc_call(sp_Proc *p, sp_int argc, sp_int *args) { if (!p || !p->fn) return 0; _sp_proc_blk = NULL; if (!args) { sp_int noargs[16] = {0}; return ((sp_int (*)(void *, sp_int, sp_int *))p->fn)(p->cap, 0, noargs); } return ((sp_int (*)(void *, sp_int, sp_int *))p->fn)(p->cap, argc, args); }
 #endif
+/* sp_proc_call with a block: `pr.call(x) { }` or `pr.call(x, &b)` */
+static inline sp_int sp_proc_call_blk(sp_Proc *p, sp_Proc *blk, sp_int argc, sp_int *args) {
+  if (!p || !p->fn) return 0;
+  _sp_proc_blk = blk;
+  return ((sp_int (*)(void *, sp_int, sp_int *))p->fn)(p->cap, argc, args);
+}
 /* The receiver of a written `<proc>.call` / `.()` / `[]` / `.yield`. A nil
    Proc slot is NULL, and sp_proc_call answers 0 for NULL because the runtime
    passes an absent block that way on purpose; a call the program wrote on
@@ -14410,6 +14493,7 @@ static sp_RbVal sp_class_value_new_fallback(sp_RbVal cls, const char *cn, sp_int
   return sp_box_nil();
 }
 static void sp_proc_call_spread(sp_Proc *p, sp_RbVal arr, int kwpos);
+static void sp_proc_call_spread_blk(sp_Proc *p, sp_Proc *blk, sp_RbVal arr, int kwpos);
 static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
   SP_GC_ROOT_RBVAL(recv);
   /* The block is this loop's only handle on its own captures: the caller's
@@ -14698,7 +14782,7 @@ static sp_RbVal sp_env_filter_bang_opt(sp_Proc *p, int keep) {
   if (sp_env_filter_core(p, keep) == 0) return sp_box_nil();
   return sp_box_obj(sp_env_to_h(), SP_BUILTIN_STR_STR_HASH);
 }
-static void sp_proc_call_spread(sp_Proc *p, sp_RbVal arr, int kwpos) { SP_GC_ROOT(p);
+static void sp_proc_call_spread_blk(sp_Proc *p, sp_Proc *blk, sp_RbVal arr, int kwpos) { SP_GC_ROOT(p);
   if (!p || !p->fn) return;
   sp_int n = sp_poly_length(arr);
   sp_int fill = n > 16 ? 16 : n;
@@ -14721,7 +14805,10 @@ static void sp_proc_call_spread(sp_Proc *p, sp_RbVal arr, int kwpos) { SP_GC_ROO
      shares the scan hook but is not a lambda. */
   sp_int pass = (p->cap_scan == sp_bm_cap_scan && p->lambda_p) ? n : fill;
   _sp_proc_kwpos = kwpos;
-  sp_proc_call(p, pass, slots);
+  sp_proc_call_blk(p, blk, pass, slots);
+}
+static void sp_proc_call_spread(sp_Proc *p, sp_RbVal arr, int kwpos) {
+  sp_proc_call_spread_blk(p, NULL, arr, kwpos);
 }
 /* sp_proc_yield with an argument list whose length is known only at run
    time (a splat, or a `**h` that passes nothing when empty) */
@@ -14927,6 +15014,7 @@ static sp_RbVal sp_poly_callable_call_kw(sp_RbVal v, sp_int n, const sp_int *arg
   if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id == SP_BUILTIN_METHOD) {
     sp_int slots[16];
     for (sp_int i = 0; i < n && i < 16; i++) slots[i] = args[i];
+    _sp_proc_blk = NULL;
     sp_method_proc_tramp((void *)v.v.p, n < 16 ? n : 16, slots);
     return _sp_proc_poly_ret;
   }
@@ -14945,6 +15033,71 @@ static sp_RbVal sp_poly_callable_call(sp_RbVal v, sp_int n, const sp_int *args) 
   return sp_poly_callable_call_kw(v, n, args, 0);
 }
 
+/* Enter a bound Method's trampoline with the call's keyword flag (kwpos,
+   as for a proc: 2 the trailing argument is keywords, 1 a positional) and
+   block. Only the Method's thunk reads them, and it takes both off their
+   channels first thing (emit_method_tramp_fn); the stamped lanes never
+   look. So they are set only when sp_method_proc_tramp is about to take
+   the thunk, and cleared otherwise: a flag or block set for a lane that
+   does not consume it stayed behind -- through a raise, too -- for the next
+   body entered without one of its own. */
+static void sp_bm_enter(sp_BoundMethod *m, sp_int n, sp_int *slots, int kwpos, sp_Proc *blk) {
+  int thunk = m && m->fn && m->thunk && !m->unbound && n <= SP_PROC_ARG_SLOTS;
+  _sp_proc_kwpos = thunk ? kwpos : 0;
+  _sp_proc_blk = thunk ? blk : NULL;
+  sp_method_proc_tramp((void *)m, n, slots);
+}
+/* sp_bm_call_boxed for a site that says what its trailing argument is: a
+   Method call of plain positionals passes a Hash as a positional, which the
+   thunk, told nothing, took as keywords past the required count. */
+static sp_RbVal sp_bm_call_boxed_kw(sp_BoundMethod *m, sp_int n, int kwpos) {
+  sp_int slots[16];
+  for (sp_int i = 0; i < n && i < 16; i++) slots[i] = _sp_proc_poly_args[i].v.i;
+  sp_bm_enter(m, n < 16 ? n : 16, slots, kwpos, NULL);
+  return _sp_proc_poly_ret;
+}
+/* Call a bound Method with a dynamic argument list, as the site laid it
+   out: every positional, each splat spread, the keywords last (kwpos says
+   whether the trailing element is keywords, as for a proc), and the block.
+   The generic trampoline picks the lane; the Method's thunk binds the list
+   by the target's parameters -- a rest and its posts, omitted optionals,
+   the keywords, `**nil`'s refusal, the `&blk` -- which the stamped fixed
+   casts cannot. A Method whose target the site cannot name (a local
+   written to more than one method, one read out of a slot) is called this
+   way whenever the call has more than plain positionals. */
+static sp_RbVal sp_bm_call_spread(sp_BoundMethod *m, sp_Proc *blk, sp_RbVal arr, int kwpos) {
+  if (!m || !m->fn)
+    sp_raise_cls("NoMethodError", sp_sprintf("undefined method '%s' for an instance of Object",
+                                             m && m->name ? m->name : "?"));
+  sp_int n = sp_poly_length(arr);
+  /* the Method lane publishes into the boxed side channel, so its ceiling
+     is that channel's -- a 17-argument call was refused outright */
+  if (n > SP_PROC_ARG_SLOTS) sp_raise_cls("NoMethodError", "undefined method 'call' for an instance of Method");
+  sp_int slots[SP_PROC_ARG_SLOTS];
+  for (sp_int i = 0; i < n; i++) {
+    sp_RbVal e = sp_poly_arr_get(arr, i);
+    /* The trampoline rejects an argument whose scalar kind does not match
+       the Method's stamped slot (or a pointer/float/bigint, which has no
+       sp_int slot at all) after reading it back from the published boxed
+       side-channel below, the same way a statically-typed .call declines via
+       sp_bm_legacy_abi_ok. */
+    _sp_proc_poly_args[i] = e;
+    /* So this raw view is SPECULATIVE: the trampoline may never look at it,
+       and for a Float or a Bignum it is guaranteed not to -- neither has an
+       sp_int slot to be read from. Converting them anyway used to saturate
+       in silence and now raises past the machine word (#4688), which turned
+       a speculative conversion into the answer: `m.call(*args)` with a wide
+       Float died on an argument the target was about to receive boxed and
+       intact, whatever ABI it was stamped with (#4704 regression). The
+       value here is a placeholder for exactly the kinds that have no slot. */
+    slots[i] = (e.tag == SP_TAG_OBJ || e.tag == SP_TAG_STR)
+                 ? (sp_int)(uintptr_t)e.v.p
+             : (e.tag == SP_TAG_FLT || e.tag == SP_TAG_BIGINT) ? 0
+             : sp_poly_to_i(e);
+  }
+  sp_bm_enter(m, n, slots, kwpos, blk);
+  return _sp_proc_poly_ret;
+}
 /* Call a boxed callable with a dynamic (spread) argument list. Unlike the
    fixed-arity sp_poly_callable_call this cannot be selected at the call site
    by a stamped signature: the value may be a Proc, a Curry, or a bound Method,
@@ -14962,36 +15115,8 @@ static sp_RbVal sp_poly_callable_spread(sp_RbVal v, sp_RbVal arr, int kwpos) {
     for (sp_int i = 0; i < n && i < 16; i++) args[i] = sp_poly_arr_get(arr, i);
     return sp_curry_call_poly((sp_Curry *)v.v.p, n < 16 ? n : 16, args);
   }
-  if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id == SP_BUILTIN_METHOD) {
-    sp_int n = sp_poly_length(arr);
-    /* the Method lane publishes into the boxed side channel, so its ceiling
-       is that channel's -- a 17-argument call was refused outright */
-    if (n > SP_PROC_ARG_SLOTS) sp_raise_cls("NoMethodError", "undefined method 'call' for an instance of Method");
-    sp_int slots[SP_PROC_ARG_SLOTS];
-    for (sp_int i = 0; i < n; i++) {
-      sp_RbVal e = sp_poly_arr_get(arr, i);
-      /* The trampoline rejects an argument whose scalar kind does not match
-         the Method's stamped slot (or a pointer/float/bigint, which has no
-         sp_int slot at all) after reading it back from the published boxed
-         side-channel below, the same way a statically-typed .call declines via
-         sp_bm_legacy_abi_ok. */
-      _sp_proc_poly_args[i] = e;
-      /* So this raw view is SPECULATIVE: the trampoline may never look at it,
-         and for a Float or a Bignum it is guaranteed not to -- neither has an
-         sp_int slot to be read from. Converting them anyway used to saturate
-         in silence and now raises past the machine word (#4688), which turned
-         a speculative conversion into the answer: `m.call(*args)` with a wide
-         Float died on an argument the target was about to receive boxed and
-         intact, whatever ABI it was stamped with (#4704 regression). The
-         value here is a placeholder for exactly the kinds that have no slot. */
-      slots[i] = (e.tag == SP_TAG_OBJ || e.tag == SP_TAG_STR)
-                   ? (sp_int)(uintptr_t)e.v.p
-               : (e.tag == SP_TAG_FLT || e.tag == SP_TAG_BIGINT) ? 0
-               : sp_poly_to_i(e);
-    }
-    sp_method_proc_tramp((void *)v.v.p, n, slots);
-    return _sp_proc_poly_ret;
-  }
+  if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id == SP_BUILTIN_METHOD)
+    return sp_bm_call_spread((sp_BoundMethod *)v.v.p, NULL, arr, kwpos);
   if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id == SP_BUILTIN_PROC) {
     sp_proc_call_spread((sp_Proc *)v.v.p, arr, kwpos);
     return _sp_proc_poly_ret;

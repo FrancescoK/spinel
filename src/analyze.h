@@ -38,6 +38,7 @@ int an_send_name_is_computed(Compiler *c, int arg);
 int an_str_mutator_name(const char *nm);
 int an_indexed_each_source(const NodeTable *nt, int recv);
 void an_node_dir(const NodeTable *nt, int id, char *dir, size_t cap);
+const char *an_memo_reader_ivar(Compiler *c, int mi);
 
 /* Infer (and cache) the type of node `id`. Used during analysis; codegen
    reads the cached results via comp_ntype. */
@@ -199,7 +200,7 @@ int method_recv_node(Compiler *c, int recv);          /* the method(:sym) node b
 int method_recv_nodes(Compiler *c, int recv, int *out, int cap); /* every one a re-written local may hold */
 int method_expr_is_unbound(Compiler *c, int recv);    /* instance_method with no #bind crossed */
 int class_is_blank_slate(Compiler *c, int ci);        /* explicit `< BasicObject` descent */
-int proc_to_proc_method_node(Compiler *c, int recv); /* the method(:sym) node behind <method>.to_proc */
+int proc_to_proc_method_nodes(Compiler *c, int recv, int *out, int cap); /* the method(:sym) nodes behind <method>.to_proc */
 int method_call_param_shift(Compiler *c, int mn, int mi); /* 1 when self carries param[0] (__bam wrapper) */
 
 /* Can a call ever arrive at an instance method of class/module `ci`? Only
@@ -285,4 +286,9 @@ void arg_layout_free(ArgLayout *L);
 /* May source `s` of a gathered call (argument s, or at pos_argc the hash
    the gather carries by gather_kwh) land in parameter i (analyze_pass.c)? */
 int gather_reaches(Compiler *c, Scope *m, const int *argv, int pos_argc, int gather_kwh, int s, int i);
+/* Does a bare `super` from `s` into `pm` pass `s`'s keywords as one more
+   positional Hash? It does when `pm` takes no keyword at all (no keyword
+   parameter, no `**kwrest`, no `**nil`) and `s` declares one: CRuby
+   passes them as keywords, which such a method takes positionally. */
+int zsuper_kw_positional(Compiler *c, Scope *s, Scope *pm);
 #endif

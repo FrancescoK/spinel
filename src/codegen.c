@@ -1,6 +1,10 @@
 #include <limits.h>
 #include "codegen_internal.h"
 
+/* classes whose pool a proc or fiber body has declared, per program */
+static unsigned char *g_pool_fwd = NULL;
+static int g_pool_fwd_n = 0;
+
 /* A reference-backed builtin (IO/Fiber/Thread/Queue/Mutex/ConditionVariable/
    Enumerator/Exception/Proc/Method) is a genuinely nilable C pointer: an unset
    ivar, a `return nil` method, or a cache miss yields NULL. It must box via
@@ -1239,10 +1243,14 @@ int call_returns_nullable_int(Compiler *c, int node) {
 void emit_boxed(Compiler *c, int node, Buf *b) {
   /* Parentheses are transparent: box the inner expression directly so a
      wrapped yield (`out << (yield x)`) reaches the per-call-site yield boxing
-     below rather than being boxed by the shared node type (#2454). */
+     below rather than being boxed by the shared node type (#2454). Not a
+     call argument that already ran into a temp (the g_argov overrides name
+     the parenthesized node): unwrapped, the inner expression ran again,
+     `m(**(lg(h)))` beside keywords that run ahead running lg twice, and
+     `m(x, (x = lg(2)))` into a boxed parameter printing twice. */
   {
     const char *pty = nt_type(c->nt, node);
-    if (pty && sp_streq(pty, "ParenthesesNode")) {
+    if (pty && sp_streq(pty, "ParenthesesNode") && !arg_ran_first(node, 0)) {
       int pbody = nt_ref(c->nt, node, "body"); int pbn = 0;
       const int *pbd = pbody >= 0 ? nt_arr(c->nt, pbody, "body", &pbn) : NULL;
       if (pbn == 1) { emit_boxed(c, pbd[0], b); return; }
@@ -2500,7 +2508,7 @@ static int fi_first_scope_named(Compiler *c, const char *nm) {
 
 /* Every user method a call could reach: by the receiver's class when it names
    one, by the bare name when the receiver is boxed or absent. */
-static void fi_callees(Compiler *c, int callnode, int *out, int *n, int max) {
+static void fi_callees_walk(Compiler *c, int callnode, int *out, int *n, int max) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, callnode, "name");
   if (!nm) return;
@@ -2556,18 +2564,108 @@ static int fi_body_unforceable(Compiler *c, int id, int depth) {
 static int g_fi_trunc;
 
 /* Collect every call node in a method's body subtree. */
-static void fi_collect_calls(Compiler *c, int id, int *out, int *n, int max, int depth) {
+static void fi_collect_calls_walk(Compiler *c, int id, int *out, int *n, int max, int depth) {
   const NodeTable *nt = c->nt;
   if (id < 0) return;
   if (depth > 4096 || *n >= max) { g_fi_trunc = 1; return; }
   if (nt_kind(nt, id) == NK_CallNode) out[(*n)++] = id;
   int nr = nt_num_refs(nt, id);
-  for (int i = 0; i < nr; i++) fi_collect_calls(c, nt_ref_at(nt, id, i), out, n, max, depth + 1);
+  for (int i = 0; i < nr; i++) fi_collect_calls_walk(c, nt_ref_at(nt, id, i), out, n, max, depth + 1);
   int na = nt_num_arrs(nt, id);
   for (int i = 0; i < na; i++) {
     int cn = 0; const int *ids = nt_arr_at(nt, id, i, &cn);
-    for (int j = 0; j < cn; j++) fi_collect_calls(c, ids[j], out, n, max, depth + 1);
+    for (int j = 0; j < cn; j++) fi_collect_calls_walk(c, ids[j], out, n, max, depth + 1);
   }
+}
+
+/* Not re-walked per ask: fi_build's fixpoints re-list every body's calls and callees on each of up to 256 rounds. */
+typedef struct { int a, b, n, trunc; int *ids; } FiMemo;
+static FiMemo *g_fi_memo;
+static int g_fi_memo_cap, g_fi_memo_n, g_fi_memo_on;
+
+static void fi_memo_reset(int on) {
+  for (int i = 0; i < g_fi_memo_cap; i++) if (g_fi_memo[i].ids) free(g_fi_memo[i].ids);
+  free(g_fi_memo);
+  g_fi_memo = NULL;
+  g_fi_memo_cap = g_fi_memo_n = 0;
+  g_fi_memo_on = on;
+}
+
+static unsigned fi_memo_hash(int a, int b, int cap) {
+  return ((unsigned)a * 2654435761u ^ (unsigned)b * 40503u) & (unsigned)(cap - 1);
+}
+
+static FiMemo *fi_memo_slot(int a, int b) {
+  if (g_fi_memo_n * 2 >= g_fi_memo_cap) {
+    int cap = g_fi_memo_cap ? g_fi_memo_cap * 2 : 1024;
+    FiMemo *grown = (FiMemo *)calloc((size_t)cap, sizeof(FiMemo));
+    if (!grown) return NULL;
+    for (int i = 0; i < cap; i++) grown[i].n = -1;
+    for (int i = 0; i < g_fi_memo_cap; i++) {
+      if (g_fi_memo[i].n < 0) continue;
+      unsigned h = fi_memo_hash(g_fi_memo[i].a, g_fi_memo[i].b, cap);
+      while (grown[h].n >= 0) h = (h + 1) & (unsigned)(cap - 1);
+      grown[h] = g_fi_memo[i];
+    }
+    free(g_fi_memo);
+    g_fi_memo = grown;
+    g_fi_memo_cap = cap;
+  }
+  unsigned h = fi_memo_hash(a, b, g_fi_memo_cap);
+  while (g_fi_memo[h].n >= 0) {
+    if (g_fi_memo[h].a == a && g_fi_memo[h].b == b) return &g_fi_memo[h];
+    h = (h + 1) & (unsigned)(g_fi_memo_cap - 1);
+  }
+  g_fi_memo[h].a = a;
+  g_fi_memo[h].b = b;
+  return &g_fi_memo[h];
+}
+
+static int fi_memo_store(FiMemo *m, const int *ids, int n, int trunc) {
+  m->ids = (int *)malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+  if (!m->ids) return 0;
+  memcpy(m->ids, ids, sizeof(int) * (size_t)n);
+  m->n = n;
+  m->trunc = trunc;
+  g_fi_memo_n++;
+  return 1;
+}
+
+static void fi_collect_calls(Compiler *c, int id, int *out, int *n, int max, int depth) {
+  if (!g_fi_memo_on || depth != 0 || *n != 0 || id < 0) { fi_collect_calls_walk(c, id, out, n, max, depth); return; }
+  FiMemo *m = fi_memo_slot(id, max);
+  if (m && m->n >= 0) {
+    memcpy(out, m->ids, sizeof(int) * (size_t)m->n);
+    *n = m->n;
+    if (m->trunc) g_fi_trunc = 1;
+    return;
+  }
+  int sv = g_fi_trunc;
+  g_fi_trunc = 0;
+  fi_collect_calls_walk(c, id, out, n, max, depth);
+  int t = g_fi_trunc;
+  g_fi_trunc = sv | t;
+  if (m) fi_memo_store(m, out, *n, t);
+}
+
+/* Not listed per `max`: a smaller one is a prefix of the full list, since the walk appends in scope order. */
+static void fi_callees(Compiler *c, int callnode, int *out, int *n, int max) {
+  enum { FI_CALLEES_FULL = 65536 };
+  if (!g_fi_memo_on || *n != 0 || max > FI_CALLEES_FULL) { fi_callees_walk(c, callnode, out, n, max); return; }
+  FiMemo *m = fi_memo_slot(callnode, -1);
+  if (m && m->n < 0) {
+    int *full = (int *)malloc(sizeof(int) * FI_CALLEES_FULL);
+    if (!full) { fi_callees_walk(c, callnode, out, n, max); return; }
+    int fn = 0;
+    fi_callees_walk(c, callnode, full, &fn, FI_CALLEES_FULL);
+    int ok = fi_memo_store(m, full, fn, 0);
+    free(full);
+    if (!ok) { fi_callees_walk(c, callnode, out, n, max); return; }
+  }
+  if (!m) { fi_callees_walk(c, callnode, out, n, max); return; }
+  int k = m->n < max ? m->n : max;
+  memcpy(out, m->ids, sizeof(int) * (size_t)k);
+  *n = k;
 }
 
 static int fi_reaches(Compiler *c, int from, int target, unsigned char *seen,
@@ -2786,6 +2884,7 @@ static int fi_all_calls(Compiler *c, int body, int **buf, int *cap, int *nc) {
 
 static void fi_build(Compiler *c) {
   const NodeTable *nt = c->nt;
+  fi_memo_reset(1);
   free(g_fi_state);
   g_fi_state = (unsigned char *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), 1);
   g_fi_nscopes = c->nscopes; g_fi_nt = nt; g_fi_ntcount = nt->count;
@@ -3028,6 +3127,7 @@ static void fi_build(Compiler *c) {
   }
   for (int si = 0; si < c->nscopes; si++) g_fi_state[si] = cand[si] ? 1 : 2;
   free(cand);
+  fi_memo_reset(0);
 }
 
 static int method_inline_force(Compiler *c, Scope *s) {
@@ -4671,6 +4771,9 @@ void proc_collect_used(Compiler *c, int id, NameSet *out) {
     if (ys && (ys->is_lowered_yield || ys->is_proc_form) && ys->blk_param && ys->blk_param[0])
       nameset_add(out, ys->blk_param);
   }
+  Scope *fs = sp_streq(ty, "ForwardingSuperNode") ? comp_scope_of(c, id) : NULL;
+  for (int i = 0; fs && i < fs->nparams; i++) nameset_add(out, fs->pnames[i]);
+  if (fs && fs->blk_param && fs->blk_param[0]) nameset_add(out, fs->blk_param);
   int nr = nt_num_refs(c->nt, id);
   for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (ch >= 0) proc_collect_used(c, ch, out); }
   int na = nt_num_arrs(c->nt, id);
@@ -5143,6 +5246,9 @@ static int gen_yields_multi(const NodeTable *nt, int id, const char *yname) {
   return 0;
 }
 
+/* emitting a fiber body, which lands in g_procs ahead of the constructors */
+static int g_in_fiber_body = 0;
+
 void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   nd_stamp(nt_ref(c->nt, id, "block"), ND_BLOCK_PROC);   /* the body is a function of its own */
   const NodeTable *nt = c->nt;
@@ -5319,6 +5425,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
      scope). */
   Buf body_buf = {0};
   Buf *pb = &body_buf;
+  g_in_fiber_body++;
   buf_printf(pb, "static void %s(sp_Fiber *_fb) {\n", fname);
   buf_puts(pb, "    SP_GC_SAVE();\n");
   size_t fib_frame_ins = pb->len;
@@ -5414,21 +5521,23 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
        (nil past the end), matching a positional block binding (#2976) */
     for (int bi = 0; bi < nbp; bi++) {
       const char *bpn = rename_local(bp_names[bi]);
-      buf_printf(pb, "    sp_RbVal lv_%s = sp_poly_index_poly(_fb->resumed_value, sp_box_int(%d));\n", bpn, bi);
+      /* one non-array value binds the first param only, as a proc does */
+      buf_printf(pb, "    sp_RbVal lv_%s = (_fb->resumed_value.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_fb->resumed_value.cls_id))"
+                     " ? sp_poly_index_poly(_fb->resumed_value, sp_box_int(%d)) : %s;\n",
+                 bpn, bi, bi == 0 ? "_fb->resumed_value" : "sp_box_nil()");
       buf_printf(pb, "    SP_GC_ROOT_RBVAL(lv_%s);\n", bpn);
     }
   }
   else if (rest_bind) {
-    /* A rest param collects the resume arguments as an array: nil (no
-       arguments) is empty, a packed multi-argument value is already the list,
-       and a single argument becomes a one-element list. A single ARRAY
-       argument is indistinguishable from a packed pair here -- the fiber
-       carries one value and no arity -- so `resume([1, 2])` binds [1, 2]
-       rather than [[1, 2]]; carrying the count would be the fix. */
+    /* A rest param collects the resume arguments as an array. pass_argc says
+       how many there were, so resume([1, 2]) binds [[1, 2]] and resume(nil)
+       [nil]. When it isn't known (-1: a splat, or a Thread's argument) nil is
+       empty, an array is the list, and anything else a one-element list. */
     const char *bpn = rename_local(bp_rest);
-    buf_printf(pb, "    sp_PolyArray *lv_%s = ({ sp_RbVal _rv = _fb->resumed_value;"
-                   " _rv.tag == SP_TAG_NIL ? sp_PolyArray_new()"
-                   " : (_rv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_rv.cls_id))"
+    buf_printf(pb, "    sp_PolyArray *lv_%s = ({ sp_RbVal _rv = _fb->resumed_value; int _pn = _fb->pass_argc;"
+                   " _pn > 1 ? sp_poly_to_poly_array(_rv)"
+                   " : _pn == 0 || (_pn < 0 && _rv.tag == SP_TAG_NIL) ? sp_PolyArray_new()"
+                   " : (_pn < 0 && _rv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_rv.cls_id))"
                    " ? sp_poly_to_poly_array(_rv)"
                    " : ({ sp_PolyArray *_ra = sp_PolyArray_new(); sp_PolyArray_push(_ra, _rv); _ra; }); });\n", bpn);
     buf_printf(pb, "    SP_GC_ROOT(lv_%s);\n", bpn);
@@ -5440,7 +5549,8 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
        `<<` the runtime answers with Fiber.yield; the body's own `y << v` is
        lowered to Fiber.yield directly (g_yielder_name) */
     if (as_gen) buf_printf(pb, "    sp_RbVal lv_%s = sp_box_obj((void *)_fb, SP_BUILTIN_YIELDER);\n", bpn);
-    else buf_printf(pb, "    sp_RbVal lv_%s = _fb->resumed_value;\n", bpn);
+    /* |a| takes the first of several values, as a proc does */
+    else buf_printf(pb, "    sp_RbVal lv_%s = _fb->pass_argc > 1 ? sp_poly_index_poly(_fb->resumed_value, sp_box_int(0)) : _fb->resumed_value;\n", bpn);
     buf_printf(pb, "    SP_GC_ROOT_RBVAL(lv_%s);\n", bpn);
     /* captured by a lifted proc: it lives in a cell, seeded from the slot */
     { LocalVar *blv = encl ? scope_local(encl, bp0) : NULL;
@@ -5569,6 +5679,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
      precede this definition there; both sit at file scope. */
   buf_puts(&g_procs, body_buf.p ? body_buf.p : "");
   free(body_buf.p);
+  g_in_fiber_body--;
 
   /* Restore emission state */
   g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block; g_block_nren = sv_bnren;
@@ -6505,6 +6616,22 @@ else if (orecv >= 0 && onm) {
   if (ncap == 0 && !cap_self && !cap_cls && !ret_proc) buf_puts(pb, "    (void)_cap;\n");
   buf_puts(pb, "    (void)args;\n");
   buf_puts(pb, "    (void)argc;\n");
+  /* `&b`: the block the call that entered this body was given, on the
+     _sp_proc_blk side-channel; nil (NULL) when none was (#2648). Read
+     before anything below can enter another proc -- a default, a keyword's
+     default, the lambda's arity raise -- which sets the channel for its own
+     call. */
+  {
+    int pnb = proc_params_node(c, create);
+    int bpar = pnb >= 0 ? nt_ref(nt, pnb, "block") : -1;
+    const char *bpty = bpar >= 0 ? nt_type(nt, bpar) : NULL;
+    const char *bpn = (bpty && sp_streq(bpty, "BlockParameterNode")) ? nt_str(nt, bpar, "name") : NULL;
+    if (bpn) {
+      g_needs_proc_poly_argslot = 1;
+      buf_printf(pb, "    sp_Proc *lv_%s = _sp_proc_blk; _sp_proc_blk = NULL; (void)lv_%s;%c",
+                 bpn, bpn, 10);
+    }
+  }
   /* Captured instance self, read back from _cap (#1436). (void) guards the
      over-approximating use-of-self detection. */
   if (cap_self && self_is_value) {
@@ -6541,8 +6668,8 @@ else if (orecv >= 0 && onm) {
   if (has_kwp) {
     g_needs_proc_poly_argslot = 1;
     buf_printf(pb, "    int _sp_kwpos = _sp_proc_kwpos; _sp_proc_kwpos = 0;\n"
-                   "    sp_int _sp_haskw = argc > 0 && argc <= 16 && _sp_kwpos != 1"
-                   " && (_sp_kwpos == 2 || argc > %d)"
+                   "    sp_int _sp_haskw = argc > 0 && argc <= 16"
+                   " && (_sp_kwpos == 2 || (_sp_kwpos == 0 && argc > %d))"
                    " && _sp_proc_poly_args[argc-1].tag == SP_TAG_OBJ"
                    " && sp_poly_is_hash_kind(_sp_proc_poly_args[argc-1].cls_id);\n"
                    "    sp_RbVal _sp_kwh = _sp_haskw ? _sp_proc_poly_args[argc-1] : sp_box_nil();"
@@ -6552,7 +6679,20 @@ else if (orecv >= 0 && onm) {
       buf_puts(pb, "    if (_sp_haskw && sp_poly_length(_sp_kwh) > 0)"
                    " sp_raise_cls(\"ArgumentError\", \"no keywords accepted\");\n");
   }
-  else buf_puts(pb, "    _sp_proc_kwpos = 0;\n");
+  /* A block that takes only leading requireds (a trailing comma's rest
+     among them) auto-splats a lone Array whatever keywords came; any other
+     shape only for a call that passed none, an empty `**h` too (kwpos 3):
+     `proc { |a, *r| }.call([1, 2], **{})` binds a = [1, 2]. */
+  int as_lead_only = 0, has_rest_marker = 0;
+  { int pnr = proc_params_node(c, create);
+    int rn = pnr >= 0 ? nt_ref(nt, pnr, "rest") : -1;
+    has_rest_marker = rn >= 0;
+    as_lead_only = !nopts && !nposts && !has_kwp &&
+                   (rn < 0 ? arity > 1 : arity >= 1 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "ImplicitRestNode")); }
+  int as_gate = !is_lambda && !as_lead_only && block_auto_splats(arity, nopts, nposts, has_rest_marker);
+  if (!has_kwp && as_gate)
+    buf_puts(pb, "    int _sp_kwpos = _sp_proc_kwpos; _sp_proc_kwpos = 0;\n");
+  else if (!has_kwp) buf_puts(pb, "    _sp_proc_kwpos = 0;\n");
   /* `arity` counts numbered parameters when the block carries a
      NumberedParametersNode, so adding nnumbered there counts them twice and a
      `lambda { _1 }.call("a")` was rejected as taking two. Only the
@@ -6571,14 +6711,11 @@ else if (orecv >= 0 && onm) {
      (block_auto_splats): `proc { |k, v = 5| }.call([:a, 1])` binds k = :a.
      Rewrite the argument view (both the sp_int[] slots and the boxed
      side-channel) from the array's elements before binding. */
-  int has_rest_marker = 0;
-  { int pnr = proc_params_node(c, create);
-    has_rest_marker = pnr >= 0 && nt_ref(nt, pnr, "rest") >= 0; }
   if (!is_lambda && block_auto_splats(arity, nopts, nposts, has_rest_marker)) {
     g_needs_proc_poly_argslot = 1;
     buf_puts(pb, "    sp_int _sp_as_buf[16];\n");
-    buf_printf(pb, "    if (argc == 1%s && _sp_proc_poly_args[0].tag == SP_TAG_OBJ && sp_poly_is_array_kind(_sp_proc_poly_args[0].cls_id)) {\n",
-               has_kwp ? " && !_sp_haskw" : "");
+    buf_printf(pb, "    if (argc == 1%s%s && _sp_proc_poly_args[0].tag == SP_TAG_OBJ && sp_poly_is_array_kind(_sp_proc_poly_args[0].cls_id)) {\n",
+               has_kwp ? " && !_sp_haskw" : "", as_gate ? " && _sp_kwpos != 3" : "");
     buf_puts(pb, "      sp_RbVal _sp_as_a = _sp_proc_poly_args[0];\n");
     buf_puts(pb, "      sp_int _sp_as_n = sp_poly_length(_sp_as_a); if (_sp_as_n > 16) _sp_as_n = 16;\n");
     buf_puts(pb, "      for (sp_int _i = 0; _i < _sp_as_n; _i++) {\n");
@@ -6743,9 +6880,12 @@ else if (orecv >= 0 && onm) {
   /* Splat rest and trailing post params. Both read the boxed side-channel:
      every call path now publishes all args boxed (yield's lean ABI was
      retired for this), so any position is recoverable regardless of the
-     callee's static types. CRuby non-lambda distribution: leading requireds
-     from the front, posts from the back, the remainder (possibly empty) is
-     the rest; missing posts bind nil. */
+     callee's static types. They bind by the plan a yield's block does
+     (sp_proc_fill at run time, block_fill in emit_block_binds): requireds
+     leading and post first, optionals from what remains, a rest the
+     middle, extras dropped, missing posts nil. The posts were taken from
+     the end, so `proc { |a, b = 5, c| }.call(1, 2, 3, 4)` bound c = 4 and
+     `.call(1, "s", :t)` into `|a = 5, b|` bound b = :t. */
   /* A local a default binds (a block param in `x = a.map { |i| i }`) is
      declared ahead of the optional and keyword slots that evaluate it. */
   NameSet dlocals = {0};
@@ -6768,15 +6908,18 @@ else if (orecv >= 0 && onm) {
         buf_printf(pb, "    (void)lv__%d;\n", k + 1);
       }
     /* Optionals fill from the front with whatever arguments remain after the
-       requireds and the trailing posts; a slot with no argument evaluates its
+       requireds and the posts (_sp_ot of them); a slot with no argument evaluates its
        default (which may reference earlier params -- they are bound above /
        to the left). Boxed like rest/post: a first-class proc's optionals are
        type-erased at the call site. */
+    if (nopts > 0 || nposts > 0 || (restn && restn[0]))
+      buf_printf(pb, "    sp_int _sp_ot, _sp_ps; sp_proc_fill(%d, %d, %d, %d, argc, &_sp_ot, &_sp_ps);\n",
+                 arity, nopts, nposts, has_rest_marker);
     for (int j = 0; j < nopts; j++) {
       const char *on = proc_opt_name(c, create, j);
       if (!on) continue;
       char cond[96], arg[64];
-      snprintf(cond, sizeof cond, "%d + %d < argc - %d && %d + %d < 16", arity, j, nposts, arity, j);
+      snprintf(cond, sizeof cond, "%d < _sp_ot && %d + %d < 16", j, arity, j);
       snprintf(arg, sizeof arg, "_sp_proc_poly_args[%d + %d]", arity, j);
       { LocalVar *olv = scope_local(bs, on);
         emit_proc_param_slot(c, pb, on, cond, arg, proc_opt_value(c, create, j), "sp_box_nil()",
@@ -6784,17 +6927,15 @@ else if (orecv >= 0 && onm) {
     }
     if (restn && restn[0]) {
       buf_printf(pb, "    sp_PolyArray *lv_%s = sp_PolyArray_new(); SP_GC_ROOT(lv_%s);\n", restn, restn);
-      buf_printf(pb, "    { sp_int __k = %d + %d, __hi = argc - %d; if (__hi > 16) __hi = 16;\n",
-                 arity, nopts, nposts);
+      buf_printf(pb, "    { sp_int __k = %d + _sp_ot, __hi = _sp_ps; if (__hi > 16) __hi = 16;\n", arity);
       buf_printf(pb, "      for (; __k < __hi; __k++) sp_PolyArray_push(lv_%s, _sp_proc_poly_args[__k]); }\n",
                  restn);
     }
     for (int j = 0; j < nposts; j++) {
       const char *pp = proc_post_name(c, create, j);
       if (!pp) continue;
-      buf_printf(pb, "    sp_RbVal lv_%s = ({ sp_int __i = argc - %d + %d;\n", pp, nposts, j);
-      buf_printf(pb, "      (__i >= %d && __i < argc && __i < 16) ? _sp_proc_poly_args[__i] : sp_box_nil(); });\n",
-                 arity);
+      buf_printf(pb, "    sp_RbVal lv_%s = ({ sp_int __i = _sp_ps + %d;\n", pp, j);
+      buf_puts(pb, "      (__i < argc && __i < 16) ? _sp_proc_poly_args[__i] : sp_box_nil(); });\n");
       buf_printf(pb, "    (void)lv_%s;\n", pp);
     }
   }
@@ -6873,19 +7014,6 @@ else if (orecv >= 0 && onm) {
       snprintf(missing, sizeof missing, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), sp_box_nil())", key);
       LocalVar *klv = scope_local(bs, kn);
       emit_proc_param_slot(c, pb, kn, cond, arg, dv, missing, klv ? klv->type : TY_POLY);
-    }
-  }
-  /* `&b`: the block the caller attached to .call, delivered on the
-     _sp_proc_blk side-channel; nil (NULL) when none was given (#2648). */
-  {
-    int pnb = proc_params_node(c, create);
-    int bpar = pnb >= 0 ? nt_ref(nt, pnb, "block") : -1;
-    const char *bpty = bpar >= 0 ? nt_type(nt, bpar) : NULL;
-    const char *bpn = (bpty && sp_streq(bpty, "BlockParameterNode")) ? nt_str(nt, bpar, "name") : NULL;
-    if (bpn) {
-      g_needs_proc_poly_argslot = 1;
-      buf_printf(pb, "    sp_Proc *lv_%s = _sp_proc_blk; _sp_proc_blk = NULL; (void)lv_%s;%c",
-                 bpn, bpn, 10);
     }
   }
   /* `**kw`: the whole trailing kwargs hash, or an empty hash when the caller
@@ -7869,6 +7997,21 @@ void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b) {
     buf_printf(b, " _t%d; })", t);
   }
   else {
+    /* A proc or fiber body is written out ahead of the classes'
+       constructors, and so ahead of the SP_POOL_DEFINE this names: declare
+       the pool to it (a Class value's `new` built inline in a block did not
+       compile). */
+    if (g_in_proc_body || g_in_fiber_body) {
+      if (g_pool_fwd_n < c->nclasses) {
+        g_pool_fwd = realloc(g_pool_fwd, (size_t)c->nclasses);
+        memset(g_pool_fwd + g_pool_fwd_n, 0, (size_t)(c->nclasses - g_pool_fwd_n));
+        g_pool_fwd_n = c->nclasses;
+      }
+      if (!g_pool_fwd[cid]) {
+        g_pool_fwd[cid] = 1;
+        buf_printf(&g_proc_protos, "SP_POOL_DECLARE(%s)\n", ci->c_name);
+      }
+    }
     /* No SP_GC_ROOT needed: allocate runs no initialize, so nothing after the
        SP_POOL_NEW allocates (memset and sp_box_nil are non-allocating), and the
        fresh pointer is consumed by the enclosing expression with no intervening
@@ -8951,7 +9094,7 @@ static void emit_zsuper_param_fill(Compiler *c, Scope *pm, int i, Buf *b) {
   else buf_puts(b, tn);
 }
 
-static void emit_zsuper_arg(Compiler *c, TyKind st, TyKind dt, const char *pname, Buf *b);
+static void emit_zsuper_arg(Compiler *c, Scope *s, LocalVar *dst, TyKind dt, const char *pname, Buf *b);
 
 /* A bare `super` passes the method's own positionals, in order, and its
    keywords by name, and the parent binds them as it binds any call's
@@ -9002,12 +9145,13 @@ static int emit_zsuper_kwrest(Compiler *c, Scope *s, Scope *pm) {
   buf_printf(g_pre, "%s *_t%d = %s_new(); SP_GC_ROOT(_t%d);\n", hk, t, hk, t);
   if (s->kwrest_idx >= 0) {
     LocalVar *kv = scope_local(s, s->pnames[s->kwrest_idx]);
-    char txt[128]; snprintf(txt, sizeof txt, "lv_%s", rename_local(s->pnames[s->kwrest_idx]));
+    Buf txt; memset(&txt, 0, sizeof txt); emit_scope_local_ref(c, s, s->pnames[s->kwrest_idx], &txt);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "%s(_t%d, ", any ? "sp_kw_merge_any" : "sp_kwrest_merge_poly", t);
-    if (kv && kv->type == TY_POLY) buf_puts(g_pre, txt);
-    else emit_boxed_text(c, kv ? kv->type : TY_SYM_POLY_HASH, txt, g_pre);
+    if (kv && kv->type == TY_POLY) buf_puts(g_pre, txt.p);
+    else emit_boxed_text(c, kv ? kv->type : TY_SYM_POLY_HASH, txt.p, g_pre);
     buf_puts(g_pre, ");\n");
+    free(txt.p);
     /* less the keywords the parent names: those bind from it by name */
     for (int i = 0; i < pm->nparams; i++) {
       if (i == pm->kwrest_idx || !callee_param_is_declared_kwarg(c, pm, pm->pnames[i])) continue;
@@ -9020,13 +9164,14 @@ static int emit_zsuper_kwrest(Compiler *c, Scope *s, Scope *pm) {
     if (i == s->kwrest_idx || !callee_param_is_declared_kwarg(c, s, s->pnames[i]) ||
         callee_param_is_declared_kwarg(c, pm, s->pnames[i])) continue;
     LocalVar *ep = scope_local(s, s->pnames[i]);
-    char txt[128]; snprintf(txt, sizeof txt, "lv_%s", rename_local(s->pnames[i]));
+    Buf txt; memset(&txt, 0, sizeof txt); emit_scope_local_ref(c, s, s->pnames[i], &txt);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, any ? "sp_PolyPolyHash_set(_t%d, sp_box_sym((sp_sym)%d), "
                           : "sp_SymPolyHash_set(_t%d, (sp_sym)%d, ", t, comp_sym_intern(c, s->pnames[i]));
-    if (ep && ep->type == TY_POLY) buf_puts(g_pre, txt);
-    else emit_boxed_text(c, ep ? ep->type : TY_POLY, txt, g_pre);
+    if (ep && ep->type == TY_POLY) buf_puts(g_pre, txt.p);
+    else emit_boxed_text(c, ep ? ep->type : TY_POLY, txt.p, g_pre);
     buf_puts(g_pre, ");\n");
+    free(txt.p);
   }
   return t;
 }
@@ -9056,13 +9201,14 @@ static void zsuper_kw_begin(Compiler *c, Scope *s, Scope *pm, ZSuper *z) {
   if (!own && !missing && !(extra && pm->kwrest_idx < 0)) return;
   if (own) {
     LocalVar *kv = scope_local(s, s->pnames[s->kwrest_idx]);
-    char txt[128]; snprintf(txt, sizeof txt, "lv_%s", rename_local(s->pnames[s->kwrest_idx]));
+    Buf txt; memset(&txt, 0, sizeof txt); emit_scope_local_ref(c, s, s->pnames[s->kwrest_idx], &txt);
     z->kwsrc = ++g_tmp;
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_RbVal _t%d = ", z->kwsrc);
-    if (kv && kv->type == TY_POLY) buf_puts(g_pre, txt);
-    else emit_boxed_text(c, kv ? kv->type : TY_SYM_POLY_HASH, txt, g_pre);
+    if (kv && kv->type == TY_POLY) buf_puts(g_pre, txt.p);
+    else emit_boxed_text(c, kv ? kv->type : TY_SYM_POLY_HASH, txt.p, g_pre);
     buf_printf(g_pre, "; SP_GC_ROOT_RBVAL(_t%d);\n", z->kwsrc);
+    free(txt.p);
   }
   int chk = ++g_tmp;
   emit_indent(g_pre, g_indent);
@@ -9131,7 +9277,7 @@ static void emit_zsuper_param(Compiler *c, Scope *s, Scope *pm, const ZSuper *z,
   LocalVar *src = kw && callee_param_is_declared_kwarg(c, s, pm->pnames[i]) ? scope_local(s, pm->pnames[i]) : NULL;
   if (src) {
     g_nren = own_nren;
-    emit_zsuper_arg(c, src->type, dt, pm->pnames[i], b);
+    emit_zsuper_arg(c, s, dst, dt, pm->pnames[i], b);
   }
   else if (kw && z->kwsrc >= 0) {
     g_nren = parent_nren;
@@ -9142,21 +9288,29 @@ static void emit_zsuper_param(Compiler *c, Scope *s, Scope *pm, const ZSuper *z,
     if (z->kwrest >= 0) snprintf(tn, sizeof tn, "_t%d", z->kwrest);
     g_nren = own_nren;
     if (z->kwrest < 0) {
-      LocalVar *kv = scope_local(s, s->pnames[s->kwrest_idx]);
-      emit_zsuper_arg(c, kv ? kv->type : TY_UNKNOWN, dt, s->pnames[s->kwrest_idx], b);
+      emit_zsuper_arg(c, s, dst, dt, s->pnames[s->kwrest_idx], b);
     }
     else if (dt == TY_POLY) emit_boxed_text(c, kwrest_any_key(c, pm) ? TY_POLY_POLY_HASH : TY_SYM_POLY_HASH, tn, b);
     else buf_puts(b, tn);
   }
   else if (z->gather >= 0 && !kw && i != pm->kwrest_idx) {
-    g_nren = parent_nren;
-    emit_gathered_param(c, pm, i, z->gather, b);
+    /* a lent parameter ahead of the rest, or among the posts behind it, is
+       this method's own, in place: the gather's copy of it would take the
+       parent's appends */
+    int own = dst && dst->byref_out ? zsuper_param_source(c, s, pm, i) : -1;
+    if (own >= 0) {
+      g_nren = own_nren;
+      emit_zsuper_arg(c, s, dst, dt, s->pnames[own], b);
+    }
+    else {
+      g_nren = parent_nren;
+      emit_gathered_param(c, pm, i, z->gather, b);
+    }
   }
   else if (z->gather < 0 && z->L.from[i] == ARG_NODE) {
     int a = z->L.arg[i];
-    LocalVar *ep = scope_local(s, s->pnames[a]);
     g_nren = own_nren;
-    emit_zsuper_arg(c, ep ? ep->type : TY_UNKNOWN, dt, s->pnames[a], b);
+    emit_zsuper_arg(c, s, dst, dt, s->pnames[a], b);
   }
   else if (z->gather < 0 && z->L.from[i] == ARG_REST) {
     /* the positionals between the requireds ahead and the posts behind */
@@ -9169,12 +9323,13 @@ static void emit_zsuper_param(Compiler *c, Scope *s, Scope *pm, const ZSuper *z,
     for (int k = pm->rest_idx; k < z->L.rest_argc - pm->npost_rest; k++) {
       LocalVar *ep = scope_local(s, s->pnames[k]);
       TyKind et = ep && ep->type != TY_UNKNOWN ? ep->type : TY_POLY;
-      char txt[128]; snprintf(txt, sizeof txt, "lv_%s", rename_local(s->pnames[k]));
+      Buf txt; memset(&txt, 0, sizeof txt); emit_scope_local_ref(c, s, s->pnames[k], &txt);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", t);
-      if (et == TY_POLY) buf_puts(g_pre, txt);
-      else emit_boxed_text(c, et, txt, g_pre);
+      if (et == TY_POLY) buf_puts(g_pre, txt.p);
+      else emit_boxed_text(c, et, txt.p, g_pre);
       buf_puts(g_pre, ");\n");
+      free(txt.p);
     }
     char tn[24]; snprintf(tn, sizeof tn, "_t%d", t);
     if (dt == TY_POLY || dt == TY_UNKNOWN) emit_boxed_text(c, TY_POLY_ARRAY, tn, b);
@@ -9192,9 +9347,9 @@ static void emit_zsuper_param(Compiler *c, Scope *s, Scope *pm, const ZSuper *z,
    at run time. Gather them into one Array rooted in the prelude and refuse a
    count the parent cannot take; -1 when the method has no named rest. */
 static int emit_zsuper_gather(Compiler *c, Scope *s, Scope *pm) {
-  if (s->rest_idx < 0 || !s->pnames[s->rest_idx]) return -1;
-  LocalVar *rv = scope_local(s, s->pnames[s->rest_idx]);
-  if (!rv) return -1;
+  int kwpos = zsuper_kw_positional(c, s, pm);
+  LocalVar *rv = s->rest_idx >= 0 && s->pnames[s->rest_idx] ? scope_local(s, s->pnames[s->rest_idx]) : NULL;
+  if (!rv && !kwpos) return -1;
   int ct = ++g_tmp;
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", ct, ct);
@@ -9202,16 +9357,52 @@ static int emit_zsuper_gather(Compiler *c, Scope *s, Scope *pm) {
                   !callee_param_is_declared_kwarg(c, s, s->pnames[i]); i++) {
     LocalVar *ep = scope_local(s, s->pnames[i]);
     TyKind et = ep && ep->type != TY_UNKNOWN ? ep->type : TY_POLY;
-    char txt[128]; snprintf(txt, sizeof txt, "lv_%s", rename_local(s->pnames[i]));
+    Buf txt; memset(&txt, 0, sizeof txt); emit_scope_local_ref(c, s, s->pnames[i], &txt);
     Buf ab; memset(&ab, 0, sizeof ab);
-    if (et == TY_POLY) buf_puts(&ab, txt);
-    else emit_boxed_text(c, et, txt, &ab);
+    if (et == TY_POLY) buf_puts(&ab, txt.p);
+    else emit_boxed_text(c, et, txt.p, &ab);
+    free(txt.p);
     emit_indent(g_pre, g_indent);
     if (i == s->rest_idx)
       buf_printf(g_pre, "sp_PolyArray_append_all(_t%d, sp_poly_to_poly_array(sp_splat_to_array(%s)));\n",
                  ct, ab.p);
     else buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", ct, ab.p);
     free(ab.p);
+  }
+  if (kwpos) {
+    /* the keywords, one more positional Hash for a parent taking none, as
+       CRuby passes them: this method's `**`, then its named keywords, pushed
+       when not empty. Dropped, `def n(kx: 90) = super` into `def n()` ran
+       where CRuby raises `wrong number of arguments (given 1, expected 0)`. */
+    int own = s->kwrest_idx >= 0 && s->pnames[s->kwrest_idx];
+    int any = own && kwrest_any_key(c, s);
+    const char *hk = any ? "sp_PolyPolyHash" : "sp_SymPolyHash";
+    int t = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "%s *_t%d = %s_new(); SP_GC_ROOT(_t%d);\n", hk, t, hk, t);
+    if (own) {
+      LocalVar *kv = scope_local(s, s->pnames[s->kwrest_idx]);
+      char txt[128]; snprintf(txt, sizeof txt, "lv_%s", rename_local(s->pnames[s->kwrest_idx]));
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "%s(_t%d, ", any ? "sp_kw_merge_any" : "sp_kwrest_merge_poly", t);
+      if (kv && kv->type == TY_POLY) buf_puts(g_pre, txt);
+      else emit_boxed_text(c, kv ? kv->type : TY_SYM_POLY_HASH, txt, g_pre);
+      buf_puts(g_pre, ");\n");
+    }
+    for (int i = 0; i < s->nparams; i++) {
+      if (i == s->kwrest_idx || !s->pnames[i] || !callee_param_is_declared_kwarg(c, s, s->pnames[i])) continue;
+      LocalVar *kp = scope_local(s, s->pnames[i]);
+      char txt[128]; snprintf(txt, sizeof txt, "lv_%s", rename_local(s->pnames[i]));
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, any ? "sp_PolyPolyHash_set(_t%d, sp_box_sym(sp_sym_intern(\"%s\")), "
+                            : "sp_SymPolyHash_set(_t%d, sp_sym_intern(\"%s\"), ", t, s->pnames[i]);
+      if (kp && kp->type == TY_POLY) buf_puts(g_pre, txt);
+      else emit_boxed_text(c, kp ? kp->type : TY_POLY, txt, g_pre);
+      buf_puts(g_pre, ");\n");
+    }
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "if (_t%d->len > 0) sp_PolyArray_push(_t%d, sp_box_obj(_t%d, %s));\n",
+               t, ct, t, any ? "SP_BUILTIN_POLY_POLY_HASH" : "SP_BUILTIN_SYM_POLY_HASH");
   }
   emit_gather_arity_check(c, pm, ct);
   return ct;
@@ -9243,7 +9434,7 @@ static void emit_super_block_arg(Compiler *c, int id, Scope *s, Scope *pm, int l
     }
   }
   if (s->blk_param && s->blk_param[0] && !s->yields)
-    buf_printf(b, "lv_%s", rename_local(s->blk_param));
+    emit_scope_local_ref(c, s, s->blk_param, b);
   /* the caller's block, implicitly forwarded from an inlined body */
   else if (s->yields && g_block_id >= 0) emit_proc_literal(c, g_block_id, b);
   /* or the proc driving the inlined body (`on(:x, &pr)`) */
@@ -9298,10 +9489,9 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      -- a declared `&blk`, or the one a super into a block-taking parent
      synthesizes -- drives the parent's yields through that proc, as an
      inlined `inner(&blk)` does; with neither, `block_given?` folds false. */
-  char yprocbuf[128];
   if (!explicit_block_arg && block < 0 && s->blk_param && s->blk_param[0] && !s->yields) {
-    snprintf(yprocbuf, sizeof yprocbuf, "lv_%s", rename_local(s->blk_param));
-    fwd_yield_proc = yprocbuf;
+    emit_scope_local_ref(c, s, s->blk_param, &fwd_pb);
+    fwd_yield_proc = fwd_pb.p;
   }
 
   int tag = ++g_tmp;
@@ -9429,9 +9619,29 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
    the parent's is typed -- a proc-form clone's parameters are boxed, and its
    super reaching the parent's plain method passed an sp_RbVal into an sp_int
    parameter, which the C compiler refused. */
-static void emit_zsuper_arg(Compiler *c, TyKind st, TyKind dt, const char *pname, Buf *b) {
+static void emit_zsuper_arg(Compiler *c, Scope *s, LocalVar *dst, TyKind dt, const char *pname, Buf *b) {
+  LocalVar *src = scope_local(s, pname);
+  TyKind st = src ? src->type : TY_UNKNOWN;
   Buf _bx; memset(&_bx, 0, sizeof _bx);
-  buf_printf(&_bx, "lv_%s", rename_local(pname));
+  emit_scope_local_ref(c, s, pname, &_bx);
+  /* A byref parent parameter takes a slot, as at any call site
+     (emit_arg_or_default_fill): this method's own cell passes on -- a lent
+     parameter forwards the caller's slot -- a plain String its address, and
+     any other value a temp. */
+  if (dst && dst->byref_out) {
+    int captured = g_cap_struct && g_cap_names && nameset_has(g_cap_names, pname);
+    if (src && st == TY_STRING && src->is_cell && !captured) buf_printf(b, "_cell_%s", rename_local(pname));
+    else if (src && st == TY_STRING && !captured) buf_printf(b, "(const char **)&lv_%s", rename_local(pname));
+    else {
+      Buf vb; memset(&vb, 0, sizeof vb);
+      if (st == TY_POLY) emit_unbox_text(c, TY_STRING, _bx.p, &vb);
+      else buf_puts(&vb, _bx.p);
+      emit_lent_temp(vb.p, b);
+      free(vb.p);
+    }
+    free(_bx.p);
+    return;
+  }
   if (dt == TY_POLY && st != TY_POLY && st != TY_UNKNOWN) emit_boxed_text(c, st, _bx.p, b);
   else if (st == TY_POLY && dt == TY_INT) buf_printf(b, "sp_poly_to_i_or_nil(%s)", _bx.p);
   else if (st == TY_POLY && dt == TY_FLOAT) buf_printf(b, "sp_poly_to_f_or_nil(%s)", _bx.p);
@@ -9567,9 +9777,12 @@ void emit_super(Compiler *c, int id, Buf *b) {
       zsuper_end(&z);
     }
     else if (ty && sp_streq(ty, "ForwardingSuperNode")) {
-      for (int i = 0; i < s->nparams; i++) buf_printf(b, ", lv_%s", rename_local(s->pnames[i]));
+      for (int i = 0; i < s->nparams; i++) { buf_puts(b, ", "); emit_scope_local_ref(c, s, s->pnames[i], b); }
     }
     else emit_args_filled(c, smi, nt_ref(c->nt, id, "arguments"), ", ", b);
+    /* the shadow's `&b` is a C parameter like any parent's: left off, a module
+       method taking a block did not link */
+    if (smi >= 0) emit_super_block_arg(c, id, s, &c->scopes[smi], 1, b);
     buf_puts(b, ")");
     return;
   }
@@ -9634,14 +9847,15 @@ void emit_super(Compiler *c, int id, Buf *b) {
       }
       else if (ty && sp_streq(ty, "ForwardingSuperNode") && s->nparams > 0) {
         LocalVar *p0 = scope_local(s, s->pnames[0]);
-        const char *rn = rename_local(s->pnames[0]);
+        Buf rn; memset(&rn, 0, sizeof rn); emit_scope_local_ref(c, s, s->pnames[0], &rn);
         /* Effective type mirrors emit_method_signature: a NULL/TY_UNKNOWN
            param is declared TY_POLY (sp_RbVal), so it too must be coerced. */
         TyKind pt = (p0 && p0->type != TY_UNKNOWN) ? p0->type : TY_POLY;
         if (pt == TY_POLY)
-          buf_printf(b, "(%s->msg = sp_poly_to_s(lv_%s))", g_self, rn);
+          buf_printf(b, "(%s->msg = sp_poly_to_s(%s))", g_self, rn.p);
         else
-          buf_printf(b, "(%s->msg = lv_%s)", g_self, rn);
+          buf_printf(b, "(%s->msg = %s)", g_self, rn.p);
+        free(rn.p);
       }
       else
         buf_puts(b, "((void)0)");
@@ -9708,22 +9922,23 @@ void emit_super(Compiler *c, int id, Buf *b) {
         buf_printf(b, "%s->iv_%s = ", g_self, cls->ivars[a] + 1);
         if (is_fwd && roff >= 0) {
           LocalVar *rv = scope_local(s, s->pnames[pk]);
-          char src[64]; snprintf(src, sizeof src, "lv_%s", rename_local(s->pnames[pk]));
+          Buf src; memset(&src, 0, sizeof src); emit_scope_local_ref(c, s, s->pnames[pk], &src);
           Buf ra; memset(&ra, 0, sizeof ra);
-          emit_boxed_text(c, rv ? rv->type : TY_POLY_ARRAY, src, &ra);
+          emit_boxed_text(c, rv ? rv->type : TY_POLY_ARRAY, src.p, &ra);
           Buf el; memset(&el, 0, sizeof el);
           buf_printf(&el, "sp_poly_index_poly(%s, sp_box_int(%d))", ra.p ? ra.p : "sp_box_nil()", roff);
           emit_unbox_nilable_text(c, ivt, el.p, b);
-          free(ra.p); free(el.p);
+          free(ra.p); free(el.p); free(src.p);
         }
         else if (is_fwd) {
           LocalVar *pv = scope_local(s, s->pnames[pk]);
           TyKind at = pv && pv->type != TY_UNKNOWN ? pv->type : TY_POLY;
-          char src[64]; snprintf(src, sizeof src, "lv_%s", rename_local(s->pnames[pk]));
-          if (ivt == TY_POLY && at == TY_FLOAT) buf_printf(b, "sp_box_float_or_nil(%s)", src);
-          else if (ivt == TY_POLY && at != TY_POLY) { Buf ex; memset(&ex, 0, sizeof ex); emit_boxed_text(c, at, src, &ex); buf_puts(b, ex.p ? ex.p : ""); free(ex.p); }
-          else if (ivt != TY_POLY && at == TY_POLY) emit_unbox_nilable_text(c, ivt, src, b);
-          else buf_puts(b, src);
+          Buf src; memset(&src, 0, sizeof src); emit_scope_local_ref(c, s, s->pnames[pk], &src);
+          if (ivt == TY_POLY && at == TY_FLOAT) buf_printf(b, "sp_box_float_or_nil(%s)", src.p);
+          else if (ivt == TY_POLY && at != TY_POLY) { Buf ex; memset(&ex, 0, sizeof ex); emit_boxed_text(c, at, src.p, &ex); buf_puts(b, ex.p ? ex.p : ""); free(ex.p); }
+          else if (ivt != TY_POLY && at == TY_POLY) emit_unbox_nilable_text(c, ivt, src.p, b);
+          else buf_puts(b, src.p);
+          free(src.p);
         }
         else if (kwh >= 0) {
           int vnode = struct_kwarg_value(c, kwh, cls->ivars[a] + 1);
@@ -12317,22 +12532,55 @@ static void ext_generate_cruby_shim(Compiler *c) {
     buf_printf(&sb, "static void *spx_run_%d(void *p) { return (void *)(intptr_t)"
                "%s_try(spx_body_%d, p, &spx_exc_cls, &spx_exc_msg); }\n",
                s9, g_ext_init_name, s9);
+    /* The argument conversions, run under rb_protect. Each converted argument
+       is rooted for the whole call: the root a spx_in_*_array helper pushes
+       pops as the helper returns, and the next argument's conversion
+       allocates. A conversion that raises longjmps past C cleanup
+       attributes, so these roots are pushed by hand and the wrapper puts the
+       root count back itself before any raise leaves it -- a root left behind
+       would point into a dead frame for the next collection to read. */
+    buf_printf(&sb, "typedef struct { spx_c_%d *c;", s9);
+    for (int p9 = 0; p9 < sc->nparams; p9++) buf_printf(&sb, " VALUE v%d;", p9);
+    buf_printf(&sb, " } spx_a_%d;\n", s9);
+    buf_printf(&sb, "static VALUE spx_conv_%d(VALUE p) { spx_a_%d *a = (spx_a_%d *)p;\n",
+               s9, s9, s9);
+    for (int p9 = 0; p9 < sc->nparams; p9++) {
+      LocalVar *lv = scope_local(sc, sc->pnames[p9]);
+      buf_printf(&sb, "  a->c->a%d = %s(a->v%d);", p9, ext_rb_in(lv->type), p9);
+      if (lv->type == TY_STRING || lv->type == TY_INT_ARRAY ||
+          lv->type == TY_FLOAT_ARRAY || lv->type == TY_STR_ARRAY)
+        buf_printf(&sb, " _sp_gc_root_push((void**)((uintptr_t)&a->c->a%d | "
+                        "_SP_GC_SLOT_TAG(a->c->a%d)));", p9, p9);
+      buf_puts(&sb, "\n");
+    }
+    buf_puts(&sb, "  return Qnil;\n}\n");
+    /* The kernel call, also under rb_protect: CRuby checks interrupts as
+       rb_thread_call_without_gvl takes the GVL back, so a Thread#raise, a
+       kill or a signal can raise out of it -- past the unlock and the root
+       restore below, if nothing catches it here. */
+    buf_printf(&sb, "static VALUE spx_call_%d(VALUE p) { return (VALUE)(intptr_t)"
+                    "rb_thread_call_without_gvl(spx_run_%d, (void *)p, RUBY_UBF_IO, NULL); }\n",
+               s9, s9);
     buf_printf(&sb, "static VALUE spx_m_%d(VALUE self", s9);
     for (int p9 = 0; p9 < sc->nparams; p9++) buf_printf(&sb, ", VALUE v%d", p9);
     buf_printf(&sb, ") {\n  spx_c_%d c__; memset(&c__, 0, sizeof c__);\n", s9);
     buf_puts(&sb, "  SP_GC_SAVE();\n");
-    for (int p9 = 0; p9 < sc->nparams; p9++) {
-      LocalVar *lv = scope_local(sc, sc->pnames[p9]);
-      buf_printf(&sb, "  c__.a%d = %s(v%d);", p9, ext_rb_in(lv->type), p9);
-      if (lv->type == TY_STRING) buf_printf(&sb, " SP_GC_ROOT_STR(c__.a%d);", p9);
-      buf_puts(&sb, "\n");
-    }
-    buf_puts(&sb, "  { int raised; const char *ec = 0, *em = 0;\n"
+    buf_printf(&sb, "  { spx_a_%d a__ = { &c__", s9);
+    for (int p9 = 0; p9 < sc->nparams; p9++) buf_printf(&sb, ", v%d", p9);
+    buf_printf(&sb, " }; int state = 0;\n"
+                    "    rb_protect(spx_conv_%d, (VALUE)&a__, &state);\n"
+                    "    if (state) { sp_gc_nroots = _gc_saved; rb_jump_tag(state); } }\n", s9);
+    buf_puts(&sb, "  { int raised, state = 0; const char *ec = 0, *em = 0;\n"
                   "    pthread_mutex_lock(&spx_lock);\n");
-    buf_printf(&sb, "    raised = (int)(intptr_t)rb_thread_call_without_gvl(spx_run_%d, &c__, RUBY_UBF_IO, NULL);\n", s9);
-    buf_puts(&sb, "    if (raised) { ec = spx_exc_cls; em = spx_exc_msg; }\n"
+    buf_printf(&sb, "    raised = (int)(intptr_t)rb_protect(spx_call_%d, (VALUE)&c__, &state);\n", s9);
+    buf_puts(&sb, "    if (state) raised = 0;\n"
+                  "    if (raised) { ec = spx_exc_cls; em = spx_exc_msg; }\n"
                   "    pthread_mutex_unlock(&spx_lock);\n"
-                  "    if (raised) spx_reraise(ec, em);\n  }\n");
+                  "    if (state) { sp_gc_nroots = _gc_saved; rb_jump_tag(state); }\n"
+                  "    if (raised) { sp_gc_nroots = _gc_saved; spx_reraise(ec, em); }\n  }\n");
+    /* The arguments are done with; the return conversion allocates only on
+       the Ruby heap, and can raise (NoMemoryError) past the cleanup. */
+    buf_puts(&sb, "  sp_gc_nroots = _gc_saved;\n");
     buf_puts(&sb, "  return ");
     { char rexpr[32]; snprintf(rexpr, sizeof rexpr, "c__.ret"); 
       if (sc->ret == TY_VOID || sc->ret == TY_NIL) buf_puts(&sb, "Qnil");
@@ -12434,6 +12682,7 @@ char *codegen_program(const NodeTable *nt) {
   Buf b; memset(&b, 0, sizeof b);
   memset(&g_procs, 0, sizeof g_procs);
   memset(&g_proc_protos, 0, sizeof g_proc_protos);
+  if (g_pool_fwd) memset(g_pool_fwd, 0, (size_t)g_pool_fwd_n);
   g_proc_counter = 0;
   g_needs_at_exit = 0;
   g_re_count = 0;
@@ -13370,6 +13619,8 @@ char *codegen_program(const NodeTable *nt) {
       buf_puts(&b, "static ");
       emit_ctype(c, t, &b);
       buf_printf(&b, " cvar_%s_%s = %s;\n", ci->name, ci->cvars[j] + 2, init);
+      if (cvar_defined_probed(c, ci->cvars[j]))
+        buf_printf(&b, "static int cvar_%s_%s__set = 0;\n", ci->name, ci->cvars[j] + 2);
     }
   }
 
@@ -14055,7 +14306,10 @@ char *codegen_program(const NodeTable *nt) {
   if (g_ext_init_name) buf_puts(body, "}\n");
   else {
     if (g_needs_at_exit) buf_puts(body, "  _sp_main_rc = sp_at_exit_run(0);\n}\n");
-    else buf_puts(body, "  _sp_main_rc = 0;\n}\n");
+    /* without hooks, the finalizers still registered run here, where the
+       program ends in Ruby terms -- before the C exit handlers, a library's
+       own teardown among them (sp_at_exit_run does the same with hooks) */
+    else buf_puts(body, "  _sp_main_rc = 0;\n  sp_fin_run_exit();\n}\n");
     g_c_ret_void = sv_main_cv;
     buf_puts(body, "int main(int argc,char**argv){\n"
                    "  _sp_main_argc = argc; _sp_main_argv = argv;\n");
@@ -14090,6 +14344,7 @@ char *codegen_program(const NodeTable *nt) {
   memset(&g_pd_protos, 0, sizeof g_pd_protos); memset(&g_pd_defs, 0, sizeof g_pd_defs);
   memset(&g_procs, 0, sizeof g_procs);
   memset(&g_proc_protos, 0, sizeof g_proc_protos);
+  if (g_pool_fwd) memset(g_pool_fwd, 0, (size_t)g_pool_fwd_n);
   g_needs_proc_poly_argslot = 0;
 
   if (g_ext_init_name) {

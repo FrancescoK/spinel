@@ -263,6 +263,23 @@ int subtree_may_allocate(const NodeTable *nt, int id) {
   }
   return 0;
 }
+/* subtree_may_allocate, plus the one allocation the node table cannot show:
+   an ordinary read of a shared-mutable String slot (a TY_STRBUF local or
+   ivar) renders as a fresh copy of the live buffer, not as the slot itself.
+   A read marked to hand out the handle (strbuf_box) copies nothing. The
+   checks are strbuf_slot_ref's, without the emission it does, on the read
+   inside any parentheses (`(a) == b`). */
+int operand_may_allocate(Compiler *c, int id) {
+  if (subtree_may_allocate(c->nt, id)) return 1;
+  id = unwrap_parens(c, id);
+  if (id < 0 || c->strbuf_box[id]) return 0;
+  if (strbuf_local_name(c, id)) return 1;
+  if (nt_kind(c->nt, id) != NK_InstanceVariableReadNode) return 0;
+  const char *nm = nt_str(c->nt, id, "name");
+  int cid = nm ? strbuf_ivar_owner(c, id) : -1;
+  int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
+  return iv >= 0 && c->classes[cid].ivar_types[iv] == TY_STRBUF;
+}
 /* True if evaluating the subtree at `id` can be observed by, or can observe,
    a sibling argument's evaluation: any call (a user method, a mutating builtin,
    or an index read of a container someone else may write) or an assignment.
@@ -310,6 +327,42 @@ int subtree_has_side_effect(Compiler *c, int id) {
     const int *ids = nt_arr_at(nt, id, i, &n);
     for (int j = 0; j < n; j++)
       if (subtree_has_side_effect(c, ids[j])) return 1;
+  }
+  return 0;
+}
+/* See codegen_internal.h. A write names the variable; a call on self
+   follows the one method the classes from `cls` down define for it, up to
+   a few calls deep; anything else that runs code of the program's -- a
+   call on another object, a yield, a super, a block -- may write it. */
+int subtree_may_write_ivar(Compiler *c, int id, const char *iv, int cls, int depth) {
+  const NodeTable *nt = c->nt;
+  if (id < 0) return 0;
+  const char *ty = nt_type(nt, id);
+  if (!ty) return 0;
+  if (!strncmp(ty, "InstanceVariable", 16) && (strstr(ty, "Write") || strstr(ty, "Target"))) {
+    const char *wn = nt_str(nt, id, "name");
+    if (!wn || sp_streq(wn, iv)) return 1;
+  }
+  if (sp_streq(ty, "SuperNode") || sp_streq(ty, "ForwardingSuperNode") || sp_streq(ty, "YieldNode") ||
+      sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode") || sp_streq(ty, "BlockArgumentNode"))
+    return 1;
+  if (sp_streq(ty, "CallNode") && !call_is_scalar_op(c, id)) {
+    int recv = nt_ref(nt, id, "receiver");
+    const char *nm = nt_str(nt, id, "name");
+    if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode) return 1;
+    int mi = cls >= 0 && nm && depth < 3 ? comp_method_in_chain(c, cls, nm, NULL) : -1;
+    if (mi < 0 || c->scopes[mi].def_node < 0 || dispatch_impl_count(c, cls, nm) != 1) return 1;
+    if (subtree_may_write_ivar(c, nt_ref(nt, c->scopes[mi].def_node, "body"), iv, cls, depth + 1)) return 1;
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++)
+    if (subtree_may_write_ivar(c, nt_ref_at(nt, id, i), iv, cls, depth)) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0;
+    const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++)
+      if (subtree_may_write_ivar(c, ids[j], iv, cls, depth)) return 1;
   }
   return 0;
 }
@@ -1005,18 +1058,21 @@ void emit_typed_elem_value(Compiler *c, int node, TyKind et, Buf *b) {
   else emit_expr(c, node, b);
 }
 void emit_local_ref(Compiler *c, int scope_node, const char *name, Buf *b) {
+  emit_scope_local_ref(c, scope_node >= 0 ? comp_scope_of(c, scope_node) : NULL, name, b);
+}
+void emit_scope_local_ref(Compiler *c, Scope *s, const char *name, Buf *b) {
   if (g_cap_struct && g_cap_names && nameset_has(g_cap_names, name)) {
     /* A TY_PROC capture is stored as (sp_int)(uintptr_t)sp_Proc* in the cell.
        Cast it back to sp_Proc* so call sites work. A heap-object cell is a real
        typed pointer, so its deref is already the right lvalue (no cast). */
-    LocalVar *clv = scope_node >= 0 ? scope_local(comp_scope_of(c, scope_node), name) : NULL;
+    LocalVar *clv = s ? scope_local(s, name) : NULL;
     if (clv && clv->type == TY_PROC)
       buf_printf(b, "(sp_Proc *)(uintptr_t)(*((%s *)_cap)->c_%s)", g_cap_struct, name);
     else
       buf_printf(b, "(*((%s *)_cap)->c_%s)", g_cap_struct, name);
     return;
   }
-  LocalVar *lv = scope_node >= 0 ? scope_local(comp_scope_of(c, scope_node), name) : NULL;
+  LocalVar *lv = s ? scope_local(s, name) : NULL;
   if (lv && lv->is_cell) {
     /* Through the rename map, exactly as the plain form below: a method
        INLINED at its call site renames its locals, and the cell form did not
@@ -1063,6 +1119,53 @@ const char *nil_value(TyKind t) {
     case TY_POLY:   return "sp_box_nil()";
     default:        return NULL;
   }
+}
+
+/* Does the program ask whether class variable `nm` ("@@x") is set yet --
+   `defined?(@@x)` or `class_variable_defined?(:@@x)`? Only such a cvar
+   carries a cvar_<C>_<x>__set flag, so every other program's writes stay
+   plain stores. */
+int cvar_defined_probed(Compiler *c, const char *nm) {
+  const NodeTable *nt = c->nt;
+  if (!nm) return 0;
+  for (int k = 0; k < nt->count; k++) {
+    const char *kt = nt_type(nt, k);
+    if (!kt) continue;
+    if (sp_streq(kt, "DefinedNode")) {
+      int v = nt_ref(nt, k, "value");
+      const char *vt = v >= 0 ? nt_type(nt, v) : NULL;
+      if (vt && sp_streq(vt, "ClassVariableReadNode") && nt_str(nt, v, "name") &&
+          sp_streq(nt_str(nt, v, "name"), nm)) return 1;
+    }
+    else if (sp_streq(kt, "CallNode") && nt_str(nt, k, "name") &&
+             sp_streq(nt_str(nt, k, "name"), "class_variable_defined?")) {
+      int an = 0; int aa = nt_ref(nt, k, "arguments");
+      const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &an) : NULL;
+      if (an < 1) continue;
+      const char *at = nt_type(nt, av[0]);
+      const char *s = !at ? NULL : sp_streq(at, "SymbolNode") ? nt_str(nt, av[0], "value")
+                    : sp_streq(at, "StringNode") ? nt_str(nt, av[0], "content") : NULL;
+      if (s && sp_streq(s, nm)) return 1;
+    }
+  }
+  return 0;
+}
+
+/* Mark class `cid`'s cvar `nm` as assigned ahead of a store to it: a
+   statement (`cvar_C_x__set = 1; `) or, with as_expr, the head of a comma
+   expression (`cvar_C_x__set = 1, `). Nothing when nothing probes it. */
+void emit_cvar_set_flag(Compiler *c, int cid, const char *nm, int as_expr, Buf *b) {
+  if (cid < 0 || !nm || !cvar_defined_probed(c, nm)) return;
+  buf_printf(b, "cvar_%s_%s__set = 1%s", c->classes[cid].name, nm + 2, as_expr ? ", " : "; ");
+}
+
+/* The flag set after the store, in value position: `(cvar = rhs` + this +
+   `)` keeps the cvar's value as the expression's, and the right-hand side
+   still sees the cvar unset. */
+void emit_cvar_set_flag_after(Compiler *c, int cid, const char *nm, Buf *b) {
+  if (cid < 0 || !nm || !cvar_defined_probed(c, nm)) return;
+  buf_printf(b, ", cvar_%s_%s__set = 1, cvar_%s_%s", c->classes[cid].name, nm + 2,
+             c->classes[cid].name, nm + 2);
 }
 
 static int subtree_has_param_named(const NodeTable *nt, int id, const char *nm);
@@ -1909,6 +2012,19 @@ const char *raise_tail_value(TyKind t) {
 
 /* Compiler-aware form: a by-value object class's C representation is a bare
    struct, where default_value's NULL would be ill-typed C. */
+/* The TypeError Array#* raises for a count that is neither a String (join)
+   nor convertible to an Integer (repeat), or NULL when the argument's type
+   may be either. */
+const char *array_times_type_error(TyKind at) {
+  if (at == TY_NIL) return "no implicit conversion from nil to integer";
+  if (ty_is_array(at) || ty_is_obj_array(at)) return "no implicit conversion of Array into Integer";
+  if (ty_is_hash(at)) return "no implicit conversion of Hash into Integer";
+  if (at == TY_SYMBOL) return "no implicit conversion of Symbol into Integer";
+  if (at == TY_RANGE || at == TY_FLOAT_RANGE || at == TY_STR_RANGE)
+    return "no implicit conversion of Range into Integer";
+  return NULL;
+}
+
 const char *raise_tail_value_c(Compiler *c, TyKind t) {
   if (ty_is_object(t) && comp_ty_value_obj(c, t)) {
     /* rotate: one static buffer would make two of these in a single
@@ -3136,6 +3252,11 @@ void emit_arity_check(Buf *b, const char *given, int min, int max, const char *k
    CRuby's "no keywords accepted", ahead of its count -- where a method
    declaring no keyword parameter would take them as a positional Hash. */
 int scope_refuses_keywords(Compiler *c, const Scope *m) {
+  /* A `def w(...)` the __fwd_N model binds (a yielding parent reached by
+     `super(...)` or `new(...)`) hands every keyword on to its target, which
+     refuses them when it says `**nil`: the forwarder refuses them for it,
+     as its synthesized keyword params would carry them nowhere. */
+  for (int hops = 0; m && m->fwd_target1 > 0 && hops < 32; hops++) m = &c->scopes[m->fwd_target1 - 1];
   if (!m || m->def_node < 0) return 0;
   int pn = nt_ref(c->nt, m->def_node, "parameters");
   if (pn >= 0 && nt_kind(c->nt, pn) == NK_BlockParametersNode) pn = nt_ref(c->nt, pn, "parameters");

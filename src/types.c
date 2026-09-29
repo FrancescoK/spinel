@@ -452,6 +452,18 @@ int ty_block_yield(TyKind recv, const char *name, TyKind *out, int max) {
     }
     return 0;
   }
+  if (recv == TY_STRING) {
+    if (sp_streq(name, "each_char") || sp_streq(name, "each_line") ||
+        sp_streq(name, "each_grapheme_cluster") || sp_streq(name, "upto") ||
+        sp_streq(name, "gsub") || sp_streq(name, "sub") ||
+        sp_streq(name, "gsub!") || sp_streq(name, "sub!")) {
+      BY_PUT(0, TY_STRING); return 1;
+    }
+    if (sp_streq(name, "each_byte")) {
+      BY_PUT(0, TY_INT); return 1;
+    }
+    return 0;
+  }
   return 0;
 #undef BY_PUT
 }

@@ -1453,6 +1453,7 @@ int poly_builtin_zero_arg_name(const char *m) {
    poly-dispatch union rules ask this to tell a name whose user answer AGREES
    with the builtin one from a name whose answer does not. */
 static TyKind an_user_read_ty(Compiler *c, const char *name, int argc) {
+  if (an_builtin_only) return TY_UNKNOWN;
   TyKind r = TY_UNKNOWN; int found = 0;
   for (int k = 0; k < c->nclasses; k++) {
     if (c->classes[k].is_native_class) {
@@ -3528,6 +3529,11 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "GC") &&
         (sp_streq(name, "start") || sp_streq(name, "compact")))
       return TY_NIL;
+    /* Encoding.find(name): a boxed Encoding (nil for "internal") */
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Encoding") &&
+        sp_streq(name, "find") && argc == 1)
+      return TY_POLY;
     /* Warning[] / Warning[]= / Warning.warn (codegen_call.c's arm) */
     if (rty && sp_streq(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Warning")) {
@@ -7117,7 +7123,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      if the receiver were that handle. Codegen unboxes it back to exactly that
      before re-dispatching, and checks the runtime cls_id first, so a value of
      any other kind still raises NoMethodError (#4158 follow-up). */
-  if (recv >= 0 && rt == TY_POLY && g_face_node < 0 &&
+  if (recv >= 0 && rt == TY_POLY && g_face_node < 0 && argc == 0 &&
       ty_poly_handle_face(name) != TY_UNKNOWN &&
       !an_user_defines_or_reads(c, name)) {
     an_set_face_node(recv, ty_poly_handle_face(name));
@@ -7174,6 +7180,32 @@ static int stmts_diverge(Compiler *c, int st) {
   return nm && (sp_streq(nm, "raise") || sp_streq(nm, "fail") || sp_streq(nm, "throw") ||
                 sp_streq(nm, "exit") || sp_streq(nm, "abort") || sp_streq(nm, "exit!"));
 }
+/* Whether `v` answers the value of `node` itself: `v` is `node`, or a
+   parenthesized, conditional, `&&`/`||` or statement-list expression one of
+   whose value arms is. */
+static int value_arm_is(const NodeTable *nt, int v, int node) {
+  if (v < 0) return 0;
+  if (v == node) return 1;
+  switch (nt_kind(nt, v)) {
+  case NK_StatementsNode: {
+    int n = 0; const int *s = nt_arr(nt, v, "body", &n);
+    return n > 0 && value_arm_is(nt, s[n - 1], node);
+  }
+  case NK_ParenthesesNode: return value_arm_is(nt, nt_ref(nt, v, "body"), node);
+  case NK_ElseNode: return value_arm_is(nt, nt_ref(nt, v, "statements"), node);
+  case NK_IfNode:
+    return value_arm_is(nt, nt_ref(nt, v, "statements"), node) ||
+           value_arm_is(nt, nt_ref(nt, v, "subsequent"), node);
+  case NK_UnlessNode:
+    return value_arm_is(nt, nt_ref(nt, v, "statements"), node) ||
+           value_arm_is(nt, nt_ref(nt, v, "else_clause"), node);
+  case NK_AndNode: case NK_OrNode:
+    return value_arm_is(nt, nt_ref(nt, v, "left"), node) ||
+           value_arm_is(nt, nt_ref(nt, v, "right"), node);
+  default: return 0;
+  }
+}
+
 /* Whether a branch node produces no value: a statement list that ends in a
    raise, or an `elsif` chain EVERY arm of which does -- including the arm
    that is not written, so a chain without an `else` never diverges as a
@@ -7336,7 +7368,7 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_NilNode)                 return TY_NIL;
   /* A while/until loop in value position evaluates to nil (a valued `break`
      is a separate gap); type it as poly so the slot holds a boxed nil. */
-  if (nk == NK_WhileNode || nk == NK_UntilNode) return TY_POLY;
+  if (nk == NK_WhileNode || nk == NK_UntilNode || nk == NK_ForNode) return TY_POLY;
   if (nk == NK_RangeNode) {
     /* (:a..:e): symbols enumerate by name succession -- the whole range
        lowers to a poly array of boxed symbols (see codegen_expr) */
@@ -7380,8 +7412,9 @@ TyKind infer_uncached(Compiler *c, int id) {
       return TY_FLOAT_RANGE;
     /* ("a".."e"): both endpoints strings -> the distinct sp_StrRange, so a
        range held in a variable stays a Range rather than materializing into
-       its element array (#3064). */
-    if (lo >= 0 && hi >= 0 && lt == TY_STRING && ht == TY_STRING)
+       its element array (#3064). An endless ("a"..) or beginless (.."e") one
+       is a String range too, its missing bound a nil (NULL) endpoint. */
+    if ((lo >= 0 || hi >= 0) && (lo < 0 || lt == TY_STRING) && (hi < 0 || ht == TY_STRING))
       return TY_STR_RANGE;
     return TY_RANGE;
   }
@@ -7513,8 +7546,7 @@ TyKind infer_uncached(Compiler *c, int id) {
   }
   if (nk == NK_GlobalVariableOperatorWriteNode) {
     /* `$g += v` evaluates to the updated value (the local/ivar op-write forms
-       above already do; #1484). Plain `$g = v` and `||=`/`&&=` stay untyped
-       statements, mirroring the local-variable policy. */
+       above already do; #1484). */
     const char *nm = nt_str(nt, id, "name");
     const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
     LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
@@ -7524,6 +7556,14 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (ty_is_numeric(ct) && ty_is_numeric(vt))
       return (ct == TY_FLOAT || vt == TY_FLOAT) ? TY_FLOAT : TY_INT;
     return ct != TY_UNKNOWN ? ct : vt;
+  }
+  if (nk == NK_GlobalVariableOrWriteNode || nk == NK_GlobalVariableAndWriteNode) {
+    /* `$g ||= v` evaluates to the slot after the guarded write */
+    const char *nm = nt_str(nt, id, "name");
+    const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
+    LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
+    TyKind ct = lv ? lv->type : TY_UNKNOWN;
+    return ct != TY_UNKNOWN ? ct : infer_type(c, nt_ref(nt, id, "value"));
   }
   if (nk == NK_ConstantReadNode) {
     const char *nm = nt_str(nt, id, "name");
@@ -8144,11 +8184,31 @@ TyKind infer_uncached(Compiler *c, int id) {
        bare-yield tail is handled per-site by emit_block_invoke_coerced /
        method_call_ret and must keep its concrete first-site type. */
     if (yield_value_diverges(c, ymi)) {
-      static const NodeKind lw_kinds[] = { NK_LocalVariableWriteNode, NK_LocalVariableOperatorWriteNode,
-                                           NK_LocalVariableOrWriteNode, NK_LocalVariableAndWriteNode };
-      for (int wk = 0; wk < 4; wk++)
+      /* An instance, global or class variable written from the yield, or from
+         a conditional one of whose arms is the yield (`@y = block_given? ?
+         yield(x) : "nil"`), is in the same position as a local: the variable
+         takes one type, the first site's, and the other site's value was
+         emitted into it (`@y = yield(x)` with a String block, then an Integer
+         one, stopped the build). */
+      static const NodeKind lw_kinds[] = {
+        NK_LocalVariableWriteNode, NK_LocalVariableOperatorWriteNode,
+        NK_LocalVariableOrWriteNode, NK_LocalVariableAndWriteNode,
+        NK_InstanceVariableWriteNode, NK_InstanceVariableOperatorWriteNode,
+        NK_InstanceVariableOrWriteNode, NK_InstanceVariableAndWriteNode,
+        NK_GlobalVariableWriteNode, NK_GlobalVariableOperatorWriteNode,
+        NK_GlobalVariableOrWriteNode, NK_GlobalVariableAndWriteNode,
+        NK_ClassVariableWriteNode, NK_ClassVariableOperatorWriteNode,
+        NK_ClassVariableOrWriteNode, NK_ClassVariableAndWriteNode };
+      for (int wk = 0; wk < (int)(sizeof lw_kinds / sizeof lw_kinds[0]); wk++)
         NT_FOREACH_KIND(nt, lw_kinds[wk], w)
-          if (nt_ref(nt, w, "value") == id) return TY_POLY;
+          if (value_arm_is(nt, nt_ref(nt, w, "value"), id)) return TY_POLY;
+      /* An array literal's element likewise: `[yield(x)]` built its array
+         from the first site's element type. */
+      NT_FOREACH_KIND(nt, NK_ArrayNode, w) {
+        int en = 0; const int *ev = nt_arr(nt, w, "elements", &en);
+        for (int e = 0; e < en; e++)
+          if (value_arm_is(nt, ev[e], id)) return TY_POLY;
+      }
       /* A yield whose value leaves through an ENSURE frame is in the same
          position as one written to a local, for the same reason: the frame
          carries the value in a slot of its own, and that slot settles its type

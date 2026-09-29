@@ -1021,6 +1021,20 @@ int scope_body_last(Compiler *c, int mi) {
   int n = 0; const int *bb = nt_arr(c->nt, body, "body", &n);
   return n > 0 ? bb[n - 1] : -1;
 }
+/* The ivar a memoizing reader hands out: method `mi`'s value is `@x ||= v`,
+   bare or in parentheses, and so is the ivar's slot itself. NULL for any
+   other body. */
+const char *an_memo_reader_ivar(Compiler *c, int mi) {
+  const NodeTable *nt = c->nt;
+  int last = scope_body_last(c, mi);
+  while (last >= 0 && nt_kind(nt, last) == NK_ParenthesesNode) {
+    int pb = nt_ref(nt, last, "body");
+    int n = 0; const int *st = pb >= 0 ? nt_arr(nt, pb, "body", &n) : NULL;
+    last = n == 1 ? st[0] : -1;
+  }
+  if (last < 0 || nt_kind(nt, last) != NK_InstanceVariableOrWriteNode) return NULL;
+  return nt_str(nt, last, "name");
+}
 int is_blk_param_call(Compiler *c, int node, int mi) {
   const NodeTable *nt = c->nt;
   if (node < 0 || !nt_type(nt, node) || !sp_streq(nt_type(nt, node), "CallNode")) return 0;
@@ -1340,6 +1354,7 @@ TyKind yield_value_type(Compiler *c, int mi) {
 
   const NodeTable *nt = c->nt;
   TyKind result = TY_UNKNOWN;
+  int pf_fwd = 0;
   if (yvt_nt != nt || yvt_ntc != nt->count) yvt_build(c);
   YvtIt yit; yvt_it_init(c, &yit, mi);
   for (int ii; (ii = yvt_it_next(&yit)) >= 0; ) {
@@ -1398,6 +1413,7 @@ TyKind yield_value_type(Compiler *c, int mi) {
       }
       TyKind ft = (emi >= 0 && emi != mi) ? yield_value_type(c, emi) : TY_UNKNOWN;
       if (ft == TY_VOID) ft = TY_NIL;
+      if (ft == TY_UNKNOWN && emi >= 0 && c->scopes[emi].is_proc_form) pf_fwd = 1;
       if (c->scopes[mi].yields || c->scopes[mi].is_lowered_yield) {
         if (ft != TY_UNKNOWN) { result = ft; break; }
         continue;
@@ -1428,6 +1444,10 @@ TyKind yield_value_type(Compiler *c, int mi) {
     if ((c->scopes[mi].yields || c->scopes[mi].is_lowered_yield) && !g_yvt_unify_all) { result = bt; break; }
     result = ty_unify(result, bt);
   }
+  /* A proc form forwarding its block (`def self.f(a, &) = g(a, &)` called
+     only through a Method) hands on a real proc no literal types: its value
+     is poly, where an unknown one unboxed it into the other arm's slot. */
+  if (result == TY_UNKNOWN && pf_fwd) result = TY_POLY;
   g_yvt_depth--;
   return result;
 }
@@ -2136,14 +2156,14 @@ int is_method_obj_call(Compiler *c, int node) {
 
 /* The target method scope index bound by a `method(:sym)` node, or -1
    (e.g. a top-level Kernel method like `puts`, or a builtin-array receiver). */
-int method_obj_target_mi(Compiler *c, int node) {
+static int method_obj_target_mi_raw(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   /* <method>.super_method: the same-named method one step up the defining
      class's ancestor chain, or -1 (nil) when there is none (#3247). */
   if (node >= 0 && nt_kind(nt, node) == NK_CallNode && nt_str(nt, node, "name") &&
       sp_streq(nt_str(nt, node, "name"), "super_method")) {
     int imn = method_recv_node(c, nt_ref(nt, node, "receiver"));
-    int imi = imn >= 0 ? method_obj_target_mi(c, imn) : -1;
+    int imi = imn >= 0 ? method_obj_target_mi_raw(c, imn) : -1;
     if (imi < 0 || c->scopes[imi].class_id < 0) return -1;
     int par = c->classes[c->scopes[imi].class_id].parent;
     if (par < 0) return -1;
@@ -2188,6 +2208,16 @@ int method_obj_target_mi(Compiler *c, int node) {
     if (ci2 >= 0) return comp_cmethod_in_chain(c, ci2, sym, NULL);
   }
   return -1;
+}
+
+/* A yielding method is spliced into each call site and has no function of
+   its own; a Method object calls it through its proc form, the clone whose
+   `yield` is a call on the block the Method passes (make_yield_proc_forms
+   makes one for every method a `method(:name)` names). */
+int method_obj_target_mi(Compiler *c, int node) {
+  int mi = method_obj_target_mi_raw(c, node);
+  int pf = scope_proc_form_of(c, mi);
+  return pf >= 0 ? pf : mi;
 }
 
 /* The Ruby return kind of a typed-array adapter Method (`<array>.method(:op)`)
@@ -2344,12 +2374,16 @@ int method_recv_nodes(Compiler *c, int recv, int *out, int cap) {
   return n;
 }
 
-/* The `method(:sym)` node behind a Proc-typed expression created by
+/* Every `method(:sym)` node behind a Proc-typed expression created by
    `<method>.to_proc`: the to_proc call itself, or a local variable's
-   single assignment to one. Returns -1 when the proc has another origin. */
-int proc_to_proc_method_node(Compiler *c, int recv) {
+   single assignment to one. The Method it converts may be a local written
+   to more than one method; each target is called with the proc's
+   arguments, so the analysis binds them to all of them, as it does for a
+   `.call` on that local (method_recv_nodes). Answers the count, at most
+   cap; 0 when the proc has another origin. */
+int proc_to_proc_method_nodes(Compiler *c, int recv, int *out, int cap) {
   const NodeTable *nt = c->nt;
-  if (recv < 0) return -1;
+  if (recv < 0) return 0;
   int cand = recv;
   const char *rty = nt_type(nt, recv);
   if (rty && sp_streq(rty, "LocalVariableReadNode")) {
@@ -2366,12 +2400,12 @@ int proc_to_proc_method_node(Compiler *c, int recv) {
       if (val >= 0 && nt_kind(nt, val) == NK_CallNode) cand = val;
     }
   }
-  if (cand < 0) return -1;
+  if (cand < 0) return 0;
   const char *cty = nt_type(nt, cand);
-  if (!cty || !sp_streq(cty, "CallNode")) return -1;
+  if (!cty || !sp_streq(cty, "CallNode")) return 0;
   const char *nm = nt_str(nt, cand, "name");
-  if (!nm || !sp_streq(nm, "to_proc")) return -1;
-  return method_recv_node(c, nt_ref(nt, cand, "receiver"));
+  if (!nm || !sp_streq(nm, "to_proc")) return 0;
+  return method_recv_nodes(c, nt_ref(nt, cand, "receiver"), out, cap);
 }
 
 /* Param-index shift for a call through a Method object. A bound

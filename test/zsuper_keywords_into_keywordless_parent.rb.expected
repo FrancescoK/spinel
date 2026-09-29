@@ -1,0 +1,11 @@
+"wrong number of arguments (given 1, expected 0)"
+[{kx: 90}]
+[{kx: 1}]
+[5, {k: 1}]
+[5, {z: 2, k: 1}]
+"wrong number of arguments (given 0, expected 1)"
+[{z: 1}]
+[1, {k: 3}]
+:none
+"wrong number of arguments (given 1, expected 0)"
+[1, 5]

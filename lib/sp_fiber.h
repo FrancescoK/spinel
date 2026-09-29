@@ -52,7 +52,7 @@ void sp_fiber_stack_hint(size_t bytes);
 #define SP_TSAN 1
 #endif
 
-typedef struct sp_Fiber{sp_fiber_ctx ctx;sp_fiber_ctx caller_ctx;char*stack;size_t stack_size;int state;int transferred;sp_RbVal yielded_value;sp_RbVal resumed_value;void(*body)(struct sp_Fiber*);void*user_data;int saved_exc_top;int saved_catch_top;void*exc_ctx;int raised;const char*raised_cls;const char*raised_msg;void*raised_obj;int inject;int inject_defer;const char*inj_cls;const char*inj_msg;void*inj_obj;void*storage;void***saved_roots;int saved_nroots;int saved_roots_cap;struct sp_Fiber*fiber_next;struct sp_Fiber*fiber_prev;struct sp_Fiber*resumer;/* the fiber suspended inside #resume of this one, until it returns: the chain from the running fiber back to the root is what the collector roots; every other suspended fiber lives by reference (#4525) */const char*birth_file;sp_int birth_line;/* the Fiber.new site, for #inspect */
+typedef struct sp_Fiber{sp_fiber_ctx ctx;sp_fiber_ctx caller_ctx;char*stack;size_t stack_size;int state;int transferred;sp_RbVal yielded_value;sp_RbVal resumed_value;void(*body)(struct sp_Fiber*);void*user_data;int saved_exc_top;int saved_catch_top;void*exc_ctx;int raised;const char*raised_cls;const char*raised_msg;void*raised_obj;int inject;int inject_defer;const char*inj_cls;const char*inj_msg;void*inj_obj;void*storage;void***saved_roots;int saved_nroots;int saved_roots_cap;struct sp_Fiber*fiber_next;struct sp_Fiber*fiber_prev;struct sp_Fiber*resumer;/* the fiber suspended inside #resume of this one, until it returns: the chain from the running fiber back to the root is what the collector roots; every other suspended fiber lives by reference (#4525) */const char*birth_file;sp_int birth_line;int pass_argc;/* how many values the first resume passed (-1: not known), so |a| can tell resume(1, 2) from resume([1, 2]) *//* the Fiber.new site, for #inspect */
 #ifdef SP_TSAN
   void *tsan_fiber;                 /* __tsan fiber handle for this coroutine */
   struct sp_Fiber *caller_fiber;    /* who switched into us (the swap-out target) */
@@ -85,6 +85,8 @@ void      sp_fiber_mark_chain(sp_Fiber *f);   /* f and every resumer waiting on 
 sp_Fiber *sp_Fiber_new(void (*body)(sp_Fiber *));
 sp_RbVal sp_Fiber_resume(sp_Fiber *f, sp_RbVal val);
 sp_RbVal sp_Fiber_yield(sp_RbVal val);
+sp_RbVal sp_Fiber_resume_n(sp_Fiber *f, sp_RbVal val, int argc);
+sp_RbVal sp_Fiber_transfer_n(sp_Fiber *f, sp_RbVal val, int argc);
 sp_RbVal sp_Fiber_transfer(sp_Fiber *f, sp_RbVal val);
 /* Like sp_Fiber_transfer, but captures f's unhandled termination exception into
    the out-params (for the thread scheduler) instead of re-raising it. */

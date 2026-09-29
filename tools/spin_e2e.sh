@@ -120,6 +120,47 @@ printf 'puts "sib"\n' > test/sib_test.rb        # fresh: must actually compile
 expect "test (sibling spinel dir)" "1/1 passed" "$(PATH="$(dirname "$SPIN"):$PATH" "$WORK/sib/spin" test sib_test.rb 2>&1 | tail -1)"
 rm -rf "$WORK/sib"; rm -f test/sib_test.rb test/sib_test.rb.expected
 
+# a test binary older than the compiler is stale, also when spin is run by its
+# bare name through PATH. $0 is then "spin" with no directory, the compiler
+# beside spin was never found, and the compiler's mtime never entered the
+# freshness bound: after a compiler upgrade every test came back "(cached)",
+# still the old compiler's binary. Backdating the project and the binary
+# stands in for the upgrade without touching the real compiler. A project of
+# its own, with no dependencies: a dependency newer than the binary would force
+# the recompile by itself and hide the bug.
+cd "$WORK"
+"$SPIN" new stale >/dev/null
+cd stale
+printf 'puts "stale"\n' > test/stale_test.rb
+"$SPIN" test --regen stale_test.rb >/dev/null 2>&1
+"$SPIN" test stale_test.rb >/dev/null 2>&1 || fail "test (stale compiler): first run failed"
+find . -path ./build -prune -o -type f -exec touch -t 200001010000 {} +
+touch -t 200001010001 build/test/stale_test
+OUT=$(PATH="$(dirname "$SPIN"):$PATH" spin test stale_test.rb 2>&1) || true
+case "$OUT" in
+  *"(cached)"*) fail "test via PATH reused a binary older than the compiler: [$OUT]" ;;
+esac
+expect "test via PATH (stale binary)" "1/1 passed" "$(echo "$OUT" | tail -1)"
+# An empty PATH component is the current directory, to the shell and so to
+# spin's which. With PATH=":<decoy>" the shell runs ./spin, whose compiler sits
+# beside it. which used to skip the empty component and answer the decoy spin
+# further along, and spin then built with the decoy's compiler. The decoy
+# compiler here only fails, so taking it fails the test.
+mkdir -p "$WORK/decoy"
+cp "$SPIN" "$WORK/decoy/spin"
+printf '#!/bin/sh\necho "decoy compiler ran" >&2\nexit 1\n' > "$WORK/decoy/spinel"
+chmod +x "$WORK/decoy/spinel"
+ln -s "$SPIN" spin
+ln -s "$(dirname "$SPIN")/spinel" spinel
+printf 'puts "here"\n' > test/here_test.rb      # fresh: must actually compile
+printf 'here\n' > test/here_test.rb.expected
+OUT=$(PATH=":$WORK/decoy:$PATH" spin test here_test.rb 2>&1) || true
+case "$OUT" in
+  *"decoy compiler ran"*) fail "an empty PATH component: spin took the compiler of a later spin: [$OUT]" ;;
+esac
+expect "test via an empty PATH component" "1/1 passed" "$(echo "$OUT" | tail -1)"
+cd "$WORK/app"; rm -rf "$WORK/stale" "$WORK/decoy"
+
 # a build that FAILS must not be reported ok by the run phase: a failed compile
 # leaves the previous binary where it was, and File.exist? read that as "it
 # built", so `spin test` printed the parse error and then ran the executable an

@@ -270,7 +270,9 @@ static inline int    ty_obj_array_class(TyKind t){ return (int)t - TY_OBJ_ARRAY_
    one belongs to exactly one builtin handle class and to no other class in
    the language, so the name alone identifies the receiver: a value of any
    other kind was going to raise NoMethodError anyway, and the emitted arm
-   checks the runtime cls_id before it dereferences.
+   checks the runtime cls_id before it dereferences. Every one of them is a
+   reader that takes no arguments, so a call that passes any is not one of
+   them, whatever its name.
 
    This is the exclusive-name mechanism, and exclusivity is the whole safety
    argument -- a SHARED name (Dir#path is also IO#path, Dir#read is also

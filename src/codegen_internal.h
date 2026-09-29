@@ -122,6 +122,7 @@ extern const char *g_sb_iv_name;   /* "@bt" while a shim is open, else NULL */
 extern int         g_sb_iv_cid;
 extern char        g_sb_iv_repl[64];
 int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap);
+int operand_may_allocate(Compiler *c, int id);
 /* The same shim over a READER call that hands out the handle
    (`obj.name[0] = "X"`): no name to rename and no ivar node, so the call node
    itself reads as the shadow through the argument-override table. */
@@ -164,7 +165,7 @@ extern char (*g_argov_text)[16];
 extern int  g_n_argov;
 /* Room for one more override whatever the fill, for a site that must run
    every argument of a call ahead of it, however many there are
-   (emit_positionals_first and its kin): the table grows, keeping
+   (emit_args_run and its kin): the table grows, keeping
    MAX_ARG_OVERRIDE entries free past the fill for the sites that check. */
 void argov_reserve(void);
 /* The setter call (`obj.x = v`) emit_stmt is lowering: nothing reads its value,
@@ -532,6 +533,11 @@ void emit_rat_coerce(Compiler *c, int node, Buf *b);
 void emit_super(Compiler *c, int id, Buf *b);
 int  emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr);
 void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out);
+/* emit_args_filled over the arguments `argv[0..argc)`, a run of some call's
+   arguments (`raise Cls, msg` passes Cls.new the message alone); `argsNode`
+   is the node a refusal names, -1 for none. */
+void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int argc, int argsNode,
+                           const char *lead, Buf *out);
 void kw_plan(Compiler *c, Scope *m, int kwh, KwPlan *P);
 /* The keyword error a plan finds statically, in CRuby's order, into `msg`;
    0 when it finds none. */
@@ -541,11 +547,22 @@ void positional_arity(Compiler *c, Scope *m, int *required, int *total);
 void emit_unreached_splat_count(Compiler *c, Scope *m, const int *argv, int argc, int pos_argc,
                                 const KwPlan *P);
 /* Every argument of a call run ahead of it, in source order, each `**`
-   operand converted where it stands (codegen_fold.c). */
+   operand converted where it stands (codegen_fold.c): a call planned so
+   (KwPlan.args_first) or whose keywords run ahead (kwh_runs_ahead). Only
+   the positionals, the keywords' reads went unguarded against a `**` that
+   rewrites them, and a nil value, skipped as if it were a raise, ran after
+   the keywords, or never when their check raised. */
 void emit_args_run(Compiler *c, const int *argv, int argc);
+/* Has the argument `node` run already, into the temp an override from
+   the `from`th on names? */
+int arg_ran_first(int node, int from);
 int emit_splat_gather(Compiler *c, Scope *m, const int *argv, const ArgLayout *L);
 void emit_gather_arity_check(Compiler *c, Scope *m, int ct);
 void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out);
+/* A byref parameter's value with no caller slot to lend: a rooted temp's address. */
+void emit_lent_temp(const char *val, Buf *out);
+/* The parameter of s a bare super in s hands pm's parameter j, or -1. */
+int zsuper_param_source(Compiler *c, Scope *s, Scope *pm, int j);
 int gathered_param_index(Compiler *c, Scope *m, int i, const char *len, char *idx, size_t cap,
                          int *npost_out);
 void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, int argc,
@@ -718,6 +735,7 @@ void nameset_add(NameSet *s, const char *nm);
    enclosing scope -> `(*_cell_x)`; otherwise the plain `lv_x`. Reads and
    writes share this (a cell deref is a valid lvalue). */
 void emit_local_ref(Compiler *c, int scope_node, const char *name, Buf *b);
+void emit_scope_local_ref(Compiler *c, Scope *s, const char *name, Buf *b);
 void emit_typed_elem_value(Compiler *c, int node, TyKind et, Buf *b);
 void emit_block_locals_reset(Compiler *c, int blk, Buf *b, int indent);
 const char *resolve_class_alias(Compiler *c, const char *cname);
@@ -823,8 +841,17 @@ const char *default_value(TyKind t);
 void emit_slot_truthy(TyKind t, const char *ref, Buf *b);
 const char *raise_tail_value(TyKind t);
 const char *raise_tail_value_c(Compiler *c, TyKind t);
+const char *array_times_type_error(TyKind at);
 void emit_bigint_operand_ext(Compiler *c, int node, Buf *b);
 const char *nil_value(TyKind t);
+int cvar_defined_probed(Compiler *c, const char *nm);
+void emit_cvar_set_flag(Compiler *c, int cid, const char *nm, int as_expr, Buf *b);
+void emit_cvar_set_flag_after(Compiler *c, int cid, const char *nm, Buf *b);
+extern int g_ivar_nil_guarded_id;
+int ivar_nil_recv_guard(Compiler *c, int id, int *recv_out);
+void emit_ivar_nil_guard(Compiler *c, int id, int recv, Buf *b, int indent);
+int emit_ivar_nil_guarded(Compiler *c, int id, Buf *b, int indent,
+                          int (*fn)(Compiler *, int, Buf *, int));
 const char *local_init_value(Compiler *c, LocalVar *lv);
 int local_nil_test(Compiler *c, LocalVar *lv, const char *ref, Buf *out);
 /* Append the C type name for `t` to `b` (objects need the class name). */
@@ -1055,11 +1082,6 @@ int emit_ds_hash_merge(Compiler *c, int kwh, int any_key, TyKind *out_type);
    of the call's positionals: a kwh_merged call's merged hash, or a first
    `**` operand with a side effect that it evaluates. */
 int kwh_runs_ahead(Compiler *c, Scope *m, int kwh);
-/* The positional arguments of such a call, evaluated in order into rooted
-   temps ahead of its keywords, as CRuby evaluates them: each one that has an
-   effect is pushed onto the g_argov overrides, for the caller to pop once it
-   has bound the call. */
-void emit_positionals_first(Compiler *c, const int *argv, int pos_argc);
 /* True when the literal keys of the keyword hash `kwh` into `m` do not come
    in the order `m` binds them: a key names a keyword parameter ahead of an
    earlier key's, or the one before it again, or a keyword parameter after a
@@ -1070,10 +1092,10 @@ int kwh_out_of_order(Compiler *c, Scope *m, int kwh);
    Method#call, an inlined yielding initialize, or one a static check refuses
    -- evaluated in source order, keywords included and each value of a key
    written twice, into rooted temps written into `b` and pushed onto the
-   g_argov overrides as emit_positionals_first pushes them, for the caller to
-   pop once it has bound the call. A nil value runs for its effect alone and
-   reads as 0. A read of a variable a later value can give another value is
-   taken too, as CRuby reads it at its place. */
+   g_argov overrides, for the caller to pop once it has bound the call. A
+   nil value runs for its effect alone and reads as 0. A read of a variable
+   a later value can give another value is taken too, as CRuby reads it at
+   its place. */
 void emit_args_in_source_order(Compiler *c, const int *argv, int argc, Buf *b);
 /* emit_args_in_source_order, where the nodes `after` also run ahead of the
    binding reading the values -- a block's defaults -- and so can change what
@@ -1084,6 +1106,27 @@ void emit_args_before(Compiler *c, const int *argv, int argc, const int *after, 
    drains ahead of the other's bind -- or a read a later value, or a node of
    `after`, can change. */
 int args_order_matters(Compiler *c, const int *argv, int argc, const int *after, int nafter);
+/* The arguments of a call into `m` (NULL: none known), run first, in source
+   order, into `b` as emit_args_before runs them, when its binding would run
+   one out of CRuby's order; 1 when they ran, for the caller to pop the
+   overrides once it has bound the call. A binder renders each value, and
+   each default it fills at the call site, at its parameter's slot, and
+   hoists the ones the slot roots ahead of the call statement, where they
+   ran before the arguments left in place. So the arguments run first when
+   its keywords are out of the parameters' order (kwh_out_of_order), when a
+   read among them is one a later value or such a default can change
+   (read_rebound_by: `m(@v, k: f(2))`, `m(v, k: (v = 2))`), when a value
+   with an effect sits beside a default with one (the default runs after
+   every argument), and when a call with keywords, bound by name, passes
+   two values with an effect (`m(lg(1), k: ls(2))`). Positionals alone are
+   sequenced where emit_args_filled hoists them. A call whose keywords run
+   ahead (kwh_runs_ahead) runs its arguments first already. */
+int emit_args_before_binding(Compiler *c, Scope *m, const int *argv, int argc, Buf *b);
+/* Can the node `after` give a variable the value `x` reads another value?
+   A local only by assigning it; an instance, global or class variable by
+   any effect. A value built of reads (`[x, 2]`) asks it of each; a block
+   reads when it runs. */
+int read_rebound_by(Compiler *c, int x, int after);
 int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type);
 /* The TypeError CRuby raises for a `**` operand that is neither a Hash, nil
    nor convertible with #to_hash, emitted into g_pre ahead of any keyword
@@ -1136,6 +1179,7 @@ int kwh_arg_param(Compiler *c, Scope *m, int pos_argc);
 int emit_anon_rest_ref(Compiler *c, int splat, Buf *buf);
 int splat_operand_ok(Compiler *c, int node);
 void emit_splat_operand_array(Compiler *c, int node, Buf *b);
+void emit_one_arg(Compiler *c, int arg, int boxed, Buf *b);
 void emit_array_elem_at(TyKind at, int tmp, int elem_idx, Buf *b);
 void emit_rest_from_splat_and_argv(int tmp, TyKind at, int from_idx, Compiler *c, int argv_from, int pos_argc, const int *argv, Buf *b);
 int is_descendant(Compiler *c, int k, int anc);
@@ -1144,6 +1188,11 @@ int class_builtin_parent(Compiler *c, int cid);      /* codegen.c */
 int class_includes_module_named(Compiler *c, int cid, const char *mod_name);
 int class_isa_user(Compiler *c, int k, int cid, const char *cn);  /* codegen_call.c */
 int dispatch_impl_count(Compiler *c, int cid, const char *name);
+/* Can running the node `id` assign self's instance variable `iv`, self an
+   instance of class `cls` (-1: none known) or of one below it? `depth`
+   counts the self calls followed into their methods (0 at the call site);
+   1 when it cannot tell. */
+int subtree_may_write_ivar(Compiler *c, int id, const char *iv, int cls, int depth);
 int block_call_takes_class_dispatch(Compiler *c, int id);
 void emit_dispatch(Compiler *c, int cid, const char *name, const char *selfptr, int argsNode, int blk_node, Buf *b);
 int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name, const char *selfptr, const char *reader, TyKind reader_ty, Buf *b);
