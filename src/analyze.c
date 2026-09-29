@@ -8016,9 +8016,9 @@ static int oa_cls_join(int a, int b) {
    is seen by the next round's inference and by codegen (#4484). */
 static int *g_oa_empt_slot, *g_oa_empt_node, g_oa_empt_n, g_oa_empt_cap;
 /* The empty literals this pass itself stamped a row kind on, kept across
-   rounds: a component that narrowed on one round's evidence and is dropped on
-   a later one has to take its stamp back, and only its own -- other producers
-   stamp empty `[]` literals too. */
+   rounds: each round clears them on the way in, beside its map sources, and
+   stamps again only the rows of a component that still narrows. Only its own
+   -- other producers stamp empty `[]` literals too. */
 static unsigned char *g_oa_empt_mine; static int g_oa_empt_mine_cap;
 static void oa_mark_empty_mine(int lit) {
   if (lit >= g_oa_empt_mine_cap) {
@@ -8762,15 +8762,25 @@ static int narrow_object_arrays(Compiler *c) {
      that want back ahead of the poly fallback.
      A map/collect CallNode is the exact discriminator: this pass is the only
      producer that stamps one. The other producers stamp empty `[]` literals,
-     which are ArrayNodes, so their wants are untouched. */
+     which are ArrayNodes, so their wants are untouched -- except the empty
+     rows this pass stamped itself, which g_oa_empt_mine names. Those fire:
+     `@row = []` reads as an int array for a round before `@row = pattern`
+     makes it boxed, and `@banks[0] = @row` narrowed @banks on that round. The
+     drop a round later left the `[]` of `@banks = [[]]` an int-array row, and
+     a boxed row stored over it was read back as an sp_IntArray *. */
   int n_cleared = 0, cap_cleared = 0;
   int *cleared = NULL;
   if (c->arr_want) {
     for (int id = 0; id < c->nt->count && id < c->node_cap; id++) {
-      if (!ty_is_ptr_array(c->arr_want[id])) continue;
-      if (nt_kind(nt, id) != NK_CallNode) continue;
-      const char *rn = nt_str(nt, id, "name");
-      if (!rn || !(sp_streq(rn, "map") || sp_streq(rn, "collect"))) continue;
+      if (id < g_oa_empt_mine_cap && g_oa_empt_mine[id]) {
+        g_oa_empt_mine[id] = 0;
+        if (c->arr_want[id] != TY_INT_ARRAY && c->arr_want[id] != TY_FLOAT_ARRAY) continue;
+      } else {
+        if (!ty_is_ptr_array(c->arr_want[id])) continue;
+        if (nt_kind(nt, id) != NK_CallNode) continue;
+        const char *rn = nt_str(nt, id, "name");
+        if (!rn || !(sp_streq(rn, "map") || sp_streq(rn, "collect"))) continue;
+      }
       c->arr_want[id] = TY_UNKNOWN;
       if (n_cleared == cap_cleared) {
         cap_cleared = cap_cleared ? cap_cleared * 2 : 16;
@@ -9431,30 +9441,14 @@ static int narrow_object_arrays(Compiler *c) {
        application the drop site is reached constantly but the want is always
        already UNKNOWN -- so this states the invariant rather than fixing a
        reproduced failure.
-       Only THIS pass's own source nodes, which are `map` calls, and the
-       empty-row literals of #4484 it stamped itself (g_oa_empt_mine): two
-       other producers stamp empty `[]` literals too (mark_empty_array_operands
-       and the ivar-write scan), and clearing one of theirs would drop a want
-       this pass never set. The empty rows do fire: `@row = []` reads as an
-       int array for a round before `@row = pattern` makes it boxed, and
-       `@banks[0] = @row` narrowed @banks on that round; the drop a round
-       later left the `[]` of `@banks = [[]]` an int-array row, and a boxed
-       row stored over it was read back as an sp_IntArray *. */
+       Only THIS pass's own source nodes, which are `map` calls. The empty-row
+       literals of #4484 it stamped are cleared on the way into the round
+       instead (see g_oa_empt_mine). */
     #define OA_DROP_SRC_STAMP() do { \
       for (int _e = 0; _e < g_oa_src_n; _e++) { \
         if (oa_uf_find(sl, g_oa_src_slot[_e]) != oa_uf_find(sl, i)) continue; \
         int _sn = g_oa_src_node[_e]; \
         if (c->arr_want && _sn >= 0 && _sn < c->node_cap) c->arr_want[_sn] = TY_UNKNOWN; \
-      } \
-      for (int _e = 0; _e < g_oa_empt_n; _e++) { \
-        if (oa_uf_find(sl, g_oa_empt_slot[_e]) != oa_uf_find(sl, i)) continue; \
-        int _ln = g_oa_empt_node[_e]; \
-        if (_ln < 0 || _ln >= g_oa_empt_mine_cap || !g_oa_empt_mine[_ln]) continue; \
-        g_oa_empt_mine[_ln] = 0; \
-        if (c->arr_want && _ln < c->node_cap && \
-            (c->arr_want[_ln] == TY_INT_ARRAY || c->arr_want[_ln] == TY_FLOAT_ARRAY)) { \
-          c->arr_want[_ln] = TY_UNKNOWN; changed = 1; \
-        } \
       } \
     } while (0)
     /* This pass cleared every candidate's pin on the way in, but the pin field
