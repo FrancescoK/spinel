@@ -36271,7 +36271,14 @@ else {
         int at = -1;
         init_pub = comp_method_vis_declared(c, ty_object_class(rt), qm, &at) == SP_VIS_PUBLIC && at >= 0;
       }
-      if (!resolved && init_pub) { resolved = 1; yes = 1; }
+      if (!resolved && init_pub && foldable) {
+        /* made public on the class, but nil's own stays private */
+        if (!include_all && !comp_ty_value_obj(c, rt)) {
+          buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") != NULL)");
+          return;
+        }
+        resolved = 1; yes = 1;
+      }
       if (!resolved && (sp_streq(qm, "initialize_copy") || sp_streq(qm, "initialize")) && foldable) {
         resolved = 1; yes = include_all;
       }
