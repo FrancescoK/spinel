@@ -1427,6 +1427,10 @@ gc-minor-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	      diff -u "$$src.expected" "$$tmp/$$bn.$$mode" | head -10; ok=0; fi; \
 	  done; \
 	  SPINEL_GC_MINOR=1 SPINEL_GC_VERIFY_GEN=1 SPINEL_GC_STRESS=1 $(TIMEOUT60) "$$tmp/$$bn" > "$$tmp/$$bn.stress" 2> "$$tmp/$$bn.verify"; \
+	  rc=$$?; \
+	  if [ $$rc -ne 0 ]; then \
+	    echo "gc-minor-test: FAIL ($$bn: SPINEL_GC_STRESS exited $$rc)"; \
+	    tail -3 "$$tmp/$$bn.verify"; ok=0; fi; \
 	  if grep -q "generational check" "$$tmp/$$bn.verify"; then \
 	    echo "gc-minor-test: FAIL ($$bn: a holder the barrier did not record)"; \
 	    head -4 "$$tmp/$$bn.verify"; ok=0; fi; \
