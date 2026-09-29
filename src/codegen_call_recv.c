@@ -8279,11 +8279,25 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
          coercion, unlike ==). A poly arg checks its tag; any other concrete
          type is never equal. */
       else if (sp_streq(name, "eql?") && argc == 1) {
-        if (a0 == TY_STRING) { buf_printf(b, "sp_str_eq(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-        else if (a0 == TY_POLY) {
+        /* the receiver may be a fresh copy (a shared slot's read): rooted
+           when the argument, evaluated beside it, may allocate -- as == does */
+        if (a0 == TY_STRING && operand_may_allocate(c, argv[0])) {
           int te = ++g_tmp;
-          buf_printf(b, "({ sp_RbVal _t%d = ", te); emit_boxed(c, argv[0], b);
-          buf_printf(b, "; _t%d.tag == SP_TAG_STR && sp_str_eq(_t%d.v.s, %s); })", te, te, r);
+          buf_printf(b, "({ const char *_t%d = %s; SP_GC_ROOT(_t%d); sp_str_eq(_t%d, ", te, r, te, te);
+          emit_expr(c, argv[0], b); buf_puts(b, "); })");
+        }
+        else if (a0 == TY_STRING) { buf_printf(b, "sp_str_eq(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        else if (a0 == TY_POLY) {
+          /* a boxed shared String handle is a String too: read its text. The
+             receiver is bound first, as Ruby evaluates it: rendered after the
+             argument, a shared slot's copy allocated while the argument's
+             fresh String sat in an unrooted temp. It is rooted when the
+             argument may allocate. */
+          int te = ++g_tmp, trc = ++g_tmp;
+          buf_printf(b, "({ const char *_t%d = %s; ", trc, r);
+          if (operand_may_allocate(c, argv[0])) buf_printf(b, "SP_GC_ROOT(_t%d); ", trc);
+          buf_printf(b, "sp_RbVal _t%d = sp_poly_strbuf_deref(", te); emit_boxed(c, argv[0], b);
+          buf_printf(b, "); _t%d.tag == SP_TAG_STR && sp_str_eq(_t%d.v.s, _t%d); })", te, te, trc);
         }
         else { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
       }
