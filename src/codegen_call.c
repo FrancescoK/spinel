@@ -31508,6 +31508,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
          defaults to the class name, so the (cls, "") fast path is correct. */
       const char *cn = nt_str(nt, av[0], "name");
       int xc = cn ? comp_class_index(c, cn) : -1;
+      /* a reopened builtin exception is still the builtin: raised by name */
+      if (xc >= 0 && cn && is_exc_name(cn) && is_builtin_reopen(cn)) xc = -1;
       int ic = (xc >= 0 && class_is_exc_subclass(c, xc))
                  ? comp_method_in_chain(c, xc, "initialize", NULL) : -1;
       if (xc >= 0 && ic >= 0 && c->scopes[ic].reachable) {
@@ -31537,6 +31539,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
          A bare-string/builtin exception keeps the (cls, msg) fast path. */
       const char *cn = nt_str(nt, av[0], "name");
       int xc = cn ? comp_class_index(c, cn) : -1;
+      /* a reopened builtin exception is still the builtin: raised by name */
+      if (xc >= 0 && cn && is_exc_name(cn) && is_builtin_reopen(cn)) xc = -1;
       int ic = -1;
       if (xc >= 0 && class_is_exc_subclass(c, xc))
         ic = comp_method_in_chain(c, xc, "initialize", NULL);
@@ -31894,6 +31898,62 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       buf_printf(b, ", \"%s\")", name);
       if (unwrap) buf_puts(b, ")");
       return;
+    }
+  }
+  /* a method a reopening of a builtin exception class defined (`class
+     LoadError; def is_missing?`): the receiver is the runtime's sp_Exception --
+     base-typed, or a user subclass instance whose own chain lacks the method
+     or reaches it through the reopened parent. Several reopenings defining
+     the name (Exception#brief and KeyError#brief) are told apart by the
+     runtime class name, most-derived first in declaration order; a base
+     Exception reopening answers for every class. */
+  if (recv >= 0) {
+    TyKind xrt = comp_ntype(c, recv);
+    int xdef = -1, xob = ty_is_object(xrt) ? ty_object_class(xrt) : -1;
+    int xhit = xob >= 0 && class_is_exc_subclass(c, xob)
+                 ? comp_method_in_chain(c, xob, name, &xdef) : -1;
+    if (xrt == TY_EXCEPTION ||
+        (xob >= 0 && class_is_exc_subclass(c, xob) &&
+         (xhit < 0 || (xdef >= 0 && is_builtin_reopen(c->classes[xdef].name))))) {
+      int xr[8];
+      int xn = exc_reopen_definers(c, name, xr, 8);
+      if (xn > 0) {
+        int xt = ++g_tmp, xbase = -1;
+        for (int q = 0; q < xn; q++)
+          if (sp_streq(c->classes[xr[q]].name, "Exception")) xbase = q;
+        buf_printf(b, "({ sp_Exception *_t%d = (sp_Exception *)(", xt);
+        emit_expr(c, recv, b);
+        buf_puts(b, "); ");
+        if (xbase < 0) {
+          /* no catch-all reopening: a runtime class none of them names has
+             no such method */
+          buf_puts(b, "if (!(");
+          for (int q = 0; q < xn; q++)
+            buf_printf(b, "%ssp_exc_cls_matches(_t%d->cls_name, \"%s\")", q ? " || " : "", xt, c->classes[xr[q]].name);
+          buf_printf(b, ")) sp_raise_nomethod(sp_nomethod_msg(\"%s\", ", name);
+          char xv[32]; snprintf(xv, sizeof xv, "_t%d", xt);
+          emit_boxed_text(c, TY_EXCEPTION, xv, b);
+          buf_puts(b, ")); ");
+        }
+        int last = xbase >= 0 ? xbase : xn - 1;
+        for (int q = 0; q < xn; q++) {
+          if (q == xbase) continue;
+          int mi = comp_method_in_chain(c, xr[q], name, NULL);
+          if (q != last) buf_printf(b, "sp_exc_cls_matches(_t%d->cls_name, \"%s\") ? ", xt, c->classes[xr[q]].name);
+          buf_printf(b, "sp_%s_%s(_t%d", mc_reopen_cls(c, xr[q], name), mc(name), xt);
+          emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), ", ", b);
+          buf_puts(b, ")");
+          if (q != last) buf_puts(b, " : ");
+        }
+        if (xbase >= 0) {
+          int mi = comp_method_in_chain(c, xr[xbase], name, NULL);
+          buf_printf(b, "sp_%s_%s(_t%d", mc_reopen_cls(c, xr[xbase], name), mc(name), xt);
+          emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), ", ", b);
+          buf_puts(b, ")");
+        }
+        buf_puts(b, "; })");
+        return;
+      }
     }
   }
   if (recv >= 0 && comp_ntype(c, recv) == TY_EXCEPTION) {

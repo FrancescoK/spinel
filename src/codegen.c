@@ -3262,6 +3262,7 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
     else if (sp_streq(cn, "Time"))    { buf_puts(b, "sp_Time self"); }
     else if (sp_streq(cn, "Thread"))  { buf_puts(b, "sp_thread *self"); }
     else if (sp_streq(cn, "Fiber"))   { buf_puts(b, "sp_Fiber *self"); }
+    else if (is_exc_name(c->classes[s->class_id].name)) { buf_puts(b, "sp_Exception *self"); }
     else if (sp_streq(cn, "File"))    { buf_puts(b, "sp_File *self"); }
     else if (sp_streq(cn, "Class"))   { buf_puts(b, "sp_Class self"); }
     else {
@@ -7297,7 +7298,11 @@ int is_builtin_reopen(const char *name) {
          sp_streq(name, "Hash")      ||
          /* a thread and a fiber are runtime handles too (activesupport's
             IsolatedExecutionState gives both an accessor) */
-         sp_streq(name, "Thread")    || sp_streq(name, "Fiber");
+         sp_streq(name, "Thread")    || sp_streq(name, "Fiber") ||
+         /* a builtin exception's reopening (`class LoadError; def is_missing?`)
+            adds methods to the runtime's class: the value stays the runtime's
+            sp_Exception, raised, rescued and constructed by name as before */
+         is_builtin_exception_name(name);
 }
 
 /* Returns 1 if n is a known built-in exception class name. */
@@ -7330,6 +7335,22 @@ int class_is_exc_subclass(Compiler *c, int ci) {
     k = next;
   }
   return 0;
+}
+
+/* The reopenings of builtin exception classes that define method mname, at
+   most max of them, in declaration order: a call on a value whose static type
+   is the base exception picks among them by the runtime class name. Returns
+   the count. */
+int exc_reopen_definers(Compiler *c, const char *mname, int *out, int max) {
+  int n = 0;
+  for (int k = 0; k < c->nclasses && n < max; k++) {
+    if (!c->classes[k].name || !is_exc_name(c->classes[k].name)) continue;
+    if (nt_ref(c->nt, c->classes[k].def_node, "superclass") >= 0) continue;
+    int mi = comp_method_in_chain(c, k, mname, NULL);
+    if (mi < 0 || c->scopes[mi].class_id != k) continue;
+    out[n++] = k;
+  }
+  return n;
 }
 
 /* Build the full Ruby-style qualified name ("ActiveRecord::RecordNotFound") for
