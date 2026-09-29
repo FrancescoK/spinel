@@ -11564,17 +11564,22 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   if (sp_streq(ty, "InstanceVariableWriteNode") && !_iv_tail_val) {
     const char *inm9 = nt_str(nt, id, "name");
     Scope *ics9 = comp_scope_of(c, id);
-    /* The plain instance-slot form (`self->iv_x`) and the class-method form
-       (`civ_C_x`, a class-level ivar written in `def self.m`) are handled
-       here; the instance_eval and toplevel-global renderings have their own
-       slot text, so those stay on the statement path. */
+    /* The plain instance-slot form (`self->iv_x`), the class-method form
+       (`civ_C_x`, a class-level ivar written in `def self.m`) and the
+       toplevel method's form (`civ_Toplevel_x`) are handled here; the
+       instance_eval rendering has its own slot text, so it stays on the
+       statement path. */
     int plain9 = ics9 && ics9->class_id >= 0 && !ics9->is_cmethod &&
                  g_ie_class_id < 0 && g_class_body_id < 0;
     int cmeth9 = ics9 && ics9->class_id >= 0 && ics9->is_cmethod &&
                  g_ie_class_id < 0 && g_class_body_id < 0;
-    if ((plain9 || cmeth9) && inm9) {
-      int iidx9 = comp_ivar_index(&c->classes[ics9->class_id], inm9);
-      TyKind it9 = iidx9 >= 0 ? c->classes[ics9->class_id].ivar_types[iidx9] : TY_UNKNOWN;
+    /* a toplevel method's ivar lives on the Toplevel class (`civ_Toplevel_x`) */
+    int tl9 = ics9 && ics9->class_id < 0 && g_ie_class_id < 0 &&
+              g_class_body_id < 0 ? comp_class_index(c, "Toplevel") : -1;
+    if ((plain9 || cmeth9 || tl9 >= 0) && inm9) {
+      int icls9 = tl9 >= 0 ? tl9 : ics9->class_id;
+      int iidx9 = comp_ivar_index(&c->classes[icls9], inm9);
+      TyKind it9 = iidx9 >= 0 ? c->classes[icls9].ivar_types[iidx9] : TY_UNKNOWN;
       int want_poly8 = g_result_var ? g_result_poly : (g_ret_type == TY_POLY);
       int slot_ok8 = iidx9 >= 0 && it9 != TY_UNKNOWN && it9 != TY_VOID &&
                      (want_poly8 || it9 == (g_result_var ? g_result_ty : g_ret_type));
@@ -11583,6 +11588,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
         emit_indent(b, indent); emit_tail_lead(b);
         char islot9[512];
         if (cmeth9) snprintf(islot9, sizeof islot9, "civ_%s_%s", c->classes[ics9->class_id].name, inm9 + 1);
+        else if (tl9 >= 0) snprintf(islot9, sizeof islot9, "civ_Toplevel_%s", inm9 + 1);
         else snprintf(islot9, sizeof islot9, "%s%siv_%s", g_self, g_self_deref, iv_c(inm9 + 1));
         if (want_poly8 && it9 != TY_POLY) {
           Buf bx8; memset(&bx8, 0, sizeof bx8);
