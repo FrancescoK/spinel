@@ -286,4 +286,9 @@ void arg_layout_free(ArgLayout *L);
 /* May source `s` of a gathered call (argument s, or at pos_argc the hash
    the gather carries by gather_kwh) land in parameter i (analyze_pass.c)? */
 int gather_reaches(Compiler *c, Scope *m, const int *argv, int pos_argc, int gather_kwh, int s, int i);
+/* Does a bare `super` from `s` into `pm` pass `s`'s keywords as one more
+   positional Hash? It does when `pm` takes no keyword at all (no keyword
+   parameter, no `**kwrest`, no `**nil`) and `s` declares one: CRuby
+   passes them as keywords, which such a method takes positionally. */
+int zsuper_kw_positional(Compiler *c, Scope *s, Scope *pm);
 #endif

@@ -6147,6 +6147,20 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
   return changed;
 }
 
+/* See analyze.h. */
+int zsuper_kw_positional(Compiler *c, Scope *s, Scope *pm) {
+  const NodeTable *nt = c->nt;
+  if (!s || !pm || pm->kwrest_idx >= 0 || pm->def_node < 0) return 0;
+  int pn = nt_ref(nt, pm->def_node, "parameters");
+  int kn = 0;
+  if (pn >= 0) nt_arr(nt, pn, "keywords", &kn);
+  if (kn > 0 || (pn >= 0 && nt_ref(nt, pn, "keyword_rest") >= 0)) return 0;
+  for (int i = 0; i < s->nparams; i++)
+    if (s->pnames[i] && (i == s->kwrest_idx || callee_param_is_declared_kwarg(c, s, s->pnames[i])))
+      return 1;
+  return 0;
+}
+
 /* The parameters of the parent a bare `super` in `s` reaches, typed as it
    binds them (codegen's zsuper_begin): with a rest in `s` the positionals
    gather, a parameter the gather funds from the front taking the element
@@ -6155,9 +6169,17 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
    are laid out as a call of `s`'s positional count (arg_layout), each
    parent parameter typed from the one of `s` it takes. A keyword takes
    `s`'s like-named keyword, or a boxed value from `s`'s `**` (as a call's
-   `**h` gives one), which codegen reads it from (zsuper_kw_begin). */
+   `**h` gives one), which codegen reads it from (zsuper_kw_begin). Keywords
+   a parent without any take as a positional Hash (zsuper_kw_positional)
+   may land in any of its positionals, which are boxed for it. */
 static int bind_zsuper_params(Compiler *c, int id, Scope *s, Scope *pm) {
   int changed = 0;
+  if (zsuper_kw_positional(c, s, pm))
+    for (int i = 0; i < pm->nparams; i++) {
+      if (i == pm->rest_idx || !pm->pnames[i]) continue;
+      LocalVar *p = scope_local(pm, pm->pnames[i]);
+      if (p && !p->rbs_seeded) changed |= slot_take(c, p, TY_POLY, id);
+    }
   /* the parent's `**` takes this method's own */
   if (pm->kwrest_idx >= 0 && s->kwrest_idx >= 0) {
     LocalVar *src = scope_local(s, s->pnames[s->kwrest_idx]);

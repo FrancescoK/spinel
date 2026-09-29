@@ -9232,9 +9232,9 @@ static void emit_zsuper_param(Compiler *c, Scope *s, Scope *pm, const ZSuper *z,
    at run time. Gather them into one Array rooted in the prelude and refuse a
    count the parent cannot take; -1 when the method has no named rest. */
 static int emit_zsuper_gather(Compiler *c, Scope *s, Scope *pm) {
-  if (s->rest_idx < 0 || !s->pnames[s->rest_idx]) return -1;
-  LocalVar *rv = scope_local(s, s->pnames[s->rest_idx]);
-  if (!rv) return -1;
+  int kwpos = zsuper_kw_positional(c, s, pm);
+  LocalVar *rv = s->rest_idx >= 0 && s->pnames[s->rest_idx] ? scope_local(s, s->pnames[s->rest_idx]) : NULL;
+  if (!rv && !kwpos) return -1;
   int ct = ++g_tmp;
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", ct, ct);
@@ -9253,6 +9253,41 @@ static int emit_zsuper_gather(Compiler *c, Scope *s, Scope *pm) {
                  ct, ab.p);
     else buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", ct, ab.p);
     free(ab.p);
+  }
+  if (kwpos) {
+    /* the keywords, one more positional Hash for a parent taking none, as
+       CRuby passes them: this method's `**`, then its named keywords, pushed
+       when not empty. Dropped, `def n(kx: 90) = super` into `def n()` ran
+       where CRuby raises `wrong number of arguments (given 1, expected 0)`. */
+    int own = s->kwrest_idx >= 0 && s->pnames[s->kwrest_idx];
+    int any = own && kwrest_any_key(c, s);
+    const char *hk = any ? "sp_PolyPolyHash" : "sp_SymPolyHash";
+    int t = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "%s *_t%d = %s_new(); SP_GC_ROOT(_t%d);\n", hk, t, hk, t);
+    if (own) {
+      LocalVar *kv = scope_local(s, s->pnames[s->kwrest_idx]);
+      char txt[128]; snprintf(txt, sizeof txt, "lv_%s", rename_local(s->pnames[s->kwrest_idx]));
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "%s(_t%d, ", any ? "sp_kw_merge_any" : "sp_kwrest_merge_poly", t);
+      if (kv && kv->type == TY_POLY) buf_puts(g_pre, txt);
+      else emit_boxed_text(c, kv ? kv->type : TY_SYM_POLY_HASH, txt, g_pre);
+      buf_puts(g_pre, ");\n");
+    }
+    for (int i = 0; i < s->nparams; i++) {
+      if (i == s->kwrest_idx || !s->pnames[i] || !callee_param_is_declared_kwarg(c, s, s->pnames[i])) continue;
+      LocalVar *kp = scope_local(s, s->pnames[i]);
+      char txt[128]; snprintf(txt, sizeof txt, "lv_%s", rename_local(s->pnames[i]));
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, any ? "sp_PolyPolyHash_set(_t%d, sp_box_sym(sp_sym_intern(\"%s\")), "
+                            : "sp_SymPolyHash_set(_t%d, sp_sym_intern(\"%s\"), ", t, s->pnames[i]);
+      if (kp && kp->type == TY_POLY) buf_puts(g_pre, txt);
+      else emit_boxed_text(c, kp ? kp->type : TY_POLY, txt, g_pre);
+      buf_puts(g_pre, ");\n");
+    }
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "if (_t%d->len > 0) sp_PolyArray_push(_t%d, sp_box_obj(_t%d, %s));\n",
+               t, ct, t, any ? "SP_BUILTIN_POLY_POLY_HASH" : "SP_BUILTIN_SYM_POLY_HASH");
   }
   emit_gather_arity_check(c, pm, ct);
   return ct;
