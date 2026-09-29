@@ -7458,13 +7458,19 @@ void block_site_types(Compiler *c, const BlockSig *s, const int *av, int ac,
       if (nmax <= np) nmax++;
     }
   }
-  if (!s->lambda && block_auto_splats(P, O, Q, s->R) && (gather ? nmin <= 1 : ac == 1) &&
+  /* Keywords the block's keywords take keep a lone Array whole, empty ones
+     too (emit_block_binds): only a `**` alone may spread it, for
+     instance_exec, which drops an empty one before it yields, so the
+     parameters then hold the Array or an element. */
+  int kw_spreads = kwh >= 0 && kwh_only_spreads(nt, kwh);
+  if (!s->lambda && (kwh < 0 || kw_spreads) && block_auto_splats(P, O, Q, s->R) &&
+      (gather ? nmin <= 1 : ac == 1) &&
       (ty_is_array(e) || e == TY_POLY || e == TY_POLY_ARRAY)) {
     /* spread across the parameters: an element, or (gathered, or boxed)
        possibly the value itself */
     TyKind et = ty_is_array(e) ? ty_array_elem(e) : TY_POLY;
     if (et == TY_UNKNOWN) et = TY_POLY;
-    if (gather || !ty_is_array(e)) et = bs_join(et, e);
+    if (gather || kw_spreads || !ty_is_array(e)) et = bs_join(et, e);
     e = et; gather = 1; nmin = 0; nmax = np + 1;
   }
   int ot = 0, ps = 0;

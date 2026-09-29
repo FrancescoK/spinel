@@ -21884,8 +21884,8 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
        prologue does. */
     if (has_any_kw)
       buf_printf(pb, "  int _sp_kwpos = _sp_proc_kwpos; _sp_proc_kwpos = 0;\n"
-                     "  sp_int _sp_haskw = argc > 0 && argc <= SP_PROC_ARG_SLOTS && _sp_kwpos != 1"
-                     " && (_sp_kwpos == 2 || argc > %d)"
+                     "  sp_int _sp_haskw = argc > 0 && argc <= SP_PROC_ARG_SLOTS"
+                     " && (_sp_kwpos == 2 || (_sp_kwpos == 0 && argc > %d))"
                      " && _sp_proc_poly_args[argc-1].tag == SP_TAG_OBJ"
                      " && sp_poly_is_hash_kind(_sp_proc_poly_args[argc-1].cls_id);\n"
                      "  sp_RbVal _sp_kwh = _sp_haskw ? _sp_proc_poly_args[argc-1] : sp_box_nil();"
@@ -22450,14 +22450,16 @@ int call_args_need_spread(const NodeTable *nt, const int *argv, int argc) {
 /* Like emit_spread_args, and writes to kwpos the C text of what the spread
    array's last element is, for a proc's keyword parameters (_sp_proc_kwpos):
    2 keywords, 1 a positional. A trailing `**h` that is empty at run time
-   pushes nothing, so the answer is then a run-time flag. */
+   pushes nothing, so the answer is then a run-time flag: 2, or 3 for
+   keywords that came to nothing (the last element, if any, a positional
+   all the same), which turns a proc's auto-splat off as CRuby's does. */
 int emit_spread_args_kw(Compiler *c, const int *argv, int argc, char *kwpos, size_t kwsz) {
   const NodeTable *nt = c->nt;
   int last_kwh = argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode;
   if (last_kwh && kwh_only_spreads(nt, argv[argc - 1])) {
     int tk = ++g_tmp;
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "int _t%d = 1;\n", tk);
+    buf_printf(g_pre, "int _t%d = 3;\n", tk);
     snprintf(kwpos, kwsz, "_t%d", tk);
   }
   else snprintf(kwpos, kwsz, "%d", last_kwh ? 2 : 1);

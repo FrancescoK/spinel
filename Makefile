@@ -1401,6 +1401,7 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/poly_array_intersect.rb \
                   test/kw_splat_true_false_nil_operand.rb \
                   test/call_positional_layout.rb \
+                  test/block_autosplat_keywords_posts.rb \
                   test/keyword_binding_plan.rb \
                   test/regex_value_as_match_arg.rb \
                   test/kwrest_any_key.rb \
