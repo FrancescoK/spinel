@@ -1,0 +1,19 @@
+[true, nil]
+f
+[false, false]
+f
+[false, true]
+t
+[true, nil, "", true]
+[false, :fast, "fast", false]
+[true, nil]
+[false, String]
+[true, nil]
+[false, 1..3]
+[true, nil]
+[false, 0.5]
+nil
+:made
+:made
+[true, :debug]
+[false, :debug]
