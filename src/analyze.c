@@ -693,6 +693,9 @@ void compute_instantiated(Compiler *c, int early) {
     for (int k = 0; k < c->nclasses; k++) {
       /* main's ivars live on the Toplevel pseudo-class, which is never built */
       if (sp_streq(c->classes[k].name, "Toplevel")) continue;
+      /* a module has no instances, whatever `klass.new` can reach */
+      { int dn = c->classes[k].def_node;
+        if (dn >= 0 && dn < c->nt->count && nt_kind(c->nt, dn) == NK_ModuleNode) continue; }
       c->classes[k].instantiated = 1;
     }
   for (int k = 0; k < c->nclasses; k++) c->classes[k].ctor_reachable = c->classes[k].instantiated;
