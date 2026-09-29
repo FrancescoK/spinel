@@ -13607,7 +13607,8 @@ static sp_Enumerator *sp_poly_regroup(sp_RbVal v, sp_int n, sp_bool cons) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p &&
       ((sp_Range *)v.v.p)->last == INTPTR_MAX)
     return sp_Enumerator_regroup(sp_Enumerator_new_from(v), n, cons);
-  sp_RbVal a = sp_box_poly_array(sp_poly_to_a_arr(v));
+  sp_RbVal a = v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE ? v
+             : sp_box_poly_array(sp_poly_to_a_arr(v));
   return cons ? sp_Enumerator_new_cons(a, n) : sp_Enumerator_new_slices(a, n);
 }
 static sp_Enumerator *sp_Enumerator_ewi(sp_Enumerator *e) SP_UNUSED;
