@@ -13988,9 +13988,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, eq ? "sp_float_is_nil(" : "(!sp_float_is_nil(");
         emit_expr(c, other, b); buf_puts(b, eq ? ")" : "))");
       }
-      else if (ot == TY_STRING || ot == TY_MATCHDATA ||
-               ty_is_hash(ot) || ty_is_array(ot) || ot == TY_PROC || ot == TY_IO ||
-               ot == TY_FIBER || ot == TY_EXCEPTION || ot == TY_REGEX) {
+      else if (ty_null_is_nil(ot)) {
         /* nullable heap pointer: a NULL pointer encodes nil (a `@h = {}` slot is
            still NULL until assigned, so `@h == nil` must be a NULL test, not the
            always-false fallback below). */
@@ -30446,6 +30444,16 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       buf_printf(b, "; ((sp_Class){(sp_int)-1, sp_float_is_nil(_t%d) ? SPL(\"NilClass\") : SPL(\"Float\")}); })", tcv);
       return;
     }
+    if (cn && ty_null_is_nil(rt) && node_may_be_null_nil(c, recv)) {
+      /* NULL is this pointer slot's nil, whose class is NilClass */
+      int tcv = ++g_tmp;
+      Buf crb = expr_buf(c, recv);
+      buf_puts(b, "({ "); emit_ctype(c, rt, b);
+      buf_printf(b, " _t%d = %s; ((sp_Class){(sp_int)-1, _t%d ? SPL(\"%s\") : SPL(\"NilClass\")}); })",
+                 tcv, crb.p ? crb.p : "0", tcv, cn);
+      free(crb.p);
+      return;
+    }
     if (cn) {
       /* a first-class name-backed Class value; the receiver is side-effect-
          evaluated when it is not a plain read */
@@ -34879,6 +34887,14 @@ else {
       (sp_streq(name, "==") || sp_streq(name, "!=") || sp_streq(name, "eql?") ||
        sp_streq(name, "equal?")) &&
       comp_ntype(c, argv[0]) != TY_REGEX && comp_ntype(c, argv[0]) != TY_POLY) {
+    /* except nil against the slot's own nil, the NULL pattern */
+    if (comp_ntype(c, argv[0]) == TY_NIL && !sp_streq(name, "equal?") && !sp_streq(name, "eql?")) {
+      int tn = ++g_tmp;
+      buf_printf(b, "({ void *_t%d = (void *)(", tn); emit_expr(c, recv, b); buf_puts(b, "); (void)(");
+      emit_boxed(c, argv[0], b);
+      buf_printf(b, "); _t%d %s NULL; })", tn, sp_streq(name, "!=") ? "!=" : "==");
+      return;
+    }
     buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
     emit_boxed(c, argv[0], b);
     buf_printf(b, "), %d)", sp_streq(name, "!=") ? 1 : 0);
@@ -34907,11 +34923,11 @@ else {
       return;
     }
     if (sp_streq(name, "inspect")) {
-      buf_puts(b, "sp_re_inspect_str((void *)("); emit_expr(c, recv, b); buf_puts(b, "))");
+      emit_null_guarded_call(c, recv, TY_REGEX, "sp_re_inspect_str", "SPL(\"nil\")", b);
       return;
     }
     if (sp_streq(name, "to_s")) {
-      buf_puts(b, "sp_re_to_s_str((void *)("); emit_expr(c, recv, b); buf_puts(b, "))");
+      emit_null_guarded_call(c, recv, TY_REGEX, "sp_re_to_s_str", "sp_str_empty", b);
       return;
     }
     if (sp_streq(name, "names")) {
@@ -38522,7 +38538,11 @@ else {
       buf_printf(b, "sp_bigint_sub(%s, sp_bigint_new_int(1))", r); free(rs.p); return;
     }
     if (sp_streq(name, "class") && argc == 0) {
-      buf_printf(b, "((void)(%s), ((sp_Class){-100}))", r); free(rs.p); return;  /* Integer */
+      /* NULL is the slot's nil */
+      if (node_may_be_null_nil(c, recv))
+        buf_printf(b, "((sp_Class){(%s) ? -100 : %d})", r, builtin_class_id("NilClass"));
+      else buf_printf(b, "((void)(%s), ((sp_Class){-100}))", r);  /* Integer */
+      free(rs.p); return;
     }
     /* coerce(n): [n, self], both boxed (#3129) */
     if (sp_streq(name, "coerce") && argc == 1) {

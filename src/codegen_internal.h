@@ -660,6 +660,12 @@ void emit_frozen_obj_guard(Compiler *c, int cid, const char *selfexpr, Buf *b);
    be NULL), return the name of its SP_BUILTIN_* class-id constant; else NULL.
    Such a value must box via sp_box_nullable_obj so a NULL becomes SP_TAG_NIL. */
 const char *ty_nullable_builtin_id(TyKind t);
+/* 1 iff a value of type t is a C pointer whose NULL is nil. */
+int ty_null_is_nil(TyKind t);
+/* A node of such a type may hold NULL: not a literal, not self. */
+int node_may_be_null_nil(Compiler *c, int node);
+/* `fn(recv)` with recv evaluated once, answering nil_c for a NULL recv. */
+void emit_null_guarded_call(Compiler *c, int recv, TyKind rt, const char *fn, const char *nil_c, Buf *b);
 void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b);
 /* emit_unbox_text, but a nil-tagged poly lands on the slot's own nil (an int?
    or float? sentinel) instead of the zero payload under the tag (#3412). */
