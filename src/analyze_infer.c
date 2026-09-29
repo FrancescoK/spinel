@@ -7841,6 +7841,8 @@ TyKind infer_uncached(Compiler *c, int id) {
     Scope *s = comp_scope_of(c, id);
     int cid = s->class_id;
     if (cid < 0 && id < c->node_cap) cid = c->node_cbody[id];
+    /* a body-level read in a (reopened) class body: the body's class */
+    if (cid < 0 && c->node_cbody && id < c->node_cap) cid = c->node_cbody[id];
     if (cid < 0) cid = comp_class_index(c, "Toplevel");
     if (cid < 0) return TY_UNKNOWN;
     int idx = nm ? comp_cvar_index(&c->classes[cid], nm) : -1;
@@ -7856,6 +7858,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     const char *nm = nt_str(nt, id, "name");
     Scope *s = comp_scope_of(c, id);
     int cid = s ? s->class_id : -1;
+    if (cid < 0 && c->node_cbody && id < c->node_cap) cid = c->node_cbody[id];
     if (cid < 0) cid = comp_class_index(c, "Toplevel");
     int idx = (cid >= 0 && nm) ? comp_cvar_index(&c->classes[cid], nm) : -1;
     if (idx >= 0) return c->classes[cid].cvar_types[idx];

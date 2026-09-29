@@ -6051,12 +6051,17 @@ int infer_cvar_types(Compiler *c) {
       }
     }
   }
-  /* Pass 2: method-level writes (comp_scope_of has class_id set). */
+  /* Pass 2: method-level writes (comp_scope_of has class_id set), and
+     body-level writes in a REOPENED class/module body: those sit in scope 0
+     like top-level code, but the scope pass recorded the enclosing body's
+     class in node_cbody, and the cvar is that class's (not Toplevel's). */
   for (int id = 0; id < nt->count; id++) {
     if (!is_cvar_write_kind(nt_kind(nt, id))) continue;
     Scope *s = comp_scope_of(c, id);
-    if (s->class_id < 0) continue;
-    if (cvar_note_write(c, &c->classes[s->class_id], id)) changed = 1;
+    int wcid = s->class_id;
+    if (wcid < 0 && c->node_cbody && id < c->node_cap) wcid = c->node_cbody[id];
+    if (wcid < 0) continue;
+    if (cvar_note_write(c, &c->classes[wcid], id)) changed = 1;
   }
   /* A multiple-assignment target (`@@a, *@@r = ...`), in a method or a class
      body and on either side of a splat, declares its cvar too; the elements'
@@ -6102,11 +6107,13 @@ int infer_cvar_types(Compiler *c) {
     TyKind merged = ty_unify(c->classes[cci].cvar_types[idx], vt);
     if (merged != c->classes[cci].cvar_types[idx]) { c->classes[cci].cvar_types[idx] = merged; changed = 1; }
   }
-  /* Pass 3: top-level writes (class_id == -1 in scope 0) -- use Toplevel pseudo-class. */
+  /* Pass 3: top-level writes (class_id == -1 in scope 0, and not inside any
+     class body) -- use Toplevel pseudo-class. */
   for (int id = 0; id < nt->count; id++) {
     if (!is_cvar_write_kind(nt_kind(nt, id))) continue;
     Scope *s = comp_scope_of(c, id);
     if (!nt_str(nt, id, "name") || s->class_id >= 0) continue;
+    if (c->node_cbody && id < c->node_cap && c->node_cbody[id] >= 0) continue;
     int tl_idx = comp_class_index(c, "Toplevel");
     if (tl_idx < 0) { comp_class_new(c, "Toplevel", -1); tl_idx = c->nclasses - 1; }
     if (cvar_note_write(c, &c->classes[tl_idx], id)) changed = 1;

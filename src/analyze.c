@@ -19675,6 +19675,20 @@ void analyze_program(Compiler *c) {
       ivar_backstop_changed = 1;
     }
   }
+  /* A class variable never assigned a typed value -- activesupport's
+     `mattr_accessor :parse_json_times`, declared nil and set by nobody in
+     the program -- has no C storage type either, and fell to an Integer
+     slot whose reader was refused in a condition. Such a slot always reads
+     nil: give it the boxed-nil poly global, as the ivar above. */
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    ClassInfo *cl = &c->classes[ci];
+    for (int cv = 0; cv < cl->ncvars; cv++) {
+      TyKind t = cl->cvar_types[cv];
+      if (t != TY_UNKNOWN && t != TY_VOID && t != TY_NIL) continue;
+      cl->cvar_types[cv] = TY_POLY;
+      ivar_backstop_changed = 1;
+    }
+  }
 
   /* An attr_reader/attr_accessor ivar typed via a writer call (scalar type),
      but whose class has no initialize that writes it, starts nil on fresh
@@ -21694,6 +21708,18 @@ void analyze_program(Compiler *c) {
     /* poly scalar return boxes; a tuple return (POLY_ARRAY, e.g. `return a, b, c`)
        boxes each element. Either way a value instance here would be boxed. */
     if (s && (s->ret == TY_POLY || s->ret == TY_POLY_ARRAY)) c->classes[q].is_value_type = 0;
+  }
+  /* An instance held in a class variable: the cvar is a file-scope static
+     initialized to NULL and GC-marked through its pointer, so its class must
+     be a heap object (a value type has no NULL and no pointer to mark). */
+  for (int i = 0; i < c->nclasses; i++) {
+    ClassInfo *ci = &c->classes[i];
+    for (int j = 0; j < ci->ncvars; j++) {
+      TyKind t = ci->cvar_types[j];
+      if (!ty_is_object(t)) continue;
+      int q = ty_object_class(t);
+      if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0;
+    }
   }
   for (int id = 0; id < c->nt->count; id++) {
     const char *ty = nt_type(c->nt, id);

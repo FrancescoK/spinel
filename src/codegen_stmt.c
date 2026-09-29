@@ -8965,8 +8965,16 @@ else {
     if (emit_empty_container_for_slot(c, v, ct, b)) { /* emitted at the slot's type */ }
     else if (ct == TY_POLY) emit_boxed(c, v, b);
     else if (emit_array_into_poly_slot(c, ct, v, b)) { }
+    /* `@@x = nil` into a slot typed by its later writes is the slot's nil,
+       not the numeric 0 a bare NilNode renders as: `@@quiet = nil` then
+       `@@quiet = 1` read back 0 before the write (mattr_accessor's default) */
+    else if (nt_kind(nt, v) == NK_NilNode && ct != TY_UNKNOWN) emit_ret_nil(c, ct, b);
     /* an int into a bigint slot promotes at the boundary, as everywhere else */
     else if (ct == TY_BIGINT && comp_ntype(c, v) != TY_BIGINT) emit_bigint_operand_ext(c, v, b);
+    /* a boxed value into a typed slot is unboxed into it (see the value form) */
+    else if (comp_ntype(c, v) == TY_POLY && ct != TY_UNKNOWN) {
+      Buf vb = expr_buf(c, v); emit_unbox_text(c, ct, vb.p ? vb.p : "sp_box_nil()", b); free(vb.p);
+    }
     else emit_expr(c, v, b);
     buf_puts(b, "; ");
     emit_cvar_set_flag(c, sc, nm, 0, b);
