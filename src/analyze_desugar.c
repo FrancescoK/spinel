@@ -4464,7 +4464,11 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
          forwards only a `super(...)` that passes nothing before the `...` */
       if (is_zsuper && nlead < 0) { ok = 0; break; }
       int lead = is_zsuper ? nlead : ac - 1;
-      if ((is_new || (is_super && !lead)) && sh >= 0 && (sh & 4) && fwd_any_def_yields(nt, cn)) {
+      /* A Class value's `new` builds a yielding initialize through its proc
+         form, which takes the block as the `&` this rewrite passes. */
+      int dyn_new = is_new && recv >= 0 && !fwd_node_is(nt, recv, "SelfNode") &&
+                    !fwd_node_is(nt, recv, "ConstantReadNode") && !fwd_node_is(nt, recv, "ConstantPathNode");
+      if ((is_new || (is_super && !lead)) && !dyn_new && sh >= 0 && (sh & 4) && fwd_any_def_yields(nt, cn)) {
         ok = 0; break;
       }
       if (sh < 0 || nt_ref(nt, id, "block") >= 0) { ok = 0; break; }
