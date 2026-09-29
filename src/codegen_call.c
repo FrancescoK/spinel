@@ -9643,11 +9643,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                      HV[hvi].cls, tr, HV[hvi].hn, HV[hvi].hn, tv, atmp[0]);
           if (ret == TY_POLY) emit_boxed_text(c, HV[hvi].vt, getx, b); else buf_puts(b, getx);
           buf_puts(b, " : ");
-          if (is_fetch && argc == 2) {
-            char dn[32]; snprintf(dn, sizeof dn, "_t%d", atmp[1]);
-            if (ret == TY_POLY) emit_boxed_text(c, infer_type(c, argv[1]), dn, b); else buf_puts(b, dn);
-          }
-          else if (is_fetch) { buf_puts(b, "("); emit_key_not_found(c, argv[0], b); buf_puts(b, ", "); buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt)); buf_puts(b, ")"); }
+          if (is_fetch) emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? argv[1] : -1, argv[0], ret, trt, b);
           else buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt));
           buf_puts(b, "; break;");
         }
@@ -9687,11 +9683,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         else if (trt == TY_FLOAT) buf_printf(b, "sp_poly_to_f(%s)", getx);
         else buf_printf(b, "sp_poly_to_i(%s)", getx);
         buf_puts(b, " : ");
-        if (is_fetch && argc == 2) {
-          char dn[32]; snprintf(dn, sizeof dn, "_t%d", atmp[1]);
-          if (ret == TY_POLY) emit_boxed_text(c, infer_type(c, argv[1]), dn, b); else buf_puts(b, dn);
-        }
-        else if (is_fetch) { buf_puts(b, "("); emit_key_not_found(c, argv[0], b); buf_puts(b, ", "); buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt)); buf_puts(b, ")"); }
+        if (is_fetch) emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? argv[1] : -1, argv[0], ret, trt, b);
         else buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt));
         buf_puts(b, "; break;");
         /* a symbol key against generic poly-keyed storage: an empty `{}`
