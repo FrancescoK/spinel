@@ -10857,6 +10857,16 @@ void emit_splat_operand_array(Compiler *c, int node, Buf *b) {
   emit_boxed(c, node, b);
   buf_puts(b, spread ? "))" : ")");
 }
+void emit_one_arg(Compiler *c, int arg, int boxed, Buf *b) {
+  if (nt_kind(c->nt, arg) != NK_SplatNode) { if (boxed) emit_boxed(c, arg, b); else emit_expr(c, arg, b); return; }
+  int so = nt_ref(c->nt, arg, "expression"), t = ++g_tmp;
+  char el[40]; snprintf(el, sizeof el, "_t%d->data[0]", t);
+  buf_printf(b, "({ sp_PolyArray *_t%d = ", t);
+  emit_splat_operand_array(c, so >= 0 ? so : arg, b);
+  buf_printf(b, "; sp_arity_check(_t%d->len, 1, 1, NULL); ", t);
+  if (boxed) buf_puts(b, el); else emit_unbox_text(c, comp_ntype(c, arg), el, b);
+  buf_puts(b, "; })");
+}
 
 /* Can a boxed IO's printf gather its arguments into one list? Not past a
    `**` argument, several forms of which have no boxed value (an anonymous
@@ -35004,7 +35014,7 @@ else {
               comp_ntype(c, argv[0]) == TY_POLY) {
             int _tvv = ++g_tmp;
             char _tvn[32]; snprintf(_tvn, sizeof _tvn, "_t%d", _tvv);
-            buf_printf(b, "sp_RbVal %s = ", _tvn); emit_expr(c, argv[0], b);
+            buf_printf(b, "sp_RbVal %s = ", _tvn); emit_one_arg(c, argv[0], 0, b);
             buf_printf(b, "; SP_GC_ROOT_RBVAL(%s); _t%d->iv_%s = ", _tvn, _atmp, iv_c(_abase));
             emit_unbox_text(c, _aivt, _tvn, b);
             TyKind _nt = comp_ntype(c, id);
@@ -35014,11 +35024,11 @@ else {
           }
           buf_printf(b, "_t%d->iv_%s = ", _atmp, iv_c(_abase));
           if (argc >= 1) {
-            if (_aivt == TY_POLY && comp_ntype(c, argv[0]) != TY_POLY) emit_boxed(c, argv[0], b);
+            if (_aivt == TY_POLY && comp_ntype(c, argv[0]) != TY_POLY) emit_one_arg(c, argv[0], 1, b);
             /* the other way: a typed slot (an --rbs seed pins it) given a
                boxed value, which the statement form already unboxes; stored
                raw, an sp_RbVal went into an sp_int (#4856) */
-            else emit_expr(c, argv[0], b);
+            else emit_one_arg(c, argv[0], 0, b);
           }
           else buf_puts(b, "0");
           buf_puts(b, "; })");
@@ -35072,7 +35082,7 @@ else {
                  ahead of the declaration, not into the middle of it */
               Buf apre; memset(&apre, 0, sizeof apre);
               Buf aval; memset(&aval, 0, sizeof aval);
-              { Buf *sv_pre = g_pre; g_pre = &apre; emit_expr(c, saved0, &aval); g_pre = sv_pre; }
+              { Buf *sv_pre = g_pre; g_pre = &apre; emit_one_arg(c, saved0, 0, &aval); g_pre = sv_pre; }
               if (!g_pre) buf_puts(b, "({ ");
               if (apre.p) buf_puts(decl, apre.p);
               if (g_pre) emit_indent(g_pre, g_indent);
