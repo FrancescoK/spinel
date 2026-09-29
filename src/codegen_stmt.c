@@ -10202,11 +10202,15 @@ else {
         }
         return;
       }
-      /* poly RHS: destructure with sp_poly_arr_get */
-      if (st == TY_POLY) {
+      /* poly RHS: destructure with sp_poly_massign_get. Any other value --
+         a hash, or a scalar from a call the fill above leaves alone since it
+         may return a tuple -- is boxed and destructures as itself. */
+      if (st != TY_UNKNOWN) {
         int tarr = ++g_tmp;
         emit_indent(b, indent);
-        buf_printf(b, "sp_RbVal _t%d = ", tarr); emit_expr(c, value, b); buf_puts(b, ";\n");
+        buf_printf(b, "sp_RbVal _t%d = ", tarr);
+        if (st == TY_POLY) emit_expr(c, value, b); else emit_boxed(c, value, b);
+        buf_puts(b, ";\n");
         emit_indent(b, indent);
         buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d);\n", tarr);
         for (int i = 0; i < ln; i++) {
