@@ -5744,6 +5744,23 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   g_hoist_len_var = sv_hvar; g_hoist_len_recv = sv_hrecv;
 }
 
+static void emit_for_poly_lefts(Compiler *c, int idx, int tv, int indent, Buf *b) {
+  int ln = 0;
+  const int *lefts = nt_arr(c->nt, idx, "lefts", &ln);
+  for (int i = 0; i < ln; i++) {
+    const char *lnm = nt_str(c->nt, lefts[i], "name");
+    if (!lnm) continue;
+    LocalVar *dlv = scope_local(comp_scope_of(c, idx), lnm);
+    TyKind vt = dlv ? dlv->type : TY_POLY;
+    emit_indent(b, indent);
+    emit_local_ref(c, idx, lnm, b);
+    if (vt == TY_INT || vt == TY_UNKNOWN) buf_printf(b, " = sp_unbox_int(sp_poly_massign_get(_t%d, %d));\n", tv, i);
+    else if (vt == TY_FLOAT) buf_printf(b, " = sp_unbox_float(sp_poly_massign_get(_t%d, %d));\n", tv, i);
+    else if (vt == TY_STRING) buf_printf(b, " = sp_unbox_str(sp_poly_massign_get(_t%d, %d));\n", tv, i);
+    else buf_printf(b, " = sp_poly_massign_get(_t%d, %d);\n", tv, i);
+  }
+}
+
 void emit_for(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int idx = nt_ref(nt, id, "index");
@@ -5862,8 +5879,6 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
     /* Multi-variable for: `for a, b in coll` -- each element is an inner array. */
     const char *idx_ty = nt_type(nt, idx);
     if (idx_ty && sp_streq(idx_ty, "MultiTargetNode")) {
-      int ln = 0;
-      const int *lefts = nt_arr(nt, idx, "lefts", &ln);
       int tv = ++g_tmp;
       emit_indent(b, indent);
       buf_printf(b, "{ sp_%sArray *_t%d = ", k ? k : "Poly", ta); emit_expr(c, coll, b); buf_puts(b, ";\n");
@@ -5877,21 +5892,7 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
                    tv, sp_streq(k,"Int")?"int":sp_streq(k,"Float")?"float":"str", k, ta, ti);
       else
         buf_printf(b, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", tv, ta, ti);
-      for (int i = 0; i < ln; i++) {
-        const char *lnm = nt_str(nt, lefts[i], "name");
-        if (!lnm) continue;
-        TyKind vt = scope_local(comp_scope_of(c, idx), lnm) ?
-                    scope_local(comp_scope_of(c, idx), lnm)->type : TY_POLY;
-        emit_indent(b, indent + 2);
-        if (vt == TY_INT || vt == TY_UNKNOWN)
-          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_int(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
-        else if (vt == TY_FLOAT)
-          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_float(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
-        else if (vt == TY_STRING)
-          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_str(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
-        else
-          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_poly_massign_get(_t%d, %d);\n", tv, i); }
-      }
+      emit_for_poly_lefts(c, idx, tv, indent + 2, b);
       emit_loop_body(c, body, b, indent + 2);
       emit_indent(b, indent + 1); buf_puts(b, "}\n");
       emit_indent(b, indent); buf_puts(b, "}\n");
@@ -5946,25 +5947,9 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
     buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, ta, ti);
     const char *idx_ty3 = nt_type(nt, idx);
     if (idx_ty3 && sp_streq(idx_ty3, "MultiTargetNode")) {
-      int ln = 0;
-      const int *lefts = nt_arr(nt, idx, "lefts", &ln);
       emit_indent(b, indent + 2);
       buf_printf(b, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", tv, ta, ti);
-      for (int i = 0; i < ln; i++) {
-        const char *lnm = nt_str(nt, lefts[i], "name");
-        if (!lnm) continue;
-        LocalVar *dlv = scope_local(comp_scope_of(c, idx), lnm);
-        TyKind vt3 = dlv ? dlv->type : TY_POLY;
-        emit_indent(b, indent + 2);
-        if (vt3 == TY_INT || vt3 == TY_UNKNOWN)
-          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_int(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
-        else if (vt3 == TY_FLOAT)
-          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_float(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
-        else if (vt3 == TY_STRING)
-          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_str(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
-        else
-          { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_poly_massign_get(_t%d, %d);\n", tv, i); }
-      }
+      emit_for_poly_lefts(c, idx, tv, indent + 2, b);
     }
     else if (vn) {
       LocalVar *ilv = scope_local(comp_scope_of(c, idx), vn);
@@ -5994,25 +5979,9 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, ta, ti);
       const char *idx_ty2 = nt_type(nt, idx);
       if (idx_ty2 && sp_streq(idx_ty2, "MultiTargetNode")) {
-        int ln = 0;
-        const int *lefts = nt_arr(nt, idx, "lefts", &ln);
         emit_indent(b, indent + 2);
         buf_printf(b, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", tv, ta, ti);
-        for (int i = 0; i < ln; i++) {
-          const char *lnm = nt_str(nt, lefts[i], "name");
-          if (!lnm) continue;
-          TyKind vt2 = scope_local(comp_scope_of(c, idx), lnm) ?
-                       scope_local(comp_scope_of(c, idx), lnm)->type : TY_POLY;
-          emit_indent(b, indent + 2);
-          if (vt2 == TY_INT || vt2 == TY_UNKNOWN)
-            { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_int(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
-          else if (vt2 == TY_FLOAT)
-            { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_float(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
-          else if (vt2 == TY_STRING)
-            { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_unbox_str(sp_poly_massign_get(_t%d, %d));\n", tv, i); }
-          else
-            { emit_local_ref(c, idx, lnm, b); buf_printf(b, " = sp_poly_massign_get(_t%d, %d);\n", tv, i); }
-        }
+        emit_for_poly_lefts(c, idx, tv, indent + 2, b);
       }
       else {
         emit_indent(b, indent + 2);
