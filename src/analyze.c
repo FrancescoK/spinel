@@ -17690,6 +17690,7 @@ void analyze_program(Compiler *c) {
   desugar_engine_branches(c);
   desugar_when_int_float_ranges(c);     /* when 0..0.05 -> 0.0..0.05 */
   desugar_class_reopen(c);               /* class Class / Class.class_eval -> a module */
+  desugar_body_ivars(c);                 /* module-body @x read / in a block -> Mod.__spinel_civget_x */
   desugar_extended_module_attrs(c);
   /* builtins/enumerable.rb, spliced by the parser: its definitions become
      the receiver-taking top-level functions before any scope is built */
