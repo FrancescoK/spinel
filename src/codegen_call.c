@@ -11849,9 +11849,21 @@ static void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Bu
     if (kw_funds || !init_accepts_kw_call(c, initm, argv, argc)) {
       /* the class exists and constructs, just not with these arguments:
          CRuby's ArgumentError, not the NoMethodError of the default */
-      if (c->classes[ci].instantiated)
-        buf_printf(b, "case %d: sp_raise_cls(\"ArgumentError\", \"wrong arguments for %s#initialize\"); break; ",
-                   ci, c->classes[ci].name);
+      if (c->classes[ci].instantiated) {
+        /* Into an initialize taking no keywords, literal keywords are one
+           positional Hash: its count is CRuby's message. */
+        char am[512]; am[0] = 0;
+        int npos = 0, has_spread = call_has_splat_arg(nt, argv, argc);
+        for (int a = 0; a < argc; a++) {
+          NodeKind ak = nt_kind(nt, argv[a]);
+          if (ak == NK_KeywordHashNode && kwh_has_splat(nt, argv[a])) has_spread = 1;
+          if (ak != NK_BlockArgumentNode) npos++;
+        }
+        if (has_spread || init_takes_keywords(c, initm) ||
+            !ctor_arity_error(c, ci, initm, npos, am, sizeof am))
+          snprintf(am, sizeof am, "wrong arguments for %s#initialize", c->classes[ci].name);
+        buf_printf(b, "case %d: sp_raise_cls(\"ArgumentError\", \"%s\"); break; ", ci, am);
+      }
       continue;
     }
     /* A class this call cannot construct: the analysis bound the arguments
