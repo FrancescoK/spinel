@@ -6903,23 +6903,24 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
        the assignment referencing an undeclared lv_e. */
     Scope *bvs = comp_scope_of(c, ref);
     LocalVar *blv = bvs ? scope_local(bvs, nt_str(nt, ref, "name")) : NULL;
+    emit_local_ref(c, ref, nt_str(nt, ref, "name"), b);
+    buf_puts(b, " = ");
     if (blv && blv->type == TY_POLY) {
       /* the name also holds other values (#4923): box the exception */
       char ce[64];
       if (spec_cid >= 0) snprintf(ce, sizeof ce, "(sp_%s *)_ce_%d", c->classes[spec_cid].c_name, rc);
       else snprintf(ce, sizeof ce, "_ce_%d", rc);
-      buf_printf(b, "lv_%s = ", rename_local(nt_str(nt, ref, "name")));
       emit_boxed_text(c, spec_cid >= 0 ? ty_object(spec_cid) : TY_EXCEPTION, ce, b);
       buf_puts(b, ";\n");
     }
     else if (spec_cid >= 0)
-      buf_printf(b, "lv_%s = (sp_%s *)_ce_%d;\n", rename_local(nt_str(nt, ref, "name")), c->classes[spec_cid].c_name, rc);
+      buf_printf(b, "(sp_%s *)_ce_%d;\n", c->classes[spec_cid].c_name, rc);
     else
       /* bind the materialized object (which already prefers the CARRIED object
          from `raise <exception-object>` / `raise Cls.new`): the rescue variable,
          $!, and the raised object are one identity, since $! reads the same
          sp_exc_handling top this arm just pushed. */
-      buf_printf(b, "lv_%s = _ce_%d;\n", rename_local(nt_str(nt, ref, "name")), rc);
+      buf_printf(b, "_ce_%d;\n", rc);
   }
   if (resultvar) {
     const char *sv = g_result_var; g_result_var = resultvar;
