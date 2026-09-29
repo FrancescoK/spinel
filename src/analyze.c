@@ -10678,6 +10678,20 @@ static int param_nonstr_index_written(Compiler *c, int mi, int p,
     if (ix[i].sc == &c->scopes[mi] && sp_streq(ix[i].nm, pn)) return 1;
   return 0;
 }
+static void mark_empty_hash_local_writes(Compiler *c, int a) {
+  const NodeTable *nt = c->nt;
+  const char *ln = nt_str(nt, a, "name");
+  Scope *asc = comp_scope_of(c, a);
+  if (!ln || !asc || !local_all_writes_empty_hash(c, asc, ln)) return;
+  for (int w = 0; w < nt->count; w++) {
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, ln) || comp_scope_of(c, w) != asc) continue;
+    int wv = nt_ref(nt, w, "value");
+    if (wv >= 0 && wv < c->node_cap && nt_kind(nt, wv) == NK_HashNode)
+      c->empty_hash_arg[wv] = 1;
+  }
+}
 static void mark_empty_literal_args(Compiler *c) {
   if (!c->empty_hash_arg) return;
   const NodeTable *nt = c->nt;
@@ -10759,20 +10773,7 @@ static void mark_empty_literal_args(Compiler *c) {
       /* `h = {}; m(h)`: the arg is a local whose value is the empty literal.
          Mark that write's `{}` so the local (and thus the param) is the widest
          hash -- the mutation then lands in place on the caller's hash. */
-      else if (ak == NK_LocalVariableReadNode) {
-        const char *ln = nt_str(nt, a, "name");
-        Scope *asc = comp_scope_of(c, a);
-        if (ln && asc && local_all_writes_empty_hash(c, asc, ln)) {
-          for (int w = 0; w < nt->count; w++) {
-            if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
-            const char *wn = nt_str(nt, w, "name");
-            if (!wn || !sp_streq(wn, ln) || comp_scope_of(c, w) != asc) continue;
-            int wv = nt_ref(nt, w, "value");
-            if (wv >= 0 && wv < c->node_cap && nt_kind(nt, wv) == NK_HashNode)
-              c->empty_hash_arg[wv] = 1;
-          }
-        }
-      }
+      else if (ak == NK_LocalVariableReadNode) mark_empty_hash_local_writes(c, a);
     }
   }
   /* `h = {}; yield h` hands the hash to a block the method does not see:
@@ -10791,18 +10792,7 @@ static void mark_empty_literal_args(Compiler *c) {
         if (en == 0) c->empty_hash_arg[a] = 1;
         continue;
       }
-      if (ak != NK_LocalVariableReadNode) continue;
-      const char *ln = nt_str(nt, a, "name");
-      Scope *asc = comp_scope_of(c, a);
-      if (!ln || !asc || !local_all_writes_empty_hash(c, asc, ln)) continue;
-      for (int w = 0; w < nt->count; w++) {
-        if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
-        const char *wn = nt_str(nt, w, "name");
-        if (!wn || !sp_streq(wn, ln) || comp_scope_of(c, w) != asc) continue;
-        int wv = nt_ref(nt, w, "value");
-        if (wv >= 0 && wv < c->node_cap && nt_kind(nt, wv) == NK_HashNode)
-          c->empty_hash_arg[wv] = 1;
-      }
+      if (ak == NK_LocalVariableReadNode) mark_empty_hash_local_writes(c, a);
     }
   }
   free(mm);
