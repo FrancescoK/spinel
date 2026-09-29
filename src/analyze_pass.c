@@ -3045,7 +3045,7 @@ int infer_write_types(Compiler *c) {
      (string key) -> hash. Part of the recompute frame so it survives reset. */
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty) continue;
+    if (!ty || nt_int(nt, id, "dyn_arm", 0)) continue;
     int recv, kt = TY_UNKNOWN, vt = TY_UNKNOWN, is_push = 0, is_idx_write = 0, is_splice = 0;
     int is_merge = 0;  /* merge!/update: kt and vt are the merged hashes' */
     /* the value arguments of a push/unshift/insert, each its own evidence */
