@@ -838,6 +838,7 @@ int ty_is_struct_valued(TyKind t);   /* see codegen_util.c: struct passed by val
 const char *native_c_type(const char *spec);
 const char *default_value(TyKind t);
 void emit_slot_truthy(TyKind t, const char *ref, Buf *b);
+void emit_sentinel_bind(Compiler *c, TyKind t, int node, char *ref, size_t cap, Buf *b);
 const char *raise_tail_value(TyKind t);
 const char *raise_tail_value_c(Compiler *c, TyKind t);
 const char *array_times_type_error(TyKind at);

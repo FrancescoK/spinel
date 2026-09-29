@@ -2102,6 +2102,15 @@ void emit_slot_truthy(TyKind t, const char *ref, Buf *b) {
   else if (t == TY_POLY)   buf_printf(b, "(sp_poly_truthy(%s))", ref);
   else                     buf_printf(b, "(%s)", ref);
 }
+/* Hold a nullable Integer or Float operand in a fresh temp -- `sp_int _tN =
+   <node>; ` -- so a read that has to ask for its sentinel (emit_slot_truthy)
+   evaluates it once. `ref` receives the temp's name; the caller opens and
+   closes the block or statement expression around it. */
+void emit_sentinel_bind(Compiler *c, TyKind t, int node, char *ref, size_t cap, Buf *b) {
+  snprintf(ref, cap, "_t%d", ++g_tmp);
+  emit_ctype(c, t, b); buf_printf(b, " %s = ", ref); emit_expr(c, node, b);
+  buf_puts(b, "; ");
+}
 /* The C type of class `cid`'s instances. A `native_struct` carries the name
    its declaration gave -- which need not be derived from the Ruby class name
    (`native_struct "Store", "sp_X509_Store"`) -- and every other class is the

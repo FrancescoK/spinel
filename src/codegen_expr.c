@@ -3141,6 +3141,13 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
           else if (it == TY_NIL)
             /* a statically-nil splat contributes nothing (`[*nil]` == []) */
             buf_printf(g_pre, ";\n");
+          /* a nullable Integer or Float holding its sentinel is that nil */
+          else if ((it == TY_INT || it == TY_FLOAT) && call_returns_nullable_int(c, inner)) {
+            Buf bx; memset(&bx, 0, sizeof bx); emit_boxed(c, inner, &bx);
+            buf_printf(g_pre, "{ sp_RbVal _sv = %s; if (_sv.tag != SP_TAG_NIL) sp_PolyArray_push(_t%d, _sv); }\n",
+                       bx.p ? bx.p : "sp_box_nil()", t);
+            free(bx.p);
+          }
           else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed(c, inner, &bx); buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", t, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
           free(el.p);
         }
@@ -3198,6 +3205,15 @@ else {
         else if (it == TY_NIL)
           /* a statically-nil splat contributes nothing (`[*nil]` == []) */
           buf_printf(g_pre, ";\n");
+        /* nor does a nullable Integer or Float holding its sentinel */
+        else if (((it == TY_INT && sp_streq(k, "Int")) || (it == TY_FLOAT && sp_streq(k, "Float"))) &&
+                 call_returns_nullable_int(c, inner)) {
+          Buf nz; memset(&nz, 0, sizeof nz);
+          emit_slot_truthy(it, "_sv", &nz);
+          buf_printf(g_pre, "{ %s _sv = %s; if %s sp_%sArray_push(_t%d, _sv); }\n",
+                     it == TY_INT ? "sp_int" : "sp_float", ep, nz.p, k, t);
+          free(nz.p);
+        }
         else {
           /* Mismatched or unknown element type: emit_expr fallback */
           buf_printf(g_pre, "sp_%sArray_push(_t%d, %s);\n", k, t, ep);
