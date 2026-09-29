@@ -7340,6 +7340,33 @@ static const char *alias_literal_name(const NodeTable *nt, int node) {
   return NULL;
 }
 
+/* `alias_method "k", "y"`: a String name is the Symbol of its text. Every
+   pass that reads alias_method reads Symbol arguments, so the literal
+   becomes one. */
+int desugar_alias_method_string_names(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "receiver") >= 0) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "alias_method")) continue;
+    int an = nt_ref(nt, id, "arguments");
+    int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+    for (int i = 0; i < ac && i < 2; i++) {
+      if (nt_kind(nt, av[i]) != NK_StringNode) continue;
+      const char *s = alias_literal_name(nt, av[i]);
+      if (!s) continue;
+      char *name = strdup(s);
+      nt_node_reset(nt, av[i], "SymbolNode");
+      nt_node_set_str(nt, av[i], "value", name);
+      comp_sym_intern(c, name);
+      free(name);
+      changed = 1;
+    }
+  }
+  return changed;
+}
+
 /* a read of local `name` shaped like node `like` */
 static int alias_local_read(NodeTable *nt, int like, const char *name) {
   int r = fwd_new_node_like(nt, like, "LocalVariableReadNode");
