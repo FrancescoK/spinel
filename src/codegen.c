@@ -12320,6 +12320,9 @@ static void ext_generate_cruby_shim(Compiler *c) {
                   "    pthread_mutex_unlock(&spx_lock);\n"
                   "    if (state) { sp_gc_nroots = _gc_saved; rb_jump_tag(state); }\n"
                   "    if (raised) { sp_gc_nroots = _gc_saved; spx_reraise(ec, em); }\n  }\n");
+    /* The arguments are done with; the return conversion allocates only on
+       the Ruby heap, and can raise (NoMemoryError) past the cleanup. */
+    buf_puts(&sb, "  sp_gc_nroots = _gc_saved;\n");
     buf_puts(&sb, "  return ");
     { char rexpr[32]; snprintf(rexpr, sizeof rexpr, "c__.ret"); 
       if (sc->ret == TY_VOID || sc->ret == TY_NIL) buf_puts(&sb, "Qnil");

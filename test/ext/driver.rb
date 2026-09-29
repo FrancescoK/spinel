@@ -27,11 +27,17 @@ p 20.times.all? { ExtKernel.pair_sum(left, right) == want }
 # element inside its helper, or the kernel's own -- leaves the root stack as
 # it found it: the calls after it collect and still answer.
 def at_depth(n, &b) = n.zero? ? b.call : at_depth(n - 1, &b)
+def raises?(klass)
+  yield
+  false
+rescue klass
+  true
+end
 p(20.times.all? do |i|
-  begin; ExtKernel.pair_sum(left, 1); rescue TypeError; end
-  begin; ExtKernel.pair_sum(left, ["x", 2]); rescue TypeError; end
-  begin; ExtKernel.pair_sum([], right); rescue ArgumentError; end
-  at_depth(i % 7) { ExtKernel.pair_sum(left, right) } == want
+  raises?(TypeError) { ExtKernel.pair_sum(left, 1) } &&
+    raises?(TypeError) { ExtKernel.pair_sum(left, ["x", 2]) } &&
+    raises?(ArgumentError) { ExtKernel.pair_sum([], right) } &&
+    at_depth(i % 7) { ExtKernel.pair_sum(left, right) } == want
 end)
 # NOTE: TOPLEVEL_NOTE deliberately absent -- the kernel's toplevel runs on
 # the SPINEL side at init; nothing but the entry methods exists on the host.
