@@ -13686,6 +13686,14 @@ static int promote_shared_stored_strings(Compiler *c) {
     LocalVar *tgtv = scope_local(ws, tgtn);
     if (!srcv || !tgtv) continue;
     if (srcv->str_shared && tgtv->str_shared) continue;   /* settled */
+    /* A block parameter is bound by its iterator, which hands over a shared
+       handle only when the iteration rule made the container's elements
+       handles (the parameter is then already a shared strbuf). Otherwise the
+       element is a plain string, and promoting the parameter through an
+       alias -- `|s| s = s__bpin` once #5669 rebinds a reassigned parameter --
+       declared an sp_String * the iterator assigns a const char * to. */
+    if ((srcv->is_block_param && !(srcv->type == TY_STRBUF && srcv->str_shared)) ||
+        (tgtv->is_block_param && !(tgtv->type == TY_STRBUF && tgtv->str_shared))) continue;
     if (!strbuf_slot_eligible(c, srcn, ws, srcv) ||
         !strbuf_slot_eligible(c, tgtn, ws, tgtv)) continue;
     int ms = strbuf_mut_kind(c, srcn, ws);
