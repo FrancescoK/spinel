@@ -23308,6 +23308,265 @@ static void emit_pre_format_args(Compiler *c, const int *av, int ac, int ta) {
   }
 }
 
+  /* respond_to?(:m): compile-time approximation. A universal method set is
+     always true; otherwise consult the receiver's class / class-method chain.
+     Unknown primitive methods answer conservatively false. Also fires for
+     the receiverless (implicit-self) form, resolved against the enclosing
+     class -- `self.fullscreen = v if respond_to?(:fullscreen=)` (doom's
+     gosu_window.rb). */
+/* The compile-time answer to `recv.respond_to?(qm)` for the call node `id`:
+   1 / 0, or -1 when only the runtime can tell (a Range or poly receiver, a
+   private match under a runtime include_all). Shared by the emission below
+   and by the branch folds, which drop the arm this rules out. */
+/* set by respond_to_static_answer: the answer came from the receiver's class
+   chain and the receiver is a heap object slot, which may hold nil (NULL) --
+   nil answers only its own surface, so such an answer is the value's
+   non-nilness rather than a constant */
+static int g_rto_nil_obj = 0;
+static int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const char *qm,
+                                    int argc, const int *argv) {
+  const NodeTable *nt = c->nt;
+  g_rto_nil_obj = 0;
+  /* respond_to?(sym, include_all=false): by default only public methods
+     answer true; a literal `true` 2nd arg includes private+protected. A
+     non-literal 2nd arg can't be folded, so a private/protected match is
+     left unresolved rather than guessed (a public match is true either way). */
+  int include_all = 0, foldable = 1;
+  if (argc >= 2) {
+    const char *a1 = nt_type(nt, argv[1]);
+    if (a1 && sp_streq(a1, "TrueNode")) include_all = 1;
+    else if (a1 && sp_streq(a1, "FalseNode")) include_all = 0;
+    else foldable = 0;
+  }
+  static const char *const uni[] = {
+    "to_s", "inspect", "class", "nil?", "dup", "clone", "freeze",
+    "frozen?", "hash", "==", "!=", "equal?", "eql?", "object_id",
+    "respond_to?", "is_a?", "kind_of?", "instance_of?", "itself",
+    "tap", "then", "send", "===",
+    /* Kernel/Object methods every CRuby object answers true for */
+    "display", "yield_self", "public_send", "__send__", "method",
+    "methods", "to_enum", "enum_for", "instance_variables",
+    "instance_variable_get", "instance_variable_set",
+    "instance_variable_defined?", "singleton_class", "extend", NULL };
+  int yes = 0, resolved = 0;
+  /* a compiler-synthesized helper (__enum_to_a) is not a real method: CRuby
+     answers false, so never let the class-chain lookup below report it */
+  if (name_is_synth_method(c, qm)) { resolved = 1; yes = 0; }
+  /* every object inherits a PRIVATE Object#initialize_copy, so it answers
+     only when private methods are included (#3753) */
+  /* every object inherits a PRIVATE Object#initialize_copy and
+     BasicObject#initialize, so they answer only when private methods are
+     included (#3753), unless the class made them public */
+  int init_pub = 0;
+  if ((sp_streq(qm, "initialize_copy") || sp_streq(qm, "initialize")) && recv >= 0 && ty_is_object(rt)) {
+    int at = -1;
+    init_pub = comp_method_vis_declared(c, ty_object_class(rt), qm, &at) == SP_VIS_PUBLIC && at >= 0;
+  }
+  if (!resolved && init_pub && foldable) {
+    /* made public on the class, but nil's own stays private: a heap object
+       slot that may hold nil answers by its non-nilness */
+    if (!include_all && recv >= 0 && ty_is_object(rt) && !comp_ty_value_obj(c, rt)) g_rto_nil_obj = 1;
+    resolved = 1; yes = 1;
+  }
+  if (!resolved && (sp_streq(qm, "initialize_copy") || sp_streq(qm, "initialize")) && foldable) {
+    resolved = 1; yes = include_all;
+  }
+  for (int u = 0; !resolved && uni[u]; u++) if (sp_streq(qm, uni[u])) { yes = resolved = 1; break; }
+  /* value-type receivers: their builtin surface is not in any class
+     table; answer the well-known names directly (the probe below only
+     reports methods spinel can dispatch, a subset of CRuby's answer) */
+  if (!resolved && recv >= 0 && rt == TY_SYMBOL) {
+    static const char *const symm[] = {
+      "to_proc", "to_sym", "id2name", "name", "length", "size",
+      "succ", "next", "upcase", "downcase", "capitalize", "swapcase",
+      "empty?", "start_with?", "end_with?", "<=>", "[]", NULL };
+    for (int u = 0; symm[u]; u++) if (sp_streq(qm, symm[u])) { yes = resolved = 1; break; }
+  }
+  /* the Range value types answer from the same builtin surface a boxed
+     range does; the probe below has no reading for them (#3619) */
+  if (!resolved && recv >= 0 &&
+      (rt == TY_RANGE || rt == TY_FLOAT_RANGE || rt == TY_STR_RANGE)) return -1;
+  if (!resolved && recv >= 0 && rt == TY_PROC) {
+    static const char *const procm[] = {
+      "call", "()", "[]", "yield", "arity", "lambda?", "curry",
+      "to_proc", "parameters", "<<", ">>", NULL };
+    for (int u = 0; procm[u]; u++) if (sp_streq(qm, procm[u])) { yes = resolved = 1; break; }
+  }
+  /* Time: a fixed builtin surface. Unknown names answer false (CRuby),
+     which is what the report needs -- previously an unresolved TY_TIME
+     receiver fell through to a true-ish default. */
+  if (!resolved && recv >= 0 && rt == TY_TIME) {
+    static const char *const timem[] = {
+      "strftime", "year", "month", "mon", "day", "mday", "hour", "min",
+      "sec", "wday", "yday", "to_i", "to_f", "to_r", "usec", "nsec",
+      "tv_sec", "tv_usec", "tv_nsec", "subsec", "utc", "gmtime", "getutc",
+      "localtime", "getlocal", "utc?", "gmt?", "dst?", "isdst", "zone",
+      "asctime", "ctime", "iso8601", "to_a", "to_time",
+      "sunday?", "monday?", "tuesday?", "wednesday?", "thursday?",
+      "friday?", "saturday?", "+", "-", "<=>", "<", ">", "<=", ">=",
+      "between?", "clamp", NULL };
+    for (int u = 0; timem[u]; u++) if (sp_streq(qm, timem[u])) { yes = 1; break; }
+    resolved = 1;
+  }
+  if (!resolved) {
+    const char *rty = nt_type(nt, recv);
+    if (rty && sp_streq(rty, "ConstantReadNode")) {
+      const char *rcn = nt_str(nt, recv, "name");
+      int ci = comp_class_index(c, rcn);
+      /* `Struct` and `Data` are core class objects with no user entry, and
+         the synthesized probe cannot type a bare `Struct.new` (it is the
+         class-building call, not a value), so both answered false for the
+         very constructor the same program calls (#3482). */
+      /* A CORE class object answers the Class/Module surface every class
+         has -- `new`, `instance_method`, `ancestors` -- but it has no user
+         entry, so class_responds_to was never consulted and the probe
+         cannot type a bare `Range.new` (#3494). Answer those here. A
+         module is excluded from `new` the same way class_responds_to
+         excludes it. */
+      if (!resolved && rcn && ci < 0 && builtin_class_id(rcn) != 0 &&
+          class_object_universal_method(qm) &&
+          !(sp_streq(qm, "new") && is_builtin_module_name(rcn))) { resolved = 1; yes = 1; }
+      /* Symbol's own class method */
+      else if (!resolved && rcn && ci < 0 && sp_streq(rcn, "Symbol") &&
+               sp_streq(qm, "all_symbols")) { resolved = 1; yes = 1; }
+      /* `members` belongs to the generated subclass, not to Struct itself
+         -- CRuby answers false there, and the test caught the overreach. */
+      else if (!resolved && rcn && sp_streq(rcn, "Struct") && ci < 0 &&
+          sp_streq(qm, "new")) { resolved = 1; yes = 1; }
+      else if (!resolved && rcn && sp_streq(rcn, "Data") && ci < 0 &&
+               sp_streq(qm, "define")) { resolved = 1; yes = 1; }
+      else if (ci >= 0) {
+        resolved = 1;
+        yes = class_responds_to(c, ci, qm);
+        /* a private/protected class method answers only to include_all */
+        if (yes && foldable && comp_cmethod_vis_declared(c, ci, qm, NULL) != SP_VIS_PUBLIC)
+          yes = include_all;
+      }
+      /* A core class or module (String, Integer, Comparable, Thread) has no
+         user class entry, and stopping here left the call unresolved -- it
+         then raised NoMethodError, or was rejected outright by the front
+         end. The synthesized probes answer it from the real resolver, the
+         same way they do for a primitive receiver (#3467). */
+      else if (rt_probe_answer(c, id, &yes)) resolved = 1;
+    }
+    else if (recv >= 0 && ty_is_object(rt)) {
+      int cid = ty_object_class(rt);
+      /* a heap object slot holds nil as NULL (a defaulted `host = nil`
+         parameter), and nil answers only its own surface */
+      if (!comp_ty_value_obj(c, rt)) g_rto_nil_obj = 1;
+      /* a writer query (`m=`) consults the writer table under its base name */
+      size_t ql = strlen(qm);
+      int is_wr = ql > 0 && qm[ql - 1] == '=';
+      char wbase[256]; wbase[0] = '\0';
+      if (is_wr && ql - 1 < sizeof wbase) { memcpy(wbase, qm, ql - 1); wbase[ql - 1] = '\0'; }
+      int found = (comp_method_in_chain(c, cid, qm, NULL) >= 0 &&
+                   !method_hidden_from_reflection(c, cid, qm)) ||
+                  comp_reader_in_chain(c, cid, qm, NULL) ||
+                  (is_wr && comp_writer_in_chain(c, cid, wbase, NULL));
+      /* the names the class answers without a method-table entry: an
+         Enumerable includer's, a Comparable's, a Struct's or a Data's
+         core names (#2663) */
+      if (!found && class_implicit_responds(c, cid, qm)) { resolved = 1; yes = 1; }
+      else if (!found) { resolved = 1; yes = 0; }
+      else {
+        int v = comp_method_vis_in_chain(c, cid, qm);
+        if (v == SP_VIS_PUBLIC) { resolved = 1; yes = 1; }       /* public: always */
+        else if (foldable) { resolved = 1; yes = include_all; }  /* private/protected */
+        /* else: private/protected + runtime include_all -> unresolved */
+      }
+    }
+    else if (recv < 0) {
+      /* implicit self: resolve against the enclosing scope's class. An
+         instance method consults the instance chain (methods + attr
+         readers/writers, a `m=` query matching the writer table under
+         its base name); a class (`def self.x`) method consults the
+         class-method chain and singleton attrs. Toplevel (class_id < 0)
+         stays unresolved and takes the normal fall-through. */
+      Scope *ss = comp_scope_of(c, id);
+      if (ss && ss->class_id >= 0) {
+        int cid = ss->class_id;
+        size_t ql = strlen(qm);
+        int is_wr = ql > 0 && qm[ql - 1] == '=';
+        char wbase[256]; wbase[0] = '\0';
+        if (is_wr && ql - 1 < sizeof wbase) { memcpy(wbase, qm, ql - 1); wbase[ql - 1] = '\0'; }
+        if (ss->is_cmethod) {
+          /* implicit self is the class object itself: same answer as
+             the explicit `Const.respond_to?` fold, including the
+             builtin Class/Module capabilities (:new, :name, ...). */
+          resolved = 1;
+          yes = class_responds_to(c, cid, qm);
+          if (yes && foldable && comp_cmethod_vis_declared(c, cid, qm, NULL) != SP_VIS_PUBLIC)
+            yes = include_all;
+        }
+        else {
+          int found = (comp_method_in_chain(c, cid, qm, NULL) >= 0 &&
+                       !method_hidden_from_reflection(c, cid, qm)) ||
+                      comp_reader_in_chain(c, cid, qm, NULL) ||
+                      (is_wr && comp_writer_in_chain(c, cid, wbase, NULL));
+          if (!found) { resolved = 1; yes = 0; }
+          else {
+            /* receiverless respond_to? still answers false for a private
+               or protected match unless include_all folded true. */
+            int v = comp_method_vis_in_chain(c, cid, qm);
+            if (v == SP_VIS_PUBLIC) { resolved = 1; yes = 1; }
+            else if (foldable) { resolved = 1; yes = include_all; }
+            /* else: private/protected + runtime include_all -> unresolved */
+          }
+        }
+      }
+    }
+    /* a poly receiver with no user class owning the name still has the
+       builtin surface of whatever it holds: ask the runtime rather than
+       folding a flat false (#3619) */
+    else if (rt == TY_POLY || rt == TY_UNKNOWN) return -1;
+    else {
+      /* primitive/builtin receiver (String/Integer/Array/...): consult the
+         analyze-time probe -- a synthesized `recv.<qm>` call whose inferred
+         type says whether spinel can actually dispatch the method. This
+         derives the answer from the same resolver that types a real call,
+         so it never drifts from what a real `recv.qm` would compile to. A
+         poly/unknown receiver with no user protocol method falls through
+         here (the builtin probe answer) rather than a possibly-wrong false. */
+      if (rt_probe_answer(c, id, &yes)) {
+        /* a class value that answers yes is the site's to emit: nil responds
+           to nothing, so the answer is the value's non-nilness, not a fold */
+        if (yes && rt == TY_CLASS && recv >= 0) return -1;
+        resolved = 1;
+      }
+    }
+  }
+  return resolved ? yes : -1;
+}
+/* the predicate form for the branch folds: a `respond_to?` call with a
+   literal name whose answer is known */
+int static_respond_to_cond(Compiler *c, int pred) {
+  const NodeTable *nt = c->nt;
+  if (pred < 0 || nt_kind(nt, pred) != NK_CallNode) return -1;
+  const char *nm = nt_str(nt, pred, "name");
+  if (!nm || !sp_streq(nm, "respond_to?")) return -1;
+  int args = nt_ref(nt, pred, "arguments");
+  int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+  if (ac < 1 || !av) return -1;
+  const char *aty = nt_type(nt, av[0]);
+  const char *qm = NULL;
+  if (aty && sp_streq(aty, "SymbolNode")) qm = nt_str(nt, av[0], "value");
+  else if (aty && sp_streq(aty, "StringNode")) {
+    qm = nt_str(nt, av[0], "content");
+    if (!qm) qm = nt_str(nt, av[0], "unescaped");
+  }
+  if (!qm) return -1;
+  int recv = nt_ref(nt, pred, "receiver");
+  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  int ans = respond_to_static_answer(c, pred, recv, rt, qm, ac, av);
+  /* a heap object slot may hold nil, which answers only its own surface:
+     the branch is not folded where the answer turns on that */
+  if (ans >= 0 && g_rto_nil_obj) {
+    int nil_too = nil_answers_name(qm) || sp_streq(qm, "rationalize");
+    if ((ans && !nil_too) || (!ans && nil_too)) return -1;
+  }
+  return ans;
+}
+
 static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -36569,12 +36828,6 @@ else {
     }
   }
 
-  /* respond_to?(:m): compile-time approximation. A universal method set is
-     always true; otherwise consult the receiver's class / class-method chain.
-     Unknown primitive methods answer conservatively false. Also fires for
-     the receiverless (implicit-self) form, resolved against the enclosing
-     class -- `self.fullscreen = v if respond_to?(:fullscreen=)` (doom's
-     gosu_window.rb). */
   if (sp_streq(name, "respond_to?") && argc >= 1 && !respond_to_user_defined(c, id, recv)) {
     const char *aty = nt_type(nt, argv[0]);
     const char *qm = NULL;
@@ -36584,65 +36837,28 @@ else {
       if (!qm) qm = nt_str(nt, argv[0], "unescaped");
     }
     if (qm) {
-      /* respond_to?(sym, include_all=false): by default only public methods
-         answer true; a literal `true` 2nd arg includes private+protected. A
-         non-literal 2nd arg can't be folded, so a private/protected match is
-         left unresolved rather than guessed (a public match is true either way). */
-      int include_all = 0, foldable = 1;
-      if (argc >= 2) {
-        const char *a1 = nt_type(nt, argv[1]);
-        if (a1 && sp_streq(a1, "TrueNode")) include_all = 1;
-        else if (a1 && sp_streq(a1, "FalseNode")) include_all = 0;
-        else foldable = 0;
+      int ans = respond_to_static_answer(c, id, recv, rt, qm, argc, argv);
+      if (ans >= 0 && g_rto_nil_obj) {
+        int nil_too = nil_answers_name(qm) || sp_streq(qm, "rationalize");
+        if (ans && !nil_too) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") != NULL)"); return; }
+        if (!ans && nil_too) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == NULL)"); return; }
       }
-      static const char *const uni[] = {
-        "to_s", "inspect", "class", "nil?", "dup", "clone", "freeze",
-        "frozen?", "hash", "==", "!=", "equal?", "eql?", "object_id",
-        "respond_to?", "is_a?", "kind_of?", "instance_of?", "itself",
-        "tap", "then", "send", "===",
-        /* Kernel/Object methods every CRuby object answers true for */
-        "display", "yield_self", "public_send", "__send__", "method",
-        "methods", "to_enum", "enum_for", "instance_variables",
-        "instance_variable_get", "instance_variable_set",
-        "instance_variable_defined?", "singleton_class", "extend", NULL };
-      int yes = 0, resolved = 0, nil_obj = 0;
-      /* a compiler-synthesized helper (__enum_to_a) is not a real method: CRuby
-         answers false, so never let the class-chain lookup below report it */
-      if (name_is_synth_method(c, qm)) { resolved = 1; yes = 0; }
-      /* every object inherits a PRIVATE Object#initialize_copy and
-         BasicObject#initialize, so they answer only when private methods are
-         included (#3753), unless the class made them public */
-      int init_pub = 0;
-      if ((sp_streq(qm, "initialize_copy") || sp_streq(qm, "initialize")) && recv >= 0 && ty_is_object(rt)) {
-        int at = -1;
-        init_pub = comp_method_vis_declared(c, ty_object_class(rt), qm, &at) == SP_VIS_PUBLIC && at >= 0;
+      /* the answer is the slot kind's; a nullable Integer or Float holding
+         its sentinel is nil, which answers its own, smaller surface */
+      if (ans >= 0 && recv >= 0 && (rt == TY_INT || rt == TY_FLOAT) &&
+          call_returns_nullable_int(c, recv)) {
+        char ref[24];
+        buf_puts(b, "({ "); emit_sentinel_bind(c, rt, recv, ref, sizeof ref, b);
+        emit_slot_truthy(rt, ref, b);
+        buf_printf(b, " ? %d : sp_poly_responds_builtin(sp_box_nil(), ", ans);
+        emit_str_literal(b, qm);
+        buf_puts(b, "); })");
+        return;
       }
-      if (!resolved && init_pub && foldable) {
-        /* made public on the class, but nil's own stays private */
-        if (!include_all && !comp_ty_value_obj(c, rt)) {
-          buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") != NULL)");
-          return;
-        }
-        resolved = 1; yes = 1;
-      }
-      if (!resolved && (sp_streq(qm, "initialize_copy") || sp_streq(qm, "initialize")) && foldable) {
-        resolved = 1; yes = include_all;
-      }
-      for (int u = 0; !resolved && uni[u]; u++) if (sp_streq(qm, uni[u])) { yes = resolved = 1; break; }
-      /* value-type receivers: their builtin surface is not in any class
-         table; answer the well-known names directly (the probe below only
-         reports methods spinel can dispatch, a subset of CRuby's answer) */
-      if (!resolved && recv >= 0 && rt == TY_SYMBOL) {
-        static const char *const symm[] = {
-          "to_proc", "to_sym", "id2name", "name", "length", "size",
-          "succ", "next", "upcase", "downcase", "capitalize", "swapcase",
-          "empty?", "start_with?", "end_with?", "<=>", "[]", NULL };
-        for (int u = 0; symm[u]; u++) if (sp_streq(qm, symm[u])) { yes = resolved = 1; break; }
-      }
-      /* the Range value types answer from the same builtin surface a boxed
-         range does; the probe below has no reading for them (#3619) */
-      if (!resolved && recv >= 0 &&
-          (rt == TY_RANGE || rt == TY_FLOAT_RANGE || rt == TY_STR_RANGE)) {
+      if (ans >= 0) { buf_printf(b, "%d", ans); return; }
+      /* the runtime answers: a Range value's builtin surface (the probe has
+         no reading for it, #3619), and a poly receiver */
+      if (recv >= 0 && (rt == TY_RANGE || rt == TY_FLOAT_RANGE || rt == TY_STR_RANGE)) {
         buf_puts(b, "sp_poly_responds_builtin(");
         emit_boxed(c, recv, b);
         buf_puts(b, ", \"");
@@ -36650,138 +36866,8 @@ else {
         buf_puts(b, "\")");
         return;
       }
-      if (!resolved && recv >= 0 && rt == TY_PROC) {
-        static const char *const procm[] = {
-          "call", "()", "[]", "yield", "arity", "lambda?", "curry",
-          "to_proc", "parameters", "<<", ">>", NULL };
-        for (int u = 0; procm[u]; u++) if (sp_streq(qm, procm[u])) { yes = resolved = 1; break; }
-      }
-      /* Time: a fixed builtin surface. Unknown names answer false (CRuby),
-         which is what the report needs -- previously an unresolved TY_TIME
-         receiver fell through to a true-ish default. */
-      if (!resolved && recv >= 0 && rt == TY_TIME) {
-        static const char *const timem[] = {
-          "strftime", "year", "month", "mon", "day", "mday", "hour", "min",
-          "sec", "wday", "yday", "to_i", "to_f", "to_r", "usec", "nsec",
-          "tv_sec", "tv_usec", "tv_nsec", "subsec", "utc", "gmtime", "getutc",
-          "localtime", "getlocal", "utc?", "gmt?", "dst?", "isdst", "zone",
-          "asctime", "ctime", "iso8601", "to_a", "to_time",
-          "sunday?", "monday?", "tuesday?", "wednesday?", "thursday?",
-          "friday?", "saturday?", "+", "-", "<=>", "<", ">", "<=", ">=",
-          "between?", "clamp", NULL };
-        for (int u = 0; timem[u]; u++) if (sp_streq(qm, timem[u])) { yes = 1; break; }
-        resolved = 1;
-      }
-      if (!resolved) {
-        const char *rty = nt_type(nt, recv);
-        if (rty && sp_streq(rty, "ConstantReadNode")) {
-          const char *rcn = nt_str(nt, recv, "name");
-          int ci = comp_class_index(c, rcn);
-          /* `Struct` and `Data` are core class objects with no user entry, and
-             the synthesized probe cannot type a bare `Struct.new` (it is the
-             class-building call, not a value), so both answered false for the
-             very constructor the same program calls (#3482). */
-          /* A CORE class object answers the Class/Module surface every class
-             has -- `new`, `instance_method`, `ancestors` -- but it has no user
-             entry, so class_responds_to was never consulted and the probe
-             cannot type a bare `Range.new` (#3494). Answer those here. A
-             module is excluded from `new` the same way class_responds_to
-             excludes it. */
-          if (!resolved && rcn && ci < 0 && builtin_class_id(rcn) != 0 &&
-              class_object_universal_method(qm) &&
-              !(sp_streq(qm, "new") && is_builtin_module_name(rcn))) { resolved = 1; yes = 1; }
-          /* Symbol's own class method */
-          else if (!resolved && rcn && ci < 0 && sp_streq(rcn, "Symbol") &&
-                   sp_streq(qm, "all_symbols")) { resolved = 1; yes = 1; }
-          /* `members` belongs to the generated subclass, not to Struct itself
-             -- CRuby answers false there, and the test caught the overreach. */
-          else if (!resolved && rcn && sp_streq(rcn, "Struct") && ci < 0 &&
-              sp_streq(qm, "new")) { resolved = 1; yes = 1; }
-          else if (!resolved && rcn && sp_streq(rcn, "Data") && ci < 0 &&
-                   sp_streq(qm, "define")) { resolved = 1; yes = 1; }
-          else if (ci >= 0) {
-            resolved = 1;
-            yes = class_responds_to(c, ci, qm);
-            /* a private/protected class method answers only to include_all */
-            if (yes && foldable && comp_cmethod_vis_declared(c, ci, qm, NULL) != SP_VIS_PUBLIC)
-              yes = include_all;
-          }
-          /* A core class or module (String, Integer, Comparable, Thread) has no
-             user class entry, and stopping here left the call unresolved -- it
-             then raised NoMethodError, or was rejected outright by the front
-             end. The synthesized probes answer it from the real resolver, the
-             same way they do for a primitive receiver (#3467). */
-          else if (rt_probe_answer(c, id, &yes)) resolved = 1;
-        }
-        else if (recv >= 0 && ty_is_object(rt)) {
-          int cid = ty_object_class(rt);
-          /* a heap object slot holds nil as NULL (a defaulted `host = nil`
-             parameter), and nil answers only its own surface */
-          if (!comp_ty_value_obj(c, rt)) nil_obj = 1;
-          /* a writer query (`m=`) consults the writer table under its base name */
-          size_t ql = strlen(qm);
-          int is_wr = ql > 0 && qm[ql - 1] == '=';
-          char wbase[256]; wbase[0] = '\0';
-          if (is_wr && ql - 1 < sizeof wbase) { memcpy(wbase, qm, ql - 1); wbase[ql - 1] = '\0'; }
-          int found = (comp_method_in_chain(c, cid, qm, NULL) >= 0 &&
-                       !method_hidden_from_reflection(c, cid, qm)) ||
-                      comp_reader_in_chain(c, cid, qm, NULL) ||
-                      (is_wr && comp_writer_in_chain(c, cid, wbase, NULL));
-          /* the names the class answers without a method-table entry: an
-             Enumerable includer's, a Comparable's, a Struct's or a Data's
-             core names (#2663) */
-          if (!found && class_implicit_responds(c, cid, qm)) { resolved = 1; yes = 1; }
-          else if (!found) { resolved = 1; yes = 0; }
-          else {
-            int v = comp_method_vis_in_chain(c, cid, qm);
-            if (v == SP_VIS_PUBLIC) { resolved = 1; yes = 1; }       /* public: always */
-            else if (foldable) { resolved = 1; yes = include_all; }  /* private/protected */
-            /* else: private/protected + runtime include_all -> unresolved */
-          }
-        }
-        else if (recv < 0) {
-          /* implicit self: resolve against the enclosing scope's class. An
-             instance method consults the instance chain (methods + attr
-             readers/writers, a `m=` query matching the writer table under
-             its base name); a class (`def self.x`) method consults the
-             class-method chain and singleton attrs. Toplevel (class_id < 0)
-             stays unresolved and takes the normal fall-through. */
-          Scope *ss = comp_scope_of(c, id);
-          if (ss && ss->class_id >= 0) {
-            int cid = ss->class_id;
-            size_t ql = strlen(qm);
-            int is_wr = ql > 0 && qm[ql - 1] == '=';
-            char wbase[256]; wbase[0] = '\0';
-            if (is_wr && ql - 1 < sizeof wbase) { memcpy(wbase, qm, ql - 1); wbase[ql - 1] = '\0'; }
-            if (ss->is_cmethod) {
-              /* implicit self is the class object itself: same answer as
-                 the explicit `Const.respond_to?` fold, including the
-                 builtin Class/Module capabilities (:new, :name, ...). */
-              resolved = 1;
-              yes = class_responds_to(c, cid, qm);
-              if (yes && foldable && comp_cmethod_vis_declared(c, cid, qm, NULL) != SP_VIS_PUBLIC)
-                yes = include_all;
-            }
-            else {
-              int found = (comp_method_in_chain(c, cid, qm, NULL) >= 0 &&
-                           !method_hidden_from_reflection(c, cid, qm)) ||
-                          comp_reader_in_chain(c, cid, qm, NULL) ||
-                          (is_wr && comp_writer_in_chain(c, cid, wbase, NULL));
-              if (!found) { resolved = 1; yes = 0; }
-              else {
-                /* receiverless respond_to? still answers false for a private
-                   or protected match unless include_all folded true. */
-                int v = comp_method_vis_in_chain(c, cid, qm);
-                if (v == SP_VIS_PUBLIC) { resolved = 1; yes = 1; }
-                else if (foldable) { resolved = 1; yes = include_all; }
-                /* else: private/protected + runtime include_all -> unresolved */
-              }
-            }
-          }
-        }
-        /* a poly receiver with no user class owning the name still has the
-           builtin surface of whatever it holds: ask the runtime rather than
-           folding a flat false (#3619) */
+      if (recv >= 0) {
+        if (0) { }
         else if ((rt == TY_CLASS && class_value_responds(c, 0, qm, NULL)) ||
                  ((rt == TY_POLY || rt == TY_UNKNOWN) && !any_class_responds(c, qm))) {
           int tv = class_value_responds(c, 0, qm, NULL) ? ++g_tmp : 0;
@@ -36833,38 +36919,15 @@ else {
           buf_puts(b, "; })");
           return;
         }
-        else {
-          /* primitive/builtin receiver (String/Integer/Array/...): consult the
-             analyze-time probe -- a synthesized `recv.<qm>` call whose inferred
-             type says whether spinel can actually dispatch the method. This
-             derives the answer from the same resolver that types a real call,
-             so it never drifts from what a real `recv.qm` would compile to. A
-             poly/unknown receiver with no user protocol method falls through
-             here (the builtin probe answer) rather than a possibly-wrong false. */
-          if (rt_probe_answer(c, id, &yes)) resolved = 1;
-          if (resolved && yes && rt == TY_CLASS) {
-            buf_puts(b, "!sp_class_nil_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-          }
+      }
+      /* a class value the probe answers for: nil (the slot's own nil) responds
+         to nothing, so the answer is the value's non-nilness */
+      if (recv >= 0 && rt == TY_CLASS) {
+        int pyes = 0;
+        if (rt_probe_answer(c, id, &pyes) && pyes) {
+          buf_puts(b, "!sp_class_nil_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
         }
       }
-      /* the answer is the slot kind's; a nullable Integer or Float holding
-         its sentinel is nil, which answers its own, smaller surface */
-      if (resolved && recv >= 0 && (rt == TY_INT || rt == TY_FLOAT) &&
-          call_returns_nullable_int(c, recv)) {
-        char ref[24];
-        buf_puts(b, "({ "); emit_sentinel_bind(c, rt, recv, ref, sizeof ref, b);
-        emit_slot_truthy(rt, ref, b);
-        buf_printf(b, " ? %d : sp_poly_responds_builtin(sp_box_nil(), ", yes);
-        emit_str_literal(b, qm);
-        buf_puts(b, "); })");
-        return;
-      }
-      if (resolved && nil_obj) {
-        int nil_too = nil_answers_name(qm) || sp_streq(qm, "rationalize");
-        if (yes && !nil_too) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") != NULL)"); return; }
-        if (!yes && nil_too) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == NULL)"); return; }
-      }
-      if (resolved) { buf_printf(b, "%d", yes); return; }
     }
     else if (recv >= 0 && rt != TY_CLASS && nt_kind(nt, argv[0]) != NK_SplatNode && !any_class_defines(c, "respond_to?")) {
       int tv = ++g_tmp;
