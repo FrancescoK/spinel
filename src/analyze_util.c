@@ -2374,12 +2374,16 @@ int method_recv_nodes(Compiler *c, int recv, int *out, int cap) {
   return n;
 }
 
-/* The `method(:sym)` node behind a Proc-typed expression created by
+/* Every `method(:sym)` node behind a Proc-typed expression created by
    `<method>.to_proc`: the to_proc call itself, or a local variable's
-   single assignment to one. Returns -1 when the proc has another origin. */
-int proc_to_proc_method_node(Compiler *c, int recv) {
+   single assignment to one. The Method it converts may be a local written
+   to more than one method; each target is called with the proc's
+   arguments, so the analysis binds them to all of them, as it does for a
+   `.call` on that local (method_recv_nodes). Answers the count, at most
+   cap; 0 when the proc has another origin. */
+int proc_to_proc_method_nodes(Compiler *c, int recv, int *out, int cap) {
   const NodeTable *nt = c->nt;
-  if (recv < 0) return -1;
+  if (recv < 0) return 0;
   int cand = recv;
   const char *rty = nt_type(nt, recv);
   if (rty && sp_streq(rty, "LocalVariableReadNode")) {
@@ -2396,12 +2400,12 @@ int proc_to_proc_method_node(Compiler *c, int recv) {
       if (val >= 0 && nt_kind(nt, val) == NK_CallNode) cand = val;
     }
   }
-  if (cand < 0) return -1;
+  if (cand < 0) return 0;
   const char *cty = nt_type(nt, cand);
-  if (!cty || !sp_streq(cty, "CallNode")) return -1;
+  if (!cty || !sp_streq(cty, "CallNode")) return 0;
   const char *nm = nt_str(nt, cand, "name");
-  if (!nm || !sp_streq(nm, "to_proc")) return -1;
-  return method_recv_node(c, nt_ref(nt, cand, "receiver"));
+  if (!nm || !sp_streq(nm, "to_proc")) return 0;
+  return method_recv_nodes(c, nt_ref(nt, cand, "receiver"), out, cap);
 }
 
 /* Param-index shift for a call through a Method object. A bound

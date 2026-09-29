@@ -15016,6 +15016,71 @@ static sp_RbVal sp_poly_callable_call(sp_RbVal v, sp_int n, const sp_int *args) 
   return sp_poly_callable_call_kw(v, n, args, 0);
 }
 
+/* Enter a bound Method's trampoline with the call's keyword flag (kwpos,
+   as for a proc: 2 the trailing argument is keywords, 1 a positional) and
+   block. Only the Method's thunk reads them, and it takes both off their
+   channels first thing (emit_method_tramp_fn); the stamped lanes never
+   look. So they are set only when sp_method_proc_tramp is about to take
+   the thunk, and cleared otherwise: a flag or block set for a lane that
+   does not consume it stayed behind -- through a raise, too -- for the next
+   body entered without one of its own. */
+static void sp_bm_enter(sp_BoundMethod *m, sp_int n, sp_int *slots, int kwpos, sp_Proc *blk) {
+  int thunk = m && m->fn && m->thunk && !m->unbound && n <= SP_PROC_ARG_SLOTS;
+  _sp_proc_kwpos = thunk ? kwpos : 0;
+  _sp_proc_blk = thunk ? blk : NULL;
+  sp_method_proc_tramp((void *)m, n, slots);
+}
+/* sp_bm_call_boxed for a site that says what its trailing argument is: a
+   Method call of plain positionals passes a Hash as a positional, which the
+   thunk, told nothing, took as keywords past the required count. */
+static sp_RbVal sp_bm_call_boxed_kw(sp_BoundMethod *m, sp_int n, int kwpos) {
+  sp_int slots[16];
+  for (sp_int i = 0; i < n && i < 16; i++) slots[i] = _sp_proc_poly_args[i].v.i;
+  sp_bm_enter(m, n < 16 ? n : 16, slots, kwpos, NULL);
+  return _sp_proc_poly_ret;
+}
+/* Call a bound Method with a dynamic argument list, as the site laid it
+   out: every positional, each splat spread, the keywords last (kwpos says
+   whether the trailing element is keywords, as for a proc), and the block.
+   The generic trampoline picks the lane; the Method's thunk binds the list
+   by the target's parameters -- a rest and its posts, omitted optionals,
+   the keywords, `**nil`'s refusal, the `&blk` -- which the stamped fixed
+   casts cannot. A Method whose target the site cannot name (a local
+   written to more than one method, one read out of a slot) is called this
+   way whenever the call has more than plain positionals. */
+static sp_RbVal sp_bm_call_spread(sp_BoundMethod *m, sp_Proc *blk, sp_RbVal arr, int kwpos) {
+  if (!m || !m->fn)
+    sp_raise_cls("NoMethodError", sp_sprintf("undefined method '%s' for an instance of Object",
+                                             m && m->name ? m->name : "?"));
+  sp_int n = sp_poly_length(arr);
+  /* the Method lane publishes into the boxed side channel, so its ceiling
+     is that channel's -- a 17-argument call was refused outright */
+  if (n > SP_PROC_ARG_SLOTS) sp_raise_cls("NoMethodError", "undefined method 'call' for an instance of Method");
+  sp_int slots[SP_PROC_ARG_SLOTS];
+  for (sp_int i = 0; i < n; i++) {
+    sp_RbVal e = sp_poly_arr_get(arr, i);
+    /* The trampoline rejects an argument whose scalar kind does not match
+       the Method's stamped slot (or a pointer/float/bigint, which has no
+       sp_int slot at all) after reading it back from the published boxed
+       side-channel below, the same way a statically-typed .call declines via
+       sp_bm_legacy_abi_ok. */
+    _sp_proc_poly_args[i] = e;
+    /* So this raw view is SPECULATIVE: the trampoline may never look at it,
+       and for a Float or a Bignum it is guaranteed not to -- neither has an
+       sp_int slot to be read from. Converting them anyway used to saturate
+       in silence and now raises past the machine word (#4688), which turned
+       a speculative conversion into the answer: `m.call(*args)` with a wide
+       Float died on an argument the target was about to receive boxed and
+       intact, whatever ABI it was stamped with (#4704 regression). The
+       value here is a placeholder for exactly the kinds that have no slot. */
+    slots[i] = (e.tag == SP_TAG_OBJ || e.tag == SP_TAG_STR)
+                 ? (sp_int)(uintptr_t)e.v.p
+             : (e.tag == SP_TAG_FLT || e.tag == SP_TAG_BIGINT) ? 0
+             : sp_poly_to_i(e);
+  }
+  sp_bm_enter(m, n, slots, kwpos, blk);
+  return _sp_proc_poly_ret;
+}
 /* Call a boxed callable with a dynamic (spread) argument list. Unlike the
    fixed-arity sp_poly_callable_call this cannot be selected at the call site
    by a stamped signature: the value may be a Proc, a Curry, or a bound Method,
@@ -15033,37 +15098,8 @@ static sp_RbVal sp_poly_callable_spread(sp_RbVal v, sp_RbVal arr, int kwpos) {
     for (sp_int i = 0; i < n && i < 16; i++) args[i] = sp_poly_arr_get(arr, i);
     return sp_curry_call_poly((sp_Curry *)v.v.p, n < 16 ? n : 16, args);
   }
-  if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id == SP_BUILTIN_METHOD) {
-    sp_int n = sp_poly_length(arr);
-    /* the Method lane publishes into the boxed side channel, so its ceiling
-       is that channel's -- a 17-argument call was refused outright */
-    if (n > SP_PROC_ARG_SLOTS) sp_raise_cls("NoMethodError", "undefined method 'call' for an instance of Method");
-    sp_int slots[SP_PROC_ARG_SLOTS];
-    for (sp_int i = 0; i < n; i++) {
-      sp_RbVal e = sp_poly_arr_get(arr, i);
-      /* The trampoline rejects an argument whose scalar kind does not match
-         the Method's stamped slot (or a pointer/float/bigint, which has no
-         sp_int slot at all) after reading it back from the published boxed
-         side-channel below, the same way a statically-typed .call declines via
-         sp_bm_legacy_abi_ok. */
-      _sp_proc_poly_args[i] = e;
-      /* So this raw view is SPECULATIVE: the trampoline may never look at it,
-         and for a Float or a Bignum it is guaranteed not to -- neither has an
-         sp_int slot to be read from. Converting them anyway used to saturate
-         in silence and now raises past the machine word (#4688), which turned
-         a speculative conversion into the answer: `m.call(*args)` with a wide
-         Float died on an argument the target was about to receive boxed and
-         intact, whatever ABI it was stamped with (#4704 regression). The
-         value here is a placeholder for exactly the kinds that have no slot. */
-      slots[i] = (e.tag == SP_TAG_OBJ || e.tag == SP_TAG_STR)
-                   ? (sp_int)(uintptr_t)e.v.p
-               : (e.tag == SP_TAG_FLT || e.tag == SP_TAG_BIGINT) ? 0
-               : sp_poly_to_i(e);
-    }
-    _sp_proc_blk = NULL;
-    sp_method_proc_tramp((void *)v.v.p, n, slots);
-    return _sp_proc_poly_ret;
-  }
+  if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id == SP_BUILTIN_METHOD)
+    return sp_bm_call_spread((sp_BoundMethod *)v.v.p, NULL, arr, kwpos);
   if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id == SP_BUILTIN_PROC) {
     sp_proc_call_spread((sp_Proc *)v.v.p, arr, kwpos);
     return _sp_proc_poly_ret;

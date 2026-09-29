@@ -21824,6 +21824,14 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
      have declared. This separate function has no prologue, so declare
      them here. */
   emit_callee_local_decls(c, tm, pb);
+  /* The call's keyword flag (_sp_proc_kwpos) and, for a target without a
+     `&blk`, its block channel are consumed here, first thing, whatever this
+     trampoline goes on to do: a count or `**nil` refusal below raises, and a
+     flag or block still set then belonged to the next body entered without
+     one -- a `2` made a Method called with a trailing Hash bind it as
+     keywords, a block reached the next `&b` proc. */
+  buf_puts(pb, "  int _sp_kwpos = _sp_proc_kwpos; _sp_proc_kwpos = 0; (void)_sp_kwpos;\n");
+  if (!(tm->blk_param && tm->blk_param[0] && !tm->yields)) buf_puts(pb, "  _sp_proc_blk = NULL;\n");
   /* The wrapper of a bound builtin keeps the plain positional binding
      (bind == 0), but a BINOP wrapper (`__bam_r <op> __bam_a`) has a real
      operand parameter, so a zero-argument proc call read the padding as
@@ -21883,8 +21891,7 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
        Hash past the required positionals taken as keywords, as a proc
        prologue does. */
     if (has_any_kw)
-      buf_printf(pb, "  int _sp_kwpos = _sp_proc_kwpos; _sp_proc_kwpos = 0;\n"
-                     "  sp_int _sp_haskw = argc > 0 && argc <= SP_PROC_ARG_SLOTS && _sp_kwpos != 1"
+      buf_printf(pb, "  sp_int _sp_haskw = argc > 0 && argc <= SP_PROC_ARG_SLOTS && _sp_kwpos != 1"
                      " && (_sp_kwpos == 2 || argc > %d)"
                      " && _sp_proc_poly_args[argc-1].tag == SP_TAG_OBJ"
                      " && sp_poly_is_hash_kind(_sp_proc_poly_args[argc-1].cls_id);\n"
@@ -21893,9 +21900,8 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
                      "  argc -= _sp_haskw;\n", nreq);
     /* a `**nil` target refuses keywords the call passes as keywords */
     else if (scope_refuses_keywords(c, tm))
-      buf_puts(pb, "  if (_sp_proc_kwpos == 2 && argc > 0 && sp_poly_length(_sp_proc_poly_args[argc-1]) > 0)"
-                   " sp_raise_cls(\"ArgumentError\", \"no keywords accepted\");\n  _sp_proc_kwpos = 0;\n");
-    else buf_puts(pb, "  _sp_proc_kwpos = 0;\n");
+      buf_puts(pb, "  if (_sp_kwpos == 2 && argc > 0 && sp_poly_length(_sp_proc_poly_args[argc-1]) > 0)"
+                   " sp_raise_cls(\"ArgumentError\", \"no keywords accepted\");\n");
     /* CRuby names the required keywords in a positional-count error */
     if (nreq > 0 || tm->rest_idx < 0) {
       char kw[256];
@@ -22660,6 +22666,49 @@ static void emit_method_call_block(Compiler *c, int id, Scope *tm, int lead_comm
     buf_printf(b, "_t%d", tb);
   }
   else if (bx < 0 || !emit_block_arg_proc(c, bx, b)) buf_puts(b, "NULL");
+}
+
+/* Whether a Method call passes more than plain positionals: a splat,
+   keywords or a `**`, or a block. */
+static int bm_call_needs_layout(const NodeTable *nt, int id, const int *argv, int argc) {
+  if (nt_ref(nt, id, "block") >= 0) return 1;
+  for (int k = 0; k < argc; k++)
+    if (nt_kind(nt, argv[k]) == NK_SplatNode || nt_kind(nt, argv[k]) == NK_KeywordHashNode) return 1;
+  return 0;
+}
+
+/* `m.call(...)` on a Method whose target is known only at run time, with
+   the arguments laid out as the site wrote them: the Method first, then
+   every argument in source order into one boxed list (each splat spread,
+   the keywords last and flagged as keywords), then the block, a literal
+   one as a proc or one passed with `&`. The Method's trampoline binds them
+   (sp_bm_call_spread); the value is boxed, as the fixed casts' is. */
+static void emit_bm_spread_call(Compiler *c, int id, int recv, const int *argv, int argc, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int tr = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb);
+  emit_expr(c, recv, &rb);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_BoundMethod *_t%d = %s; SP_GC_ROOT(_t%d);\n", tr, rb.p ? rb.p : "NULL", tr);
+  free(rb.p);
+  char kwp[24];
+  int ta = emit_spread_args_kw(c, argv, argc, kwp, sizeof kwp);
+  char blk[24] = "NULL";
+  int bn = nt_ref(nt, id, "block");
+  if (bn >= 0) {
+    Buf pv; memset(&pv, 0, sizeof pv);
+    int bx = nt_kind(nt, bn) == NK_BlockArgumentNode ? nt_ref(nt, bn, "expression") : -1;
+    int ok = nt_kind(nt, bn) == NK_BlockNode ? (emit_proc_literal(c, bn, &pv), 1)
+           : bx >= 0 && emit_block_arg_proc(c, bx, &pv);
+    if (ok) {
+      int tb = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d);\n", tb, pv.p ? pv.p : "NULL", tb);
+      snprintf(blk, sizeof blk, "_t%d", tb);
+    }
+    free(pv.p);
+  }
+  buf_printf(b, "sp_bm_call_spread(_t%d, %s, sp_box_poly_array(_t%d), %s)", tr, blk, ta, kwp);
 }
 
 /* The class a class method bound by the Method `recv` runs on: the
@@ -26079,6 +26128,22 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       }
     }
     if (!is_scalar_ret(tret)) tret = TY_INT;  /* aggregate ret: raw carrier */
+    /* A Method whose target the site cannot name -- a local written to more
+       than one method (method_recv_node declines it; inference bound the
+       arguments to each target through method_recv_nodes), one read out of
+       a slot -- is called through the stamped fixed casts below, one C
+       argument per site argument. That is the whole call only when it passes
+       plain positionals: a splat went over as one argument (`q.call(*s, 2)`
+       into `def m(*r, p1)` did not compile, and bound `[[1]]` under
+       promote), keywords rode as a trailing positional the thunk had to
+       guess at (`**nil` never refused them), and the block was dropped. Such
+       a call lays its arguments out as the site wrote them and hands them,
+       with the block, to the Method's trampoline, whose thunk binds them by
+       the target's parameters (sp_bm_call_spread). */
+    if (!tm && adapter_argc < 0 && bm_call_needs_layout(nt, id, argv, argc)) {
+      emit_bm_spread_call(c, id, recv, argv, argc, b);
+      return;
+    }
     /* A trailing splat with a statically-known target expands into the
        remaining declared params from the splatted array (#3248); the
        effective arg count becomes the target's residual arity. A wrapper
@@ -26316,7 +26381,11 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     /* every argument kept a typed temp, so each can be boxed from the value
        already evaluated -- the precondition for handing them to the
        trampoline without evaluating anything a second time */
-    int bm_boxed_ok = bm_want_boxed && bxtmp && bxref && eargc <= 16;
+    /* A call with no arguments has nothing to box and no temps to hold it
+       (they are allocated per argument): it can always take the boxed
+       lane, which is how a target with an omitted optional is called
+       (`q.call` on `def o(p = 51)`, which the zero-width stamp declines). */
+    int bm_boxed_ok = bm_want_boxed && (eargc == 0 || (bxtmp && bxref)) && eargc <= 16;
     for (int k = 0; k < eargc && bm_boxed_ok; k++) {
       if (bxtmp[k] < 0) { bm_boxed_ok = 0; break; }
       snprintf(bxref[k], 24, "_t%d", bxtmp[k]);
@@ -26347,7 +26416,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
             emit_boxed_text(c, comp_ntype(c, argv[k]), bxref[k], b);
             buf_puts(b, ", ");
           }
-          buf_printf(b, "sp_bm_call_boxed(_t%d, %d)", tr, eargc);
+          buf_printf(b, "sp_bm_call_boxed_kw(_t%d, %d, 1)", tr, eargc);
         }
         else buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_obj(_t%d, SP_BUILTIN_METHOD))), sp_box_nil()", name, tr);
         buf_puts(b, ") : ");
@@ -26364,7 +26433,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           emit_boxed_text(c, comp_ntype(c, argv[k]), bxref[k], b);
           buf_puts(b, ", ");
         }
-        buf_printf(b, "sp_bm_call_boxed(_t%d, %d); })", tr, eargc);
+        buf_printf(b, "sp_bm_call_boxed_kw(_t%d, %d, 1); })", tr, eargc);
         free(atmp); free(bxtmp); free(bxref);
         return;
       }
@@ -26378,7 +26447,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       buf_printf(b, "!sp_bm_poly_abi_ok(_t%d, %d) ? (", tr, eargc);
       if (eargc <= 16 && !(tm == NULL && adapter_argc >= 0)) {
         for (int k = 0; k < eargc; k++) buf_printf(b, "_sp_proc_poly_args[%d] = _t%d, ", k, atmp[k]);
-        buf_printf(b, "sp_bm_call_boxed(_t%d, %d)", tr, eargc);
+        /* an unresolved target's call is plain positionals here (the rest
+           took the layout lane above): a trailing Hash is a positional */
+        if (!tm) buf_printf(b, "sp_bm_call_boxed_kw(_t%d, %d, 1)", tr, eargc);
+        else buf_printf(b, "sp_bm_call_boxed(_t%d, %d)", tr, eargc);
       }
       else buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_obj(_t%d, SP_BUILTIN_METHOD))), sp_box_nil()", name, tr);
       buf_puts(b, ") : (");

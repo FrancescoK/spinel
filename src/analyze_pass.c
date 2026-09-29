@@ -6433,14 +6433,18 @@ int infer_param_types(Compiler *c) {
        target's params (the emitted trampoline calls the real C signature). */
     if (recv >= 0 && name && (sp_streq(name, "call") || sp_streq(name, "[]") || sp_streq(name, "()")) &&
         infer_type(c, recv) == TY_PROC) {
-      int mn = proc_to_proc_method_node(c, recv);
-      int tmi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
-      if (tmi >= 0) {
+      int mns[8], bound = 0;
+      int nmn = proc_to_proc_method_nodes(c, recv, mns, 8);
+      for (int j = 0; j < nmn; j++) {
+        int mn = mns[j];
+        int tmi = method_obj_target_mi(c, mn);
+        if (tmi < 0) continue;
         int shift = method_call_param_shift(c, mn, tmi);
         if (shift) changed |= bind_call_args_shifted(c, id, tmi, shift);
         else changed |= bind_call_params(c, id, tmi);
-        continue;
+        bound = 1;
       }
+      if (bound) continue;
     }
 
     /* proc >> proc / proc << proc: widen both operands' params to POLY so the

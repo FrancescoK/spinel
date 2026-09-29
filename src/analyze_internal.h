@@ -59,7 +59,7 @@ int method_recv_node(Compiler *c, int recv);
 int method_recv_nodes(Compiler *c, int recv, int *out, int cap);
 int method_expr_is_unbound(Compiler *c, int recv);
 int class_is_blank_slate(Compiler *c, int ci);
-int proc_to_proc_method_node(Compiler *c, int recv);
+int proc_to_proc_method_nodes(Compiler *c, int recv, int *out, int cap);
 int local_sole_range_node(Compiler *c, int recv);
 int const_array_elems_all_int_array(Compiler *c, const char *cname);
 int *an_parent_map(const NodeTable *nt);
