@@ -6997,6 +6997,19 @@ static sp_SymPolyHash *sp_OpenStruct_to_h(sp_OpenStruct *o){
   if(o&&o->tbl) for(sp_int i=0;i<o->tbl->len;i++){ sp_sym k=o->tbl->order[i]; sp_SymPolyHash_set(r,k,sp_SymPolyHash_get(o->tbl,k)); }
   return r;
 }
+/* #dup / #clone: a new OpenStruct over its own copy of the member table; the
+   member values stay shared. CRuby's initialize_dup and initialize_clone give
+   the copy a table of its own too, except that a frozen clone shares the
+   frozen table, which nothing can write. clone keeps the frozen bit, dup does
+   not. */
+static sp_OpenStruct *sp_OpenStruct_dup(sp_OpenStruct *o, int keep_frozen){
+  if(!o) return NULL;
+  SP_GC_ROOT(o);
+  sp_SymPolyHash *t=sp_OpenStruct_to_h(o); SP_GC_ROOT(t);
+  sp_OpenStruct *r=sp_OpenStruct_new_from(t);
+  if(keep_frozen&&sp_gc_is_frozen(o)) sp_gc_freeze(r);
+  return r;
+}
 static sp_bool sp_OpenStruct_eq(sp_OpenStruct *a, sp_OpenStruct *b){
   if(a==b) return 1;
   if(!a||!b||!a->tbl||!b->tbl) return 0;
@@ -8855,6 +8868,13 @@ static sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen) {
         v.v.p = r; break;
       }
     }
+    return v;
+  }
+  /* OpenStruct#dup/#clone on a boxed OpenStruct: a copy over its own member
+     table. Its cls_id is a builtin's, so the user-object copy below skips it
+     and the original came back. */
+  if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id == SP_BUILTIN_OPENSTRUCT) {
+    v.v.p = sp_OpenStruct_dup((sp_OpenStruct *)v.v.p, keep_frozen);
     return v;
   }
   /* String#dup on a boxed string: a copy, unfrozen unless kept. Handed back

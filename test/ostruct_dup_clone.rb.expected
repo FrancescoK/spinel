@@ -1,0 +1,20 @@
+[1, 2, 3]
+[false, {a: 1, s: "str"}, {a: 2, s: "str", b: 9}, {a: 3, s: "str"}]
+[false, false, true]
+[7, 2, 3]
+[true, false, true]
+[1, 2]
+FrozenError
+[false, false]
+[false, false, true, 2]
+[true, false, true]
+[2, 1]
+[1, 2]
+[false, false]
+[false, false]
+nil
+{a: 1}
+0
+0
+0
+0
