@@ -10638,21 +10638,46 @@ void emit_ctor_alloc_init(Compiler *c, int cid, int initm, int argsNode, int cal
   buf_printf(b, "_t%d; })", t);
 }
 
-/* The ivar slot a node is being written into, or TY_UNKNOWN. `@h = Hash.new(0)`
-   pins the SLOT (its later `[]` uses decide the variant) while the Hash.new
-   node itself has no receiver use and no value position of its own, so it
-   stayed untyped and the constructor emitted the "no such method" refusal --
-   into an ivar whose C type was already the hash it refused to build (#4291). */
-static TyKind ivar_write_slot_ty(Compiler *c, int id) {
+/* The ivar, class variable or global slot a node is being written into, or
+   TY_UNKNOWN. `@h = Hash.new(0)` pins the SLOT (its later `[]` uses decide the
+   variant) while the Hash.new node itself has no receiver use and no value
+   position of its own, so it stayed untyped and the constructor emitted the
+   "no such method" refusal -- into an ivar whose C type was already the hash
+   it refused to build (#4291). `@h ||= Hash.new(0)`, `@@h ||= ...` and
+   `$h ||= ...` pin it the same way. */
+static TyKind write_slot_ty_of(Compiler *c, int id, NodeKind kind) {
   const NodeTable *nt = c->nt;
-  NT_FOREACH_KIND(nt, NK_InstanceVariableWriteNode, w) {
+  NT_FOREACH_KIND(nt, kind, w) {
     if (nt_ref(nt, w, "value") != id) continue;
-    const char *ivn = nt_str(nt, w, "name");
+    const char *vn = nt_str(nt, w, "name");
+    if (!vn) return TY_UNKNOWN;
+    if (kind == NK_GlobalVariableOrWriteNode) {
+      const char *rn = comp_resolve_gvar(c, vn + 1);
+      LocalVar *gv = rn ? comp_gvar(c, rn) : NULL;
+      return gv ? gv->type : TY_UNKNOWN;
+    }
     Scope *ws = comp_scope_of(c, w);
-    if (!ivn || !ws || ws->class_id < 0) return TY_UNKNOWN;
-    ClassInfo *ci = &c->classes[ws->class_id];
-    int idx = comp_ivar_index(ci, ivn);
+    int cid = ws ? ws->class_id : -1;
+    if (kind == NK_ClassVariableOrWriteNode) {
+      if (cid < 0) cid = comp_class_index(c, "Toplevel");
+      if (cid < 0) return TY_UNKNOWN;
+      int idx = comp_cvar_index(&c->classes[cid], vn);
+      return idx >= 0 ? c->classes[cid].cvar_types[idx] : TY_UNKNOWN;
+    }
+    if (cid < 0) return TY_UNKNOWN;
+    ClassInfo *ci = &c->classes[cid];
+    int idx = comp_ivar_index(ci, vn);
     return idx >= 0 ? ci->ivar_types[idx] : TY_UNKNOWN;
+  }
+  return TY_UNKNOWN;
+}
+static TyKind write_slot_ty(Compiler *c, int id) {
+  static const NodeKind kinds[] = {
+    NK_InstanceVariableWriteNode, NK_InstanceVariableOrWriteNode,
+    NK_ClassVariableOrWriteNode, NK_GlobalVariableOrWriteNode };
+  for (size_t k = 0; k < sizeof kinds / sizeof kinds[0]; k++) {
+    TyKind t = write_slot_ty_of(c, id, kinds[k]);
+    if (t != TY_UNKNOWN) return t;
   }
   return TY_UNKNOWN;
 }
@@ -13274,9 +13299,9 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
          (argument position pins PolyPoly): construct that variant directly. */
       if (cn && sp_streq(cn, "Hash") && nt_ref(nt, id, "block") < 0 &&
           (ty_is_hash(comp_ntype(c, id)) ||
-           ty_is_hash(ivar_write_slot_ty(c, id)))) {
+           ty_is_hash(write_slot_ty(c, id)))) {
         TyKind ht = ty_is_hash(comp_ntype(c, id)) ? comp_ntype(c, id)
-                                                  : ivar_write_slot_ty(c, id);
+                                                  : write_slot_ty(c, id);
         const char *hcn = ty_hash_cname(ht);
         if (argc == 0 || nt_kind(nt, argv[0]) == NK_NilNode) buf_printf(b, "sp_%sHash_new()", hcn);
         else {
