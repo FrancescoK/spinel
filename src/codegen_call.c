@@ -12019,8 +12019,8 @@ static void emit_super_new_forward(Compiler *c, int id, int ci, Scope *s,
     if (pn && callee_param_is_declared_kwarg(c, is, pn)) {
       if (!kwn) { emit_arg_or_default(c, is, i, -1, b); continue; }
       buf_puts(b, "({ sp_bool _kwh; sp_RbVal _kwr = sp_poly_hash_probe(sp_box_obj(lv_");
-      buf_printf(b, "%s, SP_BUILTIN_SYM_POLY_HASH), sp_box_sym(sp_sym_intern(\"%s\")), &_kwh); _kwh ? ",
-                 rename_local(kwn), pn);
+      buf_printf(b, "%s, %s), sp_box_sym(sp_sym_intern(\"%s\")), &_kwh); _kwh ? ", rename_local(kwn),
+                 kwrest_any_key(c, s) ? "SP_BUILTIN_POLY_POLY_HASH" : "SP_BUILTIN_SYM_POLY_HASH", pn);
       if (dt == TY_POLY) buf_puts(b, "_kwr");
       else emit_unbox_text(c, dt, "_kwr", b);
       buf_puts(b, " : ");
