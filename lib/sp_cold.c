@@ -15,6 +15,7 @@
 #endif
 #include <stddef.h>
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -3407,17 +3408,25 @@ sp_float sp_frange_max(sp_FloatRange r) {
 }
 /* String range ("a".."e"). The endpoints are the value; every traversal
    materializes the element array, which is how a string range behaved before
-   it became a value of its own (#3064). */
+   it became a value of its own (#3064). A NULL endpoint is a nil bound: the
+   range is beginless or endless. */
 sp_StrRange sp_srange_new(const char *f, const char *l, sp_int e) {
   sp_StrRange r; r.first = f; r.last = l; r.excl = e; return r;
 }
 sp_StrArray *sp_srange_to_a(sp_StrRange r) {
-  return sp_StrArray_from_string_range(r.first ? r.first : sp_str_empty,
-                                       r.last ? r.last : sp_str_empty, r.excl);
+  if (!r.first) sp_raise_cls("TypeError", "can't iterate from NilClass");
+  if (!r.last) sp_raise_cls("RangeError", "cannot convert endless range to an array");
+  return sp_StrArray_from_string_range(r.first, r.last, r.excl);
 }
 sp_bool sp_srange_eq(sp_StrRange a, sp_StrRange b) {
-  return a.excl == b.excl && sp_str_eq(a.first ? a.first : sp_str_empty, b.first ? b.first : sp_str_empty) &&
-         sp_str_eq(a.last ? a.last : sp_str_empty, b.last ? b.last : sp_str_empty);
+  return a.excl == b.excl && sp_str_eq(a.first, b.first) && sp_str_eq(a.last, b.last);
+}
+/* #include? / #member?: #cover? for a bounded range, which CRuby refuses to
+   answer for a beginless or endless one. */
+sp_bool sp_srange_include(sp_StrRange r, const char *x) {
+  if (!r.first || !r.last)
+    sp_raise_cls("TypeError", "cannot determine inclusion in beginless/endless ranges");
+  return sp_srange_cover(r, x);
 }
 /* #cover? / #=== compare lexicographically, no materialization. */
 sp_bool sp_srange_cover(sp_StrRange r, const char *x) {
@@ -3431,8 +3440,8 @@ const char *sp_srange_to_s(sp_StrRange r) {
                     r.excl ? "..." : "..", r.last ? r.last : sp_str_empty);
 }
 const char *sp_srange_inspect(sp_StrRange r) {
-  const char *lo = sp_str_inspect(r.first ? r.first : sp_str_empty);
-  const char *hi = sp_str_inspect(r.last ? r.last : sp_str_empty);
+  const char *lo = r.first ? sp_str_inspect(r.first) : sp_str_empty;
+  const char *hi = r.last ? sp_str_inspect(r.last) : sp_str_empty;
   return sp_sprintf("%s%s%s", lo, r.excl ? "..." : "..", hi);
 }
 /* A boxed String range holds its two endpoint strings: the box marks them,
@@ -3526,6 +3535,30 @@ sp_RbVal sp_box_i64(int64_t v) {
   return sp_box_bigint(sp_bigint_new_int(v));
 }
 sp_RbVal sp_box_encoding(sp_Encoding e) { sp_RbVal r; r.tag = SP_TAG_ENCODING; r.cls_id = 0; r.v.s = sp_encoding_name(e); return r; }
+/* Encoding.find(name) with a name known at run time: an Encoding answers
+   itself, a name or alias the encoding it names (case-insensitively, as
+   CRuby), "external" / "locale" / "filesystem" UTF-8 and "internal" nil;
+   anything else is CRuby's ArgumentError. */
+static const char *const sp_encoding_names[][2] = {
+#include "sp_encoding_names.h"
+  { NULL, NULL } };
+sp_RbVal sp_encoding_find(sp_RbVal v) {
+  if (v.tag == SP_TAG_ENCODING) return v;
+  if (v.tag != SP_TAG_STR) {
+    const char *cn = v.tag == SP_TAG_NIL ? "nil" : v.tag == SP_TAG_INT ? "Integer"
+                   : v.tag == SP_TAG_FLT ? "Float" : v.tag == SP_TAG_SYM ? "Symbol"
+                   : v.tag == SP_TAG_BOOL ? (v.v.b ? "true" : "false") : "Object";
+    sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into String", cn));
+  }
+  const char *n = v.v.s;
+  if (!strcasecmp(n, "external") || !strcasecmp(n, "locale") || !strcasecmp(n, "filesystem"))
+    return sp_box_encoding((sp_Encoding){ "UTF-8" });
+  if (!strcasecmp(n, "internal")) return sp_box_nil();
+  for (int i = 0; sp_encoding_names[i][0]; i++)
+    if (!strcasecmp(n, sp_encoding_names[i][0])) return sp_box_encoding((sp_Encoding){ sp_encoding_names[i][1] });
+  sp_raise_cls("ArgumentError", sp_sprintf("unknown encoding name - %s", n));
+  return sp_box_nil();
+}
 sp_RbVal sp_box_nullable_str(const char *v) { return v ? sp_box_str(v) : sp_box_nil(); }
 /* An opaque foreign/FFI pointer: boxed with SP_BUILTIN_FOREIGN_PTR so the
    collector skips it (it is not a sp_gc_alloc allocation). NULL -> nil. */

@@ -194,7 +194,7 @@ sp_int sp_re_match_at(mrb_regexp_pattern *pat, const char *str, sp_int pos) {SP_
    render by name; unmatched groups render nil). */
 const char *sp_MatchData_inspect(sp_MatchData *m) {SP_GC_ROOT(m);
   if (!m) return SPL("nil");
-  sp_String *b = sp_String_new("#<MatchData ");
+  sp_String *b = sp_String_new("#<MatchData "); SP_GC_ROOT(b);
   sp_String_append(b, sp_str_inspect(sp_str_substr(m->source + m->caps[0], 0, m->caps[1] - m->caps[0])));
   for (int g = 1; g < m->ncap; g++) {
     const char *gname = re_group_name(m->pat, g);

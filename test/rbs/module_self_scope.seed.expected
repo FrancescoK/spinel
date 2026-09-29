@@ -1,0 +1,10 @@
+class Rails
+cmeth application obj_Rails_Application -
+cmeth top obj_Application -
+class Rails_Application
+meth name string -
+class Views
+class Views_Helpers
+meth app obj_Application -
+class Application
+meth name string -

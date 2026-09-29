@@ -76,3 +76,14 @@ puts Crypto.sp_crypto_hmac_sha1_bin(key, msg).unpack1("H*") ==
 # eight contains a NUL, which a NUL-terminated return would silently truncate.
 puts Crypto.sp_crypto_hmac_sha256_bin(bkey, "Hi There").bytesize
 puts Crypto.sp_crypto_hmac_sha1_bin(bkey, "Hi There").bytesize
+
+# The decode answers bytes, and sets sp_ffi_bin_len to their count, so a
+# `:binstr` binding keeps a NUL among them: "AGFi" is "\x00ab", "YQBi" is
+# "a\x00b". Bad input decodes to nothing, whatever the call before it set.
+module CryptoBin
+  ffi_func :sp_crypto_b64url_decode, [:str], :binstr
+end
+p CryptoBin.sp_crypto_b64url_decode("AGFi")
+p CryptoBin.sp_crypto_b64url_decode("YQBi")
+Crypto.sp_crypto_hmac_sha1_bin("k", "x")
+p CryptoBin.sp_crypto_b64url_decode("!!!!").bytesize

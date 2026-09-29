@@ -943,7 +943,7 @@ ext-cruby-test: $(SPINEL) $(SP_RT_LIB)
 	tmp=$$(mktemp -d /tmp/spinel-extrb.XXXXXX); ok=1; \
 	$(SPINEL) test/ext/kernel.rb -c --no-line-map --ext cruby \
 	  --ext-init spx_init_extk \
-	  --ext-entry ExtKernel.triple,ExtKernel.shout,ExtKernel.total,ExtKernel.must_pos \
+	  --ext-entry ExtKernel.triple,ExtKernel.shout,ExtKernel.total,ExtKernel.pair_sum,ExtKernel.must_pos \
 	  -o "$$tmp/extk.c" >/dev/null 2>&1 || { echo "ext-cruby-test: FAIL (emission)"; ok=0; }; \
 	if [ $$ok -eq 1 ]; then \
 	  if $(CC) $$SOFLAGS -fPIC -O1 -w -I"$$RH" -I"$$RA" -Ilib -Ilib/regexp -Ilib/regexp/shim -I"$$tmp" \
@@ -1384,23 +1384,31 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 
 GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/gc_minor_thread_retval.rb \
+                  test/str_fresh_recv_rooted.rb \
                   test/gc_minor_thread_tls_first_write.rb \
                   test/proc_cell_capture_marked.rb \
+                  test/builtins_minmax.rb \
                   test/gc_minor_byref_lent_slot.rb \
                   test/gc_minor_byref_param_same_name_cell.rb \
+                  test/string_handle_eql.rb \
                   test/gc_minor_barrier_holders.rb \
                   test/bound_method_fresh_receiver.rb \
+                  test/issue_2890.rb \
                   test/thread_new_args_rooted_across_fiber_alloc.rb \
                   test/gc_root_frame_slots.rb \
                   test/keyword_splat_rest_copy.rb \
                   test/kw_splat_poly_key_hash.rb \
+                  test/poly_array_intersect.rb \
                   test/kw_splat_true_false_nil_operand.rb \
                   test/call_positional_layout.rb \
+                  test/block_autosplat_keywords_posts.rb \
                   test/keyword_binding_plan.rb \
+                  test/regex_value_as_match_arg.rb \
                   test/kwrest_any_key.rb \
                   test/method_bound_binding_layout.rb \
+                  test/ivar_recv_before_call_arg.rb \
                   test/kw_splat_boxed_to_hash.rb \
-                  test/ivar_recv_before_call_arg.rb
+                  test/byref_keyword_rest_splat_param.rb
 
 # Each program runs with the minor mark off and on and must answer the same;
 # then once more under the generational verifier with stress on (every
@@ -1422,6 +1430,10 @@ gc-minor-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	      diff -u "$$src.expected" "$$tmp/$$bn.$$mode" | head -10; ok=0; fi; \
 	  done; \
 	  SPINEL_GC_MINOR=1 SPINEL_GC_VERIFY_GEN=1 SPINEL_GC_STRESS=1 $(TIMEOUT60) "$$tmp/$$bn" > "$$tmp/$$bn.stress" 2> "$$tmp/$$bn.verify"; \
+	  rc=$$?; \
+	  if [ $$rc -ne 0 ]; then \
+	    echo "gc-minor-test: FAIL ($$bn: SPINEL_GC_STRESS exited $$rc)"; \
+	    tail -3 "$$tmp/$$bn.verify"; ok=0; fi; \
 	  if grep -q "generational check" "$$tmp/$$bn.verify"; then \
 	    echo "gc-minor-test: FAIL ($$bn: a holder the barrier did not record)"; \
 	    head -4 "$$tmp/$$bn.verify"; ok=0; fi; \
@@ -2455,6 +2467,8 @@ gate-props:
 # The limit sits just above today's ratio (4.68, down from 5.61 before the
 # #5035 fixes). Lower it as the remaining superlinear passes are fixed.
 SCALE_LIMIT ?= 5.2
+# Not a timed test: the #5718 per-hop rescan gave ~450x here, and a work count cannot drift with the machine.
+IE_FORWARD_LIMIT ?= 2.5
 scale-test: $(SPINEL_WORK)
 	@tmp=$$(mktemp -d /tmp/spinel-scale.XXXXXX); \
 	sh test/scale/gen.sh 100 > "$$tmp/a.rb"; sh test/scale/gen.sh 400 > "$$tmp/b.rb"; \
@@ -2462,8 +2476,14 @@ scale-test: $(SPINEL_WORK)
 	wb=$$($(SPINEL_WORK) --emit-rbs -o "$$tmp/b.rbs" "$$tmp/b.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
 	( ulimit -t 20; $(SPINEL_WORK) -c -o "$$tmp/hls.c" test/scale/hash_literal_sources_fanout.rb ) >/dev/null 2>&1 || \
 	  { rm -rf "$$tmp"; echo "scale-test: FAIL (the hash-literal source walk revisited call sites along every path)"; exit 1; }; \
+	sh test/scale/ie_forward_chain.sh 2 > "$$tmp/f2.rb"; sh test/scale/ie_forward_chain.sh 4 > "$$tmp/f4.rb"; \
+	fa=$$($(SPINEL_WORK) -c -o "$$tmp/f2.c" "$$tmp/f2.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
+	fb=$$($(SPINEL_WORK) -c -o "$$tmp/f4.c" "$$tmp/f4.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
 	rm -rf "$$tmp"; \
-	if [ -z "$$wa" ] || [ -z "$$wb" ]; then echo "scale-test: FAIL (the counting compiler reported no work count)"; exit 1; fi; \
+	if [ -z "$$wa" ] || [ -z "$$wb" ] || [ -z "$$fa" ] || [ -z "$$fb" ]; then echo "scale-test: FAIL (the counting compiler reported no work count)"; exit 1; fi; \
+	awk -v a="$$fa" -v b="$$fb" -v lim="$(IE_FORWARD_LIMIT)" 'BEGIN { r = b / a; \
+	  printf "scale-test: instance_eval forwarding work at 2x the wrappers is %.2fx (limit %.2f)\n", r, lim; exit (r > lim) }' || \
+	  { echo "scale-test: FAIL (the instance_eval forwarding walk grew superlinearly in the wrapper classes, see build_ie_map)"; exit 1; }; \
 	awk -v a="$$wa" -v b="$$wb" -v lim="$(SCALE_LIMIT)" 'BEGIN { r = b / a; \
 	  printf "scale-test: work at 4x the program is %.2fx (linear 4.00, limit %.2f)\n", r, lim; exit (r > lim) }' || \
 	  { echo "scale-test: FAIL (the front end grew superlinearly: some pass rescans per node; profile per pass, see rubys/roundhouse#72)"; exit 1; }

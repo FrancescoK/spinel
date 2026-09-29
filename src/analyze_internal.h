@@ -59,7 +59,7 @@ int method_recv_node(Compiler *c, int recv);
 int method_recv_nodes(Compiler *c, int recv, int *out, int cap);
 int method_expr_is_unbound(Compiler *c, int recv);
 int class_is_blank_slate(Compiler *c, int ci);
-int proc_to_proc_method_node(Compiler *c, int recv);
+int proc_to_proc_method_nodes(Compiler *c, int recv, int *out, int cap);
 int local_sole_range_node(Compiler *c, int recv);
 int const_array_elems_all_int_array(Compiler *c, const char *cname);
 int *an_parent_map(const NodeTable *nt);
@@ -189,6 +189,7 @@ int collect_dm_each_unroll(Compiler *c, int id, int class_id);
 const char *builtin_class_of_type(TyKind t);
 const char *resolve_class_alias(Compiler *c, const char *cname);
 void walk_scope(Compiler *c, int id, int scope_idx, int class_id);
+int scope_own_defaults(Compiler *c, int di);
 void register_module_functions(Compiler *c);
 void register_method_visibility(Compiler *c);
 void register_locals(Compiler *c);
@@ -264,6 +265,8 @@ int param_rest_misfits(Compiler *c, Scope *m, LocalVar *p, TyKind ct, const int 
 int opt_before_required(Compiler *c, Scope *m);                 /* codegen_fold.c */
 int arg_slot_for_param(Compiler *c, Scope *m, int idx, int argc); /* codegen_fold.c */
 int arg_layout_plain_arg(Compiler *c, Scope *m, int pos_argc, int i); /* codegen_fold.c */
+int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread); /* codegen_fold.c */
+int zsuper_param_source(Compiler *c, Scope *s, Scope *pm, int j);         /* codegen_fold.c */
 int rest_packable_arm(Compiler *c, Scope *s);                    /* codegen_fold.c */
 /* The type a READ of ivar slot `iv` yields (a shared-mutable string slot
    reads as a plain String). Shared with the receiver-face helpers. */
@@ -290,8 +293,21 @@ int infer_param_types(Compiler *c);
 int infer_for_index(Compiler *c);
 int infer_catch_block_params(Compiler *c);
 void infer_bigint_loop_locals(Compiler *c);
-int first_yield(Compiler *c, int si);
-int first_block_call_args(Compiler *c, int si);
+void block_sites_index(Compiler *c);
+int block_sites(Compiler *c, int si, const int **sites);
+int block_site_args(Compiler *c, int si, int site, int call);
+/* A block's (or a proc literal's) parameters as its binders count them:
+   P leading requireds, O optionals, Q posts, R a rest marker (`*r`, `*`,
+   a trailing comma), nk keywords; kw when a trailing keyword hash goes to
+   the keywords (named ones, or any `**`), never to a positional. */
+typedef struct { int pn, num, P, O, Q, R, nk, kw, lambda; } BlockSig;
+void block_sig(Compiler *c, int params, int lambda, BlockSig *s);
+const char *block_sig_name(Compiler *c, const BlockSig *s, int i);
+const char *block_sig_kw_name(Compiler *c, const BlockSig *s, int k);
+void block_site_types(Compiler *c, const BlockSig *s, const int *av, int ac,
+                      TyKind *pos, char *absent, TyKind *kws);
+int block_settle_types(Compiler *c, int blk, const BlockSig *s,
+                       const TyKind *pos, const char *absent, const TyKind *kws);
 int a_proc_params_node(Compiler *c, int create);
 int infer_block_params(Compiler *c);
 int desugar_to_proc_block_arg(Compiler *c);
@@ -359,6 +375,7 @@ int desugar_public_send_recv(Compiler *c);
 int type_block_rest_params(Compiler *c);
 void check_block_rest_support(Compiler *c);
 int desugar_dynamic_send(Compiler *c);
+void expand_static_splat_args(Compiler *c, int from, int count);
 int desugar_dynamic_method(Compiler *c);
 int desugar_engine_branches(Compiler *c);
 int desugar_toplevel_instance_exec(Compiler *c);

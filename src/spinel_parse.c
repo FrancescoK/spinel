@@ -2549,6 +2549,19 @@ static void sp_req_hoist_splice(char **result, unsigned char **fsl, size_t *fsl_
   *result = nr;
 }
 
+static char *sp_req_cond_wrap(char *content, unsigned char **cfsl, size_t *cfsl_n) {
+  size_t wcl = strlen(content);
+  char *w = malloc(wcl + 40);
+  if (!w) return content;
+  sprintf(w, "#<SPINEL_COND>\n%s%s#</SPINEL_COND>\n", content,
+          (wcl && content[wcl - 1] != '\n') ? "\n" : "");
+  free(content);
+  unsigned char z = 0;
+  sp_fsl_splice(cfsl, cfsl_n, 0, 0, &z, 1);
+  sp_fsl_splice(cfsl, cfsl_n, *cfsl_n, 0, &z, 1);
+  return w;
+}
+
 /* ---- computed requires a file's own layout decides ----
  *
  * `require File.join(Archive::LIBPATH, "ffi-libarchive", "archive")`,
@@ -2974,19 +2987,7 @@ else {
 
     /* a conditional inclusion is marked, so the requires inside it count as
        conditional too (the markers are comments: two lines, no flags) */
-    if (cond_inline && !hit.margin) {
-      size_t wcl = strlen(content);
-      char *w = malloc(wcl + 40);
-      if (w) {
-        sprintf(w, "#<SPINEL_COND>\n%s%s#</SPINEL_COND>\n", content,
-                (wcl && content[wcl - 1] != '\n') ? "\n" : "");
-        free(content);
-        content = w;
-        unsigned char z = 0;
-        sp_fsl_splice(&cfsl, &cfsl_n, 0, 0, &z, 1);
-        sp_fsl_splice(&cfsl, &cfsl_n, cfsl_n, 0, &z, 1);
-      }
-    }
+    if (cond_inline && !hit.margin) content = sp_req_cond_wrap(content, &cfsl, &cfsl_n);
 
     /* Replace the statement, consuming its trailing whitespace and single
        newline; anything else on the line (`require_relative 'x'; code`) stays,
@@ -3616,19 +3617,7 @@ else {
 
     /* a conditional inclusion is marked, so the requires inside it count as
        conditional too (the markers are comments: two lines, no flags) */
-    if (cond_inline && !hit.margin) {
-      size_t wcl = strlen(content);
-      char *w = malloc(wcl + 40);
-      if (w) {
-        sprintf(w, "#<SPINEL_COND>\n%s%s#</SPINEL_COND>\n", content,
-                (wcl && content[wcl - 1] != '\n') ? "\n" : "");
-        free(content);
-        content = w;
-        unsigned char z = 0;
-        sp_fsl_splice(&cfsl, &cfsl_n, 0, 0, &z, 1);
-        sp_fsl_splice(&cfsl, &cfsl_n, cfsl_n, 0, &z, 1);
-      }
-    }
+    if (cond_inline && !hit.margin) content = sp_req_cond_wrap(content, &cfsl, &cfsl_n);
 
     /* Replace only the `require "name"` statement itself, not the whole
        line, so `require "x"; code` keeps `code`. Consume trailing
@@ -4291,6 +4280,25 @@ else {
   #undef OUT_STR
 }
 
+static char *sp_prepend_after_comments(char *source, const char *head) {
+  const char *ins = source;
+  while (*ins) {
+    const char *q = ins; while (*q == ' ' || *q == '\t') q++;
+    if (*q != '#') break;
+    const char *nl = strchr(ins, '\n');
+    if (!nl) { ins = ins + strlen(ins); break; }
+    ins = nl + 1;
+  }
+  size_t sl = strlen(source), hl = strlen(head), off = (size_t)(ins - source);
+  char *ns = (char *)malloc(sl + hl + 1);
+  if (!ns) return source;
+  memcpy(ns, source, off);
+  memcpy(ns + off, head, hl);
+  memcpy(ns + off + hl, source + off, sl - off + 1);
+  free(source);
+  return ns;
+}
+
 /* ---- Main ---- */
 /* Parse `source_file` and append the text AST to `out`. `argv0` is the
    invoking program path (used to locate the stdlib for plain `require`s).
@@ -4349,24 +4357,7 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
        off the first lines, so the entry file's pragma silently reverted to
        the default (#3298 -- "Set-Cookie" in a string is enough to trip the
        textual Set heuristic). */
-    const char *ins = source;
-    while (*ins) {
-      const char *q = ins; while (*q == ' ' || *q == '\t') q++;
-      if (*q != '#') break;
-      const char *nl = strchr(ins, '\n');
-      if (!nl) { ins = ins + strlen(ins); break; }
-      ins = nl + 1;
-    }
-    const char *head = "require \"set\"\n";
-    size_t sl = strlen(source), hl = strlen(head), off = (size_t)(ins - source);
-    char *ns = (char *)malloc(sl + hl + 1);
-    if (ns) {
-      memcpy(ns, source, off);
-      memcpy(ns + off, head, hl);
-      memcpy(ns + off + hl, source + off, sl - off + 1);
-      free(source);
-      source = ns;
-    }
+    source = sp_prepend_after_comments(source, "require \"set\"\n");
   }
   /* CRuby provides IO::Buffer with no require at all (it is core). Mirror
      it the way Set is mirrored just above: when the program references
@@ -4374,24 +4365,7 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
      bundled binding (packages/io/io/buffer.rb) splices ahead of its uses. */
   if (!strstr(source, "require \"io/buffer\"") && !strstr(source, "require 'io/buffer'") &&
       source_references_io_buffer(source)) {
-    const char *ins = source;
-    while (*ins) {
-      const char *q = ins; while (*q == ' ' || *q == '\t') q++;
-      if (*q != '#') break;
-      const char *nl = strchr(ins, '\n');
-      if (!nl) { ins = ins + strlen(ins); break; }
-      ins = nl + 1;
-    }
-    const char *head = "require \"io/buffer\"\n";
-    size_t sl = strlen(source), hl = strlen(head), off = (size_t)(ins - source);
-    char *ns = (char *)malloc(sl + hl + 1);
-    if (ns) {
-      memcpy(ns, source, off);
-      memcpy(ns + off, head, hl);
-      memcpy(ns + off + hl, source + off, sl - off + 1);
-      free(source);
-      source = ns;
-    }
+    source = sp_prepend_after_comments(source, "require \"io/buffer\"\n");
   }
   unsigned char *fsl = NULL; size_t fsl_n = 0;
   sp_autoload_is_main = 1;

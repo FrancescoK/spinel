@@ -998,23 +998,21 @@ static int name_in(char **list, int n, const char *name) {
   for (int i = 0; i < n; i++) if (sp_streq(list[i], name)) return 1;
   return 0;
 }
+static void name_add(char ***list, int *n, int *cap, const char *name) {
+  if (name_in(*list, *n, name)) return;
+  if (*n >= *cap) {
+    *cap = *cap ? *cap * 2 : 4;
+    *list = realloc(*list, sizeof(char *) * (size_t)*cap);
+  }
+  (*list)[(*n)++] = strdup(name);
+}
 unsigned comp_table_gen = 0;   /* bumped when a reader or alias table grows (poly-candidate memo stamp) */
 void comp_add_reader(ClassInfo *ci, const char *name) {
   comp_table_gen++;
-  if (name_in(ci->readers, ci->nreaders, name)) return;
-  if (ci->nreaders >= ci->creaders) {
-    ci->creaders = ci->creaders ? ci->creaders * 2 : 4;
-    ci->readers = realloc(ci->readers, sizeof(char *) * (size_t)ci->creaders);
-  }
-  ci->readers[ci->nreaders++] = strdup(name);
+  name_add(&ci->readers, &ci->nreaders, &ci->creaders, name);
 }
 void comp_add_writer(ClassInfo *ci, const char *name) {
-  if (name_in(ci->writers, ci->nwriters, name)) return;
-  if (ci->nwriters >= ci->cwriters) {
-    ci->cwriters = ci->cwriters ? ci->cwriters * 2 : 4;
-    ci->writers = realloc(ci->writers, sizeof(char *) * (size_t)ci->cwriters);
-  }
-  ci->writers[ci->nwriters++] = strdup(name);
+  name_add(&ci->writers, &ci->nwriters, &ci->cwriters, name);
 }
 int comp_is_reader(ClassInfo *ci, const char *name) { return name_in(ci->readers, ci->nreaders, name); }
 int comp_is_writer(ClassInfo *ci, const char *name) { return name_in(ci->writers, ci->nwriters, name); }
@@ -1066,12 +1064,7 @@ int setter_base_name(const char *name, char *out, size_t cap) {
   return 1;
 }
 void comp_add_undef(ClassInfo *ci, const char *name) {
-  if (name_in(ci->undefs, ci->nundefs, name)) return;
-  if (ci->nundefs >= ci->cundefs) {
-    ci->cundefs = ci->cundefs ? ci->cundefs * 2 : 4;
-    ci->undefs = realloc(ci->undefs, sizeof(char *) * (size_t)ci->cundefs);
-  }
-  ci->undefs[ci->nundefs++] = strdup(name);
+  name_add(&ci->undefs, &ci->nundefs, &ci->cundefs, name);
 }
 int comp_is_undeffed_in_chain(Compiler *c, int class_id, const char *name) {
   for (int cid = class_id; cid >= 0; cid = c->classes[cid].parent) {
@@ -1081,28 +1074,13 @@ int comp_is_undeffed_in_chain(Compiler *c, int class_id, const char *name) {
   return 0;
 }
 void comp_add_sg_reader(ClassInfo *ci, const char *name) {
-  if (name_in(ci->sg_readers, ci->nsg_readers, name)) return;
-  if (ci->nsg_readers >= ci->csg_readers) {
-    ci->csg_readers = ci->csg_readers ? ci->csg_readers * 2 : 4;
-    ci->sg_readers = realloc(ci->sg_readers, sizeof(char *) * (size_t)ci->csg_readers);
-  }
-  ci->sg_readers[ci->nsg_readers++] = strdup(name);
+  name_add(&ci->sg_readers, &ci->nsg_readers, &ci->csg_readers, name);
 }
 void comp_add_sg_writer(ClassInfo *ci, const char *name) {
-  if (name_in(ci->sg_writers, ci->nsg_writers, name)) return;
-  if (ci->nsg_writers >= ci->csg_writers) {
-    ci->csg_writers = ci->csg_writers ? ci->csg_writers * 2 : 4;
-    ci->sg_writers = realloc(ci->sg_writers, sizeof(char *) * (size_t)ci->csg_writers);
-  }
-  ci->sg_writers[ci->nsg_writers++] = strdup(name);
+  name_add(&ci->sg_writers, &ci->nsg_writers, &ci->csg_writers, name);
 }
 void comp_add_sg_civ(ClassInfo *ci, const char *name) {
-  if (!name || name_in(ci->sg_civ, ci->nsg_civ, name)) return;
-  if (ci->nsg_civ >= ci->csg_civ) {
-    ci->csg_civ = ci->csg_civ ? ci->csg_civ * 2 : 4;
-    ci->sg_civ = realloc(ci->sg_civ, sizeof(char *) * (size_t)ci->csg_civ);
-  }
-  ci->sg_civ[ci->nsg_civ++] = strdup(name);
+  if (name) name_add(&ci->sg_civ, &ci->nsg_civ, &ci->csg_civ, name);
 }
 int comp_is_sg_civ(ClassInfo *ci, const char *name) { return name_in(ci->sg_civ, ci->nsg_civ, name); }
 int comp_is_sg_reader(ClassInfo *ci, const char *name) { return name_in(ci->sg_readers, ci->nsg_readers, name); }

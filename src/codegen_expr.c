@@ -305,6 +305,16 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         EMIT_IV(); buf_puts(&conv, ")");
         if (ret_poly) buf_puts(&conv, ")");
       }
+      else if (ty_is_ptr_array(t) || ty_is_obj_array(t)) {
+        Buf ivb; memset(&ivb, 0, sizeof ivb);
+        if (vexpr[0]) buf_puts(&ivb, vexpr);
+        else if (iv_pre) buf_puts(&ivb, iv_pre);
+        else emit_expr(c, expr, &ivb);
+        buf_puts(&conv, "sp_poly_inspect(");
+        emit_boxed_text(c, t, ivb.p ? ivb.p : "NULL", &conv);
+        buf_puts(&conv, ")");
+        free(ivb.p);
+      }
       else if (t == TY_CLASS) {
         buf_puts(&conv, "sp_class_to_s(");
         EMIT_IV(); buf_puts(&conv, ")");
@@ -1002,6 +1012,22 @@ void emit_slot_orw_value(Compiler *c, TyKind t, const char *ref, int v, int is_o
   const char *cond = NULL;
   char condb[400];
   int unconditional = 0;
+  /* A shared-handle string slot takes the RHS as a handle (an alias by
+     handle, anything else freshly wrapped), and the expression's value is
+     the slot's read face with the handle published, as a plain write's is. */
+  if (t == TY_STRBUF) {
+    Buf *saved_pre = g_pre; g_pre = &vpre;
+    char srefO[1024];
+    if (strbuf_slot_ref(c, v, srefO, sizeof srefO)) buf_puts(&vval, srefO);
+    else { buf_puts(&vval, "sp_String_new_shared("); emit_str_expr(c, v, &vval); buf_puts(&vval, ")"); }
+    g_pre = saved_pre;
+    buf_printf(b, "({ if (%s%s) { ", is_or ? "!" : "", ref);
+    if (vpre.p) buf_puts(b, vpre.p);
+    buf_printf(b, "%s = %s; } (_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL); })",
+               ref, vval.p ? vval.p : "", ref, ref, ref);
+    free(vpre.p); free(vval.p);
+    return;
+  }
   if (t == TY_POLY) {
     Buf *saved_pre = g_pre; g_pre = &vpre;
     emit_boxed(c, v, &vval);
@@ -1430,9 +1456,9 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     /* ("a".."e"): the distinct string range, endpoints kept as strings (#3064) */
     if (comp_ntype(c, id) == TY_STR_RANGE) {
       buf_puts(b, "sp_srange_new(");
-      if (left >= 0) emit_str_expr_nilable(c, left, b); else buf_puts(b, "sp_str_empty");
+      if (left >= 0) emit_str_expr_nilable(c, left, b); else buf_puts(b, "NULL");
       buf_puts(b, ", ");
-      if (right >= 0) emit_str_expr_nilable(c, right, b); else buf_puts(b, "sp_str_empty");
+      if (right >= 0) emit_str_expr_nilable(c, right, b); else buf_puts(b, "NULL");
       buf_printf(b, ", %d)", excl);
       return;
     }
@@ -1888,6 +1914,58 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     buf_puts(b, "sp_box_nil(); })");
     return;
   }
+  if (sp_streq(ty, "ForNode")) {
+    /* A for loop in value position evaluates to its collection, or to a
+       `break`'s value (nil for a bare one). The collection -- for a range
+       literal, its endpoints -- is evaluated once into temps that the loop
+       then reads through the argument overrides. */
+    int coll = unwrap_parens(c, nt_ref(nt, id, "collection"));
+    int subs[2] = { -1, -1 }, ns = 0;
+    if (coll >= 0 && nt_kind(nt, coll) == NK_RangeNode && comp_ntype(c, coll) == TY_RANGE) {
+      subs[ns++] = nt_ref(nt, coll, "left");
+      subs[ns++] = nt_ref(nt, coll, "right");
+    }
+    else subs[ns++] = coll;
+    if (g_n_argov + ns > MAX_ARG_OVERRIDE) unsupported(c, id, "for loop value nested too deep");
+    Buf lb; memset(&lb, 0, sizeof lb);
+    int ind = g_pre ? g_indent : 0;
+    int sv_argov = g_n_argov;
+    for (int i = 0; i < ns; i++) {
+      if (subs[i] < 0) continue;
+      TyKind st = comp_ntype(c, subs[i]);
+      int ts = ++g_tmp;
+      Buf eb; memset(&eb, 0, sizeof eb);
+      emit_expr(c, subs[i], &eb);
+      emit_indent(&lb, ind);
+      buf_printf(&lb, "%s _t%d = %s; ", c_type_name(st), ts, eb.p ? eb.p : "0");
+      emit_gc_root_tmp(c, st, ts, &lb);
+      buf_puts(&lb, "\n");
+      free(eb.p);
+      g_argov_node[g_n_argov] = subs[i];
+      snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ts);
+      g_n_argov++;
+    }
+    int tr = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb);
+    if (coll >= 0) emit_boxed(c, coll, &rb);
+    emit_indent(&lb, ind);
+    buf_printf(&lb, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tr, rb.p ? rb.p : "sp_box_nil()", tr);
+    free(rb.p);
+    const char *saved_bv = g_loop_break_var, *saved_bs = g_brk_ser_var;
+    int saved_rp = g_ie_res_poly;
+    char bvbuf[24]; snprintf(bvbuf, sizeof bvbuf, "_t%d", tr);
+    g_loop_break_var = bvbuf; g_ie_res_poly = 1; g_brk_ser_var = NULL;
+    emit_for(c, id, &lb, ind);
+    g_loop_break_var = saved_bv; g_ie_res_poly = saved_rp; g_brk_ser_var = saved_bs;
+    g_n_argov = sv_argov;
+    if (g_pre) {
+      if (lb.p) buf_puts(g_pre, lb.p);
+      buf_printf(b, "_t%d", tr);
+    }
+    else buf_printf(b, "({ %s_t%d; })", lb.p ? lb.p : "", tr);
+    free(lb.p);
+    return;
+  }
   if (sp_streq(ty, "IndexOrWriteNode") || sp_streq(ty, "IndexAndWriteNode")) {
     int is_or2 = sp_streq(ty, "IndexOrWriteNode");
     int ir = nt_ref(nt, id, "receiver");
@@ -2156,6 +2234,11 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
                              (g_pf_emitting || _ynt != TY_UNKNOWN)
                                ? _ynt : g_yield_slot_ty,
                              b, 0, 1); }
+    else if (nt_str(nt, id, "call_operator") && sp_streq(nt_str(nt, id, "call_operator"), "&.")) {
+      /* `blk&.call`: the nil parameter answers nil instead of raising */
+      const char *nv = nil_value(comp_ntype(c, id));
+      buf_puts(b, nv ? nv : default_value(comp_ntype(c, id)));
+    }
     else {
       TyKind _bt = comp_ntype(c, id);
       buf_printf(b, "((void)sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())), %s)",
@@ -2244,6 +2327,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     else if (ct == TY_POLY) emit_boxed(c, v, b);
     else if (emit_array_into_poly_slot(c, ct, v, b)) { }
     else emit_expr(c, v, b);
+    emit_cvar_set_flag_after(c, cid, nm, b);
     buf_puts(b, ")");
     return;
   }
@@ -2268,6 +2352,16 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       buf_printf(b, "(gv_%s %s= ", rn, op ? op : "+");
       emit_expr(c, v, b); buf_puts(b, ")");
     }
+    return;
+  }
+  if (sp_streq(ty, "GlobalVariableOrWriteNode") || sp_streq(ty, "GlobalVariableAndWriteNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
+    LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
+    if (!lv) { unsupported(c, id, "global variable or/and-write (unregistered global)"); return; }
+    char gref[256]; snprintf(gref, sizeof gref, "gv_%s", rn);
+    emit_slot_orw_value(c, lv->type, gref, nt_ref(nt, id, "value"),
+                        sp_streq(ty, "GlobalVariableOrWriteNode"), b);
     return;
   }
   if (sp_streq(ty, "ClassVariableOperatorWriteNode")) {
@@ -2310,6 +2404,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     buf_printf(b, " ? %s : (%s = ", ref, ref);
     if (ot == TY_POLY) emit_boxed(c, v, b);
     else emit_expr(c, v, b);
+    emit_cvar_set_flag_after(c, cid, nm, b);
     buf_puts(b, "))");
     return;
   }
@@ -2764,7 +2859,20 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
             res = "instance-variable";
         }
       }
-      else if (sp_streq(vt, "ClassVariableReadNode")) res = "class variable";
+      else if (sp_streq(vt, "ClassVariableReadNode")) {
+        /* set or not is a run-time question: the cvar's __set flag */
+        const char *cnm = nt_str(nt, v, "name");
+        Scope *cs = comp_scope_of(c, v);
+        int cid = cs && cs->class_id >= 0 ? cs->class_id : g_class_body_id;
+        if (cid < 0) cid = comp_class_index(c, "Toplevel");
+        while (cid >= 0 && cnm && comp_cvar_index(&c->classes[cid], cnm) < 0)
+          cid = c->classes[cid].parent;
+        if (cid >= 0 && cnm)
+          buf_printf(b, "(cvar_%s_%s__set ? SPL(\"class variable\") : NULL)",
+                     c->classes[cid].name, cnm + 2);
+        else buf_puts(b, "NULL");
+        return;
+      }
       else if (sp_streq(vt, "SelfNode")) res = "self";
       else if (sp_streq(vt, "NilNode")) res = "nil";
       else if (sp_streq(vt, "TrueNode")) res = "true";

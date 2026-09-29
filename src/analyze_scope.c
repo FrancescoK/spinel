@@ -197,10 +197,12 @@ static int scope_is_forwarding(Compiler *c, Scope *s) {
 }
 
 /* The method `s`'s body forwards `...` to (a `callee(...)` call, `super(...)`
-   or a bare `super`). Returns the callee scope index, or -1 if
-   none/unresolved. */
-static int forwarding_target_idx(Compiler *c, Scope *s) {
+   or a bare `super`). Returns the callee scope index of the first such call
+   that resolves, or -1 if none does. `*sole`, when asked, says whether every
+   forwarding call resolves, and to that one scope. */
+static int forwarding_target_scan(Compiler *c, Scope *s, int *sole) {
   const NodeTable *nt = c->nt;
+  int first = -1, one = 1;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty || comp_scope_of(c, id) != s) continue;
@@ -213,23 +215,30 @@ static int forwarding_target_idx(Compiler *c, Scope *s) {
           !sp_streq(nt_type(nt, av[0]), "ForwardingArgumentsNode")) continue;
       is_super = sp_streq(ty, "SuperNode");
     }
+    int mi = -1;
     if (is_super) {
-      if (s->class_id < 0 || s->is_cmethod || !s->name) continue;
-      int par = comp_super_parent(c, s->class_id, 0);
-      int mi = par >= 0 ? comp_method_in_chain(c, par, s->name, NULL) : -1;
-      if (mi >= 0) return mi;
-      continue;
+      if (s->class_id >= 0 && !s->is_cmethod && s->name) {
+        int par = comp_super_parent(c, s->class_id, 0);
+        mi = par >= 0 ? comp_method_in_chain(c, par, s->name, NULL) : -1;
+      }
     }
-    const char *cn = nt_str(nt, id, "name");
-    if (!cn) continue;
-    int recv = nt_ref(nt, id, "receiver");
-    if (recv >= 0) continue;  /* receiver-qualified target: not resolved here */
-    int mi = comp_method_index(c, cn);
-    if (mi < 0 && s->class_id >= 0) mi = comp_method_in_chain(c, s->class_id, cn, NULL);
-    if (mi < 0 && s->class_id >= 0) mi = comp_cmethod_in_chain(c, s->class_id, cn, NULL);
-    if (mi >= 0) return mi;
+    else {
+      const char *cn = nt_str(nt, id, "name");
+      /* a receiver-qualified target is not resolved here */
+      if (cn && nt_ref(nt, id, "receiver") < 0) {
+        mi = comp_method_index(c, cn);
+        if (mi < 0 && s->class_id >= 0) mi = comp_method_in_chain(c, s->class_id, cn, NULL);
+        if (mi < 0 && s->class_id >= 0) mi = comp_cmethod_in_chain(c, s->class_id, cn, NULL);
+      }
+    }
+    if (mi < 0 || (first >= 0 && mi != first)) one = 0;
+    if (first < 0 && mi >= 0) first = mi;
   }
-  return -1;
+  if (sole) *sole = one && first >= 0;
+  return first;
+}
+static int forwarding_target_idx(Compiler *c, Scope *s) {
+  return forwarding_target_scan(c, s, NULL);
 }
 
 /* A `Klass.new(...)` call whose receiver names a class that constructs
@@ -315,8 +324,15 @@ void topup_forwarding_arity(Compiler *c) {
     for (int s = 1; s < c->nscopes; s++) {
       Scope *sc = &c->scopes[s];
       if (!scope_is_forwarding(c, sc)) continue;
-      int tgt = forwarding_target_idx(c, sc);
+      int sole = 0;
+      int tgt = forwarding_target_scan(c, sc, &sole);
       if (tgt < 0 || tgt == s) continue;
+      /* a forwarder whose every `...` reaches one method keeps its keyword
+         policy (scope_refuses_keywords); one that picks among several
+         cannot say which will take the keywords, so none is recorded:
+         `def w(c, ...) = c ? m(...) : n(...)` must not refuse `n`'s
+         keywords because `m` says `**nil` */
+      sc->fwd_target1 = sole ? tgt + 1 : 0;
       int want = c->scopes[tgt].nparams;
       while (sc->nparams < want) {
         char nm[24]; snprintf(nm, sizeof nm, "__fwd_%d", sc->nparams);
@@ -835,6 +851,22 @@ static void sclass_walk_stmt(Compiler *c, int s, int scope_idx, int target_class
     g_dm_sclass = 1;
     walk_scope(c, s, scope_idx, target_class);
     return;
+  }
+  /* `private def m` / `protected def m` / `public def m`: the def is the
+     visibility call's argument, and still a class method */
+  if (k == NK_CallNode && nt_ref(nt, s, "receiver") < 0 && nt_ref(nt, s, "block") < 0) {
+    const char *vn = nt_str(nt, s, "name");
+    int va = nt_ref(nt, s, "arguments");
+    int vc = 0; const int *vv = va >= 0 ? nt_arr(nt, va, "arguments", &vc) : NULL;
+    if (vn && (sp_streq(vn, "private") || sp_streq(vn, "protected") || sp_streq(vn, "public")) &&
+        vc == 1 && nt_kind(nt, vv[0]) == NK_DefNode && nt_ref(nt, vv[0], "receiver") < 0) {
+      c->nscope[s] = scope_idx;
+      c->node_cbody[s] = g_cbody_class_id;
+      c->nscope[va] = scope_idx;
+      c->node_cbody[va] = g_cbody_class_id;
+      sclass_walk_stmt(c, vv[0], scope_idx, target_class, depth + 1);
+      return;
+    }
   }
   if (k == NK_DefNode && nt_ref(nt, s, "receiver") < 0) {
     const char *name = nt_str(nt, s, "name");
@@ -1812,6 +1844,7 @@ static void sg_transplant_module(Compiler *c, int mod_ci, int newci) {
     dst->yields = src->yields;
     dst->nrequired = src->nrequired;
     dst->rest_idx = src->rest_idx;
+    dst->npost_rest = src->npost_rest;
     dst->kwrest_idx = src->kwrest_idx;
     src->is_transplanted_source = 1;   /* the module original is copied away */
     dst->origin_module_ci = mod_ci + 1;  /* #owner names the module (#3662) */
@@ -1840,6 +1873,7 @@ static void sg_transplant_module(Compiler *c, int mod_ci, int newci) {
         if (sp_lv && dp->type == TY_UNKNOWN) dp->type = sp_lv->type;
         src = &c->scopes[ms]; dst = &c->scopes[dst_idx];  /* intern may realloc */
       }
+      scope_own_defaults(c, dst_idx);
     }
   }
 }
@@ -4354,6 +4388,10 @@ static int module_function_self_dependent(Compiler *c, int scope_idx) {
    them as param locals so infer_param_types can update their types. */
 static void scope_copy_params(Scope *dst, const Scope *src) {
   dst->nparams = src->nparams;
+  /* the posts after a rest are part of the layout: a copy without them laid
+     `super(1)` into an included `def m(*r, p1)` out as if the rest came
+     last, the 1 into the rest and p1 left its zero */
+  dst->npost_rest = src->npost_rest;
   if (src->nparams <= 0) return;
   dst->pnames = malloc(sizeof(char *) * (size_t)src->nparams);
   dst->pdefault = malloc(sizeof(int) * (size_t)src->nparams);
@@ -4379,6 +4417,28 @@ static void scope_copy_params(Scope *dst, const Scope *src) {
       }
     }
   }
+}
+
+/* Give a copied method its own default values: clone each one and walk it
+   into the copy. Shared, a default reading an earlier parameter
+   (`def m(p1 = 51, p2 = p1)`) was typed against the source method's
+   parameter, an Integer nothing widens, while the copy's took the values its
+   own callers pass; the default then boxed an sp_RbVal as an sp_int and the
+   C compiler refused it. Returns 1 when it cloned any. */
+int scope_own_defaults(Compiler *c, int di) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int any = 0;
+  for (int p = 0; p < c->scopes[di].nparams; p++) {
+    int od = c->scopes[di].pdefault ? c->scopes[di].pdefault[p] : -1;
+    if (od < 0) continue;
+    int nd = nt_clone_subtree(nt, od);
+    if (nd < 0) continue;
+    comp_grow_node_arrays(c);
+    c->scopes[di].pdefault[p] = nd;
+    walk_scope(c, nd, di, c->scopes[di].class_id);
+    any = 1;
+  }
+  return any;
 }
 
 /* Process include calls in a single class body, creating scope copies for each
@@ -4518,7 +4578,7 @@ void process_include_body(Compiler *c, int ci, int body_node) {
              the module method is the super target: copy it under a shadow name
              and chain to it so emit_super reaches it via the prepend-super path.
              Otherwise the module method is simply shadowed -- nothing to emit. */
-          if (!scope_body_has_super(c, own)) continue;
+          if (!scope_body_has_super(c, own)) { if (!src->is_module_function) src->is_transplanted_source = 1; continue; }
           const char *existing = comp_prep_chain_target(c, ci, src->name);
           /* spaces keep the shadow unwritable in Ruby source, so an explicit
              `obj.__inc_0_tag` finds nothing and raises; mc() folds them back
@@ -4608,6 +4668,8 @@ else {
            not copied AWAY, only copied FROM. */
         if (!src->is_module_function) src->is_transplanted_source = 1;
         scope_copy_params(dst, src);
+        if (scope_own_defaults(c, dst_idx)) g_inc_did_clone = 1;
+        src = &c->scopes[ms]; dst = &c->scopes[dst_idx];
         /* Scan source body for ivar accesses and register them in the
            destination class so codegen's struct layout includes them. */
         for (int id2 = 0; id2 < nt->count; id2++) {
@@ -5229,6 +5291,8 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci) {
   }
   if (src->blk_param) dst->blk_param = strdup(src->blk_param);
   scope_copy_params(dst, src);
+  scope_own_defaults(c, dst_idx);
+  src = &c->scopes[mi]; dst = &c->scopes[dst_idx];
   /* Recurse into the inherited intermediates this body reaches. Scan the
      ORIGINAL mi body (cloned nodes are attributed to dst, not mi); a sub-clone
      reallocs c->scopes/c->nscope, so use indices and refetch. */
@@ -5605,6 +5669,8 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
                what the include clone does, and the half my first attempt at
                this omitted (the clone came out with no signature at all). */
             scope_copy_params(dst, sc);
+            scope_own_defaults(c, dst_i);
+            sc = &c->scopes[ms_i]; dst = &c->scopes[dst_i];
             /* the module body's ivars belong to the prepending class's layout */
             for (int id2 = 0; id2 < nt->count; id2++) {
               if (c->nscope[id2] != ms_i) continue;

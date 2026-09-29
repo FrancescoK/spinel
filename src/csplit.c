@@ -60,6 +60,17 @@ static int has_word(const char *t, size_t st, size_t en, const char *w) {
   return 0;
 }
 
+static size_t skip_group(const char *t, size_t i, size_t en) {
+  while (i < en && (t[i] == ' ' || t[i] == '\n' || t[i] == '\t')) i++;
+  if (i >= en || t[i] != '(') return i;
+  for (int d = 0; i < en; i++) {
+    if (t[i] == '"' || t[i] == '\'') { i = skip_lit(t, en, i) - 1; continue; }
+    if (t[i] == '(') d++;
+    else if (t[i] == ')' && --d == 0) return i + 1;
+  }
+  return i;
+}
+
 /* The first `(` at depth 0 in [st, en) that is not an attribute's or a
    __typeof__'s, or `en`. */
 static size_t first_paren(const char *t, size_t st, size_t en) {
@@ -75,17 +86,7 @@ static size_t first_paren(const char *t, size_t st, size_t en) {
                  (wl == 6 && memcmp(t + s, "typeof", 6) == 0) ||
                  (wl == 7 && memcmp(t + s, "__asm__", 7) == 0) ||
                  (wl == 8 && memcmp(t + s, "_Alignas", 8) == 0);
-      if (skip) {
-        while (i < en && (t[i] == ' ' || t[i] == '\n' || t[i] == '\t')) i++;
-        if (i < en && t[i] == '(') {
-          int d = 0;
-          for (; i < en; i++) {
-            if (t[i] == '"' || t[i] == '\'') { i = skip_lit(t, en, i) - 1; continue; }
-            if (t[i] == '(') d++;
-            else if (t[i] == ')' && --d == 0) { i++; break; }
-          }
-        }
-      }
+      if (skip) i = skip_group(t, i, en);
       continue;
     }
     if (ch == '(') return i;
@@ -136,15 +137,7 @@ static size_t trim_trailing_attrs(const char *t, size_t st, size_t en) {
     size_t s = i;
     while (i < en && is_idch(t[i])) i++;
     if (is_attr_word(t + s, i - s)) {
-      while (i < en && (t[i] == ' ' || t[i] == '\n' || t[i] == '\t')) i++;
-      if (i < en && t[i] == '(') {
-        int d = 0;
-        for (; i < en; i++) {
-          if (t[i] == '"' || t[i] == '\'') { i = skip_lit(t, en, i) - 1; continue; }
-          if (t[i] == '(') d++;
-          else if (t[i] == ')' && --d == 0) { i++; break; }
-        }
-      }
+      i = skip_group(t, i, en);
       continue;   /* an attribute is not the declaration's own content */
     }
     keep = i;

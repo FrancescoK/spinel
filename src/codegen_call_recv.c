@@ -1139,7 +1139,12 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       if (nchain > 0 && blv && blv->type == TY_STRBUF &&
           bty && sp_streq(bty, "LocalVariableReadNode")) {
         int tb9 = ++g_tmp;
-        buf_printf(b, "({ sp_String *_t%d = lv_%s;", tb9, rename_local(nt_str(nt, cur, "name")));
+        /* through emit_local_ref: a block made a real proc reads the
+           base through its capture (`*_cap->c_s`), a captured local
+           through its cell -- `lv_s` exists in neither */
+        buf_printf(b, "({ sp_String *_t%d = ", tb9);
+        emit_local_ref(c, cur, nt_str(nt, cur, "name"), b);
+        buf_puts(b, ";");
         for (int j = nchain; j >= 0; j--) {  /* innermost link first */
           int arg = j > 0 ? chain[j - 1] : argv[0];
           buf_printf(b, " sp_String_append(_t%d, ", tb9);
@@ -4277,12 +4282,23 @@ else {
         buf_printf(b, "sp_%sArray_%s(", k, name); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
+      /* The extremes are read before the result is allocated: a fresh
+         receiver (a Range's to_a) is held by nothing, and the allocation
+         collected it before min/max read it. A number needs nothing held
+         after that; a String extreme is one of the receiver's elements, so
+         the receiver stays rooted across the allocation. Two pushes never
+         grow a fresh array, so the result needs no root. */
       if (sp_streq(name, "minmax") && argc == 0 && block < 0) {
         int t = ++g_tmp, o = ++g_tmp;
+        int is_str = rt == TY_STR_ARRAY;
+        const char *et = is_str ? "const char *" : rt == TY_FLOAT_ARRAY ? "sp_float " : "sp_int ";
         buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_%sArray *_t%d = sp_%sArray_new(); sp_%sArray_push(_t%d, sp_%sArray_min(_t%d));"
-                      " sp_%sArray_push(_t%d, sp_%sArray_max(_t%d)); _t%d; })",
-                   k, o, k, k, o, k, t, k, o, k, t, o);
+        buf_puts(b, ";");
+        if (is_str) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
+        buf_printf(b, " %s_mn%d = sp_%sArray_min(_t%d); %s_mx%d = sp_%sArray_max(_t%d);"
+                      " sp_%sArray *_t%d = sp_%sArray_new(); sp_%sArray_push(_t%d, _mn%d);"
+                      " sp_%sArray_push(_t%d, _mx%d); _t%d; })",
+                   et, t, k, t, et, t, k, t, k, o, k, k, o, t, k, o, t, o);
         return 1;
       }
       /* a typed array never holds an element of another kind: include? is
@@ -8268,11 +8284,25 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
          coercion, unlike ==). A poly arg checks its tag; any other concrete
          type is never equal. */
       else if (sp_streq(name, "eql?") && argc == 1) {
-        if (a0 == TY_STRING) { buf_printf(b, "sp_str_eq(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-        else if (a0 == TY_POLY) {
+        /* the receiver may be a fresh copy (a shared slot's read): rooted
+           when the argument, evaluated beside it, may allocate -- as == does */
+        if (a0 == TY_STRING && operand_may_allocate(c, argv[0])) {
           int te = ++g_tmp;
-          buf_printf(b, "({ sp_RbVal _t%d = ", te); emit_boxed(c, argv[0], b);
-          buf_printf(b, "; _t%d.tag == SP_TAG_STR && sp_str_eq(_t%d.v.s, %s); })", te, te, r);
+          buf_printf(b, "({ const char *_t%d = %s; SP_GC_ROOT(_t%d); sp_str_eq(_t%d, ", te, r, te, te);
+          emit_expr(c, argv[0], b); buf_puts(b, "); })");
+        }
+        else if (a0 == TY_STRING) { buf_printf(b, "sp_str_eq(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        else if (a0 == TY_POLY) {
+          /* a boxed shared String handle is a String too: read its text. The
+             receiver is bound first, as Ruby evaluates it: rendered after the
+             argument, a shared slot's copy allocated while the argument's
+             fresh String sat in an unrooted temp. It is rooted when the
+             argument may allocate. */
+          int te = ++g_tmp, trc = ++g_tmp;
+          buf_printf(b, "({ const char *_t%d = %s; ", trc, r);
+          if (operand_may_allocate(c, argv[0])) buf_printf(b, "SP_GC_ROOT(_t%d); ", trc);
+          buf_printf(b, "sp_RbVal _t%d = sp_poly_strbuf_deref(", te); emit_boxed(c, argv[0], b);
+          buf_printf(b, "); _t%d.tag == SP_TAG_STR && sp_str_eq(_t%d.v.s, _t%d); })", te, te, trc);
         }
         else { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
       }
@@ -9345,11 +9375,17 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
     if (g_outer_b) {
       Buf *ib = b; b = g_outer_b;
       if (handled) {
-        /* the string sentinel is the NULL pointer, the int's is SP_INT_NIL */
-        buf_printf(b, "({ %s _t%d = (%s); if (%s_t%d%s)"
-                      " sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ",
-                   rt == TY_STRING ? "const char *" : "sp_int", g_tmpid,
-                   rs.p ? rs.p : "",
+        /* the string sentinel is the NULL pointer, the int's is SP_INT_NIL.
+           A String receiver can be a fresh copy (a shared slot's reader, a
+           method's result) that only this temp holds: it is rooted when an
+           argument, evaluated inside the call below, may allocate. */
+        int g_root = 0;
+        if (rt == TY_STRING)
+          for (int ai = 0; ai < argc && !g_root; ai++) g_root = operand_may_allocate(c, argv[ai]);
+        buf_printf(b, "({ %s _t%d = (%s); ",
+                   rt == TY_STRING ? "const char *" : "sp_int", g_tmpid, rs.p ? rs.p : "");
+        if (g_root) buf_printf(b, "SP_GC_ROOT(_t%d); ", g_tmpid);
+        buf_printf(b, "if (%s_t%d%s) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ",
                    rt == TY_STRING ? "!" : "", g_tmpid,
                    rt == TY_STRING ? "" : " == SP_INT_NIL", name);
         if (ib->p) buf_puts(b, ib->p);
@@ -9929,8 +9965,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       TyKind res = comp_ntype(c, id);
       const char *hn = ty_hash_cname(res);
       if (!hn) hn = "SymPoly";
-      buf_printf(b, "({ sp_%s *_t%d = %s; sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);",
-                 sc->name, t, rb.p ? rb.p : "", hn, rh, hn, rh);
+      buf_printf(b, "({ sp_%s *_t%d = %s; SP_GC_ROOT(_t%d); sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);",
+                 sc->name, t, rb.p ? rb.p : "", t, hn, rh, hn, rh);
       free(rb.p);
       if (block >= 0) {
         /* to_h { |k, v| [nk, nv] }: per member, bind k/v then set hash[nk] = nv */
@@ -10955,6 +10991,24 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         }
       }
     }
+    /* a memoizing reader (`def s = (@s ||= +"")`) has to run to fill the
+       slot first; then the slot is the handle */
+    if (mi >= 0 && (c->strbuf_box[id] || c->strbuf_handle_demand[id])) {
+      const char *ivnM = an_memo_reader_ivar(c, mi);
+      int defcM = c->scopes[mi].class_id;
+      int ivM = (ivnM && defcM >= 0) ? comp_ivar_index(&c->classes[defcM], ivnM) : -1;
+      if (ivM >= 0 && c->classes[defcM].ivar_types[ivM] == TY_STRBUF && !comp_ty_value_obj(c, rt)) {
+        int tM = ++g_tmp;
+        Buf rbM = expr_buf(c, recv);
+        buf_puts(b, "({ "); emit_ctype(c, rt, b);
+        buf_printf(b, " _t%d = %s; SP_GC_ROOT(_t%d); (void)", tM, rbM.p ? rbM.p : "", tM);
+        free(rbM.p);
+        char selfM[32]; snprintf(selfM, sizeof selfM, "_t%d", tM);
+        emit_dispatch(c, cid, name, selfM, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
+        buf_printf(b, "; _t%d->iv_%s; })", tM, iv_c(ivnM + 1));
+        return 1;
+      }
+    }
     if (mi >= 0) {
       /* a value-type receiver is passed by value; an ordinary object by
          pointer. For a value recv we hand emit_dispatch the value expression
@@ -11653,16 +11707,18 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     }
     if ((sp_streq(name, "cover?") || sp_streq(name, "include?") ||
          sp_streq(name, "member?") || sp_streq(name, "===")) && argc == 1) {
+      const char *fn = sp_streq(name, "include?") || sp_streq(name, "member?") ?
+                       "sp_srange_include" : "sp_srange_cover";
       if (a0 == TY_STRING) {
         buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_srange_cover(_t%d, ", tr); emit_str_expr(c, argv[0], b);
+        buf_printf(b, "; %s(_t%d, ", fn, tr); emit_str_expr(c, argv[0], b);
         buf_puts(b, "); })"); return 1;
       }
       if (a0 == TY_POLY) {
         buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
         buf_printf(b, "; sp_RbVal _a%d = ", tr); emit_boxed(c, argv[0], b);
         buf_printf(b, "; (sp_bool)(_a%d.tag == SP_TAG_STR &&"
-                      " sp_srange_cover(_t%d, _a%d.v.s)); })", tr, tr, tr);
+                      " %s(_t%d, _a%d.v.s)); })", tr, fn, tr, tr);
         return 1;
       }
       buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); return 1;
@@ -14433,7 +14489,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "sp_box_str(%s%s(sp_poly_recv_s(", fn, argc == 2 ? "2" : "");
       emit_expr(c, recv, b); buf_printf(b, ", \"%s\"), ", name);
       emit_int_expr(c, argv[0], b);
-      if (argc == 2) { buf_puts(b, ", "); emit_expr(c, argv[1], b); }
+      if (argc == 2) { buf_puts(b, ", "); emit_str_expr(c, argv[1], b); }
       buf_puts(b, "))");
       return 1;
     }
@@ -14642,7 +14698,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
       buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
       if (nil_rhs) buf_printf(b, "sp_RbVal _t%d = sp_box_nil();", tval);
-      else { emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval); emit_expr(c, argv[0], b); buf_puts(b, ";"); }
+      else { emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval); emit_one_arg(c, argv[0], 0, b); buf_puts(b, ";"); }
       buf_printf(b, " switch (_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff) {", tv, tv);
       char src[32]; snprintf(src, sizeof src, "_t%d", tval);
       char objp[32]; snprintf(objp, sizeof objp, "_t%d.v.p", tv);
