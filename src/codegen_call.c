@@ -19137,10 +19137,12 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     /* An Enumerator receiver (`arr.each.each_with_index`) is materialized to its
        element array first (#2487). */
     int is_enum = comp_ntype(c, recv) == TY_ENUMERATOR;
-    if (sp_streq(name, "each_with_index")) {
+    if (sp_streq(name, "each_with_index") && is_enum) {
+      buf_puts(b, "sp_Enumerator_ewi("); emit_expr(c, recv, b); buf_puts(b, ")");
+    }
+    else if (sp_streq(name, "each_with_index")) {
       buf_puts(b, "sp_Enumerator_new_ewi(");
-      if (is_enum) { buf_puts(b, "sp_box_poly_array(sp_Enumerator_to_a("); emit_expr(c, recv, b); buf_puts(b, "))"); }
-      else emit_boxed(c, recv, b);
+      emit_boxed(c, recv, b);
       buf_puts(b, ", 0)");
     }
     else {
@@ -19205,6 +19207,24 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     buf_printf(b, "; sp_enum_with_src(sp_Enumerator_new_from(sp_box_str_array(_t%d ? sp_str_lines_chomp(_t%d) : sp_str_lines(_t%d))), "
                   "sp_box_str(_t%d), _t%d ? SPL(\"each_line(chomp: true)\") : SPL(\"each_line(chomp: false)\")); })",
                tch, tsrc2, tsrc2, tsrc2, tch);
+    return 1;
+  }
+  /* e.each_slice(n) / e.each_cons(n) with no block on an Enumerator, which
+     the analysis routed through a marked `to_a` hop: regroup the
+     Enumerator itself, so a generator or an endless one is not drained
+     first (sp_Enumerator_regroup). */
+  if (recv >= 0 && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      (sp_streq(name, "each_slice") || sp_streq(name, "each_cons")) &&
+      nt_kind(nt, recv) == NK_CallNode && nt_str(nt, recv, "enum_hop") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "to_a") &&
+      nt_ref(nt, recv, "receiver") >= 0 &&
+      comp_ntype(c, nt_ref(nt, recv, "receiver")) == TY_ENUMERATOR) {
+    int te = ++g_tmp;
+    Buf eb = expr_buf(c, nt_ref(nt, recv, "receiver"));
+    Buf nb; memset(&nb, 0, sizeof nb); emit_int_expr(c, argv[0], &nb);
+    buf_printf(b, "({ sp_Enumerator *_t%d = %s; SP_GC_ROOT(_t%d); sp_Enumerator_regroup(_t%d, %s, %d); })",
+               te, eb.p ? eb.p : "NULL", te, te, nb.p ? nb.p : "0", sp_streq(name, "each_cons"));
+    free(eb.p); free(nb.p);
     return 1;
   }
   /* arr.each_slice(n) / arr.each_cons(n) with no block -> a materialized

@@ -13298,7 +13298,20 @@ static sp_Enumerator *sp_enum_mark_pair(sp_Enumerator *e) {
 }
 /* A blockless Array#each_with_index enumerator: an [element, index] pair for
    each element (index offset by `off`, as Enumerator#with_index(off) allows). */
+sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, sp_int off);
 static sp_Enumerator *sp_Enumerator_new_ewi(sp_RbVal arr, sp_int off) {
+  /* a boxed generator, endless Enumerator or endless Range pairs as it is
+     pulled */
+  if (arr.tag == SP_TAG_OBJ && arr.v.p &&
+      ((arr.cls_id == SP_BUILTIN_ENUMERATOR &&
+        (((sp_Enumerator *)arr.v.p)->gen || ((sp_Enumerator *)arr.v.p)->endless)) ||
+       (arr.cls_id == SP_BUILTIN_RANGE && ((sp_Range *)arr.v.p)->last == INTPTR_MAX))) {
+    sp_Enumerator *src = arr.cls_id == SP_BUILTIN_ENUMERATOR ? (sp_Enumerator *)arr.v.p
+                                                             : sp_Enumerator_new_from(arr);
+    sp_Enumerator *r = sp_Enumerator_with_index(src, off);
+    r->meth = SPL("each_with_index");
+    return r;
+  }
   SP_GC_ROOT_RBVAL(arr);   /* published into the enumerator below, after several allocations */
   sp_PolyArray *items = sp_enum_items_from(arr);
   SP_GC_ROOT(items);
@@ -13511,6 +13524,41 @@ static sp_Enumerator *sp_Enumerator_new_cons(sp_RbVal arr, sp_int n) {
    always a materialized enumerator here (each / each_char / each_slice / ...);
    a generator enumerator never reaches this path. */
 sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, sp_int off);
+sp_Enumerator *sp_Enumerator_regroup_gen(sp_Enumerator *e, sp_int n, sp_bool cons);
+/* Blockless each_slice(n) / each_cons(n) / each_with_index on an
+   Enumerator: a generator or an endless one is regrouped as it is pulled,
+   any other through its items, as before. */
+static sp_Enumerator *sp_Enumerator_regroup(sp_Enumerator *e, sp_int n, sp_bool cons) SP_UNUSED;
+static sp_Enumerator *sp_Enumerator_regroup(sp_Enumerator *e, sp_int n, sp_bool cons) {
+  if (n < 1) sp_raise_cls("ArgumentError", cons ? "invalid size" : "invalid slice size");
+  if (e && (e->gen || e->endless)) return sp_Enumerator_regroup_gen(e, n, cons);
+  SP_GC_ROOT(e);
+  sp_RbVal a = sp_box_poly_array(sp_Enumerator_to_a(e));
+  return cons ? sp_Enumerator_new_cons(a, n) : sp_Enumerator_new_slices(a, n);
+}
+/* The same on a boxed receiver: a boxed generator or endless Enumerator
+   regroups as it is pulled, anything else through its elements. */
+static sp_Enumerator *sp_poly_regroup(sp_RbVal v, sp_int n, sp_bool cons) SP_UNUSED;
+static sp_Enumerator *sp_poly_regroup(sp_RbVal v, sp_int n, sp_bool cons) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p)
+    return sp_Enumerator_regroup((sp_Enumerator *)v.v.p, n, cons);
+  /* an endless Range streams through the generator sp_Enumerator_new_from makes */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p &&
+      ((sp_Range *)v.v.p)->last == INTPTR_MAX)
+    return sp_Enumerator_regroup(sp_Enumerator_new_from(v), n, cons);
+  sp_RbVal a = sp_box_poly_array(sp_poly_to_a_arr(v));
+  return cons ? sp_Enumerator_new_cons(a, n) : sp_Enumerator_new_slices(a, n);
+}
+static sp_Enumerator *sp_Enumerator_ewi(sp_Enumerator *e) SP_UNUSED;
+static sp_Enumerator *sp_Enumerator_ewi(sp_Enumerator *e) {
+  if (e && (e->gen || e->endless)) {
+    sp_Enumerator *r = sp_Enumerator_with_index(e, 0);
+    r->meth = SPL("each_with_index");
+    return r;
+  }
+  SP_GC_ROOT(e);
+  return sp_Enumerator_new_ewi(sp_box_poly_array(sp_Enumerator_to_a(e)), 0);
+}
 /* A string's characters as a fresh poly array of one-char Strings, built
    directly. Used by a blockless String#each_char enumerator, avoiding the
    intermediate sp_StrArray that sp_str_chars + sp_enum_items_from would
