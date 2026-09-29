@@ -924,6 +924,17 @@ static void emit_poly_kw_arm_checks(Compiler *c, Scope *m, Scope *ms, const Poly
 static int poly_arm_count(Compiler *c, Scope *m, int kwh, int pos_argc, int splat_a,
                           char *exp, size_t n);
 static void emit_poly_arity_raise(Buf *b, const char *msg);
+static int hoist_block_proc(Compiler *c, int cblk) {
+  int t = ++g_tmp;
+  Buf pb; memset(&pb, 0, sizeof pb);
+  if (!emit_forwarded_proc_arg(c, cblk, &pb)) emit_proc_literal(c, cblk, &pb);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", t, pb.p ? pb.p : "NULL");
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
+  free(pb.p);
+  return t;
+}
 /* The call's literal block as one rooted proc temp, ahead of a dispatch whose
    arms share it (only one arm runs), or -1 when there is none to build. A
    forwarded `&blk` is left to emit_cmethod_block_arg, which passes it through. */
@@ -931,15 +942,7 @@ static int hoist_call_block_proc(Compiler *c, int id) {
   int cblk = resolve_forwarded_block(c, nt_ref(c->nt, id, "block"));
   const char *cbt = cblk >= 0 ? nt_type(c->nt, cblk) : NULL;
   if (!cbt || sp_streq(cbt, "BlockArgumentNode")) return -1;
-  int t = ++g_tmp;
-  Buf pb; memset(&pb, 0, sizeof pb);
-  emit_proc_literal(c, cblk, &pb);
-  emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", t, pb.p ? pb.p : "NULL");
-  emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
-  free(pb.p);
-  return t;
+  return hoist_block_proc(c, cblk);
 }
 /* The keyword argument of the call's keyword hash naming parameter `pn`, or
    -1. */
@@ -7453,17 +7456,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             if (!scope_has_callable_symbol(c, mi0) && !scope_needs_proc_form(c, mi0)) continue;
             if ((cm0->blk_param && cm0->blk_param[0] && !cm0->yields) ||
                 scope_needs_proc_form(c, mi0)) {
-              blk_tmp0 = ++g_tmp;
-              Buf pb0; memset(&pb0, 0, sizeof pb0);
               /* `&blk` that survived the forwarding resolution names a REAL
                  proc (this function's own block param), not a literal to
                  materialize: write the proc expression itself. */
-              if (!emit_forwarded_proc_arg(c, cblk0, &pb0)) emit_proc_literal(c, cblk0, &pb0);
-              emit_indent(g_pre, g_indent);
-              buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp0, pb0.p ? pb0.p : "NULL");
-              emit_indent(g_pre, g_indent);
-              buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", blk_tmp0);
-              free(pb0.p);
+              blk_tmp0 = hoist_block_proc(c, cblk0);
             }
           }
         } }
@@ -7488,16 +7484,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         if (pen_op && blk_tmp0 < 0) {
           int cblk1 = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
           if (cblk1 < 0) pen_op = NULL;
-          else {
-            blk_tmp0 = ++g_tmp;
-            Buf pb1; memset(&pb1, 0, sizeof pb1);
-            if (!emit_forwarded_proc_arg(c, cblk1, &pb1)) emit_proc_literal(c, cblk1, &pb1);
-            emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp0, pb1.p ? pb1.p : "NULL");
-            emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", blk_tmp0);
-            free(pb1.p);
-          }
+          else blk_tmp0 = hoist_block_proc(c, cblk1);
         }
         if (pen_op) {
           char pcall[160];
@@ -7518,16 +7505,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       if (sp_streq(name, "synchronize") && argc == 0 && nt_ref(nt, id, "block") >= 0) {
         if (blk_tmp0 < 0) {
           int cblk2 = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
-          if (cblk2 >= 0) {
-            blk_tmp0 = ++g_tmp;
-            Buf pb2; memset(&pb2, 0, sizeof pb2);
-            if (!emit_forwarded_proc_arg(c, cblk2, &pb2)) emit_proc_literal(c, cblk2, &pb2);
-            emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp0, pb2.p ? pb2.p : "NULL");
-            emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", blk_tmp0);
-            free(pb2.p);
-          }
+          if (cblk2 >= 0) blk_tmp0 = hoist_block_proc(c, cblk2);
         }
         if (blk_tmp0 >= 0) {
           char mcall[96];
@@ -7907,16 +7885,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           if (obj_pf >= 0 && blk_tmp0 < 0) {
             int cblk3 = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
             if (cblk3 < 0) obj_pf = -1;
-            else {
-              blk_tmp0 = ++g_tmp;
-              Buf pb3; memset(&pb3, 0, sizeof pb3);
-              if (!emit_forwarded_proc_arg(c, cblk3, &pb3)) emit_proc_literal(c, cblk3, &pb3);
-              emit_indent(g_pre, g_indent);
-              buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp0, pb3.p ? pb3.p : "NULL");
-              emit_indent(g_pre, g_indent);
-              buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", blk_tmp0);
-              free(pb3.p);
-            }
+            else blk_tmp0 = hoist_block_proc(c, cblk3);
           }
           if (obj_pf >= 0) {
             Buf oc; memset(&oc, 0, sizeof oc);
@@ -8864,17 +8833,9 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             if (!scope_has_callable_symbol(c, mi2) && !scope_needs_proc_form(c, mi2)) continue;
             if ((cm2->blk_param && cm2->blk_param[0] && !cm2->yields) ||
                 scope_needs_proc_form(c, mi2)) {
-              blk_tmp2 = ++g_tmp;
-              Buf pb2; memset(&pb2, 0, sizeof pb2);
               /* a forwarded &blk / anonymous & is a live proc, not a literal
                  to lower -- the same guard the other dispatch arms carry */
-              if (!emit_forwarded_proc_arg(c, cblk2, &pb2))
-                emit_proc_literal(c, cblk2, &pb2);
-              emit_indent(g_pre, g_indent);
-              buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp2, pb2.p ? pb2.p : "NULL");
-              emit_indent(g_pre, g_indent);
-              buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", blk_tmp2);
-              free(pb2.p);
+              blk_tmp2 = hoist_block_proc(c, cblk2);
             }
           }
         } }
