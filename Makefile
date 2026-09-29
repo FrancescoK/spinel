@@ -1400,6 +1400,7 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/kw_splat_true_false_nil_operand.rb \
                   test/call_positional_layout.rb \
                   test/keyword_binding_plan.rb \
+                  test/regex_value_as_match_arg.rb \
                   test/kwrest_any_key.rb \
                   test/method_bound_binding_layout.rb \
                   test/kw_splat_boxed_to_hash.rb
