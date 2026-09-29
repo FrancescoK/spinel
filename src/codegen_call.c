@@ -2381,6 +2381,9 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   TyKind st = infer_type(c, lazy_src);
   int src_is_range = (st == TY_RANGE), src_is_intarr = (st == TY_INT_ARRAY);
   int src_is_enum = (st == TY_ENUMERATOR);
+  /* a boxed source streams as an Enumerator over it (sp_poly_lazy_src) */
+  int src_is_poly = (st == TY_POLY && !diag_user_defines(c, "lazy"));
+  if (src_is_poly) src_is_enum = 1;
   /* other array kinds iterate a boxed-element snapshot. An empty `[]` literal
      has no element type and so infers UNKNOWN, but it is still an array and
      the pipeline over it yields [] (#2996). */
@@ -2522,7 +2525,11 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
     int te = ++g_tmp, tf = ++g_tmp, tidx = ++g_tmp;
     Buf sb = expr_buf(c, lazy_src);
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_Enumerator *_t%d = %s; SP_GC_ROOT(_t%d);\n", te, sb.p ? sb.p : "0", te); free(sb.p);
+    if (src_is_poly)
+      buf_printf(g_pre, "sp_Enumerator *_t%d = sp_poly_lazy_src(%s); SP_GC_ROOT(_t%d);\n", te, sb.p ? sb.p : "sp_box_nil()", te);
+    else
+      buf_printf(g_pre, "sp_Enumerator *_t%d = %s; SP_GC_ROOT(_t%d);\n", te, sb.p ? sb.p : "0", te);
+    free(sb.p);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_Fiber *_t%d = (_t%d && _t%d->gen) ? sp_Fiber_new(_t%d->gen) : NULL; SP_GC_ROOT(_t%d);\n", tf, te, te, te, tf);
     emit_indent(g_pre, g_indent);
