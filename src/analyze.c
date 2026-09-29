@@ -11411,28 +11411,48 @@ static int widen_mixed_key_hash_slots(Compiler *c) {
   for (size_t wk = 0; wk < sizeof(wkinds) / sizeof(wkinds[0]); wk++) {
     NT_FOREACH_KIND(nt, wkinds[wk], id) {
       int is_call = wkinds[wk] == NK_CallNode;
+      int is_upd = 0;
       if (is_call) {
         const char *nm = nt_str(nt, id, "name");
-        if (!nm || (!sp_streq(nm, "[]=") && !sp_streq(nm, "store"))) continue;
+        if (!nm) continue;
+        is_upd = sp_streq(nm, "update") || sp_streq(nm, "merge!");
+        if (!is_upd && !sp_streq(nm, "[]=") && !sp_streq(nm, "store")) continue;
       }
       int recv = nt_ref(nt, id, "receiver");
       int anode = nt_ref(nt, id, "arguments");
       int an = 0; const int *av = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
-      if (recv < 0 || !av || an != (is_call ? 2 : 1)) continue;
+      if (recv < 0 || !av || (!is_upd && an != (is_call ? 2 : 1))) continue;
       HashKeySlot hs;
       if (hash_key_slot_of(c, recv, &hs) < 0) continue;
-      unsigned kb = hash_key_class_bit(infer_type(c, av[0]));
+      unsigned kb = 0, vb = 0;
+      if (is_upd) {
+        /* `h.update("e" => 1.5)` stores each pair of the merged literals,
+           as `h["e"] = 1.5` would */
+        for (int q = 0; q < an; q++) {
+          NodeKind ak = nt_kind(nt, av[q]);
+          if (ak != NK_HashNode && ak != NK_KeywordHashNode) continue;
+          int en = 0; const int *els = nt_arr(nt, av[q], "elements", &en);
+          for (int e = 0; e < en; e++) {
+            if (nt_kind(nt, els[e]) != NK_AssocNode) continue;
+            kb |= hash_key_class_bit(infer_type(c, nt_ref(nt, els[e], "key")));
+            vb |= hash_value_class_bit(infer_type(c, nt_ref(nt, els[e], "value")));
+          }
+        }
+      }
+      else {
+        kb = hash_key_class_bit(infer_type(c, av[0]));
+        /* `h[k] op= v` stores the operator's result, which the key's own reads
+           decide; only a plain store and `||=` / `&&=` name the value. */
+        int vnode = is_call ? av[1] : wkinds[wk] == NK_IndexOperatorWriteNode ? -1 : nt_ref(nt, id, "value");
+        vb = vnode >= 0 ? hash_value_class_bit(infer_type(c, vnode)) : 0;
+        /* A boxed parameter of the storing method is boxed because its
+           callers pass values of more than one class: the typed setter cannot
+           convert them all. */
+        if (!vb && vnode >= 0 && infer_type(c, vnode) == TY_POLY &&
+            unassigned_param_read(c, comp_scope_of(c, vnode), vnode) >= 0)
+          vb = 8u;
+      }
       if (!kb) continue;
-      /* `h[k] op= v` stores the operator's result, which the key's own reads
-         decide; only a plain store and `||=` / `&&=` name the value. */
-      int vnode = is_call ? av[1] : wkinds[wk] == NK_IndexOperatorWriteNode ? -1 : nt_ref(nt, id, "value");
-      unsigned vb = vnode >= 0 ? hash_value_class_bit(infer_type(c, vnode)) : 0;
-      /* A boxed parameter of the storing method is boxed because its
-         callers pass values of more than one class: the typed setter cannot
-         convert them all. */
-      if (!vb && vnode >= 0 && infer_type(c, vnode) == TY_POLY &&
-          unassigned_param_read(c, comp_scope_of(c, vnode), vnode) >= 0)
-        vb = 8u;
       int f = -1;
       for (int q = 0; q < ns; q++) if (hash_key_slot_same(c, &slots[q], &hs, 0)) { f = q; break; }
       if (f < 0) {
