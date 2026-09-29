@@ -6864,12 +6864,15 @@ int kwh_sources_overlap(const NodeTable *nt, int kwh) {
       if (nsplat++ || lit) merge = 1;
       continue;
     }
+    /* a String key is a literal too: ahead of a `**` it lets a Symbol key
+       beside it be overridden (`k1: 3, "s" => 4, **{k1: 5}` binds k1 5,
+       where giving up on the String bound the 3) */
     int key = nt_ref(nt, el[e], "key");
-    if (key < 0 || nt_kind(nt, key) != NK_SymbolNode) return 0;
+    if (key < 0) return 0;
     lit = 1;
     for (int e2 = 0; e2 < e && !merge; e2++) {
       int k2 = nt_ref(nt, el[e2], "key");
-      if (nt_kind(nt, el[e2]) == NK_AssocNode && nt_kind(nt, k2) == NK_SymbolNode &&
+      if (nt_kind(nt, el[e2]) == NK_AssocNode && nt_kind(nt, k2) == nt_kind(nt, key) &&
           sp_streq(nt_str(nt, k2, "value"), nt_str(nt, key, "value"))) merge = 1;
     }
   }
@@ -7221,14 +7224,15 @@ static void emit_c_str(Buf *b, const char *s) {
   buf_puts(b, "\"");
 }
 
-/* Can a `**` operand of `kwh` bring a key that is no Symbol: one of a hash
-   kind keyed by something else, or only known at run time? An anonymous
-   `**` can when the rest it forwards takes any key. */
+/* Can `kwh` bring a key that is no Symbol: a literal String or computed
+   key, or a `**` operand of a hash kind keyed by something else, or only
+   known at run time? An anonymous `**` can when the rest it forwards takes
+   any key. */
 static int kwh_spreads_any_key(Compiler *c, int kwh) {
   const NodeTable *nt = c->nt;
   int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
   for (int e = 0; e < en; e++) {
-    if (nt_kind(nt, el[e]) == NK_AssocNode && kw_key_computed(nt, nt_ref(nt, el[e], "key"))) return 1;
+    if (nt_kind(nt, el[e]) == NK_AssocNode && nt_kind(nt, nt_ref(nt, el[e], "key")) != NK_SymbolNode) return 1;
     if (nt_kind(nt, el[e]) != NK_AssocSplatNode) continue;
     int v = nt_ref(nt, el[e], "value");
     TyKind t = v >= 0 ? comp_ntype(c, v) : anon_kwrest_name(c, el[e]) ? anon_kwrest_type(c, el[e]) : TY_UNKNOWN;
