@@ -1,0 +1,9 @@
+true
+false
+ArgumentError
+true
+false
+[:Ainc, 1, 2]
+ArgumentError
+ArgumentError
+[:Ainc, 7, 8]
