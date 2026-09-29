@@ -17691,6 +17691,7 @@ void analyze_program(Compiler *c) {
   desugar_when_int_float_ranges(c);     /* when 0..0.05 -> 0.0..0.05 */
   desugar_duplicate_underscore_params(c); /* |_, _| -> |_, _dup1| */
   desugar_encoding_queries(c);          /* Encoding.default_internal -> nil, find("x") -> a constant */
+  desugar_inherited_aliases(c);         /* alias_method :next, :inherited_m -> a forwarding def */
   desugar_class_reopen(c);               /* class Class / Class.class_eval -> a module */
   desugar_extended_module_attrs(c);
   /* builtins/enumerable.rb, spliced by the parser: its definitions become

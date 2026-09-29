@@ -7283,3 +7283,111 @@ int desugar_encoding_queries(Compiler *c) {
   if (changed) comp_grow_node_arrays(c);
   return changed;
 }
+
+/* ---- an alias of an inherited method ----
+ *
+ * `class HashResultSet < ResultSet; alias_method :next, :next_hash; end`: the
+ * subclass's `next` is the inherited `next_hash`. An alias is a name mapping,
+ * which the dispatch of `self.next` inside an inherited method (ResultSet#each)
+ * never consults -- it saw no override and called ResultSet#next. When the
+ * aliased method is not defined in the class itself, the alias becomes a real
+ * method that forwards to it:
+ *
+ *   def next(*a, &b) = next_hash(*a, &b)
+ *
+ * (An alias of the class's own method keeps the mapping, which also captures
+ * the definition in effect at the alias.) */
+/* the text of a literal Symbol or String argument, else NULL */
+static const char *alias_literal_name(const NodeTable *nt, int node) {
+  if (node < 0) return NULL;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_SymbolNode) return nt_str(nt, node, "value");
+  if (k == NK_StringNode) {
+    const char *u = nt_str(nt, node, "unescaped");
+    return u ? u : nt_str(nt, node, "content");
+  }
+  return NULL;
+}
+
+/* a read of local `name` shaped like node `like` */
+static int alias_local_read(NodeTable *nt, int like, const char *name) {
+  int r = fwd_new_node_like(nt, like, "LocalVariableReadNode");
+  if (r < 0) return -1;
+  nt_node_set_str(nt, r, "name", name);
+  nt_node_set_int(nt, r, "depth", 0);
+  return r;
+}
+
+static int alias_class_defines(const NodeTable *nt, const char *cls, const char *meth, int n0) {
+  for (int m = 0; m < n0; m++) {
+    if (nt_kind(nt, m) != NK_ClassNode) continue;
+    int cp = nt_ref(nt, m, "constant_path");
+    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (!cn || !sp_streq(cn, cls)) continue;
+    int body = nt_ref(nt, m, "body");
+    int n = 0; const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+    for (int k = 0; k < n; k++)
+      if (nt_kind(nt, st[k]) == NK_DefNode && nt_ref(nt, st[k], "receiver") < 0 &&
+          nt_str(nt, st[k], "name") && sp_streq(nt_str(nt, st[k], "name"), meth)) return 1;
+  }
+  return 0;
+}
+
+int desugar_inherited_aliases(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int m = 0; m < n0; m++) {
+    if (nt_kind(nt, m) != NK_ClassNode) continue;
+    int cp = nt_ref(nt, m, "constant_path");
+    const char *cls = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (!cls || nt_ref(nt, m, "superclass") < 0) continue;   /* only a subclass inherits */
+    int body = nt_ref(nt, m, "body");
+    int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+    for (int k = 0; k < n; k++) {
+      int s = st[k];
+      const char *nw = NULL, *od = NULL;
+      if (nt_kind(nt, s) == NK_AliasMethodNode) {
+        int nn = nt_ref(nt, s, "new_name"), on = nt_ref(nt, s, "old_name");
+        nw = nn >= 0 ? nt_str(nt, nn, "value") : NULL;
+        od = on >= 0 ? nt_str(nt, on, "value") : NULL;
+      }
+      else if (nt_kind(nt, s) == NK_CallNode && nt_ref(nt, s, "receiver") < 0 &&
+               nt_str(nt, s, "name") && sp_streq(nt_str(nt, s, "name"), "alias_method")) {
+        int an = nt_ref(nt, s, "arguments");
+        int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+        if (ac == 2) { nw = alias_literal_name(nt, av[0]); od = alias_literal_name(nt, av[1]); }
+      }
+      if (!nw || !od || alias_class_defines(nt, cls, od, n0)) continue;
+      char nwc[256], odc[256];
+      snprintf(nwc, sizeof nwc, "%s", nw); snprintf(odc, sizeof odc, "%s", od);
+      /* def <nw>(*spinel_alias_a__, &spinel_alias_b__) = <od>(*..., &...) */
+      nt_node_reset(nt, s, "DefNode");
+      int ps = fwd_new_node_like(nt, s, "ParametersNode");
+      int rp = fwd_new_node_like(nt, s, "RestParameterNode");
+      int bp = fwd_new_node_like(nt, s, "BlockParameterNode");
+      nt_node_set_str(nt, rp, "name", "spinel_alias_a__");
+      nt_node_set_str(nt, bp, "name", "spinel_alias_b__");
+      nt_node_set_ref(nt, ps, "rest", rp);
+      nt_node_set_ref(nt, ps, "block", bp);
+      int call = fwd_new_node_like(nt, s, "CallNode");
+      int args = fwd_new_node_like(nt, s, "ArgumentsNode");
+      int sp = fwd_new_node_like(nt, s, "SplatNode");
+      nt_node_set_ref(nt, sp, "expression", alias_local_read(nt, s, "spinel_alias_a__"));
+      nt_node_set_arr(nt, args, "arguments", &sp, 1);
+      int ba = fwd_new_node_like(nt, s, "BlockArgumentNode");
+      nt_node_set_ref(nt, ba, "expression", alias_local_read(nt, s, "spinel_alias_b__"));
+      nt_node_set_str(nt, call, "name", odc);
+      nt_node_set_ref(nt, call, "arguments", args);
+      nt_node_set_ref(nt, call, "block", ba);
+      int bd = fwd_new_node_like(nt, s, "StatementsNode");
+      nt_node_set_arr(nt, bd, "body", &call, 1);
+      nt_node_set_str(nt, s, "name", nwc);
+      nt_node_set_ref(nt, s, "parameters", ps);
+      nt_node_set_ref(nt, s, "body", bd);
+      nt_node_set_ref(nt, s, "receiver", -1);
+      changed = 1;
+    }
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
