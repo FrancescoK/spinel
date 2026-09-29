@@ -7064,8 +7064,7 @@ const char *block_rest_name(Compiler *c, int block) {
   return nt_str(c->nt, rest, "name");
 }
 
-/* Name of a block's idx-th optional parameter (`|a, b=10|`), or NULL. */
-const char *block_opt_name(Compiler *c, int block, int idx) {
+static const char *block_list_name(Compiler *c, int block, const char *list, int idx) {
   int bp = nt_ref(c->nt, block, "parameters");
   if (bp < 0) return NULL;
   const char *bpty = nt_type(c->nt, bp);
@@ -7073,9 +7072,14 @@ const char *block_opt_name(Compiler *c, int block, int idx) {
   int pn = nt_ref(c->nt, bp, "parameters");
   if (pn < 0) return NULL;
   int n = 0;
-  const int *opts = nt_arr(c->nt, pn, "optionals", &n);
-  if (idx < n) return nt_str(c->nt, opts[idx], "name");
+  const int *ps = nt_arr(c->nt, pn, list, &n);
+  if (idx < n) return nt_str(c->nt, ps[idx], "name");
   return NULL;
+}
+
+/* Name of a block's idx-th optional parameter (`|a, b=10|`), or NULL. */
+const char *block_opt_name(Compiler *c, int block, int idx) {
+  return block_list_name(c, block, "optionals", idx);
 }
 
 /* The default-value node of a block's idx-th optional parameter, or -1. */
@@ -7092,16 +7096,7 @@ int block_opt_default(Compiler *c, int block, int idx) {
 
 /* Name of a block's idx-th post-required parameter (`|a, *b, c|` -> c), or NULL. */
 const char *block_post_name(Compiler *c, int block, int idx) {
-  int bp = nt_ref(c->nt, block, "parameters");
-  if (bp < 0) return NULL;
-  const char *bpty = nt_type(c->nt, bp);
-  if (bpty && sp_streq(bpty, "NumberedParametersNode")) return NULL;
-  int pn = nt_ref(c->nt, bp, "parameters");
-  if (pn < 0) return NULL;
-  int n = 0;
-  const int *posts = nt_arr(c->nt, pn, "posts", &n);
-  if (idx < n) return nt_str(c->nt, posts[idx], "name");
-  return NULL;
+  return block_list_name(c, block, "posts", idx);
 }
 
 /* 1 when the block carries ANY rest marker: `*name`, a bare `*`, or the
@@ -7181,16 +7176,7 @@ const char *block_kwrest_name(Compiler *c, int block) {
 
 /* Name of a block's idx-th keyword parameter (`|a:, b: 5|`), or NULL. */
 const char *block_keyword_name(Compiler *c, int block, int idx) {
-  int bp = nt_ref(c->nt, block, "parameters");
-  if (bp < 0) return NULL;
-  const char *bpty = nt_type(c->nt, bp);
-  if (bpty && sp_streq(bpty, "NumberedParametersNode")) return NULL;
-  int pn = nt_ref(c->nt, bp, "parameters");
-  if (pn < 0) return NULL;
-  int n = 0;
-  const int *kws = nt_arr(c->nt, pn, "keywords", &n);
-  if (idx < n) return nt_str(c->nt, kws[idx], "name");
-  return NULL;
+  return block_list_name(c, block, "keywords", idx);
 }
 
 /* Default-value node of a block's idx-th keyword parameter (only present for an
