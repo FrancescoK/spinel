@@ -2032,6 +2032,48 @@ static int ie_forward_target(Compiler *c, int cls, int cm, const char *name, int
 static int ie_class_value_target(Compiler *c, int id, int recv, TyKind rt, int blk);
 static int ie_forward_hops;
 
+/* Not re-walked per call: a poly receiver re-walks every class's method at every hop, exponential in the hop depth. */
+static struct { int mi, key, val; } *ie_forward_memo;
+static int ie_forward_memo_cap, ie_forward_memo_n;
+
+static void ie_forward_memo_reset(void) {
+  free(ie_forward_memo);
+  ie_forward_memo = NULL;
+  ie_forward_memo_cap = ie_forward_memo_n = 0;
+}
+
+static unsigned ie_forward_memo_hash(int mi, int key, int cap) {
+  return ((unsigned)mi * 2654435761u ^ (unsigned)key * 40503u) & (unsigned)(cap - 1);
+}
+
+static int *ie_forward_memo_slot(int mi, int key) {
+  if (ie_forward_memo_n * 2 >= ie_forward_memo_cap) {
+    int cap = ie_forward_memo_cap ? ie_forward_memo_cap * 2 : 1024;
+    __typeof__(ie_forward_memo) grown = malloc(sizeof(*grown) * (size_t)cap);
+    if (!grown) return NULL;
+    for (int i = 0; i < cap; i++) grown[i].mi = -1;
+    for (int i = 0; i < ie_forward_memo_cap; i++) {
+      if (ie_forward_memo[i].mi < 0) continue;
+      unsigned h = ie_forward_memo_hash(ie_forward_memo[i].mi, ie_forward_memo[i].key, cap);
+      while (grown[h].mi >= 0) h = (h + 1) & (unsigned)(cap - 1);
+      grown[h] = ie_forward_memo[i];
+    }
+    free(ie_forward_memo);
+    ie_forward_memo = grown;
+    ie_forward_memo_cap = cap;
+  }
+  unsigned h = ie_forward_memo_hash(mi, key, ie_forward_memo_cap);
+  while (ie_forward_memo[h].mi >= 0) {
+    if (ie_forward_memo[h].mi == mi && ie_forward_memo[h].key == key) return &ie_forward_memo[h].val;
+    h = (h + 1) & (unsigned)(ie_forward_memo_cap - 1);
+  }
+  ie_forward_memo[h].mi = mi;
+  ie_forward_memo[h].key = key;
+  ie_forward_memo[h].val = INT_MIN;
+  ie_forward_memo_n++;
+  return &ie_forward_memo[h].val;
+}
+
 static int ie_forward_find(Compiler *c, int node, const Scope *s, int self_cls, int depth) {
   const NodeTable *nt = c->nt;
   if (node < 0 || depth > 64) return -1;
@@ -2090,7 +2132,12 @@ static int ie_forward_target(Compiler *c, int cls, int cm, const char *name, int
   if (mi < 0) return -1;
   const Scope *s = &c->scopes[mi];
   if (!s->blk_param || s->body < 0) return -1;
-  return ie_forward_find(c, s->body, s, cls, 0);
+  int *memo = ie_forward_memo_slot(mi, (cls + 1) * 16 + ie_forward_hops);
+  if (memo && *memo != INT_MIN) return *memo;
+  int t = ie_forward_find(c, s->body, s, cls, 0);
+  memo = ie_forward_memo_slot(mi, (cls + 1) * 16 + ie_forward_hops);
+  if (memo) *memo = t;
+  return t;
 }
 
 static int ie_receiverless_self_class(Compiler *c, int id) {
@@ -2142,6 +2189,7 @@ void build_ie_map(Compiler *c) {
   }
   int *pend = malloc(sizeof(int) * (size_t)nt->count);
   if (!pend) return;
+  ie_forward_memo_reset();
   for (int i = 0; i < nt->count; i++) g_ie_node_class[i] = pend[i] = -1;
   for (int pass = 0; pass < 2; pass++)
   for (int id = 0; id < nt->count; id++) {
