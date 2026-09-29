@@ -17166,9 +17166,10 @@ static int splat_leaf_node(NodeTable *nt, int id) {
                                           : raise ArgumentError, "...")
 
    The receiver, and any fixed argument that is not a leaf, is bound to a
-   temporary first so it is evaluated once. Returns 0, leaving the call to
-   the old expansion, when some user method of the name could not take every
-   count in the range. */
+   temporary first so it is evaluated once. The range also covers the
+   counts a user method of the name takes. Returns 0, leaving the call to
+   the old expansion, when such a method takes a rest parameter or more
+   than 8 arguments. */
 static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int argc,
                                     int sp_at, int ex) {
   NodeTable *nt = (NodeTable *)c->nt;
@@ -17187,14 +17188,21 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   int recv = nt_ref(nt, id, "receiver");
   /* a receiverless call is self's method, never one of these builtins */
   if (recv < 0) return 0;
-  /* a user method of the name that takes more than hi arguments (a rest
-     parameter) or cannot take some count in the range may own the call */
+  /* a user method of the name may own the call: the range widens to the
+     counts it takes, so each arm calls whichever method the receiver has
+     with the arguments it was given. One with a rest parameter takes any
+     count, which no range covers. */
   if (!splat_recv_is_builtin_literal(nt, id)) {
-    for (int k = lo; k <= hi; k++)
-      if (splat_user_method_rejects(c, cnm, k)) return 0;
-    for (int si = 0; si < c->nscopes; si++)
-      if (c->scopes[si].name && sp_streq(c->scopes[si].name, cnm) &&
-          (c->scopes[si].rest_idx >= 0 || c->scopes[si].nparams > hi)) return 0;
+    for (int si = 0; si < c->nscopes; si++) {
+      Scope *s = &c->scopes[si];
+      if (!s->name || !sp_streq(s->name, cnm)) continue;
+      if (s->rest_idx >= 0 || s->kwrest_idx >= 0) return 0;
+      int req = 0;
+      for (int p = 0; p < s->nparams; p++) if (s->pdefault && s->pdefault[p] < 0) req++;
+      if (req < lo) lo = req;
+      if (s->nparams > hi) hi = s->nparams;
+    }
+    if (hi > 8) return 0;
   }
   int fixed = argc - 1;
   int base = nt->count;
@@ -17402,6 +17410,7 @@ void expand_static_splat_args(Compiler *c, int from, int count) {
     }
     else if (sp_streq(ext, "LocalVariableReadNode")) n = splat_local_len(c, ex, id);
     else continue;
+    int n_static = n >= 0;
     if (n < 0 && splat_dispatch_on_length(c, id, argv, argc, sp_at, ex)) continue;
     /* the optional-argument builtins added for the dispatch keep their old
        unexpanded form where it declines */
@@ -17443,8 +17452,10 @@ void expand_static_splat_args(Compiler *c, int from, int count) {
        arguments, since the elements land on the same parameters either way;
        when it cannot, leave the call alone -- codegen reads the array into
        the declared params -- unless the receiver is a builtin literal, which
-       no user method is reachable from. */
-    if (splat_user_method_rejects(c, cnm, n) && !splat_recv_is_builtin_literal(nt, id)) continue;
+       no user method is reachable from, or the length is static: then the
+       expanded call is the call, and a receiver the method's own raises the
+       ArgumentError while a builtin one still gets its arm. */
+    if (!n_static && splat_user_method_rejects(c, cnm, n) && !splat_recv_is_builtin_literal(nt, id)) continue;
     const char *lnm = is_lit ? NULL : nt_str(nt, ex, "name");
     if (!is_lit && !lnm) continue;
     int nargs[32];
