@@ -3314,17 +3314,25 @@ sp_float sp_frange_max(sp_FloatRange r) {
 }
 /* String range ("a".."e"). The endpoints are the value; every traversal
    materializes the element array, which is how a string range behaved before
-   it became a value of its own (#3064). */
+   it became a value of its own (#3064). A NULL endpoint is a nil bound: the
+   range is beginless or endless. */
 sp_StrRange sp_srange_new(const char *f, const char *l, sp_int e) {
   sp_StrRange r; r.first = f; r.last = l; r.excl = e; return r;
 }
 sp_StrArray *sp_srange_to_a(sp_StrRange r) {
-  return sp_StrArray_from_string_range(r.first ? r.first : sp_str_empty,
-                                       r.last ? r.last : sp_str_empty, r.excl);
+  if (!r.first) sp_raise_cls("TypeError", "can't iterate from NilClass");
+  if (!r.last) sp_raise_cls("RangeError", "cannot convert endless range to an array");
+  return sp_StrArray_from_string_range(r.first, r.last, r.excl);
 }
 sp_bool sp_srange_eq(sp_StrRange a, sp_StrRange b) {
-  return a.excl == b.excl && sp_str_eq(a.first ? a.first : sp_str_empty, b.first ? b.first : sp_str_empty) &&
-         sp_str_eq(a.last ? a.last : sp_str_empty, b.last ? b.last : sp_str_empty);
+  return a.excl == b.excl && sp_str_eq(a.first, b.first) && sp_str_eq(a.last, b.last);
+}
+/* #include? / #member?: #cover? for a bounded range, which CRuby refuses to
+   answer for a beginless or endless one. */
+sp_bool sp_srange_include(sp_StrRange r, const char *x) {
+  if (!r.first || !r.last)
+    sp_raise_cls("TypeError", "cannot determine inclusion in beginless/endless ranges");
+  return sp_srange_cover(r, x);
 }
 /* #cover? / #=== compare lexicographically, no materialization. */
 sp_bool sp_srange_cover(sp_StrRange r, const char *x) {
@@ -3338,8 +3346,8 @@ const char *sp_srange_to_s(sp_StrRange r) {
                     r.excl ? "..." : "..", r.last ? r.last : sp_str_empty);
 }
 const char *sp_srange_inspect(sp_StrRange r) {
-  const char *lo = sp_str_inspect(r.first ? r.first : sp_str_empty);
-  const char *hi = sp_str_inspect(r.last ? r.last : sp_str_empty);
+  const char *lo = r.first ? sp_str_inspect(r.first) : sp_str_empty;
+  const char *hi = r.last ? sp_str_inspect(r.last) : sp_str_empty;
   return sp_sprintf("%s%s%s", lo, r.excl ? "..." : "..", hi);
 }
 /* A boxed String range holds its two endpoint strings: the box marks them,

@@ -1,0 +1,28 @@
+"a"..
+"b"..
+.."m"
+"b"...
+b..
+..m
+"b"
+nil
+nil
+"m"
+false
+true
+false
+true
+true
+false
+:m
+true
+false
+false
+1
+false
+true
+"cannot convert endless range to an array"
+"can't iterate from NilClass"
+"cannot determine inclusion in beginless/endless ranges"
+true
+["a", "b", "c"]
