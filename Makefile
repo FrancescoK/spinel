@@ -2356,6 +2356,10 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	esac; \
 	$(SPINEL) test/infer/inline_force_fanout.rb -c --no-line-map -o "$$tmp/iff.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile inline_force_fanout)"; exit 1; }; \
 	grep -q 'SP_ALWAYS_INLINE [^(]* sp_f4(' "$$tmp/iff.c" && { echo "infer-test: FAIL (forced inlining copied a small-method chain past the size budget)"; ok=0; }; \
+	$(SPINEL) test/infer/block_kept_through_or.rb -c --no-line-map -o "$$tmp/bko.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile block_kept_through_or)"; exit 1; }; \
+	grep -q 'sp_RbVal lv_okaa' "$$tmp/bko.c" || { echo "infer-test: FAIL (a block kept through the left of a || did not widen its parameters)"; ok=0; }; \
+	grep -q 'sp_int lv_alaa' "$$tmp/bko.c" || { echo "infer-test: FAIL (the left of an && widened a block parameter it does not let go)"; ok=0; }; \
+	grep -q 'sp_int lv_opaa' "$$tmp/bko.c" || { echo "infer-test: FAIL (a || a predicate reads widened a block parameter it does not let go)"; ok=0; }; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "infer-test: pass"; else exit 1; fi
 
