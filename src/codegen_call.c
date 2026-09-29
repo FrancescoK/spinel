@@ -38920,6 +38920,11 @@ else {
     emit_expr(c, recv, b); buf_puts(b, "))");
     return;
   }
+  if (recv >= 0 && argc == 0 && (sp_streq(name, "inspect") || sp_streq(name, "to_s")) &&
+      (ty_is_ptr_array(rt) || ty_is_obj_array(rt))) {
+    buf_puts(b, "sp_poly_inspect("); emit_boxed(c, recv, b); buf_puts(b, ")");
+    return;
+  }
   /* The nil-degrade placeholders must still emit the receiver: a chain like
      `cell.id.inspect` whose receiver is itself an unresolved call then reaches
      that call's own diagnostic (a compile-time NoMethodError) instead of
