@@ -1071,6 +1071,11 @@ static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
     Buf t; memset(&t, 0, sizeof t); emit_expr(c, node, &t);
     emit_unbox_text(c, ot, t.p ? t.p : "", b); free(t.p);
   }
+  /* a String into a parameter a mutating callee made a buffer, as a plain
+     assignment of one takes it (#6039) */
+  else if (ot == TY_STRBUF && at == TY_STRING) {
+    buf_puts(b, "sp_String_new_shared("); emit_expr(c, node, b); buf_puts(b, ")");
+  }
   else emit_expr(c, node, b);
 }
 
