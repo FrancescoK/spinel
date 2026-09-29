@@ -1,0 +1,6 @@
+[:a, :int]
+[:b, :double, :c, :pointer]
+[:a, :int]
+[:a, :int]
+[:b, :double, :c, :pointer]
+[:b, :double, :c, :pointer]

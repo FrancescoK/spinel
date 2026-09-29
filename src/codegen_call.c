@@ -927,9 +927,15 @@ static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int
     if (!scope_has_callable_symbol(c, kmi) && kpf < 0) continue;
     if (kpf >= 0) kmi = kpf;
     Scope *ks = &c->scopes[kmi];
-    /* a rest candidate has no arm this emitter can fill; such a class falls
-       to the default raise */
-    if (ks->yields || ks->rest_idx >= 0) continue;
+    /* a rest candidate has an arm when its rest is the boxed array a splat
+       starts as and no keyword rides beside it: the surplus arguments are
+       packed into it (FFI::Struct.layout read as `klass.layout`). Any other
+       rest candidate falls to the default raise. */
+    if (ks->yields) continue;
+    if (ks->rest_idx >= 0) {
+      int rest_ok8 = kwh < 0 && rest_packable_arm(c, ks);
+      if (!rest_ok8) continue;
+    }
     if (ks->blk_param && ks->blk_param[0]) wants_blk = 1;
     if (kwh < 0 && !cls_arm_takes_argc(ks, argc)) continue;
     if (kwh >= 0) {
@@ -988,6 +994,27 @@ static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int
       LocalVar *pp = ks->pnames && ks->pnames[a] ? scope_local(ks, ks->pnames[a]) : NULL;
       TyKind pt = pp ? pp->type : TY_POLY;
       if (pt == TY_UNKNOWN) pt = TY_POLY;
+      if (a == ks->rest_idx && kwh < 0) {
+        /* the arguments no positional parameter took, boxed */
+        int rs = 0;
+        for (int q = 0; q < a; q++) {
+          int sq = arg_slot_for_param(c, ks, q, argc);
+          if (sq >= 0 && sq + 1 > rs) rs = sq + 1;
+        }
+        int re = argc - ks->npost_rest;
+        int tra = ++g_tmp;
+        buf_printf(&cb, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tra, tra);
+        for (int q = rs; q < re && atmp; q++) {
+          char at[32]; snprintf(at, sizeof at, "_t%d", atmp[q]);
+          buf_printf(&cb, " sp_PolyArray_push(_t%d, ", tra);
+          TyKind at0 = atmp_ty ? atmp_ty[q] : TY_POLY;
+          if (at0 == TY_POLY) buf_puts(&cb, at);
+          else emit_boxed_text(c, at0, at, &cb);
+          buf_puts(&cb, ");");
+        }
+        buf_printf(&cb, " _t%d; })", tra);
+        continue;
+      }
       if (kwh >= 0 && emit_poly_kw_param(c, ks, a, kw, NULL, &cb)) continue;
       if (a == kslot) {
         emit_kwh_pos_hash(c, kw, pt == TY_POLY, &cb);
@@ -30962,9 +30989,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
              dispatch. A candidate with the WRONG ARITY does not: it cannot be
              the receiver of this call, and vetoing on it refused to compile a
              program whose call was never ambiguous (#4129). */
+          /* A *rest candidate has an arm when the rest is the boxed array
+             every splat parameter starts as: the surplus arguments are
+             packed into it (FFI::Struct.layout, a getter and a DSL in one). */
+          int rest_ok9 = rest_packable_arm(c, &c->scopes[kmi]);
           if (c->scopes[kmi].yields ||
               (c->scopes[kmi].blk_param && c->scopes[kmi].blk_param[0]) ||
-              c->scopes[kmi].rest_idx >= 0) simple9 = 0;
+              (c->scopes[kmi].rest_idx >= 0 && !rest_ok9)) simple9 = 0;
         }
         if (simple9) {
           TyKind slot9 = is_scalar_ret(uret9) && uret9 != TY_VOID && uret9 != TY_UNKNOWN
@@ -31021,6 +31052,20 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
               buf_puts(&cb9, a ? ", " : lead9);
               LocalVar *pp = scope_local(ks9, ks9->pnames[a]);
               TyKind pt = pp ? pp->type : TY_POLY;
+              if (a == ks9->rest_idx) {
+                /* the arguments no positional parameter took */
+                int rs = 0;
+                for (int q = 0; q < a; q++) {
+                  int sq = arg_slot_for_param(c, ks9, q, na9);
+                  if (sq >= 0 && sq + 1 > rs) rs = sq + 1;
+                }
+                int re = na9 - ks9->npost_rest;
+                int tra = ++g_tmp;
+                buf_printf(&cb9, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tra, tra);
+                for (int q = rs; q < re; q++) buf_printf(&cb9, " sp_PolyArray_push(_t%d, _t%d);", tra, atmp9[q]);
+                buf_printf(&cb9, " _t%d; })", tra);
+                continue;
+              }
               int slot = arg_slot_for_param(c, ks9, a, na9);
               if (slot >= 0 && slot < na9) {
                 char at[32]; snprintf(at, sizeof at, "_t%d", atmp9[slot]);
