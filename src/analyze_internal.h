@@ -323,6 +323,7 @@ int desugar_builtins(Compiler *c);
 int desugar_enum_walk_calls(Compiler *c);
 int desugar_index_op_write_user(Compiler *c);
 int desugar_main_self_call(Compiler *c);
+int desugar_cmethod_cvar_reflection(Compiler *c);
 int desugar_builtin_enum_calls(Compiler *c);
 int desugar_builtin_scalar_defs(Compiler *c);
 int desugar_builtin_scalar_calls(Compiler *c);
