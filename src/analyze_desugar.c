@@ -4483,6 +4483,12 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
       shape = sh;
       calls[ncalls++] = id;
     }
+    /* A target taking no argument at all forwards the two channels too:
+       its own count check has to see what the call passes, which the
+       __fwd_N model binds into slots it hands nowhere, so `w(1)` and
+       `w(*[], **{"s" => 1})` into `def m()` answered where CRuby raises
+       a wrong count */
+    if (ok && shape == 0) shape = 3;
     if (!ok || !ncalls || nfwd_args != ncalls || !(shape & (3 | FWD_BUILTIN))) continue;
     /* the block rides along as an anonymous `&` */
     int fwd_block = (shape & 4) || any_call_passes_block(nt, dname);
