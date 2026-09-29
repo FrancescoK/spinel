@@ -7166,3 +7166,251 @@ int desugar_when_int_float_ranges(Compiler *c) {
   }
   return changed;
 }
+
+/* ---- Class.new / Module.new with a block ----
+ *
+ * `Point = Class.new(Base) do ... end` is a class definition spelled as a
+ * call; it becomes `class Point < Base; ...; end`. An anonymous one used as a
+ * value (`k = Class.new do ... end`) becomes a named class defined just
+ * before the top-level statement that builds it, when its body reads none of
+ * the surrounding method's locals -- the class is then the same every time
+ * the code runs. One whose body does read them is a class built at run time:
+ * the call raises NotImplementedError when reached, and its methods no longer
+ * leak into the enclosing class (they used to replace that class's own,
+ * `initialize` included). */
+/* a String literal node shaped like `like` */
+static int cn_str(NodeTable *nt, int like, const char *s) {
+  int n = fwd_new_node_like(nt, like, "StringNode");
+  if (n < 0) return -1;
+  nt_node_set_str(nt, n, "unescaped", s);
+  nt_node_set_str(nt, n, "content", s);
+  return n;
+}
+
+static int cn_reads_outer_local(const NodeTable *nt, int node, int level) {
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode) return 0;                 /* a def sees no outer local */
+  if (k == NK_LocalVariableReadNode || k == NK_LocalVariableWriteNode ||
+      k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode ||
+      k == NK_LocalVariableOperatorWriteNode || k == NK_LocalVariableTargetNode) {
+    if (nt_int(nt, node, "depth", 0) > level) return 1;
+  }
+  int inner = (k == NK_BlockNode || k == NK_LambdaNode) ? level + 1 : level;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) if (cn_reads_outer_local(nt, nt_ref_at(nt, node, i), inner)) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++) if (cn_reads_outer_local(nt, ids[j], inner)) return 1;
+  }
+  return 0;
+}
+
+static int cn_contains(const NodeTable *nt, int root, int target) {
+  if (root < 0) return 0;
+  if (root == target) return 1;
+  int nr = nt_num_refs(nt, root);
+  for (int i = 0; i < nr; i++) if (cn_contains(nt, nt_ref_at(nt, root, i), target)) return 1;
+  int na = nt_num_arrs(nt, root);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, root, i, &cnt);
+    for (int j = 0; j < cnt; j++) if (cn_contains(nt, ids[j], target)) return 1;
+  }
+  return 0;
+}
+
+/* the class body a Class.new block becomes: its statements, as a StatementsNode */
+static int cn_body(NodeTable *nt, int blk) {
+  int bb = nt_ref(nt, blk, "body");
+  if (bb >= 0 && nt_kind(nt, bb) == NK_StatementsNode) return bb;
+  int st = fwd_new_node_like(nt, blk, "StatementsNode");
+  if (st < 0) return -1;
+  if (bb >= 0) nt_node_set_arr(nt, st, "body", &bb, 1);
+  else nt_node_set_arr(nt, st, "body", NULL, 0);
+  return st;
+}
+
+static int cn_make_class(NodeTable *nt, int like, int is_module, const char *name, int super_node, int body) {
+  int cls = fwd_new_node_like(nt, like, is_module ? "ModuleNode" : "ClassNode");
+  int cp = fwd_new_node_like(nt, like, "ConstantReadNode");
+  if (cls < 0 || cp < 0) return -1;
+  nt_node_set_str(nt, cp, "name", name);
+  nt_node_set_ref(nt, cls, "constant_path", cp);
+  if (!is_module) nt_node_set_ref(nt, cls, "superclass", super_node);
+  nt_node_set_ref(nt, cls, "body", body);
+  return cls;
+}
+
+static int cn_has_def(const NodeTable *nt, int node) {
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode) return 1;
+  if (k == NK_ClassNode || k == NK_ModuleNode) return 0;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) if (cn_has_def(nt, nt_ref_at(nt, node, i))) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++) if (cn_has_def(nt, ids[j])) return 1;
+  }
+  return 0;
+}
+
+static void cn_neutralize(NodeTable *nt, int node) {
+  if (node < 0) return;
+  int nr = nt_num_refs(nt, node);
+  int *kids = NULL; int nk = 0, cap = 0;
+  for (int i = 0; i < nr; i++) {
+    int ch = nt_ref_at(nt, node, i);
+    if (ch < 0) continue;
+    if (nk == cap) { cap = cap ? cap * 2 : 8; kids = realloc(kids, sizeof(int) * (size_t)cap); }
+    kids[nk++] = ch;
+  }
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++) {
+      if (nk == cap) { cap = cap ? cap * 2 : 8; kids = realloc(kids, sizeof(int) * (size_t)cap); }
+      kids[nk++] = ids[j];
+    }
+  }
+  for (int i = 0; i < nk; i++) cn_neutralize(nt, kids[i]);
+  free(kids);
+  nt_node_reset(nt, node, "NilNode");
+}
+
+int desugar_class_new_blocks(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0, serial = 0;
+  int *parent = malloc(sizeof(int) * (size_t)(n0 > 0 ? n0 : 1));
+  if (!parent) return 0;
+  for (int i = 0; i < n0; i++) parent[i] = -1;
+  for (int p = 0; p < n0; p++) {
+    int nr = nt_num_refs(nt, p);
+    for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, p, i); if (ch >= 0 && ch < n0) parent[ch] = p; }
+    int na = nt_num_arrs(nt, p);
+    for (int i = 0; i < na; i++) {
+      int cnt = 0; const int *ids = nt_arr_at(nt, p, i, &cnt);
+      for (int j = 0; j < cnt; j++) if (ids[j] >= 0 && ids[j] < n0) parent[ids[j]] = p;
+    }
+  }
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver");
+    int blk = nt_ref(nt, id, "block");
+    /* `k.class_eval do def m; end end` on a class held in a variable: the
+       defs shape a class that exists only at run time, and left in place
+       they would land in the enclosing class */
+    if (nm && recv >= 0 && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode &&
+        (sp_streq(nm, "class_eval") || sp_streq(nm, "module_eval") || sp_streq(nm, "class_exec") ||
+         sp_streq(nm, "module_exec") || sp_streq(nm, "instance_eval") || sp_streq(nm, "instance_exec"))) {
+      NodeKind rk0 = nt_kind(nt, recv);
+      /* `self.class.class_eval` names the enclosing class, as a constant does */
+      int self_class = 0;
+      if (rk0 == NK_CallNode) {
+        const char *rnm = nt_str(nt, recv, "name");
+        int rr = nt_ref(nt, recv, "receiver");
+        self_class = rnm && sp_streq(rnm, "class") && nt_ref(nt, recv, "arguments") < 0 &&
+                     (rr < 0 || nt_kind(nt, rr) == NK_SelfNode);
+      }
+      if (rk0 != NK_ConstantReadNode && rk0 != NK_ConstantPathNode && rk0 != NK_SelfNode &&
+          !self_class && cn_has_def(nt, nt_ref(nt, blk, "body"))) {
+        cn_neutralize(nt, blk);
+        nt_node_reset(nt, id, "CallNode");
+        nt_node_set_str(nt, id, "name", "raise");
+        int args = fwd_new_node_like(nt, id, "ArgumentsNode");
+        int ex = fwd_new_node_like(nt, id, "ConstantReadNode");
+        nt_node_set_str(nt, ex, "name", "NotImplementedError");
+        int msg = cn_str(nt, id, "spinel: defining methods on a class held in a variable "
+                                 "(class_eval with a def) is not supported");
+        int av2[2] = { ex, msg };
+        nt_node_set_arr(nt, args, "arguments", av2, 2);
+        nt_node_set_ref(nt, id, "arguments", args);
+        changed = 1;
+        continue;
+      }
+    }
+    if (!nm || !sp_streq(nm, "new") || recv < 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+    if (nt_kind(nt, recv) != NK_ConstantReadNode) continue;
+    const char *rn = nt_str(nt, recv, "name");
+    int is_module = rn && sp_streq(rn, "Module");
+    if (!rn || (!is_module && !sp_streq(rn, "Class"))) continue;
+    int an = nt_ref(nt, id, "arguments");
+    int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+    int super_node = (!is_module && ac >= 1) ? av[0] : -1;
+    /* a superclass the program names is static; one held in a variable is
+       a class built at run time */
+    int static_super = super_node < 0 || nt_kind(nt, super_node) == NK_ConstantReadNode ||
+                       nt_kind(nt, super_node) == NK_ConstantPathNode;
+    int body = cn_body(nt, blk);
+    if (body < 0) continue;
+    int par = parent[id];
+    /* a class body opens a scope of its own, a block does not: a body reading
+       the surrounding locals stays a block */
+    int reads_outer = cn_reads_outer_local(nt, body, 0);
+    if (static_super && !reads_outer && par >= 0 && nt_kind(nt, par) == NK_ConstantWriteNode &&
+        nt_ref(nt, par, "value") == id) {
+      /* Name = Class.new(...) do ... end  ->  class Name < ...; ...; end */
+      const char *cn = nt_str(nt, par, "name");
+      char name[256]; snprintf(name, sizeof name, "%s", cn ? cn : "SpinelAnon");
+      nt_node_reset(nt, par, is_module ? "ModuleNode" : "ClassNode");
+      int cp = fwd_new_node_like(nt, par, "ConstantReadNode");
+      nt_node_set_str(nt, cp, "name", name);
+      nt_node_set_ref(nt, par, "constant_path", cp);
+      if (!is_module) nt_node_set_ref(nt, par, "superclass", super_node);
+      nt_node_set_ref(nt, par, "body", body);
+      changed = 1;
+      continue;
+    }
+    /* the anonymous class is defined in the nearest enclosing class or
+       module body (the top level when there is none), where its superclass
+       and body constants resolve as they would around the call */
+    int host_st = nt_ref(nt, nt->root_id, "statements");
+    for (int a = par; a >= 0; a = parent[a]) {
+      NodeKind ak = nt_kind(nt, a);
+      if (ak == NK_ClassNode || ak == NK_ModuleNode) { host_st = nt_ref(nt, a, "body"); break; }
+    }
+    if (static_super && !reads_outer && host_st >= 0 && nt_kind(nt, host_st) == NK_StatementsNode) {
+      /* an anonymous class that is the same every time: name it */
+      int rn2 = 0; const int *rs = nt_arr(nt, host_st, "body", &rn2);
+      int at = -1;
+      for (int k = 0; k < rn2 && at < 0; k++) if (cn_contains(nt, rs[k], id)) at = k;
+      if (at < 0) continue;
+      char name[64]; snprintf(name, sizeof name, "SpinelAnonClass%d", ++serial);
+      int cls = cn_make_class(nt, id, is_module, name, super_node, body);
+      if (cls < 0) continue;
+      rs = nt_arr(nt, host_st, "body", &rn2);
+      int *out = malloc(sizeof(int) * (size_t)(rn2 + 1));
+      memcpy(out, rs, sizeof(int) * (size_t)at);
+      out[at] = cls;
+      memcpy(out + at + 1, rs + at, sizeof(int) * (size_t)(rn2 - at));
+      nt_node_set_arr(nt, host_st, "body", out, rn2 + 1);
+      free(out);
+      nt_node_reset(nt, id, "ConstantReadNode");
+      nt_node_set_str(nt, id, "name", name);
+      changed = 1;
+      continue;
+    }
+    /* built from the running method's values: not a class the program has.
+       Every node of the dropped body goes inert too -- passes that walk the
+       whole table by node kind would otherwise still find its defs and
+       ivar writes and give them to the top level. */
+    cn_neutralize(nt, blk);
+    nt_node_reset(nt, id, "CallNode");
+    nt_node_set_str(nt, id, "name", "raise");
+    int args = fwd_new_node_like(nt, id, "ArgumentsNode");
+    int ex = fwd_new_node_like(nt, id, "ConstantReadNode");
+    nt_node_set_str(nt, ex, "name", "NotImplementedError");
+    int msg = cn_str(nt, id, "spinel: a class built at run time (Class.new with a block that reads the "
+                             "surrounding method's locals) is not supported");
+    int av2[2] = { ex, msg };
+    nt_node_set_arr(nt, args, "arguments", av2, 2);
+    nt_node_set_ref(nt, id, "arguments", args);
+    changed = 1;
+  }
+  free(parent);
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
