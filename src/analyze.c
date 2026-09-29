@@ -15219,8 +15219,22 @@ static int pf_dynamic_new(Compiler *c) {
   return 0;
 }
 
+/* Does a `method(:name)` (or `public_method`, `instance_method`) name it? A
+   Method object calls the method as a function, and a yielding one has none
+   but its clone. */
+static int pf_method_obj(Compiler *c, const char *name) {
+  static const char *const getters[] = { "method", "public_method", "instance_method" };
+  for (int g = 0; g < 3; g++)
+    for (int id = an_calls_named_first(c, getters[g]); id >= 0; id = an_calls_named_next(id)) {
+      const char *sym = method_sym_arg(c, id);
+      if (sym && sp_streq(sym, name)) return 1;
+    }
+  return 0;
+}
+
 static int pf_wanted(Compiler *c, const char *name) {
   const NodeTable *nt = c->nt;
+  if (pf_method_obj(c, name)) return 1;
   if (sp_streq(name, "initialize")) return pf_dynamic_new(c);
   /* the calls of this name, not every node: asked per yielding method
      (rubys in #5035) */
