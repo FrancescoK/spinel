@@ -2758,12 +2758,12 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
     g_pre = &pre;
     int sv_probe = g_unsup_probe; g_unsup_probe = 1;
     ConvHold *sv_hold = g_conv_hold;
-    int sv_open_defaults = g_open_defaults;
+    int sv_open_defaults = g_open_defaults, sv_arm_argov = g_n_argov;
     volatile int ok;
     if (setjmp(g_unsup_recover) == 0) { emit_expr(c, arm, &body); ok = 1; }
     else ok = 0;
     g_conv_hold = sv_hold;  /* a dropped arm may have unwound through emit_call */
-    g_open_defaults = sv_open_defaults;
+    g_open_defaults = sv_open_defaults; g_n_argov = sv_arm_argov;
     g_unsup_probe = sv_probe;
     g_pre = sv_pre;
     if (ok) {
