@@ -5347,9 +5347,10 @@ static int pad_unsupplied_params(Compiler *c) {
         kwh = av[j];
     }
     if (fuzzy) continue;
-    int pos_an = kwh >= 0 ? an - 1 : an;
+    ArgLayout L;
+    call_layout(c, m, av, an, &L);
     for (int i = 0; i < m->nparams; i++) {
-      if (i < pos_an) continue;                       /* supplied positionally */
+      if (L.from[i] != ARG_DEFAULT && L.from[i] != ARG_BY_NAME) continue;   /* supplied positionally */
       if (!m->pnames[i]) continue;
       if (m->pdefault[i] >= 0) continue;              /* optional: has a default */
       if (kwh >= 0 && kwh_lookup(nt, kwh, m->pnames[i]) >= 0) continue;  /* supplied by keyword */
@@ -5357,6 +5358,7 @@ static int pad_unsupplied_params(Compiler *c) {
       LocalVar *lv = scope_local(m, m->pnames[i]);
       if (lv && lv->type == TY_UNKNOWN) { lv->type = TY_INT; changed = 1; }
     }
+    arg_layout_free(&L);
   }
   return changed;
 }
@@ -8214,8 +8216,12 @@ static void widen_ivars_from_pushed_params(Compiler *c) {
     Scope *asc = comp_scope_of(c, id);
     if (!asc || asc->class_id < 0) continue;
     ClassInfo *acls = &c->classes[asc->class_id];
-    for (int k = 0; k < an && k < m->nparams; k++) {
-      LocalVar *p = m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
+    /* each parameter against the argument the call's layout hands it */
+    ArgLayout L;
+    call_layout(c, m, av, an, &L);
+    for (int k = 0; k < m->nparams; k++) {
+      int a = layout_plain_arg(c, m, av, &L, k);
+      LocalVar *p = a >= 0 && m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
       if (!p) continue;
       /* Two ways in. A typed parameter that was push-widened says so directly.
          A BOXED one hid its container from the call site, so it carries the
@@ -8227,15 +8233,15 @@ static void widen_ivars_from_pushed_params(Compiler *c) {
         if (p->type != TY_POLY || (p->boxed_push_elem == TY_UNKNOWN && !p->store_val_src && !p->store_rest_src)) continue;
         boxed_hazard = 1;
       }
-      const char *aty = nt_type(nt, av[k]);
+      const char *aty = nt_type(nt, a);
       if (!aty) continue;
       char ivbuf[128];
       const char *ivn = NULL;
       if (sp_streq(aty, "InstanceVariableReadNode")) {
-        ivn = nt_str(nt, av[k], "name");             /* already "@name" */
+        ivn = nt_str(nt, a, "name");             /* already "@name" */
       }
-      else if (sp_streq(aty, "CallNode") && nt_ref(nt, av[k], "receiver") < 0) {
-        const char *cn = nt_str(nt, av[k], "name");  /* a bare attr_reader call */
+      else if (sp_streq(aty, "CallNode") && nt_ref(nt, a, "receiver") < 0) {
+        const char *cn = nt_str(nt, a, "name");  /* a bare attr_reader call */
         if (cn && cn[0] != '@' && strlen(cn) < sizeof ivbuf - 1) {
           ivbuf[0] = '@'; strcpy(ivbuf + 1, cn); ivn = ivbuf;
         }
@@ -8246,9 +8252,10 @@ static void widen_ivars_from_pushed_params(Compiler *c) {
       TyKind ivt = acls->ivar_types[ivi];
       if (!ty_is_array(ivt) || ivt == TY_POLY_ARRAY) continue;
       if (boxed_hazard && (p->boxed_push_elem == TY_UNKNOWN || ty_array_elem(ivt) == p->boxed_push_elem) &&
-          !param_src_misfits(c, p, ivt, av, an) && !param_rest_misfits(c, m, p, ivt, av, an)) continue;
+          !param_src_misfits(c, m, p, ivt, av, &L) && !param_rest_misfits(c, m, p, ivt, av, an)) continue;
       acls->ivar_types[ivi] = TY_POLY_ARRAY;
     }
+    arg_layout_free(&L);
   }
 }
 
@@ -9220,15 +9227,18 @@ static int narrow_object_arrays(Compiler *c) {
        Instance methods resolve through the class chain now; previously only
        free functions made edges, so an instance method's param narrowed
        with its callers' locals left poly. */
+    ArgLayout L;
+    memset(&L, 0, sizeof L);
     if (oa_tmi >= 0) {
       int R = oa_find(sl, n, oa_tmi, NULL);
       if (R >= 0 && id < nc) { call_ret[id] = R; sl[R].saw_call = 1; }
       Scope *M = &c->scopes[oa_tmi];
+      call_layout(c, M, argv, argc, &L);
       for (int k = 0; k < M->nparams; k++) {
         LocalVar *plv = M->pnames[k] ? scope_local(M, M->pnames[k]) : NULL;
         int T = plv ? oa_find(sl, n, oa_tmi, plv) : -1;
         if (T < 0) continue;
-        int a = (argv && k < argc) ? argv[k] : -1;
+        int a = layout_plain_arg(c, M, argv, &L, k);
         if (a >= 0 && read_slot[a] >= 0) {
           claimed[a] = 1;
           oa_uf_union(sl, read_slot[a], T);
@@ -9254,14 +9264,18 @@ static int narrow_object_arrays(Compiler *c) {
         sl[S].alive = 0;
         continue;
       }
+      /* the parameter the layout funds from argument k; none (the rest
+         collects it) kills */
       Scope *M = &c->scopes[oa_tmi];
-      if (k >= M->nparams || (M->rest_idx >= 0 && k >= M->rest_idx)) { sl[S].alive = 0; continue; }
-      LocalVar *plv = M->pnames[k] ? scope_local(M, M->pnames[k]) : NULL;
+      int pk = 0;
+      while (pk < M->nparams && layout_plain_arg(c, M, argv, &L, pk) != a) pk++;
+      LocalVar *plv = pk < M->nparams && M->pnames[pk] ? scope_local(M, M->pnames[pk]) : NULL;
       int T = plv ? oa_find(sl, n, oa_tmi, plv) : -1;
       if (T < 0) { sl[S].alive = 0; continue; }
       claimed[a] = 1;
       oa_uf_union(sl, S, T);
     }
+    arg_layout_free(&L);
   }
 
   /* 5. LocalVariableWriteNode sources: object literal -> evidence; alias to
@@ -10300,9 +10314,10 @@ static void narrow_nil_guard_params(Compiler *c) {
       for (int i = 0; i < s->nparams; i++) if (sp_streq(s->pnames[i], pn)) { k = i; break; }
       if (k < 0 || (s->rest_idx >= 0 && k >= s->rest_idx)) continue;
       if (nng_has_write(c, body, pn)) continue;
-      /* non-nil unify over every name-matched plain call's argument k; any
-         caller shape this cannot see through (super, splat, kwargs, missing
-         positional) bails */
+      /* non-nil unify over every name-matched plain call's argument for
+         parameter k, as the call's layout hands it; any caller shape this
+         cannot see through (super, a splat, the gather or a keyword hash
+         funding it, no argument) bails */
       TyKind t = TY_UNKNOWN;
       int ok = 1;
       for (int id = 0; id < nt->count && ok; id++) {
@@ -10319,11 +10334,10 @@ static void narrow_nil_guard_params(Compiler *c) {
         int args = nt_ref(nt, id, "arguments");
         int an = 0;
         const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-        if (!av || an <= k) { ok = 0; break; }
-        const char *aty = nt_type(nt, av[k]);
-        if (aty && (sp_streq(aty, "SplatNode") || sp_streq(aty, "KeywordHashNode"))) { ok = 0; break; }
-        if (aty && sp_streq(aty, "NilNode")) continue;
-        TyKind at = infer_type(c, av[k]);
+        int a = call_param_arg(c, s, av, an, k);
+        if (a < 0) { ok = 0; break; }
+        if (nt_kind(nt, a) == NK_NilNode) continue;
+        TyKind at = infer_type(c, a);
         if (at == TY_NIL) continue;
         if (at == TY_UNKNOWN || at == TY_POLY || at == TY_VOID) { ok = 0; break; }
         t = (t == TY_UNKNOWN) ? at : ty_unify(t, at);
@@ -11994,11 +12008,11 @@ static void compute_byref_out_params(Compiler *c) {
         int argsN = nt_ref(nt, id, "arguments");
         int argc2 = 0;
         const int *argv2 = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &argc2) : NULL;
-        for (int j = 0; j < argc2 && j < m->nparams; j++) {
+        for (int j = 0; j < m->nparams; j++) {
           if (!comp_byref_param(c, m, j)) continue;
-          const char *aty = nt_type(nt, argv2[j]);
-          if (!aty || !sp_streq(aty, "LocalVariableReadNode")) continue;
-          const char *vn = nt_str(nt, argv2[j], "name");
+          int a = call_param_arg(c, m, argv2, argc2, j);
+          if (a < 0 || nt_kind(nt, a) != NK_LocalVariableReadNode) continue;
+          const char *vn = nt_str(nt, a, "name");
           int pi = an_param_idx(s, vn);
           if (pi < 0 || pi >= 32 || (blocked[si] & (1u << pi))) continue;
           LocalVar *p = scope_local(s, vn);
@@ -12759,8 +12773,8 @@ static int strbuf_demand_param_container_stores(Compiler *c, const char *pn, Sco
     int argsN = nt_ref(nt, u, "arguments");
     int uargc = 0;
     const int *uargv = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &uargc) : NULL;
-    if (pj >= uargc) continue;
-    int an = uargv[pj];
+    int an = call_param_arg(c, ps, uargv, uargc, pj);
+    if (an < 0) continue;
     NodeKind ak = nt_kind(nt, an);
     if (ak == NK_LocalVariableReadNode) {
       const char *avn = nt_str(nt, an, "name");
@@ -13103,11 +13117,11 @@ static int strbuf_slot_eligible_shape(Compiler *c, const char *vn, Scope *vs, Lo
     int argsN = nt_ref(nt, u, "arguments");
     int uargc = 0;
     const int *uargv = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &uargc) : NULL;
-    for (int j = 0; j < uargc && j < c->scopes[mi].nparams; j++) {
+    for (int j = 0; j < c->scopes[mi].nparams; j++) {
       if (!comp_byref_param(c, &c->scopes[mi], j)) continue;
-      const char *aty = nt_type(nt, uargv[j]);
-      const char *an2 = aty && sp_streq(aty, "LocalVariableReadNode")
-                          ? nt_str(nt, uargv[j], "name") : NULL;
+      int a = call_param_arg(c, &c->scopes[mi], uargv, uargc, j);
+      const char *an2 = a >= 0 && nt_kind(nt, a) == NK_LocalVariableReadNode
+                          ? nt_str(nt, a, "name") : NULL;
       if (an2 && sp_streq(an2, vn)) return 0;
     }
   }
@@ -13692,9 +13706,10 @@ static int promote_shared_stored_strings(Compiler *c) {
     int cargs = nt_ref(nt, cu, "arguments");
     int cargc = 0;
     const int *cargv = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cargc) : NULL;
-    for (int j = 0; j < cargc && j < c->scopes[cmi].nparams; j++) {
+    for (int j = 0; j < c->scopes[cmi].nparams; j++) {
       if (!an_param_mutated_in_place(c, cmi, j)) continue;
-      int an5 = cargv[j];
+      int an5 = call_param_arg(c, &c->scopes[cmi], cargv, cargc, j);
+      if (an5 < 0) continue;
       char ivb5[300]; int defc5 = -1; const char *ivn5 = NULL;
       int box_node = -1;
       /* Only a reader CALL. A bare `@buf` argument is an lvalue the caller
@@ -14234,10 +14249,11 @@ static int promote_shared_stored_strings(Compiler *c) {
       int cargs = nt_ref(nt, u, "arguments");
       int cargc = 0;
       const int *cargv = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cargc) : NULL;
-      for (int j = 0; j < cargc && j < c->scopes[cmi].nparams; j++) {
-        if (infer_type(c, cargv[j]) != TY_POLY) continue;
+      for (int j = 0; j < c->scopes[cmi].nparams; j++) {
+        int a = call_param_arg(c, &c->scopes[cmi], cargv, cargc, j);
+        if (a < 0 || infer_type(c, a) != TY_POLY) continue;
         if (!an_param_mutated_in_place(c, cmi, j)) continue;
-        changed |= strbuf_demand_value_leaves(c, cargv[j], 0);
+        changed |= strbuf_demand_value_leaves(c, a, 0);
       }
     }
   }
@@ -14389,9 +14405,13 @@ static void handle_arg_tab_init(Compiler *c, HandleArgTab *t) {
       int argc2 = 0;
       const int *argv2 = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &argc2) : NULL;
       if (!argv2) continue;
-      int np = c->scopes[mi].nparams;
-      for (int pj = 0; pj < argc2 && pj < np; pj++)
-        if (an_arg_hands_handle(c, argv2[pj])) t->bit[t->off[mi] + pj] = 1;
+      ArgLayout L;
+      call_layout(c, &c->scopes[mi], argv2, argc2, &L);
+      for (int pj = 0; pj < L.n; pj++) {
+        int a = layout_plain_arg(c, &c->scopes[mi], argv2, &L, pj);
+        if (a >= 0 && an_arg_hands_handle(c, a)) t->bit[t->off[mi] + pj] = 1;
+      }
+      arg_layout_free(&L);
     }
   }
 }
@@ -14722,13 +14742,16 @@ static int narrow_params_from_arrays(Compiler *c) {
       int argsN = nt_ref(nt, u, "arguments");
       int argc = 0;
       const int *argv = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &argc) : NULL;
+      ArgLayout L;
+      call_layout(c, &c->scopes[mi], argv, argc, &L);
       for (int pj = 0; pj < np; pj++) {
         int slot = off[mi] + pj;
         if (!ok[slot]) continue;
-        /* a call site that does not supply this position says nothing this
-           pass can read (a default, a splat): give the slot up */
-        if (!argv || pj >= argc) { ok[slot] = 0; continue; }
-        int a = argv[pj];
+        /* a call site that does not hand this parameter an argument as
+           written says nothing this pass can read (a default, a splat, the
+           gather, the keyword hash): give the slot up */
+        int a = layout_plain_arg(c, &c->scopes[mi], argv, &L, pj);
+        if (a < 0) { ok[slot] = 0; continue; }
         const char *aty = nt_type(nt, a);
         /* A local holding the element is the same evidence one step on:
            narrow_locals_from_arrays has just given it the element type, and
@@ -14769,6 +14792,7 @@ static int narrow_params_from_arrays(Compiler *c) {
         if (!saw[slot]) { elem[slot] = ec; saw[slot] = 1; }
         else if (elem[slot] != ec) ok[slot] = 0;
       }
+      arg_layout_free(&L);
     }
   }
 
@@ -14979,14 +15003,15 @@ static int convert_byref_handle_params(Compiler *c,
         int argsN = nt_ref(nt, u, "arguments");
         int uargc = 0;
         const int *uargv = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &uargc) : NULL;
-        if (pj >= uargc) continue;
-        if (an_arg_is_shared_handle(c, uargv[pj])) saw_handle = 1;
+        int ua = call_param_arg(c, m2, uargv, uargc, pj);
+        if (ua < 0) continue;
+        if (an_arg_is_shared_handle(c, ua)) saw_handle = 1;
         /* an ALIASED plain-local argument also demands the handle: the
            callee's mutation must stay visible through the caller's alias
            (byref reassigns only the one slot) */
-        else if (nt_kind(nt, uargv[pj]) == NK_LocalVariableReadNode) {
-          const char *avn = nt_str(nt, uargv[pj], "name");
-          Scope *avs = avn ? comp_scope_of(c, uargv[pj]) : NULL;
+        else if (nt_kind(nt, ua) == NK_LocalVariableReadNode) {
+          const char *avn = nt_str(nt, ua, "name");
+          Scope *avs = avn ? comp_scope_of(c, ua) : NULL;
           LocalVar *alv0 = avs ? scope_local(avs, avn) : NULL;
           /* shape check WITHOUT the byref-arg clause: being this byref
              param's argument is exactly the situation we are converting */
@@ -15011,8 +15036,8 @@ static int convert_byref_handle_params(Compiler *c,
         int argsN = nt_ref(nt, u, "arguments");
         int uargc = 0;
         const int *uargv = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &uargc) : NULL;
-        if (pj >= uargc) continue;
-        int an2 = uargv[pj];
+        int an2 = call_param_arg(c, m2, uargv, uargc, pj);
+        if (an2 < 0) continue;
         if (nt_kind(nt, an2) == NK_LocalVariableReadNode) {
           const char *vn2 = nt_str(nt, an2, "name");
           Scope *vs2 = vn2 ? comp_scope_of(c, an2) : NULL;
@@ -15703,10 +15728,12 @@ static void check_seed_contradictions(Compiler *c) {
     int args = nt_ref(nt, id, "arguments");
     int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
     if (!argv || argc > m->nparams) continue;
-    for (int i = 0; i < argc; i++) {
-      if (nt_kind(nt, argv[i]) == NK_SplatNode ||
-          nt_kind(nt, argv[i]) == NK_KeywordHashNode ||
-          nt_kind(nt, argv[i]) == NK_BlockArgumentNode) break;
+    /* each parameter against the argument the call's layout hands it */
+    ArgLayout L;
+    call_layout(c, m, argv, argc, &L);
+    for (int i = 0; i < m->nparams; i++) {
+      int a = layout_plain_arg(c, m, argv, &L, i);
+      if (a < 0 || nt_kind(nt, a) == NK_BlockArgumentNode) continue;
       LocalVar *lv = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
       if (!lv || !lv->rbs_seeded) continue;
       /* The DECLARED type is what a seed promises. Inference may narrow the
@@ -15714,11 +15741,11 @@ static void check_seed_contradictions(Compiler *c) {
          with a symbol key reads as a symbol-keyed hash -- and that narrowing is
          spinel's own guess, not a declaration to hold a call site to (#3977). */
       TyKind slot = (lv->rbs_type != TY_UNKNOWN) ? lv->rbs_type : lv->type;
-      TyKind val = infer_type(c, argv[i]);
+      TyKind val = infer_type(c, a);
       if (slot == TY_POLY) continue;   /* `untyped` accepts anything */
       if (!seed_contradicts(c, slot, val, 0)) continue;
-      int ln  = (int)nt_int(nt, argv[i], "node_line", 0);
-      int fid = (int)nt_int(nt, argv[i], "node_file", 0);
+      int ln  = (int)nt_int(nt, a, "node_line", 0);
+      int fid = (int)nt_int(nt, a, "node_file", 0);
       const char *file = nt_file_path(nt, fid);
       if (!file || !*file) file = nt->source_file;
       if (!file || !*file) file = "source.rb";
@@ -15734,6 +15761,7 @@ static void check_seed_contradictions(Compiler *c) {
       if (!collect_mode()) exit(1);
       g_seed_bad = 1;
     }
+    arg_layout_free(&L);
   }
   /* Collect mode gathered them; the run still fails, and stops before codegen
      so nothing is emitted from a seed we just refused. */
@@ -16615,29 +16643,32 @@ static void mark_nullable_int_locals(Compiler *c) {
       Scope *m = &c->scopes[mi];
       int ca = nt_ref(nt, id, "arguments");
       int an = 0; const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
-      for (int k = 0; av && k < an && k < m->nparams; k++) {
-        if (m->rest_idx >= 0 && k >= m->rest_idx) break;
-        LocalVar *p = m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
+      ArgLayout L;
+      call_layout(c, m, av, an, &L);
+      for (int k = 0; k < m->nparams; k++) {
+        int a = layout_plain_arg(c, m, av, &L, k);
+        LocalVar *p = a >= 0 && m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
         if (!p) continue;
         /* an object parameter handed nil, or handed one that was (#5088) */
         if (ty_is_object(p->type) && !p->obj_nilable) {
-          int nilarg = nt_kind(nt, av[k]) == NK_NilNode;
-          if (!nilarg && nt_kind(nt, av[k]) == NK_LocalVariableReadNode) {
-            Scope *as = comp_scope_of(c, av[k]);
-            const char *an2 = nt_str(nt, av[k], "name");
+          int nilarg = nt_kind(nt, a) == NK_NilNode;
+          if (!nilarg && nt_kind(nt, a) == NK_LocalVariableReadNode) {
+            Scope *as = comp_scope_of(c, a);
+            const char *an2 = nt_str(nt, a, "name");
             LocalVar *al = as && an2 ? scope_local(as, an2) : NULL;
             nilarg = al && al->is_param && al->obj_nilable;
           }
           if (nilarg) { p->obj_nilable = 1; changed = 1; }
         }
         if ((p->type == TY_INT_ARRAY || p->type == TY_FLOAT_ARRAY) && !p->nullable_int_elem &&
-            nullable_int_elem_expr(c, av[k], 0)) { p->nullable_int_elem = 1; changed = 1; }
+            nullable_int_elem_expr(c, a, 0)) { p->nullable_int_elem = 1; changed = 1; }
         if ((p->type != TY_INT && p->type != TY_FLOAT) || p->nullable_int) continue;
-        if (nullable_int_value(c, av[k])) { p->nullable_int = 1; changed = 1; continue; }
+        if (nullable_int_value(c, a)) { p->nullable_int = 1; changed = 1; continue; }
         /* an ivar that can be read before anything assigned it, or a parameter
            already carrying one: boxing the parameter has to answer nil (#5085) */
-        if (!p->box_nullable && box_nullable_arg(c, av[k])) { p->box_nullable = 1; changed = 1; }
+        if (!p->box_nullable && box_nullable_arg(c, a)) { p->box_nullable = 1; changed = 1; }
       }
+      arg_layout_free(&L);
     }
     /* A destructuring target the right side cannot supply gets nil, through a
        target node rather than a write node of its own -- `a, b, *c, d, e = 1`
@@ -20642,17 +20673,19 @@ void analyze_program(Compiler *c) {
             if (!an_call_targets_scope(c, u, s, sc)) continue;
             int a = nt_ref(nt, u, "arguments"); int an = 0;
             const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-            for (int j = 0; j < an && j < sc->nparams; j++) {
+            for (int j = 0; j < sc->nparams; j++) {
               if (!sc->pnames[j]) continue;
               LocalVar *pv = scope_local(sc, sc->pnames[j]);
               if (!pv || !PW_TYPED_ARR(pv->type)) continue;
+              int aj = call_param_arg(c, sc, av, an, j);
+              if (aj < 0) continue;
               /* an empty literal argument is built at the parameter's kind
                  and says nothing about it */
-              if (nt_kind(nt, av[j]) == NK_ArrayNode) {
-                int en0 = 0; nt_arr(nt, av[j], "elements", &en0);
+              if (nt_kind(nt, aj) == NK_ArrayNode) {
+                int en0 = 0; nt_arr(nt, aj, "elements", &en0);
                 if (en0 == 0) continue;
               }
-              if (infer_type(c, av[j]) != TY_POLY_ARRAY) continue;
+              if (infer_type(c, aj) != TY_POLY_ARRAY) continue;
               /* a parameter the callee mutates in place is passed by
                  reference at its kind; widened, the argument would be copied
                  into it and the mutation lost (the #4480 rule), and the
@@ -21000,10 +21033,10 @@ void analyze_program(Compiler *c) {
       int argsN = nt_ref(c->nt, u, "arguments");
       int uargc = 0;
       const int *uargv = argsN >= 0 ? nt_arr(c->nt, argsN, "arguments", &uargc) : NULL;
-      for (int j = 0; j < uargc && j < c->scopes[mi].nparams; j++) {
+      for (int j = 0; j < c->scopes[mi].nparams; j++) {
         if (!comp_byref_param(c, &c->scopes[mi], j)) continue;
-        const char *aty = nt_type(c->nt, uargv[j]);
-        const char *an2 = aty && sp_streq(aty, "LocalVariableReadNode") ? nt_str(c->nt, uargv[j], "name") : NULL;
+        int a = call_param_arg(c, &c->scopes[mi], uargv, uargc, j);
+        const char *an2 = a >= 0 && nt_kind(c->nt, a) == NK_LocalVariableReadNode ? nt_str(c->nt, a, "name") : NULL;
         if (an2 && sp_streq(an2, vn)) { passed_byref = 1; break; }
       }
     }

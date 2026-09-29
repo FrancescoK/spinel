@@ -24684,8 +24684,32 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       sp_streq(name, "bind_call")) {
     int mn2 = method_recv_node(c, recv);
     int t2 = mn2 >= 0 ? method_obj_target_mi(c, mn2) : -1;
-    if (t2 >= 0 && ty_is_object(comp_ntype(c, argv[0]))) {
-      Scope *tm2 = &c->scopes[t2];
+    Scope *tm2 = t2 >= 0 ? &c->scopes[t2] : NULL;
+    /* The arguments after obj bind as a direct call's (arg_layout), the
+       layout inference types the parameters from: here each argument one
+       parameter's, and each other parameter its default. Argument k bound
+       parameter k - 1, which gave `def m(a = 5, b)` the argument in a and a
+       rest a lone element; a splat, a rest, a keyword hash or a count the
+       parameters cannot take is left to the refusal below. */
+    ArgLayout L;
+    int kwh = argc > 1 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+    arg_layout(c, tm2, argv + 1, argc - 1 - (kwh >= 0), kwh, 0, &L);
+    /* A keyword hash binds whole: into the positional slot of a target
+       taking no keywords (ARG_KWH), or into a `**kwrest` beside no named
+       keyword; named keywords are left to the refusal. */
+    int named = 0;
+    for (int i = 0; tm2 && i < tm2->nparams; i++)
+      if (i != tm2->kwrest_idx && callee_param_is_declared_kwarg(c, tm2, tm2->pnames[i])) named = 1;
+    int kwh_rest = kwh >= 0 && tm2 && tm2->kwrest_idx >= 0 && !named;
+    int direct = tm2 && ty_is_object(comp_ntype(c, argv[0])) && !L.gather && L.splat < 0;
+    int taken = 0;
+    for (int i = 0; direct && i < L.n; i++) {
+      if (L.from[i] == ARG_NODE || L.from[i] == ARG_KWH) taken++;
+      else if (i == tm2->kwrest_idx && kwh_rest) taken++;
+      else if (L.from[i] == ARG_REST || (i != tm2->kwrest_idx && tm2->pdefault[i] < 0)) direct = 0;
+    }
+    if (taken != argc - 1) direct = 0;
+    if (direct) {
       int cid2 = tm2->class_id;
       emit_method_cname(c, tm2, b);
       buf_puts(b, "(");
@@ -24695,18 +24719,25 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
       else emit_expr(c, argv[0], b);
-      for (int k = 1; k < argc; k++) {
+      for (int i = 0; i < L.n; i++) {
         buf_puts(b, ", ");
-        if (k - 1 < tm2->nparams) emit_arg_or_default(c, tm2, k - 1, argv[k], b);
-        else emit_expr(c, argv[k], b);
-      }
-      for (int k2 = argc - 1; k2 < tm2->nparams; k2++) {
-        buf_puts(b, ", ");
-        emit_arg_or_default(c, tm2, k2, -1, b);
+        int src = L.from[i] == ARG_NODE ? argv[1 + L.arg[i]]
+                : L.from[i] == ARG_KWH || (i == tm2->kwrest_idx && kwh_rest) ? kwh : -1;
+        if (src < 0 && i == tm2->kwrest_idx) {
+          /* no keywords: an empty Hash, as CRuby binds it (the default
+             emit_arg_or_default gives a rest is none, a nil) */
+          LocalVar *kp = tm2->pnames[i] ? scope_local(tm2, tm2->pnames[i]) : NULL;
+          TyKind kt = kp ? kp->type : TY_SYM_POLY_HASH;
+          if (kt == TY_POLY) emit_boxed_text(c, TY_SYM_POLY_HASH, "sp_SymPolyHash_new()", b);
+          else buf_puts(b, kt == TY_POLY_POLY_HASH ? "sp_PolyPolyHash_new()" : "sp_SymPolyHash_new()");
+        }
+        else emit_arg_or_default(c, tm2, i, src, b);
       }
       buf_puts(b, ")");
+      arg_layout_free(&L);
       return;
     }
+    arg_layout_free(&L);
   }
   /* UnboundMethod#bind(obj): the same target with obj as self. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 1 && sp_streq(name, "bind")) {
@@ -28970,17 +29001,20 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_raise_exc((sp_Exception *)sp_%s_new(", c->classes[xc].c_name);
         /* `raise Cls, msg` only ever supplies the message, but the generated
            constructor keeps its full signature (defaulted positionals and
-           keywords included) -- fill param 0 with the message and every
-           remaining param from its default, or the call is emitted with too
-           few arguments. emit_arg_or_default also boxes/coerces the message
-           to the first param's type (poly when unknown, same rule
-           emit_class_new uses for the signature). */
+           keywords included) -- the message goes where a call of one argument
+           puts it (arg_layout: `initialize(a = 5, b)` takes it in b, where
+           param 0 had it) and every other param takes its default, or the
+           call is emitted with too few arguments. emit_arg_or_default also
+           boxes/coerces the message to its param's type (poly when unknown,
+           same rule emit_class_new uses for the signature). */
         Scope *im = &c->scopes[ic];
-        emit_arg_or_default(c, im, 0, av[1], b);
-        for (int pk = 1; pk < im->nparams; pk++) {
-          buf_puts(b, ", ");
-          emit_arg_or_default(c, im, pk, -1, b);
+        ArgLayout L;
+        arg_layout(c, im, &av[1], 1, -1, 0, &L);
+        for (int pk = 0; pk < im->nparams; pk++) {
+          if (pk) buf_puts(b, ", ");
+          emit_arg_or_default(c, im, pk, pk < L.n && L.from[pk] == ARG_NODE ? av[1] : -1, b);
         }
+        arg_layout_free(&L);
         if (ctor_init_takes_block(c, ic)) buf_puts(b, ", NULL");
         buf_puts(b, "))");
       }
