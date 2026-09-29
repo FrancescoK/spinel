@@ -5706,6 +5706,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       if (sp_streq(name, "resume") || sp_streq(name, "value") || sp_streq(name, "join") ||
           sp_streq(name, "status"))
         return an_poly_concrete(c, name, TY_POLY);
+      /* the Queue names no other builtin has: a popped value, the queue, a count */
+      if ((sp_streq(name, "deq") && argc == 0) || (sp_streq(name, "enq") && argc == 1))
+        return an_poly_concrete(c, name, TY_POLY);
+      if (sp_streq(name, "num_waiting") && argc == 0) return an_poly_concrete(c, name, TY_INT);
       if (sp_streq(name, "alive?") || sp_streq(name, "dead?") || sp_streq(name, "closed?") ||
           sp_streq(name, "eof?") || sp_streq(name, "tty?") || sp_streq(name, "isatty") ||
           sp_streq(name, "sync") || sp_streq(name, "sync="))

@@ -7950,6 +7950,25 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         else emit_unbox_text(c, ret, sv, b);
         buf_puts(b, "; break;");
       }
+      /* and a boxed Queue, for the names a user class may own too (a Stack's
+         #size or #pop): the queue still answers them itself */
+      if (argc == 0) {
+        const char *qf = NULL;
+        if (sp_streq(name, "size") || sp_streq(name, "length")) qf = "sp_box_int(sp_Queue_size((sp_queue *)_t%d.v.p))";
+        else if (sp_streq(name, "empty?")) qf = "sp_box_bool(sp_Queue_empty((sp_queue *)_t%d.v.p))";
+        else if (sp_streq(name, "pop") || sp_streq(name, "shift") || sp_streq(name, "deq")) qf = "sp_Queue_pop((sp_queue *)_t%d.v.p)";
+        else if (sp_streq(name, "num_waiting")) qf = "sp_box_int(sp_Queue_num_waiting((sp_queue *)_t%d.v.p))";
+        else if (sp_streq(name, "closed?")) qf = "sp_box_bool(sp_Queue_closed((sp_queue *)_t%d.v.p))";
+        else if (sp_streq(name, "max")) qf = "sp_box_int(sp_Queue_max((sp_queue *)_t%d.v.p))";
+        if (qf) {
+          char qv[120];
+          snprintf(qv, sizeof qv, qf, tv);
+          buf_printf(b, " case SP_BUILTIN_QUEUE: _t%d = ", tr);
+          if (ret == TY_POLY) buf_puts(b, qv);
+          else emit_unbox_text(c, ret, qv, b);
+          buf_puts(b, "; break;");
+        }
+      }
       /* IO#read on a poly value when a user class owns `read` (ffi's
          Pointer#read(type)): a File in the same slot still reads itself */
       if (argc == 0 && sp_streq(name, "read") && (ret == TY_POLY || ret == TY_STRING)) {
@@ -27956,19 +27975,28 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         else if (sp_streq(name, "fileno")) dirfn = "sp_Dir_fileno";
         else if (sp_streq(name, "close")) dirfn = "sp_Dir_close";
       }
+      /* and a boxed Queue closes and answers closed? itself */
+      int qname = argc == 0 && (sp_streq(name, "close") || sp_streq(name, "closed?"));
       int tdr = 0;
-      if (dirfn) {
+      if (dirfn || qname) {
         tdr = ++g_tmp;
         buf_printf(b, "({ sp_RbVal _t%d = ", tdr);
         emit_boxed(c, recv, b);
-        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_DIR ? ",
-                   tdr, tdr, tdr);
-        /* close answers the IO arm's sp_int: the Dir's nil is dropped */
-        if (sp_streq(name, "close")) buf_printf(b, "((void)sp_Dir_close((sp_Dir *)_t%d.v.p), (sp_int)0) : ", tdr);
-        else buf_printf(b, "%s((sp_Dir *)_t%d.v.p) : ", dirfn, tdr);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tdr);
+        if (qname) {
+          buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_QUEUE ? ", tdr, tdr);
+          if (sp_streq(name, "close")) buf_printf(b, "((void)sp_Queue_close((sp_queue *)_t%d.v.p), (sp_int)0) : ", tdr);
+          else buf_printf(b, "sp_Queue_closed((sp_queue *)_t%d.v.p) : ", tdr);
+        }
+        if (dirfn) {
+          buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_DIR ? ", tdr, tdr);
+          /* close answers the IO arm's sp_int: the Dir's nil is dropped */
+          if (sp_streq(name, "close")) buf_printf(b, "((void)sp_Dir_close((sp_Dir *)_t%d.v.p), (sp_int)0) : ", tdr);
+          else buf_printf(b, "%s((sp_Dir *)_t%d.v.p) : ", dirfn, tdr);
+        }
       }
       buf_printf(b, "({ sp_File *_t%d = sp_poly_as_io(", tio2);
-      if (dirfn) buf_printf(b, "_t%d", tdr);
+      if (tdr) buf_printf(b, "_t%d", tdr);
       else emit_boxed(c, recv, b);
       buf_printf(b, ", \"%s\"); ", name);
       if (sp_streq(name, "write") && argc >= 1) {
@@ -28175,7 +28203,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "close")) buf_printf(b, "sp_File_close(_t%d); })", tio2);
       else if (sp_streq(name, "flush")) buf_printf(b, "sp_File_flush(_t%d); })", tio2);
       else buf_printf(b, "sp_File_fileno(_t%d); })", tio2);
-      if (dirfn) buf_puts(b, "; })");
+      if (tdr) buf_puts(b, "; })");
       return;
     }
   }
@@ -38146,6 +38174,30 @@ else {
     }
   }
 
+  /* The Queue names no other builtin answers, on a boxed Queue (one taken
+     out of an Array or an ivar): #enq, #deq and #num_waiting. Anything else
+     in the slot raises NoMethodError at run time. */
+  if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 &&
+      ((argc == 0 && (sp_streq(name, "deq") || sp_streq(name, "num_waiting"))) ||
+       (argc == 1 && sp_streq(name, "enq")))) {
+    int ncand = 0;
+    if (!g_poly_builtin_arm)
+      for (int k = 0; k < c->nclasses; k++)
+        if (comp_poly_arm_defines_n(c, k, name, argc) ||
+            (!c->classes[k].is_native_class && comp_reader_in_chain(c, k, name, NULL))) ncand++;
+    if (ncand == 0) {
+      Buf qv; memset(&qv, 0, sizeof qv);
+      buf_printf(&qv, "sp_poly_queue_%s(", sp_streq(name, "num_waiting") ? "num_waiting" : name);
+      emit_boxed(c, recv, &qv);
+      if (argc == 1) { buf_puts(&qv, ", "); emit_boxed(c, argv[0], &qv); }
+      buf_puts(&qv, ")");
+      TyKind want = comp_ntype(c, id);
+      if (want == TY_POLY) buf_puts(b, qv.p);
+      else emit_unbox_text(c, want, qv.p, b);
+      free(qv.p);
+      return;
+    }
+  }
   if (emit_poly_builtin_method(c, id, b)) { nd_stamp(id, ND_SWITCH); return; }
   if (emit_poly_method_dispatch(c, id, b)) { nd_stamp(id, ND_SWITCH); return; }
   /* the distinct value-type ranges (float / string) answer first */
