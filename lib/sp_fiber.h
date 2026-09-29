@@ -52,7 +52,7 @@ void sp_fiber_stack_hint(size_t bytes);
 #define SP_TSAN 1
 #endif
 
-typedef struct sp_Fiber{sp_fiber_ctx ctx;sp_fiber_ctx caller_ctx;char*stack;size_t stack_size;int state;int transferred;sp_RbVal yielded_value;sp_RbVal resumed_value;void(*body)(struct sp_Fiber*);void*user_data;int saved_exc_top;int saved_catch_top;void*exc_ctx;int raised;const char*raised_cls;const char*raised_msg;void*raised_obj;int inject;int inject_defer;const char*inj_cls;const char*inj_msg;void*inj_obj;void*storage;void***saved_roots;int saved_nroots;int saved_roots_cap;struct sp_Fiber*fiber_next;struct sp_Fiber*fiber_prev;struct sp_Fiber*resumer;/* the fiber suspended inside #resume of this one, until it returns: the chain from the running fiber back to the root is what the collector roots; every other suspended fiber lives by reference (#4525) */const char*birth_file;sp_int birth_line;int pass_argc;unsigned owner;/* id + 1 of the thread that made it (#6110); 0: no owner */struct sp_Fiber*return_to;/* where it goes if it ends after a transfer: the innermost fiber still inside a resume (NULL: the thread's main fiber) */unsigned char thread_main;/* a Thread's own fiber (its main fiber) *//* how many values the first resume passed (-1: not known), so |a| can tell resume(1, 2) from resume([1, 2]) *//* the Fiber.new site, for #inspect */
+typedef struct sp_Fiber{sp_fiber_ctx ctx;sp_fiber_ctx caller_ctx;char*stack;size_t stack_size;int state;int transferred;sp_RbVal yielded_value;sp_RbVal resumed_value;void(*body)(struct sp_Fiber*);void*user_data;int saved_exc_top;int saved_catch_top;void*exc_ctx;int raised;const char*raised_cls;const char*raised_msg;void*raised_obj;int inject;int inject_defer;const char*inj_cls;const char*inj_msg;void*inj_obj;void*storage;void*attrs;/* per-fiber attributes (Fiber.attr_accessor): a table of the fiber's own, never copied into a new fiber as `storage` is */void***saved_roots;int saved_nroots;int saved_roots_cap;struct sp_Fiber*fiber_next;struct sp_Fiber*fiber_prev;struct sp_Fiber*resumer;/* the fiber suspended inside #resume of this one, until it returns: the chain from the running fiber back to the root is what the collector roots; every other suspended fiber lives by reference (#4525) */const char*birth_file;sp_int birth_line;int pass_argc;unsigned owner;/* id + 1 of the thread that made it (#6110); 0: no owner */struct sp_Fiber*return_to;/* where it goes if it ends after a transfer: the innermost fiber still inside a resume (NULL: the thread's main fiber) */unsigned char thread_main;/* a Thread's own fiber (its main fiber) *//* how many values the first resume passed (-1: not known), so |a| can tell resume(1, 2) from resume([1, 2]) *//* the Fiber.new site, for #inspect */
 #ifdef SP_TSAN
   void *tsan_fiber;                 /* __tsan fiber handle for this coroutine */
   struct sp_Fiber *caller_fiber;    /* who switched into us (the swap-out target) */
@@ -106,6 +106,8 @@ sp_Fiber *sp_Fiber_at(sp_Fiber *f, const char *file, sp_int line);
 const char *sp_Fiber_inspect(sp_Fiber *f);   /* #inspect / #to_s */
 sp_RbVal sp_Fiber_storage_get(sp_Fiber *f, sp_sym k);
 void sp_Fiber_storage_set(sp_Fiber *f, sp_sym k, sp_RbVal v);
+sp_RbVal sp_Fiber_attr_get(sp_Fiber *f, sp_sym k);
+void sp_Fiber_attr_set(sp_Fiber *f, sp_sym k, sp_RbVal v);
 /* Reached from sp_re_mark_globals in the generated TU during a GC pass. */
 void sp_mark_fiber_root_storage(void);
 

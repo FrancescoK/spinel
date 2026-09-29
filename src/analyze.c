@@ -19194,6 +19194,7 @@ void analyze_program(Compiler *c) {
   desugar_ffi_library_functions(c);   /* attach_function :f -> def self.f (the ffi gem) */
   desugar_singleton_class_mixin(c);      /* singleton_class.prepend(M) in a body -> extend M */
   desugar_singleton_attr(c);             /* singleton_class.attr_accessor :x -> def self.x / def self.x= */
+  desugar_handle_attr_accessor(c);       /* Thread.attr_accessor :x -> a Thread reopening on its store */
   desugar_constant_path_self_alias(c);   /* A::B::C = remove_const(:C) (C a class) -> dropped */
   /* builtins/enumerable.rb, spliced by the parser: its definitions become
      the receiver-taking top-level functions before any scope is built */
@@ -20093,6 +20094,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_handle_reopen_self_recv(c);  /* bare m(..) in a Thread/Fiber reopen -> self.m(..) */
     ch |= desugar_symbol_to_proc_call(c);      /* :sym.to_proc.call(x) -> x.sym */
     ch |= desugar_call_op_write(c);            /* r.x += 1 with a def writer -> r.x = r.x + 1 */
+    ch |= desugar_call_or_write_reopen(c);     /* r.x ||= v on a reopened builtin with a def writer -> the two calls */
     ch |= desugar_index_op_write_user(c);      /* obj[k] ||= v on a user [] / []= -> the calls */
     ch |= desugar_main_self_call(c);           /* self.m on main with a top-level def m -> m */
     ch |= desugar_cmethod_cvar_reflection(c); /* class_variable_get(:@@x) in def self.m -> K.class_variable_get */

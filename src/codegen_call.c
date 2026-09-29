@@ -3461,6 +3461,18 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "alive?")) {
       buf_puts(b, "sp_Fiber_alive("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
     }
+    /* the fiber's own storage by a literal key: what a `Fiber.attr_accessor`
+       reader and writer (desugar_handle_attr_accessor) read and write on self */
+    if (sp_streq(name, "__storage_get") && argc == 1 && comp_ntype(c, argv[0]) == TY_SYMBOL) {
+      buf_puts(b, "sp_Fiber_attr_get("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
+    }
+    if (sp_streq(name, "__storage_set") && argc == 2 && comp_ntype(c, argv[0]) == TY_SYMBOL) {
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, argv[1], b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_Fiber_attr_set(", tv); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_printf(b, ", _t%d); _t%d; })", tv, tv); return 1;
+    }
     if (sp_streq(name, "kill") && argc == 0) {
       buf_puts(b, "sp_Fiber_kill("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
     }

@@ -3789,6 +3789,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* TY_FIBER instance methods */
   if (recv >= 0 && rt == TY_FIBER) {
     if (sp_streq(name, "resume") || sp_streq(name, "transfer") || sp_streq(name, "raise")) return TY_POLY;
+    if (sp_streq(name, "__storage_get") || sp_streq(name, "__storage_set")) return TY_POLY;
     if (sp_streq(name, "alive?")) return TY_BOOL;
     if (sp_streq(name, "value")) return TY_POLY;
     if (sp_streq(name, "kill")) return TY_FIBER;   /* returns the receiver */
