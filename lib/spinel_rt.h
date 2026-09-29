@@ -1958,6 +1958,8 @@ static inline const char *sp_poly_to_s(sp_RbVal v) {
            renders it: a boxed one fell through to "" (`puts [f, d]`) */
         case SP_BUILTIN_IO: return sp_io_to_s((sp_File *)v.v.p);
         case SP_BUILTIN_DIR: return sp_Dir_to_s((sp_Dir *)v.v.p);
+        case SP_BUILTIN_FIBER: return sp_Fiber_inspect((sp_Fiber *)v.v.p);
+        case SP_BUILTIN_THREAD: return sp_Thread_inspect((sp_thread *)v.v.p);
         default:
           if ((v.cls_id >= 0 || v.cls_id == SP_BUILTIN_OBJECT) && v.v.p) {
             /* a class with a user #to_s renders through the generated
@@ -6632,6 +6634,8 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
           const char *_dp = v.v.p ? ((sp_Dir *)v.v.p)->path : NULL;
           return sp_sprintf("#<Dir:%s>", _dp ? _dp : "");
         }
+        case SP_BUILTIN_FIBER:  return sp_Fiber_inspect((sp_Fiber *)v.v.p);
+        case SP_BUILTIN_THREAD: return sp_Thread_inspect((sp_thread *)v.v.p);
         default:
           /* a user object: the generated per-class ivar walk renders
              #<Name:0x... @a=..., ...> like CRuby's default inspect */

@@ -52,7 +52,7 @@ void sp_fiber_stack_hint(size_t bytes);
 #define SP_TSAN 1
 #endif
 
-typedef struct sp_Fiber{sp_fiber_ctx ctx;sp_fiber_ctx caller_ctx;char*stack;size_t stack_size;int state;int transferred;sp_RbVal yielded_value;sp_RbVal resumed_value;void(*body)(struct sp_Fiber*);void*user_data;int saved_exc_top;int saved_catch_top;void*exc_ctx;int raised;const char*raised_cls;const char*raised_msg;void*raised_obj;int inject;int inject_defer;const char*inj_cls;const char*inj_msg;void*inj_obj;void*storage;void***saved_roots;int saved_nroots;int saved_roots_cap;struct sp_Fiber*fiber_next;struct sp_Fiber*fiber_prev;struct sp_Fiber*resumer;/* the fiber suspended inside #resume of this one, until it returns: the chain from the running fiber back to the root is what the collector roots; every other suspended fiber lives by reference (#4525) */
+typedef struct sp_Fiber{sp_fiber_ctx ctx;sp_fiber_ctx caller_ctx;char*stack;size_t stack_size;int state;int transferred;sp_RbVal yielded_value;sp_RbVal resumed_value;void(*body)(struct sp_Fiber*);void*user_data;int saved_exc_top;int saved_catch_top;void*exc_ctx;int raised;const char*raised_cls;const char*raised_msg;void*raised_obj;int inject;int inject_defer;const char*inj_cls;const char*inj_msg;void*inj_obj;void*storage;void***saved_roots;int saved_nroots;int saved_roots_cap;struct sp_Fiber*fiber_next;struct sp_Fiber*fiber_prev;struct sp_Fiber*resumer;/* the fiber suspended inside #resume of this one, until it returns: the chain from the running fiber back to the root is what the collector roots; every other suspended fiber lives by reference (#4525) */const char*birth_file;sp_int birth_line;/* the Fiber.new site, for #inspect */
 #ifdef SP_TSAN
   void *tsan_fiber;                 /* __tsan fiber handle for this coroutine */
   struct sp_Fiber *caller_fiber;    /* who switched into us (the swap-out target) */
@@ -98,6 +98,8 @@ sp_RbVal sp_Fiber_raise(sp_Fiber *f, const char *cls, const char *msg, void *obj
 /* Fiber#kill: terminate the fiber (running its ensure blocks); returns it. */
 sp_Fiber *sp_Fiber_kill(sp_Fiber *f);
 sp_bool sp_Fiber_alive(sp_Fiber *f);
+sp_Fiber *sp_Fiber_at(sp_Fiber *f, const char *file, sp_int line);
+const char *sp_Fiber_inspect(sp_Fiber *f);   /* #inspect / #to_s */
 sp_RbVal sp_Fiber_storage_get(sp_Fiber *f, sp_sym k);
 void sp_Fiber_storage_set(sp_Fiber *f, sp_sym k, sp_RbVal v);
 /* Reached from sp_re_mark_globals in the generated TU during a GC pass. */
