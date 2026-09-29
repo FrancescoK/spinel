@@ -2159,7 +2159,8 @@ int method_obj_target_mi(Compiler *c, int node) {
   {
     const char *nm0 = nt_str(nt, node, "name");
     if (nm0 && sp_streq(nm0, "instance_method")) {
-      const char *rn = (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode)
+      const char *rn = (recv >= 0 && (nt_kind(nt, recv) == NK_ConstantReadNode ||
+                                      nt_kind(nt, recv) == NK_ConstantPathNode))
                        ? nt_str(nt, recv, "name") : NULL;
       int ci = rn ? comp_class_index(c, rn) : -1;
       return ci >= 0 ? comp_method_in_chain(c, ci, sym, NULL) : -1;
@@ -2178,7 +2179,10 @@ int method_obj_target_mi(Compiler *c, int node) {
     return comp_method_index(c, sym);
   if (ty_is_object(rt)) return comp_method_in_chain(c, ty_object_class(rt), sym, NULL);
   /* Klass.method(:cmeth) / Module.method(:mf): the class-side method */
-  if (rt == TY_CLASS && nt_kind(nt, recv) == NK_ConstantReadNode) {
+  if (rt == TY_CLASS && (nt_kind(nt, recv) == NK_ConstantReadNode ||
+                         nt_kind(nt, recv) == NK_ConstantPathNode)) {
+    /* `Outer::Mod.method(:m)` names the class by its last segment, as every
+       other constant receiver resolves */
     const char *rn2 = nt_str(nt, recv, "name");
     int ci2 = rn2 ? comp_class_index(c, rn2) : -1;
     if (ci2 >= 0) return comp_cmethod_in_chain(c, ci2, sym, NULL);
