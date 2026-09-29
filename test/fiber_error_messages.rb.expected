@@ -1,0 +1,6 @@
+"tried to create Proc object without a block"
+"must be called with a block"
+"attempt to resume the current fiber"
+:x
+"attempt to resume the current fiber"
+:resumed
