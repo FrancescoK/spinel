@@ -2755,6 +2755,104 @@ static char *sp_rewrite_computed_requires(const char *source, const char *dir) {
   return out;
 }
 
+/* `autoload :Name, "path"` with a literal path: the whole program is
+   compiled, so the file is loaded eagerly. In the entry file the call becomes
+   the require in place; in a required file it answers nil there, and the
+   requires go at the end of the file -- after the module body the autoload
+   sits in, which the loaded file usually reopens. A receiver form
+   (`Mod.autoload`) or a computed path is left as it was. */
+static int sp_autoload_is_main = 0;
+/* the autoload's file beside the one naming it (lib/foo.rb autoloading
+   "foo/bar" is lib/foo/bar.rb, the gem layout): reached without a load path */
+static int sp_autoload_beside(const char *dir, const char *path, size_t plen) {
+  char fp[1400];
+  snprintf(fp, sizeof fp, "%s/%.*s%s", dir, (int)plen, path,
+           (plen >= 3 && strncmp(path + plen - 3, ".rb", 3) == 0) ? "" : ".rb");
+  FILE *f = fopen(fp, "r");
+  if (!f) return 0;
+  fclose(f);
+  return 1;
+}
+
+static char *sp_rewrite_autoloads(const char *source, const char *dir) {
+  size_t slen = strlen(source);
+  /* a call becomes at most `require_relative "path"` (plus a newline in the
+     tail), under twice the length of the shortest `autoload :X,"p"` */
+  char *out = malloc(slen * 2 + 64);
+  char *tail = malloc(slen * 2 + 64);
+  if (!out || !tail) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  size_t o = 0, t = 0;
+  const char *p = source;
+  int in_comment = 0;
+  char quote = 0;
+  while (*p) {
+    char ch = *p;
+    if (ch == '\n') { in_comment = 0; quote = 0; out[o++] = *p++; continue; }
+    if (in_comment) { out[o++] = *p++; continue; }
+    if (quote) {
+      if (ch == '\\' && p[1]) { out[o++] = *p++; out[o++] = *p++; continue; }
+      if (ch == quote) quote = 0;
+      out[o++] = *p++;
+      continue;
+    }
+    if (ch == '#') { in_comment = 1; out[o++] = *p++; continue; }
+    if (ch == '"' || ch == '\'') { quote = ch; out[o++] = *p++; continue; }
+    if (strncmp(p, "autoload", 8) == 0 &&
+        (p == source || (!sp_req_ident_char(p[-1]) && p[-1] != ':' && p[-1] != '@' && p[-1] != '$' &&
+                         p[-1] != '.')) &&
+        !sp_req_ident_char(p[8]) && p[8] != '?') {
+      const char *q = p + 8;
+      int paren = 0;
+      while (*q == ' ' || *q == '\t') q++;
+      if (*q == '(') { paren = 1; q++; while (*q == ' ' || *q == '\t') q++; }
+      if (*q == ':') {
+        q++;
+        const char *ns = q;
+        while (sp_req_ident_char(*q)) q++;
+        if (q > ns) {
+          while (*q == ' ' || *q == '\t') q++;
+          if (*q == ',') {
+            q++;
+            while (*q == ' ' || *q == '\t') q++;
+            if (*q == '"' || *q == '\'') {
+              char qq = *q++;
+              const char *fs = q;
+              while (*q && *q != qq && *q != '\n' && *q != '#' ) q++;
+              if (*q == qq) {
+                size_t flen = (size_t)(q - fs);
+                q++;
+                while (*q == ' ' || *q == '\t') q++;
+                if (!paren || *q == ')') {
+                  if (paren) q++;
+                  const char *kw = sp_autoload_beside(dir, fs, flen) ? "require_relative" : "require";
+                  if (sp_autoload_is_main) {
+                    o += (size_t)sprintf(out + o, "%s \"%.*s\"", kw, (int)flen, fs);
+                  }
+                  else {
+                    out[o++] = 'n'; out[o++] = 'i'; out[o++] = 'l';
+                    t += (size_t)sprintf(tail + t, "%s \"%.*s\"\n", kw, (int)flen, fs);
+                  }
+                  p = q;
+                  continue;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    out[o++] = *p++;
+  }
+  if (t > 0) {
+    if (o > 0 && out[o - 1] != '\n') out[o++] = '\n';
+    memcpy(out + o, tail, t);
+    o += t;
+  }
+  out[o] = 0;
+  free(tail);
+  return out;
+}
+
 static char *resolve_requires(const char *source, const char *source_path,
                               unsigned char **fsl_out, size_t *fsl_n_out) {
   /* Get base directory */
@@ -2767,6 +2865,8 @@ static char *resolve_requires(const char *source, const char *source_path,
   free(path_copy);
 
   char *result = sp_rewrite_computed_requires(source, dir);
+  char *result = sp_rewrite_autoloads(source, dir);
+  sp_autoload_is_main = 0;
   /* One pragma flag per line of `result`, kept in lockstep with every text
      splice below so each literal keeps its own file's flag. */
   size_t fsl_n;
@@ -4272,6 +4372,7 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
     }
   }
   unsigned char *fsl = NULL; size_t fsl_n = 0;
+  sp_autoload_is_main = 1;
   char *resolved = resolve_requires(source, source_file, &fsl, &fsl_n);
   free(source);
   source = resolve_plain_requires(resolved, argv0, &fsl, &fsl_n);
