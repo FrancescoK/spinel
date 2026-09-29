@@ -1,0 +1,22 @@
+# An unqualified type name resolves against the declaration's own namespace
+# first: `Application` inside `module Rails` is `Rails::Application`, even
+# with a top-level `Application` declared. A sibling in the parent namespace
+# and an absolute `::Application` still resolve as before.
+module Rails
+  class Application
+    def name: () -> String
+  end
+
+  def self.application: () -> Application
+  def self.top: () -> ::Application
+end
+
+module Views
+  class Helpers
+    def app: () -> Application
+  end
+end
+
+class Application
+  def name: () -> String
+end
