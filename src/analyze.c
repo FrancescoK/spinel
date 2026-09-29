@@ -17688,6 +17688,7 @@ void analyze_program(Compiler *c) {
   mark_sym_proc_blocks(c);               /* { |_spx| _spx.m } is `&:m` */
   desugar_root_scoped_constants(c);      /* ::Name -> Name (#4801) */
   desugar_engine_branches(c);
+  desugar_when_int_float_ranges(c);     /* when 0..0.05 -> 0.0..0.05 */
   desugar_class_reopen(c);               /* class Class / Class.class_eval -> a module */
   desugar_extended_module_attrs(c);
   /* builtins/enumerable.rb, spliced by the parser: its definitions become
