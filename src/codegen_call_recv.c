@@ -14085,7 +14085,9 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
     }
-    if (sp_streq(name, "chr") && !str_conv_owned) {
+    /* no argument only: chr(Encoding::X) is resolved by emit_unresolved_call,
+       and a byte chr here would drop the encoding */
+    if (sp_streq(name, "chr") && argc == 0 && !str_conv_owned) {
       /* dispatch on the runtime tag: (48 + n).chr through a widened int
          must be Integer#chr -- stringifying first turned 61.chr into
          "61".chr == "6", corrupting percent-encoding digits (#3328) */
