@@ -33139,6 +33139,27 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "GC")) {
     if (sp_streq(name, "start") && argc == 0) { buf_puts(b, "(sp_gc_collect_request(), (sp_int)0)"); return; }
+    /* GC.start(full_mark:, immediate_mark:, immediate_sweep:): one collector,
+       one kind of collection -- the options are hints, their values
+       evaluated for what they do */
+    if (sp_streq(name, "start") && argc == 1 && nt_kind(nt, argv[0]) == NK_KeywordHashNode) {
+      int en = 0; const int *els = nt_arr(nt, argv[0], "elements", &en);
+      int ok = 1;
+      for (int e = 0; e < en && ok; e++) {
+        int key = nt_kind(nt, els[e]) == NK_AssocNode ? nt_ref(nt, els[e], "key") : -1;
+        const char *kn = key >= 0 && nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
+        ok = kn && (sp_streq(kn, "full_mark") || sp_streq(kn, "immediate_mark") ||
+                    sp_streq(kn, "immediate_sweep"));
+      }
+      if (ok) {
+        buf_puts(b, "(");
+        for (int e = 0; e < en; e++) {
+          buf_puts(b, "(void)("); emit_expr(c, nt_ref(nt, els[e], "value"), b); buf_puts(b, "), ");
+        }
+        buf_puts(b, "sp_gc_collect_request(), (sp_int)0)");
+        return;
+      }
+    }
     if (sp_streq(name, "compact") && argc == 0) { buf_puts(b, "(sp_gc_collect_request(), (sp_int)0)"); return; }
     if (sp_streq(name, "stat") && argc == 0) { buf_puts(b, "sp_gc_stat()"); return; }
   }
