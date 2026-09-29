@@ -7084,7 +7084,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      if the receiver were that handle. Codegen unboxes it back to exactly that
      before re-dispatching, and checks the runtime cls_id first, so a value of
      any other kind still raises NoMethodError (#4158 follow-up). */
-  if (recv >= 0 && rt == TY_POLY && g_face_node < 0 &&
+  if (recv >= 0 && rt == TY_POLY && g_face_node < 0 && argc == 0 &&
       ty_poly_handle_face(name) != TY_UNKNOWN &&
       !an_user_defines_or_reads(c, name)) {
     an_set_face_node(recv, ty_poly_handle_face(name));

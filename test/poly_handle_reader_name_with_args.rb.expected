@@ -1,0 +1,5 @@
+undefined method 'int' for an instance of Integer
+undefined method 'ip_port' for an instance of Integer
+undefined method 'int' for an instance of String
+undefined method 'ip_port' for an instance of String
+done
