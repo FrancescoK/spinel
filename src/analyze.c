@@ -14800,6 +14800,13 @@ static int mark_reader_read_only_operands(Compiler *c) {
     LocalVar *tv7 = scope_local(ws7, tn7);
     if (!tv7 || tv7->is_param) continue;
     if (tv7->type != TY_STRING) continue;
+    /* READ-only means read-only: a local this scope mutates belongs to the
+       carry-back rule above, which asks what the mutator is before handing it
+       a handle. A String-typed local settles the ambiguous kinds, so that
+       rule claims every mutated alias reachable today -- but this rule must
+       not be the one deciding, or tightening that rule later would silently
+       hand a disqualified mutation the handle path. */
+    if (strbuf_mut_kind(c, tn7, ws7) != 0) continue;
     if (!strbuf_slot_eligible_shape(c, tn7, ws7, tv7)) continue;
     c->strbuf_box[v7] = 1;
     tv7->type = TY_STRBUF; tv7->str_shared = 1; changed = 1;
