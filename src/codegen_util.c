@@ -2968,10 +2968,11 @@ void scope_veto_proc_form(Compiler *c, int s) {
 int scope_proc_form_of(Compiler *c, int s) {
   if (s < 0 || s >= c->nscopes) return -1;
   Scope *sc = &c->scopes[s];
-  if (!sc->name || sc->class_id < 0 || !sc->yields) return -1;
+  if (!sc->name || !sc->yields) return -1;
   char pfname[192];
   snprintf(pfname, sizeof pfname, "%s#pf", sc->name);
-  int pi = (sc->is_cmethod ? comp_cmethod_in_class : comp_method_in_class)(c, sc->class_id, pfname);
+  int pi = sc->class_id < 0 ? comp_method_index(c, pfname)
+         : (sc->is_cmethod ? comp_cmethod_in_class : comp_method_in_class)(c, sc->class_id, pfname);
   if (pi < 0 || !c->scopes[pi].is_proc_form) return -1;
   return pi;
 }
