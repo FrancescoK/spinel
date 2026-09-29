@@ -260,7 +260,7 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
      `def y1(x)` ran with x padded, `y(1, 2) { }` on `def y(x, k: 1)`
      dropped the 2. A `...` forward carries the forwarder's own params. */
   if (fwd_encl) emit_unknown_kwarg_raise(c, m, argv, argc);
-  else emit_call_arity_check(c, m, argc, argv, 1);
+  else emit_call_arity_check(c, m, argc, argv);
   /* The options-hash idiom: a braceless keyword hash no keyword parameter
      claims packs into the first unfilled positional (`def check(sel, opts =
      nil)` called `check(".x", count: 0)`). The other two call paths have done

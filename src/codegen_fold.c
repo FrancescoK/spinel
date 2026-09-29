@@ -7830,32 +7830,21 @@ static int rest_required_for(Compiler *c, Scope *m) {
   return req;
 }
 
-/* The count a call with a trailing splat supplies, in a temp: `lead` positional
-   arguments plus whatever the array holds. */
-static int emit_rest_given_count(int lead, int splat_tmp) {
-  int gv = ++g_tmp;
-  emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "sp_int _t%d = %d + (_t%d ? _t%d->len : 0);\n", gv, lead, splat_tmp, splat_tmp);
-  return gv;
-}
-/* The run-time half of the rest shortfall check: refuse the measured count. */
-static void emit_rest_shortfall_raise(int given_tmp, int req) {
-  char gv[32]; snprintf(gv, sizeof gv, "_t%d", given_tmp);
-  emit_indent(g_pre, g_indent);
-  emit_arity_check(g_pre, gv, req, -1, NULL);
-  buf_puts(g_pre, ";\n");
-}
 /* The count check of a call whose positional count only the run time knows
    (a splat, a gather), the C expression `given`, against `m`'s positional
    parameters -- keywords apart, and named in the message as CRuby names
    them. */
+static int bam_variadic_kernel(const NodeTable *nt, const Scope *m);
 static void emit_positional_count_check(Compiler *c, Scope *m, const char *given) {
   int pos_required = 0, pos_params = 0;
   positional_arity(c, m, &pos_required, &pos_params);
   char kw[256];
   scope_arity_kw_suffix(c, m, kw, sizeof kw);
   emit_indent(g_pre, g_indent);
-  emit_arity_check(g_pre, given, pos_required, m->rest_idx >= 0 ? -1 : pos_params, kw);
+  /* no upper bound where the static count has none: a rest, or a Kernel
+     wrapper whose builtin takes any count (bam_variadic_kernel) */
+  int unbounded = m->rest_idx >= 0 || bam_variadic_kernel(c->nt, m);
+  emit_arity_check(g_pre, given, pos_required, unbounded ? -1 : pos_params, kw);
   buf_puts(g_pre, ";\n");
 }
 
@@ -7878,6 +7867,31 @@ static int bam_variadic_kernel(const NodeTable *nt, const Scope *m) {
   if (!nm) return 0;
   return sp_streq(nm, "puts") || sp_streq(nm, "print") || sp_streq(nm, "p") ||
          sp_streq(nm, "pp") || sp_streq(nm, "Rational") || sp_streq(nm, "Complex");
+}
+
+/* Does `m` take parameters that are not the call's arguments one for one,
+   so no count of them can be judged: a synthesized scope, a `(...)`
+   forwarder (it takes whatever its call passes on, through the parameters
+   synthesized for its call sites), or any other synthesized (__-prefixed)
+   parameter. A __bam_ wrapper's parameters are real call arguments here: a
+   receiverless Kernel wrapper (`method(:String)`) has one, and only it
+   reaches the binders that ask -- a receiver-bound wrapper's Method call
+   goes through the object-bound path, whose self slot carries param[0], and
+   the dispatch stands its own check down for it. Counting a receiverless
+   wrapper's parameter as compiler plumbing skipped the arity check, so
+   `method(:String).call` invoked it with a filled-in 0 instead of raising
+   ArgumentError. One rule for the static count (emit_call_arity_check) and
+   the counts a splat leaves to the run time (emit_splat_given_count,
+   emit_unreached_splat_count), which judged such a scope's synthesized
+   slots as if they were arguments. */
+static int arity_unjudged(Compiler *c, Scope *m) {
+  if (m->cs_synth) return 1;
+  for (int i = 0; i < m->nparams; i++)
+    if (m->pnames[i] && m->pnames[i][0] == '_' && m->pnames[i][1] == '_' &&
+        strncmp(m->pnames[i], "__bam_", 6) != 0) return 1;
+  int pn = m->def_node >= 0 ? nt_ref(c->nt, m->def_node, "parameters") : -1;
+  int kwr = pn >= 0 ? nt_ref(c->nt, pn, "keyword_rest") : -1;
+  return kwr >= 0 && nt_type(c->nt, kwr) && sp_streq(nt_type(c->nt, kwr), "ForwardingParameterNode");
 }
 
 int splat_operand_is_scalar(TyKind t) {
@@ -7918,6 +7932,7 @@ static void emit_rt_positional_count(Compiler *c, const int *argv, int pos_argc,
    says, once the arguments have run. */
 void emit_unreached_splat_count(Compiler *c, Scope *m, const int *argv, int argc, int pos_argc,
                                 const KwPlan *P) {
+  if (arity_unjudged(c, m)) return;
   emit_args_in_source_order(c, argv, argc, g_pre);
   Buf gb; memset(&gb, 0, sizeof gb);
   emit_rt_positional_count(c, argv, pos_argc, P, &gb);
@@ -7934,9 +7949,7 @@ void emit_unreached_splat_count(Compiler *c, Scope *m, const int *argv, int argc
    the plan's (kw_plan). The count is judged here when it is known here: no
    splat among the positionals, and a hash that counts nothing or one; a
    synthesized scope or synthesized (__-prefixed, e.g. forwarding) params
-   skip. A rest target has only its shortfall judged, which the dispatch
-   (`judge_rest` off) measures itself where rest_shortfall_required judges
-   it. A keyword error the plan finds after a splat is raised
+   skip. A rest target has only its shortfall judged. A keyword error the plan finds after a splat is raised
    once the run time has judged the count, which CRuby judges first:
    `def m(k:)` called `m(*[])` is missing k, called `m(*[1])` given 1.
    One rule for the direct call (emit_args_filled), the instance dispatch
@@ -7944,7 +7957,7 @@ void emit_unreached_splat_count(Compiler *c, Scope *m, const int *argv, int argc
    dispatch kept its own count, which took keyword parameters for positional
    slots and skipped every keyword hash, so `obj.m(3, 4)` against
    `def m(x, k: 1)` bound silently where `m(3, 4)` raised. */
-void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv, int judge_rest) {
+void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv) {
   const NodeTable *nt = c->nt;
   int kwh = -1;
   int pos_argc = argc;
@@ -7971,19 +7984,9 @@ void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv, int
     }
     free(kb.p);
   }
-  int synth = 0, nfixed = 0, nreq = 0;
+  if (arity_unjudged(c, m)) return;
+  int nfixed = 0, nreq = 0;
   for (int i = 0; i < m->nparams; i++) {
-    /* A __bam_ wrapper's parameters are REAL call arguments here: a
-       receiverless Kernel wrapper (`method(:String)`) has one, and only it
-       reaches this function -- a receiver-bound wrapper's Method call goes
-       through the object-bound path, whose self slot carries param[0].
-       Counting a receiverless wrapper's parameter as compiler plumbing
-       skipped the arity check, so `method(:String).call` invoked it with a
-       filled-in 0 instead of raising ArgumentError (and `method(:String)`
-       .call(123) still binds its argument normally). Every other
-       __-prefixed parameter is compiler plumbing, as before. */
-    if (m->pnames[i] && m->pnames[i][0] == '_' && m->pnames[i][1] == '_' &&
-        strncmp(m->pnames[i], "__bam_", 6) != 0) { synth = 1; break; }
     /* Keyword parameters share pnames[] with the positional ones but are
        no positional slot: counting them let `def m(x, k: 1)` take `m(3, 4)`
        and bind the 4 nowhere. The rest is no slot either. */
@@ -7991,12 +7994,6 @@ void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv, int
     nfixed++;
     if (!m->pdefault || m->pdefault[i] < 0) nreq++;
   }
-  /* a `(...)` forwarder takes whatever its call passes on, through the
-     parameters synthesized for its call sites */
-  int pn = m->def_node >= 0 ? nt_ref(nt, m->def_node, "parameters") : -1;
-  int kwr = pn >= 0 ? nt_ref(nt, pn, "keyword_rest") : -1;
-  if (kwr >= 0 && nt_type(nt, kwr) && sp_streq(nt_type(nt, kwr), "ForwardingParameterNode")) return;
-  if (synth || m->cs_synth) return;
   /* CRuby names the callee's required keywords in every count error:
      `def h(x, k:)` called `h(k: 3)` is "(given 0, expected 1; required
      keyword: k)" */
@@ -8009,9 +8006,7 @@ void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv, int
        a padded a. */
     int given = pos_argc + P.count;
     int over = m->rest_idx < 0 && given > nfixed && !bam_variadic_kernel(nt, m);
-    /* the dispatch measures a rest target's shortfall where
-       rest_shortfall_required judges it, not beside keywords */
-    int under = given < nreq && (m->rest_idx < 0 || judge_rest || rest_shortfall_required(c, m) < 0);
+    int under = given < nreq;
     if (over || under) {
       arity_message(msg, sizeof msg, given, nreq, m->rest_idx >= 0 ? -1 : nfixed, kwsuf);
       args_raise(c, argv, argc, "%s", msg);
@@ -8344,6 +8339,109 @@ void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out) {
   free(eb.p);
 }
 
+/* The splat a static layout spreads in place (ArgLayout.splat), evaluated
+   once into a rooted temp; its array type into `*at`. A boxed operand -- a
+   block parameter, a value read out of a container -- is an array only at
+   run time: the splat's own lowering normalizes it (nil to [], a scalar to
+   [v], an array kept), where it once fell through as one positional
+   argument. A statically nil or scalar operand takes the same lowering:
+   bound as it was, `f(*nil)` passed [] and `f(*5)` passed [5] as the first
+   argument. Returns the temp. */
+static int emit_splat_in_place(Compiler *c, int splat, TyKind *at) {
+  int inner = nt_ref(c->nt, splat, "expression");
+  TyKind t = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
+  Buf anon; memset(&anon, 0, sizeof anon);
+  int is_anon = inner < 0 && emit_anon_rest_ref(c, splat, &anon);
+  int boxed = !is_anon && inner >= 0 && (t == TY_POLY || t == TY_UNKNOWN || splat_operand_is_scalar(t));
+  if (is_anon || boxed) t = TY_POLY_ARRAY;
+  *at = t;
+  int tmp = ++g_tmp;
+  /* Evaluate the splat operand into a side buffer: a literal array or a
+     call result emits its own setup (a fresh `_tN = ..._new()` decl) into
+     g_pre, which must land before this temp's declaration line -- a bare
+     local read has no setup, which is why those already worked. */
+  emit_indent(g_pre, g_indent);
+  if (is_anon) buf_printf(g_pre, "sp_PolyArray *_t%d = %s;\n", tmp, anon.p ? anon.p : "sp_PolyArray_new()");
+  else {
+    Buf sb; memset(&sb, 0, sizeof sb);
+    emit_expr(c, boxed ? splat : inner, &sb);
+    emit_ctype(c, t, g_pre);
+    buf_printf(g_pre, " _t%d = %s;\n", tmp, sb.p ? sb.p : "");
+    free(sb.p);
+  }
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tmp);
+  free(anon.p);
+  return tmp;
+}
+
+/* The count a trailing splat spread in place supplies, measured into a temp
+   where the array is (`splat_tmp`), or -1 when it is not judged here. A
+   target without a rest is judged on any count, a positional Hash of
+   literal keys one more argument. A rest target has only its shortfall,
+   judged by the rule the static check applies (rest_required_for) where the
+   hash adds nothing: a hash the callee takes as keywords is no positional
+   (kw_plan), so keywords beside the rest do not stand it down, and `def
+   m(a, *r, k: 1)` called `m(*[])` is given 0. */
+static int emit_splat_given_count(Compiler *c, Scope *m, const ArgLayout *L, int splat_tmp) {
+  if (L->splat < 0 || L->splat != L->pos_argc - 1 || arity_unjudged(c, m)) return -1;
+  if (m->rest_idx >= 0 && (L->kw.count != KWC_NONE || rest_required_for(c, m) < 0)) return -1;
+  int gv = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_int _t%d = %d + (_t%d ? _t%d->len : 0);\n", gv,
+             L->splat + (m->rest_idx < 0 && L->kw.count == KWC_ONE), splat_tmp, splat_tmp);
+  return gv;
+}
+
+/* Parameter i from element `off` of the splat temp `tmp` (of array type
+   `at`), boxed from a gather (`gathered`) or typed from a splat spread in
+   place (ArgLayout's ARG_ELEM). */
+static void emit_elem_param(Compiler *c, Scope *m, int i, int off, int tmp, TyKind at, int gathered,
+                            Buf *out) {
+  LocalVar *sp = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
+  TyKind set = ty_array_elem(at);
+  Buf eb; memset(&eb, 0, sizeof eb);
+  if (sp && sp->type == TY_POLY && set != TY_POLY && set != TY_UNKNOWN) {
+    /* a scalar splat element into a poly-widened param: box it */
+    Buf raw; memset(&raw, 0, sizeof raw);
+    emit_array_elem_at(at, tmp, off, &raw);
+    emit_boxed_text(c, set, raw.p ? raw.p : "0", &eb); free(raw.p);
+  }
+  else emit_array_elem_at(at, tmp, off, &eb);
+  /* the gathered positionals are boxed: a typed parameter unboxes */
+  if (gathered && sp && sp->type != TY_POLY && sp->type != TY_UNKNOWN) {
+    Buf ub; memset(&ub, 0, sizeof ub);
+    emit_unbox_nilable_text(c, sp->type, eb.p ? eb.p : "sp_box_nil()", &ub);
+    free(eb.p); eb = ub;
+  }
+  /* An optional param may fall past the end of a (runtime-sized) splat
+     array; the arity check guarantees the required params are present, so
+     guard only the optionals and fall back to their default. An optional
+     ahead of a required keyword sits below nrequired, which counts that
+     keyword, so its default says it is one. */
+  if (i >= m->nrequired || (m->pdefault && m->pdefault[i] >= 0)) {
+    Buf db; memset(&db, 0, sizeof db);
+    emit_arg_or_default(c, m, i, -1, &db);
+    TyKind pt = sp ? sp->type : TY_INT;
+    buf_printf(out, "(%d < (_t%d ? _t%d->len : 0) ? %s : %s)", off, tmp, tmp,
+               eb.p ? eb.p : "", db.p ? db.p : default_value(pt));
+    free(db.p);
+  }
+  else if (sp && sp->byref_out) {
+    /* a splat element filling a byref out-param slot has no caller
+       variable to write back to: pass a rooted temp's address (the
+       mutation stays local, like the pre-byref behavior). */
+    int bt = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "const char *_t%d = %s;\n", bt, eb.p ? eb.p : "NULL");
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", bt);
+    buf_printf(out, "&_t%d", bt);
+  }
+  else buf_puts(out, eb.p ? eb.p : "");
+  free(eb.p);
+}
+
 void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out) {
   Scope *m = &c->scopes[callee_idx];
   const NodeTable *nt = c->nt;
@@ -8406,7 +8504,7 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
   arg_layout(c, m, argv, pos_argc, kwh, 0, &L);
   int rest_argc = L.rest_argc;
   int argov_saved = g_n_argov;
-  emit_call_arity_check(c, m, argc, argv, 1);
+  emit_call_arity_check(c, m, argc, argv);
 
   /* Detect double-splat (**hash) inside kwh: AssocSplatNode wrapping a hash expr.
      Pre-evaluate the hash to a temp so we can do per-param lookups. */
@@ -8414,6 +8512,10 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
   if (L.kw.args_first) emit_args_run(c, argv, argc);
   else if (kwh_runs_ahead(c, m, kwh)) emit_positionals_first(c, argv, pos_argc);
   else if (kwh_out_of_order(c, m, kwh)) emit_args_in_source_order(c, argv, argc, g_pre);
+  /* the splat spread in place runs into its temp ahead of the call, so the
+     arguments written to its left run first, into theirs: `m(lg(1), *lg(a))`
+     ran lg(a) first */
+  else if (L.splat > 0) emit_args_in_source_order(c, argv, L.splat, g_pre);
   TyKind ds_hash_type = TY_UNKNOWN;
   int ds_hash_tmp = emit_ds_hash_materialize(c, m, kwh, &ds_hash_type);
 
@@ -8435,63 +8537,10 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
                         (m->rest_idx < 0 && k < m->nparams);
       if (need_expand) {
         splat_idx = k;
-        int inner = nt_ref(nt, argv[k], "expression");
-        splat_at = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
-        Buf anon; memset(&anon, 0, sizeof anon);
-        int is_anon = inner < 0 && emit_anon_rest_ref(c, argv[k], &anon);
-        if (is_anon) splat_at = TY_POLY_ARRAY;
-        /* a boxed operand -- a block parameter, a value read out of a
-           container -- is an array only at run time: the splat's own
-           lowering normalizes it (nil to [], a scalar to [v], an array kept),
-           where it once fell through as one positional argument. A
-           statically nil or scalar operand takes the same lowering: bound as
-           it was, `f(*nil)` passed [] and `f(*5)` passed [5] as the first
-           argument. */
-        int boxed = !is_anon && inner >= 0 && (splat_at == TY_POLY || splat_at == TY_UNKNOWN ||
-                                               splat_operand_is_scalar(splat_at));
-        if (boxed) splat_at = TY_POLY_ARRAY;
         if (k == L.splat) {
-          splat_tmp = ++g_tmp;
-          /* Evaluate the splat operand into a side buffer: a literal array or a
-             call result emits its own setup (a fresh `_tN = ..._new()` decl)
-             into g_pre, which must land before this temp's declaration line --
-             a bare local read has no setup, which is why those already worked. */
-          emit_indent(g_pre, g_indent);
-          if (is_anon) {
-            buf_printf(g_pre, "sp_PolyArray *_t%d = %s;\n", splat_tmp,
-                       anon.p ? anon.p : "sp_PolyArray_new()");
-          }
-          else {
-            Buf sb; memset(&sb, 0, sizeof sb);
-            emit_expr(c, boxed ? argv[k] : inner, &sb);
-            emit_ctype(c, splat_at, g_pre);
-            buf_printf(g_pre, " _t%d = %s;\n", splat_tmp, sb.p ? sb.p : "");
-            free(sb.p);
-          }
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", splat_tmp);
-          free(anon.p);
-          /* A rest target's shortfall, when the count is in the splat: the
-             same rule the static check applies, judged at run time. A hash
-             the callee takes as keywords is no positional (kw_plan), so
-             keywords beside the rest no longer stand it down: `def m(a,
-             *r, k: 1)` called `m(*[])` is given 0. */
-          if (m->rest_idx >= 0 && L.kw.count == KWC_NONE && k == pos_argc - 1 &&
-              rest_required_for(c, m) >= 0) {
-            char gvn[32];
-            snprintf(gvn, sizeof gvn, "_t%d", emit_rest_given_count(splat_idx, splat_tmp));
-            emit_positional_count_check(c, m, gvn);
-          }
-          /* Arity check: splatting into a fixed-arity (no-rest) method must
-             supply a valid element count, else CRuby raises ArgumentError.
-             Only emit when the splat is the last positional group, so the
-             total given count is `splat_idx + array length`. */
-          if (m->rest_idx < 0 && k == pos_argc - 1) {
-            int gv = ++g_tmp;
-            emit_indent(g_pre, g_indent);
-            /* a positional Hash of literal keys is one more argument */
-            buf_printf(g_pre, "sp_int _t%d = %d + (_t%d ? _t%d->len : 0);\n", gv,
-                       splat_idx + (L.kw.count == KWC_ONE), splat_tmp, splat_tmp);
+          splat_tmp = emit_splat_in_place(c, argv[k], &splat_at);
+          int gv = emit_splat_given_count(c, m, &L, splat_tmp);
+          if (gv >= 0) {
             char gvn[32]; snprintf(gvn, sizeof gvn, "_t%d", gv);
             emit_positional_count_check(c, m, gvn);
           }
@@ -8697,52 +8746,8 @@ else {
         emit_rest_pack_kwh(c, i, rest_end, argv, L.rest_kwh, out);
       }
     }
-else if (L.from[i] == ARG_ELEM) {
-      /* this param comes from the splatted array (or the gather) */
-      int off = L.arg[i];
-      LocalVar *sp = (m && m->pnames[i]) ? scope_local(m, m->pnames[i]) : NULL;
-      TyKind set = ty_array_elem(splat_at);
-      Buf eb; memset(&eb, 0, sizeof eb);
-      if (sp && sp->type == TY_POLY && set != TY_POLY && set != TY_UNKNOWN) {
-        /* a scalar splat element into a poly-widened param: box it */
-        Buf raw; memset(&raw, 0, sizeof raw);
-        emit_array_elem_at(splat_at, splat_tmp, off, &raw);
-        emit_boxed_text(c, set, raw.p ? raw.p : "0", &eb); free(raw.p);
-      }
-      else emit_array_elem_at(splat_at, splat_tmp, off, &eb);
-      /* the gathered positionals are boxed: a typed parameter unboxes */
-      if (splat_all && sp && sp->type != TY_POLY && sp->type != TY_UNKNOWN) {
-        Buf ub; memset(&ub, 0, sizeof ub);
-        emit_unbox_nilable_text(c, sp->type, eb.p ? eb.p : "sp_box_nil()", &ub);
-        free(eb.p); eb = ub;
-      }
-      /* An optional param may fall past the end of a (runtime-sized) splat
-         array; the arity check guarantees the required params are present, so
-         guard only the optionals and fall back to their default. An optional
-         ahead of a required keyword sits below nrequired, which counts that
-         keyword, so its default says it is one. */
-      if (i >= m->nrequired || (m->pdefault && m->pdefault[i] >= 0)) {
-        Buf db; memset(&db, 0, sizeof db);
-        emit_arg_or_default(c, m, i, -1, &db);
-        TyKind pt = sp ? sp->type : TY_INT;
-        buf_printf(out, "(%d < (_t%d ? _t%d->len : 0) ? %s : %s)", off, splat_tmp, splat_tmp,
-                   eb.p ? eb.p : "", db.p ? db.p : default_value(pt));
-        free(db.p);
-      }
-      else if (sp && sp->byref_out) {
-        /* a splat element filling a byref out-param slot has no caller
-           variable to write back to: pass a rooted temp's address (the
-           mutation stays local, like the pre-byref behavior). */
-        int bt = ++g_tmp;
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "const char *_t%d = %s;\n", bt, eb.p ? eb.p : "NULL");
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", bt);
-        buf_printf(out, "&_t%d", bt);
-      }
-      else buf_puts(out, eb.p ? eb.p : "");
-      free(eb.p);
-    }
+else if (L.from[i] == ARG_ELEM)
+      emit_elem_param(c, m, i, L.arg[i], splat_tmp, splat_at, splat_all, out);
 else {
       /* Check if this param has a keyword match (lookup by param name in kwh).
          Only a true KEYWORD param consumes a key -- a positional param whose
@@ -8830,23 +8835,6 @@ int dispatch_impl_count(Compiler *c, int cid, const char *name) {
     if (!seen && n < 256) impls[n++] = def;
   }
   return n;
-}
-
-/* The smallest count any implementation this dispatch may enter requires of a
-   rest-parameter call, or -1 when one of them binds by other rules and stands
-   the check down. A switch cannot know which arm it takes, so the arm that
-   asks least sets the bar; a direct call reads its own target instead. */
-static int dispatch_min_rest_required(Compiler *c, int cid, const char *name) {
-  int req = -1, seen = 0;
-  for (int k = 0; k < c->nclasses; k++) {
-    if (!is_descendant(c, k, cid)) continue;
-    int kmi = comp_method_in_chain(c, k, name, NULL);
-    if (kmi < 0) continue;
-    int kreq = rest_shortfall_required(c, &c->scopes[kmi]);
-    if (kreq < 0) return -1;
-    if (!seen || kreq < req) { req = kreq; seen = 1; }
-  }
-  return seen ? req : -1;
 }
 
 /* Append `, <arg>` for dispatch arm `arm`'s parameter `a`, coercing the shared
@@ -9089,23 +9077,33 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
     return;
   }
 
+  /* The parameters the shared temps are laid out for: the base method's,
+     or for a method only subclasses define the first arm's, which every arm
+     takes alike (dispatch_arms_disagree). Laid out as the call's positionals
+     given, a rest arm got them one by one, and the C call did not build. */
+  Scope *pm = m;
+  for (int k = 0; !pm && k < c->nclasses; k++) {
+    if (!is_descendant(c, k, cid)) continue;
+    int kmi = comp_method_in_chain(c, k, name, NULL);
+    if (kmi >= 0 && scope_has_callable_symbol(c, kmi)) pm = &c->scopes[kmi];
+  }
   /* Arity check, the free-function path's own: an over- or under-supplied
      instance call went through with the extra arguments simply dropped
-     (#3677). A rest target's shortfall is measured below, with the splat. */
+     (#3677). A count only a splat knows is measured with the splat below. */
   int argov_saved_d = g_n_argov;
-  if (m && (argv || argc == 0)) {
-    int skip = 0;
-    for (int k = 0; k < argc && argv && !skip; k++) {
-      const char *at = nt_type(nt, argv[k]);
-      if (at && (sp_streq(at, "ForwardingArgumentsNode") || sp_streq(at, "BlockArgumentNode")))
-        skip = 1;
-    }
-    /* every __-prefixed parameter, a __bam_ wrapper's too: a receiver-bound
-       wrapper's first one is its receiver, not an argument */
-    for (int i = 0; i < m->nparams && !skip; i++)
-      if (m->pnames[i] && m->pnames[i][0] == '_' && m->pnames[i][1] == '_') skip = 1;
-    if (!skip) emit_call_arity_check(c, m, argc, argv, 0);
+  /* the count is judged here, and with the splat below, unless an argument
+     is forwarded or a block argument, or a parameter is synthesized --
+     every __-prefixed one, a __bam_ wrapper's too: a receiver-bound
+     wrapper's first one is its receiver, not an argument */
+  int judged_d = pm && (argv || argc == 0);
+  for (int k = 0; k < argc && argv && judged_d; k++) {
+    const char *at = nt_type(nt, argv[k]);
+    if (at && (sp_streq(at, "ForwardingArgumentsNode") || sp_streq(at, "BlockArgumentNode")))
+      judged_d = 0;
   }
+  for (int i = 0; judged_d && i < pm->nparams; i++)
+    if (pm->pnames[i] && pm->pnames[i][0] == '_' && pm->pnames[i][1] == '_') judged_d = 0;
+  if (judged_d) emit_call_arity_check(c, pm, argc, argv);
   /* `callee(...)`: forward the enclosing `def foo(...)` method's synthesized
      __fwd_* params positionally (#1288), same as the emit_args_filled path. */
   Scope *fwd_encl = NULL;
@@ -9128,70 +9126,30 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
       sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
     kwh_d = argv[argc - 1]; pos_argc_d = argc - 1;
   }
-  /* a keyword hash binding positionally is one more argument, which moves the
-     others past a leading optional (as in emit_args_filled). The layout's
-     gather is this path's too; its static arm below is still its own. */
+  /* Which argument, splat element or gathered element each parameter takes
+     is the layout's (arg_layout), as it is a direct call's: this path renders
+     it into its shared temps and decides nothing itself. It laid the static
+     arm out on its own -- a splat spread in place into a rest target only for
+     a lone `obj.m(*x)` into a callee whose shortfall rest_shortfall_required
+     judges, every post left to its default beside a splat, a post index and a
+     cap for the parameters ahead of the rest of its own -- so `o.m(*[])`
+     against `def m(p1, *r, k1: 70)` bound the whole array to p1 where `m(*[])`
+     raises, and `o.m(lg(1), *a)` against `def m(x, y, *r)` bound a to y. */
   ArgLayout L;
-  arg_layout(c, m, argv, pos_argc_d, kwh_d, 0, &L);
-  int kslot_d = m ? L.kwh_slot : -1;
-  int bind_argc_d = m ? L.bind_argc : pos_argc_d;
-  int rest_argc_d = m ? L.rest_argc : pos_argc_d;
-  /* The count a rest-parameter target refuses for lack of arguments, by the
-     rule the by-name lowering follows: a rest lifts the upper bound, not the
-     requirement below it, and `P.new.m` on `def m(x, *y)` ran the body with a
-     padded x. A direct call knows its target and is judged by that method
-     alone. A switch may enter any arm below the receiver's static class, and an
-     override with a default where the base has a required parameter takes a
-     call the base refuses -- so a switch is judged by the smallest count its
-     arms require, and one arm that binds by other rules (a keyword parameter,
-     a synthesized one) stands the check down. */
-  int rest_req_d = virtual ? dispatch_min_rest_required(c, cid, name)
-                           : (m ? rest_shortfall_required(c, m) : -1);
-  /* The parameters AFTER the rest are the call's last arguments -- as long as
-     those can be named here. An argument that spreads at run time (a splat, a
-     forwarded `...`), or a keyword hash that degrades into one more positional
-     at the tail, leaves their positions to a length only the call knows. The
-     binding stays as it was in that case: the rest takes everything spread and
-     each post its default, rather than a post fed the spreading node itself,
-     which is not one argument at all. A hash that keywords take, or that
-     binds as the last post (counted in rest_argc_d), leaves them named. */
-  int posts_dyn_d = 0;
-  if (m && m->rest_idx >= 0 && m->npost_rest > 0 && rest_kwh_tail(c, m, kwh_d, pos_argc_d) >= 0)
-    posts_dyn_d = 1;   /* the hash degrades to one more positional at the rest's tail */
-  if (argv && m && m->rest_idx >= 0 && m->npost_rest > 0 && !posts_dyn_d)
-    for (int k = rest_argc_d - m->npost_rest; k < pos_argc_d; k++) {
-      const char *at = k >= 0 ? nt_type(nt, argv[k]) : NULL;
-      if (at && (sp_streq(at, "SplatNode") || sp_streq(at, "ForwardingArgumentsNode")))
-        { posts_dyn_d = 1; break; }
-    }
-  /* An argument the static count cannot measure: a splat's own run-time check
-     below judges it, and a forwarded or double-splatted list stands the check
-     down. A block argument is counted here only because pos_argc_d counts it
-     as a positional. */
-  int dyn_argc_d = 0;
-  for (int k = 0; argv && k < argc && !dyn_argc_d; k++) {
-    const char *at = nt_type(nt, argv[k]);
-    if (!at) continue;
-    if (sp_streq(at, "SplatNode") || sp_streq(at, "ForwardingArgumentsNode") ||
-        sp_streq(at, "BlockArgumentNode")) dyn_argc_d = 1;
-    else if (sp_streq(at, "KeywordHashNode")) {
-      int en = 0; const int *els = nt_arr(nt, argv[k], "elements", &en);
-      for (int e = 0; e < en && !dyn_argc_d; e++)
-        if (els && nt_type(nt, els[e]) && sp_streq(nt_type(nt, els[e]), "AssocSplatNode"))
-          dyn_argc_d = 1;
-    }
-  }
+  arg_layout(c, pm, argv, pos_argc_d, kwh_d, 0, &L);
   /* Materialize a forwarded `**hash` inside kwh_d so keyword params extract
      from it and a `**kwrest` callee param collects it -- the same handling
      emit_args_filled applies (previously this path dropped every keyword
      into a NULL kwrest and let positionals steal keys by name). */
-  int kw_merged_d = kwh_merged(c, m, kwh_d);
-  if (m && L.kw.args_first) emit_args_run(c, argv, argc);
-  else if (m && kwh_runs_ahead(c, m, kwh_d)) emit_positionals_first(c, argv, pos_argc_d);
-  else if (kwh_out_of_order(c, m, kwh_d)) emit_args_in_source_order(c, argv, argc, g_pre);
+  int kw_merged_d = kwh_merged(c, pm, kwh_d);
+  if (pm && L.kw.args_first) emit_args_run(c, argv, argc);
+  else if (pm && kwh_runs_ahead(c, pm, kwh_d)) emit_positionals_first(c, argv, pos_argc_d);
+  else if (kwh_out_of_order(c, pm, kwh_d)) emit_args_in_source_order(c, argv, argc, g_pre);
+  /* the arguments to the left of a splat spread in place run ahead of it */
+  else if (L.splat > 0) emit_args_in_source_order(c, argv, L.splat, g_pre);
   TyKind ds_type_d = TY_UNKNOWN;
-  int ds_tmp_d = (m && kwh_d >= 0) ? emit_ds_hash_materialize(c, m, kwh_d, &ds_type_d) : -1;
-  int np = m ? m->nparams : pos_argc_d;
+  int ds_tmp_d = (pm && kwh_d >= 0) ? emit_ds_hash_materialize(c, pm, kwh_d, &ds_type_d) : -1;
+  int np = pm ? pm->nparams : pos_argc_d;
   /* evaluate each param value (provided arg or default) into a temp so the
      virtual-dispatch cases reuse them without re-evaluating */
   int *atmp = np ? malloc(sizeof(int) * np) : NULL;
@@ -9201,89 +9159,35 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
      the shared temp to ITS param type instead of passing it raw (#3214). */
   TyKind *atmp_ty = np ? malloc(sizeof(TyKind) * np) : NULL;
   const char *saved_self = g_self;
-  /* A positional SplatNode `obj.f(*args)` expands across the fixed params, the
-     same way emit_args_filled handles it for free-function calls: pre-evaluate
-     the array to a rooted temp and fill each param from it. A splat reaching a
-     rest parameter needs the same expansion for the fixed params ahead of it --
-     without it the array went into the first parameter whole, an ill-typed one
-     as a C build failure -- but only for `obj.m(*args)` outright. The
-     pre-evaluation hoists the operand, so an argument written to its left would
-     run after it; anything to its right slides by a length only the array
-     knows; a keyword hash beside it belongs at the rest's tail, which this
-     packing does not carry; and a target whose shortfall cannot be judged (a
-     keyword parameter, a synthesized one) would run padded where the call is
-     refused today. A splat at or past the rest slot needs no expansion at all:
-     the rest collection spreads the operand itself. */
-  int splat_idx_d = -1, splat_tmp_d = -1; TyKind splat_at_d = TY_UNKNOWN;
-  int rest_given_d = -1;   /* the measured count, refused after the arguments run */
-  /* a splat with positionals after it binds from all of them gathered, as
-     in emit_args_filled: `O.new.o(*[1], 3)` bound the 3 nowhere */
-  int splat_all_d = L.gather;
-  if (splat_all_d) {
-    splat_idx_d = 0; splat_at_d = TY_POLY_ARRAY;
-    splat_tmp_d = emit_splat_gather(c, m, argv, &L);
+  /* The splat the parameters read: every positional gathered, or the one
+     spread in place. A trailing one's count is measured where the array is
+     and refused once the other arguments have run: CRuby evaluates them all
+     before it judges the count. */
+  int splat_tmp_d = -1; TyKind splat_at_d = TY_UNKNOWN;
+  int given_d = -1;
+  if (L.gather) {
+    splat_at_d = TY_POLY_ARRAY;
+    splat_tmp_d = emit_splat_gather(c, pm, argv, &L);
   }
-  for (int k = 0; m && k < pos_argc_d && !splat_all_d; k++) {
-    if (argv && nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "SplatNode") &&
-        (m->rest_idx >= 0
-           ? (k == 0 && pos_argc_d == 1 && kwh_d < 0 && k < m->rest_idx &&
-              !posts_dyn_d && rest_req_d >= 0)
-           : k < m->nparams)) {
-      int inner = nt_ref(nt, argv[k], "expression");
-      splat_at_d = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
-      Buf anon; memset(&anon, 0, sizeof anon);
-      int is_anon = inner < 0 && emit_anon_rest_ref(c, argv[k], &anon);
-      if (is_anon) splat_at_d = TY_POLY_ARRAY;
-      /* a boxed operand is normalized by the splat's own lowering, as above,
-         and so is a statically nil or scalar one: `O.new.m(*7)` bound the
-         whole [7] to the first parameter */
-      int boxed = !is_anon && inner >= 0 && (splat_at_d == TY_POLY || splat_at_d == TY_UNKNOWN ||
-                                             splat_operand_is_scalar(splat_at_d));
-      if (boxed) splat_at_d = TY_POLY_ARRAY;
-      if (is_anon || boxed || ty_is_array(splat_at_d) || splat_at_d == TY_POLY_ARRAY) {
-        splat_idx_d = k;
-        splat_tmp_d = ++g_tmp;
-        emit_indent(g_pre, g_indent);
-        if (is_anon) {
-          buf_printf(g_pre, "sp_PolyArray *_t%d = %s;\n", splat_tmp_d,
-                     anon.p ? anon.p : "sp_PolyArray_new()");
-        }
-        else {
-          Buf sb; memset(&sb, 0, sizeof sb);
-          emit_expr(c, boxed ? argv[k] : inner, &sb);
-          emit_ctype(c, splat_at_d, g_pre);
-          buf_printf(g_pre, " _t%d = %s;\n", splat_tmp_d, sb.p ? sb.p : "");
-          free(sb.p);
-        }
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", splat_tmp_d);
-        free(anon.p);
-        /* Arity check when the splat is the last positional group: the total
-           given count is splat_idx + array length. A rest target has no upper
-           bound, so only its shortfall is judged. */
-        /* measure here, where the array is; refuse below, once the other
-           arguments have run -- CRuby evaluates them all before the count is
-           judged, and this loop is ahead of them */
-        if (m->rest_idx >= 0 && rest_req_d >= 0 && kwh_d < 0 && k == pos_argc_d - 1)
-          rest_given_d = emit_rest_given_count(splat_idx_d, splat_tmp_d);
-        else if (m->rest_idx < 0 && k == pos_argc_d - 1) {
-          int gv = ++g_tmp;
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_int _t%d = %d + (_t%d ? _t%d->len : 0);\n", gv,
-                     splat_idx_d + (L.kw.count == KWC_ONE), splat_tmp_d, splat_tmp_d);
-          char gvn[32]; snprintf(gvn, sizeof gvn, "_t%d", gv);
-          emit_positional_count_check(c, m, gvn);
-        }
-      }
+  else if (L.splat >= 0) {
+    splat_tmp_d = emit_splat_in_place(c, argv[L.splat], &splat_at_d);
+    if (judged_d) given_d = emit_splat_given_count(c, pm, &L, splat_tmp_d);
+  }
+  else
+    for (int k = 0; judged_d && pm->rest_idx < 0 && argv && k < pos_argc_d; k++) {
+      if (nt_kind(nt, argv[k]) != NK_SplatNode) continue;
+      if (k >= pm->nparams) emit_unreached_splat_count(c, pm, argv, argc, pos_argc_d, &L.kw);
       break;
     }
-    if (argv && m->rest_idx < 0 && nt_kind(nt, argv[k]) == NK_SplatNode) {
-      emit_unreached_splat_count(c, m, argv, argc, pos_argc_d, &L.kw);
-      break;
-    }
+  /* the keywords a `**` brings, once the count has been judged: CRuby
+     counts first, so with such a hash the count is refused here, where the
+     arguments have run ahead of the `**` (kw_plan's args_first) */
+  if (given_d >= 0 && ds_tmp_d >= 0) {
+    char gvn[32]; snprintf(gvn, sizeof gvn, "_t%d", given_d);
+    emit_positional_count_check(c, pm, gvn);
+    given_d = -1;
   }
-  /* the keywords a `**` brings, once the count has been judged */
-  emit_ds_kwarg_check(c, m, kwh_d, ds_tmp_d, ds_type_d);
+  emit_ds_kwarg_check(c, pm, kwh_d, ds_tmp_d, ds_type_d);
   /* A default that reads an earlier parameter (`def g(u, v = u.upcase)`)
      evaluates in the callee, where that parameter is bound; here it is filled
      at the call site. emit_args_filled hoists every parameter into a named
@@ -9294,32 +9198,27 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
      restriction as the other path: a *rest and a **kwrest are temps like the
      rest, and are aliased too. A gather's parameters are temps as well. */
   int pd_ren_base = g_nren, pd_uid = 0;
-  int pd_active = m && ((splat_tmp_d < 0 && ds_tmp_d < 0) || splat_all_d) && default_refs_earlier_param(c, m);
+  int pd_active = pm && ((splat_tmp_d < 0 && ds_tmp_d < 0) || L.gather) && default_refs_earlier_param(c, pm);
   if (pd_active) pd_uid = ++g_tmp;
   for (int k = 0; k < np; k++) {
     atmp[k] = ++g_tmp;
     Buf ab; memset(&ab, 0, sizeof ab);
-    LocalVar *p = m ? scope_local(m, m->pnames[k]) : NULL;
-    if (m && m->rest_idx >= 0 && k == m->rest_idx) {
-      /* rest param: pack remaining positional args into PolyArray. An
-         unconsumed keyword hash degrades to one positional hash at the rest's
-         tail -- the same rule the other call path follows. Dropping it here
-         made `c.splat_only(id: :desc)` run with no arguments at all, silently,
-         while the identical top-level call kept it (#3503). The parameters
-         AFTER the rest are the call's last arguments, so the rest stops before
-         them: it collected them too, and each post then read the argument one
-         place to its left. */
-      int rest_end_d = posts_dyn_d ? pos_argc_d : rest_argc_d - m->npost_rest;
+    LocalVar *p = pm ? scope_local(pm, pm->pnames[k]) : NULL;
+    if (pm && pm->rest_idx >= 0 && k == pm->rest_idx) {
+      /* rest param: pack the arguments the layout leaves it into a PolyArray,
+         an unconsumed keyword hash at its tail (#3503), stopping before the
+         posts. */
+      int rest_end_d = L.rest_argc - pm->npost_rest;
       /* the packed arguments are the caller's: no parameter renames */
       int rest_nren_sv = g_nren;
       g_nren = pd_ren_base;
-      if (m && L.from[k] == ARG_GATHERED)
-        emit_gathered_param(c, m, k, splat_tmp_d, &ab);
-      else if (splat_tmp_d >= 0)
-        emit_rest_from_splat_and_argv(splat_tmp_d, splat_at_d, k - splat_idx_d,
-                                      c, splat_idx_d + 1, rest_end_d, argv, &ab);
+      if (L.from[k] == ARG_GATHERED)
+        emit_gathered_param(c, pm, k, splat_tmp_d, &ab);
+      else if (L.splat >= 0)
+        emit_rest_from_splat_and_argv(splat_tmp_d, splat_at_d, k - L.splat,
+                                      c, L.splat + 1, rest_end_d, argv, &ab);
       else
-        emit_rest_pack_kwh(c, k, rest_end_d, argv, rest_kwh_tail(c, m, kwh_d, pos_argc_d), &ab);
+        emit_rest_pack_kwh(c, k, rest_end_d, argv, L.rest_kwh, &ab);
       g_nren = rest_nren_sv;
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_PolyArray *_t%d = %s;\n", atmp[k], ab.p ? ab.p : "sp_PolyArray_new()");
@@ -9335,12 +9234,12 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
         buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", atmp[k]);
       }
       atmp_ty[k] = TY_POLY_ARRAY;
-      if (pd_active && m->pnames[k] && g_nren < MAX_RENAME) {
+      if (pd_active && pm->pnames[k] && g_nren < MAX_RENAME) {
         /* a later default reading the rest (`k: r.size`) reads this temp */
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_PolyArray *lv__pd%d_%d = _t%d; (void)lv__pd%d_%d;\n",
                    pd_uid, k, atmp[k], pd_uid, k);
-        snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", m->pnames[k]);
+        snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", pm->pnames[k]);
         snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_pd%d_%d", pd_uid, k);
         g_nren++;
       }
@@ -9362,114 +9261,47 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
       continue;
     }
 else {
+      ArgFrom from = pm ? L.from[k] : ARG_NODE;
       /* Only a true KEYWORD param consumes a key -- a positional param whose
          name happens to match must take the provided positional instead
          (mirrors emit_args_filled). */
-      int is_kwp_d = m && m->pnames[k] && callee_has_kwarg(c, m, m->pnames[k]);
-      int kv = (m && kwh_d >= 0 && is_kwp_d && !kw_merged_d) ? kwh_lookup(nt, kwh_d, m->pnames[k]) : -1;
-      /* A declared keyword param is never bound by position: `def fn(*opts,
-         ivar: false)` called `fn("a", "b")` must leave ivar at its default, not
-         steal the last positional (which the rest already collected) (#3204).
-         Mirrors the callee_param_is_declared_kwarg guard in emit_args_filled. */
-      int is_declkw_d = m && callee_param_is_declared_kwarg(c, m, m->pnames[k]);
-      /* no base implementation (the method exists only in subclasses): the
-         slots are the call's positionals as given, and the parameter map is
-         each implementation's own (#4514) */
-      int _sl = m ? arg_slot_for_param(c, m, k, bind_argc_d) : (k < pos_argc_d ? k : -1);
-      if (_sl >= pos_argc_d) _sl = -1;   /* the keyword hash's own slot: bound below */
-      /* a parameter after the rest is filled from the END of the call's
-         positionals -- the rest takes the middle (#3204's neighbour rule, the
-         one emit_args_filled and the inline lowerings already follow) */
-      int is_post_d = m && m->rest_idx >= 0 && m->npost_rest > 0 && !posts_dyn_d &&
-                      k > m->rest_idx && k <= m->rest_idx + m->npost_rest;
-      if (is_post_d) {
-        int aidx = rest_argc_d - m->npost_rest + (k - m->rest_idx - 1);
-        _sl = (aidx >= 0 && aidx < pos_argc_d) ? aidx : -1;
-      }
-      /* the posts are funded from the end, so the parameters ahead of the rest
-         reach only the arguments before them: an optional that read past that
-         point took the post's argument as well, binding it twice */
-      else if (m && m->rest_idx >= 0 && m->npost_rest > 0 && !posts_dyn_d &&
-               k < m->rest_idx && _sl >= rest_argc_d - m->npost_rest)
-        _sl = -1;
-      int provided = kv >= 0 ? kv : ((_sl >= 0 && !is_declkw_d) ? argv[_sl] : -1);
-      /* Options-hash idiom: a trailing keyword hash whose keys name no
-         parameter collapses into the first unfilled positional param when
-         that param is hash- or poly-typed -- Ruby packs `f(key: v)` into the
-         positional `data`. Mirrors the emit_args_filled path (#3191), and
-         asks the same helper which parameter that is: with a leading
-         optional it is not the one at index pos_argc_d. */
-      if (provided < 0 && kslot_d >= 0 && k == kslot_d && !is_kwp_d)
-        provided = kwh_d;
-      if (m && m->kwrest_idx >= 0 && k == m->kwrest_idx) {
+      int is_kwp_d = pm && pm->pnames[k] && callee_has_kwarg(c, pm, pm->pnames[k]);
+      int by_splat = from == ARG_GATHERED || from == ARG_ELEM;
+      int kv = (pm && kwh_d >= 0 && is_kwp_d && !kw_merged_d && !by_splat)
+                 ? kwh_lookup(nt, kwh_d, pm->pnames[k]) : -1;
+      /* no implementation to lay out for: the slots are the call's
+         positionals as given (#4514) */
+      int provided = kv >= 0 ? kv
+                   : !pm ? (k < pos_argc_d ? argv[k] : -1)
+                   : from == ARG_NODE ? argv[L.arg[k]]
+                   : from == ARG_KWH ? kwh_d : -1;
+      if (pm && pm->kwrest_idx >= 0 && k == pm->kwrest_idx) {
         /* `**kwrest` callee param: collect the call's unbound keywords --
            the caller's expressions, so with no parameter renames */
         int kr_nren_sv = g_nren;
         g_nren = pd_ren_base;
-        int krhash = emit_kwrest_collect(c, m, kwh_d, ds_tmp_d, ds_type_d, argsNode);
+        int krhash = emit_kwrest_collect(c, pm, kwh_d, ds_tmp_d, ds_type_d, argsNode);
         g_nren = kr_nren_sv;
         buf_printf(&ab, "_t%d", krhash);
       }
-      else if (kv < 0 && ds_tmp_d >= 0 && is_kwp_d) {
+      else if (!by_splat && kv < 0 && ds_tmp_d >= 0 && is_kwp_d) {
         /* keyword param fed by a forwarded `**hash`: extract by name. */
-        emit_ds_param_extract(c, m, k, ds_tmp_d, ds_type_d, &ab);
+        emit_ds_param_extract(c, pm, k, ds_tmp_d, ds_type_d, &ab);
       }
-      else if (m && L.from[k] == ARG_GATHERED) {
-        /* the default past the gathered count reads the callee's self, as
-           the defaults below do: `def m(a = @x, c)` read the caller's */
+      else if (by_splat) {
+        /* from the gather or the splat spread in place; a default past its
+           end reads the callee's self, as the defaults below do: `def m(a =
+           @x, c)` read the caller's */
         const char *saved_deref4 = g_self_deref;
         int saved_emcls4 = g_emitting_class_id;
         g_self = selfptr;
         g_self_deref = comp_ty_value_obj(c, ty_object(cid)) ? "." : "->";
-        g_emitting_class_id = m->class_id;
-        emit_gathered_param(c, m, k, splat_tmp_d, &ab);
+        g_emitting_class_id = pm->class_id;
+        if (from == ARG_GATHERED) emit_gathered_param(c, pm, k, splat_tmp_d, &ab);
+        else emit_elem_param(c, pm, k, L.arg[k], splat_tmp_d, splat_at_d, L.gather, &ab);
         g_self = saved_self;
         g_self_deref = saved_deref4;
         g_emitting_class_id = saved_emcls4;
-      }
-      else if (splat_tmp_d >= 0 && k >= splat_idx_d && kv < 0 && !is_declkw_d &&
-               (m->rest_idx < 0 || k < m->rest_idx)) {
-        /* fill this fixed param from the splatted array at offset k-splat_idx.
-           Only the parameters ahead of a rest are filled this way: a keyword
-           binds by name and a post from the end of the call. */
-        int off = k - splat_idx_d;
-        TyKind set = ty_array_elem(splat_at_d);
-        Buf eb; memset(&eb, 0, sizeof eb);
-        if (p && p->type == TY_POLY && set != TY_POLY && set != TY_UNKNOWN) {
-          /* a scalar splat element into a poly-widened param: box it */
-          Buf raw; memset(&raw, 0, sizeof raw);
-          emit_array_elem_at(splat_at_d, splat_tmp_d, off, &raw);
-          emit_boxed_text(c, set, raw.p ? raw.p : "0", &eb); free(raw.p);
-        }
-        else emit_array_elem_at(splat_at_d, splat_tmp_d, off, &eb);
-        /* the gathered positionals are boxed: a typed parameter unboxes */
-        if (splat_all_d && p && p->type != TY_POLY && p->type != TY_UNKNOWN) {
-          Buf ub; memset(&ub, 0, sizeof ub);
-          emit_unbox_nilable_text(c, p->type, eb.p ? eb.p : "sp_box_nil()", &ub);
-          free(eb.p); eb = ub;
-        }
-        /* an optional param may fall past the (runtime-sized) array end; the
-           arity check covers required params, so guard only the optionals --
-           by its default, since nrequired also counts a required keyword */
-        if (k >= m->nrequired || (m->pdefault && m->pdefault[k] >= 0)) {
-          Buf db; memset(&db, 0, sizeof db);
-          /* the default reads the callee's self, as the ones below do */
-          const char *saved_deref5 = g_self_deref;
-          int saved_emcls5 = g_emitting_class_id;
-          g_self = selfptr;
-          g_self_deref = comp_ty_value_obj(c, ty_object(cid)) ? "." : "->";
-          g_emitting_class_id = m->class_id;
-          emit_arg_or_default(c, m, k, -1, &db);
-          g_self = saved_self;
-          g_self_deref = saved_deref5;
-          g_emitting_class_id = saved_emcls5;
-          TyKind pt = p ? p->type : TY_INT;
-          buf_printf(&ab, "(%d < (_t%d ? _t%d->len : 0) ? %s : %s)", off, splat_tmp_d, splat_tmp_d,
-                     eb.p ? eb.p : "", db.p ? db.p : default_value(pt));
-          free(db.p);
-        }
-        else buf_puts(&ab, eb.p ? eb.p : "");
-        free(eb.p);
       }
       else {
         /* Default expressions (e.g. `@ivar * 10`) reference the callee's self and
@@ -9481,17 +9313,17 @@ else {
         if (provided < 0) {
           g_self = selfptr;
           g_self_deref = comp_ty_value_obj(c, ty_object(cid)) ? "." : "->";
-          if (m) g_emitting_class_id = m->class_id;
+          if (pm) g_emitting_class_id = pm->class_id;
         }
         /* a provided argument is the caller's expression: a caller local that
            happens to share a parameter's name must not resolve to the temp */
         int pd_nren_sv = g_nren;
         if (provided >= 0) g_nren = pd_ren_base;
-        /* no base implementation: there is no parameter list to read a
-           default or a coercion from, so the argument is the caller's
-           expression as written; each subclass arm takes it (#4514) */
-        if (!m) { if (provided >= 0) emit_expr(c, provided, &ab); else buf_puts(&ab, "0"); }
-        else emit_arg_or_default(c, m, k, provided, &ab);
+        /* no implementation: there is no parameter list to read a default
+           or a coercion from, so the argument is the caller's expression as
+           written (#4514) */
+        if (!pm) { if (provided >= 0) emit_expr(c, provided, &ab); else buf_puts(&ab, "0"); }
+        else emit_arg_or_default(c, pm, k, provided, &ab);
         g_nren = pd_nren_sv;
         g_self = saved_self;
         g_self_deref = saved_deref3;
@@ -9508,11 +9340,11 @@ else {
         buf_printf(g_pre, " *_t%d = ", atmp[k]);
         buf_puts(g_pre, ab.p ? ab.p : ""); buf_puts(g_pre, ";\n");
         free(ab.p);
-        if (pd_active && m->pnames[k] && g_nren < MAX_RENAME) {
+        if (pd_active && pm->pnames[k] && g_nren < MAX_RENAME) {
           /* the lent address under the cell spelling a reading default emits */
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "const char **_cell__pd%d_%d = _t%d;\n", pd_uid, k, atmp[k]);
-          snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", m->pnames[k]);
+          snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", pm->pnames[k]);
           snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_pd%d_%d", pd_uid, k);
           g_nren++;
         }
@@ -9525,7 +9357,7 @@ else {
          and collect an earlier one still sitting in its temp. */
       if (att == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", atmp[k]); }
       else if (needs_root(att)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", atmp[k]); }
-      if (pd_active && m->pnames[k] && g_nren < MAX_RENAME) {
+      if (pd_active && pm->pnames[k] && g_nren < MAX_RENAME) {
         /* alias the temp (already rooted) under the rename's spelling, and
            register the rename AFTER it so only a LATER default reads it */
         emit_indent(g_pre, g_indent);
@@ -9533,7 +9365,7 @@ else {
         buf_printf(g_pre, " lv__pd%d_%d = _t%d; (void)lv__pd%d_%d;\n", pd_uid, k, atmp[k], pd_uid, k);
         char pdn[48]; snprintf(pdn, sizeof pdn, "_pd%d_%d", pd_uid, k);
         emit_pd_cell_alias(c, p, pdn);
-        snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", m->pnames[k]);
+        snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", pm->pnames[k]);
         snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_pd%d_%d", pd_uid, k);
         g_nren++;
       }
@@ -9543,17 +9375,10 @@ else {
   g_nren = pd_ren_base;   /* the renames served the defaults only */
   g_n_argov = argov_saved_d;
 
-  /* Too few arguments for a rest-parameter target: CRuby's ArgumentError,
-     where the body ran with the missing parameters padded out. The raise sits
-     after the argument temps because CRuby evaluates a call's arguments before
-     the method refuses their count. */
-  int eff_pos_d = pos_argc_d + (kwh_d >= 0 ? 1 : 0);
-  if (rest_given_d >= 0) emit_rest_shortfall_raise(rest_given_d, rest_req_d);
-  if (rest_req_d >= 0 && !dyn_argc_d && eff_pos_d < rest_req_d) {
-    char am[512];
-    arity_message(am, sizeof am, eff_pos_d, rest_req_d, -1, NULL);
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_raise_cls(\"ArgumentError\", \"%s\");\n", am);
+  /* a trailing splat's count, refused once every argument has run */
+  if (given_d >= 0) {
+    char gvn[32]; snprintf(gvn, sizeof gvn, "_t%d", given_d);
+    emit_positional_count_check(c, pm, gvn);
   }
   /* &block param that escapes: pre-evaluate the block as sp_Proc * temp.
      When the call site has no block, blk_tmp stays -1 and we pass NULL. */
@@ -9609,19 +9434,6 @@ else {
        loops in codegen_call.c (issue #1583). */
     if (!scope_has_callable_symbol(c, kmi)) continue;
     nd_callee(c, g_nd_call_id, kmi, kd, 1);
-    /* The count is judged again per arm, because the switch knows the receiver
-       the check above could only guess at: with arms that disagree -- an
-       override with a default where the base has a required parameter -- the
-       smallest requirement kept the call, and a receiver of the stricter class
-       then ran with a padded parameter. Each arm answers for its own method,
-       the way the class-method dispatch does. */
-    { int areq = !dyn_argc_d ? rest_shortfall_required(c, &c->scopes[kmi]) : -1;
-      if (areq >= 0 && eff_pos_d < areq) {
-        char am[512];
-        arity_message(am, sizeof am, eff_pos_d, areq, -1, NULL);
-        buf_printf(b, " case %d: sp_raise_cls(\"ArgumentError\", \"%s\"); break;", k, am);
-        continue;
-      } }
     TyKind arm_ret = (TyKind)c->scopes[kmi].ret;
     const char *kfn = mc(c->scopes[kmi].name);
     if (method_is_void(&c->scopes[kmi])) {
