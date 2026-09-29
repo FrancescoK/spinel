@@ -4720,9 +4720,12 @@ static int kwh_brings_other_key(Compiler *c, int kwh) {
     if (nt_kind(nt, el[e]) == NK_AssocNode) {
       int key = nt_ref(nt, el[e], "key");
       if (key < 0 || nt_kind(nt, key) == NK_SymbolNode) continue;
-      /* a computed key whose class is not settled yet waits for it */
+      /* A computed key whose class is not settled yet waits for it while
+         inference is optimistic; widening is never undone, so taking it then
+         would widen every rest a Symbol-valued call reaches. Settled and
+         still unknown (`$g = nil; rr($g => 1)`), it may be anything. */
       TyKind kt = infer_type(c, key);
-      if (kt != TY_UNKNOWN && kt != TY_SYMBOL) return 1;
+      if (kt == TY_UNKNOWN ? !g_infer_optimistic : kt != TY_SYMBOL) return 1;
       continue;
     }
     if (nt_kind(nt, el[e]) != NK_AssocSplatNode) continue;
