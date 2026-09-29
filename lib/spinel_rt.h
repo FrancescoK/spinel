@@ -10337,6 +10337,28 @@ static sp_queue *sp_poly_as_queue(sp_RbVal v, const char *name) {
 static sp_RbVal sp_poly_queue_num_waiting(sp_RbVal v) { return sp_box_int(sp_Queue_num_waiting(sp_poly_as_queue(v, "num_waiting"))); }
 static sp_RbVal sp_poly_queue_deq(sp_RbVal v) { return sp_Queue_pop(sp_poly_as_queue(v, "deq")); }
 static sp_RbVal sp_poly_queue_enq(sp_RbVal v, sp_RbVal x) { sp_Queue_push(sp_poly_as_queue(v, "enq"), x); return v; }
+/* pop/shift/deq(non_block): an Array's pop(true) is still CRuby's TypeError */
+static sp_RbVal sp_poly_queue_pop_flag(sp_RbVal v, const char *name, sp_bool nb) {
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id))
+    sp_raise_cls("TypeError", nb ? "no implicit conversion of true into Integer"
+                                 : "no implicit conversion of false into Integer");
+  sp_queue *q = sp_poly_as_queue(v, name);
+  return nb ? sp_Queue_pop_nb(q) : sp_Queue_pop(q);
+}
+/* pop/shift with a boxed argument: a Queue reads it as non_block, an Array
+   as a count (and answers an Array of what it removed) */
+static sp_RbVal sp_poly_pop_any(sp_RbVal v, sp_RbVal arg, int from_front) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_QUEUE && v.v.p)
+    return sp_poly_queue_pop_flag(v, from_front ? "shift" : "pop", sp_poly_truthy(arg));
+  return sp_box_poly_array(sp_poly_pop_n(v, sp_poly_arg_int_chk(arg), from_front));
+}
+/* push/enq(obj, non_block): SizedQueue's form; a Queue takes one argument */
+static sp_RbVal sp_poly_queue_push_flag(sp_RbVal v, const char *name, sp_RbVal x, sp_bool nb) {
+  sp_queue *q = sp_poly_as_queue(v, name);
+  if (sp_Queue_max(q) == 0) sp_raise_cls("ArgumentError", "wrong number of arguments (given 2, expected 1)");
+  if (nb) sp_Queue_push_nb(q, x); else sp_Queue_push(q, x);
+  return v;
+}
 static sp_RbVal sp_poly_thread_status(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_THREAD) return sp_Thread_status((sp_thread *)v.v.p);
   /* a SystemExit's exit status, as the typed accessor reads it; any other

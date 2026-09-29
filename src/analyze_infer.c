@@ -3738,6 +3738,12 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      elements (#3613) -- unless a program class also answers the name, when
      the dispatch writes that class's result into the same slot, and only a
      boxed one holds both (#4831; the push rule above for the same reason). */
+  /* ...but pop(true) / shift(false) is Queue#pop(non_block): an Array's
+     pop(true) is a TypeError, so only a Queue answers it, with one value */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 &&
+      (sp_streq(name, "pop") || sp_streq(name, "shift")) &&
+      (infer_type(c, argv[0]) == TY_BOOL || infer_type(c, argv[0]) == TY_POLY))
+    return TY_POLY;   /* a boxed argument: a Queue's flag or an Array's count */
   if (recv >= 0 && rt == TY_POLY && argc == 1 &&
       (sp_streq(name, "pop") || sp_streq(name, "shift"))) {
     if (c->poly_builtin_ty && id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN)
@@ -5708,7 +5714,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
           sp_streq(name, "status"))
         return an_poly_concrete(c, name, TY_POLY);
       /* the Queue names no other builtin has: a popped value, the queue, a count */
-      if ((sp_streq(name, "deq") && argc == 0) || (sp_streq(name, "enq") && argc == 1))
+      if ((sp_streq(name, "deq") && argc <= 1) || (sp_streq(name, "enq") && (argc == 1 || argc == 2)))
         return an_poly_concrete(c, name, TY_POLY);
       if (sp_streq(name, "num_waiting") && argc == 0) return an_poly_concrete(c, name, TY_INT);
       if (sp_streq(name, "alive?") || sp_streq(name, "dead?") || sp_streq(name, "closed?") ||

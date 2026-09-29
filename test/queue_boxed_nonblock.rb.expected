@@ -1,0 +1,24 @@
+pop(true) empty: ThreadError: queue empty
+shift(true) empty: ThreadError: queue empty
+deq(true) empty: ThreadError: queue empty
+pop(true) item: 7
+pop(false) item: 8
+deq(false) item: 9
+Queue enq(x, true): ArgumentError: wrong number of arguments (given 2, expected 1)
+Queue push(x, true): ArgumentError: wrong number of arguments (given 2, expected 1)
+SizedQueue enq(x, true) room: Thread::SizedQueue
+SizedQueue enq(x, true) full: ThreadError: queue full
+SizedQueue push(x, true) full: ThreadError: queue full
+SizedQueue size: 1
+SizedQueue pop(true): :a
+SizedQueue push(x, false): Thread::SizedQueue
+SizedQueue size after: 1
+Array pop(true): TypeError: no implicit conversion of true into Integer
+Array pop(1): [2]
+pop(boxed true) empty: ThreadError: queue empty
+pop(boxed true) item: 11
+shift(boxed false) item: 12
+Queue push(x, boxed true): ArgumentError: wrong number of arguments (given 2, expected 1)
+SizedQueue push(x, boxed true) full: ThreadError: queue full
+SizedQueue size unchanged: 1
+Array pop(boxed 1): [7]
