@@ -4970,7 +4970,10 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
       if (src_misfit || !fits || folded != at) changed |= widen_arg_hash(c, argv[arg]);
     }
     if (merged == TY_PROC) {
+      /* every call's proc: the parameter answers what any of them returns
+         (each call overwriting it flipped the slot round after round) */
       TyKind pr = proc_ret_of(c, argv[arg]);
+      if (pr != TY_UNKNOWN && p->proc_ret != TY_UNKNOWN) pr = ty_unify((TyKind)p->proc_ret, pr);
       if (pr != TY_UNKNOWN && p->proc_ret != (int)pr) { p->proc_ret = (int)pr; changed = 1; }
     }
   }
