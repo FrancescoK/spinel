@@ -6841,10 +6841,12 @@ static void emit_poly_kw_all(Compiler *c, int kwh, int th, int any, Buf *b) {
       int key = nt_ref(nt, els[e], "key");
       if (nt_kind(nt, key) != NK_SymbolNode) {
         /* a String or computed key, only in a hash of any key, run where
-           it stands */
-        buf_printf(b, "sp_PolyPolyHash_set(_t%d, ", th);
+           it stands: into a temp first, as C runs a call's arguments in
+           no set order and the value's run may collect the key */
+        int tk = ++g_tmp;
+        buf_printf(b, "sp_RbVal _t%d = ", tk);
         emit_boxed(c, key, b);
-        buf_puts(b, ", ");
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyPolyHash_set(_t%d, _t%d, ", tk, th, tk);
       }
       else
         buf_printf(b, any ? "sp_PolyPolyHash_set(_t%d, sp_box_sym((sp_sym)%d), "
