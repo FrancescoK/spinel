@@ -2166,6 +2166,11 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
                              (g_pf_emitting || _ynt != TY_UNKNOWN)
                                ? _ynt : g_yield_slot_ty,
                              b, 0, 1); }
+    else if (nt_str(nt, id, "call_operator") && sp_streq(nt_str(nt, id, "call_operator"), "&.")) {
+      /* `blk&.call`: the nil parameter answers nil instead of raising */
+      const char *nv = nil_value(comp_ntype(c, id));
+      buf_puts(b, nv ? nv : default_value(comp_ntype(c, id)));
+    }
     else {
       TyKind _bt = comp_ntype(c, id);
       buf_printf(b, "((void)sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())), %s)",

@@ -8248,7 +8248,7 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
       /* forwarded real proc: <blk>.call(args) for effect; else no block was
          passed, the parameter is nil, and the call raises NoMethodError */
       if (g_yield_proc_ref) emit_yield_proc_call(c, nt_ref(nt, id, "arguments"), TY_VOID, b, indent, 0);
-      else {
+      else if (!(nt_str(nt, id, "call_operator") && sp_streq(nt_str(nt, id, "call_operator"), "&."))) {
         emit_indent(b, indent);
         buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));\n",
                    blockless_block_param_call_name(c, id));
