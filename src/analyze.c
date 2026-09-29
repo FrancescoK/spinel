@@ -17741,6 +17741,7 @@ void analyze_program(Compiler *c) {
   desugar_duplicate_underscore_params(c); /* |_, _| -> |_, _dup1| */
   desugar_encoding_queries(c);          /* Encoding.default_internal -> nil, find("x") -> a constant */
   desugar_inherited_aliases(c);         /* alias_method :next, :inherited_m -> a forwarding def */
+  desugar_reader_aliases_before_redef(c); /* attr_reader :v; alias w v; def v -> def w = @v */
   desugar_reassigned_block_params(c);   /* |p| p = other -> |p__bpin| p = p__bpin; p = other */
   desugar_class_reopen(c);               /* class Class / Class.class_eval -> a module */
   desugar_class_new_blocks(c);           /* X = Class.new(B) do..end -> class X < B; ..; end */

@@ -2271,22 +2271,32 @@ static int alias_pred_const(const NodeTable *nt, int pred) {
 /* An alias captures the definition in effect where it appears. When the target
    is redefined LATER in the same body, a name mapping would resolve to the new
    definition, so the earlier one is renamed to the alias instead -- which is
-   what the alias actually names (#3737). Returns 1 when it did that. */
+   what the alias actually names (#3737). Returns 1 when it did that. A second
+   alias of that same definition finds it by its `def` name, already renamed to
+   the first alias, and names the first alias instead. */
 static int alias_capture_earlier_def(Compiler *c, ClassInfo *cls,
                                      const char *nw, const char *od, int alias_node) {
   if (!nw || !od || !cls->name) return 0;
   int cid = comp_class_index(c, cls->name);
   if (cid < 0) return 0;
+  const NodeTable *nt = c->nt;
   int before = -1, after = 0;
   for (int si = 1; si < c->nscopes; si++) {
     Scope *sc = &c->scopes[si];
-    if (sc->class_id != cid || sc->is_cmethod || !sc->name || !sp_streq(sc->name, od)) continue;
+    if (sc->class_id != cid || sc->is_cmethod || !sc->name) continue;
+    const char *dn = sc->def_node >= 0 && nt_kind(nt, sc->def_node) == NK_DefNode
+                     ? nt_str(nt, sc->def_node, "name") : NULL;
+    if (!sp_streq(sc->name, od) && !(dn && sp_streq(dn, od))) continue;
     if (sc->def_node >= 0 && sc->def_node < alias_node) {
       if (before < 0 || sc->def_node > c->scopes[before].def_node) before = si;
     }
     else after = 1;
   }
   if (before < 0 || !after) return 0;
+  if (!sp_streq(c->scopes[before].name, od)) {
+    comp_add_alias_from(cls, nw, c->scopes[before].name, alias_node);
+    return 1;
+  }
   free(c->scopes[before].name);
   c->scopes[before].name = strdup(nw);
   return 1;
