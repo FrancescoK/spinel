@@ -11984,7 +11984,7 @@ static int an_byref_promote_group(Compiler *c, const char *nm, int pi,
   return did;
 }
 
-static int a_super_target(Compiler *c, Scope *m);
+int a_super_target(Compiler *c, Scope *m);
 static void compute_byref_out_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int n = c->nscopes;
@@ -15282,7 +15282,7 @@ static int convert_byref_handle_params(Compiler *c,
 }
 
 /* The method a `super` in scope `m` calls, or -1. */
-static int a_super_target(Compiler *c, Scope *m) {
+int a_super_target(Compiler *c, Scope *m) {
   const char *shadow = comp_prep_chain_target(c, m->class_id, m->name);
   if (shadow) return m->is_cmethod ? comp_cmethod_in_class(c, m->class_id, shadow)
                                    : comp_method_in_class(c, m->class_id, shadow);
