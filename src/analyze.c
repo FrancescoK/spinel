@@ -17706,6 +17706,7 @@ void analyze_program(Compiler *c) {
   desugar_included_hooks(c);             /* include M / extend M -> M.included/extended(base)'s body */
   desugar_self_const_get(c);             /* const_get(:X) / self::X in a class method -> per subclass */
   desugar_dynamic_const_get(c);          /* M.const_get(expr) -> a table of M's constants */
+  desugar_builtin_reopen_self_calls(c);  /* class Hash; def m = each {..} -> self.each */
   desugar_extended_module_attrs(c);
   /* builtins/enumerable.rb, spliced by the parser: its definitions become
      the receiver-taking top-level functions before any scope is built */
