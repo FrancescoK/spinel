@@ -7459,6 +7459,15 @@ TyKind infer_uncached(Compiler *c, int id) {
     /* inside an instance_eval/exec splice the block scope has no class_id; the
        ivar belongs to the rebound receiver class (an_ie_class_id). */
     int wcls = s->class_id >= 0 ? s->class_id : an_ie_class_id;
+    /* a toplevel method's `@x ||= v` / `@x &&= v` answers the Toplevel slot,
+       which the value alone does not type (`(@a ||= []) << 1`) */
+    if (wcls < 0 && !s->is_cmethod && id < c->node_cap && c->node_cbody[id] < 0 &&
+        (nk == NK_InstanceVariableOrWriteNode || nk == NK_InstanceVariableAndWriteNode)) {
+      int tl = comp_class_index(c, "Toplevel");
+      int tiv = tl >= 0 && nm ? comp_ivar_index(&c->classes[tl], nm) : -1;
+      TyKind tt = tiv >= 0 ? ivar_value_ty(&c->classes[tl], tiv) : TY_UNKNOWN;
+      if (tt != TY_UNKNOWN) return tt;
+    }
     if (wcls < 0) return infer_type(c, nt_ref(nt, id, "value"));
     ClassInfo *ci = &c->classes[wcls];
     int iv = nm ? comp_ivar_index(ci, nm) : -1;
