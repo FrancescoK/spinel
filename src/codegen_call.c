@@ -217,18 +217,16 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   buf_puts(b, "({\n");
   /* The binding below runs in parameter order, but CRuby evaluates the
      arguments in source order, and each value of a key written twice though
-     only the last binds: a call whose keywords are out of parameter order
-     runs its arguments first, in order, into temps the binding reads through
-     the g_argov overrides. */
+     only the last binds: a call whose binding would run one out of that
+     order -- keywords out of parameter order, a read a later value can
+     change (emit_args_before_binding) -- runs its arguments first, in
+     order, into temps the binding reads through the g_argov overrides. */
   int argov_saved = g_n_argov;
   int cargs = nt_ref(nt, id, "arguments");
   int cargc = 0; const int *cargv = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cargc) : NULL;
-  int ran_first = cargc > 0 && kwh_out_of_order(c, m, cargv[cargc - 1]);
-  if (ran_first) {
-    g_indent++;
-    emit_args_in_source_order(c, cargv, cargc, b);
-    g_indent--;
-  }
+  g_indent++;
+  int ran_first = emit_args_before_binding(c, m, cargv, cargc, b);
+  g_indent--;
   emit_indent(b, g_indent + 1);
   /* A value-type class returns sp_X by value from sp_X_new; a heap class returns
      sp_X *. The inlined body reaches its ivars through g_self + g_self_deref, so
@@ -12638,6 +12636,25 @@ static int emit_struct_new_early(Compiler *c, int ci, int argc, const int *argv,
    generated constructor taking the members positionally or by keyword. A
    Class-value `new` builds each Struct arm with it, as the constant form
    builds the one class. */
+/* Do the literal keys of `kwh` name members of `cls` out of the members'
+   order, which is the order emit_struct_new_call renders them in? */
+static int struct_kwh_out_of_order(Compiler *c, const ClassInfo *cls, int kwh) {
+  const NodeTable *nt = c->nt;
+  int n = 0, last = -1;
+  const int *els = kwh >= 0 ? nt_arr(nt, kwh, "elements", &n) : NULL;
+  for (int i = 0; i < n; i++) {
+    int key = nt_kind(nt, els[i]) == NK_AssocNode ? nt_ref(nt, els[i], "key") : -1;
+    const char *kn = key >= 0 && nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
+    for (int a = 0; kn && a < cls->nivars; a++) {
+      if (!sp_streq(cls->ivars[a] + 1, kn)) continue;
+      if (a < last) return 1;
+      last = a;
+      break;
+    }
+  }
+  return 0;
+}
+
 static int emit_struct_new_call(Compiler *c, int id, int ci, int argc, const int *argv, Buf *b) {
   const NodeTable *nt = c->nt;
     /* Struct.new members: positional args, or keyword args mapping each
@@ -12672,6 +12689,18 @@ static int emit_struct_new_call(Compiler *c, int id, int ci, int argc, const int
     if (cls->kw_init == -1 && !kw_splat) kwh = -1;
     int nunk, late;
     if (emit_struct_new_early(c, ci, argc, argv, kwh, &nunk, &late, b)) return 1;
+    /* CRuby runs every argument before the constructor sees one, and the
+       members below render in member order, a heap one hoisted ahead of the
+       call: arguments that can observe one another -- two with an effect, a
+       read a later one can change, or keywords with an effect written out of
+       the members' order -- run first, in source order, into temps the
+       members read, each `**` operand converted where it stands
+       (emit_args_run): `S.new(@v, f(2))` read what f left in @v, and
+       `Q.new(y: f(2), x: @v)` read @v ahead of f */
+    int argov_saved = g_n_argov;
+    if (args_order_matters(c, argv, argc, NULL, 0) ||
+        (kwh >= 0 && subtree_has_side_effect(c, kwh) && struct_kwh_out_of_order(c, cls, kwh)))
+      emit_args_run(c, argv, argc);
     /* the same test emit_struct_new_early's size check made */
     int spread_tail = kwh < 0 && argc > 1 && !cls->is_data && cls->kw_init != 1 &&
                       kwh_only_spreads(nt, argv[argc - 1]);
@@ -12772,7 +12801,7 @@ static int emit_struct_new_call(Compiler *c, int id, int ci, int argc, const int
            dangling and the next mark reads freed memory (#4049). */
         Buf mv; memset(&mv, 0, sizeof mv);
         emit_struct_member_value(c, cls, a, vnode, &mv);
-        if (arg_wants_root(c, cls->ivar_types[a], vnode))
+        if (arg_wants_root(c, cls->ivar_types[a], vnode) && !arg_ran_first(vnode, argov_saved))
           emit_rooted_operand(c, cls->ivar_types[a], -1, mv.p ? mv.p : "", b);
         else buf_puts(b, mv.p ? mv.p : "");
         free(mv.p);
@@ -12799,6 +12828,7 @@ static int emit_struct_new_call(Compiler *c, int id, int ci, int argc, const int
       free(kb.p);
     }
     free(lit_tmp);
+    g_n_argov = argov_saved;
     return 1;
 }
 
@@ -20002,9 +20032,15 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
                 }
                 continue;
               }
-              if (!aty || sp_streq(aty, "SplatNode") || sp_streq(aty, "KeywordHashNode") ||
+              /* a read a later value can change is taken here too, where
+                 CRuby reads it: left in place, `o.m(@v, f(2))` read what f
+                 left in @v (read_rebound_by) */
+              int rebound = 0;
+              for (int j = a + 1; j < nhn && !rebound; j++) rebound = read_rebound_by(c, hn[a], hn[j]);
+              if (!aty || (!rebound && (sp_streq(aty, "LocalVariableReadNode") ||
+                                        sp_streq(aty, "InstanceVariableReadNode"))) ||
+                  sp_streq(aty, "SplatNode") || sp_streq(aty, "KeywordHashNode") ||
                   sp_streq(aty, "BlockArgumentNode") || sp_streq(aty, "ForwardingArgumentsNode") ||
-                  sp_streq(aty, "LocalVariableReadNode") || sp_streq(aty, "InstanceVariableReadNode") ||
                   sp_streq(aty, "SelfNode") || sp_streq(aty, "IntegerNode") ||
                   sp_streq(aty, "FloatNode") || sp_streq(aty, "StringNode") ||
                   sp_streq(aty, "SymbolNode") || sp_streq(aty, "NilNode") ||

@@ -1246,7 +1246,8 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
      below rather than being boxed by the shared node type (#2454). Not a
      call argument that already ran into a temp (the g_argov overrides name
      the parenthesized node): unwrapped, the inner expression ran again,
-     `m(**(lg(h)))` beside keywords that run ahead running lg twice. */
+     `m(**(lg(h)))` beside keywords that run ahead running lg twice, and
+     `m(x, (x = lg(2)))` into a boxed parameter printing twice. */
   {
     const char *pty = nt_type(c->nt, node);
     if (pty && sp_streq(pty, "ParenthesesNode") && !arg_ran_first(node, 0)) {

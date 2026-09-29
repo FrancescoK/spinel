@@ -249,7 +249,7 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
   int kw_merged = kwh_merged(c, m, kwh);
   int argov_saved = g_n_argov;
   if (L->kw.args_first || kwh_runs_ahead(c, m, kwh)) emit_args_run(c, argv, argc);
-  else if (kwh_out_of_order(c, m, kwh)) emit_args_in_source_order(c, argv, argc, g_pre);
+  else emit_args_before_binding(c, m, argv, argc, g_pre);
   TyKind ds_type = TY_UNKNOWN;
   int ds_tmp = emit_ds_hash_materialize(c, m, kwh, &ds_type);
   /* The count and the keys, by the rule the ordinary call path follows. The

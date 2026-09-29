@@ -1105,6 +1105,27 @@ void emit_args_before(Compiler *c, const int *argv, int argc, const int *after, 
    drains ahead of the other's bind -- or a read a later value, or a node of
    `after`, can change. */
 int args_order_matters(Compiler *c, const int *argv, int argc, const int *after, int nafter);
+/* The arguments of a call into `m` (NULL: none known), run first, in source
+   order, into `b` as emit_args_before runs them, when its binding would run
+   one out of CRuby's order; 1 when they ran, for the caller to pop the
+   overrides once it has bound the call. A binder renders each value, and
+   each default it fills at the call site, at its parameter's slot, and
+   hoists the ones the slot roots ahead of the call statement, where they
+   ran before the arguments left in place. So the arguments run first when
+   its keywords are out of the parameters' order (kwh_out_of_order), when a
+   read among them is one a later value or such a default can change
+   (read_rebound_by: `m(@v, k: f(2))`, `m(v, k: (v = 2))`), when a value
+   with an effect sits beside a default with one (the default runs after
+   every argument), and when a call with keywords, bound by name, passes
+   two values with an effect (`m(lg(1), k: ls(2))`). Positionals alone are
+   sequenced where emit_args_filled hoists them. A call whose keywords run
+   ahead (kwh_runs_ahead) runs its arguments first already. */
+int emit_args_before_binding(Compiler *c, Scope *m, const int *argv, int argc, Buf *b);
+/* Can the node `after` give a variable the value `x` reads another value?
+   A local only by assigning it; an instance, global or class variable by
+   any effect. A value built of reads (`[x, 2]`) asks it of each; a block
+   reads when it runs. */
+int read_rebound_by(Compiler *c, int x, int after);
 int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type);
 /* The TypeError CRuby raises for a `**` operand that is neither a Hash, nil
    nor convertible with #to_hash, emitted into g_pre ahead of any keyword
@@ -1166,6 +1187,11 @@ int class_builtin_parent(Compiler *c, int cid);      /* codegen.c */
 int class_includes_module_named(Compiler *c, int cid, const char *mod_name);
 int class_isa_user(Compiler *c, int k, int cid, const char *cn);  /* codegen_call.c */
 int dispatch_impl_count(Compiler *c, int cid, const char *name);
+/* Can running the node `id` assign self's instance variable `iv`, self an
+   instance of class `cls` (-1: none known) or of one below it? `depth`
+   counts the self calls followed into their methods (0 at the call site);
+   1 when it cannot tell. */
+int subtree_may_write_ivar(Compiler *c, int id, const char *iv, int cls, int depth);
 int block_call_takes_class_dispatch(Compiler *c, int id);
 void emit_dispatch(Compiler *c, int cid, const char *name, const char *selfptr, int argsNode, int blk_node, Buf *b);
 int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name, const char *selfptr, const char *reader, TyKind reader_ty, Buf *b);
