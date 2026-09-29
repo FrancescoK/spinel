@@ -124,6 +124,22 @@ p I2.new.k(1, k: 2)
 module P2; def k(a, **o) = [:pre, super]; end
 class J2; prepend P2; def k(a, k: 1) = [a, k]; end
 p J2.new.k(1, k: 2), J2.new.k(1)
+# a parent keyword read from the `**` takes its value's type, and a post
+# after the parent's rest any of the method's positionals
+class B3
+  def k(a, k: 0) = [a, k]
+  def m(a, *r, z) = z
+  def o(a = 1, b) = b
+end
+class C3 < B3
+  def k(a, **o) = super
+  def m(x, *y) = super
+  def o(x, *r) = super
+end
+c3 = C3.new
+p c3.k(1, k: "x"), c3.k(1)
+p c3.m(1, "s"), c3.m(1, "s", :t), c3.m(1, 2)
+p c3.o(4), c3.o(4, "w")
 
 # `new` on a Class value: a Struct or Data built by keywords, a `**`
 # among them, and an initialize with a rest or a leading optional

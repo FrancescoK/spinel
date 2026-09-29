@@ -6093,10 +6093,13 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
 
 /* The parameters of the parent a bare `super` in `s` reaches, typed as it
    binds them (codegen's zsuper_begin): with a rest in `s` the positionals
-   gather, and each parent parameter from its own index on may take any
-   element; without, they are laid out as a call of `s`'s positional count
-   (arg_layout), each parent parameter typed from the one of `s` it takes. A
-   keyword takes `s`'s like-named keyword. */
+   gather, a parameter the gather funds from the front taking the element
+   at its index, and one it funds from the end (a post after the parent's
+   rest, a required after its leading optionals) any of them; without, they
+   are laid out as a call of `s`'s positional count (arg_layout), each
+   parent parameter typed from the one of `s` it takes. A keyword takes
+   `s`'s like-named keyword, or a boxed value from `s`'s `**` (as a call's
+   `**h` gives one), which codegen reads it from (zsuper_kw_begin). */
 static int bind_zsuper_params(Compiler *c, int id, Scope *s, Scope *pm) {
   int changed = 0;
   /* the parent's `**` takes this method's own */
@@ -6110,10 +6113,14 @@ static int bind_zsuper_params(Compiler *c, int id, Scope *s, Scope *pm) {
   }
   for (int i = 0; i < pm->nparams; i++) {
     if (i == pm->kwrest_idx || !callee_param_is_declared_kwarg(c, pm, pm->pnames[i])) continue;
-    if (!callee_param_is_declared_kwarg(c, s, pm->pnames[i])) continue;
-    LocalVar *src = scope_local(s, pm->pnames[i]);
     LocalVar *dst = scope_local(pm, pm->pnames[i]);
-    if (!src || !dst || dst->rbs_seeded || src->type == TY_UNKNOWN) continue;
+    if (!dst || dst->rbs_seeded) continue;
+    if (!callee_param_is_declared_kwarg(c, s, pm->pnames[i])) {
+      if (s->kwrest_idx >= 0) changed |= slot_take(c, dst, TY_POLY, id);
+      continue;
+    }
+    LocalVar *src = scope_local(s, pm->pnames[i]);
+    if (!src || src->type == TY_UNKNOWN) continue;
     TyKind mg = ty_unify(dst->type, src->type);
     if (mg != dst->type) { dst->type = mg; changed = 1; }
   }
@@ -6138,10 +6145,25 @@ static int bind_zsuper_params(Compiler *c, int id, Scope *s, Scope *pm) {
   TyKind rt = rv ? rv->type : TY_UNKNOWN;
   TyKind at = ty_is_array(rt) ? ty_array_elem(rt) : TY_POLY;
   if (at == TY_VOID || at == TY_NIL || at == TY_UNKNOWN) at = TY_POLY;
+  int opt_seen = 0;
   for (int pk = 0; pk < pm->nparams; pk++) {
     if (pk == pm->rest_idx || pk == pm->kwrest_idx) continue;
     LocalVar *p = pm->pnames[pk] ? scope_local(pm, pm->pnames[pk]) : NULL;
     if (!p || p->rbs_seeded || callee_param_is_declared_kwarg(c, pm, pm->pnames[pk])) continue;
+    int optional = pm->pdefault && pm->pdefault[pk] >= 0;
+    /* counted from the end of the gather: any of this method's positionals
+       or the rest's elements, as the count is the run time's */
+    if ((pm->rest_idx >= 0 && pk > pm->rest_idx) || (opt_seen && !optional)) {
+      for (int j = 0; j < srest; j++) {
+        LocalVar *src = scope_local(s, s->pnames[j]);
+        if (!src || src->type == TY_UNKNOWN) continue;
+        TyKind mg = ty_unify(p->type, src->type);
+        if (mg != p->type) { p->type = mg; changed = 1; }
+      }
+      if (rt != TY_UNKNOWN) changed |= slot_take(c, p, at, id);
+      continue;
+    }
+    opt_seen |= optional;
     if (pk < srest && (pm->rest_idx < 0 || pk < pm->rest_idx)) {
       LocalVar *src = scope_local(s, s->pnames[pk]);
       if (!src || src->type == TY_UNKNOWN) continue;
