@@ -8015,6 +8015,22 @@ static int oa_cls_join(int a, int b) {
    kind from (mark_empty_array_operands uses the same one), so a stamp here
    is seen by the next round's inference and by codegen (#4484). */
 static int *g_oa_empt_slot, *g_oa_empt_node, g_oa_empt_n, g_oa_empt_cap;
+/* The empty literals this pass itself stamped a row kind on, kept across
+   rounds: a component that narrowed on one round's evidence and is dropped on
+   a later one has to take its stamp back, and only its own -- other producers
+   stamp empty `[]` literals too. */
+static unsigned char *g_oa_empt_mine; static int g_oa_empt_mine_cap;
+static void oa_mark_empty_mine(int lit) {
+  if (lit >= g_oa_empt_mine_cap) {
+    int nc = g_oa_empt_mine_cap ? g_oa_empt_mine_cap : 256;
+    while (nc <= lit) nc *= 2;
+    g_oa_empt_mine = (unsigned char *)realloc(g_oa_empt_mine, (size_t)nc);
+    if (!g_oa_empt_mine) { fprintf(stderr, "oom\n"); exit(1); }
+    memset(g_oa_empt_mine + g_oa_empt_mine_cap, 0, (size_t)(nc - g_oa_empt_mine_cap));
+    g_oa_empt_mine_cap = nc;
+  }
+  g_oa_empt_mine[lit] = 1;
+}
 /* Nodes whose own emitted type has to follow the slot they feed: a
    `idx.map { |k| cols[k] }` builds the table in place, so narrowing the slot
    without retyping the map leaves the emitter building a poly array and
@@ -9415,16 +9431,30 @@ static int narrow_object_arrays(Compiler *c) {
        application the drop site is reached constantly but the want is always
        already UNKNOWN -- so this states the invariant rather than fixing a
        reproduced failure.
-       Only THIS pass's own source nodes, which are `map` calls. The empty-row
-       literal of #4484 is stamped here too and has the same exposure, but its
-       node is an empty `[]`, and two other producers stamp those as well
-       (mark_empty_array_operands and the ivar-write scan); clearing one here
-       could drop a want this pass never set. */
+       Only THIS pass's own source nodes, which are `map` calls, and the
+       empty-row literals of #4484 it stamped itself (g_oa_empt_mine): two
+       other producers stamp empty `[]` literals too (mark_empty_array_operands
+       and the ivar-write scan), and clearing one of theirs would drop a want
+       this pass never set. The empty rows do fire: `@row = []` reads as an
+       int array for a round before `@row = pattern` makes it boxed, and
+       `@banks[0] = @row` narrowed @banks on that round; the drop a round
+       later left the `[]` of `@banks = [[]]` an int-array row, and a boxed
+       row stored over it was read back as an sp_IntArray *. */
     #define OA_DROP_SRC_STAMP() do { \
       for (int _e = 0; _e < g_oa_src_n; _e++) { \
         if (oa_uf_find(sl, g_oa_src_slot[_e]) != oa_uf_find(sl, i)) continue; \
         int _sn = g_oa_src_node[_e]; \
         if (c->arr_want && _sn >= 0 && _sn < c->node_cap) c->arr_want[_sn] = TY_UNKNOWN; \
+      } \
+      for (int _e = 0; _e < g_oa_empt_n; _e++) { \
+        if (oa_uf_find(sl, g_oa_empt_slot[_e]) != oa_uf_find(sl, i)) continue; \
+        int _ln = g_oa_empt_node[_e]; \
+        if (_ln < 0 || _ln >= g_oa_empt_mine_cap || !g_oa_empt_mine[_ln]) continue; \
+        g_oa_empt_mine[_ln] = 0; \
+        if (c->arr_want && _ln < c->node_cap && \
+            (c->arr_want[_ln] == TY_INT_ARRAY || c->arr_want[_ln] == TY_FLOAT_ARRAY)) { \
+          c->arr_want[_ln] = TY_UNKNOWN; changed = 1; \
+        } \
       } \
     } while (0)
     /* This pass cleared every candidate's pin on the way in, but the pin field
@@ -9495,8 +9525,10 @@ static int narrow_object_arrays(Compiler *c) {
       for (int e = 0; e < g_oa_empt_n; e++) {
         if (oa_uf_find(sl, g_oa_empt_slot[e]) != r) continue;
         int lit = g_oa_empt_node[e];
-        if (c->arr_want && lit < c->node_cap && c->arr_want[lit] == TY_UNKNOWN)
+        if (c->arr_want && lit < c->node_cap && c->arr_want[lit] == TY_UNKNOWN) {
           c->arr_want[lit] = sl[r].cls == OA_CLS_IA ? TY_INT_ARRAY : TY_FLOAT_ARRAY;
+          oa_mark_empty_mine(lit);
+        }
       }
     }
     else {
