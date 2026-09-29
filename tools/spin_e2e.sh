@@ -141,7 +141,25 @@ case "$OUT" in
   *"(cached)"*) fail "test via PATH reused a binary older than the compiler: [$OUT]" ;;
 esac
 expect "test via PATH (stale binary)" "1/1 passed" "$(echo "$OUT" | tail -1)"
-cd "$WORK/app"; rm -rf "$WORK/stale"
+# An empty PATH component is the current directory, to the shell and so to
+# spin's which. With PATH=":<decoy>" the shell runs ./spin, whose compiler sits
+# beside it. which used to skip the empty component and answer the decoy spin
+# further along, and spin then built with the decoy's compiler. The decoy
+# compiler here only fails, so taking it fails the test.
+mkdir -p "$WORK/decoy"
+cp "$SPIN" "$WORK/decoy/spin"
+printf '#!/bin/sh\necho "decoy compiler ran" >&2\nexit 1\n' > "$WORK/decoy/spinel"
+chmod +x "$WORK/decoy/spinel"
+ln -s "$SPIN" spin
+ln -s "$(dirname "$SPIN")/spinel" spinel
+printf 'puts "here"\n' > test/here_test.rb      # fresh: must actually compile
+printf 'here\n' > test/here_test.rb.expected
+OUT=$(PATH=":$WORK/decoy:$PATH" spin test here_test.rb 2>&1) || true
+case "$OUT" in
+  *"decoy compiler ran"*) fail "an empty PATH component: spin took the compiler of a later spin: [$OUT]" ;;
+esac
+expect "test via an empty PATH component" "1/1 passed" "$(echo "$OUT" | tail -1)"
+cd "$WORK/app"; rm -rf "$WORK/stale" "$WORK/decoy"
 
 # a build that FAILS must not be reported ok by the run phase: a failed compile
 # leaves the previous binary where it was, and File.exist? read that as "it
