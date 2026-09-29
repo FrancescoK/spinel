@@ -3969,7 +3969,10 @@ static void check_unrewritten_delegators(Compiler *c) {
 /* `const_get(name)` with a name known only at run time: constants are
    resolved at compile time, so the call typed nothing and compiled silently,
    and the first call on its value raised NoMethodError for "unknown" (#4843).
-   Refuse it where it is written; a literal Symbol or String name resolves. */
+   On a constant receiver desugar_dynamic_const_get has already made it a
+   lookup in a table of the module's constants; any other receiver (a class
+   held in a variable) is refused where it is written. A literal Symbol or
+   String name resolves. */
 static void check_dynamic_const_get(Compiler *c) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
