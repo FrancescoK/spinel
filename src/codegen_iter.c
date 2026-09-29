@@ -400,6 +400,20 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
       if (mi >= 0) cm_class = g_class_body_id;
     }
     if (mi < 0) mi = comp_method_index(c, name);   /* free function */
+    /* A method of a module included at the top level is callable bare, like
+       a free function. A yielding one exists only inlined, so a call left to
+       the top-level-include arm in emit_call named a function that was never
+       emitted and the link failed. A module_function method is a class
+       method here, and it runs with the module as self, as it does when
+       called through the module. One that touches an instance variable is
+       left to that arm, which refuses it: main holds no module state. */
+    if (mi < 0) {
+      int imi = comp_included_method_index(c, name);
+      if (imi >= 0 && !scope_uses_ivars(c, imi)) {
+        mi = imi;
+        if (c->scopes[imi].is_cmethod) cm_class = c->scopes[imi].class_id;
+      }
+    }
     if (mi < 0) return 0;
   }
   else {

@@ -2992,6 +2992,25 @@ void scope_proc_form_end(Compiler *c, int s) {
    bare-call path emits a direct call to the module's own function, so that
    function has to exist even though including the module into a class also
    copied it away (#3795). */
+/* Whether method `mi`'s own body reads or writes an instance variable, in any
+   form: a multiple-assignment target and `&&=` included. The top-level
+   include path asks it twice, to inline and to refuse, and the two lists it
+   replaced drifted apart once already. */
+int scope_uses_ivars(Compiler *c, int mi) {
+  const NodeTable *nt = c->nt;
+  for (int nid = 0; nid < nt->count; nid++) {
+    if (c->nscope[nid] != mi) continue;
+    switch (nt_kind(nt, nid)) {
+      case NK_InstanceVariableReadNode: case NK_InstanceVariableWriteNode:
+      case NK_InstanceVariableOperatorWriteNode: case NK_InstanceVariableOrWriteNode:
+      case NK_InstanceVariableAndWriteNode: case NK_InstanceVariableTargetNode:
+        return 1;
+      default: break;
+    }
+  }
+  return 0;
+}
+
 int scope_toplevel_included(Compiler *c, int s) {
   if (s < 0 || s >= c->nscopes) return 0;
   Scope *sc = &c->scopes[s];

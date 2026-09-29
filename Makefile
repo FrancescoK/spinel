@@ -995,6 +995,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a singleton def on an untraceable receiver compiled)"; ok=0; \
 	else grep -q "singleton method that needs a self, on a receiver that is not one user-class instance" "$$tmp/r.out" || \
 	  { echo "reject-test: FAIL (rejected without saying why)"; sed -n 1,5p "$$tmp/r.out"; ok=0; }; fi; \
+	t=test/reject/toplevel_include_yield_ivar_target.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/tiv.c" >"$$tmp/tiv.out" 2>&1; then \
+	  echo "reject-test: FAIL (an included method assigning an ivar as a multiple-assignment target compiled)"; ok=0; \
+	else grep -q "top-level include of a module method that uses instance variables" "$$tmp/tiv.out" || \
+	  { echo "reject-test: FAIL (included ivar target rejected without saying why)"; sed -n 1,5p "$$tmp/tiv.out"; ok=0; }; fi; \
 	t=test/reject/forwarding_super_yielding_optional.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/fy.c" >"$$tmp/fy.out" 2>&1; then \
 	  echo "reject-test: FAIL (super(...) into a yielding parent with an optional compiled)"; ok=0; \
