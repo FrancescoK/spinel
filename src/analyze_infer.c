@@ -4376,6 +4376,13 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     }
   }
 
+  /* instance_variable_set(:@x, v) on a POLY receiver answers v, boxed (the
+     codegen twin stores it per class) */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_set") && argc == 2) {
+    const char *a0ty = nt_type(nt, argv[0]);
+    if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) return TY_POLY;
+  }
+
   /* nil? on a pointer-backed Enumerator: bool (NULL-as-nil test) */
   if (recv >= 0 && argc == 0 && sp_streq(name, "nil?") && rt == TY_ENUMERATOR)
     return TY_BOOL;
