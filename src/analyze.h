@@ -152,6 +152,7 @@ int an_program_builds_methods(Compiler *c);   /* the program builds Method objec
 /* obj.methods / public_methods / singleton_methods on an instance of `cid`
    fold to a static symbol list */
 int an_object_methods_listable(Compiler *c, int cid, const char *name);
+int an_class_singleton_methods_listable(Compiler *c, int cid);
 int ewo_memo_passed_to_callable_at(Compiler *c, int callid, int pidx);
 
 /* Class index when a receiverless instance_eval/exec resolves to self, else -1. */
