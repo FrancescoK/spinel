@@ -1961,6 +1961,30 @@ void emit_op_assign(Compiler *c, int id, Buf *b, int indent) {
 /* ---- control flow ---- */
 
 void emit_cond(Compiler *c, int id, Buf *b) {
+  /* A yield whose block, at the site being inlined, ends in a call no class
+     answers: the resolution gate lowers that call to its NoMethodError raise
+     (or, on a dynamic receiver, a nil placeholder), so the test's value is
+     never a truthy one. Checked before the type-based dispatch below, because
+     the yield node is shared by every call site and takes its type from
+     another site's block: typed bool there, the raising sp_RbVal statement
+     expression was negated with `!` and the C did not compile, and with no
+     other site it had no type and the condition was refused as non-bool.
+     CRuby raises NoMethodError from the block, which is what this compiles
+     to. */
+  if (nt_kind(c->nt, id) == NK_YieldNode && g_block_id >= 0 && !g_yield_proc_ref) {
+    int bbody = nt_ref(c->nt, g_block_id, "body");
+    int bn = 0; const int *bb = bbody >= 0 ? nt_arr(c->nt, bbody, "body", &bn) : NULL;
+    /* Untyped first, as the helper's other caller asks: on its own it also
+       answers yes for a builtin like `1 + 1 == 2` that no user class owns. */
+    TyKind btt = bn > 0 ? comp_ntype(c, bb[bn - 1]) : TY_UNKNOWN;
+    /* ...and no `next v` can leave the block before that tail with a value
+       the test would have to read. */
+    if (bn > 0 && (btt == TY_UNKNOWN || btt == TY_VOID) && block_tail_is_unresolved(c, bb[bn - 1]) &&
+        block_next_value_ty(c, bbody) == TY_UNKNOWN) {
+      buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, "), 0)");
+      return;
+    }
+  }
   /* &block parameter used as condition in a yielding (inlined) method must
      be checked before the type-based dispatch below: now that blk_param is
      a registered TY_PROC local, it would otherwise hit the "!= 0" pointer

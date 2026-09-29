@@ -989,6 +989,7 @@ int patch_lv_reads(Compiler *c, int id, const char *nm, TyKind ty, int *ids_out,
 int patch_lv_read_ntype(Compiler *c, int scope_idx, const char *name, TyKind new_ty, int min_id, int **saved_ids, TyKind **saved_tys);
 void restore_lv_read_ntype(Compiler *c, int *saved_ids, TyKind *saved_tys, int n);
 int emit_iter_autosplat(Compiler *c, int block, TyKind rt, const char *elem_src, int indent);
+int block_tail_is_unresolved(Compiler *c, int node);
 int emit_iter_value_expr(Compiler *c, int id, Buf *b);
 void set_enum_walk_result(int tmp);
 int iter_value_answers_recv(Compiler *c, int id);

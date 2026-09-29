@@ -1054,7 +1054,7 @@ int emit_iter_autosplat(Compiler *c, int block, TyKind rt, const char *elem_src,
    token: a settled receiver type, and no user class owns the name. Used to
    tell "the block names a method that does not exist" (compile it, let it
    raise) apart from "codegen has no shape for this" (decline). */
-static int block_tail_is_unresolved(Compiler *c, int node) {
+int block_tail_is_unresolved(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (node < 0 || nt_kind(nt, node) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, node, "name");
