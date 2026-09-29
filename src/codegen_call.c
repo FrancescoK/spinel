@@ -20584,6 +20584,48 @@ static int nil_recv_guard(Compiler *c, int id, int *recv_out) {
   return 1;
 }
 
+/* An operator whose right operand reassigns its local left operand,
+   `a + [(a = [2]; 1)]`, reads the local before that operand runs: the local
+   is bound to a temp in g_pre ahead of the operand's own prelude, and the
+   arms read the temp through the override table. Operators that mutate their
+   receiver are left out. */
+static int g_recv_snapshot_node = -1;
+static int emit_recv_snapshot(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (id == g_recv_snapshot_node || !g_pre || g_n_argov >= MAX_ARG_OVERRIDE) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  int args = nt_ref(nt, id, "arguments");
+  if (recv < 0 || args < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  static const char *const ops[] = {
+    "+", "-", "*", "/", "%", "**", "&", "|", "^", ">>", "==", "!=", "<", ">",
+    "<=", ">=", "<=>", "===", "=~", "[]", NULL };
+  int op = 0;
+  for (int i = 0; nm && ops[i] && !op; i++) op = sp_streq(nm, ops[i]);
+  const char *ln = nt_str(nt, recv, "name");
+  if (!op || !ln || !subtree_writes_local(c, args, ln)) return 0;
+  TyKind t = comp_ntype(c, recv);
+  if (t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL ||
+      ty_is_struct_valued(t) || comp_ty_value_obj(c, t)) return 0;
+  int tn = ++g_tmp;
+  Buf rb = expr_buf(c, recv);
+  emit_indent(g_pre, g_indent);
+  emit_ctype(c, t, g_pre);
+  buf_printf(g_pre, " _t%d = %s; ", tn, rb.p ? rb.p : default_value(t));
+  emit_gc_root_tmp(c, t, tn, g_pre);
+  buf_puts(g_pre, "\n");
+  free(rb.p);
+  g_argov_node[g_n_argov] = recv;
+  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tn);
+  g_n_argov++;
+  int saved = g_recv_snapshot_node;
+  g_recv_snapshot_node = id;
+  emit_call(c, id, b);
+  g_recv_snapshot_node = saved;
+  g_n_argov--;
+  return 1;
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   int nd_saved = g_nd_call_id; g_nd_call_id = id;
   int grecv = -1;
@@ -22592,6 +22634,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   if (emit_poly_arity_guard(c, id, b)) return;
   /* An argument whose static class the method cannot take (defined above). */
   if (emit_arg_type_guards(c, id, b)) return;
+  /* A local receiver its own argument reassigns (defined above). */
+  if (emit_recv_snapshot(c, id, b)) return;
   /* Operands in Ruby's order, each held across the call (defined above). */
   if (emit_operands_in_order(c, id, b)) return;
   /* Proc#=== calls the proc; a Proc read out of a container arrives boxed,
