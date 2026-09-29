@@ -835,6 +835,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   const char *sv_prl = g_method_pr_label, *sv_prv = g_method_pr_var;
   TyKind sv_prt = g_ret_type;
   int sv_prexc = g_method_pr_exc_depth;
+  int sv_prens = g_method_pr_ensure_depth;
   if (as_expr) {
     /* Use a result var so the tail uses assignment, not `return`, in the
        GCC statement-expression ({ ... result_var; }) context. */
@@ -859,6 +860,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
       snprintf(inl_lbl, sizeof inl_lbl, "_yret%d", tag);
       g_method_pr_label = inl_lbl; g_method_pr_var = rvbuf; g_ret_type = rt;
       g_method_pr_exc_depth = g_exc_frame_depth;
+      g_method_pr_ensure_depth = g_ensure_depth;
       /* body in its own scope: the funnel goto then EXITS the scopes of any
          cleanup-attributed GC roots the body declares (legal, cleanups run)
          instead of jumping over them in the same scope (a C error). */
@@ -868,6 +870,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     if (m_has_ret) {
       g_method_pr_label = sv_prl; g_method_pr_var = sv_prv; g_ret_type = sv_prt;
       g_method_pr_exc_depth = sv_prexc;
+      g_method_pr_ensure_depth = sv_prens;
       emit_indent(b, din); buf_puts(b, "}\n");
       emit_indent(b, din); buf_printf(b, "_yret%d: ;\n", tag);
     }
@@ -879,12 +882,14 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
       snprintf(inl_lbl, sizeof inl_lbl, "_yret%d", tag);
       g_method_pr_label = inl_lbl; g_method_pr_var = NULL;
       g_method_pr_exc_depth = g_exc_frame_depth;
+      g_method_pr_ensure_depth = g_ensure_depth;
       emit_indent(b, din); buf_puts(b, "{\n");   /* see expr-path comment */
     }
     emit_stmts(c, m->body, b, m_has_ret ? din + 1 : din);
     if (m_has_ret) {
       g_method_pr_label = sv_prl; g_method_pr_var = sv_prv;
       g_method_pr_exc_depth = sv_prexc;
+      g_method_pr_ensure_depth = sv_prens;
       emit_indent(b, din); buf_puts(b, "}\n");
       emit_indent(b, din); buf_printf(b, "_yret%d: ;\n", tag);
     }
@@ -1912,9 +1917,11 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   const char *sv_bl = g_method_pr_label, *sv_bv = g_method_pr_var;
   TyKind sv_bt = g_ret_type;
   int sv_bexc = g_method_pr_exc_depth;
+  int sv_bens = g_method_pr_ensure_depth;
   g_method_pr_label = g_fn_pr_label; g_method_pr_var = g_fn_pr_var;
   g_ret_type = g_fn_ret_type;
   g_method_pr_exc_depth = 0;   /* the real function's funnel sits at depth 0 */
+  g_method_pr_ensure_depth = 0;
   /* likewise, the block body's `self` is the CALLER's (an ivar read inside
      the block must not resolve against the inlined method's receiver) -- and
      so is the block body's emitting-class, so an implicit-self *call* in the
@@ -2160,6 +2167,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   g_yield_proc_ref_fallback = sv_yprf; g_yield_slot_ty_fallback = sv_yslotf;
   g_method_pr_label = sv_bl; g_method_pr_var = sv_bv; g_ret_type = sv_bt;
   g_method_pr_exc_depth = sv_bexc;
+  g_method_pr_ensure_depth = sv_bens;
   g_brk_ser_var = svser; g_brk_ensure_base = svebase; g_brk_exc_base = svbexc;
   g_block_brk_var = svbbv; g_block_brk_ebase = svbbe;
   g_block_nren = sv_bnren;

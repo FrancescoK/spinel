@@ -4495,6 +4495,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
     buf_puts(b, "    {\n");
     g_method_pr_label = "_pr_done"; g_method_pr_var = is_void ? NULL : "_prret";
     g_method_pr_exc_depth = 0;   /* _pr_done sits outside every begin frame */
+    g_method_pr_ensure_depth = 0;
     g_fn_pr_label = g_method_pr_label; g_fn_pr_var = g_method_pr_var;
   }
   const char *sv_rv2 = g_result_var; int sv_rp2 = g_result_poly;

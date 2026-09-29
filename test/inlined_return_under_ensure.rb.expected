@@ -1,0 +1,3 @@
+[:skipped, "kept", :skipped, "given", :cleaned]
+["inner kept", :skipped, :inner_cleaned, :cleaned]
+:after
