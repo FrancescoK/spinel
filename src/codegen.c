@@ -5417,21 +5417,23 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
        (nil past the end), matching a positional block binding (#2976) */
     for (int bi = 0; bi < nbp; bi++) {
       const char *bpn = rename_local(bp_names[bi]);
-      buf_printf(pb, "    sp_RbVal lv_%s = sp_poly_index_poly(_fb->resumed_value, sp_box_int(%d));\n", bpn, bi);
+      /* one non-array value binds the first param only, as a proc does */
+      buf_printf(pb, "    sp_RbVal lv_%s = (_fb->resumed_value.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_fb->resumed_value.cls_id))"
+                     " ? sp_poly_index_poly(_fb->resumed_value, sp_box_int(%d)) : %s;\n",
+                 bpn, bi, bi == 0 ? "_fb->resumed_value" : "sp_box_nil()");
       buf_printf(pb, "    SP_GC_ROOT_RBVAL(lv_%s);\n", bpn);
     }
   }
   else if (rest_bind) {
-    /* A rest param collects the resume arguments as an array: nil (no
-       arguments) is empty, a packed multi-argument value is already the list,
-       and a single argument becomes a one-element list. A single ARRAY
-       argument is indistinguishable from a packed pair here -- the fiber
-       carries one value and no arity -- so `resume([1, 2])` binds [1, 2]
-       rather than [[1, 2]]; carrying the count would be the fix. */
+    /* A rest param collects the resume arguments as an array. pass_argc says
+       how many there were, so resume([1, 2]) binds [[1, 2]] and resume(nil)
+       [nil]. When it isn't known (-1: a splat, or a Thread's argument) nil is
+       empty, an array is the list, and anything else a one-element list. */
     const char *bpn = rename_local(bp_rest);
-    buf_printf(pb, "    sp_PolyArray *lv_%s = ({ sp_RbVal _rv = _fb->resumed_value;"
-                   " _rv.tag == SP_TAG_NIL ? sp_PolyArray_new()"
-                   " : (_rv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_rv.cls_id))"
+    buf_printf(pb, "    sp_PolyArray *lv_%s = ({ sp_RbVal _rv = _fb->resumed_value; int _pn = _fb->pass_argc;"
+                   " _pn > 1 ? sp_poly_to_poly_array(_rv)"
+                   " : _pn == 0 || (_pn < 0 && _rv.tag == SP_TAG_NIL) ? sp_PolyArray_new()"
+                   " : (_pn < 0 && _rv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_rv.cls_id))"
                    " ? sp_poly_to_poly_array(_rv)"
                    " : ({ sp_PolyArray *_ra = sp_PolyArray_new(); sp_PolyArray_push(_ra, _rv); _ra; }); });\n", bpn);
     buf_printf(pb, "    SP_GC_ROOT(lv_%s);\n", bpn);
@@ -5443,7 +5445,8 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
        `<<` the runtime answers with Fiber.yield; the body's own `y << v` is
        lowered to Fiber.yield directly (g_yielder_name) */
     if (as_gen) buf_printf(pb, "    sp_RbVal lv_%s = sp_box_obj((void *)_fb, SP_BUILTIN_YIELDER);\n", bpn);
-    else buf_printf(pb, "    sp_RbVal lv_%s = _fb->resumed_value;\n", bpn);
+    /* |a| takes the first of several values, as a proc does */
+    else buf_printf(pb, "    sp_RbVal lv_%s = _fb->pass_argc > 1 ? sp_poly_index_poly(_fb->resumed_value, sp_box_int(0)) : _fb->resumed_value;\n", bpn);
     buf_printf(pb, "    SP_GC_ROOT_RBVAL(lv_%s);\n", bpn);
     /* captured by a lifted proc: it lives in a cell, seeded from the slot */
     { LocalVar *blv = encl ? scope_local(encl, bp0) : NULL;

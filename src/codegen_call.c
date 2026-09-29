@@ -2850,6 +2850,45 @@ static void emit_fiber_pass_value(Compiler *c, int argc, const int *argv, Buf *b
   buf_printf(b, " _t%d; }))", tp);
 }
 
+/* fn(recv, value, count) for resume/transfer, or fn(value) for Fiber.yield
+   (recv NULL). With a splat the values are only known at run time, so they
+   are packed there: none is nil, one is itself, more are an array. */
+static void emit_fiber_pass_call(Compiler *c, const char *fn, const char *recv,
+                                 int argc, const int *argv, Buf *b) {
+  int splat = 0;
+  for (int k = 0; k < argc; k++) {
+    const char *ty = nt_type(c->nt, argv[k]);
+    if (ty && sp_streq(ty, "SplatNode")) splat = 1;
+  }
+  if (!splat) {
+    buf_printf(b, "%s(", fn);
+    if (recv) buf_printf(b, "%s, ", recv);
+    emit_fiber_pass_value(c, argc, argv, b);
+    if (recv) buf_printf(b, ", %d", argc);
+    buf_puts(b, ")");
+    return;
+  }
+  int ta = ++g_tmp;
+  buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
+  for (int k = 0; k < argc; k++) {
+    const char *ty = nt_type(c->nt, argv[k]);
+    int inner = (ty && sp_streq(ty, "SplatNode")) ? nt_ref(c->nt, argv[k], "expression") : -1;
+    if (inner >= 0) {
+      int ts = ++g_tmp;
+      buf_printf(b, " { sp_RbVal _t%d = sp_splat_to_array(", ts); emit_boxed(c, inner, b);
+      buf_printf(b, "); SP_GC_ROOT_RBVAL(_t%d); sp_int _l%d = sp_poly_length(_t%d);"
+                    " for (sp_int _i%d = 0; _i%d < _l%d; _i%d++) sp_PolyArray_push(_t%d, sp_poly_arr_get(_t%d, _i%d)); }",
+                 ts, ts, ts, ts, ts, ts, ts, ta, ts, ts);
+    }
+    else { buf_printf(b, " sp_PolyArray_push(_t%d, ", ta); emit_boxed(c, argv[k], b); buf_puts(b, ");"); }
+  }
+  buf_printf(b, " sp_int _n%d = _t%d->len; %s(", ta, ta, fn);
+  if (recv) buf_printf(b, "%s, ", recv);
+  buf_printf(b, "_n%d == 0 ? sp_box_nil() : _n%d == 1 ? sp_PolyArray_get(_t%d, 0) : sp_box_poly_array(_t%d)", ta, ta, ta, ta);
+  if (recv) buf_printf(b, ", (int)_n%d", ta);
+  buf_puts(b, "); })");
+}
+
 /* Thread#raise / Fiber#raise: deliver an exception to the thread (it fires when
    the thread next runs) or inject it at the fiber's suspension point. The
    argument forms mirror Kernel#raise: (), ("msg"), (Class), (Class, "msg"),
@@ -3203,10 +3242,9 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
   /* Fiber instance methods */
   if (recv >= 0 && comp_ntype(c, recv) == TY_FIBER) {
     if (sp_streq(name, "resume")) {
-      buf_puts(b, "sp_Fiber_resume("); emit_expr(c, recv, b);
-      buf_puts(b, ", ");
-      emit_fiber_pass_value(c, argc, argv, b);
-      buf_puts(b, ")");
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      emit_fiber_pass_call(c, "sp_Fiber_resume_n", rb.p ? rb.p : "NULL", argc, argv, b);
+      free(rb.p);
       return 1;
     }
     if (sp_streq(name, "alive?")) {
@@ -3216,10 +3254,9 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "sp_Fiber_kill("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
     }
     if (sp_streq(name, "transfer")) {
-      buf_puts(b, "sp_Fiber_transfer("); emit_expr(c, recv, b);
-      buf_puts(b, ", ");
-      emit_fiber_pass_value(c, argc, argv, b);
-      buf_puts(b, ")");
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      emit_fiber_pass_call(c, "sp_Fiber_transfer_n", rb.p ? rb.p : "NULL", argc, argv, b);
+      free(rb.p);
       return 1;
     }
     if (sp_streq(name, "value")) {
@@ -33185,8 +33222,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* Fiber class methods: Fiber.yield(val) and Fiber.current */
   if (recv_is_const(nt, recv, "Fiber")) {
     if (sp_streq(name, "yield")) {
-      if (argc == 0) buf_puts(b, "sp_Fiber_yield(sp_box_nil())");
-      else { buf_puts(b, "sp_Fiber_yield("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
+      /* Fiber.yield(a, b) hands the resumer [a, b] */
+      emit_fiber_pass_call(c, "sp_Fiber_yield", NULL, argc, argv, b);
       return;
     }
     if (sp_streq(name, "current") && argc == 0) {
@@ -38221,9 +38258,8 @@ else {
       if (sp_streq(name, "raise"))
         emit_concurrency_raise(c, ft, argc, argv, "sp_Fiber", 'f', "sp_Fiber_raise", &fv);
       else {
-        buf_printf(&fv, "sp_Fiber_%s(_t%d, ", name, tf);
-        emit_fiber_pass_value(c, argc, argv, &fv);
-        buf_puts(&fv, ")");
+        char fn[32]; snprintf(fn, sizeof fn, "sp_Fiber_%s_n", name);
+        emit_fiber_pass_call(c, fn, ft, argc, argv, &fv);
       }
       buf_puts(&fv, "; })");
       emit_unbox_text(c, comp_ntype(c, id), fv.p, b);
