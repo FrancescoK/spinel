@@ -9624,15 +9624,12 @@ static void emit_zsuper_arg(Compiler *c, Scope *s, LocalVar *dst, TyKind dt, con
   TyKind st = src ? src->type : TY_UNKNOWN;
   Buf _bx; memset(&_bx, 0, sizeof _bx);
   emit_scope_local_ref(c, s, pname, &_bx);
-  /* A byref parent parameter takes a slot, as at any call site
-     (emit_arg_or_default_fill): this method's own cell passes on -- a lent
-     parameter forwards the caller's slot -- a plain String its address, and
-     any other value a temp. */
+  /* A byref parent parameter takes a slot, lent as a call site lends a
+     local argument (emit_lent_local): a lent parameter forwards the caller's
+     slot, this method's own cell passes pinned, a proc body's capture its
+     cell, a plain String its address, and any other value a temp. */
   if (dst && dst->byref_out) {
-    int captured = g_cap_struct && g_cap_names && nameset_has(g_cap_names, pname);
-    if (src && st == TY_STRING && src->is_cell && !captured) buf_printf(b, "_cell_%s", rename_local(pname));
-    else if (src && st == TY_STRING && !captured) buf_printf(b, "(const char **)&lv_%s", rename_local(pname));
-    else {
+    if (!emit_lent_local(src, pname, b)) {
       Buf vb; memset(&vb, 0, sizeof vb);
       if (st == TY_POLY) emit_unbox_text(c, TY_STRING, _bx.p, &vb);
       else buf_puts(&vb, _bx.p);

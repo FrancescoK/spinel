@@ -5682,6 +5682,55 @@ void emit_lent_temp(const char *val, Buf *out) {
   buf_printf(out, "&_t%d", t);
 }
 
+/* The slot a String local `vn` (lv its variable, when the scope declares it)
+   lends a byref parameter, into out; 0 when it has none and the caller lends
+   a temp (emit_lent_temp). A plain local passes its address, a heap cell
+   itself, and inside a proc body the capture struct's cell pointer. What a
+   call site's local argument lends, and a bare `super`'s forwarded parameter
+   (emit_zsuper_arg): the two are the same lending, and a super that spelled
+   its own passed a captured parameter's value in a temp, where the parent's
+   appends stayed. */
+int emit_lent_local(LocalVar *lv, const char *vn, Buf *out) {
+  if (!vn) return 0;
+  /* Forwarding a by-reference parameter pins nothing: the cell is
+     whatever the ORIGINAL lending site handed down, and that site
+     already decided. Pinning here would offer a stack address to
+     sp_gc_pin_remembered, which reads a header off it -- the fault
+     #4391's first half was. */
+  int fwd = lv && (lv->byref_out || lv->inline_alias);   /* an inline alias is a forward too: it points at whatever the caller lent */
+  if (g_cap_struct && g_cap_names && nameset_has(g_cap_names, vn)) {
+    /* a capture of another type has a cell of that type, no String slot */
+    if (lv && lv->type != TY_STRING) return 0;
+    /* inside a proc body: the capture struct holds the cell pointer */
+    if (!fwd) {
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_gc_pin_remembered((void *)((%s *)_cap)->c_%s);\n",
+                 g_cap_struct, vn);
+    }
+    buf_printf(out, "((%s *)_cap)->c_%s", g_cap_struct, vn);
+    return 1;
+  }
+  if (!lv || lv->type != TY_STRING) return 0;
+  if (lv->is_cell) {
+    /* a heap cell: the callee stores through it and cannot name it, so
+       the owner is recorded HERE, stickily, since this runs before the
+       store rather than after (#4391) */
+    if (!fwd) {
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_gc_pin_remembered((void *)_cell_%s);\n", rename_local(vn));
+    }
+    /* renamed like the plain slot below: inside an inlined body the
+       cell is the inline's own (or its alias of the caller's) */
+    buf_printf(out, "_cell_%s", rename_local(vn));
+    return 1;
+  }
+  /* The cast drops the `volatile` a local live across a rescue's
+     setjmp is declared with (`const char *volatile lv_x`), as the GC
+     root macros do for the same slot. */
+  buf_printf(out, "(const char **)&lv_%s", rename_local(vn));
+  return 1;
+}
+
 static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provided, Buf *out) {
   LocalVar *p = scope_local(m, m->pnames[idx]);
   TyKind pt = p ? p->type : TY_INT;
@@ -5750,7 +5799,13 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
   if (p && pt == TY_STRBUF && p->str_shared) {
     if (provided >= 0) {
       char srefP[192];
-      if (strbuf_slot_ref(c, provided, srefP, sizeof srefP)) {
+      /* A variable the call ran first is read where it ran, not at its
+         slot (see the byref slot below): its handle, which a later
+         argument can overwrite, is a fresh one of the value read then. */
+      NodeKind pk = nt_kind(c->nt, provided);
+      int late = (pk == NK_LocalVariableReadNode || pk == NK_InstanceVariableReadNode) &&
+                 arg_ran_first(provided, 0);
+      if (!late && strbuf_slot_ref(c, provided, srefP, sizeof srefP)) {
         buf_puts(out, srefP);
         return;
       }
@@ -5767,48 +5822,17 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
     return;
   }
   if (p && p->byref_out) {
-    if (provided >= 0) {
+    /* A variable the call ran first (emit_args_before_binding) is one a
+       later argument can give another value, `g(s, (s = +"q"; 1))`: its
+       slot, read when the callee runs, holds the new String, and CRuby
+       binds the one read first. It binds the value the call read, in a temp
+       like any other value, as a shared handle binds a fresh one. */
+    if (provided >= 0 && !arg_ran_first(provided, 0)) {
       const char *aty = nt_type(c->nt, provided);
       if (aty && sp_streq(aty, "LocalVariableReadNode")) {
         const char *vn = nt_str(c->nt, provided, "name");
-        LocalVar *clv0 = vn ? scope_local(comp_scope_of(c, provided), vn) : NULL;
-        /* Forwarding a by-reference parameter pins nothing: the cell is
-           whatever the ORIGINAL lending site handed down, and that site
-           already decided. Pinning here would offer a stack address to
-           sp_gc_pin_remembered, which reads a header off it -- the fault
-           #4391's first half was. */
-        int fwd = clv0 && (clv0->byref_out || clv0->inline_alias);   /* an inline alias is a forward too: it points at whatever the caller lent */
-        if (g_cap_struct && g_cap_names && vn && nameset_has(g_cap_names, vn)) {
-          /* inside a proc body: the capture struct holds the cell pointer */
-          if (!fwd) {
-            emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "sp_gc_pin_remembered((void *)((%s *)_cap)->c_%s);\n",
-                       g_cap_struct, vn);
-          }
-          buf_printf(out, "((%s *)_cap)->c_%s", g_cap_struct, vn);
+        if (emit_lent_local(vn ? scope_local(comp_scope_of(c, provided), vn) : NULL, vn, out))
           return;
-        }
-        LocalVar *clv = clv0;
-        if (clv && clv->type == TY_STRING && clv->is_cell) {
-          /* a heap cell: the callee stores through it and cannot name it, so
-             the owner is recorded HERE, stickily, since this runs before the
-             store rather than after (#4391) */
-          if (!fwd) {
-            emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "sp_gc_pin_remembered((void *)_cell_%s);\n", rename_local(vn));
-          }
-          /* renamed like the plain slot below: inside an inlined body the
-             cell is the inline's own (or its alias of the caller's) */
-          buf_printf(out, "_cell_%s", rename_local(vn));
-          return;
-        }
-        /* The cast drops the `volatile` a local live across a rescue's
-           setjmp is declared with (`const char *volatile lv_x`), as the GC
-           root macros do for the same slot. */
-        if (clv && clv->type == TY_STRING) {
-          buf_printf(out, "(const char **)&lv_%s", rename_local(vn));
-          return;
-        }
       }
       /* an IVAR argument: pass the slot itself so the callee's append lands in
          the object. The owner is pinned rather than marked dirty, because the
@@ -8613,6 +8637,69 @@ int arg_layout_plain_arg(Compiler *c, Scope *m, int pos_argc, int i) {
   return a;
 }
 
+/* The argument parameter i of m takes out of a gather whatever the splats
+   hold, or -1: the gather keeps the arguments in order, and the leading
+   required positionals take its first elements, so one ahead of the first
+   splat with only requireds before it is the argument written at its
+   index. The binders fund it from the gather all the same; what lends it
+   (emit_gather_lead_lent) and the analysis that follows a String into it
+   (arg_layout_param_node) read it here, and both only for an argument
+   nothing after it can give another value: the gather ran every argument,
+   and the call fills the defaults, before the callee reads what was lent,
+   so `grow(s, *xs, (s = +"q"; 9))` would bind the new String where CRuby
+   binds the one read first -- lent the slot, or, followed by the analysis,
+   the local's shared handle the assignment overwrites. A local changes by
+   an assignment written after it (a block's or a branch's too), or, when a
+   proc captures it, by any later effect, which may call one; an ivar by
+   any later effect (read_rebound_by for the rest). `argv` holds all `argc`
+   arguments, the keyword hash included. */
+static int gather_lead_arg(Compiler *c, Scope *m, const int *argv, int argc, int i) {
+  const NodeTable *nt = c->nt;
+  int kwh = argc > 0 && argv && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+  int pos_argc = kwh >= 0 ? argc - 1 : argc;
+  if (!argv || i < 0 || i >= pos_argc || i >= m->nparams) return -1;
+  for (int k = 0; k <= i; k++) {
+    NodeKind ak = nt_kind(nt, argv[k]);
+    if (ak == NK_SplatNode || ak == NK_BlockArgumentNode || !m->pnames[k] ||
+        k == m->rest_idx || k == m->kwrest_idx || (m->pdefault && m->pdefault[k] >= 0) ||
+        callee_param_is_declared_kwarg(c, m, m->pnames[k])) return -1;
+    if (nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "ForwardingArgumentsNode")) return -1;
+  }
+  int x = argv[i];
+  NodeKind xk = nt_kind(nt, x);
+  const char *vn = xk == NK_LocalVariableReadNode ? nt_str(nt, x, "name") : NULL;
+  LocalVar *lv = vn ? scope_local(comp_scope_of(c, x), vn) : NULL;
+  int nd = 0, *dfl = call_site_defaults(c, m, kwh, &nd), rebound = 0;
+  for (int j = i + 1; j < argc + nd && !rebound; j++) {
+    int after = j < argc ? argv[j] : dfl[j - argc];
+    if (vn) rebound = subtree_writes_local(c, after, vn) ||
+                      (lv && lv->is_cell && subtree_has_side_effect(c, after));
+    else if (xk == NK_InstanceVariableReadNode) rebound = subtree_has_side_effect(c, after);
+    else rebound = read_rebound_by(c, x, after);
+  }
+  free(dfl);
+  return rebound ? -1 : i;
+}
+
+/* A lent parameter a gather funds from a variable written ahead of the
+   first splat (gather_lead_arg) lends that variable's slot, as the call
+   without the splat would: bound out of the gather into a temp,
+   `grow(s, *xs, 9)` appended to the temp and s stayed as it was. Only a
+   local or an ivar, whose read the gather already ran and a second read
+   repeats; any other argument keeps the gather's value in a temp. `argv`
+   holds all `argc` arguments. 1 when it emitted. */
+static int emit_gather_lead_lent(Compiler *c, Scope *m, int i, const int *argv, int argc,
+                                 Buf *out) {
+  LocalVar *p = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
+  if (!p || !p->byref_out) return 0;
+  int k = gather_lead_arg(c, m, argv, argc, i);
+  if (k < 0) return 0;
+  NodeKind ak = nt_kind(c->nt, argv[k]);
+  if (ak != NK_LocalVariableReadNode && ak != NK_InstanceVariableReadNode) return 0;
+  emit_arg_or_default(c, m, i, argv[k], out);
+  return 1;
+}
+
 /* The argument node call `call` binds parameter i of m to, by the layout the
    binders follow: the positional placed there, or the value of the keyword
    naming it (the last one written). -1 when no one node is the parameter's
@@ -8648,7 +8735,9 @@ int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread) {
   arg_layout(c, m, argv, pos_argc, kwh, 0, &L);
   int a = -1;
   const char *pn = m->pnames[i];
+  int lead = L.gather ? gather_lead_arg(c, m, argv, argc, i) : -1;
   if (L.from[i] == ARG_NODE) a = argv[L.arg[i]];
+  else if (lead >= 0) a = argv[lead];
   else if (L.from[i] == ARG_ELEM || L.from[i] == ARG_GATHERED) {
     if (nsplat == 1 && spread) *spread = nt_ref(nt, splat, "expression");
     /* Splats of array literals alone (`m(*[], s)`, `m(*[s])`) have a count
@@ -9150,7 +9239,14 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
          to the hoisted temps. */
       int active_nren = g_nren;
       if (!from_gather && (provided >= 0 || is_rest || is_kwrest)) g_nren = ren_base;
-      if (from_gather) emit_gathered_param(c, m, i, splat_tmp, &vb);
+      if (from_gather) {
+        /* a lent leading argument is the caller's, read without the renames */
+        int sv_lead = g_nren;
+        g_nren = ren_base;
+        int lent = L.gather && emit_gather_lead_lent(c, m, i, argv, argc, &vb);
+        g_nren = sv_lead;
+        if (!lent) emit_gathered_param(c, m, i, splat_tmp, &vb);
+      }
       else if (is_rest)
         emit_rest_pack_kwh(c, i, rest_argc - m->npost_rest, argv, L.rest_kwh, &vb);
       else if (is_kwrest) {
@@ -9287,7 +9383,8 @@ else {
   }
   for (int i = 0; i < m->nparams; i++) {
     buf_puts(out, i == 0 ? lead : ", ");
-    if (L.from[i] == ARG_GATHERED)
+    if (L.gather && emit_gather_lead_lent(c, m, i, argv, argc, out)) {}
+    else if (L.from[i] == ARG_GATHERED)
       emit_gathered_param(c, m, i, splat_tmp, out);
     else if (L.from[i] == ARG_REST) {
       /* rest collects middle args; stop before post-splat params */
@@ -9892,6 +9989,11 @@ else {
         emit_ds_param_extract(c, pm, k, ds_tmp_d, ds_type_d, &ab);
       }
       else if (by_splat) {
+        /* a lent leading argument is the caller's: its self, no renames */
+        int lead_nren_sv = g_nren;
+        g_nren = pd_ren_base;
+        int lent = L.gather && emit_gather_lead_lent(c, pm, k, argv, argc, &ab);
+        g_nren = lead_nren_sv;
         /* from the gather or the splat spread in place; a default past its
            end reads the callee's self, as the defaults below do: `def m(a =
            @x, c)` read the caller's */
@@ -9900,7 +10002,8 @@ else {
         g_self = selfptr;
         g_self_deref = comp_ty_value_obj(c, ty_object(cid)) ? "." : "->";
         g_emitting_class_id = pm->class_id;
-        if (from == ARG_GATHERED) emit_gathered_param(c, pm, k, splat_tmp_d, &ab);
+        if (lent) {}
+        else if (from == ARG_GATHERED) emit_gathered_param(c, pm, k, splat_tmp_d, &ab);
         else emit_elem_param(c, pm, k, L.arg[k], splat_tmp_d, splat_at_d, L.gather, &ab);
         g_self = saved_self;
         g_self_deref = saved_deref4;
