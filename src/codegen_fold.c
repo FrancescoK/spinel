@@ -6212,6 +6212,12 @@ static const char *anon_kwrest_name(Compiler *c, int node) {
   return (nm && sp_streq(nm, "__anon_kwrest")) ? nm : NULL;
 }
 
+/* The hash type of the anonymous kwrest such a `**` forwards: Symbol-keyed,
+   or of any key where a call brings the enclosing method one (kwrest_any_key). */
+static TyKind anon_kwrest_type(Compiler *c, int node) {
+  return kwrest_any_key(c, comp_scope_of(c, node)) ? TY_POLY_POLY_HASH : TY_SYM_POLY_HASH;
+}
+
 static int kwh_consumed_by_kwparam(Compiler *c, Scope *m, int kwh);
 
 /* The parameter index a collapsed keyword hash fills, or -1 when none does.
@@ -7059,10 +7065,11 @@ int emit_ds_hash_merge(Compiler *c, int kwh, int any_key, TyKind *out_type) {
     else if (v < 0) {
       const char *akw = anon_kwrest_name(c, el[e]);
       if (akw) {
+        int aany = anon_kwrest_type(c, el[e]) == TY_POLY_POLY_HASH;
         emit_indent(g_pre, g_indent);
-        if (any_key) buf_printf(g_pre, "sp_kw_merge_any(_t%d, sp_box_obj(lv_%s, SP_BUILTIN_SYM_POLY_HASH));\n",
-                                mh, rename_local(akw));
-        else buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, lv_%s);\n", mh, rename_local(akw));
+        if (any_key && !aany) buf_printf(g_pre, "sp_kw_merge_any(_t%d, sp_box_obj(lv_%s, SP_BUILTIN_SYM_POLY_HASH));\n",
+                                         mh, rename_local(akw));
+        else buf_printf(g_pre, "sp_%sHash_update(_t%d, lv_%s);\n", hk, mh, rename_local(akw));
       }
     }
     else {
@@ -7129,14 +7136,16 @@ static void emit_c_str(Buf *b, const char *s) {
 }
 
 /* Can a `**` operand of `kwh` bring a key that is no Symbol: one of a hash
-   kind keyed by something else, or only known at run time? */
+   kind keyed by something else, or only known at run time? An anonymous
+   `**` can when the rest it forwards takes any key. */
 static int kwh_spreads_any_key(Compiler *c, int kwh) {
   const NodeTable *nt = c->nt;
   int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
   for (int e = 0; e < en; e++) {
     if (nt_kind(nt, el[e]) == NK_AssocNode && kw_key_computed(nt, nt_ref(nt, el[e], "key"))) return 1;
-    int v = nt_kind(nt, el[e]) == NK_AssocSplatNode ? nt_ref(nt, el[e], "value") : -1;
-    TyKind t = v >= 0 ? comp_ntype(c, v) : TY_UNKNOWN;
+    if (nt_kind(nt, el[e]) != NK_AssocSplatNode) continue;
+    int v = nt_ref(nt, el[e], "value");
+    TyKind t = v >= 0 ? comp_ntype(c, v) : anon_kwrest_name(c, el[e]) ? anon_kwrest_type(c, el[e]) : TY_UNKNOWN;
     if (t == TY_POLY || (ty_is_hash(t) && ty_hash_key(t) != TY_SYMBOL)) return 1;
   }
   return 0;
@@ -7151,9 +7160,11 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type) {
      taking any key, for a callee without a `**kwrest`, where such a key can
      only be unknown and the check names it: merged into the Symbol-keyed
      one it raised a TypeError instead (`def m(k:)` called `m(k: 1, **{"s"
-     => 2})`). A `**kwrest` keeps the Symbol-keyed hash it collects. */
+     => 2})`). A `**kwrest` takes the hash it collects: of any key where a
+     call brings it one (kwrest_any_key), Symbol-keyed otherwise. */
   if (kwh_merged(c, m, kwh))
-    return emit_ds_hash_merge(c, kwh, m->kwrest_idx < 0 && kwh_spreads_any_key(c, kwh), out_type);
+    return emit_ds_hash_merge(c, kwh, m->kwrest_idx < 0 ? kwh_spreads_any_key(c, kwh) : kwrest_any_key(c, m),
+                              out_type);
   int en2 = 0; const int *elems2 = nt_arr(nt, kwh, "elements", &en2);
   for (int e = 0; e < en2; e++) {
     const char *ety2 = nt_type(nt, elems2[e]);
@@ -7269,7 +7280,7 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type) {
          so the per-param extraction and kwrest collection can read it. */
       const char *akw = anon_kwrest_name(c, elems2[e]);
       if (akw) {
-        *out_type = TY_SYM_POLY_HASH;
+        *out_type = anon_kwrest_type(c, elems2[e]);
         ds_hash_tmp = ++g_tmp;
         emit_indent(g_pre, g_indent);
         emit_ctype(c, *out_type, g_pre);
@@ -7465,25 +7476,38 @@ void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
   }
 }
 
+/* See codegen_internal.h. */
+int kwrest_any_key(Compiler *c, const Scope *m) {
+  if (!m || m->kwrest_idx < 0 || m->kwrest_idx >= m->nparams || !m->pnames[m->kwrest_idx]) return 0;
+  LocalVar *lv = scope_local((Scope *)m, m->pnames[m->kwrest_idx]);
+  (void)c;
+  return lv && lv->type == TY_POLY_POLY_HASH;
+}
+
 /* Collect the call's unbound keyword args -- literal pairs not naming an
-   explicit keyword param, plus merged `**hash` sources -- into a fresh
-   SymPolyHash for the callee's `**kwrest` param. Returns the hash temp id.
-   Shared by emit_args_filled and emit_dispatch. */
+   explicit keyword param, plus merged `**hash` sources -- into a fresh hash
+   for the callee's `**kwrest` param, of the kind the parameter is: a
+   SymPolyHash, or a PolyPolyHash keeping a String or other key where some
+   call brings one (kwrest_any_key). Returns the hash temp id. Shared by
+   emit_args_filled and emit_dispatch. */
 int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
                                TyKind ds_hash_type, int argsNode) {
   const NodeTable *nt = c->nt;
+  int any = kwrest_any_key(c, m);
+  const char *hk = any ? "PolyPoly" : "SymPoly";
   int krhash = ++g_tmp;
   emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "sp_SymPolyHash *_t%d = sp_SymPolyHash_new();\n", krhash);
+  buf_printf(g_pre, "sp_%sHash *_t%d = sp_%sHash_new();\n", hk, krhash, hk);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", krhash);
   if (kwh >= 0) {
     int en3 = 0; const int *elems3 = nt_arr(nt, kwh, "elements", &en3);
     int splat_seen = 0, nsplat3 = 0, merged = kwh_merged(c, m, kwh);
     if (merged) {
-      /* every source is already merged, in order, into the materialized hash */
+      /* every source is already merged, in order, into the materialized
+         hash, which takes any key where the rest does (emit_ds_hash_materialize) */
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, _t%d);\n", krhash, ds_hash_tmp);
+      buf_printf(g_pre, "sp_%sHash_update(_t%d, _t%d);\n", hk, krhash, ds_hash_tmp);
       splat_seen = 1;
     }
     for (int e3 = 0; e3 < en3 && !merged; e3++) {
@@ -7500,7 +7524,10 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
           if (!akw) continue;
           splat_seen = 1;
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, lv_%s);\n", krhash, rename_local(akw));
+          if (any && anon_kwrest_type(c, elems3[e3]) != TY_POLY_POLY_HASH)
+            buf_printf(g_pre, "sp_kw_merge_any(_t%d, sp_box_obj(lv_%s, SP_BUILTIN_SYM_POLY_HASH));\n",
+                       krhash, rename_local(akw));
+          else buf_printf(g_pre, "sp_%sHash_update(_t%d, lv_%s);\n", hk, krhash, rename_local(akw));
           continue;
         }
         TyKind sty = comp_ntype(c, inner3);
@@ -7525,9 +7552,10 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
         }
         if (sty == TY_NIL || bad3) continue;
         const char *shn = ty_hash_cname(sty);
-        if (sty == TY_POLY || (shn && !sp_streq(shn, "SymPoly"))) {
+        if (sty == TY_POLY || (shn && !sp_streq(shn, any ? "PolyPoly" : "SymPoly"))) {
           /* A Hash only known at run time (a value read out of a poly-valued
-             hash): its entries are merged by a runtime walk. */
+             hash), or of another kind: its entries are merged by a runtime
+             walk, which into a rest of any key keeps every key. */
           Buf pb; memset(&pb, 0, sizeof pb);
           if (!splat_seen && ds_hash_tmp >= 0 && ds_hash_type == sty) {
             char tn[32]; snprintf(tn, sizeof tn, "_t%d", ds_hash_tmp);
@@ -7536,11 +7564,12 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
           else emit_boxed(c, inner3, &pb);
           splat_seen = 1;
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_kwrest_merge_poly(_t%d, %s);\n", krhash, pb.p ? pb.p : "sp_box_nil()");
+          buf_printf(g_pre, "%s(_t%d, %s);\n", any ? "sp_kw_merge_any" : "sp_kwrest_merge_poly",
+                     krhash, pb.p ? pb.p : "sp_box_nil()");
           free(pb.p);
           continue;
         }
-        if (!shn || !sp_streq(shn, "SymPoly")) {
+        if (!shn || !sp_streq(shn, any ? "PolyPoly" : "SymPoly")) {
           unsupported(c, argsNode, "double-splat forward of a non-symbol-keyed hash into a keyword-rest parameter");
           continue;
         }
@@ -7554,7 +7583,7 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
              for the matching first splat; assert it explicitly so the
              type-punned reuse can't silently emit a mismatched pointer). */
           const char *dshn = ty_hash_cname(ds_hash_type);
-          if (!dshn || !sp_streq(dshn, "SymPoly")) {
+          if (!dshn || !sp_streq(dshn, hk)) {
             unsupported(c, argsNode, "double-splat forward of a non-symbol-keyed hash into a keyword-rest parameter");
             continue;
           }
@@ -7568,14 +7597,14 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
           Buf hb; memset(&hb, 0, sizeof hb);
           emit_expr(c, inner3, &hb);
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_SymPolyHash *_t%d = %s;\n", src, hb.p ? hb.p : "");
+          buf_printf(g_pre, "sp_%sHash *_t%d = %s;\n", hk, src, hb.p ? hb.p : "");
           free(hb.p);
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", src);
         }
         splat_seen = 1;
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, _t%d);\n", krhash, src);
+        buf_printf(g_pre, "sp_%sHash_update(_t%d, _t%d);\n", hk, krhash, src);
         continue;
       }
       int key3 = nt_ref(nt, elems3[e3], "key");
@@ -7583,9 +7612,10 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
       if (key3 < 0 || val3 < 0) continue;
       const char *kty3 = nt_type(nt, key3);
       const char *kname3 = (kty3 && sp_streq(kty3, "SymbolNode")) ? nt_str(nt, key3, "value") : NULL;
-      if (!kname3 && kw_key_computed(nt, key3)) {
+      if (!kname3 && (any || kw_key_computed(nt, key3))) {
         /* a computed key: its pair joins the rest under the Symbol it
-           answers, key first, as it runs */
+           answers, key first, as it runs; into a rest of any key, under
+           whatever it answers, as a String or other literal key does */
         int kt = ++g_tmp;
         Buf kb, vb3c;
         memset(&kb, 0, sizeof kb);
@@ -7595,10 +7625,13 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
         buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", kt, kb.p ? kb.p : "sp_box_nil()", kt);
         emit_boxed(c, val3, &vb3c);
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_SymPolyHash_set(_t%d, sp_poly_hkey_sym(_t%d), %s);\n",
-                   krhash, kt, vb3c.p ? vb3c.p : "sp_box_nil()");
+        if (any) buf_printf(g_pre, "sp_PolyPolyHash_set(_t%d, _t%d, %s);\n",
+                            krhash, kt, vb3c.p ? vb3c.p : "sp_box_nil()");
+        else buf_printf(g_pre, "sp_SymPolyHash_set(_t%d, sp_poly_hkey_sym(_t%d), %s);\n",
+                        krhash, kt, vb3c.p ? vb3c.p : "sp_box_nil()");
         free(kb.p); free(vb3c.p);
-        splat_seen = 1; /* a key it answers that a keyword takes leaves the rest below */
+        /* a key it answers that a keyword takes leaves the rest below */
+        if (kw_key_computed(nt, key3)) splat_seen = 1;
         continue;
       }
       if (!kname3) continue;
@@ -7613,7 +7646,8 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
       Buf vb3; memset(&vb3, 0, sizeof vb3);
       emit_boxed(c, val3, &vb3);
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_SymPolyHash_set(_t%d, sp_sym_intern(\"%s\"), %s);\n",
+      buf_printf(g_pre, any ? "sp_PolyPolyHash_set(_t%d, sp_box_sym(sp_sym_intern(\"%s\")), %s);\n"
+                            : "sp_SymPolyHash_set(_t%d, sp_sym_intern(\"%s\"), %s);\n",
                  krhash, kname3, vb3.p ? vb3.p : "sp_box_nil()");
       free(vb3.p);
     }
@@ -7628,7 +7662,8 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
         const char *kpname = nt_str(nt, kwps[kk], "name");
         if (!kpname) continue;
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_SymPolyHash_delete(_t%d, sp_sym_intern(\"%s\"));\n",
+        buf_printf(g_pre, any ? "sp_PolyPolyHash_delete(_t%d, sp_box_sym(sp_sym_intern(\"%s\")));\n"
+                              : "sp_SymPolyHash_delete(_t%d, sp_sym_intern(\"%s\"));\n",
                    krhash, kpname);
       }
     }
