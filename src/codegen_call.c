@@ -7442,6 +7442,8 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           else if (sp_streq(_dcn, "Float")) snprintf(_dself, sizeof _dself, "_t%d.v.f", tv);
           else if (sp_streq(_dcn, "String")) snprintf(_dself, sizeof _dself, "_t%d.v.s", tv);
           else if (sp_streq(_dcn, "Symbol")) snprintf(_dself, sizeof _dself, "(sp_sym)_t%d.v.i", tv);
+          /* Object's methods take self boxed (any value can be the receiver) */
+          else if (sp_streq(_dcn, "Object")) snprintf(_dself, sizeof _dself, "_t%d", tv);
           /* a by-value (value-type) class method takes self by value:
              dereference the boxed pointer instead of passing it (#2441) */
           else if (c->classes[defcls].is_value_type) {
@@ -7717,8 +7719,19 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           }
           else if (obj_mi >= 0 && obj_def == obj_cls && c->scopes[obj_mi].nrequired == 0 &&
               scope_has_callable_symbol(c, obj_mi)) {
-            char ocall[160];
-            snprintf(ocall, sizeof ocall, "sp_Object_%s(_t%d)", mc(c->scopes[obj_mi].name), tv);
+            /* an optional parameter takes its default, spelled with the
+               boxed receiver as self */
+            Buf ob; memset(&ob, 0, sizeof ob);
+            buf_printf(&ob, "sp_Object_%s(_t%d", mc(c->scopes[obj_mi].name), tv);
+            { const char *saved_self = g_self;
+              char oselfbuf[32]; snprintf(oselfbuf, sizeof oselfbuf, "_t%d", tv);
+              g_self = oselfbuf;
+              for (int a = 0; a < c->scopes[obj_mi].nparams; a++) {
+                buf_puts(&ob, ", "); emit_arg_or_default(c, &c->scopes[obj_mi], a, -1, &ob);
+              }
+              g_self = saved_self; }
+            buf_puts(&ob, ")");
+            const char *ocall = ob.p;
             buf_puts(b, " default: ");
             if (method_is_void(&c->scopes[obj_mi])) buf_puts(b, ocall);
             else {
@@ -7731,6 +7744,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
               else buf_puts(b, ocall);
             }
             buf_puts(b, "; break;");
+            free(ob.p);
             obj_default_done = 1;
           }
           /* ... and one that needs arguments refuses them for any receiver */
@@ -8882,6 +8896,8 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d.v.s", tv);
           else if (sp_streq(_dcn2, "Symbol"))
             snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_sym)_t%d.v.i", tv);
+          else if (sp_streq(_dcn2, "Object"))
+            snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d", tv);
           /* parenthesized: a default reading an ivar spells `<self>->iv_x`,
              and a bare cast binds looser than `->` */
           else {
