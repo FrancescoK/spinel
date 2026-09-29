@@ -3391,7 +3391,11 @@ static void emit_zip_block_param(Compiler *c, TyKind slot, TyKind src_ty,
   else buf_puts(b, src);
 }
 
+static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent);
 int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
+  return emit_ivar_nil_guarded(c, id, b, indent, emit_iteration_stmt_body);
+}
+static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");
   if (block < 0) return 0;

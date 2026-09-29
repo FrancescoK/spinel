@@ -1,0 +1,14 @@
+undefined method '[]=' for nil
+undefined method '[]=' for nil
+undefined method '[]' for nil
+undefined method '<<' for nil
+undefined method 'size' for nil
+undefined method 'each' for nil
+{1 => 2, "x" => "y"}
+3
+"y"
+"y"
+[3, 4]
+2
+1
+"x"

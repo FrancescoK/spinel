@@ -830,6 +830,11 @@ const char *nil_value(TyKind t);
 int cvar_defined_probed(Compiler *c, const char *nm);
 void emit_cvar_set_flag(Compiler *c, int cid, const char *nm, int as_expr, Buf *b);
 void emit_cvar_set_flag_after(Compiler *c, int cid, const char *nm, Buf *b);
+extern int g_ivar_nil_guarded_id;
+int ivar_nil_recv_guard(Compiler *c, int id, int *recv_out);
+void emit_ivar_nil_guard(Compiler *c, int id, int recv, Buf *b, int indent);
+int emit_ivar_nil_guarded(Compiler *c, int id, Buf *b, int indent,
+                          int (*fn)(Compiler *, int, Buf *, int));
 const char *local_init_value(Compiler *c, LocalVar *lv);
 int local_nil_test(Compiler *c, LocalVar *lv, const char *ref, Buf *out);
 /* Append the C type name for `t` to `b` (objects need the class name). */

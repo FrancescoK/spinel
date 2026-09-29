@@ -8293,6 +8293,14 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
       return;
     }
     if (is_block_call(c, id)) { emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, indent, 0, TY_VOID); return; }
+    { int grecv = -1;
+      if (id != g_ivar_nil_guarded_id && ivar_nil_recv_guard(c, id, &grecv)) {
+        emit_ivar_nil_guard(c, id, grecv, b, indent);
+        int sv = g_ivar_nil_guarded_id; g_ivar_nil_guarded_id = id;
+        emit_stmt_inner(c, id, b, indent);
+        g_ivar_nil_guarded_id = sv;
+        return;
+      } }
     if (is_blockless_block_param_call(c, id)) {
       /* forwarded real proc: <blk>.call(args) for effect; else no block was
          passed, the parameter is nil, and the call raises NoMethodError */
@@ -12056,7 +12064,11 @@ static int str_mut_recv_assignable(Compiler *c, int recv) {
   return nt_kind(c->nt, recv) == NK_SelfNode || str_mut_var_recv(c, recv);
 }
 
+static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent);
 int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
+  return emit_ivar_nil_guarded(c, id, b, indent, emit_array_mutate_stmt_body);
+}
+static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
