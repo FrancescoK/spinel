@@ -1970,6 +1970,13 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     g_c_loop_depth++;
     if (as_expr) {
       nx_bt = bn3 > 0 ? comp_ntype(c, bd3[bn3 - 1]) : TY_NIL;
+      /* A void tail (a call to a method that always raises) produces no
+         value, and method_call_ret types it nil for the call. Joined raw,
+         VOID and an Integer `next` made the carrier poly while the call was
+         typed Integer, and the boxed carrier did not fit the call's sp_int.
+         An untyped tail stays as it is: method_call_ret takes the `next`
+         type alone for it, and so does the join below. */
+      if (nx_bt == TY_VOID) nx_bt = TY_NIL;
       /* the block's value is its tail OR a `next v`: a nil tail with an
          Integer next is the nullable Integer, not nil */
       { TyKind nxv = block_next_value_ntype(c, bbody);
@@ -2025,13 +2032,25 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
        bindings: hoisted to the enclosing statement, an array literal tail
        (`{ |x| next [] if x == 2; [x] }`) was built from the parameter's
        slot before the element was bound into it */
+    /* An untyped call tail (a method no class answers) is lowered to its
+       NoMethodError raise, or to a nil placeholder on a dynamic receiver. It
+       has no value to store: the slot the `next` values type already holds
+       nil. Assigned, the raise's sp_RbVal went into an sp_int slot for
+       `{ next 5 if c; obj.missing }`, and the C did not compile. */
+    int tl3 = bd3[bn3 - 1];
+    TyKind tlt3 = comp_ntype(c, tl3);
+    int void_tail = (tlt3 == TY_UNKNOWN || tlt3 == TY_VOID) &&
+                    nt_kind(nt, tl3) == NK_CallNode && nt_ref(nt, tl3, "receiver") >= 0;
     { Buf tb; memset(&tb, 0, sizeof tb);
       Buf *svp3 = g_pre; int svi3 = g_indent; g_pre = b; g_indent = 0;
-      if (g_ie_res_poly) emit_boxed(c, bd3[bn3 - 1], &tb);
-      else emit_expr_slot(c, bd3[bn3 - 1], nx_bt, &tb);
+      if (void_tail) emit_expr(c, tl3, &tb);
+      else if (g_ie_res_poly) emit_boxed(c, tl3, &tb);
+      else emit_expr_slot(c, tl3, nx_bt, &tb);
       g_pre = svp3; g_indent = svi3;
-      buf_printf(b, "%s = ", nxbuf);
+      if (void_tail) buf_puts(b, "(void)(");
+      else buf_printf(b, "%s = ", nxbuf);
       if (tb.p) buf_puts(b, tb.p);
+      if (void_tail) buf_puts(b, ")");
       free(tb.p); }
     buf_puts(b, "; ");
   }

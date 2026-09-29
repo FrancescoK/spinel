@@ -1892,7 +1892,18 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
         const char *lty = nt_type(c->nt, bb[bn - 1]);
         if (lty && sp_streq(lty, "ReturnNode"))
           return return_node_type(c, bb[bn - 1]);  /* `{ return e }`: see yield_value_type */
-        return infer_type(c, bb[bn - 1]);
+        /* A `next v` leaves the block with v, so the call answers v's type
+           joined with the tail's, as yield_value_type joins them. Typed from
+           the tail alone, `run { next true if c; nil }` was a nil call: `p`
+           folded it to "nil", and with a String tail the boxed union was
+           stored into a `const char *` and the C did not compile. */
+        TyKind bt = infer_type(c, bb[bn - 1]);
+        TyKind nx = block_next_value_ty(c, bbody);
+        if (nx != TY_UNKNOWN) {
+          if (bt == TY_VOID) bt = TY_NIL;
+          bt = bt == TY_UNKNOWN ? nx : ty_unify(bt, nx);
+        }
+        return bt;
       }
     }
   }
