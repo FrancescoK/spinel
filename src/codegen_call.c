@@ -19239,8 +19239,16 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     /* the receiver is held across the count, which may allocate */
     Buf rsl;
     int csl = hold_recv_open(c, recv, 1, "sp_RbVal", "SP_GC_ROOT_RBVAL", b, &rsl);
-    buf_printf(b, "sp_Enumerator_new_%s(%s, ", sp_streq(name, "each_slice") ? "slices" : "cons", rsl.p);
-    emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+    /* an endless Range streams (sp_poly_regroup) */
+    if (comp_ntype(c, recv) == TY_RANGE) {
+      buf_printf(b, "sp_poly_regroup(%s, ", rsl.p);
+      emit_int_expr(c, argv[0], b);
+      buf_printf(b, ", %d)", sp_streq(name, "each_cons"));
+    }
+    else {
+      buf_printf(b, "sp_Enumerator_new_%s(%s, ", sp_streq(name, "each_slice") ? "slices" : "cons", rsl.p);
+      emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+    }
     free(rsl.p);
     if (csl) buf_puts(b, "; })");
     return 1;

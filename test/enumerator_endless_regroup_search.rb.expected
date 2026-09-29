@@ -1,0 +1,37 @@
+[5, 6]
+[5, 6]
+true
+true
+[6, 7, 8]
+true
+3
+1
+[[1, 2], [3, 4], [5, 6]]
+true
+[[1, 2], [3, 4]]
+[[5, 6], 2]
+[4, 3]
+true
+[3, 4]
+nil
+true
+false
+[3, 4]
+1
+[[1, 2]]
+[3, 2]
+true
+2
+[3, 4]
+true
+[3, 4]
+[[:c, 3]]
+true
+false
+false
+true
+true
+[3, 7, 11]
+[[[1, 2], 0], [[3, 4], 1]]
+true
+"invalid slice size"

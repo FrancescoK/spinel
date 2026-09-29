@@ -7092,13 +7092,26 @@ int desugar_enum_method_recv(Compiler *c) {
        to_a -- except map/collect, whose dedicated fold arms need the raw
        shape. The index enums (each_with_index / with_index) keep ALL their
        block chains on the dedicated two-param codegen. */
+    /* find/detect/take_while are driven lazily through #next by their own
+       emitter, so they terminate over an INFINITE enumerator; materializing
+       the elements first would loop forever (#3590) */
+    int enum_lazy_driven = nt_ref(nt, id, "block") >= 0 &&
+        (sp_streq(nm, "find") || sp_streq(nm, "detect") || sp_streq(nm, "take_while") ||
+         sp_streq(nm, "find_index"));
+    /* include?/member? stop at the first hit through the same driver (#3756) */
+    if (!enum_lazy_driven && nt_ref(nt, id, "block") < 0 &&
+        (sp_streq(nm, "include?") || sp_streq(nm, "member?") || sp_streq(nm, "find_index"))) {
+      int ia = nt_ref(nt, id, "arguments"); int iac = 0;
+      if (ia >= 0) nt_arr(nt, ia, "arguments", &iac);
+      if (iac == 1) enum_lazy_driven = 1;
+    }
     int recv_is_slice_enum = 0;
     if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
       const char *rn2 = nt_str(nt, recv, "name");
       recv_is_slice_enum = rn2 && (sp_streq(rn2, "each_slice") || sp_streq(rn2, "each_cons"));
     }
     if (rt == TY_ENUMERATOR && recv_is_slice_enum && nt_ref(nt, id, "block") >= 0 &&
-        !sp_streq(nm, "map") && !sp_streq(nm, "collect") &&
+        !enum_lazy_driven && !sp_streq(nm, "map") && !sp_streq(nm, "collect") &&
         !sp_streq(nm, "with_index") && !sp_streq(nm, "each_with_index") &&
         !sp_streq(nm, "to_a") && !sp_streq(nm, "entries")) {
       int wrap3 = nt_new_node(nt, "CallNode");
@@ -7112,7 +7125,7 @@ int desugar_enum_method_recv(Compiler *c) {
         continue;
       }
     }
-    if (rt == TY_ENUMERATOR && recv_is_index_enum && enum_terminal &&
+    if (rt == TY_ENUMERATOR && recv_is_index_enum && enum_terminal && !enum_lazy_driven &&
         !sp_streq(nm, "size")) {
       int wrap2 = nt_new_node(nt, "CallNode");
       if (wrap2 >= 0) {
@@ -7132,19 +7145,6 @@ int desugar_enum_method_recv(Compiler *c) {
         (sp_streq(nm, "each_slice") || sp_streq(nm, "each_cons") ||
          sp_streq(nm, "each_entry") || sp_streq(nm, "cycle") ||
          sp_streq(nm, "reverse_each"));
-    /* find/detect/take_while are driven lazily through #next by their own
-       emitter, so they terminate over an INFINITE enumerator; materializing
-       the elements first would loop forever (#3590) */
-    int enum_lazy_driven = nt_ref(nt, id, "block") >= 0 &&
-        (sp_streq(nm, "find") || sp_streq(nm, "detect") || sp_streq(nm, "take_while") ||
-         sp_streq(nm, "find_index"));
-    /* include?/member? stop at the first hit through the same driver (#3756) */
-    if (!enum_lazy_driven && nt_ref(nt, id, "block") < 0 &&
-        (sp_streq(nm, "include?") || sp_streq(nm, "member?") || sp_streq(nm, "find_index"))) {
-      int ia = nt_ref(nt, id, "arguments"); int iac = 0;
-      if (ia >= 0) nt_arr(nt, ia, "arguments", &iac);
-      if (iac == 1) enum_lazy_driven = 1;
-    }
     if (rt == TY_ENUMERATOR && !recv_is_index_enum && !enum_lazy_driven &&
         !sp_streq(nm, "to_a") && !sp_streq(nm, "entries") &&
         (nt_ref(nt, id, "block") >= 0 || enum_terminal || enum_regroup)) {
