@@ -11684,16 +11684,18 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     }
     if ((sp_streq(name, "cover?") || sp_streq(name, "include?") ||
          sp_streq(name, "member?") || sp_streq(name, "===")) && argc == 1) {
+      const char *fn = sp_streq(name, "include?") || sp_streq(name, "member?") ?
+                       "sp_srange_include" : "sp_srange_cover";
       if (a0 == TY_STRING) {
         buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_srange_cover(_t%d, ", tr); emit_str_expr(c, argv[0], b);
+        buf_printf(b, "; %s(_t%d, ", fn, tr); emit_str_expr(c, argv[0], b);
         buf_puts(b, "); })"); return 1;
       }
       if (a0 == TY_POLY) {
         buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
         buf_printf(b, "; sp_RbVal _a%d = ", tr); emit_boxed(c, argv[0], b);
         buf_printf(b, "; (sp_bool)(_a%d.tag == SP_TAG_STR &&"
-                      " sp_srange_cover(_t%d, _a%d.v.s)); })", tr, tr, tr);
+                      " %s(_t%d, _a%d.v.s)); })", tr, fn, tr, tr);
         return 1;
       }
       buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); return 1;

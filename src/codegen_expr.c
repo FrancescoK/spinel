@@ -1440,9 +1440,9 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     /* ("a".."e"): the distinct string range, endpoints kept as strings (#3064) */
     if (comp_ntype(c, id) == TY_STR_RANGE) {
       buf_puts(b, "sp_srange_new(");
-      if (left >= 0) emit_str_expr_nilable(c, left, b); else buf_puts(b, "sp_str_empty");
+      if (left >= 0) emit_str_expr_nilable(c, left, b); else buf_puts(b, "NULL");
       buf_puts(b, ", ");
-      if (right >= 0) emit_str_expr_nilable(c, right, b); else buf_puts(b, "sp_str_empty");
+      if (right >= 0) emit_str_expr_nilable(c, right, b); else buf_puts(b, "NULL");
       buf_printf(b, ", %d)", excl);
       return;
     }

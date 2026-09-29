@@ -7411,8 +7411,9 @@ TyKind infer_uncached(Compiler *c, int id) {
       return TY_FLOAT_RANGE;
     /* ("a".."e"): both endpoints strings -> the distinct sp_StrRange, so a
        range held in a variable stays a Range rather than materializing into
-       its element array (#3064). */
-    if (lo >= 0 && hi >= 0 && lt == TY_STRING && ht == TY_STRING)
+       its element array (#3064). An endless ("a"..) or beginless (.."e") one
+       is a String range too, its missing bound a nil (NULL) endpoint. */
+    if ((lo >= 0 || hi >= 0) && (lo < 0 || lt == TY_STRING) && (hi < 0 || ht == TY_STRING))
       return TY_STR_RANGE;
     return TY_RANGE;
   }
