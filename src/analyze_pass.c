@@ -7042,21 +7042,25 @@ const char *block_param_name(Compiler *c, int block, int idx) {
   return NULL;
 }
 
-/* The name of a block's trailing rest parameter (`|*a|`), or NULL if the block
-   has none or it is anonymous (`|*|`). The rest collects the arguments past the
-   required ones into an array. */
-const char *block_rest_name(Compiler *c, int block) {
+static const char *block_rest_kind_name(Compiler *c, int block, const char *field, const char *kind) {
   int bp = nt_ref(c->nt, block, "parameters");      /* BlockParametersNode */
   if (bp < 0) return NULL;
   const char *bpty = nt_type(c->nt, bp);
   if (bpty && sp_streq(bpty, "NumberedParametersNode")) return NULL;
   int pn = nt_ref(c->nt, bp, "parameters");          /* ParametersNode */
   if (pn < 0) return NULL;
-  int rest = nt_ref(c->nt, pn, "rest");
+  int rest = nt_ref(c->nt, pn, field);
   if (rest < 0) return NULL;
   const char *rty = nt_type(c->nt, rest);
-  if (!rty || !sp_streq(rty, "RestParameterNode")) return NULL;  /* must be `*name` */
+  if (!rty || !sp_streq(rty, kind)) return NULL;
   return nt_str(c->nt, rest, "name");
+}
+
+/* The name of a block's trailing rest parameter (`|*a|`), or NULL if the block
+   has none or it is anonymous (`|*|`). The rest collects the arguments past the
+   required ones into an array. */
+const char *block_rest_name(Compiler *c, int block) {
+  return block_rest_kind_name(c, block, "rest", "RestParameterNode");  /* must be `*name` */
 }
 
 static const char *block_list_name(Compiler *c, int block, const char *list, int idx) {
@@ -7156,17 +7160,7 @@ int block_no_keywords(Compiler *c, int block) {
 /* Name of a block's `**kw` keyword-rest parameter, or NULL (also NULL for
    the anonymous `**`). */
 const char *block_kwrest_name(Compiler *c, int block) {
-  int bp = nt_ref(c->nt, block, "parameters");
-  if (bp < 0) return NULL;
-  const char *bpty = nt_type(c->nt, bp);
-  if (bpty && sp_streq(bpty, "NumberedParametersNode")) return NULL;
-  int pn = nt_ref(c->nt, bp, "parameters");
-  if (pn < 0) return NULL;
-  int kw = nt_ref(c->nt, pn, "keyword_rest");
-  if (kw < 0) return NULL;
-  const char *kty = nt_type(c->nt, kw);
-  if (!kty || !sp_streq(kty, "KeywordRestParameterNode")) return NULL;
-  return nt_str(c->nt, kw, "name");
+  return block_rest_kind_name(c, block, "keyword_rest", "KeywordRestParameterNode");
 }
 
 /* Name of a block's idx-th keyword parameter (`|a:, b: 5|`), or NULL. */
