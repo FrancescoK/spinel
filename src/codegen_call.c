@@ -11169,6 +11169,7 @@ static void emit_ctor_block_value(Compiler *c, int id, Buf *b) {
   if (bk == NK_BlockNode) { emit_proc_literal(c, blk, b); return; }
   if (bk != NK_BlockArgumentNode) { buf_puts(b, "NULL"); return; }
   int bexpr = nt_ref(nt, blk, "expression");
+  if (nt_kind(nt, bexpr) == NK_NilNode) { buf_puts(b, "NULL"); return; }
   /* a proc value threads itself into the stored `&blk`; a boxed one (read
      out of a poly slot) or a Method converts to its sp_Proc * */
   if (bexpr >= 0 && emit_block_arg_proc(c, bexpr, b)) return;
@@ -11268,11 +11269,18 @@ static int ctor_block_splices(Compiler *c, int id) {
 /* Can a Class-value `new` dispatch take this call's block? Each arm hands
    it to its class's `&blk` (emit_ctor_block_slot); a yielding initialize
    has no such slot, and takes a literal spliced into its arm. */
+/* Does class ci's yielding initialize take this call's block as a proc?
+   A `&pr` (not a literal the arm splices) and a proc-form clone. */
+static int ctor_block_by_proc(Compiler *c, int id, int ci) {
+  int blk = nt_ref(c->nt, id, "block");
+  return blk >= 0 && nt_kind(c->nt, blk) == NK_BlockArgumentNode && ctor_init_proc_form(c, ci) >= 0;
+}
+
 static int ctor_block_dispatchable(Compiler *c, int id) {
   if (nt_ref(c->nt, id, "block") < 0 || ctor_block_spliceable(c, id)) return 1;
   for (int k = 0; k < c->nclasses; k++) {
     int im = comp_method_in_chain(c, k, "initialize", NULL);
-    if (im >= 0 && c->scopes[im].yields) return 0;
+    if (im >= 0 && c->scopes[im].yields && !ctor_block_by_proc(c, id, k)) return 0;
   }
   return 1;
 }
@@ -11298,11 +11306,15 @@ static void emit_ctor_block_slot(Compiler *c, int id, int initm, const char *lea
 
 static int emit_ctor_splice_arm(Compiler *c, int id, int ci, int initm, int rt2, Buf *b) {
   if (initm < 0 || !c->scopes[initm].yields || c->classes[ci].is_struct ||
-      comp_class_is_module(c, &c->classes[ci]) || !ctor_block_spliceable(c, id)) return 0;
+      comp_class_is_module(c, &c->classes[ci])) return 0;
+  /* a proc known only at run time (`k.new(x, &pr)`, the `&` a `...`
+     forward passes) goes to the initialize's proc form, as at a static site */
+  int by_proc = !ctor_block_spliceable(c, id);
+  if (by_proc && !ctor_block_by_proc(c, id, ci)) return 0;
   Buf apre; memset(&apre, 0, sizeof apre);
   Buf yb; memset(&yb, 0, sizeof yb);
   Buf *sv_pre = g_pre; g_pre = &apre;
-  int ok = emit_ctor_yield_inline(c, id, ci, &yb);
+  int ok = by_proc ? emit_ctor_new_with_proc(c, id, ci, &yb) : emit_ctor_yield_inline(c, id, ci, &yb);
   g_pre = sv_pre;
   if (ok && yb.p) {
     buf_printf(b, "case %d: { %s_t%d=", ci, apre.p ? apre.p : "", rt2);

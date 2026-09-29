@@ -2112,10 +2112,12 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       blk_ok = es && es->yields && es->blk_param && (fx < 0 || (fn && sp_streq(fn, es->blk_param)));
     }
     if (!blk_ok) {
+      /* a `&pr` also reaches a yielding initialize's proc form */
+      int by_proc = nt_kind(nt, blk) == NK_BlockArgumentNode;
       blk_ok = 1;
       for (int k = 0; k < c->nclasses && blk_ok; k++) {
         int im = comp_method_in_chain(c, k, "initialize", NULL);
-        if (im >= 0 && c->scopes[im].yields) blk_ok = 0;
+        if (im >= 0 && c->scopes[im].yields && !(by_proc && scope_proc_form_of(c, im) >= 0)) blk_ok = 0;
       }
     }
     if (blk_ok) { *out = TY_POLY; return 1; }
