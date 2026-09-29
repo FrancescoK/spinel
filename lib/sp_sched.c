@@ -775,10 +775,7 @@ void sp_safepoint(void) {
    today's inline collect, routed through the barrier. */
 static void sp_stw_collect_impl(int force);
 
-void sp_fin_run_pending(void);
-/* the barrier has lifted: the finalizers of what the collection freed run on
-   this mutator, as after an explicit request */
-void sp_stw_collect(void) { sp_stw_collect_impl(0); sp_fin_run_pending(); }
+void sp_stw_collect(void) { sp_stw_collect_impl(0); }
 
 /* An EXPLICIT collection (GC.start / GC.compact). It must take the same barrier
    as a threshold-triggered one: the parallel sweep hands one slot to each other
@@ -789,10 +786,12 @@ void sp_stw_collect(void) { sp_stw_collect_impl(0); sp_fin_run_pending(); }
 void sp_gc_collect_request(void) {
 #ifdef SP_THREADS
   sp_stw_collect_impl(1);
-  sp_fin_run_pending();
 #else
   sp_gc_collect();
 #endif
+  /* GC.start is a call of the program's, a safe point: what it freed is
+     finalized before it returns, after the barrier has lifted */
+  sp_fin_run_pending();
 }
 
 static void sp_stw_collect_impl(int force) {

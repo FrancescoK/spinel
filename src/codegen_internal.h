@@ -446,6 +446,7 @@ extern int g_gen_obj_with;  /* >=1 instantiated Data: emit+install sp_obj_with (
 extern int g_uses_regex;
 extern int g_uses_argv;
 extern int g_uses_threads;
+extern int g_uses_finalizers;
 extern int g_has_user_cmp;
 extern int g_has_user_binop;
 extern int g_has_user_aset;

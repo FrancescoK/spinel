@@ -2567,6 +2567,8 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
      when the program uses threads; a non-threaded program is byte-identical.
      At N=1 the flag is never set -- a predicted-not-taken load. */
   if (g_uses_threads) { emit_indent(b, indent); buf_puts(b, "if (SP_UNLIKELY(SP_SAFEPOINT_POLL())) sp_safepoint();\n"); }
+  /* and for pending finalizers (sp_gc.h), when the program defines any */
+  if (g_uses_finalizers) { emit_indent(b, indent); buf_puts(b, "SP_FIN_POLL();\n"); }
   emit_stmts(c, body, b, indent);
   if (has_redo) g_redo_depth--;
   g_c_loop_depth--;

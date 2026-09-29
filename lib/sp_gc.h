@@ -526,6 +526,15 @@ extern int sp_gc_trimmer_on;
 void sp_gc_collect_retune(void);
 void sp_stw_collect(void);
 void sp_gc_collect_request(void);   /* explicit GC.start: same barrier, forced */
+/* ObjectSpace finalizers left pending by a collection. They run at a safe
+   point of the program -- a method's entry, a loop's back-edge, GC.start,
+   exit -- never inside the allocation that collected, where the runtime may
+   be halfway through an operation on an object the finalizer can reach. The
+   generated code polls the flag only when the program defines finalizers. */
+extern volatile int sp_fin_pending_flag;
+void sp_fin_run_pending(void);
+#define SP_FIN_POLL() \
+  do { if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_fin_pending_flag, __ATOMIC_RELAXED))) sp_fin_run_pending(); } while (0)
 void sp_oom_die(void);
 
 /* ---- Embedder callbacks supplied by the generated TU ----

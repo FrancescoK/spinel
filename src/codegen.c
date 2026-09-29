@@ -4289,6 +4289,8 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   buf_puts(b, "    SP_GC_SAVE();\n");
   size_t gc_save_len = b->len - gc_save_off;
   emit_scope_decls(c, s, b);
+  /* a method's entry is a safe point for pending finalizers (sp_gc.h) */
+  if (g_uses_finalizers) buf_puts(b, "    SP_FIN_POLL();\n");
   TyKind saved_rt = g_ret_type;
   int saved_ed = g_ensure_depth; g_ensure_depth = 0;
   /* the body's own ensure regions reuse the stack from index 0: keep the
@@ -11411,7 +11413,7 @@ static void scan_prologue_features(Compiler *c) {
   const NodeTable *nt = c->nt;
   g_uses_symbols = (c->nsymbols > 0);
   g_uses_marshal = 0;
-  g_uses_regex = 0; g_uses_argv = 0; g_uses_threads = 0;
+  g_uses_regex = 0; g_uses_argv = 0; g_uses_threads = 0; g_uses_finalizers = 0;
   g_uses_program_name = 0;
   for (int i = 0; i < nt->count; i++) {
     const char *ty = nt_type(nt, i);
@@ -11455,6 +11457,8 @@ static void scan_prologue_features(Compiler *c) {
                sp_streq(nm, "Mutex") || sp_streq(nm, "Monitor") ||
                sp_streq(nm, "ConditionVariable")) g_uses_threads = 1;
       else if (sp_streq(nm, "ARGV") || sp_streq(nm, "ARGF")) g_uses_argv = 1;
+      /* builtins/object_space.rb, spliced for a program that defines finalizers */
+      else if (sp_streq(nm, "Finalizers__")) g_uses_finalizers = 1;
       else if (sp_streq(nm, "Symbol")) g_uses_symbols = 1;
       /* Marshal.load reconstructs symbols at runtime, so it needs the symbol
          table (sp_sym_intern / sp_sym_to_s) emitted even if the program uses no

@@ -1049,8 +1049,9 @@ static void sp_gc_trim_request(void){
  * this registry holds only the object's identity and that index, and so does
  * not keep the object alive. After a cycle's mark, an entry whose object the
  * cycle will free moves to the pending list, and the pending finalizers run
- * once the collection is over -- never inside it -- through the runner the
- * Ruby side installed. What is still registered at exit runs then, as in
+ * at the program's next safe point (SP_FIN_POLL in sp_gc.h) -- never inside
+ * the collection, nor inside the allocation that set it off -- through the
+ * runner the Ruby side installed. What is still registered at exit runs then, as in
  * CRuby. A threaded build guards the lists with a lock (never held across a
  * callback); the mark-time scan runs with the world stopped, and no mutator
  * stops inside a locked region, which allocates nothing. */
@@ -1058,6 +1059,7 @@ typedef struct { void *obj; int tag; uint64_t bits; sp_int idx; } sp_fin_ent;
 static sp_fin_ent *sp_fin_tab; static int sp_fin_n, sp_fin_cap;
 static sp_int *sp_fin_pend; static int sp_fin_pn, sp_fin_pcap;
 static void (*sp_fin_runner)(int64_t);
+volatile int sp_fin_pending_flag;   /* sp_gc.h: SP_FIN_POLL */
 static int sp_fin_running, sp_fin_exit_armed;
 #ifdef SP_THREADS
 static pthread_mutex_t sp_fin_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1075,6 +1077,7 @@ static void sp_fin_push_pending(sp_int idx) {
     if (!sp_fin_pend) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
   sp_fin_pend[sp_fin_pn++] = idx;
+  SP_ATOMIC_STORE(&sp_fin_pending_flag, 1, __ATOMIC_RELAXED);
 }
 
 void sp_fin_run_pending(void) {
@@ -1089,6 +1092,7 @@ void sp_fin_run_pending(void) {
     if (!batch) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     memcpy(batch, sp_fin_pend, sizeof(sp_int) * (size_t)n);
     sp_fin_pn = 0;
+    SP_ATOMIC_STORE(&sp_fin_pending_flag, 0, __ATOMIC_RELAXED);
     SP_FIN_UNLOCK();
     for (int i = 0; i < n; i++) sp_fin_runner((int64_t)batch[i]);
     free(batch);
@@ -1624,12 +1628,9 @@ void sp_gc_collect(void){
   if(full)sp_gc_stat_fulls++;
   sp_gc_stat_seconds+=sp_gc_stat_now()-stat_t0;
   if(sp_gc_obj_retune_hook)sp_gc_obj_retune_hook(ob_before);
-#ifndef SP_THREADS
-  /* the collection is over: finalizers of what it freed may run now. A
-     threaded build runs them after the barrier lifts (sp_gc_collect_request)
-     and at exit, never with the world stopped. */
-  if (sp_fin_pn) sp_fin_run_pending();
-#endif
+  /* the finalizers of what this collection freed wait for the program's
+     next safe point (SP_FIN_POLL): the allocation that brought us here may
+     be in the middle of an operation one of them can reach */
 }
 
 /* Issue #1302: optional RSS ceiling via SPINEL_MAX_HEAP_MB; checked only

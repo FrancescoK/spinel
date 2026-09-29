@@ -954,6 +954,7 @@ int g_gen_obj_with = 0;
 int g_uses_regex = 0;
 int g_uses_argv = 0;
 int g_uses_threads = 0;
+int g_uses_finalizers = 0;   /* ObjectSpace.define_finalizer: SP_FIN_POLL at safe points */
 int g_has_user_cmp = 0;
 int g_has_user_binop = 0;
 int g_has_user_aset = 0;
