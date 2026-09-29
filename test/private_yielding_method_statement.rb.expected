@@ -1,0 +1,9 @@
+"private method 'cc' called for an instance of C"
+"private method 'each_one' called for an instance of C"
+"private method 'each_one' called for an instance of C"
+"protected method 'pro' called for an instance of C"
+5
+7
+2
+7
+11
