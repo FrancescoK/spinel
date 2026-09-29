@@ -10324,6 +10324,11 @@ static void mark_empty_array_operands(Compiler *c) {
     int bn = 0; const int *bb = st >= 0 ? nt_arr(nt, st, "body", &bn) : NULL;
     if (bn == 1 && is_empty_array_literal(nt, bb[0], c->node_cap)) c->empty_arr_recv[bb[0]] = 1;
   }
+  /* `a, b = []` answers its right-hand side, which no write can back-fill */
+  NT_FOREACH_KIND(nt, NK_MultiWriteNode, mw) {
+    int v = nt_ref(nt, mw, "value");
+    if (is_empty_array_literal(nt, v, c->node_cap)) c->empty_arr_recv[v] = 1;
+  }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
     int recv = nt_ref(nt, id, "receiver");
