@@ -12957,6 +12957,13 @@ char *codegen_program(const NodeTable *nt) {
     buf_printf(&b, "%s", g_ext_init_name ? "" : "static ");
     buf_puts(&b, "const char *sp_class_to_s(sp_Class c){if(sp_class_nil_p(c))return SPL(\"nil\");if(c.name)return c.name;switch(c.cls_id){");
     for (int i = 0; i < c->nclasses; i++) {
+      /* a reopened builtin's entry (`class Object; def m` gives Object one)
+         is what its constant boxes to, and it prints the builtin's name;
+         the Toplevel pseudo-class alone has no Ruby name */
+      if (is_builtin_reopen(c->classes[i].name) && !sp_streq(c->classes[i].name, "Toplevel")) {
+        buf_printf(&b, "case %d:return SPL(\"%s\");", i, c->classes[i].name);
+        continue;
+      }
       if (!is_builtin_reopen(c->classes[i].name)) {
         /* An anonymous Struct/Data class has no Ruby-visible name -- the
            StructAnon_<n> the compiler keys it by is not one -- and CRuby
