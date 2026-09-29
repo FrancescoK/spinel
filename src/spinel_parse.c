@@ -2462,6 +2462,212 @@ static void sp_req_hoist_splice(char **result, unsigned char **fsl, size_t *fsl_
   *result = nr;
 }
 
+/* ---- computed requires a file's own layout decides ----
+ *
+ * `require File.join(Archive::LIBPATH, "ffi-libarchive", "archive")`,
+ * `require ZMQ.libpath(["ffi-rzmq", file])` inside `%w(util context).each do
+ * |file|`: the name is computed, but from literals that spell a path under the
+ * requiring file's own directory (the Mr Bones gem template, among others).
+ * Such a require becomes `require_relative` of the joined literals when that
+ * file exists; a `%w(...).each` loop around it is unrolled first. Anything
+ * that does not resolve to a file is left for the ordinary pass. */
+static int sp_path_exists(const char *p) { FILE *f = fopen(p, "r"); if (f) { fclose(f); return 1; } return 0; }
+
+/* The string literals of `arg` (up to `end`) joined by '/', with `var`
+   standing in as `val` wherever it appears as a bare word. */
+static int sp_join_literals(const char *arg, const char *end, const char *var, const char *val,
+                            char *out, size_t cap) {
+  size_t o = 0; int n = 0;
+  out[0] = 0;
+  for (const char *p = arg; p < end; p++) {
+    const char *piece = NULL; size_t plen = 0;
+    if (*p == '"' || *p == '\'') {
+      char q = *p++;
+      const char *st = p;
+      while (p < end && *p != q) { if (*p == '\\') p++; p++; }
+      if (p >= end) return 0;
+      piece = st; plen = (size_t)(p - st);
+      if (memchr(piece, '#', plen)) return 0;   /* interpolation: not a literal */
+    }
+    else if (var && sp_req_ident_char(*p) && (p == arg || !sp_req_ident_char(p[-1]) ) &&
+             strncmp(p, var, strlen(var)) == 0 && !sp_req_ident_char(p[strlen(var)])) {
+      piece = val; plen = strlen(val);
+      p += strlen(var) - 1;
+    }
+    else continue;
+    if (plen == 0) continue;
+    if (plen == 1 && piece[0] == '.') continue;          /* a '.' segment */
+    if (plen == 1 && piece[0] == '/') continue;
+    if (o + plen + 2 >= cap) return 0;
+    if (n++) out[o++] = '/';
+    memcpy(out + o, piece, plen); o += plen;
+    out[o] = 0;
+  }
+  /* drop a trailing .rb: require_relative adds it back */
+  if (o > 3 && strcmp(out + o - 3, ".rb") == 0) out[o - 3] = 0;
+  return n > 0;
+}
+
+/* `require <computed>` on one line -> `require_relative "<joined>"` when the
+   joined literals name a file beside this one. The call must be the whole
+   statement (only a comment may follow it: a modifier or a `;` would be
+   lost), and a path based on __FILE__ is left alone -- its literals are
+   relative to the file, not to its directory. */
+static int sp_computed_require(const char *line, const char *eol, const char *dir,
+                               const char *var, const char *val, char *out, size_t cap) {
+  const char *p = line;
+  while (p < eol && (*p == ' ' || *p == '\t')) p++;
+  if (strncmp(p, "require", 7) != 0 || sp_req_ident_char(p[7])) return 0;
+  const char *a = p + 7;
+  int paren = 0;
+  while (a < eol && (*a == ' ' || *a == '\t')) a++;
+  if (a < eol && *a == '(') { paren = 1; a++; }
+  while (a < eol && (*a == ' ' || *a == '\t')) a++;
+  if (a >= eol || *a == '"' || *a == '\'') return 0;        /* a plain literal: the ordinary pass */
+  /* the argument's extent: to the matching `)`, or to the line's end */
+  const char *ae = NULL;
+  int depth = paren;
+  char q = 0;
+  for (const char *c = a; c < eol; c++) {
+    if (q) { if (*c == '\\') c++; else if (*c == q) q = 0; continue; }
+    if (*c == '"' || *c == '\'') { q = *c; continue; }
+    if (*c == '#') { if (paren) return 0; ae = c; break; }
+    if (*c == ';') return 0;
+    if (*c == '(' || *c == '[') depth++;
+    else if (*c == ')' || *c == ']') {
+      if (--depth == 0 && paren) { ae = c; break; }
+    }
+    /* a modifier on the call: `if` / `unless` / `rescue` / `while` / `until` */
+    if (depth == (paren ? 1 : 0) && (c == a || c[-1] == ' ' || c[-1] == ')') &&
+        ((strncmp(c, "if", 2) == 0 && !sp_req_ident_char(c[2])) ||
+         (strncmp(c, "unless", 6) == 0 && !sp_req_ident_char(c[6])) ||
+         (strncmp(c, "rescue", 6) == 0 && !sp_req_ident_char(c[6])) ||
+         (strncmp(c, "while", 5) == 0 && !sp_req_ident_char(c[5])) ||
+         (strncmp(c, "until", 5) == 0 && !sp_req_ident_char(c[5]))))
+      return 0;
+  }
+  if (q) return 0;
+  if (!ae) { if (paren) return 0; ae = eol; }
+  if (paren) {                                   /* only a comment after `)` */
+    const char *t = ae + 1;
+    while (t < eol && (*t == ' ' || *t == '\t' || *t == '\r')) t++;
+    if (t < eol && *t != '#') return 0;
+  }
+  for (const char *c = a; c + 8 <= ae; c++) if (strncmp(c, "__FILE__", 8) == 0) return 0;
+  char joined[512];
+  if (!sp_join_literals(a, ae, var, val, joined, sizeof joined)) return 0;
+  char full[1100];
+  snprintf(full, sizeof full, "%s/%s.rb", dir, joined);
+  if (!sp_path_exists(full)) return 0;
+  snprintf(out, cap, "%.*srequire_relative \"%s\"\n", (int)(p - line), line, joined);
+  return 1;
+}
+
+static char *sp_rewrite_computed_requires(const char *source, const char *dir) {
+  size_t slen = strlen(source);
+  size_t cap = slen * 2 + 4096;
+  char *out = malloc(cap);
+  if (!out) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  size_t o = 0;
+  const char *p = source;
+  while (*p) {
+    const char *eol = strchr(p, '\n');
+    const char *next = eol ? eol + 1 : p + strlen(p);
+    if (!eol) eol = p + strlen(p);
+    char repl[1400];
+    /* `%w(a b).each do |v|` / `require ...v...` / `end`, or the brace form
+       on one line */
+    const char *w = p;
+    while (w < eol && (*w == ' ' || *w == '\t')) w++;
+    if (strncmp(w, "%w(", 3) == 0 || strncmp(w, "%w[", 3) == 0 || strncmp(w, "%w{", 3) == 0) {
+      char close = w[2] == '(' ? ')' : (w[2] == '[' ? ']' : '}');
+      const char *le = memchr(w + 3, close, (size_t)(eol - w - 3));
+      const char *each = le ? strstr(le, ".each") : NULL;
+      if (le && each && each < eol) {
+        const char *bar = memchr(each, '|', (size_t)(eol - each));
+        const char *bar2 = bar ? memchr(bar + 1, '|', (size_t)(eol - bar - 1)) : NULL;
+        if (bar && bar2) {
+          char var[64];
+          const char *vs = bar + 1; while (*vs == ' ') vs++;
+          size_t vl = 0; while (vs + vl < bar2 && sp_req_ident_char(vs[vl])) vl++;
+          if (vl > 0 && vl < sizeof var) {
+            memcpy(var, vs, vl); var[vl] = 0;
+            int brace = memchr(each, '{', (size_t)(bar - each)) != NULL;
+            const char *body = brace ? bar2 + 1 : next;
+            const char *body_eol = brace ? eol : strchr(next, '\n');
+            const char *after = NULL;
+            if (!brace && body_eol) {
+              const char *l3 = body_eol + 1;
+              const char *l3e = strchr(l3, '\n'); if (!l3e) l3e = l3 + strlen(l3);
+              const char *t = l3; while (t < l3e && (*t == ' ' || *t == '\t')) t++;
+              if (strncmp(t, "end", 3) == 0 && !sp_req_ident_char(t[3])) after = *l3e ? l3e + 1 : l3e;
+            }
+            if (brace) {
+              const char *cb = strrchr(body, '}');
+              if (cb && cb < eol) { body_eol = cb; after = next; }
+            }
+            if (after && body_eol) {
+              /* every word of the list must resolve, or nothing is unrolled */
+              int old_lines = 0; for (const char *q = p; q < after; q++) if (*q == '\n') old_lines++;
+              if (old_lines < 1) old_lines = 1;
+              char unrolled[8192]; size_t uo = 0; int ok = 1, nw = 0;
+              const char *e = w + 3;
+              while (ok && e < le) {
+                while (e < le && (*e == ' ' || *e == '\t' || *e == '\n')) e++;
+                const char *es = e;
+                while (e < le && *e != ' ' && *e != '\t' && *e != '\n') e++;
+                if (e == es) break;
+                char val[128]; snprintf(val, sizeof val, "%.*s", (int)(e - es), es);
+                char one[1400];
+                if (!sp_computed_require(body, body_eol, dir, var, val, one, sizeof one)) { ok = 0; break; }
+                const char *ind = one; while (*ind == ' ' || *ind == '\t') ind++;
+                size_t il = strlen(ind);
+                if (il && ind[il - 1] == '\n') il--;
+                /* one require per line while the loop's lines last, then the
+                   rest joined by `; ` on its last line */
+                int own_line = nw < old_lines;
+                size_t lead = own_line ? (size_t)(w - p) + (nw ? 1 : 0) : 2;
+                if (uo + lead + il + 2 >= sizeof unrolled) { ok = 0; break; }
+                if (own_line) {
+                  if (nw) unrolled[uo++] = '\n';
+                  memcpy(unrolled + uo, p, (size_t)(w - p)); uo += (size_t)(w - p);
+                }
+                else { unrolled[uo++] = ';'; unrolled[uo++] = ' '; }
+                memcpy(unrolled + uo, ind, il); uo += il;
+                nw++;
+              }
+              if (ok && uo > 0) {
+                unrolled[uo++] = '\n';
+                /* the replaced lines keep their count: pad with blank lines so
+                   line numbers after the loop do not move */
+                int new_lines = nw < old_lines ? nw : old_lines;
+                if (o + uo + (size_t)old_lines + 64 >= cap) { cap = cap * 2 + uo + (size_t)old_lines; out = realloc(out, cap); }
+                memcpy(out + o, unrolled, uo); o += uo;
+                for (; new_lines < old_lines; new_lines++) out[o++] = '\n';
+                p = after;
+                continue;
+              }
+            }
+          }
+        }
+      }
+    }
+    if (sp_computed_require(p, eol, dir, NULL, NULL, repl, sizeof repl)) {
+      size_t rl = strlen(repl);
+      if (o + rl + 64 >= cap) { cap = cap * 2 + rl; out = realloc(out, cap); }
+      memcpy(out + o, repl, rl); o += rl;
+      p = next;
+      continue;
+    }
+    size_t ll = (size_t)(next - p);
+    if (o + ll + 64 >= cap) { cap = cap * 2 + ll; out = realloc(out, cap); }
+    memcpy(out + o, p, ll); o += ll;
+    p = next;
+  }
+  out[o] = 0;
+  return out;
+}
+
 static char *resolve_requires(const char *source, const char *source_path,
                               unsigned char **fsl_out, size_t *fsl_n_out) {
   /* Get base directory */
@@ -2473,11 +2679,11 @@ static char *resolve_requires(const char *source, const char *source_path,
   else { free(dir); dir = strdup("."); }
   free(path_copy);
 
-  char *result = strdup(source);
+  char *result = sp_rewrite_computed_requires(source, dir);
   /* One pragma flag per line of `result`, kept in lockstep with every text
      splice below so each literal keeps its own file's flag. */
   size_t fsl_n;
-  unsigned char *fsl = sp_fsl_make(source, sp_scan_fsl_pragma(source), &fsl_n);
+  unsigned char *fsl = sp_fsl_make(result, sp_scan_fsl_pragma(source), &fsl_n);
   /* Same scan the plain requires use: wherever the call stands, and never the
      word as it appears inside a string, comment or heredoc body. */
   for (;;) {
