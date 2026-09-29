@@ -7476,17 +7476,26 @@ void emit_ds_kwarg_check(Compiler *c, Scope *m, int kwh, int ds_hash_tmp, TyKind
   buf_puts(g_pre, "0};\n");
   /* A literal key that is no Symbol is unknown to a callee without a
      `**kwrest` as surely as one no keyword names, and CRuby names each in
-     the order the hash holds it, ahead of those the `**` brings: the plan's
-     list, inspected here, stands for the literal keys (kw_plan). */
+     the order the hash holds it: the plan's list, inspected here, stands
+     for the literal keys (kw_plan). Those written after the `**` come
+     after the keys it brings (`f(**{z: 2}, y: 3)` is `unknown keywords:
+     :z, :y`), so a call writing one there says how many stand ahead of it
+     (sp_kwargs_verify_at). */
   KwPlan P;
   kw_plan(c, m, kwh, &P);
-  int strkey = 0;
-  for (int e = 0; e < en && !merged; e++)
+  int strkey = 0, splat_el = -1, nbefore = 0;
+  for (int e = 0; e < en && !merged; e++) {
+    if (nt_kind(nt, el[e]) == NK_AssocSplatNode && splat_el < 0) splat_el = e;
     if (nt_kind(nt, el[e]) == NK_AssocNode && nt_kind(nt, nt_ref(nt, el[e], "key")) == NK_StringNode) strkey = 1;
-  if (strkey && m->kwrest_idx < 0) {
+  }
+  int nunk = P.nunknown < 32 ? P.nunknown : 32;
+  while (nbefore < nunk && P.unknown_el[nbefore] < splat_el) nbefore++;
+  int after = !merged && nbefore < nunk;
+  int listed = (strkey || after) && m->kwrest_idx < 0;
+  if (listed) {
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "static const char *const _ku%d[] = {", chk);
-    for (int u = 0; u < P.nunknown && u < 32; u++) {
+    for (int u = 0; u < nunk; u++) {
       int key = nt_ref(nt, el[P.unknown_el[u]], "key");
       int is_sym = nt_kind(nt, key) == NK_SymbolNode;
       char iv[300];
@@ -7498,11 +7507,12 @@ void emit_ds_kwarg_check(Compiler *c, Scope *m, int kwh, int ds_hash_tmp, TyKind
   }
   char tn[32]; snprintf(tn, sizeof tn, "_t%d", ds_hash_tmp);
   emit_indent(g_pre, g_indent);
-  buf_puts(g_pre, strkey && m->kwrest_idx < 0 ? "sp_kwargs_verify_lit(" : "sp_kwargs_verify(");
+  buf_puts(g_pre, !listed ? "sp_kwargs_verify(" : after ? "sp_kwargs_verify_at(" : "sp_kwargs_verify_lit(");
   if (ds_hash_type == TY_POLY) buf_puts(g_pre, tn);
   else emit_boxed_text(c, ds_hash_type, tn, g_pre);
   buf_printf(g_pre, ", _kw%d, _kr%d, _kl%d, ", chk, chk, chk);
-  if (strkey && m->kwrest_idx < 0) buf_printf(g_pre, "_ku%d, ", chk);
+  if (listed) buf_printf(g_pre, "_ku%d, ", chk);
+  if (listed && after) buf_printf(g_pre, "%d, ", nbefore);
   buf_printf(g_pre, "%d);\n", m->kwrest_idx < 0);
 }
 
