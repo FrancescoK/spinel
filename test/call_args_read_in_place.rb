@@ -9,8 +9,11 @@
 # after the keywords. Through a direct call, a class method, `.new` into
 # `initialize`, an inlined yielding `initialize`, Method#call, a class
 # method on a value of several classes, and Struct and Data members, their
-# keywords out of the members' order too. A parenthesized value that ran
-# first is not run again where its slot boxes it.
+# keywords out of the members' order too. A default filled at the call
+# site read a variable at its parameter's slot, ahead of a later argument
+# that assigns it, through the same calls, an inlined yielding method and
+# super too. A parenthesized value that ran first is not run again where
+# its slot boxes it.
 
 def li(x) = (puts "li #{x}"; x)
 def ls(x) = (puts "ls #{x}"; "s#{x}")
@@ -71,6 +74,37 @@ p DA.new(b: li(1), a: ls(2)).to_h
 QK = Struct.new(:x, :y, keyword_init: true)
 @w = "a"; p QK.new(y: gs("c"), x: @w).x
 
+# a default filled at the call site reads what an argument bound after
+# its parameter wrote
+def dv(a = @y, b) = [a, b]
+def gy(v) = (@y = v; v)
+def dg(a = $g + 1, b, c) = [a, b, c]
+def dw(k1: $g, k2:) = [k1, k2]
+def dp(a, b = $g, c) = [a, b, c]
+def dy(a = $g, b) = yield(a, b)
+class C
+  def self.dd(a = $g, b) = [:c, a, b]
+end
+class G
+  def dd(a = $g, b) = [:g, a, b]
+end
+class F < G
+  def dd(b) = super(($g = b; b))
+end
+class H
+  def initialize(a = $g, b) = (@a = [a, b])
+  attr_reader :a
+end
+@y = 0; p dv(gy(2))
+$g = 0; p dg(3, ($g = 5; 5))
+$g = 0; p dw(k2: ($g = 6; 6))
+$g = 0; p dp(1, ($g = 7; 7))
+$g = 0; p dy(($g = 8; 8)) { |a, b| [a, b] }
+$g = 0; p C.dd(($g = 9; 9))
+$g = 0; p method(:dp).call(1, ($g = 10; 10))
+$g = 0; p F.new.dd(11)
+$g = 0; p H.new(($g = 12; 12)).a
+
 # a parenthesized value that ran first is not run again where its slot
 # boxes it
 u = 1; p q(u, (u = li(2)))
@@ -84,10 +118,12 @@ class T
   def seth = (@h = "h1"; 7)
   def tick = (@n += 1)
   def pm(a, b) = [a, b]
+  def pd(a = @h, b) = [a, b]
   def go
     r = []
     @h = "h0"; r << pm(@h, seth)
     @h = "h0"; r << pm(@h, tick)
+    @h = "h0"; r << pd(seth)
     @h = "h0"; r << S.new(@h, seth).to_a
     @h = "h0"; r << QK.new(y: seth, x: @h).x
     r
