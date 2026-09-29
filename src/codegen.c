@@ -1,3 +1,4 @@
+#include <limits.h>
 #include "codegen_internal.h"
 
 /* A reference-backed builtin (IO/Fiber/Thread/Queue/Mutex/ConditionVariable/
@@ -2714,18 +2715,37 @@ static long fi_own_frame(Compiler *c, int si) {
   return f;
 }
 
-/* The nodes of a body: what absorbing it copies into its caller. */
-static long fi_node_count(const NodeTable *nt, int n) {
+/* The nodes of a body: what absorbing it copies into its caller. The walk is
+   bounded in depth, like the other forcing scans, and stops counting past
+   `cap`: a body deeper or larger than that answers cap + 1, which the size
+   pass reads as over any budget. */
+static long fi_node_count(const NodeTable *nt, int n, int depth, long cap) {
   if (n < 0) return 0;
+  if (depth > 64) return cap + 1;
   long k = 1;
   int nr = nt_num_refs(nt, n);
-  for (int i = 0; i < nr; i++) k += fi_node_count(nt, nt_ref_at(nt, n, i));
+  for (int i = 0; i < nr && k <= cap; i++) k += fi_node_count(nt, nt_ref_at(nt, n, i), depth + 1, cap);
   int na = nt_num_arrs(nt, n);
-  for (int i = 0; i < na; i++) {
+  for (int i = 0; i < na && k <= cap; i++) {
     int cnt = 0; const int *ids = nt_arr_at(nt, n, i, &cnt);
-    for (int j = 0; j < cnt; j++) k += fi_node_count(nt, ids[j]);
+    for (int j = 0; j < cnt && k <= cap; j++) k += fi_node_count(nt, ids[j], depth + 1, cap);
   }
-  return k;
+  return k > cap ? cap + 1 : k;
+}
+
+/* Every call in a body, however many: the buffer grows until the collection
+   is not truncated (or cannot grow further, and then answers 0). */
+static int fi_all_calls(Compiler *c, int body, int **buf, int *cap, int *nc) {
+  for (;;) {
+    *nc = 0;
+    g_fi_trunc = 0;
+    fi_collect_calls(c, body, *buf, nc, *cap, 0);
+    if (!g_fi_trunc) return 1;
+    if (*cap >= (1 << 22)) return 0;
+    int *nb = realloc(*buf, sizeof(int) * (size_t)(*cap) * 2);
+    if (!nb) return 0;
+    *buf = nb; *cap *= 2;
+  }
 }
 
 static void fi_build(Compiler *c) {
@@ -2905,22 +2925,25 @@ static void fi_build(Compiler *c) {
      six levels of twenty calls asked the C compiler for 20^6 copies, and it
      spent minutes on one file. Charge each candidate its own nodes plus what
      it absorbs, and stop forcing into a caller once its absorbed total passes
-     the budget -- the frame pass above, in nodes, and on every program. */
+     the budget -- the frame pass above, in nodes, and on every program. A
+     body whose calls or callees cannot all be listed counts as over. */
   {
     const char *se = getenv("SPINEL_INLINE_FORCE_SIZE");
     long sbudget = (se && *se) ? atol(se) : 100000;
-    if (sbudget > 0 && ncand > 0 && ncand <= 2048) {
+    if (sbudget > 0 && sbudget < LONG_MAX / 4 && ncand > 0 && ncand <= 2048) {
       long *size = (long *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), sizeof(long));
       long *own = (long *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), sizeof(long));
-      enum { FI_SCALLS_MAX = 8192 };
-      int *calls = (int *)malloc(sizeof(int) * FI_SCALLS_MAX);
-      int cal[32];
-      if (!calls || !own) { free(size); size = NULL; }
+      int ccap = 8192;
+      int *calls = (int *)malloc(sizeof(int) * (size_t)ccap);
+      enum { FI_SCALLEES_MAX = 65536 };
+      int *cal = (int *)malloc(sizeof(int) * FI_SCALLEES_MAX);
+      if (!calls || !own || !cal) { free(size); size = NULL; }
       if (size) {
-        for (int si = 0; si < c->nscopes; si++) own[si] = fi_node_count(nt, c->scopes[si].body);
+        for (int si = 0; si < c->nscopes; si++)
+          own[si] = fi_node_count(nt, c->scopes[si].body, 0, sbudget);
         for (int round = 0; round < 8; round++) {
           /* what each forced candidate expands to (acyclic, as above); the
-             sums saturate at the budget, which is all the trim compares */
+             sums saturate just past the budget, which is all the trim reads */
           for (int it = 0; it < 32; it++) {
             int ch = 0;
             for (int si = 0; si < c->nscopes; si++) {
@@ -2928,12 +2951,12 @@ static void fi_build(Compiler *c) {
               if (cand[si]) {
                 v = own[si];
                 int nc = 0;
-                g_fi_trunc = 0;
-                fi_collect_calls(c, c->scopes[si].body, calls, &nc, FI_SCALLS_MAX, 0);
+                if (!fi_all_calls(c, c->scopes[si].body, &calls, &ccap, &nc)) v = sbudget + 1;
                 for (int i = 0; i < nc && v <= sbudget; i++) {
                   int n2 = 0;
-                  fi_callees(c, calls[i], cal, &n2, 32);
-                  for (int j = 0; j < n2; j++) if (cand[cal[j]]) v += size[cal[j]];
+                  fi_callees(c, calls[i], cal, &n2, FI_SCALLEES_MAX);
+                  if (n2 >= FI_SCALLEES_MAX) { v = sbudget + 1; break; }
+                  for (int j = 0; j < n2 && v <= sbudget; j++) if (cand[cal[j]]) v += size[cal[j]];
                 }
                 if (v > sbudget) v = sbudget + 1;
               }
@@ -2945,15 +2968,15 @@ static void fi_build(Compiler *c) {
           for (int si = 0; si < c->nscopes; si++) {
             long tot = own[si];
             int nc = 0;
-            g_fi_trunc = 0;
-            fi_collect_calls(c, c->scopes[si].body, calls, &nc, FI_SCALLS_MAX, 0);
-            int over = g_fi_trunc;
+            /* a body whose calls cannot all be listed forces nothing */
+            int over = !fi_all_calls(c, c->scopes[si].body, &calls, &ccap, &nc) || tot > sbudget;
             for (int i = 0; i < nc; i++) {
               int n2 = 0;
-              fi_callees(c, calls[i], cal, &n2, 32);
+              fi_callees(c, calls[i], cal, &n2, FI_SCALLEES_MAX);
+              int wide = n2 >= FI_SCALLEES_MAX;
               for (int j = 0; j < n2; j++) {
                 if (!cand[cal[j]]) continue;
-                if (!over && tot + size[cal[j]] <= sbudget) { tot += size[cal[j]]; continue; }
+                if (!over && !wide && tot + size[cal[j]] <= sbudget) { tot += size[cal[j]]; continue; }
                 over = 1; cand[cal[j]] = 0; trimmed = 1;
               }
             }
@@ -2961,6 +2984,7 @@ static void fi_build(Compiler *c) {
           if (!trimmed) break;
         }
       }
+      free(cal);
       free(calls);
       free(own);
       free(size);
