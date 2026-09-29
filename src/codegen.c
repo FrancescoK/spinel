@@ -2070,8 +2070,8 @@ int cmethod_takes_self_cls(Compiler *c, int si) {
   }
   if (!g_cm_selfcls) return 0;
   if (g_cm_selfcls[si] >= 0) return g_cm_selfcls[si];
-  int ans = 0, has_desc = 0;
-  for (int k = 0; k < c->nclasses && !has_desc; k++)
+  int ans = class_reopen_cmethod(c, -1, s->name) == si, has_desc = 0;
+  for (int k = 0; k < c->nclasses && !has_desc && !ans; k++)
     if (k != s->class_id && is_descendant(c, k, s->class_id)) has_desc = 1;
   if (has_desc) {
     for (int nid = 0; nid < c->nt->count && !ans; nid++) {
@@ -2095,7 +2095,9 @@ int cmethod_takes_self_cls(Compiler *c, int si) {
    cls_id cascade). Returns the separator the rest of the arguments need. */
 const char *emit_cmethod_self_cls_arg(Compiler *c, int mi, int recv_cls, Buf *b) {
   if (!cmethod_takes_self_cls(c, mi)) return "";
-  buf_printf(b, "((sp_Class){%d, NULL})", recv_cls >= 0 ? recv_cls : c->scopes[mi].class_id);
+  int rc = recv_cls >= 0 || recv_cls <= -100 ? recv_cls : c->scopes[mi].class_id;
+  if (rc == c->scopes[mi].class_id && class_reopen_cmethod(c, -1, c->scopes[mi].name) == mi) rc = builtin_class_id("Class");
+  buf_printf(b, "((sp_Class){%d, NULL})", rc);
   return ", ";
 }
 

@@ -896,7 +896,7 @@ int        const_owned_by_class(Compiler *c, const char *clsname, const char *co
    enclosing_class resolves bare/`self.` receivers (the class whose body we are
    directly in); ignored for constant receivers. */
 int        class_eval_reopen_class(Compiler *c, int id, int enclosing_class);
-int        class_reopen_defines(Compiler *c, const char *name); /* a method the program adds to Class */
+int        class_reopen_cmethod(Compiler *c, int recv, const char *name); /* a method the program adds to Class */
 int        comp_ivar_index(ClassInfo *ci, const char *name);  /* -1 if none */
 int        comp_ivar_intern(ClassInfo *ci, const char *name); /* find or add; returns index */
 int        comp_cvar_index(ClassInfo *ci, const char *name);  /* class var; -1 if none */

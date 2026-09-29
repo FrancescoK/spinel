@@ -4230,6 +4230,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         int mi = comp_cmethod_in_chain(c, ci, name, NULL);
         if (mi >= 0) return method_call_ret(c, mi, id);
       }
+      int rmi = class_reopen_cmethod(c, recv, name);
+      if (rmi >= 0) return method_call_ret(c, rmi, id);
     }
     /* obj.class.cmeth(...) -> unify class method return types across hierarchy */
     if (rty && sp_streq(rty, "CallNode") &&

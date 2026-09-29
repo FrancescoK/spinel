@@ -912,6 +912,15 @@ static int kwh_elem_named(Compiler *c, int kwn, const int *kwels, const char *pn
   }
   return -1;
 }
+static int emit_reopen_arm_test(Compiler *c, int kmi, const char *name, const char *cls,
+                                const char *raise, Buf *b) {
+  if (kmi != class_reopen_cmethod(c, -1, name)) return 0;
+  char t[200];
+  snprintf(t, sizeof t, "(%s).cls_id < 0 && !sp_class_nil_p(%s) && !sp_class_is_module_val(%s)", cls, cls, cls);
+  if (raise) buf_printf(b, " default: if (!(%s)) { %s; break; } ", t, raise);
+  else buf_printf(b, "(%s) ? ", t);
+  return 1;
+}
 static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int argc,
                                       const int *atmp, const TyKind *atmp_ty,
                                       const PolyKw *kw, int tv, int tr, TyKind ret, int blk_tmp, Buf *b) {
@@ -993,8 +1002,14 @@ static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int
   if (nc8 == 0) { free(ccls8); free(cmi8); free(cexp8); return 0; }
   if (wants_blk && blk_tmp < 0) blk_tmp = hoist_call_block_proc(c, id);
   buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) { switch (_t%d.cls_id) {", tv, tv);
+  char rcls8[48], rraise8[256];
+  snprintf(rcls8, sizeof rcls8, "sp_unbox_class(_t%d)", tv);
+  snprintf(rraise8, sizeof rraise8, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d))", name, tv);
+  int rdef8 = 0;
   for (int i = 0; i < nc8; i++) {
-    buf_printf(b, " case %d: ", ccls8[i]);
+    int rarm8 = emit_reopen_arm_test(c, cmi8[i], name, rcls8, rraise8, b);
+    if (!rarm8) buf_printf(b, " case %d: ", ccls8[i]);
+    rdef8 |= rarm8;
     if (cexp8[i][0]) {
       emit_poly_arity_raise(b, cexp8[i]);
       buf_puts(b, " break;");
@@ -1008,7 +1023,7 @@ static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int
     buf_puts(&cb, "(");
     /* the receiving-class token, when the body reads it: the class this arm's
        case selected (#4217) */
-    const char *lead = emit_cmethod_self_cls_arg(c, cmi8[i], ccls8[i], &cb);
+    const char *lead = rarm8 ? (buf_puts(&cb, rcls8), ", ") : emit_cmethod_self_cls_arg(c, cmi8[i], ccls8[i], &cb);
     ArgLayout L;
     poly_arm_layout(c, ks, &pargs, &L);
     emit_poly_arm_args(c, ks, ks, &L, &pargs, NULL, lead, &pre, &cb);
@@ -1031,8 +1046,7 @@ static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int
     buf_puts(b, "; break;");
     free(cb.p);
   }
-  buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;",
-             name, tv);
+  if (!rdef8) buf_printf(b, " default: %s; break;", rraise8);
   buf_puts(b, " } }\nelse ");
   free(ccls8); free(cmi8); free(cexp8);
   return 1;
@@ -19597,9 +19611,6 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
       const char *rcn = nt_str(nt, recv, "name");
       grt_builtin_cls = rcn && comp_class_index(c, rcn) < 0 && builtin_class_id(rcn) != 0;
     }
-    if (grt_builtin_cls && class_reopen_defines(c, name))
-      unsupported_feature(c, id, "a method added to Class is not supported on a builtin class: "
-                                 "only the program's own classes get it");
     /* A Hash that arrives boxed -- a Fiber#resume value, a seedless
        Array#reduce, a container read -- keeps its whole read-only
        Hash/Enumerable face. Nothing above claimed the name, so normalize the
@@ -19847,13 +19858,16 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           if (wants_blk) blk_tmp = hoist_call_block_proc(c, id);
           buf_printf(b, "({ (_t%d.tag == SP_TAG_CLASS) ? (", tv);
           nd_stamp(id, ND_SWITCH);
+          char rcls[48];
+          snprintf(rcls, sizeof rcls, "sp_unbox_class(_t%d)", tv);
           for (int k = 0; k < nc; k++) {
             nd_callee(c, id, cmi[k], cdef[k], 1);
-            buf_printf(b, "_t%d.cls_id == %d ? ", tv, ccls[k]);
+            int rarm = emit_reopen_arm_test(c, cmi[k], nm, rcls, NULL, b);
+            if (!rarm) buf_printf(b, "_t%d.cls_id == %d ? ", tv, ccls[k]);
             Buf cb; memset(&cb, 0, sizeof cb);
             int ksym = cpf[k] >= 0 ? cpf[k] : cmi[k];
             buf_printf(&cb, "sp_%s_s_%s(", c->classes[cdef[k]].c_name, mc(c->scopes[ksym].name));
-            const char *leadk = emit_cmethod_self_cls_arg(c, ksym, ccls[k], &cb);
+            const char *leadk = rarm ? (buf_puts(&cb, rcls), ", ") : emit_cmethod_self_cls_arg(c, ksym, ccls[k], &cb);
             emit_args_filled(c, ksym, argsN, leadk, &cb);
             emit_cmethod_block_arg(c, id, &c->scopes[ksym], blk_tmp, &cb);
             buf_puts(&cb, ")");
@@ -31222,11 +31236,18 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           emit_ctype(c, slot9, b);
           buf_printf(b, " _t%d = %s; switch (_t%d.cls_id) {", tr9,
                      slot9 == TY_POLY ? "sp_box_nil()" : default_value(slot9), tk9);
+          char rcls9[24], rraise9[256];
+          snprintf(rcls9, sizeof rcls9, "_t%d", tk9);
+          snprintf(rraise9, sizeof rraise9, "sp_raise_nomethod(sp_sprintf(\"undefined method '%s' for %%s\", sp_class_to_s(_t%d)))", name, tk9);
+          int rdef9 = 0;
           for (int k = 0; k < c->nclasses; k++) {
             if (is_builtin_reopen(c->classes[k].name)) continue;
             int defcls9 = -1;
             int kmi = comp_cmethod_in_chain(c, k, name, &defcls9);
             if (kmi < 0) continue;
+            int rarm9 = emit_reopen_arm_test(c, kmi, name, rcls9, rraise9, b);
+            if (!rarm9) buf_printf(b, " case %d: ", k);
+            rdef9 |= rarm9;
             /* A class whose method cannot take this many arguments gets the
                answer CRuby gives, rather than no arm (which would fall to the
                default's NoMethodError, naming the wrong failure). */
@@ -31235,11 +31256,11 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
               char kw[256], am[512];
               scope_arity_kw_suffix(c, &c->scopes[kmi], kw, sizeof kw);
               arity_message(am, sizeof am, argc, c->scopes[kmi].nrequired, c->scopes[kmi].nparams, kw);
-              buf_printf(b, " case %d: sp_raise_cls(\"ArgumentError\", \"%s\"); break;", k, am);
+              buf_printf(b, "sp_raise_cls(\"ArgumentError\", \"%s\"); break;", am);
               continue;
             }
             TyKind kr = (TyKind)c->scopes[kmi].ret;
-            buf_printf(b, " case %d: _t%d = ", k, tr9);
+            buf_printf(b, "_t%d = ", tr9);
             Buf cb9; memset(&cb9, 0, sizeof cb9);
             emit_method_cname(c, &c->scopes[kmi], &cb9);
             buf_printf(&cb9, "(");
@@ -31250,7 +31271,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                not the defining class: every arm makes the same call otherwise,
                and an inherited body would answer `name` as the wrong class for
                all but one of them (#4217). */
-            const char *lead9 = emit_cmethod_self_cls_arg(c, kmi, k, &cb9);
+            const char *lead9 = rarm9 ? (buf_puts(&cb9, rcls9), ", ") : emit_cmethod_self_cls_arg(c, kmi, k, &cb9);
             /* Every candidate is a separate C function with its own parameter
                list, so the arm has to fill THAT list -- not repeat the
                caller's. Passing the call's arguments verbatim worked only
@@ -31296,7 +31317,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
              the method: CRuby raises NoMethodError, and falling out of the
              switch left the result slot at its default -- a junk value the
              caller could not tell from a real answer. */
-          buf_printf(b, " default: sp_raise_nomethod(sp_sprintf(\"undefined method '%s' for %%s\", sp_class_to_s(_t%d))); break;", name, tk9);
+          if (!rdef9) buf_printf(b, " default: %s; break;", rraise9);
           buf_printf(b, " } _t%d; })", tr9);
           (void)defmi9;
           return;
@@ -35086,6 +35107,10 @@ else {
       int ci = comp_class_index(c, nt_str(nt, recv, "name"));
       int defcls = -1;
       int mi = ci >= 0 ? comp_cmethod_in_chain(c, ci, name, &defcls) : -1;
+      if (mi < 0 && (mi = class_reopen_cmethod(c, recv, name)) >= 0) {
+        defcls = c->scopes[mi].class_id;
+        ci = builtin_class_id(nt_str(nt, recv, "name"));
+      }
       if (mi >= 0) {
         nd_callee(c, id, mi, defcls, 0);
         buf_printf(b, "sp_%s_s_%s(", c->classes[defcls].c_name, mc(c->scopes[mi].name));
@@ -36074,6 +36099,9 @@ else {
              poly/unknown receiver with no user protocol method falls through
              here (the builtin probe answer) rather than a possibly-wrong false. */
           if (rt_probe_answer(c, id, &yes)) resolved = 1;
+          if (resolved && yes && rt == TY_CLASS) {
+            buf_puts(b, "!sp_class_nil_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+          }
         }
       }
       if (resolved) { buf_printf(b, "%d", yes); return; }
@@ -36629,6 +36657,7 @@ else {
     else if (rt == TY_POLY) { buf_puts(b, "(!sp_poly_truthy("); emit_expr(c, recv, b); buf_puts(b, "))"); }
     else if (rt == TY_INT) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == SP_INT_NIL)"); }
     else if (rt == TY_FLOAT) { buf_puts(b, "sp_float_is_nil("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+    else if (rt == TY_CLASS) { buf_puts(b, "sp_class_nil_p("); emit_expr(c, recv, b); buf_puts(b, ")"); }
     /* a by-value object has no pointer to null-check and is never falsy (#2633) */
     else if (ty_is_object(rt) && comp_ty_value_obj(c, rt)) {
       buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), 0)");

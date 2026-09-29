@@ -741,9 +741,17 @@ static int is_class_const(const NodeTable *nt, int id) {
          nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "Class");
 }
 
-int class_reopen_defines(Compiler *c, const char *name) {
+int class_reopen_cmethod(Compiler *c, int recv, const char *name) {
   int cm = comp_class_index(c, class_reopen_mod);
-  return cm >= 0 && name && comp_method_in_class(c, cm, name) >= 0;
+  if (cm < 0 || !name) return -1;
+  if (recv >= 0) {
+    NodeKind rk = nt_kind(c->nt, recv);
+    const char *cn = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ? nt_str(c->nt, recv, "name") : NULL;
+    int ci = cn ? comp_class_index(c, cn) : -1;
+    if (!cn || !builtin_class_id(cn) || is_builtin_module_name(cn) ||
+        (ci >= 0 && comp_cmethod_in_chain(c, ci, name, NULL) >= 0)) return -1;
+  }
+  return comp_cmethod_in_class(c, cm, name);
 }
 
 static int is_class_eval_name(const char *nm) {
@@ -4779,7 +4787,7 @@ void register_extends(Compiler *c) {
       }
     }
    }
-   if (cls_mod >= 0 && class_is_root(c, ci))
+   if (cls_mod >= 0 && (ci == cls_mod || class_is_root(c, ci)))
      did_clone |= extend_class_with(c, ci, cls_mod);
   }
   /* The cloned bodies introduced new local nodes, and register_locals ran

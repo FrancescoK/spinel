@@ -376,7 +376,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   /* the class a CLASS METHOD is inlined for: no instance self to bind (which
      is what recv_class drives), but its body's bare `new` must still build
      this class rather than the host method's */
-  int cm_class = -1;
+  int cm_class = -1, cm_self_id = 0;
   int implicit_self = 0;
   if (recv < 0) {
     /* A bare call resolves to self first, as Ruby does and as the analyzer
@@ -412,7 +412,11 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
                                  sp_streq(rty, "ConstantPathNode")))
                         ? nt_str(nt, recv, "name") : NULL;
     int ci = cname ? comp_class_index(c, cname) : self_class_static_ci(c, recv);
-    if (ci >= 0) {
+    if ((mi = class_reopen_cmethod(c, recv, name)) >= 0) {
+      cm_class = c->scopes[mi].class_id;
+      cm_self_id = builtin_class_id(cname);
+    }
+    else if (ci >= 0) {
       /* Cls.method with a yield block: look up as a class method */
       mi = comp_cmethod_in_chain(c, ci, name, NULL);
       cm_class = ci;
@@ -760,7 +764,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   char dflt_cm_self[32];
   const char *dflt_self = recv_self_deref ? selfbuf : NULL, *dflt_deref = recv_self_deref;
   if (!recv_self_deref && cm_class >= 0) {
-    snprintf(dflt_cm_self, sizeof dflt_cm_self, "((sp_Class){%d})", cm_class);
+    snprintf(dflt_cm_self, sizeof dflt_cm_self, "((sp_Class){%d})", cm_self_id ? cm_self_id : cm_class);
     dflt_self = dflt_cm_self;
   }
   InlDflt sv_dflt = inl_dflt_enter(m, g_nren, dflt_self, dflt_deref,
@@ -795,7 +799,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     /* and `self` in that body is the CLASS, the way the method's own function
        spells it -- not the host's instance. `yield self.new` from the same
        shape was refused as `initializing 'sp_Class' with 'sp_Fetch *'`. */
-    snprintf(cm_selfbuf, sizeof cm_selfbuf, "((sp_Class){%d})", cm_class);
+    snprintf(cm_selfbuf, sizeof cm_selfbuf, "((sp_Class){%d})", cm_self_id ? cm_self_id : cm_class);
     g_self = cm_selfbuf;
     g_self_deref = NULL;
   }

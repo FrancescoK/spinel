@@ -3523,6 +3523,7 @@ else {
       else if (vt == TY_INT)   buf_printf(&tc2, "(_t%d != SP_INT_NIL)", t2);
       else if (vt == TY_FLOAT) buf_printf(&tc2, "(!sp_float_is_nil(_t%d))", t2);
       else if (vt == TY_SYMBOL) buf_printf(&tc2, "(_t%d != (sp_sym)-1)", t2);
+      else if (vt == TY_CLASS) buf_printf(&tc2, "(!sp_class_nil_p(_t%d))", t2);
       else if (vt == TY_STRING || ty_is_array(vt) || ty_is_hash(vt) || ty_is_object(vt) ||
                vt == TY_PROC || vt == TY_MATCHDATA || vt == TY_EXCEPTION ||
                ty_nullable_builtin_id(vt))
@@ -3609,6 +3610,7 @@ else {
       buf_printf(&tcond, "(_t%d != 0)", t);  /* nullable pointer: NULL reads falsy */
     else if (lt == TY_SYMBOL) buf_printf(&tcond, "(_t%d != (sp_sym)-1)", t);  /* nilable symbol sentinel */
     else if (lt == TY_UNKNOWN && res == TY_BOOL) buf_printf(&tcond, "_t%d", t);  /* temp holds sp_poly_truthy(left) (#3276) */
+    else if (lt == TY_CLASS) buf_printf(&tcond, "(!sp_class_nil_p(_t%d))", t);
     else                    buf_puts(&tcond, "1");  /* concrete value: always truthy */
     /* Capture each arm (widened to res). The RIGHT arm's prelude is captured
        separately: an object subexpression there (`a && b.c`) hoists a GC-rooted
@@ -3645,6 +3647,7 @@ else {
                   sp_mutex * where the sibling arm is an sp_RbVal, and the C
                   compiler rejected the ternary outright (#3484). */ \
                else if (ty_nullable_builtin_id(lt)) buf_printf((TB), "sp_box_nullable_obj((void *)_t%d, %s)", t, ty_nullable_builtin_id(lt)); \
+               else if (lt == TY_CLASS) buf_printf((TB), "sp_box_class(_t%d)", t); \
                else buf_printf((TB), "_t%d", t); } \
              else buf_printf((TB), "_t%d", t); } \
     } while (0)
