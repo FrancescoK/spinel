@@ -1075,6 +1075,14 @@ static int emit_ptr_array_build(Compiler *c, int v, TyKind want, Buf *b) {
   return 0;
 }
 
+static void emit_poly_array_from(Compiler *c, int v, Buf *b) {
+  TyKind vt = comp_ntype(c, v);
+  if (vt == TY_INT_ARRAY) { buf_puts(b, "sp_PolyArray_from_int_array("); emit_expr(c, v, b); buf_puts(b, ")"); }
+  else if (vt == TY_STR_ARRAY) { buf_puts(b, "sp_PolyArray_from_str_array("); emit_expr(c, v, b); buf_puts(b, ")"); }
+  else if (vt == TY_FLOAT_ARRAY) { buf_puts(b, "sp_PolyArray_from_float_array("); emit_expr(c, v, b); buf_puts(b, ")"); }
+  else emit_expr(c, v, b);
+}
+
 static int str_append_chain_base(Compiler *c, int id);
 void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   const char *nm = nt_str(c->nt, id, "name");
@@ -1277,17 +1285,13 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   }
   else if (lv && lv->type == TY_POLY_ARRAY && ty_is_array(comp_ntype(c, v)) && comp_ntype(c, v) != TY_POLY_ARRAY) {
     /* widen typed array literal to PolyArray for this slot */
-    TyKind vt = comp_ntype(c, v);
     /* ...but only over a value this expression made. Over a READ it is a copy
        of storage something else holds, and the writes that follow go to the
        copy -- silently (#4412). See conv_reads_shared_storage. */
     if (conv_reads_shared_storage(c, v))
       unsupported(c, v, "widening a typed array READ from an object into a poly slot "
                         "(the conversion copies, so writes would not be shared)");
-    if (vt == TY_INT_ARRAY) { buf_puts(b, "sp_PolyArray_from_int_array("); emit_expr(c, v, b); buf_puts(b, ")"); }
-    else if (vt == TY_STR_ARRAY) { buf_puts(b, "sp_PolyArray_from_str_array("); emit_expr(c, v, b); buf_puts(b, ")"); }
-    else if (vt == TY_FLOAT_ARRAY) { buf_puts(b, "sp_PolyArray_from_float_array("); emit_expr(c, v, b); buf_puts(b, ")"); }
-    else emit_expr(c, v, b);
+    emit_poly_array_from(c, v, b);
   }
   else if (lv && lv->type == TY_BIGINT) {
     TyKind vt = comp_ntype(c, v);
@@ -8870,11 +8874,7 @@ else {
          elements boxed, the same conversion the local write makes -- the
          slot widened on element evidence (a push of another type, #4196)
          that the RHS's own node never saw */
-      TyKind vt2 = comp_ntype(c, v);
-      if (vt2 == TY_INT_ARRAY) { buf_puts(b, "sp_PolyArray_from_int_array("); emit_expr(c, v, b); buf_puts(b, ")"); }
-      else if (vt2 == TY_STR_ARRAY) { buf_puts(b, "sp_PolyArray_from_str_array("); emit_expr(c, v, b); buf_puts(b, ")"); }
-      else if (vt2 == TY_FLOAT_ARRAY) { buf_puts(b, "sp_PolyArray_from_float_array("); emit_expr(c, v, b); buf_puts(b, ")"); }
-      else emit_expr(c, v, b);
+      emit_poly_array_from(c, v, b);
     }
     /* An int RHS into a bigint ivar is promoted at the boundary, the same way
        the local assignment and the argument binding do it. Without it `@n = 0`
@@ -9623,13 +9623,9 @@ else {
          boxed, the conversion the local and ivar writes make (a slot that
          widened on a write the node never saw -- under --int-overflow=promote
          every array built from widened Integers, #4738) */
-      TyKind vt2 = comp_ntype(c, v);
       if (conv_reads_shared_storage(c, v))
         unsupported(c, v, "widening a typed array READ into a poly global (the conversion copies, so writes would not be shared)");
-      if (vt2 == TY_INT_ARRAY) { buf_puts(b, "sp_PolyArray_from_int_array("); emit_expr(c, v, b); buf_puts(b, ")"); }
-      else if (vt2 == TY_STR_ARRAY) { buf_puts(b, "sp_PolyArray_from_str_array("); emit_expr(c, v, b); buf_puts(b, ")"); }
-      else if (vt2 == TY_FLOAT_ARRAY) { buf_puts(b, "sp_PolyArray_from_float_array("); emit_expr(c, v, b); buf_puts(b, ")"); }
-      else emit_expr(c, v, b);
+      emit_poly_array_from(c, v, b);
     }
     else emit_expr(c, v, b);
     buf_puts(b, ";\n");
