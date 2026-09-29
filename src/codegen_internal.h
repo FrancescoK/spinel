@@ -868,6 +868,11 @@ const char *raise_tail_value(TyKind t);
 const char *raise_tail_value_c(Compiler *c, TyKind t);
 void emit_bigint_operand_ext(Compiler *c, int node, Buf *b);
 const char *nil_value(TyKind t);
+extern int g_ivar_nil_guarded_id;
+int ivar_nil_recv_guard(Compiler *c, int id, int *recv_out);
+void emit_ivar_nil_guard(Compiler *c, int id, int recv, Buf *b, int indent);
+int emit_ivar_nil_guarded(Compiler *c, int id, Buf *b, int indent,
+                          int (*fn)(Compiler *, int, Buf *, int));
 const char *local_init_value(Compiler *c, LocalVar *lv);
 int local_nil_test(Compiler *c, LocalVar *lv, const char *ref, Buf *out);
 /* Append the C type name for `t` to `b` (objects need the class name). */
