@@ -2945,6 +2945,14 @@ static void ffi_semi_append(char **slot, const char *add) {
   *slot = merged;
 }
 
+static void *ffi_grow(void *p, int n, int *cap, int init, size_t sz) {
+  if (n < *cap) return p;
+  *cap = *cap ? *cap * 2 : init;
+  p = realloc(p, sz * (size_t)*cap);
+  if (!p) { perror("realloc"); exit(1); }
+  return p;
+}
+
 /* Register a ffi_func / ffi_const / ffi_buffer / ffi_read_* declared in
    module bodies. Called during analyze_program before fixpoint. */
 void register_ffi_decls(Compiler *c) {
@@ -3188,12 +3196,7 @@ void register_ffi_decls(Compiler *c) {
         for (int li = 0; li < c->n_ffi_libs; li++)
           if (sp_streq(c->ffi_libs[li].mod, mname)) { mi = li; break; }
         if (mi < 0) {
-          if (c->n_ffi_libs >= c->c_ffi_libs) {
-            c->c_ffi_libs = c->c_ffi_libs ? c->c_ffi_libs * 2 : 8;
-            FfiLib *tmp = realloc(c->ffi_libs, sizeof(FfiLib) * (size_t)c->c_ffi_libs);
-            if (!tmp) { perror("realloc"); exit(1); }
-            c->ffi_libs = tmp;
-          }
+          c->ffi_libs = ffi_grow(c->ffi_libs, c->n_ffi_libs, &c->c_ffi_libs, 8, sizeof(FfiLib));
           c->ffi_libs[c->n_ffi_libs].mod   = strdup(mname);
           c->ffi_libs[c->n_ffi_libs].names = strdup(libname);
           c->n_ffi_libs++;
@@ -3218,12 +3221,7 @@ void register_ffi_decls(Compiler *c) {
         for (int ci = 0; ci < c->n_ffi_cflags; ci++)
           if (sp_streq(c->ffi_cflags[ci].mod, mname)) { mi = ci; break; }
         if (mi < 0) {
-          if (c->n_ffi_cflags >= c->c_ffi_cflags) {
-            c->c_ffi_cflags = c->c_ffi_cflags ? c->c_ffi_cflags * 2 : 8;
-            FfiCflag *tmp = realloc(c->ffi_cflags, sizeof(FfiCflag) * (size_t)c->c_ffi_cflags);
-            if (!tmp) { perror("realloc"); exit(1); }
-            c->ffi_cflags = tmp;
-          }
+          c->ffi_cflags = ffi_grow(c->ffi_cflags, c->n_ffi_cflags, &c->c_ffi_cflags, 8, sizeof(FfiCflag));
           c->ffi_cflags[c->n_ffi_cflags].mod = strdup(mname);
           c->ffi_cflags[c->n_ffi_cflags].val = strdup(cflag);
           c->n_ffi_cflags++;
@@ -3240,12 +3238,7 @@ void register_ffi_decls(Compiler *c) {
           ffi_decl_error(c, s, "`ffi_source` expects a compile-time string "
                                "(a literal, heredoc, adjacent literals, String#+, "
                                "__dir__, or File.expand_path of those)");
-        if (c->n_ffi_sources >= c->c_ffi_sources) {
-          c->c_ffi_sources = c->c_ffi_sources ? c->c_ffi_sources * 2 : 4;
-          FfiSource *tmp = realloc(c->ffi_sources, sizeof(FfiSource) * (size_t)c->c_ffi_sources);
-          if (!tmp) { perror("realloc"); exit(1); }
-          c->ffi_sources = tmp;
-        }
+        c->ffi_sources = ffi_grow(c->ffi_sources, c->n_ffi_sources, &c->c_ffi_sources, 4, sizeof(FfiSource));
         c->ffi_sources[c->n_ffi_sources].mod = strdup(mname);
         c->ffi_sources[c->n_ffi_sources].val = source;
         c->n_ffi_sources++;
@@ -3311,12 +3304,7 @@ void register_ffi_decls(Compiler *c) {
         }
         const char *csym = a_csym >= 0 ? ffi_arg_str(nt, a_csym) : NULL;
         /* grow array */
-        if (c->n_ffi_funcs >= c->c_ffi_funcs) {
-          c->c_ffi_funcs = c->c_ffi_funcs ? c->c_ffi_funcs * 2 : 16;
-          FfiFunc *tmp = realloc(c->ffi_funcs, sizeof(FfiFunc) * (size_t)c->c_ffi_funcs);
-          if (!tmp) { perror("realloc"); exit(1); }
-          c->ffi_funcs = tmp;
-        }
+        c->ffi_funcs = ffi_grow(c->ffi_funcs, c->n_ffi_funcs, &c->c_ffi_funcs, 16, sizeof(FfiFunc));
         int fi = c->n_ffi_funcs++;
         c->ffi_funcs[fi].mod  = strdup(mname);
         c->ffi_funcs[fi].name = strdup(fname);
@@ -3333,12 +3321,7 @@ void register_ffi_decls(Compiler *c) {
         const char *kname = ffi_arg_str(nt, args[0]);
         if (!kname) continue;  /* non-literal name: tolerate */
         int val = ffi_arg_int(nt, args[1]);
-        if (c->n_ffi_consts >= c->c_ffi_consts) {
-          c->c_ffi_consts = c->c_ffi_consts ? c->c_ffi_consts * 2 : 16;
-          FfiConst *tmp = realloc(c->ffi_consts, sizeof(FfiConst) * (size_t)c->c_ffi_consts);
-          if (!tmp) { perror("realloc"); exit(1); }
-          c->ffi_consts = tmp;
-        }
+        c->ffi_consts = ffi_grow(c->ffi_consts, c->n_ffi_consts, &c->c_ffi_consts, 16, sizeof(FfiConst));
         int ci2 = c->n_ffi_consts++;
         c->ffi_consts[ci2].mod  = strdup(mname);
         c->ffi_consts[ci2].name = strdup(kname);
@@ -3352,12 +3335,7 @@ void register_ffi_decls(Compiler *c) {
         if (!bname) continue;  /* non-literal name: tolerate */
         int bsize = ffi_arg_int(nt, args[1]);
         if (bsize <= 0) continue;  /* non-literal or non-positive size: tolerate */
-        if (c->n_ffi_bufs >= c->c_ffi_bufs) {
-          c->c_ffi_bufs = c->c_ffi_bufs ? c->c_ffi_bufs * 2 : 8;
-          FfiBuf *tmp = realloc(c->ffi_bufs, sizeof(FfiBuf) * (size_t)c->c_ffi_bufs);
-          if (!tmp) { perror("realloc"); exit(1); }
-          c->ffi_bufs = tmp;
-        }
+        c->ffi_bufs = ffi_grow(c->ffi_bufs, c->n_ffi_bufs, &c->c_ffi_bufs, 8, sizeof(FfiBuf));
         int bi = c->n_ffi_bufs++;
         c->ffi_bufs[bi].mod  = strdup(mname);
         c->ffi_bufs[bi].name = strdup(bname);
@@ -3376,12 +3354,7 @@ void register_ffi_decls(Compiler *c) {
            reading some default width at codegen, which is what the write side
            has always done (#3928). */
         if (!sp_streq(kind, "ptr") && !ffi_scalar_ctype(kind)) continue;
-        if (c->n_ffi_readers >= c->c_ffi_readers) {
-          c->c_ffi_readers = c->c_ffi_readers ? c->c_ffi_readers * 2 : 8;
-          FfiReader *tmp = realloc(c->ffi_readers, sizeof(FfiReader) * (size_t)c->c_ffi_readers);
-          if (!tmp) { perror("realloc"); exit(1); }
-          c->ffi_readers = tmp;
-        }
+        c->ffi_readers = ffi_grow(c->ffi_readers, c->n_ffi_readers, &c->c_ffi_readers, 8, sizeof(FfiReader));
         int ri = c->n_ffi_readers++;
         c->ffi_readers[ri].mod    = strdup(mname);
         c->ffi_readers[ri].name   = strdup(rname);
@@ -3406,12 +3379,7 @@ void register_ffi_decls(Compiler *c) {
           arg_specs[ei] = strdup(spec ? spec : "");
         }
         arg_specs[en] = NULL;  /* the allocated sentinel slot */
-        if (c->n_ffi_callbacks >= c->c_ffi_callbacks) {
-          c->c_ffi_callbacks = c->c_ffi_callbacks ? c->c_ffi_callbacks * 2 : 8;
-          FfiCallback *grown = realloc(c->ffi_callbacks, sizeof(FfiCallback) * (size_t)c->c_ffi_callbacks);
-          if (!grown) { perror("realloc"); exit(1); }
-          c->ffi_callbacks = grown;
-        }
+        c->ffi_callbacks = ffi_grow(c->ffi_callbacks, c->n_ffi_callbacks, &c->c_ffi_callbacks, 8, sizeof(FfiCallback));
         int ci = c->n_ffi_callbacks++;
         c->ffi_callbacks[ci].mod       = strdup(mname);
         c->ffi_callbacks[ci].name      = strdup(cbname);
@@ -3445,12 +3413,7 @@ void register_ffi_decls(Compiler *c) {
           nf++;
         }
         if (nf == 0) { free(fields); continue; }
-        if (c->n_ffi_structs >= c->c_ffi_structs) {
-          c->c_ffi_structs = c->c_ffi_structs ? c->c_ffi_structs * 2 : 8;
-          FfiStruct *grown = realloc(c->ffi_structs, sizeof(FfiStruct) * (size_t)c->c_ffi_structs);
-          if (!grown) { perror("realloc"); exit(1); }
-          c->ffi_structs = grown;
-        }
+        c->ffi_structs = ffi_grow(c->ffi_structs, c->n_ffi_structs, &c->c_ffi_structs, 8, sizeof(FfiStruct));
         int sidx = c->n_ffi_structs++;
         c->ffi_structs[sidx].mod     = strdup(mname);
         c->ffi_structs[sidx].name    = strdup(sname);
@@ -3471,12 +3434,7 @@ void register_ffi_decls(Compiler *c) {
         /* reject a typoed/unsupported suffix rather than silently registering
            it and falling back to some default store at codegen. */
         if (!sp_streq(kind, "ptr") && !ffi_scalar_ctype(kind)) continue;
-        if (c->n_ffi_writers >= c->c_ffi_writers) {
-          c->c_ffi_writers = c->c_ffi_writers ? c->c_ffi_writers * 2 : 8;
-          FfiReader *grown = realloc(c->ffi_writers, sizeof(FfiReader) * (size_t)c->c_ffi_writers);
-          if (!grown) { perror("realloc"); exit(1); }
-          c->ffi_writers = grown;
-        }
+        c->ffi_writers = ffi_grow(c->ffi_writers, c->n_ffi_writers, &c->c_ffi_writers, 8, sizeof(FfiReader));
         int wi = c->n_ffi_writers++;
         c->ffi_writers[wi].mod    = strdup(mname);
         c->ffi_writers[wi].name   = strdup(wname);
