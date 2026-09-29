@@ -1,0 +1,8 @@
+F 42 1
+G 2
+F
+wrong number of arguments (given 3, expected 1..2)
+F
+struct size differs
+S
+G

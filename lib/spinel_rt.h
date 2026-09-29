@@ -776,6 +776,14 @@ static inline sp_gc_hdr *sp_pool_try_pop(sp_gc_hdr **head) {
    cheap as a pop, and a pooled header is one the sweep must touch dead to
    run its recycler, where an unpooled one dies in its chunk's bitmap
    untouched (lib/sp_slab.c). The pool keeps serving the malloc fallback. */
+/* What SP_POOL_NEW reads, for a function written ahead of SP_POOL_DEFINE:
+   tentative definitions the definition completes. */
+#define SP_POOL_DECLARE(CLS) \
+  static sp_gc_hdr *sp_##CLS##_pool_head; \
+  static long sp_##CLS##_pool_count; \
+  static long sp_##CLS##_pool_pops; \
+  static void sp_##CLS##_pool_recycle(sp_gc_hdr *h);
+
 #define SP_POOL_NEW(CLS, SCAN) (__extension__ ({ \
   sp_##CLS *_p; \
   sp_gc_hdr *_h = sp_slab_on > 0 ? NULL : sp_pool_try_pop(&sp_##CLS##_pool_head); \
