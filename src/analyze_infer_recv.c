@@ -510,6 +510,20 @@ TyKind infer_map_block_ty(Compiler *c, int id, int block) {
   return ty_array_of(bt);
 }
 
+/* The value a merge / merge! / update call's conflict block answers (its
+   tail, joined with any valued `next`), or TY_UNKNOWN without such a block. */
+TyKind hash_merge_block_value_ty(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int block = nt_ref(nt, id, "block");
+  if (block < 0 || nt_kind(nt, block) != NK_BlockNode) return TY_UNKNOWN;
+  int body = nt_ref(nt, block, "body");
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  TyKind bt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_NIL;
+  TyKind bnt = ie_block_break_next_ty(c, body);
+  if (bnt != TY_UNKNOWN) bt = bt == TY_UNKNOWN ? bnt : ty_unify(bt, bnt);
+  return bt;
+}
+
 /* Hash receivers: the hash face of infer_call */
 int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   const NodeTable *nt = c->nt;
@@ -673,6 +687,12 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       { *out = TY_POLY_POLY_HASH; return 1; }
     if (sp_streq(name, "merge") && argc == 1) {
       TyKind at = argc >= 1 ? infer_type(c, argv[0]) : TY_UNKNOWN;
+      /* a conflict block whose value the receiver's variant cannot hold
+         builds the general boxed hash, as a boxed receiver's does */
+      if (ty_hash_val(rt) != TY_POLY) {
+        TyKind bvt = hash_merge_block_value_ty(c, id);
+        if (bvt != TY_UNKNOWN && bvt != ty_hash_val(rt)) { *out = TY_POLY_POLY_HASH; return 1; }
+      }
       if (at == rt) { *out = rt; return 1; }  /* same type: trivial */
       /* cross-variant str-keyed merge: promote to str_poly_hash */
       if (ty_hash_key(rt) == TY_STRING && ty_is_hash(at) && ty_hash_key(at) == TY_STRING)

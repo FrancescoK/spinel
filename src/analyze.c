@@ -11484,6 +11484,8 @@ static int widen_mixed_key_hash_slots(Compiler *c) {
             vb |= hash_value_class_bit(infer_type(c, nt_ref(nt, els[e], "value")));
           }
         }
+        /* and the conflict block's value under a colliding key */
+        vb |= hash_value_class_bit(hash_merge_block_value_ty(c, id));
       }
       else {
         kb = hash_key_class_bit(infer_type(c, av[0]));

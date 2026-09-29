@@ -73,6 +73,7 @@ void infer_subtree(Compiler *c, int id);
    `next <other-type>` is boxed rather than assigned to a mismatched temp. */
 TyKind ie_block_break_next_ty(Compiler *c, int node);
 TyKind then_block_value_ty(Compiler *c, int body, TyKind tail);
+TyKind hash_merge_block_value_ty(Compiler *c, int id);
 /* The value type of every `next` that leaves the block whose body is `node`.
    Only `next`: a `break` leaves the ITERATOR, so its value is the iterator
    call's, not the block's. The analysis joins this with the block's tail to

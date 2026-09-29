@@ -6448,8 +6448,50 @@ else {
           if (en == 0) { emit_expr(c, recv, b); return 1; }
         }
         TyKind at = comp_ntype(c, argv[0]);
-        if (at != rt) return 0;
         int blk = nt_ref(nt, id, "block");
+        /* A receiver whose values are boxed takes another variant's pairs
+           boxed -- the key too when its keys are (a local or ivar widened
+           because a merged value or the conflict block's did not fit the
+           literal's variant). The argument's order[] holds its keys, which
+           a PolyPoly argument's does not, so that one stays out. */
+        if (at != rt && ty_is_hash(at) && at != TY_POLY_POLY_HASH && vt == TY_POLY &&
+            (kt == TY_POLY || kt == ty_hash_key(at))) {
+          TyKind akt = ty_hash_key(at), avt = ty_hash_val(at);
+          const char *ahn = ty_hash_cname(at);
+          int tr = ++g_tmp, to = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp, trk = ++g_tmp;
+          char akey[32], aval[128];
+          snprintf(akey, sizeof akey, "_t%d", tk);
+          snprintf(aval, sizeof aval, "sp_%sHash_get(_t%d, _t%d)", ahn, to, tk);
+          buf_printf(b, "({ %s _t%d = ", c_type_name(rt), tr); emit_expr(c, recv, b); buf_puts(b, ";");
+          buf_printf(b, " if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", tr, tr, hash_box_cls(rt));
+          buf_printf(b, " %s _t%d = ", c_type_name(at), to); emit_expr(c, argv[0], b); buf_puts(b, ";");
+          buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, to, ti);
+          buf_printf(b, " %s _t%d = _t%d->order[_t%d];", c_type_name(akt), tk, to, ti);
+          buf_printf(b, " %s _t%d = ", c_type_name(kt), trk);
+          if (kt == TY_POLY) emit_boxed_text(c, akt, akey, b); else buf_puts(b, akey);
+          buf_puts(b, ";");
+          if (blk >= 0) {
+            const char *bp0 = block_param_name(c, blk, 0);
+            const char *bp1 = block_param_name(c, blk, 1);
+            const char *bp2 = block_param_name(c, blk, 2);
+            buf_printf(b, " if (sp_%sHash_has_key(_t%d, _t%d)) {", hn, tr, trk);
+            if (bp0) buf_printf(b, " lv_%s = _t%d;", rename_local(bp0), trk);
+            if (bp1) buf_printf(b, " lv_%s = sp_%sHash_get(_t%d, _t%d);", rename_local(bp1), hn, tr, trk);
+            if (bp2) {
+              buf_printf(b, " lv_%s = ", rename_local(bp2));
+              emit_boxed_text(c, avt, aval, b);
+              buf_puts(b, ";");
+            }
+            buf_printf(b, " sp_%sHash_set(_t%d, _t%d, ", hn, tr, trk);
+            emit_blk_value_as(c, blk, vt, b);
+            buf_puts(b, "); }\nelse");
+          }
+          buf_printf(b, " { sp_%sHash_set(_t%d, _t%d, ", hn, tr, trk);
+          emit_boxed_text(c, avt, aval, b);
+          buf_printf(b, "); } } _t%d; })", tr);
+          return 1;
+        }
+        if (at != rt) return 0;
         int tr = ++g_tmp, to = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), tr); emit_expr(c, recv, b); buf_puts(b, ";");
         buf_printf(b, " if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", tr, tr, hash_box_cls(rt));   /* (#3001) */
@@ -6538,7 +6580,11 @@ else {
         buf_printf(b, " _t%d; })", tr);
         return 1;
       }
-      if (sp_streq(name, "merge") && argc == 1 && nt_ref(nt, id, "block") >= 0) {
+      /* A block whose value the receiver's variant cannot hold types the
+         result as the general boxed hash, which the boxed merge-with-block
+         arm builds; this one builds the receiver's own variant. */
+      if (sp_streq(name, "merge") && argc == 1 && nt_ref(nt, id, "block") >= 0 &&
+          comp_ntype(c, id) == rt) {
         /* merge(other) { |k, v1, v2| } -- conflict-resolution block. The
            result starts as a copy of the receiver, then each key of `other`
            is inserted; on a collision the block picks the value. */
