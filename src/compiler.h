@@ -274,6 +274,8 @@ typedef struct {
   int rest_idx;     /* index in pnames[] of *rest param, -1 if none */
   int npost_rest;   /* number of required params AFTER the rest param (Prism "posts") */
   int kwrest_idx;   /* index in pnames[] of **kwrest param, -1 if none */
+  int fwd_target1;  /* a `def m(...)` the __fwd_N model binds (#1288): the
+                       scope its `...` reaches, plus one; 0 if none */
 
   TyKind ret;       /* inferred return type */
   SlotWhy ret_why;  /* how `ret` came to be untyped, if it is */

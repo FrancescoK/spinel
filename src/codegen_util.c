@@ -3120,6 +3120,11 @@ void emit_arity_check(Buf *b, const char *given, int min, int max, const char *k
    CRuby's "no keywords accepted", ahead of its count -- where a method
    declaring no keyword parameter would take them as a positional Hash. */
 int scope_refuses_keywords(Compiler *c, const Scope *m) {
+  /* A `def w(...)` the __fwd_N model binds (a yielding parent reached by
+     `super(...)` or `new(...)`) hands every keyword on to its target, which
+     refuses them when it says `**nil`: the forwarder refuses them for it,
+     as its synthesized keyword params would carry them nowhere. */
+  for (int hops = 0; m && m->fwd_target1 > 0 && hops < 32; hops++) m = &c->scopes[m->fwd_target1 - 1];
   if (!m || m->def_node < 0) return 0;
   int pn = nt_ref(c->nt, m->def_node, "parameters");
   if (pn >= 0 && nt_kind(c->nt, pn) == NK_BlockParametersNode) pn = nt_ref(c->nt, pn, "parameters");

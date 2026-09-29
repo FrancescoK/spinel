@@ -1,0 +1,32 @@
+ArgumentError: no keywords accepted
+1
+1
+ArgumentError: no keywords accepted
+1
+ArgumentError: no keywords accepted
+[1, 2]
+[1, {z: 3}]
+ArgumentError: no keywords accepted
+:none
+ArgumentError: no keywords accepted
+2
+ArgumentError: no keywords accepted
+3
+ArgumentError: no keywords accepted
+2
+ArgumentError: no keywords accepted
+[1, {z: 3}]
+2
+ArgumentError: no keywords accepted
+ArgumentError: no keywords accepted
+[4, 7]
+ArgumentError: no keywords accepted
+2
+ArgumentError: no keywords accepted
+3
+ArgumentError: no keywords accepted
+4
+ArgumentError: no keywords accepted
+5
+ArgumentError: no keywords accepted
+7
