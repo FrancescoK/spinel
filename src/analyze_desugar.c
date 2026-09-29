@@ -2522,6 +2522,13 @@ int desugar_dynamic_respond_to(Compiler *c) {
    and name (not arity), so an arg-taking method like `+`/`[]` still types. */
 int desugar_respond_to_probe(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
+  /* a user-defined respond_to? resolves normally on its own class's
+     instances; the other receivers keep their probes (one such definition --
+     activesupport's TimeWithZone -- used to switch every probe in the program
+     off, and a `respond_to?` on an exception or a String was then refused) */
+  int user_rto = 0;
+  for (int s = 0; s < c->nscopes; s++) { const char *sn = c->scopes[s].name;
+    if (sn && sp_streq(sn, "respond_to?")) { user_rto = 1; break; } }
   int n0 = nt->count;
   int changed = 0;
   for (int id = 0; id < n0; id++) {
@@ -2530,6 +2537,11 @@ int desugar_respond_to_probe(Compiler *c) {
     if (!nm || !sp_streq(nm, "respond_to?")) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;                         /* implicit self handled in the fold */
+    if (user_rto) {
+      TyKind rt = infer_type(c, recv);
+      if (rt == TY_POLY || rt == TY_UNKNOWN) continue;
+      if (ty_is_object(rt) && comp_method_in_chain(c, ty_object_class(rt), "respond_to?", NULL) >= 0) continue;
+    }
     { int pn = 0; nt_arr(nt, id, "rt_probes", &pn); if (pn > 0) continue; }  /* already probed */
     int args = nt_ref(nt, id, "arguments");
     if (args < 0) continue;
