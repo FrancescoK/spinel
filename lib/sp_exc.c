@@ -385,7 +385,9 @@ const char *sp_exc_parent_of_name(const char *cls) {
     {"Encoding::UndefinedConversionError", "EncodingError"},
     {"Encoding::InvalidByteSequenceError", "EncodingError"},
     {"Encoding::CompatibilityError",       "EncodingError"},
-    {"LoadError",             "StandardError"},
+    /* a LoadError is a ScriptError: `rescue StandardError` and `rescue => e`
+       let it through, as sp_exc_is_standard_error already said */
+    {"LoadError",             "ScriptError"},
     {"RegexpError",           "StandardError"},
     {"StringScanner_Error",   "StandardError"},
     /* the json package raises these by name; NestingError is what a document
