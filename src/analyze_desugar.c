@@ -7172,26 +7172,57 @@ int desugar_when_int_float_ranges(Compiler *c) {
    repeat in one parameter list (the body reads the first), and each
    repetition still binds a slot. Give the repeats names of their own, or they
    became two declarations of one C local. */
+static int dup_param_taken(char **names, int n, const char *nm) {
+  for (int q = 0; q < n; q++) if (sp_streq(names[q], nm)) return 1;
+  return 0;
+}
+
 int desugar_duplicate_underscore_params(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0, serial = 0;
   NT_FOREACH_KIND(nt, NK_ParametersNode, pn) {
-    static const char *const lists[] = { "requireds", "optionals", "posts" };
-    const char *seen[64]; int ns = 0;
+    static const char *const lists[] = { "requireds", "optionals", "posts", "keywords" };
+    static const char *const refs[] = { "rest", "keyword_rest", "block" };
+    /* every name the list binds, so a generated one is fresh */
+    int cap = 8, na = 0;
+    char **names = malloc(sizeof(char *) * (size_t)cap);
+    for (int li = 0; li < 4; li++) {
+      int n = 0; const int *ids = nt_arr(nt, pn, lists[li], &n);
+      for (int k = 0; k < n; k++) {
+        const char *nm = nt_str(nt, ids[k], "name");
+        if (!nm) continue;
+        if (na == cap) { cap *= 2; names = realloc(names, sizeof(char *) * (size_t)cap); }
+        names[na++] = strdup(nm);
+      }
+    }
+    for (int r = 0; r < 3; r++) {
+      int x = nt_ref(nt, pn, refs[r]);
+      const char *nm = x >= 0 ? nt_str(nt, x, "name") : NULL;
+      if (!nm) continue;
+      if (na == cap) { cap *= 2; names = realloc(names, sizeof(char *) * (size_t)cap); }
+      names[na++] = strdup(nm);
+    }
+    int nseen = 0;   /* the underscore names met so far */
+    char **seen = malloc(sizeof(char *) * (size_t)(na ? na : 1));
     for (int li = 0; li < 3; li++) {
       int n = 0; const int *ids = nt_arr(nt, pn, lists[li], &n);
       for (int k = 0; k < n; k++) {
         const char *nm = nt_str(nt, ids[k], "name");
         if (!nm || nm[0] != '_') continue;
-        int dup = 0;
-        for (int q = 0; q < ns; q++) if (sp_streq(seen[q], nm)) dup = 1;
-        if (!dup) { if (ns < 64) seen[ns++] = nm; continue; }
-        char nn[128];
-        snprintf(nn, sizeof nn, "%s__dup%d", nm, ++serial);
+        if (!dup_param_taken(seen, nseen, nm)) { seen[nseen++] = strdup(nm); continue; }
+        char nn[160];
+        do snprintf(nn, sizeof nn, "%s__dup%d", nm, ++serial);
+        while (dup_param_taken(names, na, nn));
+        if (na == cap) { cap *= 2; names = realloc(names, sizeof(char *) * (size_t)cap); }
+        names[na++] = strdup(nn);
         nt_set_str(nt, ids[k], "name", nn);
         changed = 1;
       }
     }
+    for (int q = 0; q < nseen; q++) free(seen[q]);
+    free(seen);
+    for (int q = 0; q < na; q++) free(names[q]);
+    free(names);
   }
   return changed;
 }
