@@ -7166,3 +7166,105 @@ int desugar_when_int_float_ranges(Compiler *c) {
   }
   return changed;
 }
+
+/* ---- a block parameter the block body assigns ----
+ *
+ * `prepare(sql) do |stmt| stmt = build_result_set(stmt); ... end`: the body
+ * rebinds its own parameter to a value of another class. A block parameter's
+ * type is its yield's, so the write was forced into the yielded type and the
+ * conversion raised TypeError. Such a parameter becomes an ordinary local fed
+ * from a renamed parameter (`|stmt__bpin| stmt = stmt__bpin; ...`), whose
+ * writes widen it like any local's. */
+static int rbp_writes(const NodeTable *nt, int node, const char *name, int level) {
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return 0;
+  if ((k == NK_LocalVariableWriteNode || k == NK_LocalVariableOrWriteNode ||
+       k == NK_LocalVariableAndWriteNode || k == NK_LocalVariableOperatorWriteNode ||
+       k == NK_LocalVariableTargetNode) &&
+      nt_str(nt, node, "name") && sp_streq(nt_str(nt, node, "name"), name) &&
+      nt_int(nt, node, "depth", 0) == level) {
+    /* `r = nil` only makes the parameter nullable, which it already widens to */
+    int v = k == NK_LocalVariableWriteNode ? nt_ref(nt, node, "value") : -1;
+    if (!(v >= 0 && nt_kind(nt, v) == NK_NilNode)) return 1;
+  }
+  int inner = (k == NK_BlockNode || k == NK_LambdaNode) ? level + 1 : level;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) if (rbp_writes(nt, nt_ref_at(nt, node, i), name, inner)) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++) if (rbp_writes(nt, ids[j], name, inner)) return 1;
+  }
+  return 0;
+}
+
+static int rbp_captured(const NodeTable *nt, int node, const char *name, int level) {
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return 0;
+  if (level > 0 && (k == NK_LocalVariableReadNode || k == NK_LocalVariableWriteNode ||
+                    k == NK_LocalVariableOperatorWriteNode || k == NK_LocalVariableOrWriteNode ||
+                    k == NK_LocalVariableAndWriteNode || k == NK_LocalVariableTargetNode) &&
+      nt_str(nt, node, "name") && sp_streq(nt_str(nt, node, "name"), name) &&
+      nt_int(nt, node, "depth", 0) == level)
+    return 1;
+  int inner = (k == NK_BlockNode || k == NK_LambdaNode) ? level + 1 : level;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) if (rbp_captured(nt, nt_ref_at(nt, node, i), name, inner)) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++) if (rbp_captured(nt, ids[j], name, inner)) return 1;
+  }
+  return 0;
+}
+
+int desugar_reassigned_block_params(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int b = 0; b < n0; b++) {
+    if (nt_kind(nt, b) != NK_BlockNode) continue;
+    int bps = nt_ref(nt, b, "parameters");
+    if (bps < 0 || nt_kind(nt, bps) != NK_BlockParametersNode) continue;
+    int ps = nt_ref(nt, bps, "parameters");
+    if (ps < 0) continue;
+    int body = nt_ref(nt, b, "body");
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int rn = 0; const int *rq = nt_arr(nt, ps, "requireds", &rn);
+    int *pre = NULL; int npre = 0;
+    for (int i = 0; i < rn; i++) {
+      if (nt_kind(nt, rq[i]) != NK_RequiredParameterNode) continue;
+      const char *pn = nt_str(nt, rq[i], "name");
+      if (!pn || pn[0] == '_' || !rbp_writes(nt, body, pn, 0)) continue;
+      /* a parameter a nested block or lambda captures keeps its one cell per
+         iteration, which only a block parameter has */
+      if (rbp_captured(nt, body, pn, 0)) continue;
+      char orig[160], renamed[176];
+      snprintf(orig, sizeof orig, "%s", pn);
+      snprintf(renamed, sizeof renamed, "%s__bpin", orig);
+      nt_set_str(nt, rq[i], "name", renamed);
+      int w = fwd_new_node_like(nt, rq[i], "LocalVariableWriteNode");
+      nt_node_set_str(nt, w, "name", orig);
+      nt_node_set_int(nt, w, "depth", 0);
+      int rd = fwd_new_node_like(nt, rq[i], "LocalVariableReadNode");
+      nt_node_set_str(nt, rd, "name", renamed);
+      nt_node_set_int(nt, rd, "depth", 0);
+      nt_node_set_ref(nt, w, "value", rd);
+      pre = realloc(pre, sizeof(int) * (size_t)(npre + 1));
+      pre[npre++] = w;
+    }
+    if (npre > 0) {
+      int bn = 0; const int *bs = nt_arr(nt, body, "body", &bn);
+      int *out = malloc(sizeof(int) * (size_t)(bn + npre));
+      memcpy(out, pre, sizeof(int) * (size_t)npre);
+      memcpy(out + npre, bs, sizeof(int) * (size_t)bn);
+      nt_node_set_arr(nt, body, "body", out, bn + npre);
+      free(out);
+      changed = 1;
+    }
+    free(pre);
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
