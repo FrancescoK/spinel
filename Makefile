@@ -985,6 +985,11 @@ cli-opts-test: $(SPINEL)
 	links=""; i=0; while [ $$i -lt 70 ]; do links="$$links --link -lm"; i=$$((i + 1)); done; \
 	$(SPINEL) "$$tmp/p.rb" $$links --link -lsp_last_link --print-build 2>/dev/null | grep -q 'lib -lsp_last_link' || \
 	  { echo "cli-opts-test: FAIL (a --link past the 64th was dropped)"; ok=0; }; \
+	mkdir "$$tmp/feats"; : > "$$tmp/feats.rb"; i=0; while [ $$i -lt 130 ]; do \
+	  echo "F$$i = $$i" > "$$tmp/feats/f$$i.rb"; echo "require \"f$$i\"" >> "$$tmp/feats.rb"; i=$$((i + 1)); done; \
+	printf 'require "ostruct"\nputs OpenStruct.new(a: 1).a\n' >> "$$tmp/feats.rb"; \
+	$(SPINEL) -I "$$tmp/feats" --require-gate "$$tmp/feats.rb" -c -o "$$tmp/feats.c" >"$$tmp/feats.out" 2>&1 || \
+	  { echo "cli-opts-test: FAIL (a require past the 128th feature was not recorded)"; sed -n 1,3p "$$tmp/feats.out"; ok=0; }; \
 	rm -rf "$$tmp"; \
 	[ $$ok = 1 ] && echo "cli-opts-test: pass" || exit 1
 
