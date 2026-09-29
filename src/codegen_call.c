@@ -37243,15 +37243,6 @@ else {
         return;
       }
     }
-    if (0 && ty_is_hash(rt) && argc == 1 && ty_is_hash(comp_ntype(c, argv[0]))) {
-      int strict = sp_streq(name, "<") || sp_streq(name, ">");
-      int flip = sp_streq(name, ">") || sp_streq(name, ">=");
-      buf_puts(b, "sp_poly_hash_subset(");
-      if (flip) { emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, recv, b); }
-      else { emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); }
-      buf_printf(b, ", %d)", strict);
-      return;
-    }
     unsupported(c, id, "comparison");
   }
 
