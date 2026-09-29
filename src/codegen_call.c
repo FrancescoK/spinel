@@ -20762,14 +20762,21 @@ static int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
        marked to hand out the handle keeps it. */
     char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", rn);
     int ivi = comp_ivar_index(&c->classes[dispatch_cid], ivn);
-    if (ivi >= 0 && c->classes[dispatch_cid].ivar_types[ivi] == TY_STRBUF &&
+    Buf rb; memset(&rb, 0, sizeof rb);
+    TyKind rty = ivi >= 0 ? c->classes[dispatch_cid].ivar_types[ivi] : TY_UNKNOWN;
+    if (rty == TY_STRBUF &&
         !(id < c->node_cap && (c->strbuf_box[id] || c->strbuf_handle_demand[id]))) {
       int tv = ++g_tmp;
-      buf_printf(b, "({ sp_String *_t%d = %s%siv_%s; _t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; })",
+      buf_printf(&rb, "({ sp_String *_t%d = %s%siv_%s; _t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; })",
                  tv, g_self, g_self_deref, iv_c(rn), tv, tv);
-      return 1;
+      rty = TY_STRING;
     }
-    buf_printf(b, "%s%siv_%s", g_self, g_self_deref, iv_c(rn));
+    else buf_printf(&rb, "%s%siv_%s", g_self, g_self_deref, iv_c(rn));
+    /* a def in a subclass overrides the reader for that subclass */
+    if (!(rty != TY_UNKNOWN && sp_streq(g_self_deref, "->") &&
+          emit_reader_override_dispatch(c, id, dispatch_cid, name, g_self, rb.p, rty, b)))
+      buf_puts(b, rb.p);
+    free(rb.p);
     return 1;
   }
   if (comp_method_in_chain(c, dispatch_cid, name, NULL) >= 0) {
