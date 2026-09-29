@@ -6807,10 +6807,41 @@ static void emit_poly_arm_args(Compiler *c, Scope *m, Scope *ms, const ArgLayout
   emit_poly_kw_arm_checks(c, m, ms, A->kw, A->pos_argc, L->gather, pre);
   int pd_arm = default_refs_earlier_param(c, ms);
   int pd_uid = pd_arm ? ++g_tmp : 0, ren_base = g_nren;
+  /* Two arguments that each build a fresh object in a statement expression
+     (a rest's slice, a **kwrest's hash) root it only to the end of that
+     expression, and C runs a call's arguments in no set order: the second
+     one's allocation collected the first. Each such argument binds to a
+     rooted local ahead of the call instead, as a default reading an earlier
+     parameter already has them do. */
+  Buf *pav = NULL; int nfresh = 0;
+  if (!pd_arm && ms->nparams > 1) {
+    pav = calloc((size_t)ms->nparams, sizeof *pav);
+    for (int a = 0; pav && a < ms->nparams; a++) {
+      emit_poly_arm_param(c, ms, a, L, A, ct, selfd, &pav[a]);
+      if (pav[a].p && strstr(pav[a].p, "SP_GC_ROOT(")) nfresh++;
+    }
+  }
   for (int a = 0; a < ms->nparams; a++) {
     buf_puts(cb, a ? ", " : lead);
     Buf pa; memset(&pa, 0, sizeof pa);
-    emit_poly_arm_param(c, ms, a, L, A, ct, selfd, &pa);
+    if (pav) {
+      pa = pav[a];
+      if (nfresh > 1 && pa.p && strstr(pa.p, "SP_GC_ROOT(")) {
+        const char *pnm = ms->pnames ? ms->pnames[a] : NULL;
+        LocalVar *pv = pnm ? scope_local(ms, pnm) : NULL;
+        TyKind pt = pv ? pv->type : TY_POLY;
+        if (pt == TY_UNKNOWN) pt = TY_POLY;
+        int tf = ++g_tmp;
+        emit_ctype(c, pt, pre);
+        buf_printf(pre, " _t%d = %s; ", tf, pa.p);
+        if (needs_root(pt))
+          buf_printf(pre, pt == TY_POLY ? "SP_GC_ROOT_RBVAL(_t%d); " : "SP_GC_ROOT(_t%d); ", tf);
+        buf_printf(cb, "_t%d", tf);
+        free(pa.p);
+        continue;
+      }
+    }
+    else emit_poly_arm_param(c, ms, a, L, A, ct, selfd, &pa);
     const char *pnm = ms->pnames ? ms->pnames[a] : NULL;
     if (pd_arm && pnm && g_nren < MAX_RENAME) {
       LocalVar *pv = scope_local(ms, pnm);
@@ -6835,6 +6866,7 @@ static void emit_poly_arm_args(Compiler *c, Scope *m, Scope *ms, const ArgLayout
     else buf_puts(cb, pa.p ? pa.p : "");
     free(pa.p);
   }
+  free(pav);
   g_nren = ren_base;
   g_pre = sv_pre;
 }
