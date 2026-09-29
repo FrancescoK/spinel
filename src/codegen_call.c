@@ -23314,6 +23314,133 @@ static void emit_pre_format_args(Compiler *c, const int *av, int ac, int ta) {
      the receiverless (implicit-self) form, resolved against the enclosing
      class -- `self.fullscreen = v if respond_to?(:fullscreen=)` (doom's
      gosu_window.rb). */
+/* the names every object answers respond_to? true for */
+static const char *const respond_universal[] = {
+    "to_s", "inspect", "class", "nil?", "dup", "clone", "freeze",
+    "frozen?", "hash", "==", "!=", "equal?", "eql?", "object_id",
+    "respond_to?", "is_a?", "kind_of?", "instance_of?", "itself",
+    "tap", "then", "send", "===",
+    /* Kernel/Object methods every CRuby object answers true for */
+    "display", "yield_self", "public_send", "__send__", "method",
+    "methods", "to_enum", "enum_for", "instance_variables",
+    "instance_variable_get", "instance_variable_set",
+    "instance_variable_defined?", "singleton_class", "extend", NULL };
+
+/* What an instance of user class cid answers to Object#respond_to?(qm): 2 =
+   true, 1 = only with include_all (a private or protected match), 0 = false.
+   The method-table reading of respond_to_static_answer's object branch,
+   without its deferral to the class's own respond_to? -- this is what that
+   override's `super` asks. */
+static int obj_responds_answer(Compiler *c, int cid, const char *qm) {
+  if (name_is_synth_method(c, qm)) return 0;
+  if (sp_streq(qm, "initialize_copy")) return 1;
+  for (int u = 0; respond_universal[u]; u++) if (sp_streq(qm, respond_universal[u])) return 2;
+  size_t ql = strlen(qm);
+  int is_wr = ql > 0 && qm[ql - 1] == '=';
+  char wbase[256]; wbase[0] = '\0';
+  if (is_wr && ql - 1 < sizeof wbase) { memcpy(wbase, qm, ql - 1); wbase[ql - 1] = '\0'; }
+  int found = comp_method_in_chain(c, cid, qm, NULL) >= 0 ||
+              comp_reader_in_chain(c, cid, qm, NULL) ||
+              (is_wr && comp_writer_in_chain(c, cid, wbase, NULL));
+  if (!found) return class_implicit_responds(c, cid, qm) ? 2 : 0;
+  return comp_method_vis_in_chain(c, cid, qm) == SP_VIS_PUBLIC ? 2 : 1;
+}
+
+/* `super` inside a user-defined respond_to?(m, include_all = false) that no
+   ancestor defines is Object#respond_to? for this object: a switch over the
+   interned name, each arm the method-table answer for the object's runtime
+   class (this class or a descendant, which inherits the method and its
+   super) over the closed set of names a runtime-name send resolves over
+   plus the universal ones. A name outside that set answers false, as the
+   runtime-name respond_to? does. Answers 1 when it emitted. */
+int emit_super_respond_to(Compiler *c, int id, Scope *s, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (!s || s->class_id < 0 || s->is_cmethod) return 0;
+  int cid = s->class_id;
+  const char *ty = nt_type(nt, id);
+  int fwd = ty && sp_streq(ty, "ForwardingSuperNode");
+  int args = fwd ? -1 : nt_ref(nt, id, "arguments");
+  int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  if (!fwd && argc < 1) return 0;
+  if (fwd && s->nparams < 1) return 0;
+  int t = ++g_tmp;
+  /* the name: a symbol, a string (interned), or a boxed value of either */
+  Buf nm = {0, 0, 0}; TyKind nt_ty;
+  if (fwd) {
+    LocalVar *lv = scope_local(s, s->pnames[0]);
+    nt_ty = lv && lv->type != TY_UNKNOWN ? lv->type : TY_POLY;
+    buf_printf(&nm, "lv_%s", rename_local(s->pnames[0]));
+  }
+  else { nt_ty = comp_ntype(c, argv[0]); emit_expr(c, argv[0], &nm); }
+  buf_printf(b, "({ sp_sym _s%d = ", t);
+  if (nt_ty == TY_SYMBOL) buf_puts(b, nm.p ? nm.p : "0");
+  else if (nt_ty == TY_STRING) buf_printf(b, "sp_sym_intern(%s)", nm.p ? nm.p : "\"\"");
+  else {
+    int tn = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tn);
+    emit_boxed_text(c, nt_ty, nm.p ? nm.p : "sp_box_nil()", b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_SYM ? (sp_sym)_t%d.v.i : sp_sym_intern(sp_poly_to_s(_t%d)); })", tn, tn, tn);
+  }
+  free(nm.p);
+  /* include_all: the second argument or parameter, false when absent */
+  buf_printf(b, "; sp_bool _i%d = ", t);
+  Buf ia = {0, 0, 0}; TyKind ia_ty = TY_BOOL; int have_ia = 0;
+  if (fwd && s->nparams >= 2) {
+    LocalVar *lv = scope_local(s, s->pnames[1]);
+    ia_ty = lv && lv->type != TY_UNKNOWN ? lv->type : TY_POLY;
+    buf_printf(&ia, "lv_%s", rename_local(s->pnames[1])); have_ia = 1;
+  }
+  else if (!fwd && argc >= 2) { ia_ty = comp_ntype(c, argv[1]); emit_expr(c, argv[1], &ia); have_ia = 1; }
+  if (!have_ia) buf_puts(b, "0");
+  else if (ia_ty == TY_BOOL) buf_puts(b, ia.p ? ia.p : "0");
+  else { buf_puts(b, "sp_truthy("); emit_boxed_text(c, ia_ty, ia.p ? ia.p : "sp_box_nil()", b); buf_puts(b, ")"); }
+  free(ia.p);
+  /* the runtime class: this one, or a descendant inheriting the method */
+  int ncls = 0, cls[256];
+  cls[ncls++] = cid;
+  int by_value = c->classes[cid].is_value_type;
+  if (!by_value)
+    for (int k = 0; k < c->nclasses && ncls < 256; k++)
+      if (k != cid && is_descendant(c, k, cid)) cls[ncls++] = k;
+  if (ncls > 1) buf_printf(b, "; sp_int _c%d = sp_obj_cls_id_of((void *)%s)", t, g_self);
+  buf_printf(b, "; sp_bool _r%d = 0; switch (_s%d) {", t, t);
+  int ncand = 0;
+  char **cand = dsend_candidates(c, &ncand);
+  for (int pass = 0; pass < 2; pass++) {
+    int n = pass ? ncand : 0;
+    for (int q = 0; pass ? q < n : respond_universal[q] != NULL; q++) {
+      const char *qm = pass ? cand[q] : respond_universal[q];
+      if (pass) {
+        int dup = 0;
+        for (int u = 0; respond_universal[u]; u++) if (sp_streq(qm, respond_universal[u])) { dup = 1; break; }
+        if (dup) continue;
+      }
+      int ans[256], same = 1, any = 0;
+      for (int k = 0; k < ncls; k++) {
+        ans[k] = obj_responds_answer(c, cls[k], qm);
+        if (ans[k]) any = 1;
+        if (ans[k] != ans[0]) same = 0;
+      }
+      if (!any) continue;
+      char incl[24]; snprintf(incl, sizeof incl, "_i%d", t);
+      buf_printf(b, " case %d:", comp_sym_intern(c, qm));
+      if (same) buf_printf(b, " _r%d = %s; break;", t, ans[0] == 2 ? "1" : incl);
+      else {
+        buf_printf(b, " _r%d = ", t);
+        for (int k = 0; k < ncls; k++) {
+          if (!ans[k]) continue;
+          buf_printf(b, "_c%d == %d ? %s : ", t, cls[k], ans[k] == 2 ? "1" : incl);
+        }
+        buf_puts(b, "0; break;");
+      }
+    }
+  }
+  for (int q = 0; q < ncand; q++) free(cand[q]);
+  free(cand);
+  buf_printf(b, " default: _r%d = 0; } _r%d; })", t, t);
+  return 1;
+}
+
 /* The compile-time answer to `recv.respond_to?(qm)` for the call node `id`:
    1 / 0, or -1 when only the runtime can tell (a Range or poly receiver, a
    private match under a runtime include_all). Shared by the emission below
@@ -23338,16 +23465,7 @@ static int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, co
     else if (a1 && sp_streq(a1, "FalseNode")) include_all = 0;
     else foldable = 0;
   }
-  static const char *const uni[] = {
-    "to_s", "inspect", "class", "nil?", "dup", "clone", "freeze",
-    "frozen?", "hash", "==", "!=", "equal?", "eql?", "object_id",
-    "respond_to?", "is_a?", "kind_of?", "instance_of?", "itself",
-    "tap", "then", "send", "===",
-    /* Kernel/Object methods every CRuby object answers true for */
-    "display", "yield_self", "public_send", "__send__", "method",
-    "methods", "to_enum", "enum_for", "instance_variables",
-    "instance_variable_get", "instance_variable_set",
-    "instance_variable_defined?", "singleton_class", "extend", NULL };
+  const char *const *uni = respond_universal;
   int yes = 0, resolved = 0;
   /* a compiler-synthesized helper (__enum_to_a) is not a real method: CRuby
      answers false, so never let the class-chain lookup below report it */

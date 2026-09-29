@@ -2156,7 +2156,7 @@ static int dsend_receiver_names(Compiler *c, int cls, int subclasses, char ***ou
    dispatches over: the symbol and string literals the program spells, and
    the methods it defines, ranked so the names that can be meant survive the
    cap. Answers the names (strdup'd, the caller frees) and their count. */
-static char **dsend_candidates(Compiler *c, int *out_n) {
+char **dsend_candidates(Compiler *c, int *out_n) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
   static const char *const sends[] = { "send", "__send__", "public_send", NULL };

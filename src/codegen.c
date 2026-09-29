@@ -10023,6 +10023,9 @@ void emit_super(Compiler *c, int id, Buf *b) {
       free(mb.p);
       return;
     }
+    /* `super` in a respond_to? override no ancestor defines is Object's:
+       the object's method-table answer for a runtime name */
+    if (uname && sp_streq(uname, "respond_to?") && emit_super_respond_to(c, id, s, b)) return;
     /* No superclass method anywhere (parent chain, included-module shadow, and
        the exception-initialize special case all missed). CRuby raises
        NoMethodError at runtime, so emit that rather than rejecting at compile

@@ -493,6 +493,8 @@ void emit_typed_sink_text(Compiler *c, int node, TyKind slot, const char *text, 
 int is_builtin_reopen(const char *name);
 int is_exc_name(const char *n);
 int class_is_exc_subclass(Compiler *c, int ci);
+char **dsend_candidates(Compiler *c, int *out_n);
+int emit_super_respond_to(Compiler *c, int id, Scope *s, Buf *b);
 int class_has_subclass(Compiler *c, int ocid);
 int exc_has_user_msg_override(Compiler *c);
 int exc_has_nonstring_msg_override(Compiler *c);

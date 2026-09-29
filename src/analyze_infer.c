@@ -8226,13 +8226,16 @@ TyKind infer_uncached(Compiler *c, int id) {
       return ty_object(s->class_id);
     }
     int p = comp_super_parent(c, s->class_id, s->is_cmethod);
-    if (p < 0) return TY_UNKNOWN;
     const char *uname = comp_super_name(c, p, s->name, s->is_cmethod);
+    /* `super` in a respond_to? override no ancestor defines is Object's
+       respond_to?: a boolean (see emit_super_respond_to) */
+    int rto_super = !s->is_cmethod && uname && sp_streq(uname, "respond_to?");
+    if (p < 0) return rto_super ? TY_BOOL : TY_UNKNOWN;
     /* super inside a class method resolves through the parent's CLASS-method
        chain (the instance chain would miss `def self.x` entirely). */
     int mi = s->is_cmethod ? comp_cmethod_in_chain(c, p, uname, NULL)
                            : comp_method_in_chain(c, p, uname, NULL);
-    if (mi < 0) return TY_UNKNOWN;
+    if (mi < 0) return rto_super ? TY_BOOL : TY_UNKNOWN;
     /* `super(x) { }`: the literal block is spliced into the yielding parent
        like a call's, so the super answers what that call would */
     int sblk = nt_ref(nt, id, "block");
