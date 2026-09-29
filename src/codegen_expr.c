@@ -2338,6 +2338,16 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     }
     return;
   }
+  if (sp_streq(ty, "GlobalVariableOrWriteNode") || sp_streq(ty, "GlobalVariableAndWriteNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
+    LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
+    if (!lv) { unsupported(c, id, "global variable or/and-write (unregistered global)"); return; }
+    char gref[256]; snprintf(gref, sizeof gref, "gv_%s", rn);
+    emit_slot_orw_value(c, lv->type, gref, nt_ref(nt, id, "value"),
+                        sp_streq(ty, "GlobalVariableOrWriteNode"), b);
+    return;
+  }
   if (sp_streq(ty, "ClassVariableOperatorWriteNode")) {
     const char *nm = nt_str(nt, id, "name");
     const char *op = nt_str(nt, id, "binary_operator");
