@@ -8052,7 +8052,7 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
         }
         buf_printf(b, "sp_box_poly_array(_t%d)", t);
       }
-      else buf_puts(b, "sp_box_nil()");
+      else buf_puts(b, sp_streq(ynm, "yield") ? "sp_box_empty_step()" : "sp_box_nil()");
       buf_puts(b, ");\n");
       return;
     }

@@ -5095,7 +5095,7 @@ static int gen_yields_multi(const NodeTable *nt, int id, const char *yname) {
         nt_str(nt, rcv, "name") && sp_streq(nt_str(nt, rcv, "name"), yname)) {
       int ar = nt_ref(nt, id, "arguments");
       int ac = 0; const int *av = ar >= 0 ? nt_arr(nt, ar, "arguments", &ac) : NULL;
-      if (ac > 1) return 1;
+      if (ac != 1) return 1;
       if (ac == 1 && nt_type(nt, av[0]) && sp_streq(nt_type(nt, av[0]), "SplatNode")) return 1;
     }
   }
