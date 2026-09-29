@@ -259,7 +259,7 @@ int subtree_may_allocate(const NodeTable *nt, int id) {
    see -- 12% on the life benchmark. Gated on both the result and the
    receiver being scalar, so a user class's own `+` and `Array#<<` are
    effects as before. */
-static int call_is_scalar_op(Compiler *c, int id) {
+int call_is_scalar_op(Compiler *c, int id) {
   static const char *const OPS[] = {
     "+","-","*","/","%","**","<",">","<=",">=","==","!=","<=>","&","|","^","<<",">>", NULL };
   const char *nm = nt_str(c->nt, id, "name");
