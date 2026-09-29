@@ -330,6 +330,42 @@ int subtree_has_side_effect(Compiler *c, int id) {
   }
   return 0;
 }
+/* See codegen_internal.h. A write names the variable; a call on self
+   follows the one method the classes from `cls` down define for it, up to
+   a few calls deep; anything else that runs code of the program's -- a
+   call on another object, a yield, a super, a block -- may write it. */
+int subtree_may_write_ivar(Compiler *c, int id, const char *iv, int cls, int depth) {
+  const NodeTable *nt = c->nt;
+  if (id < 0) return 0;
+  const char *ty = nt_type(nt, id);
+  if (!ty) return 0;
+  if (!strncmp(ty, "InstanceVariable", 16) && (strstr(ty, "Write") || strstr(ty, "Target"))) {
+    const char *wn = nt_str(nt, id, "name");
+    if (!wn || sp_streq(wn, iv)) return 1;
+  }
+  if (sp_streq(ty, "SuperNode") || sp_streq(ty, "ForwardingSuperNode") || sp_streq(ty, "YieldNode") ||
+      sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode") || sp_streq(ty, "BlockArgumentNode"))
+    return 1;
+  if (sp_streq(ty, "CallNode") && !call_is_scalar_op(c, id)) {
+    int recv = nt_ref(nt, id, "receiver");
+    const char *nm = nt_str(nt, id, "name");
+    if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode) return 1;
+    int mi = cls >= 0 && nm && depth < 3 ? comp_method_in_chain(c, cls, nm, NULL) : -1;
+    if (mi < 0 || c->scopes[mi].def_node < 0 || dispatch_impl_count(c, cls, nm) != 1) return 1;
+    if (subtree_may_write_ivar(c, nt_ref(nt, c->scopes[mi].def_node, "body"), iv, cls, depth + 1)) return 1;
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++)
+    if (subtree_may_write_ivar(c, nt_ref_at(nt, id, i), iv, cls, depth)) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0;
+    const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++)
+      if (subtree_may_write_ivar(c, ids[j], iv, cls, depth)) return 1;
+  }
+  return 0;
+}
 int  g_tmp = 0;
 char g_ren_from[MAX_RENAME][96];
 char g_ren_to[MAX_RENAME][112];

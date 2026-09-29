@@ -7025,11 +7025,19 @@ int arg_ran_first(int node, int from) {
   return 0;
 }
 
+/* The temp an argument that ran first reads (arg_ran_first) from the
+   `from`th override on, when `text` is its slot's rendering of it, the temp
+   unconverted; -1 otherwise. */
+static int ran_first_temp(int node, int from, const char *text) {
+  for (int i = from; text && i < g_n_argov; i++) {
+    int t;
+    if (g_argov_node[i] == node && sp_streq(g_argov_text[i], text) && sscanf(text, "_t%d", &t) == 1) return t;
+  }
+  return -1;
+}
 
-/* Can `after` give the variable `x` reads another value before the binding
-   reads it? A local only by assigning it; an instance, global or class
-   variable by any effect, a call among them. Anything else is no read. */
-static int read_rebound_by(Compiler *c, int x, int after) {
+/* See codegen_internal.h. */
+int read_rebound_by(Compiler *c, int x, int after) {
   const NodeTable *nt = c->nt;
   if (after < 0) return 0;
   switch (nt_kind(nt, x)) {
@@ -7037,10 +7045,34 @@ static int read_rebound_by(Compiler *c, int x, int after) {
       const char *nm = nt_str(nt, x, "name");
       return nm && subtree_writes_local(c, after, nm);
     }
-    case NK_InstanceVariableReadNode: case NK_GlobalVariableReadNode:
-    case NK_ClassVariableReadNode:
+    case NK_InstanceVariableReadNode: {
+      /* a later argument written in the same method, where self is the
+         method's own (not a block run under another self), that calls no
+         method of self's that assigns it cannot change it: `m(@head,
+         tick)` reads @head in place when tick only counts */
+      const char *iv = nt_str(nt, x, "name");
+      Scope *xs = comp_scope_of(c, x);
+      if (iv && xs && !xs->is_cmethod && xs->class_id >= 0 && xs == comp_scope_of(c, after) &&
+          g_self && sp_streq(g_self, "self"))
+        return subtree_may_write_ivar(c, after, iv, xs->class_id, 0);
       return subtree_has_side_effect(c, after);
-    default: return 0;
+    }
+    case NK_GlobalVariableReadNode: case NK_ClassVariableReadNode:
+      return subtree_has_side_effect(c, after);
+    /* a block's body reads when it runs, not where it is written */
+    case NK_BlockNode: case NK_LambdaNode: return 0;
+    default: {
+      /* a value built of reads reads each where it is written: `m(*[x, 2],
+         k: (x = 3))` spread the Array built after the keyword ran */
+      if (x < 0) return 0;
+      for (int i = 0; i < nt_num_refs(nt, x); i++)
+        if (read_rebound_by(c, nt_ref_at(nt, x, i), after)) return 1;
+      for (int i = 0; i < nt_num_arrs(nt, x); i++) {
+        int n = 0; const int *ids = nt_arr_at(nt, x, i, &n);
+        for (int j = 0; j < n; j++) if (read_rebound_by(c, ids[j], after)) return 1;
+      }
+      return 0;
+    }
   }
 }
 
@@ -7054,6 +7086,9 @@ static void emit_arg_first(Compiler *c, int v, int rebound, Buf *b) {
   const NodeTable *nt = c->nt;
   int x = nt_kind(nt, v) == NK_SplatNode ? nt_ref(nt, v, "expression") : v;
   if (x < 0 || nt_kind(nt, v) == NK_BlockArgumentNode) return;
+  /* one a hoist around the call ran already reads its temp: a class
+     value's arms bind what the dispatch hoisted */
+  if (arg_ran_first(x, 0)) return;
   int effect = subtree_has_side_effect(c, x);
   if (!effect && !rebound) return;
   TyKind at = comp_ntype(c, x);
@@ -7124,6 +7159,39 @@ int args_order_matters(Compiler *c, const int *argv, int argc, const int *after,
   }
   free(vals); free(ds);
   return matters;
+}
+
+/* The defaults a call into `m` may fill at its site, where the binding
+   renders them in their parameters' slots: each optional's, and each
+   keyword's no literal key of `kwh` names. The caller frees them. */
+static int *call_site_defaults(Compiler *c, Scope *m, int kwh, int *n) {
+  int *d = malloc(sizeof(int) * (size_t)((m ? m->nparams : 0) + 1)), nd = 0;
+  for (int i = 0; m && m->pdefault && i < m->nparams; i++) {
+    if (m->pdefault[i] < 0) continue;
+    if (kwh >= 0 && m->pnames[i] && callee_has_kwarg(c, m, m->pnames[i]) &&
+        kwh_lookup(c->nt, kwh, m->pnames[i]) >= 0) continue;
+    d[nd++] = m->pdefault[i];
+  }
+  *n = nd;
+  return d;
+}
+
+/* See codegen_internal.h. */
+int emit_args_before_binding(Compiler *c, Scope *m, const int *argv, int argc, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int kwh = argc > 0 && argv && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+  int nd = 0, *dfl = call_site_defaults(c, m, kwh, &nd);
+  int nv = 0, ev = 0, ed = 0, run = 0; char *ds = NULL;
+  int *vals = source_values(nt, argv, argc, &nv, &ds);
+  for (int i = 0; i < nv; i++) {
+    ev += subtree_has_side_effect(c, vals[i]);
+    if (value_rebound(c, vals, nv, i, dfl, nd)) run = 1;
+  }
+  for (int i = 0; i < nd; i++) ed += subtree_has_side_effect(c, dfl[i]);
+  if ((ev && ed) || (kwh >= 0 && ev > 1) || kwh_out_of_order(c, m, kwh)) run = 1;
+  if (run) emit_args_before(c, argv, argc, dfl, nd, b);
+  free(vals); free(ds); free(dfl);
+  return run;
 }
 
 /* See codegen_internal.h. */
@@ -8813,11 +8881,11 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
      Pre-evaluate the hash to a temp so we can do per-param lookups. */
   int kw_merged = kwh_merged(c, m, kwh);
   if (L.kw.args_first || kwh_runs_ahead(c, m, kwh)) emit_args_run(c, argv, argc);
-  else if (kwh_out_of_order(c, m, kwh)) emit_args_in_source_order(c, argv, argc, g_pre);
   /* the splat spread in place runs into its temp ahead of the call, so the
      arguments written to its left run first, into theirs: `m(lg(1), *lg(a))`
      ran lg(a) first */
-  else if (L.splat > 0) emit_args_in_source_order(c, argv, L.splat, g_pre);
+  else if (!emit_args_before_binding(c, m, argv, argc, g_pre) && L.splat > 0)
+    emit_args_in_source_order(c, argv, L.splat, g_pre);
   TyKind ds_hash_type = TY_UNKNOWN;
   int ds_hash_tmp = emit_ds_hash_materialize(c, m, kwh, &ds_hash_type);
 
@@ -8986,6 +9054,8 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
          double-evaluates it and emits an ill-typed sp_RbVal temp (the splat
          lowers to sp_PolyArray*) (#3242) */
       if (aty && sp_streq(aty, "SplatNode")) continue;
+      /* one the call ran first (emit_args_before_binding) reads its temp */
+      if (arg_ran_first(argv[k], argov_saved)) continue;
       /* a bare read is already rooted where it lives */
       if (aty && (sp_streq(aty, "LocalVariableReadNode") ||
                   sp_streq(aty, "InstanceVariableReadNode") ||
@@ -9492,9 +9562,9 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
      into a NULL kwrest and let positionals steal keys by name). */
   int kw_merged_d = kwh_merged(c, pm, kwh_d);
   if (pm && (L.kw.args_first || kwh_runs_ahead(c, pm, kwh_d))) emit_args_run(c, argv, argc);
-  else if (kwh_out_of_order(c, pm, kwh_d)) emit_args_in_source_order(c, argv, argc, g_pre);
   /* the arguments to the left of a splat spread in place run ahead of it */
-  else if (L.splat > 0) emit_args_in_source_order(c, argv, L.splat, g_pre);
+  else if (!emit_args_before_binding(c, pm, argv, argc, g_pre) && L.splat > 0)
+    emit_args_in_source_order(c, argv, L.splat, g_pre);
   TyKind ds_type_d = TY_UNKNOWN;
   int ds_tmp_d = (pm && kwh_d >= 0) ? emit_ds_hash_materialize(c, pm, kwh_d, &ds_type_d) : -1;
   int np = pm ? pm->nparams : pos_argc_d;
@@ -9683,10 +9753,10 @@ else {
       TyKind att = p ? p->type : comp_ntype(c, k < argc ? argv[k] : -1);
       if (p && att == TY_UNKNOWN) att = TY_POLY;  /* poly in the callee signature */
       atmp_ty[k] = att;
-      emit_indent(g_pre, g_indent);
       /* A byref out-param takes the SLOT's address, so its temp is a
          `const char **`, not the parameter's own type. */
       if (p && p->byref_out) {
+        emit_indent(g_pre, g_indent);
         emit_ctype(c, att, g_pre);
         buf_printf(g_pre, " *_t%d = ", atmp[k]);
         buf_puts(g_pre, ab.p ? ab.p : ""); buf_puts(g_pre, ";\n");
@@ -9701,13 +9771,21 @@ else {
         }
         continue;
       }
-      emit_ctype(c, att, g_pre);
-      buf_printf(g_pre, " _t%d = ", atmp[k]);
-      buf_puts(g_pre, ab.p ? ab.p : ""); buf_puts(g_pre, ";\n");
-      /* Root heap-typed arg temps: evaluating a later argument may allocate
-         and collect an earlier one still sitting in its temp. */
-      if (att == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", atmp[k]); }
-      else if (needs_root(att)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", atmp[k]); }
+      /* an argument the call ran first (emit_args_before_binding) is its
+         rooted temp already, when the slot takes it unconverted */
+      int ran_t = provided >= 0 && comp_ntype(c, provided) == att
+                    ? ran_first_temp(provided, argov_saved_d, ab.p) : -1;
+      if (ran_t >= 0) atmp[k] = ran_t;
+      else {
+        emit_indent(g_pre, g_indent);
+        emit_ctype(c, att, g_pre);
+        buf_printf(g_pre, " _t%d = ", atmp[k]);
+        buf_puts(g_pre, ab.p ? ab.p : ""); buf_puts(g_pre, ";\n");
+        /* Root heap-typed arg temps: evaluating a later argument may allocate
+           and collect an earlier one still sitting in its temp. */
+        if (att == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", atmp[k]); }
+        else if (needs_root(att)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", atmp[k]); }
+      }
       if (pd_active && pm->pnames[k] && g_nren < MAX_RENAME) {
         /* alias the temp (already rooted) under the rename's spelling, and
            register the rename AFTER it so only a LATER default reads it */
