@@ -1453,6 +1453,7 @@ int poly_builtin_zero_arg_name(const char *m) {
    poly-dispatch union rules ask this to tell a name whose user answer AGREES
    with the builtin one from a name whose answer does not. */
 static TyKind an_user_read_ty(Compiler *c, const char *name, int argc) {
+  if (an_builtin_only) return TY_UNKNOWN;
   TyKind r = TY_UNKNOWN; int found = 0;
   for (int k = 0; k < c->nclasses; k++) {
     if (c->classes[k].is_native_class) {

@@ -4989,8 +4989,9 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
     buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_PROC"
                   " ? ((sp_Proc *)_t%d.v.p)->arity"
+                  " : _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_METHOD ? ((sp_BoundMethod *)_t%d.v.p)->arity"
                   " : (sp_int)(sp_raise_nomethod(sp_nomethod_msg(\"arity\", _t%d)), 0); })",
-               tv, tv, tv, tv);
+               tv, tv, tv, tv, tv, tv, tv);
     return 1;
   }
   /* the same reads for a Proc carried in a poly slot -- one read out of an
@@ -6323,6 +6324,7 @@ static int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *
      object protocol and never records the builtin answer. */
   if (bt == TY_UNKNOWN && argc <= 1 && (sp_streq(name, "to_s") || sp_streq(name, "inspect")))
     bt = TY_STRING;
+  if (bt == TY_UNKNOWN && argc == 0) bt = an_builtin_answer(c, id);
   if (bt == TY_UNKNOWN) return 0;
   if (ret != TY_POLY && bt != ret) return 0;
   int slot = g_n_argov++;
