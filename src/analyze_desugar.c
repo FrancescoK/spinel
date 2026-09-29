@@ -7665,8 +7665,16 @@ int desugar_class_new_blocks(Compiler *c) {
         (sp_streq(nm, "class_eval") || sp_streq(nm, "module_eval") || sp_streq(nm, "class_exec") ||
          sp_streq(nm, "module_exec") || sp_streq(nm, "instance_eval") || sp_streq(nm, "instance_exec"))) {
       NodeKind rk0 = nt_kind(nt, recv);
+      /* `self.class.class_eval` names the enclosing class, as a constant does */
+      int self_class = 0;
+      if (rk0 == NK_CallNode) {
+        const char *rnm = nt_str(nt, recv, "name");
+        int rr = nt_ref(nt, recv, "receiver");
+        self_class = rnm && sp_streq(rnm, "class") && nt_ref(nt, recv, "arguments") < 0 &&
+                     (rr < 0 || nt_kind(nt, rr) == NK_SelfNode);
+      }
       if (rk0 != NK_ConstantReadNode && rk0 != NK_ConstantPathNode && rk0 != NK_SelfNode &&
-          cn_has_def(nt, nt_ref(nt, blk, "body"))) {
+          !self_class && cn_has_def(nt, nt_ref(nt, blk, "body"))) {
         cn_neutralize(nt, blk);
         nt_node_reset(nt, id, "CallNode");
         nt_node_set_str(nt, id, "name", "raise");
@@ -7697,7 +7705,11 @@ int desugar_class_new_blocks(Compiler *c) {
     int body = cn_body(nt, blk);
     if (body < 0) continue;
     int par = parent[id];
-    if (static_super && par >= 0 && nt_kind(nt, par) == NK_ConstantWriteNode && nt_ref(nt, par, "value") == id) {
+    /* a class body opens a scope of its own, a block does not: a body reading
+       the surrounding locals stays a block */
+    int reads_outer = cn_reads_outer_local(nt, body, 0);
+    if (static_super && !reads_outer && par >= 0 && nt_kind(nt, par) == NK_ConstantWriteNode &&
+        nt_ref(nt, par, "value") == id) {
       /* Name = Class.new(...) do ... end  ->  class Name < ...; ...; end */
       const char *cn = nt_str(nt, par, "name");
       char name[256]; snprintf(name, sizeof name, "%s", cn ? cn : "SpinelAnon");
@@ -7710,20 +7722,29 @@ int desugar_class_new_blocks(Compiler *c) {
       changed = 1;
       continue;
     }
-    if (static_super && !cn_reads_outer_local(nt, body, 0)) {
+    /* the anonymous class is defined in the nearest enclosing class or
+       module body (the top level when there is none), where its superclass
+       and body constants resolve as they would around the call */
+    int host_st = nt_ref(nt, nt->root_id, "statements");
+    for (int a = par; a >= 0; a = parent[a]) {
+      NodeKind ak = nt_kind(nt, a);
+      if (ak == NK_ClassNode || ak == NK_ModuleNode) { host_st = nt_ref(nt, a, "body"); break; }
+    }
+    if (static_super && !reads_outer && host_st >= 0 && nt_kind(nt, host_st) == NK_StatementsNode) {
       /* an anonymous class that is the same every time: name it */
-      char name[64]; snprintf(name, sizeof name, "SpinelAnonClass%d", ++serial);
-      int cls = cn_make_class(nt, id, is_module, name, super_node, body);
-      int root_st = nt_ref(nt, nt->root_id, "statements");
-      int rn2 = 0; const int *rs = root_st >= 0 ? nt_arr(nt, root_st, "body", &rn2) : NULL;
+      int rn2 = 0; const int *rs = nt_arr(nt, host_st, "body", &rn2);
       int at = -1;
       for (int k = 0; k < rn2 && at < 0; k++) if (cn_contains(nt, rs[k], id)) at = k;
-      if (cls < 0 || at < 0) continue;
+      if (at < 0) continue;
+      char name[64]; snprintf(name, sizeof name, "SpinelAnonClass%d", ++serial);
+      int cls = cn_make_class(nt, id, is_module, name, super_node, body);
+      if (cls < 0) continue;
+      rs = nt_arr(nt, host_st, "body", &rn2);
       int *out = malloc(sizeof(int) * (size_t)(rn2 + 1));
       memcpy(out, rs, sizeof(int) * (size_t)at);
       out[at] = cls;
       memcpy(out + at + 1, rs + at, sizeof(int) * (size_t)(rn2 - at));
-      nt_node_set_arr(nt, root_st, "body", out, rn2 + 1);
+      nt_node_set_arr(nt, host_st, "body", out, rn2 + 1);
       free(out);
       nt_node_reset(nt, id, "ConstantReadNode");
       nt_node_set_str(nt, id, "name", name);

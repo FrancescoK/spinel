@@ -24,3 +24,17 @@ class Host
   def a = @a
 end
 p Host.new(7).a
+
+# an anonymous class built in a module's method resolves its superclass and
+# constants in that module
+module Outer
+  class Base
+    def who = "Outer::Base"
+  end
+  K = 3
+  def self.mk = Class.new(Base) { def hi = "#{who} #{K}" }
+end
+class Base
+  def who = "::Base"
+end
+p Outer.mk.new.hi
