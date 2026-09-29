@@ -6890,10 +6890,16 @@ int kwh_sources_overlap(const NodeTable *nt, int kwh) {
     int key = nt_ref(nt, el[e], "key");
     if (key < 0) return 0;
     lit = 1;
-    for (int e2 = 0; e2 < e && !merge; e2++) {
+    /* a String key's text is its "content"; a key of neither kind has no
+       text to compare */
+    const char *field = nt_kind(nt, key) == NK_SymbolNode ? "value" :
+                        nt_kind(nt, key) == NK_StringNode ? "content" : NULL;
+    const char *kt = field ? nt_str(nt, key, field) : NULL;
+    for (int e2 = 0; e2 < e && !merge && kt; e2++) {
       int k2 = nt_ref(nt, el[e2], "key");
-      if (nt_kind(nt, el[e2]) == NK_AssocNode && nt_kind(nt, k2) == nt_kind(nt, key) &&
-          sp_streq(nt_str(nt, k2, "value"), nt_str(nt, key, "value"))) merge = 1;
+      const char *t2 = nt_kind(nt, el[e2]) == NK_AssocNode && nt_kind(nt, k2) == nt_kind(nt, key)
+                       ? nt_str(nt, k2, field) : NULL;
+      if (t2 && sp_streq(t2, kt)) merge = 1;
     }
   }
   return merge;
