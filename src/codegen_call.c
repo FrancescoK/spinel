@@ -294,7 +294,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
     Buf kb; memset(&kb, 0, sizeof kb);
     Buf *sv_pre = g_pre; int sv_ind = g_indent;
     g_pre = &kb; g_indent = din;
-    if (!ran_first && kwh_runs_ahead(c, m, kwh)) emit_positionals_first(c, argv2, pos_argc);
+    if (!ran_first && kwh_runs_ahead(c, m, kwh)) emit_args_run(c, argv2, argc2);
     ds_tmp = emit_ds_hash_materialize(c, m, kwh, &ds_type);
     g_pre = sv_pre; g_indent = sv_ind;
     buf_puts(b, kb.p ? kb.p : "");

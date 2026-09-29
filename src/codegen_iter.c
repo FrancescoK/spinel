@@ -248,8 +248,7 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
      param fell through to a fabricated default. */
   int kw_merged = kwh_merged(c, m, kwh);
   int argov_saved = g_n_argov;
-  if (L->kw.args_first) emit_args_run(c, argv, argc);
-  else if (kwh_runs_ahead(c, m, kwh)) emit_positionals_first(c, argv, pos_argc);
+  if (L->kw.args_first || kwh_runs_ahead(c, m, kwh)) emit_args_run(c, argv, argc);
   else if (kwh_out_of_order(c, m, kwh)) emit_args_in_source_order(c, argv, argc, g_pre);
   TyKind ds_type = TY_UNKNOWN;
   int ds_tmp = emit_ds_hash_materialize(c, m, kwh, &ds_type);
