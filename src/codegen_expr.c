@@ -276,17 +276,20 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         buf_puts(&conv, "sp_srange_to_s(");
         EMIT_IV(); buf_puts(&conv, ")");
       }
-      else if (t == TY_REGEX) {
-        buf_puts(&conv, "sp_re_to_s_str((void *)(");
-        EMIT_IV(); buf_puts(&conv, "))");
-      }
-      else if (t == TY_POLY_ARRAY) {
-        buf_puts(&conv, "sp_PolyArray_inspect(");
-        EMIT_IV(); buf_puts(&conv, ")");
-      }
-      else if (ty_is_array(t) && array_kind(t)) {
-        buf_printf(&conv, "sp_%sArray_inspect(", array_kind(t));
-        EMIT_IV(); buf_puts(&conv, ")");
+      /* a Regexp, Array or Hash slot's nil is NULL, which interpolates as
+         the empty string the way a nullable String's does */
+      else if (t == TY_REGEX || t == TY_POLY_ARRAY || (ty_is_array(t) && array_kind(t)) ||
+               (ty_is_hash(t) && ty_hash_cname(t))) {
+        int ntv = ++g_tmp;
+        buf_puts(&conv, "({ "); emit_ctype(c, t, &conv);
+        buf_printf(&conv, " _t%d = ", ntv);
+        EMIT_IV();
+        buf_printf(&conv, "; _t%d ? ", ntv);
+        if (t == TY_REGEX) buf_printf(&conv, "sp_re_to_s_str((void *)_t%d)", ntv);
+        else if (t == TY_POLY_ARRAY) buf_printf(&conv, "sp_PolyArray_inspect(_t%d)", ntv);
+        else if (ty_is_hash(t)) buf_printf(&conv, "sp_%sHash_inspect(_t%d)", ty_hash_cname(t), ntv);
+        else buf_printf(&conv, "sp_%sArray_inspect(_t%d)", array_kind(t), ntv);
+        buf_puts(&conv, " : sp_str_empty; })");
       }
       else if (ty_is_object(t) && obj_str_cname(c, ty_object_class(t), 0)) {
         const char *cn = obj_str_cname(c, ty_object_class(t), 0);
@@ -301,10 +304,6 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         else buf_printf(&conv, "sp_%s_to_s((sp_%s *)", cn, cn);
         EMIT_IV(); buf_puts(&conv, ")");
         if (ret_poly) buf_puts(&conv, ")");
-      }
-      else if (ty_is_hash(t) && ty_hash_cname(t)) {
-        buf_printf(&conv, "sp_%sHash_inspect(", ty_hash_cname(t));
-        EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (t == TY_CLASS) {
         buf_puts(&conv, "sp_class_to_s(");

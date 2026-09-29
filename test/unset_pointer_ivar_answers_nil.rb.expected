@@ -1,0 +1,10 @@
+[true, nil, NilClass, "", "nil", true]
+[false, "hi", String, "hi", "\"hi\"", false]
+[true, nil, NilClass, "", "nil", true]
+[false, [1, 2], Array, "[1, 2]", "[1, 2]", false]
+[true, nil, NilClass, "", "nil", true]
+[false, {a: 1}, Hash, "{a: 1}", "{a: 1}", false]
+[true, nil, NilClass, "", "nil", true]
+[false, 1180591620717411303424, Integer, "1180591620717411303424", "1180591620717411303424", false]
+[true, nil, NilClass, "", "nil", true]
+S

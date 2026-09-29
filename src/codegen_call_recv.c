@@ -4226,7 +4226,10 @@ else {
         return 1;
       }
       if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
-        buf_printf(b, "sp_%sArray_inspect(", k); emit_expr(c, recv, b); buf_puts(b, ")");
+        char fn[64]; snprintf(fn, sizeof fn, "sp_%sArray_inspect", k);
+        /* the array's nil (NULL) answers nil.to_s, the empty string */
+        if (sp_streq(name, "to_s")) { emit_null_guarded_call(c, recv, rt, fn, "sp_str_empty", b); return 1; }
+        buf_printf(b, "%s(", fn); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
       if (sp_streq(name, "first") && argc == 0) {
@@ -5132,6 +5135,7 @@ else {
         return 1;
       }
       if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
+        if (sp_streq(name, "to_s")) { emit_null_guarded_call(c, recv, rt, "sp_PolyArray_inspect", "sp_str_empty", b); return 1; }
         buf_puts(b, "sp_PolyArray_inspect("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
@@ -6305,7 +6309,9 @@ else {
         return 1;
       }
       if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
-        buf_printf(b, "sp_%sHash_inspect(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
+        char fn[64]; snprintf(fn, sizeof fn, "sp_%sHash_inspect", hn);
+        if (sp_streq(name, "to_s")) { emit_null_guarded_call(c, recv, rt, fn, "sp_str_empty", b); return 1; }
+        buf_printf(b, "%s(", fn); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
       /* PolyPoly receiver: any hash-variant argument folds in through the

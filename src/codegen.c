@@ -37,6 +37,40 @@ const char *ty_nullable_builtin_id(TyKind t) {
   }
 }
 
+/* The types whose C value is a pointer with NULL for nil: an ivar no
+   constructor assigns, a `return nil` method, a miss. A method nil answers
+   differently (class, to_s, == nil) has to test for it. */
+int ty_null_is_nil(TyKind t) {
+  return t == TY_STRING || ty_is_array(t) || ty_is_ptr_array(t) || ty_is_hash(t) ||
+         t == TY_BIGINT || t == TY_REGEX || t == TY_MATCHDATA || t == TY_PROC ||
+         t == TY_CURRY || t == TY_METHOD || t == TY_FIBER || t == TY_IO ||
+         t == TY_EXCEPTION;
+}
+
+int node_may_be_null_nil(Compiler *c, int node) {
+  switch (nt_kind(c->nt, node)) {
+    case NK_StringNode: case NK_InterpolatedStringNode: case NK_XStringNode:
+    case NK_ArrayNode: case NK_HashNode: case NK_RegularExpressionNode:
+    case NK_InterpolatedRegularExpressionNode: case NK_IntegerNode:
+    case NK_LambdaNode: case NK_SelfNode:
+      return 0;
+    default:
+      return 1;
+  }
+}
+
+void emit_null_guarded_call(Compiler *c, int recv, TyKind rt, const char *fn, const char *nil_c, Buf *b) {
+  if (!node_may_be_null_nil(c, recv)) {
+    buf_printf(b, "%s(", fn); emit_expr(c, recv, b); buf_puts(b, ")");
+    return;
+  }
+  int t = ++g_tmp;
+  Buf rb = expr_buf(c, recv);
+  buf_puts(b, "({ "); emit_ctype(c, rt, b);
+  buf_printf(b, " _t%d = %s; _t%d ? %s(_t%d) : %s; })", t, rb.p ? rb.p : "0", t, fn, t, nil_c);
+  free(rb.p);
+}
+
 /* 1 iff some class inherits from `ocid`. A class with subclasses is only the
    STATIC type at a boxing site: an inherited method boxing `self`, or a base
    -typed slot holding a subclass instance, would stamp the base's id and the
