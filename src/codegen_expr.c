@@ -1003,6 +1003,22 @@ void emit_slot_orw_value(Compiler *c, TyKind t, const char *ref, int v, int is_o
   const char *cond = NULL;
   char condb[400];
   int unconditional = 0;
+  /* A shared-handle string slot takes the RHS as a handle (an alias by
+     handle, anything else freshly wrapped), and the expression's value is
+     the slot's read face with the handle published, as a plain write's is. */
+  if (t == TY_STRBUF) {
+    Buf *saved_pre = g_pre; g_pre = &vpre;
+    char srefO[1024];
+    if (strbuf_slot_ref(c, v, srefO, sizeof srefO)) buf_puts(&vval, srefO);
+    else { buf_puts(&vval, "sp_String_new_shared("); emit_str_expr(c, v, &vval); buf_puts(&vval, ")"); }
+    g_pre = saved_pre;
+    buf_printf(b, "({ if (%s%s) { ", is_or ? "!" : "", ref);
+    if (vpre.p) buf_puts(b, vpre.p);
+    buf_printf(b, "%s = %s; } (_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL); })",
+               ref, vval.p ? vval.p : "", ref, ref, ref);
+    free(vpre.p); free(vval.p);
+    return;
+  }
   if (t == TY_POLY) {
     Buf *saved_pre = g_pre; g_pre = &vpre;
     emit_boxed(c, v, &vval);
