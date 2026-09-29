@@ -1,0 +1,11 @@
+[1, 2]
+[:cb, 1, 2]
+[:cb, 1, {}]
+[:st, 1, :m, [3]]
+[:fw, 1, [2, 3], {k: 4}]
+[:post, 1, [2, 3], 4]
+[1, 2]
+[:cb, 1, 2]
+[:fw, 1, [2], {}]
+[:post, 1, [], 2]
+"wrong number of arguments (given 1, expected 2+)"

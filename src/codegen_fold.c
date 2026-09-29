@@ -6325,7 +6325,8 @@ int kwh_gathers(Compiler *c, Scope *m, int kwh, const int *argv, int pos_argc) {
         !(spl || (m->rest_idx < 0 && kwh_arg_param(c, m, pos_argc) < 0))) return 0;
   }
   for (int i = 0; i < m->nparams; i++)
-    if (!m->pnames[i] || (m->pnames[i][0] == '_' && m->pnames[i][1] == '_')) return 0;
+    if (i != m->rest_idx && i != m->kwrest_idx &&
+        (!m->pnames[i] || (m->pnames[i][0] == '_' && m->pnames[i][1] == '_'))) return 0;
   return 1;
 }
 
@@ -8248,7 +8249,8 @@ static int arg_layout_gathers(Compiler *c, Scope *m, const int *argv, int pos_ar
   const NodeTable *nt = c->nt;
   if (!m || !argv || m->cs_synth) return 0;
   for (int i = 0; i < m->nparams; i++)
-    if (!m->pnames[i] || (m->pnames[i][0] == '_' && m->pnames[i][1] == '_')) return 0;
+    if (i != m->rest_idx && i != m->kwrest_idx &&
+        (!m->pnames[i] || (m->pnames[i][0] == '_' && m->pnames[i][1] == '_'))) return 0;
   if (kwh_gathers(c, m, kwh, argv, pos_argc)) return 1;
   int rides = kwh_rides_gather(c, m, kwh, argv, pos_argc);
   int lead = m->rest_idx >= 0 ? m->rest_idx : m->nparams;
