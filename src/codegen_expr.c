@@ -2169,6 +2169,13 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
   if (sp_streq(ty, "SelfNode")) {
     /* top-level self is main, which no C scope holds (#4926) */
     if (self_is_main(c, id)) { buf_puts(b, "sp_main_self()"); return; }
+    /* self inside a method added to Array (desugar_builtin_reopen_self_calls
+       marks it): the method holds self boxed, read here as the poly array */
+    if (nt_int(c->nt, id, "ary_self", 0) && g_self && sp_streq(g_self, "self") &&
+        comp_ntype(c, id) == TY_POLY_ARRAY) {
+      buf_puts(b, "sp_poly_to_poly_array(self)");
+      return;
+    }
     buf_puts(b, g_self); return;   /* self is the object reference (pointer) */
   }
   if (sp_streq(ty, "InstanceVariableReadNode")) {

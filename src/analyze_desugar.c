@@ -7166,3 +7166,132 @@ int desugar_when_int_float_ranges(Compiler *c) {
   }
   return changed;
 }
+
+/* ---- implicit self in methods added to a builtin class ------------------
+ *
+ *   class Hash
+ *     def ffi_yajl(gen, state)
+ *       each do |k, v| ... end        # self.each
+ *     end
+ *   end
+ *   class Time
+ *     def stamp = strftime("%Y")      # self.strftime
+ *   end
+ *
+ * A receiverless call in such a method is a call on the builtin value, but
+ * the builtin surface is reached through a receiver: the bare name has no
+ * method to resolve to. Each core method name the class body itself does not
+ * define is given `self` as its receiver. Kernel's names (puts, raise,
+ * format, ...) stay as they are -- they are self's private methods, which a
+ * receiver would not reach. In a method added to Array, self as the receiver
+ * of an Array method (explicit or not) is marked for codegen, which holds
+ * self boxed. */
+static const char *const CORE_METHOD_NAMES[] = {
+#include "core_method_names.inc"
+  NULL };
+static const char *const OBJECT_METHOD_NAMES[] = {
+#include "object_method_names.inc"
+  NULL };
+static const char *const RB_OBJECT_PUBLIC[] = {
+#include "object_public_method_names.inc"
+  NULL };
+
+static int core_method_name(const char *n) {
+  /* the table is sorted */
+  int lo = 0, hi = (int)(sizeof CORE_METHOD_NAMES / sizeof CORE_METHOD_NAMES[0]) - 2;
+  while (lo <= hi) {
+    int mid = (lo + hi) / 2;
+    int r = strcmp(n, CORE_METHOD_NAMES[mid]);
+    if (r == 0) return 1;
+    if (r < 0) hi = mid - 1; else lo = mid + 1;
+  }
+  return 0;
+}
+
+static int name_in_list(const char *const *list, const char *n) {
+  for (int i = 0; list[i]; i++) if (sp_streq(list[i], n)) return 1;
+  return 0;
+}
+
+static int rbself_builtin(const char *cn) {
+  static const char *const B[] = { "String", "Integer", "Float", "Symbol", "TrueClass",
+    "FalseClass", "NilClass", "Array", "Hash", "Time", "Numeric", "Range", "Regexp", NULL };
+  for (int i = 0; B[i]; i++) if (sp_streq(B[i], cn)) return 1;
+  return 0;
+}
+
+static int rbself_array_method(const char *nm) {
+  return core_method_name(nm) && !name_in_list(OBJECT_METHOD_NAMES, nm);
+}
+
+static void rbself_walk(NodeTable *nt, int node, char **defs, int nd, int *changed, int is_array) {
+  if (node < 0) return;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return;
+  /* in a method added to Array, self is held boxed while typed as the poly
+     array: as the receiver of an Array method it reads through the
+     conversion (Object's methods, `self.class`, take the boxed value) */
+  if (k == NK_CallNode && is_array) {
+    int r = nt_ref(nt, node, "receiver");
+    const char *nm = nt_str(nt, node, "name");
+    if (r >= 0 && nt_kind(nt, r) == NK_SelfNode && nm && rbself_array_method(nm))
+      nt_node_set_int(nt, r, "ary_self", 1);
+  }
+  if (k == NK_CallNode && nt_ref(nt, node, "receiver") < 0) {
+    const char *nm = nt_str(nt, node, "name");
+    int user = 0;
+    for (int i = 0; nm && i < nd; i++) if (sp_streq(defs[i], nm)) user = 1;
+    if (nm && !user && ((core_method_name(nm) && !name_in_list(OBJECT_METHOD_NAMES, nm)) ||
+                        name_in_list(RB_OBJECT_PUBLIC, nm)) &&
+        !sp_streq(nm, "lambda") && !sp_streq(nm, "proc") && !sp_streq(nm, "loop") &&
+        !sp_streq(nm, "catch") && !sp_streq(nm, "throw") && !sp_streq(nm, "attr_reader") &&
+        !sp_streq(nm, "attr_accessor") && !sp_streq(nm, "attr_writer") && !sp_streq(nm, "binding")) {
+      int rself = fwd_new_node_like(nt, node, "SelfNode");
+      if (is_array && rbself_array_method(nm)) nt_node_set_int(nt, rself, "ary_self", 1);
+      nt_node_set_ref(nt, node, "receiver", rself);
+      *changed = 1;
+    }
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) rbself_walk(nt, nt_ref_at(nt, node, i), defs, nd, changed, is_array);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, node, i, &cnt);
+    int *cp = cnt > 0 ? malloc(sizeof(int) * (size_t)cnt) : NULL;
+    if (cnt > 0) memcpy(cp, ids, sizeof(int) * (size_t)cnt);
+    for (int j = 0; j < cnt; j++) rbself_walk(nt, cp[j], defs, nd, changed, is_array);
+    free(cp);
+  }
+}
+
+int desugar_builtin_reopen_self_calls(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int m = 0; m < n0; m++) {
+    if (nt_kind(nt, m) != NK_ClassNode) continue;
+    int cp = nt_ref(nt, m, "constant_path");
+    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (!cn || !rbself_builtin(cn)) continue;
+    /* the methods every body of the class defines */
+    char *defs[512]; int nd = 0;
+    for (int m2 = 0; m2 < n0; m2++) {
+      if (nt_kind(nt, m2) != NK_ClassNode) continue;
+      int cp2 = nt_ref(nt, m2, "constant_path");
+      const char *cn2 = cp2 >= 0 ? nt_str(nt, cp2, "name") : NULL;
+      if (!cn2 || !sp_streq(cn2, cn)) continue;
+      int b2 = nt_ref(nt, m2, "body");
+      int bn2 = 0; const int *bs2 = b2 >= 0 ? nt_arr(nt, b2, "body", &bn2) : NULL;
+      for (int k = 0; k < bn2 && nd < 512; k++)
+        if (nt_kind(nt, bs2[k]) == NK_DefNode && nt_str(nt, bs2[k], "name"))
+          defs[nd++] = (char *)nt_str(nt, bs2[k], "name");
+    }
+    int body = nt_ref(nt, m, "body");
+    int bn = 0; const int *bs = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    for (int k = 0; k < bn; k++) {
+      if (nt_kind(nt, bs[k]) != NK_DefNode || nt_ref(nt, bs[k], "receiver") >= 0) continue;
+      rbself_walk(nt, nt_ref(nt, bs[k], "body"), defs, nd, &changed, sp_streq(cn, "Array"));
+    }
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
