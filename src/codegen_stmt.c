@@ -1914,6 +1914,24 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
     }
   }
   if (emit_array_op_assign(c, lval, t, op, v, b)) return;
+  /* `t += n` / `t -= n` on a Time: Time + Integer / Float and Time -
+     Integer / Float exist (the binary emitter's sp_time_add_i / add_f /
+     sub_i); the operator-assignment form fell through to the refusal (the
+     logger gem's Period, `t += SiD if hour > 12`). */
+  if (t == TY_TIME && (sp_streq(op, "+") || sp_streq(op, "-"))) {
+    TyKind vt = comp_ntype(c, v);
+    int neg = sp_streq(op, "-");
+    if (vt == TY_INT) {
+      buf_printf(b, "%s = %s(%s, ", lval, neg ? "sp_time_sub_i" : "sp_time_add_i", lval);
+      emit_expr(c, v, b); buf_puts(b, ");\n");
+      return;
+    }
+    if (vt == TY_FLOAT) {
+      buf_printf(b, "%s = sp_time_add_f(%s, %s(", lval, lval, neg ? "-" : "");
+      emit_expr(c, v, b); buf_puts(b, "));\n");
+      return;
+    }
+  }
   /* A captured local whose type never resolved: the celled path used to send
      every unrecognized type through the int helpers, which is right only when
      the slot really is int-sized. Keep it for the untyped case alone -- a
@@ -9042,6 +9060,22 @@ else {
       buf_printf(b, "%s = %s(%s, ", ref, fn, ref);
       emit_bigint_operand_ext(c, nt_ref(nt, id, "value"), b);
       buf_puts(b, ");\n");
+    }
+    /* `@t += n` / `@t -= n` on a Time slot: the same arm the local form
+       takes (a Time is a struct; the raw C operator below cannot add to it) */
+    else if (vt == TY_TIME && op && (sp_streq(op, "+") || sp_streq(op, "-")) &&
+             (comp_ntype(c, nt_ref(nt, id, "value")) == TY_INT ||
+              comp_ntype(c, nt_ref(nt, id, "value")) == TY_FLOAT)) {
+      int ival = nt_ref(nt, id, "value");
+      int neg = sp_streq(op, "-");
+      if (comp_ntype(c, ival) == TY_INT) {
+        buf_printf(b, "%s = %s(%s, ", ref, neg ? "sp_time_sub_i" : "sp_time_add_i", ref);
+        emit_expr(c, ival, b); buf_puts(b, ");\n");
+      }
+      else {
+        buf_printf(b, "%s = sp_time_add_f(%s, %s(", ref, ref, neg ? "-" : "");
+        emit_expr(c, ival, b); buf_puts(b, "));\n");
+      }
     }
     else if (vt == TY_STRING && op && sp_streq(op, "+")) {
       buf_printf(b, "%s = sp_str_concat(%s, ", ref, ref);
