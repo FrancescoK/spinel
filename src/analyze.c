@@ -18497,6 +18497,8 @@ void analyze_program(Compiler *c) {
   desugar_builtin_reopen_methods(c);     /* class Hash; def m -> Object#m guarded by is_a?(Hash) */
   desugar_body_ivars(c);                 /* module-body @x read / in a block -> Mod.__spinel_civget_x */
   desugar_extended_module_attrs(c);
+  desugar_blk_param_writes(c);           /* `blk = proc {}` on a &blk param -> a fresh local */
+  desugar_yield_in_closure(c);           /* `yield` inside proc { } -> blk.call(...) */
   /* builtins/enumerable.rb, spliced by the parser: its definitions become
      the receiver-taking top-level functions before any scope is built */
   desugar_builtins(c);
@@ -20268,6 +20270,18 @@ void analyze_program(Compiler *c) {
       if (c->nscope[id] != mi) continue;
       const char *ty = nt_type(c->nt, id);
       if (ty && sp_streq(ty, "YieldNode")) has_yld = 1;
+      /* `block_given?` marks a method yielding exactly as a `yield` does
+         (the block-aware marking above), so a method whose block use is
+         block_given? PLUS a value use of its &blk -- `x = blk`, a capture
+         in a proc, a `&blk` forward -- has the same problem a literal yield
+         has: the inline path emits no storage for the block while the value
+         use names it (`lv_blk` undeclared). It takes the same lowering. */
+      else if (ty && sp_streq(ty, "CallNode") && m->blk_param_value_use) {
+        const char *cn = nt_str(c->nt, id, "name");
+        int r = nt_ref(c->nt, id, "receiver");
+        const char *rty = r >= 0 ? nt_type(c->nt, r) : NULL;
+        if (cn && sp_streq(cn, "block_given?") && (r < 0 || (rty && sp_streq(rty, "SelfNode")))) has_yld = 1;
+      }
     }
     if (!has_yld) continue;
     /* A yield inside a Thread/Fiber body cannot be spliced: that body is

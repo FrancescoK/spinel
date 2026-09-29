@@ -1054,11 +1054,6 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a def_delegators the parser could not rewrite compiled)"; ok=0; \
 	else grep -q "def_delegators with arguments other than a literal symbol list" "$$tmp/dd.out" || \
 	  { echo "reject-test: FAIL (a def_delegators refused without saying why)"; sed -n 1,5p "$$tmp/dd.out"; ok=0; }; fi; \
-	t=test/reject/block_param_assigned.rb; \
-	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/bp.c" >"$$tmp/bp.out" 2>&1; then \
-	  echo "reject-test: FAIL (an assignment to a &block parameter compiled)"; ok=0; \
-	else grep -q "a block parameter is read-only in spinel" "$$tmp/bp.out" || \
-	  { echo "reject-test: FAIL (a &block assignment rejected without saying why)"; sed -n 1,5p "$$tmp/bp.out"; ok=0; }; fi; \
 	t=test/reject/recursive_default_reads_block.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/rd.c" >"$$tmp/rd.out" 2>&1; then \
 	  echo "reject-test: FAIL (a recursive default reading the block compiled)"; ok=0; \
