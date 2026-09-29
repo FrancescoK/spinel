@@ -6327,7 +6327,7 @@ int kwh_gathers(Compiler *c, Scope *m, int kwh, const int *argv, int pos_argc) {
    the same pnames[] array as positional parameters. This matters when an
    anonymous `*` from a forwarding wrapper is expanded into a fixed callee:
    `def f(x, k:)` has one positional slot, not two. */
-static void positional_arity(Compiler *c, Scope *m, int *required, int *total) {
+void positional_arity(Compiler *c, Scope *m, int *required, int *total) {
   int pn = m ? nt_ref(c->nt, m->def_node, "parameters") : -1;
   if (pn >= 0) {
     int rn = 0, on = 0, postn = 0;
@@ -7821,7 +7821,7 @@ void kw_plan(Compiler *c, Scope *m, int kwh, KwPlan *P) {
    keyword ahead of an unknown one -- into `msg`; 0 when it finds none. A
    literal key no keyword takes beside a `**` is the run time's to name, with
    the keys the `**` brings (emit_ds_kwarg_check). */
-static int kw_plan_error(const KwPlan *P, char *msg, size_t n) {
+int kw_plan_error(const KwPlan *P, char *msg, size_t n) {
   if (P->nmissing) {
     kw_error_message(msg, n, "missing", P->nmissing, P->missing);
     return 1;
