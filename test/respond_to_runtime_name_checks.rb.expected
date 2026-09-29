@@ -1,0 +1,9 @@
+true
+true
+false
+TypeError: 1 is not a symbol nor a string
+TypeError: nil is not a symbol nor a string
+true
+true
+true
+false
