@@ -24264,7 +24264,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       int sn_scalar = (rrt == TY_INT || rrt == TY_FLOAT);
       /* a typed array or hash is a pointer too, and a slice past the end
          (`a[4..]&.size`) or a container miss hands it NULL (#4524) */
-      int sn_cont = ty_is_array(rrt) || ty_is_hash(rrt);
+      int sn_cont = needs_root(rrt) && rrt != TY_POLY && rrt != TY_STRING && !ty_is_object(rrt);
       if ((sn_obj || rrt == TY_STRING || sn_scalar || sn_cont) && g_sn_skip != id) {
         int tsn2 = ++g_tmp;
         TyKind ret2 = comp_ntype(c, id);
