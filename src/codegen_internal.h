@@ -532,6 +532,11 @@ void emit_rat_coerce(Compiler *c, int node, Buf *b);
 void emit_super(Compiler *c, int id, Buf *b);
 int  emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr);
 void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out);
+/* emit_args_filled over the arguments `argv[0..argc)`, a run of some call's
+   arguments (`raise Cls, msg` passes Cls.new the message alone); `argsNode`
+   is the node a refusal names, -1 for none. */
+void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int argc, int argsNode,
+                           const char *lead, Buf *out);
 void kw_plan(Compiler *c, Scope *m, int kwh, KwPlan *P);
 /* The keyword error a plan finds statically, in CRuby's order, into `msg`;
    0 when it finds none. */

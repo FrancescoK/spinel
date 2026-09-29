@@ -29465,25 +29465,17 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       int ic = -1;
       if (xc >= 0 && class_is_exc_subclass(c, xc))
         ic = comp_method_in_chain(c, xc, "initialize", NULL);
-      if (xc >= 0 && ic >= 0 && c->scopes[ic].reachable && c->scopes[ic].nparams >= 1) {
+      if (xc >= 0 && ic >= 0 && c->scopes[ic].reachable) {
         buf_printf(b, "sp_raise_exc((sp_Exception *)sp_%s_new(", c->classes[xc].c_name);
-        /* `raise Cls, msg` only ever supplies the message, but the generated
-           constructor keeps its full signature (defaulted positionals and
-           keywords included) -- the message goes where a call of one argument
-           puts it (arg_layout: `initialize(a = 5, b)` takes it in b, where
-           param 0 had it) and every other param takes its default, or the
-           call is emitted with too few arguments. emit_arg_or_default also
-           boxes/coerces the message to its param's type (poly when unknown,
-           same rule emit_class_new uses for the signature). */
-        Scope *im = &c->scopes[ic];
-        ArgLayout L;
-        arg_layout(c, im, &av[1], 1, -1, 0, &L);
-        for (int pk = 0; pk < im->nparams; pk++) {
-          if (pk) buf_puts(b, ", ");
-          emit_arg_or_default(c, im, pk, pk < L.n && L.from[pk] == ARG_NODE ? av[1] : -1, b);
-        }
-        arg_layout_free(&L);
-        if (ctor_init_takes_block(c, ic)) buf_puts(b, ", NULL");
+        /* `raise Cls, msg` is `raise Cls.new(msg)`: the message binds as the
+           one argument of that call does (a rest takes it as its element, a
+           **kwrest is empty, a default reads an earlier parameter), and an
+           initialize taking none refuses it with the wrong count. Each other
+           parameter took its default and the message went to the parameter
+           the layout named, so `initialize()` answered the message, `(*r)`
+           the bare element and a **kwrest nil. */
+        emit_args_filled_argv(c, ic, &av[1], 1, args, "", b);
+        if (ctor_init_takes_block(c, ic)) buf_puts(b, c->scopes[ic].nparams > 0 ? ", NULL" : "NULL");
         buf_puts(b, "))");
       }
       else if ((xc >= 0 && !class_is_exc_subclass(c, xc)) ||

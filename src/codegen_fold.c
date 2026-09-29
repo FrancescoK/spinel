@@ -8732,10 +8732,16 @@ static void emit_elem_param(Compiler *c, Scope *m, int i, int off, int tmp, TyKi
 }
 
 void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out) {
+  int argc = 0;
+  const int *argv = argsNode >= 0 ? nt_arr(c->nt, argsNode, "arguments", &argc) : NULL;
+  emit_args_filled_argv(c, callee_idx, argv, argc, argsNode, lead, out);
+}
+
+/* See codegen_internal.h. */
+void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int argc, int argsNode,
+                           const char *lead, Buf *out) {
   Scope *m = &c->scopes[callee_idx];
   const NodeTable *nt = c->nt;
-  int argc = 0;
-  const int *argv = argsNode >= 0 ? nt_arr(nt, argsNode, "arguments", &argc) : NULL;
   /* `bar(...)`: the ArgumentsNode holds a single ForwardingArgumentsNode.
      Forward the enclosing `def foo(...)` method's synthesized __fwd_* params
      directly to the callee, positionally (#1288). The compiler already knows

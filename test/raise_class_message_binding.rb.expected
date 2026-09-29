@@ -1,0 +1,11 @@
+ArgumentError: wrong number of arguments (given 1, expected 0)
+[[1]]
+[1, [], {}]
+[1, 1]
+ArgumentError: wrong number of arguments (given 1, expected 2)
+"MSG"
+"DFLT"
+["m", 2]
+["n", 2]
+[2, 2]
+[4, 4]
