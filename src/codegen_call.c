@@ -23509,29 +23509,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     if (rcv >= 0 && cn && (sp_streq(cn, "<<") || sp_streq(cn, "yield")) &&
         nt_type(nt, rcv) && sp_streq(nt_type(nt, rcv), "LocalVariableReadNode") &&
         nt_str(nt, rcv, "name") && sp_streq(nt_str(nt, rcv, "name"), g_yielder_name)) {
-      int ar = nt_ref(nt, id, "arguments");
-      int ac = 0; const int *av = ar >= 0 ? nt_arr(nt, ar, "arguments", &ac) : NULL;
-      buf_puts(b, "sp_Fiber_yield(");
-      /* y.yield(*xs) yields as many values as xs holds */
-      if (ac == 1 && nt_kind(nt, av[0]) == NK_SplatNode) {
-        buf_puts(b, "sp_yield_splat_pack(");
-        emit_boxed(c, nt_ref(nt, av[0], "expression"), b);
-        buf_puts(b, ")");
-      }
-      else if (ac == 1) { buf_puts(b, "sp_yield_one("); emit_boxed(c, av[0], b); buf_puts(b, ")"); }
-      else if (ac > 1) {
-        /* y.yield(a, b, ...) yields an array of the values */
-        int t = ++g_tmp;
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new_pack(); SP_GC_ROOT(_t%d);\n", t, t);
-        for (int k = 0; k < ac; k++) {
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", t); emit_boxed(c, av[k], g_pre); buf_puts(g_pre, ");\n");
-        }
-        buf_printf(b, "sp_box_poly_array(_t%d)", t);
-      }
-      else buf_puts(b, sp_streq(cn, "yield") ? "sp_box_empty_step()" : "sp_box_nil()");
-      buf_puts(b, ")");
+      emit_yielder_yield(c, id, cn, b);
       return;
     }
   }

@@ -8166,29 +8166,9 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
         nt_str(nt, yrcv, "name") && sp_streq(nt_str(nt, yrcv, "name"), g_yielder_name))) {
       /* Emit the Fiber.yield directly: re-dispatching `y.yield(v)` through
          emit_expr would let the yield-keyword inlining intercept it. */
-      int yar = nt_ref(nt, id, "arguments");
-      int yac = 0; const int *yav = yar >= 0 ? nt_arr(nt, yar, "arguments", &yac) : NULL;
       emit_indent(b, indent);
-      buf_puts(b, "sp_Fiber_yield(");
-      /* y.yield(*xs) yields as many values as xs holds */
-      if (yac == 1 && nt_kind(nt, yav[0]) == NK_SplatNode) {
-        buf_puts(b, "sp_yield_splat_pack(");
-        emit_boxed(c, nt_ref(nt, yav[0], "expression"), b);
-        buf_puts(b, ")");
-      }
-      else if (yac == 1) { buf_puts(b, "sp_yield_one("); emit_boxed(c, yav[0], b); buf_puts(b, ")"); }
-      else if (yac > 1) {
-        int t = ++g_tmp;
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new_pack(); SP_GC_ROOT(_t%d);\n", t, t);
-        for (int k = 0; k < yac; k++) {
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", t); emit_boxed(c, yav[k], g_pre); buf_puts(g_pre, ");\n");
-        }
-        buf_printf(b, "sp_box_poly_array(_t%d)", t);
-      }
-      else buf_puts(b, sp_streq(ynm, "yield") ? "sp_box_empty_step()" : "sp_box_nil()");
-      buf_puts(b, ");\n");
+      emit_yielder_yield(c, id, ynm, b);
+      buf_puts(b, ";\n");
       return;
     }
   }
