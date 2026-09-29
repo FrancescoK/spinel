@@ -2453,6 +2453,8 @@ gate-props:
 # The limit sits just above today's ratio (4.68, down from 5.61 before the
 # #5035 fixes). Lower it as the remaining superlinear passes are fixed.
 SCALE_LIMIT ?= 5.2
+# Not a timed test: the #5718 per-hop rescan gave ~450x here, and a work count cannot drift with the machine.
+IE_FORWARD_LIMIT ?= 2.5
 scale-test: $(SPINEL_WORK)
 	@tmp=$$(mktemp -d /tmp/spinel-scale.XXXXXX); \
 	sh test/scale/gen.sh 100 > "$$tmp/a.rb"; sh test/scale/gen.sh 400 > "$$tmp/b.rb"; \
@@ -2460,8 +2462,14 @@ scale-test: $(SPINEL_WORK)
 	wb=$$($(SPINEL_WORK) --emit-rbs -o "$$tmp/b.rbs" "$$tmp/b.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
 	( ulimit -t 20; $(SPINEL_WORK) -c -o "$$tmp/hls.c" test/scale/hash_literal_sources_fanout.rb ) >/dev/null 2>&1 || \
 	  { rm -rf "$$tmp"; echo "scale-test: FAIL (the hash-literal source walk revisited call sites along every path)"; exit 1; }; \
+	sh test/scale/ie_forward_chain.sh 2 > "$$tmp/f2.rb"; sh test/scale/ie_forward_chain.sh 4 > "$$tmp/f4.rb"; \
+	fa=$$($(SPINEL_WORK) -c -o "$$tmp/f2.c" "$$tmp/f2.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
+	fb=$$($(SPINEL_WORK) -c -o "$$tmp/f4.c" "$$tmp/f4.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
 	rm -rf "$$tmp"; \
-	if [ -z "$$wa" ] || [ -z "$$wb" ]; then echo "scale-test: FAIL (the counting compiler reported no work count)"; exit 1; fi; \
+	if [ -z "$$wa" ] || [ -z "$$wb" ] || [ -z "$$fa" ] || [ -z "$$fb" ]; then echo "scale-test: FAIL (the counting compiler reported no work count)"; exit 1; fi; \
+	awk -v a="$$fa" -v b="$$fb" -v lim="$(IE_FORWARD_LIMIT)" 'BEGIN { r = b / a; \
+	  printf "scale-test: instance_eval forwarding work at 2x the wrappers is %.2fx (limit %.2f)\n", r, lim; exit (r > lim) }' || \
+	  { echo "scale-test: FAIL (the instance_eval forwarding walk grew superlinearly in the wrapper classes, see build_ie_map)"; exit 1; }; \
 	awk -v a="$$wa" -v b="$$wb" -v lim="$(SCALE_LIMIT)" 'BEGIN { r = b / a; \
 	  printf "scale-test: work at 4x the program is %.2fx (linear 4.00, limit %.2f)\n", r, lim; exit (r > lim) }' || \
 	  { echo "scale-test: FAIL (the front end grew superlinearly: some pass rescans per node; profile per pass, see rubys/roundhouse#72)"; exit 1; }
