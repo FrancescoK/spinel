@@ -13006,7 +13006,15 @@ static void iow_emit_recv(Compiler *c, int recv, Buf *b) {
   emit_expr(c, recv, b);
 }
 static void iow_emit_key(Compiler *c, int key, Buf *b, int kind, TyKind kt) {
-  if (g_iow_key_ref) { buf_puts(b, g_iow_key_ref); return; }
+  if (g_iow_key_ref) {
+    /* emit_index_opw_hoist keeps a Symbol or String key raw for a poly
+       receiver, which the slot read takes as is */
+    TyKind hk = comp_ntype(c, key);
+    if (kind == IOW_KEY_BOXED && (hk == TY_SYMBOL || hk == TY_STRING))
+      emit_boxed_text(c, hk, g_iow_key_ref, b);
+    else buf_puts(b, g_iow_key_ref);
+    return;
+  }
   switch (kind) {
     case IOW_KEY_HASH:  emit_hash_key(c, key, kt, b); return;
     case IOW_KEY_INT:   emit_int_expr(c, key, b); return;
