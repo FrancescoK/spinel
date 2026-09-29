@@ -4275,6 +4275,37 @@ void resolve_parents(Compiler *c) {
       if (p >= 0 && p != i) c->classes[i].parent = p;
     }
   }
+  /* A `class << self; attr_accessor :x` is a method of the singleton class,
+     and a subclass's singleton class inherits it: the accessor answers
+     through the subclass, on the subclass's own slot (nil until assigned),
+     and a class method the subclass inherits reads that slot bare. Each
+     descendant gets the ancestor's names as its own (the adders skip a name
+     the class already declares, so an override keeps its own); the storage
+     is declared per (class, name), so every class has one. A class method
+     the subclass runs -- its own, or one inherited from any ancestor --
+     naming `@x` reads the subclass's class-level ivar, so the inherited
+     accessor shares that slot (sg_civ), as the declaring class's own does. */
+  for (int i = 0; i < c->nclasses; i++) {
+    for (int k = c->classes[i].parent, guard = 0; k >= 0 && guard < 256; k = c->classes[k].parent, guard++) {
+      ClassInfo *pc = &c->classes[k];
+      for (int j = 0; j < pc->nsg_readers + pc->nsg_writers; j++) {
+        const char *base = j < pc->nsg_readers ? pc->sg_readers[j] : pc->sg_writers[j - pc->nsg_readers];
+        int own = j < pc->nsg_readers ? comp_is_sg_reader(&c->classes[i], base)
+                                      : comp_is_sg_writer(&c->classes[i], base);
+        if (j < pc->nsg_readers) comp_add_sg_reader(&c->classes[i], base);
+        else comp_add_sg_writer(&c->classes[i], base);
+        if (!own) comp_add_sg_inh(&c->classes[i], base);
+        if (comp_is_sg_civ(&c->classes[i], base)) continue;
+        char ivname[256];
+        snprintf(ivname, sizeof ivname, "@%s", base);
+        for (int a = i, g2 = 0; a >= 0 && g2 < 256; a = c->classes[a].parent, g2++) {
+          if (cmethod_names_ivar(c, a, ivname)) { comp_add_sg_civ(&c->classes[i], base); break; }
+          if (a == c->classes[a].parent) break;
+        }
+      }
+      if (k == c->classes[k].parent) break;
+    }
+  }
   resolve_inherited_aliases(c);
 }
 
