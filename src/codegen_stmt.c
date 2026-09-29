@@ -3760,18 +3760,20 @@ static int emit_md_deconstruct_keys(Buf *b, int indent, const char *md) {
   return dk;
 }
 
+static void emit_boxed_tmp(Compiler *c, TyKind t, int tmp, Buf *b) {
+  char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmp);
+  Buf bx; memset(&bx, 0, sizeof bx);
+  emit_boxed_text(c, t, expr, &bx);
+  buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+}
+
 /* `=> name` binding: lv_<lnm> = _t<t>, boxed when the local is poly. */
 static void emit_pattern_bind(Compiler *c, int id, const char *lnm, TyKind pt, int t, int indent, Buf *b) {
   if (!lnm) return;
   emit_indent(b, indent);
   buf_printf(b, "lv_%s = ", rename_local(lnm));
   LocalVar *plv = scope_local(comp_scope_of(c, id), lnm);
-  if (plv && plv->type == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) {
-    char ex[24]; snprintf(ex, sizeof ex, "_t%d", t);
-    Buf bx; memset(&bx, 0, sizeof bx);
-    emit_boxed_text(c, pt, ex, &bx);
-    buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-  }
+  if (plv && plv->type == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) emit_boxed_tmp(c, pt, t, b);
   else buf_printf(b, "_t%d", t);
   buf_puts(b, ";\n");
 }
@@ -10549,12 +10551,7 @@ else {
           else if (valt == TY_POLY) buf_printf(b, "_t%d.v.p", tmps[i]);
           else buf_printf(b, "_t%d", tmps[i]);
         }
-        else if (ltt == TY_POLY && valt != TY_POLY) {
-          char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmps[i]);
-          Buf bx; memset(&bx, 0, sizeof bx);
-          emit_boxed_text(c, valt, expr, &bx);
-          buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-        }
+        else if (ltt == TY_POLY && valt != TY_POLY) emit_boxed_tmp(c, valt, tmps[i], b);
         else buf_printf(b, "_t%d", tmps[i]);
         if (proc_cell) buf_puts(b, ")");
         buf_puts(b, ";\n");
@@ -10565,12 +10562,7 @@ else {
         TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
         emit_indent(b, indent);
         buf_printf(b, "cst_%s = ", cnm_l);
-        if (comp_const(c, cnm_l)->type == TY_POLY && valt != TY_POLY) {
-          char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmps[i]);
-          Buf bx; memset(&bx, 0, sizeof bx);
-          emit_boxed_text(c, valt, expr, &bx);
-          buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-        }
+        if (comp_const(c, cnm_l)->type == TY_POLY && valt != TY_POLY) emit_boxed_tmp(c, valt, tmps[i], b);
         else buf_printf(b, "_t%d", tmps[i]);
         buf_puts(b, ";\n");
       }
@@ -10605,12 +10597,7 @@ else {
         else
           buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, iv_c(ivnm + 1));
         TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
-        if (ivt == TY_POLY && valt != TY_POLY) {
-          char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmps[i]);
-          Buf bx; memset(&bx, 0, sizeof bx);
-          emit_boxed_text(c, valt, expr, &bx);
-          buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-        }
+        if (ivt == TY_POLY && valt != TY_POLY) emit_boxed_tmp(c, valt, tmps[i], b);
         else buf_printf(b, "_t%d", tmps[i]);
         buf_puts(b, ";\n");
       }
@@ -10670,12 +10657,7 @@ else {
         /* a boxed global (widened under --int-overflow=promote) boxes the
            typed element, as the ivar target above does */
         TyKind gvalt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
-        if (gv2->type == TY_POLY && gvalt != TY_POLY) {
-          char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmps[i]);
-          Buf bx; memset(&bx, 0, sizeof bx);
-          emit_boxed_text(c, gvalt, expr, &bx);
-          buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-        }
+        if (gv2->type == TY_POLY && gvalt != TY_POLY) emit_boxed_tmp(c, gvalt, tmps[i], b);
         else buf_printf(b, "_t%d", tmps[i]);
         buf_puts(b, ";\n");
       }
@@ -10703,13 +10685,7 @@ else {
              unboxes here, as the boxed-receiver branch below always has */
           if (ttk[i] >= 0) buf_printf(b, "_t%d", ttk[i]); else emit_int_expr(c, idx_argv[0], b);
           buf_puts(b, ", ");
-          if (recv_t == TY_POLY_ARRAY) {
-            TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
-            char tmp_expr[32]; snprintf(tmp_expr, sizeof tmp_expr, "_t%d", tmps[i]);
-            Buf bxi; memset(&bxi, 0, sizeof bxi);
-            emit_boxed_text(c, valt, tmp_expr, &bxi);
-            buf_puts(b, bxi.p ? bxi.p : "sp_box_nil()"); free(bxi.p);
-          }
+          if (recv_t == TY_POLY_ARRAY) emit_boxed_tmp(c, tmpts ? tmpts[i] : comp_ntype(c, els[i]), tmps[i], b);
           else {
             /* a typed element fed from a boxed right-hand side converts at
                the sink, as the single store does (#4733) */
@@ -10735,11 +10711,7 @@ else {
             buf_printf(b, "%d, ", tmw);
             emit_int_expr(c, idx_argv[0], b); buf_puts(b, ", ");
           }
-          { TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
-            char tmp_expr[32]; snprintf(tmp_expr, sizeof tmp_expr, "_t%d", tmps[i]);
-            Buf bxi; memset(&bxi, 0, sizeof bxi);
-            emit_boxed_text(c, valt, tmp_expr, &bxi);
-            buf_puts(b, bxi.p ? bxi.p : "sp_box_nil()"); free(bxi.p); }
+          emit_boxed_tmp(c, tmpts ? tmpts[i] : comp_ntype(c, els[i]), tmps[i], b);
           buf_puts(b, ttr[i] >= 0 ? ");\n" : "); }\n");
         }
         else if (ty_is_hash(recv_t)) {
@@ -10759,13 +10731,8 @@ else {
           else if (ty_hash_key(recv_t) == TY_POLY) emit_boxed(c, idx_argv[0], b);
           else emit_expr(c, idx_argv[0], b);
           buf_puts(b, ", ");
-          if (recv_t == TY_SYM_POLY_HASH || recv_t == TY_STR_POLY_HASH || recv_t == TY_POLY_POLY_HASH) {
-            TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
-            char tmp_expr2[32]; snprintf(tmp_expr2, sizeof tmp_expr2, "_t%d", tmps[i]);
-            Buf bxi2; memset(&bxi2, 0, sizeof bxi2);
-            emit_boxed_text(c, valt, tmp_expr2, &bxi2);
-            buf_puts(b, bxi2.p ? bxi2.p : "sp_box_nil()"); free(bxi2.p);
-          }
+          if (recv_t == TY_SYM_POLY_HASH || recv_t == TY_STR_POLY_HASH || recv_t == TY_POLY_POLY_HASH)
+            emit_boxed_tmp(c, tmpts ? tmpts[i] : comp_ntype(c, els[i]), tmps[i], b);
           else {
             /* a typed value slot fed from a boxed right-hand side (a call's
                poly answer, every int under --int-overflow=promote) converts
@@ -10793,12 +10760,7 @@ else {
         buf_printf(b, "cvar_%s_%s = ", c->classes[cv_cid].name, cnm + 2);
         TyKind cvt = c->classes[cv_cid].cvar_types[cv_idx];
         TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
-        if (cvt == TY_POLY && valt != TY_POLY) {
-          char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmps[i]);
-          Buf bx; memset(&bx, 0, sizeof bx);
-          emit_boxed_text(c, valt, expr, &bx);
-          buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-        }
+        if (cvt == TY_POLY && valt != TY_POLY) emit_boxed_tmp(c, valt, tmps[i], b);
         else buf_printf(b, "_t%d", tmps[i]);
         buf_puts(b, ";\n");
       }
@@ -10874,12 +10836,7 @@ else {
         if (ridx >= 0 && ridx < en) {
           buf_printf(b, "lv_%s = ", rename_local(rnm_j));
           TyKind valt = comp_ntype(c, els[ridx]);
-          if (rjpoly && valt != TY_POLY) {
-            char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmps[ridx]);
-            Buf bx; memset(&bx, 0, sizeof bx);
-            emit_boxed_text(c, valt, expr, &bx);
-            buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-          }
+          if (rjpoly && valt != TY_POLY) emit_boxed_tmp(c, valt, tmps[ridx], b);
           else buf_printf(b, "_t%d", tmps[ridx]);
           buf_puts(b, ";\n");
         }
@@ -10904,12 +10861,7 @@ else {
         buf_printf(b, "%s = ", iv_lhs);
         if (ridx >= 0 && ridx < en) {
           TyKind valt2 = (ridx < en) ? comp_ntype(c, els[ridx]) : TY_UNKNOWN;
-          if (ivt2 == TY_POLY && valt2 != TY_POLY) {
-            char expr2[32]; snprintf(expr2, sizeof expr2, "_t%d", tmps[ridx]);
-            Buf bx2; memset(&bx2, 0, sizeof bx2);
-            emit_boxed_text(c, valt2, expr2, &bx2);
-            buf_puts(b, bx2.p ? bx2.p : "sp_box_nil()"); free(bx2.p);
-          }
+          if (ivt2 == TY_POLY && valt2 != TY_POLY) emit_boxed_tmp(c, valt2, tmps[ridx], b);
           else buf_printf(b, "_t%d", tmps[ridx]);
         }
         else buf_puts(b, default_value(ivt2 != TY_UNKNOWN ? ivt2 : TY_INT));
@@ -11544,11 +11496,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
       /* the begin's scalar result temp feeds a poly tail slot (return type or an
          outer poly result var widened under promote): box it to match. */
       int target_poly = g_result_var ? g_result_poly : (g_ret_type == TY_POLY);
-      if (target_poly && rt != TY_POLY) {
-        char ex[24]; snprintf(ex, sizeof ex, "_t%d", t);
-        Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, rt, ex, &bx);
-        buf_printf(b, "%s;\n", bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-      }
+      if (target_poly && rt != TY_POLY) { emit_boxed_tmp(c, rt, t, b); buf_puts(b, ";\n"); }
       /* The mirror: a POLY begin value (its arms are a union -- a String and
          nil) tailing into a CONCRETE return slot. The slot is what the --rbs
          seed says, and `String?` is a NULL `const char *` here, so narrow the
