@@ -26078,6 +26078,30 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       buf_puts(b, ")->arity");
       return;
     }
+    /* A Method built at run time on a receiver of no static class --
+       `callable.method(:call).arity`, activesupport's arity_of_callable over
+       a proc or an object with #call -- binds no target the signature could
+       be read from (the poly `method` above raises when reached). Answer per
+       runtime class instead: a Proc's own arity, and each user class's
+       method of that name from its signature; anything else is the
+       NoMethodError the poly `method` would have raised. */
+    if (target < 0 && mn >= 0 && nt_ref(nt, mn, "receiver") >= 0 &&
+        comp_ntype(c, nt_ref(nt, mn, "receiver")) == TY_POLY) {
+      const char *msym = method_sym_arg(c, mn);
+      if (msym) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, nt_ref(nt, mn, "receiver"), b); buf_puts(b, "; ");
+        buf_printf(b, "_t%d.cls_id == SP_BUILTIN_PROC ? sp_proc_arity((sp_Proc *)_t%d.v.p)", t, t);
+        for (int k = 0; k < c->nclasses; k++) {
+          int a = 0;
+          int mi = comp_method_in_chain(c, k, msym, NULL);
+          if (mi < 0 || !method_scope_arity(c, mi, &a)) continue;
+          buf_printf(b, " : (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d) ? (sp_int)%d", t, t, k, a);
+        }
+        buf_printf(b, " : (sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"undefined method '%s'\")[1])), (sp_int)0); })", msym);
+        return;
+      }
+    }
   }
   /* <method>.to_proc -> a first-class Proc trampolining into the compiled
      method. The proc ABI publishes every argument boxed on the side-channel
