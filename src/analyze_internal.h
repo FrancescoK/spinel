@@ -94,6 +94,7 @@ int an_poly_raw_argc(const char *name);
    C temp, so the call must be typed for what both can hold. */
 int an_user_ret_disagrees(Compiler *c, const char *name, TyKind want);
 int an_ty_holds_nil(TyKind t);
+int gvar_seeded_before_read(Compiler *c, const char *gname);
 int an_empty_container_kind(Compiler *c, int b);
 int an_empty_container_disagrees(int kind, TyKind other);
 int an_or_empty_hash_fallback(Compiler *c, int node);

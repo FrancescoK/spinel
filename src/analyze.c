@@ -15904,6 +15904,14 @@ int nullable_int_value(Compiler *c, int v) {
     int iv = comp_ivar_index(ci, nt_str(nt, v, "name"));
     return iv >= 0 && ci->ivar_nullable_int[iv];
   }
+  /* A Float global is declared holding the sentinel, which it keeps until its
+     first assignment. */
+  if (nt_kind(nt, v) == NK_GlobalVariableReadNode) {
+    const char *gn = nt_str(nt, v, "name");
+    const char *rn = gn ? comp_resolve_gvar(c, gn + 1) : NULL;
+    LocalVar *g = rn ? comp_gvar(c, rn) : NULL;
+    return g && g->type == TY_FLOAT && !gvar_seeded_before_read(c, rn);
+  }
   if (nt_kind(nt, v) == NK_ParenthesesNode) {
     int pb = nt_ref(nt, v, "body");
     int pn = 0; const int *pd = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;

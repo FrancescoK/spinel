@@ -3502,6 +3502,78 @@ static TyKind nil_write_type(TyKind cur) {
   return an_ty_holds_nil(cur) ? cur : TY_POLY;
 }
 
+static int user_method_named(Compiler *c, const char *nm) {
+  if (nm && sp_streq(nm, "new")) nm = "initialize";
+  for (int i = 1; nm && i < c->nscopes; i++)
+    if (c->scopes[i].name && sp_streq(c->scopes[i].name, nm)) return 1;
+  return 0;
+}
+
+/* Could the subtree `n`, run ahead of a global's first assignment, read the
+   global? A read or update of it counts, and so does a call that may reach a
+   user method outside a class body: the callee may read it. Method bodies do
+   not run here. */
+static int gvar_read_hazard(Compiler *c, int n, const char *gname, int in_cbody) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode) return 0;
+  if (k == NK_GlobalVariableReadNode || k == NK_GlobalVariableOperatorWriteNode ||
+      k == NK_GlobalVariableOrWriteNode || k == NK_GlobalVariableAndWriteNode) {
+    const char *nm = nt_str(nt, n, "name");
+    if (nm && sp_streq(comp_resolve_gvar(c, nm + 1), gname)) return 1;
+  }
+  if (k == NK_CallNode && !in_cbody && user_method_named(c, nt_str(nt, n, "name"))) return 1;
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) in_cbody = 1;
+  for (int i = 0; i < nt_num_refs(nt, n); i++)
+    if (gvar_read_hazard(c, nt_ref_at(nt, n, i), gname, in_cbody)) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++)
+      if (gvar_read_hazard(c, av[j], gname, in_cbody)) return 1;
+  }
+  return 0;
+}
+
+/* Is global `gname` assigned a non-nil value by a top-level statement that
+   runs before anything could read it? Until its first assignment a global is
+   nil, so a slot with no nil of its own has to box unless this holds. */
+int gvar_seeded_before_read(Compiler *c, const char *gname) {
+  const NodeTable *nt = c->nt;
+  int body = c->nscopes > 0 ? c->scopes[0].body : -1;
+  if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) return 0;
+  int n = 0; const int *st = nt_arr(nt, body, "body", &n);
+  for (int i = 0; i < n; i++) {
+    for (int w = st[i]; w >= 0 && nt_kind(nt, w) == NK_GlobalVariableWriteNode; w = nt_ref(nt, w, "value")) {
+      const char *nm = nt_str(nt, w, "name");
+      int v = nt_ref(nt, w, "value");
+      if (!nm || !sp_streq(comp_resolve_gvar(c, nm + 1), gname)) continue;
+      return v >= 0 && nt_kind(nt, v) != NK_NilNode && comp_nil_chain_bottom(nt, v) < 0 &&
+             !gvar_read_hazard(c, v, gname, 0);
+    }
+    if (gvar_read_hazard(c, st[i], gname, 0)) return 0;
+  }
+  return 0;
+}
+
+/* A global with no nil of its own that something could read before its first
+   assignment boxes, as one written nil does: the read is nil. The interpreter's
+   own flags keep their preset value. */
+static int gvar_implicit_nil_writes(Compiler *c) {
+  int changed = 0;
+  for (int g = 0; g < c->ngvars; g++) {
+    LocalVar *lv = &c->gvars[g];
+    if (!lv->name || nil_write_type(lv->type) == lv->type) continue;
+    if (sp_streq(lv->name, "VERBOSE") || sp_streq(lv->name, "DEBUG")) continue;
+    char g0 = lv->name[0];
+    if (!((g0 >= 'a' && g0 <= 'z') || (g0 >= 'A' && g0 <= 'Z') || g0 == '_')) continue;
+    if (gvar_seeded_before_read(c, lv->name)) continue;
+    lv->type = nil_write_type(lv->type);
+    changed = 1;
+  }
+  return changed;
+}
+
 int infer_global_const_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -3682,6 +3754,7 @@ int infer_global_const_types(Compiler *c) {
     TyKind merged = keep_general_array(lv->type, vt) ? lv->type : ty_unify(lv->type, vt);
     if (merged != lv->type) { lv->type = merged; changed = 1; }
   }
+  changed |= gvar_implicit_nil_writes(c);
   return changed;
 }
 
