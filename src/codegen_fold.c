@@ -2726,8 +2726,14 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   /* |acc, (a, b)|: the element (an array, e.g. a hash's [k, v] pair)
      destructures across the second param's leaves */
   int p1_multi = !p1_orig && rt == TY_POLY_ARRAY && block_param_is_multi(c, block, 1);
-  if (!p0_orig || (!p1_orig && !p1_multi)) return 0;
-  const char *p0 = rename_local(p0_orig);
+  /* A block of fewer parameters (`{ 5 }`, `|s|`, `|*|`, `|s, *|`) takes
+     what it names of the (accumulator, element) pair and drops the rest,
+     as a proc does. A named rest or an optional parameter would collect
+     or default the missing ones, which this binding does not do. */
+  int short_ok = !block_rest_name(c, block) && !block_opt_name(c, block, 0);
+  if ((!p0_orig && !short_ok) || (!p1_orig && !p1_multi && !short_ok)) return 0;
+  if (!p0_orig && p1_orig) return 0;
+  const char *p0 = p0_orig ? rename_local(p0_orig) : NULL;
   const char *p1 = p1_orig ? rename_local(p1_orig) : NULL;
   int bbody = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
@@ -2812,7 +2818,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
      accumulator shadow the loop installs below, and widen. */
   if (init >= 0 && ty_is_array(acc_ty) && acc_ty != TY_POLY_ARRAY) {
     Scope *psc = comp_scope_of(c, block);
-    LocalVar *pl0 = psc ? scope_local(psc, p0_orig) : NULL;
+    LocalVar *pl0 = (psc && p0_orig) ? scope_local(psc, p0_orig) : NULL;
     LocalVar *pl1 = (psc && p1_orig) ? scope_local(psc, p1_orig) : NULL;
     TyKind s0 = pl0 ? pl0->type : TY_UNKNOWN, s1 = pl1 ? pl1->type : TY_UNKNOWN;
     if (pl0) pl0->type = acc_ty;
@@ -2846,7 +2852,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
      Look ahead with the same shadow and widen before the slot is declared. */
   if (g_promote_mode && ty_is_numeric(acc_ty) && acc_ty != TY_BIGINT) {
     Scope *lsc = comp_scope_of(c, block);
-    LocalVar *l0 = lsc ? scope_local(lsc, p0_orig) : NULL;
+    LocalVar *l0 = (lsc && p0_orig) ? scope_local(lsc, p0_orig) : NULL;
     LocalVar *l1 = (lsc && p1_orig) ? scope_local(lsc, p1_orig) : NULL;
     TyKind s0 = l0 ? l0->type : TY_UNKNOWN, s1 = l1 ? l1->type : TY_UNKNOWN;
     if (l0) l0->type = acc_ty;
@@ -2915,7 +2921,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   /* Temporarily override block param types to match acc_ty/et so the body
      expression uses the correct C types (same pattern as emit_sort_cmp_expr). */
   Scope *rsc = comp_scope_of(c, block);
-  LocalVar *rlv0 = rsc ? scope_local(rsc, p0_orig) : NULL;
+  LocalVar *rlv0 = (rsc && p0_orig) ? scope_local(rsc, p0_orig) : NULL;
   LocalVar *rlv1 = (rsc && p1_orig) ? scope_local(rsc, p1_orig) : NULL;
   TyKind rpt0 = rlv0 ? rlv0->type : TY_UNKNOWN;
   TyKind rpt1 = rlv1 ? rlv1->type : TY_UNKNOWN;
@@ -2925,7 +2931,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   buf_printf(b, "for (sp_int _t%d = %d; _t%d < sp_%sArray_length(_t%d); _t%d++) { ",
              ti, start, ti, k, ta, ti);
   buf_puts(b, "{ ");
-  emit_ctype(c, acc_ty, b); buf_printf(b, " lv_%s = _t%d; ", p0, tacc);
+  if (p0) { emit_ctype(c, acc_ty, b); buf_printf(b, " lv_%s = _t%d; ", p0, tacc); }
   if (p1_multi) {
     int te2 = ++g_tmp;
     buf_printf(b, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d); ", te2, ta, ti);
@@ -2937,6 +2943,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
                  rename_local(ln), te2, li, rename_local(ln));
     }
   }
+  else if (!p1) { }
   else if (nested) { emit_ctype(c, et, b); buf_printf(b, " lv_%s = (sp_IntArray *)sp_PolyArray_get(_t%d, _t%d).v.p; ", p1, ta, ti); }
   else { emit_ctype(c, et, b); buf_printf(b, " lv_%s = sp_%sArray_get(_t%d, _t%d); ", p1, k, ta, ti); }
   /* `next v` inside a fold block sets the accumulator and moves on, so point
