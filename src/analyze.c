@@ -2120,6 +2120,7 @@ void build_ie_map(Compiler *c) {
     g_ie_node_class_cap = nt->count;
   }
   int *pend = malloc(sizeof(int) * (size_t)nt->count);
+  if (!pend) return;
   for (int i = 0; i < nt->count; i++) g_ie_node_class[i] = pend[i] = -1;
   for (int pass = 0; pass < 2; pass++)
   for (int id = 0; id < nt->count; id++) {
