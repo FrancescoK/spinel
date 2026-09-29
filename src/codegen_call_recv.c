@@ -4277,12 +4277,23 @@ else {
         buf_printf(b, "sp_%sArray_%s(", k, name); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
+      /* The extremes are read before the result is allocated: a fresh
+         receiver (a Range's to_a) is held by nothing, and the allocation
+         collected it before min/max read it. A number needs nothing held
+         after that; a String extreme is one of the receiver's elements, so
+         the receiver stays rooted across the allocation. Two pushes never
+         grow a fresh array, so the result needs no root. */
       if (sp_streq(name, "minmax") && argc == 0 && block < 0) {
         int t = ++g_tmp, o = ++g_tmp;
+        int is_str = rt == TY_STR_ARRAY;
+        const char *et = is_str ? "const char *" : rt == TY_FLOAT_ARRAY ? "sp_float " : "sp_int ";
         buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_%sArray *_t%d = sp_%sArray_new(); sp_%sArray_push(_t%d, sp_%sArray_min(_t%d));"
-                      " sp_%sArray_push(_t%d, sp_%sArray_max(_t%d)); _t%d; })",
-                   k, o, k, k, o, k, t, k, o, k, t, o);
+        buf_puts(b, ";");
+        if (is_str) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
+        buf_printf(b, " %s_mn%d = sp_%sArray_min(_t%d); %s_mx%d = sp_%sArray_max(_t%d);"
+                      " sp_%sArray *_t%d = sp_%sArray_new(); sp_%sArray_push(_t%d, _mn%d);"
+                      " sp_%sArray_push(_t%d, _mx%d); _t%d; })",
+                   et, t, k, t, et, t, k, t, k, o, k, k, o, t, k, o, t, o);
         return 1;
       }
       /* a typed array never holds an element of another kind: include? is
