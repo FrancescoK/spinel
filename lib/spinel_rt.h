@@ -10901,6 +10901,7 @@ static void sp_handler_stacks_unwind(void);
    newly reserve that verb. The list is built by scanning these sources for
    sp_ tokens, comments included, so a comment must not spell one either. */
 static int sp_at_exit_run(int status);
+void sp_fin_run_exit(void);   /* lib/sp_gc.c: finalizers still registered at exit */
 /* Print an uncaught exception in CRuby's tail format. Factored out because two
    places print it now: the end of sp_raise_cls, and a hook whose own exception
    reached the drain's protect frame. */
@@ -13867,6 +13868,10 @@ static int sp_at_exit_run(int status) {
       }
     }
   }
+  /* then the finalizers still registered, as CRuby's ruby_finalize runs them:
+     after the at_exit hooks, before the process's own exit handlers tear the
+     C world down (a library's static destructors among them) */
+  sp_fin_run_exit();
   return st;
 }
 /* ---- Kernel#Integer / Kernel#Float on a user object ----

@@ -789,6 +789,9 @@ void sp_gc_collect_request(void) {
 #else
   sp_gc_collect();
 #endif
+  /* GC.start is a call of the program's, a safe point: what it freed is
+     finalized before it returns, after the barrier has lifted */
+  sp_fin_run_pending();
 }
 
 static void sp_stw_collect_impl(int force) {

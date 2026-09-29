@@ -1043,6 +1043,151 @@ static void sp_gc_trim_request(void){
 #endif
   }
 }
+/* ---- ObjectSpace.define_finalizer ----
+ * A finalizer is a Ruby callable run after its object dies. The callable is
+ * kept (and marked) on the Ruby side, in ObjectSpace's table, under an index;
+ * this registry holds only the object's identity and that index, and so does
+ * not keep the object alive. After a cycle's mark, an entry whose object the
+ * cycle will free moves to the pending list, and the pending finalizers run
+ * at the program's next safe point (SP_FIN_POLL in sp_gc.h) -- never inside
+ * the collection, nor inside the allocation that set it off -- through the
+ * runner the Ruby side installed. What is still registered at exit runs then, as in
+ * CRuby. A threaded build guards the lists with a lock (never held across a
+ * callback); the mark-time scan runs with the world stopped, and no mutator
+ * stops inside a locked region, which allocates nothing. */
+typedef struct { void *obj; int tag; uint64_t bits; sp_int idx; } sp_fin_ent;
+static sp_fin_ent *sp_fin_tab; static int sp_fin_n, sp_fin_cap;
+static sp_int *sp_fin_pend; static int sp_fin_pn, sp_fin_pcap;
+static void (*sp_fin_runner)(int64_t);
+volatile int sp_fin_pending_flag;   /* sp_gc.h: SP_FIN_POLL */
+static int sp_fin_running, sp_fin_exit_armed;
+#ifdef SP_THREADS
+static pthread_mutex_t sp_fin_lock = PTHREAD_MUTEX_INITIALIZER;
+#define SP_FIN_LOCK() pthread_mutex_lock(&sp_fin_lock)
+#define SP_FIN_UNLOCK() pthread_mutex_unlock(&sp_fin_lock)
+#else
+#define SP_FIN_LOCK() ((void)0)
+#define SP_FIN_UNLOCK() ((void)0)
+#endif
+
+static void sp_fin_push_pending(sp_int idx) {
+  if (sp_fin_pn == sp_fin_pcap) {
+    sp_fin_pcap = sp_fin_pcap ? sp_fin_pcap * 2 : 16;
+    sp_fin_pend = realloc(sp_fin_pend, sizeof(sp_int) * (size_t)sp_fin_pcap);
+    if (!sp_fin_pend) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  sp_fin_pend[sp_fin_pn++] = idx;
+  SP_ATOMIC_STORE(&sp_fin_pending_flag, 1, __ATOMIC_RELAXED);
+}
+
+void sp_fin_run_pending(void) {
+  SP_FIN_LOCK();
+  if (sp_fin_running || !sp_fin_runner || sp_fin_pn == 0) { SP_FIN_UNLOCK(); return; }
+  sp_fin_running = 1;
+  /* in the order the objects were registered, as CRuby runs them; a
+     finalizer that frees more (or registers more) lands in the next batch */
+  while (sp_fin_pn > 0) {
+    int n = sp_fin_pn;
+    sp_int *batch = malloc(sizeof(sp_int) * (size_t)n);
+    if (!batch) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memcpy(batch, sp_fin_pend, sizeof(sp_int) * (size_t)n);
+    sp_fin_pn = 0;
+    SP_ATOMIC_STORE(&sp_fin_pending_flag, 0, __ATOMIC_RELAXED);
+    SP_FIN_UNLOCK();
+    for (int i = 0; i < n; i++) sp_fin_runner((int64_t)batch[i]);
+    free(batch);
+    SP_FIN_LOCK();
+  }
+  sp_fin_running = 0;
+  SP_FIN_UNLOCK();
+}
+
+static void sp_fin_at_exit(void) {
+  SP_FIN_LOCK();
+  for (int i = 0; i < sp_fin_n; i++) sp_fin_push_pending(sp_fin_tab[i].idx);
+  sp_fin_n = 0;
+  SP_FIN_UNLOCK();
+  sp_fin_run_pending();
+}
+
+/* The program is ending: run what is still registered. Called where the
+   program ends in Ruby terms (main's return, exit, an uncaught raise) --
+   before the C exit handlers run, which is where a library's own teardown
+   happens. The atexit registration is only the fallback for a path that
+   leaves some other way. */
+void sp_fin_run_exit(void) {
+  if (sp_fin_n || sp_fin_pn) sp_fin_at_exit();
+}
+
+void sp_fin_set_runner(void (*f)(int64_t)) {
+  sp_fin_runner = f;
+  if (!sp_fin_exit_armed) { sp_fin_exit_armed = 1; atexit(sp_fin_at_exit); }
+}
+
+/* An object with a collector header is watched by address; any other value
+   (an immediate, a string on the string heap) is matched by its bits and
+   keeps its finalizer until exit, which is when its storage goes too. */
+static void sp_fin_ident(sp_RbVal obj, void **p, int *tag, uint64_t *bits) {
+  *p = (obj.tag == SP_TAG_OBJ) ? obj.v.p : NULL;
+  *tag = (int)obj.tag;
+  *bits = 0;
+  memcpy(bits, &obj.v, sizeof obj.v < sizeof *bits ? sizeof obj.v : sizeof *bits);
+}
+
+void sp_fin_register(sp_RbVal obj, sp_int idx) {
+  void *p; int tag; uint64_t bits;
+  sp_fin_ident(obj, &p, &tag, &bits);
+  SP_FIN_LOCK();
+  if (sp_fin_n == sp_fin_cap) {
+    sp_fin_cap = sp_fin_cap ? sp_fin_cap * 2 : 16;
+    sp_fin_tab = realloc(sp_fin_tab, sizeof(sp_fin_ent) * (size_t)sp_fin_cap);
+    if (!sp_fin_tab) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  sp_fin_tab[sp_fin_n].obj = p;
+  sp_fin_tab[sp_fin_n].tag = tag;
+  sp_fin_tab[sp_fin_n].bits = bits;
+  sp_fin_tab[sp_fin_n].idx = idx;
+  sp_fin_n++;
+  SP_FIN_UNLOCK();
+}
+
+/* Drops one registration of `obj` and answers its index (the Ruby side then
+   releases the callable), or -1 when none is left. */
+sp_int sp_fin_unregister_one(sp_RbVal obj) {
+  void *p; int tag; uint64_t bits;
+  sp_fin_ident(obj, &p, &tag, &bits);
+  sp_int r = -1;
+  SP_FIN_LOCK();
+  for (int i = 0; i < sp_fin_n; i++) {
+    sp_fin_ent *e = &sp_fin_tab[i];
+    if (p ? e->obj == p : (!e->obj && e->tag == tag && e->bits == bits)) {
+      r = e->idx;
+      memmove(e, e + 1, sizeof(sp_fin_ent) * (size_t)(sp_fin_n - i - 1));
+      sp_fin_n--;
+      break;
+    }
+  }
+  SP_FIN_UNLOCK();
+  return r;
+}
+
+/* After the mark, before any sweep: which watched objects does this cycle
+   free? A full cycle frees anything unmarked; a minor one only the young. */
+static void sp_fin_after_mark(int full) {
+  int keep = 0;
+  for (int i = 0; i < sp_fin_n; i++) {
+    void *p = sp_fin_tab[i].obj;
+    int live = 1;
+    if (p) {
+      sp_gc_hdr *h = (sp_gc_hdr *)p - 1;
+      live = full ? (h->marked == sp_gc_mark_gen) : (h->old || h->marked == sp_gc_mark_gen);
+    }
+    if (live) sp_fin_tab[keep++] = sp_fin_tab[i];
+    else sp_fin_push_pending(sp_fin_tab[i].idx);
+  }
+  sp_fin_n = keep;
+}
+
 void sp_gc_collect(void){
   /* The previous cycle's sweep may still be running beside the mutators:
      finish it before anything here walks a list or reads a live total. */
@@ -1174,6 +1319,7 @@ void sp_gc_collect(void){
        While it is set every mark is whole-heap, so nothing is missed; once
        compaction has made room the set is authoritative again. */
     if (sp_gc_pin_overflow && keep < SP_GC_PINNED_MAX) sp_gc_pin_overflow = 0; }
+  if (sp_fin_n) sp_fin_after_mark(full);
   SP_GC_PH(sp_gc_ph_mark);
   sp_str_mark_settle(full);
   if(full){
@@ -1482,6 +1628,9 @@ void sp_gc_collect(void){
   if(full)sp_gc_stat_fulls++;
   sp_gc_stat_seconds+=sp_gc_stat_now()-stat_t0;
   if(sp_gc_obj_retune_hook)sp_gc_obj_retune_hook(ob_before);
+  /* the finalizers of what this collection freed wait for the program's
+     next safe point (SP_FIN_POLL): the allocation that brought us here may
+     be in the middle of an operation one of them can reach */
 }
 
 /* Issue #1302: optional RSS ceiling via SPINEL_MAX_HEAP_MB; checked only
