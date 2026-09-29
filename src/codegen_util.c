@@ -3143,16 +3143,36 @@ void kw_names_add(char *list, size_t n, int *count, const char *inspected) {
   if (l < n) snprintf(list + l, n - l, "%s%s", *count ? ", " : "", inspected);
   (*count)++;
 }
-/* Does Symbol#inspect show `name` bare, as `:name`? True for an ASCII
-   identifier with an optional trailing `?`, `!` or `=`; anything else
-   #inspect quotes (sp_sym_inspect_name, kw_key_inspect). */
+/* An identifier as a Symbol names one: a letter, `_` or a byte of a
+   non-ASCII character first, then those or digits, and with `suffix` one
+   trailing `?`, `!` or `=`. */
+static int sym_ident(const char *s, int suffix) {
+  unsigned char ch = (unsigned char)*s;
+  if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' || ch >= 0x80)) return 0;
+  for (s++; (ch = (unsigned char)*s) != 0; s++)
+    if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
+          ch == '_' || ch >= 0x80)) break;
+  if (suffix && (*s == '?' || *s == '!' || *s == '=')) s++;
+  return *s == 0;
+}
+
+/* Does Symbol#inspect show `name` bare, as `:name`? The run time's rule
+   (sp_sym_simple_p), which kw_key_inspect's messages have to match: an
+   identifier with an optional trailing `?`, `!` or `=`, a `$`, `@` or `@@`
+   name, or an operator method's name; anything else #inspect quotes. An
+   operator was quoted, so `f(a: 1, "+": 2)` raised `unknown keyword: :"+"`
+   where CRuby says `:+`. */
 int sym_name_plain(const char *s) {
-  if (!s || !((*s >= 'a' && *s <= 'z') || (*s >= 'A' && *s <= 'Z') || *s == '_')) return 0;
-  for (s++; *s; s++) {
-    if ((*s >= 'a' && *s <= 'z') || (*s >= 'A' && *s <= 'Z') || (*s >= '0' && *s <= '9') || *s == '_') continue;
-    return (*s == '?' || *s == '!' || *s == '=') && !s[1];
-  }
-  return 1;
+  if (!s || !*s) return 0;
+  if (*s == '$') return sym_ident(s + 1, 0);
+  if (*s == '@') return sym_ident(s + (s[1] == '@' ? 2 : 1), 0);
+  if (sym_ident(s, 1)) return 1;
+  static const char *const ops[] = {
+    "+", "-", "*", "/", "%", "**", "==", "===", "!=", "=~", "!~",
+    "<", "<=", ">", ">=", "<=>", "<<", ">>", "&", "|", "^", "~",
+    "!", "+@", "-@", "[]", "[]=", "`", NULL };
+  for (int i = 0; ops[i]; i++) if (!strcmp(s, ops[i])) return 1;
+  return 0;
 }
 /* A literal key as #inspect writes it: a Symbol `:name`, quoted where the
    name is no identifier (`:"a b"`), a String quoted, with the escapes
