@@ -2144,6 +2144,12 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       (sp_streq(name, "reject") || sp_streq(name, "select") || sp_streq(name, "filter")) &&
       infer_type(c, recv) == TY_POLY)
     return TY_POLY;
+  /* `poly.uniq { }` answers a new Array (the boxed emitter hands it back
+     boxed); `uniq! { }` answers the receiver or nil. */
+  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 0 &&
+      (sp_streq(name, "uniq") || sp_streq(name, "uniq!")) &&
+      infer_type(c, recv) == TY_POLY)
+    return TY_POLY;
   /* `poly.times { }` / `upto(n) { }` / `downto(n) { }` answer the receiver,
      which codegen unboxes to an sp_int before handing the call to the typed
      emitters. step is left out: a Float owns it too. */

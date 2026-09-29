@@ -1143,12 +1143,17 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
   if (rt != TY_POLY) return 0;
   int trecv = ++g_tmp, tarr = ++g_tmp, tseen = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-  emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", trecv, rb.p ? rb.p : "sp_box_nil()"); free(rb.p);
-  emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = (sp_PolyArray *)_t%d.v.p;\n", tarr, trecv);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", trecv, rb.p ? rb.p : "sp_box_nil()", trecv); free(rb.p);
+  emit_indent(g_pre, g_indent);
+  if (bang) buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_array_recv(_t%d, \"uniq!\", 1); SP_GC_ROOT(_t%d);\n", tarr, trecv, tarr);
+  else buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_arr_recv(_t%d, \"uniq\"); SP_GC_ROOT(_t%d);\n", tarr, trecv, tarr);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tseen, tseen);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tres, tres);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, tarr, ti);
-  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = _t%d->data[_t%d];\n", p0, tarr, ti);
+  char es[64]; snprintf(es, sizeof es, "_t%d->data[_t%d]", tarr, ti);
+  if (!emit_iter_autosplat(c, block, TY_POLY_ARRAY, es, g_indent + 1)) {
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = %s;\n", p0, es);
+  }
   int save = g_indent; g_indent++;
   for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent);
   int tkey = ++g_tmp, tdup = ++g_tmp, tj = ++g_tmp;
@@ -1158,14 +1163,15 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
   buf_printf(g_pre, "int _t%d = 0; for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) if (sp_poly_eq(_t%d->data[_t%d], _t%d)) { _t%d = 1; break; }\n",
              tdup, tj, tj, tseen, tj, tseen, tj, tkey, tdup);
   emit_indent(g_pre, g_indent + 1);
-  buf_printf(g_pre, "if (!_t%d) { sp_PolyArray_push(_t%d, _t%d); sp_PolyArray_push(_t%d, lv_%s); }\n", tdup, tseen, tkey, tres, p0);
+  buf_printf(g_pre, "if (!_t%d) { sp_PolyArray_push(_t%d, _t%d); sp_PolyArray_push(_t%d, %s); }\n", tdup, tseen, tkey, tres, es);
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   if (bang) {
-    int tm = ++g_tmp;
+    int tm = ++g_tmp, tn = ++g_tmp;
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "_t%d->len = 0; for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) sp_PolyArray_push(_t%d, _t%d->data[_t%d]);\n",
-               tarr, tm, tm, tres, tm, tarr, tres, tm);
-    buf_printf(b, "_t%d", trecv);
+    buf_printf(g_pre, "sp_int _t%d = _t%d->len; _t%d->len = 0; for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) sp_PolyArray_push(_t%d, _t%d->data[_t%d]);\n",
+               tn, tarr, tarr, tm, tm, tres, tm, tarr, tres, tm);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_poly_arr_writeback(_t%d, _t%d);\n", trecv, tarr);
+    buf_printf(b, "(_t%d->len == _t%d ? sp_box_nil() : _t%d)", tarr, tn, trecv);
   }
   else buf_printf(b, "sp_box_poly_array(_t%d)", tres);
   return 1;
