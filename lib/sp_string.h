@@ -114,10 +114,18 @@ static inline sp_String*sp_String_new_shared(const char*s){
      come with it. strlen stops at the first NUL, so sizing a binary payload
      that way truncated it: `Array.new(n, 0).pack("C*")` became the empty string
      the moment it was stored anywhere that promotes it, and the next setbyte
-     raised "index 0 out of string" against a zero-length buffer. */
+     raised "index 0 out of string" against a zero-length buffer.
+
+     The length comes from the header for EVERY marked string, not only a
+     binary-tagged one. A string of NUL bytes is all-ASCII, so the binary bit
+     is off and strlen answered 0 for it too: `Box.new("\0" * 8)` whose ivar is
+     later mutated through its reader -- the promotion that brings a handle
+     here -- arrived empty, and the setbyte raised against the zero-length
+     buffer. sp_str_byte_len reads the header length and falls back to strlen
+     only for an UNMARKED string, which this constructor is never given. */
   int bin=sp_str_is_binary(s);
   int frozen=(((const unsigned char*)s)[-1]==0xf1);
-  int64_t len=bin?(int64_t)sp_str_byte_len(s):(int64_t)strlen(s);
+  int64_t len=(int64_t)sp_str_byte_len(s);
   sp_String*r=sp_String_new_len(s,len);
   if(bin){r->binary=1;sp_fd_publish(r);}
   if(frozen){sp_gc_hdr*h=(sp_gc_hdr*)((char*)r-sizeof(sp_gc_hdr));h->frozen=1;}
