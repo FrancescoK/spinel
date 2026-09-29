@@ -43,3 +43,31 @@ p C.new.inner2
 p C.new.send(:cc)
 p C.new.send(:each_one) { |x| x + 10 }
 
+
+# a `&` argument is evaluated before the refusal
+class C
+  def each_one = yield(1)
+  def with_blk(&b) = b.call(2)
+  private :each_one, :with_blk
+end
+$blk_made = 0
+def blk_make_proc = ($blk_made += 1; proc { |v| v })
+def blkarg_go1
+  obj = C.new
+  obj.each_one(&blk_make_proc)
+  nil
+end
+def blkarg_go2
+  obj = C.new
+  obj.with_blk(&blk_make_proc)
+  nil
+end
+def blkarg_go3
+  obj = C.new
+  obj.each_one(&blk_make_proc)
+end
+def blkarg_go4(obj) = obj.each_one(&blk_make_proc)
+begin; blkarg_go1; rescue NoMethodError; p [:blkarg_go1, $blk_made]; end
+begin; blkarg_go2; rescue NoMethodError; p [:blkarg_go2, $blk_made]; end
+begin; blkarg_go3; rescue NoMethodError; p [:blkarg_go3, $blk_made]; end
+begin; blkarg_go4(C.new); rescue NoMethodError; p [:blkarg_go4, $blk_made]; end
