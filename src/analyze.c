@@ -17048,6 +17048,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   char tn[48];
   if (!splat_leaf_node(nt, recv)) {
     snprintf(tn, sizeof tn, "__splr%d", id);
+    scope_local_intern(comp_scope_of(c, id), tn);
     int w = nt_new_node(nt, "LocalVariableWriteNode");
     nt_node_set_str(nt, w, "name", tn);
     nt_node_set_int(nt, w, "depth", 0);
@@ -17062,6 +17063,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     fargs[k] = argv[k];
     if (k == sp_at || splat_leaf_node(nt, argv[k])) continue;
     snprintf(tn, sizeof tn, "__spla%d_%d", id, k);
+    scope_local_intern(comp_scope_of(c, id), tn);
     int w = nt_new_node(nt, "LocalVariableWriteNode");
     nt_node_set_str(nt, w, "name", tn);
     nt_node_set_int(nt, w, "depth", 0);
@@ -17120,6 +17122,9 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     }
     int cl = nt_new_node(nt, "CallNode");
     nt_node_set_str(nt, cl, "name", cnm);
+    if (nt_str(nt, id, "send_blind")) nt_node_set_str(nt, cl, "send_blind", "1");
+    if (nt_str(nt, id, "vis_enforce")) nt_node_set_str(nt, cl, "vis_enforce", "1");
+    nt_node_set_int(nt, cl, "dyn_arm", nt_int(nt, id, "dyn_arm", 0));
     nt_node_set_ref(nt, cl, "receiver", nt_clone_subtree(nt, recv));
     nt_node_set_ref(nt, cl, "block", -1);
     int an = -1;
@@ -17171,10 +17176,9 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
   return 1;
 }
-static void expand_static_splat_args(Compiler *c) {
+void expand_static_splat_args(Compiler *c, int from, int count) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int count = nt->count;
-  for (int id = 0; id < count; id++) {
+  for (int id = from; id < count; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     int an = nt_ref(nt, id, "arguments");
     if (an < 0) continue;
@@ -17265,7 +17269,7 @@ static void expand_static_splat_args(Compiler *c) {
          splat as it stands rather than refusing the program: Hash#slice's
          emitter iterates it, which is what the call means. */
       if (n < 0 && sp_streq(cnm, "slice")) continue;
-      if (n < 0 && splat_user_method_rejects(c, cnm, n)) continue;
+      if (n < 0 && (nt_int(nt, id, "dyn_arm", 0) || splat_user_method_rejects(c, cnm, n))) continue;
       if (n < 0) {
         /* No arity to expand to (a name we list for its literal-splat form
            only). Say so here rather than letting the C compiler report it
@@ -18158,7 +18162,7 @@ void analyze_program(Compiler *c) {
   qualify_colliding_consts(c);
   qualify_colliding_classes(c);
   walk_scope(c, c->nt->root_id, 0, -1);
-  expand_static_splat_args(c);
+  expand_static_splat_args(c, 0, c->nt->count);
   register_singleton_defs(c);   /* def CONST.m / def x.m -> synthesized subclass */
   register_structs(c);
   desugar_struct_index_ctor(c);

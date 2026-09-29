@@ -14484,7 +14484,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "sp_box_str(%s%s(sp_poly_recv_s(", fn, argc == 2 ? "2" : "");
       emit_expr(c, recv, b); buf_printf(b, ", \"%s\"), ", name);
       emit_int_expr(c, argv[0], b);
-      if (argc == 2) { buf_puts(b, ", "); emit_expr(c, argv[1], b); }
+      if (argc == 2) { buf_puts(b, ", "); emit_str_expr(c, argv[1], b); }
       buf_puts(b, "))");
       return 1;
     }
