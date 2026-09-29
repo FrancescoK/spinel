@@ -2968,7 +2968,8 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "sleep") && argc <= 1) {
       TyKind st = argc == 1 ? comp_ntype(c, argv[0]) : TY_NIL;
       int tm = ++g_tmp;
-      buf_printf(b, "({ sp_mutex *_t%d = ", tm); emit_expr(c, recv, b); buf_puts(b, "; ");
+      buf_printf(b, "({ sp_mutex *_t%d = ", tm); emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); ", tm);   /* it may be the only reference while we park */
       if (argc == 0) buf_printf(b, "sp_Mutex_sleep(_t%d, 0, 0.0); })", tm);
       else if (st == TY_INT || st == TY_FLOAT) {
         buf_printf(b, "sp_Mutex_sleep(_t%d, 1, (double)(", tm); emit_expr(c, argv[0], b); buf_puts(b, ")); })");
@@ -2980,8 +2981,8 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
       else {   /* a boxed timeout: nil means none */
         int ta = ++g_tmp;
         buf_printf(b, "sp_RbVal _t%d = ", ta); emit_boxed(c, argv[0], b);
-        buf_printf(b, "; sp_Mutex_sleep(_t%d, _t%d.tag != SP_TAG_NIL, _t%d.tag == SP_TAG_NIL ? 0.0 : sp_poly_to_f(_t%d)); })",
-                   tm, ta, ta, ta);
+        buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? sp_Mutex_sleep(_t%d, 0, 0.0)"
+                      " : sp_Mutex_sleep(_t%d, 1, sp_poly_time_interval(_t%d)); })", ta, tm, tm, ta);
       }
       return 1;
     }
@@ -29162,7 +29163,11 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     }
     buf_puts(b, "((void)sp_sleep(");
     if (st == TY_INT) { buf_puts(b, "(double)"); emit_expr(c, argv[0], b); }
-    else if (st == TY_POLY) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if (st == TY_POLY) {   /* a boxed nil sleeps until #wakeup, as a literal nil does */
+      int tn = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tn); emit_expr(c, argv[0], b);
+      buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? (sp_sleep_forever(), 0.0) : sp_poly_to_f(_t%d); })", tn, tn);
+    }
     else if (st == TY_BOOL) {
       buf_puts(b, "({ sp_raise_cls(\"TypeError\", (");
       emit_expr(c, argv[0], b);

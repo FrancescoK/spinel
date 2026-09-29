@@ -23,3 +23,12 @@ Mutex#sleep negative: ArgumentError: time interval must not be negative
 main woken from stop
 main woken from bare sleep
 main woken from Mutex#sleep: Integer
+Mutex#sleep(NaN): RangeError: NaN out of Time range
+Mutex#sleep(true): TypeError: can't convert TrueClass into time interval
+Mutex#sleep(String): TypeError: can't convert String into time interval
+Mutex#sleep(boxed true): TypeError: can't convert TrueClass into time interval
+still unlocked after: false
+Mutex#sleep(Rational): nil
+temporary mutex: nil
+sleep(boxed nil) sleeps: "sleep"
+sleep(boxed nil) woken: :boxed_nil

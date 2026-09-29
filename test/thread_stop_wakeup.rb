@@ -74,3 +74,20 @@ w = Thread.new { 300.times { break if main.status == "sleep"; sleep 0.01 }; main
 r = m.synchronize { m.sleep(10) }
 puts "main woken from Mutex#sleep: #{r.class}"
 w.join
+
+# a timeout Mutex#sleep can't use is rejected before it unlocks
+m2 = Mutex.new
+t("Mutex#sleep(NaN)") { m2.synchronize { m2.sleep(Float::NAN) } }
+t("Mutex#sleep(true)") { m2.synchronize { m2.sleep(true) } }
+t("Mutex#sleep(String)") { m2.synchronize { m2.sleep("1") } }
+t("Mutex#sleep(boxed true)") { v = [true, 1][0]; m2.synchronize { m2.sleep(v) } }
+t("still unlocked after") { m2.locked? }
+t("Mutex#sleep(Rational)") { m2.synchronize { m2.sleep(1/100r) } }
+# a temporary mutex stays alive while it sleeps
+t("temporary mutex") { Mutex.new.lock.sleep(0.02) }
+# a boxed nil sleeps until woken, as a literal nil does
+th8 = Thread.new { v = [nil, 1][0]; sleep(v); :boxed_nil }
+settle(th8)
+t("sleep(boxed nil) sleeps") { th8.status }
+th8.wakeup
+t("sleep(boxed nil) woken") { th8.value }

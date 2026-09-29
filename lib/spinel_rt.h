@@ -10359,6 +10359,15 @@ static sp_RbVal sp_poly_queue_push_flag(sp_RbVal v, const char *name, sp_RbVal x
   if (nb) sp_Queue_push_nb(q, x); else sp_Queue_push(q, x);
   return v;
 }
+/* a boxed sleep timeout as seconds: CRuby's TypeError for anything that is
+   not a number (nil, meaning none, is the caller's to check first) */
+static double sp_poly_time_interval(sp_RbVal v) {
+  if (v.tag == SP_TAG_INT || v.tag == SP_TAG_FLT || v.tag == SP_TAG_BIGINT) return sp_poly_to_f(v);
+  const char *cn = sp_poly_class_name(v);
+  if (cn && strcmp(cn, "Rational") == 0) return sp_poly_to_f(v);
+  sp_raise_cls("TypeError", sp_sprintf("can't convert %s into time interval", cn ? cn : "Object"));
+  return 0.0;
+}
 static sp_RbVal sp_poly_thread_status(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_THREAD) return sp_Thread_status((sp_thread *)v.v.p);
   /* a SystemExit's exit status, as the typed accessor reads it; any other
