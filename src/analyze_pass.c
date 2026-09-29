@@ -6771,6 +6771,7 @@ static TyKind for_bound_type(Compiler *c, int coll, int pos) {
     return TY_POLY;
   }
   if (ct == TY_RANGE) return TY_INT;
+  if (ct == TY_STR_RANGE) return TY_STRING;
   if (ty_is_array(ct)) return ty_array_elem(ct);
   if (ct == TY_POLY || ty_is_hash(ct)) return TY_POLY;
   return TY_UNKNOWN;
