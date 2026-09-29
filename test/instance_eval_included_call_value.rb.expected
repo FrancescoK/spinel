@@ -1,0 +1,3 @@
+[{parked: [:except, :x]}]
+[{parked: [:except, :parked]}]
+[{parked: [:except, :idle]}]

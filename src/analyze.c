@@ -2098,7 +2098,7 @@ int ie_block_body(Compiler *c, int blk) {
 static int ie_class_value_target(Compiler *c, int id, int recv, TyKind rt, int blk) {
   const char *nm = nt_str(c->nt, id, "name");
   int arg = nt_kind(c->nt, blk) == NK_BlockArgumentNode, cls = -1;
-  if (rt == TY_CLASS) return arg ? ie_forward_target(c, class_recv_static_ci(c, recv), 1, nm, 0) : -1;
+  if (rt == TY_CLASS) return ie_forward_target(c, class_recv_static_ci(c, recv), 1, nm, 0);
   for (int k = 0; rt == TY_POLY && cls >= -1 && k < 2 * c->nclasses; k++) {
     int t = ie_forward_target(c, k / 2, k % 2, nm, 0);
     if (t >= 0) cls = cls == -1 || cls == t ? t : -2 - id;
