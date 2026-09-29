@@ -1,0 +1,9 @@
+true
+false
+I, [T]  INFO -- : hello
+W, [T]  WARN -- : lazy
+E, [T] ERROR -- prog: with progname
+F, [T] FATAL -- : boom
+W, [T]  WARN -- dom: via log
+INFO|app|custom
+ANY|app|any
