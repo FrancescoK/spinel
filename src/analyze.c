@@ -12046,19 +12046,84 @@ static void compute_byref_out_params(Compiler *c) {
                          (cls->alias_new[a] && sp_streq(cls->alias_new[a], c->scopes[si].name))))
           elig[si] = 0;
   }
+  /* A name reached by a Symbol or String -- send / method(:x) /
+     define_method / respond_to? / `&:x` / inject(:x) -- takes the plain
+     ABI. When every such reach names its method with a literal, only the
+     names those literals spell are refused; a literal anywhere else (`p
+     :edit`, a Hash key) calls nothing, and refusing its method for it lost
+     the appends of every caller silently (#6040). One reach whose name is
+     only the run time's (`send(m)`, `&blk_sym`) may call any method, and
+     every name any literal spells keeps the plain ABI, as before. */
+  static const char *const DYN[] = {
+    "send", "__send__", "public_send", "method", "public_method", "instance_method",
+    "public_instance_method", "singleton_method", "define_method", "define_singleton_method",
+    "respond_to?", "alias_method", "method_defined?", "public_method_defined?",
+    "private_method_defined?", "protected_method_defined?", "inject", "reduce", "to_proc", NULL };
+  int dyn_nonlit = 0;
+  for (int id = 0; id < nt->count && !dyn_nonlit; id++) {
+    NodeKind k = nt_kind(nt, id);
+    int lit = -1;
+    if (k == NK_BlockArgumentNode) lit = nt_ref(nt, id, "expression");
+    else if (k == NK_CallNode) {
+      const char *cn = nt_str(nt, id, "name");
+      int hit = 0;
+      for (int d = 0; cn && DYN[d] && !hit; d++) hit = sp_streq(cn, DYN[d]);
+      if (!hit) continue;
+      if (sp_streq(cn, "to_proc")) lit = nt_ref(nt, id, "receiver");
+      else { int a = nt_ref(nt, id, "arguments"), ac = 0;
+             const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+             lit = ac > 0 ? av[sp_streq(cn, "inject") || sp_streq(cn, "reduce") ? ac - 1 : 0] : -2; }
+    }
+    else continue;
+    if (lit == -2) continue;   /* no argument names a method */
+    if (lit < 0) continue;     /* `&` forwarding the enclosing block */
+    NodeKind lk = nt_kind(nt, lit);
+    if (lk == NK_SymbolNode || lk == NK_StringNode) continue;
+    /* inject(0) / reduce(init) { }: an operand, not a method name */
+    if ((k == NK_CallNode) && comp_ntype(c, lit) != TY_SYMBOL && comp_ntype(c, lit) != TY_STRING &&
+        comp_ntype(c, lit) != TY_POLY && comp_ntype(c, lit) != TY_UNKNOWN) continue;
+    if (k == NK_BlockArgumentNode && comp_ntype(c, lit) != TY_SYMBOL && comp_ntype(c, lit) != TY_POLY)
+      continue;
+    dyn_nonlit = 1;
+  }
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
-    /* a symbol/string literal spelling the name: send / method(:x) /
-       define_method / respond_to? -- all reach the plain ABI */
+    /* a symbol/string literal spelling the name (see DYN above) */
     const char *v = NULL;
-    if (sp_streq(ty, "SymbolNode")) {
-      v = nt_str(nt, id, "value");
-      if (!v) v = nt_str(nt, id, "unescaped");
+    int lit = -1;
+    if (dyn_nonlit) lit = id;
+    else if (nt_kind(nt, id) == NK_BlockArgumentNode) lit = nt_ref(nt, id, "expression");
+    else if (nt_kind(nt, id) == NK_CallNode) {
+      const char *cn = nt_str(nt, id, "name");
+      int hit = 0;
+      for (int d = 0; cn && DYN[d] && !hit; d++) hit = sp_streq(cn, DYN[d]);
+      if (hit) {
+        if (sp_streq(cn, "to_proc")) lit = nt_ref(nt, id, "receiver");
+        else { int a = nt_ref(nt, id, "arguments"), ac = 0;
+               const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+               for (int j = 0; j < ac && lit < 0; j++) {
+                 NodeKind jk = nt_kind(nt, av[j]);
+                 /* each literal argument: alias_method and define_method name two */
+                 if (jk == NK_SymbolNode || jk == NK_StringNode) {
+                   const char *jv = jk == NK_SymbolNode ? nt_str(nt, av[j], "value") : nt_str(nt, av[j], "content");
+                   if (!jv) jv = nt_str(nt, av[j], "unescaped");
+                   if (jv) for (int si = 1; si < n; si++)
+                     if (elig[si] && sp_streq(c->scopes[si].name, jv)) elig[si] = 0;
+                 }
+               } }
+      }
     }
-    else if (sp_streq(ty, "StringNode")) {
-      v = nt_str(nt, id, "content");
-      if (!v) v = nt_str(nt, id, "unescaped");
+    if (lit >= 0) {
+      const char *lty = nt_type(nt, lit);
+      if (lty && sp_streq(lty, "SymbolNode")) {
+        v = nt_str(nt, lit, "value");
+        if (!v) v = nt_str(nt, lit, "unescaped");
+      }
+      else if (lty && sp_streq(lty, "StringNode")) {
+        v = nt_str(nt, lit, "content");
+        if (!v) v = nt_str(nt, lit, "unescaped");
+      }
     }
     if (v)
       for (int si = 1; si < n; si++)
