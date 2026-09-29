@@ -468,6 +468,24 @@ int infer_param_hash_value(Compiler *c) {
   return changed;
 }
 
+static int local_all_writes_empty(Compiler *c, Scope *sc, const char *name, NodeKind k) {
+  const NodeTable *nt = c->nt;
+  int saw = 0;
+  int si = (int)(sc - c->scopes);
+  for (int r = lw_shared_first(c, name, si); r >= 0; r = lw_shared_next(r)) {
+    int id = lw_shared_node(r);
+    if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
+    const char *wn = nt_str(nt, id, "name");
+    if (!wn || !sp_streq(wn, name) || comp_scope_of(c, id) != sc) continue;
+    int v = nt_ref(nt, id, "value");
+    if (v < 0 || nt_kind(nt, v) != k) return 0;
+    int en = 0; nt_arr(nt, v, "elements", &en);
+    if (en != 0) return 0;
+    saw = 1;
+  }
+  return saw;
+}
+
 /* 1 if local `name` in scope `sc` has at least one write and every write
    assigns an empty `{}` hash literal -- i.e. it is a hash container whose
    contents come from elsewhere (passed by reference into a callee). Such a
@@ -476,21 +494,7 @@ int infer_param_hash_value(Compiler *c) {
    below): bucket walk over (scope, name) instead of a whole-table rescan per
    query. */
 int local_all_writes_empty_hash(Compiler *c, Scope *sc, const char *name) {
-  const NodeTable *nt = c->nt;
-  int saw = 0;
-  int si = (int)(sc - c->scopes);
-  for (int r = lw_shared_first(c, name, si); r >= 0; r = lw_shared_next(r)) {
-    int id = lw_shared_node(r);
-    if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
-    const char *wn = nt_str(nt, id, "name");
-    if (!wn || !sp_streq(wn, name) || comp_scope_of(c, id) != sc) continue;
-    int v = nt_ref(nt, id, "value");
-    if (v < 0 || nt_kind(nt, v) != NK_HashNode) return 0;
-    int hn = 0; nt_arr(nt, v, "elements", &hn);
-    if (hn != 0) return 0;
-    saw = 1;
-  }
-  return saw;
+  return local_all_writes_empty(c, sc, name, NK_HashNode);
 }
 
 /* 1 if local `name` in scope `sc` has at least one write and every write
@@ -498,21 +502,7 @@ int local_all_writes_empty_hash(Compiler *c, Scope *sc, const char *name) {
    local_all_writes_empty_hash. Such a local carries no element evidence of
    its own, so it can adopt the poly element type a callee's push forced. */
 int local_all_writes_empty_array(Compiler *c, Scope *sc, const char *name) {
-  const NodeTable *nt = c->nt;
-  int saw = 0;
-  int si = (int)(sc - c->scopes);
-  for (int r = lw_shared_first(c, name, si); r >= 0; r = lw_shared_next(r)) {
-    int id = lw_shared_node(r);
-    if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
-    const char *wn = nt_str(nt, id, "name");
-    if (!wn || !sp_streq(wn, name) || comp_scope_of(c, id) != sc) continue;
-    int v = nt_ref(nt, id, "value");
-    if (v < 0 || nt_kind(nt, v) != NK_ArrayNode) return 0;
-    int an = 0; nt_arr(nt, v, "elements", &an);
-    if (an != 0) return 0;
-    saw = 1;
-  }
-  return saw;
+  return local_all_writes_empty(c, sc, name, NK_ArrayNode);
 }
 
 /* 1 iff every write of local `name` in `sc` builds a new array (and there is
