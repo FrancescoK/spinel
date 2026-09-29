@@ -8704,7 +8704,14 @@ else {
     int emitted_lit = 0;
     {
       Buf *saved_pre = g_pre; g_pre = &vpre;
+      char srefO2[1024];
       if (ivt2 == TY_POLY) emit_boxed(c, v, &vval);
+      /* a shared-handle string slot takes an alias by handle and wraps
+         anything else in a fresh handle, as the plain write does */
+      else if (ivt2 == TY_STRBUF) {
+        if (strbuf_slot_ref(c, v, srefO2, sizeof srefO2)) buf_puts(&vval, srefO2);
+        else { buf_puts(&vval, "sp_String_new_shared("); emit_str_expr(c, v, &vval); buf_puts(&vval, ")"); }
+      }
       else if (ty_is_object(ivt2) || ty_is_array(ivt2) || ty_is_hash(ivt2) ||
                ivt2 == TY_FIBER || ivt2 == TY_THREAD || ivt2 == TY_QUEUE || ivt2 == TY_MUTEX || ivt2 == TY_CONDVAR || ivt2 == TY_PROC || ivt2 == TY_IO ||
                ivt2 == TY_MATCHDATA || ivt2 == TY_EXCEPTION || ivt2 == TY_REGEX) {
@@ -8718,7 +8725,7 @@ else {
       g_pre = saved_pre;
     }
     if (ivt2 == TY_POLY) snprintf(cond2, sizeof cond2, "%ssp_poly_truthy(%s)", is_or ? "!" : "", ref2);
-    else if (ivt2 == TY_BOOL || ivt2 == TY_STRING) snprintf(cond2, sizeof cond2, "%s%s", is_or ? "!" : "", ref2);
+    else if (ivt2 == TY_BOOL || ivt2 == TY_STRING || ivt2 == TY_STRBUF) snprintf(cond2, sizeof cond2, "%s%s", is_or ? "!" : "", ref2);
     else if (ivt2 == TY_INT) snprintf(cond2, sizeof cond2, "%s %s= SP_INT_NIL", ref2, is_or ? "=" : "!");
     else if (ivt2 == TY_SYMBOL) snprintf(cond2, sizeof cond2, "%s %s= (sp_sym)-1", ref2, is_or ? "=" : "!");   /* nilable symbol: (sp_sym)-1 is the nil sentinel */
     else if (ivt2 == TY_CLASS) snprintf(cond2, sizeof cond2, "%ssp_class_nil_p(%s)", is_or ? "" : "!", ref2);
