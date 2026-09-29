@@ -12281,7 +12281,13 @@ static void ext_generate_cruby_shim(Compiler *c) {
     for (int p9 = 0; p9 < sc->nparams; p9++) {
       LocalVar *lv = scope_local(sc, sc->pnames[p9]);
       buf_printf(&sb, "  c__.a%d = %s(v%d);", p9, ext_rb_in(lv->type), p9);
+      /* Root each converted argument here, for the whole call: the root a
+         spx_in_*_array helper pushes pops as the helper returns, and the
+         next argument's conversion allocates. */
       if (lv->type == TY_STRING) buf_printf(&sb, " SP_GC_ROOT_STR(c__.a%d);", p9);
+      else if (lv->type == TY_INT_ARRAY || lv->type == TY_FLOAT_ARRAY ||
+               lv->type == TY_STR_ARRAY)
+        buf_printf(&sb, " SP_GC_ROOT(c__.a%d);", p9);
       buf_puts(&sb, "\n");
     }
     buf_puts(&sb, "  { int raised; const char *ec = 0, *em = 0;\n"
