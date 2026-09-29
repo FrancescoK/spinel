@@ -2059,14 +2059,22 @@ static int source_references_io_buffer(const char *src) {
    headers); declared extern in compiler.h. */
 int g_require_gate = 0;
 int g_require_gate_cli = 0;   /* --require-gate */
-static char *sp_req_feats[128];
+static char **sp_req_feats = NULL;
 static int sp_req_feats_n = 0;
+static int sp_req_feats_cap = 0;
 
 void sp_feature_mark(const char *name) {
   if (!name) return;
   for (int i = 0; i < sp_req_feats_n; i++)
     if (strcmp(sp_req_feats[i], name) == 0) return;
-  if (sp_req_feats_n < 128) sp_req_feats[sp_req_feats_n++] = strdup(name);
+  if (sp_req_feats_n >= sp_req_feats_cap) {
+    int new_cap = sp_req_feats_cap == 0 ? 64 : sp_req_feats_cap * 2;
+    char **np = (char **)realloc(sp_req_feats, sizeof(char *) * new_cap);
+    if (!np) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+    sp_req_feats = np;
+    sp_req_feats_cap = new_cap;
+  }
+  sp_req_feats[sp_req_feats_n++] = strdup(name);
 }
 
 int sp_feature_enabled(const char *name) {
