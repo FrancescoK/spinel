@@ -619,6 +619,254 @@ int desugar_yield_in_closure(Compiler *c) {
   return changed;
 }
 
+/* ---- `X.module_eval do ... end` on the body's own class ---------------------
+   As a statement of a class or module body, a class_eval / module_eval /
+   class_exec / module_exec block on that body's own class reopens it in
+   place: the block's aliases and defs are the body's. X is `self`, the
+   class's own constant, or a local holding one of those -- cgi/escape.rb:
+     target = defined?(CGI::EscapeExt) && CGI::EscapeExt.method_defined?(:escapeHTML) ? CGI::EscapeExt : self
+     target.module_eval do alias escape_html escapeHTML ... end
+   where the condition is decided from the program's text: EscapeExt is a
+   module the program defines (so `defined?` holds) whose bodies define no
+   escapeHTML (so method_defined? does not), and the local is `self`. A
+   receiver this cannot resolve is left alone (refused downstream as before).
+   Runs before the scope pass, so everything here is syntactic. */
+static void xc_push(int **arr, int *n, int v);
+static void xc_push(int **arr, int *n, int v) {
+  int *g = (int *)realloc(*arr, sizeof(int) * (size_t)(*n + 1));
+  if (!g) return;
+  *arr = g; (*arr)[(*n)++] = v;
+}
+static int me_leaf_defined(const NodeTable *nt, const char *leaf) {
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_ClassNode && k != NK_ModuleNode) continue;
+    int cp = nt_ref(nt, id, "constant_path");
+    const char *nm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (nm && sp_streq(nm, leaf)) return 1;
+  }
+  return 0;
+}
+/* does any body of the class/module named `leaf` define instance method `m`? */
+static int me_body_defines(const NodeTable *nt, const char *leaf, const char *m) {
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_ClassNode && k != NK_ModuleNode) continue;
+    int cp = nt_ref(nt, id, "constant_path");
+    const char *nm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (!nm || !sp_streq(nm, leaf)) continue;
+    int body = nt_ref(nt, id, "body");
+    int bn = 0; const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+    for (int i = 0; i < bn; i++) {
+      NodeKind sk = nt_kind(nt, bb[i]);
+      if (sk == NK_DefNode && nt_ref(nt, bb[i], "receiver") < 0 && nt_str(nt, bb[i], "name") &&
+          sp_streq(nt_str(nt, bb[i], "name"), m)) return 1;
+      if (sk == NK_AliasMethodNode) {
+        int nn = nt_ref(nt, bb[i], "new_name");
+        if (nn >= 0 && nt_kind(nt, nn) == NK_SymbolNode && nt_str(nt, nn, "value") &&
+            sp_streq(nt_str(nt, nn, "value"), m)) return 1;
+      }
+      if (sk == NK_CallNode && nt_ref(nt, bb[i], "receiver") < 0 && nt_str(nt, bb[i], "name") &&
+          (sp_streq(nt_str(nt, bb[i], "name"), "attr_reader") || sp_streq(nt_str(nt, bb[i], "name"), "attr_accessor") ||
+           sp_streq(nt_str(nt, bb[i], "name"), "attr_writer"))) {
+        int args = nt_ref(nt, bb[i], "arguments");
+        int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+        for (int a = 0; a < an; a++)
+          if (nt_kind(nt, av[a]) == NK_SymbolNode && nt_str(nt, av[a], "value") &&
+              sp_streq(nt_str(nt, av[a], "value"), m)) return 1;
+      }
+    }
+  }
+  return 0;
+}
+static const char *me_const_leaf(const NodeTable *nt, int n) {
+  if (n < 0) return NULL;
+  NodeKind k = nt_kind(nt, n);
+  return k == NK_ConstantReadNode || k == NK_ConstantPathNode ? nt_str(nt, n, "name") : NULL;
+}
+/* every segment of a constant path names a class or module the program defines */
+static int me_path_defined(const NodeTable *nt, int n) {
+  for (int seg = n; seg >= 0; ) {
+    const char *leaf = me_const_leaf(nt, seg);
+    if (!leaf || !me_leaf_defined(nt, leaf)) return 0;
+    if (nt_kind(nt, seg) != NK_ConstantPathNode) return 1;
+    seg = nt_ref(nt, seg, "parent");
+    if (seg < 0) return 1;
+  }
+  return 0;
+}
+/* 1 / 0 when the predicate is decided by the program's text, else -1 */
+static int me_static_pred(const NodeTable *nt, int pred) {
+  if (pred < 0) return -1;
+  NodeKind k = nt_kind(nt, pred);
+  if (k == NK_TrueNode) return 1;
+  if (k == NK_FalseNode || k == NK_NilNode) return 0;
+  if (k == NK_ParenthesesNode) {
+    int body = nt_ref(nt, pred, "body");
+    int bn = 0; const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+    return bn == 1 ? me_static_pred(nt, bb[0]) : -1;
+  }
+  if (k == NK_DefinedNode) {
+    int v = nt_ref(nt, pred, "value");
+    if (v < 0 || !me_const_leaf(nt, v)) return -1;
+    return me_path_defined(nt, v) ? 1 : 0;
+  }
+  if (k == NK_AndNode) {
+    int l = me_static_pred(nt, nt_ref(nt, pred, "left"));
+    if (l == 0) return 0;
+    if (l == 1) return me_static_pred(nt, nt_ref(nt, pred, "right"));
+    return -1;
+  }
+  if (k == NK_OrNode) {
+    int l = me_static_pred(nt, nt_ref(nt, pred, "left"));
+    if (l == 1) return 1;
+    if (l == 0) return me_static_pred(nt, nt_ref(nt, pred, "right"));
+    return -1;
+  }
+  if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, pred, "name");
+    if (!nm || (!sp_streq(nm, "method_defined?") && !sp_streq(nm, "public_method_defined?")) ||
+        nt_ref(nt, pred, "block") >= 0) return -1;
+    const char *leaf = me_const_leaf(nt, nt_ref(nt, pred, "receiver"));
+    if (!leaf || !me_leaf_defined(nt, leaf)) return -1;
+    int args = nt_ref(nt, pred, "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an != 1 || !av) return -1;
+    NodeKind ak = nt_kind(nt, av[0]);
+    const char *m = ak == NK_SymbolNode ? nt_str(nt, av[0], "value") : ak == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
+    if (!m) return -1;
+    return me_body_defines(nt, leaf, m) ? 1 : 0;
+  }
+  return -1;
+}
+/* does the expression name the body's own class, by the program's text? */
+static int me_is_own(const NodeTable *nt, int e, const char *own, int depth) {
+  if (e < 0 || depth > 8) return 0;
+  NodeKind k = nt_kind(nt, e);
+  if (k == NK_SelfNode) return 1;
+  const char *leaf = me_const_leaf(nt, e);
+  if (leaf) return sp_streq(leaf, own);
+  if (k == NK_ParenthesesNode) {
+    int body = nt_ref(nt, e, "body");
+    int bn = 0; const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+    return bn == 1 && me_is_own(nt, bb[0], own, depth + 1);
+  }
+  if (k == NK_IfNode || k == NK_UnlessNode) {
+    int p = me_static_pred(nt, nt_ref(nt, e, "predicate"));
+    if (p < 0) return 0;
+    int take_then = k == NK_IfNode ? p : !p;
+    int arm;
+    if (take_then) arm = nt_ref(nt, e, "statements");
+    else {
+      int sub = nt_ref(nt, e, k == NK_IfNode ? "subsequent" : "else_clause");
+      if (sub >= 0 && nt_type(nt, sub) && sp_streq(nt_type(nt, sub), "ElseNode")) arm = nt_ref(nt, sub, "statements");
+      else arm = sub;
+    }
+    if (arm < 0) return 0;
+    if (nt_kind(nt, arm) == NK_StatementsNode) {
+      int bn = 0; const int *bb = nt_arr(nt, arm, "body", &bn);
+      return bn == 1 && me_is_own(nt, bb[0], own, depth + 1);
+    }
+    return me_is_own(nt, arm, own, depth + 1);
+  }
+  return 0;
+}
+static int me_count_writes(const NodeTable *nt, int n, const char *v) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return 0;
+  int cnt = 0;
+  if ((k == NK_LocalVariableWriteNode || k == NK_LocalVariableTargetNode || k == NK_LocalVariableOrWriteNode ||
+       k == NK_LocalVariableAndWriteNode || k == NK_LocalVariableOperatorWriteNode) &&
+      nt_str(nt, n, "name") && sp_streq(nt_str(nt, n, "name"), v)) cnt++;
+  const SpNode *nd = &nt->nodes[n];
+  for (int j = 0; j < nd->nr; j++) cnt += me_count_writes(nt, nd->r[j].ref, v);
+  for (int j = 0; j < nd->na; j++)
+    for (int k2 = 0; k2 < nd->a[j].n; k2++) cnt += me_count_writes(nt, nd->a[j].ids[k2], v);
+  return cnt;
+}
+int desugar_body_module_eval(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_ModuleNode && k != NK_ClassNode) continue;
+    const char *own = me_const_leaf(nt, nt_ref(nt, id, "constant_path"));
+    int body = nt_ref(nt, id, "body");
+    if (!own || body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bb0 = nt_arr(nt, body, "body", &bn);
+    int *bb = (int *)malloc(sizeof(int) * (size_t)(bn > 0 ? bn : 1));
+    if (!bb) continue;
+    memcpy(bb, bb0, sizeof(int) * (size_t)bn);
+    int *nb = NULL, nbn = 0, any = 0;
+    for (int i = 0; i < bn; i++) {
+      int st = bb[i];
+      int blk = nt_kind(nt, st) == NK_CallNode ? nt_ref(nt, st, "block") : -1;
+      const char *nm = blk >= 0 ? nt_str(nt, st, "name") : NULL;
+      int is_eval = nm && (sp_streq(nm, "class_eval") || sp_streq(nm, "module_eval") ||
+                           sp_streq(nm, "class_exec") || sp_streq(nm, "module_exec")) &&
+                    nt_kind(nt, blk) == NK_BlockNode && nt_ref(nt, blk, "parameters") < 0 &&
+                    nt_ref(nt, st, "arguments") < 0;
+      int recv = is_eval ? nt_ref(nt, st, "receiver") : -1;
+      int is_own = 0;
+      if (is_eval && recv >= 0) {
+        if (nt_kind(nt, recv) == NK_LocalVariableReadNode) {
+          const char *v = nt_str(nt, recv, "name");
+          /* the local's one write, a statement of this body ahead of the call */
+          if (v && me_count_writes(nt, body, v) == 1)
+            for (int j = 0; j < i; j++)
+              if (nt_kind(nt, bb[j]) == NK_LocalVariableWriteNode && nt_str(nt, bb[j], "name") &&
+                  sp_streq(nt_str(nt, bb[j], "name"), v))
+                is_own = me_is_own(nt, nt_ref(nt, bb[j], "value"), own, 0);
+        }
+        else is_own = me_is_own(nt, recv, own, 0);
+      }
+      int bbody = is_own ? nt_ref(nt, blk, "body") : -1;
+      if (bbody >= 0 && nt_kind(nt, bbody) == NK_StatementsNode) {
+        int en = 0; const int *es = nt_arr(nt, bbody, "body", &en);
+        for (int j = 0; j < en; j++) xc_push(&nb, &nbn, es[j]);
+        any = 1;
+        continue;
+      }
+      if (bbody >= 0) { xc_push(&nb, &nbn, bbody); any = 1; continue; }
+      xc_push(&nb, &nbn, st);
+    }
+    if (any) { nt_node_set_arr(nt, body, "body", nb, nbn); changed = 1; }
+    free(nb); free(bb);
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
+/* ---- `self.m(...)` in a class or module body --------------------------------
+   A statement of a class or module body runs with `self` the class object,
+   so `self.m(...)` there is the class's own method: activesupport's
+   IsolatedExecutionState sets `self.isolation_level = :thread` in its body
+   after defining the writer in `class << self`. The call's receiver becomes
+   the class's constant, which the class-method dispatch already serves
+   (`Mod.m`); the bare `m` form was served all along. Runs in the fixpoint,
+   after the scope pass has recorded each node's enclosing body. */
+int desugar_body_self_call(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || nt_kind(nt, recv) != NK_SelfNode) continue;
+    int cb = self_class_body(c, recv);
+    if (cb < 0 || !c->classes[cb].name) continue;
+    long long line = nt_int(nt, recv, "node_line", 0), file = nt_int(nt, recv, "node_file", 0),
+              col = nt_int(nt, recv, "node_col", 0);
+    nt_node_reset(nt, recv, "ConstantReadNode");
+    nt_node_set_str(nt, recv, "name", c->classes[cb].name);
+    nt_node_set_int(nt, recv, "node_line", line);
+    nt_node_set_int(nt, recv, "node_file", file);
+    nt_node_set_int(nt, recv, "node_col", col);
+    changed = 1;
+  }
+  return changed;
+}
+
 /* Proc#>> / #<< with a Method operand: wrap the Method side in #to_proc at the
    AST, so composition always runs proc-to-proc. The to_proc emission builds a
    real trampoline proc that publishes its boxed result through the return

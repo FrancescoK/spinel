@@ -2277,7 +2277,21 @@ int ie_poly_classes_at(Compiler *c, int node, int *out, int max) {
    enclosing class and no instance_eval/exec receiver rebinding it. */
 int self_is_main(Compiler *c, int node) {
   Scope *s = comp_scope_of(c, node);
-  return s && s->class_id < 0 && an_ie_class_id < 0 && ie_class_of(c, node) == -1;
+  return s && s->class_id < 0 && an_ie_class_id < 0 && ie_class_of(c, node) == -1 &&
+         self_class_body(c, node) < 0;
+}
+
+/* The class whose body `self` at node sits in -- a statement of a class or
+   module body (or a block there), outside any def and not rebound by an
+   instance_eval/exec -- where `self` is that class object: cgi/escape.rb's
+   `target = defined?(CGI::EscapeExt) && ... ? CGI::EscapeExt : self` in the
+   body of CGI::Escape. -1 elsewhere (a method, top level, a rebound self). */
+int self_class_body(Compiler *c, int node) {
+  Scope *s = comp_scope_of(c, node);
+  if (!s || s->class_id >= 0) return -1;
+  if (an_ie_class_id >= 0 || ie_class_of(c, node) != -1) return -1;
+  if (!c->node_cbody || node < 0 || node >= c->node_cap) return -1;
+  return c->node_cbody[node];
 }
 
 /* Register an ivar first assigned inside an instance_exec/instance_eval block on
@@ -18500,6 +18514,7 @@ void analyze_program(Compiler *c) {
   desugar_blk_param_writes(c);           /* `blk = proc {}` on a &blk param -> a fresh local */
   desugar_yield_in_closure(c);           /* `yield` inside proc { } -> blk.call(...) */
   desugar_const_attr_op_assign(c);       /* Klass.a op= v -> Klass.a = Klass.a op v (a class-level accessor) */
+  desugar_body_module_eval(c);           /* self.module_eval do S end in a body -> S */
   /* builtins/enumerable.rb, spliced by the parser: its definitions become
      the receiver-taking top-level functions before any scope is built */
   desugar_builtins(c);
@@ -19389,6 +19404,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_binding_lvget(c);            /* binding.local_variable_get(:x) -> x.itself */
     ch |= desugar_step_kwargs(c);              /* n.step(to: X, by: Y) -> n.step(X, Y) */
     ch |= desugar_respond_to_probe(c);         /* recv.respond_to?(:m) -> probe recv.m type */
+    ch |= desugar_body_self_call(c);           /* self.m(..) in a class body -> Klass.m(..) */
     ch |= desugar_symbol_to_proc_call(c);      /* :sym.to_proc.call(x) -> x.sym */
     ch |= desugar_call_op_write(c);            /* r.x += 1 with a def writer -> r.x = r.x + 1 */
     ch |= desugar_index_op_write_user(c);      /* obj[k] ||= v on a user [] / []= -> the calls */

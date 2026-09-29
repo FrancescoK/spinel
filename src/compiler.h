@@ -988,6 +988,7 @@ int        name_is_plain_setter(const char *name);
 int        call_is_setter_assign(const NodeTable *nt, int id);
 int        proc_parameters_lambda_mode(const NodeTable *nt, int argc, const int *argv);
 int        self_is_main(Compiler *c, int node);
+int        self_class_body(Compiler *c, int node);
 int        setter_base_name(const char *name, char *out, size_t cap);
 void       comp_add_undef(ClassInfo *ci, const char *name);
 int        comp_is_undeffed_in_chain(Compiler *c, int class_id, const char *name);
