@@ -1,0 +1,16 @@
+class SplatPinBox
+  def n: () -> Integer
+end
+
+class SplatPin
+  def add: (Integer a, Integer b) -> Integer
+  def succ: (Integer a) -> Integer
+  def scale: (Float x, Float f) -> Float
+  def join: (String s, String t) -> String
+  def box_n: (SplatPinBox b, Integer k) -> Integer
+  def self.add: (Integer a, Integer b) -> Integer
+end
+
+class Object
+  def splat_pin_add: (Integer a, Integer b) -> Integer
+end
