@@ -12456,8 +12456,10 @@ static const char *an_reader_ivar_of(Compiler *c, int node, int *defc,
   int rmi = comp_method_in_chain(c, rcid, mn, defc);
   if (rmi < 0) return NULL;
   int last2 = scope_body_last(c, rmi);
-  if (last2 < 0 || nt_kind(nt, last2) != NK_InstanceVariableReadNode) return NULL;
-  const char *ivn = nt_str(nt, last2, "name");
+  /* a memoizing `def m = (@iv ||= v)` hands out the slot too */
+  const char *ivn = an_memo_reader_ivar(c, rmi);
+  if (!ivn && last2 >= 0 && nt_kind(nt, last2) == NK_InstanceVariableReadNode)
+    ivn = nt_str(nt, last2, "name");
   if (!ivn) return NULL;
   snprintf(buf, cap, "%s", ivn);
   if (*defc < 0) *defc = c->scopes[rmi].class_id;

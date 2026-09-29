@@ -1021,6 +1021,20 @@ int scope_body_last(Compiler *c, int mi) {
   int n = 0; const int *bb = nt_arr(c->nt, body, "body", &n);
   return n > 0 ? bb[n - 1] : -1;
 }
+/* The ivar a memoizing reader hands out: method `mi`'s value is `@x ||= v`,
+   bare or in parentheses, and so is the ivar's slot itself. NULL for any
+   other body. */
+const char *an_memo_reader_ivar(Compiler *c, int mi) {
+  const NodeTable *nt = c->nt;
+  int last = scope_body_last(c, mi);
+  while (last >= 0 && nt_kind(nt, last) == NK_ParenthesesNode) {
+    int pb = nt_ref(nt, last, "body");
+    int n = 0; const int *st = pb >= 0 ? nt_arr(nt, pb, "body", &n) : NULL;
+    last = n == 1 ? st[0] : -1;
+  }
+  if (last < 0 || nt_kind(nt, last) != NK_InstanceVariableOrWriteNode) return NULL;
+  return nt_str(nt, last, "name");
+}
 int is_blk_param_call(Compiler *c, int node, int mi) {
   const NodeTable *nt = c->nt;
   if (node < 0 || !nt_type(nt, node) || !sp_streq(nt_type(nt, node), "CallNode")) return 0;

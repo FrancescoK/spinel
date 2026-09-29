@@ -10986,6 +10986,24 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         }
       }
     }
+    /* a memoizing reader (`def s = (@s ||= +"")`) has to run to fill the
+       slot first; then the slot is the handle */
+    if (mi >= 0 && (c->strbuf_box[id] || c->strbuf_handle_demand[id])) {
+      const char *ivnM = an_memo_reader_ivar(c, mi);
+      int defcM = c->scopes[mi].class_id;
+      int ivM = (ivnM && defcM >= 0) ? comp_ivar_index(&c->classes[defcM], ivnM) : -1;
+      if (ivM >= 0 && c->classes[defcM].ivar_types[ivM] == TY_STRBUF && !comp_ty_value_obj(c, rt)) {
+        int tM = ++g_tmp;
+        Buf rbM = expr_buf(c, recv);
+        buf_puts(b, "({ "); emit_ctype(c, rt, b);
+        buf_printf(b, " _t%d = %s; SP_GC_ROOT(_t%d); (void)", tM, rbM.p ? rbM.p : "", tM);
+        free(rbM.p);
+        char selfM[32]; snprintf(selfM, sizeof selfM, "_t%d", tM);
+        emit_dispatch(c, cid, name, selfM, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
+        buf_printf(b, "; _t%d->iv_%s; })", tM, iv_c(ivnM + 1));
+        return 1;
+      }
+    }
     if (mi >= 0) {
       /* a value-type receiver is passed by value; an ordinary object by
          pointer. For a value recv we hand emit_dispatch the value expression
