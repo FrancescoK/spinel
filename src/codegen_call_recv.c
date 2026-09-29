@@ -14269,6 +14269,10 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "ascii_only?") && argc == 0) {
       buf_puts(b, "sp_box_bool(sp_str_ascii_only(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"ascii_only?\")))"); return 1;
     }
+    /* the boxed Encoding a String hands out (cgi's escapeHTML guard) */
+    if ((sp_streq(name, "ascii_compatible?") || sp_streq(name, "dummy?")) && argc == 0) {
+      buf_printf(b, "sp_box_bool(sp_poly_enc_pred("); emit_expr(c, recv, b); buf_printf(b, ", \"%s\"))", name); return 1;
+    }
     if (sp_streq(name, "valid_encoding?") && argc == 0) {
       buf_puts(b, "sp_box_bool(sp_str_valid_encoding(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"valid_encoding?\")))"); return 1;
     }
