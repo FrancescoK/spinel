@@ -120,7 +120,9 @@ const char *sp_crypto_hmac_sha1_hex(const char *key, const char *msg);
 
 /* Base64URL (RFC 4648 §5, no padding) encode/decode. Max input
  * length ~12 KiB (encode) / ~16 KiB (decode), bump the buffer in
- * sp_crypto.c if your callers need more. */
+ * sp_crypto.c if your callers need more. The decode answers bytes that
+ * may hold a NUL and sets sp_ffi_bin_len to their count (0 on bad input):
+ * bind it `:binstr`, as a `:str` return stops at the first NUL. */
 const char *sp_crypto_b64url_encode(const char *src);
 const char *sp_crypto_b64url_decode(const char *src);
 
