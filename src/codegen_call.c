@@ -22295,9 +22295,18 @@ static void emit_bound_method_call(Compiler *c, int id, int recv, int target, Bu
   buf_printf(&cast, "))(uintptr_t)_t%d->fn)", tr);
   /* An unresolved target binds a NULL fn: raise as the other Method routes
      do rather than jump through it. */
+  /* A pointer's NULL is cast to it: after the comma it is no null pointer
+     constant, and the conditional took void * (`m.call(5).v` did not build).
+     A by-value object's is its zero value. */
+  const char *dflt = default_value(is_void ? comp_ntype(c, id) : tret);
+  Buf dcast; memset(&dcast, 0, sizeof dcast);
+  if (!is_void && sp_streq(dflt, "NULL")) {
+    buf_puts(&dcast, "("); emit_ctype(c, tret, &dcast); buf_puts(&dcast, ")");
+    if (ty_is_object(tret) && comp_ty_value_obj(c, tret)) { buf_puts(&dcast, "{0}"); dflt = ""; }
+  }
   buf_printf(b, "(!_t%d->fn ? (sp_raise_cls(\"NoMethodError\", sp_sprintf(\"undefined method '%%s' for an instance of Object\","
-                " _t%d->name ? _t%d->name : \"?\")), %s) : ", tr, tr, tr,
-             default_value(is_void ? comp_ntype(c, id) : tret));
+                " _t%d->name ? _t%d->name : \"?\")), %s%s) : ", tr, tr, tr, dcast.p ? dcast.p : "", dflt);
+  free(dcast.p);
   if (is_void) buf_printf(b, "(%s(%s), %s))", cast.p, args.p ? args.p : "", default_value(comp_ntype(c, id)));
   else buf_printf(b, "%s(%s))", cast.p, args.p ? args.p : "");
   free(cast.p); free(args.p);
