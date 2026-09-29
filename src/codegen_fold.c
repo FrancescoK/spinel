@@ -7547,7 +7547,7 @@ void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
     /* Bare-poly `**` source (a Hash only known at run time): pull each keyword
        by a runtime key lookup, unboxing to the param type. (#2885) */
     Buf ub; memset(&ub, 0, sizeof ub);
-    emit_unbox_text(c, pt, "_v", &ub);
+    emit_unbox_nilable_text(c, pt, "_v", &ub);
     if (m->pdefault && m->pdefault[i] >= 0) {
       Buf db; memset(&db, 0, sizeof db);
       emit_ds_default(c, m, i, &db);
@@ -7580,7 +7580,7 @@ void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
              "sp_box_sym(sp_sym_intern(\"%s\"))" : "sp_sym_intern(\"%s\")", m->pnames[i]);
     char get_expr[256];
     snprintf(get_expr, sizeof get_expr, "sp_%sHash_get(_t%d, %s)", hn, ds_hash_tmp, key);
-    if (hval == TY_POLY) emit_unbox_text(c, pt, get_expr, &vb);
+    if (hval == TY_POLY) emit_unbox_nilable_text(c, pt, get_expr, &vb);
     else buf_puts(&vb, get_expr);
     /* An optional keyword param (one with a default) whose key may be
        absent from the forwarded hash falls back to its default: a bare
