@@ -1405,7 +1405,8 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/regex_value_as_match_arg.rb \
                   test/kwrest_any_key.rb \
                   test/method_bound_binding_layout.rb \
-                  test/kw_splat_boxed_to_hash.rb
+                  test/kw_splat_boxed_to_hash.rb \
+                  test/byref_keyword_rest_splat_param.rb
 
 # Each program runs with the minor mark off and on and must answer the same;
 # then once more under the generational verifier with stress on (every

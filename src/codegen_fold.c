@@ -5668,6 +5668,20 @@ static void emit_arg_or_default_at(Compiler *c, Scope *m, int idx, int provided,
   g_open_defaults--;
 }
 
+/* A byref parameter (LocalVar.byref_out) takes a slot, and a value with no
+   caller variable behind it -- a literal, an expression, a default, what a
+   binder pulls out of a splat, a gather or a `**` hash -- has none to lend:
+   it binds into a rooted temp and the temp's address is passed. The callee's
+   appends stay in the temp, as the pre-byref value ABI kept them. */
+void emit_lent_temp(const char *val, Buf *out) {
+  int t = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "const char *_t%d = %s;\n", t, val ? val : "NULL");
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
+  buf_printf(out, "&_t%d", t);
+}
+
 static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provided, Buf *out) {
   LocalVar *p = scope_local(m, m->pnames[idx]);
   TyKind pt = p ? p->type : TY_INT;
@@ -5827,12 +5841,7 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
     p->byref_out = 0;   /* reenter for the plain coerced value */
     emit_arg_or_default(c, m, idx, provided, &ab);
     p->byref_out = 1;
-    int t = ++g_tmp;
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "const char *_t%d = %s;\n", t, ab.p ? ab.p : "NULL");
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
-    buf_printf(out, "&_t%d", t);
+    emit_lent_temp(ab.p, out);
     free(ab.p);
     return;
   }
@@ -7556,6 +7565,15 @@ void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
                                   TyKind ds_hash_type, Buf *out) {
   const char *hn = ty_hash_cname(ds_hash_type);
   LocalVar *plv = scope_local(m, m->pnames[i]);
+  if (plv && plv->byref_out) {
+    Buf vb; memset(&vb, 0, sizeof vb);
+    plv->byref_out = 0;
+    emit_ds_param_extract(c, m, i, ds_hash_tmp, ds_hash_type, &vb);
+    plv->byref_out = 1;
+    emit_lent_temp(vb.p, out);
+    free(vb.p);
+    return;
+  }
   TyKind pt = plv ? plv->type : TY_INT;
   if (ds_hash_type == TY_POLY) {
     /* Bare-poly `**` source (a Hash only known at run time): pull each keyword
@@ -8501,6 +8519,135 @@ int arg_layout_plain_arg(Compiler *c, Scope *m, int pos_argc, int i) {
   return a;
 }
 
+/* The argument node call `call` binds parameter i of m to, by the layout the
+   binders follow: the positional placed there, or the value of the keyword
+   naming it (the last one written). -1 when no one node is the parameter's
+   value -- a default, a splat's element, a value out of a `**` or a merged
+   hash; `*spread` (when asked) then names the splat's or the `**`'s operand
+   the value comes out of, or -1. What the analysis reads to follow a String
+   into the parameter that mutates it: indexing the call's arguments by the
+   parameter's position read a keyword hash, or the argument beside a rest,
+   for a keyword or a post. */
+int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread) {
+  const NodeTable *nt = c->nt;
+  if (spread) *spread = -1;
+  if (!m || i < 0 || i >= m->nparams) return -1;
+  int args = nt_ref(nt, call, "arguments");
+  int argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  int kwh = -1, pos_argc = argc, nsplat = 0, splat = -1;
+  if (argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) { kwh = argv[argc - 1]; pos_argc--; }
+  for (int k = 0; k < pos_argc; k++) {
+    NodeKind ak = nt_kind(nt, argv[k]);
+    if (nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "ForwardingArgumentsNode")) return -1;
+    if (ak == NK_SplatNode) { nsplat++; splat = argv[k]; }
+  }
+  /* plain arguments into required positionals alone: the one layout there is */
+  if (kwh < 0 && !nsplat && m->rest_idx < 0 && m->kwrest_idx < 0) {
+    int plain = 1;
+    for (int k = 0; k < m->nparams && plain; k++)
+      if ((m->pdefault && m->pdefault[k] >= 0) ||
+          (m->pnames[k] && callee_param_is_declared_kwarg(c, m, m->pnames[k]))) plain = 0;
+    if (plain) return i < argc ? argv[i] : -1;
+  }
+  ArgLayout L;
+  arg_layout(c, m, argv, pos_argc, kwh, 0, &L);
+  int a = -1;
+  const char *pn = m->pnames[i];
+  if (L.from[i] == ARG_NODE) a = argv[L.arg[i]];
+  else if (L.from[i] == ARG_ELEM || L.from[i] == ARG_GATHERED) {
+    if (nsplat == 1 && spread) *spread = nt_ref(nt, splat, "expression");
+    /* Splats of array literals alone (`m(*[], s)`, `m(*[s])`) have a count
+       the program states: the arguments they spread are the elements, laid
+       out as if written in their place. */
+    int flat_n = 0, ok = 1;
+    for (int k = 0; k < pos_argc && ok; k++) {
+      if (nt_kind(nt, argv[k]) != NK_SplatNode) { flat_n++; continue; }
+      int lit = nt_ref(nt, argv[k], "expression");
+      int en = 0; const int *el = lit >= 0 && nt_kind(nt, lit) == NK_ArrayNode ? nt_arr(nt, lit, "elements", &en) : NULL;
+      if (!el && !(lit >= 0 && nt_kind(nt, lit) == NK_ArrayNode)) { ok = 0; break; }
+      for (int e = 0; e < en; e++) if (nt_kind(nt, el[e]) == NK_SplatNode) ok = 0;
+      flat_n += en;
+    }
+    if (ok) {
+      int *flat = malloc(sizeof(int) * (size_t)(flat_n + 1)), f = 0;
+      for (int k = 0; k < pos_argc; k++) {
+        if (nt_kind(nt, argv[k]) != NK_SplatNode) { flat[f++] = argv[k]; continue; }
+        int en = 0; const int *el = nt_arr(nt, nt_ref(nt, argv[k], "expression"), "elements", &en);
+        for (int e = 0; e < en; e++) flat[f++] = el[e];
+      }
+      if (kwh >= 0) flat[f] = kwh;
+      ArgLayout F;
+      arg_layout(c, m, flat, flat_n, kwh, 0, &F);
+      if (F.from[i] == ARG_NODE) a = flat[F.arg[i]];
+      arg_layout_free(&F);
+      free(flat);
+    }
+  }
+  else if (L.from[i] == ARG_BY_NAME && i != m->kwrest_idx && pn && kwh >= 0 &&
+           callee_has_kwarg(c, m, pn)) {
+    int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
+    int nds = 0, ds = -1;
+    for (int e = 0; e < en; e++)
+      if (nt_kind(nt, el[e]) == NK_AssocSplatNode) { nds++; ds = el[e]; }
+    if (!kwh_merged(c, m, kwh)) a = kwh_lookup(nt, kwh, pn);
+    if (a < 0 && nds == 1 && spread) *spread = nt_ref(nt, ds, "value");
+  }
+  arg_layout_free(&L);
+  return a;
+}
+
+/* How far from the end of the positionals parameter j of m takes its value,
+   whatever their count: a post (behind a rest or an optional) the one as far
+   from the last, and any positional of a method that takes a fixed count.
+   0 when the count decides. */
+static int positional_offset_from_end(Compiler *c, Scope *m, int j) {
+  int end = 0, fixed = m->rest_idx < 0;
+  while (end < m->nparams && end != m->kwrest_idx &&
+         !callee_param_is_declared_kwarg(c, m, m->pnames[end])) {
+    if (m->pdefault && m->pdefault[end] >= 0) fixed = 0;
+    end++;
+  }
+  if (j < 0 || j >= end || j == m->rest_idx) return 0;
+  return fixed || j >= end - m->npost_rest ? end - j : 0;
+}
+
+/* The parameter of s whose value a bare `super` in s hands parameter j of pm,
+   or -1: a keyword the like-named keyword, a positional by the layout of s's
+   positionals over pm's (as zsuper_begin lays them), and around s's rest,
+   where the gather holds them in order, the one at j when pm takes element j
+   there, or s's post as far from the gather's end as pm's parameter j takes
+   it. What the byref analysis follows through a bare super, and what the
+   gathered bare super lends. */
+int zsuper_param_source(Compiler *c, Scope *s, Scope *pm, int j) {
+  if (!s || !pm || j < 0 || j >= pm->nparams || !pm->pnames[j] || j == pm->kwrest_idx) return -1;
+  if (callee_param_is_declared_kwarg(c, pm, pm->pnames[j])) {
+    if (!callee_param_is_declared_kwarg(c, s, pm->pnames[j])) return -1;
+    for (int k = 0; k < s->nparams; k++)
+      if (s->pnames[k] && sp_streq(s->pnames[k], pm->pnames[j])) return k;
+    return -1;
+  }
+  int npos = 0;
+  while (npos < s->nparams && npos != s->rest_idx && npos != s->kwrest_idx &&
+         !callee_param_is_declared_kwarg(c, s, s->pnames[npos])) npos++;
+  if (s->rest_idx >= 0) {
+    if (j < npos && j != pm->rest_idx && !(pm->rest_idx >= 0 && j > pm->rest_idx) &&
+        !(pm->rest_idx < 0 && opt_before_required(c, pm))) return j;
+    /* The gather ends with s's posts, and a parameter of pm taking an
+       element as far from the end is one of them: `def m(a, *r, last) =
+       super` into a parent's `m(a, *r, last)`. Not when s's keywords would
+       ride at the gather's end, as the hash of a parent that takes none. */
+    int off = positional_offset_from_end(c, pm, j);
+    int s_kw = s->kwrest_idx >= 0;
+    for (int k = npos; k < s->nparams && !s_kw; k++)
+      if (k != s->rest_idx && callee_param_is_declared_kwarg(c, s, s->pnames[k])) s_kw = 1;
+    if (off < 1 || off > s->npost_rest || !s->pnames[s->rest_idx] ||
+        (s_kw && !callee_declares_kwargs(c, pm) && pm->kwrest_idx < 0)) return -1;
+    return s->rest_idx + s->npost_rest + 1 - off;
+  }
+  return arg_layout_plain_arg(c, pm, npos, j);
+}
+
 /* Gather a call's positionals, the splat spread in place, into one rooted
    PolyArray and refuse a count the parameters cannot take. The keyword hash
    is the last of them where the layout says (gather_kwh): one of `**`
@@ -8611,6 +8758,15 @@ void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out) {
     return;
   }
   LocalVar *sp = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
+  if (sp && sp->byref_out) {
+    Buf vb; memset(&vb, 0, sizeof vb);
+    sp->byref_out = 0;
+    emit_gathered_param(c, m, i, ct, &vb);
+    sp->byref_out = 1;
+    emit_lent_temp(vb.p, out);
+    free(vb.p);
+    return;
+  }
   TyKind pt = sp ? sp->type : TY_POLY;
   Buf eb; memset(&eb, 0, sizeof eb);
   char raw[128];
@@ -8688,6 +8844,17 @@ static int emit_splat_given_count(Compiler *c, Scope *m, const ArgLayout *L, int
 static void emit_elem_param(Compiler *c, Scope *m, int i, int off, int tmp, TyKind at, int gathered,
                             Buf *out) {
   LocalVar *sp = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
+  if (sp && sp->byref_out) {
+    /* an element (or the default it falls back to) has no caller variable
+       to write back to: bind the value, then lend a temp */
+    Buf vb; memset(&vb, 0, sizeof vb);
+    sp->byref_out = 0;
+    emit_elem_param(c, m, i, off, tmp, at, gathered, &vb);
+    sp->byref_out = 1;
+    emit_lent_temp(vb.p, out);
+    free(vb.p);
+    return;
+  }
   TyKind set = ty_array_elem(at);
   Buf eb; memset(&eb, 0, sizeof eb);
   if (sp && sp->type == TY_POLY && set != TY_POLY && set != TY_UNKNOWN) {
@@ -8723,17 +8890,6 @@ static void emit_elem_param(Compiler *c, Scope *m, int i, int off, int tmp, TyKi
     buf_printf(out, "(%d < (_t%d ? _t%d->len : 0) ? %s : %s)", off, tmp, tmp,
                eb.p ? eb.p : "", db.p ? db.p : default_value(pt));
     free(db.p);
-  }
-  else if (sp && sp->byref_out) {
-    /* a splat element filling a byref out-param slot has no caller
-       variable to write back to: pass a rooted temp's address (the
-       mutation stays local, like the pre-byref behavior). */
-    int bt = ++g_tmp;
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "const char *_t%d = %s;\n", bt, eb.p ? eb.p : "NULL");
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", bt);
-    buf_printf(out, "&_t%d", bt);
   }
   else buf_puts(out, eb.p ? eb.p : "");
   free(eb.p);
