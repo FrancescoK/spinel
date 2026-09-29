@@ -34364,7 +34364,10 @@ else {
           }
           if (sp_streq(spec, "str")) {
             if (at == TY_POLY) {
-              buf_puts(&call_buf, "("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ").v.s");
+              /* a boxed String may be a shared handle (a mutable String boxed
+                 as SP_BUILTIN_STRBUF), whose .v.s is the handle, not the
+                 bytes; nil is FFI's NULL, anything else a TypeError (#5679) */
+              buf_puts(&call_buf, "sp_poly_arg_str_or_null("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")");
             }
             else {
               /* An UNKNOWN argument lowers to the gate's raise token, an
