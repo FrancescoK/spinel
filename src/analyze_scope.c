@@ -4942,8 +4942,14 @@ int cmethod_has_bare_new(Compiler *c, int mi) {
    specialized for ci too, or its implicit-self chain stays bound to the base and
    the override is skipped (#1451). The depth cap bounds the walk and doubles as a
    cycle guard for mutually-recursive cmethods. */
-static int cmethod_reaches_override(Compiler *c, int mi, int ci, int def_cls, int depth) {
-  if (depth > 64) return 0;
+static int cmethod_reaches_override_walk(Compiler *c, int mi, int ci, int def_cls,
+                                         unsigned char *seen) {
+  /* A visited set, not a depth cap: the walk branches at every bare call,
+     so a depth cap alone is exponential on a class-side DSL whose methods
+     call each other (a Rails-shaped app spent 20+ minutes here). Reachability
+     of an override is exactly what a DFS with a visited set answers. */
+  if (mi < 0 || mi >= c->nscopes || seen[mi]) return 0;
+  seen[mi] = 1;
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     if (c->nscope[id] != mi) continue;
@@ -4957,9 +4963,17 @@ static int cmethod_reaches_override(Compiler *c, int mi, int ci, int def_cls, in
     /* nm is inherited unchanged by ci -- but its own body may still reach an
        override; descend into the def-chain version. */
     if (mdef >= 0 && sub_def >= 0 &&
-        cmethod_reaches_override(c, mdef, ci, sub_def, depth + 1)) return 1;
+        cmethod_reaches_override_walk(c, mdef, ci, sub_def, seen)) return 1;
   }
   return 0;
+}
+
+static int cmethod_reaches_override(Compiler *c, int mi, int ci, int def_cls, int depth) {
+  (void)depth;
+  unsigned char *seen = calloc((size_t)c->nscopes + 1, 1);
+  int r = seen ? cmethod_reaches_override_walk(c, mi, ci, def_cls, seen) : 0;
+  free(seen);
+  return r;
 }
 
 /* Does the inherited cls method `mi` (defined on def_cls) name a class-level
@@ -4970,8 +4984,9 @@ static int cmethod_reaches_override(Compiler *c, int mi, int ci, int def_cls, in
    `@fields`), and reading only mi's own body left `field` unspecialized and
    still pointed at the base class's slot (#4051). The depth cap bounds the walk
    and doubles as a cycle guard for mutually-recursive cmethods. */
-static int cmethod_reaches_class_ivar(Compiler *c, int mi, int def_cls, int depth) {
-  if (depth > 64) return 0;
+static int cmethod_reaches_class_ivar_walk(Compiler *c, int mi, int def_cls, unsigned char *seen) {
+  if (mi < 0 || mi >= c->nscopes || seen[mi]) return 0;
+  seen[mi] = 1;
   const NodeTable *nt = c->nt;
   for (int id = 0; id < nt->count; id++) {
     if (c->nscope[id] != mi) continue;
@@ -4988,9 +5003,17 @@ static int cmethod_reaches_class_ivar(Compiler *c, int mi, int def_cls, int dept
     int sub_def = -1;
     int mdef = comp_cmethod_in_chain(c, def_cls, nm, &sub_def);
     if (mdef >= 0 && mdef != mi && sub_def >= 0 &&
-        cmethod_reaches_class_ivar(c, mdef, sub_def, depth + 1)) return 1;
+        cmethod_reaches_class_ivar_walk(c, mdef, sub_def, seen)) return 1;
   }
   return 0;
+}
+
+static int cmethod_reaches_class_ivar(Compiler *c, int mi, int def_cls, int depth) {
+  (void)depth;
+  unsigned char *seen = calloc((size_t)c->nscopes + 1, 1);
+  int r = seen ? cmethod_reaches_class_ivar_walk(c, mi, def_cls, seen) : 0;
+  free(seen);
+  return r;
 }
 
 /* Does the inherited cls method `mi` (defined on def_cls) contain a bare call
