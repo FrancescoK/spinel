@@ -28,3 +28,7 @@
 [3, 4]
 [1]
 undefined method 'lazy' for an instance of Integer
+NoMethodError
+NoMethodError
+[14, 16]
+[2, 4]

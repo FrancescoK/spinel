@@ -24,3 +24,18 @@ begin
 rescue NoMethodError => e
   puts e.message
 end
+
+# a boxed value with no each raises, as lazy does in CRuby
+class LazyBox; end
+class LazyCol
+  include Enumerable
+  def each = [7, 8].each { |x| yield x }
+end
+def lazy_two(o) = o.lazy.map { |x| x * 2 }.first(2)
+[5, LazyBox.new, LazyCol.new, [1, 2]].each do |v|
+  begin
+    p lazy_two(v)
+  rescue NoMethodError => e
+    p e.class
+  end
+end
