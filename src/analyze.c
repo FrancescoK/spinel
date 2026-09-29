@@ -16353,6 +16353,16 @@ static void mark_nullable_int_locals(Compiler *c) {
     if (c->scopes[mi].ret_rbs_nilable &&
         (c->scopes[mi].ret == TY_INT || c->scopes[mi].ret == TY_FLOAT))
       c->scopes[mi].ret_nullable_int = 1;
+  /* A Float ivar initialize need not assign holds the constructor's nil seed
+     (emit_ivar_nil_inits) until its first write, so a local copied from it
+     carries the sentinel too. An int's boxing checks its sentinel anyway. */
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *ci = &c->classes[k];
+    if (ci->is_struct) continue;
+    for (int iv = 0; iv < ci->nivars; iv++)
+      if (ci->ivar_types[iv] == TY_FLOAT && !ivar_assigned_in_initialize(c, k, ci->ivars[iv]))
+        ci->ivar_nullable_int[iv] = 1;
+  }
   /* Method returns propagate through this fixpoint too (a pass-through method
      is nilable because its callee is), so the cap has to clear a chain of
      them rather than the single hop the local marking used to need. Every

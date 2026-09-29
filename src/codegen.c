@@ -7412,6 +7412,10 @@ static void emit_ivar_nil_inits(Buf *b, ClassInfo *ci, const char *lv,
     const char *name = iv_c(ci->ivars[i] + 1);  /* skip leading '@', mangle to a C field */
     if (ci->ivar_types[i] == TY_POLY)
       buf_printf(b, "%s%siv_%s = sp_box_nil()%s", lead, lv, name, term);
+    /* a Float slot initialize need not assign (ivar_nullable_int): its nil
+       is the NaN sentinel, and 0.0 read as a real number */
+    else if (ci->ivar_types[i] == TY_FLOAT && ci->ivar_nullable_int[i])
+      buf_printf(b, "%s%siv_%s = SP_FLOAT_NIL_CONST%s", lead, lv, name, term);
     else {
       const char *nv = ivar_scalar_nil_init(ci->ivar_types[i]);
       if (nv) buf_printf(b, "%s%siv_%s = %s%s", lead, lv, name, nv, term);
