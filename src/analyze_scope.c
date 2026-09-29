@@ -836,6 +836,22 @@ static void sclass_walk_stmt(Compiler *c, int s, int scope_idx, int target_class
     walk_scope(c, s, scope_idx, target_class);
     return;
   }
+  /* `private def m` / `protected def m` / `public def m`: the def is the
+     visibility call's argument, and still a class method */
+  if (k == NK_CallNode && nt_ref(nt, s, "receiver") < 0 && nt_ref(nt, s, "block") < 0) {
+    const char *vn = nt_str(nt, s, "name");
+    int va = nt_ref(nt, s, "arguments");
+    int vc = 0; const int *vv = va >= 0 ? nt_arr(nt, va, "arguments", &vc) : NULL;
+    if (vn && (sp_streq(vn, "private") || sp_streq(vn, "protected") || sp_streq(vn, "public")) &&
+        vc == 1 && nt_kind(nt, vv[0]) == NK_DefNode && nt_ref(nt, vv[0], "receiver") < 0) {
+      c->nscope[s] = scope_idx;
+      c->node_cbody[s] = g_cbody_class_id;
+      c->nscope[va] = scope_idx;
+      c->node_cbody[va] = g_cbody_class_id;
+      sclass_walk_stmt(c, vv[0], scope_idx, target_class, depth + 1);
+      return;
+    }
+  }
   if (k == NK_DefNode && nt_ref(nt, s, "receiver") < 0) {
     const char *name = nt_str(nt, s, "name");
     if (!name) return;
