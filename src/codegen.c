@@ -9577,7 +9577,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
       int sup_args = ty && sp_streq(ty, "SuperNode") ? nt_ref(c->nt, id, "arguments") : -1;
       int sup_argc = 0;
       if (sup_args >= 0) nt_arr(c->nt, sup_args, "arguments", &sup_argc);
-      if ((fwd_super && s->nparams == 0) || (!fwd_super && sup_argc == 0)) {
+      if ((fwd_super && (s->nparams == 0 || emit_zsuper_gather(c, s, NULL) >= 0)) || (!fwd_super && sup_argc == 0)) {
         buf_puts(b, default_value(comp_ntype(c, id)));
         return;
       }

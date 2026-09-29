@@ -7900,7 +7900,7 @@ static void emit_positional_count_check(Compiler *c, Scope *m, const char *given
   emit_indent(g_pre, g_indent);
   /* no upper bound where the static count has none: a rest, or a Kernel
      wrapper whose builtin takes any count (bam_variadic_kernel) */
-  int unbounded = m->rest_idx >= 0 || bam_variadic_kernel(c->nt, m);
+  int unbounded = m && (m->rest_idx >= 0 || bam_variadic_kernel(c->nt, m));
   emit_arity_check(g_pre, given, pos_required, unbounded ? -1 : pos_params, kw);
   buf_puts(g_pre, ";\n");
 }

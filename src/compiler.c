@@ -1862,6 +1862,7 @@ int comp_super_is_class_new(Compiler *c, int id) {
 }
 
 const char *comp_prep_user_name(const char *name) {
+  if (name && strncmp(name, "__inc ", 6) == 0) return strchr(name + 6, ' ') + 1;
   if (!name || strncmp(name, "__prep_", 7) != 0) return name;
   const char *p = name + 7;
   while (*p >= '0' && *p <= '9') p++;
