@@ -1935,9 +1935,11 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      clean C build (#4109). subsec answers Integer 0 or a Rational, so it stays
      boxed. Only the names Time alone owns are here -- min / round / floor /
      ceil belong to the collections and the numbers too, and claiming a type
-     for them would answer for every boxed receiver, not just a Time. */
+     for them would answer for every boxed receiver, not just a Time. A class
+     of the program's own with a method or a reader of the name answers for
+     itself (`attr_reader :zone` holding an Integer). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_recv_defines_method(c, name)) {
+      !an_user_recv_defines_method(c, name) && !an_user_defines_or_reads(c, name)) {
     if (sp_streq(name, "tv_usec") || sp_streq(name, "usec") ||
         sp_streq(name, "tv_nsec") || sp_streq(name, "nsec") ||
         sp_streq(name, "utc_offset") || sp_streq(name, "gmt_offset") ||
@@ -1953,10 +1955,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         ((sp_streq(name, "iso8601") || sp_streq(name, "xmlschema")) &&
          sp_feature_enabled("time")))
       { *out = TY_STRING; return 1; }
-    /* asctime: only where no class of the program's own has a method or a
-       reader of the name */
-    if (sp_streq(name, "asctime") && !an_user_defines_or_reads(c, name))
-      { *out = TY_STRING; return 1; }
+    if (sp_streq(name, "asctime")) { *out = TY_STRING; return 1; }
     if (sp_streq(name, "subsec")) { *out = TY_POLY; return 1; }
   }
   /* iso8601(n) / xmlschema(n) on a boxed Time: the fraction-digits form the
