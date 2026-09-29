@@ -10229,6 +10229,18 @@ int block_settle_types(Compiler *c, int blk, const BlockSig *s,
   return changed;
 }
 
+static int block_leaves_unify(Compiler *c, int block, Scope *s, TyKind t) {
+  int changed = 0, lc = block_param_multi_count(c, block, 0);
+  for (int li = 0; li < lc; li++) {
+    const char *ln = block_param_multi_leaf(c, block, 0, li);
+    if (!ln) continue;
+    LocalVar *lp = scope_local_intern(s, ln); lp->is_block_param = 1;
+    TyKind m = ty_unify(lp->type, t);
+    if (m != lp->type) { lp->type = m; changed = 1; }
+  }
+  return changed;
+}
+
 int infer_block_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -11130,14 +11142,7 @@ int infer_block_params(Compiler *c) {
       int np = 0; while (block_param_name(c, block, np)) np++;
       if (np == 0 && block_param_is_multi(c, block, 0)) {
         TyKind elem = ty_array_elem(rt);
-        int lc = block_param_multi_count(c, block, 0);
-        for (int li = 0; li < lc; li++) {
-          const char *ln = block_param_multi_leaf(c, block, 0, li);
-          if (!ln) continue;
-          LocalVar *lp = scope_local_intern(es, ln); lp->is_block_param = 1;
-          TyKind m = ty_unify(lp->type, elem);
-          if (m != lp->type) { lp->type = m; changed = 1; }
-        }
+        changed |= block_leaves_unify(c, block, es, elem);
       }
       else {
         for (int pj = 0; pj < np; pj++) {
@@ -11176,16 +11181,7 @@ int infer_block_params(Compiler *c) {
           if (np2 == 0 && block_param_is_multi(c, block, 0)) {
             /* |(a, b)| destructuring: each leaf gets element type */
             TyKind elem2 = ty_array_elem(arr_t2);
-            if (elem2 != TY_UNKNOWN) {
-              int lc2 = block_param_multi_count(c, block, 0);
-              for (int li = 0; li < lc2; li++) {
-                const char *ln = block_param_multi_leaf(c, block, 0, li);
-                if (!ln) continue;
-                LocalVar *lp = scope_local_intern(es2, ln); lp->is_block_param = 1;
-                TyKind m2 = ty_unify(lp->type, elem2);
-                if (m2 != lp->type) { lp->type = m2; changed = 1; }
-              }
-            }
+            if (elem2 != TY_UNKNOWN) changed |= block_leaves_unify(c, block, es2, elem2);
           }
           else {
             for (int pj2 = 0; pj2 < np2; pj2++) {
@@ -11228,14 +11224,7 @@ int infer_block_params(Compiler *c) {
           }
           if (block_param_is_multi(c, block, 0)) {
             /* |(a, b), i|: destructure first multi-target param */
-            int lc3 = block_param_multi_count(c, block, 0);
-            for (int li = 0; li < lc3; li++) {
-              const char *ln = block_param_multi_leaf(c, block, 0, li);
-              if (!ln) continue;
-              LocalVar *lp = scope_local_intern(wi_es, ln); lp->is_block_param = 1;
-              TyKind m3 = ty_unify(lp->type, elem_t);
-              if (m3 != lp->type) { lp->type = m3; changed = 1; }
-            }
+            changed |= block_leaves_unify(c, block, wi_es, elem_t);
           }
           else {
             /* |pair, i|: pair gets the sub-array type */
