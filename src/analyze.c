@@ -21234,6 +21234,8 @@ void analyze_program(Compiler *c) {
     /* immutable check: an ivar write outside `initialize` defeats value type */
     if (sp_streq(ty, "InstanceVariableWriteNode") ||
         sp_streq(ty, "InstanceVariableOperatorWriteNode") ||
+        sp_streq(ty, "InstanceVariableOrWriteNode") ||
+        sp_streq(ty, "InstanceVariableAndWriteNode") ||
         sp_streq(ty, "InstanceVariableTargetNode")) {
       Scope *s = comp_scope_of(c, id);
       if (s && s->class_id >= 0 && s->class_id < c->nclasses &&
