@@ -5116,7 +5116,7 @@ static int bam_call_argc(Compiler *c, int mnode) {
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;
     /* a local re-written to several Methods may hold this one at the call */
-    int mns[8], nmn = method_recv_nodes(c, recv, mns, 8), holds = 0;
+    int mns[8], nmn = method_recv_nodes(c, recv, mns, 8), holds = recv == nt_int(nt, mnode, "dyn_of", -1);
     for (int j = 0; j < nmn && !holds; j++) holds = mns[j] == mnode;
     if (!holds) continue;
     if (nt_ref(nt, id, "block") >= 0) return -1;
@@ -5341,6 +5341,7 @@ static int desugar_builtin_method_obj(Compiler *c) {
                       (ty_is_array(rt) || rt == TY_STRING);
     nt_node_set_str(nt, call, "name", slice_alias ? "[]" : sym);
     nt_node_set_ref(nt, call, "receiver", rread);
+    if (nt_int(nt, id, "dyn_of", -1) >= 0) nt_node_set_int(nt, call, "dyn_arm", 1);
     if (cargs >= 0) nt_node_set_ref(nt, call, "arguments", cargs);
     int body = nt_new_node(nt, "StatementsNode");
     nt_node_set_arr(nt, body, "body", &call, 1);

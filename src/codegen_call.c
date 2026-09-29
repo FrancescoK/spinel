@@ -10757,13 +10757,13 @@ static int class_method_named(Compiler *c, const char *name) {
 /* Does any class have an attribute writer for `name` (`pos=` from
    `attr_accessor :pos`, a Struct member)? Writers are kept under the base
    name, which the arm's method and reader test does not ask. */
-static int attr_writer_named(Compiler *c, const char *name) {
+static int attr_writer_named(Compiler *c, int cls, const char *name) {
   size_t nl = strlen(name);
   char base[128];
   if (nl < 2 || name[nl - 1] != '=' || nl > sizeof base) return 0;
   memcpy(base, name, nl - 1); base[nl - 1] = '\0';
   for (int k = 0; k < c->nclasses; k++)
-    if (comp_writer_in_chain(c, k, base, NULL)) return 1;
+    if ((cls < 0 || k == cls) && comp_writer_in_chain(c, k, base, NULL)) return 1;
   return 0;
 }
 
@@ -25485,6 +25485,12 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           if (!builtin_method_arity(PCLS[q], disp, &ba)) continue;
           buf_puts(b, "("); buf_printf(b, PTST[q], tbr, tbr); buf_printf(b, ") ? %d : ", ba);
         }
+        for (int k = 0; k < c->nclasses; k++) {
+          int ka = method_scope_arity(c, comp_method_in_chain(c, k, disp, NULL), &ar) ? ar
+                 : comp_reader_in_chain(c, k, disp, NULL) ? 0 : attr_writer_named(c, k, disp) ? 1 : fallback;
+          if (ka != fallback)
+            buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d) ? %d : ", tbr, tbr, k, ka);
+        }
         buf_printf(b, "%d)", fallback);
       }
       else if (mi >= 0 && method_scope_arity(c, mi, &ar)) buf_printf(b, ", (sp_int)%d", ar);
@@ -28085,7 +28091,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           attribute writer of that name may be the receiver's */
        (boxed_desc_control_arity(name, argc) && !call_has_splat_arg(nt, argv, argc) &&
         !(sp_streq(name, "advise") && comp_ntype(c, argv[0]) != TY_SYMBOL) &&
-        !class_method_named(c, name) && !attr_writer_named(c, name)) ||
+        !class_method_named(c, name) && !attr_writer_named(c, -1, name)) ||
        /* the descriptor surface a boxed handle needs as much as a typed one:
           an fd table is a mixed Hash (0/1/2 an IO, the rest Files), so every
           one of these reached the unresolved-call gate (#4611) */
