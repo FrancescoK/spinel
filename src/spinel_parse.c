@@ -2494,6 +2494,15 @@ static char *resolve_requires(const char *source, const char *source_path,
     /* What the call answers: true when this is the require that read the
        file, false when something already had (#3453). */
     const char *req_val = "true";
+    /* a name computed at run time: CRuby's LoadError (as for require) */
+    if (hit.arg[-1] == '"' && strstr(rel_path, "#{")) {
+      char val[700];
+      snprintf(val, sizeof val, "raise(LoadError, \"cannot load such file -- %s\")", rel_path);
+      size_t cn = 0; unsigned char *cf = sp_fsl_make("", 0, &cn);
+      sp_req_hoist_splice(&result, &fsl, &fsl_n, &hit, "", cf, cn, val);
+      free(cf);
+      continue;
+    }
 
     /* Build full path */
     char full_path[1024];
@@ -2937,6 +2946,18 @@ static char *resolve_plain_requires(char *source, const char *exe_path,
        require Spinel could not satisfy at all -- where CRuby would have raised
        LoadError rather than answer (#3453). */
     const char *req_val = "nil";
+    /* A name computed at run time (`require "sqlite3/#{v}/native"`) names no
+       file the program was compiled with: the call raises CRuby's LoadError,
+       with the message it would carry, which the usual `rescue LoadError`
+       fallback around it expects. */
+    if (hit.arg[-1] == '"' && strstr(lib_name, "#{")) {
+      char val[400];
+      snprintf(val, sizeof val, "raise(LoadError, \"cannot load such file -- %s\")", lib_name);
+      size_t cn = 0; unsigned char *cf = sp_fsl_make("", 0, &cn);
+      sp_req_hoist_splice(&result, fsl, fsl_n, &hit, "", cf, cn, val);
+      free(cf);
+      continue;
+    }
     char lib_path[1024];
     snprintf(lib_path, sizeof(lib_path), "%s/%s", lib_dir, lib_name);
     {

@@ -1,0 +1,3 @@
+"cannot load such file -- no_such_lib/9.9/native"
+LoadError
+false
