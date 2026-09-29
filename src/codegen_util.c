@@ -1087,6 +1087,15 @@ void emit_cvar_set_flag(Compiler *c, int cid, const char *nm, int as_expr, Buf *
   buf_printf(b, "cvar_%s_%s__set = 1%s", c->classes[cid].name, nm + 2, as_expr ? ", " : "; ");
 }
 
+/* The flag set after the store, in value position: `(cvar = rhs` + this +
+   `)` keeps the cvar's value as the expression's, and the right-hand side
+   still sees the cvar unset. */
+void emit_cvar_set_flag_after(Compiler *c, int cid, const char *nm, Buf *b) {
+  if (cid < 0 || !nm || !cvar_defined_probed(c, nm)) return;
+  buf_printf(b, ", cvar_%s_%s__set = 1, cvar_%s_%s", c->classes[cid].name, nm + 2,
+             c->classes[cid].name, nm + 2);
+}
+
 static int subtree_has_param_named(const NodeTable *nt, int id, const char *nm);
 int subtree_has_param_named_pub(const NodeTable *nt, int id, const char *nm) {
   return subtree_has_param_named(nt, id, nm);

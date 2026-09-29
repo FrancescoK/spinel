@@ -2240,13 +2240,12 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     TyKind ct = TY_INT;
     int idx = comp_cvar_index(&c->classes[cid], nm);
     if (idx >= 0) ct = c->classes[cid].cvar_types[idx];
-    buf_puts(b, "(");
-    emit_cvar_set_flag(c, cid, nm, 1, b);
-    buf_printf(b, "cvar_%s_%s = ", c->classes[cid].name, nm + 2);
+    buf_printf(b, "(cvar_%s_%s = ", c->classes[cid].name, nm + 2);
     if (emit_empty_container_for_slot(c, v, ct, b)) { /* emitted at the slot's type */ }
     else if (ct == TY_POLY) emit_boxed(c, v, b);
     else if (emit_array_into_poly_slot(c, ct, v, b)) { }
     else emit_expr(c, v, b);
+    emit_cvar_set_flag_after(c, cid, nm, b);
     buf_puts(b, ")");
     return;
   }
@@ -2310,11 +2309,10 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     TyKind ot = oidx >= 0 ? c->classes[cid].cvar_types[oidx] : TY_UNKNOWN;
     buf_puts(b, "(");
     emit_slot_truthy(ot, ref, b);
-    buf_printf(b, " ? %s : (", ref);
-    emit_cvar_set_flag(c, cid, nm, 1, b);
-    buf_printf(b, "%s = ", ref);
+    buf_printf(b, " ? %s : (%s = ", ref, ref);
     if (ot == TY_POLY) emit_boxed(c, v, b);
     else emit_expr(c, v, b);
+    emit_cvar_set_flag_after(c, cid, nm, b);
     buf_puts(b, "))");
     return;
   }

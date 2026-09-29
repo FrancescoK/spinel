@@ -30759,11 +30759,11 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           TyKind ct = c->classes[ccid].cvar_types[cvi];
           if (sp_streq(name, "class_variable_get")) { emit_boxed_text(c, ct, ref, b); return; }
           if (sp_streq(name, "class_variable_set") && argc == 2) {
-            buf_puts(b, "(");
-            emit_cvar_set_flag(c, ccid, cvn, 1, b);
-            buf_printf(b, "%s = ", ref);
+            buf_printf(b, "(%s = ", ref);
             if (ct == TY_POLY) emit_boxed(c, argv[1], b); else emit_expr(c, argv[1], b);
-            buf_puts(b, ", "); emit_boxed_text(c, ct, ref, b); buf_puts(b, ")");
+            buf_puts(b, ", ");
+            emit_cvar_set_flag(c, ccid, cvn, 1, b);
+            emit_boxed_text(c, ct, ref, b); buf_puts(b, ")");
             return;
           }
         }

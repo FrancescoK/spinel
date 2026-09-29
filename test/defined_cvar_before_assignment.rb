@@ -75,3 +75,16 @@ module M
   def self.r = defined?(@@mm)
 end
 p M.r
+
+# the right-hand side runs before the class variable is set
+class SelfRef
+  def self.a = (@@sa = defined?(@@sa))
+  def self.b
+    @@sb = defined?(@@sb)
+    @@sb
+  end
+  def self.c
+    @@sc ||= defined?(@@sc).inspect
+  end
+end
+p SelfRef.a, SelfRef.b, SelfRef.c

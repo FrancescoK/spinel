@@ -8841,7 +8841,6 @@ else {
     int idx = comp_cvar_index(&c->classes[sc], nm);
     if (idx >= 0) ct = c->classes[sc].cvar_types[idx];
     emit_indent(b, indent);
-    emit_cvar_set_flag(c, sc, nm, 0, b);
     buf_printf(b, "cvar_%s_%s = ", c->classes[sc].name, nm + 2);
     if (emit_empty_container_for_slot(c, v, ct, b)) { /* emitted at the slot's type */ }
     else if (ct == TY_POLY) emit_boxed(c, v, b);
@@ -8849,7 +8848,9 @@ else {
     /* an int into a bigint slot promotes at the boundary, as everywhere else */
     else if (ct == TY_BIGINT && comp_ntype(c, v) != TY_BIGINT) emit_bigint_operand_ext(c, v, b);
     else emit_expr(c, v, b);
-    buf_puts(b, ";\n");
+    buf_puts(b, "; ");
+    emit_cvar_set_flag(c, sc, nm, 0, b);
+    buf_puts(b, "\n");
     return;
   }
   if (sp_streq(ty, "ClassVariableOperatorWriteNode")) {
@@ -8893,12 +8894,12 @@ else {
        the value form does */
     buf_puts(b, "if (!");
     emit_slot_truthy(ot, ref, b);
-    buf_puts(b, ") { ");
-    emit_cvar_set_flag(c, sc, nm, 0, b);
-    buf_printf(b, "%s = ", ref);
+    buf_printf(b, ") { %s = ", ref);
     if (ot == TY_POLY) emit_boxed(c, v, b);
     else emit_expr(c, v, b);
-    buf_puts(b, "; }\n");
+    buf_puts(b, "; ");
+    emit_cvar_set_flag(c, sc, nm, 0, b);
+    buf_puts(b, "}\n");
     return;
   }
   if (sp_streq(ty, "ClassVariableAndWriteNode")) {
