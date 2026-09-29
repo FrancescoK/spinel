@@ -22921,6 +22921,15 @@ static void emit_exc_exception(Compiler *c, int recv, int arg, Buf *b) {
   buf_puts(b, ")");
 }
 
+static int hoist_exc_recv(Compiler *c, int recv) {
+  int t = ++g_tmp;
+  Buf rb = expr_buf(c, recv);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_Exception *_t%d = ", t);
+  buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+  return t;
+}
+
 static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -30116,11 +30125,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     }
     if (sp_streq(name, "message") || sp_streq(name, "to_s") || sp_streq(name, "to_str")) {
       /* NULL-guard: a nil $! (outside any rescue) has no message. */
-      int t = ++g_tmp;
-      Buf rb = expr_buf(c, recv);
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_Exception *_t%d = ", t);
-      buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+      int t = hoist_exc_recv(c, recv);
       /* An override answering something other than a String cannot ride the
          const char * dispatcher; the boxed pair carries it, and the call types
          poly to match (#3868). */
@@ -30150,42 +30155,26 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       return;
     }
     if (sp_streq(name, "full_message")) {
-      int t = ++g_tmp;
-      Buf rb = expr_buf(c, recv);
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_Exception *_t%d = ", t);
-      buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+      int t = hoist_exc_recv(c, recv);
       buf_printf(b, "sp_sprintf(\"%%s: %%s\", sp_exc_class_name(_t%d), sp_exc_message(_t%d))", t, t);
       return;
     }
     /* detailed_message -> "message (ClassName)" (kwargs like highlight: ignored) */
     if (sp_streq(name, "detailed_message")) {
-      int t = ++g_tmp;
-      Buf rb = expr_buf(c, recv);
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_Exception *_t%d = ", t);
-      buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+      int t = hoist_exc_recv(c, recv);
       buf_printf(b, "sp_sprintf(\"%%s (%%s)\", sp_exc_message(_t%d), sp_exc_class_name(_t%d))", t, t);
       return;
     }
     if (sp_streq(name, "inspect")) {
       /* #<ClassName: message>, or "nil" for a nil $! (outside any rescue). */
-      int t = ++g_tmp;
-      Buf rb = expr_buf(c, recv);
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_Exception *_t%d = ", t);
-      buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+      int t = hoist_exc_recv(c, recv);
       /* an empty message renders as the bare class name (#3713) */
       buf_printf(b, "sp_exc_inspect((void *)_t%d)", t);
       return;
     }
     if (sp_streq(name, "class")) {  /* a Class carried by name (complete for every exception class) */
       /* a nil $! (outside any rescue) is NilClass, matching the sibling nil-guards. */
-      int t = ++g_tmp;
-      Buf rb = expr_buf(c, recv);
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_Exception *_t%d = ", t);
-      buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+      int t = hoist_exc_recv(c, recv);
       buf_printf(b, "((sp_Class){0, _t%d ? sp_exc_class_name(_t%d) : SPL(\"NilClass\")})", t, t);
       return;
     }
