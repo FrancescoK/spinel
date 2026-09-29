@@ -1,0 +1,7 @@
+1
+"fiber called across threads"
+2
+"fiber called across threads"
+[1, 2]
+"fiber called across threads"
+true
