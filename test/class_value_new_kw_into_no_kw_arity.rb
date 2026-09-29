@@ -19,7 +19,7 @@ end
 
 TYPES = { 0 => A, 1 => B, 2 => C }.freeze
 
-def build(i, x) = TYPES.fetch(i).new(x, k: 1)
+def build(i, x) = TYPES.fetch(i).new(x, k: 1) { |v| v }
 def build2(i) = TYPES.fetch(i).new(1, 2, 3, k: 1)
 
 B.new(9) { |v| v }
