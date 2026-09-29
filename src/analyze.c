@@ -15338,15 +15338,7 @@ int make_yield_proc_forms(Compiler *c) {
     /* The defaults are the clone's own too: one reading an earlier parameter
        is typed against the clone's, which arrive boxed, where sharing the
        original's nodes read them as the original's sp_int. */
-    for (int p = 0; p < c->scopes[di].nparams; p++) {
-      int od = c->scopes[di].pdefault[p];
-      if (od < 0) continue;
-      int nd = nt_clone_subtree(nt, od);
-      if (nd < 0) continue;
-      comp_grow_node_arrays(c);
-      c->scopes[di].pdefault[p] = nd;
-      walk_scope(c, nd, di, c->scopes[di].class_id);
-    }
+    scope_own_defaults(c, di);
     made = 1;
   }
   if (made) {
