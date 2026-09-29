@@ -690,7 +690,11 @@ void compute_instantiated(Compiler *c, int early) {
     }
   }
   if (disable)
-    for (int k = 0; k < c->nclasses; k++) c->classes[k].instantiated = 1;
+    for (int k = 0; k < c->nclasses; k++) {
+      /* main's ivars live on the Toplevel pseudo-class, which is never built */
+      if (sp_streq(c->classes[k].name, "Toplevel")) continue;
+      c->classes[k].instantiated = 1;
+    }
   for (int k = 0; k < c->nclasses; k++) c->classes[k].ctor_reachable = c->classes[k].instantiated;
   if (early) { for (int k = 0; k < c->nclasses; k++) c->classes[k].instantiated = keep[k]; free(keep); }
 }
