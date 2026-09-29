@@ -25585,17 +25585,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                          : nrt == TY_RANGE ? "Range" : nrt == TY_TIME ? "Time"
                          : nrt == TY_BOOL || nrt == TY_NIL ? "Object"
                          : ty_is_object(nrt) ? "Object" : NULL;
-        static const char *const OBJM[] = {
-          "class", "clone", "dup", "display", "enum_for", "eql?", "equal?",
-          "extend", "freeze", "frozen?", "hash", "inspect", "instance_of?",
-          "instance_variable_get", "instance_variable_set", "instance_variables",
-          "is_a?", "itself", "kind_of?", "method", "methods", "nil?",
-          "object_id", "public_send", "respond_to?", "send", "__send__",
-          "tap", "then", "to_s", "yield_self", "==", "!=", "!", "===", NULL };
         int nknown = 0, nba;
         if (ncls && builtin_method_arity(ncls, sym, &nba)) nknown = 1;
-        for (int oi2 = 0; !nknown && OBJM[oi2]; oi2++)
-          if (sp_streq(sym, OBJM[oi2])) nknown = 1;
+        if (builtin_object_method_known(sym)) nknown = 1;
         if (ncls && !nknown) {
           buf_printf(b, "(sp_int)(sp_raise_cls(\"NameError\","
                         " sp_sprintf(\"undefined method '%s' for %%s\","
