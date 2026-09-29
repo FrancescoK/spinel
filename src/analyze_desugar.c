@@ -1036,6 +1036,49 @@ int desugar_kernel_reopen(Compiler *c) {
   return 1;
 }
 
+/* ---- `singleton_class.prepend(Mod)` in a class or module body ------------
+   The statement adds Mod's methods to the class object -- what `extend Mod`
+   does, the precedence between Mod and the class's own singleton methods
+   aside (prepend puts Mod first; a static program has no such override to
+   arbitrate). activesupport's core_ext/enumerable.rb prepends a
+   const_missing hook onto Enumerable's singleton this way, and the whole
+   statement was refused as Object#singleton_class. `singleton_class.include`
+   is the same shape. */
+int desugar_singleton_class_mixin(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_ModuleNode && k != NK_ClassNode) continue;
+    int body = nt_ref(nt, id, "body");
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+    for (int i = 0; i < bn; i++) {
+      int st = bb[i];
+      if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "block") >= 0) continue;
+      const char *nm = nt_str(nt, st, "name");
+      if (!nm || (!sp_streq(nm, "prepend") && !sp_streq(nm, "include"))) continue;
+      int recv = nt_ref(nt, st, "receiver");
+      if (recv < 0 || nt_kind(nt, recv) != NK_CallNode || nt_ref(nt, recv, "receiver") >= 0 ||
+          nt_ref(nt, recv, "arguments") >= 0 || nt_ref(nt, recv, "block") >= 0) continue;
+      const char *rn = nt_str(nt, recv, "name");
+      if (!rn || !sp_streq(rn, "singleton_class")) continue;
+      int args = nt_ref(nt, st, "arguments");
+      int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      if (an < 1 || !av) continue;
+      int ok = 1;
+      for (int a = 0; a < an; a++)
+        if (nt_kind(nt, av[a]) != NK_ConstantReadNode && nt_kind(nt, av[a]) != NK_ConstantPathNode) ok = 0;
+      if (!ok) continue;
+      nt_node_set_str(nt, st, "name", "extend");
+      nt_node_set_ref(nt, st, "receiver", -1);
+      nt_node_reset(nt, recv, "NilNode");
+      changed = 1;
+    }
+  }
+  return changed;
+}
+
 /* Proc#>> / #<< with a Method operand: wrap the Method side in #to_proc at the
    AST, so composition always runs proc-to-proc. The to_proc emission builds a
    real trampoline proc that publishes its boxed result through the return
