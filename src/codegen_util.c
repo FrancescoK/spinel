@@ -263,6 +263,23 @@ int subtree_may_allocate(const NodeTable *nt, int id) {
   }
   return 0;
 }
+/* subtree_may_allocate, plus the one allocation the node table cannot show:
+   an ordinary read of a shared-mutable String slot (a TY_STRBUF local or
+   ivar) renders as a fresh copy of the live buffer, not as the slot itself.
+   A read marked to hand out the handle (strbuf_box) copies nothing. The
+   checks are strbuf_slot_ref's, without the emission it does, on the read
+   inside any parentheses (`(a) == b`). */
+int operand_may_allocate(Compiler *c, int id) {
+  if (subtree_may_allocate(c->nt, id)) return 1;
+  id = unwrap_parens(c, id);
+  if (id < 0 || c->strbuf_box[id]) return 0;
+  if (strbuf_local_name(c, id)) return 1;
+  if (nt_kind(c->nt, id) != NK_InstanceVariableReadNode) return 0;
+  const char *nm = nt_str(c->nt, id, "name");
+  int cid = nm ? strbuf_ivar_owner(c, id) : -1;
+  int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
+  return iv >= 0 && c->classes[cid].ivar_types[iv] == TY_STRBUF;
+}
 /* True if evaluating the subtree at `id` can be observed by, or can observe,
    a sibling argument's evaluation: any call (a user method, a mutating builtin,
    or an index read of a container someone else may write) or an assignment.

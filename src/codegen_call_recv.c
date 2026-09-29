@@ -9356,11 +9356,17 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
     if (g_outer_b) {
       Buf *ib = b; b = g_outer_b;
       if (handled) {
-        /* the string sentinel is the NULL pointer, the int's is SP_INT_NIL */
-        buf_printf(b, "({ %s _t%d = (%s); if (%s_t%d%s)"
-                      " sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ",
-                   rt == TY_STRING ? "const char *" : "sp_int", g_tmpid,
-                   rs.p ? rs.p : "",
+        /* the string sentinel is the NULL pointer, the int's is SP_INT_NIL.
+           A String receiver can be a fresh copy (a shared slot's reader, a
+           method's result) that only this temp holds: it is rooted when an
+           argument, evaluated inside the call below, may allocate. */
+        int g_root = 0;
+        if (rt == TY_STRING)
+          for (int ai = 0; ai < argc && !g_root; ai++) g_root = operand_may_allocate(c, argv[ai]);
+        buf_printf(b, "({ %s _t%d = (%s); ",
+                   rt == TY_STRING ? "const char *" : "sp_int", g_tmpid, rs.p ? rs.p : "");
+        if (g_root) buf_printf(b, "SP_GC_ROOT(_t%d); ", g_tmpid);
+        buf_printf(b, "if (%s_t%d%s) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ",
                    rt == TY_STRING ? "!" : "", g_tmpid,
                    rt == TY_STRING ? "" : " == SP_INT_NIL", name);
         if (ib->p) buf_puts(b, ib->p);
