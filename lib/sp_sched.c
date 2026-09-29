@@ -2743,14 +2743,20 @@ static void *sp_sysmon_main(void *arg) {
   return NULL;
 }
 
-void sp_sched_sleep(double seconds) {
-  if (!(seconds > 0.0)) return;
+static void sp_sched_unpark(sp_thread *t);   /* below */
+
+/* Kernel#sleep, Thread.stop and Mutex#sleep park here: on g_sleepers, with a
+   timer unless seconds < 0 (until #wakeup). Answers 1 when Thread#wakeup
+   ended the sleep early, 0 when the time ran out, -1 when its timer could
+   not be allocated (the caller raises, after any cleanup of its own). */
+static int sp_sched_sleep_park(double seconds) {
   if (!g_sysmon_started) {   /* the monitor was not started: plain blocking sleep */
+    if (seconds < 0.0) for (;;) pause();   /* nothing else could wake us */
     struct timespec req; req.tv_sec = (time_t)seconds;
     req.tv_nsec = (long)((seconds - (double)req.tv_sec) * 1e9);
     if (req.tv_nsec < 0) req.tv_nsec = 0; if (req.tv_nsec >= 1000000000L) req.tv_nsec = 999999999L;
     while (nanosleep(&req, &req) == -1 && errno == EINTR) {}
-    return;
+    return 0;
   }
   SCHED_LOCK();
   sp_thread *self = g_current;
@@ -2761,16 +2767,19 @@ void sp_sched_sleep(double seconds) {
     sp_fiber_fire_inject_if_pending();   /* raises; does not return */
     SCHED_LOCK();
   }
-  if (!sp_timer_schedule(self, sp_monotonic_now() + seconds, SP_TIMER_SLEEP)) {
+  if (seconds >= 0.0 && !sp_timer_schedule(self, sp_monotonic_now() + seconds, SP_TIMER_SLEEP)) {
     SCHED_UNLOCK();
-    sp_raise_cls("NoMemoryError", "failed to schedule thread timer");
+    return -1;
   }
   self->state = SP_TH_BLOCKED;
   self->off_cpu = 0;
   self->wake_pending = 0;
+  self->woken = 0;
   self->wait_next = g_sleepers; self->wait_head = &g_sleepers; g_sleepers = self;
+  int woken;
   if (self == &g_main_thread) {
     sp_sched_pump(NULL, 1);   /* main waits (and pumps at N=1) until the monitor wakes it */
+    woken = self->woken;
     SCHED_UNLOCK();
   }
   else {
@@ -2782,8 +2791,78 @@ void sp_sched_sleep(double seconds) {
     sp_Fiber_transfer(sp_fiber_worker_root(), sp_box_nil());
     sp_exc_ctx_load(exc_snap);
     sp_exc_ctx_free(exc_snap);
+    woken = self->woken;
     sp_fiber_fire_inject_if_pending();   /* a #kill/#raise delivered while sleeping */
   }
+  return woken;
+}
+
+static void sp_sched_sleep_park_or_raise(double seconds) {
+  if (sp_sched_sleep_park(seconds) < 0) sp_raise_cls("NoMemoryError", "failed to schedule thread timer");
+}
+
+void sp_sched_sleep(double seconds) {
+  if (!(seconds > 0.0)) return;
+  sp_sched_sleep_park_or_raise(seconds);
+}
+
+void sp_sched_sleep_forever(void) { sp_sched_sleep_park_or_raise(-1.0); }
+
+void sp_Thread_stop(void) {
+  if (sp_Thread_list_count() <= 1)
+    sp_raise_cls("ThreadError", "stopping only thread\n\tnote: use sleep to stop forever");
+  sp_sched_sleep_park_or_raise(-1.0);
+}
+
+/* #wakeup ends a sleep (Kernel#sleep, Thread.stop, Mutex#sleep) early. A thread
+   blocked on anything else is left alone, and one that is running loses the
+   wakeup, as in CRuby. */
+sp_thread *sp_Thread_wakeup(sp_thread *t) {
+  SCHED_LOCK();
+  if (t->state == SP_TH_DEAD) { SCHED_UNLOCK(); sp_raise_cls("ThreadError", "killed thread"); }
+  if (t->wait_head == &g_sleepers) {
+    t->woken = 1;
+    sp_sched_unpark(t);   /* off g_sleepers, timer cancelled */
+    if (t == &g_main_thread) { t->state = SP_TH_RUNNABLE; SCHED_WAKE_ALL(); }
+    else if (t->off_cpu) { t->state = SP_TH_RUNNABLE; runq_requeue(t); sp_sched_wake_for(t); }
+    else t->wake_pending = 1;   /* mid-switch: its worker enqueues it */
+  }
+  SCHED_UNLOCK();
+  return t;
+}
+
+sp_thread *sp_Thread_run(sp_thread *t) {
+  sp_Thread_wakeup(t);
+  sp_Thread_pass();
+  return t;
+}
+
+sp_bool sp_Thread_stop_p(sp_thread *t) {
+  SCHED_LOCK();
+  sp_bool r = t->state == SP_TH_DEAD || t->state == SP_TH_BLOCKED;
+  SCHED_UNLOCK();
+  return r;
+}
+
+/* Mutex#sleep: unlock, sleep until the timeout or a #wakeup, lock again.
+   nil when the timeout ran out, else the whole seconds slept. A #kill or
+   #raise waits for the lock too, as CRuby re-locks before it unwinds. */
+sp_RbVal sp_Mutex_sleep(sp_mutex *m, int has_timeout, double timeout) {
+  if (has_timeout && timeout != timeout) sp_raise_cls("RangeError", "NaN out of Time range");
+  if (has_timeout && timeout < 0.0) sp_raise_cls("ArgumentError", "time interval must not be negative");
+  if (!has_timeout) timeout = -1.0;
+  sp_Mutex_unlock(m);   /* raises ThreadError when we don't hold it */
+  double t0 = sp_monotonic_now();
+  /* a #raise or #kill is held until we own the mutex again, which the
+     contended lock path would otherwise fire before we get it */
+  sp_fiber_defer_inject();
+  int woken = sp_sched_sleep_park(timeout);
+  sp_Mutex_lock(m);
+  sp_fiber_undefer_inject();
+  if (woken < 0) sp_raise_cls("NoMemoryError", "failed to schedule thread timer");
+  sp_fiber_fire_inject_if_pending();
+  if (!woken && has_timeout) return sp_box_nil();
+  return sp_box_int((sp_int)(sp_monotonic_now() - t0 + 0.5));
 }
 
 int sp_sched_wait_io(int fd, short events) {

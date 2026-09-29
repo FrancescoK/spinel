@@ -1,0 +1,34 @@
+stop only thread: ThreadError: stopping only thread
+	note: use sleep to stop forever
+status while stopped: "sleep"
+stop? while stopped: true
+wakeup answers the thread: true
+value: :woke
+stop? when dead: true
+run answers the thread: true
+value after run: :ran
+sleep(5) cut short: true
+bare sleep sleeps: "sleep"
+bare sleep woken: :bare
+early wakeup is lost: "sleep"
+woken later: :late
+wakeup dead: ThreadError: killed thread
+run dead: ThreadError: killed thread
+Mutex#sleep timeout: nil
+Mutex#sleep released the lock: false
+Mutex#sleep woken: [Integer, true]
+Mutex#sleep(5) woken: Integer
+Mutex#sleep unlocked: ThreadError: Attempt to unlock a mutex which is not locked
+Mutex#sleep negative: ArgumentError: time interval must not be negative
+main woken from stop
+main woken from bare sleep
+main woken from Mutex#sleep: Integer
+Mutex#sleep(NaN): RangeError: NaN out of Time range
+Mutex#sleep(true): TypeError: can't convert TrueClass into time interval
+Mutex#sleep(String): TypeError: can't convert String into time interval
+Mutex#sleep(boxed true): TypeError: can't convert TrueClass into time interval
+still unlocked after: false
+Mutex#sleep(Rational): nil
+temporary mutex: nil
+sleep(boxed nil) sleeps: "sleep"
+sleep(boxed nil) woken: :boxed_nil

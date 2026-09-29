@@ -3954,6 +3954,16 @@ void sp_sleep(sp_float s) {
 #endif
 }
 
+/* A bare Kernel#sleep: until Thread#wakeup. With no threads nothing can
+   wake it, so it sleeps for good, as CRuby's does. */
+void sp_sleep_forever(void) {
+#ifdef SP_THREADS
+  sp_sched_sleep_forever();
+#else
+  for (;;) pause();
+#endif
+}
+
 /* ---- BigRational box/scan/format ops -- relocated from spinel_rt.h.
    0 optcarrot uses. ---- */
 #include "sp_str.h"   /* sp_str_concat for brat_to_s/inspect */
