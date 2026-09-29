@@ -400,6 +400,11 @@ typedef struct {
   char **vis_names;
   int  *vis_kinds;
   int nvis, cvis;
+  /* The same for class (singleton) methods: `class << self` sections and
+     `private_class_method` / `public_class_method`. */
+  char **cm_vis_names;
+  int  *cm_vis_kinds;
+  int ncm_vis, ccm_vis;
   /* class << self attr_accessor/reader/writer: singleton-level accessors
      stored in static globals (cst_<Class>_<field>), not in per-instance ivars */
   char **sg_readers;   /* singleton reader names */
@@ -927,6 +932,11 @@ int        comp_cmethod_in_chain(Compiler *c, int class_id, const char *name, in
 int        comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_class);
 /* Record method `name`'s visibility on a class (overwrite-or-append). */
 void       comp_method_vis_set(ClassInfo *ci, const char *name, int kind);
+/* Record class method `name`'s visibility on a class (overwrite-or-append). */
+void       comp_cmethod_vis_set(ClassInfo *ci, const char *name, int kind);
+/* Visibility of class method `name` up class_id's superclass chain; the
+   declaring class goes to *at. SP_VIS_PUBLIC when none records it. */
+int        comp_cmethod_vis_declared(Compiler *c, int class_id, const char *name, int *at);
 /* Visibility of `name` declared directly on this class (SP_VIS_PUBLIC if none). */
 int        comp_method_vis(ClassInfo *ci, const char *name);
 /* Visibility of `name` as resolved up class_id's ancestor chain: the first
