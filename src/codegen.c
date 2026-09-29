@@ -2165,6 +2165,19 @@ void emit_method_cname(Compiler *c, Scope *s, Buf *b) {
    function per program, pushing each yielded value into the PolyArray its cap
    points at. A yield of several values becomes one boxed array, which is what
    `to_a` answers for a Hash-like each. */
+/* The C arguments a zero-argument call of this #to_a takes after self: an
+   empty rest array for a `*rest` parameter and no block for a `&blk` one --
+   the forwarding shape `delegate :to_a, to: :@m` produces. Answers 0 when the
+   method takes anything that cannot be defaulted here (a required, optional or
+   keyword parameter, a class method), so the caller skips it. */
+static int obj_to_a_call_tail(Scope *s, char *out, size_t sz) {
+  if (s->nrequired != 0 || s->is_cmethod || s->kwrest_idx >= 0) return 0;
+  int rest_only = s->rest_idx >= 0 && s->nparams == 1;
+  if (s->nparams != 0 && !rest_only) return 0;
+  snprintf(out, sz, "%s%s", rest_only ? ", sp_PolyArray_new()" : "", s->blk_param ? ", NULL" : "");
+  return 1;
+}
+
 static int g_iter_collect_emitted = 0;
 static void emit_iter_collect_proc(void) {
   if (g_iter_collect_emitted) return;
@@ -2265,7 +2278,11 @@ void emit_poly_iter_obj_normalize(Compiler *c, int tv, Buf *b) {
     /* a never-instantiated class can't be the runtime class (#1608) */
     if (!c->classes[k].instantiated) continue;
     int mi = comp_method_in_chain(c, k, "to_a", NULL);
-    if (mi < 0 || c->scopes[mi].nrequired != 0 || c->scopes[mi].is_cmethod) {
+    /* a to_a forwarding its block has a proc-form clone; that is the emitted
+       function for a call from poly dispatch (#3399) */
+    { int pfi = mi >= 0 ? scope_proc_form_of(c, mi) : -1; if (pfi >= 0) mi = pfi; }
+    char tail[64] = "";
+    if (mi < 0 || !obj_to_a_call_tail(&c->scopes[mi], tail, sizeof tail)) {
       /* No #to_a, but the class defines #each -- the ordinary way to write an
          enumerable, forwarding the block on. Drive it with a collector and walk
          what it yielded; without this the lowering walked the object AS A
@@ -2296,7 +2313,7 @@ void emit_poly_iter_obj_normalize(Compiler *c, int tv, Buf *b) {
     emit_method_cname(c, &c->scopes[mi], &arms);
     buf_puts(&arms, "(");
     emit_iter_recv(c, k, mi, tv, &arms);
-    buf_puts(&arms, ")); break;");
+    buf_printf(&arms, "%s)); break;", tail);
   }
   if (arms.p && arms.p[0])
     buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0) switch (_t%d.cls_id) {%s }\n",
@@ -8399,7 +8416,9 @@ static void emit_obj_struct_values_dispatch(Compiler *c, Buf *b) {
    collection (0 / nil / false) (#3761). */
 static int obj_to_a_method(Compiler *c, int cid, int *defc) {
   int mi = comp_method_in_chain(c, cid, "to_a", defc);
-  if (mi >= 0 && c->scopes[mi].nparams == 0 && scope_has_callable_symbol(c, mi)) return mi;
+  { int pfi = mi >= 0 ? scope_proc_form_of(c, mi) : -1; if (pfi >= 0) mi = pfi; }   /* the emitted clone (#3399) */
+  char tail[64];
+  if (mi >= 0 && obj_to_a_call_tail(&c->scopes[mi], tail, sizeof tail) && scope_has_callable_symbol(c, mi)) return mi;
   /* Not for a Data class: CRuby's Data has no #to_a at all (Struct does), and
      answering its members here turned that NameError into an array. */
   if (cid >= 0 && cid < c->nclasses && c->classes[cid].is_data) return -1;
@@ -8430,8 +8449,10 @@ static void emit_obj_to_a_dispatch(Compiler *c, Buf *b) {
     char callx[256];
     /* a value-type class is passed by value, not behind a pointer */
     int vobj = comp_ty_value_obj(c, ty_object(defc));
-    snprintf(callx, sizeof callx, vobj ? "sp_%s_%s(*(sp_%s *)v.v.p)" : "sp_%s_%s((sp_%s *)v.v.p)",
-             c->classes[defc].c_name, mc(c->scopes[mi].name), c->classes[defc].c_name);
+    char tail[64] = "";
+    obj_to_a_call_tail(&c->scopes[mi], tail, sizeof tail);   /* qualified in obj_to_a_method: rest/block only */
+    snprintf(callx, sizeof callx, vobj ? "sp_%s_%s(*(sp_%s *)v.v.p%s)" : "sp_%s_%s((sp_%s *)v.v.p%s)",
+             c->classes[defc].c_name, mc(c->scopes[mi].name), c->classes[defc].c_name, tail);
     buf_puts(b, "      return ");
     if (mret == TY_POLY) buf_puts(b, callx);
     else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, mret, callx, &bx);
