@@ -10718,6 +10718,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
             emit_frozen_obj_guard(c, cid, selft, b);
             buf_printf(b, "_t%d->iv_%s = ", tf9, iv_c(sym + 1));
             if (mt == TY_POLY) emit_boxed(c, argv[1], b);
+            else if (nt_kind(nt, argv[1]) == NK_NilNode && nil_value(mt)) buf_puts(b, nil_value(mt));
             else emit_expr(c, argv[1], b);
             buf_puts(b, "; })");
             return 1;
@@ -10734,6 +10735,9 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
               buf_puts(b, ")");
             }
           }
+          /* nil into a scalar slot is its in-band nil (SP_INT_NIL, NaN), not
+             the zero value the literal emits as */
+          else if (nt_kind(nt, argv[1]) == NK_NilNode && nil_value(mt)) buf_puts(b, nil_value(mt));
           else emit_expr(c, argv[1], b);
           buf_puts(b, ")");
         }
@@ -13284,6 +13288,56 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
                  (rty2 && sp_streq(rty2, "CallNode") &&
                   nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "encoding"));
     if (is_enc) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+  }
+
+  /* instance_variable_set(:@x, v) on a POLY receiver with a literal name: the
+     write twin of the dispatch below. The value is evaluated once, then
+     stored into whichever instantiated class the receiver is, converted to
+     that class's slot type; a class without the slot takes no write (the
+     inference registered the value's type on every class that has one). The
+     call answers the value. */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_set") &&
+      argc == 2 && nt_ref(nt, id, "block") < 0 && nt_type(nt, argv[0]) &&
+      (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
+    const char *a0ty = nt_type(nt, argv[0]);
+    const char *sym = sp_streq(a0ty, "SymbolNode")
+                        ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
+    if (sym && sym[0] == '@') {
+      TyKind res = comp_ntype(c, id);
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv);
+      emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _ivs%d = ", tv, tv);
+      emit_boxed(c, argv[1], b);
+      buf_printf(b, "; if (_t%d.tag == SP_TAG_OBJ) switch (_t%d.cls_id) {", tv, tv);
+      for (int k = 0; k < c->nclasses; k++) {
+        if (!c->classes[k].instantiated || c->classes[k].is_struct) continue;
+        if (comp_ty_value_obj(c, ty_object(k))) continue;   /* by value: no reference to write through */
+        int iv = comp_ivar_index(&c->classes[k], sym);
+        if (iv < 0) continue;
+        TyKind t = c->classes[k].ivar_types[iv];
+        if (t == TY_STRBUF) continue;
+        char val[48]; snprintf(val, sizeof val, "_ivs%d", tv);
+        buf_printf(b, " case %d: ((sp_%s *)_t%d.v.p)->iv_%s = ", k, c->classes[k].c_name, tv, iv_c(sym + 1));
+        if (t == TY_POLY) buf_puts(b, val);
+        else if (nil_value(t)) {
+          /* nil into a scalar or String slot is its in-band nil */
+          buf_printf(b, "(%s.tag == SP_TAG_NIL ? %s : ", val, nil_value(t));
+          emit_unbox_text(c, t, val, b);
+          buf_puts(b, ")");
+        }
+        else emit_unbox_text(c, t, val, b);
+        buf_puts(b, "; break;");
+      }
+      buf_puts(b, " } ");
+      if (res != TY_POLY && res != TY_UNKNOWN) {
+        char ivn[24]; snprintf(ivn, sizeof ivn, "_ivs%d", tv);
+        emit_unbox_text(c, res, ivn, b);
+        buf_puts(b, "; })");
+      }
+      else buf_printf(b, "_ivs%d; })", tv);
+      return 1;
+    }
   }
 
   /* instance_variable_get(:@x) on a POLY receiver with a literal symbol or

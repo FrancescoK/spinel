@@ -6073,6 +6073,21 @@ int infer_ivar_types(Compiler *c) {
             else {
               TyKind rt = comp_ntype(c, ivrecv);
               if (ty_is_object(rt)) tcid = ty_object_class(rt);
+              /* a poly receiver may be any class that has the slot: the
+                 value's type reaches each of them (the dispatch writes it) */
+              else if (rt == TY_POLY) {
+                TyKind pvt = infer_type(c, sav[1]);
+                for (int k = 0; k < c->nclasses; k++) {
+                  ClassInfo *pk = &c->classes[k];
+                  int piv = pk->is_struct ? -1 : comp_ivar_index(pk, sym);
+                  if (piv < 0) continue;
+                  if (pvt == TY_NIL) nil_write_note(&nilw, k, sym);
+                  else if (!class_ivar_pinned(pk, sym)) {
+                    TyKind pm = ty_unify(pk->ivar_types[piv], pvt);
+                    if (pm != pk->ivar_types[piv]) { pk->ivar_types[piv] = pm; changed = 1; }
+                  }
+                }
+              }
             }
             if (tcid >= 0 && tcid < c->nclasses) {
               ClassInfo *ci = &c->classes[tcid];
