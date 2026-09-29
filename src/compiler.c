@@ -622,20 +622,35 @@ int comp_method_vis_in_chain(Compiler *c, int class_id, const char *name) {
    method copied in from an included module carries the module's declaration:
    the copy's scope names the module (origin_module_ci) and the module's own
    table holds the `private`/`protected` its body said. */
-int comp_method_vis_declared(Compiler *c, int class_id, const char *name, int *at) {
-  name = comp_resolve_alias(c, class_id, name);
+static int vis_declared_in_chain(Compiler *c, int class_id, const char *name, int *at) {
   for (int cid = class_id; cid >= 0; cid = c->classes[cid].parent) {
     ClassInfo *ci = &c->classes[cid];
     for (int i = 0; i < ci->nvis; i++)
       if (sp_streq(ci->vis_names[i], name)) { if (at) *at = cid; return ci->vis_kinds[i]; }
   }
+  return -1;
+}
+
+/* An alias is a method of its own: `alias pz z; private :pz` makes only pz
+   private, and the alias carries the visibility its target had at the alias
+   (register_method_visibility records it), so the alias's own name is looked
+   up before the name it resolves to. */
+int comp_method_vis_declared(Compiler *c, int class_id, const char *name, int *at) {
+  const char *alias = name;
+  int v = vis_declared_in_chain(c, class_id, alias, at);
+  if (v >= 0) return v;
+  name = comp_resolve_alias(c, class_id, name);
+  if (name != alias && (v = vis_declared_in_chain(c, class_id, name, at)) >= 0) return v;
   int mi = comp_method_in_chain(c, class_id, name, NULL);
   if (mi >= 0 && mi < c->nscopes && c->scopes[mi].origin_module_ci > 0) {
     int mci = c->scopes[mi].origin_module_ci - 1;
     if (mci >= 0 && mci < c->nclasses) {
       ClassInfo *mi_ci = &c->classes[mci];
-      for (int i = 0; i < mi_ci->nvis; i++)
-        if (sp_streq(mi_ci->vis_names[i], name)) { if (at) *at = mci; return mi_ci->vis_kinds[i]; }
+      for (int pass = 0; pass < 2; pass++) {
+        const char *nm = pass ? name : alias;
+        for (int i = 0; i < mi_ci->nvis; i++)
+          if (sp_streq(mi_ci->vis_names[i], nm)) { if (at) *at = mci; return mi_ci->vis_kinds[i]; }
+      }
     }
   }
   return SP_VIS_PUBLIC;
