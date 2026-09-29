@@ -559,6 +559,11 @@ typedef struct {
   int args_first;       /* the keywords are judged at run time: every argument runs first */
 } KwPlan;
 void kw_plan(Compiler *c, Scope *m, int kwh, KwPlan *P);
+/* The keyword error a plan finds statically, in CRuby's order, into `msg`;
+   0 when it finds none. */
+int kw_plan_error(const KwPlan *P, char *msg, size_t n);
+/* A callee's positional count, keywords apart: required, and all of them. */
+void positional_arity(Compiler *c, Scope *m, int *required, int *total);
 void emit_unreached_splat_count(Compiler *c, Scope *m, const int *argv, int argc, int pos_argc,
                                 const KwPlan *P);
 /* Every argument of a call run ahead of it, in source order, each `**`
