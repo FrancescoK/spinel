@@ -8929,7 +8929,7 @@ static void emit_super_block_arg(Compiler *c, int id, Scope *s, Scope *pm, int l
 int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   Scope *s = comp_scope_of(c, id);
   if (s->class_id < 0 || !s->name) return 0;
-  int p = c->classes[s->class_id].parent;
+  int p = comp_super_parent(c, s->class_id, s->is_cmethod);
   int defcls = -1;
   /* `super` inside a class method resolves through the parent's CLASS-method
      chain; the instance chain would miss `def self.x` entirely. */
@@ -9251,7 +9251,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
     return;
   }
   /* Strip __prep_N_ prefix to get the user method name for parent chain lookup. */
-  int p = c->classes[s->class_id].parent;
+  int p = comp_super_parent(c, s->class_id, s->is_cmethod);
   const char *uname = comp_super_name(c, p, s->name, s->is_cmethod);
   /* super inside a class method: resolve through the parent's CLASS-method
      chain and call the sp_<Cls>_s_ form (class methods take no instance
@@ -9501,7 +9501,13 @@ void emit_super(Compiler *c, int id, Buf *b) {
                uname, scn, raise_tail_value_c(c, comp_ntype(c, id)));
     return;
   }
-  buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].c_name, mc(uname), c->classes[defcls].c_name, g_self);
+  if (sp_streq(c->classes[defcls].name, "Object")) {
+    /* Object's methods take self boxed: any value can be the receiver */
+    buf_printf(b, "sp_Object_%s(", mc(uname));
+    emit_boxed_text(c, ty_object(s->class_id), g_self, b);
+  }
+  else
+    buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].c_name, mc(uname), c->classes[defcls].c_name, g_self);
   int zgather = ty && sp_streq(ty, "ForwardingSuperNode") ? emit_zsuper_gather(c, s, &c->scopes[mi]) : -1;
   if (zgather >= 0) {
     for (int i = 0; i < c->scopes[mi].nparams; i++) {

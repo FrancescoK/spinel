@@ -215,7 +215,7 @@ static int forwarding_target_idx(Compiler *c, Scope *s) {
     }
     if (is_super) {
       if (s->class_id < 0 || s->is_cmethod || !s->name) continue;
-      int par = c->classes[s->class_id].parent;
+      int par = comp_super_parent(c, s->class_id, 0);
       int mi = par >= 0 ? comp_method_in_chain(c, par, s->name, NULL) : -1;
       if (mi >= 0) return mi;
       continue;

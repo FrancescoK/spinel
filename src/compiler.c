@@ -1835,6 +1835,21 @@ const char *comp_prep_chain_target(Compiler *c, int class_id, const char *name) 
    parent is Class itself: `def self.new(x) = super(x * 10)` allocates the
    receiving class and runs its initialize. The class-method chain answered
    "no superclass method", and so did every call that reached one. */
+/* The class a `super` in class_id's methods starts its lookup in: the
+   parent, and past the top of an explicit chain, Object -- where a method the
+   program defines on Object is every class's superclass method. A module's
+   super is its includer's, and a class method's chain has no such end. */
+int comp_super_parent(Compiler *c, int class_id, int is_cmethod) {
+  if (class_id < 0) return -1;
+  int p = c->classes[class_id].parent;
+  if (p >= 0 || is_cmethod) return p;
+  int obj = comp_class_index(c, "Object");
+  if (obj < 0 || obj == class_id) return -1;
+  int dn = c->classes[class_id].def_node;
+  if (dn >= 0 && dn < c->nt->count && nt_kind(c->nt, dn) == NK_ModuleNode) return -1;
+  return obj;
+}
+
 int comp_super_is_class_new(Compiler *c, int id) {
   NodeKind k = nt_kind(c->nt, id);
   if (k != NK_SuperNode && k != NK_ForwardingSuperNode) return 0;
