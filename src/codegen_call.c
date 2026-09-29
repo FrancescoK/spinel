@@ -23454,6 +23454,8 @@ static int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, co
       /* a heap object slot holds nil as NULL (a defaulted `host = nil`
          parameter), and nil answers only its own surface */
       if (!comp_ty_value_obj(c, rt)) g_rto_nil_obj = 1;
+      /* the class's own respond_to? answers, not the method table */
+      if (comp_method_in_chain(c, cid, "respond_to?", NULL) >= 0) return -1;
       /* a writer query (`m=`) consults the writer table under its base name */
       size_t ql = strlen(qm);
       int is_wr = ql > 0 && qm[ql - 1] == '=';
@@ -23485,6 +23487,7 @@ static int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, co
       Scope *ss = comp_scope_of(c, id);
       if (ss && ss->class_id >= 0) {
         int cid = ss->class_id;
+        if (!ss->is_cmethod && comp_method_in_chain(c, cid, "respond_to?", NULL) >= 0) return -1;
         size_t ql = strlen(qm);
         int is_wr = ql > 0 && qm[ql - 1] == '=';
         char wbase[256]; wbase[0] = '\0';
