@@ -374,6 +374,7 @@ int desugar_extend_self(Compiler *c);
 int desugar_kernel_reopen(Compiler *c);
 int desugar_singleton_class_mixin(Compiler *c);
 int desugar_singleton_attr(Compiler *c);
+int desugar_constant_path_self_alias(Compiler *c);
 int desugar_compose_method_operand(Compiler *c);
 int desugar_method_curry(Compiler *c);
 int desugar_curry_arity_to_int(Compiler *c);

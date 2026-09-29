@@ -18987,6 +18987,7 @@ void analyze_program(Compiler *c) {
   desugar_ffi_library_functions(c);   /* attach_function :f -> def self.f (the ffi gem) */
   desugar_singleton_class_mixin(c);      /* singleton_class.prepend(M) in a body -> extend M */
   desugar_singleton_attr(c);             /* singleton_class.attr_accessor :x -> def self.x / def self.x= */
+  desugar_constant_path_self_alias(c);   /* A::B::C = remove_const(:C) (C a class) -> dropped */
   /* builtins/enumerable.rb, spliced by the parser: its definitions become
      the receiver-taking top-level functions before any scope is built */
   desugar_builtins(c);
