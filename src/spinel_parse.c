@@ -2725,13 +2725,9 @@ static int sp_src_names_const(const char *src, const char *w) {
   }
   return 0;
 }
-static char *sp_splice_named_builtin(char *source, const char *exe_path, const char *cname,
-                                     const char *file, unsigned char **fsl, size_t *fsl_n) {
-  if (!sp_src_names_const(source, cname)) return source;
-  char def1[80], def2[80];
-  snprintf(def1, sizeof def1, "module %s\n", cname);
-  snprintf(def2, sizeof def2, "module %s ", cname);
-  if (strstr(source, def1) || strstr(source, def2)) return source;
+/* builtins/<file> ahead of the program, its lines' pragma entries with it */
+static char *sp_prepend_builtin_file(char *source, const char *exe_path, const char *file,
+                                     unsigned char **fsl, size_t *fsl_n) {
   char lib_dir[1024], gp[1200];
   sp_lib_dir(exe_path, lib_dir, sizeof lib_dir);
   int base_len = (int)strlen(lib_dir);
@@ -2755,6 +2751,29 @@ static char *sp_splice_named_builtin(char *source, const char *exe_path, const c
   free(content);
   free(source);
   return ns;
+}
+
+static int sp_src_defines_module(const char *source, const char *cname) {
+  char def1[80], def2[80];
+  snprintf(def1, sizeof def1, "module %s\n", cname);
+  snprintf(def2, sizeof def2, "module %s ", cname);
+  return strstr(source, def1) || strstr(source, def2);
+}
+
+static char *sp_splice_named_builtin(char *source, const char *exe_path, const char *cname,
+                                     const char *file, unsigned char **fsl, size_t *fsl_n) {
+  if (!sp_src_names_const(source, cname) || sp_src_defines_module(source, cname)) return source;
+  return sp_prepend_builtin_file(source, exe_path, file, fsl, fsl_n);
+}
+
+/* builtins/object_space.rb: the finalizer API. Only for a program that names
+   it -- the rest of ObjectSpace stays the refusal it is
+   (docs/limitations.md). */
+static char *sp_splice_object_space(char *source, const char *exe_path,
+                                    unsigned char **fsl, size_t *fsl_n) {
+  if (!strstr(source, "define_finalizer")) return source;
+  if (sp_src_defines_module(source, "ObjectSpace")) return source;
+  return sp_prepend_builtin_file(source, exe_path, "builtins/object_space.rb", fsl, fsl_n);
 }
 
 static char *sp_splice_builtins(char *source, const char *exe_path,
@@ -3915,6 +3934,7 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
   source = resolve_plain_requires(resolved, argv0, &fsl, &fsl_n);
   source = sp_splice_named_builtin(source, argv0, "Gem", "builtins/gem.rb", &fsl, &fsl_n);
   source = sp_splice_named_builtin(source, argv0, "RbConfig", "builtins/rbconfig.rb", &fsl, &fsl_n);
+  source = sp_splice_object_space(source, argv0, &fsl, &fsl_n);
   source = sp_splice_builtins(source, argv0, &fsl, &fsl_n);
   source = sp_splice_builtin_extras(source, argv0, &fsl, &fsl_n);
   source = sp_splice_builtin_enumerator(source, argv0, &fsl, &fsl_n);

@@ -1,0 +1,6 @@
+fin 0 true
+fin 1 true
+fin 2 true
+cannot define finalizer for Symbol
+end
+fin 9 true
