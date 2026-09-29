@@ -1871,12 +1871,7 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
        the value `callee` yields is whatever that forwarded block produces --
        i.e. the enclosing method's own per-call-site yield value. */
     int fwd = (bty && sp_streq(bty, "BlockArgumentNode"));
-    if (!fwd && blk < 0) {
-      int a = nt_ref(c->nt, call_id, "arguments");
-      int an = 0; const int *av = a >= 0 ? nt_arr(c->nt, a, "arguments", &an) : NULL;
-      fwd = (an == 1 && av && nt_type(c->nt, av[0]) &&
-             sp_streq(nt_type(c->nt, av[0]), "ForwardingArgumentsNode"));
-    }
+    if (!fwd && blk < 0) fwd = yvt_call_forwards_block(c->nt, call_id);
     if (fwd) {
       Scope *encl = comp_scope_of(c, call_id);
       int emi = encl ? (int)(encl - c->scopes) : -1;
@@ -1911,13 +1906,7 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
      of that return, one with a block the value of the body proper */
   if (c->scopes[mi].yields && c->scopes[mi].ret_noblock != TY_UNKNOWN) {
     int blk = nt_ref(c->nt, call_id, "block");
-    int fwd = 0;
-    if (blk < 0) {
-      int a = nt_ref(c->nt, call_id, "arguments");
-      int an = 0; const int *av = a >= 0 ? nt_arr(c->nt, a, "arguments", &an) : NULL;
-      fwd = (an == 1 && av && nt_type(c->nt, av[0]) &&
-             sp_streq(nt_type(c->nt, av[0]), "ForwardingArgumentsNode"));
-    }
+    int fwd = blk < 0 && yvt_call_forwards_block(c->nt, call_id);
     if (blk < 0 && !fwd) return c->scopes[mi].ret_noblock;
     /* `m(&f)` with a proc value: whether there is a block is decided at run
        time (the proc may be nil), so both arms are live and the call
