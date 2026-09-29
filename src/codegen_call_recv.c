@@ -14307,14 +14307,19 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
      program's own with a method or a class method of the name wins via poly
      dispatch, and a cycle on Object, which answers for every receiver the
      dispatch does not, keeps its universal fallback. */
-  if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "cycle") &&
-      nt_ref(nt, id, "block") < 0 && nt_kind(nt, argv[0]) != NK_SplatNode) {
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "cycle") && nt_ref(nt, id, "block") < 0 &&
+      ((argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode) ||
+       (argc == 0 && comp_ntype(c, id) == TY_ENUMERATOR))) {
     int oci = comp_class_index(c, "Object");
     int has_user = oci >= 0 && comp_method_in_chain(c, oci, name, NULL) >= 0;
     if (!g_poly_builtin_arm)
     for (int kk = 0; kk < c->nclasses && !has_user; kk++)
       if (comp_poly_arm_defines_n(c, kk, name, argc) ||
           comp_cmethod_in_chain(c, kk, name, NULL) >= 0) has_user = 1;
+    if (!has_user && argc == 0) {
+      buf_puts(b, "sp_poly_cycle("); emit_boxed(c, recv, b); buf_puts(b, ")");
+      return 1;
+    }
     if (!has_user) {
       Buf rcn;
       int ccn = hold_recv_open(c, recv, 1, "sp_RbVal", "SP_GC_ROOT_RBVAL", b, &rcn);

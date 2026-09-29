@@ -1539,12 +1539,14 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   if (recv >= 0 && rt == TY_POLY && argc == 0 && sp_streq(name, "hash"))
     { *out = TY_INT; return 1; }
   /* blockless cycle(n) on a boxed receiver: the Enumerator sp_poly_cycle_n
-     builds, unless a class of the program's own has a method or a class
+     builds, and a countless cycle the endless one sp_poly_cycle builds,
+     unless a class of the program's own has a method or a class
      method of the name, the test emit_poly_call makes. The builtin-only
      derivation, which shapes the dispatch's default arm, answers either way,
      but for a cycle on Object, whose universal fallback that arm keeps. */
-  if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "cycle") &&
-      nt_ref(nt, id, "block") < 0 && nt_kind(nt, argv[0]) != NK_SplatNode) {
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "cycle") && nt_ref(nt, id, "block") < 0 &&
+      ((argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode) ||
+       argc == 0)) {
     int oci = comp_class_index(c, "Object");
     int own = oci >= 0 && comp_method_in_chain(c, oci, name, NULL) >= 0;
     for (int k = 0; k < c->nclasses && !own && !an_builtin_only_p(); k++)
