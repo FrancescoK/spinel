@@ -15567,6 +15567,12 @@ static int pf_in_class_dispatch(Compiler *c, const Scope *src) {
   return 0;
 }
 
+/* The method named `name` beside src: in its class, or a top-level one */
+static int pf_scope_named(Compiler *c, const Scope *src, const char *name) {
+  if (src->class_id < 0) return comp_method_index(c, name);
+  return (src->is_cmethod ? comp_cmethod_in_class : comp_method_in_class)(c, src->class_id, name);
+}
+
 int make_yield_proc_forms(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = c->nscopes;
@@ -15575,29 +15581,34 @@ int make_yield_proc_forms(Compiler *c) {
     Scope *src = &c->scopes[s];
     /* reachability is decided after this pass, so do not consult it: an
        unused clone is a static function the C compiler drops. */
-    if (!src->yields || src->class_id < 0) continue;
+    if (!src->yields) continue;
+    /* a top-level method is cloned only for a Method object of it */
+    if (src->class_id < 0) {
+      if (src->is_cmethod || !src->name || !pf_method_obj(c, src->name)) continue;
+    }
     /* a by-value or Struct constructor is built by its own emitter, which
        does not run the clone (ctor_init_proc_form) */
-    if (sp_streq(src->name ? src->name : "", "initialize") &&
+    else if (sp_streq(src->name ? src->name : "", "initialize") &&
         (c->classes[src->class_id].is_struct || c->classes[src->class_id].is_value_type)) continue;
     if (src->is_transplanted_source || !src->name) continue;
     if (src->body < 0) continue;
     /* an exception class is built through sp_X_new by raise, rescue's
        re-raise and its own `new` sites alike, none of which splice the body */
-    int exc_init = sp_streq(src->name, "initialize") && !src->is_cmethod &&
+    int exc_init = src->class_id >= 0 && sp_streq(src->name, "initialize") && !src->is_cmethod &&
                    class_is_exc_subclass(c, src->class_id);
-    if (!exc_init && !pf_wanted(c, src->name) && !pf_in_class_dispatch(c, src)) continue;
+    if (src->class_id >= 0 && !exc_init && !pf_wanted(c, src->name) && !pf_in_class_dispatch(c, src))
+      continue;
     /* A method the program reopens has two definitions in the scope table
        and the last one wins (comp_method_in_class): only that one gets the
        clone. Cloning the first left the poly dispatch arm running the
        package's transport where every other call site ran the program's
        stub in front of it (#4502). */
-    if ((src->is_cmethod ? comp_cmethod_in_class : comp_method_in_class)(c, src->class_id, src->name) != s) continue;
+    if (pf_scope_named(c, src, src->name) != s) continue;
     /* `#` cannot appear in a Ruby method name, so the clone is invisible to
        the by-name lookups while still mangling to a valid C identifier. */
     char pfname[192];
     snprintf(pfname, sizeof pfname, "%s#pf", src->name);
-    if ((src->is_cmethod ? comp_cmethod_in_class : comp_method_in_class)(c, src->class_id, pfname) >= 0) continue;
+    if (pf_scope_named(c, src, pfname) >= 0) continue;
     int nb = nt_clone_subtree(nt, src->body);
     if (nb < 0) continue;
     comp_scope_new(c, pfname, src->def_node);
