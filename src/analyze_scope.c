@@ -5660,6 +5660,15 @@ int infer_cvar_types(Compiler *c) {
     comp_cvar_intern(&c->classes[cc], nm);
     if (c->classes[cc].ncvars != old_n) changed = 1;
   }
+  /* Pass 2b: every class-body-level write -- one nested in begin/rescue or
+     an if (Pass 1 sees only a body's direct statements), and one in a
+     reopening of the class rather than the body that defined it. */
+  for (int id = 0; id < nt->count; id++) {
+    if (!is_cvar_write_kind(nt_kind(nt, id))) continue;
+    Scope *s = comp_scope_of(c, id);
+    if (s->class_id >= 0 || id >= c->node_cap || c->node_cbody[id] < 0) continue;
+    if (cvar_note_write(c, &c->classes[c->node_cbody[id]], id)) changed = 1;
+  }
   /* Pass 2.5: `Klass.class_variable_set(:@@name, v)` with a literal name
      DECLARES the cvar when the class has no such write -- CRuby creates it on
      the fly, and the codegen store needs a registered global to hit (#2719). */
