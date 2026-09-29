@@ -2277,7 +2277,21 @@ int ie_poly_classes_at(Compiler *c, int node, int *out, int max) {
    enclosing class and no instance_eval/exec receiver rebinding it. */
 int self_is_main(Compiler *c, int node) {
   Scope *s = comp_scope_of(c, node);
-  return s && s->class_id < 0 && an_ie_class_id < 0 && ie_class_of(c, node) == -1;
+  return s && s->class_id < 0 && an_ie_class_id < 0 && ie_class_of(c, node) == -1 &&
+         self_class_body(c, node) < 0;
+}
+
+/* The class whose body `self` at node sits in -- a statement of a class or
+   module body (or a block there), outside any def and not rebound by an
+   instance_eval/exec -- where `self` is that class object: cgi/escape.rb's
+   `target = defined?(CGI::EscapeExt) && ... ? CGI::EscapeExt : self` in the
+   body of CGI::Escape. -1 elsewhere (a method, top level, a rebound self). */
+int self_class_body(Compiler *c, int node) {
+  Scope *s = comp_scope_of(c, node);
+  if (!s || s->class_id >= 0) return -1;
+  if (an_ie_class_id >= 0 || ie_class_of(c, node) != -1) return -1;
+  if (!c->node_cbody || node < 0 || node >= c->node_cap) return -1;
+  return c->node_cbody[node];
 }
 
 /* Register an ivar first assigned inside an instance_exec/instance_eval block on

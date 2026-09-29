@@ -2268,6 +2268,9 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     return;
   }
   if (sp_streq(ty, "SelfNode")) {
+    /* a statement of a class or module body: the class object itself */
+    { int cb = self_class_body(c, id);
+      if (cb >= 0) { buf_printf(b, "((sp_Class){%d})", cb); return; } }
     /* top-level self is main, which no C scope holds (#4926) */
     if (self_is_main(c, id)) { buf_puts(b, "sp_main_self()"); return; }
     /* self inside a method added to Array (desugar_builtin_reopen_self_calls
