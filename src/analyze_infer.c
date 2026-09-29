@@ -4469,7 +4469,19 @@ static TyKind infer_call_inner(Compiler *c, int id) {
           snprintf(ivn, sizeof ivn, "@%s", rname2);
           ClassInfo *rci2 = (rdcls2 >= 0 && rdcls2 < c->nclasses) ? &c->classes[rdcls2] : &c->classes[self->class_id];
           int iv = comp_ivar_index(rci2, ivn);
-          if (iv >= 0) return ivar_value_ty(rci2, iv);
+          if (iv >= 0) {
+            /* a def in a subclass overrides the reader for that subclass */
+            TyKind rt2 = ivar_value_ty(rci2, iv);
+            int base_mi2 = comp_method_in_chain(c, self->class_id, name, NULL);
+            for (int k = 0; k < c->nclasses; k++) {
+              if (k == self->class_id || !is_descendant(c, k, self->class_id)) continue;
+              int kmi = comp_method_in_chain(c, k, name, NULL);
+              if (kmi < 0 || kmi == base_mi2) continue;
+              TyKind kr = (TyKind)c->scopes[kmi].ret;
+              if (kr != TY_UNKNOWN && kr != rt2) rt2 = ty_unify(rt2, kr);
+            }
+            return rt2;
+          }
         }
       }
       /* bare `new` inside a class method returns an instance of self's class */

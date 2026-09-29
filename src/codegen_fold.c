@@ -9285,6 +9285,60 @@ static void emit_dispatch_per_arm(Compiler *c, int cid, const char *name, const 
   buf_printf(b, " } _t%d; })", rtmp);
 }
 
+/* A receiverless call of `name` that cid's chain answers with an attr reader,
+   in a class some descendant of which overrides the reader with a def:
+   a switch on the runtime class, with an arm calling the def for each
+   overriding descendant and the reader's text (`reader`, of type reader_ty)
+   for the rest. 0 when no descendant overrides it, or when the arms cannot
+   agree on the call's type. */
+int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name,
+                                  const char *selfptr, const char *reader,
+                                  TyKind reader_ty, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (nt_ref(nt, id, "block") >= 0) return 0;
+  int base_mi = comp_method_in_chain(c, cid, name, NULL);
+  int any = 0;
+  for (int k = 0; k < c->nclasses && !any; k++) {
+    if (k == cid || !is_descendant(c, k, cid)) continue;
+    int kmi = comp_method_in_chain(c, k, name, NULL);
+    if (kmi >= 0 && kmi != base_mi) any = 1;
+  }
+  if (!any) return 0;
+  TyKind ret = comp_ntype(c, id);
+  if (ret == TY_UNKNOWN || ret == TY_VOID || ret == TY_NIL) return 0;
+  if (ret != reader_ty && ret != TY_POLY) return 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k == cid || !is_descendant(c, k, cid)) continue;
+    int kmi = comp_method_in_chain(c, k, name, NULL);
+    if (kmi < 0 || kmi == base_mi) continue;
+    if (dispatch_arm_scope(c, kmi) < 0) return 0;
+    TyKind kr = (TyKind)c->scopes[kmi].ret;
+    if (kr != ret && ret != TY_POLY) return 0;
+  }
+  int argsNode = nt_ref(nt, id, "arguments");
+  int rtmp = ++g_tmp;
+  buf_puts(b, "({ ");
+  emit_ctype(c, ret, b);
+  buf_printf(b, " _t%d; switch (", rtmp);
+  emit_obj_dispatch_key(c, cid, selfptr, b);
+  buf_puts(b, ") {");
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k == cid || !is_descendant(c, k, cid)) continue;
+    int kd = -1;
+    int kmi0 = comp_method_in_chain(c, k, name, &kd);
+    if (kmi0 < 0 || kmi0 == base_mi) continue;
+    nd_callee(c, g_nd_call_id, kmi0, kd, 1);
+    buf_printf(b, " case %d: ", k);
+    emit_dispatch_arm_call(c, kd, dispatch_arm_scope(c, kmi0), selfptr, argsNode, -1,
+                           ret, ret, rtmp, b);
+  }
+  buf_printf(b, " default: _t%d = ", rtmp);
+  if (ret == TY_POLY && reader_ty != TY_POLY) emit_boxed_text(c, reader_ty, reader, b);
+  else buf_puts(b, reader);
+  buf_printf(b, "; break; } _t%d; })", rtmp);
+  return 1;
+}
+
 /* Emit a (possibly virtual) method call. `selfptr` is a reusable C
    expression yielding sp_<static>* (e.g. "self", "&lv_x", "&_t3"). Args
    are pre-evaluated into temps so they're emitted once.
