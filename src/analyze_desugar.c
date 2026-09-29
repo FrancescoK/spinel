@@ -7166,3 +7166,91 @@ int desugar_when_int_float_ranges(Compiler *c) {
   }
   return changed;
 }
+
+/* ---- Encoding's class-level queries ----
+ *
+ * Spinel strings are UTF-8 (or binary), so the answers are fixed:
+ * Encoding.default_internal is nil, default_external is UTF-8, and
+ * Encoding.find with a literal name of one of the encodings a string here can
+ * carry is that constant. The setters take their value and change nothing. */
+/* the text of a literal String or Symbol argument, else NULL */
+static const char *enc_literal_name(const NodeTable *nt, int node) {
+  if (node < 0) return NULL;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_StringNode) {
+    const char *u = nt_str(nt, node, "unescaped");
+    return u ? u : nt_str(nt, node, "content");
+  }
+  if (k == NK_SymbolNode) return nt_str(nt, node, "value");
+  return NULL;
+}
+
+static int enc_const(NodeTable *nt, int like, const char *cname) {
+  int par = fwd_new_node_like(nt, like, "ConstantReadNode");
+  int cp = fwd_new_node_like(nt, like, "ConstantPathNode");
+  if (par < 0 || cp < 0) return -1;
+  nt_node_set_str(nt, par, "name", "Encoding");
+  nt_node_set_ref(nt, cp, "parent", par);
+  nt_node_set_str(nt, cp, "name", cname);
+  return cp;
+}
+
+int desugar_encoding_queries(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) continue;
+    NodeKind rk = nt_kind(nt, recv);
+    if (rk != NK_ConstantReadNode && !(rk == NK_ConstantPathNode && nt_ref(nt, recv, "parent") < 0)) continue;
+    const char *rn = nt_str(nt, recv, "name");
+    if (!rn || !sp_streq(rn, "Encoding")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    int an = nt_ref(nt, id, "arguments");
+    int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+    if (sp_streq(nm, "default_internal") && ac == 0) {
+      nt_node_reset(nt, id, "NilNode");
+      changed = 1;
+    }
+    else if (sp_streq(nm, "default_external") && ac == 0) {
+      int k = enc_const(nt, id, "UTF_8");
+      if (k < 0) continue;
+      /* retype the call node in place as that constant path */
+      int par = nt_ref(nt, k, "parent");
+      nt_node_reset(nt, id, "ConstantPathNode");
+      nt_node_set_ref(nt, id, "parent", par);
+      nt_node_set_str(nt, id, "name", "UTF_8");
+      changed = 1;
+    }
+    else if ((sp_streq(nm, "default_internal=") || sp_streq(nm, "default_external=")) && ac == 1) {
+      /* the assigned value is the expression's value */
+      int v = av[0];
+      nt_node_set_ref(nt, id, "receiver", -1);
+      nt_node_set_str(nt, id, "name", "itself");
+      nt_node_set_ref(nt, id, "arguments", -1);
+      nt_node_set_ref(nt, id, "receiver", v);
+      changed = 1;
+    }
+    else if (sp_streq(nm, "find") && ac == 1) {
+      /* a literal name only: the constant it names */
+      const char *lit = enc_literal_name(nt, av[0]);
+      if (!lit) continue;
+      const char *cn = NULL;
+      if (!strcasecmp(lit, "utf-8") || !strcasecmp(lit, "utf8")) cn = "UTF_8";
+      else if (!strcasecmp(lit, "binary") || !strcasecmp(lit, "ascii-8bit")) cn = "ASCII_8BIT";
+      else if (!strcasecmp(lit, "us-ascii") || !strcasecmp(lit, "ascii")) cn = "US_ASCII";
+      if (!cn) continue;
+      int k = enc_const(nt, id, cn);
+      if (k < 0) continue;
+      int par = nt_ref(nt, k, "parent");
+      nt_node_reset(nt, id, "ConstantPathNode");
+      nt_node_set_ref(nt, id, "parent", par);
+      nt_node_set_str(nt, id, "name", cn);
+      changed = 1;
+    }
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
