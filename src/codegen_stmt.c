@@ -5829,12 +5829,24 @@ static void emit_for_poly_lefts(Compiler *c, int idx, int tv, int indent, Buf *b
   }
 }
 
+/* `for a, b in coll` over a collection whose elements are not arrays (a
+   range's): each element destructures as `a, b = el` does, so the first
+   index takes it and the rest are nil. */
+static void emit_for_multi_scalar(Compiler *c, int idx, TyKind et, const char *el,
+                                  Buf *b, int indent) {
+  int tv = ++g_tmp;
+  emit_indent(b, indent);
+  buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed_text(c, et, el, b); buf_puts(b, ";\n");
+  emit_for_poly_lefts(c, idx, tv, indent, b);
+}
+
 void emit_for(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int idx = nt_ref(nt, id, "index");
   int coll = nt_ref(nt, id, "collection");
   int body = nt_ref(nt, id, "statements");
   const char *vn = idx >= 0 ? nt_str(nt, idx, "name") : NULL;
+  int multi = idx >= 0 && nt_kind(nt, idx) == NK_MultiTargetNode;
   /* Unwrap parenthesized collections so node-kind checks, notably RangeNode,
      see the underlying expression. */
   coll = unwrap_parens(c, coll);
@@ -5854,7 +5866,7 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
     TyKind rty = comp_ntype(c, rref);
     int lpoly = (lty == TY_POLY || lty == TY_BIGINT);
     int rpoly = (rty == TY_POLY || rty == TY_BIGINT);
-    LocalVar *clv = scope_local(comp_scope_of(c, idx), vn);
+    LocalVar *clv = vn ? scope_local(comp_scope_of(c, idx), vn) : NULL;
     int cpoly = clv && clv->type == TY_POLY;
     int thi = ++g_tmp;
     emit_indent(b, indent); buf_puts(b, "{ sp_int ");
@@ -5887,8 +5899,14 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
     emit_expr(c, lref, b);
     if (lpoly) buf_puts(b, ")");
     buf_printf(b, "; _t%d %s _t%d; _t%d++) {\n", tc, excl ? "<" : "<=", thi, tc);
-    emit_indent(b, indent + 2);
-    emit_local_ref(c, idx, vn, b); buf_printf(b, " = _t%d;\n", tc);
+    if (multi) {
+      char el[32]; snprintf(el, sizeof el, "_t%d", tc);
+      emit_for_multi_scalar(c, idx, TY_INT, el, b, indent + 2);
+    }
+    else {
+      emit_indent(b, indent + 2);
+      emit_local_ref(c, idx, vn, b); buf_printf(b, " = _t%d;\n", tc);
+    }
     emit_loop_body(c, body, b, indent + 2);
     emit_indent(b, indent + 1); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
@@ -5896,7 +5914,7 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
   }
   /* A range held in a variable or returned by a call: walk its sp_Range the
      way Range#each does, honoring a step and an exclusive end. */
-  if (ct == TY_RANGE && vn) {
+  if (ct == TY_RANGE && (vn || multi)) {
     int tr = ++g_tmp, ts = ++g_tmp, te = ++g_tmp, tc = ++g_tmp;
     emit_indent(b, indent);
     buf_printf(b, "{ sp_Range _t%d = ", tr); emit_expr(c, coll, b); buf_puts(b, ";\n");
@@ -5908,13 +5926,16 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent + 1);
     buf_printf(b, "for (sp_int _t%d = _t%d.first; _t%d > 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d += _t%d) {\n",
                tc, tr, ts, tc, te, tc, te, tc, ts);
-    LocalVar *rlv = scope_local(comp_scope_of(c, idx), rename_local(vn));
     char el[32]; snprintf(el, sizeof el, "_t%d", tc);
-    emit_indent(b, indent + 2);
-    emit_local_ref(c, idx, vn, b); buf_puts(b, " = ");
-    if (rlv && rlv->type == TY_POLY) emit_boxed_text(c, TY_INT, el, b);
-    else buf_puts(b, el);
-    buf_puts(b, ";\n");
+    if (multi) emit_for_multi_scalar(c, idx, TY_INT, el, b, indent + 2);
+    else {
+      LocalVar *rlv = scope_local(comp_scope_of(c, idx), rename_local(vn));
+      emit_indent(b, indent + 2);
+      emit_local_ref(c, idx, vn, b); buf_puts(b, " = ");
+      if (rlv && rlv->type == TY_POLY) emit_boxed_text(c, TY_INT, el, b);
+      else buf_puts(b, el);
+      buf_puts(b, ";\n");
+    }
     emit_loop_body(c, body, b, indent + 2);
     emit_indent(b, indent + 1); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
@@ -5922,20 +5943,23 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
   }
   /* `for s in "a".."e"`: a String range has no int representation, so walk
      its succ-sequence materialized as a StrArray. */
-  if (ct == TY_STR_RANGE && vn) {
+  if (ct == TY_STR_RANGE && (vn || multi)) {
     int ta = ++g_tmp, ti = ++g_tmp;
     emit_indent(b, indent);
     buf_printf(b, "{ sp_StrArray *_t%d = sp_srange_to_a(", ta); emit_expr(c, coll, b); buf_puts(b, ");\n");
     emit_indent(b, indent + 1); buf_printf(b, "SP_GC_ROOT(_t%d);\n", ta);
     emit_indent(b, indent + 1);
     buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {\n", ti, ti, ta, ti);
-    LocalVar *slv = scope_local(comp_scope_of(c, idx), rename_local(vn));
     char el[64]; snprintf(el, sizeof el, "sp_StrArray_get(_t%d, _t%d)", ta, ti);
-    emit_indent(b, indent + 2);
-    emit_local_ref(c, idx, vn, b); buf_puts(b, " = ");
-    if (slv && slv->type == TY_POLY) emit_boxed_text(c, TY_STRING, el, b);
-    else buf_puts(b, el);
-    buf_puts(b, ";\n");
+    if (multi) emit_for_multi_scalar(c, idx, TY_STRING, el, b, indent + 2);
+    else {
+      LocalVar *slv = scope_local(comp_scope_of(c, idx), rename_local(vn));
+      emit_indent(b, indent + 2);
+      emit_local_ref(c, idx, vn, b); buf_puts(b, " = ");
+      if (slv && slv->type == TY_POLY) emit_boxed_text(c, TY_STRING, el, b);
+      else buf_puts(b, el);
+      buf_puts(b, ";\n");
+    }
     emit_loop_body(c, body, b, indent + 2);
     emit_indent(b, indent + 1); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
