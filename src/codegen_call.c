@@ -32395,6 +32395,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
             int an = ie_tramp_effective_arg(c, id, p);
             Buf eb; memset(&eb, 0, sizeof eb);
             if (an >= 0) { if (ppoly) emit_boxed(c, an, &eb); else emit_expr(c, an, &eb); }
+            /* a parameter the trampoline passes nothing for is nil in its
+               slot's own form: the `0` assigned an int to a boxed one */
+            else if (pdecl) emit_ie_param_default(c, plv->type, &eb);
             else buf_puts(&eb, "0");
             if (an >= 0 && pscalar && comp_ntype(c, an) == TY_POLY)
               emit_unbox_text(c, plv->type, eb.p ? eb.p : "", g_pre);
