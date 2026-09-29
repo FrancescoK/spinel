@@ -1139,6 +1139,7 @@ int desugar_public_send_recv(Compiler *c) {
     comp_grow_node_arrays(c);
     int encl = c->nscope[id];
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    expand_static_splat_args(c, id, id + 1);
     changed = 1;
   }
   return changed;
@@ -1706,6 +1707,7 @@ int desugar_dynamic_send(Compiler *c) {
          desugar that rewrites the name (`first` -> `[]`) leaves the arm
          unreachable and the send raises. Mark them as owned. */
       nt_node_set_int(nt, call, "dyn_arm", 1);
+      nt_node_set_str(nt, call, "dyn_name", use[k]);
       nt_node_set_ref(nt, call, "arguments", na);
       if (computed && nt_ref(nt, id, "block") >= 0) nt_node_set_ref(nt, call, "block", nt_ref(nt, id, "block"));
       /* public_send arms enforce visibility at the dispatch site */
@@ -1720,6 +1722,7 @@ int desugar_dynamic_send(Compiler *c) {
     comp_grow_node_arrays(c);
     int encl = c->nscope[id];
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    expand_static_splat_args(c, base, nt->count);
     changed = 1;
   }
   free(picked);

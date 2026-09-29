@@ -2787,7 +2787,7 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
     TyKind at = comp_ntype(c, arm);
     if (at == TY_UNKNOWN || at == TY_VOID) continue;     /* did not resolve on this receiver/arity */
     if (mo && method_obj_target_mi(c, arm) < 0) continue;
-    const char *nm = nt_str(nt, arm, mo ? "dyn_name" : "name");
+    const char *nm = nt_str(nt, arm, "dyn_name");
     if (!nm) continue;
     /* Emit the arm into private buffers under a silent probe: a method that
        resolves by type but not by codegen (e.g. wrong arity for a builtin)
