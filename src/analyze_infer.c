@@ -7179,6 +7179,32 @@ static int stmts_diverge(Compiler *c, int st) {
   return nm && (sp_streq(nm, "raise") || sp_streq(nm, "fail") || sp_streq(nm, "throw") ||
                 sp_streq(nm, "exit") || sp_streq(nm, "abort") || sp_streq(nm, "exit!"));
 }
+/* Whether `v` answers the value of `node` itself: `v` is `node`, or a
+   parenthesized, conditional, `&&`/`||` or statement-list expression one of
+   whose value arms is. */
+static int value_arm_is(const NodeTable *nt, int v, int node) {
+  if (v < 0) return 0;
+  if (v == node) return 1;
+  switch (nt_kind(nt, v)) {
+  case NK_StatementsNode: {
+    int n = 0; const int *s = nt_arr(nt, v, "body", &n);
+    return n > 0 && value_arm_is(nt, s[n - 1], node);
+  }
+  case NK_ParenthesesNode: return value_arm_is(nt, nt_ref(nt, v, "body"), node);
+  case NK_ElseNode: return value_arm_is(nt, nt_ref(nt, v, "statements"), node);
+  case NK_IfNode:
+    return value_arm_is(nt, nt_ref(nt, v, "statements"), node) ||
+           value_arm_is(nt, nt_ref(nt, v, "subsequent"), node);
+  case NK_UnlessNode:
+    return value_arm_is(nt, nt_ref(nt, v, "statements"), node) ||
+           value_arm_is(nt, nt_ref(nt, v, "else_clause"), node);
+  case NK_AndNode: case NK_OrNode:
+    return value_arm_is(nt, nt_ref(nt, v, "left"), node) ||
+           value_arm_is(nt, nt_ref(nt, v, "right"), node);
+  default: return 0;
+  }
+}
+
 /* Whether a branch node produces no value: a statement list that ends in a
    raise, or an `elsif` chain EVERY arm of which does -- including the arm
    that is not written, so a chain without an `else` never diverges as a
@@ -8156,11 +8182,31 @@ TyKind infer_uncached(Compiler *c, int id) {
        bare-yield tail is handled per-site by emit_block_invoke_coerced /
        method_call_ret and must keep its concrete first-site type. */
     if (yield_value_diverges(c, ymi)) {
-      static const NodeKind lw_kinds[] = { NK_LocalVariableWriteNode, NK_LocalVariableOperatorWriteNode,
-                                           NK_LocalVariableOrWriteNode, NK_LocalVariableAndWriteNode };
-      for (int wk = 0; wk < 4; wk++)
+      /* An instance, global or class variable written from the yield, or from
+         a conditional one of whose arms is the yield (`@y = block_given? ?
+         yield(x) : "nil"`), is in the same position as a local: the variable
+         takes one type, the first site's, and the other site's value was
+         emitted into it (`@y = yield(x)` with a String block, then an Integer
+         one, stopped the build). */
+      static const NodeKind lw_kinds[] = {
+        NK_LocalVariableWriteNode, NK_LocalVariableOperatorWriteNode,
+        NK_LocalVariableOrWriteNode, NK_LocalVariableAndWriteNode,
+        NK_InstanceVariableWriteNode, NK_InstanceVariableOperatorWriteNode,
+        NK_InstanceVariableOrWriteNode, NK_InstanceVariableAndWriteNode,
+        NK_GlobalVariableWriteNode, NK_GlobalVariableOperatorWriteNode,
+        NK_GlobalVariableOrWriteNode, NK_GlobalVariableAndWriteNode,
+        NK_ClassVariableWriteNode, NK_ClassVariableOperatorWriteNode,
+        NK_ClassVariableOrWriteNode, NK_ClassVariableAndWriteNode };
+      for (int wk = 0; wk < (int)(sizeof lw_kinds / sizeof lw_kinds[0]); wk++)
         NT_FOREACH_KIND(nt, lw_kinds[wk], w)
-          if (nt_ref(nt, w, "value") == id) return TY_POLY;
+          if (value_arm_is(nt, nt_ref(nt, w, "value"), id)) return TY_POLY;
+      /* An array literal's element likewise: `[yield(x)]` built its array
+         from the first site's element type. */
+      NT_FOREACH_KIND(nt, NK_ArrayNode, w) {
+        int en = 0; const int *ev = nt_arr(nt, w, "elements", &en);
+        for (int e = 0; e < en; e++)
+          if (value_arm_is(nt, ev[e], id)) return TY_POLY;
+      }
       /* A yield whose value leaves through an ENSURE frame is in the same
          position as one written to a local, for the same reason: the frame
          carries the value in a slot of its own, and that slot settles its type
