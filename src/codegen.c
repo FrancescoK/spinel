@@ -10738,6 +10738,9 @@ void emit_regex_section(Compiler *c, Buf *b) {
   for (int aci = 0; aci < c->nclasses; aci++) {
     ClassInfo *ci = &c->classes[aci];
     if (ci->is_native_class || !ci->instantiated) continue;
+    /* the scan loop above skips these (the Toplevel pseudo-class, a builtin
+       reopen): no sp_<C>__gc_scan exists to tag */
+    if (is_builtin_reopen(ci->name)) continue;
     int is_exc_iv = ci->nivars > 0 && class_is_exc_subclass(c, aci);
     if (!class_needs_scan(ci) && !is_exc_iv) continue;   /* no scan emitted */
     const char *rn = class_ruby_name(c, aci) ? class_ruby_name(c, aci) : ci->name;
@@ -12960,6 +12963,13 @@ char *codegen_program(const NodeTable *nt) {
     buf_printf(&b, "%s", g_ext_init_name ? "" : "static ");
     buf_puts(&b, "const char *sp_class_to_s(sp_Class c){if(sp_class_nil_p(c))return SPL(\"nil\");if(c.name)return c.name;switch(c.cls_id){");
     for (int i = 0; i < c->nclasses; i++) {
+      /* a reopened builtin's entry (`class Object; def m` gives Object one)
+         is what its constant boxes to, and it prints the builtin's name;
+         the Toplevel pseudo-class alone has no Ruby name */
+      if (is_builtin_reopen(c->classes[i].name) && !sp_streq(c->classes[i].name, "Toplevel")) {
+        buf_printf(&b, "case %d:return SPL(\"%s\");", i, c->classes[i].name);
+        continue;
+      }
       if (!is_builtin_reopen(c->classes[i].name)) {
         /* An anonymous Struct/Data class has no Ruby-visible name -- the
            StructAnon_<n> the compiler keys it by is not one -- and CRuby
