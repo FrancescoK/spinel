@@ -155,11 +155,18 @@ int scope_reads_callee(Compiler *c, int si);
 int sp_yield_site_type(const Compiler *c, int id, TyKind *out);
 TyKind block_next_value_ntype(const Compiler *c, int node);
 /* Argument-hoist overrides (see emit_args_filled): node id -> rooted temp
-   name substituted by emit_expr. */
+   name substituted by emit_expr. A site checks for room against
+   MAX_ARG_OVERRIDE and falls back when there is none; the table always
+   holds that many past its fill (argov_reserve). */
 #define MAX_ARG_OVERRIDE 64
-extern int  g_argov_node[MAX_ARG_OVERRIDE];
-extern char g_argov_text[MAX_ARG_OVERRIDE][16];
+extern int  *g_argov_node;
+extern char (*g_argov_text)[16];
 extern int  g_n_argov;
+/* Room for one more override whatever the fill, for a site that must run
+   every argument of a call ahead of it, however many there are
+   (emit_positionals_first and its kin): the table grows, keeping
+   MAX_ARG_OVERRIDE entries free past the fill for the sites that check. */
+void argov_reserve(void);
 /* The setter call (`obj.x = v`) emit_stmt is lowering: nothing reads its value,
    so emit_object_call leaves the value temp out (see setter_value_open). */
 extern int  g_setter_stmt_id;

@@ -6952,6 +6952,10 @@ static void emit_arg_temp(Compiler *c, int v) {
   else if (needs_root(at)) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", t);
   buf_puts(g_pre, "\n");
   free(hb.p);
+  /* every argument, however many: past the table's first MAX_ARG_OVERRIDE
+     entries the rest never ran where a static check refuses the call, or ran
+     at their slots, after the ones that follow them */
+  argov_reserve();
   g_argov_node[g_n_argov] = v;
   snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", t);
   g_n_argov++;
@@ -6960,7 +6964,7 @@ static void emit_arg_temp(Compiler *c, int v) {
 /* See codegen_internal.h. */
 void emit_positionals_first(Compiler *c, const int *argv, int pos_argc) {
   const NodeTable *nt = c->nt;
-  for (int k = 0; argv && k < pos_argc && g_n_argov < MAX_ARG_OVERRIDE; k++) {
+  for (int k = 0; argv && k < pos_argc; k++) {
     int v = argv[k];
     if (nt_kind(nt, v) == NK_SplatNode) v = nt_ref(nt, v, "expression");
     else if (nt_kind(nt, v) == NK_BlockArgumentNode) continue;   /* runs last */
@@ -7003,8 +7007,8 @@ static void emit_arg_first(Compiler *c, int v, int rebound, Buf *b) {
   int effect = subtree_has_side_effect(c, x);
   if (!effect && !rebound) return;
   TyKind at = comp_ntype(c, x);
-  if (ty_is_object(at) || c_type_name(at) || g_n_argov >= MAX_ARG_OVERRIDE) {
-    if (g_n_argov < MAX_ARG_OVERRIDE && (ty_is_object(at) || c_type_name(at))) emit_arg_temp(c, x);
+  if (ty_is_object(at) || c_type_name(at)) {
+    emit_arg_temp(c, x);
     return;
   }
   if (!effect) return;   /* a nil read reads nil whenever it runs */
@@ -7013,6 +7017,7 @@ static void emit_arg_first(Compiler *c, int v, int rebound, Buf *b) {
   emit_indent(b, g_indent);
   buf_printf(b, "(void)(%s);\n", vb.p ? vb.p : "0");
   free(vb.p);
+  argov_reserve();
   g_argov_node[g_n_argov] = x;
   snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "0");
   g_n_argov++;
@@ -7191,7 +7196,7 @@ int emit_ds_hash_merge(Compiler *c, int kwh, int any_key, TyKind *out_type) {
    and converted already, which reads as nothing. The caller pops the
    override with its own. */
 static void ds_operand_reads_temp(int node, int tmp) {
-  if (g_n_argov >= MAX_ARG_OVERRIDE) return;
+  argov_reserve();
   g_argov_node[g_n_argov] = node;
   if (tmp < 0) snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "((void)0)");
   else snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tmp);
@@ -8861,7 +8866,7 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
     for (int k = 0; k < pos_argc && k < m->nparams; k++)
       if (subtree_has_side_effect(c, argv[k])) { last_se = k; n_se++; }
     for (int k = 0; k < pos_argc && k < m->nparams; k++) {
-      if (g_n_argov >= MAX_ARG_OVERRIDE) break;
+      argov_reserve();   /* past MAX_ARG_OVERRIDE arguments too */
       TyKind at = comp_ntype(c, argv[k]);
       /* An argument emit_ctype would spell `void` has no C storage to
          sequence into -- `void _tN = ...` is not a declaration C accepts.
