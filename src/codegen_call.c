@@ -19726,7 +19726,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
        below would have raised. Guarded on the node id like the hash face: the
        re-entry asks the inference again, and a type cache is not a recursion
        guard (#4158 follow-up). */
-    if (grt == TY_POLY && g_handle_face_node != id &&
+    if (grt == TY_POLY && g_handle_face_node != id && argc == 0 &&
         ty_poly_handle_face(nt_str(nt, id, "name")) != TY_UNKNOWN &&
         !user_defines_or_reads(c, nt_str(nt, id, "name")) &&
         g_n_argov < MAX_ARG_OVERRIDE) {
