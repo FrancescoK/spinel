@@ -6460,8 +6460,9 @@ else if (orecv >= 0 && onm) {
      the middle of ours (invalid C). Same shape as emit_fiber_new's nested-
      Fiber fix: the inner body appends itself first, we follow -- both at file
      scope, and the prototypes in g_proc_protos keep call order irrelevant. */
-  int sv_loopd = g_c_loop_depth, sv_inproc = g_in_proc_body;
+  int sv_loopd = g_c_loop_depth, sv_inproc = g_in_proc_body, sv_cv = g_c_ret_void;
   g_c_loop_depth = 0; g_in_proc_body = 1;   /* fresh fn: outer loops don't count */
+  g_c_ret_void = 0;   /* returns sp_int, whatever the enclosing body returns */
   Buf proc_body_buf; memset(&proc_body_buf, 0, sizeof proc_body_buf);
   Buf *pb = &proc_body_buf;
   buf_printf(pb, "static sp_int _proc_%d(void *_cap, sp_int argc, sp_int *args) {\n", pid);
@@ -6994,7 +6995,7 @@ else if (orecv >= 0 && onm) {
   if (!g_no_root_frame) gc_frame_build(pb, proc_frame_ins);
   buf_puts(&g_procs, proc_body_buf.p ? proc_body_buf.p : "");
   free(proc_body_buf.p);
-  g_c_loop_depth = sv_loopd; g_in_proc_body = sv_inproc;
+  g_c_loop_depth = sv_loopd; g_in_proc_body = sv_inproc; g_c_ret_void = sv_cv;
 
   g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block; g_block_nren = sv_bnren;
   g_block_param_name = sv_bpn; g_self = sv_self; g_result_var = sv_rv; g_ret_type = sv_rt;
@@ -13751,6 +13752,7 @@ char *codegen_program(const NodeTable *nt) {
   }
 
   size_t main_frame_ins = 0;
+  int sv_main_cv = g_c_ret_void;
   if (g_ext_init_name) {
     /* Layer-1 extension emission (ext-design.md): the toplevel body brackets
        into the host-callable init function instead of main, and a tiny
@@ -13796,6 +13798,9 @@ char *codegen_program(const NodeTable *nt) {
      spelling is already reserved, so nothing can collide with it as an
      external. */
   buf_puts(body, "void _sp_main_body(void){\n");
+  /* The main body is a `void` C function: an `ensure` epilogue at top level
+     (emit_retf_return) must return bare, as it does in a fiber body. */
+  g_c_ret_void = 1;
   buf_puts(body, "    SP_GC_SAVE();\n");
   main_frame_ins = body->len;
   if (g_re_init_needed) buf_puts(body, "    sp_tu_init();\n");
@@ -13877,6 +13882,7 @@ char *codegen_program(const NodeTable *nt) {
   else {
     if (g_needs_at_exit) buf_puts(body, "  _sp_main_rc = sp_at_exit_run(0);\n}\n");
     else buf_puts(body, "  _sp_main_rc = 0;\n}\n");
+    g_c_ret_void = sv_main_cv;
     buf_puts(body, "int main(int argc,char**argv){\n"
                    "  _sp_main_argc = argc; _sp_main_argv = argv;\n");
     /* an unoptimised build's frames are several times an -O2 one's, so the
