@@ -4700,6 +4700,12 @@ static void synth_to_enum_generators(Compiler *c) {
   for (int s = 0; s < c->nscopes; s++) {
     Scope *m = &c->scopes[s];
     if (!m->name || m->is_cmethod || m->class_id < 0) continue;
+    /* a module's own copy of the method has no receiver to iterate (the
+       includers' copies get their helpers): a generator on the module --
+       activesupport's Enumerable#index_by, `to_enum(:index_by)` on its
+       blockless branch -- would compile that copy, whose bare `each` has
+       no self, and was refused */
+    if (comp_class_is_module(c, &c->classes[m->class_id])) continue;
     if (!(m->yields || (m->blk_param && m->blk_param[0]))) continue;
     int hit = 0;
     for (int k = 0; k < nnames; k++) if (sp_streq(names[k], m->name)) { hit = 1; break; }
