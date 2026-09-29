@@ -1080,8 +1080,17 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type);
 /* The TypeError CRuby raises for a `**` operand that is neither a Hash, nil
    nor convertible with #to_hash, emitted into g_pre ahead of any keyword
    check: a settled kind of another class raises outright, and a boxed one
-   (TY_POLY) is checked at run time on `val`, its evaluated value. */
+   (TY_POLY) is checked at run time on `val`, its evaluated value, which a
+   user object's #to_hash converts for its effect alone. */
 void emit_kw_splat_conv_check(Compiler *c, TyKind t, const char *val);
+/* The boxed `**` operand held in the temp named `tmp` converted where it
+   stands, the temp then holding what binds: nil, a Hash, or the Hash a user
+   object's #to_hash answered; anything else raises the TypeError. */
+void emit_kw_splat_conv_temp(Compiler *c, const char *tmp);
+/* Can a boxed `**` operand be a user object whose #to_hash converts it:
+   some class of the program defines one? Its answer is a new Hash, which
+   the temp holding the operand roots. */
+int kw_splat_user_to_hash(Compiler *c);
 /* A `**` operand of a kind that is no Hash but can still be nil at run time
    -- a nilable Integer or Float slot's sentinel, a pointer-backed kind's
    NULL -- or that is true or false, which CRuby's TypeError names by value:

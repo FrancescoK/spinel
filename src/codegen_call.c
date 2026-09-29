@@ -12622,7 +12622,10 @@ static int emit_struct_new_call(Compiler *c, int id, int ci, int argc, const int
                      splat_tmp, hv0.p ? hv0.p : "sp_box_nil()", splat_tmp);
           free(hv0.p);
           char stn[32]; snprintf(stn, sizeof stn, "_t%d", splat_tmp);
-          emit_kw_splat_conv_check(c, kw_splat_checked_boxed(c, splat_h) ? TY_POLY : comp_ntype(c, splat_h), stn);
+          /* the members read the converted operand: a user object's
+             #to_hash answer (sp_kw_splat_conv) */
+          if (comp_ntype(c, splat_h) == TY_POLY) emit_kw_splat_conv_temp(c, stn);
+          else emit_kw_splat_conv_check(c, kw_splat_checked_boxed(c, splat_h) ? TY_POLY : comp_ntype(c, splat_h), stn);
           continue;
         }
         for (int a = 0; vv >= 0 && a < cls->nivars; a++) {

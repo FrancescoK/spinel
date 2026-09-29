@@ -6746,13 +6746,20 @@ static const char *kw_splat_bad_cls(Compiler *c, TyKind t) {
   return conv_cls_name_of(c, t);
 }
 
-/* Can a boxed user object answer #to_hash? Only when some class of the
-   program defines it, or method_missing; otherwise its conversion is a
-   TypeError as surely as a builtin's. */
+/* May a boxed user object the conversion finds no #to_hash for answer one
+   anyway? Only when some class of the program defines method_missing;
+   otherwise its conversion is a TypeError as surely as a builtin's. A
+   class's own #to_hash is called through the bridge (sp_kw_splat_conv). */
 static int kw_splat_user_may_convert(Compiler *c) {
   for (int k = 0; k < c->nclasses; k++)
-    if (comp_method_in_chain(c, k, "to_hash", NULL) >= 0 ||
-        comp_method_in_chain(c, k, "method_missing", NULL) >= 0) return 1;
+    if (comp_method_in_chain(c, k, "method_missing", NULL) >= 0) return 1;
+  return 0;
+}
+
+/* See codegen_internal.h. */
+int kw_splat_user_to_hash(Compiler *c) {
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_method_in_chain(c, k, "to_hash", NULL) >= 0) return 1;
   return 0;
 }
 
@@ -6821,7 +6828,7 @@ static void emit_kw_splat_bad_operand(Compiler *c, int node) {
 void emit_kw_splat_conv_check(Compiler *c, TyKind t, const char *val) {
   if (t == TY_POLY) {
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_kw_splat_conv_check(%s, %d);\n", val, kw_splat_user_may_convert(c));
+    buf_printf(g_pre, "(void)sp_kw_splat_conv(%s, %d);\n", val, kw_splat_user_may_convert(c));
     return;
   }
   const char *cn = kw_splat_bad_cls(c, t);
@@ -6831,10 +6838,16 @@ void emit_kw_splat_conv_check(Compiler *c, TyKind t, const char *val) {
 }
 
 /* See codegen_internal.h. */
+void emit_kw_splat_conv_temp(Compiler *c, const char *tmp) {
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "%s = sp_kw_splat_conv(%s, %d);\n", tmp, tmp, kw_splat_user_may_convert(c));
+}
+
+/* See codegen_internal.h. */
 void emit_kw_splat_operand_inline(Compiler *c, int node, Buf *b) {
   TyKind t = comp_ntype(c, node);
   if (t == TY_POLY || kw_splat_checked_boxed(c, node)) {
-    buf_puts(b, "sp_kw_splat_conv_check("); emit_boxed(c, node, b);
+    buf_puts(b, "(void)sp_kw_splat_conv("); emit_boxed(c, node, b);
     buf_printf(b, ", %d); ", kw_splat_user_may_convert(c));
     return;
   }
@@ -7309,14 +7322,18 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type) {
         emit_expr(c, inner2, &hb);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", ds_hash_tmp, hb.p ? hb.p : "sp_box_nil()");
-        if (arg_wants_root(c, TY_POLY, inner2)) {   /* as above */
+        /* as above; and a user object's #to_hash answers a new Hash, which
+           the temp holds alone once converted */
+        if (arg_wants_root(c, TY_POLY, inner2) || kw_splat_user_to_hash(c)) {
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", ds_hash_tmp);
         }
         free(hb.p);
         ds_operand_reads_temp(inner2, ds_hash_tmp);
+        /* the keywords bound, checked and collected are the converted
+           operand's: a user object converts through its #to_hash here, once */
         char tn[32]; snprintf(tn, sizeof tn, "_t%d", ds_hash_tmp);
-        emit_kw_splat_conv_check(c, *out_type, tn);
+        emit_kw_splat_conv_temp(c, tn);
       }
       else if (kw_splat_checked_boxed(c, inner2)) {
         /* A slot that is no Hash but may hold nil (`**f` where f answers an
