@@ -6936,6 +6936,26 @@ int kwh_out_of_order(Compiler *c, Scope *m, int kwh) {
   return 0;
 }
 
+/* The value `v` evaluated into a rooted temp in g_pre, pushed onto the
+   g_argov overrides so its uses read the temp. */
+static void emit_arg_temp(Compiler *c, int v) {
+  TyKind at = comp_ntype(c, v);
+  int t = ++g_tmp;
+  Buf hb; memset(&hb, 0, sizeof hb);
+  emit_expr(c, v, &hb);
+  emit_indent(g_pre, g_indent);
+  if (at == TY_POLY) buf_puts(g_pre, "sp_RbVal");
+  else emit_ctype(c, at, g_pre);
+  buf_printf(g_pre, " _t%d = %s;", t, hb.p ? hb.p : default_value(at));
+  if (at == TY_POLY) buf_printf(g_pre, " SP_GC_ROOT_RBVAL(_t%d);", t);
+  else if (needs_root(at)) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", t);
+  buf_puts(g_pre, "\n");
+  free(hb.p);
+  g_argov_node[g_n_argov] = v;
+  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", t);
+  g_n_argov++;
+}
+
 /* See codegen_internal.h. */
 void emit_positionals_first(Compiler *c, const int *argv, int pos_argc) {
   const NodeTable *nt = c->nt;
@@ -6946,36 +6966,47 @@ void emit_positionals_first(Compiler *c, const int *argv, int pos_argc) {
     if (v < 0 || !subtree_has_side_effect(c, v)) continue;
     TyKind at = comp_ntype(c, v);
     if (!ty_is_object(at) && !c_type_name(at)) continue;   /* a raise: no value */
-    int t = ++g_tmp;
-    Buf hb; memset(&hb, 0, sizeof hb);
-    emit_expr(c, v, &hb);
-    emit_indent(g_pre, g_indent);
-    if (at == TY_POLY) buf_puts(g_pre, "sp_RbVal");
-    else emit_ctype(c, at, g_pre);
-    buf_printf(g_pre, " _t%d = %s;", t, hb.p ? hb.p : default_value(at));
-    if (at == TY_POLY) buf_printf(g_pre, " SP_GC_ROOT_RBVAL(_t%d);", t);
-    else if (needs_root(at)) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", t);
-    buf_puts(g_pre, "\n");
-    free(hb.p);
-    g_argov_node[g_n_argov] = v;
-    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", t);
-    g_n_argov++;
+    emit_arg_temp(c, v);
+  }
+}
+
+/* Can `after` give the variable `x` reads another value before the binding
+   reads it? A local only by assigning it; an instance, global or class
+   variable by any effect, a call among them. Anything else is no read. */
+static int read_rebound_by(Compiler *c, int x, int after) {
+  const NodeTable *nt = c->nt;
+  if (after < 0) return 0;
+  switch (nt_kind(nt, x)) {
+    case NK_LocalVariableReadNode: {
+      const char *nm = nt_str(nt, x, "name");
+      return nm && subtree_writes_local(c, after, nm);
+    }
+    case NK_InstanceVariableReadNode: case NK_GlobalVariableReadNode:
+    case NK_ClassVariableReadNode:
+      return subtree_has_side_effect(c, after);
+    default: return 0;
   }
 }
 
 /* The argument `v` of a call binding in parameter order, evaluated ahead of
    the binding into a rooted temp its uses read, as emit_positionals_first
    evaluates one. A value with no C type -- nil -- is evaluated for its effect
-   alone, and its uses read a 0 the binding takes as nil. */
-static void emit_arg_first(Compiler *c, int v, Buf *b) {
+   alone, and its uses read a 0 the binding takes as nil. A read with no
+   effect of its own is taken too when `rebound` says a later value can
+   change what it reads (read_rebound_by): `m(b: x, a: (x = 2))` bound b the
+   2. */
+static void emit_arg_first(Compiler *c, int v, int rebound, Buf *b) {
   const NodeTable *nt = c->nt;
   int x = nt_kind(nt, v) == NK_SplatNode ? nt_ref(nt, v, "expression") : v;
-  if (x < 0 || nt_kind(nt, v) == NK_BlockArgumentNode || !subtree_has_side_effect(c, x)) return;
+  if (x < 0 || nt_kind(nt, v) == NK_BlockArgumentNode) return;
+  int effect = subtree_has_side_effect(c, x);
+  if (!effect && !rebound) return;
   TyKind at = comp_ntype(c, x);
   if (ty_is_object(at) || c_type_name(at) || g_n_argov >= MAX_ARG_OVERRIDE) {
-    emit_positionals_first(c, &v, 1);
+    if (g_n_argov < MAX_ARG_OVERRIDE && (ty_is_object(at) || c_type_name(at))) emit_arg_temp(c, x);
     return;
   }
+  if (!effect) return;   /* a nil read reads nil whenever it runs */
   Buf vb; memset(&vb, 0, sizeof vb);
   emit_expr(c, x, &vb);
   emit_indent(b, g_indent);
@@ -6986,30 +7017,73 @@ static void emit_arg_first(Compiler *c, int v, Buf *b) {
   g_n_argov++;
 }
 
-/* A keyword whose key is an expression (`f(*xs, key(1) => v)`) runs the key
-   ahead of its value, as CRuby does; a literal Symbol or String key has
-   nothing to run. */
-static void emit_computed_key_first(Compiler *c, int assoc, Buf *b) {
+/* The values of a call's arguments in the order CRuby runs them: each
+   positional, and each keyword's value, a key that is an expression
+   (`f(*xs, key(1) => v)`) ahead of it; a literal Symbol or String key has
+   nothing to run. `dsplat[i]` marks a `**` operand. The caller frees both. */
+static int *source_values(const NodeTable *nt, const int *argv, int argc, int *n, char **dsplat) {
+  int nv = 0, cap = 8;
+  int *vals = malloc(sizeof(int) * (size_t)cap);
+  char *ds = malloc((size_t)cap);
+  for (int k = 0; argv && k < argc; k++) {
+    int kn = 1; const int *kv = &argv[k];
+    if (nt_kind(nt, argv[k]) == NK_KeywordHashNode) kv = nt_arr(nt, argv[k], "elements", &kn);
+    for (int e = 0; kv && e < kn; e++) {
+      int pair[2] = { -1, kv[e] };
+      if (kv != &argv[k]) {
+        int key = nt_kind(nt, kv[e]) == NK_AssocNode ? nt_ref(nt, kv[e], "key") : -1;
+        if (key >= 0 && nt_kind(nt, key) != NK_SymbolNode && nt_kind(nt, key) != NK_StringNode) pair[0] = key;
+        pair[1] = nt_ref(nt, kv[e], "value");
+      }
+      for (int p = 0; p < 2; p++) {
+        if (pair[p] < 0) continue;
+        if (nv == cap) { cap *= 2; vals = realloc(vals, sizeof(int) * (size_t)cap); ds = realloc(ds, (size_t)cap); }
+        ds[nv] = p == 1 && kv != &argv[k] && nt_kind(nt, kv[e]) == NK_AssocSplatNode;
+        vals[nv++] = pair[p];
+      }
+    }
+  }
+  *n = nv;
+  *dsplat = ds;
+  return vals;
+}
+
+/* Can a value after the i-th of `vals`, or a node of `after`, change what
+   the i-th reads? */
+static int value_rebound(Compiler *c, const int *vals, int nv, int i, const int *after, int nafter) {
   const NodeTable *nt = c->nt;
-  if (nt_kind(nt, assoc) != NK_AssocNode) return;
-  int k = nt_ref(nt, assoc, "key");
-  if (k >= 0 && nt_kind(nt, k) != NK_SymbolNode && nt_kind(nt, k) != NK_StringNode) emit_arg_first(c, k, b);
+  int x = nt_kind(nt, vals[i]) == NK_SplatNode ? nt_ref(nt, vals[i], "expression") : vals[i];
+  for (int j = i + 1; j < nv; j++) if (read_rebound_by(c, x, vals[j])) return 1;
+  for (int j = 0; j < nafter; j++) if (read_rebound_by(c, x, after[j])) return 1;
+  return 0;
+}
+
+/* See codegen_internal.h. */
+int args_order_matters(Compiler *c, const int *argv, int argc, const int *after, int nafter) {
+  int nv = 0, eff = 0, matters = 0; char *ds = NULL;
+  int *vals = source_values(c->nt, argv, argc, &nv, &ds);
+  for (int i = 0; i < nv && !matters; i++) {
+    eff += subtree_has_side_effect(c, vals[i]);
+    matters = eff > 1 || value_rebound(c, vals, nv, i, after, nafter);
+  }
+  free(vals); free(ds);
+  return matters;
+}
+
+/* See codegen_internal.h. */
+void emit_args_before(Compiler *c, const int *argv, int argc, const int *after, int nafter, Buf *b) {
+  int nv = 0; char *ds = NULL;
+  int *vals = source_values(c->nt, argv, argc, &nv, &ds);
+  Buf *sv_pre = g_pre; g_pre = b;
+  for (int i = 0; i < nv; i++)
+    emit_arg_first(c, vals[i], value_rebound(c, vals, nv, i, after, nafter), b);
+  g_pre = sv_pre;
+  free(vals); free(ds);
 }
 
 /* See codegen_internal.h. */
 void emit_args_in_source_order(Compiler *c, const int *argv, int argc, Buf *b) {
-  const NodeTable *nt = c->nt;
-  Buf *sv_pre = g_pre; g_pre = b;
-  for (int k = 0; argv && k < argc; k++) {
-    if (nt_kind(nt, argv[k]) != NK_KeywordHashNode) { emit_arg_first(c, argv[k], b); continue; }
-    int kn = 0; const int *kv = nt_arr(nt, argv[k], "elements", &kn);
-    for (int e = 0; e < kn; e++) {
-      emit_computed_key_first(c, kv[e], b);
-      int v = nt_ref(nt, kv[e], "value");
-      if (v >= 0) emit_arg_first(c, v, b);
-    }
-  }
-  g_pre = sv_pre;
+  emit_args_before(c, argv, argc, NULL, 0, b);
 }
 
 /* See codegen_internal.h. */
@@ -7717,26 +7791,22 @@ static void emit_argument_error(const char *msg);
    true, and `m(**h, **1, **src)` never runs src. Each value runs into the
    temp its uses read (emit_args_in_source_order). */
 void emit_args_run(Compiler *c, const int *argv, int argc) {
-  const NodeTable *nt = c->nt;
-  for (int k = 0; argv && k < argc; k++) {
-    if (nt_kind(nt, argv[k]) != NK_KeywordHashNode) { emit_args_in_source_order(c, &argv[k], 1, g_pre); continue; }
-    int en = 0; const int *el = nt_arr(nt, argv[k], "elements", &en);
-    for (int e = 0; e < en; e++) {
-      emit_computed_key_first(c, el[e], g_pre);
-      int v = nt_ref(nt, el[e], "value");
-      if (v < 0) continue;
-      emit_arg_first(c, v, g_pre);
-      if (nt_kind(nt, el[e]) != NK_AssocSplatNode) continue;
-      TyKind t = comp_ntype(c, v);
-      if (t == TY_POLY) {
-        Buf hb; memset(&hb, 0, sizeof hb);
-        emit_boxed(c, v, &hb);
-        emit_kw_splat_conv_check(c, TY_POLY, hb.p ? hb.p : "sp_box_nil()");
-        free(hb.p);
-      }
-      else if (kw_splat_bad_cls(c, t)) emit_kw_splat_bad_operand(c, v);
+  int nv = 0; char *ds = NULL;
+  int *vals = source_values(c->nt, argv, argc, &nv, &ds);
+  for (int i = 0; i < nv; i++) {
+    int v = vals[i];
+    emit_arg_first(c, v, value_rebound(c, vals, nv, i, NULL, 0), g_pre);
+    if (!ds[i]) continue;
+    TyKind t = comp_ntype(c, v);
+    if (t == TY_POLY) {
+      Buf hb; memset(&hb, 0, sizeof hb);
+      emit_boxed(c, v, &hb);
+      emit_kw_splat_conv_check(c, TY_POLY, hb.p ? hb.p : "sp_box_nil()");
+      free(hb.p);
     }
+    else if (kw_splat_bad_cls(c, t)) emit_kw_splat_bad_operand(c, v);
   }
+  free(vals); free(ds);
 }
 /* Inject a runtime ArgumentError ahead of the call statement: the raise
    fires exactly when the bad call would run (dead code stays silent, like

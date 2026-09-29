@@ -6894,6 +6894,40 @@ int block_lead_only(Compiler *c, int block) {
   return P >= 1 && rt && sp_streq(rt, "ImplicitRestNode");
 }
 
+/* CRuby's auto-splat, for a block, a proc and instance_exec alike: one
+   Array passed alone is spread across the parameters when the block takes a
+   required (leading or post) or two optionals, and more than one positional
+   or a rest (a trailing comma's implicit one counts). `|a|`, `|a, k:|`,
+   `|a = 1, *r|` and `|*r|` keep it whole. P, O, Q count the leading
+   requireds, optionals and posts; R is a rest marker. */
+int block_auto_splats(int P, int O, int Q, int R) {
+  return (P + Q > 0 || O > 1) && (P + O + Q > 1 || R);
+}
+
+/* The static part of the proc distribution, for n positional values into
+   P leading requireds, O optionals, Q posts and a rest marker R: *ot is how
+   many optionals take a value, *ps the index of the first post's value
+   (from there on, past n, the posts bind nil). Requireds (leading and post)
+   take theirs first, the optionals what remains left to right, a rest the
+   middle; values past them all are dropped. */
+void block_fill(int P, int O, int Q, int R, int n, int *ot, int *ps) {
+  int o = n - P - Q;
+  if (o < 0) o = 0;
+  if (o > O) o = O;
+  int rl = R ? n - P - o - Q : 0;
+  if (rl < 0) rl = 0;
+  *ot = o;
+  *ps = P + o + rl;
+}
+
+/* Does the block declare `**nil`, refusing keywords? */
+int block_no_keywords(Compiler *c, int block) {
+  int bp = nt_ref(c->nt, block, "parameters");
+  int pn = bp >= 0 ? nt_ref(c->nt, bp, "parameters") : -1;
+  int kr = pn >= 0 ? nt_ref(c->nt, pn, "keyword_rest") : -1;
+  return kr >= 0 && nt_type(c->nt, kr) && sp_streq(nt_type(c->nt, kr), "NoKeywordsParameterNode");
+}
+
 /* Name of a block's `**kw` keyword-rest parameter, or NULL (also NULL for
    the anonymous `**`). */
 const char *block_kwrest_name(Compiler *c, int block) {
@@ -9122,7 +9156,10 @@ static int cs_type_params(Compiler *c, int create, const int *argv, int argc) {
   const char *cty = nt_type(nt, create);
   const char *cnm = nt_str(nt, create, "name");
   int is_lambda = (cty && sp_streq(cty, "LambdaNode")) || (cnm && sp_streq(cnm, "lambda"));
-  if (!is_lambda && rn >= 2 && argc == 1) {
+  int on = 0, qn = 0;
+  nt_arr(nt, pn, "optionals", &on);
+  nt_arr(nt, pn, "posts", &qn);
+  if (!is_lambda && block_auto_splats(rn, on, qn, nt_ref(nt, pn, "rest") >= 0) && argc == 1) {
     TyKind a0 = infer_type(c, argv[0]);
     if (ty_is_array(a0)) {
       /* An unknown element type falls back to poly so the params stay boxed
@@ -9490,11 +9527,15 @@ static int yield_tail_kwsplat(Compiler *c, int block, const int *yv, int yc) {
 static TyKind block_opt_yield_type(Compiler *c, int block, const int *yv, int yc,
                                    int p_pre, int p_opt, int p_post, int oi, TyKind dt) {
   const NodeTable *nt = c->nt;
+  /* the trailing keyword hash a block taking keywords takes is no
+     positional: counted as one, it typed an optional from the Hash */
+  if (yc > 0 && nt_kind(nt, yv[yc - 1]) == NK_KeywordHashNode &&
+      (block_keyword_name(c, block, 0) || block_kwrest_name(c, block) || block_no_keywords(c, block)))
+    yc--;
   if (yield_tail_kwsplat(c, block, yv, yc))
     return ty_unify(block_opt_yield_type(c, block, yv, yc - 1, p_pre, p_opt, p_post, oi, dt),
                     oi < yc - p_pre - p_post ? infer_type(c, yv[p_pre + oi]) : dt);
-  int slots = p_pre + p_opt + p_post;
-  if (yc == 1 && (slots > 1 || (slots >= 1 && block_rest_marker(c, block))) &&
+  if (yc == 1 && block_auto_splats(p_pre, p_opt, p_post, block_rest_marker(c, block)) &&
       !(nt_type(nt, yv[0]) && sp_streq(nt_type(nt, yv[0]), "SplatNode"))) {
     TyKind yat = infer_type(c, yv[0]);
     if (ty_is_array(yat)) return ty_unify(ty_unify(ty_array_elem(yat), TY_POLY), dt);
@@ -9741,9 +9782,14 @@ int infer_block_params(Compiler *c) {
     int iargs = nt_ref(nt, id, "arguments");
     int iac = 0; const int *iav = iargs >= 0 ? nt_arr(nt, iargs, "arguments", &iac) : NULL;
     Scope *bs = comp_scope_of(c, blk);
-    /* A trailing `k: v` call-site hash is not a positional arg; bind keyword
-       block params to it by name. */
+    /* A trailing `k: v` call-site hash is not a positional arg for a block
+       that takes keywords; bind keyword block params to it by name. Into a
+       block that takes none it is one more positional, as a yield binds it
+       (emit_block_binds). */
     int kwhash = ie_call_kwhash(c, id);
+    if (kwhash >= 0 && !block_keyword_name(c, blk, 0) && !block_kwrest_name(c, blk) &&
+        !block_no_keywords(c, blk))
+      kwhash = -1;
     if (kwhash >= 0) iac -= 1;
     const char *pnty = nt_type(nt, pn);
     if (pnty && sp_streq(pnty, "NumberedParametersNode")) {
@@ -9788,7 +9834,28 @@ int infer_block_params(Compiler *c) {
         continue;
       }
     }
-    for (int k = 0; k < rnp; k++) {
+    /* Any other splat, or a `**`-only hash that is a positional only when it
+       is non-empty, leaves the count to the run time, which gathers the
+       values (emit_block_binds): each positional parameter may take any of
+       them or its default, so it is boxed. */
+    int gathers = 0;
+    for (int k = 0; tramp_argc < 0 && k < iac; k++)
+      if (nt_kind(nt, iav[k]) == NK_SplatNode ||
+          (k == iac - 1 && nt_kind(nt, iav[k]) == NK_KeywordHashNode && kwh_only_spreads(nt, iav[k])))
+        gathers = 1;
+    if (gathers) {
+      static const char *const kinds[] = { "requireds", "optionals", "posts" };
+      for (int g = 0; g < 3; g++) {
+        int gn = 0; const int *gp = nt_arr(nt, pnode, kinds[g], &gn);
+        for (int k = 0; k < gn; k++) {
+          const char *p = nt_str(nt, gp[k], "name");
+          if (!p) continue;
+          LocalVar *lv = scope_local_intern(bs, p); lv->is_block_param = 1;
+          if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+        }
+      }
+    }
+    for (int k = 0; !gathers && k < rnp; k++) {
       const char *p = nt_str(nt, reqs[k], "name");
       if (!p) continue;
       int an = tramp_argc >= 0 ? ie_tramp_effective_arg(c, id, k) : (k < iac ? iav[k] : -1);
@@ -9797,12 +9864,26 @@ int infer_block_params(Compiler *c) {
       LocalVar *lv = scope_local_intern(bs, p); lv->is_block_param = 1;
       if (at != TY_UNKNOWN && lv->type != at) { lv->type = at; changed = 1; }
     }
-    /* optional block params (`|a, b = 3|`) take the next args, or their
-       default's type when the call passes too few */
-    int onp = 0; const int *opts = tramp_argc < 0 ? nt_arr(nt, pnode, "optionals", &onp) : NULL;
+    /* optional block params (`|a, b = 3|`) take the args left once the
+       requireds and posts have theirs, or their default's type when the call
+       passes too few; the posts take the args after the optionals and the
+       rest, and bind nil past the end (block_fill) */
+    int onp = 0; const int *opts = tramp_argc < 0 && !gathers ? nt_arr(nt, pnode, "optionals", &onp) : NULL;
+    int qnp = 0; const int *posts = tramp_argc < 0 && !gathers ? nt_arr(nt, pnode, "posts", &qnp) : NULL;
+    int f_ot = 0, f_ps = 0;
+    block_fill(rnp, onp, qnp, nt_ref(nt, pnode, "rest") >= 0, iac, &f_ot, &f_ps);
+    for (int k = 0; k < qnp; k++) {
+      const char *p = nt_kind(nt, posts[k]) == NK_RequiredParameterNode ? nt_str(nt, posts[k], "name") : NULL;
+      if (!p) continue;
+      TyKind at = f_ps + k < iac ? infer_type(c, iav[f_ps + k]) : TY_NIL;
+      LocalVar *lv = scope_local_intern(bs, p); lv->is_block_param = 1;
+      TyKind m = at == TY_UNKNOWN || at == TY_NIL ? ty_unify(lv->type, TY_POLY)
+               : lv->type == TY_UNKNOWN ? at : ty_unify(lv->type, at);
+      if (m != lv->type) { lv->type = m; changed = 1; }
+    }
     for (int k = 0; k < onp; k++) {
       const char *p = nt_str(nt, opts[k], "name");
-      int an = rnp + k < iac ? iav[rnp + k] : nt_ref(nt, opts[k], "value");
+      int an = k < f_ot ? iav[rnp + k] : nt_ref(nt, opts[k], "value");
       if (!p || an < 0) continue;
       TyKind at = infer_type(c, an);
       LocalVar *lv = scope_local_intern(bs, p); lv->is_block_param = 1;
@@ -10188,8 +10269,7 @@ int infer_block_params(Compiler *c) {
         TyKind as_elem = TY_UNKNOWN;
         if ((yc == 1 || (yc == 2 && yield_tail_kwsplat(c, block, yargs, yc) &&
                          block_lead_only(c, block))) &&
-            (p_pre + p_opt + p_post > 1 ||
-             (p_pre + p_opt + p_post >= 1 && block_rest_marker(c, block))) &&
+            block_auto_splats(p_pre, p_opt, p_post, block_rest_marker(c, block)) &&
             !(nt_type(nt, yargs[0]) && sp_streq(nt_type(nt, yargs[0]), "SplatNode"))) {
           TyKind yat = infer_type(c, yargs[0]);
           if (ty_is_array(yat)) as_elem = ty_unify(ty_array_elem(yat), TY_POLY);

@@ -168,6 +168,9 @@ extern int  g_pd_skip;
 extern int  g_cls_tag_skip;   /* poly-dispatch builtin-arm re-entry marker */
 int subtree_may_allocate(const NodeTable *nt, int id);
 int subtree_has_side_effect(Compiler *c, int id);
+/* Whether the subtree at `id` assigns the local `nm`: a write, an op-write
+   or a multiple-assignment target by that name. */
+int subtree_writes_local(Compiler *c, int id, const char *nm);
 int iter_recv_bind_once(Compiler *c, int node);
 /* When a yielding method is inlined, g_yield_block_fallback holds the block
    that was active in the CALLER's context so nested `yield`s inside the
@@ -1109,8 +1112,18 @@ int kwh_out_of_order(Compiler *c, Scope *m, int kwh);
    written twice, into rooted temps written into `b` and pushed onto the
    g_argov overrides as emit_positionals_first pushes them, for the caller to
    pop once it has bound the call. A nil value runs for its effect alone and
-   reads as 0. */
+   reads as 0. A read of a variable a later value can give another value is
+   taken too, as CRuby reads it at its place. */
 void emit_args_in_source_order(Compiler *c, const int *argv, int argc, Buf *b);
+/* emit_args_in_source_order, where the nodes `after` also run ahead of the
+   binding reading the values -- a block's defaults -- and so can change what
+   a read among them reads. */
+void emit_args_before(Compiler *c, const int *argv, int argc, const int *after, int nafter, Buf *b);
+/* Would a binding that renders each value in place, in parameter order,
+   read one out of CRuby's order? Two values with an effect -- one's setup
+   drains ahead of the other's bind -- or a read a later value, or a node of
+   `after`, can change. */
+int args_order_matters(Compiler *c, const int *argv, int argc, const int *after, int nafter);
 int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type);
 /* The TypeError CRuby raises for a `**` operand that is neither a Hash, nil
    nor convertible with #to_hash, emitted into g_pre ahead of any keyword
@@ -1230,6 +1243,9 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
 typedef struct BiRen BiRen;
 void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int indent,
                          int as_expr, BiRen *bi);
+typedef struct BlockAliases BlockAliases;
+void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
+                      Buf *b, int indent, int as_expr, BiRen *bi, BlockAliases *al);
 void emit_yield_proc_call(Compiler *c, int args_node, TyKind result_ty, Buf *b, int indent, int as_expr);
 int emit_inline_expr(Compiler *c, int id, Buf *b);
 void emit_iter_param_assign(Compiler *c, int block, const char *p0_orig, const char *p0_ren, TyKind src_type, const char *src_expr, Buf *b, int indent);
