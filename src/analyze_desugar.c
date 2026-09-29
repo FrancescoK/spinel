@@ -2109,6 +2109,45 @@ int desugar_main_self_call(Compiler *c) {
   return changed;
 }
 
+/* `class_variable_get(:@@x)`, `class_variable_set(:@@x, v)` and
+   `class_variable_defined?(:@@x)`, bare or on `self`, in a class method of a
+   class no other class inherits from: self is that class, so the call is the
+   `Klass.class_variable_*` spelling the cvar reflection resolves. Bare, it
+   was refused. */
+int desugar_cmethod_cvar_reflection(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *name = nt_str(nt, id, "name");
+    if (!name || (!sp_streq(name, "class_variable_get") && !sp_streq(name, "class_variable_set") &&
+                  !sp_streq(name, "class_variable_defined?"))) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv >= 0 && (nt_kind(nt, recv) != NK_SelfNode || nt_int(nt, recv, "ie_self", 0))) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an < 1 || nt_kind(nt, av[0]) != NK_SymbolNode) continue;
+    const char *cvn = nt_str(nt, av[0], "value");
+    if (!cvn || cvn[0] != '@' || cvn[1] != '@') continue;
+    Scope *s = comp_scope_of(c, id);
+    if (!s || !s->is_cmethod || s->class_id < 0 || ie_class_of(c, id) != -1) continue;
+    int cid = s->class_id;
+    if (comp_cmethod_in_chain(c, cid, name, NULL) >= 0) continue;
+    int inherited = 0;
+    for (int k = 0; k < c->nclasses && !inherited; k++) inherited = c->classes[k].parent == cid;
+    if (inherited) continue;
+    int cr = nt_new_node(nt, "ConstantReadNode");
+    if (cr < 0) continue;
+    nt_node_set_str(nt, cr, "name", c->classes[cid].name);
+    nt_node_set_ref(nt, id, "receiver", cr);
+    comp_grow_node_arrays(c);
+    c->nscope[cr] = c->nscope[id];
+    changed = 1;
+  }
+  return changed;
+}
+
 /* `recv[k] ||= v`, `recv[k] &&= v` and `recv[k] op= v` on an instance of a
    user class with its own `[]` and `[]=`: the index-write emitters know the
    builtin containers only, and refused the shape (#5054). Rewritten into the
