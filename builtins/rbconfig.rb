@@ -12,7 +12,7 @@ module RbConfig
   CONFIG = {
     "host_os" => __os, "target_os" => __os, "build_os" => __os,
     "host_cpu" => __cpu, "target_cpu" => __cpu, "build_cpu" => __cpu,
-    "arch" => "#{__cpu}-#{__os}", "ruby_version" => RUBY_VERSION,
+    "arch" => "#{__cpu}-#{__os}", "ruby_version" => RUBY_VERSION.split(".")[0, 2].join(".") + ".0",
     "MAJOR" => RUBY_VERSION.split(".")[0], "MINOR" => RUBY_VERSION.split(".")[1],
     "EXEEXT" => "", "DLEXT" => (__darwin ? "bundle" : "so"),
     "SOEXT" => (__darwin ? "dylib" : "so"), "LIBEXT" => "a",
