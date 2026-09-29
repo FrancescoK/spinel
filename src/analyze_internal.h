@@ -371,6 +371,7 @@ void enum_hop_yield_view(Compiler *c, int id, int hop);
 int sym_proc_poly_pair_view(Compiler *c, int id);
 int desugar_to_h_block(Compiler *c);
 int desugar_when_int_float_ranges(Compiler *c);
+int desugar_duplicate_underscore_params(Compiler *c);
 TyKind return_node_type(Compiler *c, int id);
 int infer_return_types(Compiler *c);
 int backprop_hash_return_types(Compiler *c);

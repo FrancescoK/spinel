@@ -7167,3 +7167,31 @@ int desugar_when_int_float_ranges(Compiler *c) {
   }
   return changed;
 }
+
+/* `|_, _, offset|` / `def m(_, _)`: Ruby lets an underscore-prefixed name
+   repeat in one parameter list (the body reads the first), and each
+   repetition still binds a slot. Give the repeats names of their own, or they
+   became two declarations of one C local. */
+int desugar_duplicate_underscore_params(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0, serial = 0;
+  NT_FOREACH_KIND(nt, NK_ParametersNode, pn) {
+    static const char *const lists[] = { "requireds", "optionals", "posts" };
+    const char *seen[64]; int ns = 0;
+    for (int li = 0; li < 3; li++) {
+      int n = 0; const int *ids = nt_arr(nt, pn, lists[li], &n);
+      for (int k = 0; k < n; k++) {
+        const char *nm = nt_str(nt, ids[k], "name");
+        if (!nm || nm[0] != '_') continue;
+        int dup = 0;
+        for (int q = 0; q < ns; q++) if (sp_streq(seen[q], nm)) dup = 1;
+        if (!dup) { if (ns < 64) seen[ns++] = nm; continue; }
+        char nn[128];
+        snprintf(nn, sizeof nn, "%s__dup%d", nm, ++serial);
+        nt_set_str(nt, ids[k], "name", nn);
+        changed = 1;
+      }
+    }
+  }
+  return changed;
+}
