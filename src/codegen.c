@@ -9960,7 +9960,8 @@ void emit_super(Compiler *c, int id, Buf *b) {
   int mi = p >= 0 ? comp_method_in_chain(c, p, uname, &defcls) : -1;
   if (mi < 0) {
     /* super(msg) in exception subclass initialize: capture msg into self->msg */
-    if (class_is_exc_subclass(c, s->class_id) && uname && sp_streq(uname, "initialize")) {
+    if ((class_is_exc_subclass(c, s->class_id) || class_is_exc_reopen(c, s->class_id)) &&
+        uname && sp_streq(uname, "initialize")) {
       int args_id = nt_ref(c->nt, id, "arguments");
       int argc2 = 0;
       const int *argv2 = NULL;

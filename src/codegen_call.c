@@ -13441,6 +13441,37 @@ static int emit_struct_new_call(Compiler *c, int id, int ci, int argc, const int
     return 1;
 }
 
+/* The reopening of builtin exception class ci (`class KeyError; def
+   initialize(msg = "no key") super("wrapped: " + msg) end`) defining its
+   own initialize: the index of that method, or -1. */
+static int exc_reopen_initialize(Compiler *c, int ci) {
+  if (!class_is_exc_reopen(c, ci)) return -1;
+  int mi = comp_method_in_chain(c, ci, "initialize", NULL);
+  return (mi >= 0 && c->scopes[mi].class_id == ci && c->scopes[mi].reachable) ? mi : -1;
+}
+
+/* Build the runtime's exception of the reopened class ci and run the
+   reopening's initialize on it: from the call's argument list (args >= 0),
+   or from one message node (the `raise Cls, msg` form; -1 = none) with the
+   remaining parameters at their defaults. Its `super(msg)` sets the message
+   (the exception-initialize super arm); without one the message stays the
+   class name, as CRuby's Exception#initialize leaves it. */
+static void emit_exc_reopen_construct(Compiler *c, int ci, int initm, int args, int msg_node, Buf *b) {
+  Scope *im = &c->scopes[initm];
+  int te = ++g_tmp;
+  buf_printf(b, "({ sp_Exception *_t%d = sp_exc_new(\"%s\", (&(\"\\xff\")[1])); SP_GC_ROOT(_t%d); ", te, c->classes[ci].name, te);
+  buf_printf(b, "sp_%s_%s(_t%d", mc_reopen_cls(c, ci, "initialize"), mc("initialize"), te);
+  if (args >= 0) emit_args_filled(c, initm, args, ", ", b);
+  else {
+    for (int pk = 0; pk < im->nparams; pk++) {
+      buf_puts(b, ", ");
+      emit_arg_or_default(c, im, pk, pk == 0 ? msg_node : -1, b);
+    }
+  }
+  if (ctor_init_takes_block(c, initm)) buf_puts(b, ", NULL");
+  buf_printf(b, "); _t%d; })", te);
+}
+
 static int emit_class_new_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -13689,6 +13720,10 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       }
       const char *cn = nt_str(nt, recv, "name");
       if (cn && is_exc_name(cn)) {
+        /* a reopening's own initialize runs on the runtime's exception */
+        { int rci = comp_class_index(c, cn);
+          int rim = rci >= 0 ? exc_reopen_initialize(c, rci) : -1;
+          if (rim >= 0) { emit_exc_reopen_construct(c, rci, rim, nt_ref(nt, id, "arguments"), -1, b); return 1; } }
         /* SignalException.new(sig) / Interrupt.new(msg?): the message is the
            SIG-name and #signo is carried (#2762) */
         if (sp_streq(cn, "SignalException")) {
@@ -31549,8 +31584,19 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
          defaults to the class name, so the (cls, "") fast path is correct. */
       const char *cn = nt_str(nt, av[0], "name");
       int xc = cn ? comp_class_index(c, cn) : -1;
-      /* a reopened builtin exception is still the builtin: raised by name */
-      if (xc >= 0 && cn && is_exc_name(cn) && is_builtin_reopen(cn)) xc = -1;
+      /* a reopened builtin exception is still the builtin: raised by name,
+         through the reopening's own initialize when it has one */
+      if (xc >= 0 && cn && is_exc_name(cn) && is_builtin_reopen(cn)) {
+        int rim = exc_reopen_initialize(c, xc);
+        if (rim >= 0) {
+          buf_puts(b, "sp_raise_exc(");
+          emit_exc_reopen_construct(c, xc, rim, -1, -1, b);
+          buf_puts(b, ")");
+          if (cause_node >= 0) buf_puts(b, ")");
+          return;
+        }
+        xc = -1;
+      }
       int ic = (xc >= 0 && class_is_exc_subclass(c, xc))
                  ? comp_method_in_chain(c, xc, "initialize", NULL) : -1;
       if (xc >= 0 && ic >= 0 && c->scopes[ic].reachable) {
@@ -31580,8 +31626,19 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
          A bare-string/builtin exception keeps the (cls, msg) fast path. */
       const char *cn = nt_str(nt, av[0], "name");
       int xc = cn ? comp_class_index(c, cn) : -1;
-      /* a reopened builtin exception is still the builtin: raised by name */
-      if (xc >= 0 && cn && is_exc_name(cn) && is_builtin_reopen(cn)) xc = -1;
+      /* a reopened builtin exception is still the builtin: raised by name,
+         through the reopening's own initialize when it has one */
+      if (xc >= 0 && cn && is_exc_name(cn) && is_builtin_reopen(cn)) {
+        int rim = exc_reopen_initialize(c, xc);
+        if (rim >= 0 && c->scopes[rim].nparams >= 1) {
+          buf_puts(b, "sp_raise_exc(");
+          emit_exc_reopen_construct(c, xc, rim, -1, av[1], b);
+          buf_puts(b, ")");
+          if (cause_node >= 0) buf_puts(b, ")");
+          return;
+        }
+        xc = -1;
+      }
       int ic = -1;
       if (xc >= 0 && class_is_exc_subclass(c, xc))
         ic = comp_method_in_chain(c, xc, "initialize", NULL);
