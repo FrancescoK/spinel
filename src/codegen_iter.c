@@ -1346,54 +1346,36 @@ static TyKind builtin_yield_self_pair(Compiler *c, int arg) {
   if (!self || (self->type != TY_POLY && self->type != TY_ENUMERATOR)) return TY_UNKNOWN;
   return self->type;
 }
-void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_expr,
-                       TyKind want_ty) {
-  /* want_ty: the consumer's slot type for the block's value (the YieldNode's
-     unified type). A poly slot must receive sp_RbVal even when THIS block's
-     tail is concrete (a yield-result union of an rbs-seeded Hash and a class
-     instance reached the boxed slot without a box, #3278). */
-  int want_poly = as_expr && want_ty == TY_POLY;
+/* A spliced block's parameter aliases (see emit_block_binds), undone by the
+   caller once the body is emitted. */
+struct BlockAliases { LocalVar *lv[16]; int n, open; };
+
+/* Bind block `blk`'s parameters from the values `yargs` (yc positionals,
+   and `ykw`, the trailing keyword hash the block's keywords take, or -1),
+   by CRuby's proc distribution: requireds (leading and post) first,
+   optionals left to right from what remains, a rest the middle, extras
+   dropped but still run, missing positions nil or their default, and a
+   lone Array auto-splatted when the block takes more than one parameter
+   (block_auto_splats). A count known only at run time -- a splat, a `**`
+   that may be empty -- gathers every value into one array first. The yield
+   of a spliced block (emit_block_invoke) and instance_exec's literal block
+   bind through here; `bi` switches the rename tables for the former (NULL
+   for a block bound in place), and `al` collects the parameters aliased to
+   a yielded String variable (NULL: none are). */
+void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
+                      Buf *b, int indent, int as_expr, BiRen *bi, BlockAliases *al) {
   const NodeTable *nt = c->nt;
-  int blk = g_block_id;
-  int bbody = nt_ref(nt, blk, "body");
-  int yc = 0;
-  const int *yargs = args_node >= 0 ? nt_arr(nt, args_node, "arguments", &yc) : NULL;
+  Scope *bsc = comp_scope_of(c, blk);
   /* A trailing kwargs hash (`k: 1`, `**h`) goes to a block that declares
-     keyword params or a **kwrest, never to its positionals: CRuby binds
-     `yield(k: 1)` into `|a, k:|` as a = nil. It stays positional only for a
-     block that takes no keywords. */
-  int ykw = -1;
+     keyword params, a **kwrest or `**nil`, never to its positionals: CRuby
+     binds `yield(k: 1)` into `|a, k:|` as a = nil. It stays positional only
+     for a block that takes no keywords. */
+  int ykw = -1, nokw = block_no_keywords(c, blk);
   if (yc > 0 && yargs && nt_kind(nt, yargs[yc - 1]) == NK_KeywordHashNode &&
-      (block_keyword_name(c, blk, 0) || block_kwrest_name(c, blk))) {
+      (block_keyword_name(c, blk, 0) || block_kwrest_name(c, blk) || nokw)) {
     ykw = yargs[yc - 1];
     yc--;
   }
-  /* The params bind in their own order, but CRuby evaluates the yielded
-     values in source order, and each value of a key written twice though
-     only the last binds: keywords out of the params' order run first, the
-     positionals ahead of them, into temps the binds read. */
-  int argov_saved = g_n_argov;
-  if (ykw >= 0 && !kwh_has_splat(nt, ykw) && ykw_out_of_order(c, blk, ykw))
-    emit_args_in_source_order(c, yargs, yc + 1, g_pre);
-  Scope *bsc = comp_scope_of(c, blk);
-  LocalVar *yalias_lv[16]; int yalias_n = 0, yalias_open = 0;
-  /* The spliced body and the block's own parameter NAMES resolve at the
-     block's DEFINITION-site rename depth (g_block_nren): the entries the
-     enclosing method-inline pushed above that mark must not capture
-     same-named block locals (a numbered `_1` used by both the callee's own
-     block and the caller's, #3281). Block-side text emits with the callee's
-     entries PARKED (copied out, count truncated) so a nested inline inside
-     the body cannot clobber them; method-side (yield-arg) text restores
-     them. */
-  BiRen bi = { .cs_nren = g_nren };
-  bi.bi_nren = g_block_nren < bi.cs_nren ? g_block_nren : bi.cs_nren;
-  bi.cnt = bi.cs_nren - bi.bi_nren;
-  if (bi.cnt > 0) {
-    bi.pf = malloc(sizeof(char[96]) * (size_t)bi.cnt);
-    bi.pt = malloc(sizeof(char[112]) * (size_t)bi.cnt);
-  }
-  #define BI_BLOCK_SIDE() bi_block_side(&bi)
-  #define BI_METHOD_SIDE() bi_method_side(&bi)
   /* CRuby's argument distribution needs the parameter shape up front:
      P pre-required, O optionals, Q post-required, R any rest marker
      (`*name`, bare `*`, or the implicit rest of a trailing comma `|a, |`).
@@ -1403,10 +1385,39 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   int O = 0; while (block_opt_name(c, blk, O)) O++;
   int Q = 0; while (block_post_name(c, blk, Q)) Q++;
   int R = block_rest_marker(c, blk);
+  /* CRuby runs every value before it binds any, and the binds below run in
+     the parameters' order, the block's defaults among them: keywords out
+     of that order, an optional's default that runs ahead of a later post's
+     value (`yield(1, lit(2))` into `|a, b = lit(9), c|`), two values with
+     an effect, one's setup draining ahead of the other's bind
+     (`yield(lit(1), **h(x))`), and a read a later value or a default can
+     change (`yield(@v, **h(x))`, `yield(k: @v)` into `|a = (@v = 9), k:|`)
+     run the values first, in source order, into temps the binds read (the
+     caller restores g_n_argov). A value no later one can change stays
+     where it is. */
+  int nk = 0; while (block_keyword_name(c, blk, nk)) nk++;
+  int *dfl = malloc(sizeof(int) * (size_t)(O + nk + 1)), nd = 0;
+  for (int oi = 0; oi < O; oi++) dfl[nd++] = block_opt_default(c, blk, oi);
+  for (int ki = 0; ki < nk; ki++) dfl[nd++] = block_keyword_default(c, blk, ki);
+  if (ykw >= 0 && !kwh_has_splat(nt, ykw) && ykw_out_of_order(c, blk, ykw))
+    emit_args_before(c, yargs, yc + 1, dfl, nd, g_pre);
+  else if (yargs && !call_args_need_spread(nt, yargs, yc)) {
+    int ot = 0, ps = 0;
+    block_fill(P, O, Q, R, yc, &ot, &ps);
+    if ((ot < O && Q > 0 && yc > ps) || args_order_matters(c, yargs, yc + (ykw >= 0), dfl, nd))
+      emit_args_before(c, yargs, yc + (ykw >= 0), dfl, nd, g_pre);
+  }
+  free(dfl);
   /* `yield(*arr)`: a single splat spreads the array across the block params
      (auto-splat). Evaluate it once into a rooted temp and bind each param (and
      any rest param) from its elements rather than from the splat AST node. */
   int splat_tmp = -1; TyKind splat_at = TY_UNKNOWN;
+  int autosplat = block_auto_splats(P, O, Q, R);
+  int lone_splat_typed = 0;
+  if (yc == 1 && yargs && nt_kind(nt, yargs[0]) == NK_SplatNode) {
+    TyKind lt = comp_ntype(c, nt_ref(nt, yargs[0], "expression"));
+    lone_splat_typed = ty_is_array(lt) || lt == TY_POLY_ARRAY || lt == TY_POLY;
+  }
   int poly_splat_tmp = -1;   /* a boxed yielded value splatted at run time */
   TyKind self_ty = TY_UNKNOWN;
   /* A trailing hash made only of `**h` splats, into a block taking no
@@ -1430,11 +1441,14 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
      own index, the splat's whole array among them, so `yield(*s, 2)` bound
      the array into the first parameter (a C type error for a typed one)
      and `yield(*[], 1)` bound nil. A lone value left is auto-splatted as a
-     lone yielded Array would be. */
-  else if (yc > 1 && yargs && call_args_need_spread(nt, yargs, yc)) {
+     lone yielded Array would be. A lone splat of something that is neither
+     a typed array nor boxed (`yield(*[])`, `*nil`, a Hash, a Range) is
+     gathered too: the path below binds only those, and the splat node
+     itself was bound as a positional (an sp_PolyArray * into a slot). */
+  else if (yargs && call_args_need_spread(nt, yargs, yc) && !lone_splat_typed) {
     splat_at = TY_POLY_ARRAY;
     splat_tmp = emit_spread_args(c, yargs, yc);
-    if (P + O + Q > 1 || (P + O + Q >= 1 && R)) {
+    if (autosplat) {
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "if (_t%d->len == 1) { sp_RbVal _e = sp_PolyArray_get(_t%d, 0); "
                         "if (_e.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_e.cls_id)) "
@@ -1447,10 +1461,9 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     if (nt_type(nt, yargs[0]) && sp_streq(nt_type(nt, yargs[0]), "SplatNode"))
       inner = nt_ref(nt, yargs[0], "expression");
     /* CRuby auto-splat: a single (non-splat) Array yielded to a block taking
-       more than one binding slot -- or at least one slot plus a rest marker --
-       destructures across the params. Only-rest blocks (`|*a|`) keep the
-       array whole, as does a single plain param. */
-    else if (P + O + Q > 1 || (P + O + Q >= 1 && R))
+       more than one binding slot destructures across the params
+       (block_auto_splats). */
+    else if (autosplat)
       inner = yargs[0];
     TyKind at = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
     /* A BOXED yielded value can be an array too, and CRuby splats it just the
@@ -1500,7 +1513,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       free(sb.p);
       /* the one value a splat leaves is auto-splatted, as a lone yielded
          Array is: `yield(*[[1, 2]])` into `|a, b|` binds 1 and 2 */
-      if (inner != yargs[0] && at == TY_POLY_ARRAY && (P + O + Q > 1 || (P + O + Q >= 1 && R))) {
+      if (inner != yargs[0] && at == TY_POLY_ARRAY && autosplat) {
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "if (_t%d && _t%d->len == 1) { sp_RbVal _e = sp_PolyArray_get(_t%d, 0); "
                           "if (_e.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_e.cls_id)) "
@@ -1509,16 +1522,15 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       }
     }
   }
-  if (as_expr) buf_puts(b, "({ ");
   for (int k = 0; ; k++) {
     const char *bp = block_param_name(c, blk, k);
     if (!bp) break;
     /* The block's own param name resolves at the block's definition depth:
        renames pushed by the enclosing method-inline must not capture it. */
     char bprbuf[160];
-    BI_BLOCK_SIDE();
+    bi_block_side(bi);
     snprintf(bprbuf, sizeof bprbuf, "%s", rename_local(bp));
-    BI_METHOD_SIDE();
+    bi_method_side(bi);
     const char *bpr = bprbuf;
     if (!as_expr) emit_indent(b, indent);
     /* A parameter the block mutates in place, bound from a yield of a plain
@@ -1529,13 +1541,13 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
         nt_kind(nt, yargs[k]) == NK_LocalVariableReadNode &&
         comp_ntype(c, yargs[k]) == TY_STRING && block_param_wants_alias(c, blk, k)) {
       LocalVar *bl = bsc ? scope_local(bsc, bp) : NULL;
-      if (bl && yalias_n < (int)(sizeof yalias_lv / sizeof yalias_lv[0])) {
-        if (!as_expr && !yalias_open) { buf_puts(b, "{\n"); emit_indent(b, indent); yalias_open = 1; }
+      if (bl && al && al->n < (int)(sizeof al->lv / sizeof al->lv[0])) {
+        if (!as_expr && !al->open) { buf_puts(b, "{\n"); emit_indent(b, indent); al->open = 1; }
         buf_printf(b, "const char **_cell_%s = &(", bpr);
         emit_expr(c, yargs[k], b);
         buf_puts(b, ")");
         buf_puts(b, as_expr ? "; " : ";\n");
-        yalias_lv[yalias_n++] = bl;
+        al->lv[al->n++] = bl;
         bl->inline_alias++;
         bl->is_cell = 1;
         continue;
@@ -1575,19 +1587,10 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       free(eb.p);
     }
     else if (k < yc) {
+      /* boxed into a poly slot, unboxed into a typed one, and an empty `[]`
+         or `{}` (untyped) given its poly form, as every arm binds a value */
       LocalVar *bl = bsc ? scope_local(bsc, bp) : NULL;
-      TyKind bt = bl ? bl->type : TY_UNKNOWN;
-      TyKind at = comp_ntype(c, yargs[k]);
-      if (bt == TY_POLY && at != TY_POLY && at != TY_UNKNOWN)
-        emit_boxed(c, yargs[k], b);
-      else if (at == TY_POLY && bt != TY_POLY && bt != TY_UNKNOWN) {
-        /* a poly yield value into a scalar (e.g. int, non-widened) block param:
-           unbox down to the slot type (the reverse of the box arm above). */
-        Buf yb; memset(&yb, 0, sizeof yb); emit_expr(c, yargs[k], &yb);
-        emit_unbox_text(c, bt, yb.p ? yb.p : "", b); free(yb.p);
-      }
-      else
-        emit_expr(c, yargs[k], b);
+      emit_block_arg_coerced(c, yargs[k], bl ? bl->type : TY_UNKNOWN, b);
     }
     else {
       LocalVar *bl = scope_local(bsc, bp);
@@ -1599,11 +1602,8 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   /* Distribution counts. Direct (non-splat) yields resolve statically from
      yc; a splatted array's length is runtime, so the optional-take count and
      the post start index become runtime temps. */
-  int ot_static = yc - P - Q;
-  if (ot_static < 0) ot_static = 0;
-  if (ot_static > O) ot_static = O;
-  int rl_static = R ? yc - P - ot_static - Q : 0;
-  if (rl_static < 0) rl_static = 0;
+  int ot_static = 0, ps_static = 0;
+  block_fill(P, O, Q, R, yc, &ot_static, &ps_static);
   int t_ot = -1;
   if (splat_tmp >= 0 && (O > 0 || Q > 0)) {
     t_ot = ++g_tmp;
@@ -1619,9 +1619,9 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     const char *op = block_opt_name(c, blk, oi);
     if (!op) break;
     char oprbuf[160];
-    BI_BLOCK_SIDE();
+    bi_block_side(bi);
     snprintf(oprbuf, sizeof oprbuf, "%s", rename_local(op));
-    BI_METHOD_SIDE();
+    bi_method_side(bi);
     const char *opr = oprbuf;
     LocalVar *ol = bsc ? scope_local(bsc, op) : NULL;
     TyKind ot = ol ? ol->type : TY_UNKNOWN;
@@ -1639,7 +1639,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       else if (et == TY_POLY && ot != TY_POLY && ot != TY_UNKNOWN) emit_unbox_text(c, ot, eb.p ? eb.p : "", b);
       else buf_puts(b, eb.p ? eb.p : "");
       buf_puts(b, " : ");
-      if (dv >= 0) { BI_BLOCK_SIDE(); emit_block_arg_coerced(c, dv, ot, b); BI_METHOD_SIDE(); }
+      if (dv >= 0) { bi_block_side(bi); emit_block_arg_coerced(c, dv, ot, b); bi_method_side(bi); }
       else buf_puts(b, odflt);
       buf_puts(b, ")");
       free(eb.p);
@@ -1648,22 +1648,22 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       emit_block_arg_coerced(c, yargs[yi], ot, b);
     }
     else if (dv >= 0) {
-      BI_BLOCK_SIDE(); emit_block_arg_coerced(c, dv, ot, b); BI_METHOD_SIDE();
+      bi_block_side(bi); emit_block_arg_coerced(c, dv, ot, b); bi_method_side(bi);
     }
     else {
       buf_puts(b, odflt);
     }
     buf_puts(b, as_expr ? "; " : ";\n");
   }
-  emit_block_kw_binds(c, blk, ykw, bsc, b, indent, as_expr, &bi);
   /* A trailing rest parameter (`|*a|`) collects the yielded arguments past the
      requireds into a fresh array. */
   const char *brest = block_rest_name(c, blk);
+  int rest_tmp = -1; char rest_lv[160] = "";
   if (brest) {
     char brestrbuf[160];
-    BI_BLOCK_SIDE();
+    bi_block_side(bi);
     snprintf(brestrbuf, sizeof brestrbuf, "%s", rename_local(brest));
-    BI_METHOD_SIDE();
+    bi_method_side(bi);
     const char *brestr = brestrbuf;
     /* Build into a fresh temp, assign the rest param LAST: a yielded arg can
        reference the same (renamed) C slot the rest param occupies -- e.g. a
@@ -1700,8 +1700,8 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       emit_boxed(c, yargs[j], b);
       buf_puts(b, as_expr ? "); " : ");\n");
     }
-    if (!as_expr) emit_indent(b, indent);
-    buf_printf(b, "lv_%s = _t%d;%s", brestr, trest, as_expr ? " " : "\n");
+    rest_tmp = trest;
+    snprintf(rest_lv, sizeof rest_lv, "%s", brestr);
   }
   /* Post-required params (`|a, *b, c, d|`): bind after the pre/optional/rest
      consumption point, left-to-right; missing positions bind the slot nil. */
@@ -1725,14 +1725,13 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
                    as_expr ? " " : "\n");
       }
     }
-    int ps_static = P + ot_static + rl_static;
     for (int qi = 0; qi < Q; qi++) {
       const char *qp = block_post_name(c, blk, qi);
       if (!qp) continue;   /* anonymous post: consumes a slot, binds nothing */
       char qprbuf[160];
-      BI_BLOCK_SIDE();
+      bi_block_side(bi);
       snprintf(qprbuf, sizeof qprbuf, "%s", rename_local(qp));
-      BI_METHOD_SIDE();
+      bi_method_side(bi);
       const char *qpr = qprbuf;
       LocalVar *ql = bsc ? scope_local(bsc, qp) : NULL;
       TyKind qt = ql ? ql->type : TY_UNKNOWN;
@@ -1758,17 +1757,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       }
       else {
         int idx = ps_static + qi;
-        if (idx < yc) {
-          LocalVar *bl2 = ql;
-          TyKind at = comp_ntype(c, yargs[idx]);
-          TyKind bt2 = bl2 ? bl2->type : TY_UNKNOWN;
-          if (bt2 == TY_POLY && at != TY_POLY && at != TY_UNKNOWN) emit_boxed(c, yargs[idx], b);
-          else if (at == TY_POLY && bt2 != TY_POLY && bt2 != TY_UNKNOWN) {
-            Buf yb; memset(&yb, 0, sizeof yb); emit_expr(c, yargs[idx], &yb);
-            emit_unbox_text(c, bt2, yb.p ? yb.p : "", b); free(yb.p);
-          }
-          else emit_expr(c, yargs[idx], b);
-        }
+        if (idx < yc) emit_block_arg_coerced(c, yargs[idx], qt, b);
         else buf_puts(b, qdflt);
       }
       buf_puts(b, as_expr ? "; " : ";\n");
@@ -1781,13 +1770,71 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
      with no rest those dropped middle args would be lost. Evaluate them here for
      effect (#3209). */
   if (splat_tmp < 0 && !brest) {
-    for (int j = P + ot_static; j < yc - Q; j++) {
+    /* with no rest the posts take the values right after the optionals, so
+       the dropped ones are those past the posts: counted back from the end,
+       a post's own value ran twice and the last extra never did */
+    for (int j = ps_static + Q; j < yc; j++) {
       Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, yargs[j], &vb);
       if (!as_expr) emit_indent(b, indent);
       buf_printf(b, "(void)(%s)%s", vb.p ? vb.p : "0", as_expr ? "; " : ";\n");
       free(vb.p);
     }
   }
+  /* The keywords come last in the call, so they run after every positional
+     (the dropped ones above among them): a missing keyword raised before
+     `yield(lit(1))` into `|k:|` had evaluated its argument. */
+  if (nokw && ykw >= 0) {
+    /* `|**nil|` refuses keywords, an empty `**h` among them excepted */
+    Buf hb; memset(&hb, 0, sizeof hb);
+    Buf *sv_pre = g_pre; g_pre = b;
+    emit_boxed(c, ykw, &hb);
+    g_pre = sv_pre;
+    if (!as_expr) emit_indent(b, indent);
+    buf_printf(b, "if (sp_poly_length(%s) > 0) sp_raise_cls(\"ArgumentError\", \"no keywords accepted\");%s",
+               hb.p ? hb.p : "sp_box_nil()", as_expr ? " " : "\n");
+    free(hb.p);
+  }
+  else emit_block_kw_binds(c, blk, ykw, bsc, b, indent, as_expr, bi);
+  if (rest_tmp >= 0) {
+    if (!as_expr) emit_indent(b, indent);
+    buf_printf(b, "lv_%s = _t%d;%s", rest_lv, rest_tmp, as_expr ? " " : "\n");
+  }
+}
+
+void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_expr,
+                       TyKind want_ty) {
+  /* want_ty: the consumer's slot type for the block's value (the YieldNode's
+     unified type). A poly slot must receive sp_RbVal even when THIS block's
+     tail is concrete (a yield-result union of an rbs-seeded Hash and a class
+     instance reached the boxed slot without a box, #3278). */
+  int want_poly = as_expr && want_ty == TY_POLY;
+  const NodeTable *nt = c->nt;
+  int blk = g_block_id;
+  int bbody = nt_ref(nt, blk, "body");
+  int yc = 0;
+  const int *yargs = args_node >= 0 ? nt_arr(nt, args_node, "arguments", &yc) : NULL;
+  /* emit_block_binds may run the values first into temps the binds read */
+  int argov_saved = g_n_argov;
+  /* The spliced body and the block's own parameter NAMES resolve at the
+     block's DEFINITION-site rename depth (g_block_nren): the entries the
+     enclosing method-inline pushed above that mark must not capture
+     same-named block locals (a numbered `_1` used by both the callee's own
+     block and the caller's, #3281). Block-side text emits with the callee's
+     entries PARKED (copied out, count truncated) so a nested inline inside
+     the body cannot clobber them; method-side (yield-arg) text restores
+     them. */
+  BiRen bi = { .cs_nren = g_nren };
+  bi.bi_nren = g_block_nren < bi.cs_nren ? g_block_nren : bi.cs_nren;
+  bi.cnt = bi.cs_nren - bi.bi_nren;
+  if (bi.cnt > 0) {
+    bi.pf = malloc(sizeof(char[96]) * (size_t)bi.cnt);
+    bi.pt = malloc(sizeof(char[112]) * (size_t)bi.cnt);
+  }
+  #define BI_BLOCK_SIDE() bi_block_side(&bi)
+  #define BI_METHOD_SIDE() bi_method_side(&bi)
+  BlockAliases al = { .n = 0 };
+  if (as_expr) buf_puts(b, "({ ");
+  emit_block_binds(c, blk, yargs, yc, b, indent, as_expr, &bi, &al);
   /* Keep the rename table active for the block body: the block's variable
      references are in the same lexical scope as the surrounding inlined
      method, so renames like x → _y3_x must stay visible. Nested inlines
@@ -2057,10 +2104,10 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     else { emit_indent(b, indent); buf_puts(b, "} while(0);\n"); }
     g_ie_next_var = sv_nx2; g_ie_res_poly = sv_poly2; g_ie_next_ty = sv_nty2;
   }
-  for (int ya = 0; ya < yalias_n; ya++) {
-    if (--yalias_lv[ya]->inline_alias == 0) yalias_lv[ya]->is_cell = 0;
+  for (int ya = 0; ya < al.n; ya++) {
+    if (--al.lv[ya]->inline_alias == 0) al.lv[ya]->is_cell = 0;
   }
-  if (yalias_open) { emit_indent(b, indent); buf_puts(b, "}\n"); }
+  if (al.open) { emit_indent(b, indent); buf_puts(b, "}\n"); }
   g_self = sv_bself; g_self_deref = sv_bderef;
   g_yield_self_fallback = sv_ysf; g_yield_self_deref_fallback = sv_ysdf; g_yield_emitting_class_fallback = sv_yecf;
   g_emitting_class_id = sv_bemcls;

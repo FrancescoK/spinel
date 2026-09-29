@@ -619,54 +619,6 @@ static void emit_ie_param_default(Compiler *c, TyKind t, Buf *b) {
   buf_puts(b, default_value(t));
 }
 
-/* instance_exec's optional block parameters take the positional args past the
-   `npar` requireds, or their defaults; a `*rest` collects the args past those
-   into a poly array (#2957); keyword parameters and `**rest` bind from the
-   call's trailing keyword hash `kwh`. */
-static void emit_ie_rest_kw_binds(Compiler *c, int id, int blk, int pnode, int npar,
-                                  const int *iav, int iac, int kwh) {
-  const NodeTable *nt = c->nt;
-  int on = 0; const int *opts = pnode >= 0 ? nt_arr(nt, pnode, "optionals", &on) : NULL;
-  for (int k = 0; k < on; k++) {
-    const char *opn = nt_str(nt, opts[k], "name");
-    LocalVar *olv = opn ? scope_local(comp_scope_of(c, opts[k]), opn) : NULL;
-    int vn = npar + k < iac ? iav[npar + k] : nt_ref(nt, opts[k], "value");
-    if (!olv || olv->type == TY_UNKNOWN || vn < 0) continue;
-    Buf vb; memset(&vb, 0, sizeof vb);
-    if (olv->type == TY_POLY) emit_boxed(c, vn, &vb);
-    else if (comp_ntype(c, vn) == TY_POLY) {
-      Buf eb = expr_buf(c, vn);
-      emit_unbox_text(c, olv->type, eb.p ? eb.p : "", &vb); free(eb.p);
-    }
-    else emit_expr(c, vn, &vb);
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "lv_%s = %s;\n", rename_local(opn), vb.p ? vb.p : "0");
-    free(vb.p);
-  }
-  npar += on;
-  int restp = pnode >= 0 ? nt_ref(nt, pnode, "rest") : -1;
-  if (restp >= 0 && nt_type(nt, restp) && sp_streq(nt_type(nt, restp), "RestParameterNode")) {
-    const char *rpn = nt_str(nt, restp, "name");
-    LocalVar *rlv = rpn ? scope_local(comp_scope_of(c, restp), rpn) : NULL;
-    if (rpn && rlv && rlv->type != TY_UNKNOWN) {
-      int rta = ++g_tmp;
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", rta, rta);
-      for (int p = npar; p < iac; p++) {
-        Buf eb; memset(&eb, 0, sizeof eb);
-        emit_boxed(c, iav[p], &eb);
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", rta, eb.p ? eb.p : "sp_box_nil()");
-        free(eb.p);
-      }
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "lv_%s = _t%d;\n", rename_local(rpn), rta);
-    }
-  }
-  if (block_keyword_name(c, blk, 0) || block_kwrest_name(c, blk))
-    emit_block_kw_binds(c, blk, kwh, comp_scope_of(c, id), g_pre, g_indent, 0, NULL);
-}
-
 static int ie_forward_absent(Compiler *c, int id, int barg) {
   const NodeTable *nt = c->nt;
   if (resolve_forwarded_block(c, barg) < 0) return !g_yield_proc_ref && !g_current_scope_is_lowered;
@@ -31745,8 +31697,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       int nnp = 0; const int *nreqs = npnode >= 0 ? nt_arr(nt, npnode, "requireds", &nnp) : NULL;
       int niargs = nt_ref(nt, id, "arguments");
       int niac = 0; const int *niav = niargs >= 0 ? nt_arr(nt, niargs, "arguments", &niac) : NULL;
-      int nkwh = nexec ? ie_call_kwhash(c, id) : -1;
-      if (nkwh >= 0) niac -= 1;
       int nbody = nt_ref(nt, nblk, "body");
       int nbn = 0; const int *nbb = nbody >= 0 ? nt_arr(nt, nbody, "body", &nbn) : NULL;
       int tself = ++g_tmp;
@@ -31757,23 +31707,28 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", tself, rb.p ? rb.p : "sp_box_nil()");
         free(rb.p);
       }
-      for (int p = 0; p < nnp; p++) {
+      /* instance_exec binds its arguments as a yield binds them
+         (emit_block_binds); instance_eval hands each parameter the receiver */
+      int sv_nargov = g_n_argov;
+      if (nexec) {
+        /* into a side buffer: a value's own prelude drains into g_pre first */
+        Buf bb; memset(&bb, 0, sizeof bb);
+        emit_block_binds(c, nblk, niav, niac, &bb, g_indent, 0, NULL, NULL);
+        if (bb.p) buf_puts(g_pre, bb.p);
+        free(bb.p);
+      }
+      else for (int p = 0; p < nnp; p++) {
         const char *pn = nreqs ? nt_str(nt, nreqs[p], "name") : NULL;
         if (!pn) continue;
         LocalVar *plv = scope_local(comp_scope_of(c, nreqs[p]), pn);
         if (!plv || plv->type == TY_UNKNOWN) continue;   /* unused param */
-        int ppoly = plv->type == TY_POLY;
-        Buf vb; memset(&vb, 0, sizeof vb);
-        if (nexec) {
-          if (p < niac) { if (ppoly) emit_boxed(c, niav[p], &vb); else emit_expr(c, niav[p], &vb); }
-          else emit_ie_param_default(c, plv->type, &vb);
-        }
-        else { if (ppoly) buf_printf(&vb, "_t%d", tself); else emit_ie_param_default(c, plv->type, &vb); }
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "lv_%s = %s;\n", rename_local(pn), vb.p ? vb.p : "0");
-        free(vb.p);
+        if (plv->type == TY_POLY) buf_printf(g_pre, "lv_%s = _t%d;\n", rename_local(pn), tself);
+        else { buf_printf(g_pre, "lv_%s = ", rename_local(pn)); emit_ie_param_default(c, plv->type, g_pre); buf_puts(g_pre, ";\n"); }
       }
-      emit_ie_rest_kw_binds(c, id, nblk, nexec ? npnode : -1, nnp, niav, niac, nkwh);
+      if (!nexec && (block_keyword_name(c, nblk, 0) || block_kwrest_name(c, nblk)))
+        emit_block_kw_binds(c, nblk, -1, comp_scope_of(c, id), g_pre, g_indent, 0, NULL);
+      g_n_argov = sv_nargov;
       TyKind nbt = nbn > 0 ? comp_ntype(c, nbb[nbn - 1]) : TY_NIL;
       const char *sv_self = g_self, *sv_deref = g_self_deref;
       char selfb[32]; snprintf(selfb, sizeof selfb, "_t%d", tself);
@@ -31901,7 +31856,20 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         /* a trailing `k: v` call-site hash binds keyword params, not positionals */
         int ie_kwhash = ie_call_kwhash(c, id);
         if (ie_kwhash >= 0) iac -= 1;
-        if (bpty && sp_streq(bpty, "NumberedParametersNode")) {
+        if (is_exec && !(bpty && sp_streq(bpty, "NumberedParametersNode")) && (ie_tramp ? ie_tramp_effective_argc(c, id) : -1) < 0) {
+          /* instance_exec binds its arguments as a yield binds them
+             (emit_block_binds): the proc distribution, a splat gathered, a
+             lone Array auto-splatted, the keywords last. Its own copy bound
+             requireds and optionals by index and never took a post, so
+             `instance_exec(1) { |*r, a| }` bound r = [1]. */
+          int sv_nargov = g_n_argov;
+          Buf bb; memset(&bb, 0, sizeof bb);   /* see the non-object receiver's */
+          emit_block_binds(c, blk, iav, iac + (ie_kwhash >= 0), &bb, g_indent, 0, NULL, NULL);
+          if (bb.p) buf_puts(g_pre, bb.p);
+          free(bb.p);
+          g_n_argov = sv_nargov;
+        }
+        else if (bpty && sp_streq(bpty, "NumberedParametersNode")) {
           /* `{ _1.method }`: _1.._N bind like positional block params. */
           int maxn = (int)nt_int(nt, bp_node, "maximum", 0);
           for (int p = 0; p < maxn; p++) {
@@ -31925,32 +31893,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         int inner = bp_node >= 0 ? nt_ref(nt, bp_node, "parameters") : -1;
         int pnode = inner >= 0 ? inner : bp_node;
         int npar = 0; const int *reqs = pnode >= 0 ? nt_arr(nt, pnode, "requireds", &npar) : NULL;
-        /* auto-splat: a single array arg spread across N>=2 params. Evaluate
-           the array once, then bind each param to its element. */
-        int as_arr = 0; const char *as_kind = NULL;
         /* mixed-args trampoline: bind params to the trampoline body's args. */
         int tramp_argc = ie_tramp ? ie_tramp_effective_argc(c, id) : -1;
-        /* A sole splat arg (`instance_exec(*arr) { |a, b| }`) spreads its source
-           array across the params, exactly like passing the array directly.
-           Unwrap the splat to its operand and let the auto-splat path handle it.
-           A splat also spreads across a single param (`instance_exec(*arr) { |a| }`
-           binds `a` to `arr[0]`), unlike a directly-passed array (whole array to a
-           lone param), so allow `npar >= 1` when explicitly splatted. */
-        int arg0 = (iac == 1 && iav) ? iav[0] : -1;
-        int is_splat = arg0 >= 0 && nt_type(nt, arg0) && sp_streq(nt_type(nt, arg0), "SplatNode");
-        if (is_splat) arg0 = nt_ref(nt, arg0, "expression");
-        if (tramp_argc < 0 && is_exec && iac == 1 && (npar >= 2 || (npar >= 1 && is_splat)) && arg0 >= 0) {
-          TyKind a0 = comp_ntype(c, arg0);
-          if (ty_is_array(a0)) {
-            as_kind = (a0 == TY_POLY_ARRAY) ? "Poly" : array_kind(a0);
-            as_arr = ++g_tmp;
-            /* Evaluate the array into a side buffer so its own prelude flushes
-               to g_pre before this declaration line (avoid splicing mid-line). */
-            Buf ab = expr_buf(c, arg0);
-            emit_indent(g_pre, g_indent); emit_ctype(c, a0, g_pre);
-            buf_printf(g_pre, " _t%d = %s;\n", as_arr, ab.p ? ab.p : "NULL"); free(ab.p);
-          }
-        }
         for (int p = 0; p < npar; p++) {
           const char *pn = nt_str(nt, reqs[p], "name");
           if (!pn) continue;
@@ -31969,18 +31913,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           emit_indent(g_pre, g_indent);
           if (!pdecl) buf_puts(g_pre, "(void)(");
           else buf_printf(g_pre, "lv_%s = ", rename_local(pn));
-          if (as_kind) {
-            /* element of the auto-splat array; box the scalar kinds into the
-               poly slot (PolyArray_get already yields an sp_RbVal). */
-            const char *bx = !ppoly || sp_streq(as_kind, "Poly") ? NULL
-                           : sp_streq(as_kind, "Int") ? "sp_box_int"
-                           : sp_streq(as_kind, "Float") ? "sp_box_float"
-                           : sp_streq(as_kind, "Str") ? "sp_box_str" : NULL;
-            if (bx) buf_printf(g_pre, "%s(", bx);
-            buf_printf(g_pre, "sp_%sArray_get(_t%d, %d)", as_kind, as_arr, p);
-            if (bx) buf_puts(g_pre, ")");
-          }
-          else if (tramp_argc >= 0) {
+          if (tramp_argc >= 0) {
             int an = ie_tramp_effective_arg(c, id, p);
             Buf eb; memset(&eb, 0, sizeof eb);
             if (an >= 0) { if (ppoly) emit_boxed(c, an, &eb); else emit_expr(c, an, &eb); }
@@ -31989,17 +31922,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
               emit_unbox_text(c, plv->type, eb.p ? eb.p : "", g_pre);
             else buf_puts(g_pre, eb.p ? eb.p : "0");
             free(eb.p);
-          }
-          else if (is_exec) {
-            if (p < iac) {
-              if (ppoly) emit_boxed(c, iav[p], g_pre);
-              else if (pscalar && comp_ntype(c, iav[p]) == TY_POLY) {
-                Buf eb = expr_buf(c, iav[p]);
-                emit_unbox_text(c, plv->type, eb.p ? eb.p : "", g_pre); free(eb.p);
-              }
-              else emit_expr(c, iav[p], g_pre);
-            }
-            else emit_ie_param_default(c, plv ? plv->type : TY_POLY, g_pre);
           }
           else {
             /* instance_eval yields self. A poly slot takes it boxed: the
@@ -32015,10 +31937,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           }
           buf_puts(g_pre, pdecl ? ";\n" : ");\n");
         }
-        /* Only the plain positional-args form binds a `*rest`: the auto-splat
-           and trampoline paths distribute their args differently. */
-        int plain = is_exec && !as_kind && tramp_argc < 0;
-        emit_ie_rest_kw_binds(c, id, blk, plain ? pnode : -1, npar, iav, iac, ie_kwhash);
+        if (block_keyword_name(c, blk, 0) || block_kwrest_name(c, blk))
+          emit_block_kw_binds(c, blk, ie_kwhash, comp_scope_of(c, id), g_pre, g_indent, 0, NULL);
         }
       }
       if (ie_bn > 0) {

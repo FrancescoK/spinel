@@ -6521,11 +6521,15 @@ else if (orecv >= 0 && onm) {
     emit_arity_check(pb, "argc", lreq, proc_has_rest(c, create) ? -1 : lreq + nopts, kw);
     buf_puts(pb, ";\n");
   }
-  /* CRuby proc auto-splat: a single Array passed to a non-lambda proc taking
-     more than one positional is destructured across the parameters. Rewrite
-     the argument view (both the sp_int[] slots and the boxed side-channel)
-     from the array's elements before binding. */
-  if (!is_lambda && arity >= 2) {
+  /* CRuby proc auto-splat: a single Array passed to a non-lambda proc is
+     destructured across the parameters by the rule a yield's block follows
+     (block_auto_splats): `proc { |k, v = 5| }.call([:a, 1])` binds k = :a.
+     Rewrite the argument view (both the sp_int[] slots and the boxed
+     side-channel) from the array's elements before binding. */
+  int has_rest_marker = 0;
+  { int pnr = proc_params_node(c, create);
+    has_rest_marker = pnr >= 0 && nt_ref(nt, pnr, "rest") >= 0; }
+  if (!is_lambda && block_auto_splats(arity, nopts, nposts, has_rest_marker)) {
     g_needs_proc_poly_argslot = 1;
     buf_puts(pb, "    sp_int _sp_as_buf[16];\n");
     buf_printf(pb, "    if (argc == 1%s && _sp_proc_poly_args[0].tag == SP_TAG_OBJ && sp_poly_is_array_kind(_sp_proc_poly_args[0].cls_id)) {\n",
@@ -6726,22 +6730,6 @@ else if (orecv >= 0 && onm) {
     for (int j = 0; j < nopts; j++) {
       const char *on = proc_opt_name(c, create, j);
       if (!on) continue;
-      /* A default that reads another parameter needs that read renamed into
-         the per-block namespace, which the parse-time block rename does not
-         reach inside default expressions yet -- reject precisely rather than
-         emit an unrenamed (undeclared or wrong) variable reference. */
-      { int dv0 = proc_opt_value(c, create, j);
-        NameSet dused = {0};
-        if (dv0 >= 0) proc_collect_used(c, dv0, &dused);
-        int refs_param = 0;
-        for (int u2 = 0; u2 < dused.n && !refs_param; u2++)
-          if (nameset_has(&params, dused.v[u2])) refs_param = 1;
-        free(dused.v);
-        if (refs_param) {
-          free(dlocals.v);
-          unsupported(c, create, "proc optional default referencing another parameter (later slice)");
-          return;
-        } }
       char cond[96], arg[64];
       snprintf(cond, sizeof cond, "%d + %d < argc - %d && %d + %d < 16", arity, j, nposts, arity, j);
       snprintf(arg, sizeof arg, "_sp_proc_poly_args[%d + %d]", arity, j);

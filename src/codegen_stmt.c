@@ -1711,7 +1711,7 @@ int emit_poly_op_assign(Compiler *c, const char *lval, const char *op, int v,
 
 /* Whether the subtree at `id` assigns the local `nm`: a write, an
    op-write or a multiple-assignment target by that name. */
-static int subtree_writes_local(Compiler *c, int id, const char *nm) {
+int subtree_writes_local(Compiler *c, int id, const char *nm) {
   const NodeTable *nt = c->nt;
   if (id < 0) return 0;
   const char *ty = nt_type(nt, id);

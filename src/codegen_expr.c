@@ -3170,11 +3170,12 @@ else {
           buf_printf(g_pre, "sp_%sHash_update(_t%d, %s);\n", hn, t, sb.p ? sb.p : "");
           free(sb.p);
         }
-        else if (sh == TY_POLY && poly_poly) {
-          /* a poly spread source into a poly-poly literal: iterate its boxed
-             (key,value) pairs at runtime (any hash variant) and set them. */
+        else if ((sh == TY_POLY || shn) && poly_poly) {
+          /* a poly spread source, or a hash of another variant, into a
+             poly-poly literal: iterate its boxed (key,value) pairs at runtime
+             (any hash variant) and set them. */
           int st = ++g_tmp;
-          Buf sb; memset(&sb, 0, sizeof sb); emit_expr(c, src, &sb);
+          Buf sb; memset(&sb, 0, sizeof sb); emit_boxed(c, src, &sb);
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", st, sb.p ? sb.p : "sp_box_nil()", st);
           free(sb.p);
