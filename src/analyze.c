@@ -16596,7 +16596,8 @@ static void mark_nullable_int_locals(Compiler *c) {
         if (recv < 0) {
           Scope *self = comp_scope_of(c, id);
           if (self && self->class_id >= 0)
-            mi = comp_method_in_chain(c, self->class_id, nt_str(nt, id, "name"), NULL);
+            mi = self->is_cmethod ? comp_cmethod_in_chain(c, self->class_id, nt_str(nt, id, "name"), NULL)
+                                  : comp_method_in_chain(c, self->class_id, nt_str(nt, id, "name"), NULL);
         }
         else if (ty_is_object(rt))
           mi = comp_method_in_chain(c, ty_object_class(rt), nt_str(nt, id, "name"), NULL);
