@@ -2316,7 +2316,25 @@ void emit_if(Compiler *c, int id, Buf *b, int indent, int is_unless, int tail) {
       buf_puts(b, "\n");
       emit_indent(b, indent);
       buf_puts(b, "else {\n");
-      emit_if(c, sub, b, indent + 1, 0, tail);
+      /* An elsif's predicate is not a statement of its own, so the setup a
+         call in it hoists (its argument temps: `elsif db.execute("u",
+         update_binds)`) would land in the ambient g_pre, which flushes once
+         before the whole if statement -- running update_binds even when an
+         earlier branch is taken. Capture that prelude and emit it here,
+         where the elsif is reached (the case and ternary arm emitters do
+         the same). */
+      if (g_pre) {
+        Buf pre; memset(&pre, 0, sizeof pre);
+        Buf arm; memset(&arm, 0, sizeof arm);
+        Buf *sv_pre = g_pre; int sv_ind = g_indent;
+        g_pre = &pre; g_indent = indent + 1;
+        emit_if(c, sub, &arm, indent + 1, 0, tail);
+        g_pre = sv_pre; g_indent = sv_ind;
+        if (pre.p) buf_puts(b, pre.p);
+        if (arm.p) buf_puts(b, arm.p);
+        free(pre.p); free(arm.p);
+      }
+      else emit_if(c, sub, b, indent + 1, 0, tail);
       emit_indent(b, indent); buf_puts(b, "}\n");
     }
     else {
