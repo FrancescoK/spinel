@@ -16228,14 +16228,12 @@ int nullable_int_value(Compiler *c, int v) {
     }
     if (rcv0 >= 0 && cn && (sp_streq(cn, "find") || sp_streq(cn, "detect")) &&
         nullable_int_elem_expr(c, rcv0, 0)) return 1;
-    int mi = cn ? comp_method_index(c, cn) : -1;
     int rcv = nt_ref(nt, v, "receiver");
+    /* a receiverless call resolves as emission does: the class-method chain
+       in a class method, then the instance chain, a top-level def last */
+    int mi = cn && rcv < 0 ? comp_self_call_mi(c, v, cn) : (cn ? comp_method_index(c, cn) : -1);
     if (mi < 0 && cn) {
-      if (rcv < 0) {
-        Scope *self = comp_scope_of(c, v);
-        if (self && self->class_id >= 0) mi = comp_method_in_chain(c, self->class_id, cn, NULL);
-      }
-      else {
+      if (rcv >= 0) {
         TyKind rt = infer_type(c, rcv);
         /* an attr reader answers its float ivar, whose nil is the sentinel:
            one some write left nil, or one initialize need not assign */
@@ -16663,16 +16661,12 @@ static void mark_nullable_int_locals(Compiler *c) {
        where boxing it (`other.inspect`, `x == other`) has the same problem the
        local marking exists to prevent. */
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
-      int mi = comp_method_index(c, nt_str(nt, id, "name"));
-      if (mi < 0) {
-        int recv = nt_ref(nt, id, "receiver");
-        TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
-        if (recv < 0) {
-          Scope *self = comp_scope_of(c, id);
-          if (self && self->class_id >= 0)
-            mi = comp_method_in_chain(c, self->class_id, nt_str(nt, id, "name"), NULL);
-        }
-        else if (ty_is_object(rt))
+      int recv = nt_ref(nt, id, "receiver");
+      int mi = recv < 0 ? comp_self_call_mi(c, id, nt_str(nt, id, "name"))
+                        : comp_method_index(c, nt_str(nt, id, "name"));
+      if (mi < 0 && recv >= 0) {
+        TyKind rt = infer_type(c, recv);
+        if (ty_is_object(rt))
           mi = comp_method_in_chain(c, ty_object_class(rt), nt_str(nt, id, "name"), NULL);
         /* `W.new(k)` binds initialize's parameters, and `W.build(k)` a class
            method's: neither receiver is an instance, so the arm above cannot
