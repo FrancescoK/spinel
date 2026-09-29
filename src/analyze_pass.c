@@ -6150,8 +6150,9 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
 /* The parameters of the parent a bare `super` in `s` reaches, typed as it
    binds them (codegen's zsuper_begin): with a rest in `s` the positionals
    gather, a parameter the gather funds from the front taking the element
-   at its index, and one it funds from the end (a post after the parent's
-   rest, a required after its leading optionals) any of them; without, they
+   at its index, one as far from the end as a post of `s` that post, and any
+   other it funds from the end (a post after the parent's rest, a required
+   after its leading optionals) any of them; without, they
    are laid out as a call of `s`'s positional count (arg_layout), each
    parent parameter typed from the one of `s` it takes. A keyword takes
    `s`'s like-named keyword, or a boxed value from `s`'s `**` (as a call's
@@ -6207,6 +6208,18 @@ static int bind_zsuper_params(Compiler *c, int id, Scope *s, Scope *pm) {
     LocalVar *p = pm->pnames[pk] ? scope_local(pm, pm->pnames[pk]) : NULL;
     if (!p || p->rbs_seeded || callee_param_is_declared_kwarg(c, pm, pm->pnames[pk])) continue;
     int optional = pm->pdefault && pm->pdefault[pk] >= 0;
+    /* one as far from the end as a post of this method is that post, whatever
+       the count: the gather ends with them (zsuper_param_source) */
+    int own = zsuper_param_source(c, s, pm, pk);
+    if (own > srest) {
+      LocalVar *src = scope_local(s, s->pnames[own]);
+      if (src && src->type != TY_UNKNOWN) {
+        TyKind mg = ty_unify(p->type, src->type);
+        if (mg != p->type) { p->type = mg; changed = 1; }
+      }
+      opt_seen |= optional;
+      continue;
+    }
     /* counted from the end of the gather: any of this method's positionals
        or the rest's elements, as the count is the run time's */
     if ((pm->rest_idx >= 0 && pk > pm->rest_idx) || (opt_seen && !optional)) {

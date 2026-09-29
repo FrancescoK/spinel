@@ -265,6 +265,8 @@ int param_rest_misfits(Compiler *c, Scope *m, LocalVar *p, TyKind ct, const int 
 int opt_before_required(Compiler *c, Scope *m);                 /* codegen_fold.c */
 int arg_slot_for_param(Compiler *c, Scope *m, int idx, int argc); /* codegen_fold.c */
 int arg_layout_plain_arg(Compiler *c, Scope *m, int pos_argc, int i); /* codegen_fold.c */
+int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread); /* codegen_fold.c */
+int zsuper_param_source(Compiler *c, Scope *s, Scope *pm, int j);         /* codegen_fold.c */
 int rest_packable_arm(Compiler *c, Scope *s);                    /* codegen_fold.c */
 /* The type a READ of ivar slot `iv` yields (a shared-mutable string slot
    reads as a plain String). Shared with the receiver-face helpers. */

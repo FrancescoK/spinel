@@ -8987,7 +8987,7 @@ static void emit_zsuper_param_fill(Compiler *c, Scope *pm, int i, Buf *b) {
   else buf_puts(b, tn);
 }
 
-static void emit_zsuper_arg(Compiler *c, Scope *s, TyKind st, TyKind dt, const char *pname, Buf *b);
+static void emit_zsuper_arg(Compiler *c, Scope *s, LocalVar *dst, TyKind dt, const char *pname, Buf *b);
 
 /* A bare `super` passes the method's own positionals, in order, and its
    keywords by name, and the parent binds them as it binds any call's
@@ -9170,7 +9170,7 @@ static void emit_zsuper_param(Compiler *c, Scope *s, Scope *pm, const ZSuper *z,
   LocalVar *src = kw && callee_param_is_declared_kwarg(c, s, pm->pnames[i]) ? scope_local(s, pm->pnames[i]) : NULL;
   if (src) {
     g_nren = own_nren;
-    emit_zsuper_arg(c, s, src->type, dt, pm->pnames[i], b);
+    emit_zsuper_arg(c, s, dst, dt, pm->pnames[i], b);
   }
   else if (kw && z->kwsrc >= 0) {
     g_nren = parent_nren;
@@ -9181,21 +9181,29 @@ static void emit_zsuper_param(Compiler *c, Scope *s, Scope *pm, const ZSuper *z,
     if (z->kwrest >= 0) snprintf(tn, sizeof tn, "_t%d", z->kwrest);
     g_nren = own_nren;
     if (z->kwrest < 0) {
-      LocalVar *kv = scope_local(s, s->pnames[s->kwrest_idx]);
-      emit_zsuper_arg(c, s, kv ? kv->type : TY_UNKNOWN, dt, s->pnames[s->kwrest_idx], b);
+      emit_zsuper_arg(c, s, dst, dt, s->pnames[s->kwrest_idx], b);
     }
     else if (dt == TY_POLY) emit_boxed_text(c, kwrest_any_key(c, pm) ? TY_POLY_POLY_HASH : TY_SYM_POLY_HASH, tn, b);
     else buf_puts(b, tn);
   }
   else if (z->gather >= 0 && !kw && i != pm->kwrest_idx) {
-    g_nren = parent_nren;
-    emit_gathered_param(c, pm, i, z->gather, b);
+    /* a lent parameter ahead of the rest, or among the posts behind it, is
+       this method's own, in place: the gather's copy of it would take the
+       parent's appends */
+    int own = dst && dst->byref_out ? zsuper_param_source(c, s, pm, i) : -1;
+    if (own >= 0) {
+      g_nren = own_nren;
+      emit_zsuper_arg(c, s, dst, dt, s->pnames[own], b);
+    }
+    else {
+      g_nren = parent_nren;
+      emit_gathered_param(c, pm, i, z->gather, b);
+    }
   }
   else if (z->gather < 0 && z->L.from[i] == ARG_NODE) {
     int a = z->L.arg[i];
-    LocalVar *ep = scope_local(s, s->pnames[a]);
     g_nren = own_nren;
-    emit_zsuper_arg(c, s, ep ? ep->type : TY_UNKNOWN, dt, s->pnames[a], b);
+    emit_zsuper_arg(c, s, dst, dt, s->pnames[a], b);
   }
   else if (z->gather < 0 && z->L.from[i] == ARG_REST) {
     /* the positionals between the requireds ahead and the posts behind */
@@ -9469,9 +9477,29 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
    the parent's is typed -- a proc-form clone's parameters are boxed, and its
    super reaching the parent's plain method passed an sp_RbVal into an sp_int
    parameter, which the C compiler refused. */
-static void emit_zsuper_arg(Compiler *c, Scope *s, TyKind st, TyKind dt, const char *pname, Buf *b) {
+static void emit_zsuper_arg(Compiler *c, Scope *s, LocalVar *dst, TyKind dt, const char *pname, Buf *b) {
+  LocalVar *src = scope_local(s, pname);
+  TyKind st = src ? src->type : TY_UNKNOWN;
   Buf _bx; memset(&_bx, 0, sizeof _bx);
   emit_scope_local_ref(c, s, pname, &_bx);
+  /* A byref parent parameter takes a slot, as at any call site
+     (emit_arg_or_default_fill): this method's own cell passes on -- a lent
+     parameter forwards the caller's slot -- a plain String its address, and
+     any other value a temp. */
+  if (dst && dst->byref_out) {
+    int captured = g_cap_struct && g_cap_names && nameset_has(g_cap_names, pname);
+    if (src && st == TY_STRING && src->is_cell && !captured) buf_printf(b, "_cell_%s", rename_local(pname));
+    else if (src && st == TY_STRING && !captured) buf_printf(b, "(const char **)&lv_%s", rename_local(pname));
+    else {
+      Buf vb; memset(&vb, 0, sizeof vb);
+      if (st == TY_POLY) emit_unbox_text(c, TY_STRING, _bx.p, &vb);
+      else buf_puts(&vb, _bx.p);
+      emit_lent_temp(vb.p, b);
+      free(vb.p);
+    }
+    free(_bx.p);
+    return;
+  }
   if (dt == TY_POLY && st != TY_POLY && st != TY_UNKNOWN) emit_boxed_text(c, st, _bx.p, b);
   else if (st == TY_POLY && dt == TY_INT) buf_printf(b, "sp_poly_to_i_or_nil(%s)", _bx.p);
   else if (st == TY_POLY && dt == TY_FLOAT) buf_printf(b, "sp_poly_to_f_or_nil(%s)", _bx.p);

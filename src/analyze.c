@@ -11812,8 +11812,9 @@ static void mark_empty_hash_receivers(Compiler *c) {
      which keep the plain ABI;
    - the name is unique program-wide, never aliased, and never appears as a
      symbol/string literal (send/method(:x)/define_method material);
-   - all params required positional (no rest/kw/defaults: those fill slots
-     through temps and per-name extraction, where an address is meaningless);
+   - not an `initialize`: its callers are the sp_X_new wrappers, which the
+     class values, `raise`, `allocate` and the poly `new` dispatch all call
+     with values;
    - the param is mutated via a receiver-reassigning string mutator (`<<`,
      replace, prepend, insert, clear, concat, bang forms) or passed on into
      another method's byref slot (fixpoint), and is never PLAIN-reassigned:
@@ -11961,7 +11962,13 @@ static int an_byref_promote_group(Compiler *c, const char *nm, int pi,
     Scope *m = &c->scopes[k];
     if (!m->name || !sp_streq(m->name, nm)) continue;
     if (m->class_id >= 0 && !m->is_cmethod && !an_class_can_be_reached(c, m->class_id)) continue;
-    if (!elig[k]) return 0;
+    /* A module's method is called through the copies its includers get
+       (their own scopes, judged on their own), so the source is not refused
+       for being one: it takes the group's ABI and keeps the group's answer
+       the same whichever member an_any_scope_by_name finds first. Refused,
+       `def g(a) = super` into an included module's `g` kept the value ABI
+       and the module's appends stopped at its copy. */
+    if (!elig[k] && !m->is_transplanted_source) return 0;
     if (pi >= m->nparams || !m->pnames[pi]) return 0;
     if (blocked[k] & (1u << pi)) return 0;
     LocalVar *q = scope_local(m, m->pnames[pi]);
@@ -11986,6 +11993,7 @@ static int an_byref_promote_group(Compiler *c, const char *nm, int pi,
   return did;
 }
 
+static int a_super_target(Compiler *c, Scope *m);
 static void compute_byref_out_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int n = c->nscopes;
@@ -12007,7 +12015,6 @@ static void compute_byref_out_params(Compiler *c) {
     if (s->class_id >= 0 && !s->is_cmethod && comp_class_index(c, "Toplevel") != s->class_id &&
         (c->classes[s->class_id].is_struct || c->classes[s->class_id].is_native_class ||
          c->classes[s->class_id].is_value_type)) continue;
-    if (s->rest_idx >= 0 || s->kwrest_idx >= 0 || s->npost_rest > 0) continue;
     /* An OPTIONAL parameter beside the lent one is not an ABI difference, and
        treating it as one dropped the callee's appends without a word (#4390).
        The caller materialises every default, so the callee is emitted
@@ -12017,12 +12024,19 @@ static void compute_byref_out_params(Compiler *c) {
        (`def fill(io = String.new)`) passes a fresh caller-side temp, which is
        unaliased, so the appends go nowhere -- which is what CRuby answers for
        that shape too. */
+    /* A keyword, a rest, a **kwrest or a post beside the lent parameter is
+       no ABI difference either: the keywords are positional C parameters, and
+       every binder that fills one -- a literal keyword, a `**` or merged hash,
+       a splat's element, a gather, a default -- lends what it binds, a temp
+       where no caller variable stands behind the value (emit_lent_temp). So
+       `def m(k:) = k << "x"` called `m(k: s)` lends s like a positional, where
+       refusing the method made the appends stay in a copy. */
     if (s->nparams <= 0 || s->nparams > 32) continue;
-    int pn = nt_ref(nt, s->def_node, "parameters");
-    if (pn >= 0) {
-      int kn = 0; nt_arr(nt, pn, "keywords", &kn);
-      if (kn > 0) continue;
-    }
+    /* A constructor is reached through sp_X_new, which about two dozen
+       emitters (class values, `raise`, `allocate`, the poly `new` dispatch)
+       call with values: lent a slot at the `.new` site alone, the C build
+       stopped on the wrapper's value parameter. */
+    if (s->name && sp_streq(s->name, "initialize")) continue;
     elig[si] = 1;
   }
   /* an aliased name reaches the method under another spelling; the alias call
@@ -12092,6 +12106,35 @@ static void compute_byref_out_params(Compiler *c) {
     changed = 0;
     for (int id = 0; id < nt->count; id++) {
       const char *ty = nt_type(nt, id);
+      NodeKind sk = nt_kind(nt, id);
+      if (sk == NK_SuperNode || sk == NK_ForwardingSuperNode) {
+        /* transitive through `super`: a parameter a super hands on into the
+           parent's byref slot. A same-named parent shares the name group; one
+           an included module brings is copied under a name of its own, and
+           the child kept the value ABI the lent slot came back through. */
+        Scope *s = comp_scope_of(c, id);
+        int si = s ? (int)(s - c->scopes) : -1;
+        if (si <= 0 || si >= n || !elig[si] || s->class_id < 0) continue;
+        int mi = a_super_target(c, s);
+        if (mi < 0) continue;
+        Scope *m = &c->scopes[mi];
+        for (int j = 0; j < m->nparams; j++) {
+          if (!comp_byref_param(c, m, j)) continue;
+          int pi = -1;
+          if (sk == NK_ForwardingSuperNode) pi = zsuper_param_source(c, s, m, j);
+          else {
+            int an = arg_layout_param_node(c, m, id, j, NULL);
+            if (an >= 0 && nt_kind(nt, an) == NK_LocalVariableReadNode)
+              pi = an_param_idx(s, nt_str(nt, an, "name"));
+          }
+          if (pi < 0 || pi >= 32 || (blocked[si] & (1u << pi))) continue;
+          LocalVar *p = scope_local(s, s->pnames[pi]);
+          if (p && p->is_param && p->type == TY_STRING && !p->byref_out &&
+              an_byref_promote_group(c, s->name, pi, elig, blocked, n))
+            changed = 1;
+        }
+        continue;
+      }
       if (!ty || !sp_streq(ty, "CallNode")) continue;
       Scope *s = comp_scope_of(c, id);
       int si = s ? (int)(s - c->scopes) : -1;
@@ -12119,14 +12162,12 @@ static void compute_byref_out_params(Compiler *c) {
         int mi = an_any_scope_by_name(c, nm);
         if (mi < 0) continue;
         Scope *m = &c->scopes[mi];
-        int argsN = nt_ref(nt, id, "arguments");
-        int argc2 = 0;
-        const int *argv2 = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &argc2) : NULL;
         for (int j = 0; j < m->nparams; j++) {
           if (!comp_byref_param(c, m, j)) continue;
-          int a = call_param_arg(c, m, argv2, argc2, j);
-          if (a < 0 || nt_kind(nt, a) != NK_LocalVariableReadNode) continue;
-          const char *vn = nt_str(nt, a, "name");
+          /* the argument the binders give parameter j, a keyword's by name */
+          int an = arg_layout_param_node(c, m, id, j, NULL);
+          if (an < 0 || nt_kind(nt, an) != NK_LocalVariableReadNode) continue;
+          const char *vn = nt_str(nt, an, "name");
           int pi = an_param_idx(s, vn);
           if (pi < 0 || pi >= 32 || (blocked[si] & (1u << pi))) continue;
           LocalVar *p = scope_local(s, vn);
@@ -12886,10 +12927,7 @@ static int strbuf_demand_param_container_stores(Compiler *c, const char *pn, Sco
   for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
     if (nt_kind(nt, u) != NK_CallNode) continue;
     if (!an_call_targets_scope(c, u, mi, ps)) continue;
-    int argsN = nt_ref(nt, u, "arguments");
-    int uargc = 0;
-    const int *uargv = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &uargc) : NULL;
-    int an = call_param_arg(c, ps, uargv, uargc, pj);
+    int an = arg_layout_param_node(c, ps, u, pj, NULL);
     if (an < 0) continue;
     NodeKind ak = nt_kind(nt, an);
     if (ak == NK_LocalVariableReadNode) {
@@ -13230,14 +13268,11 @@ static int strbuf_slot_eligible_shape(Compiler *c, const char *vn, Scope *vs, Lo
     /* the group's answer, not the unique one: see an_any_scope_by_name */
     int mi = an_any_scope_by_name(c, nt_str(nt, u, "name"));
     if (mi < 0) continue;
-    int argsN = nt_ref(nt, u, "arguments");
-    int uargc = 0;
-    const int *uargv = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &uargc) : NULL;
     for (int j = 0; j < c->scopes[mi].nparams; j++) {
       if (!comp_byref_param(c, &c->scopes[mi], j)) continue;
-      int a = call_param_arg(c, &c->scopes[mi], uargv, uargc, j);
-      const char *an2 = a >= 0 && nt_kind(nt, a) == NK_LocalVariableReadNode
-                          ? nt_str(nt, a, "name") : NULL;
+      int a2 = arg_layout_param_node(c, &c->scopes[mi], u, j, NULL);
+      const char *an2 = a2 >= 0 && nt_kind(nt, a2) == NK_LocalVariableReadNode
+                          ? nt_str(nt, a2, "name") : NULL;
       if (an2 && sp_streq(an2, vn)) return 0;
     }
   }
@@ -13818,12 +13853,16 @@ static int promote_shared_stored_strings(Compiler *c) {
     if (!cun) continue;
     int cmi = an_any_scope_by_name(c, cun);
     if (cmi < 0) continue;
-    int cargs = nt_ref(nt, cu, "arguments");
-    int cargc = 0;
-    const int *cargv = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cargc) : NULL;
     for (int j = 0; j < c->scopes[cmi].nparams; j++) {
       if (!an_param_mutated_in_place(c, cmi, j)) continue;
-      int an5 = call_param_arg(c, &c->scopes[cmi], cargv, cargc, j);
+      /* the argument parameter j binds, a keyword's by name. One that comes
+         out of a splat's or a `**`'s operand is an element read like
+         `push(arr[0])` below, with the operand the container: `m(*arr)` and
+         `m(**h)` handed the callee a copy of what arr and h hold, and its
+         appends never reached them, nor the local stored there. */
+      int spread5 = -1;
+      int an5 = arg_layout_param_node(c, &c->scopes[cmi], cu, j, &spread5);
+      if (spread5 >= 0) changed |= strbuf_container_source_walk(c, spread5, 0, SB_DEMAND);
       if (an5 < 0) continue;
       char ivb5[300]; int defc5 = -1; const char *ivn5 = NULL;
       int box_node = -1;
@@ -14361,14 +14400,11 @@ static int promote_shared_stored_strings(Compiler *c) {
         if (ty_is_object(rt) && un) cmi = comp_method_in_class(c, ty_object_class(rt), un);
       }
       if (cmi < 0) continue;
-      int cargs = nt_ref(nt, u, "arguments");
-      int cargc = 0;
-      const int *cargv = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cargc) : NULL;
       for (int j = 0; j < c->scopes[cmi].nparams; j++) {
-        int a = call_param_arg(c, &c->scopes[cmi], cargv, cargc, j);
-        if (a < 0 || infer_type(c, a) != TY_POLY) continue;
         if (!an_param_mutated_in_place(c, cmi, j)) continue;
-        changed |= strbuf_demand_value_leaves(c, a, 0);
+        int aj = arg_layout_param_node(c, &c->scopes[cmi], u, j, NULL);
+        if (aj < 0 || infer_type(c, aj) != TY_POLY) continue;
+        changed |= strbuf_demand_value_leaves(c, aj, 0);
       }
     }
   }
@@ -14516,17 +14552,11 @@ static void handle_arg_tab_init(Compiler *c, HandleArgTab *t) {
       if (mi < 0 || mi >= c->nscopes) continue;
       t->enode[ne] = u; t->enext[ne] = t->head[mi]; t->head[mi] = ne; ne++;
       if (t->off[mi] < 0 || !t->bit) continue;
-      int argsN = nt_ref(nt, u, "arguments");
-      int argc2 = 0;
-      const int *argv2 = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &argc2) : NULL;
-      if (!argv2) continue;
-      ArgLayout L;
-      call_layout(c, &c->scopes[mi], argv2, argc2, &L);
-      for (int pj = 0; pj < L.n; pj++) {
-        int a = layout_plain_arg(c, &c->scopes[mi], argv2, &L, pj);
+      int np = c->scopes[mi].nparams;
+      for (int pj = 0; pj < np; pj++) {
+        int a = arg_layout_param_node(c, &c->scopes[mi], u, pj, NULL);
         if (a >= 0 && an_arg_hands_handle(c, a)) t->bit[t->off[mi] + pj] = 1;
       }
-      arg_layout_free(&L);
     }
   }
 }
@@ -15113,16 +15143,25 @@ static int convert_byref_handle_params(Compiler *c,
          plain local was copied and the caller never saw the append. */
       int poly_mut = (pp->is_param && pp->type == TY_POLY &&
                       an_param_mutated_in_place(c, mi2, pj));
-      if (!pp->byref_out && !is_handle && !poly_mut) continue;
+      /* A String parameter the callee mutates that inference typed from a
+         handle argument (the copy-on-read refinement, not the handle): it
+         never passed through the byref ABI this pass converts, so it is
+         converted the same way here -- read as a copy, the appends to a
+         keyword's handle stayed in the callee's. */
+      int strbuf_mut = (pp->is_param && pp->type == TY_STRBUF && !pp->str_shared &&
+                        an_param_mutated_in_place(c, mi2, pj));
+      if (!pp->byref_out && !is_handle && !poly_mut && !strbuf_mut) continue;
       /* one pass over this method's call sites: detect a handle arg, and
          (once converted) pull plain-local args into the shared set */
-      int saw_handle = is_handle;
+      /* A POLY parameter the callee mutates in place boxes whatever it is
+         handed, and a plain String boxed is a copy: every call site's String
+         local has to hand the handle over, whether or not another already
+         does -- `m(v)` into `def m(p) = p << "x"` widened by `m([])`, or by
+         the boxed elements `m(*[], v)` gathers, lost the append. */
+      int saw_handle = is_handle || poly_mut;
       for (int e = hat->head[mi2]; e >= 0; e = hat->enext[e]) {
         int u = hat->enode[e];
-        int argsN = nt_ref(nt, u, "arguments");
-        int uargc = 0;
-        const int *uargv = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &uargc) : NULL;
-        int ua = call_param_arg(c, m2, uargv, uargc, pj);
+        int ua = arg_layout_param_node(c, m2, u, pj, NULL);
         if (ua < 0) continue;
         if (an_arg_is_shared_handle(c, ua)) saw_handle = 1;
         /* an ALIASED plain-local argument also demands the handle: the
@@ -15142,7 +15181,7 @@ static int convert_byref_handle_params(Compiler *c,
         }
       }
       if (!saw_handle) continue;
-      if (pp->byref_out) {
+      if (pp->byref_out || strbuf_mut) {
         pp->byref_out = 0;
         pp->is_cell = 0;
         pp->type = TY_STRBUF;
@@ -15152,10 +15191,7 @@ static int convert_byref_handle_params(Compiler *c,
       /* pull the remaining plain-local args into the shared set */
       for (int e = hat->head[mi2]; e >= 0; e = hat->enext[e]) {
         int u = hat->enode[e];
-        int argsN = nt_ref(nt, u, "arguments");
-        int uargc = 0;
-        const int *uargv = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &uargc) : NULL;
-        int an2 = call_param_arg(c, m2, uargv, uargc, pj);
+        int an2 = arg_layout_param_node(c, m2, u, pj, NULL);
         if (an2 < 0) continue;
         if (nt_kind(nt, an2) == NK_LocalVariableReadNode) {
           const char *vn2 = nt_str(nt, an2, "name");
@@ -15212,6 +15248,42 @@ static int convert_byref_handle_params(Compiler *c,
             }
           }
         }
+      }
+    }
+  }
+  /* A `super` is a call site the table does not list: the parameter it
+     hands on and the parent's parameter it lands in are one String, so a
+     handle on either side makes both handles. Left a lent slot, the parent
+     took the handle's copy, and a bare `super` from a method whose caller
+     passed a handle lost the parent's appends. */
+  for (int pass = 0; pass < 2; pass++) {
+    NodeKind sk = pass ? NK_ForwardingSuperNode : NK_SuperNode;
+    for (int q = comp_kind_first(c, sk); q >= 0; q = comp_kind_next(c, q)) {
+      if (nt_kind(nt, q) != sk) continue;
+      Scope *s = comp_scope_of(c, q);
+      if (!s || !s->name || s->class_id < 0) continue;
+      int mi = a_super_target(c, s);
+      if (mi < 0) continue;
+      Scope *pm = &c->scopes[mi];
+      for (int j = 0; j < pm->nparams; j++) {
+        int pi = -1;
+        if (pass) pi = zsuper_param_source(c, s, pm, j);
+        else {
+          int an = arg_layout_param_node(c, pm, q, j, NULL);
+          if (an >= 0 && nt_kind(nt, an) == NK_LocalVariableReadNode)
+            pi = an_param_idx(s, nt_str(nt, an, "name"));
+        }
+        if (pi < 0 || !pm->pnames[j]) continue;
+        LocalVar *dst = scope_local(pm, pm->pnames[j]), *src = scope_local(s, s->pnames[pi]);
+        if (!dst || !src || !dst->is_param || !src->is_param || src->is_block_param) continue;
+        int dh = dst->type == TY_STRBUF && dst->str_shared;
+        int sh = src->type == TY_STRBUF && src->str_shared;
+        if (dh == sh) continue;
+        LocalVar *o = dh ? src : dst;
+        if (o->type != TY_STRING && o->type != TY_STRBUF) continue;
+        if (o->byref_out) { o->byref_out = 0; o->is_cell = 0; }
+        o->type = TY_STRBUF; o->str_shared = 1;
+        changed = 1;
       }
     }
   }
@@ -21205,13 +21277,11 @@ void analyze_program(Compiler *c) {
       /* the group's answer, not the unique one: see an_any_scope_by_name */
       int mi = an_any_scope_by_name(c, nt_str(c->nt, u, "name"));
       if (mi < 0) continue;
-      int argsN = nt_ref(c->nt, u, "arguments");
-      int uargc = 0;
-      const int *uargv = argsN >= 0 ? nt_arr(c->nt, argsN, "arguments", &uargc) : NULL;
       for (int j = 0; j < c->scopes[mi].nparams; j++) {
         if (!comp_byref_param(c, &c->scopes[mi], j)) continue;
-        int a = call_param_arg(c, &c->scopes[mi], uargv, uargc, j);
-        const char *an2 = a >= 0 && nt_kind(c->nt, a) == NK_LocalVariableReadNode ? nt_str(c->nt, a, "name") : NULL;
+        int a2 = arg_layout_param_node(c, &c->scopes[mi], u, j, NULL);
+        const char *an2 = a2 >= 0 && nt_kind(c->nt, a2) == NK_LocalVariableReadNode
+                            ? nt_str(c->nt, a2, "name") : NULL;
         if (an2 && sp_streq(an2, vn)) { passed_byref = 1; break; }
       }
     }
