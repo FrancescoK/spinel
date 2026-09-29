@@ -439,6 +439,14 @@ static void emit_zip_args(Compiler *c, const int *argv, int nargs, const int *tb
   }
 }
 
+static int emit_dig_splat(Compiler *c, int recv, int arg, Buf *b) {
+  Buf rb; int ch = hold_recv_open(c, recv, 1, "sp_RbVal", "SP_GC_ROOT_RBVAL", b, &rb);
+  buf_printf(b, "sp_poly_dig_list(%s, sp_poly_to_poly_array(", rb.p); free(rb.p);
+  emit_boxed(c, arg, b); buf_puts(b, "))");
+  if (ch) buf_puts(b, "; })");
+  return 1;
+}
+
 /* An operand whose evaluation cannot allocate: a local's read or a scalar
    literal. */
 static int fetch_operand_is_inert(Compiler *c, int n) {
@@ -2487,13 +2495,8 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     if (rt == TY_POLY_ARRAY && sp_streq(name, "dig") && argc >= 1) {
       /* dig(*keys): walk the runtime key list (see the hash arm) */
       /* the receiver is held across the keys, which may allocate */
-      if (nt_kind(nt, argv[0]) == NK_SplatNode) {
-        Buf rb; int ch = hold_recv_open(c, recv, 1, "sp_RbVal", "SP_GC_ROOT_RBVAL", b, &rb);
-        buf_printf(b, "sp_poly_dig_list(%s, sp_poly_to_poly_array(", rb.p); free(rb.p);
-        emit_boxed(c, argv[0], b); buf_puts(b, "))");
-        if (ch) buf_puts(b, "; })");
-        return 1;
-      }
+      if (nt_kind(nt, argv[0]) == NK_SplatNode)
+        return emit_dig_splat(c, recv, argv[0], b);
       if (argc == 1) {
         Buf rb; int ch = hold_recv_open(c, recv, 0, "sp_PolyArray *", "SP_GC_ROOT", b, &rb);
         buf_printf(b, "sp_PolyArray_get(%s, ", rb.p); free(rb.p);
@@ -5765,14 +5768,8 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
            Emitting the splat as a single key read the key array through the
            key's own type and the C did not compile. */
         /* the receiver is held across the keys, which may allocate */
-        if (nt_kind(nt, argv[0]) == NK_SplatNode) {
-          Buf rb; int ch = hold_recv_open(c, recv, 1, "sp_RbVal", "SP_GC_ROOT_RBVAL", b, &rb);
-          buf_printf(b, "sp_poly_dig_list(%s, sp_poly_to_poly_array(", rb.p); free(rb.p);
-          emit_boxed(c, argv[0], b);
-          buf_puts(b, "))");
-          if (ch) buf_puts(b, "; })");
-          return 1;
-        }
+        if (nt_kind(nt, argv[0]) == NK_SplatNode)
+          return emit_dig_splat(c, recv, argv[0], b);
         TyKind vt = ty_hash_val(rt);
         TyKind kt = ty_hash_key(rt);
         /* Static key-type mismatch (string key on sym hash, etc.) -> nil. */
@@ -13746,13 +13743,8 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
           (!c->classes[kk].is_native_class && comp_reader_in_chain(c, kk, name, NULL))) has_user_dig = 1;
     /* the receiver is held across the arguments, which may allocate */
     if (!has_user_dig) {
-      if (argc == 1 && nt_kind(nt, argv[0]) == NK_SplatNode) {
-        Buf rb; int ch = hold_recv_open(c, recv, 1, "sp_RbVal", "SP_GC_ROOT_RBVAL", b, &rb);
-        buf_printf(b, "sp_poly_dig_list(%s, sp_poly_to_poly_array(", rb.p); free(rb.p);
-        emit_boxed(c, argv[0], b); buf_puts(b, "))");
-        if (ch) buf_puts(b, "; })");
-        return 1;
-      }
+      if (argc == 1 && nt_kind(nt, argv[0]) == NK_SplatNode)
+        return emit_dig_splat(c, recv, argv[0], b);
       int any_splat = 0;
       for (int a = 0; a < argc; a++)
         if (nt_kind(nt, argv[a]) == NK_SplatNode) any_splat = 1;
