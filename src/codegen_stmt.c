@@ -3461,7 +3461,7 @@ static void emit_pm_body_value(Compiler *c, int stmts, TyKind rt, int cr,
    string locals get the pointer/cstr out of the box, a poly local takes it
    directly. Keeps a pattern binding compatible with however inference typed the
    target (e.g. a `*rest` typed as a concrete array pointer vs. a poly value). */
-static void emit_pm_typed_assign(Scope *sc, const char *lnm,
+static void emit_pm_typed_assign(Compiler *c, Scope *sc, const char *lnm,
                                  const char *boxed, Buf *b, int indent) {
   LocalVar *lv = sc ? scope_local(sc, lnm) : NULL;
   TyKind ty = lv ? lv->type : TY_POLY;
@@ -3474,7 +3474,8 @@ static void emit_pm_typed_assign(Scope *sc, const char *lnm,
   /* the slice keeps the scrutinee's kind, which may be a typed array */
   else if (ty == TY_POLY_ARRAY)           buf_printf(b, "sp_poly_to_a_arr(%s)", boxed);
   else if (ty == TY_STRING)               buf_printf(b, "sp_poly_unbox_s(%s)", boxed);
-  else                                    buf_puts(b, boxed);  /* poly: direct */
+  else if (ty == TY_POLY || ty == TY_UNKNOWN) buf_puts(b, boxed);
+  else                                    emit_unbox_nilable_text(c, ty, boxed, b);
   buf_puts(b, ";\n");
 }
 
@@ -3522,7 +3523,7 @@ void emit_pm_bind_pattern(Compiler *c, int pat, const char *src_poly, int indent
     const char *ttype = tgt >= 0 ? nt_type(nt, tgt) : NULL;
     if (ttype && sp_streq(ttype, "LocalVariableTargetNode")) {
       const char *lnm = nt_str(nt, tgt, "name");
-      if (lnm) emit_pm_typed_assign(sc, lnm, src_poly, b, indent);
+      if (lnm) emit_pm_typed_assign(c, sc, lnm, src_poly, b, indent);
     }
     emit_pm_bind_container_poly(c, nt_ref(nt, pat, "value"), src_poly, indent, b, sc);
     return;
@@ -3552,13 +3553,13 @@ static void emit_pm_bind_poly(Compiler *c, int pat, const char *arr0, int indent
     buf_printf(&src, "sp_poly_index_poly(%s, sp_box_int(%dLL))", arr, i);
     if (sp_streq(rty, "LocalVariableTargetNode")) {
       const char *lnm = nt_str(nt, reqs[i], "name");
-      if (lnm) emit_pm_typed_assign(sc, lnm, src.p, b, indent);
+      if (lnm) emit_pm_typed_assign(c, sc, lnm, src.p, b, indent);
     }
     else if (sp_streq(rty, "CapturePatternNode")) {
       int tgt = nt_ref(nt, reqs[i], "target");
       if (tgt >= 0 && nt_type(nt, tgt) && sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode")) {
         const char *lnm = nt_str(nt, tgt, "name");
-        if (lnm) emit_pm_typed_assign(sc, lnm, src.p, b, indent);
+        if (lnm) emit_pm_typed_assign(c, sc, lnm, src.p, b, indent);
       }
       emit_pm_bind_container_poly(c, nt_ref(nt, reqs[i], "value"), src.p, indent, b, sc);
     }
@@ -3578,7 +3579,7 @@ static void emit_pm_bind_poly(Compiler *c, int pat, const char *arr0, int indent
         Buf rsrc; memset(&rsrc, 0, sizeof rsrc);
         buf_printf(&rsrc, "sp_poly_slice(%s, %lldLL, sp_poly_length(%s) - %lldLL)",
                    arr, (long long)apn, arr, (long long)(apn + npost));
-        emit_pm_typed_assign(sc, rnm, rsrc.p, b, indent);
+        emit_pm_typed_assign(c, sc, rnm, rsrc.p, b, indent);
         free(rsrc.p);
       }
     }
@@ -3592,13 +3593,13 @@ static void emit_pm_bind_poly(Compiler *c, int pat, const char *arr0, int indent
                arr, arr, (long long)(npost - j));
     if (sp_streq(rty, "LocalVariableTargetNode")) {
       const char *lnm = nt_str(nt, posts[j], "name");
-      if (lnm) emit_pm_typed_assign(sc, lnm, src.p, b, indent);
+      if (lnm) emit_pm_typed_assign(c, sc, lnm, src.p, b, indent);
     }
     else if (sp_streq(rty, "CapturePatternNode")) {
       int tgt = nt_ref(nt, posts[j], "target");
       if (tgt >= 0 && nt_type(nt, tgt) && sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode")) {
         const char *lnm = nt_str(nt, tgt, "name");
-        if (lnm) emit_pm_typed_assign(sc, lnm, src.p, b, indent);
+        if (lnm) emit_pm_typed_assign(c, sc, lnm, src.p, b, indent);
       }
       /* `[a, b] => cap`: also bind the names inside the captured sub-pattern. */
       emit_pm_bind_container_poly(c, nt_ref(nt, posts[j], "value"), src.p, indent, b, sc);
@@ -3654,7 +3655,7 @@ static void emit_pm_bind_hash_poly(Compiler *c, int pat, const char *hexpr, int 
     emit_boxed(c, key, b);
     buf_printf(b, ", &_t%d);\n", tf);
     char ve[24]; snprintf(ve, sizeof ve, "_t%d", tv);
-    if (lnm) emit_pm_typed_assign(sc, lnm, ve, b, indent + 1);
+    if (lnm) emit_pm_typed_assign(c, sc, lnm, ve, b, indent + 1);
     if (sub >= 0) emit_pm_bind_container_poly(c, sub, ve, indent + 1, b, sc);
     emit_indent(b, indent); buf_puts(b, "}\n");
   }
@@ -3701,7 +3702,7 @@ static void emit_pm_bind_find_poly(Compiler *c, int pat, const char *aexpr, int 
     if (s == 0) buf_printf(&ss, "sp_poly_slice(_t%d, 0LL, _t%d)", ta, tp);
     else buf_printf(&ss, "sp_poly_slice(_t%d, _t%d + %dLL, sp_poly_length(_t%d) - (_t%d + %dLL))",
                     ta, tp, rn, ta, tp, rn);
-    emit_pm_typed_assign(sc, snm, ss.p, b, indent + 2);
+    emit_pm_typed_assign(c, sc, snm, ss.p, b, indent + 2);
     free(ss.p);
   }
   for (int j = 0; j < rn; j++) {
@@ -3711,13 +3712,13 @@ static void emit_pm_bind_find_poly(Compiler *c, int pat, const char *aexpr, int 
     buf_printf(&ge, "sp_poly_arr_get(_t%d, _t%d + %dLL)", ta, tp, j);
     if (sp_streq(rty, "LocalVariableTargetNode")) {
       const char *lnm = nt_str(nt, reqs[j], "name");
-      if (lnm) emit_pm_typed_assign(sc, lnm, ge.p, b, indent + 2);
+      if (lnm) emit_pm_typed_assign(c, sc, lnm, ge.p, b, indent + 2);
     }
     else if (sp_streq(rty, "CapturePatternNode")) {
       int tgt = nt_ref(nt, reqs[j], "target");
       if (tgt >= 0 && nt_type(nt, tgt) && sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode")) {
         const char *lnm = nt_str(nt, tgt, "name");
-        if (lnm) emit_pm_typed_assign(sc, lnm, ge.p, b, indent + 2);
+        if (lnm) emit_pm_typed_assign(c, sc, lnm, ge.p, b, indent + 2);
       }
       emit_pm_bind_container_poly(c, nt_ref(nt, reqs[j], "value"), ge.p, indent + 2, b, sc);
     }
@@ -4348,7 +4349,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
             buf_printf(b, "sp_RbVal _t%d = sp_%sHash_get(_t%d, ", vtmp, hn, arm_t);
             emit_expr(c, key, b); buf_puts(b, ");\n");
             char vn[24]; snprintf(vn, sizeof vn, "_t%d", vtmp);
-            emit_pm_typed_assign(hsc, lnm, vn, b, body_indent + 1);
+            emit_pm_typed_assign(c, hsc, lnm, vn, b, body_indent + 1);
             emit_indent(b, body_indent); buf_puts(b, "}\n");
           }
           else {
