@@ -38,3 +38,20 @@ rescue FiberError => e
   p e.message
 end
 p fi.alive?
+
+# the creating thread has exited and been collected: a later thread (which
+# may sit at the same address) still can't resume its fiber
+orphan = Thread.new { Fiber.new { :ran } }.value
+GC.start
+taken = 0
+50.times do
+  r = Thread.new do
+    orphan.resume
+    :resumed
+  rescue FiberError
+    :refused
+  end.value
+  taken += 1 if r == :resumed
+  GC.start
+end
+p taken
