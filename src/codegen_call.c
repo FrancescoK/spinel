@@ -3211,8 +3211,14 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "sp_Thread_tls_key("); emit_expr(c, recv, b); buf_puts(b, ", ");
       emit_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
     }
-    if (((sp_streq(name, "[]") || sp_streq(name, "key?")) && argc == 1) ||
-        (sp_streq(name, "[]=") && argc == 2)) {
+    /* thread_variable_get / _set / ? are the thread-local spellings of the
+       same store here (`[]` is fiber-local in CRuby; this runtime keeps one
+       table per thread for both) -- activesupport's IsolatedExecutionState
+       accessor on Thread reads it */
+    int tv_get = sp_streq(name, "thread_variable_get"), tv_set = sp_streq(name, "thread_variable_set"),
+        tv_key = sp_streq(name, "thread_variable?");
+    if (((sp_streq(name, "[]") || sp_streq(name, "key?") || tv_get || tv_key) && argc == 1) ||
+        ((sp_streq(name, "[]=") || tv_set) && argc == 2)) {
       int tt = ++g_tmp, tk = ++g_tmp, tv = ++g_tmp;
       buf_printf(b, "({ sp_thread *_t%d = ", tt); emit_expr(c, recv, b);
       buf_printf(b, "; SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", tt, tk); emit_boxed(c, argv[0], b);
@@ -3222,7 +3228,7 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tv);
       }
       buf_printf(b, " sp_Thread_tls_%s(_t%d, sp_thread_local_key(_t%d)",
-                 argc == 2 ? "set" : sp_streq(name, "[]") ? "get" : "key", tt, tk);
+                 argc == 2 ? "set" : (sp_streq(name, "[]") || tv_get) ? "get" : "key", tt, tk);
       if (argc == 2) buf_printf(b, ", _t%d", tv);
       buf_puts(b, "); })"); return 1;
     }
@@ -40874,6 +40880,8 @@ else {
     else if (rt == TY_SYMBOL)  oc_cn = "Symbol";
     else if (rt == TY_RANGE)   oc_cn = "Range";
     else if (rt == TY_TIME)    oc_cn = "Time";
+    else if (rt == TY_THREAD)  oc_cn = "Thread";
+    else if (rt == TY_FIBER)   oc_cn = "Fiber";
     else if (rt == TY_IO)      oc_cn = "File";
     else if (rt == TY_CLASS)   oc_cn = "Class";
     if (oc_cn) {

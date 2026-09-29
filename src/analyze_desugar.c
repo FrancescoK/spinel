@@ -1348,6 +1348,39 @@ int desugar_reopen_implicit_self(Compiler *c) {
   return changed;
 }
 
+/* ---- a bare call inside a `class Thread` / `class Fiber` reopening ----------
+   `thread_variable_get(:tag)` in a method the reopening adds is the thread's
+   own builtin method on self. The implicit-self resolution inlines a few
+   String / Integer names for the scalar reopenings and knows nothing of a
+   handle's surface; give the call its receiver, and the typed dispatch on
+   the thread (self is a Thread there) serves it like any `t.m(...)`. Only a
+   name no reopening defines (those resolve as the class's own). Runs in the
+   fixpoint, after the scope pass. */
+int desugar_handle_reopen_self_recv(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "receiver") >= 0) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    Scope *s = comp_scope_of(c, id);
+    if (!s || s->class_id < 0 || s->is_cmethod || s->class_id >= c->nclasses) continue;
+    const char *cn = c->classes[s->class_id].name;
+    if (!cn || (!sp_streq(cn, "Thread") && !sp_streq(cn, "Fiber"))) continue;
+    if (comp_method_in_chain(c, s->class_id, nm, NULL) >= 0) continue;
+    if (nt_int(nt, id, "vcall", 0) && nt_ref(nt, id, "arguments") < 0) continue;  /* a local read, not a call */
+    int sf = nt_new_node(nt, "SelfNode");
+    if (sf < 0) continue;
+    nt_node_set_int(nt, sf, "node_line", nt_int(nt, id, "node_line", 0));
+    nt_node_set_int(nt, sf, "node_file", nt_int(nt, id, "node_file", 0));
+    nt_node_set_ref(nt, id, "receiver", sf);
+    comp_grow_node_arrays(c);
+    c->nscope[sf] = c->nscope[id];
+    changed = 1;
+  }
+  return changed;
+}
+
 /* Proc#>> / #<< with a Method operand: wrap the Method side in #to_proc at the
    AST, so composition always runs proc-to-proc. The to_proc emission builds a
    real trampoline proc that publishes its boxed result through the return

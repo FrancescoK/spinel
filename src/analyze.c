@@ -20090,6 +20090,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_step_kwargs(c);              /* n.step(to: X, by: Y) -> n.step(X, Y) */
     ch |= desugar_respond_to_probe(c);         /* recv.respond_to?(:m) -> probe recv.m type */
     ch |= desugar_body_self_call(c);           /* self.m(..) in a class body -> Klass.m(..) */
+    ch |= desugar_handle_reopen_self_recv(c);  /* bare m(..) in a Thread/Fiber reopen -> self.m(..) */
     ch |= desugar_symbol_to_proc_call(c);      /* :sym.to_proc.call(x) -> x.sym */
     ch |= desugar_call_op_write(c);            /* r.x += 1 with a def writer -> r.x = r.x + 1 */
     ch |= desugar_index_op_write_user(c);      /* obj[k] ||= v on a user [] / []= -> the calls */

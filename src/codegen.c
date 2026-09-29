@@ -3260,6 +3260,8 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
     else if (sp_streq(cn, "Object") || sp_streq(cn, "Numeric")) { buf_puts(b, "sp_RbVal self"); }
     else if (sp_streq(cn, "Range"))   { buf_puts(b, "sp_Range self"); }
     else if (sp_streq(cn, "Time"))    { buf_puts(b, "sp_Time self"); }
+    else if (sp_streq(cn, "Thread"))  { buf_puts(b, "sp_thread *self"); }
+    else if (sp_streq(cn, "Fiber"))   { buf_puts(b, "sp_Fiber *self"); }
     else if (sp_streq(cn, "File"))    { buf_puts(b, "sp_File *self"); }
     else if (sp_streq(cn, "Class"))   { buf_puts(b, "sp_Class self"); }
     else {
@@ -7281,7 +7283,10 @@ int is_builtin_reopen(const char *name) {
             blank.rb reopens Range and Time) */
          sp_streq(name, "Range")     || sp_streq(name, "Time") ||
          sp_streq(name, "File")      || sp_streq(name, "Class") ||
-         sp_streq(name, "Hash");
+         sp_streq(name, "Hash")      ||
+         /* a thread and a fiber are runtime handles too (activesupport's
+            IsolatedExecutionState gives both an accessor) */
+         sp_streq(name, "Thread")    || sp_streq(name, "Fiber");
 }
 
 /* Returns 1 if n is a known built-in exception class name. */
