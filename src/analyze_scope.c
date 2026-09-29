@@ -1220,7 +1220,12 @@ static const char *vis_arg_name(const NodeTable *nt, int arg) {
 /* Record `kind` for the methods an attr_reader/writer/accessor call declares
    (writers as "x="), e.g. for `private attr_reader :x` or a bare attr under a
    private/protected section. */
-static void vis_apply_attr(Compiler *c, ClassInfo *cls, int call, int kind) {
+static void vis_record(ClassInfo *cls, const char *name, int kind, int sg) {
+  if (sg) comp_cmethod_vis_set(cls, name, kind);
+  else comp_method_vis_set(cls, name, kind);
+}
+
+static void vis_apply_attr(Compiler *c, ClassInfo *cls, int call, int kind, int sg) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, call, "name");
   if (!nm) return;
@@ -1234,11 +1239,11 @@ static void vis_apply_attr(Compiler *c, ClassInfo *cls, int call, int kind) {
   for (int i = 0; i < an; i++) {
     const char *base = vis_arg_name(nt, argv[i]);
     if (!base) continue;
-    if (reader) comp_method_vis_set(cls, base, kind);
+    if (reader) vis_record(cls, base, kind, sg);
     if (writer) {
       char buf[256];
       snprintf(buf, sizeof buf, "%s=", base);
-      comp_method_vis_set(cls, buf, kind);
+      vis_record(cls, buf, kind, sg);
     }
   }
 }
@@ -1256,9 +1261,10 @@ static void vis_alias(ClassInfo *cls, const char *nw, const char *od) {
    visibility (default public). Handles a bare `private`/`protected`/`public`
    (switches the mode for following defs/attrs), the `private :a, :b` /
    `private def m;end` / `private attr_reader :x` argument forms, and plain
-   `def`/`attr_*` declarations under the active mode. Class (`def self.x`)
-   methods are a separate axis and left alone. */
-static void register_method_visibility_body(Compiler *c, ClassInfo *cls, int body) {
+   `def`/`attr_*` declarations under the active mode. Class methods are a
+   separate axis: `sg` walks a `class << self` body into the class-method
+   table, which `private_class_method` / `public_class_method` also write. */
+static void register_method_visibility_body(Compiler *c, ClassInfo *cls, int body, int sg) {
   const NodeTable *nt = c->nt;
   int n = 0;
   const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
@@ -1270,12 +1276,18 @@ static void register_method_visibility_body(Compiler *c, ClassInfo *cls, int bod
     if (sp_streq(sty, "DefNode")) {
       const char *mname = nt_str(nt, s, "name");
       if (mname && nt_ref(nt, s, "receiver") < 0)
-        comp_method_vis_set(cls, mname, cur);
+        vis_record(cls, mname, cur, sg);
+      continue;
+    }
+    if (!sg && sp_streq(sty, "SingletonClassNode")) {
+      int ex = nt_ref(nt, s, "expression");
+      if (ex >= 0 && nt_kind(nt, ex) == NK_SelfNode)
+        register_method_visibility_body(c, cls, nt_ref(nt, s, "body"), 1);
       continue;
     }
     if (sp_streq(sty, "AliasMethodNode")) {
       int nn = nt_ref(nt, s, "new_name"), on = nt_ref(nt, s, "old_name");
-      vis_alias(cls, nn >= 0 ? vis_arg_name(nt, nn) : NULL, on >= 0 ? vis_arg_name(nt, on) : NULL);
+      if (!sg) vis_alias(cls, nn >= 0 ? vis_arg_name(nt, nn) : NULL, on >= 0 ? vis_arg_name(nt, on) : NULL);
       continue;
     }
     if (!sp_streq(sty, "CallNode") || nt_ref(nt, s, "receiver") >= 0) continue;
@@ -1285,11 +1297,32 @@ static void register_method_visibility_body(Compiler *c, ClassInfo *cls, int bod
       int args = nt_ref(nt, s, "arguments");
       int an = 0;
       const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      if (an == 2) vis_alias(cls, vis_arg_name(nt, argv[0]), vis_arg_name(nt, argv[1]));
+      if (an == 2 && !sg) vis_alias(cls, vis_arg_name(nt, argv[0]), vis_arg_name(nt, argv[1]));
       continue;
     }
     const char *dmn = dm_defined_name(nt, s);
-    if (dmn) { comp_method_vis_set(cls, dmn, cur); continue; }
+    if (dmn) { vis_record(cls, dmn, cur, sg); continue; }
+    int ckind = sg ? -1 :
+                sp_streq(nm, "private_class_method") ? SP_VIS_PRIVATE :
+                sp_streq(nm, "public_class_method")  ? SP_VIS_PUBLIC : -1;
+    if (ckind >= 0) {
+      int args = nt_ref(nt, s, "arguments");
+      int an = 0;
+      const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      for (int i = 0; i < an; i++) {
+        int en = 1;
+        const int *ev = &argv[i];
+        if (nt_kind(nt, argv[i]) == NK_ArrayNode) ev = nt_arr(nt, argv[i], "elements", &en);
+        for (int j = 0; ev && j < en; j++) {
+          const char *mn = vis_arg_name(nt, ev[j]);
+          /* private_class_method def self.m ... end */
+          if (!mn && nt_kind(nt, ev[j]) == NK_DefNode && nt_ref(nt, ev[j], "receiver") >= 0)
+            mn = nt_str(nt, ev[j], "name");
+          if (mn) comp_cmethod_vis_set(cls, mn, ckind);
+        }
+      }
+      continue;
+    }
     int kind = sp_streq(nm, "private")   ? SP_VIS_PRIVATE   :
                sp_streq(nm, "protected") ? SP_VIS_PROTECTED :
                sp_streq(nm, "public")    ? SP_VIS_PUBLIC : -1;
@@ -1301,23 +1334,24 @@ static void register_method_visibility_body(Compiler *c, ClassInfo *cls, int bod
       for (int i = 0; i < an; i++) {
         const char *aty = nt_type(nt, argv[i]);
         const char *mn = vis_arg_name(nt, argv[i]);
-        if (mn) { comp_method_vis_set(cls, mn, kind); continue; }
+        if (mn) { vis_record(cls, mn, kind, sg); continue; }
         if (aty && sp_streq(aty, "DefNode")) {
           const char *dn = nt_str(nt, argv[i], "name");
           if (dn && nt_ref(nt, argv[i], "receiver") < 0)
-            comp_method_vis_set(cls, dn, kind);
+            vis_record(cls, dn, kind, sg);
         }
         else if (aty && sp_streq(aty, "CallNode")) {
           const char *dn = dm_defined_name(nt, argv[i]);
           const char *acn = nt_str(nt, argv[i], "name");
-          if (dn) comp_method_vis_set(cls, dn, kind);  /* private define_method(:m) { } */
+          if (dn) vis_record(cls, dn, kind, sg);  /* private define_method(:m) { } */
           else if (acn && sp_streq(acn, "alias_method")) {  /* private alias_method :a, :b */
             int aa = nt_ref(nt, argv[i], "arguments");
             int aan = 0;
             const int *aav = aa >= 0 ? nt_arr(nt, aa, "arguments", &aan) : NULL;
-            if (aan == 2) comp_method_vis_set(cls, vis_arg_name(nt, aav[0]), kind);
+            const char *anm = aan == 2 ? vis_arg_name(nt, aav[0]) : NULL;
+            if (anm) vis_record(cls, anm, kind, sg);
           }
-          else vis_apply_attr(c, cls, argv[i], kind);  /* private attr_reader :x */
+          else vis_apply_attr(c, cls, argv[i], kind, sg);  /* private attr_reader :x */
         }
       }
       continue;
@@ -1327,7 +1361,7 @@ static void register_method_visibility_body(Compiler *c, ClassInfo *cls, int bod
        than resolving up the chain to the ancestor's visibility. */
     if (sp_streq(nm, "attr_reader") || sp_streq(nm, "attr_writer") ||
         sp_streq(nm, "attr_accessor") || sp_streq(nm, "attr"))
-      vis_apply_attr(c, cls, s, cur);
+      vis_apply_attr(c, cls, s, cur, sg);
   }
 }
 
@@ -1337,7 +1371,7 @@ void register_method_visibility(Compiler *c) {
   const NodeTable *nt = c->nt;
   for (int ci = 0; ci < c->nclasses; ci++) {
     ClassInfo *cls = &c->classes[ci];
-    register_method_visibility_body(c, cls, nt_ref(nt, cls->def_node, "body"));
+    register_method_visibility_body(c, cls, nt_ref(nt, cls->def_node, "body"), 0);
   }
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
@@ -1348,7 +1382,7 @@ void register_method_visibility(Compiler *c) {
     int ci = comp_class_index(c, cname);
     if (ci < 0) continue;
     if (id == c->classes[ci].def_node) continue;  /* canonical body already done */
-    register_method_visibility_body(c, &c->classes[ci], nt_ref(nt, id, "body"));
+    register_method_visibility_body(c, &c->classes[ci], nt_ref(nt, id, "body"), 0);
   }
 }
 
@@ -2296,22 +2330,77 @@ static int alias_pred_const(const NodeTable *nt, int pred) {
 
 /* Collect `alias new old` (AliasMethodNode) and `alias_method :new, :old`
    (CallNode) statements in class bodies into the class alias table. */
+/* A name an alias bound while a `def` of that same name is still to come in
+   the class: up to that def the name means the aliased body, after it the def
+   does, so the alias table (which would outlive the def) cannot hold it. */
+typedef struct { int cid; char *name; char *target; int until; } AliasPending;
+static AliasPending *g_alias_pending;
+static int g_nalias_pending, g_calias_pending;
+
+/* The first `def name` of class cid after node `at`, or -1. Matched by the
+   DefNode's own name, which outlives a capture's rename of the scope. */
+static int alias_def_after(Compiler *c, int cid, const char *name, int at) {
+  const NodeTable *nt = c->nt;
+  int first = -1;
+  for (int si = 1; si < c->nscopes; si++) {
+    Scope *sc = &c->scopes[si];
+    if (sc->class_id != cid || sc->is_cmethod || sc->def_node <= at) continue;
+    if (nt_kind(nt, sc->def_node) != NK_DefNode) continue;
+    const char *dn = nt_str(nt, sc->def_node, "name");
+    if (dn && sp_streq(dn, name) && (first < 0 || sc->def_node < first)) first = sc->def_node;
+  }
+  return first;
+}
+
+static const char *alias_pending_target(int cid, const char *name, int at) {
+  const char *t = NULL;
+  for (int i = 0; i < g_nalias_pending; i++) {
+    AliasPending *ap = &g_alias_pending[i];
+    if (ap->cid == cid && at < ap->until && sp_streq(ap->name, name)) t = ap->target;
+  }
+  return t;
+}
+
+/* Bind alias `nw` to method name `target`: an alias-table entry, or, when the
+   class defines `nw` again later, a pending binding that ends at that def. */
+static void alias_bind(Compiler *c, ClassInfo *cls, int cid, const char *nw, const char *target, int alias_node) {
+  int redef = alias_def_after(c, cid, nw, alias_node);
+  if (redef < 0) { comp_add_alias_from(cls, nw, target, alias_node); return; }
+  if (g_nalias_pending >= g_calias_pending) {
+    g_calias_pending = g_calias_pending ? g_calias_pending * 2 : 8;
+    g_alias_pending = realloc(g_alias_pending, sizeof *g_alias_pending * (size_t)g_calias_pending);
+    if (!g_alias_pending) { fprintf(stderr, "out of memory\n"); exit(1); }
+  }
+  AliasPending *ap = &g_alias_pending[g_nalias_pending++];
+  ap->cid = cid; ap->name = strdup(nw); ap->target = strdup(target); ap->until = redef;
+}
+
 /* An alias captures the definition in effect where it appears. When the target
    is redefined LATER in the same body, a name mapping would resolve to the new
-   definition, so the earlier one is renamed to the alias instead -- which is
-   what the alias actually names (#3737). Returns 1 when it did that. A second
-   alias of that same definition finds it by its `def` name, already renamed to
-   the first alias, and names the first alias instead. */
+   definition, so the earlier one is renamed to the alias instead (#3737), and
+   later aliases of that definition map to that name. When the class defines
+   the alias's own name again later, the definition is renamed to
+   `<name>#<n>` instead, a name no Ruby `def` can take, so redefining that
+   alias leaves the other aliases on the captured body; the alias itself is
+   bound only until its redefinition. Returns 1 when it registered the alias
+   itself. */
 static int alias_capture_earlier_def(Compiler *c, ClassInfo *cls,
                                      const char *nw, const char *od, int alias_node) {
   if (!nw || !od || !cls->name) return 0;
   int cid = comp_class_index(c, cls->name);
   if (cid < 0) return 0;
+  const char *pending = alias_pending_target(cid, od, alias_node);
+  if (pending) {
+    char *pt = strdup(pending);
+    alias_bind(c, cls, cid, nw, pt, alias_node);
+    free(pt);
+    return 1;
+  }
   const NodeTable *nt = c->nt;
   int before = -1, after = 0;
   for (int si = 1; si < c->nscopes; si++) {
     Scope *sc = &c->scopes[si];
-    if (sc->class_id != cid || sc->is_cmethod || !sc->name) continue;
+    if (sc->class_id != cid || sc->is_cmethod || sc->is_proc_form || !sc->name) continue;
     const char *dn = sc->def_node >= 0 && nt_kind(nt, sc->def_node) == NK_DefNode
                      ? nt_str(nt, sc->def_node, "name") : NULL;
     if (!sp_streq(sc->name, od) && !(dn && sp_streq(dn, od))) continue;
@@ -2320,13 +2409,22 @@ static int alias_capture_earlier_def(Compiler *c, ClassInfo *cls,
     }
     else after = 1;
   }
-  if (before < 0 || !after) return 0;
-  if (!sp_streq(c->scopes[before].name, od)) {
-    comp_add_alias_from(cls, nw, c->scopes[before].name, alias_node);
+  if (before < 0 || !after) {
+    if (alias_def_after(c, cid, nw, alias_node) < 0) return 0;
+    alias_bind(c, cls, cid, nw, before >= 0 ? c->scopes[before].name : od, alias_node);
     return 1;
   }
-  free(c->scopes[before].name);
-  c->scopes[before].name = strdup(nw);
+  if (sp_streq(c->scopes[before].name, od)) {
+    int nw_redef = alias_def_after(c, cid, nw, alias_node) >= 0;
+    char hidden[512];
+    snprintf(hidden, sizeof hidden, "%s#%d", od, alias_node);
+    free(c->scopes[before].name);
+    c->scopes[before].name = strdup(nw_redef ? hidden : nw);
+    if (!nw_redef) return 1;
+  }
+  char *target = strdup(c->scopes[before].name);
+  alias_bind(c, cls, cid, nw, target, alias_node);
+  free(target);
   return 1;
 }
 

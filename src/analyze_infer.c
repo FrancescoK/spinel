@@ -1771,6 +1771,18 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sr >= 0) return infer_type(c, sr);
   }
   const NodeTable *nt = c->nt;
+  /* `e.each { }` over an Enumerator, walked through its marked `to_a` hop:
+     it answers the generator's body value or the collection the Enumerator
+     was made from, not the hop's array. */
+  {
+    const char *en = nt_str(nt, id, "name");
+    int er = nt_ref(nt, id, "receiver");
+    if (en && (sp_streq(en, "each") || sp_streq(en, "each_with_index")) &&
+        nt_ref(nt, id, "block") >= 0 && er >= 0 && nt_kind(nt, er) == NK_CallNode &&
+        nt_str(nt, er, "enum_each_wrap") && nt_ref(nt, er, "receiver") >= 0 &&
+        infer_type(c, nt_ref(nt, er, "receiver")) == TY_ENUMERATOR)
+      return TY_POLY;
+  }
   /* a dynamic send lowered to a name-dispatch (desugar_dynamic_send) yields one
      of several boxed method results -> poly. */
   { int dn = 0; nt_arr(nt, id, "dyn_send_arms", &dn); if (dn > 0) return TY_POLY; }
@@ -2142,6 +2154,12 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      so the result rides boxed (#3449). */
   if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 0 &&
       (sp_streq(name, "reject") || sp_streq(name, "select") || sp_streq(name, "filter")) &&
+      infer_type(c, recv) == TY_POLY)
+    return TY_POLY;
+  /* `poly.uniq { }` answers a new Array (the boxed emitter hands it back
+     boxed); `uniq! { }` answers the receiver or nil. */
+  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 0 &&
+      (sp_streq(name, "uniq") || sp_streq(name, "uniq!")) &&
       infer_type(c, recv) == TY_POLY)
     return TY_POLY;
   /* `poly.times { }` / `upto(n) { }` / `downto(n) { }` answer the receiver,
@@ -4451,7 +4469,19 @@ static TyKind infer_call_inner(Compiler *c, int id) {
           snprintf(ivn, sizeof ivn, "@%s", rname2);
           ClassInfo *rci2 = (rdcls2 >= 0 && rdcls2 < c->nclasses) ? &c->classes[rdcls2] : &c->classes[self->class_id];
           int iv = comp_ivar_index(rci2, ivn);
-          if (iv >= 0) return ivar_value_ty(rci2, iv);
+          if (iv >= 0) {
+            /* a def in a subclass overrides the reader for that subclass */
+            TyKind rt2 = ivar_value_ty(rci2, iv);
+            int base_mi2 = comp_method_in_chain(c, self->class_id, name, NULL);
+            for (int k = 0; k < c->nclasses; k++) {
+              if (k == self->class_id || !is_descendant(c, k, self->class_id)) continue;
+              int kmi = comp_method_in_chain(c, k, name, NULL);
+              if (kmi < 0 || kmi == base_mi2) continue;
+              TyKind kr = (TyKind)c->scopes[kmi].ret;
+              if (kr != TY_UNKNOWN && kr != rt2) rt2 = ty_unify(rt2, kr);
+            }
+            return rt2;
+          }
         }
       }
       /* bare `new` inside a class method returns an instance of self's class */
@@ -6207,6 +6237,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       TyKind res = (sp_streq(name, "first") && argc == 0) ? TY_POLY : TY_POLY_ARRAY;
       if (st == TY_RANGE || st == TY_INT_ARRAY || st == TY_ENUMERATOR ||
           st == TY_POLY_ARRAY || st == TY_STR_ARRAY || st == TY_FLOAT_ARRAY) return res;
+      /* a source only known at run time streams as an Enumerator over it
+         (sp_poly_lazy_src), unless the program defines a lazy of its own */
+      if (st == TY_POLY && !an_user_recv_defines_method(c, "lazy")) return res;
       /* an empty array literal has no element type and so types UNKNOWN, but
          the pipeline over it is still well defined -- it yields [] (#2996) */
       if (st == TY_UNKNOWN && nt_type(nt, lazy_src) &&

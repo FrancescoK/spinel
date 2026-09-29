@@ -1143,12 +1143,17 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
   if (rt != TY_POLY) return 0;
   int trecv = ++g_tmp, tarr = ++g_tmp, tseen = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-  emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", trecv, rb.p ? rb.p : "sp_box_nil()"); free(rb.p);
-  emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = (sp_PolyArray *)_t%d.v.p;\n", tarr, trecv);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", trecv, rb.p ? rb.p : "sp_box_nil()", trecv); free(rb.p);
+  emit_indent(g_pre, g_indent);
+  if (bang) buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_array_recv(_t%d, \"uniq!\", 1); SP_GC_ROOT(_t%d);\n", tarr, trecv, tarr);
+  else buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_arr_recv(_t%d, \"uniq\"); SP_GC_ROOT(_t%d);\n", tarr, trecv, tarr);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tseen, tseen);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tres, tres);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, tarr, ti);
-  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = _t%d->data[_t%d];\n", p0, tarr, ti);
+  char es[64]; snprintf(es, sizeof es, "_t%d->data[_t%d]", tarr, ti);
+  if (!emit_iter_autosplat(c, block, TY_POLY_ARRAY, es, g_indent + 1)) {
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = %s;\n", p0, es);
+  }
   int save = g_indent; g_indent++;
   for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent);
   int tkey = ++g_tmp, tdup = ++g_tmp, tj = ++g_tmp;
@@ -1158,14 +1163,15 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
   buf_printf(g_pre, "int _t%d = 0; for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) if (sp_poly_eq(_t%d->data[_t%d], _t%d)) { _t%d = 1; break; }\n",
              tdup, tj, tj, tseen, tj, tseen, tj, tkey, tdup);
   emit_indent(g_pre, g_indent + 1);
-  buf_printf(g_pre, "if (!_t%d) { sp_PolyArray_push(_t%d, _t%d); sp_PolyArray_push(_t%d, lv_%s); }\n", tdup, tseen, tkey, tres, p0);
+  buf_printf(g_pre, "if (!_t%d) { sp_PolyArray_push(_t%d, _t%d); sp_PolyArray_push(_t%d, %s); }\n", tdup, tseen, tkey, tres, es);
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   if (bang) {
-    int tm = ++g_tmp;
+    int tm = ++g_tmp, tn = ++g_tmp;
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "_t%d->len = 0; for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) sp_PolyArray_push(_t%d, _t%d->data[_t%d]);\n",
-               tarr, tm, tm, tres, tm, tarr, tres, tm);
-    buf_printf(b, "_t%d", trecv);
+    buf_printf(g_pre, "sp_int _t%d = _t%d->len; _t%d->len = 0; for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) sp_PolyArray_push(_t%d, _t%d->data[_t%d]);\n",
+               tn, tarr, tarr, tm, tm, tres, tm, tarr, tres, tm);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_poly_arr_writeback(_t%d, _t%d);\n", trecv, tarr);
+    buf_printf(b, "(_t%d->len == _t%d ? sp_box_nil() : _t%d)", tarr, tn, trecv);
   }
   else buf_printf(b, "sp_box_poly_array(_t%d)", tres);
   return 1;
@@ -6220,13 +6226,18 @@ static TyKind anon_kwrest_type(Compiler *c, int node) {
 
 static int kwh_consumed_by_kwparam(Compiler *c, Scope *m, int kwh);
 
+/* Set while inference asks for a layout (arg_layout_untyped): it types the
+   parameters from it, so their types are not settled and are not asked. */
+static int layout_untyped;
+
 /* The parameter index a collapsed keyword hash fills, or -1 when none does.
    Ruby passes a braceless `f(k: 1)` as one more positional argument when the
    callee declares no keyword parameter that takes a key -- `def f(opts)` and
    `def f(opts = {})` alike -- so it lands where that argument binds: a
    required parameter after the optionals before any optional (#4877). The slot has to be able to hold
    a hash, so a concretely-typed one (an int param bound elsewhere) declines
-   and the rest takes it instead.
+   and the rest takes it instead. Inference, which gives the slot its type,
+   asks without it (arg_layout_untyped).
 
    The poly dispatch asked none of this: its arms matched keywords by name
    only, so an optional positional silently kept its default and a required one
@@ -6241,7 +6252,7 @@ int kwh_positional_slot(Compiler *c, Scope *m, int kwh, int pos_argc) {
   if (!pn || callee_param_is_declared_kwarg(c, m, pn)) return -1;
   LocalVar *p = scope_local(m, pn);
   TyKind pt = p ? p->type : TY_UNKNOWN;
-  if (!ty_is_hash(pt) && pt != TY_POLY) return -1;
+  if (!layout_untyped && !ty_is_hash(pt) && pt != TY_POLY) return -1;
   return slot;
 }
 
@@ -6727,6 +6738,10 @@ int emit_kwh_spread_arg(Compiler *c, int kwh, Buf *b) {
 static const char *kw_splat_bad_cls(Compiler *c, TyKind t) {
   if (ty_is_hash(t) || t == TY_NIL) return NULL;
   if (t == TY_BOOL) return "true or false";
+  /* a Class or Module value has no #to_hash; it may be nil, which its
+     boxed check tells apart (kw_splat_operand_nilable) and which names a
+     Module as one */
+  if (t == TY_CLASS) return "Class";
   /* conv_cls_name_of leaves these to the numeric slots, which convert them */
   if (t == TY_RATIONAL) return "Rational";
   if (t == TY_COMPLEX) return "Complex";
@@ -6735,13 +6750,20 @@ static const char *kw_splat_bad_cls(Compiler *c, TyKind t) {
   return conv_cls_name_of(c, t);
 }
 
-/* Can a boxed user object answer #to_hash? Only when some class of the
-   program defines it, or method_missing; otherwise its conversion is a
-   TypeError as surely as a builtin's. */
+/* May a boxed user object the conversion finds no #to_hash for answer one
+   anyway? Only when some class of the program defines method_missing;
+   otherwise its conversion is a TypeError as surely as a builtin's. A
+   class's own #to_hash is called through the bridge (sp_kw_splat_conv). */
 static int kw_splat_user_may_convert(Compiler *c) {
   for (int k = 0; k < c->nclasses; k++)
-    if (comp_method_in_chain(c, k, "to_hash", NULL) >= 0 ||
-        comp_method_in_chain(c, k, "method_missing", NULL) >= 0) return 1;
+    if (comp_method_in_chain(c, k, "method_missing", NULL) >= 0) return 1;
+  return 0;
+}
+
+/* See codegen_internal.h. */
+int kw_splat_user_to_hash(Compiler *c) {
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_method_in_chain(c, k, "to_hash", NULL) >= 0) return 1;
   return 0;
 }
 
@@ -6773,6 +6795,9 @@ static int kw_splat_operand_nilable(Compiler *c, int node, TyKind t) {
     return call_returns_nullable_int(c, node) || box_nullable_arg(c, node) ||
            nt_kind(c->nt, node) == NK_InstanceVariableReadNode;
   if (t == TY_FLOAT) return call_returns_nullable_int(c, node) || box_nullable_arg(c, node);
+  /* a Class value holds nil as SP_CLASS_NIL (`BasicObject.superclass`),
+     which it boxes as nil (sp_box_class) */
+  if (t == TY_CLASS) return 1;
   return needs_root(t);   /* a pointer-backed kind holds nil as NULL */
 }
 
@@ -6810,7 +6835,7 @@ static void emit_kw_splat_bad_operand(Compiler *c, int node) {
 void emit_kw_splat_conv_check(Compiler *c, TyKind t, const char *val) {
   if (t == TY_POLY) {
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_kw_splat_conv_check(%s, %d);\n", val, kw_splat_user_may_convert(c));
+    buf_printf(g_pre, "(void)sp_kw_splat_conv(%s, %d);\n", val, kw_splat_user_may_convert(c));
     return;
   }
   const char *cn = kw_splat_bad_cls(c, t);
@@ -6820,10 +6845,16 @@ void emit_kw_splat_conv_check(Compiler *c, TyKind t, const char *val) {
 }
 
 /* See codegen_internal.h. */
+void emit_kw_splat_conv_temp(Compiler *c, const char *tmp) {
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "%s = sp_kw_splat_conv(%s, %d);\n", tmp, tmp, kw_splat_user_may_convert(c));
+}
+
+/* See codegen_internal.h. */
 void emit_kw_splat_operand_inline(Compiler *c, int node, Buf *b) {
   TyKind t = comp_ntype(c, node);
   if (t == TY_POLY || kw_splat_checked_boxed(c, node)) {
-    buf_puts(b, "sp_kw_splat_conv_check("); emit_boxed(c, node, b);
+    buf_puts(b, "(void)sp_kw_splat_conv("); emit_boxed(c, node, b);
     buf_printf(b, ", %d); ", kw_splat_user_may_convert(c));
     return;
   }
@@ -6853,13 +6884,22 @@ int kwh_sources_overlap(const NodeTable *nt, int kwh) {
       if (nsplat++ || lit) merge = 1;
       continue;
     }
+    /* a String key is a literal too: ahead of a `**` it lets a Symbol key
+       beside it be overridden (`k1: 3, "s" => 4, **{k1: 5}` binds k1 5,
+       where giving up on the String bound the 3) */
     int key = nt_ref(nt, el[e], "key");
-    if (key < 0 || nt_kind(nt, key) != NK_SymbolNode) return 0;
+    if (key < 0) return 0;
     lit = 1;
-    for (int e2 = 0; e2 < e && !merge; e2++) {
+    /* a String key's text is its "content"; a key of neither kind has no
+       text to compare */
+    const char *field = nt_kind(nt, key) == NK_SymbolNode ? "value" :
+                        nt_kind(nt, key) == NK_StringNode ? "content" : NULL;
+    const char *kt = field ? nt_str(nt, key, field) : NULL;
+    for (int e2 = 0; e2 < e && !merge && kt; e2++) {
       int k2 = nt_ref(nt, el[e2], "key");
-      if (nt_kind(nt, el[e2]) == NK_AssocNode && nt_kind(nt, k2) == NK_SymbolNode &&
-          sp_streq(nt_str(nt, k2, "value"), nt_str(nt, key, "value"))) merge = 1;
+      const char *t2 = nt_kind(nt, el[e2]) == NK_AssocNode && nt_kind(nt, k2) == nt_kind(nt, key)
+                       ? nt_str(nt, k2, field) : NULL;
+      if (t2 && sp_streq(t2, kt)) merge = 1;
     }
   }
   return merge;
@@ -6952,6 +6992,10 @@ static void emit_arg_temp(Compiler *c, int v) {
   else if (needs_root(at)) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", t);
   buf_puts(g_pre, "\n");
   free(hb.p);
+  /* every argument, however many: past the table's first MAX_ARG_OVERRIDE
+     entries the rest never ran where a static check refuses the call, or ran
+     at their slots, after the ones that follow them */
+  argov_reserve();
   g_argov_node[g_n_argov] = v;
   snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", t);
   g_n_argov++;
@@ -6960,7 +7004,7 @@ static void emit_arg_temp(Compiler *c, int v) {
 /* See codegen_internal.h. */
 void emit_positionals_first(Compiler *c, const int *argv, int pos_argc) {
   const NodeTable *nt = c->nt;
-  for (int k = 0; argv && k < pos_argc && g_n_argov < MAX_ARG_OVERRIDE; k++) {
+  for (int k = 0; argv && k < pos_argc; k++) {
     int v = argv[k];
     if (nt_kind(nt, v) == NK_SplatNode) v = nt_ref(nt, v, "expression");
     else if (nt_kind(nt, v) == NK_BlockArgumentNode) continue;   /* runs last */
@@ -7003,8 +7047,8 @@ static void emit_arg_first(Compiler *c, int v, int rebound, Buf *b) {
   int effect = subtree_has_side_effect(c, x);
   if (!effect && !rebound) return;
   TyKind at = comp_ntype(c, x);
-  if (ty_is_object(at) || c_type_name(at) || g_n_argov >= MAX_ARG_OVERRIDE) {
-    if (g_n_argov < MAX_ARG_OVERRIDE && (ty_is_object(at) || c_type_name(at))) emit_arg_temp(c, x);
+  if (ty_is_object(at) || c_type_name(at)) {
+    emit_arg_temp(c, x);
     return;
   }
   if (!effect) return;   /* a nil read reads nil whenever it runs */
@@ -7013,6 +7057,7 @@ static void emit_arg_first(Compiler *c, int v, int rebound, Buf *b) {
   emit_indent(b, g_indent);
   buf_printf(b, "(void)(%s);\n", vb.p ? vb.p : "0");
   free(vb.p);
+  argov_reserve();
   g_argov_node[g_n_argov] = x;
   snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "0");
   g_n_argov++;
@@ -7191,7 +7236,7 @@ int emit_ds_hash_merge(Compiler *c, int kwh, int any_key, TyKind *out_type) {
    and converted already, which reads as nothing. The caller pops the
    override with its own. */
 static void ds_operand_reads_temp(int node, int tmp) {
-  if (g_n_argov >= MAX_ARG_OVERRIDE) return;
+  argov_reserve();
   g_argov_node[g_n_argov] = node;
   if (tmp < 0) snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "((void)0)");
   else snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tmp);
@@ -7210,14 +7255,15 @@ static void emit_c_str(Buf *b, const char *s) {
   buf_puts(b, "\"");
 }
 
-/* Can a `**` operand of `kwh` bring a key that is no Symbol: one of a hash
-   kind keyed by something else, or only known at run time? An anonymous
-   `**` can when the rest it forwards takes any key. */
+/* Can `kwh` bring a key that is no Symbol: a literal String or computed
+   key, or a `**` operand of a hash kind keyed by something else, or only
+   known at run time? An anonymous `**` can when the rest it forwards takes
+   any key. */
 static int kwh_spreads_any_key(Compiler *c, int kwh) {
   const NodeTable *nt = c->nt;
   int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
   for (int e = 0; e < en; e++) {
-    if (nt_kind(nt, el[e]) == NK_AssocNode && kw_key_computed(nt, nt_ref(nt, el[e], "key"))) return 1;
+    if (nt_kind(nt, el[e]) == NK_AssocNode && nt_kind(nt, nt_ref(nt, el[e], "key")) != NK_SymbolNode) return 1;
     if (nt_kind(nt, el[e]) != NK_AssocSplatNode) continue;
     int v = nt_ref(nt, el[e], "value");
     TyKind t = v >= 0 ? comp_ntype(c, v) : anon_kwrest_name(c, el[e]) ? anon_kwrest_type(c, el[e]) : TY_UNKNOWN;
@@ -7294,14 +7340,18 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type) {
         emit_expr(c, inner2, &hb);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", ds_hash_tmp, hb.p ? hb.p : "sp_box_nil()");
-        if (arg_wants_root(c, TY_POLY, inner2)) {   /* as above */
+        /* as above; and a user object's #to_hash answers a new Hash, which
+           the temp holds alone once converted */
+        if (arg_wants_root(c, TY_POLY, inner2) || kw_splat_user_to_hash(c)) {
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", ds_hash_tmp);
         }
         free(hb.p);
         ds_operand_reads_temp(inner2, ds_hash_tmp);
+        /* the keywords bound, checked and collected are the converted
+           operand's: a user object converts through its #to_hash here, once */
         char tn[32]; snprintf(tn, sizeof tn, "_t%d", ds_hash_tmp);
-        emit_kw_splat_conv_check(c, *out_type, tn);
+        emit_kw_splat_conv_temp(c, tn);
       }
       else if (kw_splat_checked_boxed(c, inner2)) {
         /* A slot that is no Hash but may hold nil (`**f` where f answers an
@@ -8212,8 +8262,12 @@ void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv) {
 /* Can the gather carry the keyword hash as its last positional? A literal
    one into a callee that takes no keywords is always one more argument, and
    after a splat the parameter it lands in is the run time's, so each one it
-   may reach has to be able to hold it: a Hash or a boxed slot, or the rest.
-   Where one of them cannot, the call keeps the static layout it had. */
+   may reach (gather_reaches, which inference types by) has to be able to
+   hold it: a Hash or a boxed slot. The rest always can. Where one of them
+   cannot, the call keeps the static layout it had. Asking every parameter
+   from the first splat argument's index on missed a post funded from the
+   end: `m(1, 1, *v, k: 3)` on `def m(*r, q)` bound the hash into an Integer
+   q. */
 static int kwh_rides_gather(Compiler *c, Scope *m, int kwh, const int *argv, int pos_argc) {
   const NodeTable *nt = c->nt;
   if (kwh < 0 || kwh_only_spreads(nt, kwh) || kwh_consumed_by_kwparam(c, m, kwh)) return 0;
@@ -8221,8 +8275,8 @@ static int kwh_rides_gather(Compiler *c, Scope *m, int kwh, const int *argv, int
   for (int k = 0; k < pos_argc && fk < 0; k++)
     if (nt_kind(nt, argv[k]) == NK_SplatNode) fk = k;
   if (fk < 0) return 0;   /* the static layout places it (kwh_positional_slot) */
-  for (int i = fk; i < m->nparams; i++) {
-    if (i == m->rest_idx) continue;
+  for (int i = 0; i < m->nparams && !layout_untyped; i++) {
+    if (i == m->rest_idx || !gather_reaches(c, m, argv, pos_argc, 2, pos_argc, i)) continue;
     LocalVar *p = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
     TyKind pt = p ? p->type : TY_UNKNOWN;
     if (!ty_is_hash(pt) && pt != TY_POLY) return 0;
@@ -8275,9 +8329,11 @@ static int arg_layout_gathers(Compiler *c, Scope *m, const int *argv, int pos_ar
 
 /* Does a splat have an array form to spread in place: an array, a boxed
    operand the splat's own lowering normalizes, a nil or scalar one, or an
-   anonymous `*`? */
+   anonymous `*`? Inference, which types the parameters from the operand's
+   elements, takes any. */
 static int splat_spreads_in_place(Compiler *c, int splat) {
   int inner = nt_ref(c->nt, splat, "expression");
+  if (layout_untyped) return 1;
   if (inner < 0) {
     Buf anon; memset(&anon, 0, sizeof anon);
     int ok = emit_anon_rest_ref(c, splat, &anon);
@@ -8391,6 +8447,20 @@ void arg_layout(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh, i
     else if (i == L->kwh_slot && !kwp) L->from[i] = ARG_KWH;
     else L->from[i] = ARG_DEFAULT;
   }
+}
+
+/* The layout inference types a call's parameters from. It is asked before
+   they have the types it gives them, so it asks none: a parameter the
+   keyword hash may bind as a positional takes it (kwh_positional_slot), the
+   gather carries it (kwh_rides_gather), and each splat spreads in place.
+   Codegen then finds each such parameter able to hold what reaches it. The
+   inlined layout differs only in gathering more, which moves no value to
+   another parameter. */
+void arg_layout_untyped(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh,
+                        ArgLayout *L) {
+  layout_untyped = 1;
+  arg_layout(c, m, argv, pos_argc, kwh, 0, L);
+  layout_untyped = 0;
 }
 
 void arg_layout_free(ArgLayout *L) {
@@ -8605,11 +8675,19 @@ static void emit_elem_param(Compiler *c, Scope *m, int i, int off, int tmp, TyKi
     emit_boxed_text(c, set, raw.p ? raw.p : "0", &eb); free(raw.p);
   }
   else emit_array_elem_at(at, tmp, off, &eb);
-  /* the gathered positionals are boxed: a typed parameter unboxes */
-  if (gathered && sp && sp->type != TY_POLY && sp->type != TY_UNKNOWN) {
+  /* The gathered positionals are boxed, and so is an element of a boxed
+     splat spread in place (a poly array, or a scalar the splat normalized
+     into one): a typed parameter unboxes. Inference widens a parameter a
+     boxed splat reaches to poly, unless an --rbs seed pins it, so the pinned
+     one is where a boxed element met a typed slot and the C did not compile;
+     the seed is asserted there, as for a boxed argument (#3412). */
+  if ((gathered || set == TY_POLY) && sp && sp->type != TY_POLY && sp->type != TY_UNKNOWN) {
+    Buf ck; memset(&ck, 0, sizeof ck);
+    if (sp->rbs_seeded) emit_rbs_checked_text(c, sp->type, m->pnames[i], eb.p ? eb.p : "sp_box_nil()", &ck);
+    else buf_puts(&ck, eb.p ? eb.p : "sp_box_nil()");
     Buf ub; memset(&ub, 0, sizeof ub);
-    emit_unbox_nilable_text(c, sp->type, eb.p ? eb.p : "sp_box_nil()", &ub);
-    free(eb.p); eb = ub;
+    emit_unbox_nilable_text(c, sp->type, ck.p, &ub);
+    free(ck.p); free(eb.p); eb = ub;
   }
   /* An optional param may fall past the end of a (runtime-sized) splat
      array; the arity check guarantees the required params are present, so
@@ -8861,7 +8939,7 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
     for (int k = 0; k < pos_argc && k < m->nparams; k++)
       if (subtree_has_side_effect(c, argv[k])) { last_se = k; n_se++; }
     for (int k = 0; k < pos_argc && k < m->nparams; k++) {
-      if (g_n_argov >= MAX_ARG_OVERRIDE) break;
+      argov_reserve();   /* past MAX_ARG_OVERRIDE arguments too */
       TyKind at = comp_ntype(c, argv[k]);
       /* An argument emit_ctype would spell `void` has no C storage to
          sequence into -- `void _tN = ...` is not a declaration C accepts.
@@ -9211,6 +9289,60 @@ static void emit_dispatch_per_arm(Compiler *c, int cid, const char *name, const 
     buf_printf(b, "_t%d = %s; break;", rtmp,
                ret == TY_POLY ? "sp_box_nil()" : default_value(disp_ret));
   buf_printf(b, " } _t%d; })", rtmp);
+}
+
+/* A receiverless call of `name` that cid's chain answers with an attr reader,
+   in a class some descendant of which overrides the reader with a def:
+   a switch on the runtime class, with an arm calling the def for each
+   overriding descendant and the reader's text (`reader`, of type reader_ty)
+   for the rest. 0 when no descendant overrides it, or when the arms cannot
+   agree on the call's type. */
+int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name,
+                                  const char *selfptr, const char *reader,
+                                  TyKind reader_ty, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (nt_ref(nt, id, "block") >= 0) return 0;
+  int base_mi = comp_method_in_chain(c, cid, name, NULL);
+  int any = 0;
+  for (int k = 0; k < c->nclasses && !any; k++) {
+    if (k == cid || !is_descendant(c, k, cid)) continue;
+    int kmi = comp_method_in_chain(c, k, name, NULL);
+    if (kmi >= 0 && kmi != base_mi) any = 1;
+  }
+  if (!any) return 0;
+  TyKind ret = comp_ntype(c, id);
+  if (ret == TY_UNKNOWN || ret == TY_VOID || ret == TY_NIL) return 0;
+  if (ret != reader_ty && ret != TY_POLY) return 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k == cid || !is_descendant(c, k, cid)) continue;
+    int kmi = comp_method_in_chain(c, k, name, NULL);
+    if (kmi < 0 || kmi == base_mi) continue;
+    if (dispatch_arm_scope(c, kmi) < 0) return 0;
+    TyKind kr = (TyKind)c->scopes[kmi].ret;
+    if (kr != ret && ret != TY_POLY) return 0;
+  }
+  int argsNode = nt_ref(nt, id, "arguments");
+  int rtmp = ++g_tmp;
+  buf_puts(b, "({ ");
+  emit_ctype(c, ret, b);
+  buf_printf(b, " _t%d; switch (", rtmp);
+  emit_obj_dispatch_key(c, cid, selfptr, b);
+  buf_puts(b, ") {");
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k == cid || !is_descendant(c, k, cid)) continue;
+    int kd = -1;
+    int kmi0 = comp_method_in_chain(c, k, name, &kd);
+    if (kmi0 < 0 || kmi0 == base_mi) continue;
+    nd_callee(c, g_nd_call_id, kmi0, kd, 1);
+    buf_printf(b, " case %d: ", k);
+    emit_dispatch_arm_call(c, kd, dispatch_arm_scope(c, kmi0), selfptr, argsNode, -1,
+                           ret, ret, rtmp, b);
+  }
+  buf_printf(b, " default: _t%d = ", rtmp);
+  if (ret == TY_POLY && reader_ty != TY_POLY) emit_boxed_text(c, reader_ty, reader, b);
+  else buf_puts(b, reader);
+  buf_printf(b, "; break; } _t%d; })", rtmp);
+  return 1;
 }
 
 /* Emit a (possibly virtual) method call. `selfptr` is a reusable C

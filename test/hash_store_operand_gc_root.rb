@@ -17,7 +17,9 @@
 # the Integer-valued ones have nothing to sweep, the two order sections
 # guard an order this compiler's argument evaluation happens to get right,
 # and the Range section fails only under GC stress; they hold the emitter to
-# the shape.
+# the shape. Ten stores of each shape are enough: every builder collects, so
+# the first store already sweeps a key the statement alone holds. A hundred
+# ran near the harness's ten-second limit in an unoptimized build (`-O 0`).
 def gcv(i)
   GC.start
   ("pad" * 400_000).size
@@ -30,37 +32,37 @@ def gci(i)
 end
 
 ss = {"a" => "b"}
-100.times { |i| ss["k#{i}"] = gcv(i) }
-p ss.size, ss.keys.uniq.size, ss["k50"]
-100.times { |i| ss.store("s#{i}", gcv(i)) }
-p ss.size, ss.keys.uniq.size, ss["s50"]
+10.times { |i| ss["k#{i}"] = gcv(i) }
+p ss.size, ss.keys.uniq.size, ss["k5"]
+10.times { |i| ss.store("s#{i}", gcv(i)) }
+p ss.size, ss.keys.uniq.size, ss["s5"]
 
 si = {"a" => 1}
-100.times { |i| si["k#{i}"] = gci(i) }
-p si.size, si.keys.uniq.size, si["k50"]
+10.times { |i| si["k#{i}"] = gci(i) }
+p si.size, si.keys.uniq.size, si["k5"]
 
 is = {1 => "a"}
-100.times { |i| is[gci(i) + 1000] = gcv(i) }
-p is.size, is[1100]
+10.times { |i| is[gci(i) + 1000] = gcv(i) }
+p is.size, is[1010]
 
 ii = {1 => 2}
-100.times { |i| ii[gci(i) + 1000] = gci(i) }
-p ii.size, ii[1100]
+10.times { |i| ii[gci(i) + 1000] = gci(i) }
+p ii.size, ii[1010]
 
 sp = {"a" => 1, "b" => "x"}
-100.times { |i| sp["k#{i}"] = gcv(i) }
-100.times { |i| sp["n#{i}"] = gci(i) }
-p sp.size, sp.keys.uniq.size, sp["k50"], sp["n50"]
+10.times { |i| sp["k#{i}"] = gcv(i) }
+10.times { |i| sp["n#{i}"] = gci(i) }
+p sp.size, sp.keys.uniq.size, sp["k5"], sp["n5"]
 
 yp = {a: 1, b: "x"}
 syms = %i[k0 k1 k2 k3 k4 k5 k6]
-100.times { |i| yp[syms[i % 7]] = gcv(i) }
+10.times { |i| yp[syms[i % 7]] = gcv(i) }
 p yp.size, yp.keys.uniq.size, yp[:k1]
 
 gp = {"a" => 1, :b => 2}
-100.times { |i| gp["k#{i}"] = gcv(i) }
-100.times { |i| gp[[i]] = gcv(i) }
-p gp.size, gp.keys.uniq.size, gp["k50"], gp[[50]]
+10.times { |i| gp["k#{i}"] = gcv(i) }
+10.times { |i| gp[[i]] = gcv(i) }
+p gp.size, gp.keys.uniq.size, gp["k5"], gp[[5]]
 
 class K
   attr_reader :a
@@ -73,41 +75,41 @@ class V
   def initialize(b); GC.start; ("pad" * 400_000).size; @b = b; end
 end
 kv = {"a" => 1, :b => 2}
-100.times { |i| kv[K.new(i)] = V.new(i) }
+10.times { |i| kv[K.new(i)] = V.new(i) }
 p kv.size
 found = 0
-100.times { |i| found += 1 if kv[K.new(i)].is_a?(V) && kv[K.new(i)].b == i }
+10.times { |i| found += 1 if kv[K.new(i)].is_a?(V) && kv[K.new(i)].b == i }
 p found
 
 # ||= and += with a built key
 oe = {"a" => "b"}
-100.times { |i| oe["k#{i}"] ||= gcv(i) }
-100.times { |i| oe["k#{i}"] ||= "again" }
-p oe.size, oe.keys.uniq.size, oe["k50"]
+10.times { |i| oe["k#{i}"] ||= gcv(i) }
+10.times { |i| oe["k#{i}"] ||= "again" }
+p oe.size, oe.keys.uniq.size, oe["k5"]
 pe = Hash.new("")
-100.times { |i| pe["k#{i}"] += gcv(i) }
-100.times { |i| pe["k#{i}"] += gcv(i) }
-p pe.size, pe.keys.uniq.size, pe["k50"]
+10.times { |i| pe["k#{i}"] += gcv(i) }
+10.times { |i| pe["k#{i}"] += gcv(i) }
+p pe.size, pe.keys.uniq.size, pe["k5"]
 ie = Hash.new(0)
-100.times { |i| ie["k#{i}"] += gci(i) }
-p ie.size, ie.keys.uniq.size, ie["k50"]
+10.times { |i| ie["k#{i}"] += gci(i) }
+p ie.size, ie.keys.uniq.size, ie["k5"]
 ae = {"a" => "b"}
-100.times { |i| ae["k#{i}"] = "seed" }
-100.times { |i| ae["k#{i}"] &&= gcv(i) }
-100.times { |i| ae["x#{i}"] &&= gcv(i) }
-p ae.size, ae.keys.uniq.size, ae["k50"], ae["x50"]
+10.times { |i| ae["k#{i}"] = "seed" }
+10.times { |i| ae["k#{i}"] &&= gcv(i) }
+10.times { |i| ae["x#{i}"] &&= gcv(i) }
+p ae.size, ae.keys.uniq.size, ae["k5"], ae["x5"]
 
 # a receiver that is a call is evaluated once
 $n = 0
 $h = {"a" => "b"}
 def mk; $n += 1; $h; end
-100.times { |i| mk["k#{i}"] = gcv(i) }
+10.times { |i| mk["k#{i}"] = gcv(i) }
 p $n, $h.size, $h.keys.uniq.size
 mk["x"] = "y"
 mk["z"] ||= "w"
 p $n
 def fresh; {"a" => "b"}; end
-100.times { |i| fresh["k#{i}"] = gcv(i) }
+10.times { |i| fresh["k#{i}"] = gcv(i) }
 puts "fresh ok"
 
 # the key is evaluated before the value
@@ -135,19 +137,19 @@ p fz
 # a store, a ||= and a &&= as values
 vs = {"a" => "b"}
 r = nil
-100.times { |i| r = (vs["k#{i}"] = gcv(i)) }
-p vs.size, vs.keys.uniq.size, vs["k50"], r
-100.times { |i| r = (vs["o#{i}"] ||= gcv(i)) }
-p vs.size, vs.keys.uniq.size, vs["o50"], r
-100.times { |i| r = (vs["k#{i}"] &&= gcv(i)) }
-p vs.size, vs.keys.uniq.size, vs["k50"], r
+10.times { |i| r = (vs["k#{i}"] = gcv(i)) }
+p vs.size, vs.keys.uniq.size, vs["k5"], r
+10.times { |i| r = (vs["o#{i}"] ||= gcv(i)) }
+p vs.size, vs.keys.uniq.size, vs["o5"], r
+10.times { |i| r = (vs["k#{i}"] &&= gcv(i)) }
+p vs.size, vs.keys.uniq.size, vs["k5"], r
 p((mk[kk(4)] = vv(4)))
 p $n
 
 # a value that allocates without a call
 rv = {"a" => 1, "b" => "x"}
-100.times { |i| rv["r#{i}"] = (i..i + 1) }
-p rv.size, rv.keys.uniq.size, rv["r50"]
+10.times { |i| rv["r#{i}"] = (i..i + 1) }
+p rv.size, rv.keys.uniq.size, rv["r5"]
 
 # the receiver is read before the key and the value
 ro = {"a" => "b"}
@@ -157,7 +159,7 @@ p orig, ro
 
 # a literal's pairs are stores too
 bad = 0
-100.times do |i|
+10.times do |i|
   lt = {"a" => "b", "k#{i}" => gcv(i), "m#{i}" => gcv(i)}
   bad += 1 unless lt.size == 3 && lt["k#{i}"] == "v#{i}" && lt["m#{i}"] == "v#{i}"
   lg = {"a" => 1, :b => 2, "k#{i}" => gcv(i)}

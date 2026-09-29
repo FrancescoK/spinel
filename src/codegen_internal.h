@@ -155,11 +155,18 @@ int scope_reads_callee(Compiler *c, int si);
 int sp_yield_site_type(const Compiler *c, int id, TyKind *out);
 TyKind block_next_value_ntype(const Compiler *c, int node);
 /* Argument-hoist overrides (see emit_args_filled): node id -> rooted temp
-   name substituted by emit_expr. */
+   name substituted by emit_expr. A site checks for room against
+   MAX_ARG_OVERRIDE and falls back when there is none; the table always
+   holds that many past its fill (argov_reserve). */
 #define MAX_ARG_OVERRIDE 64
-extern int  g_argov_node[MAX_ARG_OVERRIDE];
-extern char g_argov_text[MAX_ARG_OVERRIDE][16];
+extern int  *g_argov_node;
+extern char (*g_argov_text)[16];
 extern int  g_n_argov;
+/* Room for one more override whatever the fill, for a site that must run
+   every argument of a call ahead of it, however many there are
+   (emit_positionals_first and its kin): the table grows, keeping
+   MAX_ARG_OVERRIDE entries free past the fill for the sites that check. */
+void argov_reserve(void);
 /* The setter call (`obj.x = v`) emit_stmt is lowering: nothing reads its value,
    so emit_object_call leaves the value temp out (see setter_value_open). */
 extern int  g_setter_stmt_id;
@@ -525,44 +532,6 @@ void emit_rat_coerce(Compiler *c, int node, Buf *b);
 void emit_super(Compiler *c, int id, Buf *b);
 int  emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr);
 void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out);
-/* Where one positional parameter's value comes from, in a call's layout. */
-typedef enum {
-  ARG_BY_NAME,    /* a keyword parameter or the **kwrest: bound by name */
-  ARG_DEFAULT,    /* no argument reaches it: its default */
-  ARG_NODE,       /* the argument argv[arg] */
-  ARG_KWH,        /* the keyword hash, one more positional argument */
-  ARG_ELEM,       /* element `arg` of the splat spread in place, or of the gather */
-  ARG_REST,       /* the rest: what the layout leaves between the others */
-  ARG_GATHERED,   /* the gather's element by its run-time count (emit_gathered_param) */
-} ArgFrom;
-/* What a call's keyword hash is to one callee (kw_plan, codegen_fold.c). */
-typedef enum {
-  KWH_NONE,        /* the call passes no keyword hash */
-  KWH_KEYWORDS,    /* keywords: the callee declares a keyword or a **kwrest */
-  KWH_POSITIONAL,  /* one more positional Hash: the callee takes no keywords */
-  KWH_REFUSED,     /* a `**nil` callee: holding a key, `no keywords accepted` */
-} KwhRole;
-/* The positionals a keyword hash adds to the count: none, one, or one when
-   the run time finds a key in it (only `**` spreads, KWH_POSITIONAL). */
-enum { KWC_NONE = 0, KWC_ONE = 1, KWC_NONEMPTY = -1 };
-/* The keyword decisions of one call into one callee, taken once: what the
-   hash is, what it adds to the positional count, and which keywords the
-   call statically gets wrong, in CRuby's order (count, missing, unknown). */
-typedef struct {
-  int kwh;              /* the trailing KeywordHashNode, or -1 */
-  KwhRole role;
-  int count;            /* KWC_*: the positionals the hash adds */
-  int literal;          /* a literal key (`k: v`, `"s" => v`) */
-  int spread;           /* a `**` operand: its keys are the run time's (emit_ds_kwarg_check) */
-  int computed;         /* a key only the run time knows (`k => v`) */
-  int nmissing;         /* required keywords no key names, when no `**` may name them */
-  char missing[512];
-  int nunknown;         /* literal keys no keyword takes, each as #inspect writes it */
-  char unknown[512];
-  int unknown_el[32];   /* ... the kwh elements holding the first 32 of them */
-  char first_sym[300];  /* the first of them a Symbol, or "" */
-  int args_first;       /* the keywords are judged at run time: every argument runs first */
-} KwPlan;
 void kw_plan(Compiler *c, Scope *m, int kwh, KwPlan *P);
 /* The keyword error a plan finds statically, in CRuby's order, into `msg`;
    0 when it finds none. */
@@ -574,25 +543,6 @@ void emit_unreached_splat_count(Compiler *c, Scope *m, const int *argv, int argc
 /* Every argument of a call run ahead of it, in source order, each `**`
    operand converted where it stands (codegen_fold.c). */
 void emit_args_run(Compiler *c, const int *argv, int argc);
-/* The positional layout of one call into one callee (arg_layout, codegen_fold.c):
-   decided once, read by each binder that walks the parameters. */
-typedef struct {
-  int kwh, pos_argc;    /* the trailing keyword hash (-1) and the positionals ahead of it */
-  int kwh_slot;         /* the parameter the hash binds as a positional (kwh_positional_slot) */
-  int bind_argc;        /* the positionals, and the hash when it binds as one */
-  int rest_argc;        /* the arguments a rest and its posts are laid out over (rest_bind_argc) */
-  int rest_kwh;         /* the hash a rest takes at its tail (rest_kwh_tail) */
-  int gather;           /* the count is the run time's: every positional from one array */
-  int gather_kwh;       /* the gather's last element is the hash: 1 when it holds a key, 2 always */
-  int splat;            /* static: the argv index of the splat spread in place, or -1 */
-  KwPlan kw;            /* the keyword hash's own decisions */
-  int n;
-  ArgFrom *from;        /* per parameter */
-  int *arg;             /* ARG_NODE: the argv index; ARG_ELEM: the element index */
-} ArgLayout;
-void arg_layout(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh, int inlined,
-                ArgLayout *L);
-void arg_layout_free(ArgLayout *L);
 int emit_splat_gather(Compiler *c, Scope *m, const int *argv, const ArgLayout *L);
 void emit_gather_arity_check(Compiler *c, Scope *m, int ct);
 void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out);
@@ -661,6 +611,12 @@ void emit_frozen_obj_guard(Compiler *c, int cid, const char *selfexpr, Buf *b);
    be NULL), return the name of its SP_BUILTIN_* class-id constant; else NULL.
    Such a value must box via sp_box_nullable_obj so a NULL becomes SP_TAG_NIL. */
 const char *ty_nullable_builtin_id(TyKind t);
+/* 1 iff a value of type t is a C pointer whose NULL is nil. */
+int ty_null_is_nil(TyKind t);
+/* A node of such a type may hold NULL: not a literal, not self. */
+int node_may_be_null_nil(Compiler *c, int node);
+/* `fn(recv)` with recv evaluated once, answering nil_c for a NULL recv. */
+void emit_null_guarded_call(Compiler *c, int recv, TyKind rt, const char *fn, const char *nil_c, Buf *b);
 void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b);
 /* emit_unbox_text, but a nil-tagged poly lands on the slot's own nil (an int?
    or float? sentinel) instead of the zero payload under the tag (#3412). */
@@ -1001,6 +957,7 @@ int patch_lv_read_ntype(Compiler *c, int scope_idx, const char *name, TyKind new
 void restore_lv_read_ntype(Compiler *c, int *saved_ids, TyKind *saved_tys, int n);
 int emit_iter_autosplat(Compiler *c, int block, TyKind rt, const char *elem_src, int indent);
 int emit_iter_value_expr(Compiler *c, int id, Buf *b);
+void set_enum_walk_result(int tmp);
 int iter_value_answers_recv(Compiler *c, int id);
 int sn_guard_pending(Compiler *c, int id);
 int emit_takewhile_with_index(Compiler *c, int id, Buf *b);
@@ -1131,8 +1088,17 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type);
 /* The TypeError CRuby raises for a `**` operand that is neither a Hash, nil
    nor convertible with #to_hash, emitted into g_pre ahead of any keyword
    check: a settled kind of another class raises outright, and a boxed one
-   (TY_POLY) is checked at run time on `val`, its evaluated value. */
+   (TY_POLY) is checked at run time on `val`, its evaluated value, which a
+   user object's #to_hash converts for its effect alone. */
 void emit_kw_splat_conv_check(Compiler *c, TyKind t, const char *val);
+/* The boxed `**` operand held in the temp named `tmp` converted where it
+   stands, the temp then holding what binds: nil, a Hash, or the Hash a user
+   object's #to_hash answered; anything else raises the TypeError. */
+void emit_kw_splat_conv_temp(Compiler *c, const char *tmp);
+/* Can a boxed `**` operand be a user object whose #to_hash converts it:
+   some class of the program defines one? Its answer is a new Hash, which
+   the temp holding the operand roots. */
+int kw_splat_user_to_hash(Compiler *c);
 /* A `**` operand of a kind that is no Hash but can still be nil at run time
    -- a nilable Integer or Float slot's sentinel, a pointer-backed kind's
    NULL -- or that is true or false, which CRuby's TypeError names by value:
@@ -1180,6 +1146,7 @@ int class_isa_user(Compiler *c, int k, int cid, const char *cn);  /* codegen_cal
 int dispatch_impl_count(Compiler *c, int cid, const char *name);
 int block_call_takes_class_dispatch(Compiler *c, int id);
 void emit_dispatch(Compiler *c, int cid, const char *name, const char *selfptr, int argsNode, int blk_node, Buf *b);
+int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name, const char *selfptr, const char *reader, TyKind reader_ty, Buf *b);
 int emit_tap_then_expr(Compiler *c, int id, Buf *b);
 int recv_is_const(const NodeTable *nt, int recv, const char *name);
 int sp_is_fiber_storage_recv(const NodeTable *nt, int recv);

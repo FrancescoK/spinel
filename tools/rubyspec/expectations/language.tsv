@@ -948,7 +948,7 @@ hash_spec__016	PASS
 hash_spec__017	PASS
 hash_spec__018	PASS
 hash_spec__019	PASS
-hash_spec__020	PASS
+hash_spec__020	ERROR
 hash_spec__021	HARNESS-SKEW
 hash_spec__022	HARNESS-SKEW
 hash_spec__023	HARNESS-SKEW

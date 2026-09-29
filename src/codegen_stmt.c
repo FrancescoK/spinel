@@ -2409,9 +2409,9 @@ int emit_poly_class_when(Compiler *c, int cond_id, const char *tmp, Buf *b) {
   else if (sp_streq(cn, "Time"))
     buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id == SP_BUILTIN_TIME)", tmp, tmp);
   else if (sp_streq(cn, "Range"))
-    buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id == SP_BUILTIN_RANGE)", tmp, tmp);
+    buf_printf(b, "(%s.tag == SP_TAG_OBJ && (%s.cls_id == SP_BUILTIN_RANGE || %s.cls_id == SP_BUILTIN_STR_RANGE))", tmp, tmp, tmp);
   else if (sp_streq(cn, "Array"))
-    buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id <= -1 && %s.cls_id >= -12)", tmp, tmp, tmp);
+    buf_printf(b, "(%s.tag == SP_TAG_OBJ && sp_poly_is_array_kind(%s.cls_id))", tmp, tmp);
   else if (sp_streq(cn, "Hash"))
     buf_printf(b, "(%s.tag == SP_TAG_OBJ && ((%s.cls_id <= -13 && %s.cls_id >= -20) || %s.cls_id == -34))", tmp, tmp, tmp, tmp);
   else {
@@ -8070,7 +8070,7 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
         }
         buf_printf(b, "sp_box_poly_array(_t%d)", t);
       }
-      else buf_puts(b, "sp_box_nil()");
+      else buf_puts(b, sp_streq(ynm, "yield") ? "sp_box_empty_step()" : "sp_box_nil()");
       buf_puts(b, ");\n");
       return;
     }

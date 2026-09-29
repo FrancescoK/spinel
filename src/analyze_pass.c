@@ -346,8 +346,9 @@ static TyKind aset_value_type(Compiler *c, int recv) {
 }
 
 /* Whether some call of the method `sc` by name passes a boxed value (not
-   an empty `{}`), or one not typed yet, in positional slot p. Matched by
-   name, so a same-named method elsewhere only makes this more careful. */
+   an empty `{}`), or one not typed yet, to positional parameter p, as the
+   call's layout funds it (a splat's element is boxed). Matched by name, so
+   a same-named method elsewhere only makes this more careful. */
 static int param_gets_boxed_arg(Compiler *c, Scope *sc, int p) {
   const NodeTable *nt = c->nt;
   if (!sc->name) return 0;
@@ -359,19 +360,24 @@ static int param_gets_boxed_arg(Compiler *c, Scope *sc, int p) {
     if (!nm || !sp_streq(nm, sc->name)) continue;
     int args = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    if (p >= an) continue;
-    NodeKind ak = nt_kind(nt, av[p]);
-    if (ak == NK_SplatNode) return 1;
-    if (ak == NK_HashNode || ak == NK_KeywordHashNode) continue;
-    TyKind at = infer_type(c, av[p]);
+    ArgLayout L;
+    call_layout(c, sc, av, an, &L);
+    ArgFrom from = p < L.n ? L.from[p] : ARG_DEFAULT;
+    int a = layout_plain_arg(c, sc, av, &L, p);
+    arg_layout_free(&L);
+    if (from == ARG_ELEM || from == ARG_GATHERED) return 1;
+    if (a < 0) continue;
+    NodeKind ak = nt_kind(nt, a);
+    if (ak == NK_HashNode) continue;
+    TyKind at = infer_type(c, a);
     if (at == TY_POLY) return 1;
     /* not typed yet: wait for it rather than decide the parameter now,
        unless it is a local only ever given an empty `{}` (the container
        the narrowing exists for) */
     if (at == TY_UNKNOWN) {
       if (ak != NK_LocalVariableReadNode) return 1;
-      const char *an = nt_str(nt, av[p], "name");
-      Scope *as = an ? comp_scope_of(c, av[p]) : NULL;
+      const char *an = nt_str(nt, a, "name");
+      Scope *as = an ? comp_scope_of(c, a) : NULL;
       if (!as || !local_all_writes_empty_hash(c, as, an)) return 1;
     }
   }
@@ -4713,17 +4719,18 @@ static int widen_arg_array(Compiler *c, int arg) {
    type `ct` a key or value that `ct` cannot hold, where the method takes that
    key or value from another of its parameters (p's store_key_src and
    store_val_src): boxed, since its callers disagree, but this call's
-   argument for it has a type. */
-int param_src_misfits(Compiler *c, LocalVar *p, TyKind ct, const int *argv, int argc) {
+   argument for it, as its layout `L` hands it, has a type. One spread from a
+   splat or gathered has its elements' type only, and is not asked. */
+int param_src_misfits(Compiler *c, Scope *m, LocalVar *p, TyKind ct, const int *argv,
+                      const ArgLayout *L) {
   if (!p || !argv || !(p->store_key_src | p->store_val_src)) return 0;
   int arr = ty_is_array(ct) && ct != TY_POLY_ARRAY;
   if (!arr && !(ty_is_hash(ct) && ct != TY_POLY_POLY_HASH)) return 0;
-  for (int j = 0; j < argc && j < 64; j++) {
-    NodeKind ak = nt_kind(c->nt, argv[j]);
-    if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
+  for (int j = 0; j < L->n && j < 64; j++) {
     int isk = (int)((p->store_key_src >> j) & 1ULL), isv = (int)((p->store_val_src >> j) & 1ULL);
-    if (!isk && !isv) continue;
-    TyKind t = infer_type(c, argv[j]);
+    int a = isk || isv ? layout_plain_arg(c, m, argv, L, j) : -1;
+    if (a < 0) continue;
+    TyKind t = infer_type(c, a);
     if (t == TY_STRBUF) t = TY_STRING;
     if (t == TY_UNKNOWN || t == TY_POLY || t == TY_VOID) continue;
     if (arr) {
@@ -4788,14 +4795,137 @@ static int widen_kwrest_any_key(Compiler *c, Scope *m, int node) {
   return slot_set(c, p, TY_POLY_POLY_HASH, TY_POLY_POLY_HASH, node);
 }
 
-int bind_call_params(Compiler *c, int call_id, int mi) {
+/* May source `s` of a gathered call -- argument s, or at pos_argc the
+   keyword hash the gather carries (gather_kwh) -- reach parameter i of `m`?
+   Ruby funds the parameters ahead of a rest, or ahead of the requireds a
+   leading optional leaves last, from the front of the arguments, and the
+   others from the end. The count is the run time's, so a source's place is
+   known only up to the splats around it: from the front it is its own index
+   when no splat comes before it, and no less than the sources before it
+   when one does, from the end the same; and a count below the required
+   parameters is refused, so an argument no splat follows is never a front
+   parameter the required ones after it take (`f(1, *s)` on
+   `def f(a, *r, b)` gives b an element, never the 1), nor one the
+   parameters funded from the end always take (`f(*s, 1)` on the same gives
+   a an element). A splat, and a `**` hash that may be nothing
+   (gather_kwh 1), reach every place from theirs on. A literal hash the
+   gather carries (gather_kwh 2) is its last element, placed by the same
+   rules: the last post when there is one. Taking it to reach every
+   parameter from the first splat ARGUMENT's index on compared an argument
+   index with a parameter's, so `m(1, 1, *v, k: 3)` on `def m(*r, q)` left
+   q, parameter 1, Integer, and read the hash's pointer as one.
+   kwh_rides_gather asks each parameter this reaches to hold the hash. */
+int gather_reaches(Compiler *c, Scope *m, const int *argv, int pos_argc, int gather_kwh, int s, int i) {
+  const NodeTable *nt = c->nt;
+  int nsrc = pos_argc + (gather_kwh ? 1 : 0);
+  int nb = 0, sb = 0, na = 0, sa = 0, var = 0;
+  for (int k = 0; k < nsrc; k++) {
+    if (k < pos_argc && nt_kind(nt, argv[k]) == NK_BlockArgumentNode) continue;
+    int v = k < pos_argc ? nt_kind(nt, argv[k]) == NK_SplatNode : gather_kwh == 1;
+    if (k == s) var = v;
+    else if (k < s) { if (v) sb = 1; else nb++; }
+    else { if (v) sa = 1; else na++; }
+  }
+  /* the positional parameters: every one but the rest and those bound by
+     name (arg_layout's ARG_BY_NAME) */
+  int last = -1, nreq = 0;
+  for (int k = 0; k < m->nparams; k++) {
+    if (k == m->rest_idx || k == m->kwrest_idx ||
+        (m->pnames[k] && callee_param_is_declared_kwarg(c, m, m->pnames[k]))) continue;
+    last = k;
+    if (!m->pdefault || m->pdefault[k] < 0) nreq++;
+  }
+  int end_from = last + 1;
+  if (m->rest_idx >= 0) end_from = m->rest_idx + 1;
+  else if (opt_before_required(c, m))
+    for (int k = 0; k <= last; k++)
+      if (m->pdefault && m->pdefault[k] >= 0) end_from = k + 1;
+  /* the fewest arguments the call runs with, less one */
+  int least = (nb + na + !var > nreq ? nb + na + !var : nreq) - 1;
+  if (i < end_from) {
+    /* na from the end, with no splat after it: always one of the
+       parameters funded from the end, which every count fills */
+    if (!var && !sa && na <= last - end_from) return 0;
+    if (var || (sb && sa)) return nb <= i;
+    if (!sb) return nb == i;
+    return i >= nb && i >= least - na;
+  }
+  int e = last - i;
+  if (var || (sb && sa)) return na <= e;
+  if (!sa) return na == e;
+  return e >= na && e >= least - nb;
+}
+
+/* The positional layout of a call's arguments `argv` into method `m`, as
+   inference asks it (arg_layout_untyped): a trailing keyword hash is the
+   hash. Every pass that pairs a call's arguments with the callee's
+   parameters asks it, not argument k for parameter k, which a leading
+   optional, a splat, the posts or a hash taken as a positional put
+   elsewhere. */
+void call_layout(Compiler *c, Scope *m, const int *argv, int argc, ArgLayout *L) {
+  int kwh = argv && argc > 0 && nt_kind(c->nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+  arg_layout_untyped(c, m, argv, kwh >= 0 ? argc - 1 : argc, kwh, L);
+}
+
+/* The argument a call's layout `L` into `m` hands parameter i as written,
+   or -1: none, a splat's element, the keyword hash, or a gathered value more
+   than one source may be (gather_reaches). */
+int layout_plain_arg(Compiler *c, Scope *m, const int *argv, const ArgLayout *L, int i) {
+  const NodeTable *nt = c->nt;
+  if (!argv || i < 0 || i >= L->n || i == m->rest_idx) return -1;
+  int a = -1;
+  if (L->from[i] == ARG_NODE) a = argv[L->arg[i]];
+  else if (L->gather && (L->from[i] == ARG_ELEM || L->from[i] == ARG_GATHERED))
+    for (int s = 0; s < L->pos_argc + (L->gather_kwh ? 1 : 0); s++) {
+      if (s < L->pos_argc && nt_kind(nt, argv[s]) == NK_BlockArgumentNode) continue;
+      if (!gather_reaches(c, m, argv, L->pos_argc, L->gather_kwh, s, i)) continue;
+      if (a >= 0 || s == L->pos_argc) return -1;
+      a = argv[s];
+    }
+  return a < 0 || nt_kind(nt, a) == NK_SplatNode || nt_kind(nt, a) == NK_KeywordHashNode ? -1 : a;
+}
+
+/* The same for one parameter of one call. */
+int call_param_arg(Compiler *c, Scope *m, const int *argv, int argc, int i) {
+  ArgLayout L;
+  call_layout(c, m, argv, argc, &L);
+  int a = layout_plain_arg(c, m, argv, &L, i);
+  arg_layout_free(&L);
+  return a;
+}
+
+/* The type a parameter takes from a source its layout spreads, gathers or
+   hands whole: a splat's elements (boxed when the operand is no typed
+   array), the argument's, or the hash a braceless keyword hash is. A key
+   that is no Symbol is no keyword, so `f('m' => 1)` passes a String-keyed
+   Hash, which a Symbol-keyed parameter read as one empty key (#3487); the
+   Symbol-keyed one stays for a hash whose type has not settled. A nil the
+   parameter's slot cannot carry, or a value that never arrives, widens it
+   to the boxed value. */
+static TyKind bound_source_type(Compiler *c, int src, const LocalVar *p) {
+  const NodeTable *nt = c->nt;
+  TyKind t;
+  if (nt_kind(nt, src) == NK_SplatNode) {
+    int inner = nt_ref(nt, src, "expression");
+    TyKind arr = inner >= 0 ? infer_type(c, inner) : TY_UNKNOWN;
+    t = ty_is_array(arr) ? ty_array_elem(arr) : TY_POLY;
+    if (t == TY_NIL) t = TY_POLY;
+  }
+  else if (nt_kind(nt, src) == NK_KeywordHashNode) {
+    t = infer_type(c, src);
+    if (!ty_is_hash(t)) t = TY_SYM_POLY_HASH;
+  }
+  else t = infer_type(c, src);
+  if (t == TY_VOID) t = TY_POLY;
+  if (t == TY_NIL && p->type != TY_UNKNOWN && p->type != TY_NIL && !ty_is_object(p->type)) t = TY_POLY;
+  return t;
+}
+
+/* Type method mi's parameters from the arguments `argv` of call_id. */
+static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, int argc) {
   if (mi < 0) return 0;
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
-  int args = nt_ref(nt, call_id, "arguments");
-  int argc = 0;
-  const int *argv = NULL;
-  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
   int changed = 0;
   /* `callee(...)`: the arg list is a single ForwardingArgumentsNode. Bind the
      callee's params from the enclosing `def foo(...)` method's synthesized
@@ -4823,96 +4953,49 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
   }
   if (kwh >= 0 && m->kwrest_idx >= 0 && kwh_brings_other_key(c, kwh))
     changed |= widen_kwrest_any_key(c, m, kwh);
-  /* Don't bind individual args to the *rest slot; it stays TY_POLY_ARRAY.
-     Neither does a positional argument reach a `**kwrest` slot: only a
-     keyword hash does (below). Binding one there mis-typed the kwrest as the
-     argument's scalar kind, and the bound-Method call site then emitted the
-     later keyword hash as that scalar (`sp_int = sp_SymPolyHash *`, a C build
-     failure) instead of routing it into the kwrest slot (#4395 follow-up). */
-  int max_bind = m->nparams;
-  if (m->rest_idx >= 0 && max_bind > m->rest_idx) max_bind = m->rest_idx;
-  if (m->kwrest_idx >= 0 && max_bind > m->kwrest_idx) max_bind = m->kwrest_idx;
-  int n = pos_argc < max_bind ? pos_argc : max_bind;
-  /* `def m(a = 1, b)` given one argument funds b, not a: with an optional
-     ahead of a required, each parameter takes the argument the call lays
-     out for it (arg_slot_for_param), as codegen passes it. A splat spreads
-     positionally below. */
-  int remap = argv && opt_before_required(c, m);
-  for (int k = 0; remap && k < pos_argc; k++)
-    if (nt_kind(nt, argv[k]) == NK_SplatNode) remap = 0;
-  if (remap) n = max_bind;
-  /* a keyword hash no keyword parameter takes is one more positional
-     (#4877): it is counted in the layout, and bound by the hash rule below.
-     One of `**` spreads alone may be no argument at all, and then the
-     positionals lay out without it (`hh(1, **{})` funds c with the 1): both
-     layouts type the parameters, as for the posts below. */
-  int lay_argc = pos_argc;
-  if (remap && kwh >= 0 && m->kwrest_idx < 0 && !callee_declares_kwargs(c, m)) lay_argc++;
-  int lay_n = lay_argc > pos_argc && kwh_only_spreads(nt, kwh) ? 2 : 1;
-  for (int l = 0; l < lay_n; l++)
-  for (int k = 0; k < n; k++) {
-    int arg = k;
-    if (remap && ((arg = arg_slot_for_param(c, m, k, lay_argc - l)) < 0 || arg >= pos_argc)) continue;
-    const char *apty = argv ? nt_type(nt, argv[arg]) : NULL;
-    /* A single SplatNode spreads its array across every remaining fixed param,
-       not just this position. Bind each from the array's element type so a
-       splat-only call site (`f(*args)`) still types -- and therefore emits --
-       the callee, then stop (the splat consumes the rest of the positionals). */
-    if (apty && sp_streq(apty, "SplatNode")) {
-      int inner = nt_ref(nt, argv[arg], "expression");
-      TyKind arr = inner >= 0 ? infer_type(c, inner) : TY_UNKNOWN;
-      TyKind at = ty_is_array(arr) ? ty_array_elem(arr) : TY_POLY;
-      if (at == TY_VOID || at == TY_NIL) at = TY_POLY;
-      for (int pk = k; pk < max_bind; pk++) {
-        if (!m->pnames[pk]) continue;
-        LocalVar *p = scope_local(m, m->pnames[pk]);
-        if (!p || p->rbs_seeded) continue;
-        changed |= slot_take(c, p, at, argv[arg]);
-      }
-      /* What comes after it lands where the splats' run-time lengths put it
-         (codegen gathers such a call, arg_layout): each later argument, and
-         a keyword hash no keyword parameter takes as the last of them, may
-         reach any parameter from its own index less the splats ahead of it,
-         which may be empty. Typed at its own index alone, or not at all,
-         `f(*[1], "x")` on `def f(a, b)` bound the String into an Integer b,
-         and `m(*s, k: 1)` on `def m(a, *r)` could not give a the hash. */
-      int nspl = 1;
-      int kwh_pos = kwh >= 0 && m->kwrest_idx < 0 && !callee_declares_kwargs(c, m);
-      for (int j = arg + 1; argv && j <= pos_argc; j++) {
-        int an = j < pos_argc ? argv[j] : (kwh_pos ? kwh : -1);
-        if (an < 0 || nt_kind(nt, an) == NK_BlockArgumentNode) continue;
-        TyKind jt;
-        if (nt_kind(nt, an) == NK_SplatNode) {
-          int jin = nt_ref(nt, an, "expression");
-          TyKind ja = jin >= 0 ? infer_type(c, jin) : TY_UNKNOWN;
-          jt = ty_is_array(ja) ? ty_array_elem(ja) : TY_POLY;
-          if (jt == TY_VOID || jt == TY_NIL) jt = TY_POLY;
-        }
-        else jt = infer_type(c, an);
-        if (jt == TY_VOID) jt = TY_POLY;
-        for (int pk = j - nspl; jt != TY_UNKNOWN && pk < max_bind; pk++) {
-          LocalVar *p = pk >= 0 && m->pnames[pk] ? scope_local(m, m->pnames[pk]) : NULL;
-          if (!p || p->rbs_seeded) continue;
-          TyKind pt = jt;
-          if (pt == TY_NIL && p->type != TY_UNKNOWN && p->type != TY_NIL && !ty_is_object(p->type)) pt = TY_POLY;
-          changed |= slot_take(c, p, pt, an);
-        }
-        if (nt_kind(nt, an) == NK_SplatNode) nspl++;
-      }
-      break;
-    }
-    TyKind at = infer_type(c, argv[arg]);
-    LocalVar *p = scope_local(m, m->pnames[k]);
+  /* Each parameter takes what the call's positional layout funds it from
+     (arg_layout, the plan codegen renders): the argument it names, an
+     element of the splat spread in place, the keyword hash as one more
+     positional, or, where the count is the run time's, whichever gathered
+     source may land there (gather_reaches). Typing them by their own index
+     rules spread a splat from its own index and stopped, and took the
+     posts from the positionals as written, so `f(1, *["x", :y])` on
+     `def f(a, *r, b, c)` typed b from the 1, and a splat's elements typed
+     the keyword parameters after it. The rest stays the untyped array, a
+     `**kwrest` and the keywords bind by name (below; a positional typing
+     the `**kwrest` broke the C build, #4395), and a default types its
+     parameter where the callee reads it. */
+  ArgLayout L;
+  call_layout(c, m, argv, argc, &L);
+  for (int i = 0; i < m->nparams; i++) {
+    ArgFrom from = L.from[i];
+    if (from == ARG_BY_NAME || from == ARG_DEFAULT || from == ARG_REST || i == m->rest_idx) continue;
+    LocalVar *p = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
     if (!p || p->rbs_seeded) continue;
-
+    int anode = layout_plain_arg(c, m, argv, &L, i);
+    if (anode < 0 && !L.gather) {
+      int src = from == ARG_KWH ? kwh : from == ARG_ELEM ? argv[L.splat] : argv[L.arg[i]];
+      changed |= slot_take(c, p, bound_source_type(c, src, p), src);
+      continue;
+    }
+    if (anode < 0) {
+      for (int s = 0; s < pos_argc + (L.gather_kwh ? 1 : 0); s++) {
+        int src = s < pos_argc ? argv[s] : kwh;
+        if (nt_kind(nt, src) == NK_BlockArgumentNode || !gather_reaches(c, m, argv, pos_argc, L.gather_kwh, s, i)) continue;
+        changed |= slot_take(c, p, bound_source_type(c, src, p), src);
+      }
+      continue;
+    }
+    const char *apty = nt_type(nt, anode);
+    TyKind at = infer_type(c, anode);
     /* Post-convergence backstop only: an empty array-literal arg fills a
        parameter that no other call site typed, as an (empty) poly array so
        the callee's array methods dispatch. Never during the fixpoint -- a
        concrete kind from another call site must win the unification. */
     if (g_final_bind_pass && p->type == TY_UNKNOWN && at == TY_UNKNOWN &&
         apty && sp_streq(apty, "ArrayNode")) {
-      int en0 = 0; nt_arr(nt, argv[arg], "elements", &en0);
-      if (en0 == 0) { slot_rule(c, p, TY_POLY_ARRAY, argv[arg], "an empty `[]` argument and no other call site typing it: the parameter is the untyped array"); changed = 1; continue; }
+      int en0 = 0; nt_arr(nt, anode, "elements", &en0);
+      if (en0 == 0) { slot_rule(c, p, TY_POLY_ARRAY, anode, "an empty `[]` argument and no other call site typing it: the parameter is the untyped array"); changed = 1; continue; }
     }
     /* An empty `{}` / `[]` literal carries no type of its own, so it is skipped
        by the unification below. When ANOTHER call site typed the parameter as
@@ -4923,8 +5006,8 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
       int cross = (sp_streq(apty, "HashNode") && !ty_is_hash(p->type)) ||
                   (sp_streq(apty, "ArrayNode") && !ty_is_array(p->type));
       if (cross) {
-        int en1 = 0; nt_arr(nt, argv[arg], "elements", &en1);
-        if (en1 == 0) { slot_rule(c, p, TY_POLY, argv[arg], "an empty literal argument of one container kind where another call site passed the other: only the boxed slot holds both"); changed = 1; continue; }
+        int en1 = 0; nt_arr(nt, anode, "elements", &en1);
+        if (en1 == 0) { slot_rule(c, p, TY_POLY, anode, "an empty literal argument of one container kind where another call site passed the other: only the boxed slot holds both"); changed = 1; continue; }
       }
     }
     /* A void arg (`sink(always_raising_method)`) is nil-ish in value position:
@@ -4964,14 +5047,14 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
       merged = TY_POLY;
     else
       merged = ty_unify(p->type, at);
-    changed |= slot_set(c, p, merged, at, argv[arg]);
+    changed |= slot_set(c, p, merged, at, anode);
     /* Reverse binding: an empty-`{}`-only local passed to a hash parameter is
        that hash container, filled inside the callee through the reference.
        Type the local as the param's hash so it is constructed (sp_<H>Hash_new)
        rather than passed as a NULL-deref'ing poly nil. */
     if (ty_is_hash(p->type) && apty && sp_streq(apty, "LocalVariableReadNode")) {
-      const char *an = nt_str(nt, argv[arg], "name");
-      Scope *asc = an ? comp_scope_of(c, argv[arg]) : NULL;
+      const char *an = nt_str(nt, anode, "name");
+      Scope *asc = an ? comp_scope_of(c, anode) : NULL;
       LocalVar *al = asc ? scope_local(asc, an) : NULL;
       if (al && !al->is_param && !al->is_block_param &&
           (al->type == TY_UNKNOWN || al->type == TY_POLY) &&
@@ -4985,8 +5068,8 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
        PolyPoly hash, so a StrPoly default silently dropped an int-keyed write
        (#3158). Type the caller's `{}` as PolyPoly so any key persists. */
     if (p->type == TY_POLY && apty && sp_streq(apty, "LocalVariableReadNode")) {
-      const char *an = nt_str(nt, argv[arg], "name");
-      Scope *asc = an ? comp_scope_of(c, argv[arg]) : NULL;
+      const char *an = nt_str(nt, anode, "name");
+      Scope *asc = an ? comp_scope_of(c, anode) : NULL;
       LocalVar *al = asc ? scope_local(asc, an) : NULL;
       if (al && !al->is_param && !al->is_block_param &&
           (al->type == TY_UNKNOWN || al->type == TY_POLY || ty_is_hash(al->type)) &&
@@ -4999,18 +5082,19 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
        from another of its parameters is checked against this call's
        argument for it: one the container cannot hold widens it, as a
        literal of that kind does in infer_write_types. */
-    int src_misfit = !remap && (param_src_misfits(c, p, p->type == TY_POLY ? at : p->type, argv, pos_argc) ||
-                                 param_rest_misfits(c, m, p, p->type == TY_POLY ? at : p->type, argv, argc));
+    int src_misfit = param_src_misfits(c, m, p, p->type == TY_POLY ? at : p->type, argv, &L) ||
+                     param_rest_misfits(c, m, p, p->type == TY_POLY ? at : p->type, argv, argc);
     /* A caller that hands its own parameters on, as the container and as
        the key or value, stores them the same way: record it on the caller's
        container parameter, for its own callers' binding to check. */
-    if (!remap && (p->store_key_src | p->store_val_src)) {
+    if (p->store_key_src | p->store_val_src) {
       Scope *cs = comp_scope_of(c, call_id);
-      int ck = unassigned_param_read(c, cs, argv[arg]);
+      int ck = unassigned_param_read(c, cs, anode);
       LocalVar *cp = ck >= 0 ? scope_local(cs, cs->pnames[ck]) : NULL;
-      for (int j = 0; cp && !cp->rbs_seeded && j < pos_argc && j < 64; j++) {
-        if (nt_kind(nt, argv[j]) == NK_SplatNode) break;
-        int cj = unassigned_param_read(c, cs, argv[j]);
+      for (int j = 0; cp && !cp->rbs_seeded && j < L.n && j < 64; j++) {
+        int aj = layout_plain_arg(c, m, argv, &L, j);
+        if (aj < 0) continue;
+        int cj = unassigned_param_read(c, cs, aj);
         if ((p->store_key_src >> j) & 1ULL) changed |= mask_add(&cp->store_key_src, cj);
         if ((p->store_val_src >> j) & 1ULL) changed |= mask_add(&cp->store_val_src, cj);
       }
@@ -5027,9 +5111,9 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
        direction, only to the poly array, so it stays monotonic. A hash
        parameter a foreign store widened widens the caller's hash the same
        way. */
-    if (p->push_widened && p->type != TY_POLY_POLY_HASH) changed |= widen_arg_array(c, argv[arg]);
+    if (p->push_widened && p->type != TY_POLY_POLY_HASH) changed |= widen_arg_array(c, anode);
     if (p->push_widened && p->type == TY_POLY_POLY_HASH && ty_is_hash(at))
-      changed |= widen_arg_hash(c, argv[arg]);
+      changed |= widen_arg_hash(c, anode);
     /* A BOXED parameter hides the container from its callee, so the element
        writes through it are checked here, against each caller's own. An
        array the binding cannot widen, where a store of a known kind cannot
@@ -5038,46 +5122,27 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
        time, where it may well fit. */
     if (p->type == TY_POLY && ty_is_array(at) && at != TY_POLY_ARRAY &&
         ((p->boxed_push_elem != TY_UNKNOWN && p->boxed_push_elem != ty_array_elem(at)) || src_misfit)) {
-      int w = widen_arg_array(c, argv[arg]);
+      int w = widen_arg_array(c, anode);
       changed |= w;
-      if (!w && (src_misfit || p->boxed_push_elem != TY_POLY) && c->store_misfit_arg && argv[arg] < c->node_cap)
-        c->store_misfit_arg[argv[arg]] = 1;
+      if (!w && (src_misfit || p->boxed_push_elem != TY_POLY) && c->store_misfit_arg && anode < c->node_cap)
+        c->store_misfit_arg[anode] = 1;
     }
     if (p->type == TY_POLY && ty_is_hash(at) && at != TY_POLY_POLY_HASH &&
         (p->boxed_store_key != TY_UNKNOWN || src_misfit)) {
       TyKind folded = at;
       int fits = p->boxed_store_key == TY_UNKNOWN ||
                  fold_container_evidence(&folded, 0, 0, p->boxed_store_key, p->boxed_store_val);
-      if (src_misfit || !fits || folded != at) changed |= widen_arg_hash(c, argv[arg]);
+      if (src_misfit || !fits || folded != at) changed |= widen_arg_hash(c, anode);
     }
     if (merged == TY_PROC) {
       /* every call's proc: the parameter answers what any of them returns
          (each call overwriting it flipped the slot round after round) */
-      TyKind pr = proc_ret_of(c, argv[arg]);
+      TyKind pr = proc_ret_of(c, anode);
       if (pr != TY_UNKNOWN && p->proc_ret != TY_UNKNOWN) pr = ty_unify((TyKind)p->proc_ret, pr);
       if (pr != TY_UNKNOWN && p->proc_ret != (int)pr) { p->proc_ret = (int)pr; changed = 1; }
     }
   }
-  /* Post-splat required params: bind from the end of the positional args.
-     A keyword hash no keyword parameter takes is the last of those, and
-     the hash rule below types the post it lands in. One of `**` spreads
-     alone may be no argument at all, and then the posts take the
-     positionals as they are: both layouts type them. */
-  if (m->rest_idx >= 0 && m->npost_rest > 0) {
-    int post_argc = pos_argc + (kwh >= 0 && m->kwrest_idx < 0 && !callee_declares_kwargs(c, m));
-    int layouts = post_argc > pos_argc && kwh_only_spreads(nt, kwh) ? 2 : 1;
-    for (int l = 0; l < layouts; l++)
-    for (int j = 0; j < m->npost_rest; j++) {
-      int pi = m->rest_idx + 1 + j;
-      int ai = post_argc - l - m->npost_rest + j;
-      if (pi >= m->nparams || ai < 0 || ai >= pos_argc || !argv) continue;
-      LocalVar *p = scope_local(m, m->pnames[pi]);
-      if (!p || p->rbs_seeded) continue;
-      TyKind at = infer_type(c, argv[ai]);
-      if (at == TY_NIL && p->type != TY_UNKNOWN && p->type != TY_NIL && !ty_is_object(p->type)) at = TY_POLY;
-      changed |= slot_take(c, p, at, argv[ai]);
-    }
-  }
+  arg_layout_free(&L);
   /* Keyword arguments: match KeywordHashNode elements to named params. */
   if (kwh >= 0) {
     int en = 0;
@@ -5128,7 +5193,6 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
       }
     }
 else {
-      int any_kw_bound = 0;
       for (int e = 0; e < en; e++) {
         int key = nt_ref(nt, elems[e], "key");
         int val = nt_ref(nt, elems[e], "value");
@@ -5149,7 +5213,6 @@ else {
             if (!p || p->rbs_seeded) continue;
             changed |= slot_take(c, p, at, val);
           }
-          any_kw_bound = 1;
           continue;
         }
         if (!kname) continue;
@@ -5158,43 +5221,12 @@ else {
            key's value -- `def f(x); f(x: 9)` typed x from the 9 and then
            passed it nothing, answering 0 where Ruby answers `{x: 9}`. A
            positional parameter sharing the name takes the whole hash
-           positionally, which the collapse below already handles. */
+           positionally, as the layout above says. */
         if (!callee_has_kwarg(c, m, kname)) continue;
         LocalVar *p = scope_local(m, kname);
         if (!p || p->rbs_seeded) continue;
         TyKind at = infer_type(c, val);
         changed |= slot_take(c, p, at, val);
-        any_kw_bound = 1;
-      }
-      /* Ruby collapses a trailing braceless hash into a positional hash
-         parameter when the callee has no named keyword params (`def f(opts)`
-         called as `f(key: val)`). Bind the param to the hash the ARGUMENT
-         actually is: a non-Symbol key cannot be a keyword at all, so
-         `f('m' => 1)` passes an ordinary string-keyed Hash, and pinning the
-         param to the symbol-keyed variant regardless left the callee reading
-         an sp_StrIntHash through an sp_SymPolyHash* -- one empty-symbol key
-         and no value, or a hang on integer and mixed keys (#3487). The
-         symbol-keyed default stays for the case it was written for: a
-         keyword call whose own type has not settled. */
-      /* A `**kwrest` takes every keyword the call passed, so there is no
-         trailing hash left to collapse into a positional parameter. Typing the
-         positional from it left `def a(x = nil, **kw)` with a hash-typed `x`
-         whose nil default is a NULL hash: it rendered as `{}` and any Hash
-         method on it dereferenced the NULL (#3911). This is the type-inference
-         half of the binding rule in kwh_consumed_by_kwparam. */
-      /* The parameter is the one the hash funds as one more argument, which
-         with a leading optional is not the one at index pos_argc, and past a
-         *rest is its last post. */
-      int kpost = m->rest_idx >= 0 && m->npost_rest > 0;
-      int kslot = pos_argc < max_bind || kpost ? kwh_arg_param(c, m, pos_argc) : -1;
-      if (!any_kw_bound && m->kwrest_idx < 0 && !callee_declares_kwargs(c, m) &&
-          kslot >= 0 && (kslot < max_bind || kpost)) {
-        LocalVar *p = m->pnames[kslot] ? scope_local(m, m->pnames[kslot]) : NULL;
-        if (p && !p->rbs_seeded) {
-          TyKind kwt = infer_type(c, kwh);
-          if (!ty_is_hash(kwt)) kwt = TY_SYM_POLY_HASH;
-          changed |= slot_take(c, p, kwt, kwh);
-        }
       }
     }
   }
@@ -5202,6 +5234,13 @@ else {
 }
 
 static int bind_zsuper_params(Compiler *c, int id, Scope *s, Scope *pm);
+
+int bind_call_params(Compiler *c, int call_id, int mi) {
+  int args = mi >= 0 ? nt_ref(c->nt, call_id, "arguments") : -1;
+  int argc = 0;
+  const int *argv = args >= 0 ? nt_arr(c->nt, args, "arguments", &argc) : NULL;
+  return bind_args_params(c, call_id, mi, argv, argc);
+}
 
 /* Propagate param types from each prep-chain source scope (the transplanted
    module method) to the shadow scope it calls via super. The shadow scope has
@@ -5317,17 +5356,13 @@ static int param_supplied_anywhere(Compiler *c, Scope *sc, int pi) {
     }
     int args = nt_ref(nt, id, "arguments");
     int n = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &n) : NULL;
-    int pos = 0;
     for (int k = 0; k < n; k++) {
       NodeKind ak = nt_kind(nt, av[k]);
       const char *aty = nt_type(nt, av[k]);
       if (ak == NK_SplatNode || (aty && sp_streq(aty, "ForwardingArgumentsNode"))) return 1;
-      if (ak == NK_KeywordHashNode) {
-        /* a keyword parameter is supplied by a `name:` pair (or by a `**`
-           spread, which may carry anything); a braceless hash no keyword
-           parameter claims packs into a positional one, so it counts as
-           a positional argument for those (#4436) */
-        if (!is_kw) { pos++; continue; }
+      /* a keyword parameter is supplied by a `name:` pair (or by a `**`
+         spread, which may carry anything) */
+      if (ak == NK_KeywordHashNode && is_kw) {
         int en = 0; const int *els = nt_arr(nt, av[k], "elements", &en);
         for (int e = 0; e < en; e++) {
           if (nt_kind(nt, els[e]) == NK_AssocSplatNode) return 1;
@@ -5335,12 +5370,17 @@ static int param_supplied_anywhere(Compiler *c, Scope *sc, int pi) {
           const char *kn = key >= 0 && nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
           if (kn && sc->pnames[pi] && sp_streq(kn, sc->pnames[pi])) return 1;
         }
-        continue;
       }
-      if (ak == NK_BlockArgumentNode) continue;
-      pos++;
     }
-    if (!is_kw && pos > pi) return 1;
+    /* a positional one takes what the call's layout funds it from, a
+       braceless hash no keyword parameter claims among them (#4436) */
+    if (!is_kw) {
+      ArgLayout L;
+      call_layout(c, sc, av, n, &L);
+      int supplied = L.from[pi] != ARG_DEFAULT;
+      arg_layout_free(&L);
+      if (supplied) return 1;
+    }
   }
   NT_FOREACH_KIND(nt, NK_SuperNode, id) { (void)id; return 1; }
   NT_FOREACH_KIND(nt, NK_ForwardingSuperNode, id) { (void)id; return 1; }
@@ -6093,10 +6133,13 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
 
 /* The parameters of the parent a bare `super` in `s` reaches, typed as it
    binds them (codegen's zsuper_begin): with a rest in `s` the positionals
-   gather, and each parent parameter from its own index on may take any
-   element; without, they are laid out as a call of `s`'s positional count
-   (arg_layout), each parent parameter typed from the one of `s` it takes. A
-   keyword takes `s`'s like-named keyword. */
+   gather, a parameter the gather funds from the front taking the element
+   at its index, and one it funds from the end (a post after the parent's
+   rest, a required after its leading optionals) any of them; without, they
+   are laid out as a call of `s`'s positional count (arg_layout), each
+   parent parameter typed from the one of `s` it takes. A keyword takes
+   `s`'s like-named keyword, or a boxed value from `s`'s `**` (as a call's
+   `**h` gives one), which codegen reads it from (zsuper_kw_begin). */
 static int bind_zsuper_params(Compiler *c, int id, Scope *s, Scope *pm) {
   int changed = 0;
   /* the parent's `**` takes this method's own */
@@ -6110,10 +6153,14 @@ static int bind_zsuper_params(Compiler *c, int id, Scope *s, Scope *pm) {
   }
   for (int i = 0; i < pm->nparams; i++) {
     if (i == pm->kwrest_idx || !callee_param_is_declared_kwarg(c, pm, pm->pnames[i])) continue;
-    if (!callee_param_is_declared_kwarg(c, s, pm->pnames[i])) continue;
-    LocalVar *src = scope_local(s, pm->pnames[i]);
     LocalVar *dst = scope_local(pm, pm->pnames[i]);
-    if (!src || !dst || dst->rbs_seeded || src->type == TY_UNKNOWN) continue;
+    if (!dst || dst->rbs_seeded) continue;
+    if (!callee_param_is_declared_kwarg(c, s, pm->pnames[i])) {
+      if (s->kwrest_idx >= 0) changed |= slot_take(c, dst, TY_POLY, id);
+      continue;
+    }
+    LocalVar *src = scope_local(s, pm->pnames[i]);
+    if (!src || src->type == TY_UNKNOWN) continue;
     TyKind mg = ty_unify(dst->type, src->type);
     if (mg != dst->type) { dst->type = mg; changed = 1; }
   }
@@ -6138,10 +6185,25 @@ static int bind_zsuper_params(Compiler *c, int id, Scope *s, Scope *pm) {
   TyKind rt = rv ? rv->type : TY_UNKNOWN;
   TyKind at = ty_is_array(rt) ? ty_array_elem(rt) : TY_POLY;
   if (at == TY_VOID || at == TY_NIL || at == TY_UNKNOWN) at = TY_POLY;
+  int opt_seen = 0;
   for (int pk = 0; pk < pm->nparams; pk++) {
     if (pk == pm->rest_idx || pk == pm->kwrest_idx) continue;
     LocalVar *p = pm->pnames[pk] ? scope_local(pm, pm->pnames[pk]) : NULL;
     if (!p || p->rbs_seeded || callee_param_is_declared_kwarg(c, pm, pm->pnames[pk])) continue;
+    int optional = pm->pdefault && pm->pdefault[pk] >= 0;
+    /* counted from the end of the gather: any of this method's positionals
+       or the rest's elements, as the count is the run time's */
+    if ((pm->rest_idx >= 0 && pk > pm->rest_idx) || (opt_seen && !optional)) {
+      for (int j = 0; j < srest; j++) {
+        LocalVar *src = scope_local(s, s->pnames[j]);
+        if (!src || src->type == TY_UNKNOWN) continue;
+        TyKind mg = ty_unify(p->type, src->type);
+        if (mg != p->type) { p->type = mg; changed = 1; }
+      }
+      if (rt != TY_UNKNOWN) changed |= slot_take(c, p, at, id);
+      continue;
+    }
+    opt_seen |= optional;
     if (pk < srest && (pm->rest_idx < 0 || pk < pm->rest_idx)) {
       LocalVar *src = scope_local(s, s->pnames[pk]);
       if (!src || src->type == TY_UNKNOWN) continue;
@@ -6266,12 +6328,14 @@ int infer_param_types(Compiler *c) {
         int rci = rcn ? comp_class_index(c, rcn) : -1;
         if (rci >= 0 && class_is_exc_subclass(c, rci)) {
           int imi = comp_method_in_chain(c, rci, "initialize", NULL);
-          if (imi >= 0 && c->scopes[imi].nparams >= 1) {
-            LocalVar *ip = scope_local(&c->scopes[imi], c->scopes[imi].pnames[0]);
+          /* the message is `Cls.new(arg)`'s one argument, into the
+             parameter its layout funds: `initialize(a = 5, b)` takes it in b */
+          Scope *im = imi >= 0 ? &c->scopes[imi] : NULL;
+          for (int i = 0; im && i < im->nparams; i++) {
+            if (call_param_arg(c, im, &rav[1], 1, i) != rav[1]) continue;
+            LocalVar *ip = scope_local(im, im->pnames[i]);
             TyKind at = infer_type(c, rav[1]);
-            if (ip && !ip->rbs_seeded && at != TY_UNKNOWN) {
-              changed |= slot_take(c, ip, at, rav[1]);
-            }
+            if (ip && !ip->rbs_seeded && at != TY_UNKNOWN) changed |= slot_take(c, ip, at, rav[1]);
           }
         }
       }
@@ -6283,9 +6347,12 @@ int infer_param_types(Compiler *c) {
         for (int rci = 0; at != TY_UNKNOWN && rci < c->nclasses; rci++) {
           if (!class_is_exc_subclass(c, rci) || !class_value_escapes(c, rci)) continue;
           int imi = comp_method_in_chain(c, rci, "initialize", NULL);
-          if (imi < 0 || c->scopes[imi].nparams < 1) continue;
-          LocalVar *ip = scope_local(&c->scopes[imi], c->scopes[imi].pnames[0]);
-          if (ip && !ip->rbs_seeded) changed |= slot_take(c, ip, at, rav[1]);
+          Scope *im = imi >= 0 ? &c->scopes[imi] : NULL;
+          for (int i = 0; im && i < im->nparams; i++) {
+            if (call_param_arg(c, im, &rav[1], 1, i) != rav[1]) continue;
+            LocalVar *ip = scope_local(im, im->pnames[i]);
+            if (ip && !ip->rbs_seeded) changed |= slot_take(c, ip, at, rav[1]);
+          }
         }
       }
     }
@@ -6340,14 +6407,7 @@ int infer_param_types(Compiler *c) {
       if (tmi >= 0) {
         int bargs = nt_ref(nt, id, "arguments");
         int ban = 0; const int *bav = bargs >= 0 ? nt_arr(nt, bargs, "arguments", &ban) : NULL;
-        Scope *bm = &c->scopes[tmi];
-        for (int k = 1; k < ban && k - 1 < bm->nparams; k++) {
-          LocalVar *bp = scope_local(bm, bm->pnames[k - 1]);
-          if (!bp || bp->rbs_seeded) continue;
-          TyKind bat = infer_type(c, bav[k]);
-          if (bat == TY_VOID || bat == TY_NIL) bat = TY_POLY;
-          changed |= slot_take(c, bp, bat, bav[k]);
-        }
+        if (ban > 0) changed |= bind_args_params(c, id, tmi, bav + 1, ban - 1);
         continue;
       }
     }
@@ -6655,8 +6715,13 @@ int infer_param_types(Compiler *c) {
           int umi = comp_method_in_chain(c, k4, name, NULL);
           if (umi < 0) continue;
           Scope *um = &c->scopes[umi];
-          if (a4 >= um->nparams || (um->rest_idx >= 0 && a4 >= um->rest_idx)) continue;
-          LocalVar *up = um->pnames[a4] ? scope_local(um, um->pnames[a4]) : NULL;
+          /* the parameter the call's layout hands the argument */
+          ArgLayout L;
+          call_layout(c, um, uav, uac, &L);
+          int p4 = 0;
+          while (p4 < um->nparams && layout_plain_arg(c, um, uav, &L, p4) != uav[a4]) p4++;
+          arg_layout_free(&L);
+          LocalVar *up = p4 < um->nparams && um->pnames[p4] ? scope_local(um, um->pnames[p4]) : NULL;
           if (!up || up->rbs_seeded) continue;
           /* Only a MACHINE SCALAR parameter. Unboxing into one is a hard type
              pun -- the payload word read as a number -- and nothing downstream
@@ -8666,8 +8731,8 @@ int narrow_empty_array_args_by_yield(Compiler *c) {
     int mbody = m->body;
     int bbody = blk >= 0 ? nt_ref(nt, blk, "body") : -1;
     if (mbody < 0 || (blk >= 0 && bbody < 0)) continue;
-    for (int j = 0; j < an && j < m->nparams; j++) {
-      int a = av[j];
+    for (int j = 0; j < m->nparams; j++) {
+      int a = call_param_arg(c, m, av, an, j);
       if (a < 0 || a >= c->node_cap || nt_kind(nt, a) != NK_ArrayNode) continue;
       int en = 0; nt_arr(nt, a, "elements", &en);
       if (en != 0 || c->arr_want[a] != TY_UNKNOWN) continue;

@@ -1794,6 +1794,20 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     buf_printf(b, "_t%d", tself);
     return 1;
   }
+  /* Blockless each_slice(n) / each_cons(n) on a boxed receiver: a boxed
+     generator or endless Enumerator regroups as it is pulled (materializing
+     it never returned), anything else through its elements as below. */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      (sp_streq(name, "each_cons") || sp_streq(name, "each_slice")) &&
+      comp_ntype(c, id) == TY_ENUMERATOR && !user_defines_or_reads(c, name)) {
+    int te = ++g_tmp;
+    Buf eb; memset(&eb, 0, sizeof eb); emit_expr(c, recv, &eb);
+    Buf nb; memset(&nb, 0, sizeof nb); emit_int_expr(c, argv[0], &nb);
+    buf_printf(b, "({ sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); sp_poly_regroup(_t%d, %s, %d); })",
+               te, eb.p ? eb.p : "sp_box_nil()", te, te, nb.p ? nb.p : "0", sp_streq(name, "each_cons"));
+    free(eb.p); free(nb.p);
+    return 1;
+  }
   /* `poly.sort_by { |k, v| ... }` where poly is a hash/array read out of a
      container: materialize its elements (a hash yields [k, v] pairs) as a poly
      array and re-dispatch as an array sort_by -- the array path's 2-param
@@ -4226,7 +4240,10 @@ else {
         return 1;
       }
       if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
-        buf_printf(b, "sp_%sArray_inspect(", k); emit_expr(c, recv, b); buf_puts(b, ")");
+        char fn[64]; snprintf(fn, sizeof fn, "sp_%sArray_inspect", k);
+        /* the array's nil (NULL) answers nil.to_s, the empty string */
+        if (sp_streq(name, "to_s")) { emit_null_guarded_call(c, recv, rt, fn, "sp_str_empty", b); return 1; }
+        buf_printf(b, "%s(", fn); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
       if (sp_streq(name, "first") && argc == 0) {
@@ -5132,6 +5149,7 @@ else {
         return 1;
       }
       if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
+        if (sp_streq(name, "to_s")) { emit_null_guarded_call(c, recv, rt, "sp_PolyArray_inspect", "sp_str_empty", b); return 1; }
         buf_puts(b, "sp_PolyArray_inspect("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
@@ -6305,7 +6323,9 @@ else {
         return 1;
       }
       if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
-        buf_printf(b, "sp_%sHash_inspect(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
+        char fn[64]; snprintf(fn, sizeof fn, "sp_%sHash_inspect", hn);
+        if (sp_streq(name, "to_s")) { emit_null_guarded_call(c, recv, rt, fn, "sp_str_empty", b); return 1; }
+        buf_printf(b, "%s(", fn); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
       /* PolyPoly receiver: any hash-variant argument folds in through the
@@ -14307,14 +14327,20 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
      program's own with a method or a class method of the name wins via poly
      dispatch, and a cycle on Object, which answers for every receiver the
      dispatch does not, keeps its universal fallback. */
-  if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "cycle") &&
-      nt_ref(nt, id, "block") < 0 && nt_kind(nt, argv[0]) != NK_SplatNode) {
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "cycle") && nt_ref(nt, id, "block") < 0 &&
+      ((argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode) ||
+       (argc == 0 && comp_ntype(c, id) == TY_ENUMERATOR))) {
     int oci = comp_class_index(c, "Object");
     int has_user = oci >= 0 && comp_method_in_chain(c, oci, name, NULL) >= 0;
     if (!g_poly_builtin_arm)
     for (int kk = 0; kk < c->nclasses && !has_user; kk++)
       if (comp_poly_arm_defines_n(c, kk, name, argc) ||
+          (!c->classes[kk].is_native_class && comp_reader_in_chain(c, kk, name, NULL)) ||
           comp_cmethod_in_chain(c, kk, name, NULL) >= 0) has_user = 1;
+    if (!has_user && argc == 0) {
+      buf_puts(b, "sp_poly_cycle("); emit_boxed(c, recv, b); buf_puts(b, ")");
+      return 1;
+    }
     if (!has_user) {
       Buf rcn;
       int ccn = hold_recv_open(c, recv, 1, "sp_RbVal", "SP_GC_ROOT_RBVAL", b, &rcn);

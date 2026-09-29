@@ -150,3 +150,31 @@ class IntRows
   end
 end
 p IntRows.new.fill
+
+# The row routed through an ivar: `@row = []` reads as an int array for a round
+# before `@row = pattern` makes it boxed, and @banks narrowed on that round.
+# Dropping the narrowing a round later left the `[]` of `@banks = [[]]` built
+# as an int-array row, and the boxed row stored over it read back as 0.
+class IvarAlias
+  def initialize
+    @banks = [[]]
+    @patterns = [[]]
+    @row = []
+  end
+  def step
+    @row = pattern
+    @banks[0] = @row
+  end
+  def first
+    @banks[0][0]
+  end
+  def pattern
+    pattern = @patterns[0]
+    pattern << 1
+    pattern << 2
+    pattern
+  end
+end
+ia = IvarAlias.new
+p ia.step
+p ia.first

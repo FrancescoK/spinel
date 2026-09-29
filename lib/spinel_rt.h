@@ -9659,15 +9659,29 @@ static void sp_data_new_check(sp_int npos, sp_RbVal kw, const char *const *mem, 
   sp_raise_kw_error("missing", n - npos, buf);
 }
 /* A boxed `**` operand, converted the way CRuby converts one before any
-   keyword is bound or checked: nil carries no keywords and a Hash is
-   itself, but a builtin of any other class has no #to_hash, which is a
-   TypeError. A user object is one too unless `user_ok`, which the
-   compiler sets when some class of the program defines #to_hash or
-   method_missing: that #to_hash is not reachable from here. */
-static void sp_kw_splat_conv_check(sp_RbVal v, int user_ok) {
-  if (v.tag == SP_TAG_NIL || (user_ok && sp_poly_is_user_obj(v)) ||
-      (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id))) return;
+   keyword is bound or checked, answering what binds: nil carries no
+   keywords and a Hash is itself; a user object whose class defines
+   #to_hash answers it, through the generated bridge's row 5 (the program
+   emits it when it has a `**` and a #to_hash), and an answer that is no
+   Hash is CRuby's TypeError naming both classes. Any other value has no
+   #to_hash, which is a TypeError too -- a user object passes as it is only
+   when `user_ok`, which the compiler sets when some class of the program
+   defines method_missing, which may answer it. */
+static sp_RbVal sp_kw_splat_conv(sp_RbVal v, int user_ok) {
+  if (v.tag == SP_TAG_NIL || (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id))) return v;
+  if (sp_poly_is_user_obj(v)) {
+    sp_RbVal a = sp_box_nil();
+    SP_GC_ROOT_RBVAL(v);
+    if (sp_obj_conv_fn && sp_obj_conv_fn((int)v.cls_id, v.v.p, 5, &a)) {
+      if (a.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(a.cls_id)) return a;
+      const char *cn = sp_poly_class_name(v);
+      sp_raise_cls("TypeError", sp_sprintf("can't convert %s to Hash (%s#to_hash gives %s)",
+                                           cn, cn, sp_poly_class_name(a)));
+    }
+    if (user_ok) return v;
+  }
   sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Hash", sp_convert_src_name(v)));
+  return v;
 }
 
 /* NilClass-aware conversions for a boxed receiver (a nil-holding local widens
@@ -10494,14 +10508,15 @@ static void sp_kwargs_verify(sp_RbVal h, const char *const *allowed, const char 
 }
 /* `**h` into a **kwrest, where h is a Hash only known at run time: merge its
    entries into the keyword-rest being collected. nil carries no keywords, as
-   in CRuby; anything else that is not a Hash is CRuby's TypeError. The
-   keyword-rest is Symbol-keyed, so a key of another kind is refused loudly
-   rather than dropped. */
+   in CRuby; anything else converts through its #to_hash
+   (sp_kw_splat_conv) or is CRuby's TypeError. The keyword-rest is
+   Symbol-keyed, so a key of another kind is refused loudly rather than
+   dropped. */
 static void sp_kwrest_merge_poly(sp_SymPolyHash *dst, sp_RbVal h) {
+  SP_GC_ROOT(dst);
+  h = sp_kw_splat_conv(h, 0);
   if (h.tag == SP_TAG_NIL) return;
-  if (h.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(h.cls_id))
-    sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Hash", sp_convert_src_name(h)));
-  SP_GC_ROOT(dst); SP_GC_ROOT_RBVAL(h);
+  SP_GC_ROOT_RBVAL(h);
   sp_int n = sp_poly_length(h);
   for (sp_int i = 0; i < n; i++) {
     sp_RbVal k, v;
@@ -10515,10 +10530,10 @@ static void sp_kwrest_merge_poly(sp_SymPolyHash *dst, sp_RbVal h) {
    the member reads and sp_kw_splat_check take by name and a keyword_init:
    false Struct keeps in its Hash. */
 static void sp_kw_merge_any(sp_PolyPolyHash *dst, sp_RbVal h) {
+  SP_GC_ROOT(dst);
+  h = sp_kw_splat_conv(h, 0);
   if (h.tag == SP_TAG_NIL) return;
-  if (h.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(h.cls_id))
-    sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Hash", sp_convert_src_name(h)));
-  SP_GC_ROOT(dst); SP_GC_ROOT_RBVAL(h);
+  SP_GC_ROOT_RBVAL(h);
   sp_int n = sp_poly_length(h);
   for (sp_int i = 0; i < n; i++) {
     sp_RbVal k, v;
@@ -13128,6 +13143,24 @@ static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
   e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil(); e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = arr; e->meth = SPL("each");
   return e;
 }
+/* The source of `o.lazy...` where o is a boxed value: an Enumerator is
+   read as it is (a generator one step at a time), any other collection
+   through an Enumerator over it, and a value that is none raises
+   NoMethodError naming lazy. */
+static sp_Enumerator *sp_poly_lazy_src(sp_RbVal v) SP_UNUSED;
+static sp_Enumerator *sp_poly_lazy_src(sp_RbVal v) {
+  if (v.tag != SP_TAG_OBJ || !v.v.p) sp_raise_nomethod(sp_nomethod_msg("lazy", v));
+  if (v.cls_id == SP_BUILTIN_ENUMERATOR) return (sp_Enumerator *)v.v.p;
+  int ok = sp_poly_is_array_kind(v.cls_id) || sp_poly_is_hash_kind(v.cls_id) ||
+           v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE;
+  /* a user object streams through its own #to_a, as sp_enum_items_from reads it */
+  if (!ok && v.cls_id >= 0 && sp_obj_to_a_fn) {
+    sp_RbVal a = sp_obj_to_a_fn(v);
+    ok = a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(a.cls_id);
+  }
+  if (!ok) sp_raise_nomethod(sp_nomethod_msg("lazy", v));
+  return sp_Enumerator_new_from(v);
+}
 /* Stamp the iterated receiver and creating method onto a fresh Enumerator so
    #inspect shows the true origin (`#<Enumerator: "abc":each_char>`), not the
    materialized snapshot. Returns the enumerator for ctor-expression chaining. */
@@ -13200,13 +13233,13 @@ static sp_Enumerator *sp_enum_chain_new(sp_RbVal arr) {
    of them. */
 static sp_bool sp_yielded_packed(int pair, sp_RbVal v) SP_UNUSED;
 static sp_bool sp_yielded_packed(int pair, sp_RbVal v) {
-  if (pair == SP_PAIR_PACKED) return sp_poly_is_pack(v);
+  if (pair == SP_PAIR_PACKED) return sp_poly_is_pack(v) || sp_poly_is_empty_step(v);
   return pair && v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id);
 }
 static SP_COLD SP_NOINLINE sp_RbVal sp_yielded_first_packed(int pair, sp_RbVal v) SP_UNUSED;
 static SP_COLD SP_NOINLINE sp_RbVal sp_yielded_first_packed(int pair, sp_RbVal v) {
   if (!sp_yielded_packed(pair, v)) return v;
-  return sp_poly_arr_get(v, 0);
+  return sp_poly_arr_get(v, 0);   /* nil for an empty step */
 }
 /* Called once per element of a boxed each loop, where the receiver is almost
    always no pair source at all: that case answers inline, and the packed
@@ -13221,6 +13254,7 @@ static sp_PolyArray *sp_yielded_args(int pair, sp_RbVal v) {
   SP_GC_ROOT_RBVAL(v);
   sp_PolyArray *r = sp_PolyArray_new();
   SP_GC_ROOT(r);
+  if (sp_poly_is_empty_step(v)) return r;
   if (sp_yielded_packed(pair, v)) {
     sp_int n = sp_poly_length(v);
     for (sp_int i = 0; i < n; i++) sp_PolyArray_push(r, sp_poly_arr_get(v, i));
@@ -13274,14 +13308,14 @@ static inline sp_RbVal sp_yield_one(sp_RbVal v) {
   return SP_UNLIKELY(sp_poly_is_pack(v)) ? sp_yield_one_unpack(v) : v;
 }
 /* What a generator step `y.yield(*xs)` yields: one value for a one-element
-   xs (nil for an empty one), a pack of xs's values for more, and a value
+   xs, an empty step for an empty one, a pack of xs's values for more, and a value
    that is no Array as itself. */
 static sp_RbVal sp_yield_splat_pack(sp_RbVal a) SP_UNUSED;
 static sp_RbVal sp_yield_splat_pack(sp_RbVal a) {
   if (a.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(a.cls_id)) return sp_yield_one(a);
   SP_GC_ROOT_RBVAL(a);
   sp_int n = sp_poly_length(a);
-  if (n == 0) return sp_box_nil();
+  if (n == 0) return sp_box_empty_step();
   if (n == 1) return sp_yield_one(sp_poly_arr_get(a, 0));
   sp_PolyArray *r = sp_PolyArray_new_pack();
   SP_GC_ROOT(r);
@@ -13291,6 +13325,15 @@ static sp_RbVal sp_yield_splat_pack(sp_RbVal a) {
 /* An Enumerator.new generator whose body yields several values in a step
    (`y.yield(a, b)`): the fiber packs each such step as an Array made by
    sp_PolyArray_new_pack, and a step that yields one value leaves it as is. */
+/* What `e.each { }` answers once a walk of a materialized Enumerator ends:
+   the collection it was made from, else its items. A generator answers its
+   body's value, which the walk reads off the fiber's last resume. */
+static sp_RbVal sp_enum_walk_result(sp_Enumerator *e) SP_UNUSED;
+static sp_RbVal sp_enum_walk_result(sp_Enumerator *e) {
+  if (!e) return sp_box_nil();
+  if (e->has_src || e->source.tag != SP_TAG_NIL) return e->source;
+  return sp_box_poly_array(sp_Enumerator_to_a(e));
+}
 static sp_Enumerator *sp_enum_mark_pair(sp_Enumerator *e) SP_UNUSED;
 static sp_Enumerator *sp_enum_mark_pair(sp_Enumerator *e) {
   e->yields_pair = SP_PAIR_PACKED;
@@ -13298,7 +13341,20 @@ static sp_Enumerator *sp_enum_mark_pair(sp_Enumerator *e) {
 }
 /* A blockless Array#each_with_index enumerator: an [element, index] pair for
    each element (index offset by `off`, as Enumerator#with_index(off) allows). */
+sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, sp_int off);
 static sp_Enumerator *sp_Enumerator_new_ewi(sp_RbVal arr, sp_int off) {
+  /* a boxed generator, endless Enumerator or endless Range pairs as it is
+     pulled */
+  if (arr.tag == SP_TAG_OBJ && arr.v.p &&
+      ((arr.cls_id == SP_BUILTIN_ENUMERATOR &&
+        (((sp_Enumerator *)arr.v.p)->gen || ((sp_Enumerator *)arr.v.p)->endless)) ||
+       (arr.cls_id == SP_BUILTIN_RANGE && ((sp_Range *)arr.v.p)->last == INTPTR_MAX))) {
+    sp_Enumerator *src = arr.cls_id == SP_BUILTIN_ENUMERATOR ? (sp_Enumerator *)arr.v.p
+                                                             : sp_Enumerator_new_from(arr);
+    sp_Enumerator *r = sp_Enumerator_with_index(src, off);
+    r->meth = SPL("each_with_index");
+    return r;
+  }
   SP_GC_ROOT_RBVAL(arr);   /* published into the enumerator below, after several allocations */
   sp_PolyArray *items = sp_enum_items_from(arr);
   SP_GC_ROOT(items);
@@ -13406,6 +13462,24 @@ static sp_Enumerator *sp_poly_cycle_n(sp_RbVal v, sp_int n) {
   sp_poly_cycle_recv_chk(v);
   return sp_Enumerator_new_cycle(v, n);
 }
+/* blockless cycle with no count on a boxed receiver: the endless
+   Enumerator over the same items. */
+static sp_Enumerator *sp_poly_cycle(sp_RbVal v) SP_UNUSED;
+sp_Enumerator *sp_Enumerator_cycle_gen(sp_Enumerator *e);
+static sp_Enumerator *sp_poly_cycle(sp_RbVal v) {
+  sp_poly_cycle_recv_chk(v);
+  /* a generator or endless Enumerator is cycled as it is pulled: draining
+     it first never returns for an endless one */
+  if (v.cls_id == SP_BUILTIN_ENUMERATOR &&
+      (((sp_Enumerator *)v.v.p)->gen || ((sp_Enumerator *)v.v.p)->endless)) {
+    sp_Enumerator *g = sp_Enumerator_cycle_gen((sp_Enumerator *)v.v.p);
+    g->meth = SPL("cycle");
+    return g;
+  }
+  sp_Enumerator *e = sp_Enumerator_new_cycle_endless(v);
+  e->meth = SPL("cycle");
+  return e;
+}
 /* slice_before/slice_after with a pattern VALUE: start a new group before
    (after) each element == pattern. Groups are poly arrays. */
 /* Generic `pattern === element` on boxed values (#2847): a Class pattern
@@ -13511,6 +13585,42 @@ static sp_Enumerator *sp_Enumerator_new_cons(sp_RbVal arr, sp_int n) {
    always a materialized enumerator here (each / each_char / each_slice / ...);
    a generator enumerator never reaches this path. */
 sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, sp_int off);
+sp_Enumerator *sp_Enumerator_regroup_gen(sp_Enumerator *e, sp_int n, sp_bool cons);
+/* Blockless each_slice(n) / each_cons(n) / each_with_index on an
+   Enumerator: a generator or an endless one is regrouped as it is pulled,
+   any other through its items, as before. */
+static sp_Enumerator *sp_Enumerator_regroup(sp_Enumerator *e, sp_int n, sp_bool cons) SP_UNUSED;
+static sp_Enumerator *sp_Enumerator_regroup(sp_Enumerator *e, sp_int n, sp_bool cons) {
+  if (n < 1) sp_raise_cls("ArgumentError", cons ? "invalid size" : "invalid slice size");
+  if (e && (e->gen || e->endless)) return sp_Enumerator_regroup_gen(e, n, cons);
+  SP_GC_ROOT(e);
+  sp_RbVal a = sp_box_poly_array(sp_Enumerator_to_a(e));
+  return cons ? sp_Enumerator_new_cons(a, n) : sp_Enumerator_new_slices(a, n);
+}
+/* The same on a boxed receiver: a boxed generator or endless Enumerator
+   regroups as it is pulled, anything else through its elements. */
+static sp_Enumerator *sp_poly_regroup(sp_RbVal v, sp_int n, sp_bool cons) SP_UNUSED;
+static sp_Enumerator *sp_poly_regroup(sp_RbVal v, sp_int n, sp_bool cons) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p)
+    return sp_Enumerator_regroup((sp_Enumerator *)v.v.p, n, cons);
+  /* an endless Range streams through the generator sp_Enumerator_new_from makes */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p &&
+      ((sp_Range *)v.v.p)->last == INTPTR_MAX)
+    return sp_Enumerator_regroup(sp_Enumerator_new_from(v), n, cons);
+  sp_RbVal a = v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE ? v
+             : sp_box_poly_array(sp_poly_to_a_arr(v));
+  return cons ? sp_Enumerator_new_cons(a, n) : sp_Enumerator_new_slices(a, n);
+}
+static sp_Enumerator *sp_Enumerator_ewi(sp_Enumerator *e) SP_UNUSED;
+static sp_Enumerator *sp_Enumerator_ewi(sp_Enumerator *e) {
+  if (e && (e->gen || e->endless)) {
+    sp_Enumerator *r = sp_Enumerator_with_index(e, 0);
+    r->meth = SPL("each_with_index");
+    return r;
+  }
+  SP_GC_ROOT(e);
+  return sp_Enumerator_new_ewi(sp_box_poly_array(sp_Enumerator_to_a(e)), 0);
+}
 /* A string's characters as a fresh poly array of one-char Strings, built
    directly. Used by a blockless String#each_char enumerator, avoiding the
    intermediate sp_StrArray that sp_str_chars + sp_enum_items_from would
@@ -14368,7 +14478,7 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
         sp_RbVal e = src->data[i];
         if (spread_pair && sp_yielded_packed(pair, e)) {
           _sp_proc_poly_ret = sp_box_nil();
-          sp_proc_call_spread(blk, e, 0);
+          sp_proc_call_spread(blk, sp_poly_is_empty_step(e) ? sp_box_poly_array(sp_PolyArray_new()) : e, 0);
           sp_PolyArray_push(out, _sp_proc_poly_ret);
         }
         else sp_PolyArray_push(out, sp_penum_call1(blk, e));
