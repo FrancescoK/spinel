@@ -12520,6 +12520,23 @@ static int an_ivar_owner(Compiler *c, int node) {
   if (cs->class_id >= 0) return cs->class_id;
   return comp_class_index(c, "Toplevel");
 }
+/* The ivar node a local write's value hands over as the slot's own object:
+   a read, or a plain / or / and write of it (the value of the write is the
+   slot), through single-statement parentheses. -1 for anything else. */
+int strbuf_ivar_alias_value(const NodeTable *nt, int v) {
+  while (v >= 0 && nt_kind(nt, v) == NK_ParenthesesNode) {
+    int body = nt_ref(nt, v, "body");
+    int n = 0;
+    const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode
+                    ? nt_arr(nt, body, "body", &n) : NULL;
+    if (!st || n != 1) return -1;
+    v = st[0];
+  }
+  if (v < 0) return -1;
+  NodeKind k = nt_kind(nt, v);
+  return k == NK_InstanceVariableReadNode || k == NK_InstanceVariableWriteNode ||
+         k == NK_InstanceVariableOrWriteNode || k == NK_InstanceVariableAndWriteNode ? v : -1;
+}
 /* Promote ivar slot (cid, iv) to the shared handle if eligible; returns 1
    on a state change. */
 static int strbuf_promote_ivar(Compiler *c, int cid, const char *nm) {
@@ -14080,14 +14097,21 @@ static int promote_shared_stored_strings(Compiler *c) {
       {  tgtv->type = TY_STRBUF; tgtv->str_shared = 1; changed = 1;  }
   }
   /* local <-> ivar alias pairs: `l = @s` / `@s = l`. When either side is
-     in-place mutated, the ivar slot and the local share the handle. */
+     in-place mutated, the ivar slot and the local share the handle. An ivar
+     write as the value (`l = (@s ||= +"")`, `l = @s = +""`) answers the
+     slot's object, so it aliases the same way. */
   for (int w = 0; w < nt->count; w++) {
     NodeKind wk2 = nt_kind(nt, w);
     int lval = -1, ivnode = -1;
     const char *lname = NULL, *ivname = NULL;
     if (wk2 == NK_LocalVariableWriteNode) {
-      int wv2 = nt_ref(nt, w, "value");
-      if (wv2 < 0 || nt_kind(nt, wv2) != NK_InstanceVariableReadNode) continue;
+      int wv2 = strbuf_ivar_alias_value(nt, nt_ref(nt, w, "value"));
+      if (wv2 < 0) continue;
+      /* a write stores a String here only when its own value is one */
+      if (nt_kind(nt, wv2) != NK_InstanceVariableReadNode) {
+        TyKind st = infer_type(c, nt_ref(nt, wv2, "value"));
+        if (st != TY_STRING && st != TY_STRBUF) continue;
+      }
       lname = nt_str(nt, w, "name"); ivnode = wv2; ivname = nt_str(nt, wv2, "name");
       lval = w;
     }

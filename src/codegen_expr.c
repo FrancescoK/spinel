@@ -993,6 +993,48 @@ void emit_orw_guard(Compiler *c, int v, int boxed, const char *cond, const char 
   free(vpre.p); free(vval.p);
 }
 
+/* The guarded store of `REF ||= v` / `REF &&= v` on a shared-handle String
+   slot: the RHS goes in as a handle (an alias by handle, anything else
+   freshly wrapped), its setup spliced inside the guard. */
+static void emit_strbuf_orw_guard(Compiler *c, const char *ref, int v, int is_or, Buf *b) {
+  Buf vpre; memset(&vpre, 0, sizeof vpre);
+  Buf vval; memset(&vval, 0, sizeof vval);
+  Buf *saved_pre = g_pre; g_pre = &vpre;
+  char srefO[1024];
+  if (strbuf_slot_ref(c, v, srefO, sizeof srefO)) buf_puts(&vval, srefO);
+  else { buf_puts(&vval, "sp_String_new_shared("); emit_str_expr(c, v, &vval); buf_puts(&vval, ")"); }
+  g_pre = saved_pre;
+  buf_printf(b, "if (%s%s) { ", is_or ? "!" : "", ref);
+  if (vpre.p) buf_puts(b, vpre.p);
+  buf_printf(b, "%s = %s; }", ref, vval.p ? vval.p : "");
+  free(vpre.p); free(vval.p);
+}
+
+/* A local bound to an ivar write on a shared-handle String slot
+   (`b = (@buf ||= +"")`, `b = @buf = +""`): the write, then the slot's
+   HANDLE, so the local and the ivar are one object and an append through
+   the local shows in the ivar. Answers 0 when `v` is no such write. */
+int emit_strbuf_ivar_write_handle(Compiler *c, int v, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int w = strbuf_ivar_alias_value(nt, v);
+  if (w < 0 || nt_kind(nt, w) == NK_InstanceVariableReadNode) return 0;
+  const char *nm = nt_str(nt, w, "name");
+  int cid = strbuf_ivar_owner(c, w);
+  if (!nm || cid < 0) return 0;
+  int iv = comp_ivar_index(&c->classes[cid], nm);
+  if (iv < 0 || c->classes[cid].ivar_types[iv] != TY_STRBUF) return 0;
+  char ref[300];
+  Scope *cs = comp_scope_of(c, w);
+  if (cs && cs->class_id < 0) snprintf(ref, sizeof ref, "civ_Toplevel_%s", nm + 1);
+  else snprintf(ref, sizeof ref, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
+  buf_puts(b, "({ ");
+  if (nt_kind(nt, w) == NK_InstanceVariableWriteNode) emit_stmt_inner(c, w, b, 0);
+  else emit_strbuf_orw_guard(c, ref, nt_ref(nt, w, "value"),
+                             nt_kind(nt, w) == NK_InstanceVariableOrWriteNode, b);
+  buf_printf(b, " %s; })", ref);
+  return 1;
+}
+
 /* `REF ||= v` / `REF &&= v` on a typed slot of kind T, as a value: the
    guard tests the slot kind's own nil (NULL for a pointer-backed slot, a
    sentinel for Integer and Symbol) and the RHS converts to the slot's kind.
@@ -1016,16 +1058,10 @@ void emit_slot_orw_value(Compiler *c, TyKind t, const char *ref, int v, int is_o
      handle, anything else freshly wrapped), and the expression's value is
      the slot's read face with the handle published, as a plain write's is. */
   if (t == TY_STRBUF) {
-    Buf *saved_pre = g_pre; g_pre = &vpre;
-    char srefO[1024];
-    if (strbuf_slot_ref(c, v, srefO, sizeof srefO)) buf_puts(&vval, srefO);
-    else { buf_puts(&vval, "sp_String_new_shared("); emit_str_expr(c, v, &vval); buf_puts(&vval, ")"); }
-    g_pre = saved_pre;
-    buf_printf(b, "({ if (%s%s) { ", is_or ? "!" : "", ref);
-    if (vpre.p) buf_puts(b, vpre.p);
-    buf_printf(b, "%s = %s; } (_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL); })",
-               ref, vval.p ? vval.p : "", ref, ref, ref);
-    free(vpre.p); free(vval.p);
+    buf_puts(b, "({ ");
+    emit_strbuf_orw_guard(c, ref, v, is_or, b);
+    buf_printf(b, " (_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL); })",
+               ref, ref, ref);
     return;
   }
   if (t == TY_POLY) {
