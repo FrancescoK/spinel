@@ -6583,6 +6583,14 @@ int infer_param_types(Compiler *c) {
           changed |= bind_call_params(c, id, pcs[pi].mi);
       }
     }
+    /* a builtin receiver (a Hash, an Array, ...) whose class the program does
+       not reopen with the name: the call is Object's method (codegen's
+       universal fallback), which then takes this call's arguments */
+    else if (rt != TY_UNKNOWN && rt != TY_VOID && name) {
+      int ocb = comp_class_index(c, "Object");
+      int omb = ocb >= 0 ? comp_method_in_chain(c, ocb, name, NULL) : -1;
+      if (omb >= 0 && !c->scopes[omb].is_cmethod) changed |= bind_call_params(c, id, omb);
+    }
   }
   return changed;
 }
