@@ -1270,6 +1270,25 @@ static void emit_guarded_slot_assign(Compiler *c, int v, int tn, Buf *b) {
   free(rvb.p);
 }
 
+static void emit_if_arm_value(Compiler *c, int last, TyKind res, int tr) {
+  TyKind lt = comp_ntype(c, last);
+  int saved_gi = g_indent; g_indent = g_indent + 2;
+  Buf le; memset(&le, 0, sizeof le);
+  emit_expr(c, last, &le);
+  g_indent = saved_gi;
+  emit_indent(g_pre, g_indent + 2);
+  buf_printf(g_pre, "_t%d = ", tr);
+  if (res == TY_POLY && lt != TY_POLY) {
+    Buf bx; memset(&bx, 0, sizeof bx);
+    emit_boxed_text(c, lt, le.p ? le.p : default_value(lt), &bx);
+    buf_puts(g_pre, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+  }
+  else if (emit_arm_text_as_bigint(res, lt, le.p ? le.p : default_value(lt), g_pre)) { }
+  else buf_puts(g_pre, le.p ? le.p : default_value(res));
+  buf_puts(g_pre, ";\n");
+  free(le.p);
+}
+
 static void emit_expr_node(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -3513,23 +3532,7 @@ else {
         else if (lt == TY_NIL || lt == TY_UNKNOWN || lt == TY_VOID) {
           emit_stmt(c, last_then, g_pre, g_indent + 2);
         }
-        else {
-          int saved_gi = g_indent; g_indent = g_indent + 2;
-          Buf le; memset(&le, 0, sizeof le);
-          emit_expr(c, last_then, &le);
-          g_indent = saved_gi;
-          emit_indent(g_pre, g_indent + 2);
-          buf_printf(g_pre, "_t%d = ", tr);
-          if (res == TY_POLY && lt != TY_POLY) {
-            Buf bx; memset(&bx, 0, sizeof bx);
-            emit_boxed_text(c, lt, le.p ? le.p : default_value(lt), &bx);
-            buf_puts(g_pre, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-          }
-          else if (emit_arm_text_as_bigint(res, lt, le.p ? le.p : default_value(lt), g_pre)) { }
-          else buf_puts(g_pre, le.p ? le.p : default_value(res));
-          buf_puts(g_pre, ";\n");
-          free(le.p);
-        }
+        else emit_if_arm_value(c, last_then, res, tr);
       }
       emit_indent(g_pre, g_indent);
       buf_puts(g_pre, "}\n");
@@ -3546,23 +3549,7 @@ else {
             if (lt2 == TY_NIL || lt2 == TY_UNKNOWN || lt2 == TY_VOID) {
               emit_stmt(c, last_else, g_pre, g_indent + 2);
             }
-            else {
-              int saved_gi2 = g_indent; g_indent = g_indent + 2;
-              Buf le2; memset(&le2, 0, sizeof le2);
-              emit_expr(c, last_else, &le2);
-              g_indent = saved_gi2;
-              emit_indent(g_pre, g_indent + 2);
-              buf_printf(g_pre, "_t%d = ", tr);
-              if (res == TY_POLY && lt2 != TY_POLY) {
-                Buf bx2; memset(&bx2, 0, sizeof bx2);
-                emit_boxed_text(c, lt2, le2.p ? le2.p : default_value(lt2), &bx2);
-                buf_puts(g_pre, bx2.p ? bx2.p : "sp_box_nil()"); free(bx2.p);
-              }
-              else if (emit_arm_text_as_bigint(res, lt2, le2.p ? le2.p : default_value(lt2), g_pre)) { }
-              else buf_puts(g_pre, le2.p ? le2.p : default_value(res));
-              buf_puts(g_pre, ";\n");
-              free(le2.p);
-            }
+            else emit_if_arm_value(c, last_else, res, tr);
           }
           emit_indent(g_pre, g_indent);
           buf_puts(g_pre, "}\n");
