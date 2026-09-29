@@ -20738,6 +20738,47 @@ void analyze_program(Compiler *c) {
             }
           }
         }
+        /* (9b) a block's parameter bound from such a value: the sites that
+           bind the block -- each yield of the method the call reaches, or
+           an instance_exec's own arguments -- typed again by the binding
+           plan (block_site_types), a keyword from its value as much as a
+           positional */
+        block_sites_index(c);
+        for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
+          int blk = nt_kind(nt, u) == NK_CallNode ? nt_ref(nt, u, "block") : -1;
+          if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+          Scope *bs = comp_scope_of(c, blk);
+          BlockSig bsig;
+          block_sig(c, nt_ref(nt, blk, "parameters"), 0, &bsig);
+          int np = bsig.P + bsig.O + bsig.Q, nb = np + bsig.nk;
+          if (!bs || nb == 0) continue;
+          TyKind *pos = calloc((size_t)nb, sizeof(TyKind));
+          char *absent = calloc((size_t)np + 1, 1);
+          const char *un = nt_str(nt, u, "name");
+          if (un && sp_streq(un, "instance_exec")) {
+            int a = nt_ref(nt, u, "arguments"); int an = 0;
+            const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+            block_site_types(c, &bsig, av, an, pos, absent, pos + np);
+          }
+          else for (int s = 1; s < c->nscopes; s++) {
+            if (!c->scopes[s].yields || !an_call_targets_scope(c, u, s, &c->scopes[s])) continue;
+            const int *sites = NULL;
+            int ns = block_sites(c, s, &sites);
+            for (int k = 0; k < ns; k++) {
+              int a = block_site_args(c, s, sites[k], u); int an = 0;
+              const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+              block_site_types(c, &bsig, av, an, pos, absent, pos + np);
+            }
+          }
+          for (int i = 0; i < nb; i++) {
+            const char *pnm = i < np ? block_sig_name(c, &bsig, i) : block_sig_kw_name(c, &bsig, i - np);
+            LocalVar *pv = pnm ? scope_local(bs, pnm) : NULL;
+            if (!pv) continue;
+            TyKind nw = PW_JOIN(pv->type, pos[i]);
+            if (nw != pv->type) { pv->type = nw; changed = 1; }
+          }
+          free(pos); free(absent);
+        }
         /* (10) a local pinned to a container's element kind whose container
            has widened: the read hands it a box now, so the pin no longer
            holds and the slot takes the box (int_array_array's `row = t[3]`) */

@@ -290,8 +290,21 @@ int infer_param_types(Compiler *c);
 int infer_for_index(Compiler *c);
 int infer_catch_block_params(Compiler *c);
 void infer_bigint_loop_locals(Compiler *c);
-int first_yield(Compiler *c, int si);
-int first_block_call_args(Compiler *c, int si);
+void block_sites_index(Compiler *c);
+int block_sites(Compiler *c, int si, const int **sites);
+int block_site_args(Compiler *c, int si, int site, int call);
+/* A block's (or a proc literal's) parameters as its binders count them:
+   P leading requireds, O optionals, Q posts, R a rest marker (`*r`, `*`,
+   a trailing comma), nk keywords; kw when a trailing keyword hash goes to
+   the keywords (named ones, or any `**`), never to a positional. */
+typedef struct { int pn, num, P, O, Q, R, nk, kw, lambda; } BlockSig;
+void block_sig(Compiler *c, int params, int lambda, BlockSig *s);
+const char *block_sig_name(Compiler *c, const BlockSig *s, int i);
+const char *block_sig_kw_name(Compiler *c, const BlockSig *s, int k);
+void block_site_types(Compiler *c, const BlockSig *s, const int *av, int ac,
+                      TyKind *pos, char *absent, TyKind *kws);
+int block_settle_types(Compiler *c, int blk, const BlockSig *s,
+                       const TyKind *pos, const char *absent, const TyKind *kws);
 int a_proc_params_node(Compiler *c, int create);
 int infer_block_params(Compiler *c);
 int desugar_to_proc_block_arg(Compiler *c);
