@@ -31542,7 +31542,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
          does a method the class defines itself: Nokogiri's Node#dup is a deep
          copy, and the built-in shallow copy took its place (#5450) */
       !(ty_is_object(comp_ntype(c, recv)) &&
-        comp_resolve_member(c, ty_object_class(comp_ntype(c, recv)), name, 0, NULL, NULL) != SP_MEMBER_NONE)) {
+        comp_resolve_member(c, ty_object_class(comp_ntype(c, recv)), name, 0, NULL, NULL) != SP_MEMBER_NONE) &&
+      !(argc == 0 && comp_ntype(c, recv) == TY_POLY && !sp_streq(name, "itself") && user_defines_or_reads(c, name))) {
     int args = nt_ref(nt, id, "arguments");
     int argc0 = 0; if (args >= 0) nt_arr(nt, args, "arguments", &argc0);
     /* hash, string, array, and native-bound object dup/clone require real

@@ -1914,8 +1914,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      int-keyed `copy[i] = v` then typed the copy of an Array as a HASH -- the
      method answered `{}` where CRuby answered an Array (#3952). */
   if (recv >= 0 && argc == 0 && (sp_streq(name, "dup") || sp_streq(name, "clone")) &&
-      infer_type(c, recv) == TY_POLY)
+      infer_type(c, recv) == TY_POLY) {
+    if (c->poly_builtin_ty && id < c->node_cap) c->poly_builtin_ty[id] = TY_POLY;
     return TY_POLY;
+  }
 
   /* `!`, `!=` and `==` are ordinary methods a class may override, so the
      result is whatever its definition answers, not a bool (#3740). `==` joins
