@@ -13386,8 +13386,18 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
     const char *fn = sp_streq(name, "match?") ? "sp_poly_match_p" : "sp_poly_match_data";
-    buf_printf(b, "%s(", fn); emit_boxed(c, recv, b);
-    buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+    Buf mb; memset(&mb, 0, sizeof mb);
+    buf_printf(&mb, "%s(", fn); emit_boxed(c, recv, &mb);
+    buf_puts(&mb, ", "); emit_boxed(c, argv[0], &mb); buf_puts(&mb, ")");
+    /* This arm takes the builtin only when no REACHABLE class defines the
+       name. The analyzer's twin counts every class that defines it, so a
+       user `match` on a class the program never builds leaves the call typed
+       poly there, and the bare MatchData pointer went into that poly slot:
+       the C did not compile. Box it to the type the analyzer settled on. */
+    if (sp_streq(name, "match") && comp_ntype(c, id) == TY_POLY)
+      emit_boxed_text(c, TY_MATCHDATA, mb.p, b);
+    else buf_puts(b, mb.p);
+    free(mb.p);
     return 1;
   }
   /* poly === arg dispatches on the RECEIVER's runtime class, the way CRuby's
