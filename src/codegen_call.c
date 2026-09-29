@@ -15833,6 +15833,17 @@ static int class_responds_to(Compiler *c, int ci, const char *qm) {
   return 0;
 }
 
+static int class_value_responds(Compiler *c, int tv, const char *qm, Buf *b) {
+  int any = (class_reopen_cmethod(c, -1, qm) >= 0);
+  for (int k = 0; k < c->nclasses && !class_object_universal_method(qm); k++) any |= class_responds_to(c, k, qm);
+  if (!any || !b) return any;
+  buf_printf(b, " || (_t%d.tag == SP_TAG_CLASS && (_t%d.cls_id < 0 || _t%d.cls_id == SP_CLASS_BY_NAME ? %d : (0", tv, tv, tv,
+             class_object_universal_method(qm) || (class_reopen_cmethod(c, -1, qm) >= 0));
+  for (int k = 0; k < c->nclasses; k++) if (class_responds_to(c, k, qm)) buf_printf(b, " || _t%d.cls_id == %d", tv, k);
+  buf_puts(b, ")))");
+  return 1;
+}
+
 /* Append the trailing `&block` argument (an sp_Proc *, or NULL) to a direct
    class-method call when the callee keeps a real &blk param and isn't
    yield-inlined -- otherwise the block is silently dropped and the callee's
@@ -35644,12 +35655,15 @@ else {
         /* a poly receiver with no user class owning the name still has the
            builtin surface of whatever it holds: ask the runtime rather than
            folding a flat false (#3619) */
-        else if ((rt == TY_POLY || rt == TY_UNKNOWN) && !any_class_responds(c, qm)) {
-          buf_puts(b, "sp_poly_responds_builtin(");
-          emit_boxed(c, recv, b);
+        else if ((rt == TY_CLASS && class_value_responds(c, 0, qm, NULL)) ||
+                 ((rt == TY_POLY || rt == TY_UNKNOWN) && !any_class_responds(c, qm))) {
+          int tv = class_value_responds(c, 0, qm, NULL) ? ++g_tmp : 0;
+          if (tv) { buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, recv, b); buf_printf(b, "; sp_poly_responds_builtin(_t%d", tv); }
+          else { buf_puts(b, "sp_poly_responds_builtin("); emit_boxed(c, recv, b); }
           buf_puts(b, ", \"");
           emit_c_escaped(b, qm);
           buf_puts(b, "\")");
+          if (tv) { class_value_responds(c, tv, qm, b); buf_puts(b, "; })"); }
           return;
         }
         else if ((rt == TY_POLY || rt == TY_UNKNOWN) && any_class_responds(c, qm)) {
@@ -35687,7 +35701,9 @@ else {
           buf_printf(b, ")) || sp_poly_responds_builtin(_t%d, ", tv);
           buf_puts(b, "\"");
           emit_c_escaped(b, qm);
-          buf_puts(b, "\"); })");
+          buf_puts(b, "\")");
+          class_value_responds(c, tv, qm, b);
+          buf_puts(b, "; })");
           return;
         }
         else {
