@@ -13416,6 +13416,24 @@ static sp_Enumerator *sp_poly_cycle_n(sp_RbVal v, sp_int n) {
   sp_poly_cycle_recv_chk(v);
   return sp_Enumerator_new_cycle(v, n);
 }
+/* blockless cycle with no count on a boxed receiver: the endless
+   Enumerator over the same items. */
+static sp_Enumerator *sp_poly_cycle(sp_RbVal v) SP_UNUSED;
+sp_Enumerator *sp_Enumerator_cycle_gen(sp_Enumerator *e);
+static sp_Enumerator *sp_poly_cycle(sp_RbVal v) {
+  sp_poly_cycle_recv_chk(v);
+  /* a generator or endless Enumerator is cycled as it is pulled: draining
+     it first never returns for an endless one */
+  if (v.cls_id == SP_BUILTIN_ENUMERATOR &&
+      (((sp_Enumerator *)v.v.p)->gen || ((sp_Enumerator *)v.v.p)->endless)) {
+    sp_Enumerator *g = sp_Enumerator_cycle_gen((sp_Enumerator *)v.v.p);
+    g->meth = SPL("cycle");
+    return g;
+  }
+  sp_Enumerator *e = sp_Enumerator_new_cycle_endless(v);
+  e->meth = SPL("cycle");
+  return e;
+}
 /* slice_before/slice_after with a pattern VALUE: start a new group before
    (after) each element == pattern. Groups are poly arrays. */
 /* Generic `pattern === element` on boxed values (#2847): a Class pattern

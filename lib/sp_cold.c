@@ -2638,6 +2638,52 @@ static void sp_with_index_gen(sp_Fiber *f) {
     sp_Fiber_yield(sp_box_poly_array(pair));
   }
 }
+/* A countless cycle over a generator or endless Enumerator: a run pulls the
+   source on a fiber of its own and yields each item as it arrives, keeping
+   them; when the source ends it goes round the kept items forever. The
+   source is never drained up front, so an endless one answers first(n). */
+typedef struct { sp_Enumerator *src; } sp_CyCap;
+static void sp_cy_cap_scan(void *p) {
+  sp_CyCap *cap = (sp_CyCap *)p;
+  if (cap->src) sp_gc_mark(cap->src);
+}
+static void sp_cycle_gen(sp_Fiber *f) {
+  sp_CyCap *cap = (sp_CyCap *)f->user_data;
+  sp_Enumerator *s = cap->src;
+  sp_int j = 0;
+  sp_Fiber *sf = NULL;
+  SP_GC_ROOT(sf);
+  sp_PolyArray *seen = sp_PolyArray_new();
+  SP_GC_ROOT(seen);
+  for (;;) {
+    sp_RbVal v;
+    if (s->gen) {
+      if (!sf) { sf = sp_Fiber_new(s->gen); if (s->gen_cap) { sp_gc_wb((void*)sf); sf->user_data = s->gen_cap; } }
+      if (!sp_Fiber_alive(sf)) break;
+      v = sp_Fiber_resume(sf, sp_box_nil());
+      if (!sp_Fiber_alive(sf)) break;
+    }
+    else {
+      if (s->endless && s->items && s->items->len > 0 && j >= s->items->len) j = 0;
+      if (!s->items || j >= s->items->len) break;
+      v = s->items->data[j++];
+    }
+    sp_PolyArray_push(seen, v);
+    sp_Fiber_yield(v);
+  }
+  if (seen->len == 0) return;
+  for (sp_int i = 0;; i = (i + 1) % seen->len) sp_Fiber_yield(seen->data[i]);
+}
+sp_Enumerator *sp_Enumerator_cycle_gen(sp_Enumerator *e) {
+  SP_GC_ROOT(e);
+  sp_CyCap *cap = (sp_CyCap *)sp_gc_alloc(sizeof(sp_CyCap), NULL, sp_cy_cap_scan);
+  SP_GC_ROOT(cap);
+  cap->src = e;
+  sp_Enumerator *r = sp_Enumerator_new_gen(sp_cycle_gen, cap, sp_box_nil());
+  r->yields_pair = e->yields_pair;
+  r->source = e->source;
+  return r;
+}
 sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, sp_int off) {
   /* an endless source pairs lazily too: its pairs never run out */
   if (e && (e->gen || e->endless)) {
