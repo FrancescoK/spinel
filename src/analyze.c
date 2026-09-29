@@ -17740,6 +17740,7 @@ void analyze_program(Compiler *c) {
   desugar_when_int_float_ranges(c);     /* when 0..0.05 -> 0.0..0.05 */
   desugar_duplicate_underscore_params(c); /* |_, _| -> |_, _dup1| */
   desugar_encoding_queries(c);          /* Encoding.default_internal -> nil, find("x") -> a constant */
+  desugar_alias_method_string_names(c); /* alias_method "k", "y" -> alias_method :k, :y */
   desugar_inherited_aliases(c);         /* alias_method :next, :inherited_m -> a forwarding def */
   desugar_reassigned_block_params(c);   /* |p| p = other -> |p__bpin| p = p__bpin; p = other */
   desugar_class_reopen(c);               /* class Class / Class.class_eval -> a module */

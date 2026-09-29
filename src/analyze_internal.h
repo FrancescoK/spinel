@@ -377,6 +377,7 @@ int desugar_body_ivars(Compiler *c);
 int desugar_when_int_float_ranges(Compiler *c);
 int desugar_duplicate_underscore_params(Compiler *c);
 int desugar_encoding_queries(Compiler *c);
+int desugar_alias_method_string_names(Compiler *c);
 int desugar_inherited_aliases(Compiler *c);
 int desugar_reassigned_block_params(Compiler *c);
 int desugar_class_new_blocks(Compiler *c);
