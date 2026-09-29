@@ -5740,7 +5740,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         return an_poly_concrete(c, name, TY_POLY);
       /* Fiber/Thread/IO/File instance methods: fallback when no user class defines `name`. */
       if (sp_streq(name, "resume") || sp_streq(name, "value") || sp_streq(name, "join") ||
-          sp_streq(name, "status"))
+          sp_streq(name, "status") || sp_streq(name, "transfer") ||
+          (sp_streq(name, "raise") && argc <= 3))
         return an_poly_concrete(c, name, TY_POLY);
       /* the Queue names no other builtin has: a popped value, the queue, a count */
       if ((sp_streq(name, "deq") && argc <= 1) || (sp_streq(name, "enq") && (argc == 1 || argc == 2)))

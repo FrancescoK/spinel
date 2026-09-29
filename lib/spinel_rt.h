@@ -10338,6 +10338,12 @@ static sp_RbVal sp_poly_thread_kill(sp_RbVal v) {
   sp_raise_nomethod(sp_nomethod_msg("kill", v));
   return sp_box_nil();
 }
+/* The Fiber behind a boxed #resume / #transfer / #raise. */
+static sp_Fiber *sp_poly_as_fiber(sp_RbVal v, const char *name) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FIBER && v.v.p) return (sp_Fiber *)v.v.p;
+  sp_raise_nomethod(sp_nomethod_msg(name, v));
+  return NULL;
+}
 /* The Queue names no other builtin has, on a boxed receiver. */
 static sp_queue *sp_poly_as_queue(sp_RbVal v, const char *name) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_QUEUE && v.v.p) return (sp_queue *)v.v.p;
