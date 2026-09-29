@@ -5753,7 +5753,8 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
   coll = unwrap_parens(c, coll);
   TyKind ct = comp_ntype(c, coll);
 
-  if (ct == TY_RANGE && nt_type(nt, coll) && sp_streq(nt_type(nt, coll), "RangeNode")) {
+  if (ct == TY_RANGE && nt_type(nt, coll) && sp_streq(nt_type(nt, coll), "RangeNode") &&
+      nt_ref(nt, coll, "left") >= 0 && nt_ref(nt, coll, "right") >= 0) {
     /* for v in lo..hi -- a plain counted loop. Under --int-overflow=promote the
        counter and/or endpoints may be widened to poly, so coerce each endpoint
        with sp_poly_to_i when its static type is poly/bigint, and when the
@@ -5801,6 +5802,53 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
     buf_printf(b, "; _t%d %s _t%d; _t%d++) {\n", tc, excl ? "<" : "<=", thi, tc);
     emit_indent(b, indent + 2);
     emit_local_ref(c, idx, vn, b); buf_printf(b, " = _t%d;\n", tc);
+    emit_loop_body(c, body, b, indent + 2);
+    emit_indent(b, indent + 1); buf_puts(b, "}\n");
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return;
+  }
+  /* A range held in a variable or returned by a call: walk its sp_Range the
+     way Range#each does, honoring a step and an exclusive end. */
+  if (ct == TY_RANGE && vn) {
+    int tr = ++g_tmp, ts = ++g_tmp, te = ++g_tmp, tc = ++g_tmp;
+    emit_indent(b, indent);
+    buf_printf(b, "{ sp_Range _t%d = ", tr); emit_expr(c, coll, b); buf_puts(b, ";\n");
+    emit_indent(b, indent + 1);
+    buf_printf(b, "if (_t%d.first == INTPTR_MIN) sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\");\n", tr);
+    emit_indent(b, indent + 1);
+    buf_printf(b, "sp_int _t%d = sp_range_step(_t%d); sp_int _t%d = _t%d.last - (_t%d.excl ? (_t%d > 0 ? 1 : -1) : 0);\n",
+               ts, tr, te, tr, tr, ts);
+    emit_indent(b, indent + 1);
+    buf_printf(b, "for (sp_int _t%d = _t%d.first; _t%d > 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d += _t%d) {\n",
+               tc, tr, ts, tc, te, tc, te, tc, ts);
+    LocalVar *rlv = scope_local(comp_scope_of(c, idx), rename_local(vn));
+    char el[32]; snprintf(el, sizeof el, "_t%d", tc);
+    emit_indent(b, indent + 2);
+    emit_local_ref(c, idx, vn, b); buf_puts(b, " = ");
+    if (rlv && rlv->type == TY_POLY) emit_boxed_text(c, TY_INT, el, b);
+    else buf_puts(b, el);
+    buf_puts(b, ";\n");
+    emit_loop_body(c, body, b, indent + 2);
+    emit_indent(b, indent + 1); buf_puts(b, "}\n");
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return;
+  }
+  /* `for s in "a".."e"`: a String range has no int representation, so walk
+     its succ-sequence materialized as a StrArray. */
+  if (ct == TY_STR_RANGE && vn) {
+    int ta = ++g_tmp, ti = ++g_tmp;
+    emit_indent(b, indent);
+    buf_printf(b, "{ sp_StrArray *_t%d = sp_srange_to_a(", ta); emit_expr(c, coll, b); buf_puts(b, ");\n");
+    emit_indent(b, indent + 1); buf_printf(b, "SP_GC_ROOT(_t%d);\n", ta);
+    emit_indent(b, indent + 1);
+    buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {\n", ti, ti, ta, ti);
+    LocalVar *slv = scope_local(comp_scope_of(c, idx), rename_local(vn));
+    char el[64]; snprintf(el, sizeof el, "sp_StrArray_get(_t%d, _t%d)", ta, ti);
+    emit_indent(b, indent + 2);
+    emit_local_ref(c, idx, vn, b); buf_puts(b, " = ");
+    if (slv && slv->type == TY_POLY) emit_boxed_text(c, TY_STRING, el, b);
+    else buf_puts(b, el);
+    buf_puts(b, ";\n");
     emit_loop_body(c, body, b, indent + 2);
     emit_indent(b, indent + 1); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
