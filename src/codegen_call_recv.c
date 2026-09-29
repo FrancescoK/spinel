@@ -1139,7 +1139,12 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       if (nchain > 0 && blv && blv->type == TY_STRBUF &&
           bty && sp_streq(bty, "LocalVariableReadNode")) {
         int tb9 = ++g_tmp;
-        buf_printf(b, "({ sp_String *_t%d = lv_%s;", tb9, rename_local(nt_str(nt, cur, "name")));
+        /* through emit_local_ref: a block made a real proc reads the
+           base through its capture (`*_cap->c_s`), a captured local
+           through its cell -- `lv_s` exists in neither */
+        buf_printf(b, "({ sp_String *_t%d = ", tb9);
+        emit_local_ref(c, cur, nt_str(nt, cur, "name"), b);
+        buf_puts(b, ";");
         for (int j = nchain; j >= 0; j--) {  /* innermost link first */
           int arg = j > 0 ? chain[j - 1] : argv[0];
           buf_printf(b, " sp_String_append(_t%d, ", tb9);
