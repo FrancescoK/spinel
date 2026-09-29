@@ -786,7 +786,7 @@ static int class_is_prim_reopen(Compiler *c, int k) {
   const char *n = c->classes[k].name;
   return sp_streq(n, "Integer") || sp_streq(n, "Float") ||
          sp_streq(n, "String") || sp_streq(n, "Symbol") ||
-         sp_streq(n, "NilClass");
+         sp_streq(n, "NilClass") || sp_streq(n, "TrueClass") || sp_streq(n, "FalseClass");
 }
 
 /* Whether a user exception class answers `name`: the dispatch key then has
@@ -838,6 +838,10 @@ static void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_
     int idx = comp_class_index(c, P[i].cls);
     if (idx >= 0) buf_printf(b, " : _t%d.tag == %s ? %d", tv, P[i].tag, idx);
   }
+  { int ti = comp_class_index(c, "TrueClass"), fi = comp_class_index(c, "FalseClass");
+    if (ti >= 0 || fi >= 0)
+      buf_printf(b, " : _t%d.tag == SP_TAG_BOOL ? (_t%d.v.b ? %d : %d)", tv, tv,
+                 ti >= 0 ? ti : 0x7fffffff, fi >= 0 ? fi : 0x7fffffff); }
   buf_puts(b, " : 0x7fffffff)");
 }
 
@@ -6195,6 +6199,15 @@ static int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *
     if (g_pre && g_pre->len != sv_pre) { g_pre->len = sv_pre; g_pre->p[sv_pre] = 0; }
     free(ib.p); return 0;
   }
+  /* the re-entered emission can land on Object's own method, which may
+     answer nothing (void): run it for its effect */
+  { int oci = comp_class_index(c, "Object");
+    int omi = oci >= 0 ? comp_method_in_chain(c, oci, name, NULL) : -1;
+    if (omi >= 0 && method_is_void(&c->scopes[omi]) && strncmp(ib.p, "sp_Object_", 10) == 0) {
+      buf_printf(b, "%s %s; break;", label ? " default:" : "", ib.p);
+      free(ib.p);
+      return 1;
+    } }
   buf_printf(b, "%s _t%d = %s; break;", label ? " default:" : "", tr, ib.p);
   free(ib.p);
   return 1;
@@ -7442,8 +7455,12 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           else if (sp_streq(_dcn, "Float")) snprintf(_dself, sizeof _dself, "_t%d.v.f", tv);
           else if (sp_streq(_dcn, "String")) snprintf(_dself, sizeof _dself, "_t%d.v.s", tv);
           else if (sp_streq(_dcn, "Symbol")) snprintf(_dself, sizeof _dself, "(sp_sym)_t%d.v.i", tv);
-          /* Object's methods take self boxed (any value can be the receiver) */
-          else if (sp_streq(_dcn, "Object")) snprintf(_dself, sizeof _dself, "_t%d", tv);
+          else if (sp_streq(_dcn, "NilClass")) snprintf(_dself, sizeof _dself, "0");
+          /* Object's (and Array's) methods take self boxed */
+          else if (sp_streq(_dcn, "Object") || sp_streq(_dcn, "Array"))
+            snprintf(_dself, sizeof _dself, "_t%d", tv);
+          else if (sp_streq(_dcn, "TrueClass") || sp_streq(_dcn, "FalseClass"))
+            snprintf(_dself, sizeof _dself, "(int)_t%d.v.b", tv);
           /* a by-value (value-type) class method takes self by value:
              dereference the boxed pointer instead of passing it (#2441) */
           else if (c->classes[defcls].is_value_type) {
@@ -8896,8 +8913,12 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d.v.s", tv);
           else if (sp_streq(_dcn2, "Symbol"))
             snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_sym)_t%d.v.i", tv);
-          else if (sp_streq(_dcn2, "Object"))
+          else if (sp_streq(_dcn2, "NilClass"))
+            snprintf(selfpbuf2, sizeof selfpbuf2, "0");
+          else if (sp_streq(_dcn2, "Object") || sp_streq(_dcn2, "Array"))
             snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d", tv);
+          else if (sp_streq(_dcn2, "TrueClass") || sp_streq(_dcn2, "FalseClass"))
+            snprintf(selfpbuf2, sizeof selfpbuf2, "(int)_t%d.v.b", tv);
           /* parenthesized: a default reading an ivar spells `<self>->iv_x`,
              and a bare cast binds looser than `->` */
           else {
@@ -39318,10 +39339,17 @@ else {
       if (oc_ci3 >= 0) {
         int oc_mi3 = comp_method_in_chain(c, oc_ci3, name, NULL);
         if (oc_mi3 >= 0) {
+          /* a method with no value (it raises, or ends in a void call) where
+             the site's slot wants one: nil in that slot's type */
+          TyKind want3 = comp_ntype(c, id);
+          int void3 = method_is_void(&c->scopes[oc_mi3]) && want3 != TY_VOID &&
+                      want3 != TY_UNKNOWN && want3 != TY_NIL;
+          if (void3) buf_puts(b, "(");
           buf_printf(b, "sp_Object_%s(", mc(name));
           emit_boxed(c, recv, b);
           emit_args_filled(c, oc_mi3, nt_ref(nt, id, "arguments"), ", ", b);
           buf_puts(b, ")");
+          if (void3) buf_printf(b, ", %s)", want3 == TY_POLY ? "sp_box_nil()" : default_value(want3));
           return;
         }
       }

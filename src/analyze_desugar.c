@@ -8882,3 +8882,163 @@ int desugar_body_ivars(Compiler *c) {
   if (changed) comp_grow_node_arrays(c);
   return changed;
 }
+
+/* ---- a method on Object, overridden in builtin classes --------------------
+ *
+ *   class Object;    def ffi_yajl(g, s) ... to_json ... end; end
+ *   class Hash;      def ffi_yajl(g, s) ... each { } ... end; end
+ *   class Array;     def ffi_yajl(g, s) ... end; end
+ *   class TrueClass; def ffi_yajl(g, s) ... end; end
+ *
+ * Dispatch on a run-time value reaches Object's method (whose self is the
+ * boxed value) and the reopened scalars (String, Integer, ...), which take
+ * their unboxed self; a container, boolean or other builtin override has no
+ * such arm. The overrides move into Object's method as branches on self's
+ * class:
+ *
+ *   def ffi_yajl(g, s)
+ *     if is_a?(Hash) then <Hash's body> elsif is_a?(Array) then <Array's>
+ *     elsif self == true then <TrueClass's> else <Object's> end
+ *   end
+ *
+ * Only when every override takes the same parameters as Object's. */
+static const char *mo_override_class(const char *cn) {
+  static const char *const B[] = { "Hash", "Array", "TrueClass", "FalseClass", "Time", "Range",
+    "Regexp", "Proc", "Date", "DateTime", "Rational", "Complex", "Exception", NULL };
+  for (int i = 0; B[i]; i++) if (sp_streq(B[i], cn)) return B[i];
+  return NULL;
+}
+
+static int mo_params_sig(const NodeTable *nt, int def, char *out, size_t cap) {
+  int ps = nt_ref(nt, def, "parameters");
+  out[0] = 0;
+  if (ps < 0) return 1;
+  static const char *const L[] = { "requireds", "optionals", "posts", "keywords" };
+  size_t o = 0;
+  for (int li = 0; li < 4; li++) {
+    int n = 0; const int *ids = nt_arr(nt, ps, L[li], &n);
+    o += (size_t)snprintf(out + o, o < cap ? cap - o : 0, "%s:%d;", L[li], n);
+    for (int j = 0; j < n; j++) {
+      const char *pn = nt_str(nt, ids[j], "name");
+      o += (size_t)snprintf(out + o, o < cap ? cap - o : 0, "%s,", pn ? pn : "?");
+    }
+  }
+  const char *R[] = { "rest", "keyword_rest", "block" };
+  for (int r = 0; r < 3; r++) {
+    int x = nt_ref(nt, ps, R[r]);
+    const char *pn = x >= 0 ? nt_str(nt, x, "name") : NULL;
+    o += (size_t)snprintf(out + o, o < cap ? cap - o : 0, "%s=%s;", R[r], x >= 0 ? (pn ? pn : "_") : "-");
+  }
+  return o < cap;
+}
+
+/* is_a?(K), or `self == true` / `self == false` for the booleans */
+static int mo_override_pred(NodeTable *nt, int like, const char *cn) {
+  if (!sp_streq(cn, "TrueClass") && !sp_streq(cn, "FalseClass")) return mo_guard_pred(nt, like, cn);
+  int call = fwd_new_node_like(nt, like, "CallNode");
+  int args = fwd_new_node_like(nt, like, "ArgumentsNode");
+  nt_node_set_ref(nt, call, "receiver", fwd_new_node_like(nt, like, "SelfNode"));
+  nt_node_set_str(nt, call, "name", "==");
+  int arg = fwd_new_node_like(nt, like, sp_streq(cn, "TrueClass") ? "TrueNode" : "FalseNode");
+  nt_node_set_arr(nt, args, "arguments", &arg, 1);
+  nt_node_set_ref(nt, call, "arguments", args);
+  return call;
+}
+
+int desugar_object_method_builtin_overrides(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  static int rm_def[1024], rm_cls[1024];
+  int nrm = 0;
+  /* Object's own instance methods */
+  for (int om = 0; om < n0; om++) {
+    if (nt_kind(nt, om) != NK_ClassNode) continue;
+    int ocp = nt_ref(nt, om, "constant_path");
+    const char *ocn = ocp >= 0 ? nt_str(nt, ocp, "name") : NULL;
+    if (!ocn || !sp_streq(ocn, "Object")) continue;
+    int ob = nt_ref(nt, om, "body");
+    int obn = 0; const int *obs = ob >= 0 ? nt_arr(nt, ob, "body", &obn) : NULL;
+    for (int oi = 0; oi < obn; oi++) {
+      int odef = obs[oi];
+      if (nt_kind(nt, odef) != NK_DefNode || nt_ref(nt, odef, "receiver") >= 0) continue;
+      const char *mname = nt_str(nt, odef, "name");
+      if (!mname) continue;
+      char osig[1024];
+      if (!mo_params_sig(nt, odef, osig, sizeof osig)) continue;
+      /* the overrides */
+      int ovr[32], ovc[32]; const char *ocls[32]; int no = 0, bad = 0;
+      for (int m = 0; m < n0 && !bad; m++) {
+        if (nt_kind(nt, m) != NK_ClassNode) continue;
+        int cp = nt_ref(nt, m, "constant_path");
+        const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+        const char *g = cn ? mo_override_class(cn) : NULL;
+        if (!g) continue;
+        int b = nt_ref(nt, m, "body");
+        int bn = 0; const int *bs = b >= 0 ? nt_arr(nt, b, "body", &bn) : NULL;
+        for (int k = 0; k < bn; k++) {
+          if (nt_kind(nt, bs[k]) != NK_DefNode || nt_ref(nt, bs[k], "receiver") >= 0) continue;
+          const char *dn = nt_str(nt, bs[k], "name");
+          if (!dn || !sp_streq(dn, mname)) continue;
+          char sig[1024];
+          if (!mo_params_sig(nt, bs[k], sig, sizeof sig) || strcmp(sig, osig) != 0) { bad = 1; break; }
+          if (no < 32) { ovr[no] = bs[k]; ovc[no] = m; ocls[no] = g; no++; }
+        }
+      }
+      if (bad || no == 0) continue;
+      /* if is_a?(A) then A's body elsif ... else Object's body end */
+      int obody = nt_ref(nt, odef, "body");
+      int tail = -1;   /* the else part */
+      if (obody >= 0) {
+        tail = fwd_new_node_like(nt, odef, "ElseNode");
+        int st = obody;
+        if (nt_kind(nt, st) != NK_StatementsNode) {
+          st = fwd_new_node_like(nt, odef, "StatementsNode");
+          nt_node_set_arr(nt, st, "body", &obody, 1);
+        }
+        nt_node_set_ref(nt, tail, "statements", st);
+      }
+      for (int q = no - 1; q >= 0; q--) {
+        int ifn = fwd_new_node_like(nt, odef, "IfNode");
+        nt_node_set_ref(nt, ifn, "predicate", mo_guard_pred(nt, odef, ocls[q]));
+        int body = nt_ref(nt, ovr[q], "body");
+        /* a copy: the same override may serve several Object definitions
+           (one file inlined under several conditions) */
+        if (body >= 0) body = nt_clone_subtree(nt, body);
+        int st = body;
+        if (st >= 0 && nt_kind(nt, st) != NK_StatementsNode) {
+          st = fwd_new_node_like(nt, odef, "StatementsNode");
+          nt_node_set_arr(nt, st, "body", &body, 1);
+        }
+        if (st < 0) {
+          st = fwd_new_node_like(nt, odef, "StatementsNode");
+          int nl = fwd_new_node_like(nt, odef, "NilNode");
+          nt_node_set_arr(nt, st, "body", &nl, 1);
+        }
+        nt_node_set_ref(nt, ifn, "statements", st);
+        if (tail >= 0) nt_node_set_ref(nt, ifn, "subsequent", tail);
+        tail = ifn;
+      }
+      int nb = fwd_new_node_like(nt, odef, "StatementsNode");
+      nt_node_set_arr(nt, nb, "body", &tail, 1);
+      nt_node_set_ref(nt, odef, "body", nb);
+      /* the overrides leave their classes once every Object definition has
+         taken them */
+      for (int q = 0; q < no; q++) {
+        int dup = 0;
+        for (int r = 0; r < nrm; r++) if (rm_def[r] == ovr[q]) dup = 1;
+        if (!dup && nrm < 1024) { rm_def[nrm] = ovr[q]; rm_cls[nrm] = ovc[q]; nrm++; }
+      }
+      changed = 1;
+    }
+  }
+  for (int r = 0; r < nrm; r++) {
+    int b = nt_ref(nt, rm_cls[r], "body");
+    int bn = 0; const int *bs = nt_arr(nt, b, "body", &bn);
+    int *keep = malloc(sizeof(int) * (size_t)(bn ? bn : 1)); int nk = 0;
+    for (int k = 0; k < bn; k++) if (bs[k] != rm_def[r]) keep[nk++] = bs[k];
+    nt_node_set_arr(nt, b, "body", keep, nk);
+    free(keep);
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
