@@ -7435,6 +7435,74 @@ int desugar_alias_method_string_names(Compiler *c) {
   return changed;
 }
 
+/* A receiverless `alias_method :new, :old` whose value is used */
+static int alias_value_call(const NodeTable *nt, int id) {
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "receiver") >= 0 ||
+      nt_ref(nt, id, "block") >= 0) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm || !sp_streq(nm, "alias_method")) return 0;
+  int an = nt_ref(nt, id, "arguments");
+  int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  return ac == 2 && nt_kind(nt, av[0]) == NK_SymbolNode && nt_kind(nt, av[1]) == NK_SymbolNode &&
+         nt_str(nt, av[0], "value") != NULL;
+}
+
+/* `r = alias_method :a, :b` / `p(alias_method :a, :b)` in a class body: the
+   call returns the new name as a Symbol. Every pass that registers an alias
+   reads body statements, so the call moves in front of its statement as one
+   and its value becomes the Symbol literal. */
+int desugar_alias_method_values(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int m = 0; m < n0; m++) {
+    int k = nt_kind(nt, m);
+    if (k != NK_ClassNode && k != NK_ModuleNode && k != NK_SingletonClassNode) continue;
+    int body = nt_ref(nt, m, "body");
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int n = 0; const int *st0 = nt_arr(nt, body, "body", &n);
+    if (n == 0) continue;
+    int *out = malloc(sizeof(int) * (size_t)(2 * n)), no = 0, moved = 0;
+    int *st = malloc(sizeof(int) * (size_t)n);
+    memcpy(st, st0, sizeof(int) * (size_t)n);
+    for (int i = 0; i < n; i++) {
+      int s = st[i], sk = nt_kind(nt, s), call = -1;
+      if (sk == NK_LocalVariableWriteNode || sk == NK_InstanceVariableWriteNode ||
+          sk == NK_ClassVariableWriteNode || sk == NK_ConstantWriteNode ||
+          sk == NK_GlobalVariableWriteNode) {
+        int v = nt_ref(nt, s, "value");
+        if (alias_value_call(nt, v)) {
+          call = v;
+          int sym = fwd_new_node_like(nt, v, "SymbolNode");
+          int an = 0; const int *av = nt_arr(nt, nt_ref(nt, v, "arguments"), "arguments", &an);
+          nt_node_set_str(nt, sym, "value", nt_str(nt, av[0], "value"));
+          nt_node_set_ref(nt, s, "value", sym);
+        }
+      }
+      else if (sk == NK_CallNode && !alias_value_call(nt, s) && nt_ref(nt, s, "arguments") >= 0) {
+        int args = nt_ref(nt, s, "arguments");
+        int ac = 0; const int *av0 = nt_arr(nt, args, "arguments", &ac);
+        int *av = malloc(sizeof(int) * (size_t)(ac > 0 ? ac : 1));
+        if (ac > 0) memcpy(av, av0, sizeof(int) * (size_t)ac);
+        for (int j = 0; j < ac && call < 0; j++) {
+          if (!alias_value_call(nt, av[j])) continue;
+          call = av[j];
+          int sym = fwd_new_node_like(nt, call, "SymbolNode");
+          int cn = 0; const int *cv = nt_arr(nt, nt_ref(nt, call, "arguments"), "arguments", &cn);
+          nt_node_set_str(nt, sym, "value", nt_str(nt, cv[0], "value"));
+          av[j] = sym;
+          nt_node_set_arr(nt, args, "arguments", av, ac);
+        }
+        free(av);
+      }
+      if (call >= 0) { out[no++] = call; moved = 1; }
+      out[no++] = s;
+    }
+    if (moved) { nt_node_set_arr(nt, body, "body", out, no); changed = 1; }
+    free(out); free(st);
+  }
+  return changed;
+}
+
 /* a read of local `name` shaped like node `like` */
 static int alias_local_read(NodeTable *nt, int like, const char *name) {
   int r = fwd_new_node_like(nt, like, "LocalVariableReadNode");
