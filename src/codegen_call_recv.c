@@ -5497,12 +5497,20 @@ static void emit_blk_value_as(Compiler *c, int blk, TyKind vt, Buf *b) {
   int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
   int bval = bn > 0 ? bb[bn - 1] : -1;
   buf_puts(b, "({ ");
+  /* The value's setup lands here, after the block parameters are bound for
+     this pair: hoisted to the enclosing statement it ran once, before the
+     merge loop, on the parameters' initial nil. */
+  Buf *saved_pre = g_pre; g_pre = b;
   for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
+  Buf tv; memset(&tv, 0, sizeof tv);
   if (bval >= 0) {
-    if (vt == TY_POLY && comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, b);
-    else emit_expr(c, bval, b);
+    if (vt == TY_POLY && comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, &tv);
+    else emit_expr(c, bval, &tv);
   }
-  else buf_puts(b, vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
+  g_pre = saved_pre;
+  if (tv.p) buf_puts(b, tv.p);
+  else if (bval < 0) buf_puts(b, vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
+  free(tv.p);
   buf_puts(b, "; })");
 }
 
