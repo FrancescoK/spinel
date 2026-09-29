@@ -1841,11 +1841,17 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     Scope *cws3 = comp_scope_of(c, id);
     int cid3 = cws3 ? cws3->class_id : -1;
     if (cid3 < 0 && g_class_body_id >= 0) cid3 = g_class_body_id;
+    /* a toplevel method's ivar is the Toplevel pseudo-class global, as in
+       the statement form */
+    int tl3 = cid3 < 0 && g_ie_class_id < 0 && cws3 && !cws3->is_cmethod;
+    if (tl3) cid3 = comp_class_index(c, "Toplevel");
     TyKind ivt3 = TY_UNKNOWN;
     if (cid3 >= 0) { int iv3 = comp_ivar_index(&c->classes[cid3], nm); if (iv3 >= 0) ivt3 = c->classes[cid3].ivar_types[iv3]; }
     char ref3[300];
     if (cws3 && cws3->is_cmethod && cid3 >= 0)
       snprintf(ref3, sizeof ref3, "civ_%s_%s", c->classes[cid3].name, iv_c(nm + 1));
+    else if (tl3 && cid3 >= 0)
+      snprintf(ref3, sizeof ref3, "civ_Toplevel_%s", nm + 1);
     else
       snprintf(ref3, sizeof ref3, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
     emit_slot_orw_value(c, ivt3, ref3, v, is_or, b);
