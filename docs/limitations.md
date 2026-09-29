@@ -143,17 +143,11 @@ signature cannot bind is CRuby's `ArgumentError`. What is left:
   inside it). A parameter whose type the analyzer could not see at all is
   `Integer` by default, so a method called ONLY through a Method object takes
   Integer arguments; give it one visible call with the intended kinds.
-- A target with a keyword parameter the call would have to supply (a required
-  keyword, `**kwrest`), a class method that takes its class as a leading
-  parameter, a bound builtin's `__bam_` wrapper, and a target with more than
-  16 positional parameters have no thunk; those keep the stamped ABIs and
-  decline with `NoMethodError` outside them. A splatted call with more than
-  16 arguments declines the same way; the callable ABI packs at most 16
-  positional slots. (CRuby raises `ArgumentError` for a fixed-arity target
-  called with the same count, so the answer is still an exception, just a
-  different one.) The same cap is why `Method#to_proc` declines a target with
-  more than 16 positional parameters and a rest target given more than 16
-  arguments.
+- A bound builtin's `__bam_` wrapper has no thunk: it keeps the stamped ABIs
+  and declines with `NoMethodError` outside them
+  (`[method(:puts)][0].call(1, 2)`). The proc ABI packs at most 16
+  positional slots, so `Method#to_proc` of a target with more than 16
+  positional parameters is not supported.
 - A typed-array adapter value the typed array cannot hold (`arr.method(:push)`
   given a String, `arr.method(:[]=)` given a String value) raises the same
   `TypeError` every typed-array store raises for such a value (see "A typed
@@ -171,18 +165,6 @@ signature cannot bind is CRuby's `ArgumentError`. What is left:
   "z")` appends `3` and then refuses `"z"`, so a rescued
   `TypeError` leaves the array partially pushed (CRuby's untyped Array
   would have appended both).
-- A statically known `Method#call` whose target has a rest parameter accepts it
-  only when nothing follows the rest. A post-rest positional, a declared
-  keyword, or a `**kwrest` cannot ride the fixed C cast (the rest arm builds
-  only the parameters up to the rest), so the call declines with
-  `NoMethodError` rather than reading an unpassed register -- `def m(a, *r, c:
-  3); m.call(1, 2, 3)` (CRuby `[1, [2, 3], 3]`). The poly-slot route declines
-  the same targets, and `Method#to_proc` declines the post-rest, `**kwrest`,
-  and required-keyword shapes as well (its generic trampoline would otherwise
-  read the trailing register as the wrong C type). A declared OPTIONAL keyword
-  after the rest is the exception: `to_proc` always applies its default
-  (`def m(a, *r, c: 3)` called `m.to_proc.call(1, 2, 9)` answers `[1, [2, 9],
-  3]`), while `.call` on the same target still declines.
 - Over-arity is not modeled: a bound array operator whose wrapper/adapter C
   cast has a fixed operand count ignores operands past the ones it models.
   `ia.method(:[]).call(0, 2, 3)` answers `ia[0]` where CRuby raises
@@ -192,63 +174,8 @@ signature cannot bind is CRuby's `ArgumentError`. What is left:
   `push` through a poly slot (`[ia.method(:push)][0].call(8, 9)`) declines with
   `NoMethodError` where the static route pushes both values.
 
-A keyword argument passed through a receiver-bound `Method#to_proc`
-(`m.to_proc.call(1, c: 9)`) is not carried: the proc ABI is positional and has
-no keyword channel. A target that declares a required keyword parameter
-declines the whole `to_proc` with `NoMethodError`; a target with only OPTIONAL
-keywords still applies them on a keyword-less call (`def kw(a, b = a + 1,
-c: 3); m.to_proc.call(1)` answers `[1, 2, 3]`), but a call that actually
-passes a trailing keyword hash declines at run time rather than binding the
-hash to the next positional parameter's C slot (`m.to_proc.call(1, c: 9)` used
-to answer `[1, <hash>, 3]`). The class depends on whether the target has a
-spare optional positional slot: with one (`def kw(a, b = a + 1, c: 3)`) the
-hash lands in that slot and the keyword guard raises `NoMethodError`, while
-without one (`def m(a, c: 3)`) the earlier positional count guard fires and
-raises `ArgumentError: wrong number of arguments (given 2, expected 1)`.
-Either way it is an exception and never a positional read of the hash. An
-explicit braced positional `Hash` in that trailing position is
-indistinguishable at the proc ABI and declines the same way
-(`m.to_proc.call({c: 9})`). Call the Method directly (`m.call(1, c: 9)`) for
-keyword arguments.
-
-Required-keyword presence is not enforced through a receiver-bound
-`Method#call`. With `class K; def m(a, c:); [a, c]; end;
-def w(a, **k); [a, k]; end; end`, `K.new.method(:m).call(1)` answers `[1, 0]`
-where CRuby raises `ArgumentError: missing keyword: :c`; its `.to_proc` now
-declines with `NoMethodError` (the positional proc ABI cannot supply the
-keyword, and the trampoline would otherwise read an uninitialized register).
-`K.new.method(:w).call(1)` answers `[1, {}]` as CRuby does; its `.to_proc`
-declines with `NoMethodError`. The direct call gives CRuby's `[1, {}]` for
-`w`, and an ArgumentError for `m` -- but with an arity message (`wrong number
-of arguments (given 1, expected 2)`) rather than `missing keyword`. A
-top-level (receiverless) `method(:m).call(1)` follows the direct call and
-raises that same ArgumentError; `method(:w).call(1)` answers `[1, {}]` as
-CRuby does. The poly-slot route above declines the receiver-bound targets with
-`NoMethodError` instead.
-
-A trailing keyword hash passed to a receiver-bound `Method#call`/`Method#to_proc`
-also declines with `NoMethodError` when a key names no declared keyword
-parameter and the target also declares keyword parameters: CRuby sends such a
-key to `**kwrest` (or raises `ArgumentError` for an unknown keyword), but the
-bound call's fixed positional cast has no slot for that split, and with a
-declared keyword parameter before the `**kwrest` it emitted an `sp_int`
-initialized from a hash pointer (a C build failure). A `**kwrest`-only target
-whose keys are all unknown is unaffected ONLY when the positional arguments
-already fill every parameter before the kwrest, so the trailing hash lands
-exactly on the kwrest slot: `def w(a, **k)` called `w.call(1, z: 2)` answers
-`[1, {z: 2}]` as CRuby does. When a positional parameter before the kwrest is
-still unfilled (`def w(a, b = 5, **k)` called `w.call(1, z: 2)`) the fixed
-positional fallback would bind the hash to a scalar slot, so that shape
-declines with `NoMethodError` (CRuby answers `[1, 5, {z: 2}]`). A call that
-supplies too few or too many positionals now raises CRuby's `ArgumentError`
-regardless of the kwrest (`def w(a, **k)` called `w.call(z: 2)` or
-`w.call(1, 2)`), where a kwrest target used to skip the positional count. Such
-a rejected positional call no longer mis-types the kwrest slot as the
-argument's scalar kind, which previously made a later keyword-hash call emit
-`sp_int` from the hash pointer (a C build failure).
-
 A receiver-bound `Method#call` / `Method#to_proc` whose target has a parameter
-default that WRITES a local the method body READS also declines with
+default that WRITES a local the method body READS declines with
 `NoMethodError`: the default is evaluated in the call-site frame, while the
 body runs in its own function reading its own slot, so the write could never
 reach it (`def m(a, c = (z = a + 1; z)); z; end` answered the body's zeroed

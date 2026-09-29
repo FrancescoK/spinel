@@ -8217,6 +8217,8 @@ static int splat_spreads_in_place(Compiler *c, int splat) {
          at == TY_POLY_ARRAY;
 }
 
+/* `argv` may be NULL for `pos_argc` plain arguments that are no nodes (a
+   bare `super`'s forwarded parameters): ARG_NODE then names their index. */
 void arg_layout(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh, int inlined,
                 ArgLayout *L) {
   const NodeTable *nt = c->nt;
@@ -8293,7 +8295,7 @@ void arg_layout(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh, i
     if (i == m->rest_idx) { L->from[i] = ARG_REST; continue; }
     if (is_post) {
       int aidx = L->rest_argc - m->npost_rest + (i - m->rest_idx - 1);
-      if (argv && aidx >= 0 && aidx < L->rest_argc) { L->from[i] = ARG_NODE; L->arg[i] = aidx; }
+      if (aidx >= 0 && aidx < L->rest_argc) { L->from[i] = ARG_NODE; L->arg[i] = aidx; }
       else L->from[i] = ARG_DEFAULT;
       continue;
     }
@@ -8313,7 +8315,7 @@ void arg_layout(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh, i
     int slot = arg_slot_for_param(c, m, i, L->bind_argc);
     /* ahead of a rest, only the arguments before the posts */
     int lim = m->rest_idx >= 0 ? L->rest_argc - m->npost_rest : pos_argc;
-    if (argv && slot >= 0 && slot < lim) { L->from[i] = ARG_NODE; L->arg[i] = slot; }
+    if (slot >= 0 && slot < lim) { L->from[i] = ARG_NODE; L->arg[i] = slot; }
     else if (i == L->kwh_slot && !kwp) L->from[i] = ARG_KWH;
     else L->from[i] = ARG_DEFAULT;
   }
@@ -8322,6 +8324,17 @@ void arg_layout(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh, i
 void arg_layout_free(ArgLayout *L) {
   free(L->from); free(L->arg);
   L->from = NULL; L->arg = NULL;
+}
+
+/* The argument parameter i takes among `pos_argc` plain positional ones, by
+   the layout (arg_layout), or -1 when none reaches it: what inference reads
+   to type a parameter from a bare `super`'s forwarded positionals. */
+int arg_layout_plain_arg(Compiler *c, Scope *m, int pos_argc, int i) {
+  ArgLayout L;
+  arg_layout(c, m, NULL, pos_argc, -1, 0, &L);
+  int a = i >= 0 && i < L.n && L.from[i] == ARG_NODE ? L.arg[i] : -1;
+  arg_layout_free(&L);
+  return a;
 }
 
 /* Gather a call's positionals, the splat spread in place, into one rooted
@@ -8381,10 +8394,13 @@ void emit_gather_arity_check(Compiler *c, Scope *m, int ct) {
   emit_positional_count_check(c, m, gv);
 }
 
-/* Positional parameter i from the emit_splat_gather temp, by the count it
-   holds: a rest's slice, a post from the end, an optional past the end
-   taking its default. */
-void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out) {
+/* Where positional parameter i finds its argument among `len` gathered
+   ones (a C expression), by the count they are: the index into `idx`, a
+   post from the end. Answers the count the arguments must exceed for it to
+   be there -- an optional past the end takes its default -- or -1 for one
+   the count check guarantees. A rest's own slice is [rest, len - *npost). */
+int gathered_param_index(Compiler *c, Scope *m, int i, const char *len, char *idx, size_t cap,
+                         int *npost_out) {
   int rest = m->rest_idx, npost = rest >= 0 ? m->npost_rest : 0;
   /* the first parameter funded from the end: a rest's first post, or with a
      leading optional and no rest the first required after the optionals,
@@ -8398,6 +8414,24 @@ void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out) {
     while (post_from < n && m->pdefault && m->pdefault[post_from] >= 0) post_from++;
     npost = n - post_from;
   }
+  if (npost_out) *npost_out = npost;
+  int is_post = rest >= 0 ? i > rest : npost > 0 && i >= post_from;
+  if (is_post) snprintf(idx, cap, "%s - %d", len, post_from + npost - i);
+  else snprintf(idx, cap, "%d", i);
+  if ((rest < 0 || i < rest) && (i >= m->nrequired || (m->pdefault && m->pdefault[i] >= 0)))
+    return i + npost;
+  return -1;
+}
+
+/* Positional parameter i from the emit_splat_gather temp, by the count it
+   holds: a rest's slice, a post from the end, an optional past the end
+   taking its default. */
+void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out) {
+  char len[32], idx[64];
+  snprintf(len, sizeof len, "_t%d->len", ct);
+  int npost = 0;
+  int need = gathered_param_index(c, m, i, len, idx, sizeof idx, &npost);
+  int rest = m->rest_idx;
   if (i == rest) {
     int t = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb);
@@ -8415,17 +8449,14 @@ void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out) {
   LocalVar *sp = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
   TyKind pt = sp ? sp->type : TY_POLY;
   Buf eb; memset(&eb, 0, sizeof eb);
-  char raw[80];
-  int is_post = rest >= 0 ? i > rest : npost > 0 && i >= post_from;
-  if (is_post)
-    snprintf(raw, sizeof raw, "sp_PolyArray_get(_t%d, _t%d->len - %d)", ct, ct, post_from + npost - i);
-  else snprintf(raw, sizeof raw, "sp_PolyArray_get(_t%d, %d)", ct, i);
+  char raw[128];
+  snprintf(raw, sizeof raw, "sp_PolyArray_get(_t%d, %s)", ct, idx);
   if (pt != TY_POLY && pt != TY_UNKNOWN) emit_unbox_nilable_text(c, pt, raw, &eb);
   else buf_puts(&eb, raw);
-  if ((rest < 0 || i < rest) && (i >= m->nrequired || (m->pdefault && m->pdefault[i] >= 0))) {
+  if (need >= 0) {
     Buf db; memset(&db, 0, sizeof db);
     emit_arg_or_default(c, m, i, -1, &db);
-    buf_printf(out, "(%d < _t%d->len ? %s : %s)", i + npost, ct, eb.p ? eb.p : "",
+    buf_printf(out, "(%d < _t%d->len ? %s : %s)", need, ct, eb.p ? eb.p : "",
                db.p ? db.p : default_value(pt));
     free(db.p);
   }

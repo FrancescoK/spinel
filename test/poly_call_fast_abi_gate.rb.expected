@@ -38,7 +38,7 @@ toproc_splat_over: ArgumentError: wrong number of arguments (given 20, expected 
 6
 ptr_arg: TypeError: wrong argument type String (expected Integer)
 ptr_splat: TypeError: wrong argument type String (expected Integer)
-rest_splat_static: NoMethodError
+rest_splat_static: no raise
 static_splat_short: ArgumentError
 static_splat_long: ArgumentError
 static_call_over: ArgumentError
@@ -49,7 +49,7 @@ adapter_set_short: ArgumentError
 adapter_set_splat: ArgumentError
 adapter_set_empty: ArgumentError
 sadapter_set_short: ArgumentError
-rest_opt_short: NoMethodError
+rest_opt_short: no raise
 10
 iarr_push_str: TypeError: cannot store String into an Array[Integer]: a typed array holds one kind of element
 iarr_push_float: TypeError: cannot store Float into an Array[Integer]: a typed array holds one kind of element
@@ -63,12 +63,12 @@ iarr_get_str: TypeError
 adapter_get_short: ArgumentError
 adapter_get_proc_short: ArgumentError
 [1, 2]
-rest_kw_static: NoMethodError
-rest_post_static: NoMethodError
+rest_kw_static: no raise
+rest_post_static: no raise
 rest_kw_toproc: ArgumentError: missing keyword: :c
 rest_kw_toproc_short: ArgumentError: missing keyword: :c
-rest_post_toproc: NoMethodError
-rest_kwrest_toproc: NoMethodError
+rest_post_toproc: no raise
+rest_kwrest_toproc: no raise
 iarr_get_over: 1
 iarr_set_over: 9 [9, 2, 3]
 iarr_poly_push_multi: NoMethodError
@@ -79,19 +79,19 @@ default_body_local_toproc: NoMethodError
 [6]
 long_param_call: NoMethodError
 long_param_toproc: NoMethodError
-kwrest_unmatched: NoMethodError
+kwrest_unmatched: no raise
 kwrest_positional_name: ArgumentError
 [1, {z: 2}]
 kwrest_gap_call: ArgumentError
-kwrest_gap_opt_call: NoMethodError
+kwrest_gap_opt_call: no raise
 kwrest_gap2_call: ArgumentError
 bool_arg_call: TypeError: wrong argument type FalseClass (expected Integer)
 bool_arg_proc: TypeError: wrong argument type FalseClass (expected Integer)
 toproc_many_params: no raise
 toproc_many_params_fixed: no raise
 toproc_rest_over: no raise
-kwrest_toproc_empty: NoMethodError
-kwrest_toproc_kw: NoMethodError
+kwrest_toproc_empty: no raise
+kwrest_toproc_kw: no raise
 [1, 2, 3]
 toproc_opt_kw: no raise
 toproc_kw_no_opt: no raise

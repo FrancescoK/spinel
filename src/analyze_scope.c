@@ -5023,6 +5023,15 @@ static int name_called_on_dynamic_recv(Compiler *c, const char *name, int node_c
   return 0;
 }
 
+/* The class method a call runs on its receiver: its own name, or for a
+   `K.method(:m)` the m the Method binds, which runs on K when called as
+   `K.m` does (`Sub.method(:make).call` constructs a Sub). */
+static const char *cls_call_name(Compiler *c, int id) {
+  const char *nm = nt_str(c->nt, id, "name");
+  const char *sym = nm && sp_streq(nm, "method") ? method_sym_arg(c, id) : NULL;
+  return sym ? sym : nm;
+}
+
 /* `Subclass.create` where `create` is an inherited class method whose body
    does `new(...)`: Ruby's bare `new` constructs the *calling* class, so copy
    the inherited cls method into each calling subclass (the copy's class_id
@@ -5118,7 +5127,7 @@ void specialize_inherited_cls_new(Compiler *c) {
       ci = cn ? comp_class_index(c, cn) : -1;
       if (ci < 0) continue;
     }
-    const char *mname = nt_str(nt, id, "name");
+    const char *mname = cls_call_name(c, id);
     if (!mname || sp_streq(mname, "new")) continue;
     if (comp_cmethod_in_class(c, ci, mname) >= 0) continue;  /* defined on ci */
     int def_cls = -1;
@@ -5207,7 +5216,7 @@ void specialize_inherited_cls_new(Compiler *c) {
     int called_direct = 0;
     for (int ii = 0; ii < nccall && !called_direct; ii++) {
       int id = ccall[ii];
-      if (!nt_str(nt, id, "name") || !sp_streq(nt_str(nt, id, "name"), src->name)) continue;
+      if (!cls_call_name(c, id) || !sp_streq(cls_call_name(c, id), src->name)) continue;
       int r = nt_ref(nt, id, "receiver");
       int rc = comp_class_index(c, nt_str(nt, r, "name"));
       if (rc < 0) continue;
@@ -5219,7 +5228,7 @@ void specialize_inherited_cls_new(Compiler *c) {
       if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
       int r2 = nt_ref(nt, id, "receiver");
       if (r2 >= 0 && !(nt_type(nt, r2) && sp_streq(nt_type(nt, r2), "SelfNode"))) continue;
-      const char *nm2 = nt_str(nt, id, "name");
+      const char *nm2 = cls_call_name(c, id);
       if (!nm2 || !sp_streq(nm2, src->name)) continue;
       Scope *encl = comp_scope_of(c, id);
       if (!encl || !encl->is_cmethod || encl->class_id < 0) continue;
