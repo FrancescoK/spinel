@@ -6993,11 +6993,13 @@ static sp_OpenStruct *sp_OpenStruct_new_from(sp_SymPolyHash *h){
 }
 static sp_SymPolyHash *sp_OpenStruct_to_h(sp_OpenStruct *o){
   /* a fresh copy so mutating the returned hash does not alter the object */
+  SP_GC_ROOT(o);      /* o may be the caller's bare temporary; the copy allocates */
   sp_SymPolyHash *r=sp_SymPolyHash_new(); SP_GC_ROOT(r);
   if(o&&o->tbl) for(sp_int i=0;i<o->tbl->len;i++){ sp_sym k=o->tbl->order[i]; sp_SymPolyHash_set(r,k,sp_SymPolyHash_get(o->tbl,k)); }
   return r;
 }
 static sp_bool sp_OpenStruct_eq(sp_OpenStruct *a, sp_OpenStruct *b){
+  SP_GC_ROOT(a); SP_GC_ROOT(b);   /* either may be the caller's bare temporary; a member's == can allocate */
   if(a==b) return 1;
   if(!a||!b||!a->tbl||!b->tbl) return 0;
   if(a->tbl->len!=b->tbl->len) return 0;
@@ -7009,6 +7011,7 @@ static sp_bool sp_OpenStruct_eq(sp_OpenStruct *a, sp_OpenStruct *b){
 /* OpenStruct#eql? is the member table's eql?: class-strict per member, so
    OpenStruct.new(x: 1) is == but not eql? to OpenStruct.new(x: 1.0). */
 static sp_bool sp_OpenStruct_eql(sp_OpenStruct *a, sp_OpenStruct *b){
+  SP_GC_ROOT(a); SP_GC_ROOT(b);   /* either may be the caller's bare temporary; a member's eql? can allocate */
   if(a==b) return 1;
   if(!a||!b||!a->tbl||!b->tbl) return 0;
   if(a->tbl->len!=b->tbl->len) return 0;
@@ -7019,6 +7022,7 @@ static sp_bool sp_OpenStruct_eql(sp_OpenStruct *a, sp_OpenStruct *b){
 }
 /* #inspect: #<OpenStruct a=1, b="hi"> */
 static const char *sp_OpenStruct_inspect(sp_OpenStruct *o){
+  SP_GC_ROOT(o);      /* o may be the caller's bare temporary; the rendering allocates */
   sp_String *s=sp_String_new(""); SP_GC_ROOT(s);
   sp_String_append(s,"#<OpenStruct");
   if(o&&o->tbl) for(sp_int i=0;i<o->tbl->len;i++){
@@ -13072,6 +13076,7 @@ static sp_RbVal sp_poly_hash_splice(sp_RbVal recv, sp_RbVal v) {
    member table from the hash's entries, keys coerced to symbols. Copies, so
    mutating the OpenStruct does not alter the source hash (#3194). */
 static sp_OpenStruct *sp_openstruct_from_poly(sp_RbVal h) {
+  SP_GC_ROOT_RBVAL(h);   /* h may be the caller's bare temporary; the copy allocates */
   sp_SymPolyHash *tbl = sp_SymPolyHash_new();
   SP_GC_ROOT(tbl);
   if (h.tag == SP_TAG_OBJ && h.cls_id == SP_BUILTIN_SYM_POLY_HASH) {
