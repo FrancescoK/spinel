@@ -23765,7 +23765,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       /* arity: the key predicates take exactly 1 (#2831) */
       if (enm && eac != 1 &&
           (sp_streq(enm, "key?") || sp_streq(enm, "has_key?") ||
-           sp_streq(enm, "include?") || sp_streq(enm, "member?"))) {
+           sp_streq(enm, "include?") || sp_streq(enm, "member?") || sp_streq(enm, "[]"))) {
         buf_puts(b, "(");
         for (int q = 0; q < eac; q++) { buf_puts(b, "(void)("); emit_expr(c, eav[q], b); buf_puts(b, "), "); }
         buf_printf(b, "(sp_raise_cls(\"ArgumentError\","
@@ -23775,15 +23775,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         return;
       }
       /* arity: [] takes 1; fetch takes 1..2 (#2773) */
-      if (enm && sp_streq(enm, "[]") && eac != 1) {
-        buf_puts(b, "(");
-        for (int q = 0; q < eac; q++) { buf_puts(b, "(void)("); emit_expr(c, eav[q], b); buf_puts(b, "), "); }
-        buf_printf(b, "(sp_raise_cls(\"ArgumentError\","
-                      " (&(\"\\xff\" \"wrong number of arguments (given %d, expected 1)\")[1])), %s)",
-                   eac, default_value(comp_ntype(c, id)));
-        buf_puts(b, ")");
-        return;
-      }
       if (enm && sp_streq(enm, "fetch") && (eac == 0 || eac > 2) && nt_ref(nt, id, "block") < 0) {
         buf_puts(b, "(");
         for (int q = 0; q < eac; q++) { buf_puts(b, "(void)("); emit_expr(c, eav[q], b); buf_puts(b, "), "); }
