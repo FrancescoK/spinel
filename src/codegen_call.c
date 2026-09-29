@@ -223,7 +223,8 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   int argov_saved = g_n_argov;
   int cargs = nt_ref(nt, id, "arguments");
   int cargc = 0; const int *cargv = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cargc) : NULL;
-  if (cargc > 0 && kwh_out_of_order(c, m, cargv[cargc - 1])) {
+  int ran_first = cargc > 0 && kwh_out_of_order(c, m, cargv[cargc - 1]);
+  if (ran_first) {
     g_indent++;
     emit_args_in_source_order(c, cargv, cargc, b);
     g_indent--;
@@ -276,6 +277,31 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   arg_layout(c, m, argv2, pos_argc, kwh, 1, &L);
   /* a `**` hash that may be no argument, or a splat: every parameter from
      the gather, call-site code like each argument below */
+  /* A `**hash` among the keywords, as the other call paths take it: the
+     sources merged into one hash the keyword params read by name and the
+     **kwrest collects from (emit_ds_hash_materialize), the positionals run
+     ahead of it where it has an effect. Call-site code, written here rather
+     than hoisted out of the inline. A callee without keywords takes the
+     hash as a positional, as it did. */
+  int kw_merged = kwh >= 0 && kwh_merged(c, m, kwh);
+  TyKind ds_type = TY_UNKNOWN;
+  int ds_tmp = -1;
+  if (kwh >= 0 && !L.gather && kwh_has_splat(nt, kwh) &&
+      (m->kwrest_idx >= 0 || callee_declares_kwargs(c, m))) {
+    RenPark park = ren_park(saved_nren);
+    const char *svs = g_self, *svd = g_self_deref;
+    g_self = saved_self; g_self_deref = saved_self_deref;
+    Buf kb; memset(&kb, 0, sizeof kb);
+    Buf *sv_pre = g_pre; int sv_ind = g_indent;
+    g_pre = &kb; g_indent = din;
+    if (!ran_first && kwh_runs_ahead(c, m, kwh)) emit_positionals_first(c, argv2, pos_argc);
+    ds_tmp = emit_ds_hash_materialize(c, m, kwh, &ds_type);
+    g_pre = sv_pre; g_indent = sv_ind;
+    buf_puts(b, kb.p ? kb.p : "");
+    free(kb.p);
+    g_self = svs; g_self_deref = svd;
+    ren_unpark(&park);
+  }
   int gather_tmp = -1;
   if (L.gather) {
     RenPark park = ren_park(saved_nren);
@@ -287,6 +313,25 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   }
   InlDflt sv_dflt = inl_dflt_enter(m, g_nren, selfbuf, g_self_deref, ci);
   for (int i = 0; i < m->nparams; i++) {
+    /* a **kwrest collects the keywords no declared keyword param takes, as
+       on the other call paths: no key is named after it, so kwh_lookup
+       found none and it bound nil. The collection is call-site code, run
+       here ahead of the binding rather than hoisted out of the inline. */
+    int krhash = -1;
+    if (i == m->kwrest_idx && !(gather_tmp >= 0 && L.from[i] == ARG_GATHERED)) {
+      RenPark park = ren_park(saved_nren);
+      const char *svs = g_self, *svd = g_self_deref;
+      g_self = saved_self; g_self_deref = saved_self_deref;
+      Buf kb; memset(&kb, 0, sizeof kb);
+      Buf *sv_pre = g_pre; int sv_ind = g_indent;
+      g_pre = &kb; g_indent = din;
+      krhash = emit_kwrest_collect(c, m, kwh, ds_tmp, ds_type, args);
+      g_pre = sv_pre; g_indent = sv_ind;
+      buf_puts(b, kb.p ? kb.p : "");
+      free(kb.p);
+      g_self = svs; g_self_deref = svd;
+      ren_unpark(&park);
+    }
     emit_indent(b, din);
     { char rn[128]; snprintf(rn, sizeof rn, "_y%d_%s", tag, m->pnames[i]);
       emit_inlined_param_target(c, m, m->pnames[i], rn, b); }
@@ -294,7 +339,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
     int provided = L.from[i] == ARG_NODE ? argv2[L.arg[i]] : L.from[i] == ARG_KWH ? kwh : -1;
     /* Only bind from the keyword hash when the param was not already filled
        positionally -- otherwise a same-named key would clobber the positional. */
-    if (kwh >= 0 && provided < 0) {
+    if (kwh >= 0 && provided < 0 && !(kw_merged && ds_tmp >= 0)) {
       int kv = kwh_lookup(nt, kwh, m->pnames[i]);
       if (kv >= 0) provided = kv;
     }
@@ -320,8 +365,15 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
        takes included. */
     if (gather_tmp >= 0 && L.from[i] == ARG_GATHERED)
       emit_gathered_param(c, m, i, gather_tmp, b);
+    else if (krhash >= 0) {
+      LocalVar *krp = scope_local(m, m->pnames[i]);
+      if (krp && krp->type == TY_POLY) buf_printf(b, "sp_box_obj(_t%d, SP_BUILTIN_SYM_POLY_HASH)", krhash);
+      else buf_printf(b, "_t%d", krhash);
+    }
     else if (L.from[i] == ARG_REST)
       emit_rest_pack_kwh(c, i, L.rest_argc - m->npost_rest, argv2, L.rest_kwh, b);
+    else if (provided < 0 && ds_tmp >= 0 && callee_has_kwarg(c, m, m->pnames[i]))
+      emit_ds_param_extract(c, m, i, ds_tmp, ds_type, b);
     else emit_arg_or_default(c, m, i, provided, b);
     g_self = svs; g_self_deref = svd;
     ren_unpark(&park);
