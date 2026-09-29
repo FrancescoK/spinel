@@ -13128,6 +13128,24 @@ static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
   e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil(); e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = arr; e->meth = SPL("each");
   return e;
 }
+/* The source of `o.lazy...` where o is a boxed value: an Enumerator is
+   read as it is (a generator one step at a time), any other collection
+   through an Enumerator over it, and a value that is none raises
+   NoMethodError naming lazy. */
+static sp_Enumerator *sp_poly_lazy_src(sp_RbVal v) SP_UNUSED;
+static sp_Enumerator *sp_poly_lazy_src(sp_RbVal v) {
+  if (v.tag != SP_TAG_OBJ || !v.v.p) sp_raise_nomethod(sp_nomethod_msg("lazy", v));
+  if (v.cls_id == SP_BUILTIN_ENUMERATOR) return (sp_Enumerator *)v.v.p;
+  int ok = sp_poly_is_array_kind(v.cls_id) || sp_poly_is_hash_kind(v.cls_id) ||
+           v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE;
+  /* a user object streams through its own #to_a, as sp_enum_items_from reads it */
+  if (!ok && v.cls_id >= 0 && sp_obj_to_a_fn) {
+    sp_RbVal a = sp_obj_to_a_fn(v);
+    ok = a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(a.cls_id);
+  }
+  if (!ok) sp_raise_nomethod(sp_nomethod_msg("lazy", v));
+  return sp_Enumerator_new_from(v);
+}
 /* Stamp the iterated receiver and creating method onto a fresh Enumerator so
    #inspect shows the true origin (`#<Enumerator: "abc":each_char>`), not the
    materialized snapshot. Returns the enumerator for ctor-expression chaining. */

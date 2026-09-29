@@ -6225,6 +6225,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       TyKind res = (sp_streq(name, "first") && argc == 0) ? TY_POLY : TY_POLY_ARRAY;
       if (st == TY_RANGE || st == TY_INT_ARRAY || st == TY_ENUMERATOR ||
           st == TY_POLY_ARRAY || st == TY_STR_ARRAY || st == TY_FLOAT_ARRAY) return res;
+      /* a source only known at run time streams as an Enumerator over it
+         (sp_poly_lazy_src), unless the program defines a lazy of its own */
+      if (st == TY_POLY && !an_user_recv_defines_method(c, "lazy")) return res;
       /* an empty array literal has no element type and so types UNKNOWN, but
          the pipeline over it is still well defined -- it yields [] (#2996) */
       if (st == TY_UNKNOWN && nt_type(nt, lazy_src) &&
