@@ -4026,6 +4026,26 @@ static int wb_header_has_param(const Buf *b, size_t h, const char *nm, size_t nn
   }
   return 0;
 }
+static size_t wb_stmt_end(const Buf *b, size_t q) {
+  size_t k = q + 1, d = 0, send = 0;
+  int str = 0, ch = 0;
+  for (; k < b->len; k++) {
+    char x = b->p[k];
+    if (str) { if (x == '\\') k++; else if (x == '"') str = 0; continue; }
+    if (ch) { if (x == '\\') k++; else if (x == '\'') ch = 0; continue; }
+    if (x == '"') { str = 1; continue; }
+    if (x == '\'') { ch = 1; continue; }
+    if (x == '(' || x == '[' || x == '{') d++;
+    else if (x == ')' || x == ']' || x == '}') { if (!d) break; d--; }
+    else if (x == ';' && !d) { send = k; break; }
+  }
+  if (send) {                       /* not when it is a statement expression's value */
+    size_t k2 = send + 1;
+    while (k2 < b->len && (b->p[k2] == ' ' || b->p[k2] == '\n' || b->p[k2] == '\t')) k2++;
+    if (k2 + 1 < b->len && b->p[k2] == '}' && b->p[k2+1] == ')') send = 0;
+  }
+  return send;
+}
 /* `(*X) = v` where X names a reference cell: wrap X so the barrier lands on the
    cell, which is the object the collector reaches the stored value through.
 
@@ -4087,25 +4107,7 @@ static void gc_wb_cells(Compiler *c, Buf *b) {
     int at_stmt2 = 1;
     for (size_t k = bol2; k < i; k++)
       if (b->p[k] != ' ' && b->p[k] != '\t') { at_stmt2 = 0; break; }
-    size_t send = 0;
-    if (at_stmt2) {
-      size_t k = q + 1, d2 = 0; int str2 = 0, ch2 = 0;
-      for (; k < b->len; k++) {
-        char x = b->p[k];
-        if (str2) { if (x == '\\') k++; else if (x == '"') str2 = 0; continue; }
-        if (ch2) { if (x == '\\') k++; else if (x == '\'') ch2 = 0; continue; }
-        if (x == '"') { str2 = 1; continue; }
-        if (x == '\'') { ch2 = 1; continue; }
-        if (x == '(' || x == '[' || x == '{') d2++;
-        else if (x == ')' || x == ']' || x == '}') { if (!d2) break; d2--; }
-        else if (x == ';' && !d2) { send = k; break; }
-      }
-      if (send) {                       /* not when it is a statement expression's value */
-        size_t k2 = send + 1;
-        while (k2 < b->len && (b->p[k2]==' '||b->p[k2]=='\n'||b->p[k2]=='\t')) k2++;
-        if (k2 + 1 < b->len && b->p[k2]=='}' && b->p[k2+1]==')') send = 0;
-      }
-    }
+    size_t send = at_stmt2 ? wb_stmt_end(b, q) : 0;
     Buf ins; memset(&ins, 0, sizeof ins);
     if (send) {
       int wid = ++g_tmp;
@@ -4256,30 +4258,11 @@ static void gc_wb_insert_seg(Compiler *c, Buf *b, size_t fn_off) {
        is evaluated once; an assignment inside a larger expression still uses
        the wrapper, which has the same hazard and no room for a second
        statement. */
-    size_t stmt_end = 0;
     /* Not when this store is the last statement of a statement expression:
        that position IS the expression's value, and wrapping it in a block
        makes the value void. Detected by what follows the statement -- `})`
        closes a statement expression. */
-    if (at_stmt) {
-      size_t k = q + 1, d = 0;
-      int str = 0, ch = 0;
-      for (; k < b->len; k++) {
-        char x = b->p[k];
-        if (str) { if (x == '\\') k++; else if (x == '"') str = 0; continue; }
-        if (ch) { if (x == '\\') k++; else if (x == '\'') ch = 0; continue; }
-        if (x == '"') { str = 1; continue; }
-        if (x == '\'') { ch = 1; continue; }
-        if (x == '(' || x == '[' || x == '{') d++;
-        else if (x == ')' || x == ']' || x == '}') { if (!d) break; d--; }
-        else if (x == ';' && !d) { stmt_end = k; break; }
-      }
-    }
-    if (stmt_end) {
-      size_t k2 = stmt_end + 1;
-      while (k2 < b->len && (b->p[k2] == ' ' || b->p[k2] == '\n' || b->p[k2] == '\t')) k2++;
-      if (k2 + 1 < b->len && b->p[k2] == '}' && b->p[k2+1] == ')') stmt_end = 0;
-    }
+    size_t stmt_end = at_stmt ? wb_stmt_end(b, q) : 0;
     Buf ins; memset(&ins, 0, sizeof ins);
     if (at_stmt && stmt_end) {
       /* rewrite the whole statement: { typeof(obj) _wb = obj; _wb->f = rhs; wb(_wb); } */
