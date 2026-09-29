@@ -14064,7 +14064,10 @@ char *codegen_program(const NodeTable *nt) {
   if (g_ext_init_name) buf_puts(body, "}\n");
   else {
     if (g_needs_at_exit) buf_puts(body, "  _sp_main_rc = sp_at_exit_run(0);\n}\n");
-    else buf_puts(body, "  _sp_main_rc = 0;\n}\n");
+    /* without hooks, the finalizers still registered run here, where the
+       program ends in Ruby terms -- before the C exit handlers, a library's
+       own teardown among them (sp_at_exit_run does the same with hooks) */
+    else buf_puts(body, "  _sp_main_rc = 0;\n  sp_fin_run_exit();\n}\n");
     g_c_ret_void = sv_main_cv;
     buf_puts(body, "int main(int argc,char**argv){\n"
                    "  _sp_main_argc = argc; _sp_main_argv = argv;\n");
