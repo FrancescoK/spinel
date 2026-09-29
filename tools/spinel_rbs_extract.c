@@ -100,6 +100,12 @@ static void sbuf_set(sbuf_t *s, const char *src, size_t n) {
 static char **known_names = NULL;
 static size_t known_names_len = 0;
 static size_t known_names_cap = 0;
+/* The qualified name of the declaration whose members are being emitted
+ * (`Rails` for the members of `module Rails`). An unqualified type name
+ * resolves against it first: RBS, like Ruby, looks a constant up in the
+ * innermost enclosing namespace, so `Application` inside `module Rails`
+ * is `Rails::Application` when that is declared. */
+static const char *g_self_scope = NULL;
 
 static void known_names_add(const char *name, size_t n) {
     /* dedupe (linear; n is small in practice) */
@@ -377,7 +383,27 @@ else {
     sbuf_set(out, "obj_", 4);
     bool absolute = (ci->name != NULL && ci->name->rbs_namespace != NULL
                      && ci->name->rbs_namespace->absolute);
-    if (!absolute && enclosing_scope != NULL && enclosing_scope[0] != '\0'
+    /* The declaration's own namespace first: `Application` inside
+     * `module Rails` is `Rails_Application` when that is declared, even
+     * with a top-level `Application` in scope. */
+    bool self_resolved = false;
+    if (!absolute && g_self_scope != NULL && g_self_scope[0] != '\0'
+        && type_name_is_unqualified(ci->name)) {
+        sbuf_t own;
+        sbuf_init(&own);
+        sbuf_append_cstr(&own, g_self_scope);
+        sbuf_append_cstr(&own, "_");
+        sbuf_append(&own, name.buf, name.len);
+        if (known_names_has(own.buf)) {
+            sbuf_append(out, own.buf, own.len);
+            self_resolved = true;
+        }
+        sbuf_free(&own);
+    }
+    if (self_resolved) {
+        /* resolved against the declaration's own namespace */
+    }
+else if (!absolute && enclosing_scope != NULL && enclosing_scope[0] != '\0'
         && type_name_is_unqualified(ci->name)) {
         /* Walk the lexical chain: try `<chain>_<name>` for each suffix
          * of enclosing_scope (innermost outward), then top-level. */
@@ -693,6 +719,8 @@ static void traverse_members(rbs_parser_t *p, rbs_node_list_t *members,
                              const char *lookup_scope, FILE *out) {
     if (members == NULL || members->length == 0) return;
     fprintf(out, "class %s\n", qualified_scope);
+    const char *sv_self_scope = g_self_scope;
+    g_self_scope = qualified_scope;
     rbs_node_list_node_t *cur = members->head;
     while (cur != NULL) {
         rbs_node_t *n = cur->node;
@@ -734,6 +762,7 @@ static void traverse_members(rbs_parser_t *p, rbs_node_list_t *members,
         }
         cur = cur->next;
     }
+    g_self_scope = sv_self_scope;
 }
 
 /* Pre-pass: collect every Class/Module declaration's qualified name
