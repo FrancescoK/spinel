@@ -3179,6 +3179,9 @@ int infer_write_types(Compiler *c) {
           vt = ty_unify(vt, ty_hash_val(mai));
         }
         if (!is_idx_write) continue;
+        /* a conflict block's value is stored under the colliding key */
+        TyKind bvt = hash_merge_block_value_ty(c, id);
+        if (bvt != TY_UNKNOWN) vt = ty_unify(vt, bvt);
         is_merge = 1;
       }
       else if (name && sp_streq(name, "[]=") && an == 3) {
