@@ -8744,6 +8744,7 @@ static sp_RbVal sp_poly_fetch(sp_RbVal recv, sp_RbVal key, int has_dflt, sp_RbVa
    would alias the backing store (and double-free through the finalizer);
    they keep their dedicated copy paths. clone preserves the frozen bit. */
 static sp_PolyPolyHash*sp_PolyPolyHash_dup(sp_PolyPolyHash*h);  /* fwd */
+static void (*sp_user_init_copy_hook)(sp_RbVal, sp_RbVal) = NULL;
 static sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen) {
   /* Hash#dup/#clone on a boxed hash: a shallow copy of the same variant. The
      hash went out as-is, so a `dup` taken to keep the caller's hash intact
@@ -8821,6 +8822,7 @@ static sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen) {
     SP_GC_ROOT(src);
     void *n = sp_gc_alloc(payload, h->finalize, h->scan);
     memcpy(n, src, payload);
+    if (sp_user_init_copy_hook) { SP_GC_ROOT(n); sp_RbVal r = v; r.v.p = n; sp_user_init_copy_hook(r, v); }
     if (keep_frozen && h->frozen)
       ((sp_gc_hdr *)((char *)n - sizeof(sp_gc_hdr)))->frozen = 1;
     v.v.p = n;

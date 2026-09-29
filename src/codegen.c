@@ -9837,6 +9837,34 @@ static void emit_user_aset_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "    default: break;\n  }\n}\n");
 }
 
+static int g_has_user_init_copy = 0;
+static int user_init_copy_scope(Compiler *c, int k, int *defcls) {
+  int mi = c->classes[k].instantiated ? comp_method_in_chain(c, k, "initialize_copy", defcls) : -1;
+  if (mi < 0) return -1;
+  Scope *m = &c->scopes[mi];
+  LocalVar *p = m->nparams == 1 && m->rest_idx < 0 ? scope_local(m, m->pnames[0]) : NULL;
+  if (!p || !(ty_is_object(p->type) || p->type == TY_POLY) || !m->reachable || m->yields ||
+      scope_is_shadowed(c, mi) || m->is_transplanted_source || c->classes[*defcls].is_value_type) return -1;
+  return mi;
+}
+
+static void emit_user_init_copy_dispatch(Compiler *c, Buf *b) {
+  buf_puts(b, "static void sp_user_init_copy_dispatch(sp_RbVal copy, sp_RbVal orig) {\n  switch (copy.cls_id) {\n");
+  for (int k = 0; k < c->nclasses; k++) {
+    int defcls = -1, mi = user_init_copy_scope(c, k, &defcls);
+    if (mi < 0) continue;
+    TyKind pt = scope_local(&c->scopes[mi], c->scopes[mi].pnames[0])->type;
+    const char *dcn = c->classes[defcls].c_name;
+    buf_printf(b, "    case %d: ", k);
+    emit_method_cname(c, &c->scopes[mi], b);
+    buf_printf(b, "((sp_%s *)copy.v.p, ", dcn);
+    if (pt == TY_POLY) buf_puts(b, "orig");
+    else buf_printf(b, "(sp_%s *)orig.v.p", c->classes[ty_object_class(pt)].c_name);
+    buf_puts(b, c->scopes[mi].blk_param && c->scopes[mi].blk_param[0] ? ", NULL); break;\n" : "); break;\n");
+  }
+  buf_puts(b, "    default: break;\n  }\n}\n");
+}
+
 /* Generate sp_user_binop_dispatch: a cls_id switch resolving user-defined
    binary operators on a BOXED receiver. Installed as sp_user_binop_hook, the
    last stop before sp_poly_binop_bad raises -- so `acc + x` inside a fold
@@ -10264,6 +10292,8 @@ void emit_regex_section(Compiler *c, Buf *b) {
     buf_puts(b, "static sp_RbVal sp_user_coerce_dispatch(const char *op, sp_RbVal recv, sp_RbVal obj, sp_bool *handled);\n");
   if (g_has_user_to_io)
     buf_puts(b, "static sp_File *sp_user_to_io_dispatch(sp_RbVal v);\n");
+  if (g_has_user_init_copy)
+    buf_puts(b, "static void sp_user_init_copy_dispatch(sp_RbVal copy, sp_RbVal orig);\n");
   if (g_needs_class_machinery)
     buf_puts(b, "static int sp_poly_is_a(sp_RbVal obj, sp_Class klass);\n");
   buf_puts(b, "static void *sp_poly_unbox_cls(sp_RbVal v, int cls, const char *want);\n");
@@ -10341,6 +10371,8 @@ void emit_regex_section(Compiler *c, Buf *b) {
     buf_puts(b, "  sp_user_coerce_hook = sp_user_coerce_dispatch;\n");
   if (g_has_user_to_io)
     buf_puts(b, "  sp_user_to_io_hook = sp_user_to_io_dispatch;\n");
+  if (g_has_user_init_copy)
+    buf_puts(b, "  sp_user_init_copy_hook = sp_user_init_copy_dispatch;\n");
   if (g_gen_obj_hashkey)
     buf_puts(b, "  sp_obj_hash_hook = sp_gen_obj_hash;\n  sp_obj_eql_hook = sp_gen_obj_eql;\n");
   if (g_gen_obj_valeq)
@@ -13600,6 +13632,14 @@ char *codegen_program(const NodeTable *nt) {
   g_has_user_aset = 0;
   for (int k = 0; k < c->nclasses && !g_has_user_aset; k++)
     if (c->classes[k].instantiated && user_aset_scope(c, k, NULL) >= 0) g_has_user_aset = 1;
+  g_has_user_init_copy = 0;
+  for (int id = 0, r, dc; id < c->nt->count && !g_has_user_init_copy; id++) {
+    const char *dn = nt_kind(c->nt, id) == NK_CallNode ? nt_str(c->nt, id, "name") : NULL;
+    if (dn && (sp_streq(dn, "dup") || sp_streq(dn, "clone")) &&
+        (r = nt_ref(c->nt, id, "receiver")) >= 0 && comp_ntype(c, r) == TY_POLY)
+      for (int k = 0; k < c->nclasses && !g_has_user_init_copy; k++)
+        if (user_init_copy_scope(c, k, &dc) >= 0) g_has_user_init_copy = 1;
+  }
   g_has_user_coerce = 0;
   for (int k = 0; k < c->nclasses; k++) {
     if (!c->classes[k].instantiated) continue;
@@ -13674,6 +13714,7 @@ char *codegen_program(const NodeTable *nt) {
   if (g_has_user_aset) emit_user_aset_dispatch(c, body);
   if (g_has_user_coerce) emit_user_coerce_dispatch(c, body);
   if (g_has_user_to_io) emit_user_to_io_dispatch(c, body);
+  if (g_has_user_init_copy) emit_user_init_copy_dispatch(c, body);
   /* Struct/Data value-== hook (after the class struct definitions); emitted
      before the hash-key dispatch, which references sp_obj_eq_dispatch. */
   if (g_gen_obj_valeq) emit_obj_valeq_dispatch(c, body);
