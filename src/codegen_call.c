@@ -23635,6 +23635,14 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       buf_puts(b, "sp_OpenStruct_to_h("); emit_expr(c, recv, b); buf_puts(b, ")");
       return;
     }
+    /* dup / clone copy the member table. The generic identity shortcut handed
+       back the receiver itself, so a write through the copy landed in the
+       original. */
+    if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0) {
+      buf_puts(b, "sp_OpenStruct_dup("); emit_expr(c, recv, b);
+      buf_printf(b, ", %d)", sp_streq(name, "clone") ? 1 : 0);
+      return;
+    }
     if (sp_streq(name, "inspect") || (sp_streq(name, "to_s") && argc == 0)) {
       /* inspect/to_s is a TY_STRING (const char*); wrapping it in sp_String_new
          produced an sp_String* that was then cast straight to const char*, so
