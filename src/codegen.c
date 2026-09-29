@@ -1,6 +1,10 @@
 #include <limits.h>
 #include "codegen_internal.h"
 
+/* classes whose pool a proc or fiber body has declared, per program */
+static unsigned char *g_pool_fwd = NULL;
+static int g_pool_fwd_n = 0;
+
 /* A reference-backed builtin (IO/Fiber/Thread/Queue/Mutex/ConditionVariable/
    Enumerator/Exception/Proc/Method) is a genuinely nilable C pointer: an unset
    ivar, a `return nil` method, or a cache miss yields NULL. It must box via
@@ -7844,16 +7848,14 @@ void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b) {
        constructors, and so ahead of the SP_POOL_DEFINE this names: declare
        the pool to it (a Class value's `new` built inline in a block did not
        compile). */
-    static unsigned char *pool_fwd = NULL;
-    static int pool_fwd_n = 0;
     if (g_in_proc_body || g_in_fiber_body) {
-      if (pool_fwd_n < c->nclasses) {
-        pool_fwd = realloc(pool_fwd, (size_t)c->nclasses);
-        memset(pool_fwd + pool_fwd_n, 0, (size_t)(c->nclasses - pool_fwd_n));
-        pool_fwd_n = c->nclasses;
+      if (g_pool_fwd_n < c->nclasses) {
+        g_pool_fwd = realloc(g_pool_fwd, (size_t)c->nclasses);
+        memset(g_pool_fwd + g_pool_fwd_n, 0, (size_t)(c->nclasses - g_pool_fwd_n));
+        g_pool_fwd_n = c->nclasses;
       }
-      if (!pool_fwd[cid]) {
-        pool_fwd[cid] = 1;
+      if (!g_pool_fwd[cid]) {
+        g_pool_fwd[cid] = 1;
         buf_printf(&g_proc_protos, "SP_POOL_DECLARE(%s)\n", ci->c_name);
       }
     }
@@ -12413,6 +12415,7 @@ char *codegen_program(const NodeTable *nt) {
   Buf b; memset(&b, 0, sizeof b);
   memset(&g_procs, 0, sizeof g_procs);
   memset(&g_proc_protos, 0, sizeof g_proc_protos);
+  if (g_pool_fwd) memset(g_pool_fwd, 0, (size_t)g_pool_fwd_n);
   g_proc_counter = 0;
   g_needs_at_exit = 0;
   g_re_count = 0;
@@ -14065,6 +14068,7 @@ char *codegen_program(const NodeTable *nt) {
   memset(&g_pd_protos, 0, sizeof g_pd_protos); memset(&g_pd_defs, 0, sizeof g_pd_defs);
   memset(&g_procs, 0, sizeof g_procs);
   memset(&g_proc_protos, 0, sizeof g_proc_protos);
+  if (g_pool_fwd) memset(g_pool_fwd, 0, (size_t)g_pool_fwd_n);
   g_needs_proc_poly_argslot = 0;
 
   if (g_ext_init_name) {
