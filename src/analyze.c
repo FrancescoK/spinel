@@ -10725,9 +10725,28 @@ static unsigned hash_key_write_bits(Compiler *c, int id, const Scope **sc, const
    Symbol stored into a dup'ed String-keyed hash raised, and into a dup'ed
    Integer-keyed one landed as INT64_MIN (#4540). Appends to `out`, up to
    `cap`; answers the count. */
+/* The walk fans out -- a parameter to every call of its method, whose
+   arguments are parameters in turn -- and meets the same nodes by many
+   paths: each node is walked once per query, at the shallowest depth it is
+   reached (a generation stamp, so no clearing between queries). */
+static int *hls_gen, *hls_depth, hls_cap, hls_cur;
 static int hash_literal_sources(Compiler *c, int val, int depth, int *out, int cap, int n) {
   const NodeTable *nt = c->nt;
   if (val < 0 || depth > 6 || n >= cap) return n;
+  if (depth == 0) {
+    if (hls_cap < nt->count) {
+      int nc = nt->count * 2;
+      hls_gen = realloc(hls_gen, sizeof(int) * (size_t)nc);
+      hls_depth = realloc(hls_depth, sizeof(int) * (size_t)nc);
+      memset(hls_gen + hls_cap, 0, sizeof(int) * (size_t)(nc - hls_cap));
+      hls_cap = nc;
+    }
+    hls_cur++;
+  }
+  if (val < hls_cap) {
+    if (hls_gen[val] == hls_cur && hls_depth[val] <= depth) return n;
+    hls_gen[val] = hls_cur; hls_depth[val] = depth;
+  }
   const char *vt = nt_type(nt, val);
   if (!vt) return n;
   if (sp_streq(vt, "HashNode")) { out[n++] = val; return n; }

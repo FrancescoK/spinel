@@ -2448,6 +2448,8 @@ scale-test: $(SPINEL_WORK)
 	sh test/scale/gen.sh 100 > "$$tmp/a.rb"; sh test/scale/gen.sh 400 > "$$tmp/b.rb"; \
 	wa=$$($(SPINEL_WORK) --emit-rbs -o "$$tmp/a.rbs" "$$tmp/a.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
 	wb=$$($(SPINEL_WORK) --emit-rbs -o "$$tmp/b.rbs" "$$tmp/b.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
+	( ulimit -t 20; $(SPINEL_WORK) -c -o "$$tmp/hls.c" test/scale/hash_literal_sources_fanout.rb ) >/dev/null 2>&1 || \
+	  { rm -rf "$$tmp"; echo "scale-test: FAIL (the hash-literal source walk revisited call sites along every path)"; exit 1; }; \
 	rm -rf "$$tmp"; \
 	if [ -z "$$wa" ] || [ -z "$$wb" ]; then echo "scale-test: FAIL (the counting compiler reported no work count)"; exit 1; fi; \
 	awk -v a="$$wa" -v b="$$wb" -v lim="$(SCALE_LIMIT)" 'BEGIN { r = b / a; \
