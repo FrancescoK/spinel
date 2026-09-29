@@ -19,6 +19,7 @@ const char *sp_sprintf(const char *fmt, ...);  /* defined in the generated TU */
 /* match-register state (declared extern in sp_re.h). */
 SP_TLS const char *sp_re_captures[10] = {0};   /* per-worker (SP_TLS); see sp_re.h */
 SP_TLS int sp_re_caps[64];
+SP_TLS int sp_re_sub_matched = 0;
 SP_TLS const char *sp_re_last_str = NULL;
 SP_TLS const char *sp_re_match_str = NULL;
 /* $` and $' are built only when read: a gsub over a large subject matches
@@ -513,6 +514,7 @@ const char *sp_re_gsub(mrb_regexp_pattern *pat, const char *str, const char *rep
   while (pos <= slen) {
     int n = re_exec(pat, str, slen, pos, caps, 64, sp_str_is_binary(str));
     if (n <= 0 || caps[0] < 0) break;
+    sp_re_sub_matched = 1;
     size_t before = caps[0] - pos;
     if (olen+before+rlen >= cap) { cap = ((olen+before+rlen)*2)+64; out = (char*)realloc(out, cap); }
     memcpy(out+olen, str+pos, before); olen += before;
@@ -551,6 +553,7 @@ const char *sp_re_sub(mrb_regexp_pattern *pat, const char *str, const char *rep)
   int caps[64];
   int n = re_exec(pat, str, slen, 0, caps, 64, sp_str_is_binary(str));
   if (n <= 0 || caps[0] < 0) return str;
+  sp_re_sub_matched = 1;
   /* Issue #855: expand `\1`..`\9` / `\&` from rep against caps. */
   size_t cap = caps[0] + (rlen * 4) + (slen - caps[1]) + 64;
  /* malloc scratch: sp_re_expand_rep and the tail grow it with realloc,
