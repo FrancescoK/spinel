@@ -1,0 +1,14 @@
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+{}
+{a: 2}
+{a: "s7", b: [7, "t7"], c: "uuuuuuu"}
+#<OpenStruct a="s8", b=[8, "t8"], c="uuuuuuuu">
