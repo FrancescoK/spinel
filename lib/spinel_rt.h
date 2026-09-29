@@ -10391,13 +10391,16 @@ static void sp_kwargs_list_add(char *list, int *n, int *cnt, const char *item) {
   }
   (*cnt)++;
 }
-/* The keywords a call passes as literal keys (`lit`) plus a `**h` (any hash
-   kind, boxed; nil for none), checked against a callee's declared keyword
-   names (`allowed`) as CRuby does: a required name found in neither raises
-   `missing keyword`, then, unless a **kwrest takes the extras
-   (`check_unknown` 0), a key naming no parameter raises `unknown keyword`. */
-static void sp_kwargs_verify(sp_RbVal h, const char *const *allowed, const char *const *required,
-                             const char *const *lit, int check_unknown) {
+/* The keywords a call passes as literal Symbol keys (`lit`) plus a `**h`
+   (any hash kind, boxed; nil for none), checked against a callee's declared
+   keyword names (`allowed`) as CRuby does: a required name found in neither
+   raises `missing keyword`, then, unless a **kwrest takes the extras
+   (`check_unknown` 0), a key naming no parameter raises `unknown keyword`.
+   `unk`, when given, is the literal keys no keyword takes, already
+   inspected -- String ones among them, which `lit` cannot spell -- named
+   ahead of those of the `**`. */
+static void sp_kwargs_verify_lit(sp_RbVal h, const char *const *allowed, const char *const *required,
+                                 const char *const *lit, const char *const *unk, int check_unknown) {
   sp_PolyArray *k = sp_poly_length(h) > 0 ? sp_poly_keys(h) : sp_PolyArray_new(); SP_GC_ROOT(k);
   char list[256]; int n = 0, cnt = 0;
   list[0] = 0;
@@ -10409,16 +10412,23 @@ static void sp_kwargs_verify(sp_RbVal h, const char *const *allowed, const char 
   }
   if (cnt) sp_raise_kw_error("missing", cnt, list);
   if (!check_unknown) return;
-  for (const char *const *l = lit; *l; l++)
+  for (const char *const *u = unk; u && *u; u++) sp_kwargs_list_add(list, &n, &cnt, *u);
+  for (const char *const *l = lit; !unk && *l; l++)
     if (!sp_kwargs_name_in(*l, allowed)) sp_kwargs_list_add(list, &n, &cnt, sp_sprintf(":%s", *l));
   for (sp_int i = 0; i < k->len; i++) {
     if (k->data[i].tag == SP_TAG_SYM) {
       const char *nm = sp_sym_to_s((sp_sym)k->data[i].v.i);
       if (sp_kwargs_name_in(nm, allowed) || sp_kwargs_name_in(nm, lit)) continue;
     }
-    sp_kwargs_list_add(list, &n, &cnt, sp_poly_inspect(k->data[i]));
+    const char *iv = sp_poly_inspect(k->data[i]);
+    if (unk && sp_kwargs_name_in(iv, unk)) continue;   /* a literal key's, named already */
+    sp_kwargs_list_add(list, &n, &cnt, iv);
   }
   if (cnt) sp_raise_kw_error("unknown", cnt, list);
+}
+static void sp_kwargs_verify(sp_RbVal h, const char *const *allowed, const char *const *required,
+                             const char *const *lit, int check_unknown) {
+  sp_kwargs_verify_lit(h, allowed, required, lit, NULL, check_unknown);
 }
 /* `**h` into a **kwrest, where h is a Hash only known at run time: merge its
    entries into the keyword-rest being collected. nil carries no keywords, as

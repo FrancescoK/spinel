@@ -248,11 +248,11 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
      param fell through to a fabricated default. */
   int kw_merged = kwh_merged(c, m, kwh);
   int argov_saved = g_n_argov;
-  if (kwh_runs_ahead(c, m, kwh)) emit_positionals_first(c, argv, pos_argc);
+  if (L->kw.args_first) emit_args_run(c, argv, argc);
+  else if (kwh_runs_ahead(c, m, kwh)) emit_positionals_first(c, argv, pos_argc);
   else if (kwh_out_of_order(c, m, kwh)) emit_args_in_source_order(c, argv, argc, g_pre);
   TyKind ds_type = TY_UNKNOWN;
   int ds_tmp = emit_ds_hash_materialize(c, m, kwh, &ds_type);
-  emit_ds_kwarg_check(c, m, kwh, ds_tmp, ds_type);
   /* The count and the keys, by the rule the ordinary call path follows. The
      loop below walks the PARAMETERS, so an argument none of them reads --
      a key naming no parameter (#4419), a positional past the last one --
@@ -269,6 +269,9 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
      yielding helper asserted presence instead (#4436). */
   int gather_tmp = -1;
   if (L->gather && !fwd_encl) gather_tmp = emit_splat_gather(c, m, argv, L);
+  /* the keywords a `**` brings, once the count has been judged, which
+     CRuby judges first */
+  emit_ds_kwarg_check(c, m, kwh, ds_tmp, ds_type);
   ren_unpark(&park0);
   for (int i = 0; i < m->nparams; i++) {
     emit_indent(b, din);

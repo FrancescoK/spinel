@@ -1,0 +1,88 @@
+empty splat: ArgumentError: missing keyword: :k1
+empty var: ArgumentError: missing keyword: :k1
+splat one: ArgumentError: wrong number of arguments (given 1, expected 0; required keyword: k1)
+splat fills: ArgumentError: missing keyword: :k1
+splat short: ArgumentError: wrong number of arguments (given 0, expected 1; required keyword: k1)
+splat over: ArgumentError: wrong number of arguments (given 2, expected 1; required keyword: k1)
+splat unknown: ArgumentError: unknown keyword: :z
+nil short: ArgumentError: wrong number of arguments (given 0, expected 1; required keyword: k1)
+known short: ArgumentError: wrong number of arguments (given 0, expected 1; required keyword: k1)
+known over: ArgumentError: wrong number of arguments (given 2, expected 1; required keyword: k1)
+splat then ds: ArgumentError: wrong number of arguments (given 0, expected 1; required keyword: k1)
+splat ds fills: ArgumentError: missing keyword: :k1
+splat ds over: ArgumentError: wrong number of arguments (given 2, expected 1; required keyword: k1)
+rest bare: ArgumentError: missing keyword: :k1
+rest args: ArgumentError: missing keyword: :k1
+rest unknown: ArgumentError: missing keyword: :k1
+rest known unknown: ArgumentError: unknown keyword: :z
+kwrest short: ArgumentError: wrong number of arguments (given 0, expected 1; required keyword: k1)
+kwrest missing: ArgumentError: missing keyword: :k1
+kwrest splat: ArgumentError: missing keyword: :k1
+rest opt splat: ArgumentError: wrong number of arguments (given 0, expected 1+)
+rest opt splat kw: ArgumentError: wrong number of arguments (given 0, expected 1+)
+rest opt splat ds: ArgumentError: wrong number of arguments (given 0, expected 1+)
+rest req splat: ArgumentError: missing keyword: :k1
+string: ArgumentError: unknown keyword: "s"
+string alone: ArgumentError: wrong number of arguments (given 0, expected 1)
+string sym: ArgumentError: unknown keywords: "s", :z
+string ds: ArgumentError: unknown keywords: "s", :z
+string ds empty: ArgumentError: unknown keyword: "s"
+string ds missing: ArgumentError: missing keyword: :k1
+ds string key: ArgumentError: unknown keyword: "s"
+ds string repeat: ArgumentError: unknown keyword: "s"
+ds string only: ArgumentError: missing keyword: :k1
+hash over: ArgumentError: wrong number of arguments (given 2, expected 1)
+hash fills: {"s" => 1}
+splat hash: {"s" => 1}
+splat hash over: ArgumentError: wrong number of arguments (given 2, expected 1)
+none splat kw: ArgumentError: wrong number of arguments (given 1, expected 0)
+none splat str: ArgumentError: wrong number of arguments (given 1, expected 0)
+none str ds: ArgumentError: wrong number of arguments (given 1, expected 0)
+none splat: ArgumentError: wrong number of arguments (given 1, expected 0)
+none empty ds: 1
+past params: ArgumentError: wrong number of arguments (given 2, expected 1)
+past empty: 1
+nokw ds: ArgumentError: no keywords accepted
+nokw ds args: ArgumentError: no keywords accepted
+nokw empty: []
+nokw short: ArgumentError: wrong number of arguments (given 0, expected 1)
+nokw ds short: ArgumentError: no keywords accepted
+obj splat: ArgumentError: missing keyword: :k1
+obj ds short: ArgumentError: wrong number of arguments (given 0, expected 1; required keyword: k1)
+obj splat ds: ArgumentError: wrong number of arguments (given 0, expected 1; required keyword: k1)
+obj string: ArgumentError: unknown keyword: "s"
+obj ds string: ArgumentError: unknown keyword: "s"
+obj past: ArgumentError: wrong number of arguments (given 2, expected 1)
+obj rest short: ArgumentError: wrong number of arguments (given 0, expected 1+; required keyword: k1)
+obj rest missing: ArgumentError: missing keyword: :k1
+obj rest opt short: ArgumentError: wrong number of arguments (given 0, expected 1+)
+cls ds short: ArgumentError: wrong number of arguments (given 0, expected 1; required keyword: k1)
+cls splat: ArgumentError: missing keyword: :k1
+send splat: ArgumentError: missing keyword: :k1
+yield splat ds: ArgumentError: wrong number of arguments (given 0, expected 1; required keyword: k1)
+yield ds short: ArgumentError: wrong number of arguments (given 0, expected 1; required keyword: k1)
+yield string: ArgumentError: unknown keyword: "s"
+yield splat: ArgumentError: missing keyword: :k1
+kwinit splat kw: #<struct S k1=1>
+kwinit splat ds: ArgumentError: unknown keywords: z
+kwinit given: ArgumentError: wrong number of arguments (given 2, expected 0)
+kwinit empty ds: #<struct S k1=nil>
+kwinit ds: #<struct S k1=2>
+kwinit string: #<struct S k1=5>
+plain splat ds: ArgumentError: unknown keywords: z
+plain splat kw: #<struct P k1=1, k2=nil>
+plain given: #<struct P k1=1, k2={k1: 1}>
+plain mixed: #<struct P k1=4, k2=3>
+plain string: #<struct P k1=nil, k2=6>
+plain over: ArgumentError: struct size differs
+pos then ds: ArgumentError: unknown keyword: :z [1]
+ds then lit: ArgumentError: unknown keyword: :z [1]
+string then ds: ArgumentError: unknown keyword: "s" [1, 2]
+string twice: ArgumentError: unknown keyword: "s" [1]
+rest count: ArgumentError: wrong number of arguments (given 0, expected 1+; required keyword: k1) [1]
+kwrest count: ArgumentError: wrong number of arguments (given 0, expected 1) [1]
+true ds: TypeError: no implicit conversion of true into Hash [1]
+true beside lit: TypeError: no implicit conversion of true into Hash [1]
+missing splat: ArgumentError: missing keyword: :k1 [1, 2]
+bad ds then lit: TypeError: no implicit conversion of Integer into Hash [1]
+ds then bad: TypeError: no implicit conversion of true into Hash []

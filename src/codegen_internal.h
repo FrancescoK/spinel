@@ -530,6 +530,40 @@ typedef enum {
   ARG_REST,       /* the rest: what the layout leaves between the others */
   ARG_GATHERED,   /* the gather's element by its run-time count (emit_gathered_param) */
 } ArgFrom;
+/* What a call's keyword hash is to one callee (kw_plan, codegen_fold.c). */
+typedef enum {
+  KWH_NONE,        /* the call passes no keyword hash */
+  KWH_KEYWORDS,    /* keywords: the callee declares a keyword or a **kwrest */
+  KWH_POSITIONAL,  /* one more positional Hash: the callee takes no keywords */
+  KWH_REFUSED,     /* a `**nil` callee: holding a key, `no keywords accepted` */
+} KwhRole;
+/* The positionals a keyword hash adds to the count: none, one, or one when
+   the run time finds a key in it (only `**` spreads, KWH_POSITIONAL). */
+enum { KWC_NONE = 0, KWC_ONE = 1, KWC_NONEMPTY = -1 };
+/* The keyword decisions of one call into one callee, taken once: what the
+   hash is, what it adds to the positional count, and which keywords the
+   call statically gets wrong, in CRuby's order (count, missing, unknown). */
+typedef struct {
+  int kwh;              /* the trailing KeywordHashNode, or -1 */
+  KwhRole role;
+  int count;            /* KWC_*: the positionals the hash adds */
+  int literal;          /* a literal key (`k: v`, `"s" => v`) */
+  int spread;           /* a `**` operand: its keys are the run time's (emit_ds_kwarg_check) */
+  int computed;         /* a key only the run time knows (`k => v`) */
+  int nmissing;         /* required keywords no key names, when no `**` may name them */
+  char missing[512];
+  int nunknown;         /* literal keys no keyword takes, each as #inspect writes it */
+  char unknown[512];
+  int unknown_el[32];   /* ... the kwh elements holding the first 32 of them */
+  char first_sym[300];  /* the first of them a Symbol, or "" */
+  int args_first;       /* the keywords are judged at run time: every argument runs first */
+} KwPlan;
+void kw_plan(Compiler *c, Scope *m, int kwh, KwPlan *P);
+void emit_unreached_splat_count(Compiler *c, Scope *m, const int *argv, int argc, int pos_argc,
+                                const KwPlan *P);
+/* Every argument of a call run ahead of it, in source order, each `**`
+   operand converted where it stands (codegen_fold.c). */
+void emit_args_run(Compiler *c, const int *argv, int argc);
 /* The positional layout of one call into one callee (arg_layout, codegen_fold.c):
    decided once, read by each binder that walks the parameters. */
 typedef struct {
@@ -541,6 +575,7 @@ typedef struct {
   int gather;           /* the count is the run time's: every positional from one array */
   int gather_kwh;       /* the gather's last element is the hash: 1 when it holds a key, 2 always */
   int splat;            /* static: the argv index of the splat spread in place, or -1 */
+  KwPlan kw;            /* the keyword hash's own decisions */
   int n;
   ArgFrom *from;        /* per parameter */
   int *arg;             /* ARG_NODE: the argv index; ARG_ELEM: the element index */
