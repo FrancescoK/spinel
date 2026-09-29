@@ -7460,7 +7460,8 @@ static int rbp_captured(const NodeTable *nt, int node, const char *name, int lev
   NodeKind k = nt_kind(nt, node);
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return 0;
   if (level > 0 && (k == NK_LocalVariableReadNode || k == NK_LocalVariableWriteNode ||
-                    k == NK_LocalVariableOperatorWriteNode || k == NK_LocalVariableOrWriteNode) &&
+                    k == NK_LocalVariableOperatorWriteNode || k == NK_LocalVariableOrWriteNode ||
+                    k == NK_LocalVariableAndWriteNode || k == NK_LocalVariableTargetNode) &&
       nt_str(nt, node, "name") && sp_streq(nt_str(nt, node, "name"), name) &&
       nt_int(nt, node, "depth", 0) == level)
     return 1;
