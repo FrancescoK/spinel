@@ -6744,9 +6744,9 @@ else if (orecv >= 0 && onm) {
         buf_printf(pb, "(argc > %d) ? ", k);
         char slotx[48]; snprintf(slotx, sizeof slotx, "_sp_proc_poly_args[%d]", k);
         emit_unbox_text(c, pt, slotx, pb);
-        buf_printf(pb, " : %s;\n", default_value(pt));
+        buf_printf(pb, " : %s;\n", default_value_from_compiler(c, pt));
       }
-      else buf_printf(pb, "%s;\n", default_value(pt));
+      else buf_printf(pb, "%s;\n", default_value_from_compiler(c, pt));
     }
     else if (pt == TY_POLY || pt == TY_FLOAT) {
       /* A poly param doesn't fit the sp_int slot, so it rides the
