@@ -188,10 +188,26 @@ void buf_printf(Buf *b, const char *fmt, ...) {
 int  g_indent = 0;
 /* Argument-hoist overrides: emit_args_filled pre-evaluates GC-hazardous
    call arguments into rooted temps; emit_expr then substitutes the temp
-   name when it reaches the overridden node. */
-int  g_argov_node[MAX_ARG_OVERRIDE];
-char g_argov_text[MAX_ARG_OVERRIDE][16];
+   name when it reaches the overridden node. Twice MAX_ARG_OVERRIDE to start
+   with, so only a call of more arguments than that grows it. */
+static int  argov_node0[2 * MAX_ARG_OVERRIDE];
+static char argov_text0[2 * MAX_ARG_OVERRIDE][16];
+int  *g_argov_node = argov_node0;
+char (*g_argov_text)[16] = argov_text0;
+static int g_argov_cap = 2 * MAX_ARG_OVERRIDE;
 int  g_n_argov = 0;
+/* See codegen_internal.h. */
+void argov_reserve(void) {
+  if (g_n_argov + 1 + MAX_ARG_OVERRIDE <= g_argov_cap) return;
+  int cap = 2 * (g_n_argov + 1 + MAX_ARG_OVERRIDE);
+  int *nodes = malloc(sizeof *nodes * (size_t)cap);
+  char (*texts)[16] = malloc(sizeof *texts * (size_t)cap);
+  if (!nodes || !texts) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memcpy(nodes, g_argov_node, sizeof *nodes * (size_t)g_n_argov);
+  memcpy(texts, g_argov_text, sizeof *texts * (size_t)g_n_argov);
+  if (g_argov_node != argov_node0) { free(g_argov_node); free(g_argov_text); }
+  g_argov_node = nodes; g_argov_text = texts; g_argov_cap = cap;
+}
 int  g_setter_stmt_id = -1;
 /* Node id whose safe-nav (&.) guard is already emitted; the re-entrant
    emit_call skips the guard block for exactly this node. */

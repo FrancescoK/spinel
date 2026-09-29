@@ -276,17 +276,20 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         buf_puts(&conv, "sp_srange_to_s(");
         EMIT_IV(); buf_puts(&conv, ")");
       }
-      else if (t == TY_REGEX) {
-        buf_puts(&conv, "sp_re_to_s_str((void *)(");
-        EMIT_IV(); buf_puts(&conv, "))");
-      }
-      else if (t == TY_POLY_ARRAY) {
-        buf_puts(&conv, "sp_PolyArray_inspect(");
-        EMIT_IV(); buf_puts(&conv, ")");
-      }
-      else if (ty_is_array(t) && array_kind(t)) {
-        buf_printf(&conv, "sp_%sArray_inspect(", array_kind(t));
-        EMIT_IV(); buf_puts(&conv, ")");
+      /* a Regexp, Array or Hash slot's nil is NULL, which interpolates as
+         the empty string the way a nullable String's does */
+      else if (t == TY_REGEX || t == TY_POLY_ARRAY || (ty_is_array(t) && array_kind(t)) ||
+               (ty_is_hash(t) && ty_hash_cname(t))) {
+        int ntv = ++g_tmp;
+        buf_puts(&conv, "({ "); emit_ctype(c, t, &conv);
+        buf_printf(&conv, " _t%d = ", ntv);
+        EMIT_IV();
+        buf_printf(&conv, "; _t%d ? ", ntv);
+        if (t == TY_REGEX) buf_printf(&conv, "sp_re_to_s_str((void *)_t%d)", ntv);
+        else if (t == TY_POLY_ARRAY) buf_printf(&conv, "sp_PolyArray_inspect(_t%d)", ntv);
+        else if (ty_is_hash(t)) buf_printf(&conv, "sp_%sHash_inspect(_t%d)", ty_hash_cname(t), ntv);
+        else buf_printf(&conv, "sp_%sArray_inspect(_t%d)", array_kind(t), ntv);
+        buf_puts(&conv, " : sp_str_empty; })");
       }
       else if (ty_is_object(t) && obj_str_cname(c, ty_object_class(t), 0)) {
         const char *cn = obj_str_cname(c, ty_object_class(t), 0);
@@ -301,10 +304,6 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         else buf_printf(&conv, "sp_%s_to_s((sp_%s *)", cn, cn);
         EMIT_IV(); buf_puts(&conv, ")");
         if (ret_poly) buf_puts(&conv, ")");
-      }
-      else if (ty_is_hash(t) && ty_hash_cname(t)) {
-        buf_printf(&conv, "sp_%sHash_inspect(", ty_hash_cname(t));
-        EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (t == TY_CLASS) {
         buf_puts(&conv, "sp_class_to_s(");
@@ -3172,17 +3171,18 @@ else {
         }
         else if ((sh == TY_POLY || shn) && poly_poly) {
           /* a poly spread source, or a hash of another variant, into a
-             poly-poly literal: iterate its boxed (key,value) pairs at runtime
-             (any hash variant) and set them. */
+             poly-poly literal: its boxed (key,value) pairs set at run time
+             (any hash variant). nil spreads nothing, and anything else
+             converts through its #to_hash or raises CRuby's TypeError
+             (sp_kw_merge_any): the walk alone took a user object or an
+             Integer for no pairs at all. */
           int st = ++g_tmp;
           Buf sb; memset(&sb, 0, sizeof sb); emit_boxed(c, src, &sb);
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", st, sb.p ? sb.p : "sp_box_nil()", st);
           free(sb.p);
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "for (sp_int _si = 0, _sn = sp_poly_length(_t%d); _si < _sn; _si++) "
-                            "{ sp_RbVal _sk, _sv; sp_poly_hash_pair(_t%d, _si, &_sk, &_sv); "
-                            "sp_PolyPolyHash_set(_t%d, _sk, _sv); }\n", st, st, t);
+          buf_printf(g_pre, "sp_kw_merge_any(_t%d, _t%d);\n", t, st);
         }
         else {
           unsupported(c, id, "hash double-splat of an unmergeable source"); return;

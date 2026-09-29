@@ -23,6 +23,16 @@ static inline sp_bool sp_poly_is_pack(sp_RbVal v) {
          ((sp_gc_hdr *)((char *)v.v.p - sizeof(sp_gc_hdr)))->scan == sp_PolyArray_pack_scan;
 }
 
+/* A generator step that yields no value (`y.yield`, `y.yield(*[])`): nil to a
+   reader of the item, and no values to a `|*r|` block. The mark rides in the
+   nil's cls_id, which nothing else reads. */
+static inline sp_RbVal sp_box_empty_step(void) {
+  sp_RbVal r = sp_box_nil(); r.cls_id = 1; return r;
+}
+static inline sp_bool sp_poly_is_empty_step(sp_RbVal v) {
+  return v.tag == SP_TAG_NIL && v.cls_id == 1;
+}
+
 typedef struct {
   sp_PolyArray *items; sp_int cursor;   /* materialized mode (items != NULL) */
   void (*gen)(sp_Fiber *);                /* generator body (fiber mode, gen != NULL) */

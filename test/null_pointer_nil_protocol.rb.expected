@@ -1,0 +1,37 @@
+[true, nil, NilClass, "", "nil", true, ""]
+[true, nil, NilClass, "", "nil", true, ""]
+[true, nil, NilClass, "", "nil", true, ""]
+[true, nil, NilClass, "", "nil", true, ""]
+[true, nil, NilClass, "", "nil", true, ""]
+[true, nil, NilClass, "", "nil", true, ""]
+[true, nil, NilClass, "", "nil", true, ""]
+[true, nil, NilClass, "", "nil", true, ""]
+[true, nil, NilClass, "", "nil", true, ""]
+[true, NilClass, true]
+NilClass
+String
+String
+"[1]"
+"{a: 1}"
+"(?-mix:r)"
+Integer
+Array
+"[1, 2]"
+Array
+"[1, 2]"
+false
+true
+NilClass
+""
+"[1]"
+""
+NilClass
+""
+"[3]"
+Array
+["", "nil", true, false, NilClass, ""]
+["(?-mix:ab)", "/ab/", false, true, Regexp, "(?-mix:ab)"]
+[true, false, NilClass, "", ""]
+[false, true, Integer, "1180591620717411303424", "1180591620717411303424"]
+["", "", NilClass, true, false]
+["{\"k\" => 1}", "{\"k\" => 1}", Hash, false, true]

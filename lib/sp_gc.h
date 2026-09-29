@@ -619,7 +619,8 @@ extern const char *(*sp_obj_to_str_fn)(int cls_id, void *p);
    rb_get_path); NULL when the class defines none. */
 extern const char *(*sp_obj_to_path_fn)(int cls_id, void *p);
 /* Kernel#Integer / Kernel#Float on a boxed user object: the class's #to_int,
-   #to_i, #to_f or #to_str (`which`, in that order), WHATEVER the method's
+   #to_i, #to_f or #to_str (`which`, in that order; 4 is #to_f for a Math
+   argument, 5 #to_hash for a `**` operand), WHATEVER the method's
    static type -- CRuby calls it and judges the answer -- boxed into *out.
    Answers 1 when the class has the method, 0 when it does not; with a NULL
    `out` it only answers that, calling nothing. */
