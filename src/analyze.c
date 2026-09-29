@@ -18499,6 +18499,7 @@ void analyze_program(Compiler *c) {
   desugar_extended_module_attrs(c);
   desugar_blk_param_writes(c);           /* `blk = proc {}` on a &blk param -> a fresh local */
   desugar_yield_in_closure(c);           /* `yield` inside proc { } -> blk.call(...) */
+  desugar_const_attr_op_assign(c);       /* Klass.a op= v -> Klass.a = Klass.a op v (a class-level accessor) */
   /* builtins/enumerable.rb, spliced by the parser: its definitions become
      the receiver-taking top-level functions before any scope is built */
   desugar_builtins(c);
