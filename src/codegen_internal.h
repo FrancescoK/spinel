@@ -822,6 +822,7 @@ const char *default_value(TyKind t);
 void emit_slot_truthy(TyKind t, const char *ref, Buf *b);
 const char *raise_tail_value(TyKind t);
 const char *raise_tail_value_c(Compiler *c, TyKind t);
+const char *array_times_type_error(TyKind at);
 void emit_bigint_operand_ext(Compiler *c, int node, Buf *b);
 const char *nil_value(TyKind t);
 const char *local_init_value(Compiler *c, LocalVar *lv);

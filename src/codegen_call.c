@@ -14770,6 +14770,15 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
     return 1;
   }
 
+  if (recv >= 0 && argc == 1 && sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) &&
+      array_times_type_error(a0)) {
+    buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); (void)(");
+    emit_expr(c, argv[0], b);
+    buf_printf(b, "); sp_raise_cls(\"TypeError\", \"%s\"); %s; })",
+               array_times_type_error(a0), raise_tail_value_c(c, res));
+    return 1;
+  }
+
   /* Numeric coerce protocol: `recv <op> arg` where recv is a builtin numeric
      and arg is a user object defining coerce. Rational and Bignum take the
      same route as Integer and Float -- leaving them out made
