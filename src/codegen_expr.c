@@ -3816,10 +3816,79 @@ else {
      then return the RHS value (Ruby semantics: value of `a, b = arr` is arr). */
   if (sp_streq(ty, "MultiWriteNode")) {
     int value = nt_ref(nt, id, "value");
-    /* emit the multi-write as a statement first (for its side effects) */
+    /* The right-hand side runs once: a tuple's elements one by one, or any
+       other right-hand side whole, are held in temps that the statement and
+       the result both read through the override table. Literals are read
+       again in place. */
+    int en = 0;
+    const int *els = nt_kind(nt, value) == NK_ArrayNode ? nt_arr(nt, value, "elements", &en) : NULL;
+    for (int i = 0; i < en; i++)
+      if (nt_kind(nt, els[i]) == NK_SplatNode) { els = NULL; en = 0; break; }
+    int one = els ? -1 : value;
+    int held = 0;
+    /* a target's receiver and index that run code go first, as Ruby
+       evaluates them before the values */
+    int ln = 0;
+    const int *lefts = nt_arr(nt, id, "lefts", &ln);
+    for (int i = 0; i < ln; i++) {
+      NodeKind tk = nt_kind(nt, lefts[i]);
+      if (tk != NK_IndexTargetNode && tk != NK_CallTargetNode) continue;
+      int args = tk == NK_IndexTargetNode ? nt_ref(nt, lefts[i], "arguments") : -1, an = 0;
+      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      int parts[2] = { nt_ref(nt, lefts[i], "receiver"), an == 1 ? av[0] : -1 };
+      for (int p = 0; p < 2; p++) {
+        int v = parts[p];
+        if (v < 0 || g_n_argov >= MAX_ARG_OVERRIDE || !subtree_has_side_effect(c, v)) continue;
+        TyKind vt = comp_ntype(c, v);
+        if (vt == TY_UNKNOWN || vt == TY_NIL || vt == TY_VOID ||
+            ty_is_struct_valued(vt) || comp_ty_value_obj(c, vt)) continue;
+        Buf vb; memset(&vb, 0, sizeof vb);
+        emit_expr(c, v, &vb);
+        int t = ++g_tmp;
+        emit_indent(g_pre, g_indent);
+        emit_ctype(c, vt, g_pre);
+        buf_printf(g_pre, " _t%d = %s; ", t, vb.p ? vb.p : "");
+        emit_gc_root_tmp(c, vt, t, g_pre);
+        buf_puts(g_pre, "\n");
+        free(vb.p);
+        snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", t);
+        g_argov_node[g_n_argov++] = v;
+        held++;
+      }
+    }
+    for (int i = els ? 0 : -1; i < en; i++) {
+      int v = i < 0 ? one : els[i];
+      if (v < 0 || g_n_argov >= MAX_ARG_OVERRIDE) continue;
+      NodeKind vk = nt_kind(nt, v);
+      int vn = 0;
+      if (vk == NK_NilNode || vk == NK_IntegerNode || vk == NK_FloatNode || vk == NK_SymbolNode ||
+          vk == NK_TrueNode || vk == NK_FalseNode || vk == NK_StringNode ||
+          ((vk == NK_ArrayNode || vk == NK_HashNode) && (nt_arr(nt, v, "elements", &vn), vn == 0)))
+        continue;
+      TyKind vt = vk == NK_SplatNode ? TY_POLY_ARRAY : comp_ntype(c, v);
+      if (vt == TY_UNKNOWN) continue;
+      Buf vb; memset(&vb, 0, sizeof vb);
+      emit_expr(c, v, &vb);
+      emit_indent(g_pre, g_indent);
+      if (vt == TY_NIL || vt == TY_VOID) {
+        buf_printf(g_pre, "(void)(%s);\n", vb.p ? vb.p : "0");
+        snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "sp_box_nil()");
+      }
+      else {
+        int t = ++g_tmp;
+        emit_ctype(c, vt, g_pre);
+        buf_printf(g_pre, " _t%d = %s; ", t, vb.p ? vb.p : "");
+        emit_gc_root_tmp(c, vt, t, g_pre);
+        buf_puts(g_pre, "\n");
+        snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", t);
+      }
+      free(vb.p);
+      g_argov_node[g_n_argov++] = v;
+      held++;
+    }
     emit_stmt(c, id, g_pre, g_indent);
-    /* then yield the RHS value as the expression's result */
     emit_expr(c, value, b);
+    g_n_argov -= held;
     return;
   }
 
