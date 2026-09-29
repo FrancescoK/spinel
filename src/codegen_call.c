@@ -22388,6 +22388,21 @@ static void emit_bound_method_call(Compiler *c, int id, int recv, int target, Bu
   free(cast.p); free(args.p);
 }
 
+static void emit_exc_exception(Compiler *c, int recv, int arg, Buf *b) {
+  /* #exception answers an instance of the RECEIVER's class -- a payload
+     copy, so a user subclass keeps its own fields -- and inference types
+     it that way. The helper is declared on the base, so name the class
+     back or the assignment is an incompatible pointer (#3915). */
+  TyKind xrt = comp_ntype(c, recv);
+  if (ty_is_object(xrt))
+    buf_printf(b, "(sp_%s *)", c->classes[ty_object_class(xrt)].c_name);
+  buf_puts(b, "sp_exc_exception((sp_Exception *)(");
+  emit_expr(c, recv, b); buf_puts(b, "), ");
+  if (comp_ntype(c, arg) == TY_STRING) emit_expr(c, arg, b);
+  else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, arg, b); buf_puts(b, ")"); }
+  buf_puts(b, ")");
+}
+
 static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -29229,21 +29244,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           (comp_ntype(c, argv[0]) == TY_EXCEPTION ||
            (ty_is_object(comp_ntype(c, argv[0])) &&
             class_is_exc_subclass(c, ty_object_class(comp_ntype(c, argv[0])))))))) {
-      if (sp_streq(name, "exception")) {
-        /* #exception answers an instance of the RECEIVER's class -- a payload
-           copy, so a user subclass keeps its own fields -- and inference types
-           it that way. The helper is declared on the base, so name the class
-           back or the assignment is an incompatible pointer (#3915). */
-        { TyKind xrt = comp_ntype(c, recv);
-          if (ty_is_object(xrt))
-            buf_printf(b, "(sp_%s *)", c->classes[ty_object_class(xrt)].c_name); }
-        buf_puts(b, "sp_exc_exception((sp_Exception *)(");
-        emit_expr(c, recv, b); buf_puts(b, "), ");
-        if (comp_ntype(c, argv[0]) == TY_STRING) emit_expr(c, argv[0], b);
-        else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
-        buf_puts(b, ")");
-        return;
-      }
+      if (sp_streq(name, "exception")) { emit_exc_exception(c, recv, argv[0], b); return; }
       buf_puts(b, "sp_exc_eq((sp_Exception *)("); emit_expr(c, recv, b);
       buf_puts(b, "), (sp_Exception *)("); emit_expr(c, argv[0], b); buf_puts(b, "))");
       return;
@@ -29495,21 +29496,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
        a copy carrying the new message (#2740) */
     if (sp_streq(name, "exception")) {
       if (argc == 0) { emit_expr(c, recv, b); return; }
-      if (argc == 1) {
-        /* #exception answers an instance of the RECEIVER's class -- a payload
-           copy, so a user subclass keeps its own fields -- and inference types
-           it that way. The helper is declared on the base, so name the class
-           back or the assignment is an incompatible pointer (#3915). */
-        { TyKind xrt = comp_ntype(c, recv);
-          if (ty_is_object(xrt))
-            buf_printf(b, "(sp_%s *)", c->classes[ty_object_class(xrt)].c_name); }
-        buf_puts(b, "sp_exc_exception((sp_Exception *)(");
-        emit_expr(c, recv, b); buf_puts(b, "), ");
-        if (comp_ntype(c, argv[0]) == TY_STRING) emit_expr(c, argv[0], b);
-        else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
-        buf_puts(b, ")");
-        return;
-      }
+      if (argc == 1) { emit_exc_exception(c, recv, argv[0], b); return; }
     }
     /* NameError/NoMethodError#name: the carried missing name; any other
        exception class raises NoMethodError at runtime, per CRuby */
