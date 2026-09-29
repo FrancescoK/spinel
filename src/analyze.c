@@ -5287,6 +5287,7 @@ static int desugar_builtin_method_obj(Compiler *c) {
                       (ty_is_array(rt) || rt == TY_STRING);
     nt_node_set_str(nt, call, "name", slice_alias ? "[]" : sym);
     nt_node_set_ref(nt, call, "receiver", rread);
+    if (nt_int(nt, id, "dyn_of", -1) >= 0) nt_node_set_int(nt, call, "dyn_arm", 1);
     if (cargs >= 0) nt_node_set_ref(nt, call, "arguments", cargs);
     int body = nt_new_node(nt, "StatementsNode");
     nt_node_set_arr(nt, body, "body", &call, 1);
