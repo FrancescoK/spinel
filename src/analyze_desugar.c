@@ -9599,3 +9599,106 @@ int desugar_param_default_assigns_local(Compiler *c) {
   if (changed) comp_grow_node_arrays(c);
   return changed;
 }
+
+/* ---- `r[k] ||= v` / `r[k] &&= v` / `r[k] op= v` on a USER-class receiver ----
+   The index and/or/op-assign emitters lower the builtin containers only; a
+   receiver of a program class defining [] and []= (a registry wrapping a
+   Hash, Concurrent::Map) was refused. Once the receiver's type is known
+   (this runs in the typed fixpoint), such a node is rewritten to what Ruby
+   defines it as:
+     r[k] ||= v   ->  r[k] || (r[k] = v)          (an OrNode)
+     r[k] &&= v   ->  r[k] && (r[k] = v)          (an AndNode)
+     r[k] op= v   ->  r[k] = r[k] op v            (a []= call)
+   with the receiver and key cloned for their second evaluation, so only a
+   receiver and key without side effects (a variable, self, a constant, a
+   literal) qualify; anything else stays refused as before. The []= call's
+   value is that method's answer, where Ruby answers v -- the same for every
+   []= that returns its value, which is the convention. */
+static int ix_pure(const NodeTable *nt, int n) {
+  if (n < 0) return 0;
+  switch (nt_kind(nt, n)) {
+    case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode:
+    case NK_ClassVariableReadNode: case NK_GlobalVariableReadNode:
+    case NK_SelfNode: case NK_ConstantReadNode: case NK_ConstantPathNode:
+    case NK_SymbolNode: case NK_IntegerNode: case NK_StringNode:
+    case NK_NilNode: case NK_TrueNode: case NK_FalseNode:
+      return 1;
+    default: return 0;
+  }
+}
+static int ix_index_call(NodeTable *nt, const char *name, int recv, int a0, int a1) {
+  int na = nt_new_node(nt, "ArgumentsNode"); if (na < 0) return -1;
+  int aa[2]; int n = 0; aa[n++] = a0; if (a1 >= 0) aa[n++] = a1;
+  nt_node_set_arr(nt, na, "arguments", aa, n);
+  int call = nt_new_node(nt, "CallNode"); if (call < 0) return -1;
+  nt_node_set_ref(nt, call, "receiver", recv);
+  nt_node_set_str(nt, call, "name", name);
+  nt_node_set_ref(nt, call, "arguments", na);
+  nt_node_set_ref(nt, call, "block", -1);
+  return call;
+}
+int desugar_index_assign_user_recv(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_IndexOrWriteNode && k != NK_IndexAndWriteNode && k != NK_IndexOperatorWriteNode) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    int args = nt_ref(nt, id, "arguments");
+    int v = nt_ref(nt, id, "value");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (recv < 0 || v < 0 || an != 1 || !av || nt_ref(nt, id, "block") >= 0) continue;
+    if (!ix_pure(nt, recv) || !ix_pure(nt, av[0])) continue;
+    NodeKind rk = nt_kind(nt, recv);
+    if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
+      /* `Mod[k] ||= v` on a module or class whose `[]` / `[]=` are its own
+         class-level methods (activesupport's IsolatedExecutionState store):
+         the same rewrite, calling the constant's methods */
+      const char *cn = nt_str(nt, recv, "name");
+      int cid = cn ? comp_class_index(c, cn) : -1;
+      if (cid < 0 || cid >= c->nclasses) continue;
+      if (comp_cmethod_in_chain(c, cid, "[]", NULL) < 0 || comp_cmethod_in_chain(c, cid, "[]=", NULL) < 0) continue;
+    }
+    else {
+      TyKind rt = comp_ntype(c, recv);
+      if (!ty_is_object(rt)) rt = infer_type(c, recv);   /* a local's type lives in its scope slot */
+      if (!ty_is_object(rt)) continue;
+      int cid = ty_object_class(rt);
+      if (cid < 0 || cid >= c->nclasses) continue;
+      if (comp_method_in_chain(c, cid, "[]", NULL) < 0 || comp_method_in_chain(c, cid, "[]=", NULL) < 0) continue;
+    }
+    const char *op = k == NK_IndexOperatorWriteNode ? nt_str(nt, id, "binary_operator") : NULL;
+    if (k == NK_IndexOperatorWriteNode && !op) continue;
+    int key = av[0];
+    int base = nt->count;
+    int recv2 = nt_clone_subtree(nt, recv), key2 = nt_clone_subtree(nt, key);
+    if (recv2 < 0 || key2 < 0) continue;
+    int read = ix_index_call(nt, "[]", recv, key, -1);
+    if (read < 0) continue;
+    if (op) {
+      /* r[k] = (r[k] op v) */
+      int opc = ix_index_call(nt, op, read, v, -1);
+      int store = opc >= 0 ? ix_index_call(nt, "[]=", recv2, key2, opc) : -1;
+      if (store < 0) continue;
+      int na = nt_ref(nt, store, "arguments");
+      nt_node_reset(nt, id, "CallNode");
+      nt_node_set_ref(nt, id, "receiver", recv2);
+      nt_node_set_str(nt, id, "name", "[]=");
+      nt_node_set_ref(nt, id, "arguments", na);
+      nt_node_set_ref(nt, id, "block", -1);
+    }
+    else {
+      int store = ix_index_call(nt, "[]=", recv2, key2, v);
+      if (store < 0) continue;
+      nt_node_reset(nt, id, k == NK_IndexOrWriteNode ? "OrNode" : "AndNode");
+      nt_node_set_ref(nt, id, "left", read);
+      nt_node_set_ref(nt, id, "right", store);
+    }
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    int cb = c->node_cbody ? c->node_cbody[id] : -1;
+    for (int j = base; j < nt->count; j++) { c->nscope[j] = encl; if (c->node_cbody) c->node_cbody[j] = cb; }
+    changed = 1;
+  }
+  return changed;
+}
