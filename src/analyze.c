@@ -15178,8 +15178,7 @@ static int a_scope_super_passes_block(Compiler *c, Scope *m) {
    the first block-taking method of that name, keeper or not. For a callee
    whose receiver has no type yet: every same-named candidate is a possible
    target, and one that keeps the block decides. */
-static int a_name_keeps_block(Compiler *c, const char *fn, const char *blk_call_recv,
-                              const char *blk_arg_expr, int *first) {
+static int a_name_keeps_block(Compiler *c, const char *fn, const char *keeps, int *first) {
   if (first) *first = -1;
   if (!fn) return -1;
   for (int si = 1; si < c->nscopes; si++) {
@@ -15187,16 +15186,27 @@ static int a_name_keeps_block(Compiler *c, const char *fn, const char *blk_call_
     if (cs3->is_cmethod || !cs3->name || !sp_streq(cs3->name, fn)) continue;
     if (!cs3->blk_param || !cs3->blk_param[0]) continue;
     if (first && *first < 0) *first = si;
-    for (int q = 0; q < c->nt->count; q++) {
-      if (c->nscope[q] != si) continue;
-      if (nt_kind(c->nt, q) != NK_LocalVariableReadNode) continue;
-      const char *qn = nt_str(c->nt, q, "name");
-      if (!qn || !sp_streq(qn, cs3->blk_param)) continue;
-      if (!(blk_call_recv && blk_call_recv[q]) &&
-          !(blk_arg_expr && blk_arg_expr[q])) return si;
-    }
+    if (!keeps || keeps[si]) return si;
   }
   return -1;
+}
+
+/* Not asked per call: scanning every node for each same-named method at each call site was quadratic in the program. */
+static char *a_scopes_keeping_block(Compiler *c, const char *blk_call_recv, const char *blk_arg_expr) {
+  char *keeps = (char *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), 1);
+  if (!keeps) return NULL;
+  for (int q = 0; q < c->nt->count; q++) {
+    int si = c->nscope[q];
+    if (si < 1 || si >= c->nscopes || keeps[si]) continue;
+    Scope *cs3 = &c->scopes[si];
+    if (cs3->is_cmethod || !cs3->name || !cs3->blk_param || !cs3->blk_param[0]) continue;
+    if (nt_kind(c->nt, q) != NK_LocalVariableReadNode) continue;
+    const char *qn = nt_str(c->nt, q, "name");
+    if (!qn || !sp_streq(qn, cs3->blk_param)) continue;
+    if (!(blk_call_recv && blk_call_recv[q]) &&
+        !(blk_arg_expr && blk_arg_expr[q])) keeps[si] = 1;
+  }
+  return keeps;
 }
 
 /* A literal block on a call whose receiver has no type yet, to a method name
@@ -15204,8 +15214,7 @@ static int a_name_keeps_block(Compiler *c, const char *fn, const char *blk_call_
    becomes a real proc once the receiver settles, so a pass that runs before
    then has to count it lifted already. A constant receiver names a class and
    is left to a_block_is_lifted, which resolves it without a type. */
-static int a_block_lifted_by_callee_name(Compiler *c, int id, const char *blk_call_recv,
-                                         const char *blk_arg_expr) {
+static int a_block_lifted_by_callee_name(Compiler *c, int id, const char *keeps) {
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, id) != NK_CallNode) return 0;
   int blk = nt_ref(nt, id, "block");
@@ -15215,7 +15224,7 @@ static int a_block_lifted_by_callee_name(Compiler *c, int id, const char *blk_ca
   NodeKind rk = nt_kind(nt, recv);
   if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) return 0;
   if (infer_type(c, recv) != TY_UNKNOWN) return 0;
-  return a_name_keeps_block(c, nt_str(nt, id, "name"), blk_call_recv, blk_arg_expr, NULL) >= 0;
+  return a_name_keeps_block(c, nt_str(nt, id, "name"), keeps, NULL) >= 0;
 }
 
 /* True if `blk`'s subtree contains a YieldNode. */
@@ -18514,6 +18523,7 @@ void analyze_program(Compiler *c) {
       if (e >= 0 && e < c->nt->count) blk_arg_expr[e] = 1;
     }
   }
+  char *scope_keeps_blk = a_scopes_keeping_block(c, blk_call_recv, blk_arg_expr);
   /* For each forwarded `&blk` argument, the user method it is handed to: a
      forward is only harmless when the CALLEE lets the block go no further.
      One that stores it (`$p = b`) keeps it past the call, so the forwarder
@@ -18565,7 +18575,7 @@ void analyze_program(Compiler *c) {
              right or wrong depending on the order the classes were defined in
              (#3786). */
           int first = -1;
-          int keeper = a_name_keeps_block(c, fn, blk_call_recv, blk_arg_expr, &first);
+          int keeper = a_name_keeps_block(c, fn, scope_keeps_blk, &first);
           fmi = keeper >= 0 ? keeper : first;
         }
       }
@@ -18614,7 +18624,7 @@ void analyze_program(Compiler *c) {
            `handler`, and codegen -- on settled types -- lifted the block and
            named a `_cell_handler` nothing declared. */
         if (!a_proc_create_or_lifted(c, id) &&
-            !a_block_lifted_by_callee_name(c, id, blk_call_recv, blk_arg_expr)) continue;
+            !a_block_lifted_by_callee_name(c, id, scope_keeps_blk)) continue;
         if (comp_scope_of(c, id) != m) continue;
         int body = a_proc_body(c, id);
         if (body >= 0) a_mark_subtree(c, body, inproc_m);
@@ -18706,6 +18716,7 @@ void analyze_program(Compiler *c) {
   free(inline_cand); free(fwd_from); free(fwd_to);
   free(blk_call_recv);
   free(blk_arg_expr);
+  free(scope_keeps_blk);
   free(blk_cond_pred);
   free(blk_fwd_callee);
 
