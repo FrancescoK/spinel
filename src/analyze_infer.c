@@ -7341,7 +7341,7 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_NilNode)                 return TY_NIL;
   /* A while/until loop in value position evaluates to nil (a valued `break`
      is a separate gap); type it as poly so the slot holds a boxed nil. */
-  if (nk == NK_WhileNode || nk == NK_UntilNode) return TY_POLY;
+  if (nk == NK_WhileNode || nk == NK_UntilNode || nk == NK_ForNode) return TY_POLY;
   if (nk == NK_RangeNode) {
     /* (:a..:e): symbols enumerate by name succession -- the whole range
        lowers to a poly array of boxed symbols (see codegen_expr) */
