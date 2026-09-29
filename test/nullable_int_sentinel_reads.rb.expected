@@ -1,0 +1,32 @@
+b else nil
+f in-nil nil
+in-else
+[false, true, false, false, false]
+[true, true, true, true, 0, 0]
+[false, false, true]
+{nil => 1}
+{2 => nil}
+{nil => 2}
+["", "", [], [], [3], []]
+TypeError can't convert nil into Integer
+TypeError can't convert nil into Float
+|
+true
+false
+nil
+b cmp int
+f in-num flt
+in-num
+[true, false, true, true, true]
+[false, false, false, false, nil, nil]
+[true, true, false]
+{5 => 1}
+{2 => 5}
+{5 => 2}
+["5", "1.5", [5], [1.5], [5, 3], [1.5]]
+5
+1.5
+5|1.5
+true
+false
+1.5

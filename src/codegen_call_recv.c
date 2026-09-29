@@ -8888,7 +8888,13 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
          equal? is value identity, so it behaves the same as eql?. A Float or
          any other concrete arg is never equal; a poly arg checks its tag. */
       else if ((sp_streq(name, "eql?") || sp_streq(name, "equal?")) && argc == 1) {
-        if (a0 == TY_INT) { buf_printf(b, "((%s) == (", r); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
+        /* a receiver holding its nil sentinel is nil, which is eql? and
+           equal? to nil alone: ask the boxed pair, as nil where it is one */
+        if (call_returns_nullable_int(c, recv)) {
+          buf_printf(b, "%s(sp_box_int_or_nil(%s), ", sp_streq(name, "eql?") ? "sp_poly_eql" : "sp_poly_equal", r);
+          emit_boxed(c, argv[0], b); buf_puts(b, ")");
+        }
+        else if (a0 == TY_INT) { buf_printf(b, "((%s) == (", r); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
         else if (a0 == TY_POLY) {
           int te = ++g_tmp;
           buf_printf(b, "({ sp_RbVal _t%d = ", te); emit_boxed(c, argv[0], b);
@@ -9326,7 +9332,12 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
          other arg is boxed and rejected unless it is tagged float at runtime. */
       else if (sp_streq(name, "eql?") && argc == 1) {
         TyKind a0 = comp_ntype(c, argv[0]);
-        if (a0 == TY_FLOAT) { buf_printf(b, "((%s) == (", r); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
+        /* a receiver holding its nil sentinel is nil (see Integer#eql?) */
+        if (call_returns_nullable_int(c, recv)) {
+          buf_printf(b, "sp_poly_eql(sp_box_float_or_nil(%s), ", r);
+          emit_boxed(c, argv[0], b); buf_puts(b, ")");
+        }
+        else if (a0 == TY_FLOAT) { buf_printf(b, "((%s) == (", r); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
         else {
           int te = ++g_tmp;
           buf_printf(b, "({ sp_RbVal _t%d = ", te); emit_boxed(c, argv[0], b);
@@ -9363,7 +9374,11 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
          the value, exactly CRuby's flonum behavior (1.0.equal?(1.0) is true). */
       else if (sp_streq(name, "equal?") && argc == 1) {
         TyKind a0 = comp_ntype(c, argv[0]);
-        if (a0 == TY_FLOAT) { buf_printf(b, "((%s) == (", r); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
+        if (call_returns_nullable_int(c, recv)) {   /* nil where it is the sentinel */
+          buf_printf(b, "sp_poly_equal(sp_box_float_or_nil(%s), ", r);
+          emit_boxed(c, argv[0], b); buf_puts(b, ")");
+        }
+        else if (a0 == TY_FLOAT) { buf_printf(b, "((%s) == (", r); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
         else {
           int te = ++g_tmp;
           buf_printf(b, "({ sp_RbVal _t%d = ", te); emit_boxed(c, argv[0], b);

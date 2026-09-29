@@ -14028,7 +14028,18 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
     /* a comparable-family receiver === nil is always false; === is value
-       equality, not a method nil must define (#2584: 3 === nil is false). */
+       equality, not a method nil must define (#2584: 3 === nil is false).
+       A nullable Integer or Float receiver holding its sentinel is nil,
+       though, and nil === nil: that one is asked at run time. */
+    if (fr && fr != 5 && fr != 6 && a0 == TY_NIL &&
+        (rt == TY_INT || rt == TY_FLOAT) && call_returns_nullable_int(c, recv)) {
+      char ref[24];
+      buf_puts(b, "({ "); emit_sentinel_bind(c, rt, recv, ref, sizeof ref, b);
+      buf_puts(b, "(void)("); emit_boxed(c, argv[0], b); buf_puts(b, "); !");
+      emit_slot_truthy(rt, ref, b);
+      buf_puts(b, "; })");
+      return 1;
+    }
     if (fr && fr != 5 && fr != 6 && a0 == TY_NIL) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
       emit_boxed(c, argv[0], b); buf_puts(b, "), 0)");
@@ -14326,6 +14337,16 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         else if (fr == 5) { buf_puts(b, eq ? "sp_range_eq(" : "(!sp_range_eq("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, eq ? ")" : "))"); }
         else if (fr == 6) { buf_puts(b, eq ? "sp_frange_eq(" : "(!sp_frange_eq("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, eq ? ")" : "))"); }
         else if (fr == 7) { buf_puts(b, eq ? "sp_srange_eq(" : "(!sp_srange_eq("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, eq ? ")" : "))"); }
+        /* two nullable Floats: a nil is the sentinel, a NaN, and nil == nil
+           though NaN != NaN (the struct-member compare above says the same) */
+        else if (rt == TY_FLOAT && a0 == TY_FLOAT &&
+                 cmp_operand_may_be_nil(c, recv) && cmp_operand_may_be_nil(c, argv[0])) {
+          int ta = ++g_tmp, tb = ++g_tmp;
+          buf_printf(b, "({ sp_float _t%d = ", ta); emit_expr(c, recv, b);
+          buf_printf(b, "; sp_float _t%d = ", tb); emit_expr(c, argv[0], b);
+          buf_printf(b, "; %s(_t%d == _t%d || (sp_float_is_nil(_t%d) && sp_float_is_nil(_t%d))); })",
+                     eq ? "" : "!", ta, tb, ta, tb);
+        }
         else { buf_puts(b, "("); emit_expr(c, recv, b); buf_printf(b, " %s ", eq ? "==" : "!="); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         return 1;
       }
@@ -29006,7 +29027,19 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       { NodeKind ek = nt_kind(nt, av[0]);
         if (at == TY_UNKNOWN && (ek == NK_HashNode || ek == NK_KeywordHashNode || ek == NK_ArrayNode))
           at = TY_POLY_ARRAY; }
-      if (at == TY_STRING && comp_ntype(c, id) == TY_POLY) {   /* promote mode: a Bignum past sp_int */
+      /* A nullable Integer or Float holding its sentinel is nil, and nil does
+         not convert: CRuby's TypeError, where the sentinel passed through as
+         a number (or, as a Float, raised FloatDomainError on its NaN). */
+      if ((at == TY_INT || at == TY_FLOAT) && comp_ntype(c, id) == TY_INT &&
+          call_returns_nullable_int(c, av[0])) {
+        char ref[24];
+        buf_puts(b, "({ "); emit_sentinel_bind(c, at, av[0], ref, sizeof ref, b);
+        buf_puts(b, "if (!"); emit_slot_truthy(at, ref, b);
+        buf_puts(b, ") sp_raise_cls(\"TypeError\", \"can't convert nil into Integer\"); ");
+        if (at == TY_INT) buf_printf(b, "%s; })", ref);
+        else buf_printf(b, "sp_poly_flo_domain_ck(%s); sp_float_fit_i(%s); })", ref, ref);
+      }
+      else if (at == TY_STRING && comp_ntype(c, id) == TY_POLY) {   /* promote mode: a Bignum past sp_int */
         buf_puts(b, "sp_str_to_i_promote("); emit_expr(c, av[0], b); buf_puts(b, ", 0, 1)");
       }
       else if (at == TY_STRING) { buf_puts(b, "sp_str_to_i_strict("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
@@ -29071,7 +29104,14 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       { NodeKind ek = nt_kind(nt, av[0]);
         if (at == TY_UNKNOWN && (ek == NK_HashNode || ek == NK_KeywordHashNode || ek == NK_ArrayNode))
           at = TY_POLY_ARRAY; }
-      if (at == TY_STRING) { buf_puts(b, "sp_str_to_f_strict("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
+      /* the Float twin of Integer's nullable arm above */
+      if ((at == TY_INT || at == TY_FLOAT) && call_returns_nullable_int(c, av[0])) {
+        char ref[24];
+        buf_puts(b, "({ "); emit_sentinel_bind(c, at, av[0], ref, sizeof ref, b);
+        buf_puts(b, "if (!"); emit_slot_truthy(at, ref, b);
+        buf_printf(b, ") sp_raise_cls(\"TypeError\", \"can't convert nil into Float\"); (sp_float)%s; })", ref);
+      }
+      else if (at == TY_STRING) { buf_puts(b, "sp_str_to_f_strict("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       else if (at == TY_INT) { buf_puts(b, "((sp_float)("); emit_expr(c, av[0], b); buf_puts(b, "))"); }
       else if (at == TY_NIL) { buf_puts(b, "((void)("); emit_expr(c, av[0], b); buf_puts(b, "), sp_raise_cls(\"TypeError\", \"can't convert nil into Float\"), 0.0)"); }  /* #2514 */
       else if (at == TY_POLY) { buf_puts(b, "sp_poly_Float("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
@@ -29105,6 +29145,11 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "String") && ac == 1) {
       TyKind at = comp_ntype(c, av[0]);
       if (at == TY_STRING) { emit_expr(c, av[0], b); }
+      /* a nullable Integer or Float holding its sentinel is nil, whose
+         String is "": box it, as nil where it is one */
+      else if ((at == TY_INT || at == TY_FLOAT) && call_returns_nullable_int(c, av[0])) {
+        buf_puts(b, "sp_poly_to_s("); emit_boxed(c, av[0], b); buf_puts(b, ")");
+      }
       else if (at == TY_INT) { buf_puts(b, "sp_int_to_s("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       else if (at == TY_FLOAT) { buf_puts(b, "sp_float_to_s("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       /* a boxed object answering #to_str converts through it
@@ -29153,6 +29198,16 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       else if (at == TY_INT || at == TY_FLOAT || at == TY_STRING) {
         const char *ak = at == TY_INT ? "Int" : at == TY_FLOAT ? "Float" : "Str";
         int t = ++g_tmp;
+        /* a nullable Integer or Float holding its sentinel is nil, and
+           Array(nil) is empty: the element goes in only when it is one */
+        if (at != TY_STRING && call_returns_nullable_int(c, av[0])) {
+          char ref[24];
+          buf_puts(b, "({ "); emit_sentinel_bind(c, at, av[0], ref, sizeof ref, b);
+          buf_printf(b, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d); if (", ak, t, ak, t);
+          emit_slot_truthy(at, ref, b);
+          buf_printf(b, ") sp_%sArray_push(_t%d, %s); _t%d; })", ak, t, ref, t);
+          return;
+        }
         buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d); sp_%sArray_push(_t%d, ", ak, t, ak, t, ak, t);
         if (at == TY_INT) emit_int_expr(c, av[0], b);
         else if (at == TY_FLOAT) emit_float_expr(c, av[0], b);
@@ -36365,6 +36420,18 @@ else {
           }
         }
       }
+      /* the answer is the slot kind's; a nullable Integer or Float holding
+         its sentinel is nil, which answers its own, smaller surface */
+      if (resolved && recv >= 0 && (rt == TY_INT || rt == TY_FLOAT) &&
+          call_returns_nullable_int(c, recv)) {
+        char ref[24];
+        buf_puts(b, "({ "); emit_sentinel_bind(c, rt, recv, ref, sizeof ref, b);
+        emit_slot_truthy(rt, ref, b);
+        buf_printf(b, " ? %d : sp_poly_responds_builtin(sp_box_nil(), ", yes);
+        emit_str_literal(b, qm);
+        buf_puts(b, "); })");
+        return;
+      }
       if (resolved) { buf_printf(b, "%d", yes); return; }
     }
     else if (recv >= 0 && rt != TY_CLASS && nt_kind(nt, argv[0]) != NK_SplatNode && !any_class_defines(c, "respond_to?")) {
@@ -37523,7 +37590,17 @@ else {
       return;
     }
     /* Statically incomparable concrete operands (1 <=> "a"): Ruby answers
-       nil. User objects fall through to their own #<=> dispatch. */
+       nil. User objects fall through to their own #<=> dispatch. A nullable
+       Integer or Float receiver against nil is the exception: holding its
+       sentinel it is nil, and nil <=> nil is 0. */
+    if ((lrt == TY_INT || lrt == TY_FLOAT) && lat == TY_NIL && call_returns_nullable_int(c, recv)) {
+      char ref[24];
+      buf_puts(b, "({ "); emit_sentinel_bind(c, lrt, recv, ref, sizeof ref, b);
+      buf_puts(b, "(void)("); emit_expr(c, argv[0], b); buf_puts(b, "); ");
+      emit_slot_truthy(lrt, ref, b);
+      buf_puts(b, " ? SP_INT_NIL : (sp_int)0; })");
+      return;
+    }
     if (lrt != TY_UNKNOWN && lat != TY_UNKNOWN &&
         !ty_is_object(lrt) && !ty_is_object(lat)) {
       buf_puts(b, "((void)(");
@@ -37922,6 +37999,14 @@ else {
         yes = ty_is_array(at) || ty_is_hash(at) || at == TY_RANGE ||
               at == TY_FLOAT_RANGE || at == TY_STR_RANGE || at == TY_ENUMERATOR ||
               at == TY_DIR;
+      /* nil is neither, and a nullable Integer or Float is nil where it
+         holds its sentinel */
+      if (yes && (at == TY_INT || at == TY_FLOAT) && call_returns_nullable_int(c, argv[0])) {
+        char ref[24];
+        buf_puts(b, "({ "); emit_sentinel_bind(c, at, argv[0], ref, sizeof ref, b);
+        emit_slot_truthy(at, ref, b); buf_puts(b, "; })");
+        return;
+      }
       buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_printf(b, "), %d)", yes);
       return;
     }
@@ -38214,7 +38299,16 @@ else {
          which the inference already typed (#4190) */
       !(ty_is_object(rt) &&
         comp_resolve_member(c, ty_object_class(rt), name, 0, NULL, NULL) == SP_MEMBER_ATTR)) {
-    if (rt == TY_INT) { buf_puts(b, "(2*("); emit_expr(c, recv, b); buf_puts(b, ")+1)"); }
+    /* a nullable Integer or Float holding its sentinel is nil, whose id
+       is nil's */
+    if ((rt == TY_INT || rt == TY_FLOAT) && call_returns_nullable_int(c, recv)) {
+      char ref[24];
+      buf_puts(b, "({ "); emit_sentinel_bind(c, rt, recv, ref, sizeof ref, b);
+      emit_slot_truthy(rt, ref, b);
+      if (rt == TY_INT) buf_printf(b, " ? 2*%s+1 : 4; })", ref);
+      else buf_printf(b, " ? sp_rbval_hash_key(sp_box_float(%s)) : 4; })", ref);
+    }
+    else if (rt == TY_INT) { buf_puts(b, "(2*("); emit_expr(c, recv, b); buf_puts(b, ")+1)"); }
     else if (rt == TY_SYMBOL) { buf_puts(b, "((sp_int)("); emit_expr(c, recv, b); buf_puts(b, ")*2)"); }
     else if (rt == TY_NIL) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 4)"); }
     else if (rt == TY_BOOL) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") ? 20 : 0)"); }
@@ -38382,6 +38476,18 @@ else {
     const char *cn = isa_match_name(nt, recv, rq, sizeof rq);
     if (cn) {
       TyKind at2 = comp_ntype(c, argv[0]);
+      /* A nullable Integer or Float argument is nil where it holds its
+         sentinel, which the scalar type cannot say: `Integer === x` answered
+         true and `NilClass === x` false for a nil x. Box it, as nil where it
+         is one, and test the tag as a poly argument is tested. */
+      if ((at2 == TY_INT || at2 == TY_FLOAT) && call_returns_nullable_int(c, argv[0])) {
+        int tv = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b); buf_puts(b, "; ");
+        char v[32]; snprintf(v, sizeof v, "_t%d", tv);
+        emit_poly_isa_test(c, cn, v, 0, b);
+        buf_puts(b, "; })");
+        return;
+      }
       /* TrueClass/FalseClass/NilClass === <literal/typed value>: decide
          statically from the arg's node kind or scalar type. */
       const char *aty = nt_type(nt, argv[0]);

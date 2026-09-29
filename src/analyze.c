@@ -16330,11 +16330,13 @@ int nullable_int_value(Compiler *c, int v) {
     return iv >= 0 && ci->ivar_nullable_int[iv];
   }
   /* A Float global is declared holding the sentinel, which it keeps until its
-     first assignment. */
+     first assignment; and any scalar global some write left the sentinel in
+     holds it after (marked below, as a local is). */
   if (nt_kind(nt, v) == NK_GlobalVariableReadNode) {
     const char *gn = nt_str(nt, v, "name");
     const char *rn = gn ? comp_resolve_gvar(c, gn + 1) : NULL;
     LocalVar *g = rn ? comp_gvar(c, rn) : NULL;
+    if (g && g->nullable_int) return 1;
     return g && g->type == TY_FLOAT && !gvar_seeded_before_read(c, rn);
   }
   if (nt_kind(nt, v) == NK_ParenthesesNode) {
@@ -16666,7 +16668,7 @@ static void mark_nullable_int_locals(Compiler *c) {
      advances one link per round, and a fixed cap of 32 refused to compile a
      legal 40-deep one. Past this bound the pass is not monotone, which is the
      only thing the check is here to catch. */
-  long rounds_max = c->nscopes + 2;
+  long rounds_max = c->nscopes + 2 + c->ngvars;
   for (int s = 0; s < c->nscopes; s++) rounds_max += c->scopes[s].nlocals;
   int converged = 0;
   for (long round = 0; round < rounds_max; round++) {
@@ -16703,6 +16705,17 @@ static void mark_nullable_int_locals(Compiler *c) {
       /* An outright `i = nil` on a slot the other writes make an int leaves
          the sentinel in it just as a search miss does. */
       if (nullable_int_value(c, v)) { lv->nullable_int = 1; changed = 1; }
+    }
+    /* A global written from such a value carries it to every reader, just as
+       a local does: `$g = a[i]` boxed the sentinel as a number (a Float's
+       printed NaN) wherever $g was read. */
+    NT_FOREACH_KIND(nt, NK_GlobalVariableWriteNode, id) {
+      int v = nt_ref(nt, id, "value");
+      const char *gn = nt_str(nt, id, "name");
+      const char *rn = gn ? comp_resolve_gvar(c, gn + 1) : NULL;
+      LocalVar *g = rn ? comp_gvar(c, rn) : NULL;
+      if (v < 0 || !g || (g->type != TY_INT && g->type != TY_FLOAT) || g->nullable_int) continue;
+      if (nullable_int_value(c, v)) { g->nullable_int = 1; changed = 1; }
     }
     /* A PARAMETER whose DEFAULT is the nil literal carries the sentinel on
        every defaulted call even when each explicit call site passes a real

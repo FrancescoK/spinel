@@ -244,7 +244,16 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
       }
     }
   }
-  if (t == TY_INT) {
+  /* a nullable Integer or Float holding its sentinel is nil, which prints
+     as nothing, as `print nil` does -- the sentinel went out as its number */
+  if ((t == TY_INT || t == TY_FLOAT) && call_returns_nullable_int(c, arg)) {
+    char ref[24];
+    buf_puts(b, "{ "); emit_sentinel_bind(c, t, arg, ref, sizeof ref, b);
+    buf_puts(b, "if "); emit_slot_truthy(t, ref, b);
+    if (t == TY_INT) buf_printf(b, " printf(\"%%lld\", (long long)%s); }\n", ref);
+    else buf_printf(b, " fputs(sp_float_to_s(%s), stdout); }\n", ref);
+  }
+  else if (t == TY_INT) {
     buf_puts(b, "printf(\"%lld\", (long long)"); emit_expr(c, arg, b); buf_puts(b, ");\n");
   }
   else if (t == TY_FLOAT) {
@@ -2721,6 +2730,23 @@ static int pm_hash_value_class(const NodeTable *nt, int vpat) {
    the helpers after the subject (#3185). */
 static Buf *g_pm_hash_sink = NULL;
 
+/* Is the subject a nullable Integer or Float, whose nil is its sentinel? A
+   `when` chain or an `in` pattern decides a scalar subject from the slot's
+   kind, so for such a subject `when nil` and `in NilClass` never matched,
+   `when Integer` (or Float, Numeric, Comparable) always did, and a beginless
+   range covered the sentinel as INT64_MIN. Both `when` emitters box the
+   subject once, as nil where it is one, and test the box the way they test
+   any poly subject; the integer-literal switch runs before the box, since no
+   label is the sentinel. The pattern emitter keeps the typed subject, which
+   its bindings read, and asks the sentinel in the arms that test a class, nil
+   or a range (g_pm_sentinel_t). */
+static int case_subject_boxes_sentinel(Compiler *c, int pred, TyKind pt) {
+  return pred >= 0 && (pt == TY_INT || pt == TY_FLOAT) && call_returns_nullable_int(c, pred);
+}
+/* The subject temp of the enclosing `case/in` when it is such a scalar, or -1.
+   Only the subject itself: a sub-pattern's element temp has its own number. */
+static int g_pm_sentinel_t = -1;
+
 /* The name an exception carries at run time is its FULLY QUALIFIED Ruby name:
    sp_exc_new_sub is emitted with class_ruby_name, and sp_exc_is_a compares
    against that. A `when Mod::Klass` pattern node carries only the last
@@ -2948,6 +2974,10 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
   /* nil / true / false literal patterns */
   if (sp_streq(pty, "NilNode")) {
     if (pt == TY_POLY) buf_printf(b, "(_t%d.tag == SP_TAG_NIL)", t);
+    else if (t == g_pm_sentinel_t) {
+      char ref[24]; snprintf(ref, sizeof ref, "_t%d", t);
+      buf_puts(b, "!"); emit_slot_truthy(pt, ref, b);
+    }
     /* a no-match MatchData is a NULL pointer; `in nil` matches it */
     else if (pt == TY_MATCHDATA) buf_printf(b, "(_t%d == NULL)", t);
     else if (ty_is_object(pt)) emit_obj_nil(c, pt, t, b);
@@ -3022,6 +3052,16 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
       return 1;
     }
     int yes = ty_matches_class(pt, cn2, 0);
+    /* a scalar subject holding its nil sentinel is a NilClass, and is not
+       the Integer or Float its slot is; Object and its ancestors hold for
+       nil too, as in the is_a? fold */
+    if (t == g_pm_sentinel_t && !sp_streq(cn2, "Object") && !sp_streq(cn2, "BasicObject") &&
+        !sp_streq(cn2, "Kernel") && (yes > 0 || sp_streq(cn2, "NilClass"))) {
+      char ref[24]; snprintf(ref, sizeof ref, "_t%d", t);
+      if (!sp_streq(cn2, "NilClass")) emit_slot_truthy(pt, ref, b);
+      else { buf_puts(b, "!"); emit_slot_truthy(pt, ref, b); }
+      return 1;
+    }
     buf_printf(b, "%d", yes > 0 ? 1 : 0);
     return 1;
   }
@@ -3067,6 +3107,11 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
     if (pt == TY_INT || pt == TY_FLOAT) {
       buf_puts(b, "(");
       int wrote = 0;
+      /* the sentinel is below every bound: a beginless range covered it */
+      if (t == g_pm_sentinel_t) {
+        char ref[24]; snprintf(ref, sizeof ref, "_t%d", t);
+        emit_slot_truthy(pt, ref, b); buf_puts(b, " && ");
+      }
       if (lo >= 0) { buf_printf(b, "_t%d >= ", t); emit_expr(c, lo, b); wrote = 1; }
       if (hi >= 0) { if (wrote) buf_puts(b, " && "); buf_printf(b, "_t%d %s ", t, cmp); emit_expr(c, hi, b); wrote = 1; }
       if (!wrote) buf_puts(b, "1");
@@ -3797,6 +3842,8 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
     emit_gc_root_tmp(c, pt, t, b);
     buf_puts(b, "\n");
   }
+  int saved_sentinel_t = g_pm_sentinel_t;
+  g_pm_sentinel_t = case_subject_boxes_sentinel(c, pred, pt) ? t : -1;
 
   for (int w = 0; w < cn; w++) {
     const char *cty = nt_type(nt, conds[w]);
@@ -4617,6 +4664,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
     if (has_cond) { emit_indent(b, indent + 1); buf_puts(b, "}\n"); }
     emit_indent(b, indent); buf_puts(b, "}\n");
   }
+  g_pm_sentinel_t = saved_sentinel_t;
 
   if (else_clause >= 0) {
     emit_indent(b, indent); buf_puts(b, "{\n");
@@ -4967,6 +5015,16 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
       return;
     }
   }
+  /* the lambda and proc arms bind the subject to a parameter of its own
+     type, so they keep reading the typed temp */
+  int typed_t = t; TyKind typed_pt = pt;
+  if (case_subject_boxes_sentinel(c, pred, pt)) {
+    int bt = ++g_tmp;
+    emit_indent(b, indent);
+    buf_printf(b, "sp_RbVal _t%d = %s(_t%d);\n", bt,
+               pt == TY_INT ? "sp_box_int_or_nil" : "sp_box_float_or_nil", t);
+    t = bt; pt = TY_POLY;
+  }
 
   for (int w = 0; w < nw; w++) {
     int wn = whens[w];
@@ -5006,7 +5064,7 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
         }
         else {
           const char *cnty = nt_type(nt, conds[j]);
-          if (emit_when_lambda_inline(c, conds[j], t, pt, b)) { /* literal lambda predicate */ }
+          if (emit_when_lambda_inline(c, conds[j], typed_t, typed_pt, b)) { /* literal lambda predicate */ }
           /* `when <proc>` (a variable): Proc#=== calls the proc with the
              subject, via the proc-call ABI (mirrors the case-as-value arm) */
           /* a Proc read out of a container arrives boxed: dispatch on the tag
@@ -5014,16 +5072,16 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
           else if (comp_ntype(c, conds[j]) == TY_POLY) emit_when_boxed_test(c, conds[j], t, pt, b);
           else if (comp_ntype(c, conds[j]) == TY_PROC) {
             g_needs_proc_poly_argslot = 1;
-            char subj9[32]; snprintf(subj9, sizeof subj9, "_t%d", t);
+            char subj9[32]; snprintf(subj9, sizeof subj9, "_t%d", typed_t);
             buf_puts(b, "({ _sp_proc_poly_args[0] = ");
-            if (pt == TY_POLY) buf_puts(b, subj9);
-            else emit_boxed_text(c, pt, subj9, b);
+            if (typed_pt == TY_POLY) buf_puts(b, subj9);
+            else emit_boxed_text(c, typed_pt, subj9, b);
             buf_puts(b, "; sp_poly_truthy(((void)sp_proc_call(");
             emit_expr(c, conds[j], b);
             buf_puts(b, ", 1, (sp_int[16]){");
-            if (pt == TY_POLY) buf_printf(b, "sp_poly_to_i(%s)", subj9);
-            else if (proc_slot_is_ptr(pt)) buf_printf(b, "(sp_int)(uintptr_t)%s", subj9);
-            else if (pt == TY_FLOAT) buf_puts(b, "0");
+            if (typed_pt == TY_POLY) buf_printf(b, "sp_poly_to_i(%s)", subj9);
+            else if (proc_slot_is_ptr(typed_pt)) buf_printf(b, "(sp_int)(uintptr_t)%s", subj9);
+            else if (typed_pt == TY_FLOAT) buf_puts(b, "0");
             else buf_puts(b, subj9);
             buf_puts(b, "}), _sp_proc_poly_ret)); })");
           }
@@ -5116,15 +5174,17 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
             /* `when lo..hi` is range membership, not equality */
             int tr = ++g_tmp;
             buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, conds[j], b);
-            /* sp_range_include takes sp_int; coerce a poly scrutinee. */
-            if (pt == TY_POLY) buf_printf(b, "; sp_range_include(&_t%d, sp_poly_to_i(_t%d)); })", tr, t);
+            /* sp_range_include takes sp_int; coerce a poly scrutinee. Its
+               nil is no number, and read as one it was covered by every
+               range that holds 0 (or, from a sentinel, a beginless one). */
+            if (pt == TY_POLY) buf_printf(b, "; _t%d.tag != SP_TAG_NIL && sp_range_include(&_t%d, sp_poly_to_i(_t%d)); })", t, tr, t);
             else buf_printf(b, "; sp_range_include(&_t%d, _t%d); })", tr, t);
           }
           else if (comp_ntype(c, conds[j]) == TY_FLOAT_RANGE) {
             /* `when 1.0..3.0`: float range membership via sp_frange_cover */
             int tr = ++g_tmp;
             buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, conds[j], b);
-            if (pt == TY_POLY) buf_printf(b, "; sp_frange_cover(_t%d, sp_poly_to_f(_t%d)); })", tr, t);
+            if (pt == TY_POLY) buf_printf(b, "; _t%d.tag != SP_TAG_NIL && sp_frange_cover(_t%d, sp_poly_to_f(_t%d)); })", t, tr, t);
             else buf_printf(b, "; sp_frange_cover(_t%d, (sp_float)_t%d); })", tr, t);
           }
           else if (comp_ntype(c, conds[j]) == TY_CLASS) {
@@ -5418,6 +5478,14 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
       return;
     }
   }
+  /* the statement chain's box (see case_subject_boxes_sentinel) */
+  int typed_t = t; TyKind typed_pt = pt;
+  if (case_subject_boxes_sentinel(c, pred, pt)) {
+    int bt = ++g_tmp;
+    buf_printf(b, "sp_RbVal _t%d = %s(_t%d); ", bt,
+               pt == TY_INT ? "sp_box_int_or_nil" : "sp_box_float_or_nil", t);
+    t = bt; pt = TY_POLY;
+  }
 
   for (int w = 0; w < nw; w++) {
     int wn = whens[w];
@@ -5474,13 +5542,13 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
         else if (comp_ntype(c, conds[j]) == TY_RANGE && pt != TY_STRING) {
           int tr = ++g_tmp;
           buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, conds[j], b);
-          if (pt == TY_POLY) buf_printf(b, "; sp_range_include(&_t%d, sp_poly_to_i(_t%d)); })", tr, t);
+          if (pt == TY_POLY) buf_printf(b, "; _t%d.tag != SP_TAG_NIL && sp_range_include(&_t%d, sp_poly_to_i(_t%d)); })", t, tr, t);
           else buf_printf(b, "; sp_range_include(&_t%d, _t%d); })", tr, t);
         }
         else if (comp_ntype(c, conds[j]) == TY_FLOAT_RANGE) {
           int tr = ++g_tmp;
           buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, conds[j], b);
-          if (pt == TY_POLY) buf_printf(b, "; sp_frange_cover(_t%d, sp_poly_to_f(_t%d)); })", tr, t);
+          if (pt == TY_POLY) buf_printf(b, "; _t%d.tag != SP_TAG_NIL && sp_frange_cover(_t%d, sp_poly_to_f(_t%d)); })", t, tr, t);
           else buf_printf(b, "; sp_frange_cover(_t%d, (sp_float)_t%d); })", tr, t);
         }
         else if (comp_ntype(c, conds[j]) == TY_CLASS) {
@@ -5501,7 +5569,7 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
           buf_printf(b, "(sp_bigint_cmp(_t%d, ", t); emit_expr(c, conds[j], b); buf_puts(b, ") == 0)");
         }
         else if (comp_ntype(c, conds[j]) == TY_PROC &&
-                 emit_when_lambda_inline(c, conds[j], t, pt, b)) { /* literal lambda inlined */ }
+                 emit_when_lambda_inline(c, conds[j], typed_t, typed_pt, b)) { /* literal lambda inlined */ }
         /* a Proc read out of a container arrives boxed: dispatch on the tag so
            it is CALLED and not compared (#3683) */
         else if (comp_ntype(c, conds[j]) == TY_POLY) emit_when_boxed_test(c, conds[j], t, pt, b);
@@ -5511,16 +5579,16 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
              param) and boxed on the side-channel (poly callee param), like
              the force_poly proc-call path. */
           g_needs_proc_poly_argslot = 1;
-          char subj[32]; snprintf(subj, sizeof subj, "_t%d", t);
+          char subj[32]; snprintf(subj, sizeof subj, "_t%d", typed_t);
           buf_puts(b, "({ _sp_proc_poly_args[0] = ");
-          if (pt == TY_POLY) buf_puts(b, subj);
-          else emit_boxed_text(c, pt, subj, b);
+          if (typed_pt == TY_POLY) buf_puts(b, subj);
+          else emit_boxed_text(c, typed_pt, subj, b);
           buf_puts(b, "; sp_poly_truthy(((void)sp_proc_call(");
           emit_expr(c, conds[j], b);
           buf_puts(b, ", 1, (sp_int[16]){");
-          if (pt == TY_POLY) buf_printf(b, "sp_poly_to_i(%s)", subj);
-          else if (proc_slot_is_ptr(pt)) buf_printf(b, "(sp_int)(uintptr_t)%s", subj);
-          else if (pt == TY_FLOAT) buf_puts(b, "0");
+          if (typed_pt == TY_POLY) buf_printf(b, "sp_poly_to_i(%s)", subj);
+          else if (proc_slot_is_ptr(typed_pt)) buf_printf(b, "(sp_int)(uintptr_t)%s", subj);
+          else if (typed_pt == TY_FLOAT) buf_puts(b, "0");
           else buf_puts(b, subj);
           buf_puts(b, "}), _sp_proc_poly_ret)); })");
         }
