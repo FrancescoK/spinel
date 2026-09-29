@@ -4291,6 +4291,25 @@ else {
   #undef OUT_STR
 }
 
+static char *sp_prepend_after_comments(char *source, const char *head) {
+  const char *ins = source;
+  while (*ins) {
+    const char *q = ins; while (*q == ' ' || *q == '\t') q++;
+    if (*q != '#') break;
+    const char *nl = strchr(ins, '\n');
+    if (!nl) { ins = ins + strlen(ins); break; }
+    ins = nl + 1;
+  }
+  size_t sl = strlen(source), hl = strlen(head), off = (size_t)(ins - source);
+  char *ns = (char *)malloc(sl + hl + 1);
+  if (!ns) return source;
+  memcpy(ns, source, off);
+  memcpy(ns + off, head, hl);
+  memcpy(ns + off + hl, source + off, sl - off + 1);
+  free(source);
+  return ns;
+}
+
 /* ---- Main ---- */
 /* Parse `source_file` and append the text AST to `out`. `argv0` is the
    invoking program path (used to locate the stdlib for plain `require`s).
@@ -4349,24 +4368,7 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
        off the first lines, so the entry file's pragma silently reverted to
        the default (#3298 -- "Set-Cookie" in a string is enough to trip the
        textual Set heuristic). */
-    const char *ins = source;
-    while (*ins) {
-      const char *q = ins; while (*q == ' ' || *q == '\t') q++;
-      if (*q != '#') break;
-      const char *nl = strchr(ins, '\n');
-      if (!nl) { ins = ins + strlen(ins); break; }
-      ins = nl + 1;
-    }
-    const char *head = "require \"set\"\n";
-    size_t sl = strlen(source), hl = strlen(head), off = (size_t)(ins - source);
-    char *ns = (char *)malloc(sl + hl + 1);
-    if (ns) {
-      memcpy(ns, source, off);
-      memcpy(ns + off, head, hl);
-      memcpy(ns + off + hl, source + off, sl - off + 1);
-      free(source);
-      source = ns;
-    }
+    source = sp_prepend_after_comments(source, "require \"set\"\n");
   }
   /* CRuby provides IO::Buffer with no require at all (it is core). Mirror
      it the way Set is mirrored just above: when the program references
@@ -4374,24 +4376,7 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
      bundled binding (packages/io/io/buffer.rb) splices ahead of its uses. */
   if (!strstr(source, "require \"io/buffer\"") && !strstr(source, "require 'io/buffer'") &&
       source_references_io_buffer(source)) {
-    const char *ins = source;
-    while (*ins) {
-      const char *q = ins; while (*q == ' ' || *q == '\t') q++;
-      if (*q != '#') break;
-      const char *nl = strchr(ins, '\n');
-      if (!nl) { ins = ins + strlen(ins); break; }
-      ins = nl + 1;
-    }
-    const char *head = "require \"io/buffer\"\n";
-    size_t sl = strlen(source), hl = strlen(head), off = (size_t)(ins - source);
-    char *ns = (char *)malloc(sl + hl + 1);
-    if (ns) {
-      memcpy(ns, source, off);
-      memcpy(ns + off, head, hl);
-      memcpy(ns + off + hl, source + off, sl - off + 1);
-      free(source);
-      source = ns;
-    }
+    source = sp_prepend_after_comments(source, "require \"io/buffer\"\n");
   }
   unsigned char *fsl = NULL; size_t fsl_n = 0;
   sp_autoload_is_main = 1;
