@@ -246,8 +246,13 @@ jobs:
       - name: Build (parse + regexp + spinelc), 32-bit
         run: make -j$(getconf _NPROCESSORS_ONLN) all
 
+      # -Og: the lane checks word-size assumptions, not what an optimizer
+      # makes of them (the gcc lanes' -O1 covers that), and the corpus is
+      # all compile time: -Og ran it in 164 s where -O1 took 246 s (the full
+      # 32-bit corpus on 16 cores, cold), every program passing either way.
+      # -O0 is slower than both, from the size of what it emits.
       - name: Run the test corpus as 32-bit programs
-        run: make -j$(getconf _NPROCESSORS_ONLN) test-corpus OPT=-O1
+        run: make -j$(getconf _NPROCESSORS_ONLN) test-corpus OPT=-Og
 
       - name: sccache stats
         if: always()
