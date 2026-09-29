@@ -20747,7 +20747,14 @@ static int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
   int dispatch_cid = (g_ie_class_id >= 0) ? g_ie_class_id
                    : (g_emitting_class_id >= 0) ? g_emitting_class_id : self->class_id;
   if (dispatch_cid < 0) return 0;
-  if (comp_reader_in_chain(c, dispatch_cid, name, NULL)) {
+  int rd_cls = -1, m_cls = -1;
+  int has_reader = comp_reader_in_chain(c, dispatch_cid, name, &rd_cls);
+  /* a def in the reader's class or below it overrides the reader: `def start`
+     in a class that includes a module's `attr_reader :start` */
+  if (has_reader && comp_method_in_chain(c, dispatch_cid, name, &m_cls) >= 0 &&
+      (m_cls == rd_cls || is_descendant(c, m_cls, rd_cls)))
+    has_reader = 0;
+  if (has_reader) {
     const char *rn = comp_resolve_alias(c, dispatch_cid, name);
     /* A shared-mutable slot reads out as a GC copy, as the reader with an
        explicit receiver reads it: the raw handle in a plain string context
