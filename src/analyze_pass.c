@@ -7316,7 +7316,12 @@ static int bsi_read_keeps(Compiler *c, const int *parent, int r) {
   }
   if ((pk == NK_IfNode || pk == NK_UnlessNode || pk == NK_WhileNode || pk == NK_UntilNode) &&
       nt_ref(nt, p, "predicate") == r) return 0;
-  if ((pk == NK_AndNode || pk == NK_OrNode) && nt_ref(nt, p, "left") == r) return 0;
+  /* `b && x` answers b only where b is nil or false, so the block itself
+     never leaves through it. `b || x` answers b where b is set, so the block
+     goes wherever that answer goes: a predicate drops it, `@cb = b || fb`
+     keeps it. */
+  if (pk == NK_AndNode && nt_ref(nt, p, "left") == r) return 0;
+  if (pk == NK_OrNode && nt_ref(nt, p, "left") == r) return bsi_read_keeps(c, parent, p);
   return 1;
 }
 static void bsi_kept_mark(Compiler *c) {
