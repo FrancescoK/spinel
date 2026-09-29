@@ -2240,7 +2240,9 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     TyKind ct = TY_INT;
     int idx = comp_cvar_index(&c->classes[cid], nm);
     if (idx >= 0) ct = c->classes[cid].cvar_types[idx];
-    buf_printf(b, "(cvar_%s_%s = ", c->classes[cid].name, nm + 2);
+    buf_puts(b, "(");
+    emit_cvar_set_flag(c, cid, nm, 1, b);
+    buf_printf(b, "cvar_%s_%s = ", c->classes[cid].name, nm + 2);
     if (emit_empty_container_for_slot(c, v, ct, b)) { /* emitted at the slot's type */ }
     else if (ct == TY_POLY) emit_boxed(c, v, b);
     else if (emit_array_into_poly_slot(c, ct, v, b)) { }
@@ -2308,7 +2310,9 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     TyKind ot = oidx >= 0 ? c->classes[cid].cvar_types[oidx] : TY_UNKNOWN;
     buf_puts(b, "(");
     emit_slot_truthy(ot, ref, b);
-    buf_printf(b, " ? %s : (%s = ", ref, ref);
+    buf_printf(b, " ? %s : (", ref);
+    emit_cvar_set_flag(c, cid, nm, 1, b);
+    buf_printf(b, "%s = ", ref);
     if (ot == TY_POLY) emit_boxed(c, v, b);
     else emit_expr(c, v, b);
     buf_puts(b, "))");
@@ -2765,7 +2769,20 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
             res = "instance-variable";
         }
       }
-      else if (sp_streq(vt, "ClassVariableReadNode")) res = "class variable";
+      else if (sp_streq(vt, "ClassVariableReadNode")) {
+        /* set or not is a run-time question: the cvar's __set flag */
+        const char *cnm = nt_str(nt, v, "name");
+        Scope *cs = comp_scope_of(c, v);
+        int cid = cs && cs->class_id >= 0 ? cs->class_id : g_class_body_id;
+        if (cid < 0) cid = comp_class_index(c, "Toplevel");
+        while (cid >= 0 && cnm && comp_cvar_index(&c->classes[cid], cnm) < 0)
+          cid = c->classes[cid].parent;
+        if (cid >= 0 && cnm)
+          buf_printf(b, "(cvar_%s_%s__set ? SPL(\"class variable\") : NULL)",
+                     c->classes[cid].name, cnm + 2);
+        else buf_puts(b, "NULL");
+        return;
+      }
       else if (sp_streq(vt, "SelfNode")) res = "self";
       else if (sp_streq(vt, "NilNode")) res = "nil";
       else if (sp_streq(vt, "TrueNode")) res = "true";

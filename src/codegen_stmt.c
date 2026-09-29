@@ -7819,6 +7819,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
     int cx = cid >= 0 ? comp_cvar_index(&c->classes[cid], nm) : -1;
     if (cx < 0) { unsupported(c, id, "multiple assignment class variable target"); return 1; }
     emit_indent(b, indent);
+    emit_cvar_set_flag(c, cid, nm, 0, b);
     buf_printf(b, "cvar_%s_%s = ", c->classes[cid].name, nm + 2);
     masgn_conv(c, c->classes[cid].cvar_types[cx], vt, val, b);
     buf_puts(b, ";\n");
@@ -8840,6 +8841,7 @@ else {
     int idx = comp_cvar_index(&c->classes[sc], nm);
     if (idx >= 0) ct = c->classes[sc].cvar_types[idx];
     emit_indent(b, indent);
+    emit_cvar_set_flag(c, sc, nm, 0, b);
     buf_printf(b, "cvar_%s_%s = ", c->classes[sc].name, nm + 2);
     if (emit_empty_container_for_slot(c, v, ct, b)) { /* emitted at the slot's type */ }
     else if (ct == TY_POLY) emit_boxed(c, v, b);
@@ -8891,7 +8893,9 @@ else {
        the value form does */
     buf_puts(b, "if (!");
     emit_slot_truthy(ot, ref, b);
-    buf_printf(b, ") { %s = ", ref);
+    buf_puts(b, ") { ");
+    emit_cvar_set_flag(c, sc, nm, 0, b);
+    buf_printf(b, "%s = ", ref);
     if (ot == TY_POLY) emit_boxed(c, v, b);
     else emit_expr(c, v, b);
     buf_puts(b, "; }\n");
@@ -10712,6 +10716,7 @@ else {
         int cv_idx = comp_cvar_index(&c->classes[cv_cid], cnm);
         if (cv_idx < 0) { unsupported(c, id, "multiple assignment class variable target unregistered"); continue; }
         emit_indent(b, indent);
+        emit_cvar_set_flag(c, cv_cid, cnm, 0, b);
         buf_printf(b, "cvar_%s_%s = ", c->classes[cv_cid].name, cnm + 2);
         TyKind cvt = c->classes[cv_cid].cvar_types[cv_idx];
         TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
