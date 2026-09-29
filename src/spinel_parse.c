@@ -2706,6 +2706,57 @@ static int sp_source_mentions_method(const char *src, const char *name) {
   return 0;
 }
 
+/* A builtin library CRuby has loaded before the program runs -- RubyGems'
+   `Gem`, `RbConfig` -- that library code consults without a require. When the
+   whole program (libraries included) names the constant (`Gem.x`, `Gem::X`)
+   outside a comment and defines none of its own, builtins/<file> is spliced
+   at the top. */
+static int sp_src_names_const(const char *src, const char *w) {
+  size_t wl = strlen(w);
+  for (const char *p = strstr(src, w); p; p = strstr(p + 1, w)) {
+    char prev = p == src ? 0 : p[-1];
+    if (sp_req_ident_char(prev) || prev == '@' || prev == '$' || prev == ':') continue;
+    if (p[wl] != '.' && !(p[wl] == ':' && p[wl + 1] == ':')) continue;
+    const char *bol = p;
+    while (bol > src && bol[-1] != '\n') bol--;
+    while (*bol == ' ' || *bol == '\t') bol++;
+    if (*bol == '#') continue;
+    return 1;
+  }
+  return 0;
+}
+static char *sp_splice_named_builtin(char *source, const char *exe_path, const char *cname,
+                                     const char *file, unsigned char **fsl, size_t *fsl_n) {
+  if (!sp_src_names_const(source, cname)) return source;
+  char def1[80], def2[80];
+  snprintf(def1, sizeof def1, "module %s\n", cname);
+  snprintf(def2, sizeof def2, "module %s ", cname);
+  if (strstr(source, def1) || strstr(source, def2)) return source;
+  char lib_dir[1024], gp[1200];
+  sp_lib_dir(exe_path, lib_dir, sizeof lib_dir);
+  int base_len = (int)strlen(lib_dir);
+  if (base_len >= 4 && strcmp(lib_dir + base_len - 4, "/lib") == 0) base_len -= 4;
+  snprintf(gp, sizeof gp, "%.*s/%s", base_len, lib_dir, file);
+  char *content = read_file(gp);
+  if (!content) { snprintf(gp, sizeof gp, "%.*s/../%s", base_len, lib_dir, file); content = read_file(gp); }
+  if (!content) return source;
+  size_t sl = strlen(source), cl = strlen(content);
+  char *ns = malloc(sl + cl + 2);
+  if (!ns) { free(content); return source; }
+  memcpy(ns, content, cl);
+  if (cl && content[cl - 1] != '\n') ns[cl++] = '\n';
+  memcpy(ns + cl, source, sl + 1);
+  if (fsl && *fsl) {
+    size_t cn = 0;
+    unsigned char *cf = sp_fsl_make(content, 0, &cn);
+    sp_fsl_splice(fsl, fsl_n, 0, 0, cf, cn);
+    free(cf);
+  }
+  free(content);
+  free(source);
+  return ns;
+}
+
 static char *sp_splice_builtins(char *source, const char *exe_path,
                                 unsigned char **fsl, size_t *fsl_n) {
   if (getenv("SPINEL_NO_BUILTINS")) return source;   /* the A/B switch: the C emitters alone */
@@ -3845,6 +3896,8 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
   char *resolved = resolve_requires(source, source_file, &fsl, &fsl_n);
   free(source);
   source = resolve_plain_requires(resolved, argv0, &fsl, &fsl_n);
+  source = sp_splice_named_builtin(source, argv0, "Gem", "builtins/gem.rb", &fsl, &fsl_n);
+  source = sp_splice_named_builtin(source, argv0, "RbConfig", "builtins/rbconfig.rb", &fsl, &fsl_n);
   source = sp_splice_builtins(source, argv0, &fsl, &fsl_n);
   source = sp_splice_builtin_extras(source, argv0, &fsl, &fsl_n);
   source = sp_splice_builtin_enumerator(source, argv0, &fsl, &fsl_n);
