@@ -56,6 +56,10 @@ static int call_is_chain_receiver_with_block(Compiler *c, int id) {
   return 0;
 }
 
+static const char *const range_queries[] = {
+  "cover?", "include?", "member?", "===", "==", "!=", "eql?", "exclude_end?", "frozen?",
+  "nil?", "is_a?", "kind_of?", "instance_of?", "equal?", "respond_to?", NULL };
+
 /* Range receivers: the Float and String range faces, and the Integer-range
    arms that answer without materializing. The redispatch that rewrites `rt`
    to the int array stays in infer_call: it changes the receiver kind for
@@ -82,14 +86,7 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       { *out = argc == 0 ? TY_STRING : TY_STR_ARRAY; return 1; }
     if ((sp_streq(name, "first") || sp_streq(name, "last")))
       { *out = argc == 0 ? TY_STRING : TY_STR_ARRAY; return 1; }
-    if (sp_streq(name, "cover?") || sp_streq(name, "include?") ||
-        sp_streq(name, "member?") || sp_streq(name, "===") ||
-        sp_streq(name, "==") || sp_streq(name, "!=") || sp_streq(name, "eql?") ||
-        sp_streq(name, "exclude_end?") || sp_streq(name, "frozen?") ||
-        sp_streq(name, "nil?") || sp_streq(name, "is_a?") ||
-        sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?") ||
-        sp_streq(name, "equal?") || sp_streq(name, "respond_to?"))
-      { *out = TY_BOOL; return 1; }
+    if (str_in(name, range_queries)) { *out = TY_BOOL; return 1; }
     /* step(n) / %(n): an Enumerator over every nth member (#3671) */
     if ((sp_streq(name, "step") || sp_streq(name, "%")) && argc == 1 &&
         nt_ref(nt, id, "block") < 0)
@@ -139,14 +136,7 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       }
       { *out = argc == 0 ? TY_FLOAT : TY_POLY; return 1; }   /* first(n)/last(n) raise anyway */
     }
-    if (sp_streq(name, "cover?") || sp_streq(name, "include?") ||
-        sp_streq(name, "member?") || sp_streq(name, "===") ||
-        sp_streq(name, "==") || sp_streq(name, "!=") || sp_streq(name, "eql?") ||
-        sp_streq(name, "exclude_end?") || sp_streq(name, "frozen?") ||
-        sp_streq(name, "respond_to?") || sp_streq(name, "nil?") ||
-        sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
-        sp_streq(name, "instance_of?") || sp_streq(name, "equal?"))
-      { *out = TY_BOOL; return 1; }
+    if (str_in(name, range_queries)) { *out = TY_BOOL; return 1; }
     if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) { *out = TY_STRING; return 1; }
     if (sp_streq(name, "minmax") && argc == 0) { *out = TY_FLOAT_ARRAY; return 1; }  /* the endpoints (#3690) */
     if (sp_streq(name, "step")) { *out = TY_FLOAT_ARRAY; return 1; }
