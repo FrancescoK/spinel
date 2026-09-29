@@ -719,14 +719,49 @@ static void emit_ie_rest_kw_binds(Compiler *c, int id, int blk, int pnode, int n
     emit_block_kw_binds(c, blk, kwh, comp_scope_of(c, id), g_pre, g_indent, 0, NULL);
 }
 
-static int ie_forward_absent(Compiler *c, int id, int barg) {
+static int emit_ie_proc(Compiler *c, int id, int recv, int self_cls, int blk, int tramp, Buf *b) {
   const NodeTable *nt = c->nt;
-  if (resolve_forwarded_block(c, barg) < 0) return !g_yield_proc_ref && !g_current_scope_is_lowered;
-  Scope *s = comp_scope_of(c, id);
-  if (!s || !s->is_proc_form || !s->name || !sp_streq(s->name, "initialize#pf")) return 0;
-  int fx = nt_ref(nt, barg, "expression");
-  const char *fn = nt_kind(nt, fx) == NK_LocalVariableReadNode ? nt_str(nt, fx, "name") : NULL;
-  return s->blk_param && (fx < 0 || (fn && sp_streq(fn, s->blk_param)));
+  TyKind rt = self_cls >= 0 ? ty_object(self_cls) : comp_ntype(c, recv), t = comp_ntype(c, id);
+  int fe = nt_ref(nt, blk, "expression"), rb = resolve_forwarded_block(c, blk);
+  int args = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  int exec = tramp ? tramp == 2 : sp_streq(nt_str(nt, id, "name"), "instance_exec");
+  for (int p = 0; tramp && p <= an; p++)
+    if (tramp == 1 ? an > 0 : p == an ? ie_tramp_effective_argc(c, id) != an : ie_tramp_effective_arg(c, id, p) != av[p])
+      return 0;
+  Scope *es = comp_scope_of(c, id);
+  const char *fn = fe >= 0 ? nt_str(nt, fe, "name") : NULL;
+  int rc = ty_is_object(rt) ? ty_object_class(rt) : -1, lit = ie_block_body(c, blk);
+  int k = lit >= 0 ? ie_class_of(c, lit) : -1;
+  if (rc < 0 || c->classes[rc].is_value_type || (rb >= 0 && rb != blk) || (rb < 0 && !g_yield_proc_ref) ||
+      (rb >= 0 && !tramp && !(fn && es->blk_param && sp_streq(fn, es->blk_param)) && (k < 0 || !is_descendant(c, rc, k))))
+    return 0;
+  Buf pb, sb, eb; memset(&pb, 0, sizeof pb); memset(&sb, 0, sizeof sb); memset(&eb, 0, sizeof eb);
+  if (rb < 0) buf_puts(&pb, g_yield_proc_ref);
+  else if (!emit_block_arg_proc(c, fe, &pb)) { free(pb.p); return 0; }
+  if (self_cls >= 0) buf_puts(&sb, g_self); else emit_expr(c, recv, &sb);
+  int tp = ++g_tmp, ts = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_Proc *_t%d = %s; sp_%s *_t%d = %s; SP_GC_ROOT(_t%d);\n", tp, pb.p,
+             c->classes[rc].c_name, ts, sb.p, ts);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "if (!_t%d) sp_raise_cls(\"%s\", \"%s\");\n", tp, exec ? "LocalJumpError" : "ArgumentError",
+             exec ? "no block given" : "wrong number of arguments (given 0, expected 1..3)");
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "if (!sp_class_le_ids(%d, (int)_t%d->ie_cls - 1)) sp_raise_cls(\"NotImplementedError\", "
+             "\"instance_eval of a proc spinel could not trace to %s\");\n", rc, tp, class_ruby_name(c, rc));
+  char ref[64], self[24];
+  snprintf(ref, sizeof ref, "(_sp_ie_self = _t%d, _t%d)", ts, tp);
+  snprintf(self, sizeof self, "_t%d", ts);
+  const char *sv = g_yield_proc_ref; g_yield_proc_ref = ref;
+  if (exec) emit_yield_proc_call(c, args, t, b, g_indent, 1);
+  else {
+    buf_printf(&eb, "sp_penum_call1(%s, ", ref); emit_boxed_text(c, rt, self, &eb); buf_puts(&eb, ")");
+    if (t == TY_POLY || t == TY_UNKNOWN) buf_puts(b, eb.p); else emit_unbox_text(c, t, eb.p, b);
+  }
+  g_yield_proc_ref = sv;
+  free(pb.p); free(sb.p); free(eb.p);
+  return 1;
 }
 
 /* Print "spinel: <file>:<line>: warning: " for node `id` when
@@ -31902,9 +31937,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
        block param: the real block is the literal active at the inline splice,
        so resolve the BlockArgumentNode to it (as `inner(&block)` does). */
     if (blk >= 0 && nt_type(nt, blk) && sp_streq(nt_type(nt, blk), "BlockArgumentNode")) {
+      if (emit_ie_proc(c, id, recv, ie_self_cls, blk, ie_direct ? 0 : ie_tramp, b)) return;
       int is_exec = sp_streq(name, "instance_exec");
       if (g_block_id < 0 && ie_direct && recv < 0 && (is_exec || argc == 0) &&
-          ie_forward_absent(c, id, blk)) {
+          resolve_forwarded_block(c, blk) < 0 && !g_yield_proc_ref && !g_current_scope_is_lowered) {
         buf_printf(b, "(sp_raise_cls(\"%s\", \"%s\"), ", is_exec ? "LocalJumpError" : "ArgumentError",
                    is_exec ? "no block given" : "wrong number of arguments (given 0, expected 1..3)");
         emit_ie_param_default(c, comp_ntype(c, id), b);
