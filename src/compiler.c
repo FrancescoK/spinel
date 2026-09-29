@@ -1758,14 +1758,17 @@ static int comp_method_index_direct(Compiler *c, const char *name) {
 
 /* Find a method named `name` in any top-level included module.
    module_function methods are class-level (is_cmethod=1), so check both.
-   Iterate in reverse so the last include wins (Ruby semantics). */
+   Iterate in reverse so the last include wins (Ruby semantics). An include
+   brings in the module's INSTANCE methods, so those are asked first: a
+   module that also defines `def self.name` answered the singleton for a bare
+   `name`, and the program printed that method's value instead. */
 int comp_included_method_index(Compiler *c, const char *name) {
   if (!name) return -1;
   for (int k = c->ntoplevel_includes - 1; k >= 0; k--) {
     int ci = c->toplevel_includes[k];
-    int mi = comp_cmethod_in_chain(c, ci, name, NULL);
+    int mi = comp_method_in_chain(c, ci, name, NULL);
     if (mi >= 0) return mi;
-    mi = comp_method_in_chain(c, ci, name, NULL);
+    mi = comp_cmethod_in_chain(c, ci, name, NULL);
     if (mi >= 0) return mi;
   }
   return -1;

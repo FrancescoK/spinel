@@ -961,6 +961,7 @@ void scope_proc_form_begin(Compiler *c, int s);
 void scope_proc_form_end(Compiler *c, int s);
 int scope_has_callable_symbol(Compiler *c, int s);
 int scope_toplevel_included(Compiler *c, int s);
+int scope_uses_ivars(Compiler *c, int mi);
 int emit_forwarded_proc_arg(Compiler *c, int blk_node, Buf *b);
 int emit_block_arg_proc(Compiler *c, int fe, Buf *b);
 void emit_obj_dispatch_key(Compiler *c, int cid, const char *selfptr, Buf *b);

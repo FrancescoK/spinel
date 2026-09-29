@@ -30484,15 +30484,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
          with a spinel diagnostic rather than emitting a wrong receiver. */
       const char *lead = "";
       if (!ms->is_cmethod) {
-        const NodeTable *nt2 = c->nt;
-        for (int nid = 0; nid < nt2->count; nid++) {
-          if (c->nscope[nid] != imi) continue;
-          NodeKind k2 = nt_kind(nt2, nid);
-          if (k2 == NK_InstanceVariableReadNode || k2 == NK_InstanceVariableWriteNode ||
-              k2 == NK_InstanceVariableOperatorWriteNode || k2 == NK_InstanceVariableOrWriteNode) {
-            unsupported(c, id, "top-level include of a module method that uses instance variables");
-            return;
-          }
+        if (scope_uses_ivars(c, imi)) {
+          unsupported(c, id, "top-level include of a module method that uses instance variables");
+          return;
         }
         lead = ms->nparams > 0 ? ", " : "";
         emit_method_cname(c, ms, b);
