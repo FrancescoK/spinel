@@ -4805,12 +4805,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
   for (int id = 0; id < n0; id++) {
     if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "LocalVariableWriteNode")) continue;
     int val = nt_ref(nt, id, "value");
-    int rn = val;
-    while (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "ParenthesesNode")) {
-      int pb = nt_ref(nt, rn, "body"); int pbn = 0;
-      const int *pbb = pb >= 0 ? nt_arr(nt, pb, "body", &pbn) : NULL;
-      rn = pbn == 1 ? pbb[0] : -1;
-    }
+    int rn = an_unparen(nt, val);
     if (rn < 0 || !nt_type(nt, rn) || !sp_streq(nt_type(nt, rn), "RangeNode")) continue;
     int rlo = nt_ref(nt, rn, "left");
     const char *rloty = rlo >= 0 ? nt_type(nt, rlo) : NULL;
@@ -4834,11 +4829,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       int lz_recv = nt_ref(nt, recv, "receiver");
       /* `p (2..10).lazy...` parses the source as a ParenthesesNode; look through
          it (and nested parens) to the real range/array. */
-      while (lz_recv >= 0 && nt_type(nt, lz_recv) && sp_streq(nt_type(nt, lz_recv), "ParenthesesNode")) {
-        int pb = nt_ref(nt, lz_recv, "body"); int pbn = 0;
-        const int *pbb = pb >= 0 ? nt_arr(nt, pb, "body", &pbn) : NULL;
-        lz_recv = (pbn == 1 && pbb) ? pbb[0] : -1;
-      }
+      lz_recv = an_unparen(nt, lz_recv);
       const char *lty = lz_recv >= 0 ? nt_type(nt, lz_recv) : NULL;
       int finite = 0;
       if (lty && sp_streq(lty, "ArrayNode")) finite = 1;
@@ -4888,13 +4879,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
        range-native methods; any other Enumerable method rides the
        materialized string array (the int-range redispatch has no char
        equivalent, #1934). */
-    int rngn = recv;
-    while (rngn >= 0 && nt_type(nt, rngn) && sp_streq(nt_type(nt, rngn), "ParenthesesNode")) {
-      int pb = nt_ref(nt, rngn, "body");
-      int pbn = 0;
-      const int *pbb = pb >= 0 ? nt_arr(nt, pb, "body", &pbn) : NULL;
-      rngn = pbn == 1 ? pbb[0] : -1;
-    }
+    int rngn = an_unparen(nt, recv);
     /* `m(&lambda_literal)`: attach the lambda's block directly as m's block
        (the :sym.to_proc desugar below produces exactly this shape when the
        proc is passed inline as a block argument). */
@@ -6801,13 +6786,7 @@ int desugar_enum_method_recv(Compiler *c) {
       if (hit) {
         int rrecv = nt_ref(nt, id, "receiver");
         if (rrecv >= 0 && infer_type(c, rrecv) == TY_RANGE) {
-          int rlit = rrecv;
-          while (rlit >= 0 && nt_type(nt, rlit) && sp_streq(nt_type(nt, rlit), "ParenthesesNode")) {
-            int pb = nt_ref(nt, rlit, "body");
-            int pn = 0;
-            const int *pv = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
-            rlit = (pn == 1 && pv) ? pv[0] : -1;
-          }
+          int rlit = an_unparen(nt, rrecv);
           int open_ended = rlit >= 0 && nt_type(nt, rlit) && sp_streq(nt_type(nt, rlit), "RangeNode") &&
                            (nt_ref(nt, rlit, "left") < 0 || nt_ref(nt, rlit, "right") < 0);
           if (!open_ended) {

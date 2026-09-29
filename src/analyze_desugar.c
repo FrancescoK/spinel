@@ -3924,12 +3924,7 @@ int desugar_enumerable_via_to_a(Compiler *c) {
        turned a working search into a RangeError (#3863). The other names
        have no such walk and keep the (faithfully raising) hop. */
     if (rt == TY_RANGE && (sp_streq(nm, "find") || sp_streq(nm, "detect"))) {
-      int rn7 = recv;
-      while (rn7 >= 0 && nt_type(nt, rn7) && sp_streq(nt_type(nt, rn7), "ParenthesesNode")) {
-        int pb7 = nt_ref(nt, rn7, "body"); int pn7 = 0;
-        const int *pp7 = pb7 >= 0 ? nt_arr(nt, pb7, "body", &pn7) : NULL;
-        rn7 = pn7 == 1 ? pp7[0] : -1;
-      }
+      int rn7 = an_unparen(nt, recv);
       if (rn7 >= 0 && nt_type(nt, rn7) && sp_streq(nt_type(nt, rn7), "RangeNode") &&
           nt_ref(nt, rn7, "right") < 0) continue;
     }

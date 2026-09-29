@@ -114,12 +114,7 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        TypeError CRuby raises. */
     if ((sp_streq(name, "size") || sp_streq(name, "count")) && argc == 0 &&
         nt_ref(nt, id, "block") < 0) {
-      int rq3 = nt_ref(nt, id, "receiver");
-      while (rq3 >= 0 && nt_kind(nt, rq3) == NK_ParenthesesNode) {
-        int pb3 = nt_ref(nt, rq3, "body"); int pn3 = 0;
-        const int *pd3 = pb3 >= 0 ? nt_arr(nt, pb3, "body", &pn3) : NULL;
-        rq3 = (pn3 == 1 && pd3) ? pd3[0] : -1;
-      }
+      int rq3 = an_unparen(nt, nt_ref(nt, id, "receiver"));
       int lo3 = (rq3 >= 0 && nt_kind(nt, rq3) == NK_RangeNode) ? nt_ref(nt, rq3, "left") : -1;
       if (lo3 >= 0 && infer_type(c, lo3) == TY_INT) { *out = TY_FLOAT; return 1; }
     }
@@ -189,12 +184,7 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       range_lit_float_end(c, recv) >= 0)
     { *out = TY_FLOAT; return 1; }
   if (rt == TY_RANGE && recv >= 0) {
-    int rnA = recv;
-    while (rnA >= 0 && nt_type(nt, rnA) && sp_streq(nt_type(nt, rnA), "ParenthesesNode")) {
-      int pbA = nt_ref(nt, rnA, "body"); int pnA = 0;
-      const int *ppA = pbA >= 0 ? nt_arr(nt, pbA, "body", &pnA) : NULL;
-      rnA = pnA == 1 ? ppA[0] : -1;
-    }
+    int rnA = an_unparen(nt, recv);
     /* a local holding only such a literal counts too (sole-assignment) */
     if (rnA >= 0 && nt_type(nt, rnA) && !sp_streq(nt_type(nt, rnA), "RangeNode")) {
       int slA = local_sole_range_node(c, rnA);
@@ -1438,12 +1428,7 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         comp_method_in_chain(c, cid, "<=>", NULL) >= 0) {
       /* a literal range with same-class endpoints unfolds to the object
          clamp, whose result is one of the three same-class values */
-      int rn2 = argv[0];
-      while (rn2 >= 0 && nt_type(nt, rn2) && sp_streq(nt_type(nt, rn2), "ParenthesesNode")) {
-        int pb2 = nt_ref(nt, rn2, "body"); int pbn2 = 0;
-        const int *pbb2 = pb2 >= 0 ? nt_arr(nt, pb2, "body", &pbn2) : NULL;
-        rn2 = pbn2 == 1 ? pbb2[0] : -1;
-      }
+      int rn2 = an_unparen(nt, argv[0]);
       if (rn2 >= 0 && nt_type(nt, rn2) && sp_streq(nt_type(nt, rn2), "RangeNode")) {
         int rlo2 = nt_ref(nt, rn2, "left"), rhi2 = nt_ref(nt, rn2, "right");
         /* two-sided, beginless (`..hi`), and endless (`lo..`) object ranges all
