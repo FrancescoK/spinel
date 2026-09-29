@@ -1458,6 +1458,8 @@ void mark_proc_captures(Compiler *c) {
            method's forwarded block needs to reach a yield inside such a body */
         int heap_ptr = (lv->type == TY_STRING || lv->type == TY_STRBUF ||
                         lv->type == TY_PROC ||
+                        /* `f = Fiber.new { f.resume }` reads its own handle */
+                        lv->type == TY_FIBER || lv->type == TY_THREAD ||
                         ty_is_array(lv->type) ||
                         ty_is_hash(lv->type) || ty_is_object(lv->type)) &&
                        !comp_ty_value_obj(c, lv->type);
