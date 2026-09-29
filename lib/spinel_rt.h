@@ -13292,6 +13292,15 @@ static sp_RbVal sp_yield_splat_pack(sp_RbVal a) {
 /* An Enumerator.new generator whose body yields several values in a step
    (`y.yield(a, b)`): the fiber packs each such step as an Array made by
    sp_PolyArray_new_pack, and a step that yields one value leaves it as is. */
+/* What `e.each { }` answers once a walk of a materialized Enumerator ends:
+   the collection it was made from, else its items. A generator answers its
+   body's value, which the walk reads off the fiber's last resume. */
+static sp_RbVal sp_enum_walk_result(sp_Enumerator *e) SP_UNUSED;
+static sp_RbVal sp_enum_walk_result(sp_Enumerator *e) {
+  if (!e) return sp_box_nil();
+  if (e->has_src || e->source.tag != SP_TAG_NIL) return e->source;
+  return sp_box_poly_array(sp_Enumerator_to_a(e));
+}
 static sp_Enumerator *sp_enum_mark_pair(sp_Enumerator *e) SP_UNUSED;
 static sp_Enumerator *sp_enum_mark_pair(sp_Enumerator *e) {
   e->yields_pair = SP_PAIR_PACKED;

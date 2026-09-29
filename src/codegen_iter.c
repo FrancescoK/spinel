@@ -2967,6 +2967,11 @@ int iter_recv_bind_once(Compiler *c, int node) {
   return 1;
 }
 
+/* Set by emit_iter_value_expr around the Enumerator walk in emit_iteration_stmt: the temp
+   that receives what `e.each { }` answers. */
+static int g_enum_walk_res = 0;
+void set_enum_walk_result(int tmp) { g_enum_walk_res = tmp; }
+
 int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -2985,6 +2990,25 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   if (block < 0 || recv < 0) return 0;
   if (!nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
+  /* `e.each { }` over an Enumerator answers what its underlying each does:
+     a generator's body value, a materialized one's collection. The walk
+     runs once; the `to_a` hop in front of it is never evaluated. */
+  if ((sp_streq(name, "each") || sp_streq(name, "each_with_index")) &&
+      nt_kind(nt, recv) == NK_CallNode && nt_str(nt, recv, "enum_each_wrap") &&
+      nt_ref(nt, recv, "receiver") >= 0 &&
+      comp_ntype(c, nt_ref(nt, recv, "receiver")) == TY_ENUMERATOR &&
+      comp_ntype(c, id) == TY_POLY) {
+    int tres = ++g_tmp;
+    Buf wb; memset(&wb, 0, sizeof wb);
+    g_enum_walk_res = tres;
+    int wok = emit_iteration_stmt(c, id, &wb, 0);
+    g_enum_walk_res = 0;
+    if (!wok) { free(wb.p); return 0; }
+    buf_printf(b, "({ sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d); %s _t%d; })",
+               tres, tres, wb.p ? wb.p : "", tres);
+    free(wb.p);
+    return 1;
+  }
   TyKind rt = comp_ntype(c, recv);
   /* A poly receiver is allowed: `each` answers the receiver whatever kind it
      turns out to hold, and the loop below walks it through the poly surface.
@@ -3411,6 +3435,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       sp_streq(nt_type(nt, block), "BlockNode")) {
     int er = nt_ref(nt, recv, "receiver");
     if (er >= 0 && comp_ntype(c, er) == TY_ENUMERATOR) {
+      int tres = g_enum_walk_res; g_enum_walk_res = 0;
       const char *q0 = block_param_name(c, block, 0), *q1 = block_param_name(c, block, 1);
       Scope *bsc = comp_scope_of(c, block);
       int body = nt_ref(nt, block, "body");
@@ -3430,8 +3455,12 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent + 1);
       buf_puts(b, "for (;;) {\n");
       emit_indent(b, indent + 2);
-      buf_printf(b, "if (_t%d) { if (!sp_Fiber_alive(_t%d)) break; _t%d = sp_Fiber_resume(_t%d, sp_box_nil()); if (!sp_Fiber_alive(_t%d)) break; }\n",
-                 tf, tf, tv, tf, tf);
+      if (tres)
+        buf_printf(b, "if (_t%d) { if (!sp_Fiber_alive(_t%d)) break; _t%d = sp_Fiber_resume(_t%d, sp_box_nil()); if (!sp_Fiber_alive(_t%d)) { _t%d = _t%d; break; } }\n",
+                   tf, tf, tv, tf, tf, tres, tv);
+      else
+        buf_printf(b, "if (_t%d) { if (!sp_Fiber_alive(_t%d)) break; _t%d = sp_Fiber_resume(_t%d, sp_box_nil()); if (!sp_Fiber_alive(_t%d)) break; }\n",
+                   tf, tf, tv, tf, tf);
       emit_indent(b, indent + 2);
       buf_printf(b, "else { if (_t%d && _t%d->endless && _t%d->items && _t%d->items->len > 0 && _t%d >= _t%d->items->len) _t%d = 0;"
                     " if (!_t%d || !_t%d->items || _t%d >= _t%d->items->len) break; _t%d = _t%d->items->data[_t%d++]; }\n",
@@ -3465,6 +3494,10 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       emit_loop_body(c, body, b, indent + 2);
       emit_indent(b, indent + 1);
       buf_puts(b, "}\n");
+      if (tres) {
+        emit_indent(b, indent + 1);
+        buf_printf(b, "if (!_t%d) _t%d = sp_enum_walk_result(_t%d);\n", tf, tres, te);
+      }
       emit_indent(b, indent);
       buf_puts(b, "}\n");
       return 1;
