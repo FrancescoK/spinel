@@ -119,7 +119,8 @@ A few `require`s name a capability Spinel already provides as core, and are
 
 Some stdlib ships with Spinel as Ruby source and is spliced when required --
 `set`, `forwardable`, `optparse`, `erb`, `csv`, `pathname`, `digest`, `base64`,
-`fileutils`, `tmpdir`, `zlib`, `benchmark` (CRuby's own gem, unmodified),
+`fileutils`, `tmpdir`, `zlib`, `logger` (a compact implementation of its API),
+`benchmark` (CRuby's own gem, unmodified),
 `bigdecimal` (a minimal subset, see `packages/bigdecimal/bigdecimal.rb`)
 (plus the `stringio`/`strscan`/`json` marker shims for their C-backed
 features). `net/http` and `uri` are there, and so
