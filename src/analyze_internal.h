@@ -375,6 +375,7 @@ int desugar_duplicate_underscore_params(Compiler *c);
 int desugar_encoding_queries(Compiler *c);
 int desugar_inherited_aliases(Compiler *c);
 int desugar_reassigned_block_params(Compiler *c);
+int desugar_class_new_blocks(Compiler *c);
 TyKind return_node_type(Compiler *c, int id);
 int infer_return_types(Compiler *c);
 int backprop_hash_return_types(Compiler *c);
