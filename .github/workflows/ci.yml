@@ -196,8 +196,17 @@ jobs:
   # 148 s for the same slice), the whole difference was the cache. The
   # -m32 flag is part of sccache's key, so this lane's entries never
   # collide with the 64-bit gcc lane's.
+  #
+  # master pushes only, not pull requests. A commit that changes the runtime
+  # headers, or codegen every program goes through, misses sccache for the
+  # whole corpus, and the one-job lane then compiles all ~4500 programs on four
+  # vCPUs: 27 minutes, against 3 on a warm cache. Every PR waited on that. A
+  # word-size break a PR brings is found on its merge commit instead, and
+  # fixed there; splitting the lane into slices would halve it but take one
+  # more runner per run, which is what queues the pool when pushes cluster.
   linux32:
     name: ubuntu-latest / gcc -m32
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     env:
       CC: sccache gcc -m32
