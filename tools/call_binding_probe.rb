@@ -60,36 +60,11 @@ WRONG = %w[output-diff link-error compiler-failure crash timeout interaction].fr
 LABELS = (WRONG + %w[compile-error]).freeze
 
 # Differences docs/limitations.md gives as the answer on purpose: the path
-# and parameters of the case, and what spinel answers there.
-BOUND_METHODS = "limitations.md, \"Bound Methods read out of poly slots\""
-DOCUMENTED = [
-  {
-    doc: "#{BOUND_METHODS}: Method#call on a target with a rest declines with NoMethodError " \
-         "when a post-rest positional, a declared keyword or a **kwrest follows it",
-    when: lambda do |r|
-      r[:path] == "method_call" && r[:rest] == "named" &&
-        (r[:post] == 1 || r[:kreq] + r[:kopt] > 0 || r[:kwrest] == "named")
-    end,
-    answer: /\ANoMethodError: /,
-  },
-  {
-    doc: "#{BOUND_METHODS}: Method#to_proc declines a post-rest positional, a **kwrest or a " \
-         "required keyword with NoMethodError",
-    when: lambda do |r|
-      r[:path] == "method_to_proc" &&
-        (r[:rest] == "named" && r[:post] == 1 || r[:kwrest] == "named" || r[:kreq] > 0)
-    end,
-    answer: /\ANoMethodError: /,
-  },
-  {
-    doc: "#{BOUND_METHODS}: a keyword hash passed through Method#to_proc is not carried; the call " \
-         "declines with NoMethodError, or with ArgumentError's wrong number of arguments",
-    when: lambda do |r|
-      r[:path] == "method_to_proc" && (r[:kw] != "none" || %w[known unknown string_key boxed].include?(r[:dsplat]))
-    end,
-    answer: /\A(NoMethodError: |ArgumentError: wrong number of arguments)/,
-  },
-].freeze
+# and parameters of the case, and what spinel answers there, each
+#   { doc: "limitations.md, \"<section>\": <what it says>",
+#     when: ->(r) { <the case's realized levels> }, answer: /<spinel's line>/ }
+# None stands now: the bound-Method declines it listed bind as CRuby does.
+DOCUMENTED = [].freeze
 
 Outcome = Struct.new(:label, :detail, :lines, :status, :stderr)
 Finding = Struct.new(:c, :label, :detail, :want, :got, :kind, :program, :absorbed, :stopped, :name) do

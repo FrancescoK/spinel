@@ -2239,6 +2239,26 @@ int method_expr_is_unbound(Compiler *c, int recv) {
   return 0;
 }
 
+/* Do two `method(:sym)` nodes bind the same method the same way: the one
+   target, both with or both without a receiver, and a constant receiver
+   (the class a class method runs on) the same constant? */
+static int method_nodes_same_target(Compiler *c, int a, int b) {
+  const NodeTable *nt = c->nt;
+  const char *na = nt_str(nt, a, "name"), *nb = nt_str(nt, b, "name");
+  if (!na || !nb || !sp_streq(na, nb)) return 0;
+  int ra = nt_ref(nt, a, "receiver"), rb = nt_ref(nt, b, "receiver");
+  if ((ra < 0) != (rb < 0)) return 0;
+  int ca = ra >= 0 && (nt_kind(nt, ra) == NK_ConstantReadNode || nt_kind(nt, ra) == NK_ConstantPathNode);
+  int cb = rb >= 0 && (nt_kind(nt, rb) == NK_ConstantReadNode || nt_kind(nt, rb) == NK_ConstantPathNode);
+  if (ca != cb) return 0;
+  if (ca) {
+    const char *sa = nt_str(nt, ra, "name"), *sb = nt_str(nt, rb, "name");
+    if (!sa || !sb || !sp_streq(sa, sb)) return 0;
+  }
+  int ta = method_obj_target_mi(c, a);
+  return ta >= 0 && ta == method_obj_target_mi(c, b);
+}
+
 /* The `method(:sym)` node a Method-typed expression resolves to: either the
    call itself (inline) or, for a local variable, its assignment in scope. */
 int method_recv_node(Compiler *c, int recv) {
@@ -2264,9 +2284,23 @@ int method_recv_node(Compiler *c, int recv) {
     return recv;
   const char *rty = nt_type(nt, recv);
   static int depth;
+  static const char *active_vn[32];
+  static Scope *active_sc[32];
   if (rty && sp_streq(rty, "LocalVariableReadNode") && depth < 32) {
     const char *vn = nt_str(nt, recv, "name");
     Scope *sc = comp_scope_of(c, recv);
+    /* a write reading the local it writes (`m = m.dup`) says nothing new */
+    for (int d = 0; d < depth; d++)
+      if (active_sc[d] == sc && vn && active_vn[d] && sp_streq(active_vn[d], vn)) return -2;
+    /* Every write must name the same method: the static binding (self-ful
+       or self-less, the target's signature) is the one node's, and a local
+       re-written to another Method (`m = A.new.method(:x); m = method(:top)`)
+       or to a value of no such node took the first write's, calling the
+       second through the first's ABI (a garbage argument, or a crash).
+       Such a local answers -1, and its call dispatches on the Method value
+       at run time. A write of the same target again (a loop's
+       `m = o.method(:x)`, `m = m.dup`) keeps the node. */
+    int found = -1;
     NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
       if (comp_scope_of(c, w) != sc) continue;
       const char *wn = nt_str(nt, w, "name");
@@ -2274,13 +2308,40 @@ int method_recv_node(Compiler *c, int recv) {
       int val = nt_ref(nt, w, "value");
       /* resolve the written expression with the same rules as a direct
          receiver (sees through bind/dup/clone chains, super_method) */
+      active_vn[depth] = vn; active_sc[depth] = sc;
       depth++;
       int inner = method_recv_node(c, val);
       depth--;
-      if (inner >= 0) return inner;
+      if (inner == -2) continue;
+      if (inner < 0) return -1;
+      if (found < 0) found = inner;
+      else if (inner != found && !method_nodes_same_target(c, found, inner)) return -1;
     }
+    return found;
   }
   return -1;
+}
+
+/* Every `method(:sym)` node a Method-typed local may hold: one per write
+   that names one, where method_recv_node declines a local written to more
+   than one method. Each target is called with the call's arguments, so the
+   analysis binds them to all of them. Answers the count, at most cap. */
+int method_recv_nodes(Compiler *c, int recv, int *out, int cap) {
+  const NodeTable *nt = c->nt;
+  int one = method_recv_node(c, recv);
+  if (one >= 0) { if (cap > 0) out[0] = one; return cap > 0; }
+  if (recv < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode) return 0;
+  const char *vn = nt_str(nt, recv, "name");
+  Scope *sc = comp_scope_of(c, recv);
+  int n = 0;
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+    if (n >= cap || comp_scope_of(c, w) != sc) continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !vn || !sp_streq(wn, vn)) continue;
+    int mn = method_recv_node(c, nt_ref(nt, w, "value"));
+    if (mn >= 0) out[n++] = mn;
+  }
+  return n;
 }
 
 /* The `method(:sym)` node behind a Proc-typed expression created by

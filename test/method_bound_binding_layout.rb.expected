@@ -1,0 +1,98 @@
+[1, [], 2]
+[1, [2, 3], 4]
+[1, [2], 3]
+#<ArgumentError: wrong number of arguments (given 1, expected 2+)>
+[1, 9, 2, {}, nil]
+[1, 5, 3, {z: 4}, :blk]
+[7, 9, 2, {}, :amp]
+[1, 7]
+#<ArgumentError: wrong number of arguments (given 3, expected 2)>
+#<ArgumentError: wrong number of arguments (given 1, expected 2)>
+[1, [2, 3], 4]
+["Q", 1]
+["Q", 5]
+[1, [2], 3]
+[1, 9, 2, {q: 2}, nil]
+[1, 4]
+[1, 2, [3], nil]
+[1, 2, [], :blk]
+[1, 2, [3], :amp]
+[1, [], 2]
+[1, [2, 3], 4]
+#<ArgumentError: wrong number of arguments (given 1, expected 2+)>
+[5, 1]
+[1, 2]
+[1, 2, {z: 3}]
+[1, 1, {}]
+#<ArgumentError: no keywords accepted>
+[1, [2], 3]
+1
+2
+0
+1
+2
+3
+"  ab  "
+"**ab**"
+"--ab--"
+[1, 3]
+[1, [2], 9]
+[1, [2], 3]
+#<ArgumentError: wrong number of arguments (given 1, expected 2)>
+[1, 5, {j: 6}]
+[1, 2, {j: 3}]
+[1, 2, [3, 4], 5]
+[1, 5]
+[1, 0]
+#<ArgumentError: unknown keyword: :z>
+[1, 2]
+#<ArgumentError: missing keyword: :k>
+[1, 2, {z: 3, j: 1}]
+[:m, 1, 2]
+[:pre, [1, 2]]
+[:pre, [1, 1]]
+#<struct K a="x", b=2>
+#<data D a="x", b=2>
+#<struct S a="x", b=2>
+#<ArgumentError: unknown keywords: c>
+#<ArgumentError: missing keyword: :b>
+[1, [2], 3]
+[1, 2, 3]
+#<ArgumentError: wrong number of arguments (given 1, expected 2+)>
+#<ArgumentError: wrong number of arguments (given 1, expected 2..3)>
+["a", "b"]
+["a", "b"]
+:split
+1
+[1, 2]
+1
+6
+[5, 6]
+:slice
+"e"
+"ell"
+Op({x: 5})
+Qo[{x: 5}, 1]
+Op({x: 5})
+Qo[7, 1]
+Qo[7, {x: 5}]
+#<ArgumentError: wrong number of arguments (given 0, expected 1)>
+"Ra q"
+"rtop r"
+1
+Object
+[[:req, :s]]
+"Ra 1"
+[3, 2]
+[3, 4]
+-2
+"Ra d"
+Sub
+Par
+"Sub0"
+"Sub1"
+"Sub3"
+"Par2"
+"Mx1[2]"
+"My15"
+"MqCq1[2]"

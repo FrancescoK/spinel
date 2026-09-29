@@ -3963,7 +3963,8 @@ static int bind_call_args_shifted(Compiler *c, int call_id, int mi, int shift) {
   int argc = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   int changed = 0;
-  for (int k = 0; k < argc && k + shift < m->nparams; k++) {
+  /* a variadic wrapper's rest holds the arguments boxed (bam_call_argc) */
+  for (int k = 0; k < argc && k + shift < m->nparams && k + shift != m->rest_idx; k++) {
     LocalVar *p = scope_local(m, m->pnames[k + shift]);
     if (!p || p->rbs_seeded) continue;
     TyKind at = infer_type(c, argv[k]);
@@ -5200,9 +5201,14 @@ else {
   return changed;
 }
 
+static int bind_zsuper_params(Compiler *c, int id, Scope *s, Scope *pm);
+
 /* Propagate param types from each prep-chain source scope (the transplanted
    module method) to the shadow scope it calls via super. The shadow scope has
-   no AST call site, so bind_call_params never runs for it. */
+   no AST call site, so bind_call_params never runs for it: each super in the
+   source binds it as codegen lays that super out (emit_super), a bare one by
+   the zsuper layout and one with arguments as a call. Typed slot by slot,
+   `def m(a, b) = super` into `def m(a, *r)` gave the rest b's Integer. */
 int propagate_prep_params(Compiler *c) {
   int changed = 0;
   for (int ci = 0; ci < c->nclasses; ci++) {
@@ -5221,6 +5227,18 @@ int propagate_prep_params(Compiler *c) {
       if (from_mi < 0 || to_mi < 0) continue;
       Scope *fs = &c->scopes[from_mi];
       Scope *ts = &c->scopes[to_mi];
+      int nsup = 0;
+      NT_FOREACH_KIND(c->nt, NK_ForwardingSuperNode, id) {
+        if (c->nscope[id] != from_mi) continue;
+        changed |= bind_zsuper_params(c, id, fs, ts);
+        nsup++;
+      }
+      NT_FOREACH_KIND(c->nt, NK_SuperNode, id) {
+        if (c->nscope[id] != from_mi) continue;
+        changed |= bind_call_params(c, id, to_mi);
+        nsup++;
+      }
+      if (nsup > 0) continue;
       int n = fs->nparams < ts->nparams ? fs->nparams : ts->nparams;
       for (int i = 0; i < n; i++) {
         LocalVar *fp = scope_local(fs, fs->pnames[i]);
@@ -6073,6 +6091,69 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
   return changed;
 }
 
+/* The parameters of the parent a bare `super` in `s` reaches, typed as it
+   binds them (codegen's zsuper_begin): with a rest in `s` the positionals
+   gather, and each parent parameter from its own index on may take any
+   element; without, they are laid out as a call of `s`'s positional count
+   (arg_layout), each parent parameter typed from the one of `s` it takes. A
+   keyword takes `s`'s like-named keyword. */
+static int bind_zsuper_params(Compiler *c, int id, Scope *s, Scope *pm) {
+  int changed = 0;
+  /* the parent's `**` takes this method's own */
+  if (pm->kwrest_idx >= 0 && s->kwrest_idx >= 0) {
+    LocalVar *src = scope_local(s, s->pnames[s->kwrest_idx]);
+    LocalVar *dst = scope_local(pm, pm->pnames[pm->kwrest_idx]);
+    if (src && dst && !dst->rbs_seeded && src->type != TY_UNKNOWN) {
+      TyKind mg = ty_unify(dst->type, src->type);
+      if (mg != dst->type) { dst->type = mg; changed = 1; }
+    }
+  }
+  for (int i = 0; i < pm->nparams; i++) {
+    if (i == pm->kwrest_idx || !callee_param_is_declared_kwarg(c, pm, pm->pnames[i])) continue;
+    if (!callee_param_is_declared_kwarg(c, s, pm->pnames[i])) continue;
+    LocalVar *src = scope_local(s, pm->pnames[i]);
+    LocalVar *dst = scope_local(pm, pm->pnames[i]);
+    if (!src || !dst || dst->rbs_seeded || src->type == TY_UNKNOWN) continue;
+    TyKind mg = ty_unify(dst->type, src->type);
+    if (mg != dst->type) { dst->type = mg; changed = 1; }
+  }
+  int srest = s->rest_idx;
+  if (srest < 0 || !s->pnames[srest]) {
+    int npos = 0;
+    while (npos < s->nparams && npos != s->kwrest_idx &&
+           !callee_param_is_declared_kwarg(c, s, s->pnames[npos])) npos++;
+    for (int i = 0; i < pm->nparams; i++) {
+      int a = arg_layout_plain_arg(c, pm, npos, i);
+      if (a < 0) continue;
+      LocalVar *src = scope_local(s, s->pnames[a]);
+      LocalVar *dst = scope_local(pm, pm->pnames[i]);
+      if (!src || !dst || dst->rbs_seeded || src->type == TY_UNKNOWN) continue;
+      TyKind mg = ty_unify(dst->type, src->type);
+      if (mg != dst->type) { dst->type = mg; changed = 1; }
+    }
+    return changed;
+  }
+  /* gathered: the parameters ahead of the rest in order, any element after */
+  LocalVar *rv = scope_local(s, s->pnames[srest]);
+  TyKind rt = rv ? rv->type : TY_UNKNOWN;
+  TyKind at = ty_is_array(rt) ? ty_array_elem(rt) : TY_POLY;
+  if (at == TY_VOID || at == TY_NIL || at == TY_UNKNOWN) at = TY_POLY;
+  for (int pk = 0; pk < pm->nparams; pk++) {
+    if (pk == pm->rest_idx || pk == pm->kwrest_idx) continue;
+    LocalVar *p = pm->pnames[pk] ? scope_local(pm, pm->pnames[pk]) : NULL;
+    if (!p || p->rbs_seeded || callee_param_is_declared_kwarg(c, pm, pm->pnames[pk])) continue;
+    if (pk < srest && (pm->rest_idx < 0 || pk < pm->rest_idx)) {
+      LocalVar *src = scope_local(s, s->pnames[pk]);
+      if (!src || src->type == TY_UNKNOWN) continue;
+      TyKind mg = ty_unify(p->type, src->type);
+      if (mg != p->type) { p->type = mg; changed = 1; }
+    }
+    else if (rt != TY_UNKNOWN && pk >= srest && (pm->rest_idx < 0 || pk < pm->rest_idx))
+      changed |= slot_take(c, p, at, id);
+  }
+  return changed;
+}
+
 int infer_param_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -6123,42 +6204,8 @@ int infer_param_types(Compiler *c) {
       if (p < 0) continue;
       int pmi = comp_method_in_chain(c, p, s->name, NULL);
       if (pmi < 0) continue;
-      if (sp_streq(ty, "ForwardingSuperNode")) {
-        /* bare `super` forwards all current params to parent */
-        Scope *pm = &c->scopes[pmi];
-        int n = s->nparams < pm->nparams ? s->nparams : pm->nparams;
-        if (pm->rest_idx >= 0 && n > pm->rest_idx) n = pm->rest_idx;
-        /* a `*rest` here spreads across the parent's fixed parameters from
-           its own index on, as a `super(*rest)` does */
-        int srest = s->rest_idx;
-        if (srest >= 0 && srest < n && s->pnames[srest]) {
-          LocalVar *rv = scope_local(s, s->pnames[srest]);
-          TyKind rt = rv ? rv->type : TY_UNKNOWN;
-          TyKind at = ty_is_array(rt) ? ty_array_elem(rt) : TY_POLY;
-          if (at == TY_VOID || at == TY_NIL || at == TY_UNKNOWN) at = TY_POLY;
-          int max_bind = pm->nparams;
-          if (pm->rest_idx >= 0 && max_bind > pm->rest_idx) max_bind = pm->rest_idx;
-          if (pm->kwrest_idx >= 0 && max_bind > pm->kwrest_idx) max_bind = pm->kwrest_idx;
-          for (int pk = srest; rt != TY_UNKNOWN && pk < max_bind; pk++) {
-            LocalVar *p = pm->pnames[pk] ? scope_local(pm, pm->pnames[pk]) : NULL;
-            if (!p || p->rbs_seeded || callee_param_is_declared_kwarg(c, pm, pm->pnames[pk])) continue;
-            changed |= slot_take(c, p, at, id);
-          }
-          n = srest;
-        }
-        for (int k = 0; k < n; k++) {
-          LocalVar *src = scope_local(s, s->pnames[k]);
-          LocalVar *dst = scope_local(pm, pm->pnames[k]);
-          if (!src || !dst || dst->rbs_seeded) continue;
-          TyKind at = src->type;
-          if (at == TY_UNKNOWN) continue;
-          TyKind mg = ty_unify(dst->type, at);
-          if (mg != dst->type) { dst->type = mg; changed = 1; }
-        }
-      }
-      else {
-        changed |= bind_call_params(c, id, pmi);
-      }
+      if (sp_streq(ty, "ForwardingSuperNode")) changed |= bind_zsuper_params(c, id, s, &c->scopes[pmi]);
+      else changed |= bind_call_params(c, id, pmi);
       continue;
     }
     /* op-assign on an object slot: `lv OP= rhs` / `@iv OP= rhs` is an
@@ -6267,9 +6314,14 @@ int infer_param_types(Compiler *c) {
        reached solely via method(:sym)). */
     if (recv >= 0 && name && (sp_streq(name, "call") || sp_streq(name, "[]") || sp_streq(name, "()")) &&
         infer_type(c, recv) == TY_METHOD) {
-      int mn = method_recv_node(c, recv);
-      int tmi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
-      if (tmi >= 0) {
+      /* a local re-written to several Methods calls whichever it holds:
+         each target takes the arguments */
+      int mns[8];
+      int nmn = method_recv_nodes(c, recv, mns, 8);
+      for (int j = 0; j < nmn; j++) {
+        int mn = mns[j];
+        int tmi = method_obj_target_mi(c, mn);
+        if (tmi < 0) continue;
         int shift = method_call_param_shift(c, mn, tmi);
         if (shift) changed |= bind_call_args_shifted(c, id, tmi, shift);
         else changed |= bind_call_params(c, id, tmi);

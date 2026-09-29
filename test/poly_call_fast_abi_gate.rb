@@ -203,9 +203,10 @@ expect_nome("ptr_arg")   { [ScalarArg.new.method(:add1)][0].call("s") }
 ptr_args = ["s"]
 expect_nome("ptr_splat") { [ScalarArg.new.method(:add1)][0].call(*ptr_args) }
 
-# A rest parameter reached by a trailing runtime splat declines on the static
-# bound-Method path too: the splat's surplus would land in the trailing
-# sp_PolyArray* slot as an sp_int and the callee prologue would root it.
+# A rest parameter reached by a trailing runtime splat: the static
+# bound-Method path binds the arguments as a direct call does, the surplus in
+# the rest, where it once landed in the trailing sp_PolyArray* slot as an
+# sp_int and declined.
 rest_runtime_args = [1, 2, 3]
 expect_nome("rest_splat_static") { Base.new.method(:rest_unused).call(*rest_runtime_args) }
 
@@ -238,9 +239,9 @@ expect_raise("adapter_set_empty")  { adapt.method(:[]=).call(*empty_args) }
 sadapt = ["x"]
 expect_raise("sadapter_set_short") { sadapt.method(:[]=).call(0) }
 
-# A rest target whose optionals before the rest are omitted cannot be expanded
-# into the fixed cast (the omitted registers and the rest pointer are never
-# passed): decline like the poly-slot route instead of calling out of bounds.
+# A rest target whose optionals before the rest are omitted: each takes its
+# default and the rest an empty Array, as in a direct call, where the fixed
+# cast left their registers unpassed and declined.
 class RestOpt
   def m(a, b = 2, *r) = a + b
 end
@@ -275,10 +276,10 @@ expect_raise("adapter_get_proc_short") { ia6.method(:[]).to_proc.call() }
 puts ia6.inspect
 
 # A rest target with parameters AFTER the rest (a post-rest positional, a
-# declared keyword, or `**kwrest`) cannot ride the fixed `.call` cast: the rest
-# arm builds only the parameters up to the rest, so a trailing one read an
-# unpassed register (`def m(a, *r, c: 3); m.call(1, 2, 3)` answered garbage for
-# `c`). The poly-slot route declines these; the bound-Method path declines too.
+# declared keyword, or `**kwrest`): the bound-Method path binds them as a
+# direct call does, where its rest arm built only the parameters up to the
+# rest (`def m(a, *r, c: 3); m.call(1, 2, 3)` answered garbage for `c`) and
+# then declined.
 class RestTail
   def m(a, *r, c: 3) = [a, r, c]
   def p(a, *r, b) = [a, r, b]
@@ -288,15 +289,14 @@ expect_nome("rest_kw_static")   { RestTail.new.method(:m).call(1, 2, 3) }
 expect_nome("rest_post_static") { RestTail.new.method(:p).call(1, 2, 3) }
 # Through Method#to_proc the trampoline binds a keyword after the rest from
 # the call's keyword hash, so a required one the call omits is CRuby's
-# `missing keyword` whatever the positional count. The post-rest positional
-# still declines: the trampoline's fixed positional binding read the trailing
-# parameter's register from args[] and handed an unset register to the
-# callee, whose prologue rooted it -- a SIGSEGV.
+# `missing keyword` whatever the positional count. A post-rest positional
+# binds from the end of the arguments, where the fixed positional binding
+# read its register from args[] and declined.
 expect_nome("rest_kw_toproc")      { RestTail.new.method(:req).to_proc.call(1, 2, 3) }
 expect_nome("rest_kw_toproc_short") { RestTail.new.method(:req).to_proc.call(1) }
 expect_nome("rest_post_toproc")   { RestTail.new.method(:p).to_proc.call(1, 2, 3) }
-# A `**kwrest` after the rest is the same shape (the trailing slot has no
-# fixed C cast).
+# A `**kwrest` after the rest binds the same way, an empty Hash when the call
+# passes no keywords.
 class RestKwrest
   def m(a, *r, **kw) = [a, r, kw]
 end
@@ -374,6 +374,8 @@ class KwRest
   def w(a, **kw) = [a, kw]
   def w2(a, b = 5, **kw) = [a, b, kw]
 end
+# The key a declared keyword does not take goes to the `**kwrest`, as in a
+# direct call, where the positional fallback declined.
 expect_nome("kwrest_unmatched")       { KwRest.new.method(:d).call(1, z: 2) }
 expect_raise("kwrest_positional_name") { KwRest.new.method(:w).call(a: 2) }
 puts KwRest.new.method(:w).call(1, z: 2).inspect
@@ -381,7 +383,7 @@ puts KwRest.new.method(:w).call(1, z: 2).inspect
 # the call cannot route the trailing hash to its kwrest slot: the fixed
 # positional fallback bound the hash to a scalar parameter and the generated C
 # failed to compile (`def w(a, **kw); w.call(z: 2)`). A missing positional now
-# raises CRuby's ArgumentError; the optional-gap shape declines.
+# raises CRuby's ArgumentError; the optional-gap shape binds its default.
 expect_raise("kwrest_gap_call")     { KwRest.new.method(:w).call(z: 2) }
 expect_nome("kwrest_gap_opt_call") { KwRest.new.method(:w2).call(1, z: 2) }
 expect_raise("kwrest_gap2_call")   { KwRest.new.method(:w2).call(z: 2) }
@@ -416,11 +418,10 @@ expect_nome("toproc_many_params_fixed") { ManyParams.new.method(:m17).to_proc.ca
 many_rest = (1..20).to_a
 expect_nome("toproc_rest_over") { ManyParams.new.method(:rest).to_proc.call(*many_rest) }
 
-# A `**kwrest` target cannot ride the fixed positional `to_proc` cast: the proc
-# ABI carries no keyword channel, so the bind==0 arm read an uninitialized
-# register as the sp_SymPolyHash* and the callee dereferenced it -- a SIGSEGV.
-# Decline with the same NoMethodError the rest-tail shapes use. (The direct
-# `.call` supports the shape: see poly_method_return_kinds.rb.)
+# A `**kwrest` target through `to_proc`: the trampoline collects the keys of
+# the call's keyword hash no declared keyword takes, where the fixed
+# positional arm read an uninitialized register as the sp_SymPolyHash* (a
+# SIGSEGV) and then declined.
 class KwRestProc
   def m(a, **k) = [a, k]
 end
