@@ -21369,6 +21369,13 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
   buf_printf(pb, "static sp_int %s(void *cap, sp_int argc, sp_int *args) {\n", fname);
   if (bind && tm->rest_idx >= 0) buf_puts(pb, "  SP_GC_SAVE();\n");
   buf_puts(pb, "  sp_BoundMethod *_m = (sp_BoundMethod *)cap; (void)_m; (void)argc; (void)args;\n");
+  /* the block a `.call { }` or `.call(&b)` gave this call (_sp_proc_blk),
+     for a target that keeps a `&blk` parameter: passed on, or NULL -- left
+     out, the callee read an unset register as its block and crashed calling
+     it. Read first, before a default or the arity raise below can enter
+     another proc and set the channel for that call. */
+  int takes_blk = tm->blk_param && tm->blk_param[0] && !tm->yields;
+  if (takes_blk) buf_puts(pb, "  sp_Proc *_blk = _sp_proc_blk; _sp_proc_blk = NULL;\n");
   /* A default (and any block it inlines) binds its names through the
      METHOD scope's locals (`lv_<p>`), which the method prologue would
      have declared. This separate function has no prologue, so declare
@@ -21397,11 +21404,7 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
      silently drop the surplus from the rest array. */
   if (tm->rest_idx >= 0)
     buf_printf(pb, "  if (argc > %d) { sp_raise_cls(\"NoMethodError\", \"undefined method 'call' for an instance of Method\"); return 0; }\n", SP_PROC_ARG_SLOTS);
-  /* the block a `.call { }` or `.call(&b)` publishes (_sp_proc_blk), for a
-     target that keeps a `&blk` parameter: passed on, or NULL -- left out,
-     the callee read an unset register as its block and crashed calling it */
-  int takes_blk = tm->blk_param && tm->blk_param[0] && !tm->yields;
-  if (takes_blk) buf_puts(pb, "  sp_Proc *_blk = _sp_proc_blk; _sp_proc_blk = NULL; SP_GC_ROOT(_blk);\n");
+  if (takes_blk) buf_puts(pb, "  SP_GC_ROOT(_blk);\n");
   /* A default that writes a method-scope local the body reads cannot be
      answered from this trampoline frame either: the body reads its own
      slot, so the trampoline's write never lands. Decline it as the rest
@@ -25966,7 +25969,12 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                           : "call";
     /* `.call { |x| ... }`: the literal block rides the _sp_proc_blk
        side-channel to the callee's &block param (#2648), and so does a Proc
-       passed with `&` (`pr.call(1, &b)`) */
+       passed with `&` (`pr.call(1, &b)`). It is handed to the call itself
+       (sp_proc_call_blk), which sets the channel as it enters the body:
+       published here, ahead of the arguments, it was taken by a `&b` proc
+       an argument called, and left behind for the next `&b` body when this
+       one took no block. The temp keeps it rooted for the call. */
+    char blk_tmp[24] = "";
     {
       int cblk = nt_ref(nt, id, "block");
       int cbx = cblk >= 0 && nt_kind(nt, cblk) == NK_BlockArgumentNode ? nt_ref(nt, cblk, "expression") : -1;
@@ -25974,8 +25982,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       if (cbx >= 0 && emit_block_arg_proc(c, cbx, &bpv)) {
         int tb = ++g_tmp;
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d); _sp_proc_blk = _t%d;%c",
-                   tb, bpv.p, tb, tb, 10);
+        buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d);%c", tb, bpv.p, tb, 10);
+        snprintf(blk_tmp, sizeof blk_tmp, "_t%d", tb);
       }
       free(bpv.p);
       if (cblk >= 0 && nt_type(nt, cblk) && sp_streq(nt_type(nt, cblk), "BlockNode")) {
@@ -25986,8 +25994,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         Buf pv; memset(&pv, 0, sizeof pv);
         emit_proc_literal(c, cblk, &pv);
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d); _sp_proc_blk = _t%d;%c",
-                   tb, pv.p ? pv.p : "NULL", tb, tb, 10);
+        buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d);%c", tb, pv.p ? pv.p : "NULL", tb, 10);
+        snprintf(blk_tmp, sizeof blk_tmp, "_t%d", tb);
         free(pv.p);
       }
     }
@@ -25999,10 +26007,11 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       if (call_args_need_spread(nt, argv, argc)) {
         char kwp[24];
         int ta = emit_spread_args_kw(c, argv, argc, kwp, sizeof kwp);
-        buf_puts(b, "((void)sp_proc_call_spread(");
+        buf_puts(b, blk_tmp[0] ? "((void)sp_proc_call_spread_blk(" : "((void)sp_proc_call_spread(");
         if (proc_nil_raises) buf_puts(b, "sp_proc_recv(");
         emit_expr(c, recv, b);
         if (proc_nil_raises) buf_printf(b, ", \"%s\")", proc_meth);
+        if (blk_tmp[0]) buf_printf(b, ", %s", blk_tmp);
         buf_printf(b, ", sp_box_poly_array(_t%d), %s), ", ta, kwp);
         emit_proc_ret_unbox(c, rty, b);
         buf_puts(b, ")");
@@ -26012,7 +26021,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     /* Universal boxed return: the proc publishes its result in _sp_proc_poly_ret
        (see emit_proc_literal); evaluate the call for effect, then unbox the slot
        to the call's inferred type. */
-    buf_puts(b, "((void)sp_proc_call(");
+    buf_puts(b, blk_tmp[0] ? "((void)sp_proc_call_blk(" : "((void)sp_proc_call(");
     if (proc_nil_raises) buf_puts(b, "sp_proc_recv(");
     /* The receiver and the argument list are two operands of ONE C call, and C
        does not order them. A receiver that is itself a call publishes into --
@@ -26044,6 +26053,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       }
     }
     if (proc_nil_raises) buf_printf(b, ", \"%s\")", proc_meth);
+    if (blk_tmp[0]) buf_printf(b, ", %s", blk_tmp);
     buf_puts(b, ", ");
     emit_proc_call_args(c, argc, argv, b, 1);  /* emits args + the closing `)` */
     buf_puts(b, ", ");

@@ -1379,6 +1379,22 @@ static void sp_mark_at_exit_hooks(void);
 /* External linkage: lib/sp_gc.c's sp_gc_mark_all reaches this by name. */
 extern SP_TLS sp_RbVal _sp_proc_poly_args[SP_PROC_ARG_SLOTS];   /* the proc calling convention's side channel, defined below */
 extern SP_TLS sp_RbVal _sp_proc_poly_ret;
+/* The block passed to a first-class proc's .call { } (#2648). It is the
+   call's own: sp_proc_call_blk sets it immediately before entering the proc
+   body, and every other entry, sp_proc_call, sets it to NULL, so a body
+   finds here the block of the call that entered it and never one an
+   earlier call left behind. A `&b` prologue, or a Method#to_proc
+   trampoline that passes one on, reads it first thing, before anything
+   it runs can enter another proc; any other body ignores it. A block
+   published ahead of the call and consumed only by a body with `&b`
+   leaked into the next such body that ran without one (`f.call(1) { }`
+   into a `proc { |a| }`, then `g.call(2)` bound it), and an argument that
+   called a `&b` proc took the block meant for the outer call. The caller
+   keeps the block rooted for the call's extent. Defined below, beside the
+   other channels of this ABI, and like them one variable in an extension
+   host too: sp_proc_call_blk, inlined into the host's TU, and the kernel's
+   sp_proc_call and proc bodies must meet in the same slot. */
+extern SP_TLS sp_Proc *_sp_proc_blk;
 static void sp_re_mark_globals(void) {
   /* The sub-markers below are static and inline away, so a fault in one of
      them reports as this frame with nothing to distinguish them. Under verify,
@@ -5203,6 +5219,7 @@ sp_int sp_method_proc_tramp(void *cap, sp_int argc, sp_int *args);
 static sp_RbVal sp_bm_call_boxed(void *m, sp_int n) {
   sp_int slots[16];
   for (sp_int i = 0; i < n && i < 16; i++) slots[i] = _sp_proc_poly_args[i].v.i;
+  _sp_proc_blk = NULL;   /* entered as sp_proc_call enters a proc: no block */
   sp_method_proc_tramp(m, n < 16 ? n : 16, slots);
   return _sp_proc_poly_ret;
 }
@@ -13734,10 +13751,10 @@ extern SP_TLS sp_RbVal _sp_proc_poly_args[SP_PROC_ARG_SLOTS];
 #else
 SP_TLS sp_RbVal _sp_proc_poly_args[SP_PROC_ARG_SLOTS];
 #endif
-/* The block passed to a first-class proc's .call { }: the caller publishes it
-   here just before sp_proc_call, and the callee's &block-param prologue
-   consumes (and clears) it. Same discipline as _sp_proc_poly_args (#2648). */
-static SP_TLS sp_Proc *_sp_proc_blk;
+/* The block channel (_sp_proc_blk, declared above): the kernel TU owns it. */
+#ifndef SPINEL_EXT_HOST
+SP_TLS sp_Proc *_sp_proc_blk;
+#endif
 static SP_TLS void *_sp_ie_self;
 /* What the call site's trailing argument is: 1 a positional (a Hash passed
    as `pr.call(5, {k: 2})`), 2 keywords, 0 not said (a runtime path). The
@@ -13777,8 +13794,14 @@ static sp_RbVal sp_rbs_check(sp_RbVal v, int want, const char *slot, const char 
 #ifdef SPINEL_EXT_HOST
 sp_int sp_proc_call(sp_Proc *p, sp_int argc, sp_int *args);
 #else
-sp_int sp_proc_call(sp_Proc *p, sp_int argc, sp_int *args) { if (!p || !p->fn) return 0; if (!args) { sp_int noargs[16] = {0}; return ((sp_int (*)(void *, sp_int, sp_int *))p->fn)(p->cap, 0, noargs); } return ((sp_int (*)(void *, sp_int, sp_int *))p->fn)(p->cap, argc, args); }
+sp_int sp_proc_call(sp_Proc *p, sp_int argc, sp_int *args) { if (!p || !p->fn) return 0; _sp_proc_blk = NULL; if (!args) { sp_int noargs[16] = {0}; return ((sp_int (*)(void *, sp_int, sp_int *))p->fn)(p->cap, 0, noargs); } return ((sp_int (*)(void *, sp_int, sp_int *))p->fn)(p->cap, argc, args); }
 #endif
+/* sp_proc_call with a block: `pr.call(x) { }` or `pr.call(x, &b)` */
+static inline sp_int sp_proc_call_blk(sp_Proc *p, sp_Proc *blk, sp_int argc, sp_int *args) {
+  if (!p || !p->fn) return 0;
+  _sp_proc_blk = blk;
+  return ((sp_int (*)(void *, sp_int, sp_int *))p->fn)(p->cap, argc, args);
+}
 /* The receiver of a written `<proc>.call` / `.()` / `[]` / `.yield`. A nil
    Proc slot is NULL, and sp_proc_call answers 0 for NULL because the runtime
    passes an absent block that way on purpose; a call the program wrote on
@@ -14300,6 +14323,7 @@ static sp_RbVal sp_class_value_new_fallback(sp_RbVal cls, const char *cn, sp_int
   return sp_box_nil();
 }
 static void sp_proc_call_spread(sp_Proc *p, sp_RbVal arr, int kwpos);
+static void sp_proc_call_spread_blk(sp_Proc *p, sp_Proc *blk, sp_RbVal arr, int kwpos);
 static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
   SP_GC_ROOT_RBVAL(recv);
   /* The block is this loop's only handle on its own captures: the caller's
@@ -14588,7 +14612,7 @@ static sp_RbVal sp_env_filter_bang_opt(sp_Proc *p, int keep) {
   if (sp_env_filter_core(p, keep) == 0) return sp_box_nil();
   return sp_box_obj(sp_env_to_h(), SP_BUILTIN_STR_STR_HASH);
 }
-static void sp_proc_call_spread(sp_Proc *p, sp_RbVal arr, int kwpos) { SP_GC_ROOT(p);
+static void sp_proc_call_spread_blk(sp_Proc *p, sp_Proc *blk, sp_RbVal arr, int kwpos) { SP_GC_ROOT(p);
   if (!p || !p->fn) return;
   sp_int n = sp_poly_length(arr);
   sp_int fill = n > 16 ? 16 : n;
@@ -14611,7 +14635,10 @@ static void sp_proc_call_spread(sp_Proc *p, sp_RbVal arr, int kwpos) { SP_GC_ROO
      shares the scan hook but is not a lambda. */
   sp_int pass = (p->cap_scan == sp_bm_cap_scan && p->lambda_p) ? n : fill;
   _sp_proc_kwpos = kwpos;
-  sp_proc_call(p, pass, slots);
+  sp_proc_call_blk(p, blk, pass, slots);
+}
+static void sp_proc_call_spread(sp_Proc *p, sp_RbVal arr, int kwpos) {
+  sp_proc_call_spread_blk(p, NULL, arr, kwpos);
 }
 /* sp_proc_yield with an argument list whose length is known only at run
    time (a splat, or a `**h` that passes nothing when empty) */
@@ -14817,6 +14844,7 @@ static sp_RbVal sp_poly_callable_call_kw(sp_RbVal v, sp_int n, const sp_int *arg
   if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id == SP_BUILTIN_METHOD) {
     sp_int slots[16];
     for (sp_int i = 0; i < n && i < 16; i++) slots[i] = args[i];
+    _sp_proc_blk = NULL;
     sp_method_proc_tramp((void *)v.v.p, n < 16 ? n : 16, slots);
     return _sp_proc_poly_ret;
   }
@@ -14879,6 +14907,7 @@ static sp_RbVal sp_poly_callable_spread(sp_RbVal v, sp_RbVal arr, int kwpos) {
                : (e.tag == SP_TAG_FLT || e.tag == SP_TAG_BIGINT) ? 0
                : sp_poly_to_i(e);
     }
+    _sp_proc_blk = NULL;
     sp_method_proc_tramp((void *)v.v.p, n, slots);
     return _sp_proc_poly_ret;
   }
