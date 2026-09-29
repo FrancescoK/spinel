@@ -121,7 +121,7 @@ static int recv_has_array_write(Compiler *c, int recv) {
      program that also contains a user `<<` (a bundled csv or a Set-like class
      is enough) stopped taking element evidence from every such push, and the
      pushed-into slot kept the empty literal's bottom kind (#3781). */
-  if (sp_streq(rty, "CallNode") && nt_ref(nt, recv, "receiver") >= 0) {
+  if (sp_streq(rty, "CallNode")) {
     int rargs = nt_ref(nt, recv, "arguments");
     int rargc = 0;
     if (rargs >= 0) nt_arr(nt, rargs, "arguments", &rargc);
