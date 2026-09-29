@@ -3508,7 +3508,7 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
      only thing refusing them did was drop the call to the unresolved-call
      raise: NoMethodError for `sort_by` on an Array (#4061). */
   if (kt != TY_INT && kt != TY_FLOAT && kt != TY_STRING && kt != TY_POLY &&
-      kt != TY_SYMBOL && kt != TY_VOID && kt != TY_NIL &&
+      kt != TY_SYMBOL && kt != TY_VOID && kt != TY_NIL && kt != TY_BOOL &&
       kt != TY_RATIONAL && kt != TY_BIGINT && !ty_is_array(kt)) return 0;
 
   /* Schwartzian transform: compute each element's sort key exactly once (CRuby
