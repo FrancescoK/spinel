@@ -140,7 +140,20 @@ def spinel_bin
   # is a DIRECTORY of that name, and File.exist? said yes to it -- spin then
   # tried to run the directory ("Permission denied", or "is a directory" on
   # macOS) instead of falling through to the installed binary (#3407).
-  me = File.expand_path($0)
+  #
+  # Run through PATH, $0 is the bare name "spin" with no directory, and
+  # expand_path read it as a file in the current directory: the sibling was
+  # never found, and the "spinel" fallback below is a name, not a file, so
+  # File.exist?/File.mtime on it answered nothing. The freshness bound of
+  # `spin test` (#3202) then left the compiler out, and after a compiler
+  # upgrade every test binary the old compiler built was reused as "(cached)":
+  # a green run that tested nothing new. Look $0 up on PATH as the shell did.
+  me = $0
+  if !me.include?("/")
+    found = which(me)
+    me = found if found != ""
+  end
+  me = File.expand_path(me)
   cand = File.join(File.expand_path("..", me), "spinel")
   if File.file?(cand) && File.executable?(cand)
     # Realpath: a symlinked install (e.g. /home/user/bin/spin ->
