@@ -8302,8 +8302,16 @@ TyKind infer_uncached(Compiler *c, int id) {
   }
 
   /* MultiWriteNode as expression: value is the RHS array. */
-  if (nk == NK_MultiWriteNode)
-    return infer_type(c, nt_ref(nt, id, "value"));
+  if (nk == NK_MultiWriteNode) {
+    int v = nt_ref(nt, id, "value");
+    TyKind vt = infer_type(c, v);
+    /* an empty `[]` there is built as a poly array (mark_empty_array_operands) */
+    if (vt == TY_UNKNOWN && nt_kind(nt, v) == NK_ArrayNode) {
+      int en = 0; nt_arr(nt, v, "elements", &en);
+      if (en == 0) return TY_POLY_ARRAY;
+    }
+    return vt;
+  }
 
   return TY_UNKNOWN;
 }
