@@ -23028,6 +23028,14 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         emit_expr(c, av0[0], b); buf_puts(b, "), sp_box_int(0))");
         return;
       }
+      /* a boxed operand can hold the same singleton: `false <=> key`, the
+         key a boxed false, is 0 */
+      if (at0 == TY_POLY || at0 == TY_UNKNOWN) {
+        buf_puts(b, "sp_box_int_or_nil(");
+        emit_poly_cmp_ordered(c, "sp_poly_spaceship", rv0, av0[0], b);
+        buf_puts(b, ")");
+        return;
+      }
       buf_puts(b, "((void)("); emit_expr(c, rv0, b); buf_puts(b, "), (void)(");
       emit_expr(c, av0[0], b); buf_puts(b, "), sp_box_nil())");
       return;
