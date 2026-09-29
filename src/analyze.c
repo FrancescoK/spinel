@@ -2133,6 +2133,7 @@ void build_ie_map(Compiler *c) {
       /* receiverless instance_eval/exec inside an instance method: self. */
       cls = ie_implicit_self_class(c, id);
       if (cls < 0) cls = ie_forward_target(c, ie_receiverless_self_class(c, id), 0, nm, 1);
+      if (cls < 0 && id < c->node_cap) cls = ie_forward_target(c, c->node_cbody[id], 1, nm, 0);
       if (cls < 0) continue;
     }
     else {

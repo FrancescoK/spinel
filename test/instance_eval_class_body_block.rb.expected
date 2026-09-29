@@ -1,0 +1,1 @@
+[Vehicle, {parked: [:except, :parked]}]
