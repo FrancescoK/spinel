@@ -1889,6 +1889,58 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     buf_puts(b, "sp_box_nil(); })");
     return;
   }
+  if (sp_streq(ty, "ForNode")) {
+    /* A for loop in value position evaluates to its collection, or to a
+       `break`'s value (nil for a bare one). The collection -- for a range
+       literal, its endpoints -- is evaluated once into temps that the loop
+       then reads through the argument overrides. */
+    int coll = unwrap_parens(c, nt_ref(nt, id, "collection"));
+    int subs[2] = { -1, -1 }, ns = 0;
+    if (coll >= 0 && nt_kind(nt, coll) == NK_RangeNode && comp_ntype(c, coll) == TY_RANGE) {
+      subs[ns++] = nt_ref(nt, coll, "left");
+      subs[ns++] = nt_ref(nt, coll, "right");
+    }
+    else subs[ns++] = coll;
+    if (g_n_argov + ns > MAX_ARG_OVERRIDE) unsupported(c, id, "for loop value nested too deep");
+    Buf lb; memset(&lb, 0, sizeof lb);
+    int ind = g_pre ? g_indent : 0;
+    int sv_argov = g_n_argov;
+    for (int i = 0; i < ns; i++) {
+      if (subs[i] < 0) continue;
+      TyKind st = comp_ntype(c, subs[i]);
+      int ts = ++g_tmp;
+      Buf eb; memset(&eb, 0, sizeof eb);
+      emit_expr(c, subs[i], &eb);
+      emit_indent(&lb, ind);
+      buf_printf(&lb, "%s _t%d = %s; ", c_type_name(st), ts, eb.p ? eb.p : "0");
+      emit_gc_root_tmp(c, st, ts, &lb);
+      buf_puts(&lb, "\n");
+      free(eb.p);
+      g_argov_node[g_n_argov] = subs[i];
+      snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ts);
+      g_n_argov++;
+    }
+    int tr = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb);
+    if (coll >= 0) emit_boxed(c, coll, &rb);
+    emit_indent(&lb, ind);
+    buf_printf(&lb, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tr, rb.p ? rb.p : "sp_box_nil()", tr);
+    free(rb.p);
+    const char *saved_bv = g_loop_break_var, *saved_bs = g_brk_ser_var;
+    int saved_rp = g_ie_res_poly;
+    char bvbuf[24]; snprintf(bvbuf, sizeof bvbuf, "_t%d", tr);
+    g_loop_break_var = bvbuf; g_ie_res_poly = 1; g_brk_ser_var = NULL;
+    emit_for(c, id, &lb, ind);
+    g_loop_break_var = saved_bv; g_ie_res_poly = saved_rp; g_brk_ser_var = saved_bs;
+    g_n_argov = sv_argov;
+    if (g_pre) {
+      if (lb.p) buf_puts(g_pre, lb.p);
+      buf_printf(b, "_t%d", tr);
+    }
+    else buf_printf(b, "({ %s_t%d; })", lb.p ? lb.p : "", tr);
+    free(lb.p);
+    return;
+  }
   if (sp_streq(ty, "IndexOrWriteNode") || sp_streq(ty, "IndexAndWriteNode")) {
     int is_or2 = sp_streq(ty, "IndexOrWriteNode");
     int ir = nt_ref(nt, id, "receiver");

@@ -11057,6 +11057,9 @@ else {
         if (g_ie_res_poly) emit_boxed(c, bvargs[0], b); else emit_expr(c, bvargs[0], b);
         buf_puts(b, ";\n");
       }
+      else if (g_ie_res_poly) {
+        emit_indent(b, indent); buf_printf(b, "%s = sp_box_nil();\n", g_loop_break_var);
+      }
     }
     else {
       /* the loop's value is unused, but Ruby still EVALUATES the break
