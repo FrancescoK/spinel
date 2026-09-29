@@ -1,0 +1,12 @@
+"out\n"
+"err\n"
+3
+false
+"fed in\n"
+true
+["a\n", "b\n"]
+0
+Errno::ENOENT
+"in\nmore\n"
+""
+Errno::ENOENT

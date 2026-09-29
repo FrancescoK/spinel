@@ -1,0 +1,7 @@
+[package]
+name = "open3"
+
+# Pre-installed spin package: ships with the compiler, versioned with it.
+# Open3's capture family over Process.spawn and files: the child's streams go
+# to temporary files, read back once it has exited. No pipes are held open, so
+# there is no popen2/popen3 (a live stream both ways) -- only the capture forms.
