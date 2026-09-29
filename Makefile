@@ -2321,6 +2321,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	case "$$rounds" in ''|*[!0-9]*) echo "infer-test: FAIL (no fixpoint round count -- SP_FIXPOINT_LOG gone?)"; ok=0;; \
 	  *) [ "$$rounds" -lt 128 ] || { echo "infer-test: FAIL (the inference fixpoint ran to its $$rounds-round cap: it stopped mid-oscillation, and where it stops decides which typing is emitted)"; ok=0; };; \
 	esac; \
+	$(SPINEL) test/infer/inline_force_fanout.rb -c --no-line-map -o "$$tmp/iff.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile inline_force_fanout)"; exit 1; }; \
+	grep -q 'SP_ALWAYS_INLINE [^(]* sp_f4(' "$$tmp/iff.c" && { echo "infer-test: FAIL (forced inlining copied a small-method chain past the size budget)"; ok=0; }; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "infer-test: pass"; else exit 1; fi
 

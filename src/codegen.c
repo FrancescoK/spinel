@@ -2714,6 +2714,20 @@ static long fi_own_frame(Compiler *c, int si) {
   return f;
 }
 
+/* The nodes of a body: what absorbing it copies into its caller. */
+static long fi_node_count(const NodeTable *nt, int n) {
+  if (n < 0) return 0;
+  long k = 1;
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) k += fi_node_count(nt, nt_ref_at(nt, n, i));
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, n, i, &cnt);
+    for (int j = 0; j < cnt; j++) k += fi_node_count(nt, ids[j]);
+  }
+  return k;
+}
+
 static void fi_build(Compiler *c) {
   const NodeTable *nt = c->nt;
   free(g_fi_state);
@@ -2883,6 +2897,73 @@ static void fi_build(Compiler *c) {
       }
       free(calls);
       free(cost);
+    }
+  }
+  /* Bound the CODE the forcing copies. Each forced call site gets its own
+     copy of the callee, with everything that callee absorbs in turn, so a
+     chain of small methods that each call the next a few times multiplies:
+     six levels of twenty calls asked the C compiler for 20^6 copies, and it
+     spent minutes on one file. Charge each candidate its own nodes plus what
+     it absorbs, and stop forcing into a caller once its absorbed total passes
+     the budget -- the frame pass above, in nodes, and on every program. */
+  {
+    const char *se = getenv("SPINEL_INLINE_FORCE_SIZE");
+    long sbudget = (se && *se) ? atol(se) : 100000;
+    if (sbudget > 0 && ncand > 0 && ncand <= 2048) {
+      long *size = (long *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), sizeof(long));
+      long *own = (long *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), sizeof(long));
+      enum { FI_SCALLS_MAX = 8192 };
+      int *calls = (int *)malloc(sizeof(int) * FI_SCALLS_MAX);
+      int cal[32];
+      if (!calls || !own) { free(size); size = NULL; }
+      if (size) {
+        for (int si = 0; si < c->nscopes; si++) own[si] = fi_node_count(nt, c->scopes[si].body);
+        for (int round = 0; round < 8; round++) {
+          /* what each forced candidate expands to (acyclic, as above); the
+             sums saturate at the budget, which is all the trim compares */
+          for (int it = 0; it < 32; it++) {
+            int ch = 0;
+            for (int si = 0; si < c->nscopes; si++) {
+              long v = 0;
+              if (cand[si]) {
+                v = own[si];
+                int nc = 0;
+                g_fi_trunc = 0;
+                fi_collect_calls(c, c->scopes[si].body, calls, &nc, FI_SCALLS_MAX, 0);
+                for (int i = 0; i < nc && v <= sbudget; i++) {
+                  int n2 = 0;
+                  fi_callees(c, calls[i], cal, &n2, 32);
+                  for (int j = 0; j < n2; j++) if (cand[cal[j]]) v += size[cal[j]];
+                }
+                if (v > sbudget) v = sbudget + 1;
+              }
+              if (size[si] != v) { size[si] = v; ch = 1; }
+            }
+            if (!ch) break;
+          }
+          int trimmed = 0;
+          for (int si = 0; si < c->nscopes; si++) {
+            long tot = own[si];
+            int nc = 0;
+            g_fi_trunc = 0;
+            fi_collect_calls(c, c->scopes[si].body, calls, &nc, FI_SCALLS_MAX, 0);
+            int over = g_fi_trunc;
+            for (int i = 0; i < nc; i++) {
+              int n2 = 0;
+              fi_callees(c, calls[i], cal, &n2, 32);
+              for (int j = 0; j < n2; j++) {
+                if (!cand[cal[j]]) continue;
+                if (!over && tot + size[cal[j]] <= sbudget) { tot += size[cal[j]]; continue; }
+                over = 1; cand[cal[j]] = 0; trimmed = 1;
+              }
+            }
+          }
+          if (!trimmed) break;
+        }
+      }
+      free(calls);
+      free(own);
+      free(size);
     }
   }
   for (int si = 0; si < c->nscopes; si++) g_fi_state[si] = cand[si] ? 1 : 2;
