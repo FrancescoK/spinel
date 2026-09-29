@@ -7594,6 +7594,24 @@ int ctor_init_proc_form(Compiler *c, int cid) {
   return init >= 0 ? scope_proc_form_of(c, init) : -1;
 }
 
+static void emit_ctor_params(Compiler *c, int init, int init_has_blk, Buf *b) {
+  if (init >= 0 && (c->scopes[init].nparams > 0 || init_has_blk)) {
+    Scope *s = &c->scopes[init];
+    for (int i = 0; i < s->nparams; i++) {
+      if (i) buf_puts(b, ", ");
+      LocalVar *p = scope_local(s, s->pnames[i]);
+      TyKind pt = (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY;
+      emit_ctype(c, pt, b);
+      buf_printf(b, " lv_%s", s->pnames[i]);
+    }
+    if (init_has_blk) {
+      if (s->nparams > 0) buf_puts(b, ", ");
+      buf_printf(b, "sp_Proc *const lv_%s", s->blk_param);
+    }
+  }
+  else buf_puts(b, "void");
+}
+
 void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   /* Native (C-backed) class: constructor + methods live in the package; nothing
      is generated here (see the native_method externs + .new emission). */
@@ -7801,21 +7819,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   if (ci->is_value_type) {
     /* value-type: build on the stack and return by value (no heap / GC) */
     buf_printf(b, "static sp_%s sp_%s_new(", ci->c_name, ci->c_name);
-    if (init >= 0 && (c->scopes[init].nparams > 0 || init_has_blk)) {
-      Scope *s = &c->scopes[init];
-      for (int i = 0; i < s->nparams; i++) {
-        if (i) buf_puts(b, ", ");
-        LocalVar *p = scope_local(s, s->pnames[i]);
-        TyKind pt = (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY;
-        emit_ctype(c, pt, b);
-        buf_printf(b, " lv_%s", s->pnames[i]);
-      }
-      if (init_has_blk) {
-        if (s->nparams > 0) buf_puts(b, ", ");
-        buf_printf(b, "sp_Proc *const lv_%s", s->blk_param);
-      }
-    }
-    else buf_puts(b, "void");
+    emit_ctor_params(c, init, init_has_blk, b);
     buf_printf(b, ") {\n  sp_%s self = {0};\n  self.cls_id = %d;\n", ci->c_name, cid);
     emit_ivar_nil_inits(b, ci, "self.", "  ", ";\n");
     if (comp_class_is_module(c, ci)) {
@@ -7866,23 +7870,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   if (!class_is_exc_subclass(c, cid)) buf_printf(b, "SP_POOL_DEFINE(%s)\n", ci->c_name);
   int init_pf = ctor_init_proc_form(c, cid);
   buf_printf(b, "static sp_%s *sp_%s_new%s(", ci->c_name, ci->c_name, init_pf >= 0 ? "_noinit" : "");
-  if (init >= 0 && (c->scopes[init].nparams > 0 || init_has_blk)) {
-    Scope *s = &c->scopes[init];
-    for (int i = 0; i < s->nparams; i++) {
-      if (i) buf_puts(b, ", ");
-      LocalVar *p = scope_local(s, s->pnames[i]);
-      TyKind pt = (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY;
-      emit_ctype(c, pt, b);
-      buf_printf(b, " lv_%s", s->pnames[i]);
-    }
-    if (init_has_blk) {
-      if (s->nparams > 0) buf_puts(b, ", ");
-      buf_printf(b, "sp_Proc *const lv_%s", s->blk_param);
-    }
-  }
-  else {
-    buf_puts(b, "void");
-  }
+  emit_ctor_params(c, init, init_has_blk, b);
   /* Exception subclasses: use sp_exc_new_sub as underlying storage so that
      sp_raise/rescue machinery sees the right cls_name and parent. */
   if (class_is_exc_subclass(c, cid)) {
