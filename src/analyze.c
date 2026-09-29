@@ -8017,6 +8017,22 @@ static int oa_cls_join(int a, int b) {
    kind from (mark_empty_array_operands uses the same one), so a stamp here
    is seen by the next round's inference and by codegen (#4484). */
 static int *g_oa_empt_slot, *g_oa_empt_node, g_oa_empt_n, g_oa_empt_cap;
+/* The empty literals this pass itself stamped a row kind on, kept across
+   rounds: each round clears them on the way in, beside its map sources, and
+   stamps again only the rows of a component that still narrows. Only its own
+   -- other producers stamp empty `[]` literals too. */
+static unsigned char *g_oa_empt_mine; static int g_oa_empt_mine_cap;
+static void oa_mark_empty_mine(int lit) {
+  if (lit >= g_oa_empt_mine_cap) {
+    int nc = g_oa_empt_mine_cap ? g_oa_empt_mine_cap : 256;
+    while (nc <= lit) nc *= 2;
+    g_oa_empt_mine = (unsigned char *)realloc(g_oa_empt_mine, (size_t)nc);
+    if (!g_oa_empt_mine) { fprintf(stderr, "oom\n"); exit(1); }
+    memset(g_oa_empt_mine + g_oa_empt_mine_cap, 0, (size_t)(nc - g_oa_empt_mine_cap));
+    g_oa_empt_mine_cap = nc;
+  }
+  g_oa_empt_mine[lit] = 1;
+}
 /* Nodes whose own emitted type has to follow the slot they feed: a
    `idx.map { |k| cols[k] }` builds the table in place, so narrowing the slot
    without retyping the map leaves the emitter building a poly array and
@@ -8753,15 +8769,25 @@ static int narrow_object_arrays(Compiler *c) {
      that want back ahead of the poly fallback.
      A map/collect CallNode is the exact discriminator: this pass is the only
      producer that stamps one. The other producers stamp empty `[]` literals,
-     which are ArrayNodes, so their wants are untouched. */
+     which are ArrayNodes, so their wants are untouched -- except the empty
+     rows this pass stamped itself, which g_oa_empt_mine names. Those fire:
+     `@row = []` reads as an int array for a round before `@row = pattern`
+     makes it boxed, and `@banks[0] = @row` narrowed @banks on that round. The
+     drop a round later left the `[]` of `@banks = [[]]` an int-array row, and
+     a boxed row stored over it was read back as an sp_IntArray *. */
   int n_cleared = 0, cap_cleared = 0;
   int *cleared = NULL;
   if (c->arr_want) {
     for (int id = 0; id < c->nt->count && id < c->node_cap; id++) {
-      if (!ty_is_ptr_array(c->arr_want[id])) continue;
-      if (nt_kind(nt, id) != NK_CallNode) continue;
-      const char *rn = nt_str(nt, id, "name");
-      if (!rn || !(sp_streq(rn, "map") || sp_streq(rn, "collect"))) continue;
+      if (id < g_oa_empt_mine_cap && g_oa_empt_mine[id]) {
+        g_oa_empt_mine[id] = 0;
+        if (c->arr_want[id] != TY_INT_ARRAY && c->arr_want[id] != TY_FLOAT_ARRAY) continue;
+      } else {
+        if (!ty_is_ptr_array(c->arr_want[id])) continue;
+        if (nt_kind(nt, id) != NK_CallNode) continue;
+        const char *rn = nt_str(nt, id, "name");
+        if (!rn || !(sp_streq(rn, "map") || sp_streq(rn, "collect"))) continue;
+      }
       c->arr_want[id] = TY_UNKNOWN;
       if (n_cleared == cap_cleared) {
         cap_cleared = cap_cleared ? cap_cleared * 2 : 16;
@@ -9430,10 +9456,8 @@ static int narrow_object_arrays(Compiler *c) {
        already UNKNOWN -- so this states the invariant rather than fixing a
        reproduced failure.
        Only THIS pass's own source nodes, which are `map` calls. The empty-row
-       literal of #4484 is stamped here too and has the same exposure, but its
-       node is an empty `[]`, and two other producers stamp those as well
-       (mark_empty_array_operands and the ivar-write scan); clearing one here
-       could drop a want this pass never set. */
+       literals of #4484 it stamped are cleared on the way into the round
+       instead (see g_oa_empt_mine). */
     #define OA_DROP_SRC_STAMP() do { \
       for (int _e = 0; _e < g_oa_src_n; _e++) { \
         if (oa_uf_find(sl, g_oa_src_slot[_e]) != oa_uf_find(sl, i)) continue; \
@@ -9509,8 +9533,10 @@ static int narrow_object_arrays(Compiler *c) {
       for (int e = 0; e < g_oa_empt_n; e++) {
         if (oa_uf_find(sl, g_oa_empt_slot[e]) != r) continue;
         int lit = g_oa_empt_node[e];
-        if (c->arr_want && lit < c->node_cap && c->arr_want[lit] == TY_UNKNOWN)
+        if (c->arr_want && lit < c->node_cap && c->arr_want[lit] == TY_UNKNOWN) {
           c->arr_want[lit] = sl[r].cls == OA_CLS_IA ? TY_INT_ARRAY : TY_FLOAT_ARRAY;
+          oa_mark_empty_mine(lit);
+        }
       }
     }
     else {
