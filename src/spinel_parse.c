@@ -3484,13 +3484,20 @@ static char *rewrite_syntax_sugar(char *source) {
        rest array as an argument). Block forwarding is not emitted (known
        forwarding gap). The receiver symbol may be an ivar (:@foo) or a
        method (:foo). Only fires at a statement start (preceded by
-       newline/semicolon + indentation). */
-    if ((strncmp(source + i, "def_delegator", 13) == 0)) {
+       newline/semicolon + indentation). def_instance_delegator(s) are
+       Forwardable's aliases of the same; SingleForwardable's
+       def_single_delegator(s) delegate at the class level (`def self.x`).
+       Operator names (:[], :<<, :==) delegate like any other. */
+    size_t fwkw = 0; int fwsingle = 0;
+    if (strncmp(source + i, "def_delegator", 13) == 0) fwkw = 13;
+    else if (strncmp(source + i, "def_instance_delegator", 22) == 0) fwkw = 22;
+    else if (strncmp(source + i, "def_single_delegator", 20) == 0) { fwkw = 20; fwsingle = 1; }
+    if (fwkw && (i == 0 || !sp_is_method_name_char(source[i - 1]))) {
       size_t back3 = oi;
       while (back3 > 0 && (out[back3 - 1] == ' ' || out[back3 - 1] == '\t')) back3--;
       char pv3 = back3 > 0 ? out[back3 - 1] : '\n';
-      int plural = (i + 14 <= len && source[i + 13] == 's');
-      size_t j3 = i + 13 + (plural ? 1 : 0);
+      int plural = (i + fwkw + 1 <= len && source[i + fwkw] == 's');
+      size_t j3 = i + fwkw + (plural ? 1 : 0);
       while (j3 < len && (source[j3] == ' ' || source[j3] == '(')) j3++;
       if ((pv3 == '\n' || pv3 == ';') && j3 < len && source[j3] == ':') {
         /* parse the symbol list. It may continue onto following lines --
@@ -3500,7 +3507,7 @@ static char *rewrite_syntax_sugar(char *source) {
            the methods on the first line were defined before, and the rest
            were dropped silently or left as a stray expression (#4822). */
         int paren3 = 0;
-        { size_t pj = i + 13 + (plural ? 1 : 0);
+        { size_t pj = i + fwkw + (plural ? 1 : 0);
           while (pj < j3) { if (source[pj] == '(') paren3++; pj++; } }
         size_t symcap = 16; int nsym = 0;
         char (*syms)[160] = malloc(sizeof(*syms) * symcap);
@@ -3526,6 +3533,16 @@ static char *rewrite_syntax_sugar(char *source) {
           size_t s3 = k3;
           if (k3 < len && source[k3] == '@') k3++;
           while (k3 < len && sp_is_method_name_char(source[k3])) k3++;
+          if (k3 == s3) {
+            /* operator method symbols: :[] :[]= :<< :== :<=> :+ ... */
+            static const char *const fwops[] = { "[]=", "[]", "<=>", "===", "==", "=~",
+              "<<", ">>", "<=", ">=", "**", "+@", "-@", "!", "~", "+", "-",
+              "*", "/", "%", "<", ">", "&", "|", "^", NULL };
+            for (int oq = 0; fwops[oq]; oq++) {
+              size_t ol = strlen(fwops[oq]);
+              if (k3 + ol <= len && strncmp(source + k3, fwops[oq], ol) == 0) { k3 += ol; break; }
+            }
+          }
           size_t l3 = k3 - s3;
           if (l3 == 0 || l3 >= sizeof(syms[0])) { bad3 = 1; break; }
           if ((size_t)nsym == symcap) {
@@ -3562,12 +3579,12 @@ static char *rewrite_syntax_sugar(char *source) {
              delegated name is itself a setter (#4518). */
           #define FW_DEF(dst, cap, als, meth) do { \
             size_t _al = strlen(als), _ml = strlen(meth); \
-            if (_al > 1 && (als)[_al - 1] == '=') \
-              snprintf(dst, cap, "def %s(_fw_v); %s.%.*s = _fw_v; end", als, recvtxt, \
+            if (_al > 1 && (als)[_al - 1] == '=' && sp_is_method_name_char((als)[_al - 2])) \
+              snprintf(dst, cap, "def %s%s(_fw_v); %s.%.*s = _fw_v; end", fwsingle ? "self." : "", als, recvtxt, \
                        (int)(_ml > 1 && (meth)[_ml - 1] == '=' ? _ml - 1 : _ml), meth); \
             else \
-              snprintf(dst, cap, "def %s(*_fw_a) = _fw_a.length == 0 ? %s.%s : %s.%s(*_fw_a)", \
-                       als, recvtxt, meth, recvtxt, meth); \
+              snprintf(dst, cap, "def %s%s(*_fw_a) = _fw_a.length == 0 ? %s.%s : %s.%s(*_fw_a)", \
+                       fwsingle ? "self." : "", als, recvtxt, meth, recvtxt, meth); \
           } while (0)
           if (!plural) {
             const char *meth3 = syms[1];

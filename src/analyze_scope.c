@@ -3949,7 +3949,9 @@ static void check_unrewritten_delegators(Compiler *c) {
     /* the def_* spellings only: `delegate` is an ordinary name elsewhere */
     if (!nm || (!sp_streq(nm, "def_delegator") && !sp_streq(nm, "def_delegators") &&
                 !sp_streq(nm, "def_instance_delegator") &&
-                !sp_streq(nm, "def_instance_delegators")))
+                !sp_streq(nm, "def_instance_delegators") &&
+                !sp_streq(nm, "def_single_delegator") &&
+                !sp_streq(nm, "def_single_delegators")))
       continue;
     /* a program that defines the name itself is calling its own method */
     int user = 0;
