@@ -2991,6 +2991,14 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_CLASS && !sp_streq(name, "new")) {
     if (argc == 0 && (sp_streq(name, "to_s") || sp_streq(name, "name") || sp_streq(name, "inspect")))
       return TY_STRING;
+    /* Thread.current / Fiber.current through a class value: a boxed handle
+       (activesupport's IsolatedExecutionState keeps its scope as the class
+       itself); a user class method of that name keeps its dispatch below */
+    if (argc == 0 && sp_streq(name, "current") && nt_type(nt, recv) &&
+        !sp_streq(nt_type(nt, recv), "ConstantReadNode") && !sp_streq(nt_type(nt, recv), "ConstantPathNode")) {
+      int ncc = 0; comp_cmethod_candidates(c, name, &ncc);
+      if (ncc == 0) return TY_POLY;
+    }
     if (argc == 0 && sp_streq(name, "nil?")) return TY_BOOL;
     if (argc == 0 && sp_streq(name, "singleton_class?")) return TY_BOOL;
     if (argc == 0 && sp_streq(name, "frozen?")) return TY_BOOL;
@@ -7153,6 +7161,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       int ncc = 0;
       comp_cmethod_candidates(c, name, &ncc);
       if (ncc > 0) return TY_POLY;
+      /* Thread.current / Fiber.current through a class held in a poly slot:
+         a boxed handle (the codegen's gate answers it) */
+      if (argc == 0 && sp_streq(name, "current") && !an_user_defines_method(c, name)) return TY_POLY;
     }
   }
 
