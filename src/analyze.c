@@ -1081,7 +1081,7 @@ static int a_block_forwarded_to_proc(Compiler *c, int id) {
     if (sblk < 0 || nt_kind(nt, sblk) != NK_BlockNode) return 0;
     Scope *s = comp_scope_of(c, id);
     if (!s || !s->is_proc_form || s->class_id < 0 || !s->name) return 0;
-    int p = c->classes[s->class_id].parent;
+    int p = comp_super_parent(c, s->class_id, s->is_cmethod);
     if (p < 0) return 0;
     const char *u = comp_super_name(c, p, s->name, s->is_cmethod);
     int tmi = s->is_cmethod ? comp_cmethod_in_chain(c, p, u, NULL)
@@ -17895,7 +17895,7 @@ void analyze_program(Compiler *c) {
         for (int i = 0; i < ns; i++) {
           Scope *s = &c->scopes[i];
           if (s->yields || !has_super[i] || s->class_id < 0 || !s->name) continue;
-          int p = c->classes[s->class_id].parent;
+          int p = comp_super_parent(c, s->class_id, s->is_cmethod);
           if (p < 0) continue;
           int mi = s->is_cmethod ? comp_cmethod_in_chain(c, p, s->name, NULL)
                                  : comp_method_in_chain(c, p, s->name, NULL);
@@ -17924,7 +17924,7 @@ void analyze_program(Compiler *c) {
           for (int i = 0; i < ns; i++) {
             Scope *s = &c->scopes[i];
             if (s->yields || s->blk_param || !bare_super[i] || s->class_id < 0 || !s->name) continue;
-            int p = c->classes[s->class_id].parent;
+            int p = comp_super_parent(c, s->class_id, s->is_cmethod);
             if (p < 0) continue;
             int mi = s->is_cmethod ? comp_cmethod_in_chain(c, p, s->name, NULL)
                                    : comp_method_in_chain(c, p, s->name, NULL);

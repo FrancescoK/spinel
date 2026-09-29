@@ -8082,7 +8082,7 @@ TyKind infer_uncached(Compiler *c, int id) {
         if (k != s->class_id && is_descendant(c, k, s->class_id)) return TY_POLY;
       return ty_object(s->class_id);
     }
-    int p = c->classes[s->class_id].parent;
+    int p = comp_super_parent(c, s->class_id, s->is_cmethod);
     if (p < 0) return TY_UNKNOWN;
     const char *uname = comp_super_name(c, p, s->name, s->is_cmethod);
     /* super inside a class method resolves through the parent's CLASS-method

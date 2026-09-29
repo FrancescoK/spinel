@@ -6019,7 +6019,7 @@ int infer_param_types(Compiler *c) {
         changed |= struct_super_types_members(c, id, s);
         continue;
       }
-      int p = c->classes[s->class_id].parent;
+      int p = comp_super_parent(c, s->class_id, 0);
       if (p < 0) continue;
       int pmi = comp_method_in_chain(c, p, s->name, NULL);
       if (pmi < 0) continue;
