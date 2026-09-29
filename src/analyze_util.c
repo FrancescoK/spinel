@@ -2352,24 +2352,41 @@ int method_recv_node(Compiler *c, int recv) {
   return -1;
 }
 
+/* Append mn to the growing list method_recv_nodes answers. */
+static void mrn_push(int **out, int *n, int *cap, int mn) {
+  if (*n == *cap) {
+    *cap = *cap ? *cap * 2 : 4;
+    *out = realloc(*out, sizeof(int) * (size_t)*cap);
+    if (!*out) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  (*out)[(*n)++] = mn;
+}
+
 /* Every `method(:sym)` node a Method-typed local may hold: one per write
    that names one, where method_recv_node declines a local written to more
    than one method. Each target is called with the call's arguments, so the
-   analysis binds them to all of them. Answers the count, at most cap. */
-int method_recv_nodes(Compiler *c, int recv, int *out, int cap) {
+   analysis binds them to all of them. Answers the count, the nodes in a
+   malloc'd *out the caller frees (NULL for none). The list holds every
+   target, however many writes there are: cut at a fixed eight, a ninth was
+   bound nothing (its parameter typed Integer by default or by a direct
+   call, so the String a call passed it raised TypeError), and a bound
+   builtin's wrapper there was counted no call, so the call raised
+   NoMethodError. */
+int method_recv_nodes(Compiler *c, int recv, int **out) {
   const NodeTable *nt = c->nt;
+  int n = 0, cap = 0;
+  *out = NULL;
   int one = method_recv_node(c, recv);
-  if (one >= 0) { if (cap > 0) out[0] = one; return cap > 0; }
+  if (one >= 0) { mrn_push(out, &n, &cap, one); return n; }
   if (recv < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode) return 0;
   const char *vn = nt_str(nt, recv, "name");
   Scope *sc = comp_scope_of(c, recv);
-  int n = 0;
   NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
-    if (n >= cap || comp_scope_of(c, w) != sc) continue;
+    if (comp_scope_of(c, w) != sc) continue;
     const char *wn = nt_str(nt, w, "name");
     if (!wn || !vn || !sp_streq(wn, vn)) continue;
     int mn = method_recv_node(c, nt_ref(nt, w, "value"));
-    if (mn >= 0) out[n++] = mn;
+    if (mn >= 0) mrn_push(out, &n, &cap, mn);
   }
   return n;
 }
@@ -2379,10 +2396,12 @@ int method_recv_nodes(Compiler *c, int recv, int *out, int cap) {
    single assignment to one. The Method it converts may be a local written
    to more than one method; each target is called with the proc's
    arguments, so the analysis binds them to all of them, as it does for a
-   `.call` on that local (method_recv_nodes). Answers the count, at most
-   cap; 0 when the proc has another origin. */
-int proc_to_proc_method_nodes(Compiler *c, int recv, int *out, int cap) {
+   `.call` on that local (method_recv_nodes). Answers the count, the nodes
+   in a malloc'd *out the caller frees; 0 and NULL when the proc has
+   another origin. */
+int proc_to_proc_method_nodes(Compiler *c, int recv, int **out) {
   const NodeTable *nt = c->nt;
+  *out = NULL;
   if (recv < 0) return 0;
   int cand = recv;
   const char *rty = nt_type(nt, recv);
@@ -2405,7 +2424,7 @@ int proc_to_proc_method_nodes(Compiler *c, int recv, int *out, int cap) {
   if (!cty || !sp_streq(cty, "CallNode")) return 0;
   const char *nm = nt_str(nt, cand, "name");
   if (!nm || !sp_streq(nm, "to_proc")) return 0;
-  return method_recv_nodes(c, nt_ref(nt, cand, "receiver"), out, cap);
+  return method_recv_nodes(c, nt_ref(nt, cand, "receiver"), out);
 }
 
 /* Param-index shift for a call through a Method object. A bound
