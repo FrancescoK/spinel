@@ -6655,6 +6655,19 @@ int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name) {
   return 0;
 }
 
+/* A *rest method a class-value or boxed dispatch can call by packing the
+   arguments no positional parameter takes into its rest: the rest is the
+   boxed array a splat parameter starts as, and no keyword rides beside it
+   (FFI::Struct.layout, a getter and a DSL in one, read as `klass.layout`). */
+int rest_packable_arm(Compiler *c, Scope *s) {
+  if (!s || s->rest_idx < 0 || s->kwrest_idx >= 0) return 0;
+  LocalVar *rl = scope_local(s, s->pnames[s->rest_idx]);
+  if (rl && rl->type != TY_POLY_ARRAY && rl->type != TY_UNKNOWN) return 0;
+  for (int a = 0; a < s->nparams; a++)
+    if (callee_param_is_declared_kwarg(c, s, s->pnames[a])) return 0;
+  return 1;
+}
+
 /* True when the callee declares a keyword parameter (`k:` / `k: 1`). Ruby
    then takes a braceless `f(a, j: 2)` as keywords whatever its keys, so the
    hash is never one more positional argument and a key no parameter names is

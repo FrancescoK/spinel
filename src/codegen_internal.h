@@ -991,6 +991,7 @@ void emit_obj_upcast_prefix(Compiler *c, TyKind slot, TyKind val, Buf *b);
 int kwh_lookup(const NodeTable *nt, int kwh, const char *kname);
 int callee_has_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
+int rest_packable_arm(Compiler *c, Scope *s);
 int callee_declares_kwargs(Compiler *c, Scope *m);
 int is_fresh_array(Compiler *c, int v);
 /* True when the keyword hash `kwh` passes keywords from more than one source

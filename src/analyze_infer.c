@@ -2962,9 +2962,12 @@ static TyKind infer_call_inner(Compiler *c, int id) {
           if (argc >= c->scopes[kmi].nrequired && argc <= c->scopes[kmi].nparams) nblk++;
           continue;
         }
-        if (c->scopes[kmi].rest_idx >= 0 || c->scopes[kmi].yields ||
+        /* a *rest the emitter packs is an arm like any other */
+        int rest_ok = rest_packable_arm(c, &c->scopes[kmi]);
+        if ((c->scopes[kmi].rest_idx >= 0 && !rest_ok) || c->scopes[kmi].yields ||
             (c->scopes[kmi].blk_param && c->scopes[kmi].blk_param[0])) { nc = 0; nblk = 0; break; }
-        if (argc < c->scopes[kmi].nrequired || argc > c->scopes[kmi].nparams) continue;
+        if (argc < c->scopes[kmi].nrequired ||
+            (c->scopes[kmi].rest_idx < 0 && argc > c->scopes[kmi].nparams)) continue;
         nc++;
         TyKind kr = (TyKind)c->scopes[kmi].ret;
         if (!set) { uret = kr; set = 1; }
