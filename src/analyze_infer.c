@@ -1870,7 +1870,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
        shape that has none -- `module_function; def trap(m) = raise(...)`
        beside a `def div` that calls `trap(...)` -- and the Kernel arms below
        claimed it (#4592). Same ownership test the codegen twin makes. */
-    if (bmi < 0 && an_bare_call_class_owned(c, id)) {
+    if (bmi < 0 && ie_class_of(c, id) < 0 && an_bare_call_class_owned(c, id)) {
       Scope *osc = comp_scope_of(c, id);
       int ocls = osc ? osc->class_id : -1;
       int omi = osc && osc->is_cmethod ? comp_cmethod_in_chain(c, ocls, name, NULL)
@@ -4415,7 +4415,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* implicit-self call inside an instance method */
   if (recv < 0) {
     Scope *self = comp_scope_of(c, id);
-    if (self->class_id >= 0) {
+    if (self->class_id >= 0 && ie_class_of(c, id) < 0) {
       { int rdcls2 = -1;
         if (comp_reader_in_chain(c, self->class_id, name, &rdcls2)) {
           const char *rname2 = comp_resolve_alias(c, self->class_id, name);
