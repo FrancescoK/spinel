@@ -36549,8 +36549,10 @@ else {
   else if (sp_streq(name, "protected_method_defined?")) { md_prot = 1; }
   else if (sp_streq(name, "private_method_defined?"))   { md_priv = 1; }
   else md_family = 0;
-  if (md_family && recv >= 0 && argc >= 1 &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")) {
+  /* a constant path receiver (`CGI::EscapeExt.method_defined?`, cgi/escape.rb)
+     names its class by the leaf, as constant paths resolve here */
+  if (md_family && recv >= 0 && argc >= 1 && nt_type(nt, recv) &&
+      (sp_streq(nt_type(nt, recv), "ConstantReadNode") || sp_streq(nt_type(nt, recv), "ConstantPathNode"))) {
     const char *aty = nt_type(nt, argv[0]);
     const char *qm = NULL;
     if (aty && sp_streq(aty, "SymbolNode")) qm = nt_str(nt, argv[0], "value");
