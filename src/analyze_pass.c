@@ -7238,6 +7238,11 @@ const char *block_param_multi_leaf(Compiler *c, int block, int idx, int leaf_idx
    them would read sites that are gone or miss ones that appeared. */
 static int *bsi_start, *bsi_len, *bsi_node;
 static int bsi_ns;
+/* ...the calls that hand its named &block on with `&blk`, and whether a
+   `super` does, which bind it wherever the callee does (block_reach); and
+   whether it keeps the block (bsi_kept_mark) */
+static int *bsi_fstart, *bsi_flen, *bsi_fnode;
+static char *bsi_kept, *bsi_super;
 static int block_site_scope(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int si = c->nscope[id];
@@ -7258,24 +7263,155 @@ static int block_site_scope(Compiler *c, int id) {
   const char *rn = nt_str(nt, named, "name");
   return rn && sp_streq(rn, bp) ? si : -1;
 }
-void block_sites_index(Compiler *c) {
+static int block_fwd_scope(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
-  free(bsi_start); free(bsi_len); free(bsi_node);
+  if (nt_kind(nt, id) != NK_CallNode || block_site_scope(c, id) >= 0) return -1;
+  int si = c->nscope[id];
+  if (si < 0 || si >= c->nscopes) return -1;
+  const char *bp = c->scopes[si].blk_param;
+  int blk = nt_ref(nt, id, "block");
+  if (!bp || !bp[0] || blk < 0 || nt_kind(nt, blk) != NK_BlockArgumentNode) return -1;
+  int e = nt_ref(nt, blk, "expression");
+  if (e < 0 || nt_kind(nt, e) != NK_LocalVariableReadNode) return -1;
+  const char *en = nt_str(nt, e, "name");
+  return en && sp_streq(en, bp) ? si : -1;
+}
+static void bsi_build(Compiler *c, int (*of)(Compiler *, int), int **start, int **len, int **node) {
+  const NodeTable *nt = c->nt;
+  free(*start); free(*len); free(*node);
   int ns = c->nscopes, total = 0;
-  bsi_start = calloc((size_t)ns + 1, sizeof(int));
-  bsi_len = calloc((size_t)ns + 1, sizeof(int));
+  *start = calloc((size_t)ns + 1, sizeof(int));
+  *len = calloc((size_t)ns + 1, sizeof(int));
   for (int id = 0; id < nt->count; id++) {
-    int s = block_site_scope(c, id);
-    if (s >= 0) { bsi_len[s]++; total++; }
+    int s = of(c, id);
+    if (s >= 0) { (*len)[s]++; total++; }
   }
-  for (int s = 1; s < ns; s++) bsi_start[s] = bsi_start[s - 1] + bsi_len[s - 1];
-  bsi_node = malloc(sizeof(int) * (size_t)(total + 1));
-  memset(bsi_len, 0, sizeof(int) * ((size_t)ns + 1));
+  for (int s = 1; s < ns; s++) (*start)[s] = (*start)[s - 1] + (*len)[s - 1];
+  *node = malloc(sizeof(int) * (size_t)(total + 1));
+  memset(*len, 0, sizeof(int) * ((size_t)ns + 1));
   for (int id = 0; id < nt->count; id++) {
-    int s = block_site_scope(c, id);
-    if (s >= 0) bsi_node[bsi_start[s] + bsi_len[s]++] = id;
+    int s = of(c, id);
+    if (s >= 0) (*node)[(*start)[s] + (*len)[s]++] = id;
   }
-  bsi_ns = ns;
+}
+/* A read of a method's named &block that lets the block go where no site
+   of it shows what it is called with: kept in a variable, a container or a
+   constant, returned, handed on as a plain argument, turned into something
+   else (`b.to_proc`, `b.curry`), or read inside a nested lambda or proc,
+   which can run it anywhere. Calling it, asking about it (`b.nil?`, `if b`,
+   `b.arity`) and a `&b` forward (block_reach) keep it where it is. */
+static int bsi_read_keeps(Compiler *c, const int *parent, int r) {
+  const NodeTable *nt = c->nt;
+  static const char *const ask[] = {
+    "call", "[]", "yield", "===", "nil?", "!", "arity", "parameters",
+    "lambda?", "==", "!=", "hash", "inspect", "to_s", "source_location", NULL };
+  int p = parent[r];
+  if (p < 0) return 1;
+  NodeKind pk = nt_kind(nt, p);
+  if (pk == NK_BlockArgumentNode) return 0;
+  if (pk == NK_CallNode && nt_ref(nt, p, "receiver") == r) {
+    const char *nm = nt_str(nt, p, "name");
+    for (int k = 0; nm && ask[k]; k++) if (sp_streq(nm, ask[k])) return 0;
+    return 1;
+  }
+  if ((pk == NK_IfNode || pk == NK_UnlessNode || pk == NK_WhileNode || pk == NK_UntilNode) &&
+      nt_ref(nt, p, "predicate") == r) return 0;
+  if ((pk == NK_AndNode || pk == NK_OrNode) && nt_ref(nt, p, "left") == r) return 0;
+  return 1;
+}
+static void bsi_kept_mark(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int n = nt->count, ns = c->nscopes;
+  free(bsi_kept);
+  bsi_kept = calloc((size_t)ns + 1, 1);
+  int *parent = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+  /* the scopes of each definition that names a &block: an included
+     module's method is copied into each includer, one scope per copy */
+  int *def_first = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+  int *def_next = malloc(sizeof(int) * (size_t)(ns + 1));
+  if (!bsi_kept || !parent || !def_first || !def_next) { free(parent); free(def_first); free(def_next); return; }
+  for (int id = 0; id < n; id++) { parent[id] = -1; def_first[id] = -1; }
+  /* the walk down from the root settles every node the program reaches, so
+     an orphan a desugar left behind -- the ParenthesesNode a repointed
+     receiver hangs off still holds the same child (#5272) -- cannot claim a
+     child the tree already gave a parent. A scan of the rest then reaches
+     what hangs off no root: a module's method is copied into each includer,
+     and the copy's own `&block` reads are read here too, so leaving them
+     without a parent would call every one of them kept. */
+  int *stack = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+  if (!stack) { free(parent); free(def_first); free(def_next); return; }
+  int sp = 0;
+  if (nt->root_id >= 0 && nt->root_id < n) stack[sp++] = nt->root_id;
+  while (sp > 0) {
+    int id = stack[--sp];
+    int nr = nt_num_refs(nt, id), na = nt_num_arrs(nt, id);
+    for (int j = 0; j < nr; j++) {
+      int ch = nt_ref_at(nt, id, j);
+      if (ch >= 0 && ch < n && parent[ch] < 0 && ch != nt->root_id) { parent[ch] = id; stack[sp++] = ch; }
+    }
+    for (int j = 0; j < na; j++) {
+      int an = 0; const int *av = nt_arr_at(nt, id, j, &an);
+      for (int k = 0; k < an; k++)
+        if (av[k] >= 0 && av[k] < n && parent[av[k]] < 0 && av[k] != nt->root_id) { parent[av[k]] = id; stack[sp++] = av[k]; }
+    }
+  }
+  free(stack);
+  for (int id = 0; id < n; id++) {
+    int nr = nt_num_refs(nt, id), na = nt_num_arrs(nt, id);
+    for (int j = 0; j < nr; j++) {
+      int ch = nt_ref_at(nt, id, j);
+      if (ch >= 0 && ch < n && parent[ch] < 0 && ch != nt->root_id) parent[ch] = id;
+    }
+    for (int j = 0; j < na; j++) {
+      int an = 0; const int *av = nt_arr_at(nt, id, j, &an);
+      for (int k = 0; k < an; k++)
+        if (av[k] >= 0 && av[k] < n && parent[av[k]] < 0 && av[k] != nt->root_id) parent[av[k]] = id;
+    }
+  }
+  for (int si = 1; si < ns; si++) {
+    int d = c->scopes[si].def_node;
+    def_next[si] = -1;
+    if (d < 0 || d >= n || !c->scopes[si].blk_param || !c->scopes[si].blk_param[0]) continue;
+    def_next[si] = def_first[d]; def_first[d] = si;
+  }
+  /* a `super` passes the method's block on: a bare one, one with
+     arguments but no block, or `super(&blk)` */
+  free(bsi_super);
+  bsi_super = calloc((size_t)ns + 1, 1);
+  for (int q = 0; bsi_super && q < n; q++) {
+    NodeKind k = nt_kind(nt, q);
+    int sq = c->nscope[q];
+    if ((k != NK_SuperNode && k != NK_ForwardingSuperNode) || sq < 1 || sq >= ns) continue;
+    const char *bp = c->scopes[sq].blk_param;
+    int b = nt_ref(nt, q, "block"), e = b >= 0 && nt_kind(nt, b) == NK_BlockArgumentNode ? nt_ref(nt, b, "expression") : -1;
+    if (bp && bp[0] && (b < 0 || (e >= 0 && nt_kind(nt, e) == NK_LocalVariableReadNode &&
+                                  sp_streq(nt_str(nt, e, "name"), bp)))) bsi_super[sq] = 1;
+  }
+  for (int r = 0; r < n; r++) {
+    if (nt_kind(nt, r) != NK_LocalVariableReadNode) continue;
+    const char *rn = nt_str(nt, r, "name");
+    int s0 = c->nscope[r];
+    if (!rn || s0 < 1 || s0 >= ns) continue;
+    const char *bp = c->scopes[s0].blk_param;
+    if (bp && bp[0] && sp_streq(rn, bp)) {
+      if (!bsi_kept[s0] && bsi_read_keeps(c, parent, r)) bsi_kept[s0] = 1;
+      continue;
+    }
+    /* read inside a lambda or proc nested in the method: the definition
+       it sits in, through any number of them */
+    int d = -1, hops = 0;
+    for (int q = parent[r]; q >= 0 && hops < 4096; q = parent[q], hops++)
+      if (nt_kind(nt, q) == NK_DefNode) { d = q; break; }
+    for (int si = d >= 0 ? def_first[d] : -1; si >= 0; si = def_next[si])
+      if (sp_streq(rn, c->scopes[si].blk_param)) bsi_kept[si] = 1;
+  }
+  free(parent); free(def_first); free(def_next);
+}
+void block_sites_index(Compiler *c) {
+  bsi_build(c, block_site_scope, &bsi_start, &bsi_len, &bsi_node);
+  bsi_build(c, block_fwd_scope, &bsi_fstart, &bsi_flen, &bsi_fnode);
+  bsi_kept_mark(c);
+  bsi_ns = c->nscopes;
 }
 int block_sites(Compiler *c, int si, const int **sites) {
   if (!bsi_start) block_sites_index(c);
@@ -7548,6 +7684,116 @@ static int forwarding_yield_target(Compiler *c, int mi, int depth) {
   int t = comp_method_index(c, tn);
   if (t < 0 && m->class_id >= 0) t = comp_method_in_chain(c, m->class_id, tn, NULL);
   return forwarding_yield_target(c, t, depth + 1);
+}
+
+/* Builtins that keep the block they are handed (`proc(&b)`,
+   `define_method(:m, &b)`, `Thread.new(&b)`) or run it with a self and
+   arguments no site here shows (`o.instance_exec(x, &b)`). */
+static int block_kept_by_builtin(const char *name) {
+  static const char *const keep[] = {
+    "proc", "lambda", "define_method", "define_singleton_method", "new",
+    "instance_exec", "instance_eval", "class_exec", "module_exec",
+    "class_eval", "module_eval", "to_enum", "enum_for", "at_exit", "trap",
+    "define_finalizer", NULL };
+  for (int k = 0; keep[k]; k++) if (sp_streq(name, keep[k])) return 1;
+  return 0;
+}
+
+/* Where a block handed to scope `si` is bound besides si's own sites: the
+   calls si hands its &block on to, with `&blk` or with `super`, bind it
+   too, through every site of the callee (`def m(&b) = (inner(&b); yield
+   1)`), which this folds into pos/absent/kws as block_site_types does. Returns 1 when the
+   block goes where no site can be seen: kept as a value (bsi_kept_mark) or
+   handed to a builtin that keeps it. Its parameters then take whatever the
+   escaped calls pass, which only the box holds. `fold` is 0 for the scope
+   whose sites the caller folded already; `seen` stops a recursive forward. */
+static int block_reach(Compiler *c, int si, const BlockSig *s, TyKind *pos,
+                       char *absent, TyKind *kws, char *seen, int fold, int depth) {
+  const NodeTable *nt = c->nt;
+  if (si < 1 || si >= c->nscopes || seen[si] || depth > 16) return 0;
+  seen[si] = 1;
+  if (bsi_kept && si < bsi_ns && bsi_kept[si]) return 1;
+  int np = s->P + s->O + s->Q;
+  if (fold) {
+    const int *sites = NULL;
+    int ns = block_sites(c, si, &sites);
+    for (int k = 0; k < ns; k++) {
+      int ya = block_site_args(c, si, sites[k], -1);
+      int yc = 0; const int *yv = ya >= 0 ? nt_arr(nt, ya, "arguments", &yc) : NULL;
+      block_site_types(c, s, yv, yc, pos, absent, pos + np);
+    }
+  }
+  if (!bsi_fstart || si >= bsi_ns) return 0;
+  if (bsi_super && bsi_super[si] && c->scopes[si].class_id >= 0) {
+    int y = forwarding_yield_target(c, a_super_target(c, &c->scopes[si]), 0);
+    if (y >= 0 && block_reach(c, y, s, pos, absent, kws, seen, 1, depth + 1)) return 1;
+  }
+  for (int k = 0; k < bsi_flen[si]; k++) {
+    int f = bsi_fnode[bsi_fstart[si] + k];
+    const char *fn = nt_str(nt, f, "name");
+    int recv = nt_ref(nt, f, "receiver");
+    int t = -1, byname = 0;
+    if (recv < 0) t = comp_self_call_mi(c, f, fn);
+    else if (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode) {
+      int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+      if (ci >= 0) t = comp_cmethod_in_chain(c, ci, fn, NULL);
+      if (ci >= 0 && t < 0 && sp_streq(fn, "new")) t = comp_method_in_chain(c, ci, "initialize", NULL);
+    }
+    else {
+      TyKind rt = infer_type(c, recv);
+      /* a receiver not typed yet says nothing this round: the box a guess
+         took would stay for good */
+      if (rt == TY_UNKNOWN && g_infer_optimistic) continue;
+      if (ty_is_object(rt)) t = comp_method_in_chain(c, ty_object_class(rt), fn, NULL);
+      /* a boxed one, or one still untyped, may be any class defining it */
+      else byname = rt == TY_UNKNOWN || rt == TY_POLY;
+    }
+    if (t >= 0) {
+      int y = forwarding_yield_target(c, t, 0);
+      if (y >= 0 && block_reach(c, y, s, pos, absent, kws, seen, 1, depth + 1)) return 1;
+      continue;
+    }
+    int found = 0;
+    for (int u = 1; byname && u < c->nscopes; u++) {
+      Scope *us = &c->scopes[u];
+      if (us->is_cmethod || !us->name || !sp_streq(us->name, fn)) continue;
+      int y = forwarding_yield_target(c, u, 0);
+      if (y < 0) continue;
+      found = 1;
+      if (block_reach(c, y, s, pos, absent, kws, seen, 1, depth + 1)) return 1;
+    }
+    if (!found && block_kept_by_builtin(fn)) return 1;
+  }
+  return 0;
+}
+
+/* Widen the parameters of `block` for what block_reach found: all of them
+   when the block is kept, else each one that does not already hold what a
+   call the block is handed on to binds it with (posf/absentf/kwsf). Only
+   ever to the box: the types the method's own sites settled stay what they
+   are wherever the callee agrees with them. */
+static int block_params_widen(Compiler *c, int block, const BlockSig *s, int kept,
+                              const TyKind *posf, const char *absentf, const TyKind *kwsf) {
+  Scope *bs = comp_scope_of(c, block);
+  int np = s->P + s->O + s->Q, changed = 0;
+  for (int i = 0; i < np + s->nk; i++) {
+    int kw = i >= np;
+    const char *bp = kw ? block_sig_kw_name(c, s, i - np) : block_sig_name(c, s, i);
+    if (!bp) continue;
+    TyKind tf = kw ? kwsf[i - np] : posf[i];
+    if (!kw && absentf[i]) tf = ty_unify(tf, TY_POLY);
+    LocalVar *lv = scope_local_intern(bs, bp); lv->is_block_param = 1;
+    if (!kept && (tf == TY_UNKNOWN || ty_unify(lv->type, tf) == lv->type)) continue;
+    if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+  }
+  /* a destructuring parameter's leaves, which kept blocks bind too */
+  for (int k = 0; kept; k++) {
+    const char *bp = block_param_name(c, block, k);
+    if (!bp) break;
+    LocalVar *lv = scope_local_intern(bs, bp); lv->is_block_param = 1;
+    if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+  }
+  return changed;
 }
 
 /* Bind block parameter types for supported iteration methods. */
@@ -10576,6 +10822,12 @@ int infer_block_params(Compiler *c) {
           const int *yv = ya >= 0 ? nt_arr(nt, ya, "arguments", &yc) : NULL;
           block_site_types(c, &s, yv, yc, pos, absent, pos + np);
         }
+        /* the method may also hand the block on, or keep it: those bind it
+           too, and a kept one can be called with anything (block_reach) */
+        char *seen = calloc((size_t)c->nscopes + 1, 1);
+        TyKind *posf = calloc((size_t)(np + s.nk + 1), sizeof(TyKind));
+        char *absentf = calloc((size_t)np + 1, 1);
+        int kept = block_reach(c, yields ? yld_mi : mi, &s, posf, absentf, posf + np, seen, 0, 0);
         if (yields) changed |= block_settle_types(c, block, &s, pos, absent, pos + np);
         else {
           Scope *bs = comp_scope_of(c, block);
@@ -10587,7 +10839,8 @@ int infer_block_params(Compiler *c) {
             if (merged != lv->type) { lv->type = merged; changed = 1; }
           }
         }
-        free(pos); free(absent);
+        changed |= block_params_widen(c, block, &s, kept, posf, absentf, posf + np);
+        free(pos); free(absent); free(posf); free(absentf); free(seen);
         continue;
       }
       /* A block handed to a user method that neither yields nor names a

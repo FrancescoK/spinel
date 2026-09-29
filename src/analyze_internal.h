@@ -296,6 +296,7 @@ void infer_bigint_loop_locals(Compiler *c);
 void block_sites_index(Compiler *c);
 int block_sites(Compiler *c, int si, const int **sites);
 int block_site_args(Compiler *c, int si, int site, int call);
+int a_super_target(Compiler *c, Scope *m);
 /* A block's (or a proc literal's) parameters as its binders count them:
    P leading requireds, O optionals, Q posts, R a rest marker (`*r`, `*`,
    a trailing comma), nk keywords; kw when a trailing keyword hash goes to

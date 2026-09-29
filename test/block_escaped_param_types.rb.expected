@@ -1,0 +1,32 @@
+[1, 2]
+["t", "u"]
+1
+"s"
+2
+:sym
+3
+"returned"
+4
+1.5
+5
+"to_proc"
+6
+"alias"
+7
+"kept"
+8
+"captured"
+9
+:later
+[10, 11]
+["x", "y"]
+"inner"
+12
+:inner
+13
+15
+16
+"parent"
+16
+"parent"
+17
