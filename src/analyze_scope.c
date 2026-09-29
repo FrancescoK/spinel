@@ -1844,6 +1844,7 @@ static void sg_transplant_module(Compiler *c, int mod_ci, int newci) {
     dst->yields = src->yields;
     dst->nrequired = src->nrequired;
     dst->rest_idx = src->rest_idx;
+    dst->npost_rest = src->npost_rest;
     dst->kwrest_idx = src->kwrest_idx;
     src->is_transplanted_source = 1;   /* the module original is copied away */
     dst->origin_module_ci = mod_ci + 1;  /* #owner names the module (#3662) */
@@ -1872,6 +1873,7 @@ static void sg_transplant_module(Compiler *c, int mod_ci, int newci) {
         if (sp_lv && dp->type == TY_UNKNOWN) dp->type = sp_lv->type;
         src = &c->scopes[ms]; dst = &c->scopes[dst_idx];  /* intern may realloc */
       }
+      scope_own_defaults(c, dst_idx);
     }
   }
 }
@@ -4386,6 +4388,10 @@ static int module_function_self_dependent(Compiler *c, int scope_idx) {
    them as param locals so infer_param_types can update their types. */
 static void scope_copy_params(Scope *dst, const Scope *src) {
   dst->nparams = src->nparams;
+  /* the posts after a rest are part of the layout: a copy without them laid
+     `super(1)` into an included `def m(*r, p1)` out as if the rest came
+     last, the 1 into the rest and p1 left its zero */
+  dst->npost_rest = src->npost_rest;
   if (src->nparams <= 0) return;
   dst->pnames = malloc(sizeof(char *) * (size_t)src->nparams);
   dst->pdefault = malloc(sizeof(int) * (size_t)src->nparams);
@@ -4411,6 +4417,28 @@ static void scope_copy_params(Scope *dst, const Scope *src) {
       }
     }
   }
+}
+
+/* Give a copied method its own default values: clone each one and walk it
+   into the copy. Shared, a default reading an earlier parameter
+   (`def m(p1 = 51, p2 = p1)`) was typed against the source method's
+   parameter, an Integer nothing widens, while the copy's took the values its
+   own callers pass; the default then boxed an sp_RbVal as an sp_int and the
+   C compiler refused it. Returns 1 when it cloned any. */
+int scope_own_defaults(Compiler *c, int di) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int any = 0;
+  for (int p = 0; p < c->scopes[di].nparams; p++) {
+    int od = c->scopes[di].pdefault ? c->scopes[di].pdefault[p] : -1;
+    if (od < 0) continue;
+    int nd = nt_clone_subtree(nt, od);
+    if (nd < 0) continue;
+    comp_grow_node_arrays(c);
+    c->scopes[di].pdefault[p] = nd;
+    walk_scope(c, nd, di, c->scopes[di].class_id);
+    any = 1;
+  }
+  return any;
 }
 
 /* Process include calls in a single class body, creating scope copies for each
@@ -4640,6 +4668,8 @@ else {
            not copied AWAY, only copied FROM. */
         if (!src->is_module_function) src->is_transplanted_source = 1;
         scope_copy_params(dst, src);
+        if (scope_own_defaults(c, dst_idx)) g_inc_did_clone = 1;
+        src = &c->scopes[ms]; dst = &c->scopes[dst_idx];
         /* Scan source body for ivar accesses and register them in the
            destination class so codegen's struct layout includes them. */
         for (int id2 = 0; id2 < nt->count; id2++) {
@@ -5261,6 +5291,8 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci) {
   }
   if (src->blk_param) dst->blk_param = strdup(src->blk_param);
   scope_copy_params(dst, src);
+  scope_own_defaults(c, dst_idx);
+  src = &c->scopes[mi]; dst = &c->scopes[dst_idx];
   /* Recurse into the inherited intermediates this body reaches. Scan the
      ORIGINAL mi body (cloned nodes are attributed to dst, not mi); a sub-clone
      reallocs c->scopes/c->nscope, so use indices and refetch. */
@@ -5637,6 +5669,8 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
                what the include clone does, and the half my first attempt at
                this omitted (the clone came out with no signature at all). */
             scope_copy_params(dst, sc);
+            scope_own_defaults(c, dst_i);
+            sc = &c->scopes[ms_i]; dst = &c->scopes[dst_i];
             /* the module body's ivars belong to the prepending class's layout */
             for (int id2 = 0; id2 < nt->count; id2++) {
               if (c->nscope[id2] != ms_i) continue;

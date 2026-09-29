@@ -9583,6 +9583,9 @@ void emit_super(Compiler *c, int id, Buf *b) {
       for (int i = 0; i < s->nparams; i++) { buf_puts(b, ", "); emit_scope_local_ref(c, s, s->pnames[i], b); }
     }
     else emit_args_filled(c, smi, nt_ref(c->nt, id, "arguments"), ", ", b);
+    /* the shadow's `&b` is a C parameter like any parent's: left off, a module
+       method taking a block did not link */
+    if (smi >= 0) emit_super_block_arg(c, id, s, &c->scopes[smi], 1, b);
     buf_puts(b, ")");
     return;
   }

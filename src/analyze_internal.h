@@ -189,6 +189,7 @@ int collect_dm_each_unroll(Compiler *c, int id, int class_id);
 const char *builtin_class_of_type(TyKind t);
 const char *resolve_class_alias(Compiler *c, const char *cname);
 void walk_scope(Compiler *c, int id, int scope_idx, int class_id);
+int scope_own_defaults(Compiler *c, int di);
 void register_module_functions(Compiler *c);
 void register_method_visibility(Compiler *c);
 void register_locals(Compiler *c);
