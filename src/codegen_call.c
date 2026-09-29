@@ -30347,6 +30347,43 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
            (with or without a block at this site) */
         if (initm >= 0 && c->scopes[initm].yields &&
             (emit_ctor_yield_inline(c, id, new_cls, b) || emit_ctor_new_with_proc(c, id, new_cls, b))) return;
+        /* A class method a subclass inherits runs with self the subclass, so
+           its bare `new` builds that subclass (#5995): a body that takes the
+           receiving class picks the constructor by it. Each arm spells the
+           arguments, so only arguments with no effect are spelled more than
+           once; a subclass the plain constructor cannot build keeps the
+           static one. */
+        if (cmethod_takes_self_cls(c, (int)(encl - c->scopes)) && !(encl->yields && g_self) &&
+            !ncls->is_value_type) {
+          int nargs0 = 0; const int *av0 = call_args(nt, id, &nargs0);
+          int plain = nt_ref(nt, id, "block") < 0;
+          for (int a = 0; plain && a < nargs0; a++)
+            if (subtree_has_side_effect(c, av0[a])) plain = 0;
+          int nsub = 0;
+          for (int k = 0; plain && k < c->nclasses; k++) {
+            if (k == new_cls || !is_descendant(c, k, new_cls)) continue;
+            ClassInfo *kc = &c->classes[k];
+            int ik = comp_method_in_chain(c, k, "initialize", NULL);
+            if (kc->is_value_type || kc->is_struct || kc->is_native_class ||
+                (ik >= 0 && c->scopes[ik].yields) ||
+                comp_cmethod_in_chain(c, k, "new", NULL) >= 0) { plain = 0; break; }
+            nsub++;
+          }
+          if (plain && nsub > 0) {
+            buf_puts(b, "(");
+            for (int k = 0; k < c->nclasses; k++) {
+              if (k == new_cls || !is_descendant(c, k, new_cls)) continue;
+              int ik = comp_method_in_chain(c, k, "initialize", NULL);
+              buf_printf(b, "_sp_cls.cls_id == %d ? (sp_%s *)sp_%s_new(", k, ncls->c_name, c->classes[k].c_name);
+              if (ik >= 0) emit_args_filled(c, ik, nt_ref(nt, id, "arguments"), "", b);
+              buf_puts(b, ") : ");
+            }
+            buf_printf(b, "sp_%s_new(", ncls->c_name);
+            if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
+            buf_puts(b, "))");
+            return;
+          }
+        }
         buf_printf(b, "sp_%s_new(", ncls->c_name);
         if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
         if (initm >= 0) emit_ctor_block_slot(c, id, initm, c->scopes[initm].nparams > 0 ? ", " : "", b);

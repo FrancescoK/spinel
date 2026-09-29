@@ -9791,8 +9791,15 @@ void emit_super(Compiler *c, int id, Buf *b) {
     buf_printf(b, "sp_%s_s_%s(", c->classes[cdef].c_name, mc(uname));
     /* `super` in a class method keeps the receiving class: forward ours. */
     if (cmethod_takes_self_cls(c, cmi))
-      buf_printf(b, "%s%s", cmethod_takes_self_cls(c, (int)(s - c->scopes)) ? "_sp_cls" : "((sp_Class){-1, NULL})",
+    {
+      /* a body that does not take its receiving class is only ever run on
+         its own class: pass that, not "none", or the parent's body builds
+         and names the parent (#5995) */
+      char own[48];
+      snprintf(own, sizeof own, "((sp_Class){%d, NULL})", s->class_id);
+      buf_printf(b, "%s%s", cmethod_takes_self_cls(c, (int)(s - c->scopes)) ? "_sp_cls" : own,
                  c->scopes[cmi].nparams > 0 ? ", " : "");
+    }
     if (ty && sp_streq(ty, "ForwardingSuperNode")) {
       Scope *pm = &c->scopes[cmi];
       ZSuper z;
