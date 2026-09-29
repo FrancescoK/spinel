@@ -37284,7 +37284,15 @@ else {
              false. This mirrors the poly is_a? runtime cls_id check. */
           int tv = ++g_tmp;
           buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b); buf_puts(b, "; ");
-          buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0 && (", tv, tv);
+          /* The value's class as the poly dispatch keys it: a boxed builtin a
+             reopening extended -- a Time is an OBJ box naming SP_BUILTIN_TIME,
+             a String the string tag -- maps to the reopening's entry, where
+             the plain cls_id never did (activesupport's Object#acts_like?
+             asking a Time for acts_like_time? read false). A root class's
+             method (a `class Object` reopening) is every value's. */
+          buf_printf(b, "sp_int _k%d = ", tv);
+          emit_poly_dispatch_key(c, tv, 1, 1, poly_exc_cand(c, qm), b);
+          buf_puts(b, "; (");
           size_t ql = strlen(qm);
           char wbase[256]; wbase[0] = '\0';
           int is_wr = ql > 0 && qm[ql - 1] == '=' && ql - 1 < sizeof wbase;
@@ -37300,13 +37308,18 @@ else {
                       /* the names the class carries without a method entry
                          answer as they do on the typed receiver */
                       class_implicit_responds(c, k, qm);
-            if (has) { buf_printf(b, "%s_t%d.cls_id == %d", first ? "" : " || ", tv, k); first = 0; }
+            if (!has) continue;
+            const char *kn = c->classes[k].name;
+            int root = kn && (sp_streq(kn, "Object") || sp_streq(kn, "Kernel") || sp_streq(kn, "BasicObject"));
+            if (root) buf_printf(b, "%s1", first ? "" : " || ");
+            else buf_printf(b, "%s_k%d == %d", first ? "" : " || ", tv, k);
+            first = 0;
           }
           if (first) buf_puts(b, "0");
           /* a builtin member of the union cannot carry a user method, but it
              does have its own surface: Array really responds to :each. Ask
              the runtime rather than answering a flat false here (#3072). */
-          buf_printf(b, ")) || sp_poly_responds_builtin(_t%d, ", tv);
+          buf_printf(b, ") || sp_poly_responds_builtin(_t%d, ", tv);
           buf_puts(b, "\"");
           emit_c_escaped(b, qm);
           buf_puts(b, "\")");
@@ -37330,10 +37343,16 @@ else {
       buf_printf(b, "; const char *_n%d = sp_poly_to_name(", tv); emit_boxed(c, argv[0], b);
       buf_printf(b, "); sp_bool _a%d = ", tv);
       if (argc >= 2) emit_cond(c, argv[1], b); else buf_puts(b, "0");
-      buf_printf(b, "; (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0 && (", tv, tv);
+      /* the value's class as the poly dispatch keys it: a boxed builtin a
+         reopening extended (a Time is an OBJ box naming SP_BUILTIN_TIME, a
+         String the string tag) maps to the reopening's entry, where the
+         plain cls_id never matched it */
+      buf_printf(b, "; sp_int _k%d = ", tv);
+      emit_poly_dispatch_key(c, tv, 1, 1, 0, b);
+      buf_puts(b, "; ((");
       for (int k = 0; k < c->nclasses; k++) {
         if (comp_class_is_module(c, &c->classes[k])) continue;
-        buf_printf(b, "(_t%d.cls_id == %d && (", tv, k);
+        buf_printf(b, "(_k%d == %d && (", tv, k);
         for (int s = 0; s < c->nscopes; s++)
           if (c->scopes[s].name && !c->scopes[s].is_cmethod && !c->scopes[s].is_proc_form &&
               comp_method_in_chain(c, k, c->scopes[s].name, NULL) == s)
