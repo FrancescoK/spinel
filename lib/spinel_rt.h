@@ -2946,6 +2946,7 @@ static SP_INLINE sp_RbVal sp_poly_ary_chk(sp_RbVal v, const char *m, int range_o
    sp_poly_length answers 0 for all three -- so `v.length` on a nil read out of
    a hash miss answered 0 instead of raising NoMethodError (#3974). */
 static sp_int sp_poly_length_m(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_QUEUE && v.v.p) return sp_Queue_size((sp_queue *)v.v.p);
   if (v.tag == SP_TAG_NIL || v.tag == SP_TAG_INT || v.tag == SP_TAG_FLT ||
       v.tag == SP_TAG_BIGINT || v.tag == SP_TAG_BOOL || sp_poly_is_user_obj(v) ||
       (v.tag == SP_TAG_OBJ && (v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE ||
@@ -2989,6 +2990,7 @@ static sp_RbVal sp_poly_io_truncate(sp_RbVal v, sp_int n) {
 }
 sp_RbVal sp_Enumerator_size_p(void *e);   /* lib/sp_cold.c; sp_Enumerator is declared further down */
 static sp_int sp_poly_size(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_QUEUE && v.v.p) return sp_Queue_size((sp_queue *)v.v.p);
   if (v.tag == SP_TAG_NIL || v.tag == SP_TAG_BOOL || v.tag == SP_TAG_FLT ||
       sp_poly_is_user_obj(v))
     sp_raise_poly_nomethod("size", v);
@@ -7557,6 +7559,7 @@ static void sp_PolyPolyHash_clear(sp_PolyPolyHash*h){if(!h)return;for(sp_int i=0
    `&:clear`): empty the container in place, dispatching on its runtime kind and
    returning the receiver (#3199). */
 static sp_RbVal sp_poly_clear(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_QUEUE && v.v.p) { sp_Queue_clear((sp_queue *)v.v.p); return v; }
   sp_poly_coll_chk(v, "clear");
   if (v.tag != SP_TAG_OBJ || !v.v.p) return v;
   switch (v.cls_id) {
@@ -7607,6 +7610,7 @@ static sp_PolyArray *sp_poly_pop_n(sp_RbVal v, sp_int n, int from_front) {
   return out;
 }
 static sp_RbVal sp_poly_pop(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_QUEUE && v.v.p) return sp_Queue_pop((sp_queue *)v.v.p);
   if (v.tag == SP_TAG_OBJ && v.v.p) {
     switch (v.cls_id) {
       case SP_BUILTIN_INT_ARRAY: {
@@ -7788,6 +7792,7 @@ static sp_RbVal sp_poly_delete_at(sp_RbVal v, sp_int i) {
   return sp_box_nil();
 }
 static sp_RbVal sp_poly_shift(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_QUEUE && v.v.p) return sp_Queue_pop((sp_queue *)v.v.p);
   if (v.tag == SP_TAG_OBJ && v.v.p && sp_poly_is_hash_kind(v.cls_id)) return sp_poly_hash_shift(v);
   if (v.tag == SP_TAG_OBJ && v.v.p) {
     switch (v.cls_id) {
@@ -9511,7 +9516,7 @@ static sp_int sp_poly_count_val(sp_RbVal v, sp_RbVal x) {
   for (sp_int i = 0; i < n; i++) if (sp_poly_eq(sp_poly_arr_get(v, i), x)) cnt++;
   return cnt;
 }
-static sp_int sp_poly_length(sp_RbVal v){if(v.tag==SP_TAG_STR)return v.v.s?(sp_int)sp_str_byte_len(v.v.s):0;   /* the header length, so an embedded NUL counts (#3540) */if(v.tag==SP_TAG_SYM)return sp_sym_name_fn?(sp_int)strlen(sp_sym_name_fn((sp_sym)v.v.i)):0;if(v.tag!=SP_TAG_OBJ)return 0;switch(v.cls_id){case SP_BUILTIN_INT_ARRAY:return sp_IntArray_length((sp_IntArray*)v.v.p);case SP_BUILTIN_FLT_ARRAY:return sp_FloatArray_length((sp_FloatArray*)v.v.p);case SP_BUILTIN_STR_ARRAY:return sp_StrArray_length((sp_StrArray*)v.v.p);case SP_BUILTIN_SYM_ARRAY:return sp_IntArray_length((sp_IntArray*)v.v.p);case SP_BUILTIN_POLY_ARRAY:return sp_PolyArray_length((sp_PolyArray*)v.v.p);case SP_BUILTIN_PTR_ARRAY:return v.v.p?((sp_PtrArray*)v.v.p)->len:0;case SP_BUILTIN_STR_INT_HASH:return sp_StrIntHash_length((sp_StrIntHash*)v.v.p);case SP_BUILTIN_STR_STR_HASH:return sp_StrStrHash_length((sp_StrStrHash*)v.v.p);case SP_BUILTIN_INT_STR_HASH:return sp_IntStrHash_length((sp_IntStrHash*)v.v.p);case SP_BUILTIN_INT_INT_HASH:return sp_IntIntHash_length((sp_IntIntHash*)v.v.p);case SP_BUILTIN_STR_POLY_HASH:return sp_StrPolyHash_length((sp_StrPolyHash*)v.v.p);case SP_BUILTIN_SYM_POLY_HASH:return sp_SymPolyHash_length((sp_SymPolyHash*)v.v.p);case SP_BUILTIN_POLY_POLY_HASH:return sp_PolyPolyHash_length((sp_PolyPolyHash*)v.v.p);
+static sp_int sp_poly_length(sp_RbVal v){if(v.tag==SP_TAG_OBJ&&v.cls_id==SP_BUILTIN_QUEUE&&v.v.p)return sp_Queue_size((sp_queue*)v.v.p);if(v.tag==SP_TAG_STR)return v.v.s?(sp_int)sp_str_byte_len(v.v.s):0;   /* the header length, so an embedded NUL counts (#3540) */if(v.tag==SP_TAG_SYM)return sp_sym_name_fn?(sp_int)strlen(sp_sym_name_fn((sp_sym)v.v.i)):0;if(v.tag!=SP_TAG_OBJ)return 0;switch(v.cls_id){case SP_BUILTIN_INT_ARRAY:return sp_IntArray_length((sp_IntArray*)v.v.p);case SP_BUILTIN_FLT_ARRAY:return sp_FloatArray_length((sp_FloatArray*)v.v.p);case SP_BUILTIN_STR_ARRAY:return sp_StrArray_length((sp_StrArray*)v.v.p);case SP_BUILTIN_SYM_ARRAY:return sp_IntArray_length((sp_IntArray*)v.v.p);case SP_BUILTIN_POLY_ARRAY:return sp_PolyArray_length((sp_PolyArray*)v.v.p);case SP_BUILTIN_PTR_ARRAY:return v.v.p?((sp_PtrArray*)v.v.p)->len:0;case SP_BUILTIN_STR_INT_HASH:return sp_StrIntHash_length((sp_StrIntHash*)v.v.p);case SP_BUILTIN_STR_STR_HASH:return sp_StrStrHash_length((sp_StrStrHash*)v.v.p);case SP_BUILTIN_INT_STR_HASH:return sp_IntStrHash_length((sp_IntStrHash*)v.v.p);case SP_BUILTIN_INT_INT_HASH:return sp_IntIntHash_length((sp_IntIntHash*)v.v.p);case SP_BUILTIN_STR_POLY_HASH:return sp_StrPolyHash_length((sp_StrPolyHash*)v.v.p);case SP_BUILTIN_SYM_POLY_HASH:return sp_SymPolyHash_length((sp_SymPolyHash*)v.v.p);case SP_BUILTIN_POLY_POLY_HASH:return sp_PolyPolyHash_length((sp_PolyPolyHash*)v.v.p);
 /* File#size / File::Stat#size on a boxed handle: the file's byte size via its
    path (a poly-held stat handle's .size read this as container length 0) (#3041) */
 case SP_BUILTIN_IO:{sp_int sp_file_size(const char*);sp_File*_f=(sp_File*)v.v.p;if(_f&&sp_File_path(_f)[0]&&sp_File_path(_f)[0]!='<')return sp_file_size(sp_File_path(_f));return 0;}
@@ -10110,6 +10115,7 @@ static sp_RbVal sp_poly_min(sp_RbVal v) {
 }
 static sp_RbVal sp_poly_max(sp_RbVal v) {
   if (v.tag != SP_TAG_OBJ) return sp_raise_nomethod(sp_nomethod_msg("max", v));
+  if (v.cls_id == SP_BUILTIN_QUEUE && v.v.p) return sp_box_int(sp_Queue_max((sp_queue *)v.v.p));   /* SizedQueue#max; 0 for a Queue */
   if (sp_poly_is_hash_kind(v.cls_id)) return sp_PolyArray_max(sp_poly_to_a_arr(v));
   switch (v.cls_id) {
     case SP_BUILTIN_INT_ARRAY:  { sp_IntArray *a = (sp_IntArray *)v.v.p; return (a && a->len) ? sp_box_int(sp_IntArray_max(a)) : sp_box_nil(); }
@@ -10322,6 +10328,15 @@ static sp_RbVal sp_poly_thread_kill(sp_RbVal v) {
   sp_raise_nomethod(sp_nomethod_msg("kill", v));
   return sp_box_nil();
 }
+/* The Queue names no other builtin has, on a boxed receiver. */
+static sp_queue *sp_poly_as_queue(sp_RbVal v, const char *name) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_QUEUE && v.v.p) return (sp_queue *)v.v.p;
+  sp_raise_nomethod(sp_nomethod_msg(name, v));
+  return NULL;
+}
+static sp_RbVal sp_poly_queue_num_waiting(sp_RbVal v) { return sp_box_int(sp_Queue_num_waiting(sp_poly_as_queue(v, "num_waiting"))); }
+static sp_RbVal sp_poly_queue_deq(sp_RbVal v) { return sp_Queue_pop(sp_poly_as_queue(v, "deq")); }
+static sp_RbVal sp_poly_queue_enq(sp_RbVal v, sp_RbVal x) { sp_Queue_push(sp_poly_as_queue(v, "enq"), x); return v; }
 static sp_RbVal sp_poly_thread_status(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_THREAD) return sp_Thread_status((sp_thread *)v.v.p);
   /* a SystemExit's exit status, as the typed accessor reads it; any other
