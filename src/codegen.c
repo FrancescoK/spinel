@@ -6508,6 +6508,22 @@ else if (orecv >= 0 && onm) {
   if (ncap == 0 && !cap_self && !cap_cls && !ret_proc) buf_puts(pb, "    (void)_cap;\n");
   buf_puts(pb, "    (void)args;\n");
   buf_puts(pb, "    (void)argc;\n");
+  /* `&b`: the block the call that entered this body was given, on the
+     _sp_proc_blk side-channel; nil (NULL) when none was (#2648). Read
+     before anything below can enter another proc -- a default, a keyword's
+     default, the lambda's arity raise -- which sets the channel for its own
+     call. */
+  {
+    int pnb = proc_params_node(c, create);
+    int bpar = pnb >= 0 ? nt_ref(nt, pnb, "block") : -1;
+    const char *bpty = bpar >= 0 ? nt_type(nt, bpar) : NULL;
+    const char *bpn = (bpty && sp_streq(bpty, "BlockParameterNode")) ? nt_str(nt, bpar, "name") : NULL;
+    if (bpn) {
+      g_needs_proc_poly_argslot = 1;
+      buf_printf(pb, "    sp_Proc *lv_%s = _sp_proc_blk; _sp_proc_blk = NULL; (void)lv_%s;%c",
+                 bpn, bpn, 10);
+    }
+  }
   /* Captured instance self, read back from _cap (#1436). (void) guards the
      over-approximating use-of-self detection. */
   if (cap_self && self_is_value) {
@@ -6876,19 +6892,6 @@ else if (orecv >= 0 && onm) {
       snprintf(missing, sizeof missing, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), sp_box_nil())", key);
       LocalVar *klv = scope_local(bs, kn);
       emit_proc_param_slot(c, pb, kn, cond, arg, dv, missing, klv ? klv->type : TY_POLY);
-    }
-  }
-  /* `&b`: the block the caller attached to .call, delivered on the
-     _sp_proc_blk side-channel; nil (NULL) when none was given (#2648). */
-  {
-    int pnb = proc_params_node(c, create);
-    int bpar = pnb >= 0 ? nt_ref(nt, pnb, "block") : -1;
-    const char *bpty = bpar >= 0 ? nt_type(nt, bpar) : NULL;
-    const char *bpn = (bpty && sp_streq(bpty, "BlockParameterNode")) ? nt_str(nt, bpar, "name") : NULL;
-    if (bpn) {
-      g_needs_proc_poly_argslot = 1;
-      buf_printf(pb, "    sp_Proc *lv_%s = _sp_proc_blk; _sp_proc_blk = NULL; (void)lv_%s;%c",
-                 bpn, bpn, 10);
     }
   }
   /* `**kw`: the whole trailing kwargs hash, or an empty hash when the caller
