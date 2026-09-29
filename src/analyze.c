@@ -18764,6 +18764,57 @@ void analyze_program(Compiler *c) {
         recLs[nlrec] = s; recLi[nlrec] = i; nlrec++;
       }
     }
+    /* Returns ratchet through the same monotonic unify, and a poly return is
+       the one link the re-run could not break. An ivar assigned from a call
+       that TAKES THAT IVAR -- `@s3 = rotl32(@s3, 11)` -- re-locks to poly from
+       the call's return every iteration, however often the ivar itself is
+       re-cleared, because nothing re-derives the return. A whole xoshiro PRNG
+       stayed boxed on that: the lanes, the rotate, the draw and every Float
+       built from it.
+
+       ONLY those returns are reset, not every poly one. A return is boxed for
+       reasons its re-derivation cannot always see -- `@banks[0] = pattern`
+       hands back a row read out of a boxed table, and re-deriving it as the
+       typed array its pushes suggest makes the table store a boxed row as a
+       bare one and read it back as garbage (test/ivar_table_boxed_row_store).
+       The cycle above is the one shape where the poly is groundless, so it is
+       the only one released. An --rbs seed and an --ext-entry are DECLARED,
+       not inferred, and stay put either way. */
+    int rrcap = 16, nrrec = 0;
+    int *recRs = (int *)malloc(sizeof(int) * rrcap);
+    const NodeTable *rnt = c->nt;
+    for (int w = 0; w < rnt->count; w++) {
+      if (nt_kind(rnt, w) != NK_InstanceVariableWriteNode) continue;
+      int wv = nt_ref(rnt, w, "value");
+      if (wv < 0 || nt_kind(rnt, wv) != NK_CallNode) continue;
+      const char *ivn = nt_str(rnt, w, "name");
+      int icid = an_ivar_owner(c, w);
+      if (!ivn || icid < 0) continue;
+      /* the call has to READ the same slot it is assigned to */
+      int aN = nt_ref(rnt, wv, "arguments"); int aC = 0;
+      const int *aV = aN >= 0 ? nt_arr(rnt, aN, "arguments", &aC) : NULL;
+      int selfref = 0;
+      for (int k = 0; k < aC && aV && !selfref; k++) {
+        if (nt_kind(rnt, aV[k]) != NK_InstanceVariableReadNode) continue;
+        const char *an2 = nt_str(rnt, aV[k], "name");
+        if (an2 && sp_streq(an2, ivn) && an_ivar_owner(c, aV[k]) == icid) selfref = 1;
+      }
+      if (!selfref) continue;
+      int tgt[2], ntg = 0;
+      an_call_targets_of(c, wv, tgt, &ntg);
+      for (int k = 0; k < ntg; k++) {
+        int mi = tgt[k];
+        if (mi < 0 || mi >= c->nscopes) continue;
+        Scope *sc = &c->scopes[mi];
+        if (sc->ret != TY_POLY || sc->is_ext_entry || sc->ret_rbs_seeded) continue;
+        int seen = 0;
+        for (int q = 0; q < nrrec && !seen; q++) if (recRs[q] == mi) seen = 1;
+        if (seen) continue;
+        sc->ret = TY_UNKNOWN; any = 1;
+        if (nrrec >= rrcap) { rrcap *= 2; recRs = (int *)realloc(recRs, sizeof(int) * rrcap); }
+        recRs[nrrec++] = mi;
+      }
+    }
     if (reset_locked_iter_block_params(c)) any = 1;
     if (any) {
       TyKind *prev = (TyKind *)malloc(sizeof(TyKind) * (nrec > 0 ? nrec : 1));
@@ -18799,6 +18850,7 @@ void analyze_program(Compiler *c) {
         for (int k = 0; k < nrec; k++) c->classes[recCi[k]].ivar_types[recIv[k]] = TY_UNKNOWN;
         for (int k = 0; k < nlrec; k++) lprev[k] = c->scopes[recLs[k]].locals[recLi[k]].type;
         for (int k = 0; k < nlrec; k++) c->scopes[recLs[k]].locals[recLi[k]].type = TY_UNKNOWN;
+        for (int k = 0; k < nrrec; k++) c->scopes[recRs[k]].ret = TY_UNKNOWN;
         sp_narrow_memo_bump();  /* invalidate per-iteration narrow-helper memo */
         int ch = pre_def, ch_other = pre_def;
         ch |= infer_write_types(c);
@@ -18866,7 +18918,7 @@ void analyze_program(Compiler *c) {
       infer_param_types(c);
       free(prev); free(lprev); free(prevd); free(lprevd);
     }
-    free(recCi); free(recIv); free(recLs); free(recLi); free(nsoff); free(nsbad);
+    free(recCi); free(recIv); free(recLs); free(recLi); free(recRs); free(nsoff); free(nsbad);
   }
 
   /* Backstop: a constant bound to an EMPTY array literal has no element type to
