@@ -4488,7 +4488,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
       free(pv.p);
       g_indent--;
       emit_indent(g_pre, g_indent);
-      buf_puts(g_pre, "} else {\n");
+      buf_puts(g_pre, "}\nelse {\n");
       g_indent++;
       Buf ov; memset(&ov, 0, sizeof ov);
       if (res_poly2) emit_boxed(c, bb2[bn2 - 1], &ov);

@@ -233,7 +233,8 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
     if (args_box.tag == SP_TAG_OBJ &&
         args_box.cls_id == SP_BUILTIN_POLY_ARRAY) {
       args_arr = (sp_PolyArray *)args_box.v.p;
-    } else if (args_box.tag != SP_TAG_NIL) {
+    }
+    else if (args_box.tag != SP_TAG_NIL) {
       sp_process_spawn_fail(owned, "TypeError", "args must be a PolyArray of extra args");
     }
     /* One string and no arguments is a command LINE, as for Kernel#system:
@@ -242,7 +243,8 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
        exec'd as a program name, so `spawn("sleep 2")` was ENOENT. */
     if (!args_arr || args_arr->len == 0)
       via_shell = strpbrk(prog, " \t\n*?{}[]<>()~&|\\$;'`\"#=%") != NULL;
-  } else if (cmd.tag == SP_TAG_OBJ &&
+  }
+  else if (cmd.tag == SP_TAG_OBJ &&
              cmd.cls_id == SP_BUILTIN_POLY_ARRAY) {
     cmd_arr = (sp_PolyArray *)cmd.v.p;
     if (cmd_arr->len < 1) sp_process_spawn_fail(owned, "ArgumentError", "empty command array");
@@ -254,7 +256,8 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
         args_box.cls_id == SP_BUILTIN_POLY_ARRAY) {
       args_arr = (sp_PolyArray *)args_box.v.p;
     }
-  } else {
+  }
+  else {
     sp_process_spawn_fail(owned, "TypeError",
                           "wrong first argument type (expected String or Array)");
   }
@@ -329,7 +332,8 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
     }
     if (pgroup == 1) {
       setpgid(0, 0);
-    } else if (pgroup > 1) {
+    }
+    else if (pgroup > 1) {
       setpgid(0, pgroup);
     }
     apply_redirect(0, in_fd);

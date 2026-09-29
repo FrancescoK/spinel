@@ -890,7 +890,8 @@ static void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_
    empty) or entered an instance arm and dereferenced the class token as an
    object pointer -- #4218, the ActionText filter-chain shape, where the raise
    was the polite form and the deref was a SIGSEGV. Emits
-   `if (tag == SP_TAG_CLASS) { switch ... } else ` and returns 1 when any arm
+   `if (tag == SP_TAG_CLASS) { switch ... }`, then `else ` on a line of its
+   own, and returns 1 when any arm
    was built; emits nothing and returns 0 otherwise. */
 typedef struct {
   int kwh, kwn, kwall;
@@ -5972,7 +5973,8 @@ static int emit_poly_callable_prearm(Compiler *c, const char *name, int argc,
       if (atmp_ty[k] == TY_POLY) buf_printf(&eb, "_t%d", atmp[k]); \
       else { char _tn[24]; snprintf(_tn, sizeof _tn, "_t%d", atmp[k]); \
              emit_boxed_text(c, atmp_ty[k], _tn, &eb); } \
-    } else PA_SLOT(k); \
+    } \
+    else PA_SLOT(k); \
   } while (0)
   /* The bound Method may wrap an instance method (self-ful: fn(self, args))
      or a top-level def (self-less: fn(args), NULL self); pick at run time so a
@@ -9015,7 +9017,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           int fit = 0;
           buf_printf(&arm, " case %d: if (_t%d->len == 0) { ", k, kwall);
           for (int n = pos_argc; n <= argc; n++) {
-            if (n == argc) buf_puts(&arm, " } else { ");
+            if (n == argc) buf_puts(&arm, " }\nelse { ");
             if (poly_native_arm_call(c, k, name, n, argv, atmp, atmp_ty, tv, &cb, &mret) &&
                 (mret == TY_NIL || is_setter_val || ret == TY_POLY || mret == TY_POLY || mret == ret)) {
               emit_poly_native_arm_stmt(c, cb.p, mret, ret, tr, is_setter_val, &arm);
@@ -10980,9 +10982,9 @@ static void emit_struct_spread_kw(ClassInfo *cls, int kw_init, int ta, int kt, B
   buf_printf(ab, ", %d, NULL, 0);", cls->nivars);
   for (int m = 0; m < cls->nivars; m++)
     buf_printf(ab, " sp_PolyArray_push(_t%d, sp_kw_member_val(_t%d, \"%s\"));", ta, kt, cls->ivars[m] + 1);
-  if (kw_init) buf_printf(ab, " } else sp_raise_arity(_t%d->len + 1, 0, 0, NULL); }", ta);
-  else buf_printf(ab, " } else sp_PolyArray_push(_t%d, _t%d); }", ta, kt);
-  if (kw_init) buf_printf(ab, " else sp_arity_check(_t%d->len, 0, 0, NULL);", ta);
+  if (kw_init) buf_printf(ab, " }\nelse sp_raise_arity(_t%d->len + 1, 0, 0, NULL); }", ta);
+  else buf_printf(ab, " }\nelse sp_PolyArray_push(_t%d, _t%d); }", ta, kt);
+  if (kw_init) buf_printf(ab, "\nelse sp_arity_check(_t%d->len, 0, 0, NULL);", ta);
 }
 /* `X.new(0, *rest)` / `X.new(*mid, last)`: positionals beside a splat. The
    count is still only known at run time, so gather every argument into one
@@ -33411,15 +33413,15 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
             "  sp_RbVal _v = _t%d; "
             "  if (_v.tag == SP_TAG_NIL) { "
             "    sp_PolyArray_push(_t%d, sp_box_int(-1)); "
-            "  } else if (_v.tag == SP_TAG_BOOL && !_v.v.i) { "
+            "  }\nelse if (_v.tag == SP_TAG_BOOL && !_v.v.i) { "
             "    sp_PolyArray_push(_t%d, sp_box_int(-1)); "
-            "  } else if (_v.tag == SP_TAG_INT) { "
+            "  }\nelse if (_v.tag == SP_TAG_INT) { "
             "    sp_PolyArray_push(_t%d, _v); "
-            "  } else if (_v.tag == SP_TAG_OBJ && _v.cls_id == SP_BUILTIN_IO && _v.v.p) { "
+            "  }\nelse if (_v.tag == SP_TAG_OBJ && _v.cls_id == SP_BUILTIN_IO && _v.v.p) { "
             "    sp_PolyArray_push(_t%d, sp_box_int(sp_File_fileno((sp_File*)_v.v.p))); "
-            "  } else if (_v.tag == SP_TAG_STR) { "
+            "  }\nelse if (_v.tag == SP_TAG_STR) { "
             "    sp_PolyArray_push(_t%d, sp_box_int(sp_process_open_redirect(_v.v.s, %d, _t%d))); "
-            "  } else if (_v.tag == SP_TAG_OBJ && _v.cls_id == SP_BUILTIN_POLY_ARRAY) { "
+            "  }\nelse if (_v.tag == SP_TAG_OBJ && _v.cls_id == SP_BUILTIN_POLY_ARRAY) { "
             "    sp_PolyArray *_a = (sp_PolyArray*)_v.v.p; "
             "    if (_a->len >= 2 && _a->data[0].tag == SP_TAG_SYM "
             "        && _a->data[0].v.i == sp_sym_intern(\"child\")) { "
@@ -33427,23 +33429,23 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
             "      if (_fdv.tag == SP_TAG_SYM) { "
             "        if (_fdv.v.i == sp_sym_intern(\"out\")) { "
             "          sp_PolyArray_push(_t%d, sp_box_int(1)); "
-            "        } else if (_fdv.v.i == sp_sym_intern(\"err\")) { "
+            "        }\nelse if (_fdv.v.i == sp_sym_intern(\"err\")) { "
             "          sp_PolyArray_push(_t%d, sp_box_int(2)); "
-            "        } else { "
+            "        }\nelse { "
             "          sp_process_spawn_fail(_t%d, \"ArgumentError\", \"bad redirect value\"); "
             "        } "
-            "      } else if (_fdv.tag == SP_TAG_INT) { "
+            "      }\nelse if (_fdv.tag == SP_TAG_INT) { "
             "        sp_PolyArray_push(_t%d, sp_box_int((int)_fdv.v.i)); "
-            "      } else { "
+            "      }\nelse { "
             "        sp_process_spawn_fail(_t%d, \"ArgumentError\", \"bad redirect value\"); "
             "      } "
-            "    } else { "
+            "    }\nelse { "
             "      sp_process_spawn_fail(_t%d, \"ArgumentError\", \"bad child-array shape\"); "
             "    } "
-            "  } else { "
+            "  }\nelse { "
             "    sp_process_spawn_fail(_t%d, \"ArgumentError\", \"bad redirect type\"); "
             "  } "
-            "} else { sp_PolyArray_push(_t%d, sp_box_int(-1)); } }",
+            "}\nelse { sp_PolyArray_push(_t%d, sp_box_int(-1)); } }",
             tkv, tfd, tkv, tth, fd_keys[i], tfd,
             tfd, tkv,
             topts,
@@ -33467,9 +33469,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           "sp_box_sym(sp_sym_intern(\"pgroup\")), &_t%d); "
           "if (_t%d && _t%d.tag == SP_TAG_BOOL && _t%d.v.i) "
           "{ sp_PolyArray_push(_t%d, sp_box_int(1)); } "
-          "else if (_t%d && _t%d.tag == SP_TAG_INT) "
+          "\nelse if (_t%d && _t%d.tag == SP_TAG_INT) "
           "{ sp_PolyArray_push(_t%d, _t%d); } "
-          "else { sp_PolyArray_push(_t%d, sp_box_nil()); } }",
+          "\nelse { sp_PolyArray_push(_t%d, sp_box_nil()); } }",
           tkv, tfd, tkv, tth, tfd,
           tfd, tkv, tkv, topts,
           tfd, tkv, topts, tkv,
@@ -33483,7 +33485,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
             "sp_box_sym(sp_sym_intern(\"%s\")), &_t%d); "
             "if (_t%d && _t%d.tag == SP_TAG_INT) "
             "{ sp_PolyArray_push(_t%d, _t%d); } "
-            "else { sp_PolyArray_push(_t%d, sp_box_nil()); } }",
+            "\nelse { sp_PolyArray_push(_t%d, sp_box_nil()); } }",
             tkv, tfd, tkv, tth, rlim_keys[i], tfd,
             tfd, tkv, topts, tkv,
             topts);
@@ -33495,11 +33497,12 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           "sp_box_sym(sp_sym_intern(\"chdir\")), &_t%d); "
           "if (_t%d && _t%d.tag == SP_TAG_STR) "
           "{ sp_PolyArray_push(_t%d, _t%d); } "
-          "else { sp_PolyArray_push(_t%d, sp_box_nil()); } }",
+          "\nelse { sp_PolyArray_push(_t%d, sp_box_nil()); } }",
           tkv, tfd, tkv, tth, tfd,
           tfd, tkv, topts, tkv,
           topts);
-      } else {
+      }
+      else {
         /* No opts: push defaults (nils / 0). */
         for (int i = 0; i < 3; i++)
           buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(-1));", topts);

@@ -10373,7 +10373,8 @@ static void emit_user_to_io_dispatch(Compiler *c, Buf *b) {
                  comp_class_index(c, c->classes[k].name),
                  dcn, c->classes[defcls].is_value_type ? "*" : "", dcn,
                  has_blk ? ", NULL" : "");
-    } else {
+    }
+    else {
       /* poly/unknown: the #to_io body boxes; unwrap via the poly->file path
          so a non-IO answer falls through to the caller's TypeError instead
          of a segfault. */
@@ -13940,7 +13941,8 @@ char *codegen_program(const NodeTable *nt) {
         if (class_is_exc_subclass(c, i))
           buf_printf(&b, " %d,", i);
       buf_puts(&b, " };\n");
-    } else {
+    }
+    else {
       buf_puts(&b, "const sp_int sp_exc_subclass_ids[] = { 0 };\n");
     }
   }

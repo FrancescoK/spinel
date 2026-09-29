@@ -4524,7 +4524,8 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
       int kp = fwd_new_node_like(nt, pn, "KeywordRestParameterNode");
       if (kp < 0) continue;
       nt_node_set_ref(nt, pn, "keyword_rest", kp);
-    } else nt_node_set_ref(nt, pn, "keyword_rest", -1);
+    }
+    else nt_node_set_ref(nt, pn, "keyword_rest", -1);
     if (fwd_block) {
       int bp = fwd_new_node_like(nt, pn, "BlockParameterNode");
       if (bp < 0) continue;
@@ -5638,13 +5639,15 @@ int desugar_builtin_scalar_defs(Compiler *c) {
       if (bi >= 0) {
         if (gdef[bx][bi] >= 0) bi_subtree_blank(nt, gdef[bx][bi]);
         gdef[bx][bi] = clone;
-      } else {
+      }
+      else {
         int j = -1;
         for (int m = 0; m < odef_n[bx]; m++) if (sp_streq(odef_name[bx][m], name)) { j = m; break; }
         if (j >= 0) {
           if (odef_def[bx][j] >= 0) bi_subtree_blank(nt, odef_def[bx][j]);
           odef_def[bx][j] = clone;
-        } else {
+        }
+        else {
           if (odef_n[bx] >= odef_cap[bx]) {
             int newcap = odef_cap[bx] > 0 ? odef_cap[bx] * 2 : 8;
             char **ng = (char **)realloc(odef_name[bx], sizeof(char *) * (size_t)newcap);
@@ -5870,7 +5873,8 @@ static void rd_collect_aliases(const NodeTable *nt) {
     if (fwd_node_is(nt, id, "AliasMethodNode")) {
       nn = nt_str(nt, nt_ref(nt, id, "new_name"), "value");
       on = nt_str(nt, nt_ref(nt, id, "old_name"), "value");
-    } else if (fwd_node_is(nt, id, "CallNode") && nt_str(nt, id, "name") &&
+    }
+    else if (fwd_node_is(nt, id, "CallNode") && nt_str(nt, id, "name") &&
                sp_streq(nt_str(nt, id, "name"), "alias_method")) {
       int an = 0; const int *av = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &an);
       if (an == 2) { nn = nt_str(nt, av[0], "value"); on = nt_str(nt, av[1], "value"); }
@@ -6179,7 +6183,8 @@ int desugar_recursive_param_defaults(Compiler *c) {
       }
       nt_node_set_arr(nt, an, "arguments", av, na);
       nt_node_set_ref(nt, v, "arguments", an);
-    } else nt_node_set_ref(nt, v, "arguments", -1);
+    }
+    else nt_node_set_ref(nt, v, "arguments", -1);
 
     /* the helper is defined just ahead of the method */
     int bn = 0; const int *bv = nt_arr(nt, stmts, "body", &bn);

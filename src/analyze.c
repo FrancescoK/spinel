@@ -8857,7 +8857,8 @@ static int narrow_object_arrays(Compiler *c) {
       if (id < g_oa_empt_mine_cap && g_oa_empt_mine[id]) {
         g_oa_empt_mine[id] = 0;
         if (c->arr_want[id] != TY_INT_ARRAY && c->arr_want[id] != TY_FLOAT_ARRAY) continue;
-      } else {
+      }
+      else {
         if (!ty_is_ptr_array(c->arr_want[id])) continue;
         if (nt_kind(nt, id) != NK_CallNode) continue;
         const char *rn = nt_str(nt, id, "name");
@@ -8994,7 +8995,8 @@ static int narrow_object_arrays(Compiler *c) {
       if (has_block) {
         int sub = nt_ref(nt, id, "subsequent");
         if (sub >= 0 && nt_kind(nt, sub) == NK_ElseNode) arm = sub;
-      } else {
+      }
+      else {
         arm = nt_ref(nt, id, "statements");
       }
       if (arm >= 0) oa_mark_subtree(nt, arm, dead);
@@ -9168,7 +9170,8 @@ static int narrow_object_arrays(Compiler *c) {
     char attr[300];
     if (trim) {
       if (!setter_base_name(nm, attr, sizeof attr)) continue;
-    } else {
+    }
+    else {
       if (strlen(nm) >= sizeof attr) continue;
       strcpy(attr, nm);
     }

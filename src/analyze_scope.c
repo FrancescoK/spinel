@@ -5995,13 +5995,15 @@ static int cvar_note_write(Compiler *c, ClassInfo *ci, int id) {
     if (ty_is_object(cur)) {
       int mi = op ? comp_method_in_chain(c, ty_object_class(cur), op, NULL) : -1;
       vt = (mi >= 0 && c->scopes[mi].ret != TY_UNKNOWN) ? c->scopes[mi].ret : cur;
-    } else if ((ty_is_array(cur) || cur == TY_POLY_ARRAY) && op &&
+    }
+    else if ((ty_is_array(cur) || cur == TY_POLY_ARRAY) && op &&
                ((sp_streq(op, "*") && vt == TY_INT) ||
                 ((sp_streq(op, "|") || sp_streq(op, "&") || sp_streq(op, "-") ||
                   sp_streq(op, "+")) && vt == cur)))
       vt = cur;
     if (vt == TY_NIL || vt == TY_UNKNOWN) return changed;
-  } else {
+  }
+  else {
     vt = cvar_empty_container_type(c, vnode, nm, infer_type(c, vnode));
     { TyKind hv = fallback_hash_variant(c, vnode, NK_ClassVariableReadNode, nm, &changed);
       if (ty_is_hash(hv)) vt = hv; }

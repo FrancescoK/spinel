@@ -693,7 +693,10 @@ static void sp_str_sweep_young(sp_str_hdr **head, sp_str_hdr **keep_head, sp_str
       /* Beside the mutators (a sweeper thread) the reset is a compare-and-
          swap: a `freeze` that lands on the same byte in the same moment wins,
          where a plain store could put its 0xfe over the 0xf1. */
-      if (m == 0xfc) { if (sp_gc_in_sweeper) { unsigned char ex = 0xfc; SP_ATOMIC_CAS((unsigned char *)body, &ex, (unsigned char)0xfe, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE); } else body[0] = (char)0xfe; }
+      if (m == 0xfc) {
+        if (sp_gc_in_sweeper) { unsigned char ex = 0xfc; SP_ATOMIC_CAS((unsigned char *)body, &ex, (unsigned char)0xfe, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE); }
+        else body[0] = (char)0xfe;
+      }
       h->next = keep;
       if (!keep) tail = h;
       keep = h;
@@ -807,7 +810,11 @@ static void sp_str_sweep_old(sp_str_hdr **head, size_t *bytes) {
     SP_PREFETCH(h->next);
     char *body = (char *)(h + 1);
     unsigned char m = (unsigned char)body[0];
-    if (m == 0xfc) { if (sp_gc_in_sweeper) { unsigned char ex = 0xfc; SP_ATOMIC_CAS((unsigned char *)body, &ex, (unsigned char)0xfe, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE); } else body[0] = (char)0xfe; pp = &h->next; }
+    if (m == 0xfc) {
+      if (sp_gc_in_sweeper) { unsigned char ex = 0xfc; SP_ATOMIC_CAS((unsigned char *)body, &ex, (unsigned char)0xfe, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE); }
+      else body[0] = (char)0xfe;
+      pp = &h->next;
+    }
     else if (m == 0xf1) { pp = &h->next; }
     else {
       *pp = h->next;

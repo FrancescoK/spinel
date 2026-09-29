@@ -1784,7 +1784,8 @@ sp_RbVal sp_File_flock(sp_File *f, sp_int op) {
   int r;
   if (op & LOCK_NB) {
     r = flock(fd, (int)op);
-  } else {
+  }
+  else {
     sp_native_enter();
     while ((r = flock(fd, (int)op)) != 0 && errno == EINTR) {}
     int e = errno;   /* sp_native_leave may run GC work that changes it */
@@ -4259,7 +4260,10 @@ const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp
   char out_sb[512];
   size_t cap = (slen * 2) + 64; char *out = cap <= sizeof out_sb ? out_sb : (char *)malloc(cap); size_t olen = 0;
   int64_t pos = 0; int caps[64];
-  #define GSH_GROW(need) do { size_t _nc = (need); if (out == out_sb) { char *_o = (char *)malloc(_nc); memcpy(_o, out, olen); out = _o; } else out = (char *)realloc(out, _nc); cap = _nc; } while (0)
+  #define GSH_GROW(need) do { size_t _nc = (need); \
+    if (out == out_sb) { char *_o = (char *)malloc(_nc); memcpy(_o, out, olen); out = _o; } \
+    else out = (char *)realloc(out, _nc); \
+    cap = _nc; } while (0)
   while (pos <= slen) {
     int n = re_exec(pat, str, slen, pos, caps, 64, 0);
     if (n <= 0 || caps[0] < 0) break;

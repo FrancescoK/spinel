@@ -165,17 +165,20 @@ const char *sp_process_status_to_s(sp_int s, int is_inspect) {
   if (WIFEXITED(st)) {
     snprintf(sp_status_buf, sizeof sp_status_buf,
              "%sexit %d%s", prefix, WEXITSTATUS(st), suffix);
-  } else if (WIFSIGNALED(st)) {
+  }
+  else if (WIFSIGNALED(st)) {
     int sig = WTERMSIG(st);
     const char *name = sp_signal_name(sig);
     if (name) {
       snprintf(sp_status_buf, sizeof sp_status_buf,
                "%ssignal %d (%s)%s", prefix, sig, name, suffix);
-    } else {
+    }
+    else {
       snprintf(sp_status_buf, sizeof sp_status_buf,
                "%ssignal %d%s", prefix, sig, suffix);
     }
-  } else {
+  }
+  else {
     snprintf(sp_status_buf, sizeof sp_status_buf,
              "%sstatus 0x%llx%s", prefix, (unsigned long long)s, suffix);
   }

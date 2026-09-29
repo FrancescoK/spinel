@@ -312,7 +312,8 @@ static sp_int sp_sock_write(sp_File *f, const char *s, size_t n) {
       if (room == 0) continue;
       if (room > 0 && (size_t)room < want) want = (size_t)room;
       put = send(fd, s + off, want, SP_MSG_DONTWAIT);
-    } else {
+    }
+    else {
       put = write(fd, s + off, want);
     }
     if (put < 0) {
