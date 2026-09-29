@@ -12274,28 +12274,43 @@ static void ext_generate_cruby_shim(Compiler *c) {
     buf_printf(&sb, "static void *spx_run_%d(void *p) { return (void *)(intptr_t)"
                "%s_try(spx_body_%d, p, &spx_exc_cls, &spx_exc_msg); }\n",
                s9, g_ext_init_name, s9);
+    /* The argument conversions, run under rb_protect. Each converted argument
+       is rooted for the whole call: the root a spx_in_*_array helper pushes
+       pops as the helper returns, and the next argument's conversion
+       allocates. A conversion that raises longjmps past C cleanup
+       attributes, so these roots are pushed by hand and the wrapper puts the
+       root count back itself before any raise leaves it -- a root left behind
+       would point into a dead frame for the next collection to read. */
+    buf_printf(&sb, "typedef struct { spx_c_%d *c;", s9);
+    for (int p9 = 0; p9 < sc->nparams; p9++) buf_printf(&sb, " VALUE v%d;", p9);
+    buf_printf(&sb, " } spx_a_%d;\n", s9);
+    buf_printf(&sb, "static VALUE spx_conv_%d(VALUE p) { spx_a_%d *a = (spx_a_%d *)p;\n",
+               s9, s9, s9);
+    for (int p9 = 0; p9 < sc->nparams; p9++) {
+      LocalVar *lv = scope_local(sc, sc->pnames[p9]);
+      buf_printf(&sb, "  a->c->a%d = %s(a->v%d);", p9, ext_rb_in(lv->type), p9);
+      if (lv->type == TY_STRING || lv->type == TY_INT_ARRAY ||
+          lv->type == TY_FLOAT_ARRAY || lv->type == TY_STR_ARRAY)
+        buf_printf(&sb, " _sp_gc_root_push((void**)((uintptr_t)&a->c->a%d | "
+                        "_SP_GC_SLOT_TAG(a->c->a%d)));", p9, p9);
+      buf_puts(&sb, "\n");
+    }
+    buf_puts(&sb, "  return Qnil;\n}\n");
     buf_printf(&sb, "static VALUE spx_m_%d(VALUE self", s9);
     for (int p9 = 0; p9 < sc->nparams; p9++) buf_printf(&sb, ", VALUE v%d", p9);
     buf_printf(&sb, ") {\n  spx_c_%d c__; memset(&c__, 0, sizeof c__);\n", s9);
     buf_puts(&sb, "  SP_GC_SAVE();\n");
-    for (int p9 = 0; p9 < sc->nparams; p9++) {
-      LocalVar *lv = scope_local(sc, sc->pnames[p9]);
-      buf_printf(&sb, "  c__.a%d = %s(v%d);", p9, ext_rb_in(lv->type), p9);
-      /* Root each converted argument here, for the whole call: the root a
-         spx_in_*_array helper pushes pops as the helper returns, and the
-         next argument's conversion allocates. */
-      if (lv->type == TY_STRING) buf_printf(&sb, " SP_GC_ROOT_STR(c__.a%d);", p9);
-      else if (lv->type == TY_INT_ARRAY || lv->type == TY_FLOAT_ARRAY ||
-               lv->type == TY_STR_ARRAY)
-        buf_printf(&sb, " SP_GC_ROOT(c__.a%d);", p9);
-      buf_puts(&sb, "\n");
-    }
+    buf_printf(&sb, "  { spx_a_%d a__ = { &c__", s9);
+    for (int p9 = 0; p9 < sc->nparams; p9++) buf_printf(&sb, ", v%d", p9);
+    buf_printf(&sb, " }; int state = 0;\n"
+                    "    rb_protect(spx_conv_%d, (VALUE)&a__, &state);\n"
+                    "    if (state) { sp_gc_nroots = _gc_saved; rb_jump_tag(state); } }\n", s9);
     buf_puts(&sb, "  { int raised; const char *ec = 0, *em = 0;\n"
                   "    pthread_mutex_lock(&spx_lock);\n");
     buf_printf(&sb, "    raised = (int)(intptr_t)rb_thread_call_without_gvl(spx_run_%d, &c__, RUBY_UBF_IO, NULL);\n", s9);
     buf_puts(&sb, "    if (raised) { ec = spx_exc_cls; em = spx_exc_msg; }\n"
                   "    pthread_mutex_unlock(&spx_lock);\n"
-                  "    if (raised) spx_reraise(ec, em);\n  }\n");
+                  "    if (raised) { sp_gc_nroots = _gc_saved; spx_reraise(ec, em); }\n  }\n");
     buf_puts(&sb, "  return ");
     { char rexpr[32]; snprintf(rexpr, sizeof rexpr, "c__.ret"); 
       if (sc->ret == TY_VOID || sc->ret == TY_NIL) buf_puts(&sb, "Qnil");
