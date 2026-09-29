@@ -1061,11 +1061,6 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a Class.class_eval inside a method compiled)"; ok=0; \
 	else grep -q "methods are added to Class only by a top-level" "$$tmp/ce.out" || \
 	  { echo "reject-test: FAIL (a Class.class_eval inside a method refused without saying why)"; sed -n 1,5p "$$tmp/ce.out"; ok=0; }; fi; \
-	t=test/reject/class_method_on_builtin_class.rb; \
-	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/cb.c" >"$$tmp/cb.out" 2>&1; then \
-	  echo "reject-test: FAIL (a method added to Class, called on a builtin class, compiled)"; ok=0; \
-	else grep -q "a method added to Class is not supported on a builtin class" "$$tmp/cb.out" || \
-	  { echo "reject-test: FAIL (a method added to Class, called on a builtin class, refused without saying why)"; sed -n 1,5p "$$tmp/cb.out"; ok=0; }; fi; \
 	t=test/reject/class_eval_on_class_with_params.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/cp.c" >"$$tmp/cp.out" 2>&1; then \
 	  echo "reject-test: FAIL (a Class.class_eval with block parameters compiled)"; ok=0; \

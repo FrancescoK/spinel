@@ -6423,6 +6423,8 @@ int infer_param_types(Compiler *c) {
     /* Class.new -> initialize params; Class.cmethod -> cmethod params */
     {
       const char *rty = nt_type(nt, recv);
+      int rmi = class_reopen_cmethod(c, recv, name);
+      if (rmi >= 0) { changed |= bind_call_params(c, id, rmi); continue; }
       /* M::Sub.new(...) -- resolve by the final path component */
       if (rty && sp_streq(rty, "ConstantPathNode")) {
         const char *cn = nt_str(nt, recv, "name");

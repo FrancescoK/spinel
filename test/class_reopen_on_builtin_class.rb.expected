@@ -1,0 +1,25 @@
+true
+false
+[]
+[:w]
+[]
+[]
+[]
+[]
+BasicObject
+nil
+"String greets x!"
+"Integer greets y?"
+"StandardError greets z!"
+:w
+"String greets poly!"
+"V greets poly!"
+"Hash greets poly!"
+"Array greets dyn!"
+"W greets dyn!"
+"Float0"
+"Float1"
+"W0"
+"W1"
+NoMethodError
+"Class greets body!"
