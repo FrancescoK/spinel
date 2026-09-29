@@ -1786,7 +1786,9 @@ sp_RbVal sp_File_flock(sp_File *f, sp_int op) {
   } else {
     sp_native_enter();
     while ((r = flock(fd, (int)op)) != 0 && errno == EINTR) {}
+    int e = errno;   /* sp_native_leave may run GC work that changes it */
     sp_native_leave();
+    errno = e;
   }
   if (r == 0) return sp_box_int(0);
   /* a LOCK_NB request on a held lock answers false, as CRuby's does */
