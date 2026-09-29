@@ -1924,6 +1924,24 @@ int ie_kwhash_value(Compiler *c, int kwhash, const char *name) {
   return v;
 }
 
+/* The type the values of `kwhash` whose key is an expression carry
+   (`k(1) => v`): such a key may name any keyword, so each keyword parameter
+   takes it too. TY_UNKNOWN when every key is a literal. */
+TyKind ie_kwhash_computed_type(Compiler *c, int kwhash) {
+  const NodeTable *nt = c->nt;
+  TyKind t = TY_UNKNOWN;
+  int en = 0; const int *els = kwhash >= 0 ? nt_arr(nt, kwhash, "elements", &en) : NULL;
+  for (int i = 0; i < en; i++) {
+    if (nt_kind(nt, els[i]) != NK_AssocNode) continue;
+    int key = nt_ref(nt, els[i], "key"), v = nt_ref(nt, els[i], "value");
+    if (key < 0 || v < 0 || nt_kind(nt, key) == NK_SymbolNode || nt_kind(nt, key) == NK_StringNode) continue;
+    TyKind vt = infer_type(c, v);
+    if (vt == TY_UNKNOWN || vt == TY_NIL) vt = TY_POLY; /* see bind_call_params */
+    t = t == TY_UNKNOWN ? vt : ty_unify(t, vt);
+  }
+  return t;
+}
+
 /* The trailing KeywordHashNode of a call's arguments (`k: 1`), or -1. */
 int ie_call_kwhash(Compiler *c, int id) {
   const NodeTable *nt = c->nt;

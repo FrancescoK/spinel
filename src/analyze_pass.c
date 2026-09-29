@@ -5054,6 +5054,23 @@ else {
         if (key < 0 || val < 0) continue;
         const char *kty = nt_type(nt, key);
         const char *kname = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
+        if (!kname && nt_kind(nt, key) != NK_StringNode && callee_declares_kwargs(c, m)) {
+          /* a computed key (`f(key(1) => v)`) may name any keyword: each
+             takes its value's type, or a String bound into an Integer one
+             read its pointer bits as a number */
+          /* the value is stored boxed: one whose type is not known yet (an
+             empty `[]`) holds any class, so the keyword does too */
+          TyKind at = infer_type(c, val);
+          if (at == TY_UNKNOWN || at == TY_NIL) at = TY_POLY;
+          for (int i = 0; i < m->nparams; i++) {
+            if (i == m->kwrest_idx || !m->pnames[i] || !callee_has_kwarg(c, m, m->pnames[i])) continue;
+            LocalVar *p = scope_local(m, m->pnames[i]);
+            if (!p || p->rbs_seeded) continue;
+            changed |= slot_take(c, p, at, val);
+          }
+          any_kw_bound = 1;
+          continue;
+        }
         if (!kname) continue;
         /* A key binds by name only to a parameter that IS a keyword. Looking
            the name up among ALL locals typed a POSITIONAL parameter from the
@@ -9723,6 +9740,8 @@ int infer_block_params(Compiler *c) {
         int dv = nt_ref(nt, kws[k], "value");
         if (dv >= 0) kt = infer_type(c, dv);
       }
+      TyKind ct = ie_kwhash_computed_type(c, kwhash);
+      if (ct != TY_UNKNOWN) kt = kt == TY_UNKNOWN ? ct : ty_unify(kt, ct);
       LocalVar *lv = scope_local_intern(bs, kpn); lv->is_block_param = 1;
       if (kt != TY_UNKNOWN && lv->type != kt) { lv->type = kt; changed = 1; }
     }
@@ -10195,6 +10214,8 @@ int infer_block_params(Compiler *c) {
           TyKind kt = TY_UNKNOWN;
           if (vn >= 0) kt = infer_type(c, vn);
           else { int dv = block_keyword_default(c, block, ki); if (dv >= 0) kt = infer_type(c, dv); }
+          TyKind ct = ie_kwhash_computed_type(c, ykw);
+          if (ct != TY_UNKNOWN) kt = kt == TY_UNKNOWN ? ct : ty_unify(kt, ct);
           LocalVar *lv = scope_local_intern(bs, kp); lv->is_block_param = 1;
           if (kt != TY_UNKNOWN) { TyKind m = ty_unify(lv->type, kt); if (m != lv->type) { lv->type = m; changed = 1; } }
         }

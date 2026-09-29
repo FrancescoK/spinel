@@ -1161,8 +1161,13 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
   int ykw_splat = 0;
   if (ykw >= 0) {
     int en = 0; const int *els = nt_arr(nt, ykw, "elements", &en);
-    for (int e = 0; e < en; e++)
+    for (int e = 0; e < en; e++) {
       if (nt_kind(nt, els[e]) == NK_AssocSplatNode) ykw_splat = 1;
+      /* so is one whose key is an expression: what it names is the run
+         time's (`yield(key(1) => v)`) */
+      int key = nt_kind(nt, els[e]) == NK_AssocNode ? nt_ref(nt, els[e], "key") : -1;
+      if (key >= 0 && nt_kind(nt, key) != NK_SymbolNode && nt_kind(nt, key) != NK_StringNode) ykw_splat = 1;
+    }
   }
   int kwh_tmp = -1;
   if (ykw_splat) {

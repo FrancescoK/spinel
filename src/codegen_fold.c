@@ -6825,10 +6825,21 @@ void emit_kw_splat_operand_inline(Compiler *c, int node, Buf *b) {
   if (cn) buf_printf(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into Hash\"); ", cn);
 }
 
+/* A keyword key that is an expression (`f(key(1) => v)`), not a literal
+   Symbol or String: what it names is known only when it has run. */
+static int kw_key_computed(const NodeTable *nt, int key) {
+  return nt_kind(nt, key) != NK_SymbolNode && nt_kind(nt, key) != NK_StringNode;
+}
+
 /* See codegen_internal.h. */
 int kwh_sources_overlap(const NodeTable *nt, int kwh) {
   if (kwh < 0) return 0;
   int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
+  /* a computed key's name is the run time's: it may name any keyword, so
+     every source binds from one hash built in order -- wherever it stands,
+     a String key ahead of it included */
+  for (int e = 0; e < en; e++)
+    if (nt_kind(nt, el[e]) == NK_AssocNode && kw_key_computed(nt, nt_ref(nt, el[e], "key"))) return 1;
   int nsplat = 0, lit = 0, merge = 0;
   for (int e = 0; e < en; e++) {
     if (nt_kind(nt, el[e]) == NK_AssocSplatNode) {
@@ -6969,6 +6980,16 @@ static void emit_arg_first(Compiler *c, int v, Buf *b) {
   g_n_argov++;
 }
 
+/* A keyword whose key is an expression (`f(*xs, key(1) => v)`) runs the key
+   ahead of its value, as CRuby does; a literal Symbol or String key has
+   nothing to run. */
+static void emit_computed_key_first(Compiler *c, int assoc, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, assoc) != NK_AssocNode) return;
+  int k = nt_ref(nt, assoc, "key");
+  if (k >= 0 && nt_kind(nt, k) != NK_SymbolNode && nt_kind(nt, k) != NK_StringNode) emit_arg_first(c, k, b);
+}
+
 /* See codegen_internal.h. */
 void emit_args_in_source_order(Compiler *c, const int *argv, int argc, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -6977,6 +6998,7 @@ void emit_args_in_source_order(Compiler *c, const int *argv, int argc, Buf *b) {
     if (nt_kind(nt, argv[k]) != NK_KeywordHashNode) { emit_arg_first(c, argv[k], b); continue; }
     int kn = 0; const int *kv = nt_arr(nt, argv[k], "elements", &kn);
     for (int e = 0; e < kn; e++) {
+      emit_computed_key_first(c, kv[e], b);
       int v = nt_ref(nt, kv[e], "value");
       if (v >= 0) emit_arg_first(c, v, b);
     }
@@ -7011,6 +7033,19 @@ int emit_ds_hash_merge(Compiler *c, int kwh, int any_key, TyKind *out_type) {
       emit_boxed(c, v, &vb);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_PolyPolyHash_set(_t%d, _t%d, %s);\n", mh, kt, vb.p ? vb.p : "sp_box_nil()");
+    }
+    else if (nt_kind(nt, el[e]) != NK_AssocSplatNode && kw_key_computed(nt, key)) {
+      /* a computed key into the Symbol-keyed hash a `**kwrest` collects:
+         it has to answer a Symbol, as every key there does */
+      int kt = ++g_tmp;
+      Buf kb; memset(&kb, 0, sizeof kb);
+      emit_boxed(c, key, &kb);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", kt, kb.p ? kb.p : "sp_box_nil()", kt);
+      free(kb.p);
+      emit_boxed(c, v, &vb);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_SymPolyHash_set(_t%d, sp_poly_hkey_sym(_t%d), %s);\n", mh, kt, vb.p ? vb.p : "sp_box_nil()");
     }
     else if (nt_kind(nt, el[e]) != NK_AssocSplatNode && kwh_elem_dropped(nt, kwh, e))
       emit_dropped_value(c, v, g_pre);
@@ -7099,6 +7134,7 @@ static int kwh_spreads_any_key(Compiler *c, int kwh) {
   const NodeTable *nt = c->nt;
   int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
   for (int e = 0; e < en; e++) {
+    if (nt_kind(nt, el[e]) == NK_AssocNode && kw_key_computed(nt, nt_ref(nt, el[e], "key"))) return 1;
     int v = nt_kind(nt, el[e]) == NK_AssocSplatNode ? nt_ref(nt, el[e], "value") : -1;
     TyKind t = v >= 0 ? comp_ntype(c, v) : TY_UNKNOWN;
     if (t == TY_POLY || (ty_is_hash(t) && ty_hash_key(t) != TY_SYMBOL)) return 1;
@@ -7547,6 +7583,24 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
       if (key3 < 0 || val3 < 0) continue;
       const char *kty3 = nt_type(nt, key3);
       const char *kname3 = (kty3 && sp_streq(kty3, "SymbolNode")) ? nt_str(nt, key3, "value") : NULL;
+      if (!kname3 && kw_key_computed(nt, key3)) {
+        /* a computed key: its pair joins the rest under the Symbol it
+           answers, key first, as it runs */
+        int kt = ++g_tmp;
+        Buf kb, vb3c;
+        memset(&kb, 0, sizeof kb);
+        memset(&vb3c, 0, sizeof vb3c);
+        emit_boxed(c, key3, &kb);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", kt, kb.p ? kb.p : "sp_box_nil()", kt);
+        emit_boxed(c, val3, &vb3c);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_SymPolyHash_set(_t%d, sp_poly_hkey_sym(_t%d), %s);\n",
+                   krhash, kt, vb3c.p ? vb3c.p : "sp_box_nil()");
+        free(kb.p); free(vb3c.p);
+        splat_seen = 1; /* a key it answers that a keyword takes leaves the rest below */
+        continue;
+      }
       if (!kname3) continue;
       /* A literal `k: v` whose name is an explicit keyword param is bound
          to that param, not the keyword-rest. A positional param of the
@@ -7633,6 +7687,7 @@ void emit_args_run(Compiler *c, const int *argv, int argc) {
     if (nt_kind(nt, argv[k]) != NK_KeywordHashNode) { emit_args_in_source_order(c, &argv[k], 1, g_pre); continue; }
     int en = 0; const int *el = nt_arr(nt, argv[k], "elements", &en);
     for (int e = 0; e < en; e++) {
+      emit_computed_key_first(c, el[e], g_pre);
       int v = nt_ref(nt, el[e], "value");
       if (v < 0) continue;
       emit_arg_first(c, v, g_pre);
@@ -7725,7 +7780,9 @@ void kw_plan(Compiler *c, Scope *m, int kwh, KwPlan *P) {
   }
   if (!declares) return;
   int kn = 0; const int *kws = nt_arr(nt, pn, "keywords", &kn);
-  for (int i = 0; i < kn && !P->spread; i++) {
+  /* a `**` or a computed key may name any keyword: which are missing is
+     the run time's (emit_ds_kwarg_check, on the hash they merge into) */
+  for (int i = 0; i < kn && !P->spread && !P->computed; i++) {
     const char *kty = nt_type(nt, kws[i]);
     const char *kpn = nt_str(nt, kws[i], "name");
     if (!kty || !sp_streq(kty, "RequiredKeywordParameterNode") || !kpn || kwh_lookup(nt, kwh, kpn) >= 0) continue;
@@ -7918,7 +7975,9 @@ static void emit_rt_positional_count(Compiler *c, const int *argv, int pos_argc,
    says, once the arguments have run. */
 void emit_unreached_splat_count(Compiler *c, Scope *m, const int *argv, int argc, int pos_argc,
                                 const KwPlan *P) {
-  emit_args_in_source_order(c, argv, argc, g_pre);
+  /* arguments the plan already ran first are not run again: a key or value
+     that found no override slot free would repeat its effect */
+  if (!P->args_first) emit_args_in_source_order(c, argv, argc, g_pre);
   Buf gb; memset(&gb, 0, sizeof gb);
   emit_rt_positional_count(c, argv, pos_argc, P, &gb);
   emit_positional_count_check(c, m, gb.p);
