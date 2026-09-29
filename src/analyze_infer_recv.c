@@ -1551,6 +1551,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     int own = oci >= 0 && comp_method_in_chain(c, oci, name, NULL) >= 0;
     for (int k = 0; k < c->nclasses && !own && !an_builtin_only_p(); k++)
       if (comp_poly_arm_defines_n(c, k, name, argc) ||
+          (!c->classes[k].is_native_class && comp_reader_in_chain(c, k, name, NULL)) ||
           comp_cmethod_in_chain(c, k, name, NULL) >= 0) own = 1;
     if (!own) { *out = TY_ENUMERATOR; return 1; }
   }

@@ -30,3 +30,12 @@ begin
 rescue NoMethodError => e
   puts e.message
 end
+
+def endless_cycle(o) = o.cycle.first(3)
+p endless_cycle([1, 2])
+p endless_cycle(Enumerator.new { |y| i = 0; loop { y << (i += 1) } })
+c = Enumerator.new { |y| y << :a; y << :b }
+def cyc(o) = o.cycle
+cc = cyc(c)
+p cc.next, cc.next, cc.next
+p cyc([3]).first(2)
