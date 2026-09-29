@@ -1,9 +1,10 @@
 # A `**kwrest` takes every keyword the call passes, whatever the class of
 # its key: a String or Integer literal, a `**` of a hash keyed by another
 # class or known only at run time, or a computed key answering something
-# other than a Symbol. The rest was always a Symbol-keyed hash, so such a
-# key was dropped silently, raised a TypeError, or was refused at compile
-# time. A rest some call brings such a key now takes any key, through the
+# other than a Symbol or of a class inference never settles (a nil global).
+# The rest was always a Symbol-keyed hash, so such a key was dropped
+# silently, raised a TypeError, or was refused at compile time. A rest some
+# call brings such a key now takes any key, through the
 # direct call, a poly receiver, the virtual dispatch, a class method, `send`,
 # `Method#call`, `super`, `...` and an anonymous `**`, and the hash reads
 # as a Hash in the body and forwards on. A rest only Symbols reach is
@@ -25,6 +26,8 @@ h = { "s" => 1 }
 p rr(**h)
 p rr(a: 1, **{ "a" => 2 }, b: 3)
 p rr(lit("q") => lit(1), lit(:b) => lit(2), c: lit(3))
+$nokey = nil
+p rr($nokey => 1, a: 2), mk(1, $nokey => 2, k: 3)
 p rr(*[], "s" => 1)
 sy = { b: 2 }
 p rr(**sy), rr(**sy, "c" => 3), rr
@@ -88,6 +91,7 @@ objs = [A.new, B.new]
 p objs.map { |o| o.kw(**{ "s" => 1 }) }
 p objs.map { |o| o.kw("t" => 2, a: 1) }
 p objs.map { |o| o.kw(lit("u") => 2) }
+p objs.map { |o| o.kw($nokey => 1) }
 p objs.map { |o| o.kw(lit(:b) => 2, a: 1) }
 p objs.map { |o| o.m(1, "s" => 2, k: 3, j: 4) }
 p objs.map { |o| o.nk(lit(:a) => 2) }
