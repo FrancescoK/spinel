@@ -47,3 +47,12 @@ ly = lg.y; ly << "?"
 u = lg.x; v = lg.y
 p u.eql?(v)
 p u.eql?(lg.x)
+
+# a poly argument holding a fresh String, against a receiver whose read is a
+# copy: the receiver is read first, so the copy is not made while the
+# argument's String is held only by a temp
+def pick_long(f) = f ? ("C" * 3001) : 1
+def pick_same(f) = f ? ("C" * 3000 + "!") : 1
+p u.eql?(pick_long(true))
+p u.eql?(pick_same(true))
+p u.eql?(pick_long(false))
