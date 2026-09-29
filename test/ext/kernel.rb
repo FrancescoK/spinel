@@ -22,6 +22,7 @@ module ExtKernel
   # Two array parameters: the host converts the second while the first is
   # already built, so the first must stay rooted across that conversion.
   def self.pair_sum(a, b)
+    raise ArgumentError, "needs a non-empty first array" if a.empty?
     t = 0
     a.each { |s| t += s.length }
     b.each { |s| t += s.length }

@@ -12296,6 +12296,13 @@ static void ext_generate_cruby_shim(Compiler *c) {
       buf_puts(&sb, "\n");
     }
     buf_puts(&sb, "  return Qnil;\n}\n");
+    /* The kernel call, also under rb_protect: CRuby checks interrupts as
+       rb_thread_call_without_gvl takes the GVL back, so a Thread#raise, a
+       kill or a signal can raise out of it -- past the unlock and the root
+       restore below, if nothing catches it here. */
+    buf_printf(&sb, "static VALUE spx_call_%d(VALUE p) { return (VALUE)(intptr_t)"
+                    "rb_thread_call_without_gvl(spx_run_%d, (void *)p, RUBY_UBF_IO, NULL); }\n",
+               s9, s9);
     buf_printf(&sb, "static VALUE spx_m_%d(VALUE self", s9);
     for (int p9 = 0; p9 < sc->nparams; p9++) buf_printf(&sb, ", VALUE v%d", p9);
     buf_printf(&sb, ") {\n  spx_c_%d c__; memset(&c__, 0, sizeof c__);\n", s9);
@@ -12305,11 +12312,13 @@ static void ext_generate_cruby_shim(Compiler *c) {
     buf_printf(&sb, " }; int state = 0;\n"
                     "    rb_protect(spx_conv_%d, (VALUE)&a__, &state);\n"
                     "    if (state) { sp_gc_nroots = _gc_saved; rb_jump_tag(state); } }\n", s9);
-    buf_puts(&sb, "  { int raised; const char *ec = 0, *em = 0;\n"
+    buf_puts(&sb, "  { int raised, state = 0; const char *ec = 0, *em = 0;\n"
                   "    pthread_mutex_lock(&spx_lock);\n");
-    buf_printf(&sb, "    raised = (int)(intptr_t)rb_thread_call_without_gvl(spx_run_%d, &c__, RUBY_UBF_IO, NULL);\n", s9);
-    buf_puts(&sb, "    if (raised) { ec = spx_exc_cls; em = spx_exc_msg; }\n"
+    buf_printf(&sb, "    raised = (int)(intptr_t)rb_protect(spx_call_%d, (VALUE)&c__, &state);\n", s9);
+    buf_puts(&sb, "    if (state) raised = 0;\n"
+                  "    if (raised) { ec = spx_exc_cls; em = spx_exc_msg; }\n"
                   "    pthread_mutex_unlock(&spx_lock);\n"
+                  "    if (state) { sp_gc_nroots = _gc_saved; rb_jump_tag(state); }\n"
                   "    if (raised) { sp_gc_nroots = _gc_saved; spx_reraise(ec, em); }\n  }\n");
     buf_puts(&sb, "  return ");
     { char rexpr[32]; snprintf(rexpr, sizeof rexpr, "c__.ret"); 
