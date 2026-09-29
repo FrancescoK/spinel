@@ -2635,20 +2635,14 @@ static void emit_pm_hash_cond_poly(Compiler *c, int pat, const char *hexpr, Buf 
   buf_printf(b, " _t%d; })", tok);
 }
 
-/* Find-pattern match condition over a BOXED value (an array), expression
-   form: scan for the first window whose elements all match the requireds.
-   Used for nested find patterns; the top-level case-arm form keeps its own
-   statement emitter (it must also expose the window position for binding). */
-static void emit_pm_find_cond_poly(Compiler *c, int pat, const char *aexpr, Buf *b) {
-  const NodeTable *nt = c->nt;
+static void emit_pm_find_scan_poly(Compiler *c, int pat, int ta, int tp, Buf *b) {
   int rn = 0;
-  const int *reqs = nt_arr(nt, pat, "requireds", &rn);
-  int ta = ++g_tmp, tp = ++g_tmp, ti = ++g_tmp, tw = ++g_tmp, tl = ++g_tmp;
-  buf_printf(b, "({ sp_RbVal _t%d = %s; sp_int _t%d = -1; "
-                "if (_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)) { "
+  const int *reqs = nt_arr(c->nt, pat, "requireds", &rn);
+  int ti = ++g_tmp, tw = ++g_tmp, tl = ++g_tmp;
+  buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)) { "
                 "sp_int _t%d = sp_poly_length(_t%d); "
                 "for (sp_int _t%d = 0; _t%d + %dLL <= _t%d; _t%d++) { int _t%d = 1;",
-             ta, aexpr, tp, ta, ta, tl, ta, ti, ti, rn, tl, ti, tw);
+             ta, ta, tl, ta, ti, ti, rn, tl, ti, tw);
   for (int j = 0; j < rn; j++) {
     int te = ++g_tmp;
     buf_printf(b, " sp_RbVal _t%d = sp_poly_arr_get(_t%d, _t%d + %dLL); (void)_t%d;",
@@ -2659,7 +2653,18 @@ static void emit_pm_find_cond_poly(Compiler *c, int pat, const char *aexpr, Buf 
       buf_printf(b, " _t%d = _t%d && (%s);", tw, tw, sub.p ? sub.p : "1");
     free(sub.p);
   }
-  buf_printf(b, " if (_t%d) { _t%d = _t%d; break; } } } _t%d >= 0; })", tw, tp, ti, tp);
+  buf_printf(b, " if (_t%d) { _t%d = _t%d; break; } } }", tw, tp, ti);
+}
+
+/* Find-pattern match condition over a BOXED value (an array), expression
+   form: scan for the first window whose elements all match the requireds.
+   Used for nested find patterns; the top-level case-arm form keeps its own
+   statement emitter (it must also expose the window position for binding). */
+static void emit_pm_find_cond_poly(Compiler *c, int pat, const char *aexpr, Buf *b) {
+  int ta = ++g_tmp, tp = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = %s; sp_int _t%d = -1; ", ta, aexpr, tp);
+  emit_pm_find_scan_poly(c, pat, ta, tp, b);
+  buf_printf(b, " _t%d >= 0; })", tp);
 }
 
 /* General sub-pattern condition over a boxed poly element C-expression.
@@ -3674,25 +3679,12 @@ static void emit_pm_bind_find_poly(Compiler *c, int pat, const char *aexpr, int 
   const NodeTable *nt = c->nt;
   int rn = 0;
   const int *reqs = nt_arr(nt, pat, "requireds", &rn);
-  int ta = ++g_tmp, tp = ++g_tmp, ti = ++g_tmp, tw = ++g_tmp, tl = ++g_tmp;
+  int ta = ++g_tmp, tp = ++g_tmp;
   emit_indent(b, indent);
   buf_printf(b, "{ sp_RbVal _t%d = %s; sp_int _t%d = -1;\n", ta, aexpr, tp);
   emit_indent(b, indent + 1);
-  buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)) { "
-                "sp_int _t%d = sp_poly_length(_t%d); "
-                "for (sp_int _t%d = 0; _t%d + %dLL <= _t%d; _t%d++) { int _t%d = 1;",
-             ta, ta, tl, ta, ti, ti, rn, tl, ti, tw);
-  for (int j = 0; j < rn; j++) {
-    int te = ++g_tmp;
-    buf_printf(b, " sp_RbVal _t%d = sp_poly_arr_get(_t%d, _t%d + %dLL); (void)_t%d;",
-               te, ta, ti, j, te);
-    Buf sub; memset(&sub, 0, sizeof sub);
-    char ee[24]; snprintf(ee, sizeof ee, "_t%d", te);
-    if (emit_pm_subcond_expr(c, reqs[j], ee, &sub))
-      buf_printf(b, " _t%d = _t%d && (%s);", tw, tw, sub.p ? sub.p : "1");
-    free(sub.p);
-  }
-  buf_printf(b, " if (_t%d) { _t%d = _t%d; break; } } }\n", tw, tp, ti);
+  emit_pm_find_scan_poly(c, pat, ta, tp, b);
+  buf_puts(b, "\n");
   emit_indent(b, indent + 1);
   buf_printf(b, "if (_t%d >= 0) {\n", tp);
   int sides[2] = { nt_ref(nt, pat, "left"), nt_ref(nt, pat, "right") };
