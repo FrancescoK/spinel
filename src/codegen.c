@@ -4637,6 +4637,9 @@ void proc_collect_used(Compiler *c, int id, NameSet *out) {
     if (ys && (ys->is_lowered_yield || ys->is_proc_form) && ys->blk_param && ys->blk_param[0])
       nameset_add(out, ys->blk_param);
   }
+  Scope *fs = sp_streq(ty, "ForwardingSuperNode") ? comp_scope_of(c, id) : NULL;
+  for (int i = 0; fs && i < fs->nparams; i++) nameset_add(out, fs->pnames[i]);
+  if (fs && fs->blk_param && fs->blk_param[0]) nameset_add(out, fs->blk_param);
   int nr = nt_num_refs(c->nt, id);
   for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (ch >= 0) proc_collect_used(c, ch, out); }
   int na = nt_num_arrs(c->nt, id);
@@ -8908,7 +8911,7 @@ static void emit_zsuper_param_fill(Compiler *c, Scope *pm, int i, Buf *b) {
   else buf_puts(b, tn);
 }
 
-static void emit_zsuper_arg(Compiler *c, TyKind st, TyKind dt, const char *pname, Buf *b);
+static void emit_zsuper_arg(Compiler *c, Scope *s, TyKind st, TyKind dt, const char *pname, Buf *b);
 
 /* A bare `super` passes the method's own positionals, in order, and its
    keywords by name, and the parent binds them as it binds any call's
@@ -8959,12 +8962,13 @@ static int emit_zsuper_kwrest(Compiler *c, Scope *s, Scope *pm) {
   buf_printf(g_pre, "%s *_t%d = %s_new(); SP_GC_ROOT(_t%d);\n", hk, t, hk, t);
   if (s->kwrest_idx >= 0) {
     LocalVar *kv = scope_local(s, s->pnames[s->kwrest_idx]);
-    char txt[128]; snprintf(txt, sizeof txt, "lv_%s", rename_local(s->pnames[s->kwrest_idx]));
+    Buf txt; memset(&txt, 0, sizeof txt); emit_scope_local_ref(c, s, s->pnames[s->kwrest_idx], &txt);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "%s(_t%d, ", any ? "sp_kw_merge_any" : "sp_kwrest_merge_poly", t);
-    if (kv && kv->type == TY_POLY) buf_puts(g_pre, txt);
-    else emit_boxed_text(c, kv ? kv->type : TY_SYM_POLY_HASH, txt, g_pre);
+    if (kv && kv->type == TY_POLY) buf_puts(g_pre, txt.p);
+    else emit_boxed_text(c, kv ? kv->type : TY_SYM_POLY_HASH, txt.p, g_pre);
     buf_puts(g_pre, ");\n");
+    free(txt.p);
     /* less the keywords the parent names: those bind from it by name */
     for (int i = 0; i < pm->nparams; i++) {
       if (i == pm->kwrest_idx || !callee_param_is_declared_kwarg(c, pm, pm->pnames[i])) continue;
@@ -8977,13 +8981,14 @@ static int emit_zsuper_kwrest(Compiler *c, Scope *s, Scope *pm) {
     if (i == s->kwrest_idx || !callee_param_is_declared_kwarg(c, s, s->pnames[i]) ||
         callee_param_is_declared_kwarg(c, pm, s->pnames[i])) continue;
     LocalVar *ep = scope_local(s, s->pnames[i]);
-    char txt[128]; snprintf(txt, sizeof txt, "lv_%s", rename_local(s->pnames[i]));
+    Buf txt; memset(&txt, 0, sizeof txt); emit_scope_local_ref(c, s, s->pnames[i], &txt);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, any ? "sp_PolyPolyHash_set(_t%d, sp_box_sym((sp_sym)%d), "
                           : "sp_SymPolyHash_set(_t%d, (sp_sym)%d, ", t, comp_sym_intern(c, s->pnames[i]));
-    if (ep && ep->type == TY_POLY) buf_puts(g_pre, txt);
-    else emit_boxed_text(c, ep ? ep->type : TY_POLY, txt, g_pre);
+    if (ep && ep->type == TY_POLY) buf_puts(g_pre, txt.p);
+    else emit_boxed_text(c, ep ? ep->type : TY_POLY, txt.p, g_pre);
     buf_puts(g_pre, ");\n");
+    free(txt.p);
   }
   return t;
 }
@@ -9013,13 +9018,14 @@ static void zsuper_kw_begin(Compiler *c, Scope *s, Scope *pm, ZSuper *z) {
   if (!own && !missing && !(extra && pm->kwrest_idx < 0)) return;
   if (own) {
     LocalVar *kv = scope_local(s, s->pnames[s->kwrest_idx]);
-    char txt[128]; snprintf(txt, sizeof txt, "lv_%s", rename_local(s->pnames[s->kwrest_idx]));
+    Buf txt; memset(&txt, 0, sizeof txt); emit_scope_local_ref(c, s, s->pnames[s->kwrest_idx], &txt);
     z->kwsrc = ++g_tmp;
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_RbVal _t%d = ", z->kwsrc);
-    if (kv && kv->type == TY_POLY) buf_puts(g_pre, txt);
-    else emit_boxed_text(c, kv ? kv->type : TY_SYM_POLY_HASH, txt, g_pre);
+    if (kv && kv->type == TY_POLY) buf_puts(g_pre, txt.p);
+    else emit_boxed_text(c, kv ? kv->type : TY_SYM_POLY_HASH, txt.p, g_pre);
     buf_printf(g_pre, "; SP_GC_ROOT_RBVAL(_t%d);\n", z->kwsrc);
+    free(txt.p);
   }
   int chk = ++g_tmp;
   emit_indent(g_pre, g_indent);
@@ -9088,7 +9094,7 @@ static void emit_zsuper_param(Compiler *c, Scope *s, Scope *pm, const ZSuper *z,
   LocalVar *src = kw && callee_param_is_declared_kwarg(c, s, pm->pnames[i]) ? scope_local(s, pm->pnames[i]) : NULL;
   if (src) {
     g_nren = own_nren;
-    emit_zsuper_arg(c, src->type, dt, pm->pnames[i], b);
+    emit_zsuper_arg(c, s, src->type, dt, pm->pnames[i], b);
   }
   else if (kw && z->kwsrc >= 0) {
     g_nren = parent_nren;
@@ -9100,7 +9106,7 @@ static void emit_zsuper_param(Compiler *c, Scope *s, Scope *pm, const ZSuper *z,
     g_nren = own_nren;
     if (z->kwrest < 0) {
       LocalVar *kv = scope_local(s, s->pnames[s->kwrest_idx]);
-      emit_zsuper_arg(c, kv ? kv->type : TY_UNKNOWN, dt, s->pnames[s->kwrest_idx], b);
+      emit_zsuper_arg(c, s, kv ? kv->type : TY_UNKNOWN, dt, s->pnames[s->kwrest_idx], b);
     }
     else if (dt == TY_POLY) emit_boxed_text(c, kwrest_any_key(c, pm) ? TY_POLY_POLY_HASH : TY_SYM_POLY_HASH, tn, b);
     else buf_puts(b, tn);
@@ -9113,7 +9119,7 @@ static void emit_zsuper_param(Compiler *c, Scope *s, Scope *pm, const ZSuper *z,
     int a = z->L.arg[i];
     LocalVar *ep = scope_local(s, s->pnames[a]);
     g_nren = own_nren;
-    emit_zsuper_arg(c, ep ? ep->type : TY_UNKNOWN, dt, s->pnames[a], b);
+    emit_zsuper_arg(c, s, ep ? ep->type : TY_UNKNOWN, dt, s->pnames[a], b);
   }
   else if (z->gather < 0 && z->L.from[i] == ARG_REST) {
     /* the positionals between the requireds ahead and the posts behind */
@@ -9126,12 +9132,13 @@ static void emit_zsuper_param(Compiler *c, Scope *s, Scope *pm, const ZSuper *z,
     for (int k = pm->rest_idx; k < z->L.rest_argc - pm->npost_rest; k++) {
       LocalVar *ep = scope_local(s, s->pnames[k]);
       TyKind et = ep && ep->type != TY_UNKNOWN ? ep->type : TY_POLY;
-      char txt[128]; snprintf(txt, sizeof txt, "lv_%s", rename_local(s->pnames[k]));
+      Buf txt; memset(&txt, 0, sizeof txt); emit_scope_local_ref(c, s, s->pnames[k], &txt);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", t);
-      if (et == TY_POLY) buf_puts(g_pre, txt);
-      else emit_boxed_text(c, et, txt, g_pre);
+      if (et == TY_POLY) buf_puts(g_pre, txt.p);
+      else emit_boxed_text(c, et, txt.p, g_pre);
       buf_puts(g_pre, ");\n");
+      free(txt.p);
     }
     char tn[24]; snprintf(tn, sizeof tn, "_t%d", t);
     if (dt == TY_POLY || dt == TY_UNKNOWN) emit_boxed_text(c, TY_POLY_ARRAY, tn, b);
@@ -9159,10 +9166,11 @@ static int emit_zsuper_gather(Compiler *c, Scope *s, Scope *pm) {
                   !callee_param_is_declared_kwarg(c, s, s->pnames[i]); i++) {
     LocalVar *ep = scope_local(s, s->pnames[i]);
     TyKind et = ep && ep->type != TY_UNKNOWN ? ep->type : TY_POLY;
-    char txt[128]; snprintf(txt, sizeof txt, "lv_%s", rename_local(s->pnames[i]));
+    Buf txt; memset(&txt, 0, sizeof txt); emit_scope_local_ref(c, s, s->pnames[i], &txt);
     Buf ab; memset(&ab, 0, sizeof ab);
-    if (et == TY_POLY) buf_puts(&ab, txt);
-    else emit_boxed_text(c, et, txt, &ab);
+    if (et == TY_POLY) buf_puts(&ab, txt.p);
+    else emit_boxed_text(c, et, txt.p, &ab);
+    free(txt.p);
     emit_indent(g_pre, g_indent);
     if (i == s->rest_idx)
       buf_printf(g_pre, "sp_PolyArray_append_all(_t%d, sp_poly_to_poly_array(sp_splat_to_array(%s)));\n",
@@ -9200,7 +9208,7 @@ static void emit_super_block_arg(Compiler *c, int id, Scope *s, Scope *pm, int l
     }
   }
   if (s->blk_param && s->blk_param[0] && !s->yields)
-    buf_printf(b, "lv_%s", rename_local(s->blk_param));
+    emit_scope_local_ref(c, s, s->blk_param, b);
   /* the caller's block, implicitly forwarded from an inlined body */
   else if (s->yields && g_block_id >= 0) emit_proc_literal(c, g_block_id, b);
   /* or the proc driving the inlined body (`on(:x, &pr)`) */
@@ -9255,10 +9263,9 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      -- a declared `&blk`, or the one a super into a block-taking parent
      synthesizes -- drives the parent's yields through that proc, as an
      inlined `inner(&blk)` does; with neither, `block_given?` folds false. */
-  char yprocbuf[128];
   if (!explicit_block_arg && block < 0 && s->blk_param && s->blk_param[0] && !s->yields) {
-    snprintf(yprocbuf, sizeof yprocbuf, "lv_%s", rename_local(s->blk_param));
-    fwd_yield_proc = yprocbuf;
+    emit_scope_local_ref(c, s, s->blk_param, &fwd_pb);
+    fwd_yield_proc = fwd_pb.p;
   }
 
   int tag = ++g_tmp;
@@ -9386,9 +9393,9 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
    the parent's is typed -- a proc-form clone's parameters are boxed, and its
    super reaching the parent's plain method passed an sp_RbVal into an sp_int
    parameter, which the C compiler refused. */
-static void emit_zsuper_arg(Compiler *c, TyKind st, TyKind dt, const char *pname, Buf *b) {
+static void emit_zsuper_arg(Compiler *c, Scope *s, TyKind st, TyKind dt, const char *pname, Buf *b) {
   Buf _bx; memset(&_bx, 0, sizeof _bx);
-  buf_printf(&_bx, "lv_%s", rename_local(pname));
+  emit_scope_local_ref(c, s, pname, &_bx);
   if (dt == TY_POLY && st != TY_POLY && st != TY_UNKNOWN) emit_boxed_text(c, st, _bx.p, b);
   else if (st == TY_POLY && dt == TY_INT) buf_printf(b, "sp_poly_to_i_or_nil(%s)", _bx.p);
   else if (st == TY_POLY && dt == TY_FLOAT) buf_printf(b, "sp_poly_to_f_or_nil(%s)", _bx.p);
@@ -9524,7 +9531,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
       zsuper_end(&z);
     }
     else if (ty && sp_streq(ty, "ForwardingSuperNode")) {
-      for (int i = 0; i < s->nparams; i++) buf_printf(b, ", lv_%s", rename_local(s->pnames[i]));
+      for (int i = 0; i < s->nparams; i++) { buf_puts(b, ", "); emit_scope_local_ref(c, s, s->pnames[i], b); }
     }
     else emit_args_filled(c, smi, nt_ref(c->nt, id, "arguments"), ", ", b);
     buf_puts(b, ")");
@@ -9591,14 +9598,15 @@ void emit_super(Compiler *c, int id, Buf *b) {
       }
       else if (ty && sp_streq(ty, "ForwardingSuperNode") && s->nparams > 0) {
         LocalVar *p0 = scope_local(s, s->pnames[0]);
-        const char *rn = rename_local(s->pnames[0]);
+        Buf rn; memset(&rn, 0, sizeof rn); emit_scope_local_ref(c, s, s->pnames[0], &rn);
         /* Effective type mirrors emit_method_signature: a NULL/TY_UNKNOWN
            param is declared TY_POLY (sp_RbVal), so it too must be coerced. */
         TyKind pt = (p0 && p0->type != TY_UNKNOWN) ? p0->type : TY_POLY;
         if (pt == TY_POLY)
-          buf_printf(b, "(%s->msg = sp_poly_to_s(lv_%s))", g_self, rn);
+          buf_printf(b, "(%s->msg = sp_poly_to_s(%s))", g_self, rn.p);
         else
-          buf_printf(b, "(%s->msg = lv_%s)", g_self, rn);
+          buf_printf(b, "(%s->msg = %s)", g_self, rn.p);
+        free(rn.p);
       }
       else
         buf_puts(b, "((void)0)");
@@ -9665,22 +9673,23 @@ void emit_super(Compiler *c, int id, Buf *b) {
         buf_printf(b, "%s->iv_%s = ", g_self, cls->ivars[a] + 1);
         if (is_fwd && roff >= 0) {
           LocalVar *rv = scope_local(s, s->pnames[pk]);
-          char src[64]; snprintf(src, sizeof src, "lv_%s", rename_local(s->pnames[pk]));
+          Buf src; memset(&src, 0, sizeof src); emit_scope_local_ref(c, s, s->pnames[pk], &src);
           Buf ra; memset(&ra, 0, sizeof ra);
-          emit_boxed_text(c, rv ? rv->type : TY_POLY_ARRAY, src, &ra);
+          emit_boxed_text(c, rv ? rv->type : TY_POLY_ARRAY, src.p, &ra);
           Buf el; memset(&el, 0, sizeof el);
           buf_printf(&el, "sp_poly_index_poly(%s, sp_box_int(%d))", ra.p ? ra.p : "sp_box_nil()", roff);
           emit_unbox_nilable_text(c, ivt, el.p, b);
-          free(ra.p); free(el.p);
+          free(ra.p); free(el.p); free(src.p);
         }
         else if (is_fwd) {
           LocalVar *pv = scope_local(s, s->pnames[pk]);
           TyKind at = pv && pv->type != TY_UNKNOWN ? pv->type : TY_POLY;
-          char src[64]; snprintf(src, sizeof src, "lv_%s", rename_local(s->pnames[pk]));
-          if (ivt == TY_POLY && at == TY_FLOAT) buf_printf(b, "sp_box_float_or_nil(%s)", src);
-          else if (ivt == TY_POLY && at != TY_POLY) { Buf ex; memset(&ex, 0, sizeof ex); emit_boxed_text(c, at, src, &ex); buf_puts(b, ex.p ? ex.p : ""); free(ex.p); }
-          else if (ivt != TY_POLY && at == TY_POLY) emit_unbox_nilable_text(c, ivt, src, b);
-          else buf_puts(b, src);
+          Buf src; memset(&src, 0, sizeof src); emit_scope_local_ref(c, s, s->pnames[pk], &src);
+          if (ivt == TY_POLY && at == TY_FLOAT) buf_printf(b, "sp_box_float_or_nil(%s)", src.p);
+          else if (ivt == TY_POLY && at != TY_POLY) { Buf ex; memset(&ex, 0, sizeof ex); emit_boxed_text(c, at, src.p, &ex); buf_puts(b, ex.p ? ex.p : ""); free(ex.p); }
+          else if (ivt != TY_POLY && at == TY_POLY) emit_unbox_nilable_text(c, ivt, src.p, b);
+          else buf_puts(b, src.p);
+          free(src.p);
         }
         else if (kwh >= 0) {
           int vnode = struct_kwarg_value(c, kwh, cls->ivars[a] + 1);
