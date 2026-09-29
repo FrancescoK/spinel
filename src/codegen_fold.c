@@ -9084,8 +9084,11 @@ static int dispatch_arms_disagree(Compiler *c, int cid, const char *name) {
     int kmi = dispatch_arm_scope(c, comp_method_in_chain(c, k, name, &kd));
     if (kmi < 0) continue;
     Scope *s = &c->scopes[kmi];
-    /* a clone always takes the block, which the shared path never passes */
-    if (s->is_proc_form) return 1;
+    /* a clone always takes the block, which the shared path never passes; nor
+       does it pass one to an arm declaring `&blk` (a bare super's forwarding
+       slot included), so `A.new.m(2) { }` with every arm taking it called
+       each with one argument short */
+    if (s->is_proc_form || arm_takes_blk(s)) return 1;
     if (!first) { first = s; }
     if (s == first) continue;
     if (s->nparams != first->nparams || s->rest_idx != first->rest_idx ||
