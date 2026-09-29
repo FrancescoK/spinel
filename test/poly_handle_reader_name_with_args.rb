@@ -10,6 +10,10 @@ class Chip
 
   def save_state(out)
     out.int(@a)
+    out
+  end
+
+  def save_level(out)
     out.level(@a, @b)
     out
   end
@@ -28,6 +32,11 @@ chip = Chip.new
   v = pick(n)
   begin
     chip.save_state(v)
+  rescue NoMethodError => e
+    puts e.message
+  end
+  begin
+    chip.save_level(v)
   rescue NoMethodError => e
     puts e.message
   end
