@@ -14920,7 +14920,11 @@ static int mark_reader_read_only_operands(Compiler *c) {
        hand a disqualified mutation the handle path. */
     if (strbuf_mut_kind(c, tn7, ws7) != 0) continue;
     if (!strbuf_slot_eligible_shape(c, tn7, ws7, tv7)) continue;
+    /* the read now yields the handle, so the node says so: left a String,
+       the local's write took the handle for a const char * and wrapped it in
+       a fresh one (test/reader_alias_takes_handle) */
     c->strbuf_box[v7] = 1;
+    comp_sn_retype(c, v7, TY_STRBUF);
     tv7->type = TY_STRBUF; tv7->str_shared = 1; changed = 1;
   }
   return changed;
