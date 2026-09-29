@@ -38457,10 +38457,18 @@ else {
     buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == NULL)");
     return;
   }
+  /* nil? on a symbol: a nilable symbol slot -- an ivar no write has reached,
+     a symbol-valued miss -- carries the (sp_sym)-1 sentinel, which a real
+     symbol never is. It folded to false with the value types below, so an
+     unset `@sym` read as set (a class_attribute's instance reader). */
+  if (recv >= 0 && rt == TY_SYMBOL && sp_streq(name, "nil?") && argc == 0) {
+    buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == (sp_sym)-1)");
+    return;
+  }
   /* nil? on a value-typed concrete receiver is always false. */
   if (recv >= 0 && argc == 0 && sp_streq(name, "nil?") &&
       (rt == TY_RANGE || rt == TY_TIME || rt == TY_COMPLEX || rt == TY_RATIONAL ||
-       rt == TY_SYMBOL || rt == TY_BOOL || rt == TY_CLASS)) {
+       rt == TY_BOOL || rt == TY_CLASS)) {
     buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
     return;
   }
