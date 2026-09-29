@@ -33556,6 +33556,37 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           }
         }
       }
+      /* A reopened Object's method is every object's: a bare call to it from
+         an instance method -- activesupport's `acts_like?(:time)` inside
+         DateAndTime::Zones#in_time_zone, copied into Date and Time -- reaches
+         it with self as the receiver, boxed the way the explicit `obj.m`
+         fallback boxes its receiver. Only inlining served it before; the
+         method body itself raised NoMethodError. */
+      if (mi < 0 && !self->is_cmethod && nt_ref(nt, id, "block") < 0 && g_self) {
+        int oc = comp_class_index(c, "Object");
+        int omi = oc >= 0 && oc != dispatch_cid ? comp_method_in_chain(c, oc, name, NULL) : -1;
+        if (omi >= 0) {
+          const char *scn = c->classes[dispatch_cid].name;
+          TyKind st = TY_UNKNOWN;
+          if (!scn) st = TY_UNKNOWN;
+          else if (sp_streq(scn, "String"))  st = TY_STRING;
+          else if (sp_streq(scn, "Integer")) st = TY_INT;
+          else if (sp_streq(scn, "Float"))   st = TY_FLOAT;
+          else if (sp_streq(scn, "Symbol"))  st = TY_SYMBOL;
+          else if (sp_streq(scn, "Time"))    st = TY_TIME;
+          else if (sp_streq(scn, "Array") || sp_streq(scn, "Hash") || sp_streq(scn, "Numeric")) st = TY_POLY;
+          else if (!is_builtin_reopen(scn) && !comp_class_is_module(c, &c->classes[dispatch_cid]) &&
+                   !comp_ty_value_obj(c, ty_object(dispatch_cid))) st = ty_object(dispatch_cid);
+          if (st != TY_UNKNOWN) {
+            buf_printf(b, "sp_Object_%s(", mc(name));
+            if (ty_is_object(st)) buf_printf(b, "sp_box_obj(%s, %d)", g_self, dispatch_cid);
+            else emit_boxed_text(c, st, g_self, b);
+            emit_args_filled(c, omi, nt_ref(nt, id, "arguments"), ", ", b);
+            buf_puts(b, ")");
+            return;
+          }
+        }
+      }
     }
   }
 

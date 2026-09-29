@@ -4633,6 +4633,15 @@ static TyKind infer_call_inner(Compiler *c, int id) {
           }
         }
       }
+      /* A reopened Object's method is every object's: a bare call to it from
+         an instance method reaches it with self as the receiver (the codegen
+         boxes self for it), so the call answers the method's return. Below
+         the builtin surface, as Ruby's lookup puts Object last. */
+      if (mi < 0 && !self->is_cmethod) {
+        int oc = comp_class_index(c, "Object");
+        int omi = oc >= 0 && oc != self->class_id ? comp_method_in_chain(c, oc, name, NULL) : -1;
+        if (omi >= 0) return c->scopes[omi].ret;
+      }
       /* Method defined only in descendants (not in base chain): unify the
          return types of all descendant implementations -- codegen emits a
          cls_id virtual dispatch for exactly this shape, so leaving the node
