@@ -13405,6 +13405,15 @@ static int strbuf_demand_value_leaves(Compiler *c, int node, int depth) {
   }
 }
 
+/* String methods that only READ the receiver's bytes and keep no pointer past
+   the call: the live handle can serve them through sp_String_cstr, with no
+   copy. Deliberately narrow -- nothing here allocates from the pointer or
+   retains it, so no collection can run while an interior pointer is held. */
+static int an_str_read_only_accessor(const char *n) {
+  return sp_streq(n, "getbyte") || sp_streq(n, "bytesize") ||
+         sp_streq(n, "length") || sp_streq(n, "size") || sp_streq(n, "empty?");
+}
+
 static int promote_shared_stored_strings(Compiler *c) {
   int changed = 0;
   sb_store_valid = 0;   /* this run's store index is built on first use */
@@ -14753,6 +14762,99 @@ static int narrow_params_from_arrays(Compiler *c) {
    the emitters pick their arm from the receiver's type, so marking a receiver
    moves `equal?` off the String surface that answers it. This says only "hand
    out the handle" (#4363). */
+/* A reader call whose result is only READ hands out the live handle.
+
+   Runs after the handle promotion has converged, because it asks whether the
+   backing slot ended up a shared handle -- it promotes nothing itself, so it
+   changes no representation and no answer, only whether the read copies. */
+static int mark_reader_read_only_operands(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+
+  /* External reader READ (`ctx.buf.getbyte(i)`): the shape above with a
+     read-only accessor in place of the mutator. The unmarked read hands out a
+     fresh copy of the WHOLE string to answer one byte, so a per-row scan is
+     O(len) per row -- a 200 KB buffer read 20_000 times copied 4 GB to read
+     20_000 bytes. The accessor reads through sp_String_cstr and keeps no
+     pointer past the call, so the live handle serves it.
+
+     This rule promotes NOTHING: it only applies where the backing slot is
+     already a shared handle, so it changes no representation and no answer,
+     only the copy. Where the slot is a plain value the read is already a
+     direct one. */
+  for (int ru = 0; ru < nt->count; ru++) {
+    if (nt_kind(nt, ru) != NK_CallNode) continue;
+    const char *run = nt_str(nt, ru, "name");
+    if (!run || !an_str_read_only_accessor(run)) continue;
+    int rrecv2 = nt_ref(nt, ru, "receiver");
+    if (rrecv2 < 0 || nt_kind(nt, rrecv2) != NK_CallNode) continue;
+    if (c->strbuf_box[rrecv2] || c->strbuf_read_raw[rrecv2]) continue;
+    if (nt_ref(nt, rrecv2, "block") >= 0) continue;
+    { int ra = nt_ref(nt, rrecv2, "arguments"); int rac = 0;
+      if (ra >= 0) nt_arr(nt, ra, "arguments", &rac);
+      if (rac != 0) continue; }
+    int robj = nt_ref(nt, rrecv2, "receiver");
+    if (robj < 0) continue;
+    TyKind robt = infer_type(c, robj);
+    if (!ty_is_object(robt)) continue;
+    char ivb5[300]; int defc5 = ty_object_class(robt);
+    const char *ivn5 = an_reader_ivar_of(c, rrecv2, &defc5, ivb5, sizeof ivb5);
+    if (!ivn5 || defc5 < 0) continue;
+    int iv5 = comp_ivar_index(&c->classes[defc5], ivn5);
+    if (iv5 < 0 || !c->classes[defc5].ivar_str_shared[iv5]) continue;
+    c->strbuf_read_raw[rrecv2] = 1; changed = 1;
+  }
+
+  /* The same reader, aliased into a local that is only READ (`bytes =
+     ctx.bin_bytes`, then `bytes.getbyte(i)` in a loop). Nothing is mutated,
+     so the carry-back rule does not fire, and the assignment took a full copy
+     of the String -- O(len) once per call, which in a per-feature scan over a
+     large buffer is most of the run.
+
+     Held as the handle instead, every read of the local lowers to
+     sp_String_cstr on the live buffer and costs nothing. Aliasing a reader's
+     String is what CRuby does here anyway; the copy was the divergence. Like
+     the rule above this promotes NOTHING -- it applies only where the slot is
+     already a shared handle -- and it has to run HERE, after the promotion
+     fixpoint, because that is when the slot's answer is known. */
+  for (int w7 = 0; w7 < nt->count; w7++) {
+    if (nt_kind(nt, w7) != NK_LocalVariableWriteNode) continue;
+    int v7 = nt_ref(nt, w7, "value");
+    if (v7 < 0 || nt_kind(nt, v7) != NK_CallNode) continue;
+    if (c->strbuf_box[v7] || c->strbuf_handle_demand[v7]) continue;
+    if (nt_ref(nt, v7, "block") >= 0) continue;
+    { int a7 = nt_ref(nt, v7, "arguments"); int ac7 = 0;
+      if (a7 >= 0) nt_arr(nt, a7, "arguments", &ac7);
+      if (ac7 != 0) continue; }
+    int rr7 = nt_ref(nt, v7, "receiver");
+    if (rr7 < 0) continue;
+    TyKind rt7 = infer_type(c, rr7);
+    if (!ty_is_object(rt7)) continue;
+    const char *tn7 = nt_str(nt, w7, "name");
+    Scope *ws7 = comp_scope_of(c, w7);
+    if (!tn7 || !ws7) continue;
+    char ivb7[300]; int defc7 = ty_object_class(rt7);
+    const char *ivn7 = an_reader_ivar_of(c, v7, &defc7, ivb7, sizeof ivb7);
+    if (!ivn7 || defc7 < 0) continue;
+    { int iv7 = comp_ivar_index(&c->classes[defc7], ivn7);
+      if (iv7 < 0 || !c->classes[defc7].ivar_str_shared[iv7]) continue; }
+    LocalVar *tv7 = scope_local(ws7, tn7);
+    if (!tv7 || tv7->is_param) continue;
+    if (tv7->type != TY_STRING) continue;
+    /* READ-only means read-only: a local this scope mutates belongs to the
+       carry-back rule above, which asks what the mutator is before handing it
+       a handle. A String-typed local settles the ambiguous kinds, so that
+       rule claims every mutated alias reachable today -- but this rule must
+       not be the one deciding, or tightening that rule later would silently
+       hand a disqualified mutation the handle path. */
+    if (strbuf_mut_kind(c, tn7, ws7) != 0) continue;
+    if (!strbuf_slot_eligible_shape(c, tn7, ws7, tv7)) continue;
+    c->strbuf_box[v7] = 1;
+    tv7->type = TY_STRBUF; tv7->str_shared = 1; changed = 1;
+  }
+  return changed;
+}
+
 static int mark_reader_identity_operands(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -20646,6 +20748,7 @@ void analyze_program(Compiler *c) {
     if (!ch) break;
   }
   mark_reader_identity_operands(c);
+  mark_reader_read_only_operands(c);
 
   /* Promote `<<`-appended string locals to mutable strings (TY_STRBUF) so the
      append is amortized O(1) instead of an O(n) copy-concat (which makes a
