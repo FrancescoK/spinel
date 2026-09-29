@@ -7185,6 +7185,31 @@ static int *call_site_defaults(Compiler *c, Scope *m, int kwh, int *n) {
   return d;
 }
 
+/* Can the argument `after` change what the default `d`, filled at the call
+   site, reads? The binding renders the default at its parameter's slot,
+   ahead of the arguments bound after it: `def g(a = @y, b)` read @y before
+   `g(@y = 2)` assigned it. An instance, global or class variable it reads
+   is asked of read_rebound_by; its locals are the callee's parameters,
+   which no argument of the caller's assigns. */
+static int default_rebound_by(Compiler *c, int d, int after) {
+  const NodeTable *nt = c->nt;
+  if (d < 0) return 0;
+  switch (nt_kind(nt, d)) {
+    case NK_LocalVariableReadNode: case NK_BlockNode: case NK_LambdaNode: return 0;
+    case NK_InstanceVariableReadNode: case NK_GlobalVariableReadNode:
+    case NK_ClassVariableReadNode:
+      return read_rebound_by(c, d, after);
+    default:
+      for (int i = 0; i < nt_num_refs(nt, d); i++)
+        if (default_rebound_by(c, nt_ref_at(nt, d, i), after)) return 1;
+      for (int i = 0; i < nt_num_arrs(nt, d); i++) {
+        int n = 0; const int *ids = nt_arr_at(nt, d, i, &n);
+        for (int j = 0; j < n; j++) if (default_rebound_by(c, ids[j], after)) return 1;
+      }
+      return 0;
+  }
+}
+
 /* See codegen_internal.h. */
 int emit_args_before_binding(Compiler *c, Scope *m, const int *argv, int argc, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -7195,6 +7220,7 @@ int emit_args_before_binding(Compiler *c, Scope *m, const int *argv, int argc, B
   for (int i = 0; i < nv; i++) {
     ev += subtree_has_side_effect(c, vals[i]);
     if (value_rebound(c, vals, nv, i, dfl, nd)) run = 1;
+    for (int j = 0; j < nd && !run; j++) run = default_rebound_by(c, dfl[j], vals[i]);
   }
   for (int i = 0; i < nd; i++) ed += subtree_has_side_effect(c, dfl[i]);
   if ((ev && ed) || (kwh >= 0 && ev > 1) || kwh_out_of_order(c, m, kwh)) run = 1;

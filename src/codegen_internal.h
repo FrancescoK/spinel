@@ -1114,12 +1114,14 @@ int args_order_matters(Compiler *c, const int *argv, int argc, const int *after,
    ran before the arguments left in place. So the arguments run first when
    its keywords are out of the parameters' order (kwh_out_of_order), when a
    read among them is one a later value or such a default can change
-   (read_rebound_by: `m(@v, k: f(2))`, `m(v, k: (v = 2))`), when a value
-   with an effect sits beside a default with one (the default runs after
-   every argument), and when a call with keywords, bound by name, passes
-   two values with an effect (`m(lg(1), k: ls(2))`). Positionals alone are
-   sequenced where emit_args_filled hoists them. A call whose keywords run
-   ahead (kwh_runs_ahead) runs its arguments first already. */
+   (read_rebound_by: `m(@v, k: f(2))`, `m(v, k: (v = 2))`), when such a
+   default reads a variable an argument can change (`g(@y = 2)` into
+   `def g(a = @y, b)`), when a value with an effect sits beside a default
+   with one (the default runs after every argument), and when a call with
+   keywords, bound by name, passes two values with an effect (`m(lg(1),
+   k: ls(2))`). Positionals alone are sequenced where emit_args_filled
+   hoists them. A call whose keywords run ahead (kwh_runs_ahead) runs its
+   arguments first already. */
 int emit_args_before_binding(Compiler *c, Scope *m, const int *argv, int argc, Buf *b);
 /* Can the node `after` give a variable the value `x` reads another value?
    A local only by assigning it; an instance, global or class variable by
