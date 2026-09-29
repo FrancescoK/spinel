@@ -347,6 +347,7 @@ int desugar_define_method_captures(Compiler *c);
 int desugar_define_method_keywords(Compiler *c);
 void desugar_extended_module_attrs(Compiler *c);
 int desugar_recursive_param_defaults(Compiler *c);
+int desugar_param_default_assigns_local(Compiler *c);
 int desugar_sort_by_with_index(Compiler *c);
 int desugar_enumerable_via_to_a(Compiler *c);
 int desugar_public_method(Compiler *c);

@@ -1,0 +1,15 @@
+{1 => 10, 2 => 20}
+"no default"
+{1 => 0, 2 => 0}
+{1 => nil, 2 => nil}
+[3, true]
+[7, nil]
+[3, nil]
+hello ann (custom: false)
+hi bob (custom: nil)
+"no default"
+{3 => 9, 4 => 9}
+[2, 2]
+[5, nil]
+[3, 3]
+[9, nil]

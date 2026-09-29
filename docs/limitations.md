@@ -175,13 +175,15 @@ signature cannot bind is CRuby's `ArgumentError`. What is left:
   `push` through a poly slot (`[ia.method(:push)][0].call(8, 9)`) declines with
   `NoMethodError` where the static route pushes both values.
 
-A receiver-bound `Method#call` / `Method#to_proc` whose target has a parameter
-default that WRITES a local the method body READS declines with
-`NoMethodError`: the default is evaluated in the call-site frame, while the
-body runs in its own function reading its own slot, so the write could never
-reach it (`def m(a, c = (z = a + 1; z)); z; end` answered the body's zeroed
-`z`, 0, where CRuby answers 6). The direct call refuses the same shape at C
-compile time (its generated default names an undeclared `lv_z`).
+A parameter default that WRITES a local the method body READS -- the
+`def index_with(default = (no_default = true))` idiom, or
+`def m(a, c = (z = a + 1; z)); z; end` -- is run by the callee rather than at
+the call site, where the write could not reach the body: the parameter's
+default becomes the private symbol `:__sp_absent`, the locals are declared
+nil ahead of the body, and a guard binds the parameter from the original
+default when it sees the symbol. The parameter's inferred type therefore
+includes Symbol (a scalar parameter widens to a boxed one), and a caller
+passing that very symbol is taken as omitting the argument.
 
 A module method's optional parameter default is typed in the MODULE's own
 scope, which cannot see the including class's instance-variable types. A

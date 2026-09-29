@@ -18501,6 +18501,7 @@ void analyze_program(Compiler *c) {
   desugar_for_nonlocal_index(c);         /* for $g in xs -> for __for in xs; $g = __for */
   desugar_endless_str_range_iter(c);     /* ("a"..).take(3) -> Enumerator.produce("a") { succ }.take(3) */
   desugar_enumerator_produce(c);         /* Enumerator.produce -> fiber generator */
+  desugar_param_default_assigns_local(c); /* def m(p = (x = e)) reading x -> sentinel + callee guard */
   desugar_recursive_param_defaults(c);   /* def m(x, y = m(..)) -> default helper method */
   qualify_colliding_consts(c);
   qualify_colliding_classes(c);
