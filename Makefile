@@ -2193,6 +2193,9 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -q 'sp_PolyArray \* iv_xs;' "$$tmp/tmb.c" || { echo "infer-test: FAIL (#5521 a slot holding only Arrays widened to a boxed value)"; ok=0; }; \
 	grep -q 'sp_RbVal iv_ys;' "$$tmp/tmb.c" || { echo "infer-test: FAIL (#4196 two typed array kinds no longer box)"; ok=0; }; \
 	[ "$$(grep -c 'sp_PolyArray \* iv_items;' "$$tmp/tmb.c")" = 3 ] || { echo "infer-test: FAIL (#5521 a transplanted copy of a module's array ivar widened to a boxed value)"; ok=0; }; \
+	$(SPINEL) test/setbyte_handle_in_place.rb -c --no-line-map -o "$$tmp/sbh.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (setbyte_handle_in_place: -c)"; ok=0; }; \
+	grep -q 'sp_str_setbyte_cow(_p' "$$tmp/sbh.c" || { echo "infer-test: FAIL (setbyte on a handle still reads the whole String out)"; ok=0; }; \
+	awk '/while \\(\\(lv_i < 16LL\\)\\)/{f=1} f{print} f&&/^  }/{exit}' "$$tmp/sbh.c" | grep -q 'sp_str_concat' && { echo "infer-test: FAIL (a setbyte loop copies the String per write)"; ok=0; }; \
 	$(SPINEL) test/infer/typed_array_elem_arg_types_param.rb -c --no-line-map -o "$$tmp/tae.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (typed_array_elem_arg_types_param: -c)"; ok=0; }; \
 	grep -q 'sp_Plan_write_column(sp_Plan \*self, sp_int lv_wcol)' "$$tmp/tae.c" || { echo "infer-test: FAIL (an int-array element passed as an argument left the parameter boxed)"; ok=0; }; \
 	grep -q 'sp_Plan_shout(sp_Plan \*self, const char \* lv_s)' "$$tmp/tae.c" || { echo "infer-test: FAIL (a String-array element passed as an argument left the parameter boxed)"; ok=0; }; \
