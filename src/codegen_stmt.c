@@ -3701,53 +3701,6 @@ static void emit_pm_bind_find_poly(Compiler *c, int pat, const char *aexpr, int 
   emit_indent(b, indent); buf_puts(b, "}\n");
 }
 
-/* Recursively bind a multiple-assignment target from a boxed poly value `val`:
-   a local, or a nested (a, (b, c)) / (a, *b, c) MultiTarget. Nested targets only
-   arise with a poly-array RHS -- a typed array cannot hold a sub-array element. */
-static void emit_massign_poly_target(Compiler *c, int tgt, const char *val,
-                                     int indent, Buf *b, Scope *sc) {
-  const NodeTable *nt = c->nt;
-  const char *ty = nt_type(nt, tgt);
-  if (!ty) return;
-  if (sp_streq(ty, "LocalVariableTargetNode")) {
-    const char *lnm = nt_str(nt, tgt, "name");
-    if (lnm) emit_pm_typed_assign(sc, lnm, val, b, indent);
-    return;
-  }
-  if (sp_streq(ty, "MultiTargetNode")) {
-    int ln = 0; const int *lefts = nt_arr(nt, tgt, "lefts", &ln);
-    int rn = 0; const int *rights = nt_arr(nt, tgt, "rights", &rn);
-    int rest = nt_ref(nt, tgt, "rest");
-    int has_rest = (rest >= 0 && nt_type(nt, rest) && sp_streq(nt_type(nt, rest), "SplatNode"));
-    for (int i = 0; i < ln; i++) {
-      Buf s; memset(&s, 0, sizeof s);
-      buf_printf(&s, "sp_poly_index_poly(%s, sp_box_int(%lldLL))", val, (long long)i);
-      emit_massign_poly_target(c, lefts[i], s.p, indent, b, sc);
-      free(s.p);
-    }
-    if (has_rest) {
-      int inner = nt_ref(nt, rest, "expression");
-      if (inner >= 0 && nt_type(nt, inner) && sp_streq(nt_type(nt, inner), "LocalVariableTargetNode")) {
-        const char *rnm = nt_str(nt, inner, "name");
-        if (rnm) {
-          Buf s; memset(&s, 0, sizeof s);
-          buf_printf(&s, "sp_poly_slice(%s, %lldLL, sp_poly_length(%s) - %lldLL - %lldLL)",
-                     val, (long long)ln, val, (long long)ln, (long long)rn);
-          emit_pm_typed_assign(sc, rnm, s.p, b, indent);
-          free(s.p);
-        }
-      }
-    }
-    for (int j = 0; j < rn; j++) {
-      Buf s; memset(&s, 0, sizeof s);
-      buf_printf(&s, "sp_poly_index_poly(%s, sp_box_int(sp_poly_length(%s) - %lldLL + %lldLL))",
-                 val, val, (long long)rn, (long long)j);
-      emit_massign_poly_target(c, rights[j], s.p, indent, b, sc);
-      free(s.p);
-    }
-  }
-}
-
 /* case/in pattern match. tail=1: each arm's body is in method-return position
    (emitted via emit_stmts_tail), so arms diverge and no fallthrough label is
    needed. tail=0: statement form, arms fall through to a shared end label.
@@ -7960,6 +7913,76 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
   return 0;
 }
 
+/* Bind a target of multiple assignment `id` from `val`, a boxed sp_RbVal C
+   expression: a local, a nested (a, *b, c) target, which destructures the
+   value as the outer assignment does (an Array spreads, anything else is a
+   one-element list), or any target masgn_store writes. */
+static void emit_massign_poly_target(Compiler *c, int id, int tgt, const char *val,
+                                     int indent, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, tgt);
+  if (!ty) return;
+  if (sp_streq(ty, "LocalVariableTargetNode")) {
+    const char *lnm = nt_str(nt, tgt, "name");
+    if (!lnm) return;
+    LocalVar *lv = scope_local(comp_scope_of(c, tgt), lnm);
+    emit_indent(b, indent);
+    emit_local_ref(c, tgt, lnm, b); buf_puts(b, " = ");
+    masgn_conv(c, lv ? lv->type : TY_POLY, TY_POLY, val, b);
+    buf_puts(b, ";\n");
+    return;
+  }
+  if (!sp_streq(ty, "MultiTargetNode")) {
+    if (!masgn_store(c, id, tgt, val, TY_POLY, -1, -1, indent, b))
+      unsupported(c, id, "multiple assignment nested target");
+    return;
+  }
+  int ln = 0; const int *lefts = nt_arr(nt, tgt, "lefts", &ln);
+  int rn = 0; const int *rights = nt_arr(nt, tgt, "rights", &rn);
+  int rest = nt_ref(nt, tgt, "rest");
+  int inner = rest >= 0 && nt_type(nt, rest) && sp_streq(nt_type(nt, rest), "SplatNode")
+            ? nt_ref(nt, rest, "expression") : -1;
+  int tv = ++g_tmp, tn = ++g_tmp;
+  emit_indent(b, indent);
+  buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tv, val, tv);
+  emit_indent(b, indent);
+  buf_printf(b, "sp_int _t%d = sp_poly_massign_len(_t%d); (void)_t%d;\n", tn, tv, tn);
+  for (int i = 0; i < ln; i++) {
+    char ge[96];
+    snprintf(ge, sizeof ge, "(%dLL >= _t%d ? sp_box_nil() : sp_poly_massign_get(_t%d, %dLL))", i, tn, tv, i);
+    emit_massign_poly_target(c, id, lefts[i], ge, indent, b);
+  }
+  if (inner >= 0) {
+    int tr = ++g_tmp, ti = ++g_tmp;
+    emit_indent(b, indent);
+    buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tr, tr);
+    emit_indent(b, indent);
+    buf_printf(b, "for (sp_int _t%d = %dLL; _t%d < _t%d - %dLL; _t%d++) sp_PolyArray_push(_t%d, sp_poly_massign_get(_t%d, _t%d));\n",
+               ti, ln, ti, tn, rn, ti, tr, tv, ti);
+    char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr);
+    const char *ity = nt_type(nt, inner);
+    const char *rnm = nt_str(nt, inner, "name");
+    if (ity && sp_streq(ity, "LocalVariableTargetNode") && rnm) {
+      LocalVar *rlv = scope_local(comp_scope_of(c, inner), rnm);
+      emit_indent(b, indent);
+      emit_local_ref(c, inner, rnm, b); buf_puts(b, " = ");
+      masgn_conv(c, rlv ? rlv->type : TY_POLY_ARRAY, TY_POLY_ARRAY, rx, b);
+      buf_puts(b, ";\n");
+    }
+    else if (!masgn_store(c, id, inner, rx, TY_POLY_ARRAY, -1, -1, indent, b))
+      unsupported(c, id, "multiple assignment nested splat target");
+  }
+  for (int j = 0; j < rn; j++) {
+    int tix = ++g_tmp;
+    emit_indent(b, indent);
+    buf_printf(b, "sp_int _t%d = (_t%d - %dLL + %dLL) > %dLL ? (_t%d - %dLL + %dLL) : %dLL;\n",
+               tix, tn, rn, j, ln + j, tn, rn, j, ln + j);
+    char rgx[128];
+    snprintf(rgx, sizeof rgx, "(_t%d >= _t%d ? sp_box_nil() : sp_poly_massign_get(_t%d, _t%d))", tix, tn, tv, tix);
+    emit_massign_poly_target(c, id, rights[j], rgx, indent, b);
+  }
+}
+
 void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -9943,10 +9966,15 @@ else {
         for (int i = 0; i < ln; i++) {
           const char *lty = nt_type(nt, lefts[i]);
           if (!lty) continue;
-          if (sp_streq(lty, "MultiTargetNode") && sp_streq(k, "Poly")) {
-            /* nested (a, (b, c)) target: recurse over the boxed sub-array */
-            char ge[80]; snprintf(ge, sizeof ge, "sp_PolyArray_get(_t%d, %dLL)", tarr, i);
-            emit_massign_poly_target(c, lefts[i], ge, indent, b, rt_scope);
+          if (sp_streq(lty, "MultiTargetNode")) {
+            /* nested (a, (b, c)) target: recurse over the boxed element */
+            char gx[80]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
+            Buf ge; memset(&ge, 0, sizeof ge);
+            buf_printf(&ge, "(%dLL >= _t%d->len ? sp_box_nil() : ", i, tarr);
+            emit_boxed_text(c, elem, gx, &ge);
+            buf_puts(&ge, ")");
+            emit_massign_poly_target(c, id, lefts[i], ge.p, indent, b);
+            free(ge.p);
           }
           else if (sp_streq(lty, "LocalVariableTargetNode")) {
             emit_indent(b, indent);
@@ -10134,6 +10162,16 @@ else {
                              : sp_streq(k, "Int") ? "SP_INT_NIL"
                              : sp_streq(k, "Float") ? "sp_float_nil()"
                              : "NULL";
+            if (sp_streq(lty, "MultiTargetNode")) {
+              char gx[80]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, _t%d)", k, tarr, tix);
+              Buf ge; memset(&ge, 0, sizeof ge);
+              buf_printf(&ge, "(_t%d >= _t%d->len ? sp_box_nil() : ", tix, tarr);
+              emit_boxed_text(c, elem, gx, &ge);
+              buf_puts(&ge, ")");
+              emit_massign_poly_target(c, id, rights[j], ge.p, indent, b);
+              free(ge.p);
+              continue;
+            }
             char rgx[160];
             snprintf(rgx, sizeof rgx, "(_t%d >= _t%d->len ? %s : sp_%sArray_get(_t%d, _t%d))", tix, tarr, nilv, k, tarr, tix);
             if (!masgn_store(c, id, rights[j], rgx, elem, -1, -1, indent, b))
@@ -10149,14 +10187,13 @@ else {
         buf_printf(b, "sp_RbVal _t%d = ", tarr); emit_expr(c, value, b); buf_puts(b, ";\n");
         emit_indent(b, indent);
         buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d);\n", tarr);
-        Scope *rt_scope_p = comp_scope_of(c, id);
         for (int i = 0; i < ln; i++) {
           const char *lty = nt_type(nt, lefts[i]);
           if (!lty) continue;
           if (sp_streq(lty, "MultiTargetNode")) {
             /* nested (a, (b, c)) target: recurse over the boxed sub-value */
             char ge[80]; snprintf(ge, sizeof ge, "sp_poly_massign_get(_t%d, %dLL)", tarr, i);
-            emit_massign_poly_target(c, lefts[i], ge, indent, b, rt_scope_p);
+            emit_massign_poly_target(c, id, lefts[i], ge, indent, b);
           }
           else if (sp_streq(lty, "LocalVariableTargetNode")) {
             const char *lnm = nt_str(nt, lefts[i], "name");
@@ -10234,8 +10271,7 @@ else {
             if (!sp_streq(lty, "LocalVariableTargetNode")) {
               char rgx[128];
               snprintf(rgx, sizeof rgx, "(_t%d >= _t%d ? sp_box_nil() : sp_poly_massign_get(_t%d, _t%d))", tix, tn, tarr, tix);
-              if (!masgn_store(c, id, rights[j], rgx, TY_POLY, -1, -1, indent, b))
-                unsupported(c, id, "multiple assignment target");
+              emit_massign_poly_target(c, id, rights[j], rgx, indent, b);
               continue;
             }
             emit_indent(b, indent);
@@ -10382,6 +10418,8 @@ else {
             buf_printf(b, " = %s;\n", nilv);
           }
         }
+        else if (lty && sp_streq(lty, "MultiTargetNode"))
+          emit_massign_poly_target(c, id, lefts[i], "sp_box_nil()", indent, b);
         /* every other target past the supplied elements takes nil */
         else if (!masgn_store(c, id, lefts[i], NULL, TY_NIL, ttr[i], ttk[i], indent, b))
           unsupported(c, id, "multiple assignment target");
@@ -10516,28 +10554,12 @@ else {
         buf_puts(b, ";\n");
       }
       else if (lty && sp_streq(lty, "MultiTargetNode")) {
-        /* (b, c) = _t<i>  where _t<i> is a typed array */
-        TyKind at = comp_ntype(c, els[i]);
-        const char *k = array_kind(at);
-        if (!k) { unsupported(c, id, "multiple assignment nested target"); continue; }
-        int inn2 = 0;
-        const int *inner_lefts = nt_arr(nt, lefts[i], "lefts", &inn2);
-        TyKind elemty = sp_streq(k, "Int") ? TY_INT : sp_streq(k, "Float") ? TY_FLOAT
-                      : sp_streq(k, "Str") ? TY_STRING : TY_POLY;
-        for (int j = 0; j < inn2; j++) {
-          const char *ilty2 = inner_lefts ? nt_type(nt, inner_lefts[j]) : NULL;
-          if (!ilty2 || !sp_streq(ilty2, "LocalVariableTargetNode")) { unsupported(c, id, "multiple assignment nested target"); continue; }
-          const char *inm = nt_str(nt, inner_lefts[j], "name");
-          LocalVar *ilv = inm ? scope_local(comp_scope_of(c, inner_lefts[j]), inm) : NULL;
-          char getexpr[80]; snprintf(getexpr, sizeof getexpr, "sp_%sArray_get(_t%d, %d)", k, tmps[i], j);
-          emit_indent(b, indent);
-          buf_printf(b, "lv_%s = ", rename_local(inm));
-          /* box the scalar element into a widened (poly) target slot */
-          if (ilv && ilv->type == TY_POLY && elemty != TY_POLY)
-            emit_boxed_text(c, elemty, getexpr, b);
-          else buf_puts(b, getexpr);
-          buf_puts(b, ";\n");
-        }
+        /* nested (b, *c, d) = _t<i>: destructure the boxed element */
+        char ex[32]; snprintf(ex, sizeof ex, "_t%d", tmps[i]);
+        Buf ge; memset(&ge, 0, sizeof ge);
+        emit_boxed_text(c, tmpts[i], ex, &ge);
+        emit_massign_poly_target(c, id, lefts[i], ge.p ? ge.p : "sp_box_nil()", indent, b);
+        free(ge.p);
       }
       else if (lty && sp_streq(lty, "GlobalVariableTargetNode")) {
         const char *gnm = nt_str(nt, lefts[i], "name");
@@ -10797,7 +10819,13 @@ else {
         char rv[32];
         if (ridx >= 0) snprintf(rv, sizeof rv, "_t%d", tmps[ridx]);
         TyKind rvt = ridx >= 0 ? (tmpts ? tmpts[ridx] : comp_ntype(c, els[ridx])) : TY_NIL;
-        if (!masgn_store(c, id, rights[j], ridx >= 0 ? rv : NULL, rvt, -1, -1, indent, b))
+        if (sp_streq(lty, "MultiTargetNode")) {
+          Buf ge; memset(&ge, 0, sizeof ge);
+          if (ridx >= 0) emit_boxed_text(c, rvt, rv, &ge);
+          emit_massign_poly_target(c, id, rights[j], ge.p ? ge.p : "sp_box_nil()", indent, b);
+          free(ge.p);
+        }
+        else if (!masgn_store(c, id, rights[j], ridx >= 0 ? rv : NULL, rvt, -1, -1, indent, b))
           unsupported(c, id, "multiple assignment target");
       }
     }

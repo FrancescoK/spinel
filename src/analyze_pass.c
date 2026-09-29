@@ -2367,6 +2367,28 @@ static int masgn_unify_elem(Compiler *c, Scope *ms, const int *tgts, int n, TyKi
   return changed;
 }
 
+/* The slots under a nested (a, *b, c) target of a multiple assignment take
+   elements of a boxed value (emit_massign_poly_target): each target widens
+   to poly, and a splat target to a poly array. */
+static int masgn_nested_poly(Compiler *c, Scope *ms, int tgt) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, tgt) != NK_MultiTargetNode) return 0;
+  int changed = 0;
+  const char *sides[2] = { "lefts", "rights" };
+  for (int s = 0; s < 2; s++) {
+    int n = 0;
+    const int *ts = nt_arr(nt, tgt, sides[s], &n);
+    for (int i = 0; i < n; i++) {
+      if (nt_kind(nt, ts[i]) == NK_MultiTargetNode) changed |= masgn_nested_poly(c, ms, ts[i]);
+      else changed |= masgn_unify_elem(c, ms, &ts[i], 1, TY_POLY);
+    }
+  }
+  int rest = nt_ref(nt, tgt, "rest");
+  int inner = rest >= 0 && nt_kind(nt, rest) == NK_SplatNode ? nt_ref(nt, rest, "expression") : -1;
+  if (inner >= 0) changed |= masgn_unify_elem(c, ms, &inner, 1, TY_POLY_ARRAY);
+  return changed;
+}
+
 int infer_write_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -2577,6 +2599,12 @@ int infer_write_types(Compiler *c) {
     int ln = 0;
     const int *lefts = nt_arr(nt, id, "lefts", &ln);
     int value = nt_ref(nt, id, "value");
+    {
+      int rn_n = 0;
+      const int *rights_n = nt_arr(nt, id, "rights", &rn_n);
+      for (int i = 0; i < ln; i++) changed |= masgn_nested_poly(c, comp_scope_of(c, id), lefts[i]);
+      for (int j = 0; j < rn_n; j++) changed |= masgn_nested_poly(c, comp_scope_of(c, id), rights_n[j]);
+    }
     const char *vty = nt_type(nt, value);
     /* `r, w = IO.pipe` / `a, b = Socket.pair(...)` -> both targets are IO
        handles. The general path below reads a USER method's multi-value
