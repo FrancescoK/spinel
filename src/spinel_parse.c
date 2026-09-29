@@ -2441,21 +2441,108 @@ static int sp_require_find(char *buf, char *from, const char *word, SpReqHit *ou
   return 0;
 }
 
-/* Rebuild `*result` with `content` inlined at the top of the program and the
-   call itself replaced by `value`, so the statement around the require -- a
+/* Rebuild `*result` with `content` inlined ahead of the top-level statement
+   the call sits in (sp_toplevel_stmt_start) and the call itself replaced by
+   `value`, so the statement around the require -- a
    condition, an assignment, a method body -- survives intact. */
+/* The start of the top-level statement a position sits inside: the nearest
+   line at or above it that begins, at the margin, something other than the
+   continuation of a statement already open (end / else / rescue / a closing
+   bracket / a comment). A require nested in that statement -- inside an `if`,
+   a `begin`, a method body -- is spliced there, so the program keeps running
+   top to bottom: the library loads where the code needing it stands, not at
+   the very start, ahead of the definitions its own body calls (ffi-rzmq-core
+   requires libzmq4 under `if LibZMQ.version4?`, and libzmq4 reopens LibZMQ). */
+static size_t sp_toplevel_stmt_start(const char *buf, size_t pos) {
+  size_t ls = pos;
+  while (ls > 0 && buf[ls - 1] != '\n') ls--;
+  for (;;) {
+    const char *l = buf + ls;
+    int margin = *l && *l != ' ' && *l != '\t' && *l != '\n' && *l != '\r' && *l != '#';
+    static const char *const cont[] = { "end", "else", "elsif", "when", "in ", "rescue", "ensure",
+                                        "then", "do", "}", ")", "]", "=end", "=begin", NULL };
+    if (margin) {
+      int is_cont = 0;
+      for (int i = 0; cont[i]; i++) {
+        size_t n = strlen(cont[i]);
+        if (strncmp(l, cont[i], n) == 0 && (cont[i][n - 1] == ' ' || !sp_req_ident_char(l[n]))) { is_cont = 1; break; }
+      }
+      if (!is_cont) return ls;
+    }
+    if (ls == 0) return 0;
+    ls--;                                   /* onto the previous line's newline */
+    while (ls > 0 && buf[ls - 1] != '\n') ls--;
+  }
+}
+
+/* A require standing alone on its line whose enclosing lines, out to the
+   margin, are all control flow -- `if`/`elsif`/`else`/`unless`/`case`/`when`/
+   `begin`/`rescue`/`ensure`/`while`/`until` -- may be inlined where it stands:
+   a class or module definition is legal there, and the file then loads only
+   when that branch runs (ffi-yajl requires its C-extension flavour or its FFI
+   one on ENV["FORCE_FFI_YAJL"], inside begin/rescue LoadError). */
+/* Inside a file that was itself inlined under a condition (between the
+   markers the conditional splice writes around it)? */
+static int sp_in_cond_region(const char *buf, const char *pos) {
+  int depth = 0;
+  for (const char *p = buf; p && p < pos; ) {
+    const char *a = strstr(p, "#<SPINEL_COND");
+    const char *z = strstr(p, "#</SPINEL_COND");
+    const char *n = a && (!z || a < z) ? a : z;
+    if (!n || n >= pos) break;
+    depth += (n == a) ? 1 : -1;
+    p = n + 1;
+  }
+  return depth > 0;
+}
+
+static int sp_req_in_control_only(const char *buf, const char *kw) {
+  const char *ls = kw;
+  while (ls > buf && ls[-1] != '\n') ls--;
+  for (const char *q = ls; q < kw; q++) if (*q != ' ' && *q != '\t') return 0;
+  size_t indent = (size_t)(kw - ls);
+  if (indent == 0) return 0;
+  static const char *const CTL[] = { "if", "elsif", "else", "unless", "case", "when", "begin",
+                                     "rescue", "ensure", "while", "until", NULL };
+  const char *l = ls;
+  while (l > buf) {
+    const char *pe = l - 1;              /* the previous line's newline */
+    const char *pl = pe;
+    while (pl > buf && pl[-1] != '\n') pl--;
+    l = pl;
+    const char *t = pl;
+    while (t < pe && (*t == ' ' || *t == '\t')) t++;
+    if (t == pe || *t == '#') continue;  /* blank or comment */
+    size_t ind = (size_t)(t - pl);
+    if (ind >= indent) continue;
+    int ctl = 0;
+    for (int i = 0; CTL[i]; i++) {
+      size_t n = strlen(CTL[i]);
+      if (strncmp(t, CTL[i], n) == 0 && !sp_req_ident_char(t[n])) { ctl = 1; break; }
+    }
+    if (!ctl) return 0;
+    indent = ind;
+    if (indent == 0) return 1;
+  }
+  return 0;
+}
+
 static void sp_req_hoist_splice(char **result, unsigned char **fsl, size_t *fsl_n,
                                 const SpReqHit *h, const char *content,
                                 unsigned char *cfsl, size_t cfsl_n,
                                 const char *value) {
   size_t kw_off = (size_t)(h->kw - *result), end_off = (size_t)(h->expr_end - *result);
   size_t rlen = strlen(*result), clen = strlen(content), vlen = strlen(value);
-  sp_fsl_splice(fsl, fsl_n, 0, 0, cfsl, cfsl_n);
+  size_t ins = sp_toplevel_stmt_start(*result, kw_off);
+  size_t ins_line = 0;
+  for (size_t i = 0; i < ins; i++) if ((*result)[i] == '\n') ins_line++;
+  sp_fsl_splice(fsl, fsl_n, ins_line, 0, cfsl, cfsl_n);
   char *nr = malloc(rlen + clen + vlen + 2);
   size_t o = 0;
+  memcpy(nr + o, *result, ins);                          o += ins;
   memcpy(nr + o, content, clen);                         o += clen;
   if (clen > 0 && content[clen - 1] != '\n') nr[o++] = '\n';
-  memcpy(nr + o, *result, kw_off);                       o += kw_off;
+  memcpy(nr + o, *result + ins, kw_off - ins);           o += kw_off - ins;
   memcpy(nr + o, value, vlen);                           o += vlen;
   memcpy(nr + o, *result + end_off, rlen - end_off + 1);
   free(*result);
@@ -2689,6 +2776,9 @@ static char *resolve_requires(const char *source, const char *source_path,
   for (;;) {
     SpReqHit hit;
     if (!sp_require_find(result, result, "require_relative", &hit)) break;
+    /* a file inlined under a condition is loaded only when that branch runs:
+       it (and what it requires) stays loadable elsewhere */
+    int incl_mark = sp_included_count, cond_inline = 0;
     char *pos = hit.kw, *expr_end = hit.expr_end;
     char *line_end = strchr(pos, '\n');
     if (!line_end) line_end = pos + strlen(pos);
@@ -2770,11 +2860,28 @@ else {
       while (*trail == ' ' || *trail == '\t') trail++;
       int has_modifier = (*trail != '\n' && *trail != '\r' && *trail != ';' &&
                           *trail != '\0' && *trail != '#');
-      if (!hit.margin || has_modifier) {
+      cond_inline = !hit.margin || sp_in_cond_region(result, hit.kw);
+      if ((!hit.margin && !sp_req_in_control_only(result, hit.kw)) || has_modifier) {
         sp_req_hoist_splice(&result, &fsl, &fsl_n, &hit, content, cfsl, cfsl_n, req_val);
         free(cfsl);
         free(content);
         continue;
+      }
+    }
+
+    /* a conditional inclusion is marked, so the requires inside it count as
+       conditional too (the markers are comments: two lines, no flags) */
+    if (cond_inline && !hit.margin) {
+      size_t wcl = strlen(content);
+      char *w = malloc(wcl + 40);
+      if (w) {
+        sprintf(w, "#<SPINEL_COND>\n%s%s#</SPINEL_COND>\n", content,
+                (wcl && content[wcl - 1] != '\n') ? "\n" : "");
+        free(content);
+        content = w;
+        unsigned char z = 0;
+        sp_fsl_splice(&cfsl, &cfsl_n, 0, 0, &z, 1);
+        sp_fsl_splice(&cfsl, &cfsl_n, cfsl_n, 0, &z, 1);
       }
     }
 
@@ -2803,6 +2910,8 @@ else {
 
     free(result);
     result = new_result;
+    if (cond_inline)
+      while (sp_included_count > incl_mark) free(sp_included_paths[--sp_included_count]);
     free(content);
   }
   free(dir);
@@ -3194,6 +3303,9 @@ static char *resolve_plain_requires(char *source, const char *exe_path,
   for (;;) {
     SpReqHit hit;
     if (!sp_require_find(result, result, "require", &hit)) break;
+    /* a file inlined under a condition is loaded only when that branch runs:
+       it (and what it requires) stays loadable elsewhere */
+    int incl_mark = sp_included_count, cond_inline = 0;
     char *pos = hit.kw, *expr_end = hit.expr_end;
     char *line_end = strchr(pos, '\n');
     if (!line_end) line_end = pos + strlen(pos);
@@ -3371,11 +3483,28 @@ else {
          statement boundary so Windows sources keep the normal inlining path. */
       int has_modifier = (*trail != '\n' && *trail != '\r' && *trail != ';' &&
                           *trail != '\0' && *trail != '#');
-      if (!hit.margin || has_modifier) {
+      cond_inline = !hit.margin || sp_in_cond_region(result, hit.kw);
+      if ((!hit.margin && !sp_req_in_control_only(result, hit.kw)) || has_modifier) {
         sp_req_hoist_splice(&result, fsl, fsl_n, &hit, content, cfsl, cfsl_n, req_val);
         free(cfsl);
         free(content);
         continue;
+      }
+    }
+
+    /* a conditional inclusion is marked, so the requires inside it count as
+       conditional too (the markers are comments: two lines, no flags) */
+    if (cond_inline && !hit.margin) {
+      size_t wcl = strlen(content);
+      char *w = malloc(wcl + 40);
+      if (w) {
+        sprintf(w, "#<SPINEL_COND>\n%s%s#</SPINEL_COND>\n", content,
+                (wcl && content[wcl - 1] != '\n') ? "\n" : "");
+        free(content);
+        content = w;
+        unsigned char z = 0;
+        sp_fsl_splice(&cfsl, &cfsl_n, 0, 0, &z, 1);
+        sp_fsl_splice(&cfsl, &cfsl_n, cfsl_n, 0, &z, 1);
       }
     }
 
@@ -3410,6 +3539,8 @@ else {
     memcpy(new_result + before_len + content_len, pos + line_len, result_len - before_len - line_len + 1);
     free(result);
     result = new_result;
+    if (cond_inline)
+      while (sp_included_count > incl_mark) free(sp_included_paths[--sp_included_count]);
     free(content);
   }
   return result;
