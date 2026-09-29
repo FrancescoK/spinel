@@ -7246,6 +7246,37 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
     const NodeTable *ntS = c->nt;
     const char *nmS = nt_str(ntS, id, "name");
     int recvS = nt_ref(ntS, id, "receiver");
+    /* setbyte on a handle writes one byte into the handle's OWN buffer. The
+       shims below read the whole String out, mutate that copy and append it
+       back -- two O(len) passes to write one byte, so a per-row column write
+       over a large buffer is quadratic in it. sp_str_setbyte_cow already
+       mutates a heap string in place and copies only a static literal, so the
+       handle's buffer serves directly and the republish is needed only in
+       that one case. */
+    if (nmS && recvS >= 0 && sp_streq(nmS, "setbyte") &&
+        (comp_ntype(c, recvS) == TY_STRBUF ||
+         (comp_ntype(c, recvS) == TY_STRING && strbuf_local_name(c, recvS)))) {
+      int aS = nt_ref(ntS, id, "arguments"); int acS = 0;
+      const int *avS = aS >= 0 ? nt_arr(ntS, aS, "arguments", &acS) : NULL;
+      char srefB[1024];
+      const char *sbnB = strbuf_local_name(c, recvS);
+      int haveB = sbnB ? (snprintf(srefB, sizeof srefB, "lv_%s", sbnB), 1)
+                       : strbuf_slot_ref(c, recvS, srefB, sizeof srefB);
+      if (avS && acS == 2 && haveB) {
+        int tH = ++g_tmp;
+        buf_printf(b, "({ sp_String *_t%d = %s;"
+                      " if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);"
+                      " const char *_p%d = sp_String_cstr(_t%d); sp_int _v%d = ",
+                   tH, srefB, tH, tH, tH, tH, tH);
+        emit_int_expr(c, avS[1], b);
+        buf_printf(b, "; const char *_q%d = sp_str_setbyte_cow(_p%d, ", tH, tH);
+        emit_int_expr(c, avS[0], b);
+        buf_printf(b, ", _v%d);"
+                      " if (_q%d != _p%d) sp_String_set_bin(_t%d, _q%d); _v%d; })",
+                   tH, tH, tH, tH, tH, tH);
+        return 1;
+      }
+    }
     if (nmS && recvS >= 0 && comp_ntype(c, recvS) == TY_STRBUF &&
         sp_streq(nmS, "setbyte") &&
         sb_reader_expr_shim(c, id, recvS, b, emit_scalar_call)) return 1;
