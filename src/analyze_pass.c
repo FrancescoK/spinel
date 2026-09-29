@@ -6679,6 +6679,13 @@ int infer_param_types(Compiler *c) {
       if (mi3 < 0 && (sp_streq(name, "<") || sp_streq(name, ">") ||
                       sp_streq(name, "<=") || sp_streq(name, ">=")))
         mi3 = comp_method_in_chain(c, cid3, "<=>", NULL);
+      /* a method the program adds to Object, which the class's chain stops
+         short of: the call reaches it (codegen's Object fallback), so its
+         arguments type it (#5779) */
+      if (mi3 < 0) {
+        int oci3 = comp_class_index(c, "Object");
+        if (oci3 >= 0 && oci3 != cid3) mi3 = comp_method_in_class(c, oci3, name);
+      }
       changed |= bind_call_params(c, id, mi3);
       /* Also propagate to descendant overrides: codegen will emit a cls_id
          switch that calls each override, so each must have the right param

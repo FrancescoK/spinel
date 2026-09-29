@@ -15233,6 +15233,16 @@ static int pf_wanted(Compiler *c, const char *name) {
     /* a Class value known only at run time dispatches the same way */
     if (recv >= 0 && infer_type(c, recv) == TY_CLASS && class_recv_is_dynamic(c, recv) &&
         nt_ref(nt, id, "block") >= 0) return 1;
+    /* a method the program adds to Object, called with a block on an object
+       whose class chain stops short of Object (#5779): the call reaches it
+       through the clone, since it cannot be spliced in on that class */
+    if (recv >= 0 && nt_ref(nt, id, "block") >= 0) {
+      TyKind rt = infer_type(c, recv);
+      int obj = comp_class_index(c, "Object");
+      if (obj >= 0 && ty_is_object(rt) && ty_object_class(rt) != obj &&
+          comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0 &&
+          comp_method_in_class(c, obj, name) >= 0) return 1;
+    }
   }
   return 0;
 }
@@ -18783,6 +18793,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_class_body_bare_new(c);      /* class body `new(x)` -> `Klass.new(x)` */
     ch |= desugar_bare_class_self_calls(c);    /* cmethod `const_get(:K)` -> `self.const_get(:K)` */
     ch |= desugar_ie_bare_object_calls(c);     /* instance_eval { is_a?(K) } -> self.is_a?(K) */
+    ch |= desugar_bare_object_reopen_calls(c);  /* Object reopened: `helper` -> `self.helper` */
     ch |= desugar_masgn_store_evidence(c);     /* h[k], o.x = v, w -> detached h[k] = v, o.x = w as type evidence */
     ch |= desugar_include_math(c);             /* include Math: sqrt(x) -> Math.sqrt(x) */
     ch |= desugar_kernel_recv(c);              /* Kernel.puts x -> puts x */

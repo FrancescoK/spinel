@@ -7063,6 +7063,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       int oc_ci = comp_class_index(c, "Object");
       if (oc_ci >= 0) {
         int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
+        /* a yielding one given a block answers what its proc form does,
+           a boxed value (#5779) */
+        if (oc_mi >= 0 && c->scopes[oc_mi].yields && nt_ref(c->nt, id, "block") >= 0) return TY_POLY;
         if (oc_mi >= 0) return c->scopes[oc_mi].ret;
       }
     }

@@ -39036,6 +39036,33 @@ else {
       int oc_ci3 = comp_class_index(c, "Object");
       if (oc_ci3 >= 0) {
         int oc_mi3 = comp_method_in_chain(c, oc_ci3, name, NULL);
+        /* a yielding one takes the call's block through its proc form
+           (#5779): it has no symbol of its own, being spliced where it can */
+        int pf3 = oc_mi3 >= 0 && c->scopes[oc_mi3].yields ? scope_proc_form_of(c, oc_mi3) : -1;
+        int cblk3 = pf3 >= 0 && nt_ref(nt, id, "block") >= 0
+                    ? resolve_forwarded_block(c, nt_ref(nt, id, "block")) : -1;
+        if (cblk3 >= 0) {
+          Buf pb3; memset(&pb3, 0, sizeof pb3);
+          if (!emit_forwarded_proc_arg(c, cblk3, &pb3)) emit_proc_literal(c, cblk3, &pb3);
+          int tp3 = ++g_tmp;
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d);\n", tp3, pb3.p ? pb3.p : "NULL", tp3);
+          free(pb3.p);
+          Buf oc3; memset(&oc3, 0, sizeof oc3);
+          emit_method_cname(c, &c->scopes[pf3], &oc3);
+          buf_puts(&oc3, "(");
+          emit_boxed(c, recv, &oc3);
+          emit_args_filled(c, pf3, nt_ref(nt, id, "arguments"), ", ", &oc3);
+          buf_printf(&oc3, ", _t%d)", tp3);
+          TyKind want3 = comp_ntype(c, id), pr3 = (TyKind)c->scopes[pf3].ret;
+          if (method_is_void(&c->scopes[pf3]))
+            buf_printf(b, "(%s, %s)", oc3.p, want3 == TY_POLY ? "sp_box_nil()" : default_value(want3));
+          else if (want3 == TY_POLY && pr3 != TY_POLY) emit_boxed_text(c, pr3, oc3.p, b);
+          else if (want3 != TY_POLY && pr3 == TY_POLY && is_scalar_ret(want3)) emit_unbox_text(c, want3, oc3.p, b);
+          else buf_puts(b, oc3.p);
+          free(oc3.p);
+          return;
+        }
         if (oc_mi3 >= 0) {
           /* a method with no value (it raises, or ends in a void call) where
              the site's slot wants one: nil in that slot's type */

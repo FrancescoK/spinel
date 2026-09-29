@@ -256,6 +256,48 @@ int desugar_ie_bare_object_calls(Compiler *c) {
   return changed;
 }
 
+/* A method the program adds to Object (`class Object; def helper ...`) is
+   every object's, so a receiverless `helper` in another class's instance
+   method is `self.helper` (#5779). A class's chain stops short of Object, so
+   the bare call found nothing there: a plain one raised NameError at run
+   time and a yielding one was refused, where `self.helper` already reaches
+   Object's method. Give it self, at the top level too, where self is main.
+   A module's method runs on its includer and an instance_eval block on its
+   receiver; both are left as they were. */
+int desugar_bare_object_reopen_calls(Compiler *c) {
+  int obj = comp_class_index(c, "Object");
+  if (obj < 0) return 0;
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    if (nt_ref(nt, id, "receiver") >= 0 || id >= c->node_cap) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || comp_method_in_class(c, obj, nm) < 0) continue;
+    /* in a class body self is the class, and in an instance_eval block
+       the receiver */
+    Scope *sc = comp_scope_of(c, id);
+    if (((!sc || !sc->name) && c->node_cbody[id] >= 0) || ie_class_of(c, id) >= 0) continue;
+    int cls = sc ? sc->class_id : -1;
+    if (sc && sc->is_cmethod) continue;
+    if (cls >= 0) {
+      int dn = c->classes[cls].def_node;
+      if (cls == obj || (dn >= 0 && dn < c->nt->count && nt_kind(c->nt, dn) == NK_ModuleNode)) continue;
+      if (comp_method_in_chain(c, cls, nm, NULL) >= 0) continue;
+    }
+    /* at the top level self is main, an Object; a top-level `def` of the
+       name is the one the bare call means */
+    else if (comp_method_index(c, nm) >= 0) continue;
+    int sn = nt_new_node(nt, "SelfNode");
+    if (sn < 0) continue;
+    comp_grow_node_arrays(c);
+    c->nscope[sn] = c->nscope[id];
+    c->node_cbody[sn] = c->node_cbody[id];
+    nt_node_set_ref(nt, id, "receiver", sn);
+    changed = 1;
+  }
+  return changed;
+}
+
 /* `h[k], o.x = v, w` stores through `[]=` and `x=` just as `h[k] = v` and
    `o.x = w` do, but the passes that widen a container's key and element
    types, or an attribute's slot, from those stores only look at CallNodes:
