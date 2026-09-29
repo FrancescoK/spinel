@@ -364,6 +364,17 @@ static int emit_array_block_index(Compiler *c, int id, int recv, TyKind rt, cons
   return 0;
 }
 
+static void emit_poly_push_elem(Buf *b, int tpair, TyKind ty, int t, int ti) {
+  if (ty == TY_INT_ARRAY)
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_IntArray_get(_t%d, _t%d)));", tpair, t, ti);
+  else if (ty == TY_STR_ARRAY)
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_StrArray_get(_t%d, _t%d)));", tpair, t, ti);
+  else if (ty == TY_FLOAT_ARRAY)
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_float(sp_FloatArray_get(_t%d, _t%d)));", tpair, t, ti);
+  else
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));", tpair, t, ti);
+}
+
 
 /* Materialize each zip argument into a rooted array temp _t<tb[j]>, and
    rewrite at[j] to the array type the slot ended up holding. */
@@ -3412,24 +3423,9 @@ else {
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {",
                    ti, ti, ka, ta, ti);
         buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new();", tpair);
-        if (rt == TY_INT_ARRAY)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_IntArray_get(_t%d, _t%d)));", tpair, ta, ti);
-        else if (rt == TY_STR_ARRAY)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_StrArray_get(_t%d, _t%d)));", tpair, ta, ti);
-        else if (rt == TY_FLOAT_ARRAY)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_float(sp_FloatArray_get(_t%d, _t%d)));", tpair, ta, ti);
-        else
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));", tpair, ta, ti);
-        for (int j = 0; j < nargs; j++) {
-          if (at[j] == TY_INT_ARRAY)
-            buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_IntArray_get(_t%d, _t%d)));", tpair, tb[j], ti);
-          else if (at[j] == TY_STR_ARRAY)
-            buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_StrArray_get(_t%d, _t%d)));", tpair, tb[j], ti);
-          else if (at[j] == TY_FLOAT_ARRAY)
-            buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_float(sp_FloatArray_get(_t%d, _t%d)));", tpair, tb[j], ti);
-          else
-            buf_printf(b, " sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));", tpair, tb[j], ti);
-        }
+        emit_poly_push_elem(b, tpair, rt, ta, ti);
+        for (int j = 0; j < nargs; j++)
+          emit_poly_push_elem(b, tpair, at[j], tb[j], ti);
         buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));", tr, tpair);
         buf_printf(b, " } _t%d; })", tr);
         return 1;
@@ -3524,22 +3520,8 @@ else {
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {", ti, ti, k, ta, ti);
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {", tj, tj, kb, tb, tj);
         buf_printf(b, " _t%d = sp_PolyArray_new();", tpair);
-        if (rt == TY_INT_ARRAY)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_IntArray_get(_t%d, _t%d)));", tpair, ta, ti);
-        else if (rt == TY_STR_ARRAY)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_StrArray_get(_t%d, _t%d)));", tpair, ta, ti);
-        else if (rt == TY_FLOAT_ARRAY)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_float(sp_FloatArray_get(_t%d, _t%d)));", tpair, ta, ti);
-        else
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));", tpair, ta, ti);
-        if (at == TY_INT_ARRAY)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_IntArray_get(_t%d, _t%d)));", tpair, tb, tj);
-        else if (at == TY_STR_ARRAY)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_StrArray_get(_t%d, _t%d)));", tpair, tb, tj);
-        else if (at == TY_FLOAT_ARRAY)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_float(sp_FloatArray_get(_t%d, _t%d)));", tpair, tb, tj);
-        else
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));", tpair, tb, tj);
+        emit_poly_push_elem(b, tpair, rt, ta, ti);
+        emit_poly_push_elem(b, tpair, at, tb, tj);
         buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));", tr, tpair);
         buf_printf(b, " } } _t%d; })", tr);
         return 1;
@@ -5003,16 +4985,8 @@ else {
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {", ti, ti, ta, ti);
         buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new();", tpair);
         buf_printf(b, " sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));", tpair, ta, ti);
-        for (int j = 0; j < nargs; j++) {
-          if (at[j] == TY_INT_ARRAY)
-            buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_IntArray_get(_t%d, _t%d)));", tpair, tb[j], ti);
-          else if (at[j] == TY_STR_ARRAY)
-            buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_StrArray_get(_t%d, _t%d)));", tpair, tb[j], ti);
-          else if (at[j] == TY_FLOAT_ARRAY)
-            buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_float(sp_FloatArray_get(_t%d, _t%d)));", tpair, tb[j], ti);
-          else
-            buf_printf(b, " sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));", tpair, tb[j], ti);
-        }
+        for (int j = 0; j < nargs; j++)
+          emit_poly_push_elem(b, tpair, at[j], tb[j], ti);
         buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));", tr, tpair);
         buf_printf(b, " } _t%d; })", tr);
         return 1;
