@@ -1759,6 +1759,7 @@ static inline void sp_poly_puts(sp_RbVal v) {
         }
         case SP_BUILTIN_RANGE: puts(sp_Range_inspect((sp_Range *)v.v.p)); break;
         case SP_BUILTIN_FLOAT_RANGE: puts(sp_frange_inspect(*(sp_FloatRange *)v.v.p)); break;
+        case SP_BUILTIN_STR_RANGE: puts(sp_srange_to_s(*(sp_StrRange *)v.v.p)); break;
         case SP_BUILTIN_TIME: puts(sp_Time_to_s((sp_Time *)v.v.p)); break;
         case SP_BUILTIN_STRBUF: puts(sp_String_cstr((sp_String *)v.v.p)); break;
         case SP_BUILTIN_COMPLEX: puts(sp_complex_to_s(*(sp_Complex *)v.v.p)); break;
@@ -1944,6 +1945,7 @@ static inline const char *sp_poly_to_s(sp_RbVal v) {
         case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_inspect((sp_PolyArray *)v.v.p);
         case SP_BUILTIN_RANGE: return sp_Range_inspect((sp_Range *)v.v.p);
         case SP_BUILTIN_FLOAT_RANGE: return sp_frange_inspect(*(sp_FloatRange *)v.v.p);
+        case SP_BUILTIN_STR_RANGE: return sp_srange_to_s(*(sp_StrRange *)v.v.p);
         case SP_BUILTIN_TIME: return sp_Time_to_s((sp_Time *)v.v.p);
         case SP_BUILTIN_STRBUF: return sp_String_cstr((sp_String *)v.v.p);   /* live buffer (#3227) */
         case SP_BUILTIN_METHOD: return sp_method_desc_cstr((sp_BoundMethod *)v.v.p);
@@ -6611,6 +6613,7 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
         case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_inspect((sp_PolyArray *)v.v.p);
         case SP_BUILTIN_RANGE:     return sp_Range_inspect((sp_Range *)v.v.p);
         case SP_BUILTIN_FLOAT_RANGE: return sp_frange_inspect(*(sp_FloatRange *)v.v.p);
+        case SP_BUILTIN_STR_RANGE: return sp_srange_inspect(*(sp_StrRange *)v.v.p);
         case SP_BUILTIN_TIME:      return sp_Time_inspect((sp_Time *)v.v.p);
       case SP_BUILTIN_STRBUF: return sp_str_inspect(sp_String_cstr((sp_String *)v.v.p));   /* (#3227) */
       case SP_BUILTIN_METHOD: return sp_method_desc_cstr((sp_BoundMethod *)v.v.p);
