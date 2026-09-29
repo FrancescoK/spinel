@@ -532,7 +532,13 @@ void compute_reachable(Compiler *c) {
         /* also check reachable scope names (covers scope-backed aliases) */
         if (an) for (int t = SN_FIRST(an); t >= 0 && !an_live; t = sn_link[t]) if (c->scopes[t].reachable) an_live = 1;
         if (ao) for (int t = SN_FIRST(ao); t >= 0 && !ao_live; t = sn_link[t]) if (c->scopes[t].reachable) ao_live = 1;
-        if (an_live && !ao_live) {
+        /* Marked whenever the counterpart is live, not only when no scope of
+           the other name is yet: a module both included and extended carries
+           a copy of the target to each side, and a class-side copy made live
+           by its own call must not stop the alias from reaching the instance
+           side (cgi's escape_html on CGI::Escape). The marking is by name and
+           idempotent, so a live counterpart costs nothing. */
+        if (an_live) {
           int prev_qtail = qtail;
           MARK_NAME(ao);
           if (qtail > prev_qtail) changed = 1;
@@ -542,7 +548,7 @@ void compute_reachable(Compiler *c) {
             for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]);
           }
         }
-        if (ao_live && !an_live) {
+        if (ao_live) {
           int prev_qtail = qtail;
           MARK_NAME(an);
           if (qtail > prev_qtail) changed = 1;
