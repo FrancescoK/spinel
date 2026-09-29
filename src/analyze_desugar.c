@@ -7408,8 +7408,11 @@ static int rbp_writes(const NodeTable *nt, int node, const char *name, int level
        k == NK_LocalVariableAndWriteNode || k == NK_LocalVariableOperatorWriteNode ||
        k == NK_LocalVariableTargetNode) &&
       nt_str(nt, node, "name") && sp_streq(nt_str(nt, node, "name"), name) &&
-      nt_int(nt, node, "depth", 0) == level)
-    return 1;
+      nt_int(nt, node, "depth", 0) == level) {
+    /* `r = nil` only makes the parameter nullable, which it already widens to */
+    int v = k == NK_LocalVariableWriteNode ? nt_ref(nt, node, "value") : -1;
+    if (!(v >= 0 && nt_kind(nt, v) == NK_NilNode)) return 1;
+  }
   int inner = (k == NK_BlockNode || k == NK_LambdaNode) ? level + 1 : level;
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++) if (rbp_writes(nt, nt_ref_at(nt, node, i), name, inner)) return 1;
