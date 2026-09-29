@@ -2826,8 +2826,26 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
    which is exactly what a multi-parameter fiber body already indexes (see the
    multi_bind arm in codegen.c). Emitting them as separate C arguments instead
    overran sp_Fiber_resume's arity and stopped the build (#3469). */
+/* how many values a resume/transfer passes, or -1 when a splat hides it */
+static int fiber_pass_count(Compiler *c, int argc, const int *argv) {
+  for (int k = 0; k < argc; k++) {
+    const char *ty = nt_type(c->nt, argv[k]);
+    if (ty && sp_streq(ty, "SplatNode")) return -1;
+  }
+  return argc;
+}
+
 static void emit_fiber_pass_value(Compiler *c, int argc, const int *argv, Buf *b) {
   if (argc == 0) { buf_puts(b, "sp_box_nil()"); return; }
+  if (argc == 1 && nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "SplatNode")) {
+    /* f(*a) passes a's elements: none is nil, one is that element */
+    int ts = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", ts); emit_boxed(c, argv[0], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_int _n%d = sp_poly_length(_t%d);"
+                  " _n%d == 0 ? sp_box_nil() : _n%d == 1 ? sp_poly_index_poly(_t%d, sp_box_int(0)) : _t%d; })",
+               ts, ts, ts, ts, ts, ts, ts);
+    return;
+  }
   if (argc == 1) {
     if (comp_ntype(c, argv[0]) == TY_POLY) emit_expr(c, argv[0], b);
     else emit_boxed(c, argv[0], b);
@@ -3196,10 +3214,10 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
   /* Fiber instance methods */
   if (recv >= 0 && comp_ntype(c, recv) == TY_FIBER) {
     if (sp_streq(name, "resume")) {
-      buf_puts(b, "sp_Fiber_resume("); emit_expr(c, recv, b);
+      buf_puts(b, "sp_Fiber_resume_n("); emit_expr(c, recv, b);
       buf_puts(b, ", ");
       emit_fiber_pass_value(c, argc, argv, b);
-      buf_puts(b, ")");
+      buf_printf(b, ", %d)", fiber_pass_count(c, argc, argv));
       return 1;
     }
     if (sp_streq(name, "alive?")) {
@@ -3209,10 +3227,10 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "sp_Fiber_kill("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
     }
     if (sp_streq(name, "transfer")) {
-      buf_puts(b, "sp_Fiber_transfer("); emit_expr(c, recv, b);
+      buf_puts(b, "sp_Fiber_transfer_n("); emit_expr(c, recv, b);
       buf_puts(b, ", ");
       emit_fiber_pass_value(c, argc, argv, b);
-      buf_puts(b, ")");
+      buf_printf(b, ", %d)", fiber_pass_count(c, argc, argv));
       return 1;
     }
     if (sp_streq(name, "value")) {
@@ -32893,8 +32911,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* Fiber class methods: Fiber.yield(val) and Fiber.current */
   if (recv_is_const(nt, recv, "Fiber")) {
     if (sp_streq(name, "yield")) {
-      if (argc == 0) buf_puts(b, "sp_Fiber_yield(sp_box_nil())");
-      else { buf_puts(b, "sp_Fiber_yield("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
+      /* Fiber.yield(a, b) hands the resumer [a, b] */
+      buf_puts(b, "sp_Fiber_yield("); emit_fiber_pass_value(c, argc, argv, b); buf_puts(b, ")");
       return;
     }
     if (sp_streq(name, "current") && argc == 0) {
@@ -37908,9 +37926,9 @@ else {
       if (sp_streq(name, "raise"))
         emit_concurrency_raise(c, ft, argc, argv, "sp_Fiber", 'f', "sp_Fiber_raise", &fv);
       else {
-        buf_printf(&fv, "sp_Fiber_%s(_t%d, ", name, tf);
+        buf_printf(&fv, "sp_Fiber_%s_n(_t%d, ", name, tf);
         emit_fiber_pass_value(c, argc, argv, &fv);
-        buf_puts(&fv, ")");
+        buf_printf(&fv, ", %d)", fiber_pass_count(c, argc, argv));
       }
       buf_puts(&fv, "; })");
       emit_unbox_text(c, comp_ntype(c, id), fv.p, b);
