@@ -38,6 +38,10 @@ def y_ds(h) = [yield(1, **h), yield("s", 2)]
 p(y_ds({}) { |a, b| [a, b] })
 p(y_ds({ k: 1 }) { |a, b| [a, b] })
 
+# a gathered optional keeps its default's type, the values sure or not
+def y_opt = yield(*[1, 2])
+p(y_opt { |a, b = "d"| [a, b] })
+
 # auto-splat of a lone Array
 def y_as = [yield([1, "s"]), yield([2])]
 p(y_as { |a, b| [a, b] })
@@ -69,6 +73,13 @@ pb = proc { |a, b| [a, b] }
 p pb.call(true, false), pb.call(true)
 pq = proc { |a, b| [a, b] }
 p pq.call(:x, :y), pq.call(:z)
+
+# forwarding the method's own parameters: keywords stay keywords only
+# through its `**kw`, otherwise the rest collects them as a Hash
+def fw_rest(*a, &b) = b.call(*a)
+p(fw_rest(1, k: "x") { |x, k: 0| [x, k] })
+def fw_kw(*a, **kw, &b) = b.call(*a, **kw)
+p(fw_kw(1, k: "x") { |x, k: 0| [x, k] })
 
 # a stored block, run as a proc
 class St
