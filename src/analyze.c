@@ -16156,7 +16156,10 @@ int nullable_int_value(Compiler *c, int v) {
     if (mi < 0 && cn) {
       if (rcv < 0) {
         Scope *self = comp_scope_of(c, v);
-        if (self && self->class_id >= 0) mi = comp_method_in_chain(c, self->class_id, cn, NULL);
+        /* in a class method, a receiverless call names a class method */
+        if (self && self->class_id >= 0)
+          mi = self->is_cmethod ? comp_cmethod_in_chain(c, self->class_id, cn, NULL)
+                                : comp_method_in_chain(c, self->class_id, cn, NULL);
       }
       else {
         TyKind rt = infer_type(c, rcv);
