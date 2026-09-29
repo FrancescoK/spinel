@@ -125,9 +125,15 @@ def mkdir_p_path(path)
   nil
 end
 
+# Searches PATH the way the shell does, so the answer is the file the shell
+# ran. An empty component -- a leading or trailing ":", or "::" -- names the
+# current directory. The search used to skip it, so with PATH=":/usr/local/bin"
+# the shell ran ./spin while which("spin") answered /usr/local/bin/spin, and
+# spinel_bin took the compiler beside the wrong spin. The -1 keeps a trailing
+# empty component, which split drops otherwise.
 def which(name)
-  ENV["PATH"].to_s.split(":").each do |dir|
-    next if dir == ""
+  ENV["PATH"].to_s.split(":", -1).each do |dir|
+    dir = "." if dir == ""
     cand = File.join(dir, name)
     return cand if File.file?(cand) && File.executable?(cand)
   end
