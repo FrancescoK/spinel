@@ -7134,3 +7134,163 @@ void enum_hop_yield_view(Compiler *c, int id, int hop) {
   if (lv) lv->is_block_param = 1;
   if (mn && xn) scope_local_intern(bs, xn);
 }
+
+/* ---- Module.included hooks ----
+ *
+ * `include M` calls M.included(base) as the class body runs, and the hook's
+ * usual work is to shape the includer: `base.class_eval { layout ... }`,
+ * `base.extend(ClassMethods)`, `base.attr_accessor :x`. The includer is known
+ * at each include site, so the hook's body is spliced in right after the
+ * include, with `base` as the class the body belongs to:
+ *
+ *   base.class_eval do BODY end   ->  BODY           (self is the class)
+ *   base.m(args)                  ->  m(args)        (a class-body call)
+ *   any other read of base        ->  the class's constant
+ *
+ * The hook method itself stays on M for anything that calls it by name. */
+static int incl_find_hook_named(const NodeTable *nt, const char *mn, int n0, const char **param,
+                                const char *hook_name);
+static int incl_find_hook(const NodeTable *nt, const char *mn, int n0, const char **param) {
+  return incl_find_hook_named(nt, mn, n0, param, "included");
+}
+static int incl_find_hook_named(const NodeTable *nt, const char *mn, int n0, const char **param,
+                                const char *hook_name) {
+  for (int m = 0; m < n0; m++) {
+    if (nt_kind(nt, m) != NK_ModuleNode) continue;
+    int cp = nt_ref(nt, m, "constant_path");
+    const char *nm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (!nm || !sp_streq(nm, mn)) continue;
+    int body = nt_ref(nt, m, "body");
+    int n = 0; const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+    for (int k = 0; k < n; k++) {
+      int d = st[k];
+      if (nt_kind(nt, d) != NK_DefNode) continue;
+      const char *dn = nt_str(nt, d, "name");
+      int r = nt_ref(nt, d, "receiver");
+      if (!dn || !sp_streq(dn, hook_name) || r < 0 || nt_kind(nt, r) != NK_SelfNode) continue;
+      int ps = nt_ref(nt, d, "parameters");
+      int rn = 0; const int *rq = ps >= 0 ? nt_arr(nt, ps, "requireds", &rn) : NULL;
+      if (rn != 1) continue;
+      *param = nt_str(nt, rq[0], "name");
+      return *param ? d : -1;
+    }
+  }
+  return -1;
+}
+
+/* Rewrite the cloned hook body in place: see the header comment. */
+static void incl_subst(NodeTable *nt, int node, const char *param, const char *cls_name) {
+  if (node < 0) return;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return;
+  if (k == NK_CallNode) {
+    int r = nt_ref(nt, node, "receiver");
+    const char *cm = nt_str(nt, node, "name");
+    /* the module's own introspection reads the class: `base.name` */
+    int introspect = cm && (sp_streq(cm, "name") || sp_streq(cm, "to_s") || sp_streq(cm, "inspect") ||
+                            sp_streq(cm, "ancestors") || sp_streq(cm, "superclass") ||
+                            sp_streq(cm, "instance_methods") || sp_streq(cm, "const_get"));
+    if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && !introspect &&
+        nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), param))
+      nt_node_set_ref(nt, node, "receiver", -1);
+  }
+  if (k == NK_LocalVariableReadNode && nt_str(nt, node, "name") &&
+      sp_streq(nt_str(nt, node, "name"), param)) {
+    nt_node_reset(nt, node, "ConstantReadNode");
+    nt_node_set_str(nt, node, "name", cls_name);
+    return;
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) incl_subst(nt, nt_ref_at(nt, node, i), param, cls_name);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0;
+    const int *ids = nt_arr_at(nt, node, i, &cnt);
+    int *cp = cnt > 0 ? malloc(sizeof(int) * (size_t)cnt) : NULL;
+    if (cnt > 0 && !cp) continue;
+    if (cnt > 0) memcpy(cp, ids, sizeof(int) * (size_t)cnt);
+    for (int j = 0; j < cnt; j++) incl_subst(nt, cp[j], param, cls_name);
+    free(cp);
+  }
+}
+
+/* The statements a hook statement becomes: a bare class_eval-family call
+   with a block is its block's body; anything else is itself. */
+static void incl_emit_stmt(const NodeTable *nt, int s, int **out, int *no, int *cap) {
+  if (nt_kind(nt, s) == NK_CallNode && nt_ref(nt, s, "receiver") < 0) {
+    const char *nm = nt_str(nt, s, "name");
+    int blk = nt_ref(nt, s, "block");
+    if (nm && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode &&
+        (sp_streq(nm, "class_eval") || sp_streq(nm, "class_exec") || sp_streq(nm, "module_eval") ||
+         sp_streq(nm, "module_exec") || sp_streq(nm, "instance_eval") || sp_streq(nm, "instance_exec"))) {
+      int bb = nt_ref(nt, blk, "body");
+      int bn = 0; const int *bs = bb >= 0 && nt_kind(nt, bb) == NK_StatementsNode ? nt_arr(nt, bb, "body", &bn) : NULL;
+      for (int j = 0; j < bn; j++) incl_emit_stmt(nt, bs[j], out, no, cap);
+      return;
+    }
+  }
+  if (*no == *cap) {
+    *cap = *cap ? *cap * 2 : 16;
+    *out = realloc(*out, sizeof(int) * (size_t)*cap);
+    if (!*out) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  (*out)[(*no)++] = s;
+}
+
+int desugar_included_hooks(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  int changed = 0;
+  for (int cn = 0; cn < n0; cn++) {
+    int is_mod = nt_kind(nt, cn) == NK_ModuleNode;
+    if (nt_kind(nt, cn) != NK_ClassNode && !is_mod) continue;
+    int cp = nt_ref(nt, cn, "constant_path");
+    const char *cls = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    int body = nt_ref(nt, cn, "body");
+    if (!cls || body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int n = 0; const int *st = nt_arr(nt, body, "body", &n);
+    int *out = NULL; int no = 0, cap = 0, spliced = 0;
+    for (int k = 0; k < n; k++) {
+      int s = st[k];
+      incl_emit_stmt(nt, s, &out, &no, &cap);   /* the statement itself */
+      /* incl_emit_stmt only unwraps receiverless class_eval; a plain
+         statement passes through, so this is the statement as written */
+      if (nt_kind(nt, s) != NK_CallNode || nt_ref(nt, s, "receiver") >= 0) continue;
+      const char *nm = nt_str(nt, s, "name");
+      /* `extend M` runs M.extended(base) the same way */
+      int is_ext = nm && sp_streq(nm, "extend");
+      if (!nm || (!sp_streq(nm, "include") && !is_ext)) continue;
+      if (is_mod && !is_ext) continue;
+      int an = nt_ref(nt, s, "arguments");
+      int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+      for (int j = 0; j < ac; j++) {
+        NodeKind ak = nt_kind(nt, av[j]);
+        if (ak != NK_ConstantReadNode && ak != NK_ConstantPathNode) continue;
+        const char *param = NULL;
+        int hook = incl_find_hook_named(nt, nt_str(nt, av[j], "name"), n0, &param,
+                                        is_ext ? "extended" : "included");
+        if (hook < 0) continue;
+        int hb = nt_ref(nt, hook, "body");
+        if (hb < 0) continue;
+        int clone = nt_clone_subtree(nt, hb);
+        if (clone < 0) continue;
+        incl_subst(nt, clone, param, cls);
+        int hn = 0; const int *hs = nt_kind(nt, clone) == NK_StatementsNode ? nt_arr(nt, clone, "body", &hn) : NULL;
+        if (!hs) { incl_emit_stmt(nt, clone, &out, &no, &cap); spliced = 1; continue; }
+        int *hcp = hn > 0 ? malloc(sizeof(int) * (size_t)hn) : NULL;
+        if (hn > 0 && !hcp) continue;
+        if (hn > 0) memcpy(hcp, hs, sizeof(int) * (size_t)hn);
+        for (int q = 0; q < hn; q++) incl_emit_stmt(nt, hcp[q], &out, &no, &cap);
+        free(hcp);
+        spliced = 1;
+      }
+    }
+    if (spliced) {
+      nt_node_set_arr(nt, body, "body", out, no);
+      changed = 1;
+    }
+    free(out);
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
