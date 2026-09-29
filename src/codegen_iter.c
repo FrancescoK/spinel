@@ -456,6 +456,18 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   if (takes_class_dispatch(c, mi, implicit_self ? comp_scope_of(c, id)->class_id : recv_class,
                            name))
     return 0;
+  /* a private or protected method refuses an outside receiver before its body
+     is spliced in, as the plain call does */
+  {
+    Buf vb; memset(&vb, 0, sizeof vb);
+    if (emit_vis_refusal(c, id, &vb)) {
+      if (as_expr) buf_puts(b, vb.p);
+      else { emit_indent(b, indent); buf_puts(b, vb.p); buf_puts(b, ";\n"); }
+      free(vb.p);
+      return 1;
+    }
+    free(vb.p);
+  }
   /* A `return` inside the yielding method used to bail here -- but a bailed
      block call falls back to a plain function call against a symbol that is
      never emitted (yielding methods have no standalone function), an

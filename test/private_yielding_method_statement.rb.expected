@@ -1,0 +1,13 @@
+"private method 'cc' called for an instance of C"
+"private method 'each_one' called for an instance of C"
+"private method 'each_one' called for an instance of C"
+"protected method 'pro' called for an instance of C"
+5
+7
+2
+7
+11
+[:blkarg_go1, 1]
+[:blkarg_go2, 2]
+[:blkarg_go3, 3]
+[:blkarg_go4, 4]

@@ -19571,6 +19571,9 @@ int emit_vis_refusal(Compiler *c, int id, Buf *b) {
   /* the arguments evaluate before the lookup refuses, as CRuby's do */
   { int vac; const int *vav = call_args(nt, id, &vac);
     for (int k = 0; k < vac; k++) { buf_puts(b, "(void)("); emit_expr(c, vav[k], b); buf_puts(b, "), "); } }
+  { int vblk = nt_ref(nt, id, "block");
+    int vbx = vblk >= 0 && nt_kind(nt, vblk) == NK_BlockArgumentNode ? nt_ref(nt, vblk, "expression") : -1;
+    if (vbx >= 0 && nt_kind(nt, vbx) != NK_SymbolNode) { buf_puts(b, "(void)("); emit_expr(c, vbx, b); buf_puts(b, "), "); } }
   buf_printf(b, "sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for an instance of %s\")[1])), %s)",
              vis == SP_VIS_PRIVATE ? "private" : "protected", vnm, vrn,
              default_value(comp_ntype(c, id)));
