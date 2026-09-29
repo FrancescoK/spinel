@@ -1243,6 +1243,15 @@ static void vis_apply_attr(Compiler *c, ClassInfo *cls, int call, int kind) {
   }
 }
 
+/* An alias copies its target's visibility as it stands at the alias; a later
+   `private :old` leaves the alias as it was. A target this body has not
+   declared (an inherited method) keeps resolving through the alias. */
+static void vis_alias(ClassInfo *cls, const char *nw, const char *od) {
+  if (!nw || !od) return;
+  for (int i = 0; i < cls->nvis; i++)
+    if (sp_streq(cls->vis_names[i], od)) { comp_method_vis_set(cls, nw, cls->vis_kinds[i]); return; }
+}
+
 /* Walk one class/module body in lexical order, recording each method's
    visibility (default public). Handles a bare `private`/`protected`/`public`
    (switches the mode for following defs/attrs), the `private :a, :b` /
@@ -1264,9 +1273,21 @@ static void register_method_visibility_body(Compiler *c, ClassInfo *cls, int bod
         comp_method_vis_set(cls, mname, cur);
       continue;
     }
+    if (sp_streq(sty, "AliasMethodNode")) {
+      int nn = nt_ref(nt, s, "new_name"), on = nt_ref(nt, s, "old_name");
+      vis_alias(cls, nn >= 0 ? vis_arg_name(nt, nn) : NULL, on >= 0 ? vis_arg_name(nt, on) : NULL);
+      continue;
+    }
     if (!sp_streq(sty, "CallNode") || nt_ref(nt, s, "receiver") >= 0) continue;
     const char *nm = nt_str(nt, s, "name");
     if (!nm) continue;
+    if (sp_streq(nm, "alias_method")) {
+      int args = nt_ref(nt, s, "arguments");
+      int an = 0;
+      const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      if (an == 2) vis_alias(cls, vis_arg_name(nt, argv[0]), vis_arg_name(nt, argv[1]));
+      continue;
+    }
     const char *dmn = dm_defined_name(nt, s);
     if (dmn) { comp_method_vis_set(cls, dmn, cur); continue; }
     int kind = sp_streq(nm, "private")   ? SP_VIS_PRIVATE   :
@@ -1288,7 +1309,14 @@ static void register_method_visibility_body(Compiler *c, ClassInfo *cls, int bod
         }
         else if (aty && sp_streq(aty, "CallNode")) {
           const char *dn = dm_defined_name(nt, argv[i]);
+          const char *acn = nt_str(nt, argv[i], "name");
           if (dn) comp_method_vis_set(cls, dn, kind);  /* private define_method(:m) { } */
+          else if (acn && sp_streq(acn, "alias_method")) {  /* private alias_method :a, :b */
+            int aa = nt_ref(nt, argv[i], "arguments");
+            int aan = 0;
+            const int *aav = aa >= 0 ? nt_arr(nt, aa, "arguments", &aan) : NULL;
+            if (aan == 2) comp_method_vis_set(cls, vis_arg_name(nt, aav[0]), kind);
+          }
           else vis_apply_attr(c, cls, argv[i], kind);  /* private attr_reader :x */
         }
       }
@@ -2314,6 +2342,17 @@ void register_aliases_body(Compiler *c, ClassInfo *cls, int body) {
     }
     else if (sp_streq(sty, "CallNode")) {
       const char *nm = nt_str(nt, s, "name");
+      /* `private alias_method :a, :b` defines the alias it wraps */
+      if (nm && nt_ref(nt, s, "receiver") < 0 &&
+          (sp_streq(nm, "private") || sp_streq(nm, "protected") || sp_streq(nm, "public"))) {
+        int pa = nt_ref(nt, s, "arguments");
+        int pn = 0;
+        const int *pv = pa >= 0 ? nt_arr(nt, pa, "arguments", &pn) : NULL;
+        if (pn == 1 && nt_kind(nt, pv[0]) == NK_CallNode && nt_ref(nt, pv[0], "receiver") < 0) {
+          s = pv[0];
+          nm = nt_str(nt, s, "name");
+        }
+      }
       if (!nm || !sp_streq(nm, "alias_method")) continue;
       int args = nt_ref(nt, s, "arguments");
       int an = 0;
