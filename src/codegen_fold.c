@@ -9544,9 +9544,12 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
      spelling and registers the rename. Without it the default emitted the
      callee's `lv_u`, which nothing at the call site declared (#4431). Same
      restriction as the other path: a *rest and a **kwrest are temps like the
-     rest, and are aliased too. A gather's parameters are temps as well. */
+     rest, and are aliased too. A gather's parameters are temps as well, and
+     so is a keyword read out of a `**`'s hash (emit_ds_param_extract), its
+     default under the renames: leaving a call with a `**` out emitted
+     `C.new.m(1, **h)` into `def m(p1, p2 = p1, **kw)` against `lv_p1`. */
   int pd_ren_base = g_nren, pd_uid = 0;
-  int pd_active = pm && ((splat_tmp_d < 0 && ds_tmp_d < 0) || L.gather) && default_refs_earlier_param(c, pm);
+  int pd_active = pm && (splat_tmp_d < 0 || L.gather) && default_refs_earlier_param(c, pm);
   if (pd_active) pd_uid = ++g_tmp;
   for (int k = 0; k < np; k++) {
     atmp[k] = ++g_tmp;
