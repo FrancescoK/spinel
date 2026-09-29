@@ -1739,8 +1739,7 @@ int desugar_dynamic_method(Compiler *c) {
     if (recv < 0 || argc != 1 || dn > 0 || method_sym_arg(c, id)) continue;
     TyKind rt = infer_type(c, recv);
     int cls = ty_is_object(rt) ? ty_object_class(rt) : -1, own_method = 0;
-    for (int k = 0; k < c->nclasses; k++)
-      if ((cls < 0 || k == cls) && comp_method_in_chain(c, k, "method", NULL) >= 0) own_method = 1;
+    if (cls >= 0) own_method = comp_method_in_chain(c, cls, "method", NULL) >= 0;
     if ((cls < 0 && rt != TY_POLY) || own_method) continue;
     char **own = NULL;
     int nown = dsend_receiver_names(c, cls, 1, &own), base = nt->count;
