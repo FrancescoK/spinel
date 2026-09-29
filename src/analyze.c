@@ -1005,7 +1005,7 @@ else {
   if (m->yields && !a_scope_forwards_block_to_lowered(c, mi)) return 0;
   /* instance_eval/exec trampolines splice their block at the call site rather
      than lifting it to a proc, so they are not lifted-block captures. */
-  if (m->class_id >= 0 && !m->is_cmethod && m->name &&
+  if (m->class_id >= 0 && !m->is_cmethod && m->name && sp_streq(m->name, name) &&
       comp_trampoline_kind(c, m->class_id, m->name, NULL)) return 0;
   return 1;
 }
