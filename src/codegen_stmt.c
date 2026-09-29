@@ -574,6 +574,10 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "{ sp_Exception *_t%d = (sp_Exception *)(", ev); emit_expr(c, arg, b);
     buf_printf(b, "); sp_puts_line(sp_exc_inspect((void *)_t%d)); }\n", ev);
   }
+  else if (t == TY_FIBER || t == TY_THREAD) {
+    buf_puts(b, t == TY_FIBER ? "sp_puts_line(sp_Fiber_inspect(" : "sp_puts_line(sp_Thread_inspect(");
+    emit_expr(c, arg, b); buf_puts(b, "));\n");
+  }
   else if (t == TY_MUTEX || t == TY_QUEUE || t == TY_CONDVAR) {
     /* the concurrency handles render as Object's default does (#4421) */
     const char *hn = t == TY_MUTEX ? "Thread::Mutex"

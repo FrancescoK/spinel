@@ -1,0 +1,13 @@
+#<Fiber:0x fiber_inspect.rb:N (created)>
+#<Fiber:0x fiber_inspect.rb:N (resumed)>
+#<Fiber:0x fiber_inspect.rb:N (suspended)>
+#<Fiber:0x fiber_inspect.rb:N (suspended)>
+#<Fiber:0x fiber_inspect.rb:N (suspended)>
+#<Fiber:0x fiber_inspect.rb:N (terminated)>
+true
+#<Fiber:0x fiber_inspect.rb:N (suspended)>
+#<Fiber:0x (resumed)>
+#<Fiber:0x fiber_inspect.rb:N (suspended by resuming)>
+#<Fiber:0x fiber_inspect.rb:N (created)>
+#<Fiber:0x fiber_inspect.rb:N (created)>
+#<Thread:0x fiber_inspect.rb:N dead>

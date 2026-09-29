@@ -3232,6 +3232,9 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
       emit_concurrency_raise(c, recv, argc, argv, "sp_Fiber", 'f', "sp_Fiber_raise", b);
       return 1;
     }
+    if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
+      buf_puts(b, "sp_Fiber_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
   }
   return 0;
 }
@@ -13392,7 +13395,13 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
       if (cn && sp_streq(cn, "Fiber") && nt_ref(nt, id, "block") >= 0) {
+        /* the Ruby creation site, which #inspect carries (as Thread's does) */
+        const char *fpath = c->nt->source_file;
+        buf_puts(b, "sp_Fiber_at(");
         emit_fiber_new(c, id, b, 0, -1);
+        buf_puts(b, ", \"");
+        emit_c_escaped(b, fpath && *fpath ? fpath : "source.rb");
+        buf_printf(b, "\", %d)", (int)nt_int(nt, id, "node_line", 0));
         return 1;
       }
       if (cn && sp_streq(cn, "Queue")) { buf_puts(b, "sp_Queue_new()"); return 1; }
@@ -39360,10 +39369,8 @@ else {
      the nil-degrade below and `mutex.inspect` answered "[]" -- a silent wrong
      answer rather than a gap, and `p mutex` refused to compile at all (#4421).
      A SizedQueue shares TY_QUEUE with a Queue and so prints as Thread::Queue;
-     that divergence is in docs/limitations.md. Fiber and Thread are left out
-     deliberately: CRuby's inspect for those carries state (a Fiber's source
-     location and status, a Thread's run state) that this cannot supply, and a
-     truncated one would be a quieter wrong answer than the refusal. */
+     that divergence is in docs/limitations.md. Fiber and Thread have their
+     own inspect, with the creation site and status. */
   if (recv >= 0 && argc == 0 && (sp_streq(name, "inspect") || sp_streq(name, "to_s")) &&
       (rt == TY_MUTEX || rt == TY_QUEUE || rt == TY_CONDVAR)) {
     const char *hn = rt == TY_MUTEX ? "Thread::Mutex"
