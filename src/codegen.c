@@ -9855,9 +9855,12 @@ static void emit_user_init_copy_dispatch(Compiler *c, Buf *b) {
     if (mi < 0) continue;
     TyKind pt = scope_local(&c->scopes[mi], c->scopes[mi].pnames[0])->type;
     const char *dcn = c->classes[defcls].c_name;
-    buf_printf(b, "    case %d: sp_%s_initialize_copy((sp_%s *)copy.v.p, ", k, dcn, dcn);
-    if (pt == TY_POLY) buf_puts(b, "orig); break;\n");
-    else buf_printf(b, "(sp_%s *)orig.v.p); break;\n", c->classes[ty_object_class(pt)].c_name);
+    buf_printf(b, "    case %d: ", k);
+    emit_method_cname(c, &c->scopes[mi], b);
+    buf_printf(b, "((sp_%s *)copy.v.p, ", dcn);
+    if (pt == TY_POLY) buf_puts(b, "orig");
+    else buf_printf(b, "(sp_%s *)orig.v.p", c->classes[ty_object_class(pt)].c_name);
+    buf_puts(b, c->scopes[mi].blk_param && c->scopes[mi].blk_param[0] ? ", NULL); break;\n" : "); break;\n");
   }
   buf_puts(b, "    default: break;\n  }\n}\n");
 }

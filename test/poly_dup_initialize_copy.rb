@@ -81,3 +81,14 @@ a = [[1, 2], 1][0]
 a2 = a.dup
 a2 << 3
 p [a, a2]
+
+class BlockCopy
+  attr_reader :tag
+  def initialize = @tag = :orig
+  def initialize_copy(orig, &blk)
+    @tag = blk ? :blk : :copied
+  end
+end
+p [BlockCopy.new, [1]].map { |x| x.dup.class }
+p [BlockCopy.new, [1]].first.dup.tag
+p BlockCopy.new.clone.tag

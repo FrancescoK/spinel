@@ -31488,14 +31488,15 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
            a subclass are dup'd, so accept ty_is_object, casting the original to
            the param's class. TY_POLY -> box it. */
         if (ic >= 0 && (ty_is_object(ictp) || ictp == TY_POLY)) {
-          buf_printf(b, "sp_%s_initialize_copy(", c->classes[defcls].c_name);
+          const char *nb = c->scopes[ic].blk_param && c->scopes[ic].blk_param[0] && !c->scopes[ic].yields ? ", NULL" : "";
+          emit_method_cname(c, &c->scopes[ic], b); buf_puts(b, "(");
           if (defcls != cid) buf_printf(b, "(sp_%s *)", c->classes[defcls].c_name);
-          if (ictp == TY_POLY) { buf_printf(b, "_t%d, sp_box_obj(_t%d, %d)); ", td, to, cid); }
+          if (ictp == TY_POLY) { buf_printf(b, "_t%d, sp_box_obj(_t%d, %d)%s); ", td, to, cid, nb); }
           else {
             int icid = ty_object_class(ictp);
             buf_printf(b, "_t%d, ", td);
             if (icid != cid) buf_printf(b, "(sp_%s *)", c->classes[icid].c_name);
-            buf_printf(b, "_t%d); ", to);
+            buf_printf(b, "_t%d%s); ", to, nb);
           }
         }
         /* clone copies the receiver's frozen state (dup never does); an
