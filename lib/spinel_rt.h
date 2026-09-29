@@ -10321,6 +10321,13 @@ static sp_RbVal sp_poly_queue_pop_flag(sp_RbVal v, const char *name, sp_bool nb)
   sp_queue *q = sp_poly_as_queue(v, name);
   return nb ? sp_Queue_pop_nb(q) : sp_Queue_pop(q);
 }
+/* pop/shift with a boxed argument: a Queue reads it as non_block, an Array
+   as a count (and answers an Array of what it removed) */
+static sp_RbVal sp_poly_pop_any(sp_RbVal v, sp_RbVal arg, int from_front) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_QUEUE && v.v.p)
+    return sp_poly_queue_pop_flag(v, from_front ? "shift" : "pop", sp_poly_truthy(arg));
+  return sp_box_poly_array(sp_poly_pop_n(v, sp_poly_arg_int_chk(arg), from_front));
+}
 /* push/enq(obj, non_block): SizedQueue's form; a Queue takes one argument */
 static sp_RbVal sp_poly_queue_push_flag(sp_RbVal v, const char *name, sp_RbVal x, sp_bool nb) {
   sp_queue *q = sp_poly_as_queue(v, name);

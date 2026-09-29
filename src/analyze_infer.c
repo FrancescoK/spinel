@@ -3742,8 +3742,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      pop(true) is a TypeError, so only a Queue answers it, with one value */
   if (recv >= 0 && rt == TY_POLY && argc == 1 &&
       (sp_streq(name, "pop") || sp_streq(name, "shift")) &&
-      infer_type(c, argv[0]) == TY_BOOL)
-    return TY_POLY;
+      (infer_type(c, argv[0]) == TY_BOOL || infer_type(c, argv[0]) == TY_POLY))
+    return TY_POLY;   /* a boxed argument: a Queue's flag or an Array's count */
   if (recv >= 0 && rt == TY_POLY && argc == 1 &&
       (sp_streq(name, "pop") || sp_streq(name, "shift"))) {
     if (c->poly_builtin_ty && id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN)

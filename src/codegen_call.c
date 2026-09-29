@@ -5170,6 +5170,16 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     free(qv.p);
     return 1;
   }
+  if ((sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 1 &&
+      comp_ntype(c, argv[0]) == TY_POLY) {
+    Buf qv; memset(&qv, 0, sizeof qv);
+    buf_puts(&qv, "sp_poly_pop_any("); emit_expr(c, recv, &qv); buf_puts(&qv, ", ");
+    emit_expr(c, argv[0], &qv); buf_printf(&qv, ", %d)", sp_streq(name, "shift") ? 1 : 0);
+    TyKind want = comp_ntype(c, id);
+    if (want == TY_POLY) buf_puts(b, qv.p); else emit_unbox_text(c, want, qv.p, b);
+    free(qv.p);
+    return 1;
+  }
   if ((sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 1) {
     buf_printf(b, "sp_poly_pop_n(");
     emit_expr(c, recv, b); buf_puts(b, ", ");
@@ -9368,14 +9378,19 @@ else {
            builtin with a push, and sp_poly_shl owns it. */
         buf_printf(b, " default: if (!(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_QUEUE))"
                       " sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d));", tv, tv, name, tv);
-        /* SizedQueue#push(obj, non_block): the flag is no element */
-        int q_flag = sp_streq(name, "push") && argc == 2 && splat_a < 0 && atmp_ty[1] == TY_BOOL;
+        /* SizedQueue#push(obj, non_block): on a Queue two arguments are
+           always that pair, so the second is the flag, never an element */
+        int q_flag = sp_streq(name, "push") && argc == 2 && splat_a < 0;
         if (q_flag) {
-          char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[0]);
+          char tn[32], tf[32];
+          snprintf(tn, sizeof tn, "_t%d", atmp[0]); snprintf(tf, sizeof tf, "_t%d", atmp[1]);
           Buf ab; memset(&ab, 0, sizeof ab);
+          Buf fb; memset(&fb, 0, sizeof fb);
           if (atmp_ty[0] == TY_POLY) buf_puts(&ab, tn); else emit_boxed_text(c, atmp_ty[0], tn, &ab);
-          buf_printf(b, " sp_poly_queue_push_flag(_t%d, \"push\", %s, _t%d);", tv, ab.p ? ab.p : "sp_box_nil()", atmp[1]);
-          free(ab.p);
+          if (atmp_ty[1] == TY_POLY) buf_puts(&fb, tf); else emit_boxed_text(c, atmp_ty[1], tf, &fb);
+          buf_printf(b, " sp_poly_queue_push_flag(_t%d, \"push\", %s, sp_poly_truthy(%s));",
+                     tv, ab.p ? ab.p : "sp_box_nil()", fb.p ? fb.p : "sp_box_nil()");
+          free(ab.p); free(fb.p);
         }
         for (int a = 0; a < argc && !q_flag; a++) {
           if (a == splat_a) {

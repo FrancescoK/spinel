@@ -26,3 +26,18 @@ t("SizedQueue push(x, false)") { s.push(:c, false).class }
 t("SizedQueue size after") { s.size }
 t("Array pop(true)") { a.pop(true) }
 t("Array pop(1)") { a.pop(1) }
+
+# the flag itself held in a boxed slot
+yes = [true, 1][0]
+no = [false, 1][0]
+t("pop(boxed true) empty") { b.pop(yes) }
+b << 11
+t("pop(boxed true) item") { b.pop(yes) }
+b << 12
+t("shift(boxed false) item") { b.shift(no) }
+t("Queue push(x, boxed true)") { b.push(1, yes) }
+t("SizedQueue push(x, boxed true) full") { s.push(:d, yes) }
+t("SizedQueue size unchanged") { s.size }
+# and a boxed count on a real Array is still a count
+n = [1, "x"][0]
+t("Array pop(boxed 1)") { [[5, 6, 7], 1][0].pop(n) }
