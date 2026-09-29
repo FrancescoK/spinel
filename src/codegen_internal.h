@@ -1000,6 +1000,7 @@ int patch_lv_read_ntype(Compiler *c, int scope_idx, const char *name, TyKind new
 void restore_lv_read_ntype(Compiler *c, int *saved_ids, TyKind *saved_tys, int n);
 int emit_iter_autosplat(Compiler *c, int block, TyKind rt, const char *elem_src, int indent);
 int emit_iter_value_expr(Compiler *c, int id, Buf *b);
+void set_enum_walk_result(int tmp);
 int iter_value_answers_recv(Compiler *c, int id);
 int sn_guard_pending(Compiler *c, int id);
 int emit_takewhile_with_index(Compiler *c, int id, Buf *b);

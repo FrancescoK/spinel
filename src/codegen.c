@@ -5475,10 +5475,10 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
       int last = bb[bn - 1];
       TyKind lty = comp_ntype(c, last);
       if (as_gen && stmt_is_yielder_push(c, last, bp0)) {
-        /* A generator ending in a bare `y << v` yields v, then terminates with a
-           nil result (its value is the yielder in CRuby -- not modeled). */
+        /* A generator ending in a bare `y << v` yields v, then terminates with
+           the yielder as its result, which `<<` answers. */
         emit_stmt(c, last, pb, 1);
-        buf_puts(pb, "    _fb->yielded_value = sp_box_nil();\n");
+        buf_printf(pb, "    _fb->yielded_value = lv_%s;\n", rename_local(bp0));
       }
       else if (lty == TY_VOID || lty == TY_UNKNOWN) {
         emit_stmt(c, last, pb, 1);

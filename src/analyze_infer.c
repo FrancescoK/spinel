@@ -1771,6 +1771,18 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sr >= 0) return infer_type(c, sr);
   }
   const NodeTable *nt = c->nt;
+  /* `e.each { }` over an Enumerator, walked through its marked `to_a` hop:
+     it answers the generator's body value or the collection the Enumerator
+     was made from, not the hop's array. */
+  {
+    const char *en = nt_str(nt, id, "name");
+    int er = nt_ref(nt, id, "receiver");
+    if (en && (sp_streq(en, "each") || sp_streq(en, "each_with_index")) &&
+        nt_ref(nt, id, "block") >= 0 && er >= 0 && nt_kind(nt, er) == NK_CallNode &&
+        nt_str(nt, er, "enum_each_wrap") && nt_ref(nt, er, "receiver") >= 0 &&
+        infer_type(c, nt_ref(nt, er, "receiver")) == TY_ENUMERATOR)
+      return TY_POLY;
+  }
   /* a dynamic send lowered to a name-dispatch (desugar_dynamic_send) yields one
      of several boxed method results -> poly. */
   { int dn = 0; nt_arr(nt, id, "dyn_send_arms", &dn); if (dn > 0) return TY_POLY; }

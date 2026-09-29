@@ -15277,10 +15277,15 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
   /* `e.each { }` over an Enumerator walks the Enumerator itself (see
      emit_iteration_stmt): the marked `to_a` hop in front of it is never
      evaluated, so the Enumerator is what is held and answered */
+  /* ... and the walk itself records what the call answers when no break
+     is taken: a generator's body value, a materialized one's collection */
+  int enum_walk = 0;
   if (self_ret && nt_kind(nt, wrecv) == NK_CallNode && nt_str(nt, wrecv, "enum_each_wrap") &&
       nt_ref(nt, wrecv, "receiver") >= 0 &&
-      comp_ntype(c, nt_ref(nt, wrecv, "receiver")) == TY_ENUMERATOR)
+      comp_ntype(c, nt_ref(nt, wrecv, "receiver")) == TY_ENUMERATOR) {
     wrecv = nt_ref(nt, wrecv, "receiver");
+    enum_walk = comp_ntype(c, id) == TY_POLY;
+  }
   int sv_ig = g_infer_ignore_brk; g_infer_ignore_brk = 1;
   TyKind normal_ty = self_ret ? comp_ntype(c, wrecv) : infer_uncached(c, id);
   g_infer_ignore_brk = sv_ig;
@@ -15341,7 +15346,12 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
   /* A no-value normal type (a yield method ending in puts/nil) runs as a
      statement with nil as the no-break result. */
   int stmt_form = self_ret || !is_scalar_ret(normal_ty);
-  if (stmt_form) {
+  if (enum_walk) {
+    set_enum_walk_result(tR);
+    emit_stmt(c, id, g_pre, g_indent);
+    set_enum_walk_result(0);
+  }
+  else if (stmt_form) {
     emit_stmt(c, id, g_pre, g_indent);
     if (self_ret) {
       if (spill >= 0) buf_printf(&inner, "_t%d", spill);
@@ -15353,8 +15363,10 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
   }
   Buf boxed; memset(&boxed, 0, sizeof boxed);
   if (inner.p && inner.p[0]) emit_boxed_text(c, normal_ty, inner.p, &boxed);
-  emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "_t%d = %s;\n", tR, boxed.p && boxed.p[0] ? boxed.p : "sp_box_nil()");
+  if (!enum_walk) {
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "_t%d = %s;\n", tR, boxed.p && boxed.p[0] ? boxed.p : "sp_box_nil()");
+  }
   g_indent--;
   g_pre = sv_pre;
   g_brk_ser_var = sv_ser; g_brk_ensure_base = sv_ebase; g_brk_exc_base = sv_bexc; g_brk_skip_id = sv_skip;

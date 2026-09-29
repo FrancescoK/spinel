@@ -1,0 +1,19 @@
+[[1, 2], [9, nil]]
+Enumerator::Yielder
+42
+42
+:done
+Enumerator::Yielder
+[1, 2]
+"s"
+1
+"s"
+"s"
+7
+"s"
+42
+[1, 2]
+[1, 2]
+[3, 4]
+{a: 1}
+20
