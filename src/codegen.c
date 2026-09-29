@@ -6668,8 +6668,8 @@ else if (orecv >= 0 && onm) {
   if (has_kwp) {
     g_needs_proc_poly_argslot = 1;
     buf_printf(pb, "    int _sp_kwpos = _sp_proc_kwpos; _sp_proc_kwpos = 0;\n"
-                   "    sp_int _sp_haskw = argc > 0 && argc <= 16 && _sp_kwpos != 1"
-                   " && (_sp_kwpos == 2 || argc > %d)"
+                   "    sp_int _sp_haskw = argc > 0 && argc <= 16"
+                   " && (_sp_kwpos == 2 || (_sp_kwpos == 0 && argc > %d))"
                    " && _sp_proc_poly_args[argc-1].tag == SP_TAG_OBJ"
                    " && sp_poly_is_hash_kind(_sp_proc_poly_args[argc-1].cls_id);\n"
                    "    sp_RbVal _sp_kwh = _sp_haskw ? _sp_proc_poly_args[argc-1] : sp_box_nil();"
@@ -6679,7 +6679,20 @@ else if (orecv >= 0 && onm) {
       buf_puts(pb, "    if (_sp_haskw && sp_poly_length(_sp_kwh) > 0)"
                    " sp_raise_cls(\"ArgumentError\", \"no keywords accepted\");\n");
   }
-  else buf_puts(pb, "    _sp_proc_kwpos = 0;\n");
+  /* A block that takes only leading requireds (a trailing comma's rest
+     among them) auto-splats a lone Array whatever keywords came; any other
+     shape only for a call that passed none, an empty `**h` too (kwpos 3):
+     `proc { |a, *r| }.call([1, 2], **{})` binds a = [1, 2]. */
+  int as_lead_only = 0, has_rest_marker = 0;
+  { int pnr = proc_params_node(c, create);
+    int rn = pnr >= 0 ? nt_ref(nt, pnr, "rest") : -1;
+    has_rest_marker = rn >= 0;
+    as_lead_only = !nopts && !nposts && !has_kwp &&
+                   (rn < 0 ? arity > 1 : arity >= 1 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "ImplicitRestNode")); }
+  int as_gate = !is_lambda && !as_lead_only && block_auto_splats(arity, nopts, nposts, has_rest_marker);
+  if (!has_kwp && as_gate)
+    buf_puts(pb, "    int _sp_kwpos = _sp_proc_kwpos; _sp_proc_kwpos = 0;\n");
+  else if (!has_kwp) buf_puts(pb, "    _sp_proc_kwpos = 0;\n");
   /* `arity` counts numbered parameters when the block carries a
      NumberedParametersNode, so adding nnumbered there counts them twice and a
      `lambda { _1 }.call("a")` was rejected as taking two. Only the
@@ -6698,14 +6711,11 @@ else if (orecv >= 0 && onm) {
      (block_auto_splats): `proc { |k, v = 5| }.call([:a, 1])` binds k = :a.
      Rewrite the argument view (both the sp_int[] slots and the boxed
      side-channel) from the array's elements before binding. */
-  int has_rest_marker = 0;
-  { int pnr = proc_params_node(c, create);
-    has_rest_marker = pnr >= 0 && nt_ref(nt, pnr, "rest") >= 0; }
   if (!is_lambda && block_auto_splats(arity, nopts, nposts, has_rest_marker)) {
     g_needs_proc_poly_argslot = 1;
     buf_puts(pb, "    sp_int _sp_as_buf[16];\n");
-    buf_printf(pb, "    if (argc == 1%s && _sp_proc_poly_args[0].tag == SP_TAG_OBJ && sp_poly_is_array_kind(_sp_proc_poly_args[0].cls_id)) {\n",
-               has_kwp ? " && !_sp_haskw" : "");
+    buf_printf(pb, "    if (argc == 1%s%s && _sp_proc_poly_args[0].tag == SP_TAG_OBJ && sp_poly_is_array_kind(_sp_proc_poly_args[0].cls_id)) {\n",
+               has_kwp ? " && !_sp_haskw" : "", as_gate ? " && _sp_kwpos != 3" : "");
     buf_puts(pb, "      sp_RbVal _sp_as_a = _sp_proc_poly_args[0];\n");
     buf_puts(pb, "      sp_int _sp_as_n = sp_poly_length(_sp_as_a); if (_sp_as_n > 16) _sp_as_n = 16;\n");
     buf_puts(pb, "      for (sp_int _i = 0; _i < _sp_as_n; _i++) {\n");
@@ -6870,9 +6880,12 @@ else if (orecv >= 0 && onm) {
   /* Splat rest and trailing post params. Both read the boxed side-channel:
      every call path now publishes all args boxed (yield's lean ABI was
      retired for this), so any position is recoverable regardless of the
-     callee's static types. CRuby non-lambda distribution: leading requireds
-     from the front, posts from the back, the remainder (possibly empty) is
-     the rest; missing posts bind nil. */
+     callee's static types. They bind by the plan a yield's block does
+     (sp_proc_fill at run time, block_fill in emit_block_binds): requireds
+     leading and post first, optionals from what remains, a rest the
+     middle, extras dropped, missing posts nil. The posts were taken from
+     the end, so `proc { |a, b = 5, c| }.call(1, 2, 3, 4)` bound c = 4 and
+     `.call(1, "s", :t)` into `|a = 5, b|` bound b = :t. */
   /* A local a default binds (a block param in `x = a.map { |i| i }`) is
      declared ahead of the optional and keyword slots that evaluate it. */
   NameSet dlocals = {0};
@@ -6895,15 +6908,18 @@ else if (orecv >= 0 && onm) {
         buf_printf(pb, "    (void)lv__%d;\n", k + 1);
       }
     /* Optionals fill from the front with whatever arguments remain after the
-       requireds and the trailing posts; a slot with no argument evaluates its
+       requireds and the posts (_sp_ot of them); a slot with no argument evaluates its
        default (which may reference earlier params -- they are bound above /
        to the left). Boxed like rest/post: a first-class proc's optionals are
        type-erased at the call site. */
+    if (nopts > 0 || nposts > 0 || (restn && restn[0]))
+      buf_printf(pb, "    sp_int _sp_ot, _sp_ps; sp_proc_fill(%d, %d, %d, %d, argc, &_sp_ot, &_sp_ps);\n",
+                 arity, nopts, nposts, has_rest_marker);
     for (int j = 0; j < nopts; j++) {
       const char *on = proc_opt_name(c, create, j);
       if (!on) continue;
       char cond[96], arg[64];
-      snprintf(cond, sizeof cond, "%d + %d < argc - %d && %d + %d < 16", arity, j, nposts, arity, j);
+      snprintf(cond, sizeof cond, "%d < _sp_ot && %d + %d < 16", j, arity, j);
       snprintf(arg, sizeof arg, "_sp_proc_poly_args[%d + %d]", arity, j);
       { LocalVar *olv = scope_local(bs, on);
         emit_proc_param_slot(c, pb, on, cond, arg, proc_opt_value(c, create, j), "sp_box_nil()",
@@ -6911,17 +6927,15 @@ else if (orecv >= 0 && onm) {
     }
     if (restn && restn[0]) {
       buf_printf(pb, "    sp_PolyArray *lv_%s = sp_PolyArray_new(); SP_GC_ROOT(lv_%s);\n", restn, restn);
-      buf_printf(pb, "    { sp_int __k = %d + %d, __hi = argc - %d; if (__hi > 16) __hi = 16;\n",
-                 arity, nopts, nposts);
+      buf_printf(pb, "    { sp_int __k = %d + _sp_ot, __hi = _sp_ps; if (__hi > 16) __hi = 16;\n", arity);
       buf_printf(pb, "      for (; __k < __hi; __k++) sp_PolyArray_push(lv_%s, _sp_proc_poly_args[__k]); }\n",
                  restn);
     }
     for (int j = 0; j < nposts; j++) {
       const char *pp = proc_post_name(c, create, j);
       if (!pp) continue;
-      buf_printf(pb, "    sp_RbVal lv_%s = ({ sp_int __i = argc - %d + %d;\n", pp, nposts, j);
-      buf_printf(pb, "      (__i >= %d && __i < argc && __i < 16) ? _sp_proc_poly_args[__i] : sp_box_nil(); });\n",
-                 arity);
+      buf_printf(pb, "    sp_RbVal lv_%s = ({ sp_int __i = _sp_ps + %d;\n", pp, j);
+      buf_puts(pb, "      (__i < argc && __i < 16) ? _sp_proc_poly_args[__i] : sp_box_nil(); });\n");
       buf_printf(pb, "    (void)lv_%s;\n", pp);
     }
   }

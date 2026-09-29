@@ -13910,11 +13910,28 @@ SP_TLS sp_Proc *_sp_proc_blk;
 #endif
 static SP_TLS void *_sp_ie_self;
 /* What the call site's trailing argument is: 1 a positional (a Hash passed
-   as `pr.call(5, {k: 2})`), 2 keywords, 0 not said (a runtime path). The
-   boxed channel carries both the same way, and since Ruby 3 a proc binds
-   keywords only from a keyword argument. Every proc prologue consumes (and
-   clears) it, the same discipline as _sp_proc_blk. */
+   as `pr.call(5, {k: 2})`), 2 keywords, 3 keywords that came to nothing
+   (an empty `**h`, which passes no argument), 0 not said (a runtime path).
+   The boxed channel carries both the same way, and since Ruby 3 a proc
+   binds keywords only from a keyword argument. Every proc prologue
+   consumes (and clears) it, the same discipline as _sp_proc_blk. */
 static SP_TLS int _sp_proc_kwpos;
+/* CRuby's proc distribution of n positional values into P leading
+   requireds, O optionals, Q posts and a rest marker R, at run time (the
+   compiler's block_fill decides it when n is static): *ot is how many
+   optionals take a value, *ps the index of the first post's value (past n,
+   the posts bind nil). Requireds (leading and post) take theirs first, the
+   optionals what remains left to right, a rest the middle; values past
+   them all are dropped. */
+static inline void sp_proc_fill(sp_int P, sp_int O, sp_int Q, int R, sp_int n, sp_int *ot, sp_int *ps) {
+  sp_int o = n - P - Q;
+  if (o < 0) o = 0;
+  if (o > O) o = O;
+  sp_int rl = R ? n - P - o - Q : 0;
+  if (rl < 0) rl = 0;
+  *ot = o;
+  *ps = P + o + rl;
+}
 /* ---- --rbs seed assertions (-DSP_RBS_CHECK) ----------------------------
    A seed is trusted, never verified (docs/rbs-extract.md): the analyzer pins
    the slot and codegen narrows whatever arrives into it, so a signature the
