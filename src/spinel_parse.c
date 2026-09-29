@@ -2549,6 +2549,19 @@ static void sp_req_hoist_splice(char **result, unsigned char **fsl, size_t *fsl_
   *result = nr;
 }
 
+static char *sp_req_cond_wrap(char *content, unsigned char **cfsl, size_t *cfsl_n) {
+  size_t wcl = strlen(content);
+  char *w = malloc(wcl + 40);
+  if (!w) return content;
+  sprintf(w, "#<SPINEL_COND>\n%s%s#</SPINEL_COND>\n", content,
+          (wcl && content[wcl - 1] != '\n') ? "\n" : "");
+  free(content);
+  unsigned char z = 0;
+  sp_fsl_splice(cfsl, cfsl_n, 0, 0, &z, 1);
+  sp_fsl_splice(cfsl, cfsl_n, *cfsl_n, 0, &z, 1);
+  return w;
+}
+
 /* ---- computed requires a file's own layout decides ----
  *
  * `require File.join(Archive::LIBPATH, "ffi-libarchive", "archive")`,
@@ -2974,19 +2987,7 @@ else {
 
     /* a conditional inclusion is marked, so the requires inside it count as
        conditional too (the markers are comments: two lines, no flags) */
-    if (cond_inline && !hit.margin) {
-      size_t wcl = strlen(content);
-      char *w = malloc(wcl + 40);
-      if (w) {
-        sprintf(w, "#<SPINEL_COND>\n%s%s#</SPINEL_COND>\n", content,
-                (wcl && content[wcl - 1] != '\n') ? "\n" : "");
-        free(content);
-        content = w;
-        unsigned char z = 0;
-        sp_fsl_splice(&cfsl, &cfsl_n, 0, 0, &z, 1);
-        sp_fsl_splice(&cfsl, &cfsl_n, cfsl_n, 0, &z, 1);
-      }
-    }
+    if (cond_inline && !hit.margin) content = sp_req_cond_wrap(content, &cfsl, &cfsl_n);
 
     /* Replace the statement, consuming its trailing whitespace and single
        newline; anything else on the line (`require_relative 'x'; code`) stays,
@@ -3616,19 +3617,7 @@ else {
 
     /* a conditional inclusion is marked, so the requires inside it count as
        conditional too (the markers are comments: two lines, no flags) */
-    if (cond_inline && !hit.margin) {
-      size_t wcl = strlen(content);
-      char *w = malloc(wcl + 40);
-      if (w) {
-        sprintf(w, "#<SPINEL_COND>\n%s%s#</SPINEL_COND>\n", content,
-                (wcl && content[wcl - 1] != '\n') ? "\n" : "");
-        free(content);
-        content = w;
-        unsigned char z = 0;
-        sp_fsl_splice(&cfsl, &cfsl_n, 0, 0, &z, 1);
-        sp_fsl_splice(&cfsl, &cfsl_n, cfsl_n, 0, &z, 1);
-      }
-    }
+    if (cond_inline && !hit.margin) content = sp_req_cond_wrap(content, &cfsl, &cfsl_n);
 
     /* Replace only the `require "name"` statement itself, not the whole
        line, so `require "x"; code` keeps `code`. Consume trailing
