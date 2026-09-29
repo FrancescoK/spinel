@@ -13517,8 +13517,7 @@ static int promote_shared_stored_strings(Compiler *c) {
         int an3 = 0; const int *av3 = a3 >= 0 ? nt_arr(nt, a3, "arguments", &an3) : NULL;
         if (an3 >= 2) cand3[nc3++] = av3[an3 - 1];
       }
-      else if (cn3 && recv3 >= 0 &&
-               (sp_streq(cn3, "equal?") || sp_streq(cn3, "eql?"))) {
+      else if (cn3 && recv3 >= 0 && sp_streq(cn3, "equal?")) {
         /* identity test against the shared handle */
         int a3 = nt_ref(nt, w, "arguments");
         int an3 = 0; const int *av3 = a3 >= 0 ? nt_arr(nt, a3, "arguments", &an3) : NULL;
@@ -14908,7 +14907,7 @@ static int mark_reader_identity_operands(Compiler *c) {
   for (int w = 0; w < nt->count; w++) {
     if (nt_kind(nt, w) != NK_CallNode) continue;
     const char *nm = nt_str(nt, w, "name");
-    if (!nm || (!sp_streq(nm, "equal?") && !sp_streq(nm, "eql?"))) continue;
+    if (!nm || !sp_streq(nm, "equal?")) continue;
     int recv = nt_ref(nt, w, "receiver");
     int a = nt_ref(nt, w, "arguments");
     int ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
