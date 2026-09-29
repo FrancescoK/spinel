@@ -2012,9 +2012,10 @@ static int node_may_run_ruby(const NodeTable *nt, int node) {
    as. Bind the receiver to a rooted temp first, and only when both sides can
    allocate: a variable or a literal receiver is already held, and the extra
    temp would be churn in every string comparison in the program. Same shape as
-   the operand rule #4049 settled for call arguments. */
+   the operand rule #4049 settled for call arguments. A read of a shared String
+   slot is a fresh copy too (operand_may_allocate). */
 static void emit_str_eq_ordered(Compiler *c, int recv, int arg, int eq, Buf *b) {
-  if (subtree_may_allocate(c->nt, recv) && subtree_may_allocate(c->nt, arg)) {
+  if (operand_may_allocate(c, recv) && operand_may_allocate(c, arg)) {
     int t = ++g_tmp;
     buf_printf(b, eq ? "({ const char *_t%d = " : "(!({ const char *_t%d = ", t);
     emit_expr(c, recv, b);
