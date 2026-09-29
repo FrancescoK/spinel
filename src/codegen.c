@@ -7337,15 +7337,49 @@ int class_is_exc_subclass(Compiler *c, int ci) {
   return 0;
 }
 
+/* Per-class exception facts, computed once per class table: bit 1 the class
+   carries a builtin exception's name, bit 2 it is that builtin's reopening
+   (no superclass of its own). The name test is a scan of the builtin table,
+   and these are asked for every class at every call site the dispatch
+   emits, so asking afresh each time made the emission grow with call sites
+   times classes. */
+static unsigned char *g_excf;
+static int g_excf_n = -1, g_excf_any;
+static const Compiler *g_excf_c;
+static void excf_fill(Compiler *c) {
+  if (g_excf_c == c && g_excf_n == c->nclasses) return;
+  free(g_excf);
+  g_excf = calloc((size_t)c->nclasses + 1, 1);
+  g_excf_n = c->nclasses; g_excf_c = c; g_excf_any = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!c->classes[k].name || !is_exc_name(c->classes[k].name)) continue;
+    g_excf[k] = 1;
+    if (nt_ref(c->nt, c->classes[k].def_node, "superclass") < 0) { g_excf[k] |= 2; g_excf_any = 1; }
+  }
+}
+int any_exc_reopen(Compiler *c) { excf_fill(c); return g_excf_any; }
+int class_has_exc_name(Compiler *c, int ci) {
+  excf_fill(c);
+  return ci >= 0 && ci < g_excf_n && (g_excf[ci] & 1);
+}
+
+/* A reopening of a builtin exception class: an entry under the builtin's
+   name with no superclass of its own. */
+int class_is_exc_reopen(Compiler *c, int ci) {
+  excf_fill(c);
+  return ci >= 0 && ci < g_excf_n && (g_excf[ci] & 2);
+}
+
 /* The reopenings of builtin exception classes that define method mname, at
    most max of them, in declaration order: a call on a value whose static type
    is the base exception picks among them by the runtime class name. Returns
    the count. */
 int exc_reopen_definers(Compiler *c, const char *mname, int *out, int max) {
   int n = 0;
+  excf_fill(c);
+  if (!g_excf_any) return 0;
   for (int k = 0; k < c->nclasses && n < max; k++) {
-    if (!c->classes[k].name || !is_exc_name(c->classes[k].name)) continue;
-    if (nt_ref(c->nt, c->classes[k].def_node, "superclass") >= 0) continue;
+    if (!(g_excf[k] & 2)) continue;
     int mi = comp_method_in_chain(c, k, mname, NULL);
     if (mi < 0 || c->scopes[mi].class_id != k) continue;
     out[n++] = k;
@@ -13914,19 +13948,32 @@ char *codegen_program(const NodeTable *nt) {
      followed by the class's ivars (#5093). The name an exception carries is
      its qualified Ruby name ("Storage::WriteError"), as class_ruby_name
      gives it, not the class table's short name. */
+  /* A builtin exception's reopening (`class KeyError; def hint`) is an entry
+     too: a boxed exception of exactly that class keys to it by name, and one
+     of a class under it (a builtin the runtime raised, with only its
+     ancestor reopened) by the runtime's ancestry, most-derived reopening
+     first in declaration order, a base Exception reopening last. */
   { int any_exc = 0;
-    for (int i = 0; i < c->nclasses && !any_exc; i++) any_exc = class_is_exc_subclass(c, i);
+    for (int i = 0; i < c->nclasses && !any_exc; i++)
+      any_exc = class_is_exc_subclass(c, i) || class_is_exc_reopen(c, i);
     if (any_exc) {
       buf_puts(&b, "SP_UNUSED static int sp_exc_user_cls_id(sp_RbVal v){\n");
       buf_puts(&b, "  const char *n = v.v.p ? ((sp_Exception *)v.v.p)->cls_name : NULL;\n  if (!n) return 0x7fffffff;\n");
       for (int i = 0; i < c->nclasses; i++) {
-        if (!class_is_exc_subclass(c, i)) continue;
+        if (!class_is_exc_subclass(c, i) && !class_is_exc_reopen(c, i)) continue;
         const char *qn = class_ruby_name(c, i);
         if (!qn) qn = c->classes[i].name;
         if (!qn) continue;
         buf_printf(&b, "  if (strcmp(n, \"%s\") == 0) return %d;\n", qn, i);
       }
-      buf_puts(&b, "  return 0x7fffffff;\n}\n");
+      int base_exc = -1;
+      for (int i = 0; i < c->nclasses; i++) {
+        if (!class_is_exc_reopen(c, i)) continue;
+        if (sp_streq(c->classes[i].name, "Exception")) { base_exc = i; continue; }
+        buf_printf(&b, "  if (sp_exc_cls_matches(n, \"%s\")) return %d;\n", c->classes[i].name, i);
+      }
+      if (base_exc >= 0) buf_printf(&b, "  return %d;\n}\n", base_exc);
+      else buf_puts(&b, "  return 0x7fffffff;\n}\n");
     } }
 
   /* User exception #message / #to_s overrides: a cls_name-keyed dispatcher so
