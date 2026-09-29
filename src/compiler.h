@@ -587,6 +587,11 @@ typedef struct {
                           out of the surface that answers it -- `equal?` over a
                           reader left the String arm entirely. This array says
                           only what the mark was for (#4363). */
+  unsigned char *strbuf_read_raw;  /* [node_cap] a shared-handle read whose
+                                      only consumer READS the bytes and keeps
+                                      no pointer past the call: emit
+                                      sp_String_cstr, not a whole-string copy.
+                                      The node's TYPE is unchanged (#5745). */
   TyKind *nilnarrow; /* [node_cap] param-read narrowed by a `return .. if p.nil?`
                         guard: the read's non-nil type (codegen unboxes the poly
                         slot at the read site); TY_UNKNOWN = not narrowed */
