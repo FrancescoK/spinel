@@ -30,3 +30,8 @@ a = nm.first
 p a == b
 p a != b
 p a == nm.first
+
+# the same reads inside parentheses
+p (a) == b
+p a == (b)
+p nm.first.include?((b))

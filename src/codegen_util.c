@@ -251,9 +251,11 @@ int subtree_may_allocate(const NodeTable *nt, int id) {
    an ordinary read of a shared-mutable String slot (a TY_STRBUF local or
    ivar) renders as a fresh copy of the live buffer, not as the slot itself.
    A read marked to hand out the handle (strbuf_box) copies nothing. The
-   checks are strbuf_slot_ref's, without the emission it does. */
+   checks are strbuf_slot_ref's, without the emission it does, on the read
+   inside any parentheses (`(a) == b`). */
 int operand_may_allocate(Compiler *c, int id) {
   if (subtree_may_allocate(c->nt, id)) return 1;
+  id = unwrap_parens(c, id);
   if (id < 0 || c->strbuf_box[id]) return 0;
   if (strbuf_local_name(c, id)) return 1;
   if (nt_kind(c->nt, id) != NK_InstanceVariableReadNode) return 0;
