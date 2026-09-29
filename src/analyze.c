@@ -20314,7 +20314,54 @@ void analyze_program(Compiler *c) {
      the missing symbol (#1606 -- the direct-call sibling of #1583). Widen the
      unknown parameter to TY_POLY so the body emits with a poly parameter and the
      call links. A truly-dead method (no real call) gets the same harmless poly
-     body and is dropped by --gc-sections at link. */
+     body and is dropped by --gc-sections at link.
+
+     A method that IS called is widened first, and its parameters are then
+     bound onward. Pool#insert, reached only as `db.insert(...)` on a `db` no
+     typed site binds, got a poly `binds` here and hands it to
+     `conn.execute(sql, binds)`. The main fixpoint had seen that argument as
+     unknown, which binds nothing, so execute's `binds` was typed from its
+     other caller alone: a dead `execute("...", [str])` made it a String array,
+     the live Integer-and-nil array was converted to one at the call, and its
+     Integer read as a string pointer. A method no call can reach stays unknown
+     through that re-bind and is widened only afterwards, so its harmless poly
+     body does not widen the methods it would call (a user `[]=` that only a
+     Hash index write names must not box `poke`, #4889). */
+  {
+    const NodeTable *nt = c->nt;
+    int widened = 0;
+    for (int s = 0; s < c->nscopes; s++) {
+      Scope *sc = &c->scopes[s];
+      if (!sc->reachable || sc->nparams == 0 || !sc->name) continue;
+      int unknown = 0;
+      for (int i = 0; i < sc->nparams && !unknown; i++) {
+        LocalVar *p = sc->pnames[i] ? scope_local(sc, sc->pnames[i]) : NULL;
+        unknown = p && p->type == TY_UNKNOWN;
+      }
+      if (!unknown) continue;
+      /* a call that can land here: implicit self, a receiver of this class
+         or a subclass, or one whose type is poly or never settled */
+      int called = 0;
+      for (int id = 0; id < nt->count && !called; id++) {
+        if (nt_kind(nt, id) != NK_CallNode) continue;
+        const char *nm = nt_str(nt, id, "name");
+        if (!nm || !sp_streq(nm, sc->name)) continue;
+        int rv = nt_ref(nt, id, "receiver");
+        if (rv < 0) { called = 1; break; }
+        TyKind rt = infer_type(c, rv);
+        if (rt == TY_POLY || rt == TY_UNKNOWN) called = 1;
+        else if (ty_is_object(rt) && sc->class_id >= 0 && !sc->is_cmethod &&
+                 is_descendant(c, ty_object_class(rt), sc->class_id)) called = 1;
+      }
+      if (!called) continue;
+      for (int i = 0; i < sc->nparams; i++) {
+        LocalVar *p = sc->pnames[i] ? scope_local(sc, sc->pnames[i]) : NULL;
+        if (p && p->type == TY_UNKNOWN) { slot_rule(c, p, TY_POLY, -1, "never bound: no call site gives it a type"); widened = 1; }
+      }
+    }
+    if (widened)
+      for (int iter = 0; iter < 8; iter++) if (!infer_param_types(c)) break;
+  }
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     if (!sc->reachable || sc->nparams == 0) continue;
