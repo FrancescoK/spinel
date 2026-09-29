@@ -2,8 +2,13 @@ module CM
   def sm = (@sm ||= superclass.respond_to?(:sm) ? superclass.sm.dup : [])
 end
 
+module CT
+  def st = (@st ||= superclass ? superclass.st.dup : [])
+end
+
 class Class
   include CM
+  include CT
 
   def greet(who, punct = "!") = "#{name} greets #{who}#{punct}"
 
@@ -30,6 +35,17 @@ p String.sm
 p BasicObject.sm
 p Object.superclass
 p BasicObject.superclass
+p V.st
+p Object.st
+p BasicObject.st
+p(BasicObject.superclass ? 1 : 2)
+p(!BasicObject.superclass)
+p(!!Object.superclass)
+k = BasicObject.superclass
+p(k || String)
+p(k && 4)
+p(Object.superclass && 4)
+puts "no superclass" unless k
 p String.greet("x")
 p Integer.greet("y", "?")
 p StandardError.greet("z")

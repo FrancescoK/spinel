@@ -8,6 +8,16 @@ false
 []
 BasicObject
 nil
+[]
+[]
+[]
+2
+true
+true
+String
+nil
+4
+no superclass
 "String greets x!"
 "Integer greets y?"
 "StandardError greets z!"

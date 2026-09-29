@@ -36730,6 +36730,7 @@ else {
     else if (rt == TY_POLY) { buf_puts(b, "(!sp_poly_truthy("); emit_expr(c, recv, b); buf_puts(b, "))"); }
     else if (rt == TY_INT) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == SP_INT_NIL)"); }
     else if (rt == TY_FLOAT) { buf_puts(b, "sp_float_is_nil("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+    else if (rt == TY_CLASS) { buf_puts(b, "sp_class_nil_p("); emit_expr(c, recv, b); buf_puts(b, ")"); }
     /* a by-value object has no pointer to null-check and is never falsy (#2633) */
     else if (ty_is_object(rt) && comp_ty_value_obj(c, rt)) {
       buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
