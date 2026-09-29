@@ -36228,13 +36228,20 @@ else {
         "methods", "to_enum", "enum_for", "instance_variables",
         "instance_variable_get", "instance_variable_set",
         "instance_variable_defined?", "singleton_class", "extend", NULL };
-      int yes = 0, resolved = 0;
+      int yes = 0, resolved = 0, nil_obj = 0;
       /* a compiler-synthesized helper (__enum_to_a) is not a real method: CRuby
          answers false, so never let the class-chain lookup below report it */
       if (name_is_synth_method(c, qm)) { resolved = 1; yes = 0; }
-      /* every object inherits a PRIVATE Object#initialize_copy, so it answers
-         only when private methods are included (#3753) */
-      if (!resolved && sp_streq(qm, "initialize_copy") && foldable) {
+      /* every object inherits a PRIVATE Object#initialize_copy and
+         BasicObject#initialize, so they answer only when private methods are
+         included (#3753), unless the class made them public */
+      int init_pub = 0;
+      if ((sp_streq(qm, "initialize_copy") || sp_streq(qm, "initialize")) && recv >= 0 && ty_is_object(rt)) {
+        int at = -1;
+        init_pub = comp_method_vis_declared(c, ty_object_class(rt), qm, &at) == SP_VIS_PUBLIC && at >= 0;
+      }
+      if (!resolved && init_pub) { resolved = 1; yes = 1; }
+      if (!resolved && (sp_streq(qm, "initialize_copy") || sp_streq(qm, "initialize")) && foldable) {
         resolved = 1; yes = include_all;
       }
       for (int u = 0; !resolved && uni[u]; u++) if (sp_streq(qm, uni[u])) { yes = resolved = 1; break; }
@@ -36324,6 +36331,9 @@ else {
         }
         else if (recv >= 0 && ty_is_object(rt)) {
           int cid = ty_object_class(rt);
+          /* a heap object slot holds nil as NULL (a defaulted `host = nil`
+             parameter), and nil answers only its own surface */
+          if (!comp_ty_value_obj(c, rt)) nil_obj = 1;
           /* a writer query (`m=`) consults the writer table under its base name */
           size_t ql = strlen(qm);
           int is_wr = ql > 0 && qm[ql - 1] == '=';
@@ -36464,6 +36474,11 @@ else {
         emit_str_literal(b, qm);
         buf_puts(b, "); })");
         return;
+      }
+      if (resolved && nil_obj) {
+        int nil_too = nil_answers_name(qm) || sp_streq(qm, "rationalize");
+        if (yes && !nil_too) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") != NULL)"); return; }
+        if (!yes && nil_too) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == NULL)"); return; }
       }
       if (resolved) { buf_printf(b, "%d", yes); return; }
     }

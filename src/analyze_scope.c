@@ -1307,8 +1307,10 @@ static void register_method_visibility_body(Compiler *c, ClassInfo *cls, int bod
     if (!sty) continue;
     if (sp_streq(sty, "DefNode")) {
       const char *mname = nt_str(nt, s, "name");
+      /* `def initialize` is private whatever section it sits in; only a
+         later `public :initialize` makes it public */
       if (mname && nt_ref(nt, s, "receiver") < 0)
-        vis_record(cls, mname, cur, sg);
+        vis_record(cls, mname, !sg && sp_streq(mname, "initialize") ? SP_VIS_PRIVATE : cur, sg);
       continue;
     }
     if (!sg && sp_streq(sty, "SingletonClassNode")) {
