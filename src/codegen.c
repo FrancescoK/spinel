@@ -9404,6 +9404,20 @@ void emit_super(Compiler *c, int id, Buf *b) {
         return;
       }
     }
+    /* `super` from an exception subclass's own #message / #to_s reaches
+       Exception's: the message the exception was raised with. The subclass's
+       struct starts with the builtin exception's, so the stored message reads
+       straight off self (`def message; [super, detail].join; end`). */
+    if (class_is_exc_subclass(c, s->class_id) && !s->is_cmethod &&
+        (sp_streq(uname, "message") || sp_streq(uname, "to_s"))) {
+      TyKind rt = comp_ntype(c, id);
+      Buf mb; memset(&mb, 0, sizeof mb);
+      buf_printf(&mb, "sp_exc_message((struct sp_Exception_s *)%s)", g_self);
+      if (rt == TY_POLY) { buf_puts(b, "sp_box_str("); buf_puts(b, mb.p); buf_puts(b, ")"); }
+      else buf_puts(b, mb.p);
+      free(mb.p);
+      return;
+    }
     /* No superclass method anywhere (parent chain, included-module shadow, and
        the exception-initialize special case all missed). CRuby raises
        NoMethodError at runtime, so emit that rather than rejecting at compile
