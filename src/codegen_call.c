@@ -1860,6 +1860,17 @@ void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int for
          itself, can allocate and collect before the callee reads the value back
          from the (un-scanned) side-channel. Use the type-correct macro. */
       if (at == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", atmp[k]); }
+      /* A value-type object is a struct on the stack, not a heap pointer:
+         root its String fields, as a value-type local's are, never the
+         struct itself as though it were one. */
+      else if (ty_is_object(at) && comp_ty_value_obj(c, at)) {
+        ClassInfo *vc = &c->classes[ty_object_class(at)];
+        for (int i = 0; i < vc->nivars; i++)
+          if (vc->ivar_types[i] == TY_STRING) {
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "SP_GC_ROOT(_t%d.iv_%s);\n", atmp[k], iv_c(vc->ivars[i] + 1));
+          }
+      }
       else if (proc_slot_is_ptr(at) || at == TY_PROC) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", atmp[k]); }
       free(vb.p);
     }
@@ -1890,8 +1901,11 @@ void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int for
          typed -- speculative, exactly like the dead float slot below, so an
          object here must not raise. */
       if (at == TY_POLY) buf_printf(b, "sp_poly_slot_i(_t%d)", atmp[k]);
-      else if (proc_slot_is_ptr(at) || at == TY_PROC) buf_printf(b, "(sp_int)(uintptr_t)_t%d", atmp[k]);
+      /* the by-value test goes first: proc_slot_is_ptr answers yes for every
+         object type, a value-type one included, and a struct cast to
+         (sp_int)(uintptr_t) does not compile */
       else if (at == TY_FLOAT || proc_slot_via_poly(c, at)) buf_puts(b, "0");  /* rides the boxed side-channel; the sp_int slot is dead */
+      else if (proc_slot_is_ptr(at) || at == TY_PROC) buf_printf(b, "(sp_int)(uintptr_t)_t%d", atmp[k]);
       else buf_printf(b, "_t%d", atmp[k]);
     }
     if (nargs == 0) buf_puts(b, "0");  /* C99: no empty initializer list */
@@ -7260,7 +7274,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       emit_poly_vis_precheck(c, id, tv, b);
       size_t pd_from = b->len;   /* the region pd_hoist may move out of line */
       emit_ctype(c, is_scalar_ret(ret) ? ret : TY_INT, b);
-      buf_printf(b, " _t%d = %s; ", tr, is_scalar_ret(ret) ? default_value(ret) : "0");
+      buf_printf(b, " _t%d = %s; ", tr, is_scalar_ret(ret) ? default_value_from_compiler(c, ret) : "0");
       /* When the dispatch result feeds a poly context, tr is sp_RbVal, so the
          length-like int branches must box their integer result. */
       const char *bopen = (ret == TY_POLY) ? "sp_box_int(" : "";
@@ -8690,7 +8704,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           if (ret == TY_POLY) emit_boxed_text(c, infer_type(c, argv[1]), dn, b);
           else buf_puts(b, dn);
         }
-        else buf_puts(b, is_scalar_ret(ret) ? default_value(ret) : "0");
+        else buf_puts(b, is_scalar_ret(ret) ? default_value_from_compiler(c, ret) : "0");
         buf_puts(b, "; ");
       }
       /* Range#cover? on a runtime Range receiver (#3234) */

@@ -2047,6 +2047,20 @@ const char *raise_tail_value_c(Compiler *c, TyKind t) {
    sentinel, since the nil join of ty_unify makes such a slot a nullable
    scalar; 0 read as a truthy number there (the String's NULL was its nil
    already). A counter an emitter starts at zero writes the literal. */
+/* default_value, for a caller that holds the Compiler: a value-type object is
+   a struct, so its nil slot is the zeroed struct, where a pointer object's is
+   NULL. default_value itself cannot tell the two apart from the TyKind alone. */
+const char *default_value_from_compiler(Compiler *c, TyKind t) {
+  if (ty_is_object(t) && comp_ty_value_obj(c, t)) {
+    static char buf[4][96];
+    static int slot;
+    char *out = buf[slot++ & 3];
+    snprintf(out, sizeof buf[0], "(sp_%s){0}", c->classes[ty_object_class(t)].c_name);
+    return out;
+  }
+  return default_value(t);
+}
+
 const char *default_value(TyKind t) {
   switch (t) {
     case TY_INT:    return "SP_INT_NIL";
