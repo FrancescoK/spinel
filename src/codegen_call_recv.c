@@ -9330,11 +9330,13 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       /* Float#eql?(x): true only when x is itself a Float of equal value (no
          numeric coercion, unlike ==). A float-typed arg compares directly; any
          other arg is boxed and rejected unless it is tagged float at runtime. */
-      else if (sp_streq(name, "eql?") && argc == 1) {
+      /* Float#equal?: an unboxed double is an immediate value -- identity IS
+         the value, exactly CRuby's flonum behavior (1.0.equal?(1.0) is true). */
+      else if ((sp_streq(name, "eql?") || sp_streq(name, "equal?")) && argc == 1) {
         TyKind a0 = comp_ntype(c, argv[0]);
         /* a receiver holding its nil sentinel is nil (see Integer#eql?) */
         if (call_returns_nullable_int(c, recv)) {
-          buf_printf(b, "sp_poly_eql(sp_box_float_or_nil(%s), ", r);
+          buf_printf(b, "sp_poly_%s(sp_box_float_or_nil(%s), ", sp_streq(name, "eql?") ? "eql" : "equal", r);
           emit_boxed(c, argv[0], b); buf_puts(b, ")");
         }
         else if (a0 == TY_FLOAT) { buf_printf(b, "((%s) == (", r); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
@@ -9368,21 +9370,6 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         }
         else {
           buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)");
-        }
-      }
-      /* Float#equal?: an unboxed double is an immediate value -- identity IS
-         the value, exactly CRuby's flonum behavior (1.0.equal?(1.0) is true). */
-      else if (sp_streq(name, "equal?") && argc == 1) {
-        TyKind a0 = comp_ntype(c, argv[0]);
-        if (call_returns_nullable_int(c, recv)) {   /* nil where it is the sentinel */
-          buf_printf(b, "sp_poly_equal(sp_box_float_or_nil(%s), ", r);
-          emit_boxed(c, argv[0], b); buf_puts(b, ")");
-        }
-        else if (a0 == TY_FLOAT) { buf_printf(b, "((%s) == (", r); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
-        else {
-          int te = ++g_tmp;
-          buf_printf(b, "({ sp_RbVal _t%d = ", te); emit_boxed(c, argv[0], b);
-          buf_printf(b, "; _t%d.tag == SP_TAG_FLT && _t%d.v.f == (%s); })", te, te, r);
         }
       }
       else handled = 0;
