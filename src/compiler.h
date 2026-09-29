@@ -418,6 +418,10 @@ typedef struct {
      must read one slot (civ_<Class>_<x>) rather than diverging (#3776) */
   char **sg_civ;
   int nsg_civ, csg_civ;
+  /* singleton accessor names inherited from an ancestor's `class << self`
+     (resolve_parents copies them in): reflection lists them only with all */
+  char **sg_inh;
+  int nsg_inh, csg_inh;
   char **alias_new;    /* `alias new old`: alias_new[i] redirects to alias_old[i] */
   char **alias_old;
   int   *alias_cls;    /* class the lookup resumes from (an alias of an
@@ -995,6 +999,8 @@ void       comp_add_alias(ClassInfo *ci, const char *new_name, const char *old_n
 void       comp_add_alias_from(ClassInfo *ci, const char *new_name, const char *old_name, int from_cls);
 void       comp_add_sg_civ(ClassInfo *ci, const char *name);
 int        comp_is_sg_civ(ClassInfo *ci, const char *name);
+int        comp_is_sg_inh(ClassInfo *ci, const char *name);
+void       comp_add_sg_inh(ClassInfo *ci, const char *name);
 /* Prepend-chain helpers. */
 void        comp_prep_chain_add(ClassInfo *ci, const char *from, const char *to);
 const char *comp_prep_chain_target(Compiler *c, int class_id, const char *name);

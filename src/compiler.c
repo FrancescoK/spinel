@@ -1083,6 +1083,15 @@ void comp_add_sg_civ(ClassInfo *ci, const char *name) {
   if (name) name_add(&ci->sg_civ, &ci->nsg_civ, &ci->csg_civ, name);
 }
 int comp_is_sg_civ(ClassInfo *ci, const char *name) { return name_in(ci->sg_civ, ci->nsg_civ, name); }
+int comp_is_sg_inh(ClassInfo *ci, const char *name) { return name_in(ci->sg_inh, ci->nsg_inh, name); }
+void comp_add_sg_inh(ClassInfo *ci, const char *name) {
+  if (name_in(ci->sg_inh, ci->nsg_inh, name)) return;
+  if (ci->nsg_inh >= ci->csg_inh) {
+    ci->csg_inh = ci->csg_inh ? ci->csg_inh * 2 : 4;
+    ci->sg_inh = realloc(ci->sg_inh, sizeof(char *) * (size_t)ci->csg_inh);
+  }
+  ci->sg_inh[ci->nsg_inh++] = strdup(name);
+}
 int comp_is_sg_reader(ClassInfo *ci, const char *name) { return name_in(ci->sg_readers, ci->nsg_readers, name); }
 int comp_is_sg_writer(ClassInfo *ci, const char *name) { return name_in(ci->sg_writers, ci->nsg_writers, name); }
 
