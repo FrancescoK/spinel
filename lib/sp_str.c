@@ -12,6 +12,33 @@
 #include <stdint.h>
 #include "sp_str.h"
 #include "sp_crypto.h"   /* sp_crypto_hmac_sha256_b64url for sp_str_crypt */
+/* general categories, for what inspect escapes; `spin ext build` vendors
+   the runtime flat, lib/regexp/ beside lib/ */
+#if defined(__has_include)
+#  if __has_include("regexp/re_prop.h")
+#    include "regexp/re_prop.h"
+#  else
+#    include "re_prop.h"
+#  endif
+#else
+#  include "regexp/re_prop.h"
+#endif
+
+/* Does String#inspect spell codepoint cp as \uXXXX? CRuby escapes what
+   rb_enc_isprint refuses: a C1 control (Cc), a line or paragraph separator
+   (Zl, Zp), a surrogate (Cs) and an unassigned codepoint (Cn). A format
+   character (Cf) and a space (Zs) print as they are. */
+static int sp_cp_inspect_escapes(uint32_t cp) {
+  size_t lo = 0, hi = RE_PROP_GC_RUN_COUNT;
+  while (hi - lo > 1) {
+    size_t mid = (lo + hi) / 2;
+    if ((re_prop_gc_runs[mid] >> RE_PROP_GC_BITS) <= cp) lo = mid;
+    else hi = mid;
+  }
+  const char *gc = re_prop_gc_names[re_prop_gc_runs[lo] & ((1u << RE_PROP_GC_BITS) - 1)];
+  return !strcmp(gc, "Cc") || !strcmp(gc, "Zl") || !strcmp(gc, "Zp") ||
+         !strcmp(gc, "Cs") || !strcmp(gc, "Cn");
+}
 
 /* Single-char substring cache (sub_range fast path); per-process, only
    used by the sub_range helpers that live in this file. */
@@ -202,7 +229,17 @@ else if(c>=0x80){
   int ok=extra>0&&!sp_str_is_binary(s)&&i+(size_t)extra<sl;
   for(int k=1;ok&&k<=extra;k++)if(((unsigned char)s[i+(size_t)k]&0xC0)!=0x80)ok=0;
   if(!ok){snprintf(r+o,5,"\\x%02X",c);o+=4;}
-  else{for(int k=0;k<=extra;k++)r[o++]=s[i+(size_t)k];i+=(size_t)extra;}
+  else{
+    /* a valid character that does not print is spelled by its codepoint,
+       as CRuby does: "\u0080", "\u2028", "\u{E0080}" */
+    uint32_t cp=(uint32_t)(c&(extra==1?0x1F:extra==2?0x0F:0x07));
+    for(int k=1;k<=extra;k++)cp=(cp<<6)|((unsigned char)s[i+(size_t)k]&0x3F);
+    if(sp_cp_inspect_escapes(cp)){
+      if(cp>0xFFFF){int w=snprintf(r+o,12,"\\u{%X}",(unsigned)cp);o+=(size_t)w;}
+      else{snprintf(r+o,7,"\\u%04X",(unsigned)cp);o+=6;}
+    }
+    else for(int k=0;k<=extra;k++)r[o++]=s[i+(size_t)k];
+    i+=(size_t)extra;}
 }
 else{r[o++]=(char)c;}}r[o++]='"';r[o]=0;sp_str_set_len(r,o);return r;}
 /* A symbol prints without quotes when its name is a plain identifier (an
