@@ -5112,21 +5112,31 @@ static sp_PolyArray *sp_poly_enum_recv(sp_RbVal v, const char *m) {
 
 /* inject/reduce with a symbol op over a poly iterable (a container-read row
    or a to_a-bearing user object like Set, #3234): fold through the numeric-
-   tower poly ops. Only the arithmetic four dispatch; anything else raises
-   like an unresolved method. */
+   tower poly ops: the arithmetic operators, `%`, `**`, and the bitwise
+   `&`, `|`, `^`, `<<`, `>>`. Anything else raises like an unresolved
+   method. */
 static sp_RbVal sp_poly_inject_sym(sp_RbVal v, sp_sym op) {
   sp_PolyArray *a = sp_poly_arr_recv(v, "inject");
   if (!a || a->len == 0) return sp_box_nil();
   const char *nm = sp_sym_name_fn ? sp_sym_name_fn(op) : "";
+  sp_RbVal (*fn)(sp_RbVal, sp_RbVal) = NULL;
+  if (!strcmp(nm, "+")) fn = sp_poly_add;
+  else if (!strcmp(nm, "-")) fn = sp_poly_sub;
+  else if (!strcmp(nm, "*")) fn = sp_poly_mul;
+  else if (!strcmp(nm, "/")) fn = sp_poly_div;
+  else if (!strcmp(nm, "%")) fn = sp_poly_mod;
+  else if (!strcmp(nm, "**")) fn = sp_poly_pow;
+  else if (!strcmp(nm, "&")) fn = sp_poly_band;
+  else if (!strcmp(nm, "|")) fn = sp_poly_bor;
+  else if (!strcmp(nm, "^")) fn = sp_poly_bxor;
+  else if (!strcmp(nm, "<<")) fn = sp_poly_shl;
+  else if (!strcmp(nm, ">>")) fn = sp_poly_shr;
   sp_RbVal acc = sp_PolyArray_get(a, 0);
   SP_GC_ROOT_RBVAL(acc);
   for (sp_int i = 1; i < a->len; i++) {
     sp_RbVal e = sp_PolyArray_get(a, i);
-    if (nm[0] == '+' && !nm[1]) acc = sp_poly_add(acc, e);
-    else if (nm[0] == '-' && !nm[1]) acc = sp_poly_sub(acc, e);
-    else if (nm[0] == '*' && !nm[1]) acc = sp_poly_mul(acc, e);
-    else if (nm[0] == '/' && !nm[1]) acc = sp_poly_div(acc, e);
-    else sp_raise_nomethod(sp_nomethod_msg(nm, acc));
+    if (!fn) sp_raise_nomethod(sp_nomethod_msg(nm, acc));
+    acc = fn(acc, e);
   }
   return acc;
 }
