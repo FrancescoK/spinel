@@ -22686,17 +22686,29 @@ static int emit_bm_flat_args(Compiler *c, const int *argv, int argc, Buf *b) {
   return tflat;
 }
 
+/* A `&blk` or an anonymous `&` forwards the block of the body it is
+   written in, which once that body is inlined is its caller's: the literal
+   block or `&expr` the caller passed (resolve_forwarded_block), or the
+   real proc the inline was handed in their place (`fw(&pr)`,
+   g_yield_proc_ref), which this answers when the node resolves to none
+   (blk < 0 for a written blk0). Read as written, the block named a proc
+   local the inlined body does not declare, and the C did not compile
+   (`def fw(&) = method(:t).call(1, &)`). */
+static const char *forwarded_real_proc(int blk0, int blk) {
+  return blk0 >= 0 && blk < 0 ? g_yield_proc_ref : NULL;
+}
+
 /* The block argument a Method call hands a target that keeps a `&blk`
-   parameter: the site's literal block as a proc, a Proc passed with `&`, or
-   NULL. Nothing is passed to a target without one. */
+   parameter: the site's literal block as a proc, a Proc passed with `&`, a
+   forwarded one (forwarded_real_proc), or NULL. Nothing is passed to a
+   target without one. */
 static void emit_method_call_block(Compiler *c, int id, Scope *tm, int lead_comma, Buf *b) {
   const NodeTable *nt = c->nt;
   if (!tm->blk_param || !tm->blk_param[0] || tm->yields) return;
-  int bn = nt_ref(nt, id, "block");
-  const char *bty = bn >= 0 ? nt_type(nt, bn) : NULL;
-  int bx = (bty && sp_streq(bty, "BlockArgumentNode")) ? nt_ref(nt, bn, "expression") : -1;
+  int bn0 = nt_ref(nt, id, "block"), bn = resolve_forwarded_block(c, bn0);
+  const char *fwd = forwarded_real_proc(bn0, bn);
   if (lead_comma) buf_puts(b, ", ");
-  if (bty && sp_streq(bty, "BlockNode")) {
+  if (nt_kind(nt, bn) == NK_BlockNode) {
     int tb = ++g_tmp;
     Buf pv; memset(&pv, 0, sizeof pv);
     emit_proc_literal(c, bn, &pv);
@@ -22705,7 +22717,8 @@ static void emit_method_call_block(Compiler *c, int id, Scope *tm, int lead_comm
     free(pv.p);
     buf_printf(b, "_t%d", tb);
   }
-  else if (bx < 0 || !emit_block_arg_proc(c, bx, b)) buf_puts(b, "NULL");
+  else if (fwd) buf_puts(b, fwd);
+  else if (!emit_forwarded_proc_arg(c, bn, b)) buf_puts(b, "NULL");
 }
 
 /* Whether a Method call passes more than plain positionals: a splat,
@@ -22734,18 +22747,17 @@ static void emit_bm_spread_call(Compiler *c, int id, int recv, const int *argv, 
   char kwp[24];
   int ta = emit_spread_args_kw(c, argv, argc, kwp, sizeof kwp);
   char blk[24] = "NULL";
-  int bn = nt_ref(nt, id, "block");
-  if (bn >= 0) {
+  /* a forwarded `&blk` or `&` resolves as emit_method_call_block's does */
+  int bn0 = nt_ref(nt, id, "block"), bn = resolve_forwarded_block(c, bn0);
+  const char *fwd = forwarded_real_proc(bn0, bn);
+  if (bn >= 0 || fwd) {
     Buf pv; memset(&pv, 0, sizeof pv);
-    int bx = nt_kind(nt, bn) == NK_BlockArgumentNode ? nt_ref(nt, bn, "expression") : -1;
-    int ok = nt_kind(nt, bn) == NK_BlockNode ? (emit_proc_literal(c, bn, &pv), 1)
-           : bx >= 0 && emit_block_arg_proc(c, bx, &pv);
-    if (ok) {
-      int tb = ++g_tmp;
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d);\n", tb, pv.p ? pv.p : "NULL", tb);
-      snprintf(blk, sizeof blk, "_t%d", tb);
-    }
+    if (fwd) buf_puts(&pv, fwd);
+    else if (!emit_forwarded_proc_arg(c, bn, &pv)) emit_proc_literal(c, bn, &pv);
+    int tb = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d);\n", tb, pv.p ? pv.p : "NULL", tb);
+    snprintf(blk, sizeof blk, "_t%d", tb);
     free(pv.p);
   }
   buf_printf(b, "sp_bm_call_spread(_t%d, %s, sp_box_poly_array(_t%d), %s)", tr, blk, ta, kwp);
@@ -26593,10 +26605,14 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
        one took no block. The temp keeps it rooted for the call. */
     char blk_tmp[24] = "";
     {
-      int cblk = nt_ref(nt, id, "block");
+      /* a forwarded `&blk` or `&` resolves as a Method call's does
+         (forwarded_real_proc) */
+      int cblk0 = nt_ref(nt, id, "block"), cblk = resolve_forwarded_block(c, cblk0);
       int cbx = cblk >= 0 && nt_kind(nt, cblk) == NK_BlockArgumentNode ? nt_ref(nt, cblk, "expression") : -1;
       Buf bpv; memset(&bpv, 0, sizeof bpv);
-      if (cbx >= 0 && emit_block_arg_proc(c, cbx, &bpv)) {
+      const char *fwd = forwarded_real_proc(cblk0, cblk);
+      if (fwd) buf_puts(&bpv, fwd);
+      if (fwd || (cbx >= 0 && emit_block_arg_proc(c, cbx, &bpv))) {
         int tb = ++g_tmp;
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d);%c", tb, bpv.p, tb, 10);

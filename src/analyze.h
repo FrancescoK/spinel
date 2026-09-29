@@ -197,10 +197,10 @@ int is_method_obj_call(Compiler *c, int node);        /* is node a method(:sym) 
 int method_obj_target_mi(Compiler *c, int node);      /* target method scope idx, or -1 */
 TyKind method_obj_adapter_ret(TyKind arr, const char *op); /* typed-array adapter Ruby return */
 int method_recv_node(Compiler *c, int recv);          /* the method(:sym) node behind a Method expr */
-int method_recv_nodes(Compiler *c, int recv, int *out, int cap); /* every one a re-written local may hold */
+int method_recv_nodes(Compiler *c, int recv, int **out); /* every one a re-written local may hold */
 int method_expr_is_unbound(Compiler *c, int recv);    /* instance_method with no #bind crossed */
 int class_is_blank_slate(Compiler *c, int ci);        /* explicit `< BasicObject` descent */
-int proc_to_proc_method_nodes(Compiler *c, int recv, int *out, int cap); /* the method(:sym) nodes behind <method>.to_proc */
+int proc_to_proc_method_nodes(Compiler *c, int recv, int **out); /* the method(:sym) nodes behind <method>.to_proc */
 int method_call_param_shift(Compiler *c, int mn, int mi); /* 1 when self carries param[0] (__bam wrapper) */
 
 /* Can a call ever arrive at an instance method of class/module `ci`? Only

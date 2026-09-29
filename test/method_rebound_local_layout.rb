@@ -10,7 +10,11 @@
 # keyword flag nor its block behind. `.to_proc.call` through such a local
 # typed the targets' parameters from nothing, Integer, and a String
 # argument raised TypeError. A Method read out of a poly slot goes through
-# the same lane.
+# the same lane. A `&` or `&blk` forwarded through a Method call named the
+# forwarder's own proc, which its inlined body does not declare, and the C
+# did not compile. A local written nine times bound the arguments to its
+# first eight targets only: a ninth raised TypeError on a String, and a
+# bound builtin there NoMethodError.
 
 def lg(v) = (puts "arg #{v.inspect}"; v)
 
@@ -149,3 +153,51 @@ p inner([1, 2])
 # a Method read out of a poly slot
 [C.new.method(:n), method(:n)].each { |e| p try { e.call(**{ z: 1 }) } }
 [C.new.method(:m), method(:m)].each { |e| p e.call(*s, 2) }
+
+# a `&` or `&blk` passes the block the forwarder was given, a literal one,
+# a Proc or none: to a known target, a bound one, a converted one and a
+# rebound local
+def fa(&) = method(:b).call(1, &)
+def fb(&blk) = C.new.method(:b).call(2, &blk)
+def fc(&) = method(:b).to_proc.call(3, &)
+def fd(k, &)
+  q = C.new.method(:b)
+  q = method(:b) if k
+  q.call(4, &)
+end
+p fa { |i| [:fa, i] }
+p fa
+p fb { |i| [:fb, i] }
+p fc { |i| [:fc, i] }
+p fd(true) { |i| [:fd, i] }
+p fd(false) { |i| [:fd, i] }
+p fd(true)
+p fa(&pr)
+p fc(&pr)
+p fd(false, &pr)
+
+# every target of a local written nine times takes the arguments
+def g1(a) = [1, a * 2]
+def g2(a) = [2, a * 2]
+def g3(a) = [3, a * 2]
+def g4(a) = [4, a * 2]
+def g5(a) = [5, a * 2]
+def g6(a) = [6, a * 2]
+def g7(a) = [7, a * 2]
+def g8(a) = [8, a * 2]
+def g9(a) = [9, a * 2]
+p g9(4)
+def nine(k)
+  q = method(:g1)
+  q = method(:g2) if k == 2
+  q = method(:g3) if k == 3
+  q = method(:g4) if k == 4
+  q = method(:g5) if k == 5
+  q = method(:g6) if k == 6
+  q = method(:g7) if k == 7
+  q = method(:g8) if k == 8
+  q = method(:g9) if k == 9
+  q = "ab".method(:center) if k == 10
+  [q.call(k < 10 ? "s" : 6), q.to_proc.call(k < 10 ? "t" : 7)]
+end
+p nine(9), nine(10), nine(1)
