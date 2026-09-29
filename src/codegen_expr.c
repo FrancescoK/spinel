@@ -3172,17 +3172,18 @@ else {
         }
         else if ((sh == TY_POLY || shn) && poly_poly) {
           /* a poly spread source, or a hash of another variant, into a
-             poly-poly literal: iterate its boxed (key,value) pairs at runtime
-             (any hash variant) and set them. */
+             poly-poly literal: its boxed (key,value) pairs set at run time
+             (any hash variant). nil spreads nothing, and anything else
+             converts through its #to_hash or raises CRuby's TypeError
+             (sp_kw_merge_any): the walk alone took a user object or an
+             Integer for no pairs at all. */
           int st = ++g_tmp;
           Buf sb; memset(&sb, 0, sizeof sb); emit_boxed(c, src, &sb);
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", st, sb.p ? sb.p : "sp_box_nil()", st);
           free(sb.p);
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "for (sp_int _si = 0, _sn = sp_poly_length(_t%d); _si < _sn; _si++) "
-                            "{ sp_RbVal _sk, _sv; sp_poly_hash_pair(_t%d, _si, &_sk, &_sv); "
-                            "sp_PolyPolyHash_set(_t%d, _sk, _sv); }\n", st, st, t);
+          buf_printf(g_pre, "sp_kw_merge_any(_t%d, _t%d);\n", t, st);
         }
         else {
           unsupported(c, id, "hash double-splat of an unmergeable source"); return;

@@ -8556,13 +8556,38 @@ static void emit_conv_bridge(Compiler *c, Buf *b, const char *mname, TyKind want
    boxed for the runtime to judge. Answers 1 with the boxed value, 0 for a
    class without the method -- and asked with a NULL `out`, whether the
    method exists, calling nothing. Emitted only for a program that calls
-   Kernel#Integer or Kernel#Float somewhere (Compiler.uses_kconv). */
+   Kernel#Integer or Kernel#Float somewhere (Compiler.uses_kconv), or that
+   converts a boxed `**` operand through its #to_hash (row 5,
+   Compiler.uses_kw_to_hash; sp_kw_splat_conv judges the answer). */
+static const char *const kconv_names[] = { "to_int", "to_i", "to_f", "to_str", NULL, "to_hash" };
+static int kconv_row_wanted(Compiler *c, int w) {
+  return w == 5 ? c->uses_kw_to_hash : w < 4 && c->uses_kconv;
+}
+static void emit_kconv_row(Compiler *c, int i, int w, int *rows, Buf *b) {
+  int tmi = -1;
+  int callee = conv_bridge_callee(c, i, kconv_names[w], TY_UNKNOWN, 1, &tmi);
+  if (callee < 0) return;
+  if ((*rows)++ == 0) buf_printf(b, "    case %d: switch (which) {\n", i);
+  char call[256];
+  snprintf(call, sizeof call, "sp_%s_%s(%s(sp_%s *)p%s)", c->classes[callee].c_name,
+           mc(c->scopes[tmi].name),
+           comp_ty_value_obj(c, ty_object(callee)) ? "*" : "", c->classes[callee].c_name,
+           bridge_blk_arg(c, tmi));
+  TyKind rt = (TyKind)c->scopes[tmi].ret;
+  buf_printf(b, "      case %d: if (out) *out = ", w);
+  /* a Float slot's nil is a NaN payload, which the plain box would carry
+     as a Float answer */
+  if (rt == TY_FLOAT)
+    buf_printf(b, "({ sp_float _f = %s; sp_float_is_nil(_f) ? sp_box_nil() : sp_box_float(_f); })", call);
+  else emit_boxed_text(c, rt, call, b);
+  buf_puts(b, "; return 1;\n");
+}
 static void emit_kconv_bridge(Compiler *c, Buf *b) {
-  static const char *const names[] = { "to_int", "to_i", "to_f", "to_str" };
   for (int i = 0; i < c->nclasses; i++) {
-    for (int w = 0; w < 4; w++) {
+    for (int w = 0; w < 6; w++) {
+      if (!kconv_row_wanted(c, w)) continue;
       int tmi = -1;
-      int callee = conv_bridge_callee(c, i, names[w], TY_UNKNOWN, 1, &tmi);
+      int callee = conv_bridge_callee(c, i, kconv_names[w], TY_UNKNOWN, 1, &tmi);
       if (callee != i) continue;   /* an ancestor's own row declares it */
       buf_puts(b, g_debug ? "" : "static ");
       emit_ctype(c, (TyKind)c->scopes[tmi].ret, b);
@@ -8575,28 +8600,11 @@ static void emit_kconv_bridge(Compiler *c, Buf *b) {
               "  switch (cls_id) {\n");
   for (int i = 0; i < c->nclasses; i++) {
     int rows = 0;
-    for (int w = 0; w < 4; w++) {
-      int tmi = -1;
-      int callee = conv_bridge_callee(c, i, names[w], TY_UNKNOWN, 1, &tmi);
-      if (callee < 0) continue;
-      if (rows++ == 0) buf_printf(b, "    case %d: switch (which) {\n", i);
-      char call[256];
-      snprintf(call, sizeof call, "sp_%s_%s(%s(sp_%s *)p%s)", c->classes[callee].c_name,
-               mc(c->scopes[tmi].name),
-               comp_ty_value_obj(c, ty_object(callee)) ? "*" : "", c->classes[callee].c_name,
-               bridge_blk_arg(c, tmi));
-      TyKind rt = (TyKind)c->scopes[tmi].ret;
-      buf_printf(b, "      case %d: if (out) *out = ", w);
-      /* a Float slot's nil is a NaN payload, which the plain box would carry
-         as a Float answer */
-      if (rt == TY_FLOAT)
-        buf_printf(b, "({ sp_float _f = %s; sp_float_is_nil(_f) ? sp_box_nil() : sp_box_float(_f); })", call);
-      else emit_boxed_text(c, rt, call, b);
-      buf_puts(b, "; return 1;\n");
-    }
+    for (int w = 0; w < 4; w++)
+      if (kconv_row_wanted(c, w)) emit_kconv_row(c, i, w, &rows, b);
     /* row 4: #to_f for a Math argument, which rb_to_float converts only
        for a Numeric (the runtime's sp_num_to_f) */
-    if (class_is_user_numeric(c, i)) {
+    if (c->uses_kconv && class_is_user_numeric(c, i)) {
       int tmi = -1;
       int callee = conv_bridge_callee(c, i, "to_f", TY_UNKNOWN, 1, &tmi);
       if (callee >= 0) {
@@ -8614,6 +8622,7 @@ static void emit_kconv_bridge(Compiler *c, Buf *b) {
         buf_puts(b, "; return 1;\n");
       }
     }
+    if (kconv_row_wanted(c, 5)) emit_kconv_row(c, i, 5, &rows, b);
     if (rows) buf_puts(b, "      default: return 0;\n    }\n");
   }
   buf_puts(b, "    default: return 0;\n  }\n}\n");
@@ -8722,7 +8731,7 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
   emit_conv_bridge(c, b, "to_path", TY_STRING,
                    "const char *", "static const char *sp_obj_to_path_sw(int cls_id, void *p)",
                    0, "return NULL;");
-  if (c->uses_kconv) emit_kconv_bridge(c, b);
+  if (c->uses_kconv || c->uses_kw_to_hash) emit_kconv_bridge(c, b);
   buf_puts(b, "static const char *sp_obj_cls_name_rt(int cls_id) {\n"
               "  sp_Class _c = {cls_id}; return sp_class_to_s(_c);\n}\n");
   buf_puts(b, "static const char *sp_obj_inspect_sw(int cls_id, void *p) {\n");
@@ -10549,7 +10558,7 @@ void emit_regex_section(Compiler *c, Buf *b) {
     buf_puts(b, "  sp_obj_to_int_fn = sp_obj_to_int_sw;\n");
     buf_puts(b, "  sp_obj_to_str_fn = sp_obj_to_str_sw;\n");
     buf_puts(b, "  sp_obj_to_path_fn = sp_obj_to_path_sw;\n");
-    if (c->uses_kconv) buf_puts(b, "  sp_obj_conv_fn = sp_obj_conv_sw;\n");
+    if (c->uses_kconv || c->uses_kw_to_hash) buf_puts(b, "  sp_obj_conv_fn = sp_obj_conv_sw;\n");
     buf_puts(b, "  sp_obj_cls_name_fn = sp_obj_cls_name_rt;\n");
   }
   if (g_uses_marshal) {
@@ -13365,7 +13374,7 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "static sp_int sp_obj_to_int_sw(int cls_id, void *p, int *ok) SP_COLD SP_NOINLINE;\n");
     buf_puts(&b, "static const char *sp_obj_to_str_sw(int cls_id, void *p) SP_COLD SP_NOINLINE;\n");
     buf_puts(&b, "static const char *sp_obj_to_path_sw(int cls_id, void *p) SP_COLD SP_NOINLINE;\n");
-    if (c->uses_kconv)
+    if (c->uses_kconv || c->uses_kw_to_hash)
       buf_puts(&b, "static int sp_obj_conv_sw(int cls_id, void *p, int which, sp_RbVal *out) SP_COLD SP_NOINLINE;\n");
     buf_puts(&b, "static const char *sp_obj_cls_name_rt(int cls_id) SP_COLD SP_NOINLINE;\n");
   }

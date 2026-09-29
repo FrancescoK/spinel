@@ -493,9 +493,22 @@ void compute_reachable(Compiler *c) {
       if (sn && sp_streq(sn, "Numeric")) has_unum = 1;
     }
     c->uses_kconv = has_kint || has_kflt || has_unum;
+    /* a `**` operand converts through its #to_hash, which a boxed one
+       reaches through the same bridge (sp_kw_splat_conv), named nowhere in
+       the AST either */
+    int has_kwsplat = 0, has_to_hash = 0;
+    NT_FOREACH_KIND(c->nt, NK_AssocSplatNode, sid) {
+      if (nt_ref(c->nt, sid, "value") >= 0) has_kwsplat = 1;
+    }
+    NT_FOREACH_KIND(c->nt, NK_DefNode, did) {
+      const char *dn = nt_str(c->nt, did, "name");
+      if (dn && sp_streq(dn, "to_hash")) has_to_hash = 1;
+    }
+    c->uses_kw_to_hash = has_kwsplat && has_to_hash;
     if (has_kint) { MARK_NAME("to_int"); MARK_NAME("to_str"); MARK_NAME("to_i"); }
     if (has_kflt || has_unum) MARK_NAME("to_f");
-    if (has_kint || has_kflt || has_unum)
+    if (c->uses_kw_to_hash) MARK_NAME("to_hash");
+    if (has_kint || has_kflt || has_unum || c->uses_kw_to_hash)
       while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); }
   }
 

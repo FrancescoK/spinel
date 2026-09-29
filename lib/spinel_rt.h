@@ -9659,15 +9659,29 @@ static void sp_data_new_check(sp_int npos, sp_RbVal kw, const char *const *mem, 
   sp_raise_kw_error("missing", n - npos, buf);
 }
 /* A boxed `**` operand, converted the way CRuby converts one before any
-   keyword is bound or checked: nil carries no keywords and a Hash is
-   itself, but a builtin of any other class has no #to_hash, which is a
-   TypeError. A user object is one too unless `user_ok`, which the
-   compiler sets when some class of the program defines #to_hash or
-   method_missing: that #to_hash is not reachable from here. */
-static void sp_kw_splat_conv_check(sp_RbVal v, int user_ok) {
-  if (v.tag == SP_TAG_NIL || (user_ok && sp_poly_is_user_obj(v)) ||
-      (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id))) return;
+   keyword is bound or checked, answering what binds: nil carries no
+   keywords and a Hash is itself; a user object whose class defines
+   #to_hash answers it, through the generated bridge's row 5 (the program
+   emits it when it has a `**` and a #to_hash), and an answer that is no
+   Hash is CRuby's TypeError naming both classes. Any other value has no
+   #to_hash, which is a TypeError too -- a user object passes as it is only
+   when `user_ok`, which the compiler sets when some class of the program
+   defines method_missing, which may answer it. */
+static sp_RbVal sp_kw_splat_conv(sp_RbVal v, int user_ok) {
+  if (v.tag == SP_TAG_NIL || (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id))) return v;
+  if (sp_poly_is_user_obj(v)) {
+    sp_RbVal a = sp_box_nil();
+    SP_GC_ROOT_RBVAL(v);
+    if (sp_obj_conv_fn && sp_obj_conv_fn((int)v.cls_id, v.v.p, 5, &a)) {
+      if (a.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(a.cls_id)) return a;
+      const char *cn = sp_poly_class_name(v);
+      sp_raise_cls("TypeError", sp_sprintf("can't convert %s to Hash (%s#to_hash gives %s)",
+                                           cn, cn, sp_poly_class_name(a)));
+    }
+    if (user_ok) return v;
+  }
   sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Hash", sp_convert_src_name(v)));
+  return v;
 }
 
 /* NilClass-aware conversions for a boxed receiver (a nil-holding local widens
@@ -10494,14 +10508,15 @@ static void sp_kwargs_verify(sp_RbVal h, const char *const *allowed, const char 
 }
 /* `**h` into a **kwrest, where h is a Hash only known at run time: merge its
    entries into the keyword-rest being collected. nil carries no keywords, as
-   in CRuby; anything else that is not a Hash is CRuby's TypeError. The
-   keyword-rest is Symbol-keyed, so a key of another kind is refused loudly
-   rather than dropped. */
+   in CRuby; anything else converts through its #to_hash
+   (sp_kw_splat_conv) or is CRuby's TypeError. The keyword-rest is
+   Symbol-keyed, so a key of another kind is refused loudly rather than
+   dropped. */
 static void sp_kwrest_merge_poly(sp_SymPolyHash *dst, sp_RbVal h) {
+  SP_GC_ROOT(dst);
+  h = sp_kw_splat_conv(h, 0);
   if (h.tag == SP_TAG_NIL) return;
-  if (h.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(h.cls_id))
-    sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Hash", sp_convert_src_name(h)));
-  SP_GC_ROOT(dst); SP_GC_ROOT_RBVAL(h);
+  SP_GC_ROOT_RBVAL(h);
   sp_int n = sp_poly_length(h);
   for (sp_int i = 0; i < n; i++) {
     sp_RbVal k, v;
@@ -10515,10 +10530,10 @@ static void sp_kwrest_merge_poly(sp_SymPolyHash *dst, sp_RbVal h) {
    the member reads and sp_kw_splat_check take by name and a keyword_init:
    false Struct keeps in its Hash. */
 static void sp_kw_merge_any(sp_PolyPolyHash *dst, sp_RbVal h) {
+  SP_GC_ROOT(dst);
+  h = sp_kw_splat_conv(h, 0);
   if (h.tag == SP_TAG_NIL) return;
-  if (h.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(h.cls_id))
-    sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Hash", sp_convert_src_name(h)));
-  SP_GC_ROOT(dst); SP_GC_ROOT_RBVAL(h);
+  SP_GC_ROOT_RBVAL(h);
   sp_int n = sp_poly_length(h);
   for (sp_int i = 0; i < n; i++) {
     sp_RbVal k, v;

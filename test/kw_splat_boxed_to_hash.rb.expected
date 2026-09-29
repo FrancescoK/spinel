@@ -1,0 +1,52 @@
+to_hash
+[2, {z: 1}]
+to_hash
+[0, {z: 1}]
+to_hash
+1
+to_hash
+1
+to_hash
+{z: 1}
+to_hash
+to_hash
+{z: 1}
+to_hash
+[{z: 1}]
+[0, {}]
+to_hash
+to_hash
+[[:a, 1, {}], [:b, {z: 1}]]
+to_hash
+1
+to_hash
+{z: 1}
+to_hash
+{z: 1}
+to_hash
+#<struct S z=1>
+to_hash
+#<data D z=1>
+to_hash
+[1, {}]
+to_hash
+1
+to_hash
+[1, {}]
+to_hash
+1
+to_hash
+1
+to_hash
+{z: 1, w: 2}
+to_hash
+"wrong number of arguments (given 3, expected 1)"
+"can't convert N to Hash (N#to_hash gives Integer)"
+"can't convert N to Hash (N#to_hash gives Integer)"
+"can't convert N to Hash (N#to_hash gives Integer)"
+"no implicit conversion of Q into Hash"
+"no implicit conversion of Q into Hash"
+"no implicit conversion of Q into Hash"
+"no implicit conversion of Integer into Hash"
+"no implicit conversion of Integer into Hash"
+"no implicit conversion of Integer into Hash"
