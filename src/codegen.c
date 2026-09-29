@@ -4228,7 +4228,12 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
      single exit (_pr_done) that pops the frame, so the setjmp buffer is never
      left live past the method. */
   int si = (int)(s - c->scopes);
-  int pr_frame = !s->is_lowered_yield && scope_creates_returning_proc(c, si);
+  /* A lowered yielding method (its block taken as a real sp_Proc) is a
+     function of its own like any other: a proc it creates that `return`s
+     needs the frame all the same -- the proc of a block given to a poly
+     receiver's #each, whose `return` otherwise came out as a C return from
+     the proc function (#flat_find in ruby-vips). */
+  int pr_frame = scope_creates_returning_proc(c, si);
   /* The setjmp catch returns directly (no goto) so it never jumps over a later
      GC-root cleanup local; the body runs inside a `{ }` block so a funnel
      `goto _pr_done` only ever exits that block (running its cleanups). On the
