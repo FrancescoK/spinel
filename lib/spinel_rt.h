@@ -3080,6 +3080,18 @@ static const char *sp_poly_recv_s(sp_RbVal v, const char *meth) {
   return sp_str_empty;
 }
 
+/* Encoding#ascii_compatible? / Encoding#dummy? on a boxed Encoding (the
+   SP_TAG_ENCODING box carries the name): every encoding this runtime hands
+   out (UTF-8, US-ASCII, ASCII-8BIT) is ASCII-compatible, the UTF-16/UTF-32
+   family is not, and none is a dummy. cgi's pure-Ruby escapeHTML asks the
+   first of its String's encoding. Anything but an Encoding is NoMethodError. */
+static sp_bool sp_poly_enc_pred(sp_RbVal v, const char *meth) {
+  if (v.tag != SP_TAG_ENCODING) { sp_raise_nomethod(sp_nomethod_msg(meth, v)); return FALSE; }
+  if (meth[0] == 'd') return FALSE;
+  const char *n = v.v.s ? v.v.s : "";
+  return !(strncmp(n, "UTF-16", 6) == 0 || strncmp(n, "UTF-32", 6) == 0);
+}
+
 static sp_RbVal sp_poly_case_conv(sp_RbVal v, const char *(*fn)(const char *), const char *meth) {
   if (v.tag == SP_TAG_SYM && sp_sym_name_fn && sp_json_sym_intern_fn)
     return sp_box_sym(sp_json_sym_intern_fn(fn(sp_sym_name_fn((sp_sym)v.v.i))));

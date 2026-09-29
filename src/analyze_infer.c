@@ -5377,6 +5377,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
               here: `ascii_only?` is a boxed boolean and reads as one. */
            sp_streq(name, "lstrip") || sp_streq(name, "rstrip") ||
            sp_streq(name, "to_str") || sp_streq(name, "ascii_only?") ||
+           sp_streq(name, "ascii_compatible?") || sp_streq(name, "dummy?") ||
            sp_streq(name, "valid_encoding?") || sp_streq(name, "encode") ||
            sp_streq(name, "scrub") || sp_streq(name, "b")))
         return an_poly_concrete(c, name, TY_POLY);
