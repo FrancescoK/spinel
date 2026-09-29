@@ -10939,10 +10939,25 @@ else {
        no per-object singleton dispatch and is rejected loudly. */
     int sexpr = nt_ref(nt, id, "expression");
     const char *exty = sexpr >= 0 ? nt_type(nt, sexpr) : NULL;
-    if (exty && sp_streq(exty, "SelfNode")) return;
-    if (exty && sp_streq(exty, "ConstantReadNode")) {
+    int class_self = exty && sp_streq(exty, "SelfNode");
+    if (!class_self && exty && sp_streq(exty, "ConstantReadNode")) {
       const char *cn = nt_str(nt, sexpr, "name");
-      if (cn && comp_class_index(c, cn) >= 0) return;
+      class_self = cn && comp_class_index(c, cn) >= 0;
+    }
+    if (class_self) {
+      /* ... but a constant it assigns is assigned here, where the body
+         runs: the singleton methods beside it read it, and they read nil
+         while nothing stored it (#5996) */
+      int body = nt_ref(nt, id, "body");
+      int n = 0;
+      const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+      for (int k = 0; k < n; k++) {
+        NodeKind sk = nt_kind(nt, stmts[k]);
+        if (sk == NK_ConstantWriteNode || sk == NK_ConstantOrWriteNode ||
+            sk == NK_ConstantOperatorWriteNode)
+          emit_stmt(c, stmts[k], b, indent);
+      }
+      return;
     }
     /* `class << obj` on a statically-traceable instance: the inner defs were
        reattached to a synthesized singleton subclass (register_singleton_defs)
@@ -10971,8 +10986,14 @@ else {
     for (int k = 0; k < n; k++) {
       const char *sty = nt_type(nt, stmts[k]);
       if (!sty) continue;
-      if (sp_streq(sty, "DefNode") || sp_streq(sty, "AliasMethodNode") ||
-          sp_streq(sty, "SingletonClassNode")) continue;
+      if (sp_streq(sty, "DefNode") || sp_streq(sty, "AliasMethodNode")) continue;
+      /* `class << self`: its defs are the class's own, but the constants it
+         assigns are assigned where it stands (#5996) */
+      if (sp_streq(sty, "SingletonClassNode")) {
+        int sx = nt_ref(nt, stmts[k], "expression");
+        if (sx >= 0 && nt_kind(nt, sx) == NK_SelfNode) emit_stmt(c, stmts[k], b, indent);
+        continue;
+      }
       /* A receiver-less call in a class body is, by default, a declaration
          macro (attr_*, include, private, an FFI/DSL directive) -- skip it.
          Only run the genuine side-effecting ones: output calls and calls
