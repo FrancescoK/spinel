@@ -1,0 +1,5 @@
+ok typed
+NoMethodError: undefined method 'save' for an instance of Gadget
+yes typed
+NoMethodError: undefined method 'refresh' for an instance of Gadget
+NoMethodError: undefined method 'save' for an instance of Gadget
