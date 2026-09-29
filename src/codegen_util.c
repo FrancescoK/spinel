@@ -1893,6 +1893,19 @@ const char *raise_tail_value(TyKind t) {
 
 /* Compiler-aware form: a by-value object class's C representation is a bare
    struct, where default_value's NULL would be ill-typed C. */
+/* The TypeError Array#* raises for a count that is neither a String (join)
+   nor convertible to an Integer (repeat), or NULL when the argument's type
+   may be either. */
+const char *array_times_type_error(TyKind at) {
+  if (at == TY_NIL) return "no implicit conversion from nil to integer";
+  if (ty_is_array(at) || ty_is_obj_array(at)) return "no implicit conversion of Array into Integer";
+  if (ty_is_hash(at)) return "no implicit conversion of Hash into Integer";
+  if (at == TY_SYMBOL) return "no implicit conversion of Symbol into Integer";
+  if (at == TY_RANGE || at == TY_FLOAT_RANGE || at == TY_STR_RANGE)
+    return "no implicit conversion of Range into Integer";
+  return NULL;
+}
+
 const char *raise_tail_value_c(Compiler *c, TyKind t) {
   if (ty_is_object(t) && comp_ty_value_obj(c, t)) {
     /* rotate: one static buffer would make two of these in a single

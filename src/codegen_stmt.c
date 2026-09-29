@@ -1559,6 +1559,11 @@ int emit_array_op_assign(Compiler *c, const char *lval, TyKind t,
     free(rb.p);
     return 1;
   }
+  if (sp_streq(op, "*") && array_times_type_error(vt)) {
+    buf_puts(b, "{ (void)("); emit_expr(c, v, b);
+    buf_printf(b, "); sp_raise_cls(\"TypeError\", \"%s\"); }", array_times_type_error(vt));
+    return 1;
+  }
   if (sp_streq(op, "*") && (vt == TY_INT || vt == TY_POLY)) {
     int ta = ++g_tmp, tn = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp;
     size_t pre_mark = g_pre ? g_pre->len : 0;
