@@ -5120,6 +5120,33 @@ int desugar_enum_walk_calls(Compiler *c) {
   return changed;
 }
 
+static int enum_is_a_chain(Compiler *c, const char *rn, const int *defcls, int ndef) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int pred = -1;
+  for (int k = 0; k < ndef; k++) {
+    int pr = nt_new_node(nt, "LocalVariableReadNode");
+    int cr = nt_new_node(nt, "ConstantReadNode");
+    int ia = nt_new_node(nt, "CallNode");
+    int iaa = nt_new_node(nt, "ArgumentsNode");
+    if (pr < 0 || cr < 0 || ia < 0 || iaa < 0) return -1;
+    nt_node_set_str(nt, pr, "name", rn); nt_node_set_int(nt, pr, "depth", 0);
+    nt_node_set_str(nt, cr, "name", c->classes[defcls[k]].name);
+    nt_node_set_arr(nt, iaa, "arguments", &cr, 1);
+    nt_node_set_str(nt, ia, "name", "is_a?");
+    nt_node_set_ref(nt, ia, "receiver", pr);
+    nt_node_set_ref(nt, ia, "arguments", iaa);
+    if (pred < 0) pred = ia;
+    else {
+      int orn = nt_new_node(nt, "OrNode");
+      if (orn < 0) return -1;
+      nt_node_set_ref(nt, orn, "left", pred);
+      nt_node_set_ref(nt, orn, "right", ia);
+      pred = orn;
+    }
+  }
+  return pred;
+}
+
 int desugar_builtin_enum_calls(Compiler *c) {
   if (sp_builtin_enum_names_n == 0) return 0;
   NodeTable *nt = (NodeTable *)c->nt;
@@ -5345,27 +5372,8 @@ int desugar_builtin_enum_calls(Compiler *c) {
         nt_node_set_ref(nt, nq, "receiver", nr);
         pred = nq;
       }
-      for (int k = 0; !safe_nav && k < ndef; k++) {
-        int pr = nt_new_node(nt, "LocalVariableReadNode");
-        int cr = nt_new_node(nt, "ConstantReadNode");
-        int ia = nt_new_node(nt, "CallNode");
-        int iaa = nt_new_node(nt, "ArgumentsNode");
-        if (pr < 0 || cr < 0 || ia < 0 || iaa < 0) { free(chained); free(in_default); return changed; }
-        nt_node_set_str(nt, pr, "name", rn); nt_node_set_int(nt, pr, "depth", 0);
-        nt_node_set_str(nt, cr, "name", c->classes[defcls[k]].name);
-        nt_node_set_arr(nt, iaa, "arguments", &cr, 1);
-        nt_node_set_str(nt, ia, "name", "is_a?");
-        nt_node_set_ref(nt, ia, "receiver", pr);
-        nt_node_set_ref(nt, ia, "arguments", iaa);
-        if (pred < 0) pred = ia;
-        else {
-          int orn = nt_new_node(nt, "OrNode");
-          if (orn < 0) { free(chained); free(in_default); return changed; }
-          nt_node_set_ref(nt, orn, "left", pred);
-          nt_node_set_ref(nt, orn, "right", ia);
-          pred = orn;
-        }
-      }
+      if (!safe_nav) pred = enum_is_a_chain(c, rn, defcls, ndef);
+      if (pred < 0) { free(chained); free(in_default); return changed; }
       /* the class's own method, on the same receiver, with the block; under
          a safe navigation the nil arm answers nil and the class arm, when
          there is one, sits inside it */
@@ -5381,23 +5389,8 @@ int desugar_builtin_enum_calls(Compiler *c) {
         int celse = nt_new_node(nt, "ElseNode");
         if (nil_n < 0 || ifc < 0 || cts < 0 || ces < 0 || celse < 0) { free(chained); free(in_default); return changed; }
         /* pred so far is `__r.nil?`; the class test becomes the inner if */
-        int cpred = -1;
-        for (int k = 0; k < ndef; k++) {
-          int pr2 = nt_new_node(nt, "LocalVariableReadNode");
-          int cr2 = nt_new_node(nt, "ConstantReadNode");
-          int ia2 = nt_new_node(nt, "CallNode");
-          int iaa2 = nt_new_node(nt, "ArgumentsNode");
-          if (pr2 < 0 || cr2 < 0 || ia2 < 0 || iaa2 < 0) { free(chained); free(in_default); return changed; }
-          nt_node_set_str(nt, pr2, "name", rn); nt_node_set_int(nt, pr2, "depth", 0);
-          nt_node_set_str(nt, cr2, "name", c->classes[defcls[k]].name);
-          nt_node_set_arr(nt, iaa2, "arguments", &cr2, 1);
-          nt_node_set_str(nt, ia2, "name", "is_a?");
-          nt_node_set_ref(nt, ia2, "receiver", pr2);
-          nt_node_set_ref(nt, ia2, "arguments", iaa2);
-          if (cpred < 0) cpred = ia2;
-          else { int o2 = nt_new_node(nt, "OrNode"); if (o2 < 0) { free(chained); free(in_default); return changed; }
-                 nt_node_set_ref(nt, o2, "left", cpred); nt_node_set_ref(nt, o2, "right", ia2); cpred = o2; }
-        }
+        int cpred = enum_is_a_chain(c, rn, defcls, ndef);
+        if (cpred < 0) { free(chained); free(in_default); return changed; }
         nt_node_set_str(nt, own, "name", name);
         nt_node_set_ref(nt, own, "receiver", ownr);
         nt_node_set_int(nt, own, "enum_own", 1);   /* the class's method: a user arm */
