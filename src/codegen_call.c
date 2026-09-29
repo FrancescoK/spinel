@@ -19897,8 +19897,22 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           int hoisted_n = 0, hoisted_sv[64]; TyKind hoisted_ty[64];
           { int hargc = 0;
             const int *hav = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &hargc) : NULL;
-            for (int a = 0; hav && a < hargc && hoisted_n < 64; a++) {
-              const char *aty = nt_type(nt, hav[a]);
+            /* the keywords' values too, and a computed key, in source order:
+               each arm rendered its own keyword hash, so `z: lit(3)` ran once
+               per candidate class. A `**` operand keeps its own path. */
+            int hn[64], nhn = 0;
+            for (int a = 0; hav && a < hargc && nhn < 64; a++) {
+              if (nt_kind(nt, hav[a]) != NK_KeywordHashNode) { hn[nhn++] = hav[a]; continue; }
+              int en = 0; const int *el = nt_arr(nt, hav[a], "elements", &en);
+              for (int e = 0; e < en && nhn < 63; e++) {
+                if (nt_kind(nt, el[e]) != NK_AssocNode) continue;
+                int key = nt_ref(nt, el[e], "key"), v = nt_ref(nt, el[e], "value");
+                if (key >= 0) hn[nhn++] = key;
+                if (v >= 0) hn[nhn++] = v;
+              }
+            }
+            for (int a = 0; a < nhn && hoisted_n < 64; a++) {
+              const char *aty = nt_type(nt, hn[a]);
               if (!aty || sp_streq(aty, "SplatNode") || sp_streq(aty, "KeywordHashNode") ||
                   sp_streq(aty, "BlockArgumentNode") || sp_streq(aty, "ForwardingArgumentsNode") ||
                   sp_streq(aty, "LocalVariableReadNode") || sp_streq(aty, "InstanceVariableReadNode") ||
@@ -19908,13 +19922,13 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
                   sp_streq(aty, "TrueNode") || sp_streq(aty, "FalseNode"))
                 continue;
               if (g_n_argov >= MAX_ARG_OVERRIDE) break;
-              int ht = hoist_boxed_rooted(c, hav[a]);
+              int ht = hoist_boxed_rooted(c, hn[a]);
               hoisted_sv[hoisted_n] = g_n_argov;
-              hoisted_ty[hoisted_n] = c->ntype[hav[a]];
-              g_argov_node[g_n_argov] = hav[a];
+              hoisted_ty[hoisted_n] = c->ntype[hn[a]];
+              g_argov_node[g_n_argov] = hn[a];
               snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ht);
               g_n_argov++;
-              c->ntype[hav[a]] = TY_POLY;
+              c->ntype[hn[a]] = TY_POLY;
               hoisted_n++;
             } }
           int wants_blk = 0, blk_tmp = -1;
