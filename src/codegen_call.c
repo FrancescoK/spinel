@@ -15870,6 +15870,28 @@ static int rt_probe_answer(Compiler *c, int id, int *yes) {
     if (comp_ntype(c, probes[p]) != TY_UNKNOWN) { *yes = 1; break; }
   return 1;
 }
+/* A receiver whose class defines respond_to? itself answers through it: the
+   call is an ordinary dispatch, not the compile-time fold. That is a typed
+   receiver of such a class, or implicit self in one; a boxed receiver keeps
+   the fold, which answers for builtin values too. */
+static int respond_to_user_defined(Compiler *c, int id, int recv) {
+  int any = 0;
+  for (int k = 0; k < c->nclasses && !any; k++)
+    if (comp_method_in_class(c, k, "respond_to?") >= 0) any = 1;
+  if (!any) return 0;
+  int k = -1;
+  if (recv < 0) {
+    Scope *s = comp_scope_of(c, id);
+    if (!s || s->is_cmethod) return 0;
+    k = s->class_id;
+  }
+  else {
+    TyKind t = comp_ntype(c, recv);
+    if (ty_is_object(t)) k = ty_object_class(t);
+  }
+  return k >= 0 && comp_method_in_chain(c, k, "respond_to?", NULL) >= 0;
+}
+
 static void emit_responds_name(Compiler *c, int k, const char *nm, int tv, Buf *b) {
   if (name_is_synth_method(c, nm) || sp_streq(nm, "initialize") || sp_streq(nm, "initialize_copy")) return;
   buf_printf(b, "(!strcmp(_n%d, \"", tv);
@@ -35943,7 +35965,7 @@ else {
      the receiverless (implicit-self) form, resolved against the enclosing
      class -- `self.fullscreen = v if respond_to?(:fullscreen=)` (doom's
      gosu_window.rb). */
-  if (sp_streq(name, "respond_to?") && argc >= 1) {
+  if (sp_streq(name, "respond_to?") && argc >= 1 && !respond_to_user_defined(c, id, recv)) {
     const char *aty = nt_type(nt, argv[0]);
     const char *qm = NULL;
     if (aty && sp_streq(aty, "SymbolNode")) qm = nt_str(nt, argv[0], "value");

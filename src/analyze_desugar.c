@@ -1733,9 +1733,6 @@ int desugar_dynamic_method(Compiler *c) {
    and name (not arity), so an arg-taking method like `+`/`[]` still types. */
 int desugar_respond_to_probe(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
-  /* a user-defined respond_to? resolves normally; don't intercept */
-  for (int s = 0; s < c->nscopes; s++) { const char *sn = c->scopes[s].name;
-    if (sn && sp_streq(sn, "respond_to?")) return 0; }
   int n0 = nt->count;
   int changed = 0;
   for (int id = 0; id < n0; id++) {
