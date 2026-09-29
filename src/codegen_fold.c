@@ -6226,13 +6226,18 @@ static TyKind anon_kwrest_type(Compiler *c, int node) {
 
 static int kwh_consumed_by_kwparam(Compiler *c, Scope *m, int kwh);
 
+/* Set while inference asks for a layout (arg_layout_untyped): it types the
+   parameters from it, so their types are not settled and are not asked. */
+static int layout_untyped;
+
 /* The parameter index a collapsed keyword hash fills, or -1 when none does.
    Ruby passes a braceless `f(k: 1)` as one more positional argument when the
    callee declares no keyword parameter that takes a key -- `def f(opts)` and
    `def f(opts = {})` alike -- so it lands where that argument binds: a
    required parameter after the optionals before any optional (#4877). The slot has to be able to hold
    a hash, so a concretely-typed one (an int param bound elsewhere) declines
-   and the rest takes it instead.
+   and the rest takes it instead. Inference, which gives the slot its type,
+   asks without it (arg_layout_untyped).
 
    The poly dispatch asked none of this: its arms matched keywords by name
    only, so an optional positional silently kept its default and a required one
@@ -6247,7 +6252,7 @@ int kwh_positional_slot(Compiler *c, Scope *m, int kwh, int pos_argc) {
   if (!pn || callee_param_is_declared_kwarg(c, m, pn)) return -1;
   LocalVar *p = scope_local(m, pn);
   TyKind pt = p ? p->type : TY_UNKNOWN;
-  if (!ty_is_hash(pt) && pt != TY_POLY) return -1;
+  if (!layout_untyped && !ty_is_hash(pt) && pt != TY_POLY) return -1;
   return slot;
 }
 
@@ -8218,8 +8223,12 @@ void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv) {
 /* Can the gather carry the keyword hash as its last positional? A literal
    one into a callee that takes no keywords is always one more argument, and
    after a splat the parameter it lands in is the run time's, so each one it
-   may reach has to be able to hold it: a Hash or a boxed slot, or the rest.
-   Where one of them cannot, the call keeps the static layout it had. */
+   may reach (gather_reaches, which inference types by) has to be able to
+   hold it: a Hash or a boxed slot. The rest always can. Where one of them
+   cannot, the call keeps the static layout it had. Asking every parameter
+   from the first splat argument's index on missed a post funded from the
+   end: `m(1, 1, *v, k: 3)` on `def m(*r, q)` bound the hash into an Integer
+   q. */
 static int kwh_rides_gather(Compiler *c, Scope *m, int kwh, const int *argv, int pos_argc) {
   const NodeTable *nt = c->nt;
   if (kwh < 0 || kwh_only_spreads(nt, kwh) || kwh_consumed_by_kwparam(c, m, kwh)) return 0;
@@ -8227,8 +8236,8 @@ static int kwh_rides_gather(Compiler *c, Scope *m, int kwh, const int *argv, int
   for (int k = 0; k < pos_argc && fk < 0; k++)
     if (nt_kind(nt, argv[k]) == NK_SplatNode) fk = k;
   if (fk < 0) return 0;   /* the static layout places it (kwh_positional_slot) */
-  for (int i = fk; i < m->nparams; i++) {
-    if (i == m->rest_idx) continue;
+  for (int i = 0; i < m->nparams && !layout_untyped; i++) {
+    if (i == m->rest_idx || !gather_reaches(c, m, argv, pos_argc, 2, pos_argc, i)) continue;
     LocalVar *p = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
     TyKind pt = p ? p->type : TY_UNKNOWN;
     if (!ty_is_hash(pt) && pt != TY_POLY) return 0;
@@ -8281,9 +8290,11 @@ static int arg_layout_gathers(Compiler *c, Scope *m, const int *argv, int pos_ar
 
 /* Does a splat have an array form to spread in place: an array, a boxed
    operand the splat's own lowering normalizes, a nil or scalar one, or an
-   anonymous `*`? */
+   anonymous `*`? Inference, which types the parameters from the operand's
+   elements, takes any. */
 static int splat_spreads_in_place(Compiler *c, int splat) {
   int inner = nt_ref(c->nt, splat, "expression");
+  if (layout_untyped) return 1;
   if (inner < 0) {
     Buf anon; memset(&anon, 0, sizeof anon);
     int ok = emit_anon_rest_ref(c, splat, &anon);
@@ -8397,6 +8408,20 @@ void arg_layout(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh, i
     else if (i == L->kwh_slot && !kwp) L->from[i] = ARG_KWH;
     else L->from[i] = ARG_DEFAULT;
   }
+}
+
+/* The layout inference types a call's parameters from. It is asked before
+   they have the types it gives them, so it asks none: a parameter the
+   keyword hash may bind as a positional takes it (kwh_positional_slot), the
+   gather carries it (kwh_rides_gather), and each splat spreads in place.
+   Codegen then finds each such parameter able to hold what reaches it. The
+   inlined layout differs only in gathering more, which moves no value to
+   another parameter. */
+void arg_layout_untyped(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh,
+                        ArgLayout *L) {
+  layout_untyped = 1;
+  arg_layout(c, m, argv, pos_argc, kwh, 0, L);
+  layout_untyped = 0;
 }
 
 void arg_layout_free(ArgLayout *L) {
