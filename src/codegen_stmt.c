@@ -8947,46 +8947,28 @@ else {
     }
     return;
   }
-  if (sp_streq(ty, "ClassVariableOrWriteNode")) {
+  if (sp_streq(ty, "ClassVariableOrWriteNode") || sp_streq(ty, "ClassVariableAndWriteNode")) {
+    int is_or = sp_streq(ty, "ClassVariableOrWriteNode");
     const char *nm = nt_str(nt, id, "name");
     int v = nt_ref(nt, id, "value");
     int sc = comp_scope_of(c, id)->class_id;
     if (sc < 0) sc = g_class_body_id;
     if (sc < 0) sc = comp_class_index(c, "Toplevel");
-    if (sc < 0) { unsupported(c, id, "class variable or-write (no class scope)"); return; }
+    if (sc < 0) { unsupported(c, id, is_or ? "class variable or-write (no class scope)" : "class variable and-write (no class scope)"); return; }
     char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[sc].name, nm + 2);
     int oidx = comp_cvar_index(&c->classes[sc], nm);
     TyKind ot = oidx >= 0 ? c->classes[sc].cvar_types[oidx] : TY_UNKNOWN;
     emit_indent(b, indent);
     /* a boxed slot (one written nil and a bool, #4884) tests and stores as
        the value form does */
-    buf_puts(b, "if (!");
+    buf_puts(b, is_or ? "if (!" : "if ");
     emit_slot_truthy(ot, ref, b);
-    buf_printf(b, ") { %s = ", ref);
+    buf_printf(b, is_or ? ") { %s = " : " { %s = ", ref);
     if (ot == TY_POLY) emit_boxed(c, v, b);
     else emit_expr(c, v, b);
     buf_puts(b, "; ");
     emit_cvar_set_flag(c, sc, nm, 0, b);
     buf_puts(b, "}\n");
-    return;
-  }
-  if (sp_streq(ty, "ClassVariableAndWriteNode")) {
-    const char *nm = nt_str(nt, id, "name");
-    int v = nt_ref(nt, id, "value");
-    int sc = comp_scope_of(c, id)->class_id;
-    if (sc < 0) sc = g_class_body_id;
-    if (sc < 0) sc = comp_class_index(c, "Toplevel");
-    if (sc < 0) { unsupported(c, id, "class variable and-write (no class scope)"); return; }
-    char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[sc].name, nm + 2);
-    int aidx = comp_cvar_index(&c->classes[sc], nm);
-    TyKind at = aidx >= 0 ? c->classes[sc].cvar_types[aidx] : TY_UNKNOWN;
-    emit_indent(b, indent);
-    buf_puts(b, "if ");
-    emit_slot_truthy(at, ref, b);
-    buf_printf(b, " { %s = ", ref);
-    if (at == TY_POLY) emit_boxed(c, v, b);
-    else emit_expr(c, v, b);
-    buf_puts(b, "; }\n");
     return;
   }
   if (sp_streq(ty, "InstanceVariableOperatorWriteNode")) {
