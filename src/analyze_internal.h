@@ -372,6 +372,7 @@ int sym_proc_poly_pair_view(Compiler *c, int id);
 int desugar_to_h_block(Compiler *c);
 int desugar_builtin_reopen_self_calls(Compiler *c);
 int desugar_builtin_reopen_methods(Compiler *c);
+int desugar_body_ivars(Compiler *c);
 int desugar_when_int_float_ranges(Compiler *c);
 int desugar_duplicate_underscore_params(Compiler *c);
 int desugar_encoding_queries(Compiler *c);

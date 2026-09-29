@@ -8618,3 +8618,267 @@ int desugar_builtin_reopen_methods(Compiler *c) {
   if (changed) comp_grow_node_arrays(c);
   return changed;
 }
+
+/* ---- module/class-body ivars read outside a method ------------------------
+ *
+ *   module GLib
+ *     @logger = Logger.new($stdout)
+ *     H = proc { |d, l, m| @logger.log(l, m, d) }
+ *   end
+ *
+ * A body-level `@x` is the module object's own ivar -- the one its class
+ * methods see. Writes directly in the body are attributed to it, but a read
+ * (and anything inside a block, whose C function is emitted outside the body)
+ * fell to the Toplevel pseudo-class or an instance slot. Every such access
+ * is routed through a pair of class-method accessors
+ *
+ *   def self.__spinel_civget_x = @x
+ *   def self.__spinel_civset_x(v) = @x = v
+ *
+ * called on the module constant, so they resolve to the module's civ. Blocks
+ * whose self is something else (class_eval, instance_eval, define_method,
+ * Class.new, ...) and nested class/def bodies are not entered. */
+static int cbi_self_changing_block(const NodeTable *nt, int call) {
+  const char *nm = nt_str(nt, call, "name");
+  if (!nm) return 0;
+  static const char *const SC[] = { "class_eval", "module_eval", "class_exec", "module_exec",
+    "instance_eval", "instance_exec", "define_method", "define_singleton_method",
+    "new", "define", "configure", NULL };
+  for (int q = 0; SC[q]; q++) if (sp_streq(nm, SC[q])) return 1;
+  return 0;
+}
+
+/* `@x op= v` / `@x ||= v` / `@x &&= v` spelled as the plain read and write
+   the accessor rewrite handles: `@x = @x op v`, `@x || @x = v`, `@x && @x = v` */
+static void cbi_lower_op_writes(NodeTable *nt, int node) {
+  if (node < 0) return;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_DefNode || k == NK_SingletonClassNode)
+    return;
+  if (k == NK_InstanceVariableOperatorWriteNode || k == NK_InstanceVariableOrWriteNode ||
+      k == NK_InstanceVariableAndWriteNode) {
+    const char *iv = nt_str(nt, node, "name");
+    const char *op = k == NK_InstanceVariableOperatorWriteNode ? nt_str(nt, node, "binary_operator") : NULL;
+    int v = nt_ref(nt, node, "value");
+    if (iv && v >= 0 && (op || k != NK_InstanceVariableOperatorWriteNode)) {
+      char ivb[256], opb[16];
+      snprintf(ivb, sizeof ivb, "%s", iv);
+      snprintf(opb, sizeof opb, "%s", op ? op : "");
+      int rd = fwd_new_node_like(nt, node, "InstanceVariableReadNode");
+      nt_node_set_str(nt, rd, "name", ivb);
+      if (k == NK_InstanceVariableOperatorWriteNode) {
+        int call = fwd_new_node_like(nt, node, "CallNode");
+        int args = fwd_new_node_like(nt, node, "ArgumentsNode");
+        nt_node_set_arr(nt, args, "arguments", &v, 1);
+        nt_node_set_str(nt, call, "name", opb);
+        nt_node_set_ref(nt, call, "receiver", rd);
+        nt_node_set_ref(nt, call, "arguments", args);
+        nt_node_reset(nt, node, "InstanceVariableWriteNode");
+        nt_node_set_str(nt, node, "name", ivb);
+        nt_node_set_ref(nt, node, "value", call);
+      }
+      else {
+        int wr = fwd_new_node_like(nt, node, "InstanceVariableWriteNode");
+        nt_node_set_str(nt, wr, "name", ivb);
+        nt_node_set_ref(nt, wr, "value", v);
+        nt_node_reset(nt, node, k == NK_InstanceVariableOrWriteNode ? "OrNode" : "AndNode");
+        nt_node_set_ref(nt, node, "left", rd);
+        nt_node_set_ref(nt, node, "right", wr);
+      }
+    }
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) cbi_lower_op_writes(nt, nt_ref_at(nt, node, i));
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, node, i, &cnt);
+    int *cp = cnt > 0 ? malloc(sizeof(int) * (size_t)cnt) : NULL;
+    if (cnt > 0) memcpy(cp, ids, sizeof(int) * (size_t)cnt);
+    for (int j = 0; j < cnt; j++) cbi_lower_op_writes(nt, cp[j]);
+    free(cp);
+  }
+}
+
+/* A proc handed to one of those calls as an argument -- `define_method(:k,
+   -> { @v })`, or a local holding it, `define_method(:h, pr)` -- runs with
+   the other self too: the locals so passed, to leave their procs alone. */
+typedef struct { const char *names[64]; int n; } CbiProcLocals;
+
+static void cbi_proc_locals(const NodeTable *nt, int node, CbiProcLocals *pl) {
+  if (node < 0) return;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_DefNode || k == NK_SingletonClassNode)
+    return;
+  if (k == NK_CallNode && cbi_self_changing_block(nt, node)) {
+    int an = nt_ref(nt, node, "arguments");
+    int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+    int ba = nt_ref(nt, node, "block");
+    for (int i = 0; i <= ac; i++) {
+      int x = i < ac ? av[i] : (ba >= 0 && nt_kind(nt, ba) == NK_BlockArgumentNode
+                                ? nt_ref(nt, ba, "expression") : -1);
+      if (x >= 0 && nt_kind(nt, x) == NK_BlockArgumentNode) x = nt_ref(nt, x, "expression");
+      if (x >= 0 && nt_kind(nt, x) == NK_LocalVariableReadNode && nt_str(nt, x, "name") && pl->n < 64)
+        pl->names[pl->n++] = nt_str(nt, x, "name");
+    }
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) cbi_proc_locals(nt, nt_ref_at(nt, node, i), pl);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++) cbi_proc_locals(nt, ids[j], pl);
+  }
+}
+
+/* `no_procs`: in the arguments of a self-changing call, whose procs are
+   entered by the other self */
+static void cbi_collect(const NodeTable *nt, int node, int in_block, int no_procs,
+                        const CbiProcLocals *pl, int *hits, int *nhits, int cap, int *trigger) {
+  if (node < 0) return;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_DefNode || k == NK_SingletonClassNode)
+    return;
+  if ((k == NK_BlockNode || k == NK_LambdaNode) && no_procs) return;
+  if (k == NK_CallNode && cbi_self_changing_block(nt, node)) {
+    /* the receiver and arguments are still body code, their procs are not */
+    cbi_collect(nt, nt_ref(nt, node, "receiver"), in_block, no_procs, pl, hits, nhits, cap, trigger);
+    cbi_collect(nt, nt_ref(nt, node, "arguments"), in_block, 1, pl, hits, nhits, cap, trigger);
+    int ba = nt_ref(nt, node, "block");
+    if (ba >= 0 && nt_kind(nt, ba) == NK_BlockArgumentNode)
+      cbi_collect(nt, ba, in_block, 1, pl, hits, nhits, cap, trigger);
+    return;
+  }
+  if (k == NK_LocalVariableWriteNode && nt_str(nt, node, "name")) {
+    for (int q = 0; q < pl->n; q++)
+      if (sp_streq(pl->names[q], nt_str(nt, node, "name"))) { no_procs = 1; break; }
+  }
+  if (k == NK_InstanceVariableReadNode || k == NK_InstanceVariableWriteNode) {
+    if (*nhits < cap) hits[(*nhits)++] = node;
+    if (k == NK_InstanceVariableReadNode || in_block) *trigger = 1;
+  }
+  int blk = (k == NK_BlockNode || k == NK_LambdaNode) ? 1 : in_block;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++)
+    cbi_collect(nt, nt_ref_at(nt, node, i), blk, no_procs, pl, hits, nhits, cap, trigger);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++)
+      cbi_collect(nt, ids[j], blk, no_procs, pl, hits, nhits, cap, trigger);
+  }
+}
+
+static int cbi_local_read(NodeTable *nt, int like, const char *name) {
+  int rd = fwd_new_node_like(nt, like, "LocalVariableReadNode");
+  if (rd < 0) return -1;
+  nt_node_set_str(nt, rd, "name", name);
+  nt_node_set_int(nt, rd, "depth", 0);
+  return rd;
+}
+
+int desugar_body_ivars(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int m = 0; m < n0; m++) {
+    NodeKind mk = nt_kind(nt, m);
+    if (mk != NK_ModuleNode && mk != NK_ClassNode) continue;
+    int cp = nt_ref(nt, m, "constant_path");
+    if (cp < 0 || nt_kind(nt, cp) != NK_ConstantReadNode) continue;
+    const char *cn = nt_str(nt, cp, "name");
+    int body = nt_ref(nt, m, "body");
+    if (!cn || body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int cap = 4096, nhits = 0, trigger = 0;
+    int *hits = malloc(sizeof(int) * (size_t)cap);
+    int bn = 0; const int *bs = nt_arr(nt, body, "body", &bn);
+    CbiProcLocals pl; pl.n = 0;
+    for (int k = 0; k < bn; k++) cbi_proc_locals(nt, bs[k], &pl);
+    for (int k = 0; k < bn; k++) cbi_collect(nt, bs[k], 0, 0, &pl, hits, &nhits, cap, &trigger);
+    if (trigger) {
+      for (int k = 0; k < bn; k++) cbi_lower_op_writes(nt, bs[k]);
+      bs = nt_arr(nt, body, "body", &bn);
+      nhits = 0; pl.n = 0;
+      for (int k = 0; k < bn; k++) cbi_proc_locals(nt, bs[k], &pl);
+      for (int k = 0; k < bn; k++) cbi_collect(nt, bs[k], 0, 0, &pl, hits, &nhits, cap, &trigger);
+    }
+    if (!trigger || nhits == 0) { free(hits); continue; }
+    /* names needing accessors */
+    char *names[256]; int nn = 0;
+    for (int h = 0; h < nhits; h++) {
+      const char *iv = nt_str(nt, hits[h], "name");
+      if (!iv || iv[0] != '@' || iv[1] == '@') continue;
+      int seen = 0;
+      for (int q = 0; q < nn; q++) if (sp_streq(names[q], iv)) seen = 1;
+      if (!seen && nn < 256) names[nn++] = strdup(iv);
+    }
+    int *defs = malloc(sizeof(int) * (size_t)(2 * nn + bn));
+    int nd = 0;
+    for (int q = 0; q < nn; q++) {
+      const char *iv = names[q];
+      char gname[256], sname[256];
+      snprintf(gname, sizeof gname, "__spinel_civget_%s", iv + 1);
+      snprintf(sname, sizeof sname, "__spinel_civset_%s", iv + 1);
+      int gd = fwd_new_node_like(nt, m, "DefNode");
+      int gb = fwd_new_node_like(nt, m, "StatementsNode");
+      int gr = fwd_new_node_like(nt, m, "InstanceVariableReadNode");
+      nt_node_set_str(nt, gr, "name", iv);
+      nt_node_set_arr(nt, gb, "body", &gr, 1);
+      nt_node_set_str(nt, gd, "name", gname);
+      nt_node_set_ref(nt, gd, "receiver", fwd_new_node_like(nt, m, "SelfNode"));
+      nt_node_set_ref(nt, gd, "body", gb);
+      int sd = fwd_new_node_like(nt, m, "DefNode");
+      int sb = fwd_new_node_like(nt, m, "StatementsNode");
+      int sw = fwd_new_node_like(nt, m, "InstanceVariableWriteNode");
+      int ps = fwd_new_node_like(nt, m, "ParametersNode");
+      int rq = fwd_new_node_like(nt, m, "RequiredParameterNode");
+      nt_node_set_str(nt, rq, "name", "spinel_civ_v__");
+      nt_node_set_arr(nt, ps, "requireds", &rq, 1);
+      nt_node_set_str(nt, sw, "name", iv);
+      nt_node_set_ref(nt, sw, "value", cbi_local_read(nt, m, "spinel_civ_v__"));
+      nt_node_set_arr(nt, sb, "body", &sw, 1);
+      nt_node_set_str(nt, sd, "name", sname);
+      nt_node_set_ref(nt, sd, "receiver", fwd_new_node_like(nt, m, "SelfNode"));
+      nt_node_set_ref(nt, sd, "parameters", ps);
+      nt_node_set_ref(nt, sd, "body", sb);
+      defs[nd++] = gd; defs[nd++] = sd;
+    }
+    /* rewrite the accesses in place */
+    for (int h = 0; h < nhits; h++) {
+      int id = hits[h];
+      const char *iv0 = nt_str(nt, id, "name");
+      if (!iv0 || iv0[1] == '@') continue;
+      char iv[256]; snprintf(iv, sizeof iv, "%s", iv0);
+      NodeKind k = nt_kind(nt, id);
+      int line = (int)nt_int(nt, id, "node_line", 0);
+      int file = (int)nt_int(nt, id, "node_file", 0);
+      int recv = fwd_new_node_like(nt, id, "ConstantReadNode");
+      nt_node_set_str(nt, recv, "name", cn);
+      char mname[256];
+      if (k == NK_InstanceVariableReadNode) {
+        snprintf(mname, sizeof mname, "__spinel_civget_%s", iv + 1);
+        nt_node_reset(nt, id, "CallNode");
+        nt_node_set_str(nt, id, "name", mname);
+        nt_node_set_ref(nt, id, "receiver", recv);
+      }
+      else {
+        int v = nt_ref(nt, id, "value");
+        snprintf(mname, sizeof mname, "__spinel_civset_%s", iv + 1);
+        int args = fwd_new_node_like(nt, id, "ArgumentsNode");
+        nt_node_set_arr(nt, args, "arguments", &v, 1);
+        nt_node_reset(nt, id, "CallNode");
+        nt_node_set_str(nt, id, "name", mname);
+        nt_node_set_ref(nt, id, "receiver", recv);
+        nt_node_set_ref(nt, id, "arguments", args);
+      }
+      if (line) nt_node_set_int(nt, id, "node_line", line);
+      if (file) nt_node_set_int(nt, id, "node_file", file);
+    }
+    memcpy(defs + nd, bs, sizeof(int) * (size_t)bn);
+    nt_node_set_arr(nt, body, "body", defs, nd + bn);
+    free(defs);
+    for (int q = 0; q < nn; q++) free(names[q]);
+    free(hits);
+    changed = 1;
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
