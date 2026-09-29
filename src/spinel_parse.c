@@ -2724,7 +2724,11 @@ static int sp_src_names_const(const char *src, const char *w) {
   size_t wl = strlen(w);
   for (const char *p = strstr(src, w); p; p = strstr(p + 1, w)) {
     char prev = p == src ? 0 : p[-1];
-    if (sp_req_ident_char(prev) || prev == '@' || prev == '$' || prev == ':') continue;
+    if (sp_req_ident_char(prev) || prev == '@' || prev == '$') continue;
+    /* `Foo::Gem` is Foo's; a leading `::Gem` is the top-level one */
+    if (prev == ':' && (p - src < 2 || p[-2] != ':' ||
+                        (p - src >= 3 && (sp_req_ident_char(p[-3]) || p[-3] == ')'))))
+      continue;
     if (p[wl] != '.' && !(p[wl] == ':' && p[wl + 1] == ':')) continue;
     const char *bol = p;
     while (bol > src && bol[-1] != '\n') bol--;

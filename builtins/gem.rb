@@ -14,15 +14,16 @@ module Gem
   def self.ruby_version = Version.new(RUBY_VERSION)
   def self.platforms = []
 
-  # Gem::Version: dotted segments, numeric ones compared as numbers, a
-  # string segment (a prerelease, "1.2.0.rc1") sorting before any number.
+  # Gem::Version: the runs of digits and of letters ("1.0.rc10" is
+  # 1, 0, "rc", 10), numeric ones compared as numbers, a string segment (a
+  # prerelease) sorting before any number -- RubyGems' own segmentation.
   class Version
     include Comparable
     attr_reader :segments
 
     def initialize(v)
       @version = v.to_s.strip
-      @segments = @version.split(".").map { |s| s.match?(/\A\d+\z/) ? s.to_i : s }
+      @segments = @version.scan(/[0-9]+|[a-z]+/i).map { |s| s.match?(/\A\d+\z/) ? s.to_i : s }
     end
 
     def self.create(v) = new(v)
