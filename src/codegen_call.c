@@ -20849,9 +20849,9 @@ static int ivar_only_memo_written(Compiler *c, const char *ivn) {
    memoization (`def c = (@c ||= {})`): the slot is nil (NULL) until the
    memoizing read runs, and the typed emission stores through or reads the
    NULL pointer -- `@c[k] = v` ahead of the first `c` crashed where CRuby
-   raises NoMethodError. An ivar any other write fills is left unguarded: the
-   test would sit in front of every hot call through it. 0 when the call
-   needs no guard. */
+   raises NoMethodError. An ivar any other write fills is left unguarded in
+   a release build: the test would sit in front of every hot call through
+   it. A debug build guards them all. 0 when the call needs no guard. */
 int g_ivar_nil_guarded_id = -1;
 int ivar_nil_recv_guard(Compiler *c, int id, int *recv_out) {
   const NodeTable *nt = c->nt;
@@ -20875,9 +20875,17 @@ int ivar_nil_recv_guard(Compiler *c, int id, int *recv_out) {
   Scope *s = comp_scope_of(c, recv);
   int cid = s ? s->class_id : -1;
   const char *ivn = nt_str(nt, recv, "name");
-  if (cid < 0 || !ivn || !ivar_only_memo_written(c, ivn)) return 0;
-  /* an attribute writer fills it from outside */
-  if (comp_resolve_member(c, cid, ivn + 1, 1, NULL, NULL) == SP_MEMBER_ATTR) return 0;
+  /* A debug build (-g, --debug) guards every such slot, whatever fills it
+     (#5960): a `reset` or `setup` method that has not run yet leaves it
+     NULL too, and the release build cannot afford the test in front of
+     every hot call through one (optcarrot lost 10-20%), so it keeps the
+     memoized slots alone. */
+  if (cid < 0 || !ivn) return 0;
+  if (!g_debug) {
+    if (!ivar_only_memo_written(c, ivn)) return 0;
+    /* an attribute writer fills it from outside */
+    if (comp_resolve_member(c, cid, ivn + 1, 1, NULL, NULL) == SP_MEMBER_ATTR) return 0;
+  }
   *recv_out = recv;
   return 1;
 }

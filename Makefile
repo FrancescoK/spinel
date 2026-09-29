@@ -982,6 +982,9 @@ cli-opts-test: $(SPINEL)
 	out=$$($(SPINEL) -E "$$tmp/p.rb" --a-program-flag 2>&1); \
 	[ "$$out" = '["--a-program-flag"]' ] || \
 	  { echo "cli-opts-test: FAIL (run mode did not hand the program its flag: $$out)"; ok=0; }; \
+	$(SPINEL) -g test/debug/ivar_nil_before_setup.rb -o "$$tmp/dbg" >"$$tmp/dbg.out" 2>&1 && \
+	  "$$tmp/dbg" 2>&1 | cmp -s - test/debug/ivar_nil_before_setup.rb.expected || \
+	  { echo "cli-opts-test: FAIL (a -g build did not raise NoMethodError for an unset ivar, #5960)"; ok=0; }; \
 	links=""; i=0; while [ $$i -lt 70 ]; do links="$$links --link -lm"; i=$$((i + 1)); done; \
 	$(SPINEL) "$$tmp/p.rb" $$links --link -lsp_last_link --print-build 2>/dev/null | grep -q 'lib -lsp_last_link' || \
 	  { echo "cli-opts-test: FAIL (a --link past the 64th was dropped)"; ok=0; }; \

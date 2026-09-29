@@ -1,0 +1,5 @@
+NoMethodError: undefined method 'run' for nil
+NoMethodError: undefined method 'upcase' for nil
+NoMethodError: undefined method 'first' for nil
+NoMethodError: undefined method '[]=' for nil
+["running", "BOX", 1, 1]
