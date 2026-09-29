@@ -7166,3 +7166,208 @@ int desugar_when_int_float_ranges(Compiler *c) {
   }
   return changed;
 }
+
+/* ---- const_get / const_defined? with a name known only at run time ----
+ *
+ * A module's constants are all known when the program is compiled, so a name
+ * computed at run time (`Archive.const_get("COMPRESSION_#{c.upcase}")`) is a
+ * lookup into a table of them. Each module whose const_get is called that way
+ * gets
+ *
+ *   def self.__const_get__(n)     = {"A" => A, "B" => B, ...}[n.to_s]
+ *   def self.__const_defined__(n) = {"A" => A, ...}.key?(n.to_s)
+ *
+ * built from the constants its bodies assign and the classes and modules
+ * they define, and the call is renamed to it. A name outside the table
+ * raises NameError (const_get) / answers false (const_defined?). */
+static int cg_local_read(NodeTable *nt, int like, const char *name) {
+  int r = fwd_new_node_like(nt, like, "LocalVariableReadNode");
+  if (r < 0) return -1;
+  nt_node_set_str(nt, r, "name", name);
+  nt_node_set_int(nt, r, "depth", 0);
+  return r;
+}
+
+static int cg_str(NodeTable *nt, int like, const char *s) {
+  int n = fwd_new_node_like(nt, like, "StringNode");
+  if (n < 0) return -1;
+  nt_node_set_str(nt, n, "unescaped", s);
+  nt_node_set_str(nt, n, "content", s);
+  return n;
+}
+
+static void cg_collect(const NodeTable *nt, const char *mn, int n0, char ***names, int *nn, int *cap) {
+  for (int m = 0; m < n0; m++) {
+    NodeKind mk = nt_kind(nt, m);
+    if (mk != NK_ModuleNode && mk != NK_ClassNode) continue;
+    int cp = nt_ref(nt, m, "constant_path");
+    const char *nm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (!nm || !sp_streq(nm, mn)) continue;
+    int body = nt_ref(nt, m, "body");
+    int n = 0; const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+    for (int k = 0; k < n; k++) {
+      NodeKind sk = nt_kind(nt, st[k]);
+      const char *cn = NULL;
+      if (sk == NK_ConstantWriteNode || sk == NK_ConstantOrWriteNode) cn = nt_str(nt, st[k], "name");
+      else if (sk == NK_ClassNode || sk == NK_ModuleNode) {
+        int ccp = nt_ref(nt, st[k], "constant_path");
+        cn = ccp >= 0 ? nt_str(nt, ccp, "name") : NULL;
+      }
+      if (!cn) continue;
+      int dup = 0;
+      for (int q = 0; q < *nn; q++) if (sp_streq((*names)[q], cn)) dup = 1;
+      if (dup) continue;
+      if (*nn == *cap) { *cap = *cap ? *cap * 2 : 32; *names = realloc(*names, sizeof(char *) * (size_t)*cap); }
+      (*names)[(*nn)++] = strdup(cn);
+    }
+  }
+}
+
+/* def self.<mname>(__cg_n) = {<table>}.<op>(__cg_n.to_s) */
+static int cg_def(NodeTable *nt, int like, const char *mname, const char *op,
+                  char **names, int nn, const char *mod) {
+  int def = fwd_new_node_like(nt, like, "DefNode");
+  int self = fwd_new_node_like(nt, like, "SelfNode");
+  int ps = fwd_new_node_like(nt, like, "ParametersNode");
+  int rq = fwd_new_node_like(nt, like, "RequiredParameterNode");
+  int body = fwd_new_node_like(nt, like, "StatementsNode");
+  int hash = fwd_new_node_like(nt, like, "HashNode");
+  int call = fwd_new_node_like(nt, like, "CallNode");
+  int args = fwd_new_node_like(nt, like, "ArgumentsNode");
+  int ts = fwd_new_node_like(nt, like, "CallNode");
+  if (def < 0 || self < 0 || ps < 0 || rq < 0 || body < 0 || hash < 0 || call < 0 || args < 0 || ts < 0) return -1;
+  int *els = malloc(sizeof(int) * (size_t)(nn > 0 ? nn : 1));
+  for (int i = 0; i < nn; i++) {
+    int as = fwd_new_node_like(nt, like, "AssocNode");
+    int cr = fwd_new_node_like(nt, like, "ConstantReadNode");
+    nt_node_set_str(nt, cr, "name", names[i]);
+    nt_node_set_ref(nt, as, "key", cg_str(nt, like, names[i]));
+    nt_node_set_ref(nt, as, "value", cr);
+    els[i] = as;
+  }
+  nt_node_set_arr(nt, hash, "elements", els, nn);
+  free(els);
+  nt_node_set_str(nt, rq, "name", "__cg_n");
+  nt_node_set_arr(nt, ps, "requireds", &rq, 1);
+  nt_node_set_str(nt, ts, "name", "to_s");
+  nt_node_set_ref(nt, ts, "receiver", cg_local_read(nt, like, "__cg_n"));
+  nt_node_set_arr(nt, args, "arguments", &ts, 1);
+  nt_node_set_str(nt, call, "name", op);
+  nt_node_set_ref(nt, call, "receiver", hash);
+  nt_node_set_ref(nt, call, "arguments", args);
+  if (!sp_streq(op, "[]") || !mod) nt_node_set_arr(nt, body, "body", &call, 1);
+  else {
+    /* const_get of a name outside the table is CRuby's NameError:
+         __cg_h = {...}; __cg_k = __cg_n.to_s
+         raise NameError, "uninitialized constant Mod::" + __cg_k unless __cg_h.key?(__cg_k)
+         __cg_h[__cg_k] */
+    int wh = fwd_new_node_like(nt, like, "LocalVariableWriteNode");
+    nt_node_set_str(nt, wh, "name", "__cg_h");
+    nt_node_set_int(nt, wh, "depth", 0);
+    nt_node_set_ref(nt, wh, "value", hash);
+    int wk = fwd_new_node_like(nt, like, "LocalVariableWriteNode");
+    nt_node_set_str(nt, wk, "name", "__cg_k");
+    nt_node_set_int(nt, wk, "depth", 0);
+    nt_node_set_ref(nt, wk, "value", ts);
+    int kq = fwd_new_node_like(nt, like, "CallNode");
+    int kqa = fwd_new_node_like(nt, like, "ArgumentsNode");
+    int kqk = cg_local_read(nt, like, "__cg_k");
+    nt_node_set_arr(nt, kqa, "arguments", &kqk, 1);
+    nt_node_set_str(nt, kq, "name", "key?");
+    nt_node_set_ref(nt, kq, "receiver", cg_local_read(nt, like, "__cg_h"));
+    nt_node_set_ref(nt, kq, "arguments", kqa);
+    char msg[300]; snprintf(msg, sizeof msg, "uninitialized constant %s::", mod);
+    int cat = fwd_new_node_like(nt, like, "CallNode");
+    int cata = fwd_new_node_like(nt, like, "ArgumentsNode");
+    int catk = cg_local_read(nt, like, "__cg_k");
+    nt_node_set_arr(nt, cata, "arguments", &catk, 1);
+    nt_node_set_str(nt, cat, "name", "+");
+    nt_node_set_ref(nt, cat, "receiver", cg_str(nt, like, msg));
+    nt_node_set_ref(nt, cat, "arguments", cata);
+    int rc = fwd_new_node_like(nt, like, "CallNode");
+    int rca = fwd_new_node_like(nt, like, "ArgumentsNode");
+    int ne = fwd_new_node_like(nt, like, "ConstantReadNode");
+    nt_node_set_str(nt, ne, "name", "NameError");
+    int rav[2] = { ne, cat };
+    nt_node_set_arr(nt, rca, "arguments", rav, 2);
+    nt_node_set_str(nt, rc, "name", "raise");
+    nt_node_set_ref(nt, rc, "arguments", rca);
+    int unl = fwd_new_node_like(nt, like, "UnlessNode");
+    int ust = fwd_new_node_like(nt, like, "StatementsNode");
+    nt_node_set_arr(nt, ust, "body", &rc, 1);
+    nt_node_set_ref(nt, unl, "predicate", kq);
+    nt_node_set_ref(nt, unl, "statements", ust);
+    int kr = cg_local_read(nt, like, "__cg_k");
+    nt_node_set_arr(nt, args, "arguments", &kr, 1);
+    nt_node_set_ref(nt, call, "receiver", cg_local_read(nt, like, "__cg_h"));
+    int stmts[4] = { wh, wk, unl, call };
+    nt_node_set_arr(nt, body, "body", stmts, 4);
+  }
+  nt_node_set_str(nt, def, "name", mname);
+  nt_node_set_ref(nt, def, "receiver", self);
+  nt_node_set_ref(nt, def, "parameters", ps);
+  nt_node_set_ref(nt, def, "body", body);
+  return def;
+}
+
+int desugar_dynamic_const_get(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  int changed = 0;
+  char **done = NULL; int ndone = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int is_get = nm && sp_streq(nm, "const_get");
+    int is_def = nm && sp_streq(nm, "const_defined?");
+    if (!is_get && !is_def) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an < 1 || !av) continue;
+    NodeKind ak = nt_kind(nt, av[0]);
+    if (ak == NK_SymbolNode || ak == NK_StringNode) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || (nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode)) continue;
+    const char *mn = nt_str(nt, recv, "name");
+    if (!mn) continue;
+    /* the module's first body carries the generated methods */
+    int first = -1;
+    for (int m = 0; m < n0 && first < 0; m++) {
+      NodeKind mk = nt_kind(nt, m);
+      if (mk != NK_ModuleNode && mk != NK_ClassNode) continue;
+      int cp = nt_ref(nt, m, "constant_path");
+      const char *bn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+      if (bn && sp_streq(bn, mn) && nt_ref(nt, m, "body") >= 0) first = m;
+    }
+    if (first < 0) continue;
+    int seen = 0;
+    for (int q = 0; q < ndone; q++) if (sp_streq(done[q], mn)) seen = 1;
+    if (!seen) {
+      char **names = NULL; int nn = 0, cap = 0;
+      cg_collect(nt, mn, n0, &names, &nn, &cap);
+      int body = nt_ref(nt, first, "body");
+      int bn = 0; const int *bs = nt_arr(nt, body, "body", &bn);
+      int *out = malloc(sizeof(int) * (size_t)(bn + 2));
+      memcpy(out, bs, sizeof(int) * (size_t)bn);
+      int d1 = cg_def(nt, id, "__const_get__", "[]", names, nn, mn);
+      int d2 = cg_def(nt, id, "__const_defined__", "key?", names, nn, NULL);
+      int no = bn;
+      if (d1 >= 0) out[no++] = d1;
+      if (d2 >= 0) out[no++] = d2;
+      nt_node_set_arr(nt, body, "body", out, no);
+      free(out);
+      for (int q = 0; q < nn; q++) free(names[q]);
+      free(names);
+      done = realloc(done, sizeof(char *) * (size_t)(ndone + 1));
+      done[ndone++] = strdup(mn);
+    }
+    nt_node_set_str(nt, id, "name", is_get ? "__const_get__" : "__const_defined__");
+    /* a second argument (inherit) has no meaning for the table */
+    if (an > 1) nt_node_set_arr(nt, args, "arguments", av, 1);
+    changed = 1;
+  }
+  for (int q = 0; q < ndone; q++) free(done[q]);
+  free(done);
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}

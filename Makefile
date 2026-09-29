@@ -1032,7 +1032,7 @@ reject-test: $(SPINEL)
 	  { echo "reject-test: FAIL (a held typed array into a boxed parameter's store rejected without saying why)"; sed -n 1,5p "$$tmp/tb.out"; ok=0; }; fi; \
 	t=test/reject/const_get_runtime_name.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/cg.c" >"$$tmp/cg.out" 2>&1; then \
-	  echo "reject-test: FAIL (a const_get with a run-time name compiled)"; ok=0; \
+	  echo "reject-test: FAIL (a const_get with a run-time name on a class value compiled)"; ok=0; \
 	else grep -q "const_get with a name known only at run time" "$$tmp/cg.out" || \
 	  { echo "reject-test: FAIL (a run-time const_get refused without saying why)"; sed -n 1,5p "$$tmp/cg.out"; ok=0; }; fi; \
 	t=test/reject/def_delegators_splat.rb; \
