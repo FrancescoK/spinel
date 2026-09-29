@@ -914,10 +914,14 @@ static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int
                                       const int *atmp, const TyKind *atmp_ty,
                                       const PolyKw *kw, int tv, int tr, TyKind ret, int blk_tmp, Buf *b) {
   int kwh = kw ? kw->kwh : -1;
-  int ccls8[64], cmi8[64], nc8 = 0, wants_blk = 0;
+  int nc8 = 0, wants_blk = 0;
   int ncc8 = 0;
   const PolyCand *cc8 = comp_cmethod_candidates(c, name, &ncc8);   /* per name, not per site (#4966) */
-  for (int ki = 0; ki < ncc8 && nc8 < 64; ki++) {
+  /* one arm per candidate class, however many: a binding with hundreds of
+     FFI::Struct subclasses reads `klass.layout` on any of them */
+  int *ccls8 = malloc(sizeof(int) * (size_t)(ncc8 > 0 ? ncc8 : 1));
+  int *cmi8 = malloc(sizeof(int) * (size_t)(ncc8 > 0 ? ncc8 : 1));
+  for (int ki = 0; ki < ncc8; ki++) {
     int k = cc8[ki].cls;
     if (is_builtin_reopen(c->classes[k].name)) continue;
     int kmi = cc8[ki].mi;
@@ -976,7 +980,7 @@ static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int
     if (incompat8) continue;
     ccls8[nc8] = k; cmi8[nc8] = kmi; nc8++;
   }
-  if (nc8 == 0) return 0;
+  if (nc8 == 0) { free(ccls8); free(cmi8); return 0; }
   if (wants_blk && blk_tmp < 0) blk_tmp = hoist_call_block_proc(c, id);
   buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) { switch (_t%d.cls_id) {", tv, tv);
   for (int i = 0; i < nc8; i++) {
@@ -1050,6 +1054,7 @@ static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int
   buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;",
              name, tv);
   buf_puts(b, " } }\nelse ");
+  free(ccls8); free(cmi8);
   return 1;
 }
 
@@ -19596,7 +19601,11 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
          Class) and a poly result slot (dflt nil), the shape this arises in. */
       if (grt == TY_POLY && nm && (ret == TY_POLY || ret == TY_UNKNOWN) &&
           g_cls_tag_skip != id) {
-        int ccls[64], cmi[64], cdef[64], cpf[64], nc = 0;
+        /* one arm per candidate class, however many (a binding with hundreds
+           of FFI::Struct subclasses reads `klass.layout` on any of them) */
+        int ncap = c->nclasses > 0 ? c->nclasses : 1;
+        int *ccls = malloc(sizeof(int) * 4 * (size_t)ncap);
+        int *cmi = ccls + ncap, *cdef = cmi + ncap, *cpf = cdef + ncap, nc = 0;
         int cargc = 0, csplat = 0;
         { int ca = nt_ref(nt, id, "arguments");
           const int *cav = ca >= 0 ? nt_arr(nt, ca, "arguments", &cargc) : NULL;
@@ -19612,7 +19621,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
                   csplat = 1;
             }
           } }
-        for (int k = 0; k < c->nclasses && nc < 64; k++) {
+        for (int k = 0; k < c->nclasses; k++) {
           int dc = -1;
           int mi = comp_cmethod_in_chain(c, k, nm, &dc);
           if (mi < 0) continue;
@@ -19727,8 +19736,10 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
             c->ntype[g_argov_node[hoisted_sv[h]]] = hoisted_ty[h];
             g_n_argov = hoisted_sv[h];
           }
+          free(ccls);
           return 1;
         }
+        free(ccls);
       }
       /* The receiver's static class HAS subclasses and cannot answer this
          name, while some subclass can. A slot typed as that class is only its
