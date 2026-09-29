@@ -2864,8 +2864,11 @@ static char *resolve_requires(const char *source, const char *source_path,
   else { free(dir); dir = strdup("."); }
   free(path_copy);
 
-  char *result = sp_rewrite_computed_requires(source, dir);
-  char *result = sp_rewrite_autoloads(source, dir);
+  /* computed requires spelling a literal path (#5700), then autoloads with
+     a literal path (#5696): each answers a fresh copy of what it reads */
+  char *pre_auto = sp_rewrite_computed_requires(source, dir);
+  char *result = sp_rewrite_autoloads(pre_auto, dir);
+  free(pre_auto);
   sp_autoload_is_main = 0;
   /* One pragma flag per line of `result`, kept in lockstep with every text
      splice below so each literal keeps its own file's flag. */
