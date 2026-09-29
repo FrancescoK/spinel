@@ -13421,6 +13421,8 @@ char *codegen_program(const NodeTable *nt) {
       buf_puts(&b, "static ");
       emit_ctype(c, t, &b);
       buf_printf(&b, " cvar_%s_%s = %s;\n", ci->name, ci->cvars[j] + 2, init);
+      if (cvar_defined_probed(c, ci->cvars[j]))
+        buf_printf(&b, "static int cvar_%s_%s__set = 0;\n", ci->name, ci->cvars[j] + 2);
     }
   }
 

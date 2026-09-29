@@ -1085,6 +1085,53 @@ const char *nil_value(TyKind t) {
   }
 }
 
+/* Does the program ask whether class variable `nm` ("@@x") is set yet --
+   `defined?(@@x)` or `class_variable_defined?(:@@x)`? Only such a cvar
+   carries a cvar_<C>_<x>__set flag, so every other program's writes stay
+   plain stores. */
+int cvar_defined_probed(Compiler *c, const char *nm) {
+  const NodeTable *nt = c->nt;
+  if (!nm) return 0;
+  for (int k = 0; k < nt->count; k++) {
+    const char *kt = nt_type(nt, k);
+    if (!kt) continue;
+    if (sp_streq(kt, "DefinedNode")) {
+      int v = nt_ref(nt, k, "value");
+      const char *vt = v >= 0 ? nt_type(nt, v) : NULL;
+      if (vt && sp_streq(vt, "ClassVariableReadNode") && nt_str(nt, v, "name") &&
+          sp_streq(nt_str(nt, v, "name"), nm)) return 1;
+    }
+    else if (sp_streq(kt, "CallNode") && nt_str(nt, k, "name") &&
+             sp_streq(nt_str(nt, k, "name"), "class_variable_defined?")) {
+      int an = 0; int aa = nt_ref(nt, k, "arguments");
+      const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &an) : NULL;
+      if (an < 1) continue;
+      const char *at = nt_type(nt, av[0]);
+      const char *s = !at ? NULL : sp_streq(at, "SymbolNode") ? nt_str(nt, av[0], "value")
+                    : sp_streq(at, "StringNode") ? nt_str(nt, av[0], "content") : NULL;
+      if (s && sp_streq(s, nm)) return 1;
+    }
+  }
+  return 0;
+}
+
+/* Mark class `cid`'s cvar `nm` as assigned ahead of a store to it: a
+   statement (`cvar_C_x__set = 1; `) or, with as_expr, the head of a comma
+   expression (`cvar_C_x__set = 1, `). Nothing when nothing probes it. */
+void emit_cvar_set_flag(Compiler *c, int cid, const char *nm, int as_expr, Buf *b) {
+  if (cid < 0 || !nm || !cvar_defined_probed(c, nm)) return;
+  buf_printf(b, "cvar_%s_%s__set = 1%s", c->classes[cid].name, nm + 2, as_expr ? ", " : "; ");
+}
+
+/* The flag set after the store, in value position: `(cvar = rhs` + this +
+   `)` keeps the cvar's value as the expression's, and the right-hand side
+   still sees the cvar unset. */
+void emit_cvar_set_flag_after(Compiler *c, int cid, const char *nm, Buf *b) {
+  if (cid < 0 || !nm || !cvar_defined_probed(c, nm)) return;
+  buf_printf(b, ", cvar_%s_%s__set = 1, cvar_%s_%s", c->classes[cid].name, nm + 2,
+             c->classes[cid].name, nm + 2);
+}
+
 static int subtree_has_param_named(const NodeTable *nt, int id, const char *nm);
 int subtree_has_param_named_pub(const NodeTable *nt, int id, const char *nm) {
   return subtree_has_param_named(nt, id, nm);

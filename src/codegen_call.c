@@ -31050,15 +31050,21 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       int ccid = (rty2 && sp_streq(rty2, "ConstantReadNode")) ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
       if (cvn && cvn[0] == '@' && cvn[1] == '@' && ccid >= 0) {
         int cvi = comp_cvar_index(&c->classes[ccid], cvn);
-        if (sp_streq(name, "class_variable_defined?")) { buf_printf(b, "%d", cvi >= 0 ? 1 : 0); return; }
         char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[ccid].name, cvn + 2);
+        if (sp_streq(name, "class_variable_defined?")) {
+          if (cvi >= 0) buf_printf(b, "(%s__set != 0)", ref);
+          else buf_puts(b, "0");
+          return;
+        }
         if (cvi >= 0) {
           TyKind ct = c->classes[ccid].cvar_types[cvi];
           if (sp_streq(name, "class_variable_get")) { emit_boxed_text(c, ct, ref, b); return; }
           if (sp_streq(name, "class_variable_set") && argc == 2) {
             buf_printf(b, "(%s = ", ref);
             if (ct == TY_POLY) emit_boxed(c, argv[1], b); else emit_expr(c, argv[1], b);
-            buf_puts(b, ", "); emit_boxed_text(c, ct, ref, b); buf_puts(b, ")");
+            buf_puts(b, ", ");
+            emit_cvar_set_flag(c, ccid, cvn, 1, b);
+            emit_boxed_text(c, ct, ref, b); buf_puts(b, ")");
             return;
           }
         }
