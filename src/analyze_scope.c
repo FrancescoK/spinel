@@ -5843,6 +5843,74 @@ static int nil_writes_apply(Compiler *c, NilWrites *w) {
   return changed;
 }
 
+/* The ivar writes a fresh instance runs before any other method: those in an
+   `initialize` and in the methods it calls on self, as (class, name) pairs. A
+   write of a bare nil leaves the slot nil, so it does not count. */
+static int ctor_scopes_write(Compiler *c, NilWrites *out) {
+  const NodeTable *nt = c->nt;
+  unsigned char *ctor = calloc((size_t)(c->nscopes ? c->nscopes : 1), 1);
+  for (int si = 0; si < c->nscopes; si++) {
+    Scope *s = &c->scopes[si];
+    if (s->class_id >= 0 && !s->is_cmethod && s->name && sp_streq(s->name, "initialize")) ctor[si] = 1;
+  }
+  for (int grew = 1; grew; ) {
+    grew = 0;
+    NT_FOREACH_KIND(nt, NK_CallNode, id) {
+      Scope *s = comp_scope_of(c, id);
+      if (!s || !ctor[s - c->scopes]) continue;
+      int recv = nt_ref(nt, id, "receiver");
+      if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode) continue;
+      const char *nm = nt_str(nt, id, "name");
+      int mi = nm ? comp_method_in_chain(c, s->class_id, nm, NULL) : -1;
+      if (mi < 0 || ctor[mi] || c->scopes[mi].is_cmethod) continue;
+      ctor[mi] = 1; grew = 1;
+    }
+  }
+  static const NodeKind kinds[] = {
+    NK_InstanceVariableWriteNode, NK_InstanceVariableOperatorWriteNode,
+    NK_InstanceVariableOrWriteNode, NK_InstanceVariableAndWriteNode,
+    NK_InstanceVariableTargetNode,
+  };
+  for (size_t k = 0; k < sizeof kinds / sizeof kinds[0]; k++) {
+    NT_FOREACH_KIND(nt, kinds[k], id) {
+      Scope *s = comp_scope_of(c, id);
+      if (!s || !ctor[s - c->scopes]) continue;
+      if (kinds[k] == NK_InstanceVariableWriteNode) {
+        int v = nt_ref(nt, id, "value");
+        if (v >= 0 && (nt_kind(nt, v) == NK_NilNode || comp_nil_chain_bottom(nt, v) >= 0)) continue;
+      }
+      nil_write_note(out, s->class_id, nt_str(nt, id, "name"));
+    }
+  }
+  free(ctor);
+  return out->n;
+}
+
+/* An ivar no constructor writes is nil on a fresh instance until some method
+   assigns it: an implicit nil write, which boxes a slot with no nil of its own
+   the way an explicit one does. Without it a Symbol, bool or Class slot read
+   before its first write answered its C zero -- `@v.nil?` false, `p @v`
+   false. Only classes something constructs are asked, so an abstract base
+   whose subclasses' constructors assign the slot keeps it unboxed. */
+static void implicit_nil_writes_note(Compiler *c, NilWrites *w) {
+  NilWrites seeded = {0};
+  int built = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *ci = &c->classes[k];
+    if (!ci->ctor_reachable || ci->is_struct) continue;
+    for (int iv = 0; iv < ci->nivars; iv++) {
+      if (nil_write_type(ci->ivar_types[iv]) == ci->ivar_types[iv]) continue;
+      if (!built) { ctor_scopes_write(c, &seeded); built = 1; }
+      int found = 0;
+      for (int a = k; a >= 0 && a < c->nclasses && !found; a = c->classes[a].parent)
+        for (int j = 0; j < seeded.n && !found; j++)
+          found = seeded.cls[j] == a && sp_streq(seeded.nm[j], ci->ivars[iv]);
+      if (!found) nil_write_note(w, k, ci->ivars[iv]);
+    }
+  }
+  free(seeded.cls); free(seeded.nm);
+}
+
 int class_has_subclass(Compiler *c, int ocid);
 
 static int sg_writer_class(Compiler *c, int id, int recv) {
@@ -6188,6 +6256,7 @@ int infer_ivar_types(Compiler *c) {
       }
     }
   }
+  implicit_nil_writes_note(c, &nilw);
   changed |= nil_writes_apply(c, &nilw);
   return changed;
 }
