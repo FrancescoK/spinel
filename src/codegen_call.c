@@ -7909,6 +7909,16 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         else emit_unbox_text(c, ret, sv, b);
         buf_puts(b, "; break;");
       }
+      /* IO#read on a poly value when a user class owns `read` (ffi's
+         Pointer#read(type)): a File in the same slot still reads itself */
+      if (argc == 0 && sp_streq(name, "read") && (ret == TY_POLY || ret == TY_STRING)) {
+        char rv[80];
+        snprintf(rv, sizeof rv, "sp_File_read((sp_File *)_t%d.v.p)", tv);
+        buf_printf(b, " case SP_BUILTIN_IO: _t%d = ", tr);
+        if (ret == TY_POLY) buf_printf(b, "sp_box_nullable_str(%s)", rv);
+        else buf_puts(b, rv);
+        buf_puts(b, "; break;");
+      }
       /* IO#flush on a poly value: the zero-arg sibling of the write arm in
          the argument-carrying dispatch. A Socket or File reaches this switch
          when any user class owns the name and fell to the raise default
