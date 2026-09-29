@@ -3865,31 +3865,18 @@ int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b) {
   if (lv_p1) lv_p1->type = et;
   for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);  /* refresh cache */
   int save = g_indent; g_indent++;
-  if (is_min) {
-    /* Open C shadow scope with et-typed block param vars */
-    emit_indent(g_pre, g_indent); buf_puts(g_pre, "{\n"); g_indent++;
-    emit_indent(g_pre, g_indent);
-    if (p0) { emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = _t%d; ", p0, te); }
-    if (p1) { emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = _t%d;", p1, tmin); }
-    buf_puts(g_pre, "\n");
-    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent);
-    Buf cm; memset(&cm, 0, sizeof cm); emit_expr(c, bb[bn - 1], &cm);
-    g_indent--;
-    emit_indent(g_pre, g_indent); buf_printf(g_pre, "if (%s%s) < 0) _t%d = _t%d;\n", cmp_o, cm.p ? cm.p : "0", tmin, te); free(cm.p);
-    emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-  }
-  if (is_max) {
-    emit_indent(g_pre, g_indent); buf_puts(g_pre, "{\n"); g_indent++;
-    emit_indent(g_pre, g_indent);
-    if (p0) { emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = _t%d; ", p0, te); }
-    if (p1) { emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = _t%d;", p1, tmax); }
-    buf_puts(g_pre, "\n");
-    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent);
-    Buf cx; memset(&cx, 0, sizeof cx); emit_expr(c, bb[bn - 1], &cx);
-    g_indent--;
-    emit_indent(g_pre, g_indent); buf_printf(g_pre, "if (%s%s) > 0) _t%d = _t%d;\n", cmp_o, cx.p ? cx.p : "0", tmax, te); free(cx.p);
-    emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-  }
+  int tacc = is_min ? tmin : tmax;
+  /* Open C shadow scope with et-typed block param vars */
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "{\n"); g_indent++;
+  emit_indent(g_pre, g_indent);
+  if (p0) { emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = _t%d; ", p0, te); }
+  if (p1) { emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = _t%d;", p1, tacc); }
+  buf_puts(g_pre, "\n");
+  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent);
+  Buf cm; memset(&cm, 0, sizeof cm); emit_expr(c, bb[bn - 1], &cm);
+  g_indent--;
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "if (%s%s) %c 0) _t%d = _t%d;\n", cmp_o, cm.p ? cm.p : "0", is_min ? '<' : '>', tacc, te); free(cm.p);
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   if (lv_p0) lv_p0->type = saved_p0;
   if (lv_p1) lv_p1->type = saved_p1;
   g_indent = save;
