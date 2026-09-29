@@ -12462,7 +12462,9 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       int trep = ++g_tmp;
       emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
       emit_indent(b, indent);
-      buf_printf(b, "{ const char *_t%d = ", trep); emit_expr(c, argv[0], b);
+      /* a boxed argument (a call dispatched on a class held in a variable)
+         reads as its string, TypeError for anything else */
+      buf_printf(b, "{ const char *_t%d = ", trep); emit_str_expr(c, argv[0], b);
       buf_printf(b, "; ");
       emit_expr(c, recv, b);
       buf_printf(b, " = sp_str_from_bytes(_t%d, sp_str_byte_len(_t%d)); }\n", trep, trep);
