@@ -9940,8 +9940,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       TyKind res = comp_ntype(c, id);
       const char *hn = ty_hash_cname(res);
       if (!hn) hn = "SymPoly";
-      buf_printf(b, "({ sp_%s *_t%d = %s; sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);",
-                 sc->name, t, rb.p ? rb.p : "", hn, rh, hn, rh);
+      buf_printf(b, "({ sp_%s *_t%d = %s; SP_GC_ROOT(_t%d); sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);",
+                 sc->name, t, rb.p ? rb.p : "", t, hn, rh, hn, rh);
       free(rb.p);
       if (block >= 0) {
         /* to_h { |k, v| [nk, nv] }: per member, bind k/v then set hash[nk] = nv */
