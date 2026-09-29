@@ -32882,6 +32882,14 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
 
   /* StringIO is a native-bound package class; .open is Ruby in the package. */
 
+  /* Encoding.find(name) with a name known only at run time (a literal one is
+     the constant it names, desugar_encoding_queries) */
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode && argc == 1 &&
+      sp_streq(name, "find") && nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Encoding")) {
+    buf_puts(b, "sp_encoding_find("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+    return;
+  }
+
   /* GC module methods */
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "GC")) {

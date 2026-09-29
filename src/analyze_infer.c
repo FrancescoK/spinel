@@ -3510,6 +3510,11 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "GC") &&
         (sp_streq(name, "start") || sp_streq(name, "compact")))
       return TY_NIL;
+    /* Encoding.find(name): a boxed Encoding (nil for "internal") */
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Encoding") &&
+        sp_streq(name, "find") && argc == 1)
+      return TY_POLY;
     /* Warning[] / Warning[]= / Warning.warn (codegen_call.c's arm) */
     if (rty && sp_streq(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Warning")) {

@@ -15,6 +15,7 @@
 #endif
 #include <stddef.h>
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -3433,6 +3434,30 @@ sp_RbVal sp_box_i64(int64_t v) {
   return sp_box_bigint(sp_bigint_new_int(v));
 }
 sp_RbVal sp_box_encoding(sp_Encoding e) { sp_RbVal r; r.tag = SP_TAG_ENCODING; r.cls_id = 0; r.v.s = sp_encoding_name(e); return r; }
+/* Encoding.find(name) with a name known at run time: an Encoding answers
+   itself, a name or alias the encoding it names (case-insensitively, as
+   CRuby), "external" / "locale" / "filesystem" UTF-8 and "internal" nil;
+   anything else is CRuby's ArgumentError. */
+static const char *const sp_encoding_names[][2] = {
+#include "sp_encoding_names.h"
+  { NULL, NULL } };
+sp_RbVal sp_encoding_find(sp_RbVal v) {
+  if (v.tag == SP_TAG_ENCODING) return v;
+  if (v.tag != SP_TAG_STR) {
+    const char *cn = v.tag == SP_TAG_NIL ? "nil" : v.tag == SP_TAG_INT ? "Integer"
+                   : v.tag == SP_TAG_FLT ? "Float" : v.tag == SP_TAG_SYM ? "Symbol"
+                   : v.tag == SP_TAG_BOOL ? (v.v.b ? "true" : "false") : "Object";
+    sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into String", cn));
+  }
+  const char *n = v.v.s;
+  if (!strcasecmp(n, "external") || !strcasecmp(n, "locale") || !strcasecmp(n, "filesystem"))
+    return sp_box_encoding((sp_Encoding){ "UTF-8" });
+  if (!strcasecmp(n, "internal")) return sp_box_nil();
+  for (int i = 0; sp_encoding_names[i][0]; i++)
+    if (!strcasecmp(n, sp_encoding_names[i][0])) return sp_box_encoding((sp_Encoding){ sp_encoding_names[i][1] });
+  sp_raise_cls("ArgumentError", sp_sprintf("unknown encoding name - %s", n));
+  return sp_box_nil();
+}
 sp_RbVal sp_box_nullable_str(const char *v) { return v ? sp_box_str(v) : sp_box_nil(); }
 /* An opaque foreign/FFI pointer: boxed with SP_BUILTIN_FOREIGN_PTR so the
    collector skips it (it is not a sp_gc_alloc allocation). NULL -> nil. */
