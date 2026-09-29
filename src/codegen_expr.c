@@ -2379,6 +2379,18 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     }
     return;
   }
+  if (sp_streq(ty, "GlobalVariableWriteNode")) {
+    /* `$g = v` as a value: ({ <the write>; gv_g; }) -- the statement form
+       builds the slot's value, and the slot is the expression's value */
+    const char *nm = nt_str(nt, id, "name");
+    const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
+    LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
+    if (!lv) { unsupported(c, id, "global variable write (unregistered global)"); return; }
+    buf_puts(b, "({ ");
+    emit_stmt_inner(c, id, b, 0);
+    buf_printf(b, "gv_%s; })", rn);
+    return;
+  }
   if (sp_streq(ty, "GlobalVariableOrWriteNode") || sp_streq(ty, "GlobalVariableAndWriteNode")) {
     const char *nm = nt_str(nt, id, "name");
     const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;

@@ -11626,8 +11626,31 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     free(rb9.p);
     return;
   }
+  /* A tail GLOBAL write answers the stored value too (`def m; $g = v; end`),
+     and the statement form returned nil. Same shape as the local write:
+     emit the write, then hand back the slot. */
+  if (sp_streq(ty, "GlobalVariableWriteNode")) {
+    const char *gnm = nt_str(nt, id, "name");
+    const char *grn = gnm ? comp_resolve_gvar(c, gnm + 1) : NULL;
+    LocalVar *gv9 = grn ? comp_gvar(c, grn) : NULL;
+    TyKind gt9 = gv9 ? gv9->type : TY_UNKNOWN;
+    int want_poly9 = g_result_var ? g_result_poly : (g_ret_type == TY_POLY);
+    int slot_ok = gv9 && gt9 != TY_UNKNOWN && gt9 != TY_VOID &&
+                  (want_poly9 || gt9 == (g_result_var ? g_result_ty : g_ret_type));
+    emit_stmt(c, id, b, indent);
+    if (!slot_ok) return;
+    char gref9[256]; snprintf(gref9, sizeof gref9, "gv_%s", grn);
+    emit_indent(b, indent); emit_tail_lead(b);
+    if (want_poly9 && gt9 != TY_POLY) {
+      Buf bx9; memset(&bx9, 0, sizeof bx9);
+      emit_boxed_text(c, gt9, gref9, &bx9);
+      buf_printf(b, "%s;\n", bx9.p ? bx9.p : "sp_box_nil()");
+      free(bx9.p);
+    }
+    else buf_printf(b, "%s;\n", gref9);
+    return;
+  }
   if ((sp_streq(ty, "InstanceVariableWriteNode") && !_iv_tail_val) ||
-      sp_streq(ty, "GlobalVariableWriteNode") ||
       sp_streq(ty, "ConstantWriteNode") ||
       sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") ||
       (sp_streq(ty, "CallNode") && nt_ref(nt, id, "receiver") < 0 &&
