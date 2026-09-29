@@ -19,12 +19,14 @@ g = Fiber.new { g = nil; :cleared }
 p g.resume
 p g.nil?
 
+# A thread may start before `t = ` has stored its handle: it waits for the
+# assignment, as a CRuby program racing its own Thread.new must.
 t = Thread.new do
-  sleep 0.01
+  Thread.pass until t
   GC.start
   t.equal?(Thread.current)
 end
 p t.value
 
-ts = Thread.new { ts.name = "self-named"; ts.name }
+ts = Thread.new { Thread.pass until ts; ts.name = "self-named"; ts.name }
 p ts.value
