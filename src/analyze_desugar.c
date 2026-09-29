@@ -3548,6 +3548,13 @@ static int def_shape(const NodeTable *nt, int id) {
     if (kn > 0) sh |= 2;
     if (fwd_node_is(nt, nt_ref(nt, pn, "rest"), "RestParameterNode")) sh |= 1;
     if (fwd_node_is(nt, nt_ref(nt, pn, "keyword_rest"), "KeywordRestParameterNode")) sh |= 2;
+    /* A `**nil` method takes no keyword, but it has to see the keywords a
+       forward passes to refuse them: without the `**` channel `...` carried
+       them into the rest as a positional Hash, so `def w(...) = m(...)`
+       into `def m(a, **nil)` raised a wrong count for `w(1, z: 3)`, and
+       bound the Hash into an optional where m had one, instead of CRuby's
+       "no keywords accepted". An empty `**` passes nothing to refuse. */
+    if (fwd_node_is(nt, nt_ref(nt, pn, "keyword_rest"), "NoKeywordsParameterNode")) sh |= 2;
   }
   if (fwd_subtree_uses_yield_or_block(nt, id)) sh |= 4;
   return sh;

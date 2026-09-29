@@ -197,10 +197,12 @@ static int scope_is_forwarding(Compiler *c, Scope *s) {
 }
 
 /* The method `s`'s body forwards `...` to (a `callee(...)` call, `super(...)`
-   or a bare `super`). Returns the callee scope index, or -1 if
-   none/unresolved. */
-static int forwarding_target_idx(Compiler *c, Scope *s) {
+   or a bare `super`). Returns the callee scope index of the first such call
+   that resolves, or -1 if none does. `*sole`, when asked, says whether every
+   forwarding call resolves, and to that one scope. */
+static int forwarding_target_scan(Compiler *c, Scope *s, int *sole) {
   const NodeTable *nt = c->nt;
+  int first = -1, one = 1;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty || comp_scope_of(c, id) != s) continue;
@@ -213,23 +215,30 @@ static int forwarding_target_idx(Compiler *c, Scope *s) {
           !sp_streq(nt_type(nt, av[0]), "ForwardingArgumentsNode")) continue;
       is_super = sp_streq(ty, "SuperNode");
     }
+    int mi = -1;
     if (is_super) {
-      if (s->class_id < 0 || s->is_cmethod || !s->name) continue;
-      int par = comp_super_parent(c, s->class_id, 0);
-      int mi = par >= 0 ? comp_method_in_chain(c, par, s->name, NULL) : -1;
-      if (mi >= 0) return mi;
-      continue;
+      if (s->class_id >= 0 && !s->is_cmethod && s->name) {
+        int par = comp_super_parent(c, s->class_id, 0);
+        mi = par >= 0 ? comp_method_in_chain(c, par, s->name, NULL) : -1;
+      }
     }
-    const char *cn = nt_str(nt, id, "name");
-    if (!cn) continue;
-    int recv = nt_ref(nt, id, "receiver");
-    if (recv >= 0) continue;  /* receiver-qualified target: not resolved here */
-    int mi = comp_method_index(c, cn);
-    if (mi < 0 && s->class_id >= 0) mi = comp_method_in_chain(c, s->class_id, cn, NULL);
-    if (mi < 0 && s->class_id >= 0) mi = comp_cmethod_in_chain(c, s->class_id, cn, NULL);
-    if (mi >= 0) return mi;
+    else {
+      const char *cn = nt_str(nt, id, "name");
+      /* a receiver-qualified target is not resolved here */
+      if (cn && nt_ref(nt, id, "receiver") < 0) {
+        mi = comp_method_index(c, cn);
+        if (mi < 0 && s->class_id >= 0) mi = comp_method_in_chain(c, s->class_id, cn, NULL);
+        if (mi < 0 && s->class_id >= 0) mi = comp_cmethod_in_chain(c, s->class_id, cn, NULL);
+      }
+    }
+    if (mi < 0 || (first >= 0 && mi != first)) one = 0;
+    if (first < 0 && mi >= 0) first = mi;
   }
-  return -1;
+  if (sole) *sole = one && first >= 0;
+  return first;
+}
+static int forwarding_target_idx(Compiler *c, Scope *s) {
+  return forwarding_target_scan(c, s, NULL);
 }
 
 /* A `Klass.new(...)` call whose receiver names a class that constructs
@@ -315,8 +324,15 @@ void topup_forwarding_arity(Compiler *c) {
     for (int s = 1; s < c->nscopes; s++) {
       Scope *sc = &c->scopes[s];
       if (!scope_is_forwarding(c, sc)) continue;
-      int tgt = forwarding_target_idx(c, sc);
+      int sole = 0;
+      int tgt = forwarding_target_scan(c, sc, &sole);
       if (tgt < 0 || tgt == s) continue;
+      /* a forwarder whose every `...` reaches one method keeps its keyword
+         policy (scope_refuses_keywords); one that picks among several
+         cannot say which will take the keywords, so none is recorded:
+         `def w(c, ...) = c ? m(...) : n(...)` must not refuse `n`'s
+         keywords because `m` says `**nil` */
+      sc->fwd_target1 = sole ? tgt + 1 : 0;
       int want = c->scopes[tgt].nparams;
       while (sc->nparams < want) {
         char nm[24]; snprintf(nm, sizeof nm, "__fwd_%d", sc->nparams);
