@@ -130,6 +130,7 @@ const char *numbered_param_name(Compiler *c, int params_node, int idx);
 const char *block_rest_name(Compiler *c, int block);
 const char *block_opt_name(Compiler *c, int block, int idx);
 const char *block_post_name(Compiler *c, int block, int idx);
+int block_lone_rest(Compiler *c, int block);
 int block_rest_marker(Compiler *c, int block);
 int block_lead_only(Compiler *c, int block);
 int block_auto_splats(int P, int O, int Q, int R);

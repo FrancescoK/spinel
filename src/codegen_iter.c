@@ -4324,7 +4324,8 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       Scope *ss = comp_scope_of(c, id);
       const char *sn = ss ? ss->name : NULL;
       const char *rest = block_rest_name(c, block);
-      if (sp_streq(name, "each") && p0 && !block_param_name(c, block, 1) && !(rest && *rest) &&
+      if (sp_streq(name, "each") &&
+          ((p0 && !block_param_name(c, block, 1) && !(rest && *rest)) || block_lone_rest(c, block)) &&
           !(sn && strncmp(sn, "__enum", 6) == 0)) {
         tpair = ++g_tmp;
         emit_indent(b, indent); buf_printf(b, "int _t%d = sp_poly_yields_pair(_t%d);\n", tpair, ta);
@@ -4397,6 +4398,20 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent + 1);
       buf_printf(b, "sp_RbVal _t%d = sp_poly_each_elem(_t%d, _t%d);\n", telem, ta, ti);
       emit_poly_auto_splat(c, block, telem, b, indent);
+    }
+    else if (pv_half < 0 && block_lone_rest(c, block)) {
+      /* `each { |*r| }`: the element, a Hash entry's [k, v] pair included,
+         is the one value the rest array holds; an Enumerator that yields
+         several values per step gives them all */
+      if (tpair) {
+        emit_indent(b, indent + 1);
+        buf_printf(b, "lv_%s = sp_yielded_args(_t%d, sp_poly_each_elem(_t%d, _t%d));\n",
+                   rename_local(block_rest_name(c, block)), tpair, ta, ti);
+      }
+      else {
+        char rsrc[64]; snprintf(rsrc, sizeof rsrc, "sp_poly_each_elem(_t%d, _t%d)", ta, ti);
+        emit_iter_bind_rest(c, block, 0, TY_POLY, rsrc, b, indent + 1);
+      }
     }
     else if (p0 && pv_half >= 0) {
       /* each_value / each_key: the element is a [k, v] pair; bind one half
