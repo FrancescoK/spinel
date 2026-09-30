@@ -1491,7 +1491,8 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/byref_gather_lead_block_super.rb \
                   test/shared_handle_nonunique_callee.rb \
                   test/shared_handle_poly_args.rb \
-                  test/instance_exec_args_caller_self.rb
+                  test/instance_exec_args_caller_self.rb \
+                  test/class_value_dispatch_args.rb
 
 # Each program runs with the minor mark off and on and must answer the same;
 # then once more under the generational verifier with stress on (every

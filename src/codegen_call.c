@@ -20302,6 +20302,140 @@ int call_on_builtin_class_missing(Compiler *c, int id) {
   int rci = comp_class_index(c, rcn);
   return rci < 0 || comp_cmethod_in_chain(c, rci, name, NULL) < 0;
 }
+
+/* A class-value dispatch renders the call's arguments once per arm, each
+   for ITS callee, and so does the not-a-Class fallback after them: an
+   argument that is an expression was evaluated once per candidate class -- a
+   `build(sql)` argument to `@model.hydrate(build(sql))` ran three times for
+   three models, its side effects with it, and every run but the taken arm's
+   was garbage. Ruby evaluates an argument once. Bind each non-trivial
+   argument to one rooted boxed temp in g_pre and let every arm unbox that; a
+   plain read or literal is left in place, where re-rendering costs nothing.
+   Splats and keyword hashes keep their own paths. Every value finds an
+   override slot, however many there are (argov_reserve): past a table of 64
+   the rest stayed in the arms and ran after the ones hoisted, a `**` operand
+   among them. Each override's slot and the node's own type go to *sv/*ty,
+   which unhoist_dispatch_args restores and frees; the count is returned. */
+static int hoist_dispatch_args(Compiler *c, int argsN, int **sv, TyKind **ty) {
+  const NodeTable *nt = c->nt;
+  int hoisted_n = 0, hargc = 0;
+  const int *hav = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &hargc) : NULL;
+  /* the keywords' values too, and a computed key, in source order: each arm
+     rendered its own keyword hash, so `z: lit(3)` ran once per candidate
+     class. A `*` or `**` operand takes its place among them (hds marks the
+     `**` one): left to the arm, it ran after every value hoisted here --
+     `o.m(*lg(a), k: lg(2))` ran lg(2) first -- and a `**true` raised its
+     TypeError only once the values written after it had run. */
+  int ncap = 0;
+  for (int a = 0; hav && a < hargc; a++) {
+    int en = 1;
+    if (nt_kind(nt, hav[a]) == NK_KeywordHashNode) nt_arr(nt, hav[a], "elements", &en);
+    ncap += 2 * en;
+  }
+  int *hn = malloc(sizeof(int) * (size_t)(ncap + 1)), nhn = 0;
+  char *hds = malloc((size_t)(ncap + 1));
+  for (int a = 0; hav && a < hargc; a++) {
+    if (nt_kind(nt, hav[a]) == NK_SplatNode) {
+      int x = nt_ref(nt, hav[a], "expression");
+      if (x >= 0) { hds[nhn] = 0; hn[nhn++] = x; }
+      continue;
+    }
+    if (nt_kind(nt, hav[a]) != NK_KeywordHashNode) { hds[nhn] = 0; hn[nhn++] = hav[a]; continue; }
+    int en = 0; const int *el = nt_arr(nt, hav[a], "elements", &en);
+    for (int e = 0; e < en; e++) {
+      int v = nt_ref(nt, el[e], "value");
+      if (nt_kind(nt, el[e]) == NK_AssocSplatNode) {
+        if (v >= 0) { hds[nhn] = 1; hn[nhn++] = v; }
+        continue;
+      }
+      if (nt_kind(nt, el[e]) != NK_AssocNode) continue;
+      int key = nt_ref(nt, el[e], "key");
+      if (key >= 0) { hds[nhn] = 0; hn[nhn++] = key; }
+      if (v >= 0) { hds[nhn] = 0; hn[nhn++] = v; }
+    }
+  }
+  int *hoisted_sv = malloc(sizeof(int) * (size_t)(nhn + 1));
+  TyKind *hoisted_ty = malloc(sizeof(TyKind) * (size_t)(nhn + 1));
+  for (int a = 0; a < nhn; a++) {
+    const char *aty = nt_type(nt, hn[a]);
+    if (hds[a]) {
+      /* A `**` operand runs where it stands, into a temp of its own type --
+         the keyword binders judge a `**` by that type, and a boxed one reached
+         a hash literal typed for the spread of nothing a `**true` is -- and
+         converts there, even when reading it has no effect: `**true` raises
+         its TypeError before the values written after it run. */
+      int v = hn[a];
+      TyKind vt = comp_ntype(c, v);
+      int conv = vt == TY_POLY || kw_splat_raises(c, v) || kw_splat_checked_boxed(c, v);
+      int eff = subtree_has_side_effect(c, v);
+      if (!conv && !eff) continue;
+      if (eff) {
+        if (!ty_is_object(vt) && !c_type_name(vt) && vt != TY_POLY) continue;
+        argov_reserve();
+        int ht = ++g_tmp;
+        Buf vb; memset(&vb, 0, sizeof vb);
+        emit_expr(c, v, &vb);
+        emit_indent(g_pre, g_indent);
+        if (vt == TY_POLY) buf_puts(g_pre, "sp_RbVal");
+        else emit_ctype(c, vt, g_pre);
+        buf_printf(g_pre, " _t%d = %s;", ht, vb.p ? vb.p : default_value(vt));
+        if (vt == TY_POLY) buf_printf(g_pre, " SP_GC_ROOT_RBVAL(_t%d);", ht);
+        else if (needs_root(vt)) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", ht);
+        buf_puts(g_pre, "\n");
+        free(vb.p);
+        hoisted_sv[hoisted_n] = g_n_argov;
+        hoisted_ty[hoisted_n] = vt;
+        g_argov_node[g_n_argov] = v;
+        snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ht);
+        g_n_argov++;
+        hoisted_n++;
+      }
+      if (conv) {
+        Buf cb2; memset(&cb2, 0, sizeof cb2);
+        emit_kw_splat_operand_inline(c, v, &cb2);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "%s\n", cb2.p ? cb2.p : "");
+        free(cb2.p);
+      }
+      continue;
+    }
+    /* a read a later value can change is taken here too, where CRuby reads it:
+       left in place, `o.m(@v, f(2))` read what f left in @v (read_rebound_by) */
+    int rebound = 0;
+    for (int j = a + 1; j < nhn && !rebound; j++) rebound = read_rebound_by(c, hn[a], hn[j]);
+    if (!aty || (!rebound && (sp_streq(aty, "LocalVariableReadNode") ||
+                              sp_streq(aty, "InstanceVariableReadNode"))) ||
+        sp_streq(aty, "SplatNode") || sp_streq(aty, "KeywordHashNode") ||
+        sp_streq(aty, "BlockArgumentNode") || sp_streq(aty, "ForwardingArgumentsNode") ||
+        sp_streq(aty, "SelfNode") || sp_streq(aty, "IntegerNode") ||
+        sp_streq(aty, "FloatNode") || sp_streq(aty, "StringNode") ||
+        sp_streq(aty, "SymbolNode") || sp_streq(aty, "NilNode") ||
+        sp_streq(aty, "TrueNode") || sp_streq(aty, "FalseNode"))
+      continue;
+    argov_reserve();
+    int ht = hoist_boxed_rooted(c, hn[a]);
+    hoisted_sv[hoisted_n] = g_n_argov;
+    hoisted_ty[hoisted_n] = c->ntype[hn[a]];
+    g_argov_node[g_n_argov] = hn[a];
+    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ht);
+    g_n_argov++;
+    c->ntype[hn[a]] = TY_POLY;
+    hoisted_n++;
+  }
+  free(hn); free(hds);
+  *sv = hoisted_sv; *ty = hoisted_ty;
+  return hoisted_n;
+}
+
+/* Undo hoist_dispatch_args' overrides in reverse: the slots are a stack. */
+static void unhoist_dispatch_args(Compiler *c, int n, int *sv, TyKind *ty) {
+  for (int h = n - 1; h >= 0; h--) {
+    c->ntype[g_argov_node[sv[h]]] = ty[h];
+    g_n_argov = sv[h];
+  }
+  free(sv); free(ty);
+}
+
 int emit_unresolved_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -20613,135 +20747,8 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           snprintf(raise, sizeof raise,
                    "sp_raise_nomethod(sp_nomethod_msg_args(\"%s\", _t%d, 0, (sp_RbVal[]){sp_box_nil()}))",
                    nm, tv);
-          /* Each arm below renders the call's arguments for ITS callee, and
-             so does the not-a-Class fallback after them: an argument that is
-             an expression was evaluated once per candidate class -- a
-             `build(sql)` argument to `@model.hydrate(build(sql))` ran three
-             times for three models, its side effects with it, and every run
-             but the taken arm's was garbage. Ruby evaluates an argument once.
-             Bind each non-trivial argument to one rooted boxed temp here and
-             let every arm unbox that; a plain read or literal is left in
-             place, where re-rendering costs nothing. Splats and keyword
-             hashes keep their own paths. */
-          int hoisted_n = 0, hoisted_sv[64]; TyKind hoisted_ty[64];
-          { int hargc = 0;
-            const int *hav = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &hargc) : NULL;
-            /* the keywords' values too, and a computed key, in source order:
-               each arm rendered its own keyword hash, so `z: lit(3)` ran once
-               per candidate class. A `*` or `**` operand takes its place
-               among them (hds marks the `**` one): left to the arm, it ran
-               after every value hoisted here -- `o.m(*lg(a), k: lg(2))` ran
-               lg(2) first -- and a `**true` raised its TypeError only once
-               the values written after it had run. */
-            int ncap = 0;
-            for (int a = 0; hav && a < hargc; a++) {
-              int en = 1;
-              if (nt_kind(nt, hav[a]) == NK_KeywordHashNode) nt_arr(nt, hav[a], "elements", &en);
-              ncap += 2 * en;
-            }
-            int *hn = malloc(sizeof(int) * (size_t)(ncap + 1)), nhn = 0;
-            char *hds = malloc((size_t)(ncap + 1));
-            for (int a = 0; hav && a < hargc; a++) {
-              if (nt_kind(nt, hav[a]) == NK_SplatNode) {
-                int x = nt_ref(nt, hav[a], "expression");
-                if (x >= 0) { hds[nhn] = 0; hn[nhn++] = x; }
-                continue;
-              }
-              if (nt_kind(nt, hav[a]) != NK_KeywordHashNode) { hds[nhn] = 0; hn[nhn++] = hav[a]; continue; }
-              int en = 0; const int *el = nt_arr(nt, hav[a], "elements", &en);
-              for (int e = 0; e < en; e++) {
-                int v = nt_ref(nt, el[e], "value");
-                if (nt_kind(nt, el[e]) == NK_AssocSplatNode) {
-                  if (v >= 0) { hds[nhn] = 1; hn[nhn++] = v; }
-                  continue;
-                }
-                if (nt_kind(nt, el[e]) != NK_AssocNode) continue;
-                int key = nt_ref(nt, el[e], "key");
-                if (key >= 0) { hds[nhn] = 0; hn[nhn++] = key; }
-                if (v >= 0) { hds[nhn] = 0; hn[nhn++] = v; }
-              }
-            }
-            /* A `**` operand with an effect must find an override slot: left
-               to the arm, a hash bound positionally renders it a second time
-               once the table is full. So those slots are held back from the
-               other values, which past the table's room stay in the arm,
-               run once there. */
-            int ds_left = 0;
-            for (int a = 0; a < nhn; a++) {
-              TyKind vt = hds[a] ? comp_ntype(c, hn[a]) : TY_UNKNOWN;
-              if (hds[a] && subtree_has_side_effect(c, hn[a]) &&
-                  (ty_is_object(vt) || c_type_name(vt) || vt == TY_POLY)) ds_left++;
-            }
-            for (int a = 0; a < nhn; a++) {
-              const char *aty = nt_type(nt, hn[a]);
-              if (hds[a]) {
-                /* A `**` operand runs where it stands, into a temp of its own
-                   type -- the keyword binders judge a `**` by that type, and
-                   a boxed one reached a hash literal typed for the spread of
-                   nothing a `**true` is -- and converts there, even when
-                   reading it has no effect: `**true` raises its TypeError
-                   before the values written after it run. */
-                int v = hn[a];
-                TyKind vt = comp_ntype(c, v);
-                int conv = vt == TY_POLY || kw_splat_raises(c, v) || kw_splat_checked_boxed(c, v);
-                int eff = subtree_has_side_effect(c, v);
-                if (!conv && !eff) continue;
-                if (eff) {
-                  if (!ty_is_object(vt) && !c_type_name(vt) && vt != TY_POLY) continue;
-                  ds_left--;
-                  if (g_n_argov >= MAX_ARG_OVERRIDE || hoisted_n >= 64) continue;
-                  int ht = ++g_tmp;
-                  Buf vb; memset(&vb, 0, sizeof vb);
-                  emit_expr(c, v, &vb);
-                  emit_indent(g_pre, g_indent);
-                  if (vt == TY_POLY) buf_puts(g_pre, "sp_RbVal");
-                  else emit_ctype(c, vt, g_pre);
-                  buf_printf(g_pre, " _t%d = %s;", ht, vb.p ? vb.p : default_value(vt));
-                  if (vt == TY_POLY) buf_printf(g_pre, " SP_GC_ROOT_RBVAL(_t%d);", ht);
-                  else if (needs_root(vt)) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", ht);
-                  buf_puts(g_pre, "\n");
-                  free(vb.p);
-                  hoisted_sv[hoisted_n] = g_n_argov;
-                  hoisted_ty[hoisted_n] = vt;
-                  g_argov_node[g_n_argov] = v;
-                  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ht);
-                  g_n_argov++;
-                  hoisted_n++;
-                }
-                if (conv) {
-                  Buf cb2; memset(&cb2, 0, sizeof cb2);
-                  emit_kw_splat_operand_inline(c, v, &cb2);
-                  emit_indent(g_pre, g_indent);
-                  buf_printf(g_pre, "%s\n", cb2.p ? cb2.p : "");
-                  free(cb2.p);
-                }
-                continue;
-              }
-              /* a read a later value can change is taken here too, where
-                 CRuby reads it: left in place, `o.m(@v, f(2))` read what f
-                 left in @v (read_rebound_by) */
-              int rebound = 0;
-              for (int j = a + 1; j < nhn && !rebound; j++) rebound = read_rebound_by(c, hn[a], hn[j]);
-              if (!aty || (!rebound && (sp_streq(aty, "LocalVariableReadNode") ||
-                                        sp_streq(aty, "InstanceVariableReadNode"))) ||
-                  sp_streq(aty, "SplatNode") || sp_streq(aty, "KeywordHashNode") ||
-                  sp_streq(aty, "BlockArgumentNode") || sp_streq(aty, "ForwardingArgumentsNode") ||
-                  sp_streq(aty, "SelfNode") || sp_streq(aty, "IntegerNode") ||
-                  sp_streq(aty, "FloatNode") || sp_streq(aty, "StringNode") ||
-                  sp_streq(aty, "SymbolNode") || sp_streq(aty, "NilNode") ||
-                  sp_streq(aty, "TrueNode") || sp_streq(aty, "FalseNode"))
-                continue;
-              if (g_n_argov + ds_left >= MAX_ARG_OVERRIDE || hoisted_n + ds_left >= 64) continue;
-              int ht = hoist_boxed_rooted(c, hn[a]);
-              hoisted_sv[hoisted_n] = g_n_argov;
-              hoisted_ty[hoisted_n] = c->ntype[hn[a]];
-              g_argov_node[g_n_argov] = hn[a];
-              snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ht);
-              g_n_argov++;
-              c->ntype[hn[a]] = TY_POLY;
-              hoisted_n++;
-            }
-            free(hn); free(hds); }
+          int *hoisted_sv; TyKind *hoisted_ty;
+          int hoisted_n = hoist_dispatch_args(c, argsN, &hoisted_sv, &hoisted_ty);
           int wants_blk = 0, blk_tmp = -1;
           for (int k = 0; k < nc; k++) {
             Scope *ks = &c->scopes[cpf[k] >= 0 ? cpf[k] : cmi[k]];
@@ -20786,7 +20793,8 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
              `k.downcase` on a String bind to an unrelated `def self.downcase`
              and fail with that method's arity (#3520). */
           Buf eb2; memset(&eb2, 0, sizeof eb2);
-          if (g_n_argov < MAX_ARG_OVERRIDE && g_cls_value_recv != recv) {
+          if (g_cls_value_recv != recv) {
+            argov_reserve();   /* past the hoisted arguments, however many */
             int slot2 = g_n_argov++;
             g_argov_node[slot2] = recv;
             snprintf(g_argov_text[slot2], sizeof g_argov_text[0], "_t%d", tv);
@@ -20799,11 +20807,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           buf_printf(b, "%s) : %s; })", raise,
                      (eb2.p && eb2.p[0]) ? eb2.p : raise);
           free(eb2.p);
-          /* Undo the argument overrides in reverse: the slots are a stack. */
-          for (int h = hoisted_n - 1; h >= 0; h--) {
-            c->ntype[g_argov_node[hoisted_sv[h]]] = hoisted_ty[h];
-            g_n_argov = hoisted_sv[h];
-          }
+          unhoist_dispatch_args(c, hoisted_n, hoisted_sv, hoisted_ty);
           free(ccls);
           return 1;
         }
@@ -22159,9 +22163,13 @@ static int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
    CRuby raises ArgumentError there -- so it must not veto the whole dispatch
    (#4129). Optional parameters make this a range, not an equality: the old
    `nrequired == argc` test also refused a candidate with a trailing default
-   called with the argument that fills it. */
-static int cls_arm_takes_argc(Scope *s, int argc) {
+   called with the argument that fills it. With a splat among the
+   arguments (`splat`) the count is known only at run time: a candidate the
+   other arguments leave room in may take it, and its arm binds through the
+   gather, which judges the count there. */
+static int cls_arm_takes_argc(Scope *s, int argc, int splat) {
   if (s->rest_idx >= 0) return 1;   /* a rest param takes any count */
+  if (splat) return argc - 1 <= s->nparams;
   return argc >= s->nrequired && argc <= s->nparams;
 }
 
@@ -32933,7 +32941,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
          below build with an arm per class -- the user `self.new` ones among
          them. Taken here, the classes that construct normally had no arm. */
       if (sp_streq(name, "new") && comp_ntype(c, id) == TY_POLY) goto skip_cls_cmethod9;
-      TyKind uret9 = TY_UNKNOWN; int uret_set9 = 0;
+      TyKind uret9 = TY_UNKNOWN; int uret_set9 = 0, splat9 = 0;
+      for (int a = 0; a < argc; a++)
+        if (nt_kind(nt, argv[a]) == NK_SplatNode) splat9 = 1;
       for (int k = 0; k < c->nclasses; k++) {
         if (is_builtin_reopen(c->classes[k].name)) continue;
         int kmi = comp_cmethod_in_chain(c, k, name, NULL);
@@ -32941,7 +32951,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         /* Only the candidates this call could actually reach set the return
            type. One that cannot take this many arguments is not a possible
            receiver here, so its return type is not part of the answer. */
-        if (!cls_arm_takes_argc(&c->scopes[kmi], argc)) continue;
+        if (!cls_arm_takes_argc(&c->scopes[kmi], argc, splat9)) continue;
         ncand9++; defmi9 = kmi;
         TyKind kr = (TyKind)c->scopes[kmi].ret;
         if (!uret_set9) { uret9 = kr; uret_set9 = 1; }
@@ -33005,16 +33015,27 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         if (simple9) {
           TyKind slot9 = is_scalar_ret(uret9) && uret9 != TY_VOID && uret9 != TY_UNKNOWN
                          ? uret9 : (ty_is_object(uret9) ? uret9 : TY_POLY);
-          int tk9 = ++g_tmp, tr9 = ++g_tmp;
+          int tk9 = ++g_tmp, tr9 = ++g_tmp, argsN9 = nt_ref(nt, id, "arguments");
           buf_puts(b, "({ ");
-          /* hoist each argument into a rooted poly temp (evaluate once) */
-          int atmp9[16]; int na9 = argc < 16 ? argc : 16;
-          for (int a = 0; a < na9; a++) {
-            atmp9[a] = ++g_tmp;
-            buf_printf(b, "sp_RbVal _t%d = ", atmp9[a]); emit_boxed(c, argv[a], b);
-            buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", atmp9[a]);
-          }
-          buf_printf(b, "sp_Class _t%d = ", tk9); emit_expr(c, recv, b); buf_puts(b, "; ");
+          /* The receiver, then each argument once, as the boxed class value's
+             dispatch takes them (hoist_dispatch_args), here in the call's own
+             statement expression: each arm below binds them for its callee
+             through the shared binder. The arm bound them by hand, one
+             argument to one parameter, out of a table of 16: every argument
+             past the 16th was dropped unevaluated, a post after a rest read
+             an argument the rest had taken, and a splat or a keyword reached
+             a positional slot whole. */
+          int *hsv9; TyKind *hty9;
+          Buf hp9; memset(&hp9, 0, sizeof hp9);
+          Buf *sv_pre9 = g_pre; g_pre = &hp9;
+          Buf rb9; memset(&rb9, 0, sizeof rb9);
+          emit_expr(c, recv, &rb9);
+          buf_printf(g_pre, "sp_Class _t%d = %s; ", tk9, rb9.p ? rb9.p : "");
+          free(rb9.p);
+          int hn9 = hoist_dispatch_args(c, argsN9, &hsv9, &hty9);
+          g_pre = sv_pre9;
+          if (hp9.p) buf_puts(b, hp9.p);
+          free(hp9.p);
           emit_ctype(c, slot9, b);
           buf_printf(b, " _t%d = %s; switch (_t%d.cls_id) {", tr9,
                      slot9 == TY_POLY ? "sp_box_nil()" : default_value(slot9), tk9);
@@ -33033,7 +33054,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
             /* A class whose method cannot take this many arguments gets the
                answer CRuby gives, rather than no arm (which would fall to the
                default's NoMethodError, naming the wrong failure). */
-            if (!cls_arm_takes_argc(&c->scopes[kmi], argc)) {
+            if (!cls_arm_takes_argc(&c->scopes[kmi], argc, splat9)) {
               /* the range the arm judged, which a default widens */
               char kw[256], am[512];
               scope_arity_kw_suffix(c, &c->scopes[kmi], kw, sizeof kw);
@@ -33042,11 +33063,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
               continue;
             }
             TyKind kr = (TyKind)c->scopes[kmi].ret;
-            buf_printf(b, "_t%d = ", tr9);
             Buf cb9; memset(&cb9, 0, sizeof cb9);
             emit_method_cname(c, &c->scopes[kmi], &cb9);
             buf_printf(&cb9, "(");
-            Scope *ks9 = &c->scopes[kmi];
             /* A class method whose body reads the receiving class (a class
                with descendants, `def self.find; name; end`) is compiled with a
                leading sp_Class token. Pass the class THIS arm's case selected,
@@ -33055,43 +33074,22 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                all but one of them (#4217). */
             const char *lead9 = rarm9 ? (buf_puts(&cb9, rcls9), ", ") : emit_cmethod_self_cls_arg(c, kmi, k, &cb9);
             /* Every candidate is a separate C function with its own parameter
-               list, so the arm has to fill THAT list -- not repeat the
-               caller's. Passing the call's arguments verbatim worked only
-               while every candidate took exactly as many as the call supplied;
-               a candidate with a trailing optional got too few arguments and
-               the C did not compile, and a call site reaching candidates of
-               different arities broke on whichever one was longer. */
-            int np9 = ks9->nparams;
-            for (int a = 0; a < np9; a++) {
-              buf_puts(&cb9, a ? ", " : lead9);
-              LocalVar *pp = scope_local(ks9, ks9->pnames[a]);
-              TyKind pt = pp ? pp->type : TY_POLY;
-              if (a == ks9->rest_idx) {
-                /* the arguments no positional parameter took */
-                int rs = 0;
-                for (int q = 0; q < a; q++) {
-                  int sq = arg_slot_for_param(c, ks9, q, na9);
-                  if (sq >= 0 && sq + 1 > rs) rs = sq + 1;
-                }
-                int re = na9 - ks9->npost_rest;
-                int tra = ++g_tmp;
-                buf_printf(&cb9, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tra, tra);
-                for (int q = rs; q < re; q++) buf_printf(&cb9, " sp_PolyArray_push(_t%d, _t%d);", tra, atmp9[q]);
-                buf_printf(&cb9, " _t%d; })", tra);
-                continue;
-              }
-              int slot = arg_slot_for_param(c, ks9, a, na9);
-              if (slot >= 0 && slot < na9) {
-                char at[32]; snprintf(at, sizeof at, "_t%d", atmp9[slot]);
-                if (pt == TY_POLY) buf_puts(&cb9, at);
-                else emit_unbox_text(c, pt, at, &cb9);
-              }
-              else emit_arg_or_default(c, ks9, a, -1, &cb9);
-            }
+               list, so the arm fills THAT list, by the binder a direct call
+               to it uses. What the binding puts ahead of the call (a splat's
+               gather, a `**` merge, a count check) is this arm's alone: in
+               the statement's prelude it ran for a value of every class. */
+            Buf apre9; memset(&apre9, 0, sizeof apre9);
+            Buf *sv_apre9 = g_pre; g_pre = &apre9;
+            emit_args_filled(c, kmi, argsN9, lead9, &cb9);
+            g_pre = sv_apre9;
             buf_puts(&cb9, ")");
+            if (apre9.p && apre9.p[0]) { buf_puts(b, "{ "); buf_puts(b, apre9.p); }
+            buf_printf(b, "_t%d = ", tr9);
             if (slot9 == TY_POLY && kr != TY_POLY) emit_boxed_text(c, kr, cb9.p ? cb9.p : "", b);
             else if (slot9 != TY_POLY && kr == TY_POLY) emit_unbox_text(c, slot9, cb9.p ? cb9.p : "", b);
             else buf_puts(b, cb9.p ? cb9.p : "");
+            if (apre9.p && apre9.p[0]) buf_puts(b, "; }");
+            free(apre9.p);
             free(cb9.p);
             buf_puts(b, "; break;");
           }
@@ -33101,6 +33099,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
              caller could not tell from a real answer. */
           if (!rdef9) buf_printf(b, " default: %s; break;", rraise9);
           buf_printf(b, " } _t%d; })", tr9);
+          unhoist_dispatch_args(c, hn9, hsv9, hty9);
           (void)defmi9;
           return;
         }
