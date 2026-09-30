@@ -13258,7 +13258,13 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
                subtree_is_pure_read(c, v);
     int eff = !fuse && g_pre && subtree_has_side_effect(c, v);
     buf_printf(b, "{ %s _t%d = ", c_type_name(rt), ta); iow_emit_recv(c, recv, b);
-    if (subtree_may_allocate(nt, recv) || (eff && !g_iow_recv_ref)) buf_printf(b, "; SP_GC_ROOT(_t%d)", ta);
+    /* ...and when the key can run code: it can reassign the variable the
+       receiver was read from (`@a[swap_a] += 1`) and allocate, and the temp
+       is then the old array's only holder while the key runs -- the fold
+       below writes into it. A key that is a pure read does neither. */
+    if (subtree_may_allocate(nt, recv) || (eff && !g_iow_recv_ref) ||
+        (!g_iow_recv_ref && !subtree_is_pure_read(c, argv[0])))
+      buf_printf(b, "; SP_GC_ROOT(_t%d)", ta);
     buf_printf(b, "; sp_int _t%d = ", tb); iow_emit_key(c, argv[0], b, IOW_KEY_INT, TY_INT);
     buf_puts(b, "; ");
     char slot[64];
