@@ -5,6 +5,7 @@ int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
 int is_fresh_array(Compiler *c, int v);
 static int widen_nested_literals(Compiler *c, int recv, int is_push, int is_splice, TyKind kt, TyKind vt);
 int kwh_only_spreads(const NodeTable *nt, int kwh);
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
