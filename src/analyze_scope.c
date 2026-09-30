@@ -1481,6 +1481,23 @@ int is_struct_call(Compiler *c, int val) {
                 (sp_streq(rn, "Data") && mn && sp_streq(mn, "define")));
 }
 
+/* The class body a definition node carries: a ClassNode's or ModuleNode's
+   own, or the block of `Name = Struct.new(...) do ... end` (and
+   Data.define), whose write is the class's def_node. Reading "body" off that
+   write found nothing, so an `include` / `extend` / `prepend` in the block
+   was dropped. -1 when there is none. */
+static int class_def_body(Compiler *c, int def_node) {
+  const NodeTable *nt = c->nt;
+  if (def_node < 0) return -1;
+  if (nt_kind(nt, def_node) != NK_ConstantWriteNode) return nt_ref(nt, def_node, "body");
+  int val = nt_ref(nt, def_node, "value");
+  if (!is_struct_call(c, val)) return -1;
+  int blk = nt_ref(nt, val, "block");
+  if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return -1;
+  int bb = nt_ref(nt, blk, "body");
+  return bb >= 0 && nt_kind(nt, bb) == NK_StatementsNode ? bb : -1;
+}
+
 /* Register the symbol members of a Struct.new(...) call onto `cls`. */
 /* Resolve a Struct.new / Data.define member argument to its literal symbol
    name: a SymbolNode directly, or a local variable whose writes in the same
@@ -4774,7 +4791,7 @@ void register_includes(Compiler *c) {
     if (nb == cap) { cap *= 2; bci = realloc(bci, (size_t)cap * sizeof(int)); bnode = realloc(bnode, (size_t)cap * sizeof(int)); } \
     bci[nb] = (CI); bnode[nb] = (NODE); nb++; } while (0)
   for (int ci = 0; ci < c->nclasses; ci++)
-    ADD_BODY(ci, nt_ref(nt, c->classes[ci].def_node, "body"));
+    ADD_BODY(ci, class_def_body(c, c->classes[ci].def_node));
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty || (!sp_streq(ty, "ClassNode") && !sp_streq(ty, "ModuleNode"))) continue;
@@ -5059,12 +5076,20 @@ void register_extends(Compiler *c) {
   int *body_cls = malloc(sizeof(int) * (size_t)capbody);
   if (!body_node || !body_cls) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int cn = 0; cn < nt->count; cn++) {
-    if (nt_kind(nt, cn) != NK_ClassNode && nt_kind(nt, cn) != NK_ModuleNode) continue;
-    int cp = nt_ref(nt, cn, "constant_path");
-    const char *cnm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    /* the body this class is defined by, named the way every other pass
-       reads a ClassNode's name */
-    int bci = cnm ? comp_class_index(c, cnm) : -1;
+    int bci = -1;
+    if (nt_kind(nt, cn) == NK_ClassNode || nt_kind(nt, cn) == NK_ModuleNode) {
+      int cp = nt_ref(nt, cn, "constant_path");
+      const char *cnm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+      /* the body this class is defined by, named the way every other pass
+         reads a ClassNode's name */
+      bci = cnm ? comp_class_index(c, cnm) : -1;
+    }
+    /* `Name = Struct.new(...) do ... end`: the block is the class body */
+    else if (nt_kind(nt, cn) == NK_ConstantWriteNode && class_def_body(c, cn) >= 0) {
+      const char *cnm = nt_str(nt, cn, "name");
+      bci = cnm ? comp_class_index(c, cnm) : -1;
+      if (bci >= 0 && c->classes[bci].def_node != cn) bci = -1;
+    }
     if (bci < 0) continue;
     if (nbody == capbody) {
       capbody *= 2;
@@ -5083,7 +5108,7 @@ void register_extends(Compiler *c) {
    for (int bi = 0; bi < nbody; bi++) {
     if (body_cls[bi] != ci) continue;
     int cn = body_node[bi];
-    int body = nt_ref(nt, cn, "body");
+    int body = class_def_body(c, cn);
     int n = 0;
     const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
     for (int k = 0; k < n; k++) {
@@ -5736,7 +5761,7 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
 void register_prepends(Compiler *c) {
   const NodeTable *nt = c->nt;
   for (int ci = 0; ci < c->nclasses; ci++)
-    process_prepend_body(c, ci, nt_ref(nt, c->classes[ci].def_node, "body"));
+    process_prepend_body(c, ci, class_def_body(c, c->classes[ci].def_node));
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty || (!sp_streq(ty, "ClassNode") && !sp_streq(ty, "ModuleNode"))) continue;
