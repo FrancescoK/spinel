@@ -7673,6 +7673,7 @@ TyKind infer_uncached(Compiler *c, int id) {
                sp_streq(nm, "RUBY_PLATFORM") || sp_streq(nm, "RUBY_ENGINE") ||
                sp_streq(nm, "RUBY_ENGINE_VERSION") || sp_streq(nm, "RUBY_RELEASE_DATE") ||
                sp_streq(nm, "RUBY_REVISION") || sp_streq(nm, "RUBY_COPYRIGHT"))) return TY_STRING;
+    if (nm && sp_streq(nm, "RUBY_PATCHLEVEL")) return TY_INT;
     if (nm && sp_streq(nm, "ARGV")) return TY_STR_ARRAY;
     if (nm && sp_streq(nm, "ARGF")) return TY_ARGF;
     /* STDOUT/STDERR/STDIN are IO handles wrapping the C standard streams, so
