@@ -73,13 +73,17 @@ def ins(t) = (t.insert(0, X); t.prepend("<"); t.replace(t + ">"); t.size)
 p method(:ins).call(+"ab"), method(:ins).call("cd".dup)
 
 # a block parameter a proc in the body captures: the block is wrapped in a
-# lambda called at once (desugar_block_capture_wrap), which is no dynamic
-# call of the program's; a frozen one raises, an unfrozen one is changed
+# lambda called at once (desugar_block_capture_wrap), whose parameter is the
+# block's String; a frozen one raises, an unfrozen one is changed, in the
+# block and in the Array it came from, by an append that outgrows it too
 ["", "Hello", "hello"].each do |a|
   a.freeze
   begin; -> { a.capitalize! }.call; p :changed; rescue FrozenError => ex; p ex.class; end
 end
 [+"hello", +"world"].each { |a| -> { a.capitalize! }.call; p a }
+[+"abcd"].each { |a| -> { a << "x" * 100 }.call; p a.size }
+arr = [+"hi", +"yo"]; arr.each { |a| -> { a.upcase! }.call }; p arr
+arr = [+"ab"]; arr.each { |a| -> { a << "y" * 100 }.call }; p arr[0].size
 
 # a frozen String raises where CRuby raises
 begin; f.call("fr".freeze); rescue FrozenError => ex; p ex.class; end

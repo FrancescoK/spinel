@@ -14125,6 +14125,33 @@ static int an_str_read_only_accessor(const char *n) {
          sp_streq(n, "length") || sp_streq(n, "size") || sp_streq(n, "empty?");
 }
 
+const char *proc_param_name(Compiler *c, int create, int idx);
+/* A block whose body a proc inside captures its parameter from is wrapped
+   in a lambda called at once (desugar_block_capture_wrap): `{ |a| ->(__cap_a)
+   { body }.call(a) }`. The body's mutation of `a` is then one of the
+   wrapper's parameter, and it is the block's element all the same: CRuby's
+   `arr.each { |a| -> { a.upcase! }.call }` changes the Array. Answers 1 when
+   the block `blk`'s body is such a wrapper call handing it `bp` and the
+   wrapper's parameter there is mutated in place. */
+static int cap_wrap_mutates_param(Compiler *c, int blk, const char *bp) {
+  const NodeTable *nt = c->nt;
+  if (!nt_int(nt, blk, "cap_wrapped", 0)) return 0;
+  int body = nt_ref(nt, blk, "body"), bn = 0;
+  const int *bv = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn != 1 || nt_kind(nt, bv[0]) != NK_CallNode) return 0;
+  int lam = nt_ref(nt, bv[0], "receiver");
+  if (lam < 0 || nt_kind(nt, lam) != NK_LambdaNode || !nt_int(nt, lam, "cap_iife", 0)) return 0;
+  int a = nt_ref(nt, bv[0], "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  for (int k = 0; k < ac; k++) {
+    if (nt_kind(nt, av[k]) != NK_LocalVariableReadNode || !nt_str(nt, av[k], "name") ||
+        !sp_streq(nt_str(nt, av[k], "name"), bp)) continue;
+    const char *wn = proc_param_name(c, lam, k);
+    if (wn && strbuf_mut_kind(c, wn, comp_scope_of(c, lam)) == 1) return 1;
+  }
+  return 0;
+}
+
 static int promote_shared_stored_strings(Compiler *c) {
   int changed = 0;
   sb_store_valid = 0;   /* this run's store index is built on first use */
@@ -14682,7 +14709,7 @@ static int promote_shared_stored_strings(Compiler *c) {
     Scope *bs4 = comp_scope_of(c, blk4);
     LocalVar *bpv4 = bs4 ? scope_local(bs4, bp4) : NULL;
     if (!bpv4) continue;
-    if (strbuf_mut_kind(c, bp4, bs4) != 1) continue;
+    if (strbuf_mut_kind(c, bp4, bs4) != 1 && !cap_wrap_mutates_param(c, blk4, bp4)) continue;
     /* the container's elements must be strings: gate on the receiver's
        (settled or literal) element type so an array-of-arrays each+<<
        never promotes its param */
