@@ -35,13 +35,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      # The macOS lane runs on master pushes only, as the -m32 lane does.
-      # Every PR ran it too, and the account's macOS runners are few: with
-      # a few dozen PRs open at once its queue alone was 16 minutes at the
-      # median and over an hour at the tail, for a 13-minute job, and each
-      # PR's result waited on it. A pull request runs the three Linux lanes.
+      # A pull request runs one job: the clang lane, the whole corpus at -O0.
+      # A PR is checked where the maintainer's own gate (gcc, with the
+      # property gates, benchmarks and optcarrot) is not, and every lane --
+      # gcc, clang, macOS, -m32 and wasm -- runs again on the merge commit,
+      # which is where the rest is caught and fixed. With a few dozen PRs
+      # open at once the runner pool, not a job's length, set the latency,
+      # and each PR held four jobs of it. The macOS runners are the fewest,
+      # so that lane stays on master pushes (its queue was 16 minutes at the
+      # median and over an hour at the tail when every PR ran it).
       matrix:
-        include: ${{ fromJSON(github.event_name == 'push' && '[{"os":"ubuntu-latest","cc":"gcc","shard":1,"nshards":1},{"os":"ubuntu-latest","cc":"clang","shard":1,"nshards":1},{"os":"macos-latest","cc":"clang","shard":1,"nshards":1}]' || '[{"os":"ubuntu-latest","cc":"gcc","shard":1,"nshards":1},{"os":"ubuntu-latest","cc":"clang","shard":1,"nshards":1}]') }}
+        include: ${{ fromJSON(github.event_name == 'push' && '[{"os":"ubuntu-latest","cc":"gcc","shard":1,"nshards":1},{"os":"ubuntu-latest","cc":"clang","shard":1,"nshards":1},{"os":"macos-latest","cc":"clang","shard":1,"nshards":1}]' || '[{"os":"ubuntu-latest","cc":"clang","shard":1,"nshards":1}]') }}
     env:
       # `sccache <cc>` wrapper. sccache forwards through to the
       # underlying compiler when its cache misses, so this stays
@@ -284,6 +288,9 @@ jobs:
   # doing nothing.
   wasm:
     name: wasm32-wasi
+    # master pushes only, as the -m32 and macOS lanes: a PR runs the clang
+    # lane alone (see the matrix above)
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     env:
       # docs/wasm.md asks for 34 or later (the exnref lowering)
