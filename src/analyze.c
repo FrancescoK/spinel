@@ -7071,6 +7071,17 @@ int desugar_enum_method_recv(Compiler *c) {
         continue;
       }
     }
+    if (nm && (sp_streq(nm, "find") || sp_streq(nm, "detect") || sp_streq(nm, "rfind"))) {
+      int fr = nt_ref(nt, id, "receiver"), fa = nt_ref(nt, id, "arguments"), fac = 0;
+      const int *fav = fa >= 0 ? nt_arr(nt, fa, "arguments", &fac) : NULL;
+      TyKind frt = fr >= 0 ? infer_type(c, fr) : TY_UNKNOWN;
+      if (fac == 1 && nt_kind(nt, fav[0]) == NK_NilNode &&
+          (ty_is_array(frt) || ty_is_hash(frt) || frt == TY_RANGE || frt == TY_ENUMERATOR)) {
+        nt_node_set_ref(nt, id, "arguments", -1);
+        changed = 1;
+        continue;
+      }
+    }
     if (nm && sp_streq(nm, "rfind")) {
       /* Array#rfind { block } == reverse.find { block }: interpose a reverse
          call so the existing find machinery serves it (#2320) */

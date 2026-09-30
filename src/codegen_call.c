@@ -19784,7 +19784,7 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     emit_boxed(c, recv, b); buf_puts(b, ")");
     return 1;
   }
-  if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+  if (recv >= 0 && argc <= sp_streq(name, "find") && nt_ref(nt, id, "block") < 0 &&
       (ty_is_array(comp_ntype(c, recv)) ||
        /* a bare [] literal types UNKNOWN until pushes promote it */
        (comp_ntype(c, recv) == TY_UNKNOWN && nt_type(nt, recv) &&
