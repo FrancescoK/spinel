@@ -255,6 +255,15 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       return 1;
     }
   }
+  /* Integer#&, #| and #^ fail to coerce an operand with no integer in it
+     (emit_int_operand_fail), so the call answers only where the receiver
+     is nil: nil's own boolean (`x & true` of a nil x is false) */
+  if (rt == TY_INT && argc == 1 && recv >= 0 &&
+      (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^"))) {
+    TyKind at = infer_type(c, argv[0]);
+    if (at == TY_FLOAT || at == TY_STRING || at == TY_NIL || at == TY_SYMBOL || at == TY_BOOL ||
+        ty_is_array(at) || ty_is_hash(at)) { *out = TY_BOOL; return 1; }
+  }
   if (rt == TY_INT && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX) {
     if (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")) { *out = TY_COMPLEX; return 1; }
     if (sp_streq(name, "==") || sp_streq(name, "!=")) { *out = TY_BOOL; return 1; }

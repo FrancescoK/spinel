@@ -1863,6 +1863,7 @@ static sp_Bigint *sp_poly_as_bigint(sp_RbVal v);
 static int sp_bigint_eq_f(sp_Bigint *a, double d);    /* fwd: the exact Bignum/Float pair */
 static int sp_bigint_cmp_f(sp_Bigint *a, double d);
 static sp_RbVal sp_poly_binop_bad(const char *op, sp_RbVal recv, sp_RbVal arg);  /* fwd */
+static const char *sp_cmperr_desc(sp_RbVal v);  /* fwd: a failed coerce names its operand this way too */
 static inline int sp_poly_is_array_kind(int cls_id);            /* fwd: array set ops */
 static sp_PolyArray *sp_poly_to_poly_array(sp_RbVal v);
 /* `zip`'s arguments must respond to :each -- an Array, a Range, any Enumerable
@@ -1900,6 +1901,11 @@ static sp_RbVal sp_poly_bitop(sp_RbVal a, sp_RbVal b, int op) {  /* 0:& 1:| 2:^ 
      a Float or a String receiver into it as a zero. Everything with a meaning
      of its own for the operator was answered above. */
   if (a.tag != SP_TAG_INT && a.tag != SP_TAG_BIGINT)
+    return sp_poly_binop_bad(op == 0 ? "&" : op == 1 ? "|" : "^", a, b);
+  /* ... and only an Integer operand: any other is coerced (a user class's
+     #coerce) or fails to be, where reading it as an integer answered
+     `1 & true` as 1 */
+  if (b.tag != SP_TAG_INT && b.tag != SP_TAG_BIGINT)
     return sp_poly_binop_bad(op == 0 ? "&" : op == 1 ? "|" : "^", a, b);
   /* A bignum operand keeps its width: truncating both sides to int64 first
      turned `x ^ (x << 17)` into a negative int once the shift had promoted,
@@ -2584,9 +2590,7 @@ static sp_RbVal sp_poly_binop_bad(const char *op, sp_RbVal recv, sp_RbVal arg) {
   if (recv.tag == SP_TAG_STR || (recv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(recv.cls_id)))
     sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into %s",
                                          sp_convert_src_name(arg), rc));
-  sp_raise_cls("TypeError", sp_sprintf("%s can't be coerced into %s",
-                                       arg.tag == SP_TAG_SYM ? sp_poly_inspect(arg)
-                                                             : sp_convert_src_name(arg), rc));
+  sp_raise_cls("TypeError", sp_sprintf("%s can't be coerced into %s", sp_cmperr_desc(arg), rc));
 }
 /* A user object on the left of a binary operator: its own method is the
    answer, and sp_poly_binop_bad is where the dispatch hook lives. Only
@@ -4025,6 +4029,31 @@ static const char *sp_cmperr_desc(sp_RbVal v) {
     default: return sp_poly_class_name(v);
   }
 }
+/* An Integer's &, | or ^ operand read out of a box, and a shift count: an
+   Integer is itself, and a Bignum, a Float count or an object keeps the
+   conversion sp_poly_to_i makes. nil, true, false, a String, a Symbol and a
+   container are no Integer, and reading them as one answered `1 & true` as
+   1: the operator fails to coerce them ("true can't be coerced into
+   Integer"; a Float too), the shift to convert them ("no implicit
+   conversion of true into Integer"). */
+static SP_NOINLINE void sp_int_operand_fail(sp_RbVal v, int shift) {
+  if (shift) sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Integer", sp_convert_src_name(v)));
+  sp_raise_cls("TypeError", sp_sprintf("%s can't be coerced into Integer", sp_cmperr_desc(v)));
+}
+static inline int sp_int_operand_bad(sp_RbVal v, int shift) {
+  switch (v.tag) {
+    case SP_TAG_NIL: case SP_TAG_BOOL: case SP_TAG_STR: case SP_TAG_SYM: return 1;
+    case SP_TAG_FLT: return !shift;
+    case SP_TAG_OBJ: return sp_poly_is_array_kind(v.cls_id) || sp_poly_is_hash_kind(v.cls_id);
+    default: return 0;
+  }
+}
+static inline sp_int sp_poly_bit_operand(sp_RbVal v, int shift) SP_UNUSED;
+static inline sp_int sp_poly_bit_operand(sp_RbVal v, int shift) {
+  if (SP_LIKELY(v.tag == SP_TAG_INT)) return v.v.i;
+  if (sp_int_operand_bad(v, shift)) sp_int_operand_fail(v, shift);
+  return sp_poly_to_i(v);
+}
 /* rb_cmpint-checked comparison: an incomparable pair (nil `<=>`) raises the
    Comparable ArgumentError. Backs the object <,<=,>,>=,between? emitters when
    the user `<=>` can return nil (a TY_INT `<=>` keeps the inline fast path). */
@@ -4451,11 +4480,11 @@ static sp_RbVal sp_poly_shr(sp_RbVal a, sp_RbVal b) {
      positive value past 2^63 negative, so the shift became arithmetic and a
      masked xorshift diverged from CRuby (#3371) */
   if (a.tag == SP_TAG_BIGINT)
-    return sp_box_bigint(sp_bigint_shr((sp_Bigint *)a.v.p, (int64_t)sp_poly_to_i(b)));
+    return sp_box_bigint(sp_bigint_shr((sp_Bigint *)a.v.p, (int64_t)sp_poly_bit_operand(b, 1)));
   if (sp_poly_is_user_obj(a)) return sp_poly_binop_bad(">>", a, b);
   /* Integer#>> is Integer's alone (see sp_poly_bitop) */
   if (a.tag != SP_TAG_INT) return sp_poly_binop_bad(">>", a, b);
-  return sp_box_int(sp_poly_to_i(a) >> sp_poly_to_i(b));
+  return sp_box_int(sp_poly_to_i(a) >> sp_poly_bit_operand(b, 1));
 }
 /* & | ^ are boolean operators on a nil/boolean receiver (NilClass#& is
    always false, | and ^ test the operand's truthiness) and bitwise on an
@@ -4479,7 +4508,7 @@ static sp_RbVal sp_poly_band(sp_RbVal a, sp_RbVal b) {
   if (sp_poly_is_user_obj(a)) return sp_poly_binop_bad("&", a, b);
   /* Integer#& is Integer's alone (see sp_poly_bitop) */
   if (a.tag != SP_TAG_INT && a.tag != SP_TAG_BIGINT) return sp_poly_binop_bad("&", a, b);
-  return sp_box_int(sp_poly_to_i(a) & sp_poly_to_i(b));
+  return sp_box_int(sp_poly_to_i(a) & sp_poly_bit_operand(b, 0));
 }
 static sp_RbVal sp_poly_bor(sp_RbVal a, sp_RbVal b) {
   if (a.tag == SP_TAG_NIL) return sp_box_bool(sp_poly_truthy(b));
@@ -4493,7 +4522,7 @@ static sp_RbVal sp_poly_bor(sp_RbVal a, sp_RbVal b) {
   if (sp_poly_is_user_obj(a)) return sp_poly_binop_bad("|", a, b);
   /* Integer#| is Integer's alone (see sp_poly_bitop) */
   if (a.tag != SP_TAG_INT && a.tag != SP_TAG_BIGINT) return sp_poly_binop_bad("|", a, b);
-  return sp_box_int(sp_poly_to_i(a) | sp_poly_to_i(b));
+  return sp_box_int(sp_poly_to_i(a) | sp_poly_bit_operand(b, 0));
 }
 static sp_RbVal sp_poly_bxor(sp_RbVal a, sp_RbVal b) {
   if (a.tag == SP_TAG_NIL) return sp_box_bool(sp_poly_truthy(b));
@@ -4501,7 +4530,7 @@ static sp_RbVal sp_poly_bxor(sp_RbVal a, sp_RbVal b) {
   if (sp_poly_is_user_obj(a)) return sp_poly_binop_bad("^", a, b);
   /* Integer#^ is Integer's alone (see sp_poly_bitop) */
   if (a.tag != SP_TAG_INT && a.tag != SP_TAG_BIGINT) return sp_poly_binop_bad("^", a, b);
-  return sp_box_int(sp_poly_to_i(a) ^ sp_poly_to_i(b));
+  return sp_box_int(sp_poly_to_i(a) ^ sp_poly_bit_operand(b, 0));
 }
 /* Unary minus on a boxed value. Only Float and Integer were handled, and
    everything else fell to sp_poly_to_i -- which answers 0 for a Rational or a
@@ -4784,9 +4813,9 @@ static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b) {
      result escapes the word promotes under --int-overflow=promote and
      raises/wraps per mode otherwise (sp_int_shl carries those semantics). */
   if (a.tag == SP_TAG_BIGINT)
-    return sp_box_bigint(sp_bigint_shl((sp_Bigint *)a.v.p, sp_poly_to_i(b)));
+    return sp_box_bigint(sp_bigint_shl((sp_Bigint *)a.v.p, sp_poly_bit_operand(b, 1)));
   {
-    sp_int x = sp_poly_to_i(a), n = sp_poly_to_i(b);
+    sp_int x = sp_poly_to_i(a), n = sp_poly_bit_operand(b, 1);
 #ifdef SP_INT_OVERFLOW_MODE_PROMOTE
     if (n >= 0 && x != 0) {
       const sp_int w = (sp_int)(sizeof(sp_int) * 8);

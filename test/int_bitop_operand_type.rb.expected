@@ -1,0 +1,52 @@
+TypeError: true can't be coerced into Integer
+TypeError: false can't be coerced into Integer
+TypeError: nil can't be coerced into Integer
+TypeError: String can't be coerced into Integer
+TypeError: 1.5 can't be coerced into Integer
+TypeError: :a can't be coerced into Integer
+TypeError: Array can't be coerced into Integer
+TypeError: no implicit conversion of true into Integer
+TypeError: no implicit conversion of nil into Integer
+2
+TypeError: :a can't be coerced into Integer
+TypeError: true can't be coerced into Integer
+TypeError: no implicit conversion of String into Integer
+2
+7
+5
+8
+8
+TypeError: true can't be coerced into Integer
+TypeError: true can't be coerced into Integer
+TypeError: true can't be coerced into Integer
+TypeError: no implicit conversion of true into Integer
+TypeError: no implicit conversion of true into Integer
+TypeError: :s can't be coerced into Integer
+TypeError: :s can't be coerced into Integer
+TypeError: :s can't be coerced into Integer
+TypeError: no implicit conversion of Symbol into Integer
+TypeError: no implicit conversion of Symbol into Integer
+TypeError: 1.5 can't be coerced into Integer
+TypeError: 1.5 can't be coerced into Integer
+TypeError: 1.5 can't be coerced into Integer
+2
+32
+TypeError: nil can't be coerced into Integer
+TypeError: nil can't be coerced into Integer
+TypeError: nil can't be coerced into Integer
+TypeError: no implicit conversion of nil into Integer
+TypeError: no implicit conversion of nil into Integer
+TypeError: String can't be coerced into Integer
+TypeError: String can't be coerced into Integer
+TypeError: String can't be coerced into Integer
+TypeError: no implicit conversion of String into Integer
+TypeError: no implicit conversion of String into Integer
+TypeError: Array can't be coerced into Integer
+TypeError: Array can't be coerced into Integer
+TypeError: Array can't be coerced into Integer
+TypeError: no implicit conversion of Array into Integer
+TypeError: no implicit conversion of Array into Integer
+1
+false
+true
+true
