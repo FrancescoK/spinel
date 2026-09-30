@@ -525,7 +525,7 @@ sp_StrArray *sp_str_rpartition(const char *s, const char *sep) {
   sp_StrArray *r = sp_StrArray_new();
   SP_GC_ROOT(r);   /* keep r (and its pushed slices) live across the byteslice allocs */
   sp_int bl = (sp_int)sp_str_byte_len(s), sl = (sp_int)sp_str_byte_len(sep);
-  const char *last = NULL;
+  const char *last = sl == 0 ? s + bl : NULL;   /* an empty sep matches at the end: [s, "", ""] */
   if (sl > 0) { const char *p = s, *e = s + bl;
     while (p < e) { const char *f2 = sp_bytestr(p, (size_t)(e - p), sep, (size_t)sl); if (!f2) break; last = f2; p = f2 + 1; } }
   if (!last) { sp_StrArray_push(r, sp_str_empty); sp_StrArray_push(r, sp_str_empty); sp_StrArray_push(r, s); return r; }
