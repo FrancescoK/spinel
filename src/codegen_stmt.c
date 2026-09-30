@@ -8469,6 +8469,55 @@ static void emit_break_value(Compiler *c, int id, Buf *b) {
   }
 }
 
+/* Run a class body's side-effecting statements at the definition site
+   (top-to-bottom, like CRuby), with g_class_body_id set to `ci`. Method/attr/
+   alias declarations are handled elsewhere; everything else (puts, constant
+   writes, nested class/module bodies) executes inline here. */
+static void emit_class_body_stmts(Compiler *c, int ci, int body, Buf *b, int indent) {
+  const NodeTable *nt = c->nt;
+  int saved_cbi = g_class_body_id;
+  g_class_body_id = ci;
+  int n = 0;
+  const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+  for (int k = 0; k < n; k++) {
+    const char *sty = nt_type(nt, stmts[k]);
+    if (!sty) continue;
+    if (sp_streq(sty, "DefNode") || sp_streq(sty, "AliasMethodNode")) continue;
+    /* `class << self`: its defs are the class's own, but the constants it
+       assigns are assigned where it stands (#5996) */
+    if (sp_streq(sty, "SingletonClassNode")) {
+      int sx = nt_ref(nt, stmts[k], "expression");
+      if (sx >= 0 && nt_kind(nt, sx) == NK_SelfNode) emit_stmt(c, stmts[k], b, indent);
+      continue;
+    }
+    /* A receiver-less call in a class body is, by default, a declaration
+       macro (attr_*, include, private, an FFI/DSL directive) -- skip it.
+       Only run the genuine side-effecting ones: output calls and calls
+       that resolve to a user-defined method. */
+    if (sp_streq(sty, "CallNode") && nt_ref(nt, stmts[k], "receiver") < 0) {
+      const char *cn = nt_str(nt, stmts[k], "name");
+      /* reflection-mutation macros can't take effect (methods/class vars are
+         static): report the documented limit rather than skip silently
+         (#2954, #2955). diagnose no-ops when the class defines its own. */
+      if (cn && (sp_streq(cn, "remove_method") || sp_streq(cn, "undef_method") ||
+                 sp_streq(cn, "remove_class_variable")) &&
+          diagnose_unsupported_call(c, stmts[k])) break;
+      int is_output = cn && (sp_streq(cn, "puts") || sp_streq(cn, "print") || sp_streq(cn, "p"));
+      int is_user = cn && comp_method_index(c, cn) >= 0;
+      /* self in a class body is the class, so a receiver-less call naming one
+         of its class methods (its own or an ancestor's) is a real call, not a
+         declaration macro -- the shape every declarative DSL uses (`key :a`,
+         `validates :name`). Skipping it left the state it establishes unset
+         and nothing said so (#4051). */
+      if (!is_user && cn && g_class_body_id >= 0)
+        is_user = comp_cmethod_in_chain(c, g_class_body_id, cn, NULL) >= 0;
+      if (!is_output && !is_user) continue;
+    }
+    emit_stmt(c, stmts[k], b, indent);
+  }
+  g_class_body_id = saved_cbi;
+}
+
 void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -9897,19 +9946,8 @@ else {
          despite being declared and typed (a method reading them, e.g. a Linedef
          FLAGS[:TWOSIDED] flag helper, silently sees an empty constant). Mirrors
          fix_struct_block_scopes, which does the analogous fixup for DefNodes. */
-      if (!isg && v >= 0 && is_struct_call(c, v)) {
-        int blk = nt_ref(nt, v, "block");
-        int bbody = blk >= 0 ? nt_ref(nt, blk, "body") : -1;
-        if (bbody >= 0) {
-          int bn = 0;
-          const int *stmts = nt_arr(nt, bbody, "body", &bn);
-          for (int k = 0; k < bn; k++) {
-            const char *sty = nt_type(nt, stmts[k]);
-            if (sty && sp_streq(sty, "ConstantWriteNode"))
-              emit_stmt(c, stmts[k], b, indent);
-          }
-        }
-      }
+      if (!isg && v >= 0 && is_struct_call(c, v))
+        emit_class_body_stmts(c, comp_class_index(c, nm), class_def_body(c, id), b, indent);
       return;
     }
     if (!isg && lv->init_guarded) {
@@ -11290,54 +11328,9 @@ else {
     unsupported(c, id, "singleton class on arbitrary object");
   }
   if (sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) {
-    /* Run the body's side-effecting statements at the definition site
-       (top-to-bottom, like CRuby). Method/attr/alias declarations are
-       handled elsewhere; everything else (puts, constant writes, nested
-       class/module bodies) executes inline here. */
     int cp = nt_ref(nt, id, "constant_path");
     const char *cname = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    int saved_cbi = g_class_body_id;
-    if (cname) g_class_body_id = comp_class_index(c, cname);
-    int body = nt_ref(nt, id, "body");
-    int n = 0;
-    const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
-    for (int k = 0; k < n; k++) {
-      const char *sty = nt_type(nt, stmts[k]);
-      if (!sty) continue;
-      if (sp_streq(sty, "DefNode") || sp_streq(sty, "AliasMethodNode")) continue;
-      /* `class << self`: its defs are the class's own, but the constants it
-         assigns are assigned where it stands (#5996) */
-      if (sp_streq(sty, "SingletonClassNode")) {
-        int sx = nt_ref(nt, stmts[k], "expression");
-        if (sx >= 0 && nt_kind(nt, sx) == NK_SelfNode) emit_stmt(c, stmts[k], b, indent);
-        continue;
-      }
-      /* A receiver-less call in a class body is, by default, a declaration
-         macro (attr_*, include, private, an FFI/DSL directive) -- skip it.
-         Only run the genuine side-effecting ones: output calls and calls
-         that resolve to a user-defined method. */
-      if (sp_streq(sty, "CallNode") && nt_ref(nt, stmts[k], "receiver") < 0) {
-        const char *cn = nt_str(nt, stmts[k], "name");
-        /* reflection-mutation macros can't take effect (methods/class vars are
-           static): report the documented limit rather than skip silently
-           (#2954, #2955). diagnose no-ops when the class defines its own. */
-        if (cn && (sp_streq(cn, "remove_method") || sp_streq(cn, "undef_method") ||
-                   sp_streq(cn, "remove_class_variable")) &&
-            diagnose_unsupported_call(c, stmts[k])) return;
-        int is_output = cn && (sp_streq(cn, "puts") || sp_streq(cn, "print") || sp_streq(cn, "p"));
-        int is_user = cn && comp_method_index(c, cn) >= 0;
-        /* self in a class body is the class, so a receiver-less call naming one
-           of its class methods (its own or an ancestor's) is a real call, not a
-           declaration macro -- the shape every declarative DSL uses (`key :a`,
-           `validates :name`). Skipping it left the state it establishes unset
-           and nothing said so (#4051). */
-        if (!is_user && cn && g_class_body_id >= 0)
-          is_user = comp_cmethod_in_chain(c, g_class_body_id, cn, NULL) >= 0;
-        if (!is_output && !is_user) continue;
-      }
-      emit_stmt(c, stmts[k], b, indent);
-    }
-    g_class_body_id = saved_cbi;
+    emit_class_body_stmts(c, cname ? comp_class_index(c, cname) : g_class_body_id, nt_ref(nt, id, "body"), b, indent);
     return;
   }
   if (sp_streq(ty, "SuperNode") || sp_streq(ty, "ForwardingSuperNode")) {

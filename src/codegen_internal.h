@@ -1195,6 +1195,7 @@ void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
 /* analyze-side helpers also called from codegen (defined in analyze_util.c /
    analyze_scope.c; canonical declarations live in analyze_internal.h) */
 int is_arith_op(const char *op);
+int class_def_body(Compiler *c, int def_node);
 TyKind an_builtin_answer(Compiler *c, int id);
 int node_is_empty_container(const NodeTable *nt, int node);
 TyKind ffi_spec_to_ty(const char *spec);
