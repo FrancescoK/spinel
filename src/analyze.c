@@ -20884,7 +20884,7 @@ void analyze_program(Compiler *c) {
   desugar_root_scoped_constants(c);      /* ::Name -> Name (#4801) */
   desugar_engine_branches(c);
   desugar_conditional_defs(c);
-  desugar_when_int_float_ranges(c);     /* when 0..0.05 -> 0.0..0.05 */
+  mark_match_ranges(c);                  /* when 0..0.05 matches as 0.0..0.05 */
   desugar_duplicate_underscore_params(c); /* |_, _| -> |_, _dup1| */
   desugar_encoding_queries(c);          /* Encoding.default_internal -> nil, find("x") -> a constant */
   desugar_alias_method_string_names(c); /* alias_method "k", "y" -> alias_method :k, :y */

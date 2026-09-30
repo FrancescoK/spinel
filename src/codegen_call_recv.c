@@ -12867,9 +12867,8 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
         }
         else {
           /* sp_range_include takes sp_int; a float arg (`(1..).include?(2.4)`)
-             needs an explicit cast, else clang -Werror flags the implicit
-             float-literal->int conversion (gcc truncates silently). A poly arg
-             (e.g. under --int-overflow=promote) is coerced with sp_poly_to_i. */
+             compares against the bounds as a Float instead, and so does a poly
+             arg holding one (e.g. under --int-overflow=promote). */
           TyKind at0 = comp_ntype(c, argv[0]);
           int arg_is_float = at0 == TY_FLOAT;
           int arg_is_poly = at0 == TY_POLY;
@@ -12879,12 +12878,8 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
             buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b); buf_puts(b, "); 0; })");
           }
           else {
-            buf_printf(b, "sp_range_include(&_t%d, ", t);
-            if (arg_is_float) buf_puts(b, "(sp_int)(");
-            if (arg_is_poly) buf_puts(b, "sp_poly_to_i(");
+            buf_printf(b, "sp_range_%s(&_t%d, ", arg_is_float ? "cover_f" : arg_is_poly ? "cover_poly" : "include", t);
             emit_expr(c, argv[0], b);
-            if (arg_is_poly) buf_puts(b, ")");
-            if (arg_is_float) buf_puts(b, ")");
             buf_puts(b, ")");
           }
         }

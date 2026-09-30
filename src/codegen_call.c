@@ -9204,13 +9204,11 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       }
       /* Range#cover? on a runtime Range receiver (#3234) */
       if (is_cover) {
-        char ix[64];
-        if (atmp_ty[0] == TY_POLY) snprintf(ix, sizeof ix, "sp_poly_to_i(_t%d)", atmp[0]);
-        else snprintf(ix, sizeof ix, "_t%d", atmp[0]);
+        const char *fn = atmp_ty[0] == TY_POLY ? "cover_poly" : atmp_ty[0] == TY_FLOAT ? "cover_f" : "include";
         buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE)"
-                      " { _t%d = %ssp_range_include((sp_Range *)_t%d.v.p, %s)%s; }\nelse ",
+                      " { _t%d = %ssp_range_%s((sp_Range *)_t%d.v.p, _t%d)%s; }\nelse ",
                    tv, tv, tr,
-                   ret == TY_POLY ? "sp_box_bool(" : "", tv, ix,
+                   ret == TY_POLY ? "sp_box_bool(" : "", fn, tv, atmp[0],
                    ret == TY_POLY ? ")" : "");
       }
       /* Klass.try_convert(x) on a class-tagged receiver, checked ahead of
@@ -10141,6 +10139,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           buf_printf(b, " case SP_BUILTIN_RANGE: _t%d = %ssp_range_include((sp_Range *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
           buf_printf(b, " case SP_BUILTIN_FLOAT_RANGE: _t%d = %ssp_frange_cover(*(sp_FloatRange *)_t%d.v.p, (sp_float)_t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
         }
+        else if (at == TY_FLOAT) {
+          buf_printf(b, " case SP_BUILTIN_RANGE: _t%d = %ssp_range_cover_f((sp_Range *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
+          buf_printf(b, " case SP_BUILTIN_FLOAT_RANGE: _t%d = %ssp_frange_cover(*(sp_FloatRange *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
+        }
         else if (at == TY_STRING) {
           buf_printf(b, " case SP_BUILTIN_STR_ARRAY: _t%d = %ssp_StrArray_include((sp_StrArray *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
           buf_printf(b, " case SP_BUILTIN_STR_INT_HASH: _t%d = %ssp_StrIntHash_has_key((sp_StrIntHash *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
@@ -10159,7 +10161,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
              container cases. Typed arrays match only when the boxed arg's tag
              fits the element type (a Set difference against an Array literal
              reaches these; a mismatched tag is simply not a member). */
-          buf_printf(b, " case SP_BUILTIN_RANGE: _t%d = %ssp_range_include((sp_Range *)_t%d.v.p, sp_poly_to_i(_t%d))%s; break;", tr, ibo, tv, atmp[0], ibc);
+          buf_printf(b, " case SP_BUILTIN_RANGE: _t%d = %ssp_range_cover_poly((sp_Range *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
           buf_printf(b, " case SP_BUILTIN_FLOAT_RANGE: _t%d = %ssp_frange_cover(*(sp_FloatRange *)_t%d.v.p, sp_poly_to_f(_t%d))%s; break;", tr, ibo, tv, atmp[0], ibc);
           /* a boxed nil is the typed array's sentinel, which the search
              finds wherever a nil was stored */

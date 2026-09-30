@@ -8972,36 +8972,31 @@ void enum_hop_yield_view(Compiler *c, int id, int hop) {
   if (mn && xn) scope_local_intern(bs, xn);
 }
 
-/* `case x when 0..0.05` -- an Integer begin with a fractional Float end. The
-   integer range representation truncates the end (and the tested Float),
-   which is right for iterating `1..5.5` but wrong for matching: a `when`
-   only matches, so its range becomes the Float range it compares as. */
-int desugar_when_int_float_ranges(Compiler *c) {
+/* `case x when 0..0.05`, `(..2.5) === x`: a range literal that only matches
+   -- a `when` condition, or the receiver of === / include? / member? /
+   cover? of a non-Range (the Float representation has no cover?(Range)) --
+   is marked, and one with a Float bound then takes the Float representation.
+   The integer one truncates that bound: right for iterating `1..5.5`, wrong
+   for matching. */
+void mark_match_ranges(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0;
   for (int w = 0; w < nt->count; w++) {
     const char *wty = nt_type(nt, w);
-    if (!wty || !sp_streq(wty, "WhenNode")) continue;
-    int n = 0; const int *conds = nt_arr(nt, w, "conditions", &n);
-    for (int i = 0; i < n; i++) {
-      int r = conds[i];
-      if (nt_kind(nt, r) != NK_RangeNode) continue;
-      int lo = nt_ref(nt, r, "left"), hi = nt_ref(nt, r, "right");
-      if (lo < 0 || hi < 0 || nt_kind(nt, lo) != NK_IntegerNode || nt_kind(nt, hi) != NK_FloatNode) continue;
-      const char *fv = nt_content(nt, hi);
-      double d = fv ? atof(fv) : 0.0;
-      if (d == (double)(long long)d) continue;
-      long long iv = (long long)nt_int(nt, lo, "value", 0);
-      char buf[48]; snprintf(buf, sizeof buf, "%lld.0", iv);
-      int line = (int)nt_int(nt, lo, "node_line", 0), file = (int)nt_int(nt, lo, "node_file", 0);
-      nt_node_reset(nt, lo, "FloatNode");
-      nt_node_set_content(nt, lo, buf);
-      if (line) nt_node_set_int(nt, lo, "node_line", line);
-      if (file) nt_node_set_int(nt, lo, "node_file", file);
-      changed = 1;
+    int n = 0, rcv = -1; const int *conds = NULL;
+    if (wty && sp_streq(wty, "WhenNode")) conds = nt_arr(nt, w, "conditions", &n);
+    else if (nt_kind(nt, w) == NK_CallNode && nt_str(nt, w, "name")) {
+      const char *mn = nt_str(nt, w, "name");
+      int args = nt_ref(nt, w, "arguments"), an = 0;
+      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      if (an != 1) continue;
+      if (!(sp_streq(mn, "===") || sp_streq(mn, "include?") || sp_streq(mn, "member?") ||
+            (sp_streq(mn, "cover?") && nt_kind(nt, unwrap_parens(c, av[0])) != NK_RangeNode))) continue;
+      rcv = unwrap_parens(c, nt_ref(nt, w, "receiver"));
+      conds = &rcv; n = 1;
     }
+    for (int i = 0; i < n; i++)
+      if (nt_kind(nt, conds[i]) == NK_RangeNode) nt_node_set_int(nt, conds[i], "match_only", 1);
   }
-  return changed;
 }
 
 /* `|_, _, offset|` / `def m(_, _)`: Ruby lets an underscore-prefixed name

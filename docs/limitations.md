@@ -762,7 +762,9 @@ A finite mixed range (`1..5.0`) keeps the integer representation, where its
 `#to_a`, `#sum` and `#cover?` are all right and its iteration is the integer
 one CRuby performs; only `#end` reports `5` where CRuby reports `5.0`. A
 one-sided float range (`(..5.0)`, `(1.0..)`) likewise keeps it, so `#to_s`
-renders the bound as an integer (`"..5"`).
+renders the bound as an integer (`"..5"`). A range literal that is only
+matched (`when ..2.5`, `(1.5..) === x`, `.cover?(x)`) takes the `Float`
+representation instead, so it compares its bound as written.
 
 A `String`-bounded range (`("a".."e")`) is its own value type, so it keeps its
 class, `#to_s` and `#inspect` whether it is used inline or held in a variable.
