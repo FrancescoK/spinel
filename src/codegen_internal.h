@@ -177,6 +177,7 @@ extern int  g_pd_skip;
 extern int  g_cls_tag_skip;   /* poly-dispatch builtin-arm re-entry marker */
 int subtree_may_allocate(const NodeTable *nt, int id);
 int subtree_has_side_effect(Compiler *c, int id);
+int loop_has_valued_break(Compiler *c, int root);
 /* Can evaluating the subtree store into an ivar, class variable or global? A
    write to one, or anything that runs Ruby code it does not show; not scalar
    arithmetic, a typed-array read or a plain field read (codegen_call.c). */
