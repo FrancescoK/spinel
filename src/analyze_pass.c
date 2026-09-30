@@ -1279,6 +1279,13 @@ void intern_block_params(Compiler *c) {
   }
 }
 
+static int lv_widen(LocalVar *lv, TyKind t) {
+  TyKind m = ty_unify(lv->type, t);
+  if (m == lv->type) return 0;
+  lv->type = m;
+  return 1;
+}
+
 int reconcile_locals_reading_ivars(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -1321,8 +1328,7 @@ int reconcile_locals_reading_ivars(Compiler *c) {
       ivt = ivar_value_ty(&c->classes[rdcls], iv2);
     }
     if (ivt == TY_UNKNOWN) continue;
-    TyKind m = ty_unify(lv->type, ivt);
-    if (m != lv->type) { lv->type = m; changed = 1; }
+    if (lv_widen(lv, ivt)) changed = 1;
   }
   return changed;
 }
@@ -2333,8 +2339,7 @@ static int masgn_unify_elem(Compiler *c, Scope *ms, const int *tgts, int n, TyKi
       const char *grn = gnm ? comp_resolve_gvar(c, gnm + 1) : NULL;
       LocalVar *glv = grn ? comp_gvar(c, grn) : NULL;
       if (!glv) continue;
-      TyKind mg = ty_unify(glv->type, elem);
-      if (mg != glv->type) { glv->type = mg; changed = 1; }
+      if (lv_widen(glv, elem)) changed = 1;
     }
     else if (sp_streq(lty_ms, "ClassVariableTargetNode")) {
       /* in a method, its class; in a class body, the body's */
@@ -2353,8 +2358,7 @@ static int masgn_unify_elem(Compiler *c, Scope *ms, const int *tgts, int n, TyKi
       const char *cnm_ms = nt_str(nt, tgts[i], "name");
       LocalVar *cv_ms = cnm_ms ? comp_const(c, cnm_ms) : NULL;
       if (!cv_ms) continue;
-      TyKind mg_ms = ty_unify(cv_ms->type, elem);
-      if (mg_ms != cv_ms->type) { cv_ms->type = mg_ms; changed = 1; }
+      if (lv_widen(cv_ms, elem)) changed = 1;
     }
   }
   return changed;
@@ -2851,8 +2855,7 @@ int infer_write_types(Compiler *c) {
         if (!cv) continue;
         TyKind et = infer_type(c, els[i]);
         if (et == TY_NIL || nt_kind(nt, els[i]) == NK_SplatNode) et = TY_POLY;
-        TyKind mg = ty_unify(cv->type, et);
-        if (mg != cv->type) { cv->type = mg; changed = 1; }
+        if (lv_widen(cv, et)) changed = 1;
       }
       else if (sp_streq(lty, "InstanceVariableTargetNode")) {
         Scope *iv_sc = comp_scope_of(c, id);
@@ -2937,8 +2940,7 @@ int infer_write_types(Compiler *c) {
         const char *cnm2 = nt_str(nt, rights[j], "name");
         LocalVar *cv2 = cnm2 ? comp_const(c, cnm2) : NULL;
         if (!cv2) continue;
-        TyKind mg3 = ty_unify(cv2->type, et);
-        if (mg3 != cv2->type) { cv2->type = mg3; changed = 1; }
+        if (lv_widen(cv2, et)) changed = 1;
       }
       else if (sp_streq(rty3, "GlobalVariableTargetNode") || sp_streq(rty3, "ClassVariableTargetNode"))
         changed |= masgn_unify_elem(c, comp_scope_of(c, id), &rights[j], 1, et);
@@ -3995,8 +3997,7 @@ static int bind_call_args_shifted(Compiler *c, int call_id, int mi, int shift) {
     if (!p || p->rbs_seeded) continue;
     TyKind at = infer_type(c, argv[k]);
     if (at == TY_VOID || at == TY_NIL) at = TY_POLY;
-    TyKind merged = ty_unify(p->type, at);
-    if (merged != p->type) { p->type = merged; changed = 1; }
+    if (lv_widen(p, at)) changed = 1;
   }
   return changed;
 }
@@ -5617,8 +5618,7 @@ int propagate_prep_params(Compiler *c) {
         LocalVar *fp = scope_local(fs, fs->pnames[i]);
         LocalVar *tp = scope_local(ts, ts->pnames[i]);
         if (!fp || !tp || fp->type == TY_UNKNOWN || tp->rbs_seeded) continue;
-        TyKind merged = ty_unify(tp->type, fp->type);
-        if (merged != tp->type) { tp->type = merged; changed = 1; }
+        if (lv_widen(tp, fp->type)) changed = 1;
       }
     }
   }
@@ -6087,8 +6087,7 @@ int bind_coerce_operator_params(Compiler *c) {
     if (sc->class_id < 0 || sc->nparams < 1 || !sc->pnames[0]) continue;
     LocalVar *cp = scope_local(sc, sc->pnames[0]);
     if (!cp || cp->rbs_seeded) continue;
-    TyKind mg = ty_unify(cp->type, TY_POLY);
-    if (mg != cp->type) { cp->type = mg; changed = 1; }
+    if (lv_widen(cp, TY_POLY)) changed = 1;
   }
   /* A user `<=>` has a caller with no call node of its own:
      sp_obj_cmp_dispatch, the boxed hook the runtime comparator installs for
@@ -6158,8 +6157,7 @@ int bind_coerce_operator_params(Compiler *c) {
     }
     LocalVar *p = scope_local(sc, sc->pnames[0]);
     if (!p || p->rbs_seeded) continue;
-    TyKind mg = ty_unify(p->type, TY_POLY);
-    if (mg != p->type) { p->type = mg; changed = 1; }
+    if (lv_widen(p, TY_POLY)) changed = 1;
   }
   /* An operator reached through a POLY receiver goes out to the runtime's
      user-binop dispatch, which hands the argument over boxed -- it cannot know
@@ -6212,8 +6210,7 @@ int bind_coerce_operator_params(Compiler *c) {
       if (cm->nparams >= 1 && cm->pnames[0]) {
         LocalVar *cp = scope_local(cm, cm->pnames[0]);
         if (cp && !cp->rbs_seeded) {
-          TyKind cmg = ty_unify(cp->type, TY_POLY);
-          if (cmg != cp->type) { cp->type = cmg; changed = 1; }
+          if (lv_widen(cp, TY_POLY)) changed = 1;
         }
       }
     }
@@ -6231,8 +6228,7 @@ int bind_coerce_operator_params(Compiler *c) {
        second idiom's arm falls through and `5 + obj` raises NoMethodError on
        a `+` the class defines (found by matz reviewing #4265). The parameter
        has to be poly. */
-    TyKind merged = ty_unify(p->type, TY_POLY);
-    if (merged != p->type) { p->type = merged; changed = 1; }
+    if (lv_widen(p, TY_POLY)) changed = 1;
   }
   return changed;
 }
@@ -6511,8 +6507,7 @@ static int bind_zsuper_params(Compiler *c, int id, Scope *s, Scope *pm) {
     LocalVar *src = scope_local(s, s->pnames[s->kwrest_idx]);
     LocalVar *dst = scope_local(pm, pm->pnames[pm->kwrest_idx]);
     if (src && dst && !dst->rbs_seeded && src->type != TY_UNKNOWN) {
-      TyKind mg = ty_unify(dst->type, src->type);
-      if (mg != dst->type) { dst->type = mg; changed = 1; }
+      if (lv_widen(dst, src->type)) changed = 1;
     }
   }
   for (int i = 0; i < pm->nparams; i++) {
@@ -6525,8 +6520,7 @@ static int bind_zsuper_params(Compiler *c, int id, Scope *s, Scope *pm) {
     }
     LocalVar *src = scope_local(s, pm->pnames[i]);
     if (!src || src->type == TY_UNKNOWN) continue;
-    TyKind mg = ty_unify(dst->type, src->type);
-    if (mg != dst->type) { dst->type = mg; changed = 1; }
+    if (lv_widen(dst, src->type)) changed = 1;
   }
   int srest = s->rest_idx;
   if (srest < 0 || !s->pnames[srest]) {
@@ -6539,8 +6533,7 @@ static int bind_zsuper_params(Compiler *c, int id, Scope *s, Scope *pm) {
       LocalVar *src = scope_local(s, s->pnames[a]);
       LocalVar *dst = scope_local(pm, pm->pnames[i]);
       if (!src || !dst || dst->rbs_seeded || src->type == TY_UNKNOWN) continue;
-      TyKind mg = ty_unify(dst->type, src->type);
-      if (mg != dst->type) { dst->type = mg; changed = 1; }
+      if (lv_widen(dst, src->type)) changed = 1;
     }
     return changed;
   }
@@ -6561,8 +6554,7 @@ static int bind_zsuper_params(Compiler *c, int id, Scope *s, Scope *pm) {
     if (own > srest) {
       LocalVar *src = scope_local(s, s->pnames[own]);
       if (src && src->type != TY_UNKNOWN) {
-        TyKind mg = ty_unify(p->type, src->type);
-        if (mg != p->type) { p->type = mg; changed = 1; }
+        if (lv_widen(p, src->type)) changed = 1;
       }
       opt_seen |= optional;
       continue;
@@ -6573,8 +6565,7 @@ static int bind_zsuper_params(Compiler *c, int id, Scope *s, Scope *pm) {
       for (int j = 0; j < srest; j++) {
         LocalVar *src = scope_local(s, s->pnames[j]);
         if (!src || src->type == TY_UNKNOWN) continue;
-        TyKind mg = ty_unify(p->type, src->type);
-        if (mg != p->type) { p->type = mg; changed = 1; }
+        if (lv_widen(p, src->type)) changed = 1;
       }
       if (rt != TY_UNKNOWN) changed |= slot_take(c, p, at, id);
       continue;
@@ -6583,8 +6574,7 @@ static int bind_zsuper_params(Compiler *c, int id, Scope *s, Scope *pm) {
     if (pk < srest && (pm->rest_idx < 0 || pk < pm->rest_idx)) {
       LocalVar *src = scope_local(s, s->pnames[pk]);
       if (!src || src->type == TY_UNKNOWN) continue;
-      TyKind mg = ty_unify(p->type, src->type);
-      if (mg != p->type) { p->type = mg; changed = 1; }
+      if (lv_widen(p, src->type)) changed = 1;
     }
     else if (rt != TY_UNKNOWN && pk >= srest && (pm->rest_idx < 0 || pk < pm->rest_idx))
       changed |= slot_take(c, p, at, id);
@@ -6619,8 +6609,7 @@ int infer_param_types(Compiler *c) {
             for (int q = 0; q < im->nparams; q++) {
               LocalVar *dst = scope_local(im, im->pnames[q]);
               if (!dst || dst->rbs_seeded) continue;
-              TyKind mg = ty_unify(dst->type, TY_POLY);
-              if (mg != dst->type) { dst->type = mg; changed = 1; }
+              if (lv_widen(dst, TY_POLY)) changed = 1;
             }
             continue;
           }
@@ -6628,8 +6617,7 @@ int infer_param_types(Compiler *c) {
             LocalVar *src = scope_local(s, s->pnames[q]);
             LocalVar *dst = scope_local(im, im->pnames[q]);
             if (!src || !dst || dst->rbs_seeded || src->type == TY_UNKNOWN) continue;
-            TyKind mg = ty_unify(dst->type, src->type);
-            if (mg != dst->type) { dst->type = mg; changed = 1; }
+            if (lv_widen(dst, src->type)) changed = 1;
           }
         }
         continue;
@@ -6745,8 +6733,7 @@ int infer_param_types(Compiler *c) {
         if (dmi >= 0 && c->scopes[dmi].nparams >= 1) {
           LocalVar *dp = scope_local(&c->scopes[dmi], c->scopes[dmi].pnames[0]);
           if (dp && !dp->rbs_seeded) {
-            TyKind m = ty_unify(dp->type, ty_object(dcid));
-            if (m != dp->type) { dp->type = m; changed = 1; }
+            if (lv_widen(dp, ty_object(dcid))) changed = 1;
           }
         }
       }
@@ -10653,14 +10640,17 @@ int block_settle_types(Compiler *c, int blk, const BlockSig *s,
   return changed;
 }
 
+static int bp_widen(Scope *s, const char *name, TyKind t) {
+  LocalVar *lv = scope_local_intern(s, name); lv->is_block_param = 1;
+  return lv_widen(lv, t);
+}
+
 static int block_leaves_unify(Compiler *c, int block, Scope *s, TyKind t) {
   int changed = 0, lc = block_param_multi_count(c, block, 0);
   for (int li = 0; li < lc; li++) {
     const char *ln = block_param_multi_leaf(c, block, 0, li);
     if (!ln) continue;
-    LocalVar *lp = scope_local_intern(s, ln); lp->is_block_param = 1;
-    TyKind m = ty_unify(lp->type, t);
-    if (m != lp->type) { lp->type = m; changed = 1; }
+    if (bp_widen(s, ln, t)) changed = 1;
   }
   return changed;
 }
@@ -11278,16 +11268,11 @@ int infer_block_params(Compiler *c) {
         Scope *es = comp_scope_of(c, block);
         const char *ep0 = block_param_name(c, block, 0);
         if (ep0) {
-          LocalVar *lp = scope_local_intern(es, ep0); lp->is_block_param = 1;
-          TyKind m = ty_unify(lp->type, et);
-          if (m != lp->type) { lp->type = m; changed = 1; }
+          if (bp_widen(es, ep0, et)) changed = 1;
         }
         const char *ep1 = block_param_name(c, block, 1);
         if (ep1) {
-          LocalVar *lp = scope_local_intern(es, ep1); lp->is_block_param = 1;
-          TyKind want = ewi ? TY_INT : et;
-          TyKind m = ty_unify(lp->type, want);
-          if (m != lp->type) { lp->type = m; changed = 1; }
+          TyKind want = ewi ? TY_INT : et;          if (bp_widen(es, ep1, want)) changed = 1;
         }
         continue;
       }
@@ -11480,9 +11465,7 @@ int infer_block_params(Compiler *c) {
     /* then / yield_self: block param receives the receiver value */
     if ((sp_streq(name, "then") || sp_streq(name, "yield_self")) && p0) {
       Scope *bs = comp_scope_of(c, block);
-      LocalVar *lv = scope_local_intern(bs, p0); lv->is_block_param = 1;
-      TyKind m = ty_unify(lv->type, rt == TY_NIL ? TY_POLY : rt);
-      if (m != lv->type) { lv->type = m; changed = 1; }
+      if (bp_widen(bs, p0, rt == TY_NIL ? TY_POLY : rt)) changed = 1;
       continue;
     }
 
@@ -11562,9 +11545,7 @@ int infer_block_params(Compiler *c) {
         for (int pk = 0; ; pk++) {
           const char *pn2 = block_param_name(c, block, pk);
           if (!pn2) break;
-          LocalVar *plv2 = scope_local_intern(scs, pn2); plv2->is_block_param = 1;
-          TyKind pm2 = ty_unify(plv2->type, TY_STRING);
-          if (pm2 != plv2->type) { plv2->type = pm2; changed = 1; }
+          if (bp_widen(scs, pn2, TY_STRING)) changed = 1;
         }
         continue;
       }
@@ -11702,10 +11683,7 @@ int infer_block_params(Compiler *c) {
       else {
         for (int pj = 0; pj < np; pj++) {
           const char *pn = block_param_name(c, block, pj);
-          LocalVar *lp = scope_local_intern(es, pn); lp->is_block_param = 1;
-          TyKind want = (np == 1) ? rt : ty_array_elem(rt);
-          TyKind m = ty_unify(lp->type, want);
-          if (m != lp->type) { lp->type = m; changed = 1; }
+          TyKind want = (np == 1) ? rt : ty_array_elem(rt);          if (bp_widen(es, pn, want)) changed = 1;
         }
       }
       continue;
@@ -11742,9 +11720,7 @@ int infer_block_params(Compiler *c) {
             for (int pj2 = 0; pj2 < np2; pj2++) {
               const char *pn2 = block_param_name(c, block, pj2);
               if (!pn2) break;
-              LocalVar *lp2 = scope_local_intern(es2, pn2); lp2->is_block_param = 1;
-              TyKind m2 = ty_unify(lp2->type, bp_t2);
-              if (m2 != lp2->type) { lp2->type = m2; changed = 1; }
+              if (bp_widen(es2, pn2, bp_t2)) changed = 1;
             }
           }
           continue;
@@ -11773,9 +11749,7 @@ int infer_block_params(Compiler *c) {
           /* p0 is the pair (array) or |(a,b)| multi-target; p1 is the int index */
           const char *idx_p = block_param_name(c, block, 1);
           if (idx_p) {
-            LocalVar *ip = scope_local_intern(wi_es, idx_p); ip->is_block_param = 1;
-            TyKind im = ty_unify(ip->type, TY_INT);
-            if (im != ip->type) { ip->type = im; changed = 1; }
+            if (bp_widen(wi_es, idx_p, TY_INT)) changed = 1;
           }
           if (block_param_is_multi(c, block, 0)) {
             /* |(a, b), i|: destructure first multi-target param */
@@ -11785,9 +11759,7 @@ int infer_block_params(Compiler *c) {
             /* |pair, i|: pair gets the sub-array type */
             const char *pair_p = block_param_name(c, block, 0);
             if (pair_p) {
-              LocalVar *pp = scope_local_intern(wi_es, pair_p); pp->is_block_param = 1;
-              TyKind m3 = ty_unify(pp->type, ec_arr_t);
-              if (m3 != pp->type) { pp->type = m3; changed = 1; }
+              if (bp_widen(wi_es, pair_p, ec_arr_t)) changed = 1;
             }
           }
           continue;
@@ -11811,25 +11783,20 @@ int infer_block_params(Compiler *c) {
         TyKind acc_t = (rargc > 0 && rargv) ? infer_type(c, rargv[0]) : elem;
         if (acc_t == TY_UNKNOWN) acc_t = elem;
         if (p0) {
-          LocalVar *ap = scope_local_intern(bs, p0); ap->is_block_param = 1;
-          TyKind m = ty_unify(ap->type, acc_t); if (m != ap->type) { ap->type = m; changed = 1; }
+          if (bp_widen(bs, p0, acc_t)) changed = 1;
         }
         if (block_param_is_multi(c, block, 1)) {
           int lc = block_param_multi_count(c, block, 1);
           for (int li = 0; li < lc; li++) {
             const char *ln = block_param_multi_leaf(c, block, 1, li);
             if (!ln) continue;
-            LocalVar *lp = scope_local_intern(bs, ln); lp->is_block_param = 1;
-            TyKind want = (li == 0) ? elem : TY_INT;
-            TyKind m = ty_unify(lp->type, want); if (m != lp->type) { lp->type = m; changed = 1; }
+            TyKind want = (li == 0) ? elem : TY_INT;            if (bp_widen(bs, ln, want)) changed = 1;
           }
         }
         else {
           const char *pp = block_param_name(c, block, 1);
           if (pp) {
-            LocalVar *lp = scope_local_intern(bs, pp); lp->is_block_param = 1;
-            TyKind pairt = (elem == TY_INT) ? TY_INT_ARRAY : TY_POLY_ARRAY;
-            TyKind m = ty_unify(lp->type, pairt); if (m != lp->type) { lp->type = m; changed = 1; }
+            TyKind pairt = (elem == TY_INT) ? TY_INT_ARRAY : TY_POLY_ARRAY;            if (bp_widen(bs, pp, pairt)) changed = 1;
           }
         }
         continue;
@@ -11857,10 +11824,8 @@ int infer_block_params(Compiler *c) {
       if (ty_is_array(chain_at) && !block_param_is_multi(c, block, 0) && vp && ip) {
         TyKind elem = ty_array_elem(chain_at);
         Scope *bs = comp_scope_of(c, block);
-        LocalVar *lp = scope_local_intern(bs, vp); lp->is_block_param = 1;
-        TyKind m = ty_unify(lp->type, elem); if (m != lp->type) { lp->type = m; changed = 1; }
-        LocalVar *lp2 = scope_local_intern(bs, ip); lp2->is_block_param = 1;
-        TyKind m2 = ty_unify(lp2->type, TY_INT); if (m2 != lp2->type) { lp2->type = m2; changed = 1; }
+        if (bp_widen(bs, vp, elem)) changed = 1;
+        if (bp_widen(bs, ip, TY_INT)) changed = 1;
         continue;
       }
     }
@@ -11883,15 +11848,11 @@ int infer_block_params(Compiler *c) {
         if (ty_is_array(arr_t)) {
           Scope *wis = comp_scope_of(c, block);
           if (p0) {
-            LocalVar *ep = scope_local_intern(wis, p0); ep->is_block_param = 1;
-            TyKind em = ty_unify(ep->type, ty_array_elem(arr_t));
-            if (em != ep->type) { ep->type = em; changed = 1; }
+            if (bp_widen(wis, p0, ty_array_elem(arr_t))) changed = 1;
           }
           const char *idx_p = block_param_name(c, block, 1);
           if (idx_p) {
-            LocalVar *ip = scope_local_intern(wis, idx_p); ip->is_block_param = 1;
-            TyKind im = ty_unify(ip->type, TY_INT);
-            if (im != ip->type) { ip->type = im; changed = 1; }
+            if (bp_widen(wis, idx_p, TY_INT)) changed = 1;
           }
           continue;
         }
@@ -11900,9 +11861,7 @@ int infer_block_params(Compiler *c) {
 
     /* array.combination(k)/permutation(k) { |c| } binds the k-element sub-array */
     if ((sp_streq(name, "combination") || sp_streq(name, "permutation")) && ty_is_array(rt)) {
-      LocalVar *lp = scope_local_intern(comp_scope_of(c, block), p0); lp->is_block_param = 1;
-      TyKind m = ty_unify(lp->type, rt);
-      if (m != lp->type) { lp->type = m; changed = 1; }
+      if (bp_widen(comp_scope_of(c, block), p0, rt)) changed = 1;
       continue;
     }
 
@@ -11914,9 +11873,7 @@ int infer_block_params(Compiler *c) {
       for (int pj = 0; pj < 2; pj++) {
         const char *pn = block_param_name(c, block, pj);
         if (!pn) continue;
-        LocalVar *lp = scope_local_intern(cs, pn); lp->is_block_param = 1;
-        TyKind m = ty_unify(lp->type, ty_array_elem(rt));
-        if (m != lp->type) { lp->type = m; changed = 1; }
+        if (bp_widen(cs, pn, ty_array_elem(rt))) changed = 1;
       }
       continue;
     }
@@ -11962,14 +11919,10 @@ int infer_block_params(Compiler *c) {
         if (bt3 == TY_POLY || ty_is_object(bt3) || bt3 == TY_RATIONAL ||
             bt3 == TY_COMPLEX || bt3 == TY_BIGINT) acc_t = TY_POLY;
       }
-      LocalVar *ap = scope_local_intern(rs, p0); ap->is_block_param = 1;
-      TyKind am = ty_unify(ap->type, acc_t);
-      if (am != ap->type) { ap->type = am; changed = 1; }
+      if (bp_widen(rs, p0, acc_t)) changed = 1;
       const char *rp1 = block_param_name(c, block, 1);
       if (rp1) {
-        LocalVar *ep2 = scope_local_intern(rs, rp1); ep2->is_block_param = 1;
-        TyKind em2 = ty_unify(ep2->type, et2);
-        if (em2 != ep2->type) { ep2->type = em2; changed = 1; }
+        if (bp_widen(rs, rp1, et2)) changed = 1;
       }
       continue;
     }
@@ -11978,14 +11931,10 @@ int infer_block_params(Compiler *c) {
     if (sp_streq(name, "each_with_index") && ty_is_array(rt)) {
       Scope *es = comp_scope_of(c, block);
       if (!p0) continue;
-      LocalVar *ep = scope_local_intern(es, p0); ep->is_block_param = 1;
-      TyKind em = ty_unify(ep->type, ty_array_elem(rt));
-      if (em != ep->type) { ep->type = em; changed = 1; }
+      if (bp_widen(es, p0, ty_array_elem(rt))) changed = 1;
       const char *p1 = block_param_name(c, block, 1);
       if (p1) {
-        LocalVar *ip = scope_local_intern(es, p1); ip->is_block_param = 1;
-        TyKind im = ty_unify(ip->type, TY_INT);
-        if (im != ip->type) { ip->type = im; changed = 1; }
+        if (bp_widen(es, p1, TY_INT)) changed = 1;
       }
       continue;
     }
@@ -12002,9 +11951,7 @@ int infer_block_params(Compiler *c) {
           (mat && sp_streq(mat, "RegularExpressionNode")) ||
           rt == TY_REGEX || (mac > 0 && infer_type(c, mav[0]) == TY_REGEX)) {
         Scope *ms = comp_scope_of(c, block);
-        LocalVar *mp = scope_local_intern(ms, p0); mp->is_block_param = 1;
-        TyKind mm = ty_unify(mp->type, TY_MATCHDATA);
-        if (mm != mp->type) { mp->type = mm; changed = 1; }
+        if (bp_widen(ms, p0, TY_MATCHDATA)) changed = 1;
         continue;
       }
     }
@@ -12014,17 +11961,14 @@ int infer_block_params(Compiler *c) {
       LocalVar *ep0 = scope_local_intern(zs, p0); ep0->is_block_param = 1;
       /* a SOLO param receives the boxed TUPLE ([e1, e2]); two params
          auto-splat it */
-      TyKind em0 = ty_unify(ep0->type, zp1s ? ty_array_elem(rt) : TY_POLY);
-      if (em0 != ep0->type) { ep0->type = em0; changed = 1; }
+      if (lv_widen(ep0, zp1s ? ty_array_elem(rt) : TY_POLY)) changed = 1;
       const char *zp1 = zp1s;
       if (zp1) {
         int zargs = nt_ref(nt, id, "arguments");
         int zargc = 0; const int *zargv = zargs >= 0 ? nt_arr(nt, zargs, "arguments", &zargc) : NULL;
         TyKind et2 = (zargc > 0 && zargv && ty_is_array(infer_type(c, zargv[0])))
                      ? ty_array_elem(infer_type(c, zargv[0])) : ty_array_elem(rt);
-        LocalVar *ep1 = scope_local_intern(zs, zp1); ep1->is_block_param = 1;
-        TyKind em1 = ty_unify(ep1->type, et2);
-        if (em1 != ep1->type) { ep1->type = em1; changed = 1; }
+        if (bp_widen(zs, zp1, et2)) changed = 1;
       }
       continue;
     }
@@ -12033,17 +11977,13 @@ int infer_block_params(Compiler *c) {
     if ((sp_streq(name, "merge") || sp_streq(name, "merge!") || sp_streq(name, "update")) &&
         ty_is_hash(rt)) {
       Scope *ms = comp_scope_of(c, block);
-      LocalVar *kp = scope_local_intern(ms, p0); kp->is_block_param = 1;
-      TyKind km = ty_unify(kp->type, ty_hash_key(rt));
-      if (km != kp->type) { kp->type = km; changed = 1; }
+      if (bp_widen(ms, p0, ty_hash_key(rt))) changed = 1;
       const char *mp1 = block_param_name(c, block, 1);
       const char *mp2 = block_param_name(c, block, 2);
       const char *mps[2]; mps[0] = mp1; mps[1] = mp2;
       for (int mi2 = 0; mi2 < 2; mi2++) {
         if (!mps[mi2]) continue;
-        LocalVar *vp = scope_local_intern(ms, mps[mi2]); vp->is_block_param = 1;
-        TyKind vm = ty_unify(vp->type, ty_hash_val(rt));
-        if (vm != vp->type) { vp->type = vm; changed = 1; }
+        if (bp_widen(ms, mps[mi2], ty_hash_val(rt))) changed = 1;
       }
       continue;
     }
@@ -12051,35 +11991,26 @@ int infer_block_params(Compiler *c) {
     /* array.product(other) { |pair| } binds the boxed pair array */
     if (sp_streq(name, "product") && ty_is_array(rt) && p0) {
       Scope *aps = comp_scope_of(c, block);
-      LocalVar *pp = scope_local_intern(aps, p0); pp->is_block_param = 1;
-      TyKind pm = ty_unify(pp->type, TY_POLY);
-      if (pm != pp->type) { pp->type = pm; changed = 1; }
+      if (bp_widen(aps, p0, TY_POLY)) changed = 1;
       continue;
     }
     /* array.fetch(i) { |i| } binds the (int) index */
     if (sp_streq(name, "fetch") && ty_is_array(rt) && p0) {
       Scope *afs = comp_scope_of(c, block);
-      LocalVar *ap = scope_local_intern(afs, p0); ap->is_block_param = 1;
-      TyKind am = ty_unify(ap->type, TY_INT);
-      if (am != ap->type) { ap->type = am; changed = 1; }
+      if (bp_widen(afs, p0, TY_INT)) changed = 1;
       continue;
     }
     /* hash.fetch(key) { |k| } binds the looked-up key */
     if (sp_streq(name, "fetch") && ty_is_hash(rt)) {
       Scope *fs = comp_scope_of(c, block);
-      LocalVar *kp = scope_local_intern(fs, p0); kp->is_block_param = 1;
-      TyKind km = ty_unify(kp->type, ty_hash_key(rt));
-      if (km != kp->type) { kp->type = km; changed = 1; }
+      if (bp_widen(fs, p0, ty_hash_key(rt))) changed = 1;
       continue;
     }
 
     /* hash.transform_keys { |k| } binds key; transform_values { |v| } value */
     if ((sp_streq(name, "transform_keys") || sp_streq(name, "transform_values")) && ty_is_hash(rt)) {
       Scope *hs = comp_scope_of(c, block);
-      LocalVar *vp = scope_local_intern(hs, p0); vp->is_block_param = 1;
-      TyKind want = sp_streq(name, "transform_keys") ? ty_hash_key(rt) : ty_hash_val(rt);
-      TyKind vm = ty_unify(vp->type, want);
-      if (vm != vp->type) { vp->type = vm; changed = 1; }
+      TyKind want = sp_streq(name, "transform_keys") ? ty_hash_key(rt) : ty_hash_val(rt);      if (bp_widen(hs, p0, want)) changed = 1;
       continue;
     }
 
@@ -12098,8 +12029,7 @@ int infer_block_params(Compiler *c) {
           continue;
         }
       }
-      TyKind vm = ty_unify(vp->type, want);
-      if (vm != vp->type) { vp->type = vm; changed = 1; }
+      if (lv_widen(vp, want)) changed = 1;
       continue;
     }
 
@@ -12124,17 +12054,13 @@ int infer_block_params(Compiler *c) {
         if (lc >= 1) {
           const char *kn = block_param_multi_leaf(c, block, 0, 0);
           if (kn) {
-            LocalVar *kp2 = scope_local_intern(hs, kn); kp2->is_block_param = 1;
-            TyKind km2 = ty_unify(kp2->type, ty_hash_key(rt));
-            if (km2 != kp2->type) { kp2->type = km2; changed = 1; }
+            if (bp_widen(hs, kn, ty_hash_key(rt))) changed = 1;
           }
         }
         if (lc >= 2) {
           const char *vn = block_param_multi_leaf(c, block, 0, 1);
           if (vn) {
-            LocalVar *vp2 = scope_local_intern(hs, vn); vp2->is_block_param = 1;
-            TyKind vm2 = ty_unify(vp2->type, ty_hash_val(rt));
-            if (vm2 != vp2->type) { vp2->type = vm2; changed = 1; }
+            if (bp_widen(hs, vn, ty_hash_val(rt))) changed = 1;
           }
         }
       }
@@ -12156,14 +12082,10 @@ int infer_block_params(Compiler *c) {
                          sp_streq(name, "none?") || sp_streq(name, "one?") ||
                          sp_streq(name, "count"));
         if (p0) {
-          LocalVar *kp = scope_local_intern(hs, p0); kp->is_block_param = 1;
-          TyKind km = ty_unify(kp->type, pair_solo ? TY_POLY : ty_hash_key(rt));
-          if (km != kp->type) { kp->type = km; changed = 1; }
+          if (bp_widen(hs, p0, pair_solo ? TY_POLY : ty_hash_key(rt))) changed = 1;
         }
         if (p1) {
-          LocalVar *vp = scope_local_intern(hs, p1); vp->is_block_param = 1;
-          TyKind vm = ty_unify(vp->type, ty_hash_val(rt));
-          if (vm != vp->type) { vp->type = vm; changed = 1; }
+          if (bp_widen(hs, p1, ty_hash_val(rt))) changed = 1;
         }
       }
       continue;
@@ -12205,9 +12127,7 @@ int infer_block_params(Compiler *c) {
           for (int pj = 0; pj < np; pj++) {
             const char *pname2 = block_param_name(c, block, pj);
             if (!pname2) continue;
-            LocalVar *lp2 = scope_local_intern(ds, pname2); lp2->is_block_param = 1;
-            TyKind m2 = ty_unify(lp2->type, inner_elem);
-            if (m2 != lp2->type) { lp2->type = m2; changed = 1; }
+            if (bp_widen(ds, pname2, inner_elem)) changed = 1;
           }
           continue;
         }
@@ -12229,8 +12149,7 @@ int infer_block_params(Compiler *c) {
              desugared destructure temp bound to an each_cons/each_slice window)
              down to a poly scalar; that mismatches the array the codegen binds. */
           if (ty_is_array(lp2->type)) continue;
-          TyKind m2 = ty_unify(lp2->type, TY_POLY);
-          if (m2 != lp2->type) { lp2->type = m2; changed = 1; }
+          if (lv_widen(lp2, TY_POLY)) changed = 1;
         }
         continue;
       }
@@ -12255,8 +12174,7 @@ int infer_block_params(Compiler *c) {
       lv->type = pt; changed = 1;
       continue;
     }
-    TyKind merged = ty_unify(lv->type, pt);
-    if (merged != lv->type) { lv->type = merged; changed = 1; }
+    if (lv_widen(lv, pt)) changed = 1;
   }
   return changed;
 }
