@@ -1129,6 +1129,12 @@ int kwh_out_of_order(Compiler *c, Scope *m, int kwh);
    a later value can give another value is taken too, as CRuby reads it at
    its place. */
 void emit_args_in_source_order(Compiler *c, const int *argv, int argc, Buf *b);
+/* The arguments of a call whose binding runs under another self -- an
+   instance_exec's, bound where self is already its receiver -- evaluated in
+   source order ahead of the switch, as emit_args_in_source_order runs them:
+   each one with an effect, and each that reads self (an ivar, self, a
+   receiverless call), which CRuby reads as the caller's. */
+void emit_args_off_self(Compiler *c, const int *argv, int argc, Buf *b);
 /* emit_args_in_source_order, where the nodes `after` also run ahead of the
    binding reading the values -- a block's defaults -- and so can change what
    a read among them reads. */

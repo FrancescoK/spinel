@@ -33462,6 +33462,15 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         emit_indent(g_pre, g_indent); emit_ctype(c, body_ty, g_pre);
         buf_printf(g_pre, " _t%d;\n", tres);
       }
+      /* The arguments are the caller's, so a value that reads self runs
+         here, before self switches, into a temp the binds below read:
+         `O.new.instance_exec(@x) { |a| }` read O's @x, and the C did not
+         build where O had none. The block's defaults, and a trampoline's
+         own arguments, still run under the receiver, as its body does. */
+      int ie_sv_argov = g_n_argov;
+      { int iargs0 = nt_ref(nt, id, "arguments");
+        int iac0 = 0; const int *iav0 = iargs0 >= 0 ? nt_arr(nt, iargs0, "arguments", &iac0) : NULL;
+        emit_args_off_self(c, iav0, iac0, g_pre); }
       char selfbuf[320];   /* a class name plus a cast: 64 truncated the longest of them */ snprintf(selfbuf, sizeof selfbuf, "_t%d", tr);
       const char *saved_self2 = g_self; g_self = selfbuf;
       const char *saved_deref2 = g_self_deref; g_self_deref = self_is_val ? "." : "->";
@@ -33575,6 +33584,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           emit_block_kw_binds(c, blk, ie_kwhash, comp_scope_of(c, id), g_pre, g_indent, 0, NULL);
         }
       }
+      g_n_argov = ie_sv_argov;   /* the binds were the arguments' last readers */
       if (ie_bn > 0) {
         /* In statement position the value is discarded, so emit the whole body
            as statements -- the last node may not be expressible (e.g. puts). */
