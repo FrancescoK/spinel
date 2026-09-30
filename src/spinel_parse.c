@@ -2607,16 +2607,27 @@ static void sp_req_hoist_splice(char **result, unsigned char **fsl, size_t *fsl_
   *result = nr;
 }
 
-static char *sp_req_cond_wrap(char *content, unsigned char **cfsl, size_t *cfsl_n) {
-  size_t wcl = strlen(content);
-  char *w = malloc(wcl + 40);
+static int sp_req_if_modifier(const char *t) {
+  int n = (int)strspn(t, " \t"), k = strncmp(t + n, "if", 2) == 0 ? 2 : strncmp(t + n, "unless", 6) == 0 ? 6 : 0;
+  if (!k || sp_req_ident_char(t[n + k])) return 0;
+  int c = n += k, e;
+  for (; t[n] && t[n] != '\n' && t[n] != '\r' && t[n] != ';'; n++) {}
+  for (e = n; e > c && (t[e - 1] == ' ' || t[e - 1] == '\t'); e--) {}
+  if (e == c || t[n] == ';' || strchr("&|,(\\+-*/.<>=:", t[e - 1])) return 0;
+  return (e - c > 3 && (!strncmp(t + e - 4, " and", 4) || !strncmp(t + e - 4, " not", 4))) ||
+         (e - c > 2 && !strncmp(t + e - 3, " or", 3)) ? 0 : n;
+}
+
+static char *sp_req_cond_wrap(char *content, unsigned char **cfsl, size_t *cfsl_n, const char *head, int hl) {
+  size_t wcl = strlen(content), skip = hl && strncmp(content, SP_PUSH_PREFIX, strlen(SP_PUSH_PREFIX)) == 0 ? strlen(SP_PUSH_PREFIX) : 0;
+  char *w = malloc(wcl + hl + 48);
   if (!w) return content;
-  sprintf(w, "#<SPINEL_COND>\n%s%s#</SPINEL_COND>\n", content,
-          (wcl && content[wcl - 1] != '\n') ? "\n" : "");
+  sprintf(w, "#<SPINEL_COND>\n%.*s%s%s%s%s%s#</SPINEL_COND>\n", hl, head, hl ? "\n" : "", skip ? SP_INSERT_PREFIX : "",
+          content + skip, (wcl && content[wcl - 1] != '\n') ? "\n" : "", hl ? "end " : "");
   free(content);
-  unsigned char z = 0;
-  sp_fsl_splice(cfsl, cfsl_n, 0, 0, &z, 1);
-  sp_fsl_splice(cfsl, cfsl_n, *cfsl_n, 0, &z, 1);
+  unsigned char z[2] = { 0, 0 };
+  sp_fsl_splice(cfsl, cfsl_n, 0, 0, z, hl ? 2 : 1);
+  sp_fsl_splice(cfsl, cfsl_n, *cfsl_n, 0, z, 1);
   return w;
 }
 
@@ -3046,7 +3057,7 @@ static char *resolve_requires(const char *source, const char *source_path,
     if (!sp_require_find(result, result, "require_relative", &hit)) break;
     /* a file inlined under a condition is loaded only when that branch runs:
        it (and what it requires) stays loadable elsewhere */
-    int incl_mark = sp_included_count, cond_inline = 0;
+    int incl_mark = sp_included_count, cond_inline = 0, ml = 0;
     char *pos = hit.kw, *expr_end = hit.expr_end;
     char *line_end = strchr(pos, '\n');
     if (!line_end) line_end = pos + strlen(pos);
@@ -3128,8 +3139,9 @@ else {
       while (*trail == ' ' || *trail == '\t') trail++;
       int has_modifier = (*trail != '\n' && *trail != '\r' && *trail != ';' &&
                           *trail != '\0' && *trail != '#');
-      cond_inline = !hit.margin || sp_in_cond_region(result, hit.kw);
-      if ((!hit.margin && !sp_req_in_control_only(result, hit.kw)) || has_modifier) {
+      ml = sp_req_if_modifier(expr_end);
+      cond_inline = !hit.margin || ml || sp_in_cond_region(result, hit.kw);
+      if ((!hit.margin && !sp_req_in_control_only(result, hit.kw)) || (has_modifier && !ml)) {
         sp_req_hoist_splice(&result, &fsl, &fsl_n, &hit, content, cfsl, cfsl_n, req_val);
         free(cfsl);
         free(content);
@@ -3139,12 +3151,12 @@ else {
 
     /* a conditional inclusion is marked, so the requires inside it count as
        conditional too (the markers are comments: two lines, no flags) */
-    if (cond_inline && !hit.margin) content = sp_req_cond_wrap(content, &cfsl, &cfsl_n);
+    if (cond_inline && (!hit.margin || ml)) content = sp_req_cond_wrap(content, &cfsl, &cfsl_n, expr_end, ml);
 
     /* Replace the statement, consuming its trailing whitespace and single
        newline; anything else on the line (`require_relative 'x'; code`) stays,
        pushed onto its own line by the inserted content's trailing newline. */
-    char *stmt_end = expr_end;
+    char *stmt_end = expr_end + ml;
     while (*stmt_end == ' ' || *stmt_end == '\t') stmt_end++;
     if (*stmt_end == '\n') stmt_end++;
     size_t line_len = (size_t)(stmt_end - pos);
@@ -3580,7 +3592,7 @@ static char *resolve_plain_requires(char *source, const char *exe_path,
     if (!sp_require_find(result, result, "require", &hit)) break;
     /* a file inlined under a condition is loaded only when that branch runs:
        it (and what it requires) stays loadable elsewhere */
-    int incl_mark = sp_included_count, cond_inline = 0;
+    int incl_mark = sp_included_count, cond_inline = 0, ml = 0;
     char *pos = hit.kw, *expr_end = hit.expr_end;
     char *line_end = strchr(pos, '\n');
     if (!line_end) line_end = pos + strlen(pos);
@@ -3769,8 +3781,9 @@ else {
          statement boundary so Windows sources keep the normal inlining path. */
       int has_modifier = (*trail != '\n' && *trail != '\r' && *trail != ';' &&
                           *trail != '\0' && *trail != '#');
-      cond_inline = !hit.margin || sp_in_cond_region(result, hit.kw);
-      if ((!hit.margin && !sp_req_in_control_only(result, hit.kw)) || has_modifier) {
+      ml = sp_req_if_modifier(expr_end);
+      cond_inline = !hit.margin || ml || sp_in_cond_region(result, hit.kw);
+      if ((!hit.margin && !sp_req_in_control_only(result, hit.kw)) || (has_modifier && !ml)) {
         sp_req_hoist_splice(&result, fsl, fsl_n, &hit, content, cfsl, cfsl_n, req_val);
         free(cfsl);
         free(content);
@@ -3780,7 +3793,7 @@ else {
 
     /* a conditional inclusion is marked, so the requires inside it count as
        conditional too (the markers are comments: two lines, no flags) */
-    if (cond_inline && !hit.margin) content = sp_req_cond_wrap(content, &cfsl, &cfsl_n);
+    if (cond_inline && (!hit.margin || ml)) content = sp_req_cond_wrap(content, &cfsl, &cfsl_n, expr_end, ml);
 
     /* Replace only the `require "name"` statement itself, not the whole
        line, so `require "x"; code` keeps `code`. Consume trailing
@@ -3788,7 +3801,7 @@ else {
        require on its own line leaves no blank line); stop at `;` or any
        other trailing code, which the inserted content's trailing newline
        then pushes onto its own line. */
-    char *stmt_end = expr_end;  /* just past the call */
+    char *stmt_end = expr_end + ml;
     while (*stmt_end == ' ' || *stmt_end == '\t') stmt_end++;
     int consumed_nl = (*stmt_end == '\n');
     if (consumed_nl) stmt_end++;
