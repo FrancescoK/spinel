@@ -3053,7 +3053,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       int recv_is_var = class_recv_is_dynamic(c, recv);
       TyKind uret = TY_UNKNOWN; int nc = recv_is_var ? 0 : -1000, set = 0;
       int ncc = 0, nblk = 0;
-      int has_blk = nt_ref(nt, id, "block") >= 0;
+      int has_blk = nt_ref(nt, id, "block") >= 0, splat = 0;
+      for (int a = 0; a < argc; a++)
+        if (nt_kind(nt, argv[a]) == NK_SplatNode) splat++;
       const PolyCand *ccs = recv_is_var ? comp_cmethod_candidates(c, name, &ncc) : NULL;
       for (int ki = 0; ki < ncc; ki++) {
         int k = ccs[ki].cls;
@@ -3076,8 +3078,11 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         int rest_ok = rest_packable_arm(c, &c->scopes[kmi]);
         if ((c->scopes[kmi].rest_idx >= 0 && !rest_ok) || c->scopes[kmi].yields ||
             (c->scopes[kmi].blk_param && c->scopes[kmi].blk_param[0])) { nc = 0; nblk = 0; break; }
-        if (argc < c->scopes[kmi].nrequired ||
-            (c->scopes[kmi].rest_idx < 0 && argc > c->scopes[kmi].nparams)) continue;
+        /* with a splat, the count is the gather's to judge at run time: each
+           splat may spread to nothing, so only the other arguments count */
+        if (splat ? c->scopes[kmi].rest_idx < 0 && argc - splat > c->scopes[kmi].nparams
+                  : argc < c->scopes[kmi].nrequired ||
+                    (c->scopes[kmi].rest_idx < 0 && argc > c->scopes[kmi].nparams)) continue;
         nc++;
         TyKind kr = (TyKind)c->scopes[kmi].ret;
         if (!set) { uret = kr; set = 1; }
