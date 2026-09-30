@@ -20733,6 +20733,25 @@ static int text_is_raise_token(const char *txt) {
    (`@ref[addr & 3]`), recursively; nothing in either runs code. Every other
    call counts, conservatively: Hash#[] can run a default block, and a builtin
    handed a user object can call back into it. */
+/* Does the program give a Hash a default block anywhere (`Hash.new { }`,
+   `default_proc=`)? Only such a Hash runs code on a missing key. */
+static int prog_has_hash_default_block(Compiler *c) {
+  static const Compiler *memo_c; static int memo;
+  if (memo_c == c) return memo;
+  memo_c = c; memo = 0;
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count && !memo; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    if (sp_streq(nm, "default_proc=")) { memo = 1; break; }
+    if (!sp_streq(nm, "new") || nt_ref(nt, id, "block") < 0) continue;
+    int r = nt_ref(nt, id, "receiver");
+    const char *rn = r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode ? nt_str(nt, r, "name") : NULL;
+    if (!rn || sp_streq(rn, "Hash")) memo = 1;   /* a computed class may be Hash */
+  }
+  return memo;
+}
 static int subtree_may_reassign_state(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (id < 0) return 0;
@@ -20752,7 +20771,13 @@ static int subtree_may_reassign_state(Compiler *c, int id) {
     int typed_index = nm && sp_streq(nm, "[]") && recv >= 0 && ac == 1 &&
                       nt_ref(nt, id, "block") < 0 &&
                       ty_is_array(comp_ntype(c, recv)) && comp_ntype(c, av[0]) == TY_INT;
-    if (!typed_index) return 1;
+    /* An index read of a boxed value runs Ruby code only through a user
+       `[]` or a Hash's default block; with neither in the program it is a
+       lookup (`@bg_pattern_lut[@bg_pattern]`, a poly array of arrays). */
+    int boxed_index = nm && sp_streq(nm, "[]") && recv >= 0 && ac == 1 &&
+                      nt_ref(nt, id, "block") < 0 && comp_ntype(c, recv) == TY_POLY &&
+                      !any_class_defines(c, "[]") && !prog_has_hash_default_block(c);
+    if (!typed_index && !boxed_index) return 1;
   }
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++)
