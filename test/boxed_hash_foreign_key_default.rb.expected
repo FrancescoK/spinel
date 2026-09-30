@@ -1,0 +1,28 @@
+sp: sym=1 str=7 int=7 flt=7 nil=7 ary=7
+sq: sym=7 str=7 int=7 flt=7 nil=7 ary=7
+si: sym=7 str=7 int=7 flt=7 nil=7 ary=7
+ss: sym="d" str="d" int="d" flt="d" nil="d" ary="d"
+ii: sym=7 str=7 int=7 flt=7 nil=7 ary=7
+is: sym="d" str="d" int="d" flt="d" nil="d" ary="d"
+pp: sym=7 str=7 int=7 flt=7 nil=7 ary=7
+sp: 7 7 7 7 7 7 7 7 7
+sq: 7 7 7 7 7 7 7 7 7
+si: 7 7 7 7 7 7 7 7 7
+ss: "d" "d" "d" "d" "d" "d" "d" "d" "d"
+ii: 7 7 7 7 7 7 7 7 7
+is: "d" "d" "d" "d" "d" "d" "d" "d" "d"
+dp: "blk" "blk" "blk" "blk" "blk"
+dq: "blk" "blk" "blk" "blk" "blk"
+dr: "blk" "blk" "blk" "blk" "blk" "blk"
+ds: "blk" "blk" "blk" "blk" "blk" "blk"
+:fresh_after
+{q: 1, r: 2}
+z: 7 7 7 7 7 5
+zs: "d" "d" "d" "d" "d" "z"
+np: nil nil nil nil nil
+nq: nil nil nil nil nil
+ni: nil nil nil nil nil
+ni2: nil nil nil nil nil
+1 1 1 "v"
+:f false 1 7
+[1, 7, 7, 7]
