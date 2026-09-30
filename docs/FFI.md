@@ -371,6 +371,36 @@ struct declarations and callbacks are covered. Not supported yet:
   a `poly_array` or a generic `Hash`; keep them as plain locals or
   wrap them in a class with a `ptr`-typed ivar.
 
+## The ffi gem (`require "ffi"`)
+
+The DSL above is compile-time: every name, type and library is written in
+the source, and each call is a direct C call. Gems written against CRuby's
+`ffi` gem often need more than that -- a library path computed at run
+time, `FFI::Struct` layouts, `MemoryPointer`s, callbacks stored and called
+later, functions attached under names that come from data. For those,
+`require "ffi"` loads the bundled package (`packages/ffi`): the gem's API
+in Ruby over `packages/ffi/sp_ffi.c`, which is the libffi and dlopen glue
+and nothing else.
+
+- A module that `extend`s `FFI::Library` is then the package's: `ffi_lib`,
+  `attach_function`, `callback`, `typedef` and `enum` run when the module
+  body runs, as in CRuby, and a symbol that is missing raises
+  `FFI::NotFoundError` there.
+- A literal `attach_function :name, ...` also gets a method `name` on the
+  module (and as an instance method, for a module that is included) at
+  compile time, since a method's name has to be known then.
+- A call to a function attached under a computed name
+  (`SDL.Init(...)`, or a bare `InitWindow(...)` in a class that includes the
+  module) goes through the table of attached functions at run time.
+- `FFI::Pointer` / `MemoryPointer` / `Buffer`, `FFI::Struct` / `Union`
+  (nested, by value and by reference, arrays in layouts), `FFI::Function`,
+  enums, typedefs, varargs and `FFI::AutoPointer` are provided.
+
+The package needs the system libffi where spinel is built (like openssl, it
+is probed for). Without it, `require "ffi"` stays a no-op and an `extend
+FFI::Library` module is read by the compile-time DSL, which accepts the
+gem's spellings for the literal cases.
+
 ## Examples
 
 Runnable examples live under `examples/ffi/`:

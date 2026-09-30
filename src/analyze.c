@@ -18836,6 +18836,7 @@ void analyze_program(Compiler *c) {
   desugar_body_module_eval(c);           /* self.module_eval do S end in a body -> S */
   desugar_extend_self(c);                /* `extend self` -> a def self.m twin per def */
   desugar_kernel_reopen(c);              /* module Kernel; def m -> a top-level def m */
+  desugar_ffi_library_functions(c);   /* attach_function :f -> def self.f (the ffi gem) */
   /* builtins/enumerable.rb, spliced by the parser: its definitions become
      the receiver-taking top-level functions before any scope is built */
   desugar_builtins(c);
@@ -18983,6 +18984,8 @@ void analyze_program(Compiler *c) {
       }
     }
   }
+
+  rewrite_ffi_dynamic_calls(c);   /* Mod.Name / bare Name with no def -> the attached-function table */
 
   /* `iterator?` is the deprecated alias of `block_given?`; rename it up front
      (implicit/self receiver) so the block-aware marking and codegen below serve

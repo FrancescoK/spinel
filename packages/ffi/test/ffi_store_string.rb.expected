@@ -1,0 +1,11 @@
+put :string: ArgumentError: Cannot set :string fields
+put_pointer: ArgumentError: value is not a pointer
+write_array_of_pointer: ArgumentError: value is not a pointer
+struct :string: ArgumentError: Cannot set :string fields
+inline [:string]: ArgumentError: Cannot set :string fields
+struct :pointer: ArgumentError: value is not a pointer
+Struct.new(String): TypeError: wrong argument type String (expected FFI::AbstractMemory)
+struct :string nil: ArgumentError: Cannot set :string fields
+"ab"
+4
+arg

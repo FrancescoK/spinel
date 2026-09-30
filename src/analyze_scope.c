@@ -2992,6 +2992,10 @@ void register_ffi_decls(Compiler *c) {
     int cp = nt_ref(nt, id, "constant_path");
     const char *mname = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
     if (!mname) continue;
+    /* A module that extends FFI::Library is the ffi gem's: its ffi_lib,
+       attach_function, callback and typedef are runtime calls into the
+       bundled package (packages/ffi), not this compile-time DSL. */
+    if (comp_ffi_library_module(nt, mname)) continue;
     int body = nt_ref(nt, id, "body");
     int sn = 0;
     const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &sn) : NULL;

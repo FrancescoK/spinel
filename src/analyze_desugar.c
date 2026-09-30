@@ -10170,3 +10170,627 @@ int desugar_const_attr_op_assign(Compiler *c) {
   if (changed) comp_grow_node_arrays(c);
   return changed;
 }
+
+/* ---- the ffi gem's attach_function ----
+ *
+ * `attach_function :name, [types], :ret` in a module that extends
+ * FFI::Library defines `name` on the module when the body runs (the bundled
+ * packages/ffi/ffi.rb). A method's name has to exist when the program is
+ * compiled, so each literal-named attach also gets its definition here:
+ *
+ *   def self.name(*__ffi_a, &__ffi_b) = __ffi_call(:name, __ffi_a, __ffi_b)
+ *
+ * __ffi_call is FFI::Library's, reached through the module's `extend`; it
+ * finds the Function the attach made and invokes it. The attach call itself
+ * stays where it was written, so symbol lookup, NotFoundError and a `rescue`
+ * around it behave as in CRuby. `attach_variable :name, ...` gets the reader
+ * and writer the gem defines the same way. */
+
+/* `extend FFI::Library` (or `extend ::FFI::Library`, which an earlier pass
+   has already made relative) among a module or class body's statements. */
+static int body_extends_ffi_library(const NodeTable *nt, int body) {
+  int n = 0;
+  const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+  for (int k = 0; k < n; k++) {
+    int s = st[k];
+    if (nt_kind(nt, s) != NK_CallNode || nt_ref(nt, s, "receiver") >= 0) continue;
+    const char *nm = nt_str(nt, s, "name");
+    if (!nm || !sp_streq(nm, "extend")) continue;
+    int an = nt_ref(nt, s, "arguments");
+    int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+    for (int j = 0; j < ac; j++) {
+      if (nt_kind(nt, av[j]) != NK_ConstantPathNode) continue;
+      const char *leaf = nt_str(nt, av[j], "name");
+      int par = nt_ref(nt, av[j], "parent");
+      const char *pn = par >= 0 ? nt_str(nt, par, "name") : NULL;
+      if (leaf && pn && sp_streq(leaf, "Library") && sp_streq(pn, "FFI")) return 1;
+    }
+  }
+  return 0;
+}
+
+/* Is `mn` (a module/class leaf name) extended with FFI::Library by any of
+   its bodies? Reopenings count: the attach may sit in a later file. */
+/* The bundled package is in the program (it defines FFI__Registry): without
+   it -- no libffi where spinel was built -- `extend FFI::Library` modules are
+   the builtin FFI DSL's. */
+static int ffi_package_loaded(const NodeTable *nt) {
+  static const NodeTable *memo_nt; static int memo;
+  if (memo_nt == nt) return memo;
+  memo_nt = nt; memo = 0;
+  NT_FOREACH_KIND(nt, NK_ModuleNode, m) {
+    int cp = nt_ref(nt, m, "constant_path");
+    const char *n = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (n && sp_streq(n, "FFI__Registry")) { memo = 1; break; }
+  }
+  return memo;
+}
+
+static int ffi_library_module(const NodeTable *nt, const char *mn, int n0) {
+  if (!ffi_package_loaded(nt)) return 0;
+  for (int m = 0; m < n0; m++) {
+    NodeKind k = nt_kind(nt, m);
+    if (k != NK_ModuleNode && k != NK_ClassNode) continue;
+    int cp = nt_ref(nt, m, "constant_path");
+    const char *nm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (nm && sp_streq(nm, mn) && body_extends_ffi_library(nt, nt_ref(nt, m, "body"))) return 1;
+  }
+  return 0;
+}
+
+static const char *ffi_literal_name(const NodeTable *nt, int node) {
+  if (node < 0) return NULL;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_SymbolNode) return nt_str(nt, node, "value");
+  if (k == NK_StringNode) {
+    const char *s = nt_str(nt, node, "content");
+    return s ? s : nt_str(nt, node, "unescaped");
+  }
+  return NULL;
+}
+
+/* Collect the literal names of attach_function / attach_variable calls made
+   directly by the module body -- including inside begin/rescue, if/unless
+   and similar statement wrappers, but not inside method bodies, blocks or
+   nested modules. kind: 0 function, 1 variable. */
+typedef struct { char *name; int kind; int at; } FfiAttach;
+static void ffi_collect_attaches(const NodeTable *nt, int node, FfiAttach **out, int *n, int *cap) {
+  if (node < 0) return;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_BlockNode ||
+      k == NK_LambdaNode || k == NK_SingletonClassNode)
+    return;
+  if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, node, "name");
+    int r = nt_ref(nt, node, "receiver");
+    if (nm && (r < 0 || nt_kind(nt, r) == NK_SelfNode) &&
+        (sp_streq(nm, "attach_function") || sp_streq(nm, "attach_variable"))) {
+      int an = nt_ref(nt, node, "arguments");
+      int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+      const char *fname = ac > 0 ? ffi_literal_name(nt, av[0]) : NULL;
+      if (fname) {
+        if (*n == *cap) {
+          *cap = *cap ? *cap * 2 : 16;
+          *out = realloc(*out, sizeof(FfiAttach) * (size_t)*cap);
+          if (!*out) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        }
+        (*out)[*n].name = strdup(fname);
+        (*out)[*n].kind = sp_streq(nm, "attach_variable") ? 1 : 0;
+        (*out)[*n].at = node;
+        (*n)++;
+      }
+      return;
+    }
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) ffi_collect_attaches(nt, nt_ref_at(nt, node, i), out, n, cap);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0;
+    const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++) ffi_collect_attaches(nt, ids[j], out, n, cap);
+  }
+}
+
+static int ffi_local_read(NodeTable *nt, int like, const char *name) {
+  int rd = fwd_new_node_like(nt, like, "LocalVariableReadNode");
+  if (rd < 0) return -1;
+  nt_node_set_str(nt, rd, "name", name);
+  nt_node_set_int(nt, rd, "depth", 0);
+  return rd;
+}
+
+static int ffi_symbol(NodeTable *nt, int like, const char *name) {
+  int sy = fwd_new_node_like(nt, like, "SymbolNode");
+  if (sy < 0) return -1;
+  nt_node_set_str(nt, sy, "value", name);
+  nt_node_set_str(nt, sy, "unescaped", name);
+  return sy;
+}
+
+/* def self.<mname>(<params>) = <helper>(:<key>, <args...>) */
+static int ffi_forwarding_def(NodeTable *nt, int like, const char *mname, const char *helper,
+                              const char *key, int with_rest, int with_block, int with_value) {
+  int def = fwd_new_node_like(nt, like, "DefNode");
+  int self = fwd_new_node_like(nt, like, "SelfNode");
+  int body = fwd_new_node_like(nt, like, "StatementsNode");
+  int call = fwd_new_node_like(nt, like, "CallNode");
+  int args = fwd_new_node_like(nt, like, "ArgumentsNode");
+  if (def < 0 || self < 0 || body < 0 || call < 0 || args < 0) return -1;
+  int av[4]; int ac = 0;
+  av[ac++] = ffi_symbol(nt, like, key);
+  if (with_rest || with_block || with_value) {
+    int ps = fwd_new_node_like(nt, like, "ParametersNode");
+    if (ps < 0) return -1;
+    if (with_rest) {
+      int rp = fwd_new_node_like(nt, like, "RestParameterNode");
+      nt_node_set_str(nt, rp, "name", "ffi_a__");
+      nt_node_set_ref(nt, ps, "rest", rp);
+      av[ac++] = ffi_local_read(nt, like, "ffi_a__");
+    }
+    if (with_value) {
+      int rq = fwd_new_node_like(nt, like, "RequiredParameterNode");
+      nt_node_set_str(nt, rq, "name", "ffi_v__");
+      nt_node_set_arr(nt, ps, "requireds", &rq, 1);
+      av[ac++] = ffi_local_read(nt, like, "ffi_v__");
+    }
+    if (with_block) {
+      int bp = fwd_new_node_like(nt, like, "BlockParameterNode");
+      nt_node_set_str(nt, bp, "name", "ffi_b__");
+      nt_node_set_ref(nt, ps, "block", bp);
+      av[ac++] = ffi_local_read(nt, like, "ffi_b__");
+    }
+    nt_node_set_ref(nt, def, "parameters", ps);
+  }
+  nt_node_set_arr(nt, args, "arguments", av, ac);
+  nt_node_set_str(nt, call, "name", helper);
+  nt_node_set_ref(nt, call, "arguments", args);
+  nt_node_set_arr(nt, body, "body", &call, 1);
+  nt_node_set_str(nt, def, "name", mname);
+  nt_node_set_ref(nt, def, "receiver", self);
+  nt_node_set_ref(nt, def, "body", body);
+  return def;
+}
+
+/* The ffi gem's builtin type names: a parameter spelled with one of these
+   is never a callback, so it never takes the call's block. */
+static int ffi_builtin_type_name(const char *n) {
+  static const char *const T[] = {
+    "void", "bool", "char", "uchar", "short", "ushort", "int", "uint", "long", "ulong",
+    "long_long", "ulong_long", "float", "double", "long_double", "pointer", "string", "strptr",
+    "buffer_in", "buffer_out", "buffer_inout", "int8", "uint8", "int16", "uint16", "int32",
+    "uint32", "int64", "uint64", "float32", "float64", "size_t", "ssize_t", "intptr_t",
+    "uintptr_t", "ptrdiff_t", "off_t", "time_t", "pid_t", "uid_t", "gid_t", "mode_t",
+    "socklen_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t", "int8_t", "int16_t",
+    "int32_t", "int64_t", NULL };
+  for (int i = 0; T[i]; i++) if (sp_streq(T[i], n)) return 1;
+  return 0;
+}
+
+/* def self.<mname>(__ffi_a0, ..., [&__ffi_b]) = __ffi_call(:<key>, [__ffi_a0, ...], __ffi_b)
+   -- the fixed-arity form, for an attach whose parameter list is a literal:
+   an arity the compiler knows is one `method(:name)` and every other
+   dispatch path can bind (a *rest method is not). */
+static int ffi_fixed_def(NodeTable *nt, int like, const char *mname, const char *key, int nparams, int with_block) {
+  int def = fwd_new_node_like(nt, like, "DefNode");
+  int self = fwd_new_node_like(nt, like, "SelfNode");
+  int body = fwd_new_node_like(nt, like, "StatementsNode");
+  int call = fwd_new_node_like(nt, like, "CallNode");
+  int args = fwd_new_node_like(nt, like, "ArgumentsNode");
+  int arr = fwd_new_node_like(nt, like, "ArrayNode");
+  int ps = fwd_new_node_like(nt, like, "ParametersNode");
+  if (def < 0 || self < 0 || body < 0 || call < 0 || args < 0 || arr < 0 || ps < 0) return -1;
+  int *rq = malloc(sizeof(int) * (size_t)(nparams > 0 ? nparams : 1));
+  int *el = malloc(sizeof(int) * (size_t)(nparams > 0 ? nparams : 1));
+  /* a trailing callback may come as the call's block instead: it is then
+     optional, and __ffi_call puts the block in its place */
+  int nreq = with_block && nparams > 0 ? nparams - 1 : nparams;
+  for (int i = 0; i < nparams; i++) {
+    char pn[32]; snprintf(pn, sizeof pn, "ffi_a%d__", i);
+    if (i < nreq) {
+      rq[i] = fwd_new_node_like(nt, like, "RequiredParameterNode");
+      nt_node_set_str(nt, rq[i], "name", pn);
+    }
+    else {
+      int op = fwd_new_node_like(nt, like, "OptionalParameterNode");
+      int nilv = fwd_new_node_like(nt, like, "NilNode");
+      nt_node_set_str(nt, op, "name", pn);
+      nt_node_set_ref(nt, op, "value", nilv);
+      nt_node_set_arr(nt, ps, "optionals", &op, 1);
+    }
+    el[i] = ffi_local_read(nt, like, pn);
+  }
+  nt_node_set_arr(nt, ps, "requireds", rq, nreq);
+  nt_node_set_arr(nt, arr, "elements", el, nparams);
+  free(rq); free(el);
+  int av[3]; int ac = 0;
+  av[ac++] = ffi_symbol(nt, like, key);
+  av[ac++] = arr;
+  if (with_block) {
+    int bp = fwd_new_node_like(nt, like, "BlockParameterNode");
+    nt_node_set_str(nt, bp, "name", "ffi_b__");
+    nt_node_set_ref(nt, ps, "block", bp);
+    av[ac++] = ffi_local_read(nt, like, "ffi_b__");
+  }
+  nt_node_set_ref(nt, def, "parameters", ps);
+  nt_node_set_arr(nt, args, "arguments", av, ac);
+  nt_node_set_str(nt, call, "name", "__ffi_call");
+  nt_node_set_ref(nt, call, "arguments", args);
+  nt_node_set_arr(nt, body, "body", &call, 1);
+  nt_node_set_str(nt, def, "name", mname);
+  nt_node_set_ref(nt, def, "receiver", self);
+  nt_node_set_ref(nt, def, "body", body);
+  return def;
+}
+
+/* The literal parameter list of an attach_function call, or -1: its element
+   count in *n, and whether the last element could be a callback. */
+static int ffi_attach_params(const NodeTable *nt, int call, int *n, int *maybe_cb) {
+  int an = nt_ref(nt, call, "arguments");
+  int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  if (ac < 3) return -1;
+  int arr = nt_kind(nt, av[1]) == NK_ArrayNode ? av[1] : (ac >= 4 && nt_kind(nt, av[2]) == NK_ArrayNode ? av[2] : -1);
+  if (arr < 0) return -1;
+  int en = 0; const int *els = nt_arr(nt, arr, "elements", &en);
+  for (int i = 0; i < en; i++) {
+    if (nt_kind(nt, els[i]) == NK_SplatNode) return -1;
+    const char *v = nt_kind(nt, els[i]) == NK_SymbolNode ? nt_str(nt, els[i], "value") : NULL;
+    if (v && sp_streq(v, "varargs")) return -1;
+  }
+  *n = en;
+  *maybe_cb = 0;
+  if (en > 0) {
+    int last = els[en - 1];
+    const char *v = nt_kind(nt, last) == NK_SymbolNode ? nt_str(nt, last, "value") : NULL;
+    *maybe_cb = !(v && ffi_builtin_type_name(v));
+  }
+  return arr;
+}
+
+/* does the body already define `def self.<name>`? */
+static int body_defines_smethod(const NodeTable *nt, const int *st, int n, const char *name) {
+  for (int k = 0; k < n; k++) {
+    if (nt_kind(nt, st[k]) != NK_DefNode) continue;
+    int r = nt_ref(nt, st[k], "receiver");
+    const char *dn = nt_str(nt, st[k], "name");
+    if (r >= 0 && nt_kind(nt, r) == NK_SelfNode && dn && sp_streq(dn, name)) return 1;
+  }
+  return 0;
+}
+
+int comp_ffi_library_module(const NodeTable *nt, const char *mn) {
+  return mn && ffi_library_module(nt, mn, nt->count);
+}
+
+int desugar_ffi_library_functions(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  int changed = 0;
+  for (int m = 0; m < n0; m++) {
+    NodeKind mk = nt_kind(nt, m);
+    if (mk != NK_ModuleNode && mk != NK_ClassNode) continue;
+    int cp = nt_ref(nt, m, "constant_path");
+    const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    int body = nt_ref(nt, m, "body");
+    if (!mn || body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    if (!ffi_library_module(nt, mn, n0)) continue;
+    FfiAttach *at = NULL; int na = 0, cap = 0;
+    ffi_collect_attaches(nt, body, &at, &na, &cap);
+    if (na == 0) { free(at); continue; }
+    int n = 0;
+    const int *st = nt_arr(nt, body, "body", &n);
+    int *out = malloc(sizeof(int) * (size_t)(n + na * 2 + 1));
+    if (!out) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memcpy(out, st, sizeof(int) * (size_t)n);
+    int no = n;
+    for (int i = 0; i < na; i++) {
+      int dup = 0;
+      for (int j = 0; j < i; j++) if (at[j].kind == at[i].kind && sp_streq(at[j].name, at[i].name)) dup = 1;
+      if (dup || body_defines_smethod(nt, st, n, at[i].name)) continue;
+      if (at[i].kind == 0) {
+        int np = 0, mcb = 0;
+        int d = ffi_attach_params(nt, at[i].at, &np, &mcb) >= 0
+                  ? ffi_fixed_def(nt, at[i].at, at[i].name, at[i].name, np, mcb)
+                  : ffi_forwarding_def(nt, at[i].at, at[i].name, "__ffi_call", at[i].name, 1, 1, 0);
+        if (d >= 0) out[no++] = d;
+      }
+      else {
+        char wn[512];
+        snprintf(wn, sizeof wn, "%s=", at[i].name);
+        int g = ffi_forwarding_def(nt, at[i].at, at[i].name, "__ffi_var_get", at[i].name, 0, 0, 0);
+        int s = ffi_forwarding_def(nt, at[i].at, wn, "__ffi_var_set", at[i].name, 0, 0, 1);
+        if (g >= 0) out[no++] = g;
+        if (s >= 0) out[no++] = s;
+      }
+    }
+    nt_node_set_arr(nt, body, "body", out, no);
+    free(out);
+    for (int i = 0; i < na; i++) free(at[i].name);
+    free(at);
+    changed = 1;
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
+/* ---- calls into an FFI library that no definition names ----
+ *
+ * Binding generators attach functions whose names come from data -- a table
+ * of symbols walked in a method (sdl2-bindings, raylib-bindings, opengl), or
+ * a name computed from another (raylib's snake_case mode) -- and programs
+ * call them on the module (`SDL.Init(...)`) or, having included it, bare
+ * (`InitWindow(...)`). No `def` of those names exists to compile, so a call
+ * that resolves to nothing is sent through the attached-function table at
+ * run time instead:
+ *
+ *   Mod.Name(args)  ->  Mod.__ffi_call(:Name, [args])        (block kept)
+ *   Name(args)      ->  FFI__Registry.__ffi_dispatch([:Mod, ...], :Name, [args])
+ *                                                           (block kept)
+ *
+ * The receiver form applies to a module that extends FFI::Library and has
+ * no class method of the name; the bare form to a call no method in the
+ * program defines, made where such a module is in reach -- inside its own
+ * methods, or in a class (or the top level) that includes it. Both answer
+ * NoMethodError at run time when nothing was attached under the name. */
+static int ffi_kernel_name(const char *n) {
+  static const char *const K[] = {
+    "puts", "print", "p", "pp", "printf", "sprintf", "format", "gets", "require", "require_relative",
+    "load", "raise", "fail", "loop", "lambda", "proc", "rand", "srand", "sleep", "exit", "exit!", "abort",
+    "at_exit", "catch", "throw", "binding", "block_given?", "iterator?", "caller", "caller_locations",
+    "freeze", "frozen?", "Integer", "Float", "String", "Array", "Hash", "Rational", "Complex",
+    "system", "exec", "spawn", "fork", "trap", "open", "select", "warn", "autoload", "`", "putc",
+    "readline", "readlines", "__method__", "__dir__", "__callee__", "define_method", "attr_accessor",
+    "attr_reader", "attr_writer", "attr", "include", "extend", "prepend", "private", "public",
+    "protected", "module_function", "alias_method", "tap", "then", "yield_self", "instance_variable_get",
+    "instance_variable_set", "instance_variables", "instance_variable_defined?", "respond_to?", "send",
+    "public_send", "__send__", "method", "methods", "is_a?", "kind_of?", "instance_of?", "nil?",
+    "class", "object_id", "hash", "inspect", "to_s", "dup", "clone", "itself", "display",
+    "private_constant", "public_constant", "const_get", "const_set", "const_defined?", "constants",
+    "instance_eval", "instance_exec", "class_eval", "module_eval", "class_exec", "define_singleton_method",
+    "singleton_class", "extend_object", "new", "allocate", "superclass", "name", "ancestors",
+    "private_class_method", "public_class_method", "ffi_lib", "ffi_lib_flags", "ffi_convention",
+    "attach_function", "attach_variable", "callback", "typedef", "enum", "bitmask", "find_type",
+    "enum_type", "enum_value", "ffi_libraries", "__ffi_call", "equal?", "eql?", "==", "!=", "!",
+    "=~", "===", "<=>", "instance_variables", "local_variables", "global_variables", "sprintf",
+    "gsub", "sub", "chomp", "chop", "test", "set_trace_func", "trace_var", "untrace_var",
+    "ObjectSpace", "GC", "binding", "private_method_defined?", "method_defined?",
+    "public_method_defined?", "instance_method", "instance_methods", "remove_method", "undef_method",
+    "pack", "unpack", "unpack1", "exit_status", "Pathname", "BigDecimal", "URI",
+    NULL };
+  for (int i = 0; K[i]; i++) if (sp_streq(K[i], n)) return 1;
+  return 0;
+}
+
+static int ffi_cls_is_lib(Compiler *c, int ci) {
+  if (ci < 0 || ci >= c->nclasses) return 0;
+  const char *nm = c->classes[ci].name;
+  if (!nm) return 0;
+  const char *leaf = strrchr(nm, ':');
+  leaf = leaf ? leaf + 1 : nm;
+  return comp_ffi_library_module(c->nt, leaf);
+}
+
+/* The FFI library modules a bare call in scope `s` reaches, in the order
+   Ruby's method lookup meets them: the module itself (its own class methods
+   and body), those included into the scope's class chain (the latest include
+   first, a class before its superclass), then those included at the top
+   level. At most `max` are written to `out`; the count is returned. */
+static void ffi_reach_add(Compiler *c, int k, int *out, int *n, int max) {
+  if (!ffi_cls_is_lib(c, k)) return;
+  for (int q = 0; q < *n; q++) if (out[q] == k) return;
+  if (*n < max) out[(*n)++] = k;
+}
+
+static int ffi_bare_reach(Compiler *c, Scope *s, int *out, int max) {
+  int n = 0;
+  int ci = s ? s->class_id : -1;
+  if (ci >= 0) ffi_reach_add(c, ci, out, &n, max);
+  for (int k = ci; k >= 0; k = c->classes[k].parent) {
+    ClassInfo *ki = &c->classes[k];
+    for (int j = ki->nincluded_mods - 1; j >= 0; j--) ffi_reach_add(c, ki->included_mods[j], out, &n, max);
+  }
+  for (int j = c->ntoplevel_includes - 1; j >= 0; j--)
+    ffi_reach_add(c, c->toplevel_includes[j], out, &n, max);
+  return n;
+}
+
+/* The call's arguments (and nothing else) as one Array literal. */
+static int ffi_args_array(NodeTable *nt, int call) {
+  int arr = fwd_new_node_like(nt, call, "ArrayNode");
+  if (arr < 0) return -1;
+  int an = nt_ref(nt, call, "arguments");
+  int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  int *cp = ac > 0 ? malloc(sizeof(int) * (size_t)ac) : NULL;
+  if (ac > 0 && !cp) return -1;
+  if (ac > 0) memcpy(cp, av, sizeof(int) * (size_t)ac);
+  nt_node_set_arr(nt, arr, "elements", cp, ac);
+  free(cp);
+  return arr;
+}
+
+/* Stamp every node of a class body with the class, stopping at method
+   bodies and nested classes (which have a self of their own). */
+static void ffi_mark_body(const NodeTable *nt, int node, int ci, int *out, int n0) {
+  if (node < 0 || node >= n0) return;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return;
+  out[node] = ci;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) ffi_mark_body(nt, nt_ref_at(nt, node, i), ci, out, n0);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0;
+    const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++) ffi_mark_body(nt, ids[j], ci, out, n0);
+  }
+}
+
+/* `class << self; attr_accessor :logger; def x; end; end` inside the body of
+   class ci: its singleton methods, which are not (yet) cmethods here. */
+static int ffi_sclass_defines(Compiler *c, int ci, const char *name) {
+  const NodeTable *nt = c->nt;
+  if (ci < 0 || !name) return 0;
+  size_t nl = strlen(name);
+  for (int m = 0; m < nt->count; m++) {
+    NodeKind mk = nt_kind(nt, m);
+    if (mk != NK_ClassNode && mk != NK_ModuleNode) continue;
+    int cp = nt_ref(nt, m, "constant_path");
+    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (!cn || comp_class_index(c, cn) != ci) continue;
+    int body = nt_ref(nt, m, "body");
+    int bn = 0; const int *bs = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    for (int k = 0; k < bn; k++) {
+      if (nt_kind(nt, bs[k]) != NK_SingletonClassNode) continue;
+      int ex = nt_ref(nt, bs[k], "expression");
+      if (ex < 0 || nt_kind(nt, ex) != NK_SelfNode) continue;
+      int sb = nt_ref(nt, bs[k], "body");
+      int sn = 0; const int *ss = sb >= 0 ? nt_arr(nt, sb, "body", &sn) : NULL;
+      for (int q = 0; q < sn; q++) {
+        NodeKind qk = nt_kind(nt, ss[q]);
+        const char *qn = nt_str(nt, ss[q], "name");
+        if (!qn) continue;
+        if (qk == NK_DefNode && sp_streq(qn, name)) return 1;
+        if (qk != NK_CallNode || nt_ref(nt, ss[q], "receiver") >= 0) continue;
+        int rd = sp_streq(qn, "attr_reader") || sp_streq(qn, "attr_accessor") || sp_streq(qn, "attr");
+        int wr = sp_streq(qn, "attr_writer") || sp_streq(qn, "attr_accessor");
+        if (!rd && !wr) continue;
+        int an = nt_ref(nt, ss[q], "arguments");
+        int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+        for (int a = 0; a < ac; a++) {
+          const char *sym = ffi_literal_name(nt, av[a]);
+          if (!sym) continue;
+          if (rd && sp_streq(sym, name)) return 1;
+          if (wr && strlen(sym) + 1 == nl && strncmp(sym, name, nl - 1) == 0 && name[nl - 1] == '=') return 1;
+        }
+      }
+    }
+  }
+  return 0;
+}
+
+int rewrite_ffi_dynamic_calls(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int any_lib = 0;
+  for (int k = 0; k < c->nclasses && !any_lib; k++) if (ffi_cls_is_lib(c, k)) any_lib = 1;
+  if (!any_lib) return 0;
+  int n0 = nt->count;
+  int first_new = n0;
+  int changed = 0;
+  /* the class whose body (not one of its methods) each node sits in */
+  int *body_cls = malloc(sizeof(int) * (size_t)(n0 > 0 ? n0 : 1));
+  if (body_cls) {
+    for (int i = 0; i < n0; i++) body_cls[i] = -1;
+    for (int m = 0; m < n0; m++) {
+      NodeKind mk = nt_kind(nt, m);
+      if (mk != NK_ClassNode && mk != NK_ModuleNode) continue;
+      int cp = nt_ref(nt, m, "constant_path");
+      int ci = cp >= 0 ? comp_class_index(c, nt_str(nt, cp, "name")) : -1;
+      if (ci < 0) continue;
+      ffi_mark_body(nt, nt_ref(nt, m, "body"), ci, body_cls, n0);
+    }
+  }
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *name = nt_str(nt, id, "name");
+    if (!name || !*name || ffi_kernel_name(name)) continue;
+    if (strncmp(name, "__ffi", 5) == 0) continue;
+    /* the compile-time FFI and native-binding declarations are not calls */
+    if (strncmp(name, "ffi_", 4) == 0 || strncmp(name, "native_", 7) == 0) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    int sc = id < c->node_cap ? c->nscope[id] : 0;
+    Scope *s = (sc >= 0 && sc < c->nscopes) ? &c->scopes[sc] : NULL;
+    if (recv >= 0) {
+      NodeKind rk = nt_kind(nt, recv);
+      if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) continue;
+      int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+      if (!ffi_cls_is_lib(c, ci)) continue;
+      if (comp_cmethod_in_chain(c, ci, name, NULL) >= 0) continue;
+      if (ffi_sclass_defines(c, ci, name)) continue;
+      /* a nested class or constant written as a call (`Mod::Name`) is not one */
+      if (name[strlen(name) - 1] == '=') continue;
+      int arr = ffi_args_array(nt, id);
+      int sym = ffi_symbol(nt, id, name);
+      int args = fwd_new_node_like(nt, id, "ArgumentsNode");
+      if (arr < 0 || sym < 0 || args < 0) continue;
+      int av[2] = { sym, arr };
+      nt_node_set_arr(nt, args, "arguments", av, 2);
+      nt_node_set_ref(nt, id, "arguments", args);
+      nt_node_set_str(nt, id, "name", "__ffi_call");
+      changed = 1;
+    }
+    else {
+      if (comp_method_index(c, name) >= 0) continue;
+      int bk = body_cls ? body_cls[id] : -1;
+      int obj = comp_class_index(c, "Object");
+      if (bk >= 0) {
+        /* a class-body statement: self is the class */
+        if (comp_cmethod_in_chain(c, bk, name, NULL) >= 0) continue;
+        if (ffi_sclass_defines(c, bk, name)) continue;
+      }
+      else if (s && s->is_cmethod && s->class_id >= 0) {
+        if (comp_cmethod_in_chain(c, s->class_id, name, NULL) >= 0) continue;
+        if (ffi_sclass_defines(c, s->class_id, name)) continue;
+      }
+      else if (s && s->class_id >= 0) {
+        if (comp_method_in_chain(c, s->class_id, name, NULL) >= 0 ||
+            comp_reader_in_chain(c, s->class_id, name, NULL)) continue;
+      }
+      if (obj >= 0 && comp_method_in_chain(c, obj, name, NULL) >= 0) continue;
+      Scope *reach_s = s;
+      Scope body_s;
+      if (bk >= 0) { memset(&body_s, 0, sizeof body_s); body_s.class_id = bk; reach_s = &body_s; }
+      int libs[32];
+      int nlibs = ffi_bare_reach(c, reach_s, libs, 32);
+      if (nlibs == 0) continue;
+      /* a bare word could be a local only the parser knew about; those are
+         LocalVariableReadNodes already, so a CallNode here is a call */
+      int owners = fwd_new_node_like(nt, id, "ArrayNode");
+      int osyms[32], ok = owners >= 0;
+      for (int j = 0; j < nlibs && ok; j++) {
+        const char *rn = class_ruby_name(c, libs[j]);
+        osyms[j] = rn ? ffi_symbol(nt, id, rn) : -1;
+        if (osyms[j] < 0) ok = 0;
+      }
+      if (!ok) continue;
+      nt_node_set_arr(nt, owners, "elements", osyms, nlibs);
+      int arr = ffi_args_array(nt, id);
+      int sym = ffi_symbol(nt, id, name);
+      int args = fwd_new_node_like(nt, id, "ArgumentsNode");
+      int reg = fwd_new_node_like(nt, id, "ConstantReadNode");
+      if (arr < 0 || sym < 0 || args < 0 || reg < 0) continue;
+      nt_node_set_str(nt, reg, "name", "FFI__Registry");
+      int av[3] = { owners, sym, arr };
+      nt_node_set_arr(nt, args, "arguments", av, 3);
+      nt_node_set_ref(nt, id, "arguments", args);
+      nt_node_set_ref(nt, id, "receiver", reg);
+      nt_node_set_str(nt, id, "name", "__ffi_dispatch");
+      changed = 1;
+    }
+  }
+  free(body_cls);
+  if (changed) {
+    comp_grow_node_arrays(c);
+    /* the new nodes belong to the scope of the call they were made for:
+       each was created right after the node it annotates, so walk the
+       parents' refs to stamp them */
+    for (int id = 0; id < n0; id++) {
+      if (nt_kind(nt, id) != NK_CallNode) continue;
+      int sc = c->nscope[id];
+      int an = nt_ref(nt, id, "arguments");
+      if (an >= first_new) {
+        c->nscope[an] = sc;
+        int ac = 0; const int *av = nt_arr(nt, an, "arguments", &ac);
+        for (int j = 0; j < ac; j++) {
+          if (av[j] < first_new) continue;
+          c->nscope[av[j]] = sc;
+          /* the owners Array's Symbols are new too */
+          int ec = 0; const int *ev = nt_kind(nt, av[j]) == NK_ArrayNode ? nt_arr(nt, av[j], "elements", &ec) : NULL;
+          for (int e = 0; e < ec; e++) if (ev[e] >= first_new) c->nscope[ev[e]] = sc;
+        }
+      }
+      int r = nt_ref(nt, id, "receiver");
+      if (r >= first_new) c->nscope[r] = sc;
+    }
+  }
+  return changed;
+}
