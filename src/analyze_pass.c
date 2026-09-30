@@ -5,6 +5,7 @@ int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
 int is_fresh_array(Compiler *c, int v);
 static int widen_nested_literals(Compiler *c, int recv, int is_push, int is_splice, TyKind kt, TyKind vt);
 int kwh_only_spreads(const NodeTable *nt, int kwh);
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -2211,6 +2212,131 @@ static void widen_ivar_hash_literals(Compiler *c, const LWIndex *ivw, int cls, c
   }
 }
 
+int a_proc_params_node(Compiler *c, int create);
+
+static int proc_literal_escapes_as_arg(Compiler *c, int lit);
+
+/* The names that run a Proc: `.call`, `.()` (which is `call`), `[]` and
+   `.yield`. */
+static int proc_call_name(const char *cn) {
+  return cn && (sp_streq(cn, "call") || sp_streq(cn, "[]") || sp_streq(cn, "yield"));
+}
+
+/* An index of the proc and lambda literals, built once per node table (as
+   ple_build is): which literal written in a scope has a parameter of a name,
+   and whether each literal's calls are all in sight. The push-evidence pass
+   asks it at every push or element write into an unassigned local, every
+   round, where a walk of the whole table each time made a program of many
+   such literals quadratic. A (scope, name) key holds the first literal with
+   that parameter, a local's reads and its reads that call a Proc. */
+typedef struct { const Scope *s; const char *nm; int lit, reads, calls; } PplEnt;
+static PplEnt *ppl_tab = NULL; static int ppl_cap = 0;
+static signed char *ppl_sight = NULL;   /* per literal: 1 when its calls are all in sight */
+static const NodeTable *ppl_nt = NULL; static int ppl_ntc = -1;
+
+/* The entry of (s, nm): made when `add`, else NULL when there is none. The
+   build adds at most one entry per node, into a table twice that size. */
+static PplEnt *ppl_slot_at(const Scope *s, const char *nm, int add) {
+  unsigned h = 2166136261u;
+  for (const char *q = nm; *q; q++) h = (h ^ (unsigned char)*q) * 16777619u;
+  h ^= (unsigned)((uintptr_t)s >> 4);
+  int j = (int)(h & (unsigned)(ppl_cap - 1));
+  while (ppl_tab[j].nm && !(ppl_tab[j].s == s && sp_streq(ppl_tab[j].nm, nm))) j = (j + 1) & (ppl_cap - 1);
+  if (!ppl_tab[j].nm) {
+    if (!add) return NULL;
+    ppl_tab[j].s = s; ppl_tab[j].nm = nm; ppl_tab[j].lit = -1;
+  }
+  return &ppl_tab[j];
+}
+static PplEnt *ppl_slot(const Scope *s, const char *nm) { return ppl_slot_at(s, nm, 1); }
+
+static void ppl_build(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int n = nt->count;
+  free(ppl_tab); free(ppl_sight);
+  ppl_cap = 64;
+  while (ppl_cap < 2 * n + 2) ppl_cap *= 2;
+  ppl_tab = calloc((size_t)ppl_cap, sizeof *ppl_tab);
+  ppl_sight = calloc((size_t)(n > 0 ? n : 1), 1);
+  int *recv_call = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+  int *nw = calloc((size_t)(n > 0 ? n : 1), sizeof(int));
+  PplEnt **wl = calloc((size_t)(n > 0 ? n : 1), sizeof(PplEnt *));
+  if (!ppl_tab || !ppl_sight || !recv_call || !nw || !wl) {
+    free(recv_call); free(nw); free(wl); ppl_nt = NULL; return;
+  }
+  for (int i = 0; i < n; i++) recv_call[i] = -1;
+  for (int id = 0; id < n; id++) {
+    if (!is_proc_create(c, id)) continue;
+    int pn = a_proc_params_node(c, id);
+    if (pn >= 0 && nt_kind(nt, pn) == NK_BlockParametersNode) pn = nt_ref(nt, pn, "parameters");
+    if (pn < 0) continue;
+    Scope *sc = comp_scope_of(c, id);
+    static const char *const lists[] = { "requireds", "optionals", "posts" };
+    for (int l = 0; l < 3; l++) {
+      int pc = 0; const int *ps = nt_arr(nt, pn, lists[l], &pc);
+      for (int k = 0; k < pc; k++) {
+        const char *p = nt_str(nt, ps[k], "name");
+        if (!p) continue;
+        PplEnt *e = ppl_slot(sc, p);
+        if (e->lit < 0) e->lit = id;
+      }
+    }
+  }
+  NT_FOREACH_KIND(nt, NK_LocalVariableReadNode, r) {
+    const char *rn = nt_str(nt, r, "name");
+    if (rn) ppl_slot(comp_scope_of(c, r), rn)->reads++;
+  }
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    int r = nt_ref(nt, id, "receiver");
+    if (r < 0 || r >= n) continue;
+    const char *cn = nt_str(nt, id, "name");
+    if (recv_call[r] < 0) recv_call[r] = proc_call_name(cn);
+    if (nt_kind(nt, r) != NK_LocalVariableReadNode || !proc_call_name(cn)) continue;
+    const char *rn = nt_str(nt, r, "name");
+    if (rn) ppl_slot(comp_scope_of(c, r), rn)->calls++;
+  }
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+    int v = nt_ref(nt, w, "value");
+    const char *wn = nt_str(nt, w, "name");
+    if (v < 0 || v >= n || !wn || !is_proc_create(c, v)) continue;
+    nw[v]++;
+    wl[v] = ppl_slot(comp_scope_of(c, w), wn);
+  }
+  /* in sight: the literal is the receiver of its one call and that call runs
+     it, or it is the value of one local every read of which runs it */
+  for (int id = 0; id < n; id++) {
+    if (!is_proc_create(c, id) || proc_literal_escapes_as_arg(c, id)) continue;
+    if (recv_call[id] >= 0) ppl_sight[id] = (signed char)recv_call[id];
+    else ppl_sight[id] = nw[id] == 1 && wl[id]->reads == wl[id]->calls;
+  }
+  free(recv_call); free(nw); free(wl);
+  ppl_nt = nt; ppl_ntc = n;
+}
+
+static int ppl_ready(Compiler *c) {
+  if (ppl_nt != c->nt || ppl_ntc != c->nt->count) ppl_build(c);
+  return ppl_nt != NULL;
+}
+
+/* The proc or lambda literal written in scope `sc` (`proc { |a| }`,
+   `lambda { |a| }`, `Proc.new { |a| }`, `->(a) { }`) that has a parameter
+   `nm`, held as a local of that scope; -1 if none. */
+static int local_proc_literal_param_of(Compiler *c, Scope *sc, const char *nm) {
+  PplEnt *e = ppl_ready(c) && nm ? ppl_slot_at(sc, nm, 0) : NULL;
+  return e ? e->lit : -1;
+}
+
+/* Whether every call of proc literal `lit` is in sight of the binders: the
+   literal is the receiver of its one call (`->(a) { }.call(x)`), or the value
+   of one local every read of which calls it (`f.call(x)`, `f.(x)`, `f[x]`,
+   `f.yield(x)`: proc_call_name). Anything else -- passed on, returned,
+   stored, read into another local, curried -- is called where the binders
+   cannot look. A call on the literal that does not run it (`.curry`,
+   `.itself`) answers a Proc its caller calls out of sight. */
+static int proc_literal_calls_in_sight(Compiler *c, int lit) {
+  return ppl_ready(c) && lit >= 0 && lit < ppl_ntc && ppl_sight[lit];
+}
+
 /* The `@h ||= {}` / `h ||= {}` a container write's receiver evaluates to:
    the receiver itself, parenthesized or not, or the tail of a zero-argument
    self-getter (`def tbl = (@h ||= {})`; `tbl[k] = v`). -1 otherwise. */
@@ -3521,6 +3647,29 @@ int infer_write_types(Compiler *c) {
         /* while the fixpoint runs; the second stage (g_infer_optimistic
            cleared) still types a slot whose array evidence never arrived */
         if (g_infer_optimistic && has_unsettled_write) continue;
+      }
+      /* A proc or lambda literal's parameter holds what the Proc's caller
+         passes, and that caller can be out of sight: the Proc handed to a
+         method that calls it (`def fw(f, s) = f.call(s)`), or called through
+         another local. A push or an element write in the body then says
+         only that the value answers `<<` or `[]=`, which a String does as
+         well as an Array. Read as "a is a String array", `proc { |a| a <<
+         "x" }` laundered the String such a call passed out of the slot as an
+         array, and the push aborted; `a[0] = "z"` crashed the same way. Boxed,
+         the operator takes whichever arrives. A literal whose every call is in
+         sight keeps the evidence: those calls bind the parameter as well.
+         Set outright, as a plain local is reset each round and the stash
+         compare sees the change. */
+      if (is_push || is_idx_write) {
+        int assigned = 0;
+        for (int _r = lw_index_first(&lw_ix, rnm, (int)(lsc - c->scopes)); _r >= 0 && !assigned; _r = lw_ix.next[_r]) {
+          int w = lw_ix.node[_r];
+          const char *wn = nt_str(nt, w, "name");
+          assigned = nt_kind(nt, w) == NK_LocalVariableWriteNode && wn && sp_streq(wn, rnm) &&
+                     comp_scope_of(c, w) == lsc;
+        }
+        int lit = assigned ? -1 : local_proc_literal_param_of(c, lsc, rnm);
+        if (lit >= 0 && !proc_literal_calls_in_sight(c, lit)) { lv->type = TY_POLY; continue; }
       }
       slot = &lv->type;
       slot_reset = !lv->is_param && !lv->is_block_param && !lv->rbs_seeded;
