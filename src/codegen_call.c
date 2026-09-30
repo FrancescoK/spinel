@@ -14011,7 +14011,9 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         int tinner = tbp >= 0 ? nt_ref(nt, tbp, "parameters") : -1;
         int tpn = tinner >= 0 ? tinner : tbp;
         int treq = 0; if (tpn >= 0) nt_arr(nt, tpn, "requireds", &treq);
-        if (treq > 1) {
+        /* so does a |*args| block given more than one */
+        int trest = tpn >= 0 && nt_ref(nt, tpn, "rest") >= 0;
+        if (treq > 1 || (trest && argc > 1)) {
           int tpa = ++g_tmp;
           buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tpa, tpa);
           for (int a = 0; a < argc; a++) {

@@ -5260,6 +5260,12 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   nd_stamp(nt_ref(c->nt, id, "block"), ND_BLOCK_PROC);   /* the body is a function of its own */
   const NodeTable *nt = c->nt;
   int blk = nt_ref(nt, id, "block");
+  /* Fiber.new(&x) / Thread.new(&x) reach here as a literal block
+     (desugar_value_callable_forwards) when x is a local, an ivar, a constant,
+     method(:m) or a lambda; any other &-expression would run nothing */
+  if (blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode) {
+    unsupported(c, id, "&-argument form (pass a local, method(:m) or a lambda)");
+  }
   if (blk < 0) {
     if (as_gen) { buf_puts(b, "sp_Enumerator_new_gen(NULL, NULL, "); emit_enum_size_arg(c, size_node, b); buf_puts(b, ")"); }
     else buf_puts(b, "sp_Fiber_new(NULL)");
