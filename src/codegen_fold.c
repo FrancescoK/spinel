@@ -7280,7 +7280,16 @@ int read_rebound_by(Compiler *c, int x, int after) {
   switch (nt_kind(nt, x)) {
     case NK_LocalVariableReadNode: {
       const char *nm = nt_str(nt, x, "name");
-      return nm && subtree_writes_local(c, after, nm);
+      if (!nm) return 0;
+      if (subtree_writes_local(c, after, nm)) return 1;
+      /* A proc that assigns the local through its cell rebinds it wherever
+         it is called from: `m2(v, la.call)` for `la = -> { v = 0; 5 }` read
+         v beside the call, in C's order, and bound the 0. Anything that
+         may run code of the program's may call such a proc
+         (subtree_may_run_proc); a builtin over plain values cannot, and a
+         local no proc assigns keeps its read in place. */
+      LocalVar *lv = scope_local(comp_scope_of(c, x), nm);
+      return lv && lv->is_cell && lv->proc_rebinds && subtree_may_run_proc(c, after);
     }
     case NK_InstanceVariableReadNode: {
       /* nothing that runs no code and stores nothing can: arithmetic, typed-

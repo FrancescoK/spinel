@@ -21446,6 +21446,117 @@ int subtree_may_reassign_state(Compiler *c, int id) {
   return 0;
 }
 
+/* A value of a kind whose builtin methods run no Ruby code of the
+   program's: numbers, Strings, Symbols, their ranges and typed Arrays. A
+   Proc, an object, a boxed value or a container of them may call back into
+   the program (an element's #==, #to_s, #<=>). */
+static int ty_runs_no_code(TyKind t) {
+  switch (t) {
+    case TY_NIL: case TY_INT: case TY_BIGINT: case TY_FLOAT: case TY_STRING:
+    case TY_STRBUF: case TY_SYMBOL: case TY_BOOL: case TY_RANGE: case TY_FLOAT_RANGE:
+    case TY_STR_RANGE: case TY_INT_ARRAY: case TY_FLOAT_ARRAY: case TY_STR_ARRAY:
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+/* See codegen_internal.h. */
+int subtree_may_run_proc(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0) return 0;
+  switch (nt_kind(nt, id)) {
+    case NK_YieldNode: case NK_SuperNode: case NK_ForwardingSuperNode:
+    case NK_BlockNode: case NK_LambdaNode: case NK_BlockArgumentNode:
+      return 1;
+    case NK_CallNode: {
+      if (call_is_scalar_op(c, id)) break;
+      const char *nm = nt_str(nt, id, "name");
+      int recv = nt_ref(nt, id, "receiver");
+      if (!nm || recv < 0 || nt_ref(nt, id, "block") >= 0 ||
+          !ty_runs_no_code(comp_ntype(c, recv)) ||
+          comp_method_index(c, nm) >= 0 || any_class_defines(c, nm)) return 1;
+      int a = nt_ref(nt, id, "arguments"); int ac = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+      for (int i = 0; i < ac; i++) {
+        NodeKind ak = nt_kind(nt, av[i]);
+        if (ak == NK_SplatNode || ak == NK_KeywordHashNode || !ty_runs_no_code(comp_ntype(c, av[i])))
+          return 1;
+      }
+      break;
+    }
+    default:
+      break;
+  }
+  for (int i = 0; i < nt_num_refs(nt, id); i++)
+    if (subtree_may_run_proc(c, nt_ref_at(nt, id, i))) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, id); i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++) if (subtree_may_run_proc(c, ids[j])) return 1;
+  }
+  return 0;
+}
+
+/* Does a local read in the operand `x` -- itself, or one its value is built
+   of (`ar.first(v)`) -- read what the operand `after` can rebind
+   (read_rebound_by)? A read that already ran into a temp reads that; a
+   block reads when it runs. */
+static int operand_local_rebound_by(Compiler *c, int x, int after) {
+  const NodeTable *nt = c->nt;
+  if (x < 0) return 0;
+  NodeKind k = nt_kind(nt, x);
+  if (k == NK_LocalVariableReadNode) return !arg_ran_first(x, 0) && read_rebound_by(c, x, after);
+  if (k == NK_BlockNode || k == NK_LambdaNode) return 0;
+  for (int i = 0; i < nt_num_refs(nt, x); i++)
+    if (operand_local_rebound_by(c, nt_ref_at(nt, x, i), after)) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, x); i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, x, i, &n);
+    for (int j = 0; j < n; j++) if (operand_local_rebound_by(c, ids[j], after)) return 1;
+  }
+  return 0;
+}
+
+/* An operand emit_operands_in_order cannot bind, the `u`th, renders where
+   its arm puts it. An Array or Hash literal builds into g_pre, ahead of the
+   whole call, so a local read anywhere in an operand to its left read what
+   it assigned: `ar.first(u) + [(u = 0; 5)]` sliced no element, and
+   `x.push([(x = [9]; 2)])` pushed onto the new Array. A parenthesized write
+   renders in the arm's own order, and an arm that passes its operands in
+   one C call leaves them in C's: `"abcdef"[u, (u = 0; 5)]` read u after
+   the write under gcc. The receiver is not asked there: the arms that take
+   it into a temp do so ahead of their arguments (push_recv_in_slot), and
+   the ones that render it beside them take their snapshot first
+   (emit_recv_snapshot). The operands up to the last such read run first,
+   in order, into rooted temps in g_pre (emit_args_before), and the call
+   reads those. `first_arg` is the index of the first argument among the
+   operands. 1 when it emitted the call; 0, emitting nothing, when no such
+   read is there. */
+static int emit_operands_before_unbound(Compiler *c, int id, const int *operand, int nop,
+                                        int first_arg, int u, Buf *b) {
+  const NodeTable *nt = c->nt;
+  NodeKind uk = nt_kind(nt, operand[u]);
+  int literal = uk == NK_ArrayNode || uk == NK_HashNode;
+  /* a user method or a boxed receiver's dispatch binds its arguments in
+     order already (emit_args_before_binding); only a builtin's arm of plain
+     values passes them to C as they stand */
+  if (!literal && (first_arg == 0 || !ty_runs_no_code(comp_ntype(c, operand[0])))) return 0;
+  int last = -1;
+  for (int i = literal ? 0 : first_arg; i < u; i++) {
+    if (!literal && nt_kind(nt, operand[i]) != NK_LocalVariableReadNode) continue;
+    for (int j = u; j < nop && last < i; j++)
+      if (operand_local_rebound_by(c, operand[i], operand[j])) last = i;
+  }
+  if (last < 0) return 0;
+  int saved_argov = g_n_argov;
+  emit_args_before(c, operand, last + 1, operand + last + 1, nop - last - 1, g_pre);
+  int saved_node = g_operand_order_node;
+  g_operand_order_node = id;
+  emit_call(c, id, b);
+  g_operand_order_node = saved_node;
+  g_n_argov = saved_argov;
+  return 1;
+}
+
 static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   if (id == g_operand_order_node) return 0;
@@ -21464,7 +21575,9 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
 
      If any observable operand is not bindable, decline the whole rewrite rather
      than bind a subset: binding only the later one would evaluate it FIRST,
-     which is a worse order than the one C picked. */
+     which is a worse order than the one C picked. Only a local read ahead of
+     it that it can rebind runs first, with the operands before it
+     (emit_operands_before_unbound). */
   int node[8], nb = 0;
   TyKind ty[8];
   int operand[9], nop = 0;
@@ -21478,7 +21591,9 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
      read is ordered -- bound and rooted like a call -- exactly when some other
      operand can reassign it (subtree_may_reassign_state); next to arithmetic
      and typed-array reads, `@mem[@ref[addr & 3]]`, it stays a plain read. A
-     local changes only through a write the pass already sees. */
+     local read is ordered the same way when a later operand can rebind it
+     (read_rebound_by): a call that may run a proc assigning its cell,
+     `v.divmod(la.call)` for `la = -> { v = 0; 5 }`. */
   int effects = 0;
   for (int i = 0; i < nop; i++)
     if (subtree_may_reassign_state(c, operand[i])) effects++;
@@ -21498,16 +21613,20 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     NodeKind k = nt_kind(nt, operand[i]);
     int state_read = (k == NK_InstanceVariableReadNode || k == NK_ClassVariableReadNode ||
                       k == NK_GlobalVariableReadNode);
+    int local_read = 0;
+    for (int j = i + 1; k == NK_LocalVariableReadNode && j < nop && !local_read; j++)
+      local_read = operand_local_rebound_by(c, operand[i], operand[j]);
     /* ...but not a shared String slot's: bound, its read is the value form, a
        COPY, and `@buf.setbyte(idx, 90)` wrote into the copy. The arms reach
        the handle through the node itself, so it stays where it is. */
     char sref[192];
-    if (state_read && strbuf_slot_ref(c, operand[i], sref, sizeof sref)) state_read = 0;
-    if (state_read ? effects < 1 : !subtree_has_side_effect(c, operand[i])) continue;
+    if ((state_read || local_read) && strbuf_slot_ref(c, operand[i], sref, sizeof sref))
+      state_read = local_read = 0;
+    if (!local_read && (state_read ? effects < 1 : !subtree_has_side_effect(c, operand[i]))) continue;
     observable++;
     int bindable = (k == NK_CallNode || k == NK_SuperNode ||
-                    k == NK_ForwardingSuperNode || k == NK_YieldNode || state_read);
-    if (!bindable) return 0;
+                    k == NK_ForwardingSuperNode || k == NK_YieldNode || state_read || local_read);
+    if (!bindable) return emit_operands_before_unbound(c, id, operand, nop, recv >= 0, i, b);
     TyKind t = comp_ntype(c, operand[i]);
     if (t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL) return 0;
     if (nb >= 8) return 0;
@@ -21813,9 +21932,12 @@ static int nil_recv_guard(Compiler *c, int id, int *recv_out) {
 }
 
 /* An operator whose right operand reassigns its local left operand,
-   `a + [(a = [2]; 1)]`, reads the local before that operand runs: the local
+   `a + [(a = [2]; 1)]`, or may call a proc that does (`a + la.call`,
+   read_rebound_by), reads the local before that operand runs: the local
    is bound to a temp in g_pre ahead of the operand's own prelude, and the
-   arms read the temp through the override table. Operators that mutate their
+   arms read the temp through the override table. divmod is one of them: its
+   arm renders the receiver after the operand's temp, and
+   `u.divmod((u = 0; 5))` answered [0, 0]. Operators that mutate their
    receiver are left out. */
 static int g_recv_snapshot_node = -1;
 static int emit_recv_snapshot(Compiler *c, int id, Buf *b) {
@@ -21827,11 +21949,10 @@ static int emit_recv_snapshot(Compiler *c, int id, Buf *b) {
   const char *nm = nt_str(nt, id, "name");
   static const char *const ops[] = {
     "+", "-", "*", "/", "%", "**", "&", "|", "^", ">>", "==", "!=", "<", ">",
-    "<=", ">=", "<=>", "===", "=~", "[]", NULL };
+    "<=", ">=", "<=>", "===", "=~", "[]", "divmod", NULL };
   int op = 0;
   for (int i = 0; nm && ops[i] && !op; i++) op = sp_streq(nm, ops[i]);
-  const char *ln = nt_str(nt, recv, "name");
-  if (!op || !ln || !subtree_writes_local(c, args, ln)) return 0;
+  if (!op || !read_rebound_by(c, recv, args)) return 0;
   TyKind t = comp_ntype(c, recv);
   if (t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL ||
       ty_is_struct_valued(t) || comp_ty_value_obj(c, t)) return 0;
