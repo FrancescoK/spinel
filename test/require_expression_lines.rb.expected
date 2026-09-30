@@ -1,0 +1,15 @@
+["relative.rb", 2]
+["nested.rb", 1]
+true
+["relative.rb", 4]
+[3, true]
+4
+false
+6
+[true, 9]
+false
+11
+[false, 16]
+19
+22
+true
