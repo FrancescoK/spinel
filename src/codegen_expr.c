@@ -627,7 +627,7 @@ void emit_int_divisor(Compiler *c, int node, Buf *b) {
    arguments does bind to the loop, so those are still traversed). A valued break
    makes the loop's value the break value rather than nil; detect it so a loop in
    value position rejects instead of silently yielding nil. */
-static int loop_has_valued_break(Compiler *c, int root) {
+int loop_has_valued_break(Compiler *c, int root) {
   if (root < 0) return 0;
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, root);

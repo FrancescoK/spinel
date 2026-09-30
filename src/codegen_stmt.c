@@ -11985,7 +11985,8 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   }
   if ((sp_streq(ty, "InstanceVariableWriteNode") && !_iv_tail_val) ||
       sp_streq(ty, "ConstantWriteNode") ||
-      sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") ||
+      ((sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode")) &&
+       !loop_has_valued_break(c, nt_ref(nt, id, "statements"))) ||
       (sp_streq(ty, "CallNode") && nt_ref(nt, id, "receiver") < 0 &&
        emit_output_call(c, id, b, indent))) {
     if (!sp_streq(ty, "CallNode")) emit_stmt(c, id, b, indent);
