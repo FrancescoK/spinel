@@ -1080,8 +1080,11 @@ void emit_slot_orw_value(Compiler *c, TyKind t, const char *ref, int v, int is_o
       /* an Integer into a Bignum slot is promoted, as a plain ivar write does */
       buf_puts(&vval, "sp_bigint_new_int("); emit_int_expr(c, v, &vval); buf_puts(&vval, ")");
     }
-    else if (!emit_empty_literal_as(c, v, t, &vval))
-      emit_array_store_value(c, t, v, &vval);   /* a seed-pinned kind converts */
+    else if (emit_empty_literal_as(c, v, t, &vval)) { }
+    /* a typed array into a general Array slot is rebuilt as one, as a plain
+       write does */
+    else if (emit_array_into_poly_slot(c, t, v, &vval)) { }
+    else emit_array_store_value(c, t, v, &vval);   /* a seed-pinned kind converts */
     g_pre = saved_pre;
     if (t == TY_BOOL || t == TY_STRING)
       snprintf(condb, sizeof condb, "%s%s", is_or ? "!" : "", ref);
@@ -1845,6 +1848,11 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       return;
     }
     else if (ivt2 == TY_POLY && comp_ntype(c, v) != TY_POLY) emit_boxed(c, v, b);
+    /* a typed array into the general Array slot the ivar widened to (an
+       `o.a << nil` through its reader), rebuilt as the statement form does:
+       an endless `def initialize(z) = (@a = [z])` assigned the typed array
+       itself and the C did not build */
+    else if (emit_array_into_poly_slot(c, ivt2, v, b)) { }
     else if (seeded_array_kind_mismatch(ivt2, comp_ntype(c, v))) {
       /* an array of another kind into a seed-pinned array ivar: converted,
          as the statement form does */
