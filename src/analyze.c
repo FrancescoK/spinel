@@ -2495,17 +2495,6 @@ int blkp_binds_param(Compiler *c, int create, const char *name) {
   return 0;
 }
 
-int lv_node_is_named_ref(const char *ty) {
-  return ty && (sp_streq(ty, "LocalVariableReadNode") || sp_streq(ty, "LocalVariableWriteNode") ||
-                sp_streq(ty, "LocalVariableTargetNode") || sp_streq(ty, "LocalVariableOperatorWriteNode") ||
-                sp_streq(ty, "LocalVariableOrWriteNode") || sp_streq(ty, "LocalVariableAndWriteNode"));
-}
-int lv_node_is_write(const char *ty) {
-  return ty && (sp_streq(ty, "LocalVariableWriteNode") || sp_streq(ty, "LocalVariableTargetNode") ||
-                sp_streq(ty, "LocalVariableOperatorWriteNode") || sp_streq(ty, "LocalVariableOrWriteNode") ||
-                sp_streq(ty, "LocalVariableAndWriteNode"));
-}
-
 /* Rewrite references to `oldn` -> `newn`, stopping at nested defs/classes and
    at nested blocks/lambdas that re-bind `oldn`. */
 void blkp_rewrite_refs(Compiler *c, int node, const char *oldn, const char *newn) {
@@ -2515,7 +2504,7 @@ void blkp_rewrite_refs(Compiler *c, int node, const char *oldn, const char *newn
   if (!ty) return;
   if (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) return;
   if ((sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode")) && blkp_binds_param(c, node, oldn)) return;
-  if (lv_node_is_named_ref(ty)) {
+  if (a_is_local_node(ty)) {
     const char *nm = nt_str(nt, node, "name");
     if (nm && sp_streq(nm, oldn)) nt_set_str((NodeTable *)nt, node, "name", newn);
   }
@@ -3423,7 +3412,7 @@ void rename_shadowing_block_params(Compiler *c) {
   if (!wp) { free(owner); free(inbody); return; }
   for (int w = 0; w < n; w++) {
     const char *wty = nt_type(nt, w);
-    if (lv_node_is_write(wty) || is_name_binding_param(wty)) wp[wpn++] = w;
+    if (a_is_write_node(wty) || is_name_binding_param(wty)) wp[wpn++] = w;
   }
   BlkpIdx ix;
   if (!blkp_idx_init(&ix, nt, wp, wpn)) { free(wp); free(inbody); free(owner); return; }
@@ -4048,7 +4037,7 @@ static int blkp_name_written(Compiler *c, int node, const char *nm) {
   if (!ty) return 0;
   if (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) return 0;
   if ((sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode")) && blkp_binds_param(c, node, nm)) return 0;
-  if (lv_node_is_write(ty)) {
+  if (a_is_write_node(ty)) {
     const char *n = nt_str(nt, node, "name");
     if (n && sp_streq(n, nm)) return 1;
   }
