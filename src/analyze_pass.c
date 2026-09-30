@@ -11241,6 +11241,46 @@ int narrow_site_boxed_block_params(Compiler *c) {
   return n;
 }
 
+/* The initialize a `new` with a literal block hands the block to, when the
+   call names no class constant: a class value's `k.new { }`, and a bare or
+   `self.new { }` in a class method, which builds that class or a subclass.
+   Only an initialize that runs the block (yields it, keeps it as `&b`, or
+   forwards it) counts. Answers it when the call can reach one alone; when
+   it can reach two or more, answers -1 and sets *several, and the block's
+   parameters are boxed, since no one initialize's bindings type them. */
+static int new_block_initialize(Compiler *c, int id, int *several) {
+  const NodeTable *nt = c->nt;
+  *several = 0;
+  int recv = nt_ref(nt, id, "receiver");
+  Scope *es = comp_scope_of(c, id);
+  int cls = -1;
+  if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
+    if (!es || !es->is_cmethod || es->class_id < 0) return -1;
+    cls = es->class_id;
+  }
+  else {
+    NodeKind rk = nt_kind(nt, recv);
+    if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) return -1;
+    if (ty_is_object(infer_type(c, recv))) return -1;   /* an object's own `new` */
+  }
+  int found = -1;
+  int nd = 0; const int *ds = cls >= 0 ? comp_descendants(c, cls, &nd) : NULL;
+  int n = cls >= 0 ? nd + 1 : c->nclasses;
+  for (int e = 0; e < n; e++) {
+    int k = cls >= 0 ? (e == 0 ? cls : ds[e - 1]) : e;
+    if (cls < 0 && !dynamic_new_may_reach(c, id, k)) continue;
+    if (comp_cmethod_in_chain(c, k, "new", NULL) >= 0) continue;
+    int mi = comp_method_in_chain(c, k, "initialize", NULL);
+    if (mi < 0 || c->scopes[mi].is_cmethod || mi == found) continue;
+    Scope *m = &c->scopes[mi];
+    if (!m->yields && !(m->blk_param && m->blk_param[0]) && forwarding_yield_target(c, mi, 0) < 0)
+      continue;
+    if (found >= 0) { *several = 1; return -1; }
+    found = mi;
+  }
+  return found;
+}
+
 int infer_block_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -11826,6 +11866,25 @@ int infer_block_params(Compiler *c) {
             }
             continue;
           }
+        }
+      }
+      /* `k.new { }` on a class value and a bare `new { }` in a class
+         method: the block is the initialize's, as a constant's `new` gives
+         it above. Unresolved, its parameters were typed from the body
+         alone -- `t << x` made one an Array -- and the initialize handed
+         it an Integer or a String: the program crashed. */
+      if (mi < 0 && sp_streq(name, "new")) {
+        int several = 0;
+        mi = new_block_initialize(c, id, &several);
+        if (several) {
+          Scope *bs = comp_scope_of(c, block);
+          for (int k = 0; ; k++) {
+            const char *bp = block_param_name(c, block, k);
+            if (!bp) break;
+            LocalVar *lv = scope_local_intern(bs, bp); lv->is_block_param = 1;
+            if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+          }
+          continue;
         }
       }
       /* A block passed to a pure `...` forwarder is really consumed by the
