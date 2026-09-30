@@ -11128,9 +11128,13 @@ int ctor_needs_self_defaults(Compiler *c, int initm, int argc) {
   if (initm < 0) return 0;
   Scope *m = &c->scopes[initm];
   if (m->is_cmethod || m->class_id < 0 || m->yields) return 0;
-  if (m->blk_param && m->blk_param[0]) return 0;   /* the block is threaded separately */
+  /* A keyword is left out by name, which a count cannot say: `new(**h)`,
+     or `new(z: 1)` that raises for its unknown key, reached the default of
+     `initialize(k1: @d)` all the same, rendered at the call site on the
+     caller's self (at the top level, on none). */
   for (int i = 0; i < m->nparams; i++)
-    if (m->pdefault[i] >= 0 && arg_slot_for_param(c, m, i, argc) < 0 &&
+    if (m->pdefault[i] >= 0 &&
+        (callee_param_is_declared_kwarg(c, m, m->pnames[i]) || arg_slot_for_param(c, m, i, argc) < 0) &&
         ctor_default_reads_self(c, m, m->pdefault[i], 0)) return 1;
   return 0;
 }
@@ -11287,7 +11291,22 @@ static void emit_ctor_arm_case(Compiler *c, int ci, int rt2, int self_t, const c
    object (no initialize), then run initialize with self bound to it, so the
    default sees the object CRuby would have evaluated it on. Answers the object
    (a pointer, or the struct itself for a value-type class). */
+static void ctor_alloc_init(Compiler *c, int cid, int initm, int argsNode, const int *argv, int argc,
+                            int call_id, Buf *b);
+static int ctor_init_takes_block(Compiler *c, int initm);
 void emit_ctor_alloc_init(Compiler *c, int cid, int initm, int argsNode, int call_id, Buf *b) {
+  ctor_alloc_init(c, cid, initm, argsNode, NULL, 0, call_id, b);
+}
+
+/* The same over the arguments `argv` (`raise Cls, msg` constructs with the
+   message alone), for a construction with no block. */
+void emit_ctor_alloc_init_argv(Compiler *c, int cid, int initm, const int *argv, int argc, int argsNode,
+                               Buf *b) {
+  ctor_alloc_init(c, cid, initm, argsNode, argv, argc, -1, b);
+}
+
+static void ctor_alloc_init(Compiler *c, int cid, int initm, int argsNode, const int *argv, int argc,
+                            int call_id, Buf *b) {
   int is_val = comp_ty_value_obj(c, ty_object(cid));
   buf_puts(b, "({ ");
   int t = ctor_alloc_decl(c, cid, b);
@@ -11303,8 +11322,12 @@ void emit_ctor_alloc_init(Compiler *c, int cid, int initm, int argsNode, int cal
   Buf args; memset(&args, 0, sizeof args);
   Buf *sv_pre = g_pre; int sv_ind = g_indent;
   g_pre = &apre; g_indent = 0;
-  if (initm >= 0) emit_args_filled(c, initm, argsNode, ", ", &args);
-  if (initm >= 0) emit_ctor_block_slot(c, call_id, initm, ", ", &args);   /* its `&blk` */
+  if (initm >= 0 && argv) emit_args_filled_argv(c, initm, argv, argc, argsNode, ", ", &args);
+  else if (initm >= 0) emit_args_filled(c, initm, argsNode, ", ", &args);
+  /* its `&blk`: the call's block, or none for a construction with no call
+     of its own (`raise Cls, msg`) */
+  if (initm >= 0 && call_id >= 0) emit_ctor_block_slot(c, call_id, initm, ", ", &args);
+  else if (ctor_init_takes_block(c, initm)) buf_puts(&args, ", NULL");
   g_pre = sv_pre; g_indent = sv_ind;
   if (apre.p) buf_puts(b, apre.p);
   ctor_init_call(c, cid, t, args.p ? args.p : "", b);
@@ -11374,6 +11397,12 @@ static int call_has_splat_arg(const NodeTable *nt, const int *argv, int argc) {
   for (int a = 0; a < argc; a++)
     if (argv && nt_kind(nt, argv[a]) == NK_SplatNode) return 1;
   return 0;
+}
+
+/* ctor_needs_self_defaults for a construction over `argv`: a splat's count
+   is the run time's, so any optional may be left to its default. */
+static int ctor_needs_self_defaults_argv(Compiler *c, int initm, const int *argv, int argc) {
+  return ctor_needs_self_defaults(c, initm, call_has_splat_arg(c->nt, argv, argc) ? 0 : argc);
 }
 
 /* Does any class define `name` as a class method? A boxed Class or Module
@@ -12562,7 +12591,7 @@ static void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Bu
       }
     }
     /* a default reading the instance runs on the allocated object */
-    if (ctor_needs_self_defaults(c, initm, 0) && !class_is_exc_subclass(c, ci)) {
+    if (ctor_needs_self_defaults(c, initm, 0)) {
       g_pre = sv_pre;
       buf_printf(b, "case %d: { %s _t%d=", ci, apre.p ? apre.p : "", rt2);
       buf_printf(b, c->classes[ci].is_value_type ? "sp_box_vobj_%s(" : "sp_box_obj(",
@@ -12755,7 +12784,7 @@ static void emit_super_new_ctor(Compiler *c, int id, int ci, Buf *b) {
     buf_printf(b, "(sp_raise_cls(\"ArgumentError\", \"%s\"), %s)", am, default_value(ty_object(ci)));
     return;
   }
-  if (initm >= 0 && ctor_needs_self_defaults(c, initm, argc)) {
+  if (initm >= 0 && ctor_needs_self_defaults(c, initm, sp_unknown_argc ? 0 : argc)) {
     emit_ctor_alloc_init(c, ci, initm, argsn, id, b);
     return;
   }
@@ -13600,7 +13629,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
            dynamically), so box the concrete constructor result to match (#2653) */
         int is_val = comp_ty_value_obj(c, ty_object(ci));
         int initm = comp_method_in_chain(c, ci, "initialize", NULL);
-        if (ctor_needs_self_defaults(c, initm, argc) && !class_is_exc_subclass(c, ci)) {
+        if (ctor_needs_self_defaults_argv(c, initm, argv, argc)) {
           buf_printf(b, is_val ? "sp_box_vobj_%s(" : "sp_box_obj(", c->classes[ci].c_name);
           emit_ctor_alloc_init(c, ci, initm, nt_ref(nt, id, "arguments"), id, b);
           if (is_val) buf_puts(b, ")");
@@ -13638,7 +13667,11 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           /* a yielding initialize takes this site's block the way any class's does */
           if (initm >= 0 && c->scopes[initm].yields && nt_ref(nt, id, "block") >= 0 &&
               (emit_ctor_yield_inline(c, id, ci, b) || emit_ctor_new_with_proc(c, id, ci, b))) return 1;
-          if (initm >= 0) {
+          if (initm >= 0 && ctor_needs_self_defaults_argv(c, initm, argv, argc)) {
+            /* a default reading the instance runs on the allocated object */
+            emit_ctor_alloc_init(c, ci, initm, nt_ref(nt, id, "arguments"), id, b);
+          }
+          else if (initm >= 0) {
             /* user initialize: sp_ClassName_new(args) calls initialize which calls super(msg) */
             buf_printf(b, "sp_%s_new(", c->classes[ci].c_name);
             emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
@@ -13695,7 +13728,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         emit_new_arity_check(c, ci, argc, argv, g_pre);
         {
           int initm0 = comp_method_in_chain(c, ci, "initialize", NULL);
-          if (ctor_needs_self_defaults(c, initm0, argc) && !class_is_exc_subclass(c, ci)) {
+          if (ctor_needs_self_defaults_argv(c, initm0, argv, argc)) {
             emit_ctor_alloc_init(c, ci, initm0, nt_ref(nt, id, "arguments"), id, b);
             return 1;
           }
@@ -32125,7 +32158,14 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       int xc = cn ? comp_class_index(c, cn) : -1;
       int ic = (xc >= 0 && class_is_exc_subclass(c, xc))
                  ? comp_method_in_chain(c, xc, "initialize", NULL) : -1;
-      if (xc >= 0 && ic >= 0 && c->scopes[ic].reachable) {
+      if (xc >= 0 && ic >= 0 && c->scopes[ic].reachable && ctor_needs_self_defaults(c, ic, 0)) {
+        /* a default reading the instance runs on the allocated object, as
+           the same `.new` does (emit_ctor_alloc_init) */
+        buf_puts(b, "sp_raise_exc((sp_Exception *)");
+        emit_ctor_alloc_init(c, xc, ic, -1, -1, b);
+        buf_puts(b, ")");
+      }
+      else if (xc >= 0 && ic >= 0 && c->scopes[ic].reachable) {
         buf_printf(b, "sp_raise_exc((sp_Exception *)sp_%s_new(", c->classes[xc].c_name);
         emit_args_filled(c, ic, -1, "", b);
         if (ctor_init_takes_block(c, ic)) buf_puts(b, c->scopes[ic].nparams > 0 ? ", NULL" : "NULL");
@@ -32155,7 +32195,14 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       int ic = -1;
       if (xc >= 0 && class_is_exc_subclass(c, xc))
         ic = comp_method_in_chain(c, xc, "initialize", NULL);
-      if (xc >= 0 && ic >= 0 && c->scopes[ic].reachable) {
+      if (xc >= 0 && ic >= 0 && c->scopes[ic].reachable && ctor_needs_self_defaults(c, ic, 1)) {
+        /* a default the message leaves reading the instance runs on the
+           allocated object, as for `Cls.new(msg)` */
+        buf_puts(b, "sp_raise_exc((sp_Exception *)");
+        emit_ctor_alloc_init_argv(c, xc, ic, &av[1], 1, args, b);
+        buf_puts(b, ")");
+      }
+      else if (xc >= 0 && ic >= 0 && c->scopes[ic].reachable) {
         buf_printf(b, "sp_raise_exc((sp_Exception *)sp_%s_new(", c->classes[xc].c_name);
         /* `raise Cls, msg` is `raise Cls.new(msg)`: the message binds as the
            one argument of that call does (a rest takes it as its element, a
@@ -35198,7 +35245,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         }
         else {
           if (!ctor_arm_takes(c, &c->scopes[initm], argc)) continue;
-          if (class_is_exc_subclass(c, ci) && ctor_needs_self_defaults(c, initm, argc)) continue;
         }
       }
       /* the arguments' places by the call's layout, and no class whose
@@ -35338,7 +35384,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
          still declares the slots, #2452); the call site supplies no args, so
          emit_args_filled emits each param's default. A default reading the
          instance runs on the allocated object, as in the poly arm below. */
-      if (ctor_needs_self_defaults(c, initm, 0) && !class_is_exc_subclass(c, ci)) {
+      if (ctor_needs_self_defaults(c, initm, 0)) {
         buf_printf(b, "case %d: _t%d=", ci, rt2);
         buf_printf(b, c->classes[ci].is_value_type ? "sp_box_vobj_%s(" : "sp_box_obj(",
                    c->classes[ci].c_name);
@@ -35425,7 +35471,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
          optional: the arm fills each with its default, exactly as the
          statically-known `Klass.new` does. */
       if (argc == 0 && nreq == 0 && np > 0) {
-        if (class_is_exc_subclass(c, ci) && ctor_needs_self_defaults(c, initm, 0)) continue;
         buf_printf(b, "case %d: _t%d=", ci, rt2);
         if (ctor_needs_self_defaults(c, initm, 0)) {
           buf_printf(b, c->classes[ci].is_value_type ? "sp_box_vobj_%s(" : "sp_box_obj(",
@@ -35458,7 +35503,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       if (initm < 0) { if (!nil_fill && (argc != np || nreq != np)) continue; }
       else {
         if (!ctor_arm_takes(c, &c->scopes[initm], argc)) continue;
-        if (class_is_exc_subclass(c, ci) && ctor_needs_self_defaults(c, initm, argc)) continue;
       }
       /* as in the Class-valued form above */
       Scope *is = initm >= 0 ? &c->scopes[initm] : NULL;
