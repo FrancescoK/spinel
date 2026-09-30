@@ -8230,6 +8230,24 @@ TyKind infer_uncached(Compiler *c, int id) {
         for (int e = 0; e < ac; e++)
           if (value_arm_is(nt, av[e], id)) return TY_POLY;
       }
+      /* The receiver of a builtin arithmetic operator too: `yield + yield`
+         typed its `+`, and the method's return, from the first site's block,
+         so a String block at one site and a Float one at another put the Float
+         into a `const char *`. Poly makes the result a boxed carrier, and
+         codegen types each site's operator from that site's block
+         (yield_operator_site_type), so the value it emits is boxed into it.
+         Only the operators that helper types: for another method on the
+         yield, codegen still emits one site's concrete result into the slot
+         unboxed. */
+      NT_FOREACH_KIND(nt, NK_CallNode, w) {
+        if (nt_ref(nt, w, "receiver") != id || nt_ref(nt, w, "block") >= 0) continue;
+        const char *op = nt_str(nt, w, "name");
+        int an = nt_ref(nt, w, "arguments"), ac = 0;
+        if (an >= 0) nt_arr(nt, an, "arguments", &ac);
+        if (ac == 1 && op && (sp_streq(op, "+") || sp_streq(op, "-") || sp_streq(op, "*") ||
+                              sp_streq(op, "/") || sp_streq(op, "%")))
+          return TY_POLY;
+      }
       /* A yield whose value leaves through an ENSURE frame is in the same
          position as one written to a local, for the same reason: the frame
          carries the value in a slot of its own, and that slot settles its type
