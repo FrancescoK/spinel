@@ -32,6 +32,11 @@ class T
     # an argument with an effect runs once, before the block
     O.new.instance_exec(bump) { |a| p [a, @x] }
     p @x
+    # a read a later argument rebinds binds what it read first
+    y = 1
+    O.new.instance_exec(y, (y = 5)) { |a, b| p [a, b] }
+    x = 1
+    O.new.instance_exec(x, (x = mx)) { |a, b| p [a, b] }
     # the block's defaults read the receiver
     O.new.instance_exec(@y) { |b, a = @x| p [b, a] }
     O.new.instance_exec(j: @y) { |j:, k: @x| p [j, k] }
