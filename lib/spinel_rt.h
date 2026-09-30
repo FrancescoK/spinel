@@ -1820,7 +1820,9 @@ static inline void sp_poly_puts(sp_RbVal v) {
   }
 }
 static sp_bool sp_poly_nil_p(sp_RbVal v) { return v.tag == SP_TAG_NIL; }
-static sp_bool sp_poly_truthy(sp_RbVal v) { return !(v.tag == SP_TAG_NIL || (v.tag == SP_TAG_BOOL && !v.v.b)); }
+/* two tag compares, on every condition over a boxed value: forced inline
+   (see SP_ALWAYS_INLINE in sp_compat.h) */
+static inline SP_ALWAYS_INLINE sp_bool sp_poly_truthy(sp_RbVal v) { return !(v.tag == SP_TAG_NIL || (v.tag == SP_TAG_BOOL && !v.v.b)); }
 /* Regexp.new's option argument where its type is not known until run time: an
    Integer is option bits, and anything else truthy is IGNORECASE. CRuby makes
    that choice from the VALUE, so a caller that cannot see the type statically

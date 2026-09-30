@@ -221,7 +221,9 @@ static inline void sp_gc_pin_remembered(void *obj) {
 extern void *sp_gc_pinned[SP_GC_PINNED_MAX];
 extern int sp_gc_npinned;
 extern int sp_gc_pin_overflow;
-static inline void sp_gc_wb(void *obj) {
+/* forced inline (see SP_ALWAYS_INLINE in sp_compat.h): one flag load with the
+   generational mark off, the default; recording a store is sp_gc_wb_slow */
+static inline SP_ALWAYS_INLINE void sp_gc_wb(void *obj) {
   /* Nothing reads the remembered set unless a minor mark runs, and whether one
      can is decided once, from the environment, before main. So with the
      generational mark off -- the default -- the whole barrier is bookkeeping

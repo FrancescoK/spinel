@@ -28,7 +28,8 @@ const char *sp_sprintf(const char *fmt, ...);  /* defined in the generated TU */
 static void sp_IntArray_fin(void*p){sp_pl_free(((sp_IntArray*)p)->data);}
 static sp_IntArray*sp_IntArray_new(void){sp_IntArray*a=(sp_IntArray*)sp_gc_alloc(sizeof(sp_IntArray),sp_IntArray_fin,NULL);a->cap=16;a->data=(sp_int*)sp_pl_alloc(sizeof(sp_int)*a->cap);if(!a->data)sp_oom_die();a->start=0;a->len=0;{sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));h->size+=sizeof(sp_int)*a->cap;sp_gc_bytes_add(sizeof(sp_int)*a->cap);}return a;}
 static SP_NOINLINE void sp_IntArray_push_grow(sp_IntArray*a){if(a->start>0){memmove(a->data,a->data+a->start,sizeof(sp_int)*a->len);a->start=0;if(a->len<a->cap)return;}{sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes_sub(sizeof(sp_int)*a->cap);h->size-=sizeof(sp_int)*a->cap;a->cap=((((((a->cap*2))))))+1;void*nd=sp_pl_realloc(a->data,sizeof(sp_int)*a->cap);if(!nd)sp_oom_die();a->data=(sp_int*)nd;h->size+=sizeof(sp_int)*a->cap;sp_gc_bytes_add(sizeof(sp_int)*a->cap);}}
-static inline void sp_IntArray_push(sp_IntArray*a,sp_int v){if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_INT_ARRAY);return;}if(a->start+a->len>=a->cap)sp_IntArray_push_grow(a);a->data[a->start+a->len]=v;a->len++;}
+/* forced inline: see SP_ALWAYS_INLINE in sp_compat.h (the grow is a call) */
+static inline SP_ALWAYS_INLINE void sp_IntArray_push(sp_IntArray*a,sp_int v){if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_INT_ARRAY);return;}if(a->start+a->len>=a->cap)sp_IntArray_push_grow(a);a->data[a->start+a->len]=v;a->len++;}
 /* Issue #826/#832: empty pop/shift return SP_INT_NIL (nullable int
    sentinel) to match MRI's nil; callers treat as int?. Without the
    guard, `--a->len` wraps to -1 and reads past the buffer start. */
@@ -36,7 +37,8 @@ static inline sp_int sp_IntArray_pop(sp_IntArray*a){if(!a||a->len<=0)return SP_I
 static inline sp_int sp_IntArray_shift(sp_IntArray*a){if(!a||a->len<=0)return SP_INT_NIL;if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_INT_ARRAY);return SP_INT_NIL;}sp_int v=a->data[a->start];a->start++;a->len--;return v;}
 static inline sp_int sp_IntArray_length(sp_IntArray*a){return a->len;}
 static inline sp_bool sp_IntArray_empty(sp_IntArray*a){return a->len==0;}
-static inline sp_int sp_IntArray_get(sp_IntArray*a,sp_int i){if(!a)return SP_INT_NIL;if((unsigned long long)i<(unsigned long long)a->len)return a->data[a->start+i];if(i<0)i+=a->len;if(i<0||i>=a->len)return SP_INT_NIL;return a->data[a->start+i];}
+/* forced inline, as push: a bounds test and a load */
+static inline SP_ALWAYS_INLINE sp_int sp_IntArray_get(sp_IntArray*a,sp_int i){if(!a)return SP_INT_NIL;if((unsigned long long)i<(unsigned long long)a->len)return a->data[a->start+i];if(i<0)i+=a->len;if(i<0||i>=a->len)return SP_INT_NIL;return a->data[a->start+i];}
 /* Issue #769: a very-negative i leaves i negative after the `i += a->len`
    adjustment. CRuby raises IndexError; spinel no-ops as the safest
    fallback (raising from a typed-array set would need setjmp plumbing
@@ -45,7 +47,8 @@ static void sp_IntArray_set_slow(sp_IntArray*a,sp_int i,sp_int v){if(i<0)return;
 /* Issue #839: an extreme negative index (still negative after `i += len`)
    raises IndexError per MRI. */
 static SP_NOINLINE SP_COLD void sp_IntArray_set_cold(sp_IntArray*a,sp_int i,sp_int v){if(!a)return;if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_INT_ARRAY);return;}sp_int orig=i;if(i<0)i+=a->len;if(i<0)sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)orig,(long long)-a->len));if(i<a->len){a->data[a->start+i]=v;return;}sp_IntArray_set_slow(a,i,v);}
-static inline void sp_IntArray_set(sp_IntArray*a,sp_int i,sp_int v){if(SP_LIKELY(a&&!a->frozen&&i>=0&&i<a->len)){a->data[a->start+i]=v;return;}sp_IntArray_set_cold(a,i,v);}
+/* forced inline, as push: the in-range store; the rest is sp_IntArray_set_cold */
+static inline SP_ALWAYS_INLINE void sp_IntArray_set(sp_IntArray*a,sp_int i,sp_int v){if(SP_LIKELY(a&&!a->frozen&&i>=0&&i<a->len)){a->data[a->start+i]=v;return;}sp_IntArray_set_cold(a,i,v);}
 
 /* ---- sp_IntArray cold ops (compiled in lib/sp_array.c) ---- */
 sp_IntArray *sp_IntArray_from_range(sp_int s, sp_int e);
