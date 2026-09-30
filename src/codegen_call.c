@@ -1388,7 +1388,7 @@ int builtin_method_known(const char *cls, const char *m);
 int builtin_object_method_known(const char *m);
 static int builtin_method_arity(const char *cls, const char *m, int *out) {
   for (int i = 0; sp_builtin_arity_tbl[i].cls; i++)
-    if (sp_streq(sp_builtin_arity_tbl[i].cls, cls) && sp_streq(sp_builtin_arity_tbl[i].m, m))
+    if (sp_streq(sp_builtin_arity_tbl[i].cls, cls) && (!m || sp_streq(sp_builtin_arity_tbl[i].m, m)))
       { *out = sp_builtin_arity_tbl[i].a; return 1; }
   return 0;
 }

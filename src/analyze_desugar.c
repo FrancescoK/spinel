@@ -698,13 +698,13 @@ static int me_leaf_defined(const NodeTable *nt, const char *leaf) {
   return 0;
 }
 /* does any body of the class/module named `leaf` define instance method `m`? */
-static int me_body_defines(const NodeTable *nt, const char *leaf, const char *m) {
+static int me_body_defines(const NodeTable *nt, const char *leaf, const char *m, int skip) {
   for (int id = 0; id < nt->count; id++) {
     NodeKind k = nt_kind(nt, id);
     if (k != NK_ClassNode && k != NK_ModuleNode) continue;
     int cp = nt_ref(nt, id, "constant_path");
     const char *nm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    if (!nm || !sp_streq(nm, leaf)) continue;
+    if (!nm || !sp_streq(nm, leaf) || subtree_has(nt, skip, id)) continue;
     int body = nt_ref(nt, id, "body");
     int bn = 0; const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
     for (int i = 0; i < bn; i++) {
@@ -785,7 +785,7 @@ static int me_static_pred(const NodeTable *nt, int pred) {
     NodeKind ak = nt_kind(nt, av[0]);
     const char *m = ak == NK_SymbolNode ? nt_str(nt, av[0], "value") : ak == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
     if (!m) return -1;
-    return me_body_defines(nt, leaf, m) ? 1 : 0;
+    return me_body_defines(nt, leaf, m, -1) ? 1 : 0;
   }
   return -1;
 }
@@ -2499,8 +2499,53 @@ static const char *engine_written(NodeTable *nt, int id) {
   return t >= 0 ? nt_str(nt, t, "name") : nt_str(nt, id, "name");
 }
 
+static const char *engine_body_class(NodeTable *nt, int stmt) {
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_ClassNode && nt_kind(nt, id) != NK_ModuleNode) continue;
+    int bn = 0; const int *b = nt_arr(nt, nt_ref(nt, id, "body"), "body", &bn);
+    for (int i = 0; i < bn; i++) if (b[i] == stmt) return nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+  }
+  return NULL;
+}
+
+static int engine_method_absent(NodeTable *nt, const char *cls, const char *m, int in, int depth) {
+  if (builtin_method_known(cls, m) || me_body_defines(nt, cls, m, in)) return 0;
+  if (is_builtin_class_name(cls) || is_builtin_module_name(cls)) return builtin_method_known(cls, NULL) ? 1 : -1;
+  if (!me_leaf_defined(nt, cls) || depth > 16) return -1;
+  int a = 1;
+  for (int id = 0; id < nt->count && a > 0; id++) {
+    const char *nm = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+    if ((nt_kind(nt, id) != NK_ClassNode && nt_kind(nt, id) != NK_ModuleNode) || !nm || !sp_streq(nm, cls)) continue;
+    int sc = nt_ref(nt, id, "superclass"), bn = 0;
+    if (sc >= 0) a = nt_kind(nt, sc) == NK_ConstantReadNode ? engine_method_absent(nt, nt_str(nt, sc, "name"), m, in, depth + 1) : -1;
+    const int *b = nt_arr(nt, nt_ref(nt, id, "body"), "body", &bn);
+    for (int i = 0; i < bn && a > 0; i++) {
+      const char *n = nt_kind(nt, b[i]) == NK_CallNode && nt_ref(nt, b[i], "receiver") < 0 ? nt_str(nt, b[i], "name") : NULL;
+      if (!n || (!sp_streq(n, "include") && !sp_streq(n, "prepend"))) continue;
+      int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, b[i], "arguments"), "arguments", &ac);
+      for (int k = 0; k < ac && a > 0; k++)
+        a = nt_kind(nt, av[k]) == NK_ConstantReadNode ? engine_method_absent(nt, nt_str(nt, av[k], "name"), m, in, depth + 1) : -1;
+    }
+  }
+  return a;
+}
+
 static int engine_absent(NodeTable *nt, int e, int in) {
   const char *x = NULL;
+  const char *en = nt_kind(nt, e) == NK_CallNode && nt_ref(nt, e, "block") < 0 ? nt_str(nt, e, "name") : NULL;
+  if (en && (sp_streq(en, "method_defined?") || sp_streq(en, "public_method_defined?"))) {
+    int r = nt_ref(nt, e, "receiver"), ac = 0;
+    const int *av = nt_arr(nt, nt_ref(nt, e, "arguments"), "arguments", &ac);
+    const char *cls = r < 0 || nt_kind(nt, r) == NK_SelfNode ? engine_body_class(nt, in) :
+                      nt_kind(nt, r) == NK_ConstantReadNode ? nt_str(nt, r, "name") : NULL;
+    const char *m = ac != 1 ? NULL : nt_kind(nt, av[0]) == NK_SymbolNode ? nt_str(nt, av[0], "value") :
+                    nt_kind(nt, av[0]) == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
+    int a = !cls || !m ? -1 : builtin_object_method_known(m) ? 0 : engine_method_absent(nt, cls, m, in, 0);
+    if (a > 0)
+      NT_FOREACH_KIND(nt, NK_DefNode, d)
+        if (nt_str(nt, d, "name") && sp_streq(nt_str(nt, d, "name"), m) && !subtree_has(nt, in, d)) return -1;
+    return a;
+  }
   if (nt_kind(nt, e) == NK_DefinedNode) {
     int v = nt_ref(nt, e, "value");
     while (nt_kind(nt, v) == NK_ConstantPathNode && nt_ref(nt, v, "parent") >= 0) v = nt_ref(nt, v, "parent");
@@ -2514,9 +2559,9 @@ static int engine_absent(NodeTable *nt, int e, int in) {
     if (ac >= 1 && nt_kind(nt, av[0]) == NK_StringNode) x = nt_str(nt, av[0], "content");
   }
   if (!x || comp_is_wellknown_const(x) || is_builtin_class_name(x) || is_builtin_module_name(x) ||
-      is_builtin_exception_name(x)) return 0;
+      is_builtin_exception_name(x)) return -1;
   for (int id = 0; id < nt->count; id++)
-    if (engine_written(nt, id) && sp_streq(engine_written(nt, id), x) && !subtree_has(nt, in, id)) return 0;
+    if (engine_written(nt, id) && sp_streq(engine_written(nt, id), x) && !subtree_has(nt, in, id)) return -1;
   return 1;
 }
 
@@ -2525,10 +2570,10 @@ static int engine_absent_fold(NodeTable *nt, int e, int in) {
   if (k == NK_AndNode || k == NK_OrNode)
     return engine_absent_fold(nt, nt_ref(nt, e, "left"), in) | engine_absent_fold(nt, nt_ref(nt, e, "right"), in);
   int neg = k == NK_CallNode && sp_streq(nt_str(nt, e, "name"), "!") && nt_ref(nt, e, "arguments") < 0;
-  int q = neg ? nt_ref(nt, e, "receiver") : e;
-  if (!engine_absent(nt, q, in)) return 0;
+  int q = neg ? nt_ref(nt, e, "receiver") : e, a = engine_absent(nt, q, in);
+  if (a < 0) return 0;
   engine_blank(nt, q);
-  nt_node_reset(nt, e, neg ? "TrueNode" : "FalseNode");
+  nt_node_reset(nt, e, neg == a ? "TrueNode" : "FalseNode");
   nt_node_set_int(nt, e, "engine_check", 1);
   return 1;
 }
