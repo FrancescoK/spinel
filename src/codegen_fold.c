@@ -1107,8 +1107,13 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
     Scope *csc = p0 ? comp_scope_of(c, block) : NULL;
     LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
     TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
-    int use_shadow = clv0 && clv0->type != et && et != TY_UNKNOWN;
     int trecv = ++g_tmp, tseen = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp;
+    /* a multi-param block over a poly array (a Hash's pairs) splats each
+       element across its params; the survivor pushed is the element */
+    char es[64]; snprintf(es, sizeof es, "sp_%sArray_get(_t%d, _t%d)", rk, trecv, ti);
+    int np = 0; while (block_param_name(c, block, np)) np++;
+    int splat = rt == TY_POLY_ARRAY && np >= 2 && !block_param_is_multi(c, block, 0);
+    int use_shadow = !splat && clv0 && clv0->type != et && et != TY_UNKNOWN;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(g_pre, g_indent);
     emit_ctype(c, rt, g_pre);
@@ -1124,7 +1129,21 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
       emit_indent(g_pre, din); buf_puts(g_pre, "{\n"); din++;
       emit_indent(g_pre, din); emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, rk, trecv, ti);
     }
-    else { emit_indent(g_pre, din); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, rk, trecv, ti); }
+    else {
+      /* the element is kept as it was before the block ran, which may
+         replace the receiver's entry */
+      char sel[24] = "";
+      if (splat) {
+        int tel = ++g_tmp;
+        snprintf(sel, sizeof sel, "_t%d", tel);
+        emit_indent(g_pre, din); buf_printf(g_pre, "sp_RbVal %s = %s; SP_GC_ROOT_RBVAL(%s);\n", sel, es, sel);
+      }
+      if (!splat || !emit_iter_autosplat(c, block, rt, sel, din)) {
+        splat = 0;
+        emit_indent(g_pre, din); buf_printf(g_pre, "lv_%s = %s;\n", p0, es);
+      }
+      else snprintf(es, sizeof es, "%s", sel);
+    }
     for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, din);
     int tkey = ++g_tmp, tdup = ++g_tmp, tj = ++g_tmp;
     int save = g_indent; g_indent = din;
@@ -1134,7 +1153,8 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "int _t%d = 0; for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) if (sp_poly_eq(_t%d->data[_t%d], _t%d)) { _t%d = 1; break; }\n",
                tdup, tj, tj, tseen, tj, tseen, tj, tkey, tdup);
     emit_indent(g_pre, din);
-    buf_printf(g_pre, "if (!_t%d) { sp_PolyArray_push(_t%d, _t%d); sp_%sArray_push(_t%d, lv_%s); }\n", tdup, tseen, tkey, rk, tres, p0);
+    if (splat) buf_printf(g_pre, "if (!_t%d) { sp_PolyArray_push(_t%d, _t%d); sp_%sArray_push(_t%d, %s); }\n", tdup, tseen, tkey, rk, tres, es);
+    else buf_printf(g_pre, "if (!_t%d) { sp_PolyArray_push(_t%d, _t%d); sp_%sArray_push(_t%d, lv_%s); }\n", tdup, tseen, tkey, rk, tres, p0);
     if (use_shadow) { din--; emit_indent(g_pre, din); buf_puts(g_pre, "}\n"); }
     if (clv0) clv0->type = csaved0;
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
