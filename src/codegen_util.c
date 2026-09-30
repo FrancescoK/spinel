@@ -2594,8 +2594,12 @@ int emit_catch_tag(Compiler *c, int id, Buf *b) {
     return 0;
   }
   if (ty_is_object(t)) {
-    /* a non-symbol object tag matches by identity: carry its pointer */
-    buf_puts(b, "(const char *)(void *)("); emit_expr(c, id, b); buf_puts(b, ")");
+    /* a non-symbol object tag matches by identity: carry its pointer. An
+       object that is nil (a NULL pointer) is the nil tag, so it meets a nil
+       held in a boxed value */
+    int tp = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = (const char *)(void *)(", tp); emit_expr(c, id, b);
+    buf_printf(b, "); _t%d ? _t%d : (const char *)&sp_catch_nil_tag; })", tp, tp);
     return 1;
   }
   if (t == TY_POLY) {
@@ -2620,11 +2624,21 @@ int emit_catch_tag(Compiler *c, int id, Buf *b) {
     buf_puts(b, "(const char *)(intptr_t)("); emit_expr(c, id, b); buf_puts(b, ")");
     return 1;
   }
-  /* A Float/boolean/nil/Bignum tag would emit a non-pointer (or a struct)
-     into the const char* tag slot -- invalid C, and (0/1 truncation) a wrong
-     match. These are vanishingly rare as catch/throw tags; reject loudly
-     rather than miscompile. */
-  unsupported(c, id, "catch/throw with a Float, boolean, nil, or Bignum tag (use a Symbol, String, Integer, or object tag)");
+  /* nil, true and false are single objects in CRuby, so they match by
+     identity: each is the address of its own marker. */
+  if (t == TY_NIL) {
+    buf_puts(b, "((void)("); emit_expr(c, id, b); buf_puts(b, "), (const char *)&sp_catch_nil_tag)");
+    return 1;
+  }
+  if (t == TY_BOOL) {
+    buf_puts(b, "(("); emit_expr(c, id, b);
+    buf_puts(b, ") ? (const char *)&sp_catch_true_tag : (const char *)&sp_catch_false_tag)");
+    return 1;
+  }
+  /* A Float/Bignum tag would emit a non-pointer (or a struct) into the
+     const char* tag slot -- invalid C. These are vanishingly rare as
+     catch/throw tags; reject loudly rather than miscompile. */
+  unsupported(c, id, "catch/throw with a Float or Bignum tag (use a Symbol, String, Integer, nil, boolean, or object tag)");
   return 0;
 }
 /* A key whose static kind can never be in a typed hash's table: a String
