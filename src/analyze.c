@@ -4173,19 +4173,160 @@ static void desugar_enumerator_produce(Compiler *c) {
 
 /* An endless String range (`("a"..)`) iterates by String#succ forever, so it
    has no element array for the String-range methods to ride: they raised
-   RangeError. Its iteration, as a literal receiver, is rewritten (before
-   desugar_enumerator_produce) onto the generator that walks the same
-   sequence:
+   RangeError. Its iteration is rewritten (before desugar_enumerator_produce)
+   onto the generator that walks the same sequence:
      ("a"..).take(3)     -> Enumerator.produce("a") { |__sv| __sv.succ }.take(3)
      ("a"..).step(2) { } -> Enumerator.produce("a") { |__sv| 2.times { __sv = __sv.succ }; __sv }.each { }
-   A step that is not a positive Integer literal is left alone. */
+     for s in ("a"..)    -> __esr = "a"; while true; s = __esr; __esr = __esr.succ; ...; end
+   The range is a literal at the call, or a local that its scope only ever
+   assigns such a literal (then the walk starts at `r.begin`). A step is a
+   positive Integer literal, or a local or constant read; one that is not
+   positive at run time repeats the first member, as CRuby's does. */
+static int esr_strip_parens(const NodeTable *nt, int n) {
+  while (n >= 0 && nt_kind(nt, n) == NK_ParenthesesNode) {
+    int pb = nt_ref(nt, n, "body");
+    int pn = 0;
+    const int *pv = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
+    n = pv && pn == 1 ? pv[0] : -1;
+  }
+  return n;
+}
+
+/* the endless String range literal `n` is, under any parentheses, or -1 */
+static int esr_literal(const NodeTable *nt, int n) {
+  n = esr_strip_parens(nt, n);
+  if (n < 0 || nt_kind(nt, n) != NK_RangeNode || nt_ref(nt, n, "right") >= 0) return -1;
+  int left = nt_ref(nt, n, "left");
+  if (left < 0 || (nt_kind(nt, left) != NK_StringNode &&
+                   nt_kind(nt, left) != NK_InterpolatedStringNode)) return -1;
+  return n;
+}
+
+/* the node opening the local scope `n` is in: a def or a class body, or -1
+   for the top level. A block shares its scope's locals. */
+static int esr_scope(const NodeTable *nt, const int *par, int n) {
+  for (int p = par[n]; p >= 0; p = par[p]) {
+    const char *t = nt_type(nt, p);
+    if (t && (sp_streq(t, "DefNode") || sp_streq(t, "ClassNode") ||
+              sp_streq(t, "ModuleNode") || sp_streq(t, "SingletonClassNode"))) return p;
+  }
+  return -1;
+}
+
+/* whether node `n` binds the local `name` in some way: a write or a target,
+   an operator write, or a parameter of any kind */
+static int esr_binds(const NodeTable *nt, int n, const char *name) {
+  const char *t = nt_type(nt, n);
+  if (!t) return 0;
+  size_t tl = strlen(t);
+  int binder = (strncmp(t, "LocalVariable", 13) == 0 && !sp_streq(t, "LocalVariableReadNode")) ||
+               (tl > 13 && sp_streq(t + tl - 13, "ParameterNode")) ||
+               sp_streq(t, "BlockLocalVariableNode");
+  if (!binder) return 0;
+  const char *nm = nt_str(nt, n, "name");
+  return nm && sp_streq(nm, name);
+}
+
+typedef struct { int *w; int *sc; int n; int *par; } EsrLocals;
+
+/* whether `read` reads a local its scope only ever assigns an endless String
+   range literal */
+static int esr_local_read(const NodeTable *nt, const EsrLocals *L, int read) {
+  if (L->n == 0 || read < 0 || nt_kind(nt, read) != NK_LocalVariableReadNode) return 0;
+  const char *nm = nt_str(nt, read, "name");
+  if (!nm) return 0;
+  int sc = esr_scope(nt, L->par, read);
+  for (int i = 0; i < L->n; i++)
+    if (L->w[i] >= 0 && L->sc[i] == sc && sp_streq(nt_str(nt, L->w[i], "name"), nm)) return 1;
+  return 0;
+}
+
+/* where the walk starts: the literal's begin, moved out of the range, or
+   `local.begin` */
+static int esr_seed(NodeTable *nt, int rng, int lread) {
+  if (rng >= 0) {
+    int left = nt_ref(nt, rng, "left");
+    nt_node_set_ref(nt, rng, "left", -1);
+    return left;
+  }
+  char nm[128];
+  snprintf(nm, sizeof nm, "%s", nt_str(nt, lread, "name"));
+  return te_call(nt, te_lvread(nt, nm), "begin", -1, -1);
+}
+
+/* a fresh read of the same local or constant, for a step used more than once */
+static int esr_step_read(NodeTable *nt, int kind, const char *name) {
+  return kind == NK_ConstantReadNode ? te_const(nt, name) : te_lvread(nt, name);
+}
+
 static void desugar_endless_str_range_iter(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   static const char *const iters[] = {
     "each", "first", "take", "lazy", "each_slice", "each_cons", "each_with_index",
     "find", "detect", "find_index", "take_while", "step", "%", NULL };
   int n0 = nt->count;
+  /* the locals written an endless String range literal, each dropped when
+     its scope binds the name any other way (a parameter, another value) */
+  EsrLocals L = { NULL, NULL, 0, NULL };
+  for (int id = 0; id < n0; id++)
+    if (nt_kind(nt, id) == NK_LocalVariableWriteNode && esr_literal(nt, nt_ref(nt, id, "value")) >= 0) {
+      L.w = realloc(L.w, sizeof(int) * (size_t)(L.n + 1));
+      L.w[L.n++] = id;
+    }
+  if (L.n > 0) {
+    L.par = an_parent_map(nt);
+    L.sc = malloc(sizeof(int) * (size_t)L.n);
+    if (!L.par || !L.sc) L.n = 0;
+    for (int i = 0; i < L.n; i++) L.sc[i] = esr_scope(nt, L.par, L.w[i]);
+    for (int id = 0; id < n0 && L.n > 0; id++) {
+      if (nt_kind(nt, id) == NK_LocalVariableWriteNode && esr_literal(nt, nt_ref(nt, id, "value")) >= 0)
+        continue;
+      for (int i = 0; i < L.n; i++) {
+        if (L.w[i] < 0 || !esr_binds(nt, id, nt_str(nt, L.w[i], "name"))) continue;
+        int sc = esr_scope(nt, L.par, id);
+        char nm[128];
+        snprintf(nm, sizeof nm, "%s", nt_str(nt, L.w[i], "name"));
+        for (int j = 0; j < L.n; j++)
+          if (L.w[j] >= 0 && L.sc[j] == sc && sp_streq(nt_str(nt, L.w[j], "name"), nm)) L.w[j] = -1;
+      }
+    }
+  }
   for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) == NK_ForNode) {
+      int idx = nt_ref(nt, id, "index");
+      int coll = nt_ref(nt, id, "collection");
+      if (idx < 0 || nt_kind(nt, idx) != NK_LocalVariableTargetNode || coll < 0) continue;
+      int rng = esr_literal(nt, coll);
+      int lread = rng < 0 && esr_local_read(nt, &L, esr_strip_parens(nt, coll)) ? esr_strip_parens(nt, coll) : -1;
+      if (rng < 0 && lread < 0) continue;
+      char iv[128], sv[48];
+      snprintf(iv, sizeof iv, "%s", nt_str(nt, idx, "name"));
+      snprintf(sv, sizeof sv, "__esr_%d", id);
+      int seedw = te_lvwrite(nt, sv, esr_seed(nt, rng, lread));
+      int body = nt_ref(nt, id, "statements");
+      int on = 0; const int *ob = body >= 0 ? nt_arr(nt, body, "body", &on) : NULL;
+      int *wb = malloc(sizeof(int) * (size_t)(on + 2));
+      if (!wb) continue;
+      wb[0] = te_lvwrite(nt, iv, te_lvread(nt, sv));
+      wb[1] = te_lvwrite(nt, sv, te_call(nt, te_lvread(nt, sv), "succ", -1, -1));
+      ob = body >= 0 ? nt_arr(nt, body, "body", &on) : NULL;
+      for (int i = 0; i < on; i++) wb[i + 2] = ob[i];
+      int wst = nt_new_node(nt, "StatementsNode");
+      nt_node_set_arr(nt, wst, "body", wb, on + 2);
+      free(wb);
+      int wh = nt_new_node(nt, "WhileNode");
+      nt_node_set_ref(nt, wh, "predicate", nt_new_node(nt, "TrueNode"));
+      nt_node_set_ref(nt, wh, "statements", wst);
+      int seq[2] = { seedw, wh };
+      int bst = nt_new_node(nt, "StatementsNode");
+      nt_node_set_arr(nt, bst, "body", seq, 2);
+      nt_node_set_type(nt, id, "BeginNode");
+      nt_node_set_ref(nt, id, "index", -1);
+      nt_node_set_ref(nt, id, "collection", -1);
+      nt_node_set_ref(nt, id, "statements", bst);
+      comp_grow_node_arrays(c);
+      continue;
+    }
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     int recv = nt_ref(nt, id, "receiver");
@@ -4193,35 +4334,39 @@ static void desugar_endless_str_range_iter(Compiler *c) {
     int it = 0;
     for (int j = 0; iters[j]; j++) if (sp_streq(nm, iters[j])) { it = 1; break; }
     if (!it) continue;
-    int rng = recv;
-    while (rng >= 0 && nt_kind(nt, rng) == NK_ParenthesesNode) {
-      int pb = nt_ref(nt, rng, "body");
-      int pn = 0;
-      const int *pv = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
-      rng = pv && pn == 1 ? pv[0] : -1;
-    }
-    if (rng < 0 || nt_kind(nt, rng) != NK_RangeNode || nt_ref(nt, rng, "right") >= 0) continue;
-    int left = nt_ref(nt, rng, "left");
-    if (left < 0 || (nt_kind(nt, left) != NK_StringNode &&
-                     nt_kind(nt, left) != NK_InterpolatedStringNode)) continue;
+    int rng = esr_literal(nt, recv);
+    int lread = rng < 0 && esr_local_read(nt, &L, esr_strip_parens(nt, recv)) ? esr_strip_parens(nt, recv) : -1;
+    if (rng < 0 && lread < 0) continue;
     int args = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     /* `first` bare is the begin endpoint, which the range answers itself */
     if (sp_streq(nm, "first") && an == 0) continue;
     long long step = 1;
     int is_step = sp_streq(nm, "step") || sp_streq(nm, "%");
+    int skind = -1;
+    char sname[128] = "";
     if (is_step) {
-      if (an != 1 || !av || nt_kind(nt, av[0]) != NK_IntegerNode) continue;
-      step = nt_int(nt, av[0], "value", 0);
-      if (step <= 0) continue;
+      if (an != 1 || !av) continue;
+      NodeKind ak = nt_kind(nt, av[0]);
+      if (ak == NK_IntegerNode) {
+        step = nt_int(nt, av[0], "value", 0);
+        if (step <= 0) continue;
+      }
+      else if (ak == NK_LocalVariableReadNode || ak == NK_ConstantReadNode) {
+        skind = ak;
+        snprintf(sname, sizeof sname, "%s", nt_str(nt, av[0], "name"));
+      }
+      else continue;
     }
+    int each = sp_streq(nm, "each");
     int nxt = te_call(nt, te_lvread(nt, "__sv"), "succ", -1, -1);
     int pbody;
-    if (step == 1) pbody = te_stmts1(nt, nxt);
+    if (step == 1 && skind < 0) pbody = te_stmts1(nt, nxt);
     else {
       int adv = te_stmts1(nt, te_lvwrite(nt, "__sv", nxt));
       int tblk = nt_new_node(nt, "BlockNode"); nt_node_set_ref(nt, tblk, "body", adv);
-      int stmts[2] = { te_call(nt, te_int(nt, step), "times", -1, tblk), te_lvread(nt, "__sv") };
+      int by = skind >= 0 ? esr_step_read(nt, skind, sname) : te_int(nt, step);
+      int stmts[2] = { te_call(nt, by, "times", -1, tblk), te_lvread(nt, "__sv") };
       pbody = nt_new_node(nt, "StatementsNode"); nt_node_set_arr(nt, pbody, "body", stmts, 2);
     }
     int preq = nt_new_node(nt, "RequiredParameterNode"); nt_node_set_str(nt, preq, "name", "__sv");
@@ -4230,17 +4375,17 @@ static void desugar_endless_str_range_iter(Compiler *c) {
     int pblk = nt_new_node(nt, "BlockNode");
     nt_node_set_ref(nt, pblk, "parameters", pbp);
     nt_node_set_ref(nt, pblk, "body", pbody);
-    nt_node_set_ref(nt, rng, "left", -1);
+    int seed = esr_seed(nt, rng, lread);
     /* a blockless each or step is the generator itself */
-    if ((sp_streq(nm, "each") || is_step) && nt_ref(nt, id, "block") < 0) {
+    if ((each || is_step) && nt_ref(nt, id, "block") < 0) {
       nt_node_set_ref(nt, id, "receiver", te_const(nt, "Enumerator"));
       nt_node_set_str(nt, id, "name", "produce");
-      nt_node_set_ref(nt, id, "arguments", te_args1(nt, left));
+      nt_node_set_ref(nt, id, "arguments", te_args1(nt, seed));
       nt_node_set_ref(nt, id, "block", pblk);
       comp_grow_node_arrays(c);
       continue;
     }
-    int prod = te_call(nt, te_const(nt, "Enumerator"), "produce", te_args1(nt, left), pblk);
+    int prod = te_call(nt, te_const(nt, "Enumerator"), "produce", te_args1(nt, seed), pblk);
     nt_node_set_ref(nt, id, "receiver", prod);
     /* the stride lives in the generator: what is left is the walk */
     if (is_step) {
@@ -4249,6 +4394,7 @@ static void desugar_endless_str_range_iter(Compiler *c) {
     }
     comp_grow_node_arrays(c);
   }
+  free(L.w); free(L.sc); free(L.par);
 }
 
 /* Synthesize, on every class that defines an instance `#each` that yields, a
