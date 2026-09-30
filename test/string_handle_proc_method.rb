@@ -40,6 +40,25 @@ s = +"h"; e = [2]; ->(t, u) { t << X }.call(*[s], *e); p s.size
 s = +"l"; a = [s, 2]; ->(t, u) { t << X }.call(*a); p s.size, a[0].size
 s = +"i"; s0 = s; ->(t, u) { t << X }.call(s, (s = +"j"; 1)); p s0.size, s.size
 
+# a proc handing its String on to a method that appends: through an ivar
+# receiver, a local object, a class constant, past a splat and beside a
+# keyword; and a single-element Array local splatted into a proc
+class Log
+  def write(buf) = (buf << X; nil)
+  def self.cwrite(buf) = (buf << X; nil)
+end
+class Holder
+  def initialize = (@log = Log.new)
+  def fn = ->(t) { @log.write(t) }
+end
+s = +"n"; Holder.new.fn.call(s); p s.size
+lg = Log.new; s = +"o"; ->(t) { lg.write(t) }.call(s); p s.size
+s = +"p"; ->(t) { Log.cwrite(t) }.call(s); p s.size
+def wr(a, b, buf) = (buf << X; nil)
+def wk(buf, n: 0) = (buf << X; nil)
+s = +"q"; ->(t) { wr(*[1, 2], t) }.call(s); ->(t) { wk(t, n: 1) }.call(s); p s.size
+s = +"r"; a1 = [s]; proc { |t| t << X }.call(*a1); p s.size, a1[0].size
+
 # a reading proc and a storing one see the bytes, never freed memory
 s = +"k"; keep = proc { |t| KEEP << t.upcase; KEEP << t; t.size }
 f.call(s); keep.call(s)

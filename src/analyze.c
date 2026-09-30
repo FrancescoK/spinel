@@ -16189,6 +16189,63 @@ static int dyn_name_at(const char **pn, int np, const char *vn) {
    than its bytes (*kept). A name handed on to a user method whose parameter
    there is lent, the handle or appended to counts as appended too: the
    method appends to the one String. */
+static int dyn_scopes_named(Compiler *c, const char *nm);
+/* Is parameter j of method mi lent, the handle, or appended to? */
+static int dyn_param_appended(Compiler *c, int mi, int j) {
+  Scope *m = &c->scopes[mi];
+  LocalVar *q = j < m->nparams && m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
+  return q && (q->byref_out || (q->type == TY_STRBUF && q->str_shared) || an_param_mutated_in_place(c, mi, j));
+}
+/* Does call `call` into method mi bind argument `arg` to a parameter the
+   method appends to? The argument is placed by the call's own layout
+   (arg_layout_param_node), so a splat or a keyword ahead of it does not
+   shift it onto another parameter. An argument the layout cannot place (it
+   rides a splat's positions) counts when any parameter of the method is
+   appended to. */
+static int dyn_scope_appends_arg(Compiler *c, int mi, int call, int arg) {
+  Scope *m = &c->scopes[mi];
+  int any = 0;
+  for (int j = 0; j < m->nparams; j++) {
+    int an = arg_layout_param_node(c, m, call, j, NULL);
+    if (an == arg) return dyn_param_appended(c, mi, j);
+    if (!any && dyn_param_appended(c, mi, j)) any = 1;
+  }
+  const NodeTable *nt = c->nt;
+  int a = nt_ref(nt, call, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  for (int i = 0; i < ac; i++) if (nt_kind(nt, av[i]) == NK_SplatNode) return any;
+  return 0;
+}
+/* Does a call in a proc's or method's body hand the argument `arg` on to a
+   user method that appends to the parameter it binds? The callee is the one
+   the receiver names: self's class for a bare call, an object's class, a
+   class constant's class method. A receiver the analysis cannot pin (a boxed
+   value, a method's value) may be any method of the name, and counts when
+   one of them appends to what the argument binds; a read-only method of the
+   name does not. A typed builtin receiver is not a user method's. */
+static int dyn_call_hands_on(Compiler *c, int call, const char *un, int ur, int arg) {
+  const NodeTable *nt = c->nt;
+  int mi = -1;
+  if (ur < 0 || nt_kind(nt, ur) == NK_SelfNode) {
+    Scope *encl = comp_scope_of(c, call);
+    if (encl && encl->class_id >= 0)
+      mi = encl->is_cmethod ? comp_cmethod_in_chain(c, encl->class_id, un, NULL)
+                            : comp_method_in_chain(c, encl->class_id, un, NULL);
+  }
+  else {
+    NodeKind rk = nt_kind(nt, ur);
+    TyKind rt = comp_ntype(c, ur);
+    int ci = (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) && nt_str(nt, ur, "name")
+               ? comp_class_index(c, nt_str(nt, ur, "name")) : -1;
+    if (ci >= 0) mi = comp_cmethod_in_chain(c, ci, un, NULL);
+    else if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), un, NULL);
+    else if (rt != TY_POLY && rt != TY_UNKNOWN) return 0;
+  }
+  if (mi >= 0) return dyn_scope_appends_arg(c, mi, call, arg);
+  for (int m = dyn_scopes_named(c, un); m >= 0; m = g_dyn.snext[m])
+    if (dyn_scope_appends_arg(c, m, call, arg)) return 1;
+  return 0;
+}
 static void dyn_body_scan(Compiler *c, int node, const char **pn, int np, unsigned *app, unsigned *kept) {
   const NodeTable *nt = c->nt;
   if (node < 0) return;
@@ -16216,7 +16273,6 @@ static void dyn_body_scan(Compiler *c, int node, const char **pn, int np, unsign
     else if (j >= 0 && dyn_pure_read_name(un)) skip_recv = ur;
     int a = nt_ref(nt, node, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-    int mi = un && (ur < 0 || nt_kind(nt, ur) == NK_SelfNode) ? an_any_scope_by_name(c, un) : -1;
     for (int i = 0; i < ac; i++) {
       if (nt_kind(nt, av[i]) != NK_LocalVariableReadNode) continue;
       int ji = dyn_name_at(pn, np, nt_str(nt, av[i], "name"));
@@ -16224,10 +16280,7 @@ static void dyn_body_scan(Compiler *c, int node, const char **pn, int np, unsign
       /* printed: the bytes are all that is read */
       if (ur < 0 && un && (sp_streq(un, "puts") || sp_streq(un, "print"))) continue;
       *kept |= 1u << ji;
-      if (mi < 0 || i >= c->scopes[mi].nparams) continue;
-      LocalVar *q = c->scopes[mi].pnames[i] ? scope_local(&c->scopes[mi], c->scopes[mi].pnames[i]) : NULL;
-      if (q && (q->byref_out || (q->type == TY_STRBUF && q->str_shared) || an_param_mutated_in_place(c, mi, i)))
-        *app |= 1u << ji;
+      if (un && dyn_call_hands_on(c, node, un, ur, av[i])) *app |= 1u << ji;
     }
     int nr = nt_num_refs(nt, node);
     for (int i = 0; i < nr; i++) {
@@ -20996,6 +21049,7 @@ void analyze_program(Compiler *c) {
     ch |= infer_global_const_types(c);
     ch |= infer_multiwrite_const_types(c);
     ch |= promote_shared_stored_strings(c);
+    ch |= promote_dyncall_string_args(c);
     ch |= promote_append_accumulators(c);
     ch |= infer_ivar_types(c);
     ch |= infer_cvar_types(c);
