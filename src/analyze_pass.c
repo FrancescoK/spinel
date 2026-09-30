@@ -7871,12 +7871,16 @@ static TyKind bs_join_val(Compiler *c, TyKind a, int v, char *flags) {
    and the count bounds. The binders lay a splat out at run time, so any
    positional may read an element of it. An array literal's plain elements
    (the splat-then-values rewrite leaves `yield(*e, 7)` as `*[*e, 7]`) are
-   values sure to be there, though; any other operand's length is the run
-   time's. An operand not typed yet says nothing this round. A literal nil
-   among them is recorded in *flags (bs_join_val). */
+   values sure to be there, though, and so are those of a local that holds
+   one whose length nothing can change (splat_local_sure_lit), which spreads
+   as that literal does; any other operand's length is the run time's. An
+   operand not typed yet says nothing this round. A literal nil among them
+   is recorded in *flags (bs_join_val). */
 static void bs_splat(Compiler *c, int x, int np, TyKind *e, char *flags, int *nmin, int *nmax) {
   const NodeTable *nt = c->nt;
   *nmax = np + 1;
+  int lit = splat_local_sure_lit(c, x);
+  if (lit >= 0) x = lit;
   if (x >= 0 && nt_kind(nt, x) == NK_ArrayNode) {
     int en = 0; const int *el = nt_arr(nt, x, "elements", &en);
     for (int j = 0; j < en; j++) {
@@ -10570,7 +10574,9 @@ static int pure_block_param(Compiler *c, Scope *s, const char *name) {
    under promote, where an Integer is boxed anyway. A value not typed yet
    says nothing this round: boxed then, the parameter stayed boxed for
    good. A rest is the array that binder builds, and a `**kw` rest its
-   hash. */
+   hash. A parameter the sites boxed is marked site_boxed, 1 when they did
+   it alone and 2 when something had boxed it first: the sites may still
+   narrow once the fixpoint is over (narrow_site_boxed_block_params). */
 int block_settle_types(Compiler *c, int blk, const BlockSig *s,
                        const TyKind *pos, const char *absent, const TyKind *kws) {
   Scope *bs = comp_scope_of(c, blk);
@@ -10587,7 +10593,7 @@ int block_settle_types(Compiler *c, int blk, const BlockSig *s,
     int nil_int = i < s->P + s->O && fl && (at == TY_INT || at == TY_FLOAT) && !g_promote_mode;
     if ((fl & BS_ABSENT) && !nil_int) at = ty_unify(at, TY_POLY);
     if ((fl & BS_NIL) && (at == TY_INT || at == TY_FLOAT) && !nil_int) at = TY_POLY;
-    TyKind m = ty_unify(lv->type, at);
+    TyKind was = lv->type, m = ty_unify(lv->type, at);
     /* what the sites bind says what the parameter IS; an array kind the
        usage pass guessed from a push inside the block (`s << "z"` on a
        yielded String read as "s is a string array") is not evidence about
@@ -10598,6 +10604,7 @@ int block_settle_types(Compiler *c, int blk, const BlockSig *s,
         at != TY_POLY && pure_block_param(c, bs, bp))
       m = at;
     if (nil_int && m == at && !lv->nullable_int) { lv->nullable_int = 1; changed = 1; }
+    if (m == TY_POLY && !lv->site_boxed) lv->site_boxed = at == TY_POLY && was != TY_POLY ? 1 : 2;
     if (m != lv->type) { lv->type = m; changed = 1; }
   }
   const char *rest[2] = { block_rest_name(c, blk), block_kwrest_name(c, blk) };
@@ -10622,10 +10629,142 @@ static int block_leaves_unify(Compiler *c, int block, Scope *s, TyKind t) {
   return changed;
 }
 
+/* What binds `block`, handed by call `id` to method `mi` whose sites are
+   `ym`'s (its yields when `yields`, else its &block's calls): pos/absent
+   from every site (block_site_types), posf/absentf from the calls the
+   method hands the block on to, and 1 when it is kept, so anything may call
+   it (block_reach). The caller frees the four arrays. */
+static int block_bind_plan(Compiler *c, int id, int block, int mi, int ym, int yields, BlockSig *s,
+                           TyKind **pos, char **absent, TyKind **posf, char **absentf) {
+  const NodeTable *nt = c->nt;
+  const int *sites = NULL;
+  int ns = block_sites(c, ym, &sites);
+  block_sig(c, nt_ref(nt, block, "parameters"), 0, s);
+  int np = s->P + s->O + s->Q;
+  *pos = calloc((size_t)(np + s->nk + 1), sizeof(TyKind));
+  *absent = calloc((size_t)np + 1, 1);
+  /* a yielding method with no site in its own scope binds no values:
+     every parameter nil or its default */
+  for (int k = 0; k < ns || (yields && k == 0); k++) {
+    int ya = k < ns ? block_site_args(c, ym, sites[k], mi == ym ? id : -1) : -1;
+    int yc = 0;
+    const int *yv = ya >= 0 ? nt_arr(nt, ya, "arguments", &yc) : NULL;
+    block_site_types(c, s, yv, yc, *pos, *absent, *pos + np);
+  }
+  /* the method may also hand the block on, or keep it: those bind it
+     too, and a kept one can be called with anything (block_reach) */
+  char *seen = calloc((size_t)c->nscopes + 1, 1);
+  *posf = calloc((size_t)(np + s->nk + 1), sizeof(TyKind));
+  *absentf = calloc((size_t)np + 1, 1);
+  int kept = block_reach(c, ym, s, *posf, *absentf, *posf + np, seen, 0, 0);
+  free(seen);
+  return kept;
+}
+
+/* The blocks the last infer_block_params settled from a yielding method's
+   sites (block_settle_types): the call, the block, the method it resolved
+   and the one whose yields bind it. narrow_site_boxed_block_params binds
+   them again once the fixpoint is over. */
+static int *bsn_v, bsn_n, bsn_cap;
+static void bsn_note(int id, int block, int mi, int ym) {
+  if (bsn_n + 4 > bsn_cap) {
+    bsn_cap = bsn_cap ? bsn_cap * 2 : 64;
+    bsn_v = realloc(bsn_v, sizeof(int) * (size_t)bsn_cap);
+  }
+  bsn_v[bsn_n++] = id; bsn_v[bsn_n++] = block; bsn_v[bsn_n++] = mi; bsn_v[bsn_n++] = ym;
+}
+
+/* A table's rows spread into a block (`table.each { |row| yield(*row) }`)
+   are poly all through the fixpoint: the nested Integer and Float array
+   kinds show up only after it (narrow_object_arrays, and the locals and
+   parameters read out of them). The parameters `yield(*row)` binds were
+   settled from the boxed row and, a parameter only widening, stayed boxed.
+   Once the rows are typed, bind the blocks block_settle_types settled from
+   a yielding method's sites again (bsn_note) and settle a parameter the
+   sites alone boxed (site_boxed 1) the way it settles an Integer or a Float
+   with a nil or a missing value: an sp_int or an sp_float, marked nullable
+   when a site may leave it without one. Only a leading required or an
+   optional, and only when every block binding the local agrees (block
+   parameters share their method's locals, so `|a, b|` in two blocks is one
+   slot), nothing writes it, and no call the block is handed on to binds it
+   otherwise. What was typed from the box stays the box, which the narrowed
+   value boxes into. Promote boxes an Integer anyway. Returns the count. */
+int narrow_site_boxed_block_params(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (g_promote_mode || bsn_n == 0) return 0;
+  block_sites_index(c);
+  int cap = 16, nc = 0;
+  LocalVar **cl = malloc(sizeof(LocalVar *) * (size_t)cap);
+  TyKind *ct = malloc(sizeof(TyKind) * (size_t)cap);
+  char *cn = malloc((size_t)cap), *cbad = malloc((size_t)cap);
+  int *cbind = malloc(sizeof(int) * (size_t)cap), *csc = malloc(sizeof(int) * (size_t)cap);
+  for (int r = 0; r < bsn_n; r += 4) {
+    int id = bsn_v[r], block = bsn_v[r + 1], mi = bsn_v[r + 2], ym = bsn_v[r + 3];
+    BlockSig s;
+    block_sig(c, nt_ref(nt, block, "parameters"), 0, &s);
+    Scope *bs = comp_scope_of(c, block);
+    int any = 0;
+    for (int i = 0; i < s.P + s.O && !any; i++) {
+      const char *bp = block_sig_name(c, &s, i);
+      LocalVar *lv = bp ? scope_local(bs, bp) : NULL;
+      any = lv && lv->type == TY_POLY && lv->site_boxed == 1;
+    }
+    if (!any) continue;
+    TyKind *pos, *posf; char *absent, *absentf;
+    int kept = block_bind_plan(c, id, block, mi, ym, 1, &s, &pos, &absent, &posf, &absentf);
+    for (int i = 0; i < s.P + s.O; i++) {
+      const char *bp = block_sig_name(c, &s, i);
+      LocalVar *lv = bp ? scope_local(bs, bp) : NULL;
+      if (!lv || lv->type != TY_POLY || lv->site_boxed != 1) continue;
+      TyKind at = pos[i];
+      int bad = kept || !blkp_binds_param(c, block, bp) || absentf[i] ||
+                (at != TY_INT && at != TY_FLOAT) ||
+                (posf[i] != TY_UNKNOWN && ty_unify(at, posf[i]) != at);
+      int k = 0;
+      while (k < nc && cl[k] != lv) k++;
+      if (k == nc) {
+        if (nc == cap) {
+          cap *= 2;
+          cl = realloc(cl, sizeof(LocalVar *) * (size_t)cap); ct = realloc(ct, sizeof(TyKind) * (size_t)cap);
+          cn = realloc(cn, (size_t)cap); cbad = realloc(cbad, (size_t)cap);
+          cbind = realloc(cbind, sizeof(int) * (size_t)cap); csc = realloc(csc, sizeof(int) * (size_t)cap);
+        }
+        cl[nc] = lv; ct[nc] = at; cn[nc] = 0; cbad[nc] = 0; cbind[nc] = 0;
+        csc[nc] = (int)(bs - c->scopes); nc++;
+      }
+      if (bad || ct[k] != at) cbad[k] = 1;
+      if (absent[i]) cn[k] = 1;
+      cbind[k]++;
+    }
+    free(pos); free(absent); free(posf); free(absentf);
+  }
+  int n = 0;
+  for (int k = 0; k < nc; k++) {
+    LocalVar *lv = cl[k];
+    if (cbad[k] || lv->is_param || lv->rbs_seeded) continue;
+    int sc = csc[k], ok = 1, binders = 0;
+    for (int w = comp_lvw_first_sc(c, sc, lv->name); w >= 0 && ok; w = comp_lvw_next_sc(c, w)) {
+      const char *wn = nt_str(nt, w, "name");
+      if (w < c->node_cap && c->nscope[w] == sc && wn && sp_streq(wn, lv->name)) ok = 0;
+    }
+    const NodeKind kinds[2] = { NK_BlockNode, NK_LambdaNode };
+    for (int q = 0; q < 2 && ok; q++)
+      for (int b = comp_kind_first(c, kinds[q]); b >= 0; b = comp_kind_next(c, b))
+        if (b < c->node_cap && c->nscope[b] == sc && blkp_binds_param(c, b, lv->name)) binders++;
+    if (!ok || binders != cbind[k]) continue;
+    lv->type = ct[k];
+    if (cn[k]) lv->nullable_int = 1;
+    n++;
+  }
+  free(cl); free(ct); free(cn); free(cbad); free(cbind); free(csc);
+  return n;
+}
+
 int infer_block_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
   block_sites_index(c);
+  bsn_n = 0;
 
   /* Splat-rest / trailing-post params of proc literals: register them on the
      proc's scope so they are locals, not "uncaptured outer variables". The
@@ -11233,28 +11372,14 @@ int infer_block_params(Compiler *c) {
          literal's. */
       int yields = yld_mi >= 0 && c->scopes[yld_mi].yields;
       if (yields || (mi >= 0 && c->scopes[mi].blk_param && c->scopes[mi].blk_param[0])) {
-        const int *sites = NULL;
-        int ns = block_sites(c, yields ? yld_mi : mi, &sites);
         BlockSig s;
-        block_sig(c, nt_ref(nt, block, "parameters"), 0, &s);
+        TyKind *pos, *posf; char *absent, *absentf;
+        int kept = block_bind_plan(c, id, block, mi, yields ? yld_mi : mi, yields, &s, &pos, &absent, &posf, &absentf);
         int np = s.P + s.O + s.Q;
-        TyKind *pos = calloc((size_t)(np + s.nk + 1), sizeof(TyKind));
-        char *absent = calloc((size_t)np + 1, 1);
-        /* a yielding method with no site in its own scope binds no values:
-           every parameter nil or its default */
-        for (int k = 0; k < ns || (yields && k == 0); k++) {
-          int ya = k < ns ? block_site_args(c, yields ? yld_mi : mi, sites[k], mi == (yields ? yld_mi : mi) ? id : -1) : -1;
-          int yc = 0;
-          const int *yv = ya >= 0 ? nt_arr(nt, ya, "arguments", &yc) : NULL;
-          block_site_types(c, &s, yv, yc, pos, absent, pos + np);
+        if (yields) {
+          changed |= block_settle_types(c, block, &s, pos, absent, pos + np);
+          bsn_note(id, block, mi, yld_mi);
         }
-        /* the method may also hand the block on, or keep it: those bind it
-           too, and a kept one can be called with anything (block_reach) */
-        char *seen = calloc((size_t)c->nscopes + 1, 1);
-        TyKind *posf = calloc((size_t)(np + s.nk + 1), sizeof(TyKind));
-        char *absentf = calloc((size_t)np + 1, 1);
-        int kept = block_reach(c, yields ? yld_mi : mi, &s, posf, absentf, posf + np, seen, 0, 0);
-        if (yields) changed |= block_settle_types(c, block, &s, pos, absent, pos + np);
         else {
           Scope *bs = comp_scope_of(c, block);
           for (int k = 0; k < s.P; k++) {
@@ -11269,7 +11394,7 @@ int infer_block_params(Compiler *c) {
           }
         }
         changed |= block_params_widen(c, block, &s, kept, posf, absentf, posf + np);
-        free(pos); free(absent); free(posf); free(absentf); free(seen);
+        free(pos); free(absent); free(posf); free(absentf);
         continue;
       }
       /* A block handed to a user method that neither yields nor names a

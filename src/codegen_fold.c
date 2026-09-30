@@ -6610,6 +6610,13 @@ void emit_array_elem_at(TyKind at, int tmp, int elem_idx, Buf *b) {
     buf_printf(b, "(_t%d && %d < _t%d->len ? _t%d->data[%d] : sp_box_nil())", tmp, elem_idx, tmp, tmp, elem_idx);
 }
 
+/* The same element of a typed array temp the caller knows to hold it (a
+   splat of a local splat_local_sure_lit vouches for): no length test. */
+void emit_array_elem_sure(TyKind at, int tmp, int elem_idx, Buf *b) {
+  if (at == TY_INT_ARRAY) buf_printf(b, "_t%d->data[_t%d->start+%d]", tmp, tmp, elem_idx);
+  else buf_printf(b, "_t%d->data[%d]", tmp, elem_idx);
+}
+
 /* Emit a PolyArray containing elements from array temp `tmp` starting at `from_idx`,
    then the remaining positional args from argv[argv_from..pos_argc-1]. */
 void emit_rest_from_splat_and_argv(int tmp, TyKind at, int from_idx,

@@ -315,6 +315,7 @@ int block_settle_types(Compiler *c, int blk, const BlockSig *s,
                        const TyKind *pos, const char *absent, const TyKind *kws);
 int a_proc_params_node(Compiler *c, int create);
 int infer_block_params(Compiler *c);
+int narrow_site_boxed_block_params(Compiler *c);
 int desugar_to_proc_block_arg(Compiler *c);
 int desugar_proc_expr_block_arg(Compiler *c);
 int desugar_to_hash_splat(Compiler *c);

@@ -1457,6 +1457,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
      (auto-splat). Evaluate it once into a rooted temp and bind each param (and
      any rest param) from its elements rather than from the splat AST node. */
   int splat_tmp = -1; TyKind splat_at = TY_UNKNOWN;
+  int splat_sure = 0;   /* leading elements the splatted array surely holds */
   /* Keywords the block's keywords take turn the auto-splat off, empty ones
      too: CRuby spreads a lone Array only for a yield that passed none, bar
      the only-leading-requireds block, which takes no keywords (the `**h`
@@ -1574,6 +1575,14 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", splat_tmp);
       free(sb.p);
+      /* a local whose length nothing can change holds every element of the
+         literal it was assigned (splat_local_sure_lit): the parameters those
+         reach bind them without a length test, as the analysis bound them
+         without a nil */
+      if (inner != yargs[0] && (at == TY_INT_ARRAY || at == TY_FLOAT_ARRAY || at == TY_STR_ARRAY)) {
+        int lit = splat_local_sure_lit(c, inner);
+        if (lit >= 0) nt_arr(nt, lit, "elements", &splat_sure);
+      }
       /* the one value a splat leaves is auto-splatted, as a lone yielded
          Array is: `yield(*[[1, 2]])` into `|a, b|` binds 1 and 2 */
       if (inner != yargs[0] && at == TY_POLY_ARRAY && autosplat) {
@@ -1638,8 +1647,12 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
       TyKind bt = bl ? bl->type : TY_UNKNOWN;
       TyKind et = ty_array_elem(splat_at);
       Buf eb; memset(&eb, 0, sizeof eb);
-      emit_array_elem_at(splat_at, splat_tmp, k, &eb);
-      buf_printf(b, "(%d < (_t%d ? _t%d->len : 0) ? ", k, splat_tmp, splat_tmp);
+      int sure = k < splat_sure;
+      if (sure) emit_array_elem_sure(splat_at, splat_tmp, k, &eb);
+      else {
+        emit_array_elem_at(splat_at, splat_tmp, k, &eb);
+        buf_printf(b, "(%d < (_t%d ? _t%d->len : 0) ? ", k, splat_tmp, splat_tmp);
+      }
       if (bt == TY_POLY && et != TY_POLY && et != TY_UNKNOWN)
         emit_boxed_text(c, et, eb.p ? eb.p : "0", b);
       /* a nil element (`yield(*[1, nil])`) into a nullable Integer or
@@ -1652,7 +1665,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
         emit_unbox_text(c, bt, eb.p ? eb.p : "", b);
       else
         buf_puts(b, eb.p ? eb.p : "");
-      buf_printf(b, " : %s)", bt == TY_RANGE ? "(sp_Range){0}" : default_value(bt));
+      if (!sure) buf_printf(b, " : %s)", bt == TY_RANGE ? "(sp_Range){0}" : default_value(bt));
       free(eb.p);
     }
     else if (k < yc) {

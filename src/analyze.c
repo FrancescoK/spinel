@@ -17842,6 +17842,61 @@ static int splat_local_len(Compiler *c, int ex, int callid) {
   }
   return writes == 1 ? len : -1;
 }
+/* The array literal a splat of local `x` spreads, when its length is sure:
+   the method's own body assigns it that literal once, in a statement ahead
+   of the one holding the splat, and every other mention of it only indexes
+   it (`a[i]`) or spreads it again. Anything else -- another write, a call
+   on it, handing it to a method or to another local, which could all push
+   onto it -- and the length is the run time's. -1 then. Stricter than
+   splat_local_len, which does not ask that the write run first or that no
+   alias reaches the array; the binders read the elements without a length
+   test on the strength of this. */
+int splat_local_sure_lit(Compiler *c, int x) {
+  const NodeTable *nt = c->nt;
+  if (x < 0 || x >= c->node_cap || nt_kind(nt, x) != NK_LocalVariableReadNode) return -1;
+  const char *nm = nt_str(nt, x, "name");
+  int sc = c->nscope[x];
+  Scope *s = sc >= 0 && sc < c->nscopes ? &c->scopes[sc] : NULL;
+  if (!nm || !s || s->def_node < 0 || s->body < 0 || nt_kind(nt, s->body) != NK_StatementsNode) return -1;
+  LocalVar *lv = scope_local(s, nm);
+  if (!lv || lv->is_param || lv->is_block_param) return -1;
+  int wn = -1, lit = -1;
+  for (int w = comp_lvw_first_sc(c, sc, nm); w >= 0; w = comp_lvw_next_sc(c, w)) {
+    if (w >= c->node_cap || c->nscope[w] != sc) continue;
+    const char *n2 = nt_str(nt, w, "name");
+    if (!n2 || !sp_streq(n2, nm)) continue;
+    if (wn >= 0 || nt_kind(nt, w) != NK_LocalVariableWriteNode) return -1;
+    wn = w; lit = nt_ref(nt, w, "value");
+  }
+  if (wn < 0 || splat_lit_len(c, lit) < 0) return -1;
+  /* the write is a statement of the body itself, the splat in a later one */
+  int bn = 0; const int *bs = nt_arr(nt, s->body, "body", &bn);
+  int wi = -1, after = 0;
+  for (int j = 0; j < bn && !after; j++) {
+    if (bs[j] == wn) wi = j;
+    else if (wi >= 0 && a_subtree_contains(nt, bs[j], x, 0)) after = 1;
+  }
+  if (!after) return -1;
+  int reads = 0, seen = 0;
+  for (int r = comp_kind_first(c, NK_LocalVariableReadNode); r >= 0; r = comp_kind_next(c, r)) {
+    if (r >= c->node_cap || c->nscope[r] != sc) continue;
+    const char *n2 = nt_str(nt, r, "name");
+    if (n2 && sp_streq(n2, nm)) reads++;
+  }
+  for (int sp = comp_kind_first(c, NK_SplatNode); sp >= 0; sp = comp_kind_next(c, sp)) {
+    int e = nt_ref(nt, sp, "expression");
+    if (e < 0 || e >= c->node_cap || c->nscope[e] != sc || nt_kind(nt, e) != NK_LocalVariableReadNode) continue;
+    const char *n2 = nt_str(nt, e, "name");
+    if (n2 && sp_streq(n2, nm)) seen++;
+  }
+  for (int u = comp_scall_first(c, sc); u >= 0; u = comp_scall_next(c, u)) {
+    int r = nt_ref(nt, u, "receiver");
+    if (r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode) continue;
+    const char *n2 = nt_str(nt, r, "name"), *cn = nt_str(nt, u, "name");
+    if (n2 && sp_streq(n2, nm) && cn && sp_streq(cn, "[]")) seen++;
+  }
+  return reads == seen ? lit : -1;
+}
 /* How many arguments the builtin requires, for a splat whose length only the
    run time knows and that splat_dispatch_on_length declined (a block, `&.`, a
    user method of the name that cannot take every count). Only the required
@@ -21518,6 +21573,8 @@ void analyze_program(Compiler *c) {
   /* after the locals: a parameter can be fed an element the local rule has
      just narrowed, and both read the settled array types */
   narrow_params_from_arrays(c);
+  /* and a block parameter a splat of such a row binds (`yield(*row)`) */
+  narrow_site_boxed_block_params(c);
   /* An --rbs `Array[Class]` ivar seed the pass could not honour is said so,
      rather than dropped without a word (#4444): the array is used in a way
      its unboxed form has no emitter for, or read from outside the class's
