@@ -3660,8 +3660,18 @@ int infer_write_types(Compiler *c) {
              one -- already typed as an array, or written with one -- since a
              slot that is still settling (`@q = nil` before `@q = Queue.new`)
              reads UNKNOWN. */
-          if (grecv >= 0 && !ty_is_array(ci2->ivar_types[iv2]) &&
-              !ivar_has_array_write(c, &ivw_ix, tcls[ti], tiv[ti])) continue;
+          if (!ty_is_array(ci2->ivar_types[iv2]) &&
+              !ivar_has_array_write(c, &ivw_ix, tcls[ti], tiv[ti])) {
+            /* a subclass's slot reads UNKNOWN when only its superclass
+               writes the ivar: that class's writes say what it holds */
+            int arr = 0;
+            for (int pk = c->classes[tcls[ti]].parent; pk >= 0 && !arr; pk = c->classes[pk].parent) {
+              int piv = comp_ivar_index(&c->classes[pk], tiv[ti]);
+              arr = piv >= 0 && (ty_is_array(c->classes[pk].ivar_types[piv]) ||
+                                 ivar_has_array_write(c, &ivw_ix, pk, tiv[ti]));
+            }
+            if (!arr) continue;
+          }
         }
         /* An index write only reshapes a container the slot already is: the
            ivar's own writes decide what it holds, and a typeless slot keeps
