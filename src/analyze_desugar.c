@@ -6225,9 +6225,10 @@ static int stored_enum_write(Compiler *c, int id, int n0) {
   if (nw != 1 || nt_kind(nt, w) != NK_LocalVariableWriteNode) return -1;
   int v = (int)nt_int(nt, w, "enum_src", nt_ref(nt, w, "value"));
   const char *m = nt_str(nt, v, "name");
-  int k = 0;
-  if (nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0 || nt_ref(nt, v, "arguments") >= 0 ||
-      nt_ref(nt, v, "receiver") < 0 || !m) return -1;
+  int an = 0, k = 0; const int *av = nt_arr(nt, nt_ref(nt, v, "arguments"), "arguments", &an);
+  if (nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0 || !m || an > sp_streq(m, "find") ||
+      (an && (nt_kind(nt, av[0]) == NK_SplatNode || nt_kind(nt, av[0]) == NK_KeywordHashNode)) ||
+      nt_ref(nt, v, "receiver") < 0) return -1;
   while (meths[k] && !sp_streq(m, meths[k])) k++;
   if (!meths[k] || program_defines_name(nt, n0, m)) return -1;
   for (int p = 0; p < n0; p++) {
@@ -6243,19 +6244,27 @@ void desugar_stored_enum_each(Compiler *c) {
   for (int id = 0; id < n0; id++) {
     int w = nt_kind(nt, id) == NK_CallNode ? stored_enum_write(c, id, n0) : -1;
     if (w < 0) continue;
-    char hs[48]; snprintf(hs, sizeof hs, "__enum_src_%d", w);
-    int v = (int)nt_int(nt, w, "enum_src", -1);
-    if (v < 0) {
-      v = nt_ref(nt, w, "value");
+    char hs[48], hp[48]; snprintf(hs, sizeof hs, "__enum_src_%d", w); snprintf(hp, sizeof hp, "__enum_ifn_%d", w);
+    int v = (int)nt_int(nt, w, "enum_src", nt_ref(nt, w, "value"));
+    int an = 0; const int *av = nt_arr(nt, nt_ref(nt, v, "arguments"), "arguments", &an);
+    if (nt_int(nt, w, "enum_src", -1) < 0) {
+      int p0 = an ? av[0] : -1;
       int hw = nt_new_node(nt, "LocalVariableWriteNode"), hr = nt_new_node(nt, "LocalVariableReadNode");
       int st = nt_new_node(nt, "StatementsNode"), par = nt_new_node(nt, "ParenthesesNode");
-      if (hw < 0 || hr < 0 || st < 0 || par < 0) break;
+      int pw = an ? nt_new_node(nt, "LocalVariableWriteNode") : -1, pr = an ? nt_new_node(nt, "LocalVariableReadNode") : -1;
+      if (hw < 0 || hr < 0 || st < 0 || par < 0 || (an && (pw < 0 || pr < 0))) break;
       nt_node_set_str(nt, hw, "name", hs);
       nt_node_set_ref(nt, hw, "value", nt_ref(nt, v, "receiver"));
       nt_node_set_str(nt, hr, "name", hs);
       nt_node_set_ref(nt, v, "receiver", hr);
-      int sb[2] = { hw, v };
-      nt_node_set_arr(nt, st, "body", sb, 2);
+      if (an) {
+        nt_node_set_str(nt, pw, "name", hp);
+        nt_node_set_ref(nt, pw, "value", p0);
+        nt_node_set_str(nt, pr, "name", hp);
+        nt_node_set_arr(nt, nt_ref(nt, v, "arguments"), "arguments", &pr, 1);
+      }
+      int sb[3] = { hw, an ? pw : v, v };
+      nt_node_set_arr(nt, st, "body", sb, 2 + an);
       nt_node_set_ref(nt, par, "body", st);
       nt_node_set_ref(nt, w, "value", par);
       nt_node_set_int(nt, w, "enum_src", v);
@@ -6267,6 +6276,14 @@ void desugar_stored_enum_each(Compiler *c) {
     nt_node_set_ref(nt, id, "receiver", sr);
     nt_node_set_str(nt, id, "name", nt_str(nt, v, "name"));
     nt_node_set_int(nt, id, "enum_copy", nt_int(nt, v, "enum_copy", -1));
+    if (an) {
+      int ar = nt_new_node(nt, "ArgumentsNode"), pr = nt_new_node(nt, "LocalVariableReadNode");
+      if (ar < 0 || pr < 0) break;
+      nt_node_set_str(nt, pr, "name", hp);
+      nt_node_set_int(nt, pr, "depth", nt_int(nt, sr, "depth", 0));
+      nt_node_set_arr(nt, ar, "arguments", &pr, 1);
+      nt_node_set_ref(nt, id, "arguments", ar);
+    }
   }
   comp_grow_node_arrays(c);
 }
