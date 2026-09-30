@@ -6410,6 +6410,18 @@ static int emit_poly_callable_spread_prearm(Compiler *c, const char *name, int s
   return 1;
 }
 
+/* The setup statements a re-entered builtin emission spilled into g_pre
+   since `mark`, taken out of it: they belong inside the arm that runs the
+   emission, not ahead of the dispatch, where they would run for every
+   receiver and before the receiver is in its temp. NULL when nothing
+   spilled. */
+static char *poly_arm_take_pre(size_t mark) {
+  if (!g_pre || g_pre->len <= mark) return NULL;
+  char *t = strdup(g_pre->p + mark);
+  g_pre->len = mark; g_pre->p[mark] = 0;
+  return t;
+}
+
 /* A genuine String reaching the poly method dispatch because a user class
    happens to own the name. The switch below has an arm per user class and
    none for a String, so the call raised NoMethodError for a method String has
@@ -6486,11 +6498,9 @@ static int emit_poly_str_prearm(Compiler *c, int id, int recv, const char *name,
   g_pd_skip = id; g_poly_builtin_arm = 1;
   /* Some of these arms hoist a statement into the prelude -- the `const char
      *_tN = sp_poly_recv_s(recv, "<name>")` that roots the receiver's bytes
-     across the call. Ahead of the dispatch that statement runs for EVERY
-     receiver, so a user object would take its NoMethodError before reaching
-     its own arm, and it names the wrong temp besides (the prelude runs before
-     the dispatch assigns the receiver one). Watch the prelude and decline the
-     arm when it grew: those names keep the behaviour they had. */
+     across the call. Ahead of the dispatch that statement would run for
+     EVERY receiver, and before the dispatch assigns the receiver its temp,
+     so it moves into the arm (poly_arm_take_pre). */
   size_t sv_pre = g_pre ? g_pre->len : 0;
   TyKind sv_ty = c->ntype[id];
   c->ntype[id] = bt;
@@ -6505,19 +6515,18 @@ static int emit_poly_str_prearm(Compiler *c, int id, int recv, const char *name,
   c->ntype[id] = sv_ty;
   g_pd_skip = sv_pd; g_poly_builtin_arm = sv_fb;
   g_n_argov -= nov + 1;
+  char *arm_pre = poly_arm_take_pre(sv_pre);
   /* an emission that fell through to the raise token adds nothing: leave the
      String tag on the switch's own default so the message is the same */
   if (!ib.p || strncmp(ib.p, "sp_raise_nomethod(", 18) == 0 ||
-      strncmp(ib.p, "sp_raise_poly_nomethod(", 23) == 0 ||
-      (g_pre && g_pre->len != sv_pre)) {
-    if (g_pre && g_pre->len != sv_pre) { g_pre->len = sv_pre; g_pre->p[sv_pre] = 0; }
-    free(ib.p); return 0;
+      strncmp(ib.p, "sp_raise_poly_nomethod(", 23) == 0) {
+    free(ib.p); free(arm_pre); return 0;
   }
   /* a shared-mutable string is a builtin OBJ box, not SP_TAG_STR, and is a
      string: sp_poly_recv_s takes both, so the guard has to as well */
-  buf_printf(b, "if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) { _t%d = %s; }\nelse ",
-             tv, tv, tr, ib.p);
-  free(ib.p);
+  buf_printf(b, "if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) { %s _t%d = %s; }\nelse ",
+             tv, tv, arm_pre ? arm_pre : "", tr, ib.p);
+  free(ib.p); free(arm_pre);
   return 1;
 }
 
@@ -6608,33 +6617,35 @@ static int poly_num_arm(const char *name, int argc) {
    to emit the whole corpus. The ask is one expression emission into a
    throwaway buffer.
 
-   Only the zero-argument dispatch calls it. The one with arguments writes
-   its default from several arms already -- the numeric table's, the
-   container reads' -- and appending a second `default:` label is a C error
-   rather than a fallback; finding out whether one is already there means
-   knowing where the switch being built starts, which the emitted text does
-   not say once the receiver has been rewritten to a GC frame slot. Two
-   attempts at reading it out of the buffer each left more programs failing
-   to compile than they fixed, so the arm stays where the question does not
-   arise. Fifteen of the names the corpus audit found are still uncovered for
-   that reason.
+   Both dispatches call it, the one with arguments only where no arm has
+   written the `default:` label yet (#4831). The builtin answer is asked
+   whenever the analysis did not record one: it records it only for a name
+   some user method answers at the call's arity, and `a.fill(v, 1, 2)`
+   beside a five-argument user fill has none.
 
-   It declines in the three places the String pre-arm declines, for the same
-   reasons: an emission that hoists a statement into the prelude would run it
-   for every receiver, an argument with a side effect must read the temp the
-   dispatch already hoisted rather than run twice, and a raise token adds
-   nothing over the default already there. */
+   Like the String pre-arm, it moves whatever the emission hoists into the
+   prelude into the arm itself -- the `sp_poly_array_recv` an Array mutator
+   works on, the write-back after it -- since ahead of the switch it would run
+   for every receiver. An argument with a side effect reads the temp the
+   dispatch already hoisted rather than run twice; a block is spliced into
+   the arm by the builtin emission, as a user arm takes it as a proc, and
+   only one of them runs. It declines where the emission is a raise token,
+   which adds nothing over the default already there, and where the slot the
+   switch assigns is typed for something the builtin answer is not. */
 static int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *name,
                                      int argc, const int *argv, const int *atmp,
                                      const TyKind *atmp_ty, TyKind ret, int tv, int tr,
                                      int label, Buf *b) {
   const NodeTable *nt = c->nt;
   if (recv < 0 || !name) return 0;
-  if (nt_ref(nt, id, "block") >= 0) return 0;
+  if (nt_ref(nt, id, "block") >= 0 && argc == 0) return 0;
   if (g_pd_skip == id || g_n_argov + argc + 1 > MAX_ARG_OVERRIDE) return 0;
   if (argc > 0 && (!atmp || !atmp_ty)) return 0;
+  /* a splat is one temp holding the whole list, which no builtin emitter
+     reads as its arguments */
   for (int a = 0; a < argc; a++)
-    if (subtree_has_side_effect(c, argv[a]) && comp_ntype(c, argv[a]) != atmp_ty[a])
+    if (nt_kind(nt, argv[a]) == NK_SplatNode ||
+        (subtree_has_side_effect(c, argv[a]) && comp_ntype(c, argv[a]) != atmp_ty[a]))
       return 0;
   TyKind bt = (c->poly_builtin_ty && id < c->node_cap)
                 ? c->poly_builtin_ty[id] : TY_UNKNOWN;
@@ -6643,53 +6654,69 @@ static int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *
      object protocol and never records the builtin answer. */
   if (bt == TY_UNKNOWN && argc <= 1 && (sp_streq(name, "to_s") || sp_streq(name, "inspect")))
     bt = TY_STRING;
-  if (bt == TY_UNKNOWN && argc == 0) bt = an_builtin_answer(c, id);
+  if (bt == TY_UNKNOWN) bt = an_builtin_answer(c, id);
   if (bt == TY_UNKNOWN) return 0;
   if (ret != TY_POLY && bt != ret) return 0;
   int slot = g_n_argov++;
   g_argov_node[slot] = recv;
   snprintf(g_argov_text[slot], sizeof g_argov_text[0], "_t%d", tv);
-  int nov = 0;
   for (int a = 0; a < argc; a++) {
     if (!subtree_has_side_effect(c, argv[a])) continue;
-    int as = g_n_argov++; nov++;
+    int as = g_n_argov++;
     g_argov_node[as] = argv[a];
     snprintf(g_argov_text[as], sizeof g_argov_text[0], "_t%d", atmp[a]);
   }
   int sv_pd = g_pd_skip, sv_fb = g_poly_builtin_arm;
   g_pd_skip = id; g_poly_builtin_arm = 1;
-  size_t sv_pre = g_pre ? g_pre->len : 0;
   TyKind sv_ty = c->ntype[id];
   c->ntype[id] = bt;
-  Buf ib; memset(&ib, 0, sizeof ib);
-  if (ret == TY_POLY && bt != TY_POLY) {
-    Buf nb; memset(&nb, 0, sizeof nb);
-    emit_expr(c, id, &nb);
-    emit_boxed_text(c, bt, nb.p ? nb.p : "0", &ib);
-    free(nb.p);
-  }
-  else emit_expr(c, id, &ib);
+  /* Under the silent probe the dynamic-send arms use: a builtin emitter
+     that refuses these arguments (Array#join given a user object, a
+     separator no String can be) drops the arm, not the build -- the call
+     never reaches that emitter in a run where the receiver is not the
+     builtin. What the emission hoists is captured, for the arm. */
+  Buf pb; memset(&pb, 0, sizeof pb);
+  Buf nb; memset(&nb, 0, sizeof nb);
+  Buf *sv_gpre = g_pre;
+  int sv_probe = g_unsup_probe, sv_open_defaults = g_open_defaults;
+  ConvHold *sv_hold = g_conv_hold;
+  jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
+  volatile int ok = 1;
+  g_pre = &pb; g_unsup_probe = 1;
+  if (setjmp(g_unsup_recover) == 0) emit_expr(c, id, &nb);
+  else ok = 0;
+  memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
+  g_conv_hold = sv_hold; g_open_defaults = sv_open_defaults;
+  g_unsup_probe = sv_probe; g_pre = sv_gpre;
   c->ntype[id] = sv_ty;
   g_pd_skip = sv_pd; g_poly_builtin_arm = sv_fb;
-  g_n_argov -= nov + 1;
+  g_n_argov = slot;
+  Buf ib; memset(&ib, 0, sizeof ib);
+  if (ok && nb.p) {
+    if (ret == TY_POLY && bt != TY_POLY) emit_boxed_text(c, bt, nb.p, &ib);
+    else buf_puts(&ib, nb.p);
+  }
+  free(nb.p);
+  char *arm_pre = ok && pb.p && pb.len ? pb.p : NULL;
+  if (!arm_pre) free(pb.p);
   if (!ib.p || strncmp(ib.p, "sp_raise_nomethod(", 18) == 0 ||
       strncmp(ib.p, "sp_raise_poly_nomethod(", 23) == 0 ||
-      strstr(ib.p, "sp_raise_cls(\"NoMethodError\"") != NULL ||
-      (g_pre && g_pre->len != sv_pre)) {
-    if (g_pre && g_pre->len != sv_pre) { g_pre->len = sv_pre; g_pre->p[sv_pre] = 0; }
-    free(ib.p); return 0;
+      strstr(ib.p, "sp_raise_cls(\"NoMethodError\"") != NULL) {
+    free(ib.p); free(arm_pre); return 0;
   }
   /* the re-entered emission can land on Object's own method, which may
      answer nothing (void): run it for its effect */
+  int void_obj = 0;
   { int oci = comp_class_index(c, "Object");
     int omi = oci >= 0 ? comp_method_in_chain(c, oci, name, NULL) : -1;
-    if (omi >= 0 && method_is_void(&c->scopes[omi]) && strncmp(ib.p, "sp_Object_", 10) == 0) {
-      buf_printf(b, "%s %s; break;", label ? " default:" : "", ib.p);
-      free(ib.p);
-      return 1;
-    } }
-  buf_printf(b, "%s _t%d = %s; break;", label ? " default:" : "", tr, ib.p);
-  free(ib.p);
+    void_obj = omi >= 0 && method_is_void(&c->scopes[omi]) && strncmp(ib.p, "sp_Object_", 10) == 0; }
+  const char *lb = label ? " default:" : "";
+  if (arm_pre) buf_printf(b, "%s { %s", lb, arm_pre);
+  else buf_puts(b, lb);
+  if (void_obj) buf_printf(b, " %s;", ib.p);
+  else buf_printf(b, " _t%d = %s;", tr, ib.p);
+  buf_puts(b, arm_pre ? " } break;" : " break;");
+  free(ib.p); free(arm_pre);
   return 1;
 }
 
