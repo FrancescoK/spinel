@@ -3159,12 +3159,16 @@ else {
             if (alv && alv->type != TY_UNKNOWN) at = alv->type;
           }
           if (at != rt) same = 0;
-          if (at != TY_POLY) all_poly = 0;
+          if (at != TY_POLY && at != TY_POLY_ARRAY && at != rt) all_poly = 0;
         }
         /* A boxed argument -- an element read out of a poly array, which is
            what `g.each_with_object([]) { |r, acc| acc.concat(r) }` hands it --
            is an array at run time; reading it as this array's C type did not
-           compile (#3850). Append its elements through the boxed surface. */
+           compile (#3850). Append its elements through the boxed surface. A
+           poly array argument takes the same path: `[2].concat([1, nil])`
+           as a value had no arm and raised NoMethodError. An Integer or
+           Float element goes through sp_poly_elem_i / _f, so a nil lands as
+           the slot's nil sentinel rather than 0. */
         if (!same && all_poly && k) {
           int ta = ++g_tmp;
           Buf ra = expr_buf(c, recv);
@@ -3178,7 +3182,10 @@ else {
             buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++)", ti, ti, tn, ti);
             buf_printf(b, " sp_%sArray_push(_t%d, ", k, ta);
             { char el[64]; snprintf(el, sizeof el, "sp_poly_each_elem(_t%d, _t%d)", tv, ti);
-              emit_unbox_text(c, ty_array_elem(rt), el, b); }
+              TyKind et = ty_array_elem(rt);
+              if (et == TY_INT) buf_printf(b, "sp_poly_elem_i(%s)", el);
+              else if (et == TY_FLOAT) buf_printf(b, "sp_poly_elem_f(%s)", el);
+              else emit_unbox_text(c, et, el, b); }
             buf_puts(b, ");");
           }
           buf_printf(b, " _t%d; })", ta);
