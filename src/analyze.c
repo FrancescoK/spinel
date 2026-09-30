@@ -7356,7 +7356,7 @@ int desugar_enum_method_recv(Compiler *c) {
       int pac = 0;
       if (pa >= 0) nt_arr(nt, pa, "arguments", &pac);
       if (prc >= 0 && pac == 1 && nt_ref(nt, id, "block") < 0 &&
-          infer_type(c, prc) == TY_RANGE) {
+          (infer_type(c, prc) == TY_RANGE || infer_type(c, prc) == TY_FLOAT_RANGE)) {
         nt_node_set_str(nt, id, "name", "step");
         changed = 1;
       }

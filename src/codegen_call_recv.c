@@ -12360,8 +12360,8 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     }
     if (sp_streq(name, "step") && argc == 1 && nt_ref(nt, id, "block") < 0) {
       buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, recv, b);
-      buf_puts(b, "; sp_frange_step(_t"); buf_printf(b, "%d, ", tr);
-      emit_float_expr(c, argv[0], b); buf_puts(b, "); })"); return 1;
+      buf_printf(b, "; sp_FloatArray_from_step(_t%d.first, _t%d.last, ", tr, tr);
+      emit_float_expr(c, argv[0], b); buf_printf(b, ", _t%d.excl); })", tr); return 1;
     }
     /* Range#size counts the integers a range enumerates, so it answers only
        for an Integer begin -- and Infinity when the end is unbounded, which is

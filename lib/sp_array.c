@@ -380,47 +380,44 @@ sp_int sp_IntArray_cmp(sp_IntArray*a,sp_IntArray*b){if(!a||!b)return a==b?0:(a?1
 
 /* ============================ sp_FloatArray ============================ */
 void sp_FloatArray_unshift(sp_FloatArray*a,sp_float v){SP_GC_ROOT(a);if(!a)return;if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_FLT_ARRAY);return;}sp_FloatArray_push(a,0.0);if(a->len>1)memmove(&a->data[1],&a->data[0],(size_t)(a->len-1)*sizeof(sp_float));a->data[0]=v;}
-/* (beg..end).step(step) / Float#step materialised as a FloatArray, following
-   CRuby's ruby_float_step: an epsilon-corrected element count (so float drift
-   never drops or adds a value) with each value computed as beg + i*step rather
-   than by repeated addition. Honours range exclusivity; step==0 raises
-   ArgumentError like CRuby; the final value is clamped to end on overshoot. */
-sp_FloatArray*sp_FloatArray_from_step(sp_float beg,sp_float end,sp_float step,sp_int excl){
-  if(step==0.0)sp_raise_cls("ArgumentError","step can't be 0");
-  /* CRuby rejects a NaN range bound at construction with this message; a NaN
-     step is just as degenerate. Guard before any arithmetic so the count never
-     becomes NaN (whose cast to sp_int is undefined behaviour). */
-  if(isnan(beg)||isnan(end)||isnan(step))sp_raise_cls("ArgumentError","bad value for range");
-  sp_FloatArray*a=sp_FloatArray_new();
-  if(isinf(step)){if(step>0?beg<=end:beg>=end)sp_FloatArray_push(a,beg);return a;}
-  sp_float n=(end-beg)/step;
-  sp_float err=(fabs(beg)+fabs(end)+fabs(end-beg))/fabs(step)*DBL_EPSILON;
+/* CRuby's ruby_float_step_size: how many values beg.step(end, unit) yields,
+   floored with an epsilon so float drift never drops or adds one. NaN
+   anywhere answers NaN, which a `i < n` walk treats as none. */
+sp_float sp_float_step_size(sp_float beg,sp_float end,sp_float unit,sp_int excl){
+  if(isinf(unit))return unit>0?beg<=end:beg>=end;
+  sp_float n=(end-beg)/unit;
+  sp_float err=(fabs(beg)+fabs(end)+fabs(end-beg))/fabs(unit)*DBL_EPSILON;
   if(err>0.5)err=0.5;
   if(excl){
-    if(n<=0)return a;
+    if(n<=0)return 0;
     n=(n<1)?0:floor(n-err);
-    sp_float d=((n+1)*step)+beg;
+    sp_float d=((n+1)*unit)+beg;
     if(beg<end){if(d<end)n++;}
     else if(beg>end){if(d>end)n++;}
   }
   else{
-    if(n<0)return a;
+    if(n<0)return 0;
     n=floor(n+err);
-    sp_float d=((n+1)*step)+beg;
+    sp_float d=((n+1)*unit)+beg;
     if(beg<end){if(d<=end)n++;}
     else if(beg>end){if(d>=end)n++;}
   }
+  return n+1;
+}
+/* (beg..end).step(step) / Float#step materialised as a FloatArray, following
+   CRuby's ruby_float_step value for value. step==0 raises ArgumentError like
+   CRuby. */
+sp_FloatArray*sp_FloatArray_from_step(sp_float beg,sp_float end,sp_float step,sp_int excl){
+  if(step==0.0)sp_raise_cls("ArgumentError","step can't be 0");
+  /* CRuby rejects a NaN range bound at construction with this message. */
+  if(isnan(beg)||isnan(end))sp_raise_cls("ArgumentError","bad value for range");
+  sp_float n=sp_float_step_size(beg,end,step,excl);
   /* An infinite end (or an enormous span) drives n to infinity or past what can
-     be materialised; CRuby loops forever there. Raise rather than cast a
-     non-finite/huge double to sp_int (undefined behaviour) and exhaust memory.
-     The 1<<30 cap matches sp_IntArray_from_range's sanity bound. */
-  if(isinf(n)||n>=(sp_float)(1LL<<30))sp_raise_cls("RangeError","range too large to materialize");
-  sp_int count=(sp_int)n+1;
-  for(sp_int i=0;i<count;i++){
-    sp_float d=((sp_float)i*step)+beg;
-    if(step>=0?end<d:d<end)d=end;
-    sp_FloatArray_push(a,d);
-  }
+     be materialised; CRuby loops forever there. Raise rather than exhaust
+     memory. The 1<<30 cap matches sp_IntArray_from_range's sanity bound. */
+  if(n>=(sp_float)(1LL<<30))sp_raise_cls("RangeError","range too large to materialize");
+  sp_FloatArray*a=sp_FloatArray_new();
+  for(sp_int i=0;i<n;i++)sp_FloatArray_push(a,sp_float_step_at(beg,end,step,i));
   return a;
 }
 sp_float sp_FloatArray_min(sp_FloatArray*a){if(!a||a->len==0)return sp_float_nil();  /* CRuby: nil on empty (#4288) */ sp_float m=a->data[0];for(sp_int i=1;i<a->len;i++)if(a->data[i]<m)m=a->data[i];return m;}

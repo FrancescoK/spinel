@@ -998,23 +998,6 @@ const char *sp_str_splice_at(const char *s, sp_int from, sp_int n, const char *v
   return sp_str_concat(pre, tail);
 }
 
-sp_FloatArray *sp_frange_step(sp_FloatRange r, sp_float st) {
-  sp_FloatArray *a = sp_FloatArray_new(); SP_GC_ROOT(a);
-  if (st == 0) sp_raise_cls("ArgumentError", "step can't be 0");
-  sp_float span = r.last - r.first;
-  if (span == span && st == st) {   /* not NaN */
-    if ((span > 0 && st < 0) || (span < 0 && st > 0)) return a;   /* wrong direction */
-  }
-  sp_int n = (sp_int)(span / st + (r.excl ? -1e-9 : 1e-9));
-  for (sp_int i = 0; i <= n; i++) {
-    sp_float v = r.first + (sp_float)i * st;
-    if (st > 0) { if (r.excl ? v >= r.last : v > r.last + 1e-9) break; }
-    else        { if (r.excl ? v <= r.last : v < r.last - 1e-9) break; }
-    sp_FloatArray_push(a, v);
-  }
-  return a;
-}
-
 sp_int sp_poly_cmp_int_arrays(sp_RbVal a, sp_RbVal b, sp_bool *comparable) {
   if (a.tag != SP_TAG_OBJ || b.tag != SP_TAG_OBJ ||
       a.cls_id != SP_BUILTIN_INT_ARRAY || b.cls_id != SP_BUILTIN_INT_ARRAY) { *comparable = FALSE; return 0; }

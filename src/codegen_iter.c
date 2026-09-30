@@ -3875,7 +3875,8 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       /* (1.0..2.0).step(0.5) { } -> the float step array, then iterate it */
       int trf = ++g_tmp;
       buf_printf(&ab, "({ sp_FloatRange _t%d = ", trf); emit_expr(c, recv, &ab);
-      buf_printf(&ab, "; sp_frange_step(_t%d, ", trf); emit_float_expr(c, sargv[0], &ab); buf_puts(&ab, "); })");
+      buf_printf(&ab, "; sp_FloatArray_from_step(_t%d.first, _t%d.last, ", trf, trf); emit_float_expr(c, sargv[0], &ab);
+      buf_printf(&ab, ", _t%d.excl); })", trf);
       at = TY_FLOAT_ARRAY; et = TY_FLOAT; aty = "sp_FloatArray";
     }
     else {
@@ -4031,22 +4032,15 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     /* a zero step never advances, so CRuby rejects it outright (#3648) */
     emit_indent(b, indent);
     buf_printf(b, "if (_t%d == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");\n", ts);
-    /* n = floor((limit-begin)/step + err); err bounds fp drift (CRuby) */
     emit_indent(b, indent);
-    buf_printf(b, "sp_float _t%d_e = (fabs(_t%d)+fabs(_t%d)+fabs(_t%d-_t%d))/fabs(_t%d)*DBL_EPSILON;\n",
-               tn, tb, tl, tl, tb, ts);
-    emit_indent(b, indent);
-    buf_printf(b, "if (_t%d_e > 0.5) _t%d_e = 0.5;\n", tn, tn);
-    emit_indent(b, indent);
-    /* keep the bound as a float: NaN begin/limit/step makes `i <= NaN` false
-       (0 iterations, matching CRuby) and an out-of-range begin gives a
-       negative/+inf bound naturally, instead of UB from casting NaN to int
+    /* keep the count as a float: NaN begin/limit/step makes `i < NaN` false
+       (0 iterations, matching CRuby) instead of UB from casting NaN to int
        (#3010) */
-    buf_printf(b, "sp_float _t%d = floor((_t%d-_t%d)/_t%d + _t%d_e);\n", tn, tl, tb, ts, tn);
+    buf_printf(b, "sp_float _t%d = sp_float_step_size(_t%d, _t%d, _t%d, 0);\n", tn, tb, tl, ts);
     emit_indent(b, indent);
-    buf_printf(b, "for (sp_int _t%d = 0; (sp_float)_t%d <= _t%d; _t%d++) {\n", ti, ti, tn, ti);
-    if (p0) { char fp_expr[64]; snprintf(fp_expr, sizeof fp_expr, "_t%d + _t%d * _t%d", tb, ti, ts); emit_iter_param_assign(c, block, p0_orig, p0, TY_FLOAT, fp_expr, b, indent + 1); }
-    { char rs_es[64]; snprintf(rs_es, sizeof rs_es, "_t%d + _t%d * _t%d", tb, ti, ts);
+    buf_printf(b, "for (sp_int _t%d = 0; (sp_float)_t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
+    if (p0) { char fp_expr[96]; snprintf(fp_expr, sizeof fp_expr, "sp_float_step_at(_t%d, _t%d, _t%d, _t%d)", tb, tl, ts, ti); emit_iter_param_assign(c, block, p0_orig, p0, TY_FLOAT, fp_expr, b, indent + 1); }
+    { char rs_es[96]; snprintf(rs_es, sizeof rs_es, "sp_float_step_at(_t%d, _t%d, _t%d, _t%d)", tb, tl, ts, ti);
       int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
       emit_iter_bind_rest(c, block, rs_np, TY_FLOAT, rs_es, b, indent + 1); }
     emit_loop_body(c, body, b, indent + 1);
