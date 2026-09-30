@@ -9644,9 +9644,20 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
              reaches these; a mismatched tag is simply not a member). */
           buf_printf(b, " case SP_BUILTIN_RANGE: _t%d = %ssp_range_include((sp_Range *)_t%d.v.p, sp_poly_to_i(_t%d))%s; break;", tr, ibo, tv, atmp[0], ibc);
           buf_printf(b, " case SP_BUILTIN_FLOAT_RANGE: _t%d = %ssp_frange_cover(*(sp_FloatRange *)_t%d.v.p, sp_poly_to_f(_t%d))%s; break;", tr, ibo, tv, atmp[0], ibc);
-          buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = %s_t%d.tag == SP_TAG_INT && sp_IntArray_include((sp_IntArray *)_t%d.v.p, _t%d.v.i)%s; break;", tr, ibo, atmp[0], tv, atmp[0], ibc);
-          buf_printf(b, " case SP_BUILTIN_FLT_ARRAY: _t%d = %s_t%d.tag == SP_TAG_FLT && sp_FloatArray_include((sp_FloatArray *)_t%d.v.p, _t%d.v.f)%s; break;", tr, ibo, atmp[0], tv, atmp[0], ibc);
+          /* a boxed nil is the typed array's sentinel, which the search
+             finds wherever a nil was stored */
+          buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = %s(_t%d.tag == SP_TAG_INT || _t%d.tag == SP_TAG_NIL) &&"
+                        " sp_IntArray_include((sp_IntArray *)_t%d.v.p, _t%d.tag == SP_TAG_NIL ? SP_INT_NIL : _t%d.v.i)%s; break;",
+                     tr, ibo, atmp[0], atmp[0], tv, atmp[0], atmp[0], ibc);
+          buf_printf(b, " case SP_BUILTIN_FLT_ARRAY: _t%d = %s(_t%d.tag == SP_TAG_FLT || _t%d.tag == SP_TAG_NIL) &&"
+                        " sp_FloatArray_include((sp_FloatArray *)_t%d.v.p, _t%d.tag == SP_TAG_NIL ? sp_float_nil() : _t%d.v.f)%s; break;",
+                     tr, ibo, atmp[0], atmp[0], tv, atmp[0], atmp[0], ibc);
           buf_printf(b, " case SP_BUILTIN_STR_ARRAY: _t%d = %s_t%d.tag == SP_TAG_STR && sp_StrArray_include((sp_StrArray *)_t%d.v.p, _t%d.v.s)%s; break;", tr, ibo, atmp[0], tv, atmp[0], ibc);
+        }
+        else if (at == TY_NIL) {
+          /* an Integer or Float array holds nil as its sentinel */
+          buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = %ssp_IntArray_include((sp_IntArray *)_t%d.v.p, SP_INT_NIL)%s; break;", tr, ibo, tv, ibc);
+          buf_printf(b, " case SP_BUILTIN_FLT_ARRAY: _t%d = %ssp_FloatArray_include((sp_FloatArray *)_t%d.v.p, sp_float_nil())%s; break;", tr, ibo, tv, ibc);
         }
         /* PolyArray: box the arg for runtime comparison */
         {

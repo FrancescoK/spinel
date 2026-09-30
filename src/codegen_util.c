@@ -1075,7 +1075,10 @@ int g_re_init_needed = 0;
    run time (poly) goes through the element check, which stores its own kind
    and refuses a foreign one with TypeError rather than coercing it (#4481);
    a statically typed value is emitted as it is (the emitter's own
-   int/float/string forms already convert between the numeric kinds). */
+   int/float/string forms already convert between the numeric kinds). An
+   element slot takes nil, so a nilable Integer passes its sentinel, as `<<`
+   and `[]=` store it, rather than the strict slot's TypeError: analyze marks
+   the array it lands in (unshift, insert, fill) as able to hold one. */
 void emit_typed_elem_value(Compiler *c, int node, TyKind et, Buf *b) {
   TyKind vt = comp_ntype(c, node);
   if (vt == TY_POLY && (et == TY_INT || et == TY_FLOAT || et == TY_STRING)) {
@@ -1091,7 +1094,7 @@ void emit_typed_elem_value(Compiler *c, int node, TyKind et, Buf *b) {
     emit_unresolved_coerced(c, node, et, b);
     return;
   }
-  if (et == TY_INT) emit_int_expr(c, node, b);
+  if (et == TY_INT) emit_int_expr_nilable(c, node, b);
   else if (et == TY_FLOAT) emit_float_expr(c, node, b);
   else emit_expr(c, node, b);
 }
