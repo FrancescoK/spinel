@@ -12323,6 +12323,34 @@ static void reject_binding(Compiler *c) {
   }
 }
 
+/* `const_get(name)` with a runtime name that the lowering could not reach:
+   one with no receiver the desugar could supply (an instance method, where
+   self has no const_get) or one the fixpoint never lowered. Left alone it
+   typed nothing and the first call on its value raised NoMethodError for
+   "unknown" (#4843); refuse it where it is written instead. The explicit
+   and class-method forms lower to a static dispatch (desugar_dynamic_const_get). */
+static void reject_runtime_const_get(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  for (int s = 0; s < c->nscopes; s++) {
+    const char *sn = c->scopes[s].name;
+    if (sn && sp_streq(sn, "const_get")) return;   /* user-defined: normal dispatch */
+  }
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "const_get")) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an < 1 || !av) continue;
+    NodeKind k = nt_kind(nt, av[0]);
+    if (k == NK_SymbolNode || k == NK_StringNode) continue;
+    { int dn = 0; nt_arr(nt, id, "dyn_cget_arms", &dn); if (dn > 0) continue; }
+    int sc = c->nscope[id];
+    if (sc < 0 || sc >= c->nscopes || !c->scopes[sc].reachable) continue;
+    unsupported(c, id, "const_get with a name known only at run time and no class or module "
+                       "receiver (an instance has no const_get; constants are resolved at compile time)");
+  }
+}
+
 static void reject_runtime_send(Compiler *c) {
   const NodeTable *nt = c->nt;
   static const char *const names[] = { "send", "__send__", "public_send", NULL };
@@ -12751,6 +12779,7 @@ char *codegen_program(const NodeTable *nt) {
   /* Reject runtime-name send before any emission so the diagnostic fires
      regardless of how the call's result is later consumed. */
   reject_runtime_send(c);
+  reject_runtime_const_get(c);
   reject_binding(c);
 
   Buf b; memset(&b, 0, sizeof b);

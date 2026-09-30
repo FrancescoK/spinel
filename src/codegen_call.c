@@ -2929,6 +2929,78 @@ static int emit_dynamic_respond_to(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* Runtime-name `recv.const_get(name)`: desugar_dynamic_const_get stashed one
+   literal `recv.const_get(:Name)` arm per constant the program defines. Emit
+   `strcmp(name, "N1") == 0 ? arm1 : ... : NameError`, boxing each arm (a class
+   or a value: the result is poly). The name is compared as TEXT, not as a
+   symbol id: the candidates are constant names, not symbol literals, so they
+   have no entry in the symbol table the prologue sized before this call was
+   emitted, and an id interned here would not be the one the runtime hands
+   back for the same text. An arm that did not type on this receiver is
+   dropped. The miss is CRuby's message: "wrong constant name x" for a name
+   with no leading capital, else "uninitialized constant [Recv::]Name",
+   qualified by a constant receiver other than Object as the literal rule
+   qualifies it. */
+static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int narm = 0; const int *arms = nt_arr(nt, id, "dyn_cget_arms", &narm);
+  if (narm <= 0) return 0;
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  if (argc < 1 || !argv) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  int sym = argv[0];
+  TyKind st = comp_ntype(c, sym);
+  int t = ++g_tmp;
+  buf_printf(b, "({ const char *_n%d = ", t);
+  if (st == TY_STRING) emit_expr(c, sym, b);
+  else if (st == TY_SYMBOL) { buf_puts(b, "sp_sym_to_s("); emit_expr(c, sym, b); buf_puts(b, ")"); }
+  else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, sym, b); buf_puts(b, ")"); }
+  buf_printf(b, "; if (!_n%d) _n%d = sp_str_empty; sp_RbVal _r%d; ", t, t, t);
+  Buf *sv_pre = g_pre;
+  for (int k = 0; k < narm; k++) {
+    int arm = arms[k];
+    TyKind at = comp_ntype(c, arm);
+    if (at == TY_UNKNOWN || at == TY_VOID) continue;
+    int aargs = nt_ref(nt, arm, "arguments");
+    int aac = 0; const int *aav = aargs >= 0 ? nt_arr(nt, aargs, "arguments", &aac) : NULL;
+    const char *nm = (aac >= 1 && aav) ? nt_str(nt, aav[0], "value") : NULL;
+    if (!nm) continue;
+    /* Emit the arm under a silent probe, as the dynamic send does: an arm
+       that resolves by type but not by codegen longjmps out and is dropped;
+       its preludes replay inside its own branch. */
+    Buf pre = {0, 0, 0}, body = {0, 0, 0};
+    g_pre = &pre;
+    int sv_probe = g_unsup_probe; g_unsup_probe = 1;
+    ConvHold *sv_hold = g_conv_hold;
+    int sv_open_defaults = g_open_defaults;
+    volatile int ok;
+    if (setjmp(g_unsup_recover) == 0) { emit_expr(c, arm, &body); ok = 1; }
+    else ok = 0;
+    g_conv_hold = sv_hold;
+    g_open_defaults = sv_open_defaults;
+    g_unsup_probe = sv_probe;
+    g_pre = sv_pre;
+    if (ok) {
+      buf_printf(b, "if (strcmp(_n%d, \"", t); emit_c_escaped(b, nm); buf_puts(b, "\") == 0) { ");
+      if (pre.p && pre.len) buf_puts(b, pre.p);
+      buf_printf(b, "_r%d = ", t);
+      emit_boxed_text(c, at, body.p ? body.p : "0", b);
+      buf_puts(b, "; }\nelse ");
+    }
+    free(pre.p); free(body.p);
+  }
+  const char *rvt = recv >= 0 ? nt_type(nt, recv) : NULL;
+  const char *rnm = (rvt && (sp_streq(rvt, "ConstantReadNode") || sp_streq(rvt, "ConstantPathNode")))
+                    ? nt_str(nt, recv, "name") : NULL;
+  if (rnm && sp_streq(rnm, "Object")) rnm = NULL;
+  buf_printf(b, "{ if (!(_n%d[0] >= 'A' && _n%d[0] <= 'Z')) sp_raise_cls(\"NameError\", sp_sprintf(\"wrong constant name %%s\", _n%d)); "
+                "else sp_raise_cls(\"NameError\", sp_sprintf(\"uninitialized constant %s%s%%s\", _n%d)); "
+                "_r%d = sp_box_nil(); } _r%d; })",
+             t, t, t, rnm ? rnm : "", rnm ? "::" : "", t, t, t);
+  return 1;
+}
+
 /* The single value a resume / transfer hands the fiber. Ruby passes any number
    of arguments and the body's parameters take them positionally, but the fiber
    carries ONE resumed value -- so two or more are packed into a poly array,
@@ -24450,6 +24522,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   }
   if (emit_dynamic_send(c, id, b)) return;   /* recv.send(runtime_name, args) static dispatch */
   if (emit_dynamic_respond_to(c, id, b)) return;   /* recv.respond_to?(runtime_name) static dispatch */
+  if (emit_dynamic_const_get(c, id, b)) return;   /* recv.const_get(runtime_name) static dispatch */
   if (emit_vis_refusal(c, id, b)) return;
   /* k = Struct.new(:a, :b): the registered anonymous struct class, as a
      first-class class value */

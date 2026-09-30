@@ -1,12 +1,9 @@
-# const_get with a name known only at run time on a class held in a variable
-# is refused where it is written: which module's table to read is not known
-# at compile time either (#4843).
-module Carts
-  class A
-    def initialize(x) = @x = x
-    def x = @x
-  end
-  TYPES = { 0 => :A }.freeze
+# const_get with a name known only at run time lowers to a static dispatch
+# over the program's constants when it has a class or module receiver
+# (test/const_get_dynamic.rb). In an instance method it has none to lower
+# onto -- an instance has no const_get -- so it is refused where it is
+# written, rather than typing nothing and failing at run time (#4843).
+class Cart
+  def klass(name) = const_get(name)
 end
-mod = [Carts, Kernel].first
-p mod.const_get(Carts::TYPES.fetch(0)).new(5).x
+p Cart.new.klass("Cart")
