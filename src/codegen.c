@@ -8134,17 +8134,28 @@ void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b) {
    For each marshalable class, codegen emits an arm in two dispatchers that
    sp_marshal.h calls: sp_marshal_obj_dump (by cls_id) writes `o`<:Class><nivar>
    (:@iv val)*, and sp_marshal_obj_load (by class name) allocates a blank
-   instance and fills its ivars from the loaded name/value pairs. Only scalar,
-   poly, and nested-user-object ivar types round-trip cleanly (a typed array or
-   hash ivar would mismatch the loader's always-poly containers), so a class
+   instance and fills its ivars from the loaded name/value pairs. Scalar, poly
+   and nested-user-object ivars round-trip directly; an Array or Hash ivar
+   loads as the loader's always-poly container and reaches a typed slot
+   through the converting unbox every boxed container takes into one. A class
    carrying any other ivar type is left out and raises at runtime. */
+static int marshal_container_type(TyKind t) {
+  switch (t) {
+    case TY_INT_ARRAY: case TY_FLOAT_ARRAY: case TY_STR_ARRAY: case TY_POLY_ARRAY:
+    case TY_STR_POLY_HASH: case TY_SYM_POLY_HASH: case TY_POLY_POLY_HASH:
+      return 1;
+    default:
+      return ty_is_ptr_array(t);
+  }
+}
 static int marshal_ivar_type_ok(TyKind t) {
   switch (t) {
     case TY_INT: case TY_FLOAT: case TY_STRING: case TY_BOOL:
     case TY_SYMBOL: case TY_BIGINT: case TY_POLY: case TY_NIL:
       return 1;
     default:
-      return ty_is_object(t);  /* a nested user object reloads with its real cls_id */
+      /* a nested user object reloads with its real cls_id */
+      return ty_is_object(t) || marshal_container_type(t);
   }
 }
 static int class_marshalable(Compiler *c, int i) {
@@ -8159,8 +8170,12 @@ static int class_marshalable(Compiler *c, int i) {
 }
 /* Box ivar expression `expr` (typed t) into an sp_RbVal, mapping an unset ivar
    (SP_INT_NIL / NULL pointer) to nil. */
-static void emit_marshal_box_ivar(TyKind t, const char *expr, Buf *b) {
+static void emit_marshal_box_ivar(Compiler *c, TyKind t, const char *expr, Buf *b) {
   if (t == TY_POLY) { buf_puts(b, expr); return; }
+  if (marshal_container_type(t)) {
+    buf_printf(b, "(%s ? ", expr); emit_boxed_text(c, t, expr, b); buf_puts(b, " : sp_box_nil())");
+    return;
+  }
   if (t == TY_NIL)  { buf_puts(b, "sp_box_nil()"); return; }
   if (ty_is_object(t)) {
     buf_printf(b, "(%s ? sp_box_obj(%s, %d) : sp_box_nil())", expr, expr, ty_object_class(t));
@@ -8180,6 +8195,10 @@ static void emit_marshal_box_ivar(TyKind t, const char *expr, Buf *b) {
    type's unset representation. */
 static void emit_marshal_unbox_ivar(Compiler *c, TyKind t, Buf *b) {
   if (t == TY_POLY) { buf_puts(b, "val"); return; }
+  if (marshal_container_type(t)) {
+    buf_puts(b, "(val.tag == SP_TAG_NIL ? NULL : "); emit_unbox_text(c, t, "val", b); buf_puts(b, ")");
+    return;
+  }
   if (ty_is_object(t)) {
     buf_printf(b, "(val.tag == SP_TAG_OBJ ? (sp_%s *)val.v.p : NULL)", c->classes[ty_object_class(t)].c_name);
     return;
@@ -9110,14 +9129,14 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
         buf_printf(b, "(%s ? sp_PolyArray_inspect(%s) : \"nil\")", expr, expr);
       else if (ty_is_hash(ivt) && ty_hash_cname(ivt))
         buf_printf(b, "(%s ? sp_%sHash_inspect(%s) : \"nil\")", expr, ty_hash_cname(ivt), expr);
-      else if (marshal_ivar_type_ok(ivt) && ivt != TY_UNKNOWN) {
+      else if (marshal_ivar_type_ok(ivt) && !marshal_container_type(ivt) && ivt != TY_UNKNOWN) {
         buf_puts(b, "sp_poly_inspect(");
-        emit_marshal_box_ivar(ivt, expr, b);
+        emit_marshal_box_ivar(c, ivt, expr, b);
         buf_puts(b, ")");
       }
       else if (ivt == TY_UNKNOWN) {
         buf_puts(b, "sp_poly_inspect(");
-        emit_marshal_box_ivar(TY_INT, expr, b);
+        emit_marshal_box_ivar(c, TY_INT, expr, b);
         buf_puts(b, ")");
       }
       else
@@ -9144,7 +9163,7 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
     for (int j = 0; j < ci->nivars; j++) {
       char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
       buf_printf(b, "      sp_mar_sym(b, \"%s\"); sp_mar_w(b, ", ci->ivars[j]);
-      emit_marshal_box_ivar(ci->ivar_types[j], expr, b);
+      emit_marshal_box_ivar(c, ci->ivar_types[j], expr, b);
       buf_puts(b, ");\n");
     }
     buf_puts(b, "      return 1;\n    }\n");
