@@ -652,7 +652,10 @@ void sp_fiber_fire_inject_if_pending(void){sp_Fiber*f=sp_fiber_current;if(f&&!f-
 int sp_fiber_inject_pending(sp_Fiber*f){return SP_INJECT_PEEK(f)!=0;}
 SP_NORETURN void sp_fiber_raise_kill_self(void){sp_raise_cls(SP_FIBER_KILL_CLS,(&("\xff")[1]));}
 static void sp_fiber_trampoline(void){sp_Fiber*f=sp_fiber_current;jmp_buf base;if(setjmp(base)==0){sp_exc_arm(base);{int _inj=SP_INJECT_PEEK(f);if(_inj&&_inj!=3)sp_fiber_consume_inject(f);}/* a thread raise (3) defers to the body's first suspension point */f->body(f);sp_exc_disarm();}
-else{const char*_cc=sp_exc_cur_cls();if(_cc&&!strcmp(_cc,SP_FIBER_KILL_CLS)){/* killed: ensures already ran while unwinding; terminate without propagating */}
+else{const char*_cc=sp_exc_cur_cls();if(_cc&&!strcmp(_cc,SP_FIBER_KILL_CLS)){
+  /* killed: ensures already ran while unwinding; end without propagating,
+     and #resume answers nil rather than whatever it last yielded */
+  f->yielded_value=sp_box_nil();}
 else{f->raised=1;f->raised_cls=_cc;f->raised_msg=sp_exc_cur_msg();f->raised_obj=sp_exc_cur_obj();}}f->state=3;f->saved_nroots=0;/* dead: the snapshot points into unwound frames; never mark it */if(f->transferred){
   /* back to the fiber it returns to, whose transfer answers the block's result */
   sp_Fiber*home=f->return_to&&f->return_to->state!=3?f->return_to:sp_thread_main_fiber();
@@ -709,6 +712,12 @@ sp_RbVal sp_Fiber_raise(sp_Fiber*f,const char*cls,const char*msg,void*obj){SP_GC
    bypassed) until the trampoline terminates it. An unstarted fiber never ran its
    body, so it is just marked dead. Returns the fiber, matching CRuby. */
 sp_Fiber*sp_Fiber_kill(sp_Fiber*f){SP_GC_ROOT(f);
+  if(f==sp_fiber_current){
+    /* A fiber killing itself unwinds right here. The main fiber of the
+       program or of a Thread ignores it, as in CRuby. */
+    if(f==&sp_fiber_root||f==sp_thread_main_fiber())return f;
+    sp_fiber_raise_kill_self();
+  }
   if(f->state==3)return f;             /* already dead: no-op */
   if(f->state==0){f->state=3;return f;}/* unstarted: nothing to unwind */
   sp_fiber_inject_publish(f,2,NULL,NULL,NULL);
