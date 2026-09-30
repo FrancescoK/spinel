@@ -21401,6 +21401,21 @@ void analyze_program(Compiler *c) {
       if (e >= 0 && e < c->nt->count) blk_arg_expr[e] = 1;
     }
   }
+  /* `Fiber.new(&blk)` / `Thread.new(&blk)` keep the block in the fiber
+     (sp_Fiber_new_callable), which reads it as a value: that forward is an
+     escape, so the method keeps a real &blk rather than being yield-inlined
+     with no slot for it. */
+  for (int p = 0; p < c->nt->count; p++) {
+    if (nt_kind(c->nt, p) != NK_CallNode) continue;
+    const char *cn = nt_str(c->nt, p, "name");
+    int r = nt_ref(c->nt, p, "receiver"), bk = nt_ref(c->nt, p, "block");
+    if (!cn || !sp_streq(cn, "new") || r < 0 || bk < 0) continue;
+    if (nt_kind(c->nt, r) != NK_ConstantReadNode || nt_kind(c->nt, bk) != NK_BlockArgumentNode) continue;
+    const char *rn = nt_str(c->nt, r, "name");
+    if (!rn || (!sp_streq(rn, "Fiber") && !sp_streq(rn, "Thread"))) continue;
+    int e = nt_ref(c->nt, bk, "expression");
+    if (e >= 0 && e < c->nt->count) blk_arg_expr[e] = 0;
+  }
   char *scope_keeps_blk = a_scopes_keeping_block(c, blk_call_recv, blk_arg_expr);
   /* For each forwarded `&blk` argument, the user method it is handed to: a
      forward is only harmless when the CALLEE lets the block go no further.
