@@ -1414,21 +1414,25 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, " sp_Range _t%d = ", trg); emit_expr(c, argv[0], b);
         buf_printf(b, "; _t%d = _t%d.first < 0 ? _t%d.first + _t%d : _t%d.first;",
                    tb2, trg, trg, tn2, trg);
-        buf_printf(b, " _t%d = (_t%d.last < 0 ? _t%d.last + _t%d : _t%d.last) - _t%d + (_t%d.excl ? 0 : 1);",
-                   tl2, trg, trg, tn2, trg, tb2, trg);
+        /* an endless Range (last is INTPTR_MAX) runs to the end of the String */
+        buf_printf(b, " _t%d = _t%d.last == INTPTR_MAX ? _t%d - _t%d :"
+                      " (_t%d.last < 0 ? _t%d.last + _t%d : _t%d.last) - _t%d + (_t%d.excl ? 0 : 1);",
+                   tl2, trg, tn2, tb2, trg, trg, tn2, trg, tb2, trg);
         buf_printf(b, " if (_t%d < 0) _t%d = 0;", tl2, tl2);
       }
       else {
         buf_printf(b, " _t%d = ", tb2); emit_int_expr(c, argv[0], b);
         buf_printf(b, "; _t%d = 1; if (_t%d < 0) _t%d += _t%d;", tl2, tb2, tb2, tn2);
       }
+      /* a Range may be empty at any position up to the end (`s.slice!(3..)`
+         is ""); one index removes a character, so it must be inside */
       buf_printf(b, " const char *_t%d = NULL;"
-                    " if (_t%d >= 0 && _t%d < _t%d && _t%d > 0) {"
+                    " if (_t%d >= 0 && _t%d %s _t%d && _t%d >= 0) {"
                     " if (_t%d > _t%d - _t%d) _t%d = _t%d - _t%d;"
                     " _t%d = sp_str_sub_range(_t%d, _t%d, _t%d);"
                     " SP_GC_ROOT_STR(_t%d);",
                  tr2,
-                 tb2, tb2, tn2, tl2,
+                 tb2, tb2, comp_ntype(c, argv[0]) == TY_RANGE ? "<=" : "<", tn2, tl2,
                  tl2, tn2, tb2, tl2, tn2, tb2,
                  tr2, to, tb2, tl2, tr2);
       if (sb_asgn) {
@@ -1473,7 +1477,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       emit_expr(c, recv, b);
       buf_printf(b, "); const char *_t%d = NULL;"
                     " if (_t%d < 0) _t%d += _t%d;"
-                    " if (_t%d >= 0 && _t%d <= _t%d && _t%d > 0) {"
+                    " if (_t%d >= 0 && _t%d <= _t%d && _t%d >= 0) {"
                     " if (_t%d > _t%d - _t%d) _t%d = _t%d - _t%d;"
                     " _t%d = sp_str_sub_range(",
                  tr2,
