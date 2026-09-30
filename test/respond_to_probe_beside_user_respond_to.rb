@@ -9,8 +9,8 @@ class Dyn
 end
 
 e = LoadError.new("x")
-p e.respond_to?(:original_message), e.respond_to?(:message)
-p(e.respond_to?(:original_message) ? e.original_message : e.message)
+p e.respond_to?(:zzz), e.respond_to?(:message)
+p(e.respond_to?(:path) ? e.path.inspect : e.message)
 p "str".respond_to?(:upcase), "str".respond_to?(:zzz)
 p [1].respond_to?(:each), [1].respond_to?(:zzz)
 p 3.respond_to?(:succ), 3.respond_to?(:zzz)
