@@ -127,10 +127,16 @@ def flunk(msg = "flunked")
   puts "MSPEC-FAIL: #{msg}"
 end
 
+def spec_version(s)
+  a, b, c = s.split(".")
+  (a.to_i * 100 + b.to_i) * 100 + c.to_i
+end
+
 def spec_version_in?(req, bug = false)
   lo, hi = req.to_s.split(/\.\.\.?/, 2)
   lo, hi = "0", lo if bug && !hi
-  4.0 >= lo.to_f && (!hi || (req.to_s.include?("...") ? 4.0 < hi.to_f : 4.0 <= hi.to_f))
+  v = spec_version("4.0")
+  spec_version(lo) <= v && (!hi || (req.to_s.include?("...") ? v < spec_version(hi) : v <= spec_version(hi)))
 end
 
 def ruby_version_is(req)
