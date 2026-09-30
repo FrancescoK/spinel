@@ -16763,7 +16763,7 @@ static int index_write_gaps(Compiler *c, int call, int ix) {
    push, append, unshift, prepend, insert (past its index), `[]=` and a
    blockless fill given a value that can be nil, or concat and a slice's
    `[]=` given an array whose elements can be. */
-static int nullable_elem_mutation(Compiler *c, int call) {
+static int nullable_elem_mutation(Compiler *c, int call, int depth) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, call, "name");
   int ca = nt_ref(nt, call, "arguments"); int an = 0;
@@ -16772,13 +16772,13 @@ static int nullable_elem_mutation(Compiler *c, int call) {
   int from = 0, to = an;
   if (sp_streq(nm, "insert")) from = 1;
   else if (sp_streq(nm, "[]=")) {
-    if (ty_is_array(infer_type(c, av[an - 1]))) return nullable_int_elem_expr(c, av[an - 1], 0);
+    if (ty_is_array(infer_type(c, av[an - 1]))) return nullable_int_elem_expr(c, av[an - 1], depth + 1);
     if (an == 2 && index_write_gaps(c, call, av[0])) return 1;
     from = an - 1;
   }
   else if (sp_streq(nm, "fill")) { if (nt_ref(nt, call, "block") >= 0) return 0; to = 1; }
   else if (sp_streq(nm, "concat")) {
-    for (int k = 0; k < an; k++) if (nullable_int_elem_expr(c, av[k], 0)) return 1;
+    for (int k = 0; k < an; k++) if (nullable_int_elem_expr(c, av[k], depth + 1)) return 1;
     return 0;
   }
   for (int k = from; k < to; k++) if (nullable_int_value(c, av[k])) return 1;
@@ -16901,7 +16901,7 @@ static int nullable_int_elem_expr(Compiler *c, int v, int depth) {
     if (elem_preserving_call(nm)) return nullable_int_elem_expr(c, rc, depth + 1);
     /* a mutator answers its receiver, which may hold one already or now */
     if (rc >= 0 && self_mutator_call(nm))
-      return nullable_elem_mutation(c, v) || nullable_int_elem_expr(c, rc, depth + 1);
+      return nullable_elem_mutation(c, v, depth + 1) || nullable_int_elem_expr(c, rc, depth + 1);
     /* the value is one ELEMENT of the receiver, and that element is itself the
        container being indexed into (`t[i][j]`, `h[:a][0]`) */
     if (elem_returning_call(nm)) return nested_elem_nilable(c, rc, depth + 1);
@@ -17522,7 +17522,7 @@ static void mark_nullable_int_locals(Compiler *c) {
        ivar or the ivar an object call hands out (`k.arr << v`, `k.arr[i] = v`). */
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
       int recv = mutated_array(c, nt_ref(nt, id, "receiver"));
-      if (recv < 0 || !nullable_elem_mutation(c, id)) continue;
+      if (recv < 0 || !nullable_elem_mutation(c, id, 0)) continue;
       if (nt_kind(nt, recv) == NK_LocalVariableReadNode) {
         LocalVar *lv = nullable_elem_local(c, recv, nt_str(nt, recv, "name"));
         if (lv) { lv->nullable_int_elem = 1; changed = 1; }
