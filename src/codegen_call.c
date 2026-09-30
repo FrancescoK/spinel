@@ -24391,6 +24391,7 @@ static int obj_responds_answer(Compiler *c, int cid, const char *qm) {
   int is_wr = ql > 0 && qm[ql - 1] == '=';
   char wbase[256]; wbase[0] = '\0';
   if (is_wr && ql - 1 < sizeof wbase) { memcpy(wbase, qm, ql - 1); wbase[ql - 1] = '\0'; }
+  if (comp_is_undeffed_in_chain(c, cid, qm)) return 0;
   int found = comp_method_in_chain(c, cid, qm, NULL) >= 0 ||
               comp_reader_in_chain(c, cid, qm, NULL) ||
               (is_wr && comp_writer_in_chain(c, cid, wbase, NULL));
@@ -24631,10 +24632,11 @@ static int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, co
       int is_wr = ql > 0 && qm[ql - 1] == '=';
       char wbase[256]; wbase[0] = '\0';
       if (is_wr && ql - 1 < sizeof wbase) { memcpy(wbase, qm, ql - 1); wbase[ql - 1] = '\0'; }
-      int found = (comp_method_in_chain(c, cid, qm, NULL) >= 0 &&
-                   !method_hidden_from_reflection(c, cid, qm)) ||
-                  comp_reader_in_chain(c, cid, qm, NULL) ||
-                  (is_wr && comp_writer_in_chain(c, cid, wbase, NULL));
+      int found = ((comp_method_in_chain(c, cid, qm, NULL) >= 0 &&
+                    !method_hidden_from_reflection(c, cid, qm)) ||
+                   comp_reader_in_chain(c, cid, qm, NULL) ||
+                   (is_wr && comp_writer_in_chain(c, cid, wbase, NULL))) &&
+                  !comp_is_undeffed_in_chain(c, cid, qm);
       /* the names the class answers without a method-table entry: an
          Enumerable includer's, a Comparable's, a Struct's or a Data's
          core names (#2663) */
@@ -24672,10 +24674,11 @@ static int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, co
             yes = include_all;
         }
         else {
-          int found = (comp_method_in_chain(c, cid, qm, NULL) >= 0 &&
-                       !method_hidden_from_reflection(c, cid, qm)) ||
-                      comp_reader_in_chain(c, cid, qm, NULL) ||
-                      (is_wr && comp_writer_in_chain(c, cid, wbase, NULL));
+          int found = ((comp_method_in_chain(c, cid, qm, NULL) >= 0 &&
+                        !method_hidden_from_reflection(c, cid, qm)) ||
+                       comp_reader_in_chain(c, cid, qm, NULL) ||
+                       (is_wr && comp_writer_in_chain(c, cid, wbase, NULL))) &&
+                      !comp_is_undeffed_in_chain(c, cid, qm);
           if (!found) { resolved = 1; yes = 0; }
           else {
             /* receiverless respond_to? still answers false for a private
@@ -38195,6 +38198,7 @@ else {
           if (is_wr) { memcpy(wbase, qm, ql - 1); wbase[ql - 1] = '\0'; }
           int first = 1;
           for (int k = 0; k < c->nclasses; k++) {
+            if (comp_is_undeffed_in_chain(c, k, qm)) continue;
             int has = (comp_method_in_chain(c, k, qm, NULL) >= 0 &&
                        !method_hidden_from_reflection(c, k, qm)) ||
                       comp_reader_in_chain(c, k, qm, NULL) ||
@@ -38319,7 +38323,7 @@ else {
         buf_printf(b, "%d", md_priv ? 1 : 0);
         return;
       }
-      if (name_is_synth_method(c, qm)) { buf_puts(b, "FALSE"); return; }
+      if (name_is_synth_method(c, qm) || comp_is_undeffed_in_chain(c, ci, qm)) { buf_puts(b, "FALSE"); return; }
       int parent = c->classes[ci].parent;
       int mc = -1;
       int mi = comp_method_in_chain(c, ci, qm, &mc);
