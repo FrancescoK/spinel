@@ -3734,8 +3734,8 @@ static sp_RbVal sp_poly_class_try_convert(sp_RbVal k, sp_RbVal x) {
    compare by VALUE across storage variants, like arrays -- Ruby has one Hash
    and the variants are a storage optimization that must not leak into ==
    (a JSON.parse StrPolyHash equals the same pairs written as a literal
-   StrIntHash). */
-static sp_bool sp_poly_hash_eq_cross(sp_RbVal a, sp_RbVal b);
+   StrIntHash). With `eql`, values compare by eql? instead, as Hash#eql? does. */
+static sp_bool sp_poly_hash_eq_cross(sp_RbVal a, sp_RbVal b, sp_bool eql);
 /* User Struct/Data instances compare by VALUE inside containers (Array/Hash
    equality, include?/index/uniq, nested members). The generated TU installs
    sp_obj_eq_hook to dispatch a field-wise == by cls_id; sp_poly_eq consults it
@@ -3790,11 +3790,11 @@ static sp_bool sp_poly_eq_deep(sp_RbVal a, sp_RbVal b) {
        sp_poly_eq and cannot hold a container at all. Each variant is named;
        one added later and not listed here takes the cross-variant walk, which
        is right for any two variants, only slower. */
-    if (a.cls_id != b.cls_id)                      r = sp_poly_hash_eq_cross(a, b);
+    if (a.cls_id != b.cls_id)                      r = sp_poly_hash_eq_cross(a, b, FALSE);
     else if (a.cls_id == SP_BUILTIN_STR_POLY_HASH) r = sp_StrPolyHash_eq((sp_StrPolyHash *)a.v.p, (sp_StrPolyHash *)b.v.p);
     else if (a.cls_id == SP_BUILTIN_SYM_POLY_HASH) r = sp_SymPolyHash_eq((sp_SymPolyHash *)a.v.p, (sp_SymPolyHash *)b.v.p);
     else if (a.cls_id == SP_BUILTIN_POLY_POLY_HASH) r = sp_PolyPolyHash_eq((sp_PolyPolyHash *)a.v.p, (sp_PolyPolyHash *)b.v.p);
-    else                                           r = sp_poly_hash_eq_cross(a, b);
+    else                                           r = sp_poly_hash_eq_cross(a, b, FALSE);
   }
   else r = sp_obj_eq_hook(a, b);   /* non-NULL: sp_poly_eq's object arm checks it first */
   sp_poly_recur_pop(mark);
@@ -7661,6 +7661,9 @@ static sp_bool sp_rbval_eql_key(sp_RbVal a, sp_RbVal b) {
           return r;
         }
       }
+      /* Hashes likewise, across variants and value by value with eql?: paired
+         with the content hash above, so a Hash key is found by an equal one. */
+      if (sp_poly_is_hash_kind(a.cls_id) && sp_poly_is_hash_kind(b.cls_id)) return sp_poly_eql(a, b);
       if (a.cls_id != b.cls_id) return FALSE;
       if (a.v.p == b.v.p) return TRUE;
       if (a.cls_id == SP_BUILTIN_REGEX)
@@ -9273,10 +9276,12 @@ static sp_bool sp_poly_eql(sp_RbVal a, sp_RbVal b) {
   int a_int = (a.tag == SP_TAG_INT || a.tag == SP_TAG_BIGINT);
   int b_int = (b.tag == SP_TAG_INT || b.tag == SP_TAG_BIGINT);
   if ((a_int && b.tag == SP_TAG_FLT) || (a.tag == SP_TAG_FLT && b_int)) return FALSE;
-  /* Array#eql? recurses per element with eql? (not ==), so [1, 2] is not
-     eql? to [1, 2.0] even though they are ==. */
+  /* Array#eql? and Hash#eql? recurse per element / value with eql? (not ==),
+     so [1, 2] is not eql? to [1, 2.0], nor {a: 1} to {a: 1.0}, even though
+     they are ==. */
   if (a.tag == SP_TAG_OBJ && b.tag == SP_TAG_OBJ &&
-      sp_poly_is_array_kind(a.cls_id) && sp_poly_is_array_kind(b.cls_id)) {
+      ((sp_poly_is_array_kind(a.cls_id) && sp_poly_is_array_kind(b.cls_id)) ||
+       (sp_poly_is_hash_kind(a.cls_id) && sp_poly_is_hash_kind(b.cls_id)))) {
     if (a.v.p == b.v.p) return TRUE;  /* same object: eql? to itself (O(1)) */
     sp_int n = sp_poly_length(a);
     if (n != sp_poly_length(b)) return FALSE;
@@ -9285,7 +9290,8 @@ static sp_bool sp_poly_eql(sp_RbVal a, sp_RbVal b) {
     if (sp_poly_recur_seen(SP_POLY_RECUR_EQ, a.v.p, b.v.p)) return TRUE;
     int mark = sp_poly_recur_push(SP_POLY_RECUR_EQ, a.v.p, b.v.p);
     sp_bool r = TRUE;
-    for (sp_int i = 0; r && i < n; i++)
+    if (sp_poly_is_hash_kind(a.cls_id)) r = sp_poly_hash_eq_cross(a, b, TRUE);
+    else for (sp_int i = 0; r && i < n; i++)
       r = sp_poly_eql(sp_poly_arr_get(a, i), sp_poly_arr_get(b, i));
     sp_poly_recur_pop(mark);
     return r;
@@ -11068,7 +11074,7 @@ static sp_RbVal sp_poly_hash_probe(sp_RbVal h, sp_RbVal k, sp_bool *found) {
     default: return sp_box_nil();
   }
 }
-static sp_bool sp_poly_hash_eq_cross(sp_RbVal a, sp_RbVal b) {
+static sp_bool sp_poly_hash_eq_cross(sp_RbVal a, sp_RbVal b, sp_bool eql) {
   if (!a.v.p || !b.v.p) return a.v.p == b.v.p;
   SP_GC_ROOT_RBVAL(a); SP_GC_ROOT_RBVAL(b);
   if (sp_poly_length(a) != sp_poly_length(b)) return FALSE;
@@ -11079,7 +11085,7 @@ static sp_bool sp_poly_hash_eq_cross(sp_RbVal a, sp_RbVal b) {
     sp_bool found = FALSE;
     sp_RbVal vb = sp_poly_hash_probe(b, k, &found);
     if (!found) return FALSE;
-    if (!sp_poly_eq(va, vb)) return FALSE;
+    if (!(eql ? sp_poly_eql(va, vb) : sp_poly_eq(va, vb))) return FALSE;
   }
   return TRUE;
 }
