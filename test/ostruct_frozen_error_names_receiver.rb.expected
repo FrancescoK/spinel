@@ -1,0 +1,23 @@
+[FrozenError, "can't modify frozen OpenStruct: #<OpenStruct a=1, b=\"x\">"]
+[FrozenError, "can't modify frozen OpenStruct: #<OpenStruct a=1, b=\"x\">"]
+[FrozenError, "can't modify frozen OpenStruct: #<OpenStruct a=1, b=\"x\">"]
+[FrozenError, "can't modify frozen Hash: {a: 1, b: \"x\"}"]
+[FrozenError, "can't modify frozen Hash: {a: 1, b: \"x\"}"]
+[FrozenError, "can't modify frozen Hash: {a: 1, b: \"x\"}"]
+#<OpenStruct a=1, b="x">
+true
+[FrozenError, "can't modify frozen OpenStruct: #<OpenStruct>"]
+[FrozenError, "can't modify frozen OpenStruct: #<OpenStruct a=1, b=\"x\">"]
+[FrozenError, "can't modify frozen Hash: {a: 1, b: \"x\"}"]
+#<OpenStruct a=1, b="x">
+{a: 1, b: "x"}
+true
+#<OpenStruct a=1>
+can't modify frozen OpenStruct: #<OpenStruct a=1, me=#<OpenStruct ...>>
+Hash
+31
+1706
+true
+OpenStruct
+1687
+true
