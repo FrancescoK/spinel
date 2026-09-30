@@ -3028,15 +3028,28 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
            segment leaves nil (the segment walk lives in the guard helpers) */
         if (comp_defined_guard_true(c, id)) res = "constant";
       }
-      else if (sp_streq(vt, "CallNode") && nt_ref(nt, v, "receiver") >= 0) {
-        /* an operator invocation on a defined receiver is a method call the
-           compiler always resolves (defined?(x == 2) -> "method") */
-        const char *on = nt_str(nt, v, "name");
-        static const char *const ops[] = { "==", "!=", "<", ">", "<=", ">=",
-          "<=>", "+", "-", "*", "/", "%", "**", "<<", ">>", "&", "|", "^",
-          "=~", "[]", "!", NULL };
-        if (on) for (int oi = 0; ops[oi]; oi++)
-          if (sp_streq(on, ops[oi])) { res = "method"; break; }
+      /* an iterator is an expression, whatever it calls */
+      else if (sp_streq(vt, "CallNode") && nt_kind(nt, nt_ref(nt, v, "block")) == NK_BlockNode)
+        res = "expression";
+      /* see desugar_defined_method_call; a guard known nil at compile time
+         leaves the receiver unevaluated. A respond_to? left untyped (an IO
+         handle's, which spinel refuses to answer) keeps the answer nil. */
+      else if (sp_streq(vt, "CallNode") && nt_ref(nt, id, "method_cond") >= 0 &&
+               comp_ntype(c, nt_ref(nt, id, "method_cond")) == TY_BOOL) {
+        int ng = 0; const int *gs = nt_arr(nt, id, "method_guards", &ng);
+        Buf g; memset(&g, 0, sizeof g);
+        for (int gi = 0; gi < ng; gi++) {
+          Buf gb; memset(&gb, 0, sizeof gb);
+          emit_expr(c, gs[gi], &gb);
+          if (sp_streq(gb.p, "NULL")) { free(gb.p); free(g.p); buf_puts(b, "NULL"); return; }
+          buf_printf(&g, "(%s) && ", gb.p);
+          free(gb.p);
+        }
+        buf_printf(b, "(%s(", g.p ? g.p : "");
+        emit_cond(c, nt_ref(nt, id, "method_cond"), b);
+        buf_puts(b, ") ? SPL(\"method\") : NULL)");
+        free(g.p);
+        return;
       }
       else if (sp_streq(vt, "CallNode") && nt_ref(nt, v, "receiver") < 0) {
         const char *cn = nt_str(nt, v, "name");

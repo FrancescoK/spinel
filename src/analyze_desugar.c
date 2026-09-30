@@ -3232,6 +3232,116 @@ int desugar_respond_to_probe(Compiler *c) {
   return changed;
 }
 
+/* A call `defined?` looks up on its receiver's value: an explicit receiver
+   (`&.` and setters alike) and no literal block (an iterator answers
+   "expression"). */
+static int defined_method_call(const NodeTable *nt, int v) {
+  return v >= 0 && nt_kind(nt, v) == NK_CallNode && nt_ref(nt, v, "receiver") >= 0 &&
+         nt_kind(nt, nt_ref(nt, v, "block")) != NK_BlockNode;
+}
+
+/* `defined?(r.m(a))`: CRuby checks that r and a are defined, evaluates r,
+   and answers "method" when its value has a public m. Each level of a chain
+   `r.m1.m2` asks `respond_to?` of the value the level below produced, which a
+   fresh local carries so every receiver is evaluated once, as CRuby does.
+   The receiver and argument checks go on the node as "method_guards", the
+   respond_to? conjunction as "method_cond"; codegen joins them. */
+int desugar_defined_method_call(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_DefinedNode || nt_ref(nt, id, "method_cond") >= 0) continue;
+    int v = nt_ref(nt, id, "value");
+    if (!defined_method_call(nt, v)) continue;
+    int lv[64], k = 0;
+    for (int cur = v; defined_method_call(nt, cur) && k < 64; cur = nt_ref(nt, cur, "receiver")) lv[k++] = cur;
+    int r0 = nt_ref(nt, lv[k - 1], "receiver");
+    NodeKind rk = nt_kind(nt, r0);
+    /* a receiver whose evaluation has no effect needs no local */
+    int pure = rk == NK_LocalVariableReadNode || rk == NK_SelfNode || rk == NK_InstanceVariableReadNode ||
+               rk == NK_ConstantReadNode || rk == NK_ConstantPathNode || rk == NK_NilNode ||
+               rk == NK_TrueNode || rk == NK_FalseNode || rk == NK_IntegerNode || rk == NK_FloatNode ||
+               rk == NK_SymbolNode || rk == NK_StringNode;
+    long long line = nt_int(nt, id, "node_line", 0);
+    int base = nt->count, gn = 0, guards[256], cond = -1, recv = r0;
+    guards[gn++] = nt_new_node(nt, "DefinedNode");
+    nt_node_set_ref(nt, guards[0], "value", r0);
+    for (int i = k - 1; i >= 0; i--) {
+      int args = nt_ref(nt, lv[i], "arguments"), ac = 0;
+      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+      int blk = nt_ref(nt, lv[i], "block");
+      for (int a = 0; a <= ac && gn < 256; a++) {
+        int e = a < ac ? av[a] : blk >= 0 ? nt_ref(nt, blk, "expression") : -1;
+        if (e >= 0 && nt_kind(nt, e) == NK_SplatNode) e = nt_ref(nt, e, "expression");
+        if (e < 0) continue;
+        guards[gn] = nt_new_node(nt, "DefinedNode");
+        nt_node_set_ref(nt, guards[gn++], "value", e);
+      }
+      const char *m = nt_str(nt, lv[i], "name");
+      int sym = nt_new_node(nt, "SymbolNode"), rargs = nt_new_node(nt, "ArgumentsNode");
+      int rto = nt_new_node(nt, "CallNode");
+      nt_node_set_str(nt, sym, "value", m);
+      nt_node_set_arr(nt, rargs, "arguments", &sym, 1);
+      nt_node_set_str(nt, rto, "name", "respond_to?");
+      nt_node_set_ref(nt, rto, "arguments", rargs);
+      nt_node_set_int(nt, rto, "node_line", line);
+      comp_sym_intern(c, m);
+      int ask = rto, next = -1;
+      if (pure && i == k - 1) nt_node_set_ref(nt, rto, "receiver", recv);
+      else {
+        /* (__dfm_ID_i = recv; __dfm_ID_i.respond_to?(:m)) */
+        char tname[48]; snprintf(tname, sizeof tname, "__dfm_%d_%d", id, i);
+        int tw = nt_new_node(nt, "LocalVariableWriteNode"), tr = nt_new_node(nt, "LocalVariableReadNode");
+        int st = nt_new_node(nt, "StatementsNode");
+        ask = nt_new_node(nt, "ParenthesesNode");
+        nt_node_set_str(nt, tw, "name", tname); nt_node_set_int(nt, tw, "depth", 0);
+        nt_node_set_ref(nt, tw, "value", recv);
+        nt_node_set_str(nt, tr, "name", tname); nt_node_set_int(nt, tr, "depth", 0);
+        nt_node_set_ref(nt, rto, "receiver", tr);
+        { int two[2] = { tw, rto }; nt_node_set_arr(nt, st, "body", two, 2); }
+        nt_node_set_ref(nt, ask, "body", st);
+        scope_local_intern(comp_scope_of(c, id), tname);
+        if (i > 0) {
+          int tr2 = nt_new_node(nt, "LocalVariableReadNode");
+          nt_node_set_str(nt, tr2, "name", tname); nt_node_set_int(nt, tr2, "depth", 0);
+          next = tr2;
+        }
+      }
+      if (i > 0) {
+        /* the next level's receiver: this level's call on the value just asked */
+        int call = nt_new_node(nt, "CallNode");
+        nt_node_set_ref(nt, call, "receiver", next >= 0 ? next : recv);
+        nt_node_set_str(nt, call, "name", m);
+        nt_node_set_str(nt, call, "call_operator", ".");
+        nt_node_set_ref(nt, call, "arguments", args);
+        nt_node_set_ref(nt, call, "block", blk);
+        nt_node_set_int(nt, call, "node_line", line);
+        recv = call;
+      }
+      if (cond < 0) cond = ask;
+      else {
+        int both = nt_new_node(nt, "AndNode");
+        nt_node_set_ref(nt, both, "left", cond);
+        nt_node_set_ref(nt, both, "right", ask);
+        cond = both;
+      }
+    }
+    if (!pure || k > 1) {
+      /* an exception raised by an evaluated receiver answers nil */
+      int rm = nt_new_node(nt, "RescueModifierNode"), no = nt_new_node(nt, "FalseNode");
+      nt_node_set_ref(nt, rm, "expression", cond);
+      nt_node_set_ref(nt, rm, "rescue_expression", no);
+      cond = rm;
+    }
+    nt_node_set_arr(nt, id, "method_guards", guards, gn);
+    nt_node_set_ref(nt, id, "method_cond", cond);
+    comp_grow_node_arrays(c);
+    for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[id];
+    changed = 1;
+  }
+  return changed;
+}
+
 /* `recv.at(i)` is `recv[i]` for a single argument -- Array#at takes exactly
    one integer and answers what #[] does. Written as its own name it reached
    neither the typed array arms nor the boxed dispatch, so an Array read out
