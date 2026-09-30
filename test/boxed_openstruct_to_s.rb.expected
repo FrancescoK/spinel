@@ -1,0 +1,13 @@
+"#<OpenStruct a=1, b=\"x\">"
+#<OpenStruct a=1, b="x">
+v=#<OpenStruct a=1, b="x">
+"#<OpenStruct>"
+#<OpenStruct a=1, b="x">
+2
+#<OpenStruct a=1, b="x", c=[3]>!
+#<OpenStruct a=1, b="x", c=[3]>
+2
+#<OpenStruct a=1, b="x", c=[3]>
+#<OpenStruct a=1, b="x", c=[3]>,#<OpenStruct z=1>
+#<OpenStruct a=1, b="x", c=[3]>|#<OpenStruct a=1, b="x", c=[3]>
+6080

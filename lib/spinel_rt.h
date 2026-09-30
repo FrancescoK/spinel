@@ -1733,6 +1733,8 @@ static inline sp_bool sp_class_eq(sp_Class a, sp_Class b) {
   return (an && bn) ? strcmp(an, bn) == 0 : an == bn;
 }
 static inline const char *sp_poly_to_s(sp_RbVal v);   /* defined below; used by the user-object arm */
+struct sp_OpenStruct_s;
+static const char *sp_OpenStruct_inspect(struct sp_OpenStruct_s *o);   /* defined below */
 static inline sp_File *sp_poly_to_file(sp_RbVal v); /* defined below; IO.select's user-#to_io unwrap */
 static inline void sp_poly_puts(sp_RbVal v) {
   switch (v.tag) {
@@ -1986,6 +1988,8 @@ static inline const char *sp_poly_to_s(sp_RbVal v) {
         case SP_BUILTIN_DIR: return sp_Dir_to_s((sp_Dir *)v.v.p);
         case SP_BUILTIN_FIBER: return sp_Fiber_inspect((sp_Fiber *)v.v.p);
         case SP_BUILTIN_THREAD: return sp_Thread_inspect((sp_thread *)v.v.p);
+        /* OpenStruct#to_s is its inspect, as sp_poly_inspect renders it */
+        case SP_BUILTIN_OPENSTRUCT: return sp_OpenStruct_inspect((struct sp_OpenStruct_s *)v.v.p);
         default:
           if ((v.cls_id >= 0 || v.cls_id == SP_BUILTIN_OBJECT) && v.v.p) {
             /* a class with a user #to_s renders through the generated
