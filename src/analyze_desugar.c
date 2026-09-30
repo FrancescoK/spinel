@@ -2068,7 +2068,6 @@ static const char *engine_operand(NodeTable *nt, int id, int eng, int ver, int *
   int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
   if (!nm || nt_ref(nt, id, "block") >= 0) return NULL;
   *gem = 1;
-  if (sp_streq(nm, "ruby_version") && ac == 0 && engine_const(nt, recv, "Gem")) { *con = 1; return ver ? SP_RUBY_VERSION : NULL; }
   const char *vn = nt_kind(nt, recv) == NK_ConstantPathNode ? nt_str(nt, recv, "name") : NULL;
   if (!sp_streq(nm, "new") || ac != 1 || !vn || !sp_streq(vn, "Version") || !engine_const(nt, nt_ref(nt, recv, "parent"), "Gem")) return NULL;
   int g = 0;
@@ -2078,6 +2077,7 @@ static const char *engine_operand(NodeTable *nt, int id, int eng, int ver, int *
 
 static int engine_numeric(const char *s) {
   size_t n = strlen(s);
+  for (const char *p = s; *p; p++) if (strspn(p, "0123456789") > 18) return 0;
   return n && strspn(s, "0123456789.") == n && s[0] != '.' && s[n - 1] != '.' && !strstr(s, "..");
 }
 
