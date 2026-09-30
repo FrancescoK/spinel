@@ -1,0 +1,14 @@
+:none
+2
+Enumerator
+[1, 2, 3]
+0
+:fallback
+1
+5
+1
+0
+2
+:nope
+4
+:inner_none
