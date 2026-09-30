@@ -45,8 +45,11 @@ buf = FFI::MemoryPointer.new(:char, 64)
 n = LibC.snprintf(buf, 64, "%d-%s-%.2f", :int, 42, :string, "abc", :double, 3.14159)
 p n, buf.read_string
 
+# endp points into the argument's bytes, so the String has to outlive the
+# read: a temporary is garbage once strtol returns, in CRuby as here
 endp = FFI::MemoryPointer.new(:pointer)
-p LibC.strtol("123xyz", endp, 10)
+num = "123xyz"
+p LibC.strtol(num, endp, 10)
 p endp.read_pointer.read_string
 
 tv = LibC::Timeval.new

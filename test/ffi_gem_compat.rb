@@ -10,11 +10,11 @@ module LibC
   ffi_lib FFI::Library::LIBC
   attach_function :abs, [:int], :int
   attach_function :my_len, :strlen, [:string], :ulong
-  attach_function :floor, [:double], :double
+  attach_function :atof, [:string], :double
   callback :cmp, [:pointer, :pointer], :int
 end
 
 p LibC.abs(-5)
 p LibC.my_len("hello")
-p LibC.floor(3.7)
+p LibC.atof("3.0")
 p LibC.abs(42)

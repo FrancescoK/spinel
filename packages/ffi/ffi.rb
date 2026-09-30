@@ -222,9 +222,10 @@ module FFI
         raise ::ArgumentError, "Cannot set :string fields" unless keep
         a = if v.nil? then 0
             elsif v.is_a?(String)
-              s = v.include?("\0") ? v : v + ""
-              keep << s
-              Native.str_addr(s)
+              # the String's own bytes, as the gem passes them: a pointer the
+              # callee keeps (strtol's endptr) stays inside the caller's String
+              keep << v
+              Native.str_addr(v)
             else FFI.pointer_address(v, keep)
             end
         Native.put_int(addr, K_PTR, a)
