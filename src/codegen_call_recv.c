@@ -6499,7 +6499,10 @@ else {
           buf_printf(b, "; if (_t%d) _t%d->default_v = ", t, t); emit_boxed(c, argv[0], b); buf_puts(b, "; ");
         }
         else if (rt == TY_STR_INT_HASH || rt == TY_INT_INT_HASH) {
-          buf_printf(b, "; if (_t%d) _t%d->default_v = ", t, t); emit_expr(c, argv[0], b); buf_puts(b, "; ");
+          /* nil is SP_INT_NIL in an Integer slot; nil emitted as an int is 0 */
+          buf_printf(b, "; if (_t%d) _t%d->default_v = ", t, t);
+          if (comp_ntype(c, argv[0]) == TY_NIL) buf_puts(b, "SP_INT_NIL"); else emit_expr(c, argv[0], b);
+          buf_puts(b, "; ");
         }
         else if (rt == TY_STR_STR_HASH || rt == TY_INT_STR_HASH) {
           buf_printf(b, "; if (_t%d) _t%d->default_v = ", t, t); emit_expr(c, argv[0], b); buf_puts(b, "; ");
