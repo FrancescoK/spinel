@@ -4391,6 +4391,32 @@ else {
         buf_printf(b, "sp_%sArray_pop(", k); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
+      /* `[a, b, c].min` on a literal of Integers that cannot be nil: the
+         extreme of the values, compared in place, with no array built. The
+         array was a fresh allocation per call, and in a hot loop (an edit
+         distance's `[ins, del, sub].min`) its garbage grew the heap to twice
+         what the program kept. Each element runs once, in order. */
+      if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 0 &&
+          rt == TY_INT_ARRAY && nt_kind(nt, recv) == NK_ArrayNode &&
+          nt_ref(nt, id, "block") < 0) {
+        int en = 0; const int *el = nt_arr(nt, recv, "elements", &en);
+        int plain = en > 0 && en <= 8;
+        for (int e = 0; plain && e < en; e++)
+          if (comp_ntype(c, el[e]) != TY_INT || nullable_int_value(c, el[e])) plain = 0;
+        if (plain) {
+          int base = g_tmp + 1; g_tmp += en + 1;
+          buf_puts(b, "({");
+          for (int e = 0; e < en; e++) {
+            buf_printf(b, " sp_int _t%d = ", base + e); emit_int_expr(c, el[e], b); buf_puts(b, ";");
+          }
+          int m = base + en;
+          buf_printf(b, " sp_int _t%d = _t%d;", m, base);
+          for (int e = 1; e < en; e++)
+            buf_printf(b, " if (_t%d %s _t%d) _t%d = _t%d;", base + e, sp_streq(name, "min") ? "<" : ">", m, m, base + e);
+          buf_printf(b, " _t%d; })", m);
+          return 1;
+        }
+      }
       if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 0) {
         buf_printf(b, "sp_%sArray_%s(", k, name); emit_nil_ck_recv(c, recv, rt, "cmp", 0, b); buf_puts(b, ")");
         return 1;
