@@ -4,6 +4,7 @@
    against the stable package ABI; the struct + prototypes stay in lib's
    sp_stringio.h, the interface the compiler's StringIO dispatch emits calls to. */
 #include "sp_stringio.h"      /* the StringIO struct + this unit's prototypes */
+#include "sp_string.h"        /* sp_String, for a boxed shared-mutable String */
 #include <stdlib.h>
 #include <string.h>
 
@@ -117,27 +118,204 @@ sp_int sp_StringIO_zero(sp_StringIO *s) { (void)s; return 0; }
 /* << writes and returns the receiver (chainable), unlike write's byte count. */
 sp_StringIO *sp_StringIO_shl(sp_StringIO *s, const char *str) { sio_write(s, str, (int64_t)sp_str_byte_len(str)); return s; }
 
-/* gets(sep): read through the end of the first occurrence of `sep` (the
-   whole rest on a miss); nil at EOF. A multi-byte separator is honored. */
-const char *sp_StringIO_gets_sep(sp_StringIO *s, const char *sep) {SP_GC_ROOT(s);
+/* One line from the stream, read as CRuby's strio_getline reads it. `sep` NULL
+   is nil (read to the end); "" is paragraph mode; a `limit` above zero ends
+   the line at that many bytes, rounded up to the end of the character it
+   falls in. `chomp` takes the separator off the end. nil at EOF. */
+static const char *sio_getline(sp_StringIO *s, const char *sep, sp_int limit, sp_bool chomp) {SP_GC_ROOT(s);SP_GC_ROOT_STR(sep);
   if (s->pos >= s->len) return NULL;
-  const char *st = s->buf + s->pos;
-  int64_t rem = s->len - s->pos;
-  int64_t sl = sep ? (int64_t)strlen(sep) : 0;
-  int64_t ll = rem;
-  if (sl > 0) {
-    for (int64_t i = 0; i + sl <= rem; i++) {
-      if (memcmp(st + i, sep, sl) == 0) { ll = i + sl; break; }
+  const char *st = s->buf + s->pos, *e = s->buf + s->len, *p;
+  int64_t w = 0;
+  if (limit > 0 && (size_t)limit < (size_t)(e - st)) {
+    const char *le = st + limit;
+    while (le < e && ((unsigned char)*le & 0xC0) == 0x80) le++;
+    e = le;
+  }
+  int64_t n = sep ? (int64_t)sp_str_byte_len(sep) : 0;
+  if (!sep) {
+    /* nil reads up to the limit, and chomp leaves it as read */
+  }
+  else if (n == 0) {
+    /* paragraph mode: blank lines ahead of it are skipped, and it ends after
+       the run of blank lines that follows its first one, all of which it
+       keeps (a "\r\n" counts as a newline there); chomp takes that run off */
+    const char *pend = NULL;
+    p = st;
+    while (*p == '\n') { if (++p == e) return NULL; }
+    st = p;
+    while ((p = memchr(p, '\n', (size_t)(e - p))) != NULL && p != e) {
+      p++;
+      if (!((p < e && *p == '\n') || (p + 1 < e && *p == '\r' && p[1] == '\n'))) continue;
+      pend = p - ((p[-2] == '\r') ? 2 : 1);
+      while ((p < e && *p == '\n') || (p + 1 < e && *p == '\r' && p[1] == '\n')) p += (*p == '\r') ? 2 : 1;
+      e = p;
+      break;
+    }
+    if (chomp && pend) w = e - pend;
+  }
+  else if (n == 1) {
+    if ((p = memchr(st, sep[0], (size_t)(e - st))) != NULL) {
+      e = p + 1;
+      if (chomp) w = (p > st && p[-1] == '\r') + 1;
     }
   }
+  else if (n < (e - st) + (chomp ? 1 : 0)) {
+    /* unless chomping, a separator that would end the stream anyway does not matter */
+    for (p = st; p + n <= e; ++p) {
+      if (memcmp(p, sep, (size_t)n) == 0) { e = p + n; if (chomp) w = n; break; }
+    }
+  }
+  int64_t ll = (e - st) - w;
   char *r = sp_str_alloc_raw(ll + 1);
-  memcpy(r, st, ll);
+  memcpy(r, st, (size_t)ll);
   r[ll] = '\0';
   sp_str_set_len(r, (size_t)ll);
-  s->pos += ll;
+  s->pos = e - s->buf;
   s->lineno++;
   return r;
 }
+
+/* gets(sep): a String separator, with no limit and no chomp. */
+const char *sp_StringIO_gets_sep(sp_StringIO *s, const char *sep) {SP_GC_ROOT(s);SP_GC_ROOT_STR(sep);
+  return sio_getline(s, sep, -1, 0);
+}
+
+/* The name CRuby's conversion errors give a value: nil, true and false
+   spell themselves, Integer, Float, String and Symbol their own name, a class
+   of the program, an Array and a Hash theirs, and any other builtin class
+   "Object". */
+static const char *sio_src_name(sp_RbVal v) {
+  switch (v.tag) {
+    case SP_TAG_NIL: return "nil";
+    case SP_TAG_BOOL: return v.v.b ? "true" : "false";
+    case SP_TAG_INT: return "Integer";
+    case SP_TAG_FLT: return "Float";
+    case SP_TAG_STR: return "String";
+    case SP_TAG_SYM: return "Symbol";
+    default: break;
+  }
+  if (v.tag == SP_TAG_OBJ) {
+    if (v.cls_id >= 0 && sp_obj_cls_name_fn) {
+      const char *cn = sp_obj_cls_name_fn((int)v.cls_id);
+      if (cn) return cn;
+    }
+    if (sp_json_kind_fn) {
+      int k = sp_json_kind_fn(v);
+      if (k == 1) return "Array";
+      if (k == 2) return "Hash";
+    }
+  }
+  return "Object";
+}
+static void sio_type_error(sp_RbVal v, const char *into) {
+  char msg[160];
+  snprintf(msg, sizeof msg, "no implicit conversion of %s into %s", sio_src_name(v), into);
+  sp_raise_cls("TypeError", msg);
+}
+
+/* A limit as the caller wrote it: an Integer or a Float (truncated), nil for
+   none; anything else has no Integer form. */
+static sp_int sio_limit_arg(sp_RbVal v) {
+  if (v.tag == SP_TAG_INT) return v.v.i;
+  if (v.tag == SP_TAG_FLT) return (sp_int)v.v.f;
+  if (v.tag == SP_TAG_NIL) return -1;
+  sio_type_error(v, "Integer");
+  return -1;
+}
+
+/* A shared-mutable String held in a container is boxed as a handle; it reads
+   as its live text. */
+static sp_RbVal sio_arg_value(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF) return sp_box_str(sp_String_cstr((sp_String *)v.v.p));
+  return v;
+}
+
+/* The arguments of gets, readline and readlines: ([sep,] [limit,] [chomp: b]).
+   With one, a String or nil is the separator (nil reads to the end) and
+   anything else is the limit. With two, the first is the separator and the
+   second the limit (nil for none). A trailing Hash is the keywords; `chomp:`
+   is the one this reader takes. */
+static void sio_line_args(const sp_RbVal *a0, int n0, const char **sep, sp_int *limit, sp_bool *chomp) {
+  *sep = SPL("\n"); *limit = -1; *chomp = 0;
+  sp_RbVal sv[8];
+  int n = 0, given = n0;
+  for (int j = 0; j < n0 && j < 8; j++) sv[n++] = sio_arg_value(a0[j]);
+  const sp_RbVal *a = sv;
+  if (n > 0 && a[n - 1].tag == SP_TAG_OBJ && sp_json_kind_fn && sp_json_kind_fn(a[n - 1]) == 2) {
+    sp_RbVal h = a[n - 1];
+    sp_int hn = sp_json_len_fn(h);
+    char unk[160]; int nunk = 0; size_t ul = 0;
+    unk[0] = 0;
+    for (sp_int i = 0; i < hn; i++) {
+      sp_RbVal k, v;
+      sp_json_hpair_fn(h, i, &k, &v);
+      if (k.tag == SP_TAG_SYM && sp_sym_name_fn && strcmp(sp_sym_name_fn((sp_sym)k.v.i), "chomp") == 0) {
+        *chomp = !(v.tag == SP_TAG_NIL || (v.tag == SP_TAG_BOOL && !v.v.b));
+        continue;
+      }
+      if (k.tag == SP_TAG_SYM && sp_sym_name_fn && ul < sizeof unk - 64)
+        ul += (size_t)snprintf(unk + ul, sizeof unk - ul, "%s:%s", nunk ? ", " : "", sp_sym_name_fn((sp_sym)k.v.i));
+      nunk++;
+    }
+    if (nunk) {
+      char msg[240];
+      snprintf(msg, sizeof msg, "unknown keyword%s: %s", nunk > 1 ? "s" : "", unk);
+      sp_raise_cls("ArgumentError", msg);
+    }
+    n--; given--;
+  }
+  if (given > 2) {
+    char msg[80];
+    snprintf(msg, sizeof msg, "wrong number of arguments (given %d, expected 0..2)", given);
+    sp_raise_cls("ArgumentError", msg);
+  }
+  if (n == 1) {
+    if (a[0].tag == SP_TAG_NIL) *sep = NULL;
+    else if (a[0].tag == SP_TAG_STR) *sep = a[0].v.s ? a[0].v.s : SPL("");
+    else *limit = sio_limit_arg(a[0]);
+    return;
+  }
+  if (n == 2) {
+    if (a[0].tag == SP_TAG_NIL) *sep = NULL;
+    else if (a[0].tag == SP_TAG_STR) *sep = a[0].v.s ? a[0].v.s : SPL("");
+    else sio_type_error(a[0], "String");
+    *limit = sio_limit_arg(a[1]);
+  }
+}
+
+/* gets(...), which answers "" for a zero limit and nil at the end. */
+static const char *sio_gets_n(sp_StringIO *s, const sp_RbVal *a, int n) {SP_GC_ROOT(s);
+  const char *sep; sp_int limit; sp_bool chomp;
+  sio_line_args(a, n, &sep, &limit, &chomp);
+  if (limit == 0) return sp_str_empty;
+  return sio_getline(s, sep, limit, chomp);
+}
+const char *sp_StringIO_gets_a1(sp_StringIO *s, sp_RbVal a) {SP_GC_ROOT(s);SP_GC_ROOT_RBVAL(a); return sio_gets_n(s, &a, 1); }
+const char *sp_StringIO_gets_a2(sp_StringIO *s, sp_RbVal a, sp_RbVal b) {SP_GC_ROOT(s);SP_GC_ROOT_RBVAL(a);SP_GC_ROOT_RBVAL(b); sp_RbVal v[2] = {a, b}; return sio_gets_n(s, v, 2); }
+const char *sp_StringIO_gets_a3(sp_StringIO *s, sp_RbVal a, sp_RbVal b, sp_RbVal c) {SP_GC_ROOT(s);SP_GC_ROOT_RBVAL(a);SP_GC_ROOT_RBVAL(b);SP_GC_ROOT_RBVAL(c); sp_RbVal v[3] = {a, b, c}; return sio_gets_n(s, v, 3); }
+
+static const char *sio_readline_n(sp_StringIO *s, const sp_RbVal *a, int n) {SP_GC_ROOT(s);
+  const char *r = sio_gets_n(s, a, n);
+  if (!r) sp_raise_cls("EOFError", "end of file reached");
+  return r;
+}
+const char *sp_StringIO_readline_a1(sp_StringIO *s, sp_RbVal a) {SP_GC_ROOT(s);SP_GC_ROOT_RBVAL(a); return sio_readline_n(s, &a, 1); }
+const char *sp_StringIO_readline_a2(sp_StringIO *s, sp_RbVal a, sp_RbVal b) {SP_GC_ROOT(s);SP_GC_ROOT_RBVAL(a);SP_GC_ROOT_RBVAL(b); sp_RbVal v[2] = {a, b}; return sio_readline_n(s, v, 2); }
+const char *sp_StringIO_readline_a3(sp_StringIO *s, sp_RbVal a, sp_RbVal b, sp_RbVal c) {SP_GC_ROOT(s);SP_GC_ROOT_RBVAL(a);SP_GC_ROOT_RBVAL(b);SP_GC_ROOT_RBVAL(c); sp_RbVal v[3] = {a, b, c}; return sio_readline_n(s, v, 3); }
+
+static sp_RbVal sio_readlines_n(sp_StringIO *s, const sp_RbVal *a, int n) {SP_GC_ROOT(s);
+  const char *sep; sp_int limit; sp_bool chomp;
+  sio_line_args(a, n, &sep, &limit, &chomp);
+  if (limit == 0) sp_raise_cls("ArgumentError", "invalid limit: 0 for readlines");
+  sp_PolyArray *r = sp_PolyArray_new();
+  SP_GC_ROOT(r);
+  const char *l;
+  while ((l = sio_getline(s, sep, limit, chomp)) != NULL) sp_PolyArray_push(r, sp_box_str(l));
+  return sp_box_poly_array(r);
+}
+sp_RbVal sp_StringIO_readlines_a1(sp_StringIO *s, sp_RbVal a) {SP_GC_ROOT(s);SP_GC_ROOT_RBVAL(a); return sio_readlines_n(s, &a, 1); }
+sp_RbVal sp_StringIO_readlines_a2(sp_StringIO *s, sp_RbVal a, sp_RbVal b) {SP_GC_ROOT(s);SP_GC_ROOT_RBVAL(a);SP_GC_ROOT_RBVAL(b); sp_RbVal v[2] = {a, b}; return sio_readlines_n(s, v, 2); }
+sp_RbVal sp_StringIO_readlines_a3(sp_StringIO *s, sp_RbVal a, sp_RbVal b, sp_RbVal c) {SP_GC_ROOT(s);SP_GC_ROOT_RBVAL(a);SP_GC_ROOT_RBVAL(b);SP_GC_ROOT_RBVAL(c); sp_RbVal v[3] = {a, b, c}; return sio_readlines_n(s, v, 3); }
 
 /* seek(off, whence): 0=SET, 1=CUR, 2=END; a negative result is EINVAL. */
 sp_int sp_StringIO_seek2(sp_StringIO *s, sp_int off, sp_int whence) {SP_GC_ROOT(s);
@@ -157,6 +335,7 @@ const char *sp_StringIO_readline(sp_StringIO *s) {SP_GC_ROOT(s);
 
 sp_RbVal sp_StringIO_readlines(sp_StringIO *s) {SP_GC_ROOT(s);
   sp_PolyArray *a = sp_PolyArray_new();
+  SP_GC_ROOT(a);
   const char *l;
   while ((l = sp_StringIO_gets(s)) != NULL) sp_PolyArray_push(a, sp_box_str(l));
   return sp_box_poly_array(a);

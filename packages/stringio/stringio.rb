@@ -51,8 +51,19 @@ module StringIOPackage
   native_method :read,     [:int], :string, "sp_StringIO_read_n"
   native_method :gets,     [], :string?, "sp_StringIO_gets"
   native_method :gets,     [:string], :string?, "sp_StringIO_gets_sep"
+  # the separator, the limit and `chomp:` (a keyword Hash boxes as the last
+  # argument), decoded at run time: a lone Integer is the limit
+  native_method :gets,     [:any], :string?, "sp_StringIO_gets_a1"
+  native_method :gets,     [:any, :any], :string?, "sp_StringIO_gets_a2"
+  native_method :gets,     [:any, :any, :any], :string?, "sp_StringIO_gets_a3"
   native_method :readline, [], :string,  "sp_StringIO_readline"
+  native_method :readline, [:any], :string, "sp_StringIO_readline_a1"
+  native_method :readline, [:any, :any], :string, "sp_StringIO_readline_a2"
+  native_method :readline, [:any, :any, :any], :string, "sp_StringIO_readline_a3"
   native_method :readlines, [], :any,    "sp_StringIO_readlines"
+  native_method :readlines, [:any], :any, "sp_StringIO_readlines_a1"
+  native_method :readlines, [:any, :any], :any, "sp_StringIO_readlines_a2"
+  native_method :readlines, [:any, :any, :any], :any, "sp_StringIO_readlines_a3"
   native_method :getc,     [], :string?, "sp_StringIO_getc"
   native_method :getbyte,  [], :any,     "sp_StringIO_getbyte"
   native_method :readbyte, [], :int,     "sp_StringIO_readbyte"
@@ -96,22 +107,32 @@ class StringIO
   # form only: CRuby answers an Enumerator when no block is given, and a
   # method returning either that or `self` is a union spinel's typing has no
   # slot for -- `readlines.each` / `each_char.to_a` say the same thing here.
-  def each_line(sep = nil)
-    if sep
-      s = sep.to_s
+  def each_line(sep = "\n", limit = nil, chomp: false)
+    # new locals: the spliced parameters would follow a block that rebinds the
+    # variables passed in
+    s = sep.is_a?(String) ? sep.to_s : sep
+    l = limit
+    # a lone Integer (or Float) is the limit, as it is for gets
+    if l.nil? && (s.is_a?(Integer) || s.is_a?(Float))
+      l = s.to_i
+      s = "\n"
+    end
+    l = l.to_i if l.is_a?(Float)
+    raise ArgumentError, "invalid limit: 0 for each_line" if l == 0
+    if l.nil? && !chomp
       while (line = gets(s))
         yield line
       end
     else
-      while (line = gets)
+      while (line = gets(s, l, chomp: chomp))
         yield line
       end
     end
     self
   end
 
-  def each(sep = nil, &blk)
-    each_line(sep, &blk)
+  def each(sep = "\n", limit = nil, chomp: false, &blk)
+    each_line(sep, limit, chomp: chomp, &blk)
   end
 
 

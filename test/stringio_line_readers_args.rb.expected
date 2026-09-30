@@ -1,0 +1,499 @@
+--- 0 "a\nb\n\nc\n\n\nd"
+"a\n"
+"a\nb\n\n"
+"a\nb"
+"a"
+"a\nb\n\nc\n\n\nd"
+"a\nb\n"
+"a\n"
+"a\n"
+"a\nb\n\nc\n\n\nd"
+"a\nb\n\nc\n\n\nd"
+"a"
+""
+"a\n"
+"a\n"
+["a\n", "b\n", "\n", "c\n", "\n", "\n", "d"]
+["a\nb\n\n", "c\n\n\n", "d"]
+["a\nb", "c", "d"]
+["a", "b", "", "c", "", "", "d"]
+["a\n", "b\n", "\n", "c\n", "\n", "\n", "d"]
+["a\n", "b\n", "\nc", "\n\n", "\nd"]
+["a\n", "b\n", "\n", "c\n", "\n", "\n", "d"]
+["a\nb\n\n", "c\n\n\n", "d"]
+["a\nb", "c", "d"]
+["a", "b", "", "c", "", "", "d"]
+["a\nb\n\nc\n\n\nd"]
+["a\nb\n\nc\n\n\nd"]
+["a\nb\n\nc\n\n\nd"]
+["a\n", "b\n", "\n", "c\n", "\n", "\n", "d"]
+["a\nb", "\n\nc", "\n\n\n", "d"]
+["a\n", "b\n", "\nc", "\n\n", "\nd"]
+[ArgumentError, "invalid limit: 0 for readlines"]
+"a\n"
+"a\nb\n\n"
+"a\nb"
+"a"
+"a\nb\n\nc\n\n\nd"
+"a\n"
+"a\nb"
+2
+3
+["a\nb\n\n", "c\n\n\n", "d"]
+["a", "b", "", "c", "", "", "d"]
+["a\nb\n\nc\n\n\nd"]
+["a\nb", "c", "d"]
+["a\n", "b\n", "\n", "c\n", "\n", "\n", "d"]
+["a\nb\n\nc\n\n\nd"]
+["a\n", "b\n", "\nc", "\n\n", "\nd"]
+["a", "b", "", "c", "", "", "d"]
+["a\nb\n\n", "c\n\n\n", "d"]
+--- 1 "\n\n\na\n\nb\n"
+"\n"
+"a\n\n"
+"a"
+""
+"\n\n\na\n\nb\n"
+"\n\n\na"
+"\n"
+"\n"
+"\n\n\na\n\nb\n"
+"\n\n\na\n\nb\n"
+"\n"
+""
+"\n"
+nil
+["\n", "\n", "\n", "a\n", "\n", "b\n"]
+["a\n\n", "b\n"]
+["a", "b\n"]
+["", "", "", "a", "", "b"]
+["\n", "\n", "\n", "a\n", "\n", "b\n"]
+["\n\n", "\na", "\n\n", "b\n"]
+["\n", "\n", "\n", "a\n", "\n", "b\n"]
+["a\n\n", "b\n"]
+["a", "b\n"]
+["", "", "", "a", "", "b"]
+["\n\n\na\n\nb\n"]
+["\n\n\na\n\nb\n"]
+["\n\n\na\n\nb\n"]
+["\n", "\n", "\n", "a\n", "\n", "b\n"]
+["\n\n\n", "a\n\n", "b\n"]
+["\n\n", "\na", "\n\n", "b\n"]
+[ArgumentError, "invalid limit: 0 for readlines"]
+"\n"
+"a\n\n"
+"a"
+""
+"\n\n\na\n\nb\n"
+"\n"
+"\n\n\n"
+2
+2
+["a\n\n", "b\n"]
+["", "", "", "a", "", "b"]
+["\n\n\na\n\nb\n"]
+["a", "b\n"]
+["\n", "\n", "\n", "a\n", "\n", "b\n"]
+["\n\n\na\n\nb\n"]
+["\n\n", "\na", "\n\n", "b\n"]
+["", "", "", "a", "", "b"]
+["a\n\n", "b\n"]
+--- 2 "a\n\n"
+"a\n"
+"a\n\n"
+"a"
+"a"
+"a\n\n"
+"a\n\n"
+"a\n"
+"a\n"
+"a\n\n"
+"a\n\n"
+"a"
+""
+"a\n"
+"a\n"
+["a\n", "\n"]
+["a\n\n"]
+["a"]
+["a", ""]
+["a\n", "\n"]
+["a\n", "\n"]
+["a\n", "\n"]
+["a\n\n"]
+["a"]
+["a", ""]
+["a\n\n"]
+["a\n\n"]
+["a\n\n"]
+["a\n", "\n"]
+["a\n\n"]
+["a\n", "\n"]
+[ArgumentError, "invalid limit: 0 for readlines"]
+"a\n"
+"a\n\n"
+"a"
+"a"
+"a\n\n"
+"a\n"
+"a\n\n"
+1
+1
+["a\n\n"]
+["a", ""]
+["a\n\n"]
+["a"]
+["a\n", "\n"]
+["a\n\n"]
+["a\n", "\n"]
+["a", ""]
+["a\n\n"]
+--- 3 "abc\n\n\n"
+"abc\n"
+"abc\n\n\n"
+"abc"
+"abc"
+"abc\n\n\n"
+"abc\n"
+"abc"
+"abc\n"
+"abc\n\n\n"
+"abc\n\n\n"
+"a"
+""
+"abc\n"
+"ab"
+["abc\n", "\n", "\n"]
+["abc\n\n\n"]
+["abc"]
+["abc", "", ""]
+["abc", "\n", "\n", "\n"]
+["ab", "c\n", "\n\n"]
+["abc\n", "\n", "\n"]
+["abc\n\n\n"]
+["abc"]
+["abc", "", ""]
+["abc\n\n\n"]
+["abc\n\n\n"]
+["abc\n\n\n"]
+["abc\n", "\n", "\n"]
+["abc", "\n\n\n"]
+["ab", "c\n", "\n\n"]
+[ArgumentError, "invalid limit: 0 for readlines"]
+"abc\n"
+"abc\n\n\n"
+"abc"
+"abc"
+"abc\n\n\n"
+"ab"
+"abc"
+1
+1
+["abc\n\n\n"]
+["abc", "", ""]
+["abc\n\n\n"]
+["abc"]
+["abc", "\n", "\n", "\n"]
+["abc\n\n\n"]
+["ab", "c\n", "\n\n"]
+["abc", "", ""]
+["abc\n\n\n"]
+--- 4 "a\r\nb\r\n\r\nc\r\n"
+"a\r\n"
+"a\r\nb\r\n\r\n"
+"a\r\nb"
+"a"
+"a\r\nb\r\n\r\nc\r\n"
+"a\r\nb"
+"a\r\n"
+"a\r\n"
+"a\r\nb\r\n\r\nc\r\n"
+"a\r\nb\r\n\r\nc\r\n"
+"a"
+""
+"a\r\n"
+"a\r"
+["a\r\n", "b\r\n", "\r\n", "c\r\n"]
+["a\r\nb\r\n\r\n", "c\r\n"]
+["a\r\nb", "c\r\n"]
+["a", "b", "", "c"]
+["a\r\n", "b\r\n", "\r\n", "c\r\n"]
+["a\r", "\nb", "\r\n", "\r\n", "c\r", "\n"]
+["a\r\n", "b\r\n", "\r\n", "c\r\n"]
+["a\r\nb\r\n\r\n", "c\r\n"]
+["a\r\nb", "c\r\n"]
+["a", "b", "", "c"]
+["a\r\nb\r\n\r\nc\r\n"]
+["a\r\nb\r\n\r\nc\r\n"]
+["a\r\nb\r\n\r\nc\r\n"]
+["a\r\n", "b\r\n", "\r\n", "c\r\n"]
+["a\r\n", "b\r\n", "\r\nc", "\r\n"]
+["a\r", "\nb", "\r\n", "\r\n", "c\r", "\n"]
+[ArgumentError, "invalid limit: 0 for readlines"]
+"a\r\n"
+"a\r\nb\r\n\r\n"
+"a\r\nb"
+"a"
+"a\r\nb\r\n\r\nc\r\n"
+"a\r"
+"a\r\n"
+2
+2
+["a\r\nb\r\n\r\n", "c\r\n"]
+["a", "b", "", "c"]
+["a\r\nb\r\n\r\nc\r\n"]
+["a\r\nb", "c\r\n"]
+["a\r\n", "b\r\n", "\r\n", "c\r\n"]
+["a\r\nb\r\n\r\nc\r\n"]
+["a\r", "\nb", "\r\n", "\r\n", "c\r", "\n"]
+["a", "b", "", "c"]
+["a\r\nb\r\n\r\n", "c\r\n"]
+--- 5 "abXcdXX\r\nef\r\n\r\nghi\n\n\nj"
+"abXcdXX\r\n"
+"abXcdXX\r\nef\r\n\r\n"
+"abXcdXX\r\nef"
+"abXcdXX"
+"abXcdXX\r\nef\r\n\r\nghi\n\n\nj"
+"abXc"
+"abX"
+"abXc"
+"abX"
+"ab"
+"a"
+""
+"abXcdXX\r\n"
+"ab"
+["abXcdXX\r\n", "ef\r\n", "\r\n", "ghi\n", "\n", "\n", "j"]
+["abXcdXX\r\nef\r\n\r\n", "ghi\n\n\n", "j"]
+["abXcdXX\r\nef", "ghi", "j"]
+["abXcdXX", "ef", "", "ghi", "", "", "j"]
+["abX", "cdX", "X\r\n", "ef\r", "\n", "\r\n", "ghi", "\n", "\n", "\n", "j"]
+["ab", "X", "cd", "X", "X", "\r\n", "ef", "\r\n", "\r\n", "gh", "i\n", "\n\n", "j"]
+["abXcdXX\r\n", "ef\r\n", "\r\n", "ghi\n", "\n", "\n", "j"]
+["abXcdXX\r\nef\r\n\r\n", "ghi\n\n\n", "j"]
+["abXcdXX\r\nef", "ghi", "j"]
+["abXcdXX", "ef", "", "ghi", "", "", "j"]
+["abXcdXX\r\nef\r\n\r\nghi\n\n\nj"]
+["abX", "cdX", "X", "\r\nef\r\n\r\nghi\n\n\nj"]
+["ab", "cd", "", "\r\nef\r\n\r\nghi\n\n\nj"]
+["abXc", "dXX\r", "\n", "ef\r\n", "\r\n", "ghi\n", "\n", "\n", "j"]
+["abX", "cdX", "X\r\n", "ef\r", "\n\r\n", "ghi", "\n\n\n", "j"]
+["ab", "X", "cd", "X", "X", "\r\n", "ef", "\r\n", "\r\n", "gh", "i\n", "\n\n", "j"]
+[ArgumentError, "invalid limit: 0 for readlines"]
+"abXcdXX\r\n"
+"abXcdXX\r\nef\r\n\r\n"
+"abXcdXX\r\nef"
+"abXcdXX"
+"abXcdXX\r\nef\r\n\r\nghi\n\n\nj"
+"ab"
+"abX"
+2
+3
+["abXcdXX\r\nef\r\n\r\n", "ghi\n\n\n", "j"]
+["abXcdXX", "ef", "", "ghi", "", "", "j"]
+["abX", "cdX", "X", "\r\nef\r\n\r\nghi\n\n\nj"]
+["abXcdXX\r\nef", "ghi", "j"]
+["abX", "cdX", "X\r\n", "ef\r", "\n", "\r\n", "ghi", "\n", "\n", "\n", "j"]
+["abXcdXX\r\nef\r\n\r\nghi\n\n\nj"]
+["ab", "", "cd", "", "", "\r\n", "ef", "\r\n", "\r\n", "gh", "i\n", "\n\n", "j"]
+["abXcdXX", "ef", "", "ghi", "", "", "j"]
+["abXcdXX\r\nef\r\n\r\n", "ghi\n\n\n", "j"]
+--- 6 "日本語\n日本\n\nx"
+"日本語\n"
+"日本語\n日本\n\n"
+"日本語\n日本"
+"日本語"
+"日本語\n日本\n\nx"
+"日本"
+"日"
+"日本"
+"日本語\n日本\n\nx"
+"日本語\n日本\n\nx"
+"日"
+""
+"日本語\n"
+"日"
+["日本語\n", "日本\n", "\n", "x"]
+["日本語\n日本\n\n", "x"]
+["日本語\n日本", "x"]
+["日本語", "日本", "", "x"]
+["日", "本", "語", "\n", "日", "本", "\n", "\n", "x"]
+["日", "本", "語", "\n日", "本", "\n\n", "x"]
+["日本語\n", "日本\n", "\n", "x"]
+["日本語\n日本\n\n", "x"]
+["日本語\n日本", "x"]
+["日本語", "日本", "", "x"]
+["日本語\n日本\n\nx"]
+["日本語\n日本\n\nx"]
+["日本語\n日本\n\nx"]
+["日本", "語\n", "日本", "\n", "\n", "x"]
+["日", "本", "語", "\n日", "本", "\n\nx"]
+["日", "本", "語", "\n日", "本", "\n\n", "x"]
+[ArgumentError, "invalid limit: 0 for readlines"]
+"日本語\n"
+"日本語\n日本\n\n"
+"日本語\n日本"
+"日本語"
+"日本語\n日本\n\nx"
+"日"
+"日"
+2
+2
+["日本語\n日本\n\n", "x"]
+["日本語", "日本", "", "x"]
+["日本語\n日本\n\nx"]
+["日本語\n日本", "x"]
+["日", "本", "語", "\n", "日", "本", "\n", "\n", "x"]
+["日本語\n日本\n\nx"]
+["日", "本", "語", "\n日", "本", "\n\n", "x"]
+["日本語", "日本", "", "x"]
+["日本語\n日本\n\n", "x"]
+--- 7 "x"
+"x"
+"x"
+"x"
+"x"
+"x"
+"x"
+"x"
+"x"
+"x"
+"x"
+"x"
+""
+"x"
+"x"
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+[ArgumentError, "invalid limit: 0 for readlines"]
+"x"
+"x"
+"x"
+"x"
+"x"
+"x"
+"x"
+1
+1
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+--- 8 ""
+nil
+nil
+nil
+nil
+nil
+nil
+nil
+nil
+nil
+nil
+nil
+""
+nil
+nil
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+[ArgumentError, "invalid limit: 0 for readlines"]
+[EOFError, "end of file reached"]
+[EOFError, "end of file reached"]
+[EOFError, "end of file reached"]
+[EOFError, "end of file reached"]
+[EOFError, "end of file reached"]
+[EOFError, "end of file reached"]
+[EOFError, "end of file reached"]
+0
+0
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+[TypeError, "no implicit conversion of Symbol into Integer"]
+"a"
+[TypeError, "no implicit conversion of true into Integer"]
+[TypeError, "no implicit conversion of String into Integer"]
+"a"
+[TypeError, "no implicit conversion of Symbol into String"]
+[ArgumentError, "wrong number of arguments (given 3, expected 0..2)"]
+"abc\n"
+"abc"
+[ArgumentError, "unknown keyword: :foo"]
+[ArgumentError, "unknown keyword: :foo"]
+[TypeError, "no implicit conversion of Symbol into Integer"]
+[ArgumentError, "invalid limit: 0 for each_line"]
+[ArgumentError, "invalid limit: 0 for each_line"]
+3
+5
+[nil, false, 0]
+["日", 3]
+["日", "本", "語"]
+["ab", "cd", "", "ef"]
+"ab-"
+"a"
+"ab\r\n"
+"ab"
+"abc\nde"
+"abc\n"
+"abc\ndef\n"
+["ab\n", "cd\n"]
+"ab\n"
+["ab", "cd", "\n", "ef", "\n"]
+["ab\n", "cd\n"]
+["abX", "cd"]
+["a", "b", "X", "c", "d"]
+[ArgumentError, "wrong number of arguments (given 3, expected 0..2)"]
+true
+true
+["ab", "cb", "d\nxb", "\n"]
+["ab", "cd", "ef"]
+["a", "b", "c", "d", "\n", "e", "f"]
+[["ab", "cbd", "bd\nxbd\n"], "bddd"]
+["abXcdXX", "ef\ngh"]
+"abXcdXX"
+["abXcd", "ef\ngh"]
+"abXc"
+[ArgumentError, "invalid limit: 0 for each_line"]
+[ArgumentError, "invalid limit: 0 for each_line"]
+["ab", "cd"]
+["a\nb\n"]
+["ab", "cd"]
