@@ -163,6 +163,7 @@ while i < 4
   k = qk[i]
   qs[i] = (v.is_a?(Float) && v.nan?) ? 0.0 : v * 2.0
   qt += k if k.is_a?(Integer) && k.kind_of?(Numeric) && !k.nil?
+  qt += 1000 if !k || !v
   qt += 100 if v.instance_of?(Integer)
   i += 1
 end
