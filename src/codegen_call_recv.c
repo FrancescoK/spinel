@@ -292,6 +292,22 @@ static TyKind emit_product_operand(Compiler *c, int node, TyKind at, Buf *b) {
   int def = -1;
   TyKind k = obj_container_conv(c, at, "to_ary", &def);
   if (k != TY_UNKNOWN) { emit_obj_container_conv(c, node, def, "to_ary", b); return k; }
+  /* a boxed operand is an Array only at run time: taken as one, or the
+     implicit-conversion TypeError CRuby raises for anything else (a String,
+     nil). Declared as the poly array it holds, the box did not build. */
+  if (at == TY_POLY) {
+    buf_puts(b, "sp_poly_set_operand("); emit_boxed(c, node, b); buf_puts(b, ")");
+    return TY_POLY_ARRAY;
+  }
+  /* ... and so is the general Array's nil (NULL), which read as empty; a
+     literal is never nil */
+  if (at == TY_POLY_ARRAY && nt_kind(c->nt, node) != NK_ArrayNode) {
+    int tn = ++g_tmp;
+    buf_printf(b, "({ sp_PolyArray *_t%d = ", tn); emit_expr(c, node, b);
+    buf_printf(b, "; if (!_t%d) sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into Array\"); _t%d; })",
+               tn, tn);
+    return at;
+  }
   const char *cn = conv_cls_name_of(c, at);
   if (cn && !ty_is_array(at) && at != TY_POLY_ARRAY) {
     buf_puts(b, "({ (void)("); emit_expr(c, node, b);
