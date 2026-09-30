@@ -11048,6 +11048,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           }
         }
       }
+      if (emit_native_splat_call(c, id, cid, name, recv, argc, argv, b)) return 1;
       TyKind natys[8];
       int nta = argc < 8 ? argc : 8;
       for (int a = 0; a < nta; a++) natys[a] = comp_ntype(c, argv[a]);

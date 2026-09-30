@@ -893,6 +893,8 @@ const char *class_ctype(Compiler *c, int cid);
 void emit_native_rest_args(Compiler *c, const NativeMethod *m, int argc, const int *argv, Buf *b);
 void native_arg_check(Compiler *c, int id, const char *what, NativeMethod *m,
                       int argc, const int *argv);
+int emit_native_splat_call(Compiler *c, int id, int cid, const char *name, int recv,
+                           int argc, const int *argv, Buf *b);
 int emit_native_count_mismatch(Compiler *c, int id, int cid, const char *name, int kind,
                                int recv, int argc, const int *argv, Buf *b);
 void emit_ctype(Compiler *c, TyKind t, Buf *b);
