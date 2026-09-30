@@ -13528,6 +13528,68 @@ static int emit_struct_new_call(Compiler *c, int id, int ci, int argc, const int
     return 1;
 }
 
+/* Whether the subtree reads local `nm`, counting the read an operator,
+   `||=` or `&&=` write makes of its own target. */
+static int subtree_reads_local_nm(const NodeTable *nt, int id, const char *nm) {
+  if (id < 0) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_LocalVariableReadNode || k == NK_LocalVariableOperatorWriteNode ||
+      k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode) {
+    const char *n = nt_str(nt, id, "name");
+    if (n && sp_streq(n, nm)) return 1;
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++)
+    if (subtree_reads_local_nm(nt, nt_ref_at(nt, id, i), nm)) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++)
+      if (subtree_reads_local_nm(nt, ids[j], nm)) return 1;
+  }
+  return 0;
+}
+
+/* Whether an `Array.new(n) { ... }` block needs its locals made fresh at the
+   top of every run: a captured (cell-backed) parameter or local always does,
+   since a block kept past its run holds the cell it was built with; an
+   uncaptured local only when a run can read it before writing it (`x ||= v`,
+   a conditional first write). A block whose every local is first written by
+   a plain top-level assignment is left as it was -- a reset there is a dead
+   store. */
+static int array_new_block_needs_fresh_locals(Compiler *c, int blk) {
+  const NodeTable *nt = c->nt;
+  const char *locs = nt_str(nt, blk, "locals");
+  if (!locs || !*locs) return 0;
+  Scope *sc = comp_scope_of(c, blk);
+  int body = nt_ref(nt, blk, "body");
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  int params = nt_ref(nt, blk, "parameters");
+  char nm[128];
+  for (const char *p = locs; *p; ) {
+    const char *e = strchr(p, ',');
+    size_t l = e ? (size_t)(e - p) : strlen(p);
+    if (l >= sizeof nm) return 1;   /* too long to test here: reset, as other iterators do */
+    if (l) {
+      memcpy(nm, p, l); nm[l] = 0;
+      LocalVar *lv = sc ? scope_local(sc, nm) : NULL;
+      if (lv && lv->is_cell) return 1;
+      if (lv && lv->type != TY_UNKNOWN && !subtree_has_param_named_pub(nt, params, nm)) {
+        for (int j = 0; j < bn; j++) {
+          if (nt_kind(nt, bb[j]) == NK_LocalVariableWriteNode && nt_str(nt, bb[j], "name") &&
+              sp_streq(nt_str(nt, bb[j], "name"), nm) &&
+              !subtree_reads_local_nm(nt, nt_ref(nt, bb[j], "value"), nm))
+            break;
+          if (subtree_reads_local_nm(nt, bb[j], nm)) return 1;
+        }
+      }
+    }
+    if (!e) break;
+    p = e + 1;
+  }
+  return 0;
+}
+
 static int emit_class_new_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -14281,6 +14343,15 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
         g_indent++;
         if (irn) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_int lv_%s = _t%d;\n", irn, ti); }
+        /* Fresh block-locals per run, as every other inlined iterator gets
+           them (#3230, #4462): this emitter walks the body itself instead of
+           going through emit_stmts, so without the reset a captured index or
+           local stayed in the one cell the frame allocated -- never written
+           with the index, so every block a `&b` callee kept answered 0, and a
+           captured local answered its last value -- and an uncaptured local
+           kept the previous element's value into `x ||= ...`. */
+        if (array_new_block_needs_fresh_locals(c, blk))
+          emit_block_locals_reset(c, blk, g_pre, g_indent);
         if (bn > 0 && bb) {
           TyKind elem_t = ty_array_elem(at);
           Buf vb; memset(&vb, 0, sizeof vb);
