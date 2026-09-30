@@ -2294,6 +2294,7 @@ sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
 #endif
   SP_GC_ROOT(f);   /* root the freshly-built fiber across the allocation below */
   SP_GC_ROOT_RBVAL(arg);
+  f->owner = 0;   /* the thread's own fiber: the scheduler runs it on any worker */
   sp_thread *volatile t = (sp_thread *)sp_gc_alloc(sizeof(sp_thread), NULL, sp_thread_scan);
   memset(t, 0, sizeof *t);
   t->home_wid = -1;              /* not yet started: any worker may pick it up */
@@ -2431,6 +2432,9 @@ void sp_Thread_pass(void) {
 }
 
 sp_thread *sp_Thread_current(void) { return g_current; }
+/* The current thread as a fiber owner. An id is never reused, so a fiber
+   can't be taken over by a later thread at the same address. */
+unsigned sp_thread_owner_id(void) { return g_current ? g_current->id + 1 : 0; }
 
 sp_bool sp_Thread_alive(sp_thread *t) { return t->state != SP_TH_DEAD; }
 
