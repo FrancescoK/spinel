@@ -1486,6 +1486,7 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/shared_handle_arg_keeps_object.rb \
                   test/index_opassign_fused.rb \
                   test/loop_array_header_cache.rb \
+                  test/array_new_fill_sized.rb \
                   test/kw_splat_boxed_to_hash.rb \
                   test/byref_keyword_rest_splat_param.rb \
                   test/byref_gather_lead_block_super.rb \
@@ -2314,6 +2315,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -E '^#define _SP_HCR' "$$tmp/lahc.c" | grep -q 'lv_cur\b' && { echo "infer-test: FAIL (an array local the loop reassigns was read through a cached header)"; ok=0; }; \
 	grep -E '^#define _SP_HCR' "$$tmp/lahc.c" | grep -q 'self->iv_v\b' && { echo "infer-test: FAIL (an ivar the loop writes was read through a cached header)"; ok=0; }; \
 	grep -qE '^#define _SP_HCR[0-9]+\(\) .*lv_qv.*lv_qk.*lv_qs' "$$tmp/lahc.c" || { echo "infer-test: FAIL (a class test on a scalar kept a loop from caching its arrays' headers)"; ok=0; }; \
+	$(SPINEL) test/array_new_fill_sized.rb -c --no-line-map -o "$$tmp/anf.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (array_new_fill_sized: -c)"; ok=0; }; \
+	grep -q 'sp_IntArray_new_fill(' "$$tmp/anf.c" && grep -q 'sp_FloatArray_new_fill(' "$$tmp/anf.c" || { echo "infer-test: FAIL (Array.new(n, v) on an Integer or Float array grows by n pushes instead of allocating n)"; ok=0; }; \
 	$(SPINEL) test/reader_operands_pure_read.rb -c --no-line-map -o "$$tmp/rop.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (reader_operands_pure_read: -c)"; ok=0; }; \
 	awk '/^[a-z].* sp_total\(/,/^}/' "$$tmp/rop.c" | grep -q 'SP_GC_ROOT(_t' && { echo "infer-test: FAIL (operands that are all pure reads were bound to rooted temps)"; ok=0; }; \
 	grep -qE 'sp_IntArray \* _t[0-9]+ = sp_Loud_vals\(\(sp_Loud \*\)lv_l\); SP_GC_ROOT' "$$tmp/rop.c" || { echo "infer-test: FAIL (a def overriding a reader was taken for a pure field read)"; ok=0; }; \

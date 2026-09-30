@@ -14241,11 +14241,17 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           }
           buf_puts(g_pre, ";\n");
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", k, tr, k);
-          emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tr);
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push(_t%d, _t%d);\n",
-                     ti, ti, tn, ti, k, tr, tv);
+          if (sp_streq(k, "Int") || sp_streq(k, "Float")) {
+            buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new_fill(_t%d, _t%d);\n", k, tr, k, tn, tv);
+            emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tr);
+          }
+          else {
+            buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", k, tr, k);
+            emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tr);
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push(_t%d, _t%d);\n",
+                       ti, ti, tn, ti, k, tr, tv);
+          }
           free(nb.p); free(vb.p);
           buf_printf(b, "_t%d", tr);
           return 1;
