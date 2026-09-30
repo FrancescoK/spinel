@@ -5862,6 +5862,27 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
       return;
     }
   }
+  /* A String that is the shared handle, handed to an initialize that only
+     reads its parameter (#6179): the handle's live bytes, where its plain
+     read copies the whole String for a callee that may keep it. A String an
+     appending initialize made the handle is read by other constructors too,
+     and the copy per construction was most of their cost. */
+  if (provided >= 0 && pt == TY_STRING && p && !p->byref_out && m->name && sp_streq(m->name, "initialize") &&
+      nt_kind(c->nt, provided) == NK_LocalVariableReadNode && !c->strbuf_box[provided] &&
+      !arg_ran_first(provided, 0)) {
+    const char *vn = nt_str(c->nt, provided, "name");
+    Scope *vs = vn ? comp_scope_of(c, provided) : NULL;
+    LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+    if (lv && !lv->is_cell && lv->type == TY_STRBUF && lv->str_shared &&
+        ctor_param_reads_only(c, (int)(m - c->scopes), idx)) {
+      Buf lr; memset(&lr, 0, sizeof lr);
+      emit_local_ref(c, provided, vn, &lr);
+      if (lv->dyn_handle) buf_printf(out, "(%s ? sp_String_cstr(%s) : NULL)", lr.p, lr.p);
+      else buf_printf(out, "sp_String_cstr(%s)", lr.p);
+      free(lr.p);
+      return;
+    }
+  }
   /* A hash argument of a different KIND than the parameter's slot: the two are
      different C structs, so the assignment is not one C accepts. It is reachable
      through an RBS seed, which pins a parameter to `Hash[Symbol, untyped]` while
@@ -5935,6 +5956,9 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
         buf_puts(out, ")");
         return;
       }
+      /* nil, a default's or an argument's, is the NULL handle a nullable
+         handle parameter reads as nil (`def initialize(o: nil)`) */
+      if (p->dyn_handle && comp_ntype(c, provided) == TY_NIL) { buf_puts(out, "NULL"); return; }
       buf_puts(out, p->dyn_handle && pk != NK_LocalVariableReadNode && pk != NK_InstanceVariableReadNode
                       ? "sp_String_new_fresh(" : "sp_String_new_shared(");
       emit_str_expr(c, provided, out);
@@ -5942,6 +5966,7 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
       return;
     }
     int dvP = m->pdefault[idx];
+    if (p->dyn_handle && dvP >= 0 && comp_ntype(c, dvP) == TY_NIL) { buf_puts(out, "NULL"); return; }
     buf_puts(out, "sp_String_new_shared(");
     if (dvP >= 0) emit_str_expr(c, dvP, out);
     else buf_puts(out, "(&(\"\\xff\")[1])");
@@ -9236,6 +9261,13 @@ static void emit_elem_param(Compiler *c, Scope *m, int i, int off, int tmp, TyKi
     Buf raw; memset(&raw, 0, sizeof raw);
     emit_array_elem_at(at, tmp, off, &raw);
     emit_boxed_text(c, set, raw.p ? raw.p : "0", &eb); free(raw.p);
+  }
+  else if (sp && sp->type == TY_STRBUF && sp->str_shared && set == TY_STRING) {
+    /* a String element into a shared-handle parameter: a handle of its own,
+       as any value that is not a caller's variable gets */
+    Buf raw; memset(&raw, 0, sizeof raw);
+    emit_array_elem_at(at, tmp, off, &raw);
+    buf_printf(&eb, "sp_String_new_shared(%s)", raw.p ? raw.p : "NULL"); free(raw.p);
   }
   else emit_array_elem_at(at, tmp, off, &eb);
   /* The gathered positionals are boxed, and so is an element of a boxed

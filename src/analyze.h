@@ -55,6 +55,14 @@ void dyn_call_reach(Compiler *c, int n, int k, DynReach *r);
 void dyn_value_reach(Compiler *c, int v, int k, DynReach *r);
 int dyn_method_appends(Compiler *c, int mi, int j);
 int dyn_block_appends(Compiler *c, int blk, int k);
+/* `new` and `raise C, s` into an initialize that appends to a String
+   parameter (#6179): the initialize methods a call reaches, the argument
+   one binds to a parameter, and whether the initialize appends to it. */
+int ctor_call_targets(Compiler *c, int u, int *first, int *boxed, int *out, int cap);
+int ctor_param_arg(Compiler *c, Scope *m, int u, int first, int j);
+int ctor_param_appends(Compiler *c, int mi, int j);
+int ctor_param_reads_only(Compiler *c, int mi, int j);
+int ctor_arg_in_splat(Compiler *c, int u, int a);
 int an_indexed_each_source(const NodeTable *nt, int recv);
 void an_node_dir(const NodeTable *nt, int id, char *dir, size_t cap);
 const char *an_memo_reader_ivar(Compiler *c, int mi);
