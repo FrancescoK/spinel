@@ -2318,6 +2318,29 @@ static int local_is_kept_block_param(Compiler *c, Scope *sc, const char *nm) {
   return 0;
 }
 
+/* Whether `nm` is a parameter of a `Thread.new` or `Fiber.new` block written
+   in scope `sc`. The body runs as its own function and declares each such
+   parameter an sp_RbVal (emit_fiber_new): the runtime hands it the thread's
+   arguments or the resume value boxed, whatever they are. */
+static int local_is_fiber_block_param(Compiler *c, Scope *sc, const char *nm) {
+  const NodeTable *nt = c->nt;
+  for (int call = an_calls_named_first(c, "new"); call >= 0; call = an_calls_named_next(call)) {
+    int blk = nt_ref(nt, call, "block"), recv = nt_ref(nt, call, "receiver");
+    if (nt_kind(nt, call) != NK_CallNode || blk < 0 || nt_kind(nt, blk) != NK_BlockNode || recv < 0) continue;
+    if (nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode) continue;
+    const char *rn = nt_str(nt, recv, "name");
+    if (!rn || (!sp_streq(rn, "Thread") && !sp_streq(rn, "Fiber")) || comp_scope_of(c, blk) != sc) continue;
+    int pn = nt_ref(nt, blk, "parameters");
+    int inner = pn >= 0 ? nt_ref(nt, pn, "parameters") : -1;
+    int rn2 = 0; const int *reqs = inner >= 0 ? nt_arr(nt, inner, "requireds", &rn2) : NULL;
+    for (int k = 0; k < rn2; k++) {
+      const char *p = nt_str(nt, reqs[k], "name");
+      if (p && sp_streq(p, nm)) return 1;
+    }
+  }
+  return 0;
+}
+
 static int recv_hash_or_write(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
   int n = unwrap_parens(c, recv);
@@ -3537,6 +3560,13 @@ int infer_write_types(Compiler *c) {
         continue;
       }
       if (elem_splat_index) continue;
+      /* A Thread.new or Fiber.new block's parameter is boxed in the body
+         (local_is_fiber_block_param), so a push or an element write there
+         says only that the value answers `<<` or `[]=`, which a String does
+         as well as an Array. Read as "t is a String array", `Thread.new(s)
+         { |t| t << x }` pushed into the boxed value as an sp_StrArray *,
+         and the C did not compile; an Integer array's push did not either. */
+      if ((is_push || is_idx_write) && local_is_fiber_block_param(c, lsc, rnm)) continue;
       /* A bare `x[i]` read OR an `x[i] = v` element assignment must not promote
          `x` to a hash if `x` elsewhere gets an array-typed write (`x = a.split`
          etc.): it is an array indexed/assigned by position, and the hash type
