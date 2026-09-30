@@ -258,8 +258,20 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   g_self_deref = is_val ? "." : "->";
   int din = g_indent + 1;
 
+  /* A String the body appends to, or yields to a block that does, binds as
+     an alias of the caller's variable, as an inlined method's does
+     (inline_alias_params): a copy took the block's appends (#6179) */
+  unsigned alias_mask = 0;
+  { int aa = nt_ref(nt, id, "arguments"), ac = 0;
+    const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &ac) : NULL;
+    int pac = ac > 0 && nt_kind(nt, av[ac - 1]) == NK_KeywordHashNode ? ac - 1 : ac;
+    ArgLayout LA;
+    arg_layout(c, m, av, pac, pac < ac ? av[pac] : -1, 1, &LA);
+    alias_mask = inline_alias_params(c, mi, av, pac, &LA, block);
+    arg_layout_free(&LA); }
+
   /* declare the initialize body's locals under renamed names */
-  emit_inlined_locals(c, m, tag, b, din);
+  emit_inline_locals_aliased(c, mi, tag, alias_mask, b, din);
 
   /* bind params to the call args (call-site scope: renames off) */
   int args = nt_ref(nt, id, "arguments");
@@ -331,6 +343,17 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
       ren_unpark(&park);
     }
     emit_indent(b, din);
+    if (i < 32 && (alias_mask & (1u << i))) {
+      RenPark park = ren_park(saved_nren);
+      const char *svs = g_self, *svd = g_self_deref;
+      g_self = saved_self; g_self_deref = saved_self_deref;
+      buf_printf(b, "const char **_cell__y%d_%s = &(", tag, m->pnames[i]);
+      emit_inline_alias_arg(c, argv2[L.arg[i]], b);
+      buf_puts(b, ";\n");
+      g_self = svs; g_self_deref = svd;
+      ren_unpark(&park);
+      continue;
+    }
     { char rn[128]; snprintf(rn, sizeof rn, "_y%d_%s", tag, m->pnames[i]);
       emit_inlined_param_target(c, m, m->pnames[i], rn, b); }
     /* A param past the rest binds by name, never positionally. */
@@ -391,6 +414,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   int save_ind = g_indent; g_indent = din;
   emit_stmts(c, m->body, b, din);
   g_indent = save_ind;
+  inline_alias_release(m, alias_mask);
   emit_indent(b, g_indent + 1);
   buf_printf(b, "_t%d;\n", st);
   emit_indent(b, g_indent); buf_puts(b, "})");
@@ -1894,6 +1918,7 @@ void emit_proc_ret_unbox(Compiler *c, TyKind rty, Buf *b) {
    side-channel, so every argument -- including a concrete-typed one -- must be
    boxed and published, not just the statically-poly ones. (A `yield` knows its
    block's parameter types, so it passes force_poly=0 and keeps the lean ABI.) */
+unsigned g_yield_live_mask = 0;
 void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *b, int force_poly) {
   int nargs = argc < 16 ? argc : 16;  /* proc-call ABI caps args at sp_int[16] */
   int any_poly = force_poly;
@@ -1962,6 +1987,8 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
           dyn_call_reach(c, call, k, &r);
           live = !r.unknown && !r.keeps && !r.unlifted;
         }
+        /* a yield into a proc: emit_proc_yield judged its targets */
+        else if (call < 0) live = (g_yield_live_mask >> k) & 1u;
         if (!live) {
           slot[k] = ++g_tmp;
           emit_indent(g_pre, g_indent);
@@ -22579,6 +22606,24 @@ static int refuse_scope_params(Compiler *c, Scope *m) {
   return bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
 }
 
+/* The method a static call names: by the receiver's class, or the
+   enclosing class for self, or the free function. */
+static int refuse_static_target(Compiler *c, int id, const char *name) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  int cls = -1;
+  if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
+    Scope *encl = comp_scope_of(c, id);
+    cls = encl ? encl->class_id : -1;
+  }
+  else {
+    TyKind rt = comp_ntype(c, recv);
+    if (!ty_is_object(rt)) return -1;
+    cls = ty_object_class(rt);
+  }
+  return cls >= 0 ? comp_method_in_chain(c, cls, name, NULL) : comp_method_index(c, name);
+}
+
 /* The method scope a static call names, when it is a define_method body. */
 static int refuse_dm_target(Compiler *c, int id, const char *name) {
   const NodeTable *nt = c->nt;
@@ -22601,13 +22646,15 @@ static int refuse_dm_target(Compiler *c, int id, const char *name) {
 }
 
 /* `yield(s)` into a real proc (`run(s, &method(:m))`, `run(s, &pr)`, a
-   lowered or proc-form method's block): the yield boxes a copy, and the
-   proc's parameter takes it. */
+   lowered or proc-form method's block): the yield boxes what it is handed,
+   and a String variable that is the shared handle goes over as the handle
+   (a lowered method's yield pulls it in, dyn_yield_site); any other is a
+   copy the proc's parameter takes. */
 void refuse_yield_string_copies(Compiler *c, int yargc, const int *yargv) {
   for (int k = 0; k < yargc && k < 16; k++) {
     int shared;
     if (nt_kind(c->nt, yargv[k]) == NK_SplatNode) return;
-    if (!strvar_arg(c, yargv[k], &shared)) continue;
+    if (!strvar_arg(c, yargv[k], &shared) || shared || local_is_handle(c, yargv[k])) continue;
     DynReach r;
     dyn_value_reach(c, g_yield_proc_expr, k, &r);
     if (!r.app) continue;
@@ -22709,6 +22756,83 @@ static int refuse_ctor_copies(Compiler *c, int id, const char *name, int recv) {
   return 1;
 }
 
+/* Does `instance_exec` call `id` splice its literal block into an object's
+   context with every argument bound in place, so that a String variable the
+   block appends to is aliased (emit_block_binds)? Not through a trampoline,
+   a poly or non-object receiver, a class's own `instance_exec`, or a splat,
+   which gathers the arguments into an Array first. */
+static int ie_splice_aliases(Compiler *c, int id, const char *name, int recv) {
+  const NodeTable *nt = c->nt;
+  if (!sp_streq(name, "instance_exec")) return 0;
+  int cls = -1;
+  if (recv >= 0) {
+    TyKind rt = comp_ntype(c, recv);
+    /* a receiver that is no object of a class spinel lays out (nil, a
+       builtin, `Object.new`) runs the block in place, binding the same way,
+       and a poly one splices it per class (emit_ie_poly) or in place */
+    if (rt == TY_UNKNOWN) return 0;
+    if (ty_is_object(rt)) cls = ty_object_class(rt);
+  }
+  else if ((cls = ie_implicit_self_class(c, id)) < 0) return 0;
+  if (cls >= 0 && comp_method_in_chain(c, cls, name, NULL) >= 0) return 0;
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  for (int i = 0; i < ac; i++)
+    if (nt_kind(nt, av[i]) == NK_SplatNode) return 0;
+  return 1;
+}
+
+/* Is block `blk`'s parameter k the shared String handle? */
+static int block_param_is_handle(Compiler *c, int blk, int k) {
+  const char *bp = block_param_name(c, blk, k);
+  Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
+  LocalVar *t = bs ? scope_local(bs, bp) : NULL;
+  return t && t->type == TY_STRBUF && t->str_shared;
+}
+/* Is `a` a String variable a splice can alias: a local or a parameter, or
+   one lent to this method (a cell that is the caller's slot), not a
+   block's parameter or a variable a proc captures? */
+static int ie_arg_aliases(Compiler *c, int a) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, a) != NK_LocalVariableReadNode || comp_ntype(c, a) != TY_STRING) return 0;
+  const char *vn = nt_str(nt, a, "name");
+  Scope *vs = vn ? comp_scope_of(c, a) : NULL;
+  LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+  return lv && lv->type == TY_STRING && !lv->is_block_param && (!lv->is_cell || lv->byref_out);
+}
+
+/* A method that yields its parameter to a block that appends to it, where
+   the parameter is the handle: a lowered method's yield into the block it
+   keeps, or a spliced method's that a handle reached (yield_splice_handles).
+   The call's String variable is pulled into it, but for one that cannot
+   be: a block's parameter, a global or class variable, an ivar that is no
+   handle. A spliced call is emitted by the inliner, which asks this too. */
+void refuse_yield_handle_args(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name) return;
+  int ymi = refuse_static_target(c, id, name);
+  Scope *ym = ymi >= 0 ? &c->scopes[ymi] : NULL;
+  if (!ym || !(ym->is_lowered_yield || ym->yields) ||
+      !refuse_call_binds(c, refuse_scope_params(c, ym), id, 0, 0)) return;
+  if (nt_int(nt, id, "node_line", 0) > 0) g_refuse_call = id;
+  for (int j = 0; j < ym->nparams && j < 16; j++) {
+    LocalVar *q = ym->pnames[j] ? scope_local(ym, ym->pnames[j]) : NULL;
+    if (!q || q->type != TY_STRBUF || !q->str_shared) continue;
+    if (ym->is_lowered_yield && !dyn_yield_param_appends(c, ymi, j)) continue;
+    int a = arg_layout_param_node(c, ym, id, j, NULL);
+    int shared;
+    const char *kind = a >= 0 ? strvar_arg(c, a, &shared) : NULL;
+    /* a local that is the handle goes over as the handle, a captured one
+       too (its cell holds the handle) */
+    if (!kind || ctor_arg_shared(c, a, 0) || (local_is_handle(c, a) && !sp_streq(kind, "a block's parameter")))
+      continue;
+    char mt[96]; snprintf(mt, sizeof mt, "`%s`", name);
+    char why[96]; snprintf(why, sizeof why, "from %s", kind);
+    refuse_string_copy(c, a, mt, ym->pnames[j], "a yield into a block argument", why);
+  }
+}
+
 static void refuse_string_copies(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -22794,7 +22918,9 @@ static void refuse_string_copies(Compiler *c, int id) {
     }
     return;
   }
-  /* `o.instance_exec(s) { |t| t << x }`: the block's parameter is bound as a
+  /* `o.instance_exec(s) { |t| t << x }`: the block's parameter is bound as
+     a yield binds it, and on an object's splice a plain String variable is
+     aliased as a yield's is (ie_splice_aliases); elsewhere it is bound as a
      plain assignment */
   if (sp_streq(name, "instance_exec") || sp_streq(name, "class_exec") || sp_streq(name, "module_exec")) {
     int blk = nt_ref(nt, id, "block");
@@ -22802,9 +22928,15 @@ static void refuse_string_copies(Compiler *c, int id) {
     { int bp = nt_ref(nt, blk, "parameters");
       if (!refuse_call_binds(c, bp >= 0 ? nt_ref(nt, bp, "parameters") : -1, id, 0, 1)) return; }
     int n = refuse_arg_layout(c, id, av, 16);
+    int spliced = ie_splice_aliases(c, id, name, recv);
     for (int k = 0; k < n; k++) {
       int shared;
-      if (!strvar_arg(c, av[k], &shared)) continue;
+      const char *kind = strvar_arg(c, av[k], &shared);
+      if (!kind) continue;
+      if (spliced && ie_arg_aliases(c, av[k]) && block_param_wants_alias(c, blk, k)) continue;
+      /* a parameter that is the shared handle takes the caller's, pulled in
+         (yield_splice_handles) */
+      if (spliced && local_is_handle(c, av[k]) && block_param_is_handle(c, blk, k)) continue;
       if (dyn_block_appends(c, blk, k)) {
         char thr2[48]; snprintf(thr2, sizeof thr2, "`%s`", name);
         char why2[64]; snprintf(why2, sizeof why2, "through `%s`", name);
@@ -22813,6 +22945,7 @@ static void refuse_string_copies(Compiler *c, int id) {
     }
     return;
   }
+  if (!dyn) refuse_yield_handle_args(c, id);
   /* a method `define_method` defines keeps the value ABI (a DYN name) */
   if (dyn) return;
   static int dm_any = -1;
@@ -34811,10 +34944,28 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       /* instance_exec binds its arguments as a yield binds them
          (emit_block_binds); instance_eval hands each parameter the receiver */
       int sv_nargov = g_n_argov;
+      /* a String variable the block appends to is aliased, as a yield's is
+         (#6179); the alias's brace closes after the body, which then leaves
+         its value in a temp */
+      BlockAliases nal = { .n = 0 };
+      int nal_tr = -1;
+      TyKind nal_vt = TY_UNKNOWN;
       if (nexec) {
         /* into a side buffer: a value's own prelude drains into g_pre first */
         Buf bb; memset(&bb, 0, sizeof bb);
-        emit_block_binds(c, nblk, niav, niac, &bb, g_indent, 0, NULL, NULL);
+        emit_block_binds(c, nblk, niav, niac, &bb, g_indent, 0, NULL, &nal);
+        if (nal.open && nbn > 0) {
+          TyKind lt = comp_ntype(c, nbb[nbn - 1]);
+          nal_vt = comp_ntype(c, id) == TY_POLY && lt != TY_POLY ? TY_POLY : lt;
+          if (nal_vt != TY_VOID && nal_vt != TY_NIL && nal_vt != TY_UNKNOWN &&
+              (ty_is_object(nal_vt) || c_type_name(nal_vt))) {
+            nal_tr = ++g_tmp;
+            emit_indent(g_pre, g_indent); emit_ctype(c, nal_vt, g_pre);
+            buf_printf(g_pre, " _t%d = %s; ", nal_tr, comp_ty_value_obj(c, nal_vt) ? "{0}" : default_value(nal_vt));
+            emit_gc_root_tmp(c, nal_vt, nal_tr, g_pre);
+            buf_puts(g_pre, "\n");
+          }
+        }
         if (bb.p) buf_puts(g_pre, bb.p);
         free(bb.p);
       }
@@ -34836,9 +34987,29 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       g_self = selfb; g_self_deref = ".";
       int *nsnap = ie_body_retype(c, nbody, -2 - id);
       for (int j = 0; j < nbn - 1; j++) emit_stmt(c, nbb[j], g_pre, g_indent);
-      if (nbn == 0) { ie_body_restore(c, nsnap); g_self = sv_self; g_self_deref = sv_deref; buf_puts(b, "sp_box_nil()"); return; }
+      if (nbn == 0) {
+        ie_body_restore(c, nsnap); g_self = sv_self; g_self_deref = sv_deref;
+        if (nal.open) { emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n"); }
+        buf_puts(b, "sp_box_nil()"); return;
+      }
       int nscalar = is_scalar_ret(nbt) && nbt != TY_VOID && nbt != TY_NIL && nbt != TY_UNKNOWN;
       int nbox = comp_ntype(c, id) == TY_POLY && nbt != TY_POLY;
+      if (nal.open) {
+        Buf vb; memset(&vb, 0, sizeof vb);
+        if (nal_vt == TY_POLY && nbt != TY_POLY) emit_boxed(c, nbb[nbn - 1], &vb); else emit_expr(c, nbb[nbn - 1], &vb);
+        emit_indent(g_pre, g_indent);
+        if (nal_tr >= 0) buf_printf(g_pre, "_t%d = %s;\n", nal_tr, vb.p ? vb.p : "0");
+        else buf_printf(g_pre, "%s;\n", vb.p ? vb.p : "0");
+        free(vb.p);
+        ie_body_restore(c, nsnap);
+        g_self = sv_self; g_self_deref = sv_deref;
+        for (int a = 0; a < nal.n; a++)
+          if (--nal.lv[a]->inline_alias == 0) nal.lv[a]->is_cell = 0;
+        emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+        if (nal_tr >= 0) buf_printf(b, "_t%d", nal_tr);
+        else buf_puts(b, nbox ? "sp_box_nil()" : default_value(nbt));
+        return;
+      }
       if (nscalar) {
         int tr = ++g_tmp;
         Buf vb = expr_buf(c, nbb[nbn - 1]);
@@ -34958,6 +35129,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       /* Bind the block params (interned in the enclosing scope, declared
          there): instance_exec assigns the call-site args; instance_eval
          yields the receiver to each param. */
+      BlockAliases ie_al = { .n = 0 };
       {
         int is_exec = ie_tramp ? (ie_tramp == 2) : sp_streq(name, "instance_exec");
         int bp_node = nt_ref(nt, blk, "parameters");
@@ -34975,7 +35147,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
              `instance_exec(1) { |*r, a| }` bound r = [1]. */
           int sv_nargov = g_n_argov;
           Buf bb; memset(&bb, 0, sizeof bb);   /* see the non-object receiver's */
-          emit_block_binds(c, blk, iav, iac + (ie_kwhash >= 0), &bb, g_indent, 0, NULL, NULL);
+          /* a String variable the block appends to is aliased, as a yield's
+             is: the block writes through the caller's slot (#6179) */
+          emit_block_binds(c, blk, iav, iac + (ie_kwhash >= 0), &bb, g_indent, 0, NULL, &ie_al);
           if (bb.p) buf_puts(g_pre, bb.p);
           free(bb.p);
           g_n_argov = sv_nargov;
@@ -35109,6 +35283,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         g_brk_ser_var = sv_bser;
         g_ie_discard_value = saved_discard;
       }
+      /* the aliases end with the body, which the result temps outlive */
+      for (int a = 0; a < ie_al.n; a++)
+        if (--ie_al.lv[a]->inline_alias == 0) ie_al.lv[a]->is_cell = 0;
+      if (ie_al.open) { emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n"); }
       g_ie_class_id = saved_ie;
       if (ie_flip) { ie_sc->is_cmethod = ie_sv_cm; ie_sc->class_id = ie_sv_cls; comp_scope_move_end(); }
       g_self = saved_self2;

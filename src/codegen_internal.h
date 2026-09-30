@@ -603,6 +603,14 @@ int emit_lent_local(LocalVar *lv, const char *vn, Buf *out);
 int zsuper_param_source(Compiler *c, Scope *s, Scope *pm, int j);
 int gathered_param_index(Compiler *c, Scope *m, int i, const char *len, char *idx, size_t cap,
                          int *npost_out);
+int local_is_handle(Compiler *c, int a);
+extern unsigned g_yield_live_mask;   /* emit_proc_yield: positions whose targets take live bytes */
+void refuse_yield_handle_args(Compiler *c, int id);
+int emit_handle_var_ref(Compiler *c, int a, Buf *b);
+unsigned inline_alias_params(Compiler *c, int mi, const int *argv, int pargc, const ArgLayout *L, int blk);
+void inline_alias_release(Scope *m, unsigned alias_mask);
+void emit_inline_locals_aliased(Compiler *c, int mi, int tag, unsigned alias_mask, Buf *b, int din);
+void emit_inline_alias_arg(Compiler *c, int av, Buf *b);
 void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, int argc,
                              const ArgLayout *L, unsigned alias_mask, int tag, int saved_nren,
                              int din, Buf *b);
@@ -1332,7 +1340,10 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
 typedef struct BiRen BiRen;
 void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int indent,
                          int as_expr, BiRen *bi);
-typedef struct BlockAliases BlockAliases;
+/* A spliced block's parameter aliases (see emit_block_binds), undone by the
+   caller once the body is emitted. */
+typedef struct BlockAliases { LocalVar *lv[16]; int n, open; } BlockAliases;
+int block_param_wants_alias(Compiler *c, int blk, int k);
 void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
                       Buf *b, int indent, int as_expr, BiRen *bi, BlockAliases *al);
 void emit_yield_proc_call(Compiler *c, int args_node, TyKind result_ty, Buf *b, int indent, int as_expr);

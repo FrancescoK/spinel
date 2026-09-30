@@ -141,19 +141,32 @@ static int subtree_mutates_local(const NodeTable *nt, int id, const char *name) 
   }
   return 0;
 }
-/* A block parameter of `blk` that the block's body mutates in place, and that
-   no write site in its scope rebinds: the yield it is bound from has to lend
-   the yielded variable itself (see emit_block_invoke's alias binding), or the
-   append lands in the parameter's copy and the yielded string never sees it
-   (`fill(buf) { |s| s << "z" }` left buf empty). */
-static int block_param_wants_alias(Compiler *c, int blk, int k) {
+/* Does block `blk` append to its parameter `bp` through a method it hands
+   it to, whose parameter there is lent, the handle or appended to (the
+   dynamic-call analysis's answer, dyn_block_appends)? */
+static int block_param_handed_to_appender(Compiler *c, int blk, const char *bp) {
+  for (int j = 0; j < 16; j++) {
+    const char *pn = proc_param_name(c, blk, j);
+    if (!pn) break;
+    if (sp_streq(pn, bp)) return dyn_block_appends(c, blk, j);
+  }
+  return 0;
+}
+/* A block parameter of `blk` that the block's body mutates in place, or
+   hands to a method that appends to it, and that no write site in its scope
+   rebinds: the yield it is bound from has to lend the yielded variable
+   itself (see emit_block_invoke's alias binding), or the append lands in
+   the parameter's copy and the yielded string never sees it (`fill(buf) {
+   |s| s << "z" }` left buf empty, and so did `{ |s| grow(s) }`). */
+int block_param_wants_alias(Compiler *c, int blk, int k) {
   const NodeTable *nt = c->nt;
   const char *bp = block_param_name(c, blk, k);
   if (!bp) return 0;
   Scope *bs = comp_scope_of(c, blk);
   LocalVar *lv = bs ? scope_local(bs, bp) : NULL;
   if (!lv || lv->type != TY_STRING || (lv->is_cell && !lv->inline_alias)) return 0;
-  if (!subtree_mutates_local(nt, nt_ref(nt, blk, "body"), bp)) return 0;
+  if (!subtree_mutates_local(nt, nt_ref(nt, blk, "body"), bp) &&
+      !block_param_handed_to_appender(c, blk, bp)) return 0;
   for (int w = 0; w < nt->count; w++) {
     NodeKind wk = nt_kind(nt, w);
     if (wk != NK_LocalVariableWriteNode && wk != NK_LocalVariableOperatorWriteNode &&
@@ -212,6 +225,121 @@ int block_call_takes_class_dispatch(Compiler *c, int id) {
   }
   int mi = comp_method_in_chain(c, cls, name, NULL);
   return mi >= 0 && c->scopes[mi].yields && takes_class_dispatch(c, mi, cls, name);
+}
+
+/* Is `a` a read of a local that is the shared String handle? */
+int local_is_handle(Compiler *c, int a) {
+  if (a < 0 || nt_kind(c->nt, a) != NK_LocalVariableReadNode) return 0;
+  const char *vn = nt_str(c->nt, a, "name");
+  Scope *vs = vn ? comp_scope_of(c, a) : NULL;
+  LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+  return lv && lv->type == TY_STRBUF && lv->str_shared;
+}
+/* A local that is the shared handle, as a reference to the handle itself
+   rather than the copy a plain read of it takes. 0 when it is none. */
+int emit_handle_var_ref(Compiler *c, int a, Buf *b) {
+  if (!local_is_handle(c, a)) return 0;
+  char ref[1024];
+  unsigned char svm = c->strbuf_box[a];
+  c->strbuf_box[a] = 1;
+  int ok = strbuf_slot_ref(c, a, ref, sizeof ref);
+  c->strbuf_box[a] = svm;
+  if (!ok) return 0;
+  buf_puts(b, ref);
+  return 1;
+}
+/* Which parameters of inlined method `mi` bind as ALIASES of the caller's
+   variables (see inline_param_mutated above): a String the body mutates,
+   hands on, or yields to a block parameter `blk` mutates, passed as a plain
+   local read (or an instance method's ivar), not rebound by the body, and
+   not celled for a capture of its own. Each is marked an alias until
+   inline_alias_release. Decided before the locals are declared, since an
+   aliased parameter gets no local of its own. */
+unsigned inline_alias_params(Compiler *c, int mi, const int *argv, int pargc, const ArgLayout *L, int blk) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  unsigned alias_mask = 0;
+  for (int i = 0; i < m->nparams && i < 32 && !L->gather; i++) {
+    if (L->from[i] != ARG_NODE || L->arg[i] >= pargc || (m->rest_idx >= 0 && i >= m->rest_idx)) continue;
+    int an = argv[L->arg[i]];
+    NodeKind ak = nt_kind(nt, an);
+    if (ak == NK_InstanceVariableReadNode) {
+      /* an ivar buffer: the object's own slot, from an instance method of a
+         heap class (a value type is a struct copy with no slot to lend) */
+      Scope *as = comp_scope_of(c, an);
+      if (!as || as->class_id < 0 || as->is_cmethod || comp_ntype(c, an) != TY_STRING ||
+          comp_ty_value_obj(c, ty_object(as->class_id)) || !g_self) continue;
+    }
+    /* a String that is the shared handle has no slot to lend: the
+       parameter takes the handle (yield_splice_handles) or a copy */
+    else if (ak != NK_LocalVariableReadNode || local_is_handle(c, an)) continue;
+    LocalVar *lv = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
+    if (!lv || !lv->is_param || lv->is_block_param || lv->type != TY_STRING) continue;
+    if (lv->is_cell && !lv->inline_alias) continue;
+    if (inline_param_rebound(c, mi, m->pnames[i]) == 2 ||
+        (!inline_param_mutated(c, mi, m->pnames[i]) &&
+         !inline_param_yielded_mutated(c, mi, m->pnames[i], blk))) continue;
+    alias_mask |= 1u << i;
+    lv->inline_alias++;
+    lv->is_cell = 1;
+  }
+  return alias_mask;
+}
+void inline_alias_release(Scope *m, unsigned alias_mask) {
+  for (int i = 0; i < m->nparams && i < 32; i++) {
+    if (!(alias_mask & (1u << i))) continue;
+    LocalVar *lv = scope_local(m, m->pnames[i]);
+    if (lv && --lv->inline_alias == 0) lv->is_cell = 0;
+  }
+}
+/* Declare inlined method `mi`'s locals under renamed names, all but the
+   aliased parameters: the alias is declared at the binding, and a
+   parameter the body also rebinds gets the private local the rebind
+   repoints the cell at. */
+void emit_inline_locals_aliased(Compiler *c, int mi, int tag, unsigned alias_mask, Buf *b, int din) {
+  Scope *m = &c->scopes[mi];
+  for (int i = 0; i < m->nlocals; i++) {
+    LocalVar *lv = &m->locals[i];
+    if (m->blk_param && lv->name && sp_streq(lv->name, m->blk_param)) continue;  /* virtual &block slot */
+    snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", lv->name);
+    snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_y%d_%s", tag, lv->name);
+    const char *rn = g_ren_to[g_nren];
+    g_nren++;
+    if (lv->is_param && lv->inline_alias) {
+      int pi = -1;
+      for (int k = 0; k < m->nparams; k++) if (m->pnames[k] && sp_streq(m->pnames[k], lv->name)) { pi = k; break; }
+      if (pi >= 0 && (alias_mask & (1u << pi))) {
+        if (inline_param_rebound(c, mi, lv->name) == 1) {
+          emit_indent(b, din);
+          buf_printf(b, "const char *lv_%s = NULL; SP_GC_ROOT_STR(lv_%s);\n", rn, rn);
+        }
+        continue;
+      }
+    }
+    emit_inlined_local_decl(c, lv, rn, b, din);
+  }
+}
+/* The alias an aliased parameter binds: the caller's variable's own slot. */
+void emit_inline_alias_arg(Compiler *c, int av, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, av) == NK_InstanceVariableReadNode) {
+    /* the slot itself, and the owner pinned as a byref call pins it: the
+       store lands inside this expansion, past any dirty bit (#4378) */
+    const char *ivn = nt_str(nt, av, "name");
+    buf_printf(b, "%s%siv_%s); sp_gc_pin_remembered((void *)%s)", g_self, g_self_deref, iv_c(ivn + 1), g_self);
+    return;
+  }
+  emit_expr(c, av, b); buf_puts(b, ")");
+  /* The caller's variable may be a heap cell (captured by a proc): the
+     body will store through it from inside this expansion, which is the
+     placement a dirty bit cannot cover, so pin the cell as a byref call
+     would (#4391); a stack slot, or a cell the caller itself was lent,
+     is not ours to pin. */
+  const char *avn = nt_str(nt, av, "name");
+  LocalVar *alv = avn ? scope_local(comp_scope_of(c, av), avn) : NULL;
+  if (alv && alv->is_cell && !alv->byref_out && !alv->inline_alias &&
+      !(g_cap_struct && g_cap_names && nameset_has(g_cap_names, avn)))
+    buf_printf(b, "; sp_gc_pin_remembered((void *)_cell_%s)", rename_local(avn));
 }
 
 /* Bind an inlined yielding method's parameters from a call's arguments:
@@ -314,27 +442,7 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
       emit_arg_or_default(c, m, i, L->from[i] == ARG_NODE ? argv[L->arg[i]] : -1, b);
     /* Anything past the rest that is not one of its posts is a keyword (or
        **kwrest) param: it binds by name, never positionally. */
-    else if (aliased && nt_kind(nt, argv[L->arg[i]]) == NK_InstanceVariableReadNode) {
-      /* the slot itself, and the owner pinned as a byref call pins it: the
-         store lands inside this expansion, past any dirty bit (#4378) */
-      const char *ivn = nt_str(nt, argv[L->arg[i]], "name");
-      buf_printf(b, "%s%siv_%s); sp_gc_pin_remembered((void *)%s)", g_self, g_self_deref, iv_c(ivn + 1), g_self);
-    }
-    else if (aliased) {
-      int av = argv[L->arg[i]];
-      emit_expr(c, av, b); buf_puts(b, ")");
-      /* The caller's variable may be a heap cell (captured by a proc): the
-         body will store through it from inside this expansion, which is the
-         placement a dirty bit cannot cover, so pin the cell as a byref call
-         would (#4391); a stack slot, or a cell the caller itself was lent,
-         is not ours to pin. */
-      { const char *avn = nt_str(nt, av, "name");
-        LocalVar *alv = avn ? scope_local(comp_scope_of(c, av), avn) : NULL;
-        if (alv && alv->is_cell && !alv->byref_out && !alv->inline_alias &&
-            !(g_cap_struct && g_cap_names && nameset_has(g_cap_names, avn)))
-          buf_printf(b, "; sp_gc_pin_remembered((void *)_cell_%s)", rename_local(avn));
-      }
-    }
+    else if (aliased) emit_inline_alias_arg(c, argv[L->arg[i]], b);
     /* a **kwrest collects the keywords no declared keyword param takes, as
        on the other call paths; it bound its nil default here */
     else if (i == m->kwrest_idx) {
@@ -738,60 +846,19 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int args = nt_ref(nt, id, "arguments");
   int argc = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
-  unsigned alias_mask = 0;
   ArgLayout L;
+  unsigned alias_mask;
   {
     int pargc = argc;
     if (argc > 0 && argv && nt_type(nt, argv[argc - 1]) &&
         sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) pargc = argc - 1;
     arg_layout(c, m, argv, pargc, pargc < argc ? argv[pargc] : -1, 1, &L);
-    for (int i = 0; i < m->nparams && i < 32 && !L.gather; i++) {
-      if (L.from[i] != ARG_NODE || L.arg[i] >= pargc || (m->rest_idx >= 0 && i >= m->rest_idx)) continue;
-      int an = argv[L.arg[i]];
-      NodeKind ak = nt_kind(nt, an);
-      if (ak == NK_InstanceVariableReadNode) {
-        /* an ivar buffer: the object's own slot, from an instance method of a
-           heap class (a value type is a struct copy with no slot to lend) */
-        Scope *as = comp_scope_of(c, an);
-        if (!as || as->class_id < 0 || as->is_cmethod || comp_ntype(c, an) != TY_STRING ||
-            comp_ty_value_obj(c, ty_object(as->class_id)) || !g_self) continue;
-      }
-      else if (ak != NK_LocalVariableReadNode) continue;
-      LocalVar *lv = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
-      if (!lv || !lv->is_param || lv->is_block_param || lv->type != TY_STRING) continue;
-      if (lv->is_cell && !lv->inline_alias) continue;
-      if (inline_param_rebound(c, mi, m->pnames[i]) == 2 ||
-          (!inline_param_mutated(c, mi, m->pnames[i]) &&
-           !inline_param_yielded_mutated(c, mi, m->pnames[i], nt_ref(nt, id, "block")))) continue;
-      alias_mask |= 1u << i;
-      lv->inline_alias++;
-      lv->is_cell = 1;
-    }
+    refuse_yield_handle_args(c, id);
+    alias_mask = inline_alias_params(c, mi, argv, pargc, &L, nt_ref(nt, id, "block"));
   }
 
   /* declare method locals under renamed names */
-  for (int i = 0; i < m->nlocals; i++) {
-    LocalVar *lv = &m->locals[i];
-    if (m->blk_param && lv->name && sp_streq(lv->name, m->blk_param)) continue;  /* virtual &block slot */
-    snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", lv->name);
-    snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_y%d_%s", tag, lv->name);
-    const char *rn = g_ren_to[g_nren];
-    g_nren++;
-    if (lv->is_param && lv->inline_alias) {
-      int pi = -1;
-      for (int k = 0; k < m->nparams; k++) if (m->pnames[k] && sp_streq(m->pnames[k], lv->name)) { pi = k; break; }
-      if (pi >= 0 && (alias_mask & (1u << pi))) {
-        /* the alias is declared at the binding; a parameter the body also
-           rebinds gets the private local the rebind repoints the cell at */
-        if (inline_param_rebound(c, mi, lv->name) == 1) {
-          emit_indent(b, din);
-          buf_printf(b, "const char *lv_%s = NULL; SP_GC_ROOT_STR(lv_%s);\n", rn, rn);
-        }
-        continue;
-      }
-    }
-    emit_inlined_local_decl(c, lv, rn, b, din);
-  }
+  emit_inline_locals_aliased(c, mi, tag, alias_mask, b, din);
 
   char dflt_cm_self[32];
   const char *dflt_self = recv_self_deref ? selfbuf : NULL, *dflt_deref = recv_self_deref;
@@ -904,11 +971,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   if (as_expr) { emit_indent(b, indent); buf_puts(b, "})"); }
   else { emit_indent(b, indent); buf_puts(b, "}\n"); }
 
-  for (int i = 0; i < m->nparams && i < 32; i++) {
-    if (!(alias_mask & (1u << i))) continue;
-    LocalVar *lv = scope_local(m, m->pnames[i]);
-    if (lv && --lv->inline_alias == 0) lv->is_cell = 0;
-  }
+  inline_alias_release(m, alias_mask);
   g_nren = saved_nren;
   g_block_id = saved_block;
   g_yield_proc_ref = saved_ypr;
@@ -1010,7 +1073,31 @@ void emit_proc_yield(Compiler *c, const char *ref, int yargc, const int *yargv, 
     return;
   }
   buf_printf(b, "sp_proc_yield(%s, ", ref);
+  /* a String variable that is the shared handle goes over as the handle,
+     its read marked for the call alone: the same yield spliced into a
+     literal block binds the plain String (#6179) */
+  unsigned char mk[16]; TyKind mt[16];
+  int nm = yargc < 16 ? yargc : 16;
+  /* the handle's live bytes may ride the plain slot where every target
+     reads the box or only reads the String: the blocks a lowered method's
+     call sites pass, or the proc forwarded into this splice */
+  Scope *ys = nm > 0 ? comp_scope_of(c, yargv[0]) : NULL;
+  int lmi = ys && ys->is_lowered_yield ? (int)(ys - c->scopes) : -1;
+  unsigned live = 0;
+  for (int k = 0; k < nm; k++) {
+    mk[k] = c->strbuf_box[yargv[k]]; mt[k] = c->ntype[yargv[k]];
+    if (!mk[k] && local_is_handle(c, yargv[k])) { c->strbuf_box[yargv[k]] = 1; c->ntype[yargv[k]] = TY_STRBUF; }
+    if (lmi >= 0) { if (dyn_yield_live(c, lmi, k)) live |= 1u << k; }
+    else if (g_yield_proc_expr >= 0 && ref && ref == g_yield_proc_ref && g_yield_proc_expr_ref == g_yield_proc_ref) {
+      DynReach r;
+      dyn_value_reach(c, g_yield_proc_expr, k, &r);
+      if (!r.unknown && !r.keeps && !r.unlifted) live |= 1u << k;
+    }
+  }
+  unsigned sv_live = g_yield_live_mask; g_yield_live_mask = live;
   emit_proc_call_args(c, -1, yargc, yargv, b, 1);
+  g_yield_live_mask = sv_live;
+  for (int k = 0; k < nm; k++) { c->strbuf_box[yargv[k]] = mk[k]; c->ntype[yargv[k]] = mt[k]; }
 }
 
 /* Emit a call to the forwarded real-proc block (g_yield_proc_ref) with the
@@ -1118,6 +1205,15 @@ static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
   else if (ot == TY_STRBUF && at == TY_STRING) {
     buf_puts(b, "sp_String_new_shared("); emit_expr(c, node, b); buf_puts(b, ")");
   }
+  /* the shared handle, its read marked for a proc a yield of it may call,
+     into a plain String parameter: the copy a plain read takes */
+  else if (at == TY_STRBUF && ot == TY_STRING && nk == NK_LocalVariableReadNode) {
+    unsigned char svm = c->strbuf_box[node];
+    TyKind svt = c->ntype[node];
+    c->strbuf_box[node] = 0; c->ntype[node] = TY_STRING;
+    emit_expr(c, node, b);
+    c->strbuf_box[node] = svm; c->ntype[node] = svt;
+  }
   else emit_expr(c, node, b);
 }
 
@@ -1165,6 +1261,17 @@ static int block_tail_needs_value_form(Compiler *c, int id) {
       nt_ref(nt, id, "receiver") >= 0 && nt_ref(nt, id, "block") < 0 &&
       nt_ref(nt, id, "arguments") >= 0 && ty_is_array(comp_ntype(c, nt_ref(nt, id, "receiver"))))
     return 1;
+  /* and a String mutator on a String held as the sp_String buffer (a block
+     parameter that is the shared handle): the statement form appends
+     through a void C call, while the call answers the String */
+  { int r = nt_ref(nt, id, "receiver");
+    if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && an_str_mutator_name(nm) &&
+        nt_ref(nt, id, "block") < 0) {
+      const char *rn = nt_str(nt, r, "name");
+      Scope *rs = rn ? comp_scope_of(c, r) : NULL;
+      LocalVar *rl = rs ? scope_local(rs, rn) : NULL;
+      if (rl && rl->type == TY_STRBUF) return 1;
+    } }
   if (nt_ref(nt, id, "block") < 0) return 0;
   if (sp_streq(nm, "tap") || sp_streq(nm, "then") || sp_streq(nm, "yield_self"))
     return nt_ref(nt, id, "receiver") >= 0;
@@ -1404,9 +1511,6 @@ static TyKind builtin_yield_self_pair(Compiler *c, int arg) {
   if (!self || (self->type != TY_POLY && self->type != TY_ENUMERATOR)) return TY_UNKNOWN;
   return self->type;
 }
-/* A spliced block's parameter aliases (see emit_block_binds), undone by the
-   caller once the body is emitted. */
-struct BlockAliases { LocalVar *lv[16]; int n, open; };
 
 /* Bind block `blk`'s parameters from the values `yargs` (yc positionals,
    and `ykw`, the trailing keyword hash the block's keywords take, or -1),
@@ -1623,7 +1727,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
        block's append reaches what was yielded. The parameter reads and
        writes through the cell for the rest of this splice. */
     if (poly_splat_tmp < 0 && splat_tmp < 0 && k < yc &&
-        nt_kind(nt, yargs[k]) == NK_LocalVariableReadNode &&
+        nt_kind(nt, yargs[k]) == NK_LocalVariableReadNode && !local_is_handle(c, yargs[k]) &&
         comp_ntype(c, yargs[k]) == TY_STRING && block_param_wants_alias(c, blk, k)) {
       LocalVar *bl = bsc ? scope_local(bsc, bp) : NULL;
       if (bl && al && al->n < (int)(sizeof al->lv / sizeof al->lv[0])) {
@@ -1683,9 +1787,12 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
     }
     else if (k < yc) {
       /* boxed into a poly slot, unboxed into a typed one, and an empty `[]`
-         or `{}` (untyped) given its poly form, as every arm binds a value */
+         or `{}` (untyped) given its poly form, as every arm binds a value;
+         a parameter that is the shared handle takes a handle yielded to it
+         itself (yield_splice_handles) */
       LocalVar *bl = bsc ? scope_local(bsc, bp) : NULL;
-      emit_block_arg_coerced(c, yargs[k], bl ? bl->type : TY_UNKNOWN, b);
+      if (!(bl && bl->type == TY_STRBUF && bl->str_shared && emit_handle_var_ref(c, yargs[k], b)))
+        emit_block_arg_coerced(c, yargs[k], bl ? bl->type : TY_UNKNOWN, b);
     }
     else {
       LocalVar *bl = scope_local(bsc, bp);
