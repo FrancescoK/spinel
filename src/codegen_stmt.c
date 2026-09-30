@@ -170,6 +170,23 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
                ti, ti, ta, ti, ta, ti);
     free(ab.p);
   }
+  else if (ty_is_hash(t) &&
+           !(nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "KeywordHashNode") &&
+             ({ int _n = 0, _s = 0; const int *_e = nt_arr(c->nt, arg, "elements", &_n);
+                for (int _k = 0; _k < _n; _k++)
+                  if (nt_type(c->nt, _e[_k]) && sp_streq(nt_type(c->nt, _e[_k]), "AssocSplatNode")) _s = 1;
+                _s; }))) {
+    /* puts of a Hash prints its inspect: the boxed value's render, as `print`
+       and `puts [h]` already give it. A `**h` argument stays refused: an empty
+       one passes no argument at all, which one printed line cannot express. */
+    buf_puts(b, "sp_poly_puts("); emit_boxed(c, arg, b); buf_puts(b, ");\n");
+  }
+  else if (t == TY_OPENSTRUCT) {
+    /* OpenStruct#to_s is its inspect; a nil slot is `puts nil`, an empty line */
+    int tv = ++g_tmp;
+    buf_printf(b, "{ sp_OpenStruct *_t%d = (", tv); emit_expr(c, arg, b);
+    buf_printf(b, "); sp_puts_line(_t%d ? sp_OpenStruct_inspect(_t%d) : \"\"); }\n", tv, tv);
+  }
   else if (ty_is_object(t) && c->classes[ty_object_class(t)].is_native_class &&
            comp_native_method_find(c, ty_object_class(t), "to_s", 0, 0) >= 0) {
     /* a native class binding its own to_s (IO::Buffer) */
@@ -198,6 +215,11 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
   else if (nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "ArrayNode") &&
            ({ int _n = 0; nt_arr(c->nt, arg, "elements", &_n); _n == 0; })) {
     buf_puts(b, "(void)0;  /* puts [] prints nothing */\n");
+  }
+  else if (nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "HashNode") &&
+           ({ int _n = 0; nt_arr(c->nt, arg, "elements", &_n); _n == 0; })) {
+    /* an inline `{}` carries no key or value type to box it by */
+    buf_puts(b, "puts(\"{}\");\n");
   }
   else if (t == TY_NIL || t == TY_VOID) {
     buf_puts(b, "(void)("); emit_expr(c, arg, b); buf_puts(b, "); putchar('\\n');  /* puts nil */\n");
