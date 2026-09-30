@@ -8054,6 +8054,14 @@ TyKind infer_uncached(Compiler *c, int id) {
         int nsrc = -1;
         if (sh == TY_UNKNOWN && src >= 0 && nt_kind(nt, src) == NK_HashNode) nt_arr(nt, src, "elements", &nsrc);
         if (nsrc == 0) { empty_spread = 1; continue; }
+        /* A local that only ever holds nil is boxed once inference is done
+           (the TY_NIL backstop), and its spread merges at run time into the
+           hash of any key, as a poly source's does. Read as spreading nothing
+           until then, the literal settled on its pairs' variant -- a String
+           to Integer hash -- and the parameter it bound took that type, which
+           the merged hash then was not: `m(1, "s" => 2, **h)` with `h = nil`
+           did not compile into `def m(*r, a)`, and crashed once splatted. */
+        if (sh == TY_NIL && src >= 0 && nt_kind(nt, src) == NK_LocalVariableReadNode) sh = TY_POLY;
         /* nor does an operand of another class: nil carries no keywords, and
            `**true`, `**1` or an object without #to_hash raise CRuby's
            TypeError where they stand (a slot that may be nil, only when it
