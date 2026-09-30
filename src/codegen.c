@@ -8024,6 +8024,47 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   buf_puts(b, "NULL);\n}\n");
 }
 
+/* `allocate` on the class the method runs for (allocate_on_own_class). In a
+   class method, the class its body is emitted for. In an instance method,
+   the object's own class, picked by its id over `base` and the subclasses
+   the program allocates, each cast to the base as a bare `new` in a class
+   method is; a class with no such subclass allocates `base` alone. */
+void emit_own_class_alloc(Compiler *c, int id, int base, Buf *b) {
+  const NodeTable *nt = c->nt;
+  Scope *s = comp_scope_of(c, id);
+  char sel[256] = "";
+  if (s && s->is_cmethod) {
+    /* a class method is copied for each subclass it runs for, as one with
+       a bare `new` is (cmethod_has_bare_new): the copy allocates its class */
+    if (g_emitting_class_id >= 0) base = g_emitting_class_id;
+  }
+  else if (!comp_ty_value_obj(c, ty_object(base))) {
+    int recv = nt_ref(nt, id, "receiver");
+    Buf sb; memset(&sb, 0, sizeof sb);
+    emit_expr(c, nt_ref(nt, recv, "receiver"), &sb);
+    if (sb.p) snprintf(sel, sizeof sel, "(%s)->cls_id", sb.p);
+    free(sb.p);
+  }
+  int nsub = 0;
+  for (int k = 0; sel[0] && k < c->nclasses; k++)
+    if (k != base && is_descendant(c, k, base) && c->classes[k].instantiated &&
+        !class_is_exc_subclass(c, k) && !c->classes[k].is_native_class &&
+        !comp_ty_value_obj(c, ty_object(k))) nsub++;
+  if (!nsub) { emit_obj_alloc_expr(c, base, b); return; }
+  int t = ++g_tmp;
+  buf_printf(b, "({ int _ac%d = %s; ", t, sel);
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k == base || !is_descendant(c, k, base) || !c->classes[k].instantiated ||
+        class_is_exc_subclass(c, k) || c->classes[k].is_native_class ||
+        comp_ty_value_obj(c, ty_object(k))) continue;
+    buf_printf(b, "_ac%d == %d ? (sp_%s *)", t, k, c->classes[base].c_name);
+    emit_obj_alloc_expr(c, k, b);
+    buf_puts(b, " : ");
+  }
+  emit_obj_alloc_expr(c, base, b);
+  buf_puts(b, "; })");
+}
+
 /* Emit a statement-expression that allocates an instance of class `cid` with
    its ivars zero/nil-initialized and cls_id stamped, but WITHOUT running
    initialize -- the Class#allocate primitive. Handles both value-type objects

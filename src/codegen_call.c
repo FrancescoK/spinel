@@ -32905,6 +32905,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       int user_new = sp_streq(name, "new") ? comp_cmethod_in_chain(c, new_cls, "new", NULL) : -1;
       if (user_new >= 0 && (&c->scopes[user_new] == encl ||
                             !scope_has_callable_symbol(c, user_new))) user_new = -1;
+      if (sp_streq(name, "allocate")) {
+        int oc = allocate_on_own_class(c, id);
+        if (oc >= 0 && !class_is_exc_subclass(c, oc)) { emit_own_class_alloc(c, id, oc, b); return; }
+      }
       if (sp_streq(name, "new") && user_new < 0) {
         ClassInfo *ncls = &c->classes[new_cls];
         /* a native class's bare `new` uses the declared constructor, exactly
@@ -35696,6 +35700,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* Class#allocate: a bare instance with default/nil ivars and no initialize.
      Exception subclasses carry raise/message state set up by their dedicated
      constructor, so they are excluded (fall through to the generic reject). */
+  if (recv >= 0 && sp_streq(name, "allocate")) {
+    int oc = allocate_on_own_class(c, id);
+    if (oc >= 0 && !class_is_exc_subclass(c, oc)) { emit_own_class_alloc(c, id, oc, b); return; }
+  }
   if (recv >= 0 && sp_streq(name, "allocate") && argc == 0 && comp_ntype(c, recv) == TY_CLASS &&
       nt_type(nt, recv) &&
       (sp_streq(nt_type(nt, recv), "ConstantReadNode") || sp_streq(nt_type(nt, recv), "ConstantPathNode"))) {
