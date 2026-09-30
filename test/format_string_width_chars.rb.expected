@@ -1,0 +1,55 @@
+"    é|"
+"é    |"
+"    日本|"
+"日本    |"
+"日|"
+"   日本|"
+"日本   |"
+"|"
+"日本語|"
+"日本語|"
+"  é|"
+"  😀|"
+"😀|"
+"    é|"
+"é    |"
+"é    |"
+"日|"
+"    é|"
+"é    |"
+"\"é\"       |"
+"\"日本|"
+"      :é|"
+"  sym|"
+"     |"
+"12    |"
+"[1, \"é\"]|"
+"{\"é\" => 1}|"
+"   ab|"
+"    y|    z|    w|"
+"é   |   日|"
+"日本語|é  |"
+日本  |   é|
+301
+"  é|"
+301
+"日本 "
+1000
+"  a\xFFb|"
+"a\xFF|"
+"ab\u0000c|d  |"
+"  a\u0000b|"
+"width too big"
+"precision too big"
+"abc|"
+"ab   |"
+"é    日|"
+"    é|é    |"
+"   é日|"
+[ArgumentError, "width too big"]
+[ArgumentError, "precision too big"]
+[RangeError, "integer 99999999999 too big to convert to 'int'"]
+[RangeError, "integer -99999999999 too small to convert to 'int'"]
+[RangeError, "integer 99999999999 too big to convert to 'int'"]
+[RangeError, "integer 2147483648 too big to convert to 'int'"]
+[RangeError, "integer -2147483649 too small to convert to 'int'"]
