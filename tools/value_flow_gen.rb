@@ -1,6 +1,7 @@
 # Generated value-flow probes (see tools/value_flow_probe.rb).
 #
-#   ruby tools/value_flow_gen.rb [--strength T | --random N] [--seed S] [--id ID]
+#   ruby tools/value_flow_gen.rb [--strength T | --random N] [--seed S]
+#                                [--only F=L,..] [--id ID]
 #
 # A case is one row of FACTORS: where a value that may be nil comes from, what
 # carries it to the read, the operation that reads it, whether the slot it
@@ -338,6 +339,7 @@ if $PROGRAM_NAME == __FILE__
   random = nil
   seed = 1
   id = nil
+  only = {}
   args = ARGV.dup
   begin
     until args.empty?
@@ -346,18 +348,20 @@ if $PROGRAM_NAME == __FILE__
       when "--random" then random = Integer(args.shift)
       when "--seed" then seed = Integer(args.shift)
       when "--id" then id = Integer(args.shift)
+      when "--only" then only.merge!(ValueFlowGen.pins(args.shift.to_s))
       else raise ArgumentError
       end
     end
     raise ArgumentError unless (1..ValueFlowGen::FACTORS.size).cover?(strength) && (random.nil? || random.positive?)
-  rescue ArgumentError, TypeError
-    abort "usage: ruby tools/value_flow_gen.rb [--strength T | --random N] [--seed S] [--id ID]"
+  rescue ArgumentError, TypeError => e
+    warn e.message unless e.message == "ArgumentError"
+    abort "usage: ruby tools/value_flow_gen.rb [--strength T | --random N] [--seed S] [--only F=L,..] [--id ID]"
   end
   if random
-    cs = ValueFlowGen.cases(ValueFlowGen.random_rows(random, seed))
+    cs = ValueFlowGen.pinned_cases(ValueFlowGen.random_rows(random, seed), only)
     warn "#{cs.size} cases"
   else
-    cs, want, got = ValueFlowGen.covering_cases(strength, seed)
+    cs, want, got = ValueFlowGen.covering_cases(strength, seed, 100, only)
     warn "#{cs.size} cases, taking #{got} of #{want} #{strength}-way combinations"
   end
   cs = cs.select { |c| c.id == id } if id

@@ -111,12 +111,13 @@ binding makes (`vm_args.c`); the others each ask for a kind of bug that was
 found by hand past the probe, named in the comments at `FACTORS`. The rows
 are a covering array: every combination of levels of any T factors (default
 3) is asked for by some row. A row asks for levels a case cannot always take
-(a rebound `Method` local on a path with no `Method`), so each case records
-the levels it did take, and the summary says how many of the combinations
-the cases took -- at strength 2, 6719 of 7060, at strength 3, 217697 of
-248186. `--only name_clash=sibling,seed=poly` pins factors to a level each,
-leaving out the cases that cannot take them, to ask one level's combinations
-without a whole run. Ruby that does not parse is no case; an exception CRuby
+(a rebound `Method` local on a path with no `Method`, or an argument
+assigning the instance variable a default reads, on a path whose method has
+another self), so each case records the levels it did take, and the summary
+says how many of the combinations the cases took -- at strength 2, 6716 of
+7060, at strength 3, 217453 of 248186. `--only name_clash=sibling,seed=poly`
+pins factors to a level each, leaving out the cases that cannot take them,
+to ask one level's combinations without a whole run. Ruby that does not parse is no case; an exception CRuby
 raises is part of the expected answer.
 
 A difference is a finding. A program that spinel refuses, whose C does not

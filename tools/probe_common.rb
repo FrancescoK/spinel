@@ -275,18 +275,29 @@ module ProbeCommon
 
   module_function
 
-  def run_timed(argv, timeout, out_path, err_path)
+  # A run given up because the probe stopped (Probe#stop).
+  class Stopped < StandardError; end
+
+  # Runs `argv` to its end, or for `timeout` seconds, or until `stop`
+  # answers true. Answers [status, timed out]; a stopped run raises Stopped.
+  # A run that does not end is killed with what it started: it runs in a
+  # process group of its own, since spinel runs the C compiler through a
+  # shell, and killing spinel alone left the compiler running.
+  def run_timed(argv, timeout, out_path, err_path, stop = nil)
+    raise Stopped if stop&.call
     # one path for both streams is opened once: two opens keep two offsets,
     # and each stream writes over the other's lines
     redirect = out_path == err_path ? { [:out, :err] => out_path } : { out: out_path, err: err_path }
-    pid = Process.spawn(*argv, in: File::NULL, **redirect)
+    pid = Process.spawn(*argv, in: File::NULL, pgroup: true, **redirect)
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
     loop do
       got, status = Process.waitpid2(pid, Process::WNOHANG)
       return [status, false] if got
-      if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
-        Process.kill("KILL", pid) rescue nil
+      stopped = stop&.call
+      if stopped || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+        Process.kill("KILL", -pid) rescue nil
         Process.waitpid2(pid)
+        raise Stopped if stopped
         return [nil, true]
       end
       sleep 0.02
@@ -376,6 +387,47 @@ module ProbeCommon
       @findings = []
       @lock = Mutex.new
       @seq = 0
+      @stopped = false
+      @halt = -> { @stopped }
+      @failure = nil
+    end
+
+    # Stops the probe: every run in flight is killed, and it and every
+    # later one raise Stopped.
+    def stop
+      @stopped = true
+    end
+
+    # A thread of the probe's, running the block. The first one to fail
+    # stops the probe, so the others end at their next run instead of
+    # writing findings and scratch files while the failure is reported and
+    # the work directory removed.
+    def start
+      Thread.new do
+        yield
+      rescue Stopped
+        nil
+      rescue StandardError => e
+        @lock.synchronize { @failure ||= e }
+        stop
+        nil
+      end
+    end
+
+    # Waits for `threads` of #start, then raises the first failure of any.
+    # An interrupt, which reaches the main thread only, stops them first:
+    # they run in process groups of their own, which the terminal's
+    # interrupt does not reach.
+    def finish(threads)
+      begin
+        threads.each(&:join)
+      ensure
+        if threads.any?(&:alive?)
+          stop
+          threads.each(&:join)
+        end
+      end
+      raise @failure if @failure
     end
 
     def scratch(tag)
@@ -387,7 +439,8 @@ module ProbeCommon
     def expected(cases)
       base = scratch("ref")
       File.write(base + ".rb", @gen.program(cases))
-      status, timed_out = ProbeCommon.run_timed([@ruby, "-W0", base + ".rb"], @timeout, base + ".out", base + ".err")
+      status, timed_out = ProbeCommon.run_timed([@ruby, "-W0", base + ".rb"], @timeout, base + ".out", base + ".err",
+                                                @halt)
       raise "CRuby did not run #{base}.rb to its end" if timed_out || !status.success?
       out = File.read(base + ".out")
       if (bad = out[@undefined])
@@ -401,7 +454,7 @@ module ProbeCommon
       base = scratch("sp")
       File.write(base + ".rb", @gen.program(cases))
       argv = [@spinel, *@gen.flags(cases), base + ".rb", "-o", base + ".bin"]
-      status, timed_out = ProbeCommon.run_timed(argv, 600, base + ".build", base + ".build")
+      status, timed_out = ProbeCommon.run_timed(argv, 600, base + ".build", base + ".build", @halt)
       build = File.read(base + ".build")
       unless !timed_out && status.success?
         # C that does not build first: its diagnostics can quote generated C
@@ -420,7 +473,7 @@ module ProbeCommon
                   end
         return Outcome.new(label, first.strip.sub(LOCATION, ""))
       end
-      status, timed_out = ProbeCommon.run_timed([base + ".bin"], @timeout, base + ".out", base + ".err")
+      status, timed_out = ProbeCommon.run_timed([base + ".bin"], @timeout, base + ".out", base + ".err", @halt)
       return Outcome.new("timeout", "no answer after #{@timeout}s") if timed_out
       return Outcome.new("crash", "SIG#{Signal.signame(status.termsig)}") if status.signaled?
       Outcome.new("ran", "", ProbeCommon.by_case(File.read(base + ".out")), status.exitstatus,
@@ -557,13 +610,15 @@ module ProbeCommon
       todo.sort_by! { |f| [nondefault.call(f.c), f.c.id] }
       reduced = []
       todo.each_slice(jobs) do |wave|
-        wave.map do |f|
+        runs = wave.map do |f|
           into = reduced.find do |r|
             r.label == f.label && r.kind == f.kind &&
               @gen::NAMES.all? { |x| r.c.realized[x] == @gen::SIMPLEST[x] || r.c.realized[x] == f.c.realized[x] }
           end
-          into ? [f, into, nil] : [f, nil, Thread.new { shrink(f, budget) }]
-        end.each do |f, into, thread|
+          into ? [f, into, nil] : [f, nil, start { shrink(f, budget) }]
+        end
+        finish(runs.filter_map(&:last))
+        runs.each do |f, into, thread|
           if into
             into.absorbed << f
             @findings.delete(f)
@@ -767,15 +822,17 @@ module ProbeCommon
       done = 0
       progress = Mutex.new
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      Array.new(jobs) do
-        Thread.new do
+      # every worker has ended before a failure is reported: the first one
+      # stops the others (Probe#start)
+      probe.finish(Array.new(jobs) do
+        probe.start do
           while (b = (queue.pop(true) rescue nil))
             probe.check(b, probe.expected(b))
             progress.synchronize { done += b.size }
             $stderr.print "\r#{done}/#{cases.size} cases, #{probe.findings.size} findings"
           end
         end
-      end.each(&:join)
+      end)
       $stderr.puts
       ran = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
       probe.findings.sort_by! { |f| f.c.id }

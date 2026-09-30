@@ -68,7 +68,9 @@ module CallBindingGen
     # a later argument assign it (`def m(a = $d, b)`, `m(($d = 2; 2))`).
     # CRuby fills a default after every argument ran, and a default filled
     # at the call site at its parameter's slot read the value from before
-    # the write (#6005).
+    # the write (#6005). An instance variable's is assigned only on the
+    # paths whose method has the self the arguments run with
+    # (SAME_SELF_PATHS); elsewhere the source is a literal.
     [:opt_default, %w[int string ref ivar global]],
     [:rest, %w[none named]],
     [:post, [0, 1]],
@@ -93,7 +95,9 @@ module CallBindingGen
     # through the method's own Method, then the typed one through a local
     # written nine times, each with a method of its own, the called one
     # last (a local's targets were bound up to eight, and the ninth, typed
-    # by the other call, read a String as an Integer, #6007).
+    # by the other call, read a String as an Integer, #6007). With
+    # body=mutate every call passes the String, so rebound9 is rebound, as
+    # int_then_typed is twice.
     [:sites, %w[one twice int_then_typed rebound rebound9]],
     # sibling: a class of its own defines a method of the called one's name
     # and parameters, called with the same arguments, so the name has two
@@ -158,6 +162,14 @@ module CallBindingGen
   # Paths whose block is one the case writes to take the parameters, which
   # the method it is given to can keep.
   KEPT_PATHS = %w[block_yield yield_inline].freeze
+  # Paths whose parameters bind with the self the call's arguments run
+  # with: the top level's, or on a super path the child's method, where
+  # the call is made (a bare super's call is made at the top level on a
+  # new object). An instance variable an argument assigns is the one a
+  # default reads only there. (A rebound Method local's first target is an
+  # object's method; its second call is the top level's.)
+  SAME_SELF_PATHS = %w[direct send method_call method_to_proc yield_inline forward_all forward_anon block_yield
+                       proc_call lambda_call super_explicit super_include super_prepend].freeze
   # The order a parameter list declares its kinds in, where a child's
   # parameter joins it.
   KINDS = %i[req opt rest post kreq kopt kwrest nokw block].freeze
@@ -572,6 +584,14 @@ module CallBindingGen
       # the grown value is a String, and every call passes it
       row = row.merge(type: "string")
       row = row.merge(sites: "twice") if row[:sites] == "int_then_typed"
+      # the nine-target local's Integer call would pass the String too
+      row = row.merge(sites: "rebound") if row[:sites] == "rebound9"
+    end
+    # an instance variable's default sees the argument's write only with
+    # the self the call is made with
+    if row[:source] == "default" && row[:opt_default] == "ivar" &&
+       !(SAME_SELF_PATHS.include?(row[:path]) && child_level(row[:path], row[:child]) == "none")
+      row = row.merge(source: "literal")
     end
     mutate = row[:body] == "mutate"
     if %w[rebound rebound9].include?(row[:sites]) && !METHOD_PATHS.include?(row[:path])
