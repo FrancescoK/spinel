@@ -41,3 +41,6 @@ class PlainInit
 end
 p PubInit.new(1).respond_to?(:initialize), OnlyPub.new.respond_to?(:initialize)
 p PlainInit.new(1).respond_to?(:initialize), PlainInit.new(1).respond_to?(:initialize, true)
+def pubinit(host = nil) = host.respond_to?(:initialize)
+def pubinit_all(host = nil) = host.respond_to?(:initialize, true)
+p pubinit(PubInit.new(1)), pubinit, pubinit_all(PubInit.new(1)), pubinit_all
