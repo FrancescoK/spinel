@@ -12367,14 +12367,6 @@ static void emit_stat_handle_only(int th, const char *name, Buf *b) {
    stat is carried in; a field's index is its slot in sp_stat_field. */
 static const char *const boxed_stat_sfield[] = { "uid", "gid", "nlink", "dev", "ino",
                                                  "blksize", "blocks", "rdev", NULL };
-/* Only a stat's handle has these: a File, a pipe or a standard stream
-   raises CRuby's NoMethodError. */
-static void emit_stat_fields_guard(int th, const char *name, Buf *b) {
-  buf_printf(b, "if (!(_t%d->mode && (strcmp(_t%d->mode, \"stat\") == 0 || "
-                "strcmp(_t%d->mode, \"lstat\") == 0))) "
-                "sp_raise_poly_nomethod(\"%s\", sp_box_obj(_t%d, SP_BUILTIN_IO)); ",
-             th, th, th, name, th);
-}
 /* mode or one of those fields */
 static int boxed_stat_name(const char *name) {
   if (sp_streq(name, "mode")) return 1;
@@ -33283,13 +33275,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       /* a stat's mode and fields, answered as the TY_IO arms answer them,
          for a stat's handle only */
       else if (sp_streq(name, "mode")) {
-        emit_stat_fields_guard(tio2, name, b);
+        emit_stat_handle_only(tio2, name, b);
         buf_printf(b, "sp_stat_mode(_t%d); })", tio2);
       }
       else if (boxed_stat_name(name)) {
         int k = 0;
         while (boxed_stat_sfield[k] && !sp_streq(name, boxed_stat_sfield[k])) k++;
-        emit_stat_fields_guard(tio2, name, b);
+        emit_stat_handle_only(tio2, name, b);
         buf_printf(b, "sp_stat_field(_t%d, %d); })", tio2, k);
       }
       else if (sp_streq(name, "path") || sp_streq(name, "to_path"))
