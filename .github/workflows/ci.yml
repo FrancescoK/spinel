@@ -22,14 +22,14 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # The corpus is what a job's wall time is made of (six minutes of the
-  # eight on a 4-vCPU runner). Only the Linux/gcc lane splits it, into two
-  # slices (make's TEST_SHARD=k/n, by position in the sorted list), since
-  # its slice 1 also carries the property gates, the benchmarks and
-  # optcarrot; every other lane runs the whole corpus in one job. Three
-  # slices per lane made a run 13 jobs, and with several pushes an hour
-  # the runner pool, not the tests, set the latency: results arrived hours
-  # after their commit. Slice 1 of each lane carries the C-side test legs.
+  # Every lane runs the whole corpus in one job. The Linux/gcc lane used to
+  # split it into two slices (make's TEST_SHARD=k/n), which shortened that
+  # lane's wall time; but with dozens of PRs open at once the runner pool,
+  # not a job's length, set the latency, and the extra job per run only
+  # lengthened the queue. TEST_SHARD stays in the make call (1/1 picks the
+  # whole corpus) so a lane can be split again by changing its nshards.
+  # Slice 1 of each lane carries the C-side test legs, the property gates,
+  # the benchmarks and optcarrot.
   posix:
     name: ${{ matrix.os }} / ${{ matrix.cc }} (${{ matrix.shard }}/${{ matrix.nshards }})
     runs-on: ${{ matrix.os }}
@@ -41,7 +41,7 @@ jobs:
       # median and over an hour at the tail, for a 13-minute job, and each
       # PR's result waited on it. A pull request runs the three Linux lanes.
       matrix:
-        include: ${{ fromJSON(github.event_name == 'push' && '[{"os":"ubuntu-latest","cc":"gcc","shard":1,"nshards":2},{"os":"ubuntu-latest","cc":"gcc","shard":2,"nshards":2},{"os":"ubuntu-latest","cc":"clang","shard":1,"nshards":1},{"os":"macos-latest","cc":"clang","shard":1,"nshards":1}]' || '[{"os":"ubuntu-latest","cc":"gcc","shard":1,"nshards":2},{"os":"ubuntu-latest","cc":"gcc","shard":2,"nshards":2},{"os":"ubuntu-latest","cc":"clang","shard":1,"nshards":1}]') }}
+        include: ${{ fromJSON(github.event_name == 'push' && '[{"os":"ubuntu-latest","cc":"gcc","shard":1,"nshards":1},{"os":"ubuntu-latest","cc":"clang","shard":1,"nshards":1},{"os":"macos-latest","cc":"clang","shard":1,"nshards":1}]' || '[{"os":"ubuntu-latest","cc":"gcc","shard":1,"nshards":1},{"os":"ubuntu-latest","cc":"clang","shard":1,"nshards":1}]') }}
     env:
       # `sccache <cc>` wrapper. sccache forwards through to the
       # underlying compiler when its cache misses, so this stays
