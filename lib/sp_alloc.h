@@ -862,7 +862,14 @@ const char *sp_float_opt_inspect(sp_float v);
 const char *sp_float_opt_to_s(sp_float v);
 sp_int sp_float_denominator(sp_float f);
 sp_RbVal sp_float_numerator(sp_float f);
-sp_int sp_float_to_i_checked(sp_float f);
+/* Float#to_i: an in-range, non-NaN value is a C truncation, done inline;
+   NaN (which fails both tests), Infinity and an out-of-range value go to the
+   raising body in sp_cold.c. The range is exactly the one that body checks. */
+sp_int sp_float_to_i_checked_slow(sp_float f);
+static inline sp_int sp_float_to_i_checked(sp_float f) {
+  if (SP_LIKELY(f >= (sp_float)INTPTR_MIN && f < -(sp_float)INTPTR_MIN)) return (sp_int)f;
+  return sp_float_to_i_checked_slow(f);
+}
 
 /* ---- forward declarations for pointer-only box params (full types stay
    opaque to lib/sp_alloc.h -- these box functions only store the pointer). ---- */

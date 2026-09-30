@@ -3486,7 +3486,7 @@ sp_RbVal sp_float_numerator(sp_float f) {
 /* Float#to_i whose integer value escapes int64: CRuby promotes to Bignum;
    until the promotion plan covers statically-int results (#2024), raise
    loudly instead of saturating silently. NaN/Inf raise FloatDomainError. */
-sp_int sp_float_to_i_checked(sp_float f) {
+sp_int sp_float_to_i_checked_slow(sp_float f) {
   if (isnan(f) || isinf(f)) sp_raise_cls("FloatDomainError", sp_sprintf("%g", f));
   if (f >= -(sp_float)INTPTR_MIN || f < (sp_float)INTPTR_MIN)  /* exact at either sp_int width */
     sp_raise_cls("RangeError", "float out of Integer range (Bignum promotion pending)");
