@@ -138,6 +138,11 @@ typedef struct {
                        checked there; this carries the evidence out to the
                        ivar-widening pass, which knows both sides. An
                        Integer-keyed element write counts as a push. */
+  TyKind boxed_known_elem; /* (params, boxed) the same, of the stores whose
+                       kind is known: a value decided at run time is checked
+                       as it lands (#4481), and a concat of no Array raises
+                       rather than stores. What a boxed argument's arrays
+                       widen for (widen_boxed_array_sources). */
   TyKind boxed_store_key, boxed_store_val; /* (params, boxed) the key and the
                        value an element write through this BOXED parameter
                        stores, unified as boxed_push_elem is: the evidence

@@ -1103,7 +1103,7 @@ reject-test: $(SPINEL)
 	  else grep -Eq "is not a (class|module)" "$$tmp/$$t.out" || \
 	    { echo "reject-test: FAIL (#4318: $$t rejected without saying why)"; sed -n 1,3p "$$tmp/$$t.out"; ok=0; }; fi; \
 	done; \
-	t=test/reject/typed_array_kept_by_ivar_into_mutated_param.rb; \
+	t=test/reject/typed_array_kept_by_struct_into_mutated_param.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/tp.c" >"$$tmp/tp.out" 2>&1; then \
 	  echo "reject-test: FAIL (#4480: a typed array copied into a mutated general-Array parameter compiled)"; ok=0; \
 	else grep -q "which the method mutates" "$$tmp/tp.out" || \
@@ -1113,7 +1113,7 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (#6179: a global's String copied into an appending initialize compiled)"; ok=0; \
 	else grep -q "which the method appends to" "$$tmp/sn.out" || \
 	  { echo "reject-test: FAIL (#6179: rejected without saying why)"; sed -n 1,5p "$$tmp/sn.out"; ok=0; }; fi; \
-	t=test/reject/typed_array_kept_by_ivar_into_boxed_param_store.rb; \
+	t=test/reject/typed_array_kept_by_struct_into_boxed_param_store.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/tb.c" >"$$tmp/tb.out" 2>&1; then \
 	  echo "reject-test: FAIL (a typed array held by the caller, stored into through a boxed parameter, compiled)"; ok=0; \
 	else grep -q "which the method stores elements of other kinds into" "$$tmp/tb.out" || \

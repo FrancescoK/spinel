@@ -2155,6 +2155,7 @@ static int ivar_has_array_write(Compiler *c, const LWIndex *ivw, int cls, const 
 
 static int widen_arg_hash(Compiler *c, int arg);
 static int widen_arg_array(Compiler *c, int arg);
+static int widen_boxed_array_sources(Compiler *c, int v, TyKind elem, int depth);
 
 /* Widens the parameters class `cls` assigns `inm` (`@c = a`) to the
    general Array, as a push through the parameter itself would, with its
@@ -3037,6 +3038,8 @@ int infer_write_types(Compiler *c) {
     if (!ty || nt_int(nt, id, "dyn_arm", 0)) continue;
     int recv, kt = TY_UNKNOWN, vt = TY_UNKNOWN, is_push = 0, is_idx_write = 0, is_splice = 0;
     int is_fill = 0;  /* a fill's span: one value, the element evidence a store's is */
+    int concat_scalar = 0;  /* a concat of no array, which raises rather than stores */
+    int splice_arr = 0;     /* a splice's source is a typed array: its kind is the elements' */
     int is_merge = 0;  /* merge!/update: kt and vt are the merged hashes' */
     /* the value arguments of a push/unshift/insert, each its own evidence */
     const int *elem_argv = NULL;
@@ -3088,6 +3091,8 @@ int infer_write_types(Compiler *c) {
       else if (name && sp_streq(name, "concat") && an == 1) {
         /* concat(other): the other array's elements splice in */
         is_push = 1; vt = splice_incoming_elem(c, argv[0]);
+        TyKind cat = infer_type(c, argv[0]);
+        concat_scalar = cat != TY_UNKNOWN && cat != TY_POLY && !ty_is_array(cat);
       }
       else if (name && sp_streq(name, "replace") && an == 1 && recv >= 0 &&
                ty_is_array(infer_type(c, argv[0])) &&
@@ -3149,7 +3154,10 @@ int infer_write_types(Compiler *c) {
         vt = tuple_elem_evidence(c, argv[1], infer_type(c, argv[1]));
         knode = argv[0]; vnode = argv[1];
         /* a range key is a splice: the RHS contributes element evidence */
-        if (kt == TY_RANGE) { is_splice = 1; vt = splice_incoming_elem(c, argv[1]); }
+        if (kt == TY_RANGE) {
+          is_splice = 1; vt = splice_incoming_elem(c, argv[1]);
+          splice_arr = ty_is_array(infer_type(c, argv[1])) && vt != TY_POLY_ARRAY;
+        }
         /* an empty [] / {} literal value carries no element type but is
            definite container evidence: treat it as poly so an int-keyed
            write can still settle the hash variant (`h = {}; h[k] = []`
@@ -3187,6 +3195,7 @@ int infer_write_types(Compiler *c) {
       else if (name && sp_streq(name, "[]=") && an == 3) {
         /* a[start, len] = rhs: a splice over the (start, len) span */
         is_idx_write = 1; is_splice = 1; vt = splice_incoming_elem(c, argv[2]);
+        splice_arr = ty_is_array(infer_type(c, argv[2])) && vt != TY_POLY_ARRAY;
       }
       else if (name && sp_streq(name, "fill") && an >= 1 && an <= 3 &&
                nt_ref(nt, id, "block") < 0) {
@@ -3344,6 +3353,15 @@ int infer_write_types(Compiler *c) {
       const char *rnm = nt_str(nt, recv, "name");
       Scope *lsc = rnm ? comp_scope_of(c, recv) : NULL;
       LocalVar *lv = lsc ? scope_local(lsc, rnm) : NULL;
+      /* A boxed local or block parameter holds its array the way a boxed
+         parameter does: a store of another kind promotes a copy into this
+         one slot, and wherever else the array is held keeps it typed. Its
+         arrays widen where they are built instead. A value whose kind is
+         decided at run time is exempt, as it is for a typed parameter
+         (#4481): the boxed store checks it, and raises for a foreign one. */
+      if (lv && (!lv->is_param || lv->is_block_param) && lv->type == TY_POLY && (is_push || (is_idx_write && (is_splice || kt == TY_INT))) &&
+          vt != TY_UNKNOWN && vt != TY_POLY && !concat_scalar && (!is_splice || is_fill || splice_arr))
+        changed |= widen_boxed_array_sources(c, recv, (TyKind)vt, 0);
       if (!lv || lv->is_block_param) continue;
       /* A parameter is typed from its call sites, not from its uses -- except
          that a push through it MUTATES the caller's own array, so an element
@@ -3378,13 +3396,17 @@ int infer_write_types(Compiler *c) {
            is exempt, as it is for a typed parameter. */
         /* A merged hash's boxed keys or values are of kinds nothing here
            knows, not one boxed value the setter converts: evidence. */
-        if (is_idx_write && !is_push && !is_splice && lv->type == TY_POLY) {
-          if (vt == TY_UNKNOWN || (vt == TY_POLY && !is_merge)) continue;
-          int hkey = kt != TY_UNKNOWN && (kt != TY_POLY || is_merge);
-          TyKind *ev[3] = { hkey ? &lv->boxed_store_key : NULL, hkey ? &lv->boxed_store_val : NULL,
-                            (kt == TY_INT || kt == TY_POLY) ? &lv->boxed_push_elem : NULL };
-          TyKind got[3] = { kt, vt, vt };
-          for (int e = 0; e < 3; e++) {
+        if (is_idx_write && !is_push && lv->type == TY_POLY) {
+          if (vt == TY_UNKNOWN || (vt == TY_POLY && !is_merge) || (is_splice && !is_fill && !splice_arr)) continue;
+          /* a fill's value and a typed array's spliced elements are
+             elements, as a push's are */
+          int hkey = !is_splice && kt != TY_UNKNOWN && (kt != TY_POLY || is_merge);
+          int elem_ev = is_splice || kt == TY_INT || kt == TY_POLY;
+          TyKind *ev[4] = { hkey ? &lv->boxed_store_key : NULL, hkey ? &lv->boxed_store_val : NULL,
+                            elem_ev ? &lv->boxed_push_elem : NULL,
+                            elem_ev && vt != TY_POLY ? &lv->boxed_known_elem : NULL };
+          TyKind got[4] = { kt, vt, vt, vt };
+          for (int e = 0; e < 4; e++) {
             if (!ev[e]) continue;
             TyKind was = *ev[e];
             TyKind now = was == TY_UNKNOWN ? got[e] : (was == got[e] ? was : TY_POLY);
@@ -3410,12 +3432,14 @@ int infer_write_types(Compiler *c) {
         /* An element write through it stores into the caller's array the
            same way: `arr[i] = v` is the push's evidence when the key indexes
            an array, and so is `arr.fill(v)`, whose one value lands in every
-           slot of its span: skipped as a splice, a String filled into an
+           slot of its span, and a splice's of a typed array (`arr[0, 1] =
+           ["s"]`), whose elements do: skipped, a String filled into an
            Array[Integer] parameter went to a copy and the caller's array
-           never changed. */
+           never changed, and a splice of another kind was refused. A general
+           Array's elements are checked as they land, as a boxed value is. */
         if (is_idx_write && !is_push) {
           if (!ty_is_array(lv->type) || lv->type == TY_POLY_ARRAY) continue;
-          if ((is_splice && !is_fill) || (kt != TY_INT && kt != TY_POLY)) continue;
+          if (is_splice ? !is_fill && !splice_arr : kt != TY_INT && kt != TY_POLY) continue;
           if (vt == TY_UNKNOWN || vt == TY_POLY || vt == ty_array_elem(lv->type)) continue;
           lv->type = TY_POLY_ARRAY; lv->push_widened = 1; changed = 1;
           continue;
@@ -3434,6 +3458,11 @@ int infer_write_types(Compiler *c) {
             TyKind was = lv->boxed_push_elem;
             TyKind now = (was == TY_UNKNOWN) ? vt : (was == vt ? was : TY_POLY);
             if (now != was) { lv->boxed_push_elem = now; changed = 1; }
+          }
+          if (vt != TY_UNKNOWN && vt != TY_POLY && !concat_scalar) {
+            TyKind was = lv->boxed_known_elem;
+            TyKind now = (was == TY_UNKNOWN) ? vt : (was == vt ? was : TY_POLY);
+            if (now != was) { lv->boxed_known_elem = now; changed = 1; }
           }
           continue;
         }
@@ -4771,6 +4800,28 @@ static int local_has_target_write(Compiler *c, Scope *sc, const char *name) {
   return 0;
 }
 
+/* The value a multiple assignment (`a, b = x, y`) binds its target `t`
+   to: the element of its literal right side at the target's place. -1 when
+   the right side is no such literal, or the target no plain left one. */
+static int masgn_target_value(Compiler *c, int t) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_MultiWriteNode, mw) {
+    int ln = 0, rn = 0, en = 0;
+    const int *lefts = nt_arr(nt, mw, "lefts", &ln);
+    int i = 0;
+    while (i < ln && lefts[i] != t) i++;
+    if (i == ln) continue;
+    nt_arr(nt, mw, "rights", &rn);
+    int val = unwrap_parens(c, nt_ref(nt, mw, "value"));
+    if (nt_ref(nt, mw, "rest") >= 0 || rn > 0 || val < 0 || nt_kind(nt, val) != NK_ArrayNode) return -1;
+    const int *ev = nt_arr(nt, val, "elements", &en);
+    if (en != ln) return -1;
+    for (int e = 0; e < en; e++) if (nt_kind(nt, ev[e]) == NK_SplatNode) return -1;
+    return ev[i];
+  }
+  return -1;
+}
+
 /* 1 when the call `v` is an Array method that answers its receiver itself,
    not a new array or nil. */
 static int array_answers_receiver(Compiler *c, int v) {
@@ -4854,9 +4905,12 @@ static int named_writes_fresh(Compiler *c, int v) {
 }
 
 /* 1 when every write of ivar `ivn` of class `cls` (or of a class it shares
-   the slot with) stores nil or a new array nothing else holds, so the slot
-   can be the general Array with no copy the program could see. */
-static int ivar_writes_fresh(Compiler *c, int cls, const char *ivn) {
+   the slot with) stores nil, a new array nothing else holds, or a parameter
+   of the method writing it, so the slot can be the general Array with no
+   copy the program could see: a parameter it keeps (`@a = a`) is its
+   callers' array, and widens for them as one a store goes through does.
+   With `apply` widens those parameters, setting *ch on a change. */
+static int ivar_writes_fresh(Compiler *c, int cls, const char *ivn, int apply, int *ch) {
   const NodeTable *nt = c->nt;
   static const NodeKind wk[4] = { NK_InstanceVariableWriteNode, NK_InstanceVariableOrWriteNode,
                                   NK_InstanceVariableAndWriteNode, NK_InstanceVariableOperatorWriteNode };
@@ -4869,10 +4923,87 @@ static int ivar_writes_fresh(Compiler *c, int cls, const char *ivn) {
       if (wc < 0 || (wc != cls && !is_descendant(c, wc, cls) && !is_descendant(c, cls, wc))) continue;
       if (t >= 2) return 0;
       int wv = unwrap_parens(c, nt_ref(nt, w, "value"));
-      if (wv < 0 || (nt_kind(nt, wv) != NK_NilNode && !is_fresh_array(c, wv))) return 0;
+      if (wv < 0) return 0;
       saw = 1;
+      if (nt_kind(nt, wv) == NK_NilNode || is_fresh_array(c, wv)) continue;
+      LocalVar *pl = unassigned_param_read(c, ws, wv) >= 0 ? scope_local(ws, nt_str(nt, wv, "name")) : NULL;
+      if (!pl || pl->rbs_seeded || !(ty_is_array(pl->type) || pl->type == TY_UNKNOWN) || ty_is_ptr_array(pl->type))
+        return 0;
+      if (apply && pl->type != TY_POLY_ARRAY) *ch |= widen_arg_array(c, wv);
     }
   return saw;
+}
+
+/* 1 when a read of the local `r` names is anything but the receiver of an
+   element read, an iteration or a size, or an argument printed: the local
+   may be stored into (`r << v`), aliased or handed on, so its elements may
+   be arrays none of its literals shows. */
+static int local_rows_escape(Compiler *c, int r) {
+  static const char *const reads[] = { "[]", "first", "last", "fetch", "each", "each_with_index",
+                                       "size", "length", "empty?", "inspect", "to_s", NULL };
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, r, "name");
+  Scope *sc = comp_scope_of(c, r);
+  int nread = 0, nok = 0;
+  NT_FOREACH_KIND(nt, NK_LocalVariableReadNode, u)
+    if (comp_scope_of(c, u) == sc && sp_streq(nt_str(nt, u, "name"), nm)) nread++;
+  NT_FOREACH_KIND(nt, NK_CallNode, call) {
+    const char *cn = nt_str(nt, call, "name");
+    int rc = unwrap_parens(c, nt_ref(nt, call, "receiver"));
+    if (!cn) continue;
+    if (rc >= 0 && nt_kind(nt, rc) == NK_LocalVariableReadNode && comp_scope_of(c, rc) == sc &&
+        sp_streq(nt_str(nt, rc, "name"), nm)) {
+      for (int k = 0; reads[k]; k++) if (sp_streq(cn, reads[k])) { nok++; break; }
+      continue;
+    }
+    if (rc >= 0 || !(sp_streq(cn, "p") || sp_streq(cn, "puts") || sp_streq(cn, "print") || sp_streq(cn, "pp")))
+      continue;
+    int a = nt_ref(nt, call, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    for (int k = 0; k < an; k++)
+      if (nt_kind(nt, av[k]) == NK_LocalVariableReadNode && comp_scope_of(c, av[k]) == sc &&
+          sp_streq(nt_str(nt, av[k], "name"), nm)) nok++;
+  }
+  return nok < nread;
+}
+
+/* An element read (`o[i]`, `first`, `last`, `fetch`) out of a local every
+   write of which is an array literal of array literals, which nothing stores
+   into or hands on: the rows are the arrays the read can answer. With
+   `apply` 0 answers 1 when that is so; with 1 builds each row as the general
+   Array, answering 1 on a change. -1 when `v` is no such read. */
+static int literal_rows_read(Compiler *c, int v, int apply) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, v, "name");
+  int r = unwrap_parens(c, nt_ref(nt, v, "receiver")), a = nt_ref(nt, v, "arguments"), an = 0;
+  if (a >= 0) nt_arr(nt, a, "arguments", &an);
+  if (!nm || r < 0 || nt_ref(nt, v, "block") >= 0 ||
+      !((sp_streq(nm, "[]") && an == 1) || (sp_streq(nm, "fetch") && an == 1) ||
+        ((sp_streq(nm, "first") || sp_streq(nm, "last")) && an == 0))) return -1;
+  if (nt_kind(nt, r) != NK_LocalVariableReadNode) return -1;
+  const char *rn = nt_str(nt, r, "name");
+  Scope *sc = rn ? comp_scope_of(c, r) : NULL;
+  LocalVar *lv = sc ? scope_local(sc, rn) : NULL;
+  if (!lv || lv->is_param || lv->is_block_param || lv->rbs_seeded || local_has_target_write(c, sc, rn) ||
+      local_rows_escape(c, r)) return -1;
+  int saw = 0, ch = 0;
+  for (int w0 = lw_shared_first(c, rn, (int)(sc - c->scopes)); w0 >= 0; w0 = lw_shared_next(w0)) {
+    int w = lw_shared_node(w0);
+    if (comp_scope_of(c, w) != sc || !sp_streq(nt_str(nt, w, "name"), rn)) continue;
+    int lit = unwrap_parens(c, nt_ref(nt, w, "value"));
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode || nt_kind(nt, lit) != NK_ArrayNode) return -1;
+    int en = 0; const int *ev = nt_arr(nt, lit, "elements", &en);
+    for (int e = 0; e < en; e++) {
+      int el = unwrap_parens(c, ev[e]);
+      TyKind et = infer_type(c, el);
+      if (nt_kind(nt, el) != NK_ArrayNode || !is_fresh_array(c, el) || ty_is_ptr_array(et) ||
+          (et != TY_UNKNOWN && !ty_is_array(et)) || !c->arr_want || el >= c->node_cap) return -1;
+      if (apply && c->arr_want[el] != TY_POLY_ARRAY) { c->arr_want[el] = TY_POLY_ARRAY; ch = 1; }
+    }
+    saw = 1;
+  }
+  if (!saw) return -1;
+  return apply ? ch : 1;
 }
 
 /* The arrays the value `v` can be, followed back to where each is built or
@@ -4911,6 +5042,12 @@ static int array_src_walk(Compiler *c, int v, int pinned, int apply, int *stack,
   }
   if (!ty_is_array(vt) || ty_is_ptr_array(vt)) return 0;
   if (is_fresh_array(c, v)) return pinned && !apply;
+  /* an element read out of a local every write of which is a literal of
+     array literals, and nothing stores into: those rows are the value */
+  if (k == NK_CallNode) {
+    int rows = literal_rows_read(c, v, apply);
+    if (rows >= 0) return rows;
+  }
   /* a builtin that answers its receiver: the receiver's array is the value */
   if (k == NK_CallNode && array_answers_receiver(c, v))
     return array_src_walk(c, nt_ref(nt, v, "receiver"), pinned, apply, stack, depth + 1);
@@ -4926,15 +5063,34 @@ static int array_src_walk(Compiler *c, int v, int pinned, int apply, int *stack,
       lv->type = TY_POLY_ARRAY; lv->push_widened = 1;
       return 1;
     }
-    if (local_has_target_write(c, sc, nm)) return 0;
     int saw = 0, ch = 0;
+    /* a target of a multiple assignment takes its element of the right
+       side, which it does not convert: not pinned */
+    NT_FOREACH_KIND(nt, NK_LocalVariableTargetNode, t) {
+      if (comp_scope_of(c, t) != sc || !sp_streq(nt_str(nt, t, "name"), nm)) continue;
+      int tv = masgn_target_value(c, t);
+      if (tv < 0) return 0;
+      int got = array_src_walk(c, tv, 0, apply, stack, depth + 1);
+      if (!apply && !got) return 0;
+      ch |= got; saw = 1;
+    }
     for (int r = lw_shared_first(c, nm, (int)(sc - c->scopes)); r >= 0; r = lw_shared_next(r)) {
       int w = lw_shared_node(r);
       if (comp_scope_of(c, w) != sc || !sp_streq(nt_str(nt, w, "name"), nm)) continue;
-      if (nt_kind(nt, w) != NK_LocalVariableWriteNode) return 0;
-      int got = array_src_walk(c, nt_ref(nt, w, "value"), 1, apply, stack, depth + 1);
-      if (!apply && !got) return 0;
-      ch |= got; saw = 1;
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode && nt_kind(nt, w) != NK_LocalVariableOrWriteNode) return 0;
+      /* each arm of a branch it is written; one that reads the local back
+         (`x = m(x) ? x : y`) is this slot's own array */
+      int wl[16];
+      int nl = value_leaves(c, nt_ref(nt, w, "value"), wl, 0, 16);
+      if (nl <= 0) return 0;
+      for (int i = 0; i < nl; i++) {
+        if (nt_kind(nt, wl[i]) == NK_LocalVariableReadNode && comp_scope_of(c, wl[i]) == sc &&
+            sp_streq(nt_str(nt, wl[i], "name"), nm)) continue;
+        int got = array_src_walk(c, wl[i], 1, apply, stack, depth + 1);
+        if (!apply && !got) return 0;
+        ch |= got;
+      }
+      saw = 1;
     }
     if (!saw || !apply) return saw;
     if (!lv->poly_array_pin || lv->type != TY_POLY_ARRAY) { lv->type = TY_POLY_ARRAY; lv->poly_array_pin = 1; ch = 1; }
@@ -4951,8 +5107,9 @@ static int array_src_walk(Compiler *c, int v, int pinned, int apply, int *stack,
   /* An ivar, read here or through an attr_reader, widens after the
      fixpoint (widen_ivars_from_pushed_params), where the write passes cannot
      narrow it back; the locals and method values on the way are pinned now.
-     Only one every write of which builds a new array: a stored parameter
-     would be copied into the widened slot, away from its caller. */
+     Only one every write of which builds a new array or keeps a parameter,
+     which widens with it for its callers (ivar_writes_fresh): a parameter
+     left typed would be copied into the widened slot, away from its caller. */
   const char *ivn = NULL;
   int icls = ivar_src_slot(c, v, &ivn);
   if (icls >= 0) {
@@ -4961,19 +5118,61 @@ static int array_src_walk(Compiler *c, int v, int pinned, int apply, int *stack,
     int wdc = -1, wmi = -1;
     if (ivi < 0 || class_ivar_pinned(ci, ivn) || !c->ivar_widen_src || v >= c->node_cap ||
         comp_resolve_member(c, icls, ivn + 1, 1, &wdc, &wmi) == SP_MEMBER_ATTR ||
-        !ivar_writes_fresh(c, icls, ivn)) return 0;
+        !ivar_writes_fresh(c, icls, ivn, 0, NULL)) return 0;
     if (!apply) return 1;
-    if (c->ivar_widen_src[v]) return 0;
-    c->ivar_widen_src[v] = 1;
-    return 1;
+    int ch = 0;
+    ivar_writes_fresh(c, icls, ivn, 1, &ch);
+    if (!c->ivar_widen_src[v]) { c->ivar_widen_src[v] = 1; ch = 1; }
+    return ch;
   }
   if (k != NK_CallNode) return 0;
   int mi = backprop_call_target(c, v);
+  /* `v.then { ... }`: the block's value */
+  const char *cn = nt_str(nt, v, "name");
+  int tblk = nt_ref(nt, v, "block");
+  if (mi < 0 && cn && (sp_streq(cn, "then") || sp_streq(cn, "yield_self")) && nt_ref(nt, v, "receiver") >= 0 &&
+      tblk >= 0 && nt_kind(nt, tblk) == NK_BlockNode &&
+      ie_block_break_next_ty(c, nt_ref(nt, tblk, "body")) == TY_UNKNOWN) {
+    int bl[16];
+    int n = value_leaves(c, nt_ref(nt, tblk, "body"), bl, 0, 16), ch = 0;
+    if (n <= 0) return 0;
+    for (int i = 0; i < n; i++) {
+      int got = array_src_walk(c, bl[i], pinned, apply, stack, depth + 1);
+      if (!apply && !got) return 0;
+      ch |= got;
+    }
+    return apply ? ch : 1;
+  }
   if (mi < 0) return 0;
   for (int d = 0; d < depth; d++) if (stack[d] == mi) return !apply;
   Scope *m = &c->scopes[mi];
   if (m->ret_rbs_seeded || m->ret_specialized || m->cs_synth || m->is_lowered_yield ||
-      m->ret_oa_pin != TY_UNKNOWN || method_has_other_body(c, mi)) return 0;
+      m->ret_oa_pin != TY_UNKNOWN) return 0;
+  /* A method a subclass overrides, or one defined again, answers any of
+     its bodies' values: each is followed, and each body's value pinned. */
+  if (method_has_other_body(c, mi)) {
+    int ch = 0;
+    stack[depth] = mi;
+    for (int t = 1; t < c->nscopes; t++) {
+      Scope *o = &c->scopes[t];
+      if (t != mi && !(o->name && sp_streq(o->name, m->name) && o->is_cmethod == m->is_cmethod &&
+                       (o->class_id == m->class_id ||
+                        (o->class_id >= 0 && m->class_id >= 0 && is_descendant(c, o->class_id, m->class_id)))))
+        continue;
+      int ol[16];
+      int on = method_value_leaves(c, t, ol, 16);
+      if (o->ret_rbs_seeded || o->ret_specialized || o->cs_synth || o->is_lowered_yield ||
+          o->ret_oa_pin != TY_UNKNOWN || on <= 0) return 0;
+      for (int i = 0; i < on; i++) {
+        if (nt_kind(nt, ol[i]) == NK_YieldNode) return 0;
+        int got = array_src_walk(c, ol[i], 1, apply, stack, depth + 1);
+        if (!apply && !got) return 0;
+        ch |= got;
+      }
+      if (apply && !o->ret_poly_array_pin) { o->ret_poly_array_pin = 1; ch = 1; }
+    }
+    return apply ? ch : 1;
+  }
   int lv[16];
   int n = method_value_leaves(c, mi, lv, 16);
   if (n <= 0) return 0;
@@ -5048,6 +5247,244 @@ static int widen_arg_array(Compiler *c, int arg) {
     return 0;
   }
   return widen_array_sources(c, arg);
+}
+
+const char *block_param_name(Compiler *c, int block, int idx);
+static int widen_boxed_elem_sources(Compiler *c, int r, TyKind elem, int depth);
+
+/* The calls whose literal block names a positional parameter, keyed by the
+   name and the block's scope: the calls a block parameter is bound by.
+   Rebuilt, as lw_shared_ix is, when the node table or the scope shape
+   moves; a scan of every call per lookup was quadratic in a program of many
+   blocks. */
+static struct { int cap, n; int *head, *next, *call, *idx, *scope; const char **name; } bp_ix;
+static const NodeTable *bp_ix_nt = NULL;
+static int bp_ix_ntc = -1;
+static unsigned bp_ix_gen = 0;
+static int bp_ix_first(Compiler *c, const char *name, int scope) {
+  const NodeTable *nt = c->nt;
+  unsigned gen = comp_scope_index_gen();
+  if (!comp_scope_index_is_frozen() || bp_ix_nt != nt || bp_ix_ntc != nt->count || bp_ix_gen != gen) {
+    free(bp_ix.head); free(bp_ix.next); free(bp_ix.call); free(bp_ix.idx); free(bp_ix.scope); free(bp_ix.name);
+    int n = 0, cap = 16;
+    NT_FOREACH_KIND(nt, NK_CallNode, call) {
+      int blk = nt_ref(nt, call, "block");
+      if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+      for (int bi = 0; block_param_name(c, blk, bi); bi++) n++;
+    }
+    while (cap < n * 2) cap <<= 1;
+    bp_ix.cap = cap; bp_ix.n = 0;
+    bp_ix.head = malloc(sizeof(int) * cap);
+    for (int i = 0; i < cap; i++) bp_ix.head[i] = -1;
+    bp_ix.next = malloc(sizeof(int) * (n + 1)); bp_ix.call = malloc(sizeof(int) * (n + 1));
+    bp_ix.idx = malloc(sizeof(int) * (n + 1)); bp_ix.scope = malloc(sizeof(int) * (n + 1));
+    bp_ix.name = malloc(sizeof(char *) * (n + 1));
+    NT_FOREACH_KIND(nt, NK_CallNode, call) {
+      int blk = nt_ref(nt, call, "block");
+      if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+      int sc = (int)(comp_scope_of(c, blk) - c->scopes);
+      const char *bp;
+      for (int bi = 0; (bp = block_param_name(c, blk, bi)) && bp_ix.n < n; bi++) {
+        int k = bp_ix.n++;
+        unsigned h = lw_hash(bp, sc) & (unsigned)(cap - 1);
+        bp_ix.call[k] = call; bp_ix.idx[k] = bi; bp_ix.scope[k] = sc; bp_ix.name[k] = bp;
+        bp_ix.next[k] = bp_ix.head[h]; bp_ix.head[h] = k;
+      }
+    }
+    bp_ix_nt = nt; bp_ix_ntc = nt->count; bp_ix_gen = gen;
+  }
+  return bp_ix.head[lw_hash(name, scope) & (unsigned)(bp_ix.cap - 1)];
+}
+
+/* 1 when one of the values lv[0..n) is a typed array a store of kind
+   `elem` cannot fit and the walk cannot build as the general Array on its
+   own (a new array a builtin answers, which only a pinned slot converts):
+   only then is the slot they are the values of pinned. */
+static int leaves_need_pin(Compiler *c, const int *lv, int n, TyKind elem) {
+  int stack[8];
+  for (int i = 0; i < n; i++) {
+    TyKind t = infer_type(c, lv[i]);
+    if (!ty_is_array(t) || t == TY_POLY_ARRAY || ty_is_ptr_array(t) || elem == ty_array_elem(t)) continue;
+    if (!array_src_walk(c, lv[i], 0, 0, stack, 0)) return 1;
+  }
+  return 0;
+}
+
+/* 1 when every value in lv[0..n) is the general Array or an array the
+   walk can build as one where it reaches a pinned slot (array_src_walk):
+   the slot they are the values of can then be pinned to it, and a new
+   array of a typed kind converts there. With `apply` builds them so,
+   answering 1 on a change. */
+static int leaves_widen_to_poly_array(Compiler *c, const int *lv, int n, int apply) {
+  int stack[8], ch = 0;
+  for (int i = 0; i < n; i++) {
+    if (infer_type(c, lv[i]) == TY_POLY_ARRAY) continue;
+    int got = array_src_walk(c, lv[i], 1, apply, stack, 0);
+    if (!apply && !got) return 0;
+    ch |= got;
+  }
+  return apply ? ch : n > 0;
+}
+
+/* A store of kind `elem` (TY_POLY: one decided at run time) goes into the
+   array `v` is, where the program holds `v` boxed: a local written arrays of
+   two kinds, an element read out of a general container, a block parameter,
+   a boxed parameter. A typed array cannot take a foreign element in place:
+   the store through the box promotes a copy and writes it back to the one
+   slot it names (sp_poly_arr_widen_and_set), or refuses the element with
+   TypeError, and every other slot holding the array -- the caller's, the
+   local it was read from, the container it came out of -- kept the typed
+   array without it. So each typed array `v` can be that cannot hold `elem`
+   is widened where the program builds it, as an argument is
+   (widen_arg_array): followed through a local's writes and `||=`, the arms
+   of a branch, a method's values, and the elements of the containers an
+   element read, an element iterator's block parameter or a `for` variable
+   takes it from. A boxed parameter records the element for its callers'
+   binding, as a store through it does (boxed_push_elem). What the walk
+   cannot follow keeps the run time's answer. Returns 1 on a change. */
+static int widen_boxed_array_sources(Compiler *c, int v, TyKind elem, int depth) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  /* Only once the optimistic rounds have settled: a slot is boxed for a
+     round or two while its evidence arrives, and a widening is for good. */
+  if (v < 0 || depth > 6 || elem == TY_UNKNOWN || g_infer_optimistic) return 0;
+  TyKind vt = infer_type(c, v);
+  /* an empty literal's kind is what its uses store, this one among them,
+     and so is a local's that only empty literals are written */
+  int en = 0;
+  if (nt_kind(nt, v) == NK_ArrayNode && (nt_arr(nt, v, "elements", &en), en == 0)) return 0;
+  if (nt_kind(nt, v) == NK_LocalVariableReadNode &&
+      local_all_writes_empty_array(c, comp_scope_of(c, v), nt_str(nt, v, "name"))) return 0;
+  if (ty_is_array(vt)) {
+    if (vt == TY_POLY_ARRAY || ty_is_ptr_array(vt) || elem == ty_array_elem(vt)) return 0;
+    return widen_arg_array(c, v);
+  }
+  if (vt != TY_POLY) return 0;
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_LocalVariableWriteNode || k == NK_LocalVariableOrWriteNode)
+    return widen_boxed_array_sources(c, nt_ref(nt, v, "value"), elem, depth + 1);
+  if (k == NK_IfNode || k == NK_UnlessNode || k == NK_CaseNode) {
+    int lv[16];
+    int n = value_leaves(c, v, lv, 0, 16), ch = 0;
+    for (int i = 0; i < n; i++) ch |= widen_boxed_array_sources(c, lv[i], elem, depth + 1);
+    return ch;
+  }
+  if (k == NK_LocalVariableReadNode) {
+    const char *nm = nt_str(nt, v, "name");
+    Scope *sc = nm ? comp_scope_of(c, v) : NULL;
+    LocalVar *lv = sc ? scope_local(sc, nm) : NULL;
+    if (!lv || lv->rbs_seeded) return 0;
+    int ch = 0;
+    if (lv->is_block_param) {
+      /* what an element iterator hands its block: an element of the
+         receiver, or a Hash's value */
+      int si = (int)(sc - c->scopes);
+      for (int e = bp_ix_first(c, nm, si); e >= 0; e = bp_ix.next[e]) {
+        if (bp_ix.scope[e] != si || !sp_streq(bp_ix.name[e], nm)) continue;
+        int call = bp_ix.call[e], bi = bp_ix.idx[e];
+        int r = nt_ref(nt, call, "receiver");
+        const char *cn = nt_str(nt, call, "name");
+        if (r < 0 || !cn) continue;
+        TyKind rt = infer_type(c, r), yt[2];
+        int elem_at = -1;
+        if (ty_is_hash(rt))
+          elem_at = sp_streq(cn, "each_value") ? 0 : sp_streq(cn, "each") || sp_streq(cn, "each_pair") ? 1 : -1;
+        else if ((ty_is_array(rt) || rt == TY_POLY) && ty_block_yield(TY_POLY_ARRAY, cn, yt, 2) > 0)
+          elem_at = 0;
+        if (bi == elem_at) ch |= widen_boxed_elem_sources(c, r, elem, depth + 1);
+      }
+    }
+    /* a `for` variable, bound as a block parameter is */
+    NT_FOREACH_KIND(nt, NK_ForNode, f) {
+      int ix = nt_ref(nt, f, "index");
+      if (ix < 0 || nt_kind(nt, ix) != NK_LocalVariableTargetNode || comp_scope_of(c, f) != sc ||
+          !sp_streq(nt_str(nt, ix, "name"), nm)) continue;
+      ch |= widen_boxed_elem_sources(c, nt_ref(nt, f, "collection"), elem, depth + 1);
+    }
+    if (lv->is_block_param) return ch;
+    if (lv->is_param) {
+      if (lv->type != TY_POLY) return 0;
+      TyKind *ev[2] = { &lv->boxed_push_elem, &lv->boxed_known_elem };
+      for (int e = 0; e < 2; e++) {
+        TyKind was = *ev[e];
+        TyKind now = was == TY_UNKNOWN ? elem : (was == elem ? was : TY_POLY);
+        if (now != was) { *ev[e] = now; ch = 1; }
+      }
+      return ch;
+    }
+    /* every value it is written, each followed on its own; where one the
+       store cannot fit can only be converted at the slot, and all of them
+       are arrays, the local is pinned to the general Array */
+    int wl[32], nl = 0, all = !local_has_target_write(c, sc, nm);
+    for (int r = lw_shared_first(c, nm, (int)(sc - c->scopes)); r >= 0; r = lw_shared_next(r)) {
+      int w = lw_shared_node(r);
+      NodeKind wk = nt_kind(nt, w);
+      if (comp_scope_of(c, w) != sc || !sp_streq(nt_str(nt, w, "name"), nm)) continue;
+      if (wk != NK_LocalVariableWriteNode && wk != NK_LocalVariableOrWriteNode) { all = 0; continue; }
+      ch |= widen_boxed_array_sources(c, nt_ref(nt, w, "value"), elem, depth + 1);
+      int got = all ? value_leaves(c, nt_ref(nt, w, "value"), wl, nl, 32) : -1;
+      if (got < 0) { all = 0; continue; }
+      for (int i = nl; i < got; i++)
+        if (!(nt_kind(nt, wl[i]) == NK_LocalVariableReadNode && comp_scope_of(c, wl[i]) == sc &&
+              sp_streq(nt_str(nt, wl[i], "name"), nm))) wl[nl++] = wl[i];
+    }
+    /* The pin is re-asserted at the end of every round's write pass, where
+       the local re-derives from its writes: a change is only a new pin. */
+    if (all && leaves_need_pin(c, wl, nl, elem) && leaves_widen_to_poly_array(c, wl, nl, 0)) {
+      ch |= leaves_widen_to_poly_array(c, wl, nl, 1);
+      if (!lv->poly_array_pin) { lv->poly_array_pin = 1; ch = 1; }
+      lv->type = TY_POLY_ARRAY;
+    }
+    return ch;
+  }
+  if (k != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  int r = nt_ref(nt, v, "receiver"), a = nt_ref(nt, v, "arguments"), an = 0;
+  if (a >= 0) nt_arr(nt, a, "arguments", &an);
+  if (!nm || nt_ref(nt, v, "block") >= 0) return 0;
+  if (r >= 0 && ((sp_streq(nm, "[]") && an == 1) || (sp_streq(nm, "fetch") && an >= 1) ||
+                 ((sp_streq(nm, "first") || sp_streq(nm, "last")) && an == 0)))
+    return widen_boxed_elem_sources(c, r, elem, depth + 1);
+  int mi = backprop_call_target(c, v);
+  if (mi < 0) return 0;
+  Scope *m = &c->scopes[mi];
+  if (m->ret_rbs_seeded || m->cs_synth || m->is_lowered_yield || method_has_other_body(c, mi)) return 0;
+  int lv[16];
+  int n = method_value_leaves(c, mi, lv, 16), ch = 0;
+  /* A value that is one of the method's parameters is, at this call, this
+     call's argument for it (`def id(a) = a`), not every caller's. */
+  int aa = nt_ref(nt, v, "arguments"), aargc = 0;
+  const int *aargv = aa >= 0 ? nt_arr(nt, aa, "arguments", &aargc) : NULL;
+  for (int i = 0; i < n; i++) {
+    int pk = unassigned_param_read(c, m, lv[i]);
+    int arg = pk >= 0 ? call_param_arg(c, m, aargv, aargc, pk) : -1;
+    if (arg >= 0) lv[i] = arg;
+  }
+  if (n > 0 && leaves_need_pin(c, lv, n, elem) && leaves_widen_to_poly_array(c, lv, n, 0)) {
+    ch |= leaves_widen_to_poly_array(c, lv, n, 1);
+    if (!m->ret_poly_array_pin) { m->ret_poly_array_pin = 1; ch = 1; }
+    return ch;
+  }
+  for (int i = 0; i < n; i++) ch |= widen_boxed_array_sources(c, lv[i], elem, depth + 1);
+  return ch;
+}
+
+/* The same for the arrays that are elements of the container `r` (the
+   values of a Hash), as far as its literals show them (container_literals). */
+static int widen_boxed_elem_sources(Compiler *c, int r, TyKind elem, int depth) {
+  const NodeTable *nt = c->nt;
+  int lits[32], ch = 0;
+  if (depth > 6) return 0;
+  int nl = container_literals(c, r, lits, 0, 32, 0);
+  for (int q = 0; q < nl; q++) {
+    int en = 0; const int *ev = nt_arr(nt, lits[q], "elements", &en);
+    for (int e = 0; e < en; e++) {
+      int el = nt_kind(nt, ev[e]) == NK_AssocNode ? nt_ref(nt, ev[e], "value") : ev[e];
+      if (el >= 0 && nt_kind(nt, el) != NK_SplatNode && nt_kind(nt, el) != NK_AssocSplatNode)
+        ch |= widen_boxed_array_sources(c, el, elem, depth + 1);
+    }
+  }
+  return ch;
 }
 
 /* 1 when a call passing `argv` has parameter `p` store into a container of
@@ -5365,9 +5802,11 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
        decides that first: tested after the two-kinds rule, a param already on
        the poly array met an int-array argument as two kinds (-> poly), and
        the next round met it from poly (-> poly array), every round until the
-       fixpoint's cap (#4962). */
+       fixpoint's cap (#4962). One a boxed argument already made boxed stays
+       boxed: taken back to the poly array by the next array argument, it met
+       the boxed one again, and the two calls flipped it every round. */
     if (p->push_widened && ty_is_array(at))
-      merged = TY_POLY_ARRAY;
+      merged = p->type == TY_POLY ? TY_POLY : TY_POLY_ARRAY;
     else if (p->push_widened && p->type == TY_POLY_POLY_HASH && ty_is_hash(at))
       merged = TY_POLY_POLY_HASH;
     else if (ty_is_array(p->type) && ty_is_array(at) && p->type != at)
@@ -5462,6 +5901,11 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
       if (!w && (src_misfit || p->boxed_push_elem != TY_POLY) && c->store_misfit_arg && anode < c->node_cap)
         c->store_misfit_arg[anode] = 1;
     }
+    /* A boxed argument hides its arrays the same way, one step further:
+       they are followed back to where they are built, and each one the
+       store cannot fit widens there (widen_boxed_array_sources). */
+    if (p->type == TY_POLY && at == TY_POLY && p->boxed_known_elem != TY_UNKNOWN)
+      changed |= widen_boxed_array_sources(c, anode, p->boxed_known_elem, 0);
     if (p->type == TY_POLY && ty_is_hash(at) && at != TY_POLY_POLY_HASH &&
         (p->boxed_store_key != TY_UNKNOWN || src_misfit)) {
       TyKind folded = at;
