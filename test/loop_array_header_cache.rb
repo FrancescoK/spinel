@@ -150,3 +150,21 @@ while i < 2
   i += 1
 end
 p ft
+
+# a class test on a scalar is its nil test: the loop still caches, and the
+# test still answers
+qv = [1.5, 0.0 / 0.0, -2.0, 4.0]
+qk = [3, 1, 4, 1]
+qs = Array.new(4, 0.0)
+i = 0
+qt = 0
+while i < 4
+  v = qv[i]
+  k = qk[i]
+  qs[i] = (v.is_a?(Float) && v.nan?) ? 0.0 : v * 2.0
+  qt += k if k.is_a?(Integer) && k.kind_of?(Numeric) && !k.nil?
+  qt += 1000 if !k || !v
+  qt += 100 if v.instance_of?(Integer)
+  i += 1
+end
+p qs, qt
