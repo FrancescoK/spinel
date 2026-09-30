@@ -518,7 +518,7 @@ def_spec__008	FAIL
 def_spec__009	PASS
 def_spec__010	PASS
 def_spec__011	PASS
-def_spec__012	REJECT
+def_spec__012	FAIL
 def_spec__013	PASS
 def_spec__014	PASS
 def_spec__015	PASS
@@ -539,7 +539,7 @@ def_spec__029	ERROR
 def_spec__030	PASS
 def_spec__031	REJECT
 def_spec__032	FAIL
-def_spec__033	HARNESS-SKEW
+def_spec__033	REJECT
 def_spec__034	HARNESS-SKEW
 def_spec__035	FAIL
 def_spec__036	PASS
@@ -1047,7 +1047,7 @@ it_parameter_spec__007	HARNESS-SKEW
 it_parameter_spec__008	HARNESS-SKEW
 it_parameter_spec__009	HARNESS-SKEW
 it_parameter_spec__010	HARNESS-SKEW
-it_parameter_spec__011	HARNESS-SKEW
+it_parameter_spec__011	FAIL
 it_parameter_spec__012	HARNESS-SKEW
 it_parameter_spec__013	HARNESS-SKEW
 it_parameter_spec__014	HARNESS-SKEW

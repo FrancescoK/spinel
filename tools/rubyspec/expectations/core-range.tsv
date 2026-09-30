@@ -306,7 +306,7 @@ new_spec__010	REJECT
 overlap_spec__001	HARNESS-SKEW
 overlap_spec__002	HARNESS-SKEW
 overlap_spec__003	HARNESS-SKEW
-overlap_spec__004	HARNESS-SKEW
+overlap_spec__004	PASS
 overlap_spec__005	HARNESS-SKEW
 overlap_spec__006	HARNESS-SKEW
 overlap_spec__007	HARNESS-SKEW
