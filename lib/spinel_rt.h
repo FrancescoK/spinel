@@ -2128,15 +2128,17 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
     "filter", "reject", "find", "detect", "reduce", "inject", "to_a", "size",
     "length", "count", "include?", "first", "min", "max", "sort", "sort_by",
     "sum", "any?", "all?", "none?", "one?", "group_by", "partition", "zip",
-    "flat_map", "each_slice", "each_cons", "take", "drop", "empty?", NULL };
+    "flat_map", "each_slice", "each_cons", "take", "drop", NULL };
+  /* empty? is Array's and Hash's, not Enumerable's: a Range does not answer
+     it in CRuby, and activesupport's Object#blank? asks exactly that */
   static const char *const arrm[] = {
-    "[]", "[]=", "push", "<<", "pop", "shift", "unshift", "concat", "join",
+    "empty?", "[]", "[]=", "push", "<<", "pop", "shift", "unshift", "concat", "join",
     "flatten", "compact", "uniq", "reverse", "last", "index", "delete",
     "delete_at", "delete_if", "insert", "fetch", "sample", "shuffle",
     "rotate", "slice", "fill", "dig", "values_at", "+", "-", "*", "&", "|",
     NULL };
   static const char *const hashm[] = {
-    "[]", "[]=", "keys", "values", "fetch", "store", "delete", "key?",
+    "empty?", "[]", "[]=", "keys", "values", "fetch", "store", "delete", "key?",
     "has_key?", "member?", "value?", "has_value?", "each_pair", "each_key",
     "each_value", "merge", "merge!", "update", "to_h", "invert", "dig",
     "default", "key", "transform_keys", "transform_values", NULL };
