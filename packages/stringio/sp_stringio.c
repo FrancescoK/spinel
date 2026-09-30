@@ -68,7 +68,26 @@ sp_int sp_StringIO_putc(sp_StringIO *s, sp_int ch) { char c = (char)(ch & 0xFF);
 const char *sp_StringIO_read(sp_StringIO *s) {SP_GC_ROOT(s); if (s->pos >= s->len) return sp_str_empty; size_t rem = s->len - s->pos; char *r = sp_str_alloc(rem); memcpy(r, s->buf + s->pos, rem); r[rem] = 0; s->pos = s->len; return r; }
 const char *sp_StringIO_read_n(sp_StringIO *s, sp_int n) {SP_GC_ROOT(s); if (s->pos >= s->len) return sp_str_empty; int64_t rem = s->len - s->pos; if (n > rem) n = rem; char *r = sp_str_alloc_raw(n+1); memcpy(r, s->buf + s->pos, n); r[n] = '\0'; sp_str_set_len(r, (size_t)n); s->pos += n; return r; }
 const char *sp_StringIO_gets(sp_StringIO *s) {SP_GC_ROOT(s); if (s->pos >= s->len) return NULL; const char *st = s->buf + s->pos; const char *nl = memchr(st, '\n', s->len - s->pos); int64_t ll = nl ? (nl - st) + 1 : s->len - s->pos; char *r = sp_str_alloc_raw(ll+1); memcpy(r, st, ll); r[ll] = '\0'; sp_str_set_len(r, (size_t)ll); s->pos += ll; s->lineno++; return r; }
-const char *sp_StringIO_getc(sp_StringIO *s) {SP_GC_ROOT(s); if (s->pos >= s->len) return NULL; char *gc = sp_str_alloc_raw(2); gc[0] = s->buf[s->pos++]; gc[1] = '\0'; sp_str_set_len(gc, 1); return gc; }
+/* The byte length of the character at p, n bytes available: a whole UTF-8
+   sequence, or one byte where the sequence is malformed or cut short (CRuby
+   hands those out a byte at a time). A binary buffer is bytes only. */
+static int64_t sio_char_len(const char *p, int64_t n, int binary) {
+  unsigned char c = (unsigned char)p[0];
+  int64_t cl = binary ? 1 : c >= 0xC2 && c <= 0xDF ? 2 : c >= 0xE0 && c <= 0xEF ? 3 : c >= 0xF0 && c <= 0xF4 ? 4 : 1;
+  if (cl > n) return 1;
+  for (int64_t i = 1; i < cl; i++)
+    if (((unsigned char)p[i] & 0xC0) != 0x80) return 1;
+  /* an overlong form, a surrogate or a code point past U+10FFFF */
+  if (cl >= 3) {
+    unsigned char c2 = (unsigned char)p[1];
+    if ((c == 0xE0 && c2 < 0xA0) || (c == 0xED && c2 > 0x9F) ||
+        (c == 0xF0 && c2 < 0x90) || (c == 0xF4 && c2 > 0x8F)) return 1;
+  }
+  return cl;
+}
+const char *sp_StringIO_getc(sp_StringIO *s) {SP_GC_ROOT(s); if (s->pos >= s->len) return NULL;
+  int64_t cl = sio_char_len(s->buf + s->pos, s->len - s->pos, s->borrowed && sp_str_is_binary(s->buf));
+  char *gc = sp_str_alloc_raw(cl + 1); memcpy(gc, s->buf + s->pos, cl); gc[cl] = '\0'; sp_str_set_len(gc, (size_t)cl); s->pos += cl; return gc; }
 sp_RbVal sp_StringIO_getbyte(sp_StringIO *s) { if (s->pos >= s->len) return sp_box_nil(); return sp_box_int((int64_t)(unsigned char)s->buf[s->pos++]); }
 /* readbyte and readchar: getbyte and getc that raise EOFError at the end */
 sp_int sp_StringIO_readbyte(sp_StringIO *s) { if (s->pos >= s->len) sp_raise_cls("EOFError", "end of file reached"); return (int64_t)(unsigned char)s->buf[s->pos++]; }
@@ -87,7 +106,11 @@ sp_bool sp_StringIO_isatty(sp_StringIO *s) { (void)s; return 0; }
 /* Normalized helpers so the binding stays a plain method->symbol map:
    putc with a string arg writes its first byte; lineno is a field read;
    fsync/fileno/pid are always 0 on an in-memory stream. */
-const char *sp_StringIO_putc_s(sp_StringIO *s, const char *str) {SP_GC_ROOT(s);SP_GC_ROOT_STR(str); sp_StringIO_putc(s, (sp_int)(unsigned char)(str && str[0] ? str[0] : 0)); return str; }
+/* putc(String) writes the string's first character, all of its bytes */
+const char *sp_StringIO_putc_s(sp_StringIO *s, const char *str) {SP_GC_ROOT(s);SP_GC_ROOT_STR(str);
+  int64_t l = str ? (int64_t)sp_str_byte_len(str) : 0;
+  if (l > 0) sio_write(s, str, sio_char_len(str, l, sp_str_is_binary(str)));
+  return str; }
 sp_int sp_StringIO_lineno(sp_StringIO *s) { return s->lineno; }
 sp_int sp_StringIO_zero(sp_StringIO *s) { (void)s; return 0; }
 
