@@ -7010,12 +7010,23 @@ static sp_OpenStruct *sp_OpenStruct_new(void){
   sp_OpenStruct *o=(sp_OpenStruct*)sp_gc_alloc(sizeof(sp_OpenStruct),NULL,sp_OpenStruct_scan);
   o->tbl=sp_SymPolyHash_new(); return o;
 }
+static sp_SymPolyHash *sp_OpenStruct_to_h(sp_OpenStruct *o);   /* defined below */
 static sp_RbVal sp_OpenStruct_get(sp_OpenStruct *o, sp_sym k){
   if(!o||!o->tbl||!sp_SymPolyHash_has_key(o->tbl,k)) return sp_box_nil();
   return sp_SymPolyHash_get(o->tbl,k);
 }
 static void sp_OpenStruct_set(sp_OpenStruct *o, sp_sym k, sp_RbVal v){
-  if(o&&sp_gc_is_frozen(o)) sp_raise_cls("FrozenError","can't modify frozen OpenStruct");
+  if(o&&sp_gc_is_frozen(o)){
+    SP_GC_ROOT(o);   /* o may be a bare temporary; the message allocates */
+    /* CRuby: a new member fails on the object, an existing one on its member
+       table, which froze with it; the receiver here is a frozen copy of it */
+    if(o->tbl&&sp_SymPolyHash_has_key(o->tbl,k)){
+      sp_SymPolyHash *tc=sp_OpenStruct_to_h(o); SP_GC_ROOT(tc);
+      sp_gc_freeze(tc);
+      sp_raise_frozen_obj(sp_box_obj(tc,SP_BUILTIN_SYM_POLY_HASH),(&("\xff" "can't modify frozen Hash")[1]));
+    }
+    sp_raise_frozen_obj(sp_box_obj(o,SP_BUILTIN_OPENSTRUCT),(&("\xff" "can't modify frozen OpenStruct")[1]));
+  }
   if(o&&o->tbl) sp_SymPolyHash_set(o->tbl,k,v);
 }
 static sp_bool sp_OpenStruct_has(sp_OpenStruct *o, sp_sym k){
@@ -7072,6 +7083,10 @@ static sp_bool sp_OpenStruct_eql(sp_OpenStruct *a, sp_OpenStruct *b){
 /* #inspect: #<OpenStruct a=1, b="hi"> */
 static const char *sp_OpenStruct_inspect(sp_OpenStruct *o){
   SP_GC_ROOT(o);      /* o may be the caller's bare temporary; the rendering allocates */
+  /* an OpenStruct reached from inside itself renders as the ellipsis and stops,
+     as CRuby's does: `#<OpenStruct a=1, me=#<OpenStruct ...>>` */
+  if(o&&sp_poly_recur_seen(SP_POLY_RECUR_INSPECT,o,NULL)) return (&("\xff" "#<OpenStruct ...>")[1]);
+  int rmark=o?sp_poly_recur_push(SP_POLY_RECUR_INSPECT,o,NULL):-1;
   sp_String *s=sp_String_new(""); SP_GC_ROOT(s);
   sp_String_append(s,"#<OpenStruct");
   if(o&&o->tbl) for(sp_int i=0;i<o->tbl->len;i++){
@@ -7082,6 +7097,7 @@ static const char *sp_OpenStruct_inspect(sp_OpenStruct *o){
     sp_String_append(s, sp_poly_inspect(sp_SymPolyHash_get(o->tbl,k)));
   }
   sp_String_append(s,">");
+  if(rmark>=0) sp_poly_recur_pop(rmark);
   /* an independent GC heap string, not the sp_String's own buffer: the wrapper
      is unrooted on return and its data would dangle if the result is stored. */
   return sp_str_concat(sp_String_cstr(s), (&("\xff")[1]));
