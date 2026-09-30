@@ -479,6 +479,19 @@ int comp_cvar_index(ClassInfo *ci, const char *name) {
   return -1;
 }
 
+/* A subclass shares the class variable a superclass declares, so the slot (one
+   file-scope static per declaring class) belongs to the topmost ancestor that
+   has an entry for `name`, or to `cid` itself when none does. Every reader and
+   writer of a class variable goes through here before it looks the entry up or
+   builds the slot's name. */
+int comp_cvar_owner(const Compiler *c, int cid, const char *name) {
+  int owner = cid;
+  if (cid < 0 || !name) return cid;
+  for (int p = c->classes[cid].parent; p >= 0; p = c->classes[p].parent)
+    if (comp_cvar_index(&c->classes[p], name) >= 0) owner = p;
+  return owner;
+}
+
 int comp_cvar_intern(ClassInfo *ci, const char *name) {
   int idx = comp_cvar_index(ci, name);
   if (idx >= 0) return idx;

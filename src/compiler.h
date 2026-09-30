@@ -960,6 +960,7 @@ int        comp_ivar_index(ClassInfo *ci, const char *name);  /* -1 if none */
 int        comp_ivar_intern(ClassInfo *ci, const char *name); /* find or add; returns index */
 int        comp_cvar_index(ClassInfo *ci, const char *name);  /* class var; -1 if none */
 int        comp_cvar_intern(ClassInfo *ci, const char *name); /* find or add; returns index */
+int        comp_cvar_owner(const Compiler *c, int cid, const char *name); /* the class whose slot holds @@name */
 /* 1 iff method m's param idx is a byref string out-param (LocalVar.byref_out):
    passed as const char** so callee mutation lands in the caller's variable. */
 int        comp_byref_param(Compiler *c, Scope *m, int idx);

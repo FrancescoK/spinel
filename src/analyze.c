@@ -11996,7 +11996,7 @@ static int widen_mixed_key_hash_slots(Compiler *c) {
         if (iv >= 0) slot = &ci->ivar_types[iv];
       }
       else if (hs.kind == 1) {
-        ClassInfo *ci = &c->classes[hs.cls];
+        ClassInfo *ci = &c->classes[comp_cvar_owner(c, hs.cls, hs.nm)];
         int cv = comp_cvar_index(ci, hs.nm);
         if (cv >= 0) slot = &ci->cvar_types[cv];
       }
@@ -23470,7 +23470,7 @@ void analyze_program(Compiler *c) {
             Scope *ws = comp_scope_of(c, id);
             int cid = ws ? ws->class_id : -1;
             if (cid < 0) continue;
-            ClassInfo *ci = &c->classes[cid];
+            ClassInfo *ci = &c->classes[comp_cvar_owner(c, cid, nm)];
             for (int cv = 0; cv < ci->ncvars; cv++) {
               if (!ci->cvars[cv] || !sp_streq(ci->cvars[cv], nm)) continue;
               TyKind cur = ci->cvar_types[cv], nw = PW_JOIN(cur, vt);

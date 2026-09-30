@@ -8220,6 +8220,7 @@ static TyKind masgn_slot_type(Compiler *c, int id, int tgt) {
   if (sp_streq(ty, "ClassVariableTargetNode")) {
     Scope *sc = comp_scope_of(c, id);
     int cid = (sc && sc->class_id >= 0) ? sc->class_id : g_class_body_id;
+    if (cid >= 0) cid = comp_cvar_owner(c, cid, nm);
     int cx = cid >= 0 ? comp_cvar_index(&c->classes[cid], nm) : -1;
     return cx >= 0 ? c->classes[cid].cvar_types[cx] : TY_UNKNOWN;
   }
@@ -8262,6 +8263,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
   if (sp_streq(ty, "ClassVariableTargetNode") && nm) {
     Scope *sc = comp_scope_of(c, id);
     int cid = (sc && sc->class_id >= 0) ? sc->class_id : g_class_body_id;
+    if (cid >= 0) cid = comp_cvar_owner(c, cid, nm);
     int cx = cid >= 0 ? comp_cvar_index(&c->classes[cid], nm) : -1;
     if (cx < 0) { unsupported(c, id, "multiple assignment class variable target"); return 1; }
     emit_indent(b, indent);
@@ -9355,6 +9357,7 @@ else {
     if (sc < 0) sc = g_class_body_id;
     if (sc < 0) sc = comp_class_index(c, "Toplevel");
     if (sc < 0) { unsupported(c, id, "class variable write (no class scope)"); return; }
+    sc = comp_cvar_owner(c, sc, nm);
     TyKind ct = TY_INT;
     int idx = comp_cvar_index(&c->classes[sc], nm);
     if (idx >= 0) ct = c->classes[sc].cvar_types[idx];
@@ -9387,6 +9390,7 @@ else {
     if (sc < 0) sc = g_class_body_id;
     if (sc < 0) sc = comp_class_index(c, "Toplevel");
     if (sc < 0) { unsupported(c, id, "class variable op-write (no class scope)"); return; }
+    sc = comp_cvar_owner(c, sc, nm);
     TyKind ct = TY_INT;
     int idx = comp_cvar_index(&c->classes[sc], nm);
     if (idx >= 0) ct = c->classes[sc].cvar_types[idx];
@@ -9413,6 +9417,7 @@ else {
     if (sc < 0) sc = g_class_body_id;
     if (sc < 0) sc = comp_class_index(c, "Toplevel");
     if (sc < 0) { unsupported(c, id, is_or ? "class variable or-write (no class scope)" : "class variable and-write (no class scope)"); return; }
+    sc = comp_cvar_owner(c, sc, nm);
     char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[sc].name, nm + 2);
     int oidx = comp_cvar_index(&c->classes[sc], nm);
     TyKind ot = oidx >= 0 ? c->classes[sc].cvar_types[oidx] : TY_UNKNOWN;
@@ -11170,6 +11175,7 @@ else {
         Scope *cv_sc = comp_scope_of(c, id);
         int cv_cid = (cv_sc && cv_sc->class_id >= 0) ? cv_sc->class_id : g_class_body_id;
         if (cv_cid < 0) { unsupported(c, id, "multiple assignment class variable target no class"); continue; }
+        cv_cid = comp_cvar_owner(c, cv_cid, cnm);
         int cv_idx = comp_cvar_index(&c->classes[cv_cid], cnm);
         if (cv_idx < 0) { unsupported(c, id, "multiple assignment class variable target unregistered"); continue; }
         emit_indent(b, indent);

@@ -8063,6 +8063,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (cid < 0 && c->node_cbody && id < c->node_cap) cid = c->node_cbody[id];
     if (cid < 0) cid = comp_class_index(c, "Toplevel");
     if (cid < 0) return TY_UNKNOWN;
+    cid = comp_cvar_owner(c, cid, nm);
     int idx = nm ? comp_cvar_index(&c->classes[cid], nm) : -1;
     return idx >= 0 ? c->classes[cid].cvar_types[idx] : TY_UNKNOWN;
   }
@@ -8078,6 +8079,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     int cid = s ? s->class_id : -1;
     if (cid < 0 && c->node_cbody && id < c->node_cap) cid = c->node_cbody[id];
     if (cid < 0) cid = comp_class_index(c, "Toplevel");
+    cid = comp_cvar_owner(c, cid, nm);
     int idx = (cid >= 0 && nm) ? comp_cvar_index(&c->classes[cid], nm) : -1;
     if (idx >= 0) return c->classes[cid].cvar_types[idx];
     return infer_type(c, nt_ref(nt, id, "value"));
