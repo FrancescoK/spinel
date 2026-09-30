@@ -2680,6 +2680,10 @@ static int dsend_defined_arity_excludes(Compiler *c, const char *name, int argc)
   return defined;
 }
 
+/* The candidates dsend_candidates took from the program's literals (keys
+   point into its answer, valid until the caller frees that). */
+static ANameHash g_dsend_lits;
+
 /* The closed set of method names a runtime-name send (and respond_to?)
    dispatches over: the symbol and string literals the program spells, and
    the methods it defines, ranked so the names that can be meant survive the
@@ -2698,6 +2702,7 @@ char **dsend_candidates(Compiler *c, int *out_n) {
      round (rubys/roundhouse#72). */
   char **cand = NULL; int ncand = 0, candcap = 0;
   ANameHash cand_set; memset(&cand_set, 0, sizeof cand_set);
+  anh_free(&g_dsend_lits); memset(&g_dsend_lits, 0, sizeof g_dsend_lits);
   for (int id = 0; id < n0; id++) {
     const char *ty = nt_type(nt, id);
     const char *v = NULL;
@@ -2711,6 +2716,7 @@ char **dsend_candidates(Compiler *c, int *out_n) {
     if (ncand == candcap) { candcap = candcap ? candcap * 2 : 16; cand = (char **)realloc(cand, sizeof(char *) * candcap); }
     cand[ncand++] = strdup(v);
     anh_add(&cand_set, cand[ncand - 1]);
+    anh_add(&g_dsend_lits, cand[ncand - 1]);
   }
   /* ... and the names the program DEFINES: its defs, class methods, attr
      readers and writers (as `x=`). A writer reached as `public_send("#{name}=",
@@ -2831,6 +2837,7 @@ int desugar_dynamic_send(Compiler *c) {
   int ncand = 0;
   char **cand = dsend_candidates(c, &ncand);
   char **picked = (char **)malloc(sizeof(char *) * (size_t)(ncand > 0 ? ncand : 1));
+  char **lits = (char **)malloc(sizeof(char *) * (size_t)(ncand > 0 ? ncand : 1));
   for (int id = 0; id < n0; id++) {
     if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
     const char *nm = nt_str(nt, id, "name");
@@ -2885,7 +2892,20 @@ int desugar_dynamic_send(Compiler *c) {
     char **use = cand; int nuse = ncand;
     char **own = NULL; int nown = 0;
     int computed = an_send_name_is_computed(c, argv[0]);
-    if (!computed && ncand > 256) {
+    /* A name that is not computed -- a variable, a parameter, a table read
+       (`send(type, ...)`, `send(*DISPATCH[op])`) -- holds one of the names
+       the program spells, so its arms are the literals alone. The methods it
+       defines are for a computed name (an interpolation, a concatenation),
+       which can spell a name no literal does; as arms of every send, their
+       return types widened the slots the sends flow into (optcarrot's
+       CPU#irq_flags became boxed, 42% more instructions). */
+    int nlit = 0;
+    if (!computed) {
+      for (int k = 0; k < ncand; k++)
+        if (anh_has(&g_dsend_lits, cand[k])) lits[nlit++] = cand[k];
+      use = lits; nuse = nlit;
+    }
+    if (!computed && nlit > 256) {
       /* Past the cap, the literals the receiver answers go first and are all
          kept, so a program's other literals can't crowd its own names out. */
       int npick = 0;
@@ -2898,14 +2918,14 @@ int desugar_dynamic_send(Compiler *c) {
           for (int k = 0; k < nrn; k++) { if (!anh_has(&answers, rn[k])) anh_add(&answers, rn[k]); else free(rn[k]); }
           free(rn);
         }
-        for (int k = 0; k < ncand; k++)
-          if (anh_has(&answers, cand[k])) picked[npick++] = cand[k];
-        for (int k = 0; k < ncand && npick < 256; k++)
-          if (!anh_has(&answers, cand[k])) picked[npick++] = cand[k];
+        for (int k = 0; k < nlit; k++)
+          if (anh_has(&answers, lits[k])) picked[npick++] = lits[k];
+        for (int k = 0; k < nlit && npick < 256; k++)
+          if (!anh_has(&answers, lits[k])) picked[npick++] = lits[k];
         for (int k = 0; k < answers.n; k++) free((char *)answers.key[k]);
         anh_free(&answers);
       }
-      else for (; npick < 256; npick++) picked[npick] = cand[npick];
+      else for (; npick < 256; npick++) picked[npick] = lits[npick];
       use = picked; nuse = npick;
     }
     if (computed) {
@@ -3007,6 +3027,7 @@ int desugar_dynamic_send(Compiler *c) {
     changed = 1;
   }
   free(picked);
+  free(lits);
   for (int k = 0; k < ncand; k++) free(cand[k]);
   free(cand);
   return changed;
