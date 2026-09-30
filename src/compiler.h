@@ -409,6 +409,9 @@ typedef struct {
   int n_rbs_pin_ivars, c_rbs_pin_ivars;
   char **cvars;        /* class variable names, incl. leading '@@' */
   TyKind *cvar_types;
+  unsigned char *cvar_nullable_int; /* the Integer or Float class variable can
+                                       hold the nil sentinel, as
+                                       ivar_nullable_int for an ivar */
   int ncvars, ccvars;
   char **readers;      /* attr reader method names (no '@') */
   int nreaders, creaders;
