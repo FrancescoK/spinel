@@ -3037,6 +3037,7 @@ int infer_write_types(Compiler *c) {
     const char *ty = nt_type(nt, id);
     if (!ty || nt_int(nt, id, "dyn_arm", 0)) continue;
     int recv, kt = TY_UNKNOWN, vt = TY_UNKNOWN, is_push = 0, is_idx_write = 0, is_splice = 0;
+    int is_fill = 0;  /* a fill's span: one value, the element evidence a store's is */
     int is_merge = 0;  /* merge!/update: kt and vt are the merged hashes' */
     /* the value arguments of a push/unshift/insert, each its own evidence */
     const int *elem_argv = NULL;
@@ -3196,7 +3197,7 @@ int infer_write_types(Compiler *c) {
            (previously the raw bits were stored: [1,2,3].fill(:a) filled the int
            array with the symbol id). The block form fill([start[, len]]) { |i| }
            carries no value argument and is not handled here. */
-        is_idx_write = 1; is_splice = 1; vt = infer_type(c, argv[0]);
+        is_idx_write = 1; is_splice = 1; is_fill = 1; vt = infer_type(c, argv[0]);
         kt = TY_INT;  /* a positional span, never hash evidence */
       }
       else if (name && (sp_streq(name, "fetch") ||
@@ -3409,10 +3410,13 @@ int infer_write_types(Compiler *c) {
         }
         /* An element write through it stores into the caller's array the
            same way: `arr[i] = v` is the push's evidence when the key indexes
-           an array. */
+           an array, and so is `arr.fill(v)`, whose one value lands in every
+           slot of its span: skipped as a splice, a String filled into an
+           Array[Integer] parameter went to a copy and the caller's array
+           never changed. */
         if (is_idx_write && !is_push) {
           if (!ty_is_array(lv->type) || lv->type == TY_POLY_ARRAY) continue;
-          if (is_splice || (kt != TY_INT && kt != TY_POLY)) continue;
+          if ((is_splice && !is_fill) || (kt != TY_INT && kt != TY_POLY)) continue;
           if (vt == TY_UNKNOWN || vt == TY_POLY || vt == ty_array_elem(lv->type)) continue;
           lv->type = TY_POLY_ARRAY; lv->push_widened = 1; changed = 1;
           continue;
@@ -4685,13 +4689,317 @@ static int widen_nested_literals(Compiler *c, int recv, int is_push, int is_spli
   return changed;
 }
 
+/* Collects into out[] the expressions whose value is the value of `n`:
+   through parentheses, the last statement, and each arm of an `if`,
+   `unless` or `case`. Answers the new count, or -1 when a path has no
+   such expression (an arm left out answers nil) or out[] is full. */
+static int value_leaves(Compiler *c, int n, int *out, int nout, int cap) {
+  const NodeTable *nt = c->nt;
+  n = unwrap_parens(c, n);
+  if (n < 0 || nout < 0) return -1;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_StatementsNode) {
+    int bn = 0; const int *bb = nt_arr(nt, n, "body", &bn);
+    return bn > 0 ? value_leaves(c, bb[bn - 1], out, nout, cap) : -1;
+  }
+  if (k == NK_ParenthesesNode) return value_leaves(c, nt_ref(nt, n, "body"), out, nout, cap);
+  if (k == NK_ElseNode) return value_leaves(c, nt_ref(nt, n, "statements"), out, nout, cap);
+  if (k == NK_IfNode || k == NK_UnlessNode) {
+    int alt = nt_ref(nt, n, k == NK_IfNode ? "subsequent" : "else_clause");
+    nout = value_leaves(c, nt_ref(nt, n, "statements"), out, nout, cap);
+    return value_leaves(c, alt, out, nout, cap);
+  }
+  if (k == NK_CaseNode) {
+    int an = 0; const int *arms = nt_arr(nt, n, "conditions", &an);
+    for (int i = 0; i < an; i++) nout = value_leaves(c, nt_ref(nt, arms[i], "statements"), out, nout, cap);
+    return value_leaves(c, nt_ref(nt, n, "else_clause"), out, nout, cap);
+  }
+  if (k == NK_ReturnNode) {
+    int a = nt_ref(nt, n, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (an != 1 || nt_kind(nt, av[0]) == NK_SplatNode) return -1;
+    return value_leaves(c, av[0], out, nout, cap);
+  }
+  if (nout >= cap) return -1;
+  out[nout++] = n;
+  return nout;
+}
+
+/* The values method scope `mi` answers: its body's, and each `return`'s. */
+static int method_value_leaves(Compiler *c, int mi, int *out, int cap) {
+  Scope *m = &c->scopes[mi];
+  int n = m->body >= 0 ? value_leaves(c, m->body, out, 0, cap) : -1;
+  NT_FOREACH_KIND(c->nt, NK_ReturnNode, r) {
+    if (n < 0) break;
+    if (comp_scope_of(c, r) == m) n = value_leaves(c, r, out, n, cap);
+  }
+  return n;
+}
+
+/* 1 when a call bound to method scope `mi` can reach another definition: an
+   override in a subclass, or the same method defined again. */
+static int method_has_other_body(Compiler *c, int mi) {
+  Scope *m = &c->scopes[mi];
+  for (int t = 1; t < c->nscopes; t++) {
+    Scope *o = &c->scopes[t];
+    if (t == mi || !o->name || !m->name || !sp_streq(o->name, m->name) || o->is_cmethod != m->is_cmethod) continue;
+    if (o->class_id == m->class_id || (o->class_id >= 0 && m->class_id >= 0 && is_descendant(c, o->class_id, m->class_id)))
+      return 1;
+  }
+  return 0;
+}
+
+/* 1 when local `name` of `sc` is also bound as a target (`a, b = ...`,
+   `rescue => e`, a `for` variable), which the write index does not list. */
+static int local_has_target_write(Compiler *c, Scope *sc, const char *name) {
+  NT_FOREACH_KIND(c->nt, NK_LocalVariableTargetNode, t)
+    if (comp_scope_of(c, t) == sc && sp_streq(nt_str(c->nt, t, "name"), name)) return 1;
+  return 0;
+}
+
+/* 1 when the call `v` is an Array method that answers its receiver itself,
+   not a new array or nil. */
+static int array_answers_receiver(Compiler *c, int v) {
+  static const char *const self_ret[] = {
+    "<<", "push", "append", "unshift", "prepend", "insert", "concat", "fill", "replace",
+    "sort!", "sort_by!", "reverse!", "rotate!", "shuffle!", "map!", "collect!", "tap",
+    "freeze", "itself", NULL };
+  const char *nm = nt_str(c->nt, v, "name");
+  int r = nt_ref(c->nt, v, "receiver");
+  if (!nm || r < 0 || !ty_is_array(infer_type(c, r))) return 0;
+  for (int k = 0; self_ret[k]; k++) if (sp_streq(nm, self_ret[k])) return 1;
+  return 0;
+}
+
+/* The class whose ivar the value `v` reads, with the ivar's name in *ivn:
+   an ivar read in a method, or an attr_reader call (`obj.items`, a bare
+   `items` in the class). -1 when `v` is neither. */
+int ivar_src_slot(Compiler *c, int v, const char **ivn) {
+  const NodeTable *nt = c->nt;
+  static char ivb[128];
+  Scope *sc = comp_scope_of(c, v);
+  if (!sc) return -1;
+  if (nt_kind(nt, v) == NK_InstanceVariableReadNode) {
+    *ivn = nt_str(nt, v, "name");
+    return *ivn && sc->class_id >= 0 ? sc->class_id : -1;
+  }
+  if (nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0) return -1;
+  int a = nt_ref(nt, v, "arguments"), an = 0;
+  if (a >= 0) nt_arr(nt, a, "arguments", &an);
+  const char *nm = nt_str(nt, v, "name");
+  if (an > 0 || !nm || strlen(nm) >= sizeof ivb - 1) return -1;
+  int r = nt_ref(nt, v, "receiver"), cls = -1;
+  if (r < 0) cls = sc->is_cmethod ? -1 : sc->class_id;
+  else {
+    TyKind rt = infer_type(c, r);
+    if (ty_is_object(rt)) cls = ty_object_class(rt);
+  }
+  int def_cls = -1, mix = -1;
+  if (cls < 0 || comp_resolve_member(c, cls, nm, 0, &def_cls, &mix) != SP_MEMBER_ATTR) return -1;
+  ivb[0] = '@'; strcpy(ivb + 1, nm);
+  *ivn = ivb;
+  return cls;
+}
+
+/* 1 when every write of the global, class variable or constant `v` reads
+   stores nil or a new array, as ivar_writes_fresh asks of an ivar. */
+static int named_writes_fresh(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, v);
+  NodeKind wk[4] = { NK_NONE, NK_NONE, NK_NONE, NK_NONE };
+  if (k == NK_GlobalVariableReadNode) {
+    wk[0] = NK_GlobalVariableWriteNode; wk[1] = NK_GlobalVariableOrWriteNode;
+    wk[2] = NK_GlobalVariableAndWriteNode; wk[3] = NK_GlobalVariableOperatorWriteNode;
+  }
+  else if (k == NK_ClassVariableReadNode) {
+    wk[0] = NK_ClassVariableWriteNode; wk[1] = NK_ClassVariableOrWriteNode;
+    wk[2] = NK_ClassVariableAndWriteNode; wk[3] = NK_ClassVariableOperatorWriteNode;
+  }
+  else wk[0] = NK_ConstantWriteNode;
+  Scope *vs = comp_scope_of(c, v);
+  int vcls = vs && vs->class_id >= 0 ? vs->class_id : comp_class_index(c, "Toplevel");
+  int saw = 0;
+  for (int t = 0; t < 4 && wk[t] != NK_NONE; t++)
+    NT_FOREACH_KIND(nt, wk[t], w) {
+      if (!sp_streq(nt_str(nt, w, "name"), nt_str(nt, v, "name"))) continue;
+      /* a class variable of another class is another slot */
+      if (k == NK_ClassVariableReadNode) {
+        Scope *ws = comp_scope_of(c, w);
+        int wc = ws && ws->class_id >= 0 ? ws->class_id : c->node_cbody[w];
+        if ((wc >= 0 ? wc : comp_class_index(c, "Toplevel")) != vcls) continue;
+      }
+      if (t >= 2) return 0;
+      int wv = unwrap_parens(c, nt_ref(nt, w, "value"));
+      if (wv < 0 || (nt_kind(nt, wv) != NK_NilNode && !is_fresh_array(c, wv))) return 0;
+      saw = 1;
+    }
+  return saw;
+}
+
+/* 1 when every write of ivar `ivn` of class `cls` (or of a class it shares
+   the slot with) stores nil or a new array nothing else holds, so the slot
+   can be the general Array with no copy the program could see. */
+static int ivar_writes_fresh(Compiler *c, int cls, const char *ivn) {
+  const NodeTable *nt = c->nt;
+  static const NodeKind wk[4] = { NK_InstanceVariableWriteNode, NK_InstanceVariableOrWriteNode,
+                                  NK_InstanceVariableAndWriteNode, NK_InstanceVariableOperatorWriteNode };
+  int saw = 0;
+  for (int t = 0; t < 4; t++)
+    NT_FOREACH_KIND(nt, wk[t], w) {
+      if (!sp_streq(nt_str(nt, w, "name"), ivn)) continue;
+      Scope *ws = comp_scope_of(c, w);
+      int wc = ws && ws->class_id >= 0 ? ws->class_id : c->node_cbody[w];
+      if (wc < 0 || (wc != cls && !is_descendant(c, wc, cls) && !is_descendant(c, cls, wc))) continue;
+      if (t >= 2) return 0;
+      int wv = unwrap_parens(c, nt_ref(nt, w, "value"));
+      if (wv < 0 || (nt_kind(nt, wv) != NK_NilNode && !is_fresh_array(c, wv))) return 0;
+      saw = 1;
+    }
+  return saw;
+}
+
+/* The arrays the value `v` can be, followed back to where each is built or
+   held: through a local's writes, a method's values (and a method answering
+   its block's value, the block at this call), a builtin answering its
+   receiver, to an array literal, a new array, a parameter, an ivar, a
+   global, class variable or constant. With `apply` 0 it answers whether
+   every one of them can be the general Array; with 1 it makes them so,
+   answering 1 on a change. A literal is built as one; a parameter widens
+   for its own callers, as a push through it widens it; a local and a
+   method's value are pinned to it, and a new array of a typed kind
+   (`Array.new(n, 0)`, a `map`) is converted where it reaches the pinned
+   slot, which is only right because nothing else holds it (`pinned`: the
+   slot `v` is written to is one). A slot that may keep an array from
+   elsewhere (an ivar a parameter is stored into), a block parameter, an
+   element read, a call nothing resolves or one an override may answer is
+   none of these, and answers 0: the call site refuses it. The methods being
+   walked are on `stack`, and a call back into one of them answers what the
+   method does. */
+static int array_src_walk(Compiler *c, int v, int pinned, int apply, int *stack, int depth) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (v < 0 || depth > 6) return 0;
+  stack[depth] = -1;
+  TyKind vt = infer_type(c, v);
+  if (vt == TY_POLY_ARRAY) return !apply;
+  NodeKind k = nt_kind(nt, v);
+  /* a literal, an empty one too, whose kind its uses decide */
+  if (k == NK_ArrayNode) {
+    if ((vt != TY_UNKNOWN && !ty_is_array(vt)) || ty_is_ptr_array(vt) || !is_fresh_array(c, v) ||
+        !c->arr_want || v >= c->node_cap) return 0;
+    if (!apply) return 1;
+    if (c->arr_want[v] == TY_POLY_ARRAY) return 0;
+    c->arr_want[v] = TY_POLY_ARRAY;
+    return 1;
+  }
+  if (!ty_is_array(vt) || ty_is_ptr_array(vt)) return 0;
+  if (is_fresh_array(c, v)) return pinned && !apply;
+  /* a builtin that answers its receiver: the receiver's array is the value */
+  if (k == NK_CallNode && array_answers_receiver(c, v))
+    return array_src_walk(c, nt_ref(nt, v, "receiver"), pinned, apply, stack, depth + 1);
+  /* `x = y = v`: the inner write's local is the value */
+  if (k == NK_LocalVariableReadNode || k == NK_LocalVariableWriteNode) {
+    const char *nm = nt_str(nt, v, "name");
+    Scope *sc = nm ? comp_scope_of(c, v) : NULL;
+    LocalVar *lv = sc ? scope_local(sc, nm) : NULL;
+    if (!lv || lv->is_block_param) return 0;
+    if (lv->is_param) {
+      if (lv->rbs_seeded) return 0;
+      if (!apply) return 1;
+      lv->type = TY_POLY_ARRAY; lv->push_widened = 1;
+      return 1;
+    }
+    if (local_has_target_write(c, sc, nm)) return 0;
+    int saw = 0, ch = 0;
+    for (int r = lw_shared_first(c, nm, (int)(sc - c->scopes)); r >= 0; r = lw_shared_next(r)) {
+      int w = lw_shared_node(r);
+      if (comp_scope_of(c, w) != sc || !sp_streq(nt_str(nt, w, "name"), nm)) continue;
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode) return 0;
+      int got = array_src_walk(c, nt_ref(nt, w, "value"), 1, apply, stack, depth + 1);
+      if (!apply && !got) return 0;
+      ch |= got; saw = 1;
+    }
+    if (!saw || !apply) return saw;
+    if (!lv->poly_array_pin || lv->type != TY_POLY_ARRAY) { lv->type = TY_POLY_ARRAY; lv->poly_array_pin = 1; ch = 1; }
+    return ch;
+  }
+  if (k == NK_GlobalVariableReadNode || k == NK_ClassVariableReadNode || k == NK_ConstantReadNode) {
+    TyKind *ns = named_array_slot(c, v);
+    if (!ns || !ty_is_array(*ns) || ty_is_ptr_array(*ns) || !named_writes_fresh(c, v)) return 0;
+    if (!apply) return 1;
+    if (*ns == TY_POLY_ARRAY) return 0;
+    *ns = TY_POLY_ARRAY;
+    return 1;
+  }
+  /* An ivar, read here or through an attr_reader, widens after the
+     fixpoint (widen_ivars_from_pushed_params), where the write passes cannot
+     narrow it back; the locals and method values on the way are pinned now.
+     Only one every write of which builds a new array: a stored parameter
+     would be copied into the widened slot, away from its caller. */
+  const char *ivn = NULL;
+  int icls = ivar_src_slot(c, v, &ivn);
+  if (icls >= 0) {
+    ClassInfo *ci = &c->classes[icls];
+    int ivi = comp_ivar_index(ci, ivn);
+    int wdc = -1, wmi = -1;
+    if (ivi < 0 || class_ivar_pinned(ci, ivn) || !c->ivar_widen_src || v >= c->node_cap ||
+        comp_resolve_member(c, icls, ivn + 1, 1, &wdc, &wmi) == SP_MEMBER_ATTR ||
+        !ivar_writes_fresh(c, icls, ivn)) return 0;
+    if (!apply) return 1;
+    if (c->ivar_widen_src[v]) return 0;
+    c->ivar_widen_src[v] = 1;
+    return 1;
+  }
+  if (k != NK_CallNode) return 0;
+  int mi = backprop_call_target(c, v);
+  if (mi < 0) return 0;
+  for (int d = 0; d < depth; d++) if (stack[d] == mi) return !apply;
+  Scope *m = &c->scopes[mi];
+  if (m->ret_rbs_seeded || m->ret_specialized || m->cs_synth || m->is_lowered_yield ||
+      m->ret_oa_pin != TY_UNKNOWN || method_has_other_body(c, mi)) return 0;
+  int lv[16];
+  int n = method_value_leaves(c, mi, lv, 16);
+  if (n <= 0) return 0;
+  stack[depth] = mi;
+  /* A method answering its block's value (`def build = yield`) answers, at
+     this call, what this call's block does. */
+  int yields = 0;
+  for (int i = 0; i < n; i++) yields += nt_kind(nt, lv[i]) == NK_YieldNode;
+  if (yields) {
+    int blk = nt_ref(nt, v, "block");
+    if (yields != n || blk < 0 || nt_kind(nt, blk) != NK_BlockNode ||
+        ie_block_break_next_ty(c, nt_ref(nt, blk, "body")) != TY_UNKNOWN) return 0;
+    n = value_leaves(c, nt_ref(nt, blk, "body"), lv, 0, 16);
+    if (n <= 0) return 0;
+  }
+  int ch = 0;
+  for (int i = 0; i < n; i++) {
+    int got = array_src_walk(c, lv[i], !yields, apply, stack, depth + 1);
+    if (!apply && !got) return 0;
+    ch |= got;
+  }
+  if (!apply) return 1;
+  if (!yields && !m->ret_poly_array_pin) { m->ret_poly_array_pin = 1; ch = 1; }
+  return ch;
+}
+
+/* Widens every array the value `v` can be to the general Array, when all
+   of them can be (array_src_walk). Returns 1 on a change. */
+static int widen_array_sources(Compiler *c, int v) {
+  int stack[8];
+  if (!array_src_walk(c, v, 0, 0, stack, 0)) return 0;
+  return array_src_walk(c, v, 0, 1, stack, 0);
+}
+
 /* A callee stores into the array argument `arg` names an element its kind
    cannot hold: the caller's own array has to be the general Array. Widens
    a local every write of which is an array literal (pinned, since the
    literals re-derive the narrow kind), or a global, class variable or
    constant, whose write passes keep a general Array once it is one. A
-   parameter widens as the callee's did, for its own callers. Returns 1 on
-   a change. */
+   parameter widens as the callee's did, for its own callers. Anything else
+   is followed back to where its arrays are built (widen_array_sources): a
+   local assigned a method's value, the value of a method, a chain of them.
+   Returns 1 on a change. */
 static int widen_arg_array(Compiler *c, int arg) {
   const NodeTable *nt = c->nt;
   arg = unwrap_parens(c, arg);
@@ -4715,13 +5023,14 @@ static int widen_arg_array(Compiler *c, int arg) {
     if (local_all_writes_fresh_array(c, asc, an)) {
       al->type = TY_POLY_ARRAY; al->poly_array_pin = 1; return 1;
     }
-    return 0;
+    return widen_array_sources(c, arg);
   }
   if (ak == NK_GlobalVariableReadNode || ak == NK_ClassVariableReadNode || ak == NK_ConstantReadNode) {
     TyKind *ns = named_array_slot(c, arg);
     if (ns && ty_is_array(*ns) && *ns != TY_POLY_ARRAY) { *ns = TY_POLY_ARRAY; return 1; }
+    return 0;
   }
-  return 0;
+  return widen_array_sources(c, arg);
 }
 
 /* 1 when a call passing `argv` has parameter `p` store into a container of
@@ -12284,6 +12593,14 @@ int infer_return_types(Compiler *c) {
          an_empty_container_disagrees(ret_empty[s] & 2, r)))
       r = TY_POLY;
     ret_decided:
+    /* A value a caller's parameter stores elements of another kind into is
+       the general Array (widen_array_sources); its values re-derive their
+       typed kinds, which unify to the poly scalar when they differ. One that
+       stops being an array at all loses the pin. */
+    if (sc->ret_poly_array_pin) {
+      if (r == TY_UNKNOWN || r == TY_POLY || (ty_is_array(r) && !ty_is_ptr_array(r))) r = TY_POLY_ARRAY;
+      else sc->ret_poly_array_pin = 0;
+    }
     /* Post-backstop re-runs fill returns whose body only settled after the
        main fixpoint (a `r = expr; r` chain, #1670). Adopting a NEW poly there
        is a net loss: the late-settling chains that matter are scalar, while a

@@ -10,8 +10,8 @@ rescue TypeError => e
   puts "#{label}: TypeError: #{e.message}"
 end
 # the boxed dispatch (out is a general slot: the call sites disagree). An
-# array built where the call can see it widens with the parameter and holds
-# what CRuby's does; one a method hands over stays typed and refuses.
+# array built where the call can follow it, a method's value too, widens
+# with the parameter and holds what CRuby's does.
 def collect(out, src)
   i = 0
   while i < src.length

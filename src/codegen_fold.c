@@ -5909,9 +5909,10 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
   if (provided >= 0) {
     /* A typed array into a boxed parameter the method stores an element
        into that the array cannot hold: the store promotes a copy, and the
-       caller's array never sees it. The binding widens the arrays it can see
-       built; a literal or a new array is storage nobody else holds, and the
-       rest are refused rather than miscompiled. */
+       caller's array never sees it. The binding widens the arrays it can
+       follow back to where they are built (widen_arg_array); a literal or a
+       new array is storage nobody else holds, and the rest are refused
+       rather than miscompiled. */
     if (pt == TY_POLY && c->store_misfit_arg && provided < c->node_cap && c->store_misfit_arg[provided] &&
         !is_fresh_array(c, provided)) {
       TyKind at = comp_ntype(c, provided);
@@ -5921,8 +5922,8 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
         snprintf(msg, sizeof msg,
                  "an Array[%s] is passed to `%s`'s parameter `%s`, which the method stores elements of "
                  "other kinds into: the caller's array cannot hold them, and the store would go to a "
-                 "copy it never sees. Build the argument from an array literal the call can see, so it "
-                 "is widened with the parameter.",
+                 "copy it never sees. Build the argument where the call can follow it (an array literal "
+                 "or a new array, through locals and method values), so it is widened with the parameter.",
                  ek, m->name ? m->name : "?", m->pnames[idx]);
         unsupported_feature(c, provided, msg);
       }
@@ -6059,22 +6060,29 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
           /* The rebuild is a COPY, which is right for a value and wrong for
              storage the caller still holds: a callee that appends to the
              parameter appended to the copy and the caller's array never
-             changed, silently (#4480). Until the parameter can take the
-             typed array by reference, refuse the shape rather than
-             miscompile it. An array literal, or a new array a builtin
-             answers, is storage nobody else holds, so its copy is the only
-             one there is. */
+             changed, silently (#4480). The binding widens the caller's
+             array instead wherever it can follow it back to where it is
+             built (widen_arg_array): a literal, a new array, a local, a
+             method's value, an ivar that only ever holds new arrays. What
+             it cannot follow is refused here rather than miscompiled. An
+             array literal, or a new array a builtin answers, is storage
+             nobody else holds, so its copy is the only one there is. A
+             parameter the binding widened (push_widened) is mutated all the
+             same, perhaps after the method hands it back as its value. */
+          int direct = 0;
           if (m && idx >= 0 && idx < m->nparams && m->pnames[idx] &&
               nt_kind(c->nt, provided) != NK_ArrayNode && !is_fresh_array(c, provided) &&
-              scope_mutates_array_local(c, (int)(m - c->scopes), m->pnames[idx], 0)) {
+              ((direct = scope_mutates_array_local(c, (int)(m - c->scopes), m->pnames[idx], 0)) ||
+               (p && p->push_widened))) {
             char msg[512];
             snprintf(msg, sizeof msg,
-                     "an Array[%s] is passed to `%s`'s parameter `%s`, which the method mutates: the "
+                     "an Array[%s] is passed to `%s`'s parameter `%s`, which the method %s: the "
                      "parameter is a general Array and the argument would be copied into it, so the "
                      "mutation would not reach the caller's array. Give the parameter the argument's kind "
                      "(an rbs seed, or callers that all pass Array[%s]), or build the argument as a general Array.",
                      at == TY_INT_ARRAY ? "Integer" : at == TY_STR_ARRAY ? "String" : "Float",
                      m->name ? m->name : "?", m->pnames[idx],
+                     direct ? "mutates" : "hands on to where it is mutated",
                      at == TY_INT_ARRAY ? "Integer" : at == TY_STR_ARRAY ? "String" : "Float");
             unsupported_feature(c, provided, msg);
           }

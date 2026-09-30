@@ -437,6 +437,7 @@ TyKind return_node_type(Compiler *c, int id);
 int infer_return_types(Compiler *c);
 int backprop_hash_return_types(Compiler *c);
 int backprop_call_target(Compiler *c, int call_id);
+int ivar_src_slot(Compiler *c, int v, const char **ivn);
 void cr_collect_calls(Compiler *c, const NodeTable *nt, int id, char ***out, int *n, int *cap);
 void compute_reachable(Compiler *c);
 void compute_instantiated(Compiler *c, int early);

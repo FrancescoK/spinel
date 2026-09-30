@@ -313,6 +313,14 @@ typedef struct {
                           this method, re-asserted every round for the same
                           reason LocalVar.oa_pin is. TY_UNKNOWN = not narrowed. */
   unsigned char ret_oa_grace;   /* LocalVar.oa_grace for the return slot */
+  int ret_poly_array_pin; /* the method's value reaches a parameter that stores
+                          elements of another kind into it, so the arrays it
+                          answers are built as the general Array
+                          (widen_array_sources). Re-asserted each round, as
+                          LocalVar.poly_array_pin is: the values re-derive
+                          their typed kinds, and a new array of another kind
+                          (`Array.new(n, 0)`) is converted where it is
+                          returned, which nothing else holds to notice. */
   int ret_proc_ret; /* when ret==TY_PROC: the returned proc's body return type
                        (TyKind), so a caller's `m.call` knows the result type */
   int blk_ret;      /* for a method with a &block param: the unified value type
@@ -619,6 +627,12 @@ typedef struct {
                           the method stores an element into that the array
                           cannot hold: codegen refuses it unless the binding
                           widened it */
+  char *ivar_widen_src; /* [node_cap] an ivar read, or a reader call, that a
+                          caller's array comes from (through locals and method
+                          values) when a parameter it reaches stores elements
+                          of another kind into it: widen_ivars_from_pushed_params
+                          widens the ivar to the general Array, after the
+                          fixpoint, as it does one passed directly */
   TyKind *hash_want; /* [node_cap] variant a hash literal should take from its use context (#3040) */
   TyKind *arr_want;  /* [node_cap] array kind a node takes from its use context
                         rather than from its own contents: an empty `[]`

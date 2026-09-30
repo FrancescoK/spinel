@@ -8436,6 +8436,18 @@ static void widen_ivars_read_into_poly(Compiler *c) {
 
 static void widen_ivars_from_pushed_params(Compiler *c) {
   const NodeTable *nt = c->nt;
+  /* An ivar a caller's array comes from through locals and method values
+     (`x = box.items; fill(x)`, `def get(i) = @a`): the binding marked it and
+     pinned the slots on the way, and the ivar widens here with them. */
+  for (int id = 0; c->ivar_widen_src && id < nt->count && id < c->node_cap; id++) {
+    if (!c->ivar_widen_src[id]) continue;
+    const char *ivn = NULL;
+    int cls = ivar_src_slot(c, id, &ivn);
+    int ivi = cls >= 0 ? comp_ivar_index(&c->classes[cls], ivn) : -1;
+    if (ivi < 0) continue;
+    TyKind ivt = c->classes[cls].ivar_types[ivi];
+    if (ty_is_array(ivt) && !ty_is_ptr_array(ivt)) c->classes[cls].ivar_types[ivi] = TY_POLY_ARRAY;
+  }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *name = nt_str(nt, id, "name");
     if (!name) continue;
