@@ -7379,6 +7379,19 @@ void emit_args_in_source_order(Compiler *c, const int *argv, int argc, Buf *b) {
 }
 
 /* See codegen_internal.h. */
+void emit_args_off_self(Compiler *c, const int *argv, int argc, Buf *b) {
+  int nv = 0; char *ds = NULL;
+  int *vals = source_values(c->nt, argv, argc, &nv, &ds);
+  Buf *sv_pre = g_pre; g_pre = b;
+  for (int i = 0; i < nv; i++) {
+    int x = nt_kind(c->nt, vals[i]) == NK_SplatNode ? nt_ref(c->nt, vals[i], "expression") : vals[i];
+    emit_arg_first(c, vals[i], value_rebound(c, vals, nv, i, NULL, 0) || fiber_body_uses_self(c, x), b);
+  }
+  g_pre = sv_pre;
+  free(vals); free(ds);
+}
+
+/* See codegen_internal.h. */
 int emit_ds_hash_merge(Compiler *c, int kwh, int any_key, TyKind *out_type) {
   const NodeTable *nt = c->nt;
   int mh = ++g_tmp;
