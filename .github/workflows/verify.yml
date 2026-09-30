@@ -3,6 +3,14 @@ name: verify
 # slices, infer-test, both probes, the corpus C diff against BASE, and a
 # new test under --int-overflow=promote and SPINEL_GC_STRESS=1. Edit
 # verify.conf and push this branch, or dispatch by hand.
+#
+# Each sha is built once, by the build job, and the legs unpack its tree.
+# Every make-driven compile goes through sccache, as upstream CI's do: the
+# build and each suite slice carry sccache's disk store between runs as one
+# actions/cache entry per lane. The base's results (both probes, the rubyspec
+# gate, the C the base emits for each corpus program) are cached by the base
+# sha, the leg, the runner (image, ruby, cc) and the files of this branch that
+# make them; the report says which came from the cache.
 on:
   push:
     branches: [verify]
@@ -12,7 +20,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.m.outputs.matrix }}
+      builds: ${{ steps.m.outputs.builds }}
       label: ${{ steps.m.outputs.label }}
+      shards: ${{ steps.m.outputs.shards }}
     steps:
       - uses: actions/checkout@v7
       - id: m
@@ -24,22 +34,113 @@ jobs:
           legs = os.environ["LEGS"].split()
           n = int(os.environ.get("SHARDS", "4"))
           base = os.environ["BASE"]
+          # "base" names the base's tree and its jobs
+          assert all(name != "base" for name, _ in heads), "a head may not be called base"
           jobs = []
-          for probe in ("cb", "vf"):
-              if probe in legs:
-                  jobs.append({"leg": probe, "name": "base", "sha": base, "shard": 0})
+          for leg in ("cb", "vf", "rubyspec"):
+              if leg in legs:
+                  jobs.append({"leg": leg, "name": "base", "sha": base, "shard": 0})
           for name, sha in heads:
               if "suite" in legs:
                   jobs += [{"leg": "suite", "name": name, "sha": sha, "shard": k} for k in range(1, n + 1)]
               for leg in ("cb", "vf", "cdiff", "extra", "scale", "rubyspec"):
                   if leg in legs:
                       jobs.append({"leg": leg, "name": name, "sha": sha, "shard": 0})
+          builds = []
+          if any(leg in legs for leg in ("cb", "vf", "cdiff", "scale", "rubyspec")):
+              builds.append({"name": "base", "sha": base, "dir": "base"})
+          builds += [{"name": name, "sha": sha, "dir": "head"} for name, sha in heads]
           print("matrix=" + json.dumps({"include": jobs}))
+          print("builds=" + json.dumps({"include": builds}))
           print("label=" + os.environ.get("LABEL", "verify"))
+          print(f"shards={n}")
           EOF
 
-  run:
+  # One job per sha: clone, `make deps`, `make all`, and the tree as an
+  # artifact. A spinel binary finds lib/ and its runtime beside itself, so
+  # the whole tree goes, .git included (the version stamp, `git diff` in the
+  # extra leg), and every job unpacks it at the path it was built at:
+  # $RUNNER_TEMP/head for a head, $RUNNER_TEMP/base for the base.
+  build:
     needs: plan
+    name: build ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix: ${{ fromJSON(needs.plan.outputs.builds) }}
+    env:
+      NAME: ${{ matrix.name }}
+      SHA: ${{ matrix.sha }}
+      DIR: ${{ matrix.dir }}
+      # sccache as upstream CI has it: its own disk store, restored and saved
+      # as one actions/cache entry, and a server started once. sccache is on
+      # PATH, so common.mk wraps CC with it.
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_STARTUP_TIMEOUT: "30"
+      SCCACHE_IDLE_TIMEOUT: "0"
+      SCCACHE_CACHE_SIZE: 1G
+    steps:
+      - uses: actions/checkout@v7
+      - uses: mozilla-actions/sccache-action@v0.0.10
+      # The key never matches (it carries the run id), so the post step always
+      # saves; the restore key picks up the newest earlier store of the lane.
+      - name: Restore the sccache store
+        uses: actions/cache@v6
+        with:
+          path: .sccache
+          key: sccache-verify-build-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
+          restore-keys: sccache-verify-build-
+      - run: sccache --start-server
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+      - name: Clone
+        id: clone
+        run: |
+          d="$RUNNER_TEMP/$DIR"
+          git clone -q --filter=blob:none https://github.com/matz/spinel.git "$d"
+          cd "$d"
+          git remote add fork https://github.com/FrancescoK/spinel.git
+          # a short sha cannot be fetched by name: fall back to the fork's ci/ branches
+          git cat-file -e "$SHA^{commit}" 2>/dev/null || git fetch -q origin "$SHA" 2>/dev/null ||
+            git fetch -q fork "$SHA" 2>/dev/null || git fetch -q fork '+refs/heads/ci/*:refs/remotes/fork/ci/*'
+          git checkout -q "$SHA"
+          # the vendored parsers are what the versions and the deps recipe make
+          v=$({ grep -E '^(PRISM|RBS)_VERSION' Makefile; sed -n '/^deps:/,/^DIST_RELEASE/p' Makefile; } | sha256sum | cut -c1-16)
+          echo "vendor=$v" >> "$GITHUB_OUTPUT"
+      # `make deps` fetches prism and rbs from rubygems.org; with vendor/
+      # restored it has nothing to fetch.
+      - name: Restore the vendored parsers
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/${{ matrix.dir }}/vendor
+          key: vendor-${{ steps.clone.outputs.vendor }}
+      - name: Build
+        run: |
+          set -a; . ./verify.conf; set +a
+          cd "$RUNNER_TEMP/$DIR"
+          make deps > /dev/null || { sleep 30; make deps > /dev/null; }
+          make -j"$(nproc)" all > /dev/null
+          # the scale leg's counting compiler, for the head and the base
+          case " $LEGS " in *" scale "*) make -j"$(nproc)" build/spinel-work > /dev/null 2>&1 || true ;; esac
+      - name: Pack
+        run: tar -C "$RUNNER_TEMP" -cf - "$DIR" | zstd -q -T0 -3 -o tree.tar.zst
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tree-${{ matrix.name }}
+          path: tree.tar.zst
+          compression-level: 0
+          retention-days: 1
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
+  run:
+    needs: [plan, build]
+    # a head whose build failed fails its own jobs, not the others'
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     name: ${{ matrix.leg }} ${{ matrix.name }}${{ matrix.shard > 0 && format(' {0}', matrix.shard) || '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -54,59 +155,141 @@ jobs:
       NAME: ${{ matrix.name }}
       SHA: ${{ matrix.sha }}
       SHARD: ${{ matrix.shard }}
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_STARTUP_TIMEOUT: "30"
+      SCCACHE_IDLE_TIMEOUT: "0"
+      SCCACHE_CACHE_SIZE: 1G
     steps:
       - uses: actions/checkout@v7
+      # sccache for the suite's per-test compiles, one store per slice
+      - uses: mozilla-actions/sccache-action@v0.0.10
+        if: matrix.leg == 'suite'
+      - name: Restore the sccache store
+        if: matrix.leg == 'suite'
+        uses: actions/cache@v6
+        with:
+          path: .sccache
+          key: sccache-verify-suite-${{ needs.plan.outputs.shards }}-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: sccache-verify-suite-${{ needs.plan.outputs.shards }}-${{ matrix.shard }}-
+      - if: matrix.leg == 'suite'
+        run: sccache --start-server
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "4.0"
-      - name: Build
+      # A base result is the base sha's, under this runner's ruby, cc and
+      # image, made by this branch's files (the base's own tools come with
+      # its sha); the tree's path is in the emitted C of a program whose
+      # required file's path it names.
+      - name: Base cache key
+        id: key
+        if: matrix.name == 'base' || matrix.leg == 'cdiff'
         run: |
           set -a; . ./verify.conf; set +a
-          build () {
-            d=$1; sha=$2
-            git clone -q --filter=blob:none https://github.com/matz/spinel.git "$d"
-            cd "$d"
-            git remote add fork https://github.com/FrancescoK/spinel.git
-            # a short sha cannot be fetched by name: fall back to the fork's ci/ branches
-            git cat-file -e "$sha^{commit}" 2>/dev/null || git fetch -q origin "$sha" 2>/dev/null ||
-              git fetch -q fork "$sha" 2>/dev/null || git fetch -q fork '+refs/heads/ci/*:refs/remotes/fork/ci/*'
-            git checkout -q "$sha"
-            make deps > /dev/null && make -j"$(nproc)" all > /dev/null
-            cd - > /dev/null
-          }
-          build "$RUNNER_TEMP/head" "$SHA"
-          if [ "$LEG" = cdiff ] || [ "$LEG" = extra ] || [ "$LEG" = scale ] || [ "$LEG" = rubyspec ]; then build "$RUNNER_TEMP/base" "$BASE"; fi
-          echo "HEAD_REV=$(git -C "$RUNNER_TEMP/head" log -1 --format='%h %s')" >> "$GITHUB_ENV"
+          env_id=$({ ruby -v; cc --version | head -1; nproc; echo "$ImageOS $ImageVersion $RUNNER_TEMP"
+                     sha256sum .github/workflows/verify.yml cdiff1.sh cbase1.sh cbase.py; } | sha256sum | cut -c1-16)
+          echo "key=verify-base-$LEG-$BASE-$env_id" >> "$GITHUB_OUTPUT"
+      - name: Restore the base result
+        id: based
+        if: matrix.name == 'base'
+        uses: actions/cache/restore@v6
+        with:
+          path: out
+          key: ${{ steps.key.outputs.key }}
+      - name: Restore the base's C
+        id: cbase
+        if: matrix.leg == 'cdiff'
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/cbase
+          key: ${{ steps.key.outputs.key }}
+      - uses: actions/download-artifact@v8
+        if: matrix.name != 'base'
+        with:
+          name: tree-${{ matrix.name }}
+          path: ${{ runner.temp }}/dl-head
+      - uses: actions/download-artifact@v8
+        if: matrix.leg == 'cdiff' || matrix.leg == 'scale' || (matrix.name == 'base' && steps.based.outputs.cache-hit != 'true')
+        with:
+          name: tree-base
+          path: ${{ runner.temp }}/dl-base
+      - name: Unpack
+        run: |
+          for r in head base; do
+            f="$RUNNER_TEMP/dl-$r/tree.tar.zst"
+            if [ -f "$f" ]; then zstd -q -dc "$f" | tar -C "$RUNNER_TEMP" -xf -; rm -f "$f"; fi
+          done
+        shell: bash
       - name: Run
+        id: run
+        env:
+          BASE_HIT: ${{ steps.based.outputs.cache-hit }}
+          CBASE_HIT: ${{ steps.cbase.outputs.cache-hit }}
+          BASE_KEY: ${{ steps.key.outputs.key }}
         run: |
           set -a; . ./verify.conf; set +a
           out="$GITHUB_WORKSPACE/out"; mkdir -p "$out"
-          h="$RUNNER_TEMP/head"
-          echo "$LEG $NAME $SHARD $HEAD_REV" > "$out/rev.txt"
+          h="$RUNNER_TEMP/head"; [ "$NAME" = base ] && h="$RUNNER_TEMP/base"
+          if [ "$BASE_HIT" = true ]; then
+            # rev.txt and the result come from the run that computed them
+            echo "$BASE_KEY" > "$out/cache.txt"
+            exit 0
+          fi
+          echo "$LEG $NAME $SHARD $(git -C "$h" log -1 --format='%h %s')" > "$out/rev.txt"
+          [ "$NAME" = base ] && echo "run ${{ github.run_id }} attempt ${{ github.run_attempt }}, $(date -u '+%Y-%m-%d %H:%M UTC')" > "$out/computed.txt"
           cd "$h"
           case "$LEG" in
           suite)
-            tgt=test-corpus; [ "$SHARD" = 1 ] && tgt=test
-            make -j"$(nproc)" $tgt TEST_SHARD=$SHARD/$SHARDS OPT=-O1 CC=gcc > "$out/test.log" 2>&1 || true
+            tgt="test-corpus"; [ "$SHARD" = 1 ] && tgt="test"
+            make -j"$(nproc)" "$tgt" TEST_SHARD="$SHARD/$SHARDS" OPT=-O1 CC=gcc > "$out/test.log" 2>&1 || true
             if [ "$SHARD" = 1 ]; then make infer-test > "$out/infer.log" 2>&1 || true; fi
-            ls test/*.rb | wc -l > "$out/corpus.txt"
+            printf '%s\n' test/*.rb | wc -l > "$out/corpus.txt"
             ;;
           cb|vf)
             tool=tools/call_binding_probe.rb; [ "$LEG" = vf ] && tool=tools/value_flow_probe.rb
             ruby $tool --strength 2 --seed 1 --jobs "$(nproc)" --no-reduce --out "$out/probe" > "$out/probe.log" 2>&1 || true
+            # a timeout depends on the machine's load: such a result is not kept
+            if [ "$NAME" = base ] && grep -q -E '^[0-9]+ cases: ' "$out/probe/summary.txt" 2>/dev/null &&
+               ! grep -q -E '^ +timeout ' "$out/probe/summary.txt"; then echo save=true >> "$GITHUB_OUTPUT"; fi
             ;;
           cdiff)
-            b="$RUNNER_TEMP/base"
+            # The base compiles what the head's tree holds, at the head's path,
+            # as before; a program's base C comes from the cache where
+            # cbase.py finds it still stands.
+            b="$RUNNER_TEMP/base"; C="$RUNNER_TEMP/cbase"
             ls test/*.rb test/infer/*.rb benchmark/*.rb > "$out/programs.txt"
-            mkdir -p "$out/diffs"
-            xargs -P "$(nproc)" -n 1 "$GITHUB_WORKSPACE/cdiff1.sh" "$b/spinel" "$h/spinel" "$out" < "$out/programs.txt" || true
+            mkdir -p "$out/diffs" "$C/c"
+            python3 "$GITHUB_WORKSPACE/cbase.py" plan "$h" "$out/programs.txt" "$C" "$RUNNER_TEMP/recompute.txt" > "$out/cbase.txt"
+            xargs -P "$(nproc)" -n 1 "$GITHUB_WORKSPACE/cbase1.sh" "$b/spinel" "$C" < "$RUNNER_TEMP/recompute.txt" || true
+            xargs -P "$(nproc)" -n 1 "$GITHUB_WORKSPACE/cdiff1.sh" "$C" "$h/spinel" "$out" < "$out/programs.txt" || true
             touch "$out/changed.txt"; sort -o "$out/changed.txt" "$out/changed.txt"
+            if [ "$CBASE_HIT" = true ]; then
+              echo "  (cache $BASE_KEY)" >> "$out/cbase.txt"
+            else
+              # kept only from a head whose test/ and benchmark/ differ from
+              # the base's in programs and .expected files alone, so the
+              # cache's tree is the base's but for a few programs
+              aux=$(git diff --name-only "$BASE" HEAD -- test benchmark |
+                    grep -v -E '^(test|test/infer|benchmark)/[^/]+\.rb$|\.expected$' || true)
+              miss=$(while read -r p; do [ -f "$C/c/$p.c" ] || echo "$p"; done < "$out/programs.txt" | wc -l)
+              if [ -z "$aux" ] && [ "$miss" -eq 0 ]; then
+                python3 "$GITHUB_WORKSPACE/cbase.py" manifest "$h" "$C"
+                echo save=true >> "$GITHUB_OUTPUT"
+                echo "  (computed, cached as $BASE_KEY)" >> "$out/cbase.txt"
+              else
+                echo "  (computed, not cached: $miss programs without C; other files differ from the base: $(echo "$aux" | tr '\n' ' ' | cut -c1-200))" >> "$out/cbase.txt"
+              fi
+            fi
             ;;
           rubyspec)
-            # `make gate`'s rubyspec leg, which `make test` does not run, on
-            # the head and on the base
-            make rubyspec-gate > "$out/rubyspec-head.log" 2>&1 || true
-            (cd "$RUNNER_TEMP/base" && make rubyspec-gate > "$out/rubyspec-base.log" 2>&1 || true)
+            # `make gate`'s rubyspec leg, which `make test` does not run; the
+            # base's is a job of its own
+            tag="head"; [ "$NAME" = base ] && tag="base"
+            make rubyspec-gate > "$out/rubyspec-$tag.log" 2>&1 || true
+            # every suite ran and answered; a failed extraction or run is not kept
+            if [ "$NAME" = base ] && grep -q '^rubyspec-gate\[' "$out/rubyspec-base.log" &&
+               ! grep -q -E '^rubyspec-gate\[[^]]*\]: (extraction failed|run\.sh failed|ran [0-9]+ of)' "$out/rubyspec-base.log"; then
+              echo save=true >> "$GITHUB_OUTPUT"
+            fi
             ;;
           scale)
             make -j"$(nproc)" build/spinel-work > /dev/null 2>&1 || true
@@ -133,6 +316,21 @@ jobs:
             ;;
           esac
         shell: bash
+      - name: Save the base result
+        if: matrix.name == 'base' && steps.run.outputs.save == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: out
+          key: ${{ steps.key.outputs.key }}
+      - name: Save the base's C
+        if: matrix.leg == 'cdiff' && steps.run.outputs.save == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/cbase
+          key: ${{ steps.key.outputs.key }}
+      - name: sccache stats
+        if: always() && matrix.leg == 'suite'
+        run: mkdir -p out && sccache --show-stats | tee out/sccache.txt
       - uses: actions/upload-artifact@v7
         if: always()
         with:

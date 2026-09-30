@@ -24,6 +24,13 @@ def cases(d):
                 out.add(os.path.relpath(os.path.join(root, f), os.path.join(d, "probe")))
     return out
 
+def origin(d):
+    # a base result: from the cache (cache.txt, the key) or computed in this run
+    run = read(os.path.join(d, "computed.txt")).strip()
+    if os.path.exists(os.path.join(d, "cache.txt")):
+        return f"from the cache, computed by {run or 'an earlier run'}"
+    return "computed in this run" if run else ""
+
 def summary(d):
     s = read(os.path.join(d, "probe", "summary.txt"))
     m = re.search(r"\d+ cases: [^\n]*", s)
@@ -34,7 +41,12 @@ print("# verify\n")
 for probe in ("cb", "vf"):
     if (probe, "base", 0) in jobs:
         d = jobs[(probe, "base", 0)]
-        print(f"- base {probe}: {summary(d)} ({read(os.path.join(d, 'rev.txt')).split(' ', 3)[-1].strip()})")
+        o = origin(d)
+        print(f"- base {probe}: {summary(d)} ({read(os.path.join(d, 'rev.txt')).split(' ', 3)[-1].strip()})" +
+              (f"; {o}" if o else ""))
+if ("rubyspec", "base", 0) in jobs:
+    o = origin(jobs[("rubyspec", "base", 0)])
+    print(f"- base rubyspec-gate: {o or 'no result'}")
 print()
 for n in names:
     rev = next((read(os.path.join(d, "rev.txt")).split(" ", 3)[-1].strip()
@@ -59,6 +71,9 @@ for n in names:
         infer = read(os.path.join(shards[0][1], "infer.log")).strip().splitlines()
         if infer:
             print(f"- infer-test: {infer[-1]}")
+        rates = [re.search(r"Cache hits rate\s+([\d.]+ %)", read(os.path.join(d, "sccache.txt"))) for _, d in shards]
+        if any(rates):
+            print(f"- sccache hits per slice: {', '.join(m.group(1) if m else '?' for m in rates)}")
         for l in fails[:30]:
             print(f"  - `{l.strip()}`")
     for probe in ("cb", "vf"):
@@ -83,6 +98,9 @@ for n in names:
         print(f"- C diff vs base: {len(ch)} of {total} programs change")
         for c in ch[:60]:
             print(f"  - {c}")
+        cbase = " ".join(l.strip() for l in read(os.path.join(d, "cbase.txt")).splitlines() if l.strip())
+        if cbase:
+            print(f"- C diff, the base's side: {cbase}")
     if ("scale", n, 0) in jobs:
         d = jobs[("scale", n, 0)]
         for tag, f in (("head", "scale.log"), ("base", "scale-base.log")):
@@ -93,7 +111,9 @@ for n in names:
     if ("rubyspec", n, 0) in jobs:
         d = jobs[("rubyspec", n, 0)]
         for tag in ("head", "base"):
-            rs = [l.strip() for l in read(os.path.join(d, f"rubyspec-{tag}.log")).splitlines()
+            # the base's gate is a job of its own; before, the head's job ran both
+            bd = jobs.get(("rubyspec", "base", 0), d) if tag == "base" else d
+            rs = [l.strip() for l in read(os.path.join(bd, f"rubyspec-{tag}.log")).splitlines()
                   if re.search(r"rubyspec|REJECT|FAIL|regress", l)][-8:]
             print(f"- rubyspec-gate ({tag}):")
             for l in rs:
