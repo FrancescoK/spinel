@@ -181,14 +181,9 @@ static int an_seed_is_builtin(const NodeTable *nt, int id) {
    those" with a linear scan, once per node or per mark, paid (asks x names)
    every round (rubys/roundhouse#72); compute_reachable's called-name set is
    the first user. */
-static unsigned cr_hash(const char *s) {
-  unsigned h = 2166136261u;
-  for (; *s; s++) { h ^= (unsigned char)*s; h *= 16777619u; }
-  return h;
-}
 int anh_find(const ANameHash *st, const char *nm) {
   if (!st->nb) return -1;
-  for (int i = st->head[cr_hash(nm) % (unsigned)st->nb]; i >= 0; i = st->next[i])
+  for (int i = st->head[sp_strhash(nm) % (unsigned)st->nb]; i >= 0; i = st->next[i])
     if (sp_streq(st->key[i], nm)) return i;   /* the most recent add of it */
   return -1;
 }
@@ -204,7 +199,7 @@ void anh_add(ANameHash *st, const char *nm) {
     st->key = realloc(st->key, sizeof(char *) * (size_t)st->cap);
     st->next = realloc(st->next, sizeof(int) * (size_t)st->cap);
   }
-  unsigned b = cr_hash(nm) % (unsigned)st->nb;
+  unsigned b = sp_strhash(nm) % (unsigned)st->nb;
   st->key[st->n] = nm; st->next[st->n] = st->head[b]; st->head[b] = st->n; st->n++;
 }
 void anh_free(ANameHash *st) { free(st->key); free(st->next); free(st->head); }
@@ -306,7 +301,7 @@ void compute_reachable(Compiler *c) {
     if (!tn) continue;
     int k = -1;
     if (sn_set.nb)
-      for (int i = sn_set.head[cr_hash(tn) % (unsigned)sn_set.nb]; i >= 0; i = sn_set.next[i])
+      for (int i = sn_set.head[sp_strhash(tn) % (unsigned)sn_set.nb]; i >= 0; i = sn_set.next[i])
         if (sp_streq(sn_set.key[i], tn)) { k = i; break; }
     if (k < 0) {
       anh_add(&sn_set, tn); k = sn_set.n - 1;
@@ -320,7 +315,7 @@ void compute_reachable(Compiler *c) {
     }
   }
   #define SN_FIRST(NM) ({ const char *_q = (NM); int _r = -1; \
-    if (sn_set.nb) for (int _i = sn_set.head[cr_hash(_q) % (unsigned)sn_set.nb]; _i >= 0; _i = sn_set.next[_i]) \
+    if (sn_set.nb) for (int _i = sn_set.head[sp_strhash(_q) % (unsigned)sn_set.nb]; _i >= 0; _i = sn_set.next[_i]) \
       if (sp_streq(sn_set.key[_i], _q)) { _r = sn_first[_i]; break; } _r; })
   /* A name already called is fully marked: reachability never clears, so a
      second MARK_NAME of it found nothing to do. */
@@ -1844,15 +1839,9 @@ static const NodeTable *bp_user_nt;
 static char **bp_user_names;
 static int bp_user_n;
 
-static unsigned bp_rename_hash(const char *s) {
-  unsigned h = 2166136261u;
-  while (*s) { h ^= (unsigned char)*s++; h *= 16777619u; }
-  return h;
-}
-
 static int bp_rename_slot(const char *name) {
   if (!bp_renames.name || !name) return -1;
-  unsigned i = bp_rename_hash(name) & bp_renames.mask;
+  unsigned i = sp_strhash(name) & bp_renames.mask;
   while (bp_renames.name[i]) {
     if (sp_streq(bp_renames.name[i], name)) return (int)i;
     i = (i + 1) & bp_renames.mask;
@@ -1861,7 +1850,7 @@ static int bp_rename_slot(const char *name) {
 }
 
 static void bp_rename_insert(char *name, size_t len) {
-  unsigned i = bp_rename_hash(name) & bp_renames.mask;
+  unsigned i = sp_strhash(name) & bp_renames.mask;
   while (bp_renames.name[i]) i = (i + 1) & bp_renames.mask;
   bp_renames.name[i] = name;
   bp_renames.len[i] = len;
@@ -2893,17 +2882,12 @@ void qualify_colliding_classes(Compiler *c) {
    index is rebuilt lazily when that happens (renames are the exception). */
 typedef struct { const int *wp; int wpn; int *head; int *next; unsigned mask; } BlkpIdx;
 
-static unsigned blkp_name_hash(const char *s) {
-  unsigned h = 2166136261u;
-  while (*s) { h ^= (unsigned char)*s++; h *= 16777619u; }
-  return h;
-}
 static void blkp_idx_build(BlkpIdx *ix, const NodeTable *nt) {
   for (unsigned b = 0; b <= ix->mask; b++) ix->head[b] = -1;
   for (int i = 0; i < ix->wpn; i++) {
     const char *nm = nt_str(nt, ix->wp[i], "name");
     if (!nm) { ix->next[i] = -1; continue; }
-    unsigned b = blkp_name_hash(nm) & ix->mask;
+    unsigned b = sp_strhash(nm) & ix->mask;
     ix->next[i] = ix->head[b];
     ix->head[b] = i;
   }
@@ -2930,7 +2914,7 @@ static BlkpScan blkp_scan(const BlkpIdx *ix, const char *name) {
   BlkpScan sc;
   sc.ix = ix;
   sc.all = block_param_is_renamed(name);
-  sc.i = sc.all ? 0 : ix->head[blkp_name_hash(name) & ix->mask];
+  sc.i = sc.all ? 0 : ix->head[sp_strhash(name) & ix->mask];
   return sc;
 }
 static int blkp_scan_next(BlkpScan *sc, int *out) {

@@ -148,11 +148,6 @@ static int *udr_next = NULL, *udr_head = NULL;
 static int udr_n = 0, udr_cap = 0;
 static unsigned udr_gen = (unsigned)-1;
 static int udr_nscopes = -1, udr_nclasses = -1;
-static unsigned udr_hash(const char *s) {
-  unsigned h = 2166136261u;
-  while (*s) { h ^= (unsigned char)*s++; h *= 16777619u; }
-  return h;
-}
 
 /* Does the program spawn a Thread anywhere (`Thread.new` / `.start` /
    `.fork`)? Then a boxed receiver's `join` may be a Thread's, whose answer is
@@ -200,7 +195,7 @@ int an_user_defines_or_reads(Compiler *c, const char *name) {
       udr_gen = gen; udr_nscopes = c->nscopes; udr_nclasses = c->nclasses;
     }
     if (udr_cap) {
-      b = udr_hash(name) & (unsigned)(udr_cap - 1);
+      b = sp_strhash(name) & (unsigned)(udr_cap - 1);
       for (int i = udr_head[b]; i >= 0; i = udr_next[i])
         if (sp_streq(udr_names[i], name)) return udr_ans[i];
     }

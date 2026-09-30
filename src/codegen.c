@@ -2379,7 +2379,6 @@ static int  g_mih_ntcount = 0;
    CallNode per method was a scan of the whole table per scope, and on a
    program with thousands of methods (campfire) that was 80% of the front
    end (#4662) */
-static unsigned mih_hash(const char *s) { unsigned h = 2166136261u; for (; *s; s++) h = (h ^ (unsigned char)*s) * 16777619u; return h; }
 /* name -> first scope of that name; scopes sharing a name chain through
    next. Kept with the counts, so a call node appended later is counted
    without rebuilding it. */
@@ -2387,7 +2386,7 @@ static int *g_mih_head = NULL, *g_mih_next = NULL, g_mih_cap = 0;
 static void mih_count_call(Compiler *c, int id) {
   const char *nm = nt_str(c->nt, id, "name");
   if (!nm) return;
-  unsigned h = mih_hash(nm) & (unsigned)(g_mih_cap - 1);
+  unsigned h = sp_strhash(nm) & (unsigned)(g_mih_cap - 1);
   while (g_mih_head[h] >= 0 && !sp_streq(c->scopes[g_mih_head[h]].name, nm))
     h = (h + 1) & (unsigned)(g_mih_cap - 1);
   for (int si = g_mih_head[h]; si >= 0; si = g_mih_next[si]) g_mih_calls[si]++;
@@ -2409,7 +2408,7 @@ static void mih_count_calls(Compiler *c) {
     next[si] = -1;
     const char *nm = c->scopes[si].name;
     if (!nm) continue;
-    unsigned h = mih_hash(nm) & (unsigned)(cap - 1);
+    unsigned h = sp_strhash(nm) & (unsigned)(cap - 1);
     while (head[h] >= 0 && !sp_streq(c->scopes[head[h]].name, nm)) h = (h + 1) & (unsigned)(cap - 1);
     if (head[h] < 0) head[h] = si;
     else { int t = head[h]; while (next[t] >= 0) t = next[t]; next[t] = si; }
@@ -2493,12 +2492,6 @@ static int *g_fi_nm_head, *g_fi_nm_next, *g_fi_nm_tail;
 static int g_fi_nm_nb, g_fi_nm_nscopes = -1;
 static const Scope *g_fi_nm_scopes;
 
-static unsigned fi_name_hash(const char *s) {
-  unsigned h = 2166136261u;
-  for (; *s; s++) h = (h ^ (unsigned char)*s) * 16777619u;
-  return h;
-}
-
 static int fi_first_scope_named(Compiler *c, const char *nm) {
   if (g_fi_nm_nscopes != c->nscopes || g_fi_nm_scopes != c->scopes) {
     free(g_fi_nm_head); free(g_fi_nm_next); free(g_fi_nm_tail);
@@ -2518,7 +2511,7 @@ static int fi_first_scope_named(Compiler *c, const char *nm) {
       g_fi_nm_next[si] = -1;
       const char *sn = c->scopes[si].name;
       if (!sn) continue;
-      unsigned b = fi_name_hash(sn) & (unsigned)(nb - 1);
+      unsigned b = sp_strhash(sn) & (unsigned)(nb - 1);
       if (g_fi_nm_tail[b] < 0) g_fi_nm_head[b] = si;
       else g_fi_nm_next[g_fi_nm_tail[b]] = si;
       g_fi_nm_tail[b] = si;
@@ -2527,7 +2520,7 @@ static int fi_first_scope_named(Compiler *c, const char *nm) {
     g_fi_nm_nscopes = c->nscopes;
     g_fi_nm_scopes = c->scopes;
   }
-  return g_fi_nm_head[fi_name_hash(nm) & (unsigned)(g_fi_nm_nb - 1)];
+  return g_fi_nm_head[sp_strhash(nm) & (unsigned)(g_fi_nm_nb - 1)];
 }
 
 /* Every user method a call could reach: by the receiver's class when it names

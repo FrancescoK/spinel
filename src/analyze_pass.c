@@ -21,17 +21,12 @@ int kwh_only_spreads(const NodeTable *nt, int kwh);
    the fixpoint that runs many times per node, so a full rescan each call is
    O(recvs * nodes * iterations). The index is built once and reused across all
    fixpoint iterations (rebuilt if the table changes). */
-static unsigned wrn_hash(const char *s) {
-  unsigned h = 2166136261u;
-  for (; *s; s++) { h ^= (unsigned char)*s; h *= 16777619u; }
-  return h;
-}
 /* Bucket key. Local writes are keyed by (name, scope) so a common local name
    (`s`, `result`) written across thousands of methods does not collapse into
    one giant chain that every query must walk; ivar writes are keyed by name
    alone, matching the lookup semantics (an ivar `@x` write anywhere counts). */
 static unsigned wrn_key(const char *nm, int scopeidx) {
-  unsigned h = wrn_hash(nm);
+  unsigned h = sp_strhash(nm);
   if (scopeidx >= 0) h = h * 31u + (unsigned)scopeidx * 2654435761u;
   return h;
 }
@@ -199,7 +194,7 @@ static int *aw_next = NULL, *aw_head = NULL;
    the name alone, a name every unit repeats (`@user`, `h`) put all of them in
    one chain, walked per ask (rubys in #5035). */
 static unsigned aw_key(const char *nm, int is_ivar, int owner) {
-  return wrn_hash(nm) ^ ((unsigned)(owner + 2) * 2654435761u) ^ (is_ivar ? 0x9e3779b9u : 0);
+  return sp_strhash(nm) ^ ((unsigned)(owner + 2) * 2654435761u) ^ (is_ivar ? 0x9e3779b9u : 0);
 }
 static int aw_owner_of(Compiler *c, int recv, int is_ivar) {
   Scope *s = comp_scope_of(c, recv);
@@ -12357,7 +12352,7 @@ static void rn_build(Compiler *c) {
   for (int i = 0; i < rn_buckets; i++) rn_head[i] = -1;
   for (int s = 0; s < ns; s++) {
     if (c->scopes[s].class_id < 0 || !c->scopes[s].name) continue;
-    unsigned b = wrn_hash(c->scopes[s].name) % (unsigned)rn_buckets;
+    unsigned b = sp_strhash(c->scopes[s].name) % (unsigned)rn_buckets;
     rn_next[s] = rn_head[b]; rn_head[b] = s;
   }
 }
@@ -12879,7 +12874,7 @@ int infer_return_types(Compiler *c) {
     if (rn_nscopes != c->nscopes) rn_build(c);
     TyKind unified = TY_VOID;
     int use_idx = rn_buckets > 0;
-    int t = use_idx ? rn_head[wrn_hash(sc->name) % (unsigned)rn_buckets] : 1;
+    int t = use_idx ? rn_head[sp_strhash(sc->name) % (unsigned)rn_buckets] : 1;
     for (; use_idx ? (t >= 0) : (t < c->nscopes); t = use_idx ? rn_next[t] : t + 1) {
       Scope *ot = &c->scopes[t];
       if (t == s || !ot->name || !sp_streq(ot->name, sc->name)) continue;

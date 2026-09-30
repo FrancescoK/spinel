@@ -221,7 +221,6 @@ void comp_add_gvar_alias(Compiler *c, const char *from, const char *to) {
    large program has thousands: a hash over the names, rebuilt when the table
    grows or moves (its names are unique, interned by comp_const_intern). */
 static int *cst_idx; static int cst_cap, cst_n = -1; static const LocalVar *cst_base;
-static unsigned cst_hash(const char *s) { unsigned h = 2166136261u; for (; *s; s++) h = (h ^ (unsigned char)*s) * 16777619u; return h; }
 LocalVar *comp_const(Compiler *c, const char *name) {
   if (!name) return NULL;
   if (c->nconsts < 16) return lv_find(c->consts, c->nconsts, name);
@@ -232,13 +231,13 @@ LocalVar *comp_const(Compiler *c, const char *name) {
     cst_idx = malloc(sizeof(int) * (size_t)cap);
     for (int i = 0; i < cap; i++) cst_idx[i] = -1;
     for (int i = 0; i < c->nconsts; i++) {
-      unsigned j = cst_hash(c->consts[i].name) & (unsigned)(cap - 1);
+      unsigned j = sp_strhash(c->consts[i].name) & (unsigned)(cap - 1);
       while (cst_idx[j] >= 0) j = (j + 1) & (unsigned)(cap - 1);
       cst_idx[j] = i;
     }
     cst_cap = cap; cst_n = c->nconsts; cst_base = c->consts;
   }
-  unsigned j = cst_hash(name) & (unsigned)(cst_cap - 1);
+  unsigned j = sp_strhash(name) & (unsigned)(cst_cap - 1);
   for (; cst_idx[j] >= 0; j = (j + 1) & (unsigned)(cst_cap - 1))
     if (sp_streq(c->consts[cst_idx[j]].name, name)) return &c->consts[cst_idx[j]];
   return NULL;
@@ -404,11 +403,6 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
    classes with the count unchanged), fall back to the linear scan. */
 static int ci_frozen = 0, ci_nclasses = -1, ci_buckets = 0;
 static int *ci_next = NULL, *ci_head = NULL;
-static unsigned ci_hash(const char *s) {
-  unsigned h = 2166136261u;
-  for (; *s; s++) { h ^= (unsigned char)*s; h *= 16777619u; }
-  return h;
-}
 static void ci_build(Compiler *c) {
   int nc = c->nclasses;
   free(ci_next); free(ci_head);
@@ -420,7 +414,7 @@ static void ci_build(Compiler *c) {
   for (int i = 0; i < ci_buckets; i++) ci_head[i] = -1;
   for (int i = nc - 1; i >= 0; i--) {
     if (!c->classes[i].name) continue;
-    unsigned b = ci_hash(c->classes[i].name) % (unsigned)ci_buckets;
+    unsigned b = sp_strhash(c->classes[i].name) % (unsigned)ci_buckets;
     ci_next[i] = ci_head[b]; ci_head[b] = i;
   }
 }
@@ -433,7 +427,7 @@ int comp_class_index(Compiler *c, const char *name) {
   }
   if (ci_nclasses != c->nclasses) ci_build(c);
   if (!ci_buckets) return -1;
-  for (int i = ci_head[ci_hash(name) % (unsigned)ci_buckets]; i >= 0; i = ci_next[i])
+  for (int i = ci_head[sp_strhash(name) % (unsigned)ci_buckets]; i >= 0; i = ci_next[i])
     if (c->classes[i].name && sp_streq(c->classes[i].name, name)) return i;
   return -1;
 }
@@ -1359,11 +1353,6 @@ int comp_writer_in_chain(Compiler *c, int class_id, const char *name, int *def_c
    conditions that vary per call (ctor_reachable, an_builtin_only, native arity)
    stay with the consumer. A native class is always listed: its answer depends
    on the call's arity, which the consumer checks. */
-static unsigned pc_hash_name(const char *s) {
-  unsigned h = 2166136261u;
-  while (*s) { h ^= (unsigned char)*s++; h *= 16777619u; }
-  return h;
-}
 struct pc_entry { char *name; PolyCand *cands; int n; struct pc_entry *next; };
 #define PC_BUCKETS 4096
 static struct pc_entry *pc_tab[PC_BUCKETS];
@@ -1412,7 +1401,7 @@ const PolyCand *comp_poly_candidates(Compiler *c, const char *name, int *n) {
   if (pc_gen_stamp != sm_gen || pc_nscopes_stamp != c->nscopes || pc_nclasses_stamp != c->nclasses || pc_table_stamp != comp_table_gen) {
     pc_clear(); pc_gen_stamp = sm_gen; pc_nscopes_stamp = c->nscopes; pc_nclasses_stamp = c->nclasses; pc_table_stamp = comp_table_gen;
   }
-  unsigned b = pc_hash_name(name) % PC_BUCKETS;
+  unsigned b = sp_strhash(name) % PC_BUCKETS;
   for (struct pc_entry *e = pc_tab[b]; e; e = e->next)
     if (sp_streq(e->name, name)) {
       *n = e->n; return e->cands;
@@ -1456,7 +1445,7 @@ const PolyCand *comp_cmethod_candidates(Compiler *c, const char *name, int *n) {
     }
     cc_gen_stamp = sm_gen; cc_nscopes_stamp = c->nscopes; cc_nclasses_stamp = c->nclasses; cc_table_stamp = comp_table_gen;
   }
-  unsigned b = pc_hash_name(name) % PC_BUCKETS;
+  unsigned b = sp_strhash(name) % PC_BUCKETS;
   for (struct pc_entry *e = cc_tab[b]; e; e = e->next)
     if (sp_streq(e->name, name)) { *n = e->n; return e->cands; }
   struct pc_entry *e = calloc(1, sizeof *e);
@@ -1511,11 +1500,6 @@ Scope *comp_scope_of(Compiler *c, int node_id) {
   return &c->scopes[idx];
 }
 
-static unsigned lvw_hash(const char *s) {
-  unsigned h = 2166136261u;
-  while (*s) { h ^= (unsigned char)*s++; h *= 16777619u; }
-  return h;
-}
 int comp_is_local_write(NodeKind k) {
   return k == NK_LocalVariableWriteNode || k == NK_LocalVariableTargetNode ||
          k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode ||
@@ -1542,7 +1526,7 @@ static void lvw_build(Compiler *c) {
     if (!comp_is_local_write(nt_kind(c->nt, w))) continue;
     const char *wn = nt_str(c->nt, w, "name");
     if (!wn) continue;
-    unsigned b = lvw_hash(wn) & (unsigned)(nb - 1);
+    unsigned b = sp_strhash(wn) & (unsigned)(nb - 1);
     c->lvw_next[w] = c->lvw_head[b];
     c->lvw_head[b] = w;
   }
@@ -1552,7 +1536,7 @@ static void lvw_build(Compiler *c) {
 int comp_lvw_first(Compiler *c, const char *name) {
   if (!c->lvw_built || c->lvw_version != c->nt->version) lvw_build(c);
   if (!c->lvw_built) return -1;
-  return c->lvw_head[lvw_hash(name) & (unsigned)(c->lvw_nbuckets - 1)];
+  return c->lvw_head[sp_strhash(name) & (unsigned)(c->lvw_nbuckets - 1)];
 }
 int comp_lvw_next(const Compiler *c, int w) {
   return (w >= 0 && w < c->lvw_count) ? c->lvw_next[w] : -1;
@@ -1586,7 +1570,7 @@ static void lvws_build(Compiler *c) {
     const char *wn = nt_str(c->nt, w, "name");
     if (!wn) continue;
     int si = (w < c->nt->count && c->nscope) ? c->nscope[w] : 0;
-    unsigned b = (lvw_hash(wn) ^ ((unsigned)si * 2654435761u)) & (unsigned)(nb - 1);
+    unsigned b = (sp_strhash(wn) ^ ((unsigned)si * 2654435761u)) & (unsigned)(nb - 1);
     c->lvws_next[w] = c->lvws_head[b];
     c->lvws_head[b] = w;
   }
@@ -1596,7 +1580,7 @@ static void lvws_build(Compiler *c) {
 int comp_lvw_first_sc(Compiler *c, int scope_idx, const char *name) {
   if (!c->lvws_built || c->lvws_version != c->nt->version) lvws_build(c);
   if (!c->lvws_built) return -1;
-  unsigned b = (lvw_hash(name) ^ ((unsigned)scope_idx * 2654435761u)) & (unsigned)(c->lvws_nbuckets - 1);
+  unsigned b = (sp_strhash(name) ^ ((unsigned)scope_idx * 2654435761u)) & (unsigned)(c->lvws_nbuckets - 1);
   return c->lvws_head[b];
 }
 int comp_lvw_next_sc(const Compiler *c, int w) {
