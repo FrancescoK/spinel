@@ -11314,6 +11314,32 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           return 1;
         }
         const char *rn2 = comp_resolve_alias(c, cid, name);
+        /* A receiver typed for this class can hold an instance of a subclass
+           whose `def` overrides the reader: `self` in one of the class's own
+           methods, or an object such a method answers. The read then
+           dispatches on the runtime class, as a receiverless call to the
+           reader does, and the receiver is evaluated once. */
+        TyKind ovty = comp_ty_value_obj(c, rt) ? TY_UNKNOWN : reader_override_ty(c, id, cid, name);
+        if (ovty != TY_UNKNOWN) {
+          const char *ovrt = nt_type(nt, recv);
+          int ov_simple = ovrt && (sp_streq(ovrt, "LocalVariableReadNode") ||
+                                   sp_streq(ovrt, "InstanceVariableReadNode") || sp_streq(ovrt, "SelfNode"));
+          int ovt = ov_simple ? -1 : ++g_tmp;
+          Buf ovs; memset(&ovs, 0, sizeof ovs);
+          if (ov_simple) ovs = expr_buf(c, recv);
+          else buf_printf(&ovs, "_t%d", ovt);
+          Buf ovr; memset(&ovr, 0, sizeof ovr);
+          buf_printf(&ovr, "(%s)->iv_%s", ovs.p, iv_c(rn2));
+          if (!ov_simple) {
+            buf_puts(b, "({ "); emit_ctype(c, rt, b);
+            buf_printf(b, " _t%d = ", ovt); emit_expr(c, recv, b);
+            buf_printf(b, "; SP_GC_ROOT(_t%d); ", ovt);
+          }
+          emit_reader_override_dispatch(c, id, cid, name, ovs.p, ovr.p, ovty, b);
+          if (!ov_simple) buf_puts(b, "; })");
+          free(ovs.p); free(ovr.p);
+          return 1;
+        }
         /* a shared-mutable string slot reads out as a GC COPY of the current
            contents (the raw sp_String* handle must not leak into a plain
            string context); a demand-marked read hands out the handle (#3227) */

@@ -21211,6 +21211,8 @@ int call_is_field_read(Compiler *c, int id, int *allocates) {
   int rdc = -1, mdc = -1;
   if (!comp_reader_in_chain(c, cid, nm, &rdc)) return 0;
   if (comp_resolve_member(c, cid, nm, 0, &mdc, NULL) != SP_MEMBER_ATTR) return 0;
+  /* a read that dispatches on the runtime class is a call */
+  if (!comp_ty_value_obj(c, rt) && reader_override_ty(c, id, cid, nm) != TY_UNKNOWN) return 0;
   char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, cid, nm));
   ClassInfo *owner = &c->classes[rdc >= 0 ? rdc : cid];
   int iv = comp_ivar_index(owner, ivn);
