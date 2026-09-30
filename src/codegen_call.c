@@ -23429,6 +23429,73 @@ static void refuse_changed_splat(Compiler *c, int id, const char *name, int recv
                      "through a splat of an Array that holds a copy");
 }
 
+/* The method a static call names, for the forwarding refusal: by the
+   receiver's class, the enclosing class for self, a constant's `new` (its
+   initialize), or the free function. */
+static int refuse_fwd_target(Compiler *c, int id, const char *name) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_SelfNode;
+  int cls = -1;
+  if (sp_streq(name, "new") && (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)) {
+    TyKind ct = comp_ntype(c, id);
+    return ty_is_object(ct) ? comp_method_in_chain(c, ty_object_class(ct), "initialize", NULL) : -1;
+  }
+  if (rk == NK_SelfNode) {
+    Scope *encl = comp_scope_of(c, id);
+    if (encl && encl->is_cmethod && encl->class_id >= 0 && sp_streq(name, "new"))
+      return comp_method_in_chain(c, encl->class_id, "initialize", NULL);
+    cls = encl && !encl->is_cmethod ? encl->class_id : -1;
+  }
+  else {
+    TyKind rt = comp_ntype(c, recv);
+    if (!ty_is_object(rt)) return -1;
+    cls = ty_object_class(rt);
+  }
+  int mi = cls >= 0 ? comp_method_in_chain(c, cls, name, NULL) : -1;
+  return mi >= 0 ? mi : comp_method_index(c, name);
+}
+
+/* A method that forwards its rest (`def w(*a) = m(*a)`, `*`, `...`) to a
+   parameter that appends, or hands a POLY parameter on to one (`def m(p,
+   k:) = super`, called with `**h`): the call's String variable is pulled
+   into the handle (promote_forwarded_rest_args, convert_byref_handle_params),
+   but for one that cannot be -- a block's parameter, an ivar that is no
+   handle, a global or class variable -- which goes over as a copy. */
+static void refuse_forwarded_args(Compiler *c, int id, const char *name) {
+  const NodeTable *nt = c->nt;
+  int t = refuse_fwd_target(c, id, name);
+  if (t < 0) return;
+  Scope *m = &c->scopes[t];
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  int pos = ac;
+  while (pos > 0 && (nt_kind(nt, av[pos - 1]) == NK_KeywordHashNode || nt_kind(nt, av[pos - 1]) == NK_BlockArgumentNode)) pos--;
+  for (int k = 0; k < pos && k < 16; k++) {
+    if (nt_kind(nt, av[k]) == NK_SplatNode) break;
+    int shared;
+    const char *kind = strvar_arg(c, av[k], &shared);
+    if (!kind || ctor_arg_shared(c, av[k], 0)) continue;
+    if (nt_kind(nt, av[k]) == NK_LocalVariableReadNode && !sp_streq(kind, "a block's parameter") &&
+        !sp_streq(kind, "a variable a block or a proc captures")) continue;
+    const char *pn = NULL, *thr = NULL;
+    if (m->rest_idx >= 0 && k >= m->rest_idx) {
+      if (k >= pos - m->npost_rest || !fwd_rest_elem_appends(c, t, k - m->rest_idx)) continue;
+      pn = m->pnames[m->rest_idx] && m->pnames[m->rest_idx][0] != '_' ? m->pnames[m->rest_idx] : "*";
+      thr = "the rest it hands on";
+    }
+    else {
+      if (k >= m->nparams || !fwd_poly_param_appends(c, t, k)) continue;
+      pn = m->pnames[k];
+      thr = "a parameter it hands on";
+    }
+    char mt[96]; snprintf(mt, sizeof mt, "`%s`", name);
+    char why[96]; snprintf(why, sizeof why, "from %s", kind);
+    char through[96]; snprintf(through, sizeof through, "%s", thr);
+    refuse_string_copy(c, av[k], mt, pn, through, why);
+  }
+}
+
 static void refuse_string_copies(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -23596,6 +23663,7 @@ static void refuse_string_copies(Compiler *c, int id) {
     return;
   }
   if (!dyn) refuse_yield_handle_args(c, id);
+  if (!dyn) refuse_forwarded_args(c, id, name);
   /* a method `define_method` defines takes an appended String as the handle
      (dyn_convert_params), and its callers are pulled in as a handle
      method's are, but for a variable that cannot be */
