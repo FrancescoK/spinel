@@ -10012,6 +10012,11 @@ void emit_super(Compiler *c, int id, Buf *b) {
           TyKind at = pv && pv->type != TY_UNKNOWN ? pv->type : TY_POLY;
           Buf src; memset(&src, 0, sizeof src); emit_scope_local_ref(c, s, s->pnames[pk], &src);
           if (ivt == TY_POLY && at == TY_FLOAT) buf_printf(b, "sp_box_float_or_nil(%s)", src.p);
+          /* a parameter the initialize appends to is the handle (#6179); a
+             String member holds its bytes, copied, since the handle's next
+             growing append moves them */
+          else if (ivt == TY_STRING && at == TY_STRBUF)
+            buf_printf(b, "(%s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)", src.p, src.p);
           else if (ivt == TY_POLY && at != TY_POLY) { Buf ex; memset(&ex, 0, sizeof ex); emit_boxed_text(c, at, src.p, &ex); buf_puts(b, ex.p ? ex.p : ""); free(ex.p); }
           else if (ivt != TY_POLY && at == TY_POLY) emit_unbox_nilable_text(c, ivt, src.p, b);
           else buf_puts(b, src.p);

@@ -22016,6 +22016,8 @@ static int refuse_call_binds(Compiler *c, int pn, int id, int first, int is_bloc
     int x = nt_ref(nt, el[e], "value");
     TyKind xt = x >= 0 ? comp_ntype(c, x) : TY_UNKNOWN;
     if (x >= 0 && !ty_is_hash(xt) && xt != TY_NIL && xt != TY_POLY && xt != TY_UNKNOWN) return 0;
+    /* `**nil` passes no keyword */
+    if (x >= 0 && xt == TY_NIL) continue;
     int known = 0;
     if (x >= 0 && nt_kind(nt, x) == NK_LocalVariableReadNode) {
       const char *xn = nt_str(nt, x, "name");
@@ -22079,16 +22081,6 @@ static int refuse_scope_params(Compiler *c, Scope *m) {
   return bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
 }
 
-/* `C.new(args)`'s class, when C is a class constant, or -1. */
-static int refuse_new_class(Compiler *c, int recv) {
-  const NodeTable *nt = c->nt;
-  if (recv < 0) return -1;
-  NodeKind rk = nt_kind(nt, recv);
-  if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) return -1;
-  const char *cn = nt_str(nt, recv, "name");
-  return cn ? comp_class_index(c, cn) : -1;
-}
-
 /* The method scope a static call names, when it is a define_method body. */
 static int refuse_dm_target(Compiler *c, int id, const char *name) {
   const NodeTable *nt = c->nt;
@@ -22129,6 +22121,86 @@ void refuse_yield_string_copies(Compiler *c, int yargc, const int *yargv) {
     refuse_string_copy(c, yargv[k], NULL, r.pname, "a yield into a block argument",
                        "through a `yield` into a Method or proc passed with `&`");
   }
+}
+
+/* Does argument `a` of a `new` or `raise` hand the initialize the caller's
+   String itself? A local that is the handle does, its read marked to box
+   it where the call dispatches on a class value (`boxed`); so does an ivar
+   that is the handle, bound statically. */
+static int ctor_arg_shared(Compiler *c, int a, int boxed) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, a);
+  if (k == NK_LocalVariableReadNode) {
+    const char *vn = nt_str(nt, a, "name");
+    Scope *vs = vn ? comp_scope_of(c, a) : NULL;
+    LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+    /* a block's parameter is bound from what the block is handed (an
+       Array's element): the handle it holds is not that String */
+    return lv && !lv->is_cell && !lv->is_block_param && lv->type == TY_STRBUF && lv->str_shared &&
+           (!boxed || c->strbuf_box[a]);
+  }
+  if (k != NK_InstanceVariableReadNode || boxed) return 0;
+  const char *nm = nt_str(nt, a, "name");
+  int cid = nm ? strbuf_ivar_owner(c, a) : -1;
+  int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
+  return iv >= 0 && c->classes[cid].ivar_types[iv] == TY_STRBUF && c->classes[cid].ivar_str_shared[iv];
+}
+
+/* The `new` / `raise` arm of refuse_string_copies: 1 when the call is one. */
+static int refuse_ctor_copies(Compiler *c, int id, const char *name, int recv) {
+  const NodeTable *nt = c->nt;
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  /* the targets are asked only of a call handing over a String variable */
+  int any = 0;
+  for (int k = 0; k < ac && !any; k++) {
+    int shared;
+    NodeKind ak = nt_kind(nt, av[k]);
+    if (ak == NK_KeywordHashNode) {
+      int en = 0; const int *el = nt_arr(nt, av[k], "elements", &en);
+      for (int e = 0; e < en && !any; e++)
+        any = nt_kind(nt, el[e]) == NK_AssocNode && strvar_arg(c, nt_ref(nt, el[e], "value"), &shared);
+    }
+    else if (ak == NK_SplatNode) {
+      int x = nt_ref(nt, av[k], "expression");
+      int en = 0; const int *el = x >= 0 && nt_kind(nt, x) == NK_ArrayNode ? nt_arr(nt, x, "elements", &en) : NULL;
+      for (int e = 0; e < en && !any; e++) any = strvar_arg(c, el[e], &shared) != NULL;
+    }
+    else any = strvar_arg(c, av[k], &shared) != NULL;
+  }
+  if (!any) return 1;
+  int first, boxed, tg[64];
+  int n = ctor_call_targets(c, id, &first, &boxed, tg, 64);
+  char thr[160];
+  if (first) snprintf(thr, sizeof thr, "`raise`");
+  else if (recv >= 0 && (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode))
+    snprintf(thr, sizeof thr, "`%s.new`", nt_str(nt, recv, "name"));
+  else snprintf(thr, sizeof thr, "`new`");
+  for (int t = 0; t < n; t++) {
+    Scope *m = &c->scopes[tg[t]];
+    if (!refuse_call_binds(c, refuse_scope_params(c, m), id, first, 0)) continue;
+    for (int j = 0; j < m->nparams && j < 16; j++) {
+      if (!ctor_param_appends(c, tg[t], j)) continue;
+      LocalVar *q = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
+      if (!q || (q->type != TY_STRING && q->type != TY_STRBUF && q->type != TY_POLY)) continue;
+      int arg = ctor_param_arg(c, m, id, first, j);
+      int shared;
+      const char *kind = arg >= 0 ? strvar_arg(c, arg, &shared) : NULL;
+      /* an element of a splatted Array literal rides the Array, which holds
+         the handle once the element's read is marked (ctor_pull_args), or
+         boxes it for a boxed parameter */
+      int spl = kind && ctor_arg_in_splat(c, id, arg) >= 0;
+      if (!kind || (ctor_arg_shared(c, arg, boxed) && (!spl || c->strbuf_box[arg] || q->type == TY_POLY)))
+        continue;
+      char why[96]; snprintf(why, sizeof why, "from %s", kind);
+      if (spl) snprintf(why, sizeof why, "through a splat");
+      /* kept off the handle: it yields the String to its block */
+      if (q->type == TY_STRING && (m->yields || m->is_lowered_yield))
+        snprintf(why, sizeof why, "into an initialize that yields it to its block");
+      refuse_string_copy(c, arg, "`initialize`", m->pnames[j], thr, why);
+    }
+  }
+  return 1;
 }
 
 static void refuse_string_copies(Compiler *c, int id) {
@@ -22192,34 +22264,13 @@ static void refuse_string_copies(Compiler *c, int id) {
     }
     return;
   }
-  /* `C.new(s)` and `raise C, s`: the class's initialize keeps the value ABI
-     (compute_byref_out_params), since about two dozen emitters call its
-     constructor wrapper with values */
-  int ncls = -1, first = 0;
-  const char *through = NULL;
-  char thr[160];
-  if (sp_streq(name, "new")) {
-    ncls = refuse_new_class(c, recv);
-    if (ncls >= 0) { snprintf(thr, sizeof thr, "`%s.new`", nt_str(nt, recv, "name")); through = thr; }
-  }
-  else if (sp_streq(name, "raise") && recv < 0) {
-    int a = nt_ref(nt, id, "arguments"), ac = 0;
-    const int *rv = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-    if (ac >= 2) { ncls = refuse_new_class(c, rv[0]); first = 1; through = "`raise`"; }
-  }
-  if (ncls >= 0) {
-    int mi = comp_method_in_chain(c, ncls, "initialize", NULL);
-    if (mi < 0 || !refuse_call_binds(c, refuse_scope_params(c, &c->scopes[mi]), id, first, 0)) return;
-    int n = refuse_arg_layout(c, id, av, 16);
-    for (int k = first; k < n; k++) {
-      int shared;
-      if (!strvar_arg(c, av[k], &shared)) continue;
-      if (dyn_method_appends(c, mi, k - first) && refuse_param_copies(c, mi, k - first, av[k]))
-        refuse_string_copy(c, av[k], "`initialize`", c->scopes[mi].pnames[k - first], through,
-                           sp_streq(name, "new") ? "through `new`" : "through `raise`");
-    }
+  /* `C.new(s)`, `k.new(s)`, `new(s)` in a class method and `raise C, s`: an
+     initialize's appended String parameter is the handle (ctor_convert_params),
+     and the caller's String variable is pulled into it (ctor_pull_args), but
+     for a variable that cannot be: a block's parameter, a captured local, a
+     global, a class variable, and an ivar handed to a class value's `new` */
+  if ((sp_streq(name, "new") || (sp_streq(name, "raise") && recv < 0)) && refuse_ctor_copies(c, id, name, recv))
     return;
-  }
   /* `M.instance_method(:m).bind_call(o, s)`: the method keeps the value ABI
      (an `instance_method` literal is a DYN name) */
   if (sp_streq(name, "bind_call") && recv >= 0) {
