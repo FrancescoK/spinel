@@ -50,6 +50,7 @@ static const PolyFace ty_poly_face_tbl[] = {
   {"rotate!", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 1, 0}, {"uniq!", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 0, -1},
   {"shuffle!", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 0, 0},
   {"flatten!", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 1, 0}, {"fill", PF_ARRAY | PF_MUT | PF_VAL_SELF, 1, 3, 0},
+  {"fill", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 2, 1},
   {"to_ary", PF_ARRAY, 0, 0, 0}, {"transpose", PF_ARRAY, 0, 0, 0},
   /* and the Enumerable names that had no arm at all */
   {"grep", PF_ENUM, 1, 1, -1}, {"minmax_by", PF_ENUM, 0, 0, 1},
