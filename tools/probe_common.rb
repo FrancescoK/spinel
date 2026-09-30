@@ -7,20 +7,27 @@
 # level of each its simplest), NAMES, SIMPLEST, GeneratorError, render(id, row) (a Case of the levels it realized, which render
 # back to the same program), covering_cases(t, seed, tries, only), cases(rows),
 # pinned_cases(rows, only), pins(spec),
-# random_rows(n, seed), program(cases), flags(cases) and shape(case), and
+# random_rows(n, seed), program(cases) (each case's lines under a heading
+# `# case <id>:`), flags(cases) and shape(case), and
 # optionally diff_kind(want, got, case). A probe names, beside it, the lines CRuby
 # prints when a generated program reads a name it does not define. Covering gives a generator all but render,
 # program, flags and shape from its FACTORS.
 #
-# A program spinel refuses, whose C does not build, that crashes or that runs
-# out of time is split in halves until one case carries the failure; a
-# difference seen in a program is confirmed on its case alone. A failure no
-# single case carries (two cases that only fail together) is kept as an
-# `interaction`, with the program that showed it.
+# A program spinel refuses, whose C does not build, that crashes, stops part
+# way or runs out of time is split until one case carries the failure. The
+# cases the failure names are tried alone first: those its diagnostics' lines
+# are in (a C error's through spinel's #line map), or the first one it did
+# not finish (for a crash or a timeout, as the program prints on a terminal,
+# which loses no buffered lines). When they show the failure, the others are
+# split in halves without them; else, and when no case is named, the program
+# is split in halves. A difference seen in a program is confirmed on
+# its case alone. A failure no single case carries (two cases that only fail
+# together) is kept as an `interaction`, with the program that showed it.
 #
 # Each finding is then reduced: one factor at a time steps toward its
 # simplest level for as long as the case alone still makes the same kind of
-# difference. The findings of a run are reduced simplest first, a few at a
+# difference (for a case that does not build, asked of a build that stops at
+# the C compiler's checks). The findings of a run are reduced simplest first, a few at a
 # time; a finding that makes the same kind of difference as one reduced
 # before it and takes every level that one still needs is taken to be that
 # bug again and is not reduced itself -- it is listed under that finding's
@@ -53,6 +60,7 @@
 # (A run is many programs, so unlike `spinel diff` one status summarizes it.)
 
 require "fileutils"
+require "pty"
 require "rbconfig"
 require "tmpdir"
 
@@ -62,7 +70,8 @@ module ProbeCommon
   # A compiler diagnostic's location, which moves as a case shrinks.
   LOCATION = /\A\S+\.(?:rb|c|h):\d+(?::\d+)?: /
 
-  Outcome = Struct.new(:label, :detail, :lines, :status, :stderr)
+  # `at`: for a program that does not build, the cases its diagnostics name.
+  Outcome = Struct.new(:label, :detail, :lines, :status, :stderr, :at)
   Finding = Struct.new(:c, :label, :detail, :want, :got, :kind, :program, :absorbed, :stopped, :name) do
     # the file a finding is written to: its case's, or an interaction's own
     def file = name || "case_#{c.id}"
@@ -304,6 +313,33 @@ module ProbeCommon
     end
   end
 
+  # What `argv` prints on a terminal, run to its end or for `timeout`
+  # seconds; a stopped run raises Stopped. It leads a session of its own, so
+  # a run that does not end is killed with what it started.
+  def run_on_tty(argv, timeout, stop = nil)
+    raise Stopped if stop&.call
+    out = +""
+    r, w, pid = PTY.spawn(*argv, in: File::NULL)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    begin
+      until (left = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)) <= 0 || stop&.call
+        next unless r.wait_readable([left, 0.1].min)
+        got = r.read_nonblock(1 << 16, exception: false)
+        break if got.nil?
+        out << got if got.is_a?(String)
+      end
+    rescue Errno::EIO, EOFError
+      nil # the program ended
+    end
+    Process.kill("KILL", -pid) rescue nil
+    Process.waitpid2(pid)
+    raise Stopped if stop&.call
+    out
+  ensure
+    r&.close
+    w&.close
+  end
+
   # The lines of a run, grouped by the case id each begins with.
   def by_case(text)
     h = Hash.new { |hh, k| hh[k] = [] }
@@ -390,6 +426,7 @@ module ProbeCommon
       @stopped = false
       @halt = -> { @stopped }
       @failure = nil
+      @judged = {}
     end
 
     # Stops the probe: every run in flight is killed, and it and every
@@ -449,11 +486,16 @@ module ProbeCommon
       ProbeCommon.by_case(out)
     end
 
-    # Spinel's outcome for `cases` as one program.
-    def spinel(cases)
+    # Spinel's outcome for `cases` as one program. `check_only` stops the
+    # build at the C compiler's checks (spinel's own `cc`, -fsyntax-only),
+    # and a program that passes them is "built", not run: one that spinel
+    # refuses, or whose C has an error, fails as the full build does.
+    def spinel(cases, check_only = false)
       base = scratch("sp")
-      File.write(base + ".rb", @gen.program(cases))
-      argv = [@spinel, *@gen.flags(cases), base + ".rb", "-o", base + ".bin"]
+      src = @gen.program(cases)
+      File.write(base + ".rb", src)
+      argv = [@spinel, *@gen.flags(cases), *(check_only ? ["--cc=cc -fsyntax-only"] : []), base + ".rb", "-o",
+              base + ".bin"]
       status, timed_out = ProbeCommon.run_timed(argv, 600, base + ".build", base + ".build", @halt)
       build = File.read(base + ".build")
       unless !timed_out && status.success?
@@ -471,13 +513,35 @@ module ProbeCommon
                   elsif status.signaled? then "spinel died of SIG#{Signal.signame(status.termsig)}"
                   else build.lines.last.to_s
                   end
-        return Outcome.new(label, first.strip.sub(LOCATION, ""))
+        # a refusal names its Ruby line, and a C error names one through
+        # spinel's #line map
+        at = build.lines.filter_map do |l|
+          next unless l.include?("error:") || l.match?(refusal)
+          m = l.match(/\A(?:spinel: )?(\S+\.rb):(\d+):/)
+          case_at(cases, src, m[2].to_i) if m && File.basename(m[1]) == File.basename(base + ".rb")
+        end
+        return Outcome.new(label, first.strip.sub(LOCATION, ""), nil, nil, nil, at.uniq)
       end
+      return Outcome.new("built", "") if check_only
       status, timed_out = ProbeCommon.run_timed([base + ".bin"], @timeout, base + ".out", base + ".err", @halt)
-      return Outcome.new("timeout", "no answer after #{@timeout}s") if timed_out
-      return Outcome.new("crash", "SIG#{Signal.signame(status.termsig)}") if status.signaled?
+      if timed_out || status.signaled?
+        # what the program printed to a file is lost with the buffer it was
+        # in; on a terminal, which flushes each line, it shows the case the
+        # program stopped in
+        lines = ProbeCommon.by_case(ProbeCommon.run_on_tty([base + ".bin"], @timeout, @halt)) if cases.size > 1
+        return Outcome.new("timeout", "no answer after #{@timeout}s", lines) if timed_out
+        return Outcome.new("crash", "SIG#{Signal.signame(status.termsig)}", lines)
+      end
       Outcome.new("ran", "", ProbeCommon.by_case(File.read(base + ".out")), status.exitstatus,
                   File.read(base + ".err"))
+    end
+
+    # The case of `cases` that line `n` of their program `src` is in: the
+    # last whose heading (`# case <id>:`, which program(cases) writes above
+    # each) comes before it. Nil for a line above the first case.
+    def case_at(cases, src, n)
+      id = src.lines[0, n].reverse_each.find { |l| l.start_with?("# case ") }.to_s[/\A# case (\d+):/, 1]
+      id && cases.find { |c| c.id == id.to_i }
     end
 
     def record(f)
@@ -507,8 +571,16 @@ module ProbeCommon
     end
 
     # One case alone: [label, kind, CRuby's lines, spinel's lines, detail].
-    # The label is "ran" when the two agree.
+    # The label is "ran" when the two agree. A case is built alone once: a
+    # failing program's split can come back to a case it named as the
+    # failure's, and a reduction ends on a case it judged on the way.
     def judge(c)
+      @lock.synchronize { return @judged[c] if @judged.key?(c) }
+      verdict = judge_alone(c)
+      @lock.synchronize { @judged[c] = verdict }
+    end
+
+    def judge_alone(c)
       want = expected([c])[c.id]
       o = spinel([c])
       if o.label == "ran"
@@ -547,21 +619,41 @@ module ProbeCommon
         return [] if l == "ran" # the case alone agrees: nothing to report
         [record(Finding.new(cases[0], l, det, w, g, k, nil, []))]
       else
-        h = cases.size / 2
-        found = check(cases[0...h], want) + check(cases[h..], want)
-        # the halves have to show the failure the whole program showed; when
-        # none does, it needs cases from both
-        shown = found.any? do |f|
+        # the parts have to show the failure the whole program showed
+        shows = lambda do |f|
           if stopped
             %w[no-answer missing-answer exit-status].include?(f.kind) || %w[crash timeout].include?(f.label)
           else
             f.label == o.label && ProbeCommon.error_kind(f.detail) == ProbeCommon.error_kind(o.detail)
           end
         end
-        return found if shown
+        # The cases the failure names -- those its diagnostics' lines are in,
+        # or the first one a program that stopped did not finish -- are
+        # tried alone. Those that show it, or do not build as the program
+        # did not, carry it, and the others are split without them: one
+        # split instead of one to each. The halves are no larger than a
+        # plain split's, since a C compiler's time can grow faster than the
+        # program (gcc took over 600s on 50 cases that built in halves).
+        named = o.lines ? [cases.find { |c| o.lines[c.id].size < want[c.id].size }].compact : o.at
+        carriers = named.filter_map do |c|
+          l, k, w, g, det = judge(c)
+          f = Finding.new(c, l, det, w, g, k, nil, [])
+          f if shows.call(f) || (!o.lines && l == o.label)
+        end
+        return carriers.map { |f| record(f) } + halves(cases - carriers.map(&:c), want) if carriers.any?(&shows)
+        found = halves(cases, want)
+        # when neither half shows it, it needs cases from both
+        return found if found.any?(&shows)
         detail = stopped ? "the program stopped part way" : "#{o.label}: #{o.detail}"
         found + [record(interaction(cases, detail, nil, nil))]
       end
+    end
+
+    # The findings of `cases` checked in two halves (or one, or none, for a
+    # case or none): each smaller than `cases`, so a split ends.
+    def halves(cases, want)
+      h = cases.size / 2
+      [cases[0...h], cases[h..]].reject(&:empty?).sum([]) { |part| check(part, want) }
     end
 
     # A failure the cases of `cases` make only together, filed under its own
@@ -587,9 +679,17 @@ module ProbeCommon
     def shrink(f, budget)
       c = f.c
       evals = 0
+      # A case that does not build fails before any code is generated (at
+      # spinel's refusal or the C compiler's checks) when a build that stops
+      # there fails as it does. Each step then asks that build whether it
+      # still fails the same way, and only the case the reduction ends on is
+      # built in full.
+      same = ->(o) { o.label == f.label && ProbeCommon.error_kind(o.detail) == f.kind }
+      quick = %w[compile-error link-error compiler-failure].include?(f.label) && same.call(spinel([f.c], true))
       loop do
         step = simpler(c).find do |s|
           break nil if (evals += 1) > budget
+          next same.call(spinel([s], true)) if quick
           l, k, = judge(s)
           l == f.label && k == f.kind
         end
