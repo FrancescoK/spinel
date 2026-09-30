@@ -1676,6 +1676,7 @@ static TyKind *named_array_slot(Compiler *c, int recv) {
       int cid = s ? s->class_id : -1;
       if (cid < 0) cid = comp_class_index(c, "Toplevel");
       if (cid < 0) return NULL;
+      cid = comp_cvar_owner(c, cid, nm);
       int idx = comp_cvar_index(&c->classes[cid], nm);
       return idx >= 0 ? &c->classes[cid].cvar_types[idx] : NULL;
     }
@@ -2345,6 +2346,7 @@ static int masgn_unify_elem(Compiler *c, Scope *ms, const int *tgts, int n, TyKi
       int cc = ms && ms->class_id >= 0 ? ms->class_id
              : tgts[i] < c->node_cap ? c->node_cbody[tgts[i]] : -1;
       const char *cvnm = nt_str(nt, tgts[i], "name");
+      if (cc >= 0 && cvnm) cc = comp_cvar_owner(c, cc, cvnm);
       int cvx = cc >= 0 && cvnm ? comp_cvar_index(&c->classes[cc], cvnm) : -1;
       if (cvx < 0) continue;
       TyKind mg = ty_unify(c->classes[cc].cvar_types[cvx], elem);
@@ -4534,7 +4536,10 @@ static int widen_arg_hash(Compiler *c, int arg) {
     slot = named_array_slot(c, arg);
     wk = ak == NK_GlobalVariableReadNode ? NK_GlobalVariableWriteNode
        : ak == NK_ClassVariableReadNode ? NK_ClassVariableWriteNode : NK_ConstantWriteNode;
-    if (ak == NK_ClassVariableReadNode) cid = asc->class_id >= 0 ? asc->class_id : comp_class_index(c, "Toplevel");
+    if (ak == NK_ClassVariableReadNode) {
+      cid = asc->class_id >= 0 ? asc->class_id : comp_class_index(c, "Toplevel");
+      cid = comp_cvar_owner(c, cid, an);
+    }
   }
   else return 0;
   if (!slot || !ty_is_hash(*slot) || *slot == TY_POLY_POLY_HASH) return 0;
@@ -4545,6 +4550,7 @@ static int widen_arg_hash(Compiler *c, int arg) {
       if (cid >= 0) {
         Scope *ws = comp_scope_of(c, w);
         int wc = ws && ws->class_id >= 0 ? ws->class_id : comp_class_index(c, "Toplevel");
+        if (ak == NK_ClassVariableReadNode) wc = comp_cvar_owner(c, wc, an);
         if (wc != cid) continue;
       }
       int v = nt_ref(nt, w, "value");
@@ -4642,11 +4648,13 @@ static int container_literals(Compiler *c, int n, int *out, int nout, int cap, i
   int cid = -1;
   if (k == NK_InstanceVariableReadNode || k == NK_ClassVariableReadNode)
     cid = sc->class_id >= 0 ? sc->class_id : comp_class_index(c, "Toplevel");
+  if (k == NK_ClassVariableReadNode) cid = comp_cvar_owner(c, cid, nm);
   NT_FOREACH_KIND(nt, wk, w) {
     if (!sp_streq(nt_str(nt, w, "name"), nm)) continue;
     if (cid >= 0) {
       Scope *ws = comp_scope_of(c, w);
       int wc = ws && ws->class_id >= 0 ? ws->class_id : comp_class_index(c, "Toplevel");
+      if (k == NK_ClassVariableReadNode) wc = comp_cvar_owner(c, wc, nm);
       if (wc != cid) continue;
     }
     nout = container_literals(c, nt_ref(nt, w, "value"), out, nout, cap, depth + 1);
@@ -4818,15 +4826,18 @@ static int named_writes_fresh(Compiler *c, int v) {
   else wk[0] = NK_ConstantWriteNode;
   Scope *vs = comp_scope_of(c, v);
   int vcls = vs && vs->class_id >= 0 ? vs->class_id : comp_class_index(c, "Toplevel");
+  if (k == NK_ClassVariableReadNode) vcls = comp_cvar_owner(c, vcls, nt_str(nt, v, "name"));
   int saw = 0;
   for (int t = 0; t < 4 && wk[t] != NK_NONE; t++)
     NT_FOREACH_KIND(nt, wk[t], w) {
       if (!sp_streq(nt_str(nt, w, "name"), nt_str(nt, v, "name"))) continue;
-      /* a class variable of another class is another slot */
+      /* a class variable of another class is another slot, unless that class
+         inherits it */
       if (k == NK_ClassVariableReadNode) {
         Scope *ws = comp_scope_of(c, w);
         int wc = ws && ws->class_id >= 0 ? ws->class_id : c->node_cbody[w];
-        if ((wc >= 0 ? wc : comp_class_index(c, "Toplevel")) != vcls) continue;
+        if (wc < 0) wc = comp_class_index(c, "Toplevel");
+        if (comp_cvar_owner(c, wc, nt_str(nt, v, "name")) != vcls) continue;
       }
       if (t >= 2) return 0;
       int wv = unwrap_parens(c, nt_ref(nt, w, "value"));

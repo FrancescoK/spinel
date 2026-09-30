@@ -5959,10 +5959,11 @@ static int is_cvar_write_kind(NodeKind k) {
    and unifies the stored type into its slot. An op-write stores the RHS type
    unless the slot holds an object (the operator method's return) or an array
    the operator combines with its own kind. */
-static int cvar_note_write(Compiler *c, ClassInfo *ci, int id) {
+static int cvar_note_write(Compiler *c, int cid, int id) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, id, "name");
   if (!nm) return 0;
+  ClassInfo *ci = &c->classes[comp_cvar_owner(c, cid, nm)];
   int old_n = ci->ncvars;
   int idx = comp_cvar_intern(ci, nm);
   int changed = ci->ncvars != old_n;
@@ -6011,7 +6012,7 @@ int infer_cvar_types(Compiler *c) {
       const char *sty = nt_type(nt, s);
       if (!sty) continue;
       if (is_cvar_write_kind(nt_kind(nt, s))) {
-        if (cvar_note_write(c, &c->classes[ci], s)) changed = 1;
+        if (cvar_note_write(c, ci, s)) changed = 1;
       }
       else if (sp_streq(sty, "MultiWriteNode")) {
         int mln = 0;
@@ -6024,11 +6025,12 @@ int infer_cvar_types(Compiler *c) {
           if (!mlty || !sp_streq(mlty, "ClassVariableTargetNode")) continue;
           const char *cnm = nt_str(nt, mlefts[mi], "name");
           if (!cnm) continue;
-          int midx = comp_cvar_intern(&c->classes[ci], cnm);
+          ClassInfo *mcl = &c->classes[comp_cvar_owner(c, ci, cnm)];
+          int midx = comp_cvar_intern(mcl, cnm);
           TyKind mvt2 = (mels && mi < men) ? infer_type(c, mels[mi]) : TY_UNKNOWN;
           if (mvt2 == TY_NIL || mvt2 == TY_UNKNOWN) continue;
-          TyKind mmerged = ty_unify(c->classes[ci].cvar_types[midx], mvt2);
-          if (mmerged != c->classes[ci].cvar_types[midx]) { c->classes[ci].cvar_types[midx] = mmerged; changed = 1; }
+          TyKind mmerged = ty_unify(mcl->cvar_types[midx], mvt2);
+          if (mmerged != mcl->cvar_types[midx]) { mcl->cvar_types[midx] = mmerged; changed = 1; }
         }
       }
     }
@@ -6043,7 +6045,7 @@ int infer_cvar_types(Compiler *c) {
     int wcid = s->class_id;
     if (wcid < 0 && c->node_cbody && id < c->node_cap) wcid = c->node_cbody[id];
     if (wcid < 0) continue;
-    if (cvar_note_write(c, &c->classes[wcid], id)) changed = 1;
+    if (cvar_note_write(c, wcid, id)) changed = 1;
   }
   /* A multiple-assignment target (`@@a, *@@r = ...`), in a method or a class
      body and on either side of a splat, declares its cvar too; the elements'
@@ -6053,9 +6055,10 @@ int infer_cvar_types(Compiler *c) {
     int cc = s && s->class_id >= 0 ? s->class_id : id < c->node_cap ? c->node_cbody[id] : -1;
     const char *nm = nt_str(nt, id, "name");
     if (cc < 0 || !nm) continue;
-    int old_n = c->classes[cc].ncvars;
-    comp_cvar_intern(&c->classes[cc], nm);
-    if (c->classes[cc].ncvars != old_n) changed = 1;
+    ClassInfo *tcl = &c->classes[comp_cvar_owner(c, cc, nm)];
+    int old_n = tcl->ncvars;
+    comp_cvar_intern(tcl, nm);
+    if (tcl->ncvars != old_n) changed = 1;
   }
   /* Pass 2b: every class-body-level write -- one nested in begin/rescue or
      an if (Pass 1 sees only a body's direct statements), and one in a
@@ -6064,7 +6067,7 @@ int infer_cvar_types(Compiler *c) {
     if (!is_cvar_write_kind(nt_kind(nt, id))) continue;
     Scope *s = comp_scope_of(c, id);
     if (s->class_id >= 0 || id >= c->node_cap || c->node_cbody[id] < 0) continue;
-    if (cvar_note_write(c, &c->classes[c->node_cbody[id]], id)) changed = 1;
+    if (cvar_note_write(c, c->node_cbody[id], id)) changed = 1;
   }
   /* Pass 2.5: `Klass.class_variable_set(:@@name, v)` with a literal name
      DECLARES the cvar when the class has no such write -- CRuby creates it on
@@ -6083,11 +6086,12 @@ int infer_cvar_types(Compiler *c) {
     const char *cvn = (aty && sp_streq(aty, "SymbolNode")) ? nt_str(nt, av[0], "value")
                     : (aty && sp_streq(aty, "StringNode")) ? nt_str(nt, av[0], "content") : NULL;
     if (!cvn || cvn[0] != '@' || cvn[1] != '@') continue;
-    int idx = comp_cvar_intern(&c->classes[cci], cvn);
+    ClassInfo *scl = &c->classes[comp_cvar_owner(c, cci, cvn)];
+    int idx = comp_cvar_intern(scl, cvn);
     TyKind vt = infer_type(c, av[1]);
     if (vt == TY_NIL || vt == TY_UNKNOWN) continue;
-    TyKind merged = ty_unify(c->classes[cci].cvar_types[idx], vt);
-    if (merged != c->classes[cci].cvar_types[idx]) { c->classes[cci].cvar_types[idx] = merged; changed = 1; }
+    TyKind merged = ty_unify(scl->cvar_types[idx], vt);
+    if (merged != scl->cvar_types[idx]) { scl->cvar_types[idx] = merged; changed = 1; }
   }
   /* Pass 3: top-level writes (class_id == -1 in scope 0, and not inside any
      class body) -- use Toplevel pseudo-class. */
@@ -6098,7 +6102,24 @@ int infer_cvar_types(Compiler *c) {
     if (c->node_cbody && id < c->node_cap && c->node_cbody[id] >= 0) continue;
     int tl_idx = comp_class_index(c, "Toplevel");
     if (tl_idx < 0) { comp_class_new(c, "Toplevel", -1); tl_idx = c->nclasses - 1; }
-    if (cvar_note_write(c, &c->classes[tl_idx], id)) changed = 1;
+    if (cvar_note_write(c, tl_idx, id)) changed = 1;
+  }
+  /* Pass 4: a subclass can have interned a name before its superclass
+     declared it, when a write in the subclass was reached first (the passes
+     above go by kind of write, not by inheritance). That entry goes, with its
+     type: the next round registers the same writes at the owner, through
+     cvar_note_write's own merge, so the owner's type does not depend on which
+     write came first. The other entries keep their order. */
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    ClassInfo *cl = &c->classes[ci];
+    for (int j = 0; j < cl->ncvars; ) {
+      if (comp_cvar_owner(c, ci, cl->cvars[j]) == ci) { j++; continue; }
+      free(cl->cvars[j]);
+      memmove(&cl->cvars[j], &cl->cvars[j + 1], sizeof(char *) * (size_t)(cl->ncvars - j - 1));
+      memmove(&cl->cvar_types[j], &cl->cvar_types[j + 1], sizeof(TyKind) * (size_t)(cl->ncvars - j - 1));
+      cl->ncvars--;
+      changed = 1;
+    }
   }
   return changed;
 }

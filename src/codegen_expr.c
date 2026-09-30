@@ -2373,7 +2373,11 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     Scope *s = comp_scope_of(c, id);
     int cid = s->class_id >= 0 ? s->class_id : g_class_body_id;
     if (cid < 0) cid = comp_class_index(c, "Toplevel");
-    if (cid >= 0) { buf_printf(b, "cvar_%s_%s", c->classes[cid].name, nm + 2); return; }
+    if (cid >= 0) {
+      cid = comp_cvar_owner(c, cid, nm);
+      buf_printf(b, "cvar_%s_%s", c->classes[cid].name, nm + 2);
+      return;
+    }
     unsupported(c, id, "class variable read (no class scope)");
   }
   if (sp_streq(ty, "ClassVariableWriteNode")) {  /* in value position: yields the assigned value */
@@ -2383,6 +2387,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     int cid = s->class_id >= 0 ? s->class_id : g_class_body_id;
     if (cid < 0) cid = comp_class_index(c, "Toplevel");
     if (cid < 0) { unsupported(c, id, "class variable write (no class scope)"); return; }
+    cid = comp_cvar_owner(c, cid, nm);
     TyKind ct = TY_INT;
     int idx = comp_cvar_index(&c->classes[cid], nm);
     if (idx >= 0) ct = c->classes[cid].cvar_types[idx];
@@ -2454,6 +2459,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     int cid = s->class_id >= 0 ? s->class_id : g_class_body_id;
     if (cid < 0) cid = comp_class_index(c, "Toplevel");
     if (cid < 0) { unsupported(c, id, "class variable op-write (no class scope)"); return; }
+    cid = comp_cvar_owner(c, cid, nm);
     TyKind ct = TY_INT;
     int idx = comp_cvar_index(&c->classes[cid], nm);
     if (idx >= 0) ct = c->classes[cid].cvar_types[idx];
@@ -2478,6 +2484,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     int cid = s->class_id >= 0 ? s->class_id : g_class_body_id;
     if (cid < 0) cid = comp_class_index(c, "Toplevel");
     if (cid < 0) { unsupported(c, id, "class variable or-write (no class scope)"); return; }
+    cid = comp_cvar_owner(c, cid, nm);
     char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[cid].name, nm + 2);
     int oidx = comp_cvar_index(&c->classes[cid], nm);
     TyKind ot = oidx >= 0 ? c->classes[cid].cvar_types[oidx] : TY_UNKNOWN;
@@ -2497,6 +2504,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     int cid = s->class_id >= 0 ? s->class_id : g_class_body_id;
     if (cid < 0) cid = comp_class_index(c, "Toplevel");
     if (cid < 0) { unsupported(c, id, "class variable and-write (no class scope)"); return; }
+    cid = comp_cvar_owner(c, cid, nm);
     char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[cid].name, nm + 2);
     int aidx = comp_cvar_index(&c->classes[cid], nm);
     TyKind at = aidx >= 0 ? c->classes[cid].cvar_types[aidx] : TY_UNKNOWN;
@@ -2947,8 +2955,8 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         Scope *cs = comp_scope_of(c, v);
         int cid = cs && cs->class_id >= 0 ? cs->class_id : g_class_body_id;
         if (cid < 0) cid = comp_class_index(c, "Toplevel");
-        while (cid >= 0 && cnm && comp_cvar_index(&c->classes[cid], cnm) < 0)
-          cid = c->classes[cid].parent;
+        if (cid >= 0 && cnm) cid = comp_cvar_owner(c, cid, cnm);
+        if (cid >= 0 && cnm && comp_cvar_index(&c->classes[cid], cnm) < 0) cid = -1;
         if (cid >= 0 && cnm)
           buf_printf(b, "(cvar_%s_%s__set ? SPL(\"class variable\") : NULL)",
                      c->classes[cid].name, cnm + 2);

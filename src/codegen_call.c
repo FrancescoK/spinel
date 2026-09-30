@@ -11188,6 +11188,7 @@ static TyKind write_slot_ty_of(Compiler *c, int id, NodeKind kind) {
     if (kind == NK_ClassVariableOrWriteNode) {
       if (cid < 0) cid = comp_class_index(c, "Toplevel");
       if (cid < 0) return TY_UNKNOWN;
+      cid = comp_cvar_owner(c, cid, vn);
       int idx = comp_cvar_index(&c->classes[cid], vn);
       return idx >= 0 ? c->classes[cid].cvar_types[idx] : TY_UNKNOWN;
     }
@@ -32713,6 +32714,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       const char *rty2 = nt_type(nt, recv);
       int ccid = (rty2 && sp_streq(rty2, "ConstantReadNode")) ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
       if (cvn && cvn[0] == '@' && cvn[1] == '@' && ccid >= 0) {
+        ccid = comp_cvar_owner(c, ccid, cvn);
         int cvi = comp_cvar_index(&c->classes[ccid], cvn);
         char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[ccid].name, cvn + 2);
         if (sp_streq(name, "class_variable_defined?")) {
