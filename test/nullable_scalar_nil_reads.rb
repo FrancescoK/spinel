@@ -9,7 +9,8 @@
 # labels (INT64_MIN and INT64_MAX among them). An argument is evaluated after
 # the receiver, and nil's rationalize takes an epsilon of any kind.
 # Integer() of either nil is the TypeError, also under --int-overflow=promote,
-# where the call answers a box.
+# where the call answers a box. nil's answer is a value like any other: a
+# call can be made on it too.
 
 def t
   yield
@@ -70,3 +71,11 @@ end
   else p :else
   end
 end
+
+p [b.to_a.size, b.to_h.empty?, (b =~ /x/).inspect, b.to_a.inspect]
+p [(f & true).inspect, (f | 1).to_s, (f ^ nil).class, f.to_h.to_a]
+t { c.to_a.size }
+t { (g & true).inspect }
+h = b.to_a
+h << 3
+p [h, [b.to_a, f.to_h]]
