@@ -3430,6 +3430,40 @@ static void emit_zip_block_param(Compiler *c, TyKind slot, TyKind src_ty,
   else buf_puts(b, src);
 }
 
+static void emit_poly_auto_splat(Compiler *c, int block, int telem, Buf *b, int indent) {
+  Scope *bs = comp_scope_of(c, block);
+  int npp = 0; while (block_param_name(c, block, npp)) npp++;
+  emit_indent(b, indent + 1);
+  buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && SP_IS_BUILTIN_ARRAY(_t%d.cls_id)) {\n", telem, telem);
+  for (int pj = 0; pj < npp; pj++) {
+    const char *pnj = block_param_name(c, block, pj);
+    if (!pnj) break;
+    LocalVar *plv = bs ? scope_local(bs, pnj) : NULL;
+    TyKind pt = plv ? plv->type : TY_POLY;
+    char src[64]; snprintf(src, sizeof src, "sp_poly_arr_get(_t%d, %d)", telem, pj);
+    emit_indent(b, indent + 2);
+    emit_block_param_from_boxed(c, rename_local(pnj), pt, src, b);
+  }
+  emit_indent(b, indent + 1); buf_puts(b, "}\nelse {\n");
+  for (int pj = 0; pj < npp; pj++) {
+    const char *pnj = block_param_name(c, block, pj);
+    if (!pnj) break;
+    LocalVar *plv = bs ? scope_local(bs, pnj) : NULL;
+    TyKind pt = plv ? plv->type : TY_POLY;
+    emit_indent(b, indent + 2);
+    if (pj == 0) {
+      char src[32]; snprintf(src, sizeof src, "_t%d", telem);
+      emit_block_param_from_boxed(c, rename_local(pnj), pt, src, b);
+    }
+    else {
+      buf_printf(b, "lv_%s = ", rename_local(pnj));
+      emit_block_param_nil(c, pt, b);
+      buf_puts(b, ";\n");
+    }
+  }
+  emit_indent(b, indent + 1); buf_puts(b, "}\n");
+}
+
 static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent);
 int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   return emit_ivar_nil_guarded(c, id, b, indent, emit_iteration_stmt_body);
@@ -4336,39 +4370,10 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       }
     }
     else if (npp_poly >= 2) {
-      Scope *blk_pv = comp_scope_of(c, block);
       int telem = ++g_tmp;
       emit_indent(b, indent + 1);
       buf_printf(b, "sp_RbVal _t%d = sp_poly_each_elem(_t%d, _t%d);\n", telem, ta, ti);
-      emit_indent(b, indent + 1);
-      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && SP_IS_BUILTIN_ARRAY(_t%d.cls_id)) {\n", telem, telem);
-      for (int pj = 0; pj < npp_poly; pj++) {
-        const char *pnj = block_param_name(c, block, pj);
-        if (!pnj) break;
-        LocalVar *plv = blk_pv ? scope_local(blk_pv, pnj) : NULL;
-        TyKind pt = plv ? plv->type : TY_POLY;
-        char src[64]; snprintf(src, sizeof src, "sp_poly_arr_get(_t%d, %d)", telem, pj);
-        emit_indent(b, indent + 2);
-        emit_block_param_from_boxed(c, rename_local(pnj), pt, src, b);
-      }
-      emit_indent(b, indent + 1); buf_puts(b, "}\nelse {\n");
-      for (int pj = 0; pj < npp_poly; pj++) {
-        const char *pnj = block_param_name(c, block, pj);
-        if (!pnj) break;
-        LocalVar *plv = blk_pv ? scope_local(blk_pv, pnj) : NULL;
-        TyKind pt = plv ? plv->type : TY_POLY;
-        emit_indent(b, indent + 2);
-        if (pj == 0) {
-          char src[32]; snprintf(src, sizeof src, "_t%d", telem);
-          emit_block_param_from_boxed(c, rename_local(pnj), pt, src, b);
-        }
-        else {
-          buf_printf(b, "lv_%s = ", rename_local(pnj));
-          emit_block_param_nil(c, pt, b);
-          buf_puts(b, ";\n");
-        }
-      }
-      emit_indent(b, indent + 1); buf_puts(b, "}\n");
+      emit_poly_auto_splat(c, block, telem, b, indent);
     }
     else if (p0 && pv_half >= 0) {
       /* each_value / each_key: the element is a [k, v] pair; bind one half
@@ -4526,39 +4531,10 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
          element ONLY when it is itself an Array -- destructure item k into param
          k (missing item -> nil); a non-array element binds param 0, rest nil. */
       if (!did_destruct && npp >= 2) {
-        Scope *blk_sp2 = comp_scope_of(c, block);
         int telem = ++g_tmp;
         emit_indent(b, indent + 1);
         buf_printf(b, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", telem, ta, t);
-        emit_indent(b, indent + 1);
-        buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && SP_IS_BUILTIN_ARRAY(_t%d.cls_id)) {\n", telem, telem);
-        for (int pj = 0; pj < npp; pj++) {
-          const char *pnj = block_param_name(c, block, pj);
-          if (!pnj) break;
-          LocalVar *plv = blk_sp2 ? scope_local(blk_sp2, pnj) : NULL;
-          TyKind pt = plv ? plv->type : TY_POLY;
-          char src[64]; snprintf(src, sizeof src, "sp_poly_arr_get(_t%d, %d)", telem, pj);
-          emit_indent(b, indent + 2);
-          emit_block_param_from_boxed(c, rename_local(pnj), pt, src, b);
-        }
-        emit_indent(b, indent + 1); buf_puts(b, "}\nelse {\n");
-        for (int pj = 0; pj < npp; pj++) {
-          const char *pnj = block_param_name(c, block, pj);
-          if (!pnj) break;
-          LocalVar *plv = blk_sp2 ? scope_local(blk_sp2, pnj) : NULL;
-          TyKind pt = plv ? plv->type : TY_POLY;
-          emit_indent(b, indent + 2);
-          if (pj == 0) {
-            char src[32]; snprintf(src, sizeof src, "_t%d", telem);
-            emit_block_param_from_boxed(c, rename_local(pnj), pt, src, b);
-          }
-          else {
-            buf_printf(b, "lv_%s = ", rename_local(pnj));
-            emit_block_param_nil(c, pt, b);
-            buf_puts(b, ";\n");
-          }
-        }
-        emit_indent(b, indent + 1); buf_puts(b, "}\n");
+        emit_poly_auto_splat(c, block, telem, b, indent);
         did_destruct = 1;
       }
       if (!did_destruct) {
