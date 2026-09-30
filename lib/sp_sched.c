@@ -2295,6 +2295,7 @@ sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
   SP_GC_ROOT(f);   /* root the freshly-built fiber across the allocation below */
   SP_GC_ROOT_RBVAL(arg);
   f->owner = 0;   /* the thread's own fiber: the scheduler runs it on any worker */
+  f->thread_main = 1;
   sp_thread *volatile t = (sp_thread *)sp_gc_alloc(sizeof(sp_thread), NULL, sp_thread_scan);
   memset(t, 0, sizeof *t);
   t->home_wid = -1;              /* not yet started: any worker may pick it up */

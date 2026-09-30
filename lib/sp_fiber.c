@@ -579,7 +579,7 @@ static void sp_Fiber_scan(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->user_data)sp_gc_
   if(f!=sp_fiber_collecting&&f!=sp_fiber_current&&f->state!=3)sp_fiber_mark_roots(f);}
 sp_Fiber*sp_Fiber_new(void(*body)(sp_Fiber*)){sp_fiber_fault_arm();sp_Fiber*f=(sp_Fiber*)sp_gc_alloc(sizeof(sp_Fiber),sp_Fiber_fin,sp_Fiber_scan);{size_t _g=sp_fiber_guard();f->stack_size=sp_fiber_stack_bytes();
 /* MAP_NORESERVE: the stack is virtual space until touched, and a strict-overcommit host must not charge every fiber the whole of it (#4496) */
-f->stack=(char*)mmap(NULL,_g+f->stack_size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_STACK|MAP_NORESERVE,-1,0);if(f->stack==MAP_FAILED){f->stack=NULL;sp_raise_cls("FiberError","failed to allocate fiber stack");}mprotect(f->stack,_g,PROT_NONE);}f->state=0;f->transferred=0;f->body=body;f->yielded_value=sp_box_nil();f->resumed_value=sp_box_nil();f->user_data=NULL;f->saved_exc_top=0;f->saved_catch_top=0;f->exc_ctx=sp_exc_ctx_new();f->raised=0;f->raised_cls=NULL;f->raised_msg=NULL;f->raised_obj=NULL;f->inject=0;f->inject_defer=0;f->inj_cls=NULL;f->inj_msg=NULL;f->inj_obj=NULL;f->storage=NULL;f->birth_file=NULL;f->birth_line=0;f->pass_argc=-1;f->owner=sp_thread_owner_id();f->return_to=NULL;f->saved_roots=NULL;f->saved_nroots=0;f->saved_roots_cap=0;f->fiber_next=NULL;f->fiber_prev=NULL;sp_fiber_list_add(f);sp_fiber_install_gc_hook();if(sp_fiber_current&&sp_fiber_current->storage){sp_Fiber*volatile _froot=f;int _pushed=0;if(sp_gc_nroots<SP_GC_STACK_MAX){sp_gc_roots[sp_gc_nroots++]=(void**)&_froot;_pushed=1;}f->storage=sp_FiberStore_dup((sp_FiberStore*)sp_fiber_current->storage);if(_pushed)sp_gc_nroots--;}
+f->stack=(char*)mmap(NULL,_g+f->stack_size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_STACK|MAP_NORESERVE,-1,0);if(f->stack==MAP_FAILED){f->stack=NULL;sp_raise_cls("FiberError","failed to allocate fiber stack");}mprotect(f->stack,_g,PROT_NONE);}f->state=0;f->transferred=0;f->body=body;f->yielded_value=sp_box_nil();f->resumed_value=sp_box_nil();f->user_data=NULL;f->saved_exc_top=0;f->saved_catch_top=0;f->exc_ctx=sp_exc_ctx_new();f->raised=0;f->raised_cls=NULL;f->raised_msg=NULL;f->raised_obj=NULL;f->inject=0;f->inject_defer=0;f->inj_cls=NULL;f->inj_msg=NULL;f->inj_obj=NULL;f->storage=NULL;f->birth_file=NULL;f->birth_line=0;f->pass_argc=-1;f->owner=sp_thread_owner_id();f->return_to=NULL;f->thread_main=0;f->saved_roots=NULL;f->saved_nroots=0;f->saved_roots_cap=0;f->fiber_next=NULL;f->fiber_prev=NULL;sp_fiber_list_add(f);sp_fiber_install_gc_hook();if(sp_fiber_current&&sp_fiber_current->storage){sp_Fiber*volatile _froot=f;int _pushed=0;if(sp_gc_nroots<SP_GC_STACK_MAX){sp_gc_roots[sp_gc_nroots++]=(void**)&_froot;_pushed=1;}f->storage=sp_FiberStore_dup((sp_FiberStore*)sp_fiber_current->storage);if(_pushed)sp_gc_nroots--;}
 #ifdef SP_TSAN
   if(!sp_fiber_root.tsan_fiber)sp_fiber_root.tsan_fiber=__tsan_get_current_fiber();
   f->tsan_fiber=__tsan_create_fiber(0);f->caller_fiber=NULL;
@@ -593,6 +593,9 @@ void sp_Fiber_storage_set(sp_Fiber*f,sp_sym k,sp_RbVal v){SP_GC_ROOT_RBVAL(v);SP
    it and terminates without propagating. Must stay in sync with the literal the
    codegen emits in src/codegen_stmt.c. */
 #define SP_FIBER_KILL_CLS "FiberKillSignal"
+/* the kill signal's message when it is aimed at a main fiber: fibers pass it
+   on up instead of ending there (see sp_Fiber_kill) */
+#define SP_FIBER_KILL_MAIN "main"
 
 /* The inject slot is written by another OS thread (Thread#kill/#raise under the
    scheduler lock) but read lock-free by the target's own paths (the trampoline,
@@ -652,7 +655,12 @@ void sp_fiber_fire_inject_if_pending(void){sp_Fiber*f=sp_fiber_current;if(f&&!f-
 int sp_fiber_inject_pending(sp_Fiber*f){return SP_INJECT_PEEK(f)!=0;}
 SP_NORETURN void sp_fiber_raise_kill_self(void){sp_raise_cls(SP_FIBER_KILL_CLS,(&("\xff")[1]));}
 static void sp_fiber_trampoline(void){sp_Fiber*f=sp_fiber_current;jmp_buf base;if(setjmp(base)==0){sp_exc_arm(base);{int _inj=SP_INJECT_PEEK(f);if(_inj&&_inj!=3)sp_fiber_consume_inject(f);}/* a thread raise (3) defers to the body's first suspension point */f->body(f);sp_exc_disarm();}
-else{const char*_cc=sp_exc_cur_cls();if(_cc&&!strcmp(_cc,SP_FIBER_KILL_CLS)){
+else{const char*_cc=sp_exc_cur_cls();
+  int killed=_cc&&!strcmp(_cc,SP_FIBER_KILL_CLS);
+  /* a kill aimed at a main fiber goes on up to it, like an exception */
+  const char*_km=killed?sp_exc_cur_msg():NULL;
+  if(_km&&!strcmp(_km,SP_FIBER_KILL_MAIN)&&f!=sp_thread_main_fiber())killed=0;
+  if(killed){
   /* killed: ensures already ran while unwinding; end without propagating,
      and #resume answers nil rather than whatever it last yielded */
   f->yielded_value=sp_box_nil();}
@@ -712,12 +720,20 @@ sp_RbVal sp_Fiber_raise(sp_Fiber*f,const char*cls,const char*msg,void*obj){SP_GC
    bypassed) until the trampoline terminates it. An unstarted fiber never ran its
    body, so it is just marked dead. Returns the fiber, matching CRuby. */
 sp_Fiber*sp_Fiber_kill(sp_Fiber*f){SP_GC_ROOT(f);
-  if(f==sp_fiber_current){
-    /* A fiber killing itself unwinds right here. The main fiber of the
-       program or of a Thread ignores it, as in CRuby. */
-    if(f==&sp_fiber_root||f==sp_thread_main_fiber())return f;
-    sp_fiber_raise_kill_self();
-  }
+  /* A main fiber: the root (no stack of its own) or a Thread's own fiber. */
+  int main_fiber=f->stack==NULL||f->thread_main;
+  /* the running thread's: the root only counts on the main thread */
+  int ours=f->stack==NULL?sp_thread_main_fiber()==NULL:f==sp_thread_main_fiber();
+  /* Killing the main fiber of the program or of a Thread ends that program
+     or thread, as in CRuby: the signal unwinds every fiber on the way. */
+  if(main_fiber&&ours)
+    sp_raise_cls(SP_FIBER_KILL_CLS,(&("\xff" SP_FIBER_KILL_MAIN)[1]));
+  /* Another thread's fiber is refused before anything is queued on it,
+     with CRuby's messages. */
+  if(main_fiber)sp_raise_cls("FiberError","attempt to resume a transferring fiber");
+  sp_fiber_check_thread(f);
+  /* a fiber killing itself unwinds right here */
+  if(f==sp_fiber_current)sp_fiber_raise_kill_self();
   if(f->state==3)return f;             /* already dead: no-op */
   if(f->state==0){f->state=3;return f;}/* unstarted: nothing to unwind */
   sp_fiber_inject_publish(f,2,NULL,NULL,NULL);
