@@ -638,11 +638,12 @@ class value, through a proc, a lambda and a `Method`: `.call`, `.()`,
 `method(:m)` and `obj.method(:m)` and their `to_proc`; through `yield`, into
 a literal block, a block the method keeps, and a proc or `Method` passed
 with `&`; through `instance_exec`, `instance_eval`, `class_exec` and
-`module_exec`; and through `new` and `raise Cls, s` into an `initialize`,
-one that yields the String to its block, a Struct's and a Data's included.
-The paths below do not share it yet, and a call that would hand such a
-method a String variable through one of them is refused at compile time
-rather than compiled with the append lost:
+`module_exec`; through `new` and `raise Cls, s` into an `initialize`, one
+that yields the String to its block, a Struct's and a Data's included; and
+through a splat or a gather (`m(*args, s)`, `m(*[s])`, `def m(*r)`). The
+paths below do not share it yet, and a call that would hand such a method a
+String variable through one of them is refused at compile time rather than
+compiled with the append lost:
 
 ```ruby
 f = ->(t) { t << "!" }
