@@ -15,6 +15,7 @@
 #include "spinel/runtime.h"
 #include <dlfcn.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -90,9 +91,19 @@ sp_int sp_ffi_strnlen(sp_int p, sp_int max) {
    moves an object, so the address is stable while the String lives. */
 sp_int sp_ffi_str_addr(const char *s) { return (sp_int)(intptr_t)s; }
 
+/* The most bytes one binary String can carry out through sp_ffi_bin_len,
+   an int. A larger count wrapped when it was stored there, and the String
+   made from it was shorter than the memory the caller went on to use. CRuby
+   has no such bound; past it, the answer is the NoMemoryError a failed
+   allocation gives. */
+static void sp_ffi_check_bin_len(sp_int n) {
+  if (n > INT_MAX) sp_raise_cls("NoMemoryError", "failed to allocate memory");
+}
+
 /* `n` bytes at `p` as a binary String, copied (embedded NULs survive). */
 const char *sp_ffi_read_bytes(sp_int p, sp_int n) {
   if (n < 0) n = 0;
+  sp_ffi_check_bin_len(n);
   sp_ffi_bin_len = (int)n;
   return p ? (const char *)(intptr_t)p : "";
 }
@@ -102,11 +113,21 @@ void sp_ffi_write_bytes(sp_int p, const char *s, sp_int off, sp_int n) {
 }
 
 /* A fresh, zero-filled binary String of `n` bytes on the GC heap: the backing
-   store of a MemoryPointer. */
+   store of a MemoryPointer. The `:cbinstr` return copies sp_ffi_bin_len bytes
+   out of the buffer, so a failed calloc cannot answer "" with a length of
+   `n`: the copy read `n` bytes from a one-byte literal. It raises
+   NoMemoryError, as CRuby's ffi does for a MemoryPointer it cannot allocate
+   and as the runtime's own recoverable allocations do (sp_fiber.c), and keeps
+   the old buffer. */
 const char *sp_ffi_zero_bytes(sp_int n) {
   if (n < 0) n = 0;
+  sp_ffi_check_bin_len(n);
   static char *zeros = NULL; static sp_int zcap = 0;
-  if (n > zcap) { free(zeros); zeros = calloc(1, (size_t)n + 1); zcap = zeros ? n : 0; }
+  if (n > zcap) {
+    char *grown = calloc(1, (size_t)n + 1);
+    if (!grown) sp_raise_cls("NoMemoryError", "failed to allocate memory");
+    free(zeros); zeros = grown; zcap = n;
+  }
   sp_ffi_bin_len = (int)n;
   return zeros ? zeros : "";
 }
