@@ -102,10 +102,10 @@ s = +"H"; p c.le(s, 2, 3), seen(s)
 s = +"J"; p c.po(1, 2, s), seen(s)
 s = +"K"; p c.mm(s), seen(s)
 
-# The same super from procs that outlive the call: the capture's cell is a
-# heap object the parent stores into and cannot name, so it is pinned as a
-# call site pins it (#4391). Unpinned, a minor collection missed the young
-# Strings the stores put there and the buffers came back short.
+# The same super from procs that outlive the call. The slot there would be
+# the capture's cell, a heap object the parent stores young Strings into
+# (#4391), so the parameter is the shared handle instead: the parent appends
+# to it in place, and the buffers come back whole under a minor collection.
 FRAG = "-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 PROCS = []
 module Keep

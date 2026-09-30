@@ -12385,10 +12385,14 @@ int an_class_can_be_reached(Compiler *c, int ci) {
    caller's buffer came back empty (#4390). Agreeing is the thing to require,
    so require it: every member must be eligible, must have a parameter at that
    index, must have it typed String, and must not have blocked it by
-   rebinding. One member that cannot take it keeps the value ABI for all. */
+   rebinding. One member that cannot take it keeps the value ABI for all.
+   A member whose parameter a proc captures takes it as the shared handle
+   instead, and so does the rest of the group (`handle`, below). */
 static int an_byref_promote_group(Compiler *c, const char *nm, int pi,
-                                  const char *elig, const unsigned *blocked, int n) {
+                                  const char *elig, const unsigned *blocked, int n,
+                                  unsigned *handle) {
   if (!nm || pi < 0 || pi >= 32) return 0;
+  int captured = 0;
   for (int k = 1; k < n; k++) {
     Scope *m = &c->scopes[k];
     if (!m->name || !sp_streq(m->name, nm)) continue;
@@ -12405,19 +12409,25 @@ static int an_byref_promote_group(Compiler *c, const char *nm, int pi,
     LocalVar *q = scope_local(m, m->pnames[pi]);
     if (!q || !q->is_param || q->is_block_param || q->type != TY_STRING) return 0;
     /* celled for a proc that can outlive the call (a stored proc, a Thread
-       body) is not a slot the caller can lend; celled because it is already
+       body) is not a slot the caller can lend: the proc would keep the
+       caller's frame. It is one String the proc, the method and the caller
+       all hold, which is what the shared handle is, so the group takes the
+       handle instead. Refused, the group kept the value ABI: a `super` or a
+       call handing the captured parameter on appended to a copy, and so did
+       the parent that shares the name (#6179). Celled because it is already
        byref is this group, mid-fixpoint. A cell only lifted iteration blocks
        made is consumed while the call runs, and the block reads the caller's
        slot through it exactly as when byref promoted first -- refusing it
        made the ABI depend on which of the two passes ran first, and the
        caller's buffer came back empty (#4568). */
-    if (q->is_cell && !q->byref_out && q->cell_outlives) return 0;
+    if (q->is_cell && !q->byref_out && q->cell_outlives) captured = 1;
   }
   int did = 0;
   for (int k = 1; k < n; k++) {
     Scope *m = &c->scopes[k];
     if (!m->name || !sp_streq(m->name, nm)) continue;
     if (m->class_id >= 0 && !m->is_cmethod && !an_class_can_be_reached(c, m->class_id)) continue;
+    if (captured) handle[k] |= 1u << pi;
     LocalVar *q = scope_local(m, m->pnames[pi]);
     if (q && !q->byref_out) { q->byref_out = 1; q->is_cell = 1; did = 1; }
   }
@@ -12431,7 +12441,8 @@ static void compute_byref_out_params(Compiler *c) {
   char *elig = calloc((size_t)n, 1);
   unsigned *blocked = calloc((size_t)n, sizeof(unsigned));  /* per-scope param bitmask */
   char *polyr = calloc((size_t)n, 1);   /* a POLY receiver reaches the name */
-  if (!elig || !blocked || !polyr) { free(elig); free(blocked); free(polyr); return; }
+  unsigned *cellh = calloc((size_t)n, sizeof(unsigned));  /* a proc captures the param */
+  if (!elig || !blocked || !polyr || !cellh) { free(elig); free(blocked); free(polyr); free(cellh); return; }
 
   for (int si = 1; si < n; si++) {
     Scope *s = &c->scopes[si];
@@ -12630,7 +12641,7 @@ static void compute_byref_out_params(Compiler *c) {
           if (pi < 0 || pi >= 32 || (blocked[si] & (1u << pi))) continue;
           LocalVar *p = scope_local(s, s->pnames[pi]);
           if (p && p->is_param && p->type == TY_STRING && !p->byref_out &&
-              an_byref_promote_group(c, s->name, pi, elig, blocked, n))
+              an_byref_promote_group(c, s->name, pi, elig, blocked, n, cellh))
             changed = 1;
         }
         continue;
@@ -12651,7 +12662,7 @@ static void compute_byref_out_params(Compiler *c) {
           /* the whole name group takes it or none of it does; the cell deref
              forms the body already emits are what the ABI rides on */
           if (p && p->is_param && p->type == TY_STRING && !p->byref_out &&
-              an_byref_promote_group(c, s->name, pi, elig, blocked, n))
+              an_byref_promote_group(c, s->name, pi, elig, blocked, n, cellh))
             changed = 1;
         }
       }
@@ -12672,7 +12683,7 @@ static void compute_byref_out_params(Compiler *c) {
           if (pi < 0 || pi >= 32 || (blocked[si] & (1u << pi))) continue;
           LocalVar *p = scope_local(s, vn);
           if (p && p->is_param && p->type == TY_STRING && !p->byref_out &&
-              an_byref_promote_group(c, s->name, pi, elig, blocked, n))
+              an_byref_promote_group(c, s->name, pi, elig, blocked, n, cellh))
             changed = 1;
         }
       }
@@ -12684,19 +12695,25 @@ static void compute_byref_out_params(Compiler *c) {
      Quiet.new].each { |v| v.append_into(io) }` left every append in a
      copy. The whole name group is marked, so every member it promoted
      converts, and the group still agrees. */
+  /* A group a captured parameter promoted takes the handle at that index
+     (see an_byref_promote_group). The captured member keeps its cell: the
+     proc reads the handle through it, and the handle, unlike a lent slot,
+     outlives the call. */
   for (int si = 1; si < n; si++) {
-    if (!polyr[si]) continue;
+    if (!polyr[si] && !cellh[si]) continue;
     Scope *m = &c->scopes[si];
     for (int j = 0; j < m->nparams && j < 32; j++) {
+      if (!polyr[si] && !(cellh[si] & (1u << j))) continue;
       LocalVar *q = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
       if (!q || !q->byref_out) continue;
-      q->byref_out = 0; q->is_cell = 0;
+      q->byref_out = 0; q->is_cell = q->cell_outlives;
       q->type = TY_STRBUF; q->str_shared = 1;
     }
   }
   free(elig);
   free(blocked);
   free(polyr);
+  free(cellh);
 }
 
 /* Does scope mi's body contain a call to its own method name on implicit or
