@@ -7098,6 +7098,18 @@ const char *block_post_name(Compiler *c, int block, int idx) {
   return block_list_name(c, block, "posts", idx);
 }
 
+/* 1 when a block's only parameter is a named rest (`|*r|`, `|*r, &b|`): no
+   leading, optional or post-required parameter, and no keyword. */
+int block_lone_rest(Compiler *c, int block) {
+  const char *rest = block_rest_name(c, block);
+  if (!rest || !*rest || block_param_name(c, block, 0) || block_opt_name(c, block, 0) ||
+      block_post_name(c, block, 0)) return 0;
+  int pn = nt_ref(c->nt, nt_ref(c->nt, block, "parameters"), "parameters");
+  int nk = 0;
+  nt_arr(c->nt, pn, "keywords", &nk);
+  return nk == 0 && nt_ref(c->nt, pn, "keyword_rest") < 0;
+}
+
 /* 1 when the block carries ANY rest marker: `*name`, a bare `*`, or the
    implicit rest of a trailing comma (`|a, |`). block_rest_name answers only
    the named form; the distribution (and the auto-splat gate) needs them all. */

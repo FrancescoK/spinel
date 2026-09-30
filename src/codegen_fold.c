@@ -4451,8 +4451,9 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     }
     if (has_rest2 && tpair2) {
       emit_indent(g_pre, g_indent + 2);
-      buf_printf(g_pre, "lv_%s = sp_yielded_args(_t%d, sp_poly_arr_get_hash(_t%d, _t%d));\n",
-                 rename_local(restn2), tpair2, trecv2, ti2);
+      buf_printf(g_pre, "lv_%s = sp_yielded_args(_t%d, %s(_t%d, _t%d));\n",
+                 rename_local(restn2), tpair2,
+                 block_lone_rest(c, block) ? "sp_poly_iter_elem" : "sp_poly_arr_get_hash", trecv2, ti2);
     }
     else if (has_rest2) {
       /* |*x|: wrap the whole yielded element into the rest array. A leading
