@@ -9394,6 +9394,38 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           buf_puts(b, "break; }");
         }
       }
+      /* seek and read(n) on a poly value, the positioning pair beside the
+         write arm: a File held in the same ivar as a StringIO reached this
+         dispatch because StringIO owns the names, and with no arm of its own
+         `@io.seek(4)` raised NoMethodError for the File. The offset, whence
+         and length ride their already-materialised temps. */
+      if (((sp_streq(name, "seek") && (argc == 1 || argc == 2)) ||
+           (sp_streq(name, "read") && argc == 1 && (ret == TY_POLY || ret == TY_STRING))) &&
+          kwh < 0 && splat_a < 0) {
+        int int_args = 1;
+        for (int a = 0; a < argc; a++)
+          if (atmp_ty[a] != TY_INT && atmp_ty[a] != TY_POLY) int_args = 0;
+        if (int_args) {
+          char iv[2][48];
+          for (int a = 0; a < argc; a++) {
+            if (atmp_ty[a] == TY_POLY) snprintf(iv[a], sizeof iv[a], "sp_poly_to_i(_t%d)", atmp[a]);
+            else snprintf(iv[a], sizeof iv[a], "_t%d", atmp[a]);
+          }
+          buf_puts(b, " case SP_BUILTIN_IO: ");
+          if (ret == TY_POLY || ret == (sp_streq(name, "seek") ? TY_INT : TY_STRING))
+            buf_printf(b, "_t%d = ", tr);
+          if (sp_streq(name, "seek")) {
+            if (ret == TY_POLY) buf_puts(b, "sp_box_int(");
+            buf_printf(b, "sp_File_seek((sp_File *)_t%d.v.p, %s, %s)", tv, iv[0], argc == 2 ? iv[1] : "0");
+          }
+          else {
+            if (ret == TY_POLY) buf_puts(b, "sp_box_nullable_str(");
+            buf_printf(b, "sp_File_read_n((sp_File *)_t%d.v.p, %s)", tv, iv[0]);
+          }
+          if (ret == TY_POLY) buf_puts(b, ")");
+          buf_puts(b, "; break;");
+        }
+      }
       if (is_unshift) {
         /* sp_poly_insert is the kind dispatch for a positional splice, so
            `unshift(a, b)` is a insert at 0 and b insert at 1 -- CRuby's order.
