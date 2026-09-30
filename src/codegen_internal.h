@@ -845,6 +845,7 @@ const char *default_value(TyKind t);
 const char *default_value_from_compiler(Compiler *c, TyKind t);
 void emit_slot_truthy(TyKind t, const char *ref, Buf *b);
 void emit_sentinel_bind(Compiler *c, TyKind t, int node, char *ref, size_t cap, Buf *b);
+const char *typed_elem_box_fn(Compiler *c, int node, TyKind t);
 const char *raise_tail_value(TyKind t);
 const char *raise_tail_value_c(Compiler *c, TyKind t);
 const char *array_times_type_error(TyKind at);

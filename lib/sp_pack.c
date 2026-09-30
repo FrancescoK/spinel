@@ -472,6 +472,16 @@ static void pk_str_bytes_directive(char spec, int64_t count, const char *s, size
 
 /* ---------- Pack entry points ---------- */
 
+/* A typed array's nil is the slot's sentinel (SP_INT_NIL, the Float NaN
+   payload), and nil converts to neither number: CRuby raises the
+   conversion's TypeError where these packed the sentinel's bits. */
+static int pk_int_directive_consumes(char spec) {
+  return spec && strchr("CcnNvVsSlLqQU", spec) != NULL;   /* the ones pk_int_directive packs */
+}
+static SP_NORETURN void pk_nil_elem(int flt) {
+  sp_raise_cls("TypeError", flt ? "can't convert nil into Float" : "no implicit conversion of nil into Integer");
+}
+
 const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {SP_GC_ROOT(arr);
   if (!arr || !fmt) return sp_str_empty;
   size_t cap = 64;
@@ -504,6 +514,7 @@ const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {SP_GC_ROOT(arr)
       int64_t wc = count < 0 ? arr->len - idx : count;
       for (int64_t k = 0; k < wc; k++) {
         int64_t sv = (idx < arr->len) ? arr->data[arr->start + idx] : 0; idx++;
+        if (sv == SP_INT_NIL) pk_nil_elem(0);
         if (sv < 0) sp_raise_cls("ArgumentError", "can't compress negative numbers");
         uint64_t v = (uint64_t)sv;
         unsigned char tmp[10]; int ti = 0;
@@ -517,6 +528,7 @@ const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {SP_GC_ROOT(arr)
     if (count < 0) count = 0;
     if (pk_is_flt_spec(spec)) {
       for (int64_t k = 0; k < count; k++) {
+        if (idx < arr->len && arr->data[arr->start + idx] == SP_INT_NIL) pk_nil_elem(1);
         double dv = (idx < arr->len) ? (double)arr->data[arr->start + idx] : 0.0;
         idx++;
         pk_flt_directive(spec, dv, &buf, &len, &cap);
@@ -525,6 +537,7 @@ const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {SP_GC_ROOT(arr)
     }
     for (int64_t k = 0; k < count; k++) {
       int64_t v = (idx < arr->len) ? arr->data[arr->start + idx] : 0;
+      if (idx < arr->len && v == SP_INT_NIL && pk_int_directive_consumes(spec)) pk_nil_elem(0);
       idx++;
       if (!pk_int_directive(spec, v, big, &buf, &len, &cap)) idx--;
     }
@@ -577,12 +590,14 @@ const char *sp_FloatArray_pack(sp_FloatArray *arr, const char *fmt) {
     if (pk_is_flt_spec(spec)) {
       for (int64_t k = 0; k < count; k++) {
         double dv = (idx < arr->len) ? arr->data[idx] : 0.0;
+        if (idx < arr->len && sp_float_is_nil(dv)) pk_nil_elem(1);
         idx++;
         pk_flt_directive(spec, dv, &buf, &len, &cap);
       }
       continue;
     }
     for (int64_t k = 0; k < count; k++) {
+      if (idx < arr->len && sp_float_is_nil(arr->data[idx]) && pk_int_directive_consumes(spec)) pk_nil_elem(0);
       int64_t v = (idx < arr->len) ? pk_flt_to_int(arr->data[idx]) : 0;
       idx++;
       if (!pk_int_directive(spec, v, big, &buf, &len, &cap)) idx--;

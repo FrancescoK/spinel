@@ -6511,11 +6511,13 @@ void emit_rest_pack_kwh(Compiler *c, int from, int pos_argc, const int *argv, in
       else if (inner < 0 && emit_anon_rest_ref(c, argv[i], &arr)) at = TY_POLY_ARRAY;  /* anonymous `*` */
       const char *ap = arr.p ? arr.p : "NULL";
       if (at == TY_INT_ARRAY)
-        buf_printf(b, " { sp_IntArray *_sa = %s; for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, sp_box_int(_sa->data[_sa->start+_si])); }", ap, t);
+        buf_printf(b, " { sp_IntArray *_sa = %s; for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, %s(_sa->data[_sa->start+_si])); }",
+                   ap, t, typed_elem_box_fn(c, inner, at));
       else if (at == TY_STR_ARRAY)
         buf_printf(b, " { sp_StrArray *_sa = %s; for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, sp_box_str(_sa->data[_si])); }", ap, t);
       else if (at == TY_FLOAT_ARRAY)
-        buf_printf(b, " { sp_FloatArray *_sa = %s; for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, sp_box_float(_sa->data[_si])); }", ap, t);
+        buf_printf(b, " { sp_FloatArray *_sa = %s; for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, %s(_sa->data[_si])); }",
+                   ap, t, typed_elem_box_fn(c, inner, at));
       else if (at == TY_POLY_ARRAY)
         buf_printf(b, " { sp_PolyArray *_sa = %s; for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, _sa->data[_si]); }", ap, t);
       /* a boxed operand is an array only at run time: the splat's lowering

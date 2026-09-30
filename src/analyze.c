@@ -16455,6 +16455,19 @@ static int nullable_int_elem_expr(Compiler *c, int v, int depth) {
       int mi = comp_method_index(c, nm);
       if (mi > 0) return nullable_int_elem_expr(c, scope_body_last(c, mi), depth + 1);
     }
+    /* the same through an object receiver (`k.arr`): the method the class
+       chain resolves, or the ivar an attr_reader hands out */
+    if (nm && rc >= 0 && ty_is_object(infer_type(c, rc))) {
+      int cid = ty_object_class(infer_type(c, rc)), defc = -1;
+      int mi = comp_method_in_chain(c, cid, nm, NULL);
+      if (mi > 0) return nullable_int_elem_expr(c, scope_body_last(c, mi), depth + 1);
+      if (comp_reader_in_chain(c, cid, nm, &defc) && defc >= 0) {
+        char ivb[300];
+        snprintf(ivb, sizeof ivb, "@%s", comp_resolve_alias(c, cid, nm));
+        int iv = comp_ivar_index(&c->classes[defc], ivb);
+        return iv >= 0 && c->classes[defc].ivar_nullable_int_elem[iv];
+      }
+    }
     return 0;
   }
   return 0;
@@ -16471,6 +16484,14 @@ int nullable_int_elem_read(Compiler *c, int call) {
   int recv = nt_ref(nt, call, "receiver");
   return recv >= 0 && elem_returning_call(nt_str(nt, call, "name")) &&
          nullable_int_elem_expr(c, recv, 0);
+}
+
+/* The receiver-side question for codegen: can an element of this Integer or
+   Float array expression be the sentinel? The array methods that search for,
+   render, compare or sum the elements ask it, so an array that can never hold
+   one keeps the plain C it had. */
+int nullable_int_elem_array(Compiler *c, int node) {
+  return nullable_int_elem_expr(c, node, 0);
 }
 
 /* A call that answers one element of its receiver, or nil when there is none
