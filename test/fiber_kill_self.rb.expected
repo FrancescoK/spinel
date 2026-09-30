@@ -14,5 +14,10 @@ nil
 a ensure
 nil
 main goes on
+"fiber called across threads"
+true
+"attempt to resume a transferring fiber"
+:t3_done
+"attempt to resume a transferring fiber"
 main ensure
 at_exit

@@ -62,6 +62,37 @@ end
 p th2.value
 puts "main goes on"
 
+# Another thread's fibers can't be killed: the main fiber of the program or
+# of a Thread, or one it made. (CRuby still ends the program at the main
+# fiber's next switch after the refused kill, so that case comes last.)
+other = Fiber.new { Fiber.yield; :done }
+other.resume
+p(Thread.new do
+  other.kill
+  :killed
+rescue FiberError => e
+  e.message
+end.value)
+p other.alive?
+
+t_main = nil
+t3 = Thread.new { t_main = Fiber.current; sleep 0.2; :t3_done }
+sleep 0.05
+begin
+  t_main.kill
+rescue FiberError => e
+  p e.message
+end
+p t3.value
+
+main_fiber = Fiber.current
+p(Thread.new do
+  main_fiber.kill
+  :killed
+rescue FiberError => e
+  e.message
+end.value)
+
 # Killing the program's main fiber ends the program with status 1, after
 # its ensure blocks and at_exit hooks.
 at_exit { puts "at_exit" }
