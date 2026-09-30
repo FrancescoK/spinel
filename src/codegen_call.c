@@ -23248,6 +23248,73 @@ static void emit_bound_method_call(Compiler *c, int id, int recv, int target, Bu
   free(cast.p); free(args.p);
 }
 
+/* Whether obj, of static type `ot`, cannot be bound to the instance method
+   `target`: CRuby binds only an instance of the method's owner or of a
+   subclass of it, and anything to a module's method. */
+static int bind_owner_mismatch(Compiler *c, int target, TyKind ot) {
+  Scope *tm = &c->scopes[target];
+  int cid = tm->class_id;
+  if (cid < 0 || tm->is_cmethod || class_is_module_def(c, cid)) return 0;
+  return !class_isa_user(c, ty_object_class(ot), cid, c->classes[cid].name);
+}
+
+/* `um.bind_call(obj, args...)` on an UnboundMethod whose target is a known
+   instance method: bind(obj).call(args...) without the Method. obj runs
+   first, into a rooted temporary, and must be an instance of the method's
+   owner (any object will do for a module's), else CRuby's TypeError once
+   the arguments have run. The arguments after obj bind to the target's
+   parameters as bind(obj).call binds them (emit_bound_method_call): the
+   direct call's ArgLayout over that run of the site's arguments, so the
+   count is judged, an omitted optional defaults on obj, and a rest and its
+   posts, a splat anywhere, keywords, `**` and a block (literal or `&`)
+   each bind as they do there. Binding each argument to one parameter, with
+   the rest refused, left every splat, named keyword and `**` an
+   unsupported call, and passed no block to a target keeping `&b`, whose C
+   call was one argument short. */
+static void emit_bind_call(Compiler *c, int id, int target, const int *argv, int argc, Buf *b) {
+  Scope *tm = &c->scopes[target];
+  int cid = tm->class_id;
+  TyKind ot = comp_ntype(c, argv[0]);
+  const char *cn = c->classes[cid].name;
+  if (bind_owner_mismatch(c, target, ot)) {
+    emit_args_run(c, argv, argc);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_raise_cls(\"TypeError\", \"bind argument must be an instance of %s\");\n", cn);
+    const char *dv = default_value(comp_ntype(c, id));
+    buf_puts(b, dv ? dv : "0");
+    return;
+  }
+  int value = c->classes[cid].is_value_type;
+  int to = ++g_tmp;
+  Buf ob; memset(&ob, 0, sizeof ob);
+  emit_expr(c, argv[0], &ob);
+  emit_indent(g_pre, g_indent);
+  if (value) {
+    emit_ctype(c, ot, g_pre);
+    buf_printf(g_pre, " _t%d = %s;\n", to, ob.p ? ob.p : "");
+  }
+  else buf_printf(g_pre, "void *_t%d = (void *)(%s); SP_GC_ROOT(_t%d);\n", to, ob.p ? ob.p : "NULL", to);
+  free(ob.p);
+  char selfp[96];
+  if (value) snprintf(selfp, sizeof selfp, "_t%d", to);
+  else snprintf(selfp, sizeof selfp, "((sp_%s *)_t%d)", c->classes[cid].c_name, to);
+  /* a default reading self or an ivar reads obj */
+  const char *sv_arm_self = g_arm_self; const Scope *sv_arm_scope = g_arm_scope;
+  int sv_arm_depth = g_arm_depth;
+  if (!value) { g_arm_self = selfp; g_arm_scope = tm; g_arm_depth = g_expr_depth; }
+  Buf args; memset(&args, 0, sizeof args);
+  buf_puts(&args, selfp);
+  emit_args_filled_argv(c, target, argv + 1, argc - 1, nt_ref(c->nt, id, "arguments"), ", ", &args);
+  g_arm_self = sv_arm_self; g_arm_scope = sv_arm_scope; g_arm_depth = sv_arm_depth;
+  emit_method_call_block(c, id, tm, 1, &args);
+  int is_void = method_is_void(tm);
+  if (is_void) buf_puts(b, "(");
+  emit_method_cname(c, tm, b);
+  buf_printf(b, "(%s)", args.p ? args.p : "");
+  if (is_void) buf_printf(b, ", %s)", default_value(comp_ntype(c, id)));
+  free(args.p);
+}
+
 static void emit_exc_exception(Compiler *c, int recv, int arg, Buf *b) {
   /* #exception answers an instance of the RECEIVER's class -- a payload
      copy, so a user subclass keeps its own fields -- and inference types
@@ -25665,70 +25732,33 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     return;
   }
   /* UnboundMethod#bind_call(obj, args...) = bind(obj).call(args...): with a
-     statically-known target, call it directly with obj as self (#3246). */
+     statically-known instance-method target, call it directly with obj as
+     self (#3246), the arguments after obj bound as bind(obj).call binds
+     them (emit_bind_call). */
   if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc >= 1 &&
       sp_streq(name, "bind_call")) {
     int mn2 = method_recv_node(c, recv);
     int t2 = mn2 >= 0 ? method_obj_target_mi(c, mn2) : -1;
-    Scope *tm2 = t2 >= 0 ? &c->scopes[t2] : NULL;
-    /* The arguments after obj bind as a direct call's (arg_layout), the
-       layout inference types the parameters from: here each argument one
-       parameter's, and each other parameter its default. Argument k bound
-       parameter k - 1, which gave `def m(a = 5, b)` the argument in a and a
-       rest a lone element; a splat, a rest, a keyword hash or a count the
-       parameters cannot take is left to the refusal below. */
-    ArgLayout L;
-    int kwh = argc > 1 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
-    arg_layout(c, tm2, argv + 1, argc - 1 - (kwh >= 0), kwh, 0, &L);
-    /* A keyword hash binds whole: into the positional slot of a target
-       taking no keywords (ARG_KWH), or into a `**kwrest` beside no named
-       keyword; named keywords are left to the refusal. */
-    int named = 0;
-    for (int i = 0; tm2 && i < tm2->nparams; i++)
-      if (i != tm2->kwrest_idx && callee_param_is_declared_kwarg(c, tm2, tm2->pnames[i])) named = 1;
-    int kwh_rest = kwh >= 0 && tm2 && tm2->kwrest_idx >= 0 && !named;
-    int direct = tm2 && ty_is_object(comp_ntype(c, argv[0])) && !L.gather && L.splat < 0;
-    int taken = 0;
-    for (int i = 0; direct && i < L.n; i++) {
-      if (L.from[i] == ARG_NODE || L.from[i] == ARG_KWH) taken++;
-      else if (i == tm2->kwrest_idx && kwh_rest) taken++;
-      else if (L.from[i] == ARG_REST || (i != tm2->kwrest_idx && tm2->pdefault[i] < 0)) direct = 0;
-    }
-    if (taken != argc - 1) direct = 0;
-    if (direct) {
-      int cid2 = tm2->class_id;
-      emit_method_cname(c, tm2, b);
-      buf_puts(b, "(");
-      if (cid2 >= 0 && c->classes[cid2].is_value_type) emit_expr(c, argv[0], b);
-      else if (cid2 >= 0) {
-        buf_printf(b, "(sp_%s *)(", c->classes[cid2].c_name);
-        emit_expr(c, argv[0], b); buf_puts(b, ")");
-      }
-      else emit_expr(c, argv[0], b);
-      for (int i = 0; i < L.n; i++) {
-        buf_puts(b, ", ");
-        int src = L.from[i] == ARG_NODE ? argv[1 + L.arg[i]]
-                : L.from[i] == ARG_KWH || (i == tm2->kwrest_idx && kwh_rest) ? kwh : -1;
-        if (src < 0 && i == tm2->kwrest_idx) {
-          /* no keywords: an empty Hash, as CRuby binds it (the default
-             emit_arg_or_default gives a rest is none, a nil) */
-          LocalVar *kp = tm2->pnames[i] ? scope_local(tm2, tm2->pnames[i]) : NULL;
-          TyKind kt = kp ? kp->type : TY_SYM_POLY_HASH;
-          if (kt == TY_POLY) emit_boxed_text(c, TY_SYM_POLY_HASH, "sp_SymPolyHash_new()", b);
-          else buf_puts(b, kt == TY_POLY_POLY_HASH ? "sp_PolyPolyHash_new()" : "sp_SymPolyHash_new()");
-        }
-        else emit_arg_or_default(c, tm2, i, src, b);
-      }
-      buf_puts(b, ")");
-      arg_layout_free(&L);
+    if (t2 >= 0 && c->scopes[t2].class_id >= 0 && !c->scopes[t2].is_cmethod &&
+        ty_is_object(comp_ntype(c, argv[0]))) {
+      emit_bind_call(c, id, t2, argv, argc, b);
       return;
     }
-    arg_layout_free(&L);
   }
   /* UnboundMethod#bind(obj): the same target with obj as self. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 1 && sp_streq(name, "bind")) {
     int mn2 = method_recv_node(c, recv);
     int t2 = mn2 >= 0 ? method_obj_target_mi(c, mn2) : -1;
+    if (t2 >= 0 && ty_is_object(comp_ntype(c, argv[0])) &&
+        bind_owner_mismatch(c, t2, comp_ntype(c, argv[0]))) {
+      /* obj of another class: CRuby's TypeError, at bind time, whether or
+         not the Method is ever called. It was bound and called as one. */
+      buf_puts(b, "({ (void)(");
+      emit_expr(c, argv[0], b);
+      buf_printf(b, "); sp_raise_cls(\"TypeError\", \"bind argument must be an instance of %s\"); (sp_BoundMethod *)NULL; })",
+                 c->classes[c->scopes[t2].class_id].name);
+      return;
+    }
     if (t2 >= 0 && ty_is_object(comp_ntype(c, argv[0]))) {
       /* The constructor allocates: hold the fresh `obj` (`...bind(C.new)`)
          in a rooted C temporary across it, or the only reference can be

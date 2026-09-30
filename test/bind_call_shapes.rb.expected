@@ -1,0 +1,41 @@
+[1, 9, [], 4]
+[2, 9, [], 3]
+[1, 2, [3], 5]
+[1, 2, [3], 4]
+#<ArgumentError: wrong number of arguments (given 1, expected 2+)>
+#<ArgumentError: wrong number of arguments (given 0, expected 2+)>
+[0, 5, 6, {}]
+[0, 1, 7, {z: 3}]
+[0, 2, 2, {"s" => 1}]
+[0, 4, 2, {}]
+#<ArgumentError: missing keyword: :k>
+#<ArgumentError: missing keyword: :k>
+#<ArgumentError: missing keyword: :k>
+#<TypeError: no implicit conversion of true into Hash>
+#<ArgumentError: unknown keyword: :z>
+#<ArgumentError: unknown keyword: "s">
+[0, 3]
+#<ArgumentError: wrong number of arguments (given 3, expected 0..1)>
+[{k: 1}]
+[1]
+#<ArgumentError: no keywords accepted>
+[4, :none]
+[5, 6]
+[6, 18]
+:noblk
+40
+12
+[:tag, 1, :d]
+[:tag, 2, 3]
+[1, 4, [], 2]
+[1, 2, 2, {}]
+ran
+#<TypeError: bind argument must be an instance of K>
+nil
+[0, 7, [], 1]
+#<TypeError: bind argument must be an instance of K>
+#<TypeError: bind argument must be an instance of K>
+[1, 6, [], 2]
+[:tag, 3, :d]
+[1, 2, 2, {}]
+[["aaaaaaaa", [1, 1, 1, 1], 2, {z: "bbbbbbbbbbbbbbbb"}, "cccccccc", "dddddddd", [], "eeeeeeee", "ffffffff", "ffffffffg"], ["aaaaaaaaaaaaaaaa", [2, 2, 2, 2], 2, {z: "bbbbbbbbbbbbbbbb"}, "cccccccc", "dddddddd", [], "eeeeeeee", "ffffffff", "ffffffffg"], ["aaaaaaaaaaaaaaaaaaaaaaaa", [3, 3, 3, 3], 2, {z: "bbbbbbbbbbbbbbbb"}, "cccccccc", "dddddddd", [], "eeeeeeee", "ffffffff", "ffffffffg"]]
