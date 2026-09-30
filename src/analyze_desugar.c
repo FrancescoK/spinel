@@ -8986,7 +8986,7 @@ int desugar_alias_method_values(Compiler *c) {
 }
 
 /* a read of local `name` shaped like node `like` */
-static int alias_local_read(NodeTable *nt, int like, const char *name) {
+static int local_read_like(NodeTable *nt, int like, const char *name) {
   int r = fwd_new_node_like(nt, like, "LocalVariableReadNode");
   if (r < 0) return -1;
   nt_node_set_str(nt, r, "name", name);
@@ -9052,10 +9052,10 @@ int desugar_inherited_aliases(Compiler *c) {
       int call = fwd_new_node_like(nt, s, "CallNode");
       int args = fwd_new_node_like(nt, s, "ArgumentsNode");
       int sp = fwd_new_node_like(nt, s, "SplatNode");
-      nt_node_set_ref(nt, sp, "expression", alias_local_read(nt, s, "spinel_alias_a__"));
+      nt_node_set_ref(nt, sp, "expression", local_read_like(nt, s, "spinel_alias_a__"));
       nt_node_set_arr(nt, args, "arguments", &sp, 1);
       int ba = fwd_new_node_like(nt, s, "BlockArgumentNode");
-      nt_node_set_ref(nt, ba, "expression", alias_local_read(nt, s, "spinel_alias_b__"));
+      nt_node_set_ref(nt, ba, "expression", local_read_like(nt, s, "spinel_alias_b__"));
       nt_node_set_str(nt, call, "name", odc);
       nt_node_set_ref(nt, call, "arguments", args);
       nt_node_set_ref(nt, call, "block", ba);
@@ -9247,7 +9247,7 @@ int desugar_reassigned_block_params(Compiler *c) {
  * leak into the enclosing class (they used to replace that class's own,
  * `initialize` included). */
 /* a String literal node shaped like `like` */
-static int cn_str(NodeTable *nt, int like, const char *s) {
+static int str_node_like(NodeTable *nt, int like, const char *s) {
   int n = fwd_new_node_like(nt, like, "StringNode");
   if (n < 0) return -1;
   nt_node_set_str(nt, n, "unescaped", s);
@@ -9410,7 +9410,7 @@ int desugar_class_new_blocks(Compiler *c) {
         int args = fwd_new_node_like(nt, id, "ArgumentsNode");
         int ex = fwd_new_node_like(nt, id, "ConstantReadNode");
         nt_node_set_str(nt, ex, "name", "NotImplementedError");
-        int msg = cn_str(nt, id, "spinel: defining methods on a class held in a variable "
+        int msg = str_node_like(nt, id, "spinel: defining methods on a class held in a variable "
                                  "(class_eval with a def) is not supported");
         int av2[2] = { ex, msg };
         nt_node_set_arr(nt, args, "arguments", av2, 2);
@@ -9490,7 +9490,7 @@ int desugar_class_new_blocks(Compiler *c) {
     int args = fwd_new_node_like(nt, id, "ArgumentsNode");
     int ex = fwd_new_node_like(nt, id, "ConstantReadNode");
     nt_node_set_str(nt, ex, "name", "NotImplementedError");
-    int msg = cn_str(nt, id, "spinel: a class built at run time (Class.new with a block that reads the "
+    int msg = str_node_like(nt, id, "spinel: a class built at run time (Class.new with a block that reads the "
                              "surrounding method's locals) is not supported");
     int av2[2] = { ex, msg };
     nt_node_set_arr(nt, args, "arguments", av2, 2);
@@ -9705,14 +9705,6 @@ static const char *scg_literal_name(const NodeTable *nt, int node) {
   return NULL;
 }
 
-static int scg_str(NodeTable *nt, int like, const char *s) {
-  int n = fwd_new_node_like(nt, like, "StringNode");
-  if (n < 0) return -1;
-  nt_node_set_str(nt, n, "unescaped", s);
-  nt_node_set_str(nt, n, "content", s);
-  return n;
-}
-
 static void scg_add_def_body(NodeTable *nt, int cls, const char *cname, int like, int raising);
 static void scg_add_def(NodeTable *nt, int cls, const char *cname, int like) {
   scg_add_def_body(nt, cls, cname, like, 0);
@@ -9739,7 +9731,7 @@ static void scg_add_def_body(NodeTable *nt, int cls, const char *cname, int like
     int ne = fwd_new_node_like(nt, like, "ConstantReadNode");
     nt_node_set_str(nt, ne, "name", "NameError");
     char msg[300]; snprintf(msg, sizeof msg, "uninitialized constant %s", cname);
-    int av[2] = { ne, scg_str(nt, like, msg) };
+    int av[2] = { ne, str_node_like(nt, like, msg) };
     nt_node_set_arr(nt, ra, "arguments", av, 2);
     nt_node_set_str(nt, rc, "name", "raise");
     nt_node_set_ref(nt, rc, "arguments", ra);
@@ -9890,22 +9882,6 @@ int desugar_self_const_get(Compiler *c) {
  * built from the constants its bodies assign and the classes and modules
  * they define, and the call is renamed to it. A name outside the table
  * raises NameError (const_get) / answers false (const_defined?). */
-static int cg_local_read(NodeTable *nt, int like, const char *name) {
-  int r = fwd_new_node_like(nt, like, "LocalVariableReadNode");
-  if (r < 0) return -1;
-  nt_node_set_str(nt, r, "name", name);
-  nt_node_set_int(nt, r, "depth", 0);
-  return r;
-}
-
-static int cg_str(NodeTable *nt, int like, const char *s) {
-  int n = fwd_new_node_like(nt, like, "StringNode");
-  if (n < 0) return -1;
-  nt_node_set_str(nt, n, "unescaped", s);
-  nt_node_set_str(nt, n, "content", s);
-  return n;
-}
-
 static void cg_collect(const NodeTable *nt, const char *mn, int n0, char ***names, int *nn, int *cap) {
   for (int m = 0; m < n0; m++) {
     NodeKind mk = nt_kind(nt, m);
@@ -9951,7 +9927,7 @@ static int cg_def(NodeTable *nt, int like, const char *mname, const char *op,
     int as = fwd_new_node_like(nt, like, "AssocNode");
     int cr = fwd_new_node_like(nt, like, "ConstantReadNode");
     nt_node_set_str(nt, cr, "name", names[i]);
-    nt_node_set_ref(nt, as, "key", cg_str(nt, like, names[i]));
+    nt_node_set_ref(nt, as, "key", str_node_like(nt, like, names[i]));
     nt_node_set_ref(nt, as, "value", cr);
     els[i] = as;
   }
@@ -9960,7 +9936,7 @@ static int cg_def(NodeTable *nt, int like, const char *mname, const char *op,
   nt_node_set_str(nt, rq, "name", "__cg_n");
   nt_node_set_arr(nt, ps, "requireds", &rq, 1);
   nt_node_set_str(nt, ts, "name", "to_s");
-  nt_node_set_ref(nt, ts, "receiver", cg_local_read(nt, like, "__cg_n"));
+  nt_node_set_ref(nt, ts, "receiver", local_read_like(nt, like, "__cg_n"));
   nt_node_set_arr(nt, args, "arguments", &ts, 1);
   nt_node_set_str(nt, call, "name", op);
   nt_node_set_ref(nt, call, "receiver", hash);
@@ -9981,18 +9957,18 @@ static int cg_def(NodeTable *nt, int like, const char *mname, const char *op,
     nt_node_set_ref(nt, wk, "value", ts);
     int kq = fwd_new_node_like(nt, like, "CallNode");
     int kqa = fwd_new_node_like(nt, like, "ArgumentsNode");
-    int kqk = cg_local_read(nt, like, "__cg_k");
+    int kqk = local_read_like(nt, like, "__cg_k");
     nt_node_set_arr(nt, kqa, "arguments", &kqk, 1);
     nt_node_set_str(nt, kq, "name", "key?");
-    nt_node_set_ref(nt, kq, "receiver", cg_local_read(nt, like, "__cg_h"));
+    nt_node_set_ref(nt, kq, "receiver", local_read_like(nt, like, "__cg_h"));
     nt_node_set_ref(nt, kq, "arguments", kqa);
     char msg[300]; snprintf(msg, sizeof msg, "uninitialized constant %s::", mod);
     int cat = fwd_new_node_like(nt, like, "CallNode");
     int cata = fwd_new_node_like(nt, like, "ArgumentsNode");
-    int catk = cg_local_read(nt, like, "__cg_k");
+    int catk = local_read_like(nt, like, "__cg_k");
     nt_node_set_arr(nt, cata, "arguments", &catk, 1);
     nt_node_set_str(nt, cat, "name", "+");
-    nt_node_set_ref(nt, cat, "receiver", cg_str(nt, like, msg));
+    nt_node_set_ref(nt, cat, "receiver", str_node_like(nt, like, msg));
     nt_node_set_ref(nt, cat, "arguments", cata);
     int rc = fwd_new_node_like(nt, like, "CallNode");
     int rca = fwd_new_node_like(nt, like, "ArgumentsNode");
@@ -10016,21 +9992,21 @@ static int cg_def(NodeTable *nt, int like, const char *mname, const char *op,
     nt_node_set_int(nt, i0, "value", 0);
     nt_node_set_arr(nt, c0a, "arguments", &i0, 1);
     nt_node_set_str(nt, c0, "name", "[]");
-    nt_node_set_ref(nt, c0, "receiver", cg_local_read(nt, like, "__cg_k"));
+    nt_node_set_ref(nt, c0, "receiver", local_read_like(nt, like, "__cg_k"));
     nt_node_set_ref(nt, c0, "arguments", c0a);
     int bw = fwd_new_node_like(nt, like, "CallNode");
     int bwa = fwd_new_node_like(nt, like, "ArgumentsNode");
-    int bwv[2] = { cg_str(nt, like, "A"), cg_str(nt, like, "Z") };
+    int bwv[2] = { str_node_like(nt, like, "A"), str_node_like(nt, like, "Z") };
     nt_node_set_arr(nt, bwa, "arguments", bwv, 2);
     nt_node_set_str(nt, bw, "name", "between?");
     nt_node_set_ref(nt, bw, "receiver", c0);
     nt_node_set_ref(nt, bw, "arguments", bwa);
     int cat2 = fwd_new_node_like(nt, like, "CallNode");
     int cat2a = fwd_new_node_like(nt, like, "ArgumentsNode");
-    int cat2k = cg_local_read(nt, like, "__cg_k");
+    int cat2k = local_read_like(nt, like, "__cg_k");
     nt_node_set_arr(nt, cat2a, "arguments", &cat2k, 1);
     nt_node_set_str(nt, cat2, "name", "+");
-    nt_node_set_ref(nt, cat2, "receiver", cg_str(nt, like, "wrong constant name "));
+    nt_node_set_ref(nt, cat2, "receiver", str_node_like(nt, like, "wrong constant name "));
     nt_node_set_ref(nt, cat2, "arguments", cat2a);
     int rc2 = fwd_new_node_like(nt, like, "CallNode");
     int rc2a = fwd_new_node_like(nt, like, "ArgumentsNode");
@@ -10045,9 +10021,9 @@ static int cg_def(NodeTable *nt, int like, const char *mname, const char *op,
     nt_node_set_arr(nt, ust2, "body", &rc2, 1);
     nt_node_set_ref(nt, unl2, "predicate", bw);
     nt_node_set_ref(nt, unl2, "statements", ust2);
-    int kr = cg_local_read(nt, like, "__cg_k");
+    int kr = local_read_like(nt, like, "__cg_k");
     nt_node_set_arr(nt, args, "arguments", &kr, 1);
-    nt_node_set_ref(nt, call, "receiver", cg_local_read(nt, like, "__cg_h"));
+    nt_node_set_ref(nt, call, "receiver", local_read_like(nt, like, "__cg_h"));
     int stmts[5] = { wh, wk, unl2, unl, call };
     nt_node_set_arr(nt, body, "body", stmts, 5);
   }
@@ -10290,14 +10266,6 @@ static int mo_guard_pred(NodeTable *nt, int like, const char *cn) {
   return call;
 }
 
-static int mo_str(NodeTable *nt, int like, const char *s) {
-  int n = fwd_new_node_like(nt, like, "StringNode");
-  if (n < 0) return -1;
-  nt_node_set_str(nt, n, "unescaped", s);
-  nt_node_set_str(nt, n, "content", s);
-  return n;
-}
-
 static int mo_object_defines(const NodeTable *nt, int n0, const char *mname) {
   for (int m = 0; m < n0; m++) {
     if (nt_kind(nt, m) != NK_ClassNode) continue;
@@ -10365,7 +10333,7 @@ int desugar_builtin_reopen_methods(Compiler *c) {
       int ne = fwd_new_node_like(nt, d, "ConstantReadNode");
       nt_node_set_str(nt, ne, "name", "NoMethodError");
       char msg[300]; snprintf(msg, sizeof msg, "undefined method '%s'", mname);
-      int av[2] = { ne, mo_str(nt, d, msg) };
+      int av[2] = { ne, str_node_like(nt, d, msg) };
       nt_node_set_arr(nt, ra, "arguments", av, 2);
       nt_node_set_str(nt, rc, "name", "raise");
       nt_node_set_ref(nt, rc, "arguments", ra);
@@ -10552,14 +10520,6 @@ static void cbi_collect(const NodeTable *nt, int node, int in_block, int no_proc
   }
 }
 
-static int cbi_local_read(NodeTable *nt, int like, const char *name) {
-  int rd = fwd_new_node_like(nt, like, "LocalVariableReadNode");
-  if (rd < 0) return -1;
-  nt_node_set_str(nt, rd, "name", name);
-  nt_node_set_int(nt, rd, "depth", 0);
-  return rd;
-}
-
 int desugar_body_ivars(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
@@ -10617,7 +10577,7 @@ int desugar_body_ivars(Compiler *c) {
       nt_node_set_str(nt, rq, "name", "spinel_civ_v__");
       nt_node_set_arr(nt, ps, "requireds", &rq, 1);
       nt_node_set_str(nt, sw, "name", iv);
-      nt_node_set_ref(nt, sw, "value", cbi_local_read(nt, m, "spinel_civ_v__"));
+      nt_node_set_ref(nt, sw, "value", local_read_like(nt, m, "spinel_civ_v__"));
       nt_node_set_arr(nt, sb, "body", &sw, 1);
       nt_node_set_str(nt, sd, "name", sname);
       nt_node_set_ref(nt, sd, "receiver", fwd_new_node_like(nt, m, "SelfNode"));
@@ -11204,14 +11164,6 @@ static void ffi_collect_attaches(const NodeTable *nt, int node, FfiAttach **out,
   }
 }
 
-static int ffi_local_read(NodeTable *nt, int like, const char *name) {
-  int rd = fwd_new_node_like(nt, like, "LocalVariableReadNode");
-  if (rd < 0) return -1;
-  nt_node_set_str(nt, rd, "name", name);
-  nt_node_set_int(nt, rd, "depth", 0);
-  return rd;
-}
-
 static int ffi_symbol(NodeTable *nt, int like, const char *name) {
   int sy = fwd_new_node_like(nt, like, "SymbolNode");
   if (sy < 0) return -1;
@@ -11238,19 +11190,19 @@ static int ffi_forwarding_def(NodeTable *nt, int like, const char *mname, const 
       int rp = fwd_new_node_like(nt, like, "RestParameterNode");
       nt_node_set_str(nt, rp, "name", "ffi_a__");
       nt_node_set_ref(nt, ps, "rest", rp);
-      av[ac++] = ffi_local_read(nt, like, "ffi_a__");
+      av[ac++] = local_read_like(nt, like, "ffi_a__");
     }
     if (with_value) {
       int rq = fwd_new_node_like(nt, like, "RequiredParameterNode");
       nt_node_set_str(nt, rq, "name", "ffi_v__");
       nt_node_set_arr(nt, ps, "requireds", &rq, 1);
-      av[ac++] = ffi_local_read(nt, like, "ffi_v__");
+      av[ac++] = local_read_like(nt, like, "ffi_v__");
     }
     if (with_block) {
       int bp = fwd_new_node_like(nt, like, "BlockParameterNode");
       nt_node_set_str(nt, bp, "name", "ffi_b__");
       nt_node_set_ref(nt, ps, "block", bp);
-      av[ac++] = ffi_local_read(nt, like, "ffi_b__");
+      av[ac++] = local_read_like(nt, like, "ffi_b__");
     }
     nt_node_set_ref(nt, def, "parameters", ps);
   }
@@ -11310,7 +11262,7 @@ static int ffi_fixed_def(NodeTable *nt, int like, const char *mname, const char 
       nt_node_set_ref(nt, op, "value", nilv);
       nt_node_set_arr(nt, ps, "optionals", &op, 1);
     }
-    el[i] = ffi_local_read(nt, like, pn);
+    el[i] = local_read_like(nt, like, pn);
   }
   nt_node_set_arr(nt, ps, "requireds", rq, nreq);
   nt_node_set_arr(nt, arr, "elements", el, nparams);
@@ -11322,7 +11274,7 @@ static int ffi_fixed_def(NodeTable *nt, int like, const char *mname, const char 
     int bp = fwd_new_node_like(nt, like, "BlockParameterNode");
     nt_node_set_str(nt, bp, "name", "ffi_b__");
     nt_node_set_ref(nt, ps, "block", bp);
-    av[ac++] = ffi_local_read(nt, like, "ffi_b__");
+    av[ac++] = local_read_like(nt, like, "ffi_b__");
   }
   nt_node_set_ref(nt, def, "parameters", ps);
   nt_node_set_arr(nt, args, "arguments", av, ac);
