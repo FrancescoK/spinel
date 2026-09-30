@@ -7922,6 +7922,10 @@ static void sp_PolyPolyHash_clear(sp_PolyPolyHash*h){if(!h)return;for(sp_int i=0
    returning the receiver (#3199). */
 static sp_RbVal sp_poly_clear(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_QUEUE && v.v.p) { sp_Queue_clear((sp_queue *)v.v.p); return v; }
+  /* String#clear on a plain string box: a fresh empty string the receiver
+     takes back, as the typed clear builds; a frozen one raises. It answered
+     the box untouched. */
+  if (v.tag == SP_TAG_STR) { sp_str_check_mutable(v.v.s); return sp_box_str(sp_str_from_bytes("", 0)); }
   sp_poly_coll_chk(v, "clear");
   if (v.tag != SP_TAG_OBJ || !v.v.p) return v;
   switch (v.cls_id) {
@@ -13429,6 +13433,17 @@ static sp_RbVal sp_poly_hash_replace(sp_RbVal recv, sp_RbVal src, int keep_defau
 }
 static sp_RbVal sp_poly_replace_any(sp_RbVal recv, sp_RbVal src) {
   if (recv.tag == SP_TAG_OBJ && recv.v.p && sp_poly_is_hash_kind(recv.cls_id)) return sp_poly_hash_replace(recv, src, 0);
+  /* String#replace on a plain string box: a fresh mutable copy of the
+     source, which the receiver takes back (the typed replace builds the
+     same, sp_str_from_bytes). A frozen receiver raises first; a source that
+     is no String is CRuby's TypeError. It answered the box untouched. */
+  if (recv.tag == SP_TAG_STR) {
+    sp_str_check_mutable(recv.v.s);
+    if (src.tag != SP_TAG_STR && !sp_poly_is_strbuf(src))
+      sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into String", sp_poly_class_name(src)));
+    const char *s2 = src.tag == SP_TAG_STR ? (src.v.s ? src.v.s : sp_str_empty) : sp_String_cstr((sp_String *)src.v.p);
+    return sp_box_str(sp_str_from_bytes(s2, sp_str_byte_len(s2)));
+  }
   return sp_poly_replace(recv, src);
 }
 /* The lowered bang transform (analyze.c): the transformed hash goes into
