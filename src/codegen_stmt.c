@@ -5034,7 +5034,10 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
       if (wc == 0) { all_int = 0; break; }
       for (int j = 0; j < wc; j++) {
         const char *cty = nt_type(nt, conds[j]);
-        if (!cty || !sp_streq(cty, "IntegerNode")) { all_int = 0; break; }
+        /* a literal past the int range -- INT64_MIN included, the nil
+           sentinel's value, which the parser keeps as a bignum -- carries a
+           placeholder `value` and is no switch label */
+        if (!cty || !sp_streq(cty, "IntegerNode") || nt_str(nt, conds[j], "bigval")) { all_int = 0; break; }
       }
     }
     /* A C switch can't host a Ruby `break` that targets the enclosing loop
@@ -5519,7 +5522,10 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
       if (wc == 0) { all_int = 0; break; }
       for (int j = 0; j < wc; j++) {
         const char *cty = nt_type(nt, conds[j]);
-        if (!cty || !sp_streq(cty, "IntegerNode")) { all_int = 0; break; }
+        /* a literal past the int range -- INT64_MIN included, the nil
+           sentinel's value, which the parser keeps as a bignum -- carries a
+           placeholder `value` and is no switch label */
+        if (!cty || !sp_streq(cty, "IntegerNode") || nt_str(nt, conds[j], "bigval")) { all_int = 0; break; }
         long long v = (long long)nt_int(nt, conds[j], "value", 0);
         for (int d = 0; d < ndup; d++) if (vals[d] == v) { all_int = 0; break; }  /* dup label -> bail */
         if (all_int && ndup < (int)(sizeof vals / sizeof vals[0])) vals[ndup++] = v;
