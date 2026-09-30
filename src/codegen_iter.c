@@ -2498,7 +2498,8 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
      -- exactly as in a program with no user class of that name. The block is
      spliced into this arm as it is into the user arms; only one arm runs. */
   if (!emitted_default && g_prbd_skip != id && g_n_argov + 1 <= MAX_ARG_OVERRIDE) {
-    Buf ab; memset(&ab, 0, sizeof ab);
+    /* on the heap: the probe may longjmp back after the emitter wrote to it */
+    Buf *ab = calloc(1, sizeof *ab);
     int slot = g_n_argov++;
     g_argov_node[slot] = recv;
     snprintf(g_argov_text[slot], sizeof g_argov_text[0], "_t%d", trecv);
@@ -2514,7 +2515,7 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
     volatile int ok = 1;
     EmitUnitState *sv_state = emit_state_snapshot();
     g_unsup_probe = 1;
-    if (setjmp(g_unsup_recover) == 0) emit_stmt(c, id, &ab, indent + 1);
+    if (setjmp(g_unsup_recover) == 0) emit_stmt(c, id, ab, indent + 1);
     else ok = 0;
     emit_state_release(sv_state, !ok);
     memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
@@ -2525,14 +2526,14 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
     g_n_argov = slot;
     char rtok[300];
     snprintf(rtok, sizeof rtok, "sp_nomethod_msg(\"%s\"", name);
-    if (ok && ab.p && !strstr(ab.p, rtok)) {
+    if (ok && ab->p && !strstr(ab->p, rtok)) {
       emit_indent(&sw, indent); buf_puts(&sw, "default: {\n");
-      buf_puts(&sw, ab.p);
+      buf_puts(&sw, ab->p);
       emit_indent(&sw, indent + 1); buf_puts(&sw, "break;\n");
       emit_indent(&sw, indent); buf_puts(&sw, "}\n");
       emitted_default = 1;
     }
-    free(ab.p);
+    free(ab->p); free(ab);
   }
   if (!emitted_default) {
     emit_indent(&sw, indent); buf_puts(&sw, "default: ");
