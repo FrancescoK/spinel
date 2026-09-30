@@ -218,9 +218,9 @@ int  g_indent = 0;
    name when it reaches the overridden node. Twice MAX_ARG_OVERRIDE to start
    with, so only a call of more arguments than that grows it. */
 static int  argov_node0[2 * MAX_ARG_OVERRIDE];
-static char argov_text0[2 * MAX_ARG_OVERRIDE][16];
+static char argov_text0[2 * MAX_ARG_OVERRIDE][32];
 int  *g_argov_node = argov_node0;
-char (*g_argov_text)[16] = argov_text0;
+char (*g_argov_text)[32] = argov_text0;
 static int g_argov_cap = 2 * MAX_ARG_OVERRIDE;
 int  g_n_argov = 0;
 /* See codegen_internal.h. */
@@ -228,7 +228,7 @@ void argov_reserve(void) {
   if (g_n_argov + 1 + MAX_ARG_OVERRIDE <= g_argov_cap) return;
   int cap = 2 * (g_n_argov + 1 + MAX_ARG_OVERRIDE);
   int *nodes = malloc(sizeof *nodes * (size_t)cap);
-  char (*texts)[16] = malloc(sizeof *texts * (size_t)cap);
+  char (*texts)[32] = malloc(sizeof *texts * (size_t)cap);
   if (!nodes || !texts) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   memcpy(nodes, g_argov_node, sizeof *nodes * (size_t)g_n_argov);
   memcpy(texts, g_argov_text, sizeof *texts * (size_t)g_n_argov);

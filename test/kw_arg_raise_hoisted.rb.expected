@@ -1,0 +1,5 @@
+[{k: 1}, 2]
+"undefined method 'id' for an instance of Hash"
+"undefined method 'id' for an instance of Hash"
+[1, 2]
+"undefined method 'id' for an instance of Hash"

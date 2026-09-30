@@ -162,7 +162,7 @@ TyKind block_next_value_ntype(const Compiler *c, int node);
    holds that many past its fill (argov_reserve). */
 #define MAX_ARG_OVERRIDE 64
 extern int  *g_argov_node;
-extern char (*g_argov_text)[16];
+extern char (*g_argov_text)[32];
 extern int  g_n_argov;
 /* Room for one more override whatever the fill, for a site that must run
    every argument of a call ahead of it, however many there are

@@ -7153,10 +7153,15 @@ static void emit_arg_first(Compiler *c, int v, int rebound, Buf *b) {
   emit_expr(c, x, &vb);
   emit_indent(b, g_indent);
   buf_printf(b, "(void)(%s);\n", vb.p ? vb.p : "0");
+  /* A value that raises (`h.id`, a NoMethodError the compiler knows) never
+     answers one, so the call after it is dead, but its slot still has to
+     build. A bare 0 is no sp_RbVal for a slot that boxes it (#6024); a
+     raise's own shape is what every slot already coerces. */
+  int raises = vb.p && strncmp(past_open_parens(vb.p), "sp_raise_", 9) == 0;
   free(vb.p);
   argov_reserve();
   g_argov_node[g_n_argov] = x;
-  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "0");
+  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "%s", raises ? "sp_raise_nomethod(\"\")" : "0");
   g_n_argov++;
 }
 
