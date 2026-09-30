@@ -5741,17 +5741,31 @@ int emit_lent_local(LocalVar *lv, const char *vn, Buf *out) {
   return 1;
 }
 
-/* The handle temp emit_arg_temp took of a shared String slot's read that the
-   call ran first, -1 when there is none: the value temp's number, one down,
-   declared in the statement's pending lines. Other sites that run an argument
-   first take no handle, and a declaration only exists once one was taken. */
+/* The handles emit_arg_temp took of the shared String slots it ran first:
+   each names the override it rode with -- its index in g_argov, the node,
+   and the value temp that override reads -- and the temp holding the handle.
+   An override the call has dropped since (a later call reuses its index)
+   is pruned when the next one is taken, so the list is no longer than the
+   overrides live at once. */
+typedef struct { int idx, node, t, th; } RanHandle;
+static RanHandle *g_ran_hnd;
+static int g_n_ran_hnd, g_cap_ran_hnd;
+
+/* The handle temp emit_arg_temp took of the shared String slot `node` that
+   the call ran first, -1 when there is none. It is the one recorded with the
+   live override itself. Guessing it as the value temp's number one down,
+   declared anywhere in the statement's pending lines, matched another
+   String's temp when the variable held no handle: `h((buf.upcase!; 1), d,
+   (d = +"q"; 2))` bound the block-scoped temp upcase! took of buf. */
 static int ran_first_handle(int node) {
   for (int i = g_n_argov - 1; i >= 0; i--) {
     if (g_argov_node[i] != node) continue;
     int t;
-    if (sscanf(g_argov_text[i], "_t%d", &t) != 1 || !g_pre || !g_pre->p) return -1;
-    char decl[48]; snprintf(decl, sizeof decl, "sp_String *_t%d = ", t - 1);
-    return strstr(g_pre->p, decl) ? t - 1 : -1;
+    if (sscanf(g_argov_text[i], "_t%d", &t) != 1) return -1;
+    for (int j = 0; j < g_n_ran_hnd; j++)
+      if (g_ran_hnd[j].idx == i && g_ran_hnd[j].node == node && g_ran_hnd[j].t == t)
+        return g_ran_hnd[j].th;
+    return -1;
   }
   return -1;
 }
@@ -7083,11 +7097,14 @@ static void emit_arg_temp(Compiler *c, int v) {
   TyKind at = comp_ntype(c, v);
   /* A shared String slot's read is the value form, a copy; a shared-handle
      parameter wants the OBJECT read here, not a fresh one of its bytes. So
-     its handle is taken too, just ahead, into the temp numbered one below
-     the value's (ran_first_handle). */
+     a variable's handle is taken too, just ahead, and recorded with the
+     override below (ran_first_handle). */
   char sref[192];
-  if (strbuf_slot_ref(c, v, sref, sizeof sref)) {
-    int th = ++g_tmp;
+  NodeKind vk = nt_kind(c->nt, v);
+  int th = -1;
+  if ((vk == NK_LocalVariableReadNode || vk == NK_InstanceVariableReadNode) &&
+      strbuf_slot_ref(c, v, sref, sizeof sref)) {
+    th = ++g_tmp;
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, sref, th);
   }
@@ -7106,6 +7123,19 @@ static void emit_arg_temp(Compiler *c, int v) {
      entries the rest never ran where a static check refuses the call, or ran
      at their slots, after the ones that follow them */
   argov_reserve();
+  int k = 0;
+  for (int j = 0; j < g_n_ran_hnd; j++)
+    if (g_ran_hnd[j].idx < g_n_argov) g_ran_hnd[k++] = g_ran_hnd[j];
+  g_n_ran_hnd = k;
+  if (th >= 0) {
+    if (g_n_ran_hnd == g_cap_ran_hnd) {
+      g_cap_ran_hnd = g_cap_ran_hnd ? g_cap_ran_hnd * 2 : 16;
+      RanHandle *nr = realloc(g_ran_hnd, sizeof *g_ran_hnd * (size_t)g_cap_ran_hnd);
+      if (!nr) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      g_ran_hnd = nr;
+    }
+    g_ran_hnd[g_n_ran_hnd++] = (RanHandle){ g_n_argov, v, t, th };
+  }
   g_argov_node[g_n_argov] = v;
   snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", t);
   g_n_argov++;

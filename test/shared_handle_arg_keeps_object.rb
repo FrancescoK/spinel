@@ -54,3 +54,18 @@ t = s
 k = Ctx.new(s, (s = +"q"; 1))
 t << "!"
 p [k.buf, s, t]
+# (d) a variable run first that holds no handle -- lent to a byref slot, so
+# it stays a plain String -- beside an argument that takes a String's handle
+# for itself: the handle parameter binds a fresh String, where it bound the
+# other temp, which its block had already closed (the C build stopped)
+module Helper
+  def self.open_into(io) = (io << "<div>"; nil)
+end
+Helper.open_into([]) if ARGV.size > 5   # a second caller makes io POLY
+def plain_into(io) = (io << "p"; nil)
+def h(k0, io, k) = (Helper.open_into(io); io << "h#{k0}#{k}"; nil)
+buf = +""
+d = String.new
+plain_into(d)
+h((buf << "ab"; buf.upcase!; buf.size), d, (d = String.new; 1))
+p [d, buf]
