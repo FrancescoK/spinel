@@ -30579,7 +30579,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           comp_method_in_chain(c, iencl->class_id, name, NULL) >= 0)
         goto skip_toplevel_include;
     }
-    int imi = comp_included_method_index(c, name);
+    int imi = comp_included_method_index(c, name, id);
     if (imi >= 0) {
       Scope *ms = &c->scopes[imi];
       /* An INSTANCE method reached this way runs with self bound to main, which
