@@ -32,6 +32,7 @@ uint64_t sp_random_next(sp_Random *r);
 sp_Random *sp_Random_new(sp_int seed);
 sp_Random *sp_Random_new_float(sp_float f);
 sp_Random *sp_Random_new_auto(void);
+sp_Random *sp_Random_dup(sp_Random *r);
 sp_int sp_Random_seed(sp_Random *r);
 sp_bool sp_Random_eq(sp_Random *a, sp_Random *b);
 sp_int sp_Random_rand_range(sp_Random *r, sp_Range rg);
