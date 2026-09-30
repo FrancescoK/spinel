@@ -3260,6 +3260,7 @@ void register_ffi_decls(Compiler *c) {
       if (sp_streq(dname, "native_obj")) {
         if (an < 1) continue;
         const char *objp = ffi_arg_str(nt, args[0]);
+        for (int k = 0; objp && k < c->n_native_objs; k++) if (sp_streq(c->native_objs[k].path, objp)) objp = NULL;
         if (!objp) continue;
         if (c->n_native_objs >= c->c_native_objs) {
           c->c_native_objs = c->c_native_objs ? c->c_native_objs * 2 : 8;
