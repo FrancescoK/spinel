@@ -6705,6 +6705,19 @@ static void emit_tail_value(Compiler *c, int node, Buf *b) {
       }
     }
   }
+  /* a case whose value is nil -- each arm returns or answers nil -- is held
+     boxed by emit_case_expr (a nil has no C slot of its own); the method's
+     slot takes it unboxed */
+  if (nt_kind(c->nt, node) == NK_CaseNode && g_ret_type != TY_UNKNOWN && g_ret_type != TY_VOID) {
+    TyKind ct = comp_ntype(c, node);
+    if (ct == TY_NIL || ct == TY_VOID || ct == TY_UNKNOWN) {
+      Buf cb; memset(&cb, 0, sizeof cb);
+      emit_expr(c, node, &cb);
+      emit_unbox_text(c, g_ret_type, cb.p ? cb.p : "sp_box_nil()", b);
+      free(cb.p);
+      return;
+    }
+  }
   Buf tmp; memset(&tmp, 0, sizeof tmp);
   emit_expr(c, node, &tmp);
   const char *txt = tmp.p ? tmp.p : "";
