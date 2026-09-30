@@ -92,3 +92,13 @@ begin; m.call("fr".freeze); rescue FrozenError => ex; p ex.class; end
 # binary content with a NUL keeps its length and bytes
 s = +"a\0b"; f.call(s); m.call(s); p s.size, s.bytes.first(4)
 b = "\xff\0".b; p K.new.method(:app2).call(b.dup), b.size
+
+# a `<<` taken back into its slot keeps a user object whose #<< answers
+# something else: only a plain String's append answers the new String
+class ShlAnswers
+  def <<(x) = 42
+end
+[ShlAnswers.new, +"s"].each { |a| -> { a << "x" }.call; p a.class }
+shl = [ShlAnswers.new, +"s"][ARGV.size]
+shl << "x"
+p shl.class

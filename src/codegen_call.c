@@ -30533,16 +30533,26 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
        there appends by concat, and sp_poly_shl answers the new box. In value
        position -- `-> { a << x }` over the block parameter the wrapper
        (desugar_block_capture_wrap) renamed `__cap_N_a` -- the cell kept the
-       old String and the append was lost. */
+       old String and the append was lost. Only a plain String takes the
+       result back: any other receiver answers itself, or, through a user
+       class's own #<<, something that is not the receiver at all. */
     const char *rvn = nt_kind(nt, recv) == NK_LocalVariableReadNode ? nt_str(nt, recv, "name") : NULL;
     int rebind = rvn && strncmp(rvn, "__cap_", 6) == 0;
-    if (rebind) { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, " = "); }
+    int was = 0, got = 0;
+    if (rebind) {
+      was = ++g_tmp; got = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", was); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_RbVal _t%d = ", got);
+    }
     int se = 0;
     int t = poly_binop_recv_temp(c, recv, argv[0], b, &se);
     buf_printf(b, "sp_poly_shl(_t%d, ", t);
     emit_boxed(c, argv[0], b);
     buf_puts(b, se ? "); })" : ")");
-    if (rebind) buf_puts(b, ")");
+    if (rebind) {
+      buf_printf(b, "; if (_t%d.tag == SP_TAG_STR) ", was); emit_expr(c, recv, b);
+      buf_printf(b, " = _t%d; _t%d; })", got, got);
+    }
     return;
   }
   /* poly_val >> int: unbox recv to int, apply op. & | ^ dispatch on the
