@@ -1287,6 +1287,7 @@ int recv_user_defines(Compiler *c, const char *name);
 int user_defines_or_reads(Compiler *c, const char *name);
 const char *array_index_bad_class(Compiler *c, int id);
 extern int g_poly_builtin_arm;  /* emitting a poly dispatch's builtin arm */
+int poly_name_user_claimed(Compiler *c, const char *name, int argc, int readers);
 void emit_complex_coerce(Compiler *c, int node, Buf *b);
 void emit_brk_wrapped_call(Compiler *c, int id, Buf *b);
 /* 1 if a break-carrying call at `id` can skip the serial-addressed setjmp

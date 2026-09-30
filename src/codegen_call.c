@@ -1613,6 +1613,14 @@ int recv_user_defines(Compiler *c, const char *name) {
    receivers out (#3459). */
 int g_poly_builtin_arm = 0;
 
+int poly_name_user_claimed(Compiler *c, const char *name, int argc, int readers) {
+  if (g_poly_builtin_arm) return 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_poly_arm_defines_n(c, k, name, argc) ||
+        (readers && !c->classes[k].is_native_class && comp_reader_in_chain(c, k, name, NULL))) return 1;
+  return 0;
+}
+
 /* 1 iff a user class that descends from an exception class defines `name`:
    a rescued value is typed TY_EXCEPTION rather than as its user class, so
    the ordinary user-method routing never sees such a definition and the
@@ -40379,11 +40387,7 @@ else {
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
       (sp_streq(name, "inject") || sp_streq(name, "reduce")) &&
       comp_ntype(c, argv[0]) == TY_SYMBOL) {
-    int ncand8 = 0;
-    if (!g_poly_builtin_arm)
-      for (int k = 0; k < c->nclasses; k++)
-        if (comp_poly_arm_defines_n(c, k, name, argc)) ncand8++;
-    if (ncand8 == 0) {
+    if (!poly_name_user_claimed(c, name, argc, 0)) {
       buf_puts(b, "sp_poly_inject_sym("); emit_expr(c, recv, b); buf_puts(b, ", ");
       emit_expr(c, argv[0], b); buf_puts(b, ")");
       return;
@@ -40416,12 +40420,7 @@ else {
     else if (sp_streq(name, "max")) pn9 = "sp_poly_arr_max_n";
     else if (sp_streq(name, "shuffle") && argc == 0) pn9 = "sp_poly_arr_shuffle";
     if (pn9) {
-      int ncand9 = 0;
-      if (!g_poly_builtin_arm)
-        for (int k = 0; k < c->nclasses; k++)
-          if (comp_poly_arm_defines_n(c, k, name, argc) ||
-              (!c->classes[k].is_native_class && comp_reader_in_chain(c, k, name, NULL))) ncand9++;
-      if (ncand9 == 0) {
+      if (!poly_name_user_claimed(c, name, argc, 1)) {
         Buf cb9; memset(&cb9, 0, sizeof cb9);
         buf_printf(&cb9, "%s(", pn9);
         { Buf rb9; memset(&rb9, 0, sizeof rb9); emit_expr(c, recv, &rb9);
@@ -40441,11 +40440,7 @@ else {
   /* values_at takes any number of indices; collect them into a poly array. */
   if (recv >= 0 && rt == TY_POLY && argc >= 1 && nt_ref(nt, id, "block") < 0 &&
       sp_streq(name, "values_at")) {
-    int ncand9 = 0;
-    if (!g_poly_builtin_arm)
-      for (int k = 0; k < c->nclasses; k++)
-        if (comp_poly_arm_defines_n(c, k, name, argc)) ncand9++;
-    if (ncand9 == 0) {
+    if (!poly_name_user_claimed(c, name, argc, 0)) {
       int ti9 = ++g_tmp;
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", ti9, ti9);
@@ -40492,12 +40487,7 @@ else {
   if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 &&
       (sp_streq(name, "resume") || sp_streq(name, "transfer") ||
        (sp_streq(name, "raise") && argc <= 3))) {
-    int ncand = 0;
-    if (!g_poly_builtin_arm)
-      for (int k = 0; k < c->nclasses; k++)
-        if (comp_poly_arm_defines_n(c, k, name, argc) ||
-            (!c->classes[k].is_native_class && comp_reader_in_chain(c, k, name, NULL))) ncand++;
-    if (ncand == 0) {
+    if (!poly_name_user_claimed(c, name, argc, 1)) {
       Buf fv; memset(&fv, 0, sizeof fv);
       int tf = ++g_tmp;
       buf_printf(&fv, "({ sp_Fiber *_t%d = sp_poly_as_fiber(", tf);
@@ -40540,12 +40530,7 @@ else {
          must shadow the builtin helper exactly like `def value` does, or the
          reader call is hijacked (e.g. sp_poly_fiber_value on a Node). The
          general poly dispatch below emits reader arms, so it handles them. */
-      int ncand = 0;
-      if (!g_poly_builtin_arm)
-        for (int k = 0; k < c->nclasses; k++)
-          if (comp_poly_arm_defines_n(c, k, name, argc) ||
-              (!c->classes[k].is_native_class && comp_reader_in_chain(c, k, name, NULL))) ncand++;
-      if (ncand == 0) {
+      if (!poly_name_user_claimed(c, name, argc, 1)) {
         TyKind want = comp_ntype(c, id);
         int is_alive = sp_streq(name, "alive?");
         if (is_alive && want == TY_POLY) buf_puts(b, "sp_box_bool(");
@@ -40563,12 +40548,7 @@ else {
       ((argc == 0 && (sp_streq(name, "deq") || sp_streq(name, "num_waiting"))) ||
        (argc == 1 && sp_streq(name, "enq")) ||
        (argc == 1 && sp_streq(name, "deq")) || (argc == 2 && sp_streq(name, "enq")))) {
-    int ncand = 0;
-    if (!g_poly_builtin_arm)
-      for (int k = 0; k < c->nclasses; k++)
-        if (comp_poly_arm_defines_n(c, k, name, argc) ||
-            (!c->classes[k].is_native_class && comp_reader_in_chain(c, k, name, NULL))) ncand++;
-    if (ncand == 0) {
+    if (!poly_name_user_claimed(c, name, argc, 1)) {
       Buf qv; memset(&qv, 0, sizeof qv);
       if (sp_streq(name, "deq") && argc == 1) {   /* deq(non_block) */
         buf_puts(&qv, "sp_poly_queue_pop_flag("); emit_boxed(c, recv, &qv);
