@@ -1043,6 +1043,7 @@ int emit_native_ctor(Compiler *c, int id, int ci, int argc, const int *argv, Buf
 void emit_block_value_into(Compiler *c, int block, const char *dest,
                            int want_poly, int indent);
 int emit_block_cond_next(Compiler *c, int block, int indent, Buf *out);
+int fold_body_has_next(Compiler *c, int node);  /* a `next` of the body's own, not a nested block's */
 int emit_collect_expr(Compiler *c, int id, Buf *b);
 int emit_with_index_expr(Compiler *c, int id, Buf *b);
 int emit_enum_with_index_expr(Compiler *c, int id, Buf *b);
