@@ -91,12 +91,31 @@ sp_IntArray*sp_IntArray_slice_range(sp_IntArray*a,sp_int start,sp_int end_,sp_in
    mutator here checks, but replace did not, so `[1, 2].freeze.replace([3, 4])`
    quietly rewrote it. */
 void sp_IntArray_replace(sp_IntArray*dst,sp_IntArray*src){if(dst==src)return;if(dst->frozen){sp_raise_frozen_array_at(dst,SP_BUILTIN_INT_ARRAY);return;}dst->len=0;dst->start=0;if(src->len>dst->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)dst-sizeof(sp_gc_hdr));sp_gc_bytes_sub(sizeof(sp_int)*dst->cap);h->size-=sizeof(sp_int)*dst->cap;void*nd=sp_pl_realloc(dst->data,sizeof(sp_int)*src->len);if(!nd){perror("realloc");exit(1);}dst->data=(sp_int*)nd;dst->cap=src->len;h->size+=sizeof(sp_int)*dst->cap;sp_gc_bytes_add(sizeof(sp_int)*dst->cap);}memcpy(dst->data,src->data+src->start,sizeof(sp_int)*src->len);dst->len=src->len;}
+/* The cold start-past-the-end splice: nil (the sentinel) up to `s`, then the
+   source. Kept apart so the splice's in-range path below is unchanged. */
+static void sp_IntArray_splice_gap(sp_IntArray*a,sp_int s,const sp_int*src,sp_int srcn){
+  SP_GC_ROOT(a);
+  sp_int*sb=NULL;
+  if(srcn>0){sb=(sp_int*)sp_pl_alloc(sizeof(sp_int)*(size_t)srcn);if(!sb)sp_oom_die();memcpy(sb,src,sizeof(sp_int)*(size_t)srcn);}
+  while(a->len<s)sp_IntArray_push(a,SP_INT_NIL);
+  for(sp_int i=0;i<srcn;i++)sp_IntArray_push(a,sb[i]);
+  sp_pl_free(sb);
+}
+static void sp_FloatArray_splice_gap(sp_FloatArray*a,sp_int s,const sp_float*src,sp_int srcn){
+  SP_GC_ROOT(a);
+  sp_float*sb=NULL;
+  if(srcn>0){sb=(sp_float*)sp_pl_alloc(sizeof(sp_float)*(size_t)srcn);if(!sb)sp_oom_die();memcpy(sb,src,sizeof(sp_float)*(size_t)srcn);}
+  while(a->len<s)sp_FloatArray_push(a,sp_float_nil());
+  for(sp_int i=0;i<srcn;i++)sp_FloatArray_push(a,sb[i]);
+  sp_pl_free(sb);
+}
 /* arr[start,len] = src / arr[range] = src : remove `len` elements at `start`
    and insert the `srcn` elements of `src` in their place, shifting the tail.
    Reuses push so capacity growth + GC byte accounting stay in one place. src
    is snapshotted first so splicing an array into itself (`a[1,1]=a`) is safe.
-   A start beyond the end would need a nil gap, which a typed array cannot
-   hold, so it raises (the poly-array splice fills nil instead). */
+   A start beyond the end pads the gap with nil -- the sentinel, or NULL in a
+   String array -- as CRuby does (the *_splice_gap helpers); it raised while a
+   typed array could not hold nil. */
 void sp_IntArray_splice(sp_IntArray*a,sp_int start,sp_int len,const sp_int*src,sp_int srcn){
   if(!a)return;
   if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_INT_ARRAY);return;}
@@ -107,7 +126,7 @@ void sp_IntArray_splice(sp_IntArray*a,sp_int start,sp_int len,const sp_int*src,s
   if(s<0)s+=alen;
   if(len<0){sp_raise_cls("IndexError",sp_sprintf("negative length (%lld)",(long long)len));return;}
   if(s<0){sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)start,(long long)-alen));return;}
-  if(s>alen){sp_raise_cls("RuntimeError",sp_sprintf("index %lld out of range for typed-array splice (would require nil fill)",(long long)s));return;}
+  if(s>alen){sp_IntArray_splice_gap(a,s,src,srcn);return;}
   if(s+len>alen)len=alen-s;
   /* Equal-length replacement is a pure overwrite: no length change, no
      capacity growth, no tail shift. memmove, since src may alias a's own
@@ -132,7 +151,7 @@ void sp_FloatArray_splice(sp_FloatArray*a,sp_int start,sp_int len,const sp_float
   if(s<0)s+=alen;
   if(len<0){sp_raise_cls("IndexError",sp_sprintf("negative length (%lld)",(long long)len));return;}
   if(s<0){sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)start,(long long)-alen));return;}
-  if(s>alen){sp_raise_cls("RuntimeError",sp_sprintf("index %lld out of range for typed-array splice (would require nil fill)",(long long)s));return;}
+  if(s>alen){sp_FloatArray_splice_gap(a,s,src,srcn);return;}
   if(s+len>alen)len=alen-s;
   if(len==srcn){if(srcn>0)memmove(a->data+s,src,sizeof(sp_float)*(size_t)srcn);return;}  /* see the int form */
   SP_GC_ROOT(a);
@@ -146,6 +165,17 @@ void sp_FloatArray_splice(sp_FloatArray*a,sp_int start,sp_int len,const sp_float
   for(sp_int i=0;i<tail_n;i++)sp_FloatArray_push(a,tb[i]);
   sp_pl_free(sb);sp_pl_free(tb);
 }
+/* A String array's nil is NULL, as a past-the-end `a[i] = s` pads it. The
+   source strings stay reachable through the caller's array: a is not
+   truncated here, so the raw snapshot needs no rooted holder. */
+static void sp_StrArray_splice_gap(sp_StrArray*a,sp_int s,const char*const*src,sp_int srcn){
+  SP_GC_ROOT(a);
+  const char**sb=NULL;
+  if(srcn>0){sb=(const char**)sp_pl_alloc(sizeof(const char*)*(size_t)srcn);if(!sb)sp_oom_die();memcpy(sb,src,sizeof(const char*)*(size_t)srcn);}
+  while(a->len<s)sp_StrArray_push(a,NULL);
+  for(sp_int i=0;i<srcn;i++)sp_StrArray_push(a,sb[i]);
+  sp_pl_free(sb);
+}
 void sp_StrArray_splice(sp_StrArray*a,sp_int start,sp_int len,const char*const*src,sp_int srcn){
   if(!a)return;
   if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_STR_ARRAY);return;}
@@ -153,7 +183,7 @@ void sp_StrArray_splice(sp_StrArray*a,sp_int start,sp_int len,const char*const*s
   if(s<0)s+=alen;
   if(len<0){sp_raise_cls("IndexError",sp_sprintf("negative length (%lld)",(long long)len));return;}
   if(s<0){sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)start,(long long)-alen));return;}
-  if(s>alen){sp_raise_cls("RuntimeError",sp_sprintf("index %lld out of range for typed-array splice (would require nil fill)",(long long)s));return;}
+  if(s>alen){sp_StrArray_splice_gap(a,s,src,srcn);return;}
   if(s+len>alen)len=alen-s;
   if(len==srcn){if(srcn>0)memmove(a->data+s,src,sizeof(const char*)*(size_t)srcn);return;}  /* see the int form */
   SP_GC_ROOT(a);
@@ -196,25 +226,27 @@ void sp_PolyArray_splice(sp_PolyArray*a,sp_int start,sp_int len,sp_RbVal src){
     sp_RbVal*dst=a->data+s;
     switch(src.cls_id){
       case SP_BUILTIN_POLY_ARRAY:{sp_PolyArray*x=(sp_PolyArray*)src.v.p;if(x->len==len){sp_gc_wb((void*)a);memmove(dst,x->data,sizeof(sp_RbVal)*(size_t)len);return;}break;}
-      case SP_BUILTIN_INT_ARRAY:{sp_IntArray*x=(sp_IntArray*)src.v.p;if(x->len==len){sp_gc_wb((void*)a);for(sp_int i=0;i<len;i++)dst[i]=sp_box_int(x->data[x->start+i]);return;}break;}
-      case SP_BUILTIN_FLT_ARRAY:{sp_FloatArray*x=(sp_FloatArray*)src.v.p;if(x->len==len){sp_gc_wb((void*)a);for(sp_int i=0;i<len;i++)dst[i]=sp_box_float(x->data[i]);return;}break;}
+      case SP_BUILTIN_INT_ARRAY:{sp_IntArray*x=(sp_IntArray*)src.v.p;if(x->len==len){sp_gc_wb((void*)a);for(sp_int i=0;i<len;i++)dst[i]=sp_box_int_or_nil(x->data[x->start+i]);return;}break;}
+      case SP_BUILTIN_FLT_ARRAY:{sp_FloatArray*x=(sp_FloatArray*)src.v.p;if(x->len==len){sp_gc_wb((void*)a);for(sp_int i=0;i<len;i++)dst[i]=sp_box_float_or_nil(x->data[i]);return;}break;}
       case SP_BUILTIN_STR_ARRAY:{sp_StrArray*x=(sp_StrArray*)src.v.p;if(x->len==len){sp_gc_wb((void*)a);for(sp_int i=0;i<len;i++)dst[i]=sp_box_str(x->data[i]);return;}break;}
       default:break;
     }
   }
-  /* snapshot the source elements as boxed values. src's class id decides
-     array-vs-single-element (Ruby splices an Array RHS, inserts anything
-     else). A user object with to_ary is coerced at COMPILE time when its
-     static type is known; a to_ary object reaching here as a runtime poly
-     value still inserts as one element -- closing that would need a
-     codegen-installed dispatch hook (the sp_obj_cmp_hook pattern). */
+  /* snapshot the source elements as boxed values (an Integer or Float
+     array's sentinel is its nil element, so it boxes as nil, here and in the
+     overwrite above). src's class id decides array-vs-single-element (Ruby
+     splices an Array RHS, inserts anything else). A user object with to_ary
+     is coerced at COMPILE time when its static type is known; a to_ary
+     object reaching here as a runtime poly value still inserts as one
+     element -- closing that would need a codegen-installed dispatch hook
+     (the sp_obj_cmp_hook pattern). */
   int src_is_array=src.tag==SP_TAG_OBJ&&(src.cls_id==SP_BUILTIN_INT_ARRAY||src.cls_id==SP_BUILTIN_FLT_ARRAY||src.cls_id==SP_BUILTIN_STR_ARRAY||src.cls_id==SP_BUILTIN_POLY_ARRAY||src.cls_id==SP_BUILTIN_PTR_ARRAY);
   sp_int srcn=0;sp_RbVal*sb=NULL;
   if(src_is_array){
     void*p=src.v.p;
     switch(src.cls_id){
-      case SP_BUILTIN_INT_ARRAY:{sp_IntArray*x=(sp_IntArray*)p;srcn=x->len;if(srcn>0){sb=(sp_RbVal*)sp_pl_alloc(sizeof(sp_RbVal)*(size_t)srcn);if(!sb)sp_oom_die();for(sp_int i=0;i<srcn;i++)sb[i]=sp_box_int(x->data[x->start+i]);}break;}
-      case SP_BUILTIN_FLT_ARRAY:{sp_FloatArray*x=(sp_FloatArray*)p;srcn=x->len;if(srcn>0){sb=(sp_RbVal*)sp_pl_alloc(sizeof(sp_RbVal)*(size_t)srcn);if(!sb)sp_oom_die();for(sp_int i=0;i<srcn;i++)sb[i]=sp_box_float(x->data[i]);}break;}
+      case SP_BUILTIN_INT_ARRAY:{sp_IntArray*x=(sp_IntArray*)p;srcn=x->len;if(srcn>0){sb=(sp_RbVal*)sp_pl_alloc(sizeof(sp_RbVal)*(size_t)srcn);if(!sb)sp_oom_die();for(sp_int i=0;i<srcn;i++)sb[i]=sp_box_int_or_nil(x->data[x->start+i]);}break;}
+      case SP_BUILTIN_FLT_ARRAY:{sp_FloatArray*x=(sp_FloatArray*)p;srcn=x->len;if(srcn>0){sb=(sp_RbVal*)sp_pl_alloc(sizeof(sp_RbVal)*(size_t)srcn);if(!sb)sp_oom_die();for(sp_int i=0;i<srcn;i++)sb[i]=sp_box_float_or_nil(x->data[i]);}break;}
       case SP_BUILTIN_STR_ARRAY:{sp_StrArray*x=(sp_StrArray*)p;srcn=x->len;if(srcn>0){sb=(sp_RbVal*)sp_pl_alloc(sizeof(sp_RbVal)*(size_t)srcn);if(!sb)sp_oom_die();for(sp_int i=0;i<srcn;i++)sb[i]=sp_box_str(x->data[i]);}break;}
       case SP_BUILTIN_POLY_ARRAY:{sp_PolyArray*x=(sp_PolyArray*)p;srcn=x->len;if(srcn>0){sb=(sp_RbVal*)sp_pl_alloc(sizeof(sp_RbVal)*(size_t)srcn);if(!sb)sp_oom_die();memcpy(sb,x->data,sizeof(sp_RbVal)*(size_t)srcn);}break;}
       case SP_BUILTIN_PTR_ARRAY:{sp_PtrArray*x=(sp_PtrArray*)p;srcn=x->len;if(srcn>0){sb=(sp_RbVal*)sp_pl_alloc(sizeof(sp_RbVal)*(size_t)srcn);if(!sb)sp_oom_die();for(sp_int i=0;i<srcn;i++)sb[i]=sp_PtrArray_elem_box(x,x->data[i]);}break;}   /* rows or objects (#4486) */

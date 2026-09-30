@@ -2541,7 +2541,10 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_IntArray_length(_t%d)%s; _t%d++) {\n",
                tloop, tloop, tsrc, cbuf, tloop);
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "sp_RbVal _t%d = sp_box_int(sp_IntArray_get(_t%d, _t%d)); SP_GC_ROOT_RBVAL(_t%d);\n", tv, tsrc, tloop, tv);
+    /* a nil element of a nil-carrying Integer array streams as nil, not as
+       its sentinel (typed_elem_box_fn) */
+    buf_printf(g_pre, "sp_RbVal _t%d = %s(sp_IntArray_get(_t%d, _t%d)); SP_GC_ROOT_RBVAL(_t%d);\n",
+               tv, typed_elem_box_fn(c, lazy_src, TY_INT_ARRAY), tsrc, tloop, tv);
   }
   else if (src_is_arr) {
     emit_indent(g_pre, g_indent);
@@ -9366,9 +9369,13 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       }
       if (is_index) {
         if (ret == TY_POLY) {
-          buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = sp_box_int(sp_IntArray_get((sp_IntArray *)_t%d.v.p, %s)); break;", tr, tv, idxref);
+          /* An Integer or Float array answers a nil element, and any index
+             past its end, with its sentinel: the _or_nil box reads that as
+             nil. The plain box made `x[9]` the sentinel as a number -- nil?
+             false, and NaN for a Float array. */
+          buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = sp_box_int_or_nil(sp_IntArray_get((sp_IntArray *)_t%d.v.p, %s)); break;", tr, tv, idxref);
           buf_printf(b, " case SP_BUILTIN_STR_ARRAY: _t%d = sp_box_str(sp_StrArray_get((sp_StrArray *)_t%d.v.p, %s)); break;", tr, tv, idxref);
-          buf_printf(b, " case SP_BUILTIN_FLT_ARRAY: _t%d = sp_box_float(sp_FloatArray_get((sp_FloatArray *)_t%d.v.p, %s)); break;", tr, tv, idxref);
+          buf_printf(b, " case SP_BUILTIN_FLT_ARRAY: _t%d = sp_box_float_or_nil(sp_FloatArray_get((sp_FloatArray *)_t%d.v.p, %s)); break;", tr, tv, idxref);
           buf_printf(b, " case SP_BUILTIN_POLY_ARRAY: _t%d = sp_PolyArray_get((sp_PolyArray *)_t%d.v.p, %s); break;", tr, tv, idxref);
           buf_printf(b, " case SP_BUILTIN_PTR_ARRAY: _t%d = sp_PtrArray_get_box((sp_PtrArray *)_t%d.v.p, %s); break;", tr, tv, idxref);
         }
