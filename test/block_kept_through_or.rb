@@ -58,3 +58,19 @@ def or_pred_nested(&b)
   p :deep if (b || true) && true
 end
 or_pred_nested { |a| p a + 1 }
+
+# a call on what the `||` or the `&&` answers passes the block arguments no
+# call site of it shows, so it keeps the block: its parameter took "s" as a
+# pointer read as an Integer
+def or_called(&b)
+  b.call(9)
+  (b || ->(a) { p [:fallback, a] }).call("or called")
+end
+or_called { |a| p a }
+
+def and_called(&b)
+  b.call(10)
+  (b && b).call("and called")
+  (true && b).call("and right")
+end
+and_called { |a| p a }

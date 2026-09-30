@@ -7629,17 +7629,30 @@ static int bsi_read_keeps(Compiler *c, const int *parent, int r) {
   if (pk == NK_BlockArgumentNode) return 0;
   if (pk == NK_CallNode && nt_ref(nt, p, "receiver") == r) {
     const char *nm = nt_str(nt, p, "name");
-    for (int k = 0; nm && ask[k]; k++) if (sp_streq(nm, ask[k])) return 0;
+    /* a call through what an operator answers (`(b || fb).call(v)`) is no
+       site of the block (block_site_scope reads `b.call` alone), so there
+       only the asking names, past the four calling ones, keep it in place */
+    int via = nt_kind(nt, r) != NK_LocalVariableReadNode;
+    for (int k = via ? 4 : 0; nm && ask[k]; k++) if (sp_streq(nm, ask[k])) return 0;
     return 1;
   }
   if ((pk == NK_IfNode || pk == NK_UnlessNode || pk == NK_WhileNode || pk == NK_UntilNode) &&
       nt_ref(nt, p, "predicate") == r) return 0;
   /* `b && x` answers b only where b is nil or false, so the block itself
-     never leaves through it. `b || x` answers b where b is set, so the block
-     goes wherever that answer goes: a predicate drops it, `@cb = b || fb`
-     keeps it. */
+     never leaves through it. `b || x` answers b where b is set, and `x || b`
+     and `x && b` answer b whenever they reach it, so the block goes wherever
+     that answer goes: a predicate drops it, `@cb = b || fb` keeps it. The
+     question moves up through each such operator and each pair of
+     parentheses, so `(b || true) && true` drops it too: it is the left of
+     the `&&` that the block would have to leave through. */
   if (pk == NK_AndNode && nt_ref(nt, p, "left") == r) return 0;
-  if (pk == NK_OrNode && nt_ref(nt, p, "left") == r) return bsi_read_keeps(c, parent, p);
+  if (pk == NK_OrNode || pk == NK_AndNode || pk == NK_ParenthesesNode)
+    return bsi_read_keeps(c, parent, p);
+  if (pk == NK_StatementsNode && parent[p] >= 0 && nt_kind(nt, parent[p]) == NK_ParenthesesNode) {
+    /* `(a; b)` answers its last statement; an earlier one's value is dropped */
+    int n = 0; const int *body = nt_arr(nt, p, "body", &n);
+    return n > 0 && body[n - 1] == r ? bsi_read_keeps(c, parent, p) : 0;
+  }
   return 1;
 }
 static void bsi_kept_mark(Compiler *c) {

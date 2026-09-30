@@ -2441,6 +2441,9 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -q 'sp_RbVal lv_okaa' "$$tmp/bko.c" || { echo "infer-test: FAIL (a block kept through the left of a || did not widen its parameters)"; ok=0; }; \
 	grep -q 'sp_int lv_alaa' "$$tmp/bko.c" || { echo "infer-test: FAIL (the left of an && widened a block parameter it does not let go)"; ok=0; }; \
 	grep -q 'sp_int lv_opaa' "$$tmp/bko.c" || { echo "infer-test: FAIL (a || a predicate reads widened a block parameter it does not let go)"; ok=0; }; \
+	grep -q 'sp_int lv_onaa' "$$tmp/bko.c" || { echo "infer-test: FAIL (a || nested in the left of an && widened a block parameter it does not let go)"; ok=0; }; \
+	grep -q 'sp_int lv_oraa' "$$tmp/bko.c" || { echo "infer-test: FAIL (the right of a || a predicate reads widened a block parameter it does not let go)"; ok=0; }; \
+	grep -q 'sp_RbVal lv_orkaa' "$$tmp/bko.c" || { echo "infer-test: FAIL (a block kept through the right of a parenthesized || did not widen its parameters)"; ok=0; }; \
 	$(SPINEL) test/infer/yield_splat_int_params.rb -c --no-line-map -o "$$tmp/ysi.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile yield_splat_int_params)"; exit 1; }; \
 	for m in 'sp_int lv_e = ' 'sp_int lv_f = ' 'sp_int_mul(lv_e, lv_f)'; do \
 	  grep -q "$$m" "$$tmp/ysi.c" || { echo "infer-test: FAIL (yield(*xs) of an Integer array left a block parameter boxed: $$m)"; ok=0; }; \
