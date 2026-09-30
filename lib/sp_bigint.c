@@ -5404,9 +5404,26 @@ sp_Bigint *sp_bigint_remainder(sp_Bigint *a, sp_Bigint *b) {
 sp_Bigint *sp_bigint_powmod(sp_Bigint *base, intptr_t exp, sp_Bigint *mod) {
   if (exp < 0) sp_raise_cls("RangeError", "Integer#pow() 1st argument cannot be negative when 2nd argument specified");
   if (zero_p(&mod->mpz)) sp_bigint_raise_zerodiv("divided by 0");
+  /* As mruby's mrb_bint_powm (1ee6d4619): reduce by |m|, with the base
+     first taken into [0, |m|) (the reductions expect it; a negative base gave
+     a negative or unreduced result), and a negative modulus moves a nonzero
+     result down by |m|, into (m, 0] as Ruby's modulo does. */
+  mpz_t c, b;
+  mpz_init(sp_mpz_ctx, &c);
+  mpz_set(sp_mpz_ctx, &c, &mod->mpz);
+  int neg_mod = c.sn < 0;
+  if (neg_mod) c.sn = 1;
+  mpz_init(sp_mpz_ctx, &b);
+  mpz_mod(sp_mpz_ctx, &b, &base->mpz, &c);
+  if (b.sn < 0 && !uzero_p(&b)) mpz_add(sp_mpz_ctx, &b, &b, &c);
   sp_Bigint *r = sp_bigint_alloc();
   mpz_init(sp_mpz_ctx, &r->mpz);
-  mpz_powm_i(sp_mpz_ctx, &r->mpz, &base->mpz, exp, &mod->mpz);
+  if (!((zero_p(&b) || uzero_p(&b)) && exp > 0))
+    mpz_powm_i(sp_mpz_ctx, &r->mpz, &b, exp, &c);
+  if (neg_mod && !zero_p(&r->mpz) && !uzero_p(&r->mpz))
+    mpz_sub(sp_mpz_ctx, &r->mpz, &r->mpz, &c);
+  mpz_clear(sp_mpz_ctx, &b);
+  mpz_clear(sp_mpz_ctx, &c);
   return r;
 }
 
