@@ -1332,6 +1332,7 @@ int emit_poly_op_assign(Compiler *c, const char *lval, const char *op, int v,
 void emit_cond(Compiler *c, int id, Buf *b);
 int static_isa_cond(Compiler *c, int pred);
 int static_respond_to_cond(Compiler *c, int pred);
+int call_on_builtin_class_missing(Compiler *c, int id);
 int static_block_given_cond(Compiler *c, int pred);
 int static_nil_ivar_cond(Compiler *c, int pred);
 void emit_if(Compiler *c, int id, Buf *b, int indent, int is_unless, int tail);

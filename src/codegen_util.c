@@ -2848,6 +2848,17 @@ static const char *const sp_rt_string_fns[] = {
 const char *mc_reopen_cls(Compiler *c, int class_id, const char *mname) {
   static char buf[128];
   const char *stem = c->classes[class_id].c_name;
+  /* The runtime owns dozens of sp_Range_* / sp_Time_* / sp_File_* /
+     sp_Class_* functions and grows more; rather than track the names, a
+     reopen of these takes the `_oc` stem for every method. */
+  {
+    const char *rn = c->classes[class_id].name;
+    if (rn && (sp_streq(rn, "Range") || sp_streq(rn, "Time") ||
+               sp_streq(rn, "File") || sp_streq(rn, "Class"))) {
+      snprintf(buf, sizeof buf, "%s_oc", stem);
+      return buf;
+    }
+  }
   if (mname && sp_streq(c->classes[class_id].name, "String")) {
     for (int i = 0; sp_rt_string_fns[i]; i++)
       if (sp_streq(mname, sp_rt_string_fns[i])) {

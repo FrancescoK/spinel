@@ -824,7 +824,10 @@ static int class_is_prim_reopen(Compiler *c, int k) {
   const char *n = c->classes[k].name;
   return sp_streq(n, "Integer") || sp_streq(n, "Float") ||
          sp_streq(n, "String") || sp_streq(n, "Symbol") ||
-         sp_streq(n, "NilClass") || sp_streq(n, "TrueClass") || sp_streq(n, "FalseClass");
+         sp_streq(n, "NilClass") ||
+         sp_streq(n, "TrueClass") || sp_streq(n, "FalseClass") ||
+         sp_streq(n, "Time") || sp_streq(n, "Range") ||
+         sp_streq(n, "Array") || sp_streq(n, "Hash");
 }
 
 /* Whether a user exception class answers `name`: the dispatch key then has
@@ -871,6 +874,22 @@ static void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_
     {"SP_TAG_STR", "String"},  {"SP_TAG_SYM", "Symbol"},
     {"SP_TAG_NIL", "NilClass"},
   };
+  /* a boxed Time / Range is an OBJ box whose cls_id names the builtin, so
+     it has to be asked before the plain cls_id read below claims it */
+  {
+    int ti = comp_class_index(c, "Time"), ri = comp_class_index(c, "Range");
+    int ai = comp_class_index(c, "Array"), hi = comp_class_index(c, "Hash");
+    if (ti >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_TIME) ? %d : ", tv, tv, ti);
+    if (ri >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? %d : ", tv, tv, ri);
+    /* a boxed array / hash of any element kind is its reopen's; the box's
+       cls_id names the container kind, which the runtime's predicates read */
+    if (ai >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)) ? %d : ", tv, tv, ai);
+    if (hi >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_t%d.cls_id)) ? %d : ", tv, tv, hi);
+    /* a shared-mutable string travels as a handle box, not the plain string
+       tag the String arm keys on; it is the String's too */
+    { int si = comp_class_index(c, "String");
+      if (si >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STRBUF) ? %d : ", tv, tv, si); }
+  }
   buf_printf(b, "(_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id", tv, tv);
   for (unsigned i = 0; i < sizeof P / sizeof P[0]; i++) {
     int idx = comp_class_index(c, P[i].cls);
@@ -880,7 +899,19 @@ static void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_
     if (ti >= 0 || fi >= 0)
       buf_printf(b, " : _t%d.tag == SP_TAG_BOOL ? (_t%d.v.b ? %d : %d)", tv, tv,
                  ti >= 0 ? ti : 0x7fffffff, fi >= 0 ? fi : 0x7fffffff); }
+  /* a boxed bool is one of two classes, by its value (blank.rb reopens both) */
+  {
+    int ti = comp_class_index(c, "TrueClass"), fi = comp_class_index(c, "FalseClass");
+    if (ti >= 0 || fi >= 0)
+      buf_printf(b, " : _t%d.tag == SP_TAG_BOOL ? (_t%d.v.i ? %d : %d)", tv, tv,
+                 ti >= 0 ? ti : 0x7fffffff, fi >= 0 ? fi : 0x7fffffff);
+  }
   buf_puts(b, " : 0x7fffffff)");
+  if (comp_class_index(c, "Time") >= 0) buf_puts(b, ")");
+  if (comp_class_index(c, "Range") >= 0) buf_puts(b, ")");
+  if (comp_class_index(c, "Array") >= 0) buf_puts(b, ")");
+  if (comp_class_index(c, "Hash") >= 0) buf_puts(b, ")");
+  if (comp_class_index(c, "String") >= 0) buf_puts(b, ")");
 }
 
 /* A poly receiver can hold a Class object at run time. The instance-method
@@ -8007,7 +8038,9 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             continue;
           } }
         if (mi >= 0 && c->scopes[mi].nrequired == 0 &&
-            (scope_has_callable_symbol(c, mi) || scope_needs_proc_form(c, mi))) {
+            (scope_has_callable_symbol(c, mi) || scope_needs_proc_form(c, mi)) &&
+            !(c->classes[defcls].name && (sp_streq(c->classes[defcls].name, "Class") ||
+                                          sp_streq(c->classes[defcls].name, "File")))) {
           nd_callee(c, id, mi, defcls, 1);   /* one switch arm (#4557) */
           /* Build the call; append default values for any optional params
              not provided by the (zero-arg) call site. */
@@ -8018,9 +8051,14 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           const char *_dcn = c->classes[defcls].c_name;
           char _dself[320];
           int _dstruct = 0;   /* the receiver is a struct pointer in .v.p */
-          if (sp_streq(_dcn, "Integer") || sp_streq(_dcn, "Numeric")) snprintf(_dself, sizeof _dself, "_t%d.v.i", tv);
+          if (sp_streq(_dcn, "Integer")) snprintf(_dself, sizeof _dself, "_t%d.v.i", tv);
+          /* a Numeric reopen takes self BOXED (it serves Integer and Float
+             alike), not the int payload (blank.rb) */
+          else if (sp_streq(_dcn, "Numeric")) snprintf(_dself, sizeof _dself, "_t%d", tv);
           else if (sp_streq(_dcn, "Float")) snprintf(_dself, sizeof _dself, "_t%d.v.f", tv);
-          else if (sp_streq(_dcn, "String")) snprintf(_dself, sizeof _dself, "_t%d.v.s", tv);
+          /* a plain string box or a mutable handle: deref answers the live
+             text for the handle and is the identity for the plain box */
+          else if (sp_streq(_dcn, "String")) snprintf(_dself, sizeof _dself, "sp_poly_strbuf_deref(_t%d).v.s", tv);
           else if (sp_streq(_dcn, "Symbol")) snprintf(_dself, sizeof _dself, "(sp_sym)_t%d.v.i", tv);
           else if (sp_streq(_dcn, "NilClass")) snprintf(_dself, sizeof _dself, "0");
           /* Object's (and Array's) methods take self boxed */
@@ -8028,6 +8066,13 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             snprintf(_dself, sizeof _dself, "_t%d", tv);
           else if (sp_streq(_dcn, "TrueClass") || sp_streq(_dcn, "FalseClass"))
             snprintf(_dself, sizeof _dself, "(int)_t%d.v.b", tv);
+          else if (sp_streq(_dcn, "NilClass")) snprintf(_dself, sizeof _dself, "0");
+          else if (sp_streq(_dcn, "TrueClass") || sp_streq(_dcn, "FalseClass")) snprintf(_dself, sizeof _dself, "(int)_t%d.v.i", tv);
+          else if (sp_streq(_dcn, "Array") || sp_streq(_dcn, "Hash") || sp_streq(_dcn, "Object"))
+            snprintf(_dself, sizeof _dself, "_t%d", tv);
+          /* a boxed Time / Range points at the value; the reopen takes it by value */
+          else if (sp_streq(_dcn, "Time") || sp_streq(_dcn, "Range"))
+            snprintf(_dself, sizeof _dself, "*(sp_%s *)_t%d.v.p", _dcn, tv);
           /* a by-value (value-type) class method takes self by value:
              dereference the boxed pointer instead of passing it (#2441) */
           else if (c->classes[defcls].is_value_type) {
@@ -8035,7 +8080,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           else { snprintf(_dself, sizeof _dself, "(sp_%s *)_t%d.v.p", _dcn, tv); _dstruct = 1; }
           /* a yielding candidate is called through its proc-form clone (#3399) */
           int pfi9 = scope_proc_form_of(c, mi);
-          buf_printf(&cb, "sp_%s_%s(%s", _dcn,
+          buf_printf(&cb, "sp_%s_%s(%s", mc_reopen_cls(c, defcls, c->scopes[mi].name),
                      mc(pfi9 >= 0 ? c->scopes[pfi9].name : c->scopes[mi].name), _dself);
           if (c->scopes[mi].nparams > 0) {
             const char *saved_self = g_self;
@@ -9486,12 +9531,22 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            a non-existent sp_<Prim> struct (#4219), as the zero-arg dispatch's
            arm already does. */
         { const char *_dcn2 = c->classes[defcls].c_name;
-          if (sp_streq(_dcn2, "Integer") || sp_streq(_dcn2, "Numeric"))
+          if (sp_streq(_dcn2, "Integer"))
             snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d.v.i", tv);
+          else if (sp_streq(_dcn2, "Numeric"))
+            snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d", tv);
+          else if (sp_streq(_dcn2, "NilClass"))
+            snprintf(selfpbuf2, sizeof selfpbuf2, "0");
+          else if (sp_streq(_dcn2, "TrueClass") || sp_streq(_dcn2, "FalseClass"))
+            snprintf(selfpbuf2, sizeof selfpbuf2, "(int)_t%d.v.i", tv);
+          else if (sp_streq(_dcn2, "Time") || sp_streq(_dcn2, "Range"))
+            snprintf(selfpbuf2, sizeof selfpbuf2, "*(sp_%s *)_t%d.v.p", _dcn2, tv);
+          else if (sp_streq(_dcn2, "Array") || sp_streq(_dcn2, "Hash") || sp_streq(_dcn2, "Object"))
+            snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d", tv);
           else if (sp_streq(_dcn2, "Float"))
             snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d.v.f", tv);
           else if (sp_streq(_dcn2, "String"))
-            snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d.v.s", tv);
+            snprintf(selfpbuf2, sizeof selfpbuf2, "sp_poly_strbuf_deref(_t%d).v.s", tv);
           else if (sp_streq(_dcn2, "Symbol"))
             snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_sym)_t%d.v.i", tv);
           else if (sp_streq(_dcn2, "NilClass"))
@@ -9511,7 +9566,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            sibling arm at the default dispatch has spelled this out since
            #2441; without it the C build stopped the moment ceaea73e gave
            `join` a user arm and that user's class was a value type. */
-        buf_printf(&cb, "sp_%s_%s(%s%s", c->classes[defcls].c_name,
+        buf_printf(&cb, "sp_%s_%s(%s%s", mc_reopen_cls(c, defcls, c->scopes[mi].name),
                    mc(pfi8 >= 0 ? c->scopes[pfi8].name : c->scopes[mi].name),
                    c->classes[defcls].is_value_type ? "*" : "", selfpbuf2);
         const char *saved_self = g_self;
@@ -20116,6 +20171,25 @@ void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b) {
   }
 }
 
+/* `Const.m(...)` on a BUILTIN class constant whose closed method table has no
+   `m`: the program's NoMethodError, raised when the call runs, which the gate
+   below emits and a `rescue` can catch. A builtin the program merely reopens
+   (activesupport's seven `class Time` bodies) keeps that closed table for the
+   names no reopening defines: `::Time.zone` without active_support/time
+   loaded is that NoMethodError, not a refusal of the build. A user class
+   keeps the hard compile error: there the missing method is a genuine gap in
+   the program's own code. */
+int call_on_builtin_class_missing(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  const char *name = nt_str(nt, id, "name");
+  if (recv < 0 || !name || comp_ntype(c, recv) != TY_CLASS || !nt_type(nt, recv) ||
+      !sp_streq(nt_type(nt, recv), "ConstantReadNode")) return 0;
+  const char *rcn = nt_str(nt, recv, "name");
+  if (!rcn || builtin_class_id(rcn) == 0) return 0;
+  int rci = comp_class_index(c, rcn);
+  return rci < 0 || comp_cmethod_in_chain(c, rci, name, NULL) < 0;
+}
 int emit_unresolved_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -20227,12 +20301,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
        build over -- and a `rescue` around it must be able to catch it. A USER
        class keeps the hard compile error: there the missing method is a genuine
        gap in the program's own code. */
-    int grt_builtin_cls = 0;
-    if (grt == TY_CLASS && nt_type(nt, recv) &&
-        sp_streq(nt_type(nt, recv), "ConstantReadNode")) {
-      const char *rcn = nt_str(nt, recv, "name");
-      grt_builtin_cls = rcn && comp_class_index(c, rcn) < 0 && builtin_class_id(rcn) != 0;
-    }
+    int grt_builtin_cls = call_on_builtin_class_missing(c, id);
     /* A Hash that arrives boxed -- a Fiber#resume value, a seedless
        Array#reduce, a container read -- keeps its whole read-only
        Hash/Enumerable face. Nothing above claimed the name, so normalize the
@@ -20934,6 +21003,10 @@ static int emit_poly_isa_test(Compiler *c, const char *cn, const char *v, int ex
   else if (sp_streq(cn, "Encoding")) buf_printf(b, "%s.tag == SP_TAG_ENCODING", v);
   else {
     int cid = comp_class_index(c, cn);
+    /* a reopened builtin's entry (`class Time; def m`) is not the class a
+       boxed Time carries (SP_BUILTIN_TIME): the runtime ancestry answers
+       for it, as for a builtin with no entry */
+    if (cid >= 0 && is_builtin_reopen(cn) && builtin_class_id(cn) != 0) cid = -1;
     if (cid >= 0) {
       buf_printf(b, "(%s.tag == SP_TAG_OBJ && (", v);
       int first = 1;
@@ -21862,6 +21935,28 @@ int bare_call_class_owned(Compiler *c, int id) {
          comp_reader_in_chain(c, cid, name, NULL);
 }
 
+/* A receiverless call to a builtin reopen's OWN method (`def present? =
+   !blank?` inside `class String`): self is the builtin value -- const char *,
+   sp_RbVal, sp_Range, ... -- and emit_dispatch's cast of it to the user-struct
+   pointer was a C error for every one of them (blank.rb). Call it the way the
+   explicit-receiver reopen path does. Answers 1 when it emitted the call. */
+static int emit_reopen_own_call(Compiler *c, int id, int dispatch_cid, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || dispatch_cid < 0 || dispatch_cid >= c->nclasses) return 0;
+  const char *cn = c->classes[dispatch_cid].name;
+  if (!cn || !is_builtin_reopen(cn) || sp_streq(cn, "Toplevel")) return 0;
+  if (nt_ref(nt, id, "block") >= 0) return 0;
+  Scope *self = comp_scope_of(c, id);
+  if (!self || self->is_cmethod) return 0;
+  int mi = comp_method_in_chain(c, dispatch_cid, name, NULL);
+  if (mi < 0 || mi >= c->nscopes || c->scopes[mi].class_id != dispatch_cid || c->scopes[mi].is_cmethod) return 0;
+  buf_printf(b, "sp_%s_%s(%s", mc_reopen_cls(c, dispatch_cid, name), mc(name), g_self);
+  emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), ", ", b);
+  buf_puts(b, ")");
+  return 1;
+}
+
 /* The implicit-self member a receiverless call names: an attr reader on the
    dispatch class, or a method its own chain defines. Answers 1 when it emitted
    the call. Asked from two places -- in front of the Kernel arms, so a class
@@ -21910,6 +22005,7 @@ static int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
     return 1;
   }
   if (comp_method_in_chain(c, dispatch_cid, name, NULL) >= 0) {
+    if (emit_reopen_own_call(c, id, dispatch_cid, b)) return 1;
     emit_dispatch(c, dispatch_cid, name, g_self, nt_ref(nt, id, "arguments"),
                   nt_ref(nt, id, "block"), b);
     return 1;
@@ -24112,7 +24208,11 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       const char *ocR = rtR == TY_STRING ? "String"
                       : rtR == TY_INT ? "Integer"
                       : rtR == TY_FLOAT ? "Float"
-                      : rtR == TY_SYMBOL ? "Symbol" : NULL;
+                      : rtR == TY_SYMBOL ? "Symbol"
+                      : rtR == TY_RANGE ? "Range"
+                      : rtR == TY_TIME ? "Time"
+                      : rtR == TY_IO ? "File"
+                      : rtR == TY_CLASS ? "Class" : NULL;
       if (ocR) {
         int ciR = comp_class_index(c, ocR);
         int miR = ciR >= 0 ? comp_method_in_chain(c, ciR, nmR, NULL) : -1;
@@ -24523,6 +24623,28 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   if (emit_dynamic_send(c, id, b)) return;   /* recv.send(runtime_name, args) static dispatch */
   if (emit_dynamic_respond_to(c, id, b)) return;   /* recv.respond_to?(runtime_name) static dispatch */
   if (emit_dynamic_const_get(c, id, b)) return;   /* recv.const_get(runtime_name) static dispatch */
+  /* A program's own method on Range / Time / File / Class, ahead of the
+     builtin emitters for those receivers (the inference twin sits at the top
+     of infer_call_inner for the same reason: a reopen's name wins over the
+     builtin's, as in Ruby). */
+  {
+    int erecv = nt_ref(c->nt, id, "receiver");
+    TyKind ert = erecv >= 0 ? comp_ntype(c, erecv) : TY_VOID;
+    if (erecv >= 0 && (ert == TY_RANGE || ert == TY_TIME || ert == TY_IO || ert == TY_CLASS) &&
+        nt_ref(c->nt, id, "block") < 0) {
+      const char *ename = nt_str(c->nt, id, "name");
+      const char *ecn = ert == TY_RANGE ? "Range" : ert == TY_TIME ? "Time" : ert == TY_IO ? "File" : "Class";
+      int eci = comp_class_index(c, ecn);
+      int emi = (eci >= 0 && ename) ? comp_method_in_chain(c, eci, ename, NULL) : -1;
+      if (emi >= 0) {
+        buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, eci, ename), mc(ename));
+        emit_expr(c, erecv, b);
+        emit_args_filled(c, emi, nt_ref(c->nt, id, "arguments"), ", ", b);
+        buf_puts(b, ")");
+        return;
+      }
+    }
+  }
   if (emit_vis_refusal(c, id, b)) return;
   /* k = Struct.new(:a, :b): the registered anonymous struct class, as a
      first-class class value */
@@ -33540,6 +33662,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           if (comp_method_in_chain(c, k, name, NULL) >= 0) { mi = k; break; }
         }
       }
+      if (mi >= 0 && emit_reopen_own_call(c, id, dispatch_cid, b)) return;
       if (mi >= 0) {
         emit_dispatch(c, dispatch_cid, name, g_self, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
         return;
@@ -33639,6 +33762,37 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
             }
             if (sp_streq(name, "inspect")) { buf_printf(b, "sp_sym_inspect(%s)", s); return; }
             if (sp_streq(name, "to_sym") || sp_streq(name, "itself")) { buf_puts(b, s); return; }
+          }
+        }
+      }
+      /* A reopened Object's method is every object's: a bare call to it from
+         an instance method -- activesupport's `acts_like?(:time)` inside
+         DateAndTime::Zones#in_time_zone, copied into Date and Time -- reaches
+         it with self as the receiver, boxed the way the explicit `obj.m`
+         fallback boxes its receiver. Only inlining served it before; the
+         method body itself raised NoMethodError. */
+      if (mi < 0 && !self->is_cmethod && nt_ref(nt, id, "block") < 0 && g_self) {
+        int oc = comp_class_index(c, "Object");
+        int omi = oc >= 0 && oc != dispatch_cid ? comp_method_in_chain(c, oc, name, NULL) : -1;
+        if (omi >= 0) {
+          const char *scn = c->classes[dispatch_cid].name;
+          TyKind st = TY_UNKNOWN;
+          if (!scn) st = TY_UNKNOWN;
+          else if (sp_streq(scn, "String"))  st = TY_STRING;
+          else if (sp_streq(scn, "Integer")) st = TY_INT;
+          else if (sp_streq(scn, "Float"))   st = TY_FLOAT;
+          else if (sp_streq(scn, "Symbol"))  st = TY_SYMBOL;
+          else if (sp_streq(scn, "Time"))    st = TY_TIME;
+          else if (sp_streq(scn, "Array") || sp_streq(scn, "Hash") || sp_streq(scn, "Numeric")) st = TY_POLY;
+          else if (!is_builtin_reopen(scn) && !comp_class_is_module(c, &c->classes[dispatch_cid]) &&
+                   !comp_ty_value_obj(c, ty_object(dispatch_cid))) st = ty_object(dispatch_cid);
+          if (st != TY_UNKNOWN) {
+            buf_printf(b, "sp_Object_%s(", mc(name));
+            if (ty_is_object(st)) buf_printf(b, "sp_box_obj(%s, %d)", g_self, dispatch_cid);
+            else emit_boxed_text(c, st, g_self, b);
+            emit_args_filled(c, omi, nt_ref(nt, id, "arguments"), ", ", b);
+            buf_puts(b, ")");
+            return;
           }
         }
       }
@@ -37339,7 +37493,15 @@ else {
              false. This mirrors the poly is_a? runtime cls_id check. */
           int tv = ++g_tmp;
           buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b); buf_puts(b, "; ");
-          buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0 && (", tv, tv);
+          /* The value's class as the poly dispatch keys it: a boxed builtin a
+             reopening extended -- a Time is an OBJ box naming SP_BUILTIN_TIME,
+             a String the string tag -- maps to the reopening's entry, where
+             the plain cls_id never did (activesupport's Object#acts_like?
+             asking a Time for acts_like_time? read false). A root class's
+             method (a `class Object` reopening) is every value's. */
+          buf_printf(b, "sp_int _k%d = ", tv);
+          emit_poly_dispatch_key(c, tv, 1, 1, poly_exc_cand(c, qm), b);
+          buf_puts(b, "; (");
           size_t ql = strlen(qm);
           char wbase[256]; wbase[0] = '\0';
           int is_wr = ql > 0 && qm[ql - 1] == '=' && ql - 1 < sizeof wbase;
@@ -37355,13 +37517,18 @@ else {
                       /* the names the class carries without a method entry
                          answer as they do on the typed receiver */
                       class_implicit_responds(c, k, qm);
-            if (has) { buf_printf(b, "%s_t%d.cls_id == %d", first ? "" : " || ", tv, k); first = 0; }
+            if (!has) continue;
+            const char *kn = c->classes[k].name;
+            int root = kn && (sp_streq(kn, "Object") || sp_streq(kn, "Kernel") || sp_streq(kn, "BasicObject"));
+            if (root) buf_printf(b, "%s1", first ? "" : " || ");
+            else buf_printf(b, "%s_k%d == %d", first ? "" : " || ", tv, k);
+            first = 0;
           }
           if (first) buf_puts(b, "0");
           /* a builtin member of the union cannot carry a user method, but it
              does have its own surface: Array really responds to :each. Ask
              the runtime rather than answering a flat false here (#3072). */
-          buf_printf(b, ")) || sp_poly_responds_builtin(_t%d, ", tv);
+          buf_printf(b, ") || sp_poly_responds_builtin(_t%d, ", tv);
           buf_puts(b, "\"");
           emit_c_escaped(b, qm);
           buf_puts(b, "\")");
@@ -37385,10 +37552,16 @@ else {
       buf_printf(b, "; const char *_n%d = sp_poly_to_name(", tv); emit_boxed(c, argv[0], b);
       buf_printf(b, "); sp_bool _a%d = ", tv);
       if (argc >= 2) emit_cond(c, argv[1], b); else buf_puts(b, "0");
-      buf_printf(b, "; (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0 && (", tv, tv);
+      /* the value's class as the poly dispatch keys it: a boxed builtin a
+         reopening extended (a Time is an OBJ box naming SP_BUILTIN_TIME, a
+         String the string tag) maps to the reopening's entry, where the
+         plain cls_id never matched it */
+      buf_printf(b, "; sp_int _k%d = ", tv);
+      emit_poly_dispatch_key(c, tv, 1, 1, 0, b);
+      buf_puts(b, "; ((");
       for (int k = 0; k < c->nclasses; k++) {
         if (comp_class_is_module(c, &c->classes[k])) continue;
-        buf_printf(b, "(_t%d.cls_id == %d && (", tv, k);
+        buf_printf(b, "(_k%d == %d && (", tv, k);
         for (int s = 0; s < c->nscopes; s++)
           if (c->scopes[s].name && !c->scopes[s].is_cmethod && !c->scopes[s].is_proc_form &&
               comp_method_in_chain(c, k, c->scopes[s].name, NULL) == s)
@@ -40699,6 +40872,10 @@ else {
     else if (rt == TY_INT)     oc_cn = "Integer";
     else if (rt == TY_FLOAT)   oc_cn = "Float";
     else if (rt == TY_SYMBOL)  oc_cn = "Symbol";
+    else if (rt == TY_RANGE)   oc_cn = "Range";
+    else if (rt == TY_TIME)    oc_cn = "Time";
+    else if (rt == TY_IO)      oc_cn = "File";
+    else if (rt == TY_CLASS)   oc_cn = "Class";
     if (oc_cn) {
       int oc_ci = comp_class_index(c, oc_cn);
       if (oc_ci >= 0) {
@@ -40750,6 +40927,44 @@ else {
         buf_printf(b, "%s(_t%d", mc(name), bt);
         emit_args_filled(c, fc_mi, nt_ref(nt, id, "arguments"), ", ", b);
         buf_puts(b, "))");
+        return;
+      }
+    }
+    /* Hash reopening: any hash-typed receiver -> box to sp_RbVal */
+    if (ty_is_hash(rt)) {
+      int hc_ci = comp_class_index(c, "Hash");
+      int hc_mi = hc_ci >= 0 ? comp_method_in_chain(c, hc_ci, name, NULL) : -1;
+      if (hc_mi >= 0) {
+        buf_printf(b, "sp_Hash_%s(", mc(name));
+        emit_boxed(c, recv, b);
+        emit_args_filled(c, hc_mi, nt_ref(nt, id, "arguments"), ", ", b);
+        buf_puts(b, ")");
+        return;
+      }
+    }
+    /* NilClass methods on a receiver known to be nil (self is the `int self`
+       the bool reopens take; nil carries nothing) */
+    if (rt == TY_NIL) {
+      int nc_ci = comp_class_index(c, "NilClass");
+      int nc_mi = nc_ci >= 0 ? comp_method_in_chain(c, nc_ci, name, NULL) : -1;
+      if (nc_mi >= 0) {
+        buf_printf(b, "((void)("); emit_expr(c, recv, b);
+        buf_printf(b, "), sp_NilClass_%s(0", mc(name));
+        emit_args_filled(c, nc_mi, nt_ref(nt, id, "arguments"), ", ", b);
+        buf_puts(b, "))");
+        return;
+      }
+    }
+    /* Numeric reopening: an Integer / Float receiver whose own reopen (above)
+       did not answer; the inference twin has typed it. Self is boxed. */
+    if (rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) {
+      int nm_ci = comp_class_index(c, "Numeric");
+      int nm_mi = nm_ci >= 0 ? comp_method_in_chain(c, nm_ci, name, NULL) : -1;
+      if (nm_mi >= 0) {
+        buf_printf(b, "sp_Numeric_%s(", mc(name));
+        emit_boxed(c, recv, b);
+        emit_args_filled(c, nm_mi, nt_ref(nt, id, "arguments"), ", ", b);
+        buf_puts(b, ")");
         return;
       }
     }

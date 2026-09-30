@@ -2063,6 +2063,14 @@ void emit_cond(Compiler *c, int id, Buf *b) {
       g_block_id < 0 && !g_yield_proc_ref) {
     buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, "), 0)"); return;
   }
+  /* a class method no reopening of a builtin defines, as a condition
+     (`::Time.zone ? a : b`, DateTime.current): the call raises when reached
+     (the NoMethodError gate's answer), so the test that follows is never
+     read -- evaluate it for the raise */
+  if ((t == TY_UNKNOWN || t == TY_VOID) && nt_kind(c->nt, id) == NK_CallNode &&
+      call_on_builtin_class_missing(c, id)) {
+    buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, "), 0)"); return;
+  }
   if (t != TY_BOOL) unsupported(c, id, "condition (non-bool)");
   emit_expr(c, id, b);
 }
