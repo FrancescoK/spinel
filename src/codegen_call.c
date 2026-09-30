@@ -36995,6 +36995,9 @@ else {
   if (recv >= 0 && argc >= 1 && rt != TY_SYMBOL && rt != TY_NIL && !ty_is_object(rt) &&
       (sp_streq(name, "match?") || sp_streq(name, "!~") || sp_streq(name, "=~") || sp_streq(name, "match"))) {
     int are = re_lit_index(c, argv[0]);
+    /* a receiver of no known type (a bare name that resolves to nothing and
+       raises NameError) is boxed: the tag checks below take it */
+    int rpoly = rt == TY_POLY || rt == TY_UNKNOWN;
     /* a numeric receiver has no =~/!~/match?/match (Object#=~ was removed):
        raise NoMethodError rather than matching the number as a string. */
     if ((rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) &&
@@ -37015,7 +37018,7 @@ else {
        (e.g. an element read out of an array that widened to poly), nil when it
        holds nil (NilClass#=~ is always nil); any other tag has no =~ (Object#=~
        was removed) -> NoMethodError, matching CRuby. */
-    if (are >= 0 && sp_streq(name, "=~") && rt == TY_POLY) {
+    if (are >= 0 && sp_streq(name, "=~") && rpoly) {
       /* Self-contained statement-expression: this can appear in a pure
          expression position (an `if`/ternary condition) where a g_pre prelude
          would not be flushed and would splice a stray statement into the
@@ -37031,7 +37034,7 @@ else {
     /* poly receiver `poly !~ /re/`: nil !~ is always true, a string tests the
        negated match; any other tag has no =~ so !~ raises NoMethodError. A
        non-poly (string) receiver keeps the direct negated-match emit. */
-    if (are >= 0 && sp_streq(name, "!~") && rt == TY_POLY) {
+    if (are >= 0 && sp_streq(name, "!~") && rpoly) {
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
       buf_printf(b, "; (_t%d.tag == SP_TAG_STR ? !sp_re_match_p(sp_re_pat_%d, _t%d.v.s)"
@@ -37047,7 +37050,7 @@ else {
        emit_expr handed an sp_RbVal to sp_re_match_p's const char * slot and
        the generated C did not compile (#3374). Self-contained so it can sit
        in a condition where a g_pre prelude would not be flushed. */
-    if (are >= 0 && sp_streq(name, "!~") && rt == TY_POLY) {
+    if (are >= 0 && sp_streq(name, "!~") && rpoly) {
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
       buf_printf(b, "; (sp_bool)(_t%d.tag == SP_TAG_STR ? !sp_re_match_p(sp_re_pat_%d, _t%d.v.s)"
@@ -37065,7 +37068,7 @@ else {
        string, over its name when it holds a Symbol. NilClass has no match?, so
        nil raises here rather than answering false the way `nil !~` answers
        true. */
-    if (are >= 0 && sp_streq(name, "match?") && rt == TY_POLY) {
+    if (are >= 0 && sp_streq(name, "match?") && rpoly) {
       int tv = ++g_tmp;
       /* a shared-string handle is a String (#4279) */
       buf_printf(b, "({ sp_RbVal _t%d = sp_poly_strbuf_deref(", tv); emit_expr(c, recv, b);
