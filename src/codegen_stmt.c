@@ -11263,17 +11263,28 @@ else {
       class_self = cn && comp_class_index(c, cn) >= 0;
     }
     if (class_self) {
-      /* ... but a constant it assigns is assigned here, where the body
-         runs: the singleton methods beside it read it, and they read nil
-         while nothing stored it (#5996) */
+      /* ... but the rest of the body runs here, top to bottom, like a class
+         body: a constant it assigns is read by the singleton methods beside
+         it (#5996), and a statement like `p 5` has its effect where it
+         stands. A receiver-less call other than output is a declaration
+         macro on the singleton class (attr_*, private, alias_method). An
+         ivar written here belongs to the singleton class, not to the class
+         whose ivars the singleton methods read, so it is not stored. */
       int body = nt_ref(nt, id, "body");
       int n = 0;
       const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
       for (int k = 0; k < n; k++) {
         NodeKind sk = nt_kind(nt, stmts[k]);
-        if (sk == NK_ConstantWriteNode || sk == NK_ConstantOrWriteNode ||
-            sk == NK_ConstantOperatorWriteNode)
-          emit_stmt(c, stmts[k], b, indent);
+        if (sk == NK_DefNode || sk == NK_AliasMethodNode || sk == NK_InstanceVariableWriteNode ||
+            sk == NK_InstanceVariableOrWriteNode || sk == NK_InstanceVariableAndWriteNode ||
+            sk == NK_InstanceVariableOperatorWriteNode)
+          continue;
+        if (sk == NK_CallNode && nt_ref(nt, stmts[k], "receiver") < 0) {
+          const char *cn = nt_str(nt, stmts[k], "name");
+          if (!cn || (!sp_streq(cn, "puts") && !sp_streq(cn, "print") && !sp_streq(cn, "p")))
+            continue;
+        }
+        emit_stmt(c, stmts[k], b, indent);
       }
       return;
     }
