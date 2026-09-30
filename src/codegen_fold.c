@@ -10253,8 +10253,19 @@ else {
         buf_printf(&ab, "_t%d", krhash);
       }
       else if (!by_splat && kv < 0 && ds_tmp_d >= 0 && is_kwp_d) {
-        /* keyword param fed by a forwarded `**hash`: extract by name. */
+        /* keyword param fed by a forwarded `**hash`: extract by name. The
+           default a missing key falls back to reads the callee's self, as
+           the defaults below do: `def m(k1: @d)` called `C.new.m(**h)` read
+           the caller's @d, and at the top level named no self at all. */
+        const char *saved_deref5 = g_self_deref;
+        int saved_emcls5 = g_emitting_class_id;
+        g_self = selfptr;
+        g_self_deref = comp_ty_value_obj(c, ty_object(cid)) ? "." : "->";
+        g_emitting_class_id = pm->class_id;
         emit_ds_param_extract(c, pm, k, ds_tmp_d, ds_type_d, &ab);
+        g_self = saved_self;
+        g_self_deref = saved_deref5;
+        g_emitting_class_id = saved_emcls5;
       }
       else if (by_splat) {
         /* a lent leading argument is the caller's: its self, no renames */

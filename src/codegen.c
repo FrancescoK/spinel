@@ -8026,6 +8026,25 @@ void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b) {
   ClassInfo *ci = &c->classes[cid];
   int is_val = comp_ty_value_obj(c, ty_object(cid));
   int t = ++g_tmp;
+  if (class_is_exc_subclass(c, cid)) {
+    /* an exception is built on sp_Exception's storage, as its constructor
+       builds it: the name, parent and message the raise machinery reads */
+    const char *cn2 = class_ruby_name(c, cid); if (!cn2) cn2 = ci->name;
+    const char *par = exc_builtin_parent(c, cid);
+    if (ci->nivars == 0) {
+      buf_printf(b, "sp_exc_new_sub(\"%s\", \"%s\", (&(\"\\xff\")[1]))", cn2, par);
+      return;
+    }
+    buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), NULL, sp_%s__gc_scan);"
+                  " _t%d->cls_name = \"%s\"; _t%d->parent_cls_name = \"%s\";"
+                  " _t%d->msg = (&(\"\\xff\")[1]); _t%d->result = sp_box_nil();"
+                  " _t%d->xname = sp_box_nil(); _t%d->xkey = sp_box_nil(); _t%d->xrecv = sp_box_nil();",
+               ci->c_name, t, ci->c_name, ci->c_name, ci->c_name, t, cn2, t, par, t, t, t, t, t);
+    char lv[32]; snprintf(lv, sizeof lv, "_t%d->", t);
+    emit_ivar_nil_inits(b, ci, lv, " ", ";");
+    buf_printf(b, " _t%d; })", t);
+    return;
+  }
   if (is_val) {
     buf_printf(b, "({ sp_%s _t%d = {0}; _t%d.cls_id = %d;", ci->c_name, t, t, cid);
     char lv[32]; snprintf(lv, sizeof lv, "_t%d.", t);

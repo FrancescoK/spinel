@@ -1,0 +1,29 @@
+:callee
+1
+[:callee, {"s" => 1}]
+[:callee, 1]
+:callee
+[2, {j: 3}]
+[nil]
+[4]
+"unknown keyword: :z"
+["enil", [nil, 2]]
+["e1", [1, 2]]
+[nil, 2]
+[nil, 2]
+[5, 2]
+"F"
+"F"
+true
+[ArgumentError, "wrong number of arguments (given 1, expected 0)"]
+"gnil"
+"g7"
+[nil, nil, nil]
+[1, nil, :blk]
+[nil, nil, nil]
+[1, 2, nil]
+[nil, 2, nil]
+[nil, 2, :blk]
+[1, nil, 5]
+[1, 2, 5]
+[1, 7, 8]
