@@ -582,24 +582,40 @@ general container (`grid[r][c] = v` where the row is typed) is the one route
 that widens the row to a general Array instead, since the container is what
 holds it.
 
-#### A typed array is not copied into a general-Array parameter the method mutates
+#### A typed array the compiler cannot follow is not copied into a parameter the method mutates
 
-A parameter every call site passes a general Array to is compiled as one; a
-call site passing a typed array (`Array[Integer]`) to it has to convert,
-since the two store their elements differently, and the conversion is a copy.
-For a parameter the method only reads the copy is invisible. For one the
-method mutates it is not: the appends land in the copy and the caller's array
-never changes, which CRuby never does. Such a call is refused at compile time:
+A parameter the method stores elements of another kind into is compiled as a
+general Array (or a boxed value, when its callers disagree), and a typed
+array (`Array[Integer]`) passed to it has to be one too, since the two store
+their elements differently. The compiler follows the argument back to where
+its arrays are built and builds them as general Arrays: an array literal or a
+new array, through locals, the value of a method (or a chain of them, or a
+method answering its block's value), a builtin that answers its receiver
+(`push`, `concat`, `tap`), an ivar or attr_reader every write of which builds
+a new array, a global, class variable or constant. The method's other
+callers then read the general Array too.
+
+Where it cannot follow the argument, the one conversion left is a copy, and
+the mutation would land in the copy where CRuby changes the caller's array.
+Such a call is refused at compile time:
 
 ```ruby
-def collect(out, tbl) ... out << row[ti] ... end   # out settled as a general Array
-o = Array.new(0, 0)
-collect(o, ctx.tbl)
-# spinel: t.rb:22: an Array[Integer] is passed to `collect`'s parameter `out`, which the method mutates: ...
+class Box
+  def initialize(a) = @a = a   # keeps the caller's array
+  def get = @a
+end
+def add(out) = out << "z"
+src = [1, 2]
+add(Box.new(src).get)
+# spinel: t.rb:7: an Array[Integer] is passed to `add`'s parameter `out`, which the method mutates: ...
 ```
 
-Give the parameter the argument's kind (an rbs seed, or call sites that all
-pass the same kind) or build the argument as a general Array.
+What it does not follow: an ivar, Struct member or other slot that keeps an
+array handed in from outside; an array an rbs seed declares typed (a
+parameter or a return); a method overridden in a subclass; the value of a
+lambda or proc, of a `then` block, of a multiple assignment. Build the array
+as a general Array where it is created, or give the parameter the argument's
+kind (an rbs seed, or call sites that all pass the same kind).
 
 #### A reassigned block parameter, and `yield` inside a proc literal
 

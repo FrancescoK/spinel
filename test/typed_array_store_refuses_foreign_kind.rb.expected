@@ -3,8 +3,7 @@
 [1.5, "z"]
 [1.5, 2]
 ["a", 7]
-int<<str held: TypeError: cannot store String into an Array[Integer]: a typed array holds one kind of element
-[1]
+[1, "z"]
 ["a", nil]
 []=: TypeError: cannot store String into an Array[Integer]: a typed array holds one kind of element
 [0, 0]
