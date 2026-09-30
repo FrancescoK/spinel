@@ -10925,3 +10925,4 @@ int desugar_singleton_attr(Compiler *c) {
   return changed;
 }
 
+
