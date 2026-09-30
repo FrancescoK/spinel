@@ -68,13 +68,13 @@ Dir.glob(File.join(SPEC_DIR, GLOB)).sort.each do |path|
   block_open = /\b(do|\{)\s*(\|[^|]*\|)?\s*$/
   lines.each_with_index do |raw, ln|
     line = raw.chomp
-    s = line.strip
+    s = line.strip.sub(/\bdo\K\s+#(?!\{).*/, "")
     next if s.start_with?("require_relative", "require ")
 
     if example
       # inside an it block: track nesting depth via do/end pairs
       if s =~ /^(it|describe|context)\b/ && false; end
-      example[:depth] += 1 if line =~ block_open || s =~ /^(begin|def|class|module|case|if|unless|while|until|for)\b/ && s !~ /\bend\b/
+      example[:depth] += 1 if s =~ block_open || s =~ /^(begin|def|class|module|case|if|unless|while|until|for)\b/ && s !~ /\bend\b/
       if s == "end" || s =~ /^end\b/
         if example[:depth].zero?
           # emit
