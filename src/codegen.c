@@ -12956,6 +12956,7 @@ char *codegen_program(const NodeTable *nt) {
       else if (sp_streq(m->ret, "self")) buf_printf(&b, "%s *%s(%s *", cstruct, m->csym, cstruct);
       else { buf_printf(&b, "%s %s(%s *", native_c_type(m->ret), m->csym, cstruct); }
       for (int ai = 0; ai < m->nargs; ai++) { buf_puts(&b, ", "); buf_puts(&b, native_c_type(m->args[ai])); }
+      if (m->rest) buf_puts(&b, ", sp_int, sp_RbVal *");
       buf_puts(&b, ");\n");
     }
     /* IO::Buffer as an ffi_func pointer argument (codegen_call.c) */

@@ -7388,12 +7388,14 @@ static int poly_native_arm_call(Compiler *c, int k, const char *name, int n, con
                                 const int *atmp, const TyKind *atmp_ty, int tv,
                                 Buf *cb, TyKind *mret) {
   memset(cb, 0, sizeof *cb);
-  int nmi = comp_native_method_find(c, k, name, n, 0);
-  if (nmi < 0 || c->native_methods[nmi].nargs != n) return 0;
+  /* by the argument types too: puts(Array) takes the [:any] binding, not
+     the [:string] one declared first */
+  int nmi = comp_native_method_find_typed(c, k, name, n, 0, atmp_ty);
+  if (nmi < 0 || !native_takes(&c->native_methods[nmi], n)) return 0;
   NativeMethod *nmet = &c->native_methods[nmi];
   buf_printf(cb, "%s((%s *)_t%d.v.p", nmet->csym, c->classes[k].c_struct, tv);
   int ok = 1;
-  for (int ai = 0; ai < n && ok; ai++) {
+  for (int ai = 0; ai < nmet->nargs && ok; ai++) {
     const char *spec = nmet->args[ai];
     char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[ai]);
     buf_puts(cb, ", ");
@@ -7420,6 +7422,20 @@ static int poly_native_arm_call(Compiler *c, int k, const char *name, int n, con
     }
   }
   if (!ok) { free(cb->p); memset(cb, 0, sizeof *cb); return 0; }
+  if (nmet->rest) {
+    buf_printf(cb, ", %d, ", n - nmet->nargs);
+    if (n == nmet->nargs) buf_puts(cb, "NULL");
+    else {
+      buf_puts(cb, "(sp_RbVal[]){");
+      for (int ai = nmet->nargs; ai < n; ai++) {
+        char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[ai]);
+        if (ai > nmet->nargs) buf_puts(cb, ", ");
+        if (atmp_ty[ai] == TY_POLY) buf_puts(cb, tn);
+        else emit_boxed_text(c, atmp_ty[ai], tn, cb);
+      }
+      buf_puts(cb, "}");
+    }
+  }
   buf_puts(cb, ")");
   if (sp_streq(nmet->ret, "string?")) {
     Buf wb; memset(&wb, 0, sizeof wb);
@@ -8002,13 +8018,14 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
              any arity, and StringScanner#peek(len) beside two user `peek`s
              got an arm calling it with none, which C refused (#5359). A
              receiver of that class then lands in the default arm. */
-          if (nmi >= 0 && c->native_methods[nmi].nargs == 0) {
+          if (nmi >= 0 && native_takes(&c->native_methods[nmi], 0)) {
             NativeMethod *nmet = &c->native_methods[nmi];
             char nbuf[300];
+            const char *rest0 = nmet->rest ? ", 0, NULL" : "";
             if (sp_streq(nmet->ret, "string?"))
-              snprintf(nbuf, sizeof nbuf, "sp_box_nullable_str(%s((%s *)_t%d.v.p))", nmet->csym, c->classes[k].c_struct, tv);
+              snprintf(nbuf, sizeof nbuf, "sp_box_nullable_str(%s((%s *)_t%d.v.p%s))", nmet->csym, c->classes[k].c_struct, tv, rest0);
             else
-              snprintf(nbuf, sizeof nbuf, "%s((%s *)_t%d.v.p)", nmet->csym, c->classes[k].c_struct, tv);
+              snprintf(nbuf, sizeof nbuf, "%s((%s *)_t%d.v.p%s)", nmet->csym, c->classes[k].c_struct, tv, rest0);
             TyKind mret = native_spec_to_ty(nmet->ret);
             buf_printf(b, " case %d: ", k);
             if (mret == TY_NIL) buf_puts(b, nbuf);
@@ -8826,7 +8843,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         if (kw_pos && !has_splat_arg && c->classes[k].instantiated) {
           for (int n = pos_argc; n <= argc; n++) {
             int nmi = comp_native_method_find(c, k, name, n, 0);
-            if (nmi >= 0 && c->native_methods[nmi].nargs == n) { ncand++; break; }
+            if (nmi >= 0 && native_takes(&c->native_methods[nmi], n)) { ncand++; break; }
           }
         }
         continue;
@@ -10674,6 +10691,21 @@ void native_arg_check(Compiler *c, int id, const char *what, NativeMethod *m,
   }
 }
 
+/* The tail a :rest binding takes after its fixed arguments: the count of the
+   remaining arguments and a compound-literal array of them, boxed. */
+void emit_native_rest_args(Compiler *c, const NativeMethod *m, int argc, const int *argv, Buf *b) {
+  if (!m->rest) return;
+  int n = argc > m->nargs ? argc - m->nargs : 0;
+  buf_printf(b, ", %d, ", n);
+  if (n == 0) { buf_puts(b, "NULL"); return; }
+  buf_puts(b, "(sp_RbVal[]){");
+  for (int a = m->nargs; a < argc; a++) {
+    if (a > m->nargs) buf_puts(b, ", ");
+    emit_boxed(c, argv[a], b);
+  }
+  buf_puts(b, "}");
+}
+
 /* native (C-backed) class constructor: call the declared C symbol with the
    assigned cls_id first (runtime cls_id == class index), then the args in
    their native representation. The returned pointer is GC-allocated by the
@@ -10699,6 +10731,7 @@ int emit_native_ctor(Compiler *c, int id, int ci, int argc, const int *argv, Buf
     else if (aw == TY_INT) emit_int_expr(c, argv[ai], b);
     else emit_expr(c, argv[ai], b);
   }
+  emit_native_rest_args(c, m, argc, argv, b);
   buf_puts(b, ")");
   (void)id;
   return 1;

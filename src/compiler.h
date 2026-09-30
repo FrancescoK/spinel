@@ -588,8 +588,14 @@ typedef struct {
   char *ret;       /* return type spec, or "" */
   char *csym;      /* C symbol to call */
   char **args;     /* arg type specs */
-  int nargs;
+  int nargs;       /* fixed arguments, not counting a trailing :rest */
+  int rest;        /* a trailing :rest takes every further argument, boxed,
+                      as a count and an array after the fixed ones */
 } NativeMethod;
+/* Whether a binding accepts a call of argc positional arguments. */
+static inline int native_takes(const NativeMethod *m, int argc) {
+  return m->nargs == argc || (m->rest && argc > m->nargs);
+}
 
 typedef struct {
   const NodeTable *nt;

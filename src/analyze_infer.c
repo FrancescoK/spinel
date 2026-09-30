@@ -1453,7 +1453,7 @@ static TyKind an_user_read_ty(Compiler *c, const char *name, int argc) {
   for (int k = 0; k < c->nclasses; k++) {
     if (c->classes[k].is_native_class) {
       int nmk = comp_native_method_find(c, k, name, argc, 0);
-      if (nmk >= 0 && c->native_methods[nmk].nargs == argc) {
+      if (nmk >= 0 && native_takes(&c->native_methods[nmk], argc)) {
         TyKind nr = sp_streq(c->native_methods[nmk].ret, "self")
                       ? ty_object(k) : native_spec_to_ty(c->native_methods[nmk].ret);
         r = found ? ty_unify(r, nr) : nr; found = 1;
@@ -5572,7 +5572,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
              boxed String as Integer while the emission was the builtin
              sp_poly_getbyte, whose value is boxed (#4432). */
           int nmk = comp_native_method_find(c, k, name, argc, 0);
-          if (nmk >= 0 && c->native_methods[nmk].nargs == argc) {
+          if (nmk >= 0 && native_takes(&c->native_methods[nmk], argc)) {
             TyKind nr = sp_streq(c->native_methods[nmk].ret, "self")
                           ? ty_object(k) : native_spec_to_ty(c->native_methods[nmk].ret);
             r = found ? ty_unify(r, nr) : nr; found = 1; nat_found = 1;

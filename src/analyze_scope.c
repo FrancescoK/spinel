@@ -3235,7 +3235,8 @@ void register_ffi_decls(Compiler *c) {
         c->native_methods[mi].ret  = strdup(ret_spec);
         c->native_methods[mi].csym = strdup(csym);
         c->native_methods[mi].args = arg_specs;
-        c->native_methods[mi].nargs = en;
+        c->native_methods[mi].rest = en > 0 && sp_streq(arg_specs[en - 1], "rest");
+        c->native_methods[mi].nargs = c->native_methods[mi].rest ? en - 1 : en;
         continue;
       }
       /* The classes themselves are registered in the pre-scan above; what this

@@ -11129,6 +11129,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           else if (aw == TY_INT) emit_int_expr(c, argv[ai], b);
           else emit_expr(c, argv[ai], b);
         }
+        emit_native_rest_args(c, m, argc, argv, b);
         buf_puts(b, ")");
         if (cstr_ret) buf_puts(b, ")");
         if (bin_ret)
