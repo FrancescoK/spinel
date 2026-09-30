@@ -12782,18 +12782,55 @@ static int an_strbuf_alias_source(Compiler *c, int v) {
   }
   return -1;
 }
-static int an_local_has_alias(Compiler *c, const char *vn, Scope *vs) {
+/* The aliasing writes (`b = a`, `b = a << x`) of every scope, collected in
+   one walk of the table. Asked once per call site of a lent parameter, a
+   walk each made the pass (sites x nodes): a method defined in a thousand
+   classes, each calling its own with a local, is a thousand sites. The
+   writes are syntax, so one collection serves a whole pass. */
+typedef struct { int *head, *next; const char **wn, **rn; int n; } ALocalAliases;
+
+static void an_local_aliases_build(Compiler *c, ALocalAliases *t) {
   const NodeTable *nt = c->nt;
-  for (int w = 0; w < nt->count; w++) {
+  memset(t, 0, sizeof *t);
+  t->head = (int *)malloc(sizeof(int) * (size_t)(c->nscopes > 0 ? c->nscopes : 1));
+  if (!t->head) return;
+  for (int i = 0; i < c->nscopes; i++) t->head[i] = -1;
+  int cap = 0;
+  for (int w = comp_kind_first(c, NK_LocalVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
     if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
-    if (comp_scope_of(c, w) != vs) continue;
+    Scope *ws = comp_scope_of(c, w);
+    int si = ws ? (int)(ws - c->scopes) : -1;
+    if (si < 0 || si >= c->nscopes) continue;
     const char *wn = nt_str(nt, w, "name");
     int wv = an_strbuf_alias_source(c, nt_ref(nt, w, "value"));
     if (wv < 0) continue;
     const char *rn = nt_str(nt, wv, "name");
     if (!wn || !rn || sp_streq(wn, rn)) continue;
-    if (sp_streq(wn, vn) || sp_streq(rn, vn)) return 1;
+    if (t->n == cap) {
+      cap = cap ? cap * 2 : 64;
+      int *nn = (int *)realloc(t->next, sizeof(int) * (size_t)cap);
+      const char **nw = nn ? (const char **)realloc(t->wn, sizeof(char *) * (size_t)cap) : NULL;
+      const char **nr = nw ? (const char **)realloc(t->rn, sizeof(char *) * (size_t)cap) : NULL;
+      if (nn) t->next = nn;
+      if (nw) t->wn = nw;
+      if (nr) t->rn = nr;
+      if (!nn || !nw || !nr) break;
+    }
+    t->wn[t->n] = wn; t->rn[t->n] = rn;
+    t->next[t->n] = t->head[si]; t->head[si] = t->n; t->n++;
   }
+}
+
+static void an_local_aliases_free(ALocalAliases *t) {
+  free(t->head); free(t->next); free(t->wn); free(t->rn);
+  memset(t, 0, sizeof *t);
+}
+
+static int an_local_has_alias(Compiler *c, const ALocalAliases *t, const char *vn, Scope *vs) {
+  int si = vs ? (int)(vs - c->scopes) : -1;
+  if (!t->head || si < 0 || si >= c->nscopes) return 0;
+  for (int r = t->head[si]; r >= 0; r = t->next[r])
+    if (sp_streq(t->wn[r], vn) || sp_streq(t->rn[r], vn)) return 1;
   return 0;
 }
 /* Is this argument node a shared-handle slot read (a str_shared local or a
@@ -14691,14 +14728,197 @@ static int an_arg_hands_handle(Compiler *c, int node) {
   return 0;
 }
 
-/* Which scope does CallNode `u` statically call? The forward form of
+/* The method scope after `i` that has the same name, or -1: a name group
+   walked without a scan of every scope per call site. The table is built once
+   per scope-index epoch, as an_any_scope_by_name's is; before the index is
+   frozen, names can still change, so the answer is a scan. */
+static int an_same_name_next(Compiler *c, int i) {
+  const char *nm = c->scopes[i].name;
+  if (!nm) return -1;
+  if (comp_scope_index_is_frozen()) {
+    static int *next = NULL, stamp_n = -1;
+    static unsigned stamp_gen;
+    if (stamp_n != c->nscopes || stamp_gen != comp_scope_index_gen()) {
+      free(next);
+      next = (int *)malloc(sizeof(int) * (size_t)(c->nscopes > 0 ? c->nscopes : 1));
+      int *last = (int *)malloc(sizeof(int) * (size_t)(c->nscopes > 0 ? c->nscopes : 1));
+      ANameHash names; memset(&names, 0, sizeof names);
+      if (!next || !last) { free(next); free(last); next = NULL; stamp_n = -1; return -1; }
+      for (int k = c->nscopes - 1; k >= 1; k--) {
+        const char *sn = c->scopes[k].name;
+        next[k] = -1;
+        if (!sn) continue;
+        int h = anh_find(&names, sn);
+        if (h >= 0) { next[k] = last[h]; last[h] = k; }
+        else { anh_add(&names, sn); last[names.n - 1] = k; }
+      }
+      anh_free(&names); free(last);
+      stamp_n = c->nscopes; stamp_gen = comp_scope_index_gen();
+    }
+    return next[i];
+  }
+  for (int k = i + 1; k < c->nscopes; k++)
+    if (c->scopes[k].name && sp_streq(c->scopes[k].name, nm)) return k;
+  return -1;
+}
+
+/* The call targets of one CallNode, as a list that grows. A call on a name
+   more than one class defines can reach several scopes, and a receiver the
+   analysis cannot pin can reach every one of them. With `want` set the list
+   is not built: the walk only answers whether that one scope is a target
+   (`hit`), which is what an_call_targets_scope asks for every scope of the
+   name, and listing a wide group's overrides for each was quadratic. */
+typedef struct { int *v; int n, cap; int want, hit; } ACallTargets;
+
+/* scope -> the list act_add last put it in, so a group of a thousand
+   candidates is deduplicated without comparing each against the rest */
+static unsigned *act_mark, act_stamp;
+static int act_nmark;
+
+static void act_reset(Compiler *c, ACallTargets *t) {
+  t->n = 0; t->want = -1; t->hit = 0;
+  if (act_nmark < c->nscopes) {
+    unsigned *nm = (unsigned *)realloc(act_mark, sizeof(unsigned) * (size_t)c->nscopes);
+    if (nm) {
+      memset(nm + act_nmark, 0, sizeof(unsigned) * (size_t)(c->nscopes - act_nmark));
+      act_mark = nm; act_nmark = c->nscopes;
+    }
+  }
+  if (++act_stamp == 0) {
+    memset(act_mark, 0, sizeof(unsigned) * (size_t)act_nmark);
+    act_stamp = 1;
+  }
+}
+
+static void act_add(ACallTargets *t, int mi) {
+  if (mi < 0) return;
+  if (t->want >= 0) { if (mi == t->want) t->hit = 1; return; }
+  if (mi < act_nmark) {
+    if (act_mark[mi] == act_stamp) return;
+    act_mark[mi] = act_stamp;
+  }
+  else for (int k = 0; k < t->n; k++) if (t->v[k] == mi) return;
+  if (t->n == t->cap) {
+    int ncap = t->cap ? t->cap * 2 : 8;
+    int *nv = (int *)realloc(t->v, sizeof(int) * (size_t)ncap);
+    if (!nv) return;
+    t->v = nv; t->cap = ncap;
+  }
+  t->v[t->n++] = mi;
+}
+
+/* Every override of `un` below class `cid` (class methods when `cm`): a
+   dispatch on a receiver of that class can land on any of them, the way the
+   binders bind a bare call's arguments to each descendant override. */
+static void act_add_overrides(Compiler *c, ACallTargets *t, int cid, const char *un, int cm) {
+  if (cid < 0) return;
+  if (t->want >= 0) {
+    Scope *w = &c->scopes[t->want];
+    if (w->class_id >= 0 && w->class_id != cid && !w->is_cmethod == !cm &&
+        cr_class_is_ancestor(c, cid, w->class_id) &&
+        (cm ? comp_cmethod_in_class(c, w->class_id, un) : comp_method_in_class(c, w->class_id, un)) == t->want)
+      t->hit = 1;
+    return;
+  }
+  int nd = 0; const int *ds = comp_descendants(c, cid, &nd);
+  for (int d = 0; d < nd && ds; d++)
+    act_add(t, cm ? comp_cmethod_in_class(c, ds[d], un) : comp_method_in_class(c, ds[d], un));
+}
+
+/* Does a class below `cid` define `un` (a class method when `cm`)? */
+static int act_has_override(Compiler *c, int cid, const char *un, int cm) {
+  int nd = 0; const int *ds = comp_descendants(c, cid, &nd);
+  for (int d = 0; d < nd && ds; d++)
+    if ((cm ? comp_cmethod_in_class(c, ds[d], un) : comp_method_in_class(c, ds[d], un)) >= 0) return 1;
+  return 0;
+}
+
+/* Is `nm` a name some class aliases a method under? Hashed once per alias
+   table generation, since the question is asked for every call site. */
+static int an_alias_name(Compiler *c, const char *nm) {
+  static ANameHash names;
+  static int stamp_nc = -1;
+  static unsigned stamp_gen;
+  if (stamp_nc != c->nclasses || stamp_gen != comp_table_gen) {
+    anh_free(&names); memset(&names, 0, sizeof names);
+    for (int k = 0; k < c->nclasses; k++)
+      for (int a = 0; a < c->classes[k].naliases; a++)
+        if (!anh_has(&names, c->classes[k].alias_new[a])) anh_add(&names, c->classes[k].alias_new[a]);
+    stamp_nc = c->nclasses; stamp_gen = comp_table_gen;
+  }
+  return nm && names.n > 0 && anh_has(&names, nm);
+}
+
+/* The scopes a call on name `un`, defined by more than one method or reached
+   under an alias, can reach.
+   Resolved the way the binders resolve it: a class method on a constant
+   receiver, a bare call or a call on `self` against the enclosing
+   definition's chain, an instance call against its receiver's class, with the
+   overrides below that class. A receiver the analysis cannot pin (a poly, a
+   class value) can reach any method of the name, so it answers all of them:
+   the caller then hands every candidate what the one that wants the most
+   wants. */
+static void an_call_targets_nonunique(Compiler *c, int u, const char *un, ACallTargets *t) {
+  const NodeTable *nt = c->nt;
+  int first = an_any_scope_by_name(c, un);
+  int aliased = an_alias_name(c, un);
+  if (first < 0 && !aliased) return;
+  int rc = nt_ref(nt, u, "receiver");
+  NodeKind rk = rc >= 0 ? nt_kind(nt, rc) : NK_SelfNode;
+  int n0 = t->n;
+  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
+    const char *cn = nt_str(nt, rc, "name");
+    int ci = cn ? comp_class_index(c, cn) : -1;
+    if (ci >= 0) { act_add(t, comp_cmethod_in_chain(c, ci, un, NULL)); return; }
+  }
+  else if (rk == NK_SelfNode) {
+    int mi = comp_self_call_mi(c, u, un);
+    if (mi < 0 && rc < 0) mi = comp_cbody_call_mi(c, u, un);
+    if (mi < 0) mi = comp_included_method_index(c, un);
+    act_add(t, mi);
+    Scope *self = comp_scope_of(c, u);
+    int any = mi >= 0;
+    if (self && self->class_id >= 0) {
+      if (self->is_cmethod) act_add_overrides(c, t, self->class_id, un, 1);
+      act_add_overrides(c, t, self->class_id, un, 0);
+      /* only the overrides define it: resolved all the same */
+      if (!any && t->want >= 0)
+        any = act_has_override(c, self->class_id, un, self->is_cmethod) ||
+              act_has_override(c, self->class_id, un, 0);
+    }
+    if (any || t->n > n0) return;
+  }
+  else {
+    TyKind rt = infer_type(c, rc);
+    if (ty_is_object(rt)) {
+      int cid = ty_object_class(rt);
+      act_add(t, comp_method_in_chain(c, cid, un, NULL));
+      act_add_overrides(c, t, cid, un, 0);
+      return;
+    }
+    if (rt != TY_POLY && rt != TY_UNKNOWN && rt != TY_CLASS) return;
+  }
+  if (t->want >= 0 && c->scopes[t->want].name && sp_streq(c->scopes[t->want].name, un))
+    t->hit = 1;
+  else
+    for (int k = first; k >= 0 && t->want < 0; k = an_same_name_next(c, k)) act_add(t, k);
+  /* and every method a class aliases under the name */
+  for (int k = 0; aliased && k < c->nclasses; k++)
+    for (int a = 0; a < c->classes[k].naliases; a++) {
+      if (!sp_streq(c->classes[k].alias_new[a], un)) continue;
+      act_add(t, comp_method_in_chain(c, k, un, NULL));
+      act_add(t, comp_cmethod_in_chain(c, k, un, NULL));
+    }
+}
+
+/* Which scopes does CallNode `u` statically call? The forward form of
    an_call_targets_scope, so one walk can fill a table for every scope at once
    instead of re-deciding per candidate. The two must agree; the order of the
-   two arms is the same (a unique user method named `new` wins over the
+   arms is the same (a unique user method named `new` wins over the
    constructor reading). */
-static void an_call_targets_of(Compiler *c, int u, int out[2], int *nout) {
+static void an_call_targets_of(Compiler *c, int u, ACallTargets *t) {
   const NodeTable *nt = c->nt;
-  *nout = 0;
+  act_reset(c, t);
   const char *un = nt_str(nt, u, "name");
   if (!un) return;
   /* BOTH arms, because an_call_targets_scope answers for both and a call can
@@ -14710,7 +14930,16 @@ static void an_call_targets_of(Compiler *c, int u, int out[2], int *nout) {
      copy came back. */
   int byname = an_unique_scope_by_name(c, un);
   if (byname >= 0 && c->scopes[byname].name &&
-      sp_streq(c->scopes[byname].name, un)) out[(*nout)++] = byname;
+      sp_streq(c->scopes[byname].name, un)) act_add(t, byname);
+  /* A name more than one method defines resolves by the call itself, and
+     so does an alias, which names no scope of its own. By unique name alone
+     such a call had no target, so its site was missing from every chain: a
+     callee whose parameter became a shared handle -- a POLY parameter's pull
+     (#5957) reaching `Rooms.show_into` beside a `Users.show_into` -- never
+     pulled the caller's local into the handle, and the call handed it a
+     fresh copy that took every append (#6065). */
+  if ((byname < 0 || an_alias_name(c, un)) && !sp_streq(un, "new"))
+    an_call_targets_nonunique(c, u, un, t);
   if (!sp_streq(un, "new")) return;
   int rc = nt_ref(nt, u, "receiver");
   if (rc < 0 || nt_kind(nt, rc) != NK_ConstantReadNode) return;
@@ -14724,7 +14953,7 @@ static void an_call_targets_of(Compiler *c, int u, int out[2], int *nout) {
   if (mi < 0 || mi >= c->nscopes) return;
   Scope *m2 = &c->scopes[mi];
   if (!m2->name || m2->class_id < 0 || m2->is_cmethod) return;
-  if (*nout == 0 || out[0] != mi) out[(*nout)++] = mi;
+  act_add(t, mi);
 }
 
 /* (scope, parameter) -> "some call site hands that parameter a shared handle".
@@ -14796,13 +15025,26 @@ static void handle_arg_tab_init(Compiler *c, HandleArgTab *t) {
   }
   t->ok = 1;
   int ne = 0;
+  ACallTargets tg = { NULL, 0, 0, -1, 0 };
   for (int u = 0; u < nt->count; u++) {
     if (nt_kind(nt, u) != NK_CallNode) continue;
-    int tgt[2], ntg = 0;
-    an_call_targets_of(c, u, tgt, &ntg);
-    for (int k = 0; k < ntg; k++) {
-      int mi = tgt[k];
-      if (mi < 0 || mi >= c->nscopes) continue;
+    an_call_targets_of(c, u, &tg);
+    for (int k = 0; k < tg.n; k++) {
+      int mi = tg.v[k];
+      /* only a parameter's chain is ever read, and a poly receiver's call
+         reaches every method of its name, most of them often taking none */
+      if (mi < 0 || mi >= c->nscopes || c->scopes[mi].nparams <= 0) continue;
+      /* a call a poly receiver makes is an edge to every method of its
+         name, so the edges can outnumber the two per node reserved above */
+      if ((size_t)ne == maxe) {
+        size_t nmax = maxe * 2;
+        int *nn = (int *)realloc(t->enext, sizeof(int) * nmax);
+        if (nn) t->enext = nn;
+        int *nd = nn ? (int *)realloc(t->enode, sizeof(int) * nmax) : NULL;
+        if (nd) t->enode = nd;
+        if (!nn || !nd) { t->ok = 0; free(tg.v); return; }
+        maxe = nmax;
+      }
       t->enode[ne] = u; t->enext[ne] = t->head[mi]; t->head[mi] = ne; ne++;
       if (t->off[mi] < 0 || !t->bit) continue;
       int np = c->scopes[mi].nparams;
@@ -14812,6 +15054,7 @@ static void handle_arg_tab_init(Compiler *c, HandleArgTab *t) {
       }
     }
   }
+  free(tg.v);
 }
 
 static void handle_arg_tab_free(HandleArgTab *t) {
@@ -15034,7 +15277,18 @@ static int an_call_targets_scope(Compiler *c, int u, int mi2, Scope *m2) {
   const NodeTable *nt = c->nt;
   const char *un = nt_str(nt, u, "name");
   if (!un) return 0;
-  if (sp_streq(un, m2->name) && an_unique_scope_by_name(c, un) == mi2) return 1;
+  int is_new = sp_streq(un, "new"), named = sp_streq(un, m2->name);
+  /* only an alias reaches a scope under another name */
+  int aliased = !is_new && an_alias_name(c, un);
+  int byname = named ? an_unique_scope_by_name(c, un) : -1;
+  if (named && byname == mi2) return 1;
+  /* a name more than one method defines, or an alias: the targets the call
+     itself resolves to, as an_call_targets_of lists them */
+  if (!is_new && ((named && byname < 0) || aliased)) {
+    ACallTargets tg = { NULL, 0, 0, mi2, 0 };
+    an_call_targets_nonunique(c, u, un, &tg);
+    if (tg.hit) return 1;
+  }
   if (!sp_streq(un, "new") || !sp_streq(m2->name, "initialize")) return 0;
   if (m2->class_id < 0 || m2->is_cmethod) return 0;
   int rc = nt_ref(nt, u, "receiver");
@@ -15130,7 +15384,11 @@ static int narrow_params_from_arrays(Compiler *c) {
       }
       /* the by-name arm here; a `K.new` call also takes the constructor arm
          an_call_targets_of resolves (only `new` calls reach its scan) */
-      if (un && sp_streq(un, "new")) an_call_targets_of(c, u, tgt, &ntg);
+      if (un && sp_streq(un, "new")) {
+        static ACallTargets ctg;
+        an_call_targets_of(c, u, &ctg);
+        for (int k = 0; k < ctg.n && ntg < 2; k++) tgt[ntg++] = ctg.v[k];
+      }
       else if (byname >= 0) tgt[ntg++] = byname;
     }
     for (int t = 0; t < ntg; t++) {
@@ -15374,6 +15632,8 @@ static int convert_byref_handle_params(Compiler *c,
   /* the call-site chain is what makes this pass affordable; with no table
      there is nothing to walk, and promoting nothing is the safe answer */
   if (!hat->ok) return 0;
+  ALocalAliases aliases;
+  an_local_aliases_build(c, &aliases);
   /* byref -> handle parameter conversion: a shared handle passed into a
      string-mutating (byref) parameter converts that parameter to the handle
      representation -- byref's const char** slot cannot carry the handle, so
@@ -15429,7 +15689,7 @@ static int convert_byref_handle_params(Compiler *c,
           if (alv0 && !alv0->is_param && !alv0->is_cell &&
               (alv0->type == TY_STRING || alv0->type == TY_UNKNOWN ||
                alv0->type == TY_STRBUF) &&
-              an_local_has_alias(c, avn, avs))
+              an_local_has_alias(c, &aliases, avn, avs))
             saw_handle = 1;
         }
       }
@@ -15540,6 +15800,59 @@ static int convert_byref_handle_params(Compiler *c,
       }
     }
   }
+  /* A name group lends the slot as one (an_byref_promote_group), so it
+     leaves the slot as one too. The rules above turn a single method's
+     parameter into the handle -- the one a POLY parameter's pull reaches --
+     and left its same-named siblings lending theirs. A dispatch over the
+     group then hoisted the argument in one ABI for both: a bare
+     `show_into(io)` in Base, overridden by a Sub whose parameter became the
+     handle, handed the Sub the lent `const char **` and the C build
+     stopped. Every lending member at that index takes the handle, and the
+     next round pulls its callers in (#6065). */
+  /* one pass collects, per name, the indices some member takes as the
+     handle; a second converts the lending members at those indices */
+  ANameHash hnames; memset(&hnames, 0, sizeof hnames);
+  unsigned *hbits = NULL; int hcap = 0;
+  for (int k = 1; k < c->nscopes; k++) {
+    Scope *mk = &c->scopes[k];
+    if (!mk->name) continue;
+    unsigned bits = 0;
+    for (int j = 0; j < mk->nparams && j < 32; j++) {
+      LocalVar *q = mk->pnames[j] ? scope_local(mk, mk->pnames[j]) : NULL;
+      if (q && q->is_param && q->type == TY_STRBUF && q->str_shared && !q->byref_out)
+        bits |= 1u << j;
+    }
+    if (!bits) continue;
+    int h = anh_find(&hnames, mk->name);
+    if (h < 0) {
+      if (hnames.n == hcap) {
+        hcap = hcap ? hcap * 2 : 64;
+        unsigned *nb = (unsigned *)realloc(hbits, sizeof(unsigned) * (size_t)hcap);
+        if (!nb) break;
+        hbits = nb;
+      }
+      anh_add(&hnames, mk->name);
+      h = hnames.n - 1;
+      hbits[h] = 0;
+    }
+    hbits[h] |= bits;
+  }
+  for (int k = 1; hnames.n > 0 && k < c->nscopes; k++) {
+    Scope *mk = &c->scopes[k];
+    if (!mk->name || mk->nparams <= 0) continue;
+    int h = -1;
+    for (int j = 0; j < mk->nparams && j < 32; j++) {
+      LocalVar *q = mk->pnames[j] ? scope_local(mk, mk->pnames[j]) : NULL;
+      if (!q || !q->byref_out) continue;
+      if (h < 0 && (h = anh_find(&hnames, mk->name)) < 0) break;
+      if (!(hbits[h] & (1u << j))) continue;
+      q->byref_out = 0; q->is_cell = 0;
+      q->type = TY_STRBUF; q->str_shared = 1;
+      changed = 1;
+    }
+  }
+  an_local_aliases_free(&aliases);
+  anh_free(&hnames); free(hbits);
   return changed;
 }
 
@@ -19560,6 +19873,7 @@ void analyze_program(Compiler *c) {
        the only one released. An --rbs seed and an --ext-entry are DECLARED,
        not inferred, and stay put either way. */
     int rrcap = 16, nrrec = 0;
+    ACallTargets rtg = { NULL, 0, 0, -1, 0 };
     int *recRs = (int *)malloc(sizeof(int) * rrcap);
     const NodeTable *rnt = c->nt;
     for (int w = 0; w < rnt->count; w++) {
@@ -19579,10 +19893,9 @@ void analyze_program(Compiler *c) {
         if (an2 && sp_streq(an2, ivn) && an_ivar_owner(c, aV[k]) == icid) selfref = 1;
       }
       if (!selfref) continue;
-      int tgt[2], ntg = 0;
-      an_call_targets_of(c, wv, tgt, &ntg);
-      for (int k = 0; k < ntg; k++) {
-        int mi = tgt[k];
+      an_call_targets_of(c, wv, &rtg);
+      for (int k = 0; k < rtg.n; k++) {
+        int mi = rtg.v[k];
         if (mi < 0 || mi >= c->nscopes) continue;
         Scope *sc = &c->scopes[mi];
         if (sc->ret != TY_POLY || sc->is_ext_entry || sc->ret_rbs_seeded) continue;
@@ -19594,6 +19907,7 @@ void analyze_program(Compiler *c) {
         recRs[nrrec++] = mi;
       }
     }
+    free(rtg.v);
     if (reset_locked_iter_block_params(c)) any = 1;
     if (any) {
       TyKind *prev = (TyKind *)malloc(sizeof(TyKind) * (nrec > 0 ? nrec : 1));
