@@ -9070,8 +9070,15 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
                       " sp_IntArray_push(_t%d, sp_imod(%s, _t%d)); _t%d; })", o, o, r, tb, o, r, tb, o);
       }
       else if (sp_streq(name, "div") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
-        /* Integer#div(Float) floors the real quotient (7.div(2.5) == 2) (#2425) */
-        buf_printf(b, "((sp_int)floor((double)(%s) / (", r); emit_expr(c, argv[0], b); buf_puts(b, ")))");
+        /* Integer#div(Float) floors the real quotient (7.div(2.5) == 2) (#2425);
+           a zero divisor is ZeroDivisionError, a NaN one FloatDomainError and a
+           quotient past the Integer range sp_float_fit_i's RangeError */
+        int tx = ++g_tmp, tn = ++g_tmp;
+        buf_printf(b, "({ sp_int _t%d = (%s); sp_float _t%d = ", tx, r, tn);
+        emit_expr(c, argv[0], b);
+        buf_printf(b, "; if (_t%d == 0.0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
+                      " if (isnan(_t%d)) sp_raise_cls(\"FloatDomainError\", \"NaN\");"
+                      " sp_float_fit_i(floor((double)_t%d / _t%d)); })", tn, tn, tx, tn);
       }
       /* int receiver, Bignum divisor: the receiver always fits an sp_int, but
          the quotient has to be computed in bigint since the divisor cannot
