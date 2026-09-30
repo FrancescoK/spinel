@@ -23738,8 +23738,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "inspect") || (sp_streq(name, "to_s") && argc == 0)) {
       /* inspect/to_s is a TY_STRING (const char*); wrapping it in sp_String_new
          produced an sp_String* that was then cast straight to const char*, so
-         puts printed the struct's raw bytes (#3270). Return the const char*. */
-      buf_puts(b, "sp_OpenStruct_inspect("); emit_expr(c, recv, b); buf_puts(b, ")");
+         puts printed the struct's raw bytes (#3270). Return the const char*.
+         A slot left nil is NULL: nil.inspect is "nil", a new String on each
+         call, and nil.to_s is the one shared empty String. */
+      int ov = ++g_tmp;
+      buf_printf(b, "({ sp_OpenStruct *_t%d = ", ov); emit_expr(c, recv, b);
+      buf_printf(b, "; _t%d ? sp_OpenStruct_inspect(_t%d) : %s; })", ov, ov,
+                 sp_streq(name, "inspect") ? "sp_str_from_bytes(\"nil\", 3)" : "sp_str_empty");
       return;
     }
     if (sp_streq(name, "respond_to?") && argc >= 1) {
