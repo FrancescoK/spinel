@@ -88,7 +88,14 @@
 #endif
 
 /* `inline` stays: only the forcing is a hint. The generated C spells it
-   `inline SP_ALWAYS_INLINE`, so src/csplit.c still sees the `inline` word. */
+   `inline SP_ALWAYS_INLINE`, so src/csplit.c still sees the `inline` word.
+   The runtime forces four accessors a large generated loop reads on every
+   pass and whose slow path is already a call: sp_IntArray_get / set,
+   sp_box_nil and sp_poly_truthy. A large unit (optcarrot's) spends gcc's
+   --param inline-unit-growth budget, and whichever calls it runs out on stay
+   out of line, so a header change far from a hot loop could leave that loop
+   calling these. Forcing more than these spends the loop's own
+   large-function-growth budget on the rest. */
 #if SP_HAS_ATTRIBUTE(always_inline) || (!defined(SP_PORTABLE) && SP_GNUC_PREREQ(3, 1))
 # define SP_ALWAYS_INLINE __attribute__((always_inline))
 #else
