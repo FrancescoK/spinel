@@ -14135,59 +14135,17 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], pb, 1);
         if (bn > 0) {
           int last = bb[bn - 1];
-          const char *lty = nt_type(nt, last);
-          int is_set = lty && sp_streq(lty, "CallNode") && nt_str(nt, last, "name") &&
-                       sp_streq(nt_str(nt, last, "name"), "[]=");
-          if (is_set) {
-            int srecv = nt_ref(nt, last, "receiver");
-            int sargs = nt_ref(nt, last, "arguments");
-            int san = 0; const int *sav = sargs >= 0 ? nt_arr(nt, sargs, "arguments", &san) : NULL;
-            if (san == 2) {
-              int vtmp = ++g_tmp;
-              /* Emit the value via a side-buffer so any hoisted prelude (e.g.
-                 an instance-method call needing arg temps) lands on its own
-                 lines before this assignment, not spliced mid-line. Box into an
-                 sp_RbVal temp rather than a comp_ntype-typed one: a container
-                 literal like `[]` infers TY_UNKNOWN, whose emit_ctype is `void`
-                 -- `void _t = sp_IntArray_new()` doesn't compile. The boxed
-                 value is set into the hash and returned (the block's value). */
-              Buf vexpr; memset(&vexpr, 0, sizeof vexpr);
-              Buf vpre; memset(&vpre, 0, sizeof vpre);
-              Buf *svp = g_pre; g_pre = &vpre;
-              emit_boxed(c, sav[1], &vexpr);
-              g_pre = svp;
-              if (vpre.p) buf_puts(pb, vpre.p);
-              free(vpre.p);
-              emit_indent(pb, 1);
-              buf_printf(pb, "sp_RbVal _t%d = %s;\n", vtmp, vexpr.p ? vexpr.p : "sp_box_nil()");
-              free(vexpr.p);
-              Buf kexpr; memset(&kexpr, 0, sizeof kexpr);
-              Buf kpre; memset(&kpre, 0, sizeof kpre);
-              Buf *svk = g_pre; g_pre = &kpre;
-              emit_boxed(c, sav[0], &kexpr);
-              g_pre = svk;
-              if (kpre.p) buf_puts(pb, kpre.p);
-              free(kpre.p);
-              emit_indent(pb, 1); buf_puts(pb, "sp_PolyPolyHash_set(");
-              emit_expr(c, srecv, pb); buf_puts(pb, ", ");
-              buf_printf(pb, "%s, _t%d);\n", kexpr.p ? kexpr.p : "sp_box_nil()", vtmp);
-              free(kexpr.p);
-              emit_indent(pb, 1); buf_printf(pb, "return _t%d;\n", vtmp);
-            }
-          }
-          else {
-            Buf vexpr; memset(&vexpr, 0, sizeof vexpr);
-            Buf vpre; memset(&vpre, 0, sizeof vpre);
-            Buf *svp = g_pre; g_pre = &vpre;
-            if (comp_ntype(c, last) == TY_POLY) emit_expr(c, last, &vexpr);
-            else emit_boxed(c, last, &vexpr);
-            g_pre = svp;
-            if (vpre.p) buf_puts(pb, vpre.p);
-            free(vpre.p);
-            emit_indent(pb, 1);
-            buf_printf(pb, "return %s;\n", vexpr.p ? vexpr.p : "sp_box_nil()");
-            free(vexpr.p);
-          }
+          Buf vexpr; memset(&vexpr, 0, sizeof vexpr);
+          Buf vpre; memset(&vpre, 0, sizeof vpre);
+          Buf *svp = g_pre; g_pre = &vpre;
+          if (comp_ntype(c, last) == TY_POLY) emit_expr(c, last, &vexpr);
+          else emit_boxed(c, last, &vexpr);
+          g_pre = svp;
+          if (vpre.p) buf_puts(pb, vpre.p);
+          free(vpre.p);
+          emit_indent(pb, 1);
+          buf_printf(pb, "return %s;\n", vexpr.p ? vexpr.p : "sp_box_nil()");
+          free(vexpr.p);
         }
         g_pre = sv_pre; g_indent = sv_ind; g_self = sv_self;
         buf_puts(pb, "}\n");
