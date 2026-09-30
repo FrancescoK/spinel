@@ -5,7 +5,8 @@
 #
 # A generator is a module answering FACTORS ([name, levels] pairs, the first
 # level of each its simplest), NAMES, SIMPLEST, GeneratorError, render(id, row) (a Case of the levels it realized, which render
-# back to the same program), covering_cases(t, seed), cases(rows),
+# back to the same program), covering_cases(t, seed, tries, only), cases(rows),
+# pinned_cases(rows, only), pins(spec),
 # random_rows(n, seed), program(cases), flags(cases) and shape(case), and
 # optionally diff_kind(want, got, case). A probe names, beside it, the lines CRuby
 # prints when a generated program reads a name it does not define. Covering gives a generator all but render,
@@ -163,15 +164,26 @@ module ProbeCommon
     # first, and a combination is tried only when every one of its parts is
     # taken. Answers the cases, how many combinations there are, and how many
     # the cases take.
-    def covering_cases(t, seed, tries = 100)
-      cases = self.cases(covering_array(t, seed))
+    #
+    # With `only`, every case takes its levels (see pinned_cases), and the
+    # combinations are those that agree with them.
+    def covering_cases(t, seed, tries = 100, only = {})
+      cases = pinned_cases(covering_array(t, seed), only)
       rng = Random.new(seed)
       want = got = nil
       (1..t).each do |s|
+        combos = (0...self::FACTORS.size).to_a.combination(s).to_a
         want = all_tuples(s)
+        unless only.empty?
+          want.reject! do |kk, _|
+            ti, ls = unkey(kk, s)
+            combos[ti].each_with_index.any? do |f, x|
+              only.key?(self::NAMES[f]) && self::FACTORS[f][1][ls[x]] != only[self::NAMES[f]]
+            end
+          end
+        end
         got = tuples_of(cases, s)
         parts = s > 1 ? tuples_of(cases, s - 1) : {}
-        combos = (0...self::FACTORS.size).to_a.combination(s).to_a
         part_index = (0...self::FACTORS.size).to_a.combination(s - 1).each_with_index.to_h
         want.each_key do |kk|
           next if got.key?(kk)
@@ -191,8 +203,8 @@ module ProbeCommon
               end
             end
             base = n.odd? && !from.empty? ? from[rng.rand(from.size)].realized : random_row(rng)
-            c = render(cases.last.id + 1, base.merge(fixed))
-            next unless fixed.all? { |f, l| c.realized[f] == l }
+            c = render(cases.last.id + 1, base.merge(fixed).merge(only))
+            next unless fixed.merge(only).all? { |f, l| c.realized[f] == l }
             cases << c
             got.merge!(tuples_of([c], s))
             parts.merge!(tuples_of([c], s - 1)) if s > 1
@@ -201,6 +213,33 @@ module ProbeCommon
         end
       end
       [cases, want.size, want.count { |kk, _| got.key?(kk) }]
+    end
+
+    # The levels a spec such as "name_clash=sibling,seed=poly" pins.
+    def pins(spec)
+      spec.split(",").to_h do |pair|
+        f, l = pair.split("=", 2)
+        levels = self::FACTORS.to_h[f.to_s.to_sym] or raise ArgumentError, "no factor #{f.inspect}"
+        level = levels.find { |x| x.to_s == l } or raise ArgumentError, "#{f} has no level #{l.inspect}"
+        [f.to_sym, level]
+      end
+    end
+
+    # The cases of `rows` with the levels of `only` pinned, numbered from
+    # `first + 1`, to ask one level's combinations without a whole run: a
+    # row that does not take them once rendered, or takes the levels of a
+    # case before it, is left out.
+    def pinned_cases(rows, only, first = 0)
+      return cases(rows, first) if only.empty?
+      seen = {}
+      got = rows.each_with_object([]) do |row, out|
+        c = render(first + out.size + 1, row.merge(only))
+        next if seen[c.realized] || only.any? { |f, l| c.realized[f] != l }
+        seen[c.realized] = true
+        out << c
+      end
+      raise ArgumentError, "no case takes #{only.map { |f, l| "#{f}=#{l}" }.join(",")}" if got.empty?
+      got
     end
 
     def key(ti, ls)
@@ -540,7 +579,7 @@ module ProbeCommon
         next [] if c.realized[f] == @gen::SIMPLEST[f]
         steps = [@gen::SIMPLEST[f]]
         steps.unshift(c.realized[f] - 1) if c.realized[f].is_a?(Integer) && c.realized[f] > 1
-        steps.map { |l| @gen.render(c.id, c.realized.merge(f => l)) }.reject { |s| s.realized == c.realized }
+        steps.uniq.map { |l| @gen.render(c.id, c.realized.merge(f => l)) }.reject { |s| s.realized == c.realized }
       end
     end
 
@@ -698,10 +737,11 @@ module ProbeCommon
   # default --out, `strength` its default --strength; `documented` and
   # `undefined` as Probe takes them. Answers the exit status.
   def main(gen, name, argv, out:, strength:, undefined:, documented: [])
-    usage = "usage: ruby tools/#{name}.rb [--strength T | --random N] [--seed S] [--batch B] " \
-            "[--jobs J] [--out DIR] [--timeout SEC] [--keep] [--no-reduce]"
+    usage = "usage: ruby tools/#{name}.rb [--strength T | --random N] [--seed S] [--only F=L,..] " \
+            "[--batch B] [--jobs J] [--out DIR] [--timeout SEC] [--keep] [--no-reduce]"
     random = nil
     seed = 1
+    only = {}
     batch = 50
     jobs = 4
     timeout = 30
@@ -714,6 +754,7 @@ module ProbeCommon
         when "--strength" then strength = Integer(args.shift)
         when "--random" then random = Integer(args.shift)
         when "--seed" then seed = Integer(args.shift)
+        when "--only" then only.merge!(gen.pins(args.shift.to_s))
         when "--batch" then batch = Integer(args.shift)
         when "--jobs" then jobs = Integer(args.shift)
         when "--out" then out = File.expand_path(args.shift || raise(ArgumentError))
@@ -725,7 +766,8 @@ module ProbeCommon
       end
       raise ArgumentError unless (1..gen::FACTORS.size).cover?(strength) &&
                                  [batch, jobs, timeout].all?(&:positive?) && (random.nil? || random.positive?)
-    rescue ArgumentError, TypeError
+    rescue ArgumentError, TypeError => e
+      warn "#{name}: #{e.message}" unless e.message == "ArgumentError"
       warn usage
       return 4
     end
@@ -761,13 +803,14 @@ module ProbeCommon
     Thread.report_on_exception = false # a worker's failure is reported once, below
     begin
       if random
-        cases = gen.cases(gen.random_rows(random, seed))
+        cases = gen.pinned_cases(gen.random_rows(random, seed), only)
         coverage = "#{random} random rows (seed #{seed})"
       else
-        cases, want, got = gen.covering_cases(strength, seed)
+        cases, want, got = gen.covering_cases(strength, seed, 100, only)
         coverage = "#{strength}-way covering array (seed #{seed}): the cases take #{got} of the #{want} " \
                    "#{strength}-way combinations of levels; #{want - got} were not taken"
       end
+      coverage += "; pinned: #{only.map { |f, l| "#{f}=#{l}" }.join(" ")}" unless only.empty?
       (LABELS + %w[work summary.txt]).each { |p| FileUtils.rm_rf(File.join(out, p)) }
       File.write(File.join(out, "summary.txt"), "run in progress\n")
       work = keep ? File.join(out, "work") : Dir.mktmpdir(name.tr("_", "-"))
