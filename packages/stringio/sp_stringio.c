@@ -69,7 +69,10 @@ const char *sp_StringIO_read(sp_StringIO *s) {SP_GC_ROOT(s); if (s->pos >= s->le
 const char *sp_StringIO_read_n(sp_StringIO *s, sp_int n) {SP_GC_ROOT(s); if (s->pos >= s->len) return sp_str_empty; int64_t rem = s->len - s->pos; if (n > rem) n = rem; char *r = sp_str_alloc_raw(n+1); memcpy(r, s->buf + s->pos, n); r[n] = '\0'; sp_str_set_len(r, (size_t)n); s->pos += n; return r; }
 const char *sp_StringIO_gets(sp_StringIO *s) {SP_GC_ROOT(s); if (s->pos >= s->len) return NULL; const char *st = s->buf + s->pos; const char *nl = memchr(st, '\n', s->len - s->pos); int64_t ll = nl ? (nl - st) + 1 : s->len - s->pos; char *r = sp_str_alloc_raw(ll+1); memcpy(r, st, ll); r[ll] = '\0'; sp_str_set_len(r, (size_t)ll); s->pos += ll; s->lineno++; return r; }
 const char *sp_StringIO_getc(sp_StringIO *s) {SP_GC_ROOT(s); if (s->pos >= s->len) return NULL; char *gc = sp_str_alloc_raw(2); gc[0] = s->buf[s->pos++]; gc[1] = '\0'; sp_str_set_len(gc, 1); return gc; }
-sp_int sp_StringIO_getbyte(sp_StringIO *s) { if (s->pos >= s->len) return -1; return (int64_t)(unsigned char)s->buf[s->pos++]; }
+sp_RbVal sp_StringIO_getbyte(sp_StringIO *s) { if (s->pos >= s->len) return sp_box_nil(); return sp_box_int((int64_t)(unsigned char)s->buf[s->pos++]); }
+/* readbyte and readchar: getbyte and getc that raise EOFError at the end */
+sp_int sp_StringIO_readbyte(sp_StringIO *s) { if (s->pos >= s->len) sp_raise_cls("EOFError", "end of file reached"); return (int64_t)(unsigned char)s->buf[s->pos++]; }
+const char *sp_StringIO_readchar(sp_StringIO *s) {SP_GC_ROOT(s); const char *r = sp_StringIO_getc(s); if (!r) sp_raise_cls("EOFError", "end of file reached"); return r; }
 sp_int sp_StringIO_rewind(sp_StringIO *s) { s->pos = 0; s->lineno = 0; return 0; }
 sp_int sp_StringIO_seek(sp_StringIO *s, sp_int off) { if (off < 0) off = 0; s->pos = off; return 0; }
 sp_int sp_StringIO_tell(sp_StringIO *s) { return s->pos; }
@@ -84,7 +87,7 @@ sp_bool sp_StringIO_isatty(sp_StringIO *s) { (void)s; return 0; }
 /* Normalized helpers so the binding stays a plain method->symbol map:
    putc with a string arg writes its first byte; lineno is a field read;
    fsync/fileno/pid are always 0 on an in-memory stream. */
-sp_int sp_StringIO_putc_s(sp_StringIO *s, const char *str) {SP_GC_ROOT(s);SP_GC_ROOT_STR(str); return sp_StringIO_putc(s, (sp_int)(unsigned char)(str && str[0] ? str[0] : 0)); }
+const char *sp_StringIO_putc_s(sp_StringIO *s, const char *str) {SP_GC_ROOT(s);SP_GC_ROOT_STR(str); sp_StringIO_putc(s, (sp_int)(unsigned char)(str && str[0] ? str[0] : 0)); return str; }
 sp_int sp_StringIO_lineno(sp_StringIO *s) { return s->lineno; }
 sp_int sp_StringIO_zero(sp_StringIO *s) { (void)s; return 0; }
 

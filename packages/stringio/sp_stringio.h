@@ -33,12 +33,14 @@ void sp_StringIO_puts(sp_StringIO *s, const char *str);
 void sp_StringIO_puts_empty(sp_StringIO *s);
 void sp_StringIO_print(sp_StringIO *s, const char *str);
 sp_int sp_StringIO_putc(sp_StringIO *s, sp_int ch);
-sp_int sp_StringIO_putc_s(sp_StringIO *s, const char *str);
+const char *sp_StringIO_putc_s(sp_StringIO *s, const char *str);   /* answers its argument */
 const char *sp_StringIO_read(sp_StringIO *s);
 const char *sp_StringIO_read_n(sp_StringIO *s, sp_int n);
 const char *sp_StringIO_gets(sp_StringIO *s);
 const char *sp_StringIO_getc(sp_StringIO *s);
-sp_int sp_StringIO_getbyte(sp_StringIO *s);
+sp_RbVal sp_StringIO_getbyte(sp_StringIO *s);   /* nil at the end */
+sp_int sp_StringIO_readbyte(sp_StringIO *s);
+const char *sp_StringIO_readchar(sp_StringIO *s);
 sp_int sp_StringIO_rewind(sp_StringIO *s);
 sp_int sp_StringIO_seek(sp_StringIO *s, sp_int off);
 sp_int sp_StringIO_tell(sp_StringIO *s);
