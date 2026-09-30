@@ -5481,6 +5481,14 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   nd_stamp(nt_ref(c->nt, id, "block"), ND_BLOCK_PROC);   /* the body is a function of its own */
   const NodeTable *nt = c->nt;
   int blk = nt_ref(nt, id, "block");
+  /* Fiber.new(&x) / Thread.new(&x): x is read once, now, and kept in the
+     fiber; the runtime body calls it with what the first resume passes */
+  if (blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode) {
+    int ex = nt_ref(nt, blk, "expression");
+    if (ex < 0 || as_gen) unsupported(c, id, "&-argument form here");
+    buf_puts(b, "sp_Fiber_new_callable("); emit_boxed(c, ex, b); buf_puts(b, ")");
+    return;
+  }
   if (blk < 0) {
     if (as_gen) { buf_puts(b, "sp_Enumerator_new_gen(NULL, NULL, "); emit_enum_size_arg(c, size_node, b); buf_puts(b, ")"); }
     else buf_puts(b, "sp_Fiber_new(NULL)");
@@ -5694,6 +5702,11 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   const char *sv_fn_prl2 = g_fn_pr_label, *sv_fn_prv2 = g_fn_pr_var; TyKind sv_fn_rt2 = g_fn_ret_type;
   g_fn_pr_label = NULL; g_fn_pr_var = NULL; g_fn_ret_type = TY_POLY;
   const char *sv_fbser = g_brk_ser_var; g_brk_ser_var = NULL;   /* fresh function context */
+  /* the body reads its captures from its own _fc, never from an enclosing
+     proc's _cap: a fiber made inside a lifted block read `pr` through a
+     `_cap` its C function doesn't have */
+  const char *sv_fbcap = g_cap_struct; NameSet *sv_fbcapn = g_cap_names;
+  g_cap_struct = NULL; g_cap_names = NULL;
   /* A `break` written directly in a fiber/thread body -- not inside a block
      or a C loop within it -- has nothing to deliver to and cannot reach one
      across the body's own stack. It fell through to a bare C `break;` with no
@@ -5917,6 +5930,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   g_result_poly = sv_rp; g_result_var = sv_rv; g_yielder_name = sv_yld;
   g_fn_pr_label = sv_fn_prl2; g_fn_pr_var = sv_fn_prv2; g_fn_ret_type = sv_fn_rt2;
   g_brk_ser_var = sv_fbser; g_brk_skip_id = sv_fbskip;
+  g_cap_struct = sv_fbcap; g_cap_names = sv_fbcapn;
   g_c_loop_depth = sv_fbcld;
   g_exc_frame_depth = sv_fbexcd; g_method_pr_exc_depth = sv_fbprexcd;
   g_rescue_save_depth = sv_fbrsd;

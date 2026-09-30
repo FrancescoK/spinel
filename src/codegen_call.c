@@ -14037,17 +14037,21 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
            the next Thread.new was handed the same array, and two threads ran
            with one's arguments. Both go into temps rooted for the whole call. */
         int tfb = ++g_tmp, targ = ++g_tmp;
+        int tblk = nt_ref(nt, id, "block");
+        /* Thread.new(args, &x): the body calls x with exactly these args */
+        int tcallable = tblk >= 0 && nt_kind(nt, tblk) == NK_BlockArgumentNode;
         buf_printf(b, "({ sp_Fiber *_t%d = ", tfb);
         emit_fiber_new(c, id, b, 0, -1);
-        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", tfb, targ);
+        buf_printf(b, "; SP_GC_ROOT(_t%d);", tfb);
+        if (tcallable) buf_printf(b, " _t%d->pass_argc = %d;", tfb, argc);
+        buf_printf(b, " sp_RbVal _t%d = ", targ);
         /* a block with >1 param takes the args positionally: pack them into a
            poly array the fiber body binds element-by-element (#2976) */
-        int tblk = nt_ref(nt, id, "block");
         int tbp = tblk >= 0 ? nt_ref(nt, tblk, "parameters") : -1;
         int tinner = tbp >= 0 ? nt_ref(nt, tbp, "parameters") : -1;
         int tpn = tinner >= 0 ? tinner : tbp;
         int treq = 0; if (tpn >= 0) nt_arr(nt, tpn, "requireds", &treq);
-        if (treq > 1) {
+        if (treq > 1 || (tcallable && argc > 1)) {
           int tpa = ++g_tmp;
           buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tpa, tpa);
           for (int a = 0; a < argc; a++) {

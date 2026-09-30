@@ -15561,6 +15561,35 @@ static sp_RbVal sp_poly_callable_spread(sp_RbVal v, sp_RbVal arr, int kwpos) {
   return sp_box_nil();
 }
 
+/* Fiber.new(&x) / Thread.new(&x): x lives in the fiber (user_data, one
+   sp_RbVal cell), read once when the fiber was made. The body calls it with
+   what the first resume passed; pass_argc says how many (-1: not known). */
+static void sp_fiber_callable_body(sp_Fiber *f) {
+  SP_GC_ROOT(f);
+  sp_RbVal rv = f->resumed_value;
+  SP_GC_ROOT_RBVAL(rv);
+  int n = f->pass_argc;
+  int is_list = rv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(rv.cls_id);
+  sp_PolyArray *args;
+  if (n > 1 || (n < 0 && is_list)) args = sp_poly_to_poly_array(rv);
+  else {
+    args = sp_PolyArray_new();
+    if (n == 1 || (n < 0 && rv.tag != SP_TAG_NIL)) sp_PolyArray_push(args, rv);
+  }
+  SP_GC_ROOT(args);
+  f->yielded_value = sp_poly_callable_spread(*(sp_RbVal *)f->user_data, sp_box_poly_array(args), 0);
+}
+static sp_Fiber *sp_Fiber_new_callable(sp_RbVal callable) {
+  SP_GC_ROOT_RBVAL(callable);
+  sp_Fiber *f = sp_Fiber_new(sp_fiber_callable_body);
+  SP_GC_ROOT(f);
+  sp_RbVal *cell = (sp_RbVal *)sp_gc_alloc(sizeof(sp_RbVal), NULL, sp_cell_scan_rbval);
+  *cell = callable;
+  sp_gc_wb((void *)f);
+  f->user_data = cell;
+  return f;
+}
+
 /* Hash#to_proc cap-scan: the proc's `cap` field IS the source hash
    (a single GC pointer), so marking it keeps the hash alive for the
    proc's lifetime. The per-variant lookup fn is emitted by codegen
