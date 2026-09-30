@@ -7553,6 +7553,38 @@ static sp_RbVal sp_poly_call_aref(sp_RbVal v, sp_RbVal arg) {
   sp_int slot = sp_poly_slot_i(arg);
   return sp_poly_callable_call(v, 1, &slot);
 }
+/* A key of a kind the Hash's storage cannot hold (a String or an Integer on a
+   Symbol-keyed Hash, a Symbol or an Integer on a String-keyed one, a Float or
+   an Array on any typed kind, ...) is a miss, and answers the Hash's default:
+   its default block when it has one, else its default value. A block's key
+   parameter is typed by the storage kind, so it is handed a key of that kind:
+   on a Symbol-keyed Hash an Integer read as a Symbol id and Symbol 0 for any
+   other key, on a String-keyed one the name of a Symbol or an Integer read as
+   a Symbol id and "" for any other key. A block that ignores its key answers
+   as CRuby does. */
+static sp_RbVal sp_poly_hash_foreign_miss(sp_RbVal recv, sp_RbVal key) {
+  if (recv.tag != SP_TAG_OBJ || !recv.v.p) return sp_box_nil();
+  switch (recv.cls_id) {
+    case SP_BUILTIN_SYM_POLY_HASH: {
+      sp_SymPolyHash *h = (sp_SymPolyHash *)recv.v.p;
+      if (!h->dproc) return h->default_v;
+      sp_sym k = key.tag == SP_TAG_INT ? (sp_sym)key.v.i : (sp_sym)0;
+      return h->dproc(h, k, h->dproc_self);
+    }
+    case SP_BUILTIN_STR_POLY_HASH: {
+      sp_StrPolyHash *h = (sp_StrPolyHash *)recv.v.p;
+      if (!h->dproc) return h->default_v;
+      const char *nm = (key.tag == SP_TAG_SYM || key.tag == SP_TAG_INT) && sp_sym_name_fn
+                         ? sp_sym_name_fn((sp_sym)key.v.i) : "";
+      return h->dproc(h, nm ? nm : "", h->dproc_self);
+    }
+    case SP_BUILTIN_STR_STR_HASH: return sp_box_nullable_str(((sp_StrStrHash *)recv.v.p)->default_v);
+    case SP_BUILTIN_INT_STR_HASH: return sp_box_nullable_str(((sp_IntStrHash *)recv.v.p)->default_v);
+    case SP_BUILTIN_STR_INT_HASH: { sp_int d = ((sp_StrIntHash *)recv.v.p)->default_v; return d == SP_INT_NIL ? sp_box_nil() : sp_box_int(d); }
+    case SP_BUILTIN_INT_INT_HASH: { sp_int d = ((sp_IntIntHash *)recv.v.p)->default_v; return d == SP_INT_NIL ? sp_box_nil() : sp_box_int(d); }
+    default: return sp_box_nil();
+  }
+}
 static sp_RbVal sp_poly_get_sym(sp_RbVal v, sp_sym key) {
   if (sp_poly_is_call_aref(v)) return sp_poly_call_aref(v, sp_box_sym(key));
   sp_poly_coll_chk(v, "[]");
@@ -7561,6 +7593,10 @@ static sp_RbVal sp_poly_get_sym(sp_RbVal v, sp_sym key) {
     case SP_BUILTIN_CURRY: return sp_curry_call_poly((sp_Curry *)v.v.p, 1, (sp_RbVal[]){sp_box_sym(key)});
     case SP_BUILTIN_SYM_POLY_HASH: return sp_SymPolyHash_get((sp_SymPolyHash*)v.v.p, key);
     case SP_BUILTIN_POLY_POLY_HASH: return sp_PolyPolyHash_get((sp_PolyPolyHash*)v.v.p, sp_box_sym(key));
+    /* a Symbol is no key of a String- or Integer-keyed Hash: a miss */
+    case SP_BUILTIN_STR_POLY_HASH: case SP_BUILTIN_STR_STR_HASH: case SP_BUILTIN_STR_INT_HASH:
+    case SP_BUILTIN_INT_INT_HASH: case SP_BUILTIN_INT_STR_HASH:
+      return sp_poly_hash_foreign_miss(v, sp_box_sym(key));
     /* an OpenStruct read as poly (e.g. returned from a method that can also
        return an int): `o[:k]` is the member value (#3193). */
     case SP_BUILTIN_OPENSTRUCT: return sp_OpenStruct_get((sp_OpenStruct*)v.v.p, key);
@@ -7961,6 +7997,9 @@ static sp_RbVal sp_poly_get_str(sp_RbVal v, const char *key) {
     case SP_BUILTIN_POLY_POLY_HASH: return sp_PolyPolyHash_get((sp_PolyPolyHash*)v.v.p, sp_box_str(key));
     /* OpenStruct#["name"] is the member of that name, as with a Symbol */
     case SP_BUILTIN_OPENSTRUCT: return key ? sp_OpenStruct_get((sp_OpenStruct*)v.v.p, sp_sym_intern(key)) : sp_box_nil();
+    /* a String is no key of a Symbol- or Integer-keyed Hash: a miss */
+    case SP_BUILTIN_SYM_POLY_HASH: case SP_BUILTIN_INT_INT_HASH: case SP_BUILTIN_INT_STR_HASH:
+      return sp_poly_hash_foreign_miss(v, sp_box_str(key));
     default: break;
   }
   /* Struct#["member"] names the member, like the symbol form (#3369) */
@@ -8463,18 +8502,13 @@ static SP_NOINLINE sp_RbVal sp_poly_arr_get_hash_cold(sp_RbVal a, sp_int i) {
   if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_POLY_POLY_HASH)
     return sp_PolyPolyHash_get((sp_PolyPolyHash*)a.v.p, sp_box_int(i));
   /* A Symbol- or String-keyed hash cannot hold an Integer key, so an Integer
-     index is a miss. These two arms looked it up as a Symbol id (and as that
-     Symbol's name), so `h[0]` answered whatever sat under Symbol 0; they now go
-     straight to the miss that lookup fell to. A default block still gets the
-     key the lookup used: its key parameter is a Symbol (a String), which cannot
-     take the Integer. */
-  if (a.tag == SP_TAG_OBJ && a.v.p && a.cls_id == SP_BUILTIN_SYM_POLY_HASH)
-    return sp_SymPolyHash_miss((sp_SymPolyHash*)a.v.p, (sp_sym)i);
-  if (a.tag == SP_TAG_OBJ && a.v.p && a.cls_id == SP_BUILTIN_STR_POLY_HASH) {
-    sp_StrPolyHash *sh = (sp_StrPolyHash*)a.v.p;
-    if (sh->dproc) return sh->dproc(sh, sp_sym_name_fn ? sp_sym_name_fn((sp_sym)i) : "", sh->dproc_self);
-    return sh->default_v;
-  }
+     index is a miss that answers the Hash's default. The Symbol- and
+     String-keyed arms with mixed values looked it up as a Symbol id (and as
+     that Symbol's name), so `h[0]` answered whatever sat under Symbol 0. */
+  if (a.tag == SP_TAG_OBJ && a.v.p &&
+      (a.cls_id == SP_BUILTIN_SYM_POLY_HASH || a.cls_id == SP_BUILTIN_STR_POLY_HASH ||
+       a.cls_id == SP_BUILTIN_STR_STR_HASH || a.cls_id == SP_BUILTIN_STR_INT_HASH))
+    return sp_poly_hash_foreign_miss(a, sp_box_int(i));
 
   if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_INT_INT_HASH) {
     /* a miss answers the hash's default, nil for a plain hash (#5544) */
@@ -8669,7 +8703,7 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
      sp_int and, for a symbol- or string-keyed hash, reads it as that kind's
      key -- so `h[0]` on `{a: 1}` came back as whatever symbol 0 happens to be
      rather than nil (#3509). Those storages cannot hold an Integer key at all,
-     so the answer is nil; the two that can look it up. */
+     so the answer is the Hash's default; the two that can look it up. */
   if (idx.tag == SP_TAG_INT && recv.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(recv.cls_id)) {
     /* a miss answers the hash's default, nil for a plain hash (#5544) */
     if (recv.cls_id == SP_BUILTIN_INT_INT_HASH) {
@@ -8678,11 +8712,16 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
     }
     if (recv.cls_id == SP_BUILTIN_INT_STR_HASH)
       return sp_box_nullable_str(sp_IntStrHash_get((sp_IntStrHash *)recv.v.p, i));
-    return sp_box_nil();
+    return sp_poly_hash_foreign_miss(recv, idx);
   }
   /* Integer#[]: one bit of the receiver, a Bignum's included (#4665) */
   if (idx.tag == SP_TAG_INT && (recv.tag == SP_TAG_INT || recv.tag == SP_TAG_BIGINT))
     return sp_box_int(sp_poly_int_bit(recv, idx.v.i));
+  /* any other kind of key (a Float, nil, an Array, ...) is no key of a String-,
+     Symbol- or Integer-keyed Hash: a miss, not a read of key 0 */
+  if (recv.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(recv.cls_id) &&
+      recv.cls_id != SP_BUILTIN_POLY_POLY_HASH)
+    return sp_poly_hash_foreign_miss(recv, idx);
   return sp_poly_arr_get_hash(recv, i);
 }
 
