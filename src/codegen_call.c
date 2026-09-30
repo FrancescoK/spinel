@@ -447,13 +447,14 @@ static int emit_float_bigint_cmp(Compiler *c, int recv, int arg, const char *op,
     buf_puts(b, "))");
     return 1;
   }
-  buf_puts(b, "(");
-  if (lt == TY_BIGINT) { buf_puts(b, "sp_bigint_to_double("); emit_expr(c, recv, b); buf_puts(b, ")"); }
-  else emit_expr(c, recv, b);
-  buf_printf(b, " %s ", op);
-  if (rt2 == TY_BIGINT) { buf_puts(b, "sp_bigint_to_double("); emit_expr(c, arg, b); buf_puts(b, ")"); }
-  else emit_expr(c, arg, b);
-  buf_puts(b, ")");
+  /* ordering is exact too (sp_bigint_cmp_f, answered from the bignum's side
+     and turned round for a Float receiver); a NaN orders nothing */
+  int tc = ++g_tmp;
+  buf_printf(b, "({ int _t%d = sp_bigint_cmp_f(", tc);
+  emit_expr(c, lt == TY_BIGINT ? recv : arg, b);
+  buf_puts(b, ", ");
+  emit_expr(c, lt == TY_BIGINT ? arg : recv, b);
+  buf_printf(b, "); _t%d != 2 && %s_t%d %s 0; })", tc, lt == TY_BIGINT ? "" : "-", tc, op);
   return 1;
 }
 static void emit_bigint_operand(Compiler *c, int node, Buf *b) {
@@ -38226,18 +38227,17 @@ else {
                  ta, ta, tb, ta, tb);
       return;
     }
-    /* Float <=> Bignum (either side): compare by value as doubles; a raw >/< on
-       the sp_Bigint* pointer would be ill-typed C (#3009) */
+    /* Float <=> Bignum (either side): compared by value, exactly
+       (sp_bigint_cmp_f); a raw >/< on the sp_Bigint* pointer would be
+       ill-typed C (#3009), and a double round-trip called a bignum equal to
+       every Float within half an ulp of it. A NaN answers nil. */
     if ((lrt == TY_FLOAT && lat == TY_BIGINT) || (lrt == TY_BIGINT && lat == TY_FLOAT)) {
-      int ta = ++g_tmp, tb = ++g_tmp;
-      buf_printf(b, "({ double _t%d = ", ta);
-      if (lrt == TY_BIGINT) { buf_puts(b, "sp_bigint_to_double("); emit_expr(c, recv, b); buf_puts(b, ")"); }
-      else emit_expr(c, recv, b);
-      buf_printf(b, "; double _t%d = ", tb);
-      if (lat == TY_BIGINT) { buf_puts(b, "sp_bigint_to_double("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else emit_expr(c, argv[0], b);
-      buf_printf(b, "; isnan(_t%d) ? SP_INT_NIL : (sp_int)((_t%d > _t%d) - (_t%d < _t%d)); })",
-                 ta, ta, tb, ta, tb);
+      int tc = ++g_tmp;
+      buf_printf(b, "({ int _t%d = sp_bigint_cmp_f(", tc);
+      emit_expr(c, lrt == TY_BIGINT ? recv : argv[0], b);
+      buf_puts(b, ", ");
+      emit_expr(c, lrt == TY_BIGINT ? argv[0] : recv, b);
+      buf_printf(b, "); _t%d == 2 ? SP_INT_NIL : (sp_int)(%s_t%d); })", tc, lrt == TY_BIGINT ? "" : "-", tc);
       return;
     }
     /* Bignum <=> (either side): compare by value, not the pointer identity a
