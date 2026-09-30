@@ -16588,6 +16588,7 @@ static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
 
 int spread_string_reads(Compiler *c, Scope *m, int call, int pj, int *out, int *direct, int cap);
 static int dyn_pull_arg(Compiler *c, int a, int mark_read);
+static int fwd_poly_param_handed_on(Compiler *c, int mi, int pj, int depth);
 static int convert_byref_handle_params(Compiler *c,
                                        const HandleArgTab *hat) {
   const NodeTable *nt = c->nt;
@@ -16619,7 +16620,8 @@ static int convert_byref_handle_params(Compiler *c,
          plain local was copied and the caller never saw the append. */
       int poly_mut = (pp->is_param && pp->type == TY_POLY &&
                       ((pp->poly_lift & POLY_LIFT_APPENDED) || an_param_mutated_in_place(c, mi2, pj) ||
-                       an_poly_param_yielded_lent(c, mi2, pj)));
+                       an_poly_param_yielded_lent(c, mi2, pj) ||
+                       fwd_poly_param_handed_on(c, mi2, pj, 0)));
       if (poly_mut && !(pp->poly_lift & POLY_LIFT_APPENDED)) { pp->poly_lift |= POLY_LIFT_APPENDED; changed = 1; }
       /* A String parameter the callee mutates that inference typed from a
          handle argument (the copy-on-read refinement, not the handle): it
@@ -19263,6 +19265,218 @@ static int a_scope_super_passes_block(Compiler *c, Scope *m) {
         sp_streq(nt_str(nt, e, "name"), m->blk_param)) return 1;
   }
   return 0;
+}
+
+/* ---- A String forwarded by `super`, `*`, `...` (#6179) -------------------
+
+   A parameter a method only hands on appends to the caller's String when
+   the parameter it lands on does: `def m(p, k:) = super` into a parent
+   that appends to its `p`, and `def w(*a) = m(*a)`, `def w(*) = m(*)`,
+   `def w(...) = m(...)` or `def m(*) = super` into a method that appends
+   to the parameter an element of the rest lands on. A call with a `**h`
+   types such a parameter POLY, and a rest is an Array of boxes: either way
+   the caller boxed a copy of its String, which the target appended to. A
+   POLY parameter handed on this way pulls its callers' Strings into the
+   handle as one the method appends to itself does
+   (convert_byref_handle_params), and a rest whose elements are forwarded
+   pulls the Strings its callers gather into it (promote_forwarded_rest_args),
+   so the box carries the handle, which the target appends through. */
+
+/* The method a call names when it names one: self or none (a unique name),
+   a constant's `new` (its initialize), an object's class. */
+static int fwd_call_target(Compiler *c, int u) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, u, "name");
+  if (!nm) return -1;
+  int recv = nt_ref(nt, u, "receiver");
+  NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_SelfNode;
+  if (sp_streq(nm, "new") && (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)) {
+    TyKind ct = comp_ntype(c, u);
+    return ty_is_object(ct) ? comp_method_in_chain(c, ty_object_class(ct), "initialize", NULL) : -1;
+  }
+  if (rk == NK_SelfNode) {
+    Scope *es = comp_scope_of(c, u);
+    /* `new` in a class method builds the class */
+    if (sp_streq(nm, "new") && es && es->is_cmethod && es->class_id >= 0)
+      return comp_method_in_chain(c, es->class_id, "initialize", NULL);
+    int mi = es && es->class_id >= 0 && !es->is_cmethod ? comp_method_in_chain(c, es->class_id, nm, NULL) : -1;
+    return mi >= 0 ? mi : an_any_scope_by_name(c, nm);
+  }
+  TyKind rt = comp_ntype(c, recv);
+  if (ty_is_object(rt)) return comp_method_in_chain(c, ty_object_class(rt), nm, NULL);
+  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
+    int ci = nt_str(nt, recv, "name") ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
+    return ci >= 0 ? comp_cmethod_in_chain(c, ci, nm, NULL) : -1;
+  }
+  return -1;
+}
+
+static unsigned fwd_rest_bits(Compiler *c, int mi, int depth);
+/* Does method mi append to what its parameter j is bound to: in place, lent,
+   the handle, or a POLY parameter or a rest element it hands on? */
+static int fwd_param_appends(Compiler *c, int mi, int j, int depth) {
+  Scope *m = &c->scopes[mi];
+  if (depth > 4 || j < 0) return 0;
+  /* a rest takes the arguments from its position on */
+  if (m->rest_idx >= 0 && j >= m->rest_idx)
+    return j - m->rest_idx < 16 && ((fwd_rest_bits(c, mi, depth + 1) >> (j - m->rest_idx)) & 1u);
+  if (j >= m->nparams || !m->pnames[j]) return 0;
+  LocalVar *q = scope_local(m, m->pnames[j]);
+  if (!q || !q->is_param || q->is_block_param) return 0;
+  if (q->byref_out || (q->type == TY_STRBUF && q->str_shared)) return 1;
+  if (q->type != TY_POLY) return 0;
+  return an_param_mutated_in_place(c, mi, j) || fwd_poly_param_handed_on(c, mi, j, depth + 1);
+}
+
+/* The position a call or `super`'s splat of local `rn` starts at among the
+   target's parameters (the plain arguments ahead of it), or -1. */
+static int fwd_splat_start(Compiler *c, int u, const char *rn) {
+  const NodeTable *nt = c->nt;
+  int a = nt_ref(nt, u, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  for (int k = 0; k < ac; k++) {
+    NodeKind ak = nt_kind(nt, av[k]);
+    if (ak == NK_SplatNode) {
+      int x = nt_ref(nt, av[k], "expression");
+      return x >= 0 && nt_kind(nt, x) == NK_LocalVariableReadNode && nt_str(nt, x, "name") &&
+             sp_streq(nt_str(nt, x, "name"), rn) ? k : -1;
+    }
+    if (ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return -1;
+  }
+  return -1;
+}
+
+/* Per pass: which elements of each method's rest (bits 0-15) it forwards to
+   a parameter that appends; bit 30 answered, bit 29 being asked. */
+static unsigned *g_fwd_rest;
+static int g_fwd_n;
+static unsigned fwd_rest_bits(Compiler *c, int mi, int depth) {
+  const NodeTable *nt = c->nt;
+  if (mi < 0 || mi >= g_fwd_n || depth > 4) return 0;
+  if (g_fwd_rest[mi] & 0x60000000u) return g_fwd_rest[mi] & 0xffffu;
+  Scope *m = &c->scopes[mi];
+  const char *rn = m->rest_idx >= 0 ? m->pnames[m->rest_idx] : NULL;
+  if (!rn) { g_fwd_rest[mi] = 0x40000000u; return 0; }
+  g_fwd_rest[mi] = 0x20000000u;
+  unsigned bits = 0;
+  for (int u = comp_scall_first(c, mi); u >= 0; u = comp_scall_next(c, u)) {
+    if (nt_kind(nt, u) != NK_CallNode) continue;
+    int p = fwd_splat_start(c, u, rn);
+    int t = p >= 0 ? fwd_call_target(c, u) : -1;
+    for (int i = 0; t >= 0 && i < 16; i++)
+      if (fwd_param_appends(c, t, p + i, depth + 1)) bits |= 1u << i;
+  }
+  /* `super(*a)`, and a zsuper handing on the rest at its own position */
+  for (int pass = 0; pass < 2 && m->class_id >= 0; pass++) {
+    NodeKind sk = pass ? NK_ForwardingSuperNode : NK_SuperNode;
+    for (int q = comp_kind_first(c, sk); q >= 0; q = comp_kind_next(c, q)) {
+      if (nt_kind(nt, q) != sk || comp_scope_of(c, q) != m) continue;
+      int p = pass ? m->rest_idx : fwd_splat_start(c, q, rn);
+      int t = p >= 0 ? a_super_target(c, m) : -1;
+      for (int i = 0; t >= 0 && i < 16; i++)
+        if (fwd_param_appends(c, t, p + i, depth + 1)) bits |= 1u << i;
+    }
+  }
+  g_fwd_rest[mi] = 0x40000000u | bits;
+  return bits;
+}
+
+/* Does POLY parameter pj of method mi reach a parameter that appends, by a
+   `super` or a call it is handed to? */
+static int fwd_poly_param_handed_on(Compiler *c, int mi, int pj, int depth) {
+  const NodeTable *nt = c->nt;
+  if (depth > 4 || mi < 0 || mi >= c->nscopes) return 0;
+  Scope *m = &c->scopes[mi];
+  if (pj < 0 || pj >= m->nparams || !m->pnames[pj]) return 0;
+  const char *pn = m->pnames[pj];
+  int t = m->class_id >= 0 ? a_super_target(c, m) : -1;
+  if (t >= 0) {
+    Scope *tm = &c->scopes[t];
+    for (int q = comp_kind_first(c, NK_ForwardingSuperNode); q >= 0; q = comp_kind_next(c, q)) {
+      if (nt_kind(nt, q) != NK_ForwardingSuperNode || comp_scope_of(c, q) != m) continue;
+      for (int j = 0; j < tm->nparams; j++)
+        if (zsuper_param_source(c, m, tm, j) == pj && fwd_param_appends(c, t, j, depth + 1)) return 1;
+    }
+    for (int q = comp_kind_first(c, NK_SuperNode); q >= 0; q = comp_kind_next(c, q)) {
+      if (nt_kind(nt, q) != NK_SuperNode || comp_scope_of(c, q) != m) continue;
+      for (int j = 0; j < tm->nparams; j++) {
+        int an = arg_layout_param_node(c, tm, q, j, NULL);
+        if (an >= 0 && nt_kind(nt, an) == NK_LocalVariableReadNode && nt_str(nt, an, "name") &&
+            sp_streq(nt_str(nt, an, "name"), pn) && fwd_param_appends(c, t, j, depth + 1)) return 1;
+      }
+    }
+  }
+  for (int u = comp_scall_first(c, mi); u >= 0; u = comp_scall_next(c, u)) {
+    if (nt_kind(nt, u) != NK_CallNode) continue;
+    int ct = fwd_call_target(c, u);
+    if (ct < 0) continue;
+    Scope *cm = &c->scopes[ct];
+    for (int j = 0; j < cm->nparams; j++) {
+      int an = arg_layout_param_node(c, cm, u, j, NULL);
+      if (an >= 0 && nt_kind(nt, an) == NK_LocalVariableReadNode && nt_str(nt, an, "name") &&
+          sp_streq(nt_str(nt, an, "name"), pn) && fwd_param_appends(c, ct, j, depth + 1)) return 1;
+    }
+  }
+  return 0;
+}
+
+/* For the emitters' refusal, after the last pass: does method mi forward
+   element i of its rest to a parameter that appends, and does it hand its
+   POLY parameter j on to one? */
+static int g_fwd_codegen;
+static void fwd_memo_fresh(Compiler *c) {
+  if (g_fwd_codegen && g_fwd_n == c->nscopes) return;
+  free(g_fwd_rest);
+  g_fwd_n = c->nscopes;
+  g_fwd_rest = (unsigned *)calloc((size_t)g_fwd_n + 1, sizeof(unsigned));
+  if (!g_fwd_rest) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  g_fwd_codegen = 1;
+}
+int fwd_rest_elem_appends(Compiler *c, int mi, int i) {
+  if (mi < 0 || mi >= c->nscopes || i < 0 || i >= 16 || c->scopes[mi].rest_idx < 0) return 0;
+  fwd_memo_fresh(c);
+  return (int)((fwd_rest_bits(c, mi, 0) >> i) & 1u);
+}
+int fwd_poly_param_appends(Compiler *c, int mi, int j) {
+  if (mi < 0 || mi >= c->nscopes || j < 0 || j >= c->scopes[mi].nparams) return 0;
+  LocalVar *q = c->scopes[mi].pnames[j] ? scope_local(&c->scopes[mi], c->scopes[mi].pnames[j]) : NULL;
+  if (!q || q->type != TY_POLY || an_param_mutated_in_place(c, mi, j)) return 0;
+  fwd_memo_fresh(c);
+  return fwd_poly_param_handed_on(c, mi, j, 0);
+}
+
+/* Pull the String variables a call gathers into a rest whose elements the
+   method forwards to a parameter that appends. Answers 1 when it changed
+   anything. */
+static int promote_forwarded_rest_args(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  g_fwd_codegen = 0;
+  fwd_memo_fresh(c);
+  g_fwd_codegen = 0;
+  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
+    if (nt_kind(nt, u) != NK_CallNode) continue;
+    int a = nt_ref(nt, u, "arguments");
+    if (a < 0) continue;
+    int t = fwd_call_target(c, u);
+    if (t < 0 || c->scopes[t].rest_idx < 0) continue;
+    unsigned bits = fwd_rest_bits(c, t, 0);
+    if (!bits) continue;
+    Scope *m = &c->scopes[t];
+    int ac = 0; const int *av = nt_arr(nt, a, "arguments", &ac);
+    int pos = ac;
+    if (pos > 0 && (nt_kind(nt, av[pos - 1]) == NK_KeywordHashNode || nt_kind(nt, av[pos - 1]) == NK_BlockArgumentNode)) pos--;
+    if (pos > 0 && nt_kind(nt, av[pos - 1]) == NK_KeywordHashNode) pos--;
+    for (int k = m->rest_idx; k < pos - m->npost_rest && k - m->rest_idx < 16; k++) {
+      if (nt_kind(nt, av[k]) == NK_SplatNode) break;
+      if (!((bits >> (k - m->rest_idx)) & 1u) || nt_kind(nt, av[k]) != NK_LocalVariableReadNode) continue;
+      TyKind at = comp_ntype(c, av[k]);
+      if (at != TY_STRING && at != TY_STRBUF) continue;
+      changed |= dyn_pull_arg(c, av[k], 1);
+    }
+  }
+  dyn_memo_stale();
+  return changed;
 }
 
 /* The block-taking method named `fn` that KEEPS its block -- reads its &blk
@@ -27317,6 +27531,7 @@ void analyze_program(Compiler *c) {
     if (promote_dyncall_string_args(c)) ch = 1;
     if (promote_spread_string_args(c)) ch = 1;
     if (promote_default_alias_params(c)) ch = 1;
+    if (promote_forwarded_rest_args(c)) ch = 1;
     if (!ch) break;
   }
   mark_reader_identity_operands(c);
