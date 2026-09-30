@@ -590,33 +590,36 @@ general Array (or a boxed value, when its callers disagree), and a typed
 array (`Array[Integer]`) passed to it has to be one too, since the two store
 their elements differently. The compiler follows the argument back to where
 its arrays are built and builds them as general Arrays: an array literal or a
-new array, through locals, the value of a method (or a chain of them, or a
-method answering its block's value), a builtin that answers its receiver
+new array, through locals (their `||=` and the arms of a branch too), the
+value of a method (or a chain of them, a method a subclass overrides, or a
+method answering its block's value), a `then` block, a multiple assignment
+from a literal, a row of a literal table, a builtin that answers its receiver
 (`push`, `concat`, `tap`), an ivar or attr_reader every write of which builds
-a new array, a global, class variable or constant. The method's other
-callers then read the general Array too.
+a new array or keeps a parameter of the method writing it, a global, class
+variable or constant. The method's other callers then read the general Array
+too. A boxed argument -- a local written arrays of two kinds, an element read
+out of a general container, a block parameter, a `for` variable -- is
+followed the same way, to each typed array the store cannot fit.
 
-Where it cannot follow the argument, the one conversion left is a copy, and
-the mutation would land in the copy where CRuby changes the caller's array.
-Such a call is refused at compile time:
+Where it cannot follow a typed argument, the one conversion left is a copy,
+and the mutation would land in the copy where CRuby changes the caller's
+array. Such a call is refused at compile time:
 
 ```ruby
-class Box
-  def initialize(a) = @a = a   # keeps the caller's array
-  def get = @a
-end
+Box = Struct.new(:a)            # the member keeps the caller's array
 def add(out) = out << "z"
 src = [1, 2]
-add(Box.new(src).get)
-# spinel: t.rb:7: an Array[Integer] is passed to `add`'s parameter `out`, which the method mutates: ...
+add(Box.new(src).a)
+# spinel: t.rb:4: an Array[Integer] is passed to `add`'s parameter `out`, which the method mutates: ...
 ```
 
-What it does not follow: an ivar, Struct member or other slot that keeps an
-array handed in from outside; an array an rbs seed declares typed (a
-parameter or a return); a method overridden in a subclass; the value of a
-lambda or proc, of a `then` block, of a multiple assignment. Build the array
-as a general Array where it is created, or give the parameter the argument's
-kind (an rbs seed, or call sites that all pass the same kind).
+What it does not follow: a Struct member, or an ivar an attr_writer writes,
+that keeps an array handed in from outside; an array an rbs seed declares
+typed (a parameter or a return); a call through a receiver of no one class;
+the value of a lambda or proc; a new array (`Array.new(2, 0)`) a multiple
+assignment binds. Build the array as a general Array where it is created, or
+give the parameter the argument's kind (an rbs seed, or call sites that all
+pass the same kind).
 
 #### A String a method appends to is not yet shared through some dynamic calls
 
