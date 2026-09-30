@@ -6793,6 +6793,26 @@ static int pd_hoist(Compiler *c, Buf *b, size_t from, int tr, TyKind rct,
   return 1;
 }
 
+/* An argument of a poly dispatch into its temp `_tN`, declared as `ty`
+   (boxed when `boxed`), where the arguments run. An argument that builds
+   (an Array or Hash literal) or runs statements ahead of its value writes
+   them to the prelude, which runs ahead of the whole dispatch: ahead of the
+   receiver and of every argument written before it. An argument with an
+   effect of its own, once something has run (`ran`), holds its prelude and
+   writes it here, in its place; any other's is not observable where it runs. */
+static void emit_poly_arg_temp(Compiler *c, int node, TyKind ty, int boxed, int tn, int ran, Buf *b) {
+  Buf pre; memset(&pre, 0, sizeof pre);
+  Buf val; memset(&val, 0, sizeof val);
+  Buf *sv_pre = g_pre;
+  if (ran && subtree_has_side_effect(c, node)) g_pre = &pre;
+  if (boxed) emit_boxed(c, node, &val); else emit_expr(c, node, &val);
+  g_pre = sv_pre;
+  if (pre.p) buf_puts(b, pre.p);
+  if (boxed) buf_puts(b, "sp_RbVal"); else emit_ctype(c, ty, b);
+  buf_printf(b, " _t%d = %s; ", tn, val.p ? val.p : "");
+  free(pre.p); free(val.p);
+}
+
 /* `sp_raise_cls("ArgumentError", msg);` with msg a C string literal: a
    keyword's #inspect in it (`unknown keyword: "s"`) carries quotes. */
 static void emit_poly_arity_raise(Buf *b, const char *msg) {
@@ -7180,36 +7200,58 @@ static int poly_kw_any_key(Compiler *c, int kwh) {
   return 0;
 }
 
+/* `node` boxed (or as itself) into `val`, its prelude written to `b` ahead
+   of the statement using it once something has run (`ran`), as
+   emit_poly_arg_temp holds an argument's. */
+static void poly_kw_held(Compiler *c, int node, int boxed, int ran, Buf *b, Buf *val) {
+  Buf pre; memset(&pre, 0, sizeof pre);
+  Buf *sv_pre = g_pre;
+  if (ran && subtree_has_side_effect(c, node)) g_pre = &pre;
+  if (boxed) emit_boxed(c, node, val); else emit_expr(c, node, val);
+  g_pre = sv_pre;
+  if (pre.p) buf_puts(b, pre.p);
+  free(pre.p);
+}
+
 /* The call's keywords as one hash, in order, so a later key wins as it does
-   in CRuby: Symbol-keyed, or of any key when poly_kw_any_key. */
-static void emit_poly_kw_all(Compiler *c, int kwh, int th, int any, Buf *b) {
+   in CRuby: Symbol-keyed, or of any key when poly_kw_any_key. `ran` says
+   the receiver or an argument ahead of them has run something. */
+static void emit_poly_kw_all(Compiler *c, int kwh, int th, int any, int ran, Buf *b) {
   const NodeTable *nt = c->nt;
   int en = 0; const int *els = nt_arr(nt, kwh, "elements", &en);
   const char *hk = any ? "PolyPoly" : "SymPoly";
   buf_printf(b, "sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d); ", hk, th, hk, th);
   for (int e = 0; e < en; e++) {
     if (nt_kind(nt, els[e]) != NK_AssocSplatNode) {
-      int key = nt_ref(nt, els[e], "key");
+      int key = nt_ref(nt, els[e], "key"), val = nt_ref(nt, els[e], "value");
+      Buf vb; memset(&vb, 0, sizeof vb);
       if (nt_kind(nt, key) != NK_SymbolNode) {
         /* a String or computed key, only in a hash of any key, run where
            it stands: into a temp first, as C runs a call's arguments in
            no set order and the value's run may collect the key */
         int tk = ++g_tmp;
-        buf_printf(b, "sp_RbVal _t%d = ", tk);
-        emit_boxed(c, key, b);
-        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyPolyHash_set(_t%d, _t%d, ", tk, th, tk);
+        Buf kb; memset(&kb, 0, sizeof kb);
+        poly_kw_held(c, key, 1, ran, b, &kb);
+        buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); ", tk, kb.p ? kb.p : "sp_box_nil()", tk);
+        free(kb.p);
+        ran |= subtree_has_side_effect(c, key);
+        poly_kw_held(c, val, 1, ran, b, &vb);
+        buf_printf(b, "sp_PolyPolyHash_set(_t%d, _t%d, %s); ", th, tk, vb.p ? vb.p : "sp_box_nil()");
       }
-      else
-        buf_printf(b, any ? "sp_PolyPolyHash_set(_t%d, sp_box_sym((sp_sym)%d), "
-                          : "sp_SymPolyHash_set(_t%d, (sp_sym)%d, ", th,
-                   comp_sym_intern(c, nt_str(nt, key, "value")));
-      emit_boxed(c, nt_ref(nt, els[e], "value"), b);
-      buf_puts(b, "); ");
+      else {
+        poly_kw_held(c, val, 1, ran, b, &vb);
+        buf_printf(b, any ? "sp_PolyPolyHash_set(_t%d, sp_box_sym((sp_sym)%d), %s); "
+                          : "sp_SymPolyHash_set(_t%d, (sp_sym)%d, %s); ", th,
+                   comp_sym_intern(c, nt_str(nt, key, "value")), vb.p ? vb.p : "sp_box_nil()");
+      }
+      free(vb.p);
+      ran |= subtree_has_side_effect(c, val);
       continue;
     }
     int src = nt_ref(nt, els[e], "value");
     if (src >= 0 && poly_kw_brings_none(c, src)) {
       emit_kw_splat_operand_inline(c, src, b);
+      ran |= subtree_has_side_effect(c, src);
       continue;
     }
     if (any) {
@@ -7217,7 +7259,7 @@ static void emit_poly_kw_all(Compiler *c, int kwh, int th, int any, Buf *b) {
          a key of any class */
       Buf sb; memset(&sb, 0, sizeof sb);
       if (src >= 0 && poly_kw_empty_literal(nt, src)) continue;
-      if (src >= 0) emit_boxed(c, src, &sb);
+      if (src >= 0) poly_kw_held(c, src, 1, ran, b, &sb);
       else {
         LocalVar *kl = poly_anon_kwrest(c, els[e]);
         Buf lr; memset(&lr, 0, sizeof lr);
@@ -7227,6 +7269,7 @@ static void emit_poly_kw_all(Compiler *c, int kwh, int th, int any, Buf *b) {
       }
       buf_printf(b, "sp_kw_merge_any(_t%d, %s); ", th, sb.p ? sb.p : "sp_box_nil()");
       free(sb.p);
+      if (src >= 0) ran |= subtree_has_side_effect(c, src);
       continue;
     }
     if (src < 0) {
@@ -7244,15 +7287,13 @@ static void emit_poly_kw_all(Compiler *c, int kwh, int th, int any, Buf *b) {
       continue;
     }
     if (poly_kw_empty_literal(nt, src)) continue;
-    if (comp_ntype(c, src) == TY_SYM_POLY_HASH) {
-      buf_printf(b, "sp_SymPolyHash_update(_t%d, ", th);
-      emit_expr(c, src, b);
-    }
-    else {
-      buf_printf(b, "sp_kwrest_merge_poly(_t%d, ", th);
-      emit_boxed(c, src, b);
-    }
-    buf_puts(b, "); ");
+    Buf sb; memset(&sb, 0, sizeof sb);
+    int sym = comp_ntype(c, src) == TY_SYM_POLY_HASH;
+    poly_kw_held(c, src, !sym, ran, b, &sb);
+    buf_printf(b, sym ? "sp_SymPolyHash_update(_t%d, %s); " : "sp_kwrest_merge_poly(_t%d, %s); ",
+               th, sb.p ? sb.p : (sym ? "NULL" : "sp_box_nil()"));
+    free(sb.p);
+    ran |= subtree_has_side_effect(c, src);
   }
 }
 
@@ -8825,6 +8866,9 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
       buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
       emit_poly_vis_precheck(c, id, tv, b);
+      /* something with an effect has run: a later argument's prelude is held
+         in its place (emit_poly_arg_temp) */
+      int ran = subtree_has_side_effect(c, recv);
       for (int a = 0; a < pos_argc; a++) {
         atmp[a] = ++g_tmp;
         if (nt_kind(nt, argv[a]) == NK_SplatNode) {
@@ -8841,7 +8885,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            param slot. */
         if (at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN) {
           atmp_ty[a] = TY_POLY;
-          buf_printf(b, "sp_RbVal _t%d = ", atmp[a]); emit_boxed(c, argv[a], b); buf_puts(b, "; ");
+          emit_poly_arg_temp(c, argv[a], TY_POLY, 1, atmp[a], ran, b);
         }
         else {
           atmp_ty[a] = at;
@@ -8860,9 +8904,9 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             htmp[a] = ++g_tmp;
             buf_printf(b, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d); ", htmp[a], sref, htmp[a]);
           }
-          emit_ctype(c, at, b);
-          buf_printf(b, " _t%d = ", atmp[a]); emit_expr(c, argv[a], b); buf_puts(b, "; ");
+          emit_poly_arg_temp(c, argv[a], at, 0, atmp[a], ran, b);
         }
+        ran |= subtree_has_side_effect(c, argv[a]);
       }
       /* keyword values, evaluated once like the positionals; matched to each
          arm's keyword params by name below (#3268) */
@@ -8873,7 +8917,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       if (kw_ds) {
         kwall = atmp[pos_argc] = ++g_tmp;
         atmp_ty[pos_argc] = kwall_any ? TY_POLY_POLY_HASH : TY_SYM_POLY_HASH;
-        emit_poly_kw_all(c, kwh, kwall, kwall_any, b);
+        emit_poly_kw_all(c, kwh, kwall, kwall_any, ran, b);
       }
       else if (kwh >= 0) {
         kwels = nt_arr(nt, kwh, "elements", &kwn);
@@ -8885,15 +8929,14 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           TyKind at = val >= 0 ? infer_type(c, val) : TY_NIL;
           if (at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN) {
             kwty[e] = TY_POLY;
-            buf_printf(b, "sp_RbVal _t%d = ", kwtmp[e]);
-            if (val >= 0) emit_boxed(c, val, b); else buf_puts(b, "sp_box_nil()");
-            buf_puts(b, "; ");
+            if (val >= 0) emit_poly_arg_temp(c, val, TY_POLY, 1, kwtmp[e], ran, b);
+            else buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); ", kwtmp[e]);
           }
           else {
             kwty[e] = at;
-            emit_ctype(c, at, b);
-            buf_printf(b, " _t%d = ", kwtmp[e]); emit_expr(c, val, b); buf_puts(b, "; ");
+            emit_poly_arg_temp(c, val, at, 0, kwtmp[e], ran, b);
           }
+          if (val >= 0) ran |= subtree_has_side_effect(c, val);
         }
         /* The builtin arms read the keyword hash as the last positional
            argument (`h.fetch(k, a: 1)` takes it as the default), through the
