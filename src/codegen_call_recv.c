@@ -6656,6 +6656,7 @@ else {
       if (sp_streq(name, "default=") && argc == 1) {
         int t = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b);
+        buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s)", t, t, hash_box_cls(rt));
         if (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH) {
           buf_printf(b, "; if (_t%d) _t%d->default_v = ", t, t); emit_boxed(c, argv[0], b); buf_puts(b, "; ");
         }
@@ -7304,7 +7305,8 @@ else {
         TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
         int th = ++g_tmp, tp = ++g_tmp, tr = ++g_tmp, tk = ++g_tmp;
         buf_printf(b, "({ sp_%sHash *_t%d = ", hn, th); emit_expr(c, recv, b);
-        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_RbVal _t%d = sp_box_nil();", th, tr);
+        buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", th, th, hash_box_cls(rt));
+        buf_printf(b, " SP_GC_ROOT(_t%d); sp_RbVal _t%d = sp_box_nil();", th, tr);
         buf_printf(b, " if (_t%d && _t%d->len > 0) {", th, th);
         /* bind the first key (raw), used for both the pair and the delete */
         if (rt == TY_POLY_POLY_HASH)
