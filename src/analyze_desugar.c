@@ -703,12 +703,14 @@ static int me_stmt_defines(const NodeTable *nt, int s, const char *m) {
   int nn = sk == NK_AliasMethodNode ? nt_ref(nt, s, "new_name") : -1;
   if (nn >= 0) return nt_kind(nt, nn) == NK_SymbolNode && nt_str(nt, nn, "value") && sp_streq(nt_str(nt, nn, "value"), m);
   const char *cn = sk == NK_CallNode ? nt_str(nt, s, "name") : NULL;
-  if (!cn || (strncmp(cn, "attr", 4) && !sp_streq(cn, "define_method") && !sp_streq(cn, "alias_method"))) return 0;
+  int w = cn && (sp_streq(cn, "attr_writer") || sp_streq(cn, "attr_accessor")), r = cn && !sp_streq(cn, "attr_writer");
+  if (!cn || (!w && !sp_streq(cn, "attr") && !sp_streq(cn, "attr_reader") && !sp_streq(cn, "define_method") && !sp_streq(cn, "alias_method"))) return 0;
   int an = 0; const int *av = nt_arr(nt, nt_ref(nt, s, "arguments"), "arguments", &an);
   for (int a = 0; a < an; a++) {
     NodeKind ak = nt_kind(nt, av[a]);
     const char *v = ak == NK_SymbolNode ? nt_str(nt, av[a], "value") : ak == NK_StringNode ? nt_str(nt, av[a], "content") : NULL;
-    if (v && sp_streq(v, m)) return 1;
+    size_t vl = v ? strlen(v) : 0;
+    if (v && ((r && sp_streq(v, m)) || (w && !strncmp(v, m, vl) && sp_streq(m + vl, "=")))) return 1;
   }
   return 0;
 }

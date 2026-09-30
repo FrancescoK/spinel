@@ -56,3 +56,18 @@ p w.size
 p w.count
 p w.tally
 p w.label
+class Gadget
+  def self.attribute(name); end
+  attribute :caption
+  attr_writer :width
+  def caption = "fallback" unless method_defined?(:caption)
+  def width = "width fallback" unless method_defined?(:width)
+  unless method_defined?(:width=)
+    def width=(v)
+      raise "must not replace attr_writer"
+    end
+  end
+end
+g = Gadget.new
+g.width = 3
+p g.caption, g.width
