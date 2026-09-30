@@ -539,7 +539,7 @@ static int flatten(pm_node_t *node) {
     int32_t bl = lc.line;
     int orig = bl;
     int fid = 0;
-    if (sp_line_map_n > 0 && bl >= 1 && bl <= sp_line_map_n) {
+    if (sp_line_map_n > 0 && bl >= 1 && bl <= sp_line_map_n && sp_line_orig[bl] > 0) {
       orig = sp_line_orig[bl];
       fid = sp_line_file[bl];
     }
@@ -556,7 +556,7 @@ static int flatten(pm_node_t *node) {
                                                         g_parser->start_line);
       int32_t el = le.line;
       int eorig = el;
-      if (sp_line_map_n > 0 && el >= 1 && el <= sp_line_map_n) eorig = sp_line_orig[el];
+      if (sp_line_map_n > 0 && el >= 1 && el <= sp_line_map_n && sp_line_orig[el] > 0) eorig = sp_line_orig[el];
       emit_int(id, "node_end_line", (long long)eorig);
       emit_int(id, "node_end_col", (long long)le.column);
     }
@@ -4594,10 +4594,9 @@ else {
     size_t la = 1, lb = 1;
     for (const char *p = premap; *p; p++) if (*p == '\n') la++;
     for (const char *p = source; *p; p++) if (*p == '\n') lb++;
-    if (la == lb) {
-      sp_build_line_map(premap, source_file);
-    }
-else {
+    sp_build_line_map(la == lb ? premap : source, source_file);
+    if (la != lb) {
+      memset(sp_line_orig, 0, sizeof(int) * ((size_t)sp_line_map_n + 2));
       /* Multi-file line attribution unavailable for this program; #line
          falls back to buffer lines. Only worth a word under an explicit
          --debug build (faithful stepping matters there); stay silent for
