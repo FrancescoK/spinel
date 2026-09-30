@@ -96,6 +96,14 @@ sp_Random *sp_Random_new(sp_int seed) {
   r->seed = seed;
   return r;
 }
+/* Random#dup / #clone: a distinct generator that continues from the same state. */
+sp_Random *sp_Random_dup(sp_Random *r) {
+  if (!r) return NULL;   /* nil.dup is nil */
+  SP_GC_ROOT(r);
+  sp_Random *d = (sp_Random *)sp_gc_alloc(sizeof(sp_Random), NULL, NULL);
+  *d = *r;
+  return d;
+}
 /* Random.new(Float): CRuby truncates the float to an integer seed. A plain
    (sp_int) cast is UB when the truncated value is out of range, so seed from
    the in-range truncation when it fits and from the raw float bits otherwise

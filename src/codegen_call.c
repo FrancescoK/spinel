@@ -27270,6 +27270,19 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       buf_puts(b, "))");
       return;
     }
+    /* dup / clone copy the generator: the same state, a distinct object */
+    if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0) {
+      if (sp_streq(name, "clone")) {
+        /* clone keeps a frozen receiver's frozen bit; dup does not */
+        int ro = ++g_tmp, rd = ++g_tmp;
+        buf_printf(b, "({ sp_Random *_t%d = ", ro); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_Random *_t%d = sp_Random_dup(_t%d);"
+                      " if (_t%d && sp_gc_is_frozen(_t%d)) sp_gc_freeze(_t%d); _t%d; })",
+                   rd, ro, ro, ro, rd, rd);
+      }
+      else { buf_puts(b, "sp_Random_dup("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+      return;
+    }
     if (sp_streq(name, "==") && argc == 1) {
       if (comp_ntype(c, argv[0]) == TY_RANDOM) {
         buf_puts(b, "sp_Random_eq("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
