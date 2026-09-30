@@ -1,15 +1,18 @@
 # Generated call-binding probes (see tools/call_binding_probe.rb).
 #
-#   ruby tools/call_binding_gen.rb [--strength T | --random N] [--seed S] [--id ID]
+#   ruby tools/call_binding_gen.rb [--strength T | --random N] [--seed S]
+#                                  [--only F=L,..] [--id ID]
 #
-# A case is one row of FACTORS: the path a call takes to reach its
-# parameters, the parameter list, the arguments, the class of one argument's
-# value, where the arguments' values come from, how many calls reach the
-# parameters, the parameters of a child whose bare `super` forwards them, what
-# the callee does with them, the block the call passes, and the mode the
-# program is compiled in. Spinel binds arguments to parameters separately on
-# each path, and its inference types a parameter from every call that reaches
-# it, so each of these is a factor rather than a constant of the probe.
+# A case is one row of FACTORS: the path a call takes to reach its parameters,
+# the parameter list, the arguments, the class of one argument's value, where
+# the arguments' values come from, how many calls reach the parameters,
+# whether another class defines a method of the same name, the parameters of a
+# child whose bare `super` forwards them, what the callee does with them (and
+# through which method), the block the call passes and what the method does
+# with it, and the mode the program is compiled in. Spinel binds arguments to
+# parameters separately on each path, and its inference types a parameter from
+# every call that reaches it, so each of these is a factor rather than a
+# constant of the probe.
 #
 # The argument levels follow the decisions CRuby's binding makes
 # (setup_parameters_complex, vm_args.c), relative to the parameters: the
@@ -46,6 +49,7 @@
 # such, not as impossible.
 
 require "prism"
+require_relative "probe_common"
 
 module CallBindingGen
   FACTORS = [
@@ -59,7 +63,13 @@ module CallBindingGen
                block_yield proc_call lambda_call instance_exec struct struct_kw data]],
     [:req, [0, 1, 2]],
     [:opt, [0, 1, 2]],
-    [:opt_default, %w[int string ref]],
+    # ivar, global: the default of an optional, positional or keyword,
+    # reads an instance variable or a global; the source level `default` has
+    # a later argument assign it (`def m(a = $d, b)`, `m(($d = 2; 2))`).
+    # CRuby fills a default after every argument ran, and a default filled
+    # at the call site at its parameter's slot read the value from before
+    # the write (#6005).
+    [:opt_default, %w[int string ref ivar global]],
     [:rest, %w[none named]],
     [:post, [0, 1]],
     [:kreq, [0, 1]],
@@ -76,11 +86,21 @@ module CallBindingGen
     [:dsplat, %w[none empty nil_lit nil_var known unknown string_key non_hash boxed]],
     [:dsplat_at, %w[after before]],
     [:type, %w[int string nil float symbol array hash object boxed]],
-    [:source, %w[literal logged local ivar]],
+    [:source, %w[literal logged local ivar default]],
     # rebound: one Method local called, then set to another method and
     # called again (`m = A.new.method(:x); m.call(..); m = method(:x)`), so
-    # the local's target changes under it.
-    [:sites, %w[one twice int_then_typed rebound]],
+    # the local's target changes under it. rebound9: an all-Integer call
+    # through the method's own Method, then the typed one through a local
+    # written nine times, each with a method of its own, the called one
+    # last (a local's targets were bound up to eight, and the ninth, typed
+    # by the other call, read a String as an Integer, #6007).
+    [:sites, %w[one twice int_then_typed rebound rebound9]],
+    # sibling: a class of its own defines a method of the called one's name
+    # and parameters, called with the same arguments, so the name has two
+    # methods. A callee found by unique name was then not found at all: a
+    # caller handed a copy of its String to a parameter the callee grows
+    # through a shared handle, and lost the growth (#6065).
+    [:name_clash, %w[none sibling]],
     # A bare `super` passes the child's own parameters, as they stand, to the
     # parent's: the child may take the parent's list, or add a `**o`, a rest,
     # or a keyword the parent lacks. `none` is a child with no parameters of
@@ -91,7 +111,23 @@ module CallBindingGen
     # copies the String on its way in loses (a keyword parameter lost the
     # growth, found by hand).
     [:body, %w[params mutate]],
-    [:block, %w[none literal amp]],
+    # With body=mutate, how the String grows. forward 2: the callee hands
+    # the parameter to a method of its own that grows it (`gr(p1)`). seed
+    # poly: another call passes that method an Array, so its parameter
+    # holds values of several classes, and the callee's is grown through a
+    # shared handle; at forward 1 the callee hands it on and grows it too.
+    # #6065 needed the seed, the helper and a name two methods share.
+    [:forward, [1, 2]],
+    [:seed, %w[none poly]],
+    # fwd_anon: the call is made inside `def fw(&) = <call>(.., &)`, which
+    # hands on the block it is given; through Method#call that named a
+    # proc the forwarder does not declare, and the C did not build (#6007).
+    [:block, %w[none literal amp fwd_anon]],
+    # kept: a method that yields to a block also stores it, and a later
+    # call runs the block with values of another type (`@kb = b` beside
+    # `yield 1`, then `@kb.call("s")`). A block parameter typed from the
+    # yields alone read the String as an Integer (#6033).
+    [:block_use, %w[yield kept]],
     # promote: compiled with --int-overflow=promote, which widens Integer
     # values and so the types every binding reads (#5744 met a yield that
     # did not build only there).
@@ -112,172 +148,30 @@ module CallBindingGen
   BARE_SUPER_PATHS = %w[super_zsuper super_include super_prepend].freeze
   # Paths that call through a Method a local can hold.
   METHOD_PATHS = %w[method_call method_to_proc].freeze
+  # Paths whose parameters are a method's named m<id>, the name a sibling
+  # class can define too; on the first three that method is a class
+  # method.
+  CLASS_METHOD_PATHS = %w[class_method inherited_cmethod class_value].freeze
+  NAMED_PATHS = (CLASS_METHOD_PATHS + METHOD_PATHS +
+                 %w[direct send public_send bind_call instance poly yield_inline define_method forward_all
+                    forward_anon super_explicit super_zsuper super_include super_prepend]).freeze
+  # Paths whose block is one the case writes to take the parameters, which
+  # the method it is given to can keep.
+  KEPT_PATHS = %w[block_yield yield_inline].freeze
   # The order a parameter list declares its kinds in, where a child's
   # parameter joins it.
   KINDS = %i[req opt rest post kreq kopt kwrest nokw block].freeze
 
-  Case = Struct.new(:id, :realized, :src)
+  Case = ProbeCommon::Covering::Case
 
   # A case whose realized levels do not render back to it: a bug here, not in
   # the compiler under test.
   class GeneratorError < StandardError; end
 
+  # the covering array of FACTORS, the cases of rows and a case's shape
+  extend ProbeCommon::Covering
+
   module_function
-
-  # ---- the covering array ----
-
-  # Rows covering every `t`-way combination of levels of FACTORS in
-  # `uncovered` (all of them when nil), by AETG's greedy construction: each row
-  # is the best of a few candidates, each candidate built factor by factor in a
-  # random order, each factor taking the level that covers the most
-  # combinations not yet covered with the factors already set.
-  def covering_array(t, seed, candidates = 5, uncovered = nil)
-    rng = Random.new(seed)
-    k = FACTORS.size
-    sizes = FACTORS.map { |_, l| l.size }
-    tuples = (0...k).to_a.combination(t).to_a
-    tindex = tuples.each_with_index.to_h
-    uncovered = (uncovered || all_tuples(t)).dup
-    # sampled with lazy deletion: a Hash has no random access
-    pool = uncovered.keys
-    rows = []
-    until uncovered.empty?
-      best = nil
-      best_gain = -1
-      candidates.times do
-        row = Array.new(k)
-        # start from a combination still uncovered, so every row gains
-        j = rng.rand(pool.size)
-        until uncovered.key?(pool[j])
-          pool[j] = pool.last
-          pool.pop
-          j = rng.rand(pool.size)
-        end
-        ti, ls = unkey(pool[j], t)
-        tuples[ti].each_with_index { |f, x| row[f] = ls[x] }
-        (0...k).to_a.shuffle(random: rng).each do |f|
-          next if row[f]
-          set = (0...k).select { |g| row[g] }
-          best_l = nil
-          best_n = -1
-          (0...sizes[f]).to_a.shuffle(random: rng).each do |l|
-            n = 0
-            set.combination(t - 1) do |others|
-              tu = (others + [f]).sort
-              n += 1 if uncovered[key(tindex[tu], tu.map { |g| g == f ? l : row[g] })]
-            end
-            if n > best_n
-              best_n = n
-              best_l = l
-            end
-          end
-          row[f] = best_l
-        end
-        gain = tuples.each_with_index.count { |tu, i| uncovered[key(i, tu.map { |f| row[f] })] }
-        if gain > best_gain
-          best_gain = gain
-          best = row
-        end
-      end
-      tuples.each_with_index { |tu, i| uncovered.delete(key(i, tu.map { |f| best[f] })) }
-      rows << best
-    end
-    rows.map { |r| NAMES.each_with_index.to_h { |f, i| [f, FACTORS[i][1][r[i]]] } }
-  end
-
-  # Every `t`-way combination of levels, as the keys covering_array uses.
-  def all_tuples(t)
-    sizes = FACTORS.map { |_, l| l.size }
-    h = {}
-    (0...FACTORS.size).to_a.combination(t).each_with_index do |tu, i|
-      tu.map { |f| (0...sizes[f]).to_a }.reduce([[]]) { |acc, ls| acc.product(ls).map { |a, l| a + [l] } }.each do |ls|
-        h[key(i, ls)] = true
-      end
-    end
-    h
-  end
-
-  # The `t`-way combinations the realized levels of `cases` take.
-  def tuples_of(cases, t)
-    idx = FACTORS.map { |_, l| l.each_with_index.to_h }
-    combos = (0...FACTORS.size).to_a.combination(t).to_a
-    h = {}
-    cases.each do |c|
-      lv = NAMES.each_with_index.map { |f, i| idx[i][c.realized[f]] }
-      combos.each_with_index { |tu, i| h[key(i, tu.map { |f| lv[f] })] = true }
-    end
-    h
-  end
-
-  # Cases for every `t`-way combination some case takes. The covering array's
-  # rows ask for levels; a combination they asked for and no case took is
-  # then tried from up to `tries` rows with its levels fixed -- random ones,
-  # and the realized levels of the cases that take the most of them, which
-  # carry what those levels need of the other factors (a Method local
-  # rebound, a path through a Method) -- and the first case that takes it
-  # joins. Smaller combinations go first, and a combination is tried only
-  # when every one of its parts is taken: one with a part no case takes (a
-  # rebound local on a bare super's path) cannot be taken either. Answers
-  # the cases, how many combinations there are, and how many the cases take.
-  def covering_cases(t, seed, tries = 100)
-    cases = self.cases(covering_array(t, seed))
-    rng = Random.new(seed)
-    want = got = nil
-    (1..t).each do |s|
-      want = all_tuples(s)
-      got = tuples_of(cases, s)
-      parts = s > 1 ? tuples_of(cases, s - 1) : {}
-      combos = (0...FACTORS.size).to_a.combination(s).to_a
-      part_index = (0...FACTORS.size).to_a.combination(s - 1).each_with_index.to_h
-      want.each_key do |kk|
-        next if got.key?(kk)
-        ti, ls = unkey(kk, s)
-        fs = combos[ti]
-        next if s > 1 && (0...s).any? do |x|
-          parts[key(part_index[fs[0...x] + fs[(x + 1)..]], ls[0...x] + ls[(x + 1)..])].nil?
-        end
-        fixed = fs.each_with_index.to_h { |f, x| [NAMES[f], FACTORS[f][1][ls[x]]] }
-        from = nil
-        tries.times do |n|
-          if n.odd?
-            from ||= begin
-              near = cases.group_by { |c| fixed.count { |f, l| c.realized[f] == l } }
-              near.delete(0)
-              near.empty? ? [] : near[near.keys.max]
-            end
-          end
-          base = n.odd? && !from.empty? ? from[rng.rand(from.size)].realized : random_row(rng)
-          c = render(cases.last.id + 1, base.merge(fixed))
-          next unless fixed.all? { |f, l| c.realized[f] == l }
-          cases << c
-          got.merge!(tuples_of([c], s))
-          parts.merge!(tuples_of([c], s - 1)) if s > 1
-          break
-        end
-      end
-    end
-    [cases, want.size, want.count { |kk, _| got.key?(kk) }]
-  end
-
-  def key(ti, ls)
-    ls.reduce(ti) { |acc, l| acc * 64 + l }
-  end
-
-  def unkey(kk, t)
-    ls = []
-    t.times { ls.unshift(kk % 64); kk /= 64 }
-    [kk, ls]
-  end
-
-  def random_row(rng)
-    FACTORS.to_h { |f, l| [f, l[rng.rand(l.size)]] }
-  end
-
-  def random_rows(n, seed)
-    rng = Random.new(seed)
-    Array.new(n) { random_row(rng) }
-  end
-
 
   # ---- a row as Ruby ----
 
@@ -295,17 +189,24 @@ module CallBindingGen
     end
   end
 
+  # The variable a default of case `i` reads at opt_default `level`, or nil.
+  def default_var(level, i)
+    { "ivar" => "@d#{i}", "global" => "$d#{i}" }[level]
+  end
+
   # The parameters of `row`, each [kind, name, default]; records in `real`
   # the levels they realize.
-  def params(row, real)
+  def params(row, real, i)
     ps = []
     n = 0
+    var = default_var(row[:opt_default], i)
     row[:req].times { ps << [:req, "p#{n += 1}"] }
     row[:opt].times do
       name = "p#{n += 1}"
       default = case row[:opt_default]
                 when "string" then "\"d#{n}\""
                 when "ref" then ps.last && ps.last[1]
+                else var
                 end
       ps << [:opt, name, default || (50 + n).to_s]
     end
@@ -314,7 +215,7 @@ module CallBindingGen
     # required, which `req` already asks for
     ps << [:post, "p#{n += 1}"] if row[:post] == 1 && ps.any? { |p| p[0] == :opt || p[0] == :rest }
     row[:kreq].times { |j| ps << [:kreq, "k#{j + 1}"] }
-    row[:kopt].times { |j| ps << [:kopt, "k#{row[:kreq] + j + 1}", (70 + j).to_s] }
+    row[:kopt].times { |j| ps << [:kopt, "k#{row[:kreq] + j + 1}", var || (70 + j).to_s] }
     ps << [:kwrest, "kw"] if row[:kwrest] == "named"
     # `**nil` says a method takes no keywords, so it cannot sit beside any
     ps << [:nokw] if row[:kwrest] == "nokw" && (row[:kreq] + row[:kopt]).zero?
@@ -327,6 +228,7 @@ module CallBindingGen
                     end
     real[:opt_default] = if opts.any? { |p| p[2].start_with?("p") } then "ref"
                          elsif opts.any? { |p| p[2].start_with?("\"") } then "string"
+                         elsif var && ps.any? { |p| p[2] == var } then row[:opt_default]
                          else "int"
                          end
     ps
@@ -372,15 +274,23 @@ module CallBindingGen
   end
 
   # The callee's answer: its parameters, after `lead` (a tag or self); with
-  # `mutated`, that parameter grown in place first.
-  def body_src(ps, lead = nil, mutated = nil)
+  # `grow`, that statement first (it grows a parameter in place).
+  def body_src(ps, lead = nil, grow = nil)
     vals = ps.filter_map do |kind, name|
       next if kind == :nokw
       kind == :block ? "(#{name} ? #{name}.call : nil)" : name
     end
     vals.unshift(lead) if lead
     list = "[#{vals.join(", ")}]"
-    mutated ? "(#{mutated} << \"x\"; #{list})" : list
+    grow ? "(#{grow}; #{list})" : list
+  end
+
+  # How the callee of case `i` grows its parameter `name`: in place, or
+  # through gr<id> (forward 2), which a seed also hands an Array; at
+  # forward 1 a seeded callee hands it to gr<id> and grows it itself too.
+  def grow_src(i, name, forward, seed)
+    own = forward == 2 ? "gr#{i}(#{name})" : "#{name} << \"x\""
+    seed == "poly" && forward == 1 ? "gr#{i}(#{name}); #{own}" : own
   end
 
   # The parameter the typed value binds to without asking the binding the
@@ -556,8 +466,11 @@ module CallBindingGen
     # it; a read that binds nowhere asks nothing
     read_at = marks.empty? ? nil : kws.index { |_, src| src.include?("\u0000#{marks.first}\u0000") }
     replaced = read_at && kws[(read_at + 1)..].any? { |k, _| k == kws[read_at][0] }
+    # the variable a default reads, which the last value run in place assigns
+    dvar = STRUCT_PATHS.include?(row[:path]) ? nil : ps.filter_map { |p| p[2] if p[2]&.match?(/\A[@$]d\d+\z/) }.first
     source = case row[:source]
              when "logged" then marks.empty? ? "literal" : "logged"
+             when "default" then dvar && !marks.empty? ? "default" : "literal"
              when "local" then marks.size >= 2 && !replaced ? "local" : "literal"
              when "ivar" then !marks.empty? && (ds_last || marks.size >= 2) && !replaced ? "ivar" : "literal"
              else "literal"
@@ -569,6 +482,7 @@ module CallBindingGen
       t, n, = slots[j]
       v = value(t, n)
       if source == "logged" then "($l << #{n}; #{v})"
+      elsif source == "default" then j == marks.last ? "(#{dvar} = #{v}; #{v})" : v
       elsif source == "literal" || !(j == marks.first || j == marks.last) then v
       elsif j == marks.first
         prelude << "#{source == "ivar" ? "@" : ""}u#{tag} = #{v}"
@@ -583,15 +497,19 @@ module CallBindingGen
       args = args.delete_suffix(ds) + "**g#{tag}(h#{tag})" if ds_last
     end
     prelude.unshift("v#{tag} = +#{value("string", 1)}") if mutate && !typed.nil?
+    # a default's variable starts each call at 0
+    prelude.unshift("#{dvar} = 0") if dvar
     [args, prelude, defs, typed]
   end
 
+  # With fwd_anon the call hands on the block its forwarder is given.
   def call_src(name, args, row, tag, prelude)
     case BLOCK_PATHS.include?(row[:path]) ? "none" : row[:block]
     when "literal" then "#{name}(#{args}) { :blk }"
     when "amp"
-      prelude << "blk#{tag} = proc { :blk }"
+      prelude << "blk#{tag} = proc { :blk }" unless prelude.include?("blk#{tag} = proc { :blk }")
       "#{name}(#{[args, "&blk#{tag}"].reject(&:empty?).join(", ")})"
+    when "fwd_anon" then "#{name}(#{[args, "&"].reject(&:empty?).join(", ")})"
     else "#{name}(#{args})"
     end
   end
@@ -620,6 +538,29 @@ module CallBindingGen
     end
   end
 
+  # The writes of a rebound Method local ahead of call `s`: its first
+  # target ahead of the first call, the top-level method ahead of the
+  # second; with rebound9 all nine ahead of the second, and the first call
+  # reads no local.
+  def rebound_src(i, m, s, sites)
+    writes = ["C#{i}.new.method(:#{m})"]
+    writes += (2..8).map { |k| "D#{i}_#{k}.new.method(:#{m})" } if sites == "rebound9"
+    writes << "method(:#{m})"
+    writes = sites == "rebound9" ? (s.zero? ? [] : writes) : [writes[s]]
+    writes.map { |w| "q#{i} = #{w}\n" }.join
+  end
+
+  # The arguments a kept block is called with later, of another type than
+  # the calls that typed it: a String for each positional and required
+  # keyword it takes, or a Symbol where the typed value was a String the
+  # body does not grow.
+  def kept_args(ps, type, mutate)
+    n = 0
+    v = -> { type == "string" && !mutate ? ":k#{n += 1}" : "+\"k#{n += 1}\"" }
+    pos = ps.select { |p| %i[req opt post].include?(p[0]) }.map { v.call }
+    (pos + ps.select { |p| p[0] == :kreq }.map { |p| "#{p[1]}: #{v.call}" }).join(", ")
+  end
+
   # The program of `row` and the levels it realizes. Every name a case
   # defines carries its id, so the cases of one program share nothing the
   # compiler could type across them.
@@ -633,17 +574,22 @@ module CallBindingGen
       row = row.merge(sites: "twice") if row[:sites] == "int_then_typed"
     end
     mutate = row[:body] == "mutate"
-    if row[:sites] == "rebound" && !METHOD_PATHS.include?(row[:path])
+    if %w[rebound rebound9].include?(row[:sites]) && !METHOD_PATHS.include?(row[:path])
       row = row.merge(sites: "twice")
     end
     real = row.dup
     real[:block] = "none" if BLOCK_PATHS.include?(row[:path])
-    ps = params(row, real)
+    real[:name_clash] = "none" unless NAMED_PATHS.include?(row[:path])
+    real[:block_use] = "yield" unless KEPT_PATHS.include?(row[:path])
+    ps = params(row, real, i)
     child = child_level(row[:path], row[:child])
     cps = child_params(child, ps)
     child, cps = "same", ps if cps.nil?
     real[:child] = child
     bare = child != "none"
+    rebound = %w[rebound rebound9].include?(real[:sites])
+    fwd = real[:block] == "fwd_anon"
+    kept = real[:block_use] == "kept"
     pl = param_src(ps)
     cpl = param_src(cps)
     m = "m#{i}"
@@ -659,7 +605,11 @@ module CallBindingGen
     mutated = mutate ? mutated_param(ps, sites.last[4]) : nil
     return build(i, asked.merge(body: "params")) if mutate && (real[:type] != "string" || mutated.nil?)
     real[:body] = mutate ? "mutate" : "params"
-    body = body_src(ps, nil, mutated)
+    real[:forward] = mutate ? row[:forward] : 1
+    real[:seed] = mutate ? row[:seed] : "none"
+    grow = mutate ? grow_src(i, mutated, real[:forward], real[:seed]) : nil
+    body = body_src(ps, nil, grow)
+    indent = ->(text, ind) { text.gsub(/^(?=.)/, ind) }
     defs = +""
     uses = +""
     branches = +""
@@ -670,6 +620,19 @@ module CallBindingGen
       pre = ->(ind = "") { prelude.map { |l| "#{ind}#{l}\n" }.join }
       # with a grown String, the caller's variable after the call
       out = ->(call) { mutate ? "[#{call}, v#{tag}]" : call }
+      # The call where it stands after `lead` and the locals, or with
+      # fwd_anon in a forwarder of its own the report gives a literal block;
+      # `local`, a local of the top level the call reads, is then the
+      # forwarder's argument.
+      emit = lambda do |call, lead = "", local = nil, ind = ""|
+        if fwd
+          defs << "def fw#{tag}(#{[local, "&"].compact.join(", ")})\n#{indent.call(lead, "  ")}#{pre.call("  ")}" \
+                  "  #{out.call(call)}\nend\n"
+          uses << report(i, "fw#{tag}#{local ? "(#{local})" : ""} { :blk }", ind)
+        else
+          uses << indent.call(lead, ind) << pre.call(ind) << report(i, out.call(call), ind)
+        end
+      end
       case row[:path]
       when "direct", "send", "public_send", "method_call", "method_to_proc", "bind_call", "inherited_cmethod",
            "forward_all", "forward_anon"
@@ -678,7 +641,7 @@ module CallBindingGen
                  when "send" then "send"
                  when "public_send" then "C#{i}.new.public_send"
                  when "method_call", "method_to_proc"
-                   (real[:sites] == "rebound" ? "q#{i}" : "method(:#{m})") +
+                   (rebound && !(real[:sites] == "rebound9" && s.zero?) ? "q#{i}" : "method(:#{m})") +
                      (row[:path] == "method_call" ? ".call" : ".to_proc.call")
                  when "bind_call" then "C#{i}.instance_method(:#{m}).bind_call"
                  when "inherited_cmethod" then "B#{i}.method(:#{m}).call"
@@ -686,45 +649,43 @@ module CallBindingGen
                  end
         lead = { "send" => ":#{m}", "public_send" => ":#{m}", "bind_call" => "C#{i}.new" }[row[:path]]
         call = call_src(target, lead ? [lead, as].reject(&:empty?).join(", ") : as, row, tag, prelude)
-        if real[:sites] == "rebound"
-          uses << "q#{i} = #{s.zero? ? "C#{i}.new.method(:#{m})" : "method(:#{m})"}\n"
-        end
-        uses << pre.call << report(i, out.call(call))
+        emit.call(call, rebound ? rebound_src(i, m, s, real[:sites]) : "")
       when "instance", "class_method", "initialize", "define_method"
         recv = { "instance" => "C#{i}.new.#{m}", "class_method" => "C#{i}.#{m}",
                  "initialize" => "C#{i}.new", "define_method" => "C#{i}.new.#{m}" }[row[:path]]
         call = call_src(recv, as, row, tag, prelude)
         call = "(#{call}).v#{i}" if row[:path] == "initialize"
-        uses << pre.call << report(i, out.call(call))
+        emit.call(call)
       when "raise_new"
-        call = "(begin; raise C#{i}, #{as}; rescue C#{i} => j#{tag}; j#{tag}.v#{i}; end)"
-        uses << pre.call << report(i, out.call(call))
+        emit.call("(begin; raise C#{i}, #{as}; rescue C#{i} => j#{tag}; j#{tag}.v#{i}; end)")
       when "poly", "class_value"
         recvs = row[:path] == "poly" ? "[A#{i}.new, B#{i}.new]" : "[A#{i}, B#{i}]"
         call = call_src("o#{i}.#{m}", as, row, tag, prelude)
         # the locals are set for each receiver, so each call reads what it
         # did not write itself
-        uses << "#{recvs}.each do |o#{i}|\n" << pre.call("  ") << report(i, out.call(call), "  ") << "end\n"
+        uses << "#{recvs}.each do |o#{i}|\n"
+        emit.call(call, "", "o#{i}", "  ")
+        uses << "end\n"
       when "yield_inline"
         uses << pre.call << report(i, out.call("#{m}(#{as}) { |x#{i}| x#{i} }"))
       when "super_explicit", "super_zsuper", "super_include", "super_prepend"
         if bare
-          call = call_src("C#{i}.new.#{m}", as, row, tag, prelude)
-          uses << pre.call << report(i, out.call(call))
+          emit.call(call_src("C#{i}.new.#{m}", as, row, tag, prelude))
         else
           call = call_src("super", as, row, tag, prelude)
           parent = { "super_explicit" => " < B#{i}", "super_prepend" => " < P#{i}" }[row[:path]]
           incl = row[:path] == "super_include" ? "  include M#{i}\n\n" : ""
-          defs << "class C#{tag}#{parent}\n#{incl}  def #{m}\n#{pre.call("    ")}    #{out.call(call)}\n  end\nend\n"
-          uses << report(i, "C#{tag}.new.#{m}")
+          # with fwd_anon the child's method is the forwarder
+          defs << "class C#{tag}#{parent}\n#{incl}  def #{m}#{fwd ? "(&)" : ""}\n#{pre.call("    ")}    " \
+                  "#{out.call(call)}\n  end\nend\n"
+          uses << report(i, "C#{tag}.new.#{m}#{fwd ? " { :blk }" : ""}")
         end
       when "block_yield"
         # one literal block, reached by every site: y<id>(s) yields site s's arguments
         branches << "#{s.zero? ? "  if" : "  elsif"} s#{i} == #{s}\n#{pre.call("    ")}    " \
                     "#{out.call("yield(#{as})")}\n"
       when "proc_call", "lambda_call"
-        call = call_src("f#{i}.call", as, row, tag, prelude)
-        uses << pre.call << report(i, out.call(call))
+        emit.call(call_src("f#{i}.call", as, row, tag, prelude), "", "f#{i}")
       when "instance_exec"
         uses << pre.call << report(i, out.call("Object.new.instance_exec(#{as}) { |#{pl}| #{body} }"))
       when "struct", "struct_kw", "data"
@@ -733,25 +694,61 @@ module CallBindingGen
     end
     if row[:path] == "block_yield"
       n = sites.size
-      defs << "def y#{i}(s#{i})\n#{branches}  end\nend\n"
+      # kept: the method stores its block beside the yields
+      keep = kept ? ", &kb#{i})\n  @kb#{i} = kb#{i}\n" : ")\n"
+      defs << "def y#{i}(s#{i}#{keep}#{branches}  end\nend\n"
       uses << "#{(0...n).to_a.inspect}.each do |s#{i}|\n" <<
         report(i, "y#{i}(s#{i}) { |#{pl}| #{body} }", "  ") << "end\n"
     end
+    # the kept block, run again with values of another type
+    if kept
+      uses << report(i, "@kb#{i}.call(#{row[:path] == "block_yield" ? kept_args(ps, real[:type], mutate) : "+\"k1\""})")
+    end
+    # the sibling, called with the first call's arguments
+    sibling = ""
+    if real[:name_clash] == "sibling"
+      tag, as, prelude = sites[0]
+      sp = prelude.dup
+      cm = CLASS_METHOD_PATHS.include?(row[:path])
+      sps = bare ? cps : ps
+      sibling = "class N#{i}\n  def #{cm ? "self." : ""}#{m}(#{bare ? cpl : pl}) = " \
+                "#{body_src(sps, ":n", mutate ? "#{mutated} << \"x\"" : nil)}\nend\n"
+      # a forwarder's block given where the sibling is called
+      call = call_src(cm ? "N#{i}.#{m}" : "N#{i}.new.#{m}", as, row.merge(block: fwd ? "literal" : row[:block]),
+                      tag, sp)
+      uses << sp.map { |l| "#{l}\n" }.join << report(i, mutate ? "[#{call}, v#{tag}]" : call)
+    end
+    # the method the callee hands its String to, and the call that seeds it
+    helper = if real[:forward] == 2 || real[:seed] == "poly"
+               "def gr#{i}(v) = v << \"x\"\n" + (real[:seed] == "poly" ? "gr#{i}([])\n" : "")
+             else ""
+             end
     members = ps.select { |p| %i[req opt post rest kreq kopt].include?(p[0]) }.map { |p| ":#{p[1]}" }
     mod = "module M#{i}\n  def #{m}(#{pl}) = #{body}\nend\n"
     child_src = ->(parent) { "class C#{i}#{parent}\n  def #{m}(#{cpl}) = super\nend\n" }
     head = case row[:path]
            when "direct", "send", "method_call", "method_to_proc"
-             # rebound: the Method local's first target, a method of the same parameters
-             (real[:sites] == "rebound" ? "class C#{i}\n  def #{m}(#{pl}) = #{body_src(ps, ":c", mutated)}\nend\n" : "") +
+             # rebound: the Method local's first target, a method of the same
+             # parameters, and with rebound9 seven more
+             target = ->(c, lead) { "class #{c}\n  def #{m}(#{pl}) = #{body_src(ps, lead, grow)}\nend\n" }
+             (rebound ? target.call("C#{i}", ":c") : "") +
+               (real[:sites] == "rebound9" ? (2..8).map { |k| target.call("D#{i}_#{k}", ":d#{k}") }.join : "") +
                "def #{m}(#{pl}) = #{body}\n"
-           when "yield_inline" then "def #{m}(#{pl}) = yield(#{body})\n"
+           when "yield_inline"
+             if kept
+               # the method keeps its block: its own block parameter, or one it takes for that
+               bp = ps.find { |p| p[0] == :block }&.[](1)
+               "def #{m}(#{bp ? pl : [pl, "&kb#{i}"].reject(&:empty?).join(", ")}) = " \
+                 "(@kb#{i} = #{bp || "kb#{i}"}; yield(#{body}))\n"
+             else
+               "def #{m}(#{pl}) = yield(#{body})\n"
+             end
            when "forward_all" then "def #{m}(#{pl}) = #{body}\ndef w#{i}(...) = #{m}(...)\n"
            when "forward_anon" then "def #{m}(#{pl}) = #{body}\ndef w#{i}(*, **, &) = #{m}(*, **, &)\n"
            when "public_send", "instance", "bind_call" then "class C#{i}\n  def #{m}(#{pl}) = #{body}\nend\n"
            when "class_method" then "class C#{i}\n  def self.#{m}(#{pl}) = #{body}\nend\n"
            when "inherited_cmethod"
-             "class A#{i}\n  def self.#{m}(#{pl}) = #{body_src(ps, "self", mutated)}\nend\n" \
+             "class A#{i}\n  def self.#{m}(#{pl}) = #{body_src(ps, "self", grow)}\nend\n" \
                "class B#{i} < A#{i}\nend\n"
            when "initialize"
              "class C#{i}\n  attr_reader :v#{i}\n\n  def initialize(#{pl})\n    @v#{i} = #{body}\n  end\nend\n"
@@ -759,11 +756,11 @@ module CallBindingGen
              "class C#{i} < StandardError\n  attr_reader :v#{i}\n\n  def initialize(#{pl})\n    @v#{i} = #{body}\n  end\nend\n"
            when "define_method" then "class C#{i}\n  define_method(:#{m}) { |#{pl}| #{body} }\nend\n"
            when "poly"
-             "class A#{i}\n  def #{m}(#{pl}) = #{body_src(ps, ":a", mutated)}\nend\n" \
-               "class B#{i}\n  def #{m}(#{pl}) = #{body_src(ps, ":b", mutated)}\nend\n"
+             "class A#{i}\n  def #{m}(#{pl}) = #{body_src(ps, ":a", grow)}\nend\n" \
+               "class B#{i}\n  def #{m}(#{pl}) = #{body_src(ps, ":b", grow)}\nend\n"
            when "class_value"
-             "class A#{i}\n  def self.#{m}(#{pl}) = #{body_src(ps, ":a", mutated)}\nend\n" \
-               "class B#{i}\n  def self.#{m}(#{pl}) = #{body_src(ps, ":b", mutated)}\nend\n"
+             "class A#{i}\n  def self.#{m}(#{pl}) = #{body_src(ps, ":a", grow)}\nend\n" \
+               "class B#{i}\n  def self.#{m}(#{pl}) = #{body_src(ps, ":b", grow)}\nend\n"
            when "super_explicit" then "class B#{i}\n  def #{m}(#{pl}) = #{body}\nend\n"
            when "super_zsuper" then "class B#{i}\n  def #{m}(#{pl}) = #{body}\nend\n" + child_src.call(" < B#{i}")
            when "super_include" then mod + (bare ? child_src.call("").sub("\n", "\n  include M#{i}\n\n") : "")
@@ -787,7 +784,7 @@ module CallBindingGen
     # with an Integer typed value both calls are the same, one twice
     real[:sites] = "twice" if row[:sites] == "int_then_typed" && real[:type] == "int"
     real[:sites] = "one" if row[:path] == "instance_exec"
-    [head + defs + uses, real]
+    [helper + head + sibling + defs + uses, real]
   end
 
   # The case of `row`, numbered `id`. Its realized levels must render back to
@@ -806,17 +803,6 @@ module CallBindingGen
       def inspect = "O(\#{@v})"
     end
   RUBY
-
-  # The cases of `rows`, numbered from `first + 1`.
-  def cases(rows, first = 0)
-    rows.each_with_index.map { |row, j| render(first + j + 1, row) }
-  end
-
-  # The factors where `c` is not at its simplest level, as the probe names a
-  # finding's shape.
-  def shape(c)
-    NAMES.reject { |f| c.realized[f] == SIMPLEST[f] }.map { |f| "#{f}=#{c.realized[f]}" }.join(" ")
-  end
 
   # The flags spinel compiles `cases` with: one program is one mode.
   def flags(cases)
@@ -842,6 +828,7 @@ if $PROGRAM_NAME == __FILE__
   random = nil
   seed = 1
   id = nil
+  only = {}
   args = ARGV.dup
   begin
     until args.empty?
@@ -850,18 +837,20 @@ if $PROGRAM_NAME == __FILE__
       when "--random" then random = Integer(args.shift)
       when "--seed" then seed = Integer(args.shift)
       when "--id" then id = Integer(args.shift)
+      when "--only" then only.merge!(CallBindingGen.pins(args.shift.to_s))
       else raise ArgumentError
       end
     end
     raise ArgumentError unless (1..CallBindingGen::FACTORS.size).cover?(strength) && (random.nil? || random.positive?)
-  rescue ArgumentError, TypeError
-    abort "usage: ruby tools/call_binding_gen.rb [--strength T | --random N] [--seed S] [--id ID]"
+  rescue ArgumentError, TypeError => e
+    warn e.message unless e.message == "ArgumentError"
+    abort "usage: ruby tools/call_binding_gen.rb [--strength T | --random N] [--seed S] [--only F=L,..] [--id ID]"
   end
   if random
-    cs = CallBindingGen.cases(CallBindingGen.random_rows(random, seed))
+    cs = CallBindingGen.pinned_cases(CallBindingGen.random_rows(random, seed), only)
     warn "#{cs.size} cases"
   else
-    cs, want, got = CallBindingGen.covering_cases(strength, seed)
+    cs, want, got = CallBindingGen.covering_cases(strength, seed, 100, only)
     warn "#{cs.size} cases, taking #{got} of #{want} #{strength}-way combinations"
   end
   cs = cs.select { |c| c.id == id } if id
