@@ -11871,8 +11871,13 @@ static void scan_prologue_features(Compiler *c) {
       /* A class a bundled library defines, named without requiring it. CRuby
          raises NameError at run time; here the unknown constant flows into
          the inference as an untyped value and the generated C can end up
-         ill-typed far from the cause, so say what is missing instead. */
-      {
+         ill-typed far from the cause, so say what is missing instead.
+         Only a TOP-LEVEL name is the library's: a path segment under a
+         parent (`ActiveSupport::JSON::Encoding`) names that module's own
+         constant, and telling it to `require "json"` refused every
+         activesupport file that reaches its JSON encoder. */
+      if (sp_streq(ty, "ConstantPathNode") && nt_ref(nt, i, "parent") >= 0) { /* nested */ }
+      else {
         static const struct { const char *cls, *feat; } PKG[] = {
           {"StringIO","stringio"}, {"CSV","csv"}, {"JSON","json"}, {"Set","set"},
           {"StringScanner","strscan"}, {"Base64","base64"}, {"Digest","digest"},
@@ -11883,6 +11888,18 @@ static void scan_prologue_features(Compiler *c) {
         for (int pk = 0; PKG[pk].cls; pk++) {
           if (!sp_streq(nm, PKG[pk].cls)) continue;
           if (comp_class_index(c, nm) >= 0) break;      /* the program defines it */
+          /* ... or defines it under a path: a nested `module Digest` the
+             collision qualifier registered as `OpenSSL::Digest` (beside
+             activesupport's ActiveSupport::Digest) is what a bare `Digest`
+             inside that namespace names by Ruby's lexical lookup -- not the
+             bundled library */
+          { int nested = 0; size_t nl = strlen(nm);
+            for (int q = 0; q < c->nclasses && !nested; q++) {
+              const char *cn = c->classes[q].name; size_t cl = cn ? strlen(cn) : 0;
+              /* the qualifier joins the path with `__` (Wrap__Digest) */
+              if (cl > nl + 2 && sp_streq(cn + cl - nl, nm) && cn[cl - nl - 1] == '_' && cn[cl - nl - 2] == '_') nested = 1;
+            }
+            if (nested) break; }
           if (sp_feature_required(PKG[pk].feat)) break;
           { static char rq[256];
             snprintf(rq, sizeof rq,
