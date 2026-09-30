@@ -2294,6 +2294,26 @@ int self_class_body(Compiler *c, int node) {
   return c->node_cbody[node];
 }
 
+/* A receiver-less attr_reader / attr_writer / attr_accessor / attr in a class
+   body whose names are all Symbol literals: its value is the Array of the
+   method names it defines. 1 when `id` is one. */
+int attr_decl_call(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "receiver") >= 0) return 0;
+  if (nt_ref(nt, id, "block") >= 0) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm || (!sp_streq(nm, "attr_reader") && !sp_streq(nm, "attr_writer") &&
+              !sp_streq(nm, "attr_accessor") && !sp_streq(nm, "attr")))
+    return 0;
+  int args = nt_ref(nt, id, "arguments");
+  int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an < 1) return 0;
+  for (int i = 0; i < an; i++) {
+    if (nt_kind(nt, av[i]) != NK_SymbolNode) return 0;
+  }
+  return self_class_body(c, id) >= 0;
+}
+
 /* Register an ivar first assigned inside an instance_exec/instance_eval block on
    the block's receiver class. register_locals only interns ivar writes whose
    enclosing scope is a class body or method; an ivar written solely inside a
