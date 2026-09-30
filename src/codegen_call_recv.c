@@ -4,19 +4,65 @@
 
 #include "codegen_internal.h"
 
+/* The value of the block a `fetch` or `delete` runs when it finds nothing, as
+   `({ bind; leading statements; setup; value; })`. `bind` sets the block's
+   parameter to what the call was given, and has to run before the block's own
+   expression: an array or hash literal in it builds its elements in `setup`,
+   which lands in g_pre, ahead of the whole call, unless it is captured here
+   -- there the parameter was still unset, so `{ |k| [k] }` held nil.
+   `lead_always` 0 (`delete`) leaves the leading statements out of a block
+   that has a `next`: spliced here, that `next` would be a C `continue`, which
+   is not a loop's. */
+static void emit_fallback_block_value(Compiler *c, const int *bb, int bn, const char *bind,
+                                      int boxed, const char *empty, int lead_always, Buf *b) {
+  buf_puts(b, "({ ");
+  if (bind) buf_puts(b, bind);
+  int lead = 1;
+  if (!lead_always)
+    for (int k = 0; k < bn; k++) if (subtree_has_own_next(c->nt, bb[k])) lead = 0;
+  if (lead)
+    for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
+  Buf pre, val;
+  memset(&pre, 0, sizeof pre); memset(&val, 0, sizeof val);
+  if (bn > 0) emit_split_pre(c, bb[bn - 1], boxed ? emit_boxed : emit_expr, &pre, &val);
+  buf_puts(b, pre.p ? pre.p : "");
+  buf_puts(b, bn > 0 ? (val.p ? val.p : "0") : empty);
+  buf_puts(b, "; })");
+  free(pre.p); free(val.p);
+}
+
+/* Is the parameter `nm` of the spliced block `blk` a boxed slot, one that the
+   value a call was given can be stored in? The block's own uses decide the
+   slot's type: one that does `v << 1` makes it an Array, and storing a boxed
+   value there is a C type error. */
+static int block_param_is_boxed(Compiler *c, int blk, int site, const char *nm) {
+  Scope *bs = comp_scope_of(c, blk);
+  LocalVar *lv = bs ? scope_local(bs, nm) : NULL;
+  if (!lv) { Scope *es = comp_scope_of(c, site); lv = es ? scope_local(es, nm) : NULL; }
+  return lv && lv->type == TY_POLY;
+}
+
 /* Integer Array#delete(v) as an sp_int (SP_INT_NIL for nothing deleted). A
    boxed needle that is not an Integer deletes nothing -- it cannot equal an
    element -- where passing the sp_RbVal as the element did not compile
    (#4835). */
-static void emit_int_array_delete(Compiler *c, const char *arr, int arg, int nil_elems, Buf *b) {
+static void emit_int_array_delete(Compiler *c, const char *arr, int arg, int nil_elems, const char *held, Buf *b) {
   TyKind at = comp_ntype(c, arg);
-  if (at == TY_POLY || at == TY_NIL) {
+  if (held || at == TY_POLY || at == TY_NIL) {
     /* a nil is deleted as the sentinel from an array that can hold it (the
-       answer is nil either way) */
+       answer is nil either way). `held` is the needle already boxed in a
+       temporary of the caller's, which the block's parameter reads too. */
     int tv = ++g_tmp;
-    buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, arg, b);
-    buf_printf(b, "; _t%d.tag == SP_TAG_INT ? sp_IntArray_delete(%s, _t%d.v.i) : ", tv, arr, tv);
-    if (nil_elems) buf_printf(b, "_t%d.tag == SP_TAG_NIL ? sp_IntArray_delete(%s, SP_INT_NIL) : ", tv, arr);
+    char tvn[32]; snprintf(tvn, sizeof tvn, "_t%d", tv);
+    const char *nd = held ? held : tvn;
+    buf_puts(b, "({ ");
+    if (!held) { buf_printf(b, "sp_RbVal %s = ", tvn); emit_boxed(c, arg, b); buf_puts(b, "; "); }
+    buf_printf(b, "%s.tag == SP_TAG_INT ? sp_IntArray_delete(%s, %s.v.i) : ", nd, arr, nd);
+    /* a Float that is a whole number equals the Integer element (2.0 == 2) */
+    if (held)
+      buf_printf(b, "(%s.tag == SP_TAG_FLT && %s.v.f >= -9223372036854775808.0 && %s.v.f < 9223372036854775808.0 && %s.v.f == (sp_float)(sp_int)%s.v.f) ? sp_IntArray_delete(%s, (sp_int)%s.v.f) : ",
+                 nd, nd, nd, nd, nd, arr, nd);
+    if (nil_elems) buf_printf(b, "%s.tag == SP_TAG_NIL ? sp_IntArray_delete(%s, SP_INT_NIL) : ", nd, arr);
     buf_puts(b, "SP_INT_NIL; })");
     return;
   }
@@ -2855,11 +2901,18 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         int dbn = 0; const int *dbb = dbody >= 0 ? nt_arr(nt, dbody, "body", &dbn) : NULL;
         if (dbn >= 1) {
           Buf rb; int ch = hold_recv_open(c, recv, 0, "sp_PolyArray *", "SP_GC_ROOT", b, &rb);
-          int tdr = ++g_tmp;
-          buf_printf(b, "({ sp_RbVal _t%d = sp_PolyArray_delete(%s, ", tdr, rb.p); free(rb.p);
-          emit_boxed(c, argv[0], b);
-          buf_printf(b, "); _t%d.tag != SP_TAG_NIL ? _t%d : ", tdr, tdr);
-          emit_boxed(c, dbb[dbn - 1], b);
+          int tdr = ++g_tmp, tdn = ++g_tmp;
+          /* the value is bound once, for the delete and for the block's parameter */
+          buf_printf(b, "({ sp_RbVal _t%d = ", tdn); emit_boxed(c, argv[0], b);
+          buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = sp_PolyArray_delete(%s, _t%d);",
+                     tdn, tdr, rb.p, tdn);
+          free(rb.p);
+          Buf pbind; memset(&pbind, 0, sizeof pbind);
+          const char *pp0 = block_param_name(c, dblk, 0);
+          if (pp0 && block_param_is_boxed(c, dblk, id, pp0)) buf_printf(&pbind, "lv_%s = _t%d; ", rename_local(pp0), tdn);
+          buf_printf(b, " _t%d.tag != SP_TAG_NIL ? _t%d : ", tdr, tdr);
+          emit_fallback_block_value(c, dbb, dbn, pbind.p, 1, "sp_box_nil()", 0, b);
+          free(pbind.p);
           buf_puts(b, "; })");
           if (ch) buf_puts(b, "; })");
           return 1;
@@ -3957,43 +4010,69 @@ else {
             /* nothing to delete: the block, handed the value, supplies the answer */
             const char *dp0 = block_param_name(c, dblk, 0);
             buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); ");
-            if (dp0) { buf_printf(b, "lv_%s = ", rename_local(dp0)); emit_boxed(c, argv[0], b); buf_puts(b, "; "); }
+            Buf nbind; memset(&nbind, 0, sizeof nbind);
+            if (dp0 && block_param_is_boxed(c, dblk, id, dp0)) { buf_printf(&nbind, "lv_%s = ", rename_local(dp0)); emit_boxed(c, argv[0], &nbind); buf_puts(&nbind, "; "); }
             else { buf_puts(b, "(void)("); emit_expr(c, argv[0], b); buf_puts(b, "); "); }
-            emit_boxed(c, dbb[dbn - 1], b); buf_puts(b, "; })");
+            emit_fallback_block_value(c, dbb, dbn, nbind.p, 1, "sp_box_nil()", 0, b);
+            free(nbind.p);
+            buf_puts(b, "; })");
             return 1;
           }
           if (dbn >= 1) {
             /* the block form holds the receiver across the value as the
                plain form below does */
             int tdr = ++g_tmp;
+            /* the parameter is the value the call was given; on a miss it is
+               read again, so a value that runs code has nowhere to be kept --
+               which only matters to a block that reads the parameter */
+            const char *dpb = block_param_name(c, dblk, 0);
+            Buf dpbind; memset(&dpbind, 0, sizeof dpbind);
+            char held[32] = "";   /* the value boxed once, when it runs code */
+            if (dpb && subtree_reads_local(nt, dbody, dpb) && block_param_is_boxed(c, dblk, id, dpb)) {
+              if (subtree_has_side_effect(c, argv[0])) snprintf(held, sizeof held, "_t%d", ++g_tmp);
+              buf_printf(&dpbind, "lv_%s = ", rename_local(dpb));
+              if (held[0]) buf_puts(&dpbind, held); else emit_boxed(c, argv[0], &dpbind);
+              buf_puts(&dpbind, "; ");
+            }
             Buf rdb; char tyb[32];
             snprintf(tyb, sizeof tyb, "sp_%sArray *", k);
             int cdb = hold_recv_open(c, recv, 0, tyb, "SP_GC_ROOT", b, &rdb);
+            if (held[0]) {
+              buf_printf(b, "({ sp_RbVal %s = ", held); emit_boxed(c, argv[0], b);
+              buf_printf(b, "; SP_GC_ROOT_RBVAL(%s); ", held);
+            }
             if (rt == TY_INT_ARRAY) {
               buf_printf(b, "({ sp_int _t%d = ", tdr);
-              emit_int_array_delete(c, rdb.p, argv[0], dnil, b);
+              emit_int_array_delete(c, rdb.p, argv[0], dnil, held[0] ? held : NULL, b);
               buf_printf(b, "; _t%d != SP_INT_NIL ? sp_box_int(_t%d) : ", tdr, tdr);
             }
             else if (rt == TY_FLOAT_ARRAY) {
-              buf_printf(b, "({ sp_float _t%d = sp_FloatArray_delete%s(%s, ", tdr, df_boxed ? "_key" : "", rdb.p);
-              if (df_boxed) emit_boxed(c, argv[0], b); else emit_elem_needle(c, rt, argv[0], b);
+              buf_printf(b, "({ sp_float _t%d = sp_FloatArray_delete%s(%s, ", tdr, (df_boxed || held[0]) ? "_key" : "", rdb.p);
+              if (held[0]) buf_puts(b, held);
+              else if (df_boxed) emit_boxed(c, argv[0], b);
+              else emit_elem_needle(c, rt, argv[0], b);
               buf_printf(b, "); !sp_float_is_nil(_t%d) ? sp_box_float(_t%d) : ", tdr, tdr);
             }
-            else if (a0 == TY_POLY) {
+            else if (a0 == TY_POLY || held[0]) {
               /* a boxed needle: a String compares, anything else is not
                  there, as include? and index read it (#4458) */
               int tv = ++g_tmp;
-              buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
-              buf_printf(b, "; const char *_t%d = _t%d.tag == SP_TAG_STR ? sp_StrArray_delete(%s, _t%d.v.s)"
-                            " : (const char *)0; _t%d ? sp_box_str(_t%d) : ", tdr, tv, rdb.p, tv, tdr, tdr);
+              char tvn[32]; snprintf(tvn, sizeof tvn, "_t%d", tv);
+              const char *nd = held[0] ? held : tvn;
+              buf_puts(b, "({ ");
+              if (!held[0]) { buf_printf(b, "sp_RbVal %s = ", tvn); emit_boxed(c, argv[0], b); buf_puts(b, "; "); }
+              buf_printf(b, "const char *_t%d = %s.tag == SP_TAG_STR ? sp_StrArray_delete(%s, %s.v.s)"
+                            " : (const char *)0; _t%d ? sp_box_str(_t%d) : ", tdr, nd, rdb.p, nd, tdr, tdr);
             }
             else {
               buf_printf(b, "({ const char *_t%d = sp_StrArray_delete(%s, ", tdr, rdb.p);
               emit_expr(c, argv[0], b);
               buf_printf(b, "); _t%d ? sp_box_str(_t%d) : ", tdr, tdr);
             }
-            emit_boxed(c, dbb[dbn - 1], b);
+            emit_fallback_block_value(c, dbb, dbn, dpbind.p, 1, "sp_box_nil()", 0, b);
+            free(dpbind.p);
             buf_puts(b, "; })");
+            if (held[0]) buf_puts(b, "; })");
             free(rdb.p);
             if (cdb) buf_puts(b, "; })");
             return 1;
@@ -4012,7 +4091,7 @@ else {
         Buf rdl; char tyl[32];
         snprintf(tyl, sizeof tyl, "sp_%sArray *", k);
         int cdl = hold_recv_open(c, recv, 0, tyl, "SP_GC_ROOT", b, &rdl);
-        if (rt == TY_INT_ARRAY) emit_int_array_delete(c, rdl.p, argv[0], dnil, b);
+        if (rt == TY_INT_ARRAY) emit_int_array_delete(c, rdl.p, argv[0], dnil, NULL, b);
         else if (rt == TY_STR_ARRAY && a0 == TY_POLY) {
           /* a boxed needle, read as the block form above reads it */
           int tv = ++g_tmp;
@@ -6462,24 +6541,34 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
             buf_printf(b, "; sp_%sHash_has_key(_t%d, _t%d) ? ", hn, th, tk);
             char getexpr[128]; snprintf(getexpr, sizeof getexpr, "sp_%sHash_get(_t%d, _t%d)", hn, th, tk);
             emit_boxed_text(c, vt, getexpr, b);
-            buf_puts(b, " : ({ ");
+            buf_puts(b, " : ");
           }
 else {
-            buf_printf(b, "; sp_%sHash_has_key(_t%d, _t%d) ? sp_%sHash_get(_t%d, _t%d) : ({ ",
+            buf_printf(b, "; sp_%sHash_has_key(_t%d, _t%d) ? sp_%sHash_get(_t%d, _t%d) : ",
                        hn, th, tk, hn, th, tk);
           }
-          emit_fetch_blk_param(c, id, blk, ty_hash_key(rt), tk, b);  /* fetch yields the key */
-          if (emit_blk_value_via_next(c, blk, (vt == TY_POLY || mismatch) ? TY_POLY : vt, b)) {
-            buf_puts(b, "; }); })");
-            return 1;
+          Buf fbind; memset(&fbind, 0, sizeof fbind);
+          emit_fetch_blk_param(c, id, blk, ty_hash_key(rt), tk, &fbind);  /* fetch yields the key */
+          {
+            /* a valued `next` in the block answers through a destination
+               temporary, after the key is bound */
+            Buf fv; memset(&fv, 0, sizeof fv);
+            if (emit_blk_value_via_next(c, blk, (vt == TY_POLY || mismatch) ? TY_POLY : vt, &fv)) {
+              buf_puts(b, "({ ");
+              if (fbind.p) buf_puts(b, fbind.p);
+              buf_puts(b, fv.p ? fv.p : "");
+              buf_puts(b, "; })");
+              free(fv.p); free(fbind.p);
+              buf_puts(b, "; })");
+              return 1;
+            }
+            free(fv.p);
           }
-          for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);  /* leading stmts */
-          if (bval >= 0) {
-            if ((vt == TY_POLY || mismatch) && bvt != TY_POLY) emit_boxed(c, bval, b);
-            else emit_expr(c, bval, b);
-          }
-          else buf_puts(b, (vt == TY_POLY || mismatch) ? "sp_box_nil()" : default_value(vt));
-          buf_printf(b, "; }); })");
+          emit_fallback_block_value(c, bb, bn, fbind.p,
+                                    (vt == TY_POLY || mismatch) && bvt != TY_POLY,
+                                    (vt == TY_POLY || mismatch) ? "sp_box_nil()" : default_value(vt), 1, b);
+          free(fbind.p);
+          buf_puts(b, "; })");
           return 1;
         }
         /* fetch(key) with no default raises KeyError on a miss */
@@ -7622,17 +7711,19 @@ else {
             if (vt == TY_POLY) buf_puts(b, getx);
             else emit_boxed_text(c, vt, getx, b); }
           buf_printf(b, "; sp_%sHash_delete(_t%d, _t%d); }\nelse {", hn, th, tk);
+          Buf dbind; memset(&dbind, 0, sizeof dbind);
           if (dp0) {
             char keytmp[32]; snprintf(keytmp, sizeof keytmp, "_t%d", tk);
-            buf_printf(b, " lv_%s = ", rename_local(dp0));
-            if (ty_hash_key(rt) == TY_POLY) buf_puts(b, keytmp);
-            else emit_boxed_text(c, ty_hash_key(rt), keytmp, b);
-            buf_puts(b, ";");
+            buf_printf(&dbind, "lv_%s = ", rename_local(dp0));
+            if (ty_hash_key(rt) == TY_POLY) buf_puts(&dbind, keytmp);
+            else emit_boxed_text(c, ty_hash_key(rt), keytmp, &dbind);
+            buf_puts(&dbind, "; ");
           }
           buf_printf(b, " _t%d = ", tvv);
-          if (hdn > 0) emit_boxed(c, hdv[hdn - 1], b);
-          else buf_puts(b, "sp_box_nil()");
-          buf_printf(b, "; } _t%d; })", tvv);
+          emit_fallback_block_value(c, hdv, hdn, dbind.p, 1, "sp_box_nil()", 0, b);
+          free(dbind.p);
+          buf_puts(b, "; }");
+          buf_printf(b, " _t%d; })", tvv);
           return 1;
         }
         /* a miss answers nil: the nullable int's SP_INT_NIL, not 0, which
