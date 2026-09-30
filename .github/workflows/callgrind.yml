@@ -35,7 +35,7 @@ jobs:
             make deps >/dev/null && make -j"$(nproc)" all >/dev/null
             mkdir -p build && cp -a "$RUNNER_TEMP/oc" build/optcarrot
             make optcarrot OPTCARROT_RUNS=1 | tail -2
-            valgrind --tool=callgrind --callgrind-out-file=/dev/null ./build/optcarrot-single > "$RUNNER_TEMP/oc-$side.out" 2> "$RUNNER_TEMP/oc-$side.vg"
+            valgrind --tool=callgrind --callgrind-out-file="$RUNNER_TEMP/cg/optcarrot-$side.cg" ./build/optcarrot-single > "$RUNNER_TEMP/oc-$side.out" 2> "$RUNNER_TEMP/oc-$side.vg"
             grep -q '^checksum: 59662$' "$RUNNER_TEMP/oc-$side.out" || { echo "optcarrot checksum wrong on $side"; exit 1; }
             ir=$(grep -o 'Collected : [0-9]*' "$RUNNER_TEMP/oc-$side.vg" | grep -o '[0-9]*$')
             echo "optcarrot $side $ir" >> "$RUNNER_TEMP/ir.txt"
@@ -43,12 +43,13 @@ jobs:
             for b in $list; do
               [ -f "benchmark/$b.rb" ] || continue
               ./spinel "benchmark/$b.rb" -o "$RUNNER_TEMP/$b-$side" >/dev/null 2>&1 || { echo "$b $side build-failed" >> "$RUNNER_TEMP/ir.txt"; continue; }
-              valgrind --tool=callgrind --callgrind-out-file=/dev/null "$RUNNER_TEMP/$b-$side" > /dev/null 2> "$RUNNER_TEMP/$b-$side.vg" || true
+              valgrind --tool=callgrind --callgrind-out-file="$RUNNER_TEMP/cg/$b-$side.cg" "$RUNNER_TEMP/$b-$side" > /dev/null 2> "$RUNNER_TEMP/$b-$side.vg" || true
               ir=$(grep -o 'Collected : [0-9]*' "$RUNNER_TEMP/$b-$side.vg" | grep -o '[0-9]*$')
               echo "$b $side ${ir:-none}" >> "$RUNNER_TEMP/ir.txt"
             done
             cd - >/dev/null
           }
+          mkdir -p "$RUNNER_TEMP/cg"
           measure base "$BASE"
           measure head "$HEAD"
       - name: Summary
@@ -64,9 +65,15 @@ jobs:
                    printf "| %s | %s | %s | %s |\n", p, b, h, r } }' "$RUNNER_TEMP/ir.txt"
           } | tee -a "$GITHUB_STEP_SUMMARY" > "$RUNNER_TEMP/summary.md"
           cp "$RUNNER_TEMP/ir.txt" "$RUNNER_TEMP/revs.txt" .
+          mkdir -p annotate
+          for f in "$RUNNER_TEMP"/cg/*.cg; do
+            n=$(basename "$f" .cg)
+            callgrind_annotate --inclusive=no --threshold=99 "$f" 2>/dev/null | head -60 > "annotate/$n.txt" || true
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: callgrind-${{ env.LABEL }}
           path: |
             ir.txt
             revs.txt
+            annotate/
