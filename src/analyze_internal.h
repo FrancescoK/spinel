@@ -195,6 +195,7 @@ void register_module_functions(Compiler *c);
 void register_method_visibility(Compiler *c);
 void register_locals(Compiler *c);
 int is_struct_call(Compiler *c, int val);
+int class_body_list(Compiler *c, int **out_ci, int **out_body);
 void register_struct_members(Compiler *c, ClassInfo *cls, int val);
 void register_structs(Compiler *c);
 void register_singleton_defs(Compiler *c);

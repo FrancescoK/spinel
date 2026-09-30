@@ -1409,22 +1409,11 @@ static void register_method_visibility_body(Compiler *c, ClassInfo *cls, int bod
 /* Record per-method visibility for every class/module body, including reopened
    bodies (each `class Foo ... end` opening starts public, like CRuby). */
 void register_method_visibility(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  for (int ci = 0; ci < c->nclasses; ci++) {
-    ClassInfo *cls = &c->classes[ci];
-    register_method_visibility_body(c, cls, nt_ref(nt, cls->def_node, "body"), 0);
-  }
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || (!sp_streq(ty, "ClassNode") && !sp_streq(ty, "ModuleNode"))) continue;
-    int cp = nt_ref(nt, id, "constant_path");
-    const char *cname = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    if (!cname) continue;
-    int ci = comp_class_index(c, cname);
-    if (ci < 0) continue;
-    if (id == c->classes[ci].def_node) continue;  /* canonical body already done */
-    register_method_visibility_body(c, &c->classes[ci], nt_ref(nt, id, "body"), 0);
-  }
+  int *bci, *bnode;
+  int nb = class_body_list(c, &bci, &bnode);
+  for (int b = 0; b < nb; b++) register_method_visibility_body(c, &c->classes[bci[b]], bnode[b], 0);
+  free(bci);
+  free(bnode);
 }
 
 void register_locals(Compiler *c) {
@@ -1496,7 +1485,8 @@ int is_struct_call(Compiler *c, int val) {
 static int class_def_body(Compiler *c, int def_node) {
   const NodeTable *nt = c->nt;
   if (def_node < 0) return -1;
-  if (nt_kind(nt, def_node) != NK_ConstantWriteNode) return nt_ref(nt, def_node, "body");
+  NodeKind k = nt_kind(nt, def_node);
+  if (k != NK_ConstantWriteNode && k != NK_LocalVariableWriteNode) return nt_ref(nt, def_node, "body");
   int val = nt_ref(nt, def_node, "value");
   if (!is_struct_call(c, val)) return -1;
   int blk = nt_ref(nt, val, "block");
@@ -1534,6 +1524,38 @@ static int *struct_block_before_def(Compiler *c) {
     if (ci >= 0 && sw[ci] < 0 && id < c->classes[ci].def_node) sw[ci] = id;
   }
   return sw;
+}
+
+/* Every body that defines or reopens a class, in the order the class-body
+   passes walk them: per class, a Struct.new/Data.define block that a later
+   `class Name` reopens, then its def_node's body; then every other body in
+   node order. *out_ci[i] is the class, *out_body[i] the body (-1 for none).
+   The caller frees both arrays. */
+int class_body_list(Compiler *c, int **out_ci, int **out_body) {
+  int nb = 0, cap = 64;
+  int *bci = malloc((size_t)cap * sizeof(int));
+  int *bnode = malloc((size_t)cap * sizeof(int));
+  #define ADD_BODY(CI, NODE) do { \
+    if (nb == cap) { cap *= 2; bci = realloc(bci, (size_t)cap * sizeof(int)); bnode = realloc(bnode, (size_t)cap * sizeof(int)); } \
+    bci[nb] = (CI); bnode[nb] = (NODE); nb++; } while (0)
+  int *sw = struct_block_before_def(c);
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    if (sw[ci] >= 0) ADD_BODY(ci, class_def_body(c, sw[ci]));
+    ADD_BODY(ci, class_def_body(c, c->classes[ci].def_node));
+  }
+  for (int id = 0; id < c->nt->count; id++) {
+    const char *cname = class_body_name(c, id);
+    if (!cname) continue;
+    int ci = comp_class_index(c, cname);
+    if (ci < 0) continue;
+    if (id == c->classes[ci].def_node || id == sw[ci]) continue;
+    ADD_BODY(ci, class_def_body(c, id));
+  }
+  #undef ADD_BODY
+  free(sw);
+  *out_ci = bci;
+  *out_body = bnode;
+  return nb;
 }
 
 /* Register the symbol members of a Struct.new(...) call onto `cls`. */
@@ -2214,17 +2236,18 @@ void register_structs(Compiler *c) {
    class_id=-1. This pass corrects them after the class is registered. */
 void fix_struct_block_scopes(Compiler *c) {
   const NodeTable *nt = c->nt;
-  NT_FOREACH_KIND(nt, NK_ConstantWriteNode, id) {
-    const char *cname = nt_str(nt, id, "name");
-    int val = nt_ref(nt, id, "value");
-    if (!cname || val < 0 || !is_struct_call(c, val)) continue;
-    int blk = nt_ref(nt, val, "block");
-    if (blk < 0) continue;
-    int ci = comp_class_index(c, cname);
-    if (ci < 0) continue;
-    /* Walk the block body and fix any DefNode scopes */
-    int bbody = nt_ref(nt, blk, "body");
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind wk = nt_kind(nt, id);
+    if (wk != NK_ConstantWriteNode && wk != NK_LocalVariableWriteNode) continue;
+    int bbody = class_def_body(c, id);
     if (bbody < 0) continue;
+    /* `k = Struct.new(...) do ... end` held in a local: register_structs
+       named its class after the write */
+    char an[48];
+    const char *cname = nt_str(nt, id, "name");
+    if (wk == NK_LocalVariableWriteNode) { snprintf(an, sizeof an, "StructAnon_%d", id); cname = an; }
+    int ci = cname ? comp_class_index(c, cname) : -1;
+    if (ci < 0) continue;
     int bn = 0;
     const int *stmts = nt_arr(nt, bbody, "body", &bn);
     for (int k = 0; k < bn; k++) {
@@ -2369,24 +2392,11 @@ void register_attrs_body(Compiler *c, ClassInfo *cls, int body) {
 }
 
 void register_attrs(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  /* Pass 1: process primary definition bodies. */
-  for (int ci = 0; ci < c->nclasses; ci++) {
-    ClassInfo *cls = &c->classes[ci];
-    register_attrs_body(c, cls, nt_ref(nt, cls->def_node, "body"));
-  }
-  /* Pass 2: scan all ClassNode/ModuleNode reopenings. */
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || (!sp_streq(ty, "ClassNode") && !sp_streq(ty, "ModuleNode"))) continue;
-    int cp = nt_ref(nt, id, "constant_path");
-    const char *cname = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    if (!cname) continue;
-    int ci = comp_class_index(c, cname);
-    if (ci < 0) continue;
-    if (id == c->classes[ci].def_node) continue;  /* already handled above */
-    register_attrs_body(c, &c->classes[ci], nt_ref(nt, id, "body"));
-  }
+  int *bci, *bnode;
+  int nb = class_body_list(c, &bci, &bnode);
+  for (int b = 0; b < nb; b++) register_attrs_body(c, &c->classes[bci[b]], bnode[b]);
+  free(bci);
+  free(bnode);
 }
 
 /* Classify a modifier/if predicate as a compile-time constant: 1 = always
@@ -2596,23 +2606,11 @@ void register_aliases_body(Compiler *c, ClassInfo *cls, int body) {
 
 void register_aliases(Compiler *c) {
   const NodeTable *nt = c->nt;
-  /* Pass 1: primary definition bodies. */
-  for (int ci = 0; ci < c->nclasses; ci++) {
-    ClassInfo *cls = &c->classes[ci];
-    register_aliases_body(c, cls, nt_ref(nt, cls->def_node, "body"));
-  }
-  /* Pass 2: reopened class/module bodies. */
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || (!sp_streq(ty, "ClassNode") && !sp_streq(ty, "ModuleNode"))) continue;
-    int cp = nt_ref(nt, id, "constant_path");
-    const char *cname = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    if (!cname) continue;
-    int ci = comp_class_index(c, cname);
-    if (ci < 0) continue;
-    if (id == c->classes[ci].def_node) continue;
-    register_aliases_body(c, &c->classes[ci], nt_ref(nt, id, "body"));
-  }
+  int *bci, *bnode;
+  int nb = class_body_list(c, &bci, &bnode);
+  for (int b = 0; b < nb; b++) register_aliases_body(c, &c->classes[bci[b]], bnode[b]);
+  free(bci);
+  free(bnode);
   /* Pass 3: the top level, whose methods live on the Toplevel pseudo-class.
      It is not a ClassNode, so neither pass above saw it and a top-level
      `alias b a` left b undefined (#3730). */
@@ -2660,22 +2658,11 @@ void register_undefs_body(Compiler *c, ClassInfo *cls, int body) {
 }
 
 void register_undefs(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  for (int ci = 0; ci < c->nclasses; ci++) {
-    ClassInfo *cls = &c->classes[ci];
-    register_undefs_body(c, cls, nt_ref(nt, cls->def_node, "body"));
-  }
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || (!sp_streq(ty, "ClassNode") && !sp_streq(ty, "ModuleNode"))) continue;
-    int cp = nt_ref(nt, id, "constant_path");
-    const char *cname = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    if (!cname) continue;
-    int ci = comp_class_index(c, cname);
-    if (ci < 0) continue;
-    if (id == c->classes[ci].def_node) continue;
-    register_undefs_body(c, &c->classes[ci], nt_ref(nt, id, "body"));
-  }
+  int *bci, *bnode;
+  int nb = class_body_list(c, &bci, &bnode);
+  for (int b = 0; b < nb; b++) register_undefs_body(c, &c->classes[bci[b]], bnode[b]);
+  free(bci);
+  free(bnode);
 }
 
 int is_c_ident(const char *s) {
@@ -4740,27 +4727,8 @@ void register_includes(Compiler *c) {
      `class C; include M; end` in the walk, C copied M before M had Inner's
      methods and could not reach them (#4517). A cycle (mutual includes)
      falls back to source order. */
-  int nb = 0, cap = 64;
-  int *bci = malloc((size_t)cap * sizeof(int));
-  int *bnode = malloc((size_t)cap * sizeof(int));
-  #define ADD_BODY(CI, NODE) do { \
-    if (nb == cap) { cap *= 2; bci = realloc(bci, (size_t)cap * sizeof(int)); bnode = realloc(bnode, (size_t)cap * sizeof(int)); } \
-    bci[nb] = (CI); bnode[nb] = (NODE); nb++; } while (0)
-  int *sw = struct_block_before_def(c);
-  for (int ci = 0; ci < c->nclasses; ci++) {
-    if (sw[ci] >= 0) ADD_BODY(ci, class_def_body(c, sw[ci]));
-    ADD_BODY(ci, class_def_body(c, c->classes[ci].def_node));
-  }
-  for (int id = 0; id < nt->count; id++) {
-    const char *cname = class_body_name(c, id);
-    if (!cname) continue;
-    int ci = comp_class_index(c, cname);
-    if (ci < 0) continue;
-    if (id == c->classes[ci].def_node || id == sw[ci]) continue;  /* listed above */
-    ADD_BODY(ci, class_def_body(c, id));
-  }
-  free(sw);
-  #undef ADD_BODY
+  int *bci, *bnode;
+  int nb = class_body_list(c, &bci, &bnode);
   int *remaining = calloc((size_t)c->nclasses, sizeof(int));
   char *done = calloc((size_t)nb, 1);
   for (int b = 0; b < nb; b++) remaining[bci[b]]++;
@@ -5706,21 +5674,11 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
 /* For each class, find `prepend M` in ALL class bodies, the reopenings
    included, the same two passes register_includes makes (#4200). */
 void register_prepends(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  int *sw = struct_block_before_def(c);
-  for (int ci = 0; ci < c->nclasses; ci++) {
-    if (sw[ci] >= 0) process_prepend_body(c, ci, class_def_body(c, sw[ci]));
-    process_prepend_body(c, ci, class_def_body(c, c->classes[ci].def_node));
-  }
-  for (int id = 0; id < nt->count; id++) {
-    const char *cname = class_body_name(c, id);
-    if (!cname) continue;
-    int ci = comp_class_index(c, cname);
-    if (ci < 0) continue;
-    if (id == c->classes[ci].def_node || id == sw[ci]) continue;
-    process_prepend_body(c, ci, class_def_body(c, id));
-  }
-  free(sw);
+  int *bci, *bnode;
+  int nb = class_body_list(c, &bci, &bnode);
+  for (int b = 0; b < nb; b++) process_prepend_body(c, bci[b], bnode[b]);
+  free(bci);
+  free(bnode);
 }
 
 /* Merge inherited ivar/reader/writer NAMES into subclasses so the struct
