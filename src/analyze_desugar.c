@@ -2546,25 +2546,34 @@ int desugar_engine_branches(Compiler *c) {
     nt_node_set_ref(nt, id, dead, -1);
     changed = 1;
   }
-  for (int id = 0; id < n0; id++) {
+  for (int id = 0; id < nt->count; id++) {
     if (nt_kind(nt, id) != NK_StatementsNode) continue;
     int n = 0; const int *st = nt_arr(nt, id, "body", &n);
     for (int k = 0; k < n - 1; k++) {
       NodeKind sk = nt_kind(nt, st[k]);
       int pred = sk == NK_IfNode || sk == NK_UnlessNode ? nt_ref(nt, st[k], "predicate") : -1;
-      if (pred < 0 || nt_int(nt, pred, "engine_check", 0) <= 0 ||
-          (nt_kind(nt, pred) == NK_TrueNode) != (sk == NK_IfNode)) continue;
+      long long pop = nt_int(nt, st[k], "req_pop", 0);
+      const char *other = sk == NK_IfNode ? "subsequent" : "else_clause";
+      int folded = pred >= 0 && nt_int(nt, pred, "engine_check", 0) > 0;
+      if (pred < 0 || (folded ? (nt_kind(nt, pred) == NK_TrueNode) != (sk == NK_IfNode) :
+                                pop <= 0 || nt_ref(nt, st[k], other) >= 0)) continue;
       int body = nt_ref(nt, st[k], "statements");
       int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
       if (bn == 0 || nt_kind(nt, bb[bn - 1]) != NK_ReturnNode) continue;
       int *keep = malloc(sizeof(int) * (size_t)n);
       if (!keep) break;
       memcpy(keep, st, sizeof(int) * (size_t)n);
-      long long pop = nt_int(nt, st[k], "req_pop", 0);
       int e = pop > 0 ? k + 1 : n;
       while (e < n && nt_int(nt, keep[e], "req_pop", 0) > 0 && nt_int(nt, keep[e], "req_pop", 0) <= pop) e++;
       if (pop > 0) engine_blank(nt, bb[bn - 1]);
-      for (int j = k + 1; j < e; j++) engine_blank(nt, keep[j]);
+      if (!folded && e > k + 1) {
+        int rest = nt_new_node(nt, "StatementsNode"), els = nt_new_node(nt, "ElseNode");
+        nt_node_set_arr(nt, rest, "body", keep + k + 1, e - k - 1);
+        nt_node_set_ref(nt, els, "statements", rest);
+        nt_node_set_ref(nt, keep[k], other, els);
+        comp_grow_node_arrays(c);
+      }
+      for (int j = k + 1; folded && j < e; j++) engine_blank(nt, keep[j]);
       memmove(keep + k + 1, keep + e, sizeof(int) * (size_t)(n - e));
       nt_node_set_arr(nt, id, "body", keep, n - (e - k - 1));
       free(keep);

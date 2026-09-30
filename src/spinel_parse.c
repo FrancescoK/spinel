@@ -234,7 +234,8 @@ static void sp_fsl_splice(unsigned char **buf, size_t *n, size_t at,
 static int *sp_line_file = NULL;  /* buffer line (1-based) -> file id */
 static int *sp_line_orig = NULL;  /* buffer line (1-based) -> original line */
 static int *sp_line_pop = NULL;
-static pm_node_t **g_root_next, **g_root_end;
+static pm_node_t **g_stmt_next, **g_stmt_end;
+static const uint8_t *g_owner;
 static int sp_line_map_n = 0;
 static char **sp_file_table;   /* id -> path; defined with the map builder below */
 
@@ -515,11 +516,15 @@ static int flatten(pm_node_t *node) {
 
   int id = node_counter++;
   pm_node_type_t t = PM_NODE_TYPE(node);
-  if (g_root_next < g_root_end && node == *g_root_next) {
+  const uint8_t *owner = g_owner;
+  if (g_stmt_next < g_stmt_end && node == *g_stmt_next) {
     int32_t bl = pm_newline_list_line(&g_parser->newline_list, node->location.start, g_parser->start_line);
-    g_root_next++;
-    if (bl >= 1 && bl <= sp_line_map_n && sp_line_pop[bl] > 0) emit_int(id, "req_pop", sp_line_pop[bl]);
+    int32_t ol = owner ? pm_newline_list_line(&g_parser->newline_list, owner, g_parser->start_line) : 0;
+    g_stmt_next++;
+    if (bl >= 1 && bl <= sp_line_map_n && sp_line_pop[bl] > 0 && sp_line_pop[bl] != sp_line_pop[ol])
+      emit_int(id, "req_pop", sp_line_pop[bl]);
   }
+  if (t != PM_STATEMENTS_NODE) g_owner = t == PM_PROGRAM_NODE ? NULL : node->location.start;
 
   /* Debug builds only: stamp every node with its source line -- and, when a
      multi-file map was built, its original file -- so codegen can emit
@@ -534,7 +539,7 @@ static int flatten(pm_node_t *node) {
     int32_t bl = lc.line;
     int orig = bl;
     int fid = 0;
-    if (sp_line_map_n > 0 && bl >= 1 && bl <= sp_line_map_n) {
+    if (sp_line_map_n > 0 && bl >= 1 && bl <= sp_line_map_n && sp_line_orig[bl] > 0) {
       orig = sp_line_orig[bl];
       fid = sp_line_file[bl];
     }
@@ -551,7 +556,7 @@ static int flatten(pm_node_t *node) {
                                                         g_parser->start_line);
       int32_t el = le.line;
       int eorig = el;
-      if (sp_line_map_n > 0 && el >= 1 && el <= sp_line_map_n) eorig = sp_line_orig[el];
+      if (sp_line_map_n > 0 && el >= 1 && el <= sp_line_map_n && sp_line_orig[el] > 0) eorig = sp_line_orig[el];
       emit_int(id, "node_end_line", (long long)eorig);
       emit_int(id, "node_end_col", (long long)le.column);
     }
@@ -569,14 +574,16 @@ static int flatten(pm_node_t *node) {
   case PM_PROGRAM_NODE: {
     pm_program_node_t *n = (pm_program_node_t *)node;
     N("ProgramNode");
-    if (n->statements) { g_root_next = n->statements->body.nodes; g_root_end = g_root_next + n->statements->body.size; }
     R("statements", n->statements);
     break;
   }
   case PM_STATEMENTS_NODE: {
     pm_statements_node_t *n = (pm_statements_node_t *)node;
+    pm_node_t **next = g_stmt_next, **end = g_stmt_end;
     N("StatementsNode");
+    g_stmt_next = n->body.nodes; g_stmt_end = g_stmt_next + n->body.size;
     A("body", &n->body);
+    g_stmt_next = next; g_stmt_end = end;
     break;
   }
   case PM_CLASS_NODE: {
@@ -1885,6 +1892,7 @@ else {
 #undef A
 #undef NAME
 
+  g_owner = owner;
   return id;
 }
 
@@ -4586,10 +4594,9 @@ else {
     size_t la = 1, lb = 1;
     for (const char *p = premap; *p; p++) if (*p == '\n') la++;
     for (const char *p = source; *p; p++) if (*p == '\n') lb++;
-    if (la == lb) {
-      sp_build_line_map(premap, source_file);
-    }
-else {
+    sp_build_line_map(la == lb ? premap : source, source_file);
+    if (la != lb) {
+      memset(sp_line_orig, 0, sizeof(int) * ((size_t)sp_line_map_n + 2));
       /* Multi-file line attribution unavailable for this program; #line
          falls back to buffer lines. Only worth a word under an explicit
          --debug build (faithful stepping matters there); stay silent for
