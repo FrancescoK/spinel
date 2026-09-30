@@ -17363,6 +17363,35 @@ int box_nullable_arg(Compiler *c, int v) {
   return 0;
 }
 
+/* The class variable a read or write of `@@x` names, resolved as
+   infer_type resolves it: the method's class, a class body's own class, else
+   Toplevel. -1 when there is none. */
+static int cvar_slot(Compiler *c, int id, ClassInfo **cio) {
+  const char *nm = nt_str(c->nt, id, "name");
+  Scope *s = comp_scope_of(c, id);
+  int cid = s ? s->class_id : -1;
+  if (cid < 0 && c->node_cbody && id < c->node_cap) cid = c->node_cbody[id];
+  if (cid < 0) cid = comp_class_index(c, "Toplevel");
+  if (cid < 0 || cid >= c->nclasses || !nm) return -1;
+  *cio = &c->classes[cid];
+  return comp_cvar_index(*cio, nm);
+}
+
+/* The member slot `name` names on class cid's Struct or Data, which its
+   generated constructor and accessors read and write rather than an ivar
+   node or an attr_reader: -1 when the chain has no such member. */
+static int struct_member_slot(Compiler *c, int cid, const char *name, ClassInfo **out) {
+  char ivb[300];
+  if (!name) return -1;
+  snprintf(ivb, sizeof ivb, "@%s", name);
+  for (; cid >= 0 && cid < c->nclasses; cid = c->classes[cid].parent) {
+    if (!c->classes[cid].is_struct) continue;
+    int iv = comp_ivar_index(&c->classes[cid], ivb);
+    if (iv >= 0) { *out = &c->classes[cid]; return iv; }
+  }
+  return -1;
+}
+
 int nullable_int_value(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   if (v < 0) return 0;
@@ -17425,6 +17454,13 @@ int nullable_int_value(Compiler *c, int v) {
     int iv = comp_ivar_index(ci, nt_str(nt, v, "name"));
     return iv >= 0 && ci->ivar_nullable_int[iv];
   }
+  /* A class variable some write left the sentinel in, as an ivar: `def
+     self.b = (@@x = nil)` beside `@@x = 1` read back 0 */
+  if (nt_kind(nt, v) == NK_ClassVariableReadNode) {
+    ClassInfo *ci = NULL;
+    int cv = cvar_slot(c, v, &ci);
+    return cv >= 0 && ci->cvar_nullable_int[cv];
+  }
   /* A Float global is declared holding the sentinel, which it keeps until its
      first assignment; and any scalar global some write left the sentinel in
      holds it after (marked below, as a local is). */
@@ -17435,10 +17471,13 @@ int nullable_int_value(Compiler *c, int v) {
     if (g && g->nullable_int) return 1;
     return g && g->type == TY_FLOAT && !gvar_seeded_before_read(c, rn);
   }
+  /* `(e)` is e, and a parenthesized sequence `(y = a[i]; y)` is its last
+     statement, as a block's body is: the arm above walks it. Only the
+     one-statement form was read, so the sequence's nil left the local it was
+     assigned to unmarked. `()` is nil. */
   if (nt_kind(nt, v) == NK_ParenthesesNode) {
     int pb = nt_ref(nt, v, "body");
-    int pn = 0; const int *pd = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
-    return pd && pn == 1 ? nullable_int_value(c, pd[0]) : 0;
+    return pb < 0 || nullable_int_value(c, pb);
   }
   /* The value of `yield x` is the BLOCK's, decided per call site. The yield's
      own type says only TY_INT, which an `Integer?` and an `Integer` share, so
@@ -17481,17 +17520,26 @@ int nullable_int_value(Compiler *c, int v) {
     if (mi < 0 && cn) {
       if (rcv >= 0) {
         TyKind rt = infer_type(c, rcv);
-        /* an attr reader answers its float ivar, whose nil is the sentinel:
-           one some write left nil, or one initialize need not assign */
+        /* an attr reader answers its ivar, whose nil is the sentinel: an
+           Integer or Float one some write left nil, or a Float one
+           initialize need not assign (an Integer's boxing checks its
+           sentinel anyway). Only the Float was asked, so `A.new(nil).x > 0`
+           of an Integer ivar compared the sentinel. */
         int rdc = -1;
         if (ty_is_object(rt) && comp_reader_in_chain(c, ty_object_class(rt), cn, &rdc)) {
           int k = rdc >= 0 ? rdc : ty_object_class(rt);
           char ivb[300];
           snprintf(ivb, sizeof ivb, "@%s", comp_resolve_alias(c, ty_object_class(rt), cn));
           int iv = comp_ivar_index(&c->classes[k], ivb);
-          if (iv >= 0 && c->classes[k].ivar_types[iv] == TY_FLOAT &&
-              (c->classes[k].ivar_nullable_int[iv] || !ivar_assigned_in_initialize(c, k, ivb)))
-            return 1;
+          TyKind ivt = iv >= 0 ? c->classes[k].ivar_types[iv] : TY_UNKNOWN;
+          if ((ivt == TY_FLOAT || ivt == TY_INT) && c->classes[k].ivar_nullable_int[iv]) return 1;
+          if (ivt == TY_FLOAT && !ivar_assigned_in_initialize(c, k, ivb)) return 1;
+        }
+        /* ... and so does a Struct member's, which is no attr_reader */
+        else if (ty_is_object(rt) && comp_method_in_chain(c, ty_object_class(rt), cn, NULL) < 0) {
+          ClassInfo *sci = NULL;
+          int sm = struct_member_slot(c, ty_object_class(rt), cn, &sci);
+          if (sm >= 0 && sci->ivar_nullable_int[sm]) return 1;
         }
         if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), cn, NULL);
         else if (nt_kind(nt, rcv) == NK_ConstantReadNode) {
@@ -17909,6 +17957,76 @@ static void mark_nullable_int_locals(Compiler *c) {
       if (iv < 0 || ci->ivar_nullable_int[iv]) continue;
       if (ci->ivar_types[iv] != TY_INT && ci->ivar_types[iv] != TY_FLOAT) continue;
       if (nullable_int_value(c, v)) { ci->ivar_nullable_int[iv] = 1; changed = 1; }
+    }
+    /* ... and through a setter that is no ivar write in the program: an
+       attr_writer's or a Struct member's `o.x = v` */
+    NT_FOREACH_KIND(nt, NK_CallNode, id) {
+      const char *wn = nt_str(nt, id, "name");
+      int recv = nt_ref(nt, id, "receiver");
+      size_t wl = wn ? strlen(wn) : 0;
+      if (recv < 0 || wl < 2 || wl > 255 || wn[wl - 1] != '=' || !call_is_setter_assign(nt, id)) continue;
+      int ca = nt_ref(nt, id, "arguments");
+      int an = 0; const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+      TyKind rt = infer_type(c, recv);
+      if (an != 1 || !ty_is_object(rt)) continue;
+      int cid = ty_object_class(rt), defc = -1;
+      char base[256]; memcpy(base, wn, wl - 1); base[wl - 1] = '\0';
+      ClassInfo *ci = NULL; int iv = -1;
+      if (comp_writer_in_chain(c, cid, base, &defc)) {
+        char ivb[300];
+        snprintf(ivb, sizeof ivb, "@%s", comp_resolve_alias(c, cid, base));
+        ci = &c->classes[defc >= 0 ? defc : cid];
+        iv = comp_ivar_index(ci, ivb);
+      }
+      else if (comp_method_in_chain(c, cid, wn, NULL) < 0) iv = struct_member_slot(c, cid, base, &ci);
+      if (iv < 0 || ci->ivar_nullable_int[iv]) continue;
+      if (ci->ivar_types[iv] != TY_INT && ci->ivar_types[iv] != TY_FLOAT) continue;
+      if (nullable_int_value(c, av[0])) { ci->ivar_nullable_int[iv] = 1; changed = 1; }
+    }
+    /* A Struct's generated constructor sets its members: from a nil
+       argument, or to nil when the construction does not supply one
+       (`S.new(1)` of two members; a Data raises instead). */
+    NT_FOREACH_KIND(nt, NK_CallNode, id) {
+      const char *cn = nt_str(nt, id, "name");
+      int recv = nt_ref(nt, id, "receiver");
+      if (!cn || !sp_streq(cn, "new") || recv < 0) continue;
+      NodeKind rk = nt_kind(nt, recv);
+      int k = rk == NK_LocalVariableReadNode ? class_var_static_ci(c, recv)
+            : rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ? comp_class_index(c, nt_str(nt, recv, "name"))
+            : -1;
+      if (k < 0 || !c->classes[k].is_struct || comp_method_in_chain(c, k, "initialize", NULL) >= 0) continue;
+      ClassInfo *ci = &c->classes[k];
+      int ca = nt_ref(nt, id, "arguments");
+      int an = 0; const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+      /* a splat or a `**` member is boxed (struct_new_types_members) */
+      int plain = 1;
+      for (int a = 0; a < an && plain; a++)
+        plain = nt_kind(nt, av[a]) != NK_SplatNode && nt_kind(nt, av[a]) != NK_BlockArgumentNode;
+      int kwh = an == 1 && nt_kind(nt, av[0]) == NK_KeywordHashNode && ci->kw_init != -1 ? av[0] : -1;
+      int kn = 0; const int *ke = kwh >= 0 ? nt_arr(nt, kwh, "elements", &kn) : NULL;
+      for (int e = 0; e < kn && plain; e++) plain = nt_kind(nt, ke[e]) == NK_AssocNode;
+      if (!plain) continue;
+      for (int m = 0; m < ci->nivars; m++) {
+        if (ci->ivar_nullable_int[m] || (ci->ivar_types[m] != TY_INT && ci->ivar_types[m] != TY_FLOAT)) continue;
+        int vnode = kwh < 0 && m < an ? av[m] : -1;
+        for (int e = 0; e < kn; e++) {
+          int key = nt_ref(nt, ke[e], "key");
+          const char *kv = nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
+          if (kv && sp_streq(kv, ci->ivars[m] + 1)) vnode = nt_ref(nt, ke[e], "value");
+        }
+        if (vnode < 0 ? !ci->is_data : nullable_int_value(c, vnode)) {
+          ci->ivar_nullable_int[m] = 1; changed = 1;
+        }
+      }
+    }
+    /* ... and through a class variable */
+    NT_FOREACH_KIND(nt, NK_ClassVariableWriteNode, id) {
+      int v = nt_ref(nt, id, "value");
+      ClassInfo *ci = NULL;
+      int cv = v >= 0 ? cvar_slot(c, id, &ci) : -1;
+      if (cv < 0 || ci->cvar_nullable_int[cv]) continue;
+      if (ci->cvar_types[cv] != TY_INT && ci->cvar_types[cv] != TY_FLOAT) continue;
+      if (nullable_int_value(c, v)) { ci->cvar_nullable_int[cv] = 1; changed = 1; }
     }
     /* A PARAMETER bound from such a value carries the sentinel into the callee,
        where boxing it (`other.inspect`, `x == other`) has the same problem the
