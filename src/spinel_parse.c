@@ -2109,12 +2109,20 @@ int sp_feature_required(const char *name) {
    that is not a bundled lib or native feature is looked up here, in order, as
    <root>/X.rb (CRuby single-file form) or <root>/X/<last>.rb (the colocated
    directory form, where one feature's sources share a directory). */
-static char *sp_feature_roots[64];
+static char **sp_feature_roots = NULL;
 static int sp_feature_roots_n = 0;
+static int sp_feature_roots_cap = 0;
 
 void sp_add_feature_root(const char *dir) {
   if (!dir) return;
-  if (sp_feature_roots_n < 64) sp_feature_roots[sp_feature_roots_n++] = strdup(dir);
+  if (sp_feature_roots_n >= sp_feature_roots_cap) {
+    int new_cap = sp_feature_roots_cap == 0 ? 16 : sp_feature_roots_cap * 2;
+    char **np = (char **)realloc(sp_feature_roots, sizeof(char *) * new_cap);
+    if (!np) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+    sp_feature_roots = np;
+    sp_feature_roots_cap = new_cap;
+  }
+  sp_feature_roots[sp_feature_roots_n++] = strdup(dir);
 }
 
 /* Resolve a path to its canonical form for dedup. realpath() returns NULL

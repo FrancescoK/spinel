@@ -1049,6 +1049,10 @@ cli-opts-test: $(SPINEL)
 	printf 'require "ostruct"\nputs OpenStruct.new(a: 1).a\n' >> "$$tmp/feats.rb"; \
 	$(SPINEL) -I "$$tmp/feats" --require-gate "$$tmp/feats.rb" -c -o "$$tmp/feats.c" >"$$tmp/feats.out" 2>&1 || \
 	  { echo "cli-opts-test: FAIL (a require past the 128th feature was not recorded)"; sed -n 1,3p "$$tmp/feats.out"; ok=0; }; \
+	incs=""; i=0; while [ $$i -lt 70 ]; do mkdir -p "$$tmp/roots/r$$i"; incs="$$incs -I $$tmp/roots/r$$i"; i=$$((i + 1)); done; \
+	echo 'puts "deep root"' > "$$tmp/roots/r69/deep_root.rb"; echo 'require "deep_root"' > "$$tmp/dr.rb"; \
+	$(SPINEL) $$incs "$$tmp/dr.rb" -o "$$tmp/dr" >"$$tmp/dr.out" 2>&1 && [ "$$("$$tmp/dr")" = "deep root" ] || \
+	  { echo "cli-opts-test: FAIL (an -I root past the 64th was dropped)"; sed -n 1,3p "$$tmp/dr.out"; ok=0; }; \
 	rm -rf "$$tmp"; \
 	[ $$ok = 1 ] && echo "cli-opts-test: pass" || exit 1
 
