@@ -1,0 +1,15 @@
+[false, true, true, false]
+TypeError
+true
+1
+[false, true, true, false]
+2
+TypeError
+[false, true, true, false, false]
+[false, true, true, false]
+2
+true
+TypeError
+[0, 9, 5, 6]
+false
+20
