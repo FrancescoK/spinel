@@ -12084,6 +12084,21 @@ static int str_mut_recv_assignable(Compiler *c, int recv) {
   return nt_kind(c->nt, recv) == NK_SelfNode || str_mut_var_recv(c, recv);
 }
 
+static void emit_sb_shim_swap(Buf *b, int indent, int tH, char *arm) {
+  emit_indent(b, indent + 1);
+  buf_printf(b, "if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);\n", tH, tH);
+  emit_indent(b, indent + 1);
+  buf_printf(b, "const char *lv__sb%d = sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1]));\n", tH, tH);
+  emit_indent(b, indent + 1);
+  buf_printf(b, "SP_GC_ROOT(lv__sb%d);\n", tH);
+  buf_puts(b, arm ? arm : "");
+  free(arm);
+  emit_indent(b, indent + 1);
+  buf_printf(b, "sp_String_set_bin(_t%d, lv__sb%d);\n", tH, tH);
+  emit_indent(b, indent);
+  buf_puts(b, "}\n");
+}
+
 static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent);
 int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
   return emit_ivar_nil_guarded(c, id, b, indent, emit_array_mutate_stmt_body);
@@ -12153,18 +12168,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       else {
         emit_indent(b, indent);
         buf_printf(b, "{ sp_String *_t%d = %s;\n", tH, srefR);
-        emit_indent(b, indent + 1);
-        buf_printf(b, "if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);\n", tH, tH);
-        emit_indent(b, indent + 1);
-        buf_printf(b, "const char *lv__sb%d = sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1]));\n", tH, tH);
-        emit_indent(b, indent + 1);
-        buf_printf(b, "SP_GC_ROOT(lv__sb%d);\n", tH);
-        buf_puts(b, armb.p ? armb.p : "");
-        free(armb.p);
-        emit_indent(b, indent + 1);
-        buf_printf(b, "sp_String_set_bin(_t%d, lv__sb%d);\n", tH, tH);
-        emit_indent(b, indent);
-        buf_puts(b, "}\n");
+        emit_sb_shim_swap(b, indent, tH, armb.p);
         return 1;
       }
     }
@@ -12201,18 +12205,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
         else {
           emit_indent(b, indent);
           buf_printf(b, "{ sp_String *_t%d = %s;\n", tH, srefI);
-          emit_indent(b, indent + 1);
-          buf_printf(b, "if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);\n", tH, tH);
-          emit_indent(b, indent + 1);
-          buf_printf(b, "const char *lv__sb%d = sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1]));\n", tH, tH);
-          emit_indent(b, indent + 1);
-          buf_printf(b, "SP_GC_ROOT(lv__sb%d);\n", tH);
-          buf_puts(b, armb.p ? armb.p : "");
-          free(armb.p);
-          emit_indent(b, indent + 1);
-          buf_printf(b, "sp_String_set_bin(_t%d, lv__sb%d);\n", tH, tH);
-          emit_indent(b, indent);
-          buf_puts(b, "}\n");
+          emit_sb_shim_swap(b, indent, tH, armb.p);
           return 1;
         }
       }
@@ -12234,18 +12227,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       else {
         emit_indent(b, indent);
         buf_printf(b, "{ sp_String *_t%d = lv_%s;\n", tH, rename_local(sbn));
-        emit_indent(b, indent + 1);
-        buf_printf(b, "if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);\n", tH, tH);
-        emit_indent(b, indent + 1);
-        buf_printf(b, "const char *lv__sb%d = sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1]));\n", tH, tH);
-        emit_indent(b, indent + 1);
-        buf_printf(b, "SP_GC_ROOT(lv__sb%d);\n", tH);
-        buf_puts(b, armb.p ? armb.p : "");
-        free(armb.p);
-        emit_indent(b, indent + 1);
-        buf_printf(b, "sp_String_set_bin(_t%d, lv__sb%d);\n", tH, tH);
-        emit_indent(b, indent);
-        buf_puts(b, "}\n");
+        emit_sb_shim_swap(b, indent, tH, armb.p);
         return 1;
       }
     }
