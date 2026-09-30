@@ -4465,12 +4465,12 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       const char *kty = nt_type(nt, argv[0]);
       if (kty && sp_streq(kty, "IntegerNode")) {
         long long idx = (long long)nt_int(nt, argv[0], "value", 0);
-        if (idx < 0) idx += (long long)sc->nivars;
-        if (idx >= 0 && idx < sc->nivars) return sc->ivar_types[(int)idx];
+        if (idx < 0) idx += (long long)sc->nmembers;
+        if (idx >= 0 && idx < sc->nmembers) return sc->ivar_types[(int)idx];
       }
       return TY_POLY;
     }
-    if (sp_streq(name, "[]=") && argc == 2) return sc->nivars > 0 ? sc->ivar_types[0] : TY_POLY;
+    if (sp_streq(name, "[]=") && argc == 2) return sc->nmembers > 0 ? sc->ivar_types[0] : TY_POLY;
   }
 
   /* built-in class reopening: look up user-defined methods on scalar built-in types */

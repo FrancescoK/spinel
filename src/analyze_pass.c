@@ -4430,7 +4430,7 @@ static int bind_dynamic_new_initializers(Compiler *c, int call_id) {
       int kh = -1;
       for (int a = 0; a < argc; a++) if (nt_kind(nt, av[a]) == NK_KeywordHashNode) kh = av[a];
       int ne = 0; const int *els = nt_arr(nt, kh, "elements", &ne);
-      for (int a = 0; a < sk->nivars; a++) {
+      for (int a = 0; a < sk->nmembers; a++) {
         if (class_ivar_pinned(sk, sk->ivars[a])) continue;
         TyKind mt = sk->ivar_types[a];
         if (mt == TY_UNKNOWN || mt == TY_POLY) continue;
@@ -6293,7 +6293,7 @@ static int struct_super_types_members(Compiler *c, int id, Scope *s) {
   /* A `*a` or `**h` decides only at run time which value reaches which
      member, so every member takes a boxed value. */
   int spreads = !fwd && struct_super_spreads(c, args);
-  for (int a = 0; a < cls->nivars; a++) {
+  for (int a = 0; a < cls->nmembers; a++) {
     if (class_ivar_pinned(cls, cls->ivars[a])) continue;
     if (spreads) {
       TyKind sm = ty_unify(cls->ivar_types[a], TY_POLY);
@@ -6417,7 +6417,7 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
      the member is boxed, and the members after it are left nil. */
   int kwf = cls->kw_init == -1;
   if (kwf && !kw_splat) kwh = -1;
-  for (int a = 0; a < cls->nivars; a++) {
+  for (int a = 0; a < cls->nmembers; a++) {
     /* a member not supplied at this construction can be nil */
     const char *mname = cls->ivars[a] + 1;
     int kn = 0;
@@ -6972,7 +6972,7 @@ int infer_param_types(Compiler *c) {
             /* a Struct's members, which a sole splat spreads into */
             ClassInfo *sk = &c->classes[k];
             if (!sk->is_struct || nargs != 1) continue;
-            for (int a = 0; a < sk->nivars; a++) {
+            for (int a = 0; a < sk->nmembers; a++) {
               if (class_ivar_pinned(sk, sk->ivars[a])) continue;
               TyKind m = ty_unify(sk->ivar_types[a], TY_POLY);
               if (m != sk->ivar_types[a]) { sk->ivar_types[a] = m; changed = 1; }

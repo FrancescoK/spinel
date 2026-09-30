@@ -4468,7 +4468,7 @@ static void desugar_data_positional_new(Compiler *c) {
     int args = nt_ref(nt, id, "arguments");
     int an = 0;
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    if (an == 0 || an > dcls->nivars) continue;
+    if (an == 0 || an > dcls->nmembers) continue;
     int plain = 1;
     for (int a = 0; a < an && plain; a++) {
       NodeKind k = nt_kind(nt, av[a]);
@@ -4503,10 +4503,10 @@ static void synth_struct_each(Compiler *c) {
   for (int ci = 0; ci < ncls0; ci++) {
     ClassInfo *cls = &c->classes[ci];
     /* Data is not Enumerable: each/each_pair/each_with_index are Struct's */
-    if (!cls->is_struct || cls->is_data || cls->nivars == 0) continue;
+    if (!cls->is_struct || cls->is_data || cls->nmembers == 0) continue;
     if (comp_method_in_class(c, ci, "each") >= 0) continue;
     int stmts[65]; int nst = 0;
-    for (int j = 0; j < cls->nivars && nst < 64; j++) {
+    for (int j = 0; j < cls->nmembers && nst < 64; j++) {
       int ivr = nt_new_node(nt, "InstanceVariableReadNode");
       nt_node_set_str(nt, ivr, "name", cls->ivars[j]);
       int yargs = nt_new_node(nt, "ArgumentsNode");
@@ -4535,7 +4535,7 @@ static void synth_struct_each(Compiler *c) {
     /* def each_pair; yield :m1, @m1; ...; self; end */
     if (comp_method_in_class(c, ci, "each_pair") < 0) {
       int pst[65]; int pn = 0;
-      for (int j = 0; j < cls->nivars && pn < 64; j++) {
+      for (int j = 0; j < cls->nmembers && pn < 64; j++) {
         int sy = nt_new_node(nt, "SymbolNode");
         nt_node_set_str(nt, sy, "value", cls->ivars[j] + 1);
         int ivr = nt_new_node(nt, "InstanceVariableReadNode");
@@ -4572,7 +4572,7 @@ static void synth_struct_each(Compiler *c) {
        return the flat member array). The index is a literal per member. */
     if (comp_method_in_class(c, ci, "each_with_index") < 0) {
       int wst[65]; int wn = 0;
-      for (int j = 0; j < cls->nivars && wn < 64; j++) {
+      for (int j = 0; j < cls->nmembers && wn < 64; j++) {
         int ivr = nt_new_node(nt, "InstanceVariableReadNode");
         nt_node_set_str(nt, ivr, "name", cls->ivars[j]);
         int ixn = nt_new_node(nt, "IntegerNode");

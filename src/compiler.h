@@ -465,6 +465,9 @@ typedef struct {
                           order and there is no user `initialize`. */
   int is_data;         /* defined via Data.define(...): a Struct-like value class
                           that additionally supports the `#with` copy-update. */
+  int nmembers;        /* is_struct/is_data: ivars[0..nmembers) back the
+                          members, in declaration order; any later ivar is an
+                          attr's or a method's own instance variable. */
   int is_anon_struct;  /* k = Struct.new(:a, :b): synthesized for a local-held
                           anonymous struct class; #inspect omits the name. */
   int is_singleton_of; /* +1-based parent class index (0 = not one): a
@@ -958,6 +961,8 @@ int        class_eval_reopen_class(Compiler *c, int id, int enclosing_class);
 int        class_reopen_cmethod(Compiler *c, int recv, const char *name); /* a method the program adds to Class */
 int        comp_ivar_index(ClassInfo *ci, const char *name);  /* -1 if none */
 int        comp_ivar_intern(ClassInfo *ci, const char *name); /* find or add; returns index */
+int        comp_member_intern(ClassInfo *ci, const char *name);
+int        comp_member_index(ClassInfo *ci, const char *name);
 int        comp_cvar_index(ClassInfo *ci, const char *name);  /* class var; -1 if none */
 int        comp_cvar_intern(ClassInfo *ci, const char *name); /* find or add; returns index */
 int        comp_cvar_owner(const Compiler *c, int cid, const char *name); /* the class whose slot holds @@name */

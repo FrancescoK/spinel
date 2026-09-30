@@ -1720,7 +1720,7 @@ void register_struct_members(Compiler *c, ClassInfo *cls, int val) {
         const char *sm = syms[e];
         if (!sm) continue;
         char siv[256]; snprintf(siv, sizeof siv, "@%s", sm);
-        comp_ivar_intern(cls, siv);
+        comp_member_intern(cls, siv);
         comp_add_reader(cls, sm);
         if (!cls->is_data) comp_add_writer(cls, sm);
       }
@@ -1730,7 +1730,7 @@ void register_struct_members(Compiler *c, ClassInfo *cls, int val) {
     const char *m = resolve_member_symbol(c, argv[a]);
     if (!m) continue;
     char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", m);
-    comp_ivar_intern(cls, ivn);
+    comp_member_intern(cls, ivn);
     comp_add_reader(cls, m);
     /* a Data member is read-only: no `x=` to call, answer or list */
     if (!cls->is_data) comp_add_writer(cls, m);
@@ -5822,6 +5822,8 @@ void inherit_members(Compiler *c) {
       free(old[k]);
     }
     #undef IV_SIDE_COPY
+    /* the parent's ivars lead the rebuilt layout, so its members lead them */
+    if (pc->is_struct && ci->nmembers < pc->nmembers) ci->nmembers = pc->nmembers;
     free(old); free(oldt); free(old_ss); free(old_it); free(old_oa); free(old_os);
     free(old_oc); free(old_ni); free(old_ne); free(old_ae);
 
