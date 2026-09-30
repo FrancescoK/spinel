@@ -16668,6 +16668,15 @@ static int elem_returning_call(const char *nm) {
   return name_in(nm, N);
 }
 
+/* `a[i, n]` / `a[r]`: an index read answering a sub-array. */
+static int slice_read_call(Compiler *c, int call) {
+  const NodeTable *nt = c->nt;
+  int ca = nt_ref(nt, call, "arguments"); int an = 0;
+  const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+  if (!av) return 0;
+  return an == 2 || (an == 1 && (nt_kind(nt, av[0]) == NK_RangeNode || infer_type(c, av[0]) == TY_RANGE));
+}
+
 /* The tail expression of a literal block attached to `call`, or -1. */
 static int call_block_tail(Compiler *c, int call) {
   const NodeTable *nt = c->nt;
@@ -16770,13 +16779,31 @@ static int nullable_elem_mutation(Compiler *c, int call, int depth) {
   const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
   if (!nm || !av || (!self_mutator_call(nm) && !sp_streq(nm, "[]="))) return 0;
   int from = 0, to = an;
-  if (sp_streq(nm, "insert")) from = 1;
+  if (sp_streq(nm, "insert")) {
+    /* past the end, the gap before the index is nil (sp_IntArray_insert) */
+    if (index_write_gaps(c, call, av[0])) return 1;
+    from = 1;
+  }
   else if (sp_streq(nm, "[]=")) {
+    /* where the write starts: the index, a slice's start (`a[s, n] = v`) or
+       a range's first (`a[s..e] = v`). Past the end, CRuby nil-fills up to it
+       whatever the value is, and so does the typed splice. */
+    int ix = an >= 2 ? av[0] : -1;
+    if (an == 2 && ix >= 0 && nt_kind(nt, ix) == NK_RangeNode) ix = nt_ref(nt, ix, "left");
+    if (ix >= 0 && an <= 3 && index_write_gaps(c, call, ix)) return 1;
     if (ty_is_array(infer_type(c, av[an - 1]))) return nullable_int_elem_expr(c, av[an - 1], depth + 1);
-    if (an == 2 && index_write_gaps(c, call, av[0])) return 1;
     from = an - 1;
   }
-  else if (sp_streq(nm, "fill")) { if (nt_ref(nt, call, "block") >= 0) return 0; to = 1; }
+  else if (sp_streq(nm, "fill")) {
+    /* fill(v, start[, n]) / fill(v, s..e), or fill(start, n) { } with a
+       block: a start past the end leaves a nil gap before the filled run */
+    int blk = nt_ref(nt, call, "block") >= 0;
+    int fx = an > 1 - blk ? av[1 - blk] : -1;
+    if (fx >= 0 && nt_kind(nt, fx) == NK_RangeNode) fx = nt_ref(nt, fx, "left");
+    if (fx >= 0 && index_write_gaps(c, call, fx)) return 1;
+    if (blk) return 0;
+    to = 1;
+  }
   else if (sp_streq(nm, "concat")) {
     for (int k = 0; k < an; k++) if (nullable_int_elem_expr(c, av[k], depth + 1)) return 1;
     return 0;
@@ -16898,13 +16925,23 @@ static int nullable_int_elem_expr(Compiler *c, int v, int depth) {
         return an >= 2 && nullable_int_value(c, av[1]);
       }
     }
-    if (elem_preserving_call(nm)) return nullable_int_elem_expr(c, rc, depth + 1);
+    /* The array-method rules below go by name alone, so they hold only for a
+       receiver that is not a user object: `Maker.new.fill` or `k.to_a` runs
+       the class's own method, whose tail decides (the object-receiver case
+       at the end). Read as Array#fill, the receiver was asked instead and
+       the array the method builds went unmarked. */
+    int obj_rc = rc >= 0 && ty_is_object(infer_type(c, rc));
+    /* a slice (`a[1..]`, `a[i, n]`) is a run of the receiver's own elements,
+       as `slice` is; a one-index read is one element, below */
+    if (!obj_rc && nm && sp_streq(nm, "[]") && slice_read_call(c, v))
+      return nullable_int_elem_expr(c, rc, depth + 1);
+    if (!obj_rc && elem_preserving_call(nm)) return nullable_int_elem_expr(c, rc, depth + 1);
     /* a mutator answers its receiver, which may hold one already or now */
-    if (rc >= 0 && self_mutator_call(nm))
+    if (rc >= 0 && !obj_rc && self_mutator_call(nm))
       return nullable_elem_mutation(c, v, depth + 1) || nullable_int_elem_expr(c, rc, depth + 1);
     /* the value is one ELEMENT of the receiver, and that element is itself the
        container being indexed into (`t[i][j]`, `h[:a][0]`) */
-    if (elem_returning_call(nm)) return nested_elem_nilable(c, rc, depth + 1);
+    if (!obj_rc && elem_returning_call(nm)) return nested_elem_nilable(c, rc, depth + 1);
     /* a method returning such an array: its own tail decides */
     if (nm && rc < 0) {
       int mi = comp_method_index(c, nm);
@@ -16963,7 +17000,7 @@ static int elem_miss_call(Compiler *c, int v) {
      only as type evidence (desugar_masgn_store_evidence): it is no more a
      miss there than it is for the assignment's local and ivar targets */
   if (nt_int(nt, v, "masgn_elem", LLONG_MIN) != LLONG_MIN) return 0;
-  if (sp_streq(nm, "[]") || sp_streq(nm, "at")) return argc == 1 && blk < 0;
+  if (sp_streq(nm, "[]") || sp_streq(nm, "at") || sp_streq(nm, "slice")) return argc == 1 && blk < 0;
   if (sp_streq(nm, "dig")) return argc >= 1;
   if (sp_streq(nm, "first") || sp_streq(nm, "last") || sp_streq(nm, "sample"))
     return argc == 0 && blk < 0;

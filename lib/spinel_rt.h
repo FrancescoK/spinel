@@ -5029,10 +5029,13 @@ static void sp_poly_arr_writeback(sp_RbVal orig, sp_PolyArray *work) {
   switch (orig.cls_id) {
     case SP_BUILTIN_INT_ARRAY: {
       sp_IntArray *a = (sp_IntArray *)orig.v.p;
+      /* nil goes back as the sentinel, the typed array's nil: a fill(v, 3)
+         past the end pads with it, as the typed fill does */
       for (sp_int i = 0; i < work->len; i++)
-        if (work->data[i].tag != SP_TAG_INT) sp_raise_writeback_kind(work->data[i], "Integer");
+        if (work->data[i].tag != SP_TAG_INT && work->data[i].tag != SP_TAG_NIL)
+          sp_raise_writeback_kind(work->data[i], "Integer");
       a->start = 0; a->len = 0;
-      for (sp_int i = 0; i < work->len; i++) sp_IntArray_push(a, work->data[i].v.i);
+      for (sp_int i = 0; i < work->len; i++) sp_IntArray_push(a, sp_poly_as_int_or_nil(work->data[i]));
       return;
     }
     case SP_BUILTIN_SYM_ARRAY: {
@@ -5046,10 +5049,11 @@ static void sp_poly_arr_writeback(sp_RbVal orig, sp_PolyArray *work) {
     case SP_BUILTIN_FLT_ARRAY: {
       sp_FloatArray *a = (sp_FloatArray *)orig.v.p;
       for (sp_int i = 0; i < work->len; i++)
-        if (work->data[i].tag != SP_TAG_FLT && work->data[i].tag != SP_TAG_INT)
+        if (work->data[i].tag != SP_TAG_FLT && work->data[i].tag != SP_TAG_INT &&
+            work->data[i].tag != SP_TAG_NIL)
           sp_raise_writeback_kind(work->data[i], "Float");
       a->len = 0;
-      for (sp_int i = 0; i < work->len; i++) sp_FloatArray_push(a, sp_poly_to_f(work->data[i]));
+      for (sp_int i = 0; i < work->len; i++) sp_FloatArray_push(a, sp_poly_to_f_or_nil(work->data[i]));
       return;
     }
     case SP_BUILTIN_STR_ARRAY: {
@@ -7724,8 +7728,11 @@ static sp_PolyArray *sp_poly_pop_n(sp_RbVal v, sp_int n, int from_front) {
   if (n < 0) sp_raise_cls("ArgumentError", "negative array size");
   sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
   for (sp_int i = 0; i < n; i++) {
+    /* stop on the length before the removal, not on a nil result: a nil
+       element is still an element, so `[3, nil].shift(5)` is [3, nil] */
+    sp_int left = sp_poly_length(v);
     sp_RbVal e = from_front ? sp_poly_shift(v) : sp_poly_pop(v);
-    if (e.tag == SP_TAG_NIL && sp_poly_length(v) == 0) break;
+    if (left == 0) break;
     sp_PolyArray_push(out, e);
   }
   if (!from_front) sp_PolyArray_reverse_bang(out);
@@ -7738,12 +7745,12 @@ static sp_RbVal sp_poly_pop(sp_RbVal v) {
       case SP_BUILTIN_INT_ARRAY: {
         sp_IntArray *a = (sp_IntArray *)v.v.p;
         if (a->len <= 0) return sp_box_nil();
-        return sp_box_int(sp_IntArray_pop(a));
+        return sp_box_int_or_nil(sp_IntArray_pop(a));
       }
       case SP_BUILTIN_FLT_ARRAY: {
         sp_FloatArray *a = (sp_FloatArray *)v.v.p;
         if (a->len <= 0) return sp_box_nil();
-        return sp_box_float(sp_FloatArray_pop(a));
+        return sp_box_float_or_nil(sp_FloatArray_pop(a));
       }
       case SP_BUILTIN_STR_ARRAY: {
         sp_StrArray *a = (sp_StrArray *)v.v.p;
@@ -7879,7 +7886,7 @@ static sp_RbVal sp_poly_delete_at(sp_RbVal v, sp_int i) {
         sp_FloatArray *a = (sp_FloatArray *)v.v.p;
         sp_int i2 = i < 0 ? i + a->len : i;
         if (i2 < 0 || i2 >= a->len) return sp_box_nil();
-        return sp_box_float(sp_FloatArray_delete_at(a, i));
+        return sp_box_float_or_nil(sp_FloatArray_delete_at(a, i));
       }
       case SP_BUILTIN_STR_ARRAY: {
         const char *r = sp_StrArray_delete_at((sp_StrArray *)v.v.p, i);
@@ -7921,12 +7928,12 @@ static sp_RbVal sp_poly_shift(sp_RbVal v) {
       case SP_BUILTIN_INT_ARRAY: {
         sp_IntArray *a = (sp_IntArray *)v.v.p;
         if (a->len <= 0) return sp_box_nil();
-        return sp_box_int(sp_IntArray_shift(a));
+        return sp_box_int_or_nil(sp_IntArray_shift(a));
       }
       case SP_BUILTIN_FLT_ARRAY: {
         sp_FloatArray *a = (sp_FloatArray *)v.v.p;
         if (a->len <= 0) return sp_box_nil();
-        return sp_box_float(sp_FloatArray_shift(a));
+        return sp_box_float_or_nil(sp_FloatArray_shift(a));
       }
       case SP_BUILTIN_STR_ARRAY: {
         sp_StrArray *a = (sp_StrArray *)v.v.p;
