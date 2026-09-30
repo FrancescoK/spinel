@@ -28,12 +28,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      # The macOS lane runs on master pushes only, as the -m32 lane does.
+      # Every PR ran it too, and the account's macOS runners are few: with
+      # a few dozen PRs open at once its queue alone was 16 minutes at the
+      # median and over an hour at the tail, for a 13-minute job, and each
+      # PR's result waited on it. A pull request runs the three Linux lanes.
       matrix:
-        include:
-          - { os: ubuntu-latest, cc: gcc, shard: 1, nshards: 2 }
-          - { os: ubuntu-latest, cc: gcc, shard: 2, nshards: 2 }
-          - { os: ubuntu-latest, cc: clang, shard: 1, nshards: 1 }
-          - { os: macos-latest, cc: clang, shard: 1, nshards: 1 }
+        include: ${{ fromJSON(github.event_name == 'push' && '[{"os":"ubuntu-latest","cc":"gcc","shard":1,"nshards":2},{"os":"ubuntu-latest","cc":"gcc","shard":2,"nshards":2},{"os":"ubuntu-latest","cc":"clang","shard":1,"nshards":1},{"os":"macos-latest","cc":"clang","shard":1,"nshards":1}]' || '[{"os":"ubuntu-latest","cc":"gcc","shard":1,"nshards":2},{"os":"ubuntu-latest","cc":"gcc","shard":2,"nshards":2},{"os":"ubuntu-latest","cc":"clang","shard":1,"nshards":1}]') }}
     env:
       # `sccache <cc>` wrapper. sccache forwards through to the
       # underlying compiler when its cache misses, so this stays
