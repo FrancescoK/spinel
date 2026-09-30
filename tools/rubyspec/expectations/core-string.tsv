@@ -872,7 +872,7 @@ match_spec__010	PASS
 match_spec__011	PASS
 match_spec__012	ERROR
 match_spec__013	PASS
-match_spec__014	HARNESS-SKEW
+match_spec__014	PASS
 match_spec__015	HARNESS-SKEW
 match_spec__016	HARNESS-SKEW
 match_spec__017	PASS

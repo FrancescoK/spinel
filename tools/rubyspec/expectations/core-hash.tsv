@@ -372,7 +372,7 @@ slice_spec__002	PASS
 slice_spec__003	PASS
 slice_spec__004	PASS
 slice_spec__005	REJECT
-slice_spec__006	REJECT
+slice_spec__006	ERROR
 slice_spec__007	PASS
 slice_spec__008	PASS
 slice_spec__009	REJECT
@@ -388,7 +388,7 @@ to_h_spec__003	HARNESS-SKEW
 to_h_spec__004	HARNESS-SKEW
 to_h_spec__005	HARNESS-SKEW
 to_h_spec__006	PASS
-to_h_spec__007	HARNESS-SKEW
+to_h_spec__007	FAIL
 to_h_spec__008	HARNESS-SKEW
 to_h_spec__009	HARNESS-SKEW
 to_h_spec__010	HARNESS-SKEW

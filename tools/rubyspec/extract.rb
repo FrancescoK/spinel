@@ -48,7 +48,7 @@ end
 def rewrite(line)
   line = line.gsub(/ScratchPad\.record\s+(.+)$/) { "scratch_pad = #{$1}" }
   line = line.gsub(/ScratchPad\.record\((.+)\)/) { "scratch_pad = #{$1}" }
-  line = line.gsub(/ScratchPad\s*<<\s*(.+)$/) { "scratch_pad.push(#{$1})" }
+  line = line.gsub(/ScratchPad\s*<</, "scratch_pad <<")
   line = line.gsub("ScratchPad.recorded", "scratch_pad")
   line = line.gsub("ScratchPad.clear", "scratch_pad = nil")
   line
