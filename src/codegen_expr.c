@@ -3028,6 +3028,10 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
            segment leaves nil (the segment walk lives in the guard helpers) */
         if (comp_defined_guard_true(c, id)) res = "constant";
       }
+      /* `sym.to_proc` was lowered to a lambda before this point (the
+         "stp_arity" mark): it is still the Symbol's method, not an iterator */
+      else if (sp_streq(vt, "CallNode") && nt_int(nt, v, "stp_arity", 0))
+        res = "method";
       /* an iterator is an expression, whatever it calls */
       else if (sp_streq(vt, "CallNode") && nt_kind(nt, nt_ref(nt, v, "block")) == NK_BlockNode)
         res = "expression";

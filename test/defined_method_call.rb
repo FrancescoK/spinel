@@ -28,3 +28,9 @@ p defined?(Emp.new), defined?(Math.sqrt), defined?(Emp.nope), defined?(Nope.new)
 p defined?(e.work { 1 })
 y = rand < 2 ? 1 : "s"
 p defined?(y.succ), defined?(y.upcase)
+
+# Symbol#to_proc is lowered to a lambda before defined? sees it: still "method"
+tp = :upcase
+p defined?(:upcase.to_proc)
+p defined?(tp.to_proc)
+p defined?(lambda { 1 })
