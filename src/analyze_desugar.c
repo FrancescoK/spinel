@@ -10529,6 +10529,32 @@ int desugar_builtin_reopen_self_calls(Compiler *c) {
  *               else raise NoMethodError, "undefined method 'two'" end
  *   end
  */
+/* Spinel has no Date or DateTime of its own: a program that defines one --
+   a body of the name with a superclass, an initialize, or class methods (a
+   pure-Ruby Date) -- owns the class, and its bodies are not a builtin's
+   reopening. A body that only adds instance methods (a gem reopening the
+   Date it expects the date library to provide) still is. */
+static int mo_program_owns(const NodeTable *nt, int n0, const char *cn) {
+  if (!sp_streq(cn, "Date") && !sp_streq(cn, "DateTime")) return 0;
+  for (int m = 0; m < n0; m++) {
+    if (nt_kind(nt, m) != NK_ClassNode) continue;
+    int cp = nt_ref(nt, m, "constant_path");
+    const char *mn = cp >= 0 && nt_kind(nt, cp) == NK_ConstantReadNode ? nt_str(nt, cp, "name") : NULL;
+    if (!mn || !sp_streq(mn, cn)) continue;
+    if (nt_ref(nt, m, "superclass") >= 0) return 1;
+    int b = nt_ref(nt, m, "body");
+    int bn = 0; const int *bs = b >= 0 ? nt_arr(nt, b, "body", &bn) : NULL;
+    for (int k = 0; k < bn; k++) {
+      if (nt_kind(nt, bs[k]) == NK_SingletonClassNode) return 1;
+      if (nt_kind(nt, bs[k]) != NK_DefNode) continue;
+      if (nt_ref(nt, bs[k], "receiver") >= 0) return 1;
+      const char *dn = nt_str(nt, bs[k], "name");
+      if (dn && sp_streq(dn, "initialize")) return 1;
+    }
+  }
+  return 0;
+}
+
 static const char *mo_guard_class(const char *cn) {
   /* Hash, Time and Range reopenings are modelled directly (a typed receiver
      dispatches to the reopening's own method, a boxed one through the
@@ -10586,7 +10612,7 @@ int desugar_builtin_reopen_methods(Compiler *c) {
     const char *g = cn ? mo_guard_class(cn) : NULL;
     if (!g) continue;
     /* a program's own class of the name (with a superclass) is its own */
-    if (nt_ref(nt, m, "superclass") >= 0) continue;
+    if (nt_ref(nt, m, "superclass") >= 0 || mo_program_owns(nt, n0, cn)) continue;
     int b = nt_ref(nt, m, "body");
     int bn = 0; const int *bs = b >= 0 ? nt_arr(nt, b, "body", &bn) : NULL;
     int *keep = malloc(sizeof(int) * (size_t)(bn ? bn : 1)); int nk = 0;
@@ -11002,7 +11028,7 @@ int desugar_object_method_builtin_overrides(Compiler *c) {
         int cp = nt_ref(nt, m, "constant_path");
         const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
         const char *g = cn ? mo_override_class(cn) : NULL;
-        if (!g) continue;
+        if (!g || mo_program_owns(nt, n0, cn)) continue;
         int b = nt_ref(nt, m, "body");
         int bn = 0; const int *bs = b >= 0 ? nt_arr(nt, b, "body", &bn) : NULL;
         for (int k = 0; k < bn; k++) {
