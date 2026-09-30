@@ -24517,25 +24517,43 @@ int emit_spread_args_into(Compiler *c, const int *argv, int argc, const char *kw
 /* The (separator, limit, chomp) arguments of sp_File_gets_sep and
    sp_File_readline_sep from IO#gets's argument forms (#2809): an argument
    typed Integer is the limit, a `chomp:` keyword the flag, anything else the
-   separator; an absent one is "\n", 0 or 0. */
-static void emit_gets_sep_args(Compiler *c, const int *argv, int argc, Buf *b) {
+   separator; an absent one is "\n", 0 or 0. Each comes out as its own C
+   expression, for a caller that has to bind them once. `strict` (the block
+   form of each_line) reads only a first argument typed String or nil as the
+   separator and leaves any other alone, as that form always did. */
+static void gets_sep_arg_texts(Compiler *c, const int *argv, int argc, int strict, Buf *sep, Buf *lim, Buf *chomp) {
   const NodeTable *nt = c->nt;
   int gsep = -1, glim = -1;
   Buf gchomp; memset(&gchomp, 0, sizeof gchomp);   /* the C truth of `chomp:` */
+  int pos = 0;   /* position among the positional arguments */
   for (int k = 0; k < argc; k++) {
     const char *kty = nt_type(nt, argv[k]);
     if (kty && sp_streq(kty, "KeywordHashNode")) {
       int cv = struct_kwarg_value(c, argv[k], "chomp");
       emit_kw_flag(c, cv, &gchomp);
+      continue;
     }
-    else if (comp_ntype(c, argv[k]) == TY_INT) glim = argv[k];
-    else gsep = argv[k];
+    TyKind at = comp_ntype(c, argv[k]);
+    if (at == TY_INT) glim = argv[k];
+    else if (!strict) gsep = argv[k];
+    else if (pos == 0 && (at == TY_STRING || at == TY_NIL)) gsep = argv[k];   /* a nil after it is no limit */
+    pos++;
   }
-  if (gsep >= 0) emit_str_expr_nilable(c, gsep, b); else buf_puts(b, "\"\\n\"");
-  buf_puts(b, ", ");
-  if (glim >= 0) emit_int_expr(c, glim, b); else buf_puts(b, "0");
-  buf_printf(b, ", %s", gchomp.p ? gchomp.p : "0");
+  if (gsep >= 0) emit_str_expr_sep(c, gsep, sep); else buf_puts(sep, "\"\\n\"");
+  if (glim >= 0) {
+    /* the block form never raised for a nil limit, and keeps not raising */
+    if (strict) emit_int_expr_nilable(c, glim, lim); else emit_int_expr(c, glim, lim);
+  }
+  else buf_puts(lim, "0");
+  buf_puts(chomp, gchomp.p ? gchomp.p : "0");
   free(gchomp.p);
+}
+
+static void emit_gets_sep_args(Compiler *c, const int *argv, int argc, Buf *b) {
+  Buf s, l, k; memset(&s, 0, sizeof s); memset(&l, 0, sizeof l); memset(&k, 0, sizeof k);
+  gets_sep_arg_texts(c, argv, argc, 0, &s, &l, &k);
+  buf_printf(b, "%s, %s, %s", s.p, l.p, k.p);
+  free(s.p); free(l.p); free(k.p);
 }
 
 /* The readiness family on a handle `r`: the handle when ready, nil (NULL)
@@ -30802,8 +30820,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       const char *bpn = bp ? rename_local(bp) : NULL;
       int bdy = nt_ref(nt, blk, "body");
       int bbn = 0; const int *bbb = bdy >= 0 ? nt_arr(nt, bdy, "body", &bbn) : NULL;
-      /* an optional separator argument (#2810) forces the general reader */
-      int esep = (argc >= 1 && comp_ntype(c, argv[0]) == TY_STRING) ? argv[0] : -1;
       int lt = ++g_tmp, rf = ++g_tmp;
       buf_puts(b, "({ ");
       /* rooted as the File.open block form roots its handle (below): a
@@ -30821,10 +30837,17 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
          emit_hash_filter_loop roots its key and value (codegen_iter.c): a
          block that REBINDS it -- line = line.upcase -- holds the new string
          in that slot alone. */
+      /* the separator, the limit and `chomp:` (#2810) are evaluated once,
+         ahead of the loop, as CRuby evaluates them */
+      Buf esep, elim, echomp; memset(&esep, 0, sizeof esep); memset(&elim, 0, sizeof elim); memset(&echomp, 0, sizeof echomp);
+      gets_sep_arg_texts(c, argv, argc, 1, &esep, &elim, &echomp);
+      int ls = ++g_tmp, ll = ++g_tmp, lc = ++g_tmp;
+      buf_printf(b, "const char *_t%d = %s; SP_GC_ROOT_STR(_t%d); sp_int _t%d = %s; sp_bool _t%d = %s;",
+                 ls, esep.p, ls, ll, elim.p, lc, echomp.p);
+      free(esep.p); free(elim.p); free(echomp.p);
       buf_printf(b, "const char *_t%d = NULL; SP_GC_ROOT_STR(_t%d);"
-                    " while ((_t%d = sp_File_gets_sep(_t%d, ", lt, lt, lt, rf);
-      if (esep >= 0) emit_expr(c, esep, b); else buf_puts(b, "\"\\n\"");
-      buf_puts(b, ", 0, 0)) != NULL) {");
+                    " while ((_t%d = sp_File_gets_sep(_t%d, _t%d, _t%d, _t%d)) != NULL) {",
+                 lt, lt, lt, rf, ls, ll, lc);
       if (bpn && file_block_param_poly(c, id, bpn))
         buf_printf(b, " sp_RbVal lv_%s = sp_box_str(_t%d); SP_GC_ROOT_RBVAL(lv_%s);", bpn, lt, bpn);
       else if (bpn) buf_printf(b, " const char *lv_%s = _t%d; SP_GC_ROOT_STR(lv_%s);", bpn, lt, bpn);
