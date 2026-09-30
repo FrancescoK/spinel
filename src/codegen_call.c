@@ -7469,6 +7469,13 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           {"pos",     "sp_File_tell",     TY_INT},
           {NULL, NULL, TY_VOID}
         };
+        /* a bare puts writes the newline and answers nil (#6158) */
+        if (sp_streq(name, "puts")) {
+          buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO) { "
+                        "sp_File_puts((sp_File *)_t%d.v.p, \"\"); ", tv, tv, tv);
+          if (ret == TY_POLY) buf_printf(b, "_t%d = sp_box_nil(); ", tr);
+          buf_puts(b, "}\nelse ");
+        }
         for (int i = 0; IOZ[i].nm; i++) {
           if (!sp_streq(name, IOZ[i].nm)) continue;
           char ioex[128];
@@ -9437,6 +9444,32 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           else                buf_printf(b, "_t%d = _t%d; ", tr, wres);
           buf_puts(b, "break; }");
         }
+      }
+      /* print and puts on a poly value, beside the write arm: an IO held
+         where a StringIO can be, or reached through a user class that owns
+         the name (Zlib::GzipWriter#print), had no arm and raised
+         NoMethodError (#6158). Each argument is boxed; puts takes it through
+         sp_File_puts_val, which flattens an Array as Kernel#puts does, and
+         print writes its to_s. Both answer nil. */
+      if ((sp_streq(name, "puts") || (sp_streq(name, "print") && argc > 0)) &&
+          kwh < 0 && splat_a < 0) {
+        int is_puts = sp_streq(name, "puts");
+        buf_puts(b, " case SP_BUILTIN_IO: { ");
+        if (is_puts && argc == 0) buf_printf(b, "sp_File_write((sp_File *)_t%d.v.p, \"\\n\"); ", tv);
+        for (int a = 0; a < argc; a++) {
+          int pv = ++g_tmp;
+          char an[24]; snprintf(an, sizeof an, "_t%d", atmp[a]);
+          buf_printf(b, "sp_RbVal _t%d = ", pv);
+          if (atmp_ty[a] == TY_POLY) buf_puts(b, an);
+          else emit_boxed_text(c, atmp_ty[a], an, b);
+          buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", pv);
+          if (is_puts) buf_printf(b, "sp_File_puts_val((sp_File *)_t%d.v.p, _t%d); ", tv, pv);
+          else buf_printf(b, "if (_t%d.tag == SP_TAG_STR) sp_File_write_bin((sp_File *)_t%d.v.p, _t%d.v.s); "
+                             "else sp_File_write((sp_File *)_t%d.v.p, sp_poly_to_s(_t%d)); ",
+                          pv, tv, pv, tv, pv);
+        }
+        if (ret == TY_POLY) buf_printf(b, "_t%d = sp_box_nil(); ", tr);
+        buf_puts(b, "break; }");
       }
       /* seek and read(n) on a poly value, the positioning pair beside the
          write arm: a File held in the same ivar as a StringIO reached this

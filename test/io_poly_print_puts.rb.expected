@@ -1,0 +1,19 @@
+a
+b
+--
+1
+2
+
+sym
+3 4.5
+
+x
+nil
+"c\n--\n1\n2\n\nsym\n3 4.5\n\nx\nnil\n"
+via IO
+and puts
+7k1.5
+3
+4
+
+[[3, [4]], nil]
