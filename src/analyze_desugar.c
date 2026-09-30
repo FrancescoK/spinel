@@ -9460,6 +9460,7 @@ static void incl_subst(NodeTable *nt, int node, const char *param, const char *c
   }
   if (k == NK_LocalVariableReadNode && nt_str(nt, node, "name") &&
       sp_streq(nt_str(nt, node, "name"), param)) {
+    if (!cls_name) { nt_node_reset(nt, node, "SelfNode"); return; }
     nt_node_reset(nt, node, "ConstantReadNode");
     nt_node_set_str(nt, node, "name", cls_name);
     return;
@@ -9519,8 +9520,11 @@ int desugar_included_hooks(Compiler *c) {
       cls = nt_str(nt, cn, "name");
       body = class_def_body(c, cn);
     }
+    else if (ck == NK_LocalVariableWriteNode) {   /* k = Struct.new(...) do ... end: base is self */
+      body = class_def_body(c, cn);
+    }
     else continue;
-    if (!cls || body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    if ((!cls && ck != NK_LocalVariableWriteNode) || body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
     int n = 0; const int *st = nt_arr(nt, body, "body", &n);
     int *out = NULL; int no = 0, cap = 0, spliced = 0;
     for (int k = 0; k < n; k++) {

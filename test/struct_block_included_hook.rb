@@ -17,3 +17,16 @@ S = Struct.new(:a) do
 end
 p S.build.hi
 p S.new(4).twice
+
+# the same held in a local
+module LM
+  def self.included(base)
+    puts "LM included"
+  end
+end
+lk = Struct.new(:a) do
+  include LM
+  puts "local body"
+  def m = a
+end
+p lk.new(3).m

@@ -8983,7 +8983,16 @@ else {
     buf_puts(b, ";\n");
     return;
   }
-  if (sp_streq(ty, "LocalVariableWriteNode")) { emit_assign(c, id, b, indent); return; }
+  if (sp_streq(ty, "LocalVariableWriteNode")) {
+    emit_assign(c, id, b, indent);
+    /* `k = Struct.new(...) do ... end`: the block's statements run too */
+    int v = nt_ref(nt, id, "value");
+    if (v >= 0 && is_struct_call(c, v)) {
+      int sci = anon_struct_ci_for_value(c, v);
+      if (sci >= 0) emit_class_body_stmts(c, sci, class_def_body(c, id), b, indent);
+    }
+    return;
+  }
   if (sp_streq(ty, "LocalVariableOperatorWriteNode")) { emit_op_assign(c, id, b, indent); return; }
   if (sp_streq(ty, "LocalVariableOrWriteNode") || sp_streq(ty, "LocalVariableAndWriteNode")) {
     int is_or = sp_streq(ty, "LocalVariableOrWriteNode");
