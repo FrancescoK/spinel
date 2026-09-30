@@ -2520,9 +2520,13 @@ int emit_step_array_expr(Compiler *c, int id, Buf *b) {
   buf_printf(b, "; sp_float _t%d = ", ts);
   if (sc >= 2) emit_float_expr(c, sv[1], b); else buf_puts(b, "1.0");
   buf_printf(b, "; if (_t%d == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");", ts);
+  /* an infinite or huge count cannot be materialised (CRuby's blockless
+     form is lazy): raise as sp_FloatArray_from_step does rather than push
+     until memory runs out */
   buf_printf(b, " sp_float _t%d = sp_float_step_size(_t%d, _t%d, _t%d, 0);"
+                " if (_t%d >= (sp_float)(1LL << 30)) sp_raise_cls(\"RangeError\", \"range too large to materialize\");"
                 " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_FloatArray_push(_t%d, sp_float_step_at(_t%d, _t%d, _t%d, _t%d)); _t%d; })",
-             tn, tb, tl, ts, ti, ti, tn, ti, tr, tb, tl, ts, ti, tr);
+             tn, tb, tl, ts, tn, ti, ti, tn, ti, tr, tb, tl, ts, ti, tr);
   return 1;
 }
 
