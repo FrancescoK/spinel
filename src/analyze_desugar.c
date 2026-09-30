@@ -724,7 +724,10 @@ static int me_body_defines(const NodeTable *nt, const char *leaf, const char *m,
     if (!nm || !sp_streq(nm, leaf) || subtree_has(nt, skip, id)) continue;
     int body = nt_ref(nt, id, "body");
     int bn = 0; const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
-    for (int i = 0; i < bn; i++) if (me_stmt_defines(nt, bb[i], m)) return 1;
+    for (int i = 0; i < bn; i++) {
+      int rv = nt_ref(nt, bb[i], "receiver");
+      if ((rv < 0 || nt_kind(nt, rv) == NK_SelfNode) && me_stmt_defines(nt, bb[i], m)) return 1;
+    }
   }
   return 0;
 }
