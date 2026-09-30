@@ -10188,8 +10188,14 @@ static int pure_block_param(Compiler *c, Scope *s, const char *name) {
 
 /* Settle what the sites bound (block_site_types) into the parameters of
    block `blk`, which emit_block_binds binds: there a parameter left without
-   a value is nil, which only the box holds for every type. A rest is the
-   array that binder builds, and a `**kw` rest its hash. */
+   a value is nil, which only the box holds for every type. A leading
+   required every site binds an Integer, or nothing (`yield(*xs)` of a
+   run-time length), is the exception: its binders write the sentinel for a
+   missing value (default_value), so it stays an sp_int marked nullable, the
+   mark every read that boxes or tests it for nil goes by. Under promote an
+   Integer is boxed anyway. A value not typed yet says nothing this round:
+   boxed then, the parameter stayed boxed for good. A rest is the array that
+   binder builds, and a `**kw` rest its hash. */
 int block_settle_types(Compiler *c, int blk, const BlockSig *s,
                        const TyKind *pos, const char *absent, const TyKind *kws) {
   Scope *bs = comp_scope_of(c, blk);
@@ -10199,8 +10205,10 @@ int block_settle_types(Compiler *c, int blk, const BlockSig *s,
     const char *bp = kw ? block_sig_kw_name(c, s, i - s->P - s->O - s->Q) : block_sig_name(c, s, i);
     if (!bp) continue;
     TyKind at = kw ? kws[i - s->P - s->O - s->Q] : pos[i];
-    if (!kw && absent[i]) at = ty_unify(at, TY_POLY);
+    int nil_int = !kw && i < s->P && absent[i] && at == TY_INT && !g_promote_mode;
     LocalVar *lv = scope_local_intern(bs, bp); lv->is_block_param = 1;
+    if (!kw && absent[i] && at == TY_UNKNOWN && g_infer_optimistic) continue;
+    if (!kw && absent[i] && !nil_int) at = ty_unify(at, TY_POLY);
     TyKind m = ty_unify(lv->type, at);
     /* what the sites bind says what the parameter IS; an array kind the
        usage pass guessed from a push inside the block (`s << "z"` on a
@@ -10211,6 +10219,7 @@ int block_settle_types(Compiler *c, int blk, const BlockSig *s,
     if (ty_is_array(lv->type) && at != TY_UNKNOWN && !ty_is_array(at) &&
         at != TY_POLY && pure_block_param(c, bs, bp))
       m = at;
+    if (nil_int && m == TY_INT && !lv->nullable_int) { lv->nullable_int = 1; changed = 1; }
     if (m != lv->type) { lv->type = m; changed = 1; }
   }
   const char *rest[2] = { block_rest_name(c, blk), block_kwrest_name(c, blk) };
