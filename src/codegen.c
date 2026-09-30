@@ -13334,6 +13334,50 @@ char *codegen_program(const NodeTable *nt) {
         cls_incs[ci][cls_nincs[ci]++] = mid3;
       }
     }
+    /* A module's own includes are part of every includer's ancestry:
+       `module M2; include M1; end; class A; include M2; end` gives A the
+       ancestors [A, M2, M1, ...], and A.include?(M1) / A.new.is_a?(M1) are
+       true. The tables held direct includes only, so those answered false
+       (activesupport's concerns include one another this way). Close each
+       list transitively, keeping the include-order convention the emission
+       below reverses: a module's closure goes right BEFORE the module. */
+    {
+      int **closed = calloc((size_t)c->nclasses, sizeof(int *));
+      int  *nclosed = calloc((size_t)c->nclasses, sizeof(int));
+      for (int ci = 0; ci < c->nclasses; ci++) {
+        int *out = NULL, nout = 0;
+        /* iterative DFS in include order: push m's closure, then m */
+        int *seen = calloc((size_t)c->nclasses, sizeof(int));
+        seen[ci] = 1;
+        /* frame: (class index, next include position) */
+        int fr_ci[128], fr_q[128]; int nfr = 0;
+        fr_ci[nfr] = ci; fr_q[nfr] = 0; nfr++;
+        while (nfr > 0) {
+          int cur = fr_ci[nfr - 1]; int q = fr_q[nfr - 1];
+          if (q >= cls_nincs[cur]) {
+            nfr--;
+            if (nfr > 0) { int m = cur; int dup = 0;
+              for (int j = 0; j < nout; j++) if (out[j] == m) dup = 1;
+              if (!dup) { out = realloc(out, sizeof(int) * (size_t)(nout + 1)); out[nout++] = m; } }
+            continue;
+          }
+          fr_q[nfr - 1] = q + 1;
+          int m = cls_incs[cur][q];
+          if (m < 0) {   /* a builtin module: no includes of its own */
+            int dup = 0; for (int j = 0; j < nout; j++) if (out[j] == m) dup = 1;
+            if (!dup) { out = realloc(out, sizeof(int) * (size_t)(nout + 1)); out[nout++] = m; }
+            continue;
+          }
+          if (m >= c->nclasses || seen[m] || nfr >= 128) continue;
+          seen[m] = 1;
+          fr_ci[nfr] = m; fr_q[nfr] = 0; nfr++;
+        }
+        free(seen);
+        closed[ci] = out; nclosed[ci] = nout;
+      }
+      for (int ci = 0; ci < c->nclasses; ci++) { free(cls_incs[ci]); cls_incs[ci] = closed[ci]; cls_nincs[ci] = nclosed[ci]; }
+      free(closed); free(nclosed);
+    }
     /* Emit sp_class_ancestors using the include info. */
     buf_puts(&b, "static sp_PolyArray *sp_class_ancestors(sp_Class c){\n");
     buf_puts(&b, "  sp_PolyArray *a=sp_PolyArray_new();\n");
