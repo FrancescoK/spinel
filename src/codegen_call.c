@@ -25260,6 +25260,15 @@ static int emit_int_operand_fail(Compiler *c, int id, int recv, int arg, int is_
   return 1;
 }
 
+/* Whether a File iterator's block parameter (renamed) is a boxed local: the
+   block is shared with another receiver's arm (a StringIO's Ruby each_line
+   in the same poly dispatch), so its body reads the parameter boxed. */
+static int file_block_param_poly(Compiler *c, int id, const char *pname) {
+  Scope *s = comp_scope_of(c, id);
+  LocalVar *lv = s ? scope_local(s, pname) : NULL;
+  return lv && lv->type == TY_POLY;
+}
+
 static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -30265,7 +30274,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
            read by the loop condition and never again, so it needs no root */
         buf_printf(b, "const char *_t%d = NULL; SP_GC_ROOT_STR(_t%d);"
                       " while ((_t%d = sp_File_getc(_t%d)) != NULL) {", lt2, lt2, lt2, rf2);
-      if (bpn2) {
+      if (bpn2 && file_block_param_poly(c, id, bpn2))
+        buf_printf(b, " sp_RbVal lv_%s = %s(_t%d); SP_GC_ROOT_RBVAL(lv_%s);", bpn2,
+                   (is_byte || is_cp) ? "sp_box_int" : "sp_box_str", lt2, bpn2);
+      else if (bpn2) {
         buf_printf(b, " %s lv_%s = _t%d;", (is_byte || is_cp) ? "sp_int" : "const char *", bpn2, lt2);
         if (!is_byte && !is_cp) buf_printf(b, " SP_GC_ROOT_STR(lv_%s);", bpn2);
       }
@@ -30585,7 +30597,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                     " while ((_t%d = sp_File_gets_sep(_t%d, ", lt, lt, lt, rf);
       if (esep >= 0) emit_expr(c, esep, b); else buf_puts(b, "\"\\n\"");
       buf_puts(b, ", 0, 0)) != NULL) {");
-      if (bpn) buf_printf(b, " const char *lv_%s = _t%d; SP_GC_ROOT_STR(lv_%s);", bpn, lt, bpn);
+      if (bpn && file_block_param_poly(c, id, bpn))
+        buf_printf(b, " sp_RbVal lv_%s = sp_box_str(_t%d); SP_GC_ROOT_RBVAL(lv_%s);", bpn, lt, bpn);
+      else if (bpn) buf_printf(b, " const char *lv_%s = _t%d; SP_GC_ROOT_STR(lv_%s);", bpn, lt, bpn);
       for (int k = 0; k < bbn; k++) emit_stmt(c, bbb[k], b, 0);
       buf_printf(b, " } (sp_File *)_t%d; })", rf);
       return;
@@ -41091,6 +41105,7 @@ else {
       return;
     }
   }
+  if (emit_poly_recv_block_value(c, id, b)) { nd_stamp(id, ND_SWITCH); return; }
   if (emit_poly_builtin_method(c, id, b)) { nd_stamp(id, ND_SWITCH); return; }
   if (emit_poly_method_dispatch(c, id, b)) { nd_stamp(id, ND_SWITCH); return; }
   /* the distinct value-type ranges (float / string) answer first */

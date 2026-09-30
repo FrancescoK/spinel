@@ -1,0 +1,42 @@
+[:line, "a\n"]
+[:line, "b\n"]
+[:char, "a"]
+[:char, "\n"]
+[:char, "b"]
+[:char, "\n"]
+[:byte, 97]
+[:byte, 10]
+[:byte, 98]
+[:byte, 10]
+"a\n"
+"b\n"
+true
+"a"
+"\n"
+"b"
+"\n"
+97
+10
+98
+10
+[:line, "x\n"]
+[:line, "y\n"]
+[:char, "x"]
+[:char, "\n"]
+[:char, "y"]
+[:char, "\n"]
+[:byte, 120]
+[:byte, 10]
+[:byte, 121]
+[:byte, 10]
+"x\n"
+"y\n"
+true
+"x"
+"\n"
+"y"
+"\n"
+120
+10
+121
+10
