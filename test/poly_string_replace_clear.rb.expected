@@ -1,0 +1,15 @@
+[2]
+"cd"
+{}
+""
+[3]
+"r"
+"longlonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglonglong"
+["n"]
+"n"
+["n"]
+"b"
+[9]
+TypeError: no implicit conversion of Integer into String
+FrozenError: can't modify frozen String: "fr"
+FrozenError: can't modify frozen String: "fz"

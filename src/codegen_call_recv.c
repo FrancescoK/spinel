@@ -15347,8 +15347,18 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       g_n_argov--;
       return 1;
     }
+    /* a plain string box cannot hold the new contents, so an lvalue
+       receiver takes the result back, as `insert` does (#3445), when the
+       source can be a String; a container is replaced through its pointer
+       and answers itself */
+    const char *rvtr = nt_type(nt, recv);
+    TyKind srt = comp_ntype(c, argv[0]);
+    int wb = rvtr && (sp_streq(rvtr, "LocalVariableReadNode") || sp_streq(rvtr, "InstanceVariableReadNode")) &&
+             (srt == TY_STRING || srt == TY_POLY);
+    if (wb) { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, " = "); }
     buf_puts(b, "sp_poly_replace_any("); emit_expr(c, recv, b);
     buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+    if (wb) buf_puts(b, ")");
     return 1;
   }
   /* poly receiver: pack(fmt) -> runtime dispatch (nullable array). */
