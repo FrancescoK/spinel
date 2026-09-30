@@ -12163,7 +12163,8 @@ static void compute_byref_out_params(Compiler *c) {
   int n = c->nscopes;
   char *elig = calloc((size_t)n, 1);
   unsigned *blocked = calloc((size_t)n, sizeof(unsigned));  /* per-scope param bitmask */
-  if (!elig || !blocked) { free(elig); free(blocked); return; }
+  char *polyr = calloc((size_t)n, 1);   /* a POLY receiver reaches the name */
+  if (!elig || !blocked || !polyr) { free(elig); free(blocked); free(polyr); return; }
 
   for (int si = 1; si < n; si++) {
     Scope *s = &c->scopes[si];
@@ -12305,15 +12306,18 @@ static void compute_byref_out_params(Compiler *c) {
        was exactly the case it refused, and a poly dispatch needs two. Making
        the group agree (df30ed28) removed that accident and left the dispatch
        unable to call what it now agrees about.
-       Teaching the dispatch to lend the slot is the real answer and it is
-       part of deciding what a byref slot is. Until then a name a poly
-       receiver can reach keeps the value ABI, which is what it had. */
+       Kept on the value ABI, though, every arm appended to a copy and the
+       caller's String came back empty. So such a name is promoted as any
+       other, and takes the shared handle instead of the slot once the
+       group has settled (below): the dispatch hands a handle arm the
+       caller's handle (emit_poly_shared_arg), and a handle, unlike a slot,
+       is one thing whichever arm the receiver picks. */
     if (sp_streq(ty, "CallNode")) {
       int rcv = nt_ref(nt, id, "receiver");
       const char *cn = nt_str(nt, id, "name");
       if (rcv >= 0 && cn && comp_ntype(c, rcv) == TY_POLY)
         for (int si = 1; si < n; si++)
-          if (elig[si] && c->scopes[si].name && sp_streq(c->scopes[si].name, cn)) elig[si] = 0;
+          if (elig[si] && c->scopes[si].name && sp_streq(c->scopes[si].name, cn)) polyr[si] = 1;
     }
     /* a plain rebind of a param blocks it (see the header comment) */
     if (sp_streq(ty, "LocalVariableWriteNode") ||
@@ -12407,8 +12411,25 @@ static void compute_byref_out_params(Compiler *c) {
       }
     }
   }
+  /* A name a POLY receiver reaches takes the shared handle where the group
+     settled on the slot (see the POLY receiver note above), and the
+     conversion pass pulls each caller's local into it: `[Loud.new,
+     Quiet.new].each { |v| v.append_into(io) }` left every append in a
+     copy. The whole name group is marked, so every member it promoted
+     converts, and the group still agrees. */
+  for (int si = 1; si < n; si++) {
+    if (!polyr[si]) continue;
+    Scope *m = &c->scopes[si];
+    for (int j = 0; j < m->nparams && j < 32; j++) {
+      LocalVar *q = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
+      if (!q || !q->byref_out) continue;
+      q->byref_out = 0; q->is_cell = 0;
+      q->type = TY_STRBUF; q->str_shared = 1;
+    }
+  }
   free(elig);
   free(blocked);
+  free(polyr);
 }
 
 /* Does scope mi's body contain a call to its own method name on implicit or

@@ -5622,6 +5622,7 @@ void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out)
 }
 
 static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provided, Buf *out);
+static int ran_first_handle(int node);
 
 /* A default is emitted in place at the call site, so one whose expression
    omits the same argument of the same method again has no finite emission.
@@ -5795,13 +5796,20 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
     if (provided >= 0) {
       char srefP[192];
       /* A variable the call ran first is read where it ran, not at its
-         slot (see the byref slot below): its handle, which a later
-         argument can overwrite, is a fresh one of the value read then. */
+         slot (see the byref slot below): a later argument can give the
+         slot another String. It binds the handle taken where it ran, or,
+         when the variable held none, a fresh one of the value read then. */
       NodeKind pk = nt_kind(c->nt, provided);
       int late = (pk == NK_LocalVariableReadNode || pk == NK_InstanceVariableReadNode) &&
                  arg_ran_first(provided, 0);
       if (!late && strbuf_slot_ref(c, provided, srefP, sizeof srefP)) {
         buf_puts(out, srefP);
+        return;
+      }
+      /* one whose handle was taken where it ran binds that handle */
+      int hP = late ? ran_first_handle(provided) : 0;
+      if (hP) {
+        buf_printf(out, "_t%d", hP);
         return;
       }
       buf_puts(out, "sp_String_new_shared(");
@@ -7025,6 +7033,25 @@ int kwh_out_of_order(Compiler *c, Scope *m, int kwh) {
   return 0;
 }
 
+/* A String variable that holds a shared handle, read ahead of the
+   binding (emit_arg_temp): each pair is the temp its value went to and the
+   temp holding the handle. Temps are numbered once per program, so a pair
+   never goes stale. */
+static int (*g_ran_hnd)[2];
+static int g_n_ran_hnd, g_cap_ran_hnd;
+
+/* The temp holding the handle of the variable `node` read where the call
+   ran it, or 0. */
+static int ran_first_handle(int node) {
+  for (int i = 0; i < g_n_argov; i++) {
+    int t;
+    if (g_argov_node[i] != node || sscanf(g_argov_text[i], "_t%d", &t) != 1) continue;
+    for (int j = 0; j < g_n_ran_hnd; j++)
+      if (g_ran_hnd[j][0] == t) return g_ran_hnd[j][1];
+  }
+  return 0;
+}
+
 /* The value `v` evaluated into a rooted temp in g_pre, pushed onto the
    g_argov overrides so its uses read the temp. */
 static void emit_arg_temp(Compiler *c, int v) {
@@ -7033,6 +7060,25 @@ static void emit_arg_temp(Compiler *c, int v) {
   Buf hb; memset(&hb, 0, sizeof hb);
   emit_expr(c, v, &hb);
   emit_indent(g_pre, g_indent);
+  /* A variable holding a shared handle, which a later argument gives
+     another value: the handle is taken here too, as CRuby takes the object
+     where the argument runs, so a handle parameter binds it and the
+     callee's appends reach the String the caller read (ran_first_handle).
+     The value temp alone wrapped a fresh handle, and they stayed in it. */
+  NodeKind vk = nt_kind(c->nt, v);
+  char sref[192];
+  if ((at == TY_STRING || at == TY_STRBUF) &&
+      (vk == NK_LocalVariableReadNode || vk == NK_InstanceVariableReadNode) &&
+      strbuf_slot_ref(c, v, sref, sizeof sref)) {
+    int h = ++g_tmp;
+    buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d); ", h, sref, h);
+    if (g_n_ran_hnd == g_cap_ran_hnd) {
+      g_cap_ran_hnd = g_cap_ran_hnd ? g_cap_ran_hnd * 2 : 16;
+      g_ran_hnd = realloc(g_ran_hnd, sizeof *g_ran_hnd * (size_t)g_cap_ran_hnd);
+    }
+    g_ran_hnd[g_n_ran_hnd][0] = t; g_ran_hnd[g_n_ran_hnd][1] = h;
+    g_n_ran_hnd++;
+  }
   if (at == TY_POLY) buf_puts(g_pre, "sp_RbVal");
   else emit_ctype(c, at, g_pre);
   buf_printf(g_pre, " _t%d = %s;", t, hb.p ? hb.p : default_value(at));
