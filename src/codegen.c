@@ -12430,7 +12430,7 @@ static void scan_prologue_features(Compiler *c) {
    same case, and restoring the pre-unit value needs no judgement about what
    each global's "between units" value ought to be. Scalars are left alone:
    a stale int is wrong, not undefined, and the next unit assigns its own. */
-typedef struct {
+typedef struct EmitUnitState {
   Buf *pre;
   const char *yield_self_fallback;
   const char *yield_self_fallback2, *yield_self_deref_fallback2; int yield_emitting_class_fallback2;
@@ -12480,10 +12480,12 @@ typedef struct {
   int indent, nren, block_nren, block_id, c_loop_depth, ensure_depth;
   int emitting_class_id, inline_recv_class, ie_class_id, dm_subst_node, exc_frame_depth;
   int open_defaults;
+  int loop_exc_base, loop_ensure_base, redo_depth;
+  TyKind ie_next_ty;
   int move_depth;   /* instance_exec scope moves (comp_scope_move_unwind) */
 } EmitUnitState;
 
-static void emit_unit_state_save(EmitUnitState *s) {
+void emit_unit_state_save(EmitUnitState *s) {
   s->move_depth = comp_scope_move_depth();
   s->ret_type = g_ret_type; s->fn_ret_type = g_fn_ret_type; s->result_ty = g_result_ty;
   s->c_ret_void = g_c_ret_void; s->in_proc_body = g_in_proc_body; s->result_poly = g_result_poly;
@@ -12492,6 +12494,8 @@ static void emit_unit_state_save(EmitUnitState *s) {
   s->c_loop_depth = g_c_loop_depth; s->ensure_depth = g_ensure_depth;
   s->emitting_class_id = g_emitting_class_id; s->inline_recv_class = g_inline_recv_class;
   s->ie_class_id = g_ie_class_id; s->dm_subst_node = g_dm_subst_node; s->exc_frame_depth = g_exc_frame_depth;
+  s->loop_exc_base = g_loop_exc_base; s->loop_ensure_base = g_loop_ensure_base; s->redo_depth = g_redo_depth;
+  s->ie_next_ty = g_ie_next_ty;
   s->open_defaults = g_open_defaults;
   s->pre = g_pre;
   s->yield_self_fallback = g_yield_self_fallback;
@@ -12531,7 +12535,7 @@ static void emit_unit_state_save(EmitUnitState *s) {
   s->iow_key_ref = g_iow_key_ref;
 }
 
-static void emit_unit_state_restore(const EmitUnitState *s) {
+void emit_unit_state_restore(const EmitUnitState *s) {
   comp_scope_move_unwind(s->move_depth);
   g_ret_type = s->ret_type; g_fn_ret_type = s->fn_ret_type; g_result_ty = s->result_ty;
   g_c_ret_void = s->c_ret_void; g_in_proc_body = s->in_proc_body; g_result_poly = s->result_poly;
@@ -12540,6 +12544,8 @@ static void emit_unit_state_restore(const EmitUnitState *s) {
   g_c_loop_depth = s->c_loop_depth; g_ensure_depth = s->ensure_depth;
   g_emitting_class_id = s->emitting_class_id; g_inline_recv_class = s->inline_recv_class;
   g_ie_class_id = s->ie_class_id; g_dm_subst_node = s->dm_subst_node; g_exc_frame_depth = s->exc_frame_depth;
+  g_loop_exc_base = s->loop_exc_base; g_loop_ensure_base = s->loop_ensure_base; g_redo_depth = s->redo_depth;
+  g_ie_next_ty = s->ie_next_ty;
   g_open_defaults = s->open_defaults;
   g_pre = s->pre;
   g_yield_self_fallback = s->yield_self_fallback;
@@ -12577,6 +12583,17 @@ static void emit_unit_state_restore(const EmitUnitState *s) {
   g_cap_names = s->cap_names;
   g_iow_recv_ref = s->iow_recv_ref;
   g_iow_key_ref = s->iow_key_ref;
+}
+/* A probe's snapshot of the emitter state, for a probe that may be
+   abandoned by a longjmp partway through a loop or a nested body. */
+EmitUnitState *emit_state_snapshot(void) {
+  EmitUnitState *s = malloc(sizeof *s);
+  emit_unit_state_save(s);
+  return s;
+}
+void emit_state_release(EmitUnitState *s, int rollback) {
+  if (rollback) emit_unit_state_restore(s);
+  free(s);
 }
 
 /* Emit one top-level output unit (a method, constructor, BEGIN/END block, or the

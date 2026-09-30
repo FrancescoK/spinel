@@ -230,6 +230,9 @@ extern const char *g_ie_next_var;
    at its own default, which the destination then reads as the wrong struct
    (#3978). TY_UNKNOWN when unknown or not a container. */
 extern TyKind g_ie_next_ty;
+typedef struct EmitUnitState EmitUnitState;
+EmitUnitState *emit_state_snapshot(void);
+void emit_state_release(EmitUnitState *s, int rollback);
 extern TyKind g_bv_dest_ty;
 extern int g_c_loop_depth;   /* C-loop nesting inside the current fn body */
 extern int g_in_proc_body;   /* emitting a _proc_N function body */
