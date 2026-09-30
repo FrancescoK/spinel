@@ -94,7 +94,7 @@ jobs:
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.4"
+          ruby-version: "4.0"
 
       # coreutils is NOT preinstalled on the macOS runners, so `timeout` and
       # `gtimeout` were both absent and the whole suite ran with no time limit:
@@ -240,7 +240,7 @@ jobs:
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.4"
+          ruby-version: "4.0"
 
       - name: Install the 32-bit toolchain
         run: |
@@ -314,7 +314,7 @@ jobs:
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.4"
+          ruby-version: "4.0"
 
       - name: Restore the wasi-sdk
         id: wasi-sdk-cache
