@@ -15608,9 +15608,19 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
     if ((rt == TY_INT || rt == TY_BIGINT) && is_arith_op(name)) {
       TyKind at9 = comp_ntype(c, argv[0]);
       const char *cn9 =
-        at9 == TY_STRING ? "String" : at9 == TY_SYMBOL ? "Symbol" :
+        at9 == TY_STRING ? "String" :
         at9 == TY_NIL ? "nil" : ty_is_array(at9) ? "Array" :
         ty_is_hash(at9) ? "Hash" : at9 == TY_RANGE ? "Range" : NULL;
+      /* a Symbol is named by inspect, as nil and the booleans are:
+         ":a can't be coerced into Integer" */
+      if (at9 == TY_SYMBOL) {
+        int ts9 = ++g_tmp;
+        buf_puts(b, "({ (void)("); emit_expr(c, recv, b);
+        buf_printf(b, "); sp_RbVal _t%d = ", ts9); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; sp_raise_cls(\"TypeError\", sp_sprintf(\"%%s can't be coerced into Integer\", "
+                      "sp_cmperr_desc(_t%d))); (sp_int)0; })", ts9);
+        return 1;
+      }
       if (at9 == TY_BOOL) {
         buf_puts(b, "({ (void)("); emit_expr(c, recv, b);
         buf_puts(b, "); sp_raise_cls(\"TypeError\", sp_sprintf(\"%s can't be coerced into Integer\", (");
@@ -24910,6 +24920,48 @@ int static_respond_to_cond(Compiler *c, int pred) {
     if ((ans && !nil_too) || (!ans && nil_too)) return -1;
   }
   return ans;
+}
+
+/* An Integer's bitwise operator (or a Bignum's) given an operand of a class
+   with no integer in it: nil, true, false, a String, a Symbol, a container,
+   and for &, | and ^ a Float too (a shift truncates a Float count). The two
+   families word the TypeError differently. A shift converts its count
+   (to_int): "no implicit conversion of true into Integer". &, | and ^
+   coerce their operand, and name it as a failed coerce does: nil, true,
+   false, a Symbol and a Float by inspect, anything else by its class ("true
+   can't be coerced into Integer", as `1 + true` already said). The operand
+   is evaluated, and the call's slot takes its own default: a boxed one under
+   --int-overflow=promote. Answers 0 for any other operand. */
+static int emit_int_operand_fail(Compiler *c, int id, int recv, int arg, int is_shift, Buf *b) {
+  TyKind at = comp_ntype(c, arg);
+  if (!((at == TY_FLOAT && !is_shift) || at == TY_STRING || at == TY_NIL || at == TY_SYMBOL ||
+        at == TY_BOOL || ty_is_array(at) || ty_is_hash(at))) return 0;
+  int ta = ++g_tmp;
+  TyKind ct = comp_ntype(c, id);
+  const char *nm = nt_str(c->nt, id, "name");
+  /* a receiver that can be nil answers nil's boolean there: `&` false, `|`
+     and `^` the operand's truth */
+  if (!is_shift && ct == TY_BOOL && comp_ntype(c, recv) == TY_INT && call_returns_nullable_int(c, recv)) {
+    int tr = ++g_tmp;
+    char nilv[64];
+    if (nm && sp_streq(nm, "&")) snprintf(nilv, sizeof nilv, "0");
+    else snprintf(nilv, sizeof nilv, "sp_poly_truthy(_t%d)", ta);
+    buf_printf(b, "({ sp_int _t%d = ", tr); emit_expr(c, recv, b);
+    buf_printf(b, "; sp_RbVal _t%d = ", ta); emit_boxed(c, arg, b);
+    buf_printf(b, "; _t%d == SP_INT_NIL ? %s : (sp_raise_cls(\"TypeError\", sp_sprintf(\"%%s can't be coerced into Integer\", "
+                  "sp_cmperr_desc(_t%d))), 0); })", tr, nilv, ta);
+    return 1;
+  }
+  buf_puts(b, "({ (void)("); emit_expr(c, recv, b);
+  buf_printf(b, "); sp_RbVal _t%d = ", ta); emit_boxed(c, arg, b);
+  if (is_shift)
+    buf_printf(b, "; sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into Integer\", "
+                  "sp_convert_src_name(_t%d)));", ta);
+  else
+    buf_printf(b, "; sp_raise_cls(\"TypeError\", sp_sprintf(\"%%s can't be coerced into Integer\", "
+                  "sp_cmperr_desc(_t%d)));", ta);
+  buf_printf(b, " %s; })", ct == TY_POLY ? "sp_box_nil()" : ct == TY_BIGINT ? "(sp_Bigint *)0" : "(sp_int)0");
+  return 1;
 }
 
 static void emit_call_body(Compiler *c, int id, Buf *b) {
@@ -39139,6 +39191,7 @@ else {
       (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
        sp_streq(name, "<<") || sp_streq(name, ">>"))) {
     TyKind at0 = comp_ntype(c, argv[0]);
+    if (emit_int_operand_fail(c, id, recv, argv[0], sp_streq(name, "<<") || sp_streq(name, ">>"), b)) return;
     /* Both operands are heap Bignums, and either side may allocate (and so
        collect) while the other is being evaluated -- the C operand order is
        unspecified besides. Evaluate left then right into rooted temps. */
@@ -39180,15 +39233,7 @@ else {
     /* a non-integer operand raises TypeError, as CRuby (#2421) -- except that
        the SHIFT operators accept a Float count and truncate it via to_int
        (`10 << 2.9` is 40); the bitwise &/|/^ still reject a Float. */
-    if ((at0 == TY_FLOAT && !is_shift) || at0 == TY_STRING || at0 == TY_NIL || at0 == TY_SYMBOL ||
-        at0 == TY_BOOL || ty_is_array(at0) || ty_is_hash(at0)) {
-      const char *tn9 = at0 == TY_FLOAT ? "Float" : at0 == TY_STRING ? "String"
-                      : at0 == TY_NIL ? "nil" : at0 == TY_SYMBOL ? "Symbol"
-                      : at0 == TY_BOOL ? "boolean" : ty_is_array(at0) ? "Array" : "Hash";
-      buf_puts(b, "({ (void)("); emit_expr(c, recv, b);
-      buf_printf(b, "); sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into Integer\"); (sp_int)0; })", tn9);
-      return;
-    }
+    if (emit_int_operand_fail(c, id, recv, argv[0], is_shift, b)) return;
     /* &, | and ^ with a Bignum operand promote (#2422). `&` too: a negative
        receiver is sign-extended forever, so `-1 & 0xFFFFFFFFFFFFFFFF` is that
        whole mask, not -1. */
@@ -39245,7 +39290,7 @@ else {
       if (rt == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); }
       else emit_expr(c, recv, b);
       buf_puts(b, ", ");
-      if (at0 == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      if (at0 == TY_POLY) { buf_puts(b, "sp_poly_bit_operand("); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
       else if (at0 == TY_FLOAT) { buf_puts(b, "(sp_int)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else emit_int_expr(c, argv[0], b);
       buf_puts(b, ")");
@@ -39274,7 +39319,7 @@ else {
     if (shl_neg_safe) buf_puts(b, ")");
     buf_printf(b, " %s ", name);
     if (at0 == TY_POLY) {
-      buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      buf_puts(b, "sp_poly_bit_operand("); emit_expr(c, argv[0], b); buf_printf(b, ", %d)", is_shift);
     }
     /* A literal wider than int64 (a 64-bit mask like 0xFFFFFFFFFFFFFFFF) is
        typed as a bigint; the result slot is int, so take its low-64 bit pattern
