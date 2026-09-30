@@ -1,18 +1,21 @@
 # Call-binding probe: generated calls, CRuby against spinel, case by case.
 #
 #   ruby tools/call_binding_probe.rb [--strength T | --random N] [--seed S]
-#                                    [--batch B] [--jobs J] [--out DIR]
-#                                    [--timeout SEC] [--keep] [--no-reduce]
+#                                    [--only F=L,..] [--batch B] [--jobs J]
+#                                    [--out DIR] [--timeout SEC] [--keep]
+#                                    [--no-reduce]
 #
 # Takes the cases of tools/call_binding_gen.rb -- a covering array of strength
-# T (default 3) over its factors, or N random rows -- runs them B to a program
-# under CRuby and under spinel, and compares each case's lines. The cases of
-# one program share the mode spinel compiles them in (the `mode` factor:
-# --int-overflow=promote or not), so the batches are made per mode. An
-# exception CRuby raises is part of the expected answer: spinel has to raise
-# the same one, after running the same arguments. A case's line is its answer
-# and the order its arguments ran in, so a difference is a raise, another
-# answer (and the first place in it that binds wrong) or only another order.
+# T (default 3) over its factors, or N random rows, with --only pinning
+# factors to a level each (a case that cannot take one is left out) -- runs
+# them B to a program under CRuby and under spinel, and compares each case's
+# lines. The cases of one program share the mode spinel compiles them in (the
+# `mode` factor: --int-overflow=promote or not), so the batches are made per
+# mode. An exception CRuby raises is part of the expected answer: spinel has
+# to raise the same one, after running the same arguments. A case's line is
+# its answer and the order its arguments ran in, so a difference is a raise,
+# another answer (and the first place in it that binds wrong) or only another
+# order.
 #
 # The runner, shared with tools/value_flow_probe.rb, is tools/probe_common.rb:
 # it splits a failing program to the case that carries it, reduces each
@@ -31,9 +34,10 @@ require_relative "probe_common"
 DOCUMENTED = [].freeze
 
 # A name the generator defines, undefined: the program is wrong, not spinel
-# (a local, a helper method it calls -- g, q, w, y -- or a class or module).
-UNDEFINED = Regexp.union(/NameError: undefined local variable or method '(?:blk|[a-z])\d+(?:_\d+)?'[^\n]*/,
-                         /NoMethodError: undefined method '[gqwy]\d+(?:_\d+)?'[^\n]*/,
+# (a local, a helper method it calls -- g, gr, fw, q, w, y -- or a class or
+# module).
+UNDEFINED = Regexp.union(/NameError: undefined local variable or method '(?:blk|kb|[a-z])\d+(?:_\d+)?'[^\n]*/,
+                         /NoMethodError: undefined method '(?:[gqwy]|gr|fw)\d+(?:_\d+)?'[^\n]*/,
                          /NameError: uninitialized constant [A-Z]+\d+(?:_\d+)?[^\n]*/)
 
 exit ProbeCommon.main(CallBindingGen, "call_binding_probe", ARGV,
