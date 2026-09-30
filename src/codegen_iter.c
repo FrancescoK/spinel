@@ -2487,6 +2487,16 @@ static int call_targets_yielding_method(Compiler *c, int id) {
       mi = comp_method_in_chain(c, encl->class_id, name, NULL);
       if (mi < 0 && encl->is_cmethod) mi = comp_cmethod_in_chain(c, encl->class_id, name, NULL);
     }
+    /* A bare call to a method of a module included at the top level, which
+       emit_inline_call_x splices under the same condition. Missed here, a
+       block whose tail is such a call took the statement form, and the
+       splice read for the block's value was void: `check { raises? { raise
+       E } }` under `include T` gave "invalid argument type 'void' to unary
+       expression" at check's `unless yield`. */
+    if (mi < 0) {
+      int imi = comp_included_method_index(c, name);
+      if (imi >= 0 && !scope_uses_ivars(c, imi)) mi = imi;
+    }
   }
   else {
     TyKind rt = comp_ntype(c, recv);

@@ -1261,6 +1261,11 @@ static int yvt_callee_index(Compiler *c, int cid) {
         if (rmi < 0) rmi = comp_cmethod_in_chain(c, cs->class_id, cn, NULL);
       }
     }
+    /* a bare call to a method of a module included at the top level, as
+       infer_uncached resolves it: its block feeds that method's yield.
+       Missed here, T.twice's return was typed from no block at all, so
+       `n = twice { 2 }` under `include T` typed nil */
+    if (rmi < 0) rmi = comp_included_method_index(c, cn);
   }
   else {
     TyKind crt = infer_type(c, crecv);
