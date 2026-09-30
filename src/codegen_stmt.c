@@ -8769,12 +8769,18 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
               /* A nil literal RHS has void type; cache it as a boxed-nil
                  sp_RbVal rather than declaring an (illegal) `void` temp. */
               int nil_rhs = (at == TY_NIL || at == TY_VOID);
-              TyKind at_eff = nil_rhs ? TY_POLY : at;
+              /* A value of no type -- a call proven to raise NoMethodError --
+                 is the raise's sp_RbVal; `void _t` did not compile (#6213). */
+              int unk_rhs = at == TY_UNKNOWN;
+              TyKind at_eff = (nil_rhs || unk_rhs) ? TY_POLY : at;
               int tv = ++g_tmp, tval = ++g_tmp;
               emit_indent(b, indent);
               buf_printf(b, "{ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b); buf_puts(b, "; ");
               if (nil_rhs) {
                 buf_printf(b, "sp_RbVal _t%d = sp_box_nil();", tval);
+              }
+              else if (unk_rhs) {
+                buf_printf(b, "sp_RbVal _t%d = ", tval); emit_expr(c, argv[0], b); buf_puts(b, ";");
               }
 else {
                 emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval); emit_expr(c, argv[0], b); buf_puts(b, ";");

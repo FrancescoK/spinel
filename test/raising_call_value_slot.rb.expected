@@ -1,0 +1,4 @@
+"undefined method 'create' for nil"
+"undefined method 'deep_stringify_keys' for an instance of Hash"
+nil
+{lang: "ja"}

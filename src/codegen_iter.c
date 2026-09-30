@@ -5031,6 +5031,9 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
   /* recv.tap { |p| body } -- run block for side effects, preserve outer var */
   if (sp_streq(name, "tap") && recv >= 0) {
     TyKind et = infer_type(c, recv);
+    /* a receiver of no type -- a call proven to raise NoMethodError -- is
+       the raise's sp_RbVal; `void _t` did not compile (#6213) */
+    if (et == TY_UNKNOWN || et == TY_VOID) et = TY_POLY;
     Scope *tsc = p0_orig ? comp_scope_of(c, block) : NULL;
     LocalVar *tlv0 = (tsc && p0_orig) ? scope_local(tsc, p0_orig) : NULL;
     TyKind tsaved0 = tlv0 ? tlv0->type : TY_UNKNOWN;
