@@ -1747,7 +1747,7 @@ int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
   if (iv < 0 || c->classes[cid].ivar_types[iv] != TY_STRBUF) return 0;
   Scope *cs = comp_scope_of(c, recv);
   if (cs && cs->class_id < 0)
-    snprintf(out, cap, "civ_Toplevel_%s", nm + 1);
+    snprintf(out, cap, "civ_Toplevel_%s", iv_c(nm + 1));
   else
     snprintf(out, cap, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
   return 1;
@@ -2986,6 +2986,14 @@ const char *iv_c(const char *name) {
     memcpy(buf + j, tok, tl); j += (int)tl;
   }
   buf[j] = '\0';
+  /* A long name keeps a prefix plus a hash of the whole name, so every field
+     reference fits the fixed buffers its callers format it into and names
+     sharing a long prefix stay distinct. */
+  if (j > IV_C_MAX) {
+    unsigned long long h = 1469598103934665603ULL;
+    for (const char *p = name; *p; p++) { h ^= (unsigned char)*p; h *= 1099511628211ULL; }
+    snprintf(buf + IV_C_MAX - 17, 18, "_%016llx", h);
+  }
   return buf;
 }
 /* scope_is_shadowed asks every later scope, and emission asks it per method

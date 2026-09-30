@@ -1025,7 +1025,7 @@ int emit_strbuf_ivar_write_handle(Compiler *c, int v, Buf *b) {
   if (iv < 0 || c->classes[cid].ivar_types[iv] != TY_STRBUF) return 0;
   char ref[300];
   Scope *cs = comp_scope_of(c, w);
-  if (cs && cs->class_id < 0) snprintf(ref, sizeof ref, "civ_Toplevel_%s", nm + 1);
+  if (cs && cs->class_id < 0) snprintf(ref, sizeof ref, "civ_Toplevel_%s", iv_c(nm + 1));
   else snprintf(ref, sizeof ref, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
   buf_puts(b, "({ ");
   if (nt_kind(nt, w) == NK_InstanceVariableWriteNode) emit_stmt_inner(c, w, b, 0);
@@ -1781,7 +1781,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       fz_cid = g_ie_class_id;
     }
     else if (cid2 < 0 && comp_class_index(c, "Toplevel") >= 0)
-      snprintf(ref2e, sizeof ref2e, "civ_Toplevel_%s", nm + 1);
+      snprintf(ref2e, sizeof ref2e, "civ_Toplevel_%s", iv_c(nm + 1));
     else {
       snprintf(ref2e, sizeof ref2e, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
       fz_cid = cid2;
@@ -1887,7 +1887,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     if (cws3 && cws3->is_cmethod && cid3 >= 0)
       snprintf(ref3, sizeof ref3, "civ_%s_%s", c->classes[cid3].name, iv_c(nm + 1));
     else if (tl3 && cid3 >= 0)
-      snprintf(ref3, sizeof ref3, "civ_Toplevel_%s", nm + 1);
+      snprintf(ref3, sizeof ref3, "civ_Toplevel_%s", iv_c(nm + 1));
     else
       snprintf(ref3, sizeof ref3, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
     emit_slot_orw_value(c, ivt3, ref3, v, is_or, b);
@@ -2361,7 +2361,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     else if (cs && cs->class_id < 0) {
       /* top-level method: ivar stored as file-scope global in Toplevel pseudo-class */
       int tl = comp_class_index(c, "Toplevel");
-      if (tl >= 0) buf_printf(b, "civ_Toplevel_%s", nm + 1);
+      if (tl >= 0) buf_printf(b, "civ_Toplevel_%s", iv_c(nm + 1));
       else buf_printf(b, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
     }
     else

@@ -3315,7 +3315,7 @@ static void emit_compiler_state_method(Compiler *c, Scope *s, Buf *b) {
   if (s->cs_synth == CG_CS_INIT) {
     for (int i = 0; i < ci->ncs; i++) {
       const char *nm = ci->cs_names[i], *k = ci->cs_kinds[i];
-      buf_printf(b, "  self->iv_%s = ", nm);
+      buf_printf(b, "  self->iv_%s = ", iv_c(nm));
       if (sp_streq(k, "str")) emit_str_literal(b, "");
       else if (sp_streq(k, "sa")) buf_puts(b, "sp_StrArray_new()");
       else if (sp_streq(k, "ia")) buf_puts(b, "sp_IntArray_new()");
@@ -3336,7 +3336,7 @@ static void emit_compiler_state_method(Compiler *c, Scope *s, Buf *b) {
       char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nm);
       buf_printf(b, "  lv_buf = sp_%s_ir_emit_%s(self, lv_buf, ", ecn, k);
       emit_str_literal(b, ivn);
-      buf_printf(b, ", self->iv_%s);\n", nm);
+      buf_printf(b, ", self->iv_%s);\n", iv_c(nm));
     }
     buf_puts(b, "  return lv_buf;\n}\n");
   }
@@ -3350,7 +3350,7 @@ static void emit_compiler_state_method(Compiler *c, Scope *s, Buf *b) {
       char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nm);
       buf_puts(b, "  if (sp_str_eq(lv_name, ");
       emit_str_literal(b, ivn);
-      buf_printf(b, ")) { self->iv_%s = lv_val; }\n", nm);
+      buf_printf(b, ")) { self->iv_%s = lv_val; }\n", iv_c(nm));
     }
     buf_puts(b, "  return 0;\n}\n");
   }
@@ -7902,7 +7902,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
                ci->c_name, ci->c_name);
     for (int i = 0; i < ci->nivars; i++) {
       TyKind it = ci->ivar_types[i];
-      const char *iv = ci->ivars[i] + 1;
+      const char *iv = iv_c(ci->ivars[i] + 1);
       if (it == TY_STRING) buf_printf(b, "  SP_GC_ROOT(v.iv_%s);\n", iv);
       else if (it == TY_POLY) buf_printf(b, "  SP_GC_ROOT_RBVAL(v.iv_%s);\n", iv);
       else if (needs_root(it)) buf_printf(b, "  SP_GC_ROOT(v.iv_%s);\n", iv);
@@ -9025,7 +9025,7 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
        heap and cannot collect, so its arm is left as it was. */
     if (ci->nivars > 0) buf_puts(b, "      SP_GC_ROOT(_s);\n");
     for (int j = 0; j < ci->nivars; j++) {
-      char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", ci->ivars[j] + 1);
+      char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
       buf_printf(b, "      sp_String_append(_s, \"%s%s=\"); sp_String_append(_s, ",
                  j ? ", " : " ", ci->ivars[j]);
       TyKind ivt = ci->ivar_types[j];
@@ -9080,7 +9080,7 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
     buf_printf(b, "      sp_mar_b(b, 'o'); sp_mar_sym(b, \"%s\");\n", ci->name);
     buf_printf(b, "      sp_mar_long(b, %d);\n", ci->nivars);
     for (int j = 0; j < ci->nivars; j++) {
-      char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", ci->ivars[j] + 1);
+      char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
       buf_printf(b, "      sp_mar_sym(b, \"%s\"); sp_mar_w(b, ", ci->ivars[j]);
       emit_marshal_box_ivar(ci->ivar_types[j], expr, b);
       buf_puts(b, ");\n");
@@ -9106,7 +9106,7 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
       buf_puts(b, "      sp_RbVal val = sp_PolyArray_get(iv, k + 1); (void)val; (void)nm;\n");
       for (int j = 0; j < ci->nivars; j++) {
         buf_printf(b, "      %sif (!strcmp(nm, \"%s\")) o->iv_%s = ",
-                   j ? "else " : "", ci->ivars[j], ci->ivars[j] + 1);
+                   j ? "else " : "", ci->ivars[j], iv_c(ci->ivars[j] + 1));
         emit_marshal_unbox_ivar(c, ci->ivar_types[j], b);
         buf_puts(b, ";\n");
       }
@@ -9809,7 +9809,7 @@ static void emit_struct_super_spread(Compiler *c, ClassInfo *cls, const int *arg
     else if (cls->is_data) buf_printf(&ev, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), sp_box_nil())", mname);
     else buf_puts(&ev, "sp_box_nil()");
     buf_printf(&ev, " : (%d < _t%d ? sp_PolyArray_get(_t%d, %d) : sp_box_nil()))", a, tl, ta, a);
-    buf_printf(b, " %s->iv_%s = ", g_self, mname);
+    buf_printf(b, " %s->iv_%s = ", g_self, iv_c(mname));
     if (cls->ivar_types[a] == TY_POLY) buf_puts(b, ev.p);
     else emit_unbox_nilable_text(c, cls->ivar_types[a], ev.p, b);
     buf_puts(b, ";");
@@ -9996,7 +9996,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
         int roff = -1;
         int pk = is_fwd ? struct_zsuper_param(c, s, a, cls->ivars[a] + 1, &roff) : -1;
         if (is_fwd && pk < 0) continue;
-        buf_printf(b, "%s->iv_%s = ", g_self, cls->ivars[a] + 1);
+        buf_printf(b, "%s->iv_%s = ", g_self, iv_c(cls->ivars[a] + 1));
         if (is_fwd && roff >= 0) {
           LocalVar *rv = scope_local(s, s->pnames[pk]);
           Buf src; memset(&src, 0, sizeof src); emit_scope_local_ref(c, s, s->pnames[pk], &src);

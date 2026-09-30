@@ -10313,7 +10313,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, ">\", (unsigned long long)(uintptr_t)&_t%d", tv2);
       if (want_ins)
         for (int vi = 0; vi < ci2->nivars; vi++) {
-          char fb2[300]; snprintf(fb2, sizeof fb2, "_t%d.iv_%s", tv2, iv_c(iv_c(ci2->ivars[vi] + 1)));
+          char fb2[300]; snprintf(fb2, sizeof fb2, "_t%d.iv_%s", tv2, iv_c(ci2->ivars[vi] + 1));
           buf_puts(b, ", sp_poly_inspect(");
           emit_boxed_text(c, ci2->ivar_types[vi], fb2, b);
           buf_puts(b, ")");
@@ -10806,7 +10806,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
             int t2 = ++g_tmp;
             Buf rb2 = expr_buf(c, recv);
             buf_printf(b, "({ sp_%s *_t%d = %s; _t%d%s->iv_%s; })",
-                       sc->c_name, t2, rb2.p ? rb2.p : "", t2, path, cur->ivars[cmi] + 1);
+                       sc->c_name, t2, rb2.p ? rb2.p : "", t2, path, iv_c(cur->ivars[cmi] + 1));
             free(rb2.p);
             return 1;
           }

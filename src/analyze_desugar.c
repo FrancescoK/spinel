@@ -11773,7 +11773,7 @@ int desugar_singleton_attr(Compiler *c) {
       if (!ok) { xc_push(&nb, &nbn, st); continue; }
       long long line = nt_int(nt, st, "node_line", 0);
       for (int j = 0; j < nsyms && ok; j++) {
-        char iv[160], wn[160]; snprintf(iv, sizeof iv, "@%s", syms[j]); snprintf(wn, sizeof wn, "%s=", syms[j]);
+        char iv[300], wn[300]; snprintf(iv, sizeof iv, "@%s", syms[j]); snprintf(wn, sizeof wn, "%s=", syms[j]);
         if (reader) {
           int rd = nt_new_node(nt, "InstanceVariableReadNode"); if (rd < 0) { ok = 0; break; }
           nt_node_set_str(nt, rd, "name", iv);
