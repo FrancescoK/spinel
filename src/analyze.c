@@ -7088,6 +7088,9 @@ int desugar_enum_method_recv(Compiler *c) {
       if (wac == 2 && ty_is_object(wrt) && c->classes[ty_object_class(wrt)].is_struct) {
         ClassInfo *wsc = &c->classes[ty_object_class(wrt)];
         int wmi = struct_member_idx(c, wsc, wav[0]);
+        /* a Float literal offset, unless the class has a `[]=` of its own */
+        if (wmi < 0 && comp_method_in_chain(c, ty_object_class(wrt), "[]=", NULL) < 0)
+          wmi = struct_member_idx_float(c, wsc, wav[0]);
         if (wmi >= 0) {
           char wn[300]; snprintf(wn, sizeof wn, "%s=", wsc->ivars[wmi] + 1);
           int one = nt_new_node(nt, "ArgumentsNode");

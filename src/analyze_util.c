@@ -1023,6 +1023,20 @@ int struct_member_idx(Compiler *c, ClassInfo *sc, int keynode) {
   }
   return -1;
 }
+/* The member a Float literal offset names: it is cut to the Integer it
+   converts to, as CRuby's does. -1 for anything else. Only the `[]=` rewrite
+   asks, so that the member's type unifies with the stored value. */
+int struct_member_idx_float(Compiler *c, ClassInfo *sc, int keynode) {
+  const NodeTable *nt = c->nt;
+  const char *kty = nt_type(nt, keynode);
+  if (!kty || !sp_streq(kty, "FloatNode")) return -1;
+  const char *txt = nt_content(nt, keynode);
+  double fv = txt ? strtod(txt, NULL) : 1e18;
+  if (!(fv > -1e9 && fv < 1e9)) return -1;
+  int idx = (int)fv;
+  if (idx < 0) idx += sc->nmembers;
+  return idx >= 0 && idx < sc->nmembers ? idx : -1;
+}
 int scope_body_last(Compiler *c, int mi) {
   int body = c->scopes[mi].body;
   if (body < 0 || !nt_type(c->nt, body) || !sp_streq(nt_type(c->nt, body), "StatementsNode")) return -1;

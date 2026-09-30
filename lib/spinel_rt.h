@@ -8898,6 +8898,11 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
           if (sp_poly_int_bit(recv, lo + k)) out |= (sp_int)((uint64_t)1 << k);
         return sp_box_int(out); } }
   }
+  /* a Float index into a boxed Struct (or another object read by member
+     index) is cut to the Integer it converts to, as a typed read cuts it */
+  if (idx.tag == SP_TAG_FLT && recv.tag == SP_TAG_OBJ && recv.cls_id >= 0 && sp_obj_to_h_fn &&
+      idx.v.f > -2147483649.0 && idx.v.f < 2147483648.0)
+    idx = sp_box_int((sp_int)idx.v.f);
   sp_int i = (idx.tag == SP_TAG_INT) ? idx.v.i : 0;
   /* Struct#[n] is the nth MEMBER, in declaration order -- the order #to_h
      preserves -- not an array index (#3369). */
