@@ -1,0 +1,7 @@
+"plain"
+"42"
+"never raised (RuntimeError)\n"
+"raised (ArgumentError)"
+:none
+:frames
+[:none, :none]
