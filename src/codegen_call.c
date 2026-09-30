@@ -23856,6 +23856,119 @@ static void emit_bind_call(Compiler *c, int id, int target, const int *argv, int
   free(args.p);
 }
 
+/* One target's arm of emit_bind_call_boxed: obj (the boxed `_t<to>`) must be
+   an instance of the target's owner, of a subclass of it, else CRuby's
+   TypeError; then the target runs with it as self, the arguments after obj
+   bound as emit_bind_call binds them, and its answer goes to `_t<tr>`, a slot
+   of `slot`'s type. */
+static void emit_bind_call_arm(Compiler *c, int id, int target, const int *argv, int argc,
+                               int to, int tr, TyKind slot, Buf *b) {
+  Scope *tm = &c->scopes[target];
+  int cid = tm->class_id;
+  const char *cn = c->classes[cid].name;
+  buf_printf(b, "if (!(_t%d.tag == SP_TAG_OBJ && (0", to);
+  for (int k = 0; k < c->nclasses; k++)
+    if (class_isa_user(c, k, cid, cn)) buf_printf(b, " || _t%d.cls_id == %d", to, k);
+  buf_printf(b, "))) sp_raise_cls(\"TypeError\", \"bind argument must be an instance of %s\"); ", cn);
+  char selfp[96];
+  snprintf(selfp, sizeof selfp, "((sp_%s *)_t%d.v.p)", c->classes[cid].c_name, to);
+  const char *sv_arm_self = g_arm_self; const Scope *sv_arm_scope = g_arm_scope;
+  int sv_arm_depth = g_arm_depth;
+  g_arm_self = selfp; g_arm_scope = tm; g_arm_depth = g_expr_depth;
+  Buf call; memset(&call, 0, sizeof call);
+  emit_method_cname(c, tm, &call);
+  buf_printf(&call, "(%s", selfp);
+  /* what the binding puts ahead of the call (a splat's gather, a `**`
+     merge) is this arm's alone */
+  Buf apre; memset(&apre, 0, sizeof apre);
+  Buf *sv_pre = g_pre; g_pre = &apre;
+  emit_args_filled_argv(c, target, argv + 1, argc - 1, nt_ref(c->nt, id, "arguments"), ", ", &call);
+  g_pre = sv_pre;
+  g_arm_self = sv_arm_self; g_arm_scope = sv_arm_scope; g_arm_depth = sv_arm_depth;
+  buf_puts(&call, ")");
+  if (apre.p && apre.p[0]) buf_puts(b, apre.p);
+  TyKind kr = (TyKind)tm->ret;
+  if (method_is_void(tm))
+    buf_printf(b, "%s; _t%d = %s;", call.p, tr, slot == TY_POLY ? "sp_box_nil()" : default_value(slot));
+  else {
+    buf_printf(b, "_t%d = ", tr);
+    if (slot == TY_POLY && kr != TY_POLY) emit_boxed_text(c, kr, call.p, b);
+    else if (slot != TY_POLY && kr == TY_POLY) emit_unbox_text(c, slot, call.p, b);
+    else buf_puts(b, call.p);
+    buf_puts(b, ";");
+  }
+  free(apre.p); free(call.p);
+}
+
+/* `um.bind_call(obj, args...)` where what binds is known only at run time:
+   obj is a boxed value (`bind_call(list[0])`), or um is
+   `k.instance_method(:m)` on a Class value k that only the run time knows
+   (`def go(k) = k.instance_method(:m).bind_call(k.new)`), which names no
+   one target. In the second, k runs first and a class without `m` raises
+   CRuby's NameError before obj does; obj and the arguments then run once,
+   into boxed temporaries (hoist_dispatch_args), and a switch on k's class
+   picks the class's own `m`, each arm checking obj and binding the
+   arguments for its target (emit_bind_call_arm). `target` is the one target
+   when um has it, else -1 and `kn` is the Class value. The call answers
+   `id`'s type. Such a site fell through to the call on a value of unknown
+   type and raised NoMethodError, "undefined method 'bind_call' for
+   unknown", or, with a boxed obj, was refused. */
+static void emit_bind_call_boxed(Compiler *c, int id, int target, int kn, const char *sym,
+                                 const int *argv, int argc, Buf *b) {
+  TyKind slot = comp_ntype(c, id);
+  if (slot == TY_VOID || slot == TY_UNKNOWN) slot = TY_POLY;
+  int tk = ++g_tmp, to = ++g_tmp, tr = ++g_tmp;
+  buf_puts(b, "({ ");
+  if (kn >= 0) {
+    Buf kb; memset(&kb, 0, sizeof kb);
+    if (comp_ntype(c, kn) == TY_CLASS) {
+      emit_expr(c, kn, &kb);
+      buf_printf(b, "sp_Class _t%d = %s; ", tk, kb.p ? kb.p : "");
+    }
+    else {
+      /* a boxed value that is no Class has no instance_method at all */
+      emit_boxed(c, kn, &kb);
+      buf_printf(b, "sp_RbVal _t%dv = %s; if (_t%dv.tag != SP_TAG_CLASS) "
+                    "sp_raise_nomethod(sp_nomethod_msg(\"instance_method\", _t%dv)); "
+                    "sp_Class _t%d = sp_unbox_class(_t%dv); ", tk, kb.p ? kb.p : "sp_box_nil()", tk, tk, tk, tk);
+    }
+    free(kb.p);
+    buf_printf(b, "switch (_t%d.cls_id) {", tk);
+    for (int k = 0; k < c->nclasses; k++)
+      if (class_value_bind_call_target(c, k, sym, NULL) >= 0) buf_printf(b, " case %d:", k);
+    buf_printf(b, " break; default: sp_raise_cls(\"NameError\", sp_sprintf(\"undefined method '%s' for %%s '%%s'\", "
+                  "sp_class_is_module_fn && sp_class_is_module_fn(_t%d) ? \"module\" : \"class\", "
+                  "sp_class_to_s(_t%d))); } ", sym, tk, tk);
+  }
+  int *hsv; TyKind *hty;
+  Buf hp; memset(&hp, 0, sizeof hp);
+  Buf *sv_pre = g_pre; g_pre = &hp;
+  int hn = hoist_dispatch_args(c, nt_ref(c->nt, id, "arguments"), &hsv, &hty);
+  g_pre = sv_pre;
+  if (hp.p) buf_puts(b, hp.p);
+  free(hp.p);
+  Buf ob; memset(&ob, 0, sizeof ob);
+  emit_boxed(c, argv[0], &ob);
+  buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); ", to, ob.p ? ob.p : "sp_box_nil()", to);
+  free(ob.p);
+  emit_ctype(c, slot, b);
+  buf_printf(b, " _t%d = %s; ", tr, slot == TY_POLY ? "sp_box_nil()" : default_value(slot));
+  if (kn < 0) emit_bind_call_arm(c, id, target, argv, argc, to, tr, slot, b);
+  else {
+    buf_printf(b, "switch (_t%d.cls_id) {", tk);
+    for (int k = 0; k < c->nclasses; k++) {
+      int tmi = class_value_bind_call_target(c, k, sym, NULL);
+      if (tmi < 0) continue;
+      buf_printf(b, " case %d: { ", k);
+      emit_bind_call_arm(c, id, tmi, argv, argc, to, tr, slot, b);
+      buf_puts(b, " } break;");
+    }
+    buf_puts(b, " } ");
+  }
+  buf_printf(b, "_t%d; })", tr);
+  unhoist_dispatch_args(c, hn, hsv, hty);
+}
+
 static void emit_exc_exception(Compiler *c, int recv, int arg, Buf *b) {
   /* #exception answers an instance of the RECEIVER's class -- a payload
      copy, so a user subclass keeps its own fields -- and inference types
@@ -26690,6 +26803,23 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     if (t2 >= 0 && c->scopes[t2].class_id >= 0 && !c->scopes[t2].is_cmethod &&
         ty_is_object(comp_ntype(c, argv[0]))) {
       emit_bind_call(c, id, t2, argv, argc, b);
+      return;
+    }
+    /* a boxed obj: its class is checked at run time */
+    if (t2 >= 0 && c->scopes[t2].class_id >= 0 && !c->scopes[t2].is_cmethod &&
+        comp_ntype(c, argv[0]) == TY_POLY && nt_kind(nt, argv[0]) != NK_SplatNode &&
+        class_value_bind_call_target(c, c->scopes[t2].class_id, c->scopes[t2].name, NULL) == t2) {
+      emit_bind_call_boxed(c, id, t2, -1, NULL, argv, argc, b);
+      return;
+    }
+  }
+  /* ...and on a Class value known only at run time, a switch on its class */
+  if (recv >= 0 && argc >= 1 && sp_streq(name, "bind_call") && nt_kind(nt, argv[0]) != NK_SplatNode) {
+    const char *cvsym = class_value_instance_method_sym(c, recv);
+    /* a class with no arm to build is a gap, not the NameError */
+    if (cvsym && class_value_bind_call_gap(c, recv)) unsupported(c, id, "call");
+    if (cvsym) {
+      emit_bind_call_boxed(c, id, -1, nt_ref(nt, recv, "receiver"), cvsym, argv, argc, b);
       return;
     }
   }
