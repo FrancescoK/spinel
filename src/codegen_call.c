@@ -6675,16 +6675,16 @@ static int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *
      separator no String can be) drops the arm, not the build -- the call
      never reaches that emitter in a run where the receiver is not the
      builtin. What the emission hoists is captured, for the arm. */
-  Buf pb; memset(&pb, 0, sizeof pb);
-  Buf nb; memset(&nb, 0, sizeof nb);
+  /* on the heap: the probe may longjmp back after an emitter wrote to them */
+  Buf *pb = calloc(1, sizeof *pb), *nb = calloc(1, sizeof *nb);
   Buf *sv_gpre = g_pre;
   int sv_probe = g_unsup_probe, sv_open_defaults = g_open_defaults;
   ConvHold *sv_hold = g_conv_hold;
   jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
   volatile int ok = 1;
   EmitUnitState *sv_state = emit_state_snapshot();
-  g_pre = &pb; g_unsup_probe = 1;
-  if (setjmp(g_unsup_recover) == 0) emit_expr(c, id, &nb);
+  g_pre = pb; g_unsup_probe = 1;
+  if (setjmp(g_unsup_recover) == 0) emit_expr(c, id, nb);
   else ok = 0;
   emit_state_release(sv_state, !ok);
   memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
@@ -6694,13 +6694,14 @@ static int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *
   g_pd_skip = sv_pd; g_poly_builtin_arm = sv_fb;
   g_n_argov = slot;
   Buf ib; memset(&ib, 0, sizeof ib);
-  if (ok && nb.p) {
-    if (ret == TY_POLY && bt != TY_POLY) emit_boxed_text(c, bt, nb.p, &ib);
-    else buf_puts(&ib, nb.p);
+  if (ok && nb->p) {
+    if (ret == TY_POLY && bt != TY_POLY) emit_boxed_text(c, bt, nb->p, &ib);
+    else buf_puts(&ib, nb->p);
   }
-  free(nb.p);
-  char *arm_pre = ok && pb.p && pb.len ? pb.p : NULL;
-  if (!arm_pre) free(pb.p);
+  free(nb->p); free(nb);
+  char *arm_pre = ok && pb->p && pb->len ? pb->p : NULL;
+  if (!arm_pre) free(pb->p);
+  free(pb);
   if (!ib.p || strncmp(ib.p, "sp_raise_nomethod(", 18) == 0 ||
       strncmp(ib.p, "sp_raise_poly_nomethod(", 23) == 0 ||
       strstr(ib.p, "sp_raise_cls(\"NoMethodError\"") != NULL) {
