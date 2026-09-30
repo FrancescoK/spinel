@@ -961,6 +961,10 @@ int        comp_method_in_class(Compiler *c, int class_id, const char *name);
    comp_scope_own_class in compiler.c). */
 void       comp_scope_move_begin(Compiler *c, int s);
 void       comp_scope_move_end(void);
+/* the number of moves in effect, and putting back every move made since a
+   depth: for the recoveries a refusal longjmps to */
+int        comp_scope_move_depth(void);
+void       comp_scope_move_unwind(int depth);
 int        comp_scope_own_class(const Compiler *c, int s, int *is_cmethod);
 /* Freeze/unfreeze the (class_id,name,is_cmethod)->scope lookup index. Frozen
    only while scope shape is fixed (the inference fixpoint); see compiler.c. */

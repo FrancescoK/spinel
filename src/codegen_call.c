@@ -2879,9 +2879,10 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
     int sv_probe = g_unsup_probe; g_unsup_probe = 1;
     ConvHold *sv_hold = g_conv_hold;
     int sv_open_defaults = g_open_defaults, sv_arm_argov = g_n_argov;
+    int sv_moves = comp_scope_move_depth();
     volatile int ok;
     if (setjmp(g_unsup_recover) == 0) { emit_expr(c, arm, &body); ok = 1; }
-    else ok = 0;
+    else { ok = 0; comp_scope_move_unwind(sv_moves); }
     g_conv_hold = sv_hold;  /* a dropped arm may have unwound through emit_call */
     g_open_defaults = sv_open_defaults; g_n_argov = sv_arm_argov;
     g_unsup_probe = sv_probe;
@@ -2946,9 +2947,10 @@ static int emit_dynamic_respond_to(Compiler *c, int id, Buf *b) {
     int sv_probe = g_unsup_probe; g_unsup_probe = 1;
     ConvHold *sv_hold = g_conv_hold;
     int sv_open_defaults = g_open_defaults;
+    int sv_moves = comp_scope_move_depth();
     volatile int ok;
     if (setjmp(g_unsup_recover) == 0) { emit_expr(c, arm, &body); ok = 1; }
-    else ok = 0;
+    else { ok = 0; comp_scope_move_unwind(sv_moves); }
     g_conv_hold = sv_hold;
     g_open_defaults = sv_open_defaults;
     g_unsup_probe = sv_probe;
@@ -3012,9 +3014,10 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
     int sv_probe = g_unsup_probe; g_unsup_probe = 1;
     ConvHold *sv_hold = g_conv_hold;
     int sv_open_defaults = g_open_defaults;
+    int sv_moves = comp_scope_move_depth();
     volatile int ok;
     if (setjmp(g_unsup_recover) == 0) { emit_expr(c, arm, &body); ok = 1; }
-    else ok = 0;
+    else { ok = 0; comp_scope_move_unwind(sv_moves); }
     g_conv_hold = sv_hold;
     g_open_defaults = sv_open_defaults;
     g_unsup_probe = sv_probe;

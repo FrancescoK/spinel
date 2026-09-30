@@ -505,6 +505,7 @@ int comp_cvar_intern(ClassInfo *ci, const char *name) {
    block in a block) keeps its first record. */
 static int *mv_s = NULL, *mv_cls = NULL, *mv_cm = NULL;
 static int mv_n = 0, mv_cap = 0;
+static Compiler *mv_c = NULL;
 void comp_scope_move_begin(Compiler *c, int s) {
   if (mv_n == mv_cap) {
     mv_cap = mv_cap ? mv_cap * 2 : 8;
@@ -514,9 +515,23 @@ void comp_scope_move_begin(Compiler *c, int s) {
     if (!mv_s || !mv_cls || !mv_cm) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
   mv_s[mv_n] = s; mv_cls[mv_n] = c->scopes[s].class_id; mv_cm[mv_n] = c->scopes[s].is_cmethod;
-  mv_n++;
+  mv_n++; mv_c = c;
 }
 void comp_scope_move_end(void) { if (mv_n > 0) mv_n--; }
+int comp_scope_move_depth(void) { return mv_n; }
+/* A refusal longjmps out of the emission (a unit abandoned, a probe's arm
+   dropped) past the code that moves a scope back, which left the scope in
+   the other class: the class method a later unit called was then not found
+   and refused as well. The recovery puts back every move made since the
+   depth it saved, the latest first, so each scope ends with the class it had
+   before its first move. */
+void comp_scope_move_unwind(int depth) {
+  while (mv_n > depth && mv_n > 0) {
+    mv_n--;
+    mv_c->scopes[mv_s[mv_n]].class_id = mv_cls[mv_n];
+    mv_c->scopes[mv_s[mv_n]].is_cmethod = mv_cm[mv_n];
+  }
+}
 int comp_scope_own_class(const Compiler *c, int s, int *is_cmethod) {
   for (int i = 0; i < mv_n; i++)
     if (mv_s[i] == s) { if (is_cmethod) *is_cmethod = mv_cm[i]; return mv_cls[i]; }
@@ -1465,6 +1480,14 @@ const PolyCand *comp_poly_candidates(Compiler *c, const char *name, int *n) {
       *n = e->n; return e->cands;
     }
   struct pc_entry *e = calloc(1, sizeof *e);
+  /* While a scope is moved for an instance_exec block (comp_scope_move_begin)
+     the lookups leave the moved method out, so a list made then would miss
+     it after the move: answer it, but keep it off the memo. */
+  if (mv_n) {
+    pc_build(c, name, &e->cands, &e->n);
+    e->next = pc_retired; pc_retired = e;
+    *n = e->n; return e->cands;
+  }
   e->name = strdup(name);
   pc_build(c, name, &e->cands, &e->n);
   e->next = pc_tab[b]; pc_tab[b] = e;
@@ -1507,6 +1530,11 @@ const PolyCand *comp_cmethod_candidates(Compiler *c, const char *name, int *n) {
   for (struct pc_entry *e = cc_tab[b]; e; e = e->next)
     if (sp_streq(e->name, name)) { *n = e->n; return e->cands; }
   struct pc_entry *e = calloc(1, sizeof *e);
+  if (mv_n) {   /* see comp_poly_candidates */
+    cc_build(c, name, &e->cands, &e->n);
+    e->next = pc_retired; pc_retired = e;
+    *n = e->n; return e->cands;
+  }
   e->name = strdup(name);
   cc_build(c, name, &e->cands, &e->n);
   e->next = cc_tab[b]; cc_tab[b] = e;
