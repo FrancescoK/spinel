@@ -2585,9 +2585,9 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       if (sp_streq(nm, "E"))  { buf_puts(b, "M_E"); return; }
     }
     if (nm && sp_streq(nm, "RUBY_DESCRIPTION")) { buf_puts(b, "SPL(\"spinel\")"); return; }
-    if (nm && sp_streq(nm, "RUBY_VERSION"))     { buf_puts(b, "SPL(\"3.2.0\")"); return; }
+    if (nm && sp_streq(nm, "RUBY_VERSION"))     { buf_puts(b, "SPL(\"" SP_RUBY_VERSION "\")"); return; }
     if (nm && sp_streq(nm, "RUBY_ENGINE"))      { buf_puts(b, "SPL(\"spinel\")"); return; }
-    if (nm && sp_streq(nm, "RUBY_ENGINE_VERSION")) { buf_puts(b, "SPL(\"3.2.0\")"); return; }
+    if (nm && sp_streq(nm, "RUBY_ENGINE_VERSION")) { buf_puts(b, "SPL(\"" SP_RUBY_VERSION "\")"); return; }
     if (nm && sp_streq(nm, "RUBY_PLATFORM"))    { buf_puts(b, "sp_ruby_platform_str()"); return; }
     if (nm && sp_streq(nm, "RUBY_RELEASE_DATE")) { buf_puts(b, "SPL(\"2023-03-30\")"); return; }
     if (nm && sp_streq(nm, "RUBY_REVISION"))    { buf_puts(b, "SPL(\"0\")"); return; }
