@@ -5929,7 +5929,7 @@ static int hc_recv_text(Compiler *c, int recv, int kind, char *out, size_t cap) 
       int obj = nt_ref(nt, recv, "receiver");
       const char *on = obj >= 0 && nt_kind(nt, obj) == NK_LocalVariableReadNode ? nt_str(nt, obj, "name") : NULL;
       if (!on || nameset_has(&g_hc->wl, on) || comp_ty_value_obj(c, comp_ntype(c, obj))) return 0;
-      char ivn[160]; snprintf(ivn, sizeof ivn, "@%s", nt_str(nt, recv, "name"));
+      char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", nt_str(nt, recv, "name"));
       if (nameset_has(&g_hc->wi, ivn)) return 0;
       Buf ob; memset(&ob, 0, sizeof ob);
       emit_expr(c, obj, &ob);
@@ -8142,7 +8142,7 @@ static int masgn_ivar_home(Compiler *c, int id, const char *ivnm, char *lhs, siz
   Scope *sc = comp_scope_of(c, id);
   int cc = sc ? sc->class_id : -1;
   if (cc >= 0) {
-    if (sc->is_cmethod) snprintf(lhs, n, "civ_%s_%s", c->classes[cc].name, ivnm + 1);
+    if (sc->is_cmethod) snprintf(lhs, n, "civ_%s_%s", c->classes[cc].name, iv_c(ivnm + 1));
     else snprintf(lhs, n, "%s%siv_%s", g_self, g_self_deref, iv_c(ivnm + 1));
     *cid = cc;
     return 1;
@@ -8151,7 +8151,7 @@ static int masgn_ivar_home(Compiler *c, int id, const char *ivnm, char *lhs, siz
   if (g_class_body_id >= 0) cc = g_class_body_id;
   else cc = comp_class_index(c, "Toplevel");
   if (cc < 0) return 0;
-  snprintf(lhs, n, "civ_%s_%s", c->classes[cc].name, ivnm + 1);
+  snprintf(lhs, n, "civ_%s_%s", c->classes[cc].name, iv_c(ivnm + 1));
   *cid = cc;
   return 1;
 }
@@ -9073,13 +9073,13 @@ else {
     if (sc2 >= 0) { int iv2 = comp_ivar_index(&c->classes[sc2], nm); if (iv2 >= 0) ivt2 = c->classes[sc2].ivar_types[iv2]; }
     char ref2[300];
     if (cws2 && cws2->is_cmethod && cws2->class_id >= 0)
-      snprintf(ref2, sizeof ref2, "civ_%s_%s", c->classes[cws2->class_id].name, nm + 1);
+      snprintf(ref2, sizeof ref2, "civ_%s_%s", c->classes[cws2->class_id].name, iv_c(nm + 1));
     else if (cws2 && cws2->class_id < 0 && !cws2->is_cmethod && g_ie_class_id >= 0)
       snprintf(ref2, sizeof ref2, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
     else if (cws2 && cws2->class_id < 0 && !cws2->is_cmethod && g_class_body_id >= 0)
-      snprintf(ref2, sizeof ref2, "civ_%s_%s", c->classes[g_class_body_id].name, nm + 1);
+      snprintf(ref2, sizeof ref2, "civ_%s_%s", c->classes[g_class_body_id].name, iv_c(nm + 1));
     else if (cws2 && cws2->class_id < 0 && !cws2->is_cmethod && sc2 >= 0)
-      snprintf(ref2, sizeof ref2, "civ_Toplevel_%s", nm + 1);
+      snprintf(ref2, sizeof ref2, "civ_Toplevel_%s", iv_c(nm + 1));
     else
       snprintf(ref2, sizeof ref2, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
     /* The RHS is rendered with its setup captured and spliced inside the
@@ -9192,20 +9192,20 @@ else {
        module-level civ_ variable. */
     else if (cws && cws->class_id < 0 && !cws->is_cmethod && g_class_body_id >= 0) {
       emit_indent(b, indent);
-      buf_printf(b, "civ_%s_%s = ", c->classes[g_class_body_id].name, nm + 1);
+      buf_printf(b, "civ_%s_%s = ", c->classes[g_class_body_id].name, iv_c(nm + 1));
     }
     /* Top-level method (class_id<0, not cmethod): use Toplevel pseudo-class global. */
     else if (cws && cws->class_id < 0 && !cws->is_cmethod &&
              comp_class_index(c, "Toplevel") >= 0) {
       emit_indent(b, indent);
-      buf_printf(b, "civ_Toplevel_%s = ", nm + 1);
+      buf_printf(b, "civ_Toplevel_%s = ", iv_c(nm + 1));
     }
     /* True top-level or no-class scope: skip. */
     else if (!cws || (cws->class_id < 0 && !cws->is_cmethod)) { return; }
     else {
       emit_indent(b, indent);
       if (cws && cws->is_cmethod && cws->class_id >= 0)
-        buf_printf(b, "civ_%s_%s = ", c->classes[cws->class_id].name, nm + 1);
+        buf_printf(b, "civ_%s_%s = ", c->classes[cws->class_id].name, iv_c(nm + 1));
       else {
         if (cws && cws->class_id >= 0)
           emit_frozen_obj_guard(c, cws->class_id, g_self ? g_self : "self", b);
@@ -9447,13 +9447,13 @@ else {
     char ref[300];
     Scope *cs = comp_scope_of(c, id);
     if (cs && cs->is_cmethod && cs->class_id >= 0)
-      snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[cs->class_id].name, nm + 1);
+      snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[cs->class_id].name, iv_c(nm + 1));
     else if (cs && cs->class_id < 0 && !cs->is_cmethod && g_ie_class_id < 0 &&
              g_class_body_id >= 0)
-      snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[g_class_body_id].name, nm + 1);
+      snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[g_class_body_id].name, iv_c(nm + 1));
     else if (cs && cs->class_id < 0 && !cs->is_cmethod && g_ie_class_id < 0 &&
              comp_class_index(c, "Toplevel") >= 0)
-      snprintf(ref, sizeof ref, "civ_Toplevel_%s", nm + 1);
+      snprintf(ref, sizeof ref, "civ_Toplevel_%s", iv_c(nm + 1));
     else
       snprintf(ref, sizeof ref, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
     emit_indent(b, indent);
@@ -9729,7 +9729,7 @@ else {
       const char *acc = comp_ty_value_obj(c, rt) ? "." : "->";
       emit_indent(b, indent);
       if (ivt == TY_STRING) {
-        buf_printf(b, "_t%d%siv_%s = sp_str_concat(_t%d%siv_%s, ", trecv, acc, rn, trecv, acc, rn);
+        buf_printf(b, "_t%d%siv_%s = sp_str_concat(_t%d%siv_%s, ", trecv, acc, iv_c(rn), trecv, acc, iv_c(rn));
         if (rhst == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, val, b); buf_puts(b, ")"); }
         else emit_expr(c, val, b);
         buf_puts(b, ");\n");
@@ -9737,26 +9737,26 @@ else {
       else if (ivt == TY_POLY && cpf) {
         /* boxed slot: dynamic operator on boxed operands (same as the
            poly-receiver dispatch arms below). */
-        buf_printf(b, "_t%d%siv_%s = %s(_t%d%siv_%s, ", trecv, acc, rn, cpf, trecv, acc, rn);
+        buf_printf(b, "_t%d%siv_%s = %s(_t%d%siv_%s, ", trecv, acc, iv_c(rn), cpf, trecv, acc, iv_c(rn));
         emit_boxed(c, val, b); buf_puts(b, ");\n");
       }
       else if (ivt == TY_POLY) {
         /* bitwise op-assign on a boxed slot: coerce to int, re-box */
         buf_printf(b, "_t%d%siv_%s = sp_box_int((sp_poly_to_i(_t%d%siv_%s) %s (",
-                   trecv, acc, rn, trecv, acc, rn, op);
+                   trecv, acc, iv_c(rn), trecv, acc, iv_c(rn), op);
         if (rhst == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")"); }
         else emit_expr(c, val, b);
         buf_puts(b, ")));\n");
       }
       else if (ty_is_array(ivt) || ivt == TY_POLY_ARRAY) {
-        char aref[400]; snprintf(aref, sizeof aref, "_t%d%siv_%s", trecv, acc, rn);
+        char aref[400]; snprintf(aref, sizeof aref, "_t%d%siv_%s", trecv, acc, iv_c(rn));
         if (!emit_array_op_assign(c, aref, ivt, op, val, b))
           unsupported(c, id, "call operator write (operator on an array attribute)");
       }
       else {
-        char lval[400]; snprintf(lval, sizeof lval, "_t%d%siv_%s", trecv, acc, rn);
+        char lval[400]; snprintf(lval, sizeof lval, "_t%d%siv_%s", trecv, acc, iv_c(rn));
         if (emit_scalar_op_assign(c, lval, ivt, op, val, 1, b)) return;
-        buf_printf(b, "_t%d%siv_%s = _t%d%siv_%s %s ", trecv, acc, rn, trecv, acc, rn, op ? op : "+");
+        buf_printf(b, "_t%d%siv_%s = _t%d%siv_%s %s ", trecv, acc, iv_c(rn), trecv, acc, iv_c(rn), op ? op : "+");
         if (rhst == TY_POLY && (ivt == TY_INT || ivt == TY_BOOL)) {
           buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")");
         }
@@ -9892,7 +9892,7 @@ else {
         emit_indent(b, indent + 1);
         buf_printf(b, "case %d: { sp_%s *_o = (sp_%s *)_t%d.v.p; ", k, cn, cn, trecv);
         if (ivt == TY_STRING) {
-          buf_puts(b, "_o->iv_"); buf_puts(b, rn); buf_puts(b, " = sp_str_concat(_o->iv_"); buf_puts(b, rn);
+          buf_puts(b, "_o->iv_"); buf_puts(b, iv_c(rn)); buf_puts(b, " = sp_str_concat(_o->iv_"); buf_puts(b, iv_c(rn));
           buf_puts(b, ", ");
           if (rhst == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, val, b); buf_puts(b, ")"); }
           else emit_expr(c, val, b);
@@ -9902,26 +9902,26 @@ else {
           /* the slot itself is boxed (a whole-program-widened numeric like
              Sector#ceiling_height): fold via the dynamic operator on boxed
              operands rather than raw C arithmetic on an sp_RbVal. */
-          buf_puts(b, "_o->iv_"); buf_puts(b, rn);
-          buf_printf(b, " = %s(_o->iv_", cpf); buf_puts(b, rn); buf_puts(b, ", ");
+          buf_puts(b, "_o->iv_"); buf_puts(b, iv_c(rn));
+          buf_printf(b, " = %s(_o->iv_", cpf); buf_puts(b, iv_c(rn)); buf_puts(b, ", ");
           emit_boxed(c, val, b);
           buf_puts(b, "); break; }\n");
         }
         else if (ivt == TY_POLY) {
           /* bitwise op-assign on a boxed slot: coerce to int, re-box */
-          buf_puts(b, "_o->iv_"); buf_puts(b, rn);
-          buf_printf(b, " = sp_box_int((sp_poly_to_i(_o->iv_%s) %s (", rn, op);
+          buf_puts(b, "_o->iv_"); buf_puts(b, iv_c(rn));
+          buf_printf(b, " = sp_box_int((sp_poly_to_i(_o->iv_%s) %s (", iv_c(rn), op);
           if (rhst == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")"); }
           else emit_expr(c, val, b);
           buf_puts(b, "))); break; }\n");
         }
         else {
-          char lval[320]; snprintf(lval, sizeof lval, "_o->iv_%s", rn);
+          char lval[320]; snprintf(lval, sizeof lval, "_o->iv_%s", iv_c(rn));
           if (emit_scalar_op_assign(c, lval, ivt, op, val, 0, b)) {
             emit_indent(b, indent + 1); buf_puts(b, "break; }\n");
             continue;
           }
-          buf_puts(b, "_o->iv_"); buf_puts(b, rn); buf_puts(b, " = _o->iv_"); buf_puts(b, rn);
+          buf_puts(b, "_o->iv_"); buf_puts(b, iv_c(rn)); buf_puts(b, " = _o->iv_"); buf_puts(b, iv_c(rn));
           buf_printf(b, " %s ", op ? op : "+");
           if (rhst == TY_POLY && (ivt == TY_INT || ivt == TY_BOOL)) {
             buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")");
@@ -11015,7 +11015,7 @@ else {
         }
         emit_indent(b, indent);
         if (((iv_sc && iv_sc->is_cmethod) || iv_global) && iv_cid >= 0)
-          buf_printf(b, "civ_%s_%s = ", c->classes[iv_cid].name, ivnm + 1);
+          buf_printf(b, "civ_%s_%s = ", c->classes[iv_cid].name, iv_c(ivnm + 1));
         else
           buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, iv_c(ivnm + 1));
         TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
@@ -11920,8 +11920,8 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
         emit_stmt(c, id, b, indent);
         emit_indent(b, indent); emit_tail_lead(b);
         char islot9[512];
-        if (cmeth9) snprintf(islot9, sizeof islot9, "civ_%s_%s", c->classes[ics9->class_id].name, inm9 + 1);
-        else if (tl9 >= 0) snprintf(islot9, sizeof islot9, "civ_Toplevel_%s", inm9 + 1);
+        if (cmeth9) snprintf(islot9, sizeof islot9, "civ_%s_%s", c->classes[ics9->class_id].name, iv_c(inm9 + 1));
+        else if (tl9 >= 0) snprintf(islot9, sizeof islot9, "civ_Toplevel_%s", iv_c(inm9 + 1));
         else snprintf(islot9, sizeof islot9, "%s%siv_%s", g_self, g_self_deref, iv_c(inm9 + 1));
         if (want_poly8 && it9 != TY_POLY) {
           Buf bx8; memset(&bx8, 0, sizeof bx8);

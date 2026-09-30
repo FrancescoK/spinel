@@ -987,6 +987,7 @@ const char *mc(const char *name);
 const char *mc_reopen_cls(Compiler *c, int class_id, const char *mname);
 const char *mc_top(Compiler *c, const char *name);
 const char *iv_c(const char *name);  /* ivar/member name -> valid C field id (#3110) */
+#define IV_C_MAX 64  /* iv_c's longest result; a longer name is shortened with a hash */
 /* A method scope is shadowed (and must not be emitted) when a later
    scope redefines the same (class, name, is_cmethod) -- a reopened class
    where the last definition wins, matching comp_method_in_class. A top-level
