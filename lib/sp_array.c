@@ -62,7 +62,7 @@ sp_IntArray*sp_IntArray_from_range_step(sp_int beg,sp_int end,sp_int step,sp_int
   }
   return a;
 }
-sp_IntArray*sp_IntArray_dup(sp_IntArray*a){SP_GC_ROOT(a);sp_IntArray*b=sp_IntArray_new();if(a->len>b->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)b-sizeof(sp_gc_hdr));sp_gc_bytes_sub(sizeof(sp_int)*b->cap);h->size-=sizeof(sp_int)*b->cap;b->cap=a->len;void*nd=sp_pl_realloc(b->data,sizeof(sp_int)*b->cap);if(!nd)sp_oom_die();b->data=(sp_int*)nd;h->size+=sizeof(sp_int)*b->cap;sp_gc_bytes_add(sizeof(sp_int)*b->cap);}memcpy(b->data,a->data+a->start,sizeof(sp_int)*a->len);b->len=a->len;return b;}
+sp_IntArray*sp_IntArray_dup(sp_IntArray*a){SP_GC_ROOT(a);sp_IntArray*b=sp_IntArray_new();if(a->len>b->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)b-sizeof(sp_gc_hdr));sp_gc_bytes_sub(sizeof(sp_int)*b->cap);h->size-=sizeof(sp_int)*b->cap;b->cap=a->len;void*nd=sp_pl_realloc(b->data,sizeof(sp_int)*b->cap);if(!nd)sp_oom_die();b->data=(sp_int*)nd;h->size+=sizeof(sp_int)*b->cap;sp_gc_bytes_add(sizeof(sp_int)*b->cap);}memcpy(b->data,a->data+a->start,sizeof(sp_int)*a->len);b->len=a->len;SP_MAY_NIL(b)=SP_MAY_NIL(a);return b;}
 /* a[start, len] / a[start..end] for IntArray. Negative start counts from
    the end. start past the array length yields an empty result; len is
    clamped so we never read past the source. CRuby returns nil for
@@ -77,7 +77,7 @@ sp_IntArray*sp_IntArray_dup(sp_IntArray*a){SP_GC_ROOT(a);sp_IntArray*b=sp_IntArr
    heap -- a segfault today on ordinary -O2 for an index CRuby answers fine.
    By this point start is already known to be in [0, N), so N - start cannot
    underflow. */
-sp_IntArray*sp_IntArray_slice(sp_IntArray*a,sp_int start,sp_int len){SP_GC_ROOT(a);if(start<0)start+=a->len;if(start<0)start=0;sp_IntArray*b=sp_IntArray_new();if(start>=a->len||len<=0)return b;if(len>a->len-start)len=a->len-start;if(len>b->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)b-sizeof(sp_gc_hdr));sp_gc_bytes_sub(sizeof(sp_int)*b->cap);h->size-=sizeof(sp_int)*b->cap;b->cap=len;b->data=(sp_int*)sp_pl_realloc(b->data,sizeof(sp_int)*b->cap);h->size+=sizeof(sp_int)*b->cap;sp_gc_bytes_add(sizeof(sp_int)*b->cap);}memcpy(b->data,a->data+a->start+start,sizeof(sp_int)*len);b->len=len;return b;}
+sp_IntArray*sp_IntArray_slice(sp_IntArray*a,sp_int start,sp_int len){SP_GC_ROOT(a);if(start<0)start+=a->len;if(start<0)start=0;sp_IntArray*b=sp_IntArray_new();if(start>=a->len||len<=0)return b;if(len>a->len-start)len=a->len-start;if(len>b->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)b-sizeof(sp_gc_hdr));sp_gc_bytes_sub(sizeof(sp_int)*b->cap);h->size-=sizeof(sp_int)*b->cap;b->cap=len;b->data=(sp_int*)sp_pl_realloc(b->data,sizeof(sp_int)*b->cap);h->size+=sizeof(sp_int)*b->cap;sp_gc_bytes_add(sizeof(sp_int)*b->cap);}memcpy(b->data,a->data+a->start+start,sizeof(sp_int)*len);b->len=len;SP_MAY_NIL(b)=SP_MAY_NIL(a);return b;}
 /* a[start..end] / a[start...end] with possibly negative endpoints.
    Normalize end against a->len first; the bare _slice already handles
    negative start. Issue #496. */
@@ -90,13 +90,14 @@ sp_IntArray*sp_IntArray_slice_range(sp_IntArray*a,sp_int start,sp_int end_,sp_in
    And a FROZEN receiver raises before the truncation, not after: every other
    mutator here checks, but replace did not, so `[1, 2].freeze.replace([3, 4])`
    quietly rewrote it. */
-void sp_IntArray_replace(sp_IntArray*dst,sp_IntArray*src){if(dst==src)return;if(dst->frozen){sp_raise_frozen_array_at(dst,SP_BUILTIN_INT_ARRAY);return;}dst->len=0;dst->start=0;if(src->len>dst->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)dst-sizeof(sp_gc_hdr));sp_gc_bytes_sub(sizeof(sp_int)*dst->cap);h->size-=sizeof(sp_int)*dst->cap;void*nd=sp_pl_realloc(dst->data,sizeof(sp_int)*src->len);if(!nd){perror("realloc");exit(1);}dst->data=(sp_int*)nd;dst->cap=src->len;h->size+=sizeof(sp_int)*dst->cap;sp_gc_bytes_add(sizeof(sp_int)*dst->cap);}memcpy(dst->data,src->data+src->start,sizeof(sp_int)*src->len);dst->len=src->len;}
+void sp_IntArray_replace(sp_IntArray*dst,sp_IntArray*src){if(dst==src)return;if(dst->frozen){sp_raise_frozen_array_at(dst,SP_BUILTIN_INT_ARRAY);return;}dst->len=0;dst->start=0;if(src->len>dst->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)dst-sizeof(sp_gc_hdr));sp_gc_bytes_sub(sizeof(sp_int)*dst->cap);h->size-=sizeof(sp_int)*dst->cap;void*nd=sp_pl_realloc(dst->data,sizeof(sp_int)*src->len);if(!nd){perror("realloc");exit(1);}dst->data=(sp_int*)nd;dst->cap=src->len;h->size+=sizeof(sp_int)*dst->cap;sp_gc_bytes_add(sizeof(sp_int)*dst->cap);}memcpy(dst->data,src->data+src->start,sizeof(sp_int)*src->len);dst->len=src->len;SP_MAY_NIL(dst)=SP_MAY_NIL(src);}
 /* The cold start-past-the-end splice: nil (the sentinel) up to `s`, then the
    source. Kept apart so the splice's in-range path below is unchanged. */
 static SP_NOINLINE SP_COLD void sp_IntArray_splice_gap(sp_IntArray*a,sp_int s,const sp_int*src,sp_int srcn){
   SP_GC_ROOT(a);
   sp_int*sb=NULL;
   if(srcn>0){sb=(sp_int*)sp_pl_alloc(sizeof(sp_int)*(size_t)srcn);if(!sb)sp_oom_die();memcpy(sb,src,sizeof(sp_int)*(size_t)srcn);}
+  SP_MAY_NIL(a)=1;
   while(a->len<s)sp_IntArray_push(a,SP_INT_NIL);
   for(sp_int i=0;i<srcn;i++)sp_IntArray_push(a,sb[i]);
   sp_pl_free(sb);
@@ -105,6 +106,7 @@ static SP_NOINLINE SP_COLD void sp_FloatArray_splice_gap(sp_FloatArray*a,sp_int 
   SP_GC_ROOT(a);
   sp_float*sb=NULL;
   if(srcn>0){sb=(sp_float*)sp_pl_alloc(sizeof(sp_float)*(size_t)srcn);if(!sb)sp_oom_die();memcpy(sb,src,sizeof(sp_float)*(size_t)srcn);}
+  SP_MAY_NIL(a)=1;
   while(a->len<s)sp_FloatArray_push(a,sp_float_nil());
   for(sp_int i=0;i<srcn;i++)sp_FloatArray_push(a,sb[i]);
   sp_pl_free(sb);
@@ -355,17 +357,17 @@ sp_bool sp_IntArray_include(sp_IntArray*a,sp_int v){if(!a)return FALSE;for(sp_in
 sp_int sp_IntArray_index(sp_IntArray*a,sp_int v){for(sp_int i=0;i<a->len;i++)if(a->data[a->start+i]==v)return i;return -1;}
 sp_int sp_IntArray_rindex(sp_IntArray*a,sp_int v){for(sp_int i=a->len-1;i>=0;i--)if(a->data[a->start+i]==v)return i;return -1;}
 sp_int sp_IntArray_delete_at(sp_IntArray*a,sp_int i){SP_GC_ROOT(a);if(a&&a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_INT_ARRAY);return SP_INT_NIL;}if(i<0)i+=a->len;if(i<0||i>=a->len)return SP_INT_NIL;sp_int v=a->data[a->start+i];for(sp_int j=i;j<a->len-1;j++)a->data[a->start+j]=a->data[a->start+j+1];a->len--;return v;}
-sp_int sp_IntArray_delete(sp_IntArray*a,sp_int v){SP_GC_ROOT(a);if(a&&a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_INT_ARRAY);return 0;}sp_int w=0;for(sp_int i=0;i<a->len;i++){if(a->data[a->start+i]!=v){a->data[a->start+w]=a->data[a->start+i];w++;}}sp_int d=a->len-w;a->len=w;return d>0?v:SP_INT_NIL;}  /* CRuby: nil when absent */
+sp_int sp_IntArray_delete(sp_IntArray*a,sp_int v){SP_GC_ROOT(a);if(a&&a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_INT_ARRAY);return 0;}sp_int w=0;for(sp_int i=0;i<a->len;i++){if(a->data[a->start+i]!=v){a->data[a->start+w]=a->data[a->start+i];w++;}}sp_int d=a->len-w;a->len=w;if(v==SP_INT_NIL)SP_MAY_NIL(a)=0;/* no nil is left */return d>0?v:SP_INT_NIL;}  /* CRuby: nil when absent */
 /* Issue #788: clamp i so a very-negative index doesn't underflow past
    a->start and write into the array's GC header. */
-void sp_IntArray_insert(sp_IntArray*a,sp_int i,sp_int v){SP_GC_ROOT(a);if(!a)return;if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_INT_ARRAY);return;}sp_int orig=i;if(i<0)i+=a->len+1;if(i<0)sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)orig,(long long)(-(a->len+1))));while(i>a->len)sp_IntArray_push(a,SP_INT_NIL);/* CRuby pads with nils past the end */sp_IntArray_push(a,0);for(sp_int j=a->len-1;j>i;j--)a->data[a->start+j]=a->data[a->start+j-1];a->data[a->start+i]=v;}
-sp_IntArray*sp_IntArray_uniq(sp_IntArray*a){SP_GC_ROOT(a);sp_IntArray*b=sp_IntArray_new();for(sp_int i=0;i<a->len;i++){int found=0;for(sp_int j=0;j<b->len;j++){if(b->data[b->start+j]==a->data[a->start+i]){found=1;break;}}if(!found)sp_IntArray_push(b,a->data[a->start+i]);}return b;}
-sp_IntArray*sp_IntArray_intersect(sp_IntArray*a,sp_IntArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_IntArray*r=sp_IntArray_new();if(!a||!b)return r;for(sp_int i=0;i<a->len;i++){sp_int v=a->data[a->start+i];if(sp_IntArray_include(b,v)&&!sp_IntArray_include(r,v))sp_IntArray_push(r,v);}return r;}
+void sp_IntArray_insert(sp_IntArray*a,sp_int i,sp_int v){SP_GC_ROOT(a);if(!a)return;if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_INT_ARRAY);return;}sp_int orig=i;if(i<0)i+=a->len+1;if(i<0)sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)orig,(long long)(-(a->len+1))));if(i>a->len)SP_MAY_NIL(a)=1;while(i>a->len)sp_IntArray_push(a,SP_INT_NIL);/* CRuby pads with nils past the end */sp_IntArray_push(a,0);for(sp_int j=a->len-1;j>i;j--)a->data[a->start+j]=a->data[a->start+j-1];a->data[a->start+i]=v;}
+sp_IntArray*sp_IntArray_uniq(sp_IntArray*a){SP_GC_ROOT(a);sp_IntArray*b=sp_IntArray_new();for(sp_int i=0;i<a->len;i++){int found=0;for(sp_int j=0;j<b->len;j++){if(b->data[b->start+j]==a->data[a->start+i]){found=1;break;}}if(!found)sp_IntArray_push(b,a->data[a->start+i]);}SP_MAY_NIL(b)=SP_MAY_NIL(a);return b;}
+sp_IntArray*sp_IntArray_intersect(sp_IntArray*a,sp_IntArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_IntArray*r=sp_IntArray_new();if(!a||!b)return r;for(sp_int i=0;i<a->len;i++){sp_int v=a->data[a->start+i];if(sp_IntArray_include(b,v)&&!sp_IntArray_include(r,v))sp_IntArray_push(r,v);}SP_MAY_NIL(r)=SP_MAY_NIL(a)&&SP_MAY_NIL(b);return r;}
 sp_bool sp_IntArray_intersect_p(sp_IntArray*a,sp_IntArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);if(!a||!b)return 0;for(sp_int i=0;i<a->len;i++)if(sp_IntArray_include(b,a->data[a->start+i]))return 1;return 0;}
-sp_IntArray*sp_IntArray_union(sp_IntArray*a,sp_IntArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_IntArray*r=sp_IntArray_new();if(a)for(sp_int i=0;i<a->len;i++){sp_int v=a->data[a->start+i];if(!sp_IntArray_include(r,v))sp_IntArray_push(r,v);}if(b){for(sp_int i=0;i<b->len;i++){sp_int v=b->data[b->start+i];if(!sp_IntArray_include(r,v))sp_IntArray_push(r,v);}}return r;}
+sp_IntArray*sp_IntArray_union(sp_IntArray*a,sp_IntArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_IntArray*r=sp_IntArray_new();if(a)for(sp_int i=0;i<a->len;i++){sp_int v=a->data[a->start+i];if(!sp_IntArray_include(r,v))sp_IntArray_push(r,v);}if(b){for(sp_int i=0;i<b->len;i++){sp_int v=b->data[b->start+i];if(!sp_IntArray_include(r,v))sp_IntArray_push(r,v);}}SP_MAY_NIL(r)=(a&&SP_MAY_NIL(a))||(b&&SP_MAY_NIL(b));return r;}
 /* Array#- / Array#difference: keep every LHS element NOT in RHS,
    preserving the LHS's duplicates. `[1,1,2,3] - [3]` is `[1,1,2]`. */
-sp_IntArray*sp_IntArray_difference(sp_IntArray*a,sp_IntArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_IntArray*r=sp_IntArray_new();if(!a)return r;for(sp_int i=0;i<a->len;i++){sp_int v=a->data[a->start+i];if(!sp_IntArray_include(b,v))sp_IntArray_push(r,v);}return r;}
+sp_IntArray*sp_IntArray_difference(sp_IntArray*a,sp_IntArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_IntArray*r=sp_IntArray_new();if(!a)return r;for(sp_int i=0;i<a->len;i++){sp_int v=a->data[a->start+i];if(!sp_IntArray_include(b,v))sp_IntArray_push(r,v);}SP_MAY_NIL(r)=SP_MAY_NIL(a);return r;}
 void sp_IntArray_unshift(sp_IntArray*a,sp_int v){SP_GC_ROOT(a);if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_INT_ARRAY);return;}if(a->start>0){a->start--;a->data[a->start]=v;a->len++;}
 else{sp_int e=a->len+1;if(e>a->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes_sub(sizeof(sp_int)*a->cap);h->size-=sizeof(sp_int)*a->cap;a->cap=(((((a->cap*2)))))+1;a->data=(sp_int*)sp_pl_realloc(a->data,sizeof(sp_int)*a->cap);h->size+=sizeof(sp_int)*a->cap;sp_gc_bytes_add(sizeof(sp_int)*a->cap);}memmove(a->data+1,a->data,sizeof(sp_int)*a->len);a->data[0]=v;a->len++;}}
 /* A nil element (the slot's sentinel) joins as nil.to_s, the empty string,
@@ -437,10 +439,10 @@ sp_float sp_FloatArray_sum(sp_FloatArray*a,sp_float init){sp_float s=init,c=0.0;
    0.6000000000000001 where `.sum(0)` and `.sum` are 0.6. The boxed fold in
    spinel_rt.h draws the same line; these two must not disagree. */
 sp_float sp_FloatArray_sum_plain(sp_FloatArray*a,sp_float init){sp_float s=init;for(sp_int i=0;i<a->len;i++)s+=a->data[i];return s;}
-void sp_FloatArray_replace(sp_FloatArray*dst,sp_FloatArray*src){if(dst==src)return;if(dst->frozen){sp_raise_frozen_array_at(dst,SP_BUILTIN_FLT_ARRAY);return;}dst->len=0;if(src->len>dst->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)dst-sizeof(sp_gc_hdr));sp_gc_bytes_sub(sizeof(sp_float)*dst->cap);h->size-=sizeof(sp_float)*dst->cap;void*nd=sp_pl_realloc(dst->data,sizeof(sp_float)*src->len);if(!nd){perror("realloc");exit(1);}dst->data=(sp_float*)nd;dst->cap=src->len;h->size+=sizeof(sp_float)*dst->cap;sp_gc_bytes_add(sizeof(sp_float)*dst->cap);}memcpy(dst->data,src->data,sizeof(sp_float)*src->len);dst->len=src->len;}
+void sp_FloatArray_replace(sp_FloatArray*dst,sp_FloatArray*src){if(dst==src)return;if(dst->frozen){sp_raise_frozen_array_at(dst,SP_BUILTIN_FLT_ARRAY);return;}dst->len=0;if(src->len>dst->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)dst-sizeof(sp_gc_hdr));sp_gc_bytes_sub(sizeof(sp_float)*dst->cap);h->size-=sizeof(sp_float)*dst->cap;void*nd=sp_pl_realloc(dst->data,sizeof(sp_float)*src->len);if(!nd){perror("realloc");exit(1);}dst->data=(sp_float*)nd;dst->cap=src->len;h->size+=sizeof(sp_float)*dst->cap;sp_gc_bytes_add(sizeof(sp_float)*dst->cap);}memcpy(dst->data,src->data,sizeof(sp_float)*src->len);dst->len=src->len;SP_MAY_NIL(dst)=SP_MAY_NIL(src);}
 /* a[start, len] / a[start..end] for FloatArray. Same negative-start and
    length-clamping semantics as sp_IntArray_slice. */
-sp_FloatArray*sp_FloatArray_slice(sp_FloatArray*a,sp_int start,sp_int len){SP_GC_ROOT(a);if(start<0)start+=a->len;if(start<0)start=0;sp_FloatArray*b=sp_FloatArray_new();if(start>=a->len||len<=0)return b;if(len>a->len-start)len=a->len-start;if(len>b->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)b-sizeof(sp_gc_hdr));sp_gc_bytes_sub(sizeof(sp_float)*b->cap);h->size-=sizeof(sp_float)*b->cap;b->cap=len;b->data=(sp_float*)sp_pl_realloc(b->data,sizeof(sp_float)*b->cap);h->size+=sizeof(sp_float)*b->cap;sp_gc_bytes_add(sizeof(sp_float)*b->cap);}memcpy(b->data,a->data+start,sizeof(sp_float)*len);b->len=len;return b;}
+sp_FloatArray*sp_FloatArray_slice(sp_FloatArray*a,sp_int start,sp_int len){SP_GC_ROOT(a);if(start<0)start+=a->len;if(start<0)start=0;sp_FloatArray*b=sp_FloatArray_new();if(start>=a->len||len<=0)return b;if(len>a->len-start)len=a->len-start;if(len>b->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)b-sizeof(sp_gc_hdr));sp_gc_bytes_sub(sizeof(sp_float)*b->cap);h->size-=sizeof(sp_float)*b->cap;b->cap=len;b->data=(sp_float*)sp_pl_realloc(b->data,sizeof(sp_float)*b->cap);h->size+=sizeof(sp_float)*b->cap;sp_gc_bytes_add(sizeof(sp_float)*b->cap);}memcpy(b->data,a->data+start,sizeof(sp_float)*len);b->len=len;SP_MAY_NIL(b)=SP_MAY_NIL(a);return b;}
 sp_FloatArray*sp_FloatArray_slice_range(sp_FloatArray*a,sp_int start,sp_int end_,sp_int excl){SP_GC_ROOT(a);if(end_<0)end_+=a->len;if(start<0)start+=a->len;if(start<0||start>a->len)return NULL;/* a start outside [-len, len] is nil (#4524); start == len is [] */sp_int n=end_-start+(excl?0:1);if(n<0)n=0;return sp_FloatArray_slice(a,start,n);}
 void sp_FloatArray_reverse_bang(sp_FloatArray*a){SP_GC_ROOT(a);if(!a)return;if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_FLT_ARRAY);return;}for(sp_int i=0,j=a->len-1;i<j;i++,j--){sp_float t=a->data[i];a->data[i]=a->data[j];a->data[j]=t;}}
 void sp_FloatArray_rotate_bang(sp_FloatArray*a,sp_int n){SP_GC_ROOT(a);
@@ -485,12 +487,12 @@ sp_bool sp_FloatArray_include(sp_FloatArray*a,sp_float v){if(!a)return FALSE;for
    shows the difference -- and nil (an e never reassigned) when absent. */
 sp_int sp_FloatArray_index(sp_FloatArray*a,sp_float v){if(!a)return -1;for(sp_int i=0;i<a->len;i++){sp_float x=a->data[i];if(x==v||(v!=v&&x!=x&&memcmp(&x,&v,sizeof v)==0))return i;}return -1;}
 sp_int sp_FloatArray_rindex(sp_FloatArray*a,sp_float v){if(!a)return -1;for(sp_int i=a->len-1;i>=0;i--){sp_float x=a->data[i];if(x==v||(v!=v&&x!=x&&memcmp(&x,&v,sizeof v)==0))return i;}return -1;}
-sp_float sp_FloatArray_delete(sp_FloatArray*a,sp_float v){SP_GC_ROOT(a);if(!a)return sp_float_nil();if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_FLT_ARRAY);return sp_float_nil();}sp_int w=0;sp_float e=sp_float_nil();for(sp_int i=0;i<a->len;i++){sp_float x=a->data[i];if(x==v||(v!=v&&x!=x&&memcmp(&x,&v,sizeof v)==0))e=x;else{a->data[w]=x;w++;}}a->len=w;return e;}
-sp_FloatArray*sp_FloatArray_intersect(sp_FloatArray*a,sp_FloatArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_FloatArray*r=sp_FloatArray_new();if(!a||!b)return r;for(sp_int i=0;i<a->len;i++){sp_float v=a->data[i];if(sp_FloatArray_include(b,v)&&!sp_FloatArray_include(r,v))sp_FloatArray_push(r,v);}return r;}
+sp_float sp_FloatArray_delete(sp_FloatArray*a,sp_float v){SP_GC_ROOT(a);if(!a)return sp_float_nil();if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_FLT_ARRAY);return sp_float_nil();}sp_int w=0;sp_float e=sp_float_nil();for(sp_int i=0;i<a->len;i++){sp_float x=a->data[i];if(x==v||(v!=v&&x!=x&&memcmp(&x,&v,sizeof v)==0))e=x;else{a->data[w]=x;w++;}}a->len=w;if(sp_float_is_nil(v))SP_MAY_NIL(a)=0;return e;}
+sp_FloatArray*sp_FloatArray_intersect(sp_FloatArray*a,sp_FloatArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_FloatArray*r=sp_FloatArray_new();if(!a||!b)return r;for(sp_int i=0;i<a->len;i++){sp_float v=a->data[i];if(sp_FloatArray_include(b,v)&&!sp_FloatArray_include(r,v))sp_FloatArray_push(r,v);}SP_MAY_NIL(r)=SP_MAY_NIL(a)&&SP_MAY_NIL(b);return r;}
 sp_bool sp_FloatArray_intersect_p(sp_FloatArray*a,sp_FloatArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);if(!a||!b)return 0;for(sp_int i=0;i<a->len;i++)if(sp_FloatArray_include(b,a->data[i]))return 1;return 0;}
-sp_FloatArray*sp_FloatArray_union(sp_FloatArray*a,sp_FloatArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_FloatArray*r=sp_FloatArray_new();if(a)for(sp_int i=0;i<a->len;i++){sp_float v=a->data[i];if(!sp_FloatArray_include(r,v))sp_FloatArray_push(r,v);}if(b){for(sp_int i=0;i<b->len;i++){sp_float v=b->data[i];if(!sp_FloatArray_include(r,v))sp_FloatArray_push(r,v);}}return r;}
-sp_FloatArray*sp_FloatArray_difference(sp_FloatArray*a,sp_FloatArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_FloatArray*r=sp_FloatArray_new();for(sp_int i=0;i<a->len;i++){sp_float v=a->data[i];if(!sp_FloatArray_include(b,v))sp_FloatArray_push(r,v);}return r;}
-sp_FloatArray*sp_FloatArray_uniq(sp_FloatArray*a){SP_GC_ROOT(a);sp_FloatArray*b=sp_FloatArray_new();if(!a)return b;for(sp_int i=0;i<a->len;i++){sp_float v=sp_FloatArray_get(a,i);if(!sp_FloatArray_include(b,v))sp_FloatArray_push(b,v);}return b;}
+sp_FloatArray*sp_FloatArray_union(sp_FloatArray*a,sp_FloatArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_FloatArray*r=sp_FloatArray_new();if(a)for(sp_int i=0;i<a->len;i++){sp_float v=a->data[i];if(!sp_FloatArray_include(r,v))sp_FloatArray_push(r,v);}if(b){for(sp_int i=0;i<b->len;i++){sp_float v=b->data[i];if(!sp_FloatArray_include(r,v))sp_FloatArray_push(r,v);}}SP_MAY_NIL(r)=(a&&SP_MAY_NIL(a))||(b&&SP_MAY_NIL(b));return r;}
+sp_FloatArray*sp_FloatArray_difference(sp_FloatArray*a,sp_FloatArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_FloatArray*r=sp_FloatArray_new();for(sp_int i=0;i<a->len;i++){sp_float v=a->data[i];if(!sp_FloatArray_include(b,v))sp_FloatArray_push(r,v);}SP_MAY_NIL(r)=SP_MAY_NIL(a);return r;}
+sp_FloatArray*sp_FloatArray_uniq(sp_FloatArray*a){SP_GC_ROOT(a);sp_FloatArray*b=sp_FloatArray_new();if(!a)return b;for(sp_int i=0;i<a->len;i++){sp_float v=sp_FloatArray_get(a,i);if(!sp_FloatArray_include(b,v))sp_FloatArray_push(b,v);}SP_MAY_NIL(b)=SP_MAY_NIL(a);return b;}
 
 /* ============================= sp_PtrArray ============================ */
 /* `Array#delete_at(i)` -- remove and return the element at index i.
@@ -586,21 +588,31 @@ sp_IntArray*sp_IntArray_compact(sp_IntArray*a){SP_GC_ROOT(a);sp_IntArray*r=sp_In
 sp_FloatArray*sp_FloatArray_compact(sp_FloatArray*a){SP_GC_ROOT(a);sp_FloatArray*r=sp_FloatArray_new();if(!a)return r;for(sp_int i=0;i<a->len;i++){sp_float v=a->data[i];if(!sp_float_is_nil(v))sp_FloatArray_push(r,v);}return r;}
 /* compact! on one of those: the nils go in place, and the answer is whether
    any did (CRuby's self, or nil for a no-op). */
-sp_bool sp_IntArray_compact_bang(sp_IntArray*a){SP_GC_ROOT(a);if(!a)return FALSE;if(a->frozen){sp_raise_frozen_array_at(a,SP_BUILTIN_INT_ARRAY);return FALSE;}sp_int w=0;for(sp_int i=0;i<a->len;i++){sp_int v=a->data[a->start+i];if(v!=SP_INT_NIL)a->data[a->start+w++]=v;}sp_bool ch=w!=a->len;a->len=w;return ch;}
-sp_bool sp_FloatArray_compact_bang(sp_FloatArray*a){SP_GC_ROOT(a);if(!a)return FALSE;if(a->frozen){sp_raise_frozen_array_at(a,SP_BUILTIN_FLT_ARRAY);return FALSE;}sp_int w=0;for(sp_int i=0;i<a->len;i++){sp_float v=a->data[i];if(!sp_float_is_nil(v))a->data[w++]=v;}sp_bool ch=w!=a->len;a->len=w;return ch;}
+sp_bool sp_IntArray_compact_bang(sp_IntArray*a){SP_GC_ROOT(a);if(!a)return FALSE;if(a->frozen){sp_raise_frozen_array_at(a,SP_BUILTIN_INT_ARRAY);return FALSE;}sp_int w=0;for(sp_int i=0;i<a->len;i++){sp_int v=a->data[a->start+i];if(v!=SP_INT_NIL)a->data[a->start+w++]=v;}sp_bool ch=w!=a->len;a->len=w;SP_MAY_NIL(a)=0;return ch;}
+sp_bool sp_FloatArray_compact_bang(sp_FloatArray*a){SP_GC_ROOT(a);if(!a)return FALSE;if(a->frozen){sp_raise_frozen_array_at(a,SP_BUILTIN_FLT_ARRAY);return FALSE;}sp_int w=0;for(sp_int i=0;i<a->len;i++){sp_float v=a->data[i];if(!sp_float_is_nil(v))a->data[w++]=v;}sp_bool ch=w!=a->len;a->len=w;SP_MAY_NIL(a)=0;return ch;}
 /* min, max, minmax and sort compare the elements pairwise, and nil compares
    with nothing but nil, so CRuby raises once one meets a number; an array of
    nils alone sorts and answers nil. The message names the pair the way a
    left-to-right scan meets it, which is Array#min's and #max's order (sort
    and the counted min(n)/max(n) may meet the pair the other way round).
-   Emitted only ahead of a receiver analyze marked as able to hold the
-   sentinel (#3505); each answers the array it was handed. */
+   Emitted ahead of a receiver analyze marked as able to hold the sentinel
+   (#3505), and reached through the nil_*_if_flagged wrappers in sp_array.h
+   for any other whose may_nil is set; each answers the array it was handed. */
 sp_IntArray*sp_IntArray_nil_cmp_ck(sp_IntArray*a){if(!a)return a;sp_int ni=-1,vi=-1;for(sp_int i=0;i<a->len&&(ni<0||vi<0);i++){if(a->data[a->start+i]==SP_INT_NIL){if(ni<0)ni=i;}else if(vi<0)vi=i;}if(ni<0||vi<0)return a;if(ni<vi)sp_raise_cls("ArgumentError",sp_sprintf("comparison of NilClass with %lld failed",(long long)a->data[a->start+vi]));sp_raise_cls("ArgumentError","comparison of Integer with nil failed");return a;}
 sp_FloatArray*sp_FloatArray_nil_cmp_ck(sp_FloatArray*a){if(!a)return a;sp_int ni=-1,vi=-1;for(sp_int i=0;i<a->len&&(ni<0||vi<0);i++){if(sp_float_is_nil(a->data[i])){if(ni<0)ni=i;}else if(vi<0)vi=i;}if(ni<0||vi<0)return a;if(ni<vi)sp_raise_cls("ArgumentError",sp_sprintf("comparison of NilClass with %s failed",sp_float_to_s(a->data[vi])));sp_raise_cls("ArgumentError","comparison of Float with nil failed");return a;}
 /* sum adds each element to the running total, and a nil is no addend: the
    TypeError names the total's class when the nil arrives -- the seed's before
    the first element (`float_seed`: a Float one), then the array's own, or
    Float once a Float seed has made it one. */
+/* A typed array just converted from a boxed one: a nil element became the
+   sentinel, which sets may_nil. One pass after the conversion, out of line,
+   so the converting loops stay the size they were. */
+void sp_IntArray_note_nils(sp_IntArray*a){if(!a)return;for(sp_int i=0;i<a->len;i++)if(a->data[a->start+i]==SP_INT_NIL){SP_MAY_NIL(a)=1;return;}}
+void sp_FloatArray_note_nils(sp_FloatArray*a){if(!a)return;for(sp_int i=0;i<a->len;i++)if(sp_float_is_nil(a->data[i])){SP_MAY_NIL(a)=1;return;}}
+/* all? / any? / none? / one? of an array that may hold nil: its non-nil
+   elements (sp_*Array_truthy_count, the length where none can be nil) */
+sp_int sp_IntArray_truthy_scan(sp_IntArray*a){sp_int n=0;for(sp_int i=0;i<a->len;i++)if(a->data[a->start+i]!=SP_INT_NIL)n++;return n;}
+sp_int sp_FloatArray_truthy_scan(sp_FloatArray*a){sp_int n=0;for(sp_int i=0;i<a->len;i++)if(!sp_float_is_nil(a->data[i]))n++;return n;}
 sp_IntArray*sp_IntArray_nil_sum_ck(sp_IntArray*a,int float_seed){if(!a)return a;for(sp_int i=0;i<a->len;i++)if(a->data[a->start+i]==SP_INT_NIL)sp_raise_cls("TypeError",float_seed?"nil can't be coerced into Float":"nil can't be coerced into Integer");return a;}
 sp_FloatArray*sp_FloatArray_nil_sum_ck(sp_FloatArray*a,int float_seed){if(!a)return a;for(sp_int i=0;i<a->len;i++)if(sp_float_is_nil(a->data[i]))sp_raise_cls("TypeError",(i>0||float_seed)?"nil can't be coerced into Float":"nil can't be coerced into Integer");return a;}
 const char*sp_StrArray_delete_at(sp_StrArray*a,sp_int i){SP_GC_ROOT(a); sp_gc_wb((void*)a);if(!a)return NULL;if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_STR_ARRAY);return NULL;}if(i<0)i+=a->len;if(i<0||i>=a->len)return NULL;const char*v=a->data[i];for(sp_int j=i;j<a->len-1;j++)a->data[j]=a->data[j+1];a->len--;return v;}
@@ -658,9 +670,9 @@ sp_bool sp_FloatArray_eq(sp_FloatArray*a,sp_FloatArray*b){if(!a||!b)return a==b;
 const char*sp_StrArray_inspect(sp_StrArray*a){SP_GC_ROOT(a);return a?sp_inspect_container(sp_box_obj(a,SP_BUILTIN_STR_ARRAY)):"nil";}
 const char*sp_PtrArray_inspect(sp_PtrArray*a){if(!a)return SPL("nil");SP_GC_ROOT(a);sp_String*s=sp_String_new("[");SP_GC_ROOT(s);for(sp_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,"#<Object>");}sp_String_append(s,"]");return sp_str_dup(s->data);}
 /* Array#slice_before(delim): start a new chunk before each element == delim. */
-sp_PtrArray*sp_IntArray_slice_before(sp_IntArray*a,sp_int d){SP_GC_ROOT(a);sp_PtrArray*out=sp_PtrArray_new();SP_GC_ROOT(out);if(!a)return out;sp_IntArray*cur=sp_IntArray_new();SP_GC_ROOT(cur);for(sp_int i=0;i<a->len;i++){sp_int e=a->data[a->start+i];if(e==d&&cur->len>0){sp_PtrArray_push(out,cur);cur=sp_IntArray_new();}sp_IntArray_push(cur,e);}if(cur->len>0)sp_PtrArray_push(out,cur);return out;}
+sp_PtrArray*sp_IntArray_slice_before(sp_IntArray*a,sp_int d){SP_GC_ROOT(a);sp_PtrArray*out=sp_PtrArray_new();SP_GC_ROOT(out);if(!a)return out;sp_IntArray*cur=sp_IntArray_new();SP_GC_ROOT(cur);for(sp_int i=0;i<a->len;i++){sp_int e=a->data[a->start+i];if(e==d&&cur->len>0){sp_PtrArray_push(out,cur);cur=sp_IntArray_new();}SP_MAY_NIL(cur)=SP_MAY_NIL(a);sp_IntArray_push(cur,e);}if(cur->len>0)sp_PtrArray_push(out,cur);return out;}
 /* Array#slice_after(delim): end a chunk after each element == delim. */
-sp_PtrArray*sp_IntArray_slice_after(sp_IntArray*a,sp_int d){SP_GC_ROOT(a);sp_PtrArray*out=sp_PtrArray_new();SP_GC_ROOT(out);if(!a)return out;sp_IntArray*cur=sp_IntArray_new();SP_GC_ROOT(cur);for(sp_int i=0;i<a->len;i++){sp_int e=a->data[a->start+i];sp_IntArray_push(cur,e);if(e==d){sp_PtrArray_push(out,cur);cur=sp_IntArray_new();}}if(cur->len>0)sp_PtrArray_push(out,cur);return out;}
+sp_PtrArray*sp_IntArray_slice_after(sp_IntArray*a,sp_int d){SP_GC_ROOT(a);sp_PtrArray*out=sp_PtrArray_new();SP_GC_ROOT(out);if(!a)return out;sp_IntArray*cur=sp_IntArray_new();SP_GC_ROOT(cur);for(sp_int i=0;i<a->len;i++){sp_int e=a->data[a->start+i];SP_MAY_NIL(cur)=SP_MAY_NIL(a);sp_IntArray_push(cur,e);if(e==d){sp_PtrArray_push(out,cur);cur=sp_IntArray_new();}}if(cur->len>0)sp_PtrArray_push(out,cur);return out;}
 sp_PtrArray *sp_IntArray_product(sp_IntArray *a, sp_IntArray *b) {
   SP_GC_ROOT(a); SP_GC_ROOT(b);
   sp_PtrArray *out = sp_PtrArray_new();
@@ -669,6 +681,7 @@ sp_PtrArray *sp_IntArray_product(sp_IntArray *a, sp_IntArray *b) {
   for (sp_int i = 0; i < a->len; i++) {
     for (sp_int j = 0; j < b->len; j++) {
       sp_IntArray *pair = sp_IntArray_new();
+      SP_MAY_NIL(pair) = SP_MAY_NIL(a) || SP_MAY_NIL(b);   /* the rows carry the operands' nils */
       sp_IntArray_push(pair, a->data[a->start + i]);
       sp_IntArray_push(pair, b->data[b->start + j]);
       sp_PtrArray_push(out, pair);
@@ -696,9 +709,9 @@ sp_RbVal sp_FloatArray_rindex_key(sp_FloatArray *a, sp_RbVal v) {SP_GC_ROOT(a); 
 sp_float sp_FloatArray_delete_key(sp_FloatArray *a, sp_RbVal v) {SP_GC_ROOT(a); if (v.tag == SP_TAG_FLT) return sp_FloatArray_delete(a, v.v.f); if (v.tag == SP_TAG_INT) return sp_FloatArray_delete(a, (sp_float)v.v.i); if (v.tag == SP_TAG_NIL) return sp_FloatArray_delete(a, sp_float_nil()); return sp_float_nil(); }
 const int64_t *sp_IntArray_ffi_data(sp_IntArray *a) { return a ? (const int64_t *)(a->data + a->start) : (const int64_t *)0; }
 const double  *sp_FloatArray_ffi_data(sp_FloatArray *a) { return a ? (const double *)a->data : (const double *)0; }
-sp_IntArray *sp_IntArray_concat(sp_IntArray *a, sp_IntArray *b) { SP_GC_ROOT(a); SP_GC_ROOT(b); sp_IntArray *r = sp_IntArray_new(); SP_GC_ROOT(r); if (a) for (sp_int i = 0; i < a->len; i++) sp_IntArray_push(r, sp_IntArray_get(a, i)); if (b) for (sp_int i = 0; i < b->len; i++) sp_IntArray_push(r, sp_IntArray_get(b, i)); return r; }
+sp_IntArray *sp_IntArray_concat(sp_IntArray *a, sp_IntArray *b) { SP_GC_ROOT(a); SP_GC_ROOT(b); sp_IntArray *r = sp_IntArray_new(); SP_GC_ROOT(r); if (a) for (sp_int i = 0; i < a->len; i++) sp_IntArray_push(r, sp_IntArray_get(a, i)); if (b) for (sp_int i = 0; i < b->len; i++) sp_IntArray_push(r, sp_IntArray_get(b, i)); sp_IntArray_nil_from(r, a); sp_IntArray_nil_from(r, b); return r; }
 sp_StrArray *sp_StrArray_concat(sp_StrArray *a, sp_StrArray *b) {SP_GC_ROOT(a);SP_GC_ROOT(b); sp_StrArray *r = sp_StrArray_new(); SP_GC_ROOT(r); if (a) for (sp_int i = 0; i < a->len; i++) sp_StrArray_push(r, sp_StrArray_get(a, i)); if (b) for (sp_int i = 0; i < b->len; i++) sp_StrArray_push(r, sp_StrArray_get(b, i)); return r; }
-sp_FloatArray *sp_FloatArray_concat(sp_FloatArray *a, sp_FloatArray *b) {SP_GC_ROOT(a);SP_GC_ROOT(b); sp_FloatArray *r = sp_FloatArray_new(); SP_GC_ROOT(r); if (a) for (sp_int i = 0; i < a->len; i++) sp_FloatArray_push(r, sp_FloatArray_get(a, i)); if (b) for (sp_int i = 0; i < b->len; i++) sp_FloatArray_push(r, sp_FloatArray_get(b, i)); return r; }
+sp_FloatArray *sp_FloatArray_concat(sp_FloatArray *a, sp_FloatArray *b) {SP_GC_ROOT(a);SP_GC_ROOT(b); sp_FloatArray *r = sp_FloatArray_new(); SP_GC_ROOT(r); if (a) for (sp_int i = 0; i < a->len; i++) sp_FloatArray_push(r, sp_FloatArray_get(a, i)); if (b) for (sp_int i = 0; i < b->len; i++) sp_FloatArray_push(r, sp_FloatArray_get(b, i)); sp_FloatArray_nil_from(r, a); sp_FloatArray_nil_from(r, b); return r; }
 /* A typed array widened whole into a poly one boxes its nil (the slot's
    sentinel) as nil, as sp_PolyArray_from_int_array does: once boxed as a
    number, nothing downstream -- a set operation, ==, a zip row -- can tell.
@@ -737,6 +750,7 @@ sp_IntArray *sp_IntArray_slice_bang(sp_IntArray *a, sp_int from, sp_int n) {SP_G
   if (from + n > a->len) n = a->len - from;
   sp_IntArray *r = sp_IntArray_new();
   for (sp_int i = 0; i < n; i++) sp_IntArray_push(r, a->data[a->start + from + i]);
+  SP_MAY_NIL(r) = SP_MAY_NIL(a);
   if (from == 0) {
     a->start += n;
     a->len -= n;
@@ -758,6 +772,7 @@ sp_FloatArray *sp_FloatArray_slice_bang(sp_FloatArray *a, sp_int from, sp_int n)
   if (from + n > a->len) n = a->len - from;
   sp_FloatArray *r = sp_FloatArray_new();
   for (sp_int i = 0; i < n; i++) sp_FloatArray_push(r, a->data[from + i]);
+  SP_MAY_NIL(r) = SP_MAY_NIL(a);
   for (sp_int i = from; i + n < a->len; i++) a->data[i] = a->data[i + n];
   a->len -= n;
   return r;

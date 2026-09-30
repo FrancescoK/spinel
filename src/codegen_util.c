@@ -2220,14 +2220,64 @@ void emit_sentinel_bind(Compiler *c, TyKind t, int node, char *ref, size_t cap, 
   emit_ctype(c, t, b); buf_printf(b, " %s = ", ref); emit_expr(c, node, b);
   buf_puts(b, "; ");
 }
-/* The box for an element the Integer or Float array `node` hands to a poly
-   container (a zip or product row, a splat into a mixed literal or a rest
-   parameter): the _or_nil twin where analyze marked the array as able to hold
-   the sentinel (#3505), which is its nil; the plain box everywhere else. */
-const char *typed_elem_box_fn(Compiler *c, int node, TyKind t) {
-  int nil = node >= 0 && nullable_int_elem_array(c, node);
-  if (t == TY_INT_ARRAY) return nil ? "sp_box_int_or_nil" : "sp_box_int";
-  return nil ? "sp_box_float_or_nil" : "sp_box_float";
+/* The box for an element an Integer or Float array hands to a poly container
+   (a zip or product row, a splat into a mixed literal or a rest parameter, a
+   lazy stream): sp_box_int_nf / sp_box_float_nf, whose first argument is the
+   array's may_nil, read once ahead of the loop by the caller. Where it is set
+   the sentinel boxes as the nil it is; an array a computed index wrote past
+   the end holds one analyze cannot see, so the static mark no longer
+   decides. */
+const char *typed_elem_box_fn(TyKind t) {
+  return t == TY_INT_ARRAY ? "sp_box_int_nf" : "sp_box_float_nf";
+}
+/* The store an Integer or Float array (`k`, "Int" / "Float") takes the value
+   `node` with: "_nilable" where a nil can land that no static mark covers --
+   a literal nil, a boxed value (whose nil converts to the sentinel), or an
+   element a builtin copies -- so the store sets the array's may_nil; "" for
+   everything else. A scalar analyze sees can be nil marks the array it is
+   stored into (nullable_elem_mutation), and a marked array's reads scan for
+   the sentinel as they always did, so that store keeps its plain C: the
+   hot loops that copy elements or ivars pay nothing. Any other kind of array
+   has no flag. */
+const char *nil_store_sfx(Compiler *c, const char *k, int node) {
+  if (!k || (!sp_streq(k, "Int") && !sp_streq(k, "Float"))) return "";
+  if (node == NIL_STORE_BOXED) return "_nilable";   /* a boxed element, converted */
+  if (node < 0) return "";
+  TyKind t = comp_ntype(c, node);
+  if (t == TY_NIL || t == TY_POLY || t == TY_UNKNOWN) return "_nilable";
+  if (t != TY_INT && t != TY_FLOAT) return "";
+  return enum_builtin_node(c, node) ? "_nilable" : "";
+}
+/* The C text asking whether the Integer or Float array `arr` (C text; `node`
+   its Ruby expression, of kind `t`) may hold nil: "1" where analyze marked
+   the array, whose stores set no flag, else its run-time may_nil. */
+void emit_may_nil_text(Compiler *c, int node, TyKind t, const char *arr, Buf *b) {
+  if (node >= 0 && nullable_int_elem_array(c, node)) buf_puts(b, "1");
+  else buf_printf(b, "sp_%sArray_may_nil(%s)", t == TY_INT_ARRAY ? "Int" : "Float", arr);
+}
+/* An array literal of Integers or Floats none of which can be nil at run
+   time (no splat, no element nil_store_sfx would flag): it is born without
+   may_nil, so a copy of it (`[0] * 8192`) has nothing to hand on. */
+int typed_array_lit_flag_free(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node >= 0) node = unwrap_parens(c, node);
+  if (node < 0 || nt_kind(nt, node) != NK_ArrayNode) return 0;
+  int en = 0; const int *els = nt_arr(nt, node, "elements", &en);
+  for (int k = 0; els && k < en; k++) {
+    TyKind t = comp_ntype(c, els[k]);
+    if (nt_kind(nt, els[k]) == NK_SplatNode || (t != TY_INT && t != TY_FLOAT) || *nil_store_sfx(c, "Int", els[k]))
+      return 0;
+  }
+  return 1;
+}
+/* A node in one of the Ruby builtins (builtins/enumerable.rb: take_while,
+   partition, flat_map, ...). They copy their receiver's elements one by one,
+   and an element read is typed as a number even where the receiver holds nil
+   (a gap a computed index wrote past the end), so their stores take the
+   flag-setting form and their boxes the _or_nil one, whatever the element. */
+int enum_builtin_node(Compiler *c, int node) {
+  Scope *s = node >= 0 ? comp_scope_of(c, node) : NULL;
+  return s && s->name && !strncmp(s->name, "__enum_", 7);
 }
 /* The C type of class `cid`'s instances. A `native_struct` carries the name
    its declaration gave -- which need not be derived from the Ruby class name

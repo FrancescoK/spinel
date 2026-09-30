@@ -18119,7 +18119,8 @@ static int elem_preserving_call(const char *nm) {
                                    "uniq", "reverse", "rotate", "take", "drop",
                                    "take_while", "drop_while", "shuffle", "to_a",
                                    "dup", "clone", "freeze", "values_at", "slice",
-                                   "flatten", "first", "last", NULL };
+                                   "flatten", "first", "last", "sample", "slice!", "*", "-",
+                                   "&", "difference", "intersection", NULL };
   return name_in(nm, N);
 }
 
@@ -18193,7 +18194,10 @@ static int self_mutator_call(const char *nm) {
    literal k >= 1, or a literal index beyond the shortest array literal the
    local receiver is ever assigned (`a = [1, 2]; a[5] = v`). Only what can be
    shown: an index computed some other way is taken as in range, or every
-   `a[i] = v` in a typed-array loop would box through the nil check. */
+   `a[i] = v` in a typed-array loop would box through the nil check. The gap
+   such a write can still leave is not lost: the runtime sets the array's
+   may_nil where it fills one (sp_IntArray_set_slow), and the whole-array
+   reads ask that flag, so this mark only types the elements read out. */
 static int index_write_gaps(Compiler *c, int call, int ix) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, call, "receiver");
@@ -18450,6 +18454,16 @@ static int nullable_int_elem_expr(Compiler *c, int v, int depth) {
     if (!obj_rc && nm && sp_streq(nm, "[]") && slice_read_call(c, v))
       return nullable_int_elem_expr(c, rc, depth + 1);
     if (!obj_rc && elem_preserving_call(nm)) return nullable_int_elem_expr(c, rc, depth + 1);
+    /* `a + b`, `a | b`, `a.union(b)`: the elements of either side, and
+       Kernel#Array(a) is `a` itself */
+    if (!obj_rc && nm && (sp_streq(nm, "+") || sp_streq(nm, "|") || sp_streq(nm, "union") ||
+                          (sp_streq(nm, "Array") && rc < 0))) {
+      int ca = nt_ref(nt, v, "arguments"); int an = 0;
+      const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+      if (rc >= 0 && nullable_int_elem_expr(c, rc, depth + 1)) return 1;
+      for (int k = 0; av && k < an; k++) if (nullable_int_elem_expr(c, av[k], depth + 1)) return 1;
+      return 0;
+    }
     /* a mutator answers its receiver, which may hold one already or now */
     if (rc >= 0 && !obj_rc && self_mutator_call(nm))
       return nullable_elem_mutation(c, v, depth + 1) || nullable_int_elem_expr(c, rc, depth + 1);
@@ -18487,10 +18501,10 @@ int nullable_int_elem_read(Compiler *c, int call) {
          nullable_int_elem_expr(c, recv, 0);
 }
 
-/* The receiver-side question for codegen: can an element of this Integer or
-   Float array expression be the sentinel? The array methods that search for,
-   render, compare or sum the elements ask it, so an array that can never hold
-   one keeps the plain C it had. */
+/* The receiver-side question for codegen: did analyze see a nil stored into
+   this Integer or Float array expression? A marked array's whole-array reads
+   scan for the sentinel, as its stores set no flag; an unmarked one asks its
+   run-time may_nil for the nils only the runtime sees (a gap, a conversion). */
 int nullable_int_elem_array(Compiler *c, int node) {
   return nullable_int_elem_expr(c, node, 0);
 }

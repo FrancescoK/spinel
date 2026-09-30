@@ -1510,12 +1510,13 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
        so the flag is asked here alone (#5085). */
     case TY_INT:    fn = (g_promote_mode || call_returns_nullable_int(c, node) ||
                           nt_kind(c->nt, node) == NK_InstanceVariableReadNode ||
-                          box_nullable_arg(c, node))
+                          box_nullable_arg(c, node) || enum_builtin_node(c, node))
                            ? "sp_box_int_or_nil" : "sp_box_int"; break;
     /* A float slot has its own reserved nil sentinel, and the same rule
        applies: box it as nil where the value can be one, or it goes out as an
        ordinary Float and no literal nil matches it (#3493). */
-    case TY_FLOAT:  fn = (call_returns_nullable_int(c, node) || box_nullable_arg(c, node))
+    case TY_FLOAT:  fn = (call_returns_nullable_int(c, node) || box_nullable_arg(c, node) ||
+                          enum_builtin_node(c, node))
                            ? "sp_box_float_or_nil" : "sp_box_float"; break;
     /* NULL is a bigint slot's nil (nil_value), and boxing it as a Bignum made
        a truthy Integer that printed 0 (#4800). Unconditional: a live Bignum is

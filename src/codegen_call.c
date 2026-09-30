@@ -2619,14 +2619,18 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "sp_RbVal _t%d = sp_box_int(_t%d);\n", tv, tloop);
   }
   else if (src_is_intarr) {
+    /* a nil element of a nil-carrying Integer array streams as nil, not as
+       its sentinel (typed_elem_box_fn) */
+    int tnf = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    { char an[24]; snprintf(an, sizeof an, "_t%d", tsrc);
+      buf_printf(g_pre, "int _t%d = ", tnf); emit_may_nil_text(c, lazy_src, TY_INT_ARRAY, an, g_pre); buf_puts(g_pre, ";\n"); }
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_IntArray_length(_t%d)%s; _t%d++) {\n",
                tloop, tloop, tsrc, cbuf, tloop);
     emit_indent(g_pre, g_indent + 1);
-    /* a nil element of a nil-carrying Integer array streams as nil, not as
-       its sentinel (typed_elem_box_fn) */
-    buf_printf(g_pre, "sp_RbVal _t%d = %s(sp_IntArray_get(_t%d, _t%d)); SP_GC_ROOT_RBVAL(_t%d);\n",
-               tv, typed_elem_box_fn(c, lazy_src, TY_INT_ARRAY), tsrc, tloop, tv);
+    buf_printf(g_pre, "sp_RbVal _t%d = %s(_t%d, sp_IntArray_get(_t%d, _t%d)); SP_GC_ROOT_RBVAL(_t%d);\n",
+               tv, typed_elem_box_fn(TY_INT_ARRAY), tnf, tsrc, tloop, tv);
   }
   else if (src_is_arr) {
     emit_indent(g_pre, g_indent);
@@ -14234,7 +14238,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           }
           else if (sp_streq(k, "Ptr"))
             buf_printf(g_pre, "sp_PtrArray_push(_t%d, (void *)(%s));\n", tr, vb.p ? vb.p : "0");
-          else { buf_printf(g_pre, "sp_%sArray_push(_t%d, %s);\n", k, tr, vb.p ? vb.p : ""); }
+          else { buf_printf(g_pre, "sp_%sArray_push%s(_t%d, %s);\n", k, nil_store_sfx(c, k, bb[bn - 1]), tr, vb.p ? vb.p : ""); }
           free(vb.p);
         }
         g_indent--;
@@ -14283,6 +14287,14 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           if (sp_streq(k, "Int") || sp_streq(k, "Float")) {
             buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new_fill(_t%d, _t%d);\n", k, tr, k, tn, tv);
             emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tr);
+            /* a fill value that can be nil sets the new array's may_nil */
+            if (*nil_store_sfx(c, k, argv[1])) {
+              char nt[48];
+              if (sp_streq(k, "Int")) snprintf(nt, sizeof nt, "_t%d == SP_INT_NIL", tv);
+              else snprintf(nt, sizeof nt, "sp_float_is_nil(_t%d)", tv);
+              emit_indent(g_pre, g_indent);
+              buf_printf(g_pre, "if (SP_UNLIKELY(%s) && _t%d > 0) sp_%sArray_note_nil(_t%d);\n", nt, tn, k, tr);
+            }
           }
           else {
             buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", k, tr, k);
@@ -15381,6 +15393,7 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
      yielded value (Ruby `[]=` returns the assigned value as written). */
   char valtmp[24];
   snprintf(valtmp, sizeof valtmp, "_t%d", ts);
+  int tam_src = 0;   /* the source is the array an object's to_ary answered */
   buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b); buf_puts(b, "; ");
   buf_printf(b, "%s_src%d; sp_int _srcn%d; ", srcty, ta, ta);
 
@@ -15425,6 +15438,7 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
   }
   else if (tam >= 0 && (TyKind)c->scopes[tam].ret != TY_POLY_ARRAY &&
              ty_array_elem((TyKind)c->scopes[tam].ret) == elem) {
+    tam_src = 1;
     /* object RHS whose to_ary returns this element kind: splice the coerced
        array; the OBJECT is the yielded value (CRuby rb_ary_to_ary) */
     Buf call; memset(&call, 0, sizeof call);
@@ -15464,6 +15478,9 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
                ts, ts, bcon, k, ta, k, ts, ta);
     if (elem == TY_INT) buf_printf(b, "_sa%d->data + _sa%d->start", ta, ta);
     else buf_printf(b, "_sa%d->data", ta);
+    /* a boxed source takes no flag test: this is optcarrot's per-tile
+       @bg_pixels splice, and a nil it carries is the one copy the flag
+       does not follow (as a static mark does not either) */
     buf_printf(b, "; _srcn%d = _sa%d->len; }\n", ta, ta);
     buf_printf(b, "else if (_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)) { _ca%d = sp_%sArray_from_elems(_t%d); _src%d = ",
                ts, ts, ta, k, ts, ta);
@@ -15484,8 +15501,12 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
   }
 
   emit_splice_bounds(c, ta, tg, start_node, len_node, range_node, b);
-  buf_printf(b, "sp_%sArray_splice(_t%d, _s%d, _l%d, _src%d, _srcn%d); %s; })",
-             k, ta, ta, ta, ta, ta, valtmp);
+  buf_printf(b, "sp_%sArray_splice(_t%d, _s%d, _l%d, _src%d, _srcn%d); ", k, ta, ta, ta, ta, ta);
+  /* the spliced-in values carry their nils: a same-kind array its flag, in
+     O(1); a scalar that can be nil marks the receiver statically */
+  if ((elem == TY_INT || elem == TY_FLOAT) && (rhs_is_arr || tam_src))
+    buf_printf(b, "sp_%sArray_nil_from(_t%d, _t%d); ", k, ta, ts);
+  buf_printf(b, "%s; })", valtmp);
 }
 
 static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
@@ -15523,27 +15544,32 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
       int has_start = (rt == TY_INT_ARRAY);
       buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b);
       buf_printf(b, "; sp_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
+      /* the repeated elements carry the receiver's nils, unless it is a
+         literal that cannot hold one (`[0] * 8192`) */
+      char nf[64] = "";
+      if ((rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && !typed_array_lit_flag_free(c, recv))
+        snprintf(nf, sizeof nf, " sp_%sArray_nil_from(_t%d, _t%d);", k, tr, ta);
       if (has_start) {
         buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative argument\");"
                       " sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);"
                       " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++)"
                       " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
-                      " sp_%sArray_push(_t%d, _t%d->data[_t%d->start + _t%d]); _t%d; })",
+                      " sp_%sArray_push(_t%d, _t%d->data[_t%d->start + _t%d]);%s _t%d; })",
                    tn, k, tr, k, tr,
                    ti, ti, tn, ti,
                    tj, tj, ta, tj,
-                   k, tr, ta, ta, tj, tr);
+                   k, tr, ta, ta, tj, nf, tr);
       }
       else {
         buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative argument\");"
                       " sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);"
                       " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++)"
                       " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
-                      " sp_%sArray_push(_t%d, _t%d->data[_t%d]); _t%d; })",
+                      " sp_%sArray_push(_t%d, _t%d->data[_t%d]);%s _t%d; })",
                    tn, k, tr, k, tr,
                    ti, ti, tn, ti,
                    tj, tj, ta, tj,
-                   k, tr, ta, tj, tr);
+                   k, tr, ta, tj, nf, tr);
       }
     }
     return 1;
@@ -31179,7 +31205,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     else emit_recv_rooted(c, recv, t, "SP_GC_ROOT", b);
     TyKind elem = ty_array_elem(art);
     for (int a = 0; a < argc; a++) {
-      buf_printf(b, "sp_%sArray_push(_t%d, ", k, t);
+      buf_printf(b, "sp_%sArray_push%s(_t%d, ", k, nil_store_sfx(c, k, argv[a]), t);
       if (art == TY_POLY_ARRAY) emit_boxed(c, argv[a], b);
       else if (comp_ntype(c, argv[a]) == TY_POLY && elem == TY_STRING) {
         /* a poly value (holds a string at runtime) into a str_array: coerce */
@@ -41235,7 +41261,7 @@ else {
         else if (vt == TY_POLY && et == TY_FLOAT) { buf_puts(b, "sp_poly_elem_f("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
         else emit_expr(c, argv[1], b);
       }
-      buf_printf(b, "; sp_%sArray_set(_t%d, _t%d, _t%d); _t%d; })", k, t, ti, tv, tv);
+      buf_printf(b, "; sp_%sArray_set%s(_t%d, _t%d, _t%d); _t%d; })", k, nil_store_sfx(c, k, argv[1]), t, ti, tv, tv);
       return;
     }
   }
@@ -41932,7 +41958,7 @@ else {
         buf_printf(b, " _t%d = ", tv);
         if (rt == TY_POLY_ARRAY && vt != TY_POLY) emit_boxed(c, argv[1], b);
         else emit_expr(c, argv[1], b);
-        buf_printf(b, "; sp_%sArray_set(", k); emit_expr(c, recv, b); buf_puts(b, ", ");
+        buf_printf(b, "; sp_%sArray_set%s(", k, nil_store_sfx(c, k, argv[1])); emit_expr(c, recv, b); buf_puts(b, ", ");
         emit_expr(c, argv[0], b); buf_printf(b, ", _t%d); _t%d; })", tv, tv);
         return;
       }
