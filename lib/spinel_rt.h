@@ -1739,8 +1739,12 @@ static inline sp_File *sp_poly_to_file(sp_RbVal v); /* defined below; IO.select'
 static inline void sp_poly_puts(sp_RbVal v) {
   switch (v.tag) {
     case SP_TAG_INT: printf("%lld\n", (long long)v.v.i); break;
-    case SP_TAG_STR: if (v.v.s) { fputs(v.v.s, stdout); if (!*v.v.s || v.v.s[strlen(v.v.s)-1] != '\n') putchar('\n'); }
-    else putchar('\n'); break;
+    case SP_TAG_STR: if (v.v.s) {
+        size_t _n = sp_str_byte_len(v.v.s);
+        fwrite(v.v.s, 1, _n, stdout);
+        if (!_n || v.v.s[_n - 1] != '\n') putchar('\n');
+      }
+      else putchar('\n'); break;
     case SP_TAG_FLT: { fputs(sp_float_to_s(v.v.f), stdout); putchar('\n'); break; }
     case SP_TAG_BOOL: puts(v.v.b ? "true" : "false"); break;
     case SP_TAG_NIL: putchar('\n'); break;
@@ -1770,7 +1774,11 @@ static inline void sp_poly_puts(sp_RbVal v) {
           sp_StrArray *_a = (sp_StrArray *)v.v.p;
           for (sp_int _i = 0; _i < _a->len; _i++) {
             const char *_s = _a->data[_i];
-            if (_s) { fputs(_s, stdout); if (!*_s || _s[strlen(_s)-1] != '\n') putchar('\n'); }
+            if (_s) {
+              size_t _n = sp_str_byte_len(_s);
+              fwrite(_s, 1, _n, stdout);
+              if (!_n || _s[_n - 1] != '\n') putchar('\n');
+            }
             else putchar('\n');
           }
           break;
@@ -5894,12 +5902,31 @@ static void sp_puts_line(const char *s) {
   putc_unlocked('\n', stdout);
   funlockfile(stdout);
 }
-/* Kernel#puts on a String: a trailing newline is not doubled. */
-static void sp_puts_str_line(const char *s) {
+/* Kernel#puts on a C string (a to_s result): a trailing newline is not
+   doubled. */
+static void sp_puts_cstr_line(const char *s) {
   flockfile(stdout);
   if (s) fputs(s, stdout);
   if (!s || !*s || s[strlen(s) - 1] != '\n') putc_unlocked('\n', stdout);
   funlockfile(stdout);
+}
+/* The same for a String value, sized by its header length so an embedded NUL
+   is written. Reads s[-1], so it takes codegen-emitted Strings only. */
+static void sp_puts_str_line(const char *s) {
+  size_t n = sp_str_byte_len(s);
+  flockfile(stdout);
+  if (s) fwrite(s, 1, n, stdout);
+  if (!n || s[n - 1] != '\n') putc_unlocked('\n', stdout);
+  funlockfile(stdout);
+}
+/* Kernel#print on a String value: every byte, an embedded NUL too. */
+static void sp_print_str_bin(const char *s) {
+  if (s) fwrite(s, 1, sp_str_byte_len(s), stdout);
+}
+static void sp_poly_print(sp_RbVal v) {
+  if (v.tag == SP_TAG_STR) { sp_print_str_bin(v.v.s); return; }
+  const char *s = sp_poly_to_s(v);
+  if (s) fputs(s, stdout);
 }
 static void sp_puts_elems(sp_RbVal a) {
   sp_int n = sp_poly_arr_len(a);
@@ -5908,7 +5935,8 @@ static void sp_puts_elems(sp_RbVal a) {
   for (sp_int i = 0; i < n; i++) {
     sp_RbVal e = sp_poly_arr_get(a, i);
     if (e.tag == SP_TAG_OBJ && sp_poly_is_array_kind(e.cls_id)) { sp_puts_elems(e); continue; }
-    sp_puts_str_line(sp_poly_to_s(e));
+    if (e.tag == SP_TAG_STR && e.v.s) { sp_puts_str_line(e.v.s); continue; }
+    sp_puts_cstr_line(sp_poly_to_s(e));
   }
   sp_poly_recur_pop(pmark);
 }
@@ -5919,10 +5947,7 @@ static void sp_splat_puts(sp_RbVal a) {
 }
 static void sp_splat_print(sp_RbVal a) {
   sp_int n = sp_poly_arr_len(a);
-  for (sp_int i = 0; i < n; i++) {
-    const char *s = sp_poly_to_s(sp_poly_arr_get(a, i));
-    if (s) fputs(s, stdout);
-  }
+  for (sp_int i = 0; i < n; i++) sp_poly_print(sp_poly_arr_get(a, i));
 }
 static void sp_splat_p(sp_RbVal a) {
   sp_int n = sp_poly_arr_len(a);
@@ -8281,8 +8306,9 @@ static void sp_poly_warn_line(sp_RbVal v, FILE *f) {
   }
   const char *s = sp_poly_to_s(v);
   if (!s) s = sp_str_empty;
-  fputs(s, f);
-  if (!*s || s[strlen(s) - 1] != '\n') fputc('\n', f);
+  size_t n = v.tag == SP_TAG_STR ? sp_str_byte_len(s) : strlen(s);
+  fwrite(s, 1, n, f);
+  if (!n || s[n - 1] != '\n') fputc('\n', f);
 }
 
 static sp_StrPolyHash *sp_StrPolyHash_from_poly(sp_RbVal src) {

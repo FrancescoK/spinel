@@ -29892,9 +29892,11 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
          (`io << a << b`). Hold the handle in a temp, write, yield the handle. */
       int t = ++g_tmp;
       int sk = comp_ntype(c, argv[0]) == TY_STRING;
+      int pk = comp_ntype(c, argv[0]) == TY_POLY;
       buf_printf(b, "({ sp_File *_t%d = %s; %s(_t%d, ", t, r,
-                 sk ? "sp_File_write_bin" : "sp_File_write", t);
-      emit_to_s_expr(c, argv[0], b);
+                 pk ? "sp_File_write_poly" : sk ? "sp_File_write_bin" : "sp_File_write", t);
+      if (pk) emit_boxed(c, argv[0], b);
+      else emit_to_s_expr(c, argv[0], b);
       buf_printf(b, "); _t%d; })", t);
       free(rb.p); return;
     }
