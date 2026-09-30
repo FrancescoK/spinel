@@ -1507,6 +1507,10 @@ static const char *class_body_name(Compiler *c, int id) {
     return cp >= 0 ? nt_str(nt, cp, "name") : NULL;
   }
   if (k == NK_ConstantWriteNode && class_def_body(c, id) >= 0) return nt_str(nt, id, "name");
+  /* `k = Struct.new(...) do ... end` defines the anonymous class it homes */
+  if (k == NK_LocalVariableWriteNode && class_def_body(c, id) >= 0)
+    for (int ci = 0; ci < c->nclasses; ci++)
+      if (c->classes[ci].def_node == id) return c->classes[ci].name;
   return NULL;
 }
 
