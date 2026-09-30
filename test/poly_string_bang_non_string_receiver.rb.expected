@@ -1,0 +1,45 @@
+"AB"
+"ab"
+"ax"
+"ab"
+"ba"
+undefined method 'upcase!' for an instance of Symbol
+undefined method 'chomp!' for an instance of Symbol
+undefined method 'sub!' for an instance of Symbol
+undefined method 'squeeze!' for an instance of Symbol
+undefined method 'succ!' for an instance of Symbol
+undefined method 'upcase!' for an instance of Integer
+undefined method 'chomp!' for an instance of Integer
+undefined method 'sub!' for an instance of Integer
+undefined method 'squeeze!' for an instance of Integer
+undefined method 'succ!' for an instance of Integer
+undefined method 'upcase!' for nil
+undefined method 'chomp!' for nil
+undefined method 'sub!' for nil
+undefined method 'squeeze!' for nil
+undefined method 'succ!' for nil
+undefined method 'upcase!' for an instance of Array
+undefined method 'chomp!' for an instance of Array
+undefined method 'sub!' for an instance of Array
+undefined method 'squeeze!' for an instance of Array
+undefined method 'succ!' for an instance of Array
+undefined method 'upcase!' for an instance of Float
+undefined method 'chomp!' for an instance of Float
+undefined method 'sub!' for an instance of Float
+undefined method 'squeeze!' for an instance of Float
+undefined method 'succ!' for an instance of Float
+undefined method 'upcase!' for an instance of Hash
+undefined method 'chomp!' for an instance of Hash
+undefined method 'sub!' for an instance of Hash
+undefined method 'squeeze!' for an instance of Hash
+undefined method 'succ!' for an instance of Hash
+undefined method 'downcase!' for an instance of Symbol
+undefined method 'tr!' for an instance of Symbol
+"Ab"
+"Ab"
+"ab"
+undefined method 'strip!' for an instance of Integer
+"b"
+["b", :k, 7]
+undefined method 'delete_suffix!' for an instance of Symbol
+undefined method 'next!' for an instance of Integer

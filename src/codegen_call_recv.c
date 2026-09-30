@@ -13418,7 +13418,11 @@ static int emit_face_switch(Compiler *c, int id, unsigned own, Buf *b) {
 
 /* A String value-form mutator on a boxed receiver: compute the non-bang
    transform against the unboxed contents, then write the result back
-   through the box. */
+   through the box. The contents come from sp_poly_recv_s, as every other
+   String method's receiver does (#4029): a receiver that is no string is
+   CRuby's NoMethodError, where its #to_s rendering had the transform
+   applied and the write-back took the box for a string: a Symbol or an
+   Integer crashed there, and an Array answered its own rendering. */
 static void emit_face_str_bang(Compiler *c, int id, unsigned own, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -13433,8 +13437,8 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, Buf *b) {
   Buf rbb; memset(&rbb, 0, sizeof rbb); emit_expr(c, recv, &rbb);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);"
-                    " const char *_t%d = sp_poly_to_s(_t%d); SP_GC_ROOT(_t%d);\n",
-             tvb, rbb.p ? rbb.p : "sp_box_nil()", tvb, tob, tvb, tob);
+                    " const char *_t%d = sp_poly_recv_s(_t%d, \"%s\"); SP_GC_ROOT(_t%d);\n",
+             tvb, rbb.p ? rbb.p : "sp_box_nil()", tvb, tob, tvb, bang, tob);
   free(rbb.p);
   g_argov_node[g_n_argov] = recv;
   snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tob);
