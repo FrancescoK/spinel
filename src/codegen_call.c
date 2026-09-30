@@ -37469,17 +37469,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
             if (sp_streq(name, "floor"))  { buf_printf(b, "((double)((sp_int)floor(%s)))", s); return; }
             if (sp_streq(name, "ceil"))   { buf_printf(b, "((double)((sp_int)ceil(%s)))", s); return; }
             if (sp_streq(name, "round"))  { buf_printf(b, "((double)((sp_int)round(%s)))", s); return; }
-            if (sp_streq(name, "+") && ac2 == 1) {
-              buf_puts(b, "("); buf_puts(b, s); buf_puts(b, " + "); emit_expr(c, av2[0], b); buf_puts(b, ")"); return;
-            }
-            if (sp_streq(name, "-") && ac2 == 1) {
-              buf_puts(b, "("); buf_puts(b, s); buf_puts(b, " - "); emit_expr(c, av2[0], b); buf_puts(b, ")"); return;
-            }
-            if (sp_streq(name, "*") && ac2 == 1) {
-              buf_puts(b, "("); buf_puts(b, s); buf_puts(b, " * "); emit_expr(c, av2[0], b); buf_puts(b, ")"); return;
-            }
-            if (sp_streq(name, "/") && ac2 == 1) {
-              buf_puts(b, "("); buf_puts(b, s); buf_puts(b, " / "); emit_expr(c, av2[0], b); buf_puts(b, ")"); return;
+            if ((sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")) && ac2 == 1) {
+              buf_printf(b, "(%s %s ", s, name); emit_expr(c, av2[0], b); buf_puts(b, ")"); return;
             }
           }
           else if (brt == TY_SYMBOL) {
