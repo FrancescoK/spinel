@@ -106,6 +106,7 @@ int an_chunk_family_to_a(Compiler *c, int id);
 const char *an_regex_lit_src(Compiler *c, int nid);
 int str_in(const char *s, const char *const *set);
 int an_unparen(const NodeTable *nt, int n);
+int blk_locals_have(const char *locals, const char *nm);
 /* The calls named `name`, ascending: for (id = an_calls_named_first(c, nm);
    id >= 0; id = an_calls_named_next(id)). Check each node as before. */
 int an_calls_named_first(Compiler *c, const char *name);

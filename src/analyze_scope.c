@@ -4198,7 +4198,7 @@ static int const_value_is_class_like(Compiler *c, int v) {
    searched at all. (The node table does not carry prism's `depth`, which
    would say this directly.) */
 /* Does a block's `locals` list (comma-separated) name `nm`? */
-static int blk_locals_have(const char *locals, const char *nm) {
+int blk_locals_have(const char *locals, const char *nm) {
   if (!locals || !nm) return 0;
   size_t n = strlen(nm);
   const char *p = locals;
