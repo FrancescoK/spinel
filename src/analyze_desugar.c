@@ -4545,6 +4545,8 @@ int desugar_multi_value_jump(Compiler *c) {
   return changed;
 }
 
+static const char *scg_literal_name(const NodeTable *nt, int node);
+
 /* `::Name` (a ConstantPathNode with no parent) is the top-level constant
    `Name`. The analyzer resolves a bare ConstantReadNode everywhere -- the
    class census, the builtin receivers (ENV, File, Math), the exception
@@ -4615,15 +4617,28 @@ int desugar_root_scoped_constants(Compiler *c) {
     }
   }
   int changed = 0;
-  for (int id = 0; id < n0; id++) {
+  for (int id = n0 - 1; id >= 0; id--) {
     if (skip[id] || nt_kind(nt, id) != NK_ConstantPathNode) continue;
-    if (nt_ref(nt, id, "parent") >= 0) continue;
+    int par = nt_ref(nt, id, "parent");
+    if (par >= 0 && !engine_const(nt, par, "Object")) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
     int shadowed = 0;
     for (int k = 0; k < nn; k++) if (sp_streq(nm, names[k])) { shadowed = 1; break; }
     if (shadowed) continue;
     nt_node_set_type(nt, id, "ConstantReadNode");
+    nt_node_set_ref(nt, id, "parent", -1);
+    changed = 1;
+  }
+  for (int id = 0; id < n0; id++) {
+    const char *cm = nt_kind(nt, id) == NK_CallNode ? nt_str(nt, id, "name") : NULL;
+    int args = cm && sp_streq(cm, "const_get") ? nt_ref(nt, id, "arguments") : -1;
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    const char *cn = an == 1 ? scg_literal_name(nt, av[0]) : NULL;
+    if (!cn || !comp_is_wellknown_const(cn) || !engine_const(nt, nt_ref(nt, id, "receiver"), "Object")) continue;
+    nt_node_set_type(nt, id, "ConstantReadNode");
+    nt_node_set_str(nt, id, "name", cn);
+    nt_node_set_ref(nt, id, "receiver", -1); nt_node_set_ref(nt, id, "arguments", -1);
     changed = 1;
   }
   free(names);
