@@ -7740,7 +7740,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
          takes its own arm -- the same shape the rewind pre-arm above uses.
          `close` leaves the seed alone: nil is what it answers. */
       if (argc == 0 && nt_ref(nt, id, "block") < 0) {
-        static const struct { const char *nm, *fn; TyKind rt; } IOZ[] = {
+        /* the readers answer what the typed receiver's arms answer: gets and
+           getc a nil-able String (NULL boxes to nil), getbyte an Integer or
+           the nil sentinel, readline/readchar/readbyte raise EOFError */
+        static const struct { const char *nm, *fn; TyKind rt; const char *tail; } IOZ[] = {
           {"close",   "sp_File_close",    TY_VOID},
           {"closed?", "sp_File_closed_p", TY_BOOL},
           {"eof?",    "sp_File_eof_p",    TY_BOOL},
@@ -7751,7 +7754,16 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           {"fileno",  "sp_File_fileno",   TY_INT},
           {"tell",    "sp_File_tell",     TY_INT},
           {"pos",     "sp_File_tell",     TY_INT},
-          {NULL, NULL, TY_VOID}
+          {"lineno",  "sp_File_lineno",   TY_INT},
+          {"sync",    "sp_File_sync_p",   TY_BOOL},
+          {"gets",    "sp_File_gets",     TY_STRING},
+          {"getc",    "sp_File_getc",     TY_STRING},
+          {"readchar", "sp_File_readchar", TY_STRING},
+          {"readline", "sp_File_readline_sep", TY_STRING, ", \"\\n\", 0, 0"},
+          {"readbyte", "sp_File_readbyte", TY_INT},
+          {"getbyte", "sp_File_getbyte",  TY_INT},
+          {"readlines", "sp_File_readlines", TY_STR_ARRAY},
+          {NULL, NULL, TY_VOID, NULL}
         };
         /* a bare puts writes the newline and answers nil (#6158) */
         if (sp_streq(name, "puts")) {
@@ -7763,13 +7775,16 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         for (int i = 0; IOZ[i].nm; i++) {
           if (!sp_streq(name, IOZ[i].nm)) continue;
           char ioex[128];
-          snprintf(ioex, sizeof ioex, "%s((sp_File *)_t%d.v.p)", IOZ[i].fn, tv);
+          snprintf(ioex, sizeof ioex, "%s((sp_File *)_t%d.v.p%s)", IOZ[i].fn, tv,
+                   IOZ[i].tail ? IOZ[i].tail : "");
           buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO) { ",
                      tv, tv);
           /* the value only lands when the result slot can hold it: poly boxes
              it, an exactly matching concrete slot takes it raw, anything else
              keeps the call for its effect and leaves the seed */
-          if (ret == TY_POLY && IOZ[i].rt != TY_VOID) {
+          if (ret == TY_POLY && sp_streq(name, "getbyte"))
+            buf_printf(b, "_t%d = sp_box_int_or_nil(%s)", tr, ioex);
+          else if (ret == TY_POLY && IOZ[i].rt != TY_VOID) {
             buf_printf(b, "_t%d = ", tr);
             emit_boxed_text(c, IOZ[i].rt, ioex, b);
           }
@@ -9824,6 +9839,19 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         }
         if (ret == TY_POLY) buf_printf(b, "_t%d = sp_box_nil(); ", tr);
         buf_puts(b, "break; }");
+      }
+      /* putc on a poly value, beside print: an IO held where a StringIO can
+         be had no arm and raised NoMethodError. sp_File_putc takes the boxed
+         argument (an Integer's low byte or a String's first character) and
+         answers it; a concrete result slot keeps the call for its effect. */
+      if (sp_streq(name, "putc") && argc == 1 && kwh < 0 && splat_a < 0) {
+        char an[24]; snprintf(an, sizeof an, "_t%d", atmp[0]);
+        buf_puts(b, " case SP_BUILTIN_IO: ");
+        if (ret == TY_POLY) buf_printf(b, "_t%d = ", tr);
+        buf_printf(b, "sp_File_putc((sp_File *)_t%d.v.p, ", tv);
+        if (atmp_ty[0] == TY_POLY) buf_puts(b, an);
+        else emit_boxed_text(c, atmp_ty[0], an, b);
+        buf_puts(b, "); break;");
       }
       /* seek and read(n) on a poly value, the positioning pair beside the
          write arm: a File held in the same ivar as a StringIO reached this
