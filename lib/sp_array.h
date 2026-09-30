@@ -145,6 +145,10 @@ static inline void sp_float_sum_step(sp_float *sum, sp_float *comp, sp_float x) 
 /* ---- sp_FloatArray cold ops (compiled in lib/sp_array.c) ---- */
 void sp_FloatArray_unshift(sp_FloatArray *a, sp_float v);
 sp_FloatArray *sp_FloatArray_from_step(sp_float beg, sp_float end, sp_float step, sp_int excl);
+sp_float sp_float_step_size(sp_float beg, sp_float end, sp_float unit, sp_int excl);
+/* The i-th value of CRuby's ruby_float_step: computed rather than accumulated,
+   clamped to end on overshoot; an infinite unit only ever yields beg. */
+static inline sp_float sp_float_step_at(sp_float beg, sp_float end, sp_float unit, sp_int i){if(isinf(unit))return beg;sp_float d=(sp_float)i*unit+beg;if(unit>=0?end<d:d<end)d=end;return d;}
 sp_float sp_FloatArray_min(sp_FloatArray *a);
 sp_float sp_FloatArray_max(sp_FloatArray *a);
 sp_float sp_FloatArray_sum(sp_FloatArray *a, sp_float init);

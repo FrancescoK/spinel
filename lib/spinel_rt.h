@@ -1687,12 +1687,6 @@ sp_RbVal sp_box_proc(void *p)        { return sp_box_obj(p, SP_BUILTIN_PROC); }
    tracking carries the result as int? rather than poly -- eliminates
    the box/unbox round-trip for the common `i = arr.index(x);
    i.nil? ? ... : <use i as int>` idiom. */
-/* #step(n) over a Float range -> a Float array toward last. A negative step walks
-   descending; a wrong-direction step yields an empty array; the count is derived
-   so accumulated float rounding does not drift. */
-sp_FloatArray *sp_frange_step(sp_FloatRange r, sp_float st) SP_UNUSED;
-/* sp_frange_step: moved to lib/sp_cold.c */
-sp_FloatArray *sp_frange_step(sp_FloatRange r, sp_float st);
 
 /* Big Rational: a Rational whose numerator/denominator do not fit sp_int, so
    it holds two sp_Bigint* instead of the by-value int Rational (#2469). The two

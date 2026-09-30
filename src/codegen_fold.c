@@ -2497,11 +2497,9 @@ int emit_step_array_expr(Compiler *c, int id, Buf *b) {
   buf_printf(b, "; sp_float _t%d = ", ts);
   if (sc >= 2) emit_float_expr(c, sv[1], b); else buf_puts(b, "1.0");
   buf_printf(b, "; if (_t%d == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");", ts);
-  buf_printf(b, " sp_float _t%d_e = (fabs(_t%d)+fabs(_t%d)+fabs(_t%d-_t%d))/fabs(_t%d)*DBL_EPSILON;"
-                " if (_t%d_e > 0.5) _t%d_e = 0.5;"
-                " sp_int _t%d = (sp_int)floor((_t%d-_t%d)/_t%d + _t%d_e);"
-                " for (sp_int _t%d = 0; _t%d <= _t%d; _t%d++) sp_FloatArray_push(_t%d, _t%d + _t%d * _t%d); _t%d; })",
-             tn, tb, tl, tl, tb, ts, tn, tn, tn, tl, tb, ts, tn, ti, ti, tn, ti, tr, tb, ti, ts, tr);
+  buf_printf(b, " sp_float _t%d = sp_float_step_size(_t%d, _t%d, _t%d, 0);"
+                " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_FloatArray_push(_t%d, sp_float_step_at(_t%d, _t%d, _t%d, _t%d)); _t%d; })",
+             tn, tb, tl, ts, ti, ti, tn, ti, tr, tb, tl, ts, ti, tr);
   return 1;
 }
 
