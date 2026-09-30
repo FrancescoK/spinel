@@ -12419,10 +12419,13 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
           int tr2 = ++g_tmp;
           buf_printf(b, "{ sp_Range _t%d = ", tr2); emit_expr(c, argv[0], b);
           buf_printf(b, "; sp_int _t%d = (sp_int)sp_str_length(", tn2); emit_expr(c, recv, b);
-          buf_printf(b, "); sp_int _t%d = _t%d.first < 0 ? _t%d.first + _t%d : _t%d.first;",
-                     ti2, tr2, tr2, tn2, tr2);
-          buf_printf(b, " sp_int _t%d = (_t%d.last < 0 ? _t%d.last + _t%d : _t%d.last) - _t%d + (_t%d.excl ? 0 : 1);",
-                     tl2, tr2, tr2, tn2, tr2, ti2, tr2);
+          /* a beginless Range (first INTPTR_MIN) starts at 0, and an endless
+             one (last INTPTR_MAX) runs to the end: `last + 1` overflowed */
+          buf_printf(b, "); sp_int _t%d = _t%d.first == INTPTR_MIN ? 0 : _t%d.first < 0 ? _t%d.first + _t%d : _t%d.first;",
+                     ti2, tr2, tr2, tr2, tn2, tr2);
+          buf_printf(b, " sp_int _t%d = _t%d.last == INTPTR_MAX ? _t%d - _t%d :"
+                        " (_t%d.last < 0 ? _t%d.last + _t%d : _t%d.last) - _t%d + (_t%d.excl ? 0 : 1);",
+                     tl2, tr2, tn2, ti2, tr2, tr2, tn2, tr2, ti2, tr2);
           buf_printf(b, " if (_t%d < 0) _t%d = 0;", tl2, tl2);
         }
         else {

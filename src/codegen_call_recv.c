@@ -1416,8 +1416,9 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       if (comp_ntype(c, argv[0]) == TY_RANGE) {
         int trg = ++g_tmp;
         buf_printf(b, " sp_Range _t%d = ", trg); emit_expr(c, argv[0], b);
-        buf_printf(b, "; _t%d = _t%d.first < 0 ? _t%d.first + _t%d : _t%d.first;",
-                   tb2, trg, trg, tn2, trg);
+        /* a beginless Range (first is INTPTR_MIN) starts at the beginning */
+        buf_printf(b, "; _t%d = _t%d.first == INTPTR_MIN ? 0 : _t%d.first < 0 ? _t%d.first + _t%d : _t%d.first;",
+                   tb2, trg, trg, trg, tn2, trg);
         /* an endless Range (last is INTPTR_MAX) runs to the end of the String */
         buf_printf(b, " _t%d = _t%d.last == INTPTR_MAX ? _t%d - _t%d :"
                       " (_t%d.last < 0 ? _t%d.last + _t%d : _t%d.last) - _t%d + (_t%d.excl ? 0 : 1);",
