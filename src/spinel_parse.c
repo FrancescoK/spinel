@@ -2610,9 +2610,17 @@ static void sp_req_hoist_splice(char **result, unsigned char **fsl, size_t *fsl_
 static int sp_req_if_modifier(const char *t) {
   int n = (int)strspn(t, " \t"), k = strncmp(t + n, "if", 2) == 0 ? 2 : strncmp(t + n, "unless", 6) == 0 ? 6 : 0;
   if (!k || sp_req_ident_char(t[n + k])) return 0;
-  int c = n += k, e;
-  for (; t[n] && t[n] != '\n' && t[n] != '\r' && t[n] != ';'; n++) {}
-  for (e = n; e > c && (t[e - 1] == ' ' || t[e - 1] == '\t'); e--) {}
+  int c = n += k, e = 0;
+  for (; t[n] && t[n] != '\n' && t[n] != '\r' && (e || t[n] != ';'); n++) {
+    if (e) continue;
+    if (t[n] == '#') e = n;
+    else if (t[n] == '"' || t[n] == '\'') {
+      char q = t[n];
+      while (t[++n] && t[n] != q && t[n] != '\n') if (t[n] == '\\' && t[n + 1]) n++;
+      if (t[n] != q) return 0;
+    }
+  }
+  for (e = e ? e : n; e > c && (t[e - 1] == ' ' || t[e - 1] == '\t'); e--) {}
   if (e == c || t[n] == ';' || strchr("&|,(\\+-*/.<>=:", t[e - 1])) return 0;
   return (e - c > 3 && (!strncmp(t + e - 4, " and", 4) || !strncmp(t + e - 4, " not", 4))) ||
          (e - c > 2 && !strncmp(t + e - 3, " or", 3)) ? 0 : n;

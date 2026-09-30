@@ -10,3 +10,4 @@ p require_relative("require_modifier_condition_lib/skipped")
 p Skipped.new.name
 require_relative "require_modifier_condition_lib/continued" if ENV["SPINEL_TEST_NEVER_SET_XYZ"].nil? &&
   true
+require_relative "require_modifier_condition_lib/nested" if ENV["SPINEL;TEST_NEVER"] # never; ends with.
