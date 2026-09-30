@@ -16799,6 +16799,50 @@ static int index_write_gaps(Compiler *c, int call, int ix) {
   return 0;
 }
 
+/* `n` reads the size of the array `recv` writes into: `a.size` / `a.length`
+   on the same local or ivar. */
+static int reads_own_size(Compiler *c, int recv, int n) {
+  const NodeTable *nt = c->nt;
+  const char *ln = n >= 0 && nt_kind(nt, n) == NK_CallNode ? nt_str(nt, n, "name") : NULL;
+  int lr = ln ? nt_ref(nt, n, "receiver") : -1;
+  if (!ln || (!sp_streq(ln, "size") && !sp_streq(ln, "length")) || lr < 0 || nt_ref(nt, n, "arguments") >= 0 ||
+      nt_kind(nt, lr) != nt_kind(nt, recv) ||
+      (nt_kind(nt, recv) != NK_LocalVariableReadNode && nt_kind(nt, recv) != NK_InstanceVariableReadNode))
+    return 0;
+  const char *a = nt_str(nt, lr, "name"), *b = nt_str(nt, recv, "name");
+  return a && b && sp_streq(a, b);
+}
+
+/* A write start that provably opens no gap: none at all, a literal at or
+   below 0 (a negative start counts from the end and raises past the front),
+   or the receiver's own size (`a[a.size, 0] = v` appends) or less
+   (`a.size - k`). Anything else may land past the end, where the runtime
+   pads with the sentinel, so the array has to be marked (#6208). */
+static int index_write_in_range(Compiler *c, int call, int ix) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, call, "receiver");
+  if (ix < 0) return 1;
+  int u = an_unparen(nt, ix);
+  if (u >= 0) ix = u;
+  if (nt_kind(nt, ix) == NK_IntegerNode) return nt_int(nt, ix, "value", 1) <= 0;
+  if (recv < 0 || nt_kind(nt, ix) != NK_CallNode) return 0;
+  if (reads_own_size(c, recv, ix)) return 1;
+  const char *op = nt_str(nt, ix, "name");
+  int ca = nt_ref(nt, ix, "arguments"); int an = 0;
+  const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+  return op && sp_streq(op, "-") && av && an == 1 && nt_kind(nt, av[0]) == NK_IntegerNode &&
+         nt_int(nt, av[0], "value", -1) >= 0 && reads_own_size(c, recv, nt_ref(nt, ix, "receiver"));
+}
+
+/* The start a range argument writes from: its first, or -1 (0) for a
+   beginless one. A range held in a variable has no start to read, so it
+   answers the range node itself, which no proof accepts. */
+static int range_write_start(Compiler *c, int r) {
+  const NodeTable *nt = c->nt;
+  int u = an_unparen(nt, r);
+  return u >= 0 && nt_kind(nt, u) == NK_RangeNode ? nt_ref(nt, u, "left") : r;
+}
+
 /* An array mutation that can leave the sentinel in its receiver: `<<`,
    push, append, unshift, prepend, insert (past its index), `[]=` and a
    blockless fill given a value that can be nil, or concat and a slice's
@@ -16810,28 +16854,36 @@ static int nullable_elem_mutation(Compiler *c, int call, int depth) {
   const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
   if (!nm || !av || (!self_mutator_call(nm) && !sp_streq(nm, "[]="))) return 0;
   int from = 0, to = an;
+  /* A splice, a range write, insert and fill pad a gap before a start past
+     the end with the sentinel, so the array is marked unless the start is
+     provably in range: a computed start (`a[i, 0] = v`) is taken as able to
+     miss. These forms are rare in a hot loop, unlike `a[i] = v` below. */
   if (sp_streq(nm, "insert")) {
-    /* past the end, the gap before the index is nil (sp_IntArray_insert) */
-    if (index_write_gaps(c, call, av[0])) return 1;
+    if (!index_write_in_range(c, call, av[0])) return 1;
     from = 1;
   }
   else if (sp_streq(nm, "[]=")) {
     /* where the write starts: the index, a slice's start (`a[s, n] = v`) or
        a range's first (`a[s..e] = v`). Past the end, CRuby nil-fills up to it
        whatever the value is, and so does the typed splice. */
-    int ix = an >= 2 ? av[0] : -1;
-    if (an == 2 && ix >= 0 && nt_kind(nt, ix) == NK_RangeNode) ix = nt_ref(nt, ix, "left");
-    if (ix >= 0 && an <= 3 && index_write_gaps(c, call, ix)) return 1;
+    int rng = an == 2 && (nt_kind(nt, an_unparen(nt, av[0])) == NK_RangeNode ||
+                          infer_type(c, av[0]) == TY_RANGE);
+    if (an == 3 || rng) {
+      if (!index_write_in_range(c, call, rng ? range_write_start(c, av[0]) : av[0])) return 1;
+    }
+    else if (an == 2 && index_write_gaps(c, call, av[0])) return 1;
     if (ty_is_array(infer_type(c, av[an - 1]))) return nullable_int_elem_expr(c, av[an - 1], depth + 1);
     from = an - 1;
   }
   else if (sp_streq(nm, "fill")) {
-    /* fill(v, start[, n]) / fill(v, s..e), or fill(start, n) { } with a
-       block: a start past the end leaves a nil gap before the filled run */
+    /* fill(v, start, n) / fill(v, s..e), or fill(start, n) / fill(s..e) with
+       a block: a start past the end leaves a nil gap before the filled run.
+       With no length (`fill(v, start)`) nothing is written past the end. */
     int blk = nt_ref(nt, call, "block") >= 0;
-    int fx = an > 1 - blk ? av[1 - blk] : -1;
-    if (fx >= 0 && nt_kind(nt, fx) == NK_RangeNode) fx = nt_ref(nt, fx, "left");
-    if (fx >= 0 && index_write_gaps(c, call, fx)) return 1;
+    int fa = 1 - blk, fx = an > fa ? av[fa] : -1;
+    int frng = fx >= 0 && (nt_kind(nt, an_unparen(nt, fx)) == NK_RangeNode || infer_type(c, fx) == TY_RANGE);
+    if ((frng || an > fa + 1) && !index_write_in_range(c, call, frng ? range_write_start(c, fx) : fx))
+      return 1;
     if (blk) return 0;
     to = 1;
   }
