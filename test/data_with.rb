@@ -10,7 +10,7 @@ p [a.x, a.y]          # [1, 2]  -- original is unchanged
 c = a.with(x: 10, y: 20)
 p [c.x, c.y]          # [10, 20]
 
-d = a.with             # no overrides -> an equal copy
+d = a.with             # no overrides -> the receiver itself
 p [d.x, d.y]          # [1, 2]
 
 # string and mixed members.

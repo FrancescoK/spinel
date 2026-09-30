@@ -1,0 +1,9 @@
+[true, #<data P x=1, y=2>]
+[false, #<data P x=5, y=2>, #<data P x=1, y=2>]
+true
+false
+true
+true
+[true, [:recv]]
+true
+[true, true, true]

@@ -10642,6 +10642,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
          the generated constructor in declaration order. */
       int wargs = nt_ref(nt, id, "arguments");
       int wargc = 0; const int *wargv = wargs >= 0 ? nt_arr(nt, wargs, "arguments", &wargc) : NULL;
+      /* no arguments: CRuby answers the receiver itself, not a copy */
+      if (wargc == 0) { emit_expr(c, recv, b); return 1; }
       int wkwh = -1;
       if (wargv && wargc >= 1) {
         const char *lty = nt_type(nt, wargv[wargc - 1]);
@@ -10658,7 +10660,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       }
       /* Data#with takes keyword arguments only; a positional argument (the only
          arg, or one alongside the keyword hash) is an ArgumentError in CRuby. */
-      if (wargc > 0 && (wkwh < 0 || wargc > 1)) {
+      if (wkwh < 0 || wargc > 1) {
         unsupported(c, id, "Data#with with a positional argument (keywords only)");
         return 0;
       }
