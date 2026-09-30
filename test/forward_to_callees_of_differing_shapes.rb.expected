@@ -1,0 +1,7 @@
+n1 a 1
+n2 b 2 3
+n2 c 4 nil
+n3 d at=5
+n4 e blk
+timer
+wrong number of arguments (given 1, expected 0)

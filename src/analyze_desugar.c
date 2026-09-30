@@ -4424,6 +4424,22 @@ static int def_shape_by_name(const NodeTable *nt, const char *name) {
   }
   return shape;
 }
+/* The channels any def of `name` takes, together; -1 when none says. A
+   receiver whose class is not known here may be any of them, and the
+   anonymous `*, **, &` passes each exactly what the call had: an empty
+   splat and an empty `**` pass nothing to a def that takes neither. */
+static int def_shape_union_by_name(const NodeTable *nt, const char *name) {
+  int shape = -1;
+  for (int id = 0; id < nt->count; id++) {
+    if (!fwd_node_is(nt, id, "DefNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, name)) continue;
+    int sh = def_shape(nt, id);
+    if (sh < 0) continue;
+    shape = shape < 0 ? sh : (shape | sh);
+  }
+  return shape;
+}
 static int fwd_any_def_named(const NodeTable *nt, const char *name) {
   for (int id = 0; id < nt->count; id++)
     if (fwd_node_is(nt, id, "DefNode") && nt_str(nt, id, "name") &&
@@ -4673,7 +4689,7 @@ static int fwd_target_shape(const NodeTable *nt, int def, int call, int is_super
   const char *name = is_super ? nt_str(nt, def, "name") : nt_str(nt, call, "name");
   if (!name) return -1;
   if (!is_super && !sp_streq(name, "new"))
-    return fwd_any_def_named(nt, name) ? def_shape_by_name(nt, name) : FWD_BUILTIN;
+    return fwd_any_def_named(nt, name) ? def_shape_union_by_name(nt, name) : FWD_BUILTIN;
   int recv = is_super ? -1 : nt_ref(nt, call, "receiver");
   int cls = fwd_enclosing_class(nt, def);
   char ctx[512] = "";
