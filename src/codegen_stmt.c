@@ -5714,6 +5714,257 @@ static int subtree_mutates_local(Compiler *c, int root, const char *name) {
   return 0;
 }
 
+/* ---- Typed-array headers cached across an innermost loop ----
+
+   A typed array's accessors are inline, but every check has an out-of-line
+   slow path -- a call the C compiler cannot see into -- so in a loop it reads
+   each array's data, start and length again at every access. A split-search
+   loop (`counts[b] += 1; sums[b] += vals[i]` over a byte buffer) spent a third
+   of its time on those reloads.
+
+   In a loop whose body runs no code, the headers of the arrays it indexes are
+   read into C locals before the loop, and each access tests the index against
+   the cached length behind the same check as before; everything that fails it
+   runs exactly the code it ran before. The headers are read again after
+   anything that can move them: a write's slow path (it may grow any array --
+   two names can denote one), and a safepoint, where another thread runs.
+
+   A loop qualifies when every node in it is one this can see through: reads,
+   writes to locals and ivars, scalar arithmetic, typed-array reads and element
+   writes, `getbyte`, `length`/`size`, plain field reads, the pure scalar
+   methods and Math functions, and control flow. A call to anything else, a
+   block, a nested loop or a rescue leaves the loop as it was. An array is
+   cached when it is read through a local, an ivar, or a field read of a
+   local, where the loop assigns neither the local nor the ivar. */
+enum { HC_INT, HC_FLOAT, HC_STR };
+typedef struct { char recv[200]; int kind; } HcEntry;
+typedef struct { int id; int n; HcEntry e[16]; NameSet wl, wi; char mark[32]; } HcRegion;
+static HcRegion *g_hc = NULL;
+/* the loops' own numbering: drawn from g_tmp, it would renumber every temp
+   after a loop that qualifies and then caches nothing */
+static int g_hc_seq = 0;
+
+static int hc_call_ok(Compiler *c, int id, int stmt) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!nm || nt_ref(nt, id, "block") >= 0) return 0;
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  for (int i = 0; i < ac; i++) {
+    const char *at = nt_type(nt, av[i]);
+    if (!at || sp_streq(at, "SplatNode") || sp_streq(at, "KeywordHashNode") ||
+        sp_streq(at, "BlockArgumentNode")) return 0;
+  }
+  if (call_is_scalar_op(c, id)) return 1;
+  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  if (sp_streq(nm, "[]") && ac == 1 && ty_is_array(rt) && comp_ntype(c, av[0]) == TY_INT) return 1;
+  if (sp_streq(nm, "[]=") && ac == 2 && stmt && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) &&
+      comp_ntype(c, av[0]) == TY_INT && comp_ntype(c, av[1]) == ty_array_elem(rt)) return 1;
+  if (sp_streq(nm, "getbyte") && ac == 1 && rt == TY_STRING && comp_ntype(c, av[0]) == TY_INT) return 1;
+  if ((sp_streq(nm, "length") || sp_streq(nm, "size")) && ac == 0 && (ty_is_array(rt) || rt == TY_STRING))
+    return 1;
+  int alloc = 0;
+  if (ac == 0 && call_is_field_read(c, id, &alloc) && !alloc) return 1;
+  if (ac == 0 && (rt == TY_INT || rt == TY_FLOAT)) {
+    static const char *const PURE[] = { "to_i", "to_f", "abs", "floor", "ceil", "round", "truncate",
+      "nan?", "zero?", "even?", "odd?", "-@", "infinite?", "finite?", "positive?", "negative?", NULL };
+    for (int i = 0; PURE[i]; i++) if (sp_streq(nm, PURE[i])) return 1;
+  }
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode && nt_str(nt, recv, "name") &&
+      sp_streq(nt_str(nt, recv, "name"), "Math") && (ac == 1 || ac == 2)) {
+    static const char *const MATH[] = { "sqrt", "cbrt", "exp", "log", "log2", "log10", "sin", "cos",
+      "tan", "atan", "atan2", "hypot", NULL };
+    for (int i = 0; MATH[i]; i++) if (sp_streq(nm, MATH[i])) return 1;
+  }
+  return 0;
+}
+
+/* Can the loop keep its arrays' headers across iterations? Collects the locals
+   and ivars it assigns, which no cached expression may read. `stmt` is set for
+   a node in statement position, where a write's value is unused. */
+static int hc_node_ok(Compiler *c, int id, int stmt, HcRegion *r) {
+  const NodeTable *nt = c->nt;
+  if (id < 0) return 1;
+  const char *ty = nt_type(nt, id);
+  if (!ty) return 0;
+  int kids_stmt = 0;
+  switch (nt_kind(nt, id)) {
+    case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode: case NK_IntegerNode:
+    case NK_FloatNode: case NK_NilNode: case NK_TrueNode: case NK_FalseNode: case NK_SelfNode:
+    case NK_ConstantReadNode:
+      return 1;
+    case NK_StatementsNode: kids_stmt = 1; break;
+    case NK_ParenthesesNode: kids_stmt = stmt; break;
+    case NK_CallNode: if (!hc_call_ok(c, id, stmt)) return 0; break;
+    case NK_IndexOperatorWriteNode: {
+      int rv = nt_ref(nt, id, "receiver");
+      TyKind rt = rv >= 0 ? comp_ntype(c, rv) : TY_UNKNOWN;
+      int a = nt_ref(nt, id, "arguments"), ac = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+      if (!stmt || (rt != TY_INT_ARRAY && rt != TY_FLOAT_ARRAY) || ac != 1 ||
+          comp_ntype(c, av[0]) != TY_INT) return 0;
+      break;
+    }
+    default: {
+      int local = strncmp(ty, "LocalVariable", 13) == 0, ivar = strncmp(ty, "InstanceVariable", 16) == 0;
+      if ((local || ivar) && strstr(ty, "WriteNode")) {
+        const char *wn = nt_str(nt, id, "name");
+        if (!wn) return 0;
+        nameset_add(local ? &r->wl : &r->wi, wn);
+        break;
+      }
+      if (sp_streq(ty, "IfNode") || sp_streq(ty, "UnlessNode") || sp_streq(ty, "ElseNode") ||
+          sp_streq(ty, "AndNode") || sp_streq(ty, "OrNode") || sp_streq(ty, "BreakNode") ||
+          sp_streq(ty, "NextNode") || sp_streq(ty, "ArgumentsNode"))
+        break;
+      return 0;
+    }
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++)
+    if (!hc_node_ok(c, nt_ref_at(nt, id, i), kids_stmt, r)) return 0;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++) if (!hc_node_ok(c, ids[j], kids_stmt, r)) return 0;
+  }
+  return 1;
+}
+
+/* The C expression a cached receiver is read through, into out; 0 when the
+   receiver is not one the loop can cache. It has to mean the same thing
+   before the loop as inside it: no temps, nothing the loop assigns. It is
+   also read before the loop, where the loop's own read may never be reached,
+   so a field read tests its object for nil first. */
+static int hc_recv_text(Compiler *c, int recv, int kind, char *out, size_t cap) {
+  const NodeTable *nt = c->nt;
+  Buf tb; memset(&tb, 0, sizeof tb);
+  int ok = 0;
+  /* the text is rendered to be inspected: a temp it numbered is either in a
+     text refused below or in one never emitted, so the numbering goes back */
+  int sv_tmp = g_tmp;
+  switch (nt_kind(nt, recv)) {
+    case NK_LocalVariableReadNode: {
+      const char *nm = nt_str(nt, recv, "name");
+      if (!nm || nameset_has(&g_hc->wl, nm)) return 0;
+      if (kind == HC_STR) {
+        char h[160];
+        if (strbuf_slot_ref(c, recv, h, sizeof h)) { buf_printf(&tb, "(%s ? sp_String_cstr(%s) : NULL)", h, h); ok = 1; }
+        else if (comp_ntype(c, recv) == TY_STRING) { emit_expr(c, recv, &tb); ok = 1; }
+      }
+      else { emit_expr(c, recv, &tb); ok = 1; }
+      break;
+    }
+    case NK_InstanceVariableReadNode: {
+      const char *nm = nt_str(nt, recv, "name");
+      if (!nm || nameset_has(&g_hc->wi, nm) || kind == HC_STR) return 0;
+      emit_expr(c, recv, &tb); ok = 1;
+      break;
+    }
+    case NK_CallNode: {
+      int alloc = 0;
+      if (kind == HC_STR || !call_is_field_read(c, recv, &alloc) || alloc) return 0;
+      int obj = nt_ref(nt, recv, "receiver");
+      const char *on = obj >= 0 && nt_kind(nt, obj) == NK_LocalVariableReadNode ? nt_str(nt, obj, "name") : NULL;
+      if (!on || nameset_has(&g_hc->wl, on) || comp_ty_value_obj(c, comp_ntype(c, obj))) return 0;
+      char ivn[160]; snprintf(ivn, sizeof ivn, "@%s", nt_str(nt, recv, "name"));
+      if (nameset_has(&g_hc->wi, ivn)) return 0;
+      Buf ob; memset(&ob, 0, sizeof ob);
+      emit_expr(c, obj, &ob);
+      Buf fb; memset(&fb, 0, sizeof fb);
+      emit_expr(c, recv, &fb);
+      buf_printf(&tb, "(%s ? %s : NULL)", ob.p ? ob.p : "NULL", fb.p ? fb.p : "NULL");
+      free(ob.p); free(fb.p);
+      ok = 1;
+      break;
+    }
+    default: return 0;
+  }
+  const char *t = tb.p ? tb.p : "";
+  /* a temp is declared where the loop's own text runs, not ahead of it */
+  for (const char *q = strstr(t, "_t"); ok && q; q = strstr(q + 2, "_t"))
+    if (q[2] >= '0' && q[2] <= '9') ok = 0;
+  if (ok && (strstr(t, "({") || strlen(t) + 1 > cap)) ok = 0;
+  if (ok) snprintf(out, cap, "%s", t);
+  free(tb.p);
+  g_tmp = sv_tmp;
+  return ok;
+}
+
+static int hc_entry(Compiler *c, int recv, int kind) {
+  if (!g_hc || recv < 0) return -1;
+  char t[200];
+  if (!hc_recv_text(c, recv, kind, t, sizeof t)) return -1;
+  for (int i = 0; i < g_hc->n; i++)
+    if (g_hc->e[i].kind == kind && sp_streq(g_hc->e[i].recv, t)) return i;
+  if (g_hc->n >= (int)(sizeof g_hc->e / sizeof g_hc->e[0])) return -1;
+  snprintf(g_hc->e[g_hc->n].recv, sizeof g_hc->e[0].recv, "%s", t);
+  g_hc->e[g_hc->n].kind = kind;
+  return g_hc->n++;
+}
+
+int hc_array(Compiler *c, int recv, int is_float, char *d, char *l, char *w, size_t cap) {
+  int e = hc_entry(c, recv, is_float ? HC_FLOAT : HC_INT);
+  if (e < 0) return 0;
+  snprintf(d, cap, "_hcd%d_%d", g_hc->id, e);
+  snprintf(l, cap, "_hcl%d_%d", g_hc->id, e);
+  snprintf(w, cap, "_hcw%d_%d", g_hc->id, e);
+  return 1;
+}
+
+int hc_string(Compiler *c, int recv, char *d, char *l, size_t cap) {
+  int e = hc_entry(c, recv, HC_STR);
+  if (e < 0) return 0;
+  snprintf(d, cap, "_hcd%d_%d", g_hc->id, e);
+  snprintf(l, cap, "_hcl%d_%d", g_hc->id, e);
+  return 1;
+}
+
+const char *hc_mark(void) { return g_hc ? g_hc->mark : ""; }
+
+/* The loop's text, with the declarations and the refresh ahead of it when
+   anything was cached, and each slow path's mark turned into a refresh (or
+   dropped: a loop that cached nothing is emitted as it always was). */
+static void hc_close(HcRegion *r, const char *loop, Buf *b, int indent) {
+  char call[32]; snprintf(call, sizeof call, ", _SP_HCR%d()", r->id);
+  if (r->n > 0) {
+    emit_indent(b, indent); buf_puts(b, "{\n");
+    for (int i = 0; i < r->n; i++) {
+      const char *et = r->e[i].kind == HC_INT ? "sp_int" : r->e[i].kind == HC_FLOAT ? "sp_float" : "const char";
+      emit_indent(b, indent + 1);
+      buf_printf(b, "%s *_hcd%d_%d; sp_int _hcl%d_%d;", et, r->id, i, r->id, i);
+      if (r->e[i].kind != HC_STR) buf_printf(b, " int _hcw%d_%d;", r->id, i);
+      buf_puts(b, "\n");
+    }
+    buf_printf(b, "#define _SP_HCR%d() ({ ", r->id);
+    for (int i = 0; i < r->n; i++) {
+      const char *rv = r->e[i].recv;
+      if (r->e[i].kind == HC_STR)
+        buf_printf(b, "{ const char *_s = %s; _hcd%d_%d = _s; _hcl%d_%d = _s ? (sp_int)sp_str_byte_len(_s) : 0; } ",
+                   rv, r->id, i, r->id, i);
+      else
+        buf_printf(b, "{ sp_%sArray *_a = %s; _hcd%d_%d = _a ? _a->data%s : NULL; _hcl%d_%d = _a ? _a->len : 0; _hcw%d_%d = _a && !_a->frozen; } ",
+                   r->e[i].kind == HC_INT ? "Int" : "Float", rv, r->id, i,
+                   r->e[i].kind == HC_INT ? " + _a->start" : "", r->id, i, r->id, i);
+    }
+    buf_puts(b, "(void)0; })\n");
+    emit_indent(b, indent + 1); buf_printf(b, "_SP_HCR%d();\n", r->id);
+  }
+  /* the marks, replaced */
+  const char *p = loop;
+  size_t ml = strlen(r->mark);
+  for (const char *q; (q = strstr(p, r->mark)); p = q + ml) {
+    buf_putn(b, p, (size_t)(q - p));
+    if (r->n > 0) buf_puts(b, call);
+  }
+  buf_puts(b, p);
+  if (r->n > 0) {
+    buf_printf(b, "#undef _SP_HCR%d\n", r->id);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+  }
+}
+
 void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   const NodeTable *nt = c->nt;
   int pred = nt_ref(nt, id, "predicate");
@@ -5764,6 +6015,20 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
       g_hoist_len_var = hbuf; g_hoist_len_recv = hn;
     }
   }
+  /* Arrays the loop indexes keep their headers in C locals across it, when
+     nothing in it can move them (see hc_node_ok). The loop is emitted into
+     its own buffer so the declarations can go ahead of it once the body
+     has said which arrays it reads. */
+  HcRegion hcr; memset(&hcr, 0, sizeof hcr);
+  HcRegion *sv_hc = g_hc;
+  Buf hlb; memset(&hlb, 0, sizeof hlb);
+  Buf *hob = b;
+  int use_hc = !sv_hc && hc_node_ok(c, pred, 0, &hcr) && hc_node_ok(c, body, 1, &hcr);
+  if (use_hc) {
+    hcr.id = ++g_hc_seq;
+    snprintf(hcr.mark, sizeof hcr.mark, "/*@HCR%d@*/", hcr.id);
+    g_hc = &hcr; b = &hlb;
+  }
   /* Capture the predicate and any expression preludes it needs (method-call
      temps etc.) into local buffers. A loop condition like
      `advance while ident_continue_byte?(byte)` evaluates a method call
@@ -5804,6 +6069,12 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
     buf_puts(b, "}\n");
   }
   free(cpre.p); free(ccond.p);
+  if (use_hc) {
+    g_hc = sv_hc; b = hob;
+    hc_close(&hcr, hlb.p ? hlb.p : "", b, indent);
+    free(hlb.p);
+  }
+  free(hcr.wl.v); free(hcr.wi.v);
   g_hoist_len_var = sv_hvar; g_hoist_len_recv = sv_hrecv;
 }
 
@@ -12857,18 +13128,34 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       return 1;
     }
     emit_indent(b, indent);
+    TyKind et = ty_array_elem(rt);
+    TyKind vt = comp_ntype(c, argv[1]);
+    /* an array whose header the loop being emitted holds (hc_array): a
+       writable slot in range is stored there; anything else takes the set,
+       after which the loop reads the headers again (hc_mark) -- it may have
+       grown this array, or another name for it */
+    char hd[48], hl[48], hw[48];
+    if ((rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && vt == et && comp_ntype(c, argv[0]) == TY_INT &&
+        hc_array(c, recv, rt == TY_FLOAT_ARRAY, hd, hl, hw, sizeof hd)) {
+      int tk = ++g_tmp, tv = ++g_tmp;
+      buf_printf(b, "{ sp_int _t%d = ", tk); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; %s _t%d = ", c_type_name(et), tv); emit_expr(c, argv[1], b);
+      buf_printf(b, "; if (SP_LIKELY(%s && (unsigned long long)_t%d < (unsigned long long)%s)) %s[_t%d] = _t%d; else sp_%sArray_set(",
+                 hw, tk, hl, hd, tk, tv, k);
+      emit_expr(c, recv, b);
+      buf_printf(b, ", _t%d, _t%d)%s; }\n", tk, tv, hc_mark());
+      return 1;
+    }
     buf_printf(b, "sp_%sArray_set(", k);
     emit_expr(c, recv, b); buf_puts(b, ", ");
     emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
     /* coerce a poly RHS to the typed array's element representation */
-    TyKind et = ty_array_elem(rt);
-    TyKind vt = comp_ntype(c, argv[1]);
     if (vt == TY_POLY && et == TY_INT) { buf_puts(b, "sp_poly_elem_i("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
     else if (vt == TY_POLY && et == TY_STRING) { buf_puts(b, "sp_poly_elem_s("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
     else if (vt == TY_POLY && et == TY_FLOAT) { buf_puts(b, "sp_poly_elem_f("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
     else if (vt == TY_UNKNOWN) emit_unresolved_coerced(c, argv[1], et, b);   /* a raise token, a void call */
     else emit_expr(c, argv[1], b);
-    buf_puts(b, ");\n");
+    buf_printf(b, ")%s;\n", hc_mark());
     return 1;
   }
   if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) && argc >= 1) {
@@ -13258,7 +13545,13 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
                subtree_is_pure_read(c, v);
     int eff = !fuse && g_pre && subtree_has_side_effect(c, v);
     buf_printf(b, "{ %s _t%d = ", c_type_name(rt), ta); iow_emit_recv(c, recv, b);
-    if (subtree_may_allocate(nt, recv) || (eff && !g_iow_recv_ref)) buf_printf(b, "; SP_GC_ROOT(_t%d)", ta);
+    /* ...and when the key can run code: it can reassign the variable the
+       receiver was read from (`@a[swap_a] += 1`) and allocate, and the temp
+       is then the old array's only holder while the key runs -- the fold
+       below writes into it. A key that is a pure read does neither. */
+    if (subtree_may_allocate(nt, recv) || (eff && !g_iow_recv_ref) ||
+        (!g_iow_recv_ref && !subtree_is_pure_read(c, argv[0])))
+      buf_printf(b, "; SP_GC_ROOT(_t%d)", ta);
     buf_printf(b, "; sp_int _t%d = ", tb); iow_emit_key(c, argv[0], b, IOW_KEY_INT, TY_INT);
     buf_puts(b, "; ");
     char slot[64];
@@ -13299,16 +13592,25 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
       snprintf(fslot, sizeof fslot, "(*_t%d)", tp);
       snprintf(rv, sizeof rv, "_t%d", tv);
       buf_printf(b, "__typeof__(%s) _t%d = %s; ", rhs, tv, rhs);
-      buf_printf(b, "if (SP_LIKELY(_t%d && !_t%d->frozen && (unsigned long long)_t%d < (unsigned long long)_t%d->len)) { ",
-                 ta, ta, tb, ta);
-      buf_printf(b, "%s *_t%d = &_t%d->data[", c_type_name(et), tp, ta);
-      if (rt == TY_INT_ARRAY) buf_printf(b, "_t%d->start + ", ta);
-      buf_printf(b, "_t%d]; *_t%d = ", tb, tp);
+      /* a header the loop being emitted holds (hc_array) is the one read:
+         the receiver's own would be read again at every iteration */
+      char hd[48], hl[48], hw[48];
+      if (hc_array(c, recv, rt == TY_FLOAT_ARRAY, hd, hl, hw, sizeof hd)) {
+        buf_printf(b, "if (SP_LIKELY(%s && (unsigned long long)_t%d < (unsigned long long)%s)) { ", hw, tb, hl);
+        buf_printf(b, "%s *_t%d = &%s[_t%d]; *_t%d = ", c_type_name(et), tp, hd, tb, tp);
+      }
+      else {
+        buf_printf(b, "if (SP_LIKELY(_t%d && !_t%d->frozen && (unsigned long long)_t%d < (unsigned long long)_t%d->len)) { ",
+                   ta, ta, tb, ta);
+        buf_printf(b, "%s *_t%d = &_t%d->data[", c_type_name(et), tp, ta);
+        if (rt == TY_INT_ARRAY) buf_printf(b, "_t%d->start + ", ta);
+        buf_printf(b, "_t%d]; *_t%d = ", tb, tp);
+      }
       if (!iow_scalar_fold(et, op, vt, fslot, rv, b)) buf_printf(b, "%s %s (%s)", fslot, op, rv);
       buf_printf(b, "; } else sp_%sArray_set(_t%d, _t%d, ", k, ta, tb);
       if (!iow_scalar_fold(et, op, vt, slot, rv, b)) buf_printf(b, "%s %s (%s)", slot, op, rv);
       free(rhs);
-      buf_puts(b, "); }\n");
+      buf_printf(b, ")%s; }\n", hc_mark());
       return;
     }
     buf_printf(b, "sp_%sArray_set(_t%d, _t%d, ", k, ta, tb);
@@ -13327,7 +13629,7 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     else if (iow_scalar_fold(ty_array_elem(rt), op, vt, slot, rhs, b)) { }
     else buf_printf(b, "%s %s (%s)", slot, op, rhs);
     free(rhs);
-    buf_puts(b, "); }\n");
+    buf_printf(b, ")%s; }\n", hc_mark());
     return;
   }
   if (rt == TY_POLY) {

@@ -185,6 +185,17 @@ int subtree_may_reassign_state(Compiler *c, int id);
    -- variable and literal reads, scalar arithmetic, typed-array reads and
    plain field reads, all the way down (codegen_call.c)? */
 int subtree_is_pure_read(Compiler *c, int id);
+/* Is the call a reader the emitter lowers to a plain field read? *allocates is
+   set when the read builds a copy (a shared String slot). codegen_call.c */
+int call_is_field_read(Compiler *c, int id, int *allocates);
+/* Typed-array headers cached across an innermost loop (codegen_stmt.c, see
+   emit_while). hc_array / hc_string answer 1 and the names of the cached
+   header locals when the receiver is cached in the loop being emitted;
+   hc_mark is the text a write's or a safepoint's slow path appends, after
+   which the cached headers are read again ("" outside such a loop). */
+int hc_array(Compiler *c, int recv, int is_float, char *d, char *l, char *w, size_t cap);
+int hc_string(Compiler *c, int recv, char *d, char *l, size_t cap);
+const char *hc_mark(void);
 int call_is_scalar_op(Compiler *c, int id);   /* a builtin operator over scalars */
 /* Whether the subtree at `id` assigns the local `nm`: a write, an op-write
    or a multiple-assignment target by that name. */

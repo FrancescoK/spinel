@@ -82,3 +82,29 @@ rescue FrozenError => ex
   p ex.class
 end
 p z
+
+# a key that reassigns the receiver's variable and allocates: the array read
+# first is the one written, and it has to stay alive while the key runs
+class Swapper
+  attr_reader :keep
+  def initialize
+    @a = [0, 0, 0, 0]
+    @keep = []
+  end
+  def key
+    @a = [5, 5, 5, 5]
+    junk = []
+    300.times { |k| junk << Array.new(4) { |q| q + k } }
+    @keep << Array.new(4) { |q| q * 10 }
+    1
+  end
+  def bump
+    @a[key] += 1
+    @a
+  end
+end
+sw = Swapper.new
+res = nil
+50.times { res = sw.bump }
+p res
+p sw.keep.all? { |x| x == [0, 10, 20, 30] }

@@ -1480,6 +1480,7 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/ivar_recv_string_handle.rb \
                   test/shared_handle_arg_keeps_object.rb \
                   test/index_opassign_fused.rb \
+                  test/loop_array_header_cache.rb \
                   test/kw_splat_boxed_to_hash.rb \
                   test/byref_keyword_rest_splat_param.rb \
                   test/byref_gather_lead_block_super.rb \
@@ -2296,9 +2297,14 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -q 'sp_int sp_Rng_next_u32(' "$$tmp/rrr.c" || { echo "infer-test: FAIL (a self-referential ivar through a return stayed boxed)"; ok=0; }; \
 	grep -q 'sp_float sp_Rng_uniform(' "$$tmp/rrr.c" || { echo "infer-test: FAIL (the Float built from it stayed boxed)"; ok=0; }; \
 	$(SPINEL) test/index_opassign_fused.rb -c --no-line-map -o "$$tmp/iof.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (index_opassign_fused: -c)"; ok=0; }; \
-	grep -qE 'sp_IntArray \* _t[0-9]+ = lv_counts; .*->frozen && \(unsigned long long\)' "$$tmp/iof.c" || { echo "infer-test: FAIL (an Integer slot's op-assign still reads and writes through two bounds checks)"; ok=0; }; \
-	grep -qE 'sp_FloatArray \* _t[0-9]+ = lv_zsum; .*->frozen && \(unsigned long long\)' "$$tmp/iof.c" || { echo "infer-test: FAIL (a Float slot's op-assign with a typed-array RHS is not folded in place)"; ok=0; }; \
+	grep -qE 'sp_IntArray \* _t[0-9]+ = lv_counts; .*(->frozen|_hcw[0-9_]+) && \(unsigned long long\)' "$$tmp/iof.c" || { echo "infer-test: FAIL (an Integer slot's op-assign still reads and writes through two bounds checks)"; ok=0; }; \
+	grep -qE 'sp_FloatArray \* _t[0-9]+ = lv_zsum; .*(->frozen|_hcw[0-9_]+) && \(unsigned long long\)' "$$tmp/iof.c" || { echo "infer-test: FAIL (a Float slot's op-assign with a typed-array RHS is not folded in place)"; ok=0; }; \
 	grep -E 'sp_IntArray \* _t[0-9]+ = lv_g;' "$$tmp/iof.c" | grep -q -- '->frozen &&' && { echo "infer-test: FAIL (an op-assign whose RHS runs code was folded through an element pointer)"; ok=0; }; \
+	grep -qE 'sp_IntArray \* _t([0-9]+) = self->iv_a; SP_GC_ROOT\(_t\1\)' "$$tmp/iof.c" || { echo "infer-test: FAIL (an op-assign's receiver is unrooted while a key that can reassign it runs)"; ok=0; }; \
+	$(SPINEL) test/loop_array_header_cache.rb -c --no-line-map -o "$$tmp/lahc.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (loop_array_header_cache: -c)"; ok=0; }; \
+	grep -qE '^#define _SP_HCR[0-9]+\(\) .*lv_bins.*lv_counts.*lv_vals.*lv_sums' "$$tmp/lahc.c" || { echo "infer-test: FAIL (a loop that only indexes typed arrays still reads their headers at every access)"; ok=0; }; \
+	grep -E '^#define _SP_HCR' "$$tmp/lahc.c" | grep -q 'lv_cur\b' && { echo "infer-test: FAIL (an array local the loop reassigns was read through a cached header)"; ok=0; }; \
+	grep -E '^#define _SP_HCR' "$$tmp/lahc.c" | grep -q 'self->iv_v\b' && { echo "infer-test: FAIL (an ivar the loop writes was read through a cached header)"; ok=0; }; \
 	$(SPINEL) test/reader_operands_pure_read.rb -c --no-line-map -o "$$tmp/rop.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (reader_operands_pure_read: -c)"; ok=0; }; \
 	awk '/^[a-z].* sp_total\(/,/^}/' "$$tmp/rop.c" | grep -q 'SP_GC_ROOT(_t' && { echo "infer-test: FAIL (operands that are all pure reads were bound to rooted temps)"; ok=0; }; \
 	grep -qE 'sp_IntArray \* _t[0-9]+ = sp_Loud_vals\(\(sp_Loud \*\)lv_l\); SP_GC_ROOT' "$$tmp/rop.c" || { echo "infer-test: FAIL (a def overriding a reader was taken for a pure field read)"; ok=0; }; \
