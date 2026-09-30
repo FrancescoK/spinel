@@ -2547,9 +2547,8 @@ static int engine_absent(NodeTable *nt, int e, int in) {
     while (nt_kind(nt, v) == NK_ConstantPathNode && nt_ref(nt, v, "parent") >= 0) v = nt_ref(nt, v, "parent");
     if (nt_kind(nt, v) == NK_ConstantReadNode || nt_kind(nt, v) == NK_ConstantPathNode) x = nt_str(nt, v, "name");
   }
-  else if (nt_kind(nt, e) == NK_CallNode && sp_streq(nt_str(nt, e, "name"), "const_defined?") &&
-           (nt_kind(nt, nt_ref(nt, e, "receiver")) == NK_ConstantReadNode ||
-            nt_kind(nt, nt_ref(nt, e, "receiver")) == NK_ConstantPathNode) && nt_ref(nt, e, "block") < 0) {
+  else if (en && sp_streq(en, "const_defined?") && (nt_kind(nt, nt_ref(nt, e, "receiver")) == NK_ConstantReadNode ||
+                                                     nt_kind(nt, nt_ref(nt, e, "receiver")) == NK_ConstantPathNode)) {
     int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, e, "arguments"), "arguments", &ac);
     if (ac >= 1 && nt_kind(nt, av[0]) == NK_SymbolNode) x = nt_str(nt, av[0], "value");
     if (ac >= 1 && nt_kind(nt, av[0]) == NK_StringNode) x = nt_str(nt, av[0], "content");
@@ -2565,7 +2564,8 @@ static int engine_absent_fold(NodeTable *nt, int e, int in) {
   NodeKind k = nt_kind(nt, e);
   if (k == NK_AndNode || k == NK_OrNode)
     return engine_absent_fold(nt, nt_ref(nt, e, "left"), in) | engine_absent_fold(nt, nt_ref(nt, e, "right"), in);
-  int neg = k == NK_CallNode && sp_streq(nt_str(nt, e, "name"), "!") && nt_ref(nt, e, "arguments") < 0;
+  int neg = k == NK_CallNode && nt_str(nt, e, "name") && sp_streq(nt_str(nt, e, "name"), "!") &&
+            nt_ref(nt, e, "arguments") < 0;
   int q = neg ? nt_ref(nt, e, "receiver") : e, a = engine_absent(nt, q, in);
   if (a < 0) return 0;
   engine_blank(nt, q);
