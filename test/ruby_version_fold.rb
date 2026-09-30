@@ -1,4 +1,4 @@
-require_relative "ruby_version_fold_lib/gated"
+require_relative "ruby_version_fold_lib/outer"
 puts "main continues"
 p Object.const_defined?(:Gated)
 
