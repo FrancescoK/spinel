@@ -2596,24 +2596,63 @@ gate-props:
 SCALE_LIMIT ?= 5.2
 # Not a timed test: the #5718 per-hop rescan gave ~450x here, and a work count cannot drift with the machine.
 IE_FORWARD_LIMIT ?= 2.5
+# The code generator's scaling: the same two programs compiled to C (-c), where
+# the leg above stops after the analysis (--emit-rbs), so the count also holds
+# every pass the emission runs. gen.sh's C grows linearly (4.03x at 4x the
+# program) but the emission's work does not: a poly dispatch asks
+# scope_is_shadowed, a scan of every later scope, for every class, so the
+# emission alone reads 13.9x and the whole compile 6.39x. The limit sits just
+# above; lower it once that scan goes. One walk of the node table per emitted
+# method reads 7.66x.
+SCALE_CODEGEN_LIMIT ?= 6.9
+# The argument binder's and the block-parameter typing's scaling: the call
+# shapes they plan site by site (test/scale/call_shapes.sh), compiled to C at
+# N=25 and N=100 units. A buffer method a whole name group defines behind a
+# POLY seed, Strings lent to a parameter that appends, poly dispatch with
+# arguments that run, splat and keyword plans, yield(*row) into block
+# parameters, nullable locals, escaping blocks and writes past an array's
+# end: gen.sh has none of them, so a pass that walks the program per call
+# site of one costs it nothing. #6135's first an_local_has_alias, a walk of
+# the node table per call site of a lent parameter, leaves gen.sh at 6.39x
+# and reads 5.40x here (5.20x against 4.32x on its own base); a walk per
+# argument the binder runs first reads 4.98x. Today's 4.55x holds 0.17 from
+# the yield typing, which walks every call for each yield
+# (call_may_reach_user_method, 4.32x before #6185); lower the limit once that
+# goes. The count sees node accesses and name compares, not a pass's scan of
+# its own side table: #6183's handle registry, scanned per lookup, took 4,798
+# steps at N=100 against a billion, which no count or clock sees at a test's
+# size.
+CALL_SHAPES_LIMIT ?= 4.8
 scale-test: $(SPINEL_WORK)
 	@tmp=$$(mktemp -d /tmp/spinel-scale.XXXXXX); \
 	sh test/scale/gen.sh 100 > "$$tmp/a.rb"; sh test/scale/gen.sh 400 > "$$tmp/b.rb"; \
 	wa=$$($(SPINEL_WORK) --emit-rbs -o "$$tmp/a.rbs" "$$tmp/a.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
 	wb=$$($(SPINEL_WORK) --emit-rbs -o "$$tmp/b.rbs" "$$tmp/b.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
+	ca=$$($(SPINEL_WORK) -c -o "$$tmp/a.c" "$$tmp/a.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
+	cb=$$($(SPINEL_WORK) -c -o "$$tmp/b.c" "$$tmp/b.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
+	sh test/scale/call_shapes.sh 25 > "$$tmp/s1.rb"; sh test/scale/call_shapes.sh 100 > "$$tmp/s4.rb"; \
+	sa=$$($(SPINEL_WORK) -c -o "$$tmp/s1.c" "$$tmp/s1.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
+	sb=$$($(SPINEL_WORK) -c -o "$$tmp/s4.c" "$$tmp/s4.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
 	( ulimit -t 20; $(SPINEL_WORK) -c -o "$$tmp/hls.c" test/scale/hash_literal_sources_fanout.rb ) >/dev/null 2>&1 || \
 	  { rm -rf "$$tmp"; echo "scale-test: FAIL (the hash-literal source walk revisited call sites along every path)"; exit 1; }; \
 	sh test/scale/ie_forward_chain.sh 2 > "$$tmp/f2.rb"; sh test/scale/ie_forward_chain.sh 4 > "$$tmp/f4.rb"; \
 	fa=$$($(SPINEL_WORK) -c -o "$$tmp/f2.c" "$$tmp/f2.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
 	fb=$$($(SPINEL_WORK) -c -o "$$tmp/f4.c" "$$tmp/f4.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
 	rm -rf "$$tmp"; \
-	if [ -z "$$wa" ] || [ -z "$$wb" ] || [ -z "$$fa" ] || [ -z "$$fb" ]; then echo "scale-test: FAIL (the counting compiler reported no work count)"; exit 1; fi; \
+	if [ -z "$$wa" ] || [ -z "$$wb" ] || [ -z "$$fa" ] || [ -z "$$fb" ] || \
+	   [ -z "$$ca" ] || [ -z "$$cb" ] || [ -z "$$sa" ] || [ -z "$$sb" ]; then echo "scale-test: FAIL (the counting compiler reported no work count)"; exit 1; fi; \
 	awk -v a="$$fa" -v b="$$fb" -v lim="$(IE_FORWARD_LIMIT)" 'BEGIN { r = b / a; \
 	  printf "scale-test: instance_eval forwarding work at 2x the wrappers is %.2fx (limit %.2f)\n", r, lim; exit (r > lim) }' || \
 	  { echo "scale-test: FAIL (the instance_eval forwarding walk grew superlinearly in the wrapper classes, see build_ie_map)"; exit 1; }; \
 	awk -v a="$$wa" -v b="$$wb" -v lim="$(SCALE_LIMIT)" 'BEGIN { r = b / a; \
 	  printf "scale-test: work at 4x the program is %.2fx (linear 4.00, limit %.2f)\n", r, lim; exit (r > lim) }' || \
-	  { echo "scale-test: FAIL (the front end grew superlinearly: some pass rescans per node; profile per pass, see rubys/roundhouse#72)"; exit 1; }
+	  { echo "scale-test: FAIL (the front end grew superlinearly: some pass rescans per node; profile per pass, see rubys/roundhouse#72)"; exit 1; }; \
+	awk -v a="$$ca" -v b="$$cb" -v lim="$(SCALE_CODEGEN_LIMIT)" 'BEGIN { r = b / a; \
+	  printf "scale-test: work at 4x the program, compiled to C, is %.2fx (limit %.2f)\n", r, lim; exit (r > lim) }' || \
+	  { echo "scale-test: FAIL (the C emission grew superlinearly: some pass rescans per method or call site; compare the -c and --emit-rbs counts)"; exit 1; }; \
+	awk -v a="$$sa" -v b="$$sb" -v lim="$(CALL_SHAPES_LIMIT)" 'BEGIN { r = b / a; \
+	  printf "scale-test: call-shape work at 4x the units, compiled to C, is %.2fx (linear 4.00, limit %.2f)\n", r, lim; exit (r > lim) }' || \
+	  { echo "scale-test: FAIL (a binding or block-typing pass grew superlinearly: it rescans per call site or argument, see test/scale/call_shapes.sh)"; exit 1; }
 
 # `spinel diff`, end to end, on the three answers the tool has to give: a
 # program both runtimes agree on (exit 0), a documented divergence (exit 1,
