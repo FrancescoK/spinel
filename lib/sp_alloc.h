@@ -162,7 +162,7 @@ static inline unsigned sp_str_lcache_slot(const char *s) {
    0xff is kept by not being added anywhere. */
 static inline int sp_str_has_hdr(const char *s) {
   unsigned char m = ((const unsigned char *)s)[-1];
-  return m == 0xfe || m == 0xfc || m == 0xfd || m == 0xf1 || m == 0xfb;
+  return m == 0xfe || m == 0xfc || m == 0xfd || m == 0xf1 || m == 0xfb || m == 0xfa || m == 0xf8;
 }
 /* "Every byte of this string is below 0x80", verified once and remembered.
    A 7-bit string indexes at fixed width, so #length is its byte length and
@@ -388,7 +388,7 @@ static inline void sp_str_mark_binary(char *s) {
 static inline int sp_str_fixed_width(const char *s, size_t *out) {
   if (!s) { *out = 0; return 0; }
   unsigned char m = ((const unsigned char *)s)[-1];
-  if (m == 0xfe || m == 0xfc || m == 0xfd || m == 0xf1 || m == 0xfb) {
+  if (m == 0xfe || m == 0xfc || m == 0xfd || m == 0xf1 || m == 0xfb || m == 0xfa || m == 0xf8) {
     const sp_str_hdr *h = ((const sp_str_hdr *)(s - 1)) - 1;
     if (h->len != SP_STR_LEN_UNSET &&
         (h->size & (SP_STR_SIZE_BINARY | SP_STR_SIZE_ASCII7))) { *out = h->len; return 1; }
@@ -421,7 +421,7 @@ static inline size_t sp_str_byte_len(const char *s) {
   /* 0xf1 (frozen heap string / frozen literal) also carries a real sp_str_hdr
      whose len is the true byte length, so an embedded NUL survives freezing
      (#2462 dedup, .freeze). */
-  if (marker == 0xfe || marker == 0xfc || marker == 0xfd || marker == 0xf1 || marker == 0xfb) {
+  if (marker == 0xfe || marker == 0xfc || marker == 0xfd || marker == 0xf1 || marker == 0xfb || marker == 0xfa || marker == 0xf8) {
     uint32_t l = (((const sp_str_hdr *)(s - 1)) - 1)->len;
     if (l != SP_STR_LEN_UNSET) return l;
   }
@@ -431,7 +431,7 @@ static inline size_t sp_str_byte_len(const char *s) {
 static inline void sp_str_set_len(char *s, size_t len) {
   if (!s) return;
   unsigned char marker = ((unsigned char *)s)[-1];
-  if (marker == 0xfe || marker == 0xfc || marker == 0xfd || marker == 0xf1 || marker == 0xfb) {
+  if (marker == 0xfe || marker == 0xfc || marker == 0xfd || marker == 0xf1 || marker == 0xfb || marker == 0xfa || marker == 0xf8) {
     sp_str_hdr *hd = ((sp_str_hdr *)(s - 1)) - 1;
     hd->len = (uint32_t)len;
     hd->hash = 0;  /* length change implies content change: invalidate cached hash */
@@ -819,13 +819,30 @@ static inline sp_RbVal sp_PolyArray_get(sp_PolyArray *a, sp_int i) { if (!a) ret
    Unlike 0xff (rodata literal) this marker lives in a malloc'd buffer
    so sp_str_freeze_val can set it.  The frozen? predicate and mutation
    guards check for 0xf1; plain rodata 0xff literals are NOT reported
-   as frozen (they behave as immutable value-semantics objects). */
+   as frozen (they behave as immutable value-semantics objects).
+   0xfa is a frozen heap string that is collected like any other where 0xf1
+   is kept for good; 0xf8 is its marked state on a malloc'd string, as 0xfc
+   is 0xfe's (a slab string's mark is a bit in its chunk). */
 static inline sp_bool sp_str_is_frozen_val(const char *s) {
   if (!s) return TRUE;
-  return ((const unsigned char *)s)[-1] == 0xf1;
+  unsigned char m = ((const unsigned char *)s)[-1];
+  return m == 0xf1 || m == 0xfa || m == 0xf8;
 }
 static inline void sp_str_check_mutable(const char *s) {
   if (sp_str_is_frozen_val(s)) sp_raise_frozen_str(s);
+}
+/* A String key as a Hash stores it: a mutable string is copied into a frozen
+   0xfa, so a later `<<` or setbyte on the caller's string cannot move the key
+   (CRuby's rb_hash_key_str). A frozen or literal key is stored as is. The
+   copy can collect, which clears the write barrier's record of the hash:
+   the caller issues its barrier again before storing. */
+static inline const char *sp_hash_key_str(const char *s) {
+  unsigned char m = ((const unsigned char *)s)[-1];
+  if (m != 0xfe && m != 0xfc && m != 0xfd) return s;
+  char *r = (char *)sp_str_from_bytes(s, sp_str_byte_len(s));
+  if (sp_str_is_binary(s)) sp_str_mark_binary(r);
+  ((unsigned char *)r)[-1] = 0xfa;
+  return r;
 }
 
 /* ---- relocated from spinel_rt.h: integer add/sub/mul overflow-check

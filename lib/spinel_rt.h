@@ -1007,7 +1007,7 @@ static inline const char *sp_str_freeze_val(const char *s) {
   }
   if (m == 0xff || m == 0xf1 || m != 0xfd) {
     /* rodata literal or already frozen: copy to heap and freeze */
-    if (m == 0xf1) return s;  /* already heap-frozen */
+    if (sp_str_is_frozen_val(s)) return s;  /* already heap-frozen */
     size_t n = strlen(s);
     char *r = sp_str_alloc(n);
     memcpy(r, s, n);
@@ -7115,7 +7115,7 @@ static sp_StrPolyHash*sp_StrPolyHash_new_with_default(sp_RbVal d){SP_GC_ROOT_RBV
 static sp_StrPolyHash*sp_StrPolyHash_new_dproc(sp_strpoly_dproc_t fn,void*self){sp_StrPolyHash*h=sp_StrPolyHash_new();h->dproc=fn;h->dproc_self=self;return h;}
 static void sp_StrPolyHash_grow(sp_StrPolyHash*h){ sp_gc_wb((void*)h);sp_int oc=h->cap;const char**ok=h->keys;sp_RbVal*ov=h->vals;h->cap*=2;h->mask=h->cap-1;h->keys=(const char**)sp_pl_zalloc((size_t)h->cap*sizeof(const char*));h->vals=(sp_RbVal*)sp_pl_zalloc((size_t)h->cap*sizeof(sp_RbVal));h->order=(const char**)sp_pl_realloc(h->order,sizeof(const char*)*h->cap);h->len=0;for(sp_int i=0;i<oc;i++){if(ok[i]){sp_int idx=(sp_int)(sp_str_hash(ok[i])&h->mask);while(h->keys[idx])idx=(idx+1)&h->mask;h->keys[idx]=ok[i];h->vals[idx]=ov[i];h->len++;}}sp_pl_free(ok);sp_pl_free(ov);}
 static sp_RbVal sp_StrPolyHash_get(sp_StrPolyHash*h,const char*k){if(!h)return sp_box_nil();sp_int idx=(sp_int)(sp_str_hash(k)&h->mask);while(h->keys[idx]){if(sp_str_eq(h->keys[idx],k))return h->vals[idx];idx=(idx+1)&h->mask;}if(h->dproc)return h->dproc(h,k,h->dproc_self);return h->default_v;}
-static void sp_StrPolyHash_set(sp_StrPolyHash*h,const char*k,sp_RbVal v){sp_gc_wb((void*)h); if(!k){sp_raise_cls("TypeError","no implicit conversion of nil into String");return;} if(h->len*2>=h->cap)sp_StrPolyHash_grow(h);sp_int idx=(sp_int)(sp_str_hash(k)&h->mask);while(h->keys[idx]){if(sp_str_eq(h->keys[idx],k)){h->vals[idx]=v;return;}idx=(idx+1)&h->mask;}h->keys[idx]=k;h->vals[idx]=v;h->order[h->len]=k;h->len++;}
+static void sp_StrPolyHash_set(sp_StrPolyHash*h,const char*k,sp_RbVal v){sp_gc_wb((void*)h); if(!k){sp_raise_cls("TypeError","no implicit conversion of nil into String");return;} if(h->len*2>=h->cap)sp_StrPolyHash_grow(h);sp_int idx=(sp_int)(sp_str_hash(k)&h->mask);while(h->keys[idx]){if(sp_str_eq(h->keys[idx],k)){h->vals[idx]=v;return;}idx=(idx+1)&h->mask;}{SP_GC_ROOT(h);SP_GC_ROOT_STR(k);SP_GC_ROOT_RBVAL(v);k=sp_hash_key_str(k);}sp_gc_wb((void*)h);h->keys[idx]=k;h->vals[idx]=v;h->order[h->len]=k;h->len++;}
 static sp_bool sp_StrPolyHash_has_key(sp_StrPolyHash*h,const char*k){if(!h)return FALSE;sp_int idx=(sp_int)(sp_str_hash(k)&h->mask);while(h->keys[idx]){if(sp_str_eq(h->keys[idx],k))return TRUE;idx=(idx+1)&h->mask;}return FALSE;}
 static sp_int sp_StrPolyHash_length(sp_StrPolyHash*h){return h->len;}
 static sp_StrArray*sp_StrPolyHash_keys(sp_StrPolyHash*h){SP_GC_ROOT(h);sp_StrArray*a=sp_StrArray_new();SP_GC_ROOT(a);if(!h)return a;for(sp_int i=0;i<h->len;i++)sp_StrArray_push(a,h->order[i]);return a;}
@@ -7611,6 +7611,8 @@ static sp_int sp_rbval_hash_key(sp_RbVal v) {
   return 0;
 }
 static sp_bool sp_rbval_eql_key(sp_RbVal a, sp_RbVal b) {
+  /* a mutable String's handle is eql? to the String it holds, as it hashes */
+  a = sp_poly_strbuf_deref(a); b = sp_poly_strbuf_deref(b);
   if (a.tag != b.tag) return FALSE;
   switch (a.tag) {
     case SP_TAG_INT: case SP_TAG_BOOL: case SP_TAG_NIL: case SP_TAG_SYM:
@@ -7814,7 +7816,7 @@ static sp_RbVal sp_poly_get_sym(sp_RbVal v, sp_sym key) {
   }
   return sp_box_nil();
 }
-static void sp_PolyPolyHash_set(sp_PolyPolyHash*h,sp_RbVal k,sp_RbVal v){sp_gc_wb((void*)h); SP_GC_ROOT(h);SP_GC_ROOT_RBVAL(k);SP_GC_ROOT_RBVAL(v);sp_int hs=sp_hash_slot(sp_rbval_hash_key(k));if(h->len*2>=h->cap)sp_PolyPolyHash_grow(h);sp_int idx=(sp_int)(hs&h->mask);while(h->occ[idx]){if(h->hs[idx]==hs&&sp_rbval_eql_key(h->keys[idx],k)){h->vals[idx]=v;return;}idx=(idx+1)&h->mask;}h->keys[idx]=k;h->vals[idx]=v;h->hs[idx]=hs;h->occ[idx]=TRUE;h->order[h->len]=idx;h->len++;}
+static void sp_PolyPolyHash_set(sp_PolyPolyHash*h,sp_RbVal k,sp_RbVal v){sp_gc_wb((void*)h); SP_GC_ROOT(h);SP_GC_ROOT_RBVAL(k);SP_GC_ROOT_RBVAL(v);sp_int hs=sp_hash_slot(sp_rbval_hash_key(k));if(h->len*2>=h->cap)sp_PolyPolyHash_grow(h);sp_int idx=(sp_int)(hs&h->mask);while(h->occ[idx]){if(h->hs[idx]==hs&&sp_rbval_eql_key(h->keys[idx],k)){h->vals[idx]=v;return;}idx=(idx+1)&h->mask;}if(k.tag==SP_TAG_STR&&k.v.s)k.v.s=sp_hash_key_str(k.v.s);else if(sp_poly_is_strbuf(k))k=sp_box_str(sp_hash_key_str(sp_String_cstr((sp_String*)k.v.p)));sp_gc_wb((void*)h);h->keys[idx]=k;h->vals[idx]=v;h->hs[idx]=hs;h->occ[idx]=TRUE;h->order[h->len]=idx;h->len++;}
 /* Marshal.dump/load hash vtable slots (sp_marshal_v.hash_new/hash_set):
    kept here (not moved to lib/sp_cold.c with the rest of the sp_marv_*
    vtable fns) since they'd otherwise force sp_PolyPolyHash_new/set --
