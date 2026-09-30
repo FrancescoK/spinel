@@ -1498,6 +1498,21 @@ static int class_def_body(Compiler *c, int def_node) {
   return bb >= 0 && nt_kind(nt, bb) == NK_StatementsNode ? bb : -1;
 }
 
+/* The name of the class a node opens a body of: a ClassNode's or
+   ModuleNode's, or the constant of `Name = Struct.new(...) do ... end`. A
+   Struct that a `class Name` elsewhere reopens keeps that ClassNode as its
+   def_node, so the block is found as one more body. NULL otherwise. */
+static const char *class_body_name(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_ClassNode || k == NK_ModuleNode) {
+    int cp = nt_ref(nt, id, "constant_path");
+    return cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+  }
+  if (k == NK_ConstantWriteNode && class_def_body(c, id) >= 0) return nt_str(nt, id, "name");
+  return NULL;
+}
+
 /* Register the symbol members of a Struct.new(...) call onto `cls`. */
 /* Resolve a Struct.new / Data.define member argument to its literal symbol
    name: a SymbolNode directly, or a local variable whose writes in the same
@@ -4736,15 +4751,12 @@ void register_includes(Compiler *c) {
   for (int ci = 0; ci < c->nclasses; ci++)
     ADD_BODY(ci, class_def_body(c, c->classes[ci].def_node));
   for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || (!sp_streq(ty, "ClassNode") && !sp_streq(ty, "ModuleNode"))) continue;
-    int cp = nt_ref(nt, id, "constant_path");
-    const char *cname = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    const char *cname = class_body_name(c, id);
     if (!cname) continue;
     int ci = comp_class_index(c, cname);
     if (ci < 0) continue;
     if (id == c->classes[ci].def_node) continue;  /* the definition, listed above */
-    ADD_BODY(ci, nt_ref(nt, id, "body"));
+    ADD_BODY(ci, class_def_body(c, id));
   }
   #undef ADD_BODY
   int *remaining = calloc((size_t)c->nclasses, sizeof(int));
@@ -5019,20 +5031,10 @@ void register_extends(Compiler *c) {
   int *body_cls = malloc(sizeof(int) * (size_t)capbody);
   if (!body_node || !body_cls) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int cn = 0; cn < nt->count; cn++) {
-    int bci = -1;
-    if (nt_kind(nt, cn) == NK_ClassNode || nt_kind(nt, cn) == NK_ModuleNode) {
-      int cp = nt_ref(nt, cn, "constant_path");
-      const char *cnm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-      /* the body this class is defined by, named the way every other pass
-         reads a ClassNode's name */
-      bci = cnm ? comp_class_index(c, cnm) : -1;
-    }
-    /* `Name = Struct.new(...) do ... end`: the block is the class body */
-    else if (nt_kind(nt, cn) == NK_ConstantWriteNode && class_def_body(c, cn) >= 0) {
-      const char *cnm = nt_str(nt, cn, "name");
-      bci = cnm ? comp_class_index(c, cnm) : -1;
-      if (bci >= 0 && c->classes[bci].def_node != cn) bci = -1;
-    }
+    /* the body this class is defined by, named the way every other pass
+       reads a ClassNode's name */
+    const char *cnm = class_body_name(c, cn);
+    int bci = cnm ? comp_class_index(c, cnm) : -1;
     if (bci < 0) continue;
     if (nbody == capbody) {
       capbody *= 2;
@@ -5706,15 +5708,12 @@ void register_prepends(Compiler *c) {
   for (int ci = 0; ci < c->nclasses; ci++)
     process_prepend_body(c, ci, class_def_body(c, c->classes[ci].def_node));
   for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || (!sp_streq(ty, "ClassNode") && !sp_streq(ty, "ModuleNode"))) continue;
-    int cp = nt_ref(nt, id, "constant_path");
-    const char *cname = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    const char *cname = class_body_name(c, id);
     if (!cname) continue;
     int ci = comp_class_index(c, cname);
     if (ci < 0) continue;
     if (id == c->classes[ci].def_node) continue;
-    process_prepend_body(c, ci, nt_ref(nt, id, "body"));
+    process_prepend_body(c, ci, class_def_body(c, id));
   }
 }
 

@@ -48,3 +48,42 @@ Point = Data.define(:x, :y) do
   def dir = y
 end
 p Point.new(x: 1, y: 2).label
+
+# a later `class S` reopening the struct keeps the block's mixins
+module SM
+  def m = "m#{x}"
+end
+
+module SN
+  def n = "n"
+end
+
+module SP
+  def t = "p" + super
+end
+
+S = Struct.new(:x) do
+  include SM
+  extend SN
+  prepend SP
+
+  def t = "t"
+end
+
+class S
+  def y = x * 2
+end
+
+s = S.new(3)
+p s.m, S.n, s.t, s.y
+
+Pt = Data.define(:x) do
+  include SM
+end
+
+class Pt
+  def y = x + 1
+end
+
+pt = Pt.new(x: 4)
+p pt.m, pt.y
