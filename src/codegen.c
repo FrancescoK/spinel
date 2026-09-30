@@ -12736,6 +12736,7 @@ static int cmp_int_pair(const void *a, const void *b) {
 char *codegen_program(const NodeTable *nt) {
   Compiler *c = comp_new(nt);
   analyze_program(c);
+  g_scopes_settled = 1;   /* scope_is_shadowed may answer from its table now */
   /* From here on a yield reads the type of the block spliced at THIS site,
      not the union the node cache holds across sites (#3784). Installed after
      analysis so the fixpoint keeps seeing the cache unchanged. */

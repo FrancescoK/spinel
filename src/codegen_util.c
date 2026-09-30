@@ -2981,7 +2981,56 @@ const char *iv_c(const char *name) {
   buf[j] = '\0';
   return buf;
 }
+/* scope_is_shadowed asks every later scope, and emission asks it per method
+   and per call site, which made the C emission grow with the square of the
+   program (the scale test's codegen leg). Once analysis has settled the
+   scopes (g_scopes_settled, set by codegen_program), the answers for all of
+   them come from one backward pass, kept until the scope count changes. */
+int g_scopes_settled = 0;
+static const Compiler *g_shadow_c;
+static int g_shadow_n = -1;
+static unsigned char *g_shadow_tab;
+typedef struct { const char *name; int class_id, is_cm, used, any, d1, multi; } ShadowKey;
+static unsigned shadow_hash(const char *nm, int cls, int cm) {
+  unsigned h = 2166136261u;
+  for (const char *p = nm; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
+  return h ^ ((unsigned)cls * 2654435761u) ^ (unsigned)cm;
+}
+static int scope_is_shadowed_scan(Compiler *c, int s);
+static void shadow_tab_build(Compiler *c) {
+  int n = c->nscopes;
+  free(g_shadow_tab);
+  g_shadow_tab = (unsigned char *)calloc((size_t)(n > 0 ? n : 1), 1);
+  size_t cap = 16; while (cap < (size_t)n * 2 + 2) cap *= 2;
+  ShadowKey *tab = (ShadowKey *)calloc(cap, sizeof(ShadowKey));
+  if (!g_shadow_tab || !tab) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = n - 1; k >= 0; k--) {
+    Scope *sc = &c->scopes[k];
+    if (!sc->name) continue;
+    int cls = sc->class_id < 0 ? -1 : sc->class_id, cm = sc->is_cmethod ? 1 : 0;
+    size_t i = shadow_hash(sc->name, cls, cm) & (cap - 1);
+    while (tab[i].used && !(tab[i].class_id == cls && tab[i].is_cm == cm && sp_streq(tab[i].name, sc->name)))
+      i = (i + 1) & (cap - 1);
+    ShadowKey *e = &tab[i];
+    if (!e->used) { e->used = 1; e->name = sc->name; e->class_id = cls; e->is_cm = cm; e->d1 = -1; }
+    int def = sc->def_node >= 0 && nt_kind(c->nt, sc->def_node) == NK_DefNode ? sc->def_node : -1;
+    if (cls >= 0) g_shadow_tab[k] = (unsigned char)e->any;
+    else g_shadow_tab[k] = (unsigned char)(def >= 0 && e->d1 >= 0 && (e->d1 != def || e->multi));
+    e->any = 1;
+    if (cls < 0 && def >= 0) {
+      if (e->d1 < 0) e->d1 = def;
+      else if (e->d1 != def) e->multi = 1;
+    }
+  }
+  free(tab);
+  g_shadow_c = c; g_shadow_n = n;
+}
 int scope_is_shadowed(Compiler *c, int s) {
+  if (!g_scopes_settled) return scope_is_shadowed_scan(c, s);
+  if (g_shadow_c != c || g_shadow_n != c->nscopes) shadow_tab_build(c);
+  return g_shadow_tab[s];
+}
+static int scope_is_shadowed_scan(Compiler *c, int s) {
   Scope *sc = &c->scopes[s];
   if (!sc->name) return 0;
   /* a redefined top-level method: only a later `def` of the same name
