@@ -36,6 +36,20 @@ def product = yield(2) * yield(3)
 p product { |x| x }
 p product { |x| x.to_f }
 
+# a String receiver converts or refuses the argument, and still answers a
+# String (or raises TypeError), whatever the argument's type
+def repeat = yield * 2.0
+p repeat { "ab" }
+p repeat { 1.5 }
+
+def bumped = yield + 1
+p bumped { 1.5 }
+begin
+  p bumped { "a" }
+rescue TypeError => e
+  puts "TypeError: #{e.message}"
+end
+
 def squared = yield * yield
 p squared { 3 }
 p squared { 1.5 }
