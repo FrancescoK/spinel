@@ -1,0 +1,26 @@
+f1
+:from_f1
+back in f1
+:done
+false
+42
+1
+2
+3
+"dead fiber called"
+"attempt to transfer to a yielding fiber"
+"attempt to transfer to a resuming fiber"
+"dead fiber called"
+"attempt to resume a transferring fiber"
+4
+[2, :fin, false]
+:only
+[:a_got, :c_end]
+[:root_got, :a_end]
+[:a2_got, :from_c]
+[:root_got2, :a2_done]
+[:d_got, :e_end]
+[:a3_got, :d_end]
+[:root_got3, :a3_end]
+"attempt to transfer to a resuming fiber"
+[:aa_got, :bb]
