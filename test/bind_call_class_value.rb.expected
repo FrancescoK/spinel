@@ -1,0 +1,21 @@
+3
+6
+[:sq, 18, true]
+3
+">Circle:1"
+">rock"
+">Shape:1"
+TypeError: bind argument must be an instance of Rock
+NameError: undefined method 'area' for class 'Rock'
+NameError: undefined method 'area' for module 'Plain'
+[:sq, 12, false]
+6
+NameError: undefined method 'area' for class 'Rock'
+NoMethodError: undefined method 'instance_method' for an instance of Integer
+["o", "a", "o", "a"]
+NameError: undefined method 'area' for class 'Rock'
+["o", "a", "o", "a"]
+nil
+"+Square:4"
+TypeError: bind argument must be an instance of Shape
+TypeError: bind argument must be an instance of Shape

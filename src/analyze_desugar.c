@@ -10149,7 +10149,7 @@ static const char *const RB_OBJECT_PUBLIC[] = {
 #include "object_public_method_names.inc"
   NULL };
 
-static int core_method_name(const char *n) {
+int core_method_name(const char *n) {
   /* the table is sorted */
   int lo = 0, hi = (int)(sizeof CORE_METHOD_NAMES / sizeof CORE_METHOD_NAMES[0]) - 2;
   while (lo <= hi) {
