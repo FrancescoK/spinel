@@ -5242,20 +5242,21 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
           else if (pt == TY_STRING && emit_when_string_range(c, conds[j], t, b)) {
             /* emitted the lexicographic cover check */
           }
-          /* an Integer Range never covers an Array or a Hash: evaluate the
-             arm for its effects and answer false */
-          else if (comp_ntype(c, conds[j]) == TY_RANGE && (ty_is_array(pt) || ty_is_hash(pt))) {
+          /* a numeric Range never covers an Array or a Hash (nor a String):
+             evaluate the arm for its effects and answer false */
+          else if ((comp_ntype(c, conds[j]) == TY_RANGE && (ty_is_array(pt) || ty_is_hash(pt))) ||
+                   (comp_ntype(c, conds[j]) == TY_FLOAT_RANGE && (pt == TY_STRING || ty_is_array(pt) || ty_is_hash(pt)))) {
             buf_printf(b, "((void)_t%d, (void)(", t); emit_expr(c, conds[j], b); buf_puts(b, "), 0)");
           }
           else if (comp_ntype(c, conds[j]) == TY_RANGE && pt != TY_STRING) {
             /* `when lo..hi` is range membership, not equality */
             int tr = ++g_tmp;
             buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, conds[j], b);
-            /* sp_range_include takes sp_int; coerce a poly scrutinee. Its
+            /* A Float scrutinee compares as a Float. A poly one's
                nil is no number, and read as one it was covered by every
                range that holds 0 (or, from a sentinel, a beginless one). */
-            if (pt == TY_POLY) buf_printf(b, "; _t%d.tag != SP_TAG_NIL && sp_range_include(&_t%d, sp_poly_to_i(_t%d)); })", t, tr, t);
-            else buf_printf(b, "; sp_range_include(&_t%d, _t%d); })", tr, t);
+            if (pt == TY_POLY) buf_printf(b, "; _t%d.tag != SP_TAG_NIL && sp_range_cover_poly(&_t%d, _t%d); })", t, tr, t);
+            else buf_printf(b, "; sp_range_%s(&_t%d, _t%d); })", pt == TY_FLOAT ? "cover_f" : "include", tr, t);
           }
           else if (comp_ntype(c, conds[j]) == TY_FLOAT_RANGE) {
             /* `when 1.0..3.0`: float range membership via sp_frange_cover */
@@ -5616,14 +5617,15 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
         else if (pt == TY_STRING && emit_when_string_range(c, conds[j], t, b)) {
           /* emitted the lexicographic cover check */
         }
-        else if (comp_ntype(c, conds[j]) == TY_RANGE && (ty_is_array(pt) || ty_is_hash(pt))) {
+        else if ((comp_ntype(c, conds[j]) == TY_RANGE && (ty_is_array(pt) || ty_is_hash(pt))) ||
+                 (comp_ntype(c, conds[j]) == TY_FLOAT_RANGE && (pt == TY_STRING || ty_is_array(pt) || ty_is_hash(pt)))) {
           buf_printf(b, "((void)_t%d, (void)(", t); emit_expr(c, conds[j], b); buf_puts(b, "), 0)");
         }
         else if (comp_ntype(c, conds[j]) == TY_RANGE && pt != TY_STRING) {
           int tr = ++g_tmp;
           buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, conds[j], b);
-          if (pt == TY_POLY) buf_printf(b, "; _t%d.tag != SP_TAG_NIL && sp_range_include(&_t%d, sp_poly_to_i(_t%d)); })", t, tr, t);
-          else buf_printf(b, "; sp_range_include(&_t%d, _t%d); })", tr, t);
+          if (pt == TY_POLY) buf_printf(b, "; _t%d.tag != SP_TAG_NIL && sp_range_cover_poly(&_t%d, _t%d); })", t, tr, t);
+          else buf_printf(b, "; sp_range_%s(&_t%d, _t%d); })", pt == TY_FLOAT ? "cover_f" : "include", tr, t);
         }
         else if (comp_ntype(c, conds[j]) == TY_FLOAT_RANGE) {
           int tr = ++g_tmp;

@@ -432,7 +432,7 @@ int desugar_builtin_reopen_self_calls(Compiler *c);
 int desugar_builtin_reopen_methods(Compiler *c);
 int desugar_object_method_builtin_overrides(Compiler *c);
 int desugar_body_ivars(Compiler *c);
-int desugar_when_int_float_ranges(Compiler *c);
+void mark_match_ranges(Compiler *c);
 int desugar_duplicate_underscore_params(Compiler *c);
 int desugar_encoding_queries(Compiler *c);
 int desugar_alias_method_string_names(Compiler *c);

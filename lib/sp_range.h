@@ -63,6 +63,7 @@ static inline sp_int sp_range_max_v(sp_Range r){
 static inline sp_bool sp_range_eq(sp_Range a,sp_Range b){return a.first==b.first&&a.last==b.last&&a.excl==b.excl;}
 
 sp_bool sp_range_include(sp_Range *r, sp_int x);
+sp_bool sp_range_cover_f(sp_Range *r, sp_float x);
 const char *sp_range_str(sp_Range r);
 const char *sp_range_inspect(sp_Range r);
 

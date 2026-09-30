@@ -13939,6 +13939,8 @@ static sp_Enumerator *sp_poly_cycle(sp_RbVal v) {
   e->meth = SPL("cycle");
   return e;
 }
+/* A boxed value against an Integer range: a Float compares as a Float. */
+static sp_bool sp_range_cover_poly(sp_Range *r, sp_RbVal x) { return x.tag == SP_TAG_FLT ? sp_range_cover_f(r, x.v.f) : sp_range_include(r, sp_poly_to_i(x)); }
 /* slice_before/slice_after with a pattern VALUE: start a new group before
    (after) each element == pattern. Groups are poly arrays. */
 /* Generic `pattern === element` on boxed values (#2847): a Class pattern
@@ -13953,9 +13955,7 @@ static sp_bool sp_poly_case_eq(sp_RbVal pat, sp_RbVal e) {
   if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_RANGE) {
     sp_Range *r = (sp_Range *)pat.v.p;
     if (e.tag == SP_TAG_INT) return sp_range_include(r, e.v.i);
-    if (e.tag == SP_TAG_FLT)
-      return e.v.f >= (sp_float)r->first &&
-             (r->excl ? e.v.f < (sp_float)r->last : e.v.f <= (sp_float)r->last);
+    if (e.tag == SP_TAG_FLT) return sp_range_cover_f(r, e.v.f);
     return 0;
   }
   if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_FLOAT_RANGE) {

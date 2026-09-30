@@ -3163,6 +3163,9 @@ sp_bool sp_range_include(sp_Range *r, sp_int x){SP_GC_ROOT(r);
   sp_int lo=sp_range_min_v(*r),hi=sp_range_max_v(*r);
   return sp_range_count(*r)>0 && lo<=x && x<=hi;
 }
+/* A Float is compared against the bounds as a Float, never truncated: 2.5 is
+   not in 1..2. The sentinels leave their side open, as in sp_range_include. */
+sp_bool sp_range_cover_f(sp_Range *r, sp_float x){return (r->first==INTPTR_MIN||x>=(sp_float)r->first)&&(r->last==INTPTR_MAX||(r->excl?x<(sp_float)r->last:x<=(sp_float)r->last));}
 /* Render a Range for a RangeError message ("-10..1", "1...3", "-10..", "..2"). */
 /* Range#inspect: as #to_s, except that a range with NO bound at either end
    names them -- CRuby prints "nil..nil", not ".." (#3670). */

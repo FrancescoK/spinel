@@ -7593,6 +7593,11 @@ TyKind infer_uncached(Compiler *c, int id) {
         (lt == TY_FLOAT || lt == TY_INT) && (ht == TY_FLOAT || ht == TY_INT) &&
         infer_endpoint_is_infinite(c, lo))
       return TY_FLOAT_RANGE;
+    /* A range that only matches (mark_match_ranges) compares a Float bound
+       as written, which only the Float representation holds. */
+    if (nt_int(nt, id, "match_only", 0) && (lt == TY_FLOAT || ht == TY_FLOAT) &&
+        (lo < 0 || lt == TY_INT || lt == TY_FLOAT) && (hi < 0 || ht == TY_INT || ht == TY_FLOAT))
+      return TY_FLOAT_RANGE;
     /* ("a".."e"): both endpoints strings -> the distinct sp_StrRange, so a
        range held in a variable stays a Range rather than materializing into
        its element array (#3064). An endless ("a"..) or beginless (.."e") one
