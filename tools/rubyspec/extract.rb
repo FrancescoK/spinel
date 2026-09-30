@@ -69,7 +69,7 @@ Dir.glob(GLOB, base: SPEC_DIR).sort.each do |rel|
   block_open = /\b(do|\{)\s*(\|[^|]*\|)?\s*$/
   lines.each_with_index do |raw, ln|
     line = raw.chomp
-    s = line.strip.sub(/\A(?:"[^"]*"|'[^']*'|[^"'])*?\bdo\K\s+#.*/, "")
+    s = line.strip.sub(/\A(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^"'])*?\bdo\K\s+#.*/, "")
     next if s.start_with?("require_relative", "require ")
 
     if example
