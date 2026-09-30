@@ -1,0 +1,99 @@
+[1.5, nil, true, "nil", true, :f, "b=.", ""]
+[NoMethodError, TypeError, NoMethodError, ArgumentError]
+[[nil], {nil => 1}, false, true, false]
+:nil_arm
+:else_arm
+nil
+[2.5, 7.5]
+[nil, nil]
+14.0
+[nil, nil, true, {nil => 1}, false, ArgumentError]
+[1.5, nil, true, {nil => 1}, false, NoMethodError]
+[1.5, false, :t, "1.5", "1.5", [1.5], {1.5 => 1}, true]
+[2.5, 2.5, true, true]
+:float_arm
+[nil, true, :f, "", "nil", [nil], {nil => 1}, false]
+[NoMethodError, TypeError, NoMethodError, ArgumentError]
+:nil_arm
+1.5
+nil
+1.5
+7.5
+[1.5, false, {1.5 => 1}, true, 2.5]
+[nil, true, {nil => 1}, false, NoMethodError]
+[1.5, false, [1.5], true, 2.5]
+[nil, true, [nil], false, TypeError]
+[1.5, nil, true, :f, {nil => 1}, false, NoMethodError, TypeError]
+:nil_arm
+[nil, 2.5, false, :t, {2.5 => 1}, true, 3.5, 3.5]
+:float_arm
+nil
+2.5
+[1.5, 7.5]
+[nil, 2.5]
+[1.5, nil, true, {nil => 1}, false, NoMethodError]
+[nil, 2.5, false, {2.5 => 1}, true, 3.5]
+[1.5, nil, true, :f, [nil], {nil => 1}, false, NoMethodError]
+:nil_arm
+[1.5, 2.5, false, :t, [2.5], {2.5 => 1}, true, 3.5]
+:float_arm
+[1.5, nil, true, :f, [nil], {nil => 1}, false, NoMethodError]
+:nil_arm
+7.5
+2.5
+7.5
+[1.5, nil, true, {nil => 1}, false, 9]
+[1.5, nil, true, {nil => 1}, false, NoMethodError, 9]
+[nil, 2.5, true, {nil => 1}, false, TypeError, 9]
+[1.5, nil, true, 9]
+[1.5, nil, true, {nil => 1}, false, NoMethodError, 9]
+[4.5, nil, true, 9]
+[3.5, nil, true, {nil => 1}, false]
+7.5
+[1.5, false, :t, [1.5], {1.5 => 1}, true]
+[2.5, 2.5, true]
+:float_arm
+[nil, true, :f, [nil], {nil => 1}, false]
+[NoMethodError, TypeError, NoMethodError]
+:nil_arm
+1.5
+nil
+1.5
+7.5
+[1.5, false, :t, [1.5], {1.5 => 1}, true, "1.5"]
+[2.5, 2.5, true]
+:float_arm
+[nil, true, :f, [nil], {nil => 1}, false, ""]
+[NoMethodError, TypeError, ArgumentError]
+:nil_arm
+[3.5, false, {3.5 => 1}, true, 4.5]
+[nil, true, {nil => 1}, false, NoMethodError]
+1.5
+nil
+1.5
+7.5
+[1.5, 2.5, false, true, {1.5 => 1}, 2.5]
+[nil, 3.5, true, false, {nil => 1}, NoMethodError]
+[nil, nil, true, false, {nil => 1}, NoMethodError]
+[nil, 4.5, true, false, {nil => 1}, NoMethodError]
+[nil, true, false, false, {nil => 1}]
+:nil_arm
+[2.5, false, true, true, {2.5 => 1}]
+:float_arm
+[1.5, false, :t, [1.5], {1.5 => 1}, true, 2.5]
+:float_arm
+[nil, true, :f, [nil], {nil => 1}, false, NoMethodError]
+:nil_arm
+1.5
+nil
+1.5
+7.5
+[1.5, nil, true, {nil => 1}, false, NoMethodError]
+[1.5, 2.5, false, {2.5 => 1}, true, 3.5]
+[1, Integer]
+[2.5, Float]
+[nil, NilClass]
+[1, 2.5]
+[1, Integer]
+[2.5, Float]
+[nil, NilClass]
