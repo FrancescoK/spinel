@@ -6381,9 +6381,15 @@ else {
         buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); _t%d; })", t, t, hash_box_cls(rt), t);
         return 1;
       }
+      /* to_hash answers the receiver itself, as CRuby's does; it made a
+         copy, so a write through the result missed the Hash */
+      if (sp_streq(name, "to_hash") && argc == 0) {
+        emit_expr(c, recv, b);
+        return 1;
+      }
       /* no-arg merge -> a copy; no-arg slice -> an empty hash of the same
-         variant; to_hash -> a copy of self (#2340/#2349) */
-      if ((sp_streq(name, "merge") || sp_streq(name, "to_hash")) && argc == 0) {
+         variant (#2340/#2349) */
+      if (sp_streq(name, "merge") && argc == 0) {
         buf_printf(b, "sp_%sHash_dup(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
