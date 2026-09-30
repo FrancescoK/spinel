@@ -2270,12 +2270,15 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
    self, so hoist the boxed receiver once, then emit a cls_id switch inlining m
    per instantiated user class that defines it -- self bound to the cast
    pointer via g_inline_recv_expr. Returns 1 if handled. */
+/* the call whose builtin default arm is being emitted: it must not come
+   back here and build the same switch again */
+static int g_prbd_skip = -1;
 int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   int block = nt_ref(nt, id, "block");
-  if (!name || recv < 0 || block < 0) return 0;
+  if (!name || recv < 0 || block < 0 || g_prbd_skip == id) return 0;
   if (!nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
   if (comp_ntype(c, recv) != TY_POLY) return 0;
   /* Only receivers whose poly value comes out of a BUILTIN container -- an
@@ -2515,6 +2518,51 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
      name, so an instance of a class that does not is exactly the case: real,
      and previously silent. (#3234 is the same hole in this switch, found from
      the builtin-array side and patched only for map!/collect!.) */
+  /* Any other builtin receiver: the switch exists because a user class owns
+     the name, and a user class owning a name must not change what a builtin
+     does. Re-enter the statement's ordinary emission with the receiver read
+     from the hoisted temp and g_poly_builtin_arm set, so the builtin surface
+     serves it -- Array#each_slice(2) { } beside a user each_slice(n, &blk)
+     -- exactly as in a program with no user class of that name. The block is
+     spliced into this arm as it is into the user arms; only one arm runs. */
+  if (!emitted_default && g_prbd_skip != id && g_n_argov + 1 <= MAX_ARG_OVERRIDE) {
+    /* on the heap: the probe may longjmp back after the emitter wrote to it */
+    Buf *ab = calloc(1, sizeof *ab);
+    int slot = g_n_argov++;
+    g_argov_node[slot] = recv;
+    snprintf(g_argov_text[slot], sizeof g_argov_text[0], "_t%d", trecv);
+    int sv_skip = g_prbd_skip, sv_arm = g_poly_builtin_arm;
+    g_prbd_skip = id; g_poly_builtin_arm = 1;
+    /* under the silent probe: a builtin emitter that refuses the call drops
+       this arm, not the build */
+    Buf *sv_gpre = g_pre;
+    int sv_probe = g_unsup_probe, sv_open_defaults = g_open_defaults;
+    int sv_nren = g_nren, sv_block = g_block_id;
+    ConvHold *sv_hold = g_conv_hold;
+    jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
+    volatile int ok = 1;
+    EmitUnitState *sv_state = emit_state_snapshot();
+    g_unsup_probe = 1;
+    if (setjmp(g_unsup_recover) == 0) emit_stmt(c, id, ab, indent + 1);
+    else ok = 0;
+    emit_state_release(sv_state, !ok);
+    memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
+    g_conv_hold = sv_hold; g_open_defaults = sv_open_defaults;
+    g_nren = sv_nren; g_block_id = sv_block;
+    g_unsup_probe = sv_probe; g_pre = sv_gpre;
+    g_prbd_skip = sv_skip; g_poly_builtin_arm = sv_arm;
+    g_n_argov = slot;
+    char rtok[300];
+    snprintf(rtok, sizeof rtok, "sp_nomethod_msg(\"%s\"", name);
+    if (ok && ab->p && !strstr(ab->p, rtok)) {
+      emit_indent(&sw, indent); buf_puts(&sw, "default: {\n");
+      buf_puts(&sw, ab->p);
+      emit_indent(&sw, indent + 1); buf_puts(&sw, "break;\n");
+      emit_indent(&sw, indent); buf_puts(&sw, "}\n");
+      emitted_default = 1;
+    }
+    free(ab->p); free(ab);
+  }
   if (!emitted_default) {
     emit_indent(&sw, indent); buf_puts(&sw, "default: ");
     buf_printf(&sw, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;\n", name, trecv);
