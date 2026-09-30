@@ -3571,10 +3571,19 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
 
   if (lv) lv->type = sv; if (li) li->type = si;
 
-  if (is_map || collect_pair || is_toh) buf_printf(b, "_t%d", tres);
-  else if (is_cnt) buf_printf(b, "_t%d", tcnt);
-  else if (is_any || is_all || is_none) buf_printf(b, "_t%d", tflag);
-  else buf_printf(b, "_t%d", ta);   /* each -> receiver */
+  char res[32]; TyKind res_t;
+  if (is_map || collect_pair || is_toh) {
+    snprintf(res, sizeof res, "_t%d", tres);
+    res_t = is_toh ? toh_ht : collect_pair || sp_streq(rk, "Poly") ? TY_POLY_ARRAY : comp_ntype(c, id);
+  }
+  else if (is_cnt) { snprintf(res, sizeof res, "_t%d", tcnt); res_t = TY_INT; }
+  else if (is_any || is_all || is_none) { snprintf(res, sizeof res, "_t%d", tflag); res_t = TY_BOOL; }
+  else { snprintf(res, sizeof res, "_t%d", ta); res_t = rt; }   /* each -> receiver */
+  /* A call the node types boxed -- a user class that also defines map,
+     select, count... makes the name poly (#6293) -- answers the result
+     boxed; left raw, a typed array went out through an sp_RbVal return. */
+  if (comp_ntype(c, id) == TY_POLY && res_t != TY_POLY) emit_boxed_text(c, res_t, res, b);
+  else buf_puts(b, res);
   return 1;
 }
 
