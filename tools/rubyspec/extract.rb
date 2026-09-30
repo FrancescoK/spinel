@@ -24,7 +24,7 @@ Encoding.default_external = Encoding::UTF_8
 
 SPEC_DIR = ARGV[0] or abort "usage: extract.rb SPEC_DIR OUT_DIR [glob]"
 OUT_DIR  = ARGV[1] or abort "usage: extract.rb SPEC_DIR OUT_DIR [glob]"
-GLOB     = ARGV[2] || "*_spec.rb"
+GLOB     = ARGV[2] || "**/*_spec.rb"
 LITE     = File.read(File.join(__dir__, "mspec_lite.rb"))
 
 SPINEL_VERSION = [4, 0]   # the CRuby level spinel targets, for version guards
@@ -55,8 +55,9 @@ def rewrite(line)
 end
 
 total = 0
-Dir.glob(File.join(SPEC_DIR, GLOB)).sort.each do |path|
-  base = File.basename(path, ".rb")
+Dir.glob(GLOB, base: SPEC_DIR).sort.each do |rel|
+  path = File.join(SPEC_DIR, rel)
+  base = rel.delete_suffix(".rb").tr("/", "-")
   lines = File.readlines(path)
 
   prelude = []          # top-level lines outside any block
@@ -90,7 +91,7 @@ Dir.glob(File.join(SPEC_DIR, GLOB)).sort.each do |path|
           name = format("%s__%03d", base, n_in_file)
           desc = (stack.map { |b| b[:desc] } + [example[:desc]]).compact.join(" ")
           File.write(File.join(OUT_DIR, name + ".rb"),
-                     "# #{File.basename(path)}:#{example[:line]} -- #{desc}\n" + out)
+                     "# #{rel}:#{example[:line]} -- #{desc}\n" + out)
           total += 1
           example = nil
         else
