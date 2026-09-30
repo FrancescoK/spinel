@@ -1765,14 +1765,38 @@ static int comp_method_index_direct(Compiler *c, const char *name) {
   return -1;
 }
 
+/* Does class ci descend from an explicit `< BasicObject` (a blank slate)?
+   Such an instance answers only BasicObject's own methods and what the user
+   defined; the Object/Kernel default arms must NOT serve it (#2703). */
+int class_is_blank_slate(Compiler *c, int ci) {
+  for (int k = ci; k >= 0; k = c->classes[k].parent) {
+    int sc = nt_ref(c->nt, c->classes[k].def_node, "superclass");
+    const char *sn = sc >= 0 ? nt_str(c->nt, sc, "name") : NULL;
+    if (sn && sp_streq(sn, "BasicObject")) return 1;
+    if (sn && c->classes[k].parent < 0) return 0;   /* rooted at another builtin */
+  }
+  return 0;
+}
+
 /* Find a method named `name` in any top-level included module.
    module_function methods are class-level (is_cmethod=1), so check both.
    Iterate in reverse so the last include wins (Ruby semantics). An include
    brings in the module's INSTANCE methods, so those are asked first: a
    module that also defines `def self.name` answered the singleton for a bare
-   `name`, and the program printed that method's value instead. */
-int comp_included_method_index(Compiler *c, const char *name) {
+   `name`, and the program printed that method's value instead.
+   An include at the top level adds the module to Object. An instance of a
+   class that descends from BasicObject is not an Object, so a bare call in
+   one of its instance methods, or in a block inside one (`call_id`, -1 when
+   there is no call site), does not reach the module: CRuby raises
+   NoMethodError there, and resolving it ran the module's method instead. A
+   class method's self is a Class, which is an Object, so it still does. */
+int comp_included_method_index(Compiler *c, const char *name, int call_id) {
   if (!name) return -1;
+  if (call_id >= 0) {
+    Scope *cs = comp_scope_of(c, call_id);
+    if (cs && cs->class_id >= 0 && !cs->is_cmethod &&
+        class_is_blank_slate(c, cs->class_id)) return -1;
+  }
   for (int k = c->ntoplevel_includes - 1; k >= 0; k--) {
     int ci = c->toplevel_includes[k];
     int mi = comp_method_in_chain(c, ci, name, NULL);

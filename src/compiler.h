@@ -809,7 +809,8 @@ int    comp_cbody_call_mi(Compiler *c, int call_node, const char *name);
    value in *out. Such a name is a VALUE, not a class, wherever the two are
    told apart. */
 int    comp_ffi_const_at(Compiler *c, int node, int *out);
-int    comp_included_method_index(Compiler *c, const char *name);
+int    comp_included_method_index(Compiler *c, const char *name, int call_id);
+int    class_is_blank_slate(Compiler *c, int ci);   /* explicit `< BasicObject` descent */
 
 /* Locals within a scope. */
 LocalVar *scope_local(Scope *s, const char *name);

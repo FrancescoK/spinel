@@ -5586,7 +5586,7 @@ static int expand_literal_splat_args(Compiler *c) {
       if (!lit) continue; }
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) {
-      if (comp_method_index(c, nm) >= 0 || comp_included_method_index(c, nm) >= 0)
+      if (comp_method_index(c, nm) >= 0 || comp_included_method_index(c, nm, id) >= 0)
         continue;   /* a user method: native splat path */
     }
     else {
@@ -14874,7 +14874,7 @@ static void an_call_targets_nonunique(Compiler *c, int u, const char *un, ACallT
   else if (rk == NK_SelfNode) {
     int mi = comp_self_call_mi(c, u, un);
     if (mi < 0 && rc < 0) mi = comp_cbody_call_mi(c, u, un);
-    if (mi < 0) mi = comp_included_method_index(c, un);
+    if (mi < 0) mi = comp_included_method_index(c, un, u);
     act_add(t, mi);
     Scope *self = comp_scope_of(c, u);
     int any = mi >= 0;

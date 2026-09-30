@@ -1887,7 +1887,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv < 0 && nt_ref(nt, id, "block") < 0 &&
       !nt_str(nt, id, "vis_enforce")) {
     int bmi = comp_method_index(c, name);
-    if (bmi < 0) bmi = comp_included_method_index(c, name);
+    if (bmi < 0) bmi = comp_included_method_index(c, name, id);
     if (bmi >= 0) {
       Scope *bsc = comp_scope_of(c, id);
       int bcls = bsc ? bsc->class_id : -1;
@@ -4693,7 +4693,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* user-defined free-function call (no receiver) */
   if (recv < 0) {
     int mi = comp_method_index(c, name);
-    if (mi < 0) mi = comp_included_method_index(c, name);
+    if (mi < 0) mi = comp_included_method_index(c, name, id);
     if (mi >= 0) return method_call_ret(c, mi, id);
     /* Kernel conversions */
     if (sp_streq(name, "Integer") && (kw_argc == 1 || kw_argc == 2)) {

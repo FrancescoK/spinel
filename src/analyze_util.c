@@ -1265,7 +1265,7 @@ static int yvt_callee_index(Compiler *c, int cid) {
        infer_uncached resolves it: its block feeds that method's yield.
        Missed here, T.twice's return was typed from no block at all, so
        `n = twice { 2 }` under `include T` typed nil */
-    if (rmi < 0) rmi = comp_included_method_index(c, cn);
+    if (rmi < 0) rmi = comp_included_method_index(c, cn, cid);
   }
   else {
     TyKind crt = infer_type(c, crecv);
@@ -1600,19 +1600,6 @@ int yield_value_diverges(Compiler *c, int mi) {
    slot, and the other emits into it. Used for an explicit `acc << yield(x)`
    (#2454) and for the collector an iterator builds from a `yield` block body
    -- `[x].map { |v| yield v }` inside a wrapper method (#2457). */
-/* Does class ci descend from an explicit `< BasicObject` (a blank slate)?
-   Such an instance answers only BasicObject's own methods and what the user
-   defined; the Object/Kernel default arms must NOT serve it (#2703). */
-int class_is_blank_slate(Compiler *c, int ci) {
-  for (int k = ci; k >= 0; k = c->classes[k].parent) {
-    int sc = nt_ref(c->nt, c->classes[k].def_node, "superclass");
-    const char *sn = sc >= 0 ? nt_str(c->nt, sc, "name") : NULL;
-    if (sn && sp_streq(sn, "BasicObject")) return 1;
-    if (sn && c->classes[k].parent < 0) return 0;   /* rooted at another builtin */
-  }
-  return 0;
-}
-
 /* Does the program define a method of this name itself? A builtin fallback for
    a poly receiver must decline then: the user method is the likelier target. */
 /* The scan below is O(nclasses * chain) per query and the fallback arms ask it

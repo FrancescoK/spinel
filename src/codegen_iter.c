@@ -408,7 +408,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
        called through the module. One that touches an instance variable is
        left to that arm, which refuses it: main holds no module state. */
     if (mi < 0) {
-      int imi = comp_included_method_index(c, name);
+      int imi = comp_included_method_index(c, name, id);
       if (imi >= 0 && !scope_uses_ivars(c, imi)) {
         mi = imi;
         if (c->scopes[imi].is_cmethod) cm_class = c->scopes[imi].class_id;
@@ -2494,7 +2494,7 @@ static int call_targets_yielding_method(Compiler *c, int id) {
        E } }` under `include T` gave "invalid argument type 'void' to unary
        expression" at check's `unless yield`. */
     if (mi < 0) {
-      int imi = comp_included_method_index(c, name);
+      int imi = comp_included_method_index(c, name, id);
       if (imi >= 0 && !scope_uses_ivars(c, imi)) mi = imi;
     }
   }

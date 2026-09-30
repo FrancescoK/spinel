@@ -6568,7 +6568,7 @@ int infer_param_types(Compiler *c) {
         else mi = comp_cbody_call_mi(c, id, name);
       }
       if (mi < 0) mi = comp_method_index(c, name);
-      if (mi < 0) mi = comp_included_method_index(c, name);
+      if (mi < 0) mi = comp_included_method_index(c, name, id);
       changed |= bind_call_params(c, id, mi);
       /* Propagate to descendant classes that directly override the same method.
          When Base#foo calls bar(arg), and Sub overrides bar, Sub#bar must also
@@ -11950,7 +11950,7 @@ int backprop_call_target(Compiler *c, int call_id) {
           mi = comp_cmethod_in_chain(c, self->class_id, name, NULL);
       }
     }
-    if (mi < 0) mi = comp_included_method_index(c, name);
+    if (mi < 0) mi = comp_included_method_index(c, name, call_id);
     return mi;
   }
   NodeKind rk = nt_kind(nt, recv);
