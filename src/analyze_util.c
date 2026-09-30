@@ -765,6 +765,11 @@ int lazy_method_chain(Compiler *c, int call) {
   if (!chain_is_lazy_valued(c, st[0])) return -1;
   return lazy_chain_self_free(c, st[0], 0) ? st[0] : -1;
 }
+int lazy_resolve_chain(Compiler *c, int n) {
+  int a = lazy_alias_chain(c, n);
+  if (a < 0) a = lazy_method_chain(c, n);
+  return a >= 0 ? a : n;
+}
 
 /* The anonymous struct class synthesized for a `k = Struct.new(:a, :b)`
    VALUE node (the write is the class's def_node), or -1. Lets the value
