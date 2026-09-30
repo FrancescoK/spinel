@@ -73,15 +73,16 @@ static const char *tmpdir_mkdtemp(const char *prefix, const char *suffix,
   size_t suf_len = suffix ? strlen(suffix) : 0;
   size_t par_len = strlen(parent);
 
-  /* Format the date once: YYYYMMDD. */
-  char date[9];
+  /* Format the date once, in local time, as CRuby's
+     Time.now.strftime("%Y%m%d"): a year of four digits at least, then the
+     month and day. The buffer holds any int year, so the name is never cut
+     short; it is YYYYMMDD for years 1000 to 9999. */
+  char date[40];
   time_t now = time(NULL);
   struct tm tm;
-  gmtime_r(&now, &tm);  /* CRuby uses local time; gmtime for portability */
-  /* Actually CRuby uses Time.now which is local. Use localtime_r. */
   localtime_r(&now, &tm);
-  snprintf(date, sizeof(date), "%04d%02d%02d",
-           tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+  int date_len = snprintf(date, sizeof(date), "%04d%02d%02d",
+                          tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
 
   /* Pre-format the constant middle: "-pid-". */
   char mid[32];
@@ -89,10 +90,10 @@ static const char *tmpdir_mkdtemp(const char *prefix, const char *suffix,
 
   /* Build path pieces. The final path is:
      parent + "/" + prefix + date + mid + random [+ "-N"] + suffix
-     Worst-case size: 4096 (parent) + 1 + 64 (prefix) + 8 (date) +
+     Worst-case size: 4096 (parent) + 1 + 64 (prefix) + date_len +
                       32 (mid) + 6 (random) + 8 ("-NNNNNNN") + 64 (suffix) */
   char path[PATH_MAX];
-  if (par_len + 1 + pre_len + 8 + 32 + 6 + 8 + suf_len >= sizeof(path))
+  if (par_len + 1 + pre_len + (size_t)date_len + 32 + 6 + 8 + suf_len >= sizeof(path))
     sp_raise_cls("ArgumentError", "tmpdir path too long");
 
   for (int n = 0; n < max_try; n++) {
@@ -103,7 +104,7 @@ static const char *tmpdir_mkdtemp(const char *prefix, const char *suffix,
     memcpy(path + pos, parent, par_len); pos += par_len;
     path[pos++] = '/';
     if (pre_len) { memcpy(path + pos, prefix, pre_len); pos += pre_len; }
-    memcpy(path + pos, date, 8); pos += 8;
+    memcpy(path + pos, date, date_len); pos += date_len;
     memcpy(path + pos, mid, mid_len); pos += mid_len;
     memcpy(path + pos, random, random_len); pos += random_len;
     if (n > 0) {
