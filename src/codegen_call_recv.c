@@ -226,6 +226,16 @@ static int elem_nil_sentinel(Compiler *c, int recv, TyKind rt) {
   return recv >= 0 && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && nullable_int_elem_array(c, recv);
 }
 
+/* An array literal of plain elements (no splat): what CRuby's VM answers
+   min and max of without building the array (opt_newarray_send). */
+static int array_literal_plain(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0 || nt_kind(nt, recv) != NK_ArrayNode) return 0;
+  int en = 0; const int *el = nt_arr(nt, recv, "elements", &en);
+  for (int e = 0; el && e < en; e++) if (nt_kind(nt, el[e]) == NK_SplatNode) return 0;
+  return en > 0;
+}
+
 /* value_kind_misses for a needle searched for in the array `recv`: nil is no
    miss where the array can hold the sentinel. */
 static int needle_misses(Compiler *c, int recv, TyKind rt, int node) {
@@ -2369,6 +2379,12 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
        strings, int-array tuples lexicographically). */
     if ((sp_streq(name, "max") || sp_streq(name, "min")) && argc == 0 &&
         rt == TY_POLY_ARRAY && nt_ref(nt, id, "block") < 0) {
+      /* a literal's in CRuby's VM order (sp_PolyArray_minmax_lit) */
+      if (array_literal_plain(c, recv)) {
+        buf_puts(b, "sp_PolyArray_minmax_lit("); emit_expr(c, recv, b);
+        buf_printf(b, ", %d)", sp_streq(name, "max"));
+        return 1;
+      }
       buf_printf(b, "sp_PolyArray_%s(", name); emit_expr(c, recv, b); buf_puts(b, ")");
       return 1;
     }
@@ -4460,6 +4476,23 @@ else {
           return 1;
         }
       }
+      /* A literal's min and max compare each new element with the extreme
+         so far, as CRuby's VM does for them (sp_PolyArray_minmax_lit): the
+         nil check and a boxed literal's comparisons name the pair that
+         way round, where Array#max's on an array value is the other. */
+      if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 0 && block < 0 &&
+          array_literal_plain(c, recv)) {
+        int want_max = sp_streq(name, "max");
+        if (rt == TY_POLY_ARRAY) {
+          buf_puts(b, "sp_PolyArray_minmax_lit("); emit_expr(c, recv, b); buf_printf(b, ", %d)", want_max);
+          return 1;
+        }
+        if ((rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && elem_nil_sentinel(c, recv, rt)) {
+          buf_printf(b, "sp_%sArray_%s(sp_%sArray_nil_lit_ck(", k, name, k);
+          emit_expr(c, recv, b); buf_printf(b, ", %d))", want_max);
+          return 1;
+        }
+      }
       if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 0) {
         buf_printf(b, "sp_%sArray_%s(", k, name); emit_nil_ck_recv(c, recv, rt, "cmp", 0, b); buf_puts(b, ")");
         return 1;
@@ -4800,12 +4833,27 @@ else {
                       " sp_%sArray_slice(_t%d, 0, _t%d); })", tn, k, t, tn);
         return 1;
       }
+      /* min(n) / max(n) as CRuby's nmin_run computes them
+         (sp_PolyArray_nmin): the size is checked first, and a boxed array
+         is cut and sorted by its comparisons. A typed one of plain numbers
+         cannot tell the two orders apart and keeps its sort; one that can
+         hold nil runs the boxed cut first, which raises where CRuby does. */
       if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 1 && block < 0) {
+        int want_max = sp_streq(name, "max");
         int t = ++g_tmp, tn = ++g_tmp;
-        buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_sort(", k, t, k); emit_nil_ck_recv(c, recv, rt, "cmp", 0, b);
-        buf_printf(b, "); SP_GC_ROOT(_t%d); sp_int _t%d = ", t, tn); emit_int_expr(c, argv[0], b);
-        buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");", tn);
-        if (sp_streq(name, "max")) buf_printf(b, " sp_%sArray_reverse_bang(_t%d);", k, t);
+        buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_int _t%d = ", t, tn); emit_int_expr(c, argv[0], b);
+        buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", sp_sprintf(\"negative size (%%lld)\", (long long)_t%d));",
+                   tn, tn);
+        if (rt == TY_POLY_ARRAY) {
+          buf_printf(b, " sp_PolyArray_nmin(_t%d, _t%d, %d); })", t, tn, want_max);
+          return 1;
+        }
+        if ((rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && elem_nil_sentinel(c, recv, rt))
+          buf_printf(b, " (void)sp_PolyArray_nmin(%s(_t%d), _t%d, %d);",
+                     rt == TY_INT_ARRAY ? "sp_IntArray_to_poly" : "sp_FloatArray_to_poly", t, tn, want_max);
+        buf_printf(b, " _t%d = sp_%sArray_sort(_t%d); SP_GC_ROOT(_t%d);", t, k, t, t);
+        if (want_max) buf_printf(b, " sp_%sArray_reverse_bang(_t%d);", k, t);
         buf_printf(b, " sp_%sArray_slice(_t%d, 0, _t%d); })", k, t, tn);
         return 1;
       }
@@ -4998,12 +5046,12 @@ else {
         return 1;
       }
       if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 1 && nt_ref(nt, id, "block") < 0) {
-        int t = ++g_tmp, tn = ++g_tmp;
-        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_sort(", t); emit_expr(c, recv, b);
-        buf_printf(b, "); SP_GC_ROOT(_t%d); sp_int _t%d = ", t, tn); emit_int_expr(c, argv[0], b);
-        buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");", tn);
-        if (sp_streq(name, "max")) buf_printf(b, " sp_PolyArray_reverse_bang(_t%d);", t);
-        buf_printf(b, " sp_PolyArray_slice(_t%d, 0, _t%d); })", t, tn);
+        /* as CRuby's nmin_run computes it (sp_PolyArray_nmin), which checks
+           the size first */
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_PolyArray_nmin(_t%d, ", t, t); emit_int_expr(c, argv[0], b);
+        buf_printf(b, ", %d); })", sp_streq(name, "max"));
         return 1;
       }
       if ((sp_streq(name, "all?") || sp_streq(name, "any?") ||
