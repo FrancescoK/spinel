@@ -9541,6 +9541,14 @@ static int arm_takes_blk(Scope *s) {
   return s->blk_param && s->blk_param[0] && !s->yields;
 }
 
+/* How an arm's parameter takes a String: 1 the lent slot (byref), 2 the
+   shared handle, 0 anything else. */
+static int arm_string_abi(const LocalVar *p) {
+  if (!p) return 0;
+  if (p->byref_out) return 1;
+  return p->type == TY_STRBUF && p->str_shared ? 2 : 0;
+}
+
 /* Do the switch's arms bind the call's arguments differently? The shared path
    evaluates the arguments once, laid out for the base method, and hands every
    arm the same temps. That is only right when every arm takes the same plain
@@ -9573,6 +9581,12 @@ static int dispatch_arms_disagree(Compiler *c, int cid, const char *name) {
       int kw_s = callee_has_kwarg(c, s, s->pnames[i]);
       if (kw_s != callee_has_kwarg(c, first, first->pnames[i])) return 1;
       if (kw_s && !sp_streq(s->pnames[i], first->pnames[i])) return 1;
+      /* a String the arms take in different forms -- the lent slot, the
+         shared handle, the value -- is one no single temp can be: a Sub
+         whose parameter became the handle took the base method's copy, or
+         its `const char **`, and the C build stopped (#6065) */
+      if (arm_string_abi(scope_local(s, s->pnames[i])) !=
+          arm_string_abi(scope_local(first, first->pnames[i]))) return 1;
     }
   }
   return 0;

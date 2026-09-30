@@ -1,0 +1,3 @@
+module SeedHelper
+  def self.open_into: (untyped io) -> untyped
+end

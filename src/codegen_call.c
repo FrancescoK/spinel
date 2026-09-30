@@ -6803,6 +6803,32 @@ static void emit_poly_arm_rest(Compiler *c, Scope *ms, int a, const ArgLayout *L
   buf_printf(pa, " _t%d; })", rt);
 }
 
+/* Positional `k` into an arm whose parameter is a shared handle
+   (str_shared). The temp holds the argument's String VALUE -- the other
+   arms take that -- so a handle argument passes its slot's handle itself,
+   the way a direct call's binder does (emit_arg_or_default_fill), and the
+   callee's appends land in the caller's String; anything else wraps a fresh
+   handle. Read at the arm, the slot is the one the temp was read from as
+   long as no argument can write it in between. */
+static int emit_poly_shared_arg(Compiler *c, const PolyArgs *A, int k, Buf *pa) {
+  TyKind at = A->atmp_ty[k];
+  if (at != TY_STRING && at != TY_STRBUF) return 0;
+  int an = A->argv[k];
+  NodeKind ak = nt_kind(c->nt, an);
+  char sref[192];
+  int quiet = !(A->kw && A->kw->kwh >= 0 && subtree_has_side_effect(c, A->kw->kwh));
+  for (int j = 0; j < A->pos_argc && quiet; j++)
+    if (j != k && subtree_has_side_effect(c, A->argv[j])) quiet = 0;
+  if (quiet && (ak == NK_LocalVariableReadNode || ak == NK_InstanceVariableReadNode) &&
+      strbuf_slot_ref(c, an, sref, sizeof sref)) {
+    buf_puts(pa, sref);
+    return 1;
+  }
+  if (at == TY_STRBUF) buf_printf(pa, "_t%d", A->atmp[k]);
+  else buf_printf(pa, "sp_String_new_shared(_t%d)", A->atmp[k]);
+  return 1;
+}
+
 /* Parameter `a` of an arm, from where the layout says: a keyword by name
    from the split-off hash (emit_poly_kw_param), an argument's temp, the
    keyword hash as one more positional, the rest, the gather, or the
@@ -6824,6 +6850,8 @@ static void emit_poly_arm_param(Compiler *c, Scope *ms, int a, const ArgLayout *
     /* the argument past the positionals is the keyword hash, where it binds
        as a rest's last post (rest_bind_argc) */
     if (L->arg[a] < A->pos_argc) {
+      if (pt == TY_STRBUF && pv && pv->str_shared &&
+          emit_poly_shared_arg(c, A, L->arg[a], pa)) return;
       emit_poly_temp_as(c, pt, A->atmp[L->arg[a]], A->atmp_ty[L->arg[a]], pa);
       return;
     }
@@ -9093,6 +9121,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           TyKind pt0 = pv0 ? pv0->type : TY_UNKNOWN;
           int sa0 = L.arg[a];
           TyKind at0 = atmp_ty[sa0];
+          /* a shared-handle parameter takes a String of either form: its
+             arm passes the handle (emit_poly_shared_arg) */
+          if (pt0 == TY_STRBUF && pv0->str_shared && (at0 == TY_STRING || at0 == TY_STRBUF))
+            continue;
           int pc = pt0 != TY_POLY && pt0 != TY_UNKNOWN && pt0 != TY_NIL && pt0 != TY_VOID;
           int ac = at0 != TY_POLY && at0 != TY_UNKNOWN && at0 != TY_NIL && at0 != TY_VOID;
           if (pc && ac && pt0 != at0 &&

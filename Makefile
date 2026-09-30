@@ -1416,7 +1416,8 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/method_bound_binding_layout.rb \
                   test/kw_splat_boxed_to_hash.rb \
                   test/byref_keyword_rest_splat_param.rb \
-                  test/byref_gather_lead_block_super.rb
+                  test/byref_gather_lead_block_super.rb \
+                  test/shared_handle_nonunique_callee.rb
 
 # Each program runs with the minor mark off and on and must answer the same;
 # then once more under the generational verifier with stress on (every
@@ -1617,6 +1618,8 @@ rbs-seed-test: $(SPINEL) $(RBS_EXTRACT_BIN) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	  "$$tmp/br" > "$$tmp/br.out" 2>/dev/null; \
 	  cmp -s "$$tmp/br.out" test/rbs-seed/byref_string_param.expected || { echo "rbs-seed-test: FAIL (a String seed on a mutated param dropped the caller's appends)"; diff -u test/rbs-seed/byref_string_param.expected "$$tmp/br.out" || true; ok=0; }; \
 	else echo "rbs-seed-test: FAIL (byref_string_param C did not compile)"; ok=0; fi; \
+	$(SPINEL) test/rbs-seed/shared_handle_nonunique_callee.rb --rbs test/rbs-seed/sig -o "$$tmp/shn" >/dev/null 2>&1 && \
+	  "$$tmp/shn" > "$$tmp/shn.out" 2>/dev/null && cmp -s "$$tmp/shn.out" test/rbs-seed/shared_handle_nonunique_callee.expected || { echo "rbs-seed-test: FAIL (#6065 an untyped seed's handle lost at a callee whose name two modules define)"; ok=0; }; \
 	$(SPINEL) test/rbs-seed/colliding_class_pin.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/cp.c" 2>/dev/null; \
 	grep -Eq 'const char[[:space:]]*\*[[:space:]]*iv_rtag' "$$tmp/cp.c" || { echo "rbs-seed-test: FAIL (collision-renamed class seed not applied)"; ok=0; }; \
