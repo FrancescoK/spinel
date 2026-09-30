@@ -20833,7 +20833,7 @@ static int prog_has_hash_default_block(Compiler *c) {
    boxed value in a program with no user `[]` and no Hash default block,
    recursively; nothing in any of them runs code. Every other call counts,
    conservatively: a builtin handed a user object can call back into it. */
-static int subtree_may_reassign_state(Compiler *c, int id) {
+int subtree_may_reassign_state(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (id < 0) return 0;
   const char *ty = nt_type(nt, id);

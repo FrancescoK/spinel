@@ -177,6 +177,10 @@ extern int  g_pd_skip;
 extern int  g_cls_tag_skip;   /* poly-dispatch builtin-arm re-entry marker */
 int subtree_may_allocate(const NodeTable *nt, int id);
 int subtree_has_side_effect(Compiler *c, int id);
+/* Can evaluating the subtree store into an ivar, class variable or global? A
+   write to one, or anything that runs Ruby code it does not show; not scalar
+   arithmetic, a typed-array read or a plain field read (codegen_call.c). */
+int subtree_may_reassign_state(Compiler *c, int id);
 int call_is_scalar_op(Compiler *c, int id);   /* a builtin operator over scalars */
 /* Whether the subtree at `id` assigns the local `nm`: a write, an op-write
    or a multiple-assignment target by that name. */

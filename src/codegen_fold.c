@@ -5726,6 +5726,21 @@ int emit_lent_local(LocalVar *lv, const char *vn, Buf *out) {
   return 1;
 }
 
+/* The handle temp emit_arg_temp took of a shared String slot's read that the
+   call ran first, -1 when there is none: the value temp's number, one down,
+   declared in the statement's pending lines. Other sites that run an argument
+   first take no handle, and a declaration only exists once one was taken. */
+static int ran_first_handle(int node) {
+  for (int i = g_n_argov - 1; i >= 0; i--) {
+    if (g_argov_node[i] != node) continue;
+    int t;
+    if (sscanf(g_argov_text[i], "_t%d", &t) != 1 || !g_pre || !g_pre->p) return -1;
+    char decl[48]; snprintf(decl, sizeof decl, "sp_String *_t%d = ", t - 1);
+    return strstr(g_pre->p, decl) ? t - 1 : -1;
+  }
+  return -1;
+}
+
 static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provided, Buf *out) {
   LocalVar *p = scope_local(m, m->pnames[idx]);
   TyKind pt = p ? p->type : TY_INT;
@@ -5795,11 +5810,18 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
     if (provided >= 0) {
       char srefP[192];
       /* A variable the call ran first is read where it ran, not at its
-         slot (see the byref slot below): its handle, which a later
-         argument can overwrite, is a fresh one of the value read then. */
+         slot (see the byref slot below), which a later argument can
+         overwrite. What it read then is an OBJECT: the handle taken with
+         it, so the callee and the caller's other names still share one
+         String. A fresh handle of the bytes read was a second String --
+         a caller writing into its own afterwards went unseen. */
       NodeKind pk = nt_kind(c->nt, provided);
       int late = (pk == NK_LocalVariableReadNode || pk == NK_InstanceVariableReadNode) &&
                  arg_ran_first(provided, 0);
+      if (late) {
+        int th = ran_first_handle(provided);
+        if (th >= 0) { buf_printf(out, "_t%d", th); return; }
+      }
       if (!late && strbuf_slot_ref(c, provided, srefP, sizeof srefP)) {
         buf_puts(out, srefP);
         return;
@@ -7029,6 +7051,16 @@ int kwh_out_of_order(Compiler *c, Scope *m, int kwh) {
    g_argov overrides so its uses read the temp. */
 static void emit_arg_temp(Compiler *c, int v) {
   TyKind at = comp_ntype(c, v);
+  /* A shared String slot's read is the value form, a copy; a shared-handle
+     parameter wants the OBJECT read here, not a fresh one of its bytes. So
+     its handle is taken too, just ahead, into the temp numbered one below
+     the value's (ran_first_handle). */
+  char sref[192];
+  if (strbuf_slot_ref(c, v, sref, sizeof sref)) {
+    int th = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, sref, th);
+  }
   int t = ++g_tmp;
   Buf hb; memset(&hb, 0, sizeof hb);
   emit_expr(c, v, &hb);
@@ -7076,6 +7108,9 @@ int read_rebound_by(Compiler *c, int x, int after) {
       return nm && subtree_writes_local(c, after, nm);
     }
     case NK_InstanceVariableReadNode: {
+      /* nothing that runs no code and stores nothing can: arithmetic, typed-
+         array reads and plain field reads (`Ctx.new(@buf, @opts.threads)`) */
+      if (!subtree_may_reassign_state(c, after)) return 0;
       /* a later argument written in the same method, where self is the
          method's own (not a block run under another self), that calls no
          method of self's that assigns it cannot change it: `m(@head,
@@ -7088,7 +7123,7 @@ int read_rebound_by(Compiler *c, int x, int after) {
       return subtree_has_side_effect(c, after);
     }
     case NK_GlobalVariableReadNode: case NK_ClassVariableReadNode:
-      return subtree_has_side_effect(c, after);
+      return subtree_may_reassign_state(c, after) && subtree_has_side_effect(c, after);
     /* a block's body reads when it runs, not where it is written */
     case NK_BlockNode: case NK_LambdaNode: return 0;
     default: {
