@@ -2311,6 +2311,26 @@ static int cmethod_names_ivar(Compiler *c, int ci, const char *ivname) {
   return 0;
 }
 
+/* An attr call whose value the class body uses (`r = attr_reader :a`,
+   `p(attr_accessor :b)`) declares its methods as the bare statement does.
+   Nested bodies with their own self are not walked. */
+static void register_attrs_in_value(Compiler *c, ClassInfo *cls, int node, int singleton) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
+      k == NK_BlockNode || k == NK_LambdaNode)
+    return;
+  if (k == NK_CallNode && nt_ref(nt, node, "receiver") < 0) register_attr_call(c, cls, node, singleton);
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) register_attrs_in_value(c, cls, nt_ref_at(nt, node, i), singleton);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, node, i, &m);
+    for (int j = 0; j < m; j++) register_attrs_in_value(c, cls, ids[j], singleton);
+  }
+}
+
 /* Collect attr_reader/attr_writer/attr_accessor declarations in class
    bodies, registering backing ivars + reader/writer method names.
    Also scans class << self bodies for singleton-level attr_accessors. */
@@ -2334,7 +2354,15 @@ void register_attrs_body(Compiler *c, ClassInfo *cls, int body) {
         for (int q = 0; q < vc; q++)
           if (nt_kind(nt, vv[q]) == NK_CallNode) register_attr_call(c, cls, vv[q], 0);
       }
+      /* `p(attr_reader :a)` */
+      int ca = nt_ref(nt, s, "arguments");
+      int cn = 0; const int *cv = ca >= 0 ? nt_arr(nt, ca, "arguments", &cn) : NULL;
+      for (int q = 0; q < cn; q++) register_attrs_in_value(c, cls, cv[q], 0);
     }
+    else if (sp_streq(sty, "LocalVariableWriteNode") || sp_streq(sty, "ConstantWriteNode") ||
+             sp_streq(sty, "InstanceVariableWriteNode") || sp_streq(sty, "ClassVariableWriteNode") ||
+             sp_streq(sty, "GlobalVariableWriteNode"))
+      register_attrs_in_value(c, cls, nt_ref(nt, s, "value"), 0);
     else if (sp_streq(sty, "SingletonClassNode")) {
       /* class << self; attr_accessor :x; end */
       int sbody = nt_ref(nt, s, "body");
@@ -2346,6 +2374,8 @@ void register_attrs_body(Compiler *c, ClassInfo *cls, int body) {
         const char *ssty = nt_type(nt, ss);
         if (ssty && sp_streq(ssty, "CallNode"))
           register_attr_call(c, cls, ss, 1);
+        else if (ssty && sp_streq(ssty, "LocalVariableWriteNode"))
+          register_attrs_in_value(c, cls, nt_ref(nt, ss, "value"), 1);
       }
       /* An accessor whose name the CLASS BODY also assigns as `@x` names the
          class-level ivar, which is where `def self.m; @x; end` reads too: mark

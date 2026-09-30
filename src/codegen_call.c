@@ -30151,6 +30151,33 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     return;
   }
 
+  /* `r = attr_accessor :a` in a class body: the definitions were made at
+     analysis time; the value is the Array of the method names, readers
+     before writers per name ([:a, :a=]). A writer's name is a symbol the
+     program did not spell, so it is interned at run time. */
+  if (attr_decl_call(c, id)) {
+    int acc = sp_streq(name, "attr_accessor"), wr = sp_streq(name, "attr_writer");
+    int ta = ++g_tmp;
+    buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new();", ta);
+    for (int i = 0; i < argc; i++) {
+      const char *an = nt_str(nt, argv[i], "value");
+      if (!an) an = "";
+      if (!wr)
+        buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym((sp_sym)%d));", ta, comp_sym_intern(c, an));
+      if (wr || acc) {
+        size_t wl = strlen(an) + 2;
+        char *wn = malloc(wl);
+        snprintf(wn, wl, "%s=", an);
+        buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", ta);
+        emit_str_literal(b, wn);
+        buf_puts(b, ")));");
+        free(wn);
+      }
+    }
+    buf_printf(b, " _t%d; })", ta);
+    return;
+  }
+
   /* __method__ / __callee__ -> the enclosing method's name as a symbol
      (nil at the top level) */
   if (recv < 0 && argc == 0 &&

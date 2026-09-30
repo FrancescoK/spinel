@@ -3089,6 +3089,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     }
   }
 
+  /* `attr_reader :a` in a class body answers the names it defined */
+  if (attr_decl_call(c, id)) return TY_POLY_ARRAY;
+
   /* __method__ / __callee__ -> the enclosing method's name (a symbol), or
      nil at the top level, where the enclosing scope has no name (matching
      the codegen, which emits sp_box_nil() there) */
