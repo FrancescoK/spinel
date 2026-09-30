@@ -9928,15 +9928,10 @@ static void emit_dispatch_per_arm(Compiler *c, int cid, const char *name, const 
   buf_printf(b, " } _t%d; })", rtmp);
 }
 
-/* A receiverless call of `name` that cid's chain answers with an attr reader,
-   in a class some descendant of which overrides the reader with a def:
-   a switch on the runtime class, with an arm calling the def for each
-   overriding descendant and the reader's text (`reader`, of type reader_ty)
-   for the rest. 0 when no descendant overrides it, or when the arms cannot
-   agree on the call's type. */
-int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name,
-                                  const char *selfptr, const char *reader,
-                                  TyKind reader_ty, Buf *b) {
+/* Will a call `id` of `name` on a `cid` whose chain answers it with an attr
+   reader (of type reader_ty) dispatch on the runtime class: some descendant
+   overrides the reader with a def, and the arms agree on the call's type? */
+static int reader_override_arms(Compiler *c, int id, int cid, const char *name, TyKind reader_ty) {
   const NodeTable *nt = c->nt;
   if (nt_ref(nt, id, "block") >= 0) return 0;
   int base_mi = comp_method_in_chain(c, cid, name, NULL);
@@ -9958,6 +9953,40 @@ int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name
     TyKind kr = (TyKind)c->scopes[kmi].ret;
     if (kr != ret && ret != TY_POLY) return 0;
   }
+  return 1;
+}
+
+/* The type of the field read a reader of `name` on `cid` lowers to, when a
+   call `id` of it has to dispatch on the runtime class instead (see
+   reader_override_arms); TY_UNKNOWN otherwise, for an alias of a reader, and
+   for a shared-mutable String slot, whose read is a copy the dispatch's
+   default arm does not make. */
+TyKind reader_override_ty(Compiler *c, int id, int cid, const char *name) {
+  int rdc = -1;
+  if (!comp_reader_in_chain(c, cid, name, &rdc)) return TY_UNKNOWN;
+  /* an alias of a reader: a def of the ORIGINAL name in a subclass does not
+     override the alias, and comp_method_in_chain would follow the alias to it */
+  { const char *al = comp_resolve_alias(c, cid, name);
+    if (al && !sp_streq(al, name)) return TY_UNKNOWN; }
+  char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, cid, name));
+  ClassInfo *owner = &c->classes[rdc >= 0 ? rdc : cid];
+  int iv = comp_ivar_index(owner, ivn);
+  if (iv < 0 || owner->ivar_types[iv] == TY_UNKNOWN || owner->ivar_types[iv] == TY_STRBUF) return TY_UNKNOWN;
+  return reader_override_arms(c, id, cid, name, owner->ivar_types[iv]) ? owner->ivar_types[iv] : TY_UNKNOWN;
+}
+
+/* A call of `name` that cid's chain answers with an attr reader, in a class
+   some descendant of which overrides the reader with a def: a switch on the
+   runtime class, with an arm calling the def for each overriding descendant
+   and the reader's text (`reader`, of type reader_ty) for the rest. 0 when no
+   descendant overrides it, or when the arms cannot agree on the call's type. */
+int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name,
+                                  const char *selfptr, const char *reader,
+                                  TyKind reader_ty, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (!reader_override_arms(c, id, cid, name, reader_ty)) return 0;
+  int base_mi = comp_method_in_chain(c, cid, name, NULL);
+  TyKind ret = comp_ntype(c, id);
   int argsNode = nt_ref(nt, id, "arguments");
   int rtmp = ++g_tmp;
   buf_puts(b, "({ ");

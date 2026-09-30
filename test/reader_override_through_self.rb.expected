@@ -1,0 +1,35 @@
+["x", "x", "x", "x", "x", "x"]
+[["x"], "x", "x", 1]
+x:3:[1, 2]:1.5:false
+[6, false, ["x", "x"]]
+["y", "y", "y", "y", "y", "y"]
+[["y"], "y", "y", 1]
+y:4:[9]:2.5:true
+[8, true, ["y", "y"]]
+["deep-y", "deep-y", "deep-y", "deep-y", "deep-y", "deep-y"]
+[["deep-y"], "deep-y", "deep-y", 1]
+deep-y:6:[9]:2.5:true
+[12, false, ["deep-y", "deep-y"]]
+["x", "x", "x", "x", "x", "x"]
+[["x"], "x", "x", 1]
+x:3:[1, 2]:1.5:false
+[6, false, ["x", "x"]]
+["x", "x", "x", "x", "x", "x"]
+[["x"], "x", "x", 1]
+x:3:[1, 2]:1.5:false
+[6, false, ["x", "x"]]
+false
+false
+"y"
+"x"
+["x", "y", "deep-y"]
+102
+"tagged"
+"retagged"
+"wrong number of arguments (given 1, expected 0)"
+5
+30
+"w"
+"w"
+2
+3
