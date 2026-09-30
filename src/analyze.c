@@ -16468,6 +16468,27 @@ static unsigned dyn_lit_bits(Compiler *c, int lit) {
   unsigned app = 0, kept = 0;
   int body = nt_kind(c->nt, lit) == NK_BlockNode ? nt_ref(c->nt, lit, "body") : a_proc_body(c, lit);
   dyn_body_scan(c, body, pn, np, &app, &kept);
+  /* An optional whose default is a required parameter (`->(x, y = x)`) is
+     that parameter's String when the call omits it, so what the body does
+     to it is done to the required one (promote_default_alias_params). */
+  const NodeTable *nt = c->nt;
+  int pnode = -1;
+  if (nt_kind(nt, lit) == NK_BlockNode) {
+    int bp = nt_ref(nt, lit, "parameters");
+    pnode = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
+  }
+  else pnode = a_proc_params_node(c, lit);
+  int on = 0; const int *ov = pnode >= 0 ? nt_arr(nt, pnode, "optionals", &on) : NULL;
+  for (int o = 0; o < on; o++) {
+    int dv = nt_ref(nt, ov[o], "value");
+    int k = dv >= 0 && nt_kind(nt, dv) == NK_LocalVariableReadNode ? dyn_name_at(pn, np, nt_str(nt, dv, "name")) : -1;
+    const char *on1[1] = { nt_str(nt, ov[o], "name") };
+    if (k < 0 || !on1[0]) continue;
+    unsigned oapp = 0, okept = 0;
+    dyn_body_scan(c, body, on1, 1, &oapp, &okept);
+    if (oapp) app |= 1u << k;
+    if (okept) kept |= 1u << k;
+  }
   g_dyn.lit[lit] = DYN_DONE | (app & 0xffffu) | ((kept & 0x3fffu) << 16);
   return g_dyn.lit[lit];
 }
@@ -17351,6 +17372,49 @@ static int promote_dyncall_string_args(Compiler *c) {
     }
   }
   dyn_memo_stale();
+  return changed;
+}
+
+/* A default that is an earlier parameter (`def m(x, y = x)`) binds the one
+   String the caller passed for x: CRuby's y IS x, so an append through
+   either is the caller's, and the other sees it. Filled at the call site,
+   the default read x's bytes into a second slot -- a lent temp, or a fresh
+   handle -- and the append landed in a copy the caller never saw, in every
+   call form. When either parameter is appended to (or lent, or already the
+   handle), both take the shared handle: the omitted default then binds x's
+   handle itself (emit_arg_or_default_fill), and the callers are pulled in
+   as a handle method's are (convert_byref_handle_params). A default that
+   only starts from x (`y = x.dup`, `y = x + ""`) is a String of its own and
+   is left alone. Answers 1 when it changed anything. */
+static int default_param_mutated(Compiler *c, int mi, int j) {
+  LocalVar *q = c->scopes[mi].pnames[j] ? scope_local(&c->scopes[mi], c->scopes[mi].pnames[j]) : NULL;
+  return q && (q->byref_out || (q->type == TY_STRBUF && q->str_shared) || an_param_mutated_in_place(c, mi, j));
+}
+static int promote_default_alias_params(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int mi = 1; mi < c->nscopes; mi++) {
+    Scope *m = &c->scopes[mi];
+    if (!m->name || !m->pdefault) continue;
+    for (int j = 1; j < m->nparams; j++) {
+      int dv = m->pdefault[j];
+      if (dv < 0 || nt_kind(nt, dv) != NK_LocalVariableReadNode) continue;
+      int i = an_param_idx(m, nt_str(nt, dv, "name"));
+      if (i < 0 || i >= j) continue;
+      LocalVar *px = scope_local(m, m->pnames[i]), *py = scope_local(m, m->pnames[j]);
+      if (!px || !py || px->is_block_param || py->is_block_param) continue;
+      if ((px->type != TY_STRING && px->type != TY_STRBUF) || (py->type != TY_STRING && py->type != TY_STRBUF))
+        continue;
+      if (!default_param_mutated(c, mi, i) && !default_param_mutated(c, mi, j)) continue;
+      LocalVar *both[2] = { px, py };
+      for (int b = 0; b < 2; b++) {
+        LocalVar *q = both[b];
+        if (q->type == TY_STRBUF && q->str_shared && !q->byref_out) continue;
+        q->type = TY_STRBUF; q->str_shared = 1; q->byref_out = 0; q->is_cell = 0;
+        changed = 1;
+      }
+    }
+  }
   return changed;
 }
 
@@ -23878,6 +23942,7 @@ void analyze_program(Compiler *c) {
     if (convert_byref_handle_params(c, &hat)) ch = 1;
     handle_arg_tab_free(&hat);
     if (promote_dyncall_string_args(c)) ch = 1;
+    if (promote_default_alias_params(c)) ch = 1;
     if (!ch) break;
   }
   mark_reader_identity_operands(c);
