@@ -1,0 +1,9 @@
+#!/bin/bash
+# usage: cdiff1.sh BASE_SPINEL NEW_SPINEL OUTDIR FILE
+# Records FILE in OUTDIR/changed.txt, and its diff in OUTDIR/diffs/, when
+# the two compilers emit different C for it.
+a=$("$1" "$4" -S --no-line-map 2>&1); b=$("$2" "$4" -S --no-line-map 2>&1)
+[ "$a" = "$b" ] && exit 0
+echo "$4" >> "$3/changed.txt"
+diff <(printf '%s\n' "$a") <(printf '%s\n' "$b") > "$3/diffs/$(echo "$4" | tr / _).diff"
+exit 0

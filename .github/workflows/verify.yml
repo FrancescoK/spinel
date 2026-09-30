@@ -1,0 +1,147 @@
+name: verify
+# The per-branch checks of a fix, off the local machine: the suite in
+# slices, infer-test, both probes, the corpus C diff against BASE, and a
+# new test under --int-overflow=promote and SPINEL_GC_STRESS=1. Edit
+# verify.conf and push this branch, or dispatch by hand.
+on:
+  push:
+    branches: [verify]
+  workflow_dispatch:
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+      label: ${{ steps.m.outputs.label }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: m
+        run: |
+          set -a; . ./verify.conf; set +a
+          python3 - >> "$GITHUB_OUTPUT" <<'EOF'
+          import json, os
+          heads = [h.split("=", 1) for h in os.environ["HEADS"].split()]
+          legs = os.environ["LEGS"].split()
+          n = int(os.environ.get("SHARDS", "4"))
+          base = os.environ["BASE"]
+          jobs = []
+          for probe in ("cb", "vf"):
+              if probe in legs:
+                  jobs.append({"leg": probe, "name": "base", "sha": base, "shard": 0})
+          for name, sha in heads:
+              if "suite" in legs:
+                  jobs += [{"leg": "suite", "name": name, "sha": sha, "shard": k} for k in range(1, n + 1)]
+              for leg in ("cb", "vf", "cdiff", "extra"):
+                  if leg in legs:
+                      jobs.append({"leg": leg, "name": name, "sha": sha, "shard": 0})
+          print("matrix=" + json.dumps({"include": jobs}))
+          print("label=" + os.environ.get("LABEL", "verify"))
+          EOF
+
+  run:
+    needs: plan
+    name: ${{ matrix.leg }} ${{ matrix.name }}${{ matrix.shard > 0 && format(' {0}', matrix.shard) || '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      LEG: ${{ matrix.leg }}
+      NAME: ${{ matrix.name }}
+      SHA: ${{ matrix.sha }}
+      SHARD: ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+      - name: Build
+        run: |
+          set -a; . ./verify.conf; set +a
+          build () {
+            d=$1; sha=$2
+            git clone -q --filter=blob:none https://github.com/matz/spinel.git "$d"
+            cd "$d"
+            git remote add fork https://github.com/FrancescoK/spinel.git
+            git fetch -q origin "$sha" 2>/dev/null || git fetch -q fork "$sha"
+            git checkout -q "$sha"
+            make deps > /dev/null && make -j"$(nproc)" all > /dev/null
+            cd - > /dev/null
+          }
+          build "$RUNNER_TEMP/head" "$SHA"
+          if [ "$LEG" = cdiff ] || [ "$LEG" = extra ]; then build "$RUNNER_TEMP/base" "$BASE"; fi
+          echo "HEAD_REV=$(git -C "$RUNNER_TEMP/head" log -1 --format='%h %s')" >> "$GITHUB_ENV"
+      - name: Run
+        run: |
+          set -a; . ./verify.conf; set +a
+          out="$GITHUB_WORKSPACE/out"; mkdir -p "$out"
+          h="$RUNNER_TEMP/head"
+          echo "$LEG $NAME $SHARD $HEAD_REV" > "$out/rev.txt"
+          cd "$h"
+          case "$LEG" in
+          suite)
+            tgt=test-corpus; [ "$SHARD" = 1 ] && tgt=test
+            make -j"$(nproc)" $tgt TEST_SHARD=$SHARD/$SHARDS OPT=-O1 CC=gcc > "$out/test.log" 2>&1 || true
+            if [ "$SHARD" = 1 ]; then make infer-test > "$out/infer.log" 2>&1 || true; fi
+            ls test/*.rb | wc -l > "$out/corpus.txt"
+            ;;
+          cb|vf)
+            tool=tools/call_binding_probe.rb; [ "$LEG" = vf ] && tool=tools/value_flow_probe.rb
+            ruby $tool --strength 2 --seed 1 --jobs "$(nproc)" --no-reduce --out "$out/probe" > "$out/probe.log" 2>&1 || true
+            ;;
+          cdiff)
+            b="$RUNNER_TEMP/base"
+            ls test/*.rb test/infer/*.rb benchmark/*.rb > "$out/programs.txt"
+            mkdir -p "$out/diffs"
+            xargs -P "$(nproc)" -n 1 "$GITHUB_WORKSPACE/cdiff1.sh" "$b/spinel" "$h/spinel" "$out" < "$out/programs.txt" || true
+            touch "$out/changed.txt"; sort -o "$out/changed.txt" "$out/changed.txt"
+            ;;
+          extra)
+            git diff --name-only --diff-filter=A "$BASE" HEAD -- 'test/*.rb' > "$out/new.txt"
+            : > "$out/extra.txt"
+            while read -r f; do
+              exp="$f.expected"; [ -f "$exp" ] || exp="${f%.rb}.expected"
+              [ -f "$exp" ] || { echo "$f: no expected file" >> "$out/extra.txt"; continue; }
+              for mode in plain promote gcstress; do
+                flags=""; envs=""
+                [ $mode = promote ] && flags="--int-overflow=promote"
+                [ $mode = gcstress ] && envs="SPINEL_GC_STRESS=1"
+                if ./spinel $flags "$f" -o "$RUNNER_TEMP/x" > "$out/build.log" 2>&1 &&
+                   env $envs timeout 300 "$RUNNER_TEMP/x" > "$RUNNER_TEMP/x.out" 2>&1 &&
+                   cmp -s "$RUNNER_TEMP/x.out" "$exp"; then r=pass; else r=FAIL; fi
+                echo "$f $mode $r" >> "$out/extra.txt"
+              done
+            done < "$out/new.txt"
+            ;;
+          esac
+        shell: bash
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: r-${{ matrix.leg }}-${{ matrix.name }}-${{ matrix.shard }}
+          path: out/
+          retention-days: 14
+
+  report:
+    needs: [plan, run]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: res
+          pattern: r-*
+      - name: Report
+        run: |
+          python3 report.py res > report.md
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+          cat report.md
+      - uses: actions/upload-artifact@v7
+        with:
+          name: report-${{ needs.plan.outputs.label }}
+          path: |
+            report.md
+            res/
+          retention-days: 30
