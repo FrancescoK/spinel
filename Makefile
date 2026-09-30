@@ -2506,6 +2506,11 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -q 'sp_box_int_or_nil(lv_d)' "$$tmp/ysr.c" || { echo "infer-test: FAIL (a block parameter a short row may leave without a value is not marked nullable)"; ok=0; }; \
 	grep -q 'lv_g = _t[0-9]*->data\[_t[0-9]*->start+0\];' "$$tmp/ysr.c" && grep -q 'lv_h = _t[0-9]*->data\[_t[0-9]*->start+1\];' "$$tmp/ysr.c" || { echo "infer-test: FAIL (yield(*pair) of a literal local no one changes tests a length it cannot lack)"; ok=0; }; \
 	grep -q 'sp_int_mul(lv_g, lv_h)' "$$tmp/ysr.c" && grep -q 'sp_box_int(lv_g)' "$$tmp/ysr.c" || { echo "infer-test: FAIL (yield(*pair) of a literal local no one changes binds a nil it cannot hold)"; ok=0; }; \
+	$(SPINEL) test/infer/array_nil_flag_plain_store.rb -c --no-line-map -o "$$tmp/anf.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (array_nil_flag_plain_store: -c)"; ok=0; }; \
+	! grep -q '_nilable(' "$$tmp/anf.c" && grep -q '\] = _t[0-9]*; else sp_IntArray_set(lv_a, ' "$$tmp/anf.c" && grep -q 'sp_IntArray_push(lv_b, ' "$$tmp/anf.c" && grep -q 'sp_FloatArray_set(lv_f, ' "$$tmp/anf.c" || { echo "infer-test: FAIL (a loop storing numbers into a typed array took the nil-flag-setting store)"; ok=0; }; \
+	grep -q 'sp_IntArray_push(lv_c, sp_IntArray_get(lv_a, ' "$$tmp/anf.c" && grep -q 'sp_IntArray_push(lv_q, sp_IntArray_pop(lv_b))' "$$tmp/anf.c" && grep -q 'sp_IntArray_push(_t[0-9]*, self->iv_v)\|sp_IntArray_push(lv_out, self->iv_v)' "$$tmp/anf.c" || { echo "infer-test: FAIL (copying an element or an ivar into a typed array took the nil-flag-setting store)"; ok=0; }; \
+	grep -q 'sp_IntArray_sum(sp_IntArray_nil_sum_if_flagged(lv_a, 0), 0)' "$$tmp/anf.c" && grep -q 'sp_IntArray_max(sp_IntArray_nil_cmp_if_flagged(lv_b))' "$$tmp/anf.c" || { echo "infer-test: FAIL (a whole-array sum or max does not ask the nil flag)"; ok=0; }; \
+	grep -q 'sp_IntArray_sum(sp_IntArray_nil_sum_ck(lv_m, 0), 0)' "$$tmp/anf.c" || { echo "infer-test: FAIL (the sum of an array analyze marked does not scan for nil)"; ok=0; }; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "infer-test: pass"; else exit 1; fi
 

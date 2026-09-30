@@ -884,7 +884,12 @@ const char *default_value(TyKind t);
 const char *default_value_from_compiler(Compiler *c, TyKind t);
 void emit_slot_truthy(TyKind t, const char *ref, Buf *b);
 void emit_sentinel_bind(Compiler *c, TyKind t, int node, char *ref, size_t cap, Buf *b);
-const char *typed_elem_box_fn(Compiler *c, int node, TyKind t);
+const char *typed_elem_box_fn(TyKind t);
+const char *nil_store_sfx(Compiler *c, const char *k, int node);
+#define NIL_STORE_BOXED (-2)   /* nil_store_sfx's node for a boxed element */
+int enum_builtin_node(Compiler *c, int node);
+int typed_array_lit_flag_free(Compiler *c, int node);
+void emit_may_nil_text(Compiler *c, int node, TyKind t, const char *arr, Buf *b);
 const char *raise_tail_value(TyKind t);
 const char *raise_tail_value_c(Compiler *c, TyKind t);
 const char *array_times_type_error(TyKind at);

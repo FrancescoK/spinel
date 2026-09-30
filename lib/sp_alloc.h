@@ -957,6 +957,11 @@ static inline sp_bool sp_encoding_eq(sp_Encoding a,sp_Encoding b){const char*an=
    a number. Inline because every boxed element read goes through here. */
 static inline sp_RbVal sp_box_int_or_nil(sp_int v) { return v == SP_INT_NIL ? sp_box_nil() : sp_box_int(v); }
 static inline sp_RbVal sp_box_float_or_nil(sp_float v) { return sp_float_is_nil(v) ? sp_box_nil() : sp_box_float(v); }
+/* An element of an Integer or Float array boxed for a poly container: `nf` is
+   the array's may_nil, read once ahead of the loop, so an array that cannot
+   hold nil boxes its elements as they are. */
+#define sp_box_int_nf(nf, v) ((nf) ? sp_box_int_or_nil(v) : sp_box_int(v))
+#define sp_box_float_nf(nf, v) ((nf) ? sp_box_float_or_nil(v) : sp_box_float(v))
 sp_RbVal sp_unsentinel(sp_RbVal v);
 sp_RbVal sp_box_bigint(sp_Bigint *b);
 /* A bigint slot's nil is NULL (the compiler's nil_value for TY_BIGINT), so a

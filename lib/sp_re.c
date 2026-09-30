@@ -1172,7 +1172,7 @@ sp_int sp_MatchData_end(sp_MatchData *m, sp_int i) {SP_GC_ROOT(m);
 sp_IntArray *sp_MatchData_offset(sp_MatchData *m, sp_int i) {SP_GC_ROOT(m);
   sp_md_check_index(m, i);
   sp_IntArray *a = sp_IntArray_new();
-  if (!m || i < 0 || i >= m->ncap) { sp_IntArray_push(a, SP_INT_NIL); sp_IntArray_push(a, SP_INT_NIL); return a; }
+  if (!m || i < 0 || i >= m->ncap) { SP_MAY_NIL(a) = 1; sp_IntArray_push(a, SP_INT_NIL); sp_IntArray_push(a, SP_INT_NIL); return a; }
   sp_IntArray_push(a, sp_md_char_off(m, m->caps[i * 2]));
   sp_IntArray_push(a, sp_md_char_off(m, m->caps[(i * 2) + 1]));
   return a;
@@ -1190,7 +1190,7 @@ sp_int sp_MatchData_byteend(sp_MatchData *m, sp_int i) {
 }
 sp_IntArray *sp_MatchData_byteoffset(sp_MatchData *m, sp_int i) {SP_GC_ROOT(m);
   sp_IntArray *a = sp_IntArray_new();
-  if (!m || i < 0 || i >= m->ncap || m->caps[i * 2] < 0) { sp_IntArray_push(a, SP_INT_NIL); sp_IntArray_push(a, SP_INT_NIL); return a; }
+  if (!m || i < 0 || i >= m->ncap || m->caps[i * 2] < 0) { SP_MAY_NIL(a) = 1; sp_IntArray_push(a, SP_INT_NIL); sp_IntArray_push(a, SP_INT_NIL); return a; }
   sp_IntArray_push(a, m->caps[i * 2]);
   sp_IntArray_push(a, m->caps[(i * 2) + 1]);
   return a;

@@ -244,8 +244,18 @@ typedef struct sp_str_hdr { struct sp_str_hdr *next; uint32_t size; uint32_t len
 
 /* ---- Typed arrays ---- */
 #define SP_STRARR_INLINE 4
-typedef struct{sp_int*data;sp_int start;sp_int len;sp_int cap;sp_int frozen;}sp_IntArray;
-typedef struct{sp_float*data;sp_int len;sp_int cap;sp_int frozen;}sp_FloatArray;
+/* may_nil: the array may hold a nil analyze did not see, carried as the
+   slot's sentinel (SP_INT_NIL, the Float NaN payload). Set where the runtime
+   puts one -- a gap filled past the end, a converted boxed nil, an element a
+   builtin copies -- and carried to copies, so the whole-array reads of an
+   array analyze did not mark (sum, min, max, sort, include?(nil), the boxing
+   into a mixed array) ask one flag; a marked array scans, as its stores set
+   none. Only compact!, delete(nil) and replace drop it. It follows `frozen`,
+   which the push / [] / []= paths read, so their code is unchanged; the
+   IntArray block stays in its slab class. */
+typedef struct{sp_int*data;sp_int start;sp_int len;sp_int cap;sp_int frozen;int may_nil;}sp_IntArray;
+typedef struct{sp_float*data;sp_int len;sp_int cap;sp_int frozen;int may_nil;}sp_FloatArray;
+#define SP_MAY_NIL(a) ((a)->may_nil)
 /* elem_kind/elem_cls: what the pointers are, stamped when the array is boxed by
    reference (the one cls_id for pointer arrays is type-erased, #4486). 0 until
    then; a stamp never changes since a typed array holds one kind. */

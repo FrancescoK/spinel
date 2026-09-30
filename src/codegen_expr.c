@@ -2075,7 +2075,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       buf_printf(b, "; sp_int _t%d = sp_IntArray_get(_t%d, _t%d);", tc2, ta2, tb2);
       buf_printf(b, " if (%s(_t%d == SP_INT_NIL)) { ", is_or2 ? "" : "!", tc2);
       emit_guarded_slot_assign(c, iv, tc2, b);
-      buf_printf(b, "; sp_IntArray_set(_t%d, _t%d, _t%d); } _t%d; })", ta2, tb2, tc2, tc2);
+      buf_printf(b, "; sp_IntArray_set%s(_t%d, _t%d, _t%d); } _t%d; })", nil_store_sfx(c, "Int", iv), ta2, tb2, tc2, tc2);
     }
     else if (irt == TY_FLOAT_ARRAY) {
       buf_printf(b, "({ sp_FloatArray *_t%d = ", ta2); emit_expr(c, ir, b);
@@ -2083,7 +2083,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       buf_printf(b, "; sp_float _t%d = sp_FloatArray_get(_t%d, _t%d);", tc2, ta2, tb2);
       buf_printf(b, " if (%ssp_float_is_nil(_t%d)) { ", is_or2 ? "" : "!", tc2);
       emit_guarded_slot_assign(c, iv, tc2, b);
-      buf_printf(b, "; sp_FloatArray_set(_t%d, _t%d, _t%d); } _t%d; })", ta2, tb2, tc2, tc2);
+      buf_printf(b, "; sp_FloatArray_set%s(_t%d, _t%d, _t%d); } _t%d; })", nil_store_sfx(c, "Float", iv), ta2, tb2, tc2, tc2);
     }
     else if (irt == TY_STR_ARRAY) {
       buf_printf(b, "({ sp_StrArray *_t%d = ", ta2); emit_expr(c, ir, b);
@@ -3251,14 +3251,20 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
               buf_printf(g_pre, "{ sp_Range _sr = %s; sp_int _e = _sr.last+(_sr.excl?0:1); for (sp_int _si = _sr.first; _si < _e; _si++) sp_PolyArray_push(_t%d, sp_box_int(_si)); }\n", ep, t);
             }
           }
-          else if (it == TY_INT_ARRAY)
-            buf_printf(g_pre, "{ sp_IntArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, %s(_sa->data[_sa->start+_si])); }\n",
-                       ep, t, typed_elem_box_fn(c, inner, it));
+          else if (it == TY_INT_ARRAY) {
+            Buf nf; memset(&nf, 0, sizeof nf); emit_may_nil_text(c, inner, it, "_sa", &nf);
+            buf_printf(g_pre, "{ sp_IntArray *_sa = %s; int _snf = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, %s(_snf, _sa->data[_sa->start+_si])); }\n",
+                       ep, nf.p, t, typed_elem_box_fn(it));
+            free(nf.p);
+          }
           else if (it == TY_STR_ARRAY)
             buf_printf(g_pre, "{ sp_StrArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, sp_box_str(_sa->data[_si])); }\n", ep, t);
-          else if (it == TY_FLOAT_ARRAY)
-            buf_printf(g_pre, "{ sp_FloatArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, %s(_sa->data[_si])); }\n",
-                       ep, t, typed_elem_box_fn(c, inner, it));
+          else if (it == TY_FLOAT_ARRAY) {
+            Buf nf; memset(&nf, 0, sizeof nf); emit_may_nil_text(c, inner, it, "_sa", &nf);
+            buf_printf(g_pre, "{ sp_FloatArray *_sa = %s; int _snf = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, %s(_snf, _sa->data[_si])); }\n",
+                       ep, nf.p, t, typed_elem_box_fn(it));
+            free(nf.p);
+          }
           else if (it == TY_POLY_ARRAY)
             buf_printf(g_pre, "{ sp_PolyArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, _sa->data[_si]); }\n", ep, t);
           else if (it == TY_POLY)
@@ -3325,11 +3331,11 @@ else {
           }
         }
         else if (it == TY_INT_ARRAY && sp_streq(k, "Int"))
-          buf_printf(g_pre, "{ sp_IntArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_%sArray_push(_t%d, _sa->data[_sa->start+_si]); }\n", ep, k, t);
+          buf_printf(g_pre, "{ sp_IntArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_%sArray_push(_t%d, _sa->data[_sa->start+_si]); sp_IntArray_nil_from(_t%d, _sa); }\n", ep, k, t, t);
         else if (it == TY_STR_ARRAY && sp_streq(k, "Str"))
           buf_printf(g_pre, "{ sp_StrArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_%sArray_push(_t%d, _sa->data[_si]); }\n", ep, k, t);
         else if (it == TY_FLOAT_ARRAY && sp_streq(k, "Float"))
-          buf_printf(g_pre, "{ sp_FloatArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_FloatArray_push(_t%d, _sa->data[_si]); }\n", ep, t);
+          buf_printf(g_pre, "{ sp_FloatArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_FloatArray_push(_t%d, _sa->data[_si]); sp_FloatArray_nil_from(_t%d, _sa); }\n", ep, t, t);
         else if (it == TY_NIL)
           /* a statically-nil splat contributes nothing (`[*nil]` == []) */
           buf_printf(g_pre, ";\n");
@@ -3344,7 +3350,7 @@ else {
         }
         else {
           /* Mismatched or unknown element type: emit_expr fallback */
-          buf_printf(g_pre, "sp_%sArray_push(_t%d, %s);\n", k, t, ep);
+          buf_printf(g_pre, "sp_%sArray_push%s(_t%d, %s);\n", k, nil_store_sfx(c, k, inner), t, ep);
         }
         free(el.p);
       }
@@ -3355,7 +3361,8 @@ else {
         if (comp_ntype(c, els[j]) == TY_UNKNOWN) emit_unresolved_coerced(c, els[j], ty_array_elem(at), &el);
         else emit_expr(c, els[j], &el);
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_%sArray_push(_t%d, ", k, t);
+        /* an element that can be nil sets the literal's may_nil */
+        buf_printf(g_pre, "sp_%sArray_push%s(_t%d, ", k, nil_store_sfx(c, k, els[j]), t);
         buf_puts(g_pre, el.p ? el.p : "");
         buf_puts(g_pre, ");\n");
         free(el.p);

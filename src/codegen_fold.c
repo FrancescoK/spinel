@@ -378,7 +378,7 @@ int emit_hash_collect_expr(Compiler *c, int id, Buf *b) {
     TyKind bret;
     char *vb = emit_hash_block_eval(c, block, rt, hn, trecv, ti, block_param_name(c, block, 1) ? 1 : 2, &bret);
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "sp_%sArray_push(_t%d, ", rk, tres);
+    buf_printf(g_pre, "sp_%sArray_push%s(_t%d, ", rk, nil_store_sfx(c, rk, NIL_STORE_BOXED), tres);
     if (res_poly && bret != TY_POLY) {
       Buf bx; memset(&bx, 0, sizeof bx);
       emit_boxed_text(c, bret, vb ? vb : "", &bx);
@@ -1703,7 +1703,7 @@ int emit_slice_when_chunk_inspect_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "lv_%s = sp_IntArray_get(_t%d, _t%d);\n", p0, ta, ti);
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "sp_IntArray_push(_t%d, lv_%s);\n", tcur, p0);
+    buf_printf(g_pre, "sp_IntArray_push_nilable(_t%d, lv_%s);\n", tcur, p0);
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "if (_t%d + 1 < sp_IntArray_length(_t%d)) {\n", ti, ta);
     emit_indent(g_pre, g_indent + 2);
@@ -1780,7 +1780,7 @@ int emit_slice_when_chunk_inspect_expr(Compiler *c, int id, Buf *b) {
   buf_printf(g_pre, "_t%d = _tkey_%d;\n", tpk, ta);
   emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
   emit_indent(g_pre, g_indent + 1);
-  buf_printf(g_pre, "sp_IntArray_push(_t%d, lv_%s);\n", tcur, p0);
+  buf_printf(g_pre, "sp_IntArray_push_nilable(_t%d, lv_%s);\n", tcur, p0);
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   /* build inspect string */
   emit_indent(g_pre, g_indent);
@@ -2003,7 +2003,7 @@ int emit_chunk_first_class_expr(Compiler *c, int id, Buf *b) {
   buf_printf(g_pre, "_t%d = _tkey_%d; _t%d = 1;\n", tpk, ta, thas);
   emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
   emit_indent(g_pre, g_indent + 1);
-  buf_printf(g_pre, "sp_IntArray_push(_t%d, lv_%s);\n", tcur, p0);
+  buf_printf(g_pre, "sp_IntArray_push_nilable(_t%d, lv_%s);\n", tcur, p0);
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   buf_printf(b, "_t%d", tout);
   return 1;
@@ -2053,6 +2053,9 @@ int emit_cycle_bounded_expr(Compiler *c, int id, Buf *b) {
   buf_printf(g_pre, "if (_t%d > 0) for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) "
              "sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _t%d %% _t%d));\n",
              tlen, ti, ti, tn, ti, k, tr, k, ta, ti, tlen);
+  if (sp_streq(k, "Int") || sp_streq(k, "Float")) {   /* the receiver's nils, repeated */
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_%sArray_nil_from(_t%d, _t%d);\n", k, tr, ta);
+  }
   buf_printf(b, "_t%d", tr);
   return 1;
 }
@@ -2109,7 +2112,7 @@ int emit_chunk_while_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "lv_%s = sp_IntArray_get(_t%d, _t%d);\n", p0, ta, ti);
   emit_indent(g_pre, g_indent + 1);
-  buf_printf(g_pre, "sp_IntArray_push(_t%d, lv_%s);\n", tcur, p0);
+  buf_printf(g_pre, "sp_IntArray_push_nilable(_t%d, lv_%s);\n", tcur, p0);
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "if (_t%d + 1 < sp_IntArray_length(_t%d)) {\n", ti, ta);
   emit_indent(g_pre, g_indent + 2);
@@ -3325,7 +3328,7 @@ int emit_each_with_index_chain(Compiler *c, int id, Buf *b) {
   else {
     buf_printf(b, "sp_%sArray *lv_%s = sp_%sArray_new(); ", pk, rename_local(pairo), pk);
     if (elem_t == TY_INT) {
-      buf_printf(b, "sp_IntArray_push(lv_%s, sp_%sArray_get(_t%d, _t%d)); sp_IntArray_push(lv_%s, _t%d); ",
+      buf_printf(b, "sp_IntArray_push_nilable(lv_%s, sp_%sArray_get(_t%d, _t%d)); sp_IntArray_push(lv_%s, _t%d); ",
                  rename_local(pairo), k, ta, ti, rename_local(pairo), tidx);
     }
     else {
@@ -3487,7 +3490,7 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, din); buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", pk, tpair, pk, tpair);
     if (elem_t == TY_INT) {
       emit_indent(g_pre, din);
-      buf_printf(g_pre, "sp_IntArray_push(_t%d, sp_%sArray_get(_t%d, _t%d)); sp_IntArray_push(_t%d, _t%d);\n", tpair, k, ta, ti, tpair, tidx);
+      buf_printf(g_pre, "sp_IntArray_push_nilable(_t%d, sp_%sArray_get(_t%d, _t%d)); sp_IntArray_push(_t%d, _t%d);\n", tpair, k, ta, ti, tpair, tidx);
     }
     else {
       emit_indent(g_pre, din); buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", tpair);
@@ -3688,6 +3691,11 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++)\n", tg, tg, tn, tg);
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, sp_IntArray_get(_t%d, _t%d)));\n", k, tres, k, trv, tidx, tg);
+  /* the same elements, reordered: the receiver's nils come along */
+  if (sp_streq(k, "Int") || sp_streq(k, "Float")) {
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_%sArray_nil_from(_t%d, _t%d);\n", k, tres, trv);
+  }
   if (is_bang) {
     /* sort_by!: write the gathered order back through the receiver pointer
        (aliases observe it) and yield the receiver -- CRuby returns self.
@@ -4178,7 +4186,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
             else { emit_ctype(c, melem_es, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tv_es, default_value(melem_es)); }
             emit_block_value_into(c, block, tvb_es, res_poly_es, g_indent + 1);
             emit_indent(g_pre, g_indent + 1);
-            buf_printf(g_pre, "sp_%sArray_push(_t%d, _t%d);\n", rk_es, tres_es, tv_es);
+            buf_printf(g_pre, "sp_%sArray_push%s(_t%d, _t%d);\n", rk_es, nil_store_sfx(c, rk_es, bb_es[bn_es - 1]), tres_es, tv_es);
             emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
             buf_printf(b, "_t%d", tres_es);
             return 1;
@@ -4272,7 +4280,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
             else emit_expr(c, bb_ec[bn_ec - 1], &vb_ec);
             g_indent = saveInd_ec;
             emit_indent(g_pre, g_indent + 1);
-            buf_printf(g_pre, "sp_%sArray_push(_t%d, %s);\n", rk_ec, tres_ec, vb_ec.p ? vb_ec.p : "");
+            buf_printf(g_pre, "sp_%sArray_push%s(_t%d, %s);\n", rk_ec, nil_store_sfx(c, rk_ec, bb_ec[bn_ec - 1]), tres_ec, vb_ec.p ? vb_ec.p : "");
             free(vb_ec.p);
             emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
             buf_printf(b, "_t%d", tres_ec);
@@ -4391,7 +4399,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
               else emit_expr(c, bb_wi[bn_wi - 1], &vb_wi);
               g_indent = saveInd_wi;
               emit_indent(g_pre, g_indent + 1);
-              buf_printf(g_pre, "sp_%sArray_push(_t%d, ", rk_wi, tres_wi);
+              buf_printf(g_pre, "sp_%sArray_push%s(_t%d, ", rk_wi, nil_store_sfx(c, rk_wi, bb_wi[bn_wi - 1]), tres_wi);
               if (res_poly_wi) buf_puts(g_pre, vb_wi.p ? vb_wi.p : "");
               else emit_typed_sink_text(c, bb_wi[bn_wi - 1], sp_streq(rk_wi, "Int") ? TY_INT : sp_streq(rk_wi, "Float") ? TY_FLOAT : TY_UNKNOWN, vb_wi.p ? vb_wi.p : "", g_pre);
               buf_puts(g_pre, ");\n");
@@ -4583,7 +4591,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     else emit_expr(c, bb2[bn2 - 1], &vb2);
     g_indent = saveIndent2;
     emit_indent(g_pre, g_indent + 2);
-    buf_printf(g_pre, "sp_%sArray_push(_t%d, %s);\n", rk2, tres2, vb2.p ? vb2.p : "");
+    buf_printf(g_pre, "sp_%sArray_push%s(_t%d, %s);\n", rk2, nil_store_sfx(c, rk2, bn2 >= 1 ? bb2[bn2 - 1] : -1), tres2, vb2.p ? vb2.p : "");
     free(vb2.p);
     emit_indent(g_pre, g_indent + 1);
     buf_puts(g_pre, "}\n");
@@ -4742,7 +4750,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     else { emit_ctype(c, elem, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tv, default_value(elem)); }
     emit_block_value_into(c, block, tvbuf, res_poly, innerIndent);
     emit_indent(g_pre, innerIndent);
-    buf_printf(g_pre, "sp_%sArray_push(_t%d, _t%d);\n", rk, tres, tv);
+    buf_printf(g_pre, "sp_%sArray_push%s(_t%d, _t%d);\n", rk, nil_store_sfx(c, rk, bn > 0 ? bb[bn - 1] : -1), tres, tv);
   }
   else {
     /* select/reject: collect the block's value (next-aware) into a temp, then
@@ -4783,6 +4791,13 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
   if (use_shadow && clv0) clv0->type = csaved0;
   emit_indent(g_pre, g_indent);
   buf_puts(g_pre, "}\n");
+  /* the kept (or mapped-to-itself) elements carry the receiver's nils: an
+     element read out of an Integer or Float array is typed as a number even
+     where a gap left the sentinel, so its may_nil is handed on whole */
+  if (!range_recv && k && rk && sp_streq(rk, k) && (sp_streq(k, "Int") || sp_streq(k, "Float"))) {
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_%sArray_nil_from(_t%d, _t%d);\n", k, tres, trecv);
+  }
 
   buf_printf(b, "_t%d", tres);
   return 1;
@@ -4903,7 +4918,7 @@ int emit_with_index_expr(Compiler *c, int id, Buf *b) {
     Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, bb[bn - 1], &vb); g_indent = saveInd;
     if (is_map) {
       TyKind body_ty = comp_ntype(c, bb[bn - 1]);
-      emit_indent(g_pre, innerIndent); buf_printf(g_pre, "sp_%sArray_push(_t%d, ", rk, tres);
+      emit_indent(g_pre, innerIndent); buf_printf(g_pre, "sp_%sArray_push%s(_t%d, ", rk, nil_store_sfx(c, rk, bb[bn - 1]), tres);
       if (res_poly && body_ty != TY_POLY) {
         Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, body_ty, vb.p ? vb.p : "", &bx);
         buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p);
@@ -4921,6 +4936,11 @@ int emit_with_index_expr(Compiler *c, int id, Buf *b) {
     free(vb.p);
   }
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  /* a kept element carries the receiver's nils (the map arm notes its own) */
+  if (collecting && !is_map && !range_src && k && rk && sp_streq(rk, k) && (sp_streq(k, "Int") || sp_streq(k, "Float"))) {
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_%sArray_nil_from(_t%d, _t%d);\n", k, tres, trecv);
+  }
 
   if (is_mapbang) {
     emit_indent(g_pre, g_indent);
@@ -6688,14 +6708,16 @@ void emit_rest_pack_kwh(Compiler *c, int from, int pos_argc, const int *argv, in
       if (inner >= 0 && reads_arr) emit_expr(c, inner, &arr);
       else if (inner < 0 && emit_anon_rest_ref(c, argv[i], &arr)) at = TY_POLY_ARRAY;  /* anonymous `*` */
       const char *ap = arr.p ? arr.p : "NULL";
+      Buf snf; memset(&snf, 0, sizeof snf);
+      if (at == TY_INT_ARRAY || at == TY_FLOAT_ARRAY) emit_may_nil_text(c, inner, at, "_sa", &snf);
       if (at == TY_INT_ARRAY)
-        buf_printf(b, " { sp_IntArray *_sa = %s; for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, %s(_sa->data[_sa->start+_si])); }",
-                   ap, t, typed_elem_box_fn(c, inner, at));
+        buf_printf(b, " { sp_IntArray *_sa = %s; int _snf = %s; for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, %s(_snf, _sa->data[_sa->start+_si])); }",
+                   ap, snf.p, t, typed_elem_box_fn(at));
       else if (at == TY_STR_ARRAY)
         buf_printf(b, " { sp_StrArray *_sa = %s; for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, sp_box_str(_sa->data[_si])); }", ap, t);
       else if (at == TY_FLOAT_ARRAY)
-        buf_printf(b, " { sp_FloatArray *_sa = %s; for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, %s(_sa->data[_si])); }",
-                   ap, t, typed_elem_box_fn(c, inner, at));
+        buf_printf(b, " { sp_FloatArray *_sa = %s; int _snf = %s; for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, %s(_snf, _sa->data[_si])); }",
+                   ap, snf.p, t, typed_elem_box_fn(at));
       else if (at == TY_POLY_ARRAY)
         buf_printf(b, " { sp_PolyArray *_sa = %s; for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, _sa->data[_si]); }", ap, t);
       /* a boxed operand is an array only at run time: the splat's lowering
@@ -6730,7 +6752,7 @@ void emit_rest_pack_kwh(Compiler *c, int from, int pos_argc, const int *argv, in
         else buf_printf(b, " sp_PolyArray_push(_t%d, %s);", t, el.p ? el.p : "sp_box_nil()");
         free(el.p);
       }
-      free(arr.p);
+      free(arr.p); free(snf.p);
     }
 else {
       Buf el; memset(&el, 0, sizeof el);
