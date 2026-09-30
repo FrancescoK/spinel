@@ -2874,6 +2874,98 @@ static char *sp_rewrite_autoloads(const char *source, const char *dir) {
   return out;
 }
 
+/* Dependency resolution precedes analysis, so even `if false; require ...`
+   would otherwise read the file (or reject a missing one). Only erase literal
+   require calls in provably unreachable branches: keep the surrounding code
+   for Ruby's lexical locals, and preserve every newline for the source map. */
+typedef struct {
+  pm_parser_t *parser;
+  const char *source;
+  char *result;
+  int dead;
+} SpDeadRequire;
+
+static int sp_require_truth(const pm_node_t *node) {
+  if (!node) return -1;
+  switch (PM_NODE_TYPE(node)) {
+    case PM_TRUE_NODE: return 1;
+    case PM_FALSE_NODE: case PM_NIL_NODE: return 0;
+    case PM_PARENTHESES_NODE:
+      return sp_require_truth(((const pm_parentheses_node_t *)node)->body);
+    case PM_STATEMENTS_NODE: {
+      const pm_node_list_t *body = &((const pm_statements_node_t *)node)->body;
+      return body->size == 1 ? sp_require_truth(body->nodes[0]) : -1;
+    }
+    default: return -1;
+  }
+}
+
+static bool sp_skip_dead_require(const pm_node_t *node, void *data) {
+  SpDeadRequire *ctx = data;
+  if (!ctx->dead && (PM_NODE_TYPE(node) == PM_IF_NODE || PM_NODE_TYPE(node) == PM_UNLESS_NODE)) {
+    const pm_node_t *predicate, *body, *other;
+    int unless = PM_NODE_TYPE(node) == PM_UNLESS_NODE;
+    if (unless) {
+      const pm_unless_node_t *n = (const pm_unless_node_t *)node;
+      predicate = n->predicate; body = (const pm_node_t *)n->statements;
+      other = (const pm_node_t *)n->else_clause;
+    } else {
+      const pm_if_node_t *n = (const pm_if_node_t *)node;
+      predicate = n->predicate; body = (const pm_node_t *)n->statements;
+      other = n->subsequent;
+    }
+    int truth = sp_require_truth(predicate);
+    if (truth >= 0) {
+      SpDeadRequire branch = *ctx;
+      branch.dead = truth == unless;
+      if (body) pm_visit_node(body, sp_skip_dead_require, &branch);
+      branch.dead = !branch.dead;
+      if (other) pm_visit_node(other, sp_skip_dead_require, &branch);
+      return false;
+    }
+  }
+  if (ctx->dead && PM_NODE_TYPE(node) == PM_CALL_NODE) {
+    const pm_call_node_t *call = (const pm_call_node_t *)node;
+    const pm_constant_t *name = pm_constant_pool_id_to_constant(&ctx->parser->constant_pool, call->name);
+    if (!call->receiver && !call->block && call->arguments && call->arguments->arguments.size == 1 &&
+        ((name->length == 7 && memcmp(name->start, "require", 7) == 0) ||
+         (name->length == 16 && memcmp(name->start, "require_relative", 16) == 0))) {
+      const pm_node_t *arg = call->arguments->arguments.nodes[0];
+      if (PM_NODE_TYPE(arg) == PM_STRING_NODE) {
+        const pm_string_node_t *str = (const pm_string_node_t *)arg;
+        /* Heredoc bodies can lie outside the call's span. Match the quoted
+           literals the textual require resolver accepts. */
+        if (str->opening_loc.start && (*str->opening_loc.start == '\'' || *str->opening_loc.start == '"')) {
+          size_t start = (size_t)(node->location.start - (const uint8_t *)ctx->source);
+          size_t end = (size_t)(node->location.end - (const uint8_t *)ctx->source);
+          for (size_t i = start; i < end; i++)
+            if (ctx->result[i] != '\n' && ctx->result[i] != '\r') ctx->result[i] = ' ';
+          /* Keep a multiline call grouped, including before a modifier. */
+          memcpy(ctx->result + start, "(nil", 4);
+          ctx->result[end - 1] = ')';
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+static char *sp_rewrite_dead_requires(const char *source) {
+  char *result = strdup(source);
+  if (!strstr(source, "require")) return result;
+  pm_parser_t parser;
+  pm_parser_init(&parser, (const uint8_t *)source, strlen(source), NULL);
+  pm_node_t *root = pm_parse(&parser);
+  if (parser.error_list.size == 0) {
+    SpDeadRequire ctx = { &parser, source, result, 0 };
+    pm_visit_node(root, sp_skip_dead_require, &ctx);
+  }
+  pm_node_destroy(&parser, root);
+  pm_parser_free(&parser);
+  return result;
+}
+
 static char *resolve_requires(const char *source, const char *source_path,
                               unsigned char **fsl_out, size_t *fsl_n_out) {
   /* Get base directory */
@@ -2887,7 +2979,9 @@ static char *resolve_requires(const char *source, const char *source_path,
 
   /* computed requires spelling a literal path (#5700), then autoloads with
      a literal path (#5696): each answers a fresh copy of what it reads */
-  char *pre_auto = sp_rewrite_computed_requires(source, dir);
+  char *reachable = sp_rewrite_dead_requires(source);
+  char *pre_auto = sp_rewrite_computed_requires(reachable, dir);
+  free(reachable);
   char *result = sp_rewrite_autoloads(pre_auto, dir);
   free(pre_auto);
   sp_autoload_is_main = 0;
