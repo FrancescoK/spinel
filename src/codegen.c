@@ -1926,7 +1926,7 @@ int scope_reads_callee(Compiler *c, int si) {
 static int scope_performs_match(Compiler *c, int si) {
   const NodeTable *nt = c->nt;
   static const char *const mnames[] = {
-    "=~", "match", "match?", "scan", "gsub", "gsub!", "sub", "sub!",
+    "=~", "!~", "match", "match?", "scan", "gsub", "gsub!", "sub", "sub!",
     "split", "slice", "index", "rindex", "partition", "rpartition",
     "start_with?", "end_with?", "grep", "grep_v", "[]", "===", NULL };
   int nids = 0; const int *ids = cg_scope_nodes(c, si, &nids);

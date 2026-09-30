@@ -1,0 +1,35 @@
+true
+nil
+nil
+nil
+nil
+false
+#<MatchData "y" 1:"y">
+"y"
+"y"
+"x"
+"z"
+#<MatchData "y" 1:"y">
+true
+nil
+false
+#<MatchData "c" 1:"c">
+"c"
+true
+nil
+false
+#<MatchData "c" 1:"c">
+"c"
+true
+nil
+true
+nil
+false
+#<MatchData "a" 1:"a">
+"a"
+nil
+#<MatchData "c">
+nil
+[#<MatchData "b" 1:"b">, "b"]
+#<MatchData "c" 1:"c">
+"c"
