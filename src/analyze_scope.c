@@ -1796,6 +1796,19 @@ static int sg_binding(Compiler *c, int id, int recv, int *is_const, const char *
   return recv;
 }
 
+static void class_note_included_mod(Compiler *c, int ci, int mod_ci) {
+  ClassInfo *cif = &c->classes[ci];
+  for (int m = 0; m < cif->nincluded_mods; m++)
+    if (cif->included_mods[m] == mod_ci) return;
+  if (cif->nincluded_mods >= cif->cincluded_mods) {
+    cif->cincluded_mods = cif->cincluded_mods ? cif->cincluded_mods * 2 : 4;
+    int *nm = realloc(cif->included_mods, sizeof(int) * (size_t)cif->cincluded_mods);
+    if (!nm) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    cif->included_mods = nm;
+  }
+  cif->included_mods[cif->nincluded_mods++] = mod_ci;
+}
+
 /* Copy module `mod_ci`'s instance methods onto subclass `newci` (obj.extend). */
 static void sg_transplant_module(Compiler *c, int mod_ci, int newci) {
   const NodeTable *nt = c->nt;
@@ -1803,21 +1816,7 @@ static void sg_transplant_module(Compiler *c, int mod_ci, int newci) {
      answers is_a?(Mod) -- it reported false, because only the methods were
      transplanted and nothing said the synthesized subclass was a member
      (#4080). */
-  {
-    ClassInfo *sci = &c->classes[newci];
-    int seen = 0;
-    for (int m = 0; m < sci->nincluded_mods; m++)
-      if (sci->included_mods[m] == mod_ci) { seen = 1; break; }
-    if (!seen) {
-      if (sci->nincluded_mods >= sci->cincluded_mods) {
-        sci->cincluded_mods = sci->cincluded_mods ? sci->cincluded_mods * 2 : 4;
-        int *nm3 = realloc(sci->included_mods, sizeof(int) * (size_t)sci->cincluded_mods);
-        if (!nm3) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-        sci->included_mods = nm3;
-      }
-      sci->included_mods[sci->nincluded_mods++] = mod_ci;
-    }
-  }
+  class_note_included_mod(c, newci, mod_ci);
   int snap = c->nscopes;
   for (int ms = 0; ms < snap; ms++) {
     Scope *src = &c->scopes[ms];
@@ -4521,21 +4520,7 @@ void process_include_body(Compiler *c, int ci, int body_node) {
         continue;
       }
       /* record membership for `rescue M` matching (dedup across reopenings) */
-      {
-        ClassInfo *cif = &c->classes[ci];
-        int seen = 0;
-        for (int m = 0; m < cif->nincluded_mods; m++)
-          if (cif->included_mods[m] == mod_id) { seen = 1; break; }
-        if (!seen) {
-          if (cif->nincluded_mods >= cif->cincluded_mods) {
-            cif->cincluded_mods = cif->cincluded_mods ? cif->cincluded_mods * 2 : 4;
-            int *nm2 = realloc(cif->included_mods, sizeof(int) * (size_t)cif->cincluded_mods);
-            if (!nm2) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-            cif->included_mods = nm2;
-          }
-          cif->included_mods[cif->nincluded_mods++] = mod_id;
-        }
-      }
+      class_note_included_mod(c, ci, mod_id);
       /* snapshot count before adding new scopes to avoid re-scanning them */
       int snap = c->nscopes;
       for (int ms = 0; ms < snap; ms++) {
