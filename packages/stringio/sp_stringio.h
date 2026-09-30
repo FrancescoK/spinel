@@ -65,5 +65,6 @@ void sp_StringIO_puts_v2(sp_StringIO *s, sp_RbVal a, sp_RbVal b);
 void sp_StringIO_puts_v3(sp_StringIO *s, sp_RbVal a, sp_RbVal b, sp_RbVal c2);
 void sp_StringIO_print_va(sp_StringIO *s, sp_int n, sp_RbVal *v);
 void sp_StringIO_puts_va(sp_StringIO *s, sp_int n, sp_RbVal *v);
+sp_int sp_StringIO_write_va(sp_StringIO *s, sp_int n, sp_RbVal *v);
 void sp_StringIO_free(void *p);             /* GC finalizer: frees buf */
 #endif /* SP_STRINGIO_H */

@@ -190,3 +190,4 @@ static void sio_write_vals(sp_StringIO *s, sp_int n, sp_RbVal *v, int is_puts) {
 }
 void sp_StringIO_print_va(sp_StringIO *s, sp_int n, sp_RbVal *v) { sio_write_vals(s, n, v, 0); }
 void sp_StringIO_puts_va(sp_StringIO *s, sp_int n, sp_RbVal *v) { sio_write_vals(s, n, v, 1); }
+sp_int sp_StringIO_write_va(sp_StringIO *s, sp_int n, sp_RbVal *v) { int64_t p0 = s->pos; sio_write_vals(s, n, v, 0); return s->pos - p0; }

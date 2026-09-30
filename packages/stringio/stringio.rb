@@ -31,6 +31,7 @@ module StringIOPackage
   # :text -- a write payload: a String passes through, anything else is
   # written as its #to_s, as IO#write does
   native_method :write,    [:text], :int,   "sp_StringIO_write"
+  native_method :write,    [:rest], :int, "sp_StringIO_write_va"
   native_method :<<,       [:text], :self,  "sp_StringIO_shl"
   native_method :puts,     [], :nil,     "sp_StringIO_puts_empty"
   native_method :puts,     [:string], :nil, "sp_StringIO_puts"

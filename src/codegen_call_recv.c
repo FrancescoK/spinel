@@ -11091,6 +11091,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           nm = -1; break;
         }
       }
+      if (nm >= 0 && emit_native_count_mismatch(c, id, cid, name, 0, recv, argc, argv, b)) return 1;
       if (nm >= 0) {
         NativeMethod *m = &c->native_methods[nm];
         native_arg_check(c, id, "native method", m, argc, argv);
