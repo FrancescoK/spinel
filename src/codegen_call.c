@@ -20467,6 +20467,24 @@ static void unhoist_dispatch_args(Compiler *c, int n, int *sv, TyKind *ty) {
   free(sv); free(ty);
 }
 
+
+/* Whether `node` is a bare identifier of no type (a vcall, the shape
+   emit_unresolved_call raises NameError for), or an untyped call chained
+   on one: evaluating it raises before anything it answers is used. */
+static int unresolved_name_chain(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  for (int depth = 0; depth < 64; depth++) {
+    node = unwrap_parens(c, node);
+    if (node < 0 || nt_kind(nt, node) != NK_CallNode || comp_ntype(c, node) != TY_UNKNOWN) return 0;
+    int r = nt_ref(nt, node, "receiver");
+    if (r < 0 || nt_kind(nt, r) == NK_SelfNode) {
+      int n = 0; call_args(nt, node, &n);
+      return n == 0 && nt_int(nt, node, "vcall", 0) && nt_ref(nt, node, "block") < 0;
+    }
+    node = r;
+  }
+  return 0;
+}
 int emit_unresolved_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -20936,6 +20954,14 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
                 g_gate_raise ? "NoMethodError (matching CRuby)" : "nil (CRuby would raise NoMethodError)");
       }
       const char *dflt = (is_scalar_ret(ret) && ret != TY_UNKNOWN) ? default_value(ret) : "sp_box_nil()";
+      /* a receiver of no type rooted in a bare name that resolves to nothing
+         (`dir.upcase`, `dir.strip.upcase`) raises CRuby's NameError when it
+         is evaluated, before this call could fail */
+      if (g_gate_raise && grt == TY_UNKNOWN && recv >= 0 && unresolved_name_chain(c, recv)) {
+        buf_puts(b, "((void)("); emit_expr(c, recv, b);
+        buf_printf(b, "), %s)", dflt);
+        return 1;
+      }
       if (g_gate_raise) {
         /* Scalar slot: the comma-expr yields a typed default the surrounding C
            accepts directly. Poly slot: emit the recognizable sp_raise_nomethod
