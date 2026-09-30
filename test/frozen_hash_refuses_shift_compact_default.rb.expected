@@ -1,0 +1,56 @@
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+{a: 1, b: nil}
+{"k" => 1}
+{1 => 2}
+{"a" => "b"}
+{1 => "b"}
+{1 => "x", "y" => 2, z: nil}
+{a: "s"}
+{}
+[nil, nil, nil, nil, nil, nil, nil]
+[nil, nil, nil]
+[:value, :refused]
+[:poly, :refused, :int, :refused, :str, :refused, :proc, :refused]
+[:a, 1]
+{}
+nil
+{}
+4
+7
+["k", 1]
+{"j" => 2}
+9
+[1, "b"]
+"d"
+[1, "x"]
+{"y" => 2}
+{"y" => 2}
