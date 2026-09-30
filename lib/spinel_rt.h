@@ -2934,6 +2934,16 @@ static SP_INLINE sp_bool sp_poly_eq(sp_RbVal a, sp_RbVal b) {
   if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i == b.v.i;
   return sp_poly_eq_slow(a, b);
 }
+/* The key a `case` over a boxed subject switches on when every `when` is an
+   Integer literal. An Integer is its own key; any other value -- nil, a
+   Symbol, a String, 0.5 -- takes a label only where `===` does (1.0 is 1),
+   and otherwise `miss`, a value no label has. Reading it through
+   sp_poly_to_i made nil, "0" and 0.5 all `when 0`. */
+static sp_int sp_poly_case_int_key(sp_RbVal v, const sp_int *lbl, int n, sp_int miss) {
+  if (v.tag == SP_TAG_INT) return v.v.i;
+  for (int i = 0; i < n; i++) if (sp_poly_eq(v, sp_box_int(lbl[i]))) return lbl[i];
+  return miss;
+}
 static sp_int sp_poly_length(sp_RbVal v);
 static sp_bool sp_OpenStruct_eq(sp_OpenStruct *a, sp_OpenStruct *b);   /* defined with OpenStruct below */
 static sp_RbVal sp_poly_hash_get_pair_val(sp_RbVal h, sp_RbVal key, sp_bool *found) {

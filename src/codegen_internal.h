@@ -681,6 +681,7 @@ int box_nullable_arg(Compiler *c, int v);
 int ivar_assigned_in_initialize(Compiler *c, int k, const char *ivn);
 int recv_may_be_sentinel(Compiler *c, int node);
 int nil_answers_name(const char *n);
+int emit_nullable_scalar_nil_only(Compiler *c, int id, Buf *b);
 void emit_sg_activate(Compiler *c, int node, int recv, Buf *b, int indent);
 int sg_activates_ci(Compiler *c, int node);
 int subtree_has_param_named_pub(const NodeTable *nt, int id, const char *nm);

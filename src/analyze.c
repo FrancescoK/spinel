@@ -16972,6 +16972,34 @@ static int elem_miss_call(Compiler *c, int v) {
   return 0;
 }
 
+/* A call of one of the names nil answers and neither Integer nor Float has:
+   to_a, to_h and =~ (with !~, which is =~ negated), and on a Float the
+   boolean operators &, | and ^. On a slot that can hold the nil sentinel it
+   has a value -- CRuby's [], {}, nil and a boolean -- rather than only the
+   NoMethodError the receiver's class gives. Integer's own &, | and ^ are
+   typed Integer, a slot nil's boolean cannot ride in, so they are not here. */
+int nullable_scalar_nil_only_call(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!nm || recv < 0 || nt_ref(nt, id, "block") >= 0) return 0;
+  const char *op = nt_str(nt, id, "call_operator");
+  if (op && sp_streq(op, "&.")) return 0;
+  TyKind rt = c->ntype[recv];
+  if (rt != TY_INT && rt != TY_FLOAT) return 0;
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  for (int k = 0; k < argc; k++)
+    if (nt_kind(nt, argv[k]) == NK_SplatNode || nt_kind(nt, argv[k]) == NK_KeywordHashNode ||
+        nt_kind(nt, argv[k]) == NK_BlockArgumentNode) return 0;
+  int hit = argc == 0 ? (sp_streq(nm, "to_a") || sp_streq(nm, "to_h"))
+          : argc == 1 ? (sp_streq(nm, "=~") || sp_streq(nm, "!~") ||
+                         (rt == TY_FLOAT && (sp_streq(nm, "&") || sp_streq(nm, "|") || sp_streq(nm, "^"))))
+          : 0;
+  return hit && nullable_int_value(c, recv);
+}
+
 /* Can this expression leave the sentinel in an int slot? */
 /* Whether an unconditional write of ivar `ivn` is among the top-level
    statements of class k's initialize, or of the initialize it inherits. */
@@ -22827,6 +22855,13 @@ void analyze_program(Compiler *c) {
   /* An --rbs seed the settled types statically contradict is a compile error,
      not something to emit a reinterpretation for. */
   mark_nullable_int_locals(c);
+  /* A nil-only name on a nullable Integer or Float was left untyped, the
+     receiver's class having no such method, and an untyped value is thrown
+     away for a nil: nil's own answer is a boxed value. */
+  NT_FOREACH_KIND(c->nt, NK_CallNode, nid) {
+    if (c->ntype[nid] == TY_UNKNOWN && nullable_scalar_nil_only_call(c, nid))
+      c->ntype[nid] = TY_POLY;
+  }
   mark_array_or_nil_slots(c);
   /* A local's array KIND has to agree with what its writes actually build. A
      value whose type widens to a poly array LATE -- a map whose block value

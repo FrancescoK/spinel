@@ -5036,7 +5036,25 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
       if (subtree_has_loop_break(c, nt_ref(nt, whens[w], "statements"))) has_lbreak = 1;
     if (all_int && !has_lbreak) {
       emit_indent(b, indent);
-      if (pt == TY_POLY) buf_printf(b, "switch (sp_poly_to_i(_t%d)) {\n", t);
+      if (pt == TY_POLY) {
+        /* an Integer subject stays the jump table's bare read; any other
+           kind asks `===` of each label, and one that matches none switches
+           on a value no label has, so it reaches the else arm */
+        long long lo = 0, hi = 0; int first = 1;
+        buf_printf(b, "switch (_t%d.tag == SP_TAG_INT ? _t%d.v.i : sp_poly_case_int_key(_t%d, (const sp_int[]){", t, t, t);
+        int nl = 0;
+        for (int w = 0; w < nw; w++) {
+          int wc = 0; const int *conds = nt_arr(nt, whens[w], "conditions", &wc);
+          for (int j = 0; j < wc; j++) {
+            long long v = (long long)nt_int(nt, conds[j], "value", 0);
+            buf_printf(b, "%s%lldLL", nl++ ? ", " : "", v);
+            if (first || v < lo) lo = v;
+            if (first || v > hi) hi = v;
+            first = 0;
+          }
+        }
+        buf_printf(b, "}, %d, %lldLL)) {\n", nl, hi < INT64_MAX ? hi + 1 : lo - 1);
+      }
       else buf_printf(b, "switch (_t%d) {\n", t);
       for (int w = 0; w < nw; w++) {
         int wc = 0; const int *conds = nt_arr(nt, whens[w], "conditions", &wc);
