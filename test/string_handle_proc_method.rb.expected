@@ -29,6 +29,11 @@ nil
 104
 FrozenError
 FrozenError
+FrozenError
+"Hello"
+"World"
+FrozenError
+FrozenError
 203
 [97, 0, 98, 120]
 102

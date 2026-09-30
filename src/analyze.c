@@ -16163,6 +16163,16 @@ static int dyn_is_proc_literal(Compiler *c, int n) {
          nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), "Proc");
 }
 
+/* The lambda desugar_block_capture_wrap wraps an inlined block's body in,
+   `{ |a| ->(__cap_a) { body }.call(a) }`, so a proc the body makes captures
+   a fresh cell per iteration: Spinel's own, called where it is made, with
+   the block's own parameter. It is no dynamic call of the program's and no
+   target one can reach: a String in it binds as it did before the wrap
+   (#6179 leaves it alone; sharing it is the block parameter's question). */
+static int dyn_cap_wrapper(Compiler *c, int n) {
+  return n >= 0 && nt_kind(c->nt, n) == NK_LambdaNode && nt_int(c->nt, n, "cap_iife", 0);
+}
+
 /* A String method that answers a new value and keeps nothing of its
    receiver: a parameter only ever the receiver of these (or printed, or
    interpolated) is read for its bytes alone, so the caller may hand it the
@@ -16438,7 +16448,7 @@ static int dyn_any_appender(Compiler *c) {
   if (g_dyn.any >= 0) return g_dyn.any;
   g_dyn.any = 0;
   for (int n = comp_kind_first(c, NK_LambdaNode); n >= 0 && !g_dyn.any; n = comp_kind_next(c, n))
-    if (nt_kind(nt, n) == NK_LambdaNode && (dyn_lit_bits(c, n) & 0xffffu)) g_dyn.any = 1;
+    if (nt_kind(nt, n) == NK_LambdaNode && !dyn_cap_wrapper(c, n) && (dyn_lit_bits(c, n) & 0xffffu)) g_dyn.any = 1;
   for (int n = comp_kind_first(c, NK_CallNode); n >= 0 && !g_dyn.any; n = comp_kind_next(c, n)) {
     if (nt_kind(nt, n) != NK_CallNode) continue;
     const char *nm = nt_str(nt, n, "name");
@@ -16572,6 +16582,7 @@ int dyn_call_site(Compiler *c, int n) {
         sp_streq(nm, "yield") || sp_streq(nm, "==="))) return 0;
   TyKind rt = comp_ntype(c, r);
   if (rt != TY_PROC && rt != TY_METHOD) return 0;
+  if (dyn_cap_wrapper(c, r)) return 0;
   if (nt_kind(nt, r) == NK_LocalVariableReadNode) {
     Scope *rs = comp_scope_of(c, r);
     const char *rn = nt_str(nt, r, "name");
@@ -16701,7 +16712,7 @@ static int dyn_convert_params(Compiler *c) {
   for (int pass = 0; pass < 2; pass++) {
     NodeKind want = pass ? NK_CallNode : NK_LambdaNode;
     for (int n = comp_kind_first(c, want); n >= 0; n = comp_kind_next(c, n)) {
-      if (nt_kind(nt, n) != want) continue;
+      if (nt_kind(nt, n) != want || dyn_cap_wrapper(c, n)) continue;
       int create = -1, lit = -1;
       if (dyn_is_proc_literal(c, n)) { create = n; lit = pass ? nt_ref(nt, n, "block") : n; }
       else if (pass) {

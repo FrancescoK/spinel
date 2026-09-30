@@ -72,6 +72,15 @@ p m.call(+"ab"), f.call("tmp".dup), K.new.method(:app2).call(+"cd")
 def ins(t) = (t.insert(0, X); t.prepend("<"); t.replace(t + ">"); t.size)
 p method(:ins).call(+"ab"), method(:ins).call("cd".dup)
 
+# a block parameter a proc in the body captures: the block is wrapped in a
+# lambda called at once (desugar_block_capture_wrap), which is no dynamic
+# call of the program's; a frozen one raises, an unfrozen one is changed
+["", "Hello", "hello"].each do |a|
+  a.freeze
+  begin; -> { a.capitalize! }.call; p :changed; rescue FrozenError => ex; p ex.class; end
+end
+[+"hello", +"world"].each { |a| -> { a.capitalize! }.call; p a }
+
 # a frozen String raises where CRuby raises
 begin; f.call("fr".freeze); rescue FrozenError => ex; p ex.class; end
 begin; m.call("fr".freeze); rescue FrozenError => ex; p ex.class; end
