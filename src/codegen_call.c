@@ -34329,7 +34329,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       Scope *ie_sc = comp_scope_of(c, id);
       int ie_flip = ie_sc && ie_sc->is_cmethod;
       int ie_sv_cm = ie_flip ? ie_sc->is_cmethod : 0, ie_sv_cls = ie_flip ? ie_sc->class_id : -1;
-      if (ie_flip) { ie_sc->is_cmethod = 0; ie_sc->class_id = cls_id; }
+      if (ie_flip) { comp_scope_move_begin(c, (int)(ie_sc - c->scopes)); ie_sc->is_cmethod = 0; ie_sc->class_id = cls_id; }
       /* Bind the block params (interned in the enclosing scope, declared
          there): instance_exec assigns the call-site args; instance_eval
          yields the receiver to each param. */
@@ -34485,7 +34485,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         g_ie_discard_value = saved_discard;
       }
       g_ie_class_id = saved_ie;
-      if (ie_flip) { ie_sc->is_cmethod = ie_sv_cm; ie_sc->class_id = ie_sv_cls; }
+      if (ie_flip) { ie_sc->is_cmethod = ie_sv_cm; ie_sc->class_id = ie_sv_cls; comp_scope_move_end(); }
       g_self = saved_self2;
       g_self_deref = saved_deref2;
       if (scalar_res) buf_printf(b, "_t%d", tres);

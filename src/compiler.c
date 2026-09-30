@@ -492,6 +492,52 @@ int comp_cvar_intern(ClassInfo *ci, const char *name) {
   return ci->ncvars++;
 }
 
+/* Scopes moved to another class for an instance_exec block, each with the
+   class it was defined in (comp_scope_move_begin). The move is for the
+   block's self and ivars; which methods a class defines does not change
+   with it. The index below is dropped on every comp_scope_index_set_frozen,
+   frozen or not, so it can be rebuilt during a move, and keyed by the
+   current class it filed a moved Evaluator.label under Plain#label's key: a
+   poly dispatch of `label` in the block then called the class method for a
+   Plain and raised ArgumentError. So the index keys every scope by its own
+   class, and a lookup skips a scope while it is moved: under its own class
+   it would be named by the class it was moved to. A scope moved twice (a
+   block in a block) keeps its first record. */
+static int *mv_s = NULL, *mv_cls = NULL, *mv_cm = NULL;
+static int mv_n = 0, mv_cap = 0;
+void comp_scope_move_begin(Compiler *c, int s) {
+  if (mv_n == mv_cap) {
+    mv_cap = mv_cap ? mv_cap * 2 : 8;
+    mv_s = realloc(mv_s, sizeof(int) * (size_t)mv_cap);
+    mv_cls = realloc(mv_cls, sizeof(int) * (size_t)mv_cap);
+    mv_cm = realloc(mv_cm, sizeof(int) * (size_t)mv_cap);
+    if (!mv_s || !mv_cls || !mv_cm) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  mv_s[mv_n] = s; mv_cls[mv_n] = c->scopes[s].class_id; mv_cm[mv_n] = c->scopes[s].is_cmethod;
+  mv_n++;
+}
+void comp_scope_move_end(void) { if (mv_n > 0) mv_n--; }
+int comp_scope_own_class(const Compiler *c, int s, int *is_cmethod) {
+  for (int i = 0; i < mv_n; i++)
+    if (mv_s[i] == s) { if (is_cmethod) *is_cmethod = mv_cm[i]; return mv_cls[i]; }
+  if (is_cmethod) *is_cmethod = c->scopes[s].is_cmethod;
+  return c->scopes[s].class_id;
+}
+static int sm_moved(int s) {
+  for (int i = 0; i < mv_n; i++) if (mv_s[i] == s) return 1;
+  return 0;
+}
+/* scope `s` is a method of (class_id, is_cm) a lookup may answer: not while
+   it is moved */
+static int sm_owns(const Compiler *c, int s, int class_id, int is_cm) {
+  return c->scopes[s].class_id == class_id && (int)c->scopes[s].is_cmethod == is_cm &&
+         (!mv_n || !sm_moved(s));
+}
+/* the same for a top-level method */
+static int sm_toplevel(const Compiler *c, int s) {
+  return c->scopes[s].class_id < 0 && (!mv_n || !sm_moved(s));
+}
+
 /* (class_id, name, is_cmethod) -> scope index, cached per scope count. Both
    lookups below otherwise scan all scopes in reverse, and they are called many
    times per node during the inference fixpoint (O(lookups * scopes)). The chain
@@ -538,8 +584,9 @@ static void sm_build(Compiler *c) {
   for (int i = 0; i < sm_buckets; i++) { sm_head[i] = -1; tm_head[i] = -1; }
   for (int s = 0; s < ns; s++) {
     if (!c->scopes[s].name) continue;
-    if (c->scopes[s].class_id >= 0) {
-      unsigned b = sm_hash(c->scopes[s].class_id, c->scopes[s].name, c->scopes[s].is_cmethod) % (unsigned)sm_buckets;
+    int cm, cls = comp_scope_own_class(c, s, &cm);
+    if (cls >= 0) {
+      unsigned b = sm_hash(cls, c->scopes[s].name, cm) % (unsigned)sm_buckets;
       sm_next[s] = sm_head[b]; sm_head[b] = s;
     }
   }
@@ -547,7 +594,7 @@ static void sm_build(Compiler *c) {
      A redefined top-level method is its LAST def, as for a class (the
      class buckets above are built the same way) */
   for (int s = 0; s < ns; s++) {
-    if (c->scopes[s].class_id >= 0 || !c->scopes[s].name) continue;
+    if (comp_scope_own_class(c, s, NULL) >= 0 || !c->scopes[s].name) continue;
     unsigned b = sm_hash(-1, c->scopes[s].name, 0) % (unsigned)sm_buckets;
     tm_next[s] = tm_head[b]; tm_head[b] = s;
   }
@@ -558,7 +605,7 @@ static int sm_lookup(Compiler *c, int class_id, const char *name, int is_cm) {
     /* scope shape may still change: scan in reverse so a later (reopened /
        transplanted) definition wins, matching the frozen index's ordering. */
     for (int s = c->nscopes - 1; s >= 0; s--)
-      if (c->scopes[s].class_id == class_id && (int)c->scopes[s].is_cmethod == is_cm &&
+      if (sm_owns(c, s, class_id, is_cm) &&
           c->scopes[s].name && sp_streq(c->scopes[s].name, name)) return s;
     return -1;
   }
@@ -566,7 +613,7 @@ static int sm_lookup(Compiler *c, int class_id, const char *name, int is_cm) {
   if (!sm_buckets) return -1;
   unsigned b = sm_hash(class_id, name, is_cm) % (unsigned)sm_buckets;
   for (int s = sm_head[b]; s >= 0; s = sm_next[s])
-    if (c->scopes[s].class_id == class_id && (int)c->scopes[s].is_cmethod == is_cm &&
+    if (sm_owns(c, s, class_id, is_cm) &&
         c->scopes[s].name && sp_streq(c->scopes[s].name, name)) return s;
   return -1;
 }
@@ -1761,7 +1808,7 @@ static int comp_method_index_direct(Compiler *c, const char *name) {
   if (!sm_frozen) {
     /* in reverse, so a redefinition wins, matching the frozen index */
     for (int s = c->nscopes - 1; s >= 0; s--)
-      if (c->scopes[s].class_id < 0 && c->scopes[s].name &&
+      if (sm_toplevel(c, s) && c->scopes[s].name &&
           sp_streq(c->scopes[s].name, name)) return s;
     return -1;
   }
@@ -1769,7 +1816,7 @@ static int comp_method_index_direct(Compiler *c, const char *name) {
   if (!sm_buckets) return -1;
   unsigned b = sm_hash(-1, name, 0) % (unsigned)sm_buckets;
   for (int s = tm_head[b]; s >= 0; s = tm_next[s])
-    if (c->scopes[s].class_id < 0 && c->scopes[s].name && sp_streq(c->scopes[s].name, name)) return s;
+    if (sm_toplevel(c, s) && c->scopes[s].name && sp_streq(c->scopes[s].name, name)) return s;
   return -1;
 }
 
