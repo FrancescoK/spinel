@@ -908,6 +908,9 @@ typedef struct {
   const int *atmp;
   const TyKind *atmp_ty;
   const PolyKw *kw;
+  /* per positional, the temp holding the handle its String variable had
+     when the argument ran, or 0 (emit_poly_shared_arg) */
+  const int *htmp;
 } PolyArgs;
 
 static void poly_arm_layout(Compiler *c, Scope *ms, const PolyArgs *A, ArgLayout *L);
@@ -975,7 +978,7 @@ static void emit_poly_splat_param(Compiler *c, Scope *ms, int a, int sa, int st,
    (activesupport's Notifications: the module has its own `publish`, and
    Fanout forwards to each listener's). */
 static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int argc,
-                                      const int *atmp, const TyKind *atmp_ty,
+                                      const int *atmp, const TyKind *atmp_ty, const int *htmp,
                                       const PolyKw *kw, int tv, int tr, TyKind ret, int blk_tmp, Buf *b) {
   const NodeTable *nt = c->nt;
   int kwh = kw ? kw->kwh : -1;
@@ -984,7 +987,7 @@ static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int
   const PolyCand *cc8 = comp_cmethod_candidates(c, name, &ncc8);   /* per name, not per site (#4966) */
   int an = 0, argsn = nt_ref(nt, id, "arguments");
   const int *argv = argsn >= 0 ? nt_arr(nt, argsn, "arguments", &an) : NULL;
-  PolyArgs pargs = { argv, argc, atmp, atmp_ty, kw };
+  PolyArgs pargs = { argv, argc, atmp, atmp_ty, kw, htmp };
   int splat = -1;
   for (int k = 0; argv && k < argc && k < an; k++)
     if (nt_kind(nt, argv[k]) == NK_SplatNode) splat = k;
@@ -6815,6 +6818,30 @@ static void emit_poly_arm_rest(Compiler *c, Scope *ms, int a, const ArgLayout *L
   buf_printf(pa, " _t%d; })", rt);
 }
 
+/* Does an argument of the call besides positional `k` run anything -- a
+   positional or the keyword hash `kwh` (-1 for none)? One that does can
+   give the variable `k` reads another String before an arm runs. */
+static int poly_other_arg_runs(Compiler *c, const int *argv, int pos_argc, int kwh, int k) {
+  if (kwh >= 0 && subtree_has_side_effect(c, kwh)) return 1;
+  for (int j = 0; j < pos_argc; j++)
+    if (j != k && subtree_has_side_effect(c, argv[j])) return 1;
+  return 0;
+}
+
+/* Does any method of this name take a parameter as the shared handle? Only
+   then can a poly dispatch's arm want an argument's handle. */
+static int poly_name_takes_handle(Compiler *c, const char *name) {
+  for (int i = 1; name && i < c->nscopes; i++) {
+    Scope *s = &c->scopes[i];
+    if (!s->name || !sp_streq(s->name, name)) continue;
+    for (int j = 0; j < s->nparams; j++) {
+      LocalVar *q = s->pnames[j] ? scope_local(s, s->pnames[j]) : NULL;
+      if (q && q->is_param && q->type == TY_STRBUF && q->str_shared) return 1;
+    }
+  }
+  return 0;
+}
+
 /* Positional `k` into an arm whose parameter is a shared handle
    (str_shared). The temp holds the argument's String VALUE -- the other
    arms take that -- so a handle argument passes its slot's handle itself,
@@ -6825,12 +6852,15 @@ static void emit_poly_arm_rest(Compiler *c, Scope *ms, int a, const ArgLayout *L
 static int emit_poly_shared_arg(Compiler *c, const PolyArgs *A, int k, Buf *pa) {
   TyKind at = A->atmp_ty[k];
   if (at != TY_STRING && at != TY_STRBUF) return 0;
+  /* the handle taken where the argument ran, beside one that runs */
+  if (A->htmp && A->htmp[k]) {
+    buf_printf(pa, "_t%d", A->htmp[k]);
+    return 1;
+  }
   int an = A->argv[k];
   NodeKind ak = nt_kind(c->nt, an);
   char sref[192];
-  int quiet = !(A->kw && A->kw->kwh >= 0 && subtree_has_side_effect(c, A->kw->kwh));
-  for (int j = 0; j < A->pos_argc && quiet; j++)
-    if (j != k && subtree_has_side_effect(c, A->argv[j])) quiet = 0;
+  int quiet = !poly_other_arg_runs(c, A->argv, A->pos_argc, A->kw ? A->kw->kwh : -1, k);
   if (quiet && (ak == NK_LocalVariableReadNode || ak == NK_InstanceVariableReadNode) &&
       strbuf_slot_ref(c, an, sref, sizeof sref)) {
     buf_puts(pa, sref);
@@ -7688,7 +7718,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                       (c->classes[0].instantiated || class_is_prim_reopen(c, 0));
       /* a class-valued receiver dispatches class-side, ahead of the instance
          arms (#4218) */
-      emit_poly_cls_value_prearm(c, id, name, 0, NULL, NULL, NULL, tv, tr, ret, blk_tmp0, b);
+      emit_poly_cls_value_prearm(c, id, name, 0, NULL, NULL, NULL, NULL, tv, tr, ret, blk_tmp0, b);
       /* a primitive-reopen candidate needs the tag-mapping key (#4219) */
       int prim_cand0 = 0;
       for (int k = 0; k < c->nclasses && !prim_cand0; k++) {
@@ -8640,6 +8670,8 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                           nt_ref(nt, id, "block") < 0;
       int *atmp = malloc(sizeof(int) * argc);
       TyKind *atmp_ty = malloc(sizeof(TyKind) * argc);
+      int *htmp = calloc((size_t)argc, sizeof(int));
+      int takes_handle = -1;   /* poly_name_takes_handle, asked once when it matters */
       /* Root the receiver temp across the arms, as the zero-arg dispatch does:
          an arm's callee may allocate and collect the otherwise-unreferenced
          receiver out from under itself (#3476). */
@@ -8666,6 +8698,21 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         }
         else {
           atmp_ty[a] = at;
+          /* A String variable a handle arm takes, beside an argument that
+             runs: the handle is taken where the argument runs, as CRuby
+             takes the object. Read at the arm, a later argument could have
+             given the variable another String; wrapped fresh, the callee's
+             appends stayed in the copy (emit_poly_shared_arg). */
+          char sref[192];
+          NodeKind ak = nt_kind(nt, argv[a]);
+          if ((at == TY_STRING || at == TY_STRBUF) &&
+              (ak == NK_LocalVariableReadNode || ak == NK_InstanceVariableReadNode) &&
+              poly_other_arg_runs(c, argv, pos_argc, kwh, a) &&
+              (takes_handle >= 0 ? takes_handle : (takes_handle = poly_name_takes_handle(c, name))) &&
+              strbuf_slot_ref(c, argv[a], sref, sizeof sref)) {
+            htmp[a] = ++g_tmp;
+            buf_printf(b, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d); ", htmp[a], sref, htmp[a]);
+          }
           emit_ctype(c, at, b);
           buf_printf(b, " _t%d = ", atmp[a]); emit_expr(c, argv[a], b); buf_puts(b, "; ");
         }
@@ -8983,7 +9030,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       }
       /* a class-valued receiver dispatches class-side, ahead of the instance
          arms (#4218). */
-      emit_poly_cls_value_prearm(c, id, name, pos_argc, atmp, atmp_ty, &kw, tv, tr, ret, blk_tmp2, b);
+      emit_poly_cls_value_prearm(c, id, name, pos_argc, atmp, atmp_ty, htmp, &kw, tv, tr, ret, blk_tmp2, b);
       /* a primitive-reopen candidate needs the tag-mapping key (#4219) */
       int prim_cand2 = 0;
       for (int k = 0; k < c->nclasses && !prim_cand2; k++) {
@@ -9123,7 +9170,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         Scope *ks = &c->scopes[scope_proc_form_of(c, mi) >= 0 ? scope_proc_form_of(c, mi) : mi];
         /* which argument each parameter takes, decided once for this arm
            (arg_layout): the type test below and the binding read the same */
-        PolyArgs pargs = { argv, pos_argc, atmp, atmp_ty, &kw };
+        PolyArgs pargs = { argv, pos_argc, atmp, atmp_ty, &kw, htmp };
         ArgLayout L;
         poly_arm_layout(c, ks, &pargs, &L);
         if (splat_a >= 0 && !L.gather)
@@ -10270,6 +10317,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       else buf_printf(b, " } _t%d; })", is_setter_val ? atmp[0] : tr);
       free(atmp);
       free(atmp_ty);
+      free(htmp);
       free(kwtmp);
       free(kwty);
       return 1;
