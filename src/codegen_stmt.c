@@ -131,7 +131,7 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
   }
   else if (t == TY_EXCEPTION) {
     buf_puts(b, "{ const char *_ps = sp_exc_message("); emit_expr(c, arg, b);
-    buf_puts(b, "); sp_puts_str_line(_ps); }\n");
+    buf_puts(b, "); sp_puts_cstr_line(_ps); }\n");
   }
   else if (t == TY_REGEX) {
     buf_puts(b, "puts(sp_re_to_s_str((void *)("); emit_expr(c, arg, b); buf_puts(b, ")));\n");
@@ -198,12 +198,12 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     int nts = comp_native_method_find(c, ty_object_class(t), "to_s", 0, 0);
     buf_printf(b, "{ const char *_ps = %s(", c->native_methods[nts].csym);
     emit_expr(c, arg, b);
-    buf_puts(b, "); sp_puts_str_line(_ps); }\n");
+    buf_puts(b, "); sp_puts_cstr_line(_ps); }\n");
   }
   else if (ty_is_object(t) && obj_str_cname(c, ty_object_class(t), 0)) {
     /* an object with #to_s (user-defined or a generated struct/data one) */
     buf_puts(b, "{ const char *_ps = "); emit_obj_to_s(c, arg, t, b);
-    buf_puts(b, "; sp_puts_str_line(_ps); }\n");
+    buf_puts(b, "; sp_puts_cstr_line(_ps); }\n");
   }
   else if (t == TY_IO || t == TY_DIR) {
     /* a handle renders as Object's to_s does for it (the protocol arm's render) */
@@ -285,8 +285,8 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "fputs(sp_float_to_s("); emit_expr(c, arg, b); buf_puts(b, "), stdout);\n");
   }
   else if (t == TY_STRING) {
-    buf_puts(b, "{ const char *_s = ("); emit_expr(c, arg, b);
-    buf_puts(b, "); if (_s) fputs(_s, stdout); }\n");
+    buf_puts(b, "sp_print_str_bin("); emit_expr(c, arg, b);
+    buf_puts(b, ");\n");
   }
   else if (t == TY_BIGINT) {
     /* a nil (NULL) prints as nothing, the way `print nil` does */
@@ -317,7 +317,7 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
     int tv = ++g_tmp;
     buf_printf(b, "{ sp_RbVal _t%d = ", tv);
     if (t == TY_POLY) emit_expr(c, arg, b); else emit_boxed(c, arg, b);
-    buf_printf(b, "; const char *_ps%d = sp_poly_to_s(_t%d); if (_ps%d) fputs(_ps%d, stdout); }\n", tv, tv, tv, tv);
+    buf_printf(b, "; sp_poly_print(_t%d); }\n", tv);
   }
   else if (t == TY_RANGE) {
     /* print of a Range renders its to_s ("first..last"), no newline. */
