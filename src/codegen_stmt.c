@@ -27,18 +27,23 @@ static void emit_obj_to_s(Compiler *c, int arg, TyKind t, Buf *b) {
   buf_puts(b, "))");
 }
 
-void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
-  /* a splat argument expands each element as its own argument */
+static int emit_splat_io(Compiler *c, int arg, const char *fn, Buf *b, int indent) {
   if (nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "SplatNode")) {
     int sx = nt_ref(c->nt, arg, "expression");
     if (sx >= 0) {
       emit_indent(b, indent);
-      buf_puts(b, "sp_splat_puts(");
+      buf_puts(b, fn);
       emit_boxed(c, sx, b);
       buf_puts(b, ");\n");
-      return;
+      return 1;
     }
   }
+  return 0;
+}
+
+void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
+  /* a splat argument expands each element as its own argument */
+  if (emit_splat_io(c, arg, "sp_splat_puts(", b, indent)) return;
   arg = unwrap_parens(c, arg);
   /* bare class/module constant: always print the name regardless of value type */
   const char *arg_ty = nt_type(c->nt, arg);
@@ -243,16 +248,7 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
 }
 void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
   /* a splat argument expands each element as its own argument */
-  if (nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "SplatNode")) {
-    int sx = nt_ref(c->nt, arg, "expression");
-    if (sx >= 0) {
-      emit_indent(b, indent);
-      buf_puts(b, "sp_splat_print(");
-      emit_boxed(c, sx, b);
-      buf_puts(b, ");\n");
-      return;
-    }
-  }
+  if (emit_splat_io(c, arg, "sp_splat_print(", b, indent)) return;
   TyKind t = comp_ntype(c, arg);
   emit_indent(b, indent);
   /* `print n.chr`: write the byte directly. Going through the C-string
@@ -362,16 +358,7 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
 }
 void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
   /* a splat argument expands each element as its own argument */
-  if (nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "SplatNode")) {
-    int sx = nt_ref(c->nt, arg, "expression");
-    if (sx >= 0) {
-      emit_indent(b, indent);
-      buf_puts(b, "sp_splat_p(");
-      emit_boxed(c, sx, b);
-      buf_puts(b, ");\n");
-      return;
-    }
-  }
+  if (emit_splat_io(c, arg, "sp_splat_p(", b, indent)) return;
   TyKind t = comp_ntype(c, arg);
   /* an element-less hash construct ({} / Hash.new / Hash.new(default)) that no
      key usage narrowed stays TY_UNKNOWN; box it (emit_boxed carries the
