@@ -12820,11 +12820,14 @@ static int an_strbuf_alias_source(Compiler *c, int v) {
    writes are syntax, so one collection serves a whole pass. */
 typedef struct { int *head, *next; const char **wn, **rn; int n; } ALocalAliases;
 
+/* A cache cut short would read a missing alias as none, and promotion would
+   keep a slot or a copy where the handle is needed: a failed allocation
+   stops the compile instead, as argov_reserve does. */
 static void an_local_aliases_build(Compiler *c, ALocalAliases *t) {
   const NodeTable *nt = c->nt;
   memset(t, 0, sizeof *t);
   t->head = (int *)malloc(sizeof(int) * (size_t)(c->nscopes > 0 ? c->nscopes : 1));
-  if (!t->head) return;
+  if (!t->head) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int i = 0; i < c->nscopes; i++) t->head[i] = -1;
   int cap = 0;
   for (int w = comp_kind_first(c, NK_LocalVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
@@ -12842,10 +12845,8 @@ static void an_local_aliases_build(Compiler *c, ALocalAliases *t) {
       int *nn = (int *)realloc(t->next, sizeof(int) * (size_t)cap);
       const char **nw = nn ? (const char **)realloc(t->wn, sizeof(char *) * (size_t)cap) : NULL;
       const char **nr = nw ? (const char **)realloc(t->rn, sizeof(char *) * (size_t)cap) : NULL;
-      if (nn) t->next = nn;
-      if (nw) t->wn = nw;
-      if (nr) t->rn = nr;
-      if (!nn || !nw || !nr) break;
+      if (!nn || !nw || !nr) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      t->next = nn; t->wn = nw; t->rn = nr;
     }
     t->wn[t->n] = wn; t->rn[t->n] = rn;
     t->next[t->n] = t->head[si]; t->head[si] = t->n; t->n++;
@@ -14774,7 +14775,8 @@ static int an_same_name_next(Compiler *c, int i) {
       next = (int *)malloc(sizeof(int) * (size_t)(c->nscopes > 0 ? c->nscopes : 1));
       int *last = (int *)malloc(sizeof(int) * (size_t)(c->nscopes > 0 ? c->nscopes : 1));
       ANameHash names; memset(&names, 0, sizeof names);
-      if (!next || !last) { free(next); free(last); next = NULL; stamp_n = -1; return -1; }
+      /* -1 is the group's end: a missing table would cut every group short */
+      if (!next || !last) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
       for (int k = c->nscopes - 1; k >= 1; k--) {
         const char *sn = c->scopes[k].name;
         next[k] = -1;
@@ -14832,7 +14834,8 @@ static void act_add(ACallTargets *t, int mi) {
   if (t->n == t->cap) {
     int ncap = t->cap ? t->cap * 2 : 8;
     int *nv = (int *)realloc(t->v, sizeof(int) * (size_t)ncap);
-    if (!nv) return;
+    /* a dropped target is a caller left out of the handle's pull */
+    if (!nv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     t->v = nv; t->cap = ncap;
   }
   t->v[t->n++] = mi;
@@ -15859,7 +15862,7 @@ static int convert_byref_handle_params(Compiler *c,
       if (hnames.n == hcap) {
         hcap = hcap ? hcap * 2 : 64;
         unsigned *nb = (unsigned *)realloc(hbits, sizeof(unsigned) * (size_t)hcap);
-        if (!nb) break;
+        if (!nb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
         hbits = nb;
       }
       anh_add(&hnames, mk->name);
