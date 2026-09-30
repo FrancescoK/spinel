@@ -38171,7 +38171,7 @@ else {
   TyKind res = comp_ntype(c, id);
 
   /* regex literal match predicates (bool-returning, no MatchData/globals):
-     /re/.match?(str[, pos])  and  str !~ /re/  and  str.match?(/re/[, pos]) */
+     /re/.match?(str[, pos])  and  str.match?(/re/[, pos]) */
   {
     int rre = re_lit_index(c, recv);
     if (rre >= 0 && sp_streq(name, "match?") && argc == 1) {
@@ -38434,31 +38434,14 @@ else {
     if (are >= 0 && sp_streq(name, "!~") && rpoly) {
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
-      buf_printf(b, "; (_t%d.tag == SP_TAG_STR ? !sp_re_match_p(sp_re_pat_%d, _t%d.v.s)"
+      buf_printf(b, "; (_t%d.tag == SP_TAG_STR ? sp_re_match(sp_re_pat_%d, _t%d.v.s) < 0"
                     " : _t%d.tag == SP_TAG_NIL ? 1"
                     " : (sp_raise_nomethod(\"undefined method '=~' for poly\"), 0)); })",
                  tv, are, tv, tv);
       return;
     }
-    /* Poly receiver for `poly !~ /re/`: String#!~ when it holds a string,
-       true when it holds nil (NilClass#=~ is nil, so !~ negates to true), and
-       NoMethodError for any other tag -- Object#=~ was removed, so Object#!~
-       has nothing to call. The =~ arm above is the same shape; without this,
-       emit_expr handed an sp_RbVal to sp_re_match_p's const char * slot and
-       the generated C did not compile (#3374). Self-contained so it can sit
-       in a condition where a g_pre prelude would not be flushed. */
-    if (are >= 0 && sp_streq(name, "!~") && rpoly) {
-      int tv = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
-      buf_printf(b, "; (sp_bool)(_t%d.tag == SP_TAG_STR ? !sp_re_match_p(sp_re_pat_%d, _t%d.v.s)"
-                    " : _t%d.tag == SP_TAG_NIL ? 1"
-                    " : (sp_raise_nomethod(sp_sprintf(\"undefined method '!~' for an instance of %%s\","
-                    " sp_poly_class_name(_t%d))), 0)); })",
-                 tv, are, tv, tv, tv);
-      return;
-    }
     if (are >= 0 && sp_streq(name, "!~")) {
-      buf_printf(b, "(!sp_re_match_p(sp_re_pat_%d, ", are); emit_expr(c, recv, b); buf_puts(b, "))");
+      buf_printf(b, "(sp_re_match(sp_re_pat_%d, ", are); emit_expr(c, recv, b); buf_puts(b, ") < 0)");
       return;
     }
     /* Poly receiver for `poly.match?(/re/)`: String#match? when it holds a
@@ -38668,7 +38651,7 @@ else {
             free(rp.p); return;
           }
           if (sp_streq(name, "!~")) {
-            buf_printf(b, "(!sp_re_match_p(%s, ", rp.p); emit_expr(c, recv, b); buf_puts(b, "))");
+            buf_printf(b, "(sp_re_match(%s, ", rp.p); emit_expr(c, recv, b); buf_puts(b, ") < 0)");
             free(rp.p); return;
           }
           if (sp_streq(name, "match") && (argc == 1 || argc == 2)) {
@@ -38738,6 +38721,10 @@ else {
               emit_expr(c, argv[0], b);
               buf_printf(b, "), sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into String\"), sp_box_nil())", tn);
             }
+            free(rp.p); return;
+          }
+          if (sp_streq(name, "!~") && argc == 1 && a0 == TY_STRING) {
+            buf_printf(b, "(sp_re_match(%s, ", rp.p); emit_expr(c, argv[0], b); buf_puts(b, ") < 0)");
             free(rp.p); return;
           }
           if (sp_streq(name, "match") && argc == 1 && nt_ref(nt, id, "block") >= 0) {
