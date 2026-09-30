@@ -6081,9 +6081,9 @@ static const char *sp_str_format_polyarr(const char *fmt, sp_PolyArray *a) {
         nm[nl] = 0;
         if (*q != nclose) break;
         p = q + 1;
+        if (used_numbered || used_sequential) { free(buf); sp_raise_cls("ArgumentError", sp_sprintf("named%c%s%c after unnumbered(1)", c, nm, nclose)); }
         named_v = sp_fmt_named_ref(a, nm, nclose, buf);
         have_named = TRUE;
-        if (used_numbered || used_sequential) { free(buf); sp_raise_cls("ArgumentError", sp_sprintf("named%c%s%c after unnumbered(1)", c, nm, nclose)); }
         used_named = TRUE;
         if (nclose == '}') { brace_named = TRUE; break; }
       }

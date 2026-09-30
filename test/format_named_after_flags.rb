@@ -12,3 +12,4 @@ h = { v: 42 }
 p format("%05<v>d", h)
 begin; format("%s %<a>s", 1, a: 2); rescue ArgumentError => e; p e.message; end
 begin; format("%<a>s %s", { a: 2 }); rescue ArgumentError => e; p e.message; end
+begin; format("%s %{missing}", "x", {}); rescue => e; puts "#{e.class}: #{e.message}"; end

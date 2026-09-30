@@ -8,3 +8,4 @@
 "00042"
 "named<a> after unnumbered(1)"
 "unnumbered(1) mixed with named"
+ArgumentError: named{missing} after unnumbered(1)
