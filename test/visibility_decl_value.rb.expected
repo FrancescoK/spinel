@@ -1,0 +1,32 @@
+:f
+:g
+:h
+[:a, :b]
+:a
+[:a, :b]
+[:b]
+nil
+nil
+K
+K
+1
+2
+3
+2
+4
+5
+6
+true
+true
+true
+true
+true
+true
+true
+false
+false
+false
+:mf
+:plain
+7
+8

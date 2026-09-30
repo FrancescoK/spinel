@@ -1155,6 +1155,63 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
   g_cbody_direct = saved_direct;
 }
 
+/* A `module_function` call of module `ci`'s body: bare, it turns on the mode
+   for the defs that follow; `module_function :m1, :m2` (or a def) marks the
+   named methods. 1 when `s` is one. */
+static int mf_call_apply(Compiler *c, int ci, int s, int *in_mf) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, s) != NK_CallNode || nt_ref(nt, s, "receiver") >= 0) return 0;
+  const char *nm = nt_str(nt, s, "name");
+  if (!nm || !sp_streq(nm, "module_function")) return 0;
+  int an = 0;
+  int anode = nt_ref(nt, s, "arguments");
+  const int *aargs = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+  if (an == 0) { *in_mf = 1; return 1; }
+  for (int ai = 0; ai < an; ai++) {
+    const char *aty = nt_type(nt, aargs[ai]);
+    const char *aval = NULL;
+    if (aty && sp_streq(aty, "SymbolNode")) aval = nt_str(nt, aargs[ai], "value");
+    else if (aty && sp_streq(aty, "DefNode") && nt_ref(nt, aargs[ai], "receiver") < 0)
+      aval = nt_str(nt, aargs[ai], "name");
+    if (!aval) continue;
+    for (int mi = 0; mi < c->nscopes; mi++) {
+      if (c->scopes[mi].class_id == ci && !c->scopes[mi].is_cmethod &&
+          c->scopes[mi].name && sp_streq(c->scopes[mi].name, aval)) {
+        c->scopes[mi].is_cmethod = 1;
+        c->scopes[mi].is_module_function = 1;
+      }
+    }
+  }
+  return 1;
+}
+
+/* A `module_function` call inside a body statement's value takes effect as
+   the bare statement does. Nested bodies with their own self are not
+   walked. */
+static void mf_apply_nested(Compiler *c, int ci, int node, int *in_mf) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
+      k == NK_BlockNode || k == NK_LambdaNode)
+    return;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) {
+    int ch = nt_ref_at(nt, node, i);
+    if (ch < 0) continue;
+    mf_call_apply(c, ci, ch, in_mf);
+    mf_apply_nested(c, ci, ch, in_mf);
+  }
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, node, i, &m);
+    for (int j = 0; j < m; j++) {
+      mf_call_apply(c, ci, ids[j], in_mf);
+      mf_apply_nested(c, ci, ids[j], in_mf);
+    }
+  }
+}
+
 /* Mark methods following `module_function` in a module body as class-level
    (is_cmethod=1, no self param). This lets them be called as bare functions
    when their module is included at the top level. */
@@ -1203,32 +1260,9 @@ void register_module_functions(Compiler *c) {
       int s = stmts[k];
       const char *sty = nt_type(nt, s);
       if (!sty) continue;
-      if (sp_streq(sty, "CallNode") && nt_ref(nt, s, "receiver") < 0) {
-        const char *nm = nt_str(nt, s, "name");
-        if (nm && sp_streq(nm, "module_function")) {
-          /* `module_function :m1, :m2` form: mark named methods */
-          int an = 0;
-          int anode = nt_ref(nt, s, "arguments");
-          const int *aargs = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
-          if (an == 0) { in_module_function = 1; continue; }
-          for (int ai = 0; ai < an; ai++) {
-            const char *aty = nt_type(nt, aargs[ai]);
-            const char *aval = NULL;
-            if (aty && sp_streq(aty, "SymbolNode")) aval = nt_str(nt, aargs[ai], "value");
-            else if (aty && sp_streq(aty, "DefNode") && nt_ref(nt, aargs[ai], "receiver") < 0)
-              aval = nt_str(nt, aargs[ai], "name");
-            if (!aval) continue;
-            for (int mi = 0; mi < c->nscopes; mi++) {
-              if (c->scopes[mi].class_id == ci && !c->scopes[mi].is_cmethod &&
-                  c->scopes[mi].name && sp_streq(c->scopes[mi].name, aval)) {
-                c->scopes[mi].is_cmethod = 1;
-                c->scopes[mi].is_module_function = 1;
-              }
-            }
-          }
-          continue;
-        }
-      }
+      if (mf_call_apply(c, ci, s, &in_module_function)) continue;
+      /* `x = module_function def m`, `p(module_function :m)` */
+      mf_apply_nested(c, ci, s, &in_module_function);
       if (sp_streq(sty, "DefNode") && in_module_function) {
         const char *mname = nt_str(nt, s, "name");
         if (!mname) continue;
@@ -1296,6 +1330,113 @@ static void vis_alias(ClassInfo *cls, const char *nw, const char *od) {
     if (sp_streq(cls->vis_names[i], od)) { comp_method_vis_set(cls, nw, cls->vis_kinds[i]); return; }
 }
 
+/* One `private` / `protected` / `public` call of a class body: bare, it
+   switches the section mode in *cur; otherwise it records the named methods'
+   visibility. */
+static void vis_apply_call(Compiler *c, ClassInfo *cls, int s, int kind, int sg, int *cur) {
+  const NodeTable *nt = c->nt;
+  int args = nt_ref(nt, s, "arguments");
+  int an = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an == 0) { *cur = kind; return; }  /* bare: switch the section mode */
+  for (int i = 0; i < an; i++) {
+    const char *aty = nt_type(nt, argv[i]);
+    const char *mn = vis_arg_name(nt, argv[i]);
+    if (mn) { vis_record(cls, mn, kind, sg); continue; }
+    if (nt_kind(nt, argv[i]) == NK_ArrayNode) {  /* private [:a, :b] */
+      int en = 0; const int *ev = nt_arr(nt, argv[i], "elements", &en);
+      for (int j = 0; j < en; j++) {
+        const char *emn = vis_arg_name(nt, ev[j]);
+        if (emn) vis_record(cls, emn, kind, sg);
+      }
+      continue;
+    }
+    if (aty && sp_streq(aty, "DefNode")) {
+      const char *dn = nt_str(nt, argv[i], "name");
+      if (dn && nt_ref(nt, argv[i], "receiver") < 0)
+        vis_record(cls, dn, kind, sg);
+    }
+    else if (aty && sp_streq(aty, "CallNode")) {
+      const char *dn = dm_defined_name(nt, argv[i]);
+      const char *acn = nt_str(nt, argv[i], "name");
+      if (dn) vis_record(cls, dn, kind, sg);  /* private define_method(:m) { } */
+      else if (acn && sp_streq(acn, "alias_method")) {  /* private alias_method :a, :b */
+        int aa = nt_ref(nt, argv[i], "arguments");
+        int aan = 0;
+        const int *aav = aa >= 0 ? nt_arr(nt, aa, "arguments", &aan) : NULL;
+        const char *anm = aan == 2 ? vis_arg_name(nt, aav[0]) : NULL;
+        if (anm) vis_record(cls, anm, kind, sg);
+      }
+      else vis_apply_attr(c, cls, argv[i], kind, sg);  /* private attr_reader :x */
+    }
+  }
+}
+
+static int vis_call_kind(const NodeTable *nt, int s) {
+  if (s < 0 || nt_kind(nt, s) != NK_CallNode || nt_ref(nt, s, "receiver") >= 0) return -1;
+  const char *nm = nt_str(nt, s, "name");
+  return !nm ? -1 : sp_streq(nm, "private")   ? SP_VIS_PRIVATE   :
+                    sp_streq(nm, "protected") ? SP_VIS_PROTECTED :
+                    sp_streq(nm, "public")    ? SP_VIS_PUBLIC : -1;
+}
+
+static int vis_cmethod_call_kind(const NodeTable *nt, int s) {
+  if (s < 0 || nt_kind(nt, s) != NK_CallNode || nt_ref(nt, s, "receiver") >= 0) return -1;
+  const char *nm = nt_str(nt, s, "name");
+  return !nm ? -1 : sp_streq(nm, "private_class_method") ? SP_VIS_PRIVATE :
+                    sp_streq(nm, "public_class_method")  ? SP_VIS_PUBLIC : -1;
+}
+
+/* private_class_method / public_class_method: the named class methods'
+   visibility */
+static void vis_apply_cmethod_call(ClassInfo *cls, const NodeTable *nt, int s, int ckind) {
+  int args = nt_ref(nt, s, "arguments");
+  int an = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  for (int i = 0; i < an; i++) {
+    int en = 1;
+    const int *ev = &argv[i];
+    if (nt_kind(nt, argv[i]) == NK_ArrayNode) ev = nt_arr(nt, argv[i], "elements", &en);
+    for (int j = 0; ev && j < en; j++) {
+      const char *mn = vis_arg_name(nt, ev[j]);
+      /* private_class_method def self.m ... end */
+      if (!mn && nt_kind(nt, ev[j]) == NK_DefNode && nt_ref(nt, ev[j], "receiver") >= 0)
+        mn = nt_str(nt, ev[j], "name");
+      if (mn) comp_cmethod_vis_set(cls, mn, ckind);
+    }
+  }
+}
+
+/* A visibility call inside a class-body statement's value (`x = private def
+   m`, `p(private :a)`) takes effect as the bare statement does. Nested bodies
+   with their own self are not walked. */
+static void vis_apply_nested(Compiler *c, ClassInfo *cls, int node, int sg, int *cur) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
+      k == NK_BlockNode || k == NK_LambdaNode)
+    return;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) {
+    int ch = nt_ref_at(nt, node, i);
+    int kind = vis_call_kind(nt, ch), ckind = sg ? -1 : vis_cmethod_call_kind(nt, ch);
+    if (kind >= 0) vis_apply_call(c, cls, ch, kind, sg, cur);
+    if (ckind >= 0) vis_apply_cmethod_call(cls, nt, ch, ckind);
+    vis_apply_nested(c, cls, ch, sg, cur);
+  }
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, node, i, &m);
+    for (int j = 0; j < m; j++) {
+      int kind = vis_call_kind(nt, ids[j]), ckind = sg ? -1 : vis_cmethod_call_kind(nt, ids[j]);
+      if (kind >= 0) vis_apply_call(c, cls, ids[j], kind, sg, cur);
+      if (ckind >= 0) vis_apply_cmethod_call(cls, nt, ids[j], ckind);
+      vis_apply_nested(c, cls, ids[j], sg, cur);
+    }
+  }
+}
+
 /* Walk one class/module body in lexical order, recording each method's
    visibility (default public). Handles a bare `private`/`protected`/`public`
    (switches the mode for following defs/attrs), the `private :a, :b` /
@@ -1331,6 +1472,7 @@ static void register_method_visibility_body(Compiler *c, ClassInfo *cls, int bod
       if (!sg) vis_alias(cls, nn >= 0 ? vis_arg_name(nt, nn) : NULL, on >= 0 ? vis_arg_name(nt, on) : NULL);
       continue;
     }
+    vis_apply_nested(c, cls, s, sg, &cur);
     if (!sp_streq(sty, "CallNode") || nt_ref(nt, s, "receiver") >= 0) continue;
     const char *nm = nt_str(nt, s, "name");
     if (!nm) continue;
@@ -1343,58 +1485,14 @@ static void register_method_visibility_body(Compiler *c, ClassInfo *cls, int bod
     }
     const char *dmn = dm_defined_name(nt, s);
     if (dmn) { vis_record(cls, dmn, cur, sg); continue; }
-    int ckind = sg ? -1 :
-                sp_streq(nm, "private_class_method") ? SP_VIS_PRIVATE :
-                sp_streq(nm, "public_class_method")  ? SP_VIS_PUBLIC : -1;
+    int ckind = sg ? -1 : vis_cmethod_call_kind(nt, s);
     if (ckind >= 0) {
-      int args = nt_ref(nt, s, "arguments");
-      int an = 0;
-      const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      for (int i = 0; i < an; i++) {
-        int en = 1;
-        const int *ev = &argv[i];
-        if (nt_kind(nt, argv[i]) == NK_ArrayNode) ev = nt_arr(nt, argv[i], "elements", &en);
-        for (int j = 0; ev && j < en; j++) {
-          const char *mn = vis_arg_name(nt, ev[j]);
-          /* private_class_method def self.m ... end */
-          if (!mn && nt_kind(nt, ev[j]) == NK_DefNode && nt_ref(nt, ev[j], "receiver") >= 0)
-            mn = nt_str(nt, ev[j], "name");
-          if (mn) comp_cmethod_vis_set(cls, mn, ckind);
-        }
-      }
+      vis_apply_cmethod_call(cls, nt, s, ckind);
       continue;
     }
-    int kind = sp_streq(nm, "private")   ? SP_VIS_PRIVATE   :
-               sp_streq(nm, "protected") ? SP_VIS_PROTECTED :
-               sp_streq(nm, "public")    ? SP_VIS_PUBLIC : -1;
+    int kind = vis_call_kind(nt, s);
     if (kind >= 0) {
-      int args = nt_ref(nt, s, "arguments");
-      int an = 0;
-      const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      if (an == 0) { cur = kind; continue; }  /* bare: switch the section mode */
-      for (int i = 0; i < an; i++) {
-        const char *aty = nt_type(nt, argv[i]);
-        const char *mn = vis_arg_name(nt, argv[i]);
-        if (mn) { vis_record(cls, mn, kind, sg); continue; }
-        if (aty && sp_streq(aty, "DefNode")) {
-          const char *dn = nt_str(nt, argv[i], "name");
-          if (dn && nt_ref(nt, argv[i], "receiver") < 0)
-            vis_record(cls, dn, kind, sg);
-        }
-        else if (aty && sp_streq(aty, "CallNode")) {
-          const char *dn = dm_defined_name(nt, argv[i]);
-          const char *acn = nt_str(nt, argv[i], "name");
-          if (dn) vis_record(cls, dn, kind, sg);  /* private define_method(:m) { } */
-          else if (acn && sp_streq(acn, "alias_method")) {  /* private alias_method :a, :b */
-            int aa = nt_ref(nt, argv[i], "arguments");
-            int aan = 0;
-            const int *aav = aa >= 0 ? nt_arr(nt, aa, "arguments", &aan) : NULL;
-            const char *anm = aan == 2 ? vis_arg_name(nt, aav[0]) : NULL;
-            if (anm) vis_record(cls, anm, kind, sg);
-          }
-          else vis_apply_attr(c, cls, argv[i], kind, sg);  /* private attr_reader :x */
-        }
-      }
+      vis_apply_call(c, cls, s, kind, sg, &cur);
       continue;
     }
     /* Record attr visibility unconditionally (like a plain `def`), so a public

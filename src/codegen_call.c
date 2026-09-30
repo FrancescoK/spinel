@@ -30706,6 +30706,35 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     return;
   }
 
+  /* `x = private def m ... end` in a class body: the visibility was recorded
+     at analysis time and the def is emitted with the class; the value is the
+     name, the Array of names, or nil for the bare form (the class itself for
+     private_class_method). */
+  {
+    int vk = vis_decl_call(c, id);
+    if (vk == VIS_DECL_NIL) { buf_puts(b, "0"); return; }
+    if (vk == VIS_DECL_SELF) { buf_printf(b, "((sp_Class){%d})", self_class_body(c, id)); return; }
+    if (vk == VIS_DECL_SYM) {
+      const char *vn = nt_kind(nt, argv[0]) == NK_DefNode ? nt_str(nt, argv[0], "name")
+                                                          : nt_str(nt, argv[0], "value");
+      buf_printf(b, "((sp_sym)%d)", comp_sym_intern(c, vn ? vn : ""));
+      return;
+    }
+    if (vk == VIS_DECL_ARRAY) {
+      int en = argc; const int *ev = argv;
+      if (argc == 1 && nt_kind(nt, argv[0]) == NK_ArrayNode) ev = nt_arr(nt, argv[0], "elements", &en);
+      int ta = ++g_tmp;
+      buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new();", ta);
+      for (int i = 0; i < en; i++) {
+        const char *vn = nt_kind(nt, ev[i]) == NK_DefNode ? nt_str(nt, ev[i], "name")
+                                                          : nt_str(nt, ev[i], "value");
+        buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym((sp_sym)%d));", ta, comp_sym_intern(c, vn ? vn : ""));
+      }
+      buf_printf(b, " _t%d; })", ta);
+      return;
+    }
+  }
+
   /* `r = attr_accessor :a` in a class body: the definitions were made at
      analysis time; the value is the Array of the method names, readers
      before writers per name ([:a, :a=]). A writer's name is a symbol the

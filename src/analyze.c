@@ -2294,6 +2294,42 @@ int self_class_body(Compiler *c, int node) {
   return c->node_cbody[node];
 }
 
+/* A receiver-less private / protected / public / module_function in a class
+   or module body, bare or naming its methods by Symbol literals, `def`s or
+   one Array of Symbols. Its value is nil bare (VIS_DECL_NIL), the name for
+   one Symbol or def (VIS_DECL_SYM), and the Array of names otherwise
+   (VIS_DECL_ARRAY). private_class_method / public_class_method naming
+   Symbols or `def self.m`s answer the class itself (VIS_DECL_SELF). 0 when
+   `id` is not one of these. */
+int vis_decl_call(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "receiver") >= 0) return 0;
+  if (nt_ref(nt, id, "block") >= 0) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm) return 0;
+  int cm = sp_streq(nm, "private_class_method") || sp_streq(nm, "public_class_method");
+  if (!cm && !sp_streq(nm, "private") && !sp_streq(nm, "protected") && !sp_streq(nm, "public") &&
+      !sp_streq(nm, "module_function"))
+    return 0;
+  if (self_class_body(c, id) < 0) return 0;
+  int args = nt_ref(nt, id, "arguments");
+  int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an == 0) return cm ? 0 : VIS_DECL_NIL;
+  if (an == 1 && nt_kind(nt, av[0]) == NK_ArrayNode) {
+    int en = 0; const int *ev = nt_arr(nt, av[0], "elements", &en);
+    for (int i = 0; i < en; i++)
+      if (nt_kind(nt, ev[i]) != NK_SymbolNode) return 0;
+    return cm ? VIS_DECL_SELF : VIS_DECL_ARRAY;
+  }
+  for (int i = 0; i < an; i++) {
+    NodeKind k = nt_kind(nt, av[i]);
+    if (k == NK_SymbolNode) continue;
+    if (k == NK_DefNode && (nt_ref(nt, av[i], "receiver") >= 0) == cm) continue;
+    return 0;
+  }
+  return cm ? VIS_DECL_SELF : an == 1 ? VIS_DECL_SYM : VIS_DECL_ARRAY;
+}
+
 /* A receiver-less attr_reader / attr_writer / attr_accessor / attr in a class
    body whose names are all Symbol literals: its value is the Array of the
    method names it defines. 1 when `id` is one. */
