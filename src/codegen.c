@@ -6784,6 +6784,17 @@ else if (orecv >= 0 && onm) {
       /* either nil makes it nullable, as an Integer's below */
       if (lv && pt == TY_FLOAT) lv->nullable_int = 1;
     }
+    else if (pt == TY_STRBUF && k < 16) {
+      /* A String parameter the body appends to is the shared handle (#6179):
+         it reads the boxed channel every call publishes, which carries the
+         caller's handle when the caller's String is one, and a plain String
+         otherwise, wrapped in a handle of its own (sp_poly_as_strbuf). The
+         sp_int slot holds bytes, never a handle. */
+      g_needs_proc_poly_argslot = 1;
+      buf_printf(pb, "(argc > %d) ? sp_poly_as_strbuf(_sp_proc_poly_args[%d]) : NULL;\n", k, k);
+      /* the handle made for a plain String is held by nothing else */
+      buf_printf(pb, "    SP_GC_ROOT(lv_%s);\n", p);
+    }
     else if (proc_slot_is_ptr(pt)) {
       buf_printf(pb, "(argc > %d) ? (", k); emit_ctype(c, pt, pb);
       buf_printf(pb, ")(uintptr_t)args[%d] : NULL;\n", k);

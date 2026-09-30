@@ -38,6 +38,23 @@ void analyze_program(Compiler *c);
 int an_re_has_captures(const char *src);
 int an_send_name_is_computed(Compiler *c, int arg);
 int an_str_mutator_name(const char *nm);
+/* A String handed to a proc, a lambda or a Method (#6179): what the targets
+   a `.call` / `.()` / `[]` / `.yield` / `===` on a Proc or Method value can
+   reach do with its argument at one position. Filled by dyn_call_reach, for
+   a node dyn_call_site accepts. */
+typedef struct {
+  int app;               /* a target appends to the parameter (or hands it on to one that does) */
+  int unknown;           /* a target is not known */
+  int keeps;             /* a known target reads the plain value and may keep it */
+  const char *unlifted;  /* a target reached through a path not shared yet ("bind", "curry") */
+  const char *pname;     /* a parameter it binds, for a diagnostic */
+  const char *mname;     /* the method it binds, when the target is one */
+} DynReach;
+int dyn_call_site(Compiler *c, int n);
+void dyn_call_reach(Compiler *c, int n, int k, DynReach *r);
+void dyn_value_reach(Compiler *c, int v, int k, DynReach *r);
+int dyn_method_appends(Compiler *c, int mi, int j);
+int dyn_block_appends(Compiler *c, int blk, int k);
 int an_indexed_each_source(const NodeTable *nt, int recv);
 void an_node_dir(const NodeTable *nt, int id, char *dir, size_t cap);
 const char *an_memo_reader_ivar(Compiler *c, int mi);

@@ -13154,17 +13154,19 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
        A `<<` whose receiver is an ASSIGNABLE slot REBINDS the result: a
        plain-string runtime value appends by concat (sp_poly_shl returns the
        new box), so discarding the result loses the append (#3325); arrays
-       and shared handles return the receiver, making the rebind an identity.
-       The rebind routes through the value form so a user-defined `<<` still
-       dispatches per class. */
+       and shared handles return the receiver. Only a plain String takes the
+       result back: a user-defined `<<`, which the value form still
+       dispatches per class, may answer something that is not the receiver,
+       and the slot keeps its object. */
     if (sp_streq(name, "<<") && argc == 1 && nt_type(nt, recv) &&
         (sp_streq(nt_type(nt, recv), "LocalVariableReadNode") ||
          sp_streq(nt_type(nt, recv), "InstanceVariableReadNode"))) {
+      int was = ++g_tmp, got = ++g_tmp;
       emit_indent(b, indent);
-      emit_expr(c, recv, b);
-      buf_puts(b, " = ");
-      emit_call(c, id, b);
-      buf_puts(b, ";\n");
+      buf_printf(b, "{ sp_RbVal _t%d = ", was); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_RbVal _t%d = ", got); emit_call(c, id, b);
+      buf_printf(b, "; if (_t%d.tag == SP_TAG_STR) ", was); emit_expr(c, recv, b);
+      buf_printf(b, " = _t%d; }\n", got);
       return 1;
     }
     /* Skip when a user class defines the name -- the poly value may be that

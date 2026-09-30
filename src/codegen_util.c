@@ -785,6 +785,13 @@ const char *g_yield_lowered_blk_fallback = NULL;
    this holds the C expression for that proc; the inlined `yield` calls it via
    sp_proc_call instead of splicing a block body. NULL otherwise. */
 const char *g_yield_proc_ref = NULL;
+/* The block argument's value behind g_yield_proc_ref, when the inline that
+   set it could name one (`run(s, &method(:m))`, `run(s, &pr)`), and the ref
+   it was named for: a yield checks the pair still matches before it trusts
+   the node, since the ref is swapped in more places than this is. -1 when
+   unknown. Read by refuse_yield_string_copies (#6179). */
+int g_yield_proc_expr = -1;
+const char *g_yield_proc_expr_ref = NULL;
 /* The inlined call's return-slot type while g_yield_proc_ref is set: sp_proc_call
    yields poly, but the slot may be concrete (the analyzer typed this forwarding
    context), so a value-position yield unboxes its result to this. */

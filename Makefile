@@ -1104,6 +1104,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (#4480: a typed array copied into a mutated general-Array parameter compiled)"; ok=0; \
 	else grep -q "which the method mutates" "$$tmp/tp.out" || \
 	  { echo "reject-test: FAIL (#4480: rejected without saying why)"; sed -n 1,5p "$$tmp/tp.out"; ok=0; }; fi; \
+	t=test/reject/string_append_through_new.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sn.c" >"$$tmp/sn.out" 2>&1; then \
+	  echo "reject-test: FAIL (#6179: a String variable copied into an appending initialize compiled)"; ok=0; \
+	else grep -q "which the method appends to" "$$tmp/sn.out" || \
+	  { echo "reject-test: FAIL (#6179: rejected without saying why)"; sed -n 1,5p "$$tmp/sn.out"; ok=0; }; fi; \
 	t=test/reject/typed_array_kept_by_ivar_into_boxed_param_store.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/tb.c" >"$$tmp/tb.out" 2>&1; then \
 	  echo "reject-test: FAIL (a typed array held by the caller, stored into through a boxed parameter, compiled)"; ok=0; \
@@ -1493,7 +1498,8 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/shared_handle_nonunique_callee.rb \
                   test/shared_handle_poly_args.rb \
                   test/instance_exec_args_caller_self.rb \
-                  test/class_value_dispatch_args.rb
+                  test/class_value_dispatch_args.rb \
+                  test/string_handle_proc_method.rb
 
 # Each program runs with the minor mark off and on and must answer the same;
 # then once more under the generational verifier with stress on (every
@@ -2288,6 +2294,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	$(SPINEL) test/infer/poly_dispatch_out_of_line.rb -c -o "$$tmp/pdl_lm.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_dispatch_out_of_line: -c with line map)"; ok=0; }; \
 	awk '/^#line /{seen=1; d=1; next} seen && !d && !c && !/^#/ {bad++} {d=0; c=/\\$$/} END{exit bad>0}' "$$tmp/pdl_lm.c" || { echo "infer-test: FAIL (#4940 a C line after a statement's first is not re-anchored to its Ruby line)"; ok=0; }; \
 	grep -B1 '^static .*sp_pd_[0-9]*(sp_RbVal _t0) {' "$$tmp/pdl_lm.c" | grep -q '^#line 12 "test/infer/poly_dispatch_out_of_line.rb"' || { echo "infer-test: FAIL (#4928 an out-of-line dispatch function does not name the call site it came from)"; ok=0; }; \
+	$(SPINEL) test/infer/string_handle_proc_reader.rb -c --no-line-map -o "$$tmp/shr.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (string_handle_proc_reader: -c)"; ok=0; }; \
+	grep -q 'const char \* lv_r = (argc > 0) ? (const char \*)(uintptr_t)args\[0\]' "$$tmp/shr.c" && grep -q 'const char \* lv_line = NULL;' "$$tmp/shr.c" && grep -q 'sp_String \* lv_buf = NULL;' "$$tmp/shr.c" || { echo "infer-test: FAIL (#6179 a proc that only reads its String took the shared handle)"; ok=0; }; \
 	$(SPINEL) test/infer/tally_typed.rb -c --no-line-map -o "$$tmp/tly.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (tally_typed: -c)"; ok=0; }; \
 	grep -q '^static inline sp_IntIntHash \* sp___enum_tally__[0-9]*(' "$$tmp/tly.c" && grep -q '^static inline sp_StrIntHash \* sp___enum_tally__[0-9]*(' "$$tmp/tly.c" || { echo "infer-test: FAIL (tally over a typed array answers a boxed hash)"; ok=0; }; \
 	$(SPINEL) test/infer/param_narrow_super_route.rb -c --no-line-map -o "$$tmp/psr.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (param_narrow_super_route: -c)"; ok=0; }; \

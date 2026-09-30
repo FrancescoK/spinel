@@ -494,6 +494,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   char yprocbuf[128];  /* holds "lv_" + a rename_local result (g_ren_to width 112) */
   const char *fwd_yield_proc = NULL;
   int fwd_proc_expr = -1, fwd_proc_tmp = 0;
+  int fwd_value = -1;   /* the block argument's value, for g_yield_proc_expr */
   /* `inner(&)` / `inner(&block)`: a BlockArgumentNode forwards the block
      active at this (already-inlined) site, not a fresh literal. */
   if (block >= 0 && nt_type(nt, block) && sp_streq(nt_type(nt, block), "BlockArgumentNode")) {
@@ -524,6 +525,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
         g_block_param_name && sp_streq(pn, g_block_param_name)) {
       snprintf(yprocbuf, sizeof yprocbuf, "%s", g_yield_proc_ref);
       fwd_yield_proc = yprocbuf;
+      if (g_yield_proc_expr_ref == g_yield_proc_ref) fwd_value = g_yield_proc_expr;
     }
     /* The same forward at a site that has NO block and no proc either: the
        enclosing method was called blockless, so the callee's `yield` has
@@ -537,6 +539,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     else if (no_encl && plv && plv->type == TY_PROC && !plv->is_cell) {
       snprintf(yprocbuf, sizeof yprocbuf, "lv_%s", rename_local(pn));
       fwd_yield_proc = yprocbuf;
+      fwd_value = fexpr;
     }
     /* Any other first-class callable passed with `&` -- a lambda literal, a
        `method(:m)`, a Proc read out of a container -- is hoisted into a temp
@@ -549,6 +552,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
         fwd_proc_tmp = ++g_tmp;
         snprintf(yprocbuf, sizeof yprocbuf, "_t%d", fwd_proc_tmp);
         fwd_yield_proc = yprocbuf;
+        fwd_value = fexpr;
       }
     }
     /* a proc value drives the yields; the site's own block is not this one */
@@ -663,6 +667,9 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   const char *saved_ypr = g_yield_proc_ref;
   TyKind saved_yslot = g_yield_slot_ty;
   g_yield_proc_ref = fwd_yield_proc;   /* NULL clears it for a normal inline */
+  int saved_ype = g_yield_proc_expr; const char *saved_yper = g_yield_proc_expr_ref;
+  g_yield_proc_expr = fwd_yield_proc ? fwd_value : -1;
+  g_yield_proc_expr_ref = fwd_yield_proc;
   g_yield_slot_ty = TY_UNKNOWN;        /* set to the inline's return type below */
   /* the literal block binds to THIS call site's break scope; a forwarded
      BlockArgumentNode block keeps its original definition-site scope */
@@ -905,6 +912,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_nren = saved_nren;
   g_block_id = saved_block;
   g_yield_proc_ref = saved_ypr;
+  g_yield_proc_expr = saved_ype; g_yield_proc_expr_ref = saved_yper;
   g_yield_slot_ty = saved_yslot;
   g_block_brk_var = saved_bbv; g_yield_blk_brk_fallback = saved_yfbv;
   g_block_brk_ebase = saved_bbe; g_yield_blk_brk_efallback = saved_yfbe;
@@ -990,6 +998,11 @@ const char *blockless_block_param_call_name(Compiler *c, int id) {
    trailing `**h` that passes nothing when empty, makes the count dynamic:
    the args are collected into an array and spread at run time. */
 void emit_proc_yield(Compiler *c, const char *ref, int yargc, const int *yargv, Buf *b) {
+  /* the proc behind the yield, when the inline that drives it named one */
+  { int sv = g_yield_proc_expr;
+    if (!ref || g_yield_proc_expr_ref != g_yield_proc_ref || ref != g_yield_proc_ref) g_yield_proc_expr = -1;
+    refuse_yield_string_copies(c, yargc, yargv);
+    g_yield_proc_expr = sv; }
   if (call_args_need_spread(c->nt, yargv, yargc)) {
     char kwp[24];
     int ta = emit_spread_args_kw(c, yargv, yargc, kwp, sizeof kwp);
@@ -997,7 +1010,7 @@ void emit_proc_yield(Compiler *c, const char *ref, int yargc, const int *yargv, 
     return;
   }
   buf_printf(b, "sp_proc_yield(%s, ", ref);
-  emit_proc_call_args(c, yargc, yargv, b, 1);
+  emit_proc_call_args(c, -1, yargc, yargv, b, 1);
 }
 
 /* Emit a call to the forwarded real-proc block (g_yield_proc_ref) with the
