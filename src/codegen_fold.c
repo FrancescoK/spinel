@@ -1129,9 +1129,20 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
       emit_indent(g_pre, din); buf_puts(g_pre, "{\n"); din++;
       emit_indent(g_pre, din); emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, rk, trecv, ti);
     }
-    else if (!splat || !emit_iter_autosplat(c, block, rt, es, din)) {
-      splat = 0;
-      emit_indent(g_pre, din); buf_printf(g_pre, "lv_%s = %s;\n", p0, es);
+    else {
+      /* the element is kept as it was before the block ran, which may
+         replace the receiver's entry */
+      char sel[24] = "";
+      if (splat) {
+        int tel = ++g_tmp;
+        snprintf(sel, sizeof sel, "_t%d", tel);
+        emit_indent(g_pre, din); buf_printf(g_pre, "sp_RbVal %s = %s; SP_GC_ROOT_RBVAL(%s);\n", sel, es, sel);
+      }
+      if (!splat || !emit_iter_autosplat(c, block, rt, sel, din)) {
+        splat = 0;
+        emit_indent(g_pre, din); buf_printf(g_pre, "lv_%s = %s;\n", p0, es);
+      }
+      else snprintf(es, sizeof es, "%s", sel);
     }
     for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, din);
     int tkey = ++g_tmp, tdup = ++g_tmp, tj = ++g_tmp;

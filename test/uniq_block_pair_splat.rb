@@ -15,3 +15,7 @@ p b.uniq { |k, v| v }
 b.uniq! { |k, v| v }
 p b
 p({1 => 2, 3 => 2}.uniq { |k, v| k })
+
+# the element is the one yielded, even if the block replaces its entry
+m = [[1, 2], [3, 4]]
+p m.uniq { |x, y| m[0] = [9, 9]; y }
