@@ -307,6 +307,9 @@ typedef struct { int pn, num, P, O, Q, R, nk, kw, lambda; } BlockSig;
 void block_sig(Compiler *c, int params, int lambda, BlockSig *s);
 const char *block_sig_name(Compiler *c, const BlockSig *s, int i);
 const char *block_sig_kw_name(Compiler *c, const BlockSig *s, int k);
+/* What block_site_types records per positional beside its type: a site may
+   leave it without a value (BS_ABSENT), or pass it a literal nil (BS_NIL). */
+enum { BS_ABSENT = 1, BS_NIL = 2 };
 void block_site_types(Compiler *c, const BlockSig *s, const int *av, int ac,
                       TyKind *pos, char *absent, TyKind *kws);
 int block_settle_types(Compiler *c, int blk, const BlockSig *s,

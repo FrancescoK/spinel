@@ -5994,9 +5994,11 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
    default node `dv` (or `fallback` when dv < 0) is evaluated. A default can
    need helper statements (an array or hash literal allocates into a temp), so
    they run in the else branch, and the slot is rooted: an allocated default
-   has no other reference. */
+   has no other reference. A `nilable` Integer slot takes a nil, passed or
+   defaulted, as its own nil (emit_unbox_nilable_text). */
 static void emit_proc_param_slot(Compiler *c, Buf *pb, const char *name, const char *cond,
-                                 const char *arg, int dv, const char *fallback, TyKind lt) {
+                                 const char *arg, int dv, const char *fallback, TyKind lt,
+                                 int nilable) {
   Buf dpre = {0}, dval = {0};
   Buf *sv_pre = g_pre; int sv_ind = g_indent;
   g_pre = &dpre; g_indent = 3;
@@ -6018,7 +6020,8 @@ static void emit_proc_param_slot(Compiler *c, Buf *pb, const char *name, const c
     char src[160];
     snprintf(src, sizeof src, "_pv_%s", name);
     Buf ub = {0};
-    emit_unbox_text(c, lt, src, &ub);
+    if (nilable) emit_unbox_nilable_text(c, lt, src, &ub);
+    else emit_unbox_text(c, lt, src, &ub);
     buf_printf(pb, "    %s lv_%s = %s;", c_type_name(lt), name, ub.p);
     if (proc_slot_is_ptr(lt)) buf_printf(pb, " SP_GC_ROOT(lv_%s);", name);
     buf_printf(pb, " (void)lv_%s;\n", name);
@@ -6772,13 +6775,24 @@ else if (orecv >= 0 && onm) {
       const char *nilv = (pt == TY_INT || pt == TY_BOOL) ? "SP_INT_NIL"
                        : (pt == TY_FLOAT) ? "sp_float_nil()"
                        : (pt == TY_SYMBOL) ? "((sp_sym)-1)" : NULL;
+      if (nilv && pt == TY_INT && k < 16) {
+        /* A nil the call passes arrives in the sp_int slot as the 0 its call
+           site put there (emit_proc_call_args), where it read as 0. Only the
+           boxed side channel, which every call path publishes and a poly
+           parameter reads, tells it from a 0. */
+        g_needs_proc_poly_argslot = 1;
+        buf_printf(pb, "(argc > %d) ? (_sp_proc_poly_args[%d].tag == SP_TAG_NIL ? SP_INT_NIL : args[%d]) : %s;\n",
+                   k, k, k, nilv);
+      }
+      else if (nilv) buf_printf(pb, "(argc > %d) ? args[%d] : %s;\n", k, k, nilv);
       if (nilv) {
-        buf_printf(pb, "(argc > %d) ? args[%d] : %s;\n", k, k, nilv);
         /* The binding we just wrote is what makes this slot nullable: called
-           with fewer arguments the param holds the sentinel, so boxing it in
-           the body (`[a, b, c]`, `a == nil`) has to answer nil rather than
-           carry INTPTR_MIN through as a truthy integer. Marked here rather
-           than in analyze because this is where the fallback is decided. */
+           with fewer arguments, or passed a nil, the param holds the
+           sentinel, so boxing it in the body (`[a, b, c]`, `a == nil`) has
+           to answer nil rather than carry INTPTR_MIN through as a truthy
+           integer. Analysis marks it too where it sees the call that does
+           (cs_type_params), so a local copied from it is marked as well;
+           this one covers the calls it cannot see (`pr === x`, an alias). */
         if (lv && pt == TY_INT) lv->nullable_int = 1;
       }
       else if (pt == TY_PROC) {
@@ -6924,7 +6938,7 @@ else if (orecv >= 0 && onm) {
       snprintf(arg, sizeof arg, "_sp_proc_poly_args[%d + %d]", arity, j);
       { LocalVar *olv = scope_local(bs, on);
         emit_proc_param_slot(c, pb, on, cond, arg, proc_opt_value(c, create, j), "sp_box_nil()",
-                             olv ? olv->type : TY_POLY); }
+                             olv ? olv->type : TY_POLY, olv && olv->nullable_int); }
     }
     if (restn && restn[0]) {
       buf_printf(pb, "    sp_PolyArray *lv_%s = sp_PolyArray_new(); SP_GC_ROOT(lv_%s);\n", restn, restn);
@@ -7014,7 +7028,7 @@ else if (orecv >= 0 && onm) {
          method-keyword arm); an optional one falls back to its default. */
       snprintf(missing, sizeof missing, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), sp_box_nil())", key);
       LocalVar *klv = scope_local(bs, kn);
-      emit_proc_param_slot(c, pb, kn, cond, arg, dv, missing, klv ? klv->type : TY_POLY);
+      emit_proc_param_slot(c, pb, kn, cond, arg, dv, missing, klv ? klv->type : TY_POLY, 0);
     }
   }
   /* `**kw`: the whole trailing kwargs hash, or an empty hash when the caller

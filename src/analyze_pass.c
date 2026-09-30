@@ -7513,7 +7513,7 @@ const char *block_sig_kw_name(Compiler *c, const BlockSig *s, int k) {
 /* One more value into a parameter's type. A nil keeps a slot that has a nil
    of its own (an object, a String, a poly array: ty_unify's join), but an
    Integer or a Float the binders would read it into as a bare number takes
-   the box. */
+   the box, but for a positional's literal nil (bs_join_val). */
 static TyKind bs_join(TyKind a, TyKind b) {
   TyKind u = ty_unify(a, b);
   if ((a == TY_NIL || b == TY_NIL) && (u == TY_INT || u == TY_FLOAT)) return TY_POLY;
@@ -7533,20 +7533,34 @@ static TyKind bs_value(Compiler *c, int v) {
   return t;
 }
 
+/* One more value `v` into a positional's type `a`. A literal nil is the
+   exception to bs_join's box: a positional's binders write an Integer
+   slot's own nil (SP_INT_NIL) for it, as they do for a missing value, so it
+   only records BS_NIL in *flags, for the parameter's settling to judge
+   whether the slot can hold it (block_settle_types, cs_type_params). Only a
+   literal: a value typed nil this round, an ivar nothing but the
+   constructor's nil has written yet, may take another type later, and an
+   Integer parameter settled beside it stayed one after the box it took. */
+static TyKind bs_join_val(Compiler *c, TyKind a, int v, char *flags) {
+  if (v >= 0 && nt_kind(c->nt, v) == NK_NilNode) { *flags |= BS_NIL; return a; }
+  return bs_join(a, bs_value(c, v));
+}
+
 /* The values a splat of `x` spreads, into the gathered element type `e`
    and the count bounds. The binders lay a splat out at run time, so any
    positional may read an element of it. An array literal's plain elements
    (the splat-then-values rewrite leaves `yield(*e, 7)` as `*[*e, 7]`) are
    values sure to be there, though; any other operand's length is the run
-   time's. An operand not typed yet says nothing this round. */
-static void bs_splat(Compiler *c, int x, int np, TyKind *e, int *nmin, int *nmax) {
+   time's. An operand not typed yet says nothing this round. A literal nil
+   among them is recorded in *flags (bs_join_val). */
+static void bs_splat(Compiler *c, int x, int np, TyKind *e, char *flags, int *nmin, int *nmax) {
   const NodeTable *nt = c->nt;
   *nmax = np + 1;
   if (x >= 0 && nt_kind(nt, x) == NK_ArrayNode) {
     int en = 0; const int *el = nt_arr(nt, x, "elements", &en);
     for (int j = 0; j < en; j++) {
-      if (nt_kind(nt, el[j]) == NK_SplatNode) { bs_splat(c, nt_ref(nt, el[j], "expression"), np, e, nmin, nmax); continue; }
-      *e = bs_join(*e, bs_value(c, el[j]));
+      if (nt_kind(nt, el[j]) == NK_SplatNode) { bs_splat(c, nt_ref(nt, el[j], "expression"), np, e, flags, nmin, nmax); continue; }
+      *e = bs_join_val(c, *e, el[j], flags);
       (*nmin)++;
     }
     return;
@@ -7560,8 +7574,9 @@ static void bs_splat(Compiler *c, int x, int np, TyKind *e, int *nmin, int *nmax
    trailing keyword hash included) into what each of a block's parameters
    receives, by the plan its binders follow (emit_block_binds, the proc
    prologue): pos[i] for the i-th positional (the P requireds, the O
-   optionals, the Q posts; block_sig_name), absent[i] set where it may
-   receive no value at all, and kws[k] for the k-th keyword.
+   optionals, the Q posts; block_sig_name), absent[i] its flags -- BS_ABSENT
+   where it may receive no value at all, BS_NIL where it may receive a
+   literal nil (bs_join_val) -- and kws[k] for the k-th keyword.
 
    A trailing keyword hash is the keywords' when the block takes any, and
    then never a positional. A count only the run time knows -- a splat, or a
@@ -7601,13 +7616,14 @@ void block_site_types(Compiler *c, const BlockSig *s, const int *av, int ac,
   }
   int gather = 0, nmin = 0, nmax = 0;
   TyKind e = TY_UNKNOWN;
+  char enil = 0;   /* a literal nil among the values e gathers */
   for (int k = 0; k < ac; k++) {
     if (av[k] >= 0 && nt_kind(nt, av[k]) == NK_SplatNode) {
       gather = 1;
-      bs_splat(c, nt_ref(nt, av[k], "expression"), np, &e, &nmin, &nmax);
+      bs_splat(c, nt_ref(nt, av[k], "expression"), np, &e, &enil, &nmin, &nmax);
     }
     else {
-      e = bs_join(e, bs_value(c, av[k]));
+      e = bs_join_val(c, e, av[k], &enil);
       if (k == ac - 1 && kwh_only_spreads(nt, av[k])) gather = 1;
       else nmin++;
       if (nmax <= np) nmax++;
@@ -7633,31 +7649,34 @@ void block_site_types(Compiler *c, const BlockSig *s, const int *av, int ac,
   for (int i = 0; i < np; i++) {
     TyKind t = TY_UNKNOWN;
     int may = 1, sure = 1;   /* may receive a value; sure to */
+    char f = 0;
     if (i >= P && i < P + O) {
       int oi = i - P;
       if (gather) { may = nmax - P - Q > oi; sure = nmin - P - Q > oi; t = may ? e : TY_UNKNOWN; }
-      else { may = sure = oi < ot; t = may ? bs_value(c, av[P + oi]) : TY_UNKNOWN; }
+      else if ((may = sure = oi < ot)) t = bs_join_val(c, t, av[P + oi], &f);
+      if (gather && may) f |= enil;
       /* a gathered count is read at run time, and the binding keeps the
          default in its other arm even where the values are sure to reach
          the optional (`yield(*[1, 2])` into `|a, b = "d"|`) */
       if (!sure || gather) {
         int opn = 0; const int *opts = nt_arr(nt, s->pn, "optionals", &opn);
-        t = bs_join(t, bs_value(c, nt_ref(nt, opts[oi], "value")));
+        t = bs_join_val(c, t, nt_ref(nt, opts[oi], "value"), &f);
       }
       pos[i] = bs_join(pos[i], t);
+      absent[i] |= f;
       continue;
     }
     /* a required or a post: the k-th value it may take counting from the
        left, the posts right after what the optionals and a rest took */
     int at = i < P ? i : P + (i - P - O);
-    if (gather) { may = nmax > at; sure = nmin > at; t = may ? e : TY_UNKNOWN; }
+    if (gather) { may = nmax > at; sure = nmin > at; t = may ? e : TY_UNKNOWN; if (may) f |= enil; }
     else {
       int vi = i < P ? i : ps + (i - P - O);
-      may = sure = vi < ac;
-      t = may ? bs_value(c, av[vi]) : TY_UNKNOWN;
+      if ((may = sure = vi < ac)) t = bs_join_val(c, t, av[vi], &f);
     }
     pos[i] = bs_join(pos[i], t);
-    if (!sure) absent[i] = 1;
+    if (!sure) f |= BS_ABSENT;
+    absent[i] |= f;
   }
 }
 
@@ -9828,10 +9847,15 @@ int desugar_for_nonlocal_index(Compiler *c) {
    (block_site_types: auto-splat, gathered splats, the keyword hash). The
    rest, post, optional and keyword params are boxed for good. A concrete
    arg overrides a param still at its bare-int default (the fallback guess,
-   no real evidence), otherwise joins it (bs_join: a nil passed at one call
-   and an Integer at another is the box); a param the call may leave without
-   a value reads the slot's own nil, so it takes a type that has one.
-   Returns 1 if any param type changed.
+   no real evidence), otherwise joins it (bs_join). A param the call may
+   leave without a value reads the slot's own nil, so it takes a type that
+   has one. A literal nil passed at one call and an Integer at another keep
+   the Integer, since the prologue reads a nil off the boxed side channel's
+   tag as the sentinel (a Float, and anything under promote, takes the
+   box), and nil_passed then keeps the nil from overriding it as it does
+   the bare-int guess. Either Integer is marked nullable here, where the
+   marking pass sees it and marks a local copied from it too, and not only
+   by the prologue that binds it. Returns 1 if any param type changed.
    Shared by the local-proc and inline-lambda call sites. */
 static int cs_type_params(Compiler *c, int create, const int *argv, int argc) {
   NodeTable *nt = (NodeTable *)c->nt;
@@ -9853,13 +9877,30 @@ static int cs_type_params(Compiler *c, int create, const int *argv, int argc) {
     LocalVar *lv = p ? scope_local(bs, p) : NULL;
     TyKind at = pos[k];
     if (!lv) continue;
-    TyKind merged = at == TY_UNKNOWN || at == lv->type ? lv->type
+    /* A literal nil here (bs_join_val) beside an Integer, at this call or
+       across two: the nil makes the param nil first, as it does the
+       bare-int guess, and marks it nil_passed, after which an Integer keeps
+       it an Integer and a literal nil no longer overrides that. A value
+       merely typed nil beside it still takes the box. */
+    int lit = !g_promote_mode && (absent[k] & BS_NIL);
+    if ((absent[k] & BS_NIL) && at == TY_UNKNOWN) at = TY_NIL;
+    TyKind lvn = lv->type == TY_NIL ? TY_UNKNOWN : lv->type;
+    int nil_int = !g_promote_mode &&
+                  (at == TY_INT ? (lvn == TY_UNKNOWN || lvn == TY_INT) &&
+                                  (lit || lv->nil_passed)
+                                : lit && at == TY_NIL && lv->type == TY_INT && lv->nil_passed);
+    TyKind merged = nil_int ? TY_INT
+                  : at == TY_NIL && lv->type == TY_INT && lv->nil_passed ? TY_POLY
+                  : at == TY_UNKNOWN || at == lv->type ? lv->type
                   : lv->type == TY_INT ? at : bs_join(lv->type, at);
+    if ((absent[k] & BS_NIL) && (merged == TY_INT || merged == TY_FLOAT) && !nil_int) merged = TY_POLY;
     /* this call may leave it without a value: the prologue reads the
        slot's own nil, which an Integer, a Float, a String or an object has
        and a true/false or a Symbol slot does not (ty_unify keeps the first
        and boxes the rest) */
-    if (absent[k] && merged != TY_UNKNOWN) merged = ty_unify(merged, TY_NIL);
+    if ((absent[k] & BS_ABSENT) && merged != TY_UNKNOWN) merged = ty_unify(merged, TY_NIL);
+    if (merged == TY_INT && (nil_int || (absent[k] & BS_ABSENT)) && !lv->nullable_int) { lv->nullable_int = 1; changed = 1; }
+    if (lit && !lv->nil_passed) { lv->nil_passed = 1; changed = 1; }
     if (merged != lv->type) { lv->type = merged; changed = 1; }
   }
   free(pos); free(absent);
@@ -10189,13 +10230,15 @@ static int pure_block_param(Compiler *c, Scope *s, const char *name) {
 /* Settle what the sites bound (block_site_types) into the parameters of
    block `blk`, which emit_block_binds binds: there a parameter left without
    a value is nil, which only the box holds for every type. A leading
-   required every site binds an Integer, or nothing (`yield(*xs)` of a
-   run-time length), is the exception: its binders write the sentinel for a
-   missing value (default_value), so it stays an sp_int marked nullable, the
-   mark every read that boxes or tests it for nil goes by. Under promote an
-   Integer is boxed anyway. A value not typed yet says nothing this round:
-   boxed then, the parameter stayed boxed for good. A rest is the array that
-   binder builds, and a `**kw` rest its hash. */
+   required or an optional every site binds an Integer, a literal nil or
+   nothing (`yield(*xs)` of a run-time length, `yield 1; yield nil`, a
+   `= nil` default) is the exception: its binders write the sentinel for a
+   missing value (default_value) and for a nil one, so it stays an sp_int
+   marked nullable, the mark every read that boxes or tests it for nil
+   goes by. A post, a keyword and a Float still take the box for a nil, and
+   under promote an Integer is boxed anyway. A value not typed yet says
+   nothing this round: boxed then, the parameter stayed boxed for good. A
+   rest is the array that binder builds, and a `**kw` rest its hash. */
 int block_settle_types(Compiler *c, int blk, const BlockSig *s,
                        const TyKind *pos, const char *absent, const TyKind *kws) {
   Scope *bs = comp_scope_of(c, blk);
@@ -10205,10 +10248,13 @@ int block_settle_types(Compiler *c, int blk, const BlockSig *s,
     const char *bp = kw ? block_sig_kw_name(c, s, i - s->P - s->O - s->Q) : block_sig_name(c, s, i);
     if (!bp) continue;
     TyKind at = kw ? kws[i - s->P - s->O - s->Q] : pos[i];
-    int nil_int = !kw && i < s->P && absent[i] && at == TY_INT && !g_promote_mode;
+    int fl = kw ? 0 : absent[i];
     LocalVar *lv = scope_local_intern(bs, bp); lv->is_block_param = 1;
-    if (!kw && absent[i] && at == TY_UNKNOWN && g_infer_optimistic) continue;
-    if (!kw && absent[i] && !nil_int) at = ty_unify(at, TY_POLY);
+    if ((fl & BS_ABSENT) && at == TY_UNKNOWN && g_infer_optimistic) continue;
+    if ((fl & BS_NIL) && at == TY_UNKNOWN) at = TY_NIL;   /* nils alone */
+    int nil_int = i < s->P + s->O && fl && at == TY_INT && !g_promote_mode;
+    if ((fl & BS_ABSENT) && !nil_int) at = ty_unify(at, TY_POLY);
+    if ((fl & BS_NIL) && (at == TY_INT || at == TY_FLOAT) && !nil_int) at = TY_POLY;
     TyKind m = ty_unify(lv->type, at);
     /* what the sites bind says what the parameter IS; an array kind the
        usage pass guessed from a push inside the block (`s << "z"` on a
@@ -10849,7 +10895,9 @@ int infer_block_params(Compiler *c) {
          (block_site_types). A method that keeps its &block without
          yielding runs the block as a proc, whose prologue binds only the
          requireds typed and reads a missing one as the slot's own nil (a
-         true/false or a Symbol one, which has none, takes the box). */
+         true/false or a Symbol one, which has none, takes the box). An
+         Integer one a site may leave without a value, or pass a nil, is
+         marked nullable here, as cs_type_params marks a proc literal's. */
       int yields = yld_mi >= 0 && c->scopes[yld_mi].yields;
       if (yields || (mi >= 0 && c->scopes[mi].blk_param && c->scopes[mi].blk_param[0])) {
         const int *sites = NULL;
@@ -10878,9 +10926,12 @@ int infer_block_params(Compiler *c) {
           Scope *bs = comp_scope_of(c, block);
           for (int k = 0; k < s.P; k++) {
             const char *bp = block_sig_name(c, &s, k);
-            if (!bp || pos[k] == TY_UNKNOWN) continue;
+            TyKind at = pos[k] == TY_UNKNOWN && (absent[k] & BS_NIL) ? TY_NIL : pos[k];
+            if (!bp || at == TY_UNKNOWN) continue;
             LocalVar *lv = scope_local_intern(bs, bp); lv->is_block_param = 1;
-            TyKind merged = ty_unify(lv->type, absent[k] ? ty_unify(pos[k], TY_NIL) : pos[k]);
+            TyKind merged = ty_unify(lv->type, absent[k] ? ty_unify(at, TY_NIL) : at);
+            if ((absent[k] & BS_NIL) && (merged == TY_FLOAT || (merged == TY_INT && g_promote_mode))) merged = TY_POLY;
+            if (merged == TY_INT && absent[k] && !lv->nullable_int) { lv->nullable_int = 1; changed = 1; }
             if (merged != lv->type) { lv->type = merged; changed = 1; }
           }
         }

@@ -1,0 +1,85 @@
+[1, false, :t, "1", [1], {1 => 1}, true, 1]
+[2, 2, true, false]
+:int_arm
+[nil, true, :f, "", [nil], {nil => 1}, false, 0]
+[NoMethodError, TypeError, NoMethodError, ArgumentError]
+:nil_arm
+1
+nil
+1
+7
+[1, false, {1 => 1}, true, 2]
+[nil, true, {nil => 1}, false, NoMethodError]
+[1, false, [1], true, 2]
+[nil, true, [nil], false, TypeError]
+[1, nil, true, :f, {nil => 1}, false, NoMethodError, TypeError]
+:nil_arm
+[nil, 2, false, :t, {2 => 1}, true, 3, 3]
+:int_arm
+nil
+2
+[1, 7]
+[nil, 2]
+[1, nil, true, {nil => 1}, false, NoMethodError]
+[nil, 2, false, {2 => 1}, true, 3]
+[1, nil, true, {nil => 1}, false, NoMethodError]
+[nil, nil, true, {nil => 1}, false, ArgumentError]
+[1, nil, true, :f, [nil], {nil => 1}, false, NoMethodError]
+:nil_arm
+[1, 2, false, :t, [2], {2 => 1}, true, 3]
+:int_arm
+[1, nil, true, :f, [nil], {nil => 1}, false, NoMethodError]
+:nil_arm
+7
+2
+7
+[1, nil, true, {nil => 1}, false, NoMethodError, 9]
+[nil, 2, true, {nil => 1}, false, TypeError, 9]
+[1, nil, true, {nil => 1}, false, NoMethodError, 9]
+[nil, 2, true, {nil => 1}, :nil_arm, 9]
+[1, false, :t, [1], {1 => 1}, true]
+[2, 2, true]
+:int_arm
+[nil, true, :f, [nil], {nil => 1}, false]
+[NoMethodError, TypeError, NoMethodError]
+:nil_arm
+1
+nil
+1
+7
+[1, false, :t, [1], {1 => 1}, true]
+[2, 2, false]
+:int_arm
+[nil, true, :f, [nil], {nil => 1}, false]
+[NoMethodError, TypeError, ArgumentError]
+:nil_arm
+[3, false, {3 => 1}, true, 4]
+[nil, true, {nil => 1}, false, NoMethodError]
+1
+nil
+1
+7
+[1, 2, false, true, {1 => 1}, 2]
+[nil, 3, true, false, {nil => 1}, NoMethodError]
+[nil, nil, true, false, {nil => 1}, NoMethodError]
+[nil, 4, true, false, {nil => 1}, NoMethodError]
+[nil, true, false, false, {nil => 1}]
+:nil_arm
+[2, false, true, true, {2 => 1}]
+:int_arm
+[1, false, :t, [1], {1 => 1}, true, 2]
+:int_arm
+[nil, true, :f, [nil], {nil => 1}, false, NoMethodError]
+:nil_arm
+1
+nil
+1
+7
+[1, nil, true, {nil => 1}, false, NoMethodError]
+[1, 2, false, {2 => 1}, true, 3]
+[1, nil]
+[1, nil]
+[1, nil]
+[nil, true, false]
+[1, false, true]
+[nil, true, false]

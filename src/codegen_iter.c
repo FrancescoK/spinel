@@ -1086,6 +1086,9 @@ static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
     empty_lit = empty_lit == 0;
   }
   if (ot == TY_POLY && ((at != TY_POLY && at != TY_UNKNOWN) || empty_lit)) emit_boxed(c, node, b);
+  /* a literal nil into an Integer parameter (one block_settle_types kept
+     nullable, bs_join_val) is the slot's own nil, not the 0 it emits as */
+  else if (nk == NK_NilNode && ot == TY_INT) buf_puts(b, "SP_INT_NIL");
   else if (at == TY_POLY && ot != TY_POLY && ot != TY_UNKNOWN) {
     Buf t; memset(&t, 0, sizeof t); emit_expr(c, node, &t);
     emit_unbox_text(c, ot, t.p ? t.p : "", b); free(t.p);
@@ -1632,6 +1635,10 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
       buf_printf(b, "(%d < (_t%d ? _t%d->len : 0) ? ", k, splat_tmp, splat_tmp);
       if (bt == TY_POLY && et != TY_POLY && et != TY_UNKNOWN)
         emit_boxed_text(c, et, eb.p ? eb.p : "0", b);
+      /* a nil element (`yield(*[1, nil])`) into a nullable Integer is its
+         sentinel, where `.v.i` read the 0 under the nil tag */
+      else if (et == TY_POLY && bt != TY_POLY && bt != TY_UNKNOWN && bl->nullable_int)
+        emit_unbox_nilable_text(c, bt, eb.p ? eb.p : "", b);
       else if (et == TY_POLY && bt != TY_POLY && bt != TY_UNKNOWN)
         emit_unbox_text(c, bt, eb.p ? eb.p : "", b);
       else
@@ -1689,6 +1696,8 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
       emit_array_elem_at(splat_at, splat_tmp, yi, &eb);
       buf_printf(b, "(%d < _t%d ? ", oi, t_ot);
       if (ot == TY_POLY && et != TY_POLY && et != TY_UNKNOWN) emit_boxed_text(c, et, eb.p ? eb.p : "0", b);
+      else if (et == TY_POLY && ot != TY_POLY && ot != TY_UNKNOWN && ol->nullable_int)
+        emit_unbox_nilable_text(c, ot, eb.p ? eb.p : "", b);
       else if (et == TY_POLY && ot != TY_POLY && ot != TY_UNKNOWN) emit_unbox_text(c, ot, eb.p ? eb.p : "", b);
       else buf_puts(b, eb.p ? eb.p : "");
       buf_puts(b, " : ");

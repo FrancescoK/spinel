@@ -88,6 +88,10 @@ typedef struct {
   int nullable_int; /* an int local that was assigned a value which can be the
                        nil sentinel (a search miss, a pop off an empty array):
                        boxing it has to yield nil, not INTPTR_MIN */
+  int nil_passed;   /* (proc params) some call passes a literal nil: an
+                       Integer another call passes keeps the param an
+                       Integer, which the nil then no longer overrides as it
+                       does the bare-int guess (cs_type_params) */
   int obj_nilable;  /* an object-typed parameter some call site passes nil:
                        a user method called on it has to raise NoMethodError
                        for nil rather than run with a NULL self (#5088) */
