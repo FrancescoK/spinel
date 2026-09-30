@@ -6046,31 +6046,12 @@ static const char *sp_str_format_polyarr(const char *fmt, sp_PolyArray *a) {
         used_numbered = TRUE; this_numbered = TRUE;
       }
     }
-    /* %<name>conv / %{name}: named reference into the format's hash argument.
-       %{name} interpolates the value's to_s directly (no conversion spec);
-       %<name> substitutes the value for the following conversion. */
-    sp_RbVal named_v = sp_box_nil(); sp_bool have_named = FALSE;
-    if (*p == '<' || *p == '{') {
-      char nclose = (*p == '<') ? '>' : '}';
-      char nm[64]; size_t nl = 0; const char *q = p + 1;
-      while (*q && *q != nclose && nl < sizeof nm - 1) nm[nl++] = *q++;
-      nm[nl] = 0;
-      if (*q == nclose) {
-        p = q + 1;
-        named_v = sp_fmt_named_ref(a, nm, nclose, buf);
-        have_named = TRUE;
-        if (used_numbered || used_sequential) { free(buf); sp_raise_cls("ArgumentError", "named after unnumbered(1)"); }
-        used_named = TRUE;
-        if (nclose == '}') {
-          const char *sv2 = sp_poly_to_s(named_v);
-          size_t svl = sv2 ? strlen(sv2) : 0;
-          if (out + svl + 1 >= cap) { cap = (out + svl) * 2 + 64; buf = (char *)realloc(buf, cap); }
-          if (svl) memcpy(buf + out, sv2, svl);
-          out += svl;
-          continue;
-        }
-      }
-    }
+    /* %<name>conv / %{name}: named reference into the format's hash argument,
+       which may stand anywhere among the flags and width (`%-5<s>s`,
+       `%0<n>5d`). %<name> substitutes the value for the conversion that
+       follows; %{name} is the conversion itself, the value's to_s, padded as
+       a %s when flags came before it. */
+    sp_RbVal named_v = sp_box_nil(); sp_bool have_named = FALSE, brace_named = FALSE;
     while (*p && sl < sizeof(spec) - 8) {
       char c = *p;
       if (c == '*') {
@@ -6093,11 +6074,32 @@ static const char *sp_str_format_polyarr(const char *fmt, sp_PolyArray *a) {
         p++;
       }
       else if (c == '-' || c == '+' || c == ' ' || c == '#' || c == '0' || c == '.' || (c >= '0' && c <= '9')) { spec[sl++] = c; p++; }
+      else if ((c == '<' || c == '{') && !have_named) {
+        char nclose = (c == '<') ? '>' : '}';
+        char nm[64]; size_t nl = 0; const char *q = p + 1;
+        while (*q && *q != nclose && nl < sizeof nm - 1) nm[nl++] = *q++;
+        nm[nl] = 0;
+        if (*q != nclose) break;
+        p = q + 1;
+        if (used_numbered || used_sequential) { free(buf); sp_raise_cls("ArgumentError", sp_sprintf("named%c%s%c after unnumbered(1)", c, nm, nclose)); }
+        named_v = sp_fmt_named_ref(a, nm, nclose, buf);
+        have_named = TRUE;
+        used_named = TRUE;
+        if (nclose == '}') { brace_named = TRUE; break; }
+      }
       else break;
     }
+    if (brace_named && sl == 0) {
+      const char *sv2 = sp_poly_to_s(named_v);
+      size_t svl = sv2 ? strlen(sv2) : 0;
+      if (out + svl + 1 >= cap) { cap = (out + svl) * 2 + 64; buf = (char *)realloc(buf, cap); }
+      if (svl) memcpy(buf + out, sv2, svl);
+      out += svl;
+      continue;
+    }
     /* a trailing bare `%` is a malformed format, not a literal (#3723) */
-    if (!*p) { free(buf); sp_raise_cls("ArgumentError", "incomplete format specifier; use %% (double %) instead"); }
-    char conv = *p++; spec[sl++] = conv;
+    if (!brace_named && !*p) { free(buf); sp_raise_cls("ArgumentError", "incomplete format specifier; use %% (double %) instead"); }
+    char conv = brace_named ? 's' : *p++; spec[sl++] = conv;
     /* Ruby's %u is %d: it prints a negative as -N rather than wrapping */
     if (conv == 'u') { conv = 'd'; spec[sl - 1] = 'd'; }
     char fmt_use[80];

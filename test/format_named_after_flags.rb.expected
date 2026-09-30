@@ -1,0 +1,11 @@
+"-05"
+"ab    |"
+"+3 0003.142"
+"05"
+"a    |7"
+"00001"
+"1 and 2"
+"00042"
+"named<a> after unnumbered(1)"
+"unnumbered(1) mixed with named"
+ArgumentError: named{missing} after unnumbered(1)
