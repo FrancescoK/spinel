@@ -22469,8 +22469,27 @@ static int refuse_param_copies(Compiler *c, int mi, int j, int arg) {
   return q->type == TY_STRING || q->type == TY_STRBUF;
 }
 
+/* The Array literal a splat spreads: its operand, or the one a local is
+   written from when it is written once (`s = [v]; C.new(*s)`); -1 else. */
+static int refuse_splat_literal(Compiler *c, int splat) {
+  const NodeTable *nt = c->nt;
+  int x = nt_ref(nt, splat, "expression");
+  if (x >= 0 && nt_kind(nt, x) == NK_LocalVariableReadNode) {
+    const char *xn = nt_str(nt, x, "name");
+    Scope *xs = xn ? comp_scope_of(c, x) : NULL;
+    int lit = -1, nw = 0;
+    for (int w = xs ? comp_lvw_first_sc(c, (int)(xs - c->scopes), xn) : -1; w >= 0; w = comp_lvw_next_sc(c, w)) {
+      if (comp_scope_of(c, w) != xs || !nt_str(nt, w, "name") || !sp_streq(nt_str(nt, w, "name"), xn)) continue;
+      nw++;
+      lit = nt_kind(nt, w) == NK_LocalVariableWriteNode ? nt_ref(nt, w, "value") : -1;
+    }
+    x = nw == 1 ? lit : -1;
+  }
+  return x >= 0 && nt_kind(nt, x) == NK_ArrayNode ? x : -1;
+}
+
 /* The positional arguments of a call, and a splat of an Array literal (or
-   of a local every write of which is one) laid out where its elements land:
+   of a local written once, from one) laid out where its elements land:
    the parser folds `f.call(s, *e)` into one splat of `[s, *e]`. Answers the
    count; positions past a splat of anything else are unknown and dropped. */
 static int refuse_arg_layout(Compiler *c, int id, int *out, int cap) {
@@ -22482,8 +22501,8 @@ static int refuse_arg_layout(Compiler *c, int id, int *out, int cap) {
     NodeKind k = nt_kind(nt, av[i]);
     if (k == NK_KeywordHashNode || k == NK_BlockArgumentNode) break;
     if (k != NK_SplatNode) { out[n++] = av[i]; continue; }
-    int x = nt_ref(nt, av[i], "expression");
-    if (x >= 0 && nt_kind(nt, x) == NK_ArrayNode) {
+    int x = refuse_splat_literal(c, av[i]);
+    if (x >= 0) {
       int en = 0; const int *ev = nt_arr(nt, x, "elements", &en);
       for (int e = 0; e < en && n < cap; e++) {
         if (nt_kind(nt, ev[e]) == NK_SplatNode) return n;
@@ -22511,7 +22530,14 @@ static int refuse_call_binds(Compiler *c, int pn, int id, int first, int is_bloc
   for (int i = first; i < ac; i++) {
     NodeKind k = nt_kind(nt, av[i]);
     if (k == NK_KeywordHashNode) kwh = av[i];
-    else if (k == NK_SplatNode) splat = 1;
+    else if (k == NK_SplatNode) {
+      /* a splat of an Array literal the call can see has its length */
+      int lit = refuse_splat_literal(c, av[i]), en = 0;
+      const int *ev = lit >= 0 ? nt_arr(nt, lit, "elements", &en) : NULL;
+      int known = lit >= 0;
+      for (int e = 0; e < en && known; e++) if (nt_kind(nt, ev[e]) == NK_SplatNode) known = 0;
+      if (known) npos += en; else splat = 1;
+    }
     else if (k != NK_BlockArgumentNode) npos++;
   }
   int R = 0, O = 0, P = 0, K = 0;

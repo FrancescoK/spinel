@@ -629,11 +629,12 @@ names hold the one object. Spinel shares the String by reference through a
 direct call, `send` with a literal name, `yield`, `super`, a poly receiver
 and a class value, through a proc, a lambda and a `Method`: `.call`, `.()`,
 `[]`, `===` and `.yield` on one, a block kept as `&blk` and called later,
-`method(:m)` and `obj.method(:m)` and their `to_proc`; and through `new`
-and `raise Cls, s` into an `initialize`, a Struct's and a Data's included.
-The paths below do not share it yet, and a call that would hand such a
-method a String variable through one of them is refused at compile time
-rather than compiled with the append lost:
+`method(:m)` and `obj.method(:m)` and their `to_proc`; through `new` and
+`raise Cls, s` into an `initialize`, a Struct's and a Data's included; and
+through a splat or a gather (`m(*args, s)`, `m(*[s])`, `def m(*r)`). The
+paths below do not share it yet, and a call that would hand such a method a
+String variable through one of them is refused at compile time rather than
+compiled with the append lost:
 
 ```ruby
 class Box
