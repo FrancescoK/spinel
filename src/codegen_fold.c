@@ -6634,7 +6634,16 @@ void emit_rest_pack_kwh(Compiler *c, int from, int pos_argc, const int *argv, in
       else { /* scalar splat: single element */
         Buf el; memset(&el, 0, sizeof el);
         emit_boxed(c, inner, &el);
-        buf_printf(b, " sp_PolyArray_push(_t%d, %s);", t, el.p ? el.p : "sp_box_nil()");
+        /* ... or none, when the scalar is nil: a String's NULL, or the
+           sentinel of an Integer or Float slot that can hold one. `*x` of
+           such a nil went in as one nil element, where CRuby's `*nil` is
+           empty (`r(*x)` gave [nil]) */
+        int may_nil = at == TY_STRING ||
+                      ((at == TY_INT || at == TY_FLOAT) && call_returns_nullable_int(c, inner));
+        if (may_nil)
+          buf_printf(b, " { sp_RbVal _sv = %s; if (!sp_poly_nil_p(_sv)) sp_PolyArray_push(_t%d, _sv); }",
+                     el.p ? el.p : "sp_box_nil()", t);
+        else buf_printf(b, " sp_PolyArray_push(_t%d, %s);", t, el.p ? el.p : "sp_box_nil()");
         free(el.p);
       }
       free(arr.p);
