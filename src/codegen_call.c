@@ -22164,12 +22164,13 @@ static int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
    (#4129). Optional parameters make this a range, not an equality: the old
    `nrequired == argc` test also refused a candidate with a trailing default
    called with the argument that fills it. With a splat among the
-   arguments (`splat`) the count is known only at run time: a candidate the
-   other arguments leave room in may take it, and its arm binds through the
-   gather, which judges the count there. */
+   arguments (`splat` of them) the count is known only at run time: each
+   may spread to nothing, so a candidate the other arguments leave room in
+   may take it, and its arm binds through the gather, which judges the
+   count there. */
 static int cls_arm_takes_argc(Scope *s, int argc, int splat) {
   if (s->rest_idx >= 0) return 1;   /* a rest param takes any count */
-  if (splat) return argc - 1 <= s->nparams;
+  if (splat) return argc - splat <= s->nparams;
   return argc >= s->nrequired && argc <= s->nparams;
 }
 
@@ -32943,7 +32944,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       if (sp_streq(name, "new") && comp_ntype(c, id) == TY_POLY) goto skip_cls_cmethod9;
       TyKind uret9 = TY_UNKNOWN; int uret_set9 = 0, splat9 = 0;
       for (int a = 0; a < argc; a++)
-        if (nt_kind(nt, argv[a]) == NK_SplatNode) splat9 = 1;
+        if (nt_kind(nt, argv[a]) == NK_SplatNode) splat9++;
       for (int k = 0; k < c->nclasses; k++) {
         if (is_builtin_reopen(c->classes[k].name)) continue;
         int kmi = comp_cmethod_in_chain(c, k, name, NULL);

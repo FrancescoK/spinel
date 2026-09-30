@@ -19,6 +19,7 @@ class A
   def self.k(a, k: 1, **o) = [a, k, o]
   def self.s(a, b = 2) = [a, b]
   def self.m(a) = [:a, a]
+  def self.z = :az
 end
 class B
   def self.w(*r) = r.size + 100
@@ -28,6 +29,7 @@ class B
   def self.k(a, k: 2, **o) = [k, a, o]
   def self.s(a, b = 3) = [b, a]
   def self.m(a, b) = [:b, a, b]
+  def self.z = :bz
 end
 
 def run(o)
@@ -54,6 +56,11 @@ def run(o)
   begin; p o.s(*[1, 2, 3]); rescue ArgumentError => e; p e.message; end
   begin; p o.m(1); rescue ArgumentError => e; p e.message; end
   begin; p o.m(*[1, 2]); rescue ArgumentError => e; p e.message; end
+  # each splat may spread to nothing: two of them still reach a method of none
+  e = []
+  p o.z(*[], *[])
+  p o.z(*e, *e)
+  begin; p o.m(*e, *[1, 2]); rescue ArgumentError => e2; p e2.message; end
   # arguments that allocate, held while the ones after them allocate
   3.times do |i|
     p o.f("s#{i}-1", "s#{i}-2", "s#{i}-3", "s#{i}-4", "s#{i}-5", "s#{i}-6", "s#{i}-7", "s#{i}-8", "s#{i}-9", "s#{i}-10", "s#{i}-11", "s#{i}-12", "s#{i}-13", "s#{i}-14", "s#{i}-15", "s#{i}-16", "s#{i}-17", "s#{i}-18")

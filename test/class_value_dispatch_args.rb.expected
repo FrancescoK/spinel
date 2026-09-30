@@ -19,6 +19,9 @@
 "wrong number of arguments (given 3, expected 1..2)"
 [:a, 1]
 "wrong number of arguments (given 2, expected 1)"
+:az
+:az
+"wrong number of arguments (given 2, expected 1)"
 ["s0-1", "s0-17", "s0-18"]
 ["t0-1", "t0-17", "t0-18"]
 ["s1-1", "s1-17", "s1-18"]
@@ -45,6 +48,9 @@
 [1, 2]
 "wrong number of arguments (given 3, expected 1..2)"
 "wrong number of arguments (given 1, expected 2)"
+[:b, 1, 2]
+:bz
+:bz
 [:b, 1, 2]
 ["s0-1", "s0-18", "s0-17"]
 ["t0-1", "t0-18", "t0-17"]
