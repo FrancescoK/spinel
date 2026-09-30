@@ -23835,17 +23835,11 @@ static void emit_pre_format_args(Compiler *c, const int *av, int ac, int ta) {
      the receiverless (implicit-self) form, resolved against the enclosing
      class -- `self.fullscreen = v if respond_to?(:fullscreen=)` (doom's
      gosu_window.rb). */
-/* the names every object answers respond_to? true for */
+/* the names every object answers respond_to? true for: Object's public
+   instance methods, as CRuby lists them */
 static const char *const respond_universal[] = {
-    "to_s", "inspect", "class", "nil?", "dup", "clone", "freeze",
-    "frozen?", "hash", "==", "!=", "equal?", "eql?", "object_id",
-    "respond_to?", "is_a?", "kind_of?", "instance_of?", "itself",
-    "tap", "then", "send", "===",
-    /* Kernel/Object methods every CRuby object answers true for */
-    "display", "yield_self", "public_send", "__send__", "method",
-    "methods", "to_enum", "enum_for", "instance_variables",
-    "instance_variable_get", "instance_variable_set",
-    "instance_variable_defined?", "singleton_class", "extend", NULL };
+#include "object_public_method_names.inc"
+  NULL };
 
 /* What an instance of user class cid answers to Object#respond_to?(qm): 2 =
    true, 1 = only with include_all (a private or protected match), 0 = false.
@@ -37799,17 +37793,8 @@ else {
          `inherit` (the default) method_defined? must report the public ones as
          true even though they have no entry in the user class chain (#2673). */
       if (!found && inherit && md_pub) {
-        static const char *const objm[] = {
-          "==", "!=", "===", "<=>", "class", "clone", "dup", "display",
-          "enum_for", "eql?", "equal?", "extend", "freeze", "frozen?", "hash",
-          "inspect", "instance_of?", "instance_variable_defined?",
-          "instance_variable_get", "instance_variable_set", "instance_variables",
-          "is_a?", "itself", "kind_of?", "method", "methods", "nil?",
-          "object_id", "private_methods", "protected_methods", "public_method",
-          "public_methods", "public_send", "respond_to?", "send", "__send__",
-          "singleton_class", "singleton_methods", "tap", "then", "to_enum",
-          "yield_self", "to_s", NULL };
-        for (int u = 0; objm[u]; u++) if (sp_streq(qm, objm[u])) { buf_puts(b, "1"); return; }
+        for (int u = 0; respond_universal[u]; u++)
+          if (sp_streq(qm, respond_universal[u])) { buf_puts(b, "1"); return; }
       }
       int yes = 0;
       if (found) {
