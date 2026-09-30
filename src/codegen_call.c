@@ -30139,10 +30139,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       if (!wr)
         buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym((sp_sym)%d));", ta, comp_sym_intern(c, an));
       if (wr || acc) {
-        char wn[256]; snprintf(wn, sizeof wn, "%s=", an);
+        size_t wl = strlen(an) + 2;
+        char *wn = malloc(wl);
+        snprintf(wn, wl, "%s=", an);
         buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", ta);
         emit_str_literal(b, wn);
         buf_puts(b, ")));");
+        free(wn);
       }
     }
     buf_printf(b, " _t%d; })", ta);
