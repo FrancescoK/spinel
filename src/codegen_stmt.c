@@ -952,6 +952,9 @@ else {
     int redirect = serr && ty_is_object(serr->type) && ty_object_class(serr->type) >= 0 &&
                    c->classes[ty_object_class(serr->type)].c_name &&
                    sp_streq(c->classes[ty_object_class(serr->type)].c_name, "StringIO");
+    /* ...and to the handle it holds when that is an IO (`$stderr = $stdout`,
+       a File): the stream its own puts writes to */
+    const char *wfp = serr && serr->type == TY_IO ? "(gv_stderr ? gv_stderr->fp : stderr)" : "stderr";
     /* the runtime gate expression, when a category was given */
     char guard[64]; guard[0] = 0;
     if (cat_guard) snprintf(guard, sizeof guard, "sp_warning_enabled(\"%s\")", cat_guard);
@@ -986,12 +989,12 @@ else {
         int wt2 = ++g_tmp;
         emit_indent(b, indent); buf_printf(b, "{ sp_RbVal _t%d = ", wt2);
         emit_boxed(c, argv[k], b);
-        buf_printf(b, "; if (%s) sp_poly_warn_line(_t%d, stderr); }\n", guard, wt2);
+        buf_printf(b, "; if (%s) sp_poly_warn_line(_t%d, %s); }\n", guard, wt2, wfp);
         continue;
       }
       emit_indent(b, indent); buf_puts(b, "sp_poly_warn_line(");
       emit_boxed(c, argv[k], b);
-      buf_puts(b, ", stderr);\n");
+      buf_printf(b, ", %s);\n", wfp);
     }
     if (bad_cat[0]) {
       emit_indent(b, indent);
