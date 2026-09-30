@@ -5,7 +5,7 @@ import os, re, sys
 res = sys.argv[1]
 jobs = {}
 for d in sorted(os.listdir(res)):
-    m = re.match(r"r-(suite|cb|vf|cdiff|extra)-(.+)-(\d+)$", d)
+    m = re.match(r"r-(suite|cb|vf|cdiff|extra|scale)-(.+)-(\d+)$", d)
     if m:
         jobs[(m.group(1), m.group(2), int(m.group(3)))] = os.path.join(res, d)
 
@@ -83,6 +83,13 @@ for n in names:
         print(f"- C diff vs base: {len(ch)} of {total} programs change")
         for c in ch[:60]:
             print(f"  - {c}")
+    if ("scale", n, 0) in jobs:
+        d = jobs[("scale", n, 0)]
+        for tag, f in (("head", "scale.log"), ("base", "scale-base.log")):
+            lines = [l.strip() for l in read(os.path.join(d, f)).splitlines() if l.startswith("scale-test")]
+            print(f"- scale-test ({tag}):")
+            for l in lines:
+                print(f"  - {l}")
     if ("extra", n, 0) in jobs:
         d = jobs[("extra", n, 0)]
         lines = read(os.path.join(d, "extra.txt")).strip().splitlines()

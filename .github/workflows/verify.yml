@@ -31,7 +31,7 @@ jobs:
           for name, sha in heads:
               if "suite" in legs:
                   jobs += [{"leg": "suite", "name": name, "sha": sha, "shard": k} for k in range(1, n + 1)]
-              for leg in ("cb", "vf", "cdiff", "extra"):
+              for leg in ("cb", "vf", "cdiff", "extra", "scale"):
                   if leg in legs:
                       jobs.append({"leg": leg, "name": name, "sha": sha, "shard": 0})
           print("matrix=" + json.dumps({"include": jobs}))
@@ -75,7 +75,7 @@ jobs:
             cd - > /dev/null
           }
           build "$RUNNER_TEMP/head" "$SHA"
-          if [ "$LEG" = cdiff ] || [ "$LEG" = extra ]; then build "$RUNNER_TEMP/base" "$BASE"; fi
+          if [ "$LEG" = cdiff ] || [ "$LEG" = extra ] || [ "$LEG" = scale ]; then build "$RUNNER_TEMP/base" "$BASE"; fi
           echo "HEAD_REV=$(git -C "$RUNNER_TEMP/head" log -1 --format='%h %s')" >> "$GITHUB_ENV"
       - name: Run
         run: |
@@ -101,6 +101,12 @@ jobs:
             mkdir -p "$out/diffs"
             xargs -P "$(nproc)" -n 1 "$GITHUB_WORKSPACE/cdiff1.sh" "$b/spinel" "$h/spinel" "$out" < "$out/programs.txt" || true
             touch "$out/changed.txt"; sort -o "$out/changed.txt" "$out/changed.txt"
+            ;;
+          scale)
+            make -j"$(nproc)" build/spinel-work > /dev/null 2>&1 || true
+            make scale-test > "$out/scale.log" 2>&1 || true
+            b="$RUNNER_TEMP/base"
+            if [ -d "$b" ]; then (cd "$b" && make -j"$(nproc)" build/spinel-work > /dev/null 2>&1; make scale-test > "$out/scale-base.log" 2>&1 || true); fi
             ;;
           extra)
             git diff --name-only --diff-filter=A "$BASE" HEAD -- 'test/*.rb' > "$out/new.txt"
