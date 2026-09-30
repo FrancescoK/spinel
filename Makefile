@@ -1631,6 +1631,8 @@ rbs-seed-test: $(SPINEL) $(RBS_EXTRACT_BIN) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	  "$$tmp/bco" > "$$tmp/bco.out" 2>/dev/null && cmp -s "$$tmp/bco.out" test/rbs-seed/bare_call_override_unify.expected || { echo "rbs-seed-test: FAIL (#4600 bare call to an overridden method under a declared return)"; ok=0; }; \
 	$(SPINEL) test/rbs-seed/declared_param_reassigned_poly.rb --rbs test/rbs-seed/sig -o "$$tmp/dpr" >/dev/null 2>&1 && \
 	  "$$tmp/dpr" > "$$tmp/dpr.out" 2>/dev/null && cmp -s "$$tmp/dpr.out" test/rbs-seed/declared_param_reassigned_poly.expected || { echo "rbs-seed-test: FAIL (#4640 a declared parameter reassigned from a poly value)"; ok=0; }; \
+	$(SPINEL) test/rbs-seed/kw_nil_from_poly_hash.rb --rbs test/rbs-seed/sig -o "$$tmp/knp" >/dev/null 2>&1 && \
+	  "$$tmp/knp" > "$$tmp/knp.out" 2>/dev/null && cmp -s "$$tmp/knp.out" test/rbs-seed/kw_nil_from_poly_hash.expected || { echo "rbs-seed-test: FAIL (#5967 a nil keyword read out of a boxed ** into an --rbs Integer? or Float? parameter)"; ok=0; }; \
 	$(SPINEL) test/rbs-seed/inherited_class_keeps_narrowed_ivar.rb --rbs test/rbs-seed/sig -o "$$tmp/ick" >/dev/null 2>&1 && \
 	  "$$tmp/ick" > "$$tmp/ick.out" 2>/dev/null && cmp -s "$$tmp/ick.out" test/rbs-seed/inherited_class_keeps_narrowed_ivar.expected || { echo "rbs-seed-test: FAIL (#4642 a subclass's narrowed ivar loses its pin in the layout rebuild)"; ok=0; }; \
 	$(SPINEL) test/rbs-seed/nested_ivar.rb --rbs test/rbs-seed/sig \

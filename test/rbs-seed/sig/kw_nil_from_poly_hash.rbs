@@ -1,0 +1,4 @@
+class Object
+  def kwnp_int: (?k1: Integer?) -> untyped
+  def kwnp_flt: (?k1: Float?) -> untyped
+end
