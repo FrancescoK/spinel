@@ -4913,13 +4913,13 @@ static void synth_to_enum_generators(Compiler *c) {
   if (!tc || !tdef || !tm) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int s = 0; s < c->nscopes; s++) {
     Scope *m = &c->scopes[s];
-    if (!m->name || m->is_cmethod || m->class_id < 0) continue;
+    if (!m->name || m->is_cmethod) continue;
     /* a module's own copy of the method has no receiver to iterate (the
        includers' copies get their helpers): a generator on the module --
        activesupport's Enumerable#index_by, `to_enum(:index_by)` on its
        blockless branch -- would compile that copy, whose bare `each` has
        no self, and was refused */
-    if (comp_class_is_module(c, &c->classes[m->class_id])) continue;
+    if (m->class_id >= 0 && comp_class_is_module(c, &c->classes[m->class_id])) continue;
     if (!(m->yields || (m->blk_param && m->blk_param[0]))) continue;
     int hit = 0;
     for (int k = 0; k < nnames; k++) if (sp_streq(names[k], m->name)) { hit = 1; break; }
@@ -8265,19 +8265,22 @@ static int desugar_to_enum(Compiler *c) {
        would run as the iteration's block). A call the rewrite leaves is
        refused downstream as before. */
     int recv = nt_ref(nt, id, "receiver");
+    Scope *es = comp_scope_of(c, id);
     /* receiver type: an explicit receiver's inferred type, else the enclosing
        self (implicit-self `enum_for(:m)` inside an instance method). */
     TyKind rt;
     if (recv >= 0) rt = infer_type(c, recv);
-    else {
-      Scope *es = comp_scope_of(c, id);
-      rt = (es && es->class_id >= 0 && !es->is_cmethod) ? ty_object(es->class_id) : TY_UNKNOWN;
-    }
-
-    if (ty_is_object(rt)) {
-      int cid = ty_object_class(rt);
+    else rt = (es && es->class_id >= 0 && !es->is_cmethod) ? ty_object(es->class_id) : TY_UNKNOWN;
+    int self_recv = recv < 0 ||
+                    (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode"));
+    /* self is main in a top-level method or the program body: m and its
+       generator are top-level methods */
+    int toplevel = self_recv && es->class_id < 0 && !es->is_cmethod;
+    if (ty_is_object(rt) || toplevel) {
       char hname[160]; snprintf(hname, sizeof hname, "__to_enum_%s", m);
-      if (comp_method_in_chain(c, cid, hname, NULL) < 0) continue;  /* no yielding m: leave */
+      int helper = toplevel ? comp_method_index(c, hname)
+                            : comp_method_in_chain(c, ty_object_class(rt), hname, NULL);
+      if (helper < 0) continue;  /* no yielding m: leave */
       if (extra > 0) continue;   /* user-class to_enum with args: PR follow-up (loud downstream) */
       /* `return enum_for(:m) unless block_given?` inside method m: a blockless
          call to m returns the Enumerator (with a block m runs the body and its
@@ -8289,9 +8292,6 @@ static int desugar_to_enum(Compiler *c) {
          through an Enumerator-typed C signature, a type error; widened, a
          blockless call site reads a boxed Enumerator its consumers dispatch
          on. */
-      Scope *es = comp_scope_of(c, id);
-      int self_recv = recv < 0 ||
-                      (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode"));
       int value_form = es && es->body >= 0 && te_tail_is_value(nt, es->body, 0);
       if (self_recv && es && es->name && sp_streq(es->name, m) && !value_form &&
           es->ret != TY_ENUMERATOR) {
