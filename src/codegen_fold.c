@@ -9297,6 +9297,14 @@ static void emit_elem_param(Compiler *c, Scope *m, int i, int off, int tmp, TyKi
     buf_printf(&eb, "sp_String_new_shared(%s)", raw.p ? raw.p : "NULL"); free(raw.p);
   }
   else emit_array_elem_at(at, tmp, off, &eb);
+  /* A String element into a parameter the callee grows through a shared
+     handle takes a handle of its own, as a String argument does: passed as
+     the element's bytes, the call did not compile. */
+  if (sp && sp->type == TY_STRBUF && set == TY_STRING) {
+    Buf hb; memset(&hb, 0, sizeof hb);
+    buf_printf(&hb, "sp_String_new_shared(%s)", eb.p ? eb.p : "NULL");
+    free(eb.p); eb = hb;
+  }
   /* The gathered positionals are boxed, and so is an element of a boxed
      splat spread in place (a poly array, or a scalar the splat normalized
      into one): a typed parameter unboxes. Inference widens a parameter a
