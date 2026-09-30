@@ -326,6 +326,7 @@ int desugar_lazy_method_call(Compiler *c);
 int desugar_value_callable_forwards(Compiler *c);
 int desugar_root_scoped_constants(Compiler *c);
 void desugar_class_reopen(Compiler *c);
+int desugar_def_unless_method_defined(Compiler *c);
 int desugar_builtins(Compiler *c);
 void desugar_stored_enum_each(Compiler *c);
 int desugar_enum_walk_calls(Compiler *c);
