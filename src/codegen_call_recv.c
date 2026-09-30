@@ -3129,6 +3129,19 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
       if ((sp_streq(name, "[]") || sp_streq(name, "at")) && argc == 1) {
+        /* an array whose header the loop being emitted holds (hc_array):
+           in range, read the element there; anything else, the get */
+        char hd[48], hl[48], hw[48];
+        if ((rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && infer_type(c, argv[0]) == TY_INT &&
+            hc_array(c, recv, rt == TY_FLOAT_ARRAY, hd, hl, hw, sizeof hd)) {
+          int tk = ++g_tmp;
+          buf_printf(b, "({ sp_int _t%d = ", tk); emit_int_expr(c, argv[0], b);
+          buf_printf(b, "; (unsigned long long)_t%d < (unsigned long long)%s ? %s[_t%d] : sp_%sArray_get(",
+                     tk, hl, hd, tk, k);
+          emit_expr(c, recv, b);
+          buf_printf(b, ", _t%d); })", tk);
+          return 1;
+        }
         buf_printf(b, "sp_%sArray_get(", k);
         emit_expr(c, recv, b); buf_puts(b, ", ");
         if (infer_type(c, argv[0]) == TY_POLY) {
@@ -8445,8 +8458,17 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       }
       else if (sp_streq(name, "getbyte") && argc == 1) {
         /* Bounds/negative-correct: a negative index counts from the end and an
-           out-of-range index is nil (SP_INT_NIL) -- getbyte is a nullable int. */
-        buf_printf(b, "sp_str_getbyte_opt(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+           out-of-range index is nil (SP_INT_NIL) -- getbyte is a nullable int.
+           A String whose bytes the loop being emitted holds (hc_string) reads
+           an index in range there and takes this call for anything else. */
+        char hd[48], hl[48];
+        if (hc_string(c, recv, hd, hl, sizeof hd)) {
+          int tk = ++g_tmp;
+          buf_printf(b, "({ sp_int _t%d = ", tk); emit_int_expr(c, argv[0], b);
+          buf_printf(b, "; (unsigned long long)_t%d < (unsigned long long)%s ? (sp_int)(unsigned char)%s[_t%d] : sp_str_getbyte_opt(%s, _t%d); })",
+                     tk, hl, hd, tk, r, tk);
+        }
+        else { buf_printf(b, "sp_str_getbyte_opt(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       }
       else if (sp_streq(name, "squeeze") && argc == 0) buf_printf(b, "sp_str_squeeze(%s)", r);
       else if (sp_streq(name, "squeeze") && argc == 1) { buf_printf(b, "sp_str_squeeze_chars(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); }

@@ -20780,7 +20780,7 @@ static int text_is_raise_token(const char *txt) {
    call this answers for really is `(recv)->iv_x`. *allocates is set when the
    read builds a copy: a shared-handle String slot reads out as a fresh String
    unless a mark hands out the handle or the live buffer. */
-static int call_is_field_read(Compiler *c, int id, int *allocates) {
+int call_is_field_read(Compiler *c, int id, int *allocates) {
   const NodeTable *nt = c->nt;
   *allocates = 0;
   const char *nm = nt_str(nt, id, "name");
