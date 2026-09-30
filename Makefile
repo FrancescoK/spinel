@@ -2640,14 +2640,14 @@ SCALE_CODEGEN_LIMIT ?= 6.9
 # site of one costs it nothing. #6135's first an_local_has_alias, a walk of
 # the node table per call site of a lent parameter, leaves gen.sh at 6.39x
 # and reads 5.40x here (5.20x against 4.32x on its own base); a walk per
-# argument the binder runs first reads 4.98x. Today's 4.55x holds 0.17 from
-# the yield typing, which walks every call for each yield
-# (call_may_reach_user_method, 4.32x before #6185); lower the limit once that
-# goes. The count sees node accesses and name compares, not a pass's scan of
-# its own side table: #6183's handle registry, scanned per lookup, took 4,798
-# steps at N=100 against a billion, which no count or clock sees at a test's
-# size.
-CALL_SHAPES_LIMIT ?= 4.8
+# argument the binder runs first reads 4.98x. Today's 4.28x is what is left
+# once a diverging yield's typing stopped walking the table per yield (4.55x
+# before); the limit sits about 5% above, and the same two walks, put back on
+# top of that, read 5.19x and 4.73x. The count sees node accesses and name
+# compares, not a pass's scan of its own side table: #6183's handle registry,
+# scanned per lookup, took 4,798 steps at N=100 against a billion, which no
+# count or clock sees at a test's size.
+CALL_SHAPES_LIMIT ?= 4.5
 # Each count is taken only from a compile that succeeded (sw): spinel-work
 # prints its count from an atexit handler, also when the compile fails, so
 # reading it alone would accept the ratio of a program that did not build.
