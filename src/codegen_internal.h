@@ -35,6 +35,7 @@ extern int g_no_root_elision;
 extern int g_no_root_frame;
 extern int g_inline_hot;
 extern int g_no_write_barrier;
+extern const char *g_ruby_description;
 void buf_printf(Buf *b, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
 static inline void emit_indent(Buf *b, int n) { for (int i = 0; i < n; i++) buf_puts(b, "  "); }
