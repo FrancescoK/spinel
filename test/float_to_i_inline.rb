@@ -1,3 +1,4 @@
+# spinel: int64
 # Float#to_i on a typed Float truncates in-range values inline and sends NaN
 # and Infinity to the raising path. Every case here goes through the typed
 # conversion: the receiver is a Float local or a Float array element.
