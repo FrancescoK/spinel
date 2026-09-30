@@ -930,13 +930,15 @@ sp_StrArray*sp_str_split_drop_trailing(const char*s,const char*sep){SP_GC_ROOT_S
    at n elements: the last element holds the unsplit remainder.
    n == 0 means "no limit" and drops trailing empty strings (same as
    the no-arg default); n < 0 means "no limit" but keeps trailing
-   empties. Empty separator works the same as the no-limit path --
-   splits into Unicode characters; the limit caps the array.
+   empties. Empty separator splits into Unicode characters, then keeps
+   one empty field after them if the limit leaves room for it.
    Issue #619 puzzle 2. */
 sp_StrArray*sp_str_split_limit(const char*s,const char*sep,sp_int n){if(!s)sp_nil_recv("split");
   if(!sep||(sep[0]==' '&&sep[1]==0))return sp_str_split_ws_limit(s,n);
   if(n==0)return sp_str_split_drop_trailing(s,sep);
-  if(n<0)return sp_str_split(s,sep);
+  if(n<0){sp_StrArray*a=sp_str_split(s,sep);SP_GC_ROOT(a);
+    /* a non-empty String split at an empty separator ends in one empty field, as with `n` positive below */
+    if(sp_str_byte_len(s)&&!sp_str_byte_len(sep))sp_str_split_push(a,"",0);return a;}
   SP_GC_ROOT_STR(s);
   SP_GC_ROOT_STR(sep);
   sp_StrArray*a=sp_StrArray_new();
@@ -952,9 +954,8 @@ sp_StrArray*sp_str_split_limit(const char*s,const char*sep,sp_int n){if(!s)sp_ni
       p+=cn;
       k++;
     }
-    if(*p){
-      sp_str_split_push(a,p,strlen(p));
-    }
+    if(*p)sp_str_split_push(a,p,strlen(p));
+    else if(!sp_str_byte_len(sep)&&p==s+sp_str_byte_len(s))sp_str_split_push(a,"",0);   /* every character is out: the limit leaves room for the empty field after them */
     return a;
   }
   const char*p=s;
