@@ -6011,6 +6011,12 @@ static const char *sp_str_format_polyarr(const char *fmt, sp_PolyArray *a) {
         sp_RbVal wv = a->data[idx]; idx++;
         long long wnum = (wv.tag == SP_TAG_INT) ? (long long)wv.v.i
                        : (wv.tag == SP_TAG_FLT) ? (long long)wv.v.f : 0;
+        /* an Integer past what a C int holds is CRuby's RangeError, not a size */
+        if (wv.tag == SP_TAG_INT && (wnum > INT32_MAX || wnum < INT32_MIN)) {
+          free(buf);
+          sp_raise_cls("RangeError", sp_sprintf("integer %lld too %s to convert to 'int'",
+                                                wnum, wnum < 0 ? "small" : "big"));
+        }
         /* a negative PRECISION is ignored (a negative width left-justifies) */
         if (wnum < 0 && sl > 0 && spec[sl - 1] == '.') { sl--; p++; continue; }
         char wbuf[24]; int wl = snprintf(wbuf, sizeof wbuf, "%lld", wnum);
@@ -6126,45 +6132,41 @@ else if (conv == 'f' || conv == 'e' || conv == 'E' || conv == 'g' || conv == 'G'
 else if (conv == 's' || conv == 'p') {
       /* %s is to_s, %p is inspect -- for every tag (symbols, arrays, hashes,
          booleans, user objects), not just the scalar three. Hash/Array to_s
-         is its inspect, which sp_poly_to_s already returns. %p formats through
-         a 's' conversion (C's %p is a pointer). A value longer than the spec
-         buffer is appended raw (width padding on it is a non-case). */
+         is its inspect, which sp_poly_to_s already returns. %p is the same
+         conversion over the inspect text (C's %p is a pointer). */
       const char *sv = (conv == 's') ? sp_poly_to_s(v) : sp_poly_inspect(v);
       if (!sv) sv = "";
-      fmt_use[sl - 1] = 's';
-      /* The BYTE length, not strlen: an embedded NUL is a byte of the string
-         (sp_str_byte_len falls back to strlen for anything without a header),
-         and snprintf's %s stops at the first one -- `format("%s", "ab\0cd")`
-         answered two bytes where CRuby answers five, and a width padded the
-         truncation out to the right size with the wrong contents (#4632).
-         A value that carries one is copied by hand, with the width, the
-         precision and the '-' flag the spec asks for. */
+      /* The field is composed by hand: snprintf's %s counts BYTES, so a width
+         or a precision fell in the middle of a multibyte character (`%.1s` of
+         "日本" cut it in half, `%-6s` padded it by its byte count), it stops at
+         an embedded NUL, and a field wider than the 256-byte buffer it wrote
+         into was copied out of that buffer whole. CRuby's width and precision
+         count characters, as String#length does; the value's length in bytes
+         is its own (an embedded NUL is a byte of the string, #4632). The '0',
+         '+', ' ' and '#' flags mean nothing to a String. */
       size_t svl = sp_str_byte_len(sv);
-      if (memchr(sv, 0, svl) != NULL) {
-        int left = 0, width = 0, prec = -1, in_prec = 0;
-        for (size_t fi = 1; fi + 1 < sl; fi++) {
-          char fc = spec[fi];
-          if (fc == '-') left = 1;
-          else if (fc == '.') { in_prec = 1; prec = 0; }
-          else if (fc >= '0' && fc <= '9') {
-            if (in_prec) prec = prec * 10 + (fc - '0');
-            else width = width * 10 + (fc - '0');
+      int left = 0, width = 0, prec = -1, in_prec = 0;
+      for (size_t fi = 1; fi + 1 < sl; fi++) {
+        char fc = spec[fi];
+        if (fc == '-') left = 1;
+        else if (fc == '.') { in_prec = 1; prec = 0; }
+        else if (fc >= '0' && fc <= '9') {
+          int *np = in_prec ? &prec : &width;
+          if (*np > (INT32_MAX - (fc - '0')) / 10) {
+            free(buf);
+            sp_raise_cls("ArgumentError", in_prec ? "precision too big" : "width too big");
           }
+          *np = *np * 10 + (fc - '0');
         }
-        if (prec >= 0 && (size_t)prec < svl) svl = (size_t)prec;
-        size_t pad = (size_t)width > svl ? (size_t)width - svl : 0;
-        if (out + svl + pad + 1 >= cap) { cap = (out + svl + pad) * 2 + 64; buf = (char *)realloc(buf, cap); }
-        if (!left) { memset(buf + out, ' ', pad); out += pad; }
-        memcpy(buf + out, sv, svl); out += svl;
-        if (left) { memset(buf + out, ' ', pad); out += pad; }
-        continue;
       }
-      if (svl + 8 >= sizeof(tmp)) {
-        if (out + svl + 1 >= cap) { cap = (out + svl) * 2 + 64; buf = (char *)realloc(buf, cap); }
-        memcpy(buf + out, sv, svl); out += svl;
-        continue;
-      }
-      wn = snprintf(tmp, sizeof(tmp), fmt_use, sv);
+      sp_int nch = sp_str_length(sv);
+      if (prec >= 0 && prec < nch) { svl = sp_utf8_byte_offset(sv, prec); nch = prec; }
+      size_t pad = (sp_int)width > nch ? (size_t)((sp_int)width - nch) : 0;
+      if (out + svl + pad + 1 >= cap) { cap = (out + svl + pad) * 2 + 64; buf = (char *)realloc(buf, cap); }
+      if (!left) { memset(buf + out, ' ', pad); out += pad; }
+      memcpy(buf + out, sv, svl); out += svl;
+      if (left) { memset(buf + out, ' ', pad); out += pad; }
+      continue;
     }
 else if (conv == 'c') {
       /* an Integer is a codepoint (UTF-8 encoded), a String contributes its
