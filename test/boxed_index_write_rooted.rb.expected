@@ -1,0 +1,9 @@
+[:hash, true, 0]
+[:hash, false, 0]
+[:ostruct, true, 0]
+[:ostruct, false, 0]
+[:ostruct_mixed_key, 0]
+#<OpenStruct name="s", size=3>
+"s"
+3
+"undefined method 'to_sym' for an instance of Integer"

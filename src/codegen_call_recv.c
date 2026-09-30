@@ -14947,6 +14947,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         free(call.p);
       }
       else { buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[1], b); buf_puts(b, "; "); }
+      buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d); ", tv);
       if (recv_is_lvalue) {
         emit_expr(c, recv, b); buf_puts(b, " = sp_poly_splice_range("); emit_expr(c, recv, b);
         buf_puts(b, ", "); emit_expr(c, argv[0], b);
@@ -14968,8 +14969,13 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     TyKind at = comp_ntype(c, argv[0]);
     TyKind vt = comp_ntype(c, argv[1]);
     int tv = ++g_tmp;
+    /* The value is boxed before the key runs, and a computed key allocates
+       (`x[:"m#{j}"] = v` interns its Symbol): rooted, or a collection there
+       reclaimed the value and the entry held garbage. An Integer index with
+       no effect allocates nothing, and stays a plain temp. */
     buf_puts(b, "({ sp_RbVal _t"); buf_printf(b, "%d = ", tv); emit_boxed(c, argv[1], b);
-    buf_puts(b, "; ");
+    if (at != TY_INT || subtree_has_side_effect(c, argv[0])) buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
+    else buf_puts(b, "; ");
     if (at == TY_STRING) {
       buf_printf(b, "sp_poly_set_str("); emit_expr(c, recv, b);
       buf_puts(b, ", "); emit_expr(c, argv[0], b);

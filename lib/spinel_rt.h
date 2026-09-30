@@ -7943,6 +7943,8 @@ static sp_RbVal sp_poly_get_str(sp_RbVal v, const char *key) {
     case SP_BUILTIN_STR_STR_HASH: { const char *s = sp_StrStrHash_get((sp_StrStrHash*)v.v.p, key); return s ? sp_box_str(s) : sp_box_nil(); }
     case SP_BUILTIN_STR_INT_HASH: { sp_int i = sp_StrIntHash_get_opt((sp_StrIntHash*)v.v.p, key); return i == SP_INT_NIL ? sp_box_nil() : sp_box_int(i); }
     case SP_BUILTIN_POLY_POLY_HASH: return sp_PolyPolyHash_get((sp_PolyPolyHash*)v.v.p, sp_box_str(key));
+    /* OpenStruct#["name"] is the member of that name, as with a Symbol */
+    case SP_BUILTIN_OPENSTRUCT: return key ? sp_OpenStruct_get((sp_OpenStruct*)v.v.p, sp_sym_intern(key)) : sp_box_nil();
     default: break;
   }
   /* Struct#["member"] names the member, like the symbol form (#3369) */
@@ -9244,6 +9246,13 @@ static sp_RbVal sp_poly_set_str(sp_RbVal v, const char *key, sp_RbVal val) {
   if (sp_poly_is_array_kind(v.cls_id))
     sp_raise_cls("TypeError", SPL("no implicit conversion of String into Integer"));
   if (v.cls_id == SP_BUILTIN_STR_POLY_HASH) { sp_StrPolyHash_set((sp_StrPolyHash*)v.v.p, key, val); return val; }
+  /* OpenStruct#["name"] = v sets the member of that name; the write was
+     dropped. Interning a new name allocates, so the value is rooted. */
+  if (v.cls_id == SP_BUILTIN_OPENSTRUCT) {
+    SP_GC_ROOT_RBVAL(v); SP_GC_ROOT_RBVAL(val);
+    sp_OpenStruct_set((sp_OpenStruct*)v.v.p, sp_sym_intern(key), val);
+    return val;
+  }
   /* Every other hash stores it or says it cannot: a typed hash of another key
      or value class dropped the entry here without a word. */
   if (sp_poly_is_hash_kind(v.cls_id)) return sp_poly_set_poly(v, sp_box_str(key), val);
@@ -9464,6 +9473,14 @@ static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
       if (key.tag == SP_TAG_INT) { sp_PtrArray *_pa = (sp_PtrArray*)v.v.p; sp_PtrArray_set_grow(_pa, key.v.i, sp_PtrArray_elem_unbox(_pa, val)); }
       break;
     case SP_BUILTIN_POLY_POLY_HASH: sp_PolyPolyHash_set((sp_PolyPolyHash*)v.v.p, key, val); break;
+    /* an OpenStruct member named by a Symbol or a String; OpenStruct#[]=
+       calls to_sym on anything else */
+    case SP_BUILTIN_OPENSTRUCT:
+      if (key.tag == SP_TAG_SYM) sp_OpenStruct_set((sp_OpenStruct*)v.v.p, (sp_sym)key.v.i, val);
+      else if (key.tag == SP_TAG_STR && key.v.s) return sp_poly_set_str(v, key.v.s, val);
+      else sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'to_sym' for an instance of %s",
+                                                    sp_poly_class_name(key)));
+      break;
     default: break;
   }
   return val;
