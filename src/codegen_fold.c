@@ -1859,6 +1859,8 @@ static int emit_hash_chunk_first_class(Compiler *c, int pr, TyKind prt, int bloc
   /* a `next <key>` writes the key slot itself */
   if (fold_body_has_next(c, nt_ref(nt, block, "body"))) {
     char dst[24]; snprintf(dst, sizeof dst, "_t%d", tkey);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "%s = sp_box_nil();\n", dst);
     int save = g_indent; g_indent++;
     emit_block_value_into(c, block, dst, 1, g_indent);
     g_indent = save;

@@ -25,3 +25,4 @@ h = {a: 1, b: 2, c: 3}
 p h.chunk_while { |x, y| next true if y[1] > 1; false }.to_a
 p h.slice_when { |x, y| next false if y[1] > 1; true }.to_a
 p h.chunk { |k, v| next :big if v > 1; :small }.to_a
+p({a: 1, b: 2, c: 3, d: 5}.chunk { |k, v| next if v == 2; v.odd? }.to_a)
