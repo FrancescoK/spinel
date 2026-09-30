@@ -12727,6 +12727,12 @@ static void ext_generate_cruby_shim(Compiler *c) {
 }
 
 
+static int cmp_int_pair(const void *a, const void *b) {
+  const int *x = a, *y = b;
+  if (x[0] != y[0]) return x[0] < y[0] ? -1 : 1;
+  return x[1] < y[1] ? -1 : x[1] > y[1];
+}
+
 char *codegen_program(const NodeTable *nt) {
   Compiler *c = comp_new(nt);
   analyze_program(c);
@@ -13381,20 +13387,19 @@ char *codegen_program(const NodeTable *nt) {
        separately from the includes that follow the class (#2702). */
     int **cls_preps = calloc((size_t)c->nclasses, sizeof(int *));
     int  *cls_npreps = calloc((size_t)c->nclasses, sizeof(int));
-    /* One pass over the node table, resolving each class/module body to its
-       own index. Scanning the whole table once per class was O(classes * N)
-       and dominated codegen on class-heavy programs; each class still sees its
-       own definitions in id order, so include/prepend order is unchanged. */
+    /* One pass over every class/module body (class_body_list, a Struct.new
+       block included), in source order so each class sees its includes in
+       the order they run. Scanning the whole table once per class was
+       O(classes * N) and dominated codegen on class-heavy programs. */
     {
-      /* scan every def_node body and all reopenings */
-      for (int id = 0; id < c->nt->count; id++) {
-        const char *ty2 = nt_type(c->nt, id);
-        if (!ty2 || (!sp_streq(ty2, "ClassNode") && !sp_streq(ty2, "ModuleNode"))) continue;
-        int cp2 = nt_ref(c->nt, id, "constant_path");
-        const char *cn2 = cp2 >= 0 ? nt_str(c->nt, cp2, "name") : NULL;
-        int ci = cn2 ? comp_class_index(c, cn2) : -1;
-        if (ci < 0 || ci >= c->nclasses) continue;
-        int body2 = nt_ref(c->nt, id, "body");
+      int *bcls, *bbody;
+      int nbodies = class_body_list(c, &bcls, &bbody);
+      int (*bord)[2] = malloc((size_t)(nbodies > 0 ? nbodies : 1) * sizeof *bord);
+      for (int bi = 0; bi < nbodies; bi++) { bord[bi][0] = bbody[bi]; bord[bi][1] = bcls[bi]; }
+      qsort(bord, (size_t)nbodies, sizeof *bord, cmp_int_pair);
+      for (int bx = 0; bx < nbodies; bx++) {
+        int ci = bord[bx][1];
+        int body2 = bord[bx][0];
         int bn2 = 0;
         const int *stmts2 = body2 >= 0 ? nt_arr(c->nt, body2, "body", &bn2) : NULL;
         for (int k2 = 0; k2 < bn2; k2++) {
@@ -13434,6 +13439,9 @@ char *codegen_program(const NodeTable *nt) {
           }
         }
       }
+      free(bord);
+      free(bcls);
+      free(bbody);
     }
     /* An `obj.extend(Mod)` records its membership on the synthesized singleton
        subclass rather than as an `include` statement in a class body, so the
