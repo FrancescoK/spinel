@@ -490,8 +490,10 @@ TyKind block_next_value_ntype(const Compiler *c, int node) {
    does not describe what it emitted. A poly slot then took that concrete
    value unboxed and the C did not compile. Answer the type the lowering
    produces, for the scalar pairs it lowers directly; anything else keeps
-   the cached type. String#% formats whatever it is given into a String.
-   Under promote, Integer `+ - *` take the boxed promotion path and may answer
+   the cached type. On a String the lowering of `+`, `*` and `%` is a String
+   expression whatever the argument: it converts the argument (`* 2.0` takes
+   an Integer count), or raises CRuby's TypeError where it cannot (`+ 1`), and
+   String#% formats anything. Under promote, Integer `+ - *` take the boxed promotion path and may answer
    a Bignum, so they are left alone; Integer `/` and `%` still emit a raw
    Integer and are answered as one. */
 static int yield_operator_site_type(const Compiler *c, int id, TyKind *out) {
@@ -511,8 +513,7 @@ static int yield_operator_site_type(const Compiler *c, int id, TyKind *out) {
               sp_streq(op, "/") || sp_streq(op, "%");
   if (!arith) return 0;
   if (rt == TY_STRING) {
-    if ((sp_streq(op, "+") && at == TY_STRING) || (sp_streq(op, "*") && at == TY_INT) ||
-        sp_streq(op, "%")) {
+    if (sp_streq(op, "+") || sp_streq(op, "*") || sp_streq(op, "%")) {
       *out = TY_STRING; return 1;
     }
     return 0;

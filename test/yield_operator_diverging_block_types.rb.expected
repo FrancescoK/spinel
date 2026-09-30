@@ -15,6 +15,10 @@
 2.5
 6
 6.0
+"abab"
+3.0
+2.5
+TypeError: no implicit conversion of Integer into String
 9
 2.25
 "cc"
