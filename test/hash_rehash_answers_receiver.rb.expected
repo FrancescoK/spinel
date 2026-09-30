@@ -1,0 +1,17 @@
+[true, {a: 1}]
+[true, {"a" => 1}]
+[true, {1 => 1}]
+[true, {"a" => "b"}]
+[true, {1 => "b"}]
+[true, {a: 1, "b" => 2}]
+[true, {1 => 1, "b" => 2}]
+[true, {}]
+{a: 1}
+true
+nil
+nil
+1
+1
+FrozenError
+[FrozenError, true]
+[FrozenError, true]

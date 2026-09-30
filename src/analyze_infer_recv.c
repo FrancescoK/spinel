@@ -703,7 +703,8 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     if (sp_streq(name, "dup") || sp_streq(name, "clone") ||
         sp_streq(name, "merge")) { *out = rt; return 1; }
     /* #2340/#2349/#2351: no-arg merge / slice / clear / to_hash / rehash keep
-       the receiver's variant (an emptied or copied hash of the same shape) */
+       the receiver's variant (an emptied or copied hash of the same shape, or
+       for rehash the receiver itself) */
     if ((sp_streq(name, "merge") || sp_streq(name, "slice")) && argc == 0) { *out = rt; return 1; }
     if ((sp_streq(name, "clear") || sp_streq(name, "to_hash") || sp_streq(name, "rehash")) && argc == 0)
       { *out = rt; return 1; }

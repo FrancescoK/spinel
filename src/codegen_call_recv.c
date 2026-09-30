@@ -6368,10 +6368,18 @@ else {
         buf_puts(b, "sp_PolyPolyHash_rehash("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
+      /* rehash answers the receiver: a typed table holds Integer, Symbol or
+         String keys, which CRuby's rehash leaves where they are, so there is
+         nothing to rebuild; a frozen one raises, as CRuby's does */
+      if (sp_streq(name, "rehash") && argc == 0) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b);
+        buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); _t%d; })", t, t, hash_box_cls(rt), t);
+        return 1;
+      }
       /* no-arg merge -> a copy; no-arg slice -> an empty hash of the same
-         variant; to_hash / rehash -> a copy of self (#2340/#2349) */
-      if ((sp_streq(name, "merge") || sp_streq(name, "to_hash") ||
-           sp_streq(name, "rehash")) && argc == 0) {
+         variant; to_hash -> a copy of self (#2340/#2349) */
+      if ((sp_streq(name, "merge") || sp_streq(name, "to_hash")) && argc == 0) {
         buf_printf(b, "sp_%sHash_dup(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
