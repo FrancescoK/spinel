@@ -279,6 +279,25 @@ sp_int sp_str_to_i_lenient_base(const char *s, sp_int base) {
   return sp_str_to_i_base_impl(s, base, 1);
 }
 
+/* The decimal text Float() accepts once its underscores are stripped: an
+   optional sign, digits, an optional '.' that may have no digit after it
+   ("5.", "1.e5"; at least one digit in all), and an optional exponent that
+   has a digit of its own. Nothing may follow, so a second point is refused. */
+static int sp_float_text_shape_ok(const char *p) {
+  int nd = 0;
+  if (*p == '+' || *p == '-') p++;
+  while (isdigit((unsigned char)*p)) { p++; nd++; }
+  if (*p == '.') { p++; while (isdigit((unsigned char)*p)) { p++; nd++; } }
+  if (!nd) return 0;
+  if (*p == 'e' || *p == 'E') {
+    p++;
+    if (*p == '+' || *p == '-') p++;
+    if (!isdigit((unsigned char)*p)) return 0;
+    while (isdigit((unsigned char)*p)) p++;
+  }
+  return *p == '\0';
+}
+
 /* Kernel#Float() raises ArgumentError on unparseable input. strtod
    on its own would silently return 0.0 for "abc" or empty input;
    match MRI semantics by validating at-least-one-digit + no-trailing-
@@ -292,9 +311,9 @@ static sp_float sp_str_to_f_impl(const char *s, int lenient) {SP_GC_ROOT_STR(s);
   {
     /* Clean into a buffer, enforcing CRuby's shape rules that strtod is looser
        about: an '_' only BETWEEN two digits of the active base (stripped);
-       a '.' only when followed by a digit ("5." and "0x1_1.0" are invalid);
        a hex literal is integral (hex digits only after 0x); at least one real
-       digit must appear (rejects "inf"/"nan", which strtod would parse). */
+       digit must appear (rejects "inf"/"nan", which strtod would parse). A
+       decimal literal's own shape is checked below once it is copied. */
     size_t n = strlen(s);
     char sbuf[256];
     char *buf = n < sizeof sbuf ? sbuf : (char *)malloc(n + 1);
@@ -345,13 +364,6 @@ static sp_float sp_str_to_f_impl(const char *s, int lenient) {SP_GC_ROOT_STR(s);
         sawdigit = 1;
       }
       else {
-        if (ch == '.' && !isdigit((unsigned char)q[1])) {
-          /* a trailing '.' after digits is valid ("5." == 5.0, CRuby 4.0) */
-          const char *t2 = q + 1;
-          while (isspace((unsigned char)*t2)) t2++;
-          if (*t2 || !sawdigit) goto bad;
-          continue;   /* drop the trailing dot for strtod */
-        }
         if (isdigit((unsigned char)ch)) sawdigit = 1;
       }
       buf[o++] = ch;
@@ -359,6 +371,11 @@ static sp_float sp_str_to_f_impl(const char *s, int lenient) {SP_GC_ROOT_STR(s);
     while (isspace((unsigned char)*q)) q++;
     if (*q || !sawdigit) goto bad;        /* junk after spaces / no digits */
     buf[o] = '\0';
+    /* sp_read_float below stops at the first character it cannot use and
+       succeeds, so text after a valid prefix ("1.0foo", "1e", "0b10") has to
+       be refused here: digits, an optional fraction, then an optional exponent
+       with at least one digit of its own. A hex literal was validated above. */
+    if (!hex && !sp_float_text_shape_ok(buf)) goto bad;
     {
       char *endptr;
       double v = 0.0;

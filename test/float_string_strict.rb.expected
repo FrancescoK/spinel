@@ -1,0 +1,89 @@
+"1e5" => 100000.0 100000.0
+"1E5" => 100000.0 100000.0
+"1e+5" => 100000.0 100000.0
+"1e-5" => 1.0e-05 1.0e-05
+"1e" => "invalid value for Float(): \"1e\"" nil
+"1e+" => "invalid value for Float(): \"1e+\"" nil
+"1.e5" => 100000.0 100000.0
+".5" => 0.5 0.5
+"-.5" => -0.5 -0.5
+"+.5" => 0.5 0.5
+"." => "invalid value for Float(): \".\"" nil
+"1_000.5" => 1000.5 1000.5
+"1__0" => "invalid value for Float(): \"1__0\"" nil
+"1e1_0" => 10000000000.0 10000000000.0
+"1e_1" => "invalid value for Float(): \"1e_1\"" nil
+"1.5e" => "invalid value for Float(): \"1.5e\"" nil
+"1.5e5.5" => "invalid value for Float(): \"1.5e5.5\"" nil
+"0x1p3" => 8.0 8.0
+"0x1" => 1.0 1.0
+"0x" => "invalid value for Float(): \"0x\"" nil
+"0d10" => "invalid value for Float(): \"0d10\"" nil
+"0b10" => "invalid value for Float(): \"0b10\"" nil
+"0o10" => "invalid value for Float(): \"0o10\"" nil
+"0B1" => "invalid value for Float(): \"0B1\"" nil
+"1.0foo" => "invalid value for Float(): \"1.0foo\"" nil
+"1.0 foo" => "invalid value for Float(): \"1.0 foo\"" nil
+"  1.5  " => 1.5 1.5
+"1.5\n" => 1.5 1.5
+"" => "invalid value for Float(): \"\"" nil
+"+" => "invalid value for Float(): \"+\"" nil
+"-" => "invalid value for Float(): \"-\"" nil
+"1e5e5" => "invalid value for Float(): \"1e5e5\"" nil
+"e5" => "invalid value for Float(): \"e5\"" nil
+"1.5.5" => "invalid value for Float(): \"1.5.5\"" nil
+"1f" => "invalid value for Float(): \"1f\"" nil
+"1.5f" => "invalid value for Float(): \"1.5f\"" nil
+"Infinity" => "invalid value for Float(): \"Infinity\"" nil
+"NaN" => "invalid value for Float(): \"NaN\"" nil
+"1_e5" => "invalid value for Float(): \"1_e5\"" nil
+"1e5_" => "invalid value for Float(): \"1e5_\"" nil
+"1 e5" => "invalid value for Float(): \"1 e5\"" nil
+"1.5e-" => "invalid value for Float(): \"1.5e-\"" nil
+"0.0e" => "invalid value for Float(): \"0.0e\"" nil
+"00" => 0.0 0.0
+"010" => 10.0 10.0
+"0e0" => 0.0 0.0
+"1e400" => Infinity Infinity
+"-0" => -0.0 -0.0
+"+0.0" => 0.0 0.0
+"1." => 1.0 1.0
+"5." => 5.0 5.0
+"1.e" => "invalid value for Float(): \"1.e\"" nil
+"0x1.8p1" => 3.0 3.0
+"0x1.8" => 1.5 1.5
+"1e0x1" => "invalid value for Float(): \"1e0x1\"" nil
+"0b" => "invalid value for Float(): \"0b\"" nil
+"1_" => "invalid value for Float(): \"1_\"" nil
+"_1" => "invalid value for Float(): \"_1\"" nil
+"1.5_5" => 1.55 1.55
+"1._5" => "invalid value for Float(): \"1._5\"" nil
+"1.5__5" => "invalid value for Float(): \"1.5__5\"" nil
+"0_1" => 1.0 1.0
+"0e" => "invalid value for Float(): \"0e\"" nil
+"0d" => "invalid value for Float(): \"0d\"" nil
+"1,5" => "invalid value for Float(): \"1,5\"" nil
+"1e5 x" => "invalid value for Float(): \"1e5 x\"" nil
+"1. e5" => "invalid value for Float(): \"1. e5\"" nil
+"-1.e-2" => -0.01 -0.01
+"3.14" => 3.14 3.14
+"12abc" => "invalid value for Float(): \"12abc\"" nil
+"1.5.e5" => "invalid value for Float(): \"1.5.e5\"" nil
+"1.e5." => "invalid value for Float(): \"1.e5.\"" nil
+"1.0." => "invalid value for Float(): \"1.0.\"" nil
+"1e5." => "invalid value for Float(): \"1e5.\"" nil
+".5." => "invalid value for Float(): \".5.\"" nil
+"1.5e5." => "invalid value for Float(): \"1.5e5.\"" nil
+"1_0.5.e5" => "invalid value for Float(): \"1_0.5.e5\"" nil
+"invalid value for Float(): \"1.0foo\""
+"invalid value for Float(): \"1e\""
+"invalid value for Float(): \"0b10\""
+100000.0
+invalid value for Float(): "1.5x"
+10.0
+2.2
+ArgumentError
+[1.5, 1.0]
+ArgumentError
+ArgumentError
+7.5
