@@ -10,7 +10,7 @@
 
 #include "compiler.h"
 
-#define SP_RUBY_VERSION "3.2.0"
+#define SP_RUBY_VERSION "4.0.7"
 
 /* Set by main.c from --int-overflow=promote. In promote mode the analyzer is
    free to widen accumulating int locals to bigint more aggressively (e.g. block
