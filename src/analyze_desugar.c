@@ -677,6 +677,16 @@ static void xc_push(int **arr, int *n, int v) {
   if (!g) return;
   *arr = g; (*arr)[(*n)++] = v;
 }
+static int subtree_has(const NodeTable *nt, int root, int id) {
+  if (root == id) return 1;
+  if (root < 0 || root >= nt->count) return 0;
+  for (int j = 0; j < nt_num_refs(nt, root); j++) if (subtree_has(nt, nt_ref_at(nt, root, j), id)) return 1;
+  for (int j = 0; j < nt_num_arrs(nt, root); j++) {
+    int an = 0; const int *ids = nt_arr_at(nt, root, j, &an);
+    for (int k = 0; k < an; k++) if (subtree_has(nt, ids[k], id)) return 1;
+  }
+  return 0;
+}
 static int me_leaf_defined(const NodeTable *nt, const char *leaf) {
   for (int id = 0; id < nt->count; id++) {
     NodeKind k = nt_kind(nt, id);
@@ -2478,6 +2488,51 @@ static int engine_version_cmp(const char *a, const char *b) {
   return 0;
 }
 
+static const char *engine_written(NodeTable *nt, int id) {
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_ClassNode || k == NK_ModuleNode) return nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+  if (k != NK_ConstantWriteNode && k != NK_ConstantOrWriteNode && k != NK_ConstantAndWriteNode &&
+      k != NK_ConstantOperatorWriteNode && k != NK_ConstantTargetNode && k != NK_ConstantPathWriteNode &&
+      k != NK_ConstantPathOrWriteNode && k != NK_ConstantPathAndWriteNode &&
+      k != NK_ConstantPathOperatorWriteNode && k != NK_ConstantPathTargetNode) return NULL;
+  int t = nt_ref(nt, id, "target");
+  return t >= 0 ? nt_str(nt, t, "name") : nt_str(nt, id, "name");
+}
+
+static int engine_absent(NodeTable *nt, int e, int in) {
+  const char *x = NULL;
+  if (nt_kind(nt, e) == NK_DefinedNode) {
+    int v = nt_ref(nt, e, "value");
+    while (nt_kind(nt, v) == NK_ConstantPathNode && nt_ref(nt, v, "parent") >= 0) v = nt_ref(nt, v, "parent");
+    if (nt_kind(nt, v) == NK_ConstantReadNode || nt_kind(nt, v) == NK_ConstantPathNode) x = nt_str(nt, v, "name");
+  }
+  else if (nt_kind(nt, e) == NK_CallNode && sp_streq(nt_str(nt, e, "name"), "const_defined?") &&
+           (nt_kind(nt, nt_ref(nt, e, "receiver")) == NK_ConstantReadNode ||
+            nt_kind(nt, nt_ref(nt, e, "receiver")) == NK_ConstantPathNode) && nt_ref(nt, e, "block") < 0) {
+    int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, e, "arguments"), "arguments", &ac);
+    if (ac >= 1 && nt_kind(nt, av[0]) == NK_SymbolNode) x = nt_str(nt, av[0], "value");
+    if (ac >= 1 && nt_kind(nt, av[0]) == NK_StringNode) x = nt_str(nt, av[0], "content");
+  }
+  if (!x || comp_is_wellknown_const(x) || is_builtin_class_name(x) || is_builtin_module_name(x) ||
+      is_builtin_exception_name(x)) return 0;
+  for (int id = 0; id < nt->count; id++)
+    if (engine_written(nt, id) && sp_streq(engine_written(nt, id), x) && !subtree_has(nt, in, id)) return 0;
+  return 1;
+}
+
+static int engine_absent_fold(NodeTable *nt, int e, int in) {
+  NodeKind k = nt_kind(nt, e);
+  if (k == NK_AndNode || k == NK_OrNode)
+    return engine_absent_fold(nt, nt_ref(nt, e, "left"), in) | engine_absent_fold(nt, nt_ref(nt, e, "right"), in);
+  int neg = k == NK_CallNode && sp_streq(nt_str(nt, e, "name"), "!") && nt_ref(nt, e, "arguments") < 0;
+  int q = neg ? nt_ref(nt, e, "receiver") : e;
+  if (!engine_absent(nt, q, in)) return 0;
+  engine_blank(nt, q);
+  nt_node_reset(nt, e, neg ? "TrueNode" : "FalseNode");
+  nt_node_set_int(nt, e, "engine_check", 1);
+  return 1;
+}
+
 int desugar_engine_branches(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
@@ -2487,16 +2542,13 @@ int desugar_engine_branches(Compiler *c) {
      fold, which knows only the global, would answer for the wrong constant:
      leave every check alone then. */
   for (int id = 0; id < n0; id++) {
-    NodeKind k = nt_kind(nt, id);
-    if (k != NK_ConstantWriteNode && k != NK_ConstantAndWriteNode && k != NK_ConstantOperatorWriteNode &&
-        k != NK_ConstantTargetNode && k != NK_ConstantPathWriteNode && k != NK_ConstantPathOrWriteNode &&
-        k != NK_ConstantPathAndWriteNode && k != NK_ConstantPathOperatorWriteNode &&
-        k != NK_ConstantPathTargetNode) continue;
-    int t = nt_ref(nt, id, "target");
-    const char *wn = t >= 0 ? nt_str(nt, t, "name") : nt_str(nt, id, "name");
+    const char *wn = engine_written(nt, id);
     if (wn && sp_streq(wn, "RUBY_ENGINE")) eng = 0;
     if (wn && sp_streq(wn, "RUBY_VERSION")) ver = 0;
   }
+  for (int id = 0; id < n0; id++)
+    if (nt_kind(nt, id) == NK_IfNode || nt_kind(nt, id) == NK_UnlessNode)
+      changed |= engine_absent_fold(nt, nt_ref(nt, id, "predicate"), id);
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *op = nt_str(nt, id, "name");
