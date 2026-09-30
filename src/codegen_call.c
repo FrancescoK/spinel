@@ -3700,6 +3700,11 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
 static void emit_rational_to_f_expr(Compiler *c, int node, Buf *b) {
   buf_puts(b, "sp_rational_to_f("); emit_expr(c, node, b); buf_puts(b, ")");
 }
+static void emit_voided_operands(Compiler *c, int recv, int arg, int v, Buf *b) {
+  buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+  emit_boxed(c, arg, b); buf_printf(b, "), %d)", v);
+}
+
 static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -4241,9 +4246,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       /* Complex == a non-numeric value is always false (!= true); the argument
          still evaluates for its side effects (#2557). */
       if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "!="))) {
-        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
-        emit_boxed(c, argv[0], b);
-        buf_printf(b, "), %d)", name[0] == '!' ? 1 : 0);
+        emit_voided_operands(c, recv, argv[0], name[0] == '!' ? 1 : 0, b);
         return 1;
       }
       /* eql? / equal? on the unboxed Complex value: component equality when
@@ -4959,9 +4962,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
           emit_boxed(c, argv[0], b); buf_puts(b, "))");
           return 1;
         }
-        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
-        emit_boxed(c, argv[0], b);
-        buf_printf(b, "), %d)", neg ? 1 : 0);
+        emit_voided_operands(c, recv, argv[0], neg ? 1 : 0, b);
         return 1;
       }
       /* Comparable#between?/clamp via <=> (#2563). between? is bool; clamp with
@@ -15381,8 +15382,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
     if (fr && fr != 5 && fr != 6 && a0 == TY_NIL) {
-      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
-      emit_boxed(c, argv[0], b); buf_puts(b, "), 0)");
+      emit_voided_operands(c, recv, argv[0], 0, b);
       return 1;
     }
   }
@@ -15913,10 +15913,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "), (sp_Exception *)(");
         emit_expr(c, argv[0], b); buf_puts(b, ")))");
       }
-      else {
-        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
-        emit_boxed(c, argv[0], b); buf_printf(b, "), %d)", eq ? 0 : 1);
-      }
+      else emit_voided_operands(c, recv, argv[0], eq ? 0 : 1, b);
       return 1;
     }
     /* MatchData#== : structural equality with another MatchData, else false (#2529) */
@@ -15925,10 +15922,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "(%ssp_MatchData_eq(", eq ? "" : "!"); emit_expr(c, recv, b);
         buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, "))");
       }
-      else {
-        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
-        emit_boxed(c, argv[0], b); buf_printf(b, "), %d)", eq ? 0 : 1);
-      }
+      else emit_voided_operands(c, recv, argv[0], eq ? 0 : 1, b);
       return 1;
     }
     /* Method/UnboundMethod#== / #eql?: same bound receiver and same target
@@ -15941,10 +15935,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; (sp_bool)%s(_t%d->self == _t%d->self && _t%d->fn == _t%d->fn); })",
                    eq ? "" : "!", ta2, tb2, ta2, tb2);
       }
-      else {
-        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
-        emit_boxed(c, argv[0], b); buf_printf(b, "), %d)", eq ? 0 : 1);
-      }
+      else emit_voided_operands(c, recv, argv[0], eq ? 0 : 1, b);
       return 1;
     }
     /* The concurrency handles compare by identity, like any other heap
@@ -15965,10 +15956,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
                    eq ? "" : "!", tq, tq);
         emit_expr(c, recv, b); buf_puts(b, ")); })");
       }
-      else {
-        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
-        emit_boxed(c, argv[0], b); buf_printf(b, "), %d)", eq ? 0 : 1);
-      }
+      else emit_voided_operands(c, recv, argv[0], eq ? 0 : 1, b);
       return 1;
     }
     /* An operand with no static type at all (a value read through a slot the
@@ -39624,9 +39612,7 @@ else {
       buf_printf(b, "); _t%d %s NULL; })", tn, sp_streq(name, "!=") ? "!=" : "==");
       return;
     }
-    buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
-    emit_boxed(c, argv[0], b);
-    buf_printf(b, "), %d)", sp_streq(name, "!=") ? 1 : 0);
+    emit_voided_operands(c, recv, argv[0], sp_streq(name, "!=") ? 1 : 0, b);
     return;
   }
   /* The IO family's share of Object's protocol, ahead of the generic
