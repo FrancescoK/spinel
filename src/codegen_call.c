@@ -38687,10 +38687,19 @@ else {
     { Buf *sv_pre = g_pre; int sv_ind = g_indent;
       g_pre = pb; g_indent = 1;
       int bn = 0; const int *bb = lbody >= 0 ? nt_arr(nt, lbody, "body", &bn) : NULL;
-      for (int k = 0; k + 1 < bn; k++) emit_stmt(c, bb[k], pb, 1);
-      buf_puts(pb, "  return ");
-      if (bn > 0) emit_boxed(c, bb[bn - 1], pb); else buf_puts(pb, "sp_box_nil()");
-      buf_puts(pb, ";\n}\n");
+      /* a `next <v>` answers the missing key, as in the Hash.new block form */
+      if (bn > 0 && fold_body_has_next(c, lbody)) {
+        char dst[32]; snprintf(dst, sizeof dst, "_t%d", ++g_tmp);
+        emit_indent(pb, 1); buf_printf(pb, "sp_RbVal %s = sp_box_nil();\n", dst);
+        emit_block_value_into(c, lam, dst, 1, 1);
+        emit_indent(pb, 1); buf_printf(pb, "return %s;\n}\n", dst);
+      }
+      else {
+        for (int k = 0; k + 1 < bn; k++) emit_stmt(c, bb[k], pb, 1);
+        buf_puts(pb, "  return ");
+        if (bn > 0) emit_boxed(c, bb[bn - 1], pb); else buf_puts(pb, "sp_box_nil()");
+        buf_puts(pb, ";\n}\n");
+      }
       g_pre = sv_pre; g_indent = sv_ind; }
     int th = ++g_tmp;
     /* An assignment's value in Ruby is the RIGHT-HAND SIDE: `h.default_proc = p`
