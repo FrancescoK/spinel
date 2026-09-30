@@ -1,0 +1,37 @@
+[:empty, :empty]
+[:other, :other]
+[:other, :other]
+[:other, :other]
+[:other, :other]
+[:other, :other]
+[:other, :other]
+[:other, :other]
+[:empty, :empty]
+[:other, :other, :other, :other]
+[:nomatch, NoMatchingPatternError]
+:matched
+:a
+:b
+:a
+:found
+:none
+1
+:none
+{}
+1
+false
+true
+false
+false
+false
+false
+false
+true
+[:empty_hash, :other, :empty_array, :other, :int, :other, :other]
+[:e, :n]
+1
+:closed
+:open
+{b: 2}
+:closed
+:open
