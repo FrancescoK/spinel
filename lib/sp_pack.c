@@ -686,6 +686,9 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {SP_GC_ROOT(ar
     if (count < 0) count = 0;
     if (pk_is_flt_spec(spec)) {
       for (int64_t k = 0; k < count; k++) {
+        /* a poly array's nil is a tagged one, which pk_poly_to_flt reads as
+           0.0; it raises here as a typed array's sentinel does */
+        if (idx < arr->len && arr->data[idx].tag == SP_TAG_NIL) pk_nil_elem(1);
         double dv = (idx < arr->len) ? pk_poly_to_flt(arr->data[idx]) : 0.0;
         idx++;
         pk_flt_directive(spec, dv, &buf, &len, &cap);
@@ -693,7 +696,10 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {SP_GC_ROOT(ar
       continue;
     }
     for (int64_t k = 0; k < count; k++) {
-      int64_t v = (idx < arr->len) ? pk_poly_to_int(arr->data[idx]) : 0;
+      /* converted only for a directive that takes the element: `x` packs a
+         NUL and leaves it, so a nil under it (`[1, nil].pack("qx")`) is not
+         converted, as the typed arrays' sentinel check already skips it */
+      int64_t v = (idx < arr->len && pk_int_directive_consumes(spec)) ? pk_poly_to_int(arr->data[idx]) : 0;
       idx++;
       if (!pk_int_directive(spec, v, big, &buf, &len, &cap)) idx--;
     }

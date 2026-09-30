@@ -55,3 +55,47 @@ true
 nil
 [8]
 [2.5]
+0
+0
+0
+-1
+0
+[[nil, 0], [nil, 1]]
+0
+nil
+true
+2
+2
+0
+true
+true
+[nil, 1, nil, 2]
+2
+0
+true
+true
+TypeError
+TypeError
+"\x01\x00\x00\x00\x00\x00\x00\x00\x00"
+ArgumentError
+true
+0
+1
+"-2"
+2
+2
+true
+false
+true
+true
+true
+TypeError
+TypeError
+nil
+ArgumentError
+ArgumentError
+ArgumentError
+ArgumentError
+[nil, nil]
+[3]
+[2.5]

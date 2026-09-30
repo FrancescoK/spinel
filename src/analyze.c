@@ -16307,14 +16307,27 @@ static LocalVar *nullable_elem_local(Compiler *c, int at, const char *nm) {
   return (lv->type == TY_INT_ARRAY || lv->type == TY_FLOAT_ARRAY) ? lv : NULL;
 }
 
+/* Ivar `nm` of class `cid`'s instances, for the element marking: the slot
+   of the topmost ancestor that carries it. A subclass copies its parent's
+   slot and a method the parent defines reads the parent's, so a mark made
+   through the subclass (`k2.arr << v`, a child method's `@arr << v`) sits
+   where the whole family reads it. */
+static int nullable_elem_ivar_in(Compiler *c, int cid, const char *nm, ClassInfo **out) {
+  int iv = -1;
+  for (; nm && cid >= 0 && cid < c->nclasses; cid = c->classes[cid].parent) {
+    int k = comp_ivar_index(&c->classes[cid], nm);
+    if (k < 0) break;
+    *out = &c->classes[cid]; iv = k;
+  }
+  return iv;
+}
+
 /* The ivar an ivar read/write node names, for the element marking. */
 static int nullable_elem_ivar(Compiler *c, int at, ClassInfo **out) {
   Scope *s = comp_scope_of(c, at);
   int cid = s ? s->class_id : -1;
   if (cid < 0) cid = comp_class_index(c, "Toplevel");
-  if (cid < 0 || cid >= c->nclasses) return -1;
-  *out = &c->classes[cid];
-  return comp_ivar_index(*out, nt_str(c->nt, at, "name"));
+  return nullable_elem_ivar_in(c, cid, nt_str(c->nt, at, "name"), out);
 }
 
 static int name_in(const char *nm, const char *const *set) {
@@ -16358,6 +16371,120 @@ static int call_block_tail(Compiler *c, int call) {
    answers from what it was built out of, which is what lets a chain with no
    local in it (`[r].map { |x| x.p_ }[0]`) be seen at all (#3505). */
 static int nullable_int_elem_expr(Compiler *c, int v, int depth);
+
+/* What an object call (`k.arr`) hands out: *mi is the method the receiver's
+   class chain resolves, whose tail decides, or else the answer is the ivar an
+   attr_reader reads, found by its alias-resolved name in the class that
+   declares it. A method whose tail reads an ivar names that one too, so a
+   mutation through `k.grab` marks the slot `k.grab` returns. -1 when no ivar
+   is named. */
+static int object_call_ivar(Compiler *c, int call, ClassInfo **out, int *mi) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, call, "name");
+  int rc = nt_ref(nt, call, "receiver");
+  *mi = -1;
+  if (!nm || rc < 0 || !ty_is_object(infer_type(c, rc))) return -1;
+  int cid = ty_object_class(infer_type(c, rc)), defc = -1;
+  *mi = comp_method_in_chain(c, cid, nm, NULL);
+  if (*mi > 0) {
+    int tail = scope_body_last(c, *mi);
+    return tail >= 0 && nt_kind(nt, tail) == NK_InstanceVariableReadNode ?
+           nullable_elem_ivar(c, tail, out) : -1;
+  }
+  if (!comp_reader_in_chain(c, cid, nm, &defc) || defc < 0) return -1;
+  char ivb[300];
+  snprintf(ivb, sizeof ivb, "@%s", comp_resolve_alias(c, cid, nm));
+  return nullable_elem_ivar_in(c, defc, ivb, out);
+}
+
+/* An array mutator that answers its receiver, so `a.push(v)` is `a`. */
+static int self_mutator_call(const char *nm) {
+  static const char *const N[] = { "<<", "push", "append", "unshift", "prepend", "insert",
+                                   "fill", "concat", NULL };
+  return name_in(nm, N);
+}
+
+/* An index write that can land past the end, where CRuby fills the gap with
+   nil and the typed array with the sentinel: `a[a.size + k] = v` for a
+   literal k >= 1, or a literal index beyond the shortest array literal the
+   local receiver is ever assigned (`a = [1, 2]; a[5] = v`). Only what can be
+   shown: an index computed some other way is taken as in range, or every
+   `a[i] = v` in a typed-array loop would box through the nil check. */
+static int index_write_gaps(Compiler *c, int call, int ix) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, call, "receiver");
+  if (recv < 0) return 0;
+  if (nt_kind(nt, ix) == NK_CallNode && sp_streq(nt_str(nt, ix, "name"), "+")) {
+    int l = nt_ref(nt, ix, "receiver"), ca = nt_ref(nt, ix, "arguments"); int an = 0;
+    const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+    const char *ln = l >= 0 && nt_kind(nt, l) == NK_CallNode ? nt_str(nt, l, "name") : NULL;
+    int lr = ln ? nt_ref(nt, l, "receiver") : -1;
+    if (!ln || (!sp_streq(ln, "size") && !sp_streq(ln, "length")) || lr < 0 ||
+        !av || an != 1 || nt_kind(nt, av[0]) != NK_IntegerNode || nt_int(nt, av[0], "value", 0) < 1)
+      return 0;
+    /* the same local or ivar on both sides */
+    if (nt_kind(nt, lr) != nt_kind(nt, recv) ||
+        (nt_kind(nt, recv) != NK_LocalVariableReadNode && nt_kind(nt, recv) != NK_InstanceVariableReadNode))
+      return 0;
+    const char *a = nt_str(nt, lr, "name"), *b = nt_str(nt, recv, "name");
+    return a && b && sp_streq(a, b);
+  }
+  if (nt_kind(nt, ix) != NK_IntegerNode || nt_kind(nt, recv) != NK_LocalVariableReadNode) return 0;
+  long long k = nt_int(nt, ix, "value", 0);
+  Scope *sc = comp_scope_of(c, recv);
+  const char *nm = nt_str(nt, recv, "name");
+  if (k < 1 || !sc || !nm) return 0;
+  for (int r = lw_shared_first(c, nm, (int)(sc - c->scopes)); r >= 0; r = lw_shared_next(r)) {
+    int id = lw_shared_node(r);
+    if (nt_kind(nt, id) != NK_LocalVariableWriteNode || comp_scope_of(c, id) != sc) continue;
+    const char *wn = nt_str(nt, id, "name");
+    int wv = nt_ref(nt, id, "value");
+    if (!wn || !sp_streq(wn, nm) || wv < 0 || nt_kind(nt, wv) != NK_ArrayNode) continue;
+    int en = 0; nt_arr(nt, wv, "elements", &en);
+    if (k > en) return 1;
+  }
+  return 0;
+}
+
+/* An array mutation that can leave the sentinel in its receiver: `<<`,
+   push, append, unshift, prepend, insert (past its index), `[]=` and a
+   blockless fill given a value that can be nil, or concat and a slice's
+   `[]=` given an array whose elements can be. */
+static int nullable_elem_mutation(Compiler *c, int call) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, call, "name");
+  int ca = nt_ref(nt, call, "arguments"); int an = 0;
+  const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+  if (!nm || !av || (!self_mutator_call(nm) && !sp_streq(nm, "[]="))) return 0;
+  int from = 0, to = an;
+  if (sp_streq(nm, "insert")) from = 1;
+  else if (sp_streq(nm, "[]=")) {
+    if (ty_is_array(infer_type(c, av[an - 1]))) return nullable_int_elem_expr(c, av[an - 1], 0);
+    if (an == 2 && index_write_gaps(c, call, av[0])) return 1;
+    from = an - 1;
+  }
+  else if (sp_streq(nm, "fill")) { if (nt_ref(nt, call, "block") >= 0) return 0; to = 1; }
+  else if (sp_streq(nm, "concat")) {
+    for (int k = 0; k < an; k++) if (nullable_int_elem_expr(c, av[k], 0)) return 1;
+    return 0;
+  }
+  for (int k = from; k < to; k++) if (nullable_int_value(c, av[k])) return 1;
+  return 0;
+}
+
+/* The array a mutation lands in, past the mutators chained before it
+   (`(a << 1) << v`, `a.push(1).push(v)`), each of which answers its receiver. */
+static int mutated_array(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  for (int d = 0; d < 8; d++) {
+    recv = an_unparen(nt, recv);
+    if (recv < 0 || nt_kind(nt, recv) != NK_CallNode || !self_mutator_call(nt_str(nt, recv, "name")) ||
+        nt_ref(nt, recv, "receiver") < 0)
+      break;
+    recv = nt_ref(nt, recv, "receiver");
+  }
+  return recv;
+}
 
 /* One level further in: can an element of a container HELD BY `v` be the
    sentinel? `v` is the outer container -- an array of arrays, a hash whose
@@ -16408,11 +16535,38 @@ static int nullable_int_elem_expr(Compiler *c, int v, int depth) {
     int iv = nullable_elem_ivar(c, v, &ci);
     return iv >= 0 && ci->ivar_nullable_int_elem[iv];
   }
-  if (nt_kind(nt, v) == NK_ParenthesesNode) {
-    int pb = nt_ref(nt, v, "body");
-    int pn = 0; const int *pd = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
-    return pd && pn == 1 ? nullable_int_elem_expr(c, pd[0], depth + 1) : 0;
+  /* A conditional's value is one of its arms, as nullable_int_value walks
+     them: the array is marked if any arm's array is. An absent arm is a nil,
+     not an array holding one. */
+  if (nt_kind(nt, v) == NK_ParenthesesNode)
+    return nullable_int_elem_expr(c, nt_ref(nt, v, "body"), depth + 1);
+  if (nt_kind(nt, v) == NK_StatementsNode) {
+    int n = 0; const int *st = nt_arr(nt, v, "body", &n);
+    return st && n > 0 && nullable_int_elem_expr(c, st[n - 1], depth + 1);
   }
+  if (nt_kind(nt, v) == NK_ElseNode)
+    return nullable_int_elem_expr(c, nt_ref(nt, v, "statements"), depth + 1);
+  if (nt_kind(nt, v) == NK_IfNode || nt_kind(nt, v) == NK_UnlessNode)
+    return nullable_int_elem_expr(c, nt_ref(nt, v, "statements"), depth + 1) ||
+           nullable_int_elem_expr(c, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
+  if (nt_kind(nt, v) == NK_CaseNode || nt_kind(nt, v) == NK_CaseMatchNode) {
+    int nw = 0; const int *whens = nt_arr(nt, v, "conditions", &nw);
+    for (int w = 0; whens && w < nw; w++)
+      if (nullable_int_elem_expr(c, nt_ref(nt, whens[w], "statements"), depth + 1)) return 1;
+    return nullable_int_elem_expr(c, nt_ref(nt, v, "else_clause"), depth + 1);
+  }
+  if (nt_kind(nt, v) == NK_BeginNode) {
+    if (nullable_int_elem_expr(c, nt_ref(nt, v, "statements"), depth + 1)) return 1;
+    for (int rs = nt_ref(nt, v, "rescue_clause"); rs >= 0; rs = nt_ref(nt, rs, "subsequent"))
+      if (nullable_int_elem_expr(c, nt_ref(nt, rs, "statements"), depth + 1)) return 1;
+    return nullable_int_elem_expr(c, nt_ref(nt, v, "else_clause"), depth + 1);
+  }
+  if (nt_kind(nt, v) == NK_RescueModifierNode)
+    return nullable_int_elem_expr(c, nt_ref(nt, v, "expression"), depth + 1) ||
+           nullable_int_elem_expr(c, nt_ref(nt, v, "rescue_expression"), depth + 1);
+  if (nt_kind(nt, v) == NK_OrNode || nt_kind(nt, v) == NK_AndNode)
+    return nullable_int_elem_expr(c, nt_ref(nt, v, "left"), depth + 1) ||
+           nullable_int_elem_expr(c, nt_ref(nt, v, "right"), depth + 1);
   if (nt_kind(nt, v) == NK_CallNode) {
     const char *nm = nt_str(nt, v, "name");
     int tail = call_block_tail(c, v);
@@ -16432,6 +16586,9 @@ static int nullable_int_elem_expr(Compiler *c, int v, int depth) {
       }
     }
     if (elem_preserving_call(nm)) return nullable_int_elem_expr(c, rc, depth + 1);
+    /* a mutator answers its receiver, which may hold one already or now */
+    if (rc >= 0 && self_mutator_call(nm))
+      return nullable_elem_mutation(c, v) || nullable_int_elem_expr(c, rc, depth + 1);
     /* the value is one ELEMENT of the receiver, and that element is itself the
        container being indexed into (`t[i][j]`, `h[:a][0]`) */
     if (elem_returning_call(nm)) return nested_elem_nilable(c, rc, depth + 1);
@@ -16442,16 +16599,11 @@ static int nullable_int_elem_expr(Compiler *c, int v, int depth) {
     }
     /* the same through an object receiver (`k.arr`): the method the class
        chain resolves, or the ivar an attr_reader hands out */
-    if (nm && rc >= 0 && ty_is_object(infer_type(c, rc))) {
-      int cid = ty_object_class(infer_type(c, rc)), defc = -1;
-      int mi = comp_method_in_chain(c, cid, nm, NULL);
+    if (nm && rc >= 0) {
+      ClassInfo *ci = NULL; int mi = -1;
+      int iv = object_call_ivar(c, v, &ci, &mi);
       if (mi > 0) return nullable_int_elem_expr(c, scope_body_last(c, mi), depth + 1);
-      if (comp_reader_in_chain(c, cid, nm, &defc) && defc >= 0) {
-        char ivb[300];
-        snprintf(ivb, sizeof ivb, "@%s", comp_resolve_alias(c, cid, nm));
-        int iv = comp_ivar_index(&c->classes[defc], ivb);
-        return iv >= 0 && c->classes[defc].ivar_nullable_int_elem[iv];
-      }
+      return iv >= 0 && ci->ivar_nullable_int_elem[iv];
     }
     return 0;
   }
@@ -17052,27 +17204,23 @@ static void mark_nullable_int_locals(Compiler *c) {
       if (ci->ivar_types[iv] != TY_INT_ARRAY && ci->ivar_types[iv] != TY_FLOAT_ARRAY) continue;
       if (nullable_int_elem_expr(c, v, 0)) { ci->ivar_nullable_int_elem[iv] = 1; changed = 1; }
     }
+    /* A mutation that stores such a value -- or copies in an array that can
+       hold one -- marks the array it mutates, whether it names a local, an
+       ivar or the ivar an object call hands out (`k.arr << v`, `k.arr[i] = v`). */
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
-      const char *nm = nt_str(nt, id, "name");
-      if (!nm || (!sp_streq(nm, "<<") && !sp_streq(nm, "push") && !sp_streq(nm, "unshift"))) continue;
-      int recv = nt_ref(nt, id, "receiver");
-      if (recv < 0) continue;
-      int ca = nt_ref(nt, id, "arguments"); int an = 0;
-      const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
-      int nilable = 0;
-      for (int k = 0; av && k < an && !nilable; k++) nilable = nullable_int_value(c, av[k]);
-      if (!nilable) continue;
+      int recv = mutated_array(c, nt_ref(nt, id, "receiver"));
+      if (recv < 0 || !nullable_elem_mutation(c, id)) continue;
       if (nt_kind(nt, recv) == NK_LocalVariableReadNode) {
         LocalVar *lv = nullable_elem_local(c, recv, nt_str(nt, recv, "name"));
         if (lv) { lv->nullable_int_elem = 1; changed = 1; }
+        continue;
       }
-      else if (nt_kind(nt, recv) == NK_InstanceVariableReadNode) {
-        ClassInfo *ci = NULL;
-        int iv = nullable_elem_ivar(c, recv, &ci);
-        if (iv >= 0 && !ci->ivar_nullable_int_elem[iv] &&
-            (ci->ivar_types[iv] == TY_INT_ARRAY || ci->ivar_types[iv] == TY_FLOAT_ARRAY)) {
-          ci->ivar_nullable_int_elem[iv] = 1; changed = 1;
-        }
+      ClassInfo *ci = NULL; int mi = -1, iv = -1;
+      if (nt_kind(nt, recv) == NK_InstanceVariableReadNode) iv = nullable_elem_ivar(c, recv, &ci);
+      else if (nt_kind(nt, recv) == NK_CallNode) iv = object_call_ivar(c, recv, &ci, &mi);
+      if (iv >= 0 && !ci->ivar_nullable_int_elem[iv] &&
+          (ci->ivar_types[iv] == TY_INT_ARRAY || ci->ivar_types[iv] == TY_FLOAT_ARRAY)) {
+        ci->ivar_nullable_int_elem[iv] = 1; changed = 1;
       }
     }
     /* `ks.each { |k| h[k] = ... }`: the block parameter IS the element. */

@@ -5170,8 +5170,12 @@ static sp_PolyArray *sp_format_args(sp_RbVal v) {
   return a;
 }
 /* Array#<=> across any pair of builtin array kinds: lexicographic element-wise
-   compare via sp_poly_cmp, breaking ties on length. `*comparable` is cleared
-   when an element pair is not mutually comparable (CRuby yields nil there). */
+   compare, breaking ties on length. CRuby asks each pair `<=>`, which is
+   sp_poly_spaceship, not sp_poly_cmp: Object#<=> answers 0 for nil against
+   nil (a typed array's nil too), true against true, or two == objects, so
+   the walk goes on where sp_poly_cmp calls the pair incomparable, and
+   `[nil, 3] <=> [nil, 4]` is -1. `*comparable` is cleared when a pair's `<=>`
+   is nil (CRuby yields nil there). */
 static sp_int sp_poly_arr_cmp(sp_RbVal a, sp_RbVal b, sp_bool *comparable) {
   /* Same object compares equal in O(1); this also terminates self-referential
      arrays (a contains a), which would otherwise recurse without bound. */
@@ -5185,8 +5189,8 @@ static sp_int sp_poly_arr_cmp(sp_RbVal a, sp_RbVal b, sp_bool *comparable) {
   if (!sp_poly_recur_seen(SP_POLY_RECUR_EQ, a.v.p, b.v.p)) {
     int mark = sp_poly_recur_push(SP_POLY_RECUR_EQ, a.v.p, b.v.p);
     for (sp_int i = 0; i < n; i++) {
-      sp_bool ec; sp_int r = sp_poly_cmp(sp_poly_arr_get(a, i), sp_poly_arr_get(b, i), &ec);
-      if (!ec) { sp_poly_recur_pop(mark); *comparable = FALSE; return 0; }
+      sp_int r = sp_poly_spaceship(sp_poly_arr_get(a, i), sp_poly_arr_get(b, i));
+      if (r == SP_INT_NIL) { sp_poly_recur_pop(mark); *comparable = FALSE; return 0; }
       if (r != 0) { sp_poly_recur_pop(mark); *comparable = TRUE; return r < 0 ? -1 : 1; }
     }
     sp_poly_recur_pop(mark);
@@ -8703,6 +8707,11 @@ static sp_RbVal sp_poly_delete_key(sp_RbVal recv, sp_RbVal key) {
        caller holds. */
     switch (recv.cls_id) {
       case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_SYM_ARRAY: {
+        /* nil deletes the sentinel an Integer array holds it as, and answers nil */
+        if (recv.cls_id == SP_BUILTIN_INT_ARRAY && key.tag == SP_TAG_NIL) {
+          sp_IntArray_delete((sp_IntArray *)recv.v.p, SP_INT_NIL);
+          return sp_box_nil();
+        }
         if (key.tag != (recv.cls_id == SP_BUILTIN_INT_ARRAY ? SP_TAG_INT : SP_TAG_SYM))
           return sp_box_nil();
         sp_int r = sp_IntArray_delete((sp_IntArray *)recv.v.p, key.v.i);
@@ -8714,6 +8723,10 @@ static sp_RbVal sp_poly_delete_key(sp_RbVal recv, sp_RbVal key) {
         return r ? sp_box_str(r) : sp_box_nil();
       }
       case SP_BUILTIN_FLT_ARRAY: {
+        if (key.tag == SP_TAG_NIL) {
+          sp_FloatArray_delete((sp_FloatArray *)recv.v.p, sp_float_nil());
+          return sp_box_nil();
+        }
         if (key.tag != SP_TAG_FLT && key.tag != SP_TAG_INT) return sp_box_nil();
         sp_float r = sp_FloatArray_delete((sp_FloatArray *)recv.v.p,
                                           key.tag == SP_TAG_FLT ? key.v.f : (sp_float)key.v.i);
@@ -9940,8 +9953,10 @@ static sp_RbVal sp_poly_sum(sp_RbVal v) {
   sp_poly_coll_chk(v, "sum");
   if (v.tag != SP_TAG_OBJ) return sp_box_int(0);
   switch (v.cls_id) {
-    case SP_BUILTIN_INT_ARRAY:  return sp_box_int(sp_IntArray_sum((sp_IntArray *)v.v.p, 0));
-    case SP_BUILTIN_FLT_ARRAY:  return sp_box_float(sp_FloatArray_sum((sp_FloatArray *)v.v.p, 0.0));
+    /* a nil element (the sentinel) raises CRuby's TypeError, as the typed sum
+       does for a marked array */
+    case SP_BUILTIN_INT_ARRAY:  return sp_box_int(sp_IntArray_sum(sp_IntArray_nil_sum_ck((sp_IntArray *)v.v.p, 0), 0));
+    case SP_BUILTIN_FLT_ARRAY:  return sp_box_float(sp_FloatArray_sum(sp_FloatArray_nil_sum_ck((sp_FloatArray *)v.v.p, 0), 0.0));
     /* Accumulate a poly array through sp_poly_add, not sum_int: a container-read
        row of Rationals/Floats/Bignums summed as ints returned 0 (#3159). */
     case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_sum_poly((sp_PolyArray *)v.v.p);
@@ -10208,14 +10223,17 @@ static sp_RbVal sp_poly_arr_values_at(sp_RbVal v, sp_PolyArray *idx) {
   return sp_box_poly_array(out);
 }
 static sp_RbVal sp_poly_min(sp_RbVal v) {
+  /* An Integer or Float array's nil is its sentinel: the check raises CRuby's
+     ArgumentError once one meets a number, and an all-nil array answers nil,
+     as the typed min and max do for a marked array. */
   /* A receiver that is not a container (nil, an Integer, a String) has no
      #min in CRuby; answering nil hid the call entirely (#4192 follow-up). */
   if (v.tag != SP_TAG_OBJ) return sp_raise_nomethod(sp_nomethod_msg("min", v));
   /* Enumerable#min on a boxed hash: the least [k, v] pair by pair comparison. */
   if (sp_poly_is_hash_kind(v.cls_id)) return sp_PolyArray_min(sp_poly_to_a_arr(v));
   switch (v.cls_id) {
-    case SP_BUILTIN_INT_ARRAY:  { sp_IntArray *a = (sp_IntArray *)v.v.p; return (a && a->len) ? sp_box_int(sp_IntArray_min(a)) : sp_box_nil(); }
-    case SP_BUILTIN_FLT_ARRAY:  { sp_FloatArray *a = (sp_FloatArray *)v.v.p; return (a && a->len) ? sp_box_float(sp_FloatArray_min(a)) : sp_box_nil(); }
+    case SP_BUILTIN_INT_ARRAY:  { sp_IntArray *a = sp_IntArray_nil_cmp_ck((sp_IntArray *)v.v.p); return (a && a->len) ? sp_box_int_or_nil(sp_IntArray_min(a)) : sp_box_nil(); }
+    case SP_BUILTIN_FLT_ARRAY:  { sp_FloatArray *a = sp_FloatArray_nil_cmp_ck((sp_FloatArray *)v.v.p); return (a && a->len) ? sp_box_float_or_nil(sp_FloatArray_min(a)) : sp_box_nil(); }
     /* a String array reached here through the default and answered nil (#3464) */
     case SP_BUILTIN_STR_ARRAY:  { const char *m = sp_StrArray_min((sp_StrArray *)v.v.p); return m ? sp_box_str(m) : sp_box_nil(); }
     case SP_BUILTIN_SYM_ARRAY: case SP_BUILTIN_PTR_ARRAY: return sp_PolyArray_min(sp_poly_to_poly_array(v));
@@ -10239,8 +10257,8 @@ static sp_RbVal sp_poly_max(sp_RbVal v) {
   if (v.cls_id == SP_BUILTIN_QUEUE && v.v.p) return sp_box_int(sp_Queue_max((sp_queue *)v.v.p));   /* SizedQueue#max; 0 for a Queue */
   if (sp_poly_is_hash_kind(v.cls_id)) return sp_PolyArray_max(sp_poly_to_a_arr(v));
   switch (v.cls_id) {
-    case SP_BUILTIN_INT_ARRAY:  { sp_IntArray *a = (sp_IntArray *)v.v.p; return (a && a->len) ? sp_box_int(sp_IntArray_max(a)) : sp_box_nil(); }
-    case SP_BUILTIN_FLT_ARRAY:  { sp_FloatArray *a = (sp_FloatArray *)v.v.p; return (a && a->len) ? sp_box_float(sp_FloatArray_max(a)) : sp_box_nil(); }
+    case SP_BUILTIN_INT_ARRAY:  { sp_IntArray *a = sp_IntArray_nil_cmp_ck((sp_IntArray *)v.v.p); return (a && a->len) ? sp_box_int_or_nil(sp_IntArray_max(a)) : sp_box_nil(); }
+    case SP_BUILTIN_FLT_ARRAY:  { sp_FloatArray *a = sp_FloatArray_nil_cmp_ck((sp_FloatArray *)v.v.p); return (a && a->len) ? sp_box_float_or_nil(sp_FloatArray_max(a)) : sp_box_nil(); }
     case SP_BUILTIN_STR_ARRAY:  { const char *m = sp_StrArray_max((sp_StrArray *)v.v.p); return m ? sp_box_str(m) : sp_box_nil(); }
     case SP_BUILTIN_SYM_ARRAY: case SP_BUILTIN_PTR_ARRAY: return sp_PolyArray_max(sp_poly_to_poly_array(v));
     case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_max((sp_PolyArray *)v.v.p);
