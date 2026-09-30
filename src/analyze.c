@@ -17284,7 +17284,9 @@ static int ctor_pull_args(Compiler *c) {
           /* An element of a splatted Array literal (`C.new(*[s, 1])`) rides
              the Array the splat builds: a boxed one holds the handle once the
              read is marked, as a dynamic call's splat does (#5957's container
-             rule). A String-only Array holds bytes, and the emitter refuses. */
+             rule). A String-only Array holds bytes until
+             promote_spread_string_args marks the element a parameter that
+             appends is placed on; the emitter refuses what is left. */
           int sx = ak == NK_LocalVariableReadNode ? ctor_arg_in_splat(c, u, a) : -1;
           if (sx >= 0) {
             if (comp_ntype(c, sx) == TY_POLY_ARRAY) changed |= dyn_pull_arg(c, a, 1);
@@ -17520,7 +17522,26 @@ int spread_string_reads(Compiler *c, Scope *m, int call, int pj, int *out, int *
   }
   int lo, hi;
   if (fs >= 0) {
-    if (arg_layout_param_node(c, m, call, pj, NULL) >= 0) return 0;
+    int an = arg_layout_param_node(c, m, call, pj, NULL);
+    if (an >= 0) {
+      /* A splat of Array literals alone has a layout, and it places the
+         parameter on an element: the literal the call builds holds that
+         element, so it has to hold the handle (`new(*[t, t])`). An argument
+         written in the call is the static binders' own. */
+      for (int k = fs; k < pos; k++) {
+        if (nt_kind(nt, av[k]) != NK_SplatNode) continue;
+        int op = nt_ref(nt, av[k], "expression"), en = 0;
+        const int *ev = op >= 0 && nt_kind(nt, op) == NK_ArrayNode ? nt_arr(nt, op, "elements", &en) : NULL;
+        for (int e = 0; e < en; e++) {
+          if (ev[e] != an || nt_kind(nt, an) != NK_LocalVariableReadNode || cap < 1) continue;
+          TyKind et = comp_ntype(c, an);
+          if (et != TY_STRING && et != TY_STRBUF) return 0;
+          out[0] = an; direct[0] = 1;
+          return 1;
+        }
+      }
+      return 0;
+    }
     lo = fs; hi = pos;
   }
   else {

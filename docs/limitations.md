@@ -627,14 +627,14 @@ A method that appends to its String parameter (`s << x`, `concat`,
 `insert`, a `!` method) changes the caller's String in CRuby, since both
 names hold the one object. Spinel shares the String by reference through a
 direct call, `send` with a literal name, `yield`, `super`, a poly receiver
-and a class value, through a proc, a lambda and a `Method`: `.call`, `.()`,
+and a class value; through a proc, a lambda and a `Method` (`.call`, `.()`,
 `[]`, `===` and `.yield` on one, a block kept as `&blk` and called later,
-`method(:m)` and `obj.method(:m)` and their `to_proc`; through `new` and
+`method(:m)` and `obj.method(:m)` and their `to_proc`); through `new` and
 `raise Cls, s` into an `initialize`, a Struct's and a Data's included; and
-through a splat or a gather (`m(*args, s)`, `m(*[s])`, `def m(*r)`). The
-paths below do not share it yet, and a call that would hand such a method a
-String variable through one of them is refused at compile time rather than
-compiled with the append lost:
+through a splat or a gather, into any of those (`m(*args, s)`, `m(*[s])`,
+`C.new(*[s, s])`, `def m(*r)`). The paths below do not share it yet, and a
+call that would hand such a method a String variable through one of them is
+refused at compile time rather than compiled with the append lost:
 
 ```ruby
 class Box
@@ -655,8 +655,6 @@ Not yet shared:
 - a `yield` into a `Method` or proc passed with `&` (`run(s, &method(:m))`
   into a method that yields), and an `initialize` that yields the String
   it appends to;
-- through `new`, a String variable in a splatted Array literal that holds
-  only Strings (`C.new(*[s])`);
 - through a proc, a `Method`, `new` or `raise`, a String held by a block
   parameter, by a variable a block or proc captures, or by a global or
   class variable, and through a proc, a `Method` or a class value's `new`,
