@@ -1,0 +1,8 @@
+TypeError: can't iterate from NilClass
+TypeError: can't iterate from NilClass
+TypeError: can't iterate from NilClass
+TypeError: can't iterate from NilClass
+ArgumentError
+[1, 0]
+[0, -1]
+[2, 1]

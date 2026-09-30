@@ -12637,6 +12637,10 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "({ sp_Range _t%d = ", trr); emit_expr(c, recv, b);
       buf_printf(b, "; sp_int _t%d = ", tnn); emit_int_expr(c, argv[0], b);
       buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");", tnn);
+      int rq = unwrap_parens(c, recv);
+      if (nt_kind(nt, rq) != NK_RangeNode) rq = local_sole_range_node(c, rq);
+      if (!want_min && nt_kind(nt, rq) == NK_RangeNode && comp_ntype(c, nt_ref(nt, rq, "right")) == TY_FLOAT)
+        buf_printf(b, " if (_t%d.first == INTPTR_MIN) sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\");", trr);
       if (want_min)
         buf_printf(b, " if (_t%d.first == INTPTR_MIN) sp_raise_cls(\"RangeError\","
                       " \"cannot get the minimum of beginless range\");", trr);
