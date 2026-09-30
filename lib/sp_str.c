@@ -923,7 +923,7 @@ sp_StrArray*sp_str_split(const char*s,const char*sep){if(!s)sp_nil_recv("split")
 /* Same as sp_str_split but removes trailing empty strings
    (CRuby default limit behavior: split without limit drops
    trailing empties; split(sep, -1) keeps them). */
-sp_StrArray*sp_str_split_drop_trailing(const char*s,const char*sep){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(sep);if(!sep||(sep[0]==' '&&sep[1]==0))return sp_str_split_ws(s);sp_StrArray*a=sp_str_split(s,sep);/* an EMPTY tail, not one that merely starts with NUL: `"\0x\0".split("x")`
+sp_StrArray*sp_str_split_drop_trailing(const char*s,const char*sep){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(sep);if(!sep||(sep[0]==' '&&sp_str_byte_len(sep)==1))return sp_str_split_ws(s);sp_StrArray*a=sp_str_split(s,sep);/* an EMPTY tail, not one that merely starts with NUL: `"\0x\0".split("x")`
      dropped both halves when the test was s[0]==0. */
   while(a->len>0&&sp_str_byte_len(a->data[a->len-1])==0)a->len--;return a;}
 /* `s.split(sep, n)` with explicit limit. Positive n caps the result
@@ -934,7 +934,7 @@ sp_StrArray*sp_str_split_drop_trailing(const char*s,const char*sep){SP_GC_ROOT_S
    one empty field after them if the limit leaves room for it.
    Issue #619 puzzle 2. */
 sp_StrArray*sp_str_split_limit(const char*s,const char*sep,sp_int n){if(!s)sp_nil_recv("split");
-  if(!sep||(sep[0]==' '&&sep[1]==0))return sp_str_split_ws_limit(s,n);
+  if(!sep||(sep[0]==' '&&sp_str_byte_len(sep)==1))return sp_str_split_ws_limit(s,n);
   if(n==0)return sp_str_split_drop_trailing(s,sep);
   if(n<0){sp_StrArray*a=sp_str_split(s,sep);SP_GC_ROOT(a);
     /* a non-empty String split at an empty separator ends in one empty field, as with `n` positive below */
@@ -971,6 +971,7 @@ sp_StrArray*sp_str_split_limit(const char*s,const char*sep,sp_int n){if(!s)sp_ni
   sp_str_split_push(a,p,strlen(p));
   return a;
 }
+#define SP_SPLIT_WS(c) ((c)==' '||(c)=='\t'||(c)=='\n'||(c)=='\r'||(c)=='\f'||(c)=='\v')
 /* `s.split` / `s.split(nil)` -- whitespace mode: split on runs of
    ASCII whitespace, skip leading whitespace. Issue #507: the no-arg
    form previously emitted `sp_str_split(s, 0)` and segfaulted at
@@ -979,14 +980,15 @@ sp_StrArray*sp_str_split_ws(const char*s){if(!s)sp_nil_recv("split");
   SP_GC_ROOT_STR(s);
   sp_StrArray*a=sp_StrArray_new();
   SP_GC_ROOT(a);
-  const char*p=s;
-  while(*p==' '||*p=='\t'||*p=='\n'||*p=='\r'||*p=='\f'||*p=='\v')p++;
-  while(*p){
+  /* by byte length, not strlen: a NUL is an ordinary character here */
+  const char*p=s,*e=s+sp_str_byte_len(s);
+  while(p<e&&SP_SPLIT_WS(*p))p++;
+  while(p<e){
     const char*start=p;
-    while(*p&&!(*p==' '||*p=='\t'||*p=='\n'||*p=='\r'||*p=='\f'||*p=='\v'))p++;
+    while(p<e&&!SP_SPLIT_WS(*p))p++;
     size_t n=p-start;
     sp_str_split_push(a,start,n);
-    while(*p==' '||*p=='\t'||*p=='\n'||*p=='\r'||*p=='\f'||*p=='\v')p++;
+    while(p<e&&SP_SPLIT_WS(*p))p++;
   }
   return a;
 }
@@ -1000,26 +1002,26 @@ sp_StrArray*sp_str_split_ws_limit(const char*s,sp_int n){if(!s)sp_nil_recv("spli
   SP_GC_ROOT_STR(s);
   sp_StrArray*a=sp_StrArray_new();
   SP_GC_ROOT(a);
-  if(*s==0)return a;
-  if(n==1){sp_str_split_push(a,s,strlen(s));return a;}
+  const char*e=s+sp_str_byte_len(s);
+  if(e==s)return a;
+  if(n==1){sp_str_split_push(a,s,(size_t)(e-s));return a;}
   const char*p=s;
-#define SP_SPLIT_WS(c) ((c)==' '||(c)=='\t'||(c)=='\n'||(c)=='\r'||(c)=='\f'||(c)=='\v')
-  while(SP_SPLIT_WS(*p))p++;
-  if(!*p){sp_str_split_push(a,p,0);return a;}
+  while(p<e&&SP_SPLIT_WS(*p))p++;
+  if(p==e){sp_str_split_push(a,p,0);return a;}
   sp_int k=0;
-  while(*p){
+  while(p<e){
     const char*start=p;
-    while(*p&&!SP_SPLIT_WS(*p))p++;
+    while(p<e&&!SP_SPLIT_WS(*p))p++;
     sp_str_split_push(a,start,(size_t)(p-start));
     k++;
     const char*sep_start=p;
-    while(SP_SPLIT_WS(*p))p++;
-    if(!*p){if(p>sep_start&&(n<0||(n>0&&k<n)))sp_str_split_push(a,p,0);break;}
-    if(n>0&&k==n-1){sp_str_split_push(a,p,strlen(p));break;}
+    while(p<e&&SP_SPLIT_WS(*p))p++;
+    if(p==e){if(p>sep_start&&(n<0||(n>0&&k<n)))sp_str_split_push(a,p,0);break;}
+    if(n>0&&k==n-1){sp_str_split_push(a,p,(size_t)(e-p));break;}
   }
-#undef SP_SPLIT_WS
   return a;
 }
+#undef SP_SPLIT_WS
 /* String-pattern String#scan. Regexp scans use sp_re_scan; this path handles
    a String argument, returning non-overlapping literal matches. The empty
    pattern matches at every UTF-8 character boundary, including both ends. */
