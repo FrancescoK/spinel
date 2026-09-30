@@ -181,6 +181,10 @@ int subtree_has_side_effect(Compiler *c, int id);
    write to one, or anything that runs Ruby code it does not show; not scalar
    arithmetic, a typed-array read or a plain field read (codegen_call.c). */
 int subtree_may_reassign_state(Compiler *c, int id);
+/* Does evaluating the subtree run no code, store nothing and allocate nothing
+   -- variable and literal reads, scalar arithmetic, typed-array reads and
+   plain field reads, all the way down (codegen_call.c)? */
+int subtree_is_pure_read(Compiler *c, int id);
 int call_is_scalar_op(Compiler *c, int id);   /* a builtin operator over scalars */
 /* Whether the subtree at `id` assigns the local `nm`: a write, an op-write
    or a multiple-assignment target by that name. */

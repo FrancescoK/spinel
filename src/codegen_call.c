@@ -20760,7 +20760,7 @@ static int call_is_field_read(Compiler *c, int id, int *allocates) {
    and no roots: nothing can run between them to collect a value or to move
    what another one reads. A whitelist, so anything it does not name is an
    effect. */
-static int subtree_is_pure_read(Compiler *c, int id) {
+int subtree_is_pure_read(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (id < 0) return 1;
   switch (nt_kind(nt, id)) {
