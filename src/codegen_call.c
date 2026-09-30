@@ -20726,13 +20726,86 @@ static int text_is_raise_token(const char *txt) {
   return strstr(txt, "sp_raise_nomethod") != NULL || strstr(txt, "sp_raise_cls(") != NULL;
 }
 
-/* Can evaluating this subtree store a new value into an ivar, a class
-   variable or a global? A write to one does, and so can anything that runs
-   Ruby code the subtree does not show -- a user method, a yield, a super.
-   What cannot: arithmetic over scalars and an index read of a typed array
-   (`@ref[addr & 3]`), recursively; nothing in either runs code. Every other
-   call counts, conservatively: Hash#[] can run a default block, and a builtin
-   handed a user object can call back into it. */
+/* Is this call a reader the emitter lowers to a plain field read -- an
+   attr_reader or Struct member on a statically typed user object, with no
+   `def` of the name winning over it? The same test the reader arm makes, so a
+   call this answers for really is `(recv)->iv_x`. *allocates is set when the
+   read builds a copy: a shared-handle String slot reads out as a fresh String
+   unless a mark hands out the handle or the live buffer. */
+static int call_is_field_read(Compiler *c, int id, int *allocates) {
+  const NodeTable *nt = c->nt;
+  *allocates = 0;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!nm || recv < 0 || nt_ref(nt, id, "block") >= 0 || nt_ref(nt, id, "arguments") >= 0) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (!ty_is_object(rt)) return 0;
+  int cid = ty_object_class(rt);
+  if (cid < 0 || cid >= c->nclasses || c->classes[cid].is_native_class) return 0;
+  int rdc = -1, mdc = -1;
+  if (!comp_reader_in_chain(c, cid, nm, &rdc)) return 0;
+  if (comp_resolve_member(c, cid, nm, 0, &mdc, NULL) != SP_MEMBER_ATTR) return 0;
+  char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, cid, nm));
+  ClassInfo *owner = &c->classes[rdc >= 0 ? rdc : cid];
+  int iv = comp_ivar_index(owner, ivn);
+  if (iv >= 0 && owner->ivar_types[iv] == TY_STRBUF &&
+      !c->strbuf_box[id] && !c->strbuf_handle_demand[id] && !c->strbuf_read_raw[id])
+    *allocates = 1;
+  return 1;
+}
+
+/* Does evaluating this subtree neither allocate nor store anything -- reads of
+   variables and literals, scalar arithmetic, typed-array index reads and plain
+   field reads, all the way down? Operands that all answer yes need no ordering
+   and no roots: nothing can run between them to collect a value or to move
+   what another one reads. A whitelist, so anything it does not name is an
+   effect. */
+static int subtree_is_pure_read(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0) return 1;
+  switch (nt_kind(nt, id)) {
+    case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode:
+    case NK_ClassVariableReadNode: case NK_SelfNode: case NK_IntegerNode:
+    case NK_FloatNode: case NK_NilNode: case NK_TrueNode: case NK_FalseNode:
+    case NK_SymbolNode:
+      return 1;
+    case NK_ParenthesesNode: case NK_StatementsNode:
+      break;
+    case NK_CallNode: {
+      int alloc = 0;
+      int typed_index = 0;
+      const char *nm = nt_str(nt, id, "name");
+      int recv = nt_ref(nt, id, "receiver");
+      int a = nt_ref(nt, id, "arguments"); int ac = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+      if (nm && sp_streq(nm, "[]") && recv >= 0 && ac == 1 && nt_ref(nt, id, "block") < 0 &&
+          ty_is_array(comp_ntype(c, recv)) && comp_ntype(c, av[0]) == TY_INT)
+        typed_index = 1;
+      if (!typed_index && !call_is_scalar_op(c, id) &&
+          !(call_is_field_read(c, id, &alloc) && !alloc))
+        return 0;
+      break;
+    }
+    default: {
+      /* a call's argument list has no kind of its own */
+      const char *ty = nt_type(nt, id);
+      if (!ty || !sp_streq(ty, "ArgumentsNode")) return 0;
+      break;
+    }
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++)
+    if (!subtree_is_pure_read(c, nt_ref_at(nt, id, i))) return 0;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0;
+    const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++)
+      if (!subtree_is_pure_read(c, ids[j])) return 0;
+  }
+  return 1;
+}
+
 /* Does the program give a Hash a default block anywhere (`Hash.new { }`,
    `default_proc=`)? Only such a Hash runs code on a missing key. */
 static int prog_has_hash_default_block(Compiler *c) {
@@ -20752,6 +20825,14 @@ static int prog_has_hash_default_block(Compiler *c) {
   }
   return memo;
 }
+/* Can evaluating this subtree store a new value into an ivar, a class
+   variable or a global? A write to one does, and so can anything that runs
+   Ruby code the subtree does not show -- a user method, a yield, a super.
+   What cannot: arithmetic over scalars, an index read of a typed array
+   (`@ref[addr & 3]`), a plain field read (`m.cols`), and an index read of a
+   boxed value in a program with no user `[]` and no Hash default block,
+   recursively; nothing in any of them runs code. Every other call counts,
+   conservatively: a builtin handed a user object can call back into it. */
 static int subtree_may_reassign_state(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (id < 0) return 0;
@@ -20777,7 +20858,8 @@ static int subtree_may_reassign_state(Compiler *c, int id) {
     int boxed_index = nm && sp_streq(nm, "[]") && recv >= 0 && ac == 1 &&
                       nt_ref(nt, id, "block") < 0 && comp_ntype(c, recv) == TY_POLY &&
                       !any_class_defines(c, "[]") && !prog_has_hash_default_block(c);
-    if (!typed_index && !boxed_index) return 1;
+    int alloc = 0;
+    if (!typed_index && !boxed_index && !call_is_field_read(c, id, &alloc)) return 1;
   }
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++)
@@ -20853,6 +20935,20 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL) return 0;
     if (nb >= 8) return 0;
     node[nb] = operand[i]; ty[nb] = t; nb++;
+  }
+  /* Operands that are all pure reads -- `m.data[i * m.cols + j]`, two readers
+     and some arithmetic -- have nothing to order and nothing to protect: none
+     can run code that moves what another reads, and none allocates, so no
+     collection can run between them. The readers count as calls above, and
+     binding them rooted each value on every iteration of a loop that only
+     reads; the root pins the temp in memory and cost 1.7x on such a loop.
+     Not when an operand converts: the conversion runs user code, in a hold
+     ahead of the call. */
+  if (!converts) {
+    int pure = 1;
+    for (int i = 0; i < nop && pure; i++)
+      if (!subtree_is_pure_read(c, operand[i])) pure = 0;
+    if (pure) return 0;
   }
   /* One observable operand has no sibling to be ordered against or collected by:
      it is the only thing running, and the call consumes it immediately. */
