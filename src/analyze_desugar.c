@@ -4368,7 +4368,6 @@ int desugar_value_callable_forwards(Compiler *c) {
        overrides the bare-int default). */
     TyKind pty[4];
     int arity;
-    int rest_fwd = 0;   /* the block takes |*args| and calls x.call(*args) */
     if (sp_streq(name, "each_with_object")) {
       /* each_with_object(init) { |elem, memo| }: two params, the element and the
          accumulator. Array receivers only (a `{}` hash memo is unsupported even
@@ -4426,21 +4425,6 @@ int desugar_value_callable_forwards(Compiler *c) {
       arity = 1;
       pty[0] = TY_INT;
     }
-    else if (!anon && recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode && sp_streq(name, "new") &&
-             nt_str(nt, recv, "name") &&
-             (sp_streq(nt_str(nt, recv, "name"), "Fiber") || sp_streq(nt_str(nt, recv, "name"), "Thread"))) {
-      /* Fiber.new(&x) / Thread.new(&x): the body calls x with what #resume
-         (or Thread.new) passes, as many values as x takes. Left in its
-         &-form, the fiber had no body and ran nothing. Only the forms that
-         read the same when the body runs (a local, an ivar, a constant,
-         method(:m), a lambda literal): the hoist other calls get would move
-         the receiver into a ParenthesesNode, which is no longer Fiber.new.
-         The block is |*args| with x.call(*args), so every arity and
-         lambda strictness is x's own. */
-      if (hoist) continue;
-      arity = 0;
-      rest_fwd = 1;
-    }
     else {
       arity = ty_block_yield(rt, name, pty, 4);
       if (arity < 1) continue;  /* not a context-free iterator (or recv unresolved) */
@@ -4492,20 +4476,6 @@ int desugar_value_callable_forwards(Compiler *c) {
     int base = nt->count;
     if (hoist) fwd_hoist_callable(c, id, blk, &ex);
     int proc_clone = anon ? -1 : nt_clone_subtree(nt, ex);  /* re-read the proc per element */
-    /* A fiber keeps the callable it was made with, so a local or ivar is read
-       once into a temp: `(__fwdx = pr; Fiber.new { |*a| __fwdx.call(*a) })`. */
-    int snap_write = -1;
-    if (rest_fwd && (nt_kind(nt, ex) == NK_LocalVariableReadNode ||
-                     nt_kind(nt, ex) == NK_InstanceVariableReadNode)) {
-      char xn[48];
-      snprintf(xn, sizeof xn, "__fwdx_%d", id);
-      snap_write = nt_new_node(nt, "LocalVariableWriteNode");
-      nt_node_set_str(nt, snap_write, "name", xn);
-      nt_node_set_ref(nt, snap_write, "value", proc_clone);
-      scope_local_intern(comp_scope_of(c, id), xn);
-      proc_clone = nt_new_node(nt, "LocalVariableReadNode");
-      nt_node_set_str(nt, proc_clone, "name", xn);
-    }
     if (!anon && proc_clone < 0) continue;
 
     int reqs[4], reads[4];
@@ -4522,19 +4492,6 @@ int desugar_value_callable_forwards(Compiler *c) {
     if (!alloc_ok) continue;  /* node-table OOM: leave the call in its &-form */
     int params = nt_new_node(nt, "ParametersNode");
     nt_node_set_arr(nt, params, "requireds", reqs, arity);
-    char rn[48];
-    snprintf(rn, sizeof rn, "__fwd_%d_rest", id);
-    if (rest_fwd) {
-      int rp = nt_new_node(nt, "RestParameterNode");
-      nt_node_set_str(nt, rp, "name", rn);
-      nt_node_set_ref(nt, params, "rest", rp);
-      int rr = nt_new_node(nt, "LocalVariableReadNode");
-      nt_node_set_str(nt, rr, "name", rn);
-      int sp = nt_new_node(nt, "SplatNode");
-      nt_node_set_ref(nt, sp, "expression", rr);
-      reads[0] = sp;
-      arity = 1;   /* the one splat argument below */
-    }
     int bparams = nt_new_node(nt, "BlockParametersNode");
     nt_node_set_ref(nt, bparams, "parameters", params);
 
@@ -4572,20 +4529,6 @@ int desugar_value_callable_forwards(Compiler *c) {
     if (anon) nt_node_set_int(nt, blocknode, "fwd_yield", 1);
 
     nt_node_set_ref(nt, id, "block", blocknode);  /* call now takes a literal block */
-    if (snap_write >= 0) {
-      /* the call moves into a new node, and `id` becomes the parentheses */
-      int nc = nt_new_node(nt, "CallNode");
-      nt_node_set_ref(nt, nc, "receiver", nt_ref(nt, id, "receiver"));
-      nt_node_set_str(nt, nc, "name", name);
-      nt_node_set_ref(nt, nc, "arguments", nt_ref(nt, id, "arguments"));
-      nt_node_set_ref(nt, nc, "block", blocknode);
-      if (nt_int(nt, id, "node_line", 0)) nt_node_set_int(nt, nc, "node_line", nt_int(nt, id, "node_line", 0));
-      int stmts[2] = { snap_write, nc };
-      int sb = nt_new_node(nt, "StatementsNode");
-      nt_node_set_arr(nt, sb, "body", stmts, 2);
-      nt_node_reset(nt, id, "ParenthesesNode");
-      nt_node_set_ref(nt, id, "body", sb);
-    }
     /* a named `&blk` forward that became a yield: its read is orphaned, and
        must not count as a use of the parameter */
     if (anon && ex >= 0) nt_node_set_str(nt, ex, "name", "__orphaned__");
@@ -4594,12 +4537,6 @@ int desugar_value_callable_forwards(Compiler *c) {
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
 
     Scope *bs = comp_scope_of(c, blocknode);
-    if (rest_fwd) {
-      LocalVar *rlv = scope_local_intern(bs, rn);
-      rlv->is_block_param = 1;
-      rlv->type = TY_POLY_ARRAY;
-      arity = 0;
-    }
     for (int k = 0; k < arity; k++) {
       snprintf(pn, sizeof pn, "__fwd_%d_%d", id, k);
       LocalVar *lv = scope_local_intern(bs, pn);

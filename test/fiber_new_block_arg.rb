@@ -50,3 +50,39 @@ p Thread.new(7, &tp).value
 def m0 = :m
 p Thread.new(&method(:m0)).value
 p Thread.new(1, 2, &sum).value
+
+# any &-expression, read once when the fiber is made
+def make = proc { |v| v * 10 }
+p Fiber.new(&make).resume(2)
+
+# each fiber keeps its own callable, also when made in a loop
+fibers = []
+[1, 10, 100].each do |m|
+  pr2 = proc { |v| v * m }
+  fibers << Fiber.new(&pr2)
+end
+GC.start
+p fibers.map { |f| f.resume(2) }
+
+cbs = [proc { |v| v + 1 }, proc { |v| v + 2 }]
+fs = []
+i = 0
+while i < 2
+  q = cbs[i]
+  fs << Fiber.new(&q)
+  i += 1
+end
+p fs.map { |f| f.resume(10) }
+
+# a single nil or Array argument is one argument
+cb = proc { |*a| a }
+p Thread.new(nil, &cb).value
+p Thread.new([1, 2], &cb).value
+p Thread.new(&cb).value
+p Fiber.new(&cb).resume(nil)
+p Fiber.new(&cb).resume([1, 2])
+
+# a fiber inside a loop block can use a proc made in that block
+made = []
+[1, 10].each { |m| pr3 = proc { m }; made << Fiber.new { pr3.call } }
+p made.map(&:resume)
