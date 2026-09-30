@@ -1036,6 +1036,49 @@ int desugar_kernel_reopen(Compiler *c) {
   return 1;
 }
 
+/* ---- `singleton_class.prepend(Mod)` in a class or module body ------------
+   The statement adds Mod's methods to the class object -- what `extend Mod`
+   does, the precedence between Mod and the class's own singleton methods
+   aside (prepend puts Mod first; a static program has no such override to
+   arbitrate). activesupport's core_ext/enumerable.rb prepends a
+   const_missing hook onto Enumerable's singleton this way, and the whole
+   statement was refused as Object#singleton_class. `singleton_class.include`
+   is the same shape. */
+int desugar_singleton_class_mixin(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_ModuleNode && k != NK_ClassNode) continue;
+    int body = nt_ref(nt, id, "body");
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+    for (int i = 0; i < bn; i++) {
+      int st = bb[i];
+      if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "block") >= 0) continue;
+      const char *nm = nt_str(nt, st, "name");
+      if (!nm || (!sp_streq(nm, "prepend") && !sp_streq(nm, "include"))) continue;
+      int recv = nt_ref(nt, st, "receiver");
+      if (recv < 0 || nt_kind(nt, recv) != NK_CallNode || nt_ref(nt, recv, "receiver") >= 0 ||
+          nt_ref(nt, recv, "arguments") >= 0 || nt_ref(nt, recv, "block") >= 0) continue;
+      const char *rn = nt_str(nt, recv, "name");
+      if (!rn || !sp_streq(rn, "singleton_class")) continue;
+      int args = nt_ref(nt, st, "arguments");
+      int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      if (an < 1 || !av) continue;
+      int ok = 1;
+      for (int a = 0; a < an; a++)
+        if (nt_kind(nt, av[a]) != NK_ConstantReadNode && nt_kind(nt, av[a]) != NK_ConstantPathNode) ok = 0;
+      if (!ok) continue;
+      nt_node_set_str(nt, st, "name", "extend");
+      nt_node_set_ref(nt, st, "receiver", -1);
+      nt_node_reset(nt, recv, "NilNode");
+      changed = 1;
+    }
+  }
+  return changed;
+}
+
 /* Proc#>> / #<< with a Method operand: wrap the Method side in #to_proc at the
    AST, so composition always runs proc-to-proc. The to_proc emission builds a
    real trampoline proc that publishes its boxed result through the return
@@ -10788,3 +10831,97 @@ int rewrite_ffi_dynamic_calls(Compiler *c) {
   }
   return changed;
 }
+static int ma_stmts1(NodeTable *nt, int st) {
+  int b = nt_new_node(nt, "StatementsNode"); if (b < 0) return -1;
+  nt_node_set_arr(nt, b, "body", &st, 1);
+  return b;
+}
+/* `def name(val)` / `def self.name` with a one-statement body */
+static int ma_def(NodeTable *nt, const char *name, int self_recv, int with_val, int body_stmt, long long line) {
+  int def = nt_new_node(nt, "DefNode"); if (def < 0) return -1;
+  nt_node_set_str(nt, def, "name", name);
+  nt_node_set_int(nt, def, "node_line", line);
+  if (self_recv) { int sf = nt_new_node(nt, "SelfNode"); if (sf < 0) return -1; nt_node_set_ref(nt, def, "receiver", sf); }
+  else nt_node_set_ref(nt, def, "receiver", -1);
+  if (with_val) {
+    int params = nt_new_node(nt, "ParametersNode"); if (params < 0) return -1;
+    int rp = nt_new_node(nt, "RequiredParameterNode"); if (rp < 0) return -1;
+    nt_node_set_str(nt, rp, "name", "val");
+    nt_node_set_arr(nt, params, "requireds", &rp, 1);
+    nt_node_set_ref(nt, def, "parameters", params);
+  }
+  else nt_node_set_ref(nt, def, "parameters", -1);
+  int body = ma_stmts1(nt, body_stmt); if (body < 0) return -1;
+  nt_node_set_ref(nt, def, "body", body);
+  return def;
+}
+/* ---- `singleton_class.attr_accessor :x` in a class or module body ----
+   Accessors on the class object over its class-level ivar: what
+   `def self.x; @x; end` / `def self.x=(val); @x = val; end` spell, and the
+   one singleton_class idiom that never needs the singleton class as a value
+   (which stays unsupported: docs/limitations.md). attr_reader / attr_writer
+   likewise; symbol or string names, or the call is left alone. */
+int desugar_singleton_attr(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_ModuleNode && k != NK_ClassNode) continue;
+    int body = nt_ref(nt, id, "body");
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bb0 = nt_arr(nt, body, "body", &bn);
+    int *bb = (int *)malloc(sizeof(int) * (size_t)(bn > 0 ? bn : 1));
+    if (!bb) continue;
+    memcpy(bb, bb0, sizeof(int) * (size_t)bn);
+    int *nb = NULL, nbn = 0, any = 0;
+    for (int i = 0; i < bn; i++) {
+      int st = bb[i];
+      const char *nm = nt_kind(nt, st) == NK_CallNode ? nt_str(nt, st, "name") : NULL;
+      int reader = 0, writer = 0;
+      if (nm && sp_streq(nm, "attr_accessor")) reader = writer = 1;
+      else if (nm && sp_streq(nm, "attr_reader")) reader = 1;
+      else if (nm && sp_streq(nm, "attr_writer")) writer = 1;
+      int rcv = nm ? nt_ref(nt, st, "receiver") : -1;
+      int is_sc = rcv >= 0 && nt_kind(nt, rcv) == NK_CallNode && nt_str(nt, rcv, "name") &&
+                  sp_streq(nt_str(nt, rcv, "name"), "singleton_class") &&
+                  nt_ref(nt, rcv, "arguments") < 0 && nt_ref(nt, rcv, "block") < 0 &&
+                  (nt_ref(nt, rcv, "receiver") < 0 || nt_kind(nt, nt_ref(nt, rcv, "receiver")) == NK_SelfNode);
+      if (!(reader || writer) || !is_sc || nt_ref(nt, st, "block") >= 0) { xc_push(&nb, &nbn, st); continue; }
+      int an = 0; int args = nt_ref(nt, st, "arguments");
+      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      const char *syms[32]; int nsyms = 0, ok = an > 0;
+      for (int a = 0; a < an && ok; a++) {
+        NodeKind ak = nt_kind(nt, av[a]);
+        const char *t = ak == NK_SymbolNode ? nt_str(nt, av[a], "value") : ak == NK_StringNode ? nt_str(nt, av[a], "content") : NULL;
+        if (!t || !t[0] || nsyms >= 32) ok = 0; else syms[nsyms++] = t;
+      }
+      if (!ok) { xc_push(&nb, &nbn, st); continue; }
+      long long line = nt_int(nt, st, "node_line", 0);
+      for (int j = 0; j < nsyms && ok; j++) {
+        char iv[160], wn[160]; snprintf(iv, sizeof iv, "@%s", syms[j]); snprintf(wn, sizeof wn, "%s=", syms[j]);
+        if (reader) {
+          int rd = nt_new_node(nt, "InstanceVariableReadNode"); if (rd < 0) { ok = 0; break; }
+          nt_node_set_str(nt, rd, "name", iv);
+          int d = ma_def(nt, syms[j], 1, 0, rd, line); if (d < 0) { ok = 0; break; }
+          xc_push(&nb, &nbn, d);
+        }
+        if (writer) {
+          int w = nt_new_node(nt, "InstanceVariableWriteNode"); if (w < 0) { ok = 0; break; }
+          nt_node_set_str(nt, w, "name", iv);
+          int vr = nt_new_node(nt, "LocalVariableReadNode"); if (vr < 0) { ok = 0; break; }
+          nt_node_set_str(nt, vr, "name", "val"); nt_node_set_int(nt, vr, "depth", 0);
+          nt_node_set_ref(nt, w, "value", vr);
+          int d = ma_def(nt, wn, 1, 1, w, line); if (d < 0) { ok = 0; break; }
+          xc_push(&nb, &nbn, d);
+        }
+      }
+      if (!ok) { free(nb); nb = NULL; nbn = 0; any = 0; break; }
+      any = 1;
+    }
+    if (any && nb) { nt_node_set_arr(nt, body, "body", nb, nbn); changed = 1; }
+    free(nb); free(bb);
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
