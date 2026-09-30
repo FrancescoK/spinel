@@ -7287,6 +7287,107 @@ static int value_arm_is(const NodeTable *nt, int v, int node) {
   }
 }
 
+/* The places a yield's value can settle a type from the first call site
+   alone (see the YieldNode arm of infer_uncached): a variable write, an
+   array literal's element, an argument, an operator's receiver and the
+   last statement of a rescue or ensure frame. Each diverging yield walked
+   the whole table for each of them, every round, and #6185's argument walk
+   asked call_may_reach_user_method of every call on the way, so the
+   typing grew with yields times nodes. One pass per round lists, for each
+   yield, the nodes that hold it in one of those places, through the value
+   arms value_arm_is follows; the arm then checks only those. The list is
+   rebuilt per fixpoint iteration and when the table grows, like the
+   receiver set above, and each node on it is checked as the walk did, so
+   one that no longer holds the yield answers no. */
+enum { YU_WRITE, YU_ELEMENT, YU_ARGUMENT, YU_RECEIVER, YU_FRAME };
+static const NodeKind yu_write_kinds[] = {
+  NK_LocalVariableWriteNode, NK_LocalVariableOperatorWriteNode,
+  NK_LocalVariableOrWriteNode, NK_LocalVariableAndWriteNode,
+  NK_InstanceVariableWriteNode, NK_InstanceVariableOperatorWriteNode,
+  NK_InstanceVariableOrWriteNode, NK_InstanceVariableAndWriteNode,
+  NK_GlobalVariableWriteNode, NK_GlobalVariableOperatorWriteNode,
+  NK_GlobalVariableOrWriteNode, NK_GlobalVariableAndWriteNode,
+  NK_ClassVariableWriteNode, NK_ClassVariableOperatorWriteNode,
+  NK_ClassVariableOrWriteNode, NK_ClassVariableAndWriteNode };
+static int *g_yu_head, *g_yu_next, *g_yu_node;
+static unsigned char *g_yu_kind;
+static int g_yu_n, g_yu_cap, g_yu_cnt = -1;
+static unsigned g_yu_gen;
+static const NodeTable *g_yu_nt;
+static void yu_add(int y, int w, int kind) {
+  if (g_yu_n == g_yu_cap) {
+    g_yu_cap = g_yu_cap ? g_yu_cap * 2 : 256;
+    g_yu_next = realloc(g_yu_next, sizeof(int) * (size_t)g_yu_cap);
+    g_yu_node = realloc(g_yu_node, sizeof(int) * (size_t)g_yu_cap);
+    g_yu_kind = realloc(g_yu_kind, (size_t)g_yu_cap);
+    if (!g_yu_next || !g_yu_node || !g_yu_kind) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  g_yu_node[g_yu_n] = w; g_yu_kind[g_yu_n] = (unsigned char)kind;
+  g_yu_next[g_yu_n] = g_yu_head[y]; g_yu_head[y] = g_yu_n++;
+}
+/* Lists `w` for each yield y that value_arm_is(nt, v, y) answers yes for,
+   down the same arms. */
+static void yu_collect(const NodeTable *nt, int v, int w, int kind) {
+  if (v < 0 || v >= nt->count) return;
+  switch (nt_kind(nt, v)) {
+  case NK_YieldNode: yu_add(v, w, kind); return;
+  case NK_StatementsNode: {
+    int n = 0; const int *st = nt_arr(nt, v, "body", &n);
+    if (n > 0) yu_collect(nt, st[n - 1], w, kind);
+    return;
+  }
+  case NK_ParenthesesNode: yu_collect(nt, nt_ref(nt, v, "body"), w, kind); return;
+  case NK_ElseNode: yu_collect(nt, nt_ref(nt, v, "statements"), w, kind); return;
+  case NK_IfNode:
+    yu_collect(nt, nt_ref(nt, v, "statements"), w, kind);
+    yu_collect(nt, nt_ref(nt, v, "subsequent"), w, kind);
+    return;
+  case NK_UnlessNode:
+    yu_collect(nt, nt_ref(nt, v, "statements"), w, kind);
+    yu_collect(nt, nt_ref(nt, v, "else_clause"), w, kind);
+    return;
+  case NK_AndNode: case NK_OrNode:
+    yu_collect(nt, nt_ref(nt, v, "left"), w, kind);
+    yu_collect(nt, nt_ref(nt, v, "right"), w, kind);
+    return;
+  default: return;
+  }
+}
+/* The first entry for yield `y` (follow g_yu_next), -1 for none. */
+static int yield_uses(Compiler *c, int y) {
+  const NodeTable *nt = c->nt;
+  if (g_yu_gen != g_narrow_gen || g_yu_nt != nt || g_yu_cnt != nt->count) {
+    free(g_yu_head);
+    g_yu_head = malloc(sizeof(int) * (size_t)(nt->count > 0 ? nt->count : 1));
+    if (!g_yu_head) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < nt->count; i++) g_yu_head[i] = -1;
+    g_yu_n = 0;
+    for (int wk = 0; wk < (int)(sizeof yu_write_kinds / sizeof yu_write_kinds[0]); wk++)
+      NT_FOREACH_KIND(nt, yu_write_kinds[wk], w) yu_collect(nt, nt_ref(nt, w, "value"), w, YU_WRITE);
+    NT_FOREACH_KIND(nt, NK_ArrayNode, w) {
+      int en = 0; const int *ev = nt_arr(nt, w, "elements", &en);
+      for (int e = 0; e < en; e++) yu_collect(nt, ev[e], w, YU_ELEMENT);
+    }
+    NT_FOREACH_KIND(nt, NK_CallNode, w) {
+      int r = nt_ref(nt, w, "receiver");
+      if (r >= 0 && r < nt->count && nt_kind(nt, r) == NK_YieldNode) yu_add(r, w, YU_RECEIVER);
+      int an = nt_ref(nt, w, "arguments");
+      if (an < 0) continue;
+      int ac = 0; const int *av = nt_arr(nt, an, "arguments", &ac);
+      for (int e = 0; e < ac; e++) yu_collect(nt, av[e], w, YU_ARGUMENT);
+    }
+    NT_FOREACH_KIND(nt, NK_BeginNode, w) {
+      int st = nt_ref(nt, w, "statements");
+      if (st < 0) continue;
+      int bn = 0; const int *bs = nt_arr(nt, st, "body", &bn);
+      if (bs && bn > 0 && bs[bn - 1] >= 0 && bs[bn - 1] < nt->count &&
+          nt_kind(nt, bs[bn - 1]) == NK_YieldNode) yu_add(bs[bn - 1], w, YU_FRAME);
+    }
+    g_yu_gen = g_narrow_gen; g_yu_nt = nt; g_yu_cnt = nt->count;
+  }
+  return y >= 0 && y < g_yu_cnt ? g_yu_head[y] : -1;
+}
+
 /* Whether a branch node produces no value: a statement list that ends in a
    raise, or an `elsif` chain EVERY arm of which does -- including the arm
    that is not written, so a chain without an `else` never diverges as a
@@ -8299,86 +8400,88 @@ TyKind infer_uncached(Compiler *c, int id) {
        bare-yield tail is handled per-site by emit_block_invoke_coerced /
        method_call_ret and must keep its concrete first-site type. */
     if (yield_value_diverges(c, ymi)) {
-      /* An instance, global or class variable written from the yield, or from
-         a conditional one of whose arms is the yield (`@y = block_given? ?
-         yield(x) : "nil"`), is in the same position as a local: the variable
-         takes one type, the first site's, and the other site's value was
-         emitted into it (`@y = yield(x)` with a String block, then an Integer
-         one, stopped the build). */
-      static const NodeKind lw_kinds[] = {
-        NK_LocalVariableWriteNode, NK_LocalVariableOperatorWriteNode,
-        NK_LocalVariableOrWriteNode, NK_LocalVariableAndWriteNode,
-        NK_InstanceVariableWriteNode, NK_InstanceVariableOperatorWriteNode,
-        NK_InstanceVariableOrWriteNode, NK_InstanceVariableAndWriteNode,
-        NK_GlobalVariableWriteNode, NK_GlobalVariableOperatorWriteNode,
-        NK_GlobalVariableOrWriteNode, NK_GlobalVariableAndWriteNode,
-        NK_ClassVariableWriteNode, NK_ClassVariableOperatorWriteNode,
-        NK_ClassVariableOrWriteNode, NK_ClassVariableAndWriteNode };
-      for (int wk = 0; wk < (int)(sizeof lw_kinds / sizeof lw_kinds[0]); wk++)
-        NT_FOREACH_KIND(nt, lw_kinds[wk], w)
+      for (int u = yield_uses(c, id); u >= 0; u = g_yu_next[u]) {
+        int w = g_yu_node[u];
+        switch (g_yu_kind[u]) {
+        case YU_WRITE:
+          /* An instance, global or class variable written from the yield, or
+             from a conditional one of whose arms is the yield (`@y =
+             block_given? ? yield(x) : "nil"`), is in the same position as a
+             local: the variable takes one type, the first site's, and the
+             other site's value was emitted into it (`@y = yield(x)` with a
+             String block, then an Integer one, stopped the build). */
           if (value_arm_is(nt, nt_ref(nt, w, "value"), id)) return TY_POLY;
-      /* An array literal's element likewise: `[yield(x)]` built its array
-         from the first site's element type. */
-      NT_FOREACH_KIND(nt, NK_ArrayNode, w) {
-        int en = 0; const int *ev = nt_arr(nt, w, "elements", &en);
-        for (int e = 0; e < en; e++)
-          if (value_arm_is(nt, ev[e], id)) return TY_POLY;
-      }
-      /* An argument to a method the program defines likewise: its parameter
-         took the first site's type, and the other site's value was converted
-         to it at run time. `show(yield)` with a String block at one site and a
-         Float block at another raised TypeError where CRuby prints both. Only
-         a call that can reach a user method (call_may_reach_user_method): a
-         builtin on the yield (`yield + yield`, an Array's `push(yield)`) is
-         lowered per site to its concrete form, which a poly operand does not
-         fit, and an unrelated class defining a method of the same name does
-         not change that. */
-      NT_FOREACH_KIND(nt, NK_CallNode, w) {
-        int an = nt_ref(nt, w, "arguments");
-        if (an < 0) continue;
-        const char *wn = nt_str(nt, w, "name");
-        if (!wn || !call_may_reach_user_method(c, w, wn)) continue;
-        int ac = 0; const int *av = nt_arr(nt, an, "arguments", &ac);
-        for (int e = 0; e < ac; e++)
-          if (value_arm_is(nt, av[e], id)) return TY_POLY;
-      }
-      /* The receiver of a builtin arithmetic operator too: `yield + yield`
-         typed its `+`, and the method's return, from the first site's block,
-         so a String block at one site and a Float one at another put the Float
-         into a `const char *`. Poly makes the result a boxed carrier, and
-         codegen types each site's operator from that site's block
-         (yield_operator_site_type), so the value it emits is boxed into it.
-         Only the operators that helper types: for another method on the
-         yield, codegen still emits one site's concrete result into the slot
-         unboxed. */
-      NT_FOREACH_KIND(nt, NK_CallNode, w) {
-        if (nt_ref(nt, w, "receiver") != id || nt_ref(nt, w, "block") >= 0) continue;
-        const char *op = nt_str(nt, w, "name");
-        int an = nt_ref(nt, w, "arguments"), ac = 0;
-        if (an >= 0) nt_arr(nt, an, "arguments", &ac);
-        if (ac == 1 && op && (sp_streq(op, "+") || sp_streq(op, "-") || sp_streq(op, "*") ||
-                              sp_streq(op, "/") || sp_streq(op, "%")))
-          return TY_POLY;
-      }
-      /* A yield whose value leaves through an ENSURE frame is in the same
-         position as one written to a local, for the same reason: the frame
-         carries the value in a slot of its own, and that slot settles its type
-         at whichever call site is analyzed first. The per-site coercion the
-         comment above relies on handles the method's own tail, and does not
-         reach a tail one frame in. So `def run; begin; yield 7; ensure; nil;
-         end; end` answered its first site's type at its second -- `p run { |x|
-         x == 7 }` then `p run { |x| x * 3 }` printed true twice, where CRuby
-         says true and 21, and a pair whose types do not share a C slot stopped
-         the build instead. Poly makes the slot a boxed carrier, and each
-         inlined site boxes its own value. */
-      NT_FOREACH_KIND(nt, NK_BeginNode, w) {
-        /* a rescue frame the same: its value slot takes the body's value or
-           the rescue arm's, `def guarded; yield; rescue; "rescued"; end` */
-        if (nt_ref(nt, w, "ensure_clause") < 0 && nt_ref(nt, w, "rescue_clause") < 0) continue;
-        int st = nt_ref(nt, w, "statements");
-        if (st < 0) continue;
-        int bn = 0; const int *bs = nt_arr(nt, st, "body", &bn);
-        if (bs && bn > 0 && bs[bn - 1] == id) return TY_POLY;
+          break;
+        case YU_ELEMENT: {
+          /* An array literal's element likewise: `[yield(x)]` built its
+             array from the first site's element type. */
+          int en = 0; const int *ev = nt_arr(nt, w, "elements", &en);
+          for (int e = 0; e < en; e++)
+            if (value_arm_is(nt, ev[e], id)) return TY_POLY;
+          break;
+        }
+        case YU_ARGUMENT: {
+          /* An argument to a method the program defines likewise: its
+             parameter took the first site's type, and the other site's value
+             was converted to it at run time. `show(yield)` with a String
+             block at one site and a Float block at another raised TypeError
+             where CRuby prints both. Only a call that can reach a user
+             method (call_may_reach_user_method): a builtin on the yield
+             (`yield + yield`, an Array's `push(yield)`) is lowered per site
+             to its concrete form, which a poly operand does not fit, and an
+             unrelated class defining a method of the same name does not
+             change that. */
+          int an = nt_ref(nt, w, "arguments");
+          if (an < 0) break;
+          const char *wn = nt_str(nt, w, "name");
+          if (!wn || !call_may_reach_user_method(c, w, wn)) break;
+          int ac = 0; const int *av = nt_arr(nt, an, "arguments", &ac);
+          for (int e = 0; e < ac; e++)
+            if (value_arm_is(nt, av[e], id)) return TY_POLY;
+          break;
+        }
+        case YU_RECEIVER: {
+          /* The receiver of a builtin arithmetic operator too: `yield +
+             yield` typed its `+`, and the method's return, from the first
+             site's block, so a String block at one site and a Float one at
+             another put the Float into a `const char *`. Poly makes the
+             result a boxed carrier, and codegen types each site's operator
+             from that site's block (yield_operator_site_type), so the value
+             it emits is boxed into it. Only the operators that helper types:
+             for another method on the yield, codegen still emits one site's
+             concrete result into the slot unboxed. */
+          if (nt_ref(nt, w, "receiver") != id || nt_ref(nt, w, "block") >= 0) break;
+          const char *op = nt_str(nt, w, "name");
+          int an = nt_ref(nt, w, "arguments"), ac = 0;
+          if (an >= 0) nt_arr(nt, an, "arguments", &ac);
+          if (ac == 1 && op && (sp_streq(op, "+") || sp_streq(op, "-") || sp_streq(op, "*") ||
+                                sp_streq(op, "/") || sp_streq(op, "%")))
+            return TY_POLY;
+          break;
+        }
+        case YU_FRAME: {
+          /* A yield whose value leaves through an ENSURE frame is in the
+             same position as one written to a local, for the same reason:
+             the frame carries the value in a slot of its own, and that slot
+             settles its type at whichever call site is analyzed first. The
+             per-site coercion the comment above relies on handles the
+             method's own tail, and does not reach a tail one frame in. So
+             `def run; begin; yield 7; ensure; nil; end; end` answered its
+             first site's type at its second -- `p run { |x| x == 7 }` then
+             `p run { |x| x * 3 }` printed true twice, where CRuby says true
+             and 21, and a pair whose types do not share a C slot stopped the
+             build instead. Poly makes the slot a boxed carrier, and each
+             inlined site boxes its own value. A rescue frame the same: its
+             value slot takes the body's value or the rescue arm's, `def
+             guarded; yield; rescue; "rescued"; end`. */
+          if (nt_ref(nt, w, "ensure_clause") < 0 && nt_ref(nt, w, "rescue_clause") < 0) break;
+          int st = nt_ref(nt, w, "statements");
+          if (st < 0) break;
+          int bn = 0; const int *bs = nt_arr(nt, st, "body", &bn);
+          if (bs && bn > 0 && bs[bn - 1] == id) return TY_POLY;
+          break;
+        }
+        }
       }
     }
     return yield_value_type(c, ymi);
