@@ -1,0 +1,11 @@
+"mixed"
+"plain"
+["a", "b", "c"]
+16
+51
+"codec"
+1
+"base"
+"outer box"
+11
+"undefined method 'only_flag' for an instance of Codec"
