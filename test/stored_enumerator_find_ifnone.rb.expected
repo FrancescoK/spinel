@@ -12,3 +12,5 @@ Enumerator
 :nope
 4
 :inner_none
+nil
+undefined method 'each' for nil
