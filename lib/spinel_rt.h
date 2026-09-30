@@ -4924,7 +4924,12 @@ static sp_RbVal sp_poly_arr_get(sp_RbVal a, sp_int i) {
      (sp_poly_slot_set / _op for `a[-1][j] = v`) pass the raw negative index --
      without this they read nil and nil out the whole element (#3168). */
   switch (a.cls_id) {
-    case SP_BUILTIN_INT_ARRAY: { sp_IntArray *ar=(sp_IntArray*)a.v.p; if(!ar) return sp_box_nil(); if(i<0)i+=ar->len; if(i<0||i>=ar->len) return sp_box_nil(); return sp_box_int(ar->data[ar->start+i]); }
+    /* the Integer twin of the Float arm below: the slot's sentinel is its nil.
+       Every walk over a typed array reached through a poly handle reads here
+       -- eql?, <=>, #hash, Kernel#Array, an Enumerator's items -- so a nil it
+       holds has to box as one; the inline poly-array path above never gets
+       this far. */
+    case SP_BUILTIN_INT_ARRAY: { sp_IntArray *ar=(sp_IntArray*)a.v.p; if(!ar) return sp_box_nil(); if(i<0)i+=ar->len; if(i<0||i>=ar->len) return sp_box_nil(); return sp_box_int_or_nil(ar->data[ar->start+i]); }
     case SP_BUILTIN_SYM_ARRAY: { sp_IntArray *ar=(sp_IntArray*)a.v.p; if(!ar) return sp_box_nil(); if(i<0)i+=ar->len; if(i<0||i>=ar->len) return sp_box_nil(); return sp_box_sym((sp_sym)ar->data[ar->start+i]); }
     case SP_BUILTIN_FLT_ARRAY: { sp_FloatArray *ar=(sp_FloatArray*)a.v.p; if(!ar) return sp_box_nil(); if(i<0)i+=ar->len; if(i<0||i>=ar->len) return sp_box_nil(); return sp_float_is_nil(ar->data[i]) ? sp_box_nil() : sp_box_float(ar->data[i]); }  /* a gap filled by `a[n] = v` past the end is nil (#3836) */
     case SP_BUILTIN_STR_ARRAY: { sp_StrArray *ar=(sp_StrArray*)a.v.p; if(!ar) return sp_box_nil(); if(i<0)i+=ar->len; if(i<0||i>=ar->len) return sp_box_nil(); return sp_box_str(ar->data[i]); }
@@ -5719,13 +5724,13 @@ SP_NORETURN SP_COLD static SP_NOINLINE void sp_poly_recur_raise(int kind, const 
 /* Array#flatten -- walk into nested array values recursively. Each
    array-tagged element (IntArray / StrArray / SymArray / FloatArray /
    PolyArray) is expanded inline; scalars are appended as-is. Issue
-   #739. */
+   #739. A typed array's sentinel is its nil, and flattens as one. */
 static void sp_PolyArray_flatten_into(sp_PolyArray *dst, sp_RbVal v) {
   if (v.tag != SP_TAG_OBJ) { sp_PolyArray_push(dst, v); return; }
-  if (v.cls_id == SP_BUILTIN_INT_ARRAY) { sp_IntArray *ia = (sp_IntArray *)v.v.p; for (sp_int i = 0; i < ia->len; i++) sp_PolyArray_push(dst, sp_box_int(ia->data[ia->start + i])); return; }
+  if (v.cls_id == SP_BUILTIN_INT_ARRAY) { sp_IntArray *ia = (sp_IntArray *)v.v.p; for (sp_int i = 0; i < ia->len; i++) sp_PolyArray_push(dst, sp_box_int_or_nil(ia->data[ia->start + i])); return; }
   if (v.cls_id == SP_BUILTIN_STR_ARRAY) { sp_StrArray *sa = (sp_StrArray *)v.v.p; for (sp_int i = 0; i < sa->len; i++) sp_PolyArray_push(dst, sp_box_str(sa->data[i])); return; }
   if (v.cls_id == SP_BUILTIN_SYM_ARRAY) { sp_IntArray *ya = (sp_IntArray *)v.v.p; for (sp_int i = 0; i < ya->len; i++) sp_PolyArray_push(dst, sp_box_sym((sp_sym)ya->data[ya->start + i])); return; }
-  if (v.cls_id == SP_BUILTIN_FLT_ARRAY) { sp_FloatArray *fa = (sp_FloatArray *)v.v.p; for (sp_int i = 0; i < fa->len; i++) sp_PolyArray_push(dst, sp_box_float(fa->data[i])); return; }
+  if (v.cls_id == SP_BUILTIN_FLT_ARRAY) { sp_FloatArray *fa = (sp_FloatArray *)v.v.p; for (sp_int i = 0; i < fa->len; i++) sp_PolyArray_push(dst, sp_box_float_or_nil(fa->data[i])); return; }
   if (v.cls_id == SP_BUILTIN_PTR_ARRAY) { sp_PolyArray_flatten_into(dst, sp_box_poly_array(sp_PtrArray_to_poly((sp_PtrArray *)v.v.p))); return; }   /* rows or objects (#4486) */
   if (v.cls_id == SP_BUILTIN_POLY_ARRAY) {
     sp_PolyArray *pa = (sp_PolyArray *)v.v.p;
@@ -6219,10 +6224,10 @@ static void sp_PolyArray_flatten_into_n(sp_PolyArray *dst, sp_RbVal v, sp_int de
     sp_RbVal a = sp_obj_to_ary_fn(v);
     if (a.tag == SP_TAG_OBJ && a.v.p && sp_poly_is_array_kind(a.cls_id)) { SP_GC_ROOT_RBVAL(a); v = a; }
   }
-  if (v.cls_id == SP_BUILTIN_INT_ARRAY) { sp_IntArray *ia = (sp_IntArray *)v.v.p; for (sp_int i = 0; i < ia->len; i++) sp_PolyArray_push(dst, sp_box_int(ia->data[ia->start + i])); return; }
+  if (v.cls_id == SP_BUILTIN_INT_ARRAY) { sp_IntArray *ia = (sp_IntArray *)v.v.p; for (sp_int i = 0; i < ia->len; i++) sp_PolyArray_push(dst, sp_box_int_or_nil(ia->data[ia->start + i])); return; }
   if (v.cls_id == SP_BUILTIN_STR_ARRAY) { sp_StrArray *sa = (sp_StrArray *)v.v.p; for (sp_int i = 0; i < sa->len; i++) sp_PolyArray_push(dst, sp_box_str(sa->data[i])); return; }
   if (v.cls_id == SP_BUILTIN_SYM_ARRAY) { sp_IntArray *ya = (sp_IntArray *)v.v.p; for (sp_int i = 0; i < ya->len; i++) sp_PolyArray_push(dst, sp_box_sym((sp_sym)ya->data[ya->start + i])); return; }
-  if (v.cls_id == SP_BUILTIN_FLT_ARRAY) { sp_FloatArray *fa = (sp_FloatArray *)v.v.p; for (sp_int i = 0; i < fa->len; i++) sp_PolyArray_push(dst, sp_box_float(fa->data[i])); return; }
+  if (v.cls_id == SP_BUILTIN_FLT_ARRAY) { sp_FloatArray *fa = (sp_FloatArray *)v.v.p; for (sp_int i = 0; i < fa->len; i++) sp_PolyArray_push(dst, sp_box_float_or_nil(fa->data[i])); return; }
   if (v.cls_id == SP_BUILTIN_PTR_ARRAY) { sp_PolyArray_flatten_into_n(dst, sp_box_poly_array(sp_PtrArray_to_poly((sp_PtrArray *)v.v.p)), depth); return; }
   if (v.cls_id == SP_BUILTIN_POLY_ARRAY) {
     sp_PolyArray *pa = (sp_PolyArray *)v.v.p;
@@ -6302,7 +6307,7 @@ static sp_PolyArray *sp_PolyArray_sum_concat(sp_PolyArray *a, sp_RbVal init) {
    flag is set AFTER the pushes, which would otherwise raise on it. */
 static sp_PolyArray *sp_PolyArray_from_int_array(sp_IntArray *a) { SP_GC_ROOT(a); sp_PolyArray *p = sp_PolyArray_new(); if (!a) return p; for (sp_int i = 0; i < a->len; i++) { sp_int v = a->data[a->start+i]; sp_PolyArray_push(p, v == SP_INT_NIL ? sp_box_nil() : sp_box_int(v)); } p->frozen = a->frozen; return p; }
 static sp_PolyArray *sp_PolyArray_from_str_array(sp_StrArray *a) { SP_GC_ROOT(a); sp_PolyArray *p = sp_PolyArray_new(); if (!a) return p; for (sp_int i = 0; i < a->len; i++) sp_PolyArray_push(p, sp_box_str(a->data[i])); p->frozen = a->frozen; return p; }
-static sp_PolyArray *sp_PolyArray_from_float_array(sp_FloatArray *a) { SP_GC_ROOT(a); sp_PolyArray *p = sp_PolyArray_new(); if (!a) return p; for (sp_int i = 0; i < a->len; i++) sp_PolyArray_push(p, sp_box_float(a->data[i])); p->frozen = a->frozen; return p; }
+static sp_PolyArray *sp_PolyArray_from_float_array(sp_FloatArray *a) { SP_GC_ROOT(a); sp_PolyArray *p = sp_PolyArray_new(); if (!a) return p; for (sp_int i = 0; i < a->len; i++) sp_PolyArray_push(p, sp_box_float_or_nil(a->data[i])); p->frozen = a->frozen; return p; }
 /* Reverse coercions: materialize a concrete typed array from a poly array by
    unboxing each element to the declared element type. Used to honor a typed-array
    return annotation (e.g. RBS `-> Array[String]`) when the body produced a poly
@@ -6805,7 +6810,7 @@ static const char *sp_poly_join(sp_RbVal a, const char *sep) {
       sp_String *s = sp_String_new(""); SP_GC_ROOT(s);
       for (sp_int i = 0; i < ar->len; i++) {
         if (i > 0 && sep) sp_String_append(s, sep);
-        sp_String_append(s, sp_int_to_s(ar->data[ar->start + i]));
+        sp_String_append(s, sp_int_interp(ar->data[ar->start + i]));   /* nil joins as "" */
       }
       return sp_str_from_bytes(s->data, (size_t)s->len);  /* standalone copy (#3151) */
     }
@@ -6833,7 +6838,8 @@ static sp_bool sp_PolyArray_eq(sp_PolyArray *a, sp_PolyArray *b) {
   return r;
 }
 /* Box a typed (int/str/float) array into a fresh poly array element-wise.
-   `kind` is the typed array's SP_BUILTIN_* tag. */
+   `kind` is the typed array's SP_BUILTIN_* tag; a sentinel boxes as the nil
+   it stands for. */
 static sp_PolyArray *sp_typed_to_poly(void *tp, int kind) {
   sp_PolyArray *tb = sp_PolyArray_new();
   if (!tp) return tb;
@@ -6843,11 +6849,11 @@ static sp_PolyArray *sp_typed_to_poly(void *tp, int kind) {
   }
   else if (kind == SP_BUILTIN_FLT_ARRAY) {
     sp_FloatArray *a = (sp_FloatArray *)tp;
-    for (sp_int i = 0; i < a->len; i++) sp_PolyArray_push(tb, sp_box_float(sp_FloatArray_get(a, i)));
+    for (sp_int i = 0; i < a->len; i++) sp_PolyArray_push(tb, sp_box_float_or_nil(sp_FloatArray_get(a, i)));
   }
   else {
     sp_IntArray *a = (sp_IntArray *)tp;
-    for (sp_int i = 0; i < a->len; i++) sp_PolyArray_push(tb, sp_box_int(sp_IntArray_get(a, i)));
+    for (sp_int i = 0; i < a->len; i++) sp_PolyArray_push(tb, sp_box_int_or_nil(sp_IntArray_get(a, i)));
   }
   return tb;
 }
@@ -12579,7 +12585,7 @@ static sp_PolyArray *sp_enum_items_from(sp_RbVal v) {
       case SP_BUILTIN_STR_ARRAY:  return sp_StrArray_to_poly_fmt((sp_StrArray *)p);
       case SP_BUILTIN_PTR_ARRAY:  return sp_PtrArray_to_poly((sp_PtrArray *)p);
       case SP_BUILTIN_POLY_ARRAY: { sp_PolyArray *a = (sp_PolyArray *)p; sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (a) for (sp_int i = 0; i < a->len; i++) sp_PolyArray_push(r, a->data[i]); return r; }
-      case SP_BUILTIN_FLT_ARRAY:  { sp_FloatArray *a = (sp_FloatArray *)p; sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (a) for (sp_int i = 0; i < a->len; i++) sp_PolyArray_push(r, sp_box_float(a->data[i])); return r; }
+      case SP_BUILTIN_FLT_ARRAY:  { sp_FloatArray *a = (sp_FloatArray *)p; sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (a) for (sp_int i = 0; i < a->len; i++) sp_PolyArray_push(r, sp_box_float_or_nil(a->data[i])); return r; }
       case SP_BUILTIN_SYM_ARRAY:  { sp_IntArray *a = (sp_IntArray *)p; sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (a) for (sp_int i = 0; i < a->len; i++) sp_PolyArray_push(r, sp_box_sym((sp_sym)a->data[a->start + i])); return r; }
       /* an int range iterates its members; keeps the range itself printable
          as the enumerator's #inspect source */

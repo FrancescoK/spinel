@@ -57,6 +57,7 @@ int enum_pair_source_call(const NodeTable *nt, int recv);
    boundary. Valid only after analyze_program has settled the marking. */
 int nullable_int_value(Compiler *c, int id);
 int nullable_int_elem_read(Compiler *c, int call);
+int nullable_int_elem_array(Compiler *c, int node);
 TyKind tuple_elem_read_type(Compiler *c, int node);
 TyKind tuple_elem_read_unboxed(Compiler *c, int node);
 

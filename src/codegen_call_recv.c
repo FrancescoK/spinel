@@ -8,13 +8,16 @@
    boxed needle that is not an Integer deletes nothing -- it cannot equal an
    element -- where passing the sp_RbVal as the element did not compile
    (#4835). */
-static void emit_int_array_delete(Compiler *c, const char *arr, int arg, Buf *b) {
+static void emit_int_array_delete(Compiler *c, const char *arr, int arg, int nil_elems, Buf *b) {
   TyKind at = comp_ntype(c, arg);
   if (at == TY_POLY || at == TY_NIL) {
+    /* a nil is deleted as the sentinel from an array that can hold it (the
+       answer is nil either way) */
     int tv = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, arg, b);
-    buf_printf(b, "; _t%d.tag == SP_TAG_INT ? sp_IntArray_delete(%s, _t%d.v.i) : SP_INT_NIL; })",
-               tv, arr, tv);
+    buf_printf(b, "; _t%d.tag == SP_TAG_INT ? sp_IntArray_delete(%s, _t%d.v.i) : ", tv, arr, tv);
+    if (nil_elems) buf_printf(b, "_t%d.tag == SP_TAG_NIL ? sp_IntArray_delete(%s, SP_INT_NIL) : ", tv, arr);
+    buf_puts(b, "SP_INT_NIL; })");
     return;
   }
   buf_printf(b, "sp_IntArray_delete(%s, ", arr);
@@ -208,6 +211,67 @@ static int value_kind_misses(Compiler *c, int node, TyKind ek) {
          ty_is_array(t) || ty_is_hash(t);
 }
 
+/* An Integer or Float array whose elements can be nil: analyze marks one built
+   from, or written with, a nilable scalar (#3505), and the typed slot holds
+   that nil as the sentinel (SP_INT_NIL, or the Float NaN payload). There nil
+   is an element like any other -- found, counted, deleted, compared -- so a
+   nil needle is not the static miss value_kind_misses reads it as, and an
+   element boxed for a poly compare has to box the sentinel as nil. Asked of
+   the receiver, so an array that can never hold one keeps its plain C. */
+static int elem_nil_sentinel(Compiler *c, int recv, TyKind rt) {
+  return recv >= 0 && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && nullable_int_elem_array(c, recv);
+}
+
+/* value_kind_misses for a needle searched for in the array `recv`: nil is no
+   miss where the array can hold the sentinel. */
+static int needle_misses(Compiler *c, int recv, TyKind rt, int node) {
+  if (comp_ntype(c, node) == TY_NIL && elem_nil_sentinel(c, recv, rt)) return 0;
+  return value_kind_misses(c, node, ty_array_elem(rt));
+}
+
+/* A needle in the Integer or Float array's own slot type. nil is the
+   sentinel, evaluated for effect first, and a nilable scalar passes its
+   sentinel unchecked: the runtime search compares it like any value (the
+   Float one by bit pattern), which finds it where the array holds one and
+   misses where it cannot, CRuby's answer either way. The strict slot's
+   TypeError was wrong here -- `[1, 2].include?(b)` is false for a nil b. */
+static void emit_elem_needle(Compiler *c, TyKind rt, int node, Buf *b) {
+  if (comp_ntype(c, node) == TY_NIL) {
+    buf_puts(b, "((void)("); emit_expr(c, node, b);
+    buf_puts(b, rt == TY_INT_ARRAY ? "), SP_INT_NIL)" : "), sp_float_nil())");
+  }
+  else if (rt == TY_INT_ARRAY) emit_int_expr_nilable(c, node, b);
+  else emit_float_expr(c, node, b);
+}
+
+/* An element read out of a typed array (`el`, C text) boxed for a poly
+   compare: sp_box_int_or_nil / sp_box_float_or_nil where the receiver can
+   hold the sentinel, so it meets a nil as nil. */
+static void emit_elem_boxed_text(Compiler *c, int recv, TyKind rt, const char *el, Buf *b) {
+  if (elem_nil_sentinel(c, recv, rt))
+    buf_printf(b, "%s(%s)", rt == TY_INT_ARRAY ? "sp_box_int_or_nil" : "sp_box_float_or_nil", el);
+  else emit_boxed_text(c, ty_array_elem(rt), el, b);
+}
+
+/* The receiver of a compare (min, max, minmax, sort; `ck` "cmp") or of a
+   blockless sum (`ck` "sum", `float_seed` when the seed is a Float), wrapped
+   in the runtime's nil check where the array can hold the sentinel: read as
+   a number, it sorted first and summed as INT64_MIN, where CRuby raises. */
+static void emit_nil_ck_recv(Compiler *c, int recv, TyKind rt, const char *ck, int float_seed, Buf *b) {
+  if (!elem_nil_sentinel(c, recv, rt)) { emit_expr(c, recv, b); return; }
+  buf_printf(b, "sp_%sArray_nil_%s_ck(", rt == TY_INT_ARRAY ? "Int" : "Float", ck);
+  emit_expr(c, recv, b);
+  if (sp_streq(ck, "sum")) buf_printf(b, ", %d", float_seed);
+  buf_puts(b, ")");
+}
+/* The sum wrap around a receiver already held in C text (`out` holds the
+   wrapped text; the caller frees it). */
+static const char *nil_sum_ck_text(Compiler *c, int recv, TyKind rt, int float_seed, const char *txt, Buf *out) {
+  if (!elem_nil_sentinel(c, recv, rt)) return txt;
+  buf_printf(out, "sp_%sArray_nil_sum_ck(%s, %d)", rt == TY_INT_ARRAY ? "Int" : "Float", txt, float_seed);
+  return out->p;
+}
+
 /* The direct call of the container conversion obj_container_conv found:
    the compiled #to_ary / #to_hash of the defining class on the operand. */
 static void emit_obj_container_conv(Compiler *c, int node, int def, const char *conv, Buf *b) {
@@ -364,13 +428,26 @@ static int emit_array_block_index(Compiler *c, int id, int recv, TyKind rt, cons
   return 0;
 }
 
-static void emit_poly_push_elem(Buf *b, int tpair, TyKind ty, int t, int ti) {
+/* The box an Integer or Float element of the array `node` takes into a poly
+   row (typed_elem_box_fn), or NULL for any other kind. */
+static const char *typed_elem_box_or_null(Compiler *c, int node, TyKind ty) {
+  return ty == TY_INT_ARRAY || ty == TY_FLOAT_ARRAY ? typed_elem_box_fn(c, node, ty) : NULL;
+}
+
+/* A zip argument's box: a row past the argument's end reads the sentinel,
+   which is the nil CRuby pads with, so it is always the _or_nil twin. */
+static const char *zip_pad_box(TyKind ty) {
+  return ty == TY_INT_ARRAY ? "sp_box_int_or_nil" : ty == TY_FLOAT_ARRAY ? "sp_box_float_or_nil" : NULL;
+}
+
+/* `box` boxes an Integer or Float element (NULL: the plain box). */
+static void emit_poly_push_elem(Buf *b, int tpair, TyKind ty, int t, int ti, const char *box) {
   if (ty == TY_INT_ARRAY)
-    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_IntArray_get(_t%d, _t%d)));", tpair, t, ti);
+    buf_printf(b, " sp_PolyArray_push(_t%d, %s(sp_IntArray_get(_t%d, _t%d)));", tpair, box ? box : "sp_box_int", t, ti);
   else if (ty == TY_STR_ARRAY)
     buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_StrArray_get(_t%d, _t%d)));", tpair, t, ti);
   else if (ty == TY_FLOAT_ARRAY)
-    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_float(sp_FloatArray_get(_t%d, _t%d)));", tpair, t, ti);
+    buf_printf(b, " sp_PolyArray_push(_t%d, %s(sp_FloatArray_get(_t%d, _t%d)));", tpair, box ? box : "sp_box_float", t, ti);
   else
     buf_printf(b, " sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));", tpair, t, ti);
 }
@@ -3225,11 +3302,9 @@ else {
           int tL = ++g_tmp, tR = ++g_tmp, tO = ++g_tmp, ti = ++g_tmp;
           Buf lbuf = expr_buf(c, recv);
           Buf rbuf = expr_buf(c, argv[0]);
-          const char *box_l = (rt == TY_INT_ARRAY) ? "sp_box_int" :
-                              (rt == TY_FLOAT_ARRAY) ? "sp_box_float" :
+          const char *box_l = (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) ? typed_elem_box_fn(c, recv, rt) :
                               (rt == TY_STR_ARRAY) ? "sp_box_str" : NULL;
-          const char *box_r = (a0 == TY_INT_ARRAY) ? "sp_box_int" :
-                              (a0 == TY_FLOAT_ARRAY) ? "sp_box_float" :
+          const char *box_r = (a0 == TY_INT_ARRAY || a0 == TY_FLOAT_ARRAY) ? typed_elem_box_fn(c, argv[0], a0) :
                               (a0 == TY_STR_ARRAY) ? "sp_box_str" : NULL;
           const char *get_l = (rt == TY_POLY_ARRAY) ? "sp_PolyArray_get" :
                               NULL;
@@ -3362,7 +3437,9 @@ else {
         else if (sp_streq(name, "shuffle!")) base = "shuffle_bang";
         if (base && argc == 0) {
           int t = ++g_tmp;
-          buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
+          buf_printf(b, "({ sp_%sArray *_t%d = ", k, t);
+          if (sp_streq(base, "sort_bang")) emit_nil_ck_recv(c, recv, rt, "cmp", 0, b);
+          else emit_expr(c, recv, b);
           buf_printf(b, "; sp_%sArray_%s(_t%d); _t%d; })", k, base, t, t);
           return 1;
         }
@@ -3370,6 +3447,16 @@ else {
       if (sp_streq(name, "uniq!") && argc == 0 && (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY)) {
         /* value form: self when changed, nil when a no-op (CRuby) */
         buf_printf(b, "sp_%sArray_uniq_bangq(", k); emit_expr(c, recv, b); buf_puts(b, ")");
+        return 1;
+      }
+      if (sp_streq(name, "compact!") && argc == 0 && elem_nil_sentinel(c, recv, rt)) {
+        /* an Integer or Float array that can hold the sentinel -- its nil --
+           drops it in place, answering self when it did; the no-op fold
+           below is for one that cannot */
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_%sArray_compact_bang(_t%d) ? sp_box_obj(_t%d, %s) : sp_box_nil(); })",
+                   k, t, t, rt == TY_INT_ARRAY ? "SP_BUILTIN_INT_ARRAY" : "SP_BUILTIN_FLT_ARRAY");
         return 1;
       }
       if ((sp_streq(name, "flatten!") || sp_streq(name, "compact!")) && argc == 0 &&
@@ -3435,9 +3522,9 @@ else {
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {",
                    ti, ti, ka, ta, ti);
         buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new();", tpair);
-        emit_poly_push_elem(b, tpair, rt, ta, ti);
+        emit_poly_push_elem(b, tpair, rt, ta, ti, typed_elem_box_or_null(c, recv, rt));
         for (int j = 0; j < nargs; j++)
-          emit_poly_push_elem(b, tpair, at[j], tb[j], ti);
+          emit_poly_push_elem(b, tpair, at[j], tb[j], ti, zip_pad_box(at[j]));
         buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));", tr, tpair);
         buf_printf(b, " } _t%d; })", tr);
         return 1;
@@ -3532,8 +3619,8 @@ else {
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {", ti, ti, k, ta, ti);
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {", tj, tj, kb, tb, tj);
         buf_printf(b, " _t%d = sp_PolyArray_new();", tpair);
-        emit_poly_push_elem(b, tpair, rt, ta, ti);
-        emit_poly_push_elem(b, tpair, at, tb, tj);
+        emit_poly_push_elem(b, tpair, rt, ta, ti, typed_elem_box_or_null(c, recv, rt));
+        emit_poly_push_elem(b, tpair, at, tb, tj, typed_elem_box_or_null(c, argv[0], at));
         buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));", tr, tpair);
         buf_printf(b, " } } _t%d; })", tr);
         return 1;
@@ -3689,7 +3776,9 @@ else {
            to-f coercion. Bignum, Rational and Complex miss where CRuby's ==
            can match -- the Int arm fails the C build on those same shapes. */
         int df_boxed = rt == TY_FLOAT_ARRAY && (a0 == TY_POLY || a0 == TY_UNKNOWN);
-        int df_never = rt == TY_FLOAT_ARRAY && !df_boxed && a0 != TY_INT && a0 != TY_FLOAT;
+        int dnil = elem_nil_sentinel(c, recv, rt);
+        int df_never = rt == TY_FLOAT_ARRAY && !df_boxed && a0 != TY_INT && a0 != TY_FLOAT &&
+                       !(a0 == TY_NIL && dnil);
         int dblk = nt_ref(nt, id, "block");
         if (dblk >= 0 && nt_type(nt, dblk) && sp_streq(nt_type(nt, dblk), "BlockNode")) {
           int dbody = nt_ref(nt, dblk, "body");
@@ -3698,7 +3787,7 @@ else {
             unsupported_feature(c, id, "Array#delete of a user object defining == from a typed Array");
             return 0;
           }
-          if (dbn >= 1 && (df_never || value_kind_misses(c, argv[0], ty_array_elem(rt)))) {
+          if (dbn >= 1 && (df_never || needle_misses(c, recv, rt, argv[0]))) {
             /* nothing to delete: the block, handed the value, supplies the answer */
             const char *dp0 = block_param_name(c, dblk, 0);
             buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); ");
@@ -3716,12 +3805,12 @@ else {
             int cdb = hold_recv_open(c, recv, 0, tyb, "SP_GC_ROOT", b, &rdb);
             if (rt == TY_INT_ARRAY) {
               buf_printf(b, "({ sp_int _t%d = ", tdr);
-              emit_int_array_delete(c, rdb.p, argv[0], b);
+              emit_int_array_delete(c, rdb.p, argv[0], dnil, b);
               buf_printf(b, "; _t%d != SP_INT_NIL ? sp_box_int(_t%d) : ", tdr, tdr);
             }
             else if (rt == TY_FLOAT_ARRAY) {
               buf_printf(b, "({ sp_float _t%d = sp_FloatArray_delete%s(%s, ", tdr, df_boxed ? "_key" : "", rdb.p);
-              if (df_boxed) emit_boxed(c, argv[0], b); else emit_float_expr(c, argv[0], b);
+              if (df_boxed) emit_boxed(c, argv[0], b); else emit_elem_needle(c, rt, argv[0], b);
               buf_printf(b, "); !sp_float_is_nil(_t%d) ? sp_box_float(_t%d) : ", tdr, tdr);
             }
             else if (a0 == TY_POLY) {
@@ -3748,7 +3837,7 @@ else {
           unsupported_feature(c, id, "Array#delete of a user object defining == from a typed Array");
           return 0;
         }
-        if (df_never || value_kind_misses(c, argv[0], ty_array_elem(rt))) {
+        if (df_never || needle_misses(c, recv, rt, argv[0])) {
           buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); (void)("); emit_expr(c, argv[0], b);
           buf_printf(b, "); %s; })", rt == TY_INT_ARRAY ? "SP_INT_NIL" : rt == TY_STR_ARRAY ? "(const char *)0" : "sp_float_nil()");
           return 1;
@@ -3757,7 +3846,7 @@ else {
         Buf rdl; char tyl[32];
         snprintf(tyl, sizeof tyl, "sp_%sArray *", k);
         int cdl = hold_recv_open(c, recv, 0, tyl, "SP_GC_ROOT", b, &rdl);
-        if (rt == TY_INT_ARRAY) emit_int_array_delete(c, rdl.p, argv[0], b);
+        if (rt == TY_INT_ARRAY) emit_int_array_delete(c, rdl.p, argv[0], dnil, b);
         else if (rt == TY_STR_ARRAY && a0 == TY_POLY) {
           /* a boxed needle, read as the block form above reads it */
           int tv = ++g_tmp;
@@ -3768,7 +3857,7 @@ else {
         else {
           buf_printf(b, "sp_%sArray_delete%s(%s, ", k, df_boxed ? "_key" : "", rdl.p);
           if (df_boxed) emit_boxed(c, argv[0], b);
-          else if (rt == TY_FLOAT_ARRAY) emit_float_expr(c, argv[0], b);
+          else if (rt == TY_FLOAT_ARRAY) emit_elem_needle(c, rt, argv[0], b);
           else emit_expr(c, argv[0], b);
           buf_puts(b, ")");
         }
@@ -3966,7 +4055,24 @@ else {
       if ((sp_streq(name, "all?") || sp_streq(name, "any?") ||
            sp_streq(name, "none?") || sp_streq(name, "one?")) &&
           argc == 0 && nt_ref(nt, id, "block") < 0) {
-        /* scalar-element arrays never hold nil/false: predicate is length-based */
+        /* scalar-element arrays never hold nil/false: predicate is length-based.
+           One that can hold the sentinel counts its truthy (non-nil) elements
+           instead. */
+        if (elem_nil_sentinel(c, recv, rt)) {
+          int ta = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
+          const char *isnil = rt == TY_INT_ARRAY ? "sp_IntArray_get(_t%d, _t%d) == SP_INT_NIL"
+                                                 : "sp_float_is_nil(sp_FloatArray_get(_t%d, _t%d))";
+          buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b);
+          buf_printf(b, "; sp_int _t%d = 0; for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) if (!(",
+                     tn, ti, ti, k, ta, ti);
+          buf_printf(b, isnil, ta, ti);
+          buf_printf(b, ")) _t%d++; ", tn);
+          if (sp_streq(name, "all?"))       buf_printf(b, "_t%d == sp_%sArray_length(_t%d); })", tn, k, ta);
+          else if (sp_streq(name, "any?"))  buf_printf(b, "_t%d > 0; })", tn);
+          else if (sp_streq(name, "none?")) buf_printf(b, "_t%d == 0; })", tn);
+          else                              buf_printf(b, "_t%d == 1; })", tn);
+          return 1;
+        }
         const char *op = sp_streq(name, "all?") ? ">= 0" : sp_streq(name, "any?") ? "> 0"
                        : sp_streq(name, "none?") ? "== 0" : "== 1";
         buf_printf(b, "(sp_%sArray_length(", k); emit_expr(c, recv, b); buf_printf(b, ") %s)", op);
@@ -4053,7 +4159,7 @@ else {
           unsupported_feature(c, id, "a user object defining == compared against a typed Array's elements");
           return 0;
         }
-        if (value_kind_misses(c, argv[0], ty_array_elem(rt))) {
+        if (needle_misses(c, recv, rt, argv[0])) {
           /* a value no element can equal: only an empty array is all? of it */
           buf_puts(b, " (void)("); emit_expr(c, argv[0], b); buf_puts(b, ");");
           if (sp_streq(name, "all?"))       buf_printf(b, " sp_%sArray_length(_t%d) == 0; })", k, ta);
@@ -4074,9 +4180,13 @@ else {
         if (cboxed) {
           char el[96]; snprintf(el, sizeof el, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
           buf_puts(b, " if (sp_poly_eq(");
-          emit_boxed_text(c, ty_array_elem(rt), el, b);
+          emit_elem_boxed_text(c, recv, rt, el, b);
           buf_printf(b, ", _t%d)) _t%d++;", tv, tc);
         }
+        else if (rt == TY_FLOAT_ARRAY && elem_nil_sentinel(c, recv, rt))
+          /* a nil Float needle is the sentinel, a NaN that == never meets */
+          buf_printf(b, " { sp_float _e = sp_FloatArray_get(_t%d, _t%d); if (_e == _t%d ||"
+                        " (sp_float_is_nil(_e) && sp_float_is_nil(_t%d))) _t%d++; }", ta, ti, tv, tv, tc);
         else if (rt == TY_STR_ARRAY)
           buf_printf(b, " if (sp_str_cmp_bytes(sp_%sArray_get(_t%d, _t%d), _t%d) == 0) _t%d++;", k, ta, ti, tv, tc);
         else
@@ -4153,7 +4263,7 @@ else {
         return 1;
       }
       if (sp_streq(name, "sum") && argc == 0 && nt_ref(nt, id, "block") < 0) {
-        buf_printf(b, "sp_%sArray_sum(", k); emit_expr(c, recv, b); buf_puts(b, ", 0)");
+        buf_printf(b, "sp_%sArray_sum(", k); emit_nil_ck_recv(c, recv, rt, "sum", 0, b); buf_puts(b, ", 0)");
         return 1;
       }
       if (sp_streq(name, "sum") && argc == 1 && nt_ref(nt, id, "block") < 0) {
@@ -4173,7 +4283,7 @@ else {
            returns sp_int, so accumulating the init through it would truncate). */
         if (rt == TY_INT_ARRAY && init_t == TY_FLOAT) {
           buf_puts(b, "((sp_float)("); emit_expr(c, argv[0], b);
-          buf_puts(b, ") + (sp_float)sp_IntArray_sum("); emit_expr(c, recv, b); buf_puts(b, ", 0))");
+          buf_puts(b, ") + (sp_float)sp_IntArray_sum("); emit_nil_ck_recv(c, recv, rt, "sum", 1, b); buf_puts(b, ", 0))");
           return 1;
         }
         /* Any other seed keeps its OWN class for the whole fold: CRuby's
@@ -4195,7 +4305,8 @@ else {
            line; the two paths must not disagree. */
         if (rt == TY_FLOAT_ARRAY && init_t == TY_FLOAT) {
           Buf rb; int ch = hold_recv_open(c, recv, 0, "sp_FloatArray *", "SP_GC_ROOT", b, &rb);
-          buf_printf(b, "sp_FloatArray_sum_plain(%s, ", rb.p); free(rb.p);
+          Buf ckb; memset(&ckb, 0, sizeof ckb);
+          buf_printf(b, "sp_FloatArray_sum_plain(%s, ", nil_sum_ck_text(c, recv, rt, 1, rb.p, &ckb)); free(rb.p); free(ckb.p);
           emit_expr(c, argv[0], b); buf_puts(b, ")");
           if (ch) buf_puts(b, "; })");
           return 1;
@@ -4204,7 +4315,8 @@ else {
         Buf rsm; char tym[32];
         snprintf(tym, sizeof tym, "sp_%sArray *", k);
         int csm = hold_recv_open(c, recv, 0, tym, "SP_GC_ROOT", b, &rsm);
-        buf_printf(b, "sp_%sArray_sum(%s, ", k, rsm.p);
+        Buf ckm; memset(&ckm, 0, sizeof ckm);
+        buf_printf(b, "sp_%sArray_sum(%s, ", k, nil_sum_ck_text(c, recv, rt, 0, rsm.p, &ckm)); free(ckm.p);
         if (rt == TY_FLOAT_ARRAY && init_t == TY_INT) {
           buf_puts(b, "(sp_float)("); emit_expr(c, argv[0], b); buf_puts(b, ")");
         }
@@ -4273,7 +4385,7 @@ else {
         return 1;
       }
       if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 0) {
-        buf_printf(b, "sp_%sArray_%s(", k, name); emit_expr(c, recv, b); buf_puts(b, ")");
+        buf_printf(b, "sp_%sArray_%s(", k, name); emit_nil_ck_recv(c, recv, rt, "cmp", 0, b); buf_puts(b, ")");
         return 1;
       }
       /* The extremes are read before the result is allocated: a fresh
@@ -4286,7 +4398,7 @@ else {
         int t = ++g_tmp, o = ++g_tmp;
         int is_str = rt == TY_STR_ARRAY;
         const char *et = is_str ? "const char *" : rt == TY_FLOAT_ARRAY ? "sp_float " : "sp_int ";
-        buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
+        buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_nil_ck_recv(c, recv, rt, "cmp", 0, b);
         buf_puts(b, ";");
         if (is_str) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
         buf_printf(b, " %s_mn%d = sp_%sArray_min(_t%d); %s_mx%d = sp_%sArray_max(_t%d);"
@@ -4298,8 +4410,10 @@ else {
       /* a typed array never holds an element of another kind: include? is
          false and index is nil, with both operands still evaluated */
       int elem_mismatch = 0;
+      /* ... except nil, in an array that can hold it as the sentinel */
+      int nil_needle = argc == 1 && a0 == TY_NIL && elem_nil_sentinel(c, recv, rt);
       if (argc == 1 && rt == TY_STR_ARRAY && a0 != TY_STRING && a0 != TY_UNKNOWN && a0 != TY_POLY) elem_mismatch = 1;
-      if (argc == 1 && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) &&
+      if (argc == 1 && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && !nil_needle &&
           a0 != TY_INT && a0 != TY_FLOAT && a0 != TY_UNKNOWN && a0 != TY_POLY) elem_mismatch = 1;
       if ((sp_streq(name, "index") || sp_streq(name, "find_index") || sp_streq(name, "rindex")) && argc == 1 &&
           (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY || rt == TY_FLOAT_ARRAY)) {
@@ -4314,7 +4428,7 @@ else {
           unsupported_feature(c, id, "Array#index of a user object defining == in a typed Array");
           return 0;
         }
-        if (value_kind_misses(c, argv[0], ty_array_elem(rt))) {
+        if (needle_misses(c, recv, rt, argv[0])) {
           buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); (void)("); emit_expr(c, argv[0], b);
           buf_puts(b, "); sp_box_nil(); })");
           return 1;
@@ -4326,14 +4440,17 @@ else {
           emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
           return 1;
         }
-        if (rt == TY_INT_ARRAY && (a0 == TY_POLY || a0 == TY_NIL)) {
+        if (rt == TY_INT_ARRAY && (a0 == TY_POLY || (a0 == TY_NIL && !nil_needle))) {
           /* the Integer twin of the String arm below: only an Integer can be
              there, where unboxing the needle raised TypeError (#4835) */
           int ta = ++g_tmp, tv = ++g_tmp;
           buf_printf(b, "({ sp_IntArray *_t%d = ", ta); emit_recv_rooted(c, recv, ta, "SP_GC_ROOT", b);
           buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
-          buf_printf(b, "; _t%d.tag == SP_TAG_INT ? sp_IntArray_%s(_t%d, _t%d.v.i) : sp_box_nil(); })",
-                     tv, fn, ta, tv);
+          buf_printf(b, "; _t%d.tag == SP_TAG_INT ? sp_IntArray_%s(_t%d, _t%d.v.i) : ", tv, fn, ta, tv);
+          /* a boxed nil is the sentinel where the array can hold one */
+          if (elem_nil_sentinel(c, recv, rt))
+            buf_printf(b, "_t%d.tag == SP_TAG_NIL ? sp_IntArray_%s(_t%d, SP_INT_NIL) : ", tv, fn, ta);
+          buf_puts(b, "sp_box_nil(); })");
           return 1;
         }
         if (rt == TY_STR_ARRAY && (a0 == TY_POLY || a0 == TY_NIL)) {
@@ -4352,8 +4469,7 @@ else {
         snprintf(tyx, sizeof tyx, "sp_%sArray *", k);
         int cix = hold_recv_open(c, recv, 0, tyx, "SP_GC_ROOT", b, &rix);
         buf_printf(b, "sp_%sArray_%s(%s, ", k, fn, rix.p);
-        if (rt == TY_INT_ARRAY) emit_int_expr(c, argv[0], b);
-        else if (rt == TY_FLOAT_ARRAY) emit_float_expr(c, argv[0], b);
+        if (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) emit_elem_needle(c, rt, argv[0], b);
         else emit_expr(c, argv[0], b);
         buf_puts(b, ")");
         free(rix.p);
@@ -4367,13 +4483,25 @@ else {
           return 1;
         }
       }
+      if ((sp_streq(name, "include?") || sp_streq(name, "member?")) && argc == 1 && rt == TY_FLOAT_ARRAY &&
+          (a0 == TY_POLY || a0 == TY_UNKNOWN) && elem_nil_sentinel(c, recv, rt)) {
+        /* a boxed needle that may be nil: the tag-guarded index finds it,
+           the receiver held across the needle as the arm below holds it */
+        Buf rfk;
+        int cfk = hold_recv_open(c, recv, 0, "sp_FloatArray *", "SP_GC_ROOT", b, &rfk);
+        buf_printf(b, "(sp_FloatArray_index_key(%s, ", rfk.p);
+        emit_boxed(c, argv[0], b); buf_puts(b, ").tag != SP_TAG_NIL)");
+        free(rfk.p);
+        if (cfk) buf_puts(b, "; })");
+        return 1;
+      }
       if ((sp_streq(name, "include?") || sp_streq(name, "member?")) && argc == 1 && rt == TY_FLOAT_ARRAY) {
         /* held across the needle: a freed receiver here read a reused slot
            as a float array and crashed */
         Buf rfi;
         int cfi = hold_recv_open(c, recv, 0, "sp_FloatArray *", "SP_GC_ROOT", b, &rfi);
         buf_printf(b, "sp_FloatArray_include(%s, ", rfi.p);
-        emit_float_expr(c, argv[0], b); buf_puts(b, ")");
+        emit_elem_needle(c, rt, argv[0], b); buf_puts(b, ")");
         free(rfi.p);
         if (cfi) buf_puts(b, "; })");
         return 1;
@@ -4396,12 +4524,14 @@ else {
         /* The same for an Integer array: a search for a value of another kind
            is a well-defined "not there" (false / no index), where unboxing the
            needle raised the conversion TypeError (#4835). */
-        if (rt == TY_INT_ARRAY && (sat == TY_POLY || sat == TY_NIL)) {
+        if (rt == TY_INT_ARRAY && (sat == TY_POLY || (sat == TY_NIL && !nil_needle))) {
           int ta = ++g_tmp, tv = ++g_tmp;
           buf_printf(b, "({ sp_IntArray *_t%d = ", ta); emit_recv_rooted(c, recv, ta, "SP_GC_ROOT", b);
           buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
-          buf_printf(b, "; _t%d.tag == SP_TAG_INT ? sp_IntArray_%s(_t%d, _t%d.v.i) : %s; })",
-                     tv, fn, ta, tv, sp_streq(fn, "include") ? "FALSE" : "(sp_int)-1");
+          buf_printf(b, "; _t%d.tag == SP_TAG_INT ? sp_IntArray_%s(_t%d, _t%d.v.i) : ", tv, fn, ta, tv);
+          if (elem_nil_sentinel(c, recv, rt))   /* as the index arm above */
+            buf_printf(b, "_t%d.tag == SP_TAG_NIL ? sp_IntArray_%s(_t%d, SP_INT_NIL) : ", tv, fn, ta);
+          buf_printf(b, "%s; })", sp_streq(fn, "include") ? "FALSE" : "(sp_int)-1");
           return 1;
         }
         /* held across the needle, which may allocate */
@@ -4412,7 +4542,8 @@ else {
         /* a poly argument into a string array's const char* slot (`arr.include?(
            params[k])`) needs coercing; emit_str_expr passes a plain string
            through and sp_poly_to_s's a poly value. */
-        if (sp_streq(k, "Int")) emit_int_expr(c, argv[0], b);
+        if (rt == TY_INT_ARRAY) emit_elem_needle(c, rt, argv[0], b);
+        else if (sp_streq(k, "Int")) emit_int_expr(c, argv[0], b);
         else if (rt == TY_STR_ARRAY) emit_str_expr(c, argv[0], b);
         else emit_expr(c, argv[0], b);
         buf_puts(b, ")");
@@ -4422,7 +4553,7 @@ else {
       }
       if (sp_streq(name, "sort") && argc == 0 &&
           (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY || rt == TY_STR_ARRAY)) {
-        buf_printf(b, "sp_%sArray_sort(", k); emit_expr(c, recv, b); buf_puts(b, ")");
+        buf_printf(b, "sp_%sArray_sort(", k); emit_nil_ck_recv(c, recv, rt, "cmp", 0, b); buf_puts(b, ")");
         return 1;
       }
       if (sp_streq(name, "uniq") && argc == 0 && (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY || rt == TY_FLOAT_ARRAY)) {
@@ -4595,7 +4726,7 @@ else {
       }
       if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 1 && block < 0) {
         int t = ++g_tmp, tn = ++g_tmp;
-        buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_sort(", k, t, k); emit_expr(c, recv, b);
+        buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_sort(", k, t, k); emit_nil_ck_recv(c, recv, rt, "cmp", 0, b);
         buf_printf(b, "); SP_GC_ROOT(_t%d); sp_int _t%d = ", t, tn); emit_int_expr(c, argv[0], b);
         buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");", tn);
         if (sp_streq(name, "max")) buf_printf(b, " sp_%sArray_reverse_bang(_t%d);", k, t);
@@ -4998,7 +5129,7 @@ else {
         buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new();", tpair);
         buf_printf(b, " sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));", tpair, ta, ti);
         for (int j = 0; j < nargs; j++)
-          emit_poly_push_elem(b, tpair, at[j], tb[j], ti);
+          emit_poly_push_elem(b, tpair, at[j], tb[j], ti, zip_pad_box(at[j]));
         buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));", tr, tpair);
         buf_printf(b, " } _t%d; })", tr);
         return 1;

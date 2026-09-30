@@ -2163,6 +2163,15 @@ void emit_sentinel_bind(Compiler *c, TyKind t, int node, char *ref, size_t cap, 
   emit_ctype(c, t, b); buf_printf(b, " %s = ", ref); emit_expr(c, node, b);
   buf_puts(b, "; ");
 }
+/* The box for an element the Integer or Float array `node` hands to a poly
+   container (a zip or product row, a splat into a mixed literal or a rest
+   parameter): the _or_nil twin where analyze marked the array as able to hold
+   the sentinel (#3505), which is its nil; the plain box everywhere else. */
+const char *typed_elem_box_fn(Compiler *c, int node, TyKind t) {
+  int nil = node >= 0 && nullable_int_elem_array(c, node);
+  if (t == TY_INT_ARRAY) return nil ? "sp_box_int_or_nil" : "sp_box_int";
+  return nil ? "sp_box_float_or_nil" : "sp_box_float";
+}
 /* The C type of class `cid`'s instances. A `native_struct` carries the name
    its declaration gave -- which need not be derived from the Ruby class name
    (`native_struct "Store", "sp_X509_Store"`) -- and every other class is the

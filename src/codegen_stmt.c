@@ -109,10 +109,17 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "if (sp_%sArray_length(%s) == 0) putchar('\\n');\n", k, a);
     emit_indent(b, indent);
     buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(%s); _t%d++) ", ti, ti, k, a, ti);
-    if (t == TY_INT_ARRAY)
+    /* an element that can be nil (the slot's sentinel) prints puts nil's
+       empty line; only an array analyze marked as holding one pays the test */
+    int nil_elems = nullable_int_elem_array(c, arg);
+    if (t == TY_INT_ARRAY && nil_elems)
+      buf_printf(b, "{ sp_int _e = sp_IntArray_get(%s, _t%d); if (_e == SP_INT_NIL) putchar('\\n');"
+                    " else printf(\"%%lld\\n\", (long long)_e); }\n", a, ti);
+    else if (t == TY_INT_ARRAY)
       buf_printf(b, "printf(\"%%lld\\n\", (long long)sp_IntArray_get(%s, _t%d));\n", a, ti);
     else if (t == TY_FLOAT_ARRAY)
-      buf_printf(b, "{ const char *_fs = sp_float_to_s(sp_FloatArray_get(%s, _t%d)); sp_puts_line(_fs); }\n", a, ti);
+      buf_printf(b, "{ const char *_fs = %s(sp_FloatArray_get(%s, _t%d)); sp_puts_line(_fs); }\n",
+                 nil_elems ? "sp_float_opt_to_s" : "sp_float_to_s", a, ti);
     else /* str */
       buf_printf(b, "{ const char *_ps = sp_StrArray_get(%s, _t%d); sp_puts_str_line(_ps); }\n", a, ti);
     free(ab.p);
