@@ -22169,8 +22169,16 @@ static int refuse_ctor_copies(Compiler *c, int id, const char *name, int recv) {
     else any = strvar_arg(c, av[k], &shared) != NULL;
   }
   if (!any) return 1;
-  int first, boxed, tg[64];
-  int n = ctor_call_targets(c, id, &first, &boxed, tg, 64);
+  /* room for every scope: the set is never cut short (ctor_call_targets) */
+  static int *tg = NULL;
+  static int tg_cap = 0;
+  if (tg_cap < c->nscopes) {
+    tg_cap = c->nscopes;
+    tg = (int *)realloc(tg, sizeof(int) * (size_t)tg_cap);
+    if (!tg) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  int first, boxed;
+  int n = ctor_call_targets(c, id, &first, &boxed, tg, c->nscopes);
   char thr[160];
   if (first) snprintf(thr, sizeof thr, "`raise`");
   else if (recv >= 0 && (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode))

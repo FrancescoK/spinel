@@ -16925,7 +16925,9 @@ static int ctor_convert_params(Compiler *c) {
 }
 
 /* The initialize methods `new` or `raise` call `u` can reach, into out[]
-   (at most cap), with *first the index of the call's first argument the
+   (at most cap; a cap of c->nscopes holds any set, each target being a
+   scope of its own, and the callers pass that: a set cut short would leave
+   an arm the pull and the refusal never see), with *first the index of the call's first argument the
    initialize binds (1 for `raise C, s`) and *boxed set when the call
    dispatches on a class value and so hands its arguments over boxed. `C.new`
    reaches C's; `new` or `self.new` in a class method, the class's and its
@@ -17057,7 +17059,9 @@ static int ctor_pull_args(Compiler *c) {
       any = q && q->dyn_handle;
     }
   if (!any) return 0;
-  int changed = 0, tg[64];
+  int changed = 0;
+  int *tg = (int *)malloc(sizeof(int) * (size_t)(c->nscopes > 0 ? c->nscopes : 1));
+  if (!tg) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   /* `super(t)` in an initialize, into the parent's handle parameter: a
      parameter of its own the super hands on is converted with the parent's
      (convert_byref_handle_params), a local is pulled here */
@@ -17074,10 +17078,45 @@ static int ctor_pull_args(Compiler *c) {
       if (a >= 0 && nt_kind(nt, a) == NK_LocalVariableReadNode) changed |= dyn_pull_arg(c, a, 0);
     }
   }
+  /* `super` in a class's own `def self.new` is Class#new: it constructs
+     through the class's initialize (and a subclass's, when the method is
+     inherited), so the String it hands on is pulled as a `new` call's is,
+     and `self.new`'s callers follow its parameter (convert_byref_handle_params) */
+  for (int pass = 0; pass < 2; pass++) {
+    NodeKind sk = pass ? NK_ForwardingSuperNode : NK_SuperNode;
+    for (int q = comp_kind_first(c, sk); q >= 0; q = comp_kind_next(c, q)) {
+      if (nt_kind(nt, q) != sk) continue;
+      Scope *s = comp_scope_of(c, q);
+      if (!s || !s->is_cmethod || s->class_id < 0 || !s->name || !sp_streq(s->name, "new")) continue;
+      int nd = 0; const int *ds = comp_descendants(c, s->class_id, &nd);
+      for (int d = -1; d < nd; d++) {
+        int k = d < 0 ? s->class_id : ds[d];
+        int mi = comp_method_in_chain(c, k, "initialize", NULL);
+        if (mi < 0) continue;
+        Scope *m = &c->scopes[mi];
+        for (int j = 0; j < m->nparams && j < DYN_ARGS; j++) {
+          LocalVar *d2 = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
+          if (!d2 || !d2->dyn_handle) continue;
+          if (!pass) {
+            int a = arg_layout_param_node(c, m, q, j, NULL);
+            if (a >= 0 && nt_kind(nt, a) == NK_LocalVariableReadNode) changed |= dyn_pull_arg(c, a, 0);
+            continue;
+          }
+          int pi = zsuper_param_source(c, s, m, j);
+          LocalVar *src = pi >= 0 && s->pnames[pi] ? scope_local(s, s->pnames[pi]) : NULL;
+          if (!src || !src->is_param || src->is_block_param || src->is_cell) continue;
+          if (src->type != TY_STRING && src->type != TY_STRBUF) continue;
+          if (src->type != TY_STRBUF || !src->str_shared) {
+            src->type = TY_STRBUF; src->str_shared = 1; src->byref_out = 0; changed = 1;
+          }
+        }
+      }
+    }
+  }
   for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
     if (nt_kind(nt, u) != NK_CallNode) continue;
     int first, boxed;
-    int n = ctor_call_targets(c, u, &first, &boxed, tg, 64);
+    int n = ctor_call_targets(c, u, &first, &boxed, tg, c->nscopes);
     for (int t = 0; t < n; t++) {
       Scope *m = &c->scopes[tg[t]];
       for (int j = 0; j < m->nparams && j < DYN_ARGS; j++) {
@@ -17130,6 +17169,7 @@ static int ctor_pull_args(Compiler *c) {
       }
     }
   }
+  free(tg);
   return changed;
 }
 

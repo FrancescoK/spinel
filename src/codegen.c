@@ -9818,6 +9818,21 @@ static void emit_struct_super_spread(Compiler *c, ClassInfo *cls, const int *arg
   buf_puts(b, " sp_box_nil(); })");
 }
 
+/* A Struct's or Data's `super(a)` / `super(a: a)` handing on an initialize
+   parameter that is the shared handle (#6179): the member, typed from it
+   (struct_super_types_members), takes the handle itself, as the bare
+   `super` does, so an append after the `super` reaches the member. 1 when
+   it emitted. */
+static int struct_super_handle_arg(Compiler *c, int v, Buf *b) {
+  if (v < 0 || nt_kind(c->nt, v) != NK_LocalVariableReadNode) return 0;
+  const char *vn = nt_str(c->nt, v, "name");
+  Scope *vs = vn ? comp_scope_of(c, v) : NULL;
+  LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+  if (!lv || !lv->dyn_handle || lv->type != TY_STRBUF || !lv->str_shared) return 0;
+  emit_local_ref(c, v, vn, b);
+  return 1;
+}
+
 void emit_super(Compiler *c, int id, Buf *b) {
   Scope *s = comp_scope_of(c, id);
   if (s->class_id < 0 || !s->name) { unsupported(c, id, "super (not in a method)"); return; }
@@ -10038,7 +10053,8 @@ void emit_super(Compiler *c, int id, Buf *b) {
           }
           else {
             TyKind at = comp_ntype(c, vnode);
-            if (ivt == TY_POLY && at != TY_POLY) emit_boxed(c, vnode, b);
+            if (ivt == TY_STRBUF && struct_super_handle_arg(c, vnode, b)) {}
+            else if (ivt == TY_POLY && at != TY_POLY) emit_boxed(c, vnode, b);
             else if (ivt != TY_POLY && at == TY_POLY) {
               Buf ex; memset(&ex, 0, sizeof ex); emit_expr(c, vnode, &ex);
               emit_unbox_nilable_text(c, ivt, ex.p ? ex.p : "", b); free(ex.p);
@@ -10048,7 +10064,8 @@ void emit_super(Compiler *c, int id, Buf *b) {
         }
         else {
           TyKind at = comp_ntype(c, sargv[a]);
-          if (ivt == TY_POLY && at != TY_POLY) emit_boxed(c, sargv[a], b);
+          if (ivt == TY_STRBUF && struct_super_handle_arg(c, sargv[a], b)) {}
+          else if (ivt == TY_POLY && at != TY_POLY) emit_boxed(c, sargv[a], b);
           else if (ivt != TY_POLY && at == TY_POLY) {
             /* poly arg (e.g. an initialize param that stayed poly) into a scalar
                member slot: unbox to the member's C type. */

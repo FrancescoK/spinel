@@ -5,7 +5,8 @@
 # outgrows the buffer and a copy could not pass by capacity.
 X = "x" * 100
 
-# C.new, a class value, `new` and `self.new` in a class method, a subclass
+# C.new, a class value, `new` and `self.new` in a class method, a subclass,
+# a `self.new` of the class's own that hands on to `super`
 class Box
   def initialize(s) = (s << X)
   def self.make(s) = new(s)
@@ -16,7 +17,12 @@ class Cat
   def initialize(s) = (s.concat(X); @n = s.size)
   def n = @n
 end
+class Made
+  def self.new(s) = super
+  def initialize(s) = (s << X)
+end
 s = +"a"; Box.new(s); Box.make(s); Box.make2(s); Sub.new(s); p s.size
+s = +"o"; Made.new(s); p s.size
 [Box, Cat].each { |k| t = +"b"; k.new(t); p t.size }
 k = [Box, Cat][ARGV.size]; t = +"c"; k.new(t); p t.size
 
@@ -78,7 +84,8 @@ class Holder
 end
 h = Holder.new(+"i"); h.into_box; p h.b.size
 
-# a Struct's and a Data's initialize, keyword_init included
+# a Struct's and a Data's initialize, keyword_init included, appending
+# before and after an explicit `super`
 S = Struct.new(:a, :b) do
   def initialize(a, b) = (a << X; super)
 end
@@ -88,9 +95,17 @@ end
 D = Data.define(:a) do
   def initialize(a:) = (a << X; super)
 end
+T = Struct.new(:a) do
+  def initialize(a) = (super(a); a << X)
+end
 s = +"j"; x = S.new(s, 2); p [s.size, x.a.size]
+s = +"i"; x = T.new(s); s << "!"; p [s.size, x.a.size]
 s = +"k"; y = K.new(a: s); p [s.size, y.a.size]
 s = +"l"; z = D.new(a: s); p [s.size, z.a.size]
+E2 = Data.define(:a) do
+  def initialize(a:) = (super(a: a); a << X)
+end
+s = +"n"; z = E2.new(a: s); p [s.size, z.a.size]
 
 # argument order, a splatted Array literal, literals and temporaries, a
 # frozen String, a NUL
