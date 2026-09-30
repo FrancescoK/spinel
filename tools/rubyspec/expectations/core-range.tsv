@@ -328,7 +328,8 @@ reverse_each_spec__010	HARNESS-SKEW
 reverse_each_spec__011	HARNESS-SKEW
 reverse_each_spec__012	ERROR
 reverse_each_spec__013	HARNESS-SKEW
-reverse_each_spec__014	FAIL
+reverse_each_spec__014	ERROR
+reverse_each_spec__015	FAIL
 size_spec__001	PASS
 size_spec__002	PASS
 size_spec__003	PASS
