@@ -20726,6 +20726,47 @@ static int text_is_raise_token(const char *txt) {
   return strstr(txt, "sp_raise_nomethod") != NULL || strstr(txt, "sp_raise_cls(") != NULL;
 }
 
+/* Can evaluating this subtree store a new value into an ivar, a class
+   variable or a global? A write to one does, and so can anything that runs
+   Ruby code the subtree does not show -- a user method, a yield, a super.
+   What cannot: arithmetic over scalars and an index read of a typed array
+   (`@ref[addr & 3]`), recursively; nothing in either runs code. Every other
+   call counts, conservatively: Hash#[] can run a default block, and a builtin
+   handed a user object can call back into it. */
+static int subtree_may_reassign_state(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0) return 0;
+  const char *ty = nt_type(nt, id);
+  if (!ty) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_YieldNode || k == NK_SuperNode || k == NK_ForwardingSuperNode) return 1;
+  if ((strncmp(ty, "InstanceVariable", 16) == 0 || strncmp(ty, "ClassVariable", 13) == 0 ||
+       strncmp(ty, "GlobalVariable", 14) == 0) &&
+      (strstr(ty, "WriteNode") || strstr(ty, "TargetNode")))
+    return 1;
+  if (k == NK_CallNode && !call_is_scalar_op(c, id)) {
+    const char *nm = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver");
+    int a = nt_ref(nt, id, "arguments"); int ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    int typed_index = nm && sp_streq(nm, "[]") && recv >= 0 && ac == 1 &&
+                      nt_ref(nt, id, "block") < 0 &&
+                      ty_is_array(comp_ntype(c, recv)) && comp_ntype(c, av[0]) == TY_INT;
+    if (!typed_index) return 1;
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++)
+    if (subtree_may_reassign_state(c, nt_ref_at(nt, id, i))) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0;
+    const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++)
+      if (subtree_may_reassign_state(c, ids[j])) return 1;
+  }
+  return 0;
+}
+
 static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   if (id == g_operand_order_node) return 0;
@@ -20750,6 +20791,18 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   int operand[9], nop = 0;
   if (recv >= 0) operand[nop++] = recv;
   for (int i = 0; i < argc && nop < 9; i++) operand[nop++] = argv[i];
+  /* A bare read of an ivar, class variable or global is no effect of its own,
+     but a sibling that runs code can reassign it: `@data[swap(i)]`, with
+     `swap` storing a new array, read the NEW array when C evaluated the
+     argument first, and the old one after it was freed once `swap` had
+     allocated enough to collect. Ruby reads the receiver first. So such a
+     read is ordered -- bound and rooted like a call -- exactly when some other
+     operand can reassign it (subtree_may_reassign_state); next to arithmetic
+     and typed-array reads, `@mem[@ref[addr & 3]]`, it stays a plain read. A
+     local changes only through a write the pass already sees. */
+  int effects = 0;
+  for (int i = 0; i < nop; i++)
+    if (subtree_may_reassign_state(c, operand[i])) effects++;
   int observable = 0, converts = 0;
   for (int i = 0; i < nop; i++) {
     /* an operand that may convert -- a user object, a boxed value -- is
@@ -20763,11 +20816,13 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
                           ty_object_class(ot) < c->nclasses &&
                           !c->classes[ty_object_class(ot)].is_native_class))
       converts = 1;
-    if (!subtree_has_side_effect(c, operand[i])) continue;
-    observable++;
     NodeKind k = nt_kind(nt, operand[i]);
+    int state_read = (k == NK_InstanceVariableReadNode || k == NK_ClassVariableReadNode ||
+                      k == NK_GlobalVariableReadNode);
+    if (state_read ? effects < 1 : !subtree_has_side_effect(c, operand[i])) continue;
+    observable++;
     int bindable = (k == NK_CallNode || k == NK_SuperNode ||
-                    k == NK_ForwardingSuperNode || k == NK_YieldNode);
+                    k == NK_ForwardingSuperNode || k == NK_YieldNode || state_read);
     if (!bindable) return 0;
     TyKind t = comp_ntype(c, operand[i]);
     if (t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL) return 0;

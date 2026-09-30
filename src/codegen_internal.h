@@ -177,6 +177,7 @@ extern int  g_pd_skip;
 extern int  g_cls_tag_skip;   /* poly-dispatch builtin-arm re-entry marker */
 int subtree_may_allocate(const NodeTable *nt, int id);
 int subtree_has_side_effect(Compiler *c, int id);
+int call_is_scalar_op(Compiler *c, int id);   /* a builtin operator over scalars */
 /* Whether the subtree at `id` assigns the local `nm`: a write, an op-write
    or a multiple-assignment target by that name. */
 int subtree_writes_local(Compiler *c, int id, const char *nm);
