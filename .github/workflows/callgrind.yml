@@ -35,6 +35,11 @@ jobs:
             make deps >/dev/null && make -j"$(nproc)" all >/dev/null
             mkdir -p build && cp -a "$RUNNER_TEMP/oc" build/optcarrot
             make optcarrot OPTCARROT_RUNS=1 | tail -2
+            # why gcc left a call out of line in optcarrot: the same compile
+            # as `make optcarrot`'s, with gcc's inlining report
+            mkdir -p "$RUNNER_TEMP/inline"
+            cmd=$(make -n optcarrot OPTCARROT_RUNS=1 | grep -m1 'build/optcarrot-single.c .* -o build/optcarrot-single$' | sed 's/^@//')
+            eval "${cmd% -o build/optcarrot-single} -c -o /dev/null -fopt-info-inline-missed=$RUNNER_TEMP/inline/optcarrot-$side.txt" 2>/dev/null || true
             valgrind --tool=callgrind --callgrind-out-file="$RUNNER_TEMP/cg/optcarrot-$side.cg" ./build/optcarrot-single > "$RUNNER_TEMP/oc-$side.out" 2> "$RUNNER_TEMP/oc-$side.vg"
             grep -q '^checksum: 59662$' "$RUNNER_TEMP/oc-$side.out" || { echo "optcarrot checksum wrong on $side"; exit 1; }
             ir=$(grep -o 'Collected : [0-9]*' "$RUNNER_TEMP/oc-$side.vg" | grep -o '[0-9]*$')
@@ -65,7 +70,8 @@ jobs:
                    printf "| %s | %s | %s | %s |\n", p, b, h, r } }' "$RUNNER_TEMP/ir.txt"
           } | tee -a "$GITHUB_STEP_SUMMARY" > "$RUNNER_TEMP/summary.md"
           cp "$RUNNER_TEMP/ir.txt" "$RUNNER_TEMP/revs.txt" .
-          mkdir -p annotate
+          mkdir -p annotate inline
+          cp "$RUNNER_TEMP"/inline/*.txt inline/ 2>/dev/null || true
           for f in "$RUNNER_TEMP"/cg/*.cg; do
             n=$(basename "$f" .cg)
             callgrind_annotate --inclusive=no --threshold=99 "$f" 2>/dev/null | head -60 > "annotate/$n.txt" || true
@@ -77,3 +83,4 @@ jobs:
             ir.txt
             revs.txt
             annotate/
+            inline/
