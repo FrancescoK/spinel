@@ -27896,12 +27896,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       }
       free(rb.p); return;
     }
-    if (sp_streq(name, "sysseek") && argc >= 1) {
-      buf_printf(b, "sp_File_sysseek(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
-      if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
-      buf_puts(b, ")");
-      free(rb.p); return;
-    }
     if (sp_streq(name, "flock") && argc == 1) {
       buf_printf(b, "sp_File_flock(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
       free(rb.p); return;
@@ -28228,10 +28222,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "eof?") || sp_streq(name, "eof")) {
       buf_printf(b, "sp_File_eof_p(%s)", r); free(rb.p); return;
     }
-    if (sp_streq(name, "seek") && argc >= 1) {
+    if ((sp_streq(name, "seek") || sp_streq(name, "sysseek")) && argc >= 1) {
       /* offset plus optional whence (IO::SEEK_SET/CUR/END -> 0/1/2; absolute
          when omitted, matching Ruby's SEEK_SET default) */
-      buf_printf(b, "sp_File_seek(%s, ", r);
+      buf_printf(b, "sp_File_%s(%s, ", name, r);
       emit_int_expr(c, argv[0], b);
       buf_puts(b, ", ");
       if (argc >= 2) emit_int_expr(c, argv[1], b);
