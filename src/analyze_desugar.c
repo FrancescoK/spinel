@@ -8582,8 +8582,27 @@ int desugar_class_new_blocks(Compiler *c) {
         self_class = rnm && sp_streq(rnm, "class") && nt_ref(nt, recv, "arguments") < 0 &&
                      (rr < 0 || nt_kind(nt, rr) == NK_SelfNode);
       }
+      /* `base.class_eval do def m; end end` in a module's `self.included(base)`
+         or `self.extended(base)` hook: base is the including class, which the
+         hook inliner (desugar_included_hooks) substitutes at the include site,
+         so the defs land on that class; leave the call for it */
+      int hook_base = 0;
+      if (rk0 == NK_LocalVariableReadNode) {
+        const char *bn = nt_str(nt, recv, "name");
+        int d = parent[id];
+        while (d >= 0 && nt_kind(nt, d) != NK_DefNode) d = parent[d];
+        if (d >= 0 && bn) {
+          const char *dn = nt_str(nt, d, "name");
+          int dr = nt_ref(nt, d, "receiver");
+          int ps = nt_ref(nt, d, "parameters");
+          int rn = 0; const int *rq = ps >= 0 ? nt_arr(nt, ps, "requireds", &rn) : NULL;
+          hook_base = dn && (sp_streq(dn, "included") || sp_streq(dn, "extended")) &&
+                      dr >= 0 && nt_kind(nt, dr) == NK_SelfNode && rn == 1 &&
+                      nt_str(nt, rq[0], "name") && sp_streq(nt_str(nt, rq[0], "name"), bn);
+        }
+      }
       if (rk0 != NK_ConstantReadNode && rk0 != NK_ConstantPathNode && rk0 != NK_SelfNode &&
-          !self_class && cn_has_def(nt, nt_ref(nt, blk, "body"))) {
+          !self_class && !hook_base && cn_has_def(nt, nt_ref(nt, blk, "body"))) {
         cn_neutralize(nt, blk);
         nt_node_reset(nt, id, "CallNode");
         nt_node_set_str(nt, id, "name", "raise");
