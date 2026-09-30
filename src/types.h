@@ -26,6 +26,11 @@ static inline int sp_streq(const char *a, const char *b) {
     if (*a == 0) return 1;
   }
 }
+static inline unsigned sp_strhash(const char *s) {
+  unsigned h = 2166136261u;
+  for (; *s; s++) { h ^= (unsigned char)*s; h *= 16777619u; }
+  return h;
+}
 
 /* ---- The boxed-receiver face table ----
 

@@ -1133,11 +1133,6 @@ static int yvt_call_forwards_block(const NodeTable *nt, int cid) {
    prepend shadow (named `__prep_N_m`), are left to the full resolution. */
 static int *yvt_nm_head = NULL, *yvt_nm_next = NULL, *yvt_always = NULL;
 static int yvt_nb = 0, yvt_always_n = 0;
-static unsigned yvt_hash(const char *s) {
-  unsigned h = 2166136261u;
-  for (; *s; s++) { h ^= (unsigned char)*s; h *= 16777619u; }
-  return h;
-}
 static unsigned char *yvt_alias_name = NULL;   /* per yvt_ids entry: its name is an alias somewhere */
 static unsigned char *yvt_fwd = NULL;          /* per yvt_ids entry: yvt_call_forwards_block */
 static int yvt_name_is_alias(Compiler *c, const char *cn) {
@@ -1205,7 +1200,7 @@ static void yvt_build(Compiler *c) {
     const char *cn = nt_str(nt, yvt_ids[ii], "name");
     yvt_nm_next[ii] = -1;
     if (!cn) continue;
-    int b = (int)(yvt_hash(cn) % (unsigned)yvt_nb);
+    int b = (int)(sp_strhash(cn) % (unsigned)yvt_nb);
     yvt_nm_next[ii] = yvt_nm_head[b]; yvt_nm_head[b] = ii;
   }
   for (int ii = 0; ii < yvt_n; ii++)
@@ -1222,8 +1217,8 @@ static void yvt_it_init(Compiler *c, YvtIt *it, int mi) {
   it->next_all = 0; it->last = -1; it->ai = 0;
   it->s[0] = it->s[1] = -1;
   if (it->all) return;
-  it->s[0] = yvt_nm_head[yvt_hash(mn) % (unsigned)yvt_nb];
-  if (sp_streq(mn, "initialize")) it->s[1] = yvt_nm_head[yvt_hash("new") % (unsigned)yvt_nb];
+  it->s[0] = yvt_nm_head[sp_strhash(mn) % (unsigned)yvt_nb];
+  if (sp_streq(mn, "initialize")) it->s[1] = yvt_nm_head[sp_strhash("new") % (unsigned)yvt_nb];
 }
 static int yvt_it_next(YvtIt *it) {
   if (it->all) return it->next_all < yvt_n ? it->next_all++ : -1;
@@ -1612,11 +1607,6 @@ static int udm_nscopes = -1, udm_nclasses = -1, udm_cap = 0, udm_n = 0;
 static char **udm_names = NULL;
 static signed char *udm_ans = NULL;
 static int *udm_next = NULL, *udm_head = NULL;
-static unsigned udm_hash(const char *s) {
-  unsigned h = 2166136261u;
-  for (const char *p = s; *p; p++) { h ^= (unsigned char)*p; h *= 16777619u; }
-  return h;
-}
 /* Per-epoch string sets making the memo fill O(1) for the common case:
    every instance-method name any class defines, and every alias source name.
    Open-addressed; rebuilt alongside the memo on an epoch change. */
@@ -1635,13 +1625,13 @@ static void udm_set_add(UdmSet *s, const char *k) {
     if (!nv) return;
     for (int i = 0; i < s->cap; i++)
       if (s->v[i]) {
-        unsigned j = udm_hash(s->v[i]) & (unsigned)(ncap - 1);
+        unsigned j = sp_strhash(s->v[i]) & (unsigned)(ncap - 1);
         while (nv[j]) j = (j + 1) & (unsigned)(ncap - 1);
         nv[j] = s->v[i];
       }
     free(s->v); s->v = nv; s->cap = ncap;
   }
-  unsigned j = udm_hash(k) & (unsigned)(s->cap - 1);
+  unsigned j = sp_strhash(k) & (unsigned)(s->cap - 1);
   while (s->v[j]) {
     if (sp_streq(s->v[j], k)) return;
     j = (j + 1) & (unsigned)(s->cap - 1);
@@ -1651,7 +1641,7 @@ static void udm_set_add(UdmSet *s, const char *k) {
 }
 static int udm_set_has(const UdmSet *s, const char *k) {
   if (!s->cap) return 0;
-  unsigned j = udm_hash(k) & (unsigned)(s->cap - 1);
+  unsigned j = sp_strhash(k) & (unsigned)(s->cap - 1);
   while (s->v[j]) {
     if (sp_streq(s->v[j], k)) return 1;
     j = (j + 1) & (unsigned)(s->cap - 1);
@@ -1723,7 +1713,7 @@ int an_user_defines_method(Compiler *c, const char *name) {
     udm_gen = gen; udm_nscopes = c->nscopes; udm_nclasses = c->nclasses;
     udm_sets_stale = 1;
   }
-  unsigned b = udm_cap ? udm_hash(name) & (unsigned)(udm_cap - 1) : 0;
+  unsigned b = udm_cap ? sp_strhash(name) & (unsigned)(udm_cap - 1) : 0;
   if (udm_cap)
     for (int i = udm_head[b]; i >= 0; i = udm_next[i])
       if (sp_streq(udm_names[i], name)) return udm_ans[i];
