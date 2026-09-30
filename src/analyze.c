@@ -6605,6 +6605,7 @@ int desugar_enum_method_recv(Compiler *c) {
           if (cst >= 0 && one >= 0 && toa >= 0) {
             nt_node_set_str(nt, toa, "name", "to_a");
             nt_node_set_ref(nt, toa, "receiver", recv);
+            nt_node_set_int(nt, toa, "to_set", 1);
             nt_node_set_str(nt, cst, "name", "Set");
             nt_node_set_arr(nt, one, "arguments", &toa, 1);
             nt_node_set_str(nt, id, "name", "new");
@@ -7071,9 +7072,18 @@ int desugar_enum_method_recv(Compiler *c) {
         continue;
       }
     }
+    if (nm && (sp_streq(nm, "find") || sp_streq(nm, "detect") || sp_streq(nm, "rfind"))) {
+      int fr = nt_ref(nt, id, "receiver"), fa = nt_ref(nt, id, "arguments"), fac = 0;
+      const int *fav = fa >= 0 ? nt_arr(nt, fa, "arguments", &fac) : NULL;
+      TyKind frt = fr >= 0 ? infer_type(c, fr) : TY_UNKNOWN;
+      if (fac == 1 && nt_kind(nt, fav[0]) == NK_NilNode &&
+          (ty_is_array(frt) || ty_is_hash(frt) || frt == TY_RANGE || frt == TY_ENUMERATOR)) {
+        nt_node_set_ref(nt, id, "arguments", -1);
+        changed = 1;
+        continue;
+      }
+    }
     if (nm && sp_streq(nm, "rfind")) {
-      /* Array#rfind { block } == reverse.find { block }: interpose a reverse
-         call so the existing find machinery serves it (#2320) */
       int rrc = nt_ref(nt, id, "receiver");
       /* an empty `[]` literal receiver infers TY_UNKNOWN but is an array all
          the same -- rfind on it must still desugar (to yield nil) (#2367) */
@@ -7081,17 +7091,18 @@ int desugar_enum_method_recv(Compiler *c) {
                           sp_streq(nt_type(nt, rrc), "ArrayNode") &&
                           ({ int _n = 0; nt_arr(nt, rrc, "elements", &_n); _n == 0; });
       if (rrc >= 0 && (ty_is_array(infer_type(c, rrc)) || rrc_empty_lit)) {
-        int rev = nt_new_node(nt, "CallNode");
+        int rev = nt_ref(nt, id, "block") >= 0 ? -1 : nt_new_node(nt, "CallNode");
         if (rev >= 0) {
           nt_node_set_str(nt, rev, "name", "reverse");
           nt_node_set_ref(nt, rev, "receiver", rrc);
           nt_node_set_ref(nt, id, "receiver", rev);
-          nt_node_set_str(nt, id, "name", "find");
           comp_grow_node_arrays(c);
           c->nscope[rev] = c->nscope[id];
-          changed = 1;
-          continue;
         }
+        else nt_node_set_int(nt, id, "rfind", 1);
+        nt_node_set_str(nt, id, "name", "find");
+        changed = 1;
+        continue;
       }
     }
     if (nm && sp_streq(nm, "step")) {

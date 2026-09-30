@@ -2219,7 +2219,8 @@ int desugar_binding_lvget(Compiler *c) {
   for (int id = 0; id < n0; id++) {
     if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, "local_variable_get")) continue;
+    int get = nm && sp_streq(nm, "local_variable_get"), set = nm && sp_streq(nm, "local_variable_set");
+    if (!get && !set && (!nm || !sp_streq(nm, "local_variable_defined?"))) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "CallNode")) continue;
     if (nt_ref(nt, recv, "receiver") >= 0) continue;      /* binding must be receiverless */
@@ -2227,11 +2228,40 @@ int desugar_binding_lvget(Compiler *c) {
     if (!rnm || !sp_streq(rnm, "binding")) continue;
     int args = nt_ref(nt, id, "arguments");
     int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
-    if (ac != 1 || !av || !nt_type(nt, av[0]) || !sp_streq(nt_type(nt, av[0]), "SymbolNode")) continue;
+    if (ac != 1 + set || !av || !nt_type(nt, av[0]) || !sp_streq(nt_type(nt, av[0]), "SymbolNode")) continue;
     const char *vn = nt_str(nt, av[0], "value");
     if (!vn) continue;
     int sc = c->nscope[id];
-    if (sc < 0 || sc >= c->nscopes || !scope_local(&c->scopes[sc], vn)) continue;
+    if (sc < 0 || sc >= c->nscopes) continue;
+    if (vn[0] == '_' && vn[1] >= '1' && vn[1] <= '9' && !vn[2]) {
+      char msg[64];
+      snprintf(msg, sizeof msg, "numbered parameter '%s' is not a local variable", vn);
+      int base = nt->count, sym = av[0], val = set ? av[1] : -1;
+      int ecn = nt_new_node(nt, "ConstantReadNode"), emn = nt_new_node(nt, "StringNode");
+      int rargs = nt_new_node(nt, "ArgumentsNode");
+      if (val >= 0) {
+        int ps = nt_new_node(nt, "StatementsNode"), seq[2] = { val, sym };
+        sym = nt_new_node(nt, "ParenthesesNode");
+        nt_node_set_arr(nt, ps, "body", seq, 2);
+        nt_node_set_ref(nt, sym, "body", ps);
+      }
+      int na[2] = { emn, sym };
+      nt_node_set_str(nt, ecn, "name", "NameError");
+      nt_node_set_str(nt, emn, "content", msg);
+      nt_node_set_arr(nt, args, "arguments", na, 2);
+      nt_node_set_ref(nt, recv, "receiver", ecn);
+      nt_node_set_str(nt, recv, "name", "new");
+      nt_node_set_ref(nt, recv, "arguments", args);
+      nt_node_set_arr(nt, rargs, "arguments", &recv, 1);
+      nt_node_set_ref(nt, id, "receiver", -1);
+      nt_node_set_str(nt, id, "name", "raise");
+      nt_node_set_ref(nt, id, "arguments", rargs);
+      comp_grow_node_arrays(c);
+      for (int j = base; j < nt->count; j++) c->nscope[j] = sc;
+      changed = 1;
+      continue;
+    }
+    if (!get || !scope_local(&c->scopes[sc], vn)) continue;
     char *vnbuf = malloc(strlen(vn) + 1);   /* copy before nt_new_node may realloc vn's storage */
     if (!vnbuf) continue;
     strcpy(vnbuf, vn);

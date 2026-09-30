@@ -718,6 +718,16 @@ int emit_array_splat_mutator(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+static void emit_find_loop_head(Compiler *c, int id, const char *k, int ti, int trecv) {
+  emit_indent(g_pre, g_indent);
+  if (nt_int(c->nt, id, "rfind", 0))
+    buf_printf(g_pre, "for (sp_int _t%d = sp_%sArray_length(_t%d); _t%d-- > 0;"
+                      " _t%d = _t%d < sp_%sArray_length(_t%d) ? _t%d : sp_%sArray_length(_t%d)) {\n",
+               ti, k, trecv, ti, ti, ti, k, trecv, ti, k, trecv);
+  else
+    buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, k, trecv, ti);
+}
+
 int emit_array_call(Compiler *c, int id, Buf *b) {
   if (emit_array_splat_mutator(c, id, b)) return 1;
   /* An array indexed by a String or a Symbol is CRuby's TypeError. A
@@ -2783,8 +2793,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
                        tfn, nb.p ? nb.p : "NULL", tfn, tfn); free(nb.p);
           }
           emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tres, default_value(TY_POLY), tres);
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {\n", ti, ti, trecv, ti);
+          emit_find_loop_head(c, id, "Poly", ti, trecv);
           /* Declare the block param in the loop body so the form is self-contained
              when this find is a parameter default hoisted to the call site (whose
              function has no top-level declaration for the block local). */
@@ -3963,9 +3972,7 @@ else {
                        tfn, nb.p ? nb.p : "NULL", tfn, tfn); free(nb.p); }
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tres, tres);
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
-                     ti, ti, k, trecv, ti);
+          emit_find_loop_head(c, id, k, ti, trecv);
           if (bp) { emit_indent(g_pre, g_indent + 1); emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti); }
           for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
           int sv = g_indent; g_indent++;
@@ -4004,9 +4011,7 @@ else {
           if (et == TY_STRING) buf_printf(g_pre, " _t%d = NULL;\n", tres);
           else if (et == TY_INT) buf_printf(g_pre, " _t%d = SP_INT_NIL;\n", tres);
           else buf_printf(g_pre, " _t%d = 0;\n", tres);
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
-                     ti, ti, k, trecv, ti);
+          emit_find_loop_head(c, id, k, ti, trecv);
           /* Declare the block param in the loop body (not a bare assignment) so
              the find is self-contained: when this call is a parameter default
              hoisted to the call site, the enclosing function has no top-level
@@ -12110,6 +12115,8 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     }
     if ((sp_streq(name, "to_a") || sp_streq(name, "entries")) && argc == 0) {
       buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
+      if (nt_int(nt, id, "to_set", 0))
+        buf_printf(b, "; if (!_t%d.last) sp_raise_cls(\"RangeError\", \"cannot convert endless range to a set\")", tr);
       buf_printf(b, "; sp_srange_to_a(_t%d); })", tr); return 1;
     }
     if (sp_streq(name, "to_s") && argc == 0) {
@@ -12632,6 +12639,10 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "({ sp_Range _t%d = ", trr); emit_expr(c, recv, b);
       buf_printf(b, "; sp_int _t%d = ", tnn); emit_int_expr(c, argv[0], b);
       buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");", tnn);
+      int rq = unwrap_parens(c, recv);
+      if (nt_kind(nt, rq) != NK_RangeNode) rq = local_sole_range_node(c, rq);
+      if (!want_min && nt_kind(nt, rq) == NK_RangeNode && comp_ntype(c, nt_ref(nt, rq, "right")) == TY_FLOAT)
+        buf_printf(b, " if (_t%d.first == INTPTR_MIN) sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\");", trr);
       if (want_min)
         buf_printf(b, " if (_t%d.first == INTPTR_MIN) sp_raise_cls(\"RangeError\","
                       " \"cannot get the minimum of beginless range\");", trr);
@@ -12691,7 +12702,10 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_Range _t%d = ", t);
       buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
-      if (sp_streq(name, "to_a") || sp_streq(name, "entries"))
+      if (nt_int(nt, id, "to_set", 0))
+        buf_printf(b, "(_t%d.last == INTPTR_MAX ? (sp_raise_cls(\"RangeError\", \"cannot convert endless"
+                      " range to a set\"), (sp_IntArray *)0) : sp_range_to_ia(_t%d))", t, t);
+      else if (sp_streq(name, "to_a") || sp_streq(name, "entries"))
         buf_printf(b, "sp_range_to_ia(_t%d)", t);
       else if (sp_streq(name, "include?") || sp_streq(name, "member?") ||
                sp_streq(name, "cover?") || sp_streq(name, "===")) {

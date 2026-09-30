@@ -764,7 +764,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     /* a blockless map/collect is a usable Enumerator too (size/class/next);
        chained block forms (map.with_index { }) are typed by their own arms
        before this one. */
-    if (block < 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+    if (block < 0 && argc <= sp_streq(name, "find") && nt_ref(nt, id, "block") < 0 &&
         (sp_streq(name, "map") || sp_streq(name, "collect") ||
          sp_streq(name, "select") || sp_streq(name, "filter") ||
          sp_streq(name, "find_all") || sp_streq(name, "reject") ||

@@ -13610,6 +13610,7 @@ char *codegen_program(const NodeTable *nt) {
       "    if(v.cls_id==SP_BUILTIN_RANGE||v.cls_id==SP_BUILTIN_STR_RANGE)return ((sp_Class){-106});\n"
       "    if(v.cls_id==SP_BUILTIN_TIME)return ((sp_Class){-107});\n"
       "    if(v.cls_id==SP_BUILTIN_PROC)return ((sp_Class){-118});\n"
+      "    if(v.cls_id==SP_BUILTIN_ENUMERATOR)return ((sp_Class){-144});\n"
       "    if(v.cls_id>=-12)return ((sp_Class){-116});\n"
       "    if(v.cls_id>=-20||v.cls_id==-34)return ((sp_Class){-105});\n"  /* hashes */
       /* a BasicObject.new is a BasicObject, not an Object or a Kernel */
