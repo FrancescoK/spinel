@@ -36,16 +36,20 @@ jobs:
           base = os.environ["BASE"]
           # "base" names the base's tree and its jobs
           assert all(name != "base" for name, _ in heads), "a head may not be called base"
+          # the rubyspec gate in shards of suites (the Run step's case)
+          rs = [{"leg": "rubyspec", "shard": k} for k in (1, 2, 3)] if "rubyspec" in legs else []
           jobs = []
-          for leg in ("cb", "vf", "rubyspec"):
+          for leg in ("cb", "vf"):
               if leg in legs:
                   jobs.append({"leg": leg, "name": "base", "sha": base, "shard": 0})
+          jobs += [dict(j, name="base", sha=base) for j in rs]
           for name, sha in heads:
               if "suite" in legs:
                   jobs += [{"leg": "suite", "name": name, "sha": sha, "shard": k} for k in range(1, n + 1)]
-              for leg in ("cb", "vf", "cdiff", "extra", "scale", "rubyspec"):
+              for leg in ("cb", "vf", "cdiff", "extra", "scale"):
                   if leg in legs:
                       jobs.append({"leg": leg, "name": name, "sha": sha, "shard": 0})
+              jobs += [dict(j, name=name, sha=sha) for j in rs]
           builds = []
           if any(leg in legs for leg in ("cb", "vf", "cdiff", "scale", "rubyspec")):
               builds.append({"name": "base", "sha": base, "dir": "base"})
@@ -187,7 +191,7 @@ jobs:
           set -a; . ./verify.conf; set +a
           env_id=$({ ruby -v; cc --version | head -1; nproc; echo "$ImageOS $ImageVersion $RUNNER_TEMP"
                      sha256sum .github/workflows/verify.yml cdiff1.sh cbase1.sh cbase.py; } | sha256sum | cut -c1-16)
-          echo "key=verify-base-$LEG-$BASE-$env_id" >> "$GITHUB_OUTPUT"
+          echo "key=verify-base-$LEG-$SHARD-$BASE-$env_id" >> "$GITHUB_OUTPUT"
       - name: Restore the base result
         id: based
         if: matrix.name == 'base'
@@ -281,13 +285,44 @@ jobs:
             fi
             ;;
           rubyspec)
-            # `make gate`'s rubyspec leg, which `make test` does not run; the
-            # base's is a job of its own
+            # `make gate`'s rubyspec leg, which `make test` does not run, in
+            # three shards of the tree's own RUBYSPEC_SUITES, balanced by
+            # expected-PASS examples (792 | 834 | 830 on master); a suite
+            # the list below does not name goes to shard 3, so the shards
+            # together run what the tree's gate runs. The base's shards are
+            # jobs of their own. spinel builds each example at its default
+            # optimization level, as the gate does.
             tag="head"; [ "$NAME" = base ] && tag="base"
-            make rubyspec-gate > "$out/rubyspec-$tag.log" 2>&1 || true
-            # every suite ran and answered; a failed extraction or run is not kept
-            if [ "$NAME" = base ] && grep -q '^rubyspec-gate\[' "$out/rubyspec-base.log" &&
-               ! grep -q -E '^rubyspec-gate\[[^]]*\]: (extraction failed|run\.sh failed|ran [0-9]+ of)' "$out/rubyspec-base.log"; then
+            log="$out/rubyspec-$tag.log"
+            case "$SHARD" in
+            1) mine="language" ;;
+            2) mine="core/string core/integer" ;;
+            *) mine="core/array core/hash core/range" ;;
+            esac
+            named=" language core/string core/integer core/array core/hash core/range "
+            all=$(sed -n 's/^RUBYSPEC_SUITES *:*= *//p' Makefile)
+            suites=""
+            for s in $all; do
+              case " $mine " in *" $s "*) suites="$suites $s"; continue ;; esac
+              case "$named" in *" $s "*) ;; *) [ "$SHARD" = 3 ] && suites="$suites $s" ;; esac
+            done
+            suites=${suites# }
+            if [ -z "$all" ]; then
+              # no list to shard: shard 1 runs the whole gate
+              if [ "$SHARD" = 1 ]; then RUBYSPEC_JOBS=$(nproc) make rubyspec-gate > "$log" 2>&1 || true
+              else echo "rubyspec-gate: RUBYSPEC_SUITES not found in the Makefile; shard 1 ran every suite" > "$log"; fi
+            elif [ -z "$suites" ]; then
+              echo "rubyspec-gate: no suite of this tree's RUBYSPEC_SUITES ($all) is in shard $SHARD" > "$log"
+            else
+              # run.sh reads RUBYSPEC_JOBS from the environment (default nproc-2)
+              RUBYSPEC_JOBS=$(nproc) make rubyspec-gate RUBYSPEC_SUITES="$suites" > "$log" 2>&1 || true
+            fi
+            # every suite of the shard ran and answered; a failed extraction
+            # or run is not kept
+            want=$(echo "$suites" | wc -w)
+            if [ "$NAME" = base ] && [ -n "$all" ] && [ "$want" -gt 0 ] &&
+               [ "$(grep -c '^rubyspec-gate\[' "$log")" -eq "$want" ] &&
+               ! grep -q -E '^rubyspec-gate\[[^]]*\]: (extraction failed|run\.sh failed|ran [0-9]+ of)' "$log"; then
               echo save=true >> "$GITHUB_OUTPUT"
             fi
             ;;

@@ -31,6 +31,20 @@ def origin(d):
         return f"from the cache, computed by {run or 'an earlier run'}"
     return "computed in this run" if run else ""
 
+def rs_dirs(name):
+    # the rubyspec gate's shards for a name, in order (one shard 0 before sharding)
+    return [d for (l, nm, k), d in sorted(jobs.items()) if l == "rubyspec" and nm == name]
+
+def rs_lines(dirs, tag):
+    # each shard's last lines of note, merged; the ruby/spec clone line once
+    out = []
+    for d in dirs:
+        for l in [l.strip() for l in read(os.path.join(d, f"rubyspec-{tag}.log")).splitlines()
+                  if re.search(r"rubyspec|REJECT|FAIL|regress", l)][-8:]:
+            if not (l.startswith("Cloning into") and l in out):
+                out.append(l)
+    return out
+
 def summary(d):
     s = read(os.path.join(d, "probe", "summary.txt"))
     m = re.search(r"\d+ cases: [^\n]*", s)
@@ -44,9 +58,11 @@ for probe in ("cb", "vf"):
         o = origin(d)
         print(f"- base {probe}: {summary(d)} ({read(os.path.join(d, 'rev.txt')).split(' ', 3)[-1].strip()})" +
               (f"; {o}" if o else ""))
-if ("rubyspec", "base", 0) in jobs:
-    o = origin(jobs[("rubyspec", "base", 0)])
-    print(f"- base rubyspec-gate: {o or 'no result'}")
+rsb = [(k, d) for (l, nm, k), d in sorted(jobs.items()) if l == "rubyspec" and nm == "base"]
+if len(rsb) == 1:
+    print(f"- base rubyspec-gate: {origin(rsb[0][1]) or 'no result'}")
+elif rsb:
+    print(f"- base rubyspec-gate: {'; '.join(f'shard {k} ' + (origin(d) or 'no result') for k, d in rsb)}")
 print()
 for n in names:
     rev = next((read(os.path.join(d, "rev.txt")).split(" ", 3)[-1].strip()
@@ -108,13 +124,10 @@ for n in names:
             print(f"- scale-test ({tag}):")
             for l in lines:
                 print(f"  - {l}")
-    if ("rubyspec", n, 0) in jobs:
-        d = jobs[("rubyspec", n, 0)]
+    if rs_dirs(n):
         for tag in ("head", "base"):
-            # the base's gate is a job of its own; before, the head's job ran both
-            bd = jobs.get(("rubyspec", "base", 0), d) if tag == "base" else d
-            rs = [l.strip() for l in read(os.path.join(bd, f"rubyspec-{tag}.log")).splitlines()
-                  if re.search(r"rubyspec|REJECT|FAIL|regress", l)][-8:]
+            # the base's gate is jobs of its own; before, the head's job ran both
+            rs = rs_lines(rs_dirs("base") or rs_dirs(n) if tag == "base" else rs_dirs(n), tag)
             print(f"- rubyspec-gate ({tag}):")
             for l in rs:
                 print(f"  - `{l}`")
