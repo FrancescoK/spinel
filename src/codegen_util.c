@@ -483,10 +483,55 @@ TyKind block_next_value_ntype(const Compiler *c, int node) {
   }
   return r;
 }
+/* A builtin arithmetic operator whose receiver is a yield: its value is per
+   call site too. The emitter lowers `yield + yield` from the operands' own
+   per-site types (sp_str_plus at a site whose block answers a String, a C
+   `+` at a Float one), so the node's cached type, the union over every site,
+   does not describe what it emitted. A poly slot then took that concrete
+   value unboxed and the C did not compile. Answer the type the lowering
+   produces, for the scalar pairs it lowers directly; anything else keeps
+   the cached type. String#% formats whatever it is given into a String.
+   Under promote, Integer `+ - *` take the boxed promotion path and may answer
+   a Bignum, so they are left alone; Integer `/` and `%` still emit a raw
+   Integer and are answered as one. */
+static int yield_operator_site_type(const Compiler *c, int id, TyKind *out) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, id) != NK_CallNode) return 0;
+  const char *op = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!op || recv < 0 || nt_kind(nt, recv) != NK_YieldNode) return 0;
+  if (nt_ref(nt, id, "block") >= 0) return 0;
+  int an = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  if (ac != 1 || !av) return 0;
+  TyKind rt, at;
+  if (!sp_yield_site_type(c, recv, &rt)) return 0;
+  at = comp_ntype(c, av[0]);
+  int arith = sp_streq(op, "+") || sp_streq(op, "-") || sp_streq(op, "*") ||
+              sp_streq(op, "/") || sp_streq(op, "%");
+  if (!arith) return 0;
+  if (rt == TY_STRING) {
+    if ((sp_streq(op, "+") && at == TY_STRING) || (sp_streq(op, "*") && at == TY_INT) ||
+        sp_streq(op, "%")) {
+      *out = TY_STRING; return 1;
+    }
+    return 0;
+  }
+  if (rt == TY_FLOAT && (at == TY_FLOAT || at == TY_INT)) { *out = TY_FLOAT; return 1; }
+  if (rt == TY_INT && at == TY_FLOAT) { *out = TY_FLOAT; return 1; }
+  if (rt == TY_INT && at == TY_INT) {
+    int promotes = sp_streq(op, "+") || sp_streq(op, "-") || sp_streq(op, "*");
+    if (g_promote_mode && promotes) return 0;
+    *out = TY_INT; return 1;
+  }
+  return 0;
+}
+
 int sp_yield_site_type(const Compiler *c, int id, TyKind *out) {
   if (g_block_id < 0 || id < 0) return 0;
   const char *ty = nt_type(c->nt, id);
   if (!ty) return 0;
+  if (sp_streq(ty, "CallNode") && yield_operator_site_type(c, id, out)) return 1;
   if (!sp_streq(ty, "YieldNode") &&
       !(sp_streq(ty, "CallNode") && blk_param_call(c, id))) return 0;
   int bbody = nt_ref(c->nt, g_block_id, "body");
