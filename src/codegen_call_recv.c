@@ -1211,6 +1211,11 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
          the current contents, then replace the buffer (#3227). */
       { char srefB[1024];
         if (strbuf_slot_ref(c, recv, srefB, sizeof srefB)) {
+          /* a reader call answering the handle (`obj.name.strip!`, `name.strip!`
+             inside the class) emits as the sp_String *, which the plain form
+             below cannot take as its receiver: it reads the contents already
+             bound in _tob instead, and the call runs once (#6436) */
+          int rd_call = nt_kind(nt, recv) == NK_CallNode && g_n_argov < MAX_ARG_OVERRIDE;
           int tsb = ++g_tmp, tob = ++g_tmp, tnb = ++g_tmp;
           buf_printf(b, "({ sp_String *_t%d = %s; const char *_t%d = sp_String_cstr(_t%d); (void)_t%d; ",
                      tsb, srefB, tob, tsb, tob);
@@ -1223,7 +1228,23 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           if (subm) buf_puts(g_pre ? g_pre : b, "sp_re_sub_matched = 0; ");
           nt_node_set_str((NodeTable *)nt, id, "name", SBANG[sbi].plain);
           Buf nbB; memset(&nbB, 0, sizeof nbB);
+          SbReaderSave svC = { 0, 0, TY_UNKNOWN };
+          if (rd_call) {
+            /* as sb_reader_shim_open: the call reads as a plain String */
+            svC.box = c->strbuf_box[recv]; svC.demand = c->strbuf_handle_demand[recv];
+            svC.ty = c->ntype[recv];
+            c->strbuf_box[recv] = 0; c->strbuf_handle_demand[recv] = 0;
+            if (svC.ty == TY_STRBUF) c->ntype[recv] = TY_STRING;
+            g_argov_node[g_n_argov] = recv;
+            snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tob);
+            g_n_argov++;
+          }
           emit_expr(c, id, &nbB);
+          if (rd_call) {
+            g_n_argov--;
+            c->strbuf_box[recv] = svC.box; c->strbuf_handle_demand[recv] = svC.demand;
+            c->ntype[recv] = svC.ty;
+          }
           nt_node_set_str((NodeTable *)nt, id, "name", SBANG[sbi].bang);
           /* The "did it change?" test has to run BEFORE the write: _tob is
              sp_String_cstr, a pointer INTO the buffer rather than a snapshot
