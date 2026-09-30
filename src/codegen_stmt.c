@@ -3687,15 +3687,7 @@ static void emit_pm_bind_poly(Compiler *c, int pat, const char *arr0, int indent
       const char *lnm = nt_str(nt, reqs[i], "name");
       if (lnm) emit_pm_typed_assign(c, sc, lnm, src.p, b, indent);
     }
-    else if (sp_streq(rty, "CapturePatternNode")) {
-      int tgt = nt_ref(nt, reqs[i], "target");
-      if (tgt >= 0 && nt_type(nt, tgt) && sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode")) {
-        const char *lnm = nt_str(nt, tgt, "name");
-        if (lnm) emit_pm_typed_assign(c, sc, lnm, src.p, b, indent);
-      }
-      emit_pm_bind_container_poly(c, nt_ref(nt, reqs[i], "value"), src.p, indent, b, sc);
-    }
-    else emit_pm_bind_container_poly(c, reqs[i], src.p, indent, b, sc);
+    else emit_pm_bind_pattern(c, reqs[i], src.p, indent, b, sc);
     free(src.p);
   }
   int npost = 0;
@@ -3727,16 +3719,8 @@ static void emit_pm_bind_poly(Compiler *c, int pat, const char *arr0, int indent
       const char *lnm = nt_str(nt, posts[j], "name");
       if (lnm) emit_pm_typed_assign(c, sc, lnm, src.p, b, indent);
     }
-    else if (sp_streq(rty, "CapturePatternNode")) {
-      int tgt = nt_ref(nt, posts[j], "target");
-      if (tgt >= 0 && nt_type(nt, tgt) && sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode")) {
-        const char *lnm = nt_str(nt, tgt, "name");
-        if (lnm) emit_pm_typed_assign(c, sc, lnm, src.p, b, indent);
-      }
-      /* `[a, b] => cap`: also bind the names inside the captured sub-pattern. */
-      emit_pm_bind_container_poly(c, nt_ref(nt, posts[j], "value"), src.p, indent, b, sc);
-    }
-    else emit_pm_bind_container_poly(c, posts[j], src.p, indent, b, sc);
+    /* `[a, b] => cap`: also bind the names inside the captured sub-pattern. */
+    else emit_pm_bind_pattern(c, posts[j], src.p, indent, b, sc);
     free(src.p);
   }
 }
@@ -3833,15 +3817,7 @@ static void emit_pm_bind_find_poly(Compiler *c, int pat, const char *aexpr, int 
       const char *lnm = nt_str(nt, reqs[j], "name");
       if (lnm) emit_pm_typed_assign(c, sc, lnm, ge.p, b, indent + 2);
     }
-    else if (sp_streq(rty, "CapturePatternNode")) {
-      int tgt = nt_ref(nt, reqs[j], "target");
-      if (tgt >= 0 && nt_type(nt, tgt) && sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode")) {
-        const char *lnm = nt_str(nt, tgt, "name");
-        if (lnm) emit_pm_typed_assign(c, sc, lnm, ge.p, b, indent + 2);
-      }
-      emit_pm_bind_container_poly(c, nt_ref(nt, reqs[j], "value"), ge.p, indent + 2, b, sc);
-    }
-    else emit_pm_bind_container_poly(c, reqs[j], ge.p, indent + 2, b, sc);
+    else emit_pm_bind_pattern(c, reqs[j], ge.p, indent + 2, b, sc);
     free(ge.p);
   }
   emit_indent(b, indent + 1); buf_puts(b, "}\n");
