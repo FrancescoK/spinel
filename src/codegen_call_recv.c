@@ -11610,6 +11610,21 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         int defcH = c->scopes[mi].class_id;
         int ivH = (ivnH && defcH >= 0) ? comp_ivar_index(&c->classes[defcH], ivnH) : -1;
         if (ivH >= 0 && c->classes[defcH].ivar_types[ivH] == TY_STRBUF) {
+          /* a body with statements before the read (`@reads += 1; @s`)
+             runs them first, then the slot is the handle it answered */
+          int nH = 0;
+          nt_arr(nt, c->scopes[mi].body, "body", &nH);
+          if (nH > 1 && !comp_ty_value_obj(c, rt)) {
+            int tH = ++g_tmp;
+            Buf rbH = expr_buf(c, recv);
+            buf_puts(b, "({ "); emit_ctype(c, rt, b);
+            buf_printf(b, " _t%d = %s; SP_GC_ROOT(_t%d); (void)", tH, rbH.p ? rbH.p : "", tH);
+            free(rbH.p);
+            char selfH[32]; snprintf(selfH, sizeof selfH, "_t%d", tH);
+            emit_dispatch(c, cid, name, selfH, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
+            buf_printf(b, "; _t%d->iv_%s; })", tH, iv_c(ivnH + 1));
+            return 1;
+          }
           buf_puts(b, "(");
           emit_expr(c, recv, b);
           buf_printf(b, ")%siv_%s", comp_ty_value_obj(c, rt) ? "." : "->", iv_c(ivnH + 1));
