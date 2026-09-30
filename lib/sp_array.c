@@ -93,7 +93,7 @@ sp_IntArray*sp_IntArray_slice_range(sp_IntArray*a,sp_int start,sp_int end_,sp_in
 void sp_IntArray_replace(sp_IntArray*dst,sp_IntArray*src){if(dst==src)return;if(dst->frozen){sp_raise_frozen_array_at(dst,SP_BUILTIN_INT_ARRAY);return;}dst->len=0;dst->start=0;if(src->len>dst->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)dst-sizeof(sp_gc_hdr));sp_gc_bytes_sub(sizeof(sp_int)*dst->cap);h->size-=sizeof(sp_int)*dst->cap;void*nd=sp_pl_realloc(dst->data,sizeof(sp_int)*src->len);if(!nd){perror("realloc");exit(1);}dst->data=(sp_int*)nd;dst->cap=src->len;h->size+=sizeof(sp_int)*dst->cap;sp_gc_bytes_add(sizeof(sp_int)*dst->cap);}memcpy(dst->data,src->data+src->start,sizeof(sp_int)*src->len);dst->len=src->len;}
 /* The cold start-past-the-end splice: nil (the sentinel) up to `s`, then the
    source. Kept apart so the splice's in-range path below is unchanged. */
-static void sp_IntArray_splice_gap(sp_IntArray*a,sp_int s,const sp_int*src,sp_int srcn){
+static SP_NOINLINE SP_COLD void sp_IntArray_splice_gap(sp_IntArray*a,sp_int s,const sp_int*src,sp_int srcn){
   SP_GC_ROOT(a);
   sp_int*sb=NULL;
   if(srcn>0){sb=(sp_int*)sp_pl_alloc(sizeof(sp_int)*(size_t)srcn);if(!sb)sp_oom_die();memcpy(sb,src,sizeof(sp_int)*(size_t)srcn);}
@@ -101,7 +101,7 @@ static void sp_IntArray_splice_gap(sp_IntArray*a,sp_int s,const sp_int*src,sp_in
   for(sp_int i=0;i<srcn;i++)sp_IntArray_push(a,sb[i]);
   sp_pl_free(sb);
 }
-static void sp_FloatArray_splice_gap(sp_FloatArray*a,sp_int s,const sp_float*src,sp_int srcn){
+static SP_NOINLINE SP_COLD void sp_FloatArray_splice_gap(sp_FloatArray*a,sp_int s,const sp_float*src,sp_int srcn){
   SP_GC_ROOT(a);
   sp_float*sb=NULL;
   if(srcn>0){sb=(sp_float*)sp_pl_alloc(sizeof(sp_float)*(size_t)srcn);if(!sb)sp_oom_die();memcpy(sb,src,sizeof(sp_float)*(size_t)srcn);}
@@ -168,7 +168,7 @@ void sp_FloatArray_splice(sp_FloatArray*a,sp_int start,sp_int len,const sp_float
 /* A String array's nil is NULL, as a past-the-end `a[i] = s` pads it. The
    source strings stay reachable through the caller's array: a is not
    truncated here, so the raw snapshot needs no rooted holder. */
-static void sp_StrArray_splice_gap(sp_StrArray*a,sp_int s,const char*const*src,sp_int srcn){
+static SP_NOINLINE SP_COLD void sp_StrArray_splice_gap(sp_StrArray*a,sp_int s,const char*const*src,sp_int srcn){
   SP_GC_ROOT(a);
   const char**sb=NULL;
   if(srcn>0){sb=(const char**)sp_pl_alloc(sizeof(const char*)*(size_t)srcn);if(!sb)sp_oom_die();memcpy(sb,src,sizeof(const char*)*(size_t)srcn);}
