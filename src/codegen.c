@@ -13381,20 +13381,16 @@ char *codegen_program(const NodeTable *nt) {
        separately from the includes that follow the class (#2702). */
     int **cls_preps = calloc((size_t)c->nclasses, sizeof(int *));
     int  *cls_npreps = calloc((size_t)c->nclasses, sizeof(int));
-    /* One pass over the node table, resolving each class/module body to its
-       own index. Scanning the whole table once per class was O(classes * N)
-       and dominated codegen on class-heavy programs; each class still sees its
-       own definitions in id order, so include/prepend order is unchanged. */
+    /* One pass over every class/module body (class_body_list: a Struct.new
+       block, the def_node, then the reopenings). Scanning the whole table once
+       per class was O(classes * N) and dominated codegen on class-heavy
+       programs. */
     {
-      /* scan every def_node body and all reopenings */
-      for (int id = 0; id < c->nt->count; id++) {
-        const char *ty2 = nt_type(c->nt, id);
-        if (!ty2 || (!sp_streq(ty2, "ClassNode") && !sp_streq(ty2, "ModuleNode"))) continue;
-        int cp2 = nt_ref(c->nt, id, "constant_path");
-        const char *cn2 = cp2 >= 0 ? nt_str(c->nt, cp2, "name") : NULL;
-        int ci = cn2 ? comp_class_index(c, cn2) : -1;
-        if (ci < 0 || ci >= c->nclasses) continue;
-        int body2 = nt_ref(c->nt, id, "body");
+      int *bcls, *bbody;
+      int nbodies = class_body_list(c, &bcls, &bbody);
+      for (int bi = 0; bi < nbodies; bi++) {
+        int ci = bcls[bi];
+        int body2 = bbody[bi];
         int bn2 = 0;
         const int *stmts2 = body2 >= 0 ? nt_arr(c->nt, body2, "body", &bn2) : NULL;
         for (int k2 = 0; k2 < bn2; k2++) {
@@ -13434,6 +13430,8 @@ char *codegen_program(const NodeTable *nt) {
           }
         }
       }
+      free(bcls);
+      free(bbody);
     }
     /* An `obj.extend(Mod)` records its membership on the synthesized singleton
        subclass rather than as an `include` statement in a class body, so the
