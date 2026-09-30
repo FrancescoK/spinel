@@ -2442,14 +2442,27 @@ static int sp_require_find(char *buf, char *from, const char *word, SpReqHit *ou
       }
       if (*p != word[0] || strncmp(p, word, wlen) != 0) continue;
       if (sp_req_ident_char(p[wlen])) continue;              /* require_relative vs require */
-      if (p > buf && (sp_req_ident_char(p[-1]) || p[-1] == '.' || p[-1] == ':' ||
-                      p[-1] == '@' || p[-1] == '$')) continue;
+      /* `Kernel.require "x"` (`::Kernel.` too) is the bare require -- the
+         deprecation proxies in activesupport spell it so; any other
+         receiver makes it that object's method and not a require at all */
+      char *kw = p;
+      if (p > buf && p[-1] == '.') {
+        char *q = p - 1;
+        if (q - line >= 6 && strncmp(q - 6, "Kernel", 6) == 0 &&
+            (q - 6 == line || !sp_req_ident_char(q[-7]))) {
+          kw = q - 6;
+          if (kw - line >= 2 && kw[-1] == ':' && kw[-2] == ':') kw -= 2;
+        }
+        else continue;
+      }
+      else if (p > buf && (sp_req_ident_char(p[-1]) || p[-1] == ':' ||
+                           p[-1] == '@' || p[-1] == '$')) continue;
       if (p < from) continue;
       SpReqHit h;
       memset(&h, 0, sizeof h);
       if (!sp_req_parse_arg(p + wlen, line_end, &h)) continue;
-      h.kw = p;
-      h.margin = (p == line);
+      h.kw = kw;
+      h.margin = (kw == line);
       *out = h;
       return 1;
     }
