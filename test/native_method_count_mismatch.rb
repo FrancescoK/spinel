@@ -32,3 +32,14 @@ t(:write0) { w.write }
 t(:write3) { w.write("ab", 1, :c) }
 t(:poly_write) { [w, 1][0].write("q", 2) }
 p w.string
+
+# write answers the bytes its own arguments wrote, not the cursor's move
+$wio = StringIO.new
+class WriteSneak
+  def to_s
+    $wio.write("xxxxxxxx")
+    "ab"
+  end
+end
+p $wio.write("12", WriteSneak.new, "c")
+p $wio.string

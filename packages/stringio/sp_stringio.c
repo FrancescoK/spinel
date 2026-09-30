@@ -143,19 +143,19 @@ sp_RbVal sp_StringIO_readlines(sp_StringIO *s) {SP_GC_ROOT(s);
    value's to_s; puts additionally flattens arrays (each element on its own
    line, via the generic container hooks) and terminates lines. A value kind
    this in-memory stream can't render raises rather than writing garbage. */
-static void sio_write_val(sp_StringIO *s, sp_RbVal v, int is_puts) {SP_GC_ROOT(s);SP_GC_ROOT_RBVAL(v);
-  int64_t p0 = s->pos;
+static int64_t sio_write_val(sp_StringIO *s, sp_RbVal v, int is_puts) {SP_GC_ROOT(s);SP_GC_ROOT_RBVAL(v);
+  int64_t p0 = s->pos, w = 0;
   switch (v.tag) {
-    case SP_TAG_STR: { const char *t = v.v.s ? v.v.s : ""; sio_write(s, t, (int64_t)sp_str_byte_len(t)); break; }
-    case SP_TAG_INT: { const char *t = sp_int_to_s(v.v.i); sio_write(s, t, (int64_t)strlen(t)); break; }
-    case SP_TAG_FLT: { const char *t = sp_float_to_s(v.v.f); sio_write(s, t, (int64_t)strlen(t)); break; }
-    case SP_TAG_BOOL: { const char *t = v.v.b ? "true" : "false"; sio_write(s, t, (int64_t)strlen(t)); break; }
+    case SP_TAG_STR: { const char *t = v.v.s ? v.v.s : ""; w += sio_write(s, t, (int64_t)sp_str_byte_len(t)); break; }
+    case SP_TAG_INT: { const char *t = sp_int_to_s(v.v.i); w += sio_write(s, t, (int64_t)strlen(t)); break; }
+    case SP_TAG_FLT: { const char *t = sp_float_to_s(v.v.f); w += sio_write(s, t, (int64_t)strlen(t)); break; }
+    case SP_TAG_BOOL: { const char *t = v.v.b ? "true" : "false"; w += sio_write(s, t, (int64_t)strlen(t)); break; }
     case SP_TAG_NIL: break;  /* puts nil -> bare newline; print nil -> nothing */
     default:
       if (is_puts && sp_json_kind_fn && sp_json_kind_fn(v) == 1) {
         sp_int n = sp_json_len_fn(v);
-        for (sp_int i = 0; i < n; i++) sio_write_val(s, sp_json_aref_fn(v, i), 1);
-        return;  /* elements each terminated their own line */
+        for (sp_int i = 0; i < n; i++) w += sio_write_val(s, sp_json_aref_fn(v, i), 1);
+        return w;  /* elements each terminated their own line */
       }
       /* anything else writes its #to_s, as IO#write and Kernel#print do. A
          user #to_s answers a Ruby String, measured by its recorded length so
@@ -163,16 +163,17 @@ static void sio_write_val(sp_StringIO *s, sp_RbVal v, int is_puts) {SP_GC_ROOT(s
          class or symbol name with no length in front of it. */
       if (v.tag == SP_TAG_OBJ && v.cls_id >= 0 && v.v.p && sp_obj_to_s_fn) {
         const char *t = sp_obj_to_s_fn((int)v.cls_id, v.v.p);
-        if (t) { sio_write(s, t, (int64_t)sp_str_byte_len(t)); break; }
+        if (t) { w += sio_write(s, t, (int64_t)sp_str_byte_len(t)); break; }
       }
       if (sp_poly_to_s_fn) {
         const char *t = sp_poly_to_s_fn(v);
-        sio_write(s, t, (int64_t)strlen(t)); break;
+        w += sio_write(s, t, (int64_t)strlen(t)); break;
       }
       sp_raise_cls("TypeError", "can't write value to StringIO");
   }
   /* terminate the line unless THIS value's bytes already ended with one */
-  if (is_puts && (s->pos == p0 || s->buf[s->pos - 1] != '\n')) sio_write(s, "\n", 1);
+  if (is_puts && (s->pos == p0 || s->buf[s->pos - 1] != '\n')) w += sio_write(s, "\n", 1);
+  return w;
 }
 
 void sp_StringIO_print_v1(sp_StringIO *s, sp_RbVal a) { sio_write_val(s, a, 0); }
@@ -183,11 +184,13 @@ void sp_StringIO_puts_v2(sp_StringIO *s, sp_RbVal a, sp_RbVal b) { sio_write_val
 void sp_StringIO_puts_v3(sp_StringIO *s, sp_RbVal a, sp_RbVal b, sp_RbVal c2) { sio_write_val(s, a, 1); sio_write_val(s, b, 1); sio_write_val(s, c2, 1); }
 /* print and puts past three arguments: the :rest binding hands over a count
    and the boxed arguments, each rooted while the ones before it are written */
-static void sio_write_vals(sp_StringIO *s, sp_int n, sp_RbVal *v, int is_puts) {SP_GC_ROOT(s);
+static int64_t sio_write_vals(sp_StringIO *s, sp_int n, sp_RbVal *v, int is_puts) {SP_GC_ROOT(s);
   SP_GC_SAVE();
   for (sp_int i = 0; i < n; i++) _sp_gc_root_push((void **)((uintptr_t)&v[i] | (uintptr_t)1));
-  for (sp_int i = 0; i < n; i++) sio_write_val(s, v[i], is_puts);
+  int64_t w = 0;
+  for (sp_int i = 0; i < n; i++) w += sio_write_val(s, v[i], is_puts);
+  return w;
 }
 void sp_StringIO_print_va(sp_StringIO *s, sp_int n, sp_RbVal *v) { sio_write_vals(s, n, v, 0); }
 void sp_StringIO_puts_va(sp_StringIO *s, sp_int n, sp_RbVal *v) { sio_write_vals(s, n, v, 1); }
-sp_int sp_StringIO_write_va(sp_StringIO *s, sp_int n, sp_RbVal *v) { int64_t p0 = s->pos; sio_write_vals(s, n, v, 0); return s->pos - p0; }
+sp_int sp_StringIO_write_va(sp_StringIO *s, sp_int n, sp_RbVal *v) { return sio_write_vals(s, n, v, 0); }

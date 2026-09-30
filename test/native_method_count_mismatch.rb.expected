@@ -13,3 +13,5 @@
 [:write3, :ok, 4]
 [:poly_write, :ok, 2]
 "ab1cq2"
+5
+"12xxxxxxxxabc"
