@@ -31,7 +31,7 @@ jobs:
           for name, sha in heads:
               if "suite" in legs:
                   jobs += [{"leg": "suite", "name": name, "sha": sha, "shard": k} for k in range(1, n + 1)]
-              for leg in ("cb", "vf", "cdiff", "extra", "scale"):
+              for leg in ("cb", "vf", "cdiff", "extra", "scale", "gate"):
                   if leg in legs:
                       jobs.append({"leg": leg, "name": name, "sha": sha, "shard": 0})
           print("matrix=" + json.dumps({"include": jobs}))
@@ -42,7 +42,7 @@ jobs:
     needs: plan
     name: ${{ matrix.leg }} ${{ matrix.name }}${{ matrix.shard > 0 && format(' {0}', matrix.shard) || '' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       # The account runs 20 jobs at once. A run keeps 8 of them free, so a
@@ -75,7 +75,7 @@ jobs:
             cd - > /dev/null
           }
           build "$RUNNER_TEMP/head" "$SHA"
-          if [ "$LEG" = cdiff ] || [ "$LEG" = extra ] || [ "$LEG" = scale ]; then build "$RUNNER_TEMP/base" "$BASE"; fi
+          if [ "$LEG" = cdiff ] || [ "$LEG" = extra ] || [ "$LEG" = scale ] || [ "$LEG" = gate ]; then build "$RUNNER_TEMP/base" "$BASE"; fi
           echo "HEAD_REV=$(git -C "$RUNNER_TEMP/head" log -1 --format='%h %s')" >> "$GITHUB_ENV"
       - name: Run
         run: |
@@ -101,6 +101,21 @@ jobs:
             mkdir -p "$out/diffs"
             xargs -P "$(nproc)" -n 1 "$GITHUB_WORKSPACE/cdiff1.sh" "$b/spinel" "$h/spinel" "$out" < "$out/programs.txt" || true
             touch "$out/changed.txt"; sort -o "$out/changed.txt" "$out/changed.txt"
+            ;;
+          gate)
+            # the legs of `make gate` that `make test` does not run, on the
+            # head and on the base, so a regression shows against the base
+            gate_legs () {
+              make rubyspec-gate > "$1/rubyspec.log" 2>&1; echo "rubyspec-gate exit $?" >> "$1/gate.txt"
+              make bench > "$1/bench.log" 2>&1; echo "bench exit $?" >> "$1/gate.txt"
+              make optcarrot > "$1/optcarrot.log" 2>&1; echo "optcarrot exit $?" >> "$1/gate.txt"
+              for t in alloc-report-test collect-errors-test spin-check diff-test; do
+                make $t > "$1/$t.log" 2>&1; echo "$t exit $?" >> "$1/gate.txt"
+              done
+            }
+            mkdir -p "$out/head" "$out/base"
+            gate_legs "$out/head"
+            (cd "$RUNNER_TEMP/base" && gate_legs "$out/base")
             ;;
           scale)
             make -j"$(nproc)" build/spinel-work > /dev/null 2>&1 || true

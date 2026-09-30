@@ -5,7 +5,7 @@ import os, re, sys
 res = sys.argv[1]
 jobs = {}
 for d in sorted(os.listdir(res)):
-    m = re.match(r"r-(suite|cb|vf|cdiff|extra|scale)-(.+)-(\d+)$", d)
+    m = re.match(r"r-(suite|cb|vf|cdiff|extra|scale|gate)-(.+)-(\d+)$", d)
     if m:
         jobs[(m.group(1), m.group(2), int(m.group(3)))] = os.path.join(res, d)
 
@@ -90,6 +90,15 @@ for n in names:
             print(f"- scale-test ({tag}):")
             for l in lines:
                 print(f"  - {l}")
+    if ("gate", n, 0) in jobs:
+        d = jobs[("gate", n, 0)]
+        for tag in ("head", "base"):
+            legs = read(os.path.join(d, tag, "gate.txt")).strip().splitlines()
+            rs = [l.strip() for l in read(os.path.join(d, tag, "rubyspec.log")).splitlines()
+                  if re.search(r"rubyspec|PASS|REJECT|FAIL", l)][-6:]
+            print(f"- gate legs ({tag}): {', '.join(legs) or 'none'}")
+            for l in rs:
+                print(f"  - `{l}`")
     if ("extra", n, 0) in jobs:
         d = jobs[("extra", n, 0)]
         lines = read(os.path.join(d, "extra.txt")).strip().splitlines()
