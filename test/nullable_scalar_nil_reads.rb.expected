@@ -38,3 +38,8 @@ TypeError: nil can't be coerced into Integer
 :one
 :min
 :max
+[0, true, "nil", "[]"]
+["false", "true", FalseClass, []]
+NoMethodError: undefined method 'to_a' for an instance of Integer
+NoMethodError: undefined method '&' for an instance of Float
+[[3], [[], {}]]

@@ -58,6 +58,7 @@ int enum_pair_source_call(const NodeTable *nt, int recv);
    asks this before choosing between sp_box_int and sp_box_int_or_nil at a poly
    boundary. Valid only after analyze_program has settled the marking. */
 int nullable_int_value(Compiler *c, int id);
+int scalar_nil_only_call(Compiler *c, int id, TyKind rt);
 int nullable_scalar_nil_only_call(Compiler *c, int id);
 int nullable_int_elem_read(Compiler *c, int call);
 int nullable_int_elem_array(Compiler *c, int node);

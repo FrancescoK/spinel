@@ -2411,6 +2411,12 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   }
   /* Numeric receivers: the Complex and Rational faces, the mixed Integer/Float x Complex operators, and the curried-Proc accumulator (analyze_infer_recv.c). */
   { TyKind rr; if (infer_numeric_call(c, id, rt, &rr)) return rr; }
+  /* nil's to_a, to_h, =~ and !~ (and a Float's &, | and ^), which the
+     receiver's class lacks: typed as nil's answer, boxed, whether or not the
+     slot turns out able to hold nil. Typed only once the marking had settled
+     (after the fixpoint), the call was still unknown to every expression
+     around it, and `b.to_a.inspect` raised NoMethodError for the nil. */
+  if (scalar_nil_only_call(c, id, rt)) return sp_streq(name, "!~") ? TY_BOOL : TY_POLY;
 
   /* Safe navigation &. : nil receiver always short-circuits to nil */
   {
