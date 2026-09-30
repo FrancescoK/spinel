@@ -1556,6 +1556,20 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
       buf_printf(b, "_t%d = sp_str_concat(_t%d, %s)", tacc, tacc, valb.p ? valb.p : "\"\"");
     }
     else {
+      /* A block value that can be its slot's nil (an element the block hands
+         back from a nil-holding array) is Float#+'s coercion failure; added,
+         a Float's NaN payload rode through the sum and it read back as nil,
+         and an Integer's sentinel became -9.2e18. */
+      TyKind vt = comp_ntype(c, bb[bn - 1]);
+      if ((vt == TY_INT || vt == TY_FLOAT) && nullable_int_value(c, bb[bn - 1])) {
+        int tv = ++g_tmp;
+        buf_printf(b, "%s _t%d = %s; ", vt == TY_INT ? "sp_int" : "sp_float", tv, valb.p ? valb.p : "0.0");
+        if (vt == TY_INT) buf_printf(b, "if (SP_UNLIKELY(_t%d == SP_INT_NIL))", tv);
+        else buf_printf(b, "if (SP_UNLIKELY(sp_float_is_nil(_t%d)))", tv);
+        buf_puts(b, " sp_raise_nil_float_op(0, \"+\"); ");
+        free(valb.p); memset(&valb, 0, sizeof valb);
+        buf_printf(&valb, "_t%d", tv);
+      }
       /* KBN step: fold the low-order bits dropped by _tacc + _tx into _tc. */
       buf_printf(b, "sp_float _t%d = %s; sp_float _t%d = _t%d + _t%d; "
                     "if (fabs(_t%d) >= fabs(_t%d)) _t%d += (_t%d - _t%d) + _t%d; "

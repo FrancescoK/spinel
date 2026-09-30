@@ -7535,6 +7535,46 @@ int nil_answers_name(const char *n) {
   return 0;
 }
 
+/* nullable_scalar_nil_only_call's names: a slot holding the sentinel is
+   nil, so it answers nil's value, and any other value raises the receiver
+   class's NoMethodError the gate below would have. */
+int emit_nullable_scalar_nil_only(Compiler *c, int id, Buf *b) {
+  if (!nullable_scalar_nil_only_call(c, id)) return 0;
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  TyKind rt = comp_ntype(c, recv);
+  int argc = 0; const int *argv = call_args(nt, id, &argc);
+  TyKind ct = comp_ntype(c, id);
+  const char *ans = sp_streq(nm, "to_a") ? "sp_box_poly_array(sp_PolyArray_new())"
+                  : sp_streq(nm, "to_h") ? "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)"
+                  : sp_streq(nm, "=~") ? "sp_box_nil()"
+                  : sp_streq(nm, "!~") ? "1"
+                  : NULL;
+  /* the Float's boolean operators: `&` is false, `|` and `^` the argument's truth */
+  int bool_op = ans ? 0 : sp_streq(nm, "&") ? 1 : 2;
+  if (ct != (sp_streq(nm, "!~") ? TY_BOOL : TY_POLY)) return 0;
+  int tr = ++g_tmp, ta = -1;
+  buf_printf(b, "({ %s _t%d = (", rt == TY_FLOAT ? "sp_float" : "sp_int", tr);
+  emit_expr(c, recv, b);
+  buf_puts(b, "); ");
+  if (argc == 1) {
+    ta = ++g_tmp;
+    buf_printf(b, "sp_RbVal _t%d = ", ta); emit_boxed(c, argv[0], b);
+    buf_printf(b, "; (void)_t%d; ", ta);
+  }
+  if (rt == TY_FLOAT) buf_printf(b, "sp_float_is_nil(_t%d) ? ", tr);
+  else buf_printf(b, "_t%d == SP_INT_NIL ? ", tr);
+  if (bool_op == 1) buf_puts(b, "sp_box_bool(0)");
+  else if (bool_op == 2) buf_printf(b, "sp_box_bool(sp_poly_truthy(_t%d))", ta);
+  else buf_puts(b, ans);
+  /* Object#!~ is =~ negated, and it is =~ that the number lacks */
+  buf_printf(b, " : (sp_raise_nomethod(sp_nomethod_msg(\"%s\", %s(_t%d))), %s); })",
+             sp_streq(nm, "!~") ? "=~" : nm, rt == TY_FLOAT ? "sp_box_float" : "sp_box_int", tr,
+             ct == TY_BOOL ? "0" : "sp_box_nil()");
+  return 1;
+}
+
 /* A String slot of the pattern family (String#split's separator): a
    String or nil passes as the String slot does, but a value of any other
    class -- true and false included -- is CRuby's "wrong argument type X

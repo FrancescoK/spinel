@@ -1173,6 +1173,12 @@ int name_is_enumerable_module_method(const char *m) {
 static int cmp_operand_may_be_nil(Compiler *c, int id) {
   return id >= 0 && nullable_int_value(c, id);
 }
+/* The C test that temp `v` of an Integer or a Float kind holds that kind's
+   nil sentinel, into out. */
+static void scalar_nil_test(TyKind t, const char *v, char *out, size_t n) {
+  if (t == TY_FLOAT) snprintf(out, n, "sp_float_is_nil(%s)", v);
+  else snprintf(out, n, "%s == SP_INT_NIL", v);
+}
 /* Comparable's instance methods, for respond_to? on a user class that mixes it
    in (spinel keys the mixin off the presence of a user `<=>`). */
 static const char *const comparable_names[] = {
@@ -4207,6 +4213,24 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       }
       buf_puts(b, "sp_rational_new((sp_int)("); emit_expr(c, recv, b); buf_puts(b, "), 1)"); return 1;
     }
+    /* The same (0/1) for a Float slot that can hold its nil; the Float section
+       below guards every name nil lacks, and these two nil has. */
+    if (crt == TY_FLOAT && ((sp_streq(name, "to_r") && argc == 0) ||
+        (sp_streq(name, "rationalize") && argc <= 1)) && nullable_int_value(c, recv)) {
+      int t = ++g_tmp, te = -1;
+      buf_printf(b, "({ sp_float _t%d = (", t); emit_expr(c, recv, b); buf_puts(b, "); ");
+      if (argc == 1) {
+        te = ++g_tmp;
+        buf_printf(b, "sp_float _t%d = ", te);
+        if (comp_ntype(c, argv[0]) == TY_RATIONAL) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        else emit_float_expr(c, argv[0], b);
+        buf_puts(b, "; ");
+      }
+      buf_printf(b, "sp_float_is_nil(_t%d) ? sp_rational_new(0, 1) : ", t);
+      if (argc == 1) buf_printf(b, "sp_float_rationalize(_t%d, _t%d); })", t, te);
+      else buf_printf(b, "%s(_t%d); })", sp_streq(name, "to_r") ? "sp_float_to_rational" : "sp_float_rationalize0", t);
+      return 1;
+    }
     /* n.to_c is Complex(n, 0) for an Integer or Float receiver. */
     if ((crt == TY_INT || crt == TY_FLOAT) && sp_streq(name, "to_c") && argc == 0) {
       /* nil.to_c is (0+0i), so a sentinel receiver must not be cast through */
@@ -4214,6 +4238,13 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_int _t%d = (", t); emit_expr(c, recv, b);
         buf_printf(b, "); (sp_Complex){(sp_float)(_t%d == SP_INT_NIL ? 0 : _t%d), 0, 0}; })", t, t);
+        return 1;
+      }
+      /* an Integer zero, not a Float one: nil.to_c is (0+0i), not (0.0+0i) */
+      if (crt == TY_FLOAT && nullable_int_value(c, recv)) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_float _t%d = (", t); emit_expr(c, recv, b);
+        buf_printf(b, "); sp_float_is_nil(_t%d) ? (sp_Complex){0, 0, 0} : (sp_Complex){_t%d, 0, 1}; })", t, t);
         return 1;
       }
       buf_puts(b, "((sp_Complex){(sp_float)("); emit_expr(c, recv, b);
@@ -15509,12 +15540,43 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
          pair; left raw it was a C pointer in a float expression and the
          build stopped (a promoted accumulator meeting `+ 1.0`). */
       TyKind lft9 = comp_ntype(c, recv), rgt9 = comp_ntype(c, argv[0]);
+      /* An Integer operand beside a Float is converted to a double, where its
+         sentinel is only a large number (`nil + 1.0` answered
+         -9.223372036854776e+18), and with an Integer on the left a nil on
+         the right is Integer#+'s coercion failure, not Float#+'s. Both sides
+         keep their own kind, tested each by its own sentinel. */
+      int lin = lft9 == TY_INT && cmp_operand_may_be_nil(c, recv);
+      int rin = rgt9 == TY_INT && cmp_operand_may_be_nil(c, argv[0]);
+      int lfn = lft9 == TY_FLOAT && cmp_operand_may_be_nil(c, recv);
+      int rfn = rgt9 == TY_FLOAT && cmp_operand_may_be_nil(c, argv[0]);
+      if (lin || rin || (lft9 == TY_INT && rfn)) {
+        int tm = ++g_tmp;
+        char lv[32], rv[32], ln[64] = "0", rn[64] = "0";
+        snprintf(lv, sizeof lv, "_t%d", tm);
+        snprintf(rv, sizeof rv, "_t%d_r", tm);
+        if (lin || lfn) scalar_nil_test(lft9, lv, ln, sizeof ln);
+        if (rin || rfn) scalar_nil_test(rgt9, rv, rn, sizeof rn);
+        buf_puts(b, "({ "); emit_ctype(c, lft9, b); buf_printf(b, " %s = ", lv);
+        emit_scalar_operand(c, recv, "0.0", b);
+        buf_puts(b, "; "); emit_ctype(c, rgt9, b); buf_printf(b, " %s = ", rv);
+        emit_scalar_operand(c, argv[0], "0.0", b);
+        /* nil on the left has no operator; on the right it is the left
+           class's coercion failure */
+        buf_printf(b, "; if (SP_UNLIKELY(%s || %s)) ", ln, rn);
+        if (lft9 == TY_INT) buf_printf(b, "sp_raise_nil_int_op(%s, 0, \"%s\"); ", lv, name);
+        else buf_printf(b, "sp_raise_nil_float_op(%s, \"%s\"); ", ln, name);
+        buf_printf(b, "%s%s%s %s %s%s%s; })",
+                   lft9 == TY_INT ? "(double)" : lft9 == TY_BIGINT ? "sp_bigint_to_double(" : "", lv,
+                   lft9 == TY_BIGINT ? ")" : "", name,
+                   rgt9 == TY_INT ? "(double)" : rgt9 == TY_BIGINT ? "sp_bigint_to_double(" : "", rv,
+                   rgt9 == TY_BIGINT ? ")" : "");
+        return 1;
+      }
       /* A Float operand that can be its nil sentinel (a NaN payload the
          hardware carries through the operator, so `nil + 1.0` read back as
          nil) is tested first, as every int helper tests SP_INT_NIL; only
          where the #3505 marking says the slot can hold it. */
-      int fguard = (lft9 == TY_FLOAT && cmp_operand_may_be_nil(c, recv)) ||
-                   (rgt9 == TY_FLOAT && cmp_operand_may_be_nil(c, argv[0]));
+      int fguard = lfn || rfn;
       int tfg = fguard ? ++g_tmp : 0;
       if (fguard) buf_printf(b, "({ sp_float _t%d = ", tfg);
       else buf_puts(b, "(");
@@ -23888,6 +23950,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       }
     }
   }
+
+  /* nil's own to_a / to_h / =~ on a nullable Integer or Float slot */
+  if (emit_nullable_scalar_nil_only(c, id, b)) return;
 
   /* A generated READER named after an Object builtin owns the name, as any
      reader does in CRuby: Data.define(:freeze) answers the member. The
@@ -38401,6 +38466,27 @@ else {
       int guard9 = rt == rht9 && (rt == TY_INT || rt == TY_FLOAT) &&
                    (cat == rt || cat == TY_POLY) &&
                    (cmp_operand_may_be_nil(c, recv) || (cat == rt && cmp_operand_may_be_nil(c, argv[0])));
+      /* An Integer against a Float compares as C does, each side its own
+         kind, so each is tested by its own sentinel: `nil > 1` on a Float
+         slot, `nil < 2.0` on an Integer one, answered as numbers. */
+      int mixed9 = (rt == TY_INT && cat == TY_FLOAT) || (rt == TY_FLOAT && cat == TY_INT);
+      int mln = mixed9 && cmp_operand_may_be_nil(c, recv);
+      int mrn = mixed9 && cmp_operand_may_be_nil(c, argv[0]);
+      if (mln || mrn) {
+        int tg = ++g_tmp;
+        char lv[32], rv[32], ln[64] = "0", rn[64] = "0";
+        snprintf(lv, sizeof lv, "_t%d", tg);
+        snprintf(rv, sizeof rv, "_t%d_r", tg);
+        if (mln) scalar_nil_test(rt, lv, ln, sizeof ln);
+        if (mrn) scalar_nil_test(cat, rv, rn, sizeof rn);
+        buf_printf(b, "({ %s %s = ", rt == TY_FLOAT ? "sp_float" : "sp_int", lv);
+        emit_expr(c, recv, b);
+        buf_printf(b, "; %s %s = ", cat == TY_FLOAT ? "sp_float" : "sp_int", rv);
+        emit_expr(c, argv[0], b);
+        buf_printf(b, "; if (SP_UNLIKELY(%s || %s)) sp_raise_nil_cmp(%s, \"%s\", \"%s\"); %s %s %s; })",
+                   ln, rn, ln, name, rt == TY_FLOAT ? "Float" : "Integer", lv, name, rv);
+        return;
+      }
       if (guard9) {
         int tg = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", rt == TY_FLOAT ? "sp_float" : "sp_int", tg);
