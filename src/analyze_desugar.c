@@ -1079,6 +1079,59 @@ int desugar_singleton_class_mixin(Compiler *c) {
   return changed;
 }
 
+/* ---- `Other::Path::C = remove_const(:C)` -----------------------------------
+   activesupport's core_ext/enumerable.rb moves a class it defined out of
+   Enumerable:
+     ActiveSupport::EnumerableCoreExt::SoleItemExpectedError = remove_const(:SoleItemExpectedError)
+   A constant path is modelled flat, by its leaf name, so the path names the
+   very class the value is: the write is a self-alias, and its target -- a
+   class name -- has no constant slot to write, which refused the program.
+   The statement goes; `Other::Path::C` and a lexical `C` both keep reaching
+   the class. Only the same-name shape, with the value a bare `C` or
+   `remove_const(:C)`, and only where the program defines a class or module
+   named C. */
+static int cpa_defines_class(const NodeTable *nt, const char *leaf) {
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_ClassNode && k != NK_ModuleNode) continue;
+    int cp = nt_ref(nt, id, "constant_path");
+    const char *nm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (nm && sp_streq(nm, leaf)) return 1;
+  }
+  return 0;
+}
+int desugar_constant_path_self_alias(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_ConstantPathWriteNode) continue;
+    int tgt = nt_ref(nt, id, "target");
+    const char *leaf = tgt >= 0 ? nt_str(nt, tgt, "name") : NULL;
+    int v = nt_ref(nt, id, "value");
+    if (!leaf || v < 0) continue;
+    int same = 0;
+    if (nt_kind(nt, v) == NK_ConstantReadNode) {
+      const char *vn = nt_str(nt, v, "name");
+      same = vn && sp_streq(vn, leaf);
+    }
+    else if (nt_kind(nt, v) == NK_CallNode && nt_ref(nt, v, "receiver") < 0 && nt_ref(nt, v, "block") < 0 &&
+             nt_str(nt, v, "name") && sp_streq(nt_str(nt, v, "name"), "remove_const")) {
+      int args = nt_ref(nt, v, "arguments");
+      int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      if (an == 1 && av) {
+        NodeKind ak = nt_kind(nt, av[0]);
+        const char *an0 = ak == NK_SymbolNode ? nt_str(nt, av[0], "value") :
+                          ak == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
+        same = an0 && sp_streq(an0, leaf);
+      }
+    }
+    if (!same || !cpa_defines_class(nt, leaf)) continue;
+    nt_node_reset(nt, id, "NilNode");
+    changed = 1;
+  }
+  return changed;
+}
+
 /* Proc#>> / #<< with a Method operand: wrap the Method side in #to_proc at the
    AST, so composition always runs proc-to-proc. The to_proc emission builds a
    real trampoline proc that publishes its boxed result through the return
