@@ -233,6 +233,8 @@ static void sp_fsl_splice(unsigned char **buf, size_t *n, size_t at,
    require-resolution machinery that defines the builder. */
 static int *sp_line_file = NULL;  /* buffer line (1-based) -> file id */
 static int *sp_line_orig = NULL;  /* buffer line (1-based) -> original line */
+static int *sp_line_pop = NULL;
+static pm_node_t **g_root_next, **g_root_end;
 static int sp_line_map_n = 0;
 static char **sp_file_table;   /* id -> path; defined with the map builder below */
 
@@ -513,6 +515,11 @@ static int flatten(pm_node_t *node) {
 
   int id = node_counter++;
   pm_node_type_t t = PM_NODE_TYPE(node);
+  if (g_root_next < g_root_end && node == *g_root_next) {
+    int32_t bl = pm_newline_list_line(&g_parser->newline_list, node->location.start, g_parser->start_line);
+    g_root_next++;
+    if (bl >= 1 && bl <= sp_line_map_n && sp_line_pop[bl] > 0) emit_int(id, "req_pop", sp_line_pop[bl]);
+  }
 
   /* Debug builds only: stamp every node with its source line -- and, when a
      multi-file map was built, its original file -- so codegen can emit
@@ -562,6 +569,7 @@ static int flatten(pm_node_t *node) {
   case PM_PROGRAM_NODE: {
     pm_program_node_t *n = (pm_program_node_t *)node;
     N("ProgramNode");
+    if (n->statements) { g_root_next = n->statements->body.nodes; g_root_end = g_root_next + n->statements->body.size; }
     R("statements", n->statements);
     break;
   }
@@ -2223,10 +2231,12 @@ static void sp_build_line_map(const char *src, const char *toplevel) {
   sp_line_map_n = (int)nlines;
   sp_line_file = (int *)calloc(nlines + 2, sizeof(int));
   sp_line_orig = (int *)calloc(nlines + 2, sizeof(int));
+  sp_line_pop = (int *)calloc(nlines + 2, sizeof(int));
 
   int *stk_file = (int *)malloc(sizeof(int) * (nlines + 2));
   int *stk_next = (int *)malloc(sizeof(int) * (nlines + 2));
-  if (!sp_line_file || !sp_line_orig || !stk_file || !stk_next) {
+  int *stk_start = (int *)malloc(sizeof(int) * (nlines + 2));
+  if (!sp_line_file || !sp_line_orig || !sp_line_pop || !stk_file || !stk_next || !stk_start) {
     fprintf(stderr, "spinel_parse: out of memory\n"); exit(1);
   }
   int sp = 0;
@@ -2256,9 +2266,11 @@ else if (strncmp(line, SP_INSERT_PREFIX, strlen(SP_INSERT_PREFIX)) == 0) {
       sp++;
       stk_file[sp] = sp_intern_file(pathbuf);
       stk_next[sp] = 1;
+      stk_start[sp] = bl;
       /* marker line maps to nothing meaningful */
     }
 else if (strncmp(line, SP_POP_PREFIX, strlen(SP_POP_PREFIX)) == 0) {
+      for (int j = sp > 0 ? stk_start[sp] : bl; j < bl; j++) if (!sp_line_pop[j]) sp_line_pop[j] = bl;
       if (sp > 0) sp--;
     }
 else {
@@ -2273,6 +2285,7 @@ else {
   }
   free(stk_file);
   free(stk_next);
+  free(stk_start);
 }
 
 /* Lexically collapse "." and ".." path segments, like File.expand_path,

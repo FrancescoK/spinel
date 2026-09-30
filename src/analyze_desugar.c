@@ -2094,10 +2094,48 @@ static void engine_blank(NodeTable *nt, int id) {
   nt_node_reset(nt, id, "NilNode");
 }
 
+static int engine_const(NodeTable *nt, int id, const char *name) {
+  const char *nm = nt_kind(nt, id) == NK_ConstantReadNode ? nt_str(nt, id, "name") : NULL;
+  return nm && sp_streq(nm, name);
+}
+
+static const char *engine_operand(NodeTable *nt, int id, int eng, int ver, int *con, int *gem) {
+  if (nt_kind(nt, id) == NK_StringNode) return nt_str(nt, id, "content");
+  if (engine_const(nt, id, "RUBY_ENGINE")) { *con = 1; return eng ? "spinel" : NULL; }
+  if (engine_const(nt, id, "RUBY_VERSION")) { *con = 1; return ver ? SP_RUBY_VERSION : NULL; }
+  const char *nm = nt_kind(nt, id) == NK_CallNode ? nt_str(nt, id, "name") : NULL;
+  int recv = nt_ref(nt, id, "receiver"), args = nt_ref(nt, id, "arguments");
+  int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+  if (!nm || nt_ref(nt, id, "block") >= 0) return NULL;
+  *gem = 1;
+  const char *vn = nt_kind(nt, recv) == NK_ConstantPathNode ? nt_str(nt, recv, "name") : NULL;
+  if (!sp_streq(nm, "new") || ac != 1 || !vn || !sp_streq(vn, "Version") || !engine_const(nt, nt_ref(nt, recv, "parent"), "Gem")) return NULL;
+  int g = 0;
+  const char *v = engine_operand(nt, av[0], 0, ver, con, &g);
+  return g ? NULL : v;
+}
+
+static int engine_numeric(const char *s) {
+  size_t n = strlen(s);
+  for (const char *p = s; *p; p++) if (strspn(p, "0123456789") > 18) return 0;
+  return n && strspn(s, "0123456789.") == n && s[0] != '.' && s[n - 1] != '.' && !strstr(s, "..");
+}
+
+static int engine_version_cmp(const char *a, const char *b) {
+  while (*a || *b) {
+    char *ea, *eb;
+    long long x = strtoll(a, &ea, 10), y = strtoll(b, &eb, 10);
+    if (x != y) return x < y ? -1 : 1;
+    a = *ea ? ea + 1 : ea;
+    b = *eb ? eb + 1 : eb;
+  }
+  return 0;
+}
+
 int desugar_engine_branches(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
-  int changed = 0;
+  int changed = 0, eng = 1, ver = 1;
   /* A program that defines a RUBY_ENGINE of its own (a shim module's
      `RUBY_ENGINE = "jruby"`) reads that one where it is in scope, so the
      fold, which knows only the global, would answer for the wrong constant:
@@ -2110,25 +2148,41 @@ int desugar_engine_branches(Compiler *c) {
         k != NK_ConstantPathTargetNode) continue;
     int t = nt_ref(nt, id, "target");
     const char *wn = t >= 0 ? nt_str(nt, t, "name") : nt_str(nt, id, "name");
-    if (wn && sp_streq(wn, "RUBY_ENGINE")) return 0;
+    if (wn && sp_streq(wn, "RUBY_ENGINE")) eng = 0;
+    if (wn && sp_streq(wn, "RUBY_VERSION")) ver = 0;
   }
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *op = nt_str(nt, id, "name");
-    if (!op || (!sp_streq(op, "==") && !sp_streq(op, "!="))) continue;
     int recv = nt_ref(nt, id, "receiver");
     int args = nt_ref(nt, id, "arguments");
     int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
-    if (recv < 0 || ac != 1 || !av) continue;
-    int cn = recv, sn = av[0];
-    if (nt_kind(nt, cn) != NK_ConstantReadNode) { cn = av[0]; sn = recv; }
-    if (nt_kind(nt, cn) != NK_ConstantReadNode || nt_kind(nt, sn) != NK_StringNode) continue;
-    const char *cname = nt_str(nt, cn, "name");
-    const char *sv = nt_str(nt, sn, "content");
-    if (!cname || !sv || !sp_streq(cname, "RUBY_ENGINE")) continue;
-    int truth = sp_streq(sv, "spinel") == sp_streq(op, "==");
+    if (!op || recv < 0 || ac != 1 || !av) continue;
+    int lc = 0, rc = 0, lg = 0, rg = 0;
+    const char *l = engine_operand(nt, recv, eng, ver, &lc, &lg);
+    const char *r = engine_operand(nt, av[0], eng, ver, &rc, &rg);
+    if (!l || !r || lc == rc || rg > lg || (lg && (!engine_numeric(l) || !engine_numeric(r)))) continue;
+    int cmp = lg ? engine_version_cmp(l, r) : strcmp(l, r);
+    int truth = sp_streq(op, "==") ? cmp == 0 : sp_streq(op, "!=") ? cmp != 0 : sp_streq(op, "<") ? cmp < 0 :
+                sp_streq(op, "<=") ? cmp <= 0 : sp_streq(op, ">") ? cmp > 0 : sp_streq(op, ">=") ? cmp >= 0 :
+                sp_streq(op, "start_with?") && !lg ? strncmp(l, r, strlen(r)) == 0 : -1;
+    if (truth < 0) continue;
     engine_blank(nt, recv);
     engine_blank(nt, args);
+    nt_node_reset(nt, id, truth ? "TrueNode" : "FalseNode");
+    nt_node_set_int(nt, id, "engine_check", 1);
+    changed = 1;
+  }
+  for (int id = n0 - 1; id >= 0; id--) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_AndNode && k != NK_OrNode) continue;
+    int l = nt_ref(nt, id, "left"), r = nt_ref(nt, id, "right");
+    if (nt_int(nt, l, "engine_check", 0) <= 0) continue;
+    int v = (nt_kind(nt, l) == NK_TrueNode) == (k == NK_OrNode) ? l : r;
+    if (nt_int(nt, v, "engine_check", 0) <= 0) continue;
+    int truth = nt_kind(nt, v) == NK_TrueNode;
+    engine_blank(nt, l);
+    engine_blank(nt, r);
     nt_node_reset(nt, id, truth ? "TrueNode" : "FalseNode");
     nt_node_set_int(nt, id, "engine_check", 1);
     changed = 1;
@@ -2160,11 +2214,16 @@ int desugar_engine_branches(Compiler *c) {
       int *keep = malloc(sizeof(int) * (size_t)n);
       if (!keep) break;
       memcpy(keep, st, sizeof(int) * (size_t)n);
-      for (int j = k + 1; j < n; j++) engine_blank(nt, keep[j]);
-      nt_node_set_arr(nt, id, "body", keep, k + 1);
+      long long pop = nt_int(nt, st[k], "req_pop", 0);
+      int e = pop > 0 ? k + 1 : n;
+      while (e < n && nt_int(nt, keep[e], "req_pop", 0) > 0 && nt_int(nt, keep[e], "req_pop", 0) <= pop) e++;
+      if (pop > 0) engine_blank(nt, bb[bn - 1]);
+      for (int j = k + 1; j < e; j++) engine_blank(nt, keep[j]);
+      memmove(keep + k + 1, keep + e, sizeof(int) * (size_t)(n - e));
+      nt_node_set_arr(nt, id, "body", keep, n - (e - k - 1));
       free(keep);
       changed = 1;
-      break;
+      st = nt_arr(nt, id, "body", &n);
     }
   }
   return changed;
