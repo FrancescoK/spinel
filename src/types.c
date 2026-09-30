@@ -68,7 +68,8 @@ static const PolyFace ty_poly_face_tbl[] = {
   /* The Hash mutators, on a Hash at run time; a typed variant takes the
      result back from the general copy it was normalized to, and the value is
      the box, since the copy is detached once written back. */
-  {"merge!", PF_HASH | PF_MUT | PF_VAL_SELF, 1, -1, 0}, {"update", PF_HASH | PF_MUT | PF_VAL_SELF, 1, -1, 0},
+  {"merge!", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, -1}, {"merge!", PF_HASH | PF_MUT | PF_VAL_SELF, 1, -1, 0},
+  {"update", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, -1}, {"update", PF_HASH | PF_MUT | PF_VAL_SELF, 1, -1, 0},
   /* The names Array and Hash share: the receiver's run-time kind picks the
      arm. The in-place filters take their block; of the blockless names,
      assoc, rassoc and fetch_values keep their last-resort Hash rows below, so
@@ -91,7 +92,8 @@ static const PolyFace ty_poly_face_tbl[] = {
   {"default=", PF_HASH | PF_MUT, 1, 1, 0}, {"default_proc=", PF_HASH | PF_MUT | PF_VAL_SELF, 1, 1, 0},
   {"assoc", PF_ARRAY, 1, 1, 0}, {"assoc", PF_HASH, 1, 1, 0},
   {"rassoc", PF_ARRAY, 1, 1, 0}, {"rassoc", PF_HASH, 1, 1, 0},
-  {"fetch_values", PF_ARRAY, 1, -1, 0}, {"fetch_values", PF_HASH, 1, -1, 0},
+  {"fetch_values", PF_ARRAY, 0, 0, -1}, {"fetch_values", PF_ARRAY, 1, -1, 0},
+  {"fetch_values", PF_HASH, 0, 0, -1}, {"fetch_values", PF_HASH, 1, -1, 0},
   /* fetch's block form: the dispatch that serves the argument forms has no
      block to call on a miss */
   {"fetch", PF_ARRAY, 1, 2, 1}, {"fetch", PF_HASH, 1, 2, 1},
