@@ -6001,6 +6001,193 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
   return changed;
 }
 
+typedef struct { int def, st, top, tst, cond, cm, cls; const char *path; } CondDef;
+static void cdef_path(const NodeTable *nt, int cp, char *p, size_t cap) {
+  if (nt_kind(nt, cp) == NK_ConstantPathNode) cdef_path(nt, nt_ref(nt, cp, "parent"), p, cap);
+  size_t l = strlen(p);
+  snprintf(p + l, cap - l, "/%s", nt_str(nt, cp, "name") ? nt_str(nt, cp, "name") : "");
+}
+static void cdef_walk(NodeTable *nt, int id, CondDef x, CondDef **v, int *n) {
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_StatementsNode) {
+    int bn = 0; const int *b = nt_arr(nt, id, "body", &bn);
+    CondDef y = x;
+    y.st = id;
+    if (x.top < 0) y.tst = id;
+    for (int i = 0; i < bn; i++) {
+      if (x.top < 0) y.top = b[i];
+      cdef_walk(nt, b[i], y, v, n);
+    }
+  }
+  else if (k == NK_IfNode || k == NK_UnlessNode || k == NK_ElseNode) {
+    x.cond = 1;
+    cdef_walk(nt, nt_ref(nt, id, "statements"), x, v, n);
+    cdef_walk(nt, nt_ref(nt, id, "subsequent"), x, v, n);
+    cdef_walk(nt, nt_ref(nt, id, "else_clause"), x, v, n);
+  }
+  else if (k == NK_ClassNode || k == NK_ModuleNode) {
+    char p[1024];
+    snprintf(p, sizeof p, "%s", x.path);
+    cdef_path(nt, nt_ref(nt, id, "constant_path"), p, sizeof p);
+    x.path = p; x.cls = id; x.cm = 0; x.top = -1;
+    cdef_walk(nt, nt_ref(nt, id, "body"), x, v, n);
+  }
+  else if (k == NK_SingletonClassNode && nt_kind(nt, nt_ref(nt, id, "expression")) == NK_SelfNode) {
+    x.cm = 1; x.top = -1;
+    cdef_walk(nt, nt_ref(nt, id, "body"), x, v, n);
+  }
+  else if (k == NK_DefNode && x.st >= 0 && nt_str(nt, id, "name") &&
+           (nt_ref(nt, id, "receiver") < 0 || nt_kind(nt, nt_ref(nt, id, "receiver")) == NK_SelfNode)) {
+    CondDef *g = realloc(*v, sizeof(CondDef) * (size_t)(*n + 1));
+    if (!g) return;
+    *v = g;
+    x.def = id;
+    x.cm |= nt_ref(nt, id, "receiver") >= 0;
+    x.path = strdup(x.path);
+    g[(*n)++] = x;
+  }
+}
+static int cdef_arity(const NodeTable *nt, int def) {
+  int pn = nt_ref(nt, def, "parameters"), rn = 0, on = 0, sn = 0, kn = 0;
+  const int *r = nt_arr(nt, pn, "requireds", &rn);
+  nt_arr(nt, pn, "optionals", &on); nt_arr(nt, pn, "posts", &sn); nt_arr(nt, pn, "keywords", &kn);
+  if (on || sn || kn || nt_ref(nt, pn, "rest") >= 0 || nt_ref(nt, pn, "keyword_rest") >= 0) return -1;
+  for (int i = 0; i < rn; i++) if (nt_kind(nt, r[i]) != NK_RequiredParameterNode) return -1;
+  return rn;
+}
+static int cdef_same(const NodeTable *nt, int a, int b) {
+  if (a < 0 || b < 0) return a == b;
+  const SpNode *x = &nt->nodes[a], *y = &nt->nodes[b];
+  if (nt_kind(nt, a) != nt_kind(nt, b) || x->ns != y->ns || x->ni != y->ni || x->nr != y->nr || x->na != y->na ||
+      (x->content ? !y->content || strcmp(x->content, y->content) : y->content != NULL)) return 0;
+  for (int j = 0; j < x->ns; j++)
+    if (strcmp(x->s[j].key, y->s[j].key) || x->s[j].val_len != y->s[j].val_len ||
+        memcmp(x->s[j].val, y->s[j].val, x->s[j].val_len)) return 0;
+  for (int j = 0; j < x->ni; j++)
+    if (strcmp(x->i[j].key, y->i[j].key) || (strncmp(x->i[j].key, "node_", 5) && x->i[j].val != y->i[j].val)) return 0;
+  for (int j = 0; j < x->nr; j++) if (!cdef_same(nt, x->r[j].ref, y->r[j].ref)) return 0;
+  for (int j = 0; j < x->na; j++) {
+    if (x->a[j].n != y->a[j].n) return 0;
+    for (int k = 0; k < x->a[j].n; k++) if (!cdef_same(nt, x->a[j].ids[k], y->a[j].ids[k])) return 0;
+  }
+  return 1;
+}
+static void cdef_insert_after(NodeTable *nt, int st, int after, int node) {
+  int bn = 0; const int *b = nt_arr(nt, st, "body", &bn);
+  int *nb = malloc(sizeof(int) * (size_t)(bn + 1)), m = 0;
+  if (!nb) return;
+  for (int i = 0; i < bn; i++) { nb[m++] = b[i]; if (b[i] == after) nb[m++] = node; }
+  nt_node_set_arr(nt, st, "body", nb, m);
+  free(nb);
+}
+static int cdef_local(NodeTable *nt, const char *ty, const char *nm) {
+  int id = nt_new_node(nt, ty);
+  nt_node_set_str(nt, id, "name", nm);
+  nt_node_set_int(nt, id, "depth", 0);
+  return id;
+}
+static int cdef_stmts(NodeTable *nt, int st) {
+  int b = nt_new_node(nt, "StatementsNode");
+  nt_node_set_arr(nt, b, "body", &st, 1);
+  return b;
+}
+int desugar_conditional_defs(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  CondDef *v = NULL;
+  int n = 0, serial = 0, groups = 0;
+  cdef_walk(nt, nt_ref(nt, nt->root_id, "statements"), (CondDef){ -1, -1, -1, -1, 0, 0, -1, "" }, &v, &n);
+  for (int i = 0; i < n; i++) {
+    if (v[i].def < 0 || !v[i].cond) continue;
+    char *base = strdup(nt_str(nt, v[i].def, "name"));
+    CondDef g[n];
+    int ng = 0, bad = 0, blk = 0, same = 1, d0 = v[i].def, ar = cdef_arity(nt, d0);
+    for (int j = 0; j < n; j++) {
+      if (v[j].def < 0 || v[j].cm != v[i].cm || strcmp(v[j].path, v[i].path) ||
+          !sp_streq(nt_str(nt, v[j].def, "name"), base)) continue;
+      int hi = fwd_subtree_max(nt, v[j].def);
+      for (int s = v[j].def; s <= hi; s++)
+        bad |= nt_kind(nt, s) == NK_SuperNode || nt_kind(nt, s) == NK_ForwardingSuperNode;
+      blk |= fwd_subtree_uses_yield_or_block(nt, v[j].def);
+      if (cdef_arity(nt, v[j].def) != ar) ar = -1;
+      same &= cdef_same(nt, v[j].def, d0);
+      g[ng++] = v[j];
+      v[j].def = -1;
+    }
+    if (ng < 2 || bad || same) { free(base); continue; }
+    char msg[512], nm[512], sel[64], pn[32];
+    const char *cn = g[0].cls >= 0 ? nt_str(nt, nt_ref(nt, g[0].cls, "constant_path"), "name") : NULL;
+    if (!cn) snprintf(msg, sizeof msg, "undefined method '%s' for main", base);
+    else if (g[0].cm) snprintf(msg, sizeof msg, "undefined method '%s' for %s %s", base,
+                               nt_kind(nt, g[0].cls) == NK_ModuleNode ? "module" : "class", cn);
+    else snprintf(msg, sizeof msg, "undefined method '%s' for an instance of %s", base, cn);
+    snprintf(sel, sizeof sel, "$__cond_def%d", ++groups);
+    int def = fwd_new_node_like(nt, g[ng - 1].def, "DefNode");
+    int ec = nt_new_node(nt, "ConstantReadNode"), em = nt_new_node(nt, "StringNode");
+    nt_node_set_str(nt, ec, "name", "NoMethodError");
+    nt_node_set_str(nt, em, "content", msg);
+    int ea[2] = { ec, em }, eargs = nt_new_node(nt, "ArgumentsNode");
+    nt_node_set_arr(nt, eargs, "arguments", ea, 2);
+    int raise = fwd_new_call(nt, -1, "raise", -1);
+    nt_node_set_ref(nt, raise, "arguments", eargs);
+    int chain = nt_new_node(nt, "ElseNode");
+    nt_node_set_ref(nt, chain, "statements", cdef_stmts(nt, raise));
+    for (int k = ng - 1; k >= 0; k--) {
+      snprintf(nm, sizeof nm, "%s#__cond%d", base, serial + k + 1);
+      nt_set_str(nt, g[k].def, "name", nm);
+      int wk = fwd_new_node_like(nt, g[k].def, "GlobalVariableWriteNode");
+      nt_node_set_str(nt, wk, "name", sel);
+      nt_node_set_ref(nt, wk, "value", fwd_new_int(nt, k + 1));
+      cdef_insert_after(nt, g[k].st, g[k].def, wk);
+      int na = ar < 0 ? 2 : ar, av[na > 0 ? na : 1];
+      for (int a = 0; a < ar; a++) { snprintf(pn, sizeof pn, "__cond%d", a); av[a] = cdef_local(nt, "LocalVariableReadNode", pn); }
+      if (ar < 0) {
+        av[0] = nt_new_node(nt, "SplatNode");
+        nt_node_set_ref(nt, av[0], "expression", cdef_local(nt, "LocalVariableReadNode", "__condr"));
+        int as = nt_new_node(nt, "AssocSplatNode");
+        nt_node_set_ref(nt, as, "value", cdef_local(nt, "LocalVariableReadNode", "__condk"));
+        av[1] = nt_new_node(nt, "KeywordHashNode");
+        nt_node_set_arr(nt, av[1], "elements", &as, 1);
+      }
+      int call = fwd_new_call(nt, -1, nm, -1);
+      if (na) {
+        int args = nt_new_node(nt, "ArgumentsNode");
+        nt_node_set_arr(nt, args, "arguments", av, na);
+        nt_node_set_ref(nt, call, "arguments", args);
+      }
+      if (blk) {
+        int ba = nt_new_node(nt, "BlockArgumentNode");
+        nt_node_set_ref(nt, ba, "expression", cdef_local(nt, "LocalVariableReadNode", "__condb"));
+        nt_node_set_ref(nt, call, "block", ba);
+      }
+      int ifn = nt_new_node(nt, "IfNode");
+      nt_node_set_ref(nt, ifn, "predicate", fwd_new_call(nt, cdef_local(nt, "GlobalVariableReadNode", sel), "==",
+                                                         fwd_new_int(nt, k + 1)));
+      nt_node_set_ref(nt, ifn, "statements", cdef_stmts(nt, call));
+      nt_node_set_ref(nt, ifn, "subsequent", chain);
+      chain = ifn;
+    }
+    int params = ar == 0 && !blk ? -1 : nt_new_node(nt, "ParametersNode"), pv[ar > 0 ? ar : 1];
+    for (int a = 0; a < ar; a++) { snprintf(pn, sizeof pn, "__cond%d", a); pv[a] = cdef_local(nt, "RequiredParameterNode", pn); }
+    if (ar > 0) nt_node_set_arr(nt, params, "requireds", pv, ar);
+    if (ar < 0) {
+      nt_node_set_ref(nt, params, "rest", cdef_local(nt, "RestParameterNode", "__condr"));
+      nt_node_set_ref(nt, params, "keyword_rest", cdef_local(nt, "KeywordRestParameterNode", "__condk"));
+    }
+    if (blk) nt_node_set_ref(nt, params, "block", cdef_local(nt, "BlockParameterNode", "__condb"));
+    nt_node_set_str(nt, def, "name", base);
+    nt_node_set_ref(nt, def, "receiver", nt_ref(nt, g[ng - 1].def, "receiver") >= 0 ? nt_new_node(nt, "SelfNode") : -1);
+    nt_node_set_ref(nt, def, "parameters", params);
+    nt_node_set_ref(nt, def, "body", cdef_stmts(nt, chain));
+    cdef_insert_after(nt, g[ng - 1].tst, g[ng - 1].top, def);
+    serial += ng;
+    free(base);
+  }
+  for (int i = 0; i < n; i++) free((char *)v[i].path);
+  free(v);
+  comp_grow_node_arrays(c);
+  return groups > 0;
+}
+
 /* ---- builtins/: Enumerable written in Ruby (builtins/enumerable.rb) ----
    The file is spliced ahead of a program that mentions one of its names
    (spinel_parse.c, sp_splice_builtins). Its `module Enumerable` reopen would

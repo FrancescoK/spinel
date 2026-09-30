@@ -20127,6 +20127,7 @@ void analyze_program(Compiler *c) {
   mark_sym_proc_blocks(c);               /* { |_spx| _spx.m } is `&:m` */
   desugar_root_scoped_constants(c);      /* ::Name -> Name (#4801) */
   desugar_engine_branches(c);
+  desugar_conditional_defs(c);
   desugar_when_int_float_ranges(c);     /* when 0..0.05 -> 0.0..0.05 */
   desugar_duplicate_underscore_params(c); /* |_, _| -> |_, _dup1| */
   desugar_encoding_queries(c);          /* Encoding.default_internal -> nil, find("x") -> a constant */
