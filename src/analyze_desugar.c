@@ -6209,6 +6209,68 @@ int desugar_builtins(Compiler *c) {
   return 1;
 }
 
+static int stored_enum_write(Compiler *c, int id, int n0) {
+  static const char *const meths[] = {
+    "map", "collect", "select", "filter", "find_all", "reject", "sort_by", "group_by",
+    "min_by", "max_by", "find", "detect", "flat_map", "collect_concat", "filter_map",
+    "partition", "take_while", "drop_while", "find_index", "minmax_by", NULL };
+  NodeTable *nt = (NodeTable *)c->nt;
+  int x = nt_ref(nt, id, "receiver");
+  const char *nm = nt_str(nt, id, "name"), *vn = nt_str(nt, x, "name");
+  if (!nm || !sp_streq(nm, "each") || nt_ref(nt, id, "block") < 0 || nt_ref(nt, id, "arguments") >= 0 ||
+      nt_kind(nt, x) != NK_LocalVariableReadNode || !vn) return -1;
+  int w = -1, nw = 0;
+  for (int k = comp_lvw_first(c, vn); k >= 0; k = comp_lvw_next(c, k))
+    if (nt_str(nt, k, "name") && sp_streq(nt_str(nt, k, "name"), vn)) { w = k; nw++; }
+  if (nw != 1 || nt_kind(nt, w) != NK_LocalVariableWriteNode) return -1;
+  int v = (int)nt_int(nt, w, "enum_src", nt_ref(nt, w, "value"));
+  const char *m = nt_str(nt, v, "name");
+  int k = 0;
+  if (nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0 || nt_ref(nt, v, "arguments") >= 0 ||
+      nt_ref(nt, v, "receiver") < 0 || !m) return -1;
+  while (meths[k] && !sp_streq(m, meths[k])) k++;
+  if (!meths[k] || program_defines_name(nt, n0, m)) return -1;
+  for (int p = 0; p < n0; p++) {
+    const char *pt = nt_type(nt, p), *pn = nt_str(nt, p, "name");
+    if (pt && pn && sp_streq(pn, vn) && (strstr(pt, "ParameterNode") || sp_streq(pt, "BlockLocalVariableNode"))) return -1;
+  }
+  return w;
+}
+
+void desugar_stored_enum_each(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    int w = nt_kind(nt, id) == NK_CallNode ? stored_enum_write(c, id, n0) : -1;
+    if (w < 0) continue;
+    char hs[48]; snprintf(hs, sizeof hs, "__enum_src_%d", w);
+    int v = (int)nt_int(nt, w, "enum_src", -1);
+    if (v < 0) {
+      v = nt_ref(nt, w, "value");
+      int hw = nt_new_node(nt, "LocalVariableWriteNode"), hr = nt_new_node(nt, "LocalVariableReadNode");
+      int st = nt_new_node(nt, "StatementsNode"), par = nt_new_node(nt, "ParenthesesNode");
+      if (hw < 0 || hr < 0 || st < 0 || par < 0) break;
+      nt_node_set_str(nt, hw, "name", hs);
+      nt_node_set_ref(nt, hw, "value", nt_ref(nt, v, "receiver"));
+      nt_node_set_str(nt, hr, "name", hs);
+      nt_node_set_ref(nt, v, "receiver", hr);
+      int sb[2] = { hw, v };
+      nt_node_set_arr(nt, st, "body", sb, 2);
+      nt_node_set_ref(nt, par, "body", st);
+      nt_node_set_ref(nt, w, "value", par);
+      nt_node_set_int(nt, w, "enum_src", v);
+    }
+    int sr = nt_new_node(nt, "LocalVariableReadNode");
+    if (sr < 0) break;
+    nt_node_set_str(nt, sr, "name", hs);
+    nt_node_set_int(nt, sr, "depth", nt_int(nt, nt_ref(nt, id, "receiver"), "depth", 0));
+    nt_node_set_ref(nt, id, "receiver", sr);
+    nt_node_set_str(nt, id, "name", nt_str(nt, v, "name"));
+    nt_node_set_int(nt, id, "enum_copy", nt_int(nt, v, "enum_copy", -1));
+  }
+  comp_grow_node_arrays(c);
+}
+
 /* Whether any assignment in scope `s` writes the local `vn`. */
 static int scope_writes_local(Compiler *c, Scope *s, const char *vn) {
   const NodeTable *nt = c->nt;

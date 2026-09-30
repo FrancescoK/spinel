@@ -327,6 +327,7 @@ int desugar_value_callable_forwards(Compiler *c);
 int desugar_root_scoped_constants(Compiler *c);
 void desugar_class_reopen(Compiler *c);
 int desugar_builtins(Compiler *c);
+void desugar_stored_enum_each(Compiler *c);
 int desugar_enum_walk_calls(Compiler *c);
 int desugar_index_op_write_user(Compiler *c);
 int desugar_main_self_call(Compiler *c);
