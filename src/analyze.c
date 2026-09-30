@@ -12761,7 +12761,8 @@ static int strbuf_promote_ivar(Compiler *c, int cid, const char *nm) {
 }
 
 /* When `node` is an argument-less reader call (attr or a simple
-   `def m = @iv` method) over an object receiver, resolve the backing ivar:
+   `def m = @iv` method) over an object receiver or implicit self, resolve
+   the backing ivar:
    returns the ivar name (into buf) and sets *defc, else NULL. */
 static const char *an_reader_ivar_of(Compiler *c, int node, int *defc,
                                      char *buf, size_t cap) {
@@ -12772,10 +12773,16 @@ static const char *an_reader_ivar_of(Compiler *c, int node, int *defc,
     if (a2 >= 0) nt_arr(nt, a2, "arguments", &an2);
     if (an2 != 0) return NULL; }
   int rrecv = nt_ref(nt, node, "receiver");
-  if (rrecv < 0) return NULL;
-  TyKind rrt = infer_type(c, rrecv);
-  if (!ty_is_object(rrt)) return NULL;
-  int rcid = ty_object_class(rrt);
+  int rcid;
+  if (rrecv < 0) {
+    rcid = ie_receiverless_self_class(c, node);
+    if (rcid < 0) return NULL;
+  }
+  else {
+    TyKind rrt = infer_type(c, rrecv);
+    if (!ty_is_object(rrt)) return NULL;
+    rcid = ty_object_class(rrt);
+  }
   const char *mn = nt_str(nt, node, "name");
   if (!mn) return NULL;
   *defc = rcid;
@@ -14105,7 +14112,8 @@ static int promote_shared_stored_strings(Compiler *c) {
 
   /* External reader mutation (`expr.reader << x`): the mutator reaches the
      ivar THROUGH its reader, with the receiver an arbitrary object-typed
-     expression (a container read, a call result). Promote the ivar to the
+     expression (a container read, a call result) or implicit self (`reader
+     << x` in the class's own method). Promote the ivar to the
      shared handle and mark the reader read so its emission hands out the
      handle instead of the safe copy -- otherwise the mutation lands in a
      read-out copy and is silently lost. */
@@ -14121,10 +14129,11 @@ static int promote_shared_stored_strings(Compiler *c) {
       if (ma >= 0) nt_arr(nt, ma, "arguments", &mac);
       if (mac != 0) continue; }
     int rrecv = nt_ref(nt, mrecv, "receiver");
-    if (rrecv < 0) continue;
-    TyKind rrt = infer_type(c, rrecv);
-    if (ty_is_object(rrt)) {
-      char ivbuf4[300]; int defc4 = ty_object_class(rrt);
+    int self4 = rrecv < 0 ? ie_receiverless_self_class(c, mrecv) : -1;
+    if (rrecv < 0 && self4 < 0) continue;
+    TyKind rrt = rrecv >= 0 ? infer_type(c, rrecv) : TY_UNKNOWN;
+    if (self4 >= 0 || ty_is_object(rrt)) {
+      char ivbuf4[300]; int defc4 = self4 >= 0 ? self4 : ty_object_class(rrt);
       const char *ivn4 = an_reader_ivar_of(c, mrecv, &defc4, ivbuf4, sizeof ivbuf4);
       if (!ivn4 || defc4 < 0) continue;
       if (strbuf_ivar_mut_kind(c, defc4, ivn4) < 0) continue;

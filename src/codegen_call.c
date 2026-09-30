@@ -22019,6 +22019,27 @@ static int emit_reopen_own_call(Compiler *c, int id, int dispatch_cid, Buf *b) {
    that defines `puts` answers its own bare `puts`, and again at the ordinary
    implicit-self resolution, which also carries the template-method and
    builtin-reopening fallbacks that must NOT preempt a builtin. */
+/* The class a receiverless call dispatches on when it names an attr reader
+   there (and no def overrides it), else -1. */
+static int implicit_self_reader_cid(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || nt_ref(nt, id, "receiver") >= 0) return -1;
+  Scope *self = comp_scope_of(c, id);
+  if (!self) return -1;
+  int dispatch_cid = (g_ie_class_id >= 0) ? g_ie_class_id
+                   : (g_emitting_class_id >= 0) ? g_emitting_class_id : self->class_id;
+  if (dispatch_cid < 0) return -1;
+  int rd_cls = -1, m_cls = -1;
+  if (!comp_reader_in_chain(c, dispatch_cid, name, &rd_cls)) return -1;
+  /* a def in the reader's class or below it overrides the reader: `def start`
+     in a class that includes a module's `attr_reader :start` */
+  if (comp_method_in_chain(c, dispatch_cid, name, &m_cls) >= 0 &&
+      (m_cls == rd_cls || is_descendant(c, m_cls, rd_cls)))
+    return -1;
+  return dispatch_cid;
+}
+
 static int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -22028,14 +22049,7 @@ static int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
   int dispatch_cid = (g_ie_class_id >= 0) ? g_ie_class_id
                    : (g_emitting_class_id >= 0) ? g_emitting_class_id : self->class_id;
   if (dispatch_cid < 0) return 0;
-  int rd_cls = -1, m_cls = -1;
-  int has_reader = comp_reader_in_chain(c, dispatch_cid, name, &rd_cls);
-  /* a def in the reader's class or below it overrides the reader: `def start`
-     in a class that includes a module's `attr_reader :start` */
-  if (has_reader && comp_method_in_chain(c, dispatch_cid, name, &m_cls) >= 0 &&
-      (m_cls == rd_cls || is_descendant(c, m_cls, rd_cls)))
-    has_reader = 0;
-  if (has_reader) {
+  if (implicit_self_reader_cid(c, id) >= 0) {
     const char *rn = comp_resolve_alias(c, dispatch_cid, name);
     /* A shared-mutable slot reads out as a GC copy, as the reader with an
        explicit receiver reads it: the raw handle in a plain string context
@@ -24233,8 +24247,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
      channel, run the ordinary call (its shared-slot tail read publishes),
      then take the handle (falling back to a fresh wrap of the returned
      copy if a path did not publish). */
+  /* An attr reader has no body to publish from; its implicit-self read hands
+     out the slot itself (emit_implicit_self_member). */
   if (c->strbuf_box[id] && nt_ref(c->nt, id, "receiver") < 0 &&
-      nt_ref(c->nt, id, "block") < 0) {
+      nt_ref(c->nt, id, "block") < 0 && implicit_self_reader_cid(c, id) < 0) {
     int tvD = ++g_tmp;
     buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", tvD);
     c->strbuf_box[id] = 0;
