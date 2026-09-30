@@ -18522,6 +18522,7 @@ void analyze_program(Compiler *c) {
   desugar_const_attr_op_assign(c);       /* Klass.a op= v -> Klass.a = Klass.a op v (a class-level accessor) */
   desugar_body_module_eval(c);           /* self.module_eval do S end in a body -> S */
   desugar_extend_self(c);                /* `extend self` -> a def self.m twin per def */
+  desugar_kernel_reopen(c);              /* module Kernel; def m -> a top-level def m */
   /* builtins/enumerable.rb, spliced by the parser: its definitions become
      the receiver-taking top-level functions before any scope is built */
   desugar_builtins(c);
