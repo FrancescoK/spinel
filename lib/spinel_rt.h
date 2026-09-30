@@ -10065,7 +10065,12 @@ static sp_RbVal sp_poly_sum(sp_RbVal v) {
     /* a nil element (the sentinel) raises CRuby's TypeError, as the typed sum
        does for a marked array */
     case SP_BUILTIN_INT_ARRAY:  return sp_box_int(sp_IntArray_sum(sp_IntArray_nil_sum_ck((sp_IntArray *)v.v.p, 0), 0));
-    case SP_BUILTIN_FLT_ARRAY:  return sp_box_float(sp_FloatArray_sum(sp_FloatArray_nil_sum_ck((sp_FloatArray *)v.v.p, 0), 0.0));
+    /* ...and an EMPTY float array answers the Integer init untouched: no
+       element ever promotes it to Float, so CRuby's `[].sum` is 0, not 0.0 */
+    case SP_BUILTIN_FLT_ARRAY: {
+      sp_FloatArray *fa = sp_FloatArray_nil_sum_ck((sp_FloatArray *)v.v.p, 0);
+      return fa->len == 0 ? sp_box_int(0) : sp_box_float(sp_FloatArray_sum(fa, 0.0));
+    }
     /* Accumulate a poly array through sp_poly_add, not sum_int: a container-read
        row of Rationals/Floats/Bignums summed as ints returned 0 (#3159). */
     case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_sum_poly((sp_PolyArray *)v.v.p);
