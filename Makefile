@@ -739,11 +739,28 @@ endif
 # one: CI runs the slices as parallel jobs, since the corpus is what the
 # jobs' wall time is made of. The bundled packages' tests are sliced the
 # same way below. Unset, the whole corpus runs.
+#
+# The pick is make's own: the shell is asked only for the positions (k, k+n,
+# k+2n, ...), and $(word) takes those. The list itself used to go through the
+# shell, `printf '%s\n' <every test> | awk ...`, as one `sh -c` string. Past
+# 128 KiB, Linux refuses a single argument that long (MAX_ARG_STRLEN), so
+# once the corpus names outgrew it (late September 2026, about 4,200 tests)
+# make printed "/bin/sh: Argument list too long" and the pick answered
+# nothing. Every CI lane then ran only the packages' tests and still passed.
+# macOS has no such per-argument limit, so a local run never showed it.
 ifneq ($(TEST_SHARD),)
 SHARD_K := $(word 1,$(subst /, ,$(TEST_SHARD)))
 SHARD_N := $(word 2,$(subst /, ,$(TEST_SHARD)))
-shard_pick = $(shell printf '%s\n' $(1) | awk -v k=$(SHARD_K) -v n=$(SHARD_N) 'NR % n == k % n')
+shard_pick = $(foreach i,$(shell seq $(SHARD_K) $(SHARD_N) $(words $(1))),$(word $(i),$(1)))
+SHARD_ALL := $(TESTS)
 TESTS := $(call shard_pick,$(TESTS))
+# A slice that comes out empty from a non-empty corpus means the pick
+# failed. Stop, rather than let a green run test nothing.
+ifneq ($(SHARD_ALL),)
+ifeq ($(TESTS),)
+$(error TEST_SHARD=$(TEST_SHARD) picked no test out of $(words $(SHARD_ALL)))
+endif
+endif
 endif
 TEST_TARGETS := $(patsubst test/%.rb,build/test-results/%.ok,$(TESTS))
 
