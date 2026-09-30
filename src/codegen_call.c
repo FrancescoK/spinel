@@ -5458,9 +5458,15 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     return 1;
   }
   /* #clear on a poly value (a mixed Array/Hash element via `&:clear`): empty the
-     container in place, dispatching on its runtime kind (#3199). */
+     container in place, dispatching on its runtime kind (#3199). A plain
+     string box cannot be emptied in place, so an lvalue receiver takes the
+     fresh empty string back, as `insert` does (#3445). */
   if (sp_streq(name, "clear") && argc == 0) {
+    const char *rvtc = nt_type(nt, recv);
+    int wb = rvtc && (sp_streq(rvtc, "LocalVariableReadNode") || sp_streq(rvtc, "InstanceVariableReadNode"));
+    if (wb) { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, " = "); }
     buf_puts(b, "sp_poly_clear("); emit_expr(c, recv, b); buf_puts(b, ")");
+    if (wb) buf_puts(b, ")");
     return 1;
   }
   /* In-place string mutators on a poly value: a shared-handle box mutates
