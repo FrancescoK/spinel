@@ -2819,9 +2819,12 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
      --int-overflow=promote every Integer local is boxed while a block
      parameter is not, which is where this shape lives (#4730). The unbox
      raises past the word, as the other typed sinks do. */
+  /* A boxed nil is the parameter's nil sentinel, as any narrowing unbox
+     keeps it: sp_poly_to_i read it as 0, so under promote `x = nil;
+     x.then { |y| y.nil? }` answered false. */
   const char *unbox = NULL;
-  if (use_shadow && et == TY_POLY && tsaved0 == TY_INT) unbox = "sp_poly_to_i";
-  else if (use_shadow && et == TY_POLY && tsaved0 == TY_FLOAT) unbox = "sp_poly_to_f";
+  if (use_shadow && et == TY_POLY && tsaved0 == TY_INT) unbox = "sp_poly_to_i_or_nil";
+  else if (use_shadow && et == TY_POLY && tsaved0 == TY_FLOAT) unbox = "sp_poly_to_f_or_nil";
   if (unbox) use_shadow = 0;
   int din = g_indent;
   if (use_shadow) {
