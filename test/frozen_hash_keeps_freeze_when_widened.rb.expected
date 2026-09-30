@@ -1,0 +1,26 @@
+true
+[FrozenError, true]
+[FrozenError, true]
+[FrozenError, true]
+{}
+0
+[FrozenError, true]
+true
+true
+[FrozenError, true]
+{}
+[FrozenError, true]
+true
+1
+[FrozenError, true]
+true
+1
+[FrozenError, true]
+true
+1
+{1 => 1, a: "x"}
+false
+{"k" => 1, "j" => "s"}
+{1 => 2}
+false
+true
