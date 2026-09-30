@@ -1,0 +1,21 @@
+[2, nil]
+true
+1
+false
+TypeError
+ArgumentError
+true
+TypeError
+[nil, nil]
+true
+2
+false
+TypeError
+nil
+true
+TypeError
+[0, 1]
+1
+[true, 0, 2.0, 1.5]
+[false, 1, TypeError, ArgumentError]
+[true, 0, 4.5, 2.5]

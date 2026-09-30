@@ -1343,6 +1343,7 @@ sp_PolyArray *sp_poly_array_transpose(sp_PolyArray *rows) {
   /* an Integer column holds nil where a row may (its may_nil) or where a row
      of another kind leaves the slot's nil: decided once per call */
   unsigned int_col_nil = 0;
+  unsigned flt_col_nil = 0;   /* the same for a Float column, from its Float rows */
   for (sp_int r = 0; r < nrows; r++) {
     sp_RbVal rv = rows->data[r];
     /* a row that is no Array is CRuby's TypeError, not a row of nothing */
@@ -1350,7 +1351,7 @@ sp_PolyArray *sp_poly_array_transpose(sp_PolyArray *rows) {
       sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Array", sp_transpose_row_class(rv)));
     sp_int rlen = 0;
     if (rv.cls_id == SP_BUILTIN_INT_ARRAY)  { rlen = ((sp_IntArray *)rv.v.p)->len; if(!kind) kind = SP_BUILTIN_INT_ARRAY; int_col_nil |= SP_MAY_NIL((sp_IntArray *)rv.v.p); }
-    else if (rv.cls_id == SP_BUILTIN_FLT_ARRAY) { rlen = ((sp_FloatArray *)rv.v.p)->len; if(!kind) kind = SP_BUILTIN_FLT_ARRAY; int_col_nil = 1; }
+    else if (rv.cls_id == SP_BUILTIN_FLT_ARRAY) { rlen = ((sp_FloatArray *)rv.v.p)->len; if(!kind) kind = SP_BUILTIN_FLT_ARRAY; int_col_nil = 1; flt_col_nil |= SP_MAY_NIL((sp_FloatArray *)rv.v.p); }
     else if (rv.cls_id == SP_BUILTIN_STR_ARRAY) { rlen = ((sp_StrArray *)rv.v.p)->len; if(!kind) kind = SP_BUILTIN_STR_ARRAY; int_col_nil = 1; }
     else if (rv.cls_id == SP_BUILTIN_POLY_ARRAY) { rlen = ((sp_PolyArray *)rv.v.p)->len; if(!kind) kind = SP_BUILTIN_POLY_ARRAY; int_col_nil = 1; }
     else if (rv.cls_id == SP_BUILTIN_PTR_ARRAY) { rlen = ((sp_PtrArray *)rv.v.p)->len; if(!kind) kind = SP_BUILTIN_POLY_ARRAY; int_col_nil = 1; }   /* a row of rows or objects reads generically (#4486) */
@@ -1430,6 +1431,8 @@ else if (kind == SP_BUILTIN_STR_ARRAY) {
      loop (65,536 of them in optcarrot's tile table) pays nothing */
   if (SP_UNLIKELY(int_col_nil) && kind == SP_BUILTIN_INT_ARRAY)
     for (sp_int c = 0; c < result->len; c++) SP_MAY_NIL((sp_IntArray *)result->data[c].v.p) = 1;
+  if (SP_UNLIKELY(flt_col_nil) && kind == SP_BUILTIN_FLT_ARRAY)
+    for (sp_int c = 0; c < result->len; c++) SP_MAY_NIL((sp_FloatArray *)result->data[c].v.p) = 1;
   return result;
 }
 

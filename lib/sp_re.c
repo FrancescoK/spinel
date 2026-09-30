@@ -1173,8 +1173,8 @@ sp_IntArray *sp_MatchData_offset(sp_MatchData *m, sp_int i) {SP_GC_ROOT(m);
   sp_md_check_index(m, i);
   sp_IntArray *a = sp_IntArray_new();
   if (!m || i < 0 || i >= m->ncap) { SP_MAY_NIL(a) = 1; sp_IntArray_push(a, SP_INT_NIL); sp_IntArray_push(a, SP_INT_NIL); return a; }
-  sp_IntArray_push(a, sp_md_char_off(m, m->caps[i * 2]));
-  sp_IntArray_push(a, sp_md_char_off(m, m->caps[(i * 2) + 1]));
+  sp_IntArray_push_nilable(a, sp_md_char_off(m, m->caps[i * 2]));
+  sp_IntArray_push_nilable(a, sp_md_char_off(m, m->caps[(i * 2) + 1]));
   return a;
 }
 /* byte-offset accessors: the raw byte positions in source (no char conversion). */
