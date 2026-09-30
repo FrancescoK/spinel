@@ -4763,6 +4763,9 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
         emit_indent(b, indent + 1);
         buf_printf(b, "lv_%s = ", p0);
         if (p0t == TY_POLY) buf_puts(b, vb0);
+        /* an element that is nil binds a nullable parameter's own nil, where
+           `.v.i` read the 0 under the tag */
+        else if (b0->nullable_int) emit_unbox_nilable_text(c, p0t, vb0, b);
         else emit_unbox_text(c, p0t, vb0, b);
         buf_puts(b, ";\n");
       }

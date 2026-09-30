@@ -8544,10 +8544,16 @@ static TyKind bs_value(Compiler *c, int v) {
    whether the slot can hold it (block_settle_types, cs_type_params). Only a
    literal: a value typed nil this round, an ivar nothing but the
    constructor's nil has written yet, may take another type later, and an
-   Integer parameter settled beside it stayed one after the box it took. */
+   Integer parameter settled beside it stayed one after the box it took.
+   An Integer or a Float value that may be nil (nullable_int_value: `i == 0
+   ? nil : i`, a missed element read) records BS_NIL beside its type: it is
+   emitted as the slot's sentinel when it is nil, which the binders hand
+   through as they do a literal's. */
 static TyKind bs_join_val(Compiler *c, TyKind a, int v, char *flags) {
   if (v >= 0 && nt_kind(c->nt, v) == NK_NilNode) { *flags |= BS_NIL; return a; }
-  return bs_join(a, bs_value(c, v));
+  TyKind t = bs_value(c, v);
+  if ((t == TY_INT || t == TY_FLOAT) && nullable_int_value(c, v)) *flags |= BS_NIL;
+  return bs_join(a, t);
 }
 
 /* The values a splat of `x` spreads, into the gathered element type `e`

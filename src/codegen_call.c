@@ -23944,6 +23944,19 @@ static int thunk_param_ok(Compiler *c, TyKind pt) {
   if (ty_is_object(pt) && !comp_ty_value_obj(c, pt)) return 1;
   return 0;
 }
+/* A parameter some `.call` site may pass nil (the marking's nullable_int)
+   binds it as the slot's own nil: through the thunk's checked readers,
+   which refuse nil for a number, and through the laundered args[], whose
+   sp_int slot holds the 0 the call site put there while sp_poly_to_f reads
+   the boxed nil as 0.0. Only the boxed side channel tells nil apart. */
+static int bm_param_nil_ok(LocalVar *pp, TyKind pt) {
+  return pp && pp->nullable_int && (pt == TY_INT || pt == TY_FLOAT);
+}
+static void emit_bm_param_nil_ok(TyKind pt, const char *slot, const char *idx, int boxed_src, Buf *pb) {
+  if (boxed_src) buf_printf(pb, "sp_bm_arg_%s_or_nil(%s)", pt == TY_INT ? "int" : "float", slot);
+  else if (pt == TY_FLOAT) buf_printf(pb, "sp_poly_to_f_or_nil(%s)", slot);
+  else buf_printf(pb, "(%s.tag == SP_TAG_NIL ? SP_INT_NIL : args[%s])", slot, idx);
+}
 static void emit_thunk_unbox(Compiler *c, TyKind pt, const char *slot, Buf *pb) {
   switch (pt) {
     case TY_POLY:   buf_puts(pb, slot); return;
@@ -24263,7 +24276,8 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
         snprintf(kv, sizeof kv, "sp_poly_index_poly(_sp_kwh, sp_box_sym((sp_sym)%d))", ksym);
         buf_printf(pb, " _a%d;\n  if (_sp_haskw && sp_poly_has_key(_sp_kwh, sp_box_sym((sp_sym)%d))) _a%d = ",
                    j, ksym, j);
-        if (thunk_param_ok(c, pt)) emit_thunk_unbox(c, pt, kv, pb);
+        if (bm_param_nil_ok(pp, pt)) emit_bm_param_nil_ok(pt, kv, NULL, 1, pb);
+        else if (thunk_param_ok(c, pt)) emit_thunk_unbox(c, pt, kv, pb);
         else emit_unbox_text(c, pt, kv, pb);
         buf_puts(pb, ";\n  else { ");
         if (hasdef) {
@@ -24276,7 +24290,8 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
         /* a post, read from the end, is there once the count is judged */
         if (need >= 0) buf_printf(pb, " _a%d;\n  if (argc > %d) _a%d = ", j, need, j);
         else buf_printf(pb, " _a%d = ", j);
-        if (boxed_src) emit_thunk_unbox(c, pt, slot, pb);   /* the boxed value, checked */
+        if (bm_param_nil_ok(pp, pt)) emit_bm_param_nil_ok(pt, slot, idx, boxed_src, pb);
+        else if (boxed_src) emit_thunk_unbox(c, pt, slot, pb);   /* the boxed value, checked */
         else if (pt == TY_POLY) buf_puts(pb, slot);
         else if (pt == TY_FLOAT) buf_printf(pb, "sp_poly_to_f(%s)", slot);
         else if (pt == TY_SYMBOL) buf_printf(pb, "(sp_sym)args[%s]", idx);
@@ -24351,6 +24366,12 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
                  kwrest_any_key(c, tm) ? "SP_BUILTIN_POLY_POLY_HASH" : "SP_BUILTIN_SYM_POLY_HASH");
     else if (bind) buf_printf(&args, "_a%d", k - shift);
     else if (pt == TY_POLY) buf_printf(&args, "_sp_proc_poly_args[%d]", k - shift);
+    else if (bm_param_nil_ok(pp, pt)) {
+      char sl[48], ix[16];
+      snprintf(sl, sizeof sl, "_sp_proc_poly_args[%d]", k - shift);
+      snprintf(ix, sizeof ix, "%d", k - shift);
+      emit_bm_param_nil_ok(pt, sl, ix, 0, &args);
+    }
     else if (pt == TY_FLOAT) buf_printf(&args, "sp_poly_to_f(_sp_proc_poly_args[%d])", k - shift);
     else if (pt == TY_SYMBOL) buf_printf(&args, "(sp_sym)args[%d]", k - shift);
     else if (pt == TY_STRBUF) buf_printf(&args, "sp_poly_as_strbuf(_sp_proc_poly_args[%d])", k - shift);

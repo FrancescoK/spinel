@@ -2879,6 +2879,13 @@ static SP_INLINE double sp_bm_arg_float(sp_RbVal v) {
   if (v.tag == SP_TAG_INT && v.v.i != SP_INT_NIL) return (double)v.v.i;
   sp_bm_arg_mismatch(v, "Float");
 }
+/* the same for a parameter a call may pass nil: it binds the slot's own nil */
+static SP_INLINE sp_int sp_bm_arg_int_or_nil(sp_RbVal v) {
+  return v.tag == SP_TAG_NIL ? SP_INT_NIL : sp_bm_arg_int(v);
+}
+static SP_INLINE double sp_bm_arg_float_or_nil(sp_RbVal v) {
+  return v.tag == SP_TAG_NIL ? sp_float_nil() : sp_bm_arg_float(v);
+}
 static SP_INLINE const char *sp_bm_arg_str(sp_RbVal v) {
   if (v.tag == SP_TAG_STR) return v.v.s;
   if (v.tag == SP_TAG_NIL) return NULL;

@@ -4,6 +4,7 @@
 
 
 static int narrow_int_table_ivars(Compiler *c);  /* declared early: the fixpoint calls it */
+int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
 
 /* --int-overflow=promote flag; see analyze.h. Default off. */
 int g_promote_mode = 0;
@@ -21033,6 +21034,74 @@ static void mark_array_or_nil_slots(Compiler *c) {
   }
 }
 
+/* Can one of the values a block site passes be an Integer's or a Float's
+   nil? Asked of every site before its block is typed again below, so the
+   common program -- no site passes one -- pays for this walk alone. */
+static int site_args_may_be_nil(Compiler *c, const int *av, int an) {
+  const NodeTable *nt = c->nt;
+  for (int k = 0; k < an; k++) {
+    int v = av[k];
+    if (v >= 0 && nt_kind(nt, v) == NK_SplatNode) {
+      int x = nt_ref(nt, v, "expression");
+      int en = 0; const int *el = x >= 0 && nt_kind(nt, x) == NK_ArrayNode ? nt_arr(nt, x, "elements", &en) : NULL;
+      if (el && site_args_may_be_nil(c, el, en)) return 1;
+      continue;
+    }
+    TyKind t = v >= 0 ? c->ntype[v] : TY_UNKNOWN;
+    if ((t == TY_INT || t == TY_FLOAT) && nullable_int_value(c, v)) return 1;
+  }
+  return 0;
+}
+
+/* The marks a call's arguments hand the parameters of method `mi` it binds:
+   an object parameter handed nil, an array one handed an array holding the
+   sentinel, an Integer or Float one handed a value that can be it -- a
+   keyword parameter by the value its key names (`k: nil`). Returns 1 if any
+   mark was set. */
+static int mark_nullable_params_of_call(Compiler *c, int id, int mi) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  Scope *m = &c->scopes[mi];
+  int ca = nt_ref(nt, id, "arguments");
+  int an = 0; const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+  ArgLayout L;
+  call_layout(c, m, av, an, &L);
+  for (int k = 0; k < m->nparams; k++) {
+    int a = layout_plain_arg(c, m, av, &L, k);
+    LocalVar *p = a >= 0 && m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
+    if (!p) continue;
+    /* an object parameter handed nil, or handed one that was (#5088) */
+    if (ty_is_object(p->type) && !p->obj_nilable) {
+      int nilarg = nt_kind(nt, a) == NK_NilNode;
+      if (!nilarg && nt_kind(nt, a) == NK_LocalVariableReadNode) {
+        Scope *as = comp_scope_of(c, a);
+        const char *an2 = nt_str(nt, a, "name");
+        LocalVar *al = as && an2 ? scope_local(as, an2) : NULL;
+        nilarg = al && al->is_param && al->obj_nilable;
+      }
+      if (nilarg) { p->obj_nilable = 1; changed = 1; }
+    }
+    if ((p->type == TY_INT_ARRAY || p->type == TY_FLOAT_ARRAY) && !p->nullable_int_elem &&
+        nullable_int_elem_expr(c, a, 0)) { p->nullable_int_elem = 1; changed = 1; }
+    if ((p->type != TY_INT && p->type != TY_FLOAT) || p->nullable_int) continue;
+    if (nullable_int_value(c, a)) { p->nullable_int = 1; changed = 1; continue; }
+    /* an ivar that can be read before anything assigned it, or a parameter
+       already carrying one: boxing the parameter has to answer nil (#5085) */
+    if (!p->box_nullable && box_nullable_arg(c, a)) { p->box_nullable = 1; changed = 1; }
+  }
+  /* a keyword parameter takes the value its key names (`k: nil`) */
+  int kwh = an > 0 && nt_kind(nt, av[an - 1]) == NK_KeywordHashNode ? av[an - 1] : -1;
+  for (int k = 0; kwh >= 0 && k < m->nparams; k++) {
+    const char *pk = m->pnames[k];
+    LocalVar *p = pk ? scope_local(m, pk) : NULL;
+    if (!p || (p->type != TY_INT && p->type != TY_FLOAT) || p->nullable_int ||
+        !callee_param_is_declared_kwarg(c, m, pk)) continue;
+    if (nullable_int_value(c, ie_kwhash_value(c, kwh, pk))) { p->nullable_int = 1; changed = 1; }
+  }
+  arg_layout_free(&L);
+  return changed;
+}
+
 /* Mark the int locals that can hold that sentinel, so codegen boxes them as
    nil rather than as INTPTR_MIN. Boxing every int through the nil check costs
    ~8% on optcarrot -- every pixel goes through it -- so the marking is static
@@ -21078,6 +21147,7 @@ static void mark_nullable_int_locals(Compiler *c) {
   long rounds_max = c->nscopes + 2 + c->ngvars;
   for (int s = 0; s < c->nscopes; s++) rounds_max += c->scopes[s].nlocals;
   int converged = 0;
+  block_sites_index(c);   /* the block arm reads each method's yields */
   for (long round = 0; round < rounds_max; round++) {
     int changed = 0;
     nn_compute(c, (int)round);
@@ -21185,22 +21255,43 @@ static void mark_nullable_int_locals(Compiler *c) {
         ci->ivar_nullable_int_elem[iv] = 1; changed = 1;
       }
     }
-    /* `ks.each { |k| h[k] = ... }`: the block parameter IS the element. */
+    /* `ks.each { |k| h[k] = ... }`: the block parameter IS the element. A
+       lone parameter is one whatever the iterator, a numbered one and `it`
+       too; `reduce`/`inject` and a comparing block (`sort { |a, b| }`,
+       `min`, `max`, `minmax`) take an element in both. An iterator whose
+       block takes the element first binds only that one -- the second is
+       `each_with_index`'s index, `each_with_object`'s memo -- through an
+       enumerator chain as well (`map.with_index`, `each.with_object`).
+       Anything else with two (`|k, v|`) has a non-element slot. */
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
       int recv = nt_ref(nt, id, "receiver"), blk = nt_ref(nt, id, "block");
-      if (recv < 0 || blk < 0) continue;
-      if (!nullable_int_elem_expr(c, recv, 0)) continue;
-      int bp = nt_ref(nt, blk, "parameters");
-      int params = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
-      int rn = 0; const int *reqs = params >= 0 ? nt_arr(nt, params, "requireds", &rn) : NULL;
-      /* |v| is the element; `reduce`/`inject` bind BOTH parameters to one.
-         Anything else with two (`|k, i|`, `|k, v|`) has a non-element slot. */
       const char *rnm2 = nt_str(nt, id, "name");
-      int fold = rnm2 && (sp_streq(rnm2, "reduce") || sp_streq(rnm2, "inject"));
-      if (!reqs || rn < 1 || (rn != 1 && !(fold && rn == 2))) continue;
+      if (recv < 0 || blk < 0 || !rnm2) continue;
+      int both = sp_streq(rnm2, "reduce") || sp_streq(rnm2, "inject") ||
+                 sp_streq(rnm2, "sort") || sp_streq(rnm2, "sort!") || sp_streq(rnm2, "max") ||
+                 sp_streq(rnm2, "min") || sp_streq(rnm2, "minmax");
+      int first = strbuf_elem_first_iterator(rnm2) || sp_streq(rnm2, "with_index") ||
+                  sp_streq(rnm2, "with_object");
+      /* the enumerator a blockless call hands on yields the same elements */
+      for (int guard = 0; first && guard < 4 && nt_kind(nt, recv) == NK_CallNode &&
+                          nt_ref(nt, recv, "block") < 0; guard++) {
+        const char *cn = nt_str(nt, recv, "name");
+        int ca = nt_ref(nt, recv, "arguments");
+        if (!cn || !(strbuf_elem_first_iterator(cn) || sp_streq(cn, "with_index") ||
+                     sp_streq(cn, "with_object") || sp_streq(cn, "lazy"))) break;
+        if (ca >= 0 && !sp_streq(cn, "with_index") && !sp_streq(cn, "with_object") &&
+            !sp_streq(cn, "each_with_object")) break;
+        recv = nt_ref(nt, recv, "receiver");
+        if (recv < 0) break;
+      }
+      if (recv < 0 || !nullable_int_elem_expr(c, recv, 0)) continue;
+      int rn = 0;
+      while (rn < 9 && block_param_name(c, blk, rn)) rn++;
+      if (rn < 1 || (rn > 2 && both)) continue;
+      if (rn > 1 && !both && !first) continue;
       Scope *bsc = comp_scope_of(c, blk);
-      for (int pk = 0; pk < rn; pk++) {
-        const char *pnm = nt_str(nt, reqs[pk], "name");
+      for (int pk = 0; pk < (rn == 1 || !both ? 1 : 2); pk++) {
+        const char *pnm = block_param_name(c, blk, pk);
         LocalVar *plv = pnm && bsc ? scope_local(bsc, pnm) : NULL;
         if (!plv || (plv->type != TY_INT && plv->type != TY_FLOAT) || plv->nullable_int) continue;
         plv->nullable_int = 1; changed = 1;
@@ -21370,36 +21461,85 @@ static void mark_nullable_int_locals(Compiler *c) {
                                       : comp_cmethod_in_chain(c, rci, cnm, NULL);
         }
       }
-      if (mi < 0) continue;
-      Scope *m = &c->scopes[mi];
-      int ca = nt_ref(nt, id, "arguments");
-      int an = 0; const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
-      ArgLayout L;
-      call_layout(c, m, av, an, &L);
-      for (int k = 0; k < m->nparams; k++) {
-        int a = layout_plain_arg(c, m, av, &L, k);
-        LocalVar *p = a >= 0 && m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
-        if (!p) continue;
-        /* an object parameter handed nil, or handed one that was (#5088) */
-        if (ty_is_object(p->type) && !p->obj_nilable) {
-          int nilarg = nt_kind(nt, a) == NK_NilNode;
-          if (!nilarg && nt_kind(nt, a) == NK_LocalVariableReadNode) {
-            Scope *as = comp_scope_of(c, a);
-            const char *an2 = nt_str(nt, a, "name");
-            LocalVar *al = as && an2 ? scope_local(as, an2) : NULL;
-            nilarg = al && al->is_param && al->obj_nilable;
-          }
-          if (nilarg) { p->obj_nilable = 1; changed = 1; }
+      /* `m.call(v)` on a Method, or on the Proc its to_proc made, is the only
+         site of a method reached that way: it binds each method the receiver
+         may hold (method_recv_nodes). A bound builtin's wrapper carries its
+         receiver in the first parameter and is left alone. */
+      const char *cn = nt_str(nt, id, "name");
+      if (mi >= 0) changed |= mark_nullable_params_of_call(c, id, mi);
+      else if (recv >= 0 && cn && (sp_streq(cn, "call") || sp_streq(cn, "[]") || sp_streq(cn, "()"))) {
+        TyKind rt = infer_type(c, recv);
+        int *mns = NULL;
+        int nmn = rt == TY_METHOD ? method_recv_nodes(c, recv, &mns)
+                : rt == TY_PROC ? proc_to_proc_method_nodes(c, recv, &mns) : 0;
+        for (int j = 0; j < nmn; j++) {
+          int tmi = method_obj_target_mi(c, mns[j]);
+          if (tmi >= 0 && !method_call_param_shift(c, mns[j], tmi))
+            changed |= mark_nullable_params_of_call(c, id, tmi);
         }
-        if ((p->type == TY_INT_ARRAY || p->type == TY_FLOAT_ARRAY) && !p->nullable_int_elem &&
-            nullable_int_elem_expr(c, a, 0)) { p->nullable_int_elem = 1; changed = 1; }
-        if ((p->type != TY_INT && p->type != TY_FLOAT) || p->nullable_int) continue;
-        if (nullable_int_value(c, a)) { p->nullable_int = 1; changed = 1; continue; }
-        /* an ivar that can be read before anything assigned it, or a parameter
-           already carrying one: boxing the parameter has to answer nil (#5085) */
-        if (!p->box_nullable && box_nullable_arg(c, a)) { p->box_nullable = 1; changed = 1; }
+        free(mns);
       }
-      arg_layout_free(&L);
+    }
+    /* A BLOCK parameter bound from such a value: the sites that bind the
+       block -- each yield of the method the call reaches, or an
+       instance_exec's own arguments -- typed again by the binding plan
+       (block_site_types), which records a value that may be nil as BS_NIL.
+       An Integer or a Float required or optional stays that type, its
+       binders handing the sentinel through, so it is marked here as
+       block_settle_types marks one during inference: a value the rounds above
+       made nilable since (a local copied from a missed read) was not one yet
+       then, and `yield(i == 0 ? nil : i)` left `Integer === a` true. */
+    {
+      char *hot = NULL;
+      for (int si = 1; si < c->nscopes; si++) {
+        if (!c->scopes[si].yields) continue;
+        const int *sites = NULL;
+        int ns = block_sites(c, si, &sites);
+        for (int k = 0; k < ns; k++) {
+          int a = nt_ref(nt, sites[k], "arguments"); int an = 0;
+          const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+          if (!av || !site_args_may_be_nil(c, av, an)) continue;
+          if (!hot) hot = calloc((size_t)c->nscopes, 1);
+          hot[si] = 1;
+          break;
+        }
+      }
+      NT_FOREACH_KIND(nt, NK_CallNode, u) {
+        int blk = nt_ref(nt, u, "block");
+        if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+        const char *un = nt_str(nt, u, "name");
+        int iex = un && sp_streq(un, "instance_exec");
+        int ia = iex ? nt_ref(nt, u, "arguments") : -1; int ian = 0;
+        const int *iav = ia >= 0 ? nt_arr(nt, ia, "arguments", &ian) : NULL;
+        if (iex ? !(iav && site_args_may_be_nil(c, iav, ian)) : !hot) continue;
+        Scope *bs = comp_scope_of(c, blk);
+        BlockSig bsig;
+        block_sig(c, nt_ref(nt, blk, "parameters"), 0, &bsig);
+        int np = bsig.P + bsig.O + bsig.Q;
+        if (!bs || bsig.P + bsig.O == 0) continue;
+        TyKind *pos = calloc((size_t)(np + bsig.nk + 1), sizeof(TyKind));
+        char *absent = calloc((size_t)np + 1, 1);
+        if (iex) block_site_types(c, &bsig, iav, ian, pos, absent, pos + np);
+        else for (int si = 1; si < c->nscopes; si++) {
+          if (!hot[si] || !an_call_targets_scope(c, u, si, &c->scopes[si])) continue;
+          const int *sites = NULL;
+          int ns = block_sites(c, si, &sites);
+          for (int k = 0; k < ns; k++) {
+            int a = block_site_args(c, si, sites[k], u); int an = 0;
+            const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+            block_site_types(c, &bsig, av, an, pos, absent, pos + np);
+          }
+        }
+        for (int i = 0; i < bsig.P + bsig.O; i++) {
+          if (!(absent[i] & BS_NIL)) continue;
+          const char *pnm = block_sig_name(c, &bsig, i);
+          LocalVar *pv = pnm ? scope_local(bs, pnm) : NULL;
+          if (!pv || (pv->type != TY_INT && pv->type != TY_FLOAT) || pv->nullable_int) continue;
+          pv->nullable_int = 1; changed = 1;
+        }
+        free(pos); free(absent);
+      }
+      free(hot);
     }
     /* A destructuring target the right side cannot supply gets nil, through a
        target node rather than a write node of its own -- `a, b, *c, d, e = 1`
