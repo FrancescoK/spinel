@@ -1348,6 +1348,146 @@ int desugar_reopen_implicit_self(Compiler *c) {
   return changed;
 }
 
+/* ---- a bare call inside a `class Thread` / `class Fiber` reopening ----------
+   `thread_variable_get(:tag)` in a method the reopening adds is the thread's
+   own builtin method on self. The implicit-self resolution inlines a few
+   String / Integer names for the scalar reopenings and knows nothing of a
+   handle's surface; give the call its receiver, and the typed dispatch on
+   the thread (self is a Thread there) serves it like any `t.m(...)`. Only a
+   name no reopening defines (those resolve as the class's own). Runs in the
+   fixpoint, after the scope pass. */
+int desugar_handle_reopen_self_recv(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "receiver") >= 0) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    Scope *s = comp_scope_of(c, id);
+    if (!s || s->class_id < 0 || s->is_cmethod || s->class_id >= c->nclasses) continue;
+    const char *cn = c->classes[s->class_id].name;
+    if (!cn || (!sp_streq(cn, "Thread") && !sp_streq(cn, "Fiber"))) continue;
+    if (comp_method_in_chain(c, s->class_id, nm, NULL) >= 0) continue;
+    if (nt_int(nt, id, "vcall", 0) && nt_ref(nt, id, "arguments") < 0) continue;  /* a local read, not a call */
+    int sf = nt_new_node(nt, "SelfNode");
+    if (sf < 0) continue;
+    nt_node_set_int(nt, sf, "node_line", nt_int(nt, id, "node_line", 0));
+    nt_node_set_int(nt, sf, "node_file", nt_int(nt, id, "node_file", 0));
+    nt_node_set_ref(nt, id, "receiver", sf);
+    comp_grow_node_arrays(c);
+    c->nscope[sf] = c->nscope[id];
+    changed = 1;
+  }
+  return changed;
+}
+
+/* ---- `Thread.attr_accessor :x` / `Fiber.attr_accessor :x` -------------------
+   An attribute on every thread and fiber object -- activesupport's
+   IsolatedExecutionState gives both an active_support_execution_state. A
+   thread and a fiber are runtime handles with no ivar slots, but each has a
+   store of its own: the thread's thread-local table, the fiber's storage.
+   The declaration becomes a reopening appended to the program:
+     class Thread
+       def x = thread_variable_get(:__attr_x)
+       def x=(val) = thread_variable_set(:__attr_x, val)
+     end
+   (a fiber's through __storage_get / __storage_set on self), keyed apart
+   from the program's own thread variables. attr_reader / attr_writer give
+   one half. Symbol names only; anything else leaves the call alone. */
+static int ma_def(NodeTable *nt, const char *name, int self_recv, int with_val, int body_stmt, long long line);
+static int ha_call(NodeTable *nt, const char *m, const char *key, int with_val, long long line) {
+  int cl = nt_new_node(nt, "CallNode"); if (cl < 0) return -1;
+  nt_node_set_ref(nt, cl, "receiver", -1);
+  nt_node_set_str(nt, cl, "name", m);
+  nt_node_set_int(nt, cl, "node_line", line);
+  nt_node_set_ref(nt, cl, "block", -1);
+  int sym = nt_new_node(nt, "SymbolNode"); if (sym < 0) return -1;
+  nt_node_set_str(nt, sym, "value", key);
+  int args = nt_new_node(nt, "ArgumentsNode"); if (args < 0) return -1;
+  int av[2] = { sym, -1 }; int an = 1;
+  if (with_val) {
+    int rd = nt_new_node(nt, "LocalVariableReadNode"); if (rd < 0) return -1;
+    nt_node_set_str(nt, rd, "name", "val"); nt_node_set_int(nt, rd, "depth", 0);
+    av[1] = rd; an = 2;
+  }
+  nt_node_set_arr(nt, args, "arguments", av, an);
+  nt_node_set_ref(nt, cl, "arguments", args);
+  return cl;
+}
+int desugar_handle_attr_accessor(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int root = nt->root_id;
+  int top = root >= 0 ? nt_ref(nt, root, "statements") : -1;
+  if (top < 0 || nt_kind(nt, top) != NK_StatementsNode) return 0;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "block") >= 0) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int reader = nm && (sp_streq(nm, "attr_accessor") || sp_streq(nm, "attr_reader"));
+    int writer = nm && (sp_streq(nm, "attr_accessor") || sp_streq(nm, "attr_writer"));
+    if (!reader && !writer) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    const char *rn = recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
+    if (!rn || (!sp_streq(rn, "Thread") && !sp_streq(rn, "Fiber"))) continue;
+    int is_thread = sp_streq(rn, "Thread");
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av0 = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an < 1 || !av0) continue;
+    int ok = 1;
+    for (int a = 0; a < an; a++) if (nt_kind(nt, av0[a]) != NK_SymbolNode || !nt_str(nt, av0[a], "value")) ok = 0;
+    if (!ok) continue;
+    int *av = (int *)malloc(sizeof(int) * (size_t)an);
+    if (!av) continue;
+    memcpy(av, av0, sizeof(int) * (size_t)an);
+    long long line = nt_int(nt, id, "node_line", 0);
+    int *defs = NULL, nd = 0;
+    for (int a = 0; a < an && ok; a++) {
+      const char *base = nt_str(nt, av[a], "value");
+      char key[300], wn[300];
+      snprintf(key, sizeof key, "__attr_%s", base);
+      snprintf(wn, sizeof wn, "%s=", base);
+      if (reader) {
+        int body = ha_call(nt, is_thread ? "thread_variable_get" : "__storage_get", key, 0, line);
+        int d = body >= 0 ? ma_def(nt, base, 0, 0, body, line) : -1;
+        if (d < 0) { ok = 0; break; }
+        xc_push(&defs, &nd, d);
+      }
+      if (writer) {
+        int body = ha_call(nt, is_thread ? "thread_variable_set" : "__storage_set", key, 1, line);
+        int d = body >= 0 ? ma_def(nt, wn, 0, 1, body, line) : -1;
+        if (d < 0) { ok = 0; break; }
+        xc_push(&defs, &nd, d);
+      }
+    }
+    free(av);
+    if (!ok || !nd) { free(defs); continue; }
+    int cls = nt_new_node(nt, "ClassNode");
+    int cp = nt_new_node(nt, "ConstantReadNode");
+    int body = nt_new_node(nt, "StatementsNode");
+    if (cls < 0 || cp < 0 || body < 0) { free(defs); continue; }
+    nt_node_set_str(nt, cp, "name", rn);
+    nt_node_set_ref(nt, cls, "constant_path", cp);
+    nt_node_set_ref(nt, cls, "superclass", -1);
+    nt_node_set_arr(nt, body, "body", defs, nd);
+    nt_node_set_ref(nt, cls, "body", body);
+    nt_node_set_int(nt, cls, "node_line", line);
+    nt_node_set_int(nt, cls, "node_file", nt_int(nt, id, "node_file", 0));
+    free(defs);
+    /* the reopening joins the program's statements; the declaration goes */
+    int tn = 0; const int *tb = nt_arr(nt, top, "body", &tn);
+    int *nb = (int *)malloc(sizeof(int) * (size_t)(tn + 1));
+    if (!nb) continue;
+    memcpy(nb, tb, sizeof(int) * (size_t)tn);
+    nb[tn] = cls;
+    nt_node_set_arr(nt, top, "body", nb, tn + 1);
+    free(nb);
+    nt_node_reset(nt, id, "NilNode");
+    changed = 1;
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 /* Proc#>> / #<< with a Method operand: wrap the Method side in #to_proc at the
    AST, so composition always runs proc-to-proc. The to_proc emission builds a
    real trampoline proc that publishes its boxed result through the return
@@ -3174,6 +3314,78 @@ int desugar_call_op_write(Compiler *c) {
     int encl = c->nscope[id];
     for (int j = recv2; j < nt->count; j++) c->nscope[j] = encl;
     (void)base;
+    changed = 1;
+  }
+  return changed;
+}
+
+/* `recv.attr ||= value` / `&&=` where the receiver is a builtin a reopening
+   gave the reader and the writer to -- a Thread with the accessor
+   `Thread.attr_accessor` declared, activesupport's IsolatedExecutionState
+   `@scope.current.active_support_execution_state ||= {}` -- has no ivar
+   slot to store through and no user object for the reader/writer pairing,
+   so it was refused. It is the two calls Ruby means, on the receiver
+   evaluated once:
+     (__cow_N = recv; __cow_N.attr || (__cow_N.attr = value))
+   A user-object receiver keeps the emitter's own pairing; a receiver of no
+   known kind keeps the poly path. */
+int desugar_call_or_write_reopen(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_CallOrWriteNode && k != NK_CallAndWriteNode) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    const char *attr = nt_str(nt, id, "name");
+    int val = nt_ref(nt, id, "value");
+    if (recv < 0 || !attr || val < 0) continue;
+    TyKind rt = infer_type(c, recv);
+    if (rt == TY_UNKNOWN || rt == TY_VOID || rt == TY_NIL || ty_is_object(rt)) continue;
+    char wname[300];
+    snprintf(wname, sizeof wname, "%s=", attr);
+    /* both halves defined by a reopening of a builtin (a poly receiver
+       counts only for those: a user object's pairing stays the emitter's) */
+    int has_def_writer = 0, has_def_reader = 0;
+    for (int q = 0; q < c->nclasses && !(has_def_writer && has_def_reader); q++) {
+      if (!c->classes[q].name || !is_builtin_reopen(c->classes[q].name)) continue;
+      if (comp_method_in_chain(c, q, wname, NULL) >= 0) has_def_writer = 1;
+      if (comp_method_in_chain(c, q, attr, NULL) >= 0) has_def_reader = 1;
+    }
+    if (!has_def_writer || !has_def_reader) continue;
+    char tname[48]; snprintf(tname, sizeof tname, "__cow_%d", id);
+    int first = nt->count;
+    int tw = nt_new_node(nt, "LocalVariableWriteNode");
+    int tr1 = nt_new_node(nt, "LocalVariableReadNode");
+    int tr2 = nt_new_node(nt, "LocalVariableReadNode");
+    int rd = nt_new_node(nt, "CallNode");
+    int wargs = nt_new_node(nt, "ArgumentsNode");
+    int wc = nt_new_node(nt, "CallNode");
+    int join = nt_new_node(nt, k == NK_CallOrWriteNode ? "OrNode" : "AndNode");
+    int stmts = nt_new_node(nt, "StatementsNode");
+    if (tw < 0 || tr1 < 0 || tr2 < 0 || rd < 0 || wargs < 0 || wc < 0 || join < 0 || stmts < 0) continue;
+    long long line = nt_int(nt, id, "node_line", 0);
+    nt_node_set_str(nt, tw, "name", tname); nt_node_set_int(nt, tw, "depth", 0);
+    nt_node_set_ref(nt, tw, "value", recv);
+    nt_node_set_str(nt, tr1, "name", tname); nt_node_set_int(nt, tr1, "depth", 0);
+    nt_node_set_str(nt, tr2, "name", tname); nt_node_set_int(nt, tr2, "depth", 0);
+    nt_node_set_ref(nt, rd, "receiver", tr1); nt_node_set_str(nt, rd, "name", attr);
+    nt_node_set_ref(nt, rd, "arguments", -1); nt_node_set_ref(nt, rd, "block", -1);
+    nt_node_set_int(nt, rd, "node_line", line);
+    { int one[1]; one[0] = val; nt_node_set_arr(nt, wargs, "arguments", one, 1); }
+    nt_node_set_ref(nt, wc, "receiver", tr2); nt_node_set_str(nt, wc, "name", wname);
+    nt_node_set_ref(nt, wc, "arguments", wargs); nt_node_set_ref(nt, wc, "block", -1);
+    nt_node_set_int(nt, wc, "node_line", line);
+    nt_node_set_ref(nt, join, "left", rd); nt_node_set_ref(nt, join, "right", wc);
+    { int two[2]; two[0] = tw; two[1] = join; nt_node_set_arr(nt, stmts, "body", two, 2); }
+    nt_node_set_type(nt, id, "ParenthesesNode");
+    nt_node_set_ref(nt, id, "body", stmts);
+    nt_node_set_ref(nt, id, "receiver", -1);
+    nt_node_set_ref(nt, id, "value", -1);
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = first; j < nt->count; j++) c->nscope[j] = encl;
+    scope_local_intern(comp_scope_of(c, tw), tname);
     changed = 1;
   }
   return changed;

@@ -1,0 +1,18 @@
+:thread
+nil
+1
+"two"
+true
+false
+true
+:child
+1
+nil
+true
+:fiber
+nil
+:fib
+true
+:inner
+:fib
+isolation_level must be `:thread` or `:fiber`, got: `:process`

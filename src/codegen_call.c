@@ -827,7 +827,8 @@ static int class_is_prim_reopen(Compiler *c, int k) {
          sp_streq(n, "NilClass") ||
          sp_streq(n, "TrueClass") || sp_streq(n, "FalseClass") ||
          sp_streq(n, "Time") || sp_streq(n, "Range") ||
-         sp_streq(n, "Array") || sp_streq(n, "Hash");
+         sp_streq(n, "Array") || sp_streq(n, "Hash") ||
+         sp_streq(n, "Thread") || sp_streq(n, "Fiber");
 }
 
 /* Whether a user exception class answers `name`: the dispatch key then has
@@ -881,6 +882,10 @@ static void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_
     int ai = comp_class_index(c, "Array"), hi = comp_class_index(c, "Hash");
     if (ti >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_TIME) ? %d : ", tv, tv, ti);
     if (ri >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? %d : ", tv, tv, ri);
+    /* a boxed thread / fiber is a handle box naming the builtin, like a Time's */
+    { int thi = comp_class_index(c, "Thread"), fbi = comp_class_index(c, "Fiber");
+      if (thi >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_THREAD) ? %d : ", tv, tv, thi);
+      if (fbi >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_FIBER) ? %d : ", tv, tv, fbi); }
     /* a boxed array / hash of any element kind is its reopen's; the box's
        cls_id names the container kind, which the runtime's predicates read */
     if (ai >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)) ? %d : ", tv, tv, ai);
@@ -909,6 +914,8 @@ static void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_
   buf_puts(b, " : 0x7fffffff)");
   if (comp_class_index(c, "Time") >= 0) buf_puts(b, ")");
   if (comp_class_index(c, "Range") >= 0) buf_puts(b, ")");
+  if (comp_class_index(c, "Thread") >= 0) buf_puts(b, ")");
+  if (comp_class_index(c, "Fiber") >= 0) buf_puts(b, ")");
   if (comp_class_index(c, "Array") >= 0) buf_puts(b, ")");
   if (comp_class_index(c, "Hash") >= 0) buf_puts(b, ")");
   if (comp_class_index(c, "String") >= 0) buf_puts(b, ")");
@@ -3211,8 +3218,14 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "sp_Thread_tls_key("); emit_expr(c, recv, b); buf_puts(b, ", ");
       emit_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
     }
-    if (((sp_streq(name, "[]") || sp_streq(name, "key?")) && argc == 1) ||
-        (sp_streq(name, "[]=") && argc == 2)) {
+    /* thread_variable_get / _set / ? are the thread-local spellings of the
+       same store here (`[]` is fiber-local in CRuby; this runtime keeps one
+       table per thread for both) -- activesupport's IsolatedExecutionState
+       accessor on Thread reads it */
+    int tv_get = sp_streq(name, "thread_variable_get"), tv_set = sp_streq(name, "thread_variable_set"),
+        tv_key = sp_streq(name, "thread_variable?");
+    if (((sp_streq(name, "[]") || sp_streq(name, "key?") || tv_get || tv_key) && argc == 1) ||
+        ((sp_streq(name, "[]=") || tv_set) && argc == 2)) {
       int tt = ++g_tmp, tk = ++g_tmp, tv = ++g_tmp;
       buf_printf(b, "({ sp_thread *_t%d = ", tt); emit_expr(c, recv, b);
       buf_printf(b, "; SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", tt, tk); emit_boxed(c, argv[0], b);
@@ -3222,7 +3235,7 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tv);
       }
       buf_printf(b, " sp_Thread_tls_%s(_t%d, sp_thread_local_key(_t%d)",
-                 argc == 2 ? "set" : sp_streq(name, "[]") ? "get" : "key", tt, tk);
+                 argc == 2 ? "set" : (sp_streq(name, "[]") || tv_get) ? "get" : "key", tt, tk);
       if (argc == 2) buf_printf(b, ", _t%d", tv);
       buf_puts(b, "); })"); return 1;
     }
@@ -3454,6 +3467,18 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
     }
     if (sp_streq(name, "alive?")) {
       buf_puts(b, "sp_Fiber_alive("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+    /* the fiber's own storage by a literal key: what a `Fiber.attr_accessor`
+       reader and writer (desugar_handle_attr_accessor) read and write on self */
+    if (sp_streq(name, "__storage_get") && argc == 1 && comp_ntype(c, argv[0]) == TY_SYMBOL) {
+      buf_puts(b, "sp_Fiber_attr_get("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
+    }
+    if (sp_streq(name, "__storage_set") && argc == 2 && comp_ntype(c, argv[0]) == TY_SYMBOL) {
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, argv[1], b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_Fiber_attr_set(", tv); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_printf(b, ", _t%d); _t%d; })", tv, tv); return 1;
     }
     if (sp_streq(name, "kill") && argc == 0) {
       buf_puts(b, "sp_Fiber_kill("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
@@ -8073,6 +8098,8 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           /* a boxed Time / Range points at the value; the reopen takes it by value */
           else if (sp_streq(_dcn, "Time") || sp_streq(_dcn, "Range"))
             snprintf(_dself, sizeof _dself, "*(sp_%s *)_t%d.v.p", _dcn, tv);
+          /* a boxed thread is the runtime's sp_thread handle (not an sp_Thread struct) */
+          else if (sp_streq(_dcn, "Thread")) { snprintf(_dself, sizeof _dself, "(sp_thread *)_t%d.v.p", tv); _dstruct = 1; }
           /* a by-value (value-type) class method takes self by value:
              dereference the boxed pointer instead of passing it (#2441) */
           else if (c->classes[defcls].is_value_type) {
@@ -9541,6 +9568,8 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             snprintf(selfpbuf2, sizeof selfpbuf2, "(int)_t%d.v.i", tv);
           else if (sp_streq(_dcn2, "Time") || sp_streq(_dcn2, "Range"))
             snprintf(selfpbuf2, sizeof selfpbuf2, "*(sp_%s *)_t%d.v.p", _dcn2, tv);
+          else if (sp_streq(_dcn2, "Thread"))
+            snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_thread *)_t%d.v.p", tv);
           else if (sp_streq(_dcn2, "Array") || sp_streq(_dcn2, "Hash") || sp_streq(_dcn2, "Object"))
             snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d", tv);
           else if (sp_streq(_dcn2, "Float"))
@@ -20181,6 +20210,16 @@ void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b) {
    loaded is that NoMethodError, not a refusal of the build. A user class
    keeps the hard compile error: there the missing method is a genuine gap in
    the program's own code. */
+/* Does the class value `expr` (an sp_Class's cls_id) name the builtin class
+   `cname`? A builtin the program reopens has an entry of its own, and its
+   constant emits as that entry's index; an unreopened one as the builtin id.
+   Either spelling is the same class. */
+static void emit_class_id_is(Compiler *c, const char *cname, const char *expr, Buf *b) {
+  int ui = comp_class_index(c, cname);
+  buf_printf(b, "(%s == %d", expr, builtin_class_id(cname));
+  if (ui >= 0) buf_printf(b, " || %s == %d", expr, ui);
+  buf_puts(b, ")");
+}
 int call_on_builtin_class_missing(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver");
@@ -20454,6 +20493,21 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
          NoMethodError, rather than raising unconditionally (#3215). Gated on a
          genuinely poly receiver (a concrete non-class static type can never be a
          Class) and a poly result slot (dflt nil), the shape this arises in. */
+      /* Thread.current / Fiber.current through a class held in a poly slot
+         (activesupport's IsolatedExecutionState scope, nil until set): the
+         boxed handle of the class the value names */
+      if (grt == TY_POLY && nm && sp_streq(nm, "current") && argc == 0 &&
+          !an_user_defines_method(c, nm)) {
+        int t = ++g_tmp;
+        char cid_expr[40]; snprintf(cid_expr, sizeof cid_expr, "_t%d.cls_id", t);
+        buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; (_t%d.tag == SP_TAG_CLASS && ", t); emit_class_id_is(c, "Thread", cid_expr, b); buf_puts(b, ") ? ");
+        emit_boxed_text(c, TY_THREAD, "sp_Thread_current()", b);
+        buf_printf(b, " : (_t%d.tag == SP_TAG_CLASS && ", t); emit_class_id_is(c, "Fiber", cid_expr, b); buf_puts(b, ") ? ");
+        emit_boxed_text(c, TY_FIBER, "sp_fiber_current", b);
+        buf_printf(b, " : (sp_raise_nomethod(sp_nomethod_msg(\"current\", _t%d)), sp_box_nil()); })", t);
+        return 1;
+      }
       if (grt == TY_POLY && nm && (ret == TY_POLY || ret == TY_UNKNOWN) &&
           g_cls_tag_skip != id) {
         /* one arm per candidate class, however many (a binding with hundreds
@@ -32384,6 +32438,25 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       buf_printf(b, "; sp_class_nil_p(_cl%d); })", _clt);
       return;
     }
+    /* Thread.current / Fiber.current through a class value -- activesupport's
+       IsolatedExecutionState keeps its scope as the class itself,
+       `@scope.current.active_support_execution_state` -- answers the boxed
+       handle of the class the value names; a user class method of that name
+       keeps the dispatch below. */
+    if (sp_streq(name, "current") && argc == 0 && nt_type(nt, recv) &&
+        !sp_streq(nt_type(nt, recv), "ConstantReadNode") && !sp_streq(nt_type(nt, recv), "ConstantPathNode")) {
+      int ncc = 0; comp_cmethod_candidates(c, name, &ncc);
+      if (ncc == 0) {
+        char cid_expr[40]; snprintf(cid_expr, sizeof cid_expr, "_cl%d.cls_id", _clt);
+        buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
+        buf_puts(b, "; "); emit_class_id_is(c, "Thread", cid_expr, b); buf_puts(b, " ? ");
+        emit_boxed_text(c, TY_THREAD, "sp_Thread_current()", b);
+        buf_puts(b, " : "); emit_class_id_is(c, "Fiber", cid_expr, b); buf_puts(b, " ? ");
+        emit_boxed_text(c, TY_FIBER, "sp_fiber_current", b);
+        buf_puts(b, " : (sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"undefined method 'current' for class\")[1])), sp_box_nil()); })");
+        return;
+      }
+    }
     /* Class/Module#freeze flips the per-class runtime flag (a class value is
        an unboxed {cls_id, name}, so the flag lives in a global map); frozen?
        reads it back (#3101). */
@@ -40876,6 +40949,8 @@ else {
     else if (rt == TY_SYMBOL)  oc_cn = "Symbol";
     else if (rt == TY_RANGE)   oc_cn = "Range";
     else if (rt == TY_TIME)    oc_cn = "Time";
+    else if (rt == TY_THREAD)  oc_cn = "Thread";
+    else if (rt == TY_FIBER)   oc_cn = "Fiber";
     else if (rt == TY_IO)      oc_cn = "File";
     else if (rt == TY_CLASS)   oc_cn = "Class";
     if (oc_cn) {

@@ -2991,6 +2991,14 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_CLASS && !sp_streq(name, "new")) {
     if (argc == 0 && (sp_streq(name, "to_s") || sp_streq(name, "name") || sp_streq(name, "inspect")))
       return TY_STRING;
+    /* Thread.current / Fiber.current through a class value: a boxed handle
+       (activesupport's IsolatedExecutionState keeps its scope as the class
+       itself); a user class method of that name keeps its dispatch below */
+    if (argc == 0 && sp_streq(name, "current") && nt_type(nt, recv) &&
+        !sp_streq(nt_type(nt, recv), "ConstantReadNode") && !sp_streq(nt_type(nt, recv), "ConstantPathNode")) {
+      int ncc = 0; comp_cmethod_candidates(c, name, &ncc);
+      if (ncc == 0) return TY_POLY;
+    }
     if (argc == 0 && sp_streq(name, "nil?")) return TY_BOOL;
     if (argc == 0 && sp_streq(name, "singleton_class?")) return TY_BOOL;
     if (argc == 0 && sp_streq(name, "frozen?")) return TY_BOOL;
@@ -3789,6 +3797,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* TY_FIBER instance methods */
   if (recv >= 0 && rt == TY_FIBER) {
     if (sp_streq(name, "resume") || sp_streq(name, "transfer") || sp_streq(name, "raise")) return TY_POLY;
+    if (sp_streq(name, "__storage_get") || sp_streq(name, "__storage_set")) return TY_POLY;
     if (sp_streq(name, "alive?")) return TY_BOOL;
     if (sp_streq(name, "value")) return TY_POLY;
     if (sp_streq(name, "kill")) return TY_FIBER;   /* returns the receiver */
@@ -3824,8 +3833,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "wakeup") || sp_streq(name, "run")) return TY_THREAD;   /* return self */
     if (sp_streq(name, "report_on_exception") || sp_streq(name, "report_on_exception=")) return TY_BOOL;
     if (sp_streq(name, "status") || sp_streq(name, "[]") || sp_streq(name, "[]=") ||
+        sp_streq(name, "thread_variable_get") || sp_streq(name, "thread_variable_set") ||
         sp_streq(name, "name") || sp_streq(name, "name=")) return TY_POLY;
-    if (sp_streq(name, "key?") || sp_streq(name, "equal?")) return TY_BOOL;
+    if (sp_streq(name, "key?") || sp_streq(name, "thread_variable?") || sp_streq(name, "equal?")) return TY_BOOL;
     if (sp_streq(name, "keys") && argc == 0) return TY_POLY_ARRAY;
   }
 
@@ -4464,6 +4474,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     else if (rt == TY_BOOL)    oc_cn = "TrueClass";
     else if (rt == TY_RANGE)   oc_cn = "Range";
     else if (rt == TY_TIME)    oc_cn = "Time";
+    else if (rt == TY_THREAD)  oc_cn = "Thread";
+    else if (rt == TY_FIBER)   oc_cn = "Fiber";
     else if (rt == TY_IO)      oc_cn = "File";
     else if (rt == TY_CLASS)   oc_cn = "Class";
     if (oc_cn) {
@@ -7149,6 +7161,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       int ncc = 0;
       comp_cmethod_candidates(c, name, &ncc);
       if (ncc > 0) return TY_POLY;
+      /* Thread.current / Fiber.current through a class held in a poly slot:
+         a boxed handle (the codegen's gate answers it) */
+      if (argc == 0 && sp_streq(name, "current") && !an_user_defines_method(c, name)) return TY_POLY;
     }
   }
 
@@ -7887,6 +7902,8 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (sp_streq(cn, "Object"))  return TY_POLY;  /* dynamic: called on any receiver type */
     if (sp_streq(cn, "Range"))   return TY_RANGE;
     if (sp_streq(cn, "Time"))    return TY_TIME;
+    if (sp_streq(cn, "Thread"))  return TY_THREAD;
+    if (sp_streq(cn, "Fiber"))   return TY_FIBER;
     if (sp_streq(cn, "File"))    return TY_IO;
     if (sp_streq(cn, "Class"))   return TY_CLASS;
     return ty_object(self_cls);
