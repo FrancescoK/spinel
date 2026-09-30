@@ -25034,8 +25034,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
      copy if a path did not publish). */
   /* An attr reader has no body to publish from; its implicit-self read hands
      out the slot itself (emit_implicit_self_member). */
-  if (c->strbuf_box[id] && nt_ref(c->nt, id, "receiver") < 0 &&
-      nt_ref(c->nt, id, "block") < 0 && implicit_self_reader_cid(c, id) < 0) {
+  if (c->strbuf_box[id] && nt_ref(c->nt, id, "block") < 0 &&
+      (nt_ref(c->nt, id, "receiver") < 0 ? implicit_self_reader_cid(c, id) < 0
+                                         : comp_ntype(c, nt_ref(c->nt, id, "receiver")) == TY_CLASS)) {
     int tvD = ++g_tmp;
     buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", tvD);
     c->strbuf_box[id] = 0;

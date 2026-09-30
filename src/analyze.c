@@ -12958,6 +12958,36 @@ static int strbuf_promote_ivar(Compiler *c, int cid, const char *nm) {
   return 1;
 }
 
+/* The class whose C-global ivar slots `self` reads at `node`: Toplevel at
+   top level or in a top-level method, the class in one of its class
+   methods; -1 elsewhere. */
+static int an_static_self(Compiler *c, int node) {
+  Scope *s = comp_scope_of(c, node);
+  if (!s) return -1;
+  if (s->is_cmethod) return s->class_id;
+  if (s->class_id >= 0) return -1;
+  return comp_class_index(c, "Toplevel");
+}
+/* The ivar a method of class `sc` (a class method when `cm`, else a
+   top-level method) reads or memoizes (`def buf = (@buf ||= +"")`), owned
+   by the class: the slot a call of it hands out. */
+static const char *an_static_reader_ivar(Compiler *c, int sc, int cm, const char *mn,
+                                         int *defc, char *buf, size_t cap) {
+  if (sc < 0 || !mn) return NULL;
+  int owner = sc;
+  int rmi = cm ? comp_cmethod_in_chain(c, sc, mn, &owner) : comp_method_index(c, mn);
+  if (rmi < 0) return NULL;
+  if (!c->scopes[rmi].is_cmethod && c->scopes[rmi].class_id >= 0) return NULL;
+  const char *ivn = an_memo_reader_ivar(c, rmi);
+  int last = scope_body_last(c, rmi);
+  if (!ivn && last >= 0 && nt_kind(c->nt, last) == NK_InstanceVariableReadNode)
+    ivn = nt_str(c->nt, last, "name");
+  if (!ivn) return NULL;
+  snprintf(buf, cap, "%s", ivn);
+  *defc = owner;
+  return buf;
+}
+
 /* When `node` is an argument-less reader call (attr or a simple
    `def m = @iv` method) over an object receiver or implicit self, resolve
    the backing ivar:
@@ -12974,10 +13004,17 @@ static const char *an_reader_ivar_of(Compiler *c, int node, int *defc,
   int rcid;
   if (rrecv < 0) {
     rcid = ie_receiverless_self_class(c, node);
-    if (rcid < 0) return NULL;
+    if (rcid < 0) {
+      Scope *ns = comp_scope_of(c, node);
+      return an_static_reader_ivar(c, an_static_self(c, node), ns && ns->is_cmethod,
+                                   nt_str(nt, node, "name"), defc, buf, cap);
+    }
   }
   else {
     TyKind rrt = infer_type(c, rrecv);
+    if (rrt == TY_CLASS)
+      return an_static_reader_ivar(c, class_recv_static_ci(c, rrecv), 1,
+                                   nt_str(nt, node, "name"), defc, buf, cap);
     if (!ty_is_object(rrt)) return NULL;
     rcid = ty_object_class(rrt);
   }
@@ -14355,8 +14392,10 @@ static int promote_shared_stored_strings(Compiler *c) {
       if (mac != 0) continue; }
     int rrecv = nt_ref(nt, mrecv, "receiver");
     int self4 = rrecv < 0 ? ie_receiverless_self_class(c, mrecv) : -1;
+    if (rrecv < 0 && self4 < 0) self4 = an_static_self(c, mrecv);
     if (rrecv < 0 && self4 < 0) continue;
     TyKind rrt = rrecv >= 0 ? infer_type(c, rrecv) : TY_UNKNOWN;
+    if (rrt == TY_CLASS) self4 = class_recv_static_ci(c, rrecv);
     if (self4 >= 0 || ty_is_object(rrt)) {
       char ivbuf4[300]; int defc4 = self4 >= 0 ? self4 : ty_object_class(rrt);
       const char *ivn4 = an_reader_ivar_of(c, mrecv, &defc4, ivbuf4, sizeof ivbuf4);
