@@ -1507,6 +1507,17 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
     buf_puts(b, acct == TY_FLOAT ? "0.0" : "0");
   }
   if (acct == TY_FLOAT) buf_printf(b, "; sp_float _t%d = 0.0", tc);
+  /* A block value that can be its slot's nil is tested before it is added
+     (below). The failure is the accumulator's own: `0 + nil` is Integer#+'s
+     until a Float has been added, however the slot is typed, so an Integer
+     start keeps a flag the first Float value clears. */
+  TyKind vt9 = acct == TY_FLOAT && bn > 0 ? comp_ntype(c, bb[bn - 1]) : TY_UNKNOWN;
+  int vnil = (vt9 == TY_INT || vt9 == TY_FLOAT) && nullable_int_value(c, bb[bn - 1]);
+  int tkind = -1;
+  if (vnil && (argc == 0 || comp_ntype(c, argv[0]) == TY_INT)) {
+    tkind = ++g_tmp;
+    buf_printf(b, "; sp_bool _t%d = 1", tkind);
+  }
   if (acct == TY_STRING) buf_printf(b, "; SP_GC_ROOT(_t%d)", tacc);
   buf_printf(b, "; for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) { ", ti, ti, tn, ti);
   /* A 2+-param block over an array of sub-arrays auto-splats each element into
@@ -1557,16 +1568,17 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
     }
     else {
       /* A block value that can be its slot's nil (an element the block hands
-         back from a nil-holding array) is Float#+'s coercion failure; added,
-         a Float's NaN payload rode through the sum and it read back as nil,
-         and an Integer's sentinel became -9.2e18. */
-      TyKind vt = comp_ntype(c, bb[bn - 1]);
-      if ((vt == TY_INT || vt == TY_FLOAT) && nullable_int_value(c, bb[bn - 1])) {
+         back from a nil-holding array) is the accumulator's coercion failure;
+         added, a Float's NaN payload rode through the sum and it read back as
+         nil, and an Integer's sentinel became -9.2e18. */
+      if (vnil) {
         int tv = ++g_tmp;
-        buf_printf(b, "%s _t%d = %s; ", vt == TY_INT ? "sp_int" : "sp_float", tv, valb.p ? valb.p : "0.0");
-        if (vt == TY_INT) buf_printf(b, "if (SP_UNLIKELY(_t%d == SP_INT_NIL))", tv);
-        else buf_printf(b, "if (SP_UNLIKELY(sp_float_is_nil(_t%d)))", tv);
-        buf_puts(b, " sp_raise_nil_float_op(0, \"+\"); ");
+        buf_printf(b, "%s _t%d = %s; ", vt9 == TY_INT ? "sp_int" : "sp_float", tv, valb.p ? valb.p : "0.0");
+        if (vt9 == TY_INT) buf_printf(b, "if (SP_UNLIKELY(_t%d == SP_INT_NIL)) ", tv);
+        else buf_printf(b, "if (SP_UNLIKELY(sp_float_is_nil(_t%d))) ", tv);
+        if (tkind >= 0) buf_printf(b, "{ if (_t%d) sp_raise_nil_int_op(0, 0, \"+\"); sp_raise_nil_float_op(0, \"+\"); } ", tkind);
+        else buf_puts(b, "sp_raise_nil_float_op(0, \"+\"); ");
+        if (tkind >= 0 && vt9 == TY_FLOAT) buf_printf(b, "_t%d = 0; ", tkind);
         free(valb.p); memset(&valb, 0, sizeof valb);
         buf_printf(&valb, "_t%d", tv);
       }

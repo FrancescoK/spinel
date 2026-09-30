@@ -844,6 +844,13 @@ void emit_scalar_operand(Compiler *c, int node, const char *zero, Buf *b) {
   free(tmp.p);
 }
 
+/* See codegen_internal.h. */
+void emit_split_pre(Compiler *c, int node, void (*emit)(Compiler *, int, Buf *), Buf *pre, Buf *val) {
+  Buf *sv = g_pre; g_pre = pre;
+  emit(c, node, val);
+  g_pre = sv;
+}
+
 /* Emit a node as a `const char *` string. A poly value (e.g. a `String | nil`
    local narrowed to String by `is_a?(String)`, which keeps an sp_RbVal
    representation) is unboxed via sp_poly_to_s; a string-typed value emits

@@ -1174,6 +1174,10 @@ int name_is_enumerable_module_method(const char *m) {
 static int cmp_operand_may_be_nil(Compiler *c, int id) {
   return id >= 0 && nullable_int_value(c, id);
 }
+/* A float-result operand as the arithmetic arm reads it (emit_scalar_operand). */
+static void emit_float_operand_expr(Compiler *c, int node, Buf *b) {
+  emit_scalar_operand(c, node, "0.0", b);
+}
 /* The C test that temp `v` of an Integer or a Float kind holds that kind's
    nil sentinel, into out. */
 static void scalar_nil_test(TyKind t, const char *v, char *out, size_t n) {
@@ -3375,6 +3379,10 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
   return 0;
 }
 
+/* A Rational read as the Float an epsilon slot takes. */
+static void emit_rational_to_f_expr(Compiler *c, int node, Buf *b) {
+  buf_puts(b, "sp_rational_to_f("); emit_expr(c, node, b); buf_puts(b, ")");
+}
 static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -4206,6 +4214,20 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
     }
     if (crt == TY_INT && (sp_streq(name, "to_r") ||
         (sp_streq(name, "rationalize") && argc <= 1)) && argc <= 1) {
+      /* Integer#rationalize ignores its epsilon, and nil's takes one too, but
+         the argument is still evaluated, after the receiver */
+      if (sp_streq(name, "rationalize") && argc == 1) {
+        int t = ++g_tmp;
+        Buf ap; memset(&ap, 0, sizeof ap);
+        Buf av; memset(&av, 0, sizeof av);
+        emit_split_pre(c, argv[0], emit_expr, &ap, &av);
+        buf_printf(b, "({ sp_int _t%d = (", t); emit_expr(c, recv, b);
+        buf_printf(b, "); %s(void)(%s); ", ap.p ? ap.p : "", av.p ? av.p : "0");
+        if (recv_may_be_sentinel(c, recv)) buf_printf(b, "sp_rational_new(_t%d == SP_INT_NIL ? 0 : _t%d, 1); })", t, t);
+        else buf_printf(b, "sp_rational_new(_t%d, 1); })", t);
+        free(ap.p); free(av.p);
+        return 1;
+      }
       if (recv_may_be_sentinel(c, recv)) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_int _t%d = (", t); emit_expr(c, recv, b);
@@ -4215,21 +4237,31 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "sp_rational_new((sp_int)("); emit_expr(c, recv, b); buf_puts(b, "), 1)"); return 1;
     }
     /* The same (0/1) for a Float slot that can hold its nil; the Float section
-       below guards every name nil lacks, and these two nil has. */
+       below guards every name nil lacks, and these two nil has. nil's
+       rationalize takes an epsilon of any kind and ignores it, so the
+       argument is only evaluated there, and converted where the Float's own
+       rationalize reads it; each branch runs its setup after the receiver. */
     if (crt == TY_FLOAT && ((sp_streq(name, "to_r") && argc == 0) ||
         (sp_streq(name, "rationalize") && argc <= 1)) && nullable_int_value(c, recv)) {
-      int t = ++g_tmp, te = -1;
+      int t = ++g_tmp;
       buf_printf(b, "({ sp_float _t%d = (", t); emit_expr(c, recv, b); buf_puts(b, "); ");
       if (argc == 1) {
-        te = ++g_tmp;
-        buf_printf(b, "sp_float _t%d = ", te);
-        if (comp_ntype(c, argv[0]) == TY_RATIONAL) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-        else emit_float_expr(c, argv[0], b);
-        buf_puts(b, "; ");
+        Buf np; memset(&np, 0, sizeof np);
+        Buf nv; memset(&nv, 0, sizeof nv);
+        Buf fp; memset(&fp, 0, sizeof fp);
+        Buf fv; memset(&fv, 0, sizeof fv);
+        emit_split_pre(c, argv[0], emit_expr, &np, &nv);
+        emit_split_pre(c, argv[0], comp_ntype(c, argv[0]) == TY_RATIONAL ? emit_rational_to_f_expr : emit_float_expr, &fp, &fv);
+        int tr = ++g_tmp;
+        buf_printf(b, "sp_Rational _t%d; if (sp_float_is_nil(_t%d)) { %s(void)(%s); _t%d = sp_rational_new(0, 1); }"
+                      " else { %s_t%d = sp_float_rationalize(_t%d, %s); } _t%d; })",
+                   tr, t, np.p ? np.p : "", nv.p ? nv.p : "0", tr,
+                   fp.p ? fp.p : "", tr, t, fv.p ? fv.p : "0.0", tr);
+        free(np.p); free(nv.p); free(fp.p); free(fv.p);
       }
-      buf_printf(b, "sp_float_is_nil(_t%d) ? sp_rational_new(0, 1) : ", t);
-      if (argc == 1) buf_printf(b, "sp_float_rationalize(_t%d, _t%d); })", t, te);
-      else buf_printf(b, "%s(_t%d); })", sp_streq(name, "to_r") ? "sp_float_to_rational" : "sp_float_rationalize0", t);
+      else
+        buf_printf(b, "sp_float_is_nil(_t%d) ? sp_rational_new(0, 1) : %s(_t%d); })", t,
+                   sp_streq(name, "to_r") ? "sp_float_to_rational" : "sp_float_rationalize0", t);
       return 1;
     }
     /* n.to_c is Complex(n, 0) for an Integer or Float receiver. */
@@ -15557,10 +15589,14 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
         snprintf(rv, sizeof rv, "_t%d_r", tm);
         if (lin || lfn) scalar_nil_test(lft9, lv, ln, sizeof ln);
         if (rin || rfn) scalar_nil_test(rgt9, rv, rn, sizeof rn);
+        Buf ap; memset(&ap, 0, sizeof ap);
+        Buf av; memset(&av, 0, sizeof av);
+        emit_split_pre(c, argv[0], emit_float_operand_expr, &ap, &av);
         buf_puts(b, "({ "); emit_ctype(c, lft9, b); buf_printf(b, " %s = ", lv);
         emit_scalar_operand(c, recv, "0.0", b);
-        buf_puts(b, "; "); emit_ctype(c, rgt9, b); buf_printf(b, " %s = ", rv);
-        emit_scalar_operand(c, argv[0], "0.0", b);
+        buf_printf(b, "; %s", ap.p ? ap.p : ""); emit_ctype(c, rgt9, b);
+        buf_printf(b, " %s = %s", rv, av.p ? av.p : "0");
+        free(ap.p); free(av.p);
         /* nil on the left has no operator; on the right it is the left
            class's coercion failure */
         buf_printf(b, "; if (SP_UNLIKELY(%s || %s)) ", ln, rn);
@@ -30028,14 +30064,18 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       /* A nullable Integer or Float holding its sentinel is nil, and nil does
          not convert: CRuby's TypeError, where the sentinel passed through as
          a number (or, as a Float, raised FloatDomainError on its NaN). */
-      if ((at == TY_INT || at == TY_FLOAT) && comp_ntype(c, id) == TY_INT &&
+      /* Under --int-overflow=promote the call answers a box (a Float past
+         sp_int is a Bignum), and the guard boxes its answer the same way. */
+      TyKind rt9 = comp_ntype(c, id);
+      if ((at == TY_INT || at == TY_FLOAT) && (rt9 == TY_INT || rt9 == TY_POLY) &&
           call_returns_nullable_int(c, av[0])) {
         char ref[24];
         buf_puts(b, "({ "); emit_sentinel_bind(c, at, av[0], ref, sizeof ref, b);
         buf_puts(b, "if (!"); emit_slot_truthy(at, ref, b);
         buf_puts(b, ") sp_raise_cls(\"TypeError\", \"can't convert nil into Integer\"); ");
-        if (at == TY_INT) buf_printf(b, "%s; })", ref);
-        else buf_printf(b, "sp_poly_flo_domain_ck(%s); sp_float_fit_i(%s); })", ref, ref);
+        if (at == TY_INT) buf_printf(b, rt9 == TY_POLY ? "sp_box_int(%s); })" : "%s; })", ref);
+        else buf_printf(b, rt9 == TY_POLY ? "sp_poly_flo_domain_ck(%s); sp_box_f_to_int(%s); })"
+                                          : "sp_poly_flo_domain_ck(%s); sp_float_fit_i(%s); })", ref, ref);
       }
       else if (at == TY_STRING && comp_ntype(c, id) == TY_POLY) {   /* promote mode: a Bignum past sp_int */
         buf_puts(b, "sp_str_to_i_promote("); emit_expr(c, av[0], b); buf_puts(b, ", 0, 1)");
@@ -38509,10 +38549,13 @@ else {
         snprintf(rv, sizeof rv, "_t%d_r", tg);
         if (mln) scalar_nil_test(rt, lv, ln, sizeof ln);
         if (mrn) scalar_nil_test(cat, rv, rn, sizeof rn);
+        Buf ap; memset(&ap, 0, sizeof ap);
+        Buf av; memset(&av, 0, sizeof av);
+        emit_split_pre(c, argv[0], emit_expr, &ap, &av);
         buf_printf(b, "({ %s %s = ", rt == TY_FLOAT ? "sp_float" : "sp_int", lv);
         emit_expr(c, recv, b);
-        buf_printf(b, "; %s %s = ", cat == TY_FLOAT ? "sp_float" : "sp_int", rv);
-        emit_expr(c, argv[0], b);
+        buf_printf(b, "; %s%s %s = %s", ap.p ? ap.p : "", cat == TY_FLOAT ? "sp_float" : "sp_int", rv, av.p ? av.p : "0");
+        free(ap.p); free(av.p);
         buf_printf(b, "; if (SP_UNLIKELY(%s || %s)) sp_raise_nil_cmp(%s, \"%s\", \"%s\"); %s %s %s; })",
                    ln, rn, ln, name, rt == TY_FLOAT ? "Float" : "Integer", lv, name, rv);
         return;

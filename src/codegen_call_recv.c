@@ -7559,9 +7559,13 @@ int emit_nullable_scalar_nil_only(Compiler *c, int id, Buf *b) {
   emit_expr(c, recv, b);
   buf_puts(b, "); ");
   if (argc == 1) {
+    /* the argument after the receiver, setup and all (emit_split_pre) */
+    Buf ap; memset(&ap, 0, sizeof ap);
+    Buf av; memset(&av, 0, sizeof av);
+    emit_split_pre(c, argv[0], emit_boxed, &ap, &av);
     ta = ++g_tmp;
-    buf_printf(b, "sp_RbVal _t%d = ", ta); emit_boxed(c, argv[0], b);
-    buf_printf(b, "; (void)_t%d; ", ta);
+    buf_printf(b, "%ssp_RbVal _t%d = %s; (void)_t%d; ", ap.p ? ap.p : "", ta, av.p ? av.p : "sp_box_nil()", ta);
+    free(ap.p); free(av.p);
   }
   if (rt == TY_FLOAT) buf_printf(b, "sp_float_is_nil(_t%d) ? ", tr);
   else buf_printf(b, "_t%d == SP_INT_NIL ? ", tr);
