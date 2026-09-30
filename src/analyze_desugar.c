@@ -532,6 +532,46 @@ int desugar_blk_param_writes(Compiler *c) {
   return changed;
 }
 
+/* A `*rest` parameter the body assigns (`args = args.first`, the usual
+   background-job `perform(*args)`) gave the parameter the union of the
+   packed Array and what the body stores, so the method took an sp_RbVal
+   while every call site still passed the packed sp_PolyArray *, and the C
+   did not build (#6227). As a &blk parameter's writes do above, the body's
+   reads and writes move to a fresh local copied from the parameter first,
+   and the parameter stays the Array the callers pack. */
+int desugar_rest_param_writes(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_DefNode) continue;
+    int pn = nt_ref(nt, id, "parameters");
+    if (pn < 0) continue;
+    int rpn = nt_ref(nt, pn, "rest");
+    if (rpn < 0 || nt_kind(nt, rpn) != NK_RestParameterNode) continue;
+    const char *rp = nt_str(nt, rpn, "name");
+    if (!rp || !rp[0]) continue;
+    int body = nt_ref(nt, id, "body");
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    if (bpw_walk(nt, body, rp, NULL) == 0) continue;
+    char nn[300]; snprintf(nn, sizeof nn, "__rpv_%s", rp);
+    bpw_walk(nt, body, rp, nn);
+    int rd = nt_new_node(nt, "LocalVariableReadNode"); if (rd < 0) continue;
+    nt_node_set_str(nt, rd, "name", rp);
+    int wr = nt_new_node(nt, "LocalVariableWriteNode"); if (wr < 0) continue;
+    nt_node_set_str(nt, wr, "name", nn);
+    nt_node_set_ref(nt, wr, "value", rd);
+    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+    int *nb = (int *)malloc(sizeof(int) * (size_t)(bn + 1));
+    if (!nb) continue;
+    nb[0] = wr; for (int j = 0; j < bn; j++) nb[j + 1] = bb[j];
+    nt_node_set_arr(nt, body, "body", nb, bn + 1);
+    free(nb);
+    comp_grow_node_arrays(c);
+    changed = 1;
+  }
+  return changed;
+}
+
 /* ---- `yield` inside a proc / lambda literal ----------------------------
    A proc literal is a real closure -- its own C function -- and a `yield` in
    it has no inlined caller's block to reach, so it raised LocalJumpError at

@@ -19185,6 +19185,7 @@ void analyze_program(Compiler *c) {
   desugar_body_ivars(c);                 /* module-body @x read / in a block -> Mod.__spinel_civget_x */
   desugar_extended_module_attrs(c);
   desugar_blk_param_writes(c);           /* `blk = proc {}` on a &blk param -> a fresh local */
+  desugar_rest_param_writes(c);          /* `args = args.first` on a *args param -> a fresh local */
   desugar_yield_in_closure(c);           /* `yield` inside proc { } -> blk.call(...) */
   desugar_const_attr_op_assign(c);       /* Klass.a op= v -> Klass.a = Klass.a op v (a class-level accessor) */
   desugar_body_module_eval(c);           /* self.module_eval do S end in a body -> S */
