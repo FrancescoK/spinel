@@ -5510,7 +5510,11 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
         changed |= slot_take(c, p, at, kwh);
       }
     }
-else {
+    /* The keywords the call names beside a `**` bind by name as well: the
+       `**`'s value type alone typed `m(k1: "a", **h)` with `h = {"s" => 3}`
+       an Integer keyword, and the String was read out of the merged hash as
+       one, its pointer printed as a number. */
+    {
       for (int e = 0; e < en; e++) {
         int key = nt_ref(nt, elems[e], "key");
         int val = nt_ref(nt, elems[e], "value");
