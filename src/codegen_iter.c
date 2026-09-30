@@ -1091,9 +1091,14 @@ static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
      not the 0 it emits as */
   else if (nk == NK_NilNode && ot == TY_INT) buf_puts(b, "SP_INT_NIL");
   else if (nk == NK_NilNode && ot == TY_FLOAT) buf_puts(b, "sp_float_nil()");
+  /* and so is a boxed nil: under --int-overflow=promote an Integer slot
+     that can hold nil (an ivar, a local, a method's parameter) is widened
+     to the box, while a block parameter it feeds keeps its Integer type,
+     and `.v.i` read the 0 under the nil tag, so `y(@u) { |a| a }` bound
+     0 for a nil @u */
   else if (at == TY_POLY && ot != TY_POLY && ot != TY_UNKNOWN) {
     Buf t; memset(&t, 0, sizeof t); emit_expr(c, node, &t);
-    emit_unbox_text(c, ot, t.p ? t.p : "", b); free(t.p);
+    emit_unbox_nilable_text(c, ot, t.p ? t.p : "", b); free(t.p);
   }
   /* a String into a parameter a mutating callee made a buffer, as a plain
      assignment of one takes it (#6039) */
