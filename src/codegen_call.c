@@ -23988,7 +23988,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "[]=") && argc == 2) {
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _v%d = ", tv); emit_boxed(c, argv[1], b);
-      buf_puts(b, "; sp_OpenStruct_set("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_v%d); sp_OpenStruct_set(", tv); emit_expr(c, recv, b); buf_puts(b, ", ");
       if (comp_ntype(c, argv[0]) == TY_SYMBOL) emit_expr(c, argv[0], b);
       else { buf_puts(b, "sp_sym_intern("); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); }
       buf_printf(b, ", _v%d); _v%d; })", tv, tv);
@@ -24004,7 +24004,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           memcpy(mem, name, nl - 1); mem[nl - 1] = 0;
           int tv = ++g_tmp;
           buf_printf(b, "({ sp_RbVal _v%d = ", tv); emit_boxed(c, argv[0], b);
-          buf_puts(b, "; sp_OpenStruct_set("); emit_expr(c, recv, b);
+          buf_printf(b, "; SP_GC_ROOT_RBVAL(_v%d); sp_OpenStruct_set(", tv); emit_expr(c, recv, b);
           buf_printf(b, ", sp_sym_intern(\"%s\"), _v%d); _v%d; })", mem, tv, tv);
           return;
         }
