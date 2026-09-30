@@ -1475,6 +1475,7 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/regex_value_as_match_arg.rb \
                   test/kwrest_any_key.rb \
                   test/method_bound_binding_layout.rb \
+                  test/bind_call_shapes.rb \
                   test/ivar_recv_before_call_arg.rb \
                   test/reader_operands_pure_read.rb \
                   test/ivar_recv_string_handle.rb \
