@@ -2273,8 +2273,17 @@ void fix_struct_block_scopes(Compiler *c) {
         }
         continue;
       }
-      if (!sp_streq(sty, "DefNode")) continue;
       int dn = stmts[k];
+      /* `private def m` / `protected def m` / `public def m` */
+      if (sp_streq(sty, "CallNode") && nt_ref(nt, dn, "receiver") < 0 && nt_ref(nt, dn, "block") < 0) {
+        const char *vn = nt_str(nt, dn, "name");
+        int va = nt_ref(nt, dn, "arguments");
+        int vc = 0; const int *vv = va >= 0 ? nt_arr(nt, va, "arguments", &vc) : NULL;
+        if (vn && (sp_streq(vn, "private") || sp_streq(vn, "protected") || sp_streq(vn, "public")) &&
+            vc == 1 && nt_kind(nt, vv[0]) == NK_DefNode && nt_ref(nt, vv[0], "receiver") < 0)
+          dn = vv[0];
+      }
+      if (nt_kind(nt, dn) != NK_DefNode) continue;
       /* Find the scope whose def_node == dn and fix its class_id */
       for (int s = 0; s < c->nscopes; s++) {
         if (c->scopes[s].def_node == dn) {

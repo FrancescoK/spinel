@@ -11,3 +11,7 @@ private method 'secret' called for an instance of D
 7
 2
 2
+2
+private method 'hidden' called for an instance of PD
+3
+false

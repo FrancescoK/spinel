@@ -63,3 +63,21 @@ x.z = 7
 p x.z
 p x.m
 p x.n
+
+# `private def` in the block, held in a constant and in a local
+PD = Struct.new(:a) do
+  private def hidden = a + 1
+  def show = hidden
+end
+p PD.new(1).show
+begin
+  PD.new(1).hidden
+rescue NoMethodError => e
+  puts e.message
+end
+pk = Struct.new(:a) do
+  protected def prot = a + 2
+  def show = prot
+end
+p pk.new(1).show
+p pk.new(1).respond_to?(:prot)
