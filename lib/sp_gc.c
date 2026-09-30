@@ -297,11 +297,11 @@ SP_CONSTRUCTOR static void sp_gc_debug_env(void){
   if (sp_gc_verify) { signal(SIGSEGV, sp_gc_fault_report); signal(SIGBUS, sp_gc_fault_report); }
 }
 
-/* Tag byte preceding `obj`: 0xfe heap-unmarked -> 0xfc; 0xfc/0xff/0xfd/0xf1/
- * 0xfb skipped; else a real GC object reached through its scan hook. 0xfb is
- * the static header-bearing table (the 1-byte binary substrings): nothing
- * before it is an sp_gc_hdr, so reaching for one and calling its scan hook
- * jumps into the payload byte. */
+/* Tag byte preceding `obj`: 0xfe heap-unmarked -> 0xfc, 0xfa -> 0xf8;
+ * 0xfc/0xf8/0xff/0xfd/0xf1/0xfb skipped; else a real GC object reached
+ * through its scan hook. 0xfb is the static header-bearing table (the
+ * 1-byte binary substrings): nothing before it is an sp_gc_hdr, so reaching
+ * for one and calling its scan hook jumps into the payload byte. */
 
 static double sp_gc_stat_now(void);
 #ifdef SP_THREADS
@@ -426,7 +426,7 @@ size_t sp_gc_mk_promo_bytes = 0;
    chunk, and the bit is also the "already marked" test: the marker byte
    stays 0xfe, since nothing resets a byte the sweep does not touch. A
    string that fell back to malloc keeps the byte protocol (0xfe -> 0xfc,
-   reset by the list sweep that frees or promotes it). */
+   0xfa -> 0xf8, reset by the list sweep that frees or promotes it). */
 void sp_gc_mark_str(const char *s) {
   sp_str_hdr *h = ((sp_str_hdr *)(s - 1)) - 1;
   if (sp_slab_owns(h)) {
@@ -440,14 +440,16 @@ void sp_gc_mark_str(const char *s) {
     if (wy) sp_gc_mkl_str_young += sz;
     return;
   }
+  /* 0xf8 too: a parallel marker may have got here first */
+  unsigned char m = (unsigned char)s[-1], mk = (m == 0xfa || m == 0xf8) ? 0xf8 : 0xfc;
 #ifdef SP_THREADS
-  SP_ATOMIC_STORE((unsigned char *)s - 1, (unsigned char)0xfc, __ATOMIC_RELAXED);   /* several markers may set it; a plain byte store, spelled so TSan reads it as intended */
+  SP_ATOMIC_STORE((unsigned char *)s - 1, mk, __ATOMIC_RELAXED);   /* several markers may set it; a plain byte store, spelled so TSan reads it as intended */
 #else
-  ((char *)s)[-1] = (char)0xfc;
+  ((unsigned char *)s)[-1] = mk;
 #endif
 }
-void sp_gc_mark(void*obj){if(!obj)return;unsigned char pm=((unsigned char*)obj)[-1];if(pm==0xfe){sp_gc_mark_str((const char*)obj);return;}
-  if(pm==0xfc||pm==0xff||pm==0xfd||pm==0xf1||pm==0xfb)return;sp_gc_hdr*h=(sp_gc_hdr*)((char*)obj-sizeof(sp_gc_hdr));if(sp_gc_verify&&!sp_gc_obj_registered(h))sp_gc_verify_fail(obj,h);if(sp_gc_verify_probe_on){if(!h->old&&h->marked==sp_gc_verify_probe)sp_gc_verify_probe_hit=1;return;}if(sp_gc_young_probe_on){if(!h->old)sp_gc_young_probe_hit=1;return;}if(sp_gc_root_phase&&!h->old)h->aged=1;
+void sp_gc_mark(void*obj){if(!obj)return;unsigned char pm=((unsigned char*)obj)[-1];if((pm|0x04)==0xfe){sp_gc_mark_str((const char*)obj);return;}
+  if(pm==0xfc||pm==0xff||pm==0xfd||pm==0xf1||pm==0xfb||pm==0xf8)return;sp_gc_hdr*h=(sp_gc_hdr*)((char*)obj-sizeof(sp_gc_hdr));if(sp_gc_verify&&!sp_gc_obj_registered(h))sp_gc_verify_fail(obj,h);if(sp_gc_verify_probe_on){if(!h->old&&h->marked==sp_gc_verify_probe)sp_gc_verify_probe_hit=1;return;}if(sp_gc_young_probe_on){if(!h->old)sp_gc_young_probe_hit=1;return;}if(sp_gc_root_phase&&!h->old)h->aged=1;
   int was_young=0;
 #ifdef SP_THREADS
   if(sp_gc_par_mark){
@@ -600,7 +602,7 @@ void sp_gc_pin_remembered_slow(void *obj) {
   if (!obj) return;
   { unsigned char pm = ((unsigned char *)obj)[-1];
     if (pm == 0xfd || pm == 0xff || pm == 0xf1 || pm == 0xf0 ||
-        pm == 0xfe || pm == 0xfc || pm == 0xfb) return; }
+        pm == 0xfe || pm == 0xfc || pm == 0xfb || pm == 0xfa || pm == 0xf8) return; }
   sp_gc_hdr *h = (sp_gc_hdr *)obj - 1;
   if (h->pinned) return;
   /* The slot is claimed BEFORE the bit goes up, which is the opposite order to
@@ -633,7 +635,7 @@ void sp_gc_wb_slow(void *obj) {
      literal or a frozen string is not a GC allocation either. */
   { unsigned char pm = ((unsigned char *)obj)[-1];
     if (pm == 0xfd || pm == 0xff || pm == 0xf1 || pm == 0xf0 ||
-        pm == 0xfe || pm == 0xfc || pm == 0xfb) return; }
+        pm == 0xfe || pm == 0xfc || pm == 0xfb || pm == 0xfa || pm == 0xf8) return; }
   sp_gc_hdr *h = (sp_gc_hdr *)obj - 1;
   if (!h->old || h->dirty) return;
   /* The bit goes up before the entry goes in, so between here and the push an

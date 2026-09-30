@@ -237,7 +237,7 @@ static inline void sp_gc_wb(void *obj) {
     if (!obj) return;
     unsigned char pm = ((const unsigned char *)obj)[-1];
     if (pm == 0xfd || pm == 0xff || pm == 0xf1 || pm == 0xf0 ||
-        pm == 0xfe || pm == 0xfc || pm == 0xfb) return;
+        pm == 0xfe || pm == 0xfc || pm == 0xfb || pm == 0xfa || pm == 0xf8) return;
     const sp_gc_hdr *h = (const sp_gc_hdr *)obj - 1;
     if (!h->old || h->dirty) return;
     sp_gc_wb_slow(obj);
@@ -643,11 +643,14 @@ extern int (*sp_class_kind_of_name_fn)(int cls, const char *name);
 extern int (*sp_class_is_module_fn)(sp_Class c);
 
 /* ---- Hot inline mark helpers (inlined into both sides) ----
- * String tag bytes: 0xfe heap-unmarked -> 0xfc marked; others skipped. */
+ * String tag bytes: 0xfe heap-unmarked -> 0xfc marked (0xfa -> 0xf8 for a
+ * collectable frozen one); others skipped. */
 void sp_gc_mark_str(const char *s);   /* lib/sp_gc.c: the bitmap mark of a slab string, the byte of a malloc'd one */
 static inline void sp_mark_string(const char *s) {
   if (!s) return;
-  if ((unsigned char)s[-1] == 0xfe) {
+  /* 0xfe or 0xfa in one compare: a second branch in this layout-sensitive
+     inline costs optcarrot's mark (#1449) */
+  if (((unsigned char)s[-1] | 0x04) == 0xfe) {
     sp_gc_mark_str(s);
     return;
   }
@@ -683,7 +686,7 @@ static inline void sp_mark_rbval(sp_RbVal v) {
    some live object, marked a cycle longer than needed, which is harmless. */
 static inline void sp_mark_rbval_scratch(sp_RbVal v) {
   const void *h = NULL;
-  if (v.tag == SP_TAG_STR || (v.tag == SP_TAG_CLASS && v.cls_id == SP_CLASS_BY_NAME)) { if (v.v.s && (unsigned char)v.v.s[-1] == 0xfe) h = ((const sp_str_hdr *)(v.v.s - 1)) - 1; }
+  if (v.tag == SP_TAG_STR || (v.tag == SP_TAG_CLASS && v.cls_id == SP_CLASS_BY_NAME)) { if (v.v.s && ((unsigned char)v.v.s[-1] | 0x04) == 0xfe) h = ((const sp_str_hdr *)(v.v.s - 1)) - 1; }
   else if ((v.tag == SP_TAG_OBJ && v.cls_id != SP_BUILTIN_FOREIGN_PTR && v.cls_id != SP_BUILTIN_REGEX) || v.tag == SP_TAG_BIGINT) { if (v.v.p) h = (const char *)v.v.p - sizeof(sp_gc_hdr); }
   if (h && sp_slab_owns(h) && !sp_slab_is_live(h)) return;
   sp_mark_rbval(v);

@@ -150,7 +150,7 @@ static inline sp_String*sp_String_new_shared(const char*s){
      buffer. sp_str_byte_len reads the header length and falls back to strlen
      only for an UNMARKED string, which this constructor is never given. */
   int bin=sp_str_is_binary(s);
-  int frozen=(((const unsigned char*)s)[-1]==0xf1);
+  int frozen=sp_str_is_frozen_val(s);
   int64_t len=(int64_t)sp_str_byte_len(s);
   sp_String*r=sp_String_new_len(s,len);
   if(bin){r->binary=1;sp_fd_publish(r);}

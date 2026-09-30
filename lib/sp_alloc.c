@@ -660,7 +660,8 @@ void sp_str_lcache_clear(void) {
 /* sp_mark_string (sp_gc.h) flips a live string's marker 0xfe->0xfc during the
    mark phase; sweep keeps the marked ones and frees the rest. A frozen heap
    string (0xf1) is kept across sweeps (a live frozen global must survive, and
-   frozen literals are immortal). */
+   frozen literals are immortal). A collectable frozen one goes 0xfa->0xf8 and
+   is swept like 0xfe. */
 /* Sweep one worker's list head (or the single st list). Runs under stop-the-
    world (threaded) or the held heap lock (st), so no concurrent push races it.
    `bytes` is decremented per freed string to keep the live-byte count in step. */
@@ -689,7 +690,7 @@ static void sp_str_sweep_young(sp_str_hdr **head, sp_str_hdr **keep_head, sp_str
     char *body = (char *)(h + 1);
     unsigned char m = (unsigned char)body[0];
     held += h->size & SP_STR_SIZE_MASK;
-    if (m == 0xfc || m == 0xf1) {
+    if (m == 0xfc || m == 0xf1 || m == 0xf8) {
       /* Beside the mutators (a sweeper thread) the reset is a compare-and-
          swap: a `freeze` that lands on the same byte in the same moment wins,
          where a plain store could put its 0xfe over the 0xf1. */
@@ -697,6 +698,7 @@ static void sp_str_sweep_young(sp_str_hdr **head, sp_str_hdr **keep_head, sp_str
         if (sp_gc_in_sweeper) { unsigned char ex = 0xfc; SP_ATOMIC_CAS((unsigned char *)body, &ex, (unsigned char)0xfe, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE); }
         else body[0] = (char)0xfe;
       }
+      else if (m == 0xf8) SP_ATOMIC_STORE((unsigned char *)body, (unsigned char)0xfa, __ATOMIC_RELAXED);
       h->next = keep;
       if (!keep) tail = h;
       keep = h;
@@ -816,6 +818,7 @@ static void sp_str_sweep_old(sp_str_hdr **head, size_t *bytes) {
       pp = &h->next;
     }
     else if (m == 0xf1) { pp = &h->next; }
+    else if (m == 0xf8) { SP_ATOMIC_STORE((unsigned char *)body, (unsigned char)0xfa, __ATOMIC_RELAXED); pp = &h->next; }
     else {
       *pp = h->next;
       *bytes -= h->size & SP_STR_SIZE_MASK;
