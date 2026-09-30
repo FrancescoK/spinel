@@ -300,10 +300,13 @@ module Net
     # Net::HTTP.start(host, port, use_ssl: true) { |http| ... }
     # `ipaddr:` is the connect target; `Host:` and the TLS hostname stay
     # `address`. `nil` reads as unset, which is what CRuby's default is.
-    def self.start(address, port = 80, use_ssl: false, ipaddr: nil)
+    def self.start(address, port = 80, use_ssl: false, ipaddr: nil,
+                   open_timeout: 60, read_timeout: 60)
       http = HTTP.new(address, port)
       http.use_ssl = use_ssl
       http.ipaddr = ipaddr.to_s
+      http.open_timeout = open_timeout
+      http.read_timeout = read_timeout
       http.start
       begin
         yield http
