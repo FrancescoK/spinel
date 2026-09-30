@@ -1,0 +1,33 @@
+false
+true
+true
+true
+false
+true
+false
+true
+true
+true
+false
+true
+true
+false
+false
+false
+true
+false
+true
+false
+true
+true
+false
+true
+[{a: 1}, {a: 1.0}]
+true
+true
+:one
+nil
+true
+1
+nil
+{{a: 1} => 2}
