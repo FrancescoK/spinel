@@ -8893,6 +8893,31 @@ static int narrow_int_table_ivars(Compiler *c) {
   return narrowed;
 }
 
+/* Does every write of local `nm` in scope s other than a plain `=` leave it
+   holding the element type `elem` the plain writes narrow it to? `b ||= v`
+   and `b &&= v` store v, an op-assign stores what its operator answers, and
+   a multiple-assignment target an element this pass does not see. */
+static int narrowed_local_other_writes_fit(Compiler *c, int s, const char *nm, TyKind elem) {
+  const NodeTable *nt = c->nt;
+  for (int id = comp_lvw_first_sc(c, s, nm); id >= 0; id = comp_lvw_next_sc(c, id)) {
+    NodeKind k = nt_kind(nt, id);
+    const char *wn = nt_str(nt, id, "name");
+    if (k == NK_LocalVariableWriteNode || c->nscope[id] != s || !wn || !sp_streq(wn, nm)) continue;
+    if (k == NK_LocalVariableTargetNode) return 0;
+    TyKind vt = infer_type(c, nt_ref(nt, id, "value"));
+    if (k == NK_LocalVariableOperatorWriteNode) {
+      const char *op = nt_str(nt, id, "binary_operator");
+      int fits = elem == TY_FLOAT ? (vt == TY_FLOAT || vt == TY_INT)
+               : elem == TY_INT ? vt == TY_INT
+               : elem == TY_STRING ? vt == TY_STRING && op && sp_streq(op, "+")
+               : 0;
+      if (!fits) return 0;
+    }
+    else if (vt != elem && vt != TY_NIL) return 0;
+  }
+  return 1;
+}
+
 /* Locals read out of an already-narrowed array: `b = arr[i]` makes b the
    element type, so its own reads unbox. Split out of narrow_object_arrays
    so it still runs when that pass has no local candidate slot and returns
@@ -8915,7 +8940,7 @@ static int narrow_locals_from_arrays(Compiler *c) {
     for (int li = 0; li < sc->nlocals; li++) {
       LocalVar *lv = &sc->locals[li];
       if (lv->type != TY_POLY || lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
-      TyKind elem = TY_UNKNOWN; int ok = 1, saw = 0;
+      TyKind elem = TY_UNKNOWN; int ok = 1, saw = 0, other = 0;
       /* the (scope, name) write chain replaces a full node-table walk that
          ran once per candidate local per propagation round -- quadratic on
          machine-generated programs, where one 52k-line input spent 58% of
@@ -8923,9 +8948,14 @@ static int narrow_locals_from_arrays(Compiler *c) {
          kind/scope/name filters stay. */
       for (int id = comp_lvw_first_sc(c, s, lv->name); id >= 0 && ok; id = comp_lvw_next_sc(c, id)) {
         const char *ty = nt_type(nt, id);
-        if (!ty || !sp_streq(ty, "LocalVariableWriteNode") || c->nscope[id] != s) continue;
+        if (!ty || c->nscope[id] != s) continue;
         const char *nm = nt_str(nt, id, "name");
         if (!nm || !sp_streq(nm, lv->name)) continue;
+        /* the local's other writes are checked against the element type
+           once it is known; passed over, the pin below held `b ||= 7` in a
+           Float slot as 7.0, and a String `||=` into an object one did not
+           build */
+        if (!sp_streq(ty, "LocalVariableWriteNode")) { other = 1; continue; }
         int v = nt_ref(nt, id, "value");
         const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
         if (vty && sp_streq(vty, "NilNode")) continue;
@@ -8949,6 +8979,8 @@ static int narrow_locals_from_arrays(Compiler *c) {
         if (elem == TY_UNKNOWN) elem = ec; else if (elem != ec) { ok = 0; break; }
         saw = 1;
       }
+      if (ok && saw && other && elem != TY_UNKNOWN)
+        ok = narrowed_local_other_writes_fit(c, s, lv->name, elem);
       if (ok && saw && elem != TY_UNKNOWN) {
         /* Pin it: the next write pass resets the slot and re-derives the plain
            poly the container read hands back, and this pass would narrow it
