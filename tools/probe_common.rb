@@ -361,9 +361,11 @@ module ProbeCommon
     nil
   end
 
-  # A refusal or C error in words that do not change as a case shrinks.
+  # A refusal or C error in words that do not change as a case shrinks, or
+  # as it shares a program with others: a name the compiler numbers (`p1`,
+  # and `p1__bp72` for the same parameter in a larger program) is `#`.
   def error_kind(detail)
-    detail.sub(/\Aspinel: /, "").sub(LOCATION, "").gsub(/node \d+/, "node N").gsub(/\b[a-z_]+\d+\b/, "#")
+    detail.sub(/\Aspinel: /, "").sub(LOCATION, "").gsub(/node \d+/, "node N").gsub(/\b[a-z_]\w*\d\b/, "#")
           .sub(/ \(\w+Node.*\z/, "").sub(/ recv=.*\z/, "")[0, 100]
   end
 
@@ -461,11 +463,17 @@ module ProbeCommon
         # that says "unsupported". A refusal is the compiler's own line naming
         # the construct at a Ruby line, or its tally of them.
         refusal = /^spinel: (?:\S+\.rb:\d+: )?unsupported /
+        tally = /\d+ refusals?, nothing written/
         label = if !timed_out && status.signaled? then "compiler-failure"
                 elsif build.include?("C compilation failed") then "link-error"
-                elsif build.match?(refusal) || build.match?(/\d+ refusals?, nothing written/) then "compile-error"
+                elsif build.match?(refusal) || build.match?(tally) then "compile-error"
                 else "compiler-failure"
                 end
+        # Under a tally every line of the compiler's at a Ruby line is a
+        # refusal, whether or not it says "unsupported", and the first one is
+        # the failure: the tally counts the program's refusals, so it changes
+        # as the program is split and would not name what its parts show.
+        refusal = /^spinel: (?:\S+\.rb:\d+: |unsupported )/ if build.match?(tally)
         first = build.lines.find { |l| l.include?("error:") || l.match?(refusal) }
         first ||= if timed_out then "spinel ran past 600s"
                   elsif status.signaled? then "spinel died of SIG#{Signal.signame(status.termsig)}"
