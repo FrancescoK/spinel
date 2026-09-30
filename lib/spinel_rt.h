@@ -13040,6 +13040,24 @@ static sp_PolyArray *sp_poly_entries(sp_RbVal v) {
   sp_raise_nomethod(sp_nomethod_msg("entries", v));
   return NULL;
 }
+/* The elements of a boxed receiver of an Enumerable method `nm` served
+   through them (each_slice, each_cons, zip, sort_by, ...). nil has to_a but
+   none of these, so it raises NoMethodError naming `nm` where
+   sp_poly_to_a_arr would answer [] and run the block zero times; any other
+   receiver with no elements names `nm` too, not to_a. */
+static sp_PolyArray *sp_poly_enum_recv_arr(sp_RbVal v, const char *nm) {
+  if (v.tag != SP_TAG_OBJ) sp_raise_nomethod(sp_nomethod_msg(nm, v));
+  if (!(sp_poly_is_array_kind(v.cls_id) || sp_poly_is_hash_kind(v.cls_id) ||
+        v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE ||
+        (v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p))) {
+    sp_RbVal sv = sp_poly_struct_values(v);
+    if (sv.tag == SP_TAG_OBJ && sv.cls_id == SP_BUILTIN_POLY_ARRAY) return (sp_PolyArray *)sv.v.p;
+    sp_PolyArray *ue = sp_poly_user_elems(v);
+    if (ue) return ue;
+    sp_raise_nomethod(sp_nomethod_msg(nm, v));
+  }
+  return sp_poly_to_a_arr(v);
+}
 
 /* `to_h` on a boxed receiver. A Hash answers ITSELF -- CRuby returns self, so
    there is nothing to build and no copy to make. Every other kind goes through

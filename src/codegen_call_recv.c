@@ -2041,8 +2041,9 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       buf_printf(&rb, "_t%d", tbox);
     }
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_to_a_arr(%s); SP_GC_ROOT(_t%d);\n",
-               ta, rb.p ? rb.p : "sp_box_nil()", ta);
+    /* nil has to_a but not these: it raises, naming the method */
+    buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_enum_recv_arr(%s, \"%s\"); SP_GC_ROOT(_t%d);\n",
+               ta, rb.p ? rb.p : "sp_box_nil()", name, ta);
     free(rb.p);
     g_argov_node[g_n_argov] = recv;
     snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);

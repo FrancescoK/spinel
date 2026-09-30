@@ -1,0 +1,16 @@
+[[:grid, 2]]
+[Symbol, [[:grid, 2]]]
+[[1, 2], [2, 3]]
+[Array, [[1, 2], [2, 3]]]
+[[1, 2], [2, 3], [3, 4]]
+[Range, [[1, 2], [2, 3], [3, 4]]]
+[[[:a, 1], [:b, 2]]]
+[Hash, [[[:a, 1], [:b, 2]]]]
+"undefined method 'each_cons' for an instance of Other"
+"undefined method 'each_cons' for an instance of Other"
+"undefined method 'each_cons' for nil"
+"undefined method 'each_cons' for nil"
+"undefined method 'each_cons' for an instance of Integer"
+"undefined method 'each_cons' for an instance of Integer"
+"undefined method 'each_cons' for an instance of String"
+"undefined method 'each_cons' for an instance of String"
