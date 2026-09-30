@@ -181,6 +181,12 @@ int subtree_has_side_effect(Compiler *c, int id);
    write to one, or anything that runs Ruby code it does not show; not scalar
    arithmetic, a typed-array read or a plain field read (codegen_call.c). */
 int subtree_may_reassign_state(Compiler *c, int id);
+/* Can evaluating the subtree run a proc or block of the program's? A
+   yield, a super, a block, a call of a method the program defines (or of a
+   name it defines on any class), and a builtin handed anything but numbers,
+   Strings, Symbols, their ranges and typed Arrays can; a builtin over those
+   alone, with no block, cannot: `total + i.to_s` (codegen_call.c). */
+int subtree_may_run_proc(Compiler *c, int id);
 /* Does evaluating the subtree run no code, store nothing and allocate nothing
    -- variable and literal reads, scalar arithmetic, typed-array reads and
    plain field reads, all the way down (codegen_call.c)? */
@@ -1167,9 +1173,11 @@ int args_order_matters(Compiler *c, const int *argv, int argc, const int *after,
    arguments first already. */
 int emit_args_before_binding(Compiler *c, Scope *m, const int *argv, int argc, Buf *b);
 /* Can the node `after` give a variable the value `x` reads another value?
-   A local only by assigning it; an instance, global or class variable by
-   any effect. A value built of reads (`[x, 2]`) asks it of each; a block
-   reads when it runs. */
+   A local by assigning it, or, when a proc or block assigns its cell
+   (LocalVar.proc_rebinds), by anything that may call that proc
+   (subtree_may_run_proc); an
+   instance, global or class variable by any effect. A value built of reads
+   (`[x, 2]`) asks it of each; a block reads when it runs. */
 int read_rebound_by(Compiler *c, int x, int after);
 int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type);
 /* The TypeError CRuby raises for a `**` operand that is neither a Hash, nil

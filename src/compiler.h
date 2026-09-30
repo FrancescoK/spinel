@@ -62,6 +62,9 @@ typedef struct {
                        forwarded into a poly callee). A cell only lifted
                        iteration blocks made is consumed while the call runs,
                        so a byref parameter may still lend its slot (#4568). */
+  int proc_rebinds; /* a proc or block that captures it assigns the cell:
+                       any later call may run it and rebind the local, so a
+                       read ahead of one is taken first (read_rebound_by) */
   int cell_shadow;  /* the cell belongs to a param of an INLINED iteration
                        block, which the loop emitters bind by writing the plain
                        C slot. Keep that slot alongside the cell and copy it in
