@@ -1,0 +1,42 @@
+[0, nil, nil, nil, nil]
+[0, nil, nil]
+[0, nil, nil, nil]
+[0, nil, nil]
+[0, nil, nil]
+[0, nil, nil]
+[0, nil, 0, nil, nil]
+[0, nil, nil]
+[0, nil, nil]
+[0, nil, nil]
+[0, nil, nil]
+[0, nil, nil, 0, nil]
+[0, nil, nil]
+0
+0
+0
+0
+0
+0
+0
+nil
+nil
+nil
+[0, nil]
+[0, nil]
+[0, nil]
+[0, nil]
+[0, nil]
+[0, nil]
+[0, nil]
+[0, nil]
+[nil, nil, nil, nil]
+[0, nil, 0, nil]
+[0, 0, nil, 0, nil]
+nil
+[:recv, :arg]
+0
+[:recv, :arg]
+nil
+[:recv, :arg]
+nil
+[:recv, :arg]

@@ -4910,6 +4910,36 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
   return 0;
 }
 
+/* Does a receiver of this type answer `<=>` as Object#<=> does, having no
+   `<=>` of its own, and compare by identity here: the builtin classes below,
+   held as a pointer. A Range is held by value, so it has no identity to
+   compare; an IO or Dir is left to the `<=>` the runtime gives it. */
+static int obj_cmp_by_identity(TyKind t) {
+  switch (t) {
+    case TY_REGEX: case TY_MATCHDATA: case TY_EXCEPTION: case TY_PROC:
+    case TY_FIBER: case TY_THREAD: case TY_QUEUE: case TY_MUTEX: case TY_CONDVAR:
+    case TY_RANDOM: case TY_ADDRINFO: case TY_METHOD: case TY_ENUMERATOR:
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+/* Does the program define `<=>` on Object itself? Every class that has none of
+   its own then answers it. */
+static int object_defines_cmp(Compiler *c) {
+  int oc = comp_class_index(c, "Object");
+  return oc >= 0 && comp_method_in_chain(c, oc, "<=>", NULL) >= 0;
+}
+
+/* Does a user exception class define its own `<=>`? An Exception held as the
+   builtin type (`rescue => e`) may be one of its instances. */
+static int exc_subclass_defines_cmp(Compiler *c) {
+  for (int k = 0; k < c->nclasses; k++)
+    if (class_is_exc_subclass(c, k) && comp_method_in_chain(c, k, "<=>", NULL) >= 0) return 1;
+  return 0;
+}
+
 /* Emit a `fetch`-miss KeyError raise carrying MRI's "key not found: <key>"
    text. The key node is boxed so sp_raise_key_not_found can inspect any key
    type; re-evaluating it on the (aborting) miss path is harmless. */
@@ -40027,6 +40057,33 @@ else {
       nt_node_set_str((NodeTable *)nt, id, "name", "<=>");
       buf_printf(b, "((%s) ? (sp_int)0 : SP_INT_NIL)", eqb.p ? eqb.p : "0");
       free(eqb.p);
+      return;
+    }
+    /* A Regexp, a Proc, a Thread and the other classes with no <=> of their
+       own: 0 for the same object, nil for another. (Object#<=> also answers 0
+       for an equal one, which needs each class's ==; that stays nil.) An
+       operand of another concrete type is not the same object, except that an
+       Exception held as the builtin type may be an instance of a class of the
+       program. The receiver is rooted while the operand is evaluated, which
+       may allocate. */
+    if (obj_cmp_by_identity(lrt) && lat != TY_UNKNOWN && !object_defines_cmp(c) &&
+        !(lrt == TY_EXCEPTION && exc_subclass_defines_cmp(c))) {
+      int exc_inst = lrt == TY_EXCEPTION && ty_is_object(lat) && class_is_exc_subclass(c, ty_object_class(lat));
+      if (lat != lrt && !exc_inst) {
+        buf_puts(b, "((void)("); emit_expr(c, recv, b);
+        buf_puts(b, "), (void)("); emit_expr(c, argv[0], b);
+        buf_puts(b, "), SP_INT_NIL)");
+        return;
+      }
+      int ta = ++g_tmp, tb = ++g_tmp;
+      const char *ct = c_type_name(lrt);
+      buf_printf(b, "({ %s_t%d = ", ct, ta); emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); ", ta);
+      buf_printf(b, "%s_t%d = ", exc_inst ? "void *" : ct, tb);
+      if (exc_inst) buf_puts(b, "(void *)(");
+      emit_expr(c, argv[0], b);
+      if (exc_inst) buf_puts(b, ")");
+      buf_printf(b, "; (void *)_t%d == (void *)_t%d ? (sp_int)0 : SP_INT_NIL; })", ta, tb);
       return;
     }
     if (lrt != TY_UNKNOWN && lat != TY_UNKNOWN &&
