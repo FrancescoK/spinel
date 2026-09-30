@@ -6545,6 +6545,121 @@ static void sp_PolyArray_sort_bang(sp_PolyArray *a) {
   }
 }
 static sp_PolyArray *sp_PolyArray_sort(sp_PolyArray *a) { sp_PolyArray *b = sp_PolyArray_dup(a); sp_PolyArray_sort_bang(b); return b; }
+/* A literal array's min and max (`[a, b].max`): CRuby's VM answers them
+   without building the array, comparing each new element with the extreme
+   so far, `new <=> extreme` -- the other way round from Array#max above, so
+   `[1, nil].max` says "comparison of NilClass with 1 failed" where
+   `a = [1, nil]; a.max` says "comparison of Integer with nil failed". */
+static sp_RbVal sp_PolyArray_minmax_lit(sp_PolyArray *a, int want_max) {
+  if (!a || a->len == 0) return sp_box_nil();
+  SP_GC_ROOT(a);
+  sp_RbVal best = a->data[0];
+  for (sp_int i = 1; i < a->len; i++) {
+    sp_bool ok = FALSE;
+    sp_int r = sp_poly_order_cmp(a->data[i], best, &ok);
+    if (!ok) sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(a->data[i]), sp_cmperr_desc(best)));
+    if (want_max ? r > 0 : r < 0) best = a->data[i];
+  }
+  return best;
+}
+/* ... and the nil check of a literal Integer or Float array's, in that
+   order: a new nil against a number names the number, a new number against
+   a nil extreme names its class, and nil against nil compares equal. */
+static sp_IntArray *sp_IntArray_nil_lit_ck(sp_IntArray *a, int want_max) SP_UNUSED;
+static sp_IntArray *sp_IntArray_nil_lit_ck(sp_IntArray *a, int want_max) {
+  if (!a || a->len == 0) return a;
+  sp_int best = a->data[a->start];
+  for (sp_int i = 1; i < a->len; i++) {
+    sp_int v = a->data[a->start + i];
+    if (v == SP_INT_NIL || best == SP_INT_NIL) {
+      if (v == best) continue;
+      if (v == SP_INT_NIL) sp_raise_cls("ArgumentError", sp_sprintf("comparison of NilClass with %lld failed", (long long)best));
+      sp_raise_cls("ArgumentError", "comparison of Integer with nil failed");
+    }
+    if (want_max ? v > best : v < best) best = v;
+  }
+  return a;
+}
+static sp_FloatArray *sp_FloatArray_nil_lit_ck(sp_FloatArray *a, int want_max) SP_UNUSED;
+static sp_FloatArray *sp_FloatArray_nil_lit_ck(sp_FloatArray *a, int want_max) {
+  if (!a || a->len == 0) return a;
+  sp_float best = a->data[0];
+  for (sp_int i = 1; i < a->len; i++) {
+    sp_float v = a->data[i];
+    int vn = sp_float_is_nil(v), bn = sp_float_is_nil(best);
+    if (vn || bn) {
+      if (vn && bn) continue;
+      if (vn) sp_raise_cls("ArgumentError", sp_sprintf("comparison of NilClass with %s failed", sp_float_to_s(best)));
+      sp_raise_cls("ArgumentError", "comparison of Float with nil failed");
+    }
+    if (want_max ? v > best : v < best) best = v;
+  }
+  return a;
+}
+/* min(n) and max(n) as CRuby's nmin_run (enum.c) computes them. Elements
+   are buffered 4n at a time, and a full buffer is cut to its n extreme ones
+   by a quickselect partition (nmin_filter) that compares each element with
+   a pivot moved to the end; after the first cut an element is compared with
+   the last pivot before it is buffered at all. What is kept is sorted, and
+   reversed for max. Sorting the whole array compared other pairs: an
+   incomparable pair was named the other way round (`[1, nil].max(1)`), and
+   equal elements came out in another order (`[1, 1.0].max(1)` is [1]). */
+static sp_int sp_nmin_cmp(sp_RbVal a, sp_RbVal b, int rev) {
+  sp_bool ok = FALSE;
+  sp_int r = sp_poly_order_cmp(a, b, &ok);
+  if (!ok) sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(a), sp_cmperr_desc(b)));
+  r = r < 0 ? -1 : r > 0;
+  return rev ? -r : r;
+}
+static sp_RbVal sp_nmin_filter(sp_PolyArray *buf, sp_int n, int rev) {
+  sp_RbVal *beg = buf->data;
+  sp_int left = 0, right = buf->len - 1, store_index = 0;
+#define SP_NMIN_SWAP(i, j) do { sp_RbVal _sw = beg[i]; beg[i] = beg[j]; beg[j] = _sw; } while (0)
+  for (;;) {
+    sp_int pivot_index = left + (right - left) / 2, num_pivots = 1;
+    SP_NMIN_SWAP(pivot_index, right);
+    pivot_index = right;
+    store_index = left;
+    sp_int i = left;
+    while (i <= right - num_pivots) {
+      sp_int c = sp_nmin_cmp(beg[i], beg[pivot_index], rev);
+      if (c == 0) { SP_NMIN_SWAP(i, right - num_pivots); num_pivots++; continue; }
+      if (c < 0) { SP_NMIN_SWAP(i, store_index); store_index++; }
+      i++;
+    }
+    sp_int j = store_index;
+    for (i = right; right - num_pivots < i; i--)
+      if (j <= i) { SP_NMIN_SWAP(j, i); j++; }
+    if (store_index <= n && n <= store_index + num_pivots) break;
+    if (n < store_index) right = store_index - 1;
+    else left = store_index + num_pivots;
+  }
+#undef SP_NMIN_SWAP
+  sp_RbVal limit = beg[store_index];
+  buf->len = n;
+  return limit;
+}
+static sp_PolyArray *sp_PolyArray_nmin(sp_PolyArray *a, sp_int n, int rev) SP_UNUSED;
+static sp_PolyArray *sp_PolyArray_nmin(sp_PolyArray *a, sp_int n, int rev) {
+  if (n < 0) sp_raise_cls("ArgumentError", sp_sprintf("negative size (%lld)", (long long)n));
+  SP_GC_ROOT(a);
+  sp_PolyArray *buf = sp_PolyArray_new(); SP_GC_ROOT(buf);
+  if (n == 0 || !a) return buf;
+  sp_int bufmax = n * 4;
+  if (bufmax / 4 != n) sp_raise_cls("ArgumentError", "too big size");
+  sp_RbVal limit = sp_box_nil(); int has_limit = 0;
+  SP_GC_ROOT_RBVAL(limit);
+  for (sp_int i = 0; i < a->len; i++) {
+    sp_RbVal v = a->data[i];
+    if (has_limit && sp_nmin_cmp(v, limit, rev) >= 0) continue;
+    sp_PolyArray_push(buf, v);
+    if (buf->len == bufmax) { limit = sp_nmin_filter(buf, n, rev); has_limit = 1; }
+  }
+  if (buf->len > n) (void)sp_nmin_filter(buf, n, rev);
+  sp_PolyArray_sort_bang(buf);
+  if (rev) sp_PolyArray_reverse_bang(buf);
+  return buf;
+}
 /* Object-array (sp_PtrArray of one user class, TY_OBJ_ARRAY) comparison
    family: box the elements with the statically-known cls_id (tag assembly,
    no allocation) and reuse the PolyArray comparator machinery -- the user
@@ -13349,9 +13464,9 @@ static sp_RbVal sp_poly_arr_min_max_n(sp_RbVal v, sp_int n, int want_max) {
   if (n < 0) sp_raise_cls("ArgumentError", sp_sprintf("negative size (%lld)", (long long)n));
   v = sp_poly_span_subject(v);
   SP_GC_ROOT_RBVAL(v);
-  sp_PolyArray *s = (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id))
-    ? sp_PolyArray_sort_pairs(sp_poly_to_a_arr(v))
-    : sp_PolyArray_sort(sp_poly_arr_recv(v, want_max ? "max" : "min"));
+  if (!(v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id)))
+    return sp_box_poly_array(sp_PolyArray_nmin(sp_poly_arr_recv(v, want_max ? "max" : "min"), n, want_max));
+  sp_PolyArray *s = sp_PolyArray_sort_pairs(sp_poly_to_a_arr(v));
   SP_GC_ROOT(s);
   if (want_max) sp_PolyArray_reverse_bang(s);
   return sp_box_poly_array(sp_PolyArray_slice(s, 0, n));
