@@ -3509,6 +3509,33 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent);
 int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   return emit_ivar_nil_guarded(c, id, b, indent, emit_iteration_stmt_body);
 }
+/* Block parameter pj of an each_slice / each_cons row: element pj of the
+   row that starts at `_t<ti>` of the array `_t<ta>` (of kind k and type rt)
+   and is `_t<tn>` long (`lit` when the size is written out, else 0). A
+   parameter past the row is nil, where it read the next row's element; the
+   array's end is a missed read, nil already. An element of a boxed row
+   into a scalar parameter keeps its nil as the sentinel: under
+   --int-overflow=promote the row is boxed while the parameter is not, and
+   the plain assignment did not build. */
+static void emit_row_param_bind(Compiler *c, int block, int pj, const char *k, TyKind rt,
+                                int ta, int ti, int tn, long long lit, int indent, Buf *b) {
+  const char *pn = block_param_name(c, block, pj);
+  if (!pn) return;
+  const char *rpn = rename_local(pn);
+  Scope *sc = comp_scope_of(c, block);
+  LocalVar *lv = sc ? scope_local(sc, rpn) : NULL;
+  TyKind pt = lv ? lv->type : TY_UNKNOWN;
+  char get[200];
+  if (rt == TY_POLY_ARRAY && (pt == TY_INT || pt == TY_FLOAT))
+    snprintf(get, sizeof get, "%s(sp_PolyArray_get(_t%d, _t%d + %d))",
+             pt == TY_INT ? "sp_poly_to_i_or_nil" : "sp_poly_to_f_or_nil", ta, ti, pj);
+  else snprintf(get, sizeof get, "sp_%sArray_get(_t%d, _t%d + %d)", k, ta, ti, pj);
+  const char *nil = pt == TY_UNKNOWN ? NULL : nil_value(pt) ? nil_value(pt) : default_value(pt);
+  emit_indent(b, indent);
+  if (pj == 0 || pj < lit || !nil) buf_printf(b, "lv_%s = %s;\n", rpn, get);
+  else buf_printf(b, "lv_%s = %d < _t%d ? %s : %s;\n", rpn, pj, tn, get, nil);
+}
+
 static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");
@@ -4857,11 +4884,9 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       }
     }
     else {
-      for (int pj = 0; pj < np; pj++) {
-        const char *pn = block_param_name(c, block, pj);
-        emit_indent(b, indent + 1);
-        buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d + %d);\n", rename_local(pn), k, ta, ti, pj);
-      }
+      long long lit = nt_kind(nt, eav[0]) == NK_IntegerNode ? nt_int(nt, eav[0], "value", 0) : 0;
+      for (int pj = 0; pj < np; pj++)
+        emit_row_param_bind(c, block, pj, k, rt, ta, ti, tnn, lit, indent + 1, b);
       emit_loop_body(c, body, b, indent + 1);
     }
     emit_indent(b, indent); buf_puts(b, "}\n");
@@ -5146,12 +5171,9 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     int bodyIndent = indent + 1;
     if (np_es > 1) {
       /* multi-param: destructure slice elements into individual params */
-      for (int pj = 0; pj < np_es; pj++) {
-        const char *pn = block_param_name(c, block, pj);
-        if (!pn) break;
-        emit_indent(b, bodyIndent);
-        buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d + %d);\n", rename_local(pn), k, ta, ti, pj);
-      }
+      long long lit = nt_kind(nt, es_argv[0]) == NK_IntegerNode ? nt_int(nt, es_argv[0], "value", 0) : 0;
+      for (int pj = 0; pj < np_es; pj++)
+        emit_row_param_bind(c, block, pj, k, rt, ta, ti, ts, lit, bodyIndent, b);
       emit_loop_body(c, body, b, bodyIndent);
     }
     else if (use_shadow_es) {

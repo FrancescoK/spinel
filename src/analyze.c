@@ -17894,6 +17894,41 @@ static void mark_nullable_int_locals(Compiler *c) {
         plv->nullable_int = 1; changed = 1;
       }
     }
+    /* `a.each_slice(n) { |w, x| }` and `a.each_cons(n) { |w, x| }` bind a
+       row's elements: a parameter past a short last row or past n is nil,
+       and so is any parameter when an element can be nil or the row is
+       boxed (every element of a poly array can be). Only a literal n over a
+       literal array it divides, with no parameter past n, has no nil. */
+    NT_FOREACH_KIND(nt, NK_CallNode, id) {
+      const char *rn2 = nt_str(nt, id, "name");
+      int recv = nt_ref(nt, id, "receiver"), blk = nt_ref(nt, id, "block");
+      if (!rn2 || recv < 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+      int cons = sp_streq(rn2, "each_cons");
+      if (!cons && !sp_streq(rn2, "each_slice")) continue;
+      int ca = nt_ref(nt, id, "arguments");
+      int an = 0; const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+      if (an != 1) continue;
+      int bp = nt_ref(nt, blk, "parameters");
+      int params = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
+      int pn = 0; const int *reqs = params >= 0 ? nt_arr(nt, params, "requireds", &pn) : NULL;
+      if (!reqs || pn < 2) continue;
+      long long n = nt_kind(nt, av[0]) == NK_IntegerNode ? nt_int(nt, av[0], "value", 0) : 0;
+      int en = -1;
+      if (nt_kind(nt, recv) == NK_ArrayNode) {
+        const int *els = nt_arr(nt, recv, "elements", &en);
+        for (int e = 0; els && e < en; e++) if (nt_kind(nt, els[e]) == NK_SplatNode) en = -1;
+      }
+      int any_nil = nullable_int_elem_expr(c, recv, 0) || infer_type(c, recv) == TY_POLY_ARRAY;
+      int full_rows = n > 0 && (cons || (en >= 0 && en % n == 0));
+      Scope *bsc = comp_scope_of(c, blk);
+      for (int pk = 0; pk < pn; pk++) {
+        const char *pnm = nt_str(nt, reqs[pk], "name");
+        LocalVar *plv = pnm && bsc ? scope_local(bsc, pnm) : NULL;
+        if (!plv || (plv->type != TY_INT && plv->type != TY_FLOAT) || plv->nullable_int) continue;
+        int past_n = n > 0 ? pk >= n : pk > 0;   /* a size not written out may be 1 */
+        if (any_nil || past_n || (pk > 0 && !full_rows)) { plv->nullable_int = 1; changed = 1; }
+      }
+    }
     /* An IVAR written from such a value hands the sentinel to every reader,
        including the attr_reader a caller goes through (`W.new(r.p_).v`). The
        slot keeps its scalar C type, so only the boxing has to know (#3505). */
