@@ -17894,6 +17894,24 @@ static void mark_nullable_int_locals(Compiler *c) {
         plv->nullable_int = 1; changed = 1;
       }
     }
+    /* `x.then { |y| }`, `x.tap { |y| }`: the block parameter IS the receiver,
+       nil included. A boxed receiver (every Integer local under
+       --int-overflow=promote) is unboxed into it with its nil kept as the
+       sentinel (emit_tap_then_expr), so it can leave one there too. */
+    NT_FOREACH_KIND(nt, NK_CallNode, id) {
+      const char *tn = nt_str(nt, id, "name");
+      int recv = nt_ref(nt, id, "receiver"), blk = nt_ref(nt, id, "block");
+      if (!tn || recv < 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+      if (!sp_streq(tn, "then") && !sp_streq(tn, "yield_self") && !sp_streq(tn, "tap")) continue;
+      int bp = nt_ref(nt, blk, "parameters");
+      int params = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
+      int rn = 0; const int *reqs = params >= 0 ? nt_arr(nt, params, "requireds", &rn) : NULL;
+      const char *pnm = reqs && rn >= 1 ? nt_str(nt, reqs[0], "name") : NULL;
+      Scope *bsc = pnm ? comp_scope_of(c, blk) : NULL;
+      LocalVar *plv = bsc ? scope_local(bsc, pnm) : NULL;
+      if (!plv || (plv->type != TY_INT && plv->type != TY_FLOAT) || plv->nullable_int) continue;
+      if (nullable_int_value(c, recv) || infer_type(c, recv) == TY_POLY) { plv->nullable_int = 1; changed = 1; }
+    }
     /* An IVAR written from such a value hands the sentinel to every reader,
        including the attr_reader a caller goes through (`W.new(r.p_).v`). The
        slot keeps its scalar C type, so only the boxing has to know (#3505). */

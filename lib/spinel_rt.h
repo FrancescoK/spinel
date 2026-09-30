@@ -4623,8 +4623,13 @@ static const char *sp_poly_hval_s(sp_RbVal v) {
   if (v.tag == SP_TAG_NIL) return NULL;
   sp_raise_typed_hash_part(v, "value", "String");
 }
+/* An Integer-keyed hash holds a nil key as SP_INT_NIL, the key a nilable
+   Integer slot stores (`h[i] = v` with i nil) and inspect, keys and each
+   render as nil. A boxed nil is that key too: under --int-overflow=promote
+   the same slot is boxed, and its nil was refused. */
 static sp_int sp_poly_hkey_i(sp_RbVal v) {
   if (v.tag == SP_TAG_INT) return v.v.i;
+  if (v.tag == SP_TAG_NIL) return SP_INT_NIL;
   sp_raise_typed_hash_part(v, "key", "Integer");
 }
 static const char *sp_poly_hkey_s(sp_RbVal v) {
