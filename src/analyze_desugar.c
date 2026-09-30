@@ -6213,7 +6213,7 @@ static int stored_enum_write(Compiler *c, int id, int n0) {
   static const char *const meths[] = {
     "map", "collect", "select", "filter", "find_all", "reject", "sort_by", "group_by",
     "min_by", "max_by", "find", "detect", "flat_map", "collect_concat", "filter_map",
-    "partition", "take_while", "drop_while", "find_index", "minmax_by", NULL };
+    "partition", "take_while", "drop_while", "find_index", "minmax_by", "reverse_each", "each_entry", NULL };
   NodeTable *nt = (NodeTable *)c->nt;
   int x = nt_ref(nt, id, "receiver");
   const char *nm = nt_str(nt, id, "name"), *vn = nt_str(nt, x, "name");
