@@ -1261,7 +1261,7 @@ int comp_poly_arm_defines(Compiler *c, int k, const char *name) {
 int comp_poly_arm_defines_n(Compiler *c, int k, const char *name, int argc) {
   if (c->classes[k].is_native_class) {
     int nmi = comp_native_method_find(c, k, name, argc, 0);
-    return nmi >= 0 && c->native_methods[nmi].nargs == argc;
+    return nmi >= 0 && native_takes(&c->native_methods[nmi], argc);
   }
   return comp_method_in_chain(c, k, name, NULL) >= 0;
 }
@@ -1298,10 +1298,12 @@ int comp_iob_ty_is_64(int t) {
 int comp_native_method_find_typed(Compiler *c, int class_id, const char *name, int argc, int kind,
                                   const TyKind *argtys) {
   if (class_id < 0 || !name) return -1;
-  int arity_match = -1, loose = -1, typed = -1;
+  int arity_match = -1, loose = -1, typed = -1, rest_match = -1;
   for (int i = 0; i < c->n_native_methods; i++) {
     NativeMethod *m = &c->native_methods[i];
     if (m->class_id != class_id || m->kind != kind || !sp_streq(m->name, name)) continue;
+    /* a :rest binding answers the arities no fixed binding declares */
+    if (m->nargs != argc && native_takes(m, argc) && rest_match < 0) rest_match = i;
     if (m->nargs == argc) {
       if (argtys) {
         /* a binding whose every slot takes the actual as-is wins outright;
@@ -1323,7 +1325,8 @@ int comp_native_method_find_typed(Compiler *c, int class_id, const char *name, i
     if (loose < 0) loose = i;
   }
   if (typed >= 0) return typed;
-  return arity_match >= 0 ? arity_match : loose;
+  if (arity_match >= 0) return arity_match;
+  return rest_match >= 0 ? rest_match : loose;
 }
 
 int comp_reader_in_chain(Compiler *c, int class_id, const char *name, int *def_class) {

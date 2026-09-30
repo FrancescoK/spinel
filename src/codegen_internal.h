@@ -886,6 +886,7 @@ const char *local_init_value(Compiler *c, LocalVar *lv);
 int local_nil_test(Compiler *c, LocalVar *lv, const char *ref, Buf *out);
 /* Append the C type name for `t` to `b` (objects need the class name). */
 const char *class_ctype(Compiler *c, int cid);
+void emit_native_rest_args(Compiler *c, const NativeMethod *m, int argc, const int *argv, Buf *b);
 void native_arg_check(Compiler *c, int id, const char *what, NativeMethod *m,
                       int argc, const int *argv);
 void emit_ctype(Compiler *c, TyKind t, Buf *b);
