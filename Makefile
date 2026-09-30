@@ -2615,10 +2615,13 @@ IE_FORWARD_LIMIT ?= 2.5
 # every pass the emission runs. gen.sh's C grows linearly (4.03x at 4x the
 # program) but the emission's work does not: the emission alone reads 13.9x
 # and the whole compile 6.39x. Sampled every 4,096 units, about 470M of the
-# 1.16G units above 4x are walks per call site or per method:
-# singleton_def_of under arity_violation, fi_fiber_stack_risk under
-# emit_method_signature, and scope_has_return's scan of a node kind under
-# call_breaks. The limit sits just above; lower it as those go. One walk of
+# 1.16G units above 4x are walks of the program repeated per call site or per
+# method: singleton_def_of under arity_violation, whose table is cached but
+# rebuilt, a walk of the node table, whenever the emission has added a node
+# since the last call (401 rebuilds for 1,200 calls at 400 units),
+# fi_fiber_stack_risk under emit_method_signature, and scope_has_return's scan
+# of a node kind under call_breaks. The limit sits just above; lower it as
+# those go. One walk of
 # the node table per emitted method reads 7.66x. The count does not see a
 # scan that compares ids before names: scope_is_shadowed's scan of every
 # later scope, per class at every poly dispatch, was 11% of gen.sh 400's
