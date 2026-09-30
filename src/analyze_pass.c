@@ -7372,6 +7372,18 @@ int infer_param_types(Compiler *c) {
         continue;
       }
     }
+    /* The same on a Class value known only at run time: every class's own
+       target may be the one bound, so each takes the arguments. */
+    if (recv >= 0 && name && sp_streq(name, "bind_call")) {
+      const char *cvsym = class_value_instance_method_sym(c, recv);
+      int bargs = cvsym ? nt_ref(nt, id, "arguments") : -1;
+      int ban = 0; const int *bav = bargs >= 0 ? nt_arr(nt, bargs, "arguments", &ban) : NULL;
+      for (int k = 0; ban > 0 && k < c->nclasses; k++) {
+        int tmi = class_value_bind_call_target(c, k, cvsym, NULL);
+        if (tmi >= 0) changed |= bind_args_params(c, id, tmi, bav + 1, ban - 1);
+      }
+      if (cvsym) continue;
+    }
 
     /* <method>.to_proc stored as a Proc: its .call sites are likewise the
        only way the target method is reached, so bind their arg types to the

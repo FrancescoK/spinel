@@ -2811,6 +2811,12 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   }
   /* method(:sym) / <recv>.method(:sym) -> a bound Method object */
   if (name && sp_streq(name, "method") && method_sym_arg(c, id) != NULL) return TY_METHOD;
+  /* `k.instance_method(:m).bind_call(obj, args)` on a Class value known only
+     at run time: whichever class k holds binds its own `m`, each arm boxing
+     its answer. */
+  if (recv >= 0 && argc >= 1 && sp_streq(name, "bind_call") &&
+      class_value_instance_method_sym(c, recv))
+    return TY_POLY;
 
   /* <method>.call(args) / [] / bind_call(obj, args) -> the target's return
      type (bind_call = bind(obj).call(args), #3246). */

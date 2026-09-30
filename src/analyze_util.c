@@ -2222,6 +2222,63 @@ int method_obj_target_mi(Compiler *c, int node) {
   return pf >= 0 ? pf : mi;
 }
 
+/* The method name of `k.instance_method(:m)` that names no one target, or
+   NULL: k is a Class value only the run time knows (a parameter, a local
+   written more than one class, a poly slot), which method_obj_target_mi does
+   not resolve (a local holding one class is retargeted to its constant), or
+   a user class constant with no `m` at all. A bind_call on it dispatches on
+   the class (class_value_bind_call_target), and a class without `m` raises
+   NameError. A name every object answers (`to_s`, `inspect`, ...) is left
+   alone: a class without its own is not a class without it. */
+const char *class_value_instance_method_sym(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || nt_kind(nt, node) != NK_CallNode) return NULL;
+  const char *nm = nt_str(nt, node, "name");
+  if (!nm || !sp_streq(nm, "instance_method") || method_obj_target_mi(c, node) >= 0) return NULL;
+  int recv = nt_ref(nt, node, "receiver");
+  const char *sym = method_sym_arg(c, node);
+  if (recv < 0 || !sym || builtin_object_method_known(sym)) return NULL;
+  TyKind rt = infer_type(c, recv);
+  if (rt == TY_POLY || (rt == TY_CLASS && class_recv_is_dynamic(c, recv))) return sym;
+  int ci = rt == TY_CLASS ? class_recv_static_ci(c, recv) : -1;
+  return ci >= 0 && !is_builtin_reopen(c->classes[ci].name) ? sym : NULL;
+}
+
+/* The instance method that class `ci` binds for such a bind_call, or -1 when
+   `ci` has no `sym`. A class held by value and a module (whose method binds
+   any object) have no arm, nor has a target taking a block, which the arms
+   do not pass: *armless is set for them. */
+int class_value_bind_call_target(Compiler *c, int ci, const char *sym, int *armless) {
+  if (ci < 0 || ci >= c->nclasses || is_builtin_reopen(c->classes[ci].name)) return -1;
+  int mi = comp_method_in_chain(c, ci, sym, NULL);
+  if (mi < 0) return -1;
+  const ClassInfo *k = &c->classes[ci];
+  Scope *tm = &c->scopes[mi];
+  if (k->is_value_type || (k->def_node >= 0 && nt_kind(c->nt, k->def_node) == NK_ModuleNode) ||
+      tm->yields || (tm->blk_param && tm->blk_param[0])) {
+    if (armless) *armless = 1;
+    return -1;
+  }
+  return mi;
+}
+
+/* Whether a bind_call on such a node (class_value_instance_method_sym) meets
+   a class it has no arm for: a user class the arms skip, a builtin the
+   program reopens with the method, or, for a Class value the run time
+   picks, a core class's method of the name, which a builtin class held in
+   it would answer. The call is refused rather than raise NameError there. */
+int class_value_bind_call_gap(Compiler *c, int node) {
+  const char *sym = class_value_instance_method_sym(c, node);
+  if (!sym) return 0;
+  int armless = 0;
+  for (int k = 0; k < c->nclasses && !armless; k++) {
+    if (is_builtin_reopen(c->classes[k].name)) armless = comp_method_in_chain(c, k, sym, NULL) >= 0;
+    else (void)class_value_bind_call_target(c, k, sym, &armless);
+  }
+  int recv = nt_ref(c->nt, node, "receiver");
+  return armless || (core_method_name(sym) && class_recv_static_ci(c, recv) < 0);
+}
+
 /* The Ruby return kind of a typed-array adapter Method (`<array>.method(:op)`)
    with no target scope: IntArray `push` answers the array, `[]`/`[]=` the int
    element; StrArray `push` the array, `[]`/`[]=` the String element; anything
