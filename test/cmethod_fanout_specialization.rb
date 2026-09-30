@@ -38,5 +38,12 @@ end
 class Sub < Base
   def self.m30 = 2
 end
-p Base.m0
-p Sub.m0
+# The walk is the compiler's; running m0 is 2**30 calls (2**31 overflows a
+# 32-bit Integer), so m0 is only reachable, and the result is read near the
+# bottom of the fan-out.
+if ARGV.size > 99
+  p Base.m0
+  p Sub.m0
+end
+p Base.m27
+p Sub.m27
