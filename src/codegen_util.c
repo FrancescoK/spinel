@@ -3014,7 +3014,11 @@ static void shadow_tab_build(Compiler *c) {
   for (int k = n - 1; k >= 0; k--) {
     Scope *sc = &c->scopes[k];
     if (!sc->name) continue;
-    int cls = sc->class_id < 0 ? -1 : sc->class_id, cm = sc->is_cmethod ? 1 : 0;
+    /* by the scope's own class, whatever an instance_exec block has moved
+       (comp_scope_own_class): the move defines nothing in the class it
+       moves to, and the table then reads the same whenever it is built */
+    int own_cm, own = comp_scope_own_class(c, k, &own_cm);
+    int cls = own < 0 ? -1 : own, cm = own_cm ? 1 : 0;
     size_t i = shadow_hash(sc->name, cls, cm) & (cap - 1);
     while (tab[i].used && !(tab[i].class_id == cls && tab[i].is_cm == cm && sp_streq(tab[i].name, sc->name)))
       i = (i + 1) & (cap - 1);

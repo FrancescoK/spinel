@@ -1153,6 +1153,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a program declaring Class__reopen compiled)"; ok=0; \
 	else grep -q "Class__reopen is reserved" "$$tmp/cr.out" || \
 	  { echo "reject-test: FAIL (a program declaring Class__reopen refused without saying why)"; sed -n 1,5p "$$tmp/cr.out"; ok=0; }; fi; \
+	t=test/reject/instance_exec_refusal_moved_scope.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/ie.c" >"$$tmp/ie.out" 2>&1; then \
+	  echo "reject-test: FAIL (ObjectSpace in an instance_exec block compiled)"; ok=0; \
+	else grep -q "1 refusal," "$$tmp/ie.out" || \
+	  { echo "reject-test: FAIL (a refusal in an instance_exec block left its method moved, and a later call was refused too)"; sed -n 1,5p "$$tmp/ie.out"; ok=0; }; fi; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "reject-test: pass"; else exit 1; fi
 
