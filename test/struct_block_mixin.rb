@@ -87,3 +87,20 @@ end
 
 pt = Pt.new(x: 4)
 p pt.m, pt.y
+module OrdA; def tag = "a"; end
+module OrdB; def tag = "b"; end
+OrdS = Struct.new(:x) { include OrdA }
+class OrdS
+  include OrdB
+end
+p OrdS.new(1).tag
+module OrdP1; def t = "p1" + super; end
+module OrdP2; def t = "p2" + super; end
+OrdT = Struct.new(:x) do
+  prepend OrdP1
+  def t = "t"
+end
+class OrdT
+  prepend OrdP2
+end
+p OrdT.new(1).t

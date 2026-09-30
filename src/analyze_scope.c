@@ -1513,6 +1513,22 @@ static const char *class_body_name(Compiler *c, int id) {
   return NULL;
 }
 
+/* For each class, the `Name = Struct.new/Data.define(...) do ... end` write
+   whose block comes before the class's def_node -- a later `class Name`
+   reopening became the def_node -- or -1. That block is the class's first
+   body in source order, so its mixins go in before the reopening's. */
+static int *struct_block_before_def(Compiler *c) {
+  int *sw = malloc(sizeof(int) * (size_t)(c->nclasses > 0 ? c->nclasses : 1));
+  for (int ci = 0; ci < c->nclasses; ci++) sw[ci] = -1;
+  for (int id = 0; id < c->nt->count; id++) {
+    if (nt_kind(c->nt, id) != NK_ConstantWriteNode) continue;
+    const char *cname = class_body_name(c, id);
+    int ci = cname ? comp_class_index(c, cname) : -1;
+    if (ci >= 0 && sw[ci] < 0 && id < c->classes[ci].def_node) sw[ci] = id;
+  }
+  return sw;
+}
+
 /* Register the symbol members of a Struct.new(...) call onto `cls`. */
 /* Resolve a Struct.new / Data.define member argument to its literal symbol
    name: a SymbolNode directly, or a local variable whose writes in the same
@@ -4752,16 +4768,20 @@ void register_includes(Compiler *c) {
   #define ADD_BODY(CI, NODE) do { \
     if (nb == cap) { cap *= 2; bci = realloc(bci, (size_t)cap * sizeof(int)); bnode = realloc(bnode, (size_t)cap * sizeof(int)); } \
     bci[nb] = (CI); bnode[nb] = (NODE); nb++; } while (0)
-  for (int ci = 0; ci < c->nclasses; ci++)
+  int *sw = struct_block_before_def(c);
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    if (sw[ci] >= 0) ADD_BODY(ci, class_def_body(c, sw[ci]));
     ADD_BODY(ci, class_def_body(c, c->classes[ci].def_node));
+  }
   for (int id = 0; id < nt->count; id++) {
     const char *cname = class_body_name(c, id);
     if (!cname) continue;
     int ci = comp_class_index(c, cname);
     if (ci < 0) continue;
-    if (id == c->classes[ci].def_node) continue;  /* the definition, listed above */
+    if (id == c->classes[ci].def_node || id == sw[ci]) continue;  /* listed above */
     ADD_BODY(ci, class_def_body(c, id));
   }
+  free(sw);
   #undef ADD_BODY
   int *remaining = calloc((size_t)c->nclasses, sizeof(int));
   char *done = calloc((size_t)nb, 1);
@@ -5709,16 +5729,20 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
    included, the same two passes register_includes makes (#4200). */
 void register_prepends(Compiler *c) {
   const NodeTable *nt = c->nt;
-  for (int ci = 0; ci < c->nclasses; ci++)
+  int *sw = struct_block_before_def(c);
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    if (sw[ci] >= 0) process_prepend_body(c, ci, class_def_body(c, sw[ci]));
     process_prepend_body(c, ci, class_def_body(c, c->classes[ci].def_node));
+  }
   for (int id = 0; id < nt->count; id++) {
     const char *cname = class_body_name(c, id);
     if (!cname) continue;
     int ci = comp_class_index(c, cname);
     if (ci < 0) continue;
-    if (id == c->classes[ci].def_node) continue;
+    if (id == c->classes[ci].def_node || id == sw[ci]) continue;
     process_prepend_body(c, ci, class_def_body(c, id));
   }
+  free(sw);
 }
 
 /* Merge inherited ivar/reader/writer NAMES into subclasses so the struct
