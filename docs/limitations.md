@@ -636,30 +636,29 @@ method a String variable through one of them is refused at compile time
 rather than compiled with the append lost:
 
 ```ruby
-class Box
-  def fill(s) = (s << "!")
-end
-s = +"a"
-Box.instance_method(:fill).bind_call(Box.new, s)
-# spinel: t.rb:5: a String is passed to `fill`'s parameter `s` through `bind_call`, which the method appends to: ...
+f = ->(t) { t << "!" }
+["a", "b"].map(&:dup).each { |s| f.call(s) }
+# spinel: t.rb:2: a String is passed to a proc's parameter `t` through `f.call`, which the proc appends to: ...
 ```
+
+It is shared as well through an UnboundMethod (`bind_call`,
+`instance_method(:m).bind(o).call`), a method `define_method` defines, a
+curried proc, and a proc or `Method` read out of a slot that holds other
+values too.
 
 Not yet shared:
 
-- `bind_call` and `instance_method(:m).bind(o)`;
-- a method `define_method` defines;
 - `instance_exec` and `class_exec`;
-- a curried proc;
-- a proc or `Method` read out of a slot that holds other values too;
 - a `yield` into a `Method` or proc passed with `&` (`run(s, &method(:m))`
   into a method that yields), and an `initialize` that yields the String
   it appends to;
 - through `new`, a String variable in a splatted Array literal that holds
   only Strings (`C.new(*[s])`);
-- through a proc, a `Method`, `new` or `raise`, a String held by a block
-  parameter, by a variable a block or proc captures, or by a global or
-  class variable, and through a proc, a `Method` or a class value's `new`,
-  one held by an instance variable.
+- through a proc, a `Method` (bound, unbound, or read out of a slot), a
+  curried proc, a method `define_method` defines, `new` or `raise`, a
+  String held by a block parameter, by a variable a block or proc captures,
+  or by a global or class variable, and through a proc, a `Method` or a
+  class value's `new`, one held by an instance variable.
 
 Each is lifted in turn, and this list shrinks with it. Until then, return
 the String from the method and assign it, or append to it in the caller. A
