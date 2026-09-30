@@ -8186,6 +8186,27 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         buf_puts(b, "; break;");
         obj_default_done = 1;
       }
+      /* The zero-argument Array transforms. A class defining flatten (or
+         compact, uniq) takes over the name's dispatch, and an Array arriving
+         at it had no arm: activesupport's Uncountables defines #flatten, and
+         its `words.flatten` on a rest array reaching the dispatch as poly
+         raised "undefined method 'flatten' for an instance of Array". The
+         coercion is the one the no-user-class path uses; a receiver that is
+         not an Array keeps the raise (a Hash answers these with its own pair
+         semantics and is left to the switch). Only a poly or poly-array slot
+         can take the PolyArray result. */
+      if (!obj_default_done && argc == 0 &&
+          (sp_streq(name, "flatten") || sp_streq(name, "compact") || sp_streq(name, "uniq")) &&
+          (ret == TY_POLY || ret == TY_POLY_ARRAY)) {
+        char nv[96];   /* the value-taking runtime helpers the no-user-class path calls */
+        snprintf(nv, sizeof nv, "sp_poly_%s(_t%d)", name, tv);
+        buf_printf(b, " default: if (!sp_rbval_is_array(_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); _t%d = ",
+                   tv, name, tv, tr);
+        if (ret == TY_POLY) emit_boxed_text(c, TY_POLY_ARRAY, nv, b);
+        else buf_puts(b, nv);
+        buf_puts(b, "; break;");
+        obj_default_done = 1;
+      }
       /* frozen?/nil? on a builtin-scalar (or un-overridden object) poly value:
          the switch default answers via the runtime predicate. */
       if (!obj_default_done && is_pred) {
