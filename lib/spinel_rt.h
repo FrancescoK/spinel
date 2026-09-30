@@ -11281,6 +11281,9 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
      Read the status BEFORE the hooks run: it lives in the pending exception
      object, which nothing roots once the hooks start allocating. */
   if (strcmp(cls, "SystemExit") == 0) exit(sp_at_exit_run(sp_exc_exit_status(sp_pending_exc_obj)));
+  /* A killed main fiber (Fiber#kill, lib/sp_fiber.c) ends the program with
+     status 1 after the at_exit hooks, as CRuby does. */
+  if (strcmp(cls, "FiberKillSignal") == 0) exit(sp_at_exit_run(1));
   /* An uncaught exception prints its text AFTER the hooks have run, which is
      the order CRuby prints them in, and the status is theirs to change (a hook
      that calls `exit 5` makes an uncaught raise exit 5, still printing the

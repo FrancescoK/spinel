@@ -9,3 +9,10 @@ nil
 nil
 false
 :outer_done
+thread ensure
+nil
+a ensure
+nil
+main goes on
+main ensure
+at_exit
