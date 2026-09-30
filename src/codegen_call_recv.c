@@ -14170,7 +14170,8 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
      (#3368). Mirrors the rt==TY_STRING arms: no captures -> string array,
      captures -> array of arrays. */
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "scan") && argc == 1 &&
-      nt_ref(nt, id, "block") < 0 && !user_defines_or_reads(c, name)) {
+      nt_ref(nt, id, "block") < 0 && !user_defines_or_reads(c, name) &&
+      !native_class_defines(c, name)) {
     /* Guard on the tag: only a String actually answers #scan, and a nil (or an
        Integer) receiver must raise NoMethodError as CRuby does rather than be
        stringified into an empty scan (test/issue_3147.rb pins that). */
@@ -14296,7 +14297,8 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   /* poly.scan(pat) with no block: the rows themselves. The pattern may arrive
      boxed (read out of a table), where its payload IS the compiled pattern. */
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "scan") && argc == 1 &&
-      nt_ref(nt, id, "block") < 0 && !user_defines_or_reads(c, "scan")) {
+      nt_ref(nt, id, "block") < 0 && !user_defines_or_reads(c, "scan") &&
+      !native_class_defines(c, "scan")) {
     int sre = re_lit_index(c, argv[0]);
     TyKind spt = comp_ntype(c, argv[0]);
     TyKind sres = comp_ntype(c, id);
@@ -14317,7 +14319,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
      does, then the block runs per row; the value is the receiver string
      (CRuby answers self). */
   if (sp_streq(name, "scan") && argc == 1 && nt_ref(nt, id, "block") >= 0 &&
-      !user_defines_or_reads(c, "scan")) {
+      !user_defines_or_reads(c, "scan") && !native_class_defines(c, "scan")) {
     int sblk = nt_ref(nt, id, "block");
     const char *sp0 = block_param_name(c, sblk, 0);
     const char *sp0r = sp0 ? rename_local(sp0) : NULL;

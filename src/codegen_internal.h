@@ -1300,6 +1300,7 @@ int diagnose_unsupported_call(Compiler *c, int id);
 int diag_user_defines(Compiler *c, const char *name);
 int recv_user_defines(Compiler *c, const char *name);
 int user_defines_or_reads(Compiler *c, const char *name);
+int native_class_defines(Compiler *c, const char *name);
 const char *array_index_bad_class(Compiler *c, int id);
 extern int g_poly_builtin_arm;  /* emitting a poly dispatch's builtin arm */
 int poly_name_user_claimed(Compiler *c, const char *name, int argc, int readers);
