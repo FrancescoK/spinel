@@ -11,6 +11,8 @@
 #   native_new    [arg_specs], "csym"          (arity-keyed; several allowed)
 #   native_method :name, [arg_specs], ret, "csym"
 #   specs: any | string | string? (nil-able) | int | float | bool | nil
+#   a trailing rest takes every further argument, boxed: the C symbol gets a
+#   count and an sp_RbVal array after the fixed arguments
 module StringIOPackage
   native_lib "stringio"
   native_obj "packages/stringio/sp_stringio.o"
@@ -35,10 +37,12 @@ module StringIOPackage
   native_method :puts,     [:any], :nil,  "sp_StringIO_puts_v1"
   native_method :puts,     [:any, :any], :nil, "sp_StringIO_puts_v2"
   native_method :puts,     [:any, :any, :any], :nil, "sp_StringIO_puts_v3"
+  native_method :puts,     [:rest], :nil, "sp_StringIO_puts_va"
   native_method :print,    [:string], :nil, "sp_StringIO_print"
   native_method :print,    [:any], :nil,  "sp_StringIO_print_v1"
   native_method :print,    [:any, :any], :nil, "sp_StringIO_print_v2"
   native_method :print,    [:any, :any, :any], :nil, "sp_StringIO_print_v3"
+  native_method :print,    [:rest], :nil, "sp_StringIO_print_va"
   native_method :putc,     [:int], :int, "sp_StringIO_putc"
   native_method :putc,     [:string], :int, "sp_StringIO_putc_s"
   native_method :flush,    [], :self,    "sp_StringIO_flush"
