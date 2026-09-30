@@ -235,6 +235,22 @@ mpz_init_set(mpz_ctx_t *ctx, mpz_t *s, mpz_t *t)
 }
 
 static void
+mpz_set_uint64(mpz_ctx_t *ctx, mpz_t *y, uint64_t u)
+{
+  size_t len = 0;
+
+  for (uint64_t u0=u; u0; u0>>=DIG_SIZE,len++)
+    ;
+  y->sn = (u != 0);
+  mpz_realloc(ctx, y, len);
+  y->sz = len;
+  for (size_t i=0; i<len; i++) {
+    y->p[i] = (mp_limb)LOW(u);
+    u >>= DIG_SIZE;
+  }
+}
+
+static void
 mpz_set_int(mpz_ctx_t *ctx, mpz_t *y, mrb_int v)
 {
   mrb_uint u;
@@ -255,33 +271,17 @@ mpz_set_int(mpz_ctx_t *ctx, mpz_t *y, mrb_int v)
   }
 #if MRB_INT_BIT > DIG_SIZE
   if ((u & ~DIG_MASK) != 0) {
-    mpz_realloc(ctx, y, 2);
-    y->p[1] = (mp_limb)HIGH(u);
-    y->p[0] = (mp_limb)LOW(u);
-    y->sz = 2;
+    /* An mrb_int can be wider than two limbs; mpz_set_uint64() counts them.
+       It derives the sign from the magnitude, so keep the one v gave. */
+    short sn = y->sn;
+    mpz_set_uint64(ctx, y, u);
+    y->sn = sn;
     return;
   }
 #endif
   mpz_realloc(ctx, y, 1);
   y->p[0] = (mp_limb)u;
   y->sz = 1;
-}
-
-
-static void
-mpz_set_uint64(mpz_ctx_t *ctx, mpz_t *y, uint64_t u)
-{
-  size_t len = 0;
-
-  for (uint64_t u0=u; u0; u0>>=DIG_SIZE,len++)
-    ;
-  y->sn = (u != 0);
-  mpz_realloc(ctx, y, len);
-  y->sz = len;
-  for (size_t i=0; i<len; i++) {
-    y->p[i] = (mp_limb)LOW(u);
-    u >>= DIG_SIZE;
-  }
 }
 
 #ifdef MRB_INT32
@@ -598,7 +598,11 @@ mpz_add_int(mpz_ctx_t *ctx, mpz_t *x, mrb_int n)
   if (carry != 0) {
     mpz_realloc(ctx, x, x->sz + 1);
     x->p[x->sz-1] = (mp_limb)carry;
-    x->sn = 1;
+    /* the magnitude grew; keep the sign the caller set (the routine "ignores
+       sign of x"). Forcing it positive here turned a magnitude-growing step on
+       a negative value positive, so mrb_bint_sub_n()/add_n() gave the wrong
+       sign whenever the carry crossed a limb, e.g. -(2**64-1) - 1. */
+    if (x->sn == 0) x->sn = 1;
   }
   trim(x);
 }
@@ -3084,10 +3088,10 @@ mpz_mod(mpz_ctx_t *ctx, mpz_t *r, mpz_t *x, mpz_t *y)
     return;
   }
 
-  /* Fast path for single-limb modulus */
+  /* Fast path for single-limb modulus; the remainder takes the sign of x,
+     as in the other paths, whatever the sign of y */
   if (y->sz == 1) {
     mpz_mod_limb(ctx, r, x, y->p[0]);
-    if (y->sn < 0) r->sn = -r->sn;
     return;
   }
 
@@ -3096,11 +3100,16 @@ mpz_mod(mpz_ctx_t *ctx, mpz_t *r, mpz_t *x, mpz_t *y)
    * violate it and the algorithm silently truncates high limbs. Fall through
    * to general division for those. */
   if (y->sz >= 4 && y->sz <= 16 && x->sz >= y->sz + 2 && x->sz <= 2 * y->sz) {
+    /* Barrett reads its operands as signed, so it is handed their
+       magnitudes, as the division below is: given a negative x it found
+       x < m and answered x unreduced. The sign goes on afterwards. */
+    mpz_t ax = *x, ay = *y;
     mpz_t mu;
+    ax.sn = ay.sn = 1;
     mpz_init_temp(ctx, &mu, y->sz + 1);
-    mpz_barrett_mu(ctx, &mu, y);
+    mpz_barrett_mu(ctx, &mu, &ay);
     mpz_realloc(ctx, r, y->sz);
-    mpz_barrett_reduce(ctx, r, x, y, &mu);
+    mpz_barrett_reduce(ctx, r, &ax, &ay, &mu);
     r->sn = sn;
     if (uzero_p(r))
       r->sn = 0;
@@ -4033,6 +4042,10 @@ mpz_get_int(mpz_t *y, mrb_int *v)
     return TRUE;
   }
 
+  /* The negative range is one wider than the positive one, so MRB_INT_MIN
+     fits as an absolute value of MRB_INT_MAX + 1. */
+  mrb_uint limit = (mrb_uint)MRB_INT_MAX + (y->sn < 0 ? 1 : 0);
+
 #ifdef MRB_NO_MPZ64BIT
   /* When using 16-bit limbs, we need to handle larger accumulation */
   mrb_uint i = 0;
@@ -4040,13 +4053,13 @@ mpz_get_int(mpz_t *y, mrb_int *v)
 
   while (d-- > y->p) {
     /* Check for overflow before shifting */
-    if (i > (mrb_uint)(MRB_INT_MAX >> DIG_SIZE)) {
+    if (i > (limit >> DIG_SIZE)) {
       return FALSE;
     }
     i = (i << DIG_SIZE) | *d;
   }
 
-  if (i > (mrb_uint)MRB_INT_MAX) {
+  if (i > limit) {
     return FALSE;
   }
 #else
@@ -4061,14 +4074,16 @@ mpz_get_int(mpz_t *y, mrb_int *v)
     }
     i = (i << DIG_SIZE) | *d;
   }
-  if (i > MRB_INT_MAX) {
+  if (i > limit) {
     /* overflow */
     return FALSE;
   }
 #endif
 
   if (y->sn < 0) {
-    *v = -(mrb_int)i;
+    /* On this branch `limit` is the absolute value of MRB_INT_MIN, which has
+       no positive counterpart to negate, so it is spelled out instead. */
+    *v = (i == limit) ? MRB_INT_MIN : -(mrb_int)i;
   }
   else {
     *v = (mrb_int)i;
@@ -4696,14 +4711,16 @@ limb_gcd(mp_limb a, mp_limb b)
       b >>= 1;
     }
 
-    /* Now both a and b are odd. Ensure a >= b */
-    if (a < b) {
+    /* Now both a and b are odd. Ensure a <= b, since a limb is unsigned and
+       the subtraction below has to stay one: with a the larger, b - a borrows
+       past zero and the loop never reaches it. */
+    if (a > b) {
       mp_limb temp = a;
       a = b;
       b = temp;
     }
 
-    /* Replace b with (b - a) */
+    /* Replace b with (b - a), which is even and smaller than b was */
     b = b - a;
 
   } while (b != 0);
