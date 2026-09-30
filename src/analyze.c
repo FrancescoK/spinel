@@ -1497,11 +1497,15 @@ void mark_proc_captures(Compiler *c) {
         /* A write in this proc's body, its own frame's or a block's nested
            in it, assigns the cell wherever the proc is later called from. A
            block the call consumes counts too: one bound to a `&b` parameter
-           may be kept and called after it (`def keep(&b) = $kept = b`). */
+           may be kept and called after it (`def keep(&b) = $kept = b`). So
+           does a write in a parameter's default, which runs in the proc's
+           frame when a call leaves the parameter out
+           (`->(q = (v = 0)) { 5 }`); procof stamps only the body. */
         for (int wi = 0; wi < nwn && !lv->proc_rebinds; wi++) {
           int w = wns[wi];
           const char *wn = nt_str(nt, w, "name");
           if (c->nscope[w] != encl || !wn || !sp_streq(wn, nm)) continue;
+          if (pn >= 0 && a_subtree_contains(nt, pn, w, 0)) { lv->proc_rebinds = 1; continue; }
           if (!procof) { lv->proc_rebinds = a_subtree_contains(nt, body, w, 0); continue; }
           for (int f = procof[w]; f >= 0; f = procof[f])
             if (f == id) { lv->proc_rebinds = 1; break; }

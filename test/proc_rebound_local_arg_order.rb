@@ -117,6 +117,9 @@ xs = [1]; p xs.push([(xs = [9]; 2)])
 s = +"a"; ls = -> { s = +"b"; 5 }; p m2(s, ls.call)
 f = 1.5; lf = -> { f = 0.5; 5 }; p m2(f, lf.call)
 ar = [1]; lar = -> { ar = [0]; 5 }; p m2(ar, lar.call)
+# a lambda whose parameter's default assigns the local
+d = 1; ld = ->(q = (d = 0)) { { k: 5 } }; p mk(d, **ld.call)
+e = 1; le = ->(k: (e = 0)) { { k: 5 } }; p mkr(e, **le.call)
 # a kept block, and a lambda made inside a proc
 x = 1
 keep { x = 0; 5 }
