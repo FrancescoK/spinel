@@ -6592,7 +6592,8 @@ else if (orecv >= 0 && onm) {
   g_self = "self"; g_result_var = NULL; g_ret_type = ret; g_ensure_depth = 0; g_result_poly = 0;
   int sv_iec = g_ie_class_id, sv_bcls = bs ? bs->class_id : -1, sv_bcm = bs ? bs->is_cmethod : 0;
   if (ie_cls >= 0) g_ie_class_id = ie_cls;
-  if (ie_cls >= 0 && sv_bcls >= 0) { bs->class_id = ie_cls; bs->is_cmethod = 0; }
+  int bs_moved = ie_cls >= 0 && sv_bcls >= 0;
+  if (bs_moved) { comp_scope_move_begin(c, (int)(bs - c->scopes)); bs->class_id = ie_cls; bs->is_cmethod = 0; }
   /* The proc body reads its captured self by value for a value-type class
      (sp_X self) but by pointer otherwise (sp_X *self); ivar access inside the
      body must match. g_self_deref is global, so override it for the body and
@@ -7196,6 +7197,7 @@ else if (orecv >= 0 && onm) {
   g_self_deref = sv_deref;
   g_ie_class_id = sv_iec;
   if (bs) { bs->class_id = sv_bcls; bs->is_cmethod = sv_bcm; }
+  if (bs_moved) comp_scope_move_end();
   g_cap_struct = sv_cap_struct; g_cap_names = sv_cap_names; g_ensure_depth = sv_ensure_depth;
   memcpy(g_ensure_stack, sv_estk, sizeof sv_estk);
   g_brk_ser_var = sv_bser; g_brk_skip_id = sv_bskip;
