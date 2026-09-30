@@ -2432,6 +2432,9 @@ void sp_Thread_pass(void) {
 }
 
 sp_thread *sp_Thread_current(void) { return g_current; }
+/* The fiber a finished transferred fiber hands back to: the green thread's
+   own fiber, or NULL on the main thread (its root fiber). */
+sp_Fiber *sp_thread_main_fiber(void) { return g_current ? g_current->fiber : NULL; }
 /* The current thread as a fiber owner. An id is never reused, so a fiber
    can't be taken over by a later thread at the same address. */
 unsigned sp_thread_owner_id(void) { return g_current ? g_current->id + 1 : 0; }

@@ -86,6 +86,7 @@ sp_Fiber *sp_Fiber_new(void (*body)(sp_Fiber *));
 sp_RbVal sp_Fiber_resume(sp_Fiber *f, sp_RbVal val);
 sp_RbVal sp_Fiber_yield(sp_RbVal val);
 unsigned sp_thread_owner_id(void);   /* lib/sp_sched.c */
+sp_Fiber *sp_thread_main_fiber(void);   /* lib/sp_sched.c */
 sp_RbVal sp_Fiber_resume_n(sp_Fiber *f, sp_RbVal val, int argc);
 sp_RbVal sp_Fiber_transfer_n(sp_Fiber *f, sp_RbVal val, int argc);
 sp_RbVal sp_Fiber_transfer(sp_Fiber *f, sp_RbVal val);
