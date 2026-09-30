@@ -16,6 +16,7 @@ class C
   def self.cm(p) = (p << X; nil)
 end
 class Ini; def initialize(p) = (p << X); end
+class Box; def initialize(a, b) = (b << X; nil); end
 class A; def w(p) = (p << X; nil); end
 class B; def w(p) = (p.size; nil); end
 e = []
@@ -29,6 +30,8 @@ v = +"a"; w = +"b"; g2(1, v, w); g3(v, w); p v.size, w.size
 v = +"a"; k = [C, C][ARGV.size]; k.cm(*e, v); k.new.m(*e, v); p v.size   # a class value
 v = +"a"; [A.new, B.new].each { |o| s = [v]; o.w(*s); o.w(*e, v) }; p v.size   # poly dispatch
 v = +"a"; s = [v]; Ini.new(*s); p v.size            # new, into initialize
+v = +"a"; Box.new(*[1, v]); p v.size                 # a literal holding the String
+v = +"a"; Box.new(*[v, v]); p v.size                 # one holding only Strings
 v = +"a"; p rd(v), v.size                            # a reader
 fz = "fr".freeze; begin; m1(*e, fz); rescue FrozenError => ex; p ex.class; end
 v = +"a\0b"; g1(v); p v.size, v.bytes.first(4)

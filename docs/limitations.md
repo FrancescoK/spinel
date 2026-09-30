@@ -640,10 +640,10 @@ a literal block, a block the method keeps, and a proc or `Method` passed
 with `&`; through `instance_exec`, `instance_eval`, `class_exec` and
 `module_exec`; through `new` and `raise Cls, s` into an `initialize`, one
 that yields the String to its block, a Struct's and a Data's included; and
-through a splat or a gather (`m(*args, s)`, `m(*[s])`, `def m(*r)`). The
-paths below do not share it yet, and a call that would hand such a method a
-String variable through one of them is refused at compile time rather than
-compiled with the append lost:
+through a splat or a gather, into any of those (`m(*args, s)`, `m(*[s])`,
+`C.new(*[s, s])`, `def m(*r)`). The paths below do not share it yet, and a
+call that would hand such a method a String variable through one of them is
+refused at compile time rather than compiled with the append lost:
 
 ```ruby
 f = ->(t) { t << "!" }
@@ -658,8 +658,6 @@ values too.
 
 Not yet shared:
 
-- through `new`, a String variable in a splatted Array literal that holds
-  only Strings (`C.new(*[s])`);
 - through `instance_exec`, a String variable in or ahead of a splat
   (`o.instance_exec(s, *rest) { |t, *r| t << "!" }`), and one held by a
   block parameter, by a variable a proc captures, or by a global or class
