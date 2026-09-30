@@ -29,6 +29,14 @@ q = proc { |a| a.concat([1]) }
 u = proc { |b| b.unshift("u") }
 p fw(q, [0]), fw(u, ["v"])
 
+# a call on the literal that does not run it answers a Proc called
+# out of sight
+h = ->(a) { a << "x" }.itself
+p fw(h, +"i")
+cu = ->(a, b) { a << b; a }.curry
+def fw2(pr, s) = pr.call(s).call("y")
+p fw2(cu, ["c"])
+
 # still bound where every call is in sight
 k = ->(acc) { acc << 1 }
 p k.call([0])
