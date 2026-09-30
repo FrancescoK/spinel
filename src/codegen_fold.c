@@ -5976,6 +5976,14 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
     }
     int dvP = m->pdefault[idx];
     if (p->dyn_handle && dvP >= 0 && comp_ntype(c, dvP) == TY_NIL) { buf_puts(out, "NULL"); return; }
+    /* a default that is an earlier parameter binds that parameter's handle,
+       the one String both names hold (promote_default_alias_params) */
+    { char srefD[192];
+      if (dvP >= 0 && nt_kind(c->nt, dvP) == NK_LocalVariableReadNode &&
+          strbuf_slot_ref(c, dvP, srefD, sizeof srefD)) {
+        buf_puts(out, srefD);
+        return;
+      } }
     buf_puts(out, "sp_String_new_shared(");
     if (dvP >= 0) emit_str_expr(c, dvP, out);
     else buf_puts(out, "(&(\"\\xff\")[1])");
