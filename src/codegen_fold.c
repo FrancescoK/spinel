@@ -286,6 +286,13 @@ static char *emit_hash_block_eval(Compiler *c, int block, TyKind rt, const char 
   Buf rv; memset(&rv, 0, sizeof rv); buf_puts(&rv, tvvb); return rv.p;
 }
 
+static void emit_pre_rooted_recv(Compiler *c, int recv, TyKind rt, int t) {
+  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+  emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+  buf_printf(g_pre, " _t%d = ", t); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
+}
+
 /* hash.map / collect { |k, v| ... } as an expression -> an array of the block
    values, built via a loop over the hash entries in the statement prelude. */
 int emit_hash_collect_expr(Compiler *c, int id, Buf *b) {
@@ -311,15 +318,12 @@ int emit_hash_collect_expr(Compiler *c, int id, Buf *b) {
   if (bn < 1) return 0;
 
   int trecv = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp;
-  { Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-    emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
-    buf_printf(g_pre, " _t%d = ", trecv); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p); }
   /* The loop below reads this temp's `len` as its bound on every turn and
      takes the entry out of it on every yield, and the block between two
      turns allocates. A receiver with no other holder -- the hash a method
      call returned -- is rooted here, as the Hash sort_by, sum and group_by
      hoists in this file already were. */
-  emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", trecv);
+  emit_pre_rooted_recv(c, recv, rt, trecv);
 
   if (is_sel || is_rej) {
     /* select/reject: produce a same-type hash with matching pairs */
@@ -435,10 +439,7 @@ int emit_hash_reduce_search_expr(Compiler *c, int id, Buf *b) {
   if (bn < 1) return 0;
 
   int trecv = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp, tbest = ++g_tmp, twin = ++g_tmp;
-  { Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-    emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
-    buf_printf(g_pre, " _t%d = ", trecv); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p); }
-  emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", trecv);
+  emit_pre_rooted_recv(c, recv, rt, trecv);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = NULL; SP_GC_ROOT(_t%d);\n", tres, tres);
   /* Index of the winning entry, or -1 if none qualified. The pair is built
      once after the loop, so no result array is allocated until the walk is
@@ -511,10 +512,7 @@ int emit_hash_sort_by_expr(Compiler *c, int id, Buf *b) {
   if (bn < 1) return 0;
 
   int trecv = ++g_tmp, ttmp = ++g_tmp, ti = ++g_tmp, tup = ++g_tmp, tpair = ++g_tmp;
-  { Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-    emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
-    buf_printf(g_pre, " _t%d = ", trecv); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p); }
-  emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", trecv);
+  emit_pre_rooted_recv(c, recv, rt, trecv);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", ttmp, ttmp);
   emit_indent(g_pre, g_indent);
@@ -572,10 +570,7 @@ int emit_hash_reduce_scalar_expr(Compiler *c, int id, Buf *b) {
   }
 
   int trecv = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp;
-  { Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-    emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
-    buf_printf(g_pre, " _t%d = ", trecv); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p); }
-  emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", trecv);
+  emit_pre_rooted_recv(c, recv, rt, trecv);
   /* The initial value is rendered into a side buffer FIRST, the way the
      receiver above is. Written straight into g_pre it landed in the middle of
      the line being built there: an empty array literal needs construction
@@ -755,9 +750,7 @@ int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
   TyKind p0_scope_ty = p0_lv_tv ? p0_lv_tv->type : TY_UNKNOWN;
   int needs_box_assign = (p0_scope_ty == TY_POLY && (!keys ? svt != TY_POLY : skt != TY_POLY));
   int ts = ++g_tmp, td = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp;
-  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);  /* recv preludes flush to g_pre first */
-  emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", ts); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
-  emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", ts);
+  emit_pre_rooted_recv(c, recv, rt, ts);  /* recv preludes flush to g_pre first */
   emit_indent(g_pre, g_indent); emit_ctype(c, dt, g_pre); buf_printf(g_pre, " _t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);\n", td, dhn, td);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, ts, ti);
   emit_indent(g_pre, g_indent + 1); emit_ctype(c, skt, g_pre);
@@ -3834,13 +3827,11 @@ int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b) {
   if (cmp_ty != TY_INT && cmp_ty != TY_POLY) return 0;
   const char *cmp_o = cmp_ty == TY_POLY ? "sp_poly_to_i(" : "(";
   int trv = ++g_tmp, tn = ++g_tmp, tmin = ++g_tmp, tmax = ++g_tmp, ti = ++g_tmp, te = ++g_tmp;
-  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-  emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", trv); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
   /* the length is hoisted once, but every turn takes its element out of this
      temp after the comparator has run, and the comparator is user code that
      allocates: rooted. A range or hash receiver arrives here already rooted
      by the arm above that materialized it, and takes a second slot. */
-  emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", trv);
+  emit_pre_rooted_recv(c, recv, rt, trv);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_int _t%d = sp_%sArray_length(_t%d);\n", tn, k, trv);
   emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre);
   /* An empty comparator reduction returns nil, so use the carrier's nil
