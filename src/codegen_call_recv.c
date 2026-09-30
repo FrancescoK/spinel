@@ -5659,8 +5659,29 @@ static int hash_lit_empty(const NodeTable *nt, int n) {
   return en == 0;
 }
 
+/* A block body with a `next` of its own answers through a slot: the next
+   assigns it and leaves the do{}while(0) emit_block_value_into wraps the
+   body in, where a bare `continue` would skip the caller's use of the value.
+   Emits `({ T _tN = nil; ...; _tN; })` and answers 1; 0 for a body with no
+   next, which the caller reads as leading statements and a tail. */
+static int emit_blk_value_via_next(Compiler *c, int blk, TyKind vt, Buf *b) {
+  if (!fold_body_has_next(c, nt_ref(c->nt, blk, "body"))) return 0;
+  int t = ++g_tmp;
+  char dest[32]; snprintf(dest, sizeof dest, "_t%d", t);
+  buf_puts(b, "({ "); emit_ctype(c, vt, b);
+  buf_printf(b, " %s = %s;\n", dest, vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
+  Buf *saved_pre = g_pre; int saved_ind = g_indent;
+  g_pre = b;
+  if (vt != TY_POLY) g_bv_dest_ty = vt;
+  emit_block_value_into(c, blk, dest, vt == TY_POLY, 0);
+  g_pre = saved_pre; g_indent = saved_ind;
+  buf_printf(b, " %s; })", dest);
+  return 1;
+}
+
 static void emit_blk_value_as(Compiler *c, int blk, TyKind vt, Buf *b) {
   const NodeTable *nt = c->nt;
+  if (emit_blk_value_via_next(c, blk, vt, b)) return;
   int bbody = nt_ref(nt, blk, "body");
   int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
   int bval = bn > 0 ? bb[bn - 1] : -1;
@@ -5722,7 +5743,12 @@ static int emit_merge_block_boxed(Compiler *c, int id, int recv, int arg, Buf *b
     if (mp[0]) buf_printf(b, " sp_RbVal lv_%s = _tk%d;", mp[0], tk);
     if (mp[1]) buf_printf(b, " sp_RbVal lv_%s = sp_PolyPolyHash_get(_t%d, _tk%d);", mp[1], tr, tk);
     if (mp[2]) buf_printf(b, " sp_RbVal lv_%s = _tv%d;", mp[2], tk);
-    { Buf *saved_pre = g_pre; g_pre = b;
+    Buf nv; memset(&nv, 0, sizeof nv);
+    if (emit_blk_value_via_next(c, mblk, TY_POLY, &nv)) {
+      buf_printf(b, " sp_PolyPolyHash_set(_t%d, _tk%d, %s); }", tr, tk, nv.p);
+      free(nv.p);
+    }
+    else { Buf *saved_pre = g_pre; g_pre = b;
       for (int j = 0; j < mbn - 1; j++) { emit_stmt(c, mbb[j], b, 0); buf_puts(b, " "); }
       /* the tail's own prelude (an interpolation temp) has to land BEFORE
          the set call, so render the value into its own buffer while g_pre
@@ -6252,6 +6278,10 @@ else {
               buf_printf(b, "lv_%s = ", rename_local(fp0)); emit_boxed_text(c, kt, ktn, b); buf_puts(b, "; ");
             }
             else buf_printf(b, "lv_%s = _t%d; ", rename_local(fp0), tk);
+          }
+          if (emit_blk_value_via_next(c, blk, (vt == TY_POLY || mismatch) ? TY_POLY : vt, b)) {
+            buf_puts(b, "; }); })");
+            return 1;
           }
           for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);  /* leading stmts */
           if (bval >= 0) {
@@ -6799,8 +6829,9 @@ else {
         if (bp0) buf_printf(b, " lv_%s = _t%d;", rename_local(bp0), tk);
         if (bp1) buf_printf(b, " lv_%s = sp_PolyPolyHash_get(_t%d, _t%d);", rename_local(bp1), tr, tk);
         if (bp2) buf_printf(b, " lv_%s = _t%d;", rename_local(bp2), tv);
-        buf_printf(b, " sp_PolyPolyHash_set(_t%d, _t%d, ({ ", tr, tk);
-        {
+        buf_printf(b, " sp_PolyPolyHash_set(_t%d, _t%d, ", tr, tk);
+        if (!emit_blk_value_via_next(c, blk, TY_POLY, b)) {
+          buf_puts(b, "({ ");
           int bbody = nt_ref(nt, blk, "body");
           int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
           int bval = bn > 0 ? bb[bn - 1] : -1;
@@ -6822,8 +6853,8 @@ else {
           if (lpre.p) buf_puts(b, lpre.p);
           if (lval.p) buf_puts(b, lval.p);
           free(lpre.p); free(lval.p);
+          buf_puts(b, "; })");
         }
-        buf_puts(b, "; })");
         buf_printf(b, "); }\nelse { sp_PolyPolyHash_set(_t%d, _t%d, _t%d); } }", tr, tk, tv);
         buf_printf(b, " _t%d; })", tr);
         return 1;

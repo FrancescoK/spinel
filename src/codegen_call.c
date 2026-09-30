@@ -13937,6 +13937,17 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         Buf *sv_pre = g_pre; int sv_ind = g_indent; const char *sv_self = g_self;
         g_pre = pb; g_indent = 1;
         int bn = 0; const int *bb = hbody >= 0 ? nt_arr(nt, hbody, "body", &bn) : NULL;
+        /* a `next <v>` answers the missing key: the body writes a slot the
+           function returns, where a bare `continue` had no loop to leave */
+        if (bn > 0 && fold_body_has_next(c, hbody)) {
+          int vtmp = ++g_tmp;
+          char dst[32]; snprintf(dst, sizeof dst, "_t%d", vtmp);
+          emit_indent(pb, 1); buf_printf(pb, "sp_RbVal %s = sp_box_nil();\n", dst);
+          emit_block_value_into(c, hblk, dst, 1, 1);
+          emit_indent(pb, 1); buf_printf(pb, "return %s;\n", dst);
+          bn = 0;
+        }
+        else if (bn == 0) { emit_indent(pb, 1); buf_puts(pb, "return sp_box_nil();\n"); }
         for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], pb, 1);
         if (bn > 0) {
           int last = bb[bn - 1];
@@ -13994,7 +14005,6 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             free(vexpr.p);
           }
         }
-        else { emit_indent(pb, 1); buf_puts(pb, "return sp_box_nil();\n"); }
         g_pre = sv_pre; g_indent = sv_ind; g_self = sv_self;
         buf_puts(pb, "}\n");
         if (dp_self) buf_printf(b, "sp_PolyPolyHash_new_dproc(_sp_hash_dproc_%d, (void *)self)", dn);

@@ -778,10 +778,24 @@ int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
       else buf_printf(g_pre, "lv_%s = sp_%sHash_get(_t%d, _t%d);\n", p0, shn, ts, tk);
     }
   }
-  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
-  int save = g_indent; g_indent++;
-  Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, bb[bn - 1], &vb); g_indent = save;
   TyKind bret = comp_ntype(c, bb[bn - 1]);
+  Buf vb; memset(&vb, 0, sizeof vb);
+  /* a `next <v>` answers for this pair: the body writes a slot and the
+     set below reads it, where the bare `continue` of a tail read skipped
+     the set and dropped the pair */
+  if (fold_body_has_next(c, body)) {
+    int tv = ++g_tmp;
+    char dst[32]; snprintf(dst, sizeof dst, "_t%d", tv);
+    emit_indent(g_pre, g_indent + 1); emit_ctype(c, bret, g_pre);
+    buf_printf(g_pre, " %s = %s;\n", dst, bret == TY_POLY ? "sp_box_nil()" : default_value(bret));
+    emit_block_value_into(c, block, dst, bret == TY_POLY, g_indent + 1);
+    buf_puts(&vb, dst);
+  }
+  else {
+    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+    int save = g_indent; g_indent++;
+    emit_expr(c, bb[bn - 1], &vb); g_indent = save;
+  }
   TyKind dkt = ty_hash_key(dt);
   emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_%sHash_set(_t%d, ", dhn, td);
   if (keys) {
@@ -1842,11 +1856,20 @@ static int emit_hash_chunk_first_class(Compiler *c, int pr, TyKind prt, int bloc
   if (box1) emit_boxed_text(c, vt, vsrc, g_pre); else buf_puts(g_pre, vsrc);
   buf_puts(g_pre, ";\n");
 
-  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
-  int save = g_indent; g_indent++;
-  Buf kb; memset(&kb, 0, sizeof kb); emit_boxed(c, bb[bn - 1], &kb); g_indent = save;
-  emit_indent(g_pre, g_indent + 1);
-  buf_printf(g_pre, "_t%d = %s;\n", tkey, kb.p ? kb.p : "sp_box_nil()"); free(kb.p);
+  /* a `next <key>` writes the key slot itself */
+  if (fold_body_has_next(c, nt_ref(nt, block, "body"))) {
+    char dst[24]; snprintf(dst, sizeof dst, "_t%d", tkey);
+    int save = g_indent; g_indent++;
+    emit_block_value_into(c, block, dst, 1, g_indent);
+    g_indent = save;
+  }
+  else {
+    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+    int save = g_indent; g_indent++;
+    Buf kb; memset(&kb, 0, sizeof kb); emit_boxed(c, bb[bn - 1], &kb); g_indent = save;
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "_t%d = %s;\n", tkey, kb.p ? kb.p : "sp_box_nil()"); free(kb.p);
+  }
 
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "if (_t%d.tag == SP_TAG_NIL || (_t%d.tag == SP_TAG_SYM && _t%d.v.i == (sp_sym)%d))"
@@ -2223,9 +2246,23 @@ static int emit_chunk_family_runs(Compiler *c, int ck) {
     int tk = ++g_tmp;
     emit_indent(g_pre, g_indent + 1);
     emit_chunk_elem_bind(c, ta, ti, p0, p1, ptb != TY_UNKNOWN, at0, pin_poly);
-    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
-    int save = g_indent; g_indent += 1;
-    Buf kb; memset(&kb, 0, sizeof kb); emit_boxed(c, bb[bn - 1], &kb); g_indent = save;
+    Buf kb; memset(&kb, 0, sizeof kb);
+    /* a `next <key>` answers the key through a slot the body writes */
+    if (fold_body_has_next(c, body)) {
+      int tnk = ++g_tmp;
+      char dst[24]; snprintf(dst, sizeof dst, "_t%d", tnk);
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "sp_RbVal %s = sp_box_nil(); SP_GC_ROOT_RBVAL(%s);\n", dst, dst);
+      int save = g_indent; g_indent += 1;
+      emit_block_value_into(c, block, dst, 1, g_indent);
+      g_indent = save;
+      buf_puts(&kb, dst);
+    }
+    else {
+      for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+      int save = g_indent; g_indent += 1;
+      emit_boxed(c, bb[bn - 1], &kb); g_indent = save;
+    }
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tk, kb.p ? kb.p : "sp_box_nil()", tk); free(kb.p);
     emit_indent(g_pre, g_indent + 1);
@@ -2248,9 +2285,12 @@ static int emit_chunk_family_runs(Compiler *c, int ck) {
     int tc = ++g_tmp;
     emit_indent(g_pre, g_indent + 1);
     emit_chunk_elem_bind(c, ta, ti, p0, p1, ptb != TY_UNKNOWN, at0, pin_poly);
-    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
-    int save = g_indent; g_indent += 1;
-    Buf cb; memset(&cb, 0, sizeof cb); emit_cond(c, bb[bn - 1], &cb); g_indent = save;
+    Buf cb; memset(&cb, 0, sizeof cb);
+    if (!emit_block_cond_next(c, block, g_indent + 1, &cb)) {
+      for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+      int save = g_indent; g_indent += 1;
+      emit_cond(c, bb[bn - 1], &cb); g_indent = save;
+    }
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "int _t%d = (%s) ? 1 : 0;\n", tc, cb.p ? cb.p : "0"); free(cb.p);
     if (is_sb) {
@@ -2293,9 +2333,12 @@ static int emit_chunk_family_runs(Compiler *c, int ck) {
       if (at1 == TY_POLY) buf_puts(g_pre, gv); else emit_unbox_text(c, at1, gv, g_pre);
       buf_puts(g_pre, ";\n");
     }
-    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 2);
-    int save = g_indent; g_indent += 2;
-    Buf cb; memset(&cb, 0, sizeof cb); emit_cond(c, bb[bn - 1], &cb); g_indent = save;
+    Buf cb; memset(&cb, 0, sizeof cb);
+    if (!emit_block_cond_next(c, block, g_indent + 2, &cb)) {
+      for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 2);
+      int save = g_indent; g_indent += 2;
+      emit_cond(c, bb[bn - 1], &cb); g_indent = save;
+    }
     emit_indent(g_pre, g_indent + 2);
     buf_printf(g_pre, is_sw ? "if (%s) {\n" : "if (!(%s)) {\n", cb.p ? cb.p : "0"); free(cb.p);
     emit_indent(g_pre, g_indent + 3);
@@ -3068,7 +3111,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
 /* True if the block body carries a `next` that is not inside a nested block
    of its own -- that next leaves THIS block, and its value is the block's
    answer. Nested blocks own their own next, so the walk stops at them. */
-static int fold_body_has_next(Compiler *c, int node) {
+int fold_body_has_next(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
