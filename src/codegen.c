@@ -2028,6 +2028,13 @@ static void emit_cell_decl(Compiler *c, Scope *s, LocalVar *lv, Buf *b) {
 }
 
 void emit_scope_decls(Compiler *c, Scope *s, Buf *b) {
+  emit_scope_decls_ends(c, s, b, NULL);
+}
+
+/* emit_scope_decls, noting in ends[i] where local i's declaration text ends
+   (a local that declares nothing ends where the one before it did). The top
+   level's split (main_body_split) moves each declaration by these. */
+void emit_scope_decls_ends(Compiler *c, Scope *s, Buf *b, size_t *ends) {
   int si = (int)(s - c->scopes);
   int has_begin = scope_has_begin(c, si);
   /* $~ and the $1.. globals derived from it are frame-local in Ruby: a match
@@ -2049,6 +2056,7 @@ void emit_scope_decls(Compiler *c, Scope *s, Buf *b) {
   char **volnames = NULL; int nvol = 0, all_vol = 0;
   if (has_begin) begin_volatile_names(c, si, &volnames, &nvol, &all_vol);
   for (int i = 0; i < s->nlocals; i++) {
+    if (ends && i > 0) ends[i - 1] = b->len;
     LocalVar *lv = &s->locals[i];
     /* define_method subst var: replaced inline by the literal, never a C
        local, so neither declare nor root it. */
@@ -2086,6 +2094,7 @@ void emit_scope_decls(Compiler *c, Scope *s, Buf *b) {
       declare_local(c, b, lv, vol);
     }
   }
+  if (ends && s->nlocals > 0) ends[s->nlocals - 1] = b->len;
   free(volnames);
 }
 
@@ -3847,6 +3856,206 @@ static int gc_frame_build(Buf *b, size_t ins) {
   free(b->p);
   *b = out;
   return 1;
+}
+
+/* ---- splitting the top level ----
+
+   A program's top level compiles to one C function, and a large program's is
+   a large function: the call-binding probe's 25-case programs gave one of
+   ~3,900 lines holding 59 setjmps. In a function that calls setjmp, GCC
+   gives every call an abnormal edge into one dispatcher block, which holds
+   a PHI with an argument per call for each value live at some setjmp (each
+   setjmp's own jmp_buf address among them), and its constant propagation
+   revisits those PHIs as the calls' edges turn executable. The cost grows
+   with calls x calls x setjmps: gcc 16 -O2 spent 58 of that program's 66 s
+   in "tree CCP", and gcc 13 took 414 s over 50 cases, where clang took 8.
+
+   So a top level past MAIN_SPLIT_BYTES with a setjmp in it runs as parts of
+   about MAIN_PART_BYTES each, cut between its statements, each a function of
+   its own that _sp_main_body calls in turn. A local used by one part is
+   declared in that part, as it was in the body; one used by several moves to
+   file scope, where every part reaches the same storage, and the body keeps
+   its initialisation and its root. Its root stays in the body's frame, which
+   outlives every part. A program under the threshold, or with no setjmp at
+   its top level, is emitted as before. */
+#define MAIN_SPLIT_BYTES (64 * 1024)
+#define MAIN_PART_BYTES (32 * 1024)
+
+/* Does [beg, end) contain the word `w` outside literals and comments? */
+static int main_text_has_word(const char *p, size_t beg, size_t end, const char *w) {
+  size_t wl = strlen(w);
+  for (size_t i = beg; i < end; ) {
+    size_t j = frame_skip_noncode(p, i, end);
+    if (j != i) { i = j; continue; }
+    if (!frame_idch(p[i])) { i++; continue; }
+    size_t k = i;
+    while (k < end && frame_idch(p[k])) k++;
+    if (k - i == wl && !strncmp(p + i, w, wl)) return 1;
+    i = k;
+  }
+  return 0;
+}
+
+typedef struct { const char *name; int local; } MainName;
+static int main_name_cmp(const void *a, const void *b) {
+  return strcmp(((const MainName *)a)->name, ((const MainName *)b)->name);
+}
+
+/* A file-scope local's declaration text, rewritten: each `T lv_x = init;`
+   line becomes `static T lv_x;` in `statics` and `lv_x = init;` in `init`
+   (nothing for a `{0}`, which static storage already holds); a root or a
+   cell's initial store stays in `init` as it was. 0 when a line has any
+   other shape, and the caller leaves the top level whole. */
+static int main_local_to_static(const char *p, size_t beg, size_t end, const char *lvn,
+                                const char *celln, Buf *statics, Buf *init) {
+  size_t i = beg;
+  while (i < end) {
+    const char *nl = memchr(p + i, '\n', end - i);
+    size_t le = nl ? (size_t)(nl - p) : end;
+    size_t s = i;
+    while (s < le && p[s] == ' ') s++;
+    if (le - s >= 6 && (!strncmp(p + s, "SP_GC_", 6) || p[s] == '*')) {
+      buf_putn(init, p + i, le - i); buf_puts(init, "\n");
+    }
+    else {
+      const char *eq = s < le ? strstr(p + s, " = ") : NULL;
+      if (!eq || (size_t)(eq - p) >= le || le == s || p[le - 1] != ';') return 0;
+      size_t de = (size_t)(eq - p), vb = de + 3;
+      const char *id = NULL;
+      if (de - s > strlen(lvn) && !strncmp(p + de - strlen(lvn), lvn, strlen(lvn))) id = lvn;
+      else if (de - s > strlen(celln) && !strncmp(p + de - strlen(celln), celln, strlen(celln))) id = celln;
+      if (!id || (p[de - strlen(id) - 1] != ' ' && p[de - strlen(id) - 1] != '*')) return 0;
+      buf_puts(statics, "static ");
+      buf_putn(statics, p + s, de - s);
+      buf_puts(statics, ";\n");
+      if (!(le - 1 - vb == 3 && !strncmp(p + vb, "{0}", 3)))
+        buf_printf(init, "    %s = %.*s\n", id, (int)(le - vb), p + vb);
+    }
+    i = nl ? le + 1 : end;
+  }
+  return 1;
+}
+
+/* Split the top level (see above). `open` is where `void _sp_main_body` starts,
+   `*frame_ins` the body's frame point, the declarations of the scope's first
+   nl locals run from `dbeg` to decl_ends[nl-1], and the statements from
+   `sbeg` to the end, statement k ending at cuts[k]. On a split the body is
+   rebuilt and *frame_ins moved with it; 1 then. */
+static int main_body_split(Compiler *c, Buf *body, size_t open, size_t *frame_ins,
+                           size_t dbeg, const size_t *decl_ends, int nl, size_t sbeg,
+                           const size_t *cuts, int ncuts) {
+  const char *p = body->p;
+  size_t end = body->len;
+  /* a local the statements add to the scope as they are emitted (a
+     setter's value, `__sv<n>`) is declared in its statement's own text, and
+     moves with it */
+  Scope *s0 = &c->scopes[0];
+  size_t dend = nl > 0 ? decl_ends[nl - 1] : dbeg;
+  if (ncuts < 2 || end - sbeg < MAIN_SPLIT_BYTES || cuts[ncuts - 1] != end) return 0;
+  if (!main_text_has_word(p, sbeg, end, "setjmp")) return 0;
+  /* a `return` at the top level returns from the body; out of a part it
+     would only end the part. The body's other C returns are an ensure's
+     epilogue (emit_retf_return) passing such a return on, dead without one. */
+  { int nids = 0; const int *ids = cg_scope_nodes(c, 0, &nids);
+    for (int k = 0; k < nids; k++)
+      if (nt_kind(c->nt, ids[k]) == NK_ReturnNode) return 0; }
+
+  /* the parts: statements [first, last] each, closed once past the size */
+  int *pend = (int *)malloc(sizeof(int) * (size_t)ncuts), np = 0;
+  size_t from = sbeg;
+  for (int k = 0; k < ncuts; k++)
+    if (cuts[k] - from >= MAIN_PART_BYTES || k == ncuts - 1) { pend[np++] = k; from = cuts[k]; }
+  if (np < 2) { free(pend); return 0; }
+
+  /* which parts name each local */
+  int *first = (int *)malloc(sizeof(int) * (size_t)(nl ? nl : 1));
+  char *many = (char *)calloc((size_t)(nl ? nl : 1), 1);
+  /* each local's two C names, lv_x and its cell _cell_x, at 2i and 2i+1 */
+  char **cn = (char **)calloc((size_t)(2 * nl + 1), sizeof(char *));
+  MainName *names = (MainName *)malloc(sizeof(MainName) * (size_t)(2 * nl + 1));
+  int nn = 0;
+  size_t maxn = 0;
+  for (int i = 0; i < nl; i++) {
+    first[i] = -1;
+    const char *nm = s0->locals[i].name;
+    if (!nm) continue;
+    size_t ln = strlen(nm) + 8;
+    cn[2 * i] = (char *)malloc(ln); cn[2 * i + 1] = (char *)malloc(ln);
+    snprintf(cn[2 * i], ln, "lv_%s", nm); snprintf(cn[2 * i + 1], ln, "_cell_%s", nm);
+    names[nn].name = cn[2 * i]; names[nn++].local = i;
+    names[nn].name = cn[2 * i + 1]; names[nn++].local = i;
+    if (ln > maxn) maxn = ln;
+  }
+  qsort(names, (size_t)nn, sizeof *names, main_name_cmp);
+  char *w = (char *)malloc(maxn + 1);
+  /* region np is what stays in the body: the BEGIN blocks */
+  for (int q = 0; q <= np; q++) {
+    size_t rb = q == np ? dend : q ? cuts[pend[q - 1]] : sbeg;
+    size_t re = q == np ? sbeg : cuts[pend[q]];
+    for (size_t i = rb; i < re; ) {
+      size_t j = frame_skip_noncode(p, i, re);
+      if (j != i) { i = j; continue; }
+      if (!frame_idch(p[i])) { i++; continue; }
+      size_t k = i;
+      while (k < re && frame_idch(p[k])) k++;
+      if ((p[i] == 'l' || p[i] == '_') && k - i < maxn) {
+        memcpy(w, p + i, k - i); w[k - i] = '\0';
+        MainName key = { w, 0 };
+        MainName *hit = (MainName *)bsearch(&key, names, (size_t)nn, sizeof *names, main_name_cmp);
+        if (hit) {
+          int li = hit->local;
+          if (first[li] < 0) first[li] = q;
+          else if (first[li] != q) many[li] = 1;
+        }
+      }
+      i = k;
+    }
+  }
+
+  Buf statics, init, out; Buf *pdecl = (Buf *)calloc((size_t)np, sizeof(Buf));
+  memset(&statics, 0, sizeof statics); memset(&init, 0, sizeof init); memset(&out, 0, sizeof out);
+  int ok = 1;
+  for (int i = 0; i < nl && ok; i++) {
+    size_t lb = i > 0 ? decl_ends[i - 1] : dbeg, le = decl_ends[i];
+    if (le == lb) continue;
+    if (first[i] < 0 || (first[i] == np && !many[i])) buf_putn(&init, p + lb, le - lb);
+    else if (!many[i]) buf_putn(&pdecl[first[i]], p + lb, le - lb);
+    else ok = main_local_to_static(p, lb, le, cn[2 * i], cn[2 * i + 1], &statics, &init);
+  }
+  if (ok) {
+    buf_putn(&out, p, open);
+    emit_synth_line_marker(&out);
+    if (statics.len) buf_putn(&out, statics.p, statics.len);
+    from = sbeg;
+    for (int q = 0; q < np; q++) {
+      Buf part; memset(&part, 0, sizeof part);
+      buf_printf(&part, "static SP_NOINLINE void _sp_main_part_%d(void){\n    SP_GC_SAVE();\n", q + 1);
+      size_t ins = part.len;
+      if (pdecl[q].len) buf_putn(&part, pdecl[q].p, pdecl[q].len);
+      size_t to = cuts[pend[q]];
+      buf_putn(&part, p + from, to - from);
+      if (part.len && part.p[part.len - 1] != '\n') buf_puts(&part, "\n");
+      buf_puts(&part, "}\n");
+      if (!g_no_root_frame) gc_frame_build(&part, ins);
+      buf_putn(&out, part.p, part.len);
+      free(part.p);
+      from = to;
+    }
+    emit_synth_line_marker(&out);
+    size_t nopen = out.len;
+    buf_putn(&out, p + open, dbeg - open);
+    if (init.len) buf_putn(&out, init.p, init.len);
+    buf_putn(&out, p + dend, sbeg - dend);
+    for (int q = 0; q < np; q++) buf_printf(&out, "  _sp_main_part_%d();\n", q + 1);
+    *frame_ins = nopen + (*frame_ins - open);
+    free(body->p);
+    *body = out;
+  }
+  for (int q = 0; q < np; q++) free(pdecl[q].p);
+  for (int i = 0; i < 2 * nl; i++) free(cn[i]);
+  free(pdecl); free(statics.p); free(init.p); free(w);
+  free(names); free(cn); free(first); free(many); free(pend);
+  return ok;
 }
 
 /* ---- write barrier insertion ----
@@ -14398,7 +14607,7 @@ char *codegen_program(const NodeTable *nt) {
     }
   }
 
-  size_t main_frame_ins = 0;
+  size_t main_frame_ins = 0, main_open = 0;
   int sv_main_cv = g_c_ret_void;
   if (g_ext_init_name) {
     /* Layer-1 extension emission (ext-design.md): the toplevel body brackets
@@ -14444,6 +14653,7 @@ char *codegen_program(const NodeTable *nt) {
      the full table, which is why only the Linux lanes showed it. The `_sp_`
      spelling is already reserved, so nothing can collide with it as an
      external. */
+  main_open = body->len;
   buf_puts(body, "void _sp_main_body(void){\n");
   /* The main body is a `void` C function: an `ensure` epilogue at top level
      (emit_retf_return) must return bare, as it does in a fiber body. */
@@ -14480,7 +14690,10 @@ char *codegen_program(const NodeTable *nt) {
   /* Register END blocks (atexit runs LIFO, so they execute in reverse registration order) */
   for (int e = 1; e <= end_count; e++)
     buf_printf(body, "    atexit(sp_end_fn_%d);\n", e);
-  emit_scope_decls(c, &c->scopes[0], body);
+  size_t main_dbeg = body->len;
+  int main_ndecl = c->scopes[0].nlocals;
+  size_t *main_dends = (size_t *)calloc((size_t)(main_ndecl + 1), sizeof(size_t));
+  emit_scope_decls_ends(c, &c->scopes[0], body, main_dends);
   buf_puts(body, "\n");
   /* Hoist BEGIN blocks to run first */
   {
@@ -14517,7 +14730,18 @@ char *codegen_program(const NodeTable *nt) {
       EMIT_COLLECT_UNIT(emit_stmt(c, st9, body, 1));
     }
   }
-  else EMIT_COLLECT_UNIT(emit_stmts(c, c->scopes[0].body, body, 1));
+  else {
+    /* each statement's end is noted, where main_body_split may cut */
+    int tb = c->scopes[0].body, tn = 0;
+    if (tb >= 0 && nt_kind(c->nt, tb) == NK_StatementsNode) nt_arr(c->nt, tb, "body", &tn);
+    size_t *cuts = (size_t *)calloc((size_t)(tn + 1), sizeof(size_t));
+    size_t sbeg = body->len;
+    volatile int ncuts = 0;   /* set under the collect unit's setjmp */
+    EMIT_COLLECT_UNIT(ncuts = emit_top_stmts(c, tb, body, 1, cuts));
+    main_body_split(c, body, main_open, &main_frame_ins, main_dbeg, main_dends, main_ndecl, sbeg, cuts, ncuts);
+    free(cuts);
+  }
+  free(main_dends);
   /* Run any fire-and-forget threads that never got a turn before the program
      exits, so their side effects happen. */
   if (g_uses_threads) buf_puts(body, "    sp_sched_drain();\n");

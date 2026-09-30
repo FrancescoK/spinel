@@ -1385,6 +1385,7 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent);
 void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent);
 void emit_stmts(Compiler *c, int id, Buf *b, int indent);
 void emit_stmts_tail(Compiler *c, int id, Buf *b, int indent);
+int emit_top_stmts(Compiler *c, int id, Buf *b, int indent, size_t *cuts);
 int needs_root(TyKind t);
 /* Whether a variable of an inferred type takes a root, and the root itself,
    picking the rbval macro for boxed poly and the string one for a String. */
@@ -1445,6 +1446,7 @@ void declare_local_named(Compiler *c, Buf *b, LocalVar *lv, const char *name, in
 void emit_cell_shadow_store(Compiler *c, Scope *encl, const char *name, Buf *b, int indent);
 int scope_has_begin(Compiler *c, int si);
 void emit_scope_decls(Compiler *c, Scope *s, Buf *b);
+void emit_scope_decls_ends(Compiler *c, Scope *s, Buf *b, size_t *ends);
 int method_is_void(Scope *s);
 void emit_method_cname(Compiler *c, Scope *s, Buf *b);
 void emit_poly_iter_obj_normalize(Compiler *c, int tv, Buf *b);
