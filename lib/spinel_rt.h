@@ -8428,15 +8428,19 @@ static SP_NOINLINE sp_RbVal sp_poly_arr_get_hash_cold(sp_RbVal a, sp_int i) {
   }
   if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_POLY_POLY_HASH)
     return sp_PolyPolyHash_get((sp_PolyPolyHash*)a.v.p, sp_box_int(i));
-  /* These two read `i` as a symbol id (and as that id's name): an emitter that
-     lowered a symbol key to an int relies on it. That makes a genuine Integer
-     key on a symbol-keyed hash answer whatever symbol sits at that number
-     rather than nil -- sp_poly_index_poly, which is handed the key boxed and
-     can tell the two apart, resolves it before reaching here. */
-  if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_SYM_POLY_HASH)
-    return sp_SymPolyHash_get((sp_SymPolyHash*)a.v.p, (sp_sym)i);
-  if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_STR_POLY_HASH)
-    return sp_StrPolyHash_get((sp_StrPolyHash*)a.v.p, sp_sym_name_fn ? sp_sym_name_fn((sp_sym)i) : "");
+  /* A Symbol- or String-keyed hash cannot hold an Integer key, so an Integer
+     index is a miss. These two arms looked it up as a Symbol id (and as that
+     Symbol's name), so `h[0]` answered whatever sat under Symbol 0; they now go
+     straight to the miss that lookup fell to. A default block still gets the
+     key the lookup used: its key parameter is a Symbol (a String), which cannot
+     take the Integer. */
+  if (a.tag == SP_TAG_OBJ && a.v.p && a.cls_id == SP_BUILTIN_SYM_POLY_HASH)
+    return sp_SymPolyHash_miss((sp_SymPolyHash*)a.v.p, (sp_sym)i);
+  if (a.tag == SP_TAG_OBJ && a.v.p && a.cls_id == SP_BUILTIN_STR_POLY_HASH) {
+    sp_StrPolyHash *sh = (sp_StrPolyHash*)a.v.p;
+    if (sh->dproc) return sh->dproc(sh, sp_sym_name_fn ? sp_sym_name_fn((sp_sym)i) : "", sh->dproc_self);
+    return sh->default_v;
+  }
 
   if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_INT_INT_HASH) {
     /* a miss answers the hash's default, nil for a plain hash (#5544) */
