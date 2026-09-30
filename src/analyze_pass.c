@@ -7649,7 +7649,20 @@ static int bsi_read_keeps(Compiler *c, const int *parent, int r) {
      goes wherever that answer goes: a predicate drops it, `@cb = b || fb`
      keeps it. */
   if (pk == NK_AndNode && nt_ref(nt, p, "left") == r) return 0;
-  if (pk == NK_OrNode && nt_ref(nt, p, "left") == r) return bsi_read_keeps(c, parent, p);
+  if (pk == NK_OrNode && nt_ref(nt, p, "left") == r) {
+    /* a call on `b || fb` itself (`(b || fb).call(v)`) runs the block, but
+       block_site_scope reads only a call on the block's own read, so what
+       it passes never reaches the block's parameters (#6275): the block has
+       to take them boxed */
+    int q = parent[p];
+    if (q >= 0 && nt_kind(nt, q) == NK_CallNode && nt_ref(nt, q, "receiver") == p) {
+      const char *nm = nt_str(nt, q, "name");
+      if (nm && (sp_streq(nm, "call") || sp_streq(nm, "[]") || sp_streq(nm, "yield") ||
+                 sp_streq(nm, "===")))
+        return 1;
+    }
+    return bsi_read_keeps(c, parent, p);
+  }
   return 1;
 }
 static void bsi_kept_mark(Compiler *c) {
