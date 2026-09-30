@@ -1535,6 +1535,7 @@ int emit_poly_rhs_coerced(Compiler *c, TyKind slot, int v, Buf *b) {
   const char *fn = slot == TY_INT   ? "sp_poly_to_i_or_nil"
                  : slot == TY_BOOL  ? "sp_poly_to_i"
                  : slot == TY_FLOAT ? "sp_poly_to_f_or_nil"
+                 : slot == TY_SYMBOL ? "sp_poly_to_sym_or_nil"
                  : slot == TY_STRING
                      ? (prog_has_conv_method(c, "to_str", TY_STRING) ? "sp_poly_arg_str" : "sp_poly_to_s") : NULL;
   if (!fn) return 0;

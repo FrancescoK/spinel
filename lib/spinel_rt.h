@@ -4615,6 +4615,14 @@ static sp_sym sp_poly_hkey_sym(sp_RbVal v) {
   if (v.tag == SP_TAG_SYM) return (sp_sym)v.v.i;
   sp_raise_typed_hash_part(v, "key", "Symbol");
 }
+/* A boxed value narrowed into a Symbol slot: its Symbol, or the slot's nil
+   sentinel for nil. Anything else is refused rather than read as a Symbol
+   id. */
+static sp_sym sp_poly_to_sym_or_nil(sp_RbVal v) {
+  if (v.tag == SP_TAG_SYM) return (sp_sym)v.v.i;
+  if (v.tag == SP_TAG_NIL) return (sp_sym)-1;
+  sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Symbol", sp_poly_class_name(v)));
+}
 /* A boxed array of any kind, re-laid as a typed array one element at a time
    under the rules above: the source of a typed-array splice whose RHS is only
    known at run time to be an array (a poly array from `poly.first(n)`). */
