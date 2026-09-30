@@ -13251,7 +13251,12 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
        sp_str_plus/repeat) can trigger a collection before the closing
        sp_*Array_set. A bare local/ivar read is already rooted at its slot,
        so it skips the push (keeps hot emissions byte-identical). */
-    int eff = g_pre && subtree_has_side_effect(c, v);
+    /* the fused fold below is decided here, ahead of the root and the capture
+       it makes unnecessary: a pure RHS allocates nothing and has nothing to
+       order against the read */
+    int fuse = (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && vt != TY_POLY &&
+               subtree_is_pure_read(c, v);
+    int eff = !fuse && g_pre && subtree_has_side_effect(c, v);
     buf_printf(b, "{ %s _t%d = ", c_type_name(rt), ta); iow_emit_recv(c, recv, b);
     if (subtree_may_allocate(nt, recv) || (eff && !g_iow_recv_ref)) buf_printf(b, "; SP_GC_ROOT(_t%d)", ta);
     buf_printf(b, "; sp_int _t%d = ", tb); iow_emit_key(c, argv[0], b, IOW_KEY_INT, TY_INT);
@@ -13280,6 +13285,32 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     if (eff) iow_capture_slot(c, rt == TY_POLY_ARRAY ? TY_POLY : ty_array_elem(rt), slot, sizeof slot, b);
     int mode = rt == TY_STR_ARRAY ? IOW_RHS_INT : (rt == TY_POLY_ARRAY || vt == TY_POLY) ? IOW_RHS_BOXED : IOW_RHS_EXPR;
     char *rhs = iow_rhs(c, v, mode, eff ? b : NULL);
+    /* An Integer or Float slot in range of a mutable array is folded where it
+       is: one bounds check instead of the get's and then the set's. Anything
+       else -- a negative index, one past the end, a frozen array, a nil slot's
+       error -- takes the get/set below unchanged. The RHS runs first, into a
+       temp both arms read, so it has to be one that runs no code and stores
+       nothing: then it cannot move the array under the element pointer, and
+       running it ahead of the read changes nothing it could observe. */
+    if (fuse) {
+      TyKind et = ty_array_elem(rt);
+      int tv = ++g_tmp, tp = ++g_tmp;
+      char fslot[32], rv[32];
+      snprintf(fslot, sizeof fslot, "(*_t%d)", tp);
+      snprintf(rv, sizeof rv, "_t%d", tv);
+      buf_printf(b, "__typeof__(%s) _t%d = %s; ", rhs, tv, rhs);
+      buf_printf(b, "if (SP_LIKELY(_t%d && !_t%d->frozen && (unsigned long long)_t%d < (unsigned long long)_t%d->len)) { ",
+                 ta, ta, tb, ta);
+      buf_printf(b, "%s *_t%d = &_t%d->data[", c_type_name(et), tp, ta);
+      if (rt == TY_INT_ARRAY) buf_printf(b, "_t%d->start + ", ta);
+      buf_printf(b, "_t%d]; *_t%d = ", tb, tp);
+      if (!iow_scalar_fold(et, op, vt, fslot, rv, b)) buf_printf(b, "%s %s (%s)", fslot, op, rv);
+      buf_printf(b, "; } else sp_%sArray_set(_t%d, _t%d, ", k, ta, tb);
+      if (!iow_scalar_fold(et, op, vt, slot, rv, b)) buf_printf(b, "%s %s (%s)", slot, op, rv);
+      free(rhs);
+      buf_puts(b, "); }\n");
+      return;
+    }
     buf_printf(b, "sp_%sArray_set(_t%d, _t%d, ", k, ta, tb);
     if (rt == TY_POLY_ARRAY) buf_printf(b, "%s(%s, %s)", pf, slot, rhs);
     else if (rt == TY_STR_ARRAY) buf_printf(b, "sp_str_repeat(%s, %s)", slot, rhs);
