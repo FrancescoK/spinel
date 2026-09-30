@@ -5247,6 +5247,8 @@ static int cmethod_needs_specialization_d(Compiler *c, int mi, int ci, int def_c
   if (has_new) *has_new = 0;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     if (c->nscope[id] != mi) continue;
+    /* `allocate` / `self.allocate` builds the calling class, as a bare `new` does */
+    if (allocate_on_own_class(c, id) >= 0) { if (has_new) *has_new = 1; need = 1; continue; }
     if (nt_ref(nt, id, "receiver") >= 0) continue;   /* receiverless only */
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;

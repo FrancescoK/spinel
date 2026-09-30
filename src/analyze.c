@@ -648,6 +648,18 @@ void compute_instantiated(Compiler *c, int early) {
         disable = 1; break;
       }
     }
+    /* allocate on the method's own class: that class, and each subclass the
+       method can run for */
+    {
+      int oc = allocate_on_own_class(c, id);
+      if (oc >= 0) {
+        Scope *encl = comp_scope_of(c, id);
+        if (!encl || encl->reachable)
+          for (int k = 0; k < c->nclasses; k++)
+            if (k == oc || is_descendant(c, k, oc)) c->classes[k].instantiated = 1;
+        continue;
+      }
+    }
     /* C.new / C.allocate */
     if (recv >= 0 && (sp_streq(name, "new") || sp_streq(name, "allocate"))) {
       const char *rty = nt_type(nt, recv);

@@ -2215,6 +2215,28 @@ int self_class_static_ci(Compiler *c, int recv) {
   return cid;
 }
 
+/* `allocate` on the class the method runs for: bare or `self.allocate` in a
+   class method, `self.class.allocate` in an instance method. Returns that
+   class -- the base of what it builds, since a subclass receiving the class
+   method, or a subclass instance, builds its own class -- or -1. */
+int allocate_on_own_class(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode) return -1;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm || !sp_streq(nm, "allocate") || nt_ref(nt, id, "block") >= 0) return -1;
+  int an = 0; nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &an);
+  if (an) return -1;
+  Scope *s = comp_scope_of(c, id);
+  int cid = s ? s->class_id : -1;
+  if (cid < 0 || cid >= c->nclasses || nt_kind(nt, c->classes[cid].def_node) == NK_ModuleNode) return -1;
+  int recv = nt_ref(nt, id, "receiver");
+  if (s->is_cmethod) return (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) ? cid : -1;
+  if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) return -1;
+  const char *rn = nt_str(nt, recv, "name");
+  int rr = nt_ref(nt, recv, "receiver");
+  return rn && sp_streq(rn, "class") && rr >= 0 && nt_kind(nt, rr) == NK_SelfNode ? cid : -1;
+}
+
 /* A Class-valued receiver that carries its class only at run time: a variable,
    or a call whose result is a class (`Job.set(1).run(2)` -- ActiveJob's chained
    `set`). Excludes a constant receiver and an accessor call, which resolve

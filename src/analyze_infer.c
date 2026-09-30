@@ -3292,6 +3292,12 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && sp_streq(name, "new") && self_class_static_ci(c, recv) >= 0)
     return ty_object(self_class_static_ci(c, recv));
 
+  /* allocate on the class the method runs for: an instance of that class
+     (a subclass's, typed as the base, as a bare `new` in a class method is) */
+  {
+    int oc = allocate_on_own_class(c, id);
+    if (oc >= 0 && !class_is_exc_subclass(c, oc)) return ty_object(oc);
+  }
   /* Class#allocate -> a bare instance of that class (no initialize run). */
   if (recv >= 0 && sp_streq(name, "allocate") && argc == 0) {
     const char *rty = nt_type(nt, recv);
