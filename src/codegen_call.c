@@ -37756,6 +37756,18 @@ else {
       buf_puts(b, " ? SP_INT_NIL : (sp_int)0; })");
       return;
     }
+    /* A Hash has no <=> of its own: Object#<=> answers 0 for the same object or
+       an equal one, and nil otherwise. Equality is the == emitter's, reached
+       through a temporary rename of the call. */
+    if (ty_is_hash(lrt)) {
+      Buf eqb; memset(&eqb, 0, sizeof eqb);
+      nt_node_set_str((NodeTable *)nt, id, "name", "==");
+      emit_expr(c, id, &eqb);
+      nt_node_set_str((NodeTable *)nt, id, "name", "<=>");
+      buf_printf(b, "((%s) ? (sp_int)0 : SP_INT_NIL)", eqb.p ? eqb.p : "0");
+      free(eqb.p);
+      return;
+    }
     if (lrt != TY_UNKNOWN && lat != TY_UNKNOWN &&
         !ty_is_object(lrt) && !ty_is_object(lat)) {
       buf_puts(b, "((void)(");
