@@ -7133,6 +7133,31 @@ static int stmts_diverge(Compiler *c, int st) {
   return nm && (sp_streq(nm, "raise") || sp_streq(nm, "fail") || sp_streq(nm, "throw") ||
                 sp_streq(nm, "exit") || sp_streq(nm, "abort") || sp_streq(nm, "exit!"));
 }
+/* Whether call `w`, named `wn`, can run a method the program defines: a
+   receiverless call (or one on self) when some user method has the name; a
+   user object whose class chain defines it; a class or module whose chain
+   has it as a class method; or a receiver the analysis cannot pin (poly,
+   unknown), whose dispatch may land on one. A builtin-typed receiver (an
+   Array's push, a String's +) runs the builtin, whatever else in the program
+   shares the name. The receiver's type is the one recorded so far, not
+   inferred afresh: this is asked while a yield is being typed, and inferring
+   a receiver that depends on that yield recursed until the stack ran out. */
+static int call_may_reach_user_method(Compiler *c, int w, const char *wn) {
+  const NodeTable *nt = c->nt;
+  int r = nt_ref(nt, w, "receiver");
+  if (r < 0 || nt_kind(nt, r) == NK_SelfNode) return an_user_defines_method(c, wn);
+  NodeKind rk = nt_kind(nt, r);
+  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
+    const char *cn = nt_str(nt, r, "name");
+    int ci = cn ? comp_class_index(c, cn) : -1;
+    if (ci >= 0) return comp_cmethod_in_chain(c, ci, wn, NULL) >= 0;
+  }
+  TyKind rt = comp_ntype(c, r);
+  if (ty_is_object(rt)) return comp_method_in_chain(c, ty_object_class(rt), wn, NULL) >= 0;
+  if (rt == TY_POLY || rt == TY_UNKNOWN) return an_user_defines_method(c, wn);
+  return 0;
+}
+
 /* Whether `v` answers the value of `node` itself: `v` is `node`, or a
    parenthesized, conditional, `&&`/`||` or statement-list expression one of
    whose value arms is. */
@@ -8184,6 +8209,24 @@ TyKind infer_uncached(Compiler *c, int id) {
         int en = 0; const int *ev = nt_arr(nt, w, "elements", &en);
         for (int e = 0; e < en; e++)
           if (value_arm_is(nt, ev[e], id)) return TY_POLY;
+      }
+      /* An argument to a method the program defines likewise: its parameter
+         took the first site's type, and the other site's value was converted
+         to it at run time. `show(yield)` with a String block at one site and a
+         Float block at another raised TypeError where CRuby prints both. Only
+         a call that can reach a user method (call_may_reach_user_method): a
+         builtin on the yield (`yield + yield`, an Array's `push(yield)`) is
+         lowered per site to its concrete form, which a poly operand does not
+         fit, and an unrelated class defining a method of the same name does
+         not change that. */
+      NT_FOREACH_KIND(nt, NK_CallNode, w) {
+        int an = nt_ref(nt, w, "arguments");
+        if (an < 0) continue;
+        const char *wn = nt_str(nt, w, "name");
+        if (!wn || !call_may_reach_user_method(c, w, wn)) continue;
+        int ac = 0; const int *av = nt_arr(nt, an, "arguments", &ac);
+        for (int e = 0; e < ac; e++)
+          if (value_arm_is(nt, av[e], id)) return TY_POLY;
       }
       /* A yield whose value leaves through an ENSURE frame is in the same
          position as one written to a local, for the same reason: the frame
