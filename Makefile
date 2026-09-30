@@ -377,7 +377,11 @@ SPINEL_WORK_OBJ = $(patsubst build/csrc/%.o,build/csrc-work/%.o,$(SPINEL_OBJ))
 build/csrc-work/%.o: src/%.c $(SPINEL_HDRS) | build/csrc
 	@mkdir -p build/csrc-work
 	$(CC) $(CFLAGS) -O1 -DSP_WORK_COUNT -Isrc -Ibuild/csrc -c $< -o $@
+# the generated headers, as for the plain objects above: without the second,
+# `make build/spinel-work` (or `make scale-test`) in a fresh tree compiled
+# codegen_util.c before sp_rt_names.h existed and stopped
 build/csrc-work/main.o: build/csrc/spinel_rev.h
+build/csrc-work/codegen_util.o: build/csrc/sp_rt_names.h
 $(SPINEL_WORK): $(SPINEL_WORK_OBJ) build/csrc/sp_parse_lib.o build/csrc/re_lit_check.o $(RE_OBJ) $(PRISM_LIB)
 	$(CC) $(CFLAGS) $(SPINEL_WORK_OBJ) build/csrc/sp_parse_lib.o build/csrc/re_lit_check.o $(RE_OBJ) $(PRISM_LIB) -lm $(LDFLAGS) -o $@
 
