@@ -1,3 +1,4 @@
+# spinel: int64
 # `%s` and `%p` in format, sprintf, printf and String#% count characters, not
 # bytes, for their width and their precision: a multibyte value is padded to
 # the width in characters, and a precision never cuts one in half.
