@@ -10781,6 +10781,7 @@ int emit_native_ctor(Compiler *c, int id, int ci, int argc, const int *argv, Buf
   for (int a = 0; a < nta; a++) natys[a] = comp_ntype(c, argv[a]);
   int nn = comp_native_method_find_typed(c, ci, "new", argc, 1, nta == argc ? natys : NULL);
   if (nn < 0) return 0;
+  if (emit_native_count_mismatch(c, id, ci, "new", 1, -1, argc, argv, b)) return 1;
   NativeMethod *m = &c->native_methods[nn];
   native_arg_check(c, id, "native constructor", m, argc, argv);
   buf_printf(b, "%s(%d", m->csym, ci);
@@ -17926,6 +17927,7 @@ sp_builtin_arity_spec_tbl[] = {
   {"StringIO","fsync",0,0,NULL,"0",0,0,NULL,"0"},
   {"StringIO","getbyte",0,0,NULL,"0",0,0,NULL,"0"},
   {"StringIO","getc",0,0,NULL,"0",0,0,NULL,"0"},
+  {"StringIO","gets",0,2,NULL,"0..2",0,2,NULL,"0..2"},
   {"StringIO","grep",1,1,"1","1",1,1,"1","1"},
   {"StringIO","grep_v",1,1,"1","1",1,1,"1","1"},
   {"StringIO","group_by",0,0,NULL,"0",0,0,NULL,"0"},
@@ -17955,6 +17957,7 @@ sp_builtin_arity_spec_tbl[] = {
   {"StringIO","read",0,2,NULL,"0..2",0,2,NULL,"0..2"},
   {"StringIO","readbyte",0,0,NULL,"0",0,0,NULL,"0"},
   {"StringIO","readchar",0,0,NULL,"0",0,0,NULL,"0"},
+  {"StringIO","readline",0,2,NULL,"0..2",0,2,NULL,"0..2"},
   {"StringIO","readlines",0,2,NULL,"0..2",0,2,NULL,"0..2"},
   {"StringIO","reduce",1,2,"1..2","1..2",0,2,NULL,"0..2"},
   {"StringIO","reject",0,0,NULL,"0",0,0,NULL,"0"},
@@ -19370,11 +19373,15 @@ static int arity_violation(Compiler *c, int id, char *exp, size_t n, int *eval_r
   return 1;
 }
 
+/* The builtin classes a boxed receiver's count is checked for, and room for
+   the native classes after them. */
+#define POLY_ARITY_BUILTINS 10
+#define POLY_ARITY_MAX 16
 static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][32]);
 int builtin_arity_violation(Compiler *c, int id) {
   char exp[32]; int eval_recv;
   if (arity_violation(c, id, exp, sizeof exp, &eval_recv)) return 1;
-  const char *tests[10]; char exps[10][32];
+  const char *tests[POLY_ARITY_MAX]; char exps[POLY_ARITY_MAX][32];
   return poly_arity_plan(c, id, tests, exps) > 0;
 }
 
@@ -19401,6 +19408,59 @@ static void emit_wrong_count(Compiler *c, int id, const char *exp, int eval_recv
              given, exp, dv ? dv : "0");
 }
 
+/* A call on a native class (kind 0: instance method, 1: constructor) whose
+   positional count no binding declares. The binding lookup falls back to the
+   first same-name binding, which takes the leading arguments and drops the
+   rest (or reads past the end of argv for too few). Where CRuby's own count
+   for the class is known (the spec rows above), the builtin guard has
+   already raised for a count CRuby refuses, and a count it accepts that no
+   binding declares cannot be bound: refused here. A class without a row
+   (a program's own package) accepts the declared counts, so a count outside
+   them raises CRuby's ArgumentError at run time. recv < 0: nothing to
+   evaluate before the raise. Answers 1 when it emitted the raise. */
+int emit_native_count_mismatch(Compiler *c, int id, int cid, const char *name, int kind,
+                               int recv, int argc, const int *argv, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int mn = -1, mx = -1;
+  for (int i = 0; i < c->n_native_methods; i++) {
+    NativeMethod *m = &c->native_methods[i];
+    if (m->class_id != cid || m->kind != kind || !sp_streq(m->name, name)) continue;
+    if (native_takes(m, argc)) return 0;
+    if (mn < 0 || m->nargs < mn) mn = m->nargs;
+    if (m->nargs > mx) mx = m->nargs;
+  }
+  if (mn < 0) return 0;
+  for (int a = 0; a < argc; a++) {
+    const char *at = nt_type(nt, argv[a]);
+    if (at && (sp_streq(at, "SplatNode") || sp_streq(at, "KeywordHashNode") ||
+               sp_streq(at, "ForwardingArgumentsNode") || sp_streq(at, "BlockArgumentNode")))
+      return 0;
+  }
+  int blk = nt_ref(nt, id, "block");
+  char exp[32] = "";
+  const char *cn = c->classes[cid].name;
+  int has_row = kind ? arity_spec_row(sp_builtin_cmeth_arity_spec_tbl, cn, "new", blk >= 0, argc, exp, sizeof exp)
+                     : arity_spec_row(sp_builtin_arity_spec_tbl, cn, name, blk >= 0, argc, exp, sizeof exp);
+  if (!has_row && (argc < mn || argc > mx)) arity_expected(exp, sizeof exp, mn, mx);
+  if (!exp[0]) {
+    char msg[256];
+    snprintf(msg, sizeof msg, "%s%s%s with %d argument%s (no native binding takes that many)",
+             cn, kind ? "." : "#", kind ? "new" : name, argc, argc == 1 ? "" : "s");
+    unsupported(c, id, msg);
+  }
+  TyKind rty = comp_ntype(c, id);
+  const char *dv = default_value(rty);
+  buf_puts(b, "({ ");
+  if (recv >= 0) { buf_puts(b, "(void)("); emit_expr(c, recv, b); buf_puts(b, "); "); }
+  for (int a = 0; a < argc; a++) {
+    buf_puts(b, "(void)("); emit_expr(c, argv[a], b); buf_puts(b, "); ");
+  }
+  buf_printf(b, "sp_raise_cls(\"ArgumentError\","
+                " \"wrong number of arguments (given %d, expected %s)\"); %s; })",
+             argc, exp, dv ? dv : "0");
+  return 1;
+}
+
 
 /* The same decision for a boxed receiver: the count is wrong for every
    builtin class that has the method (and for Object's row, which a user
@@ -19409,7 +19469,6 @@ static void emit_wrong_count(Compiler *c, int id, const char *exp, int eval_recv
    on the class the receiver has at run time: ArgumentError with that
    class's range where it has the method, NoMethodError where it has not.
    Fills the classes' runtime tests and ranges; answers how many. */
-#define POLY_ARITY_MAX 10
 static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][32]) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -19437,10 +19496,10 @@ static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][
   for (int k = 0; k < c->nclasses; k++)
     if (comp_is_reader(&c->classes[k], name) || comp_is_writer(&c->classes[k], name) ||
         comp_method_in_chain(c, k, "method_missing", NULL) >= 0) return 0;
-  static const char *const CLS[POLY_ARITY_MAX] = {
+  static const char *const CLS[POLY_ARITY_BUILTINS] = {
     "String", "Integer", "Float", "Symbol", "Array", "Hash", "Range",
     "NilClass", "TrueClass", "Object" };
-  static const char *const TST[POLY_ARITY_MAX] = {
+  static const char *const TST[POLY_ARITY_BUILTINS] = {
     "_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)",
     "_t%d.tag == SP_TAG_INT || _t%d.tag == SP_TAG_BIGINT",
     "_t%d.tag == SP_TAG_FLT && _t%d.tag == SP_TAG_FLT",
@@ -19457,10 +19516,10 @@ static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][
       reopened_owns(c, "FalseClass", name) || reopened_owns(c, "Numeric", name))
     return 0;
   int n = 0;
-  for (int q = 0; q < POLY_ARITY_MAX; q++) {
+  for (int q = 0; q < POLY_ARITY_BUILTINS; q++) {
     if (reopened_owns(c, CLS[q], name)) return 0;
     char exp[32]; exp[0] = 0;
-    int row = (q < POLY_ARITY_MAX - 1 && arity_spec_row(itbl, CLS[q], name, with_block, argc, exp, sizeof exp)) ||
+    int row = (q < POLY_ARITY_BUILTINS - 1 && arity_spec_row(itbl, CLS[q], name, with_block, argc, exp, sizeof exp)) ||
               arity_spec_row(itbl, "Object", name, with_block, argc, exp, sizeof exp);
     if (!row) {
       /* the spec leaves out a method with nothing to enforce (any count) or
@@ -19473,6 +19532,32 @@ static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][
     }
     if (!exp[0]) return 0;        /* this class takes the count */
     tests[n] = TST[q];
+    snprintf(exps[n], 32, "%s", exp);
+    n++;
+  }
+  /* a native class answers the name only through a binding of the call's
+     count; with bindings of other counts only, the arm the dispatch has
+     none of is CRuby's ArgumentError, in the class's own range where the
+     spec rows know it, else the declared counts' */
+  static char ntst[POLY_ARITY_MAX][64];
+  for (int k = 0; k < c->nclasses && n < POLY_ARITY_MAX; k++) {
+    if (!c->classes[k].is_native_class || !c->classes[k].instantiated) continue;
+    int mn = -1, mx = -1, takes = 0;
+    for (int i = 0; i < c->n_native_methods; i++) {
+      NativeMethod *m = &c->native_methods[i];
+      if (m->class_id != k || m->kind != 0 || !sp_streq(m->name, name)) continue;
+      if (native_takes(m, argc)) takes = 1;
+      if (mn < 0 || m->nargs < mn) mn = m->nargs;
+      if (m->nargs > mx) mx = m->nargs;
+    }
+    if (mn < 0 || takes) continue;
+    char exp[32]; exp[0] = 0;
+    if (!arity_spec_row(itbl, c->classes[k].name, name, with_block, argc, exp, sizeof exp) &&
+        (argc < mn || argc > mx))
+      arity_expected(exp, sizeof exp, mn, mx);
+    if (!exp[0]) continue;
+    snprintf(ntst[n], sizeof ntst[n], "_t%%d.tag == SP_TAG_OBJ && _t%%d.cls_id == %d", k);
+    tests[n] = ntst[n];
     snprintf(exps[n], 32, "%s", exp);
     n++;
   }

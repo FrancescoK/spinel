@@ -1,0 +1,17 @@
+[:gets, "wrong number of arguments (given 3, expected 0..2)"]
+[:readline, "wrong number of arguments (given 3, expected 0..2)"]
+[:getc, "wrong number of arguments (given 1, expected 0)"]
+[:seek, "wrong number of arguments (given 3, expected 1..2)"]
+[:truncate, "wrong number of arguments (given 2, expected 1)"]
+"ab\n"
+[:scan, "wrong number of arguments (given 2, expected 1)"]
+[:getch, "wrong number of arguments (given 1, expected 0)"]
+[:poly_seek, "wrong number of arguments (given 3, expected 1..2)"]
+[:poly_getc, "wrong number of arguments (given 1, expected 0)"]
+[:poly_gets, "wrong number of arguments (given 3, expected 0..2)"]
+[:write0, :ok, 0]
+[:write3, :ok, 4]
+[:poly_write, :ok, 2]
+"ab1cq2"
+5
+"12xxxxxxxxabc"

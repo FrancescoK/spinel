@@ -117,6 +117,9 @@ INSTANCE_METHOD_SKIP = %w[
 ]
 # pread (with mistyped arguments) and set_encoding_by_bom (with a block)
 # each segfault CRuby 4.0.6 itself when probed; both stay off the surface.
+# A class's own reader of its in-memory stream is safe to probe, though the
+# names are skipped everywhere else (Kernel#gets reads stdin).
+PROBE_ANYWAY = { "StringIO" => %w[gets readline] }
 
 # Class/module methods: the constructors and module functions whose emitters
 # index argv[] unconditionally (File.open with no arguments crashed the
@@ -277,7 +280,8 @@ Dir.chdir(PROBE_DIR)
 inst = []
 INSTANCE_RECEIVERS.each do |cls, thunk|
   recv = thunk.call
-  meths = recv.public_methods.map(&:to_s).sort - INSTANCE_METHOD_SKIP -
+  meths = recv.public_methods.map(&:to_s).sort -
+          (INSTANCE_METHOD_SKIP - PROBE_ANYWAY.fetch(cls, [])) -
           FORWARDING.fetch(cls, []) - PROBE_ARTEFACTS.fetch(cls, [])
   # Object's universal surface is carried by the "Object" rows; the per-class
   # rows keep only what the class itself (or its non-Object ancestry) defines,
