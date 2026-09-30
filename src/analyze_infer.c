@@ -4911,28 +4911,14 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      so accept that receiver type here too and keep the array result. */
   if (recv >= 0 && (rt == TY_UNKNOWN || rt == TY_ENUMERATOR) && (ty_iter_shape(name) == TY_ITER_MAP) &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "each_slice") &&
+      nt_str(nt, recv, "name") && (sp_streq(nt_str(nt, recv, "name"), "each_slice") ||
+                                   sp_streq(nt_str(nt, recv, "name"), "each_cons")) &&
       nt_ref(nt, recv, "block") < 0) {
     int blk_es = nt_ref(nt, id, "block");
     if (blk_es >= 0) {
       int body_es = nt_ref(nt, blk_es, "body");
       int bn_es = 0; const int *bb_es = body_es >= 0 ? nt_arr(nt, body_es, "body", &bn_es) : NULL;
       return ty_array_of(bn_es > 0 ? infer_type(c, bb_es[bn_es - 1]) : TY_UNKNOWN);
-    }
-  }
-
-  /* each_cons(n).map/collect { |...| } chain: return array of block result type.
-     Same as each_slice above -- the blockless each_cons receiver is now
-     TY_ENUMERATOR, but the codegen fold unrolls this chain syntactically. */
-  if (recv >= 0 && (rt == TY_UNKNOWN || rt == TY_ENUMERATOR) && (ty_iter_shape(name) == TY_ITER_MAP) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "each_cons") &&
-      nt_ref(nt, recv, "block") < 0) {
-    int blk_ec = nt_ref(nt, id, "block");
-    if (blk_ec >= 0) {
-      int body_ec = nt_ref(nt, blk_ec, "body");
-      int bn_ec = 0; const int *bb_ec = body_ec >= 0 ? nt_arr(nt, body_ec, "body", &bn_ec) : NULL;
-      return ty_array_of(bn_ec > 0 ? infer_type(c, bb_ec[bn_ec - 1]) : TY_UNKNOWN);
     }
   }
 
