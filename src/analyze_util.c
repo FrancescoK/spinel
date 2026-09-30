@@ -298,6 +298,14 @@ int str_in(const char *s, const char *const *set) {
   for (int i = 0; set[i]; i++) if (sp_streq(s, set[i])) return 1;
   return 0;
 }
+int an_unparen(const NodeTable *nt, int n) {
+  while (n >= 0 && nt_kind(nt, n) == NK_ParenthesesNode) {
+    int pb = nt_ref(nt, n, "body"); int pn = 0;
+    const int *pd = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
+    n = pn == 1 ? pd[0] : -1;
+  }
+  return n;
+}
 /* A construct whose VALUE is an empty container. Its type reads UNKNOWN
    because it carries no element type, which is not the same as producing no
    value -- and the two were conflated wherever an expression's type decides
@@ -1026,12 +1034,7 @@ int scope_body_last(Compiler *c, int mi) {
    other body. */
 const char *an_memo_reader_ivar(Compiler *c, int mi) {
   const NodeTable *nt = c->nt;
-  int last = scope_body_last(c, mi);
-  while (last >= 0 && nt_kind(nt, last) == NK_ParenthesesNode) {
-    int pb = nt_ref(nt, last, "body");
-    int n = 0; const int *st = pb >= 0 ? nt_arr(nt, pb, "body", &n) : NULL;
-    last = n == 1 ? st[0] : -1;
-  }
+  int last = an_unparen(nt, scope_body_last(c, mi));
   if (last < 0 || nt_kind(nt, last) != NK_InstanceVariableOrWriteNode) return NULL;
   return nt_str(nt, last, "name");
 }
@@ -1758,12 +1761,7 @@ int an_user_defines_method(Compiler *c, const char *name) {
 
 TyKind yield_aware_elem_ty(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
-  int n = node;
-  while (n >= 0 && nt_type(nt, n) && sp_streq(nt_type(nt, n), "ParenthesesNode")) {
-    int body = nt_ref(nt, n, "body"); int bn = 0;
-    const int *bd = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-    n = bn == 1 ? bd[0] : -1;
-  }
+  int n = an_unparen(nt, node);
   if (n >= 0 && nt_type(nt, n) && sp_streq(nt_type(nt, n), "YieldNode")) {
     Scope *sc = comp_scope_of(c, n);
     int mi = sc ? (int)(sc - c->scopes) : -1;
@@ -2541,12 +2539,7 @@ int local_sole_range_node(Compiler *c, int recv) {
       return -1;
     val = nt_ref(nt, w, "value");
   }
-  while (val >= 0 && nt_kind(nt, val) == NK_ParenthesesNode) {
-    int pb = nt_ref(nt, val, "body");
-    int pn = 0;
-    const int *pp = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
-    val = pn == 1 ? pp[0] : -1;
-  }
+  val = an_unparen(nt, val);
   if (val < 0 || nt_kind(nt, val) != NK_RangeNode) return -1;
   /* callers re-emit the endpoints at the use site (take/first prefix loops),
      so both must be pure: literals or constant reads only */

@@ -1227,12 +1227,7 @@ int range_enum_redispatch(Compiler *c, int id) {
      silently miscompiling. (A non-literal receiver, e.g. `r = (1.0..5.0);
      r.find`, is the pre-existing int-only-sp_Range limitation, not detectable
      here.) */
-  int rn = nt_ref(nt, id, "receiver");
-  while (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "ParenthesesNode")) {
-    int body = nt_ref(nt, rn, "body"); int bn = 0;
-    const int *bd = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-    rn = bn == 1 ? bd[0] : -1;
-  }
+  int rn = an_unparen(nt, nt_ref(nt, id, "receiver"));
   if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
     int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
     if (lo < 0 || hi < 0) return 0;
@@ -5937,12 +5932,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_RANGE) {
     /* a literal string range ("a".."z") yields strings, not ints */
     if (sp_streq(name, "to_a")) {
-      int rn = recv;
-      while (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "ParenthesesNode")) {
-        int body = nt_ref(nt, rn, "body"); int bn = 0;
-        const int *bd = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-        rn = bn == 1 ? bd[0] : -1;
-      }
+      int rn = an_unparen(nt, recv);
       if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
         int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
         if (lo >= 0 && hi >= 0 && infer_type(c, lo) == TY_STRING && infer_type(c, hi) == TY_STRING)
@@ -5951,12 +5941,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     }
     /* String-endpoint range accessors read/return strings, not ints (#2467) */
     {
-      int rn = recv;
-      while (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "ParenthesesNode")) {
-        int body = nt_ref(nt, rn, "body"); int bn = 0;
-        const int *bd = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-        rn = bn == 1 ? bd[0] : -1;
-      }
+      int rn = an_unparen(nt, recv);
       if (rn >= 0 && nt_type(nt, rn) && !sp_streq(nt_type(nt, rn), "RangeNode")) {
         int sl = local_sole_range_node(c, rn);
         if (sl >= 0) rn = sl;
@@ -5979,24 +5964,14 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     /* `x..Float::INFINITY`: the int range records only "unbounded", but the
        literal says what the bound was, so #end answers the Float (#3670) */
     if (sp_streq(name, "end") && argc == 0) {
-      int _ri = recv;
-      while (_ri >= 0 && nt_kind(nt, _ri) == NK_ParenthesesNode) {
-        int _bd = nt_ref(nt, _ri, "body"); int _bn = 0;
-        const int *_bb = _bd >= 0 ? nt_arr(nt, _bd, "body", &_bn) : NULL;
-        _ri = _bn == 1 ? _bb[0] : -1;
-      }
+      int _ri = an_unparen(nt, recv);
       if (_ri >= 0 && nt_kind(nt, _ri) == NK_RangeNode &&
           infer_endpoint_is_infinite(c, nt_ref(nt, _ri, "right")) &&
           nt_ref(nt, _ri, "right") >= 0)
         return TY_FLOAT;
     }
     /* an ENDLESS literal range: #end is nil (#2413) */
-    if (sp_streq(name, "end") && ({ int _rn = recv;
-        while (_rn >= 0 && nt_type(nt, _rn) && sp_streq(nt_type(nt, _rn), "ParenthesesNode")) {
-          int _bd = nt_ref(nt, _rn, "body"); int _bn = 0;
-          const int *_bb = _bd >= 0 ? nt_arr(nt, _bd, "body", &_bn) : NULL;
-          _rn = _bn == 1 ? _bb[0] : -1;
-        }
+    if (sp_streq(name, "end") && ({ int _rn = an_unparen(nt, recv);
         _rn >= 0 && nt_type(nt, _rn) && sp_streq(nt_type(nt, _rn), "RangeNode") &&
         nt_ref(nt, _rn, "right") < 0; })) return TY_POLY;
     /* step { } in value position returns the receiver range (#2415) */
@@ -6010,12 +5985,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       if (nt_ref(nt, id, "block") >= 0) return rt;
       /* a float step, or a literal range with float bounds, yields floats */
       int sfloat = argc >= 1 && infer_type(c, argv[0]) == TY_FLOAT;
-      int rn = recv;
-      while (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "ParenthesesNode")) {
-        int body = nt_ref(nt, rn, "body"); int bn = 0;
-        const int *bd = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-        rn = bn == 1 ? bd[0] : -1;
-      }
+      int rn = an_unparen(nt, recv);
       int bfloat = 0;
       if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
         int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
@@ -6038,12 +6008,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "bsearch")) {
       /* a float-bounded range yields a float member (or nil); an int range an
          int member. The bound types are on the receiver's RangeNode. */
-      int brn = recv;
-      while (brn >= 0 && nt_type(nt, brn) && sp_streq(nt_type(nt, brn), "ParenthesesNode")) {
-        int pb = nt_ref(nt, brn, "body"); int pbn = 0;
-        const int *pbd = pb >= 0 ? nt_arr(nt, pb, "body", &pbn) : NULL;
-        brn = pbn == 1 ? pbd[0] : -1;
-      }
+      int brn = an_unparen(nt, recv);
       if (brn >= 0 && nt_type(nt, brn) && sp_streq(nt_type(nt, brn), "RangeNode")) {
         int bl = nt_ref(nt, brn, "left"), br = nt_ref(nt, brn, "right");
         /* both bounds must be real NUMERIC nodes (the float-bisection branch
@@ -6158,11 +6123,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       ok = 0; break;
     }
     /* unwrap `(1..n)` parentheses so the endless check sees the RangeNode */
-    while (lazy_src >= 0 && nt_type(nt, lazy_src) && sp_streq(nt_type(nt, lazy_src), "ParenthesesNode")) {
-      int pb = nt_ref(nt, lazy_src, "body"); int pn = 0;
-      const int *pd = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
-      lazy_src = pn == 1 ? pd[0] : -1;
-    }
+    lazy_src = an_unparen(nt, lazy_src);
     if (ok && lazy_src >= 0) {
       TyKind st = infer_type(c, lazy_src);
       int is_arr_lit = nt_type(nt, lazy_src) && sp_streq(nt_type(nt, lazy_src), "ArrayNode");
@@ -6235,12 +6196,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
        materialize, so the pipeline over it is the only well-defined reading
        (#3840). */
     if (ok && lazy_src < 0 && saw_op) {
-      int rr = cur;
-      while (rr >= 0 && nt_type(nt, rr) && sp_streq(nt_type(nt, rr), "ParenthesesNode")) {
-        int bd = nt_ref(nt, rr, "body"); int bn = 0;
-        const int *bl = bd >= 0 ? nt_arr(nt, bd, "body", &bn) : NULL;
-        rr = bn == 1 ? bl[0] : -1;
-      }
+      int rr = an_unparen(nt, cur);
       if (rr >= 0 && nt_type(nt, rr) && sp_streq(nt_type(nt, rr), "RangeNode") &&
           nt_ref(nt, rr, "right") < 0 && nt_ref(nt, rr, "left") >= 0)
         lazy_src = rr;

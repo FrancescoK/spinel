@@ -10938,12 +10938,7 @@ int infer_block_params(Compiler *c) {
       int args = nt_ref(nt, id, "arguments");
       int sc = 0; const int *sv = args >= 0 ? nt_arr(nt, args, "arguments", &sc) : NULL;
       int isf = sc >= 1 && infer_type(c, sv[0]) == TY_FLOAT;
-      int rnn = recv;
-      while (rnn >= 0 && nt_type(nt, rnn) && sp_streq(nt_type(nt, rnn), "ParenthesesNode")) {
-        int rbody = nt_ref(nt, rnn, "body"); int rbn = 0;
-        const int *rbd = rbody >= 0 ? nt_arr(nt, rbody, "body", &rbn) : NULL;
-        rnn = rbn == 1 ? rbd[0] : -1;
-      }
+      int rnn = an_unparen(nt, recv);
       if (rnn >= 0 && nt_type(nt, rnn) && sp_streq(nt_type(nt, rnn), "RangeNode")) {
         int lo = nt_ref(nt, rnn, "left"), hi = nt_ref(nt, rnn, "right");
         if ((lo >= 0 && infer_type(c, lo) == TY_FLOAT) ||
@@ -11022,12 +11017,7 @@ int infer_block_params(Compiler *c) {
       if (rt == TY_FLOAT_RANGE) { pt = TY_FLOAT; }
       else {
       /* a float-bounded int range binds a FLOAT element (bsearch bisects the reals) */
-      int frn = recv;
-      while (frn >= 0 && nt_type(nt, frn) && sp_streq(nt_type(nt, frn), "ParenthesesNode")) {
-        int pb = nt_ref(nt, frn, "body"); int pbn = 0;
-        const int *pbd = pb >= 0 ? nt_arr(nt, pb, "body", &pbn) : NULL;
-        frn = pbn == 1 ? pbd[0] : -1;
-      }
+      int frn = an_unparen(nt, recv);
       int fl9 = frn >= 0 && nt_type(nt, frn) && sp_streq(nt_type(nt, frn), "RangeNode");
       int fb = fl9 ? nt_ref(nt, frn, "left") : -1, fe = fl9 ? nt_ref(nt, frn, "right") : -1;
       TyKind fbt = fb >= 0 ? infer_type(c, fb) : TY_NIL;
