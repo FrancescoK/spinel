@@ -3097,6 +3097,13 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   /* `attr_reader :a` in a class body answers the names it defined */
   if (attr_decl_call(c, id)) return TY_POLY_ARRAY;
+  /* `private def m ... end` in a class body answers :m */
+  switch (vis_decl_call(c, id)) {
+    case VIS_DECL_NIL: return TY_NIL;
+    case VIS_DECL_SYM: return TY_SYMBOL;
+    case VIS_DECL_ARRAY: return TY_POLY_ARRAY;
+    case VIS_DECL_SELF: return TY_CLASS;
+  }
 
   /* __method__ / __callee__ -> the enclosing method's name (a symbol), or
      nil at the top level, where the enclosing scope has no name (matching
