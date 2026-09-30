@@ -4013,7 +4013,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
           if (g_pm_qual) buf_printf(b, "if (%s) {\n", g_pm_qual);
           else buf_printf(b, "if (_t%d) {\n", t);
         }
-        for (int i = 0; i < sc->nivars; i++) {
+        for (int i = 0; i < sc->nmembers; i++) {
           char fb[300];
           if (isv) snprintf(fb, sizeof fb, "(_t%d).iv_%s", t, iv_c(sc->ivars[i] + 1));
           else     snprintf(fb, sizeof fb, "((sp_%s *)_t%d)->iv_%s", sc->c_name, t, iv_c(sc->ivars[i] + 1));
@@ -4066,7 +4066,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
           if (g_pm_qual) buf_printf(b, "if (%s) {\n", g_pm_qual);
           else buf_printf(b, "if (_t%d) {\n", t);
         }
-        for (int i = 0; i < sc->nivars; i++) {
+        for (int i = 0; i < sc->nmembers; i++) {
           char fb[300];
           if (isv) snprintf(fb, sizeof fb, "(_t%d).iv_%s", t, iv_c(sc->ivars[i] + 1));
           else     snprintf(fb, sizeof fb, "((sp_%s *)_t%d)->iv_%s", sc->c_name, t, iv_c(sc->ivars[i] + 1));
@@ -4112,7 +4112,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         else         buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", arm_t, arm_t);
         emit_indent(b, indent + 1);
         buf_printf(b, "if (_t%d) {\n", poly_class_guard);
-        for (int i = 0; i < sc->nivars; i++) {
+        for (int i = 0; i < sc->nmembers; i++) {
           char fb[320];
           if (isv) snprintf(fb, sizeof fb, "((sp_%s *)_t%d.v.p)->iv_%s", sc->c_name, t, iv_c(sc->ivars[i] + 1));
           else     snprintf(fb, sizeof fb, "((sp_%s *)_t%d.v.p)->iv_%s", sc->c_name, t, iv_c(sc->ivars[i] + 1));

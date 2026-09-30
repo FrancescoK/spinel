@@ -1,0 +1,35 @@
+3
+#<data D a=3>
+[:a]
+{a: 3}
+true
+nil
+[:a]
+#<struct S a=1>
+nil
+9
+[1]
+{a: 1}
+1
+true
+[1]
+[1]
+[:@z]
+[:arr, 1]
+[:hash, 1]
+true
+NameError
+"struct size differs"
+2
+[:a, :b]
+#<struct T a=1, b=2>
+[1, 2]
+true
+[1, 2]
+#<data E x=1>
+[:x]
+#<struct U q=1, r=2>
+7
+[:q, :r]
+[1, 2]
+#<struct K k=1>

@@ -148,9 +148,9 @@ static void emit_struct_member_by_key(Compiler *c, ClassInfo *sc, const char *rt
                   " sp_sprintf(\"no implicit conversion of %%s into Integer\","
                   " sp_poly_class_name(_t%d)));", tk, tk, tk, tk, tk0, tk, tk, tk);
   buf_printf(b, " if (_t%d.tag == SP_TAG_INT && _t%d.v.i < 0) _t%d = sp_box_int(_t%d.v.i + %d);",
-             tk, tk, tk, tk, sc->nivars);
+             tk, tk, tk, tk, sc->nmembers);
   buf_printf(b, " sp_RbVal _t%d = sp_box_nil();", tr);
-  for (int i = 0; i < sc->nivars; i++) {
+  for (int i = 0; i < sc->nmembers; i++) {
     buf_printf(b, " if(sp_rbval_eql_key(_t%d,sp_box_sym((sp_sym)%d))||sp_rbval_eql_key(_t%d,sp_box_int(%lldLL))"
                   "||sp_rbval_eql_key(_t%d,sp_box_str(\"%s\"))){ _t%d = ",
                tk, comp_sym_intern(c, sc->ivars[i] + 1), tk, (long long)i,
@@ -167,7 +167,7 @@ static void emit_struct_member_by_key(Compiler *c, ClassInfo *sc, const char *rt
                   " (long long)_t%d.v.i, _t%d.v.i < 0 ? \"small\" : \"large\"));"
                   " sp_raise_cls(\"NameError\", sp_sprintf(\"no member '%%s' in struct\", sp_poly_to_s(_t%d)));"
                   " } _t%d; })",
-               tk0, sc->nivars, tk0, tk0, tk0, tr);
+               tk0, sc->nmembers, tk0, tk0, tk0, tr);
 }
 
 /* 1 when the node is a user object whose class compares -- defines ==, ===
@@ -10352,7 +10352,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       Buf rb = expr_buf(c, recv);
       buf_printf(b, "({ sp_%s *_t%d = %s; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);",
                  sc->name, t, rb.p ? rb.p : "", rt2, rt2);
-      for (int i = 0; i < sc->nivars; i++) {
+      for (int i = 0; i < sc->nmembers; i++) {
         buf_printf(b, " sp_PolyArray_push(_t%d, ", rt2);
         Buf fb; memset(&fb, 0, sizeof fb); buf_printf(&fb, "_t%d->iv_%s", t, iv_c(sc->ivars[i] + 1));
         emit_boxed_text(c, sc->ivar_types[i], fb.p, b); free(fb.p);
@@ -10385,7 +10385,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           if (en == 2) { ke = els[0]; ve = els[1]; }
         }
         TyKind kt = ty_hash_key(res), vt = ty_hash_val(res);
-        for (int i = 0; i < sc->nivars; i++) {
+        for (int i = 0; i < sc->nmembers; i++) {
           if (kp) buf_printf(b, " lv_%s = (sp_sym)%d;", kp, comp_sym_intern(c, sc->ivars[i] + 1));
           if (vp) {
             char fb[300]; snprintf(fb, sizeof fb, "_t%d->iv_%s", t, iv_c(sc->ivars[i] + 1));
@@ -10412,7 +10412,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         }
       }
       else {
-        for (int i = 0; i < sc->nivars; i++) {
+        for (int i = 0; i < sc->nmembers; i++) {
           buf_printf(b, " sp_SymPolyHash_set(_t%d, (sp_sym)%d, ", rh, comp_sym_intern(c, sc->ivars[i] + 1));
           char fb[300]; snprintf(fb, sizeof fb, "_t%d->iv_%s", t, iv_c(sc->ivars[i] + 1));
           emit_boxed_text(c, sc->ivar_types[i], fb, b);
@@ -10443,8 +10443,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         const char *aty4 = nt_type(nt, argv[a4]);
         if (aty4 && sp_streq(aty4, "IntegerNode")) {
           long long ix = nt_int(nt, argv[a4], "value", 0);
-          if (ix < 0) ix += sc->nivars;
-          if (ix < 0 || ix >= sc->nivars) { ok4 = 0; break; }
+          if (ix < 0) ix += sc->nmembers;
+          if (ix < 0 || ix >= sc->nmembers) { ok4 = 0; break; }
           char fb4[300]; snprintf(fb4, sizeof fb4, "_t%d->iv_%s", tv4, iv_c(sc->ivars[(int)ix] + 1));
           buf_printf(b4, " sp_PolyArray_push(_t%d, ", to4);
           emit_boxed_text(c, sc->ivar_types[(int)ix], fb4, b4);
@@ -10455,15 +10455,15 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           long long lo4 = rl4 >= 0 && nt_type(nt, rl4) && sp_streq(nt_type(nt, rl4), "IntegerNode")
                             ? nt_int(nt, rl4, "value", 0) : 0;
           long long hi4 = rr4 >= 0 && nt_type(nt, rr4) && sp_streq(nt_type(nt, rr4), "IntegerNode")
-                            ? nt_int(nt, rr4, "value", 0) : sc->nivars - 1;
+                            ? nt_int(nt, rr4, "value", 0) : sc->nmembers - 1;
           if (nt_int(nt, argv[a4], "flags", 0) & 4) hi4--;
-          if (lo4 < 0) lo4 += sc->nivars;
-          if (hi4 < 0) hi4 += sc->nivars;
+          if (lo4 < 0) lo4 += sc->nmembers;
+          if (hi4 < 0) hi4 += sc->nmembers;
           /* a Range that runs past the last member pads with nil, the way
              Array#values_at does; the walk used to stop at the last member */
           for (long long ix = lo4; ix <= hi4; ix++) {
             if (ix < 0) continue;
-            if (ix >= sc->nivars) { buf_printf(b4, " sp_PolyArray_push(_t%d, sp_box_nil());", to4); continue; }
+            if (ix >= sc->nmembers) { buf_printf(b4, " sp_PolyArray_push(_t%d, sp_box_nil());", to4); continue; }
             char fb4[300]; snprintf(fb4, sizeof fb4, "_t%d->iv_%s", tv4, iv_c(sc->ivars[(int)ix] + 1));
             buf_printf(b4, " sp_PolyArray_push(_t%d, ", to4);
             emit_boxed_text(c, sc->ivar_types[(int)ix], fb4, b4);
@@ -10508,7 +10508,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "({ sp_%s *_t%d = %s; uint64_t _t%d = 1469598103934665603ULL;",
                  sc->c_name, tv5, rb5.p ? rb5.p : "", th5);
       free(rb5.p);
-      for (int i5 = 0; i5 < sc->nivars; i5++) {
+      for (int i5 = 0; i5 < sc->nmembers; i5++) {
         char fb5[300]; snprintf(fb5, sizeof fb5, "_t%d->iv_%s", tv5, iv_c(sc->ivars[i5] + 1));
         buf_printf(b, " _t%d = (_t%d ^ (uint64_t)sp_rbval_hash_key(", th5, th5);
         emit_boxed_text(c, sc->ivar_types[i5], fb5, b);
@@ -10521,7 +10521,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       char szn[272]; snprintf(szn, sizeof szn, "@%s", name);
       if (comp_ivar_index(sc, szn) < 0) {
         Buf rb = expr_buf(c, recv);
-        buf_printf(b, "((void)(%s), %dLL)", rb.p ? rb.p : "0", sc->nivars);
+        buf_printf(b, "((void)(%s), %dLL)", rb.p ? rb.p : "0", sc->nmembers);
         free(rb.p);
         return 1;
       }
@@ -10532,7 +10532,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       int keyed[64]; int nkey = 0; int ok = 1;
       const char *aty = nt_type(nt, argv[0]);
       if (aty && sp_streq(aty, "NilNode")) {
-        for (int i = 0; i < sc->nivars && nkey < 64; i++) keyed[nkey++] = i;
+        for (int i = 0; i < sc->nmembers && nkey < 64; i++) keyed[nkey++] = i;
       }
       else if (aty && sp_streq(aty, "ArrayNode")) {
         int en = 0; const int *els = nt_arr(nt, argv[0], "elements", &en);
@@ -10540,7 +10540,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           const char *ety = nt_type(nt, els[e]);
           if (!ety || !sp_streq(ety, "SymbolNode")) { ok = 0; break; }
           char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nt_str(nt, els[e], "value"));
-          int mi2 = comp_ivar_index(sc, ivn);
+          int mi2 = comp_member_index(sc, ivn);
           if (nkey >= 64) { ok = 0; break; }
           if (mi2 < 0) continue;   /* a non-member key is omitted, not an error (#2974) */
           keyed[nkey++] = mi2;
@@ -10567,7 +10567,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
     if ((sp_streq(name, "members")) && argc == 0) {
       int rm = ++g_tmp;
       buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", rm, rm);
-      for (int i = 0; i < sc->nivars; i++)
+      for (int i = 0; i < sc->nmembers; i++)
         buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym((sp_sym)%d));", rm, comp_sym_intern(c, sc->ivars[i] + 1));
       buf_printf(b, " _t%d; })", rm);
       return 1;
@@ -10612,7 +10612,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           const char *kn = is_sym ? nt_str(nt, key, "value") : is_str ? nt_str(nt, key, "content") : NULL;
           char ivn[256];
           if (kn) snprintf(ivn, sizeof ivn, "@%s", kn);
-          if (is_sym && comp_ivar_index(sc, ivn) >= 0) continue;
+          if (is_sym && comp_member_index(sc, ivn) >= 0) continue;
           if (!kn) { spelled = 0; continue; }
           int dup = 0;
           for (int e2 = 0; e2 < e && !dup; e2++) {
@@ -10643,7 +10643,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "({ sp_%s *_t%d = %s;", sc->c_name, t, rb.p ? rb.p : ""); free(rb.p);
       if (th >= 0) { buf_printf(b, " sp_RbVal _t%d = ", th); emit_boxed(c, wds, b); buf_puts(b, ";"); }
       buf_printf(b, " sp_%s_new(", sc->c_name);
-      for (int i = 0; i < sc->nivars; i++) {
+      for (int i = 0; i < sc->nmembers; i++) {
         if (i) buf_puts(b, ", ");
         int val = wkwh >= 0 ? kwh_lookup(nt, wkwh, sc->ivars[i] + 1) : -1;
         if (val >= 0) {
@@ -10771,11 +10771,11 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         const char *kv = sp_streq(kty, "SymbolNode") ? nt_str(nt, argv[0], "value")
                                                      : nt_str(nt, argv[0], "content");
         if (kv) { char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", kv);
-                  mi = comp_ivar_index(sc, ivn); }
+                  mi = comp_member_index(sc, ivn); }
       }
       else if (kty && sp_streq(kty, "IntegerNode")) {
         int v = (int)nt_int(nt, argv[0], "value", -1);
-        if (v >= 0 && v < sc->nivars) mi = v;
+        if (v >= 0 && v < sc->nmembers) mi = v;
       }
       if (mi >= 0) {
         /* nested struct members resolve the remaining literal keys at compile
@@ -10791,11 +10791,11 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
             int nmi = -1;
             if (k2ty && sp_streq(k2ty, "SymbolNode")) {
               char ivn2[256]; snprintf(ivn2, sizeof ivn2, "@%s", nt_str(nt, argv[di], "value"));
-              nmi = comp_ivar_index(nx, ivn2);
+              nmi = comp_member_index(nx, ivn2);
             }
             else if (k2ty && sp_streq(k2ty, "IntegerNode")) {
               int v2 = (int)nt_int(nt, argv[di], "value", -1);
-              if (v2 >= 0 && v2 < nx->nivars) nmi = v2;
+              if (v2 >= 0 && v2 < nx->nmembers) nmi = v2;
             }
             if (nmi < 0) { all = 0; break; }
             size_t pl = strlen(path);
@@ -10854,7 +10854,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       }
       /* a key no literal member matches (a local, an offset, a name) resolves
          at run time; each further key then digs from that value (#3849) */
-      if (sc->nivars > 0) {
+      if (sc->nmembers > 0) {
         int td = ++g_tmp;
         char rtxt[32]; snprintf(rtxt, sizeof rtxt, "_t%d", td);
         /* the receiver is rooted across the keys, which may allocate */
@@ -10883,7 +10883,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       emit_boxed(c, argv[0], b);
       buf_printf(b, "; sp_RbVal _t%d = _t%d;", tk0, tk);
       buf_printf(b, " if (_t%d.tag == SP_TAG_INT && _t%d.v.i < 0) _t%d = sp_box_int(_t%d.v.i + %d);",
-                 tk, tk, tk, tk, sc->nivars);
+                 tk, tk, tk, tk, sc->nmembers);
       /* The assignment's own value is the right-hand side in ITS type -- that
          is what the call site is typed for -- so keep it, and box a copy for
          the per-member stores (#3897). */
@@ -10899,7 +10899,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, " sp_RbVal _t%d = ", tv); emit_boxed(c, argv[1], b); buf_puts(b, ";");
         tvraw = tv;
       }
-      for (int i = 0; i < sc->nivars; i++) {
+      for (int i = 0; i < sc->nmembers; i++) {
         buf_printf(b, " if(sp_rbval_eql_key(_t%d,sp_box_sym((sp_sym)%d))||sp_rbval_eql_key(_t%d,sp_box_int(%lldLL))"
                       "||sp_rbval_eql_key(_t%d,sp_box_str(\"%s\"))){ _t%d->iv_%s = ",
                    tk, comp_sym_intern(c, sc->ivars[i] + 1), tk, (long long)i,
@@ -10919,7 +10919,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
                     " (long long)_t%d.v.i, _t%d.v.i < 0 ? \"small\" : \"large\"));"
                     " sp_raise_cls(\"NameError\", sp_sprintf(\"no member '%%s' in struct\", sp_poly_to_s(_t%d)));"
                     " } _t%d; })",
-                 tk0, sc->nivars, tk0, tk0, tk0,
+                 tk0, sc->nmembers, tk0, tk0, tk0,
                  (comp_ntype(c, id) == TY_POLY && tvraw != tv) ? tv : tvraw);
       return 1;
     }
@@ -10932,13 +10932,13 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
                                                      : nt_str(nt, argv[0], "content");
         if (kv) {
           char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", kv);
-          mi = comp_ivar_index(sc, ivn);
+          mi = comp_member_index(sc, ivn);
         }
       }
       else if (kty && sp_streq(kty, "IntegerNode")) {
         long long v = (long long)nt_int(nt, argv[0], "value", 0);
-        if (v < 0) v += (long long)sc->nivars;
-        if (v >= 0 && v < sc->nivars) mi = (int)v;
+        if (v < 0) v += (long long)sc->nmembers;
+        if (v >= 0 && v < sc->nmembers) mi = (int)v;
       }
       if (mi >= 0) {
         int t = ++g_tmp;
@@ -10950,7 +10950,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       /* general: generate chain of comparisons. Each arm has to ASSIGN into a
          result temp -- written as bare statements the chain is a void
          expression, which is not a value the caller can read (#3572). */
-      if (sc->nivars > 0) {
+      if (sc->nmembers > 0) {
         int t = ++g_tmp, tk = ++g_tmp, tr = ++g_tmp, tk0 = ++g_tmp;
         Buf rb = expr_buf(c, recv);
         buf_printf(b, "({ sp_%s *_t%d = %s; sp_RbVal _t%d = ", sc->c_name, t, rb.p ? rb.p : "", tk);
@@ -10960,9 +10960,9 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
            error message */
         buf_printf(b, "; sp_RbVal _t%d = _t%d;", tk0, tk);
         buf_printf(b, " if (_t%d.tag == SP_TAG_INT && _t%d.v.i < 0) _t%d = sp_box_int(_t%d.v.i + %d);",
-                   tk, tk, tk, tk, sc->nivars);
+                   tk, tk, tk, tk, sc->nmembers);
         buf_printf(b, " sp_RbVal _t%d = sp_box_nil();", tr);
-        for (int i = 0; i < sc->nivars; i++) {
+        for (int i = 0; i < sc->nmembers; i++) {
           buf_printf(b, " if(sp_rbval_eql_key(_t%d,sp_box_sym((sp_sym)%d))||sp_rbval_eql_key(_t%d,sp_box_int(%lldLL))){ _t%d = ",
                      tk, comp_sym_intern(c, sc->ivars[i]+1), tk, (long long)i, tr);
           char fld2[300]; snprintf(fld2, sizeof fld2, "_t%d->iv_%s", t, iv_c(sc->ivars[i] + 1));
@@ -10975,7 +10975,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
                       " (long long)_t%d.v.i, _t%d.v.i < 0 ? \"small\" : \"large\"));"
                       " sp_raise_cls(\"NameError\", sp_sprintf(\"no member '%%s' in struct\", sp_poly_to_s(_t%d)));"
                       " } _t%d; })",
-                   tk0, sc->nivars, tk0, tk0, tk0, tr);
+                   tk0, sc->nmembers, tk0, tk0, tk0, tr);
         return 1;
       }
     }
@@ -11164,8 +11164,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "({ (void)("); emit_expr(c, recv, b);
         buf_printf(b, "); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tia, tia);
         /* Data/Struct members are NOT @-instance variables in CRuby (#2849) */
-        if (!ivc->is_struct)
-          for (int ji = 0; ji < ivc->nivars; ji++)
+        for (int ji = ivc->is_struct ? ivc->nmembers : 0; ji < ivc->nivars; ji++)
             buf_printf(b, "sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(\"%s\"))); ", tia, ivc->ivars[ji]);
         buf_printf(b, "_t%d; })", tia);
         return 1;
@@ -11204,9 +11203,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       int mi = -1;
       /* Data/Struct members live in the layout but are NOT @-instance
          variables in CRuby: a get answers nil, not the member (#2849) */
-      if (!c->classes[cid].is_struct)
-        for (int i = 0; i < c->classes[cid].nivars; i++)
-          if (sp_streq(c->classes[cid].ivars[i], sym)) { mi = i; break; }
+      for (int i = c->classes[cid].is_struct ? c->classes[cid].nmembers : 0; i < c->classes[cid].nivars; i++)
+        if (sp_streq(c->classes[cid].ivars[i], sym)) { mi = i; break; }
       if (mi >= 0) {
         /* A value object is passed by value, so a field write only sticks when
            the receiver is an lvalue (a local / ivar / self); a pointer object
@@ -11295,8 +11293,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       const char *sym = sp_streq(a0ty, "SymbolNode")
                           ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
       int mi = -1;
-      if (sym && sym[0] == '@' && !c->classes[cid].is_struct)
-        for (int i = 0; i < c->classes[cid].nivars; i++)
+      if (sym && sym[0] == '@')
+        for (int i = c->classes[cid].is_struct ? c->classes[cid].nmembers : 0; i < c->classes[cid].nivars; i++)
           if (sp_streq(c->classes[cid].ivars[i], sym)) { mi = i; break; }
       if (mi >= 0) {
         const char *acc = comp_ty_value_obj(c, rt) ? "." : "->";

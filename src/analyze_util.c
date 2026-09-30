@@ -1013,13 +1013,13 @@ int struct_member_idx(Compiler *c, ClassInfo *sc, int keynode) {
                                                  : nt_str(nt, keynode, "content");
     if (!kn) return -1;
     char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", kn);
-    int iv = comp_ivar_index(sc, ivn);
+    int iv = comp_member_index(sc, ivn);
     return iv;  /* ivar order == member order */
   }
   if (sp_streq(kty, "IntegerNode")) {
     int idx = (int)nt_int(nt, keynode, "value", INT_MIN);
-    if (idx < 0) idx += sc->nivars;   /* negative counts from the last member */
-    if (idx >= 0 && idx < sc->nivars) return idx;
+    if (idx < 0) idx += sc->nmembers;   /* negative counts from the last member */
+    if (idx >= 0 && idx < sc->nmembers) return idx;
   }
   return -1;
 }

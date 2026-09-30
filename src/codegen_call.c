@@ -11459,8 +11459,8 @@ static int boxed_printf_list_ok(Compiler *c, const int *argv, int argc) {
 /* A Data's member names as a C array, for sp_data_new_check. */
 static void emit_data_members(ClassInfo *cls, Buf *b) {
   buf_puts(b, "(const char *const[]){");
-  for (int a = 0; a < cls->nivars; a++) buf_printf(b, "%s\"%s\"", a ? ", " : "", cls->ivars[a] + 1);
-  if (cls->nivars == 0) buf_puts(b, "\"\"");
+  for (int a = 0; a < cls->nmembers; a++) buf_printf(b, "%s\"%s\"", a ? ", " : "", cls->ivars[a] + 1);
+  if (cls->nmembers == 0) buf_puts(b, "\"\"");
   buf_puts(b, "}");
 }
 /* `X.new(*arr)` on a Struct or Data class: the array spread across the
@@ -11478,14 +11478,14 @@ static void emit_struct_spread_new(Compiler *c, ClassInfo *cls, const char *arr,
     buf_puts(b, ";");
   }
   else if (cls->is_data) {
-    buf_printf(b, " if (_t%d != %d) sp_data_new_check(_t%d, sp_box_nil(), ", tln, cls->nivars, tln);
+    buf_printf(b, " if (_t%d != %d) sp_data_new_check(_t%d, sp_box_nil(), ", tln, cls->nmembers, tln);
     emit_data_members(cls, b);
-    buf_printf(b, ", %d);", cls->nivars);
+    buf_printf(b, ", %d);", cls->nmembers);
   }
   else
-    buf_printf(b, " if (_t%d > %d) sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"struct size differs\")[1]));", tln, cls->nivars);
+    buf_printf(b, " if (_t%d > %d) sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"struct size differs\")[1]));", tln, cls->nmembers);
   buf_printf(b, " sp_%s_new(", cls->c_name);
-  for (int a = 0; a < cls->nivars; a++) {
+  for (int a = 0; a < cls->nmembers; a++) {
     if (a) buf_puts(b, ", ");
     char elem[96];
     snprintf(elem, sizeof elem, "(%d < _t%d ? sp_PolyArray_get(_t%d, %d) : sp_box_nil())", a, tln, tsa, a);
@@ -11521,8 +11521,8 @@ static int emit_struct_kw_hash(Compiler *c, int kwh);
 static void emit_data_spread_kw(ClassInfo *cls, int ta, int kt, Buf *ab) {
   buf_printf(ab, " if (sp_poly_length(_t%d) > 0) { sp_data_new_check(_t%d->len, _t%d, ", kt, ta, kt);
   emit_data_members(cls, ab);
-  buf_printf(ab, ", %d);", cls->nivars);
-  for (int m = 0; m < cls->nivars; m++)
+  buf_printf(ab, ", %d);", cls->nmembers);
+  for (int m = 0; m < cls->nmembers; m++)
     buf_printf(ab, " sp_PolyArray_push(_t%d, sp_kw_member_val(_t%d, \"%s\"));", ta, kt, cls->ivars[m] + 1);
   buf_puts(ab, " }");
 }
@@ -11540,8 +11540,8 @@ static void emit_struct_spread_kw(ClassInfo *cls, int kw_init, int ta, int kt, B
   buf_printf(ab, " if (sp_poly_length(_t%d) > 0) { if (_t%d->len == 0) { _t%d = sp_kw_splat_check(_t%d, ",
              kt, ta, kt, kt);
   emit_data_members(cls, ab);
-  buf_printf(ab, ", %d, NULL, 0);", cls->nivars);
-  for (int m = 0; m < cls->nivars; m++)
+  buf_printf(ab, ", %d, NULL, 0);", cls->nmembers);
+  for (int m = 0; m < cls->nmembers; m++)
     buf_printf(ab, " sp_PolyArray_push(_t%d, sp_kw_member_val(_t%d, \"%s\"));", ta, kt, cls->ivars[m] + 1);
   if (kw_init) buf_printf(ab, " }\nelse sp_raise_arity(_t%d->len + 1, 0, 0, NULL); }", ta);
   else buf_printf(ab, " }\nelse sp_PolyArray_push(_t%d, _t%d); }", ta, kt);
@@ -12556,7 +12556,7 @@ static void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Bu
 /* The type of the member slot `@name` of class `k`, TY_POLY when untyped. */
 static TyKind struct_member_slot_type(ClassInfo *k, const char *name) {
   char mvn[300]; snprintf(mvn, sizeof mvn, "@%s", name);
-  int mvi = comp_ivar_index(k, mvn);
+  int mvi = comp_member_index(k, mvn);
   return (mvi >= 0 && k->ivar_types[mvi] != TY_UNKNOWN) ? k->ivar_types[mvi] : TY_POLY;
 }
 
@@ -12806,7 +12806,7 @@ static int struct_kw_binds_late(Compiler *c, ClassInfo *cls, int kwh) {
     if (nt_kind(nt, key) != NK_SymbolNode) return 1;
     const char *kn = nt_str(nt, key, "value");
     char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", kn);
-    if (comp_ivar_index(cls, ivn) < 0) continue;
+    if (comp_member_index(cls, ivn) < 0) continue;
     for (int e2 = e + 1; e2 < n; e2++) {
       int k2 = nt_ref(nt, el[e2], "key");
       if (nt_kind(nt, el[e2]) == NK_AssocNode && nt_kind(nt, k2) == NK_SymbolNode &&
@@ -12835,13 +12835,13 @@ static int emit_struct_kw_hash(Compiler *c, int kwh) {
 static void emit_struct_kw_check(Compiler *c, ClassInfo *cls, int ht, int kwh) {
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "_t%d = sp_kw_splat_check(_t%d, (const char *const[]){", ht, ht);
-  for (int a = 0; a < cls->nivars; a++) buf_printf(g_pre, "%s\"%s\"", a ? ", " : "", cls->ivars[a] + 1);
-  if (cls->nivars == 0) buf_puts(g_pre, "\"\"");
+  for (int a = 0; a < cls->nmembers; a++) buf_printf(g_pre, "%s\"%s\"", a ? ", " : "", cls->ivars[a] + 1);
+  if (cls->nmembers == 0) buf_puts(g_pre, "\"\"");
   buf_puts(g_pre, "}, ");
-  buf_printf(g_pre, "%d, (const unsigned char[]){", cls->nivars);
-  for (int a = 0; a < cls->nivars; a++)
+  buf_printf(g_pre, "%d, (const unsigned char[]){", cls->nmembers);
+  for (int a = 0; a < cls->nmembers; a++)
     buf_printf(g_pre, "%s%d", a ? ", " : "", kwh >= 0 && struct_kwarg_value(c, kwh, cls->ivars[a] + 1) >= 0);
-  if (cls->nivars == 0) buf_puts(g_pre, "0");
+  if (cls->nmembers == 0) buf_puts(g_pre, "0");
   buf_printf(g_pre, "}, %d);\n", cls->is_data ? 1 : 0);
 }
 /* Member `a` of `cls` read out of the keyword hash in temp `ht`, in the
@@ -12967,7 +12967,7 @@ static int emit_struct_new_early(Compiler *c, int ci, int argc, const int *argv,
       const char *kn = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
       if (!kn) { nonsym = 1; continue; }
       char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", kn);
-      if (comp_ivar_index(cls, ivn) >= 0) continue;
+      if (comp_member_index(cls, ivn) >= 0) continue;
       int seen = 0;
       for (int e2 = e + 1; e2 < nke && !seen; e2++) {
         int k2 = nt_ref(nt, elke[e2], "key");
@@ -12997,7 +12997,7 @@ static int emit_struct_new_early(Compiler *c, int ci, int argc, const int *argv,
       int nmiss = 0, sym_keys = 1;
       for (int e2 = 0; e2 < nke; e2++)
         if (nt_kind(nt, nt_ref(nt, elke[e2], "key")) != NK_SymbolNode) sym_keys = 0;
-      for (int a = 0; cls->is_data && sym_keys && a < cls->nivars; a++)
+      for (int a = 0; cls->is_data && sym_keys && a < cls->nmembers; a++)
         if (struct_kwarg_value(c, kwh, cls->ivars[a] + 1) < 0)
           buf_printf(&miss, "%s:%s", nmiss++ ? ", " : "", cls->ivars[a] + 1);
       /* The names go into a C string literal, escaped. Data names a key
@@ -13063,13 +13063,13 @@ static int emit_struct_new_early(Compiler *c, int ci, int argc, const int *argv,
       if (nt_type(nt, argv[a]) && sp_streq(nt_type(nt, argv[a]), "KeywordHashNode")) mixed = 1;
     int bad = 0;
     if (!kw_splat && !late) {
-      if (kwh < 0) bad = mixed || argc != cls->nivars;
+      if (kwh < 0) bad = mixed || argc != cls->nmembers;
       else {
         int present = 0;
-        for (int a = 0; a < cls->nivars; a++)
+        for (int a = 0; a < cls->nmembers; a++)
           if (struct_kwarg_value(c, kwh, cls->ivars[a] + 1) >= 0) present++;
         int nk1; nt_arr(nt, kwh, "elements", &nk1);
-        bad = present != cls->nivars || nk1 != cls->nivars;
+        bad = present != cls->nmembers || nk1 != cls->nmembers;
       }
     }
     if (bad) {
@@ -13101,7 +13101,7 @@ static int emit_struct_new_early(Compiler *c, int ci, int argc, const int *argv,
         char am[512];
         if (ctor_arity_error(c, ci, -1, npos, am, sizeof am)) buf_puts(&msg, am);
         /* a Data of no members, which ctor_arity_error leaves alone */
-        else if (npos > cls->nivars) {
+        else if (npos > cls->nmembers) {
           char am[128];
           arity_message(am, sizeof am, npos, 0, 0, NULL);
           buf_puts(&msg, am);
@@ -13110,7 +13110,7 @@ static int emit_struct_new_early(Compiler *c, int ci, int argc, const int *argv,
       else {
         Buf miss; memset(&miss, 0, sizeof miss);
         int nmiss = 0;
-        for (int a = 0; a < cls->nivars; a++)
+        for (int a = 0; a < cls->nmembers; a++)
           if (struct_kwarg_value(c, kwh, cls->ivars[a] + 1) < 0)
             buf_printf(&miss, "%s:%s", nmiss++ ? ", " : "", cls->ivars[a] + 1);
         char km[1024];
@@ -13121,7 +13121,7 @@ static int emit_struct_new_early(Compiler *c, int ci, int argc, const int *argv,
       if (mixed && !lit_kw && !spread) {
         int *pt = calloc((size_t)(npos > 0 ? npos : 1), sizeof(int));
         for (int a = 0; a < npos; a++) {
-          if (a < cls->nivars) { pt[a] = emit_struct_member_temp(c, cls, a, argv[a]); continue; }
+          if (a < cls->nmembers) { pt[a] = emit_struct_member_temp(c, cls, a, argv[a]); continue; }
           Buf ev; memset(&ev, 0, sizeof ev); emit_boxed(c, argv[a], &ev);
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "(void)(%s);\n", ev.p ? ev.p : "0");
@@ -13141,7 +13141,7 @@ static int emit_struct_new_early(Compiler *c, int ci, int argc, const int *argv,
           buf_puts(g_pre, ");\n");
         }
         buf_printf(b, "sp_%s_new(", cls->c_name);
-        for (int a = 0; a < cls->nivars; a++) {
+        for (int a = 0; a < cls->nmembers; a++) {
           if (a) buf_puts(b, ", ");
           if (!msg.p) buf_printf(b, "_t%d", pt[a]);
           else buf_puts(b, default_value(cls->ivar_types[a]));
@@ -13170,7 +13170,7 @@ static int emit_struct_new_early(Compiler *c, int ci, int argc, const int *argv,
       buf_puts(b, "sp_raise_cls(\"ArgumentError\", ");
       emit_str_literal(b, msg.p);
       buf_printf(b, "); sp_%s_new(", cls->c_name);
-      for (int a = 0; a < cls->nivars; a++) { if (a) buf_puts(b, ", "); buf_puts(b, default_value(cls->ivar_types[a])); }
+      for (int a = 0; a < cls->nmembers; a++) { if (a) buf_puts(b, ", "); buf_puts(b, default_value(cls->ivar_types[a])); }
       buf_puts(b, "); })");
       free(msg.p);
       return 1;
@@ -13184,12 +13184,12 @@ static int emit_struct_new_early(Compiler *c, int ci, int argc, const int *argv,
   /* more positional args than members is a struct-size ArgumentError
      (fewer are allowed for Struct: nil fill); evaluate args first for
      any side effects, then raise before constructing */
-  if (kwh < 0 && argc > cls->nivars && !(spread_tail && argc - 1 == cls->nivars)) {
+  if (kwh < 0 && argc > cls->nmembers && !(spread_tail && argc - 1 == cls->nmembers)) {
     buf_puts(b, "({ ");
     for (int a2 = 0; a2 < argc; a2++) { buf_puts(b, "(void)("); emit_boxed(c, argv[a2], b); buf_puts(b, "); "); }
     buf_puts(b, "sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"struct size differs\")[1])); ");
     buf_printf(b, "sp_%s_new(", cls->c_name);
-    for (int a2 = 0; a2 < cls->nivars; a2++) {
+    for (int a2 = 0; a2 < cls->nmembers; a2++) {
       if (a2) buf_puts(b, ", ");
       buf_puts(b, default_value(cls->ivar_types[a2]));
     }
@@ -13213,7 +13213,7 @@ static int struct_kwh_out_of_order(Compiler *c, const ClassInfo *cls, int kwh) {
   for (int i = 0; i < n; i++) {
     int key = nt_kind(nt, els[i]) == NK_AssocNode ? nt_ref(nt, els[i], "key") : -1;
     const char *kn = key >= 0 && nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
-    for (int a = 0; kn && a < cls->nivars; a++) {
+    for (int a = 0; kn && a < cls->nmembers; a++) {
       if (!sp_streq(cls->ivars[a] + 1, kn)) continue;
       if (a < last) return 1;
       last = a;
@@ -13304,8 +13304,8 @@ static int emit_struct_new_call(Compiler *c, int id, int ci, int argc, const int
     int *lit_tmp = NULL;
     int merged = (splat_h >= 0 && (cls->kw_init == -1 || nunk || kwh_sources_overlap(nt, kwh))) || late;
     if (splat_h >= 0 || merged) {
-      lit_tmp = malloc(sizeof(int) * (size_t)(cls->nivars > 0 ? cls->nivars : 1));
-      for (int a = 0; a < cls->nivars; a++) lit_tmp[a] = -1;
+      lit_tmp = malloc(sizeof(int) * (size_t)(cls->nmembers > 0 ? cls->nmembers : 1));
+      for (int a = 0; a < cls->nmembers; a++) lit_tmp[a] = -1;
       if (merged) splat_tmp = emit_struct_kw_hash(c, kwh);
       int nkp; const int *elsp = nt_arr(nt, kwh, "elements", &nkp);
       for (int i = 0; i < nkp && !merged; i++) {
@@ -13324,7 +13324,7 @@ static int emit_struct_new_call(Compiler *c, int id, int ci, int argc, const int
           else emit_kw_splat_conv_check(c, kw_splat_checked_boxed(c, splat_h) ? TY_POLY : comp_ntype(c, splat_h), stn);
           continue;
         }
-        for (int a = 0; vv >= 0 && a < cls->nivars; a++) {
+        for (int a = 0; vv >= 0 && a < cls->nmembers; a++) {
           if (struct_kwarg_value(c, kwh, cls->ivars[a] + 1) != vv) continue;
           lit_tmp[a] = emit_struct_member_temp(c, cls, a, vv);
         }
@@ -13333,10 +13333,10 @@ static int emit_struct_new_call(Compiler *c, int id, int ci, int argc, const int
     }
     /* the spreads past the last member: evaluated after the members,
        and too many arguments when they hold a key */
-    int spread_over = spread_tail && argc - 1 == cls->nivars ? ++g_tmp : -1;
+    int spread_over = spread_tail && argc - 1 == cls->nmembers ? ++g_tmp : -1;
     if (spread_over >= 0) buf_printf(b, "({ sp_%s *_t%d = ", cls->c_name, spread_over);
     buf_printf(b, "sp_%s_new(", cls->c_name);
-    for (int a = 0; a < cls->nivars; a++) {
+    for (int a = 0; a < cls->nmembers; a++) {
       if (a) buf_puts(b, ", ");
       int vnode = -1;
       if (kwh >= 0) vnode = merged ? -1 : struct_kwarg_value(c, kwh, cls->ivars[a] + 1);
@@ -13450,7 +13450,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       ClassInfo *mcl = &c->classes[mci];
       int rm = ++g_tmp;
       buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", rm, rm);
-      for (int i = 0; i < mcl->nivars; i++)
+      for (int i = 0; i < mcl->nmembers; i++)
         buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym((sp_sym)%d));", rm, comp_sym_intern(c, mcl->ivars[i] + 1));
       buf_printf(b, " _t%d; })", rm);
       return 1;
@@ -14757,7 +14757,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "({ sp_%s *_t%d = ", sci->c_name, ta); emit_expr(c, recv, b);
         buf_printf(b, "; sp_%s *_t%d = ", sci->c_name, tb2); emit_expr(c, argv[0], b);
         buf_printf(b, "; _t%d == _t%d || (_t%d && _t%d", ta, tb2, ta, tb2);
-        for (int j = 0; j < sci->nivars; j++) {
+        for (int j = 0; j < sci->nmembers; j++) {
           const char *ivn = iv_c(sci->ivars[j] + 1);   /* skip @, mangle to a C field */
           TyKind ivt = sci->ivar_types[j];
           if (ivt == TY_INT || ivt == TY_BOOL || ivt == TY_SYMBOL)
@@ -32159,7 +32159,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
             emit_struct_kw_check(c, ncls, kw_ht, -1);
           }
           buf_printf(b, "sp_%s_new(", ncls->c_name);
-          for (int a = 0; a < ncls->nivars; a++) {
+          for (int a = 0; a < ncls->nmembers; a++) {
             if (a) buf_puts(b, ", ");
             int vnode = -1;
             if (kwh >= 0) vnode = struct_kwarg_value(c, kwh, ncls->ivars[a] + 1);
@@ -34707,7 +34707,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
          switch: the call answered nil and the next write through it took the
          nil box's cls_id 0 as a real class (#4048). */
       if (c->classes[ci].is_struct) {
-        int nmem = c->classes[ci].nivars;
+        int nmem = c->classes[ci].nmembers;
         buf_printf(b, "case %d: _t%d=sp_box_obj(sp_%s_new(", ci, rt2, c->classes[ci].c_name);
         for (int mq = 0; mq < nmem; mq++) {
           if (mq) buf_puts(b, ", ");

@@ -473,6 +473,37 @@ int comp_ivar_intern(ClassInfo *ci, const char *name) {
   return ci->nivars++;
 }
 
+/* Intern a Struct/Data member's backing ivar as the next member: members sit
+   at ivars[0..nmembers), in declaration order, ahead of any other ivar the
+   class already interned (an attr's, or one a method assigns). */
+int comp_member_intern(ClassInfo *ci, const char *name) {
+  int idx = comp_ivar_intern(ci, name);
+  if (idx < ci->nmembers) return idx;
+  int m = ci->nmembers;
+  if (idx != m) {
+#define IV_SWAP(arr, T) do { T _t = ci->arr[idx]; ci->arr[idx] = ci->arr[m]; ci->arr[m] = _t; } while (0)
+    IV_SWAP(ivars, char *);
+    IV_SWAP(ivar_types, TyKind);
+    IV_SWAP(ivar_str_shared, unsigned char);
+    IV_SWAP(ivar_int_table, unsigned char);
+    IV_SWAP(ivar_oa_type, TyKind);
+    IV_SWAP(ivar_oa_seed, int);
+    IV_SWAP(ivar_oa_conflict, unsigned char);
+    IV_SWAP(ivar_nullable_int, unsigned char);
+    IV_SWAP(ivar_nullable_int_elem, unsigned char);
+    IV_SWAP(ivar_arr_elem_arr_or_nil, unsigned char);
+#undef IV_SWAP
+  }
+  return ci->nmembers++;
+}
+
+/* The member index of a Struct/Data's `@name`, or -1 for a name that is no
+   member (an attr's or a method's own ivar is not one). */
+int comp_member_index(ClassInfo *ci, const char *name) {
+  int idx = comp_ivar_index(ci, name);
+  return idx < ci->nmembers ? idx : -1;
+}
+
 int comp_cvar_index(ClassInfo *ci, const char *name) {
   for (int i = 0; i < ci->ncvars; i++)
     if (sp_streq(ci->cvars[i], name)) return i;

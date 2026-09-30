@@ -7610,9 +7610,9 @@ static const char *ivar_scalar_nil_init(TyKind t) {
    ("self.", "self->", "_t3.", "_t3->"); each assignment is bracketed by `lead`
    (indentation) and `term` (`;\n` for a statement, `;` inside a compound expr).
    A string ivar's NULL zero-pattern already reads as nil, so it is skipped. */
-static void emit_ivar_nil_inits(Buf *b, ClassInfo *ci, const char *lv,
-                                const char *lead, const char *term) {
-  for (int i = 0; i < ci->nivars; i++) {
+static void emit_ivar_nil_inits_from(Buf *b, ClassInfo *ci, int from, const char *lv,
+                                     const char *lead, const char *term) {
+  for (int i = from; i < ci->nivars; i++) {
     const char *name = iv_c(ci->ivars[i] + 1);  /* skip leading '@', mangle to a C field */
     if (ci->ivar_types[i] == TY_POLY)
       buf_printf(b, "%s%siv_%s = sp_box_nil()%s", lead, lv, name, term);
@@ -7625,6 +7625,11 @@ static void emit_ivar_nil_inits(Buf *b, ClassInfo *ci, const char *lv,
       if (nv) buf_printf(b, "%s%siv_%s = %s%s", lead, lv, name, nv, term);
     }
   }
+}
+
+static void emit_ivar_nil_inits(Buf *b, ClassInfo *ci, const char *lv,
+                                const char *lead, const char *term) {
+  emit_ivar_nil_inits_from(b, ci, 0, lv, lead, term);
 }
 
 /* Was this "class" written as `module`? Module-ness lives in the AST node
@@ -7742,19 +7747,19 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
     /* Struct constructor: one parameter per member, set the backing ivars. */
     buf_printf(b, "SP_POOL_DEFINE(%s)\n", ci->c_name);
     buf_printf(b, "static sp_%s *sp_%s_new(", ci->c_name, ci->c_name);
-    for (int i = 0; i < ci->nivars; i++) {
+    for (int i = 0; i < ci->nmembers; i++) {
       if (i) buf_puts(b, ", ");
       emit_ctype(c, ci->ivar_types[i], b);
       buf_printf(b, " a%d", i);
     }
-    if (ci->nivars == 0) buf_puts(b, "void");
+    if (ci->nmembers == 0) buf_puts(b, "void");
     buf_puts(b, ") {\n");
     /* Root every heap-backed member argument before allocating the struct:
        SP_POOL_NEW can trigger a GC, and a member value that is a fresh,
        otherwise-unrooted temporary (e.g. a `data[8, 8].delete("\0").upcase`
        WAD lump name) would be swept before it is stored into the ivar,
        leaving a dangling pointer the collector later reads (use-after-free). */
-    for (int i = 0; i < ci->nivars; i++) {
+    for (int i = 0; i < ci->nmembers; i++) {
       TyKind mt = ci->ivar_types[i];
       /* Gate on needs_root() -- the codebase's authoritative "this type is a
          heap pointer the GC scans" predicate -- so EVERY heap-backed member
@@ -7771,8 +7776,10 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
               class_needs_scan(ci) ? "__gc_scan" : "");
     buf_puts(b, "  SP_GC_ROOT(self);\n");
     buf_printf(b, "  self->cls_id = %d;\n", ctor_cls_id(c, cid));
-    for (int i = 0; i < ci->nivars; i++)
+    for (int i = 0; i < ci->nmembers; i++)
       buf_printf(b, "  self->iv_%s = a%d;\n", iv_c(ci->ivars[i] + 1), i);  /* skip leading '@' */
+    /* an attr's or a method's own ivar is no member: it starts nil */
+    emit_ivar_nil_inits_from(b, ci, ci->nmembers, "self->", "  ", ";\n");
     /* Data instances are frozen from construction (CRuby); Struct is mutable. */
     if (ci->is_data) buf_puts(b, "  sp_gc_freeze(self);\n");
     buf_puts(b, "  return self;\n}\n");
@@ -7803,7 +7810,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
          itself. Stop at the object the render is already inside, as CRuby's
          #<struct S a=#<struct S:...>> does. Only a struct with members can be
          reached from inside itself, so a memberless one keeps its old body. */
-      if (ci->nivars > 0)
+      if (ci->nmembers > 0)
         buf_printf(b, "  if (sp_poly_recur_seen(SP_POLY_RECUR_INSPECT, self, NULL)) return \"#<%s %s:...>\";\n"
                       "  int _rcm = sp_poly_recur_push(SP_POLY_RECUR_INSPECT, self, NULL);\n",
                    ci->is_data ? "data" : "struct", ci->is_anon_struct ? "" : rn);
@@ -7812,11 +7819,11 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
         /* the space that would precede the first member is CRuby's even when
            there is none to precede: `Struct.new.new.inspect` is "#<struct >" */
         buf_printf(b, "  sp_String *s = sp_String_new(\"#<%s%s\"); SP_GC_ROOT(s);\n",
-                   ci->is_data ? "data" : "struct", ci->nivars == 0 ? " " : "");
+                   ci->is_data ? "data" : "struct", ci->nmembers == 0 ? " " : "");
       else
         buf_printf(b, "  sp_String *s = sp_String_new(\"#<%s %s\"); SP_GC_ROOT(s);\n",
                    ci->is_data ? "data" : "struct", rn);
-      for (int i = 0; i < ci->nivars; i++) {
+      for (int i = 0; i < ci->nmembers; i++) {
         /* CRuby shows a non-identifier member as a symbol: `:verbose?=` (a
            plain identifier stays bare, `name=`) (#3110) */
         const char *mnm = ci->ivars[i] + 1;
@@ -7840,7 +7847,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
         }
       }
       buf_puts(b, "  sp_String_append(s, \">\");\n");
-      if (ci->nivars > 0) buf_puts(b, "  sp_poly_recur_pop(_rcm);\n");
+      if (ci->nmembers > 0) buf_puts(b, "  sp_poly_recur_pop(_rcm);\n");
       buf_puts(b, "  return s->data;\n}\n");
       }
     }
@@ -8151,7 +8158,7 @@ static void emit_obj_to_hash_dispatch(Compiler *c, Buf *b) {
     buf_printf(b, "    case %d: {\n", i);
     buf_printf(b, "      sp_%s *o = (sp_%s *)v.v.p; (void)o;\n", ci->c_name, ci->c_name);
     buf_puts(b, "      sp_StrPolyHash *h = sp_StrPolyHash_new(); SP_GC_ROOT(h);\n");
-    for (int j = 0; j < ci->nivars; j++) {
+    for (int j = 0; j < ci->nmembers; j++) {
       TyKind mt = ci->ivar_types[j];
       const char *iv = ci->ivars[j] + 1;  /* member name, sans @ (hash key) */
       const char *ivf = iv_c(iv);          /* C field id (mangled member) */
@@ -8341,7 +8348,7 @@ static void emit_cls_answers_dispatch(Compiler *c, Buf *b) {
     ClassInfo *ci = &c->classes[i];
     if (!ci->is_struct || comp_cmethod_in_chain(c, i, "members", NULL) >= 0) continue;
     buf_printf(b, "    case %d:", i);
-    for (int j = 0; j < ci->nivars; j++)
+    for (int j = 0; j < ci->nmembers; j++)
       buf_printf(b, " sp_PolyArray_push(a, sp_box_sym(sp_sym_intern(\"%s\")));", ci->ivars[j] + 1);
     buf_puts(b, " return a;\n");
   }
@@ -8387,7 +8394,7 @@ static void emit_obj_to_h_dispatch(Compiler *c, Buf *b) {
     buf_printf(b, "    case %d: {\n", comp_class_index(c, ci->name));
     buf_printf(b, "      sp_%s *o = (sp_%s *)v.v.p; (void)o;\n", ci->c_name, ci->c_name);
     buf_puts(b, "      sp_SymPolyHash *h = sp_SymPolyHash_new(); SP_GC_ROOT(h);\n");
-    for (int j = 0; j < ci->nivars; j++) {
+    for (int j = 0; j < ci->nmembers; j++) {
       TyKind mt = ci->ivar_types[j];
       const char *iv = ci->ivars[j] + 1;  /* member name, sans @ (sym key) */
       const char *ivf = iv_c(iv);          /* C field id (mangled member) */
@@ -8445,7 +8452,7 @@ static void emit_obj_struct_values_dispatch(Compiler *c, Buf *b) {
     buf_printf(b, "    case %d: {\n", comp_class_index(c, ci->name));
     buf_printf(b, "      sp_%s *o = (sp_%s *)v.v.p; (void)o;\n", ci->c_name, ci->c_name);
     buf_puts(b, "      sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a);\n");
-    for (int j = 0; j < ci->nivars; j++) {
+    for (int j = 0; j < ci->nmembers; j++) {
       TyKind mt = ci->ivar_types[j];
       const char *ivf = iv_c(ci->ivars[j] + 1);
       buf_puts(b, "      sp_PolyArray_push(a, ");
@@ -8607,7 +8614,7 @@ static void emit_obj_deconstruct_dispatch(Compiler *c, Buf *b) {
     buf_printf(b, "    case %d: {\n", i);
     buf_printf(b, "      sp_%s *o = (sp_%s *)v.v.p; (void)o;\n", ci->c_name, ci->c_name);
     buf_puts(b, "      sp_PolyArray *_a = sp_PolyArray_new(); SP_GC_ROOT(_a);\n");
-    for (int j = 0; j < ci->nivars; j++) {
+    for (int j = 0; j < ci->nmembers; j++) {
       char fld[300];
       snprintf(fld, sizeof fld, "o->iv_%s", iv_c(ci->ivars[j] + 1));
       buf_puts(b, "      sp_PolyArray_push(_a, ");
@@ -8655,7 +8662,7 @@ static void emit_obj_with_dispatch(Compiler *c, Buf *b) {
     buf_printf(b, "    case %d: {\n", idx);
     buf_printf(b, "      sp_%s *o = (sp_%s *)v.v.p; (void)o;\n", ci->c_name, ci->c_name);
     buf_printf(b, "      return sp_box_obj(sp_%s_new(", ci->c_name);
-    for (int j = 0; j < ci->nivars; j++) {
+    for (int j = 0; j < ci->nmembers; j++) {
       TyKind mt = ci->ivar_types[j];
       const char *iv = ci->ivars[j] + 1;   /* sym key */
       const char *ivf = iv_c(iv);           /* C field id */
@@ -9771,9 +9778,9 @@ static void emit_struct_super_spread(Compiler *c, ClassInfo *cls, const int *arg
     buf_printf(b, " sp_bool _t%d = 1;", tk);
     /* every member the keywords leave out is named in one message, as
        Data#initialize names them */
-    if (cls->is_data && cls->nivars > 0) {
+    if (cls->is_data && cls->nmembers > 0) {
       Buf ml; memset(&ml, 0, sizeof ml);
-      for (int a = 0; a < cls->nivars; a++) buf_printf(&ml, "\"%s\", ", cls->ivars[a] + 1);
+      for (int a = 0; a < cls->nmembers; a++) buf_printf(&ml, "\"%s\", ", cls->ivars[a] + 1);
       buf_printf(b, " sp_kwargs_verify(_t%d, (const char *const[]){%s0}, (const char *const[]){%s0},"
                     " (const char *const[]){0}, 0);", th, ml.p, ml.p);
       free(ml.p);
@@ -9793,9 +9800,9 @@ static void emit_struct_super_spread(Compiler *c, ClassInfo *cls, const int *arg
       buf_printf(b, ")) sp_PolyArray_push(_t%d, _t%d);", ta, th);
     }
     buf_printf(b, " sp_int _t%d = sp_PolyArray_length(_t%d);", tl, ta);
-    buf_printf(b, " if (_t%d > %d) sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"struct size differs\")[1]));", tl, cls->nivars);
+    buf_printf(b, " if (_t%d > %d) sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"struct size differs\")[1]));", tl, cls->nmembers);
   }
-  for (int a = 0; a < cls->nivars; a++) {
+  for (int a = 0; a < cls->nmembers; a++) {
     const char *mname = cls->ivars[a] + 1;
     Buf ev; memset(&ev, 0, sizeof ev);
     buf_printf(&ev, "(_t%d ? ", tk);
@@ -9978,12 +9985,12 @@ void emit_super(Compiler *c, int id, Buf *b) {
         free(sb.p);
         return;
       }
-      int cnt = (kwh >= 0 || is_fwd) ? cls->nivars : an;
+      int cnt = (kwh >= 0 || is_fwd) ? cls->nmembers : an;
       /* the members a keyword super leaves out, all named in one message */
       char kmiss[600] = "";
       if (kwh >= 0) {
         char ml[512] = ""; int nm = 0;
-        for (int a = 0; a < cls->nivars; a++)
+        for (int a = 0; a < cls->nmembers; a++)
           if (struct_kwarg_value(c, kwh, cls->ivars[a] + 1) < 0) {
             char iv[300]; snprintf(iv, sizeof iv, ":%s", cls->ivars[a] + 1);
             kw_names_add(ml, sizeof ml, &nm, iv);
@@ -9991,7 +9998,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
         if (nm) kw_error_message(kmiss, sizeof kmiss, "missing", nm, ml);
       }
       buf_puts(b, "(");
-      for (int a = 0; a < cls->nivars && a < cnt; a++) {
+      for (int a = 0; a < cls->nmembers && a < cnt; a++) {
         TyKind ivt = cls->ivar_types[a];
         int roff = -1;
         int pk = is_fwd ? struct_zsuper_param(c, s, a, cls->ivars[a] + 1, &roff) : -1;
@@ -10620,8 +10627,8 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
        constant, so a two-member struct whose self-reference is not last
        overflows on the very next multiply (UBSan caught it). */
     buf_printf(b, "    case %d: { sp_%s *o = (sp_%s *)p; uint64_t _h = %d;\n",
-               comp_class_index(c, ci->name), ci->c_name, ci->c_name, ci->nivars + 1);
-    for (int i = 0; i < ci->nivars; i++) {
+               comp_class_index(c, ci->name), ci->c_name, ci->c_name, ci->nmembers + 1);
+    for (int i = 0; i < ci->nmembers; i++) {
       char fe[128]; snprintf(fe, sizeof fe, "o->iv_%s", iv_c(ci->ivars[i] + 1));
       Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, ci->ivar_types[i], fe, &bx);
       buf_printf(b, "      _h = _h * 31 + (uint64_t)sp_rbval_hash_key(%s);\n", bx.p ? bx.p : fe);
@@ -10681,8 +10688,8 @@ static void emit_obj_valeq_dispatch(Compiler *c, Buf *b) {
     if (comp_method_in_chain(c, k, "==", NULL) >= 0) continue;
     buf_printf(b, "    case %d: { sp_%s *_a = (sp_%s *)a.v.p, *_b = (sp_%s *)b.v.p; if (!_a || !_b) return _a == _b; return ",
                comp_class_index(c, ci->name), ci->c_name, ci->c_name, ci->c_name);
-    if (ci->nivars == 0) buf_puts(b, "1");
-    for (int i = 0; i < ci->nivars; i++) {
+    if (ci->nmembers == 0) buf_puts(b, "1");
+    for (int i = 0; i < ci->nmembers; i++) {
       const char *iv = iv_c(ci->ivars[i] + 1);  /* skip leading '@', mangle to a C field */
       Buf ea; memset(&ea, 0, sizeof ea); Buf eb; memset(&eb, 0, sizeof eb);
       char fa[128], fb[128];
@@ -14019,8 +14026,8 @@ char *codegen_program(const NodeTable *nt) {
         if (s->nparams == 0) buf_puts(&b, "void");
       }
       else {
-        for (int m = 0; m < ci->nivars; m++) { if (m) buf_puts(&b, ", "); emit_ctype(c, ci->ivar_types[m], &b); }
-        if (ci->nivars == 0) buf_puts(&b, "void");
+        for (int m = 0; m < ci->nmembers; m++) { if (m) buf_puts(&b, ", "); emit_ctype(c, ci->ivar_types[m], &b); }
+        if (ci->nmembers == 0) buf_puts(&b, "void");
       }
       buf_puts(&b, ");\n");
       /* forward-declare the generated stringifiers so one struct's #inspect may
