@@ -64,7 +64,9 @@ jobs:
             git clone -q --filter=blob:none https://github.com/matz/spinel.git "$d"
             cd "$d"
             git remote add fork https://github.com/FrancescoK/spinel.git
-            git fetch -q origin "$sha" 2>/dev/null || git fetch -q fork "$sha"
+            # a short sha cannot be fetched by name: fall back to the fork's ci/ branches
+            git cat-file -e "$sha^{commit}" 2>/dev/null || git fetch -q origin "$sha" 2>/dev/null ||
+              git fetch -q fork "$sha" 2>/dev/null || git fetch -q fork '+refs/heads/ci/*:refs/remotes/fork/ci/*'
             git checkout -q "$sha"
             make deps > /dev/null && make -j"$(nproc)" all > /dev/null
             cd - > /dev/null
