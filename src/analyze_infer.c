@@ -8261,6 +8261,8 @@ TyKind infer_uncached(Compiler *c, int id) {
       return TY_POLY_POLY_HASH;
     TyKind kt = TY_UNKNOWN, vt = TY_UNKNOWN;
     int empty_spread = 0;
+    TyKind spread_ty = TY_UNKNOWN;   /* a typed hash spread in, when there is one */
+    int spread_mixed = 0;            /* spreads of two typed variants */
     for (int k = 0; k < n; k++) {
       const char *aty = nt_type(nt, els[k]);
       if (aty && sp_streq(aty, "AssocSplatNode")) {
@@ -8296,6 +8298,8 @@ TyKind infer_uncached(Compiler *c, int id) {
         if (ty_is_hash(sh)) {
           kt = ty_unify(kt, ty_hash_key(sh));
           vt = ty_unify(vt, ty_hash_val(sh));
+          if (spread_ty != TY_UNKNOWN && spread_ty != sh) spread_mixed = 1;
+          spread_ty = sh;
         }
         else if (sh == TY_POLY) {
           /* a poly spread source (a hash reached through a poly binding) merges
@@ -8332,16 +8336,20 @@ TyKind infer_uncached(Compiler *c, int id) {
     /* symbol keys -> SymPolyHash (boxed values), regardless of value type */
     if (kt == TY_SYMBOL) return TY_SYM_POLY_HASH;
     TyKind hv = ty_hash_of(kt, vt);
-    if (hv != TY_UNKNOWN) return hv;
     /* No scalar (key,val) variant: the value is poly-stored (a nested hash/
        array/object, or a mix). The key type still selects the hash variant --
        string keys stay a str-keyed poly hash rather than collapsing to a
        fully-poly-keyed one, so the literal matches a `Hash[String, untyped]`
        (StrPolyHash) parameter without a layout-mismatching pointer cast. */
-    if (vt != TY_UNKNOWN) {
-      if (kt == TY_STRING) return TY_STR_POLY_HASH;
+    if (hv == TY_UNKNOWN && vt != TY_UNKNOWN) hv = kt == TY_STRING ? TY_STR_POLY_HASH : TY_POLY_POLY_HASH;
+    /* A typed hash spread in merges directly only into a literal of its own
+       variant; the hash of any key and value merges every variant at run
+       time. `{**h, "s" => nil}` with `h = {"s" => 2}` came out a String-keyed
+       poly hash, which a String-to-Integer one cannot be merged into, and was
+       refused -- a lambda's keywords, `f.call(**h, "s" => nil)`, too. */
+    if (hv != TY_UNKNOWN && spread_ty != TY_UNKNOWN && (spread_mixed || spread_ty != hv))
       return TY_POLY_POLY_HASH;
-    }
+    if (hv != TY_UNKNOWN) return hv;
     /* keyword arguments are symbol-keyed */
     if (empty_spread && kt == TY_UNKNOWN) return nk == NK_KeywordHashNode ? TY_SYM_POLY_HASH : TY_POLY_POLY_HASH;
     return hv;
