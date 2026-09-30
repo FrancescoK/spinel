@@ -9750,11 +9750,12 @@ else {
     buf_puts(b, ";\n");
     return;
   }
-  if (sp_streq(ty, "ConstantPathOperatorWriteNode")) {
-    int tgt = nt_ref(nt, id, "target");
+  if (sp_streq(ty, "ConstantPathOperatorWriteNode") || sp_streq(ty, "ConstantOperatorWriteNode")) {
+    int path = sp_streq(ty, "ConstantPathOperatorWriteNode");
+    int tgt = path ? nt_ref(nt, id, "target") : id;
     const char *nm = tgt >= 0 ? nt_str(nt, tgt, "name") : NULL;
     LocalVar *cv = nm ? comp_const(c, nm) : NULL;
-    if (!cv) { unsupported(c, id, "constant path operator write"); return; }
+    if (!cv) { if (path) unsupported(c, id, "constant path operator write"); return; }
     const char *op = nt_str(nt, id, "binary_operator");
     int v = nt_ref(nt, id, "value");
     emit_indent(b, indent);
@@ -9787,21 +9788,6 @@ else {
       buf_printf(b, "cst_%s = ", nm); emit_expr(c, v, b); buf_puts(b, ";\n");
     }
     /* ||= on an always-truthy constant: no-op */
-    return;
-  }
-  if (sp_streq(ty, "ConstantOperatorWriteNode")) {
-    const char *nm = nt_str(nt, id, "name");
-    LocalVar *cv = nm ? comp_const(c, nm) : NULL;
-    if (!cv) return;
-    const char *op = nt_str(nt, id, "binary_operator");
-    int v = nt_ref(nt, id, "value");
-    emit_indent(b, indent);
-    if (cv->type == TY_STRING && op && sp_streq(op, "+")) {
-      buf_printf(b, "cst_%s = sp_str_concat(cst_%s, ", nm, nm); emit_expr(c, v, b); buf_puts(b, ");\n");
-    }
-    else {
-      buf_printf(b, "cst_%s %s= ", nm, op ? op : "+"); emit_expr(c, v, b); buf_puts(b, ";\n");
-    }
     return;
   }
   if (sp_streq(ty, "ConstantOrWriteNode") || sp_streq(ty, "ConstantAndWriteNode")) {
