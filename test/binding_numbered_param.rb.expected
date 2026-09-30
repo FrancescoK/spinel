@@ -1,0 +1,7 @@
+["numbered parameter '_1' is not a local variable", :_1]
+["numbered parameter '_2' is not a local variable", :_2]
+["numbered parameter '_1' is not a local variable", :_1]
+["numbered parameter '_1' is not a local variable", :_1]
+value first
+["numbered parameter '_1' is not a local variable", :_1]
+42
