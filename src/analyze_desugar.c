@@ -8165,6 +8165,20 @@ static int alias_class_defines(const NodeTable *nt, const char *cls, const char 
   return 0;
 }
 
+static void alias_pair_names(const NodeTable *nt, int s, const char **nw, const char **od) {
+  if (nt_kind(nt, s) == NK_AliasMethodNode) {
+    int nn = nt_ref(nt, s, "new_name"), on = nt_ref(nt, s, "old_name");
+    *nw = nn >= 0 ? nt_str(nt, nn, "value") : NULL;
+    *od = on >= 0 ? nt_str(nt, on, "value") : NULL;
+  }
+  else if (nt_kind(nt, s) == NK_CallNode && nt_ref(nt, s, "receiver") < 0 &&
+           nt_str(nt, s, "name") && sp_streq(nt_str(nt, s, "name"), "alias_method")) {
+    int an = nt_ref(nt, s, "arguments");
+    int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+    if (ac == 2) { *nw = alias_literal_name(nt, av[0]); *od = alias_literal_name(nt, av[1]); }
+  }
+}
+
 int desugar_inherited_aliases(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
@@ -8178,17 +8192,7 @@ int desugar_inherited_aliases(Compiler *c) {
     for (int k = 0; k < n; k++) {
       int s = st[k];
       const char *nw = NULL, *od = NULL;
-      if (nt_kind(nt, s) == NK_AliasMethodNode) {
-        int nn = nt_ref(nt, s, "new_name"), on = nt_ref(nt, s, "old_name");
-        nw = nn >= 0 ? nt_str(nt, nn, "value") : NULL;
-        od = on >= 0 ? nt_str(nt, on, "value") : NULL;
-      }
-      else if (nt_kind(nt, s) == NK_CallNode && nt_ref(nt, s, "receiver") < 0 &&
-               nt_str(nt, s, "name") && sp_streq(nt_str(nt, s, "name"), "alias_method")) {
-        int an = nt_ref(nt, s, "arguments");
-        int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
-        if (ac == 2) { nw = alias_literal_name(nt, av[0]); od = alias_literal_name(nt, av[1]); }
-      }
+      alias_pair_names(nt, s, &nw, &od);
       if (!nw || !od || alias_class_defines(nt, cls, od, n0)) continue;
       char nwc[256], odc[256];
       snprintf(nwc, sizeof nwc, "%s", nw); snprintf(odc, sizeof odc, "%s", od);
@@ -8259,17 +8263,7 @@ int desugar_reader_aliases_before_redef(Compiler *c) {
     for (int k = 0; k < n; k++) {
       int s = st[k];
       const char *nw = NULL, *od = NULL;
-      if (nt_kind(nt, s) == NK_AliasMethodNode) {
-        int nn = nt_ref(nt, s, "new_name"), on = nt_ref(nt, s, "old_name");
-        nw = nn >= 0 ? nt_str(nt, nn, "value") : NULL;
-        od = on >= 0 ? nt_str(nt, on, "value") : NULL;
-      }
-      else if (nt_kind(nt, s) == NK_CallNode && nt_ref(nt, s, "receiver") < 0 &&
-               nt_str(nt, s, "name") && sp_streq(nt_str(nt, s, "name"), "alias_method")) {
-        int an = nt_ref(nt, s, "arguments");
-        int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
-        if (ac == 2) { nw = alias_literal_name(nt, av[0]); od = alias_literal_name(nt, av[1]); }
-      }
+      alias_pair_names(nt, s, &nw, &od);
       if (!nw || !od || !ra_body_declares_reader(nt, st, k, od)) continue;
       int later = 0;
       for (int j = k + 1; j < n && !later; j++)
