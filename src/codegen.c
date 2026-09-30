@@ -9244,12 +9244,40 @@ static void zsuper_kw_begin(Compiler *c, Scope *s, Scope *pm, ZSuper *z) {
   buf_printf(g_pre, "_kw%d, _kr%d, _kl%d, NULL, %d); }\n", chk, chk, chk, pm->kwrest_idx < 0);
 }
 
-/* Lay out a bare super from s into pm: gather, or the static layout and its
-   count check, the keywords' check, and the parent's **kwrest. */
+/* A parent saying `**nil` refuses the keywords a bare super passes it, ahead
+   of its count, as it refuses a call's (emit_call_arity_check): this
+   method's named keywords always, and its `**` when the run time finds a key
+   in it; an empty `**` passes nothing to refuse. The parent takes neither as
+   a positional Hash (zsuper_kw_positional) nor binds them anywhere, so
+   `def m(a, **o) = super` into `def m(a, **nil)` returned for `m(1, z: 5)`
+   where CRuby raises "no keywords accepted". */
+static void zsuper_refuse_keywords(Compiler *c, Scope *s, Scope *pm) {
+  if (!scope_refuses_keywords(c, pm)) return;
+  for (int i = 0; i < s->nparams; i++) {
+    if (i == s->kwrest_idx || !s->pnames[i] || !callee_param_is_declared_kwarg(c, s, s->pnames[i])) continue;
+    emit_indent(g_pre, g_indent);
+    buf_puts(g_pre, "sp_raise_cls(\"ArgumentError\", \"no keywords accepted\");\n");
+    return;
+  }
+  if (s->kwrest_idx < 0 || !s->pnames[s->kwrest_idx]) return;
+  LocalVar *kv = scope_local(s, s->pnames[s->kwrest_idx]);
+  Buf txt; memset(&txt, 0, sizeof txt); emit_scope_local_ref(c, s, s->pnames[s->kwrest_idx], &txt);
+  emit_indent(g_pre, g_indent);
+  buf_puts(g_pre, "if (sp_poly_length(");
+  if (kv && kv->type == TY_POLY) buf_puts(g_pre, txt.p);
+  else emit_boxed_text(c, kv ? kv->type : TY_SYM_POLY_HASH, txt.p, g_pre);
+  buf_puts(g_pre, ") > 0) sp_raise_cls(\"ArgumentError\", \"no keywords accepted\");\n");
+  free(txt.p);
+}
+
+/* Lay out a bare super from s into pm: the keywords a `**nil` parent
+   refuses, then gather, or the static layout and its count check, the
+   keywords' check, and the parent's **kwrest. */
 static void zsuper_begin(Compiler *c, Scope *s, Scope *pm, ZSuper *z) {
   memset(z, 0, sizeof *z);
   z->kwrest = -1;
   z->kwsrc = -1;
+  zsuper_refuse_keywords(c, s, pm);
   z->gather = emit_zsuper_gather(c, s, pm);
   if (z->gather < 0) {
     int npos = zsuper_npos(c, s);
