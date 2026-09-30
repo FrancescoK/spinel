@@ -2281,7 +2281,7 @@ else if (strncmp(line, SP_POP_PREFIX, strlen(SP_POP_PREFIX)) == 0) {
       for (int j = sp > 0 ? stk_start[sp] : bl; j < bl; j++) if (!sp_line_pop[j]) sp_line_pop[j] = bl;
       if (sp > 0) sp--;
     }
-else {
+else if (len < 12 || strncmp(line + len - 12, "SPINEL_COND>", 12) != 0) {
       sp_line_file[bl] = stk_file[sp];
       sp_line_orig[bl] = stk_next[sp];
       stk_next[sp] += 1;
