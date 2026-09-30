@@ -879,7 +879,9 @@ int comp_is_wellknown_const(const char *cn) {
     "String", "Integer", "Float", "Symbol", "Regexp", "Range", "NilClass",
     "TrueClass", "FalseClass", "Numeric", "Comparable", "Enumerable",
     "IO", "File", "Dir", "Math", "GC", "Process", "ENV", "ARGV",
-    "STDOUT", "STDERR", "STDIN", NULL };
+    "STDOUT", "STDERR", "STDIN", "RUBY_VERSION", "RUBY_ENGINE", "RUBY_ENGINE_VERSION",
+    "RUBY_PLATFORM", "RUBY_RELEASE_DATE", "RUBY_REVISION", "RUBY_COPYRIGHT", "RUBY_DESCRIPTION",
+    "RUBY_PATCHLEVEL", NULL };
   for (int bi = 0; wellknown[bi]; bi++) if (sp_streq(cn, wellknown[bi])) return 1;
   return 0;
 }

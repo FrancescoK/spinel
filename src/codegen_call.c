@@ -32616,7 +32616,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           buf_printf(b, ")), 0)");
           return;
         }
-        int yes = (comp_const(c, cn0) != NULL) || comp_class_index(c, cn0) >= 0;
+        int yes = (comp_const(c, cn0) != NULL) || comp_class_index(c, cn0) >= 0 || comp_is_wellknown_const(cn0);
         buf_printf(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", yes);
         return;
       }
@@ -38047,7 +38047,7 @@ else {
         buf_printf(b, ")), 0)");
         return;
       }
-      int yes = comp_const(c, qm) != NULL || comp_class_index(c, qm) >= 0;
+      int yes = comp_const(c, qm) != NULL || comp_class_index(c, qm) >= 0 || comp_is_wellknown_const(qm);
       /* const_defined?(name, false) restricts the search to the receiver's own
          constants, so an inherited one does not count (#3762) */
       if (yes && argc >= 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "FalseNode")) {

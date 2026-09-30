@@ -5,7 +5,7 @@
 # parser splices this file when the program names `Gem` and defines no Gem
 # of its own.
 module Gem
-  VERSION = "3.6.2"
+  VERSION = "4.0.20"
   class LoadError < ::LoadError; end
   class MissingSpecError < LoadError; end
 
