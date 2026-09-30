@@ -1718,6 +1718,11 @@ static TyKind kconv_integer_kind(Compiler *c, int arg, int noraise) {
   return TY_INT;
 }
 
+static int an_reopen_method(Compiler *c, const char *cls, const char *name) {
+  int oc_ci = comp_class_index(c, cls);
+  return oc_ci >= 0 ? comp_method_in_chain(c, oc_ci, name, NULL) : -1;
+}
+
 int class_has_subclass(Compiler *c, int ocid);
 
 static int sg_accessor_type(Compiler *c, int ci, const char *name, TyKind *out) {
@@ -4539,11 +4544,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     else if (rt == TY_IO)      oc_cn = "File";
     else if (rt == TY_CLASS)   oc_cn = "Class";
     if (oc_cn) {
-      int oc_ci = comp_class_index(c, oc_cn);
-      if (oc_ci >= 0) {
-        int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
-        if (oc_mi >= 0) return method_call_ret(c, oc_mi, id);
-      }
+      int oc_mi = an_reopen_method(c, oc_cn, name);
+      if (oc_mi >= 0) return method_call_ret(c, oc_mi, id);
     }
   }
 
@@ -7199,54 +7201,36 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0) {
     /* Array reopening: any array-typed receiver */
     if (ty_is_array(rt)) {
-      int oc_ci = comp_class_index(c, "Array");
-      if (oc_ci >= 0) {
-        int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
-        if (oc_mi >= 0) return c->scopes[oc_mi].ret;
-      }
+      int oc_mi = an_reopen_method(c, "Array", name);
+      if (oc_mi >= 0) return c->scopes[oc_mi].ret;
     }
     /* Hash reopening: any hash-typed receiver */
     if (ty_is_hash(rt)) {
-      int oc_ci = comp_class_index(c, "Hash");
-      if (oc_ci >= 0) {
-        int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
-        if (oc_mi >= 0) return c->scopes[oc_mi].ret;
-      }
+      int oc_mi = an_reopen_method(c, "Hash", name);
+      if (oc_mi >= 0) return c->scopes[oc_mi].ret;
     }
     /* Numeric reopening: integers and floats */
     if (rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) {
-      int oc_ci = comp_class_index(c, "Numeric");
-      if (oc_ci >= 0) {
-        int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
-        if (oc_mi >= 0) return c->scopes[oc_mi].ret;
-      }
+      int oc_mi = an_reopen_method(c, "Numeric", name);
+      if (oc_mi >= 0) return c->scopes[oc_mi].ret;
     }
     /* FalseClass methods (TrueClass already checked earlier for TY_BOOL) */
     if (rt == TY_BOOL) {
-      int oc_ci = comp_class_index(c, "FalseClass");
-      if (oc_ci >= 0) {
-        int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
-        if (oc_mi >= 0) return c->scopes[oc_mi].ret;
-      }
+      int oc_mi = an_reopen_method(c, "FalseClass", name);
+      if (oc_mi >= 0) return c->scopes[oc_mi].ret;
     }
     /* NilClass methods on a receiver known to be nil */
     if (rt == TY_NIL) {
-      int oc_ci = comp_class_index(c, "NilClass");
-      if (oc_ci >= 0) {
-        int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
-        if (oc_mi >= 0) return c->scopes[oc_mi].ret;
-      }
+      int oc_mi = an_reopen_method(c, "NilClass", name);
+      if (oc_mi >= 0) return c->scopes[oc_mi].ret;
     }
     /* Object reopening: universal fallback for any receiver type */
     {
-      int oc_ci = comp_class_index(c, "Object");
-      if (oc_ci >= 0) {
-        int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
-        /* a yielding one given a block answers what its proc form does,
-           a boxed value (#5779) */
-        if (oc_mi >= 0 && c->scopes[oc_mi].yields && nt_ref(c->nt, id, "block") >= 0) return TY_POLY;
-        if (oc_mi >= 0) return c->scopes[oc_mi].ret;
-      }
+      int oc_mi = an_reopen_method(c, "Object", name);
+      /* a yielding one given a block answers what its proc form does,
+         a boxed value (#5779) */
+      if (oc_mi >= 0 && c->scopes[oc_mi].yields && nt_ref(c->nt, id, "block") >= 0) return TY_POLY;
+      if (oc_mi >= 0) return c->scopes[oc_mi].ret;
     }
     /* A poly receiver may hold a Class at runtime, where `name` is a class
        method (`def self.name`) -- codegen dispatches it on the class tag (#3215).
