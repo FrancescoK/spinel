@@ -73,7 +73,7 @@ jobs:
       # earlier one for the same lane and slice, from this branch or from
       # master. Old entries fall to the repository's cache eviction.
       - name: Restore the sccache store
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .sccache
           key: sccache-${{ matrix.os }}-${{ matrix.cc }}-${{ matrix.shard }}-${{ github.run_id }}
@@ -220,7 +220,7 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Restore the sccache store
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .sccache
           key: sccache-ubuntu-latest-gcc-m32-${{ github.run_id }}
@@ -294,7 +294,7 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Restore the sccache store
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .sccache
           key: sccache-wasm-${{ github.run_id }}
@@ -310,7 +310,7 @@ jobs:
 
       - name: Restore the wasi-sdk
         id: wasi-sdk-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .wasi-sdk
           key: wasi-sdk-${{ env.WASI_SDK_VERSION }}-x86_64-linux
