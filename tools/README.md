@@ -121,9 +121,10 @@ to ask one level's combinations without a whole run. Ruby that does not parse is
 raises is part of the expected answer.
 
 A difference is a finding. A program that spinel refuses, whose C does not
-build, or that crashes is split until one case carries it -- first by the
-cases its diagnostics' lines (through spinel's `#line` map) or its output on
-a terminal name, else in halves -- and a difference is confirmed on its case
+build, that crashes or that runs out of time is split until one case carries
+it -- first by the cases its diagnostics' lines (through spinel's `#line`
+map) name, or, for a crash or a timeout, the case its output on a terminal
+stopped in, else in halves -- and a difference is confirmed on its case
 alone. Each finding is reduced -- one factor at a time toward its simplest
 level, while the case still makes the same kind of difference (a case that
 does not build is asked of a build that stops at the C compiler's checks) --
