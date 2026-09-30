@@ -379,13 +379,18 @@ static void sp_thread_stack_bounds(char *here) {
 }
 
 static SP_TLS int sp_fiber_fault_armed = 0;
+/* this thread's sigaltstack buffer; external, so the store is not optimized away */
+SP_TLS void *sp_fiber_altstack;
 static void sp_fiber_fault_arm(void) {
   if (sp_fiber_fault_armed) return;
   sp_fiber_fault_armed = 1;
   { char here; sp_thread_stack_bounds(&here); }
-  /* the alternate stack is per OS thread; workers live as long as the process */
+  /* the alternate stack is per OS thread; workers live as long as the process.
+     Its only other reference is the kernel's, so it is kept here too: a leak
+     checker (valgrind) reported the buffer as definitely lost. */
   size_t asz = 64 * 1024;
   void *as = malloc(asz);
+  sp_fiber_altstack = as;
   if (as) { stack_t ss; ss.ss_sp = as; ss.ss_size = asz; ss.ss_flags = 0; sigaltstack(&ss, NULL); }
   static int installed = 0;   /* process-wide: read racily, a second install is harmless */
   if (installed) return;
