@@ -268,7 +268,7 @@ build/rbs/%.o: $(RBS_DIR)/src/%.c
 # (SPINEL itself is defined above, just before the `all` target.)
 
 SPINEL_HDRS = src/node_table.h src/codegen.h src/codegen_internal.h src/types.h src/compiler.h src/analyze.h src/analyze_internal.h src/ffi_spec.h src/csplit.h
-build/csrc/analyze_desugar.o build/csrc-work/analyze_desugar.o: $(wildcard src/*_method_names.inc)
+build/csrc/analyze_desugar.o build/csrc-work/analyze_desugar.o build/csrc/codegen_call.o build/csrc-work/codegen_call.o: $(wildcard src/*_method_names.inc)
 SPINEL_OBJ  = build/csrc/node_table.o build/csrc/types.o build/csrc/compiler.o \
                build/csrc/ffi_spec.o \
                build/csrc/analyze.o build/csrc/analyze_util.o build/csrc/analyze_infer.o build/csrc/analyze_infer_recv.o \
