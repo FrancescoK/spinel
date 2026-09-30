@@ -29394,6 +29394,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           emit_boxed(c, argv[k], &abs[k]);
         }
         else if (akt == TY_STRING) emit_expr(c, argv[k], &abs[k]);
+        /* a boxed operand is written by its runtime tag: a String keeps its
+           byte count, as the write arm does */
+        else if (akt == TY_POLY) { aarr[k] = 1; emit_boxed(c, argv[k], &abs[k]); }
         else { buf_puts(&abs[k], "sp_poly_to_s("); emit_boxed(c, argv[k], &abs[k]); buf_puts(&abs[k], ")"); }
       }
       /* puts uses sp_File_puts, which appends a newline per argument (and only
@@ -29425,7 +29428,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
             }
           }
           else buf_printf(g_pre, "%s(%s, %s); ",
-                          abin[k] ? "sp_File_write_bin" : "sp_File_write", r, at);
+                          aarr[k] ? "sp_File_write_poly" : abin[k] ? "sp_File_write_bin" : "sp_File_write", r, at);
           free(abs[k].p);
         }
         if (is_puts && argc == 0) buf_printf(g_pre, "sp_File_write(%s, \"\\n\"); ", r);
@@ -29788,6 +29791,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           int arr2 = 0;
           if (is_puts2 && (ty_is_array(akt2) || akt2 == TY_POLY)) { arr2 = 1; emit_boxed(c, argv[k2], &ab2); }
           else if (akt2 == TY_STRING) emit_expr(c, argv[k2], &ab2);
+          else if (akt2 == TY_POLY) { arr2 = 1; emit_boxed(c, argv[k2], &ab2); }
           else { buf_puts(&ab2, "sp_poly_to_s("); emit_boxed(c, argv[k2], &ab2); buf_puts(&ab2, ")"); }
           const char *at2 = ab2.p ? ab2.p : "\"\"";
           /* the same String/non-String split the typed arm makes (#4629) */
@@ -29802,7 +29806,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
             }
           }
           else buf_printf(b, "%s(_t%d, %s); ",
-                          bin2 ? "sp_File_write_bin" : "sp_File_write", tio2, at2);
+                          arr2 ? "sp_File_write_poly" : bin2 ? "sp_File_write_bin" : "sp_File_write", tio2, at2);
           free(ab2.p);
         }
         if (is_puts2 && argc == 0) buf_printf(b, "sp_File_write(_t%d, \"\\n\"); ", tio2);

@@ -12496,6 +12496,8 @@ static void sp_File_puts_val(sp_File *f, sp_RbVal v) {
     for (sp_int i = 0; i < n; i++) sp_File_puts_val(f, sp_poly_arr_get(v, i));
     return;
   }
+  /* a String keeps its byte length: an embedded NUL is a byte of the line */
+  if (v.tag == SP_TAG_STR && v.v.s) { sp_File_puts_bin(f, v.v.s); return; }
   {
     const char *sv = (v.tag == SP_TAG_NIL) ? "" : sp_poly_to_s(v);
     sp_File_puts(f, sv ? sv : "");
