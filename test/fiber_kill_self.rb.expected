@@ -1,0 +1,16 @@
+f ensure
+nil
+false
+1
+nil
+false
+t ensure
+nil
+nil
+false
+:outer_done
+true
+main goes on
+main ensure
+thread goes on
+:value
