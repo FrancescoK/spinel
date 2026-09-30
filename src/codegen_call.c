@@ -10781,6 +10781,7 @@ int emit_native_ctor(Compiler *c, int id, int ci, int argc, const int *argv, Buf
   for (int a = 0; a < nta; a++) natys[a] = comp_ntype(c, argv[a]);
   int nn = comp_native_method_find_typed(c, ci, "new", argc, 1, nta == argc ? natys : NULL);
   if (nn < 0) return 0;
+  if (emit_native_splat_call(c, id, ci, "new", -1, argc, argv, b)) return 1;
   if (emit_native_count_mismatch(c, id, ci, "new", 1, -1, argc, argv, b)) return 1;
   NativeMethod *m = &c->native_methods[nn];
   native_arg_check(c, id, "native constructor", m, argc, argv);
@@ -19406,6 +19407,165 @@ static void emit_wrong_count(Compiler *c, int id, const char *exp, int eval_recv
   buf_printf(b, "sp_raise_cls(\"ArgumentError\","
                 " \"wrong number of arguments (given %d, expected %s)\"); %s; })",
              given, exp, dv ? dv : "0");
+}
+
+/* One binding's call over the gathered arguments `_t<ta>`: each fixed slot
+   takes its element converted to the slot's representation, a :rest tail
+   the elements past them. The receiver is `_t<tv>` (kind 0) or the class id
+   (a constructor). Answers 0 for a slot a boxed element cannot fill. */
+static int splat_binding_call(Compiler *c, NativeMethod *m, int cid, int kind, int tv, int ta,
+                              Buf *cb) {
+  memset(cb, 0, sizeof *cb);
+  if (kind) buf_printf(cb, "%s(%d", m->csym, cid);
+  else buf_printf(cb, "%s((%s *)_t%d.v.p", m->csym, c->classes[cid].c_struct, tv);
+  for (int a = 0; a < m->nargs; a++) {
+    const char *spec = m->args[a];
+    char el[48]; snprintf(el, sizeof el, "_t%d->data[%d]", ta, a);
+    buf_puts(cb, ", ");
+    if (!spec || sp_streq(spec, "any")) { buf_puts(cb, el); continue; }
+    if (sp_streq(spec, "text")) { buf_printf(cb, "sp_poly_to_s(%s)", el); continue; }
+    TyKind aw = ffi_spec_to_ty(spec);
+    if (sp_streq(spec, "regexp") || (aw != TY_STRING && aw != TY_INT && aw != TY_FLOAT && aw != TY_BOOL)) {
+      free(cb->p); memset(cb, 0, sizeof *cb); return 0;
+    }
+    emit_unbox_text(c, aw, el, cb);
+  }
+  if (m->rest) buf_printf(cb, ", _t%d->len - %d, _t%d->data + %d", ta, m->nargs, ta, m->nargs);
+  buf_puts(cb, ")");
+  if (sp_streq(m->ret, "string?")) {
+    Buf wb; memset(&wb, 0, sizeof wb);
+    buf_printf(&wb, "sp_box_nullable_str(%s)", cb->p);
+    free(cb->p); *cb = wb;
+  }
+  return 1;
+}
+
+static int native_all_any(const NativeMethod *m) {
+  for (int a = 0; a < m->nargs; a++) if (!m->args[a] || !sp_streq(m->args[a], "any")) return 0;
+  return 1;
+}
+
+/* A native method or constructor call with a splat argument (`s.print(*arr)`,
+   `StringIO.new(*args)`): its count is known only at run time, so the
+   arguments are gathered into one array and the binding is chosen by its
+   length -- each fixed count an arm, a :rest binding the default, and any
+   other count CRuby's ArgumentError in the declared range. A shape it cannot
+   bind -- a keyword or block argument beside the splat, a splat operand with
+   no array form, two bindings of one count told apart only by static types
+   (putc(65) vs putc("A")), a slot a boxed element cannot fill -- is refused:
+   the fixed-count binding would take the array itself. recv < 0 for a
+   constructor. Answers 0 for a call without a splat. */
+int emit_native_splat_call(Compiler *c, int id, int cid, const char *name, int recv,
+                           int argc, const int *argv, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int kind = recv < 0;
+  int has_splat = 0;
+  for (int a = 0; a < argc; a++) if (nt_kind(nt, argv[a]) == NK_SplatNode) has_splat = 1;
+  if (!has_splat) return 0;
+  char why[160];
+  snprintf(why, sizeof why, "%s%s%s with a splat argument (no binding takes the gathered arguments)",
+           c->classes[cid].name, kind ? "." : "#", name);
+  for (int a = 0; a < argc; a++) {
+    NodeKind k = nt_kind(nt, argv[a]);
+    const char *ty = nt_type(nt, argv[a]);
+    if (k == NK_KeywordHashNode || k == NK_BlockArgumentNode ||
+        (ty && sp_streq(ty, "ForwardingArgumentsNode")))
+      unsupported(c, id, why);
+    if (k == NK_SplatNode) {
+      int so = nt_ref(nt, argv[a], "expression");
+      if (!splat_operand_ok(c, so >= 0 ? so : argv[a])) unsupported(c, id, why);
+    }
+  }
+  /* per fixed count, the binding its arm calls: the one of that count, or,
+     among several, the one taking anything (puts's [:any] beside its
+     [:string]); several without one is a static-type choice */
+  NativeMethod *rest = NULL, *arm[16];
+  int counts[16], many[16], nc = 0, mn = -1, mx = -1;
+  for (int i = 0; i < c->n_native_methods; i++) {
+    NativeMethod *m = &c->native_methods[i];
+    if (m->class_id != cid || m->kind != kind || !sp_streq(m->name, name)) continue;
+    if (mn < 0 || m->nargs < mn) mn = m->nargs;
+    if (m->nargs > mx) mx = m->nargs;
+    if (m->rest) { if (!rest) rest = m; continue; }
+    int j = 0;
+    while (j < nc && counts[j] != m->nargs) j++;
+    if (j == nc) {
+      if (nc == 16) unsupported(c, id, why);
+      counts[nc] = m->nargs; arm[nc] = m; many[nc] = 0; nc++;
+    }
+    else {
+      many[j] = 1;
+      if (native_all_any(m) && !native_all_any(arm[j])) arm[j] = m;
+    }
+  }
+  if (mn < 0) unsupported(c, id, why);
+  for (int j = 0; j < nc; j++)
+    if (many[j] && !native_all_any(arm[j])) unsupported(c, id, why);
+  TyKind ret = comp_ntype(c, id);
+  int voidret = ret == TY_NIL || ret == TY_VOID || ret == TY_UNKNOWN;
+  int tv = ++g_tmp, ta = ++g_tmp, tr = ++g_tmp;
+  Buf sw; memset(&sw, 0, sizeof sw);
+  buf_printf(&sw, " switch (_t%d->len) {", ta);
+  for (int j = 0; j <= nc; j++) {
+    NativeMethod *m = j < nc ? arm[j] : rest;
+    if (j < nc) buf_printf(&sw, " case %d: {", counts[j]);
+    else buf_puts(&sw, " default: {");
+    if (!m) {
+      char given[32]; snprintf(given, sizeof given, "_t%d->len", ta);
+      buf_puts(&sw, " ");
+      emit_arity_raise(&sw, given, mn, mx, NULL);
+      buf_puts(&sw, "; break; }");
+      continue;
+    }
+    TyKind mret = kind || sp_streq(m->ret, "self") ? ty_object(cid) : native_spec_to_ty(m->ret);
+    if (!voidret && mret != TY_NIL && mret != ret && mret != TY_POLY && ret != TY_POLY)
+      unsupported(c, id, why);
+    Buf cb;
+    if (!splat_binding_call(c, m, cid, kind, tv, ta, &cb)) unsupported(c, id, why);
+    if (m->rest && m->nargs > 0) {
+      char given[32]; snprintf(given, sizeof given, "_t%d->len", ta);
+      buf_printf(&sw, " if (_t%d->len < %d) ", ta, m->nargs);
+      emit_arity_raise(&sw, given, mn, -1, NULL);
+      buf_puts(&sw, ";");
+    }
+    buf_puts(&sw, " ");
+    emit_poly_native_arm_stmt(c, cb.p, voidret ? TY_NIL : mret, ret, tr, 0, &sw);
+    buf_puts(&sw, " break; }");
+    free(cb.p);
+  }
+  buf_puts(&sw, " }");
+  buf_puts(b, "({");
+  if (!kind) {
+    buf_printf(b, " sp_RbVal _t%d = ", tv);
+    emit_boxed(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tv);
+  }
+  buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
+  for (int a = 0; a < argc; a++) {
+    if (nt_kind(nt, argv[a]) == NK_SplatNode) {
+      int so = nt_ref(nt, argv[a], "expression"), ts = ++g_tmp;
+      buf_printf(b, " { sp_PolyArray *_t%d = ", ts);
+      emit_splat_operand_array(c, so >= 0 ? so : argv[a], b);
+      buf_printf(b, "; for (sp_int _i = 0; _i < _t%d->len; _i++) sp_PolyArray_push(_t%d, _t%d->data[_i]); }",
+                 ts, ta, ts);
+    }
+    else {
+      buf_printf(b, " sp_PolyArray_push(_t%d, ", ta);
+      emit_boxed(c, argv[a], b);
+      buf_puts(b, ");");
+    }
+  }
+  if (!voidret) {
+    buf_puts(b, " ");
+    emit_ctype(c, ret, b);
+    const char *dv = default_value(ret);
+    buf_printf(b, " _t%d = %s;", tr, dv ? dv : "0");
+  }
+  buf_puts(b, sw.p);
+  if (!voidret) buf_printf(b, " _t%d; })", tr);
+  else buf_puts(b, " (void)0; })");
+  free(sw.p);
+  return 1;
 }
 
 /* A call on a native class (kind 0: instance method, 1: constructor) whose

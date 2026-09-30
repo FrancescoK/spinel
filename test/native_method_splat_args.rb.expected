@@ -1,0 +1,10 @@
+[:write, 3]
+"pqp\nq\n\napqz1\n2\n3\n4\n5\npq7"
+[:seek, 0]
+[:read, "llo"]
+[:seek3, ArgumentError, "wrong number of arguments (given 3, expected 1..2)"]
+[:gets, "\nwo"]
+[:gets0, "rld\n"]
+[:getc1, ArgumentError, "wrong number of arguments (given 1, expected 0)"]
+"abc"
+[:new3, ArgumentError, "wrong number of arguments (given 3, expected 0..2)"]
