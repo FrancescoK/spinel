@@ -46,10 +46,10 @@ static const PolyFace ty_poly_face_tbl[] = {
   {"slice_when", PF_ENUM, 0, -1, 1},
   /* Names served by unboxing to an Array, on an Array at run time; a mutator
      writes its result back into a typed original. */
-  {"sort!", PF_ARRAY | PF_MUT, 0, 0, -1}, {"sort_by!", PF_ARRAY | PF_MUT, 0, 0, 1},
-  {"rotate!", PF_ARRAY | PF_MUT, 0, 1, 0}, {"uniq!", PF_ARRAY | PF_MUT, 0, 0, -1},
-  {"shuffle!", PF_ARRAY | PF_MUT, 0, 0, 0},
-  {"flatten!", PF_ARRAY | PF_MUT, 0, 1, 0}, {"fill", PF_ARRAY | PF_MUT, 1, 3, 0},
+  {"sort!", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 0, -1}, {"sort_by!", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 0, 1},
+  {"rotate!", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 1, 0}, {"uniq!", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 0, -1},
+  {"shuffle!", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 0, 0},
+  {"flatten!", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 1, 0}, {"fill", PF_ARRAY | PF_MUT | PF_VAL_SELF, 1, 3, 0},
   {"to_ary", PF_ARRAY, 0, 0, 0}, {"transpose", PF_ARRAY, 0, 0, 0},
   /* and the Enumerable names that had no arm at all */
   {"grep", PF_ENUM, 1, 1, -1}, {"minmax_by", PF_ENUM, 0, 0, 1},
@@ -60,9 +60,9 @@ static const PolyFace ty_poly_face_tbl[] = {
      the arm. concat's arguments are of the receiver's own kind in CRuby
      (a String concatenates Strings, an Array Arrays), so an argument the
      inference has typed as the other kind rules that arm out. */
-  {"concat", PF_STRING | PF_MUT | PF_ARGS_OWN | PF_VAL_SELF, 0, -1, 0}, {"concat", PF_ARRAY | PF_MUT | PF_ARGS_OWN, 0, -1, 0},
-  {"prepend", PF_STRING | PF_MUT | PF_ARGS_OWN | PF_VAL_SELF, 0, -1, 0}, {"prepend", PF_ARRAY | PF_MUT, 0, -1, 0},
-  {"reverse!", PF_STRING | PF_MUT | PF_VAL_SELF, 0, 0, 0}, {"reverse!", PF_ARRAY | PF_MUT, 0, 0, 0},
+  {"concat", PF_STRING | PF_MUT | PF_ARGS_OWN | PF_VAL_SELF, 0, -1, 0}, {"concat", PF_ARRAY | PF_MUT | PF_VAL_SELF | PF_ARGS_OWN, 0, -1, 0},
+  {"prepend", PF_STRING | PF_MUT | PF_ARGS_OWN | PF_VAL_SELF, 0, -1, 0}, {"prepend", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, -1, 0},
+  {"reverse!", PF_STRING | PF_MUT | PF_VAL_SELF, 0, 0, 0}, {"reverse!", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 0, 0},
   {"slice!", PF_STRING | PF_MUT, 1, 2, 0}, {"slice!", PF_ARRAY | PF_MUT, 1, 2, 0},
   /* The Hash mutators, on a Hash at run time; a typed variant takes the
      result back from the general copy it was normalized to, and the value is
@@ -73,12 +73,12 @@ static const PolyFace ty_poly_face_tbl[] = {
      assoc, rassoc and fetch_values keep their last-resort Hash rows below, so
      a splat or a block still reaches the read-only face; compact! never had
      one. */
-  {"select!", PF_ARRAY | PF_MUT, 0, 0, 1}, {"select!", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, 1},
-  {"filter!", PF_ARRAY | PF_MUT, 0, 0, 1}, {"filter!", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, 1},
-  {"reject!", PF_ARRAY | PF_MUT, 0, 0, 1}, {"reject!", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, 1},
-  {"keep_if", PF_ARRAY | PF_MUT, 0, 0, 1}, {"keep_if", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, 1},
-  {"delete_if", PF_ARRAY | PF_MUT, 0, 0, 1}, {"delete_if", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, 1},
-  {"compact!", PF_ARRAY | PF_MUT, 0, 0, 0}, {"compact!", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, 0},
+  {"select!", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 0, 1}, {"select!", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, 1},
+  {"filter!", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 0, 1}, {"filter!", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, 1},
+  {"reject!", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 0, 1}, {"reject!", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, 1},
+  {"keep_if", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 0, 1}, {"keep_if", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, 1},
+  {"delete_if", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 0, 1}, {"delete_if", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, 1},
+  {"compact!", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 0, 0}, {"compact!", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, 0},
   /* The Hash mutators that were not rows and raised NoMethodError through
      a box. The setters answer their argument the way the typed emitter
      renders them, `default_proc=` the receiver. `shift` and `replace` are
