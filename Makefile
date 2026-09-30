@@ -1530,6 +1530,7 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/ivar_recv_before_call_arg.rb \
                   test/reader_operands_pure_read.rb \
                   test/ivar_recv_string_handle.rb \
+                  test/string_handle_forward.rb \
                   test/shared_handle_arg_keeps_object.rb \
                   test/index_opassign_fused.rb \
                   test/loop_array_header_cache.rb \

@@ -705,6 +705,13 @@ Not yet shared:
   or by a global or class variable, and through a proc, a `Method` or a
   class value's `new`, one held by an instance variable.
 
+A String is shared as well through a rest a method forwards (`def w(*a) =
+m(*a)`, `def w(*) = m(*)`, `def w(...) = m(...)`, `def m(*) = super`) and
+through a parameter a method hands on to `super` or a call after a `**h`
+call typed it POLY; through those, one held by a block parameter, a
+variable a proc captures, an instance variable that is no shared String,
+or a global or class variable is refused.
+
 Each is lifted in turn, and this list shrinks with it. Until then, return
 the String from the method and assign it, or append to it in the caller. A
 literal or any other expression passed there is not refused: nothing else
