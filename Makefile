@@ -2369,6 +2369,14 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -q 'lv_a = SP_INT_NIL;' "$$tmp/yni.c" && grep -q 'lv_f = SP_INT_NIL;' "$$tmp/yni.c" || { echo "infer-test: FAIL (a nil yielded into an Integer block parameter is not its sentinel)"; ok=0; }; \
 	grep -q 'lv_d = (1 < .*sp_poly_as_int_or_nil(' "$$tmp/yni.c" || { echo "infer-test: FAIL (a nil element of yield(*[i, nil]) is not unboxed to the sentinel)"; ok=0; }; \
 	grep -q 'sp_int lv_g = (argc > 0) ? (_sp_proc_poly_args\[0\].tag == SP_TAG_NIL ? SP_INT_NIL : args\[0\])' "$$tmp/yni.c" || { echo "infer-test: FAIL (a proc prologue reads a nil argument as 0)"; ok=0; }; \
+	$(SPINEL) test/infer/yield_nil_float_params.rb -c --no-line-map -o "$$tmp/ynf.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile yield_nil_float_params)"; exit 1; }; \
+	for m in 'sp_float lv_a = ' 'sp_float lv_b = ' 'sp_float lv_c = ' 'sp_float lv_g = ' 'sp_float lv_k = ' 'sp_float lv_m = '; do \
+	  grep -q "$$m" "$$tmp/ynf.c" || { echo "infer-test: FAIL (a Float block parameter bound nothing or nil is boxed: $$m)"; ok=0; }; \
+	done; \
+	grep -q 'sp_box_float_or_nil(lv_f)' "$$tmp/ynf.c" || { echo "infer-test: FAIL (a Float block parameter yield(*xs) may leave without a value is not marked nullable)"; ok=0; }; \
+	grep -q 'lv_c = sp_float_nil();' "$$tmp/ynf.c" && grep -q 'lv_k = sp_float_nil();' "$$tmp/ynf.c" || { echo "infer-test: FAIL (a nil yielded into a Float block parameter is not its sentinel)"; ok=0; }; \
+	grep -q 'lv_g = (1 < .*sp_poly_as_float_or_nil(' "$$tmp/ynf.c" || { echo "infer-test: FAIL (a nil element of yield(*[x, nil]) is not unboxed to the Float sentinel)"; ok=0; }; \
+	grep -q 'sp_float lv_m = (argc > 0) ? sp_poly_to_f_or_nil(_sp_proc_poly_args\[0\])' "$$tmp/ynf.c" || { echo "infer-test: FAIL (a proc prologue reads a nil Float argument as 0.0)"; ok=0; }; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "infer-test: pass"; else exit 1; fi
 

@@ -9855,13 +9855,14 @@ int desugar_for_nonlocal_index(Compiler *c) {
    arg overrides a param still at its bare-int default (the fallback guess,
    no real evidence), otherwise joins it (bs_join). A param the call may
    leave without a value reads the slot's own nil, so it takes a type that
-   has one. A literal nil passed at one call and an Integer at another keep
-   the Integer, since the prologue reads a nil off the boxed side channel's
-   tag as the sentinel (a Float, and anything under promote, takes the
-   box), and nil_passed then keeps the nil from overriding it as it does
-   the bare-int guess. Either Integer is marked nullable here, where the
-   marking pass sees it and marks a local copied from it too, and not only
-   by the prologue that binds it. Returns 1 if any param type changed.
+   has one. A literal nil passed at one call and an Integer or a Float at
+   another keep the Integer or the Float, since the prologue reads a nil
+   off the boxed side channel's tag as the slot's sentinel (anything under
+   promote takes the box), and nil_passed then keeps the nil from
+   overriding an Integer as it does the bare-int guess. Either is marked
+   nullable here, where the marking pass sees it and marks a local copied
+   from it too, and not only by the prologue that binds it. Returns 1 if
+   any param type changed.
    Shared by the local-proc and inline-lambda call sites. */
 static int cs_type_params(Compiler *c, int create, const int *argv, int argc) {
   NodeTable *nt = (NodeTable *)c->nt;
@@ -9891,11 +9892,16 @@ static int cs_type_params(Compiler *c, int create, const int *argv, int argc) {
     int lit = !g_promote_mode && (absent[k] & BS_NIL);
     if ((absent[k] & BS_NIL) && at == TY_UNKNOWN) at = TY_NIL;
     TyKind lvn = lv->type == TY_NIL ? TY_UNKNOWN : lv->type;
+    /* A Float is the same but for the guess: a param typed Float is one a
+       call passed a Float, so a literal nil beside it keeps it at once. */
     int nil_int = !g_promote_mode &&
                   (at == TY_INT ? (lvn == TY_UNKNOWN || lvn == TY_INT) &&
                                   (lit || lv->nil_passed)
-                                : lit && at == TY_NIL && lv->type == TY_INT && lv->nil_passed);
-    TyKind merged = nil_int ? TY_INT
+                   : at == TY_FLOAT ? (lvn == TY_UNKNOWN || lvn == TY_INT || lvn == TY_FLOAT) &&
+                                      (lit || lv->nil_passed)
+                   : lit && at == TY_NIL &&
+                     (lv->type == TY_FLOAT || (lv->type == TY_INT && lv->nil_passed)));
+    TyKind merged = nil_int ? (at == TY_NIL ? lv->type : at)
                   : at == TY_NIL && lv->type == TY_INT && lv->nil_passed ? TY_POLY
                   : at == TY_UNKNOWN || at == lv->type ? lv->type
                   : lv->type == TY_INT ? at : bs_join(lv->type, at);
@@ -9905,7 +9911,8 @@ static int cs_type_params(Compiler *c, int create, const int *argv, int argc) {
        and a true/false or a Symbol slot does not (ty_unify keeps the first
        and boxes the rest) */
     if ((absent[k] & BS_ABSENT) && merged != TY_UNKNOWN) merged = ty_unify(merged, TY_NIL);
-    if (merged == TY_INT && (nil_int || (absent[k] & BS_ABSENT)) && !lv->nullable_int) { lv->nullable_int = 1; changed = 1; }
+    if ((merged == TY_INT || merged == TY_FLOAT) && (nil_int || (absent[k] & BS_ABSENT)) &&
+        !lv->nullable_int) { lv->nullable_int = 1; changed = 1; }
     if (lit && !lv->nil_passed) { lv->nil_passed = 1; changed = 1; }
     if (merged != lv->type) { lv->type = merged; changed = 1; }
   }
@@ -10241,10 +10248,12 @@ static int pure_block_param(Compiler *c, Scope *s, const char *name) {
    `= nil` default) is the exception: its binders write the sentinel for a
    missing value (default_value) and for a nil one, so it stays an sp_int
    marked nullable, the mark every read that boxes or tests it for nil
-   goes by. A post, a keyword and a Float still take the box for a nil, and
-   under promote an Integer is boxed anyway. A value not typed yet says
-   nothing this round: boxed then, the parameter stayed boxed for good. A
-   rest is the array that binder builds, and a `**kw` rest its hash. */
+   goes by. A Float does the same with its own sentinel (sp_float_nil). A
+   post and a keyword still take the box for a nil, and so does either
+   under promote, where an Integer is boxed anyway. A value not typed yet
+   says nothing this round: boxed then, the parameter stayed boxed for
+   good. A rest is the array that binder builds, and a `**kw` rest its
+   hash. */
 int block_settle_types(Compiler *c, int blk, const BlockSig *s,
                        const TyKind *pos, const char *absent, const TyKind *kws) {
   Scope *bs = comp_scope_of(c, blk);
@@ -10258,7 +10267,7 @@ int block_settle_types(Compiler *c, int blk, const BlockSig *s,
     LocalVar *lv = scope_local_intern(bs, bp); lv->is_block_param = 1;
     if ((fl & BS_ABSENT) && at == TY_UNKNOWN && g_infer_optimistic) continue;
     if ((fl & BS_NIL) && at == TY_UNKNOWN) at = TY_NIL;   /* nils alone */
-    int nil_int = i < s->P + s->O && fl && at == TY_INT && !g_promote_mode;
+    int nil_int = i < s->P + s->O && fl && (at == TY_INT || at == TY_FLOAT) && !g_promote_mode;
     if ((fl & BS_ABSENT) && !nil_int) at = ty_unify(at, TY_POLY);
     if ((fl & BS_NIL) && (at == TY_INT || at == TY_FLOAT) && !nil_int) at = TY_POLY;
     TyKind m = ty_unify(lv->type, at);
@@ -10271,7 +10280,7 @@ int block_settle_types(Compiler *c, int blk, const BlockSig *s,
     if (ty_is_array(lv->type) && at != TY_UNKNOWN && !ty_is_array(at) &&
         at != TY_POLY && pure_block_param(c, bs, bp))
       m = at;
-    if (nil_int && m == TY_INT && !lv->nullable_int) { lv->nullable_int = 1; changed = 1; }
+    if (nil_int && m == at && !lv->nullable_int) { lv->nullable_int = 1; changed = 1; }
     if (m != lv->type) { lv->type = m; changed = 1; }
   }
   const char *rest[2] = { block_rest_name(c, blk), block_kwrest_name(c, blk) };
@@ -10890,8 +10899,9 @@ int infer_block_params(Compiler *c) {
          yielding runs the block as a proc, whose prologue binds only the
          requireds typed and reads a missing one as the slot's own nil (a
          true/false or a Symbol one, which has none, takes the box). An
-         Integer one a site may leave without a value, or pass a nil, is
-         marked nullable here, as cs_type_params marks a proc literal's. */
+         Integer or a Float one a site may leave without a value, or pass a
+         nil, is marked nullable here, as cs_type_params marks a proc
+         literal's. */
       int yields = yld_mi >= 0 && c->scopes[yld_mi].yields;
       if (yields || (mi >= 0 && c->scopes[mi].blk_param && c->scopes[mi].blk_param[0])) {
         const int *sites = NULL;
@@ -10924,8 +10934,8 @@ int infer_block_params(Compiler *c) {
             if (!bp || at == TY_UNKNOWN) continue;
             LocalVar *lv = scope_local_intern(bs, bp); lv->is_block_param = 1;
             TyKind merged = ty_unify(lv->type, absent[k] ? ty_unify(at, TY_NIL) : at);
-            if ((absent[k] & BS_NIL) && (merged == TY_FLOAT || (merged == TY_INT && g_promote_mode))) merged = TY_POLY;
-            if (merged == TY_INT && absent[k] && !lv->nullable_int) { lv->nullable_int = 1; changed = 1; }
+            if ((absent[k] & BS_NIL) && (merged == TY_INT || merged == TY_FLOAT) && g_promote_mode) merged = TY_POLY;
+            if ((merged == TY_INT || merged == TY_FLOAT) && absent[k] && !lv->nullable_int) { lv->nullable_int = 1; changed = 1; }
             if (merged != lv->type) { lv->type = merged; changed = 1; }
           }
         }

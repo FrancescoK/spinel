@@ -6756,16 +6756,20 @@ else if (orecv >= 0 && onm) {
       /* A poly param doesn't fit the sp_int slot, so it rides the
          _sp_proc_poly_args side-channel the call site published. A float rides
          it too: a raw sp_float in the slot is value-truncated (0.7 -> 0), so
-         read the boxed value back, unboxing a float with sp_poly_to_f. The
-         side-channel array holds 16 slots (the proc-call ABI cap). */
+         read the boxed value back, unboxing a float with sp_poly_to_f_or_nil:
+         a nil passed is the slot's own nil, as a missing one is, where
+         sp_poly_to_f read it as 0.0. The side-channel array holds 16 slots
+         (the proc-call ABI cap). */
       if (k < 16) {
         g_needs_proc_poly_argslot = 1;  /* channel array now lives in spinel_rt.h */
         if (pt == TY_FLOAT)
-          buf_printf(pb, "(argc > %d) ? sp_poly_to_f(_sp_proc_poly_args[%d]) : sp_float_nil();\n", k, k);
+          buf_printf(pb, "(argc > %d) ? sp_poly_to_f_or_nil(_sp_proc_poly_args[%d]) : sp_float_nil();\n", k, k);
         else
           buf_printf(pb, "(argc > %d) ? _sp_proc_poly_args[%d] : sp_box_nil();\n", k, k);
       }
       else buf_puts(pb, pt == TY_FLOAT ? "sp_float_nil();\n" : "0;\n");
+      /* either nil makes it nullable, as an Integer's below */
+      if (lv && pt == TY_FLOAT) lv->nullable_int = 1;
     }
     else if (proc_slot_is_ptr(pt)) {
       buf_printf(pb, "(argc > %d) ? (", k); emit_ctype(c, pt, pb);
