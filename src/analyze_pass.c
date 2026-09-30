@@ -10669,7 +10669,10 @@ static int *bsn_v, bsn_n, bsn_cap;
 static void bsn_note(int id, int block, int mi, int ym) {
   if (bsn_n + 4 > bsn_cap) {
     bsn_cap = bsn_cap ? bsn_cap * 2 : 64;
-    bsn_v = realloc(bsn_v, sizeof(int) * (size_t)bsn_cap);
+    int *nv = realloc(bsn_v, sizeof(int) * (size_t)bsn_cap);
+    /* a lost note would leave a block unbound; a NULL table, a crash */
+    if (!nv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    bsn_v = nv;
   }
   bsn_v[bsn_n++] = id; bsn_v[bsn_n++] = block; bsn_v[bsn_n++] = mi; bsn_v[bsn_n++] = ym;
 }
@@ -10698,6 +10701,7 @@ int narrow_site_boxed_block_params(Compiler *c) {
   TyKind *ct = malloc(sizeof(TyKind) * (size_t)cap);
   char *cn = malloc((size_t)cap), *cbad = malloc((size_t)cap);
   int *cbind = malloc(sizeof(int) * (size_t)cap), *csc = malloc(sizeof(int) * (size_t)cap);
+  if (!cl || !ct || !cn || !cbad || !cbind || !csc) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int r = 0; r < bsn_n; r += 4) {
     int id = bsn_v[r], block = bsn_v[r + 1], mi = bsn_v[r + 2], ym = bsn_v[r + 3];
     BlockSig s;
@@ -10728,6 +10732,7 @@ int narrow_site_boxed_block_params(Compiler *c) {
           cl = realloc(cl, sizeof(LocalVar *) * (size_t)cap); ct = realloc(ct, sizeof(TyKind) * (size_t)cap);
           cn = realloc(cn, (size_t)cap); cbad = realloc(cbad, (size_t)cap);
           cbind = realloc(cbind, sizeof(int) * (size_t)cap); csc = realloc(csc, sizeof(int) * (size_t)cap);
+          if (!cl || !ct || !cn || !cbad || !cbind || !csc) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
         }
         cl[nc] = lv; ct[nc] = at; cn[nc] = 0; cbad[nc] = 0; cbind[nc] = 0;
         csc[nc] = (int)(bs - c->scopes); nc++;
