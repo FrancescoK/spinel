@@ -8802,7 +8802,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
        and the default at the end of the switch answers for every other
        receiver and key. Restricted to those key types, a `fetch` on a
        float-keyed hash emitted no dispatch at all and raised NoMethodError. */
-    int is_fetch = sp_streq(name, "fetch") && (argc == 1 || argc == 2);
+    int is_fetch = sp_streq(name, "fetch") && (argc == 1 || argc == 2) && nt_ref(nt, id, "block") < 0;
     /* Names a user class can own, replacing the whole dispatch with its arms:
        a Hash or Array arriving at the same call matched nothing and raised
        NoMethodError naming its own class. They end in a runtime helper that

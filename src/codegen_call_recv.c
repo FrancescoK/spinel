@@ -565,6 +565,23 @@ static int emit_dig_splat(Compiler *c, int recv, int arg, Buf *b) {
   return 1;
 }
 
+/* fetch's block is spliced inline, so its parameter's slot is the enclosing
+   scope's local: bind the missed key (or index), of type `kt` in temp `tk`,
+   to it -- boxed on the way in when the slot is poly, as it is when the body
+   reassigns it or another receiver kind yields a key of another class. */
+static void emit_fetch_blk_param(Compiler *c, int id, int blk, TyKind kt, int tk, Buf *b) {
+  const char *fp0 = block_param_name(c, blk, 0);
+  if (!fp0) return;
+  Scope *fbs = comp_scope_of(c, blk);
+  LocalVar *flv = fbs ? scope_local(fbs, fp0) : NULL;
+  if (!flv) { Scope *fes = comp_scope_of(c, id); flv = fes ? scope_local(fes, fp0) : NULL; }
+  if (flv && flv->type == TY_POLY && kt != TY_POLY) {
+    char ktn[32]; snprintf(ktn, sizeof ktn, "_t%d", tk);
+    buf_printf(b, "lv_%s = ", rename_local(fp0)); emit_boxed_text(c, kt, ktn, b); buf_puts(b, "; ");
+  }
+  else buf_printf(b, "lv_%s = _t%d; ", rename_local(fp0), tk);
+}
+
 /* An operand whose evaluation cannot allocate: a local's read or a scalar
    literal. */
 static int fetch_operand_is_inert(Compiler *c, int n) {
@@ -3314,8 +3331,7 @@ else {
           int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
           int bval = bn > 0 ? bb[bn - 1] : -1;
           buf_puts(b, " ({ ");
-          const char *fp0 = block_param_name(c, blk, 0);
-          if (fp0) buf_printf(b, "lv_%s = _t%d; ", rename_local(fp0), ti);
+          emit_fetch_blk_param(c, id, blk, TY_INT, ti, b);
           for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], b, 0);
           if (bval >= 0) {
             if (boxed && comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, b);
@@ -5222,8 +5238,7 @@ else {
           int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
           int bval = bn > 0 ? bb[bn - 1] : -1;
           buf_puts(b, " ({ ");
-          const char *fp0 = block_param_name(c, blk, 0);
-          if (fp0) buf_printf(b, "lv_%s = _t%d; ", rename_local(fp0), ti);
+          emit_fetch_blk_param(c, id, blk, TY_INT, ti, b);
           for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], b, 0);
           if (bval >= 0) {
             if (comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, b);
@@ -6330,21 +6345,7 @@ else {
             buf_printf(b, "; sp_%sHash_has_key(_t%d, _t%d) ? sp_%sHash_get(_t%d, _t%d) : ({ ",
                        hn, th, tk, hn, th, tk);
           }
-          const char *fp0 = block_param_name(c, blk, 0);  /* fetch yields the key */
-          if (fp0) {
-            /* the block is spliced inline, so the parameter's slot is the
-               enclosing scope's local; a body that reassigns it widened the
-               slot to poly, and the key boxes on the way in */
-            Scope *fbs = comp_scope_of(c, blk);
-            LocalVar *flv = fbs ? scope_local(fbs, fp0) : NULL;
-            if (!flv) { Scope *fes = comp_scope_of(c, id); flv = fes ? scope_local(fes, fp0) : NULL; }
-            TyKind kt = ty_hash_key(rt);
-            if (flv && flv->type == TY_POLY && kt != TY_POLY) {
-              char ktn[32]; snprintf(ktn, sizeof ktn, "_t%d", tk);
-              buf_printf(b, "lv_%s = ", rename_local(fp0)); emit_boxed_text(c, kt, ktn, b); buf_puts(b, "; ");
-            }
-            else buf_printf(b, "lv_%s = _t%d; ", rename_local(fp0), tk);
-          }
+          emit_fetch_blk_param(c, id, blk, ty_hash_key(rt), tk, b);  /* fetch yields the key */
           if (emit_blk_value_via_next(c, blk, (vt == TY_POLY || mismatch) ? TY_POLY : vt, b)) {
             buf_puts(b, "; }); })");
             return 1;
