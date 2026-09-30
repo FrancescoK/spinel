@@ -2662,6 +2662,18 @@ static void emit_pm_array_cond(Compiler *c, int pat, const char *arr, int check_
   buf_puts(b, "); })");
 }
 
+/* Does hash pattern `pat` close the hash: no keys but the ones it lists? `**nil`
+   says so, and so does a pattern with no keys and no rest at all (`in {}`),
+   which matches only an empty hash -- unlike `in {a:}`, which allows more. */
+static int hash_pat_closed(const NodeTable *nt, int pat) {
+  int rest = nt_ref(nt, pat, "rest");
+  if (rest >= 0)
+    return nt_type(nt, rest) && sp_streq(nt_type(nt, rest), "NoKeywordsParameterNode");
+  int en = 0;
+  nt_arr(nt, pat, "elements", &en);
+  return en == 0;
+}
+
 /* Hash-pattern match condition over a BOXED value (any hash variant),
    expression form: the value is a hash, every listed key is present, and
    each value sub-pattern matches. Used for nested hash patterns (a hash
@@ -2708,10 +2720,8 @@ static void emit_pm_hash_cond_poly(Compiler *c, int pat, const char *hexpr, Buf 
       buf_printf(b, " _t%d = _t%d && (%s);", tok, tok, sub.p ? sub.p : "1");
     free(sub.p);
   }
-  /* `**nil`: no keys beyond the listed ones */
-  int hp_rest = nt_ref(nt, pat, "rest");
-  if (hp_rest >= 0 && nt_type(nt, hp_rest) &&
-      sp_streq(nt_type(nt, hp_rest), "NoKeywordsParameterNode"))
+  /* `**nil`, or no pattern keys at all: no keys beyond the listed ones */
+  if (hash_pat_closed(nt, pat))
     buf_printf(b, " _t%d = _t%d && (sp_poly_length(_t%d) == %dLL);", tok, tok, th, listed);
   buf_printf(b, " _t%d; })", tok);
 }
@@ -3503,6 +3513,11 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
         }
       }
     }
+    /* `**nil`, or `{}` alone: no keys beyond the listed ones */
+    if (hash_pat_closed(nt, pat)) {
+      emit_indent(hs, hi);
+      buf_printf(hs, "_t%d = _t%d && (_t%d->len == %dLL);\n", hcond, hcond, t, en);
+    }
     buf_printf(b, "_t%d", hcond);
     return 1;
   }
@@ -4278,18 +4293,14 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         buf_printf(b, "_t%d = (%s);\n", hcond, pc.p ? pc.p : "0");
         free(pc.p);
       }
-      /* `**nil`: no keys beyond the listed ones */
-      {
-        int hp_rest = nt_ref(nt, pat, "rest");
-        if (hn && hp_rest >= 0 && nt_type(nt, hp_rest) &&
-            sp_streq(nt_type(nt, hp_rest), "NoKeywordsParameterNode")) {
-          int en2 = 0, listed = 0;
-          const int *elms2 = nt_arr(nt, pat, "elements", &en2);
-          for (int i = 0; i < en2; i++)
-            if (nt_type(nt, elms2[i]) && sp_streq(nt_type(nt, elms2[i]), "AssocNode")) listed++;
-          emit_indent(b, indent + 1);
-          buf_printf(b, "_t%d = _t%d && (_t%d->len == %dLL);\n", hcond, hcond, arm_t, listed);
-        }
+      /* `**nil`, or no pattern keys at all: no keys beyond the listed ones */
+      if (hn && hash_pat_closed(nt, pat)) {
+        int en2 = 0, listed = 0;
+        const int *elms2 = nt_arr(nt, pat, "elements", &en2);
+        for (int i = 0; i < en2; i++)
+          if (nt_type(nt, elms2[i]) && sp_streq(nt_type(nt, elms2[i]), "AssocNode")) listed++;
+        emit_indent(b, indent + 1);
+        buf_printf(b, "_t%d = _t%d && (_t%d->len == %dLL);\n", hcond, hcond, arm_t, listed);
       }
       buf_printf(&cond_buf, "_t%d", hcond);
       has_cond = 1;
