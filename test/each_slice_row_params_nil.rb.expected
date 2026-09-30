@@ -1,0 +1,21 @@
+[1, "1"]
+[1, ""]
+[1, ""]
+3
+TypeError: nil can't be coerced into Integer
+[1, 2]
+[1]
+[1, 2, nil]
+[3, 4, nil]
+[1, 2, nil]
+[2, 3, nil]
+5.0
+NoMethodError: undefined method '*' for nil
+["a", "b"]
+["c", nil]
+[4, 5, false]
+[6, nil, true]
+[1, nil, true]
+[1, nil, true]
+3
+7
