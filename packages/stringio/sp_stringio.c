@@ -77,6 +77,12 @@ static int64_t sio_char_len(const char *p, int64_t n, int binary) {
   if (cl > n) return 1;
   for (int64_t i = 1; i < cl; i++)
     if (((unsigned char)p[i] & 0xC0) != 0x80) return 1;
+  /* an overlong form, a surrogate or a code point past U+10FFFF */
+  if (cl >= 3) {
+    unsigned char c2 = (unsigned char)p[1];
+    if ((c == 0xE0 && c2 < 0xA0) || (c == 0xED && c2 > 0x9F) ||
+        (c == 0xF0 && c2 < 0x90) || (c == 0xF4 && c2 > 0x8F)) return 1;
+  }
   return cl;
 }
 const char *sp_StringIO_getc(sp_StringIO *s) {SP_GC_ROOT(s); if (s->pos >= s->len) return NULL;

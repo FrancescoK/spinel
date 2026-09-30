@@ -28,3 +28,11 @@ def first_char(io) = io.getc
 File.write("/tmp/spinel_stringio_multibyte_chars.txt", "é!")
 File.open("/tmp/spinel_stringio_multibyte_chars.txt") { |f| p first_char(f) }
 p first_char(StringIO.new("ü?"))
+
+# invalid UTF-8 (overlong, surrogate, past U+10FFFF) is read a byte at a time
+["\xE0\x80\x80", "\xED\xA0\x80", "\xF0\x80\x80\x80", "\xF4\x90\x80\x80", "\xE0\xA0\x80"].each do |bad|
+  io = StringIO.new(bad.dup.force_encoding("UTF-8"))
+  got = []
+  while (ch = io.getc) do got << ch.bytes end
+  p got
+end
