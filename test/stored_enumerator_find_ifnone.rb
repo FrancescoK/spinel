@@ -21,3 +21,15 @@ p dt.each { |x| x > 9 }
   p inner.each { |x| x > 3 }
   p inner.each { |x| x > 4 }
 end
+def made_fallback
+  puts "made fallback"
+  -> { :none }
+end
+absent = nil
+sn = absent&.find(made_fallback)
+p sn
+begin
+  sn.each { |x| x }
+rescue NoMethodError => ex
+  puts ex.message
+end

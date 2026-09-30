@@ -6237,7 +6237,8 @@ static int stored_enum_write(Compiler *c, int id, int n0) {
   int an = 0, k = 0; const int *av = nt_arr(nt, nt_ref(nt, v, "arguments"), "arguments", &an);
   if (nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0 || !m || an > sp_streq(m, "find") ||
       (an && (nt_kind(nt, av[0]) == NK_SplatNode || nt_kind(nt, av[0]) == NK_KeywordHashNode)) ||
-      nt_ref(nt, v, "receiver") < 0) return -1;
+      nt_ref(nt, v, "receiver") < 0 ||
+      (nt_str(nt, v, "call_operator") && sp_streq(nt_str(nt, v, "call_operator"), "&."))) return -1;
   while (meths[k] && !sp_streq(m, meths[k])) k++;
   if (!meths[k] || program_defines_name(nt, n0, m)) return -1;
   for (int p = 0; p < n0; p++) {
