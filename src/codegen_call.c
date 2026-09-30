@@ -19809,7 +19809,9 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     if (!sp_streq(name, "each") && !sp_streq(name, "reverse_each") &&
         !sp_streq(name, "each_entry")) {
       int te = ++g_tmp;
-      buf_printf(b, "({ sp_Enumerator *_t%d = sp_Enumerator_new_from(", te);
+      buf_puts(b, "({ ");
+      if (argc) { buf_puts(b, "(void)("); emit_expr(c, argv[0], b); buf_puts(b, "); "); }
+      buf_printf(b, "sp_Enumerator *_t%d = sp_Enumerator_new_from(", te);
       emit_boxed(c, recv, b);
       buf_printf(b, "); _t%d->meth = SPL(\"%s\"); _t%d; })", te,
                  sp_streq(name, "collect") ? "map" :

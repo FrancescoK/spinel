@@ -17,3 +17,5 @@ p [1, 2, 3].rfind(fp).each { |x| x < 3 }
 e = [1, 2, 3].find(fp)
 p e.class
 p e.to_a
+def fallback = (puts "ifnone evaluated"; -> { :none })
+p [1, 2, 3].find(fallback).class
