@@ -2439,46 +2439,74 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
      the string's bytes, typed String for the length of the emission, so the
      typed iterator runs the block exactly as it would with no user class of
      that name in the program. */
-  if (!emitted_default && nt_ref(nt, id, "arguments") < 0 &&
-      (sp_streq(name, "each_char") || sp_streq(name, "each_byte") ||
-       sp_streq(name, "each_line") || sp_streq(name, "each_grapheme_cluster") ||
-       sp_streq(name, "each_codepoint")) &&
+  /* A File's line, char and byte iterators are the same case: StringIO
+     defines them in Ruby, and a File sharing the slot (a parameter taking
+     either stream) raised NoMethodError. Its arm is the typed File
+     emission, the receiver handed over as the unboxed handle. */
+  int str_iter = sp_streq(name, "each_char") || sp_streq(name, "each_byte") ||
+                 sp_streq(name, "each_line") || sp_streq(name, "each_grapheme_cluster") ||
+                 sp_streq(name, "each_codepoint");
+  int io_iter = sp_streq(name, "each_char") || sp_streq(name, "each_byte") ||
+                sp_streq(name, "each_line");
+  if (!emitted_default && nt_ref(nt, id, "arguments") < 0 && (str_iter || io_iter) &&
       g_n_argov + 1 <= MAX_ARG_OVERRIDE) {
-    int ts = ++g_tmp;
+    int ts = ++g_tmp, tf = ++g_tmp;
     Buf ab; memset(&ab, 0, sizeof ab);
+    Buf fb; memset(&fb, 0, sizeof fb);
     int slot = g_n_argov++;
     g_argov_node[slot] = recv;
-    snprintf(g_argov_text[slot], sizeof g_argov_text[0], "_t%d", ts);
     TyKind sv_rt = c->ntype[recv];
-    c->ntype[recv] = TY_STRING;
-    /* analysis renames a String's each_grapheme_cluster to each_char (the
-       two agree over the text spinel carries); this receiver was not a
-       String then, so the arm takes the same spelling for its emission */
-    int graph = sp_streq(name, "each_grapheme_cluster");
-    if (graph) nt_node_set_str((NodeTable *)nt, id, "name", "each_char");
-    emit_stmt(c, id, &ab, indent + 2);
-    if (graph) {
-      nt_node_set_str((NodeTable *)nt, id, "name", "each_grapheme_cluster");
-      name = nt_str(nt, id, "name");   /* the set replaced the string name read */
+    if (str_iter) {
+      snprintf(g_argov_text[slot], sizeof g_argov_text[0], "_t%d", ts);
+      c->ntype[recv] = TY_STRING;
+      /* analysis renames a String's each_grapheme_cluster to each_char (the
+         two agree over the text spinel carries); this receiver was not a
+         String then, so the arm takes the same spelling for its emission */
+      int graph = sp_streq(name, "each_grapheme_cluster");
+      if (graph) nt_node_set_str((NodeTable *)nt, id, "name", "each_char");
+      emit_stmt(c, id, &ab, indent + 2);
+      if (graph) {
+        nt_node_set_str((NodeTable *)nt, id, "name", "each_grapheme_cluster");
+        name = nt_str(nt, id, "name");   /* the set replaced the string name read */
+      }
+    }
+    if (io_iter) {
+      snprintf(g_argov_text[slot], sizeof g_argov_text[0], "_t%d", tf);
+      c->ntype[recv] = TY_IO;
+      emit_stmt(c, id, &fb, indent + 2);
     }
     c->ntype[recv] = sv_rt;
     g_n_argov--;
-    if (ab.p && !strstr(ab.p, "sp_raise_nomethod(")) {
+    int str_arm = ab.p && !strstr(ab.p, "sp_raise_nomethod(");
+    int io_arm = fb.p && !strstr(fb.p, "sp_raise_nomethod(");
+    if (str_arm || io_arm) {
       emit_indent(&sw, indent); buf_puts(&sw, "default: {\n");
-      emit_indent(&sw, indent + 1);
-      buf_printf(&sw, "if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) {\n", trecv, trecv);
-      emit_indent(&sw, indent + 2);
-      buf_printf(&sw, "const char *_t%d = sp_poly_recv_s(_t%d, \"%s\"); SP_GC_ROOT_STR(_t%d);\n",
-                 ts, trecv, name, ts);
-      buf_puts(&sw, ab.p);
-      emit_indent(&sw, indent + 2); buf_puts(&sw, "break;\n");
-      emit_indent(&sw, indent + 1); buf_puts(&sw, "}\n");
+      if (str_arm) {
+        emit_indent(&sw, indent + 1);
+        buf_printf(&sw, "if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) {\n", trecv, trecv);
+        emit_indent(&sw, indent + 2);
+        buf_printf(&sw, "const char *_t%d = sp_poly_recv_s(_t%d, \"%s\"); SP_GC_ROOT_STR(_t%d);\n",
+                   ts, trecv, name, ts);
+        buf_puts(&sw, ab.p);
+        emit_indent(&sw, indent + 2); buf_puts(&sw, "break;\n");
+        emit_indent(&sw, indent + 1); buf_puts(&sw, "}\n");
+      }
+      if (io_arm) {
+        emit_indent(&sw, indent + 1);
+        buf_printf(&sw, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO) {\n", trecv, trecv);
+        emit_indent(&sw, indent + 2);
+        buf_printf(&sw, "sp_File *_t%d = (sp_File *)_t%d.v.p;\n", tf, trecv);
+        buf_puts(&sw, fb.p);
+        emit_indent(&sw, indent + 2); buf_puts(&sw, "break;\n");
+        emit_indent(&sw, indent + 1); buf_puts(&sw, "}\n");
+      }
       emit_indent(&sw, indent + 1);
       buf_printf(&sw, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;\n", name, trecv);
       emit_indent(&sw, indent); buf_puts(&sw, "}\n");
       emitted_default = 1;
     }
     free(ab.p);
+    free(fb.p);
   }
   /* Every other poly dispatch closes with a raising default; this one closed
      with nothing, so a runtime class outside the candidate set fell through
@@ -2497,6 +2525,41 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
   if (sw.p) buf_puts(b, sw.p);
   free(sw.p);
   return 1;
+}
+
+/* The same dispatch where the call's value is used (`def f(io) =
+   io.each_line { }`), for a name a native class defines in Ruby
+   (StringIO#each_line): its arms come from no binding, so the value-position
+   poly dispatch had none. Those iterators answer their receiver, so the
+   switch runs as a statement over the evaluated receiver, which is the
+   value. */
+int emit_poly_recv_block_value(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!name || recv < 0 || nt_ref(nt, id, "block") < 0 || comp_ntype(c, id) != TY_POLY ||
+      comp_ntype(c, recv) != TY_POLY || g_n_argov + 1 > MAX_ARG_OVERRIDE) return 0;
+  if (!sp_streq(name, "each_line") && !sp_streq(name, "each_char") && !sp_streq(name, "each_byte"))
+    return 0;
+  int native = 0;
+  for (int k = 0; k < c->nclasses && !native; k++)
+    if (c->classes[k].is_native_class && c->classes[k].instantiated &&
+        comp_method_in_chain(c, k, name, NULL) >= 0) native = 1;
+  if (!native) return 0;
+  int tr = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb);
+  emit_boxed(c, recv, &rb);
+  Buf sb; memset(&sb, 0, sizeof sb);
+  int slot = g_n_argov++;
+  g_argov_node[slot] = recv;
+  snprintf(g_argov_text[slot], sizeof g_argov_text[0], "_t%d", tr);
+  int ok = emit_poly_recv_block_dispatch(c, id, &sb, 1);
+  g_n_argov--;
+  if (ok && sb.p)
+    buf_printf(b, "({ sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n%s _t%d; })",
+               tr, rb.p ? rb.p : "sp_box_nil()", tr, sb.p, tr);
+  free(rb.p); free(sb.p);
+  return ok;
 }
 
 /* Does this call target a user method that yields (so it has no standalone C
