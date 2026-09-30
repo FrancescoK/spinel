@@ -6984,23 +6984,21 @@ int desugar_enum_method_recv(Compiler *c) {
         continue;
       }
     }
-    /* Hash#reverse_each { |k, v| }: desugar to to_a.reverse.each so the
-       existing pair-array destructure serves the two-param block (#2372). */
+    /* Hash#reverse_each { |k, v| }: desugar to to_a.reverse_each so the
+       existing pair-array destructure serves the two-param block (#2372). The
+       to_a hop is marked (enum_recv), so the value emitter answers the Hash
+       itself, as CRuby's reverse_each answers its receiver. */
     if (nm && sp_streq(nm, "reverse_each") && nt_ref(nt, id, "block") >= 0) {
       int hrc = nt_ref(nt, id, "receiver");
       if (hrc >= 0 && ty_is_hash(infer_type(c, hrc))) {
         int toa = nt_new_node(nt, "CallNode");
-        int rev = nt_new_node(nt, "CallNode");
-        if (toa >= 0 && rev >= 0) {
+        if (toa >= 0) {
           nt_node_set_str(nt, toa, "name", "to_a");
           nt_node_set_ref(nt, toa, "receiver", hrc);
-          nt_node_set_str(nt, rev, "name", "reverse");
-          nt_node_set_ref(nt, rev, "receiver", toa);
-          nt_node_set_str(nt, id, "name", "each");
-          nt_node_set_ref(nt, id, "receiver", rev);
+          nt_node_set_str(nt, toa, "enum_recv", "1");
+          nt_node_set_ref(nt, id, "receiver", toa);
           comp_grow_node_arrays(c);
           c->nscope[toa] = c->nscope[id];
-          c->nscope[rev] = c->nscope[id];
           changed = 1;
         }
         continue;
