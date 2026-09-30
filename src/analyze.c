@@ -7366,20 +7366,24 @@ int desugar_enum_method_recv(Compiler *c) {
        [name, value] pairs, which is what the member hash's own blockless
        #each answers; the synthesized yielding each_pair raised LocalJumpError.
        Ahead of the Enumerable-name gate, which does not list each_pair (and
-       must not: its block form yields pairs, not members). */
-    if (nm && sp_streq(nm, "each_pair") && nt_ref(nt, id, "block") < 0) {
+       must not: its block form yields pairs, not members). The synthesized
+       each_with_index is the same case over the member array, whose own
+       blockless each_with_index answers the [member, index] Enumerator. */
+    int wix = nm && sp_streq(nm, "each_with_index");
+    if (nm && (sp_streq(nm, "each_pair") || wix) && nt_ref(nt, id, "block") < 0 &&
+        !(wix && nt_ref(nt, id, "arguments") >= 0)) {
       int prv = nt_ref(nt, id, "receiver");
       TyKind prt = prv >= 0 ? infer_type(c, prv) : TY_UNKNOWN;
       int pcid = ty_is_object(prt) ? ty_object_class(prt) : -1;
       if (pcid >= 0 && pcid < c->nclasses && c->classes[pcid].is_struct && !c->classes[pcid].is_data) {
         int wrap = nt_new_node(nt, "CallNode");
         if (wrap >= 0) {
-          nt_node_set_str(nt, wrap, "name", "to_h");
+          nt_node_set_str(nt, wrap, "name", wix ? "to_a" : "to_h");
           nt_node_set_ref(nt, wrap, "receiver", prv);
           nt_node_set_ref(nt, wrap, "arguments", -1);
           nt_node_set_ref(nt, wrap, "block", -1);
           nt_node_set_ref(nt, id, "receiver", wrap);
-          nt_node_set_str(nt, id, "name", "each");
+          if (!wix) nt_node_set_str(nt, id, "name", "each");
           comp_grow_node_arrays(c);
           c->nscope[wrap] = c->nscope[id];
           changed = 1;
