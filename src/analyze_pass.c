@@ -10643,6 +10643,7 @@ static int block_bind_plan(Compiler *c, int id, int block, int mi, int ym, int y
   int np = s->P + s->O + s->Q;
   *pos = calloc((size_t)(np + s->nk + 1), sizeof(TyKind));
   *absent = calloc((size_t)np + 1, 1);
+  if (!*pos || !*absent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   /* a yielding method with no site in its own scope binds no values:
      every parameter nil or its default */
   for (int k = 0; k < ns || (yields && k == 0); k++) {
@@ -10656,6 +10657,7 @@ static int block_bind_plan(Compiler *c, int id, int block, int mi, int ym, int y
   char *seen = calloc((size_t)c->nscopes + 1, 1);
   *posf = calloc((size_t)(np + s->nk + 1), sizeof(TyKind));
   *absentf = calloc((size_t)np + 1, 1);
+  if (!seen || !*posf || !*absentf) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   int kept = block_reach(c, ym, s, *posf, *absentf, *posf + np, seen, 0, 0);
   free(seen);
   return kept;
