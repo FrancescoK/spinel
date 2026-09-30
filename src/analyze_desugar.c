@@ -2205,32 +2205,14 @@ static int dsend_receiver_names(Compiler *c, int cls, int subclasses, char ***ou
   return n;
 }
 
-int desugar_dynamic_send(Compiler *c) {
+/* The closed set of method names a runtime-name send (and respond_to?)
+   dispatches over: the symbol and string literals the program spells, and
+   the methods it defines, ranked so the names that can be meant survive the
+   cap. Answers the names (strdup'd, the caller frees) and their count. */
+char **dsend_candidates(Compiler *c, int *out_n) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
-  int changed = 0;
   static const char *const sends[] = { "send", "__send__", "public_send", NULL };
-  /* a user-defined method named send/etc. resolves normally; don't intercept */
-  for (int s = 0; s < c->nscopes; s++) { const char *sn = c->scopes[s].name;
-    if (sn) for (int k = 0; sends[k]; k++) if (sp_streq(sn, sends[k])) return 0; }
-  /* quick out: nothing to do unless some not-yet-lowered explicit-receiver send
-     with a runtime name exists (the common case has none, so skip the scans). */
-  { int any = 0;
-    for (int id = 0; id < n0 && !any; id++) {
-      if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
-      const char *nm = nt_str(nt, id, "name"); if (!nm) continue;
-      int is = 0; for (int k = 0; sends[k]; k++) if (sp_streq(nm, sends[k])) { is = 1; break; }
-      if (!is) continue;
-      int dn = 0; nt_arr(nt, id, "dyn_send_arms", &dn); if (dn > 0) continue;
-      int a = nt_ref(nt, id, "arguments"); if (a < 0) continue;
-      int ac = 0; const int *av = nt_arr(nt, a, "arguments", &ac);
-      if (ac < 1 || !av) continue;
-      const char *a0 = nt_type(nt, av[0]);
-      if (a0 && (sp_streq(a0, "SymbolNode") || sp_streq(a0, "StringNode"))) continue;
-      any = 1;
-    }
-    if (!any) return 0;
-  }
   /* collect distinct symbol/string-literal names = candidate method names (send
      accepts either; a string name interns to the same symbol at the call).
      Only names shaped like a method name: a log message or a label with a
@@ -2303,6 +2285,39 @@ int desugar_dynamic_send(Compiler *c) {
     }
     free(score);
   }
+  *out_n = ncand;
+  return cand;
+}
+
+
+int desugar_dynamic_send(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  int changed = 0;
+  static const char *const sends[] = { "send", "__send__", "public_send", NULL };
+  /* a user-defined method named send/etc. resolves normally; don't intercept */
+  for (int s = 0; s < c->nscopes; s++) { const char *sn = c->scopes[s].name;
+    if (sn) for (int k = 0; sends[k]; k++) if (sp_streq(sn, sends[k])) return 0; }
+  /* quick out: nothing to do unless some not-yet-lowered explicit-receiver send
+     with a runtime name exists (the common case has none, so skip the scans). */
+  { int any = 0;
+    for (int id = 0; id < n0 && !any; id++) {
+      if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+      const char *nm = nt_str(nt, id, "name"); if (!nm) continue;
+      int is = 0; for (int k = 0; sends[k]; k++) if (sp_streq(nm, sends[k])) { is = 1; break; }
+      if (!is) continue;
+      int dn = 0; nt_arr(nt, id, "dyn_send_arms", &dn); if (dn > 0) continue;
+      int a = nt_ref(nt, id, "arguments"); if (a < 0) continue;
+      int ac = 0; const int *av = nt_arr(nt, a, "arguments", &ac);
+      if (ac < 1 || !av) continue;
+      const char *a0 = nt_type(nt, av[0]);
+      if (a0 && (sp_streq(a0, "SymbolNode") || sp_streq(a0, "StringNode"))) continue;
+      any = 1;
+    }
+    if (!any) return 0;
+  }
+  int ncand = 0;
+  char **cand = dsend_candidates(c, &ncand);
   char **picked = (char **)malloc(sizeof(char *) * (size_t)(ncand > 0 ? ncand : 1));
   for (int id = 0; id < n0; id++) {
     if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
@@ -2463,6 +2478,91 @@ int desugar_dynamic_method(Compiler *c) {
   return changed;
 }
 
+/* `recv.respond_to?(name)` with a NAME known only at run time (`respond_to?(
+   args.first)` in activesupport's Object#try): the answer is decided at the
+   dispatch, over the same closed set of names a runtime send resolves over,
+   one synthesized `recv.respond_to?(:m)` arm per candidate for the literal
+   fold to answer against the receiver's class (a boxed receiver's arms are
+   its own runtime test). The arm ids are stashed under "dyn_rto_arms" and
+   codegen emits `name == :m1 ? arm1 : ... : false`. A receiverless call stays
+   receiverless: the fold resolves it against the enclosing class. A name in
+   none of the arms answers false -- the set is the program's literals and
+   definitions, so a builtin method named only at run time is the shape it
+   does not cover. Before this a user object raised NoMethodError for
+   respond_to? itself and the receiverless form was refused. */
+int desugar_dynamic_respond_to(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  int changed = 0;
+  /* a user-defined respond_to? resolves normally; don't intercept */
+  for (int s = 0; s < c->nscopes; s++) { const char *sn = c->scopes[s].name;
+    if (sn && sp_streq(sn, "respond_to?")) return 0; }
+  int any = 0;
+  for (int id = 0; id < n0 && !any; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "respond_to?")) continue;
+    if (nt_int(nt, id, "dyn_arm", 0)) continue;
+    { int dn = 0; nt_arr(nt, id, "dyn_rto_arms", &dn); if (dn > 0) continue; }
+    if (nt_ref(nt, id, "receiver") >= 0) continue;
+    int a = nt_ref(nt, id, "arguments"); if (a < 0) continue;
+    int ac = 0; const int *av = nt_arr(nt, a, "arguments", &ac);
+    if (ac < 1 || !av) continue;
+    NodeKind k0 = nt_kind(nt, av[0]);
+    if (k0 == NK_SymbolNode || k0 == NK_StringNode) continue;
+    any = 1;
+  }
+  if (!any) return 0;
+  int ncand = 0;
+  char **cand = dsend_candidates(c, &ncand);
+  if (ncand == 0) { free(cand); return 0; }
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "respond_to?")) continue;
+    if (nt_int(nt, id, "dyn_arm", 0)) continue;
+    { int dn = 0; nt_arr(nt, id, "dyn_rto_arms", &dn); if (dn > 0) continue; }
+    int recv = nt_ref(nt, id, "receiver");
+    /* an explicit receiver takes the runtime name check at the call (the
+       name is type-checked and matched against the receiver's methods);
+       the receiverless form has no such emission, so it lowers here */
+    if (recv >= 0) continue;
+    int args = nt_ref(nt, id, "arguments");
+    if (args < 0) continue;
+    int argc = 0; const int *argv = nt_arr(nt, args, "arguments", &argc);
+    if (argc < 1 || argc > 2 || !argv) continue;
+    NodeKind k0 = nt_kind(nt, argv[0]);
+    if (k0 == NK_SymbolNode || k0 == NK_StringNode || k0 == NK_SplatNode) continue;
+    int extra = argc == 2 ? argv[1] : -1;                    /* include_all */
+    int base = nt->count;
+    int arms[256]; int narm = 0;
+    for (int k = 0; k < ncand && narm < 256; k++) {
+      int sym = nt_new_node(nt, "SymbolNode"); if (sym < 0) break;
+      nt_node_set_str(nt, sym, "value", cand[k]);
+      int na = nt_new_node(nt, "ArgumentsNode"); if (na < 0) break;
+      int aa[2]; aa[0] = sym; int nn = 1;
+      if (extra >= 0) aa[nn++] = extra;
+      nt_node_set_arr(nt, na, "arguments", aa, nn);
+      int call = nt_new_node(nt, "CallNode"); if (call < 0) break;
+      nt_node_set_ref(nt, call, "receiver", recv);
+      nt_node_set_str(nt, call, "name", "respond_to?");
+      nt_node_set_int(nt, call, "dyn_arm", 1);
+      nt_node_set_ref(nt, call, "arguments", na);
+      nt_node_set_ref(nt, call, "block", -1);
+      comp_sym_intern(c, cand[k]);           /* the dispatch key, see desugar_dynamic_send */
+      arms[narm++] = call;
+    }
+    nt_node_set_arr(nt, id, "dyn_rto_arms", arms, narm);
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    changed = 1;
+  }
+  for (int k = 0; k < ncand; k++) free(cand[k]);
+  free(cand);
+  return changed;
+}
+
 /* `recv.respond_to?(:m)` with an explicit receiver and a literal method name:
    synthesize a probe `recv.m` call. The analyze fixpoint types the probe with
    the ordinary resolver, so its inferred type tells codegen whether spinel can
@@ -2475,6 +2575,13 @@ int desugar_dynamic_method(Compiler *c) {
    and name (not arity), so an arg-taking method like `+`/`[]` still types. */
 int desugar_respond_to_probe(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
+  /* a user-defined respond_to? resolves normally on its own class's
+     instances; the other receivers keep their probes (one such definition --
+     activesupport's TimeWithZone -- used to switch every probe in the program
+     off, and a `respond_to?` on an exception or a String was then refused) */
+  int user_rto = 0;
+  for (int s = 0; s < c->nscopes; s++) { const char *sn = c->scopes[s].name;
+    if (sn && sp_streq(sn, "respond_to?")) { user_rto = 1; break; } }
   int n0 = nt->count;
   int changed = 0;
   for (int id = 0; id < n0; id++) {
@@ -2483,6 +2590,11 @@ int desugar_respond_to_probe(Compiler *c) {
     if (!nm || !sp_streq(nm, "respond_to?")) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;                         /* implicit self handled in the fold */
+    if (user_rto) {
+      TyKind rt = infer_type(c, recv);
+      if (rt == TY_POLY || rt == TY_UNKNOWN) continue;
+      if (ty_is_object(rt) && comp_method_in_chain(c, ty_object_class(rt), "respond_to?", NULL) >= 0) continue;
+    }
     { int pn = 0; nt_arr(nt, id, "rt_probes", &pn); if (pn > 0) continue; }  /* already probed */
     int args = nt_ref(nt, id, "arguments");
     if (args < 0) continue;

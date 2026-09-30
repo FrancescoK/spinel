@@ -3446,6 +3446,7 @@ else {
       int df = comp_defined_guard_false(c, pred);
       int dt = df ? 0 : comp_defined_guard_true(c, pred);
       int known = df ? 0 : (dt ? 1 : static_isa_cond(c, pred));
+      if (known < 0 && !df && !dt) known = static_respond_to_cond(c, pred);
       /* a `block_given? ? a : b` pair: the live arm alone, rendered at the
          result type as the unfolded pair renders each arm */
       if (known < 0 && !df && !dt && tn == 1 && en == 1) {

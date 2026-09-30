@@ -2342,6 +2342,7 @@ void emit_if(Compiler *c, int id, Buf *b, int indent, int is_unless, int tail) {
   /* Statically-decidable guard: drop the dead branch entirely. */
   {
     int sc = static_isa_cond(c, pred);
+    if (sc < 0) sc = static_respond_to_cond(c, pred);
     if (sc < 0) sc = static_nil_ivar_cond(c, pred);
     if (sc < 0) sc = static_nil_reader_cond(c, pred);
     if (sc < 0) sc = static_block_given_cond(c, pred);
