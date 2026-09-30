@@ -92,6 +92,9 @@ typedef struct {
                        Integer another call passes keeps the param an
                        Integer, which the nil then no longer overrides as it
                        does the bare-int guess (cs_type_params) */
+  int site_boxed;   /* (block params) 1 when what its sites bind boxed it,
+                       2 when it was boxed before they did (see
+                       block_settle_types, narrow_site_boxed_block_params) */
   int obj_nilable;  /* an object-typed parameter some call site passes nil:
                        a user method called on it has to raise NoMethodError
                        for nil rather than run with a NULL self (#5088) */

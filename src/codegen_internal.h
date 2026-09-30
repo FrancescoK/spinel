@@ -1201,6 +1201,7 @@ int splat_operand_ok(Compiler *c, int node);
 void emit_splat_operand_array(Compiler *c, int node, Buf *b);
 void emit_one_arg(Compiler *c, int arg, int boxed, Buf *b);
 void emit_array_elem_at(TyKind at, int tmp, int elem_idx, Buf *b);
+void emit_array_elem_sure(TyKind at, int tmp, int elem_idx, Buf *b);
 void emit_rest_from_splat_and_argv(int tmp, TyKind at, int from_idx, Compiler *c, int argv_from, int pos_argc, const int *argv, Buf *b);
 int is_descendant(Compiler *c, int k, int anc);
 int class_builtin_superclass(Compiler *c, int i);   /* codegen.c */

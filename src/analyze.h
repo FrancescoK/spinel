@@ -135,6 +135,8 @@ int block_lead_only(Compiler *c, int block);
 int block_auto_splats(int P, int O, int Q, int R);
 int block_no_keywords(Compiler *c, int block);
 void block_fill(int P, int O, int Q, int R, int n, int *ot, int *ps);
+/* The array literal a splat of this local is sure to spread, or -1. */
+int splat_local_sure_lit(Compiler *c, int x);
 const char *block_kwrest_name(Compiler *c, int block);
 int block_opt_default(Compiler *c, int block, int idx);
 const char *block_keyword_name(Compiler *c, int block, int idx);
