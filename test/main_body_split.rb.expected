@@ -1,0 +1,7 @@
+begun 7
+[12, 1.75, "t510", :b, [2, 3, 4], 3]
+[5, 6, 20, 6, 2]
+["o0", "o7", "o14", "o21", "o28"]
+[169, 17.6875, "t510|bad 1611BAD 34!bad50", :c37, 4..47, 13, 11, Box(1), 2, "***bad 38***"]
+["bad 1", "Box(6)", "ArgumentError: bad 8", "11-bad", 72, "bad 21bad 21", "good 28", "13 dab", "[\"bad 36\", 36]", "1", "bad 45/45", "bad 47...", true]
+{three: "bad 3", "nine" => ["bad 9", "BAD 9"], thirteen: {m: "bad 13", n: 13}, 19 => "bad", twentythree: "bAd 23", "thirty" => [30, 3.0, "30", :thirty], thirtythree: 429, 39.0 => 6, fortythree: [3, 2], fortysix: "46", fiftythree: ["bad 53", "bad 53"]}

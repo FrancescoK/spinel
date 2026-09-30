@@ -12318,6 +12318,23 @@ void emit_stmts(Compiler *c, int id, Buf *b, int indent) {
   }
 }
 
+/* emit_stmts over the top level's statement list, noting in cuts[k] where
+   statement k's text ends; `cuts` holds one entry per statement. Answers how
+   many were emitted (a folded return ends the list early), 0 for a body that
+   is not a list. The top level's split (main_body_split) cuts there. */
+int emit_top_stmts(Compiler *c, int id, Buf *b, int indent, size_t *cuts) {
+  if (id < 0) return 0;
+  if (nt_kind(c->nt, id) != NK_StatementsNode) { emit_stmts(c, id, b, indent); return 0; }
+  int n = 0;
+  const int *body = nt_arr(c->nt, id, "body", &n);
+  for (int k = 0; k < n; k++) {
+    emit_stmt(c, body[k], b, indent);
+    cuts[k] = b->len;
+    if (stmt_is_folded_return(c, body[k])) return k + 1;
+  }
+  return n;
+}
+
 void emit_stmts_tail(Compiler *c, int id, Buf *b, int indent) {
   if (id < 0) return;
   const NodeTable *nt = c->nt;

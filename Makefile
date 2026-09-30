@@ -1510,7 +1510,8 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/class_value_dispatch_args.rb \
                   test/string_handle_proc_method.rb \
                   test/string_handle_initialize.rb \
-                  test/default_reads_callee_self.rb
+                  test/default_reads_callee_self.rb \
+                  test/main_body_split.rb
 
 # Each program runs with the minor mark off and on and must answer the same;
 # then once more under the generational verifier with stress on (every
