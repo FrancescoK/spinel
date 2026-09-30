@@ -14131,6 +14131,20 @@ static Buf emit_cmp_self(Compiler *c, int recv, TyKind rt) {
   return out;
 }
 
+/* the `[]` literal, an ArrayNode with no elements (its element type is unknown) */
+static int eq_empty_array_literal(Compiler *c, int n) {
+  int cnt = 0;
+  if (n < 0 || !nt_type(c->nt, n) || !sp_streq(nt_type(c->nt, n), "ArrayNode")) return 0;
+  nt_arr(c->nt, n, "elements", &cnt);
+  return cnt == 0;
+}
+/* a class whose instances compare with something other than Object#==: its
+   own ==, a <=> (Comparable#== answers by it), or a native class's == */
+static int eq_class_has_own_eq(Compiler *c, int cid) {
+  return comp_resolve_member(c, cid, "==", 0, NULL, NULL) != SP_MEMBER_NONE ||
+         comp_resolve_member(c, cid, "<=>", 0, NULL, NULL) != SP_MEMBER_NONE ||
+         (c->classes[cid].is_native_class && comp_native_method_find(c, cid, "==", 1, 0) >= 0);
+}
 static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -14407,6 +14421,23 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       emit_expr(c, polyn, b); buf_puts(b, ", (void *)("); emit_expr(c, typedn, b);
       buf_printf(b, "), %s)%s", kind, eq ? "" : ")");
       return 1;
+    }
+    /* a user object or Struct against a typed Array, or an empty `[]` literal.
+       Object#== and Struct#== answer false for an Array; a class that defines
+       its own == (or a <=> that Comparable#== calls, or a native ==) is left
+       to the arms below. Array#== answers false for an object that is no Array
+       unless it converts with to_ary, whatever its own ==. Both operands are
+       evaluated. */
+    {
+      int ra = ty_is_array(rt) || ty_is_obj_array(rt) || eq_empty_array_literal(c, recv);
+      int aa = ty_is_array(a0) || ty_is_obj_array(a0) || eq_empty_array_literal(c, argv[0]);
+      if ((ra && ty_is_object(a0) &&
+           comp_resolve_member(c, ty_object_class(a0), "to_ary", 0, NULL, NULL) == SP_MEMBER_NONE) ||
+          (aa && ty_is_object(rt) && !eq_class_has_own_eq(c, ty_object_class(rt)))) {
+        buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), (");
+        emit_expr(c, argv[0], b); buf_printf(b, "), %d)", eq ? 0 : 1);
+        return 1;
+      }
     }
     /* hash == hash */
     if (ty_is_hash(rt) || ty_is_hash(a0) || rt == TY_UNKNOWN || a0 == TY_UNKNOWN) {

@@ -1,0 +1,15 @@
+[false, true, false, true]
+[false, true, false, true]
+[true, false, false, true]
+[false, true, false]
+[false, false, false, false, false, false]
+[false, false, false, false, false, false]
+[false, false, false, true, 4]
+[false, false]
+[true, false, false, false, false, true]
+[false, true, false, false, true, false, false]
+TypeError
+true
+true
+false
+[false, false, false]
