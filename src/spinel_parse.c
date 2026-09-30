@@ -2170,9 +2170,11 @@ static void sp_includes_free(void) {
    ignores comments, so the AST is unchanged), and a single pass over the
    final buffer reconstructs, per buffer line, which file and original line
    it came from. The stack accounting needs no original-line bookkeeping at
-   splice time: a PUSH consumes the parent's (replaced) require line, then
-   content lines count within the child's own coordinates until POP. */
+   splice time: a PUSH consumes the parent's (replaced) require line, while
+   INSERT leaves that line in place. Content lines count within the child's
+   own coordinates until POP. */
 #define SP_PUSH_PREFIX "#<SPINEL_PUSH>"
+#define SP_INSERT_PREFIX "#<SPINEL_INSERT>"
 #define SP_POP_PREFIX "#<SPINEL_POP>"
 
 static char **sp_file_table = NULL;  /* id -> path (declared above flatten) */
@@ -2236,13 +2238,20 @@ static void sp_build_line_map(const char *src, const char *toplevel) {
   while (1) {
     const char *eol = strchr(line, '\n');
     size_t len = eol ? (size_t)(eol - line) : strlen(line);
+    size_t prefix_len = 0;
     if (strncmp(line, SP_PUSH_PREFIX, strlen(SP_PUSH_PREFIX)) == 0) {
       /* The replaced require occupied one parent line: consume it. */
       if (sp >= 0) stk_next[sp] += 1;
+      prefix_len = strlen(SP_PUSH_PREFIX);
+    }
+else if (strncmp(line, SP_INSERT_PREFIX, strlen(SP_INSERT_PREFIX)) == 0) {
+      prefix_len = strlen(SP_INSERT_PREFIX);
+    }
+    if (prefix_len) {
       char pathbuf[1024];
-      size_t plen = len - strlen(SP_PUSH_PREFIX);
+      size_t plen = len - prefix_len;
       if (plen >= sizeof(pathbuf)) plen = sizeof(pathbuf) - 1;
-      memcpy(pathbuf, line + strlen(SP_PUSH_PREFIX), plen);
+      memcpy(pathbuf, line + prefix_len, plen);
       pathbuf[plen] = '\0';
       sp++;
       stk_file[sp] = sp_intern_file(pathbuf);
@@ -2545,9 +2554,16 @@ static void sp_req_hoist_splice(char **result, unsigned char **fsl, size_t *fsl_
   size_t ins_line = 0;
   for (size_t i = 0; i < ins; i++) if ((*result)[i] == '\n') ins_line++;
   sp_fsl_splice(fsl, fsl_n, ins_line, 0, cfsl, cfsl_n);
-  char *nr = malloc(rlen + clen + vlen + 2);
+  /* The caller's statement survives this splice. Only its included file's
+     outer marker changes: nested requires retain their own accounting. */
+  size_t skip = strncmp(content, SP_PUSH_PREFIX, strlen(SP_PUSH_PREFIX)) == 0
+              ? strlen(SP_PUSH_PREFIX) : 0;
+  size_t add = skip ? strlen(SP_INSERT_PREFIX) : 0;
+  char *nr = malloc(rlen + clen + vlen + add - skip + 2);
   size_t o = 0;
   memcpy(nr + o, *result, ins);                          o += ins;
+  if (add) { memcpy(nr + o, SP_INSERT_PREFIX, add); o += add; }
+  content += skip; clen -= skip;
   memcpy(nr + o, content, clen);                         o += clen;
   if (clen > 0 && content[clen - 1] != '\n') nr[o++] = '\n';
   memcpy(nr + o, *result + ins, kw_off - ins);           o += kw_off - ins;
