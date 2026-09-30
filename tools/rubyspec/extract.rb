@@ -27,13 +27,13 @@ OUT_DIR  = ARGV[1] or abort "usage: extract.rb SPEC_DIR OUT_DIR [glob]"
 GLOB     = ARGV[2] || "*_spec.rb"
 LITE     = File.read(File.join(__dir__, "mspec_lite.rb"))
 
-SPINEL_VERSION = [3, 4]   # the CRuby level spinel targets, for version guards
+SPINEL_VERSION = [4, 0]   # the CRuby level spinel targets, for version guards
 
 require "fileutils"
 FileUtils.mkdir_p(OUT_DIR)
 
 def version_guard_active?(kind, args)
-  # ruby_version_is "3.0" / "3.0"..."3.4" -- include body if 3.4 is in range.
+  # ruby_version_is "3.0" / "3.0"..."3.4" -- include body if 4.0 is in range.
   lo = args[/["']([\d.]+)["']/, 1]
   hi = args[/\.\.\.?\s*["']([\d.]+)["']/, 1]
   excl = args.include?("...")
