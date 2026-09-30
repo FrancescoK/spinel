@@ -10,9 +10,16 @@ on:
 # run cancels it. Every run was 13 jobs against a small runner pool, and a
 # busy afternoon queued 22 master runs and several per PR branch, so a
 # result arrived hours late; only the newest commit of a branch matters.
+#
+# On master a running run is left to finish: the macOS lane runs there only
+# (see the posix matrix), and its queue is long, so cancelling on every push
+# left no master run with a finished macOS job (five pushes in a row on
+# 2026-09-30). A push that arrives meanwhile waits as the group's one
+# pending run, which a newer push replaces, so master still tests its
+# newest commit next.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # The corpus is what a job's wall time is made of (six minutes of the
