@@ -42,7 +42,7 @@ def version_guard_active?(kind, args)
   ok = true
   ok &&= (cmp.(lo) <=> v) <= 0 if lo
   ok &&= excl ? (v <=> cmp.(hi)) < 0 : (v <=> cmp.(hi)) <= 0 if hi
-  kind == "ruby_version_is" ? ok : ok   # ruby_bug etc. default include
+  kind == "ruby_version_is" ? ok : hi ? !ok : !lo || (v <=> cmp.(lo)) > 0
 end
 
 def rewrite(line)
