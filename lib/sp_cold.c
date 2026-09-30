@@ -1672,10 +1672,37 @@ sp_bool sp_dir_empty(const char *path);
 const char *sp_dir_home_user(const char *user);
 sp_StrArray *sp_dir_children(const char *path);
 
+/* Does the UTF-8 text s[0..len) end inside a valid character, one that more
+   bytes could complete? A lead byte that can start no character (C0, C1, F5
+   and up), or a second byte out of the range its lead allows, is invalid at
+   once and is not waited for. */
+static int sp_File_tail_incomplete(const unsigned char *s, size_t len) {
+  size_t i = len;
+  int back = 0;
+  while (i > 0 && back < 3 && (s[i - 1] & 0xC0) == 0x80) { i--; back++; }
+  if (i == 0) return 0;
+  unsigned char lead = s[i - 1];
+  if (lead < 0xC2 || lead > 0xF4) return 0;
+  if (back >= 1) {
+    unsigned char lo = 0x80, hi = 0xBF, c1 = s[i];
+    if (lead == 0xE0) lo = 0xA0;
+    else if (lead == 0xED) hi = 0x9F;
+    else if (lead == 0xF0) lo = 0x90;
+    else if (lead == 0xF4) hi = 0x8F;
+    if (c1 < lo || c1 > hi) return 0;
+  }
+  int need = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : 2;
+  return need > back + 1;
+}
+
 const char *sp_File_gets_sep(sp_File *f, const char *sep, sp_int limit, sp_bool chomp) {SP_GC_ROOT(f);SP_GC_ROOT_STR(sep);
   SP_IO_OPEN(f);
   sp_io_wait_readable(f);
   SP_IO_OPEN(f);   /* the park can return after another thread closed the handle */
+  /* an empty separator is paragraph mode, a nil one (NULL) reads to the end;
+     a separator that starts with a NUL byte is not empty (strlen cannot tell) */
+  int para = sep && sep[0] == '\0' && sp_str_byte_len(sep) == 0;
+  if (para) sep = "\n\n";
   size_t sl = sep ? strlen(sep) : 0;
   /* fast path: the default "\n" separator with no limit reads via fgets
      (the byte-wise loop below costs a call per character) */
@@ -1685,7 +1712,8 @@ const char *sp_File_gets_sep(sp_File *f, const char *sep, sp_int limit, sp_bool 
     if (!buf) return NULL;
     if (!fgets(buf, 65536, f->fp)) { free(buf); return NULL; }
     size_t n = strlen(buf);
-    if (chomp && n && buf[n - 1] == '\n') n--;
+    /* chomp takes the "\r\n" of a line as well as its "\n" */
+    if (chomp && n && buf[n - 1] == '\n') { n--; if (n && buf[n - 1] == '\r') n--; }
     char *r = sp_str_alloc(n);
     memcpy(r, buf, n); r[n] = 0;
     free(buf);
@@ -1697,14 +1725,42 @@ const char *sp_File_gets_sep(sp_File *f, const char *sep, sp_int limit, sp_bool 
   char *buf = (char *)malloc(cap);
   if (!buf) return NULL;
   int ch;
+  /* a paragraph does not start with blank lines */
+  if (para) {
+    while ((ch = fgetc(f->fp)) == '\n') { }
+    if (ch != EOF) ungetc(ch, f->fp);
+  }
+  int ended = 0, extra = 16;
+  sp_int lim = limit;
   while ((ch = fgetc(f->fp)) != EOF) {
     if (len + 2 > cap) { cap *= 2; char *nb = (char *)realloc(buf, cap); if (!nb) { free(buf); return NULL; } buf = nb; }
     buf[len++] = (char)ch;
-    if (sl && len >= sl && memcmp(buf + len - sl, sep, sl) == 0) break;
-    if (limit > 0 && (sp_int)len >= limit) break;
+    /* as CRuby's getline: a byte that ends the separator is not checked
+       against the limit while fewer bytes than the separator are read, or
+       while the separator would start inside a character, and a limit
+       passed unchecked never stops that line */
+    if (sl && (unsigned char)ch == (unsigned char)sep[sl - 1]) {
+      if (len < sl) continue;
+      if (((unsigned char)buf[len - sl] & 0xC0) == 0x80 && len > sl) continue;
+      if (memcmp(buf + len - sl, sep, sl) == 0) { ended = 1; break; }
+    }
+    if (lim > 0 && (sp_int)len == lim) {
+      /* as CRuby's getline: a limit that falls inside a character reads on to
+         its end (by up to 16 bytes) */
+      if (extra > 0 && sp_File_tail_incomplete((const unsigned char *)buf, len)) { lim = (sp_int)len + 1; extra--; continue; }
+      break;
+    }
+  }
+  /* and the blank lines after one are not part of the next */
+  if (para && ended) {
+    while ((ch = fgetc(f->fp)) == '\n') { }
+    if (ch != EOF) ungetc(ch, f->fp);
   }
   if (len == 0) { free(buf); return NULL; }
-  if (chomp && sl && len >= sl && memcmp(buf + len - sl, sep, sl) == 0) len -= sl;
+  if (chomp && ended && sl && len >= sl && memcmp(buf + len - sl, sep, sl) == 0) {
+    len -= sl;
+    if (sl == 1 && sep[0] == '\n' && len && buf[len - 1] == '\r') len--;
+  }
   char *r = sp_str_alloc(len);
   memcpy(r, buf, len); r[len] = 0;
   sp_str_set_len(r, len);

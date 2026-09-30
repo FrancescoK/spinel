@@ -2727,6 +2727,12 @@ static SP_INLINE const char *sp_poly_arg_str(sp_RbVal v) {
   if (v.tag == SP_TAG_STR) return v.v.s;
   return sp_poly_arg_str_slow(v);
 }
+/* A line reader's separator argument: a boxed nil stays nil (NULL, read to
+   the end), where sp_poly_arg_str turns it into "", which is paragraph mode. */
+static SP_INLINE const char *sp_poly_sep_str(sp_RbVal v) {
+  if (v.tag == SP_TAG_NIL) return NULL;
+  return sp_poly_arg_str(v);
+}
 /* The object half of the check below, split out and kept off the inlined path
    for the reason sp_poly_arg_str_obj is: the object case is the rare one.
 

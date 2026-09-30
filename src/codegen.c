@@ -1074,6 +1074,17 @@ void emit_str_expr_nilable(Compiler *c, int node, Buf *b) {
   emit_str_expr_ex(c, node, 0, b);
 }
 
+/* A line reader's separator: nil (NULL) reads to the end and "" is paragraph
+   mode, so a boxed nil must not come out as "" as it does in a String slot. */
+void emit_str_expr_sep(Compiler *c, int node, Buf *b) {
+  if (yield_site_type(c, node) != TY_POLY) { emit_str_expr_nilable(c, node, b); return; }
+  int tmp; Buf *hb = conv_hold_begin(b, &tmp);
+  Buf *ob = hb ? hb : b;
+  buf_puts(ob, "sp_poly_sep_str(");
+  emit_expr(c, node, ob); buf_puts(ob, ")");
+  if (hb) conv_hold_end(tmp);
+}
+
 /* Is `node` a call bound to a user method whose C function is `void`
    (method_is_void)? Bound the way the direct-call emitters bind it: a
    receiverless call through the enclosing self, `Const.m` through the class

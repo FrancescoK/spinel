@@ -1,0 +1,214 @@
+--- 0 "a\nb\n\nc\n\n\nd"
+"a\nb\n\n"
+"a\nb"
+["a\nb\n\n", "c\n\n", "d"]
+["a\nb", "c", "d"]
+["a\nb\n\n", "c\n\n", "d"]
+["a\nb", "c", "d"]
+["a\nb\n\n", "c\n\n", "d"]
+["a\nb", "c", "d"]
+["a\nb\n\n", "c\n\n", "d"]
+["a\nb", "c", "d"]
+["a\nb\n\n", "c\n\n", "d"]
+["a\nb", "c", "d"]
+["a", "b", "", "c", "", "", "d"]
+["a\n", "b\n", "\n", "c\n", "\n", "\n", "d"]
+"a"
+["a", "b", "", "c", "", "", "d"]
+["a", "b", "", "c", "", "", "d"]
+"a"
+--- 1 "\n\n\na\n\nb\n"
+"a\n\n"
+"a"
+["a\n\n", "b\n"]
+["a", "b\n"]
+["a\n\n", "b\n"]
+["a", "b\n"]
+["a\n\n", "b\n"]
+["a", "b\n"]
+["a\n\n", "b\n"]
+["a", "b\n"]
+["a\n\n", "b\n"]
+["a", "b\n"]
+["", "", "", "a", "", "b"]
+["\n", "\n", "\n", "a\n", "\n", "b\n"]
+""
+["", "", "", "a", "", "b"]
+["", "", "", "a", "", "b"]
+""
+--- 2 "a\n\n\n\n"
+"a\n\n"
+"a"
+["a\n\n"]
+["a"]
+["a\n\n"]
+["a"]
+["a\n\n"]
+["a"]
+["a\n\n"]
+["a"]
+["a\n\n"]
+["a"]
+["a", "", "", ""]
+["a\n", "\n", "\n", "\n"]
+"a"
+["a", "", "", ""]
+["a", "", "", ""]
+"a"
+--- 3 "a\r\nb\r\n\r\nc\r\n"
+"a\r\nb\r\n\r\nc\r\n"
+"a\r\nb\r\n\r\nc\r\n"
+["a\r\nb\r\n\r\nc\r\n"]
+["a\r\nb\r\n\r\nc\r\n"]
+["a\r\nb\r\n\r\nc\r\n"]
+["a\r\nb\r\n\r\nc\r\n"]
+["a\r\nb\r\n\r\nc\r\n"]
+["a\r\nb\r\n\r\nc\r\n"]
+["a\r\nb\r\n\r\nc\r\n"]
+["a\r\nb\r\n\r\nc\r\n"]
+["a\r\nb\r\n\r\nc\r\n"]
+["a\r\nb\r\n\r\nc\r\n"]
+["a", "b", "", "c"]
+["a\r\n", "b\r\n", "\r\n", "c\r\n"]
+"a"
+["a", "b", "", "c"]
+["a", "b", "", "c"]
+"a"
+--- 4 "\n\n\n"
+nil
+nil
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+["", "", ""]
+["\n", "\n", "\n"]
+""
+["", "", ""]
+["", "", ""]
+""
+--- 5 ""
+nil
+nil
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+[]
+nil
+[]
+[]
+EOFError
+--- 6 "x"
+"x"
+"x"
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+["x"]
+"x"
+["x"]
+["x"]
+"x"
+--- 7 "para one\nline two\n\n\n\npara two\n"
+"para one\nline two\n\n"
+"para one\nline two"
+["para one\nline two\n\n", "para two\n"]
+["para one\nline two", "para two\n"]
+["para one\nline two\n\n", "para two\n"]
+["para one\nline two", "para two\n"]
+["para one\nline two\n\n", "para two\n"]
+["para one\nline two", "para two\n"]
+["para one\nline two\n\n", "para two\n"]
+["para one\nline two", "para two\n"]
+["para one\nline two\n\n", "para two\n"]
+["para one\nline two", "para two\n"]
+["para one", "line two", "", "", "", "para two"]
+["para one\n", "line two\n", "\n", "\n", "\n", "para two\n"]
+"para one"
+["para one", "line two", "", "", "", "para two"]
+["para one", "line two", "", "", "", "para two"]
+"para one"
+"ab"
+"abXc"
+["ab", "cd", "", "\r\nef\r\n\r\nghi\n\n\nj"]
+["abXcdXX\r\nef\r\n\r\nghi\n\n\nj"]
+["abXc", "dXX\r", "\n", "ef\r\n", "\r\n", "ghi\n", "\n", "\n", "j"]
+["abX", "cdX", "X", "\r\ne", "f\r\n", "\r\ng", "hi\n", "\n\nj"]
+["abXcdXX\r\n", "ef\r\n", "\r\n", "ghi\n", "\n", "\n", "j"]
+["abXcdXX", "ef", "", "ghi", "", "", "j"]
+[["abXcdXX\r\nef\r\n\r\nghi", "j"], 1]
+1
+7
+"abXcdXX\r\nef\r\n\r\nghi\n\n"
+"j"
+EOFError
+"abXcdXX\r\nef\r\n\r\nghi\n\n"
+"j"
+"a\n\nb"
+"a\n\nb"
+["\n"]
+["\n"]
+["a\n\n", "b\n\n", "c"]
+"a\n\n\nb\n\n\n\nc"
+"a\n\n\nb\n\n\n\nc"
+"a\n\n"
+["a\n", "\n", "\n", "b\n", "\n", "\n", "\n", "c"]
+["a\n", "\n", "\n", "b\n", "\n", "\n", "\n", "c"]
+["a\n\n", "b\n\n", "c"]
+["a\n\n", "b\n\n", "c"]
+["a", "b", "c"]
+["\n\n\n"]
+["\n\n", "\n"]
+["\n\n\n"]
+["a", "\nb\n"]
+["x", "\nx\n"]
+["é\nü\n\nñ\n\n\n日本語\n"]
+["ab3de\n", "fg\n", "\n", "h3\n"]
+["ab3", "de\nfg\n\nh3", "\n"]
+["ñ"]
+["a日"]
+["a日"]
+["日", "本", "語", "\n"]
+"日"
+["\xC0", "\x80"]
+["\xC0", "\x80"]
+["\xE0\x80", "\x80"]
+["\xE0\x80", "\x80"]
+["\xED\xA0", "\x80"]
+["\xED\xA0", "\x80"]
+["\xF4\x90", "\x80\x80"]
+["\xF4\x90", "\x80\x80"]
+["a\xFF", "b"]
+["a\xFF", "b"]
+["\xFF", "\xFF", "\xFF"]
+["\xFF", "\xFF", "\xFF"]
+["\xF0\x80", "\x80\x80"]
+["\xF0\x80", "\x80\x80"]
+["a\xA5\xA9b"]
+["a\xA5\xA9b"]
+["a\x80"]
+"a\r"
+["a", "b\r"]
+[["a", "b"], 1]
