@@ -45,6 +45,9 @@ jobs:
     timeout-minutes: 120
     strategy:
       fail-fast: false
+      # The account runs 20 jobs at once. A run keeps 8 of them free, so a
+      # big batch does not hold every other run's report behind it.
+      max-parallel: 12
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
       LEG: ${{ matrix.leg }}
