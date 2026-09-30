@@ -5765,7 +5765,9 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
       int ppk = rt == TY_POLY_POLY_HASH;
       int th = ++g_tmp, tf = ++g_tmp, ti = ++g_tmp, tv = ++g_tmp, tc2 = ++g_tmp;
       buf_printf(b, "({ sp_%sHash *_t%d = ", hnc, th); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);"
+      buf_printf(b, "; if (_t%d && sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);",
+                 th, th, th, hash_box_cls(rt));
+      buf_printf(b, " sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);"
                     " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {",
                  hnc, tf, hnc, tf, ti, ti, th, ti);
       if (ppk)
@@ -6560,20 +6562,28 @@ else {
         return 1;
       }
       if (sp_streq(name, "default=") && argc == 1) {
-        int t = ++g_tmp;
+        int t = ++g_tmp, tv = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b);
+        /* the value is evaluated before a frozen receiver refuses it, as a
+           setter's argument is */
+        char frz[160];
+        snprintf(frz, sizeof frz, " if (_t%d && sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);",
+                 t, t, t, hash_box_cls(rt));
         if (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH) {
-          buf_printf(b, "; if (_t%d) _t%d->default_v = ", t, t); emit_boxed(c, argv[0], b); buf_puts(b, "; ");
+          buf_printf(b, "; sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
+          buf_printf(b, ";%s if (_t%d) _t%d->default_v = _t%d; ", frz, t, t, tv);
         }
         else if (rt == TY_STR_INT_HASH || rt == TY_INT_INT_HASH) {
           /* nil is SP_INT_NIL in an Integer slot; nil emitted as an int is 0 */
-          buf_printf(b, "; if (_t%d) _t%d->default_v = ", t, t);
+          buf_printf(b, "; sp_int _t%d = ", tv);
           if (comp_ntype(c, argv[0]) == TY_NIL) buf_puts(b, "SP_INT_NIL"); else emit_expr(c, argv[0], b);
-          buf_puts(b, "; ");
+          buf_printf(b, ";%s if (_t%d) _t%d->default_v = _t%d; ", frz, t, t, tv);
         }
         else if (rt == TY_STR_STR_HASH || rt == TY_INT_STR_HASH) {
-          buf_printf(b, "; if (_t%d) _t%d->default_v = ", t, t); emit_expr(c, argv[0], b); buf_puts(b, "; ");
+          buf_printf(b, "; const char *_t%d = ", tv); emit_expr(c, argv[0], b);
+          buf_printf(b, ";%s if (_t%d) _t%d->default_v = _t%d; ", frz, t, t, tv);
         }
+        else buf_printf(b, ";%s ", frz);
         emit_expr(c, argv[0], b); buf_puts(b, "; })"); return 1;
       }
       if (sp_streq(name, "keys") && argc == 0 && rt == TY_SYM_POLY_HASH) {
@@ -6688,12 +6698,20 @@ else {
            without risking type confusion) falls through to the unsupported
            path rather than silently dropping or mistyping. */
         TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
-        /* merging an empty hash literal is a no-op; yield the receiver. (An
-           empty `{}` has no inferable variant, so it can't take the loop.) */
+        /* merging an empty hash literal changes nothing; yield the receiver,
+           after the frozen check. (An empty `{}` has no inferable variant, so
+           it can't take the loop.) */
         const char *aty0 = nt_type(nt, argv[0]);
         if (aty0 && (sp_streq(aty0, "HashNode") || sp_streq(aty0, "KeywordHashNode"))) {
           int en = 0; nt_arr(nt, argv[0], "elements", &en);
-          if (en == 0) { emit_expr(c, recv, b); return 1; }
+          if (en == 0) {
+            /* nothing to merge, but a frozen receiver refuses it all the same */
+            int te = ++g_tmp;
+            buf_printf(b, "({ %s _t%d = ", c_type_name(rt), te); emit_expr(c, recv, b);
+            buf_printf(b, "; if (_t%d && sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); _t%d; })",
+                       te, te, te, hash_box_cls(rt), te);
+            return 1;
+          }
         }
         TyKind at = comp_ntype(c, argv[0]);
         int blk = nt_ref(nt, id, "block");
@@ -7210,6 +7228,7 @@ else {
         int th = ++g_tmp, tp = ++g_tmp, tr = ++g_tmp, tk = ++g_tmp;
         buf_printf(b, "({ sp_%sHash *_t%d = ", hn, th); emit_expr(c, recv, b);
         buf_printf(b, "; SP_GC_ROOT(_t%d); sp_RbVal _t%d = sp_box_nil();", th, tr);
+        buf_printf(b, " if (_t%d && sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", th, th, th, hash_box_cls(rt));
         buf_printf(b, " if (_t%d && _t%d->len > 0) {", th, th);
         /* bind the first key (raw), used for both the pair and the delete */
         if (rt == TY_POLY_POLY_HASH)

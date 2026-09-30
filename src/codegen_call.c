@@ -38045,7 +38045,9 @@ else {
     int th2 = ++g_tmp, tp2 = ++g_tmp;
     buf_printf(b, "({ sp_%sHash *_t%d = ", hn2, th2); emit_expr(c, recv, b);
     buf_printf(b, "; sp_Proc *_t%d = ", tp2); emit_expr(c, argv[0], b);
-    buf_printf(b, "; _t%d->dproc = _sp_hash_dproc_%d; _t%d->dproc_self = (void *)_t%d;"
+    buf_printf(b, "; if (_t%d && sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);",
+               th2, th2, th2, hash_box_cls(hrt));
+    buf_printf(b, " _t%d->dproc = _sp_hash_dproc_%d; _t%d->dproc_self = (void *)_t%d;"
                   " sp_gc_wb((void *)_t%d); _t%d; })",
                th2, dn2, th2, tp2, th2, th2);
     return;
@@ -38095,7 +38097,9 @@ else {
        sp_XHash * into whatever slot the expression fed -- a Proc * one here
        (#3833). */
     buf_printf(b, "({ sp_%sHash *_t%d = ", hn2, th); emit_expr(c, recv, b);
-    buf_printf(b, "; _t%d->dproc = _sp_hash_dproc_%d; _t%d->dproc_self = NULL; ", th, dn, th);
+    buf_printf(b, "; if (_t%d && sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);",
+               th, th, th, hash_box_cls(hrt));
+    buf_printf(b, " _t%d->dproc = _sp_hash_dproc_%d; _t%d->dproc_self = NULL; ", th, dn, th);
     { TyKind vt = comp_ntype(c, id);
       if (vt == TY_PROC || vt == TY_POLY || vt == TY_UNKNOWN) {
         /* the proc value the call site wrote; re-emitting a literal lambda is
