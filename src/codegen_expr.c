@@ -2401,6 +2401,9 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     if (emit_empty_container_for_slot(c, v, ct, b)) { /* emitted at the slot's type */ }
     else if (ct == TY_POLY) emit_boxed(c, v, b);
     else if (emit_array_into_poly_slot(c, ct, v, b)) { }
+    /* the slot's nil, as the statement form writes it: an endless `def
+       self.b = (@@x = nil)` stored the numeric 0 a bare NilNode renders as */
+    else if (nt_kind(nt, v) == NK_NilNode && nil_value(ct)) buf_puts(b, nil_value(ct));
     /* a boxed value into a slot typed by its other writes (a writer's
        parameter reached through a `self.class.x =` dispatch, which boxes
        what it passes) is unboxed into the slot, as an ivar's is */

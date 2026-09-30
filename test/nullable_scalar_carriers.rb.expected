@@ -1,0 +1,28 @@
+1
+[nil, true, false, [1]]
+TypeError: nil can't be coerced into Integer
+ArgumentError: comparison of Integer with nil failed
+TypeError: can't convert nil into Integer
+7.5
+1
+[nil, [], []]
+NoMethodError: undefined method '>' for nil
+TypeError: nil can't be coerced into Integer
+[nil, true]
+[nil, []]
+1
+[nil, nil]
+NoMethodError: undefined method '>' for nil
+NoMethodError: undefined method '>' for nil
+ArgumentError: comparison of Integer with nil failed
+[1]
+[nil, true]
+NoMethodError: undefined method '+' for nil
+0
+[nil, true]
+NoMethodError: undefined method '>' for nil
+[nil, true]
+NoMethodError: undefined method '*' for nil
+[nil, []]
+NoMethodError: undefined method '>' for nil
+NoMethodError: undefined method '+' for nil
