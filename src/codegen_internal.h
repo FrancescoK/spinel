@@ -347,6 +347,9 @@ extern const char *g_yield_proc_ref_fallback;
 extern TyKind g_yield_slot_ty_fallback;
 extern const char *g_yield_lowered_blk_fallback;
 extern const char *g_yield_proc_ref;
+extern int g_yield_proc_expr;
+extern const char *g_yield_proc_expr_ref;
+void refuse_yield_string_copies(Compiler *c, int yargc, const int *yargv);
 extern TyKind g_yield_slot_ty;
 /* the forwarded proc one level further out still, the same pairing
    g_yield_self_fallback2 keeps for self: a literal block (B) handed to an
@@ -715,7 +718,7 @@ const char *cell_scan_fn(TyKind t);
 const char *cell_value_struct(TyKind t);
 const char *cell_value_struct_empty(TyKind t);
 void emit_cell_elem_type(Compiler *c, LocalVar *lv, Buf *b);
-void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int force_poly);
+void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *b, int force_poly);
 int call_args_need_spread(const NodeTable *nt, const int *argv, int argc);
 int emit_spread_args(Compiler *c, const int *argv, int argc);
 int emit_spread_args_kw(Compiler *c, const int *argv, int argc, char *kwpos, size_t kwsz);

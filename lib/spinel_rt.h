@@ -2474,10 +2474,17 @@ static inline sp_RbVal sp_poly_strbuf_deref(sp_RbVal v) {
   return v;
 }
 /* The shared handle behind a boxed value: a strbuf box directly, a plain
-   string box via a fresh handle (an unanalyzed flow -- conservative). */
+   string box via a fresh handle (an unanalyzed flow -- conservative). The
+   fresh handle takes the String's header length and marks, as
+   sp_String_new_shared does for every emitted String, with its bytes inside
+   the object since nothing else holds them (sp_String_new_fresh). Sized by
+   strlen, a binary String stopped at its first NUL, and a frozen one lost
+   its mark and took an append CRuby refuses: a proc or Method parameter
+   that is the handle reads every plain String argument through here
+   (#6179). */
 static inline sp_String *sp_poly_as_strbuf(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF) return (sp_String *)v.v.p;
-  if (v.tag == SP_TAG_STR && v.v.s) return sp_String_new(v.v.s);
+  if (v.tag == SP_TAG_STR && v.v.s) return sp_String_new_fresh(v.v.s);
   return sp_String_new((&("\xff")[1]));
 }
 static inline sp_bool sp_poly_is_strbuf(sp_RbVal v) {

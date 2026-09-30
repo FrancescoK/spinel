@@ -618,6 +618,48 @@ lambda or proc, of a `then` block, of a multiple assignment. Build the array
 as a general Array where it is created, or give the parameter the argument's
 kind (an rbs seed, or call sites that all pass the same kind).
 
+#### A String a method appends to is not yet shared through some dynamic calls
+
+A method that appends to its String parameter (`s << x`, `concat`,
+`insert`, a `!` method) changes the caller's String in CRuby, since both
+names hold the one object. Spinel shares the String by reference through a
+direct call, `send` with a literal name, `yield`, `super`, a poly receiver
+and a class value, and through a proc, a lambda and a `Method`: `.call`,
+`.()`, `[]`, `===` and `.yield` on one, a block kept as `&blk` and called
+later, `method(:m)` and `obj.method(:m)` and their `to_proc`. The paths
+below do not share it yet, and a call that would hand such a method a
+String variable through one of them is refused at compile time rather
+than compiled with the append lost:
+
+```ruby
+class Box
+  def initialize(s) = (s << "!")
+end
+s = +"a"
+Box.new(s)
+# spinel: t.rb:5: a String is passed to `initialize`'s parameter `s` through `Box.new`, which the method appends to: ...
+```
+
+Not yet shared:
+
+- `new`, into an `initialize` that appends (and so `raise Cls, s` and a
+  Struct's `initialize`);
+- `bind_call` and `instance_method(:m).bind(o)`;
+- a method `define_method` defines;
+- `instance_exec` and `class_exec`;
+- a curried proc;
+- a proc or `Method` read out of a slot that holds other values too;
+- a `yield` into a `Method` or proc passed with `&` (`run(s, &method(:m))`
+  into a method that yields);
+- through a proc or a `Method`, a String held by a block parameter, by a
+  variable a block or proc captures, or by an instance, global or class
+  variable.
+
+Each is lifted in turn, and this list shrinks with it. Until then, return
+the String from the method and assign it, or append to it in the caller. A
+literal or any other expression passed there is not refused: nothing else
+can see its growth.
+
 #### A reassigned block parameter, and `yield` inside a proc literal
 
 Assigning to a method's `&block` parameter used to be refused where it was

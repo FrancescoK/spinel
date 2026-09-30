@@ -5669,6 +5669,19 @@ static void emit_inlined_default(Compiler *c, Scope *m, int idx, Buf *out) {
   free(pre.p); free(val.p);
 }
 
+/* `+"lit"` bound to parameter `idx` of `m`, which is the shared handle
+   because a Method naming the method reaches it (LocalVar.dyn_handle): the
+   handle is made straight from the literal (sp_String_new_unfrozen). */
+static int dyn_handle_lit_arg(Compiler *c, Scope *m, int idx, int arg) {
+  const NodeTable *nt = c->nt;
+  if (!m || idx < 0 || idx >= m->nparams || !m->pnames[idx] || arg < 0) return 0;
+  LocalVar *p = scope_local(m, m->pnames[idx]);
+  if (!p || !p->dyn_handle || p->type != TY_STRBUF || nt_kind(nt, arg) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, arg, "name");
+  int r = nt_ref(nt, arg, "receiver");
+  return nm && sp_streq(nm, "+@") && nt_ref(nt, arg, "arguments") < 0 && r >= 0 &&
+         nt_kind(nt, r) == NK_StringNode;
+}
 /* A default a dispatch arm omits runs on the receiver as the arm's class: the
    caller's self may be another class, or none at all at top level (#4873). */
 void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out) {
@@ -5912,7 +5925,18 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
         buf_puts(out, srefP);
         return;
       }
-      buf_puts(out, "sp_String_new_shared(");
+      /* A parameter that is the handle because a Method reaches it (#6179):
+         a literal or a temporary is a String nobody else holds, so the
+         handle is made with its bytes inside the object, and `+"lit"`
+         straight from the literal rather than from a copy of it. */
+      if (!arg_ran_first(provided, 0) && dyn_handle_lit_arg(c, m, idx, provided)) {
+        buf_puts(out, "sp_String_new_unfrozen(");
+        emit_expr(c, nt_ref(c->nt, provided, "receiver"), out);
+        buf_puts(out, ")");
+        return;
+      }
+      buf_puts(out, p->dyn_handle && pk != NK_LocalVariableReadNode && pk != NK_InstanceVariableReadNode
+                      ? "sp_String_new_fresh(" : "sp_String_new_shared(");
       emit_str_expr(c, provided, out);
       buf_puts(out, ")");
       return;
@@ -9501,6 +9525,10 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
       if (aty && sp_streq(aty, "SplatNode")) continue;
       /* one the call ran first (emit_args_before_binding) reads its temp */
       if (arg_ran_first(argv[k], argov_saved)) continue;
+      /* `+"lit"` into a parameter that is the handle because a Method
+         reaches it: the binding builds the handle from the literal itself
+         (emit_arg_or_default), and a copy made here first went unused */
+      if (!seq && dyn_handle_lit_arg(c, m, k, argv[k])) continue;
       /* a bare read is already rooted where it lives */
       if (aty && (sp_streq(aty, "LocalVariableReadNode") ||
                   sp_streq(aty, "InstanceVariableReadNode") ||

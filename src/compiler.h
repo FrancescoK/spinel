@@ -167,6 +167,12 @@ typedef struct {
                        `equal?` is handle identity, matching CRuby's mutable
                        String object semantics (#3227). Plain TY_STRBUF (this
                        flag 0) stays the copy-on-read build-in-a-loop refinement. */
+  int dyn_handle;   /* (params, TY_STRBUF) the shared handle because a Method
+                       naming the method (`method(:m)`) can reach it and the
+                       method appends to it (#6179). A literal or a temporary a
+                       caller passes has nobody else holding it, so it goes over
+                       as a handle with its bytes inside the object
+                       (sp_String_new_fresh), not a separate malloc'd block. */
   int str_append;   /* (TY_STRBUF) an append accumulator: appended to inside a
                        loop and never read inside one, so the growable handle
                        makes each `<<` amortized O(1) instead of copying the

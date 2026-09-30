@@ -1886,7 +1886,7 @@ void emit_proc_ret_unbox(Compiler *c, TyKind rty, Buf *b) {
    side-channel, so every argument -- including a concrete-typed one -- must be
    boxed and published, not just the statically-poly ones. (A `yield` knows its
    block's parameter types, so it passes force_poly=0 and keeps the lean ABI.) */
-void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int force_poly) {
+void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *b, int force_poly) {
   int nargs = argc < 16 ? argc : 16;  /* proc-call ABI caps args at sp_int[16] */
   int any_poly = force_poly;
   /* A float arg also forces the boxed side-channel: an sp_float placed in the
@@ -1909,11 +1909,12 @@ void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int for
        published both unboxed (the sp_int[] slot, for a concrete parameter)
        and boxed (the side-channel, for a poly parameter). A nil/unknown arg
        has no storable C type; it rides an sp_int temp and boxes to nil. */
-    int atmp[16];
+    int atmp[16], slot[16];
     for (int k = 0; k < nargs; k++) {
       TyKind at = comp_ntype(c, argv[k]);
       int storable = ty_is_object(at) || c_type_name(at) != NULL;
       atmp[k] = ++g_tmp;
+      slot[k] = -1;
       /* render the value into a side buffer first: emit_expr drains the arg's
          own prelude (e.g. a nested proc call) into g_pre, which must land
          before -- not inside -- this temp's declaration line. */
@@ -1938,6 +1939,28 @@ void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int for
       }
       else if (proc_slot_is_ptr(at) || at == TY_PROC) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", atmp[k]); }
       free(vb.p);
+      /* A shared String handle (#6179) rides the box, which a boxed or handle
+         parameter reads and appends through. A plain String parameter reads
+         the sp_int slot instead, and the handle's live bytes are malloc'd
+         and move on its next growing append: a target that keeps what it
+         reads (stores it, answers it, hands it on) would hold freed memory.
+         So the slot carries the live bytes only when every target the call
+         can reach reads the box or only reads the bytes, and otherwise a
+         copy taken here, in argument order, rooted for the call. */
+      if (at == TY_STRBUF) {
+        DynReach r;
+        int live = 0;
+        if (call >= 0 && dyn_call_site(c, call)) {
+          dyn_call_reach(c, call, k, &r);
+          live = !r.unknown && !r.keeps && !r.unlifted;
+        }
+        if (!live) {
+          slot[k] = ++g_tmp;
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "const char *_t%d = sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])); SP_GC_ROOT(_t%d);\n",
+                     slot[k], atmp[k], slot[k]);
+        }
+      }
     }
     /* The boxed side channel is ONE global array, so its writes belong to the
        call, not to the statement above it. As prelude lines, two calls in one
@@ -1970,6 +1993,8 @@ void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int for
          object type, a value-type one included, and a struct cast to
          (sp_int)(uintptr_t) does not compile */
       else if (at == TY_FLOAT || proc_slot_via_poly(c, at)) buf_puts(b, "0");  /* rides the boxed side-channel; the sp_int slot is dead */
+      else if (at == TY_STRBUF && slot[k] >= 0) buf_printf(b, "(sp_int)(uintptr_t)_t%d", slot[k]);
+      else if (at == TY_STRBUF) buf_printf(b, "(sp_int)(uintptr_t)sp_String_cstr(_t%d)", atmp[k]);
       else if (proc_slot_is_ptr(at) || at == TY_PROC) buf_printf(b, "(sp_int)(uintptr_t)_t%d", atmp[k]);
       else buf_printf(b, "_t%d", atmp[k]);
     }
@@ -21829,8 +21854,440 @@ static int emit_recv_snapshot(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* ---- A String a method appends to, handed over as a copy (#6179) --------
+
+   CRuby hands a method the caller's String itself, so an append the method
+   makes (`s << x`, concat, insert, a `!` method) is the caller's. Spinel
+   shares the String by reference through a direct call, `send` with a
+   literal name, `yield`, `super`, a poly receiver and a class value, and
+   through a proc, a lambda and a Method (promote_dyncall_string_args). The
+   paths below do not share it yet: each hands the method a copy of a String
+   variable, and the append would be lost without a word. Until each is
+   lifted it is refused when the program is built, with this diagnostic,
+   rather than compiled with the append lost, as Matz ruled on #6179. The
+   list shrinks as the paths are lifted (docs/limitations.md). A literal or
+   any other expression is never refused: nothing else can see its growth. */
+
+/* A String variable the argument reads, described for the diagnostic, or
+   NULL for anything else. *shared says the read hands over the shared handle
+   itself (a pulled local), which the lifted paths share. */
+static const char *strvar_arg(Compiler *c, int a, int *shared) {
+  const NodeTable *nt = c->nt;
+  *shared = 0;
+  if (a < 0) return NULL;
+  TyKind at = comp_ntype(c, a);
+  NodeKind k = nt_kind(nt, a);
+  if (k == NK_LocalVariableReadNode) {
+    if (at != TY_STRING && at != TY_STRBUF) return NULL;
+    const char *vn = nt_str(nt, a, "name");
+    Scope *vs = vn ? comp_scope_of(c, a) : NULL;
+    LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+    if (!lv) return NULL;
+    *shared = at == TY_STRBUF && lv->type == TY_STRBUF && lv->str_shared;
+    if (lv->is_block_param) return "a block's parameter";
+    if (lv->is_cell) return "a variable a block or a proc captures";
+    return lv->is_param ? "a parameter" : "a local variable";
+  }
+  if (at != TY_STRING && at != TY_STRBUF) return NULL;
+  if (k == NK_InstanceVariableReadNode) return "an instance variable";
+  if (k == NK_GlobalVariableReadNode) return "a global variable";
+  if (k == NK_ClassVariableReadNode) return "a class variable";
+  return NULL;
+}
+
+/* The node a refusal names: the argument, or the call when the argument is
+   one a rewrite made and carries no position of its own, or else the last
+   call emitted that has one (`[s].each(&method(:m))` is rewritten to a
+   block whose nodes have none). */
+static int g_refuse_call = -1, g_refuse_outer = -1;
+static __attribute__((noreturn)) void refuse_string_copy(Compiler *c, int arg, const char *target,
+                                                         const char *pname, const char *through,
+                                                         const char *why) {
+  int is_method = target && target[0] == '`';
+  if (nt_int(c->nt, arg, "node_line", 0) <= 0 && g_refuse_call >= 0) arg = g_refuse_call;
+  if (nt_int(c->nt, arg, "node_line", 0) <= 0 && g_refuse_outer >= 0) arg = g_refuse_outer;
+  char msg[768];
+  /* a target the compiler cannot name (a slot, a curried proc): some proc
+     or Method the program has appends to a String parameter */
+  if (!pname) {
+    snprintf(msg, sizeof msg,
+             "a String is passed through %s, and a proc or Method it can reach appends to the String "
+             "it is handed: this call hands it a copy, so the append would not reach the caller's String "
+             "(a String is not yet shared by reference %s). Return the String from the proc or Method and "
+             "assign it, or append to it in the caller.", through, why);
+    unsupported_feature(c, arg, msg);
+  }
+  snprintf(msg, sizeof msg,
+           "a String is passed to %s's parameter `%s` through %s, which the %s appends to: this call "
+           "hands the %s a copy, so the append would not reach the caller's String (a String is not yet "
+           "shared by reference %s). Return the String from the %s and assign it, or append to it in "
+           "the caller.",
+           target ? target : "a proc", pname ? pname : "?", through, is_method ? "method" : "proc",
+           is_method ? "method" : "proc", why, is_method ? "method" : "proc");
+  unsupported_feature(c, arg, msg);
+}
+
+/* Does a method's parameter take a String by value, so that a String
+   variable bound to it arrives as a copy? A handle parameter is shared
+   through the static binders already (#3227, #5957), and a boxed one
+   appends through the box when the caller's variable is the handle. */
+static int refuse_param_copies(Compiler *c, int mi, int j, int arg) {
+  Scope *m = &c->scopes[mi];
+  LocalVar *q = j < m->nparams && m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
+  if (!q || q->byref_out) return 0;
+  if (q->type == TY_STRBUF && q->str_shared) return 0;
+  if (q->type == TY_POLY) {
+    int shared;
+    const char *k = strvar_arg(c, arg, &shared);
+    if (!k) return 0;
+    if (nt_kind(c->nt, arg) == NK_LocalVariableReadNode) {
+      const char *vn = nt_str(c->nt, arg, "name");
+      Scope *vs = vn ? comp_scope_of(c, arg) : NULL;
+      LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+      if (lv && lv->str_shared) return 0;
+    }
+    return 1;
+  }
+  return q->type == TY_STRING || q->type == TY_STRBUF;
+}
+
+/* The positional arguments of a call, and a splat of an Array literal (or
+   of a local every write of which is one) laid out where its elements land:
+   the parser folds `f.call(s, *e)` into one splat of `[s, *e]`. Answers the
+   count; positions past a splat of anything else are unknown and dropped. */
+static int refuse_arg_layout(Compiler *c, int id, int *out, int cap) {
+  const NodeTable *nt = c->nt;
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  int n = 0;
+  for (int i = 0; i < ac && n < cap; i++) {
+    NodeKind k = nt_kind(nt, av[i]);
+    if (k == NK_KeywordHashNode || k == NK_BlockArgumentNode) break;
+    if (k != NK_SplatNode) { out[n++] = av[i]; continue; }
+    int x = nt_ref(nt, av[i], "expression");
+    if (x >= 0 && nt_kind(nt, x) == NK_ArrayNode) {
+      int en = 0; const int *ev = nt_arr(nt, x, "elements", &en);
+      for (int e = 0; e < en && n < cap; e++) {
+        if (nt_kind(nt, ev[e]) == NK_SplatNode) return n;
+        out[n++] = ev[e];
+      }
+      continue;
+    }
+    return n;
+  }
+  return n;
+}
+
+/* Does a call bind its arguments to a target taking the parameters of
+   ParametersNode `pn` at all? A count or a keyword the target cannot take is
+   CRuby's ArgumentError before the body runs, and a `**` of a non-Hash its
+   TypeError, so nothing is appended and there is no copy to refuse. A block
+   (`is_block`) takes any count. What the compiler cannot judge -- a splat,
+   a `**` of a Hash -- answers yes. `first` skips the arguments that are not
+   the target's (`raise C, s`'s class, `bind_call`'s receiver). */
+static int refuse_call_binds(Compiler *c, int pn, int id, int first, int is_block) {
+  const NodeTable *nt = c->nt;
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  int kwh = -1, npos = 0, splat = 0;
+  for (int i = first; i < ac; i++) {
+    NodeKind k = nt_kind(nt, av[i]);
+    if (k == NK_KeywordHashNode) kwh = av[i];
+    else if (k == NK_SplatNode) splat = 1;
+    else if (k != NK_BlockArgumentNode) npos++;
+  }
+  int R = 0, O = 0, P = 0, K = 0;
+  const int *kws = NULL;
+  int rest = pn >= 0 && nt_ref(nt, pn, "rest") >= 0;
+  int kwrest = pn >= 0 && nt_ref(nt, pn, "keyword_rest") >= 0;
+  if (pn >= 0) {
+    nt_arr(nt, pn, "requireds", &R); nt_arr(nt, pn, "optionals", &O); nt_arr(nt, pn, "posts", &P);
+    kws = nt_arr(nt, pn, "keywords", &K);
+  }
+  /* the keys: the literal ones, and those of a `**` of a local every write
+     of which is a Hash literal; any other `**` leaves them unknown */
+  int dsplat = 0, keys[64], nkeys = 0;
+  int en = 0; const int *el = kwh >= 0 ? nt_arr(nt, kwh, "elements", &en) : NULL;
+  for (int e = 0; e < en; e++) {
+    if (nt_kind(nt, el[e]) != NK_AssocSplatNode) {
+      if (nkeys < 64) keys[nkeys++] = nt_ref(nt, el[e], "key");
+      continue;
+    }
+    int x = nt_ref(nt, el[e], "value");
+    TyKind xt = x >= 0 ? comp_ntype(c, x) : TY_UNKNOWN;
+    if (x >= 0 && !ty_is_hash(xt) && xt != TY_NIL && xt != TY_POLY && xt != TY_UNKNOWN) return 0;
+    int known = 0;
+    if (x >= 0 && nt_kind(nt, x) == NK_LocalVariableReadNode) {
+      const char *xn = nt_str(nt, x, "name");
+      Scope *xs = xn ? comp_scope_of(c, x) : NULL;
+      known = xs != NULL;
+      for (int w = xs ? comp_lvw_first_sc(c, (int)(xs - c->scopes), xn) : -1; w >= 0 && known; w = comp_lvw_next_sc(c, w)) {
+        if (comp_scope_of(c, w) != xs || !nt_str(nt, w, "name") || !sp_streq(nt_str(nt, w, "name"), xn)) continue;
+        int wv = nt_kind(nt, w) == NK_LocalVariableWriteNode ? nt_ref(nt, w, "value") : -1;
+        if (wv < 0 || nt_kind(nt, wv) != NK_HashNode) { known = 0; break; }
+        int hn = 0; const int *hv = nt_arr(nt, wv, "elements", &hn);
+        for (int h = 0; h < hn && known; h++) {
+          if (nt_kind(nt, hv[h]) == NK_AssocSplatNode) known = 0;
+          else if (nkeys < 64) keys[nkeys++] = nt_ref(nt, hv[h], "key");
+        }
+      }
+    }
+    if (!known) dsplat = 1;
+  }
+  /* a keyword hash is one more positional to a target without keywords */
+  if (kwh >= 0 && !K && !kwrest) { npos++; kwh = -1; }
+  if (!is_block && !splat) {
+    if (npos < R + P) return 0;
+    if (!rest && npos > R + O + P) return 0;
+  }
+  if (kwh < 0 && !dsplat) {
+    for (int i = 0; i < K; i++)
+      if (nt_type(nt, kws[i]) && sp_streq(nt_type(nt, kws[i]), "RequiredKeywordParameterNode")) return 0;
+    return 1;
+  }
+  if (dsplat) return 1;
+  for (int i = 0; i < K; i++) {
+    if (!nt_type(nt, kws[i]) || !sp_streq(nt_type(nt, kws[i]), "RequiredKeywordParameterNode")) continue;
+    const char *kn = nt_str(nt, kws[i], "name");
+    int found = 0;
+    for (int e = 0; e < nkeys && !found; e++) {
+      int key = keys[e];
+      found = key >= 0 && nt_kind(nt, key) == NK_SymbolNode && kn && nt_str(nt, key, "value") &&
+              sp_streq(nt_str(nt, key, "value"), kn);
+    }
+    if (!found) return 0;
+  }
+  if (!kwrest)
+    for (int e = 0; e < nkeys; e++) {
+      int key = keys[e];
+      if (key < 0 || nt_kind(nt, key) != NK_SymbolNode) return 0;
+      const char *kv = nt_str(nt, key, "value");
+      int known = 0;
+      for (int i = 0; i < K && !known; i++) known = kv && nt_str(nt, kws[i], "name") && sp_streq(nt_str(nt, kws[i], "name"), kv);
+      if (!known) return 0;
+    }
+  return 1;
+}
+/* The ParametersNode of a method scope: a def's, or the block's of the
+   `define_method` that made it. */
+static int refuse_scope_params(Compiler *c, Scope *m) {
+  const NodeTable *nt = c->nt;
+  if (!m || m->def_node < 0) return -1;
+  if (nt_kind(nt, m->def_node) == NK_DefNode) return nt_ref(nt, m->def_node, "parameters");
+  int b = nt_ref(nt, m->def_node, "block");
+  int bp = b >= 0 ? nt_ref(nt, b, "parameters") : -1;
+  return bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
+}
+
+/* `C.new(args)`'s class, when C is a class constant, or -1. */
+static int refuse_new_class(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0) return -1;
+  NodeKind rk = nt_kind(nt, recv);
+  if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) return -1;
+  const char *cn = nt_str(nt, recv, "name");
+  return cn ? comp_class_index(c, cn) : -1;
+}
+
+/* The method scope a static call names, when it is a define_method body. */
+static int refuse_dm_target(Compiler *c, int id, const char *name) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  int cls = -1;
+  if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
+    Scope *encl = comp_scope_of(c, id);
+    cls = encl ? encl->class_id : -1;
+  }
+  else {
+    TyKind rt = comp_ntype(c, recv);
+    if (ty_is_object(rt)) cls = ty_object_class(rt);
+  }
+  int mi = cls >= 0 ? comp_method_in_chain(c, cls, name, NULL) : comp_method_index(c, name);
+  if (mi < 0) return -1;
+  int dn = c->scopes[mi].def_node;
+  if (dn < 0 || nt_kind(nt, dn) != NK_CallNode) return -1;
+  const char *dname = nt_str(nt, dn, "name");
+  return dname && sp_streq(dname, "define_method") ? mi : -1;
+}
+
+/* `yield(s)` into a real proc (`run(s, &method(:m))`, `run(s, &pr)`, a
+   lowered or proc-form method's block): the yield boxes a copy, and the
+   proc's parameter takes it. */
+void refuse_yield_string_copies(Compiler *c, int yargc, const int *yargv) {
+  for (int k = 0; k < yargc && k < 16; k++) {
+    int shared;
+    if (nt_kind(c->nt, yargv[k]) == NK_SplatNode) return;
+    if (!strvar_arg(c, yargv[k], &shared)) continue;
+    DynReach r;
+    dyn_value_reach(c, g_yield_proc_expr, k, &r);
+    if (!r.app) continue;
+    if (r.mname) {
+      char mt[96]; snprintf(mt, sizeof mt, "`%s`", r.mname);
+      refuse_string_copy(c, yargv[k], mt, r.pname, "a yield into a block argument",
+                         "through a `yield` into a Method or proc passed with `&`");
+    }
+    refuse_string_copy(c, yargv[k], NULL, r.pname, "a yield into a block argument",
+                       "through a `yield` into a Method or proc passed with `&`");
+  }
+}
+
+static void refuse_string_copies(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name) return;
+  g_refuse_call = id;
+  int recv = nt_ref(nt, id, "receiver");
+  int av[16];
+  int dyn = sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]") ||
+            sp_streq(name, "yield") || sp_streq(name, "===");
+  /* a proc, a lambda or a Method: shared, unless the String is a variable
+     the call cannot pull into the handle, or the target is reached through
+     a path not lifted yet */
+  if (dyn && dyn_call_site(c, id)) {
+    /* the call as written, for the diagnostic: `f.call`, `f[]`, `m.()` */
+    char call[160], rtxt[96];
+    { NodeKind rk = nt_kind(nt, recv);
+      const char *rn = rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode ? nt_str(nt, recv, "name") : NULL;
+      const char *ms = rk == NK_CallNode ? method_sym_arg(c, recv) : NULL;
+      if (rn) snprintf(rtxt, sizeof rtxt, "%s", rn);
+      else if (ms) snprintf(rtxt, sizeof rtxt, "method(:%s)", ms);
+      else if (rk == NK_LambdaNode || dyn_call_site(c, id)) snprintf(rtxt, sizeof rtxt, "%s", comp_ntype(c, recv) == TY_METHOD ? "a Method" : "a proc");
+      if (sp_streq(name, "[]")) snprintf(call, sizeof call, "`%s[]`", rtxt);
+      else snprintf(call, sizeof call, "`%s.%s`", rtxt, sp_streq(name, "()") ? "()" : name); }
+    int n = refuse_arg_layout(c, id, av, 16);
+    for (int k = 0; k < n; k++) {
+      int shared;
+      const char *kind = strvar_arg(c, av[k], &shared);
+      if (!kind) continue;
+      DynReach r;
+      dyn_call_reach(c, id, k, &r);
+      if (r.unlifted && (r.app || r.unknown)) {
+        if (sp_streq(r.unlifted, "bind"))
+          refuse_string_copy(c, av[k], r.mname ? r.mname : "`?`", r.pname, "`bind(...).call`",
+                             "through an UnboundMethod bound with `bind`");
+        refuse_string_copy(c, av[k], NULL, r.pname, "a curried proc", "through `curry`");
+      }
+      if (shared || !r.app) continue;
+      char why[96]; snprintf(why, sizeof why, "from %s", kind);
+      char mt[96]; if (r.mname) snprintf(mt, sizeof mt, "`%s`", r.mname);
+      refuse_string_copy(c, av[k], r.mname ? mt : NULL, r.pname, call, why);
+    }
+    return;
+  }
+  /* a proc or a Method read out of a slot that holds other values too, or a
+     curried proc (which re-boxes what it collects): the call boxes a copy
+     for whatever it reaches */
+  if (dyn && recv >= 0 && (comp_ntype(c, recv) == TY_POLY || comp_ntype(c, recv) == TY_CURRY)) {
+    int curried = comp_ntype(c, recv) == TY_CURRY;
+    int n = refuse_arg_layout(c, id, av, 16);
+    for (int k = 0; k < n; k++) {
+      int shared;
+      if (!strvar_arg(c, av[k], &shared)) continue;
+      DynReach r;
+      dyn_value_reach(c, -1, k, &r);
+      if (r.app)
+        refuse_string_copy(c, av[k], NULL, NULL,
+                           curried ? "a curried proc" : "a proc or Method read out of a slot that holds other values",
+                           curried ? "through `curry`" : "through such a slot");
+    }
+    return;
+  }
+  /* `C.new(s)` and `raise C, s`: the class's initialize keeps the value ABI
+     (compute_byref_out_params), since about two dozen emitters call its
+     constructor wrapper with values */
+  int ncls = -1, first = 0;
+  const char *through = NULL;
+  char thr[160];
+  if (sp_streq(name, "new")) {
+    ncls = refuse_new_class(c, recv);
+    if (ncls >= 0) { snprintf(thr, sizeof thr, "`%s.new`", nt_str(nt, recv, "name")); through = thr; }
+  }
+  else if (sp_streq(name, "raise") && recv < 0) {
+    int a = nt_ref(nt, id, "arguments"), ac = 0;
+    const int *rv = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    if (ac >= 2) { ncls = refuse_new_class(c, rv[0]); first = 1; through = "`raise`"; }
+  }
+  if (ncls >= 0) {
+    int mi = comp_method_in_chain(c, ncls, "initialize", NULL);
+    if (mi < 0 || !refuse_call_binds(c, refuse_scope_params(c, &c->scopes[mi]), id, first, 0)) return;
+    int n = refuse_arg_layout(c, id, av, 16);
+    for (int k = first; k < n; k++) {
+      int shared;
+      if (!strvar_arg(c, av[k], &shared)) continue;
+      if (dyn_method_appends(c, mi, k - first) && refuse_param_copies(c, mi, k - first, av[k]))
+        refuse_string_copy(c, av[k], "`initialize`", c->scopes[mi].pnames[k - first], through,
+                           sp_streq(name, "new") ? "through `new`" : "through `raise`");
+    }
+    return;
+  }
+  /* `M.instance_method(:m).bind_call(o, s)`: the method keeps the value ABI
+     (an `instance_method` literal is a DYN name) */
+  if (sp_streq(name, "bind_call") && recv >= 0) {
+    int mn = method_recv_node(c, recv);
+    int mi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
+    if (mi < 0 || !refuse_call_binds(c, refuse_scope_params(c, &c->scopes[mi]), id, 1, 0)) return;
+    int n = refuse_arg_layout(c, id, av, 16);
+    for (int k = 1; k < n; k++) {
+      int shared;
+      if (!strvar_arg(c, av[k], &shared)) continue;
+      if (dyn_method_appends(c, mi, k - 1) && refuse_param_copies(c, mi, k - 1, av[k])) {
+        char mt[96]; snprintf(mt, sizeof mt, "`%s`", c->scopes[mi].name);
+        refuse_string_copy(c, av[k], mt, c->scopes[mi].pnames[k - 1], "`bind_call`", "through `bind_call`");
+      }
+    }
+    return;
+  }
+  /* `o.instance_exec(s) { |t| t << x }`: the block's parameter is bound as a
+     plain assignment */
+  if (sp_streq(name, "instance_exec") || sp_streq(name, "class_exec") || sp_streq(name, "module_exec")) {
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return;
+    { int bp = nt_ref(nt, blk, "parameters");
+      if (!refuse_call_binds(c, bp >= 0 ? nt_ref(nt, bp, "parameters") : -1, id, 0, 1)) return; }
+    int n = refuse_arg_layout(c, id, av, 16);
+    for (int k = 0; k < n; k++) {
+      int shared;
+      if (!strvar_arg(c, av[k], &shared)) continue;
+      if (dyn_block_appends(c, blk, k)) {
+        char thr2[48]; snprintf(thr2, sizeof thr2, "`%s`", name);
+        char why2[64]; snprintf(why2, sizeof why2, "through `%s`", name);
+        refuse_string_copy(c, av[k], "a block", proc_param_name(c, blk, k), thr2, why2);
+      }
+    }
+    return;
+  }
+  /* a method `define_method` defines keeps the value ABI (a DYN name) */
+  if (dyn) return;
+  static int dm_any = -1;
+  if (dm_any < 0) {
+    dm_any = 0;
+    for (int mi = 1; mi < c->nscopes && !dm_any; mi++) {
+      int dn = c->scopes[mi].def_node;
+      if (dn < 0 || nt_kind(nt, dn) != NK_CallNode || !nt_str(nt, dn, "name") ||
+          !sp_streq(nt_str(nt, dn, "name"), "define_method")) continue;
+      for (int j = 0; j < c->scopes[mi].nparams && !dm_any; j++) dm_any = dyn_method_appends(c, mi, j);
+    }
+  }
+  if (!dm_any) return;
+  int dmi = refuse_dm_target(c, id, name);
+  if (dmi >= 0 && refuse_call_binds(c, refuse_scope_params(c, &c->scopes[dmi]), id, 0, 0)) {
+    int n = refuse_arg_layout(c, id, av, 16);
+    for (int k = 0; k < n; k++) {
+      int shared;
+      if (!strvar_arg(c, av[k], &shared)) continue;
+      if (dyn_method_appends(c, dmi, k) && refuse_param_copies(c, dmi, k, av[k])) {
+        char mt[96]; snprintf(mt, sizeof mt, "`%s`", name);
+        refuse_string_copy(c, av[k], mt, c->scopes[dmi].pnames[k], "a method `define_method` defines",
+                           "into a `define_method` body");
+      }
+    }
+  }
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   int nd_saved = g_nd_call_id; g_nd_call_id = id;
+  if (nt_int(c->nt, id, "node_line", 0) > 0) g_refuse_outer = id;
+  refuse_string_copies(c, id);
   int grecv = -1;
   int guard = nil_recv_guard(c, id, &grecv);
   if (guard) {
@@ -23008,6 +23465,9 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
         else if (pt == TY_POLY) buf_puts(pb, slot);
         else if (pt == TY_FLOAT) buf_printf(pb, "sp_poly_to_f(%s)", slot);
         else if (pt == TY_SYMBOL) buf_printf(pb, "(sp_sym)args[%s]", idx);
+        /* a handle parameter (#6179) takes the caller's handle off the box;
+           the sp_int slot holds bytes */
+        else if (pt == TY_STRBUF) buf_printf(pb, "sp_poly_as_strbuf(%s)", slot);
         else if (proc_slot_is_ptr(pt)) { buf_puts(pb, "("); emit_ctype(c, pt, pb); buf_printf(pb, ")(uintptr_t)args[%s]", idx); }
         else if (pt == TY_PROC) buf_printf(pb, "(sp_Proc *)(uintptr_t)args[%s]", idx);
         else if (proc_slot_via_poly(c, pt)) emit_unbox_text(c, pt, slot, pb);
@@ -23078,6 +23538,7 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
     else if (pt == TY_POLY) buf_printf(&args, "_sp_proc_poly_args[%d]", k - shift);
     else if (pt == TY_FLOAT) buf_printf(&args, "sp_poly_to_f(_sp_proc_poly_args[%d])", k - shift);
     else if (pt == TY_SYMBOL) buf_printf(&args, "(sp_sym)args[%d]", k - shift);
+    else if (pt == TY_STRBUF) buf_printf(&args, "sp_poly_as_strbuf(_sp_proc_poly_args[%d])", k - shift);
     else if (proc_slot_is_ptr(pt)) {
       buf_puts(&args, "(");
       emit_ctype(c, pt, &args);
@@ -28096,7 +28557,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     if (proc_nil_raises) buf_printf(b, ", \"%s\")", proc_meth);
     if (blk_tmp[0]) buf_printf(b, ", %s", blk_tmp);
     buf_puts(b, ", ");
-    emit_proc_call_args(c, argc, argv, b, 1);  /* emits args + the closing `)` */
+    emit_proc_call_args(c, id, argc, argv, b, 1);  /* emits args + the closing `)` */
     buf_puts(b, ", ");
     emit_proc_ret_unbox(c, rty, b);
     buf_puts(b, ")");

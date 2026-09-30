@@ -16076,6 +16076,690 @@ static int convert_byref_handle_params(Compiler *c,
   return changed;
 }
 
+/* ---- A String handed to a proc, a lambda or a Method (#6179) ----------
+
+   `f.call(s)`, `f.(s)`, `f[s]`, `f === s` and `m.call(s)` go through one
+   type-erased entry: the caller boxes each argument into _sp_proc_poly_args
+   and lays its plain value beside it in the sp_int slot, and the target
+   reads whichever its parameter's type wants. A plain String went over as
+   its bytes either way, so a target that appended to it grew a copy, and
+   the caller's String never changed where CRuby changes the one object both
+   names hold.
+
+   A String variable handed to such a call becomes the shared handle (#3227)
+   when a target the call can reach appends to the parameter it binds; the
+   call then boxes the handle, and the target's parameter reads the box and
+   appends to it in place. The question is asked per target, not per
+   program, as Matz ruled on #6179: a proc in a hot loop that only reads its
+   String keeps the plain `const char *`, and so does every caller of it.
+
+   A call's targets are what its receiver can hold:
+   - a proc literal (`->`, `lambda {}`, `proc {}`, `Proc.new {}`) or a block
+     a method keeps as `&blk`: the body appends to the parameter (`<<`,
+     concat, insert, a `!` method, ...) or hands it on to a user method whose
+     parameter there is lent, the handle, or appended to;
+   - `method(:m)` / `obj.method(:m)` / `public_method`, and `to_proc` of
+     one: the method it names;
+   - a local: every value written to it; a method's `&blk`: the blocks its
+     call sites pass.
+   Anything else is unknown, and an unknown target counts as appending only
+   when the program has some target that appends at all, so a program with
+   none keeps its C. */
+
+#define DYN_ARGS 16            /* the proc-call ABI's cap (sp_int[16]) */
+#define DYN_DONE 0x80000000u   /* memo entry computed this pass */
+
+/* Per pass, what each proc literal, kept block and method does with its
+   positional parameters: bits 0-15 appended, bits 16-29 read for more than
+   their bytes (kept, returned, handed on; a position past 13 always counts
+   as kept). The answers depend on parameter
+   types the fixpoint is still settling, so the memo is thrown away at the
+   start of every pass; within one pass each body is walked once, however
+   many call sites reach it. */
+static struct {
+  unsigned *lit;      /* per node: a proc literal or a block */
+  unsigned *meth;     /* per scope: a method */
+  unsigned *blk;      /* per scope: the blocks its call sites pass as `&blk` */
+  int nlit, nscope;
+  int any;            /* -1 not asked yet, else "some target appends" */
+  ANameHash bnames;   /* call names that pass a block, and their calls */
+  int *bhead, *bnext, bcap, bn, bbuilt;
+  int *bnode;
+  ANameHash snames;   /* method names, and the scopes of each (snext chains) */
+  int *shead, *snext, sbuilt;
+  int fresh;          /* 0 once analysis has changed types since the memo filled */
+} g_dyn;
+
+static void dyn_memo_reset(Compiler *c) {
+  free(g_dyn.lit); free(g_dyn.meth); free(g_dyn.blk);
+  anh_free(&g_dyn.bnames);
+  free(g_dyn.bhead); free(g_dyn.bnext); free(g_dyn.bnode);
+  anh_free(&g_dyn.snames); free(g_dyn.shead); free(g_dyn.snext);
+  memset(&g_dyn, 0, sizeof g_dyn);
+  g_dyn.nlit = c->nt->count;
+  g_dyn.nscope = c->nscopes;
+  g_dyn.lit = (unsigned *)calloc((size_t)g_dyn.nlit + 1, sizeof(unsigned));
+  g_dyn.meth = (unsigned *)calloc((size_t)g_dyn.nscope + 1, sizeof(unsigned));
+  g_dyn.blk = (unsigned *)calloc((size_t)g_dyn.nscope + 1, sizeof(unsigned));
+  if (!g_dyn.lit || !g_dyn.meth || !g_dyn.blk) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  g_dyn.any = -1;
+  g_dyn.fresh = 1;
+}
+
+/* A proc-creating node: a lambda literal, or proc / lambda / Proc.new with
+   a literal block. */
+static int dyn_is_proc_literal(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_LambdaNode) return 1;
+  if (k != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, n, "name");
+  int b = nt_ref(nt, n, "block");
+  if (!nm || b < 0 || nt_kind(nt, b) != NK_BlockNode) return 0;
+  int r = nt_ref(nt, n, "receiver");
+  if (r < 0) return sp_streq(nm, "proc") || sp_streq(nm, "lambda");
+  return sp_streq(nm, "new") && nt_kind(nt, r) == NK_ConstantReadNode &&
+         nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), "Proc");
+}
+
+/* A String method that answers a new value and keeps nothing of its
+   receiver: a parameter only ever the receiver of these (or printed, or
+   interpolated) is read for its bytes alone, so the caller may hand it the
+   live bytes of a handle rather than a copy. Anything not listed counts as
+   keeping it (`to_s`, `itself` and `freeze` answer the receiver itself). */
+static int dyn_pure_read_name(const char *n) {
+  static const char *const R[] = {
+    "size", "length", "bytesize", "empty?", "==", "!=", "eql?", "<=>", "=~", "match?",
+    "start_with?", "end_with?", "include?", "index", "rindex", "count", "getbyte", "ord",
+    "upcase", "downcase", "capitalize", "swapcase", "reverse", "strip", "lstrip", "rstrip",
+    "chomp", "chop", "chars", "bytes", "lines", "split", "to_i", "to_f", "to_sym", "hash",
+    "inspect", "+", "*", "%", "[]", "slice", "center", "ljust", "rjust", "tr", "delete",
+    "squeeze", "sub", "gsub", "scan", "unpack", "unpack1", "sum", "casecmp", "casecmp?",
+    "ascii_only?", "valid_encoding?", "each_char", "each_byte", "each_line", "hex", "oct", NULL };
+  for (int i = 0; n && R[i]; i++) if (sp_streq(n, R[i])) return 1;
+  return 0;
+}
+
+static int dyn_name_at(const char **pn, int np, const char *vn) {
+  for (int k = 0; vn && k < np; k++) if (pn[k] && sp_streq(pn[k], vn)) return k;
+  return -1;
+}
+/* Which of the names pn[0..np) a body appends to (*app) and reads for more
+   than its bytes (*kept). A name handed on to a user method whose parameter
+   there is lent, the handle or appended to counts as appended too: the
+   method appends to the one String. */
+static void dyn_body_scan(Compiler *c, int node, const char **pn, int np, unsigned *app, unsigned *kept) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return;
+  if (k == NK_LocalVariableReadNode) {
+    int j = dyn_name_at(pn, np, nt_str(nt, node, "name"));
+    if (j >= 0) *kept |= 1u << j;
+    return;
+  }
+  /* `"#{t}"` copies the bytes */
+  if (k == NK_EmbeddedStatementsNode) {
+    int st = nt_ref(nt, node, "statements"), sn = 0;
+    const int *sv = st >= 0 ? nt_arr(nt, st, "body", &sn) : NULL;
+    if (sn == 1 && nt_kind(nt, sv[0]) == NK_LocalVariableReadNode &&
+        dyn_name_at(pn, np, nt_str(nt, sv[0], "name")) >= 0) return;
+  }
+  int skip_recv = -1;
+  if (k == NK_CallNode) {
+    const char *un = nt_str(nt, node, "name");
+    int ur = nt_ref(nt, node, "receiver");
+    int j = ur >= 0 && nt_kind(nt, ur) == NK_LocalVariableReadNode
+              ? dyn_name_at(pn, np, nt_str(nt, ur, "name")) : -1;
+    if (j >= 0 && un && an_str_mutator_name(un)) { *app |= 1u << j; skip_recv = ur; }
+    else if (j >= 0 && dyn_pure_read_name(un)) skip_recv = ur;
+    int a = nt_ref(nt, node, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    int mi = un && (ur < 0 || nt_kind(nt, ur) == NK_SelfNode) ? an_any_scope_by_name(c, un) : -1;
+    for (int i = 0; i < ac; i++) {
+      if (nt_kind(nt, av[i]) != NK_LocalVariableReadNode) continue;
+      int ji = dyn_name_at(pn, np, nt_str(nt, av[i], "name"));
+      if (ji < 0) continue;
+      /* printed: the bytes are all that is read */
+      if (ur < 0 && un && (sp_streq(un, "puts") || sp_streq(un, "print"))) continue;
+      *kept |= 1u << ji;
+      if (mi < 0 || i >= c->scopes[mi].nparams) continue;
+      LocalVar *q = c->scopes[mi].pnames[i] ? scope_local(&c->scopes[mi], c->scopes[mi].pnames[i]) : NULL;
+      if (q && (q->byref_out || (q->type == TY_STRBUF && q->str_shared) || an_param_mutated_in_place(c, mi, i)))
+        *app |= 1u << ji;
+    }
+    int nr = nt_num_refs(nt, node);
+    for (int i = 0; i < nr; i++) {
+      int ch = nt_ref_at(nt, node, i);
+      if (ch == skip_recv || ch == a) continue;
+      dyn_body_scan(c, ch, pn, np, app, kept);
+    }
+    /* the arguments, but for the ones settled above */
+    for (int i = 0; i < ac; i++) {
+      if (nt_kind(nt, av[i]) == NK_LocalVariableReadNode &&
+          dyn_name_at(pn, np, nt_str(nt, av[i], "name")) >= 0) continue;
+      dyn_body_scan(c, av[i], pn, np, app, kept);
+    }
+    return;
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) dyn_body_scan(c, nt_ref_at(nt, node, i), pn, np, app, kept);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, node, i, &n);
+    for (int j = 0; j < n; j++) dyn_body_scan(c, ids[j], pn, np, app, kept);
+  }
+}
+
+const char *proc_param_name(Compiler *c, int create, int idx);
+int proc_opt_count(Compiler *c, int create);
+int proc_post_count(Compiler *c, int create);
+int proc_has_rest(Compiler *c, int create);
+
+/* The memo entry of a proc literal or a block: its required positional
+   parameters (the ones a position binds whatever the count). */
+static unsigned dyn_lit_bits(Compiler *c, int lit) {
+  if (lit < 0 || lit >= g_dyn.nlit) return 0;
+  if (g_dyn.lit[lit] & DYN_DONE) return g_dyn.lit[lit];
+  const char *pn[DYN_ARGS]; int np = 0;
+  while (np < DYN_ARGS && (pn[np] = proc_param_name(c, lit, np))) np++;
+  unsigned app = 0, kept = 0;
+  int body = nt_kind(c->nt, lit) == NK_BlockNode ? nt_ref(c->nt, lit, "body") : a_proc_body(c, lit);
+  dyn_body_scan(c, body, pn, np, &app, &kept);
+  g_dyn.lit[lit] = DYN_DONE | (app & 0xffffu) | ((kept & 0x3fffu) << 16);
+  return g_dyn.lit[lit];
+}
+
+/* A method's required positional parameters: the ones call position k binds
+   for k below this count. */
+static int dyn_method_nreq(Compiler *c, Scope *m) {
+  if (m->def_node < 0) return 0;
+  /* a define_method body's scope hangs off the call; it counts its own */
+  if (nt_kind(c->nt, m->def_node) != NK_DefNode) return m->nrequired < m->nparams ? m->nrequired : m->nparams;
+  int pn = nt_ref(c->nt, m->def_node, "parameters"), rn = 0;
+  if (pn >= 0) nt_arr(c->nt, pn, "requireds", &rn);
+  return rn < m->nparams ? rn : m->nparams;
+}
+static unsigned dyn_meth_bits(Compiler *c, int mi) {
+  if (mi < 0 || mi >= g_dyn.nscope) return 0;
+  if (g_dyn.meth[mi] & DYN_DONE) return g_dyn.meth[mi];
+  Scope *m = &c->scopes[mi];
+  int np = dyn_method_nreq(c, m);
+  if (np > DYN_ARGS) np = DYN_ARGS;
+  unsigned app = 0, kept = 0;
+  const char *pn[DYN_ARGS];
+  for (int j = 0; j < np; j++) {
+    pn[j] = m->pnames[j];
+    LocalVar *q = pn[j] ? scope_local(m, pn[j]) : NULL;
+    if (q && (q->byref_out || (q->type == TY_STRBUF && q->str_shared) || an_param_mutated_in_place(c, mi, j)))
+      app |= 1u << j;
+  }
+  dyn_body_scan(c, m->body, pn, np, &app, &kept);
+  g_dyn.meth[mi] = DYN_DONE | (app & 0xffffu) | ((kept & 0x3fffu) << 16);
+  return g_dyn.meth[mi];
+}
+
+/* The calls that pass a block, by name, built once per pass the first time a
+   method's `&blk` is asked about. */
+static void dyn_blk_index(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (g_dyn.bbuilt) return;
+  g_dyn.bbuilt = 1;
+  for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
+    if (nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "block") < 0) continue;
+    const char *nm = nt_str(nt, n, "name");
+    if (!nm) continue;
+    int h = anh_find(&g_dyn.bnames, nm);
+    if (h < 0) {
+      anh_add(&g_dyn.bnames, nm);
+      h = g_dyn.bnames.n - 1;
+      g_dyn.bhead = (int *)realloc(g_dyn.bhead, sizeof(int) * (size_t)g_dyn.bnames.n);
+      if (!g_dyn.bhead) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      g_dyn.bhead[h] = -1;
+    }
+    if (g_dyn.bn == g_dyn.bcap) {
+      g_dyn.bcap = g_dyn.bcap ? g_dyn.bcap * 2 : 64;
+      g_dyn.bnext = (int *)realloc(g_dyn.bnext, sizeof(int) * (size_t)g_dyn.bcap);
+      g_dyn.bnode = (int *)realloc(g_dyn.bnode, sizeof(int) * (size_t)g_dyn.bcap);
+      if (!g_dyn.bnext || !g_dyn.bnode) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    g_dyn.bnode[g_dyn.bn] = n;
+    g_dyn.bnext[g_dyn.bn] = g_dyn.bhead[h];
+    g_dyn.bhead[h] = g_dyn.bn++;
+  }
+}
+/* The blocks a method's call sites pass as its `&blk`: the OR of their
+   entries, with DYN_OPEN set when one passes something that is not a
+   literal block, or none is found. */
+#define DYN_OPEN 0x40000000u
+static unsigned dyn_blk_bits(Compiler *c, int mi) {
+  const NodeTable *nt = c->nt;
+  if (mi < 0 || mi >= g_dyn.nscope) return DYN_OPEN;
+  if (g_dyn.blk[mi] & DYN_DONE) return g_dyn.blk[mi];
+  dyn_blk_index(c);
+  unsigned bits = 0;
+  int any = 0;
+  int h = c->scopes[mi].name ? anh_find(&g_dyn.bnames, c->scopes[mi].name) : -1;
+  for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
+    int b = nt_ref(nt, g_dyn.bnode[e], "block");
+    any = 1;
+    if (nt_kind(nt, b) != NK_BlockNode) { bits |= DYN_OPEN; continue; }
+    unsigned lb = dyn_lit_bits(c, b);
+    bits |= lb & 0x3fffffffu;
+  }
+  if (!any) bits |= DYN_OPEN;
+  g_dyn.blk[mi] = DYN_DONE | bits;
+  return g_dyn.blk[mi];
+}
+
+/* The first scope named `nm` (the rest follow g_dyn.snext), or -1: the
+   scopes a `method(:nm)` literal can name, indexed once per pass rather than
+   scanned per literal. */
+static int dyn_scopes_named(Compiler *c, const char *nm) {
+  if (!nm) return -1;
+  if (!g_dyn.sbuilt) {
+    g_dyn.sbuilt = 1;
+    g_dyn.snext = (int *)malloc(sizeof(int) * ((size_t)c->nscopes + 1));
+    g_dyn.shead = (int *)malloc(sizeof(int) * ((size_t)c->nscopes + 1));
+    if (!g_dyn.snext || !g_dyn.shead) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = c->nscopes - 1; i >= 1; i--) {
+      const char *sn = c->scopes[i].name;
+      g_dyn.snext[i] = -1;
+      if (!sn) continue;
+      int h = anh_find(&g_dyn.snames, sn);
+      if (h < 0) { anh_add(&g_dyn.snames, sn); h = g_dyn.snames.n - 1; g_dyn.shead[h] = -1; }
+      g_dyn.snext[i] = g_dyn.shead[h];
+      g_dyn.shead[h] = i;
+    }
+  }
+  int h = anh_find(&g_dyn.snames, nm);
+  return h >= 0 ? g_dyn.shead[h] : -1;
+}
+
+/* Is there any target at all that appends to a String parameter: a proc
+   literal, a block kept as `&blk`, a method a `method(:m)` names? What an
+   unknown target answers (see above). */
+static int dyn_any_appender(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (g_dyn.any >= 0) return g_dyn.any;
+  g_dyn.any = 0;
+  for (int n = comp_kind_first(c, NK_LambdaNode); n >= 0 && !g_dyn.any; n = comp_kind_next(c, n))
+    if (nt_kind(nt, n) == NK_LambdaNode && (dyn_lit_bits(c, n) & 0xffffu)) g_dyn.any = 1;
+  for (int n = comp_kind_first(c, NK_CallNode); n >= 0 && !g_dyn.any; n = comp_kind_next(c, n)) {
+    if (nt_kind(nt, n) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, n, "name");
+    if (!nm) continue;
+    int b = nt_ref(nt, n, "block");
+    if (dyn_is_proc_literal(c, n)) { if (dyn_lit_bits(c, b) & 0xffffu) g_dyn.any = 1; continue; }
+    if (b >= 0 && nt_kind(nt, b) == NK_BlockNode) {
+      /* a block handed to a method that keeps it */
+      int mi = an_any_scope_by_name(c, nm);
+      if (mi >= 0 && c->scopes[mi].blk_param && c->scopes[mi].blk_param[0] &&
+          !c->scopes[mi].yields && (dyn_lit_bits(c, b) & 0xffffu)) g_dyn.any = 1;
+      continue;
+    }
+    if (!sp_streq(nm, "method") && !sp_streq(nm, "public_method")) continue;
+    for (int mi = dyn_scopes_named(c, method_sym_arg(c, n)); mi >= 0 && !g_dyn.any; mi = g_dyn.snext[mi])
+      if (dyn_meth_bits(c, mi) & 0xffffu) g_dyn.any = 1;
+  }
+  return g_dyn.any;
+}
+
+/* Fold one target's memo entry, position k, into the reach. `open` says a
+   later position of the target depends on the count. `ptype` is the
+   parameter's slot type, when the target is known well enough to have one:
+   a boxed or handle parameter reads the box, never the sp_int slot. */
+static void dyn_fold(DynReach *r, unsigned bits, int k, int bound, int open, TyKind ptype) {
+  if (!bound) { if (open) r->unknown = 1; return; }
+  if (bits & (1u << k)) r->app = 1;
+  int reads_box = ptype == TY_POLY || ptype == TY_STRBUF;
+  if (!reads_box && (k >= 14 || (bits & (1u << (16 + k))))) r->keeps = 1;
+}
+
+static void dyn_reach_method_node(Compiler *c, int mn, int k, DynReach *r) {
+  const NodeTable *nt = c->nt;
+  const char *cn = nt_str(nt, mn, "name");
+  /* an UnboundMethod bound later (`instance_method(:m).bind(o)`) is PR 4's
+     path: not shared yet */
+  if (cn && sp_streq(cn, "instance_method")) { r->unlifted = "bind"; return; }
+  int mi = method_obj_target_mi(c, mn);
+  if (mi < 0) { r->unknown = 1; return; }
+  /* a bound builtin's wrapper (`"ab".method(:center)`, `a.method(:push)`)
+     may keep what it is handed (push stores it) */
+  if (method_call_param_shift(c, mn, mi)) { r->keeps = 1; return; }
+  Scope *m = &c->scopes[mi];
+  int nreq = dyn_method_nreq(c, m);
+  LocalVar *q = k < nreq && m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
+  dyn_fold(r, dyn_meth_bits(c, mi), k, k < nreq, m->nparams > nreq, q ? q->type : TY_UNKNOWN);
+  if (k < nreq && !r->mname) { r->mname = m->name; r->pname = m->pnames[k]; }
+}
+
+static void dyn_reach_value(Compiler *c, int v, int k, int depth, DynReach *r) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || depth > 4) { r->unknown = 1; return; }
+  NodeKind vk = nt_kind(nt, v);
+  if (dyn_is_proc_literal(c, v) || vk == NK_BlockNode) {
+    const char *pn = proc_param_name(c, v, k);
+    int open = proc_opt_count(c, v) > 0 || proc_has_rest(c, v) || proc_post_count(c, v) > 0;
+    Scope *bs = comp_scope_of(c, v);
+    LocalVar *q = pn && bs ? scope_local(bs, pn) : NULL;
+    dyn_fold(r, dyn_lit_bits(c, vk == NK_CallNode ? nt_ref(nt, v, "block") : v), k, pn != NULL, open,
+             q ? q->type : TY_UNKNOWN);
+    if (pn && !r->pname) r->pname = pn;
+    return;
+  }
+  TyKind vt = comp_ntype(c, v);
+  if (vt == TY_METHOD) {
+    int *mns = NULL;
+    int n = method_recv_nodes(c, v, &mns);
+    if (n <= 0) r->unknown = 1;
+    for (int i = 0; i < n; i++) dyn_reach_method_node(c, mns[i], k, r);
+    free(mns);
+    return;
+  }
+  if (vk == NK_CallNode) {
+    const char *nm = nt_str(nt, v, "name");
+    if (nm && sp_streq(nm, "to_proc")) {
+      int *mns = NULL;
+      int n = proc_to_proc_method_nodes(c, v, &mns);
+      if (n <= 0) dyn_reach_value(c, nt_ref(nt, v, "receiver"), k, depth + 1, r);
+      for (int i = 0; i < n; i++) dyn_reach_method_node(c, mns[i], k, r);
+      free(mns);
+      return;
+    }
+    /* a curried proc re-boxes the arguments it collects as plain Strings:
+       PR 4's path, not shared yet */
+    if (nm && sp_streq(nm, "curry")) { r->unlifted = "curry"; return; }
+    r->unknown = 1;
+    return;
+  }
+  if (vk == NK_LocalVariableReadNode) {
+    const char *vn = nt_str(nt, v, "name");
+    Scope *vs = vn ? comp_scope_of(c, v) : NULL;
+    if (!vs) { r->unknown = 1; return; }
+    /* the method's own `&blk`: the blocks its call sites pass */
+    if (vs->name && vs->blk_param && sp_streq(vs->blk_param, vn)) {
+      int mi = (int)(vs - c->scopes);
+      unsigned bits = dyn_blk_bits(c, mi);
+      if (bits & DYN_OPEN) r->unknown = 1;
+      /* a block's parameter types are its own; the conservative answer for
+         the slot is that it may keep what it reads */
+      dyn_fold(r, bits, k, 1, 0, TY_UNKNOWN);
+      return;
+    }
+    /* every value written to it (a Method-valued local was taken above, by
+       method_recv_nodes; a `m.to_proc` written here is the call's arm) */
+    int saw = 0;
+    for (int w = comp_lvw_first_sc(c, (int)(vs - c->scopes), vn); w >= 0; w = comp_lvw_next_sc(c, w)) {
+      if (comp_scope_of(c, w) != vs) continue;
+      const char *wn = nt_str(nt, w, "name");
+      if (!wn || !sp_streq(wn, vn)) continue;
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode) { r->unknown = 1; continue; }
+      saw = 1;
+      dyn_reach_value(c, nt_ref(nt, w, "value"), k, depth + 1, r);
+    }
+    if (!saw) r->unknown = 1;
+    return;
+  }
+  r->unknown = 1;
+}
+
+/* A proc/Method call with the type-erased ABI: `.call`, `.()`, `[]`,
+   `.yield`, `===` on a Proc or a Method value. A `&blk.call` in a method
+   whose block is inlined at its call sites is a yield, and binds the block's
+   parameter directly. */
+int dyn_call_site(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || nt_kind(nt, n) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, n, "name");
+  int r = nt_ref(nt, n, "receiver");
+  if (!nm || r < 0) return 0;
+  if (!(sp_streq(nm, "call") || sp_streq(nm, "()") || sp_streq(nm, "[]") ||
+        sp_streq(nm, "yield") || sp_streq(nm, "==="))) return 0;
+  TyKind rt = comp_ntype(c, r);
+  if (rt != TY_PROC && rt != TY_METHOD) return 0;
+  if (nt_kind(nt, r) == NK_LocalVariableReadNode) {
+    Scope *rs = comp_scope_of(c, r);
+    const char *rn = nt_str(nt, r, "name");
+    if (rs && rs->blk_param && rn && sp_streq(rs->blk_param, rn) && (rs->yields || rs->is_lowered_yield))
+      return 0;
+  }
+  return 1;
+}
+
+/* What the targets of dynamic call `n` do with its argument at position k
+   (see DynReach). Asked by the pass below and by the emitters, which run
+   after the last pass: the memo is refilled once for them. */
+void dyn_call_reach(Compiler *c, int n, int k, DynReach *r) {
+  memset(r, 0, sizeof *r);
+  if (!g_dyn.fresh) dyn_memo_reset(c);
+  dyn_reach_value(c, nt_ref(c->nt, n, "receiver"), k, 0, r);
+  if (r->unknown && !r->app && dyn_any_appender(c)) r->app = 1;
+}
+/* The emitters' memo is filled from the settled types; the analysis marks it
+   stale whenever a pass may change them. */
+static void dyn_memo_stale(void) { g_dyn.fresh = 0; }
+
+/* The same questions for the paths not shared yet, which the emitters refuse
+   rather than compile with the append lost (refuse_string_copy): does method
+   `mi` append to its positional parameter j, does literal block `blk` append
+   to its parameter k, what can a block argument's value `v` do at position k,
+   and does the program append through any dynamic target at all. */
+int dyn_method_appends(Compiler *c, int mi, int j) {
+  if (!g_dyn.fresh) dyn_memo_reset(c);
+  if (mi < 0 || mi >= c->nscopes || j < 0 || j >= DYN_ARGS) return 0;
+  if (j >= dyn_method_nreq(c, &c->scopes[mi])) return 0;
+  return (dyn_meth_bits(c, mi) >> j) & 1u;
+}
+int dyn_block_appends(Compiler *c, int blk, int k) {
+  if (!g_dyn.fresh) dyn_memo_reset(c);
+  if (blk < 0 || k < 0 || k >= DYN_ARGS) return 0;
+  return (dyn_lit_bits(c, blk) >> k) & 1u;
+}
+void dyn_value_reach(Compiler *c, int v, int k, DynReach *r) {
+  memset(r, 0, sizeof *r);
+  if (!g_dyn.fresh) dyn_memo_reset(c);
+  if (v < 0) r->unknown = 1;
+  else dyn_reach_value(c, v, k, 0, r);
+  if (r->unknown && !r->app && dyn_any_appender(c)) r->app = 1;
+}
+
+/* Pull a String variable at a dynamic call into the shared handle: its read
+   is marked strbuf_box, so the argument is the handle and the call boxes it
+   as one. Answers 1 when it changed anything. A variable this cannot pull --
+   a block parameter, a captured local, an ivar -- stays a plain String, and
+   the emitter refuses the call (refuse_string_copy), never compiling the
+   append away. An element of a local Array literal splatted into the call
+   (`s = [v]; f.call(*s)`) leaves its read unmarked (`mark_read` 0): the
+   container rule (promote_shared_stored_strings) widens the Array to hold
+   the handle and marks the read itself, and a read marked here first kept
+   the Array a StrArray the handle could not go into. */
+static int dyn_pull_arg(Compiler *c, int a, int mark_read) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, a) != NK_LocalVariableReadNode) return 0;
+  const char *vn = nt_str(nt, a, "name");
+  Scope *vs = vn ? comp_scope_of(c, a) : NULL;
+  LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+  if (!lv || lv->is_cell) return 0;
+  if (lv->type != TY_STRING && lv->type != TY_STRBUF) return 0;
+  int changed = 0;
+  /* the method's own parameter, handed on (`def via(s, f) = f.call(s)`): it
+     takes the handle, and convert_byref_handle_params pulls via's callers in
+     on its next run */
+  if (lv->is_param) {
+    if (lv->is_block_param || an_param_idx(vs, vn) < 0) return 0;
+    if (lv->type != TY_STRBUF || !lv->str_shared) {
+      lv->type = TY_STRBUF; lv->str_shared = 1; lv->byref_out = 0; changed = 1;
+    }
+    if (mark_read && !c->strbuf_box[a]) { c->strbuf_box[a] = 1; comp_sn_retype(c, a, TY_STRBUF); changed = 1; }
+    return changed;
+  }
+  if (lv->is_block_param) return 0;
+  /* already the handle: only this read is left to mark (the shape walk below
+     scans the scope's calls, and a pass asks at every call site) */
+  if (lv->type == TY_STRBUF && lv->str_shared) {
+    if (!mark_read || c->strbuf_box[a]) return 0;
+    c->strbuf_box[a] = 1; comp_sn_retype(c, a, TY_STRBUF);
+    return 1;
+  }
+  if (!strbuf_slot_eligible_shape(c, vn, vs, lv)) {
+    /* Also lent to a byref slot (`grow(s)` beside `f.call(s)`): a slot
+       cannot carry the handle, so that parameter takes the handle instead,
+       with its whole name group, as a POLY parameter's pull does for its own
+       callers; convert_byref_handle_params then pulls its other callers. */
+    int vsi = (int)(vs - c->scopes);
+    for (int u = comp_scall_first(c, vsi); u >= 0; u = comp_scall_next(c, u)) {
+      if (nt_kind(nt, u) != NK_CallNode || comp_scope_of(c, u) != vs) continue;
+      int mi = an_any_scope_by_name(c, nt_str(nt, u, "name"));
+      if (mi < 0) continue;
+      for (int j = 0; j < c->scopes[mi].nparams; j++) {
+        if (!comp_byref_param(c, &c->scopes[mi], j)) continue;
+        int a2 = arg_layout_param_node(c, &c->scopes[mi], u, j, NULL);
+        const char *an2 = a2 >= 0 && nt_kind(nt, a2) == NK_LocalVariableReadNode ? nt_str(nt, a2, "name") : NULL;
+        if (!an2 || !sp_streq(an2, vn)) continue;
+        for (int m = dyn_scopes_named(c, c->scopes[mi].name); m >= 0; m = g_dyn.snext[m]) {
+          Scope *mk = &c->scopes[m];
+          if (j >= mk->nparams) continue;
+          LocalVar *q = mk->pnames[j] ? scope_local(mk, mk->pnames[j]) : NULL;
+          if (!q || !q->byref_out) continue;
+          q->byref_out = 0; q->is_cell = 0; q->type = TY_STRBUF; q->str_shared = 1; changed = 1;
+        }
+      }
+    }
+    if (!strbuf_slot_eligible_shape(c, vn, vs, lv)) return changed;
+  }
+  if (lv->type != TY_STRBUF || !lv->str_shared) { lv->type = TY_STRBUF; lv->str_shared = 1; changed = 1; }
+  if (mark_read && !c->strbuf_box[a]) { c->strbuf_box[a] = 1; comp_sn_retype(c, a, TY_STRBUF); changed = 1; }
+  return changed;
+}
+
+/* The callee side. A proc literal's (or a kept block's) String parameter
+   that its body appends to reads the boxed channel as the handle
+   (emit_proc_literal_here), and so does a method a `method(:m)` names:
+   such a name keeps the value ABI (the DYN rule in compute_byref_out_params,
+   since a Method's trampoline has no slot to lend), and a value parameter
+   appends to a copy. The method takes the handle instead, which its
+   trampoline, its thunk and a devirtualized `m.call(s)` all hand over, and
+   its direct callers are pulled in as a handle method's are. */
+static int dyn_convert_params(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int pass = 0; pass < 2; pass++) {
+    NodeKind want = pass ? NK_CallNode : NK_LambdaNode;
+    for (int n = comp_kind_first(c, want); n >= 0; n = comp_kind_next(c, n)) {
+      if (nt_kind(nt, n) != want) continue;
+      int create = -1, lit = -1;
+      if (dyn_is_proc_literal(c, n)) { create = n; lit = pass ? nt_ref(nt, n, "block") : n; }
+      else if (pass) {
+        /* a block a method keeps as `&blk` is emitted as a proc too */
+        int b = nt_ref(nt, n, "block");
+        int mi = b >= 0 && nt_kind(nt, b) == NK_BlockNode ? an_any_scope_by_name(c, nt_str(nt, n, "name")) : -1;
+        if (mi >= 0 && c->scopes[mi].blk_param && c->scopes[mi].blk_param[0] &&
+            !c->scopes[mi].yields && !c->scopes[mi].is_lowered_yield) create = lit = b;
+      }
+      if (lit < 0) continue;
+      unsigned app = dyn_lit_bits(c, lit) & 0xffffu;
+      Scope *bs = app ? comp_scope_of(c, create) : NULL;
+      for (int k = 0; bs && k < DYN_ARGS; k++) {
+        if (!(app & (1u << k))) continue;
+        const char *pn = proc_param_name(c, create, k);
+        LocalVar *lv = pn ? scope_local(bs, pn) : NULL;
+        if (!lv || lv->type != TY_STRING || lv->is_cell) continue;
+        lv->type = TY_STRBUF; lv->str_shared = 1; changed = 1;
+      }
+    }
+  }
+  for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
+    if (nt_kind(nt, n) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, n, "name");
+    if (!nm || !(sp_streq(nm, "method") || sp_streq(nm, "public_method"))) continue;
+    for (int mi = dyn_scopes_named(c, method_sym_arg(c, n)); mi >= 0; mi = g_dyn.snext[mi]) {
+      Scope *m = &c->scopes[mi];
+      unsigned app = dyn_meth_bits(c, mi) & 0xffffu;
+      for (int j = 0; app && j < m->nparams && j < DYN_ARGS; j++) {
+        if (!(app & (1u << j))) continue;
+        LocalVar *q = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
+        if (!q || !q->is_param || q->is_block_param || q->type != TY_STRING || q->byref_out || q->is_cell) continue;
+        q->type = TY_STRBUF; q->str_shared = 1; q->dyn_handle = 1; changed = 1;
+      }
+    }
+  }
+  return changed;
+}
+
+/* Run in the fixpoint beside promote_shared_stored_strings (so a container
+   holding the String widens with it) and again after it beside
+   convert_byref_handle_params (so the byref slots have settled). */
+static int promote_dyncall_string_args(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  dyn_memo_reset(c);
+  int changed = dyn_convert_params(c);
+  for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
+    if (!dyn_call_site(c, n)) continue;
+    int a = nt_ref(nt, n, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    for (int k = 0; k < ac && k < DYN_ARGS; k++) {
+      NodeKind ak = nt_kind(nt, av[k]);
+      /* A splat of an Array literal, or of a local every write of which is
+         one: its String elements are the arguments (#5957's container rule,
+         at a dynamic call). The parser folds `f.call(s, *e)` into one splat
+         of `[s, *e]`, so this is also how a plain argument ahead of a splat
+         arrives. */
+      if (ak == NK_SplatNode) {
+        int x = nt_ref(nt, av[k], "expression");
+        int any = 0;
+        for (int j = k; j < DYN_ARGS && !any; j++) {
+          DynReach r; memset(&r, 0, sizeof r);
+          dyn_reach_value(c, nt_ref(nt, n, "receiver"), j, 0, &r);
+          any = !r.unlifted && (r.app || (r.unknown && dyn_any_appender(c)));
+        }
+        if (!any || x < 0) break;
+        int lits[64], nl = 0;
+        if (nt_kind(nt, x) == NK_ArrayNode) lits[nl++] = x;
+        else if (nt_kind(nt, x) == NK_LocalVariableReadNode) {
+          const char *xn = nt_str(nt, x, "name");
+          Scope *xs = xn ? comp_scope_of(c, x) : NULL;
+          for (int w = xs ? comp_lvw_first_sc(c, (int)(xs - c->scopes), xn) : -1; w >= 0 && nl < 64;
+               w = comp_lvw_next_sc(c, w)) {
+            if (nt_kind(nt, w) != NK_LocalVariableWriteNode || comp_scope_of(c, w) != xs) continue;
+            int wv = nt_ref(nt, w, "value");
+            if (wv >= 0 && nt_kind(nt, wv) == NK_ArrayNode) lits[nl++] = wv;
+          }
+        }
+        for (int l = 0; l < nl; l++) {
+          int en = 0; const int *ev = nt_arr(nt, lits[l], "elements", &en);
+          for (int e = 0; e < en; e++) {
+            TyKind et = comp_ntype(c, ev[e]);
+            if (nt_kind(nt, ev[e]) == NK_LocalVariableReadNode && (et == TY_STRING || et == TY_STRBUF))
+              changed |= dyn_pull_arg(c, ev[e], nt_kind(nt, x) == NK_ArrayNode);
+          }
+        }
+        break;   /* the positions after a splat depend on its length */
+      }
+      if (ak != NK_LocalVariableReadNode) continue;
+      TyKind at = comp_ntype(c, av[k]);
+      if (at != TY_STRING && at != TY_STRBUF) continue;
+      /* A local that is the handle already goes over as the handle at every
+         dynamic call, appending target or not: demoted, a read-only call
+         would copy the whole String per call. */
+      const char *vn = nt_str(nt, av[k], "name");
+      Scope *vs = vn ? comp_scope_of(c, av[k]) : NULL;
+      LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+      int already = lv && lv->type == TY_STRBUF && lv->str_shared;
+      if (!already) {
+        DynReach r; memset(&r, 0, sizeof r);
+        dyn_reach_value(c, nt_ref(nt, n, "receiver"), k, 0, &r);
+        if (r.unlifted) continue;   /* refused by the emitter */
+        if (!r.app && !(r.unknown && dyn_any_appender(c))) continue;
+      }
+      changed |= dyn_pull_arg(c, av[k], 1);
+    }
+  }
+  dyn_memo_stale();
+  return changed;
+}
+
 /* The method a `super` in scope `m` calls, or -1. */
 int a_super_target(Compiler *c, Scope *m) {
   const char *shadow = comp_prep_chain_target(c, m->class_id, m->name);
@@ -20515,6 +21199,7 @@ void analyze_program(Compiler *c) {
            each iteration's top, so a promote gated on STRING must see the
            freshly re-derived type, not the cleared UNKNOWN (#3227 P4) */
         { int _w = promote_shared_stored_strings(c); ch |= _w; ch_other |= _w; }
+        { int _w = promote_dyncall_string_args(c); ch |= _w; ch_other |= _w; }
         { int _w = promote_append_accumulators(c); ch |= _w; ch_other |= _w; }
         { int _w = widen_shared_cmp_params(c); ch |= _w; ch_other |= _w; }
         { int _w = infer_cvar_types(c); ch |= _w; ch_other |= _w; }
@@ -22418,6 +23103,7 @@ void analyze_program(Compiler *c) {
     int ch = promote_params_stored_in_shared_ivars(c, &hat);
     if (convert_byref_handle_params(c, &hat)) ch = 1;
     handle_arg_tab_free(&hat);
+    if (promote_dyncall_string_args(c)) ch = 1;
     if (!ch) break;
   }
   mark_reader_identity_operands(c);

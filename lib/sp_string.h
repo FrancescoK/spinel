@@ -53,8 +53,15 @@ static inline void sp_fd_publish(sp_String *s){
   if (s->binary) h->size |= SP_STR_SIZE_BINARY;
   sp_str_lcache_drop(s->data);
 }
+/* A handle whose payload sits inside its own GC object, right after the
+   struct (sp_String_new_fresh): no malloc and no finalizer, which are most of
+   what a handle costs to make and to collect. Its first growth moves the
+   payload out (sp_fd_grow_inline, lib/sp_string.c), off the inlined path. */
+static inline int sp_fd_is_inline(sp_String *s){return sp_fd_base(s->data)==(char*)(s+1);}
+SP_COLD SP_NOINLINE int sp_fd_grow_inline(sp_String *s, int64_t need);
 static inline int sp_fd_grow(sp_String *s, int64_t need){
   if (need < s->cap) return 1;
+  if (SP_EXPECT(sp_fd_is_inline(s), 0)) return sp_fd_grow_inline(s, need);
   sp_gc_hdr *h = (sp_gc_hdr *)((char *)s - sizeof(sp_gc_hdr));
   int64_t new_cap = (need * 2) + 16;
   sp_str_lcache_drop(s->data);
@@ -83,6 +90,25 @@ static inline sp_String*sp_String_new_len(const char*s,int64_t len){
   return r;
 }
 static inline sp_String*sp_String_new(const char*s){return sp_String_new_len(s,(int64_t)strlen(s));}
+/* The same over a payload inside the object, when it fits: for a String the
+   handle is made for and nobody else holds, a literal or a temporary handed to
+   a parameter that is the handle (#6179), made and dropped once per call. The
+   bytes are read into a stack copy first, for the reason sp_String_new_len
+   copies before it allocates. */
+#define SP_FD_INLINE_MAX 192
+static inline sp_String*sp_String_new_inline_len(const char*s,int64_t len){
+  int64_t cap=(len*2)+16;
+  size_t sz=sizeof(sp_String)+SP_FD_OVH+(size_t)cap;
+  if(sz>SP_FD_INLINE_MAX)return sp_String_new_len(s,len);
+  char tmp[SP_FD_INLINE_MAX];
+  memcpy(tmp,s,(size_t)len);
+  sp_String*r=(sp_String*)sp_gc_alloc(sz,NULL,NULL);
+  char*data=sp_fd_setup((char*)(r+1));
+  memcpy(data,tmp,(size_t)len);data[len]=0;
+  r->len=len;r->cap=cap;r->data=data;r->binary=0;sp_fd_own(r);
+  sp_fd_publish(r);
+  return r;
+}
 /* Shared append core: `tl` is the operand byte length (strlen for the
    bare-literal-safe entry, sp_str_byte_len for the binary one). */
 static inline void sp_fd_append_len(sp_String*s,const char*t,int64_t tl){if(!sp_fd_grow(s,s->len+tl))return;memcpy(s->data+s->len,t,tl);s->len+=tl;s->data[s->len]=0;sp_fd_publish(s);}
@@ -129,6 +155,27 @@ static inline sp_String*sp_String_new_shared(const char*s){
   sp_String*r=sp_String_new_len(s,len);
   if(bin){r->binary=1;sp_fd_publish(r);}
   if(frozen){sp_gc_hdr*h=(sp_gc_hdr*)((char*)r-sizeof(sp_gc_hdr));h->frozen=1;}
+  return r;
+}
+/* sp_String_new_shared for a String no one else holds (a literal's copy, a
+   temporary, a plain String a handle parameter reads off the boxed channel):
+   the same length and marks, over a payload inside the object. */
+static inline sp_String*sp_String_new_fresh(const char*s){
+  if(!s)return NULL;
+  int bin=sp_str_is_binary(s);
+  int frozen=(((const unsigned char*)s)[-1]==0xf1);
+  int64_t len=(int64_t)sp_str_byte_len(s);
+  sp_String*r=sp_String_new_inline_len(s,len);
+  if(bin){r->binary=1;sp_fd_publish(r);}
+  if(frozen){sp_gc_hdr*h=(sp_gc_hdr*)((char*)r-sizeof(sp_gc_hdr));h->frozen=1;}
+  return r;
+}
+/* ...and for `+"lit"`: a mutable copy of a literal, which is frozen itself */
+static inline sp_String*sp_String_new_unfrozen(const char*s){
+  if(!s)return NULL;
+  int bin=sp_str_is_binary(s);
+  sp_String*r=sp_String_new_inline_len(s,(int64_t)sp_str_byte_len(s));
+  if(bin){r->binary=1;sp_fd_publish(r);}
   return r;
 }
 static inline const char*sp_String_cstr(sp_String*s){return s->data;}
