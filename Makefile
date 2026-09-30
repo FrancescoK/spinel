@@ -2623,21 +2623,27 @@ SCALE_CODEGEN_LIMIT ?= 6.9
 # steps at N=100 against a billion, which no count or clock sees at a test's
 # size.
 CALL_SHAPES_LIMIT ?= 4.8
+# Each count is taken only from a compile that succeeded (sw): spinel-work
+# prints its count from an atexit handler, also when the compile fails, so
+# reading it alone would accept the ratio of a program that did not build.
 scale-test: $(SPINEL_WORK)
 	@tmp=$$(mktemp -d /tmp/spinel-scale.XXXXXX); \
+	sw () { o=$$($(SPINEL_WORK) "$$@" 2>&1); r=$$?; \
+	  if [ $$r -ne 0 ]; then echo "scale-test: FAIL (spinel-work exited $$r: $$*)" >&2; echo "$$o" | tail -3 >&2; return 1; fi; \
+	  echo "$$o" | sed -n 's/^spinel-work: //p'; }; \
 	sh test/scale/gen.sh 100 > "$$tmp/a.rb"; sh test/scale/gen.sh 400 > "$$tmp/b.rb"; \
-	wa=$$($(SPINEL_WORK) --emit-rbs -o "$$tmp/a.rbs" "$$tmp/a.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
-	wb=$$($(SPINEL_WORK) --emit-rbs -o "$$tmp/b.rbs" "$$tmp/b.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
-	ca=$$($(SPINEL_WORK) -c -o "$$tmp/a.c" "$$tmp/a.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
-	cb=$$($(SPINEL_WORK) -c -o "$$tmp/b.c" "$$tmp/b.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
+	wa=$$(sw --emit-rbs -o "$$tmp/a.rbs" "$$tmp/a.rb") || { rm -rf "$$tmp"; exit 1; }; \
+	wb=$$(sw --emit-rbs -o "$$tmp/b.rbs" "$$tmp/b.rb") || { rm -rf "$$tmp"; exit 1; }; \
+	ca=$$(sw -c -o "$$tmp/a.c" "$$tmp/a.rb") || { rm -rf "$$tmp"; exit 1; }; \
+	cb=$$(sw -c -o "$$tmp/b.c" "$$tmp/b.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	sh test/scale/call_shapes.sh 25 > "$$tmp/s1.rb"; sh test/scale/call_shapes.sh 100 > "$$tmp/s4.rb"; \
-	sa=$$($(SPINEL_WORK) -c -o "$$tmp/s1.c" "$$tmp/s1.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
-	sb=$$($(SPINEL_WORK) -c -o "$$tmp/s4.c" "$$tmp/s4.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
+	sa=$$(sw -c -o "$$tmp/s1.c" "$$tmp/s1.rb") || { rm -rf "$$tmp"; exit 1; }; \
+	sb=$$(sw -c -o "$$tmp/s4.c" "$$tmp/s4.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	( ulimit -t 20; $(SPINEL_WORK) -c -o "$$tmp/hls.c" test/scale/hash_literal_sources_fanout.rb ) >/dev/null 2>&1 || \
 	  { rm -rf "$$tmp"; echo "scale-test: FAIL (the hash-literal source walk revisited call sites along every path)"; exit 1; }; \
 	sh test/scale/ie_forward_chain.sh 2 > "$$tmp/f2.rb"; sh test/scale/ie_forward_chain.sh 4 > "$$tmp/f4.rb"; \
-	fa=$$($(SPINEL_WORK) -c -o "$$tmp/f2.c" "$$tmp/f2.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
-	fb=$$($(SPINEL_WORK) -c -o "$$tmp/f4.c" "$$tmp/f4.rb" 2>&1 | sed -n 's/^spinel-work: //p'); \
+	fa=$$(sw -c -o "$$tmp/f2.c" "$$tmp/f2.rb") || { rm -rf "$$tmp"; exit 1; }; \
+	fb=$$(sw -c -o "$$tmp/f4.c" "$$tmp/f4.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	rm -rf "$$tmp"; \
 	if [ -z "$$wa" ] || [ -z "$$wb" ] || [ -z "$$fa" ] || [ -z "$$fb" ] || \
 	   [ -z "$$ca" ] || [ -z "$$cb" ] || [ -z "$$sa" ] || [ -z "$$sb" ]; then echo "scale-test: FAIL (the counting compiler reported no work count)"; exit 1; fi; \
