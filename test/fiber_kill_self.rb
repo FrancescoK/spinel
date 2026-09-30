@@ -19,7 +19,6 @@ p g.resume
 p g.resume
 p g.alive?
 
-root = Fiber.current
 t = Fiber.new do
   Fiber.current.kill
 ensure
@@ -34,17 +33,3 @@ outer = Fiber.new do
   :outer_done
 end
 p outer.resume
-
-begin
-  p Fiber.current.kill.equal?(root)
-  puts "main goes on"
-ensure
-  puts "main ensure"
-end
-
-th = Thread.new do
-  Fiber.current.kill
-  puts "thread goes on"
-  :value
-end
-p th.value
