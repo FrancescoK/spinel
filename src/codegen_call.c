@@ -41129,8 +41129,10 @@ else {
       const char *aty = nt_type(nt, argv[0]);
       if (sp_streq(cn, "NilClass") || sp_streq(cn, "TrueClass") || sp_streq(cn, "FalseClass")) {
         int yn = -1;
+        /* an object slot holds nil as NULL: asked at run time below */
         if (sp_streq(cn, "NilClass"))
-          yn = (at2 == TY_NIL || (aty && sp_streq(aty, "NilNode"))) ? 1 : (at2 != TY_POLY ? 0 : -1);
+          yn = (at2 == TY_NIL || (aty && sp_streq(aty, "NilNode"))) ? 1 :
+               (at2 != TY_POLY && !ty_is_object(at2) ? 0 : -1);
         else if (sp_streq(cn, "TrueClass"))
           yn = (aty && sp_streq(aty, "TrueNode")) ? 1 : (aty && sp_streq(aty, "FalseNode")) ? 0 : (at2 != TY_BOOL && at2 != TY_POLY ? 0 : -1);
         else
@@ -41146,6 +41148,13 @@ else {
       int yes = ty_matches_class(at2, cn, 0);
       if (yes >= 0) {
         buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_printf(b, "), %d)", yes);
+        return;
+      }
+      /* a user object: its class may descend from this builtin (a Struct or
+         Data class, a subclass of Array), which only the class chain says */
+      if (ty_is_object(at2)) {
+        buf_puts(b, "sp_poly_is_a("); emit_boxed(c, argv[0], b); buf_puts(b, ", ");
+        emit_expr(c, recv, b); buf_puts(b, ")");
         return;
       }
       /* arg type is poly or unknown: runtime tag check */
