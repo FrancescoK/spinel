@@ -15,3 +15,12 @@ false
 4
 [2, :fin, false]
 :only
+[:a_got, :c_end]
+[:root_got, :a_end]
+[:a2_got, :from_c]
+[:root_got2, :a2_done]
+[:d_got, :e_end]
+[:a3_got, :d_end]
+[:root_got3, :a3_end]
+"attempt to transfer to a resuming fiber"
+[:aa_got, :bb]

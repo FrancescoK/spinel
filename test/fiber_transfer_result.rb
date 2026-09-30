@@ -62,3 +62,34 @@ t = Thread.new do
 end
 p t.value
 p(Thread.new { Fiber.new { :only }.transfer }.value)
+
+# a resumed fiber that transfers away gets the result back when the chain
+# ends, and can itself be transferred back to
+c1 = Fiber.new { :c_end }
+b1 = Fiber.new { r = c1.transfer; p [:b_got, r]; :b_end }
+a1 = Fiber.new { r = b1.transfer; GC.start; p [:a_got, r]; :a_end }
+p [:root_got, a1.resume]
+
+$a2 = nil
+c2 = Fiber.new { GC.start; $a2.transfer(:from_c) }
+$a2 = Fiber.new { r = c2.transfer; p [:a2_got, r]; :a2_done }
+p [:root_got2, $a2.resume]
+
+e3 = Fiber.new { :e_end }
+d3 = Fiber.new { r = e3.transfer; p [:d_got, r]; :d_end }
+a3 = Fiber.new { p [:a3_got, d3.resume]; :a3_end }
+p [:root_got3, a3.resume]
+
+$outer = Fiber.new do
+  inner = Fiber.new { mid = Fiber.new { $outer.transfer }; mid.transfer }
+  inner.resume
+rescue FiberError => e
+  p e.message
+end
+$outer.resume
+
+p(Thread.new do
+  bb = Fiber.new { :bb }
+  aa = Fiber.new { [:aa_got, bb.transfer] }
+  aa.resume
+end.value)

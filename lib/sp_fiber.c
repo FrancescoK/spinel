@@ -559,20 +559,22 @@ else{void*obj=*e;if(obj)sp_gc_mark(obj);}}if(f->exc_ctx)sp_exc_ctx_mark(f->exc_c
    Set by the fibers hook, which runs before any object is scanned. */
 static sp_Fiber *sp_fiber_collecting = NULL;
 void sp_fiber_mark_chain(sp_Fiber*f){for(sp_Fiber*g=f;g;g=g->resumer){if(g==sp_fiber_current||g==sp_fiber_collecting)continue;if(g->stack)sp_gc_mark(g);/* a root fiber is a worker's native stack, not a heap object */sp_fiber_mark_roots(g);}}
-static void sp_mark_suspended_fibers(void){sp_fiber_collecting=sp_fiber_current;if(sp_fiber_current!=&sp_fiber_root)sp_fiber_mark_roots(&sp_fiber_root);if(sp_fiber_current)sp_fiber_mark_chain(sp_fiber_current->resumer);}
+static void sp_mark_suspended_fibers(void){sp_fiber_collecting=sp_fiber_current;if(sp_fiber_current!=&sp_fiber_root)sp_fiber_mark_roots(&sp_fiber_root);if(sp_fiber_current)sp_fiber_mark_chain(sp_fiber_current->resumer);
+  /* and the fiber a transferred one returns to, suspended in its transfer */
+  if(sp_fiber_current&&sp_fiber_current->return_to)sp_fiber_mark_chain(sp_fiber_current->return_to);}
 static void sp_fiber_install_gc_hook(void){if(!sp_gc_mark_suspended_fibers_hook)sp_gc_mark_suspended_fibers_hook=sp_mark_suspended_fibers;}
 static void sp_Fiber_fin(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->stack)munmap(f->stack,sp_fiber_guard()+f->stack_size);if(f->saved_roots)free(f->saved_roots);if(f->exc_ctx)sp_exc_ctx_free(f->exc_ctx);
 #ifdef SP_TSAN
   if(f->tsan_fiber)__tsan_destroy_fiber(f->tsan_fiber);
 #endif
   sp_fiber_list_remove(f);}
-static void sp_Fiber_scan(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->user_data)sp_gc_mark(f->user_data);if(f->storage)sp_gc_mark(f->storage);
+static void sp_Fiber_scan(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->user_data)sp_gc_mark(f->user_data);if(f->storage)sp_gc_mark(f->storage);if(f->return_to)sp_gc_mark(f->return_to);
   /* a reachable suspended fiber keeps what its stack holds (its published
      roots); the running one's roots are live, a dead one's are gone */
   if(f!=sp_fiber_collecting&&f!=sp_fiber_current&&f->state!=3)sp_fiber_mark_roots(f);}
 sp_Fiber*sp_Fiber_new(void(*body)(sp_Fiber*)){sp_fiber_fault_arm();sp_Fiber*f=(sp_Fiber*)sp_gc_alloc(sizeof(sp_Fiber),sp_Fiber_fin,sp_Fiber_scan);{size_t _g=sp_fiber_guard();f->stack_size=sp_fiber_stack_bytes();
 /* MAP_NORESERVE: the stack is virtual space until touched, and a strict-overcommit host must not charge every fiber the whole of it (#4496) */
-f->stack=(char*)mmap(NULL,_g+f->stack_size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_STACK|MAP_NORESERVE,-1,0);if(f->stack==MAP_FAILED){f->stack=NULL;sp_raise_cls("FiberError","failed to allocate fiber stack");}mprotect(f->stack,_g,PROT_NONE);}f->state=0;f->transferred=0;f->body=body;f->yielded_value=sp_box_nil();f->resumed_value=sp_box_nil();f->user_data=NULL;f->saved_exc_top=0;f->saved_catch_top=0;f->exc_ctx=sp_exc_ctx_new();f->raised=0;f->raised_cls=NULL;f->raised_msg=NULL;f->raised_obj=NULL;f->inject=0;f->inject_defer=0;f->inj_cls=NULL;f->inj_msg=NULL;f->inj_obj=NULL;f->storage=NULL;f->birth_file=NULL;f->birth_line=0;f->pass_argc=-1;f->owner=sp_thread_owner_id();f->saved_roots=NULL;f->saved_nroots=0;f->saved_roots_cap=0;f->fiber_next=NULL;f->fiber_prev=NULL;sp_fiber_list_add(f);sp_fiber_install_gc_hook();if(sp_fiber_current&&sp_fiber_current->storage){sp_Fiber*volatile _froot=f;int _pushed=0;if(sp_gc_nroots<SP_GC_STACK_MAX){sp_gc_roots[sp_gc_nroots++]=(void**)&_froot;_pushed=1;}f->storage=sp_FiberStore_dup((sp_FiberStore*)sp_fiber_current->storage);if(_pushed)sp_gc_nroots--;}
+f->stack=(char*)mmap(NULL,_g+f->stack_size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_STACK|MAP_NORESERVE,-1,0);if(f->stack==MAP_FAILED){f->stack=NULL;sp_raise_cls("FiberError","failed to allocate fiber stack");}mprotect(f->stack,_g,PROT_NONE);}f->state=0;f->transferred=0;f->body=body;f->yielded_value=sp_box_nil();f->resumed_value=sp_box_nil();f->user_data=NULL;f->saved_exc_top=0;f->saved_catch_top=0;f->exc_ctx=sp_exc_ctx_new();f->raised=0;f->raised_cls=NULL;f->raised_msg=NULL;f->raised_obj=NULL;f->inject=0;f->inject_defer=0;f->inj_cls=NULL;f->inj_msg=NULL;f->inj_obj=NULL;f->storage=NULL;f->birth_file=NULL;f->birth_line=0;f->pass_argc=-1;f->owner=sp_thread_owner_id();f->return_to=NULL;f->saved_roots=NULL;f->saved_nroots=0;f->saved_roots_cap=0;f->fiber_next=NULL;f->fiber_prev=NULL;sp_fiber_list_add(f);sp_fiber_install_gc_hook();if(sp_fiber_current&&sp_fiber_current->storage){sp_Fiber*volatile _froot=f;int _pushed=0;if(sp_gc_nroots<SP_GC_STACK_MAX){sp_gc_roots[sp_gc_nroots++]=(void**)&_froot;_pushed=1;}f->storage=sp_FiberStore_dup((sp_FiberStore*)sp_fiber_current->storage);if(_pushed)sp_gc_nroots--;}
 #ifdef SP_TSAN
   if(!sp_fiber_root.tsan_fiber)sp_fiber_root.tsan_fiber=__tsan_get_current_fiber();
   f->tsan_fiber=__tsan_create_fiber(0);f->caller_fiber=NULL;
@@ -647,8 +649,9 @@ SP_NORETURN void sp_fiber_raise_kill_self(void){sp_raise_cls(SP_FIBER_KILL_CLS,(
 static void sp_fiber_trampoline(void){sp_Fiber*f=sp_fiber_current;jmp_buf base;if(setjmp(base)==0){sp_exc_arm(base);{int _inj=SP_INJECT_PEEK(f);if(_inj&&_inj!=3)sp_fiber_consume_inject(f);}/* a thread raise (3) defers to the body's first suspension point */f->body(f);sp_exc_disarm();}
 else{const char*_cc=sp_exc_cur_cls();if(_cc&&!strcmp(_cc,SP_FIBER_KILL_CLS)){/* killed: ensures already ran while unwinding; terminate without propagating */}
 else{f->raised=1;f->raised_cls=_cc;f->raised_msg=sp_exc_cur_msg();f->raised_obj=sp_exc_cur_obj();}}f->state=3;f->saved_nroots=0;/* dead: the snapshot points into unwound frames; never mark it */if(f->transferred){
-  /* back to the thread's main fiber, whose transfer answers the block's result */
-  sp_Fiber*home=sp_thread_main_fiber();if(!home||home==f)home=&sp_fiber_root;
+  /* back to the fiber it returns to, whose transfer answers the block's result */
+  sp_Fiber*home=f->return_to&&f->return_to->state!=3?f->return_to:sp_thread_main_fiber();
+  if(!home||home==f)home=&sp_fiber_root;
   home->resumed_value=f->yielded_value;sp_fiber_current=home;
   SP_TSAN_SWITCH(home);sp_ctx_swap(&f->ctx,&home->ctx);}
 else{SP_TSAN_SWITCH(f->caller_fiber);sp_ctx_swap(&f->ctx,&f->caller_ctx);}}
@@ -718,9 +721,17 @@ static void sp_fiber_check_transfer(sp_Fiber*f){
   if(f->state==3)sp_raise_cls("FiberError","dead fiber called");
   if(f->transferred)return;
   if(f->state==2)sp_raise_cls("FiberError","attempt to transfer to a yielding fiber");
-  if(f->state==1)sp_raise_cls("FiberError","attempt to transfer to a resuming fiber");
+  /* resuming: waiting in #resume of a fiber on the running chain. One that
+     is only suspended in its own transfer may be transferred back to. */
+  for(sp_Fiber*g=sp_fiber_current;g;){
+    if(g->resumer){if(g->resumer==f)sp_raise_cls("FiberError","attempt to transfer to a resuming fiber");g=g->resumer;}
+    else g=g->return_to;
+  }
 }
-static sp_RbVal sp_Fiber_transfer_core(sp_Fiber*f,sp_RbVal val){SP_GC_ROOT(f);sp_fiber_check_thread(f);sp_fiber_check_transfer(f);f->resumed_value=val;sp_Fiber*prev=sp_fiber_current;sp_fiber_save_roots(prev);sp_fiber_restore_roots(f);if(!prev->exc_ctx)prev->exc_ctx=sp_exc_ctx_new();sp_exc_ctx_save(prev->exc_ctx);sp_exc_ctx_load(f->exc_ctx);sp_fiber_current=f;SP_TSAN_SET_CALLER(f,prev);SP_TSAN_SWITCH(f);if(f->state==0&&f!=&sp_fiber_root){f->state=1;f->transferred=1;sp_ctx_make(&f->ctx,f->stack+sp_fiber_guard(),f->stack_size,sp_fiber_trampoline);sp_ctx_swap(&prev->ctx,&f->ctx);}
+static sp_RbVal sp_Fiber_transfer_core(sp_Fiber*f,sp_RbVal val){SP_GC_ROOT(f);sp_fiber_check_thread(f);sp_fiber_check_transfer(f);f->resumed_value=val;sp_Fiber*prev=sp_fiber_current;
+  /* it returns where its transferrer would: to that fiber if it was resumed */
+  if(f!=&sp_fiber_root&&f!=prev)f->return_to=prev->resumer?prev:prev->return_to;
+  sp_fiber_save_roots(prev);sp_fiber_restore_roots(f);if(!prev->exc_ctx)prev->exc_ctx=sp_exc_ctx_new();sp_exc_ctx_save(prev->exc_ctx);sp_exc_ctx_load(f->exc_ctx);sp_fiber_current=f;SP_TSAN_SET_CALLER(f,prev);SP_TSAN_SWITCH(f);if(f->state==0&&f!=&sp_fiber_root){f->state=1;f->transferred=1;sp_ctx_make(&f->ctx,f->stack+sp_fiber_guard(),f->stack_size,sp_fiber_trampoline);sp_ctx_swap(&prev->ctx,&f->ctx);}
 else{/* the root fiber is the implicit running coroutine: it has no mmap'd
    stack/body, so it must never be ctx_make'd. Its context was already
    saved into root.ctx by the first transfer away from it, so transferring
