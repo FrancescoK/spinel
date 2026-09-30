@@ -1482,7 +1482,7 @@ int is_struct_call(Compiler *c, int val) {
    Data.define), whose write is the class's def_node. Reading "body" off that
    write found nothing, so an `include` / `extend` / `prepend` in the block
    was dropped. -1 when there is none. */
-static int class_def_body(Compiler *c, int def_node) {
+int class_def_body(Compiler *c, int def_node) {
   const NodeTable *nt = c->nt;
   if (def_node < 0) return -1;
   NodeKind k = nt_kind(nt, def_node);
