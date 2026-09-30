@@ -40,3 +40,19 @@ unless String.method_defined?(:squish2)
   end
 end
 p "a  b".squish2
+
+class Widget
+  define_method(:size) { 3 }
+  alias_method :count, :size
+  alias tally size
+  attr :label
+  def size = 0 unless method_defined?(:size)
+  def count = 0 unless method_defined?(:count)
+  def tally = 0 unless method_defined?(:tally)
+  def label = "none" unless method_defined?(:label)
+end
+w = Widget.new
+p w.size
+p w.count
+p w.tally
+p w.label
