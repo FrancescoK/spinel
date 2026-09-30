@@ -1654,6 +1654,17 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
          right after the call (#3227 P6) */
       buf_puts(b, "(_sp_ret_strbuf = (void *)");
       emit_local_ref(c, id, lrn, b);
+      /* A parameter that is the handle because a dynamic path reaches it
+         (#6179) can be nil, `def initialize(s, o: nil)` among them: nil is
+         a NULL handle, and reads as nil. */
+      if (slv->dyn_handle) {
+        buf_puts(b, ", ");
+        emit_local_ref(c, id, lrn, b);
+        buf_puts(b, " ? sp_str_concat(sp_String_cstr(");
+        emit_local_ref(c, id, lrn, b);
+        buf_puts(b, "), (&(\"\\xff\")[1])) : NULL)");
+        return;
+      }
       buf_puts(b, ", sp_str_concat(sp_String_cstr(");
       emit_local_ref(c, id, lrn, b);
       buf_puts(b, "), (&(\"\\xff\")[1])))");

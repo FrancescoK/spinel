@@ -16203,10 +16203,12 @@ static struct {
   ANameHash snames;   /* method names, and the scopes of each (snext chains) */
   int *shead, *snext, sbuilt;
   int fresh;          /* 0 once analysis has changed types since the memo filled */
+  unsigned *ctor;     /* per scope: an initialize's appended and kept parameters (ctor_append_bits) */
+  int ctor_any;       /* -1 not asked yet, else "some initialize parameter is the handle" */
 } g_dyn;
 
 static void dyn_memo_reset(Compiler *c) {
-  free(g_dyn.lit); free(g_dyn.meth); free(g_dyn.blk);
+  free(g_dyn.lit); free(g_dyn.meth); free(g_dyn.blk); free(g_dyn.ctor);
   anh_free(&g_dyn.bnames);
   free(g_dyn.bhead); free(g_dyn.bnext); free(g_dyn.bnode);
   anh_free(&g_dyn.snames); free(g_dyn.shead); free(g_dyn.snext);
@@ -16216,8 +16218,10 @@ static void dyn_memo_reset(Compiler *c) {
   g_dyn.lit = (unsigned *)calloc((size_t)g_dyn.nlit + 1, sizeof(unsigned));
   g_dyn.meth = (unsigned *)calloc((size_t)g_dyn.nscope + 1, sizeof(unsigned));
   g_dyn.blk = (unsigned *)calloc((size_t)g_dyn.nscope + 1, sizeof(unsigned));
-  if (!g_dyn.lit || !g_dyn.meth || !g_dyn.blk) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  g_dyn.ctor = (unsigned *)calloc((size_t)g_dyn.nscope + 1, sizeof(unsigned));
+  if (!g_dyn.lit || !g_dyn.meth || !g_dyn.blk || !g_dyn.ctor) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   g_dyn.any = -1;
+  g_dyn.ctor_any = -1;
   g_dyn.fresh = 1;
 }
 
@@ -16827,6 +16831,396 @@ static int dyn_convert_params(Compiler *c) {
   return changed;
 }
 
+/* ---- A String an `initialize` appends to: `new`, `raise C, s` (#6179) --
+
+   A constructor is reached through sp_C_new, which about two dozen emitters
+   call: a constant's `new`, a class value's, `self.new` in a class method,
+   `raise`, a Struct's and a Data's, the poly `new` dispatch. So its
+   parameters kept the value ABI (compute_byref_out_params skips
+   `initialize`: a slot lent at the `.new` site alone left the others
+   passing values), and an initialize that appended to its String appended
+   to a copy. A String parameter the initialize appends to, or hands on to
+   a method or a `super` that does, takes the shared handle instead: one C
+   type every binder can hand over (emit_arg_or_default's handle arm, and
+   the class-value arms through the box). The caller's String variable at
+   every `new` and `raise` that can reach it is pulled into the handle.
+
+   Only such an initialize changes. One that reads its String, stores it or
+   ignores it keeps `const char *`, and so does every caller of it, so a
+   program without one emits the C it did. */
+
+/* Which of initialize `mi`'s parameters are appended to: by the body, by a
+   method the body hands one to, or by the parent initialize a `super`
+   hands one to (whose parameter this pass made the handle already). Every
+   parameter, keywords and optionals too: a constructor binds them all
+   through the static layout. */
+static unsigned ctor_append_scan(Compiler *c, int mi, unsigned *kept_out) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  const char *pn[DYN_ARGS];
+  int np = m->nparams < DYN_ARGS ? m->nparams : DYN_ARGS;
+  unsigned app = 0, kept = 0;
+  for (int k = 0; k < np; k++) {
+    pn[k] = m->pnames[k];
+    if (an_param_mutated_in_place(c, mi, k)) app |= 1u << k;
+  }
+  dyn_body_scan(c, m->body, pn, np, &app, &kept);
+  if (kept_out) *kept_out = kept;
+  int pi = m->class_id >= 0 ? a_super_target(c, m) : -1;
+  if (pi < 0 || !c->scopes[pi].name || !sp_streq(c->scopes[pi].name, "initialize")) return app;
+  Scope *pm = &c->scopes[pi];
+  int ph = 0;
+  for (int pj = 0; pj < pm->nparams && !ph; pj++) {
+    LocalVar *d = pm->pnames[pj] ? scope_local(pm, pm->pnames[pj]) : NULL;
+    ph = d && d->dyn_handle;
+  }
+  for (int pass = 0; ph && pass < 2; pass++) {
+    NodeKind sk = pass ? NK_ForwardingSuperNode : NK_SuperNode;
+    for (int q = comp_kind_first(c, sk); q >= 0; q = comp_kind_next(c, q)) {
+      if (nt_kind(nt, q) != sk || comp_scope_of(c, q) != m) continue;
+      for (int pj = 0; pj < pm->nparams; pj++) {
+        LocalVar *d = pm->pnames[pj] ? scope_local(pm, pm->pnames[pj]) : NULL;
+        if (!d || !d->dyn_handle) continue;
+        int src = -1;
+        if (pass) src = zsuper_param_source(c, m, pm, pj);
+        else {
+          int an = arg_layout_param_node(c, pm, q, pj, NULL);
+          if (an >= 0 && nt_kind(nt, an) == NK_LocalVariableReadNode)
+            src = an_param_idx(m, nt_str(nt, an, "name"));
+        }
+        if (src >= 0 && src < DYN_ARGS) app |= 1u << src;
+      }
+    }
+  }
+  return app;
+}
+
+/* ...memoized for the emitters' refusal, which asks after the last pass.
+   The pass itself scans: converting a parent moves a child's answer within
+   it. */
+static unsigned ctor_append_bits(Compiler *c, int mi) {
+  if (mi < 0 || mi >= g_dyn.nscope) return 0;
+  if (!(g_dyn.ctor[mi] & DYN_DONE)) {
+    unsigned kept = 0, app = ctor_append_scan(c, mi, &kept);
+    g_dyn.ctor[mi] = DYN_DONE | (app & 0xffffu) | ((kept & 0x3fffu) << 16);
+  }
+  return g_dyn.ctor[mi];
+}
+/* For the emitters' refusal: does initialize `mi` append to parameter j? */
+int ctor_param_appends(Compiler *c, int mi, int j) {
+  if (!g_dyn.fresh) dyn_memo_reset(c);
+  if (mi < 0 || mi >= c->nscopes || j < 0 || j >= DYN_ARGS) return 0;
+  return (ctor_append_bits(c, mi) >> j) & 1u;
+}
+/* For the binders: does initialize `mi` only read its parameter j's bytes
+   (the receiver of a String method that answers a new value, printed,
+   interpolated), in a program where some initialize appends to one? A
+   String that is the shared handle can then go over as its live bytes: the
+   copy a handle's plain read takes is for a callee that may keep it. A
+   program with no appending initialize keeps its C. */
+int ctor_param_reads_only(Compiler *c, int mi, int j) {
+  if (!g_dyn.fresh) dyn_memo_reset(c);
+  if (mi < 0 || mi >= c->nscopes || j < 0 || j >= 14) return 0;
+  if (g_dyn.ctor_any < 0) {
+    g_dyn.ctor_any = 0;
+    for (int k = dyn_scopes_named(c, "initialize"); k >= 0 && !g_dyn.ctor_any; k = g_dyn.snext[k])
+      for (int q = 0; q < c->scopes[k].nparams && !g_dyn.ctor_any; q++) {
+        LocalVar *v = c->scopes[k].pnames[q] ? scope_local(&c->scopes[k], c->scopes[k].pnames[q]) : NULL;
+        g_dyn.ctor_any = v && v->dyn_handle;
+      }
+  }
+  if (!g_dyn.ctor_any) return 0;
+  unsigned bits = ctor_append_bits(c, mi);
+  return !((bits >> j) & 1u) && !((bits >> (16 + j)) & 1u);
+}
+
+/* Does initialize `mi` pass its local `vn` to a yield? */
+static int ctor_yields_name(Compiler *c, int mi, const char *vn) {
+  const NodeTable *nt = c->nt;
+  for (int y = comp_kind_first(c, NK_YieldNode); y >= 0; y = comp_kind_next(c, y)) {
+    if (nt_kind(nt, y) != NK_YieldNode || comp_scope_of(c, y) != &c->scopes[mi]) continue;
+    int a = nt_ref(nt, y, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    for (int k = 0; k < ac; k++)
+      if (nt_kind(nt, av[k]) == NK_LocalVariableReadNode && nt_str(nt, av[k], "name") &&
+          sp_streq(nt_str(nt, av[k], "name"), vn)) return 1;
+  }
+  return 0;
+}
+
+static int ctor_convert_params(Compiler *c) {
+  int changed = 0;
+  for (int mi = dyn_scopes_named(c, "initialize"); mi >= 0; mi = g_dyn.snext[mi]) {
+    Scope *m = &c->scopes[mi];
+    if (m->is_cmethod || m->class_id < 0 || m->def_node < 0) continue;
+    unsigned app = ctor_append_scan(c, mi, NULL);
+    for (int j = 0; app && j < m->nparams && j < DYN_ARGS; j++) {
+      if (!(app & (1u << j))) continue;
+      LocalVar *q = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
+      if (!q || !q->is_param || q->is_block_param || q->byref_out || q->is_cell || q->dyn_handle) continue;
+      /* TY_STRBUF: retained in a shared ivar (#4363), or typed from a
+         handle argument */
+      if (q->type != TY_STRING && q->type != TY_STRBUF) continue;
+      /* A yield handing the parameter to the block binds the block's
+         parameter to it as a lent slot, which a handle is not: that is a
+         yield into a block whose parameter is the handle, not shared yet,
+         and such a `new` stays refused. */
+      if ((m->yields || m->is_lowered_yield) && ctor_yields_name(c, mi, m->pnames[j])) continue;
+      q->type = TY_STRBUF; q->str_shared = 1; q->dyn_handle = 1; changed = 1;
+    }
+  }
+  return changed;
+}
+
+/* The initialize methods `new` or `raise` call `u` can reach, into out[]
+   (at most cap; a cap of c->nscopes holds any set, each target being a
+   scope of its own, and the callers pass that: a set cut short would leave
+   an arm the pull and the refusal never see), with *first the index of the call's first argument the
+   initialize binds (1 for `raise C, s`) and *boxed set when the call
+   dispatches on a class value and so hands its arguments over boxed. `C.new`
+   reaches C's; `new` or `self.new` in a class method, the class's and its
+   subclasses'; a class value, the classes its switch has an arm for. A
+   class with a `new` of its own is not constructed by the call. */
+int dynamic_new_may_reach(Compiler *c, int call_id, int cid);
+int ctor_call_targets(Compiler *c, int u, int *first, int *boxed, int *out, int cap) {
+  const NodeTable *nt = c->nt;
+  *first = 0; *boxed = 0;
+  if (!g_dyn.fresh) dyn_memo_reset(c);
+  const char *un = nt_str(nt, u, "name");
+  if (!un) return 0;
+  int recv = nt_ref(nt, u, "receiver"), cls = -1, sub = 0, any = 0;
+  if (sp_streq(un, "new")) {
+    NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_SelfNode;
+    Scope *es = comp_scope_of(c, u);
+    if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
+      const char *cn = nt_str(nt, recv, "name");
+      cls = cn ? comp_class_index(c, cn) : -1;
+      if (cls < 0) return 0;
+    }
+    else if (rk == NK_SelfNode) {
+      if (!es || !es->is_cmethod || es->class_id < 0) return 0;
+      cls = es->class_id; sub = 1; *boxed = recv >= 0;
+    }
+    else {
+      TyKind rt = comp_ntype(c, recv);
+      if (ty_is_object(rt)) return 0;   /* an object's own `new` */
+      any = 2; *boxed = 1;
+    }
+  }
+  else if (sp_streq(un, "raise") && recv < 0) {
+    int a = nt_ref(nt, u, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    if (ac < 2 || nt_kind(nt, av[1]) == NK_SplatNode || nt_kind(nt, av[0]) == NK_SplatNode) return 0;
+    *first = 1;
+    NodeKind rk = nt_kind(nt, av[0]);
+    if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
+      const char *cn = nt_str(nt, av[0], "name");
+      cls = cn ? comp_class_index(c, cn) : -1;
+      if (cls < 0) return 0;
+    }
+    else { any = 1; *boxed = 1; }
+  }
+  else return 0;
+  int n = 0;
+  /* a class value: the classes its `new` switch has an arm for -- the ones
+     the call can reach (dynamic_new_may_reach), and for `raise k, s` every
+     exception class (emit_raise_class_value) */
+  if (any) {
+    for (int k = 0; k < c->nclasses && n < cap; k++) {
+      if (any == 2 ? !dynamic_new_may_reach(c, u, k) : !class_is_exc_subclass(c, k)) continue;
+      int mi = comp_method_in_chain(c, k, "initialize", NULL);
+      if (mi < 0 || c->scopes[mi].is_cmethod) continue;
+      int dup = 0;
+      for (int e = 0; e < n && !dup; e++) dup = out[e] == mi;
+      if (!dup) out[n++] = mi;
+    }
+    return n;
+  }
+  int nd = 0; const int *ds = sub ? comp_descendants(c, cls, &nd) : NULL;
+  for (int d = -1; d < nd && n < cap; d++) {
+    int k = d < 0 ? cls : ds[d];
+    if (comp_cmethod_in_chain(c, k, "new", NULL) >= 0) continue;
+    int mi = comp_method_in_chain(c, k, "initialize", NULL);
+    if (mi < 0 || c->scopes[mi].is_cmethod) continue;
+    int dup = 0;
+    for (int e = 0; e < n && !dup; e++) dup = out[e] == mi;
+    if (!dup) out[n++] = mi;
+  }
+  return n;
+}
+
+/* The argument node call `u` binds parameter j of initialize `m` to, or -1:
+   by the call's layout, or for `raise C, s` the one message argument. */
+int ctor_param_arg(Compiler *c, Scope *m, int u, int first, int j) {
+  if (!first) return arg_layout_param_node(c, m, u, j, NULL);
+  int a = nt_ref(c->nt, u, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(c->nt, a, "arguments", &ac) : NULL;
+  if (ac != 2) return -1;
+  ArgLayout L;
+  arg_layout(c, m, av + 1, 1, -1, 0, &L);
+  int r = j < m->nparams && L.from[j] == ARG_NODE ? av[1 + L.arg[j]] : -1;
+  arg_layout_free(&L);
+  return r;
+}
+
+/* The splatted Array literal call `u` holds argument node `a` in, or -1. */
+int ctor_arg_in_splat(Compiler *c, int u, int a) {
+  const NodeTable *nt = c->nt;
+  int args = nt_ref(nt, u, "arguments"), ac = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+  for (int k = 0; k < ac; k++) {
+    if (nt_kind(nt, av[k]) != NK_SplatNode) continue;
+    int x = nt_ref(nt, av[k], "expression");
+    int en = 0; const int *el = x >= 0 && nt_kind(nt, x) == NK_ArrayNode ? nt_arr(nt, x, "elements", &en) : NULL;
+    for (int e = 0; e < en; e++) if (el[e] == a) return x;
+  }
+  return -1;
+}
+
+/* Can initialize parameter q take the handle? A String one can, unless a
+   block captures it or the initialize yields it (see ctor_convert_params). */
+static int ctor_param_can_share(Compiler *c, int mi, LocalVar *q) {
+  Scope *m = &c->scopes[mi];
+  if (!q || !q->is_param || q->is_block_param || q->byref_out || q->is_cell) return 0;
+  if (q->type != TY_STRING && q->type != TY_STRBUF) return 0;
+  return !((m->yields || m->is_lowered_yield) && ctor_yields_name(c, mi, q->name));
+}
+
+/* The caller side: the String variable each such call binds to a handle
+   parameter becomes the handle. A static call binds it through the handle
+   arm, which takes the local's handle. A call on a class value boxes its
+   arguments once for every arm of its switch, so its read is marked to box
+   the handle, and every initialize the switch can reach takes the handle
+   at that argument, not only the ones that append: a class it reaches that
+   keeps the String (`@s = s`) then keeps the caller's own, as in CRuby,
+   where an arm reading a plain String would have taken the handle's live
+   bytes. When one of them cannot take it, the read stays a copy, and the
+   emitter refuses the call. What cannot be pulled -- a block's parameter,
+   a captured local, a global -- is refused the same way
+   (refuse_string_copies). */
+static int ctor_pull_args(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int any = 0;
+  for (int mi = dyn_scopes_named(c, "initialize"); mi >= 0 && !any; mi = g_dyn.snext[mi])
+    for (int j = 0; j < c->scopes[mi].nparams && !any; j++) {
+      LocalVar *q = c->scopes[mi].pnames[j] ? scope_local(&c->scopes[mi], c->scopes[mi].pnames[j]) : NULL;
+      any = q && q->dyn_handle;
+    }
+  if (!any) return 0;
+  int changed = 0;
+  int *tg = (int *)malloc(sizeof(int) * (size_t)(c->nscopes > 0 ? c->nscopes : 1));
+  if (!tg) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  /* `super(t)` in an initialize, into the parent's handle parameter: a
+     parameter of its own the super hands on is converted with the parent's
+     (convert_byref_handle_params), a local is pulled here */
+  for (int q = comp_kind_first(c, NK_SuperNode); q >= 0; q = comp_kind_next(c, q)) {
+    if (nt_kind(nt, q) != NK_SuperNode) continue;
+    Scope *s = comp_scope_of(c, q);
+    int pi = s && s->name && sp_streq(s->name, "initialize") && s->class_id >= 0 ? a_super_target(c, s) : -1;
+    if (pi < 0) continue;
+    Scope *pm = &c->scopes[pi];
+    for (int j = 0; j < pm->nparams && j < DYN_ARGS; j++) {
+      LocalVar *d = pm->pnames[j] ? scope_local(pm, pm->pnames[j]) : NULL;
+      if (!d || !d->dyn_handle) continue;
+      int a = arg_layout_param_node(c, pm, q, j, NULL);
+      if (a >= 0 && nt_kind(nt, a) == NK_LocalVariableReadNode) changed |= dyn_pull_arg(c, a, 0);
+    }
+  }
+  /* `super` in a class's own `def self.new` is Class#new: it constructs
+     through the class's initialize (and a subclass's, when the method is
+     inherited), so the String it hands on is pulled as a `new` call's is,
+     and `self.new`'s callers follow its parameter (convert_byref_handle_params) */
+  for (int pass = 0; pass < 2; pass++) {
+    NodeKind sk = pass ? NK_ForwardingSuperNode : NK_SuperNode;
+    for (int q = comp_kind_first(c, sk); q >= 0; q = comp_kind_next(c, q)) {
+      if (nt_kind(nt, q) != sk) continue;
+      Scope *s = comp_scope_of(c, q);
+      if (!s || !s->is_cmethod || s->class_id < 0 || !s->name || !sp_streq(s->name, "new")) continue;
+      int nd = 0; const int *ds = comp_descendants(c, s->class_id, &nd);
+      for (int d = -1; d < nd; d++) {
+        int k = d < 0 ? s->class_id : ds[d];
+        int mi = comp_method_in_chain(c, k, "initialize", NULL);
+        if (mi < 0) continue;
+        Scope *m = &c->scopes[mi];
+        for (int j = 0; j < m->nparams && j < DYN_ARGS; j++) {
+          LocalVar *d2 = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
+          if (!d2 || !d2->dyn_handle) continue;
+          if (!pass) {
+            int a = arg_layout_param_node(c, m, q, j, NULL);
+            if (a >= 0 && nt_kind(nt, a) == NK_LocalVariableReadNode) changed |= dyn_pull_arg(c, a, 0);
+            continue;
+          }
+          int pi = zsuper_param_source(c, s, m, j);
+          LocalVar *src = pi >= 0 && s->pnames[pi] ? scope_local(s, s->pnames[pi]) : NULL;
+          if (!src || !src->is_param || src->is_block_param || src->is_cell) continue;
+          if (src->type != TY_STRING && src->type != TY_STRBUF) continue;
+          if (src->type != TY_STRBUF || !src->str_shared) {
+            src->type = TY_STRBUF; src->str_shared = 1; src->byref_out = 0; changed = 1;
+          }
+        }
+      }
+    }
+  }
+  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
+    if (nt_kind(nt, u) != NK_CallNode) continue;
+    int first, boxed;
+    int n = ctor_call_targets(c, u, &first, &boxed, tg, c->nscopes);
+    for (int t = 0; t < n; t++) {
+      Scope *m = &c->scopes[tg[t]];
+      for (int j = 0; j < m->nparams && j < DYN_ARGS; j++) {
+        LocalVar *q = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
+        if (!q || !q->dyn_handle) continue;
+        int a = ctor_param_arg(c, m, u, first, j);
+        if (a < 0) continue;
+        NodeKind ak = nt_kind(nt, a);
+        if (!boxed) {
+          /* An element of a splatted Array literal (`C.new(*[s, 1])`) rides
+             the Array the splat builds: a boxed one holds the handle once the
+             read is marked, as a dynamic call's splat does (#5957's container
+             rule). A String-only Array holds bytes, and the emitter refuses. */
+          int sx = ak == NK_LocalVariableReadNode ? ctor_arg_in_splat(c, u, a) : -1;
+          if (sx >= 0) {
+            if (comp_ntype(c, sx) == TY_POLY_ARRAY) changed |= dyn_pull_arg(c, a, 1);
+            continue;
+          }
+          if (ak == NK_LocalVariableReadNode) changed |= dyn_pull_arg(c, a, 0);
+          else if (ak == NK_InstanceVariableReadNode) {
+            const char *vn = nt_str(nt, a, "name");
+            int cid = vn ? an_ivar_owner(c, a) : -1;
+            if (cid >= 0 && strbuf_ivar_mut_kind(c, cid, vn) >= 0 && strbuf_promote_ivar(c, cid, vn)) changed = 1;
+          }
+          continue;
+        }
+        if (ak != NK_LocalVariableReadNode || c->strbuf_box[a]) continue;
+        /* every arm's parameter this argument binds takes the handle, or
+           none does */
+        int ok = 1;
+        for (int t2 = 0; t2 < n && ok; t2++) {
+          Scope *m2 = &c->scopes[tg[t2]];
+          for (int j2 = 0; j2 < m2->nparams && ok; j2++) {
+            LocalVar *q2 = m2->pnames[j2] ? scope_local(m2, m2->pnames[j2]) : NULL;
+            if (!q2 || q2->dyn_handle || ctor_param_arg(c, m2, u, first, j2) != a) continue;
+            if ((q2->type == TY_STRING || q2->type == TY_STRBUF) && !ctor_param_can_share(c, tg[t2], q2)) ok = 0;
+          }
+        }
+        if (!ok) continue;
+        for (int t2 = 0; t2 < n; t2++) {
+          Scope *m2 = &c->scopes[tg[t2]];
+          for (int j2 = 0; j2 < m2->nparams; j2++) {
+            LocalVar *q2 = m2->pnames[j2] ? scope_local(m2, m2->pnames[j2]) : NULL;
+            if (!q2 || q2->dyn_handle || (q2->type != TY_STRING && q2->type != TY_STRBUF)) continue;
+            if (ctor_param_arg(c, m2, u, first, j2) != a) continue;
+            q2->type = TY_STRBUF; q2->str_shared = 1; q2->dyn_handle = 1; changed = 1;
+          }
+        }
+        changed |= dyn_pull_arg(c, a, 1);
+      }
+    }
+  }
+  free(tg);
+  return changed;
+}
+
 /* Run in the fixpoint beside promote_shared_stored_strings (so a container
    holding the String widens with it) and again after it beside
    convert_byref_handle_params (so the byref slots have settled). */
@@ -16834,6 +17228,8 @@ static int promote_dyncall_string_args(Compiler *c) {
   const NodeTable *nt = c->nt;
   dyn_memo_reset(c);
   int changed = dyn_convert_params(c);
+  changed |= ctor_convert_params(c);
+  changed |= ctor_pull_args(c);
   for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
     if (!dyn_call_site(c, n)) continue;
     int a = nt_ref(nt, n, "arguments"), ac = 0;

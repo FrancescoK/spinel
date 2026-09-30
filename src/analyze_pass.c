@@ -6324,6 +6324,13 @@ static int struct_super_types_members(Compiler *c, int id, Scope *s) {
       else if (a < an && nt_kind(nt, av[a]) != NK_SplatNode) vnode = av[a];
       if (vnode >= 0) {
         at = infer_type(c, vnode);
+        /* an initialize parameter that is the handle (#6179), handed on as
+           the bare `super` hands it: the member takes the handle, so an
+           append after the `super` is the member's too */
+        if (nt_kind(nt, vnode) == NK_LocalVariableReadNode) {
+          LocalVar *hv = scope_local(s, nt_str(nt, vnode, "name"));
+          if (hv && hv->dyn_handle && hv->type == TY_STRBUF && hv->str_shared) at = TY_STRBUF;
+        }
         nilable = nullable_int_value(c, vnode) ||
                   (nt_kind(nt, vnode) == NK_LocalVariableReadNode &&
                    param_defaults_to_nil(c, s, nt_str(nt, vnode, "name")));
