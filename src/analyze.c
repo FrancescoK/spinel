@@ -17608,11 +17608,19 @@ static int promote_spread_string_args(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
   dyn_memo_reset(c);
+  /* per scope, the parameters it appends to (bit 31: answered), asked once
+     a pass: every call of a name visits every method of it */
+  unsigned *app = (unsigned *)calloc((size_t)c->nscopes + 1, sizeof(unsigned));
+  if (!app) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
     if (nt_kind(nt, n) != NK_CallNode) continue;
     const char *nm = nt_str(nt, n, "name");
     int a = nt_ref(nt, n, "arguments");
     if (!nm || a < 0) continue;
+    /* without a splat, only a rest gathers the call's arguments */
+    int ac = 0, splat = 0;
+    const int *av = nt_arr(nt, a, "arguments", &ac);
+    for (int k = 0; k < ac && !splat; k++) splat = nt_kind(nt, av[k]) == NK_SplatNode;
     /* `C.new(*s)` binds C's initialize */
     int ctor = -1, r = nt_ref(nt, n, "receiver");
     if (sp_streq(nm, "new") && r >= 0 && (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode)) {
@@ -17621,14 +17629,21 @@ static int promote_spread_string_args(Compiler *c) {
     }
     for (int mi = ctor >= 0 ? ctor : dyn_scopes_named(c, nm); mi >= 0; mi = ctor >= 0 ? -1 : g_dyn.snext[mi]) {
       Scope *m = &c->scopes[mi];
-      for (int pj = 0; pj < m->nparams && pj < 32; pj++) {
+      if (!splat && m->rest_idx < 0) continue;
+      if (!(app[mi] & 0x80000000u)) {
+        app[mi] = 0x80000000u;
+        for (int pj = 0; pj < m->nparams && pj < 31; pj++)
+          if (spread_param_appended(c, mi, pj)) app[mi] |= 1u << pj;
+      }
+      for (int pj = 0; pj < m->nparams && pj < 31; pj++) {
+        if (!(app[mi] & (1u << pj)) || (!splat && pj != m->rest_idx)) continue;
         int out[32], direct[32];
         int k = spread_string_reads(c, m, n, pj, out, direct, 32);
-        if (!k || !spread_param_appended(c, mi, pj)) continue;
         for (int i = 0; i < k; i++) changed |= dyn_pull_arg(c, out[i], direct[i]);
       }
     }
   }
+  free(app);
   dyn_memo_stale();
   return changed;
 }
