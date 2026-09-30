@@ -2306,6 +2306,7 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -qE '^#define _SP_HCR[0-9]+\(\) .*lv_bins.*lv_counts.*lv_vals.*lv_sums' "$$tmp/lahc.c" || { echo "infer-test: FAIL (a loop that only indexes typed arrays still reads their headers at every access)"; ok=0; }; \
 	grep -E '^#define _SP_HCR' "$$tmp/lahc.c" | grep -q 'lv_cur\b' && { echo "infer-test: FAIL (an array local the loop reassigns was read through a cached header)"; ok=0; }; \
 	grep -E '^#define _SP_HCR' "$$tmp/lahc.c" | grep -q 'self->iv_v\b' && { echo "infer-test: FAIL (an ivar the loop writes was read through a cached header)"; ok=0; }; \
+	grep -qE '^#define _SP_HCR[0-9]+\(\) .*lv_qv.*lv_qk.*lv_qs' "$$tmp/lahc.c" || { echo "infer-test: FAIL (a class test on a scalar kept a loop from caching its arrays' headers)"; ok=0; }; \
 	$(SPINEL) test/reader_operands_pure_read.rb -c --no-line-map -o "$$tmp/rop.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (reader_operands_pure_read: -c)"; ok=0; }; \
 	awk '/^[a-z].* sp_total\(/,/^}/' "$$tmp/rop.c" | grep -q 'SP_GC_ROOT(_t' && { echo "infer-test: FAIL (operands that are all pure reads were bound to rooted temps)"; ok=0; }; \
 	grep -qE 'sp_IntArray \* _t[0-9]+ = sp_Loud_vals\(\(sp_Loud \*\)lv_l\); SP_GC_ROOT' "$$tmp/rop.c" || { echo "infer-test: FAIL (a def overriding a reader was taken for a pure field read)"; ok=0; }; \

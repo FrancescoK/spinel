@@ -5751,10 +5751,11 @@ static int subtree_mutates_local(Compiler *c, int root, const char *name) {
    A loop qualifies when every node in it is one this can see through: reads,
    writes to locals and ivars, scalar arithmetic, typed-array reads and element
    writes, `getbyte`, `length`/`size`, plain field reads, the pure scalar
-   methods and Math functions, and control flow. A call to anything else, a
-   block, a nested loop or a rescue leaves the loop as it was. An array is
-   cached when it is read through a local, an ivar, or a field read of a
-   local, where the loop assigns neither the local nor the ivar. */
+   methods and Math functions, class tests and `!` on a scalar, and control
+   flow. A call to anything else, a block, a nested loop or a rescue leaves
+   the loop as it was. An array is cached when it is read through a local, an
+   ivar, or a field read of a local, where the loop assigns neither the local
+   nor the ivar. */
 enum { HC_INT, HC_FLOAT, HC_STR };
 typedef struct { char recv[200]; int kind; } HcEntry;
 typedef struct { int id; int n; HcEntry e[16]; NameSet wl, wi; char mark[32]; } HcRegion;
@@ -5789,6 +5790,15 @@ static int hc_call_ok(Compiler *c, int id, int stmt) {
     static const char *const PURE[] = { "to_i", "to_f", "abs", "floor", "ceil", "round", "truncate",
       "nan?", "zero?", "even?", "odd?", "-@", "infinite?", "finite?", "positive?", "negative?", NULL };
     for (int i = 0; PURE[i]; i++) if (sp_streq(nm, PURE[i])) return 1;
+  }
+  /* on a scalar, a class test is its nil test or a constant, and a negation
+     is C's */
+  if (ac == 0 && sp_streq(nm, "!") && (rt == TY_BOOL || rt == TY_INT || rt == TY_FLOAT)) return 1;
+  if (rt == TY_INT || rt == TY_FLOAT) {
+    if (ac == 0 && sp_streq(nm, "nil?")) return 1;
+    if (ac == 1 && nt_kind(nt, av[0]) == NK_ConstantReadNode &&
+        (sp_streq(nm, "is_a?") || sp_streq(nm, "kind_of?") || sp_streq(nm, "instance_of?")))
+      return 1;
   }
   if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode && nt_str(nt, recv, "name") &&
       sp_streq(nt_str(nt, recv, "name"), "Math") && (ac == 1 || ac == 2)) {
