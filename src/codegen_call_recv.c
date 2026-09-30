@@ -12115,6 +12115,8 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     }
     if ((sp_streq(name, "to_a") || sp_streq(name, "entries")) && argc == 0) {
       buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
+      if (nt_int(nt, id, "to_set", 0))
+        buf_printf(b, "; if (!_t%d.last) sp_raise_cls(\"RangeError\", \"cannot convert endless range to a set\")", tr);
       buf_printf(b, "; sp_srange_to_a(_t%d); })", tr); return 1;
     }
     if (sp_streq(name, "to_s") && argc == 0) {
@@ -12700,7 +12702,10 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_Range _t%d = ", t);
       buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
-      if (sp_streq(name, "to_a") || sp_streq(name, "entries"))
+      if (nt_int(nt, id, "to_set", 0))
+        buf_printf(b, "(_t%d.last == INTPTR_MAX ? (sp_raise_cls(\"RangeError\", \"cannot convert endless"
+                      " range to a set\"), (sp_IntArray *)0) : sp_range_to_ia(_t%d))", t, t);
+      else if (sp_streq(name, "to_a") || sp_streq(name, "entries"))
         buf_printf(b, "sp_range_to_ia(_t%d)", t);
       else if (sp_streq(name, "include?") || sp_streq(name, "member?") ||
                sp_streq(name, "cover?") || sp_streq(name, "===")) {

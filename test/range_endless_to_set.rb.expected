@@ -1,0 +1,10 @@
+cannot convert endless range to a set
+cannot convert endless range to a set
+cannot convert endless range to a set
+cannot convert endless range to a set
+cannot convert endless range to an array
+can't iterate from NilClass
+Set[1, 2, 3, 4]
+Set[1, 2, 3]
+Set[1, 4, 9]
+Set["a", "b", "c"]

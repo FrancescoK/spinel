@@ -6605,6 +6605,7 @@ int desugar_enum_method_recv(Compiler *c) {
           if (cst >= 0 && one >= 0 && toa >= 0) {
             nt_node_set_str(nt, toa, "name", "to_a");
             nt_node_set_ref(nt, toa, "receiver", recv);
+            nt_node_set_int(nt, toa, "to_set", 1);
             nt_node_set_str(nt, cst, "name", "Set");
             nt_node_set_arr(nt, one, "arguments", &toa, 1);
             nt_node_set_str(nt, id, "name", "new");
