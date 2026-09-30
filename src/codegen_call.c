@@ -20926,6 +20926,11 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     NodeKind k = nt_kind(nt, operand[i]);
     int state_read = (k == NK_InstanceVariableReadNode || k == NK_ClassVariableReadNode ||
                       k == NK_GlobalVariableReadNode);
+    /* ...but not a shared String slot's: bound, its read is the value form, a
+       COPY, and `@buf.setbyte(idx, 90)` wrote into the copy. The arms reach
+       the handle through the node itself, so it stays where it is. */
+    char sref[192];
+    if (state_read && strbuf_slot_ref(c, operand[i], sref, sizeof sref)) state_read = 0;
     if (state_read ? effects < 1 : !subtree_has_side_effect(c, operand[i])) continue;
     observable++;
     int bindable = (k == NK_CallNode || k == NK_SuperNode ||
