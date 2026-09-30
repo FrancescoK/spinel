@@ -677,6 +677,16 @@ static void xc_push(int **arr, int *n, int v) {
   if (!g) return;
   *arr = g; (*arr)[(*n)++] = v;
 }
+static int subtree_has(const NodeTable *nt, int root, int id) {
+  if (root == id) return 1;
+  if (root < 0 || root >= nt->count) return 0;
+  for (int j = 0; j < nt_num_refs(nt, root); j++) if (subtree_has(nt, nt_ref_at(nt, root, j), id)) return 1;
+  for (int j = 0; j < nt_num_arrs(nt, root); j++) {
+    int an = 0; const int *ids = nt_arr_at(nt, root, j, &an);
+    for (int k = 0; k < an; k++) if (subtree_has(nt, ids[k], id)) return 1;
+  }
+  return 0;
+}
 static int me_leaf_defined(const NodeTable *nt, const char *leaf) {
   for (int id = 0; id < nt->count; id++) {
     NodeKind k = nt_kind(nt, id);
@@ -687,34 +697,36 @@ static int me_leaf_defined(const NodeTable *nt, const char *leaf) {
   }
   return 0;
 }
+static int me_stmt_defines(const NodeTable *nt, int s, const char *m) {
+  NodeKind sk = nt_kind(nt, s);
+  if (sk == NK_DefNode) return nt_ref(nt, s, "receiver") < 0 && nt_str(nt, s, "name") && sp_streq(nt_str(nt, s, "name"), m);
+  int nn = sk == NK_AliasMethodNode ? nt_ref(nt, s, "new_name") : -1;
+  if (nn >= 0) return nt_kind(nt, nn) == NK_SymbolNode && nt_str(nt, nn, "value") && sp_streq(nt_str(nt, nn, "value"), m);
+  const char *cn = sk == NK_CallNode ? nt_str(nt, s, "name") : NULL;
+  int w = cn && (sp_streq(cn, "attr_writer") || sp_streq(cn, "attr_accessor")), r = cn && !sp_streq(cn, "attr_writer");
+  if (!cn || (!w && !sp_streq(cn, "attr") && !sp_streq(cn, "attr_reader") && !sp_streq(cn, "define_method") && !sp_streq(cn, "alias_method"))) return 0;
+  int an = 0; const int *av = nt_arr(nt, nt_ref(nt, s, "arguments"), "arguments", &an);
+  for (int a = 0; a < an; a++) {
+    NodeKind ak = nt_kind(nt, av[a]);
+    const char *v = ak == NK_SymbolNode ? nt_str(nt, av[a], "value") : ak == NK_StringNode ? nt_str(nt, av[a], "content") : NULL;
+    size_t vl = v ? strlen(v) : 0;
+    if (v && ((r && sp_streq(v, m)) || (w && !strncmp(v, m, vl) && sp_streq(m + vl, "=")))) return 1;
+  }
+  return 0;
+}
 /* does any body of the class/module named `leaf` define instance method `m`? */
-static int me_body_defines(const NodeTable *nt, const char *leaf, const char *m) {
+static int me_body_defines(const NodeTable *nt, const char *leaf, const char *m, int skip) {
   for (int id = 0; id < nt->count; id++) {
     NodeKind k = nt_kind(nt, id);
     if (k != NK_ClassNode && k != NK_ModuleNode) continue;
     int cp = nt_ref(nt, id, "constant_path");
     const char *nm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    if (!nm || !sp_streq(nm, leaf)) continue;
+    if (!nm || !sp_streq(nm, leaf) || subtree_has(nt, skip, id)) continue;
     int body = nt_ref(nt, id, "body");
     int bn = 0; const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
     for (int i = 0; i < bn; i++) {
-      NodeKind sk = nt_kind(nt, bb[i]);
-      if (sk == NK_DefNode && nt_ref(nt, bb[i], "receiver") < 0 && nt_str(nt, bb[i], "name") &&
-          sp_streq(nt_str(nt, bb[i], "name"), m)) return 1;
-      if (sk == NK_AliasMethodNode) {
-        int nn = nt_ref(nt, bb[i], "new_name");
-        if (nn >= 0 && nt_kind(nt, nn) == NK_SymbolNode && nt_str(nt, nn, "value") &&
-            sp_streq(nt_str(nt, nn, "value"), m)) return 1;
-      }
-      if (sk == NK_CallNode && nt_ref(nt, bb[i], "receiver") < 0 && nt_str(nt, bb[i], "name") &&
-          (sp_streq(nt_str(nt, bb[i], "name"), "attr_reader") || sp_streq(nt_str(nt, bb[i], "name"), "attr_accessor") ||
-           sp_streq(nt_str(nt, bb[i], "name"), "attr_writer"))) {
-        int args = nt_ref(nt, bb[i], "arguments");
-        int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-        for (int a = 0; a < an; a++)
-          if (nt_kind(nt, av[a]) == NK_SymbolNode && nt_str(nt, av[a], "value") &&
-              sp_streq(nt_str(nt, av[a], "value"), m)) return 1;
-      }
+      int rv = nt_ref(nt, bb[i], "receiver");
+      if ((rv < 0 || nt_kind(nt, rv) == NK_SelfNode) && me_stmt_defines(nt, bb[i], m)) return 1;
     }
   }
   return 0;
@@ -775,7 +787,7 @@ static int me_static_pred(const NodeTable *nt, int pred) {
     NodeKind ak = nt_kind(nt, av[0]);
     const char *m = ak == NK_SymbolNode ? nt_str(nt, av[0], "value") : ak == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
     if (!m) return -1;
-    return me_body_defines(nt, leaf, m) ? 1 : 0;
+    return me_body_defines(nt, leaf, m, -1) ? 1 : 0;
   }
   return -1;
 }
@@ -2478,6 +2490,95 @@ static int engine_version_cmp(const char *a, const char *b) {
   return 0;
 }
 
+static const char *engine_written(NodeTable *nt, int id) {
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_ClassNode || k == NK_ModuleNode) return nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+  if (k != NK_ConstantWriteNode && k != NK_ConstantOrWriteNode && k != NK_ConstantAndWriteNode &&
+      k != NK_ConstantOperatorWriteNode && k != NK_ConstantTargetNode && k != NK_ConstantPathWriteNode &&
+      k != NK_ConstantPathOrWriteNode && k != NK_ConstantPathAndWriteNode &&
+      k != NK_ConstantPathOperatorWriteNode && k != NK_ConstantPathTargetNode) return NULL;
+  int t = nt_ref(nt, id, "target");
+  return t >= 0 ? nt_str(nt, t, "name") : nt_str(nt, id, "name");
+}
+
+static const char *engine_body_class(NodeTable *nt, int stmt) {
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_ClassNode && nt_kind(nt, id) != NK_ModuleNode) continue;
+    int bn = 0; const int *b = nt_arr(nt, nt_ref(nt, id, "body"), "body", &bn);
+    for (int i = 0; i < bn; i++) if (b[i] == stmt) return nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+  }
+  return NULL;
+}
+
+static int engine_method_absent(NodeTable *nt, const char *cls, const char *m, int in, int depth) {
+  if (builtin_method_known(cls, m) || me_body_defines(nt, cls, m, in)) return 0;
+  if (is_builtin_class_name(cls) || is_builtin_module_name(cls)) return builtin_method_known(cls, NULL) ? 1 : -1;
+  if (!me_leaf_defined(nt, cls) || depth > 16) return -1;
+  int a = 1;
+  for (int id = 0; id < nt->count && a > 0; id++) {
+    const char *nm = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+    if ((nt_kind(nt, id) != NK_ClassNode && nt_kind(nt, id) != NK_ModuleNode) || !nm || !sp_streq(nm, cls)) continue;
+    int sc = nt_ref(nt, id, "superclass"), bn = 0;
+    if (sc >= 0) a = nt_kind(nt, sc) == NK_ConstantReadNode ? engine_method_absent(nt, nt_str(nt, sc, "name"), m, in, depth + 1) : -1;
+    const int *b = nt_arr(nt, nt_ref(nt, id, "body"), "body", &bn);
+    for (int i = 0; i < bn && a > 0; i++) {
+      const char *n = nt_kind(nt, b[i]) == NK_CallNode && nt_ref(nt, b[i], "receiver") < 0 ? nt_str(nt, b[i], "name") : NULL;
+      if (!n || (!sp_streq(n, "include") && !sp_streq(n, "prepend"))) continue;
+      int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, b[i], "arguments"), "arguments", &ac);
+      for (int k = 0; k < ac && a > 0; k++)
+        a = nt_kind(nt, av[k]) == NK_ConstantReadNode ? engine_method_absent(nt, nt_str(nt, av[k], "name"), m, in, depth + 1) : -1;
+    }
+  }
+  return a;
+}
+
+static int engine_absent(NodeTable *nt, int e, int in) {
+  const char *x = NULL;
+  const char *en = nt_kind(nt, e) == NK_CallNode && nt_ref(nt, e, "block") < 0 ? nt_str(nt, e, "name") : NULL;
+  if (en && (sp_streq(en, "method_defined?") || sp_streq(en, "public_method_defined?"))) {
+    int r = nt_ref(nt, e, "receiver"), ac = 0;
+    const int *av = nt_arr(nt, nt_ref(nt, e, "arguments"), "arguments", &ac);
+    const char *cls = r < 0 || nt_kind(nt, r) == NK_SelfNode ? engine_body_class(nt, in) :
+                      nt_kind(nt, r) == NK_ConstantReadNode ? nt_str(nt, r, "name") : NULL;
+    const char *m = ac != 1 ? NULL : nt_kind(nt, av[0]) == NK_SymbolNode ? nt_str(nt, av[0], "value") :
+                    nt_kind(nt, av[0]) == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
+    int a = !cls || !m ? -1 : builtin_object_method_known(m) ? 0 : engine_method_absent(nt, cls, m, in, 0);
+    if (a > 0)
+      for (int id = 0; id < nt->count; id++) if (me_stmt_defines(nt, id, m) && !subtree_has(nt, in, id)) return -1;
+    return a;
+  }
+  if (nt_kind(nt, e) == NK_DefinedNode) {
+    int v = nt_ref(nt, e, "value");
+    while (nt_kind(nt, v) == NK_ConstantPathNode && nt_ref(nt, v, "parent") >= 0) v = nt_ref(nt, v, "parent");
+    if (nt_kind(nt, v) == NK_ConstantReadNode || nt_kind(nt, v) == NK_ConstantPathNode) x = nt_str(nt, v, "name");
+  }
+  else if (en && sp_streq(en, "const_defined?") && (nt_kind(nt, nt_ref(nt, e, "receiver")) == NK_ConstantReadNode ||
+                                                     nt_kind(nt, nt_ref(nt, e, "receiver")) == NK_ConstantPathNode)) {
+    int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, e, "arguments"), "arguments", &ac);
+    if (ac >= 1 && nt_kind(nt, av[0]) == NK_SymbolNode) x = nt_str(nt, av[0], "value");
+    if (ac >= 1 && nt_kind(nt, av[0]) == NK_StringNode) x = nt_str(nt, av[0], "content");
+  }
+  if (!x || comp_is_wellknown_const(x) || is_builtin_class_name(x) || is_builtin_module_name(x) ||
+      is_builtin_exception_name(x)) return -1;
+  for (int id = 0; id < nt->count; id++)
+    if (engine_written(nt, id) && sp_streq(engine_written(nt, id), x) && !subtree_has(nt, in, id)) return -1;
+  return 1;
+}
+
+static int engine_absent_fold(NodeTable *nt, int e, int in) {
+  NodeKind k = nt_kind(nt, e);
+  if (k == NK_AndNode || k == NK_OrNode)
+    return engine_absent_fold(nt, nt_ref(nt, e, "left"), in) | engine_absent_fold(nt, nt_ref(nt, e, "right"), in);
+  int neg = k == NK_CallNode && nt_str(nt, e, "name") && sp_streq(nt_str(nt, e, "name"), "!") &&
+            nt_ref(nt, e, "arguments") < 0;
+  int q = neg ? nt_ref(nt, e, "receiver") : e, a = engine_absent(nt, q, in);
+  if (a < 0) return 0;
+  engine_blank(nt, q);
+  nt_node_reset(nt, e, neg == a ? "TrueNode" : "FalseNode");
+  nt_node_set_int(nt, e, "engine_check", 1);
+  return 1;
+}
+
 int desugar_engine_branches(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
@@ -2487,16 +2588,13 @@ int desugar_engine_branches(Compiler *c) {
      fold, which knows only the global, would answer for the wrong constant:
      leave every check alone then. */
   for (int id = 0; id < n0; id++) {
-    NodeKind k = nt_kind(nt, id);
-    if (k != NK_ConstantWriteNode && k != NK_ConstantAndWriteNode && k != NK_ConstantOperatorWriteNode &&
-        k != NK_ConstantTargetNode && k != NK_ConstantPathWriteNode && k != NK_ConstantPathOrWriteNode &&
-        k != NK_ConstantPathAndWriteNode && k != NK_ConstantPathOperatorWriteNode &&
-        k != NK_ConstantPathTargetNode) continue;
-    int t = nt_ref(nt, id, "target");
-    const char *wn = t >= 0 ? nt_str(nt, t, "name") : nt_str(nt, id, "name");
+    const char *wn = engine_written(nt, id);
     if (wn && sp_streq(wn, "RUBY_ENGINE")) eng = 0;
     if (wn && sp_streq(wn, "RUBY_VERSION")) ver = 0;
   }
+  for (int id = 0; id < n0; id++)
+    if (nt_kind(nt, id) == NK_IfNode || nt_kind(nt, id) == NK_UnlessNode)
+      changed |= engine_absent_fold(nt, nt_ref(nt, id, "predicate"), id);
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *op = nt_str(nt, id, "name");
