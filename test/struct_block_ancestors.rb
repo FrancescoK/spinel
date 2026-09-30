@@ -11,3 +11,14 @@ end
 p S.ancestors.take(4)
 p S.include?(M)
 p S.new(1).is_a?(N)
+
+# a plain class reopened with an explicit superclass keeps source order
+module CM; end
+module CN; end
+class CC
+  include CM
+end
+class CC < Object
+  include CN
+end
+p CC.ancestors.take(3)
