@@ -138,11 +138,15 @@ static void emit_struct_member_by_key(Compiler *c, ClassInfo *sc, const char *rt
   buf_printf(b, "({ sp_RbVal _t%d = ", tk);
   emit_boxed(c, key, b);
   buf_printf(b, "; sp_RbVal _t%d = _t%d;", tk0, tk);
-  /* Struct#values_at takes offsets only, unlike #[] / #dig */
+  /* Struct#values_at takes offsets only, unlike #[] / #dig; a Float inside the
+     Integer range is truncated to one (the error paths below then name the
+     offset it became) */
   if (int_only)
-    buf_printf(b, " if (_t%d.tag != SP_TAG_INT) sp_raise_cls(\"TypeError\","
+    buf_printf(b, " if (_t%d.tag == SP_TAG_FLT && _t%d.v.f >= (sp_float)INTPTR_MIN && _t%d.v.f < -(sp_float)INTPTR_MIN)"
+                  " _t%d = _t%d = sp_box_int((sp_int)_t%d.v.f);"
+                  " if (_t%d.tag != SP_TAG_INT) sp_raise_cls(\"TypeError\","
                   " sp_sprintf(\"no implicit conversion of %%s into Integer\","
-                  " sp_poly_class_name(_t%d)));", tk, tk);
+                  " sp_poly_class_name(_t%d)));", tk, tk, tk, tk, tk0, tk, tk, tk);
   buf_printf(b, " if (_t%d.tag == SP_TAG_INT && _t%d.v.i < 0) _t%d = sp_box_int(_t%d.v.i + %d);",
              tk, tk, tk, tk, sc->nivars);
   buf_printf(b, " sp_RbVal _t%d = sp_box_nil();", tr);

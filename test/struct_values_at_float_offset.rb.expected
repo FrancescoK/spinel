@@ -1,0 +1,16 @@
+0.5: [1]
+1.9: [2]
+variable: [2]
+-0.5: [1]
+-1.5: [3]
+2.99: [3]
+mixed: [1, 2, 3]
+3.0: IndexError: offset 3 too large for struct(size:3)
+-4.0: IndexError: offset -4 too small for struct(size:3)
+string: TypeError: no implicit conversion of String into Integer
+symbol: TypeError: no implicit conversion of Symbol into Integer
+integer: [2]
+range: [1, 2]
+none: []
+boxed 0.5: [1]
+boxed variable: [2]
