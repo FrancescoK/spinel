@@ -20765,7 +20765,9 @@ static int nn_simple_stmt(Compiler *c, int s) {
          vk == NK_FloatNode || vk == NK_LocalVariableReadNode;
 }
 
-/* `f = false` beside statement s, with only simple statements between */
+/* `f = false` beside statement s, with only simple statements between. The
+   nearest write of f on each side decides: a `f = true` between s and a
+   `f = false` leaves f true while x holds the nil. */
 static int nn_beside_false(Compiler *c, int s, LocalVar *flag) {
   const NodeTable *nt = c->nt;
   int l = nn_stlist[s];
@@ -20776,6 +20778,7 @@ static int nn_beside_false(Compiler *c, int s, LocalVar *flag) {
       if (nt_kind(nt, st[j]) == NK_LocalVariableWriteNode && nn_local_of(c, st[j]) == flag) {
         int v = nt_ref(nt, st[j], "value");
         if (v >= 0 && nt_kind(nt, v) == NK_FalseNode) return 1;
+        break;
       }
       if (!nn_simple_stmt(c, st[j])) break;
     }
@@ -20797,11 +20800,19 @@ static void nn_corr(Compiler *c) {
       int l = nn_stlist[w];
       if (l < 0) { ok = 0; break; }
       int n = 0; const int *st = nt_arr(nt, l, "body", &n);
+      /* only each local's last write before `f = true` counts: `x = v; x =
+         nil; f = true` leaves x nil */
       LocalVar *here[NN_MAXF]; int nh = 0;
+      LocalVar *seen[NN_MAXF]; int ns = 0;
       for (int j = nn_stidx[w] - 1; j >= 0 && j < n && nn_simple_stmt(c, st[j]); j--) {
         LocalVar *xl = nn_local_of(c, st[j]);
-        if (xl && xl != fv->lv && nn_nonnil_value(c, nt_ref(nt, st[j], "value")) && nh < NN_MAXF)
-          here[nh++] = xl;
+        if (!xl || xl == fv->lv) continue;
+        int dup = 0;
+        for (int i = 0; i < ns; i++) if (seen[i] == xl) dup = 1;
+        if (dup) continue;
+        if (ns == NN_MAXF) break;
+        seen[ns++] = xl;
+        if (nn_nonnil_value(c, nt_ref(nt, st[j], "value")) && nh < NN_MAXF) here[nh++] = xl;
       }
       if (first) { for (int i = 0; i < nh; i++) cand[nc++] = here[i]; first = 0; }
       else for (int i = 0; i < nc; ) {
@@ -21082,12 +21093,15 @@ static int nn_use_ok(Compiler *c, int r) {
     "group_by", "tally", "uniq", "reverse", "rotate", "take", "drop", "take_while", "drop_while",
     "dup", "clone", "+", "-", "&", "|", "*", "join", "inspect", "to_s", "hash", "==", "!=", "eql?",
     "sample", "shuffle", "zip", "inject", "reduce", "find", "detect", "compact", "pack",
-    "each_with_object", "frozen?", "bsearch", "product", "combination", "permutation", "flatten",
-    "each_slice", "each_cons", "cycle", "sum", "minmax_by", "chunk_while", "slice_when", "lazy", NULL };
+    "each_with_object", "frozen?", "bsearch", "flatten",
+    "cycle", "sum", "minmax_by", "chunk_while", "slice_when", "lazy", NULL };
   if (nn_name_in(nm, rd)) return 1;
-  /* calls answering the array itself: their value must be thrown away */
+  /* calls answering the array itself (each_slice, each_cons, product,
+     combination and permutation do with a block): their value must be
+     thrown away */
   static const char *const self_rd[] = { "each", "each_with_index", "each_index", "reverse_each",
-                                         "freeze", NULL };
+                                         "freeze", "each_slice", "each_cons", "product",
+                                         "combination", "permutation", NULL };
   if (nn_name_in(nm, self_rd)) return nn_discarded(c, p);
   /* mutations that leave neither a nil nor a hole */
   static const char *const shrink[] = { "pop", "shift", "delete_at", "delete", "slice!", NULL };
