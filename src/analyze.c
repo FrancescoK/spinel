@@ -29879,11 +29879,12 @@ void analyze_program(Compiler *c) {
             int q = ty_object_class(ivrty);
             if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0;
           }
-          /* a boxed receiver can be an instance of any class that takes the
-             ivar (poly_ivar_set_class): by value, the write went to a copy */
+          /* a boxed receiver can be an instance of each class it can hold
+             that takes the ivar (poly_ivar_set_reaches): by value, the
+             write went to a copy */
           else if (ivrty == TY_POLY)
             for (int q = 0; q < c->nclasses; q++)
-              if (poly_ivar_set_class(c, q)) c->classes[q].is_value_type = 0;
+              if (poly_ivar_set_class(c, q) && poly_ivar_set_reaches(c, id, q)) c->classes[q].is_value_type = 0;
         }
       }
     }
