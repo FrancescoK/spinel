@@ -868,6 +868,18 @@ int an_value_dropped(const NodeTable *nt, const int *parent, int node) {
                 sp_streq(bn, "loop"));
 }
 
+static int an_elems_int_rows(Compiler *c, int arr, int *saw) {
+  int en = 0;
+  const int *els = nt_arr(c->nt, arr, "elements", &en);
+  for (int e = 0; e < en; e++) {
+    TyKind et = comp_ntype(c, els[e]);
+    if (et == TY_INT_ARRAY) { *saw = 1; continue; }
+    if (et == TY_NIL || et == TY_UNKNOWN) continue;
+    return 0;
+  }
+  return 1;
+}
+
 /* Whether every element stored into poly-array ivar `@<ivname>` is an int
    array (a nested array of int arrays, e.g. @chr_banks / @nmt_mem). Element
    reads then yield an int array rather than a boxed poly. */
@@ -903,15 +915,7 @@ static int ivar_array_elems_all_int_array_impl(Compiler *c, int cid, const char 
         const char *aty = nt_type(nt, av[a]);
         if (aty && sp_streq(aty, "SplatNode")) return 0;
         if (is_concat) {
-          if (!aty || !sp_streq(aty, "ArrayNode")) return 0;
-          int en = 0;
-          const int *els = nt_arr(nt, av[a], "elements", &en);
-          for (int e = 0; e < en; e++) {
-            TyKind et = comp_ntype(c, els[e]);
-            if (et == TY_INT_ARRAY) { saw = 1; continue; }
-            if (et == TY_NIL || et == TY_UNKNOWN) continue;
-            return 0;
-          }
+          if (!aty || !sp_streq(aty, "ArrayNode") || !an_elems_int_rows(c, av[a], &saw)) return 0;
           continue;
         }
         TyKind vt = comp_ntype(c, av[a]);
@@ -948,15 +952,7 @@ static int ivar_array_elems_all_int_array_impl(Compiler *c, int cid, const char 
         if (et == TY_NIL || et == TY_UNKNOWN) continue;
         return 0;
       }
-      if (arr < 0) return 0;
-      int en = 0;
-      const int *els = nt_arr(nt, arr, "elements", &en);
-      for (int e = 0; e < en; e++) {
-        TyKind et = comp_ntype(c, els[e]);
-        if (et == TY_INT_ARRAY) { saw = 1; continue; }
-        if (et == TY_NIL || et == TY_UNKNOWN) continue;
-        return 0;
-      }
+      if (arr < 0 || !an_elems_int_rows(c, arr, &saw)) return 0;
       continue;
     }
   }
@@ -1072,15 +1068,7 @@ static int const_array_elems_all_int_array_impl(Compiler *c, const char *cname) 
       if (et == TY_INT_ARRAY) { saw = 1; continue; }
       return 0;
     }
-    if (arr < 0) return 0;
-    int en = 0;
-    const int *els = nt_arr(nt, arr, "elements", &en);
-    for (int e = 0; e < en; e++) {
-      TyKind et = comp_ntype(c, els[e]);
-      if (et == TY_INT_ARRAY) { saw = 1; continue; }
-      if (et == TY_NIL || et == TY_UNKNOWN) continue;
-      return 0;
-    }
+    if (arr < 0 || !an_elems_int_rows(c, arr, &saw)) return 0;
   }
   return saw;
 }
