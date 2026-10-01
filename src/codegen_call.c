@@ -16105,17 +16105,28 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
           LocalVar *up = um->nparams >= 1 ? scope_local(um, um->pnames[0]) : NULL;
           TyKind upt = (up && up->type != TY_UNKNOWN) ? up->type : TY_POLY;
           int uretb = (um->ret == TY_BOOL);
+          /* a fresh receiver (`C.new != x`) is held by nothing else across
+             the operand's evaluation and the user #==: root it first */
+          int ueh = expr_is_held_ref(c, recv), uet = 0;
+          if (!ueh) {
+            uet = ++g_tmp;
+            buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)(", c->classes[ueq_def].c_name, uet,
+                       c->classes[ueq_def].c_name);
+            emit_expr(c, recv, b);
+            buf_printf(b, "); SP_GC_ROOT(_t%d); ", uet);
+          }
           buf_puts(b, "(!");
           if (!uretb) buf_puts(b, "sp_poly_truthy(");
           buf_printf(b, "sp_%s_%s((sp_%s *)(", c->classes[ueq_def].c_name,
                      mc(um->name), c->classes[ueq_def].c_name);
-          emit_expr(c, recv, b);
+          if (ueh) emit_expr(c, recv, b); else buf_printf(b, "_t%d", uet);
           buf_puts(b, "), ");
           if (upt == TY_POLY) emit_boxed(c, argv[0], b);
           else emit_expr(c, argv[0], b);
           buf_puts(b, ")");
           if (!uretb) buf_puts(b, ")");
           buf_puts(b, ")");
+          if (!ueh) buf_puts(b, "; })");
           return 1;
         }
       }
@@ -35172,9 +35183,20 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       if (own >= 0) {
         int defc = xcm;
         (void)comp_method_in_chain(c, xcm, c->scopes[own].name, &defc);
-        buf_printf(b, "sp_%s_%s((sp_%s *)(", c->classes[defc].c_name,
-                   mc(c->scopes[own].name), c->classes[defc].c_name);
-        emit_expr(c, recv, b); buf_puts(b, "))");
+        if (expr_is_held_ref(c, recv)) {
+          buf_printf(b, "sp_%s_%s((sp_%s *)(", c->classes[defc].c_name,
+                     mc(c->scopes[own].name), c->classes[defc].c_name);
+          emit_expr(c, recv, b); buf_puts(b, "))");
+        }
+        else {
+          /* rooted: a fresh exception (`E.new.to_s`) held by nothing else
+             while its own #to_s allocates */
+          int tex = ++g_tmp;
+          buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)(", c->classes[defc].c_name, tex, c->classes[defc].c_name);
+          emit_expr(c, recv, b);
+          buf_printf(b, "); SP_GC_ROOT(_t%d); sp_%s_%s(_t%d); })", tex, c->classes[defc].c_name,
+                     mc(c->scopes[own].name), tex);
+        }
         return;
       }
       const char *fn = exc_has_user_msg_override(c)
