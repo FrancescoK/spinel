@@ -8,6 +8,21 @@ class Foo
   def initialize
     puts "Foo.new ran"
   end
+
+  def n
+    puts "n ran"
+    3
+  end
+
+  def s
+    puts "s ran"
+    "str"
+  end
+
+  def x
+    puts "x ran"
+    1.5
+  end
 end
 
 def try
@@ -28,3 +43,10 @@ def make
 end
 try { make.missing }
 p $log
+
+# A receiver that answers an Integer, a String or a Float runs once: the
+# scalar arms rendered it before giving the call up, and the prelude they
+# left behind ran Foo.new a second time.
+try { Foo.new.n.missing }
+try { Foo.new.s.missing }
+try { Foo.new.x.missing }

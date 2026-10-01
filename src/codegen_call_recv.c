@@ -8006,7 +8006,24 @@ void emit_str_pattern_expr(Compiler *c, int node, Buf *b) {
 }
 
 static void emit_strbuf_force_encoding(Compiler *c, const char *name, const char *ref, const int *argv, int argc, Buf *b);
+static int emit_scalar_call_arms(Compiler *c, int id, Buf *b);
+/* The arms evaluate a scalar receiver into text before they look at the
+   method name, and its prelude (`Foo.new` hoisted into a temp for
+   `Foo.new.v.zork`) lands in g_pre then. When no arm takes the call, the
+   arm that does (the NoMethodError gate among them) emits the receiver
+   again, so that prelude is dropped here: left in place it ran the
+   receiver's inner call a second time. */
 int emit_scalar_call(Compiler *c, int id, Buf *b) {
+  Buf *pre = g_pre;
+  size_t pre0 = pre ? pre->len : 0;
+  int done = emit_scalar_call_arms(c, id, b);
+  if (!done && pre && pre == g_pre && pre->len > pre0) {
+    pre->len = pre0;
+    pre->p[pre0] = 0;
+  }
+  return done;
+}
+static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
   /* Shared-mutable shim (#3227): setbyte on a strbuf local -- shadow-copy
      re-entry, same as emit_array_call's. */
   {
