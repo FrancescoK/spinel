@@ -733,14 +733,16 @@ static int sp_fiber_resuming(sp_Fiber*f){
   }
   return 0;
 }
-/* CRuby's refusals for a resume target, in its order. The root fiber has no
-   stack and is never resumable: it is current, resuming, or transferring. */
+/* CRuby's refusals for a resume target, in its order. A root fiber has no
+   stack and is never resumable: it is current, resuming, or transferring.
+   That holds for the main thread's root asked from another thread too, which
+   is not this worker's root, so the test is the missing stack. */
 static void sp_fiber_check_resume(sp_Fiber*f){
   if(f->state==3)sp_raise_cls("FiberError","attempt to resume a terminated fiber");
   if(f==sp_fiber_current)sp_raise_cls("FiberError","attempt to resume the current fiber");
   if(f->resumer)sp_raise_cls("FiberError","attempt to resume a resumed fiber (double resume)");
   if(sp_fiber_resuming(f))sp_raise_cls("FiberError","attempt to resume a resuming fiber");
-  if(f->transferred||f==&sp_fiber_root)sp_raise_cls("FiberError","attempt to resume a transferring fiber");
+  if(f->transferred||f==&sp_fiber_root||!f->stack)sp_raise_cls("FiberError","attempt to resume a transferring fiber");
   if(f->state==1)sp_raise_cls("FiberError","attempt to resume a resumed fiber (double resume)");
 }
 sp_RbVal sp_Fiber_resume(sp_Fiber*f,sp_RbVal val){SP_GC_ROOT_RBVAL(val);SP_GC_ROOT(f);sp_fiber_check_thread(f);sp_fiber_check_resume(f);f->resumed_value=val;sp_Fiber*prev=sp_fiber_current;sp_fiber_save_roots(prev);sp_fiber_restore_roots(f);if(!prev->exc_ctx)prev->exc_ctx=sp_exc_ctx_new();sp_exc_ctx_save(prev->exc_ctx);sp_exc_ctx_load(f->exc_ctx);f->resumer=prev;sp_fiber_current=f;SP_TSAN_SET_CALLER(f,prev);SP_TSAN_SWITCH(f);if(f->state==0){f->state=1;sp_ctx_make(&f->ctx,f->stack+sp_fiber_guard(),f->stack_size,sp_fiber_trampoline);sp_ctx_swap(&f->caller_ctx,&f->ctx);}
@@ -819,6 +821,8 @@ sp_Fiber*sp_Fiber_kill(sp_Fiber*f){SP_GC_ROOT(f);
 /* CRuby's refusals for a transfer target. The root fiber passes, and so does
    a live fiber already entered by transfer (what the scheduler switches to). */
 static void sp_fiber_check_transfer(sp_Fiber*f){
+  /* the main thread's root, from another thread: it has no owner to check */
+  if(!f->stack&&sp_thread_main_fiber())sp_raise_cls("FiberError","fiber called across threads");
   if(f==&sp_fiber_root||f==sp_fiber_current)return;
   if(f->state==3)sp_raise_cls("FiberError","dead fiber called");
   if(f->transferred)return;
