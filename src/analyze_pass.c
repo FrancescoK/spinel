@@ -2961,14 +2961,16 @@ int infer_write_types(Compiler *c) {
                  transition is a real change. */
               if (mg_p != lv_p->type) { lv_p->type = mg_p; if (lv_p->rbs_seeded) changed = 1; }
             }
-            else if (sp_streq(lty_p, "GlobalVariableTargetNode") || sp_streq(lty_p, "ClassVariableTargetNode"))
+            else if (sp_streq(lty_p, "GlobalVariableTargetNode") || sp_streq(lty_p, "ClassVariableTargetNode") ||
+                     sp_streq(lty_p, "InstanceVariableTargetNode"))
               changed |= masgn_unify_elem(c, ms_poly, &lefts[i], 1, TY_POLY);
           }
           int rn_p = 0;
           const int *rights_p = nt_arr(nt, id, "rights", &rn_p);
           for (int j = 0; j < rn_p; j++) {
             const char *rty_p = nt_type(nt, rights_p[j]) ? nt_type(nt, rights_p[j]) : "";
-            if (sp_streq(rty_p, "GlobalVariableTargetNode") || sp_streq(rty_p, "ClassVariableTargetNode"))
+            if (sp_streq(rty_p, "GlobalVariableTargetNode") || sp_streq(rty_p, "ClassVariableTargetNode") ||
+                sp_streq(rty_p, "InstanceVariableTargetNode"))
               changed |= masgn_unify_elem(c, ms_poly, &rights_p[j], 1, TY_POLY);
           }
           int rest_p = nt_ref(nt, id, "rest");
