@@ -39,19 +39,19 @@ jobs:
           # the rubyspec gate in shards of suites (the Run step's case)
           rs = [{"leg": "rubyspec", "shard": k} for k in (1, 2, 3, 4, 5)] if "rubyspec" in legs else []
           jobs = []
-          for leg in ("cb", "vf"):
+          for leg in ("cb", "vf", "nn"):
               if leg in legs:
                   jobs.append({"leg": leg, "name": "base", "sha": base, "shard": 0})
           jobs += [dict(j, name="base", sha=base) for j in rs]
           for name, sha in heads:
               if "suite" in legs:
                   jobs += [{"leg": "suite", "name": name, "sha": sha, "shard": k} for k in range(1, n + 1)]
-              for leg in ("cb", "vf", "cdiff", "extra", "scale"):
+              for leg in ("cb", "vf", "nn", "cdiff", "extra", "scale"):
                   if leg in legs:
                       jobs.append({"leg": leg, "name": name, "sha": sha, "shard": 0})
               jobs += [dict(j, name=name, sha=sha) for j in rs]
           builds = []
-          if any(leg in legs for leg in ("cb", "vf", "cdiff", "scale", "rubyspec")):
+          if any(leg in legs for leg in ("cb", "vf", "nn", "cdiff", "scale", "rubyspec")):
               builds.append({"name": "base", "sha": base, "dir": "base"})
           builds += [{"name": name, "sha": sha, "dir": "head"} for name, sha in heads]
           print("matrix=" + json.dumps({"include": jobs}))
@@ -248,8 +248,10 @@ jobs:
             if [ "$SHARD" = 1 ]; then make infer-test > "$out/infer.log" 2>&1 || true; fi
             printf '%s\n' test/*.rb | wc -l > "$out/corpus.txt"
             ;;
-          cb|vf)
+          cb|vf|nn)
             tool=tools/call_binding_probe.rb; [ "$LEG" = vf ] && tool=tools/value_flow_probe.rb
+            # nn: the nil-narrowing probe, with each tree's own generator
+            [ "$LEG" = nn ] && tool=tools/nil_narrowing_probe.rb
             ruby $tool --strength 2 --seed 1 --jobs "$(nproc)" --no-reduce --out "$out/probe" > "$out/probe.log" 2>&1 || true
             # a timeout depends on the machine's load: such a result is not kept
             if [ "$NAME" = base ] && grep -q -E '^[0-9]+ cases: ' "$out/probe/summary.txt" 2>/dev/null &&

@@ -5,7 +5,7 @@ import os, re, sys
 res = sys.argv[1]
 jobs = {}
 for d in sorted(os.listdir(res)):
-    m = re.match(r"r-(suite|cb|vf|cdiff|extra|scale|rubyspec)-(.+)-(\d+)$", d)
+    m = re.match(r"r-(suite|cb|vf|nn|cdiff|extra|scale|rubyspec)-(.+)-(\d+)$", d)
     if m:
         jobs[(m.group(1), m.group(2), int(m.group(3)))] = os.path.join(res, d)
 
@@ -52,7 +52,7 @@ def summary(d):
 
 names = sorted({n for (_, n, _) in jobs if n != "base"})
 print("# verify\n")
-for probe in ("cb", "vf"):
+for probe in ("cb", "vf", "nn"):
     if (probe, "base", 0) in jobs:
         d = jobs[(probe, "base", 0)]
         o = origin(d)
@@ -92,7 +92,7 @@ for n in names:
             print(f"- sccache hits per slice: {', '.join(m.group(1) if m else '?' for m in rates)}")
         for l in fails[:30]:
             print(f"  - `{l.strip()}`")
-    for probe in ("cb", "vf"):
+    for probe in ("cb", "vf", "nn"):
         if (probe, n, 0) in jobs:
             d = jobs[(probe, n, 0)]
             line = f"- {probe}: {summary(d)}"
