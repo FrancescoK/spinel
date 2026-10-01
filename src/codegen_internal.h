@@ -913,6 +913,7 @@ int builtin_class_parent_id(int id);   /* analyze_util.c */
 int is_builtin_class_name(const char *n);
 int is_builtin_module_name(const char *n);
 int is_builtin_exception_name(const char *n);
+int exc_acc_object_method(Compiler *c, const char *name);   /* analyze_util.c */
 int class_inherits_builtin_exception(Compiler *c, int ci);  /* analyze_util.c */
 /* The class name a runtime match (is_a?/===/when) should test against: the
    QUALIFIED path name when it names a known builtin (exception) class --
