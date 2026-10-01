@@ -5365,6 +5365,48 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
 
+  /* the same over a Float array: the boxed implementation builds the
+     sub-arrays, and a parameter typed Float array takes each one unboxed
+     (the block was not emitted at all, and the call fell to the unresolved
+     NoMethodError) */
+  if ((sp_streq(name, "combination") || sp_streq(name, "permutation") ||
+       sp_streq(name, "repeated_combination") || sp_streq(name, "repeated_permutation")) &&
+      rt == TY_FLOAT_ARRAY) {
+    int is_perm = sp_streq(name, "permutation");
+    const char *genfn = sp_streq(name, "permutation") ? "sp_PolyArray_permutation"
+                      : sp_streq(name, "combination") ? "sp_PolyArray_combination"
+                      : sp_streq(name, "repeated_permutation") ? "sp_PolyArray_repeated_permutation"
+                      : "sp_PolyArray_repeated_combination";
+    int args = nt_ref(nt, id, "arguments");
+    int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+    if (ac != 1 && !(is_perm && ac == 0)) return 0;
+    int ta = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_boxed(c, recv, &rb);
+    emit_indent(b, indent);
+    buf_printf(b, "{ sp_PolyArray *_t%d = sp_poly_to_poly_array(%s); SP_GC_ROOT(_t%d);\n", ta, rb.p ? rb.p : "sp_box_nil()", ta);
+    free(rb.p);
+    emit_indent(b, indent + 1); buf_printf(b, "sp_PolyArray *_t%d = %s(_t%d, ", tc, genfn, ta);
+    if (ac == 1) emit_int_expr(c, av[0], b); else buf_printf(b, "_t%d ? _t%d->len : 0", ta, ta);
+    buf_puts(b, "); SP_GC_ROOT(_t"); buf_printf(b, "%d);\n", tc);
+    emit_indent(b, indent + 1); buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, tc, ti);
+    if (p0) {
+      Scope *cbsc = comp_scope_of(c, block);
+      LocalVar *clv = cbsc ? scope_local(cbsc, p0) : NULL;
+      TyKind cpt = clv ? clv->type : TY_UNKNOWN;
+      emit_indent(b, indent + 2);
+      if (cpt == TY_FLOAT_ARRAY)
+        buf_printf(b, "lv_%s = sp_FloatArray_from_poly_array((sp_PolyArray *)sp_PolyArray_get(_t%d, _t%d).v.p);\n", p0, tc, ti);
+      else if (cpt == TY_POLY_ARRAY)
+        buf_printf(b, "lv_%s = (sp_PolyArray *)sp_PolyArray_get(_t%d, _t%d).v.p;\n", p0, tc, ti);
+      else
+        buf_printf(b, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", p0, tc, ti);
+    }
+    emit_loop_body(c, body, b, indent + 2);
+    emit_indent(b, indent + 1); buf_puts(b, "}\n");
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return 1;
+  }
+
   /* array.each_cons(n) { |a, b, ...| } -- sliding window of n consecutive
      elements; a single param binds the n-element sub-array, multiple params
      destructure the window. The hoisted receiver is rooted for the same

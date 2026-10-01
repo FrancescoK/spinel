@@ -489,6 +489,37 @@ sp_FloatArray*sp_FloatArray_intersect(sp_FloatArray*a,sp_FloatArray*b){SP_GC_ROO
 sp_bool sp_FloatArray_intersect_p(sp_FloatArray*a,sp_FloatArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);if(!a||!b)return 0;for(sp_int i=0;i<a->len;i++)if(sp_FloatArray_include(b,a->data[i]))return 1;return 0;}
 sp_FloatArray*sp_FloatArray_union(sp_FloatArray*a,sp_FloatArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_FloatArray*r=sp_FloatArray_new();if(a)for(sp_int i=0;i<a->len;i++){sp_float v=a->data[i];if(!sp_FloatArray_include(r,v))sp_FloatArray_push(r,v);}if(b){for(sp_int i=0;i<b->len;i++){sp_float v=b->data[i];if(!sp_FloatArray_include(r,v))sp_FloatArray_push(r,v);}}SP_MAY_NIL(r)=(a&&SP_MAY_NIL(a))||(b&&SP_MAY_NIL(b));return r;}
 sp_FloatArray*sp_FloatArray_difference(sp_FloatArray*a,sp_FloatArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_FloatArray*r=sp_FloatArray_new();for(sp_int i=0;i<a->len;i++){sp_float v=a->data[i];if(!sp_FloatArray_include(b,v))sp_FloatArray_push(r,v);}SP_MAY_NIL(r)=SP_MAY_NIL(a);return r;}
+/* insert(i, v) on a Float array, as sp_IntArray_insert does on an Integer
+   one: a negative index counts from past the end, and the gap before an index
+   past the end is nil, the slot's sentinel. */
+void sp_FloatArray_insert(sp_FloatArray *a, sp_int i, sp_float v) {
+  SP_GC_ROOT(a);
+  if (!a) return;
+  if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_FLT_ARRAY); return; }
+  sp_int orig = i;
+  if (i < 0) i += a->len + 1;
+  if (i < 0)
+    sp_raise_cls("IndexError", sp_sprintf("index %lld too small for array; minimum: %lld",
+                                          (long long)orig, (long long)(-(a->len + 1))));
+  if (i > a->len) SP_MAY_NIL(a) = 1;
+  while (i > a->len) sp_FloatArray_push(a, sp_float_nil());
+  sp_FloatArray_splice(a, i, 0, &v, 1);
+}
+/* uniq! in place, matching elements the way sp_FloatArray_uniq does */
+void sp_FloatArray_uniq_bang(sp_FloatArray *a) {
+  SP_GC_ROOT(a);
+  if (!a) return;
+  if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_FLT_ARRAY); return; }
+  sp_int w = 0;
+  for (sp_int i = 0; i < a->len; i++) {
+    sp_float v = a->data[i];
+    int dup = 0;
+    for (sp_int j = 0; j < w && !dup; j++)
+      dup = a->data[j] == v || (v != v && a->data[j] != a->data[j] && memcmp(&a->data[j], &v, sizeof v) == 0);
+    if (!dup) a->data[w++] = v;
+  }
+  a->len = w;
+}
 sp_FloatArray*sp_FloatArray_uniq(sp_FloatArray*a){SP_GC_ROOT(a);sp_FloatArray*b=sp_FloatArray_new();if(!a)return b;for(sp_int i=0;i<a->len;i++){sp_float v=sp_FloatArray_get(a,i);if(!sp_FloatArray_include(b,v))sp_FloatArray_push(b,v);}SP_MAY_NIL(b)=SP_MAY_NIL(a);return b;}
 
 /* ============================= sp_PtrArray ============================ */
