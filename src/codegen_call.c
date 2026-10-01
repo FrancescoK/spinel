@@ -24707,6 +24707,85 @@ static void refuse_unplaced_lead(Compiler *c, int id, const char *name, int recv
   }
 }
 
+/* A global's or a class variable's read, or its write (`m($g = s)`). */
+static int refuse_nonlocal_var(const NodeTable *nt, int a) {
+  NodeKind k = a >= 0 ? nt_kind(nt, a) : NK__COUNT;
+  return k == NK_GlobalVariableReadNode || k == NK_ClassVariableReadNode ||
+         k == NK_GlobalVariableWriteNode || k == NK_ClassVariableWriteNode;
+}
+static int nonlocal_string_typed(Compiler *c, int a) {
+  TyKind t = comp_ntype(c, a);
+  return t == TY_STRING || t == TY_STRBUF;
+}
+/* A global or a class variable handed to a method's parameter that takes
+   a String's handle or box and appends to it. The binder wraps a fresh
+   handle of its bytes, or boxes a copy, since neither variable has a handle
+   of its own to give; only a lent slot (the byref ABI) can carry it. A
+   receiver that is boxed reaches every class's method of the name. */
+static void refuse_nonlocal_param_args(Compiler *c, int id, const char *name) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  int any = 0;
+  for (int k = 0; k < ac && !any; k++) {
+    if (nt_kind(nt, av[k]) == NK_KeywordHashNode) {
+      int en = 0; const int *el = nt_arr(nt, av[k], "elements", &en);
+      for (int e = 0; e < en && !any; e++) any = refuse_nonlocal_var(nt, nt_ref(nt, el[e], "value"));
+    }
+    else any = refuse_nonlocal_var(nt, av[k]);
+  }
+  if (!any) return;
+  int tg[64], n = 0;
+  if (recv >= 0 && comp_ntype(c, recv) == TY_POLY) {
+    for (int k = 0; k < c->nclasses && n < 64; k++) {
+      if (!c->classes[k].instantiated) continue;
+      int mi = comp_method_in_chain(c, k, name, NULL);
+      int dup = 0;
+      for (int e = 0; e < n && !dup; e++) dup = tg[e] == mi;
+      if (mi >= 0 && !dup) tg[n++] = mi;
+    }
+  }
+  else {
+    int mi = refuse_static_target(c, id, name);
+    /* a class method's bare call reaches a top-level method too */
+    if (mi < 0 && (recv < 0 || nt_kind(nt, recv) == NK_SelfNode)) mi = comp_method_index(c, name);
+    if (mi >= 0) tg[n++] = mi;
+  }
+  for (int t = 0; t < n; t++) {
+    Scope *m = &c->scopes[tg[t]];
+    if (!refuse_call_binds(c, refuse_scope_params(c, m), id, 0, 0)) continue;
+    for (int j = 0; j < m->nparams && j < 16; j++) {
+      LocalVar *q = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
+      if (!q || q->byref_out) continue;
+      if (!(q->type == TY_STRBUF && q->str_shared) && q->type != TY_POLY) continue;
+      int kj = -1;
+      if (!dyn_method_appends(c, tg[t], j) && !(q->type == TY_POLY && (q->poly_lift & POLY_LIFT_APPENDED)) &&
+          !(dyn_method_kw_appends(c, tg[t], m->pnames[j], &kj) && kj == j))
+        continue;
+      int arg = arg_layout_param_node(c, m, id, j, NULL);
+      /* a keyword parameter takes the value of its key */
+      for (int k = 0; arg < 0 && k < ac; k++) {
+        if (nt_kind(nt, av[k]) != NK_KeywordHashNode) continue;
+        int en = 0; const int *el = nt_arr(nt, av[k], "elements", &en);
+        for (int e = 0; e < en; e++) {
+          int key = nt_kind(nt, el[e]) == NK_AssocNode ? nt_ref(nt, el[e], "key") : -1;
+          if (key >= 0 && nt_kind(nt, key) == NK_SymbolNode && sp_streq(nt_str(nt, key, "value"), m->pnames[j]))
+            arg = nt_ref(nt, el[e], "value");
+        }
+      }
+      if (!refuse_nonlocal_var(nt, arg) || !nonlocal_string_typed(c, arg)) continue;
+      const char *kind = nt_kind(nt, arg) == NK_GlobalVariableReadNode || nt_kind(nt, arg) == NK_GlobalVariableWriteNode
+                         ? "a global variable" : "a class variable";
+      char mt[96]; snprintf(mt, sizeof mt, "`%s`", m->name ? m->name : name);
+      char why[128];
+      snprintf(why, sizeof why, "from %s into a parameter that %s", kind,
+               q->type == TY_POLY ? "boxes it" : "takes its handle");
+      refuse_string_copy(c, arg, mt, m->pnames[j], "the call", why);
+    }
+  }
+}
+
 static void refuse_string_copies(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -24885,6 +24964,7 @@ static void refuse_string_copies(Compiler *c, int id) {
   }
   if (!dyn) refuse_yield_handle_args(c, id);
   if (!dyn) refuse_forwarded_args(c, id, name);
+  if (!dyn) refuse_nonlocal_param_args(c, id, name);
   /* a method `define_method` defines takes an appended String as the handle
      (dyn_convert_params), and its callers are pulled in as a handle
      method's are, but for a variable that cannot be */

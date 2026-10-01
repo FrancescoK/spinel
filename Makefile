@@ -1130,6 +1130,16 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a global in a changed splatted Array compiled)"; ok=0; \
 	else grep -q "through a splat of an Array the program changes" "$$tmp/sca.out" || \
 	  { echo "reject-test: FAIL (changed splatted Array rejected without saying why)"; sed -n 1,5p "$$tmp/sca.out"; ok=0; }; fi; \
+	t=test/reject/string_global_handle_param.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/ghp.c" >"$$tmp/ghp.out" 2>&1; then \
+	  echo "reject-test: FAIL (a global run first into a handle parameter compiled)"; ok=0; \
+	else grep -q "parameter .io. through the call, which the method appends to" "$$tmp/ghp.out" || \
+	  { echo "reject-test: FAIL (a global into a handle parameter rejected without saying why)"; sed -n 1,5p "$$tmp/ghp.out"; ok=0; }; fi; \
+	t=test/reject/string_cvar_boxed_param.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/cbp.c" >"$$tmp/cbp.out" 2>&1; then \
+	  echo "reject-test: FAIL (a class variable into a boxed parameter compiled)"; ok=0; \
+	else grep -q "from a class variable into a parameter that boxes it" "$$tmp/cbp.out" || \
+	  { echo "reject-test: FAIL (a class variable into a boxed parameter rejected without saying why)"; sed -n 1,5p "$$tmp/cbp.out"; ok=0; }; fi; \
 	t=test/reject/string_splat_global_toplevel.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sgt.c" >"$$tmp/sgt.out" 2>&1; then \
 	  echo "reject-test: FAIL (a global splatted into a top-level method's appending parameter compiled)"; ok=0; \
