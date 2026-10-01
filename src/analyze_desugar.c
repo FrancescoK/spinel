@@ -1191,16 +1191,6 @@ int desugar_singleton_class_mixin(Compiler *c) {
    the class. Only the same-name shape, with the value a bare `C` or
    `remove_const(:C)`, and only where the program defines a class or module
    named C. */
-static int cpa_defines_class(const NodeTable *nt, const char *leaf) {
-  for (int id = 0; id < nt->count; id++) {
-    NodeKind k = nt_kind(nt, id);
-    if (k != NK_ClassNode && k != NK_ModuleNode) continue;
-    int cp = nt_ref(nt, id, "constant_path");
-    const char *nm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    if (nm && sp_streq(nm, leaf)) return 1;
-  }
-  return 0;
-}
 int desugar_constant_path_self_alias(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
@@ -1226,7 +1216,7 @@ int desugar_constant_path_self_alias(Compiler *c) {
         same = an0 && sp_streq(an0, leaf);
       }
     }
-    if (!same || !cpa_defines_class(nt, leaf)) continue;
+    if (!same || !me_leaf_defined(nt, leaf)) continue;
     nt_node_reset(nt, id, "NilNode");
     changed = 1;
   }
