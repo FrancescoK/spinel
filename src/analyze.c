@@ -12587,13 +12587,24 @@ int an_class_can_be_reached(Compiler *c, int ci) {
    that reaches both binds each arm on its own (#6135, #6183). A member
    whose parameter a proc captures takes it as the shared handle instead,
    and so does the rest of the group (`handle`, below). */
+/* Will yielding method mi be lowered to call its named block as a proc
+   (the post-fixpoint lowering's test: a value use of the block, a call of
+   itself, a yield inside a lifted body)? One that only names its block
+   (`def m(p, &b) = yield(p)`) is spliced like any yielder. */
+static int scope_calls_itself(Compiler *c, int mi);
+static int scope_yields_inside_lifted_body(Compiler *c, int mi);
+static int yield_lowers_block(Compiler *c, int mi) {
+  Scope *m = &c->scopes[mi];
+  if (!m->blk_param || !m->blk_param[0]) return 0;
+  return m->blk_param_value_use || scope_calls_itself(c, mi) || scope_yields_inside_lifted_body(c, mi);
+}
 static int an_byref_group_member_string(Compiler *c, Scope *m, int pi) {
   if (pi >= m->nparams || !m->pnames[pi]) return 0;
   /* a yielding method spliced into each call that gives it a block binds
      its parameters there, aliasing the caller's String where its block
      appends (inline_alias_params): no lent slot either. One that names its
      block can be lowered to keep it, and keeps its say. */
-  if (m->yields && !m->is_lowered_yield && !(m->blk_param && m->blk_param[0])) return 0;
+  if (m->yields && !m->is_lowered_yield && !yield_lowers_block(c, (int)(m - c->scopes))) return 0;
   LocalVar *q = scope_local(m, m->pnames[pi]);
   if (!q || !q->is_param || q->is_block_param) return 1;
   TyKind t = q->type;
@@ -12620,7 +12631,14 @@ static int an_byref_promote_group(Compiler *c, const char *nm, int pi,
        the same whichever member an_any_scope_by_name finds first. Refused,
        `def g(a) = super` into an included module's `g` kept the value ABI
        and the module's appends stopped at its copy. */
-    if (!elig[k] && !m->is_transplanted_source) return 0;
+    /* A yielder the lowering turns into a proc call is a real function, but
+       one the slot ABI is not built for (elig): the group takes the shared
+       handle instead, as for a captured parameter. Refused, every other
+       member of the name kept the value ABI and appended to a copy. */
+    if (!elig[k] && !m->is_transplanted_source) {
+      if (!yield_lowers_block(c, k)) return 0;
+      captured = 1;
+    }
     if (pi >= m->nparams || !m->pnames[pi]) return 0;
     if (blocked[k] & (1u << pi)) return 0;
     LocalVar *q = scope_local(m, m->pnames[pi]);
@@ -19883,15 +19901,6 @@ static int yield_splice_kw_handles(Compiler *c, int mi, int h, int kwh, int pass
     }
   }
   return changed;
-}
-/* Will yielding method mi be lowered to call its named block as a proc
-   (the post-fixpoint lowering's test: a value use of the block, a call of
-   itself, a yield inside a lifted body)? */
-static int scope_yields_inside_lifted_body(Compiler *c, int mi);
-static int yield_lowers_block(Compiler *c, int mi) {
-  Scope *m = &c->scopes[mi];
-  if (!m->blk_param || !m->blk_param[0]) return 0;
-  return m->blk_param_value_use || scope_calls_itself(c, mi) || scope_yields_inside_lifted_body(c, mi);
 }
 /* One yield of a spliced method (or a `blk.call` the splice expands as
    one): a spliced block's parameter a handle is yielded to, and then every
