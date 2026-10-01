@@ -5921,6 +5921,17 @@ else {
   return 0;
 }
 
+static void emit_push_hash_key(TyKind kt, int dest, int th, int ti, Buf *b) {
+  if (kt == TY_SYMBOL)
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym(_t%d->order[_t%d]));", dest, th, ti);
+  else if (kt == TY_STRING)
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(_t%d->order[_t%d]));", dest, th, ti);
+  else if (kt == TY_INT)
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(_t%d->order[_t%d]));", dest, th, ti);
+  else
+    buf_printf(b, " sp_PolyArray_push(_t%d, _t%d->keys[_t%d->order[_t%d]]);", dest, th, th, ti);
+}
+
 /* Emit a statement-expression materializing a hash's entries as a PolyArray of
    [key, value] poly pairs in insertion order. The source hash is GC-rooted
    because each pair allocates inside the walk. Shared by Hash#to_a/#entries and
@@ -5933,14 +5944,7 @@ void emit_hash_pairs_expr(Compiler *c, int recv, TyKind rt, const char *hn, Buf 
   buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
   buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, th, ti);
   buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tp, tp);
-  if (kt == TY_SYMBOL)
-    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym(_t%d->order[_t%d]));", tp, th, ti);
-  else if (kt == TY_STRING)
-    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(_t%d->order[_t%d]));", tp, th, ti);
-  else if (kt == TY_INT)
-    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(_t%d->order[_t%d]));", tp, th, ti);
-  else
-    buf_printf(b, " sp_PolyArray_push(_t%d, _t%d->keys[_t%d->order[_t%d]]);", tp, th, th, ti);
+  emit_push_hash_key(kt, tp, th, ti, b);
   if (rt == TY_POLY_POLY_HASH)
     buf_printf(b, " sp_PolyArray_push(_t%d, _t%d->vals[_t%d->order[_t%d]]);", tp, th, th, ti);
   else if (vt == TY_POLY)
@@ -7529,14 +7533,7 @@ else {
         buf_printf(b, "({ sp_%sHash *_t%d = ", hn, th); emit_expr(c, recv, b);
         buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, th, ti);
-        if (kt == TY_SYMBOL)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym(_t%d->order[_t%d]));", tr, th, ti);
-        else if (kt == TY_STRING)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(_t%d->order[_t%d]));", tr, th, ti);
-        else if (kt == TY_INT)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(_t%d->order[_t%d]));", tr, th, ti);
-        else
-          buf_printf(b, " sp_PolyArray_push(_t%d, _t%d->keys[_t%d->order[_t%d]]);", tr, th, th, ti);
+        emit_push_hash_key(kt, tr, th, ti, b);
         if (vt == TY_POLY)
           buf_printf(b, " sp_PolyArray_push(_t%d, sp_%sHash_get(_t%d, _t%d->order[_t%d]));", tr, hn, th, th, ti);
         else if (vt == TY_INT)
@@ -7687,14 +7684,7 @@ else {
         }
         /* build pair */
         buf_printf(b, " _t%d = sp_PolyArray_new();", tr);
-        if (kt == TY_SYMBOL)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym(_t%d->order[_t%d]));", tr, th, ti);
-        else if (kt == TY_STRING)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(_t%d->order[_t%d]));", tr, th, ti);
-        else if (kt == TY_INT)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(_t%d->order[_t%d]));", tr, th, ti);
-        else
-          buf_printf(b, " sp_PolyArray_push(_t%d, _t%d->keys[_t%d->order[_t%d]]);", tr, th, th, ti);
+        emit_push_hash_key(kt, tr, th, ti, b);
         if (vt == TY_POLY)
           buf_printf(b, " sp_PolyArray_push(_t%d, %s);", tr, vget);
         else if (vt == TY_INT)
