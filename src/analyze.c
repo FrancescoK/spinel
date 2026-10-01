@@ -14955,26 +14955,33 @@ static void an_caller_blocks_free(ACallerBlocks *t) {
   free(t->head); free(t->next); free(t->blk);
   t->built = 0;
 }
-/* The argument positions at which a yield of method scope `ms` under `node`
-   passes local `bp` as a plain read, as a bit mask (the first 32). */
-static unsigned a_yield_arg_mask(Compiler *c, int node, Scope *ms, const char *bp, int depth) {
+/* Does a yield of method scope `ms` (index mi) under `node` pass local `bp`
+   as a plain read at a position that a caller's block (cb) lends? Each
+   yield is asked with its own count of plain arguments, which places a
+   post the position binds (block_param_at). */
+static int a_yield_param_lent(Compiler *c, int node, Scope *ms, int mi, const char *bp, ACallerBlocks *cb,
+                              int depth) {
   const NodeTable *nt = c->nt;
   if (node < 0 || node >= nt->count || depth > 300) return 0;
-  unsigned m = 0;
   if (nt_kind(nt, node) == NK_YieldNode && comp_scope_of(c, node) == ms) {
     int aa = nt_ref(nt, node, "arguments"), an = 0;
     const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &an) : NULL;
+    int n = call_plain_argc(c, node);
     for (int k = 0; k < an && k < 32; k++) {
       if (nt_kind(nt, av[k]) == NK_SplatNode || nt_kind(nt, av[k]) == NK_KeywordHashNode) break;
-      if (nt_kind(nt, av[k]) == NK_LocalVariableReadNode && nt_str(nt, av[k], "name") &&
-          sp_streq(nt_str(nt, av[k], "name"), bp)) m |= 1u << k;
+      if (nt_kind(nt, av[k]) != NK_LocalVariableReadNode || !nt_str(nt, av[k], "name") ||
+          !sp_streq(nt_str(nt, av[k], "name"), bp)) continue;
+      for (int i = cb->head[mi]; i >= 0; i = cb->next[i])
+        if (an_block_param_lent(c, cb->blk[i], k, n)) return 1;
     }
   }
   const SpNode *nd = &nt->nodes[node];
-  for (int i = 0; i < nd->nr; i++) m |= a_yield_arg_mask(c, nd->r[i].ref, ms, bp, depth + 1);
+  for (int i = 0; i < nd->nr; i++)
+    if (a_yield_param_lent(c, nd->r[i].ref, ms, mi, bp, cb, depth + 1)) return 1;
   for (int i = 0; i < nd->na; i++)
-    for (int j = 0; j < nd->a[i].n; j++) m |= a_yield_arg_mask(c, nd->a[i].ids[j], ms, bp, depth + 1);
-  return m;
+    for (int j = 0; j < nd->a[i].n; j++)
+      if (a_yield_param_lent(c, nd->a[i].ids[j], ms, mi, bp, cb, depth + 1)) return 1;
+  return 0;
 }
 /* Does block `blk` yield its parameter `bp` on, as a plain read, to a block
    a call site of the method it is written in passes, and that block lends
@@ -14988,14 +14995,10 @@ static int block_yields_param_to_lender(Compiler *c, int blk, const char *bp, AC
   if (!ms || !ms->yields) return 0;
   int mi = (int)(ms - c->scopes);
   int body = nt_ref(nt, blk, "body");
-  unsigned mask = body >= 0 ? a_yield_arg_mask(c, body, ms, bp, 0) : 0;
-  if (!mask) return 0;
+  if (body < 0) return 0;
   if (!cb->built) an_caller_blocks_build(c, cb);
   if (mi < 0 || mi >= cb->ns) return 0;
-  for (int i = cb->head[mi]; i >= 0; i = cb->next[i])
-    for (int k = 0; k < 32; k++)
-      if (((mask >> k) & 1u) && an_block_param_lent(c, cb->blk[i], k, -1)) return 1;
-  return 0;
+  return a_yield_param_lent(c, body, ms, mi, bp, cb, 0);
 }
 
 /* Pure-alias pairs, as a pass of its own: promote_shared_stored_strings runs
