@@ -1956,8 +1956,13 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
          a parameter that is the shared handle takes a handle yielded to it
          itself (yield_splice_handles) */
       LocalVar *bl = bsc ? scope_local(bsc, bp) : NULL;
-      if (!(bl && bl->type == TY_STRBUF && bl->str_shared && emit_handle_var_ref(c, yargs[k], b)))
-        emit_block_arg_coerced(c, yargs[k], bl ? bl->type : TY_UNKNOWN, b);
+      Buf hb; memset(&hb, 0, sizeof hb);
+      if (bl && bl->type == TY_STRBUF && bl->str_shared && emit_handle_var_ref(c, yargs[k], b)) {}
+      /* a boxed parameter takes the handle's own box */
+      else if (bl && bl->type == TY_POLY && emit_handle_var_ref(c, yargs[k], &hb))
+        buf_printf(b, "sp_box_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
+      else emit_block_arg_coerced(c, yargs[k], bl ? bl->type : TY_UNKNOWN, b);
+      free(hb.p);
     }
     else {
       LocalVar *bl = scope_local(bsc, bp);

@@ -12541,6 +12541,37 @@ static int an_block_param_lent(Compiler *c, int blk, int k) {
   if (!lv || lv->type != TY_STRING || lv->is_cell) return 0;
   return an_subtree_lends_local(c, nt_ref(c->nt, blk, "body"), bp, 0);
 }
+/* Does spliced yielding method `mi` yield its boxed parameter pj to a block
+   parameter a literal block at one of its call sites appends to, in place
+   (a boxed one through the box) or by handing it to a lent parameter? The
+   box then has to hold the caller's handle, as for a boxed parameter the
+   method appends to itself (convert_byref_handle_params). */
+static int an_poly_param_yielded_lent(Compiler *c, int mi, int pj) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  if (!m->yields || pj < 0 || pj >= m->nparams || !m->pnames[pj]) return 0;
+  for (int y = comp_kind_first(c, NK_YieldNode); y >= 0; y = comp_kind_next(c, y)) {
+    if (nt_kind(nt, y) != NK_YieldNode || comp_scope_of(c, y) != m) continue;
+    int a = nt_ref(nt, y, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    for (int k = 0; k < ac; k++) {
+      if (nt_kind(nt, av[k]) == NK_SplatNode) break;
+      if (nt_kind(nt, av[k]) != NK_LocalVariableReadNode || !nt_str(nt, av[k], "name") ||
+          !sp_streq(nt_str(nt, av[k], "name"), m->pnames[pj])) continue;
+      for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
+        int blk = nt_kind(nt, u) == NK_CallNode ? nt_ref(nt, u, "block") : -1;
+        if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
+        const char *bp = block_param_name(c, blk, k);
+        Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
+        LocalVar *t = bs ? scope_local(bs, bp) : NULL;
+        if (t && !t->is_cell && (t->type == TY_POLY || t->type == TY_STRING) &&
+            an_subtree_lends_local(c, nt_ref(nt, blk, "body"), bp, 0)) return 1;
+      }
+    }
+  }
+  return 0;
+}
+
 /* Does inlined yielding method `mi` (an initialize spliced by `new`) lend
    its parameter j at a call whose literal block is `blk`? The inliner then
    binds it as an alias of the caller's variable (emit_inline_call_x): the
@@ -16322,7 +16353,8 @@ static int convert_byref_handle_params(Compiler *c,
          other call site has to hand one over -- boxed as a plain string, the
          plain local was copied and the caller never saw the append. */
       int poly_mut = (pp->is_param && pp->type == TY_POLY &&
-                      ((pp->poly_lift & POLY_LIFT_APPENDED) || an_param_mutated_in_place(c, mi2, pj)));
+                      ((pp->poly_lift & POLY_LIFT_APPENDED) || an_param_mutated_in_place(c, mi2, pj) ||
+                       an_poly_param_yielded_lent(c, mi2, pj)));
       if (poly_mut && !(pp->poly_lift & POLY_LIFT_APPENDED)) { pp->poly_lift |= POLY_LIFT_APPENDED; changed = 1; }
       /* A String parameter the callee mutates that inference typed from a
          handle argument (the copy-on-read refinement, not the handle): it
@@ -18330,6 +18362,13 @@ static int yield_splice_handles(Compiler *c) {
           LocalVar *t = bs ? scope_local(bs, bp) : NULL;
           if (!t || t->is_cell) continue;
           if (t->type == TY_STRBUF && t->str_shared) { into_h = 1; continue; }
+          /* a boxed parameter the block appends to in place appends through
+             a box that holds the handle (#5957): the yielded variable has
+             to be the handle, which the binding boxes as itself. Not for a
+             method that names its block, which is lowered to call it as a
+             proc once it keeps it, where the yield boxes what it hands. */
+          if (t->type == TY_POLY && !(ms->blk_param && ms->blk_param[0]) &&
+              an_subtree_lends_local(c, nt_ref(nt, blk, "body"), bp, 0)) { into_h = 1; continue; }
           if (pass || !is_h || t->type != TY_STRING || !an_block_param_lent(c, blk, k)) continue;
           t->type = TY_STRBUF; t->str_shared = 1; changed = 1;
         }
