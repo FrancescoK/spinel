@@ -5425,17 +5425,6 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
 
-  /* The arms below bind the tuple to the first parameter only. CRuby
-     spreads it across a block taking two or more parameters (or a rest, an
-     optional or a post): `|m, n|` bound m to the whole tuple and n to nil,
-     so such a block is refused rather than answered differently. */
-  if ((sp_streq(name, "combination") || sp_streq(name, "permutation") ||
-       sp_streq(name, "repeated_combination") || sp_streq(name, "repeated_permutation")) &&
-      (rt == TY_INT_ARRAY || rt == TY_POLY_ARRAY || rt == TY_FLOAT_ARRAY) && block >= 0 &&
-      (block_lead_only(c, block) || block_rest_marker(c, block) ||
-       block_opt_name(c, block, 0) || block_post_name(c, block, 0)))
-    unsupported_feature(c, id, "a block taking more than one parameter on combination, permutation or their repeated forms");
-
   /* int_array.combination(k)/permutation(k) { |c| ... } -- yield each k-element
      sub-array as a fresh int_array. permutation also accepts the argless
      (full-length) form. */

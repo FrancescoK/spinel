@@ -2013,7 +2013,17 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
       char es[64]; snprintf(es, sizeof es, "sp_PolyArray_get(_t%d, _t%d)", trecv, ti);
       int splat = emit_iter_autosplat(c, mblock, TY_POLY_ARRAY, es, g_indent + 1);
-      if (!splat && bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_RbVal lv_%s = %s;\n", bp, es); }
+      /* the element is boxed; a parameter the analysis typed (the receiver
+         read back from a box it filled with typed values) takes it unboxed,
+         where a boxed copy shadowed the typed slot the body reads */
+      Scope *mbs = comp_scope_of(c, mblock);
+      LocalVar *mlv = bp && mbs ? scope_local(mbs, block_param_name(c, mblock, 0)) : NULL;
+      TyKind mpt = mlv ? mlv->type : TY_UNKNOWN;
+      if (!splat && bp && mpt != TY_POLY && mpt != TY_UNKNOWN) {
+        emit_indent(g_pre, g_indent + 1);
+        emit_block_param_from_boxed(c, bp, mpt, es, g_pre);
+      }
+      else if (!splat && bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_RbVal lv_%s = %s;\n", bp, es); }
       for (int j = 0; j < mbn - 1; j++) emit_stmt(c, mbb[j], g_pre, g_indent + 1);
       int sv = g_indent; g_indent++;
       Buf vb; memset(&vb, 0, sizeof vb); emit_boxed(c, mbb[mbn - 1], &vb); g_indent = sv;
