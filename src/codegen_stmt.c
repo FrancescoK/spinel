@@ -1751,10 +1751,16 @@ static int iow_scalar_fold(TyKind et, const char *op, TyKind vt, const char *slo
 
    `capture` reads the slot ahead of an effectful rhs (op_assign_slot_src): a
    method may reassign a global, class variable or ivar before it returns,
-   and CRuby has already read it. A local keeps its own spelling. The caller
-   has emitted the indent. Answers 1 when it emitted the write. */
+   and CRuby has already read it. A local keeps its own spelling.
+
+   A Float slot's nil is a NaN payload every C operator carries through, so
+   `x += 1` on a nil Float answered nil where the binary `x + 1` raises
+   (SP_FLOAT_NIL_CK). `lhs_nil` says the slot can hold nil (its nullable
+   mark), and a rhs the marks call nilable is tested too: the same test and
+   raise as the binary form. The caller has emitted the indent. Answers 1
+   when it emitted the write. */
 int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *op,
-                          int v, int capture, Buf *b) {
+                          int v, int capture, int lhs_nil, Buf *b) {
   const NodeTable *nt = c->nt;
   if (!op) return 0;
   TyKind vt = comp_ntype(c, v);
@@ -1783,6 +1789,8 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
   size_t pre_mark = g_pre ? g_pre->len : 0;
   Buf rb; memset(&rb, 0, sizeof rb);
   if (t == TY_INT && fn && (sp_streq(op, "/") || sp_streq(op, "%"))) emit_int_divisor(c, v, &rb);
+  /* a boxed rhs of a Float op is kept boxed for the nil test below */
+  else if (vt == TY_POLY && fop) emit_expr(c, v, &rb);
   else if (vt == TY_POLY) {
     buf_puts(&rb, t == TY_FLOAT ? "sp_poly_to_f(" : t == TY_BIGINT ? "sp_poly_as_bigint(" : "sp_poly_to_i(");
     emit_expr(c, v, &rb); buf_puts(&rb, ")");
@@ -1805,7 +1813,22 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
      binary form: a raw C `lv_x *= y` silently wrapped where `x * y` raised.
      Bitwise ops map straight to the C operator (fixed-width wrap, same as the
      binary `x << y` path). */
-  if (fn) buf_printf(b, "%s = %s(%s, %s);", lval, fn, src, rhs);
+  int rnil = fop && (vt == TY_POLY || ((vt == TY_FLOAT || vt == TY_INT) && nullable_int_value(c, v)));
+  if (fop && (lhs_nil || rnil)) {
+    int k = ++g_tmp;
+    buf_printf(b, "{ sp_float _t%d = %s; %s _t%d_r = %s; ", k, src,
+               vt == TY_INT ? "sp_int" : vt == TY_POLY ? "sp_RbVal" : "sp_float", k, rhs);
+    buf_printf(b, "if (SP_UNLIKELY(sp_float_is_nil(_t%d) || ", k);
+    if (vt == TY_INT) buf_printf(b, "_t%d_r == SP_INT_NIL", k);
+    else if (vt == TY_POLY) buf_printf(b, "_t%d_r.tag == SP_TAG_NIL", k);
+    else buf_printf(b, "sp_float_is_nil(_t%d_r)", k);
+    buf_printf(b, ")) sp_raise_nil_float_op(sp_float_is_nil(_t%d), \"%s\"); ", k, op);
+    char rv[48];
+    snprintf(rv, sizeof rv, vt == TY_POLY ? "sp_poly_to_f(_t%d_r)" : "_t%d_r", k);
+    if (ffn) buf_printf(b, "%s = %s(_t%d, %s); }", lval, ffn, k, rv);
+    else buf_printf(b, "%s = _t%d %s %s; }", lval, k, op, rv);
+  }
+  else if (fn) buf_printf(b, "%s = %s(%s, %s);", lval, fn, src, rhs);
   else if (bitop) buf_printf(b, "%s = (%s %s (%s));", lval, src, op, rhs);
   else if (ffn) buf_printf(b, "%s = %s(%s, %s);", lval, ffn, src, rhs);
   else if (src == lval) buf_printf(b, "%s %s= %s;", lval, op, rhs);
@@ -1938,7 +1961,7 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
     buf_printf(b, "%s = %s %s ", lval, lval, op); emit_expr(c, v, b); buf_puts(b, ";\n");
     return;
   }
-  if (emit_scalar_op_assign(c, lval, t, op, v, cap, b)) return;
+  if (emit_scalar_op_assign(c, lval, t, op, v, cap, lv && lv->nullable_int, b)) return;
   if (t == TY_COMPLEX && (sp_streq(op, "+") || sp_streq(op, "*"))) {
     /* coerce the rhs like the binary path does: an Integer, a Float or a boxed
        value all have to reach sp_complex_* as an sp_Complex */
@@ -9591,7 +9614,8 @@ else {
     }
     else if (emit_array_op_assign(c, ref, ct, op, v, b)) { }
     else if (ct == TY_POLY && emit_poly_op_assign(c, ref, op, v, 1, b)) { }
-    else if (emit_scalar_op_assign(c, ref, ct, op, v, 1, b)) { }
+    else if (emit_scalar_op_assign(c, ref, ct, op, v, 1,
+                                   idx >= 0 && c->classes[sc].cvar_nullable_int[idx], b)) { }
     else {
       buf_printf(b, "%s %s= ", ref, op ? op : "+");
       emit_expr(c, v, b); buf_puts(b, ";\n");
@@ -9632,7 +9656,11 @@ else {
     if (sc < 0 && g_class_body_id >= 0) sc = g_class_body_id;
     if (sc < 0 && g_ie_class_id < 0) sc = comp_class_index(c, "Toplevel");
     TyKind vt = TY_UNKNOWN;
-    if (sc >= 0) { int iv = comp_ivar_index(&c->classes[sc], nm); if (iv >= 0) vt = c->classes[sc].ivar_types[iv]; }
+    int vnil = 0;
+    if (sc >= 0) {
+      int iv = comp_ivar_index(&c->classes[sc], nm);
+      if (iv >= 0) { vt = c->classes[sc].ivar_types[iv]; vnil = c->classes[sc].ivar_nullable_int[iv]; }
+    }
     char ref[300];
     Scope *cs = comp_scope_of(c, id);
     if (cs && cs->is_cmethod && cs->class_id >= 0)
@@ -9839,7 +9867,7 @@ else {
       /* An int ivar op-assign takes the overflow-checked helpers like the
          binary form (raw `@x *= y` wrapped where `@x * y` raised), and reads
          the ivar before an effectful rhs, which may reassign it. */
-      if (emit_scalar_op_assign(c, ref, vt, op, ival, 1, b)) return;
+      if (emit_scalar_op_assign(c, ref, vt, op, ival, 1, vnil, b)) return;
       buf_printf(b, "%s %s= ", ref, op ? op : "+");
       /* a poly RHS feeding an int/float ivar op-assign needs coercing to the
          scalar before the C operator (e.g. `@bg_pattern |= chr_mem[i] * 256`). */
@@ -9944,7 +9972,7 @@ else {
       }
       else {
         char lval[400]; snprintf(lval, sizeof lval, "_t%d%siv_%s", trecv, acc, iv_c(rn));
-        if (emit_scalar_op_assign(c, lval, ivt, op, val, 1, b)) return;
+        if (emit_scalar_op_assign(c, lval, ivt, op, val, 1, 0, b)) return;
         buf_printf(b, "_t%d%siv_%s = _t%d%siv_%s %s ", trecv, acc, iv_c(rn), trecv, acc, iv_c(rn), op ? op : "+");
         if (rhst == TY_POLY && (ivt == TY_INT || ivt == TY_BOOL)) {
           buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")");
@@ -10106,7 +10134,7 @@ else {
         }
         else {
           char lval[320]; snprintf(lval, sizeof lval, "_o->iv_%s", iv_c(rn));
-          if (emit_scalar_op_assign(c, lval, ivt, op, val, 0, b)) {
+          if (emit_scalar_op_assign(c, lval, ivt, op, val, 0, 0, b)) {
             emit_indent(b, indent + 1); buf_puts(b, "break; }\n");
             continue;
           }
@@ -10383,7 +10411,7 @@ else {
     }
     else if (emit_array_op_assign(c, gref, lv->type, op, v, b)) { }
     else if (lv->type == TY_POLY && emit_poly_op_assign(c, gref, op, v, 1, b)) { }
-    else if (emit_scalar_op_assign(c, gref, lv->type, op, v, 1, b)) { }
+    else if (emit_scalar_op_assign(c, gref, lv->type, op, v, 1, lv->nullable_int, b)) { }
     else {
       buf_printf(b, "gv_%s %s= ", rn, op ? op : "+");
       emit_expr(c, v, b); buf_puts(b, ";\n");

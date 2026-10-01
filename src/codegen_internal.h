@@ -1402,7 +1402,7 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent);
 void emit_op_assign(Compiler *c, int id, Buf *b, int indent);
 int emit_array_op_assign(Compiler *c, const char *lval, TyKind t, const char *op, int v, Buf *b);
 int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *op,
-                          int v, int capture, Buf *b);
+                          int v, int capture, int lhs_nil, Buf *b);
 int emit_poly_op_assign(Compiler *c, const char *lval, const char *op, int v,
                         int capture, Buf *b);
 void emit_cond(Compiler *c, int id, Buf *b);
