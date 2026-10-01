@@ -4445,6 +4445,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "xmlschema")) return TY_STRING;   /* with or without a fraction-digits arg (#3094) */
     if (sp_streq(name, "deconstruct_keys") && argc == 1) return TY_POLY;  /* boxed Sym=>Int hash */
     if (sp_streq(name, "iso8601") && sp_feature_enabled("time")) return TY_STRING;
+    if ((sp_streq(name, "httpdate") || sp_streq(name, "rfc2822") || sp_streq(name, "rfc822")) &&
+        argc == 0 && sp_feature_enabled("time")) return TY_STRING;
     if (sp_streq(name, "to_s") || sp_streq(name, "inspect") || sp_streq(name, "strftime") ||
         sp_streq(name, "zone") || sp_streq(name, "asctime") ||
         sp_streq(name, "ctime")) return TY_STRING;

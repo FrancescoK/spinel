@@ -5800,6 +5800,10 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     else if ((sp_streq(name, "iso8601") || sp_streq(name, "xmlschema")) &&
              sp_feature_enabled("time"))
       ts = "sp_time_iso8601(*(sp_Time *)_tR.v.p)";
+    else if (sp_streq(name, "httpdate") && sp_feature_enabled("time"))
+      ts = "sp_time_httpdate(*(sp_Time *)_tR.v.p)";
+    else if ((sp_streq(name, "rfc2822") || sp_streq(name, "rfc822")) && sp_feature_enabled("time"))
+      ts = "sp_time_rfc2822(*(sp_Time *)_tR.v.p)";
     if (ti || tb || ts) {
       const char *expr = ti ? ti : tb ? tb : ts;
       const char *cty  = ti ? "sp_int" : tb ? "sp_bool" : "const char *";

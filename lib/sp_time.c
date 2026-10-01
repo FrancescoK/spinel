@@ -700,6 +700,15 @@ static size_t sp_time_iso_zone(char *buf, size_t n, size_t cap, sp_Time t, int32
   return 6;
 }
 
+/* Time#httpdate (RFC 1123, always GMT) and Time#rfc2822, whose UTC time
+   is written -0000 as CRuby's time.rb does. */
+const char *sp_time_httpdate(sp_Time t) {
+  return sp_time_strftime(sp_time_utc(t), "%a, %d %b %Y %H:%M:%S GMT");
+}
+const char *sp_time_rfc2822(sp_Time t) {
+  return sp_time_strftime(t, t.is_utc == 1 ? "%a, %d %b %Y %H:%M:%S -0000" : "%a, %d %b %Y %H:%M:%S %z");
+}
+
 /* RFC 3339 / iso8601. sp_time_vtm resolves the civil fields and the offset
    for all three zone kinds; the suffix is formatted here because MSVCRT's
    %z renders the timezone name rather than ±HHMM. */

@@ -89,6 +89,8 @@ double sp_time_sub_t(sp_Time a, sp_Time b);
 /* Formatters: return a GC-heap string (from sp_alloc.h), "" on failure. */
 const char *sp_time_strftime(sp_Time t, const char *fmt);
 const char *sp_time_iso8601(sp_Time t);
+const char *sp_time_httpdate(sp_Time t);
+const char *sp_time_rfc2822(sp_Time t);
 const char *sp_time_iso8601_frac(sp_Time t, int64_t digits);
 sp_Time sp_time_getlocal_off(sp_Time t, int64_t off);
 const char *sp_time_zone(sp_Time t);
