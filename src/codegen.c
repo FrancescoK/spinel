@@ -12626,11 +12626,25 @@ int class_builtin_parent(Compiler *c, int cid) {
    `superclass` / `===` call, or a builtin class constant used as a value
    (e.g. `puts Integer`, `Integer < Numeric`). Over-approximating is safe (it
    only emits dead helpers); under-approximating would be a hard link error, so
-   the set is deliberately broad. */
+   the set is deliberately broad. The one constant it lets by is the class a
+   receiverless `raise TypeError, msg` names: that raise goes by the class's
+   name (sp_raise_cls), and the builtins raise so. Its message is scanned as
+   any other expression. */
 static int program_needs_class_machinery(Compiler *c) {
   if (c->nclasses > 0) return 1;
   const NodeTable *nt = c->nt;
-  for (int i = 0; i < nt->count; i++) {
+  unsigned char *raised = calloc((size_t)nt->count + 1, 1);
+  for (int i = 0; raised && i < nt->count; i++) {
+    if (nt_kind(nt, i) != NK_CallNode || nt_ref(nt, i, "receiver") >= 0) continue;
+    const char *nm = nt_str(nt, i, "name");
+    int ac = 0;
+    const int *av = nm && sp_streq(nm, "raise") ? call_args(nt, i, &ac) : NULL;
+    if (av && (ac == 1 || ac == 2) && av[0] >= 0 && av[0] < nt->count &&
+        nt_kind(nt, av[0]) == NK_ConstantReadNode)
+      raised[av[0]] = 1;
+  }
+  int need = 0;
+  for (int i = 0; i < nt->count && !need; i++) {
     const char *ty = nt_type(nt, i);
     if (!ty) continue;
     if (sp_streq(ty, "CallNode")) {
@@ -12639,14 +12653,15 @@ static int program_needs_class_machinery(Compiler *c) {
                  sp_streq(nm, "kind_of?") || sp_streq(nm, "instance_of?") ||
                  sp_streq(nm, "ancestors") || sp_streq(nm, "superclass") ||
                  sp_streq(nm, "===")))
-        return 1;
+        need = 1;
     }
     else if (sp_streq(ty, "ConstantReadNode") || sp_streq(ty, "ConstantPathNode")) {
       const char *nm = nt_str(nt, i, "name");
-      if (nm && is_builtin_class_name(nm)) return 1;
+      if (nm && is_builtin_class_name(nm) && !(raised && raised[i])) need = 1;
     }
   }
-  return 0;
+  free(raised);
+  return need;
 }
 
 /* Whole-program scan for the prologue features (see codegen_internal.h). Each
