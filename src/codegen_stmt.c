@@ -22,6 +22,9 @@ static void emit_obj_to_s(Compiler *c, int arg, TyKind t, Buf *b) {
     emit_indent(g_pre, g_indent); emit_ctype(c, t, g_pre);
     buf_printf(g_pre, " _t%d = ", tt);
     buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+    /* the temp may be the object's only reference (`puts C.new`), and #to_s
+       allocates before it reads the object's ivars */
+    if (!comp_ty_value_obj(c, t)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tt); }
     buf_printf(b, "_t%d", tt);
   }
   buf_puts(b, "))");
@@ -546,8 +549,12 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
        a NULL pointer is nil (nullable-object convention, e.g. Set#add?) */
     const char *cn = obj_str_cname(c, ty_object_class(t), 1);
     int pv = ++g_tmp;
+    /* rooted: a fresh object (`p mk`) has no other reference while its
+       #inspect allocates */
     buf_printf(b, "{ sp_%s *_t%d = (sp_%s *)(", cn, pv, cn); emit_expr(c, arg, b);
-    buf_printf(b, "); sp_puts_line(_t%d ? sp_%s_inspect(_t%d) : \"nil\"); }\n", pv, cn, pv);
+    buf_puts(b, "); ");
+    if (!expr_is_held_ref(c, arg)) buf_printf(b, "SP_GC_ROOT(_t%d); ", pv);
+    buf_printf(b, "sp_puts_line(_t%d ? sp_%s_inspect(_t%d) : \"nil\"); }\n", pv, cn, pv);
   }
   else if (t == TY_PROC) {
     buf_puts(b, "{ sp_Proc *_pp = ("); emit_expr(c, arg, b);
@@ -614,10 +621,17 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
        walk renders CRuby's default #<Name:0xADDR @a=..., ...> */
     int cid = ty_object_class(t);
     const char *icn = obj_str_cname(c, cid, 1);
-    if (icn) {
+    if (icn && expr_is_held_ref(c, arg)) {
       buf_printf(b, "{ const char *_pi = sp_%s_inspect((sp_%s *)(", icn, icn);
       emit_expr(c, arg, b);
       buf_puts(b, ")); sp_puts_line(_pi ? _pi : \"nil\"); }\n");
+    }
+    else if (icn) {
+      /* the receiver rooted across its #inspect, as in the arm above */
+      int pv = ++g_tmp;
+      buf_printf(b, "{ sp_%s *_t%d = (sp_%s *)(", icn, pv, icn); emit_expr(c, arg, b);
+      buf_printf(b, "); SP_GC_ROOT(_t%d); const char *_pi = sp_%s_inspect(_t%d);"
+                    " sp_puts_line(_pi ? _pi : \"nil\"); }\n", pv, icn, pv);
     }
     else {
       buf_printf(b, "{ void *_po = (void *)("); emit_expr(c, arg, b);

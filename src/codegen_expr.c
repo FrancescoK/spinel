@@ -300,9 +300,19 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         if (ret_poly) buf_puts(&conv, "sp_poly_to_s(");
         /* a value-type object (single-ivar) has a by-VALUE to_s signature;
            casting its receiver to a pointer is a C type error (#2357) */
-        if (comp_ty_value_obj(c, t)) buf_printf(&conv, "sp_%s_to_s(", cn);
-        else buf_printf(&conv, "sp_%s_to_s((sp_%s *)", cn, cn);
-        EMIT_IV(); buf_puts(&conv, ")");
+        if (comp_ty_value_obj(c, t) || (!vexpr[0] && !iv_pre && expr_is_held_ref(c, expr))) {
+          if (comp_ty_value_obj(c, t)) buf_printf(&conv, "sp_%s_to_s(", cn);
+          else buf_printf(&conv, "sp_%s_to_s((sp_%s *)", cn, cn);
+          EMIT_IV(); buf_puts(&conv, ")");
+        }
+        else {
+          /* rooted: the part may be a fresh object (`"#{C.new}"`) held
+             nowhere else while its #to_s allocates */
+          int to = ++g_tmp;
+          buf_printf(&conv, "({ sp_%s *_t%d = (sp_%s *)(", cn, to, cn);
+          EMIT_IV();
+          buf_printf(&conv, "); SP_GC_ROOT(_t%d); sp_%s_to_s(_t%d); })", to, cn, to);
+        }
         if (ret_poly) buf_puts(&conv, ")");
       }
       else if (ty_is_ptr_array(t) || ty_is_obj_array(t)) {

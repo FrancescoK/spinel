@@ -3380,6 +3380,16 @@ void scope_veto_proc_form(Compiler *c, int s) {
   if (!g_pf_flag || s < 0 || s >= g_pf_cap || s >= c->nscopes) return;
   g_pf_flag[s] = (char *)2;   /* sticky: a later marking pass must not revive it */
 }
+/* Is `node` a read of something that already holds its object (a local, an
+   ivar, self, a constant)? Anything else -- a constructor, a method call --
+   may hand back a fresh object whose only reference is the C temporary the
+   caller keeps it in, and a call on it that allocates must root that
+   temporary first. */
+int expr_is_held_ref(Compiler *c, int node) {
+  NodeKind k = nt_kind(c->nt, node);
+  return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
+         k == NK_SelfNode || k == NK_ConstantReadNode;
+}
 /* The proc-form clone of scope `s`, or -1. Made in analyze (make_yield_proc_forms):
    a second scope named "<name>#pf" on the same class, holding an independently
    typed copy of the body whose yields answer poly. */
