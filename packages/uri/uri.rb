@@ -307,6 +307,72 @@ module URI
     end
   end
 
+  # The RFC 2396 parser's #make_regexp, the pattern CRuby builds for an
+  # absolute URI. The rest of the parser (#split, #parse, #escape, the
+  # pattern and regexp tables) is not here.
+  class RFC2396_Parser
+    def make_regexp(schemes = nil)
+      x = x_abs_uri
+      return Regexp.new(x, Regexp::EXTENDED) unless schemes
+      Regexp.new("(?=(?i:#{Regexp.union(*schemes).source}):)#{x}", Regexp::EXTENDED)
+    end
+
+    private
+
+    # The pieces of CRuby's initialize_pattern the absolute-URI pattern uses.
+    def x_abs_uri
+      alpha = "a-zA-Z"
+      alnum = "#{alpha}\\d"
+      hex = "a-fA-F\\d"
+      escaped = "%[#{hex}]{2}"
+      unreserved = "\\-_.!~*'()#{alnum}"
+      reserved = ";/?:@&=+$,\\[\\]"
+      uric = "(?:[#{unreserved}#{reserved}]|#{escaped})"
+      uric_no_slash = "(?:[#{unreserved};?:@&=+$,]|#{escaped})"
+      query = "#{uric}*"
+      fragment = "#{uric}*"
+      hostname = "(?:[a-zA-Z0-9\\-.]|%\\h\\h)+"
+      ipv4addr = "\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}"
+      hex4 = "[#{hex}]{1,4}"
+      lastpart = "(?:#{hex4}|#{ipv4addr})"
+      hexseq1 = "(?:#{hex4}:)*#{hex4}"
+      hexseq2 = "(?:#{hex4}:)*#{lastpart}"
+      ipv6addr = "(?:#{hexseq2}|(?:#{hexseq1})?::(?:#{hexseq2})?)"
+      ipv6ref = "\\[#{ipv6addr}\\]"
+      host = "(?:#{hostname}|#{ipv4addr}|#{ipv6ref})"
+      userinfo = "(?:[#{unreserved};:&=+$,]|#{escaped})*"
+      pchar = "(?:[#{unreserved}:@&=+$,]|#{escaped})"
+      param = "#{pchar}*"
+      segment = "#{pchar}*(?:;#{param})*"
+      path_segments = "#{segment}(?:/#{segment})*"
+      reg_name = "(?:[#{unreserved}$,;:@&=+]|#{escaped})+"
+      scheme = "[#{alpha}][\\-+.#{alpha}\\d]*"
+      abs_path = "/#{path_segments}"
+      opaque_part = "#{uric_no_slash}#{uric}*"
+      "
+        (#{scheme}):                           (?# 1: scheme)
+        (?:
+           (#{opaque_part})                    (?# 2: opaque)
+        |
+           (?:(?:
+             //(?:
+                 (?:(?:(#{userinfo})@)?        (?# 3: userinfo)
+                   (?:(#{host})(?::(\\d*))?))? (?# 4: host, 5: port)
+               |
+                 (#{reg_name})                 (?# 6: registry)
+               )
+             |
+             (?!//))                           (?# XXX: '//' is the mark for hostport)
+             (#{abs_path})?                    (?# 7: path)
+           )(?:\\?(#{query}))?                 (?# 8: query)
+        )
+        (?:\\#(#{fragment}))?                  (?# 9: fragment)
+      "
+    end
+  end
+
+  RFC2396_PARSER = RFC2396_Parser.new
+
   def self.join(base, rel)
     b = parse(base.to_s)
     r = rel.to_s
