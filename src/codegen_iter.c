@@ -272,6 +272,19 @@ static int subtree_yields_local_to_alias(Compiler *c, int id, const char *name, 
     int aa = nt_ref(nt, id, "arguments"); int an = 0;
     const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &an) : NULL;
     for (int j = 0; j < an; j++) {
+      /* yielded on by keyword (`yield(k: u)`) to the target's keyword */
+      if (nt_kind(nt, av[j]) == NK_KeywordHashNode) {
+        int en = 0; const int *el = nt_arr(nt, av[j], "elements", &en);
+        for (int e = 0; e < en; e++) {
+          int v;
+          const char *key = dyn_kw_elem_key(c, el[e], &v);
+          const char *kp = key ? block_kw_param_named(c, target, key) : NULL;
+          if (kp && v >= 0 && nt_kind(nt, v) == NK_LocalVariableReadNode && nt_str(nt, v, "name") &&
+              sp_streq(nt_str(nt, v, "name"), name) && block_local_wants_alias_at(c, target, kp, depth + 1))
+            return 1;
+        }
+        continue;
+      }
       if (nt_kind(nt, av[j]) != NK_LocalVariableReadNode) continue;
       const char *vn = nt_str(nt, av[j], "name");
       if (vn && sp_streq(vn, name) && block_param_wants_alias_at(c, target, j, depth + 1)) return 1;
@@ -1645,10 +1658,22 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
        (emit_block_binds), or the append lands in the keyword's copy. */
     int kw_alias = al && vn >= 0 && kl && nt_kind(nt, vn) == NK_LocalVariableReadNode &&
                    comp_ntype(c, vn) == TY_STRING && block_local_wants_alias(c, blk, kp);
+    /* a keyword that is the shared handle takes a handle yielded to it
+       itself (yield_splice_kw_handles), as a positional one does */
+    if (vn >= 0 && kl && kwh_tmp < 0 && kl->type == TY_STRBUF && kl->str_shared &&
+        nt_kind(nt, vn) == NK_LocalVariableReadNode) {
+      Buf hb; memset(&hb, 0, sizeof hb);
+      if (emit_handle_var_ref(c, vn, &hb)) {
+        if (!as_expr) emit_indent(b, indent);
+        buf_printf(b, "lv_%s = %s%s", kpr, hb.p, as_expr ? "; " : ";\n");
+        free(hb.p);
+        continue;
+      }
+      free(hb.p);
+    }
     /* A variable that is the shared handle has no `const char *` slot to
-       lend, and a positional one has no binding of its own yet either: the
-       append would land in a copy, so the program is refused rather than
-       compiled without it. */
+       lend: a keyword that did not take the handle above would append to a
+       copy, so the program is refused rather than compiled without it. */
     if (kw_alias && strbuf_local_name(c, vn)) {
       char msg[512];
       snprintf(msg, sizeof msg,
