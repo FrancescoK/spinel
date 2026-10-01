@@ -1581,7 +1581,9 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, " _t%d; })", tr2);
       return 1;
     }
-    if (argc == 1 && (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_RANGE)) {
+    /* Promote arithmetic may box an Integer; emit_int_expr unboxes it. */
+    if (argc == 1 && (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_RANGE ||
+                     (g_promote_mode && comp_ntype(c, argv[0]) == TY_POLY))) {
       /* slice!(i) / slice!(range): the removed part (or nil), reassigning an
          lvalue receiver; a literal receiver just yields the removed part. */
       int to = ++g_tmp, tb2 = ++g_tmp, tl2 = ++g_tmp, tn2 = ++g_tmp, tr2 = ++g_tmp;

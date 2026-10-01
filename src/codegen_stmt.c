@@ -13642,7 +13642,9 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
         buf_puts(b, g_reads_match_regs ? ");\n" : ", (&(\"\\xff\")[1]));\n");
         return 1;
       }
-      if (argc == 1 && (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_RANGE)) {
+      /* Promote arithmetic may box an Integer; emit_int_expr unboxes it. */
+      if (argc == 1 && (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_RANGE ||
+                       (g_promote_mode && comp_ntype(c, argv[0]) == TY_POLY))) {
         /* slice!(i): one char at i; slice!(range): the range's span. Same
            clamped splice as the (start, len) arm below (OOB is a no-op). */
         int ti2 = ++g_tmp, tl2 = ++g_tmp, tn2 = ++g_tmp;
