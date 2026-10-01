@@ -3714,6 +3714,7 @@ static char *resolve_plain_requires(char *source, const char *exe_path,
        require Spinel could not satisfy at all -- where CRuby would have raised
        LoadError rather than answer (#3453). */
     const char *req_val = "nil";
+    int root_dup = 0;
     /* A name computed at run time (`require "sqlite3/#{v}/native"`) names no
        file the program was compiled with: the call raises CRuby's LoadError,
        with the message it would carry, which the usual `rescue LoadError`
@@ -3835,6 +3836,10 @@ else {
           }
           if (content) snprintf(lib_path, sizeof(lib_path), "%s", rp);
         }
+        char *rc = content ? sp_canonical_path(lib_path) : NULL;
+        if (rc && sp_path_already_included(rc)) { free(content); content = strdup("# require skipped (already included)"); root_dup = 1; }
+        else if (rc) sp_mark_path_included(rc);
+        free(rc);
       }
       if (!content) {
         if (sp_lib_is_native(lib_name)) {
@@ -3872,7 +3877,7 @@ else {
         /* A bundled lib/<name>.rb was found and spliced; record the feature so
            the require-gate enables any C-native methods it stands in for. */
         sp_feature_mark(lib_name);
-        req_val = "true";   /* this require is what loaded it */
+        req_val = root_dup ? "false" : "true";   /* this require is what loaded it */
         char *resolved = resolve_requires(content, lib_path, &cfsl, &cfsl_n);
         free(content);
         content = resolved;

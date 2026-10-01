@@ -1068,6 +1068,9 @@ cli-opts-test: $(SPINEL)
 	$(SPINEL) -g test/debug/ivar_nil_before_setup.rb -o "$$tmp/dbg" >"$$tmp/dbg.out" 2>&1 && \
 	  "$$tmp/dbg" 2>&1 | cmp -s - test/debug/ivar_nil_before_setup.rb.expected || \
 	  { echo "cli-opts-test: FAIL (a -g build did not raise NoMethodError for an unset ivar, #5960)"; ok=0; }; \
+	$(SPINEL) -I test/require_load_path test/require_load_path/main.rb -o "$$tmp/lp" >"$$tmp/lp.out" 2>&1 && \
+	  "$$tmp/lp" 2>&1 | cmp -s - test/require_load_path/main.rb.expected || \
+	  { echo "cli-opts-test: FAIL (a file reached by -I require and by require_relative loaded twice)"; ok=0; }; \
 	links=""; i=0; while [ $$i -lt 70 ]; do links="$$links --link -lm"; i=$$((i + 1)); done; \
 	$(SPINEL) "$$tmp/p.rb" $$links --link -lsp_last_link --print-build 2>/dev/null | grep -q 'lib -lsp_last_link' || \
 	  { echo "cli-opts-test: FAIL (a --link past the 64th was dropped)"; ok=0; }; \
