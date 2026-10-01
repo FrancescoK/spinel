@@ -12422,23 +12422,25 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
       for (int i = 0; hold && i < argc; i++) {
         TyKind kt3 = comp_ntype(c, argv[i]);
         held[i] = ++g_tmp;
-        if (kt3 == TY_SYMBOL) {
+        switch (kt3) {
+        case TY_SYMBOL:
           buf_printf(b, " const char *_t%d = sp_sym_to_s(", held[i]); emit_expr(c, argv[i], b);
           buf_printf(b, "); SP_GC_ROOT_STR(_t%d);", held[i]);
-        }
-        else if (kt3 == TY_STRING) {
+          break;
+        case TY_STRING:
           buf_printf(b, " const char *_t%d = ", held[i]); emit_expr(c, argv[i], b);
           buf_printf(b, "; SP_GC_ROOT_STR(_t%d);", held[i]);
-        }
-        else if (kt3 == TY_RANGE) {
+          break;
+        case TY_RANGE:
           buf_printf(b, " sp_Range _t%d = ", held[i]); emit_expr(c, argv[i], b); buf_puts(b, ";");
-        }
-        else if (kt3 == TY_POLY) {
+          break;
+        case TY_POLY:
           buf_printf(b, " sp_RbVal _t%d = ", held[i]); emit_expr(c, argv[i], b);
           buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", held[i]);
-        }
-        else {
+          break;
+        default:
           buf_printf(b, " sp_int _t%d = ", held[i]); emit_int_expr(c, argv[i], b); buf_puts(b, ";");
+          break;
         }
       }
       for (int i = 0; i < argc; i++) {
