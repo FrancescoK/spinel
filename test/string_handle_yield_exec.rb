@@ -128,6 +128,24 @@ run(f, &method(:g))
 run(f, &pr)
 p f
 
+# a bare call inside a class reaches the class's yielding method, beside a
+# top-level one of the name
+class Clash
+  def run(x) = yield(x)
+  def go(v) = run(v) { |t| t << "!" }
+end
+cl = +"cl"
+Clash.new.go(cl)
+p cl
+
+# a method passed as `&method(:m)` takes its parameters' types from where
+# the block is called: `b.call`, a method handing `&b` on, a `...` forwarder
+def gsz(t) = t.size
+def krun(x, &b) = b.call(x)
+def kfwd(x, &b) = krun(x, &b)
+def kall(...) = run(...)
+p krun("abc", &method(:gsz)), kfwd("abcd", &method(:gsz)), kall("ab", &method(:gsz))
+
 # frozen, and bytes
 fz = "fz".freeze
 begin
