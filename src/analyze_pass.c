@@ -11572,6 +11572,7 @@ static int new_block_initialize(Compiler *c, int id, int *several) {
 }
 
 int infer_block_params(Compiler *c) {
+  nn_inference_round(c);
   const NodeTable *nt = c->nt;
   int changed = 0;
   block_sites_index(c);

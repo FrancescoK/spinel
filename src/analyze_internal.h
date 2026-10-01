@@ -166,6 +166,11 @@ int is_proc_create(Compiler *c, int id);
 int lw_shared_first(Compiler *c, const char *name, int scope);
 int lw_shared_node(int rec);
 int lw_shared_next(int rec);
+/* Nil narrowing (analyze.c): the facts for a round of the nullable marking,
+   and the start of a type-inference round, whose facts are computed when
+   first asked. */
+void nn_compute(Compiler *c, int round);
+void nn_inference_round(Compiler *c);
 /* Shared cached ivar-write index (analyze_pass.c): the ivar analogue of the
    local-write index, keyed by ivar name only. Callers confirm name (hash
    collisions), node kind, and defining class on each record. */
