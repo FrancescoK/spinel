@@ -629,6 +629,23 @@ assignment binds. Build the array as a general Array where it is created, or
 give the parameter the argument's kind (an rbs seed, or call sites that all
 pass the same kind).
 
+#### A String in a slot that holds other values too is not shared by `<<`
+
+A local, ivar, Hash value or Array element that holds more than one kind of
+value keeps a String in it as a plain value, not as the shared handle a
+String-only local gets. `<<` on it builds the longer String and stores it back
+into that one slot, so the result is right there, but another name for the
+same String does not see the change:
+
+```ruby
+h = {}
+[1].each { |i| h[i] = "v#{i}" }
+o = +h[1]     # o is a slot of its own, typed by what else it holds
+o << "+"
+p o           # "v1+" in both
+p h           # {1 => "v1+"} in CRuby, {1 => "v1"} in Spinel
+```
+
 #### A String a method appends to is not yet shared through some dynamic calls
 
 A method that appends to its String parameter (`s << x`, `concat`,

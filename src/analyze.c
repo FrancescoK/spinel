@@ -13294,6 +13294,8 @@ static int an_strbuf_alias_source(Compiler *c, int v) {
       if (ca >= 0) nt_arr(nt, ca, "arguments", &cac);
       if (cn && (sp_streq(cn, "<<") || sp_streq(cn, "concat")) &&
           cr >= 0 && cac == 1) { v = cr; continue; }
+      /* +s is s itself unless s is frozen (sp_String_uplus decides) */
+      if (cn && sp_streq(cn, "+@") && cr >= 0 && cac == 0) { v = cr; continue; }
       return -1;
     }
     return -1;

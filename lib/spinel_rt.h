@@ -4559,6 +4559,21 @@ static sp_RbVal sp_poly_bxor(sp_RbVal a, sp_RbVal b) {
    Complex, so `[Rational(1,10)].map { |r| -r }` answered [0] with nothing
    said (#4299). Each kind negates through its own helper, the way sp_poly_mul
    dispatches its tower one line at a time. */
+/* +h on a shared String handle: h itself unless it is frozen, else a new,
+   unfrozen handle with the same contents */
+static inline sp_String *sp_String_uplus(sp_String *h) {
+  if (!h || !sp_String_is_frozen(h)) return h;
+  return sp_String_new_shared(sp_str_dup(sp_String_cstr(h)));
+}
+/* +s: s itself unless it is frozen, else an unfrozen copy (CRuby) */
+static inline const char *sp_str_uplus(const char *s) {
+  return sp_str_is_frozen_val(s) ? sp_str_dup(s) : s;
+}
+/* +v on a boxed value: the same for a String; anything else is itself */
+static sp_RbVal sp_poly_uplus(sp_RbVal v) {
+  if (v.tag == SP_TAG_STR && v.v.s && sp_str_is_frozen_val(v.v.s)) return sp_box_str(sp_str_dup(v.v.s));
+  return v;
+}
 static sp_RbVal sp_poly_neg(sp_RbVal a) {
   if (a.tag == SP_TAG_FLT) return sp_box_float(-a.v.f);
   if (a.tag == SP_TAG_INT) return sp_box_int(-a.v.i);
