@@ -14590,15 +14590,16 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
     buf_puts(b, "; ");
     /* int slots are nil only out of bounds (0 is truthy); ||= writes when
        nil, &&= when present. Compare with == / != to avoid `!x != NIL`. */
-    if (rt == TY_INT_ARRAY)
-      buf_printf(b, "if (sp_IntArray_get(_t%d, _t%d) %s SP_INT_NIL) ", ta, tb, is_or ? "==" : "!=");
-    else if (rt == TY_FLOAT_ARRAY)
-      buf_printf(b, "if (%ssp_float_is_nil(sp_FloatArray_get(_t%d, _t%d))) ", is_or ? "" : "!", ta, tb);
-    else if (rt == TY_STR_ARRAY)
-      buf_printf(b, "if (%ssp_StrArray_get(_t%d, _t%d)) ", is_or ? "!" : "", ta, tb);
-    else if (rt == TY_POLY_ARRAY)
-      buf_printf(b, "if (%ssp_poly_truthy(sp_PolyArray_get(_t%d, _t%d))) ", is_or ? "!" : "", ta, tb);
-    else {
+    switch (rt) {
+    case TY_INT_ARRAY:
+      buf_printf(b, "if (sp_IntArray_get(_t%d, _t%d) %s SP_INT_NIL) ", ta, tb, is_or ? "==" : "!="); break;
+    case TY_FLOAT_ARRAY:
+      buf_printf(b, "if (%ssp_float_is_nil(sp_FloatArray_get(_t%d, _t%d))) ", is_or ? "" : "!", ta, tb); break;
+    case TY_STR_ARRAY:
+      buf_printf(b, "if (%ssp_StrArray_get(_t%d, _t%d)) ", is_or ? "!" : "", ta, tb); break;
+    case TY_POLY_ARRAY:
+      buf_printf(b, "if (%ssp_poly_truthy(sp_PolyArray_get(_t%d, _t%d))) ", is_or ? "!" : "", ta, tb); break;
+    default:
       unsupported(c, id, "index and/or write (array type)"); return;
     }
     int open = 0;
