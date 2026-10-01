@@ -27667,6 +27667,220 @@ static void emit_handle_inspect(Compiler *c, int recv, TyKind rt, Buf *b) {
   buf_printf(b, "sp_sprintf(\"#<%s:0x%%016llx>\", (unsigned long long)(uintptr_t)(", hn);
   emit_expr(c, recv, b); buf_puts(b, "))");
 }
+static int emit_exception_call(Compiler *c, int id, int recv, const char *name,
+                               int argc, const int *argv, Buf *b) {
+  const NodeTable *nt = c->nt;
+  /* A class-gated accessor's name that the program also gave Object
+     (`class Object; def tag`): the classes owning the accessor answer it,
+     every other exception the Object method, as CRuby's lookup reaches
+     Object for them. Both answers ride boxed. The accessor alone raised
+     NoMethodError for a RuntimeError. */
+  int xom = argc == 0 && nt_ref(nt, id, "block") < 0 ? exc_acc_object_method(c, name) : -1;
+  if (xom >= 0) {
+    int xt = ++g_tmp;
+    static const struct { const char *nm, *fn; TyKind t; } XACC[] = {
+      {"key", "sp_exc_key_acc", TY_POLY}, {"receiver", "sp_exc_receiver_acc", TY_POLY},
+      {"args", "sp_exc_args_acc", TY_POLY}, {"private_call?", "sp_exc_private_call_acc", TY_BOOL},
+      {"reason", "sp_exc_reason_acc", TY_POLY}, {"exit_value", "sp_exc_exit_value_acc", TY_POLY},
+      {"tag", "sp_exc_tag_acc", TY_POLY}, {"value", "sp_exc_throw_value_acc", TY_POLY},
+      {"status", "sp_exc_status_acc", TY_INT}, {"success?", "sp_exc_success_acc", TY_BOOL},
+      {"signo", "sp_exc_signo_acc", TY_INT}, {"signm", "sp_exc_signm_acc", TY_STRING},
+      {"name", "sp_exc_name_acc", TY_POLY}, {"errno", "sp_exc_errno_acc", TY_POLY},
+      {"result", "sp_exc_result", TY_POLY}, {NULL, NULL, TY_UNKNOWN} };
+    int xa = 0;
+    while (XACC[xa].nm && !sp_streq(XACC[xa].nm, name)) xa++;
+    if (sp_streq(name, "reason") || sp_streq(name, "tag") || sp_streq(name, "key") ||
+        sp_streq(name, "name")) g_uses_symbols = 1;
+    char xv[32]; snprintf(xv, sizeof xv, "_t%d", xt);
+    Buf ab; memset(&ab, 0, sizeof ab);
+    buf_printf(&ab, "%s(_t%d)", XACC[xa].fn, xt);
+    Buf ob; memset(&ob, 0, sizeof ob);
+    buf_printf(&ob, "sp_Object_%s(", mc(c->scopes[xom].name));
+    emit_boxed_text(c, TY_EXCEPTION, xv, &ob);
+    buf_puts(&ob, ")");
+    TyKind want = comp_ntype(c, id), omr = (TyKind)c->scopes[xom].ret;
+    buf_printf(b, "({ sp_Exception *_t%d = (sp_Exception *)(", xt);
+    emit_expr(c, recv, b);
+    buf_printf(b, "); SP_GC_ROOT(_t%d); sp_exc_has_acc(_t%d, \"%s\") ? ", xt, xt, name);
+    if (want == TY_POLY && XACC[xa].t != TY_POLY) emit_boxed_text(c, XACC[xa].t, ab.p, b);
+    else buf_puts(b, ab.p);
+    buf_puts(b, " : ");
+    if (method_is_void(&c->scopes[xom])) buf_printf(b, "(%s, sp_box_nil())", ob.p);
+    else if (want == TY_POLY && omr != TY_POLY) emit_boxed_text(c, omr, ob.p, b);
+    else buf_puts(b, ob.p);
+    buf_puts(b, "; })");
+    free(ab.p); free(ob.p);
+    return 1;
+  }
+  /* equal? and eql? are pointer identity; == and === are CRuby's value
+     equality (same class and message): Object's protocol arm, which also
+     unwraps a poly operand and stands down for a user subclass's own
+     definition */
+  if (argc == 1 &&
+      (sp_streq(name, "==") || sp_streq(name, "!=") || sp_streq(name, "===") ||
+       sp_streq(name, "equal?") || sp_streq(name, "eql?")) &&
+      emit_native_object_protocol(c, id, b)) return 1;
+  if (sp_streq(name, "nil?") && argc == 0) {
+    buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == NULL)");
+    return 1;
+  }
+  /* a raised/constructed exception is not frozen in CRuby (#3004), but one
+     the program froze itself reads back frozen (#3709) */
+  if (sp_streq(name, "frozen?") && argc == 0) {
+    buf_puts(b, "sp_gc_is_frozen((void *)("); emit_expr(c, recv, b); buf_puts(b, "))");
+    return 1;
+  }
+  if (sp_streq(name, "freeze") && argc == 0) {
+    buf_puts(b, "((sp_Exception *)sp_gc_freeze((void *)("); emit_expr(c, recv, b); buf_puts(b, ")))");
+    return 1;
+  }
+
+  /* dup/clone copy the whole (subclass-sized) struct so mutating the copy
+     leaves the original alone (#2772) */
+  if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0) {
+    buf_puts(b, "sp_exc_dup((sp_Exception *)(");
+    emit_expr(c, recv, b); buf_puts(b, "))");
+    return 1;
+  }
+  /* Exception#exception: no-arg returns the receiver; with a message it is
+     a copy carrying the new message (#2740) */
+  if (sp_streq(name, "exception")) {
+    if (argc == 0) { emit_expr(c, recv, b); return 1; }
+    if (argc == 1) { emit_exc_exception(c, recv, argv[0], b); return 1; }
+  }
+  /* NameError/NoMethodError#name: the carried missing name; any other
+     exception class raises NoMethodError at runtime, per CRuby */
+  if (sp_streq(name, "name") && argc == 0) {
+    g_uses_symbols = 1;  /* the accessor interns a runtime-recovered name (#2758) */
+    buf_puts(b, "sp_exc_name_acc((sp_Exception *)(");
+    emit_expr(c, recv, b);
+    buf_puts(b, "))");
+    return 1;
+  }
+  /* class-gated introspection accessors (#2753-#2756, #2770) */
+  if (argc == 0) {
+    const char *accfn = exc_gated_acc_fn(name);
+    if (accfn) {
+      if (sp_streq(name, "reason") || sp_streq(name, "tag") || sp_streq(name, "key") ||
+          sp_streq(name, "name"))
+        g_uses_symbols = 1;  /* staged names intern back to symbols */
+      buf_printf(b, "%s((sp_Exception *)(", accfn);
+      emit_expr(c, recv, b);
+      buf_puts(b, "))");
+      return 1;
+    }
+  }
+  if (sp_streq(name, "inspect") && argc == 0) {
+    /* an empty message renders as the bare class name (#3713) */
+    buf_puts(b, "sp_exc_inspect((void *)("); emit_expr(c, recv, b); buf_puts(b, "))");
+    return 1;
+  }
+  if (sp_streq(name, "message") || sp_streq(name, "to_s") || sp_streq(name, "to_str")) {
+    /* NULL-guard: a nil $! (outside any rescue) has no message. */
+    int t = hoist_exc_recv(c, recv);
+    /* An override answering something other than a String cannot ride the
+       const char * dispatcher; the boxed pair carries it, and the call types
+       poly to match (#3868). */
+    if (exc_has_nonstring_msg_override(c) && comp_ntype(c, id) == TY_POLY) {
+      buf_printf(b, "(_t%d ? %s(_t%d) : sp_box_str(sp_str_empty))", t,
+                 sp_streq(name, "message") ? "sp_user_exc_message_v" : "sp_user_exc_to_s_v", t);
+      return 1;
+    }
+    const char *fn = exc_has_user_msg_override(c)
+      ? (sp_streq(name, "message") ? "sp_user_exc_message" : "sp_user_exc_to_s")
+      : "sp_exc_message";
+    buf_printf(b, "(_t%d ? %s(_t%d) : sp_str_empty)", t, fn, t);
+    return 1;
+  }
+  if (sp_streq(name, "cause")) {
+    buf_puts(b, "sp_exc_cause("); emit_expr(c, recv, b); buf_puts(b, ")");
+    return 1;
+  }
+  if (sp_streq(name, "result") && argc == 0) {
+    /* StopIteration#result: the finished iteration's return value. */
+    buf_puts(b, "sp_exc_result("); emit_expr(c, recv, b); buf_puts(b, ")");
+    return 1;
+  }
+  if (sp_streq(name, "errno") && argc == 0) {
+    /* SystemCallError#errno: the number of the Errno:: class, by name (#4560) */
+    buf_puts(b, "sp_exc_errno_acc("); emit_expr(c, recv, b); buf_puts(b, ")");
+    return 1;
+  }
+  if (sp_streq(name, "full_message")) {
+    int t = hoist_exc_recv(c, recv);
+    buf_printf(b, "sp_sprintf(\"%%s: %%s\", sp_exc_class_name(_t%d), sp_exc_message(_t%d))", t, t);
+    return 1;
+  }
+  /* detailed_message -> "message (ClassName)" (kwargs like highlight: ignored) */
+  if (sp_streq(name, "detailed_message")) {
+    int t = hoist_exc_recv(c, recv);
+    buf_printf(b, "sp_sprintf(\"%%s (%%s)\", sp_exc_message(_t%d), sp_exc_class_name(_t%d))", t, t);
+    return 1;
+  }
+  if (sp_streq(name, "inspect")) {
+    /* #<ClassName: message>, or "nil" for a nil $! (outside any rescue). */
+    int t = hoist_exc_recv(c, recv);
+    /* an empty message renders as the bare class name (#3713) */
+    buf_printf(b, "sp_exc_inspect((void *)_t%d)", t);
+    return 1;
+  }
+  if (sp_streq(name, "class")) {  /* a Class carried by name (complete for every exception class) */
+    /* a nil $! (outside any rescue) is NilClass, matching the sibling nil-guards. */
+    int t = hoist_exc_recv(c, recv);
+    buf_printf(b, "((sp_Class){0, _t%d ? sp_exc_class_name(_t%d) : SPL(\"NilClass\")})", t, t);
+    return 1;
+  }
+  /* object identity: the same raised object compares equal to $! / a `=> e`
+     binding, since both now point at the one materialized exception. */
+  if (argc == 1 && sp_streq(name, "equal?")) {
+    /* Only an exception arg can share identity with the receiver; nil compares
+       against a NULL pointer. Any other type is a struct or scalar that can't
+       be cast to void* (a -Werror break) and can never be the same object. */
+    TyKind at = comp_ntype(c, argv[0]);
+    if (at == TY_EXCEPTION) {
+      Buf rb = expr_buf(c, recv), ab = expr_buf(c, argv[0]);
+      buf_printf(b, "((void *)(%s) == (void *)(%s))", rb.p ? rb.p : "0", ab.p ? ab.p : "0");
+      free(rb.p); free(ab.p);
+    }
+    else if (at == TY_NIL) {
+      Buf rb = expr_buf(c, recv);
+      buf_printf(b, "((void *)(%s) == NULL)", rb.p ? rb.p : "0");
+      free(rb.p);
+    }
+    else {
+      buf_puts(b, "0");
+    }
+    return 1;
+  }
+  if (sp_streq(name, "backtrace")) {
+    /* the stack captured at the most recent raise (sp_bt_buf); the substrate
+       is live in --debug builds and empty in release, same as Kernel#caller. */
+    buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_backtrace_captured())");
+    return 1;
+  }
+  if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
+    /* exception class names are registered fully qualified ("PG::Error"),
+       so a nested-path argument must compare with the whole path -- the
+       flat leaf name never matched (#3260) */
+    char qbuf[192];
+    const char *cn = isa_const_qualname(nt, argv[0], qbuf, sizeof qbuf);
+    if (cn) {
+      /* instance_of? is an exact-class test, not an ancestor walk: an
+         ArgumentError is not instance_of?(StandardError) (#3013) */
+      if (sp_streq(name, "instance_of?")) {
+        buf_puts(b, "(strcmp(sp_exc_class_name("); emit_expr(c, recv, b);
+        buf_printf(b, "), \"%s\") == 0)", cn);
+      }
+      else {
+        buf_puts(b, "sp_exc_is_a("); emit_expr(c, recv, b);
+        buf_printf(b, ", \"%s\")", cn);
+      }
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -34756,174 +34970,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       }
     }
   }
-  if (recv >= 0 && comp_ntype(c, recv) == TY_EXCEPTION) {
-    /* equal? and eql? are pointer identity; == and === are CRuby's value
-       equality (same class and message): Object's protocol arm, which also
-       unwraps a poly operand and stands down for a user subclass's own
-       definition */
-    if (argc == 1 &&
-        (sp_streq(name, "==") || sp_streq(name, "!=") || sp_streq(name, "===") ||
-         sp_streq(name, "equal?") || sp_streq(name, "eql?")) &&
-        emit_native_object_protocol(c, id, b)) return;
-    if (sp_streq(name, "nil?") && argc == 0) {
-      buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == NULL)");
-      return;
-    }
-    /* a raised/constructed exception is not frozen in CRuby (#3004), but one
-       the program froze itself reads back frozen (#3709) */
-    if (sp_streq(name, "frozen?") && argc == 0) {
-      buf_puts(b, "sp_gc_is_frozen((void *)("); emit_expr(c, recv, b); buf_puts(b, "))");
-      return;
-    }
-    if (sp_streq(name, "freeze") && argc == 0) {
-      buf_puts(b, "((sp_Exception *)sp_gc_freeze((void *)("); emit_expr(c, recv, b); buf_puts(b, ")))");
-      return;
-    }
-
-    /* dup/clone copy the whole (subclass-sized) struct so mutating the copy
-       leaves the original alone (#2772) */
-    if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0) {
-      buf_puts(b, "sp_exc_dup((sp_Exception *)(");
-      emit_expr(c, recv, b); buf_puts(b, "))");
-      return;
-    }
-    /* Exception#exception: no-arg returns the receiver; with a message it is
-       a copy carrying the new message (#2740) */
-    if (sp_streq(name, "exception")) {
-      if (argc == 0) { emit_expr(c, recv, b); return; }
-      if (argc == 1) { emit_exc_exception(c, recv, argv[0], b); return; }
-    }
-    /* NameError/NoMethodError#name: the carried missing name; any other
-       exception class raises NoMethodError at runtime, per CRuby */
-    if (sp_streq(name, "name") && argc == 0) {
-      g_uses_symbols = 1;  /* the accessor interns a runtime-recovered name (#2758) */
-      buf_puts(b, "sp_exc_name_acc((sp_Exception *)(");
-      emit_expr(c, recv, b);
-      buf_puts(b, "))");
-      return;
-    }
-    /* class-gated introspection accessors (#2753-#2756, #2770) */
-    if (argc == 0) {
-      const char *accfn = exc_gated_acc_fn(name);
-      if (accfn) {
-        if (sp_streq(name, "reason") || sp_streq(name, "tag") || sp_streq(name, "key") ||
-            sp_streq(name, "name"))
-          g_uses_symbols = 1;  /* staged names intern back to symbols */
-        buf_printf(b, "%s((sp_Exception *)(", accfn);
-        emit_expr(c, recv, b);
-        buf_puts(b, "))");
-        return;
-      }
-    }
-    if (sp_streq(name, "inspect") && argc == 0) {
-      /* an empty message renders as the bare class name (#3713) */
-      buf_puts(b, "sp_exc_inspect((void *)("); emit_expr(c, recv, b); buf_puts(b, "))");
-      return;
-    }
-    if (sp_streq(name, "message") || sp_streq(name, "to_s") || sp_streq(name, "to_str")) {
-      /* NULL-guard: a nil $! (outside any rescue) has no message. */
-      int t = hoist_exc_recv(c, recv);
-      /* An override answering something other than a String cannot ride the
-         const char * dispatcher; the boxed pair carries it, and the call types
-         poly to match (#3868). */
-      if (exc_has_nonstring_msg_override(c) && comp_ntype(c, id) == TY_POLY) {
-        buf_printf(b, "(_t%d ? %s(_t%d) : sp_box_str(sp_str_empty))", t,
-                   sp_streq(name, "message") ? "sp_user_exc_message_v" : "sp_user_exc_to_s_v", t);
-        return;
-      }
-      const char *fn = exc_has_user_msg_override(c)
-        ? (sp_streq(name, "message") ? "sp_user_exc_message" : "sp_user_exc_to_s")
-        : "sp_exc_message";
-      buf_printf(b, "(_t%d ? %s(_t%d) : sp_str_empty)", t, fn, t);
-      return;
-    }
-    if (sp_streq(name, "cause")) {
-      buf_puts(b, "sp_exc_cause("); emit_expr(c, recv, b); buf_puts(b, ")");
-      return;
-    }
-    if (sp_streq(name, "result") && argc == 0) {
-      /* StopIteration#result: the finished iteration's return value. */
-      buf_puts(b, "sp_exc_result("); emit_expr(c, recv, b); buf_puts(b, ")");
-      return;
-    }
-    if (sp_streq(name, "errno") && argc == 0) {
-      /* SystemCallError#errno: the number of the Errno:: class, by name (#4560) */
-      buf_puts(b, "sp_exc_errno_acc("); emit_expr(c, recv, b); buf_puts(b, ")");
-      return;
-    }
-    if (sp_streq(name, "full_message")) {
-      int t = hoist_exc_recv(c, recv);
-      buf_printf(b, "sp_sprintf(\"%%s: %%s\", sp_exc_class_name(_t%d), sp_exc_message(_t%d))", t, t);
-      return;
-    }
-    /* detailed_message -> "message (ClassName)" (kwargs like highlight: ignored) */
-    if (sp_streq(name, "detailed_message")) {
-      int t = hoist_exc_recv(c, recv);
-      buf_printf(b, "sp_sprintf(\"%%s (%%s)\", sp_exc_message(_t%d), sp_exc_class_name(_t%d))", t, t);
-      return;
-    }
-    if (sp_streq(name, "inspect")) {
-      /* #<ClassName: message>, or "nil" for a nil $! (outside any rescue). */
-      int t = hoist_exc_recv(c, recv);
-      /* an empty message renders as the bare class name (#3713) */
-      buf_printf(b, "sp_exc_inspect((void *)_t%d)", t);
-      return;
-    }
-    if (sp_streq(name, "class")) {  /* a Class carried by name (complete for every exception class) */
-      /* a nil $! (outside any rescue) is NilClass, matching the sibling nil-guards. */
-      int t = hoist_exc_recv(c, recv);
-      buf_printf(b, "((sp_Class){0, _t%d ? sp_exc_class_name(_t%d) : SPL(\"NilClass\")})", t, t);
-      return;
-    }
-    /* object identity: the same raised object compares equal to $! / a `=> e`
-       binding, since both now point at the one materialized exception. */
-    if (argc == 1 && sp_streq(name, "equal?")) {
-      /* Only an exception arg can share identity with the receiver; nil compares
-         against a NULL pointer. Any other type is a struct or scalar that can't
-         be cast to void* (a -Werror break) and can never be the same object. */
-      TyKind at = comp_ntype(c, argv[0]);
-      if (at == TY_EXCEPTION) {
-        Buf rb = expr_buf(c, recv), ab = expr_buf(c, argv[0]);
-        buf_printf(b, "((void *)(%s) == (void *)(%s))", rb.p ? rb.p : "0", ab.p ? ab.p : "0");
-        free(rb.p); free(ab.p);
-      }
-      else if (at == TY_NIL) {
-        Buf rb = expr_buf(c, recv);
-        buf_printf(b, "((void *)(%s) == NULL)", rb.p ? rb.p : "0");
-        free(rb.p);
-      }
-      else {
-        buf_puts(b, "0");
-      }
-      return;
-    }
-    if (sp_streq(name, "backtrace")) {
-      /* the stack captured at the most recent raise (sp_bt_buf); the substrate
-         is live in --debug builds and empty in release, same as Kernel#caller. */
-      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_backtrace_captured())");
-      return;
-    }
-    if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
-      /* exception class names are registered fully qualified ("PG::Error"),
-         so a nested-path argument must compare with the whole path -- the
-         flat leaf name never matched (#3260) */
-      char qbuf[192];
-      const char *cn = isa_const_qualname(nt, argv[0], qbuf, sizeof qbuf);
-      if (cn) {
-        /* instance_of? is an exact-class test, not an ancestor walk: an
-           ArgumentError is not instance_of?(StandardError) (#3013) */
-        if (sp_streq(name, "instance_of?")) {
-          buf_puts(b, "(strcmp(sp_exc_class_name("); emit_expr(c, recv, b);
-          buf_printf(b, "), \"%s\") == 0)", cn);
-        }
-        else {
-          buf_puts(b, "sp_exc_is_a("); emit_expr(c, recv, b);
-          buf_printf(b, ", \"%s\")", cn);
-        }
-        return;
-      }
-    }
-  }
+  if (recv >= 0 && comp_ntype(c, recv) == TY_EXCEPTION &&
+      emit_exception_call(c, id, recv, name, argc, argv, b)) return;
 
   /* A bare call inside a method: the enclosing class's own chain answers it
      before the top-level table does. A top-level `def` lands on Object, which

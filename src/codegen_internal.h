@@ -959,6 +959,7 @@ int is_syserr_family_name(const char *n);           /* analyze_util.c */
 int class_is_syserr(Compiler *c, int ci);          /* codegen_call.c */
 void emit_syserr_call(Compiler *c, int id, const char *fn, const char *lead,
                       int argc, const int *argv, Buf *b);   /* codegen_call.c */
+int exc_acc_object_method(Compiler *c, const char *name);   /* analyze_util.c */
 int class_inherits_builtin_exception(Compiler *c, int ci);  /* analyze_util.c */
 /* The class name a runtime match (is_a?/===/when) should test against: the
    QUALIFIED path name when it names a known builtin (exception) class --
