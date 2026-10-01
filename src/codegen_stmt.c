@@ -5535,26 +5535,28 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
           int inner = nt_ref(nt, conds[j], "expression");
           TyKind at = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
           int ta = ++g_tmp;
-          if (at == TY_INT_ARRAY) {
+          switch (at) {
+          case TY_INT_ARRAY:
             buf_printf(b, "({ sp_IntArray *_t%d = ", ta); emit_expr(c, inner, b);
             buf_printf(b, "; _t%d && sp_IntArray_include(_t%d, _t%d); })", ta, ta, t);
-          }
-          else if (at == TY_STR_ARRAY) {
+            break;
+          case TY_STR_ARRAY:
             buf_printf(b, "({ sp_StrArray *_t%d = ", ta); emit_expr(c, inner, b);
             buf_printf(b, "; _t%d && sp_StrArray_include(_t%d, _t%d); })", ta, ta, t);
-          }
-          else if (at == TY_FLOAT_ARRAY) {
+            break;
+          case TY_FLOAT_ARRAY:
             buf_printf(b, "({ sp_FloatArray *_t%d = ", ta); emit_expr(c, inner, b);
             buf_printf(b, "; _t%d && sp_FloatArray_include(_t%d, _t%d); })", ta, ta, t);
-          }
-          else if (at == TY_POLY_ARRAY) {
+            break;
+          case TY_POLY_ARRAY:
             buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_expr(c, inner, b);
             buf_printf(b, "; _t%d && sp_PolyArray_include(_t%d, ", ta, ta);
             emit_boxed(c, pred, b);
             buf_puts(b, "); })");
-          }
-          else {
+            break;
+          default:
             buf_puts(b, "0 /* unsupported splat type */");
+            break;
           }
         }
         else {
