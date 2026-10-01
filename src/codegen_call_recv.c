@@ -2547,22 +2547,29 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
        the value at each index comes from the block. (The no-block forms, where
        the first argument IS the value, are handled below.) */
     if (sp_streq(name, "fill") && argc <= 2 && nt_ref(nt, id, "block") >= 0) {
-      const char *fk = (rt == TY_POLY_ARRAY) ? "Poly" : k;
+      /* a block value the element type cannot hold rebuilds through a poly
+         array, as the value form below does (inference typed the call poly);
+         a local receiver was widened at the write site instead */
+      int fill_conflict = rt != TY_POLY_ARRAY && comp_ntype(c, id) == TY_POLY_ARRAY;
+      const char *fk = (rt == TY_POLY_ARRAY || fill_conflict) ? "Poly" : k;
+      TyKind frt = fill_conflict ? TY_POLY_ARRAY : rt;
       int fblk = nt_ref(nt, id, "block");
       int fbody = nt_ref(nt, fblk, "body");
       int fbn = 0; const int *fbb = fbody >= 0 ? nt_arr(nt, fbody, "body", &fbn) : NULL;
       if (fk && fbn > 0) {
-        TyKind et = ty_array_elem(rt);
+        TyKind et = ty_array_elem(frt);
         int trecv = ++g_tmp, tn = ++g_tmp, ts = ++g_tmp, te = ++g_tmp, ti = ++g_tmp;
         const char *ip = block_param_name(c, fblk, 0); if (ip) ip = rename_local(ip);
-        Buf rb = expr_buf(c, recv);
-        emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+        Buf rb; memset(&rb, 0, sizeof rb);
+        if (fill_conflict) { buf_puts(&rb, "sp_poly_to_poly_array("); emit_boxed(c, recv, &rb); buf_puts(&rb, ")"); }
+        else rb = expr_buf(c, recv);
+        emit_indent(g_pre, g_indent); emit_ctype(c, frt, g_pre);
         buf_printf(g_pre, " _t%d = %s; ", trecv, rb.p ? rb.p : ""); free(rb.p);
         /* rooted, as the TY_POLY map!/collect! near the top of this file
            already roots its own hoist: fill stores into the receiver on every
            turn, and the block never mentions the receiver, so this temporary is
            the only thing holding it while the block allocates */
-        emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n");
+        emit_gc_root_tmp(c, frt, trecv, g_pre); buf_puts(g_pre, "\n");
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_int _t%d = sp_%sArray_length(_t%d);\n", tn, fk, trecv);
         /* resolve the [start, end) span from the arguments */
@@ -2654,12 +2661,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
          poly array (inference typed the result poly to match); only literal
          and temp receivers reach this -- a conflicting fill on a LOCAL
          already widened the local itself at the write site */
-      int fill_conflict = 0;
-      {
-        TyKind fe = ty_array_elem(rt), fv = comp_ntype(c, argv[0]);
-        fill_conflict = rt != TY_POLY_ARRAY && fe != TY_POLY && fv != TY_UNKNOWN && fv != TY_POLY &&
-                        fv != fe && !(ty_is_numeric(fv) && ty_is_numeric(fe));
-      }
+      int fill_conflict = rt != TY_POLY_ARRAY && comp_ntype(c, id) == TY_POLY_ARRAY;
       const char *fk = (rt == TY_POLY_ARRAY || fill_conflict) ? "Poly" : k;
       TyKind fill_rt = fill_conflict ? TY_POLY_ARRAY : rt;
       if (fk) {

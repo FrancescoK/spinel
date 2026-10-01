@@ -3438,10 +3438,23 @@ int infer_write_types(Compiler *c) {
            span: the value is element evidence exactly like a splice, so a typed
            array whose elements cannot hold the value widens to a poly array
            (previously the raw bits were stored: [1,2,3].fill(:a) filled the int
-           array with the symbol id). The block form fill([start[, len]]) { |i| }
-           carries no value argument and is not handled here. */
+           array with the symbol id). The block form is the next arm. */
         is_idx_write = 1; is_splice = 1; is_fill = 1; vt = infer_type(c, argv[0]);
         kt = TY_INT;  /* a positional span, never hash evidence */
+      }
+      else if (name && sp_streq(name, "fill") && an <= 2 && nt_ref(nt, id, "block") >= 0 &&
+               nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockNode) {
+        /* the block form, fill([start[, len]]) { |i| v }: the block's value
+           is what goes into each slot of the span, the same evidence */
+        int fblk = nt_ref(nt, id, "block");
+        int fbody = nt_ref(nt, fblk, "body");
+        int fbn = 0; const int *fbs = fbody >= 0 ? nt_arr(nt, fbody, "body", &fbn) : NULL;
+        vt = fbn > 0 ? infer_type(c, fbs[fbn - 1]) : TY_NIL;
+        TyKind fnx = block_next_value_ty(c, fbody);
+        if (fnx != TY_UNKNOWN) vt = vt == TY_UNKNOWN ? fnx : ty_unify(vt, fnx);
+        if (vt == TY_VOID) vt = TY_NIL;
+        is_idx_write = 1; is_splice = 1; is_fill = 1;
+        kt = TY_INT;
       }
       else if (name && (sp_streq(name, "fetch") ||
                         (sp_streq(name, "[]") && an == 1)) && an >= 1) {
