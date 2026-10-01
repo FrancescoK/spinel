@@ -88,6 +88,8 @@ int builtin_class_parent_id(int id);
 int desugar_builtin_reopen_named_superclass(Compiler *c);
 const char *class_ruby_name(Compiler *c, int ci); /* codegen.c */
 int builtin_object_method_known(const char *m);
+int send_blind_recv_owns(Compiler *c, TyKind rt, const char *name);
+int send_blind_split(Compiler *c, TyKind rt, const char *name);
 int core_method_name(const char *n);   /* analyze_desugar.c: a core class's public method */
 int class_inherits_builtin_exception(Compiler *c, int ci);
 int an_user_defines_or_reads(Compiler *c, const char *name);

@@ -156,6 +156,8 @@ extern int  g_block_id;
 int builtin_method_known(const char *cls, const char *m);
 int builtin_arity_violation(Compiler *c, int id);
 int builtin_object_method_known(const char *m);
+int send_blind_recv_owns(Compiler *c, TyKind rt, const char *name);
+int send_blind_split(Compiler *c, TyKind rt, const char *name);
 int name_is_enumerable_module_method(const char *m);
 int emit_object_methods_reflection(Compiler *c, int recv, int cid, const char *name, Buf *b);
 int scope_reads_callee(Compiler *c, int si);

@@ -1,0 +1,18 @@
+:a
+:a
+:a
+:a
+:b
+:top
+:top
+:top
+:top
+5
+7
+"A"
+true
+true
+true
+[:a, 1]
+[:top, 2]
+[1, 2]

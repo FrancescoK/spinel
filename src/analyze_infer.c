@@ -1967,10 +1967,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     int smi = comp_method_index(c, name);
     if (smi >= 0 && !(smi < c->nscopes && c->scopes[smi].yields)) {
       TyKind srt = infer_type(c, recv);
-      int owns = ty_is_object(srt) &&
-                 (comp_method_in_chain(c, ty_object_class(srt), name, NULL) >= 0 ||
-                  comp_reader_in_chain(c, ty_object_class(srt), name, NULL));
-      if (!owns) return method_call_ret(c, smi, id);
+      if (!send_blind_recv_owns(c, srt, name)) return method_call_ret(c, smi, id);
+      /* a boxed receiver answers by its class, the dispatch or the
+         top-level def: boxed, as codegen's split hands either back */
+      if (send_blind_split(c, srt, name)) return TY_POLY;
     }
   }
 
