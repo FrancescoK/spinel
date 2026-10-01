@@ -38,8 +38,11 @@ extern int g_no_root_elision;
 extern int g_no_root_frame;
 extern int g_opt_level;
 extern int g_require_gate_cli;
-/* RUBY_DESCRIPTION for the compiled program: "spinel <release> (<rev>)",
-   the same words `spinel -v` prints (codegen appends the platform). */
+/* RUBY_DESCRIPTION for the compiled program, in the `ruby -v` shape:
+   "spinel <RUBY_VERSION> (<release> revision <rev>)" (codegen appends the
+   platform). The version word is the one RUBY_VERSION and
+   RUBY_ENGINE_VERSION report, so a script that reads the version out of the
+   description gets the same answer; release and revision tell builds apart. */
 extern const char *g_ruby_description;
 extern int g_inline_hot;
 extern int g_no_write_barrier;
@@ -430,7 +433,7 @@ int main(int argc, char **argv) {
   char **run_args = NULL;
   int n_run_args = 0;
 
-  g_ruby_description = "spinel " SPINEL_RELEASE " (" SPINEL_BUILD_REV ")";
+  g_ruby_description = "spinel " SP_RUBY_VERSION " (" SPINEL_RELEASE " revision " SPINEL_BUILD_REV ")";
 
   for (int i = 1; i < argc; ) {
     const char *a = argv[i];

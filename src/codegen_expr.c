@@ -2731,14 +2731,14 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       if (sp_streq(nm, "E"))  { buf_puts(b, "M_E"); return; }
     }
     if (nm && sp_streq(nm, "RUBY_DESCRIPTION")) {
-      /* The `ruby -v` shape -- engine, release, revision, platform -- so a
-         harness that records RUBY_DESCRIPTION can tell two spinel builds
+      /* The `ruby -v` shape -- engine, version, release and revision,
+         platform -- so a harness that records RUBY_DESCRIPTION can tell two spinel builds
          apart. The platform comes from the runtime header at C compile
          time, the same way RUBY_PLATFORM does, so a cross-build names its
          target rather than the host. */
       char lit[256];
       snprintf(lit, sizeof lit, "\"%s [\" SP_RUBY_ARCH \"-\" SP_RUBY_OS \"]\"",
-               g_ruby_description ? g_ruby_description : "spinel");
+               g_ruby_description ? g_ruby_description : "spinel " SP_RUBY_VERSION);
       emit_engine_const_str("sp_str_ruby_description", lit, b);
       return;
     }

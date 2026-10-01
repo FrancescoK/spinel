@@ -512,10 +512,14 @@ sp_PolyArray *sp_process_waitpid2(sp_int pid);
 #  define SP_RUBY_ARCH "i686"
 #elif defined(__arm__)
 #  define SP_RUBY_ARCH "arm"
+#elif defined(__wasm32__)
+#  define SP_RUBY_ARCH "wasm32"
 #else
 #  define SP_RUBY_ARCH "unknown"
 #endif
-#if defined(__linux__)
+#if defined(__wasi__)
+#  define SP_RUBY_OS "wasi"
+#elif defined(__linux__)
 #  define SP_RUBY_OS "linux"
 #elif defined(__APPLE__)
 #  define SP_RUBY_OS "darwin"

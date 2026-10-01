@@ -3554,8 +3554,9 @@ static void gc_save_take_back(Buf *b, size_t off, size_t save_len) {
    miscompile can be bisected against the same binary. */
 int g_no_root_elision = 0;
 int g_inline_hot = 1;   /* --no-inline-hot turns off forcing small leaf methods inline */
-/* "spinel <release> (<rev>)", set by the driver (main.c) from the build stamp;
-   NULL when codegen runs without it, and RUBY_DESCRIPTION says just "spinel". */
+/* "spinel <RUBY_VERSION> (<release> revision <rev>)", set by the driver
+   (main.c) from the build stamp; NULL when codegen runs without it, and
+   RUBY_DESCRIPTION says "spinel <RUBY_VERSION>". */
 const char *g_ruby_description = NULL;
 /* The C optimisation level the TU is built at (-O), for the one decision the
    generated program makes from it: an unoptimised build's frames are many
