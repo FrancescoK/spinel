@@ -9514,8 +9514,8 @@ int desugar_instance_eval_builtin(Compiler *c) {
       if (!ok) continue;
     }
 
-    char tmp[32];
-    snprintf(tmp, sizeof tmp, "__ie_%d", id);
+    char tmp[64];
+    snprintf(tmp, sizeof tmp, "__ie_%s", comp_node_tag(c, id));
     /* the temp is a synthesized local: scope construction already ran, so
        intern it (typed as the receiver) or no declaration is ever emitted */
     {
@@ -9768,10 +9768,10 @@ int desugar_block_capture_wrap(Compiler *c) {
     /* The wrapper's params get FRESH names and the body's references are
        renamed to them: the scope table is shared per-name, so celling the
        original name would also derail the outer loop's own plain binding. */
-    char wn[4][48];
+    char wn[4][96];
     int wreqs[4], wreads[4]; int ok = 1;
     for (int k = 0; k < rn && ok; k++) {
-      snprintf(wn[k], sizeof wn[k], "__cap_%d_%s", id, pn[k]);
+      snprintf(wn[k], sizeof wn[k], "__cap_%s_%s", comp_node_tag(c, id), pn[k]);
       wreqs[k] = nt_new_node(nt, "RequiredParameterNode");
       wreads[k] = nt_new_node(nt, "LocalVariableReadNode");
       if (wreqs[k] < 0 || wreads[k] < 0) { ok = 0; break; }
@@ -10053,7 +10053,7 @@ int desugar_dir_surface(Compiler *c) {
     if (sp_streq(nm, "chdir") && blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode && an >= 1) {
       int bx = nt_ref(nt, blk, "expression");
       if (bx < 0 || nt_kind(nt, bx) == NK_SymbolNode) continue;
-      char pnm[48]; snprintf(pnm, sizeof pnm, "__cd_p_%d", id);
+      char pnm[48]; snprintf(pnm, sizeof pnm, "__cd_p_%s", comp_node_tag(c, id));
       int base2 = nt->count;
       int req = nt_new_node(nt, "RequiredParameterNode");
       int params2 = nt_new_node(nt, "ParametersNode");
@@ -10093,10 +10093,10 @@ int desugar_dir_surface(Compiler *c) {
       if (subtree_has_kind(nt, body, NK_DefNode, 0)) continue;
       int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
       if (bn > 58) continue;
-      char sav[32], valn[32], dirn[32];
-      snprintf(sav, sizeof sav, "__cd_sav_%d", id);
-      snprintf(valn, sizeof valn, "__cd_val_%d", id);
-      snprintf(dirn, sizeof dirn, "__cd_dir_%d", id);
+      char sav[64], valn[64], dirn[64];
+      snprintf(sav, sizeof sav, "__cd_sav_%s", comp_node_tag(c, id));
+      snprintf(valn, sizeof valn, "__cd_val_%s", comp_node_tag(c, id));
+      snprintf(dirn, sizeof dirn, "__cd_dir_%s", comp_node_tag(c, id));
       Scope *es = comp_scope_of(c, id);
       /* Dir.chdir yields the directory it switched to. The splice dropped
          the block's parameters, so `chdir(d) { |p| ... }` read p as nil.
@@ -10834,7 +10834,7 @@ int desugar_block_destructure_params(Compiler *c) {
       const char *rty = nt_type(nt, reqs[k]);
       if (!rty || !sp_streq(rty, "MultiTargetNode")) { newreqs[k] = reqs[k]; continue; }
       int bind = bdp_has_name(nt, reqs[k]);
-      char nm[48]; snprintf(nm, sizeof nm, "__destr_%d_%d", L, k);
+      char nm[64]; snprintf(nm, sizeof nm, "__destr_%s_%d", comp_node_tag(c, L), k);
       int rp = nt_new_node(nt, "RequiredParameterNode");
       if (rp < 0) { ok = 0; break; }
       nt_node_set_str(nt, rp, "name", nm);
@@ -10969,7 +10969,7 @@ int desugar_for_nonlocal_index(Compiler *c) {
     if (!ty || !sp_streq(ty, "ForNode")) continue;
     int idx = nt_ref(nt, F, "index");
     if (idx < 0 || dfi_local_index(nt, idx)) continue;
-    char nm[48]; snprintf(nm, sizeof nm, "__for_%d", F);
+    char nm[48]; snprintf(nm, sizeof nm, "__for_%s", comp_node_tag(c, F));
     int lt = nt_new_node(nt, "LocalVariableTargetNode");
     int rd = lt >= 0 ? nt_new_node(nt, "LocalVariableReadNode") : -1;
     if (rd < 0) continue;

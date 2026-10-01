@@ -1923,8 +1923,8 @@ size_t block_param_written_len(const char *name) {
   return s >= 0 ? bp_renames.len[s] : strlen(name);
 }
 
-/* True when the program itself uses `name`. Only a name with `__bp` in it can
-   clash with an invented one, so those are collected once. */
+/* True when the program itself uses `name`. Only a name with `__bp` or `__bq`
+   in it can clash with an invented one, so those are collected once. */
 static int bp_user_uses(const NodeTable *nt, const char *name) {
   if (bp_user_nt != nt) {
     bp_user_nt = nt;
@@ -1935,7 +1935,7 @@ static int bp_user_uses(const NodeTable *nt, const char *name) {
     int cap = 0;
     for (int id = 0; id < nt->count; id++) {
       const char *nm = nt_str(nt, id, "name");
-      if (!nm || !strstr(nm, "__bp") || block_param_is_renamed(nm)) continue;
+      if (!nm || (!strstr(nm, "__bp") && !strstr(nm, "__bq")) || block_param_is_renamed(nm)) continue;
       if (bp_user_n == cap) {
         cap = cap ? cap * 2 : 8;
         bp_user_names = realloc(bp_user_names, (size_t)cap * sizeof(char *));
@@ -1949,11 +1949,15 @@ static int bp_user_uses(const NodeTable *nt, const char *name) {
 
 /* Invent the slot name for the parameter `written` of block `blk` and record
    it, stepping past a name the program already uses. */
-void block_param_invent_name(const NodeTable *nt, char *buf, size_t n,
+void block_param_invent_name(Compiler *c, char *buf, size_t n,
                              const char *written, int blk) {
-  snprintf(buf, n, "%s__bp%d", written, blk);
+  const NodeTable *nt = c->nt;
+  /* `x__bp12` for a program block, `x__bqmin_by_12` for a builtin's */
+  const char *tag = comp_node_tag(c, blk);
+  const char *p = tag[0] == 'q' ? "" : "p";
+  snprintf(buf, n, "%s__b%s%s", written, p, tag);
   for (int k = 1; bp_user_uses(nt, buf); k++)
-    snprintf(buf, n, "%s__bp%d_%d", written, blk, k);
+    snprintf(buf, n, "%s__b%s%s_%d", written, p, tag, k);
   bp_rename_record(buf, strlen(written));
 }
 
@@ -3055,7 +3059,7 @@ static void rename_shadowing_block_locals(Compiler *c, int L, int pn, int body,
     const char *emit = tok;
     if (!params_bind_name(nt, pn, tok) &&
         name_written_outside(nt, tok, ix, inbody, gen)) {
-      block_param_invent_name(nt, newn, sizeof newn, tok, L);
+      block_param_invent_name(c, newn, sizeof newn, tok, L);
       blkp_rewrite_refs(c, body, tok, newn);
       emit = newn;
       changed = 1;
@@ -3313,9 +3317,9 @@ static void scope_numbered_block_params(Compiler *c) {
     if (maxn <= 0 || maxn > 9) continue;
     int body = nt_ref(nt, L, "body");
     for (int k = 1; k <= maxn; k++) {
-      char from[8], to[32], key[8];
+      char from[8], to[64], key[8];
       snprintf(from, sizeof from, "_%d", k);
-      snprintf(to, sizeof to, "_%d__b%d", k, L);
+      snprintf(to, sizeof to, "_%d__b%s", k, comp_node_tag(c, L));
       snprintf(key, sizeof key, "n%d", k);
       if (body >= 0) numbered_rename_reads(nt, body, from, to, 0);
       numbered_rename_locals_str(nt, L, from, to);
@@ -3379,7 +3383,7 @@ void name_anon_block_kwrest(Compiler *c) {
     const char *kn = nt_str(nt, kr, "name");
     if (kn && kn[0]) continue;
     char nm[48];
-    snprintf(nm, sizeof nm, "__blk_kwrest%d", id);
+    snprintf(nm, sizeof nm, "__blk_kwrest%s", comp_node_tag(c, id));
     nt_node_set_str(nt, kr, "name", nm);
   }
 }
@@ -3512,7 +3516,7 @@ void rename_shadowing_block_params(Compiler *c) {
       if (!collide) continue;
       char oldn[160], newn[176];
       snprintf(oldn, sizeof oldn, "%s", p);   /* copy: nt_set_str frees p's storage */
-      block_param_invent_name(nt, newn, sizeof newn, oldn, L);
+      block_param_invent_name(c, newn, sizeof newn, oldn, L);
       /* `Proc#parameters` reports the name the program wrote, and the emitter
          recovers it by stripping this suffix -- but a stripped name that
          appears nowhere else is not in the generated symbol table, so interning
@@ -4347,7 +4351,7 @@ static void desugar_endless_str_range_iter(Compiler *c) {
       if (rng < 0 && lread < 0) continue;
       char iv[128], sv[48];
       snprintf(iv, sizeof iv, "%s", nt_str(nt, idx, "name"));
-      snprintf(sv, sizeof sv, "__esr_%d", id);
+      snprintf(sv, sizeof sv, "__esr_%s", comp_node_tag(c, id));
       int seedw = te_lvwrite(nt, sv, esr_seed(nt, rng, lread));
       int body = nt_ref(nt, id, "statements");
       int on = 0; const int *ob = body >= 0 ? nt_arr(nt, body, "body", &on) : NULL;
@@ -5174,9 +5178,9 @@ static void desugar_enum_chain_shapes(Compiler *c) {
           "<=>", "<<", ">>", "&", "|", "^", NULL };
         int is_binop = 0;
         for (int j = 0; binops[j]; j++) if (sp_streq(sym, binops[j])) { is_binop = 1; break; }
-        char pa[32], pb[32];
-        snprintf(pa, sizeof pa, "__stp_a_%d", id);
-        snprintf(pb, sizeof pb, "__stp_b_%d", id);
+        char pa[64], pb[64];
+        snprintf(pa, sizeof pa, "__stp_a_%s", comp_node_tag(c, id));
+        snprintf(pb, sizeof pb, "__stp_b_%s", comp_node_tag(c, id));
         int kpa = nt_new_node(nt, "RequiredParameterNode");
         nt_node_set_str(nt, kpa, "name", pa);
         int preq[2] = { kpa, -1 };
@@ -5231,8 +5235,8 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       int origblk = nt_ref(nt, id, "block");
       if (an == 1) {
         int mnode = av0[0];
-        char pname[32];
-        snprintf(pname, sizeof pname, "__tk_k_%d", id);
+        char pname[64];
+        snprintf(pname, sizeof pname, "__tk_k_%s", comp_node_tag(c, id));
         int kp = nt_new_node(nt, "RequiredParameterNode");
         nt_node_set_str(nt, kp, "name", pname);
         int params = nt_new_node(nt, "ParametersNode");
@@ -5541,7 +5545,7 @@ static int desugar_builtin_method_obj(Compiler *c) {
       if (!kknown) continue;
       if (comp_method_index(c, ksym) >= 0) continue;   /* a user def wins */
       char kwname[48];
-      snprintf(kwname, sizeof kwname, "__bam_%d", id);
+      snprintf(kwname, sizeof kwname, "__bam_%s", comp_node_tag(c, id));
       if (comp_method_index(c, kwname) >= 0) continue;
       /* the wrapper takes what the call sites pass (bam_call_argc above),
          `def __bam_N(__bam_r, __bam_a, ...) = Integer(__bam_r, __bam_a, ...)`,
@@ -5640,7 +5644,7 @@ static int desugar_builtin_method_obj(Compiler *c) {
         continue;
     }
     char wname[48];
-    snprintf(wname, sizeof wname, "__bam_%d", id);
+    snprintf(wname, sizeof wname, "__bam_%s", comp_node_tag(c, id));
     if (comp_method_index(c, wname) >= 0) continue;   /* synthesized on a prior pass */
     /* def __bam_<id>(__bam_r) = __bam_r.<sym>; for a binary operator
        def __bam_<id>(__bam_r, __bam_a) = __bam_r <op> __bam_a; and for a
@@ -5987,9 +5991,9 @@ static int desugar_reduce_method_symbol(Compiler *c) {
     /* only an identifier-named method: operators keep their fold emitters */
     if (!((sym[0] >= 'a' && sym[0] <= 'z') || (sym[0] >= 'A' && sym[0] <= 'Z') || sym[0] == '_'))
       continue;
-    char pa[32], pb[32];
-    snprintf(pa, sizeof pa, "__rms_a_%d", id);
-    snprintf(pb, sizeof pb, "__rms_b_%d", id);
+    char pa[64], pb[64];
+    snprintf(pa, sizeof pa, "__rms_a_%s", comp_node_tag(c, id));
+    snprintf(pb, sizeof pb, "__rms_b_%s", comp_node_tag(c, id));
     int base = nt->count;
     int kpa = nt_new_node(nt, "RequiredParameterNode");
     int kpb = nt_new_node(nt, "RequiredParameterNode");
@@ -6217,8 +6221,8 @@ static int desugar_kernel_method_block_arg(Compiler *c) {
     for (int k = 0; KFN[k]; k++) if (sp_streq(sym, KFN[k])) { known = 1; break; }
     if (!known) continue;
     if (comp_method_index(c, sym) >= 0) continue;       /* a user def wins */
-    char pn[32];
-    snprintf(pn, sizeof pn, "__bmk_%d", id);
+    char pn[64];
+    snprintf(pn, sizeof pn, "__bmk_%s", comp_node_tag(c, id));
     int kpa = nt_new_node(nt, "RequiredParameterNode");
     nt_node_set_str(nt, kpa, "name", pn);
     int params = nt_new_node(nt, "ParametersNode");
@@ -6306,8 +6310,8 @@ static int desugar_hash_block_arg(Compiler *c) {
     int ex_is_lit = sp_streq(exty, "HashNode") || sp_streq(exty, "KeywordHashNode");
     if (!ex_is_lit &&
         !(sp_streq(exty, "LocalVariableReadNode") && ty_is_hash(infer_type(c, ex)))) continue;
-    char pn[32];
-    snprintf(pn, sizeof pn, "__bhp_%d", id);
+    char pn[64];
+    snprintf(pn, sizeof pn, "__bhp_%s", comp_node_tag(c, id));
     int kpa = nt_new_node(nt, "RequiredParameterNode");
     nt_node_set_str(nt, kpa, "name", pn);
     int params = nt_new_node(nt, "ParametersNode");
@@ -6367,11 +6371,11 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
        the send, the rest are its arguments */
     int npar = is_toproc ? 1 : sym_block_values(c, id);
     if (npar < 1) npar = 1;
-    char pn[8][32];
+    char pn[8][64];
     int preq[8], sa[9];
     int base = nt->count;
     for (int k = 0; k < npar; k++) {
-      snprintf(pn[k], sizeof pn[k], "__svp_%c_%d", 'a' + k, id);
+      snprintf(pn[k], sizeof pn[k], "__svp_%c_%s", 'a' + k, comp_node_tag(c, id));
       preq[k] = nt_new_node(nt, "RequiredParameterNode");
       nt_node_set_str(nt, preq[k], "name", pn[k]);
     }
@@ -7924,7 +7928,7 @@ static int desugar_yielder_block_arg(Compiler *c) {
       if (!vn || !sp_streq(vn, yname)) continue;
       if (!a_subtree_contains(nt, ebody, id, 0)) continue;
       char pnm[48];
-      snprintf(pnm, sizeof pnm, "__yb_e_%d", id);
+      snprintf(pnm, sizeof pnm, "__yb_e_%s", comp_node_tag(c, id));
       int preq = nt_new_node(nt, "RequiredParameterNode");
       if (preq < 0) continue;
       nt_node_set_str(nt, preq, "name", pnm);
@@ -7978,7 +7982,7 @@ static int desugar_curry_block_arg(Compiler *c) {
     int e = nt_ref(nt, blk, "expression");
     if (e < 0 || infer_type(c, e) != TY_CURRY) continue;
     char pnm[48];
-    snprintf(pnm, sizeof pnm, "__curry_e_%d", id);
+    snprintf(pnm, sizeof pnm, "__curry_e_%s", comp_node_tag(c, id));
     int preq = nt_new_node(nt, "RequiredParameterNode");
     if (preq < 0) continue;
     nt_node_set_str(nt, preq, "name", pnm);
@@ -9344,16 +9348,11 @@ static int oa_want_dropped(Compiler *c, const int *cleared, int n_cleared) {
   return 0;
 }
 
-/* `__enum_<name>__<callId>`: the per-site copy desugar_builtins made for one
-   call. The id is the call this body was specialized for. */
-static int enum_copy_site(const char *name) {
-  if (!name || strncmp(name, "__enum_", 7) != 0) return -1;
-  const char *p = strrchr(name, '_');
-  if (!p || p == name || p[-1] != '_') return -1;
-  char *end = NULL;
-  long v = strtol(p + 1, &end, 10);
-  if (!end || *end || v < 0 || v > 2000000000L) return -1;
-  return (int)v;
+/* The call a per-site copy desugar_builtins made (`__enum_<name>__<k>`) was
+   specialized for, which it recorded on the copy's def. */
+static int enum_copy_site(Compiler *c, const Scope *sc) {
+  if (!sc || !sc->name || strncmp(sc->name, "__enum_", 7) != 0 || sc->def_node < 0) return -1;
+  return (int)nt_int(c->nt, sc->def_node, "enum_site", -1);
 }
 
 static void oa_mark_subtree(const NodeTable *nt, int id, unsigned char *dead) {
@@ -9558,7 +9557,7 @@ static int narrow_object_arrays(Compiler *c) {
       const char *pn = nt_str(nt, pred, "name");
       if (!pn || !sp_streq(pn, "block_given?")) continue;
       Scope *sc = comp_scope_of(c, id);
-      int site = sc && sc->name ? enum_copy_site(sc->name) : -1;
+      int site = enum_copy_site(c, sc);
       if (site < 0 || site >= nt->count || nt_kind(nt, site) != NK_CallNode) continue;
       int has_block = nt_ref(nt, site, "block") >= 0;
       int arm = -1;
@@ -24841,9 +24840,9 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   int encl = c->nscope[id];
   int pre[32];
   int npre = 0;
-  char tn[48];
+  char tn[64];
   if (!splat_leaf_node(nt, recv)) {
-    snprintf(tn, sizeof tn, "__splr%d", id);
+    snprintf(tn, sizeof tn, "__splr%s", comp_node_tag(c, id));
     scope_local_intern(comp_scope_of(c, id), tn);
     int w = nt_new_node(nt, "LocalVariableWriteNode");
     nt_node_set_str(nt, w, "name", tn);
@@ -24858,7 +24857,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   for (int k = 0; k < argc; k++) {
     fargs[k] = argv[k];
     if (k == sp_at || splat_leaf_node(nt, argv[k])) continue;
-    snprintf(tn, sizeof tn, "__spla%d_%d", id, k);
+    snprintf(tn, sizeof tn, "__spla%s_%d", comp_node_tag(c, id), k);
     scope_local_intern(comp_scope_of(c, id), tn);
     int w = nt_new_node(nt, "LocalVariableWriteNode");
     nt_node_set_str(nt, w, "name", tn);
@@ -25337,7 +25336,7 @@ static void desugar_block_arg_order(Compiler *c) {
     char tn[64];
     /* one `__bo_<id>_<k> = e` statement; answers the read that replaces e */
     #define BO_HOIST(E) ({ int _e = (E), _r = _e; if (ns < 255 && bo_may_act(nt, _e)) { \
-        snprintf(tn, sizeof tn, "__bo_%d_%d", id, serial++); \
+        snprintf(tn, sizeof tn, "__bo_%s_%d", comp_node_tag(c, id), serial++); \
         int _w = nt_new_node(nt, "LocalVariableWriteNode"); \
         int _rd = nt_new_node(nt, "LocalVariableReadNode"); \
         nt_node_set_str(nt, _w, "name", tn); nt_node_set_ref(nt, _w, "value", _e); \
@@ -25575,8 +25574,8 @@ static int desugar_poly_symbol_block_arg(Compiler *c) {
        inject run no Proc block argument */
     if (nv && et == TY_SYMBOL) syms.n = 0;
     char vn[48], bn[48];
-    snprintf(vn, sizeof vn, "__psym_%d", id);
-    snprintf(bn, sizeof bn, "__psblk_%d", id);
+    snprintf(vn, sizeof vn, "__psym_%s", comp_node_tag(c, id));
+    snprintf(bn, sizeof bn, "__psblk_%s", comp_node_tag(c, id));
     int stm[3], ns = 0;
     int w1 = psb_local(nt, "LocalVariableWriteNode", vn);
     nt_node_set_ref(nt, w1, "value", ex);
@@ -25591,7 +25590,7 @@ static int desugar_poly_symbol_block_arg(Compiler *c) {
       nt_node_set_ref(nt, arm, "statements", tst);
       for (int j = syms.n - 1; j >= 0; j--) {
         char pfx[64];
-        snprintf(pfx, sizeof pfx, "__psym_%d_%d", id, j);
+        snprintf(pfx, sizeof pfx, "__psym_%s_%d", comp_node_tag(c, id), j);
         int pr = psb_symbol_proc(c, sc, syms.v[j], nv, pfx);
         /* :name == __psym_N */
         int sy = nt_new_node(nt, "SymbolNode");
