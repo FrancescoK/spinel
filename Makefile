@@ -1113,6 +1113,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (#6179: a global's String copied into an appending initialize compiled)"; ok=0; \
 	else grep -q "which the method appends to" "$$tmp/sn.out" || \
 	  { echo "reject-test: FAIL (#6179: rejected without saying why)"; sed -n 1,5p "$$tmp/sn.out"; ok=0; }; fi; \
+	t=test/reject/string_append_through_proc_keyword.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sk.c" >"$$tmp/sk.out" 2>&1; then \
+	  echo "reject-test: FAIL (#6179: a block parameter's String copied into a proc's appending keyword compiled)"; ok=0; \
+	else grep -q "which the proc appends to" "$$tmp/sk.out" || \
+	  { echo "reject-test: FAIL (#6179: keyword rejected without saying why)"; sed -n 1,5p "$$tmp/sk.out"; ok=0; }; fi; \
 	t=test/reject/typed_array_kept_by_struct_into_boxed_param_store.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/tb.c" >"$$tmp/tb.out" 2>&1; then \
 	  echo "reject-test: FAIL (a typed array held by the caller, stored into through a boxed parameter, compiled)"; ok=0; \
@@ -1513,7 +1518,8 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/default_reads_callee_self.rb \
                   test/main_body_split.rb \
                   test/string_handle_initialize_kept_block.rb \
-                  test/string_handle_captured_param.rb
+                  test/string_handle_captured_param.rb \
+                  test/string_handle_keyword_args.rb
 
 # Each program runs with the minor mark off and on and must answer the same;
 # then once more under the generational verifier with stress on (every
