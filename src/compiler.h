@@ -925,6 +925,8 @@ LocalVar *comp_gvar(Compiler *c, const char *name);
 LocalVar *comp_gvar_intern(Compiler *c, const char *name);
 const char *comp_resolve_gvar(Compiler *c, const char *name); /* alias resolution */
 void comp_add_gvar_alias(Compiler *c, const char *from, const char *to);
+/* 1 for $VERBOSE and $DEBUG, the interpreter's flags: false before any write */
+int comp_gvar_is_interp_flag(const char *name);
 LocalVar *comp_const(Compiler *c, const char *name);
 LocalVar *comp_const_intern(Compiler *c, const char *name);
 /* 1 when `pred` is a statically-false `defined?(Const)` if-guard (optionally

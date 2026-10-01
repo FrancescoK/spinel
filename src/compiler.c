@@ -210,6 +210,9 @@ const char *comp_resolve_gvar(Compiler *c, const char *name) {
     if (sp_streq(c->gvar_alias_from[i], name)) return c->gvar_alias_to[i];
   return name;
 }
+int comp_gvar_is_interp_flag(const char *name) {
+  return name && (sp_streq(name, "VERBOSE") || sp_streq(name, "DEBUG"));
+}
 void comp_add_gvar_alias(Compiler *c, const char *from, const char *to) {
   for (int i = 0; i < c->ngvar_aliases; i++)
     if (sp_streq(c->gvar_alias_from[i], from)) return; /* already recorded */
