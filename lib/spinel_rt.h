@@ -2151,6 +2151,69 @@ static const char *sp_poly_class_name(sp_RbVal v) {
     default: return SPL("Object");
   }
 }
+/* respond_to? on an IO handle, by its kind, as CRuby 4.0 answers: a
+   File::Stat has its own surface; every IO the read/write one and
+   Enumerable; a File adds its times and locks; a socket the BasicSocket
+   surface, and each kind its own class's methods. */
+static sp_bool sp_io_responds(sp_File *f, const char *m) {
+  static const char *const statm[] = {
+    "<", "<=", ">", ">=", "atime", "between?", "birthtime", "blksize", "blockdev?",
+    "blocks", "chardev?", "clamp", "ctime", "dev", "dev_major", "dev_minor",
+    "directory?", "executable?", "executable_real?", "file?", "ftype", "gid",
+    "grpowned?", "ino", "mode", "mtime", "nlink", "owned?", "pipe?", "rdev",
+    "rdev_major", "rdev_minor", "readable?", "readable_real?", "setgid?", "setuid?",
+    "size", "size?", "socket?", "sticky?", "symlink?", "uid", "world_readable?",
+    "world_writable?", "writable?", "writable_real?", "zero?", NULL };
+  static const char *const iom[] = {
+    "<<", "advise", "all?", "any?", "autoclose=", "autoclose?", "binmode", "binmode?",
+    "chain", "chunk", "chunk_while", "close", "close_on_exec=", "close_on_exec?",
+    "close_read", "close_write", "closed?", "collect", "collect_concat", "compact",
+    "count", "cycle", "detect", "drop", "drop_while", "each", "each_byte", "each_char",
+    "each_codepoint", "each_cons", "each_entry", "each_line", "each_slice",
+    "each_with_index", "each_with_object", "entries", "eof", "eof?",
+    "external_encoding", "fcntl", "fdatasync", "fileno", "filter", "filter_map", "find",
+    "find_all", "find_index", "first", "flat_map", "flush", "fsync", "getbyte", "getc",
+    "gets", "grep", "grep_v", "group_by", "include?", "inject", "internal_encoding",
+    "ioctl", "isatty", "lazy", "lineno", "lineno=", "map", "max", "max_by", "member?",
+    "min", "min_by", "minmax", "minmax_by", "none?", "one?", "partition", "path", "pid",
+    "pos", "pos=", "pread", "print", "printf", "putc", "puts", "pwrite", "read",
+    "read_nonblock", "readbyte", "readchar", "readline", "readlines", "readpartial",
+    "reduce", "reject", "reopen", "reverse_each", "rewind", "seek", "select",
+    "set_encoding", "set_encoding_by_bom", "slice_after", "slice_before", "slice_when",
+    "sort", "sort_by", "stat", "sum", "sync", "sync=", "sysread", "sysseek", "syswrite",
+    "take", "take_while", "tally", "tell", "timeout", "timeout=", "to_a", "to_h", "to_i",
+    "to_io", "to_path", "to_set", "tty?", "ungetbyte", "ungetc", "uniq", "wait",
+    "wait_priority", "wait_readable", "wait_writable", "write", "write_nonblock", "zip",
+    NULL };
+  static const char *const filem[] = {
+    "atime", "birthtime", "chmod", "chown", "ctime", "flock", "lstat", "mtime", "size",
+    "truncate", NULL };
+  static const char *const basicm[] = {
+    "connect_address", "do_not_reverse_lookup", "do_not_reverse_lookup=", "getpeername", "getsockname", "getsockopt", "local_address", "recv", "recv_nonblock",
+    "recvmsg", "recvmsg_nonblock", "remote_address", "sendmsg", "sendmsg_nonblock",
+    "setsockopt", "shutdown", NULL };
+  static const char *const ipm[] = { "addr", "peeraddr", "recvfrom", NULL };
+  static const char *const udpm[] = { "bind", "connect", "recvfrom_nonblock", NULL };
+  static const char *const unixm[] = {
+    "addr", "getpeereid", "peeraddr", "recv_io", "recvfrom", "send_io", NULL };
+  static const char *const serverm[] = { "accept", "accept_nonblock", "listen", "sysaccept", NULL };
+  static const char *const socketm[] = {
+    "accept", "accept_nonblock", "bind", "connect", "connect_nonblock", "getpeereid",
+    "ipv6only!", "listen", "recvfrom", "recvfrom_nonblock", "sysaccept", NULL };
+  const char *k;
+  if (f->mode && (strcmp(f->mode, "stat") == 0 || strcmp(f->mode, "lstat") == 0))
+    return sp_str_in_list(m, statm);
+  if (sp_str_in_list(m, iom)) return 1;
+  k = sp_io_kind_name(f);
+  if (!f->is_sock) return strcmp(k, "File") == 0 && sp_str_in_list(m, filem);
+  if (sp_str_in_list(m, basicm)) return 1;
+  if (strcmp(k, "Socket") == 0) return sp_str_in_list(m, socketm);
+  if (strncmp(k, "UNIX", 4) == 0)
+    return sp_str_in_list(m, unixm) || (strcmp(k, "UNIXServer") == 0 && sp_str_in_list(m, serverm));
+  if (sp_str_in_list(m, ipm)) return 1;
+  if (strcmp(k, "UDPSocket") == 0) return sp_str_in_list(m, udpm);
+  return strcmp(k, "TCPServer") == 0 && sp_str_in_list(m, serverm);
+}
 static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
   static const char *const uni[] = {
     "to_s", "inspect", "class", "nil?", "dup", "clone", "freeze", "frozen?",
@@ -2175,12 +2238,12 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
     "flatten", "compact", "uniq", "reverse", "last", "index", "delete",
     "delete_at", "delete_if", "insert", "fetch", "sample", "shuffle",
     "rotate", "slice", "fill", "dig", "values_at", "+", "-", "*", "&", "|",
-    NULL };
+    "to_ary", NULL };
   static const char *const hashm[] = {
     "empty?", "[]", "[]=", "keys", "values", "fetch", "store", "delete", "key?",
     "has_key?", "member?", "value?", "has_value?", "each_pair", "each_key",
     "each_value", "merge", "merge!", "update", "to_h", "invert", "dig",
-    "default", "key", "transform_keys", "transform_values", NULL };
+    "default", "key", "transform_keys", "transform_values", "to_hash", NULL };
   static const char *const strm[] = {
     "[]", "[]=", "+", "*", "%", "<=>", "<", ">", "<=", ">=", "=~", "length",
     "size", "empty?", "upcase", "downcase", "capitalize", "swapcase", "strip",
@@ -2249,6 +2312,9 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
   }
   /* an Enumerator answers the Enumerable face (#3625) */
   if (strcmp(cn, "Enumerator") == 0) return sp_str_in_list(m, enumm);
+  /* an IO handle -- a File, a socket, $stderr, a stat -- by its kind */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO && v.v.p)
+    return sp_io_responds((sp_File *)v.v.p, m);
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_EXCEPTION)
     return sp_str_in_list(m, excm);
   return 0;

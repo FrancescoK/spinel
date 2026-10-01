@@ -26028,6 +26028,22 @@ static int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, co
     resolved = 1; yes = include_all;
   }
   for (int u = 0; !resolved && uni[u]; u++) if (sp_streq(qm, uni[u])) { yes = resolved = 1; break; }
+  /* An IO answers by its kind -- a File, a socket, a server socket, a stat
+     share the type -- which only the handle knows: sp_io_responds decides at
+     run time. A method a reopening of Object, IO, File or a socket class
+     defines answers here, by its name whatever the kind. */
+  if (!resolved && recv >= 0 && rt == TY_IO) {
+    static const char *const ioclasses[] = {
+      "BasicObject", "Object", "Kernel", "IO", "File", "BasicSocket", "IPSocket",
+      "TCPSocket", "TCPServer", "UDPSocket", "UNIXSocket", "UNIXServer", "Socket", NULL };
+    for (int u = 0; ioclasses[u]; u++) {
+      int k = comp_class_index(c, ioclasses[u]);
+      if (k < 0 || comp_method_in_chain(c, k, qm, NULL) < 0) continue;
+      if (comp_method_vis_in_chain(c, k, qm) == SP_VIS_PUBLIC) return 1;
+      return foldable ? include_all : -1;
+    }
+    return -1;
+  }
   /* value-type receivers: their builtin surface is not in any class
      table; answer the well-known names directly (the probe below only
      reports methods spinel can dispatch, a subset of CRuby's answer) */
@@ -40026,15 +40042,23 @@ else {
         buf_puts(b, "); })");
         return;
       }
-      if (ans >= 0) { buf_printf(b, "%d", ans); return; }
+      /* boxed when the call is typed so ($stderr, a global, is folded here
+         as the IO it holds, where the analysis typed the call poly) */
+      if (ans >= 0) {
+        buf_printf(b, comp_ntype(c, id) == TY_POLY ? "sp_box_bool(%d)" : "%d", ans);
+        return;
+      }
       /* the runtime answers: a Range value's builtin surface (the probe has
-         no reading for it, #3619), and a poly receiver */
-      if (recv >= 0 && (rt == TY_RANGE || rt == TY_FLOAT_RANGE || rt == TY_STR_RANGE)) {
+         no reading for it, #3619), an IO (the handle knows its kind), and a
+         poly receiver */
+      if (recv >= 0 && (rt == TY_RANGE || rt == TY_FLOAT_RANGE || rt == TY_STR_RANGE || rt == TY_IO)) {
+        if (comp_ntype(c, id) == TY_POLY) buf_puts(b, "sp_box_bool(");
         buf_puts(b, "sp_poly_responds_builtin(");
         emit_boxed(c, recv, b);
         buf_puts(b, ", \"");
         emit_c_escaped(b, qm);
         buf_puts(b, "\")");
+        if (comp_ntype(c, id) == TY_POLY) buf_puts(b, ")");
         return;
       }
       if (recv >= 0) {
