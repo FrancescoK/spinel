@@ -6678,6 +6678,11 @@ else if (orecv >= 0 && onm) {
   int cap_cls = ie_cls < 0 && bs && bs->is_cmethod &&
                 cmethod_takes_self_cls(c, (int)(bs - c->scopes));
   int self_is_value = cap_self && c->classes[scls].is_value_type;
+  /* an Object / Array / Hash / Numeric reopening holds self boxed (its
+     methods take `sp_RbVal self`): captured as the boxed value */
+  int self_boxed = cap_self && !self_is_value && c->classes[scls].name &&
+                   (sp_streq(c->classes[scls].name, "Object") || sp_streq(c->classes[scls].name, "Array") ||
+                    sp_streq(c->classes[scls].name, "Hash") || sp_streq(c->classes[scls].name, "Numeric"));
   const char *self_cls = cap_self ? c->classes[scls].c_name : NULL;
 
   /* parameter metadata for Proc#parameters: every parameter kind in signature
@@ -6793,6 +6798,7 @@ else if (orecv >= 0 && onm) {
       buf_printf(&g_procs, " *c_%s;", caps.v[i]);
     }
     if (cap_self && self_is_value) buf_printf(&g_procs, " sp_%s __self_val;", self_cls);
+    else if (self_boxed) buf_puts(&g_procs, " sp_RbVal __self_rb;");
     else if (cap_self) buf_puts(&g_procs, " void *__self;");
     if (cap_cls) buf_puts(&g_procs, " sp_Class __self_cls;");
     if (ret_proc) buf_puts(&g_procs, " sp_int _home;");  /* home method's proc-return id (sp_proc_home.id) */
@@ -6823,6 +6829,7 @@ else if (orecv >= 0 && onm) {
       if (class_needs_scan(&c->classes[scls]))
         buf_printf(&g_procs, "  sp_%s__gc_scan(&_c->__self_val);\n", self_cls);
     }
+    else if (self_boxed) buf_puts(&g_procs, "  sp_mark_rbval(_c->__self_rb);\n");
     else if (cap_self) buf_puts(&g_procs, "  if (_c->__self) sp_gc_mark(_c->__self);\n");
     buf_puts(&g_procs, "}\n");
   }
@@ -6921,6 +6928,10 @@ else if (orecv >= 0 && onm) {
      over-approximating use-of-self detection. */
   if (cap_self && self_is_value) {
     buf_printf(pb, "    sp_%s self = ((_proc_cap_%d *)_cap)->__self_val;\n", self_cls, pid);
+    buf_puts(pb, "    (void)self;\n");
+  }
+  else if (self_boxed) {
+    buf_printf(pb, "    sp_RbVal self = ((_proc_cap_%d *)_cap)->__self_rb;\n", pid);
     buf_puts(pb, "    (void)self;\n");
   }
   else if (cap_self) {
@@ -7524,6 +7535,7 @@ else if (orecv >= 0 && onm) {
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "_capv_%d->__self_val = %s%s;\n", pid, self_ptr ? "*" : "", sv_self ? sv_self : "self");
       }
+      else if (self_boxed) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->__self_rb = %s;\n", pid, sv_self ? sv_self : "self"); }
       else if (cap_self) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->__self = (void *)%s;\n", pid, sv_self ? sv_self : "self"); }
       /* Capture the home method's proc-return frame so the proc's `return`
          longjmps to it (the creating method declared `_pr`). */
