@@ -11,3 +11,5 @@ o = [:ascii, 1][ARGV.size]
 p "ab".upcase(o), "AB".downcase(o), :ab.capitalize(o)
 f = [:fold, 1][ARGV.size]
 p "QRS".downcase(f)
+# :lithuanian alone maps as full Unicode case mapping in CRuby too
+p "éa".upcase(:lithuanian), "ÉA".downcase(:lithuanian), "éa".capitalize(:lithuanian)

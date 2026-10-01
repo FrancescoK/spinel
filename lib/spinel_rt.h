@@ -3424,8 +3424,9 @@ static const char *sp_case_opt_name(sp_RbVal v) {
 }
 /* A valid option this check lets through maps with the full Unicode tables
    (only a literal :ascii picks the ASCII mapping, and never reaches here):
-   that is the answer CRuby gives only on ASCII text, and for :turkic only
-   without an `i` or `I`. Anything else is refused, not mapped differently. */
+   that is the answer CRuby gives for :lithuanian, for :turkic only without
+   an `i` or `I`, and for the others only on ASCII text. Anything else is
+   refused, not mapped differently. */
 SP_COLD static void sp_case_opts_unmapped(sp_RbVal recv, int turkic, const char *opt) {
   const char *s = NULL; size_t n = 0;
   if (recv.tag == SP_TAG_STR) { s = recv.v.s; n = s ? sp_str_byte_len(s) : 0; }
@@ -3459,8 +3460,9 @@ SP_COLD static void sp_case_opts_check(sp_int argc, const sp_RbVal *o, int down,
         return;
       }
     }
-    int tk = argc == 2 || a[0] == 't';
-    sp_case_opts_unmapped(recv, tk, tk ? "turkic" : a);
+    /* :lithuanian alone maps as full Unicode in CRuby too (ruby/spec:
+       "currently works the same as full Unicode case mapping") */
+    if (argc == 2 || a[0] == 't') sp_case_opts_unmapped(recv, 1, "turkic");
     return;
   }
   if (argc > 1) { sp_raise_cls("ArgumentError", "too many options"); return; }
