@@ -490,25 +490,12 @@ static int bpw_kind_is_write(NodeKind k) {
          k == NK_LocalVariableAndWriteNode || k == NK_LocalVariableOperatorWriteNode ||
          k == NK_LocalVariableTargetNode;
 }
-static int bpw_locals_have(const char *locals, const char *nm) {
-  if (!locals || !nm) return 0;
-  size_t n = strlen(nm);
-  const char *p = locals;
-  while (*p) {
-    const char *e = strchr(p, ',');
-    size_t len = e ? (size_t)(e - p) : strlen(p);
-    if (len == n && strncmp(p, nm, n) == 0) return 1;
-    if (!e) break;
-    p = e + 1;
-  }
-  return 0;
-}
 /* rename == NULL: count the writes; else rename every read and write */
 static int bpw_walk(NodeTable *nt, int node, const char *bp, const char *rename) {
   if (node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_DefNode) return 0;
-  if ((k == NK_BlockNode || k == NK_LambdaNode) && bpw_locals_have(nt_str(nt, node, "locals"), bp)) return 0;
+  if ((k == NK_BlockNode || k == NK_LambdaNode) && blk_locals_have(nt_str(nt, node, "locals"), bp)) return 0;
   int hits = 0;
   if (bpw_kind_is_lvar(k)) {
     const char *nm = nt_str(nt, node, "name");
