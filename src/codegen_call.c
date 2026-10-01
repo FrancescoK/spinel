@@ -3124,7 +3124,7 @@ static int emit_dynamic_respond_to(Compiler *c, int id, Buf *b) {
       if (pre.p && pre.len) buf_puts(b, pre.p);
       buf_printf(b, "_r%d = ", t);
       if (at == TY_BOOL) buf_printf(b, "(%s)", body.p ? body.p : "0");
-      else { buf_puts(b, "sp_truthy("); emit_boxed_text(c, at, body.p ? body.p : "0", b); buf_puts(b, ")"); }
+      else { buf_puts(b, "sp_poly_truthy("); emit_boxed_text(c, at, body.p ? body.p : "0", b); buf_puts(b, ")"); }
       buf_puts(b, "; }\nelse ");
     }
     free(pre.p); free(body.p);
@@ -6843,6 +6843,9 @@ static int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *
      object protocol and never records the builtin answer. */
   if (bt == TY_UNKNOWN && argc <= 1 && (sp_streq(name, "to_s") || sp_streq(name, "inspect")))
     bt = TY_STRING;
+  /* respond_to? is every value's: a class overriding it gets an arm, and
+     any other value the answer the program would give without the override */
+  if (bt == TY_UNKNOWN && argc >= 1 && argc <= 2 && sp_streq(name, "respond_to?")) bt = TY_BOOL;
   if (bt == TY_UNKNOWN) bt = an_builtin_answer(c, id);
   if (bt == TY_UNKNOWN) return 0;
   if (ret != TY_POLY && bt != ret) return 0;
@@ -17357,13 +17360,15 @@ static int rt_probe_answer(Compiler *c, int id, int *yes) {
 }
 /* A receiver whose class defines respond_to? itself answers through it: the
    call is an ordinary dispatch, not the compile-time fold. That is a typed
-   receiver of such a class, or implicit self in one; a boxed receiver keeps
-   the fold, which answers for builtin values too. */
+   receiver of such a class, implicit self in one, or a boxed value when a
+   class that can be one overrides it: the dispatch's default arm answers for
+   every other value (emit_poly_builtin_default), re-entering here with
+   g_poly_builtin_arm set. */
 static int respond_to_user_defined(Compiler *c, int id, int recv) {
   int any = 0;
   for (int k = 0; k < c->nclasses && !any; k++)
     if (comp_method_in_class(c, k, "respond_to?") >= 0) any = 1;
-  if (!any) return 0;
+  if (!any || g_poly_builtin_arm) return 0;
   int k = -1;
   if (recv < 0) {
     Scope *s = comp_scope_of(c, id);
@@ -17373,6 +17378,11 @@ static int respond_to_user_defined(Compiler *c, int id, int recv) {
   else {
     TyKind t = comp_ntype(c, recv);
     if (ty_is_object(t)) k = ty_object_class(t);
+    else if (t == TY_POLY) {
+      for (int j = 0; j < c->nclasses; j++)
+        if (c->classes[j].instantiated && comp_method_in_chain(c, j, "respond_to?", NULL) >= 0) return 1;
+      return 0;
+    }
   }
   return k >= 0 && comp_method_in_chain(c, k, "respond_to?", NULL) >= 0;
 }
@@ -26152,11 +26162,21 @@ int emit_super_respond_to(Compiler *c, int id, Scope *s, Buf *b) {
     LocalVar *lv = scope_local(s, s->pnames[1]);
     ia_ty = lv && lv->type != TY_UNKNOWN ? lv->type : TY_POLY;
     buf_printf(&ia, "lv_%s", rename_local(s->pnames[1])); have_ia = 1;
+    /* `def respond_to?(name, *)`: the second parameter is the rest Array,
+       whose first element (if any) is include_all */
+    if (s->rest_idx == 1 && ty_is_array(ia_ty)) {
+      char rb[160];
+      if (ia_ty == TY_POLY_ARRAY)
+        snprintf(rb, sizeof rb, "(%s->len > 0 && sp_poly_truthy(%s->data[0]))", ia.p, ia.p);
+      else snprintf(rb, sizeof rb, "(%s->len > 0)", ia.p);
+      free(ia.p); memset(&ia, 0, sizeof ia); buf_puts(&ia, rb);
+      ia_ty = TY_BOOL;
+    }
   }
   else if (!fwd && argc >= 2) { ia_ty = comp_ntype(c, argv[1]); emit_expr(c, argv[1], &ia); have_ia = 1; }
   if (!have_ia) buf_puts(b, "0");
   else if (ia_ty == TY_BOOL) buf_puts(b, ia.p ? ia.p : "0");
-  else { buf_puts(b, "sp_truthy("); emit_boxed_text(c, ia_ty, ia.p ? ia.p : "sp_box_nil()", b); buf_puts(b, ")"); }
+  else { buf_puts(b, "sp_poly_truthy("); emit_boxed_text(c, ia_ty, ia.p ? ia.p : "sp_box_nil()", b); buf_puts(b, ")"); }
   free(ia.p);
   /* the runtime class: this one, or a descendant inheriting the method */
   int ncls = 0, cls[256];
@@ -40443,7 +40463,10 @@ else {
         }
       }
     }
-    else if (recv >= 0 && rt != TY_CLASS && nt_kind(nt, argv[0]) != NK_SplatNode && !any_class_defines(c, "respond_to?")) {
+    else if (recv >= 0 && rt != TY_CLASS && nt_kind(nt, argv[0]) != NK_SplatNode &&
+             /* an override only answers for an object or a boxed value */
+             (!any_class_defines(c, "respond_to?") || g_poly_builtin_arm ||
+              !(ty_is_object(rt) || rt == TY_POLY))) {
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, recv, b);
       buf_printf(b, "; const char *_n%d = sp_poly_to_name(", tv); emit_boxed(c, argv[0], b);
