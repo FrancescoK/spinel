@@ -1215,6 +1215,18 @@ static int hoist_block_proc(Compiler *c, int cblk) {
   free(pb.p);
   return t;
 }
+/* The trailing block parameter of a method that takes its block as one --
+   a yielding method lowered to `__yblk__`, or a `&block` -- at a fallback
+   call that spelled only its arguments: the call's block (`blk_tmp`, or
+   built here), else NULL. activesupport's Object#with, lowered because its
+   own public_send reaches it, was called one argument short. */
+static void emit_trailing_blk_arg(Compiler *c, const Scope *m, int id, int blk_tmp, Buf *b) {
+  if (!m->blk_param || !m->blk_param[0] || m->yields) return;
+  if (blk_tmp >= 0) { buf_printf(b, ", _t%d", blk_tmp); return; }
+  int cblk = resolve_forwarded_block(c, nt_ref(c->nt, id, "block"));
+  if (cblk >= 0) buf_printf(b, ", _t%d", hoist_block_proc(c, cblk));
+  else buf_puts(b, ", NULL");
+}
 /* The call's literal block as one rooted proc temp, ahead of a dispatch whose
    arms share it (only one arm runs), or -1 when there is none to build. A
    forwarded `&blk` is left to emit_cmethod_block_arg, which passes it through. */
@@ -9153,6 +9165,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                 buf_puts(&ob, ", "); emit_arg_or_default(c, &c->scopes[obj_mi], a, -1, &ob);
               }
               g_self = saved_self; }
+            emit_trailing_blk_arg(c, &c->scopes[obj_mi], id, blk_tmp0, &ob);
             buf_puts(&ob, ")");
             const char *ocall = ob.p;
             buf_puts(b, " default: ");
@@ -44298,6 +44311,7 @@ else {
           buf_printf(b, "sp_Object_%s(", mc(name));
           emit_boxed(c, recv, b);
           emit_args_filled(c, oc_mi3, nt_ref(nt, id, "arguments"), ", ", b);
+          emit_trailing_blk_arg(c, &c->scopes[oc_mi3], id, -1, b);
           buf_puts(b, ")");
           if (void3) buf_printf(b, ", %s)", want3 == TY_POLY ? "sp_box_nil()" : default_value(want3));
           return;
