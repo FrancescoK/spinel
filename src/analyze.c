@@ -16582,23 +16582,25 @@ static void dyn_blk_index(Compiler *c) {
   }
 }
 /* The methods call `n` hands its block to, into out[] (room for every
-   scope): the one its name names, or for a `new` the initialize methods it
-   can reach (ctor_call_targets). No method is named `new`, so a block
-   `Agg.new { |t| t << x }` hands to an initialize that keeps it as `&b`
-   was looked up by that name, found nothing, and was never taken for a
-   kept block: its parameter kept the value ABI, the program counted no
+   scope and one more): the one its name names, and for a `new` the
+   initialize methods it can reach (ctor_call_targets). Looked up by its
+   name alone, a block `Agg.new { |t| t << x }` hands to an initialize
+   that keeps it as `&b` found nothing and was never taken for a kept
+   block: its parameter kept the value ABI, the program counted no
    appender, and `@b.call(s)` later appended to a copy. */
 static int dyn_block_targets(Compiler *c, int n, int *out) {
   const char *nm = nt_str(c->nt, n, "name");
   if (!nm) return 0;
+  int k = 0;
   if (sp_streq(nm, "new")) {
     int first, boxed;
-    return ctor_call_targets(c, n, &first, &boxed, out, c->nscopes);
+    k = ctor_call_targets(c, n, &first, &boxed, out, c->nscopes);
   }
+  /* the method the name names, a `def new(&b)` on an object included */
   int mi = an_any_scope_by_name(c, nm);
-  if (mi < 0) return 0;
-  out[0] = mi;
-  return 1;
+  for (int e = 0; e < k && mi >= 0; e++) if (out[e] == mi) mi = -1;
+  if (mi >= 0) out[k++] = mi;
+  return k;
 }
 /* Is scope mi one of them? */
 static int dyn_block_reaches(Compiler *c, int n, int mi) {
@@ -16951,7 +16953,13 @@ static int dyn_convert_params(Compiler *c) {
       else if (pass) {
         /* a block a method keeps as `&blk` is emitted as a proc too */
         int b = nt_ref(nt, n, "block");
-        int nk = b >= 0 && nt_kind(nt, b) == NK_BlockNode ? dyn_block_targets(c, n, tg) : 0;
+        if (b < 0 || nt_kind(nt, b) != NK_BlockNode) continue;
+        /* the targets of a class value's `new` are every class it can build,
+           looked up again on each pass: ask first whether the block appends
+           at all, since one that does not converts nothing */
+        const char *cn = nt_str(nt, n, "name");
+        if (cn && sp_streq(cn, "new") && !(dyn_lit_bits(c, b) & 0xffffu)) continue;
+        int nk = dyn_block_targets(c, n, tg);
         for (int e = 0; e < nk && lit < 0; e++) {
           Scope *m = &c->scopes[tg[e]];
           if (m->blk_param && m->blk_param[0] && !m->yields && !m->is_lowered_yield) create = lit = b;
