@@ -13354,6 +13354,57 @@ static int an_local_has_alias(Compiler *c, const ALocalAliases *t, const char *v
     if (sp_streq(t->wn[r], vn) || sp_streq(t->rn[r], vn)) return 1;
   return 0;
 }
+static int an_param_mutated_in_place(Compiler *c, int mi, int pi);
+static int an_local_pure_alias_of(Compiler *c, int mi, const char *ln, const char *pn, int depth);
+/* Does scope `bs` hand local `vn` to a user method's parameter that the
+   method appends to in place (`grow(t)`)? Asked inside the fixpoint, so the
+   method's body answers, not the byref slots computed after it. */
+static int an_local_handed_to_appender(Compiler *c, Scope *bs, const char *vn) {
+  const NodeTable *nt = c->nt;
+  int si = (int)(bs - c->scopes);
+  for (int u = comp_scall_first(c, si); u >= 0; u = comp_scall_next(c, u)) {
+    if (nt_kind(nt, u) != NK_CallNode || comp_scope_of(c, u) != bs) continue;
+    int mi = an_call_target_mi(c, u);
+    if (mi < 0) continue;
+    Scope *m = &c->scopes[mi];
+    for (int j = 0; j < m->nparams; j++) {
+      int an = arg_layout_param_node(c, m, u, j, NULL);
+      if (an >= 0 && nt_kind(nt, an) == NK_LocalVariableReadNode && nt_str(nt, an, "name") &&
+          sp_streq(nt_str(nt, an, "name"), vn) && an_param_mutated_in_place(c, mi, j)) return 1;
+    }
+  }
+  return 0;
+}
+/* Is block parameter `bp` (of block scope `bs`) appended to through another
+   name: a local only ever written from it (`t = x`, or a chain `u = t`)
+   that is appended to in place, handed to a method that appends to it, or
+   is the shared handle? The element the iterator bound is then mutated as
+   surely as by `x << y`, so the parameter has to be the handle the alias
+   shares (promote_local_alias_pairs). */
+static int an_block_param_alias_mutated(Compiler *c, const ALocalAliases *t, Scope *bs, const char *bp) {
+  int si = bs ? (int)(bs - c->scopes) : -1;
+  if (!t->head || si < 0 || si >= c->nscopes || !bp) return 0;
+  const char *names[8]; int nn = 0;
+  names[nn++] = bp;
+  for (int i = 0; i < nn; i++)
+    for (int r = t->head[si]; r >= 0; r = t->next[r]) {
+      if (!sp_streq(t->rn[r], names[i])) continue;
+      const char *wn = t->wn[r];
+      int seen = 0;
+      for (int j = 0; j < nn && !seen; j++) seen = sp_streq(names[j], wn);
+      if (seen) continue;
+      LocalVar *wl = scope_local(bs, wn);
+      if (!wl || wl->is_param || wl->is_cell) continue;
+      /* only a local that is never another String: one also rebound
+         (`line = line.strip`, the rebinding #5669 desugars a reassigned
+         parameter to) appends to what it was rebound to */
+      if (!an_local_pure_alias_of(c, si, wn, bp, 0)) continue;
+      if (strbuf_mut_kind(c, wn, bs) == 1 || (wl->type == TY_STRBUF && wl->str_shared) ||
+          an_local_handed_to_appender(c, bs, wn)) return 1;
+      if (nn < 8) names[nn++] = wn;
+    }
+  return 0;
+}
 /* Is this argument node a shared-handle slot read (a str_shared local or a
    shared ivar)? */
 static int strbuf_container_stores_string(Compiler *c, const char *contn, Scope *conts);
@@ -15036,7 +15087,10 @@ static int promote_shared_stored_strings(Compiler *c) {
      the two the C emitter binds directly: `arr.filter_map { |x| x << "?"; x }`
      reaches the element through the Ruby-defined builtin's yield, and the
      mutation was lost the same way (inject/each_slice/each_cons/zip bind
-     something else first and stay out). */
+     something else first and stay out). A parameter appended to through a
+     local that names it (`{ |x| t = x; t << "!" }`) mutates the element
+     too (an_block_param_alias_mutated). */
+  ALocalAliases bpa; int bpa_built = 0;
   for (int w = 0; w < nt->count; w++) {
     if (nt_kind(nt, w) != NK_CallNode) continue;
     const char *itn = nt_str(nt, w, "name");
@@ -15060,18 +15114,36 @@ static int promote_shared_stored_strings(Compiler *c) {
       recv4 = av4[0];
     }
     else if (!strbuf_elem_first_iterator(itn)) continue;
-    if (recv4 < 0 || nt_kind(nt, recv4) != NK_LocalVariableReadNode) continue;
-    const char *contn4 = nt_str(nt, recv4, "name");
-    Scope *conts4 = contn4 ? comp_scope_of(c, recv4) : NULL;
-    LocalVar *contv4 = (contn4 && conts4) ? scope_local(conts4, contn4) : NULL;
-    if (!contv4 || (!ty_is_array(contv4->type) && contv4->type != TY_UNKNOWN))
-      continue;
+    if (recv4 < 0) continue;
     const char *bp4 = block_param_name(c, blk4, 0);
     if (!bp4) continue;
     Scope *bs4 = comp_scope_of(c, blk4);
     LocalVar *bpv4 = bs4 ? scope_local(bs4, bp4) : NULL;
     if (!bpv4) continue;
-    if (strbuf_mut_kind(c, bp4, bs4) != 1 && !cap_wrap_mutates_param(c, blk4, bp4)) continue;
+    int alias_mut = 0;
+    if (strbuf_mut_kind(c, bp4, bs4) != 1 && !cap_wrap_mutates_param(c, blk4, bp4)) {
+      if (!bpa_built) { an_local_aliases_build(c, &bpa); bpa_built = 1; }
+      if (!an_block_param_alias_mutated(c, &bpa, bs4, bp4)) continue;
+      alias_mut = 1;
+    }
+    /* An Array literal iterated in place (`[+"e"].each { |x| t = x; t << y;
+       p x }`): its elements become handles, so the parameter is one the
+       alias can share. A parameter appended to directly rebinds its own
+       slot, so that binding is left as it was. */
+    if (alias_mut && nt_kind(nt, recv4) == NK_ArrayNode && ty_is_array(infer_type(c, recv4))) {
+      if (bpv4->type != TY_UNKNOWN && bpv4->type != TY_STRING && bpv4->type != TY_STRBUF &&
+          bpv4->type != TY_POLY) continue;
+      changed |= strbuf_container_source_walk(c, recv4, 0, SB_DEMAND);
+      if (bpv4->type != TY_POLY && (bpv4->type != TY_STRBUF || !bpv4->str_shared))
+        {  bpv4->type = TY_STRBUF; bpv4->str_shared = 1; changed = 1;  }
+      continue;
+    }
+    if (nt_kind(nt, recv4) != NK_LocalVariableReadNode) continue;
+    const char *contn4 = nt_str(nt, recv4, "name");
+    Scope *conts4 = contn4 ? comp_scope_of(c, recv4) : NULL;
+    LocalVar *contv4 = (contn4 && conts4) ? scope_local(conts4, contn4) : NULL;
+    if (!contv4 || (!ty_is_array(contv4->type) && contv4->type != TY_UNKNOWN))
+      continue;
     /* the container's elements must be strings: gate on the receiver's
        (settled or literal) element type so an array-of-arrays each+<<
        never promotes its param */
@@ -15118,6 +15190,7 @@ static int promote_shared_stored_strings(Compiler *c) {
     if (bpv4->type != TY_POLY && (bpv4->type != TY_STRBUF || !bpv4->str_shared))
       {  bpv4->type = TY_STRBUF; bpv4->str_shared = 1; changed = 1;  }
   }
+  if (bpa_built) an_local_aliases_free(&bpa);
   /* deep-return alias: `r = make_held` where EVERY return path of the
      (receiverless, uniquely-named) callee yields a shared handle -- r joins
      the set and the call is marked so the emitter picks the handle off the
@@ -16829,6 +16902,30 @@ int proc_opt_count(Compiler *c, int create);
 int proc_post_count(Compiler *c, int create);
 int proc_has_rest(Compiler *c, int create);
 
+/* The locals of scope `sc` that a write under `node` makes another name for
+   local `vn` (`t = vn`, `t = (vn << x)`), and that are never another String
+   (an_local_pure_alias_of): up to `cap` into `out`. */
+static int dyn_alias_writes(Compiler *c, int node, Scope *sc, const char *vn, const char **out, int cap, int n) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || n >= cap) return n;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return n;
+  if (k == NK_LocalVariableWriteNode && comp_scope_of(c, node) == sc) {
+    int sv = an_strbuf_alias_source(c, nt_ref(nt, node, "value"));
+    const char *wn = nt_str(nt, node, "name");
+    if (sv >= 0 && wn && nt_str(nt, sv, "name") && sp_streq(nt_str(nt, sv, "name"), vn) && !sp_streq(wn, vn) &&
+        an_local_pure_alias_of(c, (int)(sc - c->scopes), wn, vn, 0))
+      out[n++] = wn;
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) n = dyn_alias_writes(c, nt_ref_at(nt, node, i), sc, vn, out, cap, n);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, node, i, &m);
+    for (int j = 0; j < m; j++) n = dyn_alias_writes(c, ids[j], sc, vn, out, cap, n);
+  }
+  return n;
+}
 /* The memo entry of a proc literal or a block: its required positional
    parameters (the ones a position binds whatever the count). */
 static unsigned dyn_lit_bits(Compiler *c, int lit) {
@@ -16859,6 +16956,27 @@ static unsigned dyn_lit_bits(Compiler *c, int lit) {
     dyn_body_scan(c, body, on1, 1, &oapp, &okept);
     if (oapp) app |= 1u << k;
     if (okept) kept |= 1u << k;
+  }
+  /* A local that names a parameter (`t = x`, or a chain through one) is
+     that parameter's String: an append through it is one to the parameter,
+     as an_param_mutated_in_place counts it for a method's */
+  for (int k = 0; k < np; k++) {
+    if (app & (1u << k)) continue;
+    const char *an[8]; int na = 0;
+    an[na++] = pn[k];
+    for (int i = 0; i < na && !(app & (1u << k)); i++) {
+      const char *wn[8]; int nw = dyn_alias_writes(c, body, comp_scope_of(c, lit), an[i], wn, 8, 0);
+      for (int j = 0; j < nw && na < 8; j++) {
+        int seen = 0;
+        for (int q = 0; q < na && !seen; q++) seen = sp_streq(an[q], wn[j]);
+        if (seen) continue;
+        an[na++] = wn[j];
+        const char *on1[1] = { wn[j] };
+        unsigned aapp = 0, akept = 0;
+        dyn_body_scan(c, body, on1, 1, &aapp, &akept);
+        if (aapp) { app |= 1u << k; break; }
+      }
+    }
   }
   g_dyn.lit[lit] = DYN_DONE | (app & 0xffffu) | ((kept & 0x3fffu) << 16);
   return g_dyn.lit[lit];
@@ -18232,10 +18350,27 @@ static int an_local_is_handle(Compiler *c, int a) {
   LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
   return lv && lv->type == TY_STRBUF && lv->str_shared;
 }
+/* A plain String local that another local names too (`z = x; yield z`): the
+   lent alias (a `const char **` slot) would grow only the yielded name, so
+   such a local counts as a handle here, as an aliased local handed to a lent
+   parameter does (convert_byref_handle_params). The parameter or block
+   parameter takes the handle, the local is pulled in, and the pure-alias
+   rule (promote_local_alias_pairs) then takes its other names along. */
+static int an_local_is_handle_or_aliased(Compiler *c, const ALocalAliases *t, int a) {
+  if (an_local_is_handle(c, a)) return 1;
+  if (a < 0 || nt_kind(c->nt, a) != NK_LocalVariableReadNode) return 0;
+  const char *vn = nt_str(c->nt, a, "name");
+  Scope *vs = vn ? comp_scope_of(c, a) : NULL;
+  LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+  return lv && !lv->is_param && !lv->is_cell && lv->type == TY_STRING &&
+         an_local_has_alias(c, t, vn, vs);
+}
 static int yield_splice_handles(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
   dyn_blk_index(c);
+  ALocalAliases aliases;
+  an_local_aliases_build(c, &aliases);
   /* a spliced method's parameter bound from a handle */
   for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
     if (nt_kind(nt, u) != NK_CallNode) continue;
@@ -18251,7 +18386,8 @@ static int yield_splice_handles(Compiler *c) {
          the method lends takes the handle whatever its callers pass */
       int captured = q && q->is_param && !q->is_block_param && q->type == TY_STRING && q->is_cell &&
                      !q->inline_alias && an_subtree_lends_local(c, m->body, m->pnames[j], 0);
-      if (!captured && (!an_local_is_handle(c, an) || !an_inline_param_lent(c, mi, j, blk))) continue;
+      if (!captured && (!an_local_is_handle_or_aliased(c, &aliases, an) || !an_inline_param_lent(c, mi, j, blk)))
+        continue;
       q->type = TY_STRBUF; q->str_shared = 1; q->byref_out = 0; changed = 1;
     }
   }
@@ -18298,8 +18434,23 @@ static int yield_splice_handles(Compiler *c) {
       for (int k = 0; k < ac && k < DYN_ARGS; k++) {
         NodeKind ak = nt_kind(nt, av[k]);
         if (ak == NK_SplatNode || ak == NK_KeywordHashNode) break;
-        if (ak != NK_LocalVariableReadNode) continue;
+        /* a block parameter a String value is yielded to, appended to
+           through a local that names it: it takes the handle the alias
+           shares, wrapped around the value (a yielded variable is pulled in
+           below) */
         TyKind at = comp_ntype(c, av[k]);
+        if (!pass && (at == TY_STRING || at == TY_STRBUF))
+          for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
+            int u = g_dyn.bnode[e], blk = nt_ref(nt, u, "block");
+            if (nt_kind(nt, blk) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
+            const char *bp = block_param_name(c, blk, k);
+            Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
+            LocalVar *t = bs ? scope_local(bs, bp) : NULL;
+            if (!t || t->is_cell || t->type != TY_STRING || !an_block_param_alias_mutated(c, &aliases, bs, bp))
+              continue;
+            t->type = TY_STRBUF; t->str_shared = 1; changed = 1;
+          }
+        if (ak != NK_LocalVariableReadNode) continue;
         /* A parameter a nil or other argument widened to POLY boxes what it
            is bound to: yielded to a proc a call site passes that appends to
            it, that call site's String variable is pulled in, as for a POLY
@@ -18321,7 +18472,7 @@ static int yield_splice_handles(Compiler *c) {
           continue;
         }
         if (at != TY_STRING && at != TY_STRBUF) continue;
-        int is_h = an_local_is_handle(c, av[k]), into_h = 0;
+        int is_h = an_local_is_handle_or_aliased(c, &aliases, av[k]), into_h = 0;
         for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
           int u = g_dyn.bnode[e], blk = nt_ref(nt, u, "block");
           if (nt_kind(nt, blk) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
@@ -18333,7 +18484,7 @@ static int yield_splice_handles(Compiler *c) {
           if (pass || !is_h || t->type != TY_STRING || !an_block_param_lent(c, blk, k)) continue;
           t->type = TY_STRBUF; t->str_shared = 1; changed = 1;
         }
-        if (pass && into_h && !is_h) changed |= dyn_pull_arg(c, av[k], 0);
+        if (pass && into_h && !an_local_is_handle(c, av[k])) changed |= dyn_pull_arg(c, av[k], 0);
         /* a call site handing the method a proc (`run(s, &pr)`,
            `&method(:m)`): the spliced yield calls it, boxing what it yields,
            which carries the handle into a proc that appends to it */
@@ -18353,6 +18504,7 @@ static int yield_splice_handles(Compiler *c) {
         }
       }
     }
+  an_local_aliases_free(&aliases);
   return changed;
 }
 
