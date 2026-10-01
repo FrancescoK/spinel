@@ -1,0 +1,7 @@
+["PATH_INFO=/a", "QUERY_STRING=", "X="]
+nil
+nil
+["PATH_INFO=/b", "QUERY_STRING=", "X="]
+"v"
+nil
+["!"]

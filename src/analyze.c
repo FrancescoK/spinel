@@ -16739,10 +16739,11 @@ static struct {
   unsigned *ctor;     /* per scope: an initialize's appended and kept parameters (ctor_append_bits) */
   int ctor_any;       /* -1 not asked yet, else "some initialize parameter is the handle" */
   int kw_any;         /* -1 not asked yet, else "some target appends to a keyword parameter" */
+  unsigned char *callable; /* per node: 0 not asked, 1 never a proc, 2 may be, 3 being asked */
 } g_dyn;
 
 static void dyn_memo_reset(Compiler *c) {
-  free(g_dyn.lit); free(g_dyn.meth); free(g_dyn.blk); free(g_dyn.ctor);
+  free(g_dyn.lit); free(g_dyn.meth); free(g_dyn.blk); free(g_dyn.ctor); free(g_dyn.callable);
   anh_free(&g_dyn.bnames);
   free(g_dyn.bhead); free(g_dyn.bnext); free(g_dyn.bnode);
   anh_free(&g_dyn.snames); free(g_dyn.shead); free(g_dyn.snext);
@@ -16753,7 +16754,8 @@ static void dyn_memo_reset(Compiler *c) {
   g_dyn.meth = (unsigned *)calloc((size_t)g_dyn.nscope + 1, sizeof(unsigned));
   g_dyn.blk = (unsigned *)calloc((size_t)g_dyn.nscope + 1, sizeof(unsigned));
   g_dyn.ctor = (unsigned *)calloc((size_t)g_dyn.nscope + 1, sizeof(unsigned));
-  if (!g_dyn.lit || !g_dyn.meth || !g_dyn.blk || !g_dyn.ctor) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  g_dyn.callable = (unsigned char *)calloc((size_t)g_dyn.nlit + 1, 1);
+  if (!g_dyn.lit || !g_dyn.meth || !g_dyn.blk || !g_dyn.ctor || !g_dyn.callable) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   g_dyn.any = -1;
   g_dyn.ctor_any = -1;
   g_dyn.kw_any = -1;
@@ -17599,6 +17601,181 @@ int dyn_call_site(Compiler *c, int n) {
    and `um.bind_call(o, s)`, whose first argument is the receiver (*shift).
    The String rides the box either way, so it is shared as at a dynamic
    call. */
+/* May a boxed value `v` be a Proc or a Method? Followed back through its
+   locals, a method's parameters (to the arguments its callers pass), what a
+   method returns, and branches. Anything not followed may be one. A cycle
+   counts as may-be, so an answer is never decided from a guess. */
+static int dyn_may_callable(Compiler *c, int v, int depth);
+static int dyn_tail_may_callable(Compiler *c, int n, int depth) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 0;   /* an empty body: nil */
+  switch (nt_kind(nt, n)) {
+    case NK_StatementsNode: {
+      int k = 0; const int *b = nt_arr(nt, n, "body", &k);
+      return k > 0 ? dyn_tail_may_callable(c, b[k - 1], depth) : 0;
+    }
+    case NK_ParenthesesNode: return dyn_tail_may_callable(c, nt_ref(nt, n, "body"), depth);
+    case NK_ReturnNode: return 0;   /* the returns are walked on their own */
+    case NK_IfNode:
+      return dyn_tail_may_callable(c, nt_ref(nt, n, "statements"), depth) ||
+             dyn_tail_may_callable(c, nt_ref(nt, n, "subsequent"), depth);
+    case NK_UnlessNode:
+      return dyn_tail_may_callable(c, nt_ref(nt, n, "statements"), depth) ||
+             dyn_tail_may_callable(c, nt_ref(nt, n, "else_clause"), depth);
+    case NK_ElseNode: return dyn_tail_may_callable(c, nt_ref(nt, n, "statements"), depth);
+    case NK_BeginNode:
+      if (nt_ref(nt, n, "else_clause") >= 0)
+        return dyn_tail_may_callable(c, nt_ref(nt, n, "else_clause"), depth) ||
+               dyn_tail_may_callable(c, nt_ref(nt, n, "rescue_clause"), depth);
+      return dyn_tail_may_callable(c, nt_ref(nt, n, "statements"), depth) ||
+             dyn_tail_may_callable(c, nt_ref(nt, n, "rescue_clause"), depth);
+    case NK_RescueNode:
+      return dyn_tail_may_callable(c, nt_ref(nt, n, "statements"), depth) ||
+             dyn_tail_may_callable(c, nt_ref(nt, n, "subsequent"), depth);
+    default: return dyn_may_callable(c, n, depth + 1);
+  }
+}
+/* What method mi returns: its body's last value and every `return`. */
+static int dyn_returns_may_callable(Compiler *c, int mi, int depth) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  if (m->body < 0 || m->cs_synth || m->is_lowered_yield) return 1;
+  if (dyn_tail_may_callable(c, m->body, depth)) return 1;
+  for (int r = comp_kind_first(c, NK_ReturnNode); r >= 0; r = comp_kind_next(c, r)) {
+    if (nt_kind(nt, r) != NK_ReturnNode || comp_scope_of(c, r) != m) continue;
+    int a = nt_ref(nt, r, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    if (ac == 1 && dyn_may_callable(c, av[0], depth + 1)) return 1;
+  }
+  return 0;
+}
+/* Can call `n` dispatch to method mi? Not when its receiver's type is one
+   that does not have it: a builtin value, or an object whose class (or a
+   subclass of it) has another. */
+static int dyn_site_may_reach(Compiler *c, int n, int mi) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  int recv = nt_ref(nt, n, "receiver");
+  int cls = -1;
+  if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
+    Scope *encl = comp_scope_of(c, n);
+    cls = encl ? encl->class_id : -1;
+    if (cls < 0) return 1;
+  }
+  else {
+    TyKind rt = comp_ntype(c, recv);
+    if (rt == TY_POLY || rt == TY_UNKNOWN) return 1;
+    if (!ty_is_object(rt)) return 0;
+    cls = ty_object_class(rt);
+  }
+  if (m->is_cmethod) return 1;
+  if (m->class_id < 0) return 1;
+  /* mi's class is cls or one below it */
+  for (int k = m->class_id; k >= 0; k = c->classes[k].parent) if (k == cls) return 1;
+  /* or cls inherits mi from a class above it */
+  return comp_method_in_chain(c, cls, m->name, NULL) == mi;
+}
+/* What parameter j of method mi can be handed: the argument each call
+   that can reach it passes there. Only a method whose parameters are all
+   plain required ones, that nothing names by Symbol or reaches by `super`. */
+static int dyn_param_may_callable(Compiler *c, Scope *m, int j, int depth) {
+  const NodeTable *nt = c->nt;
+  int mi = (int)(m - c->scopes);
+  if (!m->name || m->is_cmethod || sp_streq(m->name, "initialize")) return 1;
+  if (m->nrequired != m->nparams || m->rest_idx >= 0 || m->kwrest_idx >= 0 || m->npost_rest) return 1;
+  for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
+    if (nt_kind(nt, n) != NK_CallNode) continue;
+    const char *cn = nt_str(nt, n, "name");
+    if (!cn) continue;
+    int a = nt_ref(nt, n, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    /* named by Symbol: send, method, define_method, alias_method, ... */
+    for (int k = 0; k < ac; k++)
+      if (nt_kind(nt, av[k]) == NK_SymbolNode && nt_str(nt, av[k], "value") &&
+          sp_streq(nt_str(nt, av[k], "value"), m->name)) return 1;
+    if (!sp_streq(cn, m->name) || !dyn_site_may_reach(c, n, mi)) continue;
+    for (int k = 0; k < ac; k++) {
+      NodeKind ak = nt_kind(nt, av[k]);
+      if (ak == NK_SplatNode || ak == NK_KeywordHashNode) return 1;
+    }
+    if (ac != m->nparams) continue;   /* it raises ArgumentError instead */
+    if (dyn_may_callable(c, av[j], depth + 1)) return 1;
+  }
+  for (int n = comp_kind_first(c, NK_SuperNode); n >= 0; n = comp_kind_next(c, n))
+    if (nt_kind(nt, n) == NK_SuperNode) return 1;
+  for (int n = comp_kind_first(c, NK_ForwardingSuperNode); n >= 0; n = comp_kind_next(c, n))
+    if (nt_kind(nt, n) == NK_ForwardingSuperNode) return 1;
+  for (int n = comp_kind_first(c, NK_AliasMethodNode); n >= 0; n = comp_kind_next(c, n))
+    if (nt_kind(nt, n) == NK_AliasMethodNode) return 1;
+  return 0;
+}
+static int dyn_may_callable_walk(Compiler *c, int v, int depth) {
+  const NodeTable *nt = c->nt;
+  TyKind t = comp_ntype(c, v);
+  if (t == TY_PROC || t == TY_METHOD || t == TY_CURRY) return 1;
+  if (t != TY_POLY && t != TY_UNKNOWN) return 0;
+  switch (nt_kind(nt, v)) {
+    case NK_NilNode: case NK_HashNode: case NK_ArrayNode: case NK_StringNode:
+    case NK_InterpolatedStringNode: case NK_IntegerNode: case NK_SymbolNode:
+    case NK_TrueNode: case NK_FalseNode:
+      return 0;
+    case NK_ParenthesesNode: case NK_StatementsNode: case NK_IfNode: case NK_UnlessNode:
+    case NK_BeginNode:
+      return dyn_tail_may_callable(c, v, depth);
+    case NK_AndNode: case NK_OrNode:
+      return dyn_may_callable(c, nt_ref(nt, v, "left"), depth + 1) ||
+             dyn_may_callable(c, nt_ref(nt, v, "right"), depth + 1);
+    case NK_LocalVariableReadNode: {
+      const char *vn = nt_str(nt, v, "name");
+      Scope *vs = vn ? comp_scope_of(c, v) : NULL;
+      LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+      if (!lv || lv->is_block_param || lv->is_cell) return 1;
+      if (vs->blk_param && sp_streq(vs->blk_param, vn)) return 1;
+      int saw = 0;
+      if (lv->is_param) {
+        int j = an_param_idx(vs, vn);
+        if (j < 0 || dyn_param_may_callable(c, vs, j, depth)) return 1;
+        saw = 1;
+      }
+      for (int w = comp_lvw_first_sc(c, (int)(vs - c->scopes), vn); w >= 0; w = comp_lvw_next_sc(c, w)) {
+        if (comp_scope_of(c, w) != vs) continue;
+        const char *wn = nt_str(nt, w, "name");
+        if (!wn || !sp_streq(wn, vn)) continue;
+        if (nt_kind(nt, w) != NK_LocalVariableWriteNode) return 1;
+        saw = 1;
+        if (dyn_may_callable(c, nt_ref(nt, w, "value"), depth + 1)) return 1;
+      }
+      return !saw;
+    }
+    case NK_CallNode: {
+      const char *nm = nt_str(nt, v, "name");
+      if (!nm || nt_ref(nt, v, "block") >= 0) return 1;
+      /* on a boxed or builtin receiver it may be the builtin's answer */
+      int recv = nt_ref(nt, v, "receiver");
+      if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode && !ty_is_object(comp_ntype(c, recv))) return 1;
+      int any = 0;
+      for (int mi = dyn_scopes_named(c, nm); mi >= 0; mi = g_dyn.snext[mi]) {
+        if (!dyn_site_may_reach(c, v, mi)) continue;
+        any = 1;
+        if (dyn_returns_may_callable(c, mi, depth)) return 1;
+      }
+      return !any;
+    }
+    default: return 1;
+  }
+}
+static int dyn_may_callable(Compiler *c, int v, int depth) {
+  if (v < 0 || depth > 16) return 1;
+  if (!g_dyn.fresh) dyn_memo_reset(c);
+  unsigned char *m = &g_dyn.callable[v];
+  if (*m == 3) return 1;
+  if (*m) return *m == 2;
+  *m = 3;
+  int r = dyn_may_callable_walk(c, v, depth);
+  g_dyn.callable[v] = r ? 2 : 1;
+  return r;
+}
+
 int dyn_open_site(Compiler *c, int n, int *shift) {
   const NodeTable *nt = c->nt;
   *shift = 0;
@@ -17610,7 +17787,8 @@ int dyn_open_site(Compiler *c, int n, int *shift) {
   if (sp_streq(nm, "bind_call")) { *shift = 1; return rt == TY_METHOD; }
   if (!(sp_streq(nm, "call") || sp_streq(nm, "()") || sp_streq(nm, "[]") ||
         sp_streq(nm, "yield") || sp_streq(nm, "==="))) return 0;
-  return rt == TY_POLY || rt == TY_CURRY;
+  if (rt == TY_CURRY) return 1;
+  return rt == TY_POLY && dyn_may_callable(c, r, 0);
 }
 void dyn_open_reach(Compiler *c, int n, int k, DynReach *r) {
   int shift;
