@@ -26678,6 +26678,21 @@ static void gets_sep_arg_texts(Compiler *c, const int *argv, int argc, int stric
   free(gchomp.p);
 }
 
+/* Do a line reader's arguments come through a splat or a `**`? Their count
+   and kinds are then the run time's, which gets_sep_arg_texts cannot read:
+   it sees one array or hash node, and dropped the separator, the limit and
+   `chomp:` alike. */
+static int io_line_args_spread(const NodeTable *nt, const int *argv, int argc) {
+  for (int k = 0; k < argc; k++) {
+    if (nt_kind(nt, argv[k]) == NK_SplatNode) return 1;
+    if (nt_kind(nt, argv[k]) != NK_KeywordHashNode) continue;
+    int en = 0; const int *els = nt_arr(nt, argv[k], "elements", &en);
+    for (int e = 0; e < en; e++)
+      if (nt_kind(nt, els[e]) == NK_AssocSplatNode) return 1;
+  }
+  return 0;
+}
+
 static void emit_gets_sep_args(Compiler *c, const int *argv, int argc, Buf *b) {
   Buf s, l, k; memset(&s, 0, sizeof s); memset(&l, 0, sizeof l); memset(&k, 0, sizeof k);
   gets_sep_arg_texts(c, argv, argc, 0, &s, &l, &k);
@@ -33138,12 +33153,47 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
          in that slot alone. */
       /* the separator, the limit and `chomp:` (#2810) are evaluated once,
          ahead of the loop, as CRuby evaluates them */
-      Buf esep, elim, echomp; memset(&esep, 0, sizeof esep); memset(&elim, 0, sizeof elim); memset(&echomp, 0, sizeof echomp);
-      gets_sep_arg_texts(c, argv, argc, 1, &esep, &elim, &echomp);
       int ls = ++g_tmp, ll = ++g_tmp, lc = ++g_tmp;
-      buf_printf(b, "const char *_t%d = %s; SP_GC_ROOT_STR(_t%d); sp_int _t%d = %s; sp_bool _t%d = %s;",
-                 ls, esep.p, ls, ll, elim.p, lc, echomp.p);
-      free(esep.p); free(elim.p); free(echomp.p);
+      if (io_line_args_spread(nt, argv, argc)) {
+        /* a splat or a `**` carries them: the positional ones are gathered
+           into a list and read as CRuby reads them (sp_io_line_args), and
+           `chomp:` is looked up in the call's keywords merged in order */
+        int tpa = ++g_tmp, kwh = -1;
+        buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tpa, tpa);
+        if (argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) kwh = argv[argc - 1];
+        emit_push_arg_list(c, argv, kwh >= 0 ? argc - 1 : argc, tpa, b);
+        /* every argument is evaluated before any of them is checked */
+        int th = ++g_tmp, any = kwh >= 0 ? poly_kw_any_key(c, kwh) : 0;
+        if (kwh >= 0) emit_poly_kw_all(c, kwh, th, any, 1, b);
+        buf_printf(b, "const char *_t%d = NULL; SP_GC_ROOT_STR(_t%d); sp_int _t%d = 0; "
+                      "sp_io_line_args(_t%d, &_t%d, &_t%d); sp_bool _t%d = 0; ",
+                   ls, ls, ll, tpa, ls, ll, lc);
+        if (kwh >= 0) {
+          int chs = comp_sym_intern(c, "chomp");
+          if (any)
+            buf_printf(b, "if (sp_PolyPolyHash_has_key(_t%d, sp_box_sym((sp_sym)%d))) "
+                          "_t%d = sp_poly_truthy(sp_PolyPolyHash_get(_t%d, sp_box_sym((sp_sym)%d))); ",
+                       th, chs, lc, th, chs);
+          else
+            buf_printf(b, "if (sp_SymPolyHash_has_key(_t%d, (sp_sym)%d)) "
+                          "_t%d = sp_poly_truthy(sp_SymPolyHash_get(_t%d, (sp_sym)%d)); ",
+                       th, chs, lc, th, chs);
+        }
+      }
+      else {
+        Buf esep, elim, echomp; memset(&esep, 0, sizeof esep); memset(&elim, 0, sizeof elim); memset(&echomp, 0, sizeof echomp);
+        gets_sep_arg_texts(c, argv, argc, 1, &esep, &elim, &echomp);
+        buf_printf(b, "const char *_t%d = %s; SP_GC_ROOT_STR(_t%d); sp_int _t%d = %s; sp_bool _t%d = %s;",
+                   ls, esep.p, ls, ll, elim.p, lc, echomp.p);
+        free(esep.p); free(elim.p); free(echomp.p);
+        /* an Integer argument is the limit (gets_sep_arg_texts), and 0 is
+           CRuby's ArgumentError, where sp_File_gets_sep reads it as none */
+        for (int k = 0; k < argc; k++)
+          if (comp_ntype(c, argv[k]) == TY_INT) {
+            buf_printf(b, " if (_t%d == 0) sp_raise_cls(\"ArgumentError\", \"invalid limit: 0 for each_line\");", ll);
+            break;
+          }
+      }
       buf_printf(b, "const char *_t%d = NULL; SP_GC_ROOT_STR(_t%d);"
                     " while ((_t%d = sp_File_gets_sep(_t%d, _t%d, _t%d, _t%d)) != NULL) {",
                  lt, lt, lt, rf, ls, ll, lc);
