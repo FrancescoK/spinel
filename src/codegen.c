@@ -1810,12 +1810,11 @@ void declare_local_named(Compiler *c, Buf *b, LocalVar *lv, const char *name, in
         exit(1);
       }
   }
-  /* A local with no definite assignment anywhere starts as Ruby nil, not as
-     its type's zero: `x ||= v` has to be able to tell "never assigned" from
-     "assigned 0". The pointer kinds already start NULL; this is what gives the
+  /* A local a `||=` writes starts as Ruby nil, not as its type's zero:
+     `x ||= v` has to be able to tell "never assigned" from "assigned 0". The pointer kinds already start NULL; this is what gives the
      sentinel-carrying scalars the same footing (#3388). Block-locals are reset
      to nil_value on every iteration already (emit_block_locals_reset). */
-  if (lv->or_write_only && !lv->is_param && !lv->is_block_param) {
+  if (lv->or_written && !lv->is_param && !lv->is_block_param) {
     const char *nv = nil_value(t);   /* NULL for the kinds with no sentinel */
     if (nv) init = nv;
   }
