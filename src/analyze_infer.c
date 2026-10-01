@@ -4572,17 +4572,20 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* built-in class reopening: look up user-defined methods on scalar built-in types */
   if (recv >= 0) {
     const char *oc_cn = NULL;
-    if (rt == TY_STRING)       oc_cn = "String";
-    else if (rt == TY_INT)     oc_cn = "Integer";
-    else if (rt == TY_FLOAT)   oc_cn = "Float";
-    else if (rt == TY_SYMBOL)  oc_cn = "Symbol";
-    else if (rt == TY_BOOL)    oc_cn = "TrueClass";
-    else if (rt == TY_RANGE)   oc_cn = "Range";
-    else if (rt == TY_TIME)    oc_cn = "Time";
-    else if (rt == TY_THREAD)  oc_cn = "Thread";
-    else if (rt == TY_FIBER)   oc_cn = "Fiber";
-    else if (rt == TY_IO)      oc_cn = "File";
-    else if (rt == TY_CLASS)   oc_cn = "Class";
+    switch (rt) {
+    case TY_STRING: oc_cn = "String"; break;
+    case TY_INT:    oc_cn = "Integer"; break;
+    case TY_FLOAT:  oc_cn = "Float"; break;
+    case TY_SYMBOL: oc_cn = "Symbol"; break;
+    case TY_BOOL:   oc_cn = "TrueClass"; break;
+    case TY_RANGE:  oc_cn = "Range"; break;
+    case TY_TIME:   oc_cn = "Time"; break;
+    case TY_THREAD: oc_cn = "Thread"; break;
+    case TY_FIBER:  oc_cn = "Fiber"; break;
+    case TY_IO:     oc_cn = "File"; break;
+    case TY_CLASS:  oc_cn = "Class"; break;
+    default: break;
+    }
     if (oc_cn) {
       int oc_ci = rt == TY_IO ? io_reopen_class(c, name) : comp_class_index(c, oc_cn);
       if (oc_ci >= 0) {
