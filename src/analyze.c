@@ -13858,15 +13858,13 @@ static int strbuf_demand_param_container_stores(Compiler *c, const char *pn, Sco
       else if (ty_is_array(alv->type) || ty_is_hash(alv->type) || alv->type == TY_UNKNOWN)
         changed |= strbuf_demand_local_container(c, avn, avs, depth + 1, mode);
     }
+    /* a literal argument is a store site of its own: an element that is a
+       String local promotes to the handle like any stored one (marked
+       alone, the local's plain `const char *` went into the handle's box
+       and the C did not build) */
     else if (ak == NK_ArrayNode && mode == SB_DEMAND) {
       int en = 0; const int *el = nt_arr(nt, an, "elements", &en);
-      for (int e = 0; e < en; e++) {
-        int sn = el[e];
-        if (sn < 0 || c->strbuf_box[sn]) continue;
-        TyKind st = infer_type(c, sn);
-        if (st != TY_STRING && st != TY_STRBUF) continue;
-        c->strbuf_box[sn] = 1; changed = 1;
-      }
+      for (int e = 0; e < en; e++) changed |= strbuf_store_leaf(c, el[e], depth, mode);
     }
     else changed |= strbuf_container_source_walk(c, an, depth + 1, mode);
   }
@@ -14629,6 +14627,38 @@ static int an_subtree_hands_to_appender(Compiler *c, int node, const char *vn, i
   }
   return 0;
 }
+
+/* Does block `blk` yield its parameter `bp` on, as a plain read, to a block
+   a call site of the method it is written in passes, and that block lends
+   the parameter it binds (appends to it, or hands it to a lent one)? The
+   element is then appended to through the yield: `def r(x) = [x].each { |u|
+   yield u }` called as `r(s) { |w| w << "!" }` grows the String the Array
+   holds, which is the caller's. */
+static int block_yields_param_to_lender(Compiler *c, int blk, const char *bp) {
+  const NodeTable *nt = c->nt;
+  Scope *ms = comp_scope_of(c, blk);
+  if (!ms || !ms->yields) return 0;
+  int mi = (int)(ms - c->scopes);
+  int body = nt_ref(nt, blk, "body");
+  for (int y = comp_kind_first(c, NK_YieldNode); y >= 0 && body >= 0; y = comp_kind_next(c, y)) {
+    if (nt_kind(nt, y) != NK_YieldNode || comp_scope_of(c, y) != ms || !a_subtree_contains(nt, body, y, 0)) continue;
+    int aa = nt_ref(nt, y, "arguments"), an = 0;
+    const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &an) : NULL;
+    for (int k = 0; k < an; k++) {
+      if (nt_kind(nt, av[k]) == NK_SplatNode || nt_kind(nt, av[k]) == NK_KeywordHashNode) break;
+      if (nt_kind(nt, av[k]) != NK_LocalVariableReadNode || !nt_str(nt, av[k], "name") ||
+          !sp_streq(nt_str(nt, av[k], "name"), bp)) continue;
+      for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
+        if (nt_kind(nt, u) != NK_CallNode) continue;
+        int ub = nt_ref(nt, u, "block");
+        if (ub < 0 || nt_kind(nt, ub) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
+        if (an_block_param_lent(c, ub, k)) return 1;
+      }
+    }
+  }
+  return 0;
+}
+
 /* Pure-alias pairs, as a pass of its own: promote_shared_stored_strings runs
    it in the fixpoint, and the post-fixpoint handle loop again, since a
    local convert_byref_handle_params pulls into the handle there (`t = s;
@@ -15212,6 +15242,23 @@ static int promote_shared_stored_strings(Compiler *c) {
       if (an4 < 1) continue;
       recv4 = av4[0];
     }
+    /* `x.then { |u| ... }` (tap, yield_self) binds the receiver itself: a
+       String the block appends to, or yields on to a block that does, is
+       the variable's, which becomes the handle */
+    else if ((sp_streq(itn, "then") || sp_streq(itn, "tap") || sp_streq(itn, "yield_self")) &&
+             recv4 >= 0 && nt_kind(nt, recv4) == NK_LocalVariableReadNode) {
+      TyKind rt4 = infer_type(c, recv4);
+      const char *sp4 = block_param_name(c, blk4, 0);
+      Scope *ss4 = sp4 ? comp_scope_of(c, blk4) : NULL;
+      LocalVar *sv4 = ss4 ? scope_local(ss4, sp4) : NULL;
+      if (!sv4 || (rt4 != TY_STRING && rt4 != TY_STRBUF) ||
+          (sv4->type != TY_UNKNOWN && sv4->type != TY_STRING && sv4->type != TY_STRBUF)) continue;
+      if (strbuf_mut_kind(c, sp4, ss4) != 1 && !cap_wrap_mutates_param(c, blk4, sp4) &&
+          !block_yields_param_to_lender(c, blk4, sp4)) continue;
+      changed |= strbuf_store_leaf(c, recv4, 0, SB_DEMAND);
+      if (sv4->type != TY_STRBUF || !sv4->str_shared) { sv4->type = TY_STRBUF; sv4->str_shared = 1; changed = 1; }
+      continue;
+    }
     else if (!strbuf_elem_first_iterator(itn)) continue;
     if (recv4 < 0) continue;
     const char *bp4 = block_param_name(c, blk4, 0);
@@ -15219,12 +15266,13 @@ static int promote_shared_stored_strings(Compiler *c) {
     Scope *bs4 = comp_scope_of(c, blk4);
     LocalVar *bpv4 = bs4 ? scope_local(bs4, bp4) : NULL;
     if (!bpv4) continue;
-    /* mutated in place, or handed to a user method that appends to it
-       (`a.each { |e| go(e) }` with `def go(e) = e << x`): either way the
-       append is the element's */
+    /* mutated in place, handed to a user method that appends to it
+       (`a.each { |e| go(e) }` with `def go(e) = e << x`), or yielded on to
+       a block that lends it: either way the append is the element's */
     int alias_mut = 0;
     if (strbuf_mut_kind(c, bp4, bs4) != 1 && !cap_wrap_mutates_param(c, blk4, bp4) &&
-        !an_subtree_hands_to_appender(c, nt_ref(nt, blk4, "body"), bp4, 0)) {
+        !an_subtree_hands_to_appender(c, nt_ref(nt, blk4, "body"), bp4, 0) &&
+        !block_yields_param_to_lender(c, blk4, bp4)) {
       if (!bpa_built) { an_local_aliases_build(c, &bpa); bpa_built = 1; }
       if (!an_block_param_alias_mutated(c, &bpa, bs4, bp4)) continue;
       alias_mut = 1;
@@ -15241,17 +15289,28 @@ static int promote_shared_stored_strings(Compiler *c) {
         {  bpv4->type = TY_STRBUF; bpv4->str_shared = 1; changed = 1;  }
       continue;
     }
-    if (nt_kind(nt, recv4) != NK_LocalVariableReadNode) continue;
-    const char *contn4 = nt_str(nt, recv4, "name");
+    /* an Array literal receiver (`[x].each { |u| ... }`) is its own store
+       site: its String elements are what the block binds. Only one holding
+       a variable's String: fresh elements no one else names are seen only
+       through the block */
+    int lit4 = nt_kind(nt, recv4) == NK_ArrayNode;
+    if (lit4) {
+      int en = 0, var = 0; const int *el = nt_arr(nt, recv4, "elements", &en);
+      for (int e = 0; e < en && !var; e++) var = nt_kind(nt, el[e]) == NK_LocalVariableReadNode;
+      if (!var) continue;
+    }
+    if (!lit4 && nt_kind(nt, recv4) != NK_LocalVariableReadNode) continue;
+    const char *contn4 = lit4 ? NULL : nt_str(nt, recv4, "name");
     Scope *conts4 = contn4 ? comp_scope_of(c, recv4) : NULL;
     LocalVar *contv4 = (contn4 && conts4) ? scope_local(conts4, contn4) : NULL;
-    if (!contv4 || (!ty_is_array(contv4->type) && contv4->type != TY_UNKNOWN))
+    TyKind contt4 = lit4 ? infer_type(c, recv4) : contv4 ? contv4->type : TY_UNKNOWN;
+    if (!lit4 && (!contv4 || (!ty_is_array(contt4) && contt4 != TY_UNKNOWN)))
       continue;
     /* the container's elements must be strings: gate on the receiver's
        (settled or literal) element type so an array-of-arrays each+<<
        never promotes its param */
-    if (contv4->type != TY_STR_ARRAY && contv4->type != TY_POLY_ARRAY) continue;
-    if (contv4->type == TY_POLY_ARRAY) {
+    if (contt4 != TY_STR_ARRAY && contt4 != TY_POLY_ARRAY) continue;
+    if (contt4 == TY_POLY_ARRAY) {
       /* A poly array may still narrow to a nested numeric table. Binding the
          element param poly here is permanent -- a block parameter only widens
          -- so a row that each_with_index then yields arrives boxed. Wait for
@@ -15261,7 +15320,8 @@ static int promote_shared_stored_strings(Compiler *c) {
       /* mixed / not-provably-string elements: demand the string stores into
          handles and bind the param POLY -- the runtime mutator arms resolve
          `<<` per element kind (string append vs array push) (#3227) */
-      changed |= strbuf_demand_container_stores(c, contn4, conts4);
+      changed |= lit4 ? strbuf_container_source_walk(c, recv4, 0, SB_DEMAND)
+                      : strbuf_demand_container_stores(c, contn4, conts4);
       if (bpv4->type != TY_POLY) { bpv4->type = TY_POLY; changed = 1; }
       continue;
     }
@@ -15289,7 +15349,8 @@ static int promote_shared_stored_strings(Compiler *c) {
     if (bpv4->type != TY_UNKNOWN && bpv4->type != TY_STRING &&
         bpv4->type != TY_STRBUF && bpv4->type != TY_POLY &&
         bpv4->type != TY_STR_ARRAY) continue;
-    changed |= strbuf_demand_container_stores(c, contn4, conts4);
+    changed |= lit4 ? strbuf_container_source_walk(c, recv4, 0, SB_DEMAND)
+                    : strbuf_demand_container_stores(c, contn4, conts4);
     if (bpv4->type != TY_POLY && (bpv4->type != TY_STRBUF || !bpv4->str_shared))
       {  bpv4->type = TY_STRBUF; bpv4->str_shared = 1; changed = 1;  }
   }

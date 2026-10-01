@@ -1556,7 +1556,8 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/string_alias_chain_append.rb \
                   test/string_handle_keyword_args.rb \
                   test/gsub_sub_scan_last_match.rb \
-                  test/iter_elem_handed_to_appender.rb
+                  test/iter_elem_handed_to_appender.rb \
+                  test/iter_block_string_share.rb
 
 # Each program runs with the minor mark off and on and must answer the same;
 # then once more under the generational verifier with stress on (every
