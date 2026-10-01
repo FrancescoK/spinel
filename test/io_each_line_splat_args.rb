@@ -1,7 +1,8 @@
 # IO#each_line reads its separator, limit and chomp: when a splat or a
 # double splat forwards them, as it does when they are written out: the
 # forwarded forms dropped all three and split on "\n".
-path = "/tmp/spinel_each_line_splat_#{Process.pid}"
+require "tmpdir"
+path = File.join(Dir.tmpdir, "spinel_each_line_splat_#{Process.pid}")
 File.write(path, "one\ntwo\r\n\nthree;four\nfive")
 
 def run(path, *a, **k)
