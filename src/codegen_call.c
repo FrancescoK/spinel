@@ -961,6 +961,45 @@ static void emit_io_vis_msg(int vis, const char *name, const char *handle, Buf *
    types the call is boxed (io_reopen_ret_mixed), each answer boxed. */
 static int io_reopen_call_vis(Compiler *c, int k, const char *nm, int plain, int caller);
 static int io_builtin_name(const char *m);
+/* The builtin's own emission of typed IO call `id` on the handle in _r<tv>,
+   with the reopenings out of sight, or NULL when it does not fit the call's
+   slot or does not emit. */
+static char *emit_io_builtin_call(Compiler *c, int id, int recv, int tv) {
+  if (g_n_argov + 1 > MAX_ARG_OVERRIDE) return NULL;
+  g_io_skip_reopen = 1;
+  TyKind bt = an_builtin_answer(c, id);
+  TyKind ct = comp_ntype(c, id);
+  if (bt == TY_UNKNOWN || (bt != ct && ct != TY_POLY)) { g_io_skip_reopen = 0; return NULL; }
+  int slot = g_n_argov++;
+  g_argov_node[slot] = recv;
+  snprintf(g_argov_text[slot], sizeof g_argov_text[0], "_r%d", tv);
+  TyKind sv_ty = c->ntype[id];
+  c->ntype[id] = bt;
+  Buf *nb = calloc(1, sizeof *nb);
+  Buf *pb = calloc(1, sizeof *pb), *sv_gpre = g_pre;
+  int sv_probe = g_unsup_probe;
+  jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
+  volatile int ok = 1;
+  EmitUnitState *sv_state = emit_state_snapshot();
+  g_pre = pb; g_unsup_probe = 1;
+  if (setjmp(g_unsup_recover) == 0) emit_expr(c, id, nb);
+  else ok = 0;
+  emit_state_release(sv_state, !ok);
+  memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
+  g_unsup_probe = sv_probe; g_pre = sv_gpre;
+  c->ntype[id] = sv_ty;
+  g_n_argov = slot;
+  g_io_skip_reopen = 0;
+  /* a statement the emission hoisted cannot ride inside the ternary arm */
+  if (!ok || !nb->p || (pb->p && pb->len) || strncmp(nb->p, "sp_raise", 8) == 0) {
+    free(nb->p); free(nb); free(pb->p); free(pb); return NULL;
+  }
+  Buf out; memset(&out, 0, sizeof out);
+  if (ct == TY_POLY && bt != TY_POLY) emit_boxed_text(c, bt, nb->p, &out);
+  else buf_puts(&out, nb->p);
+  free(nb->p); free(nb); free(pb->p); free(pb);
+  return out.p;
+}
 static void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name, Buf *b) {
   const NodeTable *nt = c->nt;
   int ks[16], n = io_reopen_defs(c, name, 0, ks, 16);
@@ -1017,9 +1056,12 @@ static void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name,
     if (i < n - 1) buf_printf(b, "_k%d == %d ? %s : ", tv, ks[i], vb.p);
     else if (io_builtin_name(name)) {
       /* a builtin IO method a reopening overrides: a kind none of them
-         serves should run the builtin, which this typed call cannot reach;
-         it calls the reopening as before (a boxed handle does reach it) */
-      buf_puts(b, vb.p);
+         serves runs the builtin -- the call emitted again with the
+         reopenings out of sight and the handle in the temp -- where its
+         answer fits the call's slot; otherwise the reopening, as before */
+      char *bi = emit_io_builtin_call(c, id, recv, tv);
+      buf_printf(b, "_k%d == %d ? %s : %s", tv, ks[i], vb.p, bi ? bi : vb.p);
+      free(bi);
     }
     else {
       /* no kind matched: the raise does not return, the call types the arm */

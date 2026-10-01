@@ -2106,6 +2106,16 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     int eci = rt == TY_IO ? io_reopen_class(c, name) : comp_class_index(c, ecn);
     int emi = eci >= 0 ? comp_method_in_chain(c, eci, name, NULL) : -1;
     if (emi >= 0 && rt == TY_IO && io_reopen_ret_mixed(c, name)) return TY_POLY;
+    /* a kind no reopening serves gets the builtin's answer: boxed when the
+       two answer different types */
+    if (emi >= 0 && rt == TY_IO && io_reopen_leaves_builtin(c, name)) {
+      TyKind ur = method_call_ret(c, emi, id);
+      g_io_skip_reopen = 1;
+      TyKind bt = an_builtin_answer(c, id);
+      g_io_skip_reopen = 0;
+      if (bt != TY_UNKNOWN && ur != TY_UNKNOWN && bt != ur) return TY_POLY;
+      return ur;
+    }
     if (emi >= 0) return method_call_ret(c, emi, id);
   }
   /* A boxed-value hash whose values are all one class: its value reads are

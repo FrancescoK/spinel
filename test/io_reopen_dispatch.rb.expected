@@ -42,3 +42,6 @@ false
 false
 true
 true
+"piped"
+false
+"file-sync"

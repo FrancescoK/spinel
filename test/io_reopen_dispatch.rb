@@ -86,3 +86,12 @@ m3 = :near
 p s2.respond_to?(:near), [s2, 1][0].respond_to?(m3), [s2, 1][0].respond_to?(m3, true), $stdout.respond_to?(:near)
 s2.close
 srv2.close
+
+# a File override of a builtin: a kind no reopening serves gets the builtin
+class File
+  def sync = "file-sync"
+end
+rp, wp = IO.pipe
+wp.write("piped")
+wp.close
+p rp.read, $stdout.sync, File.open(__FILE__).sync
