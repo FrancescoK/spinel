@@ -40053,7 +40053,7 @@ else {
          poly receiver */
       if (recv >= 0 && (rt == TY_RANGE || rt == TY_FLOAT_RANGE || rt == TY_STR_RANGE || rt == TY_IO)) {
         if (comp_ntype(c, id) == TY_POLY) buf_puts(b, "sp_box_bool(");
-        buf_puts(b, "sp_poly_responds_builtin(");
+        buf_puts(b, rt == TY_IO ? "sp_io_typed_responds(" : "sp_poly_responds_builtin(");
         emit_boxed(c, recv, b);
         buf_puts(b, ", \"");
         emit_c_escaped(b, qm);
