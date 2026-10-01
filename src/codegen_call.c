@@ -12012,6 +12012,17 @@ static int emit_new_arity_check(Compiler *c, int ci, int argc,
   if (argc >= lo && argc <= hi) return 0;
   char am[128];
   arity_message(am, sizeof am, argc, lo, hi, NULL);
+  /* CRuby runs the arguments before it counts them: `K.new(log(1), log(2))`
+     into `initialize(a)` logs both, then raises. The raise sat ahead of
+     them, so neither ran. */
+  for (int a = 0; a < argc; a++) {
+    Buf vb; memset(&vb, 0, sizeof vb);
+    emit_expr(c, argv[a], &vb);
+    emit_indent(pre, g_indent);
+    buf_printf(pre, "(void)(%s);\n", vb.p ? vb.p : "0");
+    free(vb.p);
+  }
+  emit_indent(pre, g_indent);
   buf_printf(pre, "sp_raise_cls(\"ArgumentError\", \"%s\");\n", am);
   return 1;
 }
