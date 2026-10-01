@@ -502,8 +502,6 @@ int ie_block_body(Compiler *c, int blk);
 int ie_class_of(Compiler *c, int node);
 int blkp_params_node(Compiler *c, int create);
 int blkp_binds_param(Compiler *c, int create, const char *name);
-int lv_node_is_named_ref(const char *ty);
-int lv_node_is_write(const char *ty);
 void blkp_rewrite_refs(Compiler *c, int node, const char *oldn, const char *newn);
 void numbered_rename_locals_str(NodeTable *nt, int L, const char *from, const char *to);
 void blkp_mark_subtree(const NodeTable *nt, int node, char *marks);
