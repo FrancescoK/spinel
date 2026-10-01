@@ -5190,7 +5190,11 @@ void register_extends(Compiler *c) {
     body_node[nbody] = cn; body_cls[nbody] = bci; nbody++;
   }
   int cls_mod = comp_class_index(c, class_reopen_mod);
+  int nseen = 0, capseen = 8;
+  int *seen = malloc(sizeof(int) * (size_t)capseen);
+  if (!seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int ci = 0; ci < c->nclasses; ci++) {
+   nseen = 0;
    /* Every body that defines this class, not only the first: `extend M` is
       commonly written in a REOPENING of the class, and reading def_node alone
       never saw it, so the module's methods were never transplanted and a call
@@ -5219,6 +5223,17 @@ void register_extends(Compiler *c) {
         else if (aty && sp_streq(aty, "ConstantPathNode")) mname = nt_str(nt, args[j], "name");
         int mod_id = mname ? comp_class_index(c, mname) : -1;
         if (mod_id < 0) continue;
+        /* extending a module the class already extends is a no-op: it stays
+           where it was, and a second copy in front would hide the later one */
+        int again = 0;
+        for (int e = 0; e < nseen; e++) if (seen[e] == mod_id) again = 1;
+        if (again) continue;
+        if (nseen == capseen) {
+          capseen *= 2;
+          seen = realloc(seen, sizeof(int) * (size_t)capseen);
+          if (!seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        }
+        seen[nseen++] = mod_id;
         did_clone |= extend_class_with(c, ci, mod_id);
       }
     }
@@ -5230,7 +5245,7 @@ void register_extends(Compiler *c) {
      before this pass: a local first assigned in the clone had no slot, so
      it was never declared and every read of it answered nil (#4535). The
      include and inherited-class-method clones re-register the same way. */
-  free(body_node); free(body_cls);
+  free(body_node); free(body_cls); free(seen);
   if (did_clone) register_locals(c);
 }
 
