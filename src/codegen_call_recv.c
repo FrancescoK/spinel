@@ -12398,15 +12398,47 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
       int mt = ++g_tmp, at = ++g_tmp;
       buf_printf(b, "({ sp_MatchData *_t%d = %s; SP_GC_ROOT(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);",
                  mt, r, mt, at, at);
+      /* With several arguments, every one is evaluated, in source order,
+         before any is looked up: a Range begin before the whole match raises
+         RangeError and an unknown name IndexError, which must not skip a later
+         argument's side effects. Each value is held (rooted) in a temp. */
+      int held[64];
+      int hold = argc > 1 && argc <= 64;
+      for (int i = 0; hold && i < argc; i++) {
+        TyKind kt3 = comp_ntype(c, argv[i]);
+        held[i] = ++g_tmp;
+        if (kt3 == TY_SYMBOL) {
+          buf_printf(b, " const char *_t%d = sp_sym_to_s(", held[i]); emit_expr(c, argv[i], b);
+          buf_printf(b, "); SP_GC_ROOT_STR(_t%d);", held[i]);
+        }
+        else if (kt3 == TY_STRING) {
+          buf_printf(b, " const char *_t%d = ", held[i]); emit_expr(c, argv[i], b);
+          buf_printf(b, "; SP_GC_ROOT_STR(_t%d);", held[i]);
+        }
+        else if (kt3 == TY_RANGE) {
+          buf_printf(b, " sp_Range _t%d = ", held[i]); emit_expr(c, argv[i], b); buf_puts(b, ";");
+        }
+        else if (kt3 == TY_POLY) {
+          buf_printf(b, " sp_RbVal _t%d = ", held[i]); emit_expr(c, argv[i], b);
+          buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", held[i]);
+        }
+        else {
+          buf_printf(b, " sp_int _t%d = ", held[i]); emit_int_expr(c, argv[i], b); buf_puts(b, ";");
+        }
+      }
       for (int i = 0; i < argc; i++) {
         TyKind kt3 = comp_ntype(c, argv[i]);
         if (kt3 == TY_SYMBOL) {
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_nullable_str(sp_MatchData_aref_name(_t%d, sp_sym_to_s(", at, mt);
-          emit_expr(c, argv[i], b); buf_puts(b, "))));");
+          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_nullable_str(sp_MatchData_aref_name(_t%d, ", at, mt);
+          if (hold) buf_printf(b, "_t%d", held[i]);
+          else { buf_puts(b, "sp_sym_to_s("); emit_expr(c, argv[i], b); buf_puts(b, ")"); }
+          buf_puts(b, ")));");
         }
         else if (kt3 == TY_STRING) {
           buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_nullable_str(sp_MatchData_aref_name(_t%d, ", at, mt);
-          emit_expr(c, argv[i], b); buf_puts(b, ")));");
+          if (hold) buf_printf(b, "_t%d", held[i]);
+          else emit_expr(c, argv[i], b);
+          buf_puts(b, ")));");
         }
         else if (kt3 == TY_RANGE) {
           /* a Range argument selects a run of groups, as Array#values_at does;
@@ -12418,7 +12450,9 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
              loop to INTPTR_MAX, and a negative begin read the groups from the
              end through sp_MatchData_aref's own negative index. */
           int rk = ++g_tmp, rj = ++g_tmp, rlo = ++g_tmp, rhi = ++g_tmp, rn = ++g_tmp;
-          buf_printf(b, " sp_Range _t%d = ", rk); emit_expr(c, argv[i], b);
+          buf_printf(b, " sp_Range _t%d = ", rk);
+          if (hold) buf_printf(b, "_t%d", held[i]);
+          else emit_expr(c, argv[i], b);
           buf_printf(b, "; sp_int _t%d = sp_MatchData_length(_t%d);", rn, mt);
           buf_printf(b, " sp_int _t%d = _t%d.first == INTPTR_MIN ? 0 : _t%d.first;", rlo, rk, rk);
           buf_printf(b, " if (_t%d < 0) { if (_t%d < -_t%d) sp_raise_cls(\"RangeError\","
@@ -12436,7 +12470,9 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
              by name, anything else is an index. Passing the raw sp_RbVal to
              sp_MatchData_aref (sp_int) would be a C type error. */
           int kt = ++g_tmp;
-          buf_printf(b, " sp_RbVal _t%d = ", kt); emit_expr(c, argv[i], b);
+          buf_printf(b, " sp_RbVal _t%d = ", kt);
+          if (hold) buf_printf(b, "_t%d", held[i]);
+          else emit_expr(c, argv[i], b);
           buf_printf(b, "; sp_PolyArray_push(_t%d, sp_box_nullable_str("
                         "_t%d.tag == SP_TAG_SYM ? sp_MatchData_aref_name(_t%d, sp_sym_to_s((sp_sym)_t%d.v.i)) :"
                         " _t%d.tag == SP_TAG_STR ? sp_MatchData_aref_name(_t%d, _t%d.v.s) :"
@@ -12445,7 +12481,9 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
         }
         else {
           buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_nullable_str(sp_MatchData_aref(_t%d, ", at, mt);
-          emit_int_expr(c, argv[i], b); buf_puts(b, ")));");
+          if (hold) buf_printf(b, "_t%d", held[i]);
+          else emit_int_expr(c, argv[i], b);
+          buf_puts(b, ")));");
         }
       }
       buf_printf(b, " _t%d; })", at);

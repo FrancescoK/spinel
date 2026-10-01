@@ -1,0 +1,9 @@
+mark 1
+#<RangeError: -6..2 out of range>
+mark -9
+mark 0
+RangeError
+mark 2
+IndexError
+mark -1
+["a", "b", "ab", "a", "b", "b", "a"]
