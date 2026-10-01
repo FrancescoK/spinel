@@ -21489,6 +21489,13 @@ static void check_seed_contradictions(Compiler *c) {
       TyKind slot = (lv->rbs_type != TY_UNKNOWN) ? lv->rbs_type : lv->type;
       TyKind val = infer_type(c, a);
       if (slot == TY_POLY) continue;   /* `untyped` accepts anything */
+      /* emit_arg_or_default_fill boxes these array kinds into a general
+         Array parameter (#3137). This is a conversion, not a contradiction
+         (#6514). Its mutation guard still refuses a copy that would lose
+         stores into an array the caller holds (#4480). Do not apply this
+         exception to ivar storage or to kinds without a converter. */
+      if (slot == TY_POLY_ARRAY &&
+          (val == TY_INT_ARRAY || val == TY_STR_ARRAY || val == TY_FLOAT_ARRAY)) continue;
       if (!seed_contradicts(c, slot, val, 0)) continue;
       /* An arm of a runtime-name send (`send(name, h)`, `method(name).call(h)`)
          runs only when the name selects this method, and the arm set holds

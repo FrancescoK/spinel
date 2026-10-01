@@ -1,0 +1,3 @@
+module SeedArrayReader
+  def self.join: (Array[untyped] list) -> String
+end

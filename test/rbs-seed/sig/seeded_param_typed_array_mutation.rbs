@@ -1,0 +1,3 @@
+module SeedArrayMutation
+  def self.add: (Array[untyped] out) -> Array[untyped]
+end
