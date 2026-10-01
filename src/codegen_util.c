@@ -1166,7 +1166,7 @@ void emit_typed_elem_value(Compiler *c, int node, TyKind et, Buf *b) {
   }
   if (et == TY_INT) emit_int_expr_nilable(c, node, b);
   else if (et == TY_FLOAT) emit_float_expr(c, node, b);
-  else emit_expr(c, node, b);
+  else emit_coerce(c, node, et, CO_HOLD, "an Array element", b);
 }
 /* A POLY variable's slot `ref` lifted into the shared handle as it is read
    (sp_poly_strbuf_lift, #6179): the lifted value is taken into a temp first
@@ -2244,6 +2244,10 @@ void emit_typed_sink_text(Compiler *c, int node, TyKind slot, const char *text, 
   if (vt == TY_POLY && slot == TY_INT) buf_printf(b, "sp_poly_to_i(%s)", text);
   else if (vt == TY_POLY && slot == TY_FLOAT) buf_printf(b, "sp_poly_to_f(%s)", text);
   else if (vt == TY_BIGINT && slot == TY_INT) buf_printf(b, "sp_bigint_to_int(%s)", text);
+  /* A block's value into a typed element (`fill { ... }`, a collect
+     accumulator) is written as it is: where its class differs from the
+     element's, the answer is the array widened by the inference, not a
+     refusal here. The check reports it. */
   else {
     if (node >= 0 && slot != TY_UNKNOWN) store_check(c, node, slot, "a typed element sink", b);
     buf_puts(b, text);

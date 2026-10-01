@@ -1301,7 +1301,8 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a refusal after a dynamic send's probed arms did not report cleanly, exit $$st)"; sed -n 1,5p "$$tmp/ds.out"; ok=0; fi; \
 	for spec in "complex_bignum_component:a Complex component given an Integer past 64 bits" \
 	            "rational_pow_bignum:the receiver of a Float \`**\` given a Rational" \
-	            "bignum_div_rational:an Integer operand of a Bignum operation given a Rational"; do \
+	            "bignum_div_rational:an Integer operand of a Bignum operation given a Rational" \
+	            "array_push_other_class_temporary:an Array push given a String"; do \
 	  t=test/reject/$${spec%%:*}.rb; why=$${spec#*:}; \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/co.c" >"$$tmp/co.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t compiled: a value no conversion keeps went into its slot)"; ok=0; \
