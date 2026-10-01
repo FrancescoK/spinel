@@ -2373,6 +2373,12 @@ void store_check(Compiler *c, int node, TyKind slot, const char *what, Buf *b) {
 void emit_coerce_text(Compiler *c, int node, TyKind from, TyKind slot, int how,
                       const char *text, const char *what, Buf *b) {
   if (store_fits(c, from, slot)) { buf_puts(b, text); return; }
+  /* A value with no C type of its own -- a call that answers nothing, a
+     raise -- is evaluated for its effect, and the slot takes its nil */
+  if (from == TY_VOID || from == TY_NIL) {
+    buf_printf(b, "((void)(%s), %s)", text, raise_tail_value_c(c, slot));
+    return;
+  }
   if (slot == TY_BIGINT && from == TY_INT) {
     int t = ++g_tmp;
     buf_printf(b, "({ sp_int _t%d = (%s); _t%d == SP_INT_NIL ? NULL : sp_bigint_new_int(_t%d); })",
@@ -2401,9 +2407,29 @@ void emit_coerce_text(Compiler *c, int node, TyKind from, TyKind slot, int how,
 void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, Buf *b) {
   TyKind from = store_value_kind(c, node);
   if (store_fits(c, from, slot)) { emit_expr(c, node, b); return; }
+  /* An empty `[]` or `{}` (or a bare Array.new / Hash.new) has no element
+     type of its own: it is built at the slot's */
+  if ((ty_is_array(slot) || ty_is_hash(slot)) && emit_empty_literal_as(c, node, slot, b)) return;
   /* An Integer into a Bignum slot is the same Ruby value in the wide
      representation, its nil sentinel kept as nil (emit_bigint_operand) */
   if (slot == TY_BIGINT && from == TY_INT) { emit_bigint_operand_ext(c, node, b); return; }
+  /* A boxed value into a typed slot is unboxed, as the plain writes unbox
+     it: a scalar or a String through its conversion (emit_poly_rhs_coerced,
+     nil kept as the slot's nil), a container, an object or a Bignum through
+     the checked unbox, which converts or raises for a value of another class
+     rather than reading its memory. A struct-valued or other handle slot has
+     no checked unbox, and is refused below. */
+  if (from == TY_POLY && how == CO_HOLD) {
+    if (emit_poly_rhs_coerced(c, slot, node, b)) return;
+    if (ty_is_array(slot) || ty_is_ptr_array(slot) || ty_is_hash(slot) || slot == TY_BIGINT ||
+        slot == TY_STRBUF || (ty_is_object(slot) && !comp_ty_value_obj(c, slot))) {
+      Buf vb; memset(&vb, 0, sizeof vb);
+      emit_expr(c, node, &vb);
+      emit_unbox_nilable_text(c, slot, vb.p ? vb.p : "sp_box_nil()", b);
+      free(vb.p);
+      return;
+    }
+  }
   Buf vb; memset(&vb, 0, sizeof vb);
   emit_expr(c, node, &vb);
   emit_coerce_text(c, node, from, slot, how, vb.p ? vb.p : "", what, b);
