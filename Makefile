@@ -1050,7 +1050,7 @@ defer-refusals-test: $(SPINEL)
 check-stores-test: $(SPINEL)
 	@ok=1; tmp=$$(mktemp -d /tmp/spinel-stores.XXXXXX); t=test/check-stores/raw_stores.rb; \
 	$(SPINEL) --check-stores "$$t" -c -o "$$tmp/k.c" >"$$tmp/k.out" 2>&1 || { echo "check-stores-test: FAIL ($$t did not compile)"; ok=0; }; \
-	for w in "5: warning: store check: a global variable write: int value"; do \
+	for w in "5: warning: store check: a typed element sink: string value"; do \
 	  grep -q "raw_stores.rb:$$w" "$$tmp/k.out" || { echo "check-stores-test: FAIL (line $${w%%:*} not reported)"; ok=0; }; \
 	done; \
 	n=$$(grep -c 'store check' "$$tmp/k.out"); [ "$$n" -eq 1 ] || { echo "check-stores-test: FAIL ($$n reports, want 1)"; ok=0; }; \

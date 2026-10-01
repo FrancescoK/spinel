@@ -1639,10 +1639,8 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
        yield is unresolvable, into an sp_int k). A non-token RHS emits raw. */
     emit_unresolved_coerced(c, v, lv->type, b);
   }
-  else {
-    if (lv) store_check(c, v, lv->type, "a local write", b);
-    emit_expr(c, v, b);
-  }
+  else if (lv) emit_coerce(c, v, lv->type, CO_HOLD, "a local variable write", b);
+  else emit_expr(c, v, b);
   buf_puts(b, ";\n");
 }
 
@@ -9337,8 +9335,10 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
                    lowers to the gate's raising sp_RbVal token, which assigned
                    raw into an object-pointer or scalar field is ill-typed C.
                    Anything that is not the token still emits raw. */
-                else if (ivt != TY_POLY && ivt != TY_UNKNOWN)
+                else if (ivt != TY_POLY && ivt != TY_UNKNOWN && comp_ntype(c, argv[0]) == TY_UNKNOWN)
                   emit_unresolved_coerced(c, argv[0], ivt, b);
+                else if (ivt != TY_POLY && ivt != TY_UNKNOWN)
+                  emit_coerce(c, argv[0], ivt, CO_HOLD, "an attribute writer", b);
                 else emit_expr(c, argv[0], b);
                 buf_puts(b, fo ? "; }\n" : ";\n");
                 return;
@@ -9875,9 +9875,8 @@ else {
     }
     else {
       /* a subclass instance stored into an ancestor-typed ivar slot (#3418) */
-      store_check(c, v, ivt, "an instance variable write", b);
       emit_obj_upcast_prefix(c, ivt, comp_ntype(c, v), b);
-      emit_expr(c, v, b);
+      emit_coerce(c, v, ivt, CO_HOLD, "an instance variable write", b);
     }
     buf_puts(b, ";\n");
     return;
@@ -9908,7 +9907,7 @@ else {
     else if (comp_ntype(c, v) == TY_POLY && ct != TY_UNKNOWN) {
       Buf vb = expr_buf(c, v); emit_unbox_text(c, ct, vb.p ? vb.p : "sp_box_nil()", b); free(vb.p);
     }
-    else emit_expr(c, v, b);
+    else emit_coerce(c, v, ct, CO_HOLD, "a class variable write", b);
     buf_puts(b, "; ");
     emit_cvar_set_flag(c, sc, nm, 0, b);
     buf_puts(b, "\n");
@@ -10591,10 +10590,7 @@ else {
         unsupported(c, v, "widening a typed array READ into a poly global (the conversion copies, so writes would not be shared)");
       emit_poly_array_from(c, v, b);
     }
-    else {
-      store_check(c, v, lv->type, isg ? "a global variable write" : "a constant write", b);
-      emit_expr(c, v, b);
-    }
+    else emit_coerce(c, v, lv->type, CO_HOLD, isg ? "a global variable write" : "a constant write", b);
     buf_puts(b, ";\n");
     if (!isg && lv->init_guarded) {
       emit_indent(b, indent); buf_printf(b, "sp_init_in_progress_%s = 0;\n", key);

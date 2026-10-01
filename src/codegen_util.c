@@ -2359,7 +2359,8 @@ void store_check(Compiler *c, int node, TyKind slot, const char *what, Buf *b) {
 
    CO_HOLD     the slot holds the Ruby value itself -- a Complex component,
                a Rational's numerator, a receiver -- so only its C
-               representation may change, never its class or its value;
+               representation may change (an Integer widens into a
+               Bignum slot), never its class or its value;
    CO_CONVERT  the slot is a conversion Ruby makes itself -- the Float
                operand of a Float method, a duration -- so the value
                converts as Ruby converts it: an Integer past 64 bits or a
@@ -2372,6 +2373,12 @@ void store_check(Compiler *c, int node, TyKind slot, const char *what, Buf *b) {
 void emit_coerce_text(Compiler *c, int node, TyKind from, TyKind slot, int how,
                       const char *text, const char *what, Buf *b) {
   if (store_fits(c, from, slot)) { buf_puts(b, text); return; }
+  if (slot == TY_BIGINT && from == TY_INT) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_int _t%d = (%s); _t%d == SP_INT_NIL ? NULL : sp_bigint_new_int(_t%d); })",
+               t, text, t, t);
+    return;
+  }
   const char *fn = NULL;
   if (how == CO_CONVERT && slot == TY_FLOAT)
     fn = from == TY_BIGINT ? "sp_bigint_to_double" : from == TY_RATIONAL ? "sp_rational_to_f" : NULL;
@@ -2394,6 +2401,9 @@ void emit_coerce_text(Compiler *c, int node, TyKind from, TyKind slot, int how,
 void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, Buf *b) {
   TyKind from = store_value_kind(c, node);
   if (store_fits(c, from, slot)) { emit_expr(c, node, b); return; }
+  /* An Integer into a Bignum slot is the same Ruby value in the wide
+     representation, its nil sentinel kept as nil (emit_bigint_operand) */
+  if (slot == TY_BIGINT && from == TY_INT) { emit_bigint_operand_ext(c, node, b); return; }
   Buf vb; memset(&vb, 0, sizeof vb);
   emit_expr(c, node, &vb);
   emit_coerce_text(c, node, from, slot, how, vb.p ? vb.p : "", what, b);
