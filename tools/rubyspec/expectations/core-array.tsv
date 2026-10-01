@@ -21,7 +21,7 @@ append_spec__003	FAIL
 append_spec__004	HARNESS-SKEW
 append_spec__005	ERROR
 array_spec__001	PASS
-assoc_spec__001	PASS
+assoc_spec__001	FAIL
 assoc_spec__002	HARNESS-SKEW
 assoc_spec__003	REJECT
 assoc_spec__004	HARNESS-SKEW
@@ -1154,7 +1154,7 @@ transpose_spec__004	FAIL
 transpose_spec__005	HARNESS-SKEW
 transpose_spec__006	PASS
 transpose_spec__007	HARNESS-SKEW
-try_convert_spec__001	PASS
+try_convert_spec__001	FAIL
 try_convert_spec__002	HARNESS-SKEW
 try_convert_spec__003	REJECT
 try_convert_spec__004	HARNESS-SKEW
