@@ -2668,55 +2668,118 @@ static void qc_free_reverse_flags(void) {
   free(qc_cpath_parent); qc_cpath_parent = NULL;
   free(qc_def_cpath); qc_def_cpath = NULL;
 }
-/* The leaf name a superclass or an included module is written with. */
-static const char *qc_const_leaf(const NodeTable *nt, int n) {
-  if (n < 0) return NULL;
-  NodeKind k = nt_kind(nt, n);
-  return k == NK_ConstantReadNode || k == NK_ConstantPathNode ? nt_str(nt, n, "name") : NULL;
+/* Every class and module body with its path in the model qc_rewrite_reads
+   walks with (the enclosing bodies' names, then its own), for the ancestor
+   lookup below. Built once per pass. */
+typedef struct { int node; int depth; char path[QC_MAXDEPTH][64]; } QCDef;
+static QCDef *qc_defs = NULL;
+static int qc_ndefs = 0, qc_cdefs = 0;
+static void qc_collect_defs(const NodeTable *nt, int node, char (*path)[64], int depth) {
+  if (node < 0) return;
+  NodeKind k = nt_kind(nt, node);
+  if ((k == NK_ClassNode || k == NK_ModuleNode) && depth < QC_MAXDEPTH) {
+    int cp = nt_ref(nt, node, "constant_path");
+    const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (mn) {
+      snprintf(path[depth], 64, "%s", mn);
+      depth++;
+      if (qc_ndefs == qc_cdefs) {
+        qc_cdefs = qc_cdefs ? qc_cdefs * 2 : 32;
+        qc_defs = realloc(qc_defs, sizeof(QCDef) * (size_t)qc_cdefs);
+        if (!qc_defs) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      QCDef *d = &qc_defs[qc_ndefs++];
+      d->node = node; d->depth = depth;
+      for (int i = 0; i < depth; i++) snprintf(d->path[i], 64, "%s", path[i]);
+    }
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) qc_collect_defs(nt, nt_ref_at(nt, node, i), path, depth);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) { int m = 0; const int *ids = nt_arr_at(nt, node, i, &m); for (int j = 0; j < m; j++) qc_collect_defs(nt, ids[j], path, depth); }
 }
-/* The colliding write of `nm` made directly in a class or module named
-   `owner` (its last path segment), or -1. */
-static int qc_write_in(const char *owner, const char *nm, QCWrite *ws, int wn) {
+static void qc_build_defs(Compiler *c) {
+  char path[QC_MAXDEPTH][64];
+  qc_ndefs = 0;
+  qc_collect_defs(c->nt, c->nt->root_id, path, 0);
+}
+static void qc_free_defs(void) { free(qc_defs); qc_defs = NULL; qc_ndefs = qc_cdefs = 0; }
+
+static int qc_path_eq(char (*a)[64], int an, char (*b)[64], int bn) {
+  if (an != bn) return 0;
+  for (int i = 0; i < an; i++) if (!sp_streq(a[i], b[i])) return 0;
+  return 1;
+}
+/* The class or module a constant written as `ref` (a read or a path) names
+   from inside a body at `scope` (scope_n names deep): the enclosing bodies'
+   paths innermost first, then the top level, as Ruby resolves it. Its path
+   goes in `out`; the answer is its depth, or 0 when nothing defines it. */
+static int qc_resolve_ref(const NodeTable *nt, int ref, char (*scope)[64], int scope_n,
+                          char (*out)[64]) {
+  char chain[QC_MAXDEPTH + 1][64];
+  int abs_anchor = 0;
+  int cl = ref >= 0 ? qc_read_chain(nt, ref, chain, &abs_anchor) : 0;
+  if (cl <= 0) return 0;
+  for (int p = abs_anchor ? 0 : scope_n; p >= 0; p--) {
+    if (p + cl > QC_MAXDEPTH) continue;
+    char cand[QC_MAXDEPTH][64];
+    for (int i = 0; i < p; i++) snprintf(cand[i], 64, "%s", scope[i]);
+    for (int i = 0; i < cl; i++) snprintf(cand[p + i], 64, "%s", chain[i]);
+    for (int d = 0; d < qc_ndefs; d++)
+      if (qc_path_eq(qc_defs[d].path, qc_defs[d].depth, cand, p + cl)) {
+        for (int i = 0; i < p + cl; i++) snprintf(out[i], 64, "%s", cand[i]);
+        return p + cl;
+      }
+  }
+  return 0;
+}
+/* The colliding write of `nm` made directly in the body at `path`, or -1. */
+static int qc_write_in(char (*path)[64], int n, const char *nm, QCWrite *ws, int wn) {
   for (int i = 0; i < wn; i++)
-    if (ws[i].depth > 0 && sp_streq(ws[i].name, nm) && sp_streq(ws[i].path[ws[i].depth - 1], owner)) return i;
+    if (sp_streq(ws[i].name, nm) && qc_path_eq(ws[i].path, ws[i].depth, path, n)) return i;
   return -1;
 }
-/* A read of `nm` that no enclosing module defines is looked up in the
-   ancestors of the innermost one, `cls`: the modules it includes, the one
-   included last first, then its superclass and so on up. Classes and modules
-   are matched by their leaf name. Without this, a constant a superclass
+/* A read of `nm` that no enclosing body defines is looked up in the
+   ancestors of the innermost one, at `path`: the modules it includes, the one
+   included last first, and theirs in turn, then its superclass and on up.
+   Each superclass and module is resolved from the body that names it, by its
+   whole path, so `B` inside `Outer` is `Outer::B` where there is one. The
+   walk is bounded, so an include cycle ends. Without this, a constant a superclass
    defines, where another class defines the same name, read as undefined. */
-static int qc_ancestor_write(Compiler *c, const char *cls, const char *nm, QCWrite *ws, int wn) {
-  const NodeTable *nt = c->nt;
-  const char *cur = cls;
-  for (int guard = 0; cur && guard < 32; guard++) {
-    if (guard > 0) { int m = qc_write_in(cur, nm, ws, wn); if (m >= 0) return m; }
-    const char *sup = NULL;
-    for (int pass = 0; pass < 2; pass++) {
-      NT_FOREACH_KIND(nt, pass ? NK_ModuleNode : NK_ClassNode, k) {
-        const char *kn = qc_const_leaf(nt, nt_ref(nt, k, "constant_path"));
-        if (!kn || !sp_streq(kn, cur)) continue;
-        if (!pass && !sup) sup = qc_const_leaf(nt, nt_ref(nt, k, "superclass"));
-        int body = nt_ref(nt, k, "body");
-        int n = 0; const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
-        for (int q = n - 1; q >= 0; q--) {
-          if (nt_kind(nt, st[q]) != NK_CallNode || nt_ref(nt, st[q], "receiver") >= 0) continue;
-          const char *cn = nt_str(nt, st[q], "name");
-          if (!cn || !sp_streq(cn, "include")) continue;
-          int args = nt_ref(nt, st[q], "arguments");
-          int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-          for (int a = 0; a < an; a++) {
-            const char *in = qc_const_leaf(nt, av[a]);
-            int m = in ? qc_write_in(in, nm, ws, wn) : -1;
-            if (m >= 0) return m;
-          }
-        }
+static int qc_ancestor_lookup(const NodeTable *nt, char (*path)[64], int n, const char *nm,
+                              QCWrite *ws, int wn, int own, int depth) {
+  if (n <= 0 || depth > 32) return -1;
+  if (!own) { int m = qc_write_in(path, n, nm, ws, wn); if (m >= 0) return m; }
+  char sup[QC_MAXDEPTH][64];
+  int supn = 0;
+  for (int d = qc_ndefs - 1; d >= 0; d--) {
+    if (!qc_path_eq(qc_defs[d].path, qc_defs[d].depth, path, n)) continue;
+    int dn = qc_defs[d].node;
+    int body = nt_ref(nt, dn, "body");
+    int bn = 0; const int *st = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    for (int q = bn - 1; q >= 0; q--) {
+      if (nt_kind(nt, st[q]) != NK_CallNode || nt_ref(nt, st[q], "receiver") >= 0) continue;
+      const char *cn = nt_str(nt, st[q], "name");
+      if (!cn || !sp_streq(cn, "include")) continue;
+      int args = nt_ref(nt, st[q], "arguments");
+      int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      for (int a = 0; a < an; a++) {
+        char inc[QC_MAXDEPTH][64];
+        int incn = qc_resolve_ref(nt, av[a], path, n, inc);
+        if (incn <= 0 || qc_path_eq(inc, incn, path, n)) continue;
+        int m = qc_ancestor_lookup(nt, inc, incn, nm, ws, wn, 0, depth + 1);
+        if (m >= 0) return m;
       }
     }
-    cur = sup;
+    if (!supn && nt_kind(nt, dn) == NK_ClassNode)
+      supn = qc_resolve_ref(nt, nt_ref(nt, dn, "superclass"), path, n - 1, sup);
   }
-  return -1;
+  return supn > 0 ? qc_ancestor_lookup(nt, sup, supn, nm, ws, wn, 0, depth + 1) : -1;
 }
+static int qc_ancestor_write(Compiler *c, char (*path)[64], int n, const char *nm, QCWrite *ws, int wn) {
+  return qc_ancestor_lookup(c->nt, path, n, nm, ws, wn, 1, 0);
+}
+
 void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
                              QCWrite *ws, int wn) {
   const NodeTable *nt = c->nt;
@@ -2752,7 +2815,7 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
             if (ok) matched = i;
           }
         }
-        if (matched < 0 && depth > 0) matched = qc_ancestor_write(c, path[depth - 1], nm, ws, wn);
+        if (matched < 0 && depth > 0) matched = qc_ancestor_write(c, path, depth, nm, ws, wn);
         for (int i = 0; i < wn && matched < 0; i++)
           if (sp_streq(ws[i].name, nm) && ws[i].depth == 0) matched = i;
         if (matched >= 0 && ws[matched].depth > 0) {
@@ -2839,7 +2902,9 @@ void qualify_colliding_consts(Compiler *c) {
     /* rewrite reads first (they match against the original write names) */
     char mods[QC_MAXDEPTH][64];
     qc_build_reverse_flags(c);
+    qc_build_defs(c);
     qc_rewrite_reads(c, nt->root_id, mods, 0, ws, wn);
+    qc_free_defs();
     qc_free_reverse_flags();
     /* then qualify the nested writes themselves */
     for (int i = 0; i < wn; i++) {
@@ -2975,9 +3040,11 @@ void qualify_colliding_classes(Compiler *c) {
        then qualify the nested definitions themselves */
     char mods[QC_MAXDEPTH][64];
     qc_build_reverse_flags(c);
+    qc_build_defs(c);
     qc_retype_root_reads = 1;
     qc_rewrite_reads(c, nt->root_id, mods, 0, ws, wn);
     qc_retype_root_reads = 0;
+    qc_free_defs();
     qc_free_reverse_flags();
     for (int i = 0; i < wn; i++) {
       if (ws[i].depth == 0) continue;
