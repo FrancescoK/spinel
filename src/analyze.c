@@ -17722,6 +17722,11 @@ static int dyn_alias_writes(Compiler *c, int node, Scope *sc, const char *vn, co
   }
   return n;
 }
+static int dyn_lit_params(Compiler *c, int lit) {
+  if (nt_kind(c->nt, lit) != NK_BlockNode) return a_proc_params_node(c, lit);
+  int bp = nt_ref(c->nt, lit, "parameters");
+  return bp >= 0 && nt_kind(c->nt, bp) == NK_BlockParametersNode ? nt_ref(c->nt, bp, "parameters") : -1;
+}
 /* The parameter call position k of a proc literal or a block binds whatever
    the count, or NULL: a required one, or an optional after them unless
    required parameters follow (as dyn_method_nreq counts a method's). The
@@ -17730,12 +17735,7 @@ static const char *dyn_lit_param_name(Compiler *c, int lit, int k) {
   const char *pn = proc_param_name(c, lit, k);
   if (pn) return pn;
   const NodeTable *nt = c->nt;
-  int pnode = -1;
-  if (nt_kind(nt, lit) == NK_BlockNode) {
-    int bp = nt_ref(nt, lit, "parameters");
-    pnode = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
-  }
-  else pnode = a_proc_params_node(c, lit);
+  int pnode = dyn_lit_params(c, lit);
   int rn = 0, on = 0, sn = 0;
   if (pnode < 0) return NULL;
   nt_arr(nt, pnode, "requireds", &rn);
@@ -17757,12 +17757,7 @@ static unsigned dyn_lit_bits(Compiler *c, int lit) {
      that parameter's String when the call omits it, so what the body does
      to it is done to the required one (promote_default_alias_params). */
   const NodeTable *nt = c->nt;
-  int pnode = -1;
-  if (nt_kind(nt, lit) == NK_BlockNode) {
-    int bp = nt_ref(nt, lit, "parameters");
-    pnode = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
-  }
-  else pnode = a_proc_params_node(c, lit);
+  int pnode = dyn_lit_params(c, lit);
   int on = 0; const int *ov = pnode >= 0 ? nt_arr(nt, pnode, "optionals", &on) : NULL;
   for (int o = 0; o < on; o++) {
     int dv = nt_ref(nt, ov[o], "value");
@@ -17804,12 +17799,7 @@ static unsigned dyn_lit_bits(Compiler *c, int lit) {
    arguments (sp_proc_fill's distribution), or NULL. */
 static const char *dyn_lit_post_name(Compiler *c, int lit, int k, int n) {
   const NodeTable *nt = c->nt;
-  int pnode = -1;
-  if (nt_kind(nt, lit) == NK_BlockNode) {
-    int bp = nt_ref(nt, lit, "parameters");
-    pnode = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
-  }
-  else pnode = a_proc_params_node(c, lit);
+  int pnode = dyn_lit_params(c, lit);
   if (pnode < 0 || k >= n) return NULL;
   int rn = 0, on = 0, sn = 0;
   nt_arr(nt, pnode, "requireds", &rn);
@@ -17835,12 +17825,7 @@ static int dyn_lit_post_app(Compiler *c, int lit) {
   const NodeTable *nt = c->nt;
   if (lit < 0 || lit >= g_dyn.nlit) return 0;
   if (g_dyn.litpost[lit]) return g_dyn.litpost[lit] == 2;
-  int pnode = -1;
-  if (nt_kind(nt, lit) == NK_BlockNode) {
-    int bp = nt_ref(nt, lit, "parameters");
-    pnode = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
-  }
-  else pnode = a_proc_params_node(c, lit);
+  int pnode = dyn_lit_params(c, lit);
   int sn = 0; const int *sv = pnode >= 0 ? nt_arr(nt, pnode, "posts", &sn) : NULL;
   int app = 0;
   for (int i = 0; i < sn && !app; i++) {
@@ -17914,12 +17899,7 @@ static int dyn_kw_name_is(const char *pn, const char *key) {
 }
 static unsigned dyn_lit_kw_bits(Compiler *c, int lit, const char *key) {
   const NodeTable *nt = c->nt;
-  int pnode = -1;
-  if (nt_kind(nt, lit) == NK_BlockNode) {
-    int bp = nt_ref(nt, lit, "parameters");
-    pnode = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
-  }
-  else pnode = a_proc_params_node(c, lit);
+  int pnode = dyn_lit_params(c, lit);
   int kn = 0; const int *kv = pnode >= 0 ? nt_arr(nt, pnode, "keywords", &kn) : NULL;
   for (int i = 0; i < kn; i++) {
     const char *pn[1] = { nt_str(nt, kv[i], "name") };
@@ -17955,12 +17935,7 @@ static unsigned dyn_meth_kw_bits(Compiler *c, int mi, const char *key, int *j_ou
    dyn_any_appender does for a position: a program with none keeps its C. */
 static int dyn_lit_kw_any(Compiler *c, int lit) {
   const NodeTable *nt = c->nt;
-  int pnode = -1;
-  if (nt_kind(nt, lit) == NK_BlockNode) {
-    int bp = nt_ref(nt, lit, "parameters");
-    pnode = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
-  }
-  else pnode = a_proc_params_node(c, lit);
+  int pnode = dyn_lit_params(c, lit);
   int kn = 0; const int *kv = pnode >= 0 ? nt_arr(nt, pnode, "keywords", &kn) : NULL;
   for (int i = 0; i < kn; i++) {
     const char *pn = nt_str(nt, kv[i], "name");
@@ -18275,12 +18250,7 @@ static int dyn_lit_rest_takes(Compiler *c, int lit, int k) {
   const NodeTable *nt = c->nt;
   const char *rn = proc_rest_name(c, lit);
   if (!rn || !rn[0]) return 0;
-  int pnode = -1;
-  if (nt_kind(nt, lit) == NK_BlockNode) {
-    int bp = nt_ref(nt, lit, "parameters");
-    pnode = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
-  }
-  else pnode = a_proc_params_node(c, lit);
+  int pnode = dyn_lit_params(c, lit);
   int rn_req = 0;
   if (pnode >= 0) nt_arr(nt, pnode, "requireds", &rn_req);
   if (k < rn_req) return 0;
