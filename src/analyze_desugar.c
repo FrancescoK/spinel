@@ -6724,7 +6724,14 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
   return changed;
 }
 
-typedef struct { int def, st, top, tst, cond, cm, cls; const char *path; } CondDef;
+typedef struct { int def, st, top, tst, cond, cm, cls; const char *path, *vis; } CondDef;
+static int cdef_vis_def(const NodeTable *nt, int id) {
+  const char *nm = nt_kind(nt, id) == NK_CallNode && nt_ref(nt, id, "receiver") < 0 ? nt_str(nt, id, "name") : NULL;
+  int an = 0;
+  const int *av = nm && (sp_streq(nm, "private") || sp_streq(nm, "protected") || sp_streq(nm, "public"))
+                  ? nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &an) : NULL;
+  return an == 1 && nt_kind(nt, av[0]) == NK_DefNode ? av[0] : -1;
+}
 static void cdef_path(const NodeTable *nt, int cp, char *p, size_t cap) {
   if (nt_kind(nt, cp) == NK_ConstantPathNode) cdef_path(nt, nt_ref(nt, cp, "parent"), p, cap);
   size_t l = strlen(p);
@@ -6763,6 +6770,10 @@ static void cdef_walk(NodeTable *nt, int id, CondDef x, CondDef **v, int *n) {
   if (k == NK_SingletonClassNode && nt_kind(nt, nt_ref(nt, id, "expression")) == NK_SelfNode) {
     x.cm = 1; x.top = -1;
     cdef_walk(nt, nt_ref(nt, id, "body"), x, v, n);
+  }
+  else if (cdef_vis_def(nt, id) >= 0) {
+    x.vis = nt_str(nt, id, "name");
+    cdef_walk(nt, cdef_vis_def(nt, id), x, v, n);
   }
   else if (k == NK_DefNode && x.st >= 0 && nt_str(nt, id, "name") &&
            (nt_ref(nt, id, "receiver") < 0 || nt_kind(nt, nt_ref(nt, id, "receiver")) == NK_SelfNode)) {
@@ -6804,7 +6815,7 @@ static void cdef_insert_after(NodeTable *nt, int st, int after, int node) {
   int bn = 0; const int *b = nt_arr(nt, st, "body", &bn);
   int *nb = malloc(sizeof(int) * (size_t)(bn + 1)), m = 0;
   if (!nb) return;
-  for (int i = 0; i < bn; i++) { nb[m++] = b[i]; if (b[i] == after) nb[m++] = node; }
+  for (int i = 0; i < bn; i++) { nb[m++] = b[i]; if (b[i] == after || cdef_vis_def(nt, b[i]) == after) nb[m++] = node; }
   nt_node_set_arr(nt, st, "body", nb, m);
   free(nb);
 }
@@ -6823,7 +6834,7 @@ int desugar_conditional_defs(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   CondDef *v = NULL;
   int n = 0, serial = 0, groups = 0;
-  cdef_walk(nt, nt_ref(nt, nt->root_id, "statements"), (CondDef){ -1, -1, -1, -1, 0, 0, -1, "" }, &v, &n);
+  cdef_walk(nt, nt_ref(nt, nt->root_id, "statements"), (CondDef){ -1, -1, -1, -1, 0, 0, -1, "", "" }, &v, &n);
   for (int i = 0; i < n; i++) {
     if (v[i].def < 0 || !v[i].cond) continue;
     char *base = strdup(nt_str(nt, v[i].def, "name"));
@@ -6836,6 +6847,7 @@ int desugar_conditional_defs(Compiler *c) {
       for (int s = v[j].def; s <= hi; s++)
         bad |= nt_kind(nt, s) == NK_SuperNode || nt_kind(nt, s) == NK_ForwardingSuperNode;
       blk |= fwd_subtree_uses_yield_or_block(nt, v[j].def);
+      bad |= !sp_streq(v[j].vis, v[i].vis);
       if (cdef_arity(nt, v[j].def) != ar) ar = -1;
       same &= cdef_same(nt, v[j].def, d0);
       g[ng++] = v[j];
@@ -6906,7 +6918,7 @@ int desugar_conditional_defs(Compiler *c) {
     nt_node_set_ref(nt, def, "receiver", nt_ref(nt, g[ng - 1].def, "receiver") >= 0 ? nt_new_node(nt, "SelfNode") : -1);
     nt_node_set_ref(nt, def, "parameters", params);
     nt_node_set_ref(nt, def, "body", cdef_stmts(nt, chain));
-    cdef_insert_after(nt, g[ng - 1].tst, g[ng - 1].top, def);
+    cdef_insert_after(nt, g[ng - 1].tst, g[ng - 1].top, *g[0].vis ? fwd_new_call(nt, -1, g[0].vis, def) : def);
     serial += ng;
     free(base);
   }
