@@ -6390,6 +6390,16 @@ static TyKind ivar_nullable_int_ternary(Compiler *c, int vnode) {
    nothing, settling the ivar back on the bare type. */
 typedef struct { int n, cap; int *cls; const char **nm; } NilWrites;
 
+/* Can an instance of class k take an ivar `instance_variable_set` on a
+   boxed receiver names: a class, not a module, a Struct or Data class
+   (whose layout follows its members; a Data one is frozen), a native
+   class, a singleton, or the Toplevel pseudo-class. */
+int poly_ivar_set_class(Compiler *c, int k) {
+  ClassInfo *pk = &c->classes[k];
+  if (pk->is_struct || pk->is_data || pk->is_native_class || pk->is_singleton_of) return 0;
+  if (!pk->name || sp_streq(pk->name, "Toplevel") || comp_class_is_module(c, pk)) return 0;
+  return 1;
+}
 static void nil_write_note(NilWrites *w, int cls, const char *nm) {
   if (cls < 0 || !nm) return;
   if (w->n == w->cap) {
@@ -6740,13 +6750,19 @@ int infer_ivar_types(Compiler *c) {
             else {
               TyKind rt = comp_ntype(c, ivrecv);
               if (ty_is_object(rt)) tcid = ty_object_class(rt);
-              /* a poly receiver may be any class that has the slot: the
-                 value's type reaches each of them (the dispatch writes it) */
+              /* a poly receiver may be an instance of any class, and CRuby
+                 creates the ivar on whichever it is: every class that can
+                 take one gets the slot, and the value's type reaches each
+                 (the dispatch writes it). Left to the classes that already
+                 had it, the write to any other was dropped. */
               else if (rt == TY_POLY) {
                 TyKind pvt = infer_type(c, sav[1]);
                 for (int k = 0; k < c->nclasses; k++) {
                   ClassInfo *pk = &c->classes[k];
-                  int piv = pk->is_struct ? -1 : comp_ivar_index(pk, sym);
+                  if (!poly_ivar_set_class(c, k)) continue;
+                  int old_pn = pk->nivars;
+                  int piv = comp_ivar_intern(pk, sym);
+                  if (pk->nivars != old_pn) changed = 1;
                   if (piv < 0) continue;
                   if (pvt == TY_NIL) nil_write_note(&nilw, k, sym);
                   else if (!class_ivar_pinned(pk, sym)) {
