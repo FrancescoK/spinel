@@ -9836,12 +9836,14 @@ else {
       /* `@iv = cond ? nil : <int>` emitted in int context (nil -> SP_INT_NIL) */
     }
     else if (vty && sp_streq(vty, "NilNode")) {
-      if (ivt == TY_RANGE) buf_puts(b, "(sp_Range){0}");
-      else if (ivt == TY_POLY) buf_puts(b, "sp_box_nil()");
-      else if (ivt == TY_INT) buf_puts(b, "SP_INT_NIL");
-      else if (ivt == TY_FLOAT) buf_puts(b, "sp_float_nil()");
-      else if (ivt == TY_STRING) buf_puts(b, "NULL");
-      else buf_puts(b, default_value(ivt));
+      switch (ivt) {
+      case TY_RANGE: buf_puts(b, "(sp_Range){0}"); break;
+      case TY_POLY: buf_puts(b, "sp_box_nil()"); break;
+      case TY_INT: buf_puts(b, "SP_INT_NIL"); break;
+      case TY_FLOAT: buf_puts(b, "sp_float_nil()"); break;
+      case TY_STRING: buf_puts(b, "NULL"); break;
+      default: buf_puts(b, default_value(ivt)); break;
+      }
     }
     else if ((v_empty_array || v_empty_hash) && emit_empty_literal_as(c, v, ivt, b)) {
       /* the literal took the slot's variant */
