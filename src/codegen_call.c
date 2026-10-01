@@ -23691,14 +23691,15 @@ void refuse_yield_string_copies(Compiler *c, int yargc, const int *yargv) {
   int spread = 0;
   for (int k = 0; k < yargc && k < 16; k++) {
     int shared;
-    /* a keyword (`yield(k: s)`) binds the proc's keyword of that name, and
-       the Hash the yield builds holds a copy just the same */
+    /* a keyword (`yield(k: s)`) binds the proc's keyword of that name: the
+       Hash the yield builds holds the handle a pulled variable is
+       (dyn_pull_site_kw_args), or a copy */
     if (nt_kind(c->nt, yargv[k]) == NK_KeywordHashNode) {
       int en = 0; const int *el = nt_arr(c->nt, yargv[k], "elements", &en);
       for (int e = 0; e < en; e++) {
         int v;
         const char *key = dyn_kw_elem_key(c, el[e], &v);
-        if (!key || v < 0 || !strvar_arg(c, v, &shared)) continue;
+        if (!key || v < 0 || !strvar_arg(c, v, &shared) || shared || local_is_handle(c, v)) continue;
         DynReach r;
         dyn_value_kw_reach(c, g_yield_proc_expr, key, &r);
         if (!r.app) continue;
@@ -24058,7 +24059,8 @@ static void refuse_string_copies(Compiler *c, int id) {
         char mt[96]; if (r.mname) snprintf(mt, sizeof mt, "`%s`", r.mname);
         refuse_string_copy(c, av[k], r.mname ? mt : NULL, r.pname, through, why);
       }
-      /* and the keywords, by name: an open site shares a position only */
+      /* and the keywords, by name: shared as a position is when the
+         analysis pulled the variable (dyn_pull_site_kw_args) */
       int ka = nt_ref(nt, id, "arguments"), kac = 0;
       const int *kav = ka >= 0 ? nt_arr(nt, ka, "arguments", &kac) : NULL;
       for (int k = 0; k < kac; k++) {
@@ -24067,7 +24069,7 @@ static void refuse_string_copies(Compiler *c, int id) {
         for (int e = 0; e < en; e++) {
           int v, shared, j;
           const char *key = dyn_kw_elem_key(c, el[e], &v);
-          if (!key || v < 0 || !strvar_arg(c, v, &shared)) continue;
+          if (!key || v < 0 || !strvar_arg(c, v, &shared) || shared) continue;
           if (shift) {
             /* the method's keyword can be the handle (dyn_convert_params),
                but the caller's String is not pulled into it here */
@@ -24128,6 +24130,8 @@ static void refuse_string_copies(Compiler *c, int id) {
         int v, shared;
         const char *key = dyn_kw_elem_key(c, el[e], &v);
         if (!key || v < 0 || !strvar_arg(c, v, &shared)) continue;
+        /* aliased on an object's splice, as a position is */
+        if (spliced && ie_arg_aliases(c, v) && block_kw_wants_alias(c, blk, key)) continue;
         DynReach r;
         dyn_value_kw_reach(c, blk, key, &r);
         if (!r.app || r.unknown) continue;

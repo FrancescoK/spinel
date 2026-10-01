@@ -17783,8 +17783,7 @@ static void dyn_reach_value(Compiler *c, int v, int k, int depth, DynReach *r) {
    the boxed Hash, never the sp_int slot, so whether a target keeps it does
    not matter here. */
 static void dyn_reach_kw_method(Compiler *c, int mn, const char *key, DynReach *r) {
-  const char *cn = nt_str(c->nt, mn, "name");
-  if (cn && sp_streq(cn, "instance_method")) { r->unlifted = "bind"; return; }
+  /* an UnboundMethod names its method as a Method does (dyn_reach_method_node) */
   int mi = method_obj_target_mi(c, mn);
   if (mi < 0 || method_call_param_shift(c, mn, mi)) { r->unknown = 1; return; }
   int j;
@@ -18969,6 +18968,73 @@ static void dyn_site_reach(Compiler *c, int n, int k, DynReach *r) {
 /* Pull the String variables dynamic site `n` hands a target that appends to
    them into the shared handle. */
 static int spread_demand_changed_local(Compiler *c, int splat);
+/* The keyword arm of a site's reach (dyn_site_reach): a dynamic call's
+   receiver, a lowered method's yield into the blocks its call sites pass
+   (literal blocks, and a proc or Method passed with `&`), or an open site
+   (a boxed callable or a curried proc, whose targets are unknown, and
+   bind_call, whose UnboundMethod names its method). */
+static void dyn_site_kw_reach(Compiler *c, int n, const char *key, DynReach *r) {
+  const NodeTable *nt = c->nt;
+  memset(r, 0, sizeof *r);
+  if (!g_dyn.fresh) dyn_memo_reset(c);
+  int shift = 0;
+  if (nt_kind(nt, n) == NK_YieldNode) {
+    int mi = dyn_yield_site(c, n);
+    const char *mn = mi >= 0 ? c->scopes[mi].name : NULL;
+    dyn_blk_index(c);
+    int h = mn ? anh_find(&g_dyn.bnames, sp_streq(mn, "initialize") ? "new" : mn) : -1, any = 0;
+    for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
+      int b = nt_ref(nt, g_dyn.bnode[e], "block");
+      any = 1;
+      if (nt_kind(nt, b) == NK_BlockNode) dyn_reach_kw(c, b, key, 0, r);
+      else if (nt_kind(nt, b) == NK_BlockArgumentNode) dyn_reach_kw(c, nt_ref(nt, b, "expression"), key, 0, r);
+      else r->unknown = 1;
+    }
+    if (!any) r->unknown = 1;
+  }
+  else if (dyn_open_site(c, n, &shift)) {
+    /* a curried proc does not pass keywords on as keywords (CRuby counts
+       them as a position and raises), so it is no keyword site: refused */
+    if (!shift && comp_ntype(c, nt_ref(nt, n, "receiver")) == TY_CURRY) { r->unlifted = "curry"; return; }
+    if (shift) dyn_reach_kw(c, nt_ref(nt, n, "receiver"), key, 0, r);
+    else r->unknown = 1;
+  }
+  else dyn_reach_kw(c, nt_ref(nt, n, "receiver"), key, 0, r);
+  if (r->unknown && !r->app && dyn_any_kw_appender(c)) r->app = 1;
+}
+/* The keywords of site `n` (`f.call(k: s)`, `yield(k: s)` into a proc, an
+   open site's): each value is bound by name to the target's keyword
+   parameter of that name, through the boxed Hash the call builds, and a
+   target that appends to it appended to a copy. The same pull as a
+   position's: the Hash then holds the handle. */
+static int dyn_pull_site_kw_args(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  int a = nt_ref(nt, n, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  for (int k = 0; k < ac; k++) {
+    if (nt_kind(nt, av[k]) != NK_KeywordHashNode) continue;
+    int en = 0; const int *el = nt_arr(nt, av[k], "elements", &en);
+    for (int e = 0; e < en; e++) {
+      int v;
+      const char *key = dyn_kw_elem_key(c, el[e], &v);
+      if (!key || v < 0 || nt_kind(nt, v) != NK_LocalVariableReadNode) continue;
+      TyKind vt = comp_ntype(c, v);
+      if (vt != TY_STRING && vt != TY_STRBUF) continue;
+      const char *vn = nt_str(nt, v, "name");
+      Scope *vs = vn ? comp_scope_of(c, v) : NULL;
+      LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+      if (!(lv && lv->type == TY_STRBUF && lv->str_shared)) {
+        DynReach r;
+        dyn_site_kw_reach(c, n, key, &r);
+        if (r.unlifted || !r.app) continue;
+      }
+      changed |= dyn_pull_arg(c, v, 1);
+    }
+  }
+  return changed;
+}
+
 static int dyn_pull_site_args(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -19038,30 +19104,8 @@ static int dyn_pull_site_args(Compiler *c, int n) {
     }
     changed |= dyn_pull_arg(c, av[k], 1);
   }
-  /* The keywords (`f.call(k1: s)`): each value is bound by name to the
-     target's keyword parameter of that name, through the boxed Hash, and
-     a target that appends to it appended to a copy. The same pull as a
-     position's: the Hash then holds the handle. */
-  for (int k = 0; k < ac && nt_kind(nt, n) == NK_CallNode; k++) {
-    if (nt_kind(nt, av[k]) != NK_KeywordHashNode) continue;
-    int en = 0; const int *el = nt_arr(nt, av[k], "elements", &en);
-    for (int e = 0; e < en; e++) {
-      int v;
-      const char *key = dyn_kw_elem_key(c, el[e], &v);
-      if (!key || v < 0 || nt_kind(nt, v) != NK_LocalVariableReadNode) continue;
-      TyKind vt = comp_ntype(c, v);
-      if (vt != TY_STRING && vt != TY_STRBUF) continue;
-      const char *vn = nt_str(nt, v, "name");
-      Scope *vs = vn ? comp_scope_of(c, v) : NULL;
-      LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
-      if (!(lv && lv->type == TY_STRBUF && lv->str_shared)) {
-        DynReach r;
-        dyn_call_kw_reach(c, n, key, &r);
-        if (r.unlifted || !r.app) continue;
-      }
-      changed |= dyn_pull_arg(c, v, 1);
-    }
-  }
+  /* the keywords, by name, at a call and at a lowered yield alike */
+  changed |= dyn_pull_site_kw_args(c, n);
   return changed;
 }
 
@@ -19322,6 +19366,7 @@ static int promote_dyncall_string_args(Compiler *c) {
   for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
     int shift;
     if (!dyn_open_site(c, n, &shift)) continue;
+    changed |= dyn_pull_site_kw_args(c, n);
     int a = nt_ref(nt, n, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
     for (int k = shift; k < ac && k < DYN_ARGS; k++) {
