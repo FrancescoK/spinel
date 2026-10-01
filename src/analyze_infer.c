@@ -3264,6 +3264,8 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
 static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind *out) {
   /* TY_RANDOM instance methods */
   if (recv >= 0 && rt == TY_RANDOM) {
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op) { *out = bop_result(op, rt); return 1; }
     if (sp_streq(name, "rand")) {
       if (argc < 1) { *out = TY_FLOAT; return 1; }
       TyKind a0 = infer_type(c, argv[0]);
@@ -3275,8 +3277,6 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
       if (rand_lit_range_float(c, argv[0])) { *out = TY_FLOAT; return 1; }
       { *out = TY_INT; return 1; }
     }
-    if (sp_streq(name, "bytes")) { *out = TY_STRING; return 1; }
-    if (sp_streq(name, "seed")) { *out = TY_INT; return 1; }
     if (sp_streq(name, "class")) { *out = TY_CLASS; return 1; }
     if (is_equality_name(name) && argc == 1)
       { *out = TY_BOOL; return 1; }

@@ -70,6 +70,16 @@ const BuiltinZeroOp *bop_zero_find(TyKind recv, const char *name) {
    lookups go through the sorted index below. */
 static const BuiltinOp bop_rows[] = {
 #include "builtin_zero_ops.inc"
+  /* Random's scalar readers and byte string, also used by its poly face. */
+  { TY_RANDOM, "rand", 0, 0, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "sp_Random_rand_float($r)", 0, 0, 0 },
+  { TY_RANDOM, "seed", 0, 0, BF_ANY, TY_INT, BOPE_TEMPLATE, "sp_Random_seed($r)", 0, 0, 0 },
+  { TY_RANDOM, "bytes", 1, 1, BF_ANY, TY_STRING, BOPE_TEMPLATE, "sp_Random_bytes($r, $i0)", BOP_K(TY_INT), 0, 0 },
+  { TY_RANDOM, "bytes", 1, 1, BF_ANY, TY_STRING, BOPE_TEMPLATE, "sp_Random_bytes($h, sp_random_bytes_count($b0))", 0, 0, 0 },
+  /* Preserve the result of the legacy inference for invalid counts too;
+     emission's arity guard raises before an operation is selected. */
+  { TY_RANDOM, "seed", 0, BOP_ARGC_ANY, BF_ANY, TY_INT, BOPE_NONE, NULL, 0, 0, 0 },
+  { TY_RANDOM, "bytes", 0, BOP_ARGC_ANY, BF_ANY, TY_STRING, BOPE_NONE, NULL, 0, 0, 0 },
+
   /* Process::Tms: four cumulative CPU times, all Float (#3044), fields of
      the by-value struct */
   { TY_TMS, "utime",  0, 0, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "($r).utime", 0, 0, BOPF_BOXED },

@@ -4,6 +4,12 @@
 
 /* ---- The boxed-receiver face table (see types.h) ---- */
 static const PolyFace ty_poly_face_tbl[] = {
+  /* Random stored in a mixed container keeps its instance surface. The
+     typed call also checks invalid counts; bytes without arguments belongs
+     to String and keeps its existing dispatch. */
+  {"rand", PF_RANDOM, 0, -1, -1},
+  {"bytes", PF_RANDOM, 1, -1, -1},
+  {"seed", PF_RANDOM, 0, -1, -1},
   /* String value-form mutators: the non-bang transform runs against the
      unboxed contents and the result is written back through the box. */
   {"gsub!", PF_STRING | PF_STR_BANG, 0, -1, -1}, {"sub!", PF_STRING | PF_STR_BANG, 0, -1, -1},
