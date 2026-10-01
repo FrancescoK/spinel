@@ -4446,6 +4446,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
          type via the general `-` arm below. */
       if (at == TY_TIME) return TY_FLOAT;
       if (at == TY_POLY) return TY_POLY;
+      /* an argument not typed yet (a parameter whose callers are still
+         being read) may turn out poly: answering Time now pins a local
+         that later holds the boxed answer */
+      if (at == TY_UNKNOWN) return TY_UNKNOWN;
     }
     if (sp_streq(name, "utc") || sp_streq(name, "gmtime") || sp_streq(name, "getutc") ||
         sp_streq(name, "getgm") ||

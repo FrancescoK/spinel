@@ -17102,10 +17102,11 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "-") && at == TY_POLY) {
         /* Time - poly: a Time held there gives the Float duration (#2456), a
            number of the tower an earlier Time, anything else a TypeError --
-           the boxed subtraction's own Time arm, answering boxed */
+           the boxed subtraction's own Time arm, answering boxed. The operand
+           may be a fresh box, so it is rooted across the receiver's box. */
         buf_printf(b, "({ sp_Time _t%d = ", tt); emit_expr(c, recv, b);
         buf_printf(b, "; sp_RbVal _t%d = ", tu); emit_boxed(c, argv[0], b);
-        buf_printf(b, "; sp_poly_sub(sp_box_time(_t%d), _t%d); })", tt, tu);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_poly_sub(sp_box_time(_t%d), _t%d); })", tu, tt, tu);
       }
       else if (at == TY_FLOAT) {
         buf_printf(b, "({ sp_Time _t%d = ", tt); emit_expr(c, recv, b);
