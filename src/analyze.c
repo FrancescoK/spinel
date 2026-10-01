@@ -12547,6 +12547,30 @@ static int an_block_param_lent(Compiler *c, int blk, int k) {
    (a boxed one through the box) or by handing it to a lent parameter? The
    box then has to hold the caller's handle, as for a boxed parameter the
    method appends to itself (convert_byref_handle_params). */
+/* Does literal block `blk` append to the elements of its rest, and does a
+   yield of the n arguments av[] gather position k into it (the positions
+   past the leading and the optional parameters the count fills, up to the
+   posts)? The rest is then an Array of the arguments' boxes, and a String
+   variable there has to be the shared handle (#6179). */
+static int rest_elems_mutated_walk(Compiler *c, int node, const char *rn, int depth);
+static int block_rest_position(Compiler *c, int blk, const int *av, int n, int k) {
+  const NodeTable *nt = c->nt;
+  for (int i = 0; i < n; i++) {
+    NodeKind ak = nt_kind(nt, av[i]);
+    if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
+  }
+  const char *rn = block_rest_name(c, blk);
+  int bp = nt_ref(nt, blk, "parameters");
+  int pn = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
+  if (!rn || !rn[0] || pn < 0) return 0;
+  int P = 0, O = 0, Q = 0, ot, ps;
+  nt_arr(nt, pn, "requireds", &P);
+  nt_arr(nt, pn, "optionals", &O);
+  nt_arr(nt, pn, "posts", &Q);
+  block_fill(P, O, Q, 1, n, &ot, &ps);
+  if (k < P + ot || k >= ps) return 0;
+  return rest_elems_mutated_walk(c, nt_ref(nt, blk, "body"), rn, 0);
+}
 static int an_poly_param_yielded_lent(Compiler *c, int mi, int pj) {
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
@@ -12567,6 +12591,8 @@ static int an_poly_param_yielded_lent(Compiler *c, int mi, int pj) {
         LocalVar *t = bs ? scope_local(bs, bp) : NULL;
         if (t && !t->is_cell && (t->type == TY_POLY || t->type == TY_STRING) &&
             an_subtree_lends_local(c, nt_ref(nt, blk, "body"), bp, 0)) return 1;
+        /* or gathers it into a rest it appends to the elements of */
+        if (block_rest_position(c, blk, av, ac, k)) return 1;
       }
     }
   }
@@ -17321,10 +17347,16 @@ static int dyn_scopes_named(Compiler *c, const char *nm) {
 /* Is there any target at all that appends to a String parameter: a proc
    literal, a block kept as `&blk`, a method a `method(:m)` names? What an
    unknown target answers (see above). */
+static int dyn_lit_rest_takes(Compiler *c, int lit, int k);
 static int dyn_any_appender(Compiler *c) {
   const NodeTable *nt = c->nt;
   if (g_dyn.any >= 0) return g_dyn.any;
   g_dyn.any = 0;
+  /* a proc literal or a block appending to its rest's elements */
+  for (int n = comp_kind_first(c, NK_LambdaNode); n >= 0 && !g_dyn.any; n = comp_kind_next(c, n))
+    if (nt_kind(nt, n) == NK_LambdaNode && !dyn_cap_wrapper(c, n) && dyn_lit_rest_takes(c, n, DYN_ARGS)) g_dyn.any = 1;
+  for (int n = comp_kind_first(c, NK_BlockNode); n >= 0 && !g_dyn.any; n = comp_kind_next(c, n))
+    if (nt_kind(nt, n) == NK_BlockNode && dyn_lit_rest_takes(c, n, DYN_ARGS)) g_dyn.any = 1;
   int *tg = (int *)malloc(sizeof(int) * ((size_t)c->nscopes + 1));
   if (!tg) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int n = comp_kind_first(c, NK_LambdaNode); n >= 0 && !g_dyn.any; n = comp_kind_next(c, n))
@@ -17383,10 +17415,65 @@ static void dyn_reach_method_node(Compiler *c, int mn, int k, DynReach *r) {
   if (k < nreq && !r->mname) { r->mname = m->name; r->pname = m->pnames[k]; }
 }
 
+const char *proc_rest_name(Compiler *c, int create);
+static int dyn_lit_rest_takes(Compiler *c, int lit, int k);
+/* Does a block one of method mi's call sites passes as its `&blk` take
+   position k into a rest it appends to the elements of? */
+static int dyn_blk_rest_takes(Compiler *c, int mi, int k) {
+  const NodeTable *nt = c->nt;
+  const char *cn = c->scopes[mi].name;
+  if (!cn) return 0;
+  dyn_blk_index(c);
+  int h = anh_find(&g_dyn.bnames, cn);
+  for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
+    int b = nt_ref(nt, g_dyn.bnode[e], "block");
+    if (nt_kind(nt, b) == NK_BlockNode && dyn_lit_rest_takes(c, b, k)) return 1;
+  }
+  return 0;
+}
+/* A rest whose elements the body of a proc literal or a block appends to
+   (`proc { |*q| q[0] << x }`) gathers the arguments past its leading
+   parameters into an Array of their boxes: a String variable there has to
+   be the handle, which the call boxes as itself, or the append lands in a
+   copy (#6179). The positions it may take are those past the leading
+   requireds, whatever the count. */
+static int rest_elems_mutated_walk(Compiler *c, int node, const char *rn, int depth);
+static int dyn_lit_rest_takes(Compiler *c, int lit, int k) {
+  const NodeTable *nt = c->nt;
+  const char *rn = proc_rest_name(c, lit);
+  if (!rn || !rn[0]) return 0;
+  int pnode = -1;
+  if (nt_kind(nt, lit) == NK_BlockNode) {
+    int bp = nt_ref(nt, lit, "parameters");
+    pnode = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
+  }
+  else pnode = a_proc_params_node(c, lit);
+  int rn_req = 0;
+  if (pnode >= 0) nt_arr(nt, pnode, "requireds", &rn_req);
+  if (k < rn_req) return 0;
+  int body = nt_kind(nt, lit) == NK_BlockNode ? nt_ref(nt, lit, "body") : a_proc_body(c, lit);
+  return rest_elems_mutated_walk(c, body, rn, 0);
+}
+/* ...for what a call's receiver `v` can hold: a literal, or a method's
+   `&blk`, whose call sites pass the blocks. */
+static int dyn_rest_takes(Compiler *c, int v, int k) {
+  const NodeTable *nt = c->nt;
+  if (v < 0) return 0;
+  NodeKind vk = nt_kind(nt, v);
+  if (dyn_is_proc_literal(c, v) || vk == NK_BlockNode)
+    return dyn_lit_rest_takes(c, vk == NK_CallNode ? nt_ref(nt, v, "block") : v, k);
+  if (vk != NK_LocalVariableReadNode) return 0;
+  const char *vn = nt_str(nt, v, "name");
+  Scope *vs = vn ? comp_scope_of(c, v) : NULL;
+  if (!vs || !vs->name || !vs->blk_param || !sp_streq(vs->blk_param, vn)) return 0;
+  return dyn_blk_rest_takes(c, (int)(vs - c->scopes), k);
+}
+
 static void dyn_reach_value(Compiler *c, int v, int k, int depth, DynReach *r) {
   const NodeTable *nt = c->nt;
   if (v < 0 || depth > 4) { r->unknown = 1; return; }
   NodeKind vk = nt_kind(nt, v);
+  if (dyn_rest_takes(c, v, k)) r->app = 1;
   if (dyn_is_proc_literal(c, v) || vk == NK_BlockNode) {
     const char *pn = proc_param_name(c, v, k);
     int open = proc_opt_count(c, v) > 0 || proc_has_rest(c, v) || proc_post_count(c, v) > 0;
@@ -17655,6 +17742,7 @@ void dyn_yield_reach(Compiler *c, int y, int k, DynReach *r) {
   memset(r, 0, sizeof *r);
   if (!g_dyn.fresh) dyn_memo_reset(c);
   int mi = dyn_yield_site(c, y);
+  if (mi >= 0 && dyn_blk_rest_takes(c, mi, k)) r->app = 1;
   unsigned bits = mi >= 0 ? dyn_blk_bits(c, mi) : DYN_OPEN;
   if (bits & DYN_OPEN) r->unknown = 1;
   dyn_fold(r, bits, k, 1, 0, TY_UNKNOWN);
@@ -18610,10 +18698,72 @@ static int yield_splice_handles(Compiler *c) {
   return changed;
 }
 
+/* ---- A String a yield gathers into a block's rest (#6179) ---------------
+
+   A spliced yield, and instance_exec, gather the arguments past a block's
+   leading and optional parameters into a fresh Array for its rest
+   (emit_block_binds). The Array held a copy of a plain String, so a block
+   appending to the rest's element (`{ |*q| q[0] << x }`) grew the copy,
+   where CRuby grows the caller's String, as a method's gather did before
+   promote_spread_string_args. Such a String variable becomes the shared
+   handle, and the Array holds the handle. */
+/* Pull the String variables among the n arguments av[] that literal block
+   `blk` gathers into its rest, when it appends to the rest's elements. A
+   parameter of the yielding method `ms` a nil or another kind widened to a
+   box pulls the String variable call `u` binds to it instead: the box then
+   holds the handle (as yield_splice_handles does for a boxed parameter). */
+static int block_rest_pull_args(Compiler *c, int blk, const int *av, int n, Scope *ms, int u) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int k = 0; k < n; k++) {
+    if (!block_rest_position(c, blk, av, n, k)) continue;
+    if (nt_kind(nt, av[k]) != NK_LocalVariableReadNode) continue;
+    TyKind at = comp_ntype(c, av[k]);
+    if (at == TY_STRING || at == TY_STRBUF) changed |= dyn_pull_arg(c, av[k], 1);
+    else if (at == TY_POLY && ms) {
+      int pj = an_param_idx(ms, nt_str(nt, av[k], "name"));
+      int ua = pj >= 0 ? arg_layout_param_node(c, ms, u, pj, NULL) : -1;
+      if (ua >= 0) changed |= dyn_pull_arg(c, ua, 1);
+    }
+  }
+  return changed;
+}
+static int yield_rest_handles(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  dyn_blk_index(c);
+  for (int y = comp_kind_first(c, NK_YieldNode); y >= 0; y = comp_kind_next(c, y)) {
+    if (nt_kind(nt, y) != NK_YieldNode) continue;
+    Scope *ms = comp_scope_of(c, y);
+    if (!ms || !ms->name || !ms->yields) continue;
+    int mi = (int)(ms - c->scopes);
+    int aa = nt_ref(nt, y, "arguments"), ac = 0;
+    const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &ac) : NULL;
+    if (ac == 0) continue;
+    int h = anh_find(&g_dyn.bnames, sp_streq(ms->name, "initialize") ? "new" : ms->name);
+    for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
+      int u = g_dyn.bnode[e], blk = nt_ref(nt, u, "block");
+      if (nt_kind(nt, blk) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
+      changed |= block_rest_pull_args(c, blk, av, ac, ms, u);
+    }
+  }
+  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
+    if (nt_kind(nt, u) != NK_CallNode || !nt_str(nt, u, "name") || !sp_streq(nt_str(nt, u, "name"), "instance_exec"))
+      continue;
+    int blk = nt_ref(nt, u, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+    int aa = nt_ref(nt, u, "arguments"), ac = 0;
+    const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &ac) : NULL;
+    changed |= block_rest_pull_args(c, blk, av, ac, NULL, u);
+  }
+  return changed;
+}
+
 static int promote_dyncall_string_args(Compiler *c) {
   const NodeTable *nt = c->nt;
   dyn_memo_reset(c);
   int yh = yield_splice_handles(c);
+  yh |= yield_rest_handles(c);
   int changed = dyn_convert_params(c);
   changed |= ctor_convert_params(c);
   changed |= ctor_pull_args(c);
