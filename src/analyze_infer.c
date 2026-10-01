@@ -7946,16 +7946,9 @@ TyKind infer_uncached(Compiler *c, int id) {
       return (ct == TY_FLOAT || vt == TY_FLOAT) ? TY_FLOAT : TY_INT;
     return ct != TY_UNKNOWN ? ct : vt;
   }
-  if (nk == NK_GlobalVariableWriteNode) {
+  if (nk == NK_GlobalVariableWriteNode || nk == NK_GlobalVariableOrWriteNode || nk == NK_GlobalVariableAndWriteNode) {
     /* `$g = v` evaluates to the stored value, which codegen reads back from
        the slot -- the slot's type, as for the ivar and cvar writes above */
-    const char *nm = nt_str(nt, id, "name");
-    const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
-    LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
-    TyKind ct = lv ? lv->type : TY_UNKNOWN;
-    return ct != TY_UNKNOWN ? ct : infer_type(c, nt_ref(nt, id, "value"));
-  }
-  if (nk == NK_GlobalVariableOrWriteNode || nk == NK_GlobalVariableAndWriteNode) {
     /* `$g ||= v` evaluates to the slot after the guarded write */
     const char *nm = nt_str(nt, id, "name");
     const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
