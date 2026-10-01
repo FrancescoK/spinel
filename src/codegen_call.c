@@ -27426,7 +27426,7 @@ static int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, co
         /* a private/protected class method answers only to include_all */
         if (yes && foldable && comp_cmethod_vis_declared(c, ci, qm, NULL) != SP_VIS_PUBLIC)
           yes = include_all;
-        /* as do Class's and Module's private ones (ruby2_keywords, ...) */
+        /* as do Class's and Module's private ones (private, inherited, ...) */
         if (!yes && foldable && include_all && class_object_private_method(qm, class_is_module(c, ci)))
           yes = 1;
       }
@@ -27437,6 +27437,10 @@ static int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, co
          same way they do for a primitive receiver (#3467). */
       /* a core module (Comparable, Kernel) has none of Class's own */
       else if (rcn && ci < 0 && is_builtin_module_name(rcn) && class_only_method(qm)) { resolved = 1; yes = 0; }
+      /* a core class or module object has Class's or Module's private
+         methods too, answered to include_all as a user one's are */
+      else if (rcn && ci < 0 && builtin_class_id(rcn) != 0 && foldable && include_all &&
+               class_object_private_method(qm, is_builtin_module_name(rcn))) { resolved = 1; yes = 1; }
       else if (rt_probe_answer(c, id, &yes)) resolved = 1;
     }
     else if (recv >= 0 && ty_is_object(rt)) {
