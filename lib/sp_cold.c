@@ -2615,8 +2615,18 @@ sp_Enumerator *sp_enum_as_gen(sp_Enumerator *e) {
   e->gen_label = TRUE;
   return e;
 }
+/* Recognize the annotated materialized walks in the existing return
+   dispatch; an inspect label must not turn a supported walk into an error. */
+static int sp_enum_returns_source(sp_Enumerator *e) {
+  const char *m = e->meth;
+  return m && (strcmp(m, "each") == 0 || strcmp(m, "each_with_index") == 0 ||
+               strncmp(m, "cycle(", 6) == 0 || strncmp(m, "combination(", 12) == 0 ||
+               strcmp(m, "permutation") == 0 || strncmp(m, "permutation(", 12) == 0 ||
+               strncmp(m, "repeated_combination(", 21) == 0 ||
+               strncmp(m, "repeated_permutation(", 21) == 0);
+}
 sp_RbVal sp_enum_with_index_value(sp_Enumerator *e) {SP_GC_ROOT(e);
-  if (e->meth && (strcmp(e->meth, "each") == 0 || strcmp(e->meth, "each_with_index") == 0))
+  if (sp_enum_returns_source(e))
     return e->source;
   sp_raise_cls("NotImplementedError",
                sp_sprintf("Enumerator#with_index return value for a stored %s enumerator",
@@ -2626,7 +2636,7 @@ sp_RbVal sp_enum_with_index_value(sp_Enumerator *e) {SP_GC_ROOT(e);
 sp_RbVal sp_enum_with_index_result(sp_Enumerator *e, sp_PolyArray *mapped) {SP_GC_ROOT(e);
   if (e->meth && (strcmp(e->meth, "map") == 0 || strcmp(e->meth, "collect") == 0))
     return sp_box_poly_array(mapped);
-  if (e->meth && (strcmp(e->meth, "each") == 0 || strcmp(e->meth, "each_with_index") == 0))
+  if (sp_enum_returns_source(e))
     return e->source;
   sp_raise_cls("NotImplementedError",
                sp_sprintf("Enumerator#with_index return value for a stored %s enumerator",

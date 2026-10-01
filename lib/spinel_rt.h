@@ -14559,7 +14559,9 @@ static sp_Enumerator *sp_Enumerator_new_cycle(sp_RbVal arr, sp_int n) {
   sp_int len = items ? items->len : 0;
   for (sp_int r = 0; r < n; r++)
     for (sp_int i = 0; i < len; i++) sp_PolyArray_push(out, items->data[i]);
-  { sp_Enumerator *e = sp_Enumerator_new_from_items(out); e->source = arr; return e; }
+  { sp_Enumerator *e = sp_Enumerator_new_from_items(out); SP_GC_ROOT(e);
+    sp_gc_wb((void*)e); e->source = arr;
+    e->meth = sp_sprintf("cycle(%lld)", (long long)n); return e; }
 }
 /* blockless cycle(n) on a boxed receiver: an Array's, a Hash's, an Integer
    or String Range's or an Enumerator's items repeated n times, the
