@@ -1,0 +1,15 @@
+"super"
+"\"super\""
+"super"
+nil
+[nil]
+nil
+["super", :s]
+"super"
+nil
+[:i1, "super"]
+[:m1, :p]
+[:m1]
+[:b, :base1]
+[:pre, [:c, [:b, :base1]]]
+nil

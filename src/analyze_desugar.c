@@ -10881,6 +10881,8 @@ static int name_in_list(const char *const *list, const char *n) {
   return 0;
 }
 
+int object_method_name(const char *n) { return n && name_in_list(OBJECT_METHOD_NAMES, n); }
+
 static int rbself_builtin(const char *cn) {
   static const char *const B[] = { "String", "Integer", "Float", "Symbol", "TrueClass",
     "FalseClass", "NilClass", "Array", "Hash", "Time", "Numeric", "Range", "Regexp", NULL };

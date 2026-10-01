@@ -3119,6 +3119,21 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
             if (sp_streq(cn, kfns[bi])) { res = "method"; break; }
         }
       }
+      /* `defined?(super)`: "super" when the method has one to call -- the
+         next shadow of an include or prepend chain, an ancestor's method,
+         Class#new, or a method every object has -- else nil. An ancestor
+         that undefs the name hides everything above it. */
+      else if (sp_streq(vt, "SuperNode") || sp_streq(vt, "ForwardingSuperNode")) {
+        Scope *ss = comp_scope_of(c, id);
+        if (ss && ss->class_id >= 0 && ss->name) {
+          const char *un = comp_prep_user_name(ss->name);
+          int sp = comp_super_parent(c, ss->class_id, ss->is_cmethod);
+          int gone = !ss->is_cmethod && sp >= 0 && !comp_prep_chain_target(c, ss->class_id, ss->name) &&
+                     comp_is_undeffed_in_chain(c, sp, un);
+          if (!gone && (a_super_target(c, ss) >= 0 || comp_super_is_class_new(c, v) || object_method_name(un)))
+            res = "super";
+        }
+      }
       /* An assignment of any kind (local/ivar/gvar/cvar/constant/index/attr,
          plain or operator) answers "assignment" without evaluating. */
       else if (strstr(vt, "WriteNode") || sp_streq(vt, "MultiWriteNode"))
