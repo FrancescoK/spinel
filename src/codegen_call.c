@@ -362,7 +362,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
       RenPark park = ren_park(saved_nren);
       const char *svs = g_self, *svd = g_self_deref;
       g_self = saved_self; g_self_deref = saved_self_deref;
-      buf_printf(b, "const char **_cell__y%d_%s = &(", tag, m->pnames[i]);
+      buf_printf(b, "_cell__y%d_%s = &(", tag, m->pnames[i]);
       emit_inline_alias_arg(c, argv2[L.arg[i]], b);
       buf_puts(b, ";\n");
       g_self = svs; g_self_deref = svd;
@@ -8062,7 +8062,7 @@ static void emit_poly_arm_args(Compiler *c, Scope *m, Scope *ms, const ArgLayout
       TyKind pt = pv ? pv->type : TY_POLY;
       if (pt == TY_UNKNOWN) pt = TY_POLY;
       if (pv && pv->byref_out) {
-        buf_printf(pre, "const char **_cell__pd%d_%d = %s; ", pd_uid, a, pa.p ? pa.p : "NULL");
+        buf_printf(pre, "const char * volatile *_cell__pd%d_%d = %s; ", pd_uid, a, pa.p ? pa.p : "NULL");
         buf_printf(cb, "_cell__pd%d_%d", pd_uid, a);
       }
       else {
@@ -26970,7 +26970,7 @@ static void emit_bound_method_call(Compiler *c, int id, int recv, int target, Bu
   for (int k = 0; k < tm->nparams; k++) {
     if (np++) buf_puts(&cast, ", ");
     LocalVar *pp = tm->pnames[k] ? scope_local(tm, tm->pnames[k]) : NULL;
-    if (pp && pp->byref_out) buf_puts(&cast, "const char **");
+    if (pp && pp->byref_out) buf_puts(&cast, "const char * volatile *");
     else emit_ctype(c, pp ? pp->type : TY_POLY, &cast);
   }
   if (tm->blk_param && tm->blk_param[0] && !tm->yields) buf_puts(&cast, np++ ? ", sp_Proc *" : "sp_Proc *");

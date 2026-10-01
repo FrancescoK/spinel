@@ -3395,7 +3395,7 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
     /* byref string out-param: the caller's slot, so body mutation propagates.
        Named _cell_<name> so the ordinary is_cell deref forms read/write it. */
     if (p && p->byref_out) {
-      buf_printf(b, "const char * *_cell_%s", s->pnames[i]);
+      buf_printf(b, "const char * volatile *_cell_%s", s->pnames[i]);
       continue;
     }
     TyKind pt = (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY;
@@ -5791,6 +5791,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
         /* a shared cell pointer (see emit_scope_decls): float -> sp_float*,
            poly -> sp_RbVal*, heap object -> its typed pointer, else sp_int*. */
         buf_puts(&g_proc_protos, " "); emit_cell_elem_type(c, lv, &g_proc_protos);
+        if (lv->byref_out) buf_puts(&g_proc_protos, " volatile");
         buf_printf(&g_proc_protos, " *c_%s;", caps.v[i]);
       }
       else {
@@ -5914,6 +5915,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
         /* unpack the shared cell pointer; reads/writes go through (*_cell_<name>)
            (emit_local_ref), so the write reaches the enclosing scope. */
         buf_puts(pb, "    "); emit_cell_elem_type(c, lv, pb);
+        if (lv->byref_out) buf_puts(pb, " volatile");
         buf_printf(pb, " *_cell_%s = _fc->c_%s;\n", caps.v[i], caps.v[i]);
         buf_printf(pb, "    SP_GC_ROOT(_cell_%s);\n", caps.v[i]);
         continue;
@@ -6441,7 +6443,7 @@ void emit_inlined_param_target(Compiler *c, Scope *m, const char *pname,
    loop / heavy break) setjmp needs volatile? The inlined copy of that
    method sits under the same setjmp, so it needs it as much: a yield-inlined
    `begin ... ensure` read back `saved = true` as false at -O2 (#6552). */
-static int inlined_local_needs_volatile(Compiler *c, LocalVar *lv) {
+int inlined_local_needs_volatile(Compiler *c, LocalVar *lv) {
   for (int si = 0; si < c->nscopes; si++) {
     Scope *s = &c->scopes[si];
     if (!s->locals || lv < s->locals || lv >= s->locals + s->nlocals) continue;
@@ -7058,6 +7060,7 @@ else if (orecv >= 0 && onm) {
       /* a float capture rides a native sp_float cell, a poly capture an
          sp_RbVal cell, a heap object its typed pointer (see emit_scope_decls). */
       buf_puts(&g_procs, " "); emit_cell_elem_type(c, clv, &g_procs);
+      if (clv && clv->byref_out) buf_puts(&g_procs, " volatile");
       buf_printf(&g_procs, " *c_%s;", caps.v[i]);
     }
     if (cap_self && self_is_value) buf_printf(&g_procs, " sp_%s __self_val;", self_cls);

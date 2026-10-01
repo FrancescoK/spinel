@@ -765,6 +765,7 @@ void emit_sg_activate(Compiler *c, int node, int recv, Buf *b, int indent);
 int sg_activates_ci(Compiler *c, int node);
 int subtree_has_param_named_pub(const NodeTable *nt, int id, const char *nm);
 const char *past_open_parens(const char *s);
+int inlined_local_needs_volatile(Compiler *c, LocalVar *lv);
 void emit_inlined_local_decl(Compiler *c, LocalVar *lv, const char *rn, Buf *b, int din);
 void emit_inlined_locals(Compiler *c, Scope *m, int tag, Buf *b, int din);
 void emit_retf_return(int eid, int has_retval, Buf *b);
