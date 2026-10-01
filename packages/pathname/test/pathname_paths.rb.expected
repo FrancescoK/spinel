@@ -2,6 +2,7 @@ plus rel => #<Pathname:/a/b>
 plus abs => #<Pathname:/b>
 plus dotdot => #<Pathname:a>
 plus dot => #<Pathname:a>
+plus trailing => #<Pathname:a/b/>
 slash => #<Pathname:/a/b/c>
 join => #<Pathname:/a/b/c>
 parent abs => #<Pathname:/a>
