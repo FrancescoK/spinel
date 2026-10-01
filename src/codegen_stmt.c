@@ -12226,7 +12226,8 @@ int tail_iter_receiver(Compiler *c, int id) {
   static const char *iter_ret_recv[] = {
     "each", "each_pair", "each_key", "each_value", "each_with_index",
     "each_index", "each_byte", "each_entry", "reverse_each", "each_slice",
-    "upto", "downto", "step", "times", NULL
+    "each_cons", "combination", "permutation", "repeated_combination",
+    "repeated_permutation", "upto", "downto", "step", "times", NULL
   };
   int hit = 0;
   for (int i = 0; iter_ret_recv[i]; i++)
