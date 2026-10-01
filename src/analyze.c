@@ -2635,7 +2635,6 @@ void qc_qualified_name(char *out, size_t cap, const QCWrite *w) {
    == id. qc_def_cpath[id]: some Class/ModuleNode has constant_path == id. */
 static unsigned char *qc_cpath_parent = NULL;
 static unsigned char *qc_def_cpath = NULL;
-static int qc_retype_root_reads = 0;
 static void qc_build_reverse_flags(Compiler *c) {
   const NodeTable *nt = c->nt;
   int n = nt->count;
@@ -2719,8 +2718,7 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
          the top-level X (a user class or the builtin). Read it as the bare
          constant, which is what the builtin receivers (`File.binwrite`,
          `Time.at`) are recognised by. */
-      if (cl == 1 && abs_anchor && qc_retype_root_reads &&
-          !(qc_def_cpath && qc_def_cpath[node])) {
+      if (cl == 1 && abs_anchor && !(qc_def_cpath && qc_def_cpath[node])) {
         for (int i = 0; i < wn; i++) {
           if (!sp_streq(ws[i].name, chain[0])) continue;
           nt_node_set_type((NodeTable *)nt, node, "ConstantReadNode");
@@ -2777,6 +2775,7 @@ void qualify_colliding_consts(Compiler *c) {
       if (ws[i].depth != ws[j].depth) { collide = 1; break; }
       for (int k = 0; k < ws[i].depth; k++) if (!sp_streq(ws[i].path[k], ws[j].path[k])) { collide = 1; break; }
     }
+    if (!collide && ws[i].depth > 0 && builtin_class_id(ws[i].name) != 0) collide = 1;
     if (!collide) { ws[i] = ws[--wn]; i--; continue; }
     any = 1;
   }
@@ -2920,9 +2919,7 @@ void qualify_colliding_classes(Compiler *c) {
        then qualify the nested definitions themselves */
     char mods[QC_MAXDEPTH][64];
     qc_build_reverse_flags(c);
-    qc_retype_root_reads = 1;
     qc_rewrite_reads(c, nt->root_id, mods, 0, ws, wn);
-    qc_retype_root_reads = 0;
     qc_free_reverse_flags();
     for (int i = 0; i < wn; i++) {
       if (ws[i].depth == 0) continue;
