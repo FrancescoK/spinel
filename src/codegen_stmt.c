@@ -10722,16 +10722,23 @@ else {
         const char *wn0 = nt_str(nt, lefts[1], "name");
         if (rn0 && wn0) {
           int tf = ++g_tmp;
+          /* a block or lambda that captures an end keeps it in a closure
+             cell, so name both through emit_local_ref */
+          Buf rb, wb; memset(&rb, 0, sizeof rb); memset(&wb, 0, sizeof wb);
+          emit_local_ref(c, lefts[0], rn0, &rb);
+          emit_local_ref(c, lefts[1], wn0, &wb);
           emit_indent(b, indent);
           buf_printf(b, "{ int _t%d[2]; sp_io_make_pipe(_t%d); ", tf, tf);
-          buf_printf(b, "lv_%s = sp_io_fdopen(_t%d[0], \"r\"); ", rn0, tf);
+          buf_printf(b, "%s = sp_io_fdopen(_t%d[0], \"r\"); ", rb.p, tf);
           /* the write end is sync in CRuby: a write reaches the descriptor at
              once, so the reader (or an IO.select on it) sees it without a
              flush. sp_io_pipe does the same for the non-destructured call
              (#4263). */
-          buf_printf(b, "lv_%s = sp_io_fdopen(_t%d[1], \"w\"); "
-                        "if (lv_%s) { lv_%s->sync_on = 1; setvbuf(lv_%s->fp, NULL, _IONBF, 0); } }\n",
-                     wn0, tf, wn0, wn0, wn0);
+          buf_printf(b, "sp_File *_w%d = sp_io_fdopen(_t%d[1], \"w\"); "
+                        "if (_w%d) { _w%d->sync_on = 1; setvbuf(_w%d->fp, NULL, _IONBF, 0); } "
+                        "%s = _w%d; }\n",
+                     tf, tf, tf, tf, tf, wb.p, tf);
+          free(rb.p); free(wb.p);
           return;
         }
       }
