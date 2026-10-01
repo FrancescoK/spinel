@@ -13986,11 +13986,12 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
           buf_printf(b, "sp_int _t%d = _t%d->len; ", tn, tsrc);
           buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push%s(_t%d, ", ti, ti, tn, ti, k, nil_store_sfx(c, k, NIL_STORE_BOXED), tr);
           char getx[64]; snprintf(getx, sizeof getx, "sp_PolyArray_get(_t%d, _t%d)", tsrc, ti);
-          if (et == TY_POLY) buf_puts(b, getx);
-          else if (et == TY_STRING) buf_printf(b, "sp_poly_elem_s(%s)", getx);
-          else if (et == TY_INT) buf_printf(b, "sp_poly_elem_i(%s)", getx);
-          else if (et == TY_FLOAT) buf_printf(b, "sp_poly_elem_f(%s)", getx);
-          else buf_puts(b, getx);
+          switch (et) {
+          case TY_STRING: buf_printf(b, "sp_poly_elem_s(%s)", getx); break;
+          case TY_INT: buf_printf(b, "sp_poly_elem_i(%s)", getx); break;
+          case TY_FLOAT: buf_printf(b, "sp_poly_elem_f(%s)", getx); break;
+          default: buf_puts(b, getx); break;
+          }
           buf_puts(b, "); }\n");
         }
         continue;
