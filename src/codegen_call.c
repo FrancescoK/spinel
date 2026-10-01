@@ -26566,13 +26566,25 @@ int static_respond_to_cond(Compiler *c, int pred) {
    false, a Symbol and a Float by inspect, anything else by its class ("true
    can't be coerced into Integer", as `1 + true` already said). The operand
    is evaluated, and the call's slot takes its own default: a boxed one under
-   --int-overflow=promote. Answers 0 for any other operand. */
+   --int-overflow=promote. A Class or Module operand fails the same way
+   ("Class can't be coerced into Integer"), and a constant defined nowhere
+   raises its NameError as it is read, as `1 + Zork` does: both went into the
+   C operator as an sp_Class and the build failed. Answers 0 for any other
+   operand. */
 static int emit_int_operand_fail(Compiler *c, int id, int recv, int arg, int is_shift, Buf *b) {
   TyKind at = comp_ntype(c, arg);
-  if (!((at == TY_FLOAT && !is_shift) || at == TY_STRING || at == TY_NIL || at == TY_SYMBOL ||
-        at == TY_BOOL || ty_is_array(at) || ty_is_hash(at))) return 0;
-  int ta = ++g_tmp;
   TyKind ct = comp_ntype(c, id);
+  const char *dv = ct == TY_POLY ? "sp_box_nil()" : ct == TY_BIGINT ? "(sp_Bigint *)0" : "(sp_int)0";
+  if (at == TY_UNKNOWN && (nt_kind(c->nt, arg) == NK_ConstantReadNode ||
+                           nt_kind(c->nt, arg) == NK_ConstantPathNode)) {
+    buf_puts(b, "({ (void)("); emit_expr(c, recv, b);
+    buf_puts(b, "); (void)("); emit_expr(c, arg, b);
+    buf_printf(b, "); %s; })", dv);
+    return 1;
+  }
+  if (!((at == TY_FLOAT && !is_shift) || at == TY_STRING || at == TY_NIL || at == TY_SYMBOL ||
+        at == TY_BOOL || at == TY_CLASS || ty_is_array(at) || ty_is_hash(at))) return 0;
+  int ta = ++g_tmp;
   const char *nm = nt_str(c->nt, id, "name");
   /* a receiver that can be nil answers nil's boolean there: `&` false, `|`
      and `^` the operand's truth */
@@ -26595,7 +26607,7 @@ static int emit_int_operand_fail(Compiler *c, int id, int recv, int arg, int is_
   else
     buf_printf(b, "; sp_raise_cls(\"TypeError\", sp_sprintf(\"%%s can't be coerced into Integer\", "
                   "sp_cmperr_desc(_t%d)));", ta);
-  buf_printf(b, " %s; })", ct == TY_POLY ? "sp_box_nil()" : ct == TY_BIGINT ? "(sp_Bigint *)0" : "(sp_int)0");
+  buf_printf(b, " %s; })", dv);
   return 1;
 }
 
