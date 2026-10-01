@@ -1,3 +1,4 @@
+# spinel: int64
 # An Integer argument slot (String#[], #byteslice, Symbol#[], MatchData#offset
 # and friends, Random.new, Array#[], String#*) converts a Rational or a Complex
 # through #to_int, as it does a Float: a Rational truncates toward zero, and a
