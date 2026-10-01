@@ -596,6 +596,9 @@ void emit_args_run(Compiler *c, const int *argv, int argc);
 /* Has the argument `node` run already, into the temp an override from
    the `from`th on names? */
 int arg_ran_first(int node, int from);
+/* The handle temp a shared String slot's argument took when it ran first
+   (emit_arg_temp), -1 when there is none. */
+int ran_first_handle(int node);
 int emit_splat_gather(Compiler *c, Scope *m, const int *argv, const ArgLayout *L);
 void emit_gather_arity_check(Compiler *c, Scope *m, int ct);
 void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out);
@@ -787,6 +790,7 @@ void nameset_add(NameSet *s, const char *nm);
    enclosing scope -> `(*_cell_x)`; otherwise the plain `lv_x`. Reads and
    writes share this (a cell deref is a valid lvalue). */
 void emit_local_ref(Compiler *c, int scope_node, const char *name, Buf *b);
+void emit_poly_lift_ref(const char *ref, Buf *b);
 void emit_scope_local_ref(Compiler *c, Scope *s, const char *name, Buf *b);
 void emit_typed_elem_value(Compiler *c, int node, TyKind et, Buf *b);
 void emit_block_locals_reset(Compiler *c, int blk, Buf *b, int indent);
@@ -1348,11 +1352,11 @@ int is_blockless_block_param_call(Compiler *c, int id);
 const char *blockless_block_param_call_name(Compiler *c, int id);
 void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_expr, TyKind want_ty);
 typedef struct BiRen BiRen;
-void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int indent,
-                         int as_expr, BiRen *bi);
 /* A spliced block's parameter aliases (see emit_block_binds), undone by the
    caller once the body is emitted. */
 typedef struct BlockAliases { LocalVar *lv[16]; int n, open; } BlockAliases;
+void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int indent,
+                         int as_expr, BiRen *bi, BlockAliases *al);
 int block_param_wants_alias(Compiler *c, int blk, int k);
 void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
                       Buf *b, int indent, int as_expr, BiRen *bi, BlockAliases *al);

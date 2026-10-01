@@ -181,6 +181,14 @@ typedef struct {
                        caller passes has nobody else holding it, so it goes over
                        as a handle with its bytes inside the object
                        (sp_String_new_fresh), not a separate malloc'd block. */
+  int poly_lift;    /* (params, TY_POLY) POLY_LIFT_APPENDED: appended to in
+                       place, by the method itself or by a method it hands
+                       the parameter to (its read lifted into the handle,
+                       poly_strbuf_lift), so its callers hand over the handle
+                       (convert_byref_handle_params). POLY_LIFT_ZSUPER: a
+                       bare `super` hands it to such a parameter and it can
+                       hold a String, so the super lifts it as a marked read
+                       is (emit_zsuper_arg). (#6179) */
   int str_append;   /* (TY_STRBUF) an append accumulator: appended to inside a
                        loop and never read inside one, so the growable handle
                        makes each `<<` amortized O(1) instead of copying the
@@ -226,6 +234,8 @@ typedef struct {
                        and widening unconditionally instead poisoned classes
                        whose poly slots never hold a container (Set's @data). */
 } LocalVar;
+#define POLY_LIFT_APPENDED 1
+#define POLY_LIFT_ZSUPER   2
 
 typedef struct {
   char *name;       /* method name; NULL for the top-level scope */
@@ -644,6 +654,14 @@ typedef struct {
                                       no pointer past the call: emit
                                       sp_String_cstr, not a whole-string copy.
                                       The node's TYPE is unchanged (#5745). */
+  unsigned char *poly_strbuf_lift; /* [node_cap] a read of a POLY variable
+                          handed to a parameter the callee appends to in
+                          place: a plain String the variable holds becomes
+                          the shared handle (an SP_BUILTIN_STRBUF box) and is
+                          stored back before it is passed, so the callee's
+                          append and the caller's variable are one String
+                          (sp_poly_strbuf_lift). The node's TYPE is
+                          unchanged. */
   TyKind *nilnarrow; /* [node_cap] param-read narrowed by a `return .. if p.nil?`
                         guard: the read's non-nil type (codegen unboxes the poly
                         slot at the read site); TY_UNKNOWN = not narrowed */

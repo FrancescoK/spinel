@@ -1151,6 +1151,16 @@ void emit_typed_elem_value(Compiler *c, int node, TyKind et, Buf *b) {
   else if (et == TY_FLOAT) emit_float_expr(c, node, b);
   else emit_expr(c, node, b);
 }
+/* A POLY variable's slot `ref` lifted into the shared handle as it is read
+   (sp_poly_strbuf_lift, #6179): the lifted value is taken into a temp first
+   and stored after, so the store into a captured local's cell follows its
+   write barrier with nothing allocating in between. Stored in one
+   expression, the barrier could run before the lift allocated, and a
+   collection there could age the cell past it. */
+void emit_poly_lift_ref(const char *ref, Buf *b) {
+  int t = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = sp_poly_strbuf_lift(%s); %s = _t%d; _t%d; })", t, ref, ref, t, t);
+}
 void emit_local_ref(Compiler *c, int scope_node, const char *name, Buf *b) {
   emit_scope_local_ref(c, scope_node >= 0 ? comp_scope_of(c, scope_node) : NULL, name, b);
 }

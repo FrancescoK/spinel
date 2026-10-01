@@ -1283,9 +1283,23 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
        HANDLE, not the buffer, so the two names denote one object: a later
        `s1 << x` shows through s2 and `s1.equal?(s2)` is true (#3227). */
     char srefV[1024];
+    LocalVar *vlv = NULL;
     if (lv->str_shared && strbuf_slot_ref(c, v, srefV, sizeof srefV))
       buf_puts(b, srefV);
     else if (lv->str_shared && emit_strbuf_ivar_write_handle(c, v, b)) { }
+    /* A chained assignment (`u = t = s`) whose inner target is the handle too:
+       run the inner write, then alias ITS handle. Wrapping the write's value
+       as a fresh String forked u off the object t and s share. */
+    else if (lv->str_shared && nt_kind(c->nt, v) == NK_LocalVariableWriteNode &&
+             nt_str(c->nt, v, "name") &&
+             (vlv = scope_local(comp_scope_of(c, v), nt_str(c->nt, v, "name"))) &&
+             vlv->type == TY_STRBUF && vlv->str_shared) {
+      buf_puts(b, "({ (void)(");
+      emit_expr(c, v, b);
+      buf_puts(b, "); ");
+      emit_local_ref(c, v, nt_str(c->nt, v, "name"), b);
+      buf_puts(b, "; })");
+    }
     else if (comp_ntype(c, v) == TY_STRBUF) {
       /* a demand-marked read (a reader call, a container element) already
          yields the handle: alias it directly (#3227 P5) */

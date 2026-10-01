@@ -1547,6 +1547,16 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
         Scope *sbs = comp_scope_of(c, node);
         LocalVar *sblv = sbs ? scope_local(sbs, sbn) : NULL;
         char srefS[1024];
+        /* An argument that already ran is the handle it read then: the slot
+           read here is late, after a later argument may have rebound it
+           (`m(s, *xs, (s = +"q"; 1))` packed "q" where CRuby passes the
+           String s held first). The run took the handle into a temp of its
+           own beside the value copy the override names. */
+        int th = sblv && sblv->type == TY_STRBUF && sblv->str_shared ? ran_first_handle(node) : -1;
+        if (th >= 0) {
+          buf_printf(b, "sp_box_obj(_t%d, SP_BUILTIN_STRBUF)", th);
+          return;
+        }
         if (sblv && sblv->type == TY_STRBUF && sblv->str_shared &&
             strbuf_slot_ref(c, node, srefS, sizeof srefS)) {
           buf_printf(b, "sp_box_obj(%s, SP_BUILTIN_STRBUF)", srefS);
@@ -1574,10 +1584,19 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
            would reinterpret an sp_RbVal as sp_String* (#3325) */
         Scope *bs0 = comp_scope_of(c, node);
         LocalVar *blv0 = bs0 ? scope_local(bs0, bn0) : NULL;
+        int th0 = blv0 && blv0->type == TY_STRBUF && blv0->str_shared ? ran_first_handle(node) : -1;
         if (blv0 && blv0->type == TY_POLY)
           buf_printf(b, "lv_%s", rename_local(bn0));
-        else
-          buf_printf(b, "sp_box_obj(lv_%s, SP_BUILTIN_STRBUF)", rename_local(bn0));
+        else if (th0 >= 0)   /* ran first: the handle it read then, as above */
+          buf_printf(b, "sp_box_obj(_t%d, SP_BUILTIN_STRBUF)", th0);
+        else {
+          /* through emit_local_ref: a local a proc captures is its cell's
+             handle (`f.call(k: s)` beside `-> { s }` named an lv_s nothing
+             declared) */
+          buf_puts(b, "sp_box_obj(");
+          emit_local_ref(c, node, bn0, b);
+          buf_puts(b, ", SP_BUILTIN_STRBUF)");
+        }
         return;
       }
       { char srefX[192];
@@ -10036,6 +10055,12 @@ static void emit_zsuper_arg(Compiler *c, Scope *s, LocalVar *dst, TyKind dt, con
     return;
   }
   if (dt == TY_POLY && st != TY_POLY && st != TY_UNKNOWN) emit_boxed_text(c, st, _bx.p, b);
+  /* a POLY parameter handed to a parent parameter appended to in place: a
+     plain String it holds becomes the shared handle first, as a marked read
+     does at a call (poly_strbuf_lift, #6179) */
+  else if (st == TY_POLY && dt == TY_POLY && (src->poly_lift & POLY_LIFT_ZSUPER) && dst &&
+           (dst->poly_lift & POLY_LIFT_APPENDED))
+    emit_poly_lift_ref(_bx.p, b);
   else if (st == TY_POLY && dt == TY_INT) buf_printf(b, "sp_poly_to_i_or_nil(%s)", _bx.p);
   else if (st == TY_POLY && dt == TY_FLOAT) buf_printf(b, "sp_poly_to_f_or_nil(%s)", _bx.p);
   else if (st == TY_POLY && dt != TY_POLY && dt != TY_UNKNOWN) emit_unbox_text(c, dt, _bx.p, b);
