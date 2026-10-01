@@ -3698,6 +3698,28 @@ int desugar_array_at(Compiler *c) {
   return changed;
 }
 
+static void cow_tail_reread(Compiler *c, int id, int recv, const char *attr) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  for (int s = 0; s < c->nscopes; s++) {
+    int body = c->scopes[s].body, n = 0;
+    const int *st = body >= 0 && c->scopes[s].def_node >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+    if (!st || n == 0 || st[n - 1] != id) continue;
+    int *nb = (int *)malloc(sizeof(int) * (size_t)(n + 1));
+    if (nb) memcpy(nb, st, sizeof(int) * (size_t)n);
+    int r = nb ? nt_clone_subtree(nt, recv) : -1, rd = r >= 0 ? nt_new_node(nt, "CallNode") : -1;
+    if (rd >= 0) {
+      nt_node_set_ref(nt, rd, "receiver", r);
+      nt_node_set_str(nt, rd, "name", attr);
+      nb[n] = rd;
+      nt_node_set_arr(nt, body, "body", nb, n + 1);
+      comp_grow_node_arrays(c);
+      c->nscope[r] = c->nscope[rd] = c->nscope[id];
+    }
+    free(nb);
+    return;
+  }
+}
+
 /* `recv.attr op= value` where the writer is a hand-written `def attr=`.
    Ruby desugars this into a reader call and a writer call; the emitter's own
    lowering goes straight to the backing ivar, which is right for an
@@ -3732,8 +3754,11 @@ int desugar_call_op_write(Compiler *c) {
     int has_def_writer = 0;
     for (int k = 0; k < c->nclasses && !has_def_writer; k++)
       if (comp_method_in_chain(c, k, wname, NULL) >= 0) has_def_writer = 1;
-    if (!has_def_writer) continue;                 /* attr_writer: keep the store */
     char aname[300]; snprintf(aname, sizeof aname, "%s", attr);
+    if (!has_def_writer) {                         /* attr_writer: keep the store */
+      if (simple) cow_tail_reread(c, id, recv, aname);
+      continue;
+    }
     char opname[64]; snprintf(opname, sizeof opname, "%s", op);
     if (!simple) {
       /* (__cow_N = recv; __cow_N.attr = __cow_N.attr op value) */
