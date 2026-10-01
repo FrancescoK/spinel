@@ -24324,27 +24324,14 @@ static int refuse_param_copies_dm(Compiler *c, int mi, int j, int arg) {
   return refuse_param_copies(c, mi, j, arg);
 }
 
-/* A splat of a local Array the program changes after its literal, holding
-   a String the container rule cannot make the handle (a global pushed into
-   it, another Array's contents through `replace`), into a parameter that
-   appends: what lands there is a copy. */
-static void refuse_changed_splat(Compiler *c, int id, const char *name, int recv, int dyn) {
+/* The parameter at or past position p of the method call `id` (`name` on
+   `recv`) binds that the method appends to, for a splat's refusal: *pname
+   and *mname name it, or *pname stays NULL. */
+static void splat_appended_param(Compiler *c, int id, const char *name, int recv, int dyn, int p,
+                                 const char **pname_out, const char **mname_out) {
   const NodeTable *nt = c->nt;
   int a = nt_ref(nt, id, "arguments"), ac = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-  int sp = -1, p = 0;
-  for (int k = 0; k < ac && sp < 0; k++) {
-    NodeKind ak = nt_kind(nt, av[k]);
-    if (ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return;
-    if (ak != NK_SplatNode) { p++; continue; }
-    int x = nt_ref(nt, av[k], "expression");
-    if (x < 0 || nt_kind(nt, x) != NK_LocalVariableReadNode) return;
-    const char *xn = nt_str(nt, x, "name");
-    Scope *xs = xn ? comp_scope_of(c, x) : NULL;
-    if (!xs || !an_local_array_changed_x(c, xn, xs) || !an_local_array_stores_unshared(c, xn, xs)) return;
-    sp = av[k];
-  }
-  if (sp < 0) return;
   const char *pname = NULL, *mname = NULL;
   if (dyn && dyn_call_site(c, id)) {
     for (int j = p; j < 16 && !pname; j++) {
@@ -24375,6 +24362,94 @@ static void refuse_changed_splat(Compiler *c, int id, const char *name, int recv
       }
     }
   }
+  *pname_out = pname; *mname_out = mname;
+}
+
+/* An ivar, global or class variable a call hands over at or past its first
+   splat: an element of a splatted Array literal, or of a local every write
+   of which is one, or an argument written after the splat. Its position is
+   the run time's, so the binder boxes it into the gathered Array as a copy,
+   and none of them can be the handle there (an ivar that is one goes over
+   as it): answers the read, or -1. */
+static int splat_nonlocal_string(Compiler *c, const int *av, int ac, int fs, int depth) {
+  const NodeTable *nt = c->nt;
+  if (depth > 4) return -1;
+  for (int k = 0; k < ac; k++) {
+    NodeKind ak = nt_kind(nt, av[k]);
+    if (ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) break;
+    if (ak != NK_SplatNode) {
+      int shared;
+      const char *kind = k >= fs ? strvar_arg(c, av[k], &shared) : NULL;
+      if (kind && ak != NK_LocalVariableReadNode && !c->strbuf_box[av[k]]) return av[k];
+      continue;
+    }
+    int x = nt_ref(nt, av[k], "expression"), lits[16], nl = 0;
+    if (x >= 0 && nt_kind(nt, x) == NK_ArrayNode) lits[nl++] = x;
+    else if (x >= 0 && nt_kind(nt, x) == NK_LocalVariableReadNode) {
+      const char *xn = nt_str(nt, x, "name");
+      Scope *xs = xn ? comp_scope_of(c, x) : NULL;
+      for (int w = xs ? comp_lvw_first_sc(c, (int)(xs - c->scopes), xn) : -1; w >= 0 && nl < 16;
+           w = comp_lvw_next_sc(c, w)) {
+        if (comp_scope_of(c, w) != xs || nt_kind(nt, w) != NK_LocalVariableWriteNode ||
+            !sp_streq(nt_str(nt, w, "name"), xn)) continue;
+        int wv = nt_ref(nt, w, "value");
+        if (wv >= 0 && nt_kind(nt, wv) == NK_ArrayNode) lits[nl++] = wv;
+      }
+    }
+    for (int l = 0; l < nl; l++) {
+      int en = 0; const int *ev = nt_arr(nt, lits[l], "elements", &en);
+      int r = splat_nonlocal_string(c, ev, en, 0, depth + 1);
+      if (r >= 0) return r;
+    }
+  }
+  return -1;
+}
+/* `m(*[@v])`, `m(*s)` with `s = [$g]`, `m(*[], @v)` into a parameter the
+   method appends to: the String goes over as a copy, refused as `super`'s
+   is (refuse_super_splat). */
+static void refuse_splat_nonlocal(Compiler *c, int id, const char *name, int recv, int dyn) {
+  const NodeTable *nt = c->nt;
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  int fs = -1;
+  for (int k = 0; k < ac && fs < 0; k++) {
+    NodeKind ak = nt_kind(nt, av[k]);
+    if (ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return;
+    if (ak == NK_SplatNode) fs = k;
+  }
+  if (fs < 0) return;
+  int sv = splat_nonlocal_string(c, av, ac, fs, 0);
+  if (sv < 0) return;
+  const char *pname = NULL, *mname = NULL;
+  splat_appended_param(c, id, name, recv, dyn, fs, &pname, &mname);
+  if (!pname) return;
+  char mt[96]; if (mname) snprintf(mt, sizeof mt, "`%s`", mname);
+  refuse_string_copy(c, sv, mname ? mt : NULL, pname, "a splat", "through a splat");
+}
+
+/* A splat of a local Array the program changes after its literal, holding
+   a String the container rule cannot make the handle (a global pushed into
+   it, another Array's contents through `replace`), into a parameter that
+   appends: what lands there is a copy. */
+static void refuse_changed_splat(Compiler *c, int id, const char *name, int recv, int dyn) {
+  const NodeTable *nt = c->nt;
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  int sp = -1, p = 0;
+  for (int k = 0; k < ac && sp < 0; k++) {
+    NodeKind ak = nt_kind(nt, av[k]);
+    if (ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return;
+    if (ak != NK_SplatNode) { p++; continue; }
+    int x = nt_ref(nt, av[k], "expression");
+    if (x < 0 || nt_kind(nt, x) != NK_LocalVariableReadNode) return;
+    const char *xn = nt_str(nt, x, "name");
+    Scope *xs = xn ? comp_scope_of(c, x) : NULL;
+    if (!xs || !an_local_array_changed_x(c, xn, xs) || !an_local_array_stores_unshared(c, xn, xs)) return;
+    sp = av[k];
+  }
+  if (sp < 0) return;
+  const char *pname = NULL, *mname = NULL;
+  splat_appended_param(c, id, name, recv, dyn, p, &pname, &mname);
   if (!pname) return;
   char mt[96]; if (mname) snprintf(mt, sizeof mt, "`%s`", mname);
   refuse_string_copy(c, sp, mname ? mt : NULL, pname, "a splat of an Array the program changes",
@@ -24644,6 +24719,7 @@ static void refuse_string_copies(Compiler *c, int id) {
   int dyn = sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]") ||
             sp_streq(name, "yield") || sp_streq(name, "===");
   refuse_changed_splat(c, id, name, recv, dyn);
+  refuse_splat_nonlocal(c, id, name, recv, dyn);
   if (!dyn) refuse_unplaced_lead(c, id, name, recv);
   /* a proc, a lambda or a Method: shared, unless the String is a variable
      the call cannot pull into the handle, or the target is reached through
