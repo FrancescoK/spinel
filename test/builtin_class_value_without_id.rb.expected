@@ -1,0 +1,21 @@
+[Random, Process, GC, ObjectSpace, Method, UnboundMethod]
+["Random", "Process", "GC", "ObjectSpace", "Method", "UnboundMethod"]
+["Random", "Process", "GC", "ObjectSpace", "Method", "UnboundMethod"]
+true
+false
+true
+true
+[true, "Random"]
+"GC"
+"Random"
+1
+2
+Random
+"Random"
+Enumerator::Chain
+Enumerator::Lazy
+Enumerator::Product
+"Enumerator::Product"
+false
+true
+true

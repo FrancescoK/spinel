@@ -2653,10 +2653,13 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         int _bcid = builtin_class_id(nm);
         if (_bcid != 0)
           buf_printf(b, "((sp_Class){%d})", _bcid);  /* builtin class as value */
-        else if (is_builtin_exception_name(nm)) {
-          /* an exception class with no cls_id of its own (SystemCallError,
-             LoadError): a name-backed Class value, like OpenStruct above --
-             sp_class_eq and the boxed form both compare by name */
+        else if (is_builtin_exception_name(nm) || is_builtin_class_name(nm) ||
+                 is_builtin_module_name(nm)) {
+          /* a builtin class, module or exception class with no cls_id of its
+             own (SystemCallError, LoadError, Process, GC, Method, Random): a
+             name-backed Class value, like OpenStruct above -- sp_class_eq and
+             the boxed form both compare by name, and an instance's #class
+             answers the same (`Random.new.class`) */
           buf_printf(b, "((sp_Class){(sp_int)-1, SPL(\"%s\")})", nm);
         }
         else {
@@ -2956,6 +2959,13 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
           snprintf(fullname, sizeof fullname, "%s::%s", par_nmc, nm);
         else if (nm) snprintf(fullname, sizeof fullname, "%s", nm);
         else snprintf(fullname, sizeof fullname, "?");
+      }
+      /* a builtin class with no cls_id that only a path names
+         (Enumerator::Chain): the name-backed value the bare form above
+         gives Random or Process */
+      if (is_builtin_class_name(fullname) || is_builtin_module_name(fullname)) {
+        buf_printf(b, "((sp_Class){(sp_int)-1, SPL(\"%s\")})", fullname);
+        return;
       }
       if (!const_ref_is_rescued(c, id)) warn_undefined_constant(c, id, fullname);
       buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant %s\"), ((sp_Class){-1}))", fullname);
