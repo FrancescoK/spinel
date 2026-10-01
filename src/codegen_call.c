@@ -22773,6 +22773,27 @@ static int refuse_dm_target(Compiler *c, int id, const char *name) {
 void refuse_yield_string_copies(Compiler *c, int yargc, const int *yargv) {
   for (int k = 0; k < yargc && k < 16; k++) {
     int shared;
+    /* a keyword (`yield(k: s)`) binds the proc's keyword of that name, and
+       the Hash the yield builds holds a copy just the same */
+    if (nt_kind(c->nt, yargv[k]) == NK_KeywordHashNode) {
+      int en = 0; const int *el = nt_arr(c->nt, yargv[k], "elements", &en);
+      for (int e = 0; e < en; e++) {
+        int v;
+        const char *key = dyn_kw_elem_key(c, el[e], &v);
+        if (!key || v < 0 || !strvar_arg(c, v, &shared)) continue;
+        DynReach r;
+        dyn_value_kw_reach(c, g_yield_proc_expr, key, &r);
+        if (!r.app) continue;
+        if (r.mname) {
+          char mt[96]; snprintf(mt, sizeof mt, "`%s`", r.mname);
+          refuse_string_copy(c, v, mt, r.pname, "a yield into a block argument",
+                             "through a `yield` into a Method or proc passed with `&`");
+        }
+        refuse_string_copy(c, v, NULL, r.pname, "a yield into a block argument",
+                           "through a `yield` into a Method or proc passed with `&`");
+      }
+      continue;
+    }
     if (nt_kind(c->nt, yargv[k]) == NK_SplatNode) return;
     if (!strvar_arg(c, yargv[k], &shared) || shared || local_is_handle(c, yargv[k])) continue;
     DynReach r;
@@ -23007,6 +23028,32 @@ static void refuse_string_copies(Compiler *c, int id) {
       char mt[96]; if (r.mname) snprintf(mt, sizeof mt, "`%s`", r.mname);
       refuse_string_copy(c, av[k], r.mname ? mt : NULL, r.pname, call, why);
     }
+    /* the keywords, by name: shared when the analysis pulled the variable
+       (promote_dyncall_string_args), refused as a position is otherwise */
+    int ka = nt_ref(nt, id, "arguments"), kac = 0;
+    const int *kav = ka >= 0 ? nt_arr(nt, ka, "arguments", &kac) : NULL;
+    for (int k = 0; k < kac; k++) {
+      if (nt_kind(nt, kav[k]) != NK_KeywordHashNode) continue;
+      int en = 0; const int *el = nt_arr(nt, kav[k], "elements", &en);
+      for (int e = 0; e < en; e++) {
+        int v, shared;
+        const char *key = dyn_kw_elem_key(c, el[e], &v);
+        const char *kind = key && v >= 0 ? strvar_arg(c, v, &shared) : NULL;
+        if (!kind) continue;
+        DynReach r;
+        dyn_call_kw_reach(c, id, key, &r);
+        if (r.unlifted && r.app) {
+          if (sp_streq(r.unlifted, "bind"))
+            refuse_string_copy(c, v, r.mname ? r.mname : "`?`", r.pname, "`bind(...).call`",
+                               "through an UnboundMethod bound with `bind`");
+          refuse_string_copy(c, v, NULL, r.pname, "a curried proc", "through `curry`");
+        }
+        if (shared || !r.app) continue;
+        char why[96]; snprintf(why, sizeof why, "from %s", kind);
+        char mt[96]; if (r.mname) snprintf(mt, sizeof mt, "`%s`", r.mname);
+        refuse_string_copy(c, v, r.mname ? mt : NULL, r.pname ? r.pname : key, call, why);
+      }
+    }
     return;
   }
   /* a proc or a Method read out of a slot that holds other values too, a
@@ -23030,6 +23077,30 @@ static void refuse_string_copies(Compiler *c, int id) {
         char why[96]; snprintf(why, sizeof why, "from %s", kind);
         char mt[96]; if (r.mname) snprintf(mt, sizeof mt, "`%s`", r.mname);
         refuse_string_copy(c, av[k], r.mname ? mt : NULL, r.pname, through, why);
+      }
+      /* and the keywords, by name: an open site shares a position only */
+      int ka = nt_ref(nt, id, "arguments"), kac = 0;
+      const int *kav = ka >= 0 ? nt_arr(nt, ka, "arguments", &kac) : NULL;
+      for (int k = 0; k < kac; k++) {
+        if (nt_kind(nt, kav[k]) != NK_KeywordHashNode) continue;
+        int en = 0; const int *el = nt_arr(nt, kav[k], "elements", &en);
+        for (int e = 0; e < en; e++) {
+          int v, shared, j;
+          const char *key = dyn_kw_elem_key(c, el[e], &v);
+          if (!key || v < 0 || !strvar_arg(c, v, &shared)) continue;
+          if (shift) {
+            if (mi >= 0 && dyn_method_kw_appends(c, mi, key, &j) && refuse_param_copies(c, mi, j, v)) {
+              char mt[96]; snprintf(mt, sizeof mt, "`%s`", c->scopes[mi].name);
+              refuse_string_copy(c, v, mt, c->scopes[mi].pnames[j], through, "through `bind_call`");
+            }
+            continue;
+          }
+          DynReach r;
+          dyn_value_kw_reach(c, -1, key, &r);
+          if (r.app)
+            refuse_string_copy(c, v, NULL, NULL, through,
+                               comp_ntype(c, recv) == TY_CURRY ? "through `curry`" : "through such a slot");
+        }
       }
       return;
     } }
@@ -23063,6 +23134,24 @@ static void refuse_string_copies(Compiler *c, int id) {
         char thr2[48]; snprintf(thr2, sizeof thr2, "`%s`", name);
         char why2[64]; snprintf(why2, sizeof why2, "through `%s`", name);
         refuse_string_copy(c, av[k], "a block", proc_param_name(c, blk, k), thr2, why2);
+      }
+    }
+    /* the keywords, by name */
+    int ka = nt_ref(nt, id, "arguments"), kac = 0;
+    const int *kav = ka >= 0 ? nt_arr(nt, ka, "arguments", &kac) : NULL;
+    for (int k = 0; k < kac; k++) {
+      if (nt_kind(nt, kav[k]) != NK_KeywordHashNode) continue;
+      int en = 0; const int *el = nt_arr(nt, kav[k], "elements", &en);
+      for (int e = 0; e < en; e++) {
+        int v, shared;
+        const char *key = dyn_kw_elem_key(c, el[e], &v);
+        if (!key || v < 0 || !strvar_arg(c, v, &shared)) continue;
+        DynReach r;
+        dyn_value_kw_reach(c, blk, key, &r);
+        if (!r.app || r.unknown) continue;
+        char thr2[48]; snprintf(thr2, sizeof thr2, "`%s`", name);
+        char why2[64]; snprintf(why2, sizeof why2, "through `%s`", name);
+        refuse_string_copy(c, v, "a block", key, thr2, why2);
       }
     }
     return;
@@ -35126,7 +35215,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         else { buf_printf(g_pre, "lv_%s = ", rename_local(pn)); emit_ie_param_default(c, plv->type, g_pre); buf_puts(g_pre, ";\n"); }
       }
       if (!nexec && (block_keyword_name(c, nblk, 0) || block_kwrest_name(c, nblk)))
-        emit_block_kw_binds(c, nblk, -1, comp_scope_of(c, id), g_pre, g_indent, 0, NULL);
+        emit_block_kw_binds(c, nblk, -1, comp_scope_of(c, id), g_pre, g_indent, 0, NULL, NULL);
       g_n_argov = sv_nargov;
       TyKind nbt = nbn > 0 ? comp_ntype(c, nbb[nbn - 1]) : TY_NIL;
       const char *sv_self = g_self, *sv_deref = g_self_deref;
@@ -35373,7 +35462,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           buf_puts(g_pre, pdecl ? ";\n" : ");\n");
         }
         if (block_keyword_name(c, blk, 0) || block_kwrest_name(c, blk))
-          emit_block_kw_binds(c, blk, ie_kwhash, comp_scope_of(c, id), g_pre, g_indent, 0, NULL);
+          emit_block_kw_binds(c, blk, ie_kwhash, comp_scope_of(c, id), g_pre, g_indent, 0, NULL, NULL);
         }
       }
       g_n_argov = ie_sv_argov;   /* the binds were the arguments' last readers */

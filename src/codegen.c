@@ -1576,8 +1576,14 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
         LocalVar *blv0 = bs0 ? scope_local(bs0, bn0) : NULL;
         if (blv0 && blv0->type == TY_POLY)
           buf_printf(b, "lv_%s", rename_local(bn0));
-        else
-          buf_printf(b, "sp_box_obj(lv_%s, SP_BUILTIN_STRBUF)", rename_local(bn0));
+        else {
+          /* through emit_local_ref: a local a proc captures is its cell's
+             handle (`f.call(k: s)` beside `-> { s }` named an lv_s nothing
+             declared) */
+          buf_puts(b, "sp_box_obj(");
+          emit_local_ref(c, node, bn0, b);
+          buf_puts(b, ", SP_BUILTIN_STRBUF)");
+        }
         return;
       }
       { char srefX[192];

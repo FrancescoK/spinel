@@ -16437,6 +16437,7 @@ static struct {
   int fresh;          /* 0 once analysis has changed types since the memo filled */
   unsigned *ctor;     /* per scope: an initialize's appended and kept parameters (ctor_append_bits) */
   int ctor_any;       /* -1 not asked yet, else "some initialize parameter is the handle" */
+  int kw_any;         /* -1 not asked yet, else "some target appends to a keyword parameter" */
 } g_dyn;
 
 static void dyn_memo_reset(Compiler *c) {
@@ -16454,6 +16455,7 @@ static void dyn_memo_reset(Compiler *c) {
   if (!g_dyn.lit || !g_dyn.meth || !g_dyn.blk || !g_dyn.ctor) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   g_dyn.any = -1;
   g_dyn.ctor_any = -1;
+  g_dyn.kw_any = -1;
   g_dyn.fresh = 1;
 }
 
@@ -16693,6 +16695,105 @@ static unsigned dyn_meth_bits(Compiler *c, int mi) {
   dyn_body_scan(c, m->body, pn, np, &app, &kept);
   g_dyn.meth[mi] = DYN_DONE | (app & 0xffffu) | ((kept & 0x3fffu) << 16);
   return g_dyn.meth[mi];
+}
+
+/* Keyword arguments (`f.call(k1: s)`): the keyword parameter `key` names.
+   A keyword matches by name, so a target's answer is the parameter of that
+   name: appended (bit 0) and read for more than its bytes (bit 1), 0 when
+   the target has no such keyword. A block's keyword may carry the shadow
+   rename's suffix (#3679); the key is the name the program wrote. */
+static int dyn_kw_name_is(const char *pn, const char *key) {
+  if (!pn || !key) return 0;
+  size_t n = block_param_is_renamed(pn) ? block_param_written_len(pn) : strlen(pn);
+  return strlen(key) == n && !strncmp(pn, key, n);
+}
+static unsigned dyn_lit_kw_bits(Compiler *c, int lit, const char *key) {
+  const NodeTable *nt = c->nt;
+  int pnode = -1;
+  if (nt_kind(nt, lit) == NK_BlockNode) {
+    int bp = nt_ref(nt, lit, "parameters");
+    pnode = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
+  }
+  else pnode = a_proc_params_node(c, lit);
+  int kn = 0; const int *kv = pnode >= 0 ? nt_arr(nt, pnode, "keywords", &kn) : NULL;
+  for (int i = 0; i < kn; i++) {
+    const char *pn[1] = { nt_str(nt, kv[i], "name") };
+    if (!dyn_kw_name_is(pn[0], key)) continue;
+    unsigned app = 0, kept = 0;
+    int body = nt_kind(nt, lit) == NK_BlockNode ? nt_ref(nt, lit, "body") : a_proc_body(c, lit);
+    dyn_body_scan(c, body, pn, 1, &app, &kept);
+    return (app ? 1u : 0u) | (kept ? 2u : 0u);
+  }
+  return 0;
+}
+/* The same for method `mi`'s keyword parameter `key`; *j_out its index. */
+int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
+static unsigned dyn_meth_kw_bits(Compiler *c, int mi, const char *key, int *j_out) {
+  Scope *m = &c->scopes[mi];
+  if (j_out) *j_out = -1;
+  for (int j = 0; j < m->nparams; j++) {
+    if (!m->pnames[j] || !sp_streq(m->pnames[j], key ? key : "") ||
+        !callee_param_is_declared_kwarg(c, m, m->pnames[j])) continue;
+    if (j_out) *j_out = j;
+    unsigned app = 0, kept = 0;
+    LocalVar *q = scope_local(m, m->pnames[j]);
+    if (q && (q->byref_out || (q->type == TY_STRBUF && q->str_shared) || an_param_mutated_in_place(c, mi, j)))
+      app = 1;
+    const char *pn[1] = { m->pnames[j] };
+    dyn_body_scan(c, m->body, pn, 1, &app, &kept);
+    return (app ? 1u : 0u) | (kept ? 2u : 0u);
+  }
+  return 0;
+}
+/* Does any proc literal, kept block or Method-named method append to a
+   keyword parameter? What an unknown target answers for a keyword, as
+   dyn_any_appender does for a position: a program with none keeps its C. */
+static int dyn_lit_kw_any(Compiler *c, int lit) {
+  const NodeTable *nt = c->nt;
+  int pnode = -1;
+  if (nt_kind(nt, lit) == NK_BlockNode) {
+    int bp = nt_ref(nt, lit, "parameters");
+    pnode = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
+  }
+  else pnode = a_proc_params_node(c, lit);
+  int kn = 0; const int *kv = pnode >= 0 ? nt_arr(nt, pnode, "keywords", &kn) : NULL;
+  for (int i = 0; i < kn; i++) {
+    const char *pn = nt_str(nt, kv[i], "name");
+    char key[128];
+    size_t len = pn ? (block_param_is_renamed(pn) ? block_param_written_len(pn) : strlen(pn)) : 0;
+    if (!pn || len >= sizeof key) continue;
+    memcpy(key, pn, len); key[len] = 0;
+    if (dyn_lit_kw_bits(c, lit, key) & 1u) return 1;
+  }
+  return 0;
+}
+static int dyn_any_kw_appender(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (g_dyn.kw_any >= 0) return g_dyn.kw_any;
+  g_dyn.kw_any = 0;
+  for (int n = comp_kind_first(c, NK_LambdaNode); n >= 0 && !g_dyn.kw_any; n = comp_kind_next(c, n))
+    if (nt_kind(nt, n) == NK_LambdaNode && !dyn_cap_wrapper(c, n) && dyn_lit_kw_any(c, n)) g_dyn.kw_any = 1;
+  for (int n = comp_kind_first(c, NK_CallNode); n >= 0 && !g_dyn.kw_any; n = comp_kind_next(c, n)) {
+    if (nt_kind(nt, n) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, n, "name");
+    if (!nm) continue;
+    int b = nt_ref(nt, n, "block");
+    if (dyn_is_proc_literal(c, n)) { if (dyn_lit_kw_any(c, b)) g_dyn.kw_any = 1; continue; }
+    if (b >= 0 && nt_kind(nt, b) == NK_BlockNode) {
+      int mi = an_any_scope_by_name(c, nm);
+      if (mi >= 0 && c->scopes[mi].blk_param && c->scopes[mi].blk_param[0] &&
+          !c->scopes[mi].yields && dyn_lit_kw_any(c, b)) g_dyn.kw_any = 1;
+      continue;
+    }
+    if (!sp_streq(nm, "method") && !sp_streq(nm, "public_method")) continue;
+    for (int mi = dyn_scopes_named(c, method_sym_arg(c, n)); mi >= 0 && !g_dyn.kw_any; mi = g_dyn.snext[mi]) {
+      Scope *m = &c->scopes[mi];
+      for (int j = 0; j < m->nparams && !g_dyn.kw_any; j++)
+        if (callee_param_is_declared_kwarg(c, m, m->pnames[j]) &&
+            (dyn_meth_kw_bits(c, mi, m->pnames[j], NULL) & 1u)) g_dyn.kw_any = 1;
+    }
+  }
+  return g_dyn.kw_any;
 }
 
 /* The calls that pass a block, by name, built once per pass the first time a
@@ -16940,6 +17041,120 @@ static void dyn_reach_value(Compiler *c, int v, int k, int depth, DynReach *r) {
     return;
   }
   r->unknown = 1;
+}
+
+/* The same resolution for a keyword argument, asked by name: what the
+   targets receiver `v` can hold do with keyword `key`. A keyword travels in
+   the boxed Hash, never the sp_int slot, so whether a target keeps it does
+   not matter here. */
+static void dyn_reach_kw_method(Compiler *c, int mn, const char *key, DynReach *r) {
+  const char *cn = nt_str(c->nt, mn, "name");
+  if (cn && sp_streq(cn, "instance_method")) { r->unlifted = "bind"; return; }
+  int mi = method_obj_target_mi(c, mn);
+  if (mi < 0 || method_call_param_shift(c, mn, mi)) { r->unknown = 1; return; }
+  int j;
+  unsigned bits = dyn_meth_kw_bits(c, mi, key, &j);
+  if (j < 0) return;
+  if (bits & 1u) r->app = 1;
+  if (!r->mname) { r->mname = c->scopes[mi].name; r->pname = c->scopes[mi].pnames[j]; }
+}
+static void dyn_reach_kw(Compiler *c, int v, const char *key, int depth, DynReach *r) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || depth > 4) { r->unknown = 1; return; }
+  NodeKind vk = nt_kind(nt, v);
+  if (dyn_is_proc_literal(c, v) || vk == NK_BlockNode) {
+    if (dyn_lit_kw_bits(c, vk == NK_CallNode ? nt_ref(nt, v, "block") : v, key) & 1u) {
+      r->app = 1;
+      if (!r->pname) r->pname = key;
+    }
+    return;
+  }
+  if (comp_ntype(c, v) == TY_METHOD) {
+    int *mns = NULL;
+    int n = method_recv_nodes(c, v, &mns);
+    if (n <= 0) r->unknown = 1;
+    for (int i = 0; i < n; i++) dyn_reach_kw_method(c, mns[i], key, r);
+    free(mns);
+    return;
+  }
+  if (vk == NK_CallNode) {
+    const char *nm = nt_str(nt, v, "name");
+    if (nm && sp_streq(nm, "to_proc")) {
+      int *mns = NULL;
+      int n = proc_to_proc_method_nodes(c, v, &mns);
+      if (n <= 0) dyn_reach_kw(c, nt_ref(nt, v, "receiver"), key, depth + 1, r);
+      for (int i = 0; i < n; i++) dyn_reach_kw_method(c, mns[i], key, r);
+      free(mns);
+      return;
+    }
+    if (nm && sp_streq(nm, "curry")) { r->unlifted = "curry"; return; }
+    r->unknown = 1;
+    return;
+  }
+  if (vk == NK_LocalVariableReadNode) {
+    const char *vn = nt_str(nt, v, "name");
+    Scope *vs = vn ? comp_scope_of(c, v) : NULL;
+    if (!vs) { r->unknown = 1; return; }
+    /* the method's own `&blk`: the blocks its call sites pass */
+    if (vs->name && vs->blk_param && sp_streq(vs->blk_param, vn)) {
+      dyn_blk_index(c);
+      int h = anh_find(&g_dyn.bnames, vs->name), any = 0;
+      for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
+        int b = nt_ref(nt, g_dyn.bnode[e], "block");
+        any = 1;
+        if (nt_kind(nt, b) != NK_BlockNode) { r->unknown = 1; continue; }
+        dyn_reach_kw(c, b, key, depth + 1, r);
+      }
+      if (!any) r->unknown = 1;
+      return;
+    }
+    int saw = 0;
+    for (int w = comp_lvw_first_sc(c, (int)(vs - c->scopes), vn); w >= 0; w = comp_lvw_next_sc(c, w)) {
+      if (comp_scope_of(c, w) != vs) continue;
+      const char *wn = nt_str(nt, w, "name");
+      if (!wn || !sp_streq(wn, vn)) continue;
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode) { r->unknown = 1; continue; }
+      saw = 1;
+      dyn_reach_kw(c, nt_ref(nt, w, "value"), key, depth + 1, r);
+    }
+    if (!saw) r->unknown = 1;
+    return;
+  }
+  r->unknown = 1;
+}
+/* The keyword arm of dyn_call_reach: what the targets of dynamic call `n` do
+   with its keyword `key`. */
+void dyn_call_kw_reach(Compiler *c, int n, const char *key, DynReach *r) {
+  memset(r, 0, sizeof *r);
+  if (!g_dyn.fresh) dyn_memo_reset(c);
+  dyn_reach_kw(c, nt_ref(c->nt, n, "receiver"), key, 0, r);
+  if (r->unknown && !r->app && dyn_any_kw_appender(c)) r->app = 1;
+}
+/* Does method `mi` append to its keyword `key`? *j_out: its index, or -1. */
+int dyn_method_kw_appends(Compiler *c, int mi, const char *key, int *j_out) {
+  if (!g_dyn.fresh) dyn_memo_reset(c);
+  *j_out = -1;
+  if (mi < 0 || mi >= c->nscopes || !key) return 0;
+  return (int)(dyn_meth_kw_bits(c, mi, key, j_out) & 1u);
+}
+/* The keyword arm of dyn_value_reach: a value `v` (-1: unknown). */
+void dyn_value_kw_reach(Compiler *c, int v, const char *key, DynReach *r) {
+  memset(r, 0, sizeof *r);
+  if (!g_dyn.fresh) dyn_memo_reset(c);
+  if (v < 0) r->unknown = 1;
+  else dyn_reach_kw(c, v, key, 0, r);
+  if (r->unknown && !r->app && dyn_any_kw_appender(c)) r->app = 1;
+}
+/* The keyword a KeywordHashNode element binds by name: its Symbol key, when
+   its value is a plain local read; NULL for anything else. */
+const char *dyn_kw_elem_key(Compiler *c, int el, int *val) {
+  const NodeTable *nt = c->nt;
+  *val = -1;
+  if (nt_kind(nt, el) != NK_AssocNode) return NULL;
+  int key = nt_ref(nt, el, "key");
+  if (key < 0 || nt_kind(nt, key) != NK_SymbolNode) return NULL;
+  *val = nt_ref(nt, el, "value");
+  return nt_str(nt, key, "value");
 }
 
 /* A proc/Method call with the type-erased ABI: `.call`, `.()`, `[]`,
@@ -17213,6 +17428,15 @@ static int dyn_convert_params(Compiler *c) {
       for (int j = 0; app && j < m->nparams && j < DYN_ARGS; j++) {
         if (!(app & (1u << j))) continue;
         LocalVar *q = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
+        if (!q || !q->is_param || q->is_block_param || q->type != TY_STRING || q->byref_out || q->is_cell) continue;
+        q->type = TY_STRBUF; q->str_shared = 1; q->dyn_handle = 1; changed = 1;
+      }
+      /* its keywords the same way (`method(:m).call(k: s)`): bound by name,
+         and appended to as a copy while they kept the value ABI */
+      for (int j = 0; j < m->nparams; j++) {
+        if (!m->pnames[j] || !callee_param_is_declared_kwarg(c, m, m->pnames[j])) continue;
+        if (!(dyn_meth_kw_bits(c, mi, m->pnames[j], NULL) & 1u)) continue;
+        LocalVar *q = scope_local(m, m->pnames[j]);
         if (!q || !q->is_param || q->is_block_param || q->type != TY_STRING || q->byref_out || q->is_cell) continue;
         q->type = TY_STRBUF; q->str_shared = 1; q->dyn_handle = 1; changed = 1;
       }
@@ -17722,6 +17946,30 @@ static int dyn_pull_site_args(Compiler *c, int n) {
       if (!r.app && !(r.unknown && dyn_any_appender(c))) continue;
     }
     changed |= dyn_pull_arg(c, av[k], 1);
+  }
+  /* The keywords (`f.call(k1: s)`): each value is bound by name to the
+     target's keyword parameter of that name, through the boxed Hash, and
+     a target that appends to it appended to a copy. The same pull as a
+     position's: the Hash then holds the handle. */
+  for (int k = 0; k < ac && nt_kind(nt, n) == NK_CallNode; k++) {
+    if (nt_kind(nt, av[k]) != NK_KeywordHashNode) continue;
+    int en = 0; const int *el = nt_arr(nt, av[k], "elements", &en);
+    for (int e = 0; e < en; e++) {
+      int v;
+      const char *key = dyn_kw_elem_key(c, el[e], &v);
+      if (!key || v < 0 || nt_kind(nt, v) != NK_LocalVariableReadNode) continue;
+      TyKind vt = comp_ntype(c, v);
+      if (vt != TY_STRING && vt != TY_STRBUF) continue;
+      const char *vn = nt_str(nt, v, "name");
+      Scope *vs = vn ? comp_scope_of(c, v) : NULL;
+      LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+      if (!(lv && lv->type == TY_STRBUF && lv->str_shared)) {
+        DynReach r;
+        dyn_call_kw_reach(c, n, key, &r);
+        if (r.unlifted || !r.app) continue;
+      }
+      changed |= dyn_pull_arg(c, v, 1);
+    }
   }
   return changed;
 }

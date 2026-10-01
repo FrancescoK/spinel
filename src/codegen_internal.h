@@ -1347,11 +1347,11 @@ int is_blockless_block_param_call(Compiler *c, int id);
 const char *blockless_block_param_call_name(Compiler *c, int id);
 void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_expr, TyKind want_ty);
 typedef struct BiRen BiRen;
-void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int indent,
-                         int as_expr, BiRen *bi);
 /* A spliced block's parameter aliases (see emit_block_binds), undone by the
    caller once the body is emitted. */
 typedef struct BlockAliases { LocalVar *lv[16]; int n, open; } BlockAliases;
+void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int indent,
+                         int as_expr, BiRen *bi, BlockAliases *al);
 int block_param_wants_alias(Compiler *c, int blk, int k);
 void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
                       Buf *b, int indent, int as_expr, BiRen *bi, BlockAliases *al);

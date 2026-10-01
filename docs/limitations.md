@@ -635,11 +635,12 @@ names hold the one object. Spinel shares the String by reference through a
 direct call, `send` with a literal name, `super`, a poly receiver and a
 class value, through a proc, a lambda and a `Method`: `.call`, `.()`,
 `[]`, `===` and `.yield` on one, a block kept as `&blk` and called later,
-`method(:m)` and `obj.method(:m)` and their `to_proc`; through `yield`, into
-a literal block, a block the method keeps, and a proc or `Method` passed
-with `&`; through `instance_exec`, `instance_eval`, `class_exec` and
-`module_exec`; and through `new` and `raise Cls, s` into an `initialize`,
-one that yields the String to its block, a Struct's and a Data's included.
+`method(:m)` and `obj.method(:m)` and their `to_proc`, whether the String
+is passed by position or by keyword; through `yield`, into a literal block,
+a block the method keeps, and a proc or `Method` passed with `&`; through
+`instance_exec`, `instance_eval`, `class_exec` and `module_exec`; and
+through `new` and `raise Cls, s` into an `initialize`, one that yields the
+String to its block, a Struct's and a Data's included.
 The paths below do not share it yet, and a call that would hand such a
 method a String variable through one of them is refused at compile time
 rather than compiled with the append lost:
@@ -657,6 +658,10 @@ values too.
 
 Not yet shared:
 
+- a `yield` by keyword (`yield(k: s)` into `{ |k:| k << x }`) of a String
+  that a proc or a `Method` shares too;
+- by keyword, through an UnboundMethod, a curried proc, a proc or `Method`
+  read out of a slot that holds other values too, and `instance_exec`;
 - through `new`, a String variable in a splatted Array literal that holds
   only Strings (`C.new(*[s])`);
 - through `instance_exec`, a String variable in or ahead of a splat
