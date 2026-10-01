@@ -1,0 +1,7 @@
+class NestedArgProfile
+  def upd: (Hash[Symbol, untyped] attrs) -> NestedArgProfile
+end
+
+class NestedArgForm
+  def perm: (untyped input) -> untyped
+end
