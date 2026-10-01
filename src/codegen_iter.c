@@ -2607,6 +2607,11 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
      rebindings; emit_stmts places it for the last arm. */
   int rd_head = rd_lbl ? block_param_rebind_len(nt, bbody) : 0;
   if (nx_own && as_expr && g_ie_next_var && !nx_tail_stmt && bn3 > 0) {
+    /* the block's locals are fresh on every call, as in the arms below
+       (block_of_body builds the map on first use: read off the compiler
+       before any block body had been emitted, it was not there yet, and a
+       block spliced into an expression kept the previous call's locals) */
+    if (block_of_body(c, bbody) >= 0) emit_block_locals_reset(c, block_of_body(c, bbody), b, 0);
     for (int k3 = 0; k3 < bn3 - 1; k3++) {
       if (rd_lbl && k3 == rd_head) buf_printf(b, "_redo_%d: ; ", rd_lbl);
       emit_stmt(c, bd3[k3], b, 0);
@@ -2655,9 +2660,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
        void, so a block whose value is such a construct (`wrap { if c then a
        else b end }`) produced a void ({...}). Emit the tail value-compound as
        an expression (a bare-expression tail already carries its value). */
-    if (c->blk_body_map && bbody >= 0 && bbody < c->nt->count &&
-        c->blk_body_map[bbody] >= 0)
-      emit_block_locals_reset(c, c->blk_body_map[bbody], b, 0);
+    if (block_of_body(c, bbody) >= 0) emit_block_locals_reset(c, block_of_body(c, bbody), b, 0);
     for (int k3 = 0; k3 < bn3 - 1; k3++) {
       if (rd_lbl && k3 == rd_head) buf_printf(b, "_redo_%d: ; ", rd_lbl);
       emit_stmt(c, bd3[k3], b, 0);
@@ -2699,9 +2702,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
            nt_type(nt, bd3[bn3 - 1]) &&
            !sp_streq(nt_type(nt, bd3[bn3 - 1]), "ReturnNode")) {
     /* concrete-typed bare tail into a poly slot: box it (#3278) */
-    if (c->blk_body_map && bbody >= 0 && bbody < c->nt->count &&
-        c->blk_body_map[bbody] >= 0)
-      emit_block_locals_reset(c, c->blk_body_map[bbody], b, 0);
+    if (block_of_body(c, bbody) >= 0) emit_block_locals_reset(c, block_of_body(c, bbody), b, 0);
     for (int k3 = 0; k3 < bn3 - 1; k3++) {
       if (rd_lbl && k3 == rd_head) buf_printf(b, "_redo_%d: ; ", rd_lbl);
       emit_stmt(c, bd3[k3], b, 0);
