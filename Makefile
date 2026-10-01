@@ -1904,7 +1904,8 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "threaded-render-test: pass"; else exit 1; fi
 
-GC_MINOR_TESTS := test/block_arg_paren_sequence_proc.rb \
+GC_MINOR_TESTS := test/gc_fresh_receiver_eq_exc_rooted.rb \
+                  test/block_arg_paren_sequence_proc.rb \
                   test/combinations_yield_ivar.rb \
                   test/gc_minor_thread_local_slot.rb \
                   test/boxed_map_bang_write_barrier.rb \
