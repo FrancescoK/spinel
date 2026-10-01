@@ -20846,7 +20846,6 @@ static int fwd_param_appends(Compiler *c, int mi, int j, int depth) {
   if (q->byref_out || (q->type == TY_STRBUF && q->str_shared)) return 1;
   if (q->type != TY_POLY) return 0;
   if (an_param_mutated_in_place(c, mi, j)) return 1;
-  if (depth > 4) { g_fwd_taint |= 2; return 0; }
   return fwd_poly_param_handed_on(c, mi, j, depth + 1);
 }
 
@@ -20902,7 +20901,7 @@ static unsigned fwd_rest_bits(Compiler *c, int mi) {
   /* the top of a cycle has its answer; one cut at the bound says so */
   if (tainted & 2) bits |= FWD_REST_OPEN;
   g_fwd_taint = outer | (top ? 0 : tainted);
-  g_fwd_rest[mi] = !top && tainted ? 0 : 0x40000000u | bits;
+  g_fwd_rest[mi] = (!top && tainted) || (tainted & 4) ? 0 : 0x40000000u | bits;
   return bits;
 }
 /* Does target t, its parameters laid from position p on, append to one at
@@ -20943,9 +20942,34 @@ static unsigned fwd_rest_bits_once(Compiler *c, int mi, const char *rn) {
 
 /* Does POLY parameter pj of method mi reach a parameter that appends, by a
    `super` or a call it is handed to? */
+/* The question is reachability over the hand-on edges, so it is walked
+   whole rather than cut at a fixed depth: a (method, parameter) already on
+   the walk's path answers 0 -- its first visit explores every edge out of
+   it, so the top answer stays exact -- and says so (taint 4), so a rest's
+   bits answered inside the walk are not kept on it (fwd_rest_bits). A walk
+   past the path or step bound is cut short as before (taint 2), which the
+   refusal takes as appending. */
+#define FWD_POLY_PATH 256
+#define FWD_POLY_STEPS 200000
+static int g_poly_path[FWD_POLY_PATH][2];
+static int g_poly_path_n;
+static long g_poly_steps;
+static int fwd_poly_param_handed_on_1(Compiler *c, int mi, int pj, int depth);
 static int fwd_poly_param_handed_on(Compiler *c, int mi, int pj, int depth) {
+  if (mi < 0 || mi >= c->nscopes) return 0;
+  if (g_poly_path_n == 0) g_poly_steps = 0;
+  for (int i = 0; i < g_poly_path_n; i++)
+    if (g_poly_path[i][0] == mi && g_poly_path[i][1] == pj) { g_fwd_taint |= 4; return 0; }
+  if (g_poly_path_n >= FWD_POLY_PATH || ++g_poly_steps > FWD_POLY_STEPS) { g_fwd_taint |= 2; return 0; }
+  g_poly_path[g_poly_path_n][0] = mi;
+  g_poly_path[g_poly_path_n][1] = pj;
+  g_poly_path_n++;
+  int r = fwd_poly_param_handed_on_1(c, mi, pj, depth);
+  g_poly_path_n--;
+  return r;
+}
+static int fwd_poly_param_handed_on_1(Compiler *c, int mi, int pj, int depth) {
   const NodeTable *nt = c->nt;
-  if (depth > 4) { g_fwd_taint |= 2; return 0; }
   if (mi < 0 || mi >= c->nscopes) return 0;
   Scope *m = &c->scopes[mi];
   if (pj < 0 || pj >= m->nparams || !m->pnames[pj]) return 0;
