@@ -4321,9 +4321,11 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "close")) return TY_POLY;      /* nil (#2801) */
     if (sp_streq(name, "print") || sp_streq(name, "puts")) return TY_NIL;
     if (sp_streq(name, "flush") || sp_streq(name, "binmode")) return TY_IO;  /* self (#2799) */
+    /* sync= answers its argument, whatever it is; only its truth sets the mode */
+    if (sp_streq(name, "sync=") && argc >= 1) return infer_type(c, argv[0]);
     if (sp_streq(name, "closed?") || sp_streq(name, "eof?") || sp_streq(name, "eof") ||
         sp_streq(name, "tty?") || sp_streq(name, "isatty") ||
-        sp_streq(name, "sync") || sp_streq(name, "sync=") ||
+        sp_streq(name, "sync") ||
         sp_streq(name, "autoclose?") ||
         /* the File::Stat predicates: a stat is carried as the handle itself */
         sp_streq(name, "file?") || sp_streq(name, "directory?") ||
@@ -6011,8 +6013,11 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       if (sp_streq(name, "alive?") || sp_streq(name, "dead?") || sp_streq(name, "closed?") ||
           (sp_streq(name, "blocking?") && argc == 0) ||
           sp_streq(name, "eof?") || sp_streq(name, "tty?") || sp_streq(name, "isatty") ||
-          sp_streq(name, "sync") || sp_streq(name, "sync="))
+          sp_streq(name, "sync"))
         return an_poly_concrete(c, name, TY_BOOL);
+      /* sync= answers its argument (only its truth sets the mode) */
+      if (sp_streq(name, "sync=") && argc == 1)
+        return an_poly_concrete(c, name, infer_type(c, argv[0]));
       /* IO#winsize on a poly-carried handle: [rows, cols], same as the TY_IO
          arm. Without this the call falls through to a plain poly result and the
          `size[0]` that follows reads it as an untyped value. */
