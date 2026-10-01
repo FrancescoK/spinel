@@ -40621,6 +40621,21 @@ else {
             else buf_printf(b, "; _t%d->iv_%s; })", _atmp, iv_c(_abase));
             return;
           }
+          /* a value of another C type than the slot (an Integer into a slot
+             widened to Bignum) converts into it, through a temp: the
+             assignment's value is still the right-hand side as it came */
+          if (argc >= 1 && _aivt != TY_POLY && _aivt != TY_UNKNOWN &&
+              comp_ntype(c, argv[0]) != TY_UNKNOWN &&
+              !store_fits(c, store_value_kind(c, argv[0]), _aivt)) {
+            TyKind _avk = store_value_kind(c, argv[0]);
+            int _tvv = ++g_tmp;
+            char _tvn[32]; snprintf(_tvn, sizeof _tvn, "_t%d", _tvv);
+            emit_ctype(c, _avk, b); buf_printf(b, " %s = ", _tvn); emit_expr(c, argv[0], b);
+            buf_printf(b, "; _t%d->iv_%s = ", _atmp, iv_c(_abase));
+            emit_coerce_text(c, argv[0], _avk, _aivt, CO_HOLD, _tvn, "an attribute writer", b);
+            buf_printf(b, "; %s; })", _tvn);
+            return;
+          }
           buf_printf(b, "_t%d->iv_%s = ", _atmp, iv_c(_abase));
           if (argc >= 1) {
             if (_aivt == TY_POLY && comp_ntype(c, argv[0]) != TY_POLY) emit_one_arg(c, argv[0], 1, b);

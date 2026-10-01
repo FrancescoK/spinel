@@ -1800,6 +1800,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     /* poly RHS into a scalar/string slot: the same unbox the statement form
        applies (emit_poly_rhs_coerced) */
     else if (lv && emit_poly_rhs_coerced(c, lv->type, v, b)) { }
+    else if (lv) emit_coerce(c, v, lv->type, CO_HOLD, "a local variable write", b);
     else emit_expr(c, v, b);
     buf_puts(b, "; "); emit_local_ref(c, id, nm, b); buf_puts(b, "; })");
     return;
@@ -1828,6 +1829,11 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     /* inside an instance_eval/exec splice the block scope has no class_id, so
        the ivar belongs to the rebound receiver class (g_ie_class_id). */
     int ivcls2 = cid2 >= 0 ? cid2 : g_ie_class_id;
+    /* a top-level ivar's slot is the Toplevel pseudo-class's, the one the
+       store below writes (civ_Toplevel_x): without its kind the value went
+       in as it was, and `y = (@a = [])` put an Integer array into a slot
+       a later write had made a poly array */
+    if (ivcls2 < 0) ivcls2 = comp_class_index(c, "Toplevel");
     TyKind ivt2 = TY_UNKNOWN;
     if (ivcls2 >= 0) {
       int iv2 = comp_ivar_index(&c->classes[ivcls2], nm);
@@ -1928,9 +1934,8 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     }
     else {
       /* a subclass instance stored into an ancestor-typed ivar slot (#3418) */
-      store_check(c, v, ivt2, "an instance variable write", b);
       emit_obj_upcast_prefix(c, ivt2, comp_ntype(c, v), b);
-      emit_expr(c, v, b);
+      emit_coerce(c, v, ivt2, CO_HOLD, "an instance variable write", b);
     }
     /* The expression's value is the slot read back, at the node's own type:
        a write retyped for an instance_exec receiver (ie_body_retype) is typed
@@ -2506,7 +2511,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     else if (comp_ntype(c, v) == TY_POLY && ct != TY_UNKNOWN) {
       Buf vb = expr_buf(c, v); emit_unbox_text(c, ct, vb.p ? vb.p : "sp_box_nil()", b); free(vb.p);
     }
-    else emit_expr(c, v, b);
+    else emit_coerce(c, v, ct, CO_HOLD, "a class variable write", b);
     emit_cvar_set_flag_after(c, cid, nm, b);
     buf_puts(b, ")");
     return;
