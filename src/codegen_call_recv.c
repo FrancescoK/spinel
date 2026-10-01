@@ -8587,7 +8587,7 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         const char *aty = nt_type(c->nt, argv[0]);
         int nil_arg = aty && sp_streq(aty, "NilNode");
         int ws = nil_arg || (aty && sp_streq(aty, "StringNode") && nt_str(c->nt, argv[0], "content") &&
-                 sp_streq(nt_str(c->nt, argv[0], "content"), " "));
+                 sp_streq(nt_str(c->nt, argv[0], "content"), " ") && nt_str_len(c->nt, argv[0], "content") == 1);
         if (ws) buf_printf(b, "sp_str_split_ws(%s)", r);
         else { buf_printf(b, "sp_str_split_drop_trailing(%s, ", r); emit_str_pattern_expr(c, argv[0], b); buf_puts(b, ")"); }
       }

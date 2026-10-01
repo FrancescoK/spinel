@@ -5342,7 +5342,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       const char *aty = nt_type(nt, sp_argv[0]);
       int ws = (aty && sp_streq(aty, "NilNode")) ||
                (aty && sp_streq(aty, "StringNode") && nt_str(nt, sp_argv[0], "content") &&
-                sp_streq(nt_str(nt, sp_argv[0], "content"), " "));
+                sp_streq(nt_str(nt, sp_argv[0], "content"), " ") && nt_str_len(nt, sp_argv[0], "content") == 1);
       int reli = re_lit_index(c, sp_argv[0]);
       if (ws) buf_printf(b, "sp_str_split_ws(%s);\n", rb.p ? rb.p : "");
       /* a Regexp separator splits with the engine, the way the expression
