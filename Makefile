@@ -1105,6 +1105,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a redo with no label for it compiled)"; ok=0; \
 	else grep -q "redo in this block" "$$tmp/rui.out" || \
 	  { echo "reject-test: FAIL (a redo with no label rejected without saying why)"; sed -n 1,5p "$$tmp/rui.out"; ok=0; }; fi; \
+	t=test/reject/random_in_boxed_slot.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/rbs.c" >"$$tmp/rbs.out" 2>&1; then \
+	  echo "reject-test: FAIL (a Random boxed into a mixed Array compiled)"; ok=0; \
+	else grep -q "a Random in a slot that holds values of several kinds" "$$tmp/rbs.out" || \
+	  { echo "reject-test: FAIL (a boxed Random rejected without saying why)"; sed -n 1,5p "$$tmp/rbs.out"; ok=0; }; fi; \
 	t=test/reject/product_block_rest_param.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/pbr.c" >"$$tmp/pbr.out" 2>&1; then \
 	  echo "reject-test: FAIL (a product block with a rest parameter compiled)"; ok=0; \
