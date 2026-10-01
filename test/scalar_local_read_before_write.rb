@@ -50,3 +50,24 @@ f = 1.5 if ARGV.size > 3
 p f
 a, b = 1, 2 if ARGV.empty?
 p a, b
+
+# `&&=` writes only a local already truthy, so an unassigned one stays nil;
+# `+=` on one raises, as nil + 1 does
+def and_write(c)
+  x = 5 if c
+  x &&= 7
+  g = 2.5 if c
+  g &&= 1.5
+  p [x, g]
+end
+and_write(true)
+and_write(false)
+def op_write(c)
+  y = 1 if c
+  y += 1
+  p y
+rescue NoMethodError => e
+  p e.message
+end
+op_write(true)
+op_write(false)
