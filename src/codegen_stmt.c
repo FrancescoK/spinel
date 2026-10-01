@@ -13362,11 +13362,16 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     if (sp_streq(name, "<<") && argc == 1 && nt_type(nt, recv) &&
         (sp_streq(nt_type(nt, recv), "LocalVariableReadNode") ||
          sp_streq(nt_type(nt, recv), "InstanceVariableReadNode"))) {
-      int was = ++g_tmp, got = ++g_tmp;
+      /* the same rule as the value form: only while the slot still holds
+         the String the append was made to */
+      int was = ++g_tmp, got = ++g_tmp, cur = ++g_tmp;
       emit_indent(b, indent);
       buf_printf(b, "{ sp_RbVal _t%d = ", was); emit_expr(c, recv, b);
       buf_printf(b, "; sp_RbVal _t%d = ", got); emit_call(c, id, b);
-      buf_printf(b, "; if (_t%d.tag == SP_TAG_STR) ", was); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_RbVal _t%d = ", cur); emit_expr(c, recv, b);
+      buf_printf(b, "; if (_t%d.tag == SP_TAG_STR && _t%d.tag == SP_TAG_STR && _t%d.v.s == _t%d.v.s) ",
+                 was, cur, cur, was);
+      emit_expr(c, recv, b);
       buf_printf(b, " = _t%d; }\n", got);
       return 1;
     }

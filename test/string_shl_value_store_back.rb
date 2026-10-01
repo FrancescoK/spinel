@@ -58,3 +58,28 @@ class Swap
 end
 p Swap.new.run
 p Swap.new.run_statement
+
+# the same when a class of the program defines its own <<
+class Collector
+  def initialize = @items = []
+  def <<(x)
+    @items.push(x)
+    self
+  end
+  def items = @items
+end
+col = Collector.new
+col << 1
+p col.items
+class Swap2
+  def initialize = @buf = [1, +"b"][1]
+  def take
+    @buf = [1, +"new"][1]
+    "x"
+  end
+  def run_statement
+    @buf << take
+    @buf
+  end
+end
+p Swap2.new.run_statement
