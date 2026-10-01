@@ -2199,6 +2199,7 @@ static char *sp_canonical_path(const char *path) {
   return strdup("");
 }
 
+static int sp_rr_included = 0;
 static int sp_path_already_included(const char *canonical) {
   if (!canonical) return 0;
   for (int i = 0; i < sp_included_count; i++) {
@@ -3837,7 +3838,8 @@ else {
           if (content) snprintf(lib_path, sizeof(lib_path), "%s", rp);
         }
         char *rc = content ? sp_canonical_path(lib_path) : NULL;
-        if (rc && sp_path_already_included(rc)) { free(content); content = strdup("# require skipped (already included)"); root_dup = 1; }
+        for (int i = sp_rr_included; rc && i < sp_included_count && !root_dup; i++) root_dup = sp_included_paths[i] && strcmp(sp_included_paths[i], rc) == 0;
+        if (root_dup) { free(content); content = strdup("# require skipped (already included)"); }
         else if (rc) sp_mark_path_included(rc);
         free(rc);
       }
@@ -4768,6 +4770,7 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
   unsigned char *fsl = NULL; size_t fsl_n = 0;
   sp_autoload_is_main = 1;
   char *resolved = resolve_requires(source, source_file, &fsl, &fsl_n);
+  sp_rr_included = sp_included_count;
   free(source);
   source = resolve_plain_requires(resolved, argv0, &fsl, &fsl_n);
   source = sp_splice_named_builtin(source, argv0, "Gem", "builtins/gem.rb", &fsl, &fsl_n);
