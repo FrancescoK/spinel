@@ -5419,6 +5419,13 @@ void register_extends(Compiler *c) {
           if (!seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
         }
         seen[nseen++] = mod_id;
+        { ClassInfo *xc = &c->classes[ci];
+          if (xc->nextended_mods == xc->cextended_mods) {
+            xc->cextended_mods = xc->cextended_mods ? xc->cextended_mods * 2 : 4;
+            xc->extended_mods = realloc(xc->extended_mods, sizeof(int) * (size_t)xc->cextended_mods);
+            if (!xc->extended_mods) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+          }
+          xc->extended_mods[xc->nextended_mods++] = mod_id; }
         int inherited = 0;
         for (int p = c->classes[ci].parent; p >= 0 && !inherited; p = c->classes[p].parent)
           for (int bj = 0; bj < nbody && !inherited; bj++)
