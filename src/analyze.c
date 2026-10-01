@@ -25137,6 +25137,42 @@ static int du_read_maybe_unset(const NodeTable *nt, const int *par, int rd, cons
   return 1;
 }
 
+/* The instance methods of a program, by name: a boxed receiver's call binds
+   every one of its name (mark_nullable_int_locals), looked up once per call
+   in every round, so they are sorted once rather than scanned per call. */
+typedef struct { const char *name; int mi; } NamedMethod;
+
+static int named_method_cmp(const void *a, const void *b) {
+  const NamedMethod *x = a, *y = b;
+  int r = strcmp(x->name, y->name);
+  return r ? r : x->mi - y->mi;
+}
+
+static NamedMethod *instance_methods_by_name(Compiler *c, int *count) {
+  NamedMethod *v = malloc(sizeof *v * (size_t)(c->nscopes + 1));
+  int n = 0;
+  for (int k = 1; v && k < c->nscopes; k++)
+    if (c->scopes[k].name && !c->scopes[k].is_cmethod && c->scopes[k].class_id >= 0) {
+      v[n].name = c->scopes[k].name;
+      v[n].mi = k;
+      n++;
+    }
+  if (v) qsort(v, (size_t)n, sizeof *v, named_method_cmp);
+  *count = v ? n : 0;
+  return v;
+}
+
+/* the first entry of `v` (sorted) named `name`, or n */
+static int named_method_first(const NamedMethod *v, int n, const char *name) {
+  int lo = 0, hi = n;
+  while (lo < hi) {
+    int mid = lo + (hi - lo) / 2;
+    if (strcmp(v[mid].name, name) < 0) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
 static void mark_nullable_int_locals(Compiler *c) {
   const NodeTable *nt = c->nt;
   /* A scalar local a read can reach before any write starts as its nil and
@@ -25205,6 +25241,8 @@ static void mark_nullable_int_locals(Compiler *c) {
   NilOnlyLocals nilonly = {0};
   nil_only_locals(c, &nilonly);
   block_sites_index(c);   /* the block arm reads each method's yields */
+  int nimeth = 0;
+  NamedMethod *imeth = instance_methods_by_name(c, &nimeth);
   for (long round = 0; round < rounds_max; round++) {
     int changed = 0;
     nn_compute(c, (int)round);
@@ -25531,11 +25569,13 @@ static void mark_nullable_int_locals(Compiler *c) {
       /* a boxed receiver binds whichever method of the name its class has:
          the dispatch's arms are every one of them, which the lookups above
          cannot name, and each takes the nil an argument can be */
-      if (mi < 0 && recv >= 0 && cn && infer_type(c, recv) == TY_POLY) {
-        for (int k = 1; k < c->nscopes; k++)
-          if (c->scopes[k].name && sp_streq(c->scopes[k].name, cn) && !c->scopes[k].is_cmethod &&
-              c->scopes[k].class_id >= 0)
-            changed |= mark_nullable_params_of_call(c, id, k);
+      int kf = mi < 0 && recv >= 0 && cn && nt_ref(nt, id, "arguments") >= 0 ?
+               named_method_first(imeth, nimeth, cn) : nimeth;
+      if (kf < nimeth && sp_streq(imeth[kf].name, cn) && infer_type(c, recv) == TY_POLY) {
+        /* a call with no arguments hands no parameter a nil, and a name no
+           instance method has reaches no arm */
+        for (int k = kf; k < nimeth && sp_streq(imeth[k].name, cn); k++)
+          changed |= mark_nullable_params_of_call(c, id, imeth[k].mi);
       }
       else if (mi >= 0) changed |= mark_nullable_params_of_call(c, id, mi);
       else if (recv >= 0 && cn && (sp_streq(cn, "call") || sp_streq(cn, "[]") || sp_streq(cn, "()"))) {
@@ -25661,6 +25701,7 @@ static void mark_nullable_int_locals(Compiler *c) {
      this firing means a marking arm that is not monotone -- worth a bug
      report. */
   free(nilonly.v);
+  free(imeth);
   if (!converged) {
     fprintf(stderr, "spinel: internal: nilable-scalar marking did not converge in "
                     "%ld rounds; refusing to emit (a nil sentinel would box as an "
