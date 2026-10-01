@@ -2126,6 +2126,22 @@ void emit_scope_decls_ends(Compiler *c, Scope *s, Buf *b, size_t *ends) {
        scope share storage. A param's incoming value is copied into the cell;
        a body local starts at 0. Int and proc cells supported. */
     if (lv->is_cell) { emit_cell_decl(c, s, lv, b); continue; }
+    if (lv->is_param && has_begin && (all_vol || name_in(volnames, nvol, lv->name))) {
+      /* a parameter the body reassigns inside a begin and reads after the
+         rescue or a retry's longjmp: a volatile local copy of the incoming
+         value (the signature names it lv_<name>__in) (#6552) */
+      LocalVar cp = *lv; cp.is_param = 0;
+      Buf d; memset(&d, 0, sizeof d);
+      declare_local(c, &d, &cp, 1);
+      /* declare_local initialises to the type's nil: take the argument */
+      char *eq = d.p ? strstr(d.p, " = ") : NULL;
+      if (eq) {
+        char *semi = strchr(eq, ';');
+        buf_printf(b, "%.*s = lv_%s__in%s", (int)(eq - d.p), d.p, lv->name, semi ? semi : ";\n");
+      }
+      free(d.p);
+      continue;
+    }
     if (lv->is_param) {
       /* A poly param is an sp_RbVal by value: root through the tagged
          RBVAL form so the collector reads the boxed pointer, not the
@@ -3330,9 +3346,17 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
     }
     wrote = 1;
   }
+  /* a parameter the body reassigns inside a begin (and reads after the
+     rescue or the retry's longjmp) is as indeterminate there as a local
+     would be: volatile, as declare_local makes the local (#6552) */
+  char **pvol = NULL; int npvol = 0, pall = 0;
+  int psi = (int)(s - c->scopes);
+  int pbegin = psi >= 0 && psi < c->nscopes && s->nparams > 0 && scope_has_begin(c, psi);
+  if (pbegin) begin_volatile_names(c, psi, &pvol, &npvol, &pall);
   for (int i = 0; i < s->nparams; i++) {
     if (wrote++) buf_puts(b, ", ");
     LocalVar *p = scope_local(s, s->pnames[i]);
+    int pv = pbegin && (pall || name_in(pvol, npvol, s->pnames[i])) && p && !p->is_cell;
     /* byref string out-param: the caller's slot, so body mutation propagates.
        Named _cell_<name> so the ordinary is_cell deref forms read/write it. */
     if (p && p->byref_out) {
@@ -3346,8 +3370,11 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
       exit(1);
     }
     emit_ctype(c, pt, b);
-    buf_printf(b, " lv_%s", s->pnames[i]);
+    /* gcc does not keep a volatile parameter across the longjmp at -O2:
+       the body works on a volatile local copy (see emit_method_body) */
+    buf_printf(b, pv ? " lv_%s__in" : " lv_%s", s->pnames[i]);
   }
+  free(pvol);
   /* &block param that escapes (not inlined): passes the block as sp_Proc *.
      const: a method's block parameter is read-only (check_blk_param_writes
      refuses an assignment), so a write that got past that check stops the C
@@ -6220,10 +6247,40 @@ void emit_inlined_param_target(Compiler *c, Scope *m, const char *pname,
    here -- so the cell is what this frame declares, under the same renamed name.
    The three inline emitters each wrote the plain form, and `(*_cell_x)` was
    left undeclared (#4088). */
+/* Is lv, a local of some method scope, one that scope's begin/rescue (or
+   loop / heavy break) setjmp needs volatile? The inlined copy of that
+   method sits under the same setjmp, so it needs it as much: a yield-inlined
+   `begin ... ensure` read back `saved = true` as false at -O2 (#6552). */
+static int inlined_local_needs_volatile(Compiler *c, LocalVar *lv) {
+  for (int si = 0; si < c->nscopes; si++) {
+    Scope *s = &c->scopes[si];
+    if (!s->locals || lv < s->locals || lv >= s->locals + s->nlocals) continue;
+    if (!scope_has_begin(c, si)) return 0;
+    char **names = NULL; int nn = 0, all = 0;
+    begin_volatile_names(c, si, &names, &nn, &all);
+    int hit = all;
+    for (int k = 0; k < nn && !hit; k++) if (names[k] && lv->name && sp_streq(names[k], lv->name)) hit = 1;
+    free(names);
+    return hit;
+  }
+  return 0;
+}
+
 void emit_inlined_local_decl(Compiler *c, LocalVar *lv, const char *rn, Buf *b, int din) {
   if (!lv->is_cell) {
     emit_indent(b, din);
-    emit_ctype(c, lv->type, b);
+    if (inlined_local_needs_volatile(c, lv)) {
+      Buf ct; memset(&ct, 0, sizeof ct);
+      emit_ctype(c, lv->type, &ct);
+      const char *t = ct.p ? ct.p : "";
+      size_t tl = strlen(t);
+      while (tl > 0 && t[tl - 1] == ' ') tl--;
+      /* a pointer takes the qualifier on itself, as declare_local's does */
+      if (tl > 0 && t[tl - 1] == '*') buf_printf(b, "%.*s volatile", (int)tl, t);
+      else buf_printf(b, "volatile %s", t);
+      free(ct.p);
+    }
+    else emit_ctype(c, lv->type, b);
     buf_printf(b, " lv_%s = %s;\n", rn, local_init_value(c, lv));
     if (lv->type == TY_POLY) { emit_indent(b, din); buf_printf(b, "SP_GC_ROOT_RBVAL(lv_%s);\n", rn); }
     else if (needs_root(lv->type) && !comp_ty_value_obj(c, lv->type)) {
