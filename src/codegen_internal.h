@@ -1128,6 +1128,13 @@ void emit_block_value_into(Compiler *c, int block, const char *dest,
                            int want_poly, int indent);
 int emit_block_cond_next(Compiler *c, int block, int indent, Buf *out);
 int fold_body_has_next(Compiler *c, int node);  /* a `next` of the body's own, not a nested block's */
+int iter_step_needs_frame(Compiler *c, int block);
+int emit_iter_step_stmts(Compiler *c, int body, Buf *b, int indent, const char *sep);
+/* One step of a builtin iterator's block (emit_iter_step_open). */
+typedef struct { int block, want_poly, slot; TyKind slot_ty; } IterStep;
+void emit_iter_step_open(Compiler *c, int block, int want_poly, int indent, IterStep *st);
+TyKind emit_iter_step_tail(Compiler *c, const IterStep *st, Buf *vb);
+void emit_iter_step_cond(Compiler *c, const IterStep *st, Buf *cb);
 int emit_collect_expr(Compiler *c, int id, Buf *b);
 int emit_with_index_expr(Compiler *c, int id, Buf *b);
 int emit_enum_with_index_expr(Compiler *c, int id, Buf *b);
