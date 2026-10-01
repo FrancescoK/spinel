@@ -30,3 +30,15 @@ class W; end
 o = W.new
 o.instance_exec { @w = 3 }
 p o.instance_exec { @w }, @d
+
+# an ivar nested deeper than the splice looks still reads the receiver's
+p [1].instance_exec { [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[@d]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]] }.flatten
+
+# a nested instance_exec on an object writes that object's ivar
+class Rv
+  def initialize = (@value = 0)
+  def value = @value
+end
+rv = Rv.new
+Object.new.instance_exec { rv.instance_exec { @value = 1 } }
+p rv.value
