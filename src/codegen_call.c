@@ -14116,6 +14116,30 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
     emit_expr(c, recv, b);
     return 1;
   }
+  /* Hash[k1, v1, k2] with an odd number of arguments (one argument is a
+     pairs Array, desugared to its to_h): the arguments run, then CRuby's
+     ArgumentError, where the call found no method at all */
+  if (recv >= 0 && sp_streq(name, "[]") && argc >= 3 && argc % 2 == 1 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Hash") &&
+      !user_defines_or_reads(c, "[]")) {
+    int plain = 1;
+    for (int i = 0; i < argc && plain; i++) {
+      NodeKind ak = nt_kind(nt, argv[i]);
+      plain = ak != NK_SplatNode && ak != NK_KeywordHashNode && ak != NK_BlockArgumentNode;
+    }
+    if (plain) {
+      TyKind rty = comp_ntype(c, id);
+      const char *hn = ty_hash_cname(rty), *dv = default_value(rty);
+      buf_puts(b, "({ ");
+      for (int i = 0; i < argc; i++) { buf_puts(b, "(void)("); emit_expr(c, argv[i], b); buf_puts(b, "); "); }
+      buf_puts(b, "sp_raise_cls(\"ArgumentError\", \"odd number of arguments for Hash\"); ");
+      if (hn) buf_printf(b, "sp_%sHash_new(); })", hn);
+      else if (rty == TY_POLY || rty == TY_UNKNOWN || !dv) buf_puts(b, "sp_box_nil(); })");
+      else buf_printf(b, "%s; })", dv);
+      return 1;
+    }
+  }
   /* Hash[] with no arguments constructs an empty hash. */
   if (recv >= 0 && sp_streq(name, "[]") && argc == 0 &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
@@ -20510,6 +20534,40 @@ int emit_builtin_arity_guard(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* `to_h` with no block on an Integer, Float or String Array, and `Hash[a]`
+   over one (desugared to its to_h with hash_brackets): no element is a
+   pair, so a non-empty one raises CRuby's error for its first element,
+   TypeError for to_h and ArgumentError for Hash[]; an empty one answers {}.
+   The call found no method at all. */
+static int emit_scalar_array_to_h(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  int anode = nt_ref(nt, id, "arguments"), argc = 0;
+  if (anode >= 0) nt_arr(nt, anode, "arguments", &argc);
+  if (!name || !sp_streq(name, "to_h") || recv < 0 || argc != 0 || nt_ref(nt, id, "block") >= 0) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  const char *bid = rt == TY_INT_ARRAY ? "SP_BUILTIN_INT_ARRAY" : rt == TY_FLOAT_ARRAY ? "SP_BUILTIN_FLT_ARRAY" :
+                    rt == TY_STR_ARRAY ? "SP_BUILTIN_STR_ARRAY" : NULL;
+  if (!bid || user_defines_or_reads(c, name)) return 0;
+  int brackets = nt_int(nt, id, "hash_brackets", 0);
+  TyKind res = comp_ntype(c, id);
+  const char *hn = ty_hash_cname(res);
+  int t = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = sp_box_nullable_obj((void *)(", t);
+  emit_expr(c, recv, b);
+  buf_printf(b, "), %s); SP_GC_ROOT_RBVAL(_t%d);"
+                " if (sp_poly_arr_len(_t%d) > 0) sp_raise_cls(\"%s\", sp_sprintf(\"wrong element type %%s at 0 (expected array)\","
+                " %s(sp_poly_arr_get(_t%d, 0)))); ",
+             bid, t, t, brackets ? "ArgumentError" : "TypeError",
+             /* Hash[] spells nil as itself, to_h as its class */
+             brackets ? "sp_convert_src_name" : "sp_poly_class_name", t);
+  if (hn) buf_printf(b, "sp_%sHash_new(); })", hn);
+  else if (res == TY_POLY || res == TY_UNKNOWN) buf_puts(b, "sp_box_nil(); })");
+  else { const char *dv = default_value(res); buf_printf(b, "%s; })", dv ? dv : "0"); }
+  return 1;
+}
+
 /* The builtin a bound builtin's wrapper `__bam_N` calls, as the Method
    names it (desugar_builtin_method_obj records it on the def), or dflt. */
 static const char *bam_builtin_sym(Compiler *c, int mi, const char *dflt) {
@@ -26709,6 +26767,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   if (emit_poly_arity_guard(c, id, b)) return;
   /* An argument whose static class the method cannot take (defined above). */
   if (emit_arg_type_guards(c, id, b)) return;
+  /* `to_h` on an Array of scalars (defined above) */
+  if (emit_scalar_array_to_h(c, id, b)) return;
   /* A local receiver its own argument reassigns (defined above). */
   if (emit_recv_snapshot(c, id, b)) return;
   /* Operands in Ruby's order, each held across the call (defined above). */

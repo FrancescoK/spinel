@@ -1,0 +1,25 @@
+[ArgumentError, "wrong element type Symbol at 0 (expected array)"]
+[ArgumentError, "wrong element type nil at 1 (expected array)"]
+[ArgumentError, "invalid number of elements (3 for 1..2)"]
+[ArgumentError, "wrong element type Integer at 2 (expected array)"]
+[ArgumentError, "wrong element type nil at 0 (expected array)"]
+[ArgumentError, "invalid number of elements (0 for 1..2)"]
+[ArgumentError, "wrong element type true at 0 (expected array)"]
+[ArgumentError, "wrong element type Float at 0 (expected array)"]
+[ArgumentError, "wrong element type Integer at 0 (expected array)"]
+[ArgumentError, "wrong element type String at 0 (expected array)"]
+[ArgumentError, "odd number of arguments for Hash"]
+[ArgumentError, "odd number of arguments for Hash"]
+[TypeError, "wrong element type Integer at 0 (expected array)"]
+[TypeError, "wrong element type Float at 0 (expected array)"]
+[TypeError, "wrong element type String at 0 (expected array)"]
+[TypeError, "wrong element type NilClass at 0 (expected array)"]
+{}
+{}
+{a: nil}
+{a: 1, b: nil}
+{"k" => "v"}
+{1 => 2, 3 => 4}
+{a: 1}
+{1 => 2, 3 => 4}
+{1 => 2}

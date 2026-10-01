@@ -5860,6 +5860,18 @@ else {
                       " sp_sprintf(\"wrong array length at %%lld (expected 2, was %%lld)\","
                       " (long long)_t%d, (long long)_n%d)); }",
                    tp, tp, tp, ti, tp, tp, tp, ti, tp);
+        /* Hash[] takes a pair or a one-element array (a nil value), and
+           raises ArgumentError for anything else, as CRuby's Hash.[] does:
+           a non-array element read as {nil => nil}, and the third element of
+           a longer one was dropped */
+        else
+        buf_printf(b, " if (_t%d.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(_t%d.cls_id))"
+                      " sp_raise_cls(\"ArgumentError\", sp_sprintf(\"wrong element type %%s at %%lld (expected array)\","
+                      " sp_convert_src_name(_t%d), (long long)_t%d));"
+                      " { sp_int _n%d = sp_poly_arr_len(_t%d);"
+                      " if (_n%d < 1 || _n%d > 2) sp_raise_cls(\"ArgumentError\","
+                      " sp_sprintf(\"invalid number of elements (%%lld for 1..2)\", (long long)_n%d)); }",
+                   tp, tp, tp, ti, tp, tp, tp, tp, tp);
         buf_printf(b, " sp_%sHash_set(_t%d, ", hn, th);
         char kexpr[128];
         if (kty == TY_SYMBOL)      snprintf(kexpr, sizeof kexpr, "(sp_sym)sp_poly_arr_get(_t%d, 0).v.i", tp);
