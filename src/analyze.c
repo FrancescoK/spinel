@@ -13262,6 +13262,9 @@ static int an_strbuf_alias_source(Compiler *c, int v) {
       v = bb[0]; continue;
     }
     if (sp_streq(vt, "LocalVariableReadNode")) return v;
+    /* a chained assignment (`u = t = s`): its value is t's object, and the
+       write node names t as a read does */
+    if (sp_streq(vt, "LocalVariableWriteNode")) return v;
     if (sp_streq(vt, "CallNode")) {
       const char *cn = nt_str(nt, v, "name");
       int cr = nt_ref(nt, v, "receiver");
@@ -14430,6 +14433,81 @@ static int cap_wrap_mutates_param(Compiler *c, int blk, const char *bp) {
   return 0;
 }
 
+/* Pure-alias pairs, as a pass of its own: promote_shared_stored_strings runs
+   it in the fixpoint, and the post-fixpoint handle loop again, since a
+   local convert_byref_handle_params pulls into the handle there (`t = s;
+   grow(t)`) takes its alias source along only through this rule. */
+static int promote_local_alias_pairs(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  /* Pure-alias pairs (`s2 = s1`): when either endpoint of the alias is
+     in-place mutated, both share the one handle -- CRuby's mutable String
+     objects -- regardless of which mutator (a bang-only alias set shares
+     too). Non-literal writes are fine: the write emitter wraps them in
+     sp_String_new, which inherits the source's frozen state. */
+  for (int w = comp_kind_first(c, NK_LocalVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+    /* the aliasing shapes: `s2 = s1` and the value-position append chain
+       `s2 = (s1 << x)`, whose value IS the base object */
+    int wv = an_strbuf_alias_source(c, nt_ref(nt, w, "value"));
+    if (wv < 0) continue;
+    const char *srcn = nt_str(nt, wv, "name");
+    const char *tgtn = nt_str(nt, w, "name");
+    Scope *ws = comp_scope_of(c, w);
+    if (!srcn || !tgtn || !ws || sp_streq(srcn, tgtn)) continue;
+    LocalVar *srcv = scope_local(ws, srcn);
+    LocalVar *tgtv = scope_local(ws, tgtn);
+    if (!srcv || !tgtv) continue;
+    if (srcv->str_shared && tgtv->str_shared) continue;   /* settled */
+    /* A block parameter is bound by its iterator, which hands over a shared
+       handle only when the iteration rule made the container's elements
+       handles (the parameter is then already a shared strbuf). Otherwise the
+       element is a plain string, and promoting the parameter through an
+       alias -- `|s| s = s__bpin` once #5669 rebinds a reassigned parameter --
+       declared an sp_String * the iterator assigns a const char * to. */
+    if ((srcv->is_block_param && !(srcv->type == TY_STRBUF && srcv->str_shared)) ||
+        (tgtv->is_block_param && !(tgtv->type == TY_STRBUF && tgtv->str_shared))) continue;
+    /* The source may be the method's own parameter (`def m(y) = (t = y;
+       t << x)`). strbuf_slot_eligible turns parameters away, since a local
+       slot's representation is the scope's own choice and a parameter's is
+       its callers' too, so the pair was skipped and the append landed in t's
+       copy, lost even to the method's own later reads of y. The parameter
+       takes the handle instead, as one handed on to a handle parameter does
+       (convert_byref_handle_params), and that pass then pulls its callers. */
+    int src_param = srcv->is_param && !srcv->is_block_param && !srcv->rbs_seeded &&
+                    an_param_idx(ws, srcn) >= 0 &&
+                    (srcv->type == TY_STRING || srcv->type == TY_STRBUF);
+    if ((!src_param && !strbuf_slot_eligible(c, srcn, ws, srcv)) ||
+        !strbuf_slot_eligible(c, tgtn, ws, tgtv)) continue;
+    int ms = strbuf_mut_kind(c, srcn, ws);
+    int mt = strbuf_mut_kind(c, tgtn, ws);
+    if (ms < 0 || mt < 0) continue;         /* a disqualifying mutator */
+    /* An endpoint another rule made the handle counts as mutated: being the
+       handle is the conclusion that evidence was for. The alias set is then
+       mutated through it somewhere, by a later alias (`t = s; u = t;
+       u << x`) or by a callee it was handed to (`t = s; grow(t)`), and the
+       source still holding its own bytes kept the old String. */
+    int hs = srcv->type == TY_STRBUF && srcv->str_shared;
+    int ht = tgtv->type == TY_STRBUF && tgtv->str_shared;
+    if (ms != 1 && mt != 1 && !hs && !ht) continue;   /* alias set never mutated */
+    if (src_param && (srcv->type != TY_STRBUF || !srcv->str_shared || srcv->byref_out)) {
+      if (srcv->byref_out) { srcv->byref_out = 0; srcv->is_cell = 0; }
+      srcv->type = TY_STRBUF; srcv->str_shared = 1;
+      changed = 1;
+    }
+    /* A slot that has widened past String cannot carry the shared-mutable
+       REPRESENTATION: strbuf is an sp_String handle, and a poly slot may hold
+       anything. Boxing keeps the handle, so identity and in-place mutation
+       still travel; forcing strbuf back on it only fought whatever widened it,
+       every round, to the fixpoint's cap (#4116). */
+    if (srcv->type != TY_POLY && (srcv->type != TY_STRBUF || !srcv->str_shared))
+      {  srcv->type = TY_STRBUF; srcv->str_shared = 1; changed = 1;  }
+    if (tgtv->type != TY_POLY && (tgtv->type != TY_STRBUF || !tgtv->str_shared))
+      {  tgtv->type = TY_STRBUF; tgtv->str_shared = 1; changed = 1;  }
+  }
+  return changed;
+}
+
 static int promote_shared_stored_strings(Compiler *c) {
   int changed = 0;
   sb_store_valid = 0;   /* this run's store index is built on first use */
@@ -14782,49 +14860,7 @@ static int promote_shared_stored_strings(Compiler *c) {
       } }
   }
 
-  /* Pure-alias pairs (`s2 = s1`): when either endpoint of the alias is
-     in-place mutated, both share the one handle -- CRuby's mutable String
-     objects -- regardless of which mutator (a bang-only alias set shares
-     too). Non-literal writes are fine: the write emitter wraps them in
-     sp_String_new, which inherits the source's frozen state. */
-  for (int w = comp_kind_first(c, NK_LocalVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
-    if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
-    /* the aliasing shapes: `s2 = s1` and the value-position append chain
-       `s2 = (s1 << x)`, whose value IS the base object */
-    int wv = an_strbuf_alias_source(c, nt_ref(nt, w, "value"));
-    if (wv < 0) continue;
-    const char *srcn = nt_str(nt, wv, "name");
-    const char *tgtn = nt_str(nt, w, "name");
-    Scope *ws = comp_scope_of(c, w);
-    if (!srcn || !tgtn || !ws || sp_streq(srcn, tgtn)) continue;
-    LocalVar *srcv = scope_local(ws, srcn);
-    LocalVar *tgtv = scope_local(ws, tgtn);
-    if (!srcv || !tgtv) continue;
-    if (srcv->str_shared && tgtv->str_shared) continue;   /* settled */
-    /* A block parameter is bound by its iterator, which hands over a shared
-       handle only when the iteration rule made the container's elements
-       handles (the parameter is then already a shared strbuf). Otherwise the
-       element is a plain string, and promoting the parameter through an
-       alias -- `|s| s = s__bpin` once #5669 rebinds a reassigned parameter --
-       declared an sp_String * the iterator assigns a const char * to. */
-    if ((srcv->is_block_param && !(srcv->type == TY_STRBUF && srcv->str_shared)) ||
-        (tgtv->is_block_param && !(tgtv->type == TY_STRBUF && tgtv->str_shared))) continue;
-    if (!strbuf_slot_eligible(c, srcn, ws, srcv) ||
-        !strbuf_slot_eligible(c, tgtn, ws, tgtv)) continue;
-    int ms = strbuf_mut_kind(c, srcn, ws);
-    int mt = strbuf_mut_kind(c, tgtn, ws);
-    if (ms < 0 || mt < 0) continue;         /* a disqualifying mutator */
-    if (ms != 1 && mt != 1) continue;       /* alias set never mutated */
-    /* A slot that has widened past String cannot carry the shared-mutable
-       REPRESENTATION: strbuf is an sp_String handle, and a poly slot may hold
-       anything. Boxing keeps the handle, so identity and in-place mutation
-       still travel; forcing strbuf back on it only fought whatever widened it,
-       every round, to the fixpoint's cap (#4116). */
-    if (srcv->type != TY_POLY && (srcv->type != TY_STRBUF || !srcv->str_shared))
-      {  srcv->type = TY_STRBUF; srcv->str_shared = 1; changed = 1;  }
-    if (tgtv->type != TY_POLY && (tgtv->type != TY_STRBUF || !tgtv->str_shared))
-      {  tgtv->type = TY_STRBUF; tgtv->str_shared = 1; changed = 1;  }
-  }
+  if (promote_local_alias_pairs(c)) changed = 1;
   /* local <-> ivar alias pairs: `l = @s` / `@s = l`. When either side is
      in-place mutated, the ivar slot and the local share the handle. An ivar
      write as the value (`l = (@s ||= +"")`, `l = @s = +""`) answers the
@@ -24527,6 +24563,7 @@ void analyze_program(Compiler *c) {
     int ch = promote_params_stored_in_shared_ivars(c, &hat);
     if (convert_byref_handle_params(c, &hat)) ch = 1;
     handle_arg_tab_free(&hat);
+    if (promote_local_alias_pairs(c)) ch = 1;
     if (promote_dyncall_string_args(c)) ch = 1;
     if (promote_default_alias_params(c)) ch = 1;
     if (!ch) break;
