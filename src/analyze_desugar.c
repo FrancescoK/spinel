@@ -4982,6 +4982,64 @@ int desugar_block_implicit_rest(Compiler *c) {
   return changed;
 }
 
+/* `m(k: a, k: b)` passes b: the later pair wins (CRuby warns). A call
+   with a repeated keyword went through the kwargs Hash the binder builds
+   at run time, which lends a byref parameter a temp of the value, so
+   `m(k: s, k: s)` appended to a copy of s. An earlier pair whose value has
+   no effect to run (a variable's read, a literal, `+"lit"`) is dropped,
+   and the call binds the keyword as written once. */
+static int dupkw_inert(const NodeTable *nt, int v) {
+  switch (nt_kind(nt, v)) {
+    case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode: case NK_GlobalVariableReadNode:
+    case NK_ClassVariableReadNode: case NK_StringNode: case NK_SymbolNode: case NK_IntegerNode:
+    case NK_FloatNode: case NK_NilNode: case NK_TrueNode: case NK_FalseNode:
+      return 1;
+    case NK_CallNode: {
+      const char *nm = nt_str(nt, v, "name");
+      int r = nt_ref(nt, v, "receiver"), a = nt_ref(nt, v, "arguments");
+      return nm && (sp_streq(nm, "+@") || sp_streq(nm, "-@")) && a < 0 && r >= 0 &&
+             nt_kind(nt, r) == NK_StringNode;
+    }
+    default:
+      return 0;
+  }
+}
+int desugar_duplicate_keywords(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0, nkh = 0;
+  /* the resets below change the kind index: walk a copy of it */
+  const int *khs0 = nt_nodes_of_kind(nt, NK_KeywordHashNode, &nkh);
+  int *khs = nkh > 0 ? (int *)malloc(sizeof(int) * (size_t)nkh) : NULL;
+  if (nkh > 0 && !khs) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  if (nkh > 0) memcpy(khs, khs0, sizeof(int) * (size_t)nkh);
+  for (int q = 0; q < nkh; q++) {
+    int kh = khs[q];
+    int en = 0; const int *el = nt_arr(nt, kh, "elements", &en);
+    if (en < 2 || en > 64) continue;
+    int keep[64], n = 0, drop = 0, ok = 1, gone[64], ng = 0;
+    for (int e = 0; e < en && ok; e++) {
+      if (nt_kind(nt, el[e]) != NK_AssocNode) { ok = 0; break; }
+      int key = nt_ref(nt, el[e], "key");
+      if (nt_kind(nt, key) != NK_SymbolNode) { ok = 0; break; }
+      const char *kn = nt_str(nt, key, "value");
+      int later = 0;
+      for (int f = e + 1; f < en && !later; f++) {
+        int k2 = nt_kind(nt, el[f]) == NK_AssocNode ? nt_ref(nt, el[f], "key") : -1;
+        later = k2 >= 0 && nt_kind(nt, k2) == NK_SymbolNode && kn && sp_streq(nt_str(nt, k2, "value"), kn);
+      }
+      if (later && dupkw_inert(nt, nt_ref(nt, el[e], "value"))) { drop = 1; gone[ng++] = el[e]; continue; }
+      if (later) { ok = 0; break; }
+      keep[n++] = el[e];
+    }
+    if (!ok || !drop) continue;
+    nt_node_set_arr(nt, kh, "elements", keep, n);
+    for (int i = 0; i < ng; i++) nt_node_reset(nt, gone[i], "NilNode");
+    changed = 1;
+  }
+  free(khs);
+  return changed;
+}
+
 /* `return a, *b, c` / `break a, *b` / `next a, b` hand back one array:
    CRuby reads them as `return [a, *b, c]`. Wrap the arguments in that
    ArrayNode so the array-literal builders splice the splat and every
