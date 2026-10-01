@@ -292,6 +292,8 @@ static int g_mx_hide_all;    /* ... and one named at run time outside any macro 
 static MxNames g_mx_poison;  /* ivars something outside the macros writes, or may write */
 static int g_mx_poison_all;  /* ... or one named at run time */
 static MxNames g_mx_fixwriters;  /* names of macros that may write however they are called */
+static MxNames g_mx_alias;   /* constant names something besides a class/module statement may bind */
+static int g_mx_alias_all;   /* ... or a const_set with a name known only at run time */
 
 static unsigned mx_hash(const char *s) {
   unsigned h = 5381;
@@ -1228,6 +1230,10 @@ static char *mx_sym_or_str(const pm_node_t *n) {
   return strndup((const char *)pm_string_source(u), pm_string_length(u));
 }
 
+static int mx_sym_or_str_is(const pm_node_t *n) {
+  return PM_NODE_TYPE(n) == PM_SYMBOL_NODE || PM_NODE_TYPE(n) == PM_STRING_NODE;
+}
+
 /* a name a call of the `def`-like family gives: the literal arguments, or
    every name when one is computed. `setter`: attr_writer/accessor give name= too. */
 static void mx_note_literals(const pm_call_node_t *cn, int setter, int hide, int *computed) {
@@ -1734,13 +1740,31 @@ static bool mx_poison_visit(const pm_node_t *n, void *data) {
   case PM_CALL_NODE: {
     const pm_call_node_t *cn = (const pm_call_node_t *)n;
     char *nm = mx_name(cn->name);
-    if (mx_ivar_call(nm)) {
+    size_t argc = cn->arguments ? cn->arguments->arguments.size : 0;
+    int snd = strcmp(nm, "send") == 0 || strcmp(nm, "public_send") == 0 || strcmp(nm, "__send__") == 0;
+    /* a send names the method it calls: with a literal name, that call (its
+       arguments one on); with a name known only at run time (spinel compiles
+       some such sends), any macro, writing any ivar */
+    char *tgt = NULL; size_t a0i = 0;
+    if (snd || strcmp(nm, "method") == 0 || strcmp(nm, "public_method") == 0 ||
+        strcmp(nm, "singleton_method") == 0 || strcmp(nm, "instance_method") == 0) {
+      tgt = argc ? mx_sym_or_str(cn->arguments->arguments.nodes[0]) : NULL;
+      if (!tgt) g_mx_poison_all = 1;
+      else if (snd) a0i = 1;
+    }
+    const char *eff = tgt && snd ? tgt : nm;
+    if (mx_ivar_call(eff)) {
       if (!(ps->skip_writes && !cn->receiver)) {
-        char *a0 = cn->arguments && cn->arguments->arguments.size ? mx_sym_or_str(cn->arguments->arguments.nodes[0]) : NULL;
+        char *a0 = argc > a0i ? mx_sym_or_str(cn->arguments->arguments.nodes[a0i]) : NULL;
         if (a0) { mx_names_add(&g_mx_poison, a0); free(a0); } else g_mx_poison_all = 1;
       }
     }
+    /* code from a string: what it writes is not in the tree */
+    else if ((strcmp(eff, "eval") == 0 || strcmp(eff, "class_eval") == 0 || strcmp(eff, "module_eval") == 0 ||
+              strcmp(eff, "instance_eval") == 0) && argc > a0i)
+      g_mx_poison_all = 1;
     else if (!mx_is_tracked(n)) mx_poison_name(nm, cn->arguments, 1);
+    free(tgt);
     free(nm);
     return true;
   }
@@ -1750,6 +1774,116 @@ static bool mx_poison_visit(const pm_node_t *n, void *data) {
     return true;
   }
   }
+}
+
+/* The names a class or module statement may reopen through: a constant
+   assigned (`Alias = Calc`), one named by a literal (`const_set(:Alias, ..)`),
+   or any, when a const_set outside the macros computes its name. A class body
+   under such a name may be another class's: its state is not followed. */
+typedef struct { int in_macro; } MxAliasScan;
+
+static bool mx_alias_visit(const pm_node_t *n, void *data) {
+  MxAliasScan *as = data;
+  pm_constant_id_t id = 0;
+  switch (PM_NODE_TYPE(n)) {
+  case PM_MODULE_NODE: {
+    pm_node_t *b = ((const pm_module_node_t *)n)->body;
+    if (b && PM_NODE_TYPE(b) == PM_STATEMENTS_NODE) {
+      pm_statements_node_t *st = (pm_statements_node_t *)b;
+      for (size_t i = 0; i < st->body.size; i++) {
+        pm_node_t *s = st->body.nodes[i];
+        MxAliasScan in = { as->in_macro || (PM_NODE_TYPE(s) == PM_DEF_NODE && !((pm_def_node_t *)s)->receiver) };
+        pm_visit_node(s, mx_alias_visit, &in);
+      }
+    }
+    return false;
+  }
+  case PM_CONSTANT_WRITE_NODE: id = ((const pm_constant_write_node_t *)n)->name; break;
+  case PM_CONSTANT_OR_WRITE_NODE: id = ((const pm_constant_or_write_node_t *)n)->name; break;
+  case PM_CONSTANT_AND_WRITE_NODE: id = ((const pm_constant_and_write_node_t *)n)->name; break;
+  case PM_CONSTANT_OPERATOR_WRITE_NODE: id = ((const pm_constant_operator_write_node_t *)n)->name; break;
+  case PM_CONSTANT_TARGET_NODE: id = ((const pm_constant_target_node_t *)n)->name; break;
+  case PM_CONSTANT_PATH_TARGET_NODE: id = ((const pm_constant_path_target_node_t *)n)->name; break;
+  case PM_CONSTANT_PATH_WRITE_NODE: id = ((const pm_constant_path_write_node_t *)n)->target->name; break;
+  case PM_CONSTANT_PATH_OR_WRITE_NODE: id = ((const pm_constant_path_or_write_node_t *)n)->target->name; break;
+  case PM_CONSTANT_PATH_AND_WRITE_NODE: id = ((const pm_constant_path_and_write_node_t *)n)->target->name; break;
+  case PM_CONSTANT_PATH_OPERATOR_WRITE_NODE: id = ((const pm_constant_path_operator_write_node_t *)n)->target->name; break;
+  case PM_SYMBOL_NODE: case PM_STRING_NODE: {
+    char *s = mx_sym_or_str(n);
+    if (s && isupper((unsigned char)s[0])) mx_names_add(&g_mx_alias, s);
+    free(s);
+    return true;
+  }
+  case PM_CALL_NODE: {
+    const pm_call_node_t *cn = (const pm_call_node_t *)n;
+    char *nm = mx_name(cn->name);
+    if (!as->in_macro && strcmp(nm, "const_set") == 0 &&
+        !(cn->arguments && cn->arguments->arguments.size && mx_sym_or_str_is(cn->arguments->arguments.nodes[0])))
+      g_mx_alias_all = 1;
+    free(nm);
+    return true;
+  }
+  default: return true;
+  }
+  if (id) { char *s = mx_name(id); mx_names_add(&g_mx_alias, s); free(s); }
+  return true;
+}
+
+/* A setter attr_writer / attr_accessor (or `attr` with true) makes writes the
+   ivar of its name wherever it is called (`self.k = v`, a send, a module the
+   class extends): the ivar is refused, every one when a name is computed. Any
+   receiver and any place, a macro's body too. */
+static bool mx_attr_visit(const pm_node_t *n, void *data) {
+  (void)data;
+  if (PM_NODE_TYPE(n) != PM_CALL_NODE) return true;
+  const pm_call_node_t *cn = (const pm_call_node_t *)n;
+  char *nm = mx_name(cn->name);
+  int attr = strcmp(nm, "attr_writer") == 0 || strcmp(nm, "attr_accessor") == 0 || strcmp(nm, "attr") == 0;
+  /* through a send, by a literal name; a computed one is any method */
+  if (!attr && (strcmp(nm, "send") == 0 || strcmp(nm, "public_send") == 0 || strcmp(nm, "__send__") == 0) &&
+      cn->arguments && cn->arguments->arguments.size) {
+    char *t = mx_sym_or_str(cn->arguments->arguments.nodes[0]);
+    attr = t && (strcmp(t, "attr_writer") == 0 || strcmp(t, "attr_accessor") == 0 || strcmp(t, "attr") == 0);
+    free(t);
+  }
+  free(nm);
+  if (!attr) return true;
+  if (!cn->arguments) return true;
+  for (size_t i = 0; i < cn->arguments->arguments.size; i++) {
+    const pm_node_t *a = cn->arguments->arguments.nodes[i];
+    if (PM_NODE_TYPE(a) == PM_TRUE_NODE || PM_NODE_TYPE(a) == PM_FALSE_NODE) continue;
+    char *t = mx_sym_or_str(a);
+    if (!t) { g_mx_poison_all = 1; continue; }
+    if (strcmp(t, "attr_writer") && strcmp(t, "attr_accessor") && strcmp(t, "attr")) {
+      size_t len = strlen(t);
+      char *iv = malloc(len + 2);
+      iv[0] = '@'; memcpy(iv + 1, t, len + 1);
+      mx_names_add(&g_mx_poison, iv);
+      free(iv);
+    }
+    free(t);
+  }
+  return true;
+}
+
+/* may a class statement at this path (inside `outer`) reopen a class known by
+   another path? */
+static int mx_path_odd(const char *outer, const pm_node_t *cp, const char *path) {
+  if (g_mx_alias_all) return 1;
+  /* `class A::B` inside a namespace: A is looked up from there, not under it */
+  if (PM_NODE_TYPE(cp) == PM_CONSTANT_PATH_NODE && outer[0] && cp->location.start[0] != ':') return 1;
+  for (const char *p = path; *p; ) {
+    while (*p == ':') p++;
+    const char *e = strstr(p, "::");
+    size_t len = e ? (size_t)(e - p) : strlen(p);
+    char *seg = strndup(p, len);
+    /* top-level constants are Object's: `class Object; class Calc` reopens ::Calc */
+    int odd = strcmp(seg, "Object") == 0 || mx_names_has(&g_mx_alias, seg);
+    free(seg);
+    if (odd) return 1;
+    p += len;
+  }
+  return 0;
 }
 
 /* Code a macro generates (a module_eval string, a define_singleton_method
@@ -1857,6 +1991,7 @@ typedef struct {
   int vis;                      /* a bare private/protected/public/module_function came */
   int unknown;                  /* a call was left as written that may define methods or write state */
   MxNames gen;                  /* class methods its expansions define */
+  int noiv;                     /* this body may run out of order, or be another class's: no state */
   MxVar iv[64]; int niv;        /* the ivars its macros keep, as the evaluator follows them */
 } MxClass;
 static MxClass *g_mx_classes; static int g_mx_nclasses;
@@ -1893,11 +2028,19 @@ static const char *mx_resolve_const(const char *from, const char *text) {
 
 static void mx_class_body(pm_statements_node_t *st, MxEdits *ed, MxClass *k, int top, int mark);
 
-typedef struct { MxEdits *ed; const char *path; int mark; } MxWalk;
+typedef struct { MxEdits *ed; const char *path; int mark; int loose; } MxWalk;
 
 static bool mx_class_visit(const pm_node_t *n, void *data) {
   MxWalk *w = (MxWalk *)data;
-  if (PM_NODE_TYPE(n) != PM_CLASS_NODE && PM_NODE_TYPE(n) != PM_MODULE_NODE) return true;
+  if (PM_NODE_TYPE(n) != PM_CLASS_NODE && PM_NODE_TYPE(n) != PM_MODULE_NODE) {
+    /* a class body inside anything but the statements of the program, a class
+       or a module (a block, a method, a branch, a loop) runs when that does,
+       if ever: not in the order of the text */
+    if (w->loose || PM_NODE_TYPE(n) == PM_PROGRAM_NODE || PM_NODE_TYPE(n) == PM_STATEMENTS_NODE) return true;
+    MxWalk sub = *w; sub.loose = 1;
+    pm_visit_child_nodes(n, mx_class_visit, &sub);
+    return false;
+  }
   int is_mod = PM_NODE_TYPE(n) == PM_MODULE_NODE;
   pm_node_t *cp = is_mod ? ((pm_module_node_t *)n)->constant_path : ((pm_class_node_t *)n)->constant_path;
   pm_node_t *body = is_mod ? ((pm_module_node_t *)n)->body : ((pm_class_node_t *)n)->body;
@@ -1905,11 +2048,19 @@ static bool mx_class_visit(const pm_node_t *n, void *data) {
   char *path = malloc(strlen(w->path) + cl + 3);
   if (cl >= 2 && cp->location.start[0] == ':') sprintf(path, "%.*s", (int)cl, (const char *)cp->location.start);
   else sprintf(path, "%s::%.*s", w->path, (int)cl, (const char *)cp->location.start);
+  int odd = w->loose || mx_path_odd(w->path, cp, path);
+  /* not tracked: what its macro calls may write is refused */
+  if (w->mark && odd) { free(path); return false; }
   if (body && PM_NODE_TYPE(body) == PM_STATEMENTS_NODE) {
     MxClass scratch; memset(&scratch, 0, sizeof scratch);
-    mx_class_body((pm_statements_node_t *)body, w->ed, w->mark ? &scratch : mx_class_state(path), 1, w->mark);
+    MxClass *k = w->mark ? &scratch : mx_class_state(path);
+    int sv = k->noiv;
+    if (odd) k->noiv = 1;
+    /* an extend that may not run (or not now) is not recorded */
+    mx_class_body((pm_statements_node_t *)body, w->ed, k, !w->loose, w->mark);
+    k->noiv = sv;
   }
-  MxWalk sub = { w->ed, path, w->mark };
+  MxWalk sub = { w->ed, path, w->mark, odd };
   if (body) pm_visit_node(body, mx_class_visit, &sub);
   free(path);
   return false;
@@ -2007,11 +2158,16 @@ static int mx_bare_visibility(const char *name) {
          strcmp(name, "public") == 0 || strcmp(name, "module_function") == 0;
 }
 
-/* the statement lists of an if: each branch (NULL for an empty one) */
-static int mx_if_branches(pm_node_t *s, pm_statements_node_t **brs, int max, int *has_else) {
+/* the statement lists of an if: each branch (NULL for an empty one), however
+   long the elsif chain (a branch left out would be one the merge never saw);
+   the caller frees the list */
+static pm_statements_node_t **mx_if_branches(pm_node_t *s, int *nbr_out, int *has_else) {
   int is_if = PM_NODE_TYPE(s) == PM_IF_NODE;
   pm_statements_node_t *gs = is_if ? ((pm_if_node_t *)s)->statements : ((pm_unless_node_t *)s)->statements;
   pm_node_t *ge = is_if ? ((pm_if_node_t *)s)->subsequent : (pm_node_t *)((pm_unless_node_t *)s)->else_clause;
+  int max = 2;
+  for (pm_node_t *q = ge; q && PM_NODE_TYPE(q) == PM_IF_NODE; q = ((pm_if_node_t *)q)->subsequent) max++;
+  pm_statements_node_t **brs = malloc(sizeof(*brs) * (size_t)max);
   int nbr = 0;
   *has_else = 0;
   brs[nbr++] = gs;
@@ -2025,7 +2181,8 @@ static int mx_if_branches(pm_node_t *s, pm_statements_node_t **brs, int max, int
     brs[nbr++] = ((pm_if_node_t *)ge)->statements;
     ge = ((pm_if_node_t *)ge)->subsequent;
   }
-  return nbr;
+  *nbr_out = nbr;
+  return brs;
 }
 
 /* The statements of a class body, in program order. `top`: the statements
@@ -2046,10 +2203,11 @@ static void mx_class_body(pm_statements_node_t *st, MxEdits *ed, MxClass *k, int
         /* a block `if`: its statements are class-body statements too, each
            branch run from the state before it; afterwards what the branches
            do not agree on is unknown (the condition is decided at run time) */
-        pm_statements_node_t *brs[64]; int has_else;
-        int nbr = mx_if_branches(s, brs, 64, &has_else);
+        int nbr, has_else;
+        pm_statements_node_t **brs = mx_if_branches(s, &nbr, &has_else);
         if (mark) {
           for (int b = 0; b < nbr; b++) if (brs[b]) mx_class_body(brs[b], ed, k, 0, 1);
+          free(brs);
           continue;
         }
         MxVar pre[64]; int npre = k->niv;
@@ -2066,6 +2224,7 @@ static void mx_class_body(pm_statements_node_t *st, MxEdits *ed, MxClass *k, int
           else if (!mx_merge_state(acc, &nacc, pre, npre)) k->unknown = 1;
         }
         memcpy(k->iv, acc, sizeof(MxVar) * (size_t)nacc); k->niv = nacc;
+        free(brs);
         continue;
       }
       if (!gs || gs->body.size != 1 || gelse || PM_NODE_TYPE(gs->body.nodes[0]) != PM_CALL_NODE) continue;
@@ -2123,7 +2282,7 @@ static void mx_class_body(pm_statements_node_t *st, MxEdits *ed, MxClass *k, int
     MxBuf out = {0};
     MxCtx c; memset(&c, 0, sizeof c);
     c.out = dyn ? &out : NULL; c.modname = m->module;
-    c.iv = k->iv; c.niv = &k->niv; c.unsure = &k->unknown;
+    c.iv = k->noiv ? NULL : k->iv; c.niv = &k->niv; c.unsure = &k->unknown;
     /* evaluate on a copy of the state: a failed expansion must not leave half
        its writes behind */
     MxVar save[64]; int nsave = k->niv;
@@ -2268,9 +2427,11 @@ static char *sp_expand_class_macros(const char *source) {
     if (g_mx_nmacros > 0 && mx_program_reflects()) g_mx_nmacros = 0;
     /* what may write an ivar, and where the evaluator follows a macro call */
     mx_analyze_writers();
-    { MxEdits none = {0}; MxWalk mw = { &none, "", 1 }; pm_visit_node(root, mx_class_visit, &mw); }
+    { MxAliasScan as = { 0 }; pm_visit_node(root, mx_alias_visit, &as); }
+    { MxEdits none = {0}; MxWalk mw = { &none, "", 1, 0 }; pm_visit_node(root, mx_class_visit, &mw); }
     mx_sort_tracked();
     { MxPoisonScan ps = { 0 }; pm_visit_node(root, mx_poison_visit, &ps); }
+    pm_visit_node(root, mx_attr_visit, NULL);
     if (getenv("SPINEL_MACRO_DEBUG")) {
       for (int i = 0; i < g_mx_poison.n; i++) fprintf(stderr, "poisoned ivar: %s\n", g_mx_poison.v[i]);
       if (g_mx_poison_all) fprintf(stderr, "poisoned: every ivar\n");
@@ -2279,7 +2440,7 @@ static char *sp_expand_class_macros(const char *source) {
       MxEdits ed = {0};
       /* one walk in program order: a macro call sees only the extends the
          body made before it */
-      MxWalk w = { &ed, "", 0 };
+      MxWalk w = { &ed, "", 0, 0 };
       pm_visit_node(root, mx_class_visit, &w);
       for (int i = 0; i < g_mx_nclasses; i++) {
         free(g_mx_classes[i].ext);
@@ -2343,6 +2504,8 @@ static char *sp_expand_class_macros(const char *source) {
     mx_names_free(&g_mx_poison);
     g_mx_poison_all = 0;
     mx_names_free(&g_mx_fixwriters);
+    mx_names_free(&g_mx_alias);
+    g_mx_alias_all = 0;
     free(g_mx_tracked); g_mx_tracked = NULL; g_mx_ntracked = 0;
   }
   g_parser = sv;
