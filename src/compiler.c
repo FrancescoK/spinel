@@ -1211,19 +1211,26 @@ int comp_is_sg_writer(ClassInfo *ci, const char *name) { return name_in(ci->sg_w
 void comp_add_alias_from(ClassInfo *ci, const char *new_name, const char *old_name, int alias_node) {
   comp_table_gen++;
   if (!new_name || !old_name) return;
+  /* A name aliased again is the later alias, so both entries stay, in
+     program order, and lookups read the last; only the same statement
+     registered twice (or the same unplaced pair) is a repeat. */
   for (int i = 0; i < ci->naliases; i++)
-    if (sp_streq(ci->alias_new[i], new_name)) return;
+    if (sp_streq(ci->alias_new[i], new_name) &&
+        (alias_node >= 0 ? ci->alias_node[i] == alias_node
+                         : (ci->alias_node[i] < 0 && sp_streq(ci->alias_old[i], old_name)))) return;
   if (ci->naliases >= ci->caliases) {
     ci->caliases = ci->caliases ? ci->caliases * 2 : 4;
     ci->alias_new = realloc(ci->alias_new, sizeof(char *) * (size_t)ci->caliases);
     ci->alias_old = realloc(ci->alias_old, sizeof(char *) * (size_t)ci->caliases);
     ci->alias_cls = realloc(ci->alias_cls, sizeof(int) * (size_t)ci->caliases);
     ci->alias_node = realloc(ci->alias_node, sizeof(int) * (size_t)ci->caliases);
+    ci->alias_builtin = realloc(ci->alias_builtin, sizeof(int) * (size_t)ci->caliases);
   }
   ci->alias_new[ci->naliases] = strdup(new_name);
   ci->alias_old[ci->naliases] = strdup(old_name);
   ci->alias_cls[ci->naliases] = -1;
   ci->alias_node[ci->naliases] = alias_node;
+  ci->alias_builtin[ci->naliases] = 0;
   ci->naliases++;
 }
 
@@ -1264,14 +1271,21 @@ int comp_resolve_member(Compiler *c, int class_id, const char *name, int want_wr
   return SP_MEMBER_METHOD;
 }
 
-const char *comp_resolve_alias_at(Compiler *c, int class_id, const char *name, int *start_cls) {
+const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin) {
+  if (builtin) *builtin = 0;
   if (!name) return name;
-  /* Follow alias links (chain-aware), guarding against cycles. */
+  /* Follow alias links (chain-aware), guarding against cycles. A name means
+     its LAST alias, and an alias names what its target meant where the
+     alias appeared: the hop from it reads only the aliases of that class
+     before it. `alias_method :plus_without, :+` then
+     `alias_method :+, :plus_with` leaves plus_without on the old `+`;
+     reading the later alias made plus_with call itself. */
+  int lim_cls = -1, lim = 0;
   for (int hops = 0; hops < 32; hops++) {
     const char *next = NULL;
     for (int cid = class_id; cid >= 0 && !next; cid = c->classes[cid].parent) {
       ClassInfo *ci = &c->classes[cid];
-      for (int i = 0; i < ci->naliases; i++)
+      for (int i = (cid == lim_cls ? lim : ci->naliases) - 1; i >= 0; i--)
         if (sp_streq(ci->alias_new[i], name)) {
           next = ci->alias_old[i];
           /* An alias of an INHERITED method names the body that was in effect
@@ -1284,6 +1298,12 @@ const char *comp_resolve_alias_at(Compiler *c, int class_id, const char *name, i
                aliases of the name are not the body the alias took */
             class_id = ci->alias_cls[i];
           }
+          lim_cls = cid; lim = i;
+          /* it captured a primitive's builtin: that is where it ends */
+          if (ci->alias_builtin && ci->alias_builtin[i]) {
+            if (builtin) *builtin = 1;
+            return next;
+          }
           break;
         }
     }
@@ -1291,6 +1311,10 @@ const char *comp_resolve_alias_at(Compiler *c, int class_id, const char *name, i
     name = next;
   }
   return name;
+}
+
+const char *comp_resolve_alias_at(Compiler *c, int class_id, const char *name, int *start_cls) {
+  return comp_resolve_alias_ex(c, class_id, name, start_cls, NULL);
 }
 
 const char *comp_resolve_alias(Compiler *c, int class_id, const char *name) {

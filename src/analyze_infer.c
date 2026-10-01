@@ -1884,14 +1884,21 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       int k = si >= 0 ? c->scopes[si].class_id : -1;
       if (k >= 0 && k < c->nclasses && c->classes[k].name &&
           (sp_streq(c->classes[k].name, "String") || sp_streq(c->classes[k].name, "Integer") ||
-           sp_streq(c->classes[k].name, "Float") || sp_streq(c->classes[k].name, "Symbol")))
+           sp_streq(c->classes[k].name, "Float") || sp_streq(c->classes[k].name, "Symbol") ||
+           sp_streq(c->classes[k].name, "Time")))
         aci = k;
     }
-    if (aci >= 0 && c->classes[aci].naliases > 0) {
-      const char *rn = comp_resolve_alias(c, aci, name);
+    /* a call already resolved to a captured builtin keeps it: its name is
+       the builtin's now, which the class may alias to its own method */
+    if (aci >= 0 && c->classes[aci].naliases > 0 && !nt_int(nt, id, "builtin_only", 0)) {
+      int bi = 0;
+      const char *rn = comp_resolve_alias_ex(c, aci, name, NULL, &bi);
       if (rn && !sp_streq(rn, name)) {
         nt_node_set_str((NodeTable *)nt, id, "name", rn);
         name = nt_str(nt, id, "name");
+        /* the alias captured the builtin: the class's own method of that
+           name, defined or aliased after it, is not this call's */
+        if (bi) nt_node_set_int((NodeTable *)nt, id, "builtin_only", 1);
       }
     }
   }
@@ -2119,7 +2126,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      for a name it does not know, which typed `t.stamp` as an int slot around
      a String-returning reopen. The scalar reopens (String, Integer, ...) keep
      their place further down, where their rules have long been ordered. */
-  if (recv >= 0 && (rt == TY_RANGE || rt == TY_TIME || rt == TY_IO || rt == TY_CLASS)) {
+  if (recv >= 0 && (rt == TY_RANGE || rt == TY_TIME || rt == TY_IO || rt == TY_CLASS) &&
+      !nt_int(nt, id, "builtin_only", 0)) {
     const char *ecn = rt == TY_RANGE ? "Range" : rt == TY_TIME ? "Time" : "Class";
     int eci = rt == TY_IO ? io_reopen_class(c, name) : comp_class_index(c, ecn);
     int emi = eci >= 0 ? comp_method_in_chain(c, eci, name, NULL) : -1;
@@ -4607,8 +4615,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "[]=") && argc == 2) return sc->nmembers > 0 ? sc->ivar_types[0] : TY_POLY;
   }
 
-  /* built-in class reopening: look up user-defined methods on scalar built-in types */
-  if (recv >= 0) {
+  /* built-in class reopening: look up user-defined methods on scalar built-in
+     types -- not for an alias that captured the builtin (builtin_only) */
+  if (recv >= 0 && !nt_int(nt, id, "builtin_only", 0)) {
     const char *oc_cn = NULL;
     switch (rt) {
     case TY_STRING: oc_cn = "String"; break;

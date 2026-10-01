@@ -474,6 +474,9 @@ typedef struct {
                           even when this class redefines the name), or -1 */
   int   *alias_node;   /* the alias statement's node id, so the pass that runs
                           once superclasses are wired can fill alias_cls */
+  int   *alias_builtin; /* 1: the alias captured the builtin method of a
+                           reopened primitive, which the class had not
+                           defined where the alias appeared */
   int naliases, caliases;
   int enum_yield_arity; /* widest `yield` arity in this class's each, so the
                            Enumerable collector packs a multi-value yield into
@@ -1132,6 +1135,7 @@ int         comp_resolve_member(Compiler *c, int class_id, const char *name, int
                                 int *def_class, int *method_index);
 const char *comp_resolve_alias(Compiler *c, int class_id, const char *name);
 const char *comp_resolve_alias_at(Compiler *c, int class_id, const char *name, int *start_cls);
+const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin);
 
 /* Set by codegen while a block is spliced: answers the type the block being
    inlined RIGHT HERE gives a yield, which the node cache cannot hold (one

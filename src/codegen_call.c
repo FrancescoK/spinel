@@ -27767,7 +27767,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     const NodeTable *ntR = c->nt;
     int recvR = nt_ref(ntR, id, "receiver");
     const char *nmR = nt_str(ntR, id, "name");
-    if (recvR >= 0 && nmR && nt_ref(ntR, id, "block") < 0) {
+    /* an alias that captured the builtin (builtin_only) is the builtin's */
+    if (recvR >= 0 && nmR && nt_ref(ntR, id, "block") < 0 && !nt_int(ntR, id, "builtin_only", 0)) {
       TyKind rtR = comp_ntype(c, recvR);
       const char *ocR = rtR == TY_STRING ? "String"
                       : rtR == TY_INT ? "Integer"
@@ -28207,7 +28208,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     int erecv = nt_ref(c->nt, id, "receiver");
     TyKind ert = erecv >= 0 ? comp_ntype(c, erecv) : TY_VOID;
     if (erecv >= 0 && (ert == TY_RANGE || ert == TY_TIME || ert == TY_IO || ert == TY_CLASS) &&
-        nt_ref(c->nt, id, "block") < 0) {
+        nt_ref(c->nt, id, "block") < 0 && !nt_int(c->nt, id, "builtin_only", 0)) {
       const char *ename = nt_str(c->nt, id, "name");
       const char *ecn = ert == TY_RANGE ? "Range" : ert == TY_TIME ? "Time" : "Class";
       int eci = ert == TY_IO ? io_reopen_class(c, ename) : comp_class_index(c, ecn);
@@ -44881,8 +44882,9 @@ else {
     return;
   }
 
-  /* dispatch user-defined methods on reopened built-in types */
-  if (recv >= 0) {
+  /* dispatch user-defined methods on reopened built-in types -- not for an
+     alias that captured the builtin (builtin_only) */
+  if (recv >= 0 && !nt_int(nt, id, "builtin_only", 0)) {
     const char *oc_cn = NULL;
     switch (rt) {
     case TY_STRING: oc_cn = "String"; break;

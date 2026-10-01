@@ -25963,6 +25963,35 @@ static int super_reach(Compiler *c, Scope *s) {
                        : comp_method_in_chain(c, p, s->name, NULL);
 }
 
+/* A receiverless call, in a reopened primitive, of an alias that captured
+   the builtin method (`def plus_with(o) = plus_without(o)` after
+   `alias_method :plus_without, :+`): it is the builtin's call on self.
+   Spelled as one -- self as the receiver, the builtin's name, marked so the
+   class's own method of that name does not take it -- since a receiverless
+   `+` is a call of the class's own `+`, which by then is plus_with. */
+static void rewrite_builtin_alias_self_calls(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "receiver") >= 0) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int si = c->nscope[id];
+    int k = si >= 0 ? c->scopes[si].class_id : -1;
+    if (!nm || k < 0 || c->scopes[si].is_cmethod || c->classes[k].naliases == 0) continue;
+    int bi = 0;
+    const char *rn = comp_resolve_alias_ex(c, k, nm, NULL, &bi);
+    if (!bi || !rn) continue;
+    char *target = strdup(rn);
+    int self = nt_new_node(nt, "SelfNode");
+    comp_grow_node_arrays(c);
+    c->nscope[self] = c->nscope[id];
+    nt_node_set_ref(nt, id, "receiver", self);
+    nt_node_set_str(nt, id, "name", target);
+    nt_node_set_int(nt, id, "builtin_only", 1);
+    free(target);
+  }
+}
+
 void analyze_program(Compiler *c) {
   comp_poly_candidates_reset();
   comp_descendants_reset();
@@ -26124,6 +26153,7 @@ void analyze_program(Compiler *c) {
   register_attrs(c);
   register_method_visibility(c);
   register_aliases(c);
+  rewrite_builtin_alias_self_calls(c);  /* plus_without(o) -> self.+(o), the builtin's */
   register_undefs(c);
   register_globals_consts(c);
   rewrite_const_alias_receivers(c);
