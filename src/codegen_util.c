@@ -2225,6 +2225,7 @@ void emit_expr_slot(Compiler *c, int node, TyKind slot, Buf *b) {
       return;
     }
   }
+  store_check(c, node, slot, "a value into a typed slot", b);
   emit_expr(c, node, b);
 }
 /* A value written into a typed scalar slot -- an Integer or Float array's
@@ -2239,7 +2240,164 @@ void emit_typed_sink_text(Compiler *c, int node, TyKind slot, const char *text, 
   if (vt == TY_POLY && slot == TY_INT) buf_printf(b, "sp_poly_to_i(%s)", text);
   else if (vt == TY_POLY && slot == TY_FLOAT) buf_printf(b, "sp_poly_to_f(%s)", text);
   else if (vt == TY_BIGINT && slot == TY_INT) buf_printf(b, "sp_bigint_to_int(%s)", text);
-  else buf_puts(b, text);
+  else {
+    if (node >= 0 && slot != TY_UNKNOWN) store_check(c, node, slot, "a typed element sink", b);
+    buf_puts(b, text);
+  }
+}
+/* ---- The store check (--check-stores) ----
+
+   Every value the emitter writes into a C slot -- a local, a temp, a field,
+   an element, an argument, a return -- has a C type, and so does the slot.
+   Where the two differ the store has to convert (box, unbox, a numeric
+   conversion, a handle wrap), and each emitter decides that for itself. One
+   that writes the value raw into a slot of another C type emits C that does
+   not build, or, between two pointer types, reads one struct's memory as
+   another's. --check-stores reports each such store at its Ruby line, with
+   the two C types and the construct, and marks the spot in the C with a
+   comment; it changes nothing else in the output. The stores report through
+   store_check where they write the value as it is. */
+
+/* The kind of the C value emit_expr renders for `node`: its inferred type --
+   for a `yield`, the type at this call site, since the block spliced here
+   answers its own (yield_site_type) -- except for the untyped nodes the
+   emitter still renders in a definite C type. An empty `[]` with no element
+   type is built as the method's array return kind, else as an Integer array
+   (the ArrayNode arm of emit_expr). */
+TyKind store_value_kind(Compiler *c, int node) {
+  if (node < 0) return TY_UNKNOWN;
+  TyKind t = yield_site_type(c, node);
+  if (t == TY_UNKNOWN && nt_kind(c->nt, node) == NK_ArrayNode) {
+    int n = 0;
+    nt_arr(c->nt, node, "elements", &n);
+    if (n == 0) return ty_is_array(g_ret_type) && array_kind(g_ret_type) ? g_ret_type : TY_INT_ARRAY;
+  }
+  return t;
+}
+
+/* The C value class of a kind: what C allows between two of them. */
+enum { SC_NONE, SC_ARITH, SC_PTR, SC_STRUCT, SC_BOXED };
+static int store_class(Compiler *c, TyKind t) {
+  switch (t) {
+    case TY_INT: case TY_FLOAT: case TY_BOOL: case TY_SYMBOL: return SC_ARITH;
+    case TY_POLY: return SC_BOXED;
+    case TY_UNKNOWN: case TY_VOID: case TY_NIL: return SC_NONE;
+    default: break;
+  }
+  if (ty_is_object(t)) return comp_ty_value_obj(c, t) ? SC_STRUCT : SC_PTR;
+  if (ty_is_struct_valued(t)) return SC_STRUCT;
+  return c_type_name(t) ? SC_PTR : SC_NONE;
+}
+
+/* Does a value of kind `from`, written as it is, keep its value in a slot of
+   kind `to`? The same C type does; so does an exact arithmetic widening
+   (an Integer into a Float slot, a boolean into an Integer one), a nil
+   literal's 0 in a pointer slot, which is NULL, and a subclass instance in
+   its ancestor's pointer slot. An untyped value's C type is whatever its
+   emitter chose (a boxed result, the gate's token, a super call's String),
+   which the kind does not say, so it is not checked. A void one fits
+   nothing. */
+int store_fits(Compiler *c, TyKind from, TyKind to) {
+  if (from == to || to == TY_UNKNOWN || to == TY_VOID || from == TY_UNKNOWN) return 1;
+  int fc = store_class(c, from), tc = store_class(c, to);
+  if (from == TY_NIL) return tc == SC_PTR || tc == SC_ARITH;
+  if (fc == SC_NONE) return 0;
+  if (fc == SC_ARITH && tc == SC_ARITH) return from != TY_FLOAT || to == TY_FLOAT;
+  if (ty_is_object(from) && ty_is_object(to) && fc == SC_PTR && tc == SC_PTR)
+    return is_descendant(c, ty_object_class(from), ty_object_class(to));
+  Buf fb, tb;
+  memset(&fb, 0, sizeof fb); memset(&tb, 0, sizeof tb);
+  emit_ctype(c, from, &fb); emit_ctype(c, to, &tb);
+  int same = fb.p && tb.p && sp_streq(fb.p, tb.p);
+  free(fb.p); free(tb.p);
+  return same;
+}
+
+/* Report the raw store of `node` (rendered as a `from` value) into a slot of
+   kind `slot`, when it does not fit: once per node and site, on stderr at the
+   node's Ruby line, and as a comment in `b` where the value is about to be
+   written. A silent emittability probe's output is thrown away, so it
+   reports nothing. */
+void store_check_kind(Compiler *c, int node, TyKind from, TyKind slot, const char *what, Buf *b) {
+  if (!g_check_stores || g_unsup_probe || store_fits(c, from, slot)) return;
+  static int *seen = NULL;
+  static const char **seen_what = NULL;
+  static int nseen = 0, capseen = 0;
+  for (int k = 0; k < nseen; k++)
+    if (seen[k] == node && seen_what[k] == what) goto mark;
+  if (nseen == capseen) {
+    capseen = capseen ? capseen * 2 : 64;
+    seen = realloc(seen, sizeof *seen * (size_t)capseen);
+    seen_what = realloc(seen_what, sizeof *seen_what * (size_t)capseen);
+  }
+  seen[nseen] = node; seen_what[nseen] = what; nseen++;
+  {
+    Buf fb, tb;
+    memset(&fb, 0, sizeof fb); memset(&tb, 0, sizeof tb);
+    emit_ctype(c, from, &fb); emit_ctype(c, slot, &tb);
+    int ln; const char *file = unsup_pos(c, node, &ln);
+    const char *fk = ty_is_object(from) ? class_ruby_name(c, ty_object_class(from)) : ty_name(from);
+    fprintf(stderr, "spinel: %s:%d: warning: store check: %s: %s value (%s, %s) written as it is into a slot of %s\n",
+            file, ln, what, fk ? fk : "?", fb.p ? fb.p : "void", nt_type(c->nt, node), tb.p ? tb.p : "void");
+    free(fb.p); free(tb.p);
+  }
+mark:
+  if (b) buf_printf(b, "/* store check: %s */", what);
+}
+
+void store_check(Compiler *c, int node, TyKind slot, const char *what, Buf *b) {
+  if (!g_check_stores) return;
+  store_check_kind(c, node, store_value_kind(c, node), slot, what, b);
+}
+
+/* ---- emit_coerce: a value into a typed slot ----
+
+   The one place a store whose value may not fit its slot converts it, or
+   refuses the program. A value that fits (store_fits) is written as it is,
+   so a store that was right already emits the C it did. Otherwise the
+   conversion depends on what the slot is to Ruby:
+
+   CO_HOLD     the slot holds the Ruby value itself -- a Complex component,
+               a Rational's numerator, a receiver -- so only its C
+               representation may change, never its class or its value;
+   CO_CONVERT  the slot is a conversion Ruby makes itself -- the Float
+               operand of a Float method, a duration -- so the value
+               converts as Ruby converts it: an Integer past 64 bits or a
+               Rational to its nearest double.
+
+   A store no conversion keeps right is refused at compile time, naming the
+   construct (`what`), the class it was given and the slot's C type. That is
+   the rule of #6179: what Spinel compiles works, or it is refused; it never
+   emits C that does not build, or a store that reads the wrong value. */
+void emit_coerce_text(Compiler *c, int node, TyKind from, TyKind slot, int how,
+                      const char *text, const char *what, Buf *b) {
+  if (store_fits(c, from, slot)) { buf_puts(b, text); return; }
+  const char *fn = NULL;
+  if (how == CO_CONVERT && slot == TY_FLOAT)
+    fn = from == TY_BIGINT ? "sp_bigint_to_double" : from == TY_RATIONAL ? "sp_rational_to_f" : NULL;
+  if (fn) { buf_printf(b, "%s(%s)", fn, text); return; }
+  char msg[512];
+  Buf tb; memset(&tb, 0, sizeof tb);
+  emit_ctype(c, slot, &tb);
+  const char *cn = from == TY_BIGINT ? "an Integer past 64 bits"
+                 : from == TY_RATIONAL ? "a Rational" : from == TY_COMPLEX ? "a Complex"
+                 : from == TY_EXCEPTION ? "an Exception" : from == TY_POLY ? "a value of any class"
+                 : from == TY_BOOL ? "true or false" : NULL;
+  const char *rn = cn ? NULL : conv_cls_name_of(c, from);
+  snprintf(msg, sizeof msg, "%s given %s%s, which no conversion keeps in its %s slot",
+           what, rn ? "a " : "", cn ? cn : rn ? rn : "a value of another class",
+           tb.p ? tb.p : "C");
+  free(tb.p);
+  unsupported_feature(c, node, msg);
+}
+
+void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, Buf *b) {
+  TyKind from = store_value_kind(c, node);
+  if (store_fits(c, from, slot)) { emit_expr(c, node, b); return; }
+  Buf vb; memset(&vb, 0, sizeof vb);
+  emit_expr(c, node, &vb);
+  emit_coerce_text(c, node, from, slot, how, vb.p ? vb.p : "", what, b);
+  free(vb.p);
 }
 int local_nil_test(Compiler *c, LocalVar *lv, const char *ref, Buf *out) {
   if (!lv) return 0;
