@@ -8586,6 +8586,35 @@ static void emit_break_value(Compiler *c, int id, Buf *b) {
    (top-to-bottom, like CRuby), with g_class_body_id set to `ci`. Method/attr/
    alias declarations are handled elsewhere; everything else (puts, constant
    writes, nested class/module bodies) executes inline here. */
+/* Does no part of the program, the runtime or the analysis give `nm` a
+   meaning as a call in a class body? */
+static int class_body_name_undefined(Compiler *c, const char *nm) {
+  static const char *const decls[] = { "private", "protected", "public", "module_function",
+    "private_class_method", "public_class_method", "private_constant", "public_constant",
+    "attr", "attr_reader", "attr_writer", "attr_accessor", "attribute", "attributes",
+    "include", "extend", "prepend",
+    "using", "refine", "alias_method", "define_method", "define_singleton_method",
+    "remove_method", "undef_method", "remove_class_variable", "freeze", "require",
+    "require_relative", "load", "autoload", "def_delegators", "def_delegator",
+    "instance_delegate", "delegate", "class_eval", "module_eval", "class_exec",
+    "module_exec", "instance_eval", "instance_exec", "const_set", "class_variable_set",
+    "instance_variable_set", "binding", "lambda", "proc", "loop", "catch", "throw",
+    "method_missing", "respond_to_missing?",
+    /* the FFI library DSL, which the analysis reads */
+    "ffi_lib", "ffi_lib_flags", "ffi_convention", "attach_function", "attach_variable",
+    "callback", "typedef", "enum", "bitmask", "find_type", "layout", NULL };
+  for (int i = 0; decls[i]; i++) if (sp_streq(nm, decls[i])) return 0;
+  /* the native-binding directives (ffi_func, ffi_struct, native_method, ...),
+     read by the analysis (analyze_scope.c) */
+  if (strncmp(nm, "ffi_", 4) == 0 || strncmp(nm, "native_", 7) == 0) return 0;
+  if (builtin_object_method_known(nm)) return 0;
+  for (int s = 0; s < c->nscopes; s++)
+    if (c->scopes[s].name && sp_streq(c->scopes[s].name, nm)) return 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_method_in_chain(c, k, nm, NULL) >= 0 || comp_cmethod_in_chain(c, k, nm, NULL) >= 0) return 0;
+  return 1;
+}
+
 static void emit_class_body_stmts(Compiler *c, int ci, int body, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int saved_cbi = g_class_body_id;
@@ -8615,7 +8644,14 @@ static void emit_class_body_stmts(Compiler *c, int ci, int body, Buf *b, int ind
       if (cn && (sp_streq(cn, "remove_method") || sp_streq(cn, "undef_method") ||
                  sp_streq(cn, "remove_class_variable")) &&
           diagnose_unsupported_call(c, stmts[k])) break;
-      int is_output = cn && (sp_streq(cn, "puts") || sp_streq(cn, "print") || sp_streq(cn, "p"));
+      /* Kernel calls that act (output, an exception, exit) run where they
+         stand, as CRuby runs a class body top to bottom: `raise` or `warn`
+         in a class body was skipped as a declaration */
+      static const char *const kernel_acts[] = { "puts", "print", "p", "pp", "printf",
+        "putc", "warn", "raise", "fail", "exit", "exit!", "abort", "sleep", "at_exit",
+        "srand", NULL };
+      int is_output = 0;
+      for (int q = 0; cn && kernel_acts[q] && !is_output; q++) is_output = sp_streq(cn, kernel_acts[q]);
       int is_user = cn && comp_method_index(c, cn) >= 0;
       /* self in a class body is the class, so a receiver-less call naming one
          of its class methods (its own or an ancestor's) is a real call, not a
@@ -8624,6 +8660,17 @@ static void emit_class_body_stmts(Compiler *c, int ci, int body, Buf *b, int ind
          and nothing said so (#4051). */
       if (!is_user && cn && g_class_body_id >= 0)
         is_user = comp_cmethod_in_chain(c, g_class_body_id, cn, NULL) >= 0;
+      /* A name nothing defines -- no method of any class or module in the
+         program, no Module or Object method, no declaration the analysis
+         reads -- is CRuby's NoMethodError at that point of the body, not a
+         declaration to skip silently. */
+      if (!is_output && !is_user && cn && class_body_name_undefined(c, cn)) {
+        const char *rn = ci >= 0 ? class_ruby_name(c, ci) : NULL;
+        emit_indent(b, indent);
+        buf_printf(b, "sp_raise_cls(\"NoMethodError\", \"undefined method '%s' for %s %s\");\n",
+                   cn, ci >= 0 && comp_class_is_module(c, &c->classes[ci]) ? "module" : "class", rn ? rn : "Object");
+        continue;
+      }
       if (!is_output && !is_user) continue;
     }
     emit_stmt(c, stmts[k], b, indent);
