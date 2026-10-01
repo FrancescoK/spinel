@@ -39164,7 +39164,7 @@ else {
       /* the identity is only for path-like values: File.path(nil) raises */
       emit_path_expr(c, argv[0], b); return;
     }
-    if (sp_streq(name, "absolute_path") && (argc == 1 || argc == 2)) {
+    if ((sp_streq(name, "absolute_path") || sp_streq(name, "expand_path")) && (argc == 1 || argc == 2)) {
       buf_puts(b, "sp_file_expand_path("); emit_path_expr(c, argv[0], b); buf_puts(b, ", ");
       if (argc == 2) emit_path_expr(c, argv[1], b); else buf_puts(b, "(const char *)0");
       buf_puts(b, ")"); return;
@@ -39369,11 +39369,6 @@ else {
     }
     if (sp_streq(name, "size") && argc == 1) {
       buf_puts(b, "sp_file_size("); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); return;
-    }
-    if (sp_streq(name, "expand_path") && (argc == 1 || argc == 2)) {
-      buf_puts(b, "sp_file_expand_path("); emit_path_expr(c, argv[0], b); buf_puts(b, ", ");
-      if (argc == 2) emit_path_expr(c, argv[1], b); else buf_puts(b, "(const char *)0");
-      buf_puts(b, ")"); return;
     }
     if (sp_streq(name, "join")) {
       int has_dyn = 0;
