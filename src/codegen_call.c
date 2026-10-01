@@ -3564,6 +3564,9 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "alive?")) {
       buf_puts(b, "sp_Fiber_alive("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
     }
+    if (sp_streq(name, "blocking?") && argc == 0) {
+      buf_puts(b, "sp_Fiber_blocking_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
     /* the fiber's own storage by a literal key: what a `Fiber.attr_accessor`
        reader and writer (desugar_handle_attr_accessor) read and write on self */
     if (sp_streq(name, "__storage_get") && argc == 1 && comp_ntype(c, argv[0]) == TY_SYMBOL) {
@@ -14173,11 +14176,26 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       if (cn && sp_streq(cn, "Fiber") && nt_ref(nt, id, "block") >= 0) {
         /* the Ruby creation site, which #inspect carries (as Thread's does) */
         const char *fpath = c->nt->source_file;
+        /* Fiber.new(blocking: x): evaluated first, as CRuby does, and kept
+           rooted while the fiber is allocated */
+        int fbl = -1;
+        if (argc >= 1 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) {
+          int kwn = 0; const int *kwels = nt_arr(nt, argv[argc - 1], "elements", &kwn);
+          int e = kwh_elem_named(c, kwn, kwels, "blocking");
+          if (e >= 0) fbl = nt_ref(nt, kwels[e], "value");
+        }
+        int tbl = 0, tfb = 0;
+        if (fbl >= 0) {
+          tbl = ++g_tmp; tfb = ++g_tmp;
+          buf_printf(b, "({ sp_RbVal _t%d = ", tbl); emit_boxed(c, fbl, b);
+          buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_Fiber *_t%d = ", tbl, tfb);
+        }
         buf_puts(b, "sp_Fiber_at(");
         emit_fiber_new(c, id, b, 0, -1);
         buf_puts(b, ", \"");
         emit_c_escaped(b, fpath && *fpath ? fpath : "source.rb");
         buf_printf(b, "\", %d)", (int)nt_int(nt, id, "node_line", 0));
+        if (tfb) buf_printf(b, "; _t%d->blocking = sp_poly_truthy(_t%d); _t%d; })", tfb, tbl, tfb);
         return 1;
       }
       if (cn && sp_streq(cn, "Queue")) { buf_puts(b, "sp_Queue_new()"); return 1; }
@@ -36676,6 +36694,23 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       buf_puts(b, "sp_fiber_current");
       return;
     }
+    /* Fiber.blocking? is 1 in a blocking fiber, false otherwise (CRuby) */
+    if (sp_streq(name, "blocking?") && argc == 0) {
+      buf_puts(b, "(sp_Fiber_blocking_p(sp_fiber_current) ? sp_box_int(1) : sp_box_bool(0))");
+      return;
+    }
+    if (sp_streq(name, "blocking") && argc == 0 && nt_ref(nt, id, "block") >= 0) {
+      int cblk = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
+      int bt = cblk >= 0 ? hoist_block_proc(c, cblk) : -1;
+      if (bt < 0) unsupported(c, id, "Fiber.blocking block form");
+      buf_printf(b, "sp_Fiber_blocking_proc(_t%d)", bt);
+      return;
+    }
+    /* there is no fiber scheduler to set, so there is never one to answer */
+    if ((sp_streq(name, "scheduler") || sp_streq(name, "current_scheduler")) && argc == 0) {
+      buf_puts(b, "sp_box_nil()");
+      return;
+    }
   }
 
   /* Process module methods */
@@ -41609,6 +41644,7 @@ else {
     /* and #kill, which a shutdown path reaches through the handle it kept in
        an Array or an ivar rather than a traceable local (#4619) */
     else if (sp_streq(name, "kill")) pm = "sp_poly_thread_kill";
+    else if (sp_streq(name, "blocking?")) pm = "sp_poly_fiber_blocking";
     if (pm) {
       /* Attr readers count as user definitions too: `attr_accessor :value`
          must shadow the builtin helper exactly like `def value` does, or the
@@ -41616,10 +41652,10 @@ else {
          general poly dispatch below emits reader arms, so it handles them. */
       if (!poly_name_user_claimed(c, name, argc, 1)) {
         TyKind want = comp_ntype(c, id);
-        int is_alive = sp_streq(name, "alive?");
-        if (is_alive && want == TY_POLY) buf_puts(b, "sp_box_bool(");
+        int is_bool = sp_streq(name, "alive?") || sp_streq(name, "blocking?");
+        if (is_bool && want == TY_POLY) buf_puts(b, "sp_box_bool(");
         buf_printf(b, "%s(", pm); emit_expr(c, recv, b); buf_puts(b, ")");
-        if (is_alive && want == TY_POLY) buf_puts(b, ")");
+        if (is_bool && want == TY_POLY) buf_puts(b, ")");
         return;
       }
     }

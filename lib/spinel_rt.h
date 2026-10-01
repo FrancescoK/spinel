@@ -10816,6 +10816,10 @@ static sp_Fiber *sp_poly_as_fiber(sp_RbVal v, const char *name) {
   sp_raise_nomethod(sp_nomethod_msg(name, v));
   return NULL;
 }
+/* #blocking? on a boxed Fiber */
+static sp_bool sp_poly_fiber_blocking(sp_RbVal v) {
+  return sp_Fiber_blocking_p(sp_poly_as_fiber(v, "blocking?"));
+}
 /* The Queue names no other builtin has, on a boxed receiver. */
 static sp_queue *sp_poly_as_queue(sp_RbVal v, const char *name) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_QUEUE && v.v.p) return (sp_queue *)v.v.p;
@@ -14654,6 +14658,41 @@ static sp_RbVal sp_Mutex_synchronize_proc(sp_mutex *m, sp_Proc *blk) {
     }
   }
   sp_Mutex_unlock(m);
+  if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();
+  if (excf) { sp_pending_exc_obj = eobj; sp_raise_cls(ecls, emsg); }
+  return r;
+}
+/* Fiber.blocking { |fiber| }: the running fiber is blocking while the block
+   runs and goes back to what it was after, also when the block raises or
+   unwinds (the frame is Mutex#synchronize's above). */
+static sp_RbVal sp_Fiber_blocking_proc(sp_Proc *blk) {
+  SP_GC_ROOT(blk);
+  sp_Fiber *f = sp_fiber_current;
+  unsigned char was = f->blocking;
+  sp_RbVal r = sp_box_nil();
+  SP_GC_ROOT_RBVAL(r);
+  const char *ecls = NULL, *emsg = NULL; void *eobj = NULL; int excf = 0;
+  SP_GC_ROOT_STR(emsg); SP_GC_ROOT(eobj);
+  f->blocking = 1;
+  sp_exc_check_depth();
+  sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;
+  sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;
+  if (setjmp(sp_exc_stack[sp_exc_top - 1]) == 0) {
+    sp_int slot = (sp_int)(uintptr_t)f;
+    _sp_proc_poly_args[0] = sp_box_obj((void *)f, SP_BUILTIN_FIBER);
+    _sp_proc_poly_ret = sp_box_nil();
+    sp_proc_call(blk, 1, &slot);
+    r = _sp_proc_poly_ret;
+    sp_exc_top--;
+  }
+  else {
+    sp_exc_top--;
+    sp_gc_nroots = sp_exc_rootmark[sp_exc_top]; sp_rescue_sp = sp_rescue_mark[sp_exc_top];
+    if (sp_unwind_kind == SP_UNWIND_NONE) {
+      excf = 1; emsg = sp_exc_msg[sp_exc_top]; ecls = sp_exc_cls[sp_exc_top]; eobj = sp_exc_obj[sp_exc_top];
+    }
+  }
+  f->blocking = was;
   if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();
   if (excf) { sp_pending_exc_obj = eobj; sp_raise_cls(ecls, emsg); }
   return r;
