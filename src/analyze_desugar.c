@@ -12378,25 +12378,60 @@ int desugar_singleton_attr(Compiler *c) {
    defined the method by then -- an earlier def in this or another body of
    the class (or module), or in a superclass, by the program's text. Each
    guard is answered in program order and replaced by its statements or
-   dropped, so a def an earlier guard dropped does not count. Only a bare or
+   dropped, so a def an earlier guard dropped does not count. A private
+   method is not defined to method_defined?. Only a bare or
    `self.` method_defined? / public_method_defined? with a literal name is
    answered; anything else keeps its runtime refusal. */
-/* a def of `m` (no receiver) in body subtree `n`, ahead of `before` and
-   outside it; nested classes, defs and singleton classes are not entered */
-static int dum_defines(const NodeTable *nt, int n, const char *m, int before) {
-  if (n < 0) return 0;
+typedef struct { int priv, found, seen; } DumState;
+/* a receiverless visibility call: 1 private, 2 public or protected */
+static int dum_vis(const NodeTable *nt, int n) {
+  if (nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "receiver") >= 0 || nt_ref(nt, n, "block") >= 0) return 0;
+  const char *cn = nt_str(nt, n, "name");
+  if (!cn) return 0;
+  if (sp_streq(cn, "private")) return 1;
+  return sp_streq(cn, "public") || sp_streq(cn, "protected") ? 2 : 0;
+}
+static const char *dum_lit_name(const NodeTable *nt, int a) {
+  NodeKind k = nt_kind(nt, a);
+  return k == NK_SymbolNode ? nt_str(nt, a, "value") : k == NK_StringNode ? nt_str(nt, a, "content") : NULL;
+}
+static const int *dum_args(const NodeTable *nt, int call, int *n) {
+  int ar = nt_ref(nt, call, "arguments");
+  *n = 0;
+  return ar >= 0 ? nt_arr(nt, ar, "arguments", n) : NULL;
+}
+/* body subtree `n` in program order, ahead of `before` and outside it: a def
+   of `m` (no receiver) defines it unless it is private there, and a later
+   `private :m` hides it again; nested classes, defs and singleton classes
+   are not entered */
+static void dum_walk(const NodeTable *nt, int n, const char *m, int before, DumState *st) {
+  if (n < 0 || n == before) return;
   NodeKind k = nt_kind(nt, n);
   if (k == NK_DefNode) {
     const char *dn = nt_str(nt, n, "name");
-    return n < before && nt_ref(nt, n, "receiver") < 0 && dn && sp_streq(dn, m);
+    if (n < before && nt_ref(nt, n, "receiver") < 0 && dn && sp_streq(dn, m)) { st->seen = 1; st->found = !st->priv; }
+    return;
   }
-  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return 0;
-  if (n == before) return 0;
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return;
+  int vis = dum_vis(nt, n);
+  if (vis) {
+    int an = 0; const int *av = dum_args(nt, n, &an);
+    if (an == 0) { if (n < before) st->priv = vis == 1; return; }
+    for (int q = 0; q < an; q++) {
+      if (nt_kind(nt, av[q]) == NK_DefNode) {
+        const char *dn = nt_str(nt, av[q], "name");
+        if (av[q] < before && nt_ref(nt, av[q], "receiver") < 0 && dn && sp_streq(dn, m)) { st->seen = 1; st->found = vis == 2; }
+        continue;
+      }
+      const char *ln = dum_lit_name(nt, av[q]);
+      if (ln && sp_streq(ln, m) && n < before && st->seen) st->found = vis == 2;
+    }
+    return;
+  }
   const SpNode *nd = &nt->nodes[n];
-  for (int j = 0; j < nd->nr; j++) if (dum_defines(nt, nd->r[j].ref, m, before)) return 1;
+  for (int j = 0; j < nd->nr; j++) dum_walk(nt, nd->r[j].ref, m, before, st);
   for (int j = 0; j < nd->na; j++)
-    for (int q = 0; q < nd->a[j].n; q++) if (dum_defines(nt, nd->a[j].ids[q], m, before)) return 1;
-  return 0;
+    for (int q = 0; q < nd->a[j].n; q++) dum_walk(nt, nd->a[j].ids[q], m, before, st);
 }
 static const char *dum_leaf(const NodeTable *nt, int path) {
   if (path < 0) return NULL;
@@ -12406,14 +12441,18 @@ static const char *dum_leaf(const NodeTable *nt, int path) {
 static int dum_defined_before(const NodeTable *nt, const char *cls, const char *m, int before, int depth) {
   if (!cls || depth > 16) return 0;
   const char *super = NULL;
+  DumState st = {0, 0, 0};
   for (int n = 0; n < before && n < nt->count; n++) {
     NodeKind k = nt_kind(nt, n);
     if (k != NK_ClassNode && k != NK_ModuleNode) continue;
     const char *ln = dum_leaf(nt, nt_ref(nt, n, "constant_path"));
     if (!ln || !sp_streq(ln, cls)) continue;
-    if (dum_defines(nt, nt_ref(nt, n, "body"), m, before)) return 1;
+    st.priv = 0;   /* each body starts public */
+    dum_walk(nt, nt_ref(nt, n, "body"), m, before, &st);
     if (k == NK_ClassNode && !super) super = dum_leaf(nt, nt_ref(nt, n, "superclass"));
   }
+  /* the class's own def decides, a private one too (it hides an inherited one) */
+  if (st.seen) return st.found;
   return super ? dum_defined_before(nt, super, m, before, depth + 1) : 0;
 }
 int desugar_def_unless_method_defined(Compiler *c) {
