@@ -486,6 +486,11 @@ extern int g_emit_sym_rt;      /* emit sp_dyn_syms / sp_sym_to_s / sp_sym_intern
 extern int g_emit_class_names; /* emit sp_class_to_s (the class-name table) */
 extern int g_emit_obj_dispatch;/* emit sp_obj_inspect_sw / sp_obj_to_s_sw (user classes exist) */
 extern int g_uses_program_name;/* $0 / $PROGRAM_NAME read somewhere */
+/* `$~`, `$1`..`$9`, `$&`, `` $` ``, `$'`, `$+` or Regexp.last_match read
+   somewhere. Only such a program has gsub / sub / scan record their last
+   match (sp_re_track_last), which costs a copy of the match and its groups
+   per call; one that never reads them keeps the plain scans. */
+extern int g_reads_match_regs;
 extern int g_gen_obj_hash;
 extern int g_gen_obj_to_json;  /* a package wants obj reflection + >=1 user #to_json */  /* a package wants obj reflection + >=1 struct: emit+install sp_obj_to_hash */
 extern int g_gen_obj_struct_values;  /* >=1 instantiated Struct (not Data): emit+install sp_obj_struct_values (poly member array) */
@@ -1069,6 +1074,7 @@ int emit_transform_hash_expr(Compiler *c, int id, Buf *b);
 int emit_bsearch_expr(Compiler *c, int id, Buf *b);
 int emit_poly_uniq_block(Compiler *c, int id, Buf *b);
 int emit_gsub_block_expr(Compiler *c, int id, Buf *b);
+int subtree_reads_match_globals(Compiler *c, int root);
 int emit_sum_block_expr(Compiler *c, int id, Buf *b);
 int emit_sum_block_poly_expr(Compiler *c, int id, Buf *b);
 int emit_slice_when_chunk_inspect_expr(Compiler *c, int id, Buf *b);

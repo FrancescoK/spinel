@@ -5677,6 +5677,9 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     int sc_re = re_lit_index(c, sc_argv[0]);
     if (sc_re < 0 && comp_ntype(c, sc_argv[0]) != TY_STRING) return 0;
     if (sc_re >= 0 && an_re_has_captures(re_lit_src(c, sc_argv[0]))) return 0;
+    /* a body that reads `$~` or a capture global sees its own turn's match,
+       which the value-form emitter walks the subject for (#3601) */
+    if (subtree_reads_match_globals(c, body)) return 0;
     TyKind et = TY_STRING;
     Scope *csc = p0 ? comp_scope_of(c, block) : NULL;
     LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;

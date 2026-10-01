@@ -1105,6 +1105,7 @@ int g_emit_sym_rt = 0;
 int g_emit_class_names = 0;
 int g_emit_obj_dispatch = 0;
 int g_uses_program_name = 0;
+int g_reads_match_regs = 0;
 int g_gen_obj_hash = 0;
 int g_gen_obj_to_json = 0;
 int g_gen_obj_to_h = 0;

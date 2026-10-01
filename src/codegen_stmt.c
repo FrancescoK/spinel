@@ -12944,9 +12944,13 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       if (argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
         /* remove the first occurrence */
         emit_indent(b, indent);
-        emit_expr(c, recv, b); buf_puts(b, " = sp_str_sub(");
+        /* sub would set `$~`, which slice! leaves alone; a program that
+           never reads it has sub record nothing */
+        emit_expr(c, recv, b);
+        buf_puts(b, g_reads_match_regs ? " = sp_str_remove_first(" : " = sp_str_sub(");
         emit_expr(c, recv, b); buf_puts(b, ", ");
-        emit_expr(c, argv[0], b); buf_puts(b, ", (&(\"\\xff\")[1]));\n");
+        emit_expr(c, argv[0], b);
+        buf_puts(b, g_reads_match_regs ? ");\n" : ", (&(\"\\xff\")[1]));\n");
         return 1;
       }
       if (argc == 1 && (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_RANGE)) {

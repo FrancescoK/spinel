@@ -1288,6 +1288,12 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_int _t%d = (sp_int)sp_str_byte_len(_t%d);\n", tnl, tnd);
   }
+  /* `$~` is each turn's match inside the block and the last one after the
+     call, or nil when nothing matched: the registers start cleared, every
+     match sets them, and the miss that ends the loop leaves them alone
+     (sp_re_match_next). Only a program that reads them pays for it. */
+  const char *re_next = g_reads_match_regs ? "sp_re_match_next" : "sp_re_match_at";
+  if (g_reads_match_regs) { emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_re_clear_last_match();\n"); }
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "while (_t%d <= _t%d) {\n", tpos, tslen);
   if (strpat) {
     emit_indent(g_pre, g_indent + 1);
@@ -1295,16 +1301,20 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
                tm, ts, tpos, tnd, ts, tpos);
   }
   else if (dynre) {
-    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_int _t%d = sp_re_match_at(_t%d, _t%d, _t%d);\n", tm, tre, ts, tpos);
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_int _t%d = %s(_t%d, _t%d, _t%d);\n", tm, re_next, tre, ts, tpos);
   }
   else {
-    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_int _t%d = sp_re_match_at(sp_re_pat_%d, _t%d, _t%d);\n", tm, reidx, ts, tpos);
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_int _t%d = %s(sp_re_pat_%d, _t%d, _t%d);\n", tm, re_next, reidx, ts, tpos);
   }
   emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "if (_t%d < 0) { sp_String_append_bin(_t%d, _t%d + _t%d); break; }\n", tm, tout, ts, tpos);
   emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_re_sub_matched = 1;\n");   /* the bang forms' nil contract */
   if (strpat) {
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_int _t%d = _t%d;\n", tms, tm);
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_int _t%d = _t%d + _t%d;\n", tme, tm, tnl);
+    if (g_reads_match_regs) {
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "sp_re_set_lit_match(_t%d, _t%d + _t%d, _t%d + _t%d);\n", ts, tpos, tms, tpos, tme);
+    }
   }
   else {
     /* sp_re_match_at leaves sp_re_caps full-string-relative; the scan loop works

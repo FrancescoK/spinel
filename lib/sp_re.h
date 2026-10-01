@@ -71,8 +71,13 @@ void sp_re_push_match_roots(void);
 /* ---- wrappers (lib/sp_re.c) ---- */
 const char *sp_re_last_paren_match(void);
 void sp_re_set_captures(const char *str, int *caps, int ncaps);
+extern int sp_re_track_last;   /* gsub / sub / scan record `$~` (sp_re.c) */
+void sp_re_clear_last_match(void);
+void sp_re_set_last_match(const mrb_regexp_pattern *pat, const char *str, const int *caps, int n);
+void sp_re_set_lit_match(const char *str, sp_int beg, sp_int end);
 sp_int sp_re_match(mrb_regexp_pattern *pat, const char *str);
 sp_int sp_re_match_at(mrb_regexp_pattern *pat, const char *str, sp_int pos);
+sp_int sp_re_match_next(mrb_regexp_pattern *pat, const char *str, sp_int pos);
 sp_int sp_re_rindex(mrb_regexp_pattern *pat, const char *str);
 sp_StrArray *sp_re_rpartition(mrb_regexp_pattern *pat, const char *str);
 sp_bool sp_re_match_p(mrb_regexp_pattern *pat, const char *str);
@@ -131,6 +136,7 @@ typedef struct {
   const char *last_str, *match_str, *match_pre, *match_post;
   int last_ncap;
   const mrb_regexp_pattern *last_pat;
+  int last_lit;
 } sp_re_frame;
 void sp_re_frame_push(sp_re_frame *f);
 void sp_re_frame_pop(sp_re_frame *f);
