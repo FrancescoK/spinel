@@ -1307,6 +1307,28 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
       if (pbn == 1) { emit_boxed(c, pbd[0], b); return; }
     }
   }
+  /* A boxed local an `is_a?(String)` guard narrowed: its box is the value,
+     handed on as it is. Unboxed and boxed again it was a new box over the
+     String's bytes, so a parameter appending to it missed the local's own
+     String (and any handle the box held). Not a read the argument table
+     runs ahead, whose text is the temp. */
+  if (nt_kind(c->nt, node) == NK_LocalVariableReadNode && comp_ntype(c, node) == TY_STRING &&
+      !arg_ran_first(node, 0)) {
+    const char *nvn = nt_str(c->nt, node, "name");
+    LocalVar *nlv = nvn ? scope_local(comp_scope_of(c, node), nvn) : NULL;
+    int over = 0;
+    for (int i = 0; i < g_n_argov && !over; i++) over = g_argov_node[i] == node;
+    if (nlv && nlv->type == TY_POLY && !over) {
+      /* a lifted read (handed to a parameter that appends) stores the
+         handle back first, as a POLY read's lift does */
+      Buf rl; memset(&rl, 0, sizeof rl);
+      emit_local_ref(c, node, nvn, &rl);
+      if (c->poly_strbuf_lift[node]) emit_poly_lift_ref(rl.p ? rl.p : "", b);
+      else buf_puts(b, rl.p ? rl.p : "sp_box_nil()");
+      free(rl.p);
+      return;
+    }
+  }
   {
     const char *bty0 = nt_type(c->nt, node);
     /* `*x` in a boxed value position (break *x / next *x): Ruby's
