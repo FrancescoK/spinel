@@ -1509,6 +1509,7 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/builtins_minmax.rb \
                   test/gc_minor_byref_lent_slot.rb \
                   test/gc_minor_byref_param_same_name_cell.rb \
+                  test/string_handle_group_arity.rb \
                   test/string_handle_eql.rb \
                   test/string_handle_yield_exec.rb \
                   test/gc_minor_barrier_holders.rb \
