@@ -1334,8 +1334,9 @@ static void emit_fresh_cell(Compiler *c, LocalVar *lv, const char *cellv, Buf *b
        prologues already say; without this arm the reset fell through to
        the sp_int else and assigned an sp_int * to an sp_Class * */
     const char *vs = cell_value_struct(lv->type);
-    buf_printf(b, "%s = (%s *)sp_gc_alloc(sizeof(%s), NULL, NULL); *%s = %s;\n",
-               cellv, vs, vs, cellv, cell_value_struct_empty(lv->type));
+    buf_printf(b, "%s = (%s *)sp_gc_alloc(sizeof(%s), NULL, %s); *%s = %s;\n",
+               cellv, vs, vs, cell_value_struct_scan(lv->type), cellv,
+               cell_value_struct_empty(lv->type));
   }
   else if (lv->type != TY_PROC && lv->type != TY_INT && lv->type != TY_BOOL &&
            lv->type != TY_SYMBOL && lv->type != TY_UNKNOWN && cell_is_typed_ptr(c, lv)) {
