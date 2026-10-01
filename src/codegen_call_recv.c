@@ -2671,7 +2671,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         if (fill_rt == TY_POLY_ARRAY) emit_boxed(c, argv[0], b);
         else emit_typed_elem_value(c, argv[0], ty_array_elem(fill_rt), b);
         buf_printf(b, "; sp_int _t%d = sp_%sArray_length(_t%d);", tn, fk, t);
-        const char *fsfx = nil_store_sfx(c, fk, argv[0]);   /* a nil fill value notes may_nil */
+        const char *fsfx = nil_store_sfx_into(c, fk, recv, argv[0]);   /* a nil fill value notes may_nil */
         if (argc >= 2 && comp_ntype(c, argv[1]) == TY_RANGE) {
           /* fill(val, range): use range as index span */
           int tr = ++g_tmp, te = ++g_tmp;
@@ -3636,7 +3636,7 @@ else {
             buf_printf(b, " sp_int _u%d_%d = ", t, a); emit_typed_elem_value(c, argv[a], TY_INT, b); buf_puts(b, ";");
           }
           for (int a = argc - 1; a >= 0; a--) {
-            buf_printf(b, " sp_IntArray_unshift%s(_t%d, _u%d_%d);", nil_store_sfx(c, "Int", argv[a]), t, t, a);
+            buf_printf(b, " sp_IntArray_unshift%s(_t%d, _u%d_%d);", nil_store_sfx_into(c, "Int", recv, argv[a]), t, t, a);
           }
         }
         else if (rt == TY_STR_ARRAY) {
@@ -3665,7 +3665,7 @@ else {
             buf_printf(b, " sp_float _u%d_%d = ", t, a); emit_typed_elem_value(c, argv[a], TY_FLOAT, b); buf_puts(b, ";");
           }
           for (int a = argc - 1; a >= 0; a--) {
-            buf_printf(b, " sp_FloatArray_unshift%s(_t%d, _u%d_%d);", nil_store_sfx(c, "Float", argv[a]), t, t, a);
+            buf_printf(b, " sp_FloatArray_unshift%s(_t%d, _u%d_%d);", nil_store_sfx_into(c, "Float", recv, argv[a]), t, t, a);
           }
         }
         buf_printf(b, " _t%d; })", t);
@@ -4001,7 +4001,7 @@ else {
                       " (long long)_t%d, (long long)(-((_t%d ? _t%d->len : 0) + 1)))); }",
                    to2, ti2, ti2, ti2, t, t, ti2, to2, t, t);
         for (int a2 = 1; a2 < argc; a2++) {
-          buf_printf(b, " sp_%sArray_insert%s(_t%d, _t%d + %d, ", k, nil_store_sfx(c, k, argv[a2]), t, ti2, a2 - 1);
+          buf_printf(b, " sp_%sArray_insert%s(_t%d, _t%d + %d, ", k, nil_store_sfx_into(c, k, recv, argv[a2]), t, ti2, a2 - 1);
           emit_typed_elem_value(c, argv[a2], ty_array_elem(rt), b); buf_puts(b, ");");
         }
         buf_printf(b, " _t%d; })", t);

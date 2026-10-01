@@ -4799,7 +4799,7 @@ static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b) {
      a non-array. Returns the recv (matching `<<`s chainability). */
   if (a.tag == SP_TAG_OBJ) {
     if (a.cls_id == SP_BUILTIN_INT_ARRAY) {
-      sp_IntArray_push((sp_IntArray *)a.v.p, sp_poly_elem_i(b));
+      sp_IntArray_push_nilable((sp_IntArray *)a.v.p, sp_poly_elem_i(b));
       return a;
     }
     if (a.cls_id == SP_BUILTIN_POLY_ARRAY) {
@@ -4812,7 +4812,7 @@ static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b) {
       return a;
     }
     if (a.cls_id == SP_BUILTIN_FLT_ARRAY) {
-      sp_FloatArray_push((sp_FloatArray *)a.v.p, sp_poly_elem_f(b));
+      sp_FloatArray_push_nilable((sp_FloatArray *)a.v.p, sp_poly_elem_f(b));
       return a;
     }
     if (a.cls_id == SP_BUILTIN_STR_ARRAY) {
@@ -5162,6 +5162,7 @@ static void sp_poly_arr_writeback(sp_RbVal orig, sp_PolyArray *work) {
           sp_raise_writeback_kind(work->data[i], "Integer");
       a->start = 0; a->len = 0;
       for (sp_int i = 0; i < work->len; i++) sp_IntArray_push(a, sp_poly_as_int_or_nil(work->data[i]));
+      sp_IntArray_note_nils(a);
       return;
     }
     case SP_BUILTIN_SYM_ARRAY: {
@@ -5180,6 +5181,7 @@ static void sp_poly_arr_writeback(sp_RbVal orig, sp_PolyArray *work) {
           sp_raise_writeback_kind(work->data[i], "Float");
       a->len = 0;
       for (sp_int i = 0; i < work->len; i++) sp_FloatArray_push(a, sp_poly_to_f_or_nil(work->data[i]));
+      sp_FloatArray_note_nils(a);
       return;
     }
     case SP_BUILTIN_STR_ARRAY: {
@@ -9575,9 +9577,9 @@ static sp_RbVal sp_poly_arr_set_hash(sp_RbVal v, sp_int idx, sp_RbVal val) {
   sp_poly_coll_chk(v, "[]=");
   if (v.tag != SP_TAG_OBJ) return val;
   switch (v.cls_id) {
-    case SP_BUILTIN_INT_ARRAY:  sp_IntArray_set((sp_IntArray*)v.v.p, idx,
+    case SP_BUILTIN_INT_ARRAY:  sp_IntArray_set_nilable((sp_IntArray*)v.v.p, idx,
                                                 sp_poly_elem_i(val)); break;
-    case SP_BUILTIN_FLT_ARRAY:  sp_FloatArray_set((sp_FloatArray*)v.v.p, idx,
+    case SP_BUILTIN_FLT_ARRAY:  sp_FloatArray_set_nilable((sp_FloatArray*)v.v.p, idx,
                                                    sp_poly_elem_f(val)); break;
     case SP_BUILTIN_STR_ARRAY:  sp_StrArray_set((sp_StrArray*)v.v.p, idx,
                                                  sp_poly_elem_s(val)); break;
@@ -9684,9 +9686,9 @@ static sp_RbVal sp_poly_arr_set(sp_RbVal v, sp_int idx, sp_RbVal val) {
   sp_poly_coll_chk(v, "[]=");
   if (v.tag != SP_TAG_OBJ) return val;
   switch (v.cls_id) {
-    case SP_BUILTIN_INT_ARRAY:  sp_IntArray_set((sp_IntArray*)v.v.p, idx,
+    case SP_BUILTIN_INT_ARRAY:  sp_IntArray_set_nilable((sp_IntArray*)v.v.p, idx,
                                                 sp_poly_elem_i(val)); break;
-    case SP_BUILTIN_FLT_ARRAY:  sp_FloatArray_set((sp_FloatArray*)v.v.p, idx,
+    case SP_BUILTIN_FLT_ARRAY:  sp_FloatArray_set_nilable((sp_FloatArray*)v.v.p, idx,
                                                    sp_poly_elem_f(val)); break;
     case SP_BUILTIN_STR_ARRAY:  sp_StrArray_set((sp_StrArray*)v.v.p, idx,
                                                  sp_poly_elem_s(val)); break;
@@ -9814,7 +9816,7 @@ static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
       else sp_poly_typed_hash_store_miss(key, val, "Symbol", NULL);
       break;
     case SP_BUILTIN_INT_ARRAY:
-      if (key.tag == SP_TAG_INT) sp_IntArray_set((sp_IntArray*)v.v.p, key.v.i,
+      if (key.tag == SP_TAG_INT) sp_IntArray_set_nilable((sp_IntArray*)v.v.p, key.v.i,
                                                   sp_poly_elem_i(val));
       break;
     case SP_BUILTIN_POLY_ARRAY:
@@ -9828,7 +9830,7 @@ static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
                                                   sp_poly_elem_s(val));
       break;
     case SP_BUILTIN_FLT_ARRAY:
-      if (key.tag == SP_TAG_INT) sp_FloatArray_set((sp_FloatArray*)v.v.p, key.v.i,
+      if (key.tag == SP_TAG_INT) sp_FloatArray_set_nilable((sp_FloatArray*)v.v.p, key.v.i,
                                                     sp_poly_elem_f(val));
       break;
     case SP_BUILTIN_PTR_ARRAY:

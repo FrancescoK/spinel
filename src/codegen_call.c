@@ -28895,6 +28895,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           bam_done[ki][oi] = 1;
           const char *cast = (ki == 0) ? "" : "(sp_int)(uintptr_t)";
           const char *uncast = (ki == 0) ? "" : "(const char *)(uintptr_t)";
+          /* the Method stores into an array no name reaches here: a nil it
+             stores into an Integer one notes the array's may_nil */
+          const char *nsfx = (ki == 0) ? "_nilable" : "";
           if (g_promote_mode) {
             /* promote: bound methods are invoked through the poly ABI, so the
                adapter takes/returns sp_RbVal (boxing the int/string element). */
@@ -28911,12 +28914,12 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
             else if (oi == 1) {
               buf_printf(&g_proc_protos, "static sp_RbVal _bam_%sArray_set(void *a, sp_RbVal i, sp_RbVal v);\n", bk);
               buf_printf(&g_procs, "static sp_RbVal _bam_%sArray_set(void *a, sp_RbVal i, sp_RbVal v) {\n"
-                                   "  sp_%sArray_set((sp_%sArray *)a, sp_poly_to_i(i), %s(v));\n  return v;\n}\n", bk, bk, bk, unbox);
+                                   "  sp_%sArray_set%s((sp_%sArray *)a, sp_poly_to_i(i), %s(v));\n  return v;\n}\n", bk, bk, nsfx, bk, unbox);
             }
             else {
               buf_printf(&g_proc_protos, "static sp_RbVal _bam_%sArray_push(void *a, sp_RbVal v);\n", bk);
               buf_printf(&g_procs, "static sp_RbVal _bam_%sArray_push(void *a, sp_RbVal v) {\n"
-                                   "  sp_%sArray_push((sp_%sArray *)a, %s(v));\n  return %s(a);\n}\n", bk, bk, bk, unbox, boxarr);
+                                   "  sp_%sArray_push%s((sp_%sArray *)a, %s(v));\n  return %s(a);\n}\n", bk, bk, nsfx, bk, unbox, boxarr);
             }
           }
           else if (oi == 0) {
@@ -28927,12 +28930,12 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           else if (oi == 1) {
             buf_printf(&g_proc_protos, "static sp_int _bam_%sArray_set(void *a, sp_int i, sp_int v);\n", bk);
             buf_printf(&g_procs, "static sp_int _bam_%sArray_set(void *a, sp_int i, sp_int v) {\n"
-                                 "  sp_%sArray_set((sp_%sArray *)a, i, %sv);\n  return v;\n}\n", bk, bk, bk, uncast);
+                                 "  sp_%sArray_set%s((sp_%sArray *)a, i, %sv);\n  return v;\n}\n", bk, bk, nsfx, bk, uncast);
           }
           else {
             buf_printf(&g_proc_protos, "static sp_int _bam_%sArray_push(void *a, sp_int v);\n", bk);
             buf_printf(&g_procs, "static sp_int _bam_%sArray_push(void *a, sp_int v) {\n"
-                                 "  sp_%sArray_push((sp_%sArray *)a, %sv);\n  return (sp_int)(uintptr_t)a;\n}\n", bk, bk, bk, uncast);
+                                 "  sp_%sArray_push%s((sp_%sArray *)a, %sv);\n  return (sp_int)(uintptr_t)a;\n}\n", bk, bk, nsfx, bk, uncast);
           }
         }
         buf_printf(b, "(sp_int)(uintptr_t)&_bam_%sArray_%s", bk, bop);
@@ -32222,7 +32225,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     else emit_recv_rooted(c, recv, t, "SP_GC_ROOT", b);
     TyKind elem = ty_array_elem(art);
     for (int a = 0; a < argc; a++) {
-      buf_printf(b, "sp_%sArray_push%s(_t%d, ", k, nil_store_sfx(c, k, argv[a]), t);
+      buf_printf(b, "sp_%sArray_push%s(_t%d, ", k, nil_store_sfx_into(c, k, recv, argv[a]), t);
       if (art == TY_POLY_ARRAY) emit_boxed(c, argv[a], b);
       else if (comp_ntype(c, argv[a]) == TY_POLY && elem == TY_STRING) {
         /* a poly value (holds a string at runtime) into a str_array: coerce */
@@ -42570,7 +42573,7 @@ else {
         else if (vt == TY_POLY && et == TY_FLOAT) { buf_puts(b, "sp_poly_elem_f("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
         else emit_expr(c, argv[1], b);
       }
-      buf_printf(b, "; sp_%sArray_set%s(_t%d, _t%d, _t%d); _t%d; })", k, nil_store_sfx(c, k, argv[1]), t, ti, tv, tv);
+      buf_printf(b, "; sp_%sArray_set%s(_t%d, _t%d, _t%d); _t%d; })", k, nil_store_sfx_into(c, k, recv, argv[1]), t, ti, tv, tv);
       return;
     }
   }
@@ -43267,7 +43270,7 @@ else {
         buf_printf(b, " _t%d = ", tv);
         if (rt == TY_POLY_ARRAY && vt != TY_POLY) emit_boxed(c, argv[1], b);
         else emit_expr(c, argv[1], b);
-        buf_printf(b, "; sp_%sArray_set%s(", k, nil_store_sfx(c, k, argv[1])); emit_expr(c, recv, b); buf_puts(b, ", ");
+        buf_printf(b, "; sp_%sArray_set%s(", k, nil_store_sfx_into(c, k, recv, argv[1])); emit_expr(c, recv, b); buf_puts(b, ", ");
         emit_expr(c, argv[0], b); buf_printf(b, ", _t%d); _t%d; })", tv, tv);
         return;
       }

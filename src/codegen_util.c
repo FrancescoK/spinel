@@ -2259,6 +2259,360 @@ const char *nil_store_sfx(Compiler *c, const char *k, int node) {
   if (t != TY_INT && t != TY_FLOAT) return "";
   return enum_builtin_node(c, node) ? "_nilable" : "";
 }
+/* ---- arrays a nil reaches through another name ----
+   The element mark sits on the slot a nil was stored through. Another name
+   for the same array carries no mark: the caller's argument when the slot is
+   a parameter, `a` after `b = a; b << h[k]`, the array an ivar was handed,
+   a container's element. Its whole-array reads took the nil for a number
+   (`def add(x, k) = x << H[k]` left the caller's `c.max` answering 5). A
+   store of a value that can be nil therefore notes the array's run-time
+   may_nil (nil_store_sfx_into), unless the slot it goes through owns its
+   array: a local every write of which builds a fresh array, read only as the
+   receiver of a call that hands back no alias of it. */
+static int *eso_par;      /* parent of each node, built once at codegen */
+static int eso_count = -1;
+
+static void eso_parents(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  free(eso_par);
+  eso_count = nt->count;
+  eso_par = malloc(sizeof(int) * (size_t)(eso_count + 1));
+  for (int i = 0; i <= eso_count; i++) eso_par[i] = -1;
+  for (int id = 0; id < eso_count; id++) {
+    int nr = nt_num_refs(nt, id);
+    for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, id, i); if (ch >= 0 && ch < eso_count) eso_par[ch] = id; }
+    int na = nt_num_arrs(nt, id);
+    for (int i = 0; i < na; i++) {
+      int n = 0; const int *a = nt_arr_at(nt, id, i, &n);
+      for (int j = 0; j < n; j++) if (a[j] >= 0 && a[j] < eso_count) eso_par[a[j]] = id;
+    }
+  }
+}
+
+static int eso_name_in(const char *nm, const char *const *set) {
+  if (!nm) return 0;
+  for (int i = 0; set[i]; i++) if (sp_streq(nm, set[i])) return 1;
+  return 0;
+}
+
+static int eso_discarded(Compiler *c, int id);
+/* Every call of a method named `nm` drops its value (initialize's is
+   always dropped by `new`); a method also reached by name (send, method,
+   define_method) does not count as dropped. */
+static const char **eso_dropn; static signed char *eso_dropv; static int eso_ndrop, eso_cdrop;
+/* calls and symbols by name, so each method's callers are found once */
+typedef struct { const char *name; int *calls; int ncalls, ccalls; int named; } EsoName;
+static EsoName *eso_names; static int eso_nnames, eso_cnames;
+static int *eso_nhash; static int eso_nhcap;
+static unsigned eso_strhash(const char *p) {
+  unsigned h = 2166136261u;
+  for (; *p; p++) { h ^= (unsigned char)*p; h *= 16777619u; }
+  return h;
+}
+static EsoName *eso_name(const char *nm, int add) {
+  if (!nm) return NULL;
+  if (add && eso_nnames * 2 >= eso_nhcap) {
+    int ncap = eso_nhcap ? eso_nhcap * 2 : 256;
+    int *nh = malloc(sizeof(int) * (size_t)ncap);
+    for (int k = 0; k < ncap; k++) nh[k] = -1;
+    for (int k = 0; k < eso_nnames; k++) {
+      unsigned h = eso_strhash(eso_names[k].name) & (unsigned)(ncap - 1);
+      while (nh[h] >= 0) h = (h + 1) & (unsigned)(ncap - 1);
+      nh[h] = k;
+    }
+    free(eso_nhash); eso_nhash = nh; eso_nhcap = ncap;
+  }
+  if (!eso_nhcap) return NULL;
+  unsigned h = eso_strhash(nm) & (unsigned)(eso_nhcap - 1);
+  while (eso_nhash[h] >= 0) {
+    if (sp_streq(eso_names[eso_nhash[h]].name, nm)) return &eso_names[eso_nhash[h]];
+    h = (h + 1) & (unsigned)(eso_nhcap - 1);
+  }
+  if (!add) return NULL;
+  if (eso_nnames == eso_cnames) {
+    eso_cnames = eso_cnames ? eso_cnames * 2 : 256;
+    eso_names = realloc(eso_names, sizeof(EsoName) * (size_t)eso_cnames);
+  }
+  memset(&eso_names[eso_nnames], 0, sizeof(EsoName));
+  eso_names[eso_nnames].name = nm;
+  eso_nhash[h] = eso_nnames;
+  return &eso_names[eso_nnames++];
+}
+static void eso_index_names(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  for (int k = 0; k < eso_nnames; k++) free(eso_names[k].calls);
+  eso_nnames = 0;
+  if (eso_nhash) for (int k = 0; k < eso_nhcap; k++) eso_nhash[k] = -1;
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    EsoName *e = eso_name(nt_str(nt, u, "name"), 1);
+    if (!e) continue;
+    if (e->ncalls == e->ccalls) { e->ccalls = e->ccalls ? e->ccalls * 2 : 4; e->calls = realloc(e->calls, sizeof(int) * (size_t)e->ccalls); }
+    e->calls[e->ncalls++] = u;
+  }
+  NT_FOREACH_KIND(nt, NK_SymbolNode, y) {
+    EsoName *e = eso_name(nt_str(nt, y, "value"), 1);
+    if (e) e->named = 1;
+  }
+}
+static int eso_calls_discard(Compiler *c, const char *nm) {
+  const NodeTable *nt = c->nt;
+  if (!nm) return 0;
+  if (sp_streq(nm, "initialize")) return 1;
+  for (int i = 0; i < eso_ndrop; i++) if (sp_streq(eso_dropn[i], nm)) return eso_dropv[i];
+  if (eso_ndrop == eso_cdrop) {
+    eso_cdrop = eso_cdrop ? eso_cdrop * 2 : 16;
+    eso_dropn = realloc(eso_dropn, sizeof(const char *) * (size_t)eso_cdrop);
+    eso_dropv = realloc(eso_dropv, (size_t)eso_cdrop);
+  }
+  int slot = eso_ndrop++;
+  eso_dropn[slot] = nm; eso_dropv[slot] = 0;   /* a recursion answers "kept" */
+  EsoName *e = eso_name(nm, 0);
+  int ok = !e || !e->named;
+  for (int i = 0; e && ok && i < e->ncalls; i++) if (!eso_discarded(c, e->calls[i])) ok = 0;
+  eso_dropv[slot] = (signed char)ok;
+  return ok;
+}
+
+/* The node's value is thrown away: a statement other than its list's last,
+   or the last of a list whose own value is (a loop's body, the body of an
+   iterator that ignores its block's value, a program or class body). */
+static int eso_discarded(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  for (int guard = 0; guard < 64; guard++) {
+    int p = id >= 0 && id < eso_count ? eso_par[id] : -1;
+    if (p < 0) return 0;
+    NodeKind pk = nt_kind(nt, p);
+    if (pk == NK_ParenthesesNode || pk == NK_BeginNode || pk == NK_ElseNode) { id = p; continue; }
+    if (pk == NK_DefNode) return nt_ref(nt, p, "body") == id && eso_calls_discard(c, nt_str(nt, p, "name"));
+    if ((pk == NK_IfNode || pk == NK_UnlessNode) && nt_ref(nt, p, "predicate") != id) { id = p; continue; }
+    if (pk != NK_StatementsNode) return 0;
+    int n = 0; const int *st = nt_arr(nt, p, "body", &n);
+    if (n > 0 && st[n - 1] != id) return 1;
+    int q = eso_par[p];
+    if (q < 0) return 0;
+    if (nt_kind(nt, q) == NK_DefNode) { id = p; continue; }
+    NodeKind qk = nt_kind(nt, q);
+    if (qk == NK_WhileNode || qk == NK_UntilNode || qk == NK_ClassNode || qk == NK_ModuleNode) return 1;
+    const char *qt = nt_type(nt, q);
+    if (qt && sp_streq(qt, "ProgramNode")) return 1;
+    if (qk == NK_BlockNode) {
+      int call = eso_par[q];
+      const char *cn = call >= 0 && nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
+      return eso_name_in(cn, (const char *const[]){ "each", "each_with_index", "each_index", "times", "upto",
+                                                    "downto", "step", "loop", "each_slice", "each_cons",
+                                                    "reverse_each", NULL });
+    }
+    id = p;
+  }
+  return 0;
+}
+
+/* The value builds an array of its own. */
+static int eso_fresh(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (v >= 0) v = unwrap_parens(c, v);
+  if (v < 0) return 0;
+  if (nt_kind(nt, v) == NK_ArrayNode) return 1;
+  if (nt_kind(nt, v) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  int recv = nt_ref(nt, v, "receiver");
+  if (!nm || recv < 0) return 0;
+  if (sp_streq(nm, "new") && nt_kind(nt, recv) == NK_ConstantReadNode &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Array")) return 1;
+  if (sp_streq(nm, "to_a") && nt_kind(nt, unwrap_parens(c, recv)) == NK_RangeNode) return 1;
+  /* calls answering a new array of their own (`to_a` and the bang forms
+     answer the receiver itself, and are not here) */
+  static const char *const fresh[] = { "map", "collect", "select", "filter", "reject", "sort",
+    "sort_by", "dup", "clone", "uniq", "reverse", "rotate", "take", "drop", "take_while",
+    "drop_while", "compact", "flatten", "values_at", "zip", "product", "+", "-", "*", "&", "|",
+    "filter_map", "flat_map", "collect_concat", "shuffle", "sample", "difference", "union",
+    "intersection", "slice", NULL };
+  if (!eso_name_in(nm, fresh)) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  return ty_is_array(rt) || rt == TY_RANGE;
+}
+
+/* Some method the program defines is named `nm`. */
+static int eso_user_method(Compiler *c, const char *nm) {
+  if (!nm) return 0;
+  for (int i = 1; i < c->nscopes; i++) if (c->scopes[i].name && sp_streq(c->scopes[i].name, nm)) return 1;
+  return 0;
+}
+
+/* The read `r` of an owned array's slot hands no alias of it on. */
+static int eso_read_ok(Compiler *c, int r) {
+  const NodeTable *nt = c->nt;
+  int p = r < eso_count ? eso_par[r] : -1;
+  if (p < 0) return 0;
+  NodeKind pk = nt_kind(nt, p);
+  if (pk == NK_StatementsNode) return eso_discarded(c, r);
+  if ((pk == NK_IfNode || pk == NK_UnlessNode || pk == NK_WhileNode || pk == NK_UntilNode) &&
+      nt_ref(nt, p, "predicate") == r) return 1;
+  /* the value of a write: the other slot is no owner, so its stores note
+     may_nil, and its reads take this slot's mark */
+  if ((pk == NK_LocalVariableWriteNode || pk == NK_InstanceVariableWriteNode) && nt_ref(nt, p, "value") == r)
+    return 1;
+  if (pk != NK_CallNode) {
+    /* an argument: a user method's parameter is no owner either; the
+       builtins named here only read or copy the elements */
+    int q = eso_par[p];
+    const char *qn = q >= 0 && nt_kind(nt, q) == NK_CallNode && nt_ref(nt, q, "arguments") == p ? nt_str(nt, q, "name") : NULL;
+    if (!qn) return 0;
+    if (eso_name_in(qn, (const char *const[]){ "==", "!=", "eql?", "p", "puts", "print", "pp", NULL })) return 1;
+    if (eso_name_in(qn, (const char *const[]){ "concat", "replace", "+", "-", "&", "|", "zip", "product",
+                                               "difference", "union", "intersection", NULL }) &&
+        ty_is_array(comp_ntype(c, nt_ref(nt, q, "receiver")))) return 1;
+    return eso_user_method(c, qn);
+  }
+  if (nt_ref(nt, p, "receiver") != r) return 0;
+  const char *nm = nt_str(nt, p, "name");
+  /* calls that answer the receiver itself */
+  static const char *const self_ret[] = { "each", "each_with_index", "each_index", "reverse_each",
+    "to_a", "entries", "to_ary", "itself", "tap", "then", "yield_self", "freeze", "push", "<<",
+    "append", "concat", "unshift", "prepend", "insert", "fill", "replace", "clear", "sort!",
+    "map!", "collect!", "select!", "filter!", "reject!", "delete_if", "keep_if", "uniq!",
+    "compact!", "flatten!", "reverse!", "rotate!", "shuffle!", "sort_by!", NULL };
+  if (eso_name_in(nm, self_ret)) return eso_discarded(c, p);
+  /* `a.method(:[]=)`: the bound method's own stores note may_nil */
+  return 1;
+}
+
+/* The write `w` builds a fresh array whose value goes nowhere else: a
+   statement, or the last one of initialize, whose value `new` drops. */
+static int eso_write_ok(Compiler *c, int w) {
+  const NodeTable *nt = c->nt;
+  if (!eso_fresh(c, nt_ref(nt, w, "value"))) return 0;
+  if (eso_discarded(c, w)) return 1;
+  int s = w;
+  for (int guard = 0; guard < 16; guard++) {
+    int p = eso_par[s];
+    if (p < 0) return 0;
+    NodeKind pk = nt_kind(nt, p);
+    if (pk == NK_StatementsNode) {
+      int n = 0; const int *st = nt_arr(nt, p, "body", &n);
+      if (n == 0 || st[n - 1] != s) return 0;
+      s = p; continue;
+    }
+    if (pk == NK_ParenthesesNode) { s = p; continue; }
+    if (pk == NK_DefNode) {
+      const char *dn = nt_str(nt, p, "name");
+      return nt_ref(nt, p, "body") == s && dn && sp_streq(dn, "initialize");
+    }
+    return 0;
+  }
+  return 0;
+}
+
+/* ivar slots by name, across every class: a method a subclass inherits, or
+   a block run by instance_exec, names the same ivar on another class */
+typedef struct { const char *name; int state; } EsoIvar;
+static EsoIvar *eso_ivars; static int eso_nivars, eso_civars;
+static EsoIvar *eso_ivar(const char *nm) {
+  if (!nm) return NULL;
+  for (int i = 0; i < eso_nivars; i++) if (sp_streq(eso_ivars[i].name, nm)) return &eso_ivars[i];
+  if (eso_nivars == eso_civars) {
+    eso_civars = eso_civars ? eso_civars * 2 : 32;
+    eso_ivars = realloc(eso_ivars, sizeof(EsoIvar) * (size_t)eso_civars);
+  }
+  eso_ivars[eso_nivars].name = nm; eso_ivars[eso_nivars].state = 0;
+  return &eso_ivars[eso_nivars++];
+}
+
+/* Every slot's occurrences at once. A local or an ivar owns its array when
+   each write builds a fresh one and no read hands it on; a parameter, a
+   block parameter, an ivar an attr_* or reflection reaches, and anything in
+   a program that reopens Array own nothing. */
+static void eso_scan(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  eso_parents(c);
+  eso_nivars = 0;
+  eso_ndrop = 0;
+  eso_index_names(c);
+  int none = comp_class_index(c, "Array") >= 0;
+  int no_ivars = none;
+  NT_FOREACH_KIND(nt, NK_SymbolNode, y) {
+    const char *sv = nt_str(nt, y, "value");
+    if (sv && (strncmp(sv, "instance_variable", 17) == 0 || sp_streq(sv, "remove_instance_variable"))) no_ivars = 1;
+  }
+  NT_FOREACH_KIND(nt, NK_CallNode, a) {
+    const char *an = nt_str(nt, a, "name");
+    if (an && (strncmp(an, "instance_variable", 17) == 0 || sp_streq(an, "remove_instance_variable"))) no_ivars = 1;
+  }
+  for (int id = 0; id < eso_count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    int local = k == NK_LocalVariableReadNode || k == NK_LocalVariableWriteNode || k == NK_LocalVariableOrWriteNode ||
+                k == NK_LocalVariableAndWriteNode || k == NK_LocalVariableOperatorWriteNode ||
+                k == NK_LocalVariableTargetNode;
+    int ivar = k == NK_InstanceVariableReadNode || k == NK_InstanceVariableWriteNode ||
+               k == NK_InstanceVariableOrWriteNode || k == NK_InstanceVariableAndWriteNode ||
+               k == NK_InstanceVariableOperatorWriteNode || k == NK_InstanceVariableTargetNode;
+    if (!local && !ivar) continue;
+    int ok = k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ? eso_read_ok(c, id)
+           : k == NK_LocalVariableWriteNode || k == NK_InstanceVariableWriteNode ? eso_write_ok(c, id) : 0;
+    if (local) {
+      const char *nm = nt_str(nt, id, "name");
+      Scope *s = nm ? comp_scope_of(c, id) : NULL;
+      LocalVar *lv = s ? scope_local(s, nm) : NULL;
+      if (!lv || lv->elem_store_owned == 2) continue;
+      lv->elem_store_owned = ok && !none && !lv->is_param && !lv->is_block_param ? 1 : 2;
+    } else {
+      EsoIvar *e = eso_ivar(nt_str(nt, id, "name"));
+      if (!e || e->state == 2) continue;
+      e->state = ok && !no_ivars ? 1 : 2;
+    }
+  }
+  /* An attr_writer or accessor stores another array into its ivar. An
+     attr_reader hands its ivar out at each call of it, which must use the
+     array as a read of the ivar may. */
+  NT_FOREACH_KIND(nt, NK_CallNode, a) {
+    const char *an = nt_str(nt, a, "name");
+    if (!an || strncmp(an, "attr", 4) != 0) continue;
+    int reader = sp_streq(an, "attr_reader") || sp_streq(an, "attr");
+    int ca = nt_ref(nt, a, "arguments"); int na = 0;
+    const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &na) : NULL;
+    for (int i = 0; i < na; i++) {
+      const char *sv = nt_kind(nt, av[i]) == NK_SymbolNode ? nt_str(nt, av[i], "value") : NULL;
+      /* a name not spelled as a symbol could be any */
+      if (!sv) { for (int j = 0; j < eso_nivars; j++) eso_ivars[j].state = 2; continue; }
+      for (int j = 0; j < eso_nivars; j++) {
+        if (eso_ivars[j].name[0] != '@' || !sp_streq(eso_ivars[j].name + 1, sv)) continue;
+        if (!reader) { eso_ivars[j].state = 2; continue; }
+        EsoName *en = eso_name(sv, 0);
+        for (int ui = 0; en && ui < en->ncalls; ui++) {
+          int u = en->calls[ui];
+          if (nt_ref(nt, u, "arguments") < 0 && !eso_read_ok(c, u)) eso_ivars[j].state = 2;
+        }
+      }
+    }
+  }
+}
+
+static int elem_store_owned(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  if (recv >= 0) recv = unwrap_parens(c, recv);
+  if (recv < 0) return 0;
+  if (eso_count != nt->count) eso_scan(c);
+  if (nt_kind(nt, recv) == NK_InstanceVariableReadNode) {
+    const char *nm = nt_str(nt, recv, "name");
+    for (int j = 0; nm && j < eso_nivars; j++) if (sp_streq(eso_ivars[j].name, nm)) return eso_ivars[j].state == 1;
+    return 0;
+  }
+  if (nt_kind(nt, recv) != NK_LocalVariableReadNode) return 0;
+  const char *rn = nt_str(nt, recv, "name");
+  Scope *rs = rn ? comp_scope_of(c, recv) : NULL;
+  LocalVar *rv = rs ? scope_local(rs, rn) : NULL;
+  return rv && rv->elem_store_owned == 1;
+}
+
+/* nil_store_sfx for a store into the array `recv` names: a value that can
+   be nil also notes may_nil when the array has a name the slot's element
+   mark does not cover. */
+const char *nil_store_sfx_into(Compiler *c, const char *k, int recv, int node) {
+  const char *sfx = nil_store_sfx(c, k, node);
+  if (*sfx || !k || (!sp_streq(k, "Int") && !sp_streq(k, "Float")) || node < 0) return sfx;
+  if (!nullable_int_value(c, node)) return "";
+  return elem_store_owned(c, recv) ? "" : "_nilable";
+}
 /* The C text asking whether the Integer or Float array `arr` (C text; `node`
    its Ruby expression, of kind `t`) may hold nil: "1" where analyze marked
    the array, whose stores set no flag, else its run-time may_nil. */

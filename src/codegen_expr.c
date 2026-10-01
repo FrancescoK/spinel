@@ -2085,7 +2085,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       buf_printf(b, "; sp_int _t%d = sp_IntArray_get(_t%d, _t%d);", tc2, ta2, tb2);
       buf_printf(b, " if (%s(_t%d == SP_INT_NIL)) { ", is_or2 ? "" : "!", tc2);
       emit_guarded_slot_assign(c, iv, tc2, b);
-      buf_printf(b, "; sp_IntArray_set%s(_t%d, _t%d, _t%d); } _t%d; })", nil_store_sfx(c, "Int", iv), ta2, tb2, tc2, tc2);
+      buf_printf(b, "; sp_IntArray_set%s(_t%d, _t%d, _t%d); } _t%d; })", nil_store_sfx_into(c, "Int", ir, iv), ta2, tb2, tc2, tc2);
     }
     else if (irt == TY_FLOAT_ARRAY) {
       buf_printf(b, "({ sp_FloatArray *_t%d = ", ta2); emit_expr(c, ir, b);
@@ -2093,7 +2093,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       buf_printf(b, "; sp_float _t%d = sp_FloatArray_get(_t%d, _t%d);", tc2, ta2, tb2);
       buf_printf(b, " if (%ssp_float_is_nil(_t%d)) { ", is_or2 ? "" : "!", tc2);
       emit_guarded_slot_assign(c, iv, tc2, b);
-      buf_printf(b, "; sp_FloatArray_set%s(_t%d, _t%d, _t%d); } _t%d; })", nil_store_sfx(c, "Float", iv), ta2, tb2, tc2, tc2);
+      buf_printf(b, "; sp_FloatArray_set%s(_t%d, _t%d, _t%d); } _t%d; })", nil_store_sfx_into(c, "Float", ir, iv), ta2, tb2, tc2, tc2);
     }
     else if (irt == TY_STR_ARRAY) {
       buf_printf(b, "({ sp_StrArray *_t%d = ", ta2); emit_expr(c, ir, b);

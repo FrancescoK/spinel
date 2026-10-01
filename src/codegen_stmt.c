@@ -11265,7 +11265,7 @@ else {
           if (comp_ntype(c, idx_argv[0]) == TY_RANGE) { unsupported(c, id, "multiple assignment array range index target"); continue; }
           const char *k = (recv_t == TY_POLY_ARRAY) ? "Poly" : array_kind(recv_t);
           if (!k) k = "Int";
-          buf_printf(b, "sp_%sArray_set%s(", k, nil_store_sfx(c, k, els[i]));
+          buf_printf(b, "sp_%sArray_set%s(", k, nil_store_sfx_into(c, k, recv_id, els[i]));
           masgn_part(c, recv_id, ttr[i], b); buf_puts(b, ", ");
           /* the index slot is an sp_int; a POLY index (a widened local, #4204)
              unboxes here, as the boxed-receiver branch below always has */
@@ -13411,7 +13411,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     char hd[48], hl[48], hw[48];
     /* a value that can be nil sets the array's may_nil on its way in: the
        in-range store below tests it, the rest take the _nilable set */
-    const char *nsfx = nil_store_sfx(c, k, argv[1]);
+    const char *nsfx = nil_store_sfx_into(c, k, recv, argv[1]);
     if ((rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && vt == et && comp_ntype(c, argv[0]) == TY_INT &&
         hc_array(c, recv, rt == TY_FLOAT_ARRAY, hd, hl, hw, sizeof hd)) {
       int tk = ++g_tmp, tv = ++g_tmp;
@@ -13503,7 +13503,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
         continue;
       }
       emit_indent(b, indent + (has_splat ? 1 : 0));
-      buf_printf(b, "sp_%sArray_push%s(", k, nil_store_sfx(c, k, argv[a]));
+      buf_printf(b, "sp_%sArray_push%s(", k, nil_store_sfx_into(c, k, recv, argv[a]));
       if (has_splat) buf_printf(b, "_t%d", tr); else emit_expr(c, recv, b);
       buf_puts(b, ", ");
       /* coerce a poly value (holds the element type at runtime) to the typed
@@ -14053,7 +14053,7 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
     }
     int open = 0;
     char *rhs = iow_guarded_rhs(c, v, rt == TY_POLY_ARRAY ? IOW_RHS_BOXED : IOW_RHS_EXPR, b, &open);
-    buf_printf(b, "sp_%sArray_set%s(_t%d, _t%d, ", k, nil_store_sfx(c, k, v), ta, tb);
+    buf_printf(b, "sp_%sArray_set%s(_t%d, _t%d, ", k, nil_store_sfx_into(c, k, recv, v), ta, tb);
     if (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY)
       emit_typed_sink_text(c, v, rt == TY_INT_ARRAY ? TY_INT : TY_FLOAT,
                            rhs[0] ? rhs : (rt == TY_INT_ARRAY ? "0" : "0.0"), b);

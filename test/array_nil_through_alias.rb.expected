@@ -1,0 +1,29 @@
+[5, nil]
+ArgumentError
+TypeError
+true
+1
+ArgumentError
+1
+[nil, 8]
+ArgumentError
+1
+[nil, 9]
+ArgumentError
+0
+[1, nil, 2]
+ArgumentError
+[1.5, nil]
+ArgumentError
+TypeError
+ArgumentError
+true
+ArgumentError
+true
+ArgumentError
+1
+[0, nil, 0, 0]
+ArgumentError
+[1, 2, nil]
+ArgumentError
+1

@@ -115,6 +115,11 @@ typedef struct {
                        some element of which can be the sentinel, so reading an
                        element or binding a block parameter from it carries it
                        out (#3505) */
+  int elem_store_owned; /* (codegen, lazily; elem_store_owned) 1: an
+                          Integer or Float array local that owns its array
+                          (every write builds a fresh one, and no read hands
+                          it on), so its element mark covers every name the
+                          array has; 2: not */
   int bounded_counter; /* (codegen, lazily) 1: an Integer local that only ever
                           takes a small literal or `+= / -= <small literal>`
                           inside iterator blocks over containers (never a
