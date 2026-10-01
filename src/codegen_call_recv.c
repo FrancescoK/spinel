@@ -11623,6 +11623,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
             buf_printf(b, "_t%d->iv_%s = ", tf9, iv_c(sym + 1));
             if (mt == TY_POLY) emit_boxed(c, argv[1], b);
             else if (nt_kind(nt, argv[1]) == NK_NilNode && nil_value(mt)) buf_puts(b, nil_value(mt));
+            else if (emit_array_into_poly_slot(c, mt, argv[1], b)) { }
             else emit_expr(c, argv[1], b);
             buf_puts(b, "; })");
             return 1;
@@ -11642,6 +11643,9 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           /* nil into a scalar slot is its in-band nil (SP_INT_NIL, NaN), not
              the zero value the literal emits as */
           else if (nt_kind(nt, argv[1]) == NK_NilNode && nil_value(mt)) buf_puts(b, nil_value(mt));
+          /* a typed array into the general Array slot, rebuilt as an
+             `@x = v` write does */
+          else if (emit_array_into_poly_slot(c, mt, argv[1], b)) { }
           else emit_expr(c, argv[1], b);
           buf_puts(b, ")");
         }
