@@ -919,6 +919,7 @@ static void emit_io_reopen_responds(Compiler *c, int tv, const char *qm, int inc
    NoMethodError as CRuby does. When the reopenings answer different
    types the call is boxed (io_reopen_ret_mixed), each answer boxed. */
 static int io_reopen_call_vis(Compiler *c, int k, const char *nm, int plain, int caller);
+static int io_builtin_name(const char *m);
 static void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name, Buf *b) {
   const NodeTable *nt = c->nt;
   int ks[16], n = io_reopen_defs(c, name, 0, ks, 16);
@@ -970,6 +971,12 @@ static void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name,
     if (vis != SP_VIS_PUBLIC) buf_puts(&vb, ")");
     free(cb.p);
     if (i < n - 1) buf_printf(b, "_k%d == %d ? %s : ", tv, ks[i], vb.p);
+    else if (io_builtin_name(name)) {
+      /* a builtin IO method a reopening overrides: a kind none of them
+         serves should run the builtin, which this typed call cannot reach;
+         it calls the reopening as before (a boxed handle does reach it) */
+      buf_puts(b, vb.p);
+    }
     else {
       /* no kind matched: the raise does not return, the call types the arm */
       buf_printf(b, "_k%d == 0x7fffffff ? (sp_raise_nomethod(sp_nomethod_msg(\"%s\", "
@@ -8579,7 +8586,12 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           /* a boxed thread is the runtime's sp_thread handle (not an sp_Thread struct) */
           else if (sp_streq(_dcn, "Thread")) { snprintf(_dself, sizeof _dself, "(sp_thread *)_t%d.v.p", tv); _dstruct = 1; }
           /* a boxed IO or socket is the runtime's sp_File handle */
-          else if (io_family_class(c, defcls)) { snprintf(_dself, sizeof _dself, "(sp_File *)_t%d.v.p", tv); _dstruct = 1; }
+          else if (io_family_class(c, defcls)) {
+            /* a block-taking IO reopening has no standalone function (as typed) */
+            if (c->scopes[mi].yields || (c->scopes[mi].blk_param && c->scopes[mi].blk_param[0]))
+              unsupported(c, id, "call");
+            snprintf(_dself, sizeof _dself, "(sp_File *)_t%d.v.p", tv); _dstruct = 1;
+          }
           /* a boxed exception is the runtime's sp_Exception, whatever its class */
           else if (class_has_exc_name(c, defcls)) { snprintf(_dself, sizeof _dself, "(sp_Exception *)_t%d.v.p", tv); _dstruct = 1; }
           /* a by-value (value-type) class method takes self by value:
@@ -10077,8 +10089,11 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             snprintf(selfpbuf2, sizeof selfpbuf2, "*(sp_%s *)_t%d.v.p", _dcn2, tv);
           else if (sp_streq(_dcn2, "Thread"))
             snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_thread *)_t%d.v.p", tv);
-          else if (io_family_class(c, defcls))
+          else if (io_family_class(c, defcls)) {
+            if (c->scopes[mi].yields || (c->scopes[mi].blk_param && c->scopes[mi].blk_param[0]))
+              unsupported(c, id, "call");
             snprintf(selfpbuf2, sizeof selfpbuf2, "((sp_File *)_t%d.v.p)", tv);
+          }
           /* a boxed exception is the runtime's sp_Exception, whatever its class */
           else if (class_has_exc_name(c, defcls)) {
             snprintf(selfpbuf2, sizeof selfpbuf2, "((sp_Exception *)_t%d.v.p)", tv);
@@ -19489,6 +19504,12 @@ sp_builtin_arity_spec_tbl[] = {
   {"Module","undefined_instance_methods",0,0,NULL,"0",0,0,NULL,"0"},
   {NULL, NULL, 0, 0, NULL, NULL, 0, 0, NULL, NULL}
 };
+/* Is `m` a method the builtin File (IO and its Enumerable included) has? */
+static int io_builtin_name(const char *m) {
+  for (const SpAritySpec *r = sp_builtin_arity_spec_tbl; r->cls; r++)
+    if (sp_streq(r->cls, "File") && sp_streq(r->m, m)) return 1;
+  return 0;
+}
 
 /* Class/module-method positional arity, probed from ruby 4.0.6 the same
    way as the instance table above (tools/gen_builtin_arity_spec.rb): the
@@ -21208,7 +21229,8 @@ int emit_vis_refusal(Compiler *c, int id, Buf *b) {
 static int io_reopen_call_vis(Compiler *c, int k, const char *nm, int plain, int caller) {
   int owner = -1;
   int vis = comp_method_vis_declared(c, k, nm, &owner);
-  if (vis == SP_VIS_PROTECTED && plain && caller >= 0 && io_family_class(c, caller)) vis = SP_VIS_PUBLIC;
+  if (vis == SP_VIS_PROTECTED && plain && caller >= 0 && owner >= 0 && io_family_descends(c, caller, owner))
+    vis = SP_VIS_PUBLIC;
   return vis;
 }
 void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b) {

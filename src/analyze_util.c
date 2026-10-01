@@ -2738,3 +2738,20 @@ int io_reopen_ret_mixed(Compiler *c, const char *name) {
         c->scopes[comp_method_in_chain(c, ks[0], name, NULL)].ret) return 1;
   return 0;
 }
+/* The builtin superclass of an IO-family class, as lib/sp_io.c walks a
+   handle's kind (sp_io_super_of); NULL above IO. */
+static const char *io_super_name(const char *k) {
+  static const char *const pairs[][2] = {
+    {"TCPServer", "TCPSocket"}, {"TCPSocket", "IPSocket"}, {"UDPSocket", "IPSocket"},
+    {"IPSocket", "BasicSocket"}, {"UNIXServer", "UNIXSocket"}, {"UNIXSocket", "BasicSocket"},
+    {"Socket", "BasicSocket"}, {"BasicSocket", "IO"}, {"File", "IO"}, {NULL, NULL} };
+  for (int i = 0; pairs[i][0]; i++) if (sp_streq(k, pairs[i][0])) return pairs[i][1];
+  return NULL;
+}
+/* Is IO-family class k the class `owner` or below it? */
+int io_family_descends(Compiler *c, int k, int owner) {
+  if (!io_family_class(c, k) || !io_family_class(c, owner)) return 0;
+  for (const char *n = c->classes[k].name; n; n = io_super_name(n))
+    if (sp_streq(n, c->classes[owner].name)) return 1;
+  return 0;
+}

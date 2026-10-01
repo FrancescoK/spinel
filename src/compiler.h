@@ -1026,6 +1026,7 @@ int        io_family_class(Compiler *c, int k);
 int        io_reopen_class(Compiler *c, const char *name);
 int        io_reopen_defs(Compiler *c, const char *name, int public_only, int *ks, int max);
 int        io_reopen_ret_mixed(Compiler *c, const char *name);
+int        io_family_descends(Compiler *c, int k, int owner);
 /* Like comp_method_in_class but walks the superclass chain. On success,
    *def_class (if non-NULL) is set to the class that defines the method. */
 int        comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_class);

@@ -545,7 +545,8 @@ const char *sp_io_kind_name(sp_File *f) {
 /* The builtin superclass chain for a handle's class, mirroring the one the
    generated TU carries for class VALUES (sp_builtin_superclass). A handle
    answers #is_a? from its kind, which is a runtime property, so the walk lives
-   here rather than in the emitted switch. */
+   here rather than in the emitted switch. io_super_name (src/analyze_util.c)
+   is the compiler's copy; keep the two the same. */
 static const char *sp_io_super_of(const char *k) {
   if (strcmp(k, "TCPServer") == 0)   return SPL("TCPSocket");
   if (strcmp(k, "TCPSocket") == 0)   return SPL("IPSocket");
