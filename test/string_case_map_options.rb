@@ -42,3 +42,12 @@ t { p "aBc".downcase(o) }
 p "aBc".upcase(:ascii), "aBc".downcase(:fold), "aBc".swapcase(:turkic), "aBc".capitalize(:lithuanian, :turkic)
 p "aBc".upcase(:turkic, :lithuanian), :aBc.swapcase(:ascii)
 b = +"aBc"; b.downcase!(:fold); p b
+# a block is ignored, and the options are checked all the same
+t { p "abc".upcase(:invalid) { nil } }
+t { p :abc.downcase(:x) { 1 } }
+p "abc".upcase(:ascii) { nil }
+# an option with a side effect runs once
+$n = 0
+def next_opt = ($n += 1; :ascii)
+p "abc".upcase(next_opt), :xY.downcase(next_opt), $n
+s2 = +"aBc"; s2.swapcase!(next_opt); p s2, $n

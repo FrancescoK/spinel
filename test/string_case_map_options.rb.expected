@@ -31,3 +31,11 @@
 "ABC"
 :AbC
 "abc"
+[ArgumentError, "invalid option"]
+[ArgumentError, "invalid option"]
+"ABC"
+"ABC"
+:xy
+2
+"AbC"
+3
