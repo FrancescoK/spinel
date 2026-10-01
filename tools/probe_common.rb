@@ -452,8 +452,9 @@ module ProbeCommon
     #   { doc: "limitations.md, \"<section>\": <what it says>",
     #     when: ->(r) { <the case's realized levels> }, answer: /<spinel's line>/ }
     # `undefined`: CRuby's line for a name the generator's programs read and
-    # do not define, which makes the program wrong, not spinel.
-    def initialize(gen, spinel, ruby, timeout, dir, documented, undefined)
+    # do not define, which makes the program wrong, not spinel. `keep`: the
+    # work dir is kept, binaries included.
+    def initialize(gen, spinel, ruby, timeout, dir, documented, undefined, keep = false)
       @gen = gen
       @spinel = spinel
       @ruby = ruby
@@ -461,6 +462,7 @@ module ProbeCommon
       @dir = dir
       @documented = documented
       @undefined = undefined
+      @keep = keep
       @findings = []
       @lock = Mutex.new
       @seq = 0
@@ -533,6 +535,14 @@ module ProbeCommon
     # refuses, or whose C has an error, fails as the full build does.
     def spinel(cases, check_only = false)
       base = scratch("sp")
+      spinel_run(cases, check_only, base)
+    ensure
+      # A run builds thousands of programs, and a binary is a few MB: each
+      # goes as soon as it has run, unless --keep asked for the work dir
+      FileUtils.rm_f(base + ".bin") if base && !@keep
+    end
+
+    def spinel_run(cases, check_only, base)
       src = @gen.program(cases)
       File.write(base + ".rb", src)
       argv = [@spinel, *@gen.flags(cases), *(check_only ? ["--cc=cc -fsyntax-only"] : []), base + ".rb", "-o",
@@ -945,6 +955,7 @@ module ProbeCommon
     end
 
     work = nil
+    tmpdir = ENV["TMPDIR"]
     probe = nil
     coverage = nil
     Thread.report_on_exception = false # a worker's failure is reported once, below
@@ -962,7 +973,10 @@ module ProbeCommon
       File.write(File.join(out, "summary.txt"), "run in progress\n")
       work = keep ? File.join(out, "work") : Dir.mktmpdir(name.tr("_", "-"))
       FileUtils.mkdir_p(work)
-      probe = Probe.new(gen, spinel, RbConfig.ruby, timeout, work, documented, undefined)
+      probe = Probe.new(gen, spinel, RbConfig.ruby, timeout, work, documented, undefined, keep)
+      # the C spinel keeps of a program that does not build, and the C
+      # compiler's own temporary files, go to the work dir and with it
+      ENV["TMPDIR"] = work
       queue = Queue.new
       # one mode to a program
       cases.group_by { |c| gen.flags([c]) }.each_value { |cs| cs.each_slice(batch) { |b| queue << b } }
@@ -1014,6 +1028,7 @@ module ProbeCommon
       end
       4
     ensure
+      ENV["TMPDIR"] = tmpdir if work
       FileUtils.rm_rf(work) if work && !keep
       dir_lock.close
     end
