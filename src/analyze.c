@@ -21004,8 +21004,12 @@ static int nn_pure_call(Compiler *c, int id) {
 
 static void nn_visit(Compiler *c, int id, NNF *f, int ctx);
 
+/* The value is an Integer or a Float the marks call non-nil. A value of
+   another static type gets no mark to ask: a parameter or a local that only
+   nil is ever written to is typed nil, not Integer-or-nil, and written to an
+   Integer local it is the sentinel. */
 static int nn_nonnil_value(Compiler *c, int v) {
-  return v >= 0 && !nullable_int_value(c, v);
+  return v >= 0 && nn_numeric(comp_ntype(c, v)) && !nullable_int_value(c, v);
 }
 
 /* `i < a.size` (or `a.size > i`, `.length`) on an Integer or Float array
