@@ -7157,6 +7157,13 @@ static TyKind ret_arg_ntype(Compiler *c, int node) {
   return comp_ntype(c, node);
 }
 
+static int emit_return_values(Compiler *c, const int *a, int n, const char *open, Buf *b) {
+  int ta = ++g_tmp;
+  buf_printf(b, "%ssp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", open, ta, ta);
+  for (int k = 0; k < n; k++) { buf_printf(b, " sp_PolyArray_push(_t%d, ", ta); emit_boxed(c, a[k], b); buf_puts(b, ");"); }
+  return ta;
+}
+
 void emit_return(Compiler *c, int id, Buf *b, int indent) {
   int args = nt_ref(c->nt, id, "arguments");
   int n = 0;
@@ -7177,9 +7184,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
   if (g_proc_return_home) {
     emit_indent(b, indent);
     if (n > 1) {
-      int ta = ++g_tmp;
-      buf_printf(b, "{ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
-      for (int k = 0; k < n; k++) { buf_printf(b, " sp_PolyArray_push(_t%d, ", ta); emit_boxed(c, a[k], b); buf_puts(b, ");"); }
+      int ta = emit_return_values(c, a, n, "{ ", b);
       buf_printf(b, " sp_proc_return(%s, sp_box_poly_array(_t%d)); }\n", g_proc_return_home, ta);
     }
     else {
@@ -7198,9 +7203,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
     buf_puts(b, "{ ");
     if (g_method_pr_var) {
       if (n > 1) {
-        int ta = ++g_tmp;
-        buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
-        for (int k = 0; k < n; k++) { buf_printf(b, " sp_PolyArray_push(_t%d, ", ta); emit_boxed(c, a[k], b); buf_puts(b, ");"); }
+        int ta = emit_return_values(c, a, n, "", b);
         buf_printf(b, g_ret_type == TY_POLY ? " %s = sp_box_poly_array(_t%d); " : " %s = _t%d; ", g_method_pr_var, ta);
       }
       else if (n == 1) {
@@ -7243,15 +7246,9 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
     buf_puts(b, "{ ");
     if (ctx->has_retval) {
       if (n > 1) {
-        int ta = ++g_tmp;
-        buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", ta, ta);
-        for (int k = 0; k < n; k++) {
-          buf_printf(b, "sp_PolyArray_push(_t%d, ", ta);
-          emit_boxed(c, a[k], b);
-          buf_puts(b, "); ");
-        }
+        int ta = emit_return_values(c, a, n, "", b);
         /* a frame slot holding other values too takes the Array boxed */
-        buf_printf(b, ctx->retv_ty == TY_POLY ? "_retv%d = sp_box_poly_array(_t%d); " : "_retv%d = _t%d; ",
+        buf_printf(b, ctx->retv_ty == TY_POLY ? " _retv%d = sp_box_poly_array(_t%d); " : " _retv%d = _t%d; ",
                    ctx->lid, ta);
       }
       else if (n > 0) {
@@ -7287,9 +7284,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
     if (n == 0) buf_puts(b, "sp_box_nil()");
     else if (n == 1) emit_boxed(c, a[0], b);
     else {
-      int ta = ++g_tmp;
-      buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
-      for (int k = 0; k < n; k++) { buf_printf(b, " sp_PolyArray_push(_t%d, ", ta); emit_boxed(c, a[k], b); buf_puts(b, ");"); }
+      int ta = emit_return_values(c, a, n, "({ ", b);
       buf_printf(b, " sp_box_poly_array(_t%d); })", ta);
     }
     buf_puts(b, "; ");
@@ -7312,9 +7307,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
   int ret_has_frames = (g_exc_frame_depth > 0) || (rescues_crossed(0) > 0);
   if (ret_has_frames && n >= 1 && !(n == 1 && g_ret_type == TY_VOID)) {
     if (n > 1) {
-      int ta = ++g_tmp;
-      buf_printf(b, "{ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
-      for (int k = 0; k < n; k++) { buf_printf(b, " sp_PolyArray_push(_t%d, ", ta); emit_boxed(c, a[k], b); buf_puts(b, ");"); }
+      int ta = emit_return_values(c, a, n, "{ ", b);
       buf_puts(b, " ");
       emit_frame_unwind(b, 0, NULL);
       /* a method answering other values too returns the Array boxed */
@@ -7337,13 +7330,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
   }
   emit_frame_unwind(b, 0, NULL);
   if (n > 1) {
-    int ta = ++g_tmp;
-    buf_printf(b, "{ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
-    for (int k = 0; k < n; k++) {
-      buf_printf(b, " sp_PolyArray_push(_t%d, ", ta);
-      emit_boxed(c, a[k], b);
-      buf_puts(b, ");");
-    }
+    int ta = emit_return_values(c, a, n, "{ ", b);
     /* a method answering other values too returns the Array boxed */
     buf_printf(b, g_ret_type == TY_POLY ? " return sp_box_poly_array(_t%d); }\n" : " return _t%d; }\n", ta);
   }
