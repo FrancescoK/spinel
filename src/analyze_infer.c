@@ -7666,6 +7666,27 @@ int an_empty_container_disagrees(int kind, TyKind other) {
   return !ty_is_hash(other);
 }
 
+/* The value of the `super` node id in s that reaches method mi. */
+static TyKind super_target_ret(Compiler *c, Scope *s, int mi, int id) {
+  /* `super(x) { }`: the literal block is spliced into the yielding parent
+     like a call's, so the super answers what that call would */
+  int sblk = nt_ref(c->nt, id, "block");
+  if (c->scopes[mi].yields && sblk >= 0 && nt_kind(c->nt, sblk) == NK_BlockNode)
+    return method_call_ret(c, mi, id);
+  TyKind sret = (TyKind)c->scopes[mi].ret;
+  /* A yielding parent's return is whatever its yield produces, decided per
+     call site, so its own `ret` stays unknown. The block reaching it is the
+     one this method is called with, so take that value's type. */
+  if ((sret == TY_UNKNOWN || sret == TY_VOID) && c->scopes[mi].yields) {
+    int smi = (int)(s - c->scopes);
+    TyKind yt = yield_value_type(c, smi);
+    /* a middle link in a super chain has no call sites of its own */
+    if (yt == TY_UNKNOWN || yt == TY_VOID) yt = yield_value_type_via_super(c, smi);
+    if (yt != TY_UNKNOWN && yt != TY_VOID) return yt;
+  }
+  return sret;
+}
+
 TyKind infer_uncached(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -8685,10 +8706,13 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_SuperNode || nk == NK_ForwardingSuperNode) {
     Scope *s = comp_scope_of(c, id);
     if (s->class_id < 0 || !s->name) return TY_UNKNOWN;
-    const char *shadow = comp_prep_chain_target(c, s->class_id, s->name);
+    const char *shadow = comp_super_shadow(c, s);
     if (shadow) {
-      int mi = comp_method_in_class(c, s->class_id, shadow);
-      return mi >= 0 ? c->scopes[mi].ret : TY_UNKNOWN;
+      int mi = s->is_cmethod ? comp_cmethod_in_class(c, s->class_id, shadow)
+                         : comp_method_in_class(c, s->class_id, shadow);
+      if (mi < 0) return TY_UNKNOWN;
+      /* a yielding shadow is spliced as a parent is */
+      return super_target_ret(c, s, mi, id);
     }
     /* Class#new: an instance of the receiving class, which is this one or,
        through an inherited `self.new`, any descendant -- then boxed */
@@ -8708,23 +8732,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     int mi = s->is_cmethod ? comp_cmethod_in_chain(c, p, uname, NULL)
                            : comp_method_in_chain(c, p, uname, NULL);
     if (mi < 0) return rto_super ? TY_BOOL : TY_UNKNOWN;
-    /* `super(x) { }`: the literal block is spliced into the yielding parent
-       like a call's, so the super answers what that call would */
-    int sblk = nt_ref(nt, id, "block");
-    if (c->scopes[mi].yields && sblk >= 0 && nt_kind(nt, sblk) == NK_BlockNode)
-      return method_call_ret(c, mi, id);
-    TyKind sret = (TyKind)c->scopes[mi].ret;
-    /* A yielding parent's return is whatever its yield produces, decided per
-       call site, so its own `ret` stays unknown. The block reaching it is the
-       one this method is called with, so take that value's type. */
-    if ((sret == TY_UNKNOWN || sret == TY_VOID) && c->scopes[mi].yields) {
-      int smi = (int)(s - c->scopes);
-      TyKind yt = yield_value_type(c, smi);
-      /* a middle link in a super chain has no call sites of its own */
-      if (yt == TY_UNKNOWN || yt == TY_VOID) yt = yield_value_type_via_super(c, smi);
-      if (yt != TY_UNKNOWN && yt != TY_VOID) return yt;
-    }
-    return sret;
+    return super_target_ret(c, s, mi, id);
   }
   if (nk == NK_AndNode || nk == NK_OrNode) {
     int lnd = nt_ref(nt, id, "left"), rnd = nt_ref(nt, id, "right");

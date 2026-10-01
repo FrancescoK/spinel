@@ -10227,7 +10227,12 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int defcls = -1;
   /* `super` inside a class method resolves through the parent's CLASS-method
      chain; the instance chain would miss `def self.x` entirely. */
-  int mi = p < 0 ? -1
+  /* the next shadow in this class -- an earlier include's, prepend's or
+     extend's copy -- is the parent here, as in emit_super's call form */
+  const char *shadow = comp_super_shadow(c, s);
+  int mi = shadow ? (s->is_cmethod ? comp_cmethod_in_class(c, s->class_id, shadow)
+                                   : comp_method_in_class(c, s->class_id, shadow))
+         : p < 0 ? -1
          : s->is_cmethod ? comp_cmethod_in_chain(c, p, s->name, &defcls)
                          : comp_method_in_chain(c, p, s->name, &defcls);
   if (mi < 0) return 0;
@@ -10547,8 +10552,9 @@ void emit_super(Compiler *c, int id, Buf *b) {
   Scope *s = comp_scope_of(c, id);
   if (s->class_id < 0 || !s->name) { unsupported(c, id, "super (not in a method)"); return; }
   const char *ty = nt_type(c->nt, id);
-  /* Prepend chain: super goes to the next shadow in the same class. */
-  const char *shadow = comp_prep_chain_target(c, s->class_id, s->name);
+  /* Prepend chain: super goes to the next shadow in the same class (a class
+     method's chain is taken below, in the class-method form). */
+  const char *shadow = s->is_cmethod ? NULL : comp_super_shadow(c, s);
   if (shadow) {
     buf_printf(b, "sp_%s_%s((sp_%s *)%s",
                c->classes[s->class_id].c_name, mc(shadow),
@@ -10590,7 +10596,16 @@ void emit_super(Compiler *c, int id, Buf *b) {
   if (s->is_cmethod) {
     if (comp_super_is_class_new(c, id)) { emit_super_class_new(c, id, b); return; }
     int cdef = -1;
-    int cmi = p >= 0 ? comp_cmethod_in_chain(c, p, uname, &cdef) : -1;
+    int cmi = -1;
+    /* a later extend's copy: super reaches the earlier module's copy, kept in
+       this class under its shadow name */
+    const char *cshadow = comp_super_shadow(c, s);
+    if (cshadow) {
+      cmi = comp_cmethod_in_class(c, s->class_id, cshadow);
+      cdef = s->class_id;
+      uname = cshadow;
+    }
+    else cmi = p >= 0 ? comp_cmethod_in_chain(c, p, uname, &cdef) : -1;
     if (cmi < 0) {
       const char *scn2 = class_ruby_name(c, s->class_id);
       if (!scn2) scn2 = c->classes[s->class_id].name;

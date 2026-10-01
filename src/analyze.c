@@ -564,6 +564,7 @@ void compute_reachable(Compiler *c) {
         const char *pf = cls->prep_from[i]; /* user-facing name, e.g. "hi" */
         const char *pt = cls->prep_to[i];   /* shadow name, e.g. "__prep_0_hi" */
         if (!pf || !pt) continue;
+        if (strncmp(pf, "self.", 5) == 0) pf += 5;   /* a class method's chain */
         /* When the user-facing name is called, the codegen wrapper calls the shadow
            implementation directly -- so mark the shadow reachable too. */
         int pf_in_called = anh_has(&cn_set, pf);
@@ -20438,7 +20439,7 @@ static int promote_spread_string_args(Compiler *c) {
 
 /* The method a `super` in scope `m` calls, or -1. */
 int a_super_target(Compiler *c, Scope *m) {
-  const char *shadow = comp_prep_chain_target(c, m->class_id, m->name);
+  const char *shadow = comp_super_shadow(c, m);
   if (shadow) return m->is_cmethod ? comp_cmethod_in_class(c, m->class_id, shadow)
                                    : comp_method_in_class(c, m->class_id, shadow);
   int p = c->classes[m->class_id].parent;
@@ -25950,6 +25951,18 @@ static void an_method_holders_build(Compiler *c, AnMethodHolders *mh) {
       an_method_holders_add(mh, -1, nt_str(nt, id, "name"));
 }
 
+/* The method a `super` in s reaches: the next shadow in s's own class (an
+   earlier include's, prepend's or extend's copy), or else the parent's. */
+static int super_reach(Compiler *c, Scope *s) {
+  const char *shadow = comp_super_shadow(c, s);
+  if (shadow) return s->is_cmethod ? comp_cmethod_in_class(c, s->class_id, shadow)
+                                   : comp_method_in_class(c, s->class_id, shadow);
+  int p = comp_super_parent(c, s->class_id, s->is_cmethod);
+  if (p < 0) return -1;
+  return s->is_cmethod ? comp_cmethod_in_chain(c, p, s->name, NULL)
+                       : comp_method_in_chain(c, p, s->name, NULL);
+}
+
 void analyze_program(Compiler *c) {
   comp_poly_candidates_reset();
   comp_descendants_reset();
@@ -26274,10 +26287,7 @@ void analyze_program(Compiler *c) {
         for (int i = 0; i < ns; i++) {
           Scope *s = &c->scopes[i];
           if (s->yields || !has_super[i] || s->class_id < 0 || !s->name) continue;
-          int p = comp_super_parent(c, s->class_id, s->is_cmethod);
-          if (p < 0) continue;
-          int mi = s->is_cmethod ? comp_cmethod_in_chain(c, p, s->name, NULL)
-                                 : comp_method_in_chain(c, p, s->name, NULL);
+          int mi = super_reach(c, s);
           if (mi >= 0 && mi < ns && c->scopes[mi].yields) { s->yields = 1; changed = 1; }
         }
         if (!changed) break;
@@ -26303,10 +26313,7 @@ void analyze_program(Compiler *c) {
           for (int i = 0; i < ns; i++) {
             Scope *s = &c->scopes[i];
             if (s->yields || s->blk_param || !bare_super[i] || s->class_id < 0 || !s->name) continue;
-            int p = comp_super_parent(c, s->class_id, s->is_cmethod);
-            if (p < 0) continue;
-            int mi = s->is_cmethod ? comp_cmethod_in_chain(c, p, s->name, NULL)
-                                   : comp_method_in_chain(c, p, s->name, NULL);
+            int mi = super_reach(c, s);
             if (mi < 0 || mi >= ns) continue;
             Scope *pm = &c->scopes[mi];
             if (!pm->blk_param || !pm->blk_param[0] || pm->yields) continue;

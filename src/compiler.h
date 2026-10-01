@@ -257,6 +257,9 @@ typedef struct {
   int is_include_copy;        /* this scope IS such a copy: a later include of a
                                  module defining the same name replaces it, and
                                  the replacement's super chains to it (#3731) */
+  int is_extend_copy;         /* the class method an `extend` copied in: a later
+                                 extend of a module defining the same name
+                                 replaces it the same way */
   int is_proc_form;  /* a clone of a yielding method whose `yield` is a call on
                         a real &blk parameter, for the poly dispatch. Its body
                         is typed independently of the inlined original: the
@@ -1107,6 +1110,11 @@ void       comp_add_sg_inh(ClassInfo *ci, const char *name);
 /* Prepend-chain helpers. */
 void        comp_prep_chain_add(ClassInfo *ci, const char *from, const char *to);
 const char *comp_prep_chain_target(Compiler *c, int class_id, const char *name);
+/* The shadow a `super` in scope s reaches through the prep chain, or NULL. A
+   class method's chain is keyed `self.<name>`, apart from the instance
+   method of the same name. */
+const char *comp_super_shadow(Compiler *c, const Scope *s);
+void comp_cprep_chain_add(ClassInfo *ci, const char *from, const char *to);
 const char *comp_prep_user_name(const char *name);
 const char *comp_super_name(Compiler *c, int parent, const char *name, int is_cmethod);
 int comp_super_is_class_new(Compiler *c, int id);
