@@ -4795,7 +4795,10 @@ static sp_float sp_poly_elem_f(sp_RbVal v) {
 }
 static const char *sp_poly_elem_s(sp_RbVal v) {
   if (v.tag == SP_TAG_STR) return v.v.s;
-  if (sp_poly_is_strbuf(v)) return sp_poly_strbuf_deref(v).v.s;
+  /* a shared handle's bytes live in its own buffer, which a later append
+     moves: a typed container keeps a copy of the contents, not that buffer
+     (a GC scan of the container read the freed one) */
+  if (sp_poly_is_strbuf(v)) return sp_str_dup(sp_poly_strbuf_deref(v).v.s);
   if (v.tag == SP_TAG_NIL) return NULL;
   sp_raise_typed_elem(v, "String");
 }
@@ -4922,7 +4925,7 @@ static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b) {
          here silently blanked the element (#3327) */
       const char *_es = b.tag == SP_TAG_STR ? (const char *)b.v.p
                       : (b.tag == SP_TAG_OBJ && b.cls_id == SP_BUILTIN_STRBUF && b.v.p)
-                          ? sp_String_cstr((sp_String *)b.v.p)
+                          ? sp_str_dup(sp_String_cstr((sp_String *)b.v.p))   /* a copy: see sp_poly_elem_s */
                           : sp_poly_elem_s(b);   /* nil, or the refusal (#4481) */
       sp_StrArray_push((sp_StrArray *)a.v.p, _es);
       return a;
