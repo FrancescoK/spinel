@@ -171,9 +171,80 @@ static int block_local_wants_alias(Compiler *c, int blk, const char *bp) {
    literal block passed to an inlined method yields to the block that was
    current where it is written (g_yield_block_fallback while its body is
    spliced). Kept as a stack, since the fallback names one level only, and
-   `def run2(x) = run(x) { |u| yield u }` asks it of the block a level out. */
-static struct { int blk, target; const char *owner; } g_ytgt[SP_INLINE_DEPTH_MAX + 1];
+   `def run2(x) = run(x) { |u| yield u }` asks it of the block a level out.
+   Each entry also keeps what the block's splice runs under, the context the
+   inliner hands g_block_id and its fallback: its rename depth, the &block
+   name of the scope it is written in, its break scope, its self, the
+   forwarded proc and the lowered context its own yields bind. `up` is the
+   entry of its target, and g_ytgt_cur the entry of g_block_id while it
+   names one. With them emit_block_invoke moves the whole context out a
+   level, where the fallback globals record one level only: a block yielding
+   on from three inlined methods deep (`run3(x) { |w| ... }` over
+   `def run3(x) = run2(x) { |v| yield v }`) found no block two splices out
+   and raised LocalJumpError. */
+typedef struct {
+  int blk, target, up;
+  const char *owner;
+  int nren;
+  const char *brk; int brk_ebase;
+  const char *self, *self_deref; int emcls;
+  const char *ypr; TyKind yslot;
+  int lowered; const char *lowered_blk;
+} YieldTarget;
+static YieldTarget g_ytgt[SP_INLINE_DEPTH_MAX + 1];
 static int g_nytgt;
+static int g_ytgt_cur = -1;
+/* The block `k` levels out from g_block_id along the yield targets (0 is
+   g_block_id, 1 its fallback), or -1 where none is recorded: what a chain of
+   blocks whose tails are yields answers at this site. */
+int yield_block_out(int k) {
+  if (k <= 0) return g_block_id;
+  if (k == 1) return g_yield_block_fallback;
+  int e = (g_ytgt_cur >= 0 && g_ytgt[g_ytgt_cur].blk == g_block_id) ? g_ytgt[g_ytgt_cur].up : -1;
+  if (e < 0 || g_ytgt[e].blk != g_yield_block_fallback) return -1;
+  for (int i = 1; i < k && e >= 0; i++) e = g_ytgt[e].up;
+  return e >= 0 ? g_ytgt[e].blk : -1;
+}
+/* The fallback-level globals a splice refills from an entry. */
+typedef struct {
+  int cur, nren, brk_ebase, emcls, lowered;
+  const char *owner, *brk, *self, *self_deref, *ypr, *lowered_blk;
+  TyKind yslot;
+} YieldTargetSave;
+static void yield_target_save(YieldTargetSave *s) {
+  s->cur = g_ytgt_cur;
+  s->nren = g_yield_block_fallback_nren; s->owner = g_yield_block_fallback_param_name;
+  s->brk = g_yield_blk_brk_fallback; s->brk_ebase = g_yield_blk_brk_efallback;
+  s->self = g_yield_self_fallback2; s->self_deref = g_yield_self_deref_fallback2;
+  s->emcls = g_yield_emitting_class_fallback2;
+  s->ypr = g_yield_proc_ref_fallback2; s->yslot = g_yield_slot_ty_fallback2;
+  s->lowered = g_yield_lowered_fallback; s->lowered_blk = g_yield_lowered_blk_fallback;
+}
+static void yield_target_restore(const YieldTargetSave *s) {
+  g_ytgt_cur = s->cur;
+  g_yield_block_fallback_nren = s->nren; g_yield_block_fallback_param_name = s->owner;
+  g_yield_blk_brk_fallback = s->brk; g_yield_blk_brk_efallback = s->brk_ebase;
+  g_yield_self_fallback2 = s->self; g_yield_self_deref_fallback2 = s->self_deref;
+  g_yield_emitting_class_fallback2 = s->emcls;
+  g_yield_proc_ref_fallback2 = s->ypr; g_yield_slot_ty_fallback2 = s->yslot;
+  g_yield_lowered_fallback = s->lowered; g_yield_lowered_blk_fallback = s->lowered_blk;
+}
+/* Entry `fe` is the block a splice makes current: its own yields bind its
+   lowered context (the spliced block's was what the fallback held), and
+   its target, when recorded, becomes the fallback with that target's own
+   context, one level further out. */
+static void yield_target_enter(int fe) {
+  const YieldTarget *f = &g_ytgt[fe];
+  g_yield_lowered_fallback = f->lowered; g_yield_lowered_blk_fallback = f->lowered_blk;
+  if (f->up < 0) return;
+  const YieldTarget *t = &g_ytgt[f->up];
+  g_yield_block_fallback = t->blk;
+  g_yield_block_fallback_nren = t->nren; g_yield_block_fallback_param_name = t->owner;
+  g_yield_blk_brk_fallback = t->brk; g_yield_blk_brk_efallback = t->brk_ebase;
+  g_yield_self_fallback2 = t->self; g_yield_self_deref_fallback2 = t->self_deref;
+  g_yield_emitting_class_fallback2 = t->emcls;
+  g_yield_proc_ref_fallback2 = t->ypr; g_yield_slot_ty_fallback2 = t->yslot;
+}
 static int yield_target_of(int blk, const char **owner) {
   for (int i = g_nytgt - 1; i >= 0; i--)
     if (g_ytgt[i].blk == blk) { *owner = g_ytgt[i].owner; return g_ytgt[i].target; }
@@ -804,20 +875,40 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   char selfbuf[64];
   char cm_selfbuf[32];   /* the class token an inlined class method's self names */
   /* Nested `yield` inside the block body should chain to the block that was
-     active before this inline, not to the inner block. */
-  g_yield_block_fallback = saved_block;
-  g_yield_block_fallback_nren = saved_bnren;
-  g_yield_block_fallback_param_name = saved_bown;
+     active before this inline, not to the inner block. A forwarded block
+     (`def run2(x, &b) = run(x, &b)`) with a yield-target entry is the block
+     current here, and the fallback already names its own target, with the
+     proc and lowered context its yields bind: they stay. Set to the block
+     itself, its body's `yield` found no block (LocalJumpError). */
+  int fwd_kept = block >= 0 && block == saved_block && g_ytgt_cur >= 0 &&
+                 g_ytgt[g_ytgt_cur].blk == block;
+  if (!fwd_kept) {
+    g_yield_block_fallback = saved_block;
+    g_yield_block_fallback_nren = saved_bnren;
+    g_yield_block_fallback_param_name = saved_bown;
+  }
   /* a literal block yields to the block current here (a forwarded one keeps
      the target it was given where it was written) */
-  int pushed_ytgt = 0;
+  int pushed_ytgt = 0, saved_ytgt_cur = g_ytgt_cur;
   if (block >= 0 && block != saved_block && g_nytgt <= SP_INLINE_DEPTH_MAX) {
-    g_ytgt[g_nytgt].blk = block; g_ytgt[g_nytgt].target = saved_block;
-    g_ytgt[g_nytgt].owner = saved_bpn;
-    g_nytgt++; pushed_ytgt = 1;
+    /* its context is this call site's, as the assignments below hand it to
+       g_block_id: caller code at the depth before this inline's renames */
+    YieldTarget *yt = &g_ytgt[g_nytgt];
+    yt->blk = block; yt->target = saved_block;
+    yt->up = (g_ytgt_cur >= 0 && g_ytgt[g_ytgt_cur].blk == saved_block) ? g_ytgt_cur : -1;
+    yt->owner = saved_bpn;
+    yt->nren = saved_nren;
+    yt->brk = saved_ser; yt->brk_ebase = saved_ebase;
+    yt->self = g_self; yt->self_deref = g_self_deref; yt->emcls = g_emitting_class_id;
+    yt->ypr = g_yield_proc_ref; yt->yslot = g_yield_slot_ty;
+    yt->lowered = g_current_scope_is_lowered; yt->lowered_blk = g_lowered_blk_name;
+    g_ytgt_cur = g_nytgt++; pushed_ytgt = 1;
   }
-  g_yield_blk_brk_fallback = saved_bbv;
-  g_yield_blk_brk_efallback = saved_bbe;
+  else if (block != saved_block) g_ytgt_cur = -1;
+  if (!fwd_kept) {
+    g_yield_blk_brk_fallback = saved_bbv;
+    g_yield_blk_brk_efallback = saved_bbe;
+  }
   /* the block being captured is caller code: record the caller's self so
      emit_block_invoke can restore it around the spliced block body. Aliasing
      g_self by pointer is safe now that selfbuf is stack-local: it names an
@@ -837,8 +928,10 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   const char *saved_lbnf = g_yield_lowered_blk_fallback;
   int saved_low = g_current_scope_is_lowered;
   const char *saved_lbn = g_lowered_blk_name;
-  g_yield_lowered_fallback = g_current_scope_is_lowered;
-  g_yield_lowered_blk_fallback = g_lowered_blk_name;
+  if (!fwd_kept) {
+    g_yield_lowered_fallback = g_current_scope_is_lowered;
+    g_yield_lowered_blk_fallback = g_lowered_blk_name;
+  }
   /* and the enclosing inline's forwarded-proc block: a `yield` in the
      spliced caller code binds that proc, not this inline's block. Without
      it a block `{ |x| yield x }` handed to an inlined callee from a method
@@ -847,8 +940,10 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   TyKind saved_yslot_fb = g_yield_slot_ty_fallback;
   const char *saved_ypr_fb2 = g_yield_proc_ref_fallback2;
   TyKind saved_yslot_fb2 = g_yield_slot_ty_fallback2;
-  g_yield_proc_ref_fallback = g_yield_proc_ref;
-  g_yield_slot_ty_fallback = g_yield_slot_ty;
+  if (!fwd_kept) {
+    g_yield_proc_ref_fallback = g_yield_proc_ref;
+    g_yield_slot_ty_fallback = g_yield_slot_ty;
+  }
   g_current_scope_is_lowered = 0;
   g_lowered_blk_name = NULL;
   /* the block that was current keeps its own self one level out; a literal
@@ -1101,6 +1196,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_block_param_name = saved_bpn;
   g_yield_block_fallback = saved_yfb;
   if (pushed_ytgt) g_nytgt--;
+  g_ytgt_cur = saved_ytgt_cur;
   g_block_nren = saved_bnren;
   g_yield_block_fallback_nren = saved_yfbn;
   g_block_owner_param_name = saved_bown;
@@ -2203,8 +2299,9 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   /* The fallback has to move out one level with it. Leaving it pointing at
      the block now being spliced makes that block its OWN fallback, so a yield
      inside its body re-splices the same body -- forever, until the compiler
-     runs out of C stack. Only one fallback level is ever recorded, so once it
-     is consumed there is no outer block left to name: -1, not itself.
+     runs out of C stack. The globals record one fallback level, so once it
+     is consumed they have no outer block left to name: -1, not itself (the
+     yield-target entries refill it below when they record one).
      Reached by a method that both yields and recurses through a block that
      forwards the yield (`def walk; yield self; @kids.each { |k| k.walk { |x|
      yield x } }; end`) -- valid Ruby that segfaulted the compiler. */
@@ -2286,6 +2383,18 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
      found migrating Enumerable#inject to Ruby. */
   g_yield_proc_ref_fallback = g_yield_proc_ref_fallback2;
   g_yield_slot_ty_fallback = g_yield_slot_ty_fallback2;
+  /* The fallback level just consumed, refilled from the yield-target entries
+     when the block now current has one: its own lowered context, and its
+     target with the whole context that target runs under. Without an entry
+     it stays -1, as above. */
+  YieldTargetSave yts;
+  yield_target_save(&yts);
+  {
+    int fe = (g_ytgt_cur >= 0 && g_ytgt[g_ytgt_cur].blk == svb) ? g_ytgt[g_ytgt_cur].up : -1;
+    if (fe >= 0 && g_ytgt[fe].blk != g_block_id) fe = -1;
+    g_ytgt_cur = fe;
+    if (fe >= 0) yield_target_enter(fe);
+  }
   /* A `next` in a yielded block leaves the BLOCK with its value -- but this
      body is spliced inline (no _proc_ function, no loop), so a bare
      `continue` is invalid C. Only when the body owns a `next`, wrap the
@@ -2500,6 +2609,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   g_block_brk_var = svbbv; g_block_brk_ebase = svbbe;
   g_block_nren = sv_bnren;
   BI_METHOD_SIDE();
+  yield_target_restore(&yts);
   g_block_id = svb; g_yield_block_fallback = svfb; g_block_param_name = svbpn;
   g_block_owner_param_name = svbown;
   if (as_expr) {
