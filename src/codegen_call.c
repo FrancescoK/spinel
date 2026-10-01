@@ -20270,17 +20270,10 @@ static int toplevel_def(Compiler *c, const char *name) {
   return mi >= 0 && !c->scopes[mi].is_cmethod;
 }
 
-/* The guard's decision: a builtin call whose positional count CRuby rejects.
-   exp receives CRuby's wording of the accepted range, eval_recv whether the
-   receiver is an expression to evaluate before the raise. */
-static int arity_violation(Compiler *c, int id, char *exp, size_t n, int *eval_recv) {
-  const NodeTable *nt = c->nt;
-  const char *name = nt_str(nt, id, "name");
-  int recv = nt_ref(nt, id, "receiver");
-  if (!name) return 0;
+static int arity_call_block(const NodeTable *nt, int id, int *argc) {
   /* nil&.m short-circuits before any arity check */
   const char *safe_op = nt_str(nt, id, "call_operator");
-  if (safe_op && sp_streq(safe_op, "&.")) return 0;
+  if (safe_op && sp_streq(safe_op, "&.")) return -1;
   /* several builtins change their accepted counts under a block (Array#fill:
      1..3 bare, 0..2 with a block) -- the spec carries a separate quartet
      probed with a block, so a call with a LITERAL block checks against that
@@ -20291,18 +20284,31 @@ static int arity_violation(Compiler *c, int id, char *exp, size_t n, int *eval_r
   int with_block = 0;
   if (blk >= 0) {
     const char *bt = nt_type(nt, blk);
-    if (bt && sp_streq(bt, "BlockArgumentNode")) return 0;
+    if (bt && sp_streq(bt, "BlockArgumentNode")) return -1;
     with_block = 1;
   }
   int anode = nt_ref(nt, id, "arguments");
-  int argc = 0; const int *argv = anode >= 0 ? nt_arr(nt, anode, "arguments", &argc) : NULL;
-  for (int i = 0; i < argc; i++) {
+  const int *argv = anode >= 0 ? nt_arr(nt, anode, "arguments", argc) : NULL;
+  for (int i = 0; i < *argc; i++) {
     const char *at = nt_type(nt, argv[i]);
     if (at && (sp_streq(at, "SplatNode") || sp_streq(at, "KeywordHashNode") ||
                sp_streq(at, "ForwardingArgumentsNode") ||
                sp_streq(at, "BlockArgumentNode")))
-      return 0;
+      return -1;
   }
+  return with_block;
+}
+
+/* The guard's decision: a builtin call whose positional count CRuby rejects.
+   exp receives CRuby's wording of the accepted range, eval_recv whether the
+   receiver is an expression to evaluate before the raise. */
+static int arity_violation(Compiler *c, int id, char *exp, size_t n, int *eval_recv) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!name) return 0;
+  int argc = 0, with_block = arity_call_block(nt, id, &argc);
+  if (with_block < 0) return 0;
   exp[0] = 0;
   *eval_recv = 1;
   const SpAritySpec *itbl = sp_builtin_arity_spec_tbl;
@@ -20682,24 +20688,8 @@ static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   if (!name || recv < 0 || comp_ntype(c, recv) != TY_POLY) return 0;
-  const char *safe_op = nt_str(nt, id, "call_operator");
-  if (safe_op && sp_streq(safe_op, "&.")) return 0;
-  int blk = nt_ref(nt, id, "block");
-  int with_block = 0;
-  if (blk >= 0) {
-    const char *bt = nt_type(nt, blk);
-    if (bt && sp_streq(bt, "BlockArgumentNode")) return 0;
-    with_block = 1;
-  }
-  int anode = nt_ref(nt, id, "arguments");
-  int argc = 0; const int *argv = anode >= 0 ? nt_arr(nt, anode, "arguments", &argc) : NULL;
-  for (int i = 0; i < argc; i++) {
-    const char *at = nt_type(nt, argv[i]);
-    if (at && (sp_streq(at, "SplatNode") || sp_streq(at, "KeywordHashNode") ||
-               sp_streq(at, "ForwardingArgumentsNode") ||
-               sp_streq(at, "BlockArgumentNode")))
-      return 0;
-  }
+  int argc = 0, with_block = arity_call_block(nt, id, &argc);
+  if (with_block < 0) return 0;
   if (recv_user_defines(c, name) || comp_method_index(c, name) >= 0) return 0;
   for (int k = 0; k < c->nclasses; k++)
     if (comp_is_reader(&c->classes[k], name) || comp_is_writer(&c->classes[k], name) ||
