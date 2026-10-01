@@ -9337,13 +9337,22 @@ static sp_RbVal sp_poly_dig_step(sp_RbVal a, sp_int i) {
    refused, and a String/Symbol key reached the offset slot as a pointer
    (#3574/#3575). */
 static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx);
+/* A dig into an Array always converts its key as an Integer index, even
+   when the Array and key reached this step through boxed containers. */
+static sp_RbVal sp_poly_dig_index(sp_RbVal recv, sp_RbVal key) {
+  if (recv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(recv.cls_id)) {
+    SP_GC_ROOT_RBVAL(recv); SP_GC_ROOT_RBVAL(key);
+    return sp_poly_arr_get(recv, sp_poly_arg_int_chk(key));
+  }
+  return sp_poly_index_poly(recv, key);
+}
 static sp_RbVal sp_poly_dig_step_key(sp_RbVal a, sp_RbVal k) {
   if (a.tag == SP_TAG_NIL) return sp_box_nil();
   if (a.tag == SP_TAG_OBJ && a.v.p &&
       (sp_poly_is_array_kind(a.cls_id) || sp_poly_is_hash_kind(a.cls_id) ||
        (a.cls_id >= 0 && sp_obj_to_h_fn &&
         !(sp_obj_is_data_fn && sp_obj_is_data_fn(a.cls_id)))))   /* Data has no #dig (#3919) */
-    return sp_poly_index_poly(a, k);
+    return sp_poly_dig_index(a, k);
   sp_raise_cls("TypeError",
                sp_sprintf("%s does not have #dig method", sp_poly_class_name(a)));
   return sp_box_nil();
@@ -9357,7 +9366,7 @@ static sp_RbVal sp_poly_dig_list(sp_RbVal recv, sp_PolyArray *keys) {
   sp_RbVal cur = recv;
   for (sp_int i = 0; i < keys->len; i++) {
     if (cur.tag == SP_TAG_NIL) return sp_box_nil();
-    cur = sp_poly_index_poly(cur, keys->data[i]);
+    cur = sp_poly_dig_index(cur, keys->data[i]);
   }
   return cur;
 }
@@ -9621,7 +9630,7 @@ static sp_RbVal sp_poly_dig_n(sp_RbVal recv, sp_int n, const sp_RbVal *keys) {
     if (!sp_poly_diggable(cur))
       sp_raise_cls("TypeError", sp_sprintf("%s does not have #dig method",
                                            sp_poly_class_name(cur)));
-    cur = sp_poly_index_poly(cur, keys[i]);
+    cur = sp_poly_dig_index(cur, keys[i]);
   }
   return cur;
 }
