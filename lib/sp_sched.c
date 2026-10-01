@@ -1435,6 +1435,7 @@ static void reg_remove(sp_thread *t) {
    pending result) so a fire-and-forget thread with no user reference is not
    collected mid-run. Chained ahead of whatever globals hook was installed. */
 static void (*g_prev_globals_hook)(void) = NULL;
+static sp_Fiber *g_main_root = NULL;   /* worker 0's root fiber: the main thread's */
 static void sp_sched_globals_mark(void) {
   for (sp_thread *t = g_all; t; t = t->all_next) sp_gc_mark(t);
   /* The main thread is a static struct, not a registry entry, so nothing
@@ -1443,6 +1444,14 @@ static void sp_sched_globals_mark(void) {
      collection freed the map while g_main_thread.tls still pointed at it,
      and the next Thread#[]= wrote into freed memory. */
   if (g_main_thread.tls) sp_gc_mark(g_main_thread.tls);
+  /* The main thread runs on worker 0's root fiber, which is thread-local, so
+     sp_mark_fiber_root_storage reaches it only when worker 0 collects. Its
+     storage (Fiber[:k] = v, Fiber.current.storage = h at top level) is marked
+     here for a collection run by any other worker. */
+  if (g_main_root) {
+    if (g_main_root->storage) sp_gc_mark(g_main_root->storage);
+    if (g_main_root->attrs) sp_gc_mark(g_main_root->attrs);
+  }
 #ifdef SP_THREADS
   /* Mark each parked worker's published roots. Reaches the per-worker root fibers
      (idle/main workers) that are not on sp_fiber_list_head; green-thread fibers
@@ -1460,6 +1469,7 @@ void sp_sched_init(void) {
   /* Called from main() before any fiber/thread op. Adopt this OS thread (worker
      0) as the main green thread: its native stack is the per-worker root fiber. */
   sp_fiber_worker_init();
+  g_main_root = sp_fiber_worker_root();
   memset(&g_main_thread, 0, sizeof g_main_thread);
   g_main_thread.fiber = NULL;
   g_main_thread.state = SP_TH_RUNNING;
