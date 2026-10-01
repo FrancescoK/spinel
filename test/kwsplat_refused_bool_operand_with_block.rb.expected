@@ -1,0 +1,11 @@
+TypeError
+"no implicit conversion of true into Hash"
+"no implicit conversion of false into Hash"
+"no implicit conversion of true into Hash"
+"no implicit conversion of Integer into Hash"
+"no keywords accepted"
+"no keywords accepted"
+ran
+"no implicit conversion of true into Hash"
+"no implicit conversion of true into Hash"
+[1, [4]]

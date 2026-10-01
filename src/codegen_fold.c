@@ -7802,6 +7802,14 @@ static void ds_operand_reads_temp(int node, int tmp) {
   g_n_argov++;
 }
 
+/* Did the keyword binding run `**` operand `node` and judge it already, so
+   that it reads as nothing (ds_operand_reads_temp with no temp)? */
+static int ds_operand_judged(int node) {
+  for (int i = 0; i < g_n_argov; i++)
+    if (g_argov_node[i] == node && sp_streq(g_argov_text[i], "((void)0)")) return 1;
+  return 0;
+}
+
 /* `s` as a C string literal: a key a message names (`"q\"z"`) may carry
    what a C literal escapes. */
 static void emit_c_str(Buf *b, const char *s) {
@@ -8435,7 +8443,10 @@ void emit_args_run(Compiler *c, const int *argv, int argc) {
       for (int o = g_n_argov - 1; o >= 0; o--)
         if (g_argov_node[o] == v) { emit_kw_splat_conv_temp(c, g_argov_text[o]); break; }
     }
-    else if (kw_splat_bad_cls(c, t)) emit_kw_splat_bad_operand(c, v);
+    /* one the keyword binding ran and judged already reads as nothing
+       (ds_operand_reads_temp): judged again, a true or nilable one boxed
+       that nothing, `sp_box_bool(((void)0))` */
+    else if (kw_splat_bad_cls(c, t) && !ds_operand_judged(v)) emit_kw_splat_bad_operand(c, v);
   }
   free(vals); free(ds);
 }
