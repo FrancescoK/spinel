@@ -6229,13 +6229,18 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
         if (ty_is_hash(pt) && (at == TY_POLY || at == TY_NIL || at == TY_UNKNOWN)) {
           const char *hn = ty_hash_cname(pt);
           if (hn) {
+            /* The argument is rendered before its temp's declaration is
+               written: what it hoists goes to the prelude too, and written
+               after `sp_RbVal _tN = ` it took the initializer's place. A call
+               whose own argument hoists a rooted box (`upd(perm(input))`)
+               left the temp holding that box, the call ran as a statement
+               of its own, and its result was dropped. */
             int ht = ++g_tmp;
-            emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "sp_RbVal _t%d = ", ht);
             Buf ab2; memset(&ab2, 0, sizeof ab2);
             emit_expr(c, provided, &ab2);
-            buf_puts(g_pre, ab2.p ? ab2.p : "sp_box_nil()"); free(ab2.p);
-            buf_puts(g_pre, ";\n");
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", ht, ab2.p ? ab2.p : "sp_box_nil()");
+            free(ab2.p);
             /* A poly-VALUED variant takes the converting entry rather than a
                pointer cast: the variants are separate C structs, so a boxed
                hash of another one read through the cast kept its keys and read
