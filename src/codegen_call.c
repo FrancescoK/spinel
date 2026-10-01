@@ -33773,7 +33773,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         buf_puts(b, elem == TY_INT ? "sp_poly_elem_i(" : elem == TY_FLOAT ? "sp_poly_elem_f(" : "sp_poly_elem_s(");
         emit_boxed(c, argv[a], b); buf_puts(b, ")");
       }
-      else emit_expr(c, argv[a], b);
+      else emit_coerce(c, argv[a], elem, CO_HOLD, "an Array push", b);
       buf_puts(b, "); ");
     }
     buf_printf(b, "_t%d; })", t);
@@ -44175,7 +44175,7 @@ else {
         if (vt == TY_POLY && et == TY_INT) { buf_puts(b, "sp_poly_elem_i("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
         else if (vt == TY_POLY && et == TY_STRING) { buf_puts(b, "sp_poly_elem_s("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
         else if (vt == TY_POLY && et == TY_FLOAT) { buf_puts(b, "sp_poly_elem_f("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
-        else { store_check(c, argv[1], et, "an Array element store", b); emit_expr(c, argv[1], b); }
+        else emit_coerce(c, argv[1], et, CO_HOLD, "an Array element store", b);
       }
       buf_printf(b, "; sp_%sArray_set%s(_t%d, _t%d, _t%d); _t%d; })", k, nil_store_sfx(c, k, argv[1]), t, ti, tv, tv);
       return;
@@ -44878,10 +44878,8 @@ else {
         if (is_poly_hash && decl_type != TY_POLY) {
           emit_boxed_text(c, decl_type, tvn, b);
         }
-        else {
-          if (!is_poly_hash) store_check_kind(c, argv[1], decl_type, hvt, "a Hash element store", b);
-          buf_printf(b, "_t%d", tv);
-        }
+        else if (!is_poly_hash) emit_coerce_text(c, argv[1], decl_type, hvt, CO_HOLD, tvn, "a Hash element store", b);
+        else buf_printf(b, "_t%d", tv);
         /* For poly-hash receivers the expression returns the boxed value
            (sp_RbVal); for typed-hash receivers return the raw typed value. */
         if (is_poly_hash) {
