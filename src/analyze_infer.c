@@ -171,6 +171,43 @@ int an_program_spawns_threads(Compiler *c) {
   return cached;
 }
 
+/* Does a class other than a native one read `name` as an attribute: an
+   attr_reader, a Struct/Data member, or an alias of one? Asked the way the
+   emitter asks (poly_name_user_claimed with readers, comp_reader_in_chain),
+   so inference and emission take the same arm. */
+static int an_class_reads_name(Compiler *c, const char *name) {
+  if (an_builtin_only) return 0;   /* deriving the builtin-only answer (#3459) */
+  /* asked per call site: one answer per name while the class and scope
+     tables stand still (the memo an_user_defines_or_reads keeps, for the
+     one name this is asked about) */
+  static char memo_name[64];
+  static unsigned memo_gen;
+  static int memo_ncls = -1, memo_nsc = -1, memo_ans;
+  int memo = comp_scope_index_is_frozen() && strlen(name) < sizeof memo_name;
+  if (memo && memo_ncls == c->nclasses && memo_nsc == c->nscopes &&
+      memo_gen == comp_scope_index_gen() && sp_streq(memo_name, name)) return memo_ans;
+  int ans = 0;
+  for (int k = 0; k < c->nclasses && !ans; k++)
+    if (!c->classes[k].is_native_class && comp_reader_in_chain(c, k, name, NULL)) ans = 1;
+  if (memo) {
+    snprintf(memo_name, sizeof memo_name, "%s", name);
+    memo_gen = comp_scope_index_gen(); memo_ncls = c->nclasses; memo_nsc = c->nscopes;
+    memo_ans = ans;
+  }
+  return ans;
+}
+
+/* Does the program define a Struct or a Data class? */
+static int an_program_has_struct(Compiler *c) {
+  static int memo_ncls = -1, memo_ans;
+  if (memo_ncls == c->nclasses) return memo_ans;
+  int ans = 0;
+  for (int k = 0; k < c->nclasses && !ans; k++)
+    if (c->classes[k].is_struct || c->classes[k].is_data) ans = 1;
+  memo_ncls = c->nclasses; memo_ans = ans;
+  return ans;
+}
+
 int an_user_defines_or_reads(Compiler *c, const char *name) {
   if (an_builtin_only) return 0;
   if (!name) return 0;
@@ -2212,11 +2249,20 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (ty_is_hash(srt) || srt == TY_POLY || srt == TY_UNKNOWN) return TY_POLY_ARRAY;
   }
   /* `poly.members` on a Struct/Data read out of a container: the field-name
-     symbols as a generic Array. #deconstruct is the member values (like to_a). */
+     symbols as a generic Array. #deconstruct is the member values (like to_a).
+     A class that reads a value of its own as `members` -- an attr_reader, a
+     Struct/Data member of that name, or an alias of one -- answers it
+     through the dispatch, as the emitter's #members arm stands aside for it
+     (poly_name_user_claimed with readers), so the answer is not the names. */
   if (recv >= 0 && (sp_streq(name, "members") || sp_streq(name, "deconstruct")) &&
-      argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_recv_defines_method(c, name) && infer_type(c, recv) == TY_POLY)
-    return TY_POLY_ARRAY;
+      argc == 0 && nt_ref(nt, id, "block") < 0 && infer_type(c, recv) == TY_POLY &&
+      !an_user_recv_defines_method(c, name)) {
+    if (!sp_streq(name, "members") || !an_class_reads_name(c, name)) return TY_POLY_ARRAY;
+    /* ...and when a class does read it, a Struct or Data value in the same
+       container (an instance without such a member, or a class) still
+       answers its member names: either can come back, boxed. */
+    if (an_program_has_struct(c)) return TY_POLY;
+  }
   /* `poly.reject/select/filter { }` on a value only known to be an array at
      runtime (read out of a poly container): a filtered generic Array. */
   if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 0 &&
@@ -4444,8 +4490,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && ty_is_object(rt) && c->classes[ty_object_class(rt)].is_struct &&
       /* a method written in the Struct.new / Data.define block overrides the
          generated one of that name, so its own return type is the answer
-         (#3794) -- mirrors the same guard in the emitter */
-      !(name && comp_method_in_chain(c, ty_object_class(rt), name, NULL) >= 0)) {
+         (#3794), and so does a member accessor: Struct.new(:members) reads
+         the member, not the member names -- mirrors the same guard in the
+         emitter */
+      comp_resolve_member(c, ty_object_class(rt), name, 0, NULL, NULL) == SP_MEMBER_NONE) {
     ClassInfo *sc = &c->classes[ty_object_class(rt)];
     if (sp_streq(name, "with") && sc->is_data) return rt;  /* copy-update returns the same type */
     if (sp_streq(name, "to_a") || sp_streq(name, "values") ||

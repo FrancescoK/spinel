@@ -1380,7 +1380,14 @@ static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int
     buf_puts(b, "; break;");
     free(cb.p);
   }
-  if (!rdef8) buf_printf(b, " default: %s; break;", rraise8);
+  /* a Struct or Data class with no `self.members` of its own answers its
+     member names (the generated sp_cls_members), as emit_poly_call's arm
+     answers a class value when no class method takes the name */
+  if (!rdef8 && argc == 0 && sp_streq(name, "members") && g_gen_cls_answers &&
+      (ret == TY_POLY || ret == TY_POLY_ARRAY))
+    buf_printf(b, " default: _t%d = %ssp_cls_members(_t%d)%s; break;", tr,
+               ret == TY_POLY ? "sp_box_poly_array(" : "", tv, ret == TY_POLY ? ")" : "");
+  else if (!rdef8) buf_printf(b, " default: %s; break;", rraise8);
   buf_puts(b, " } }\nelse ");
   free(ccls8); free(cmi8); free(cexp8);
   return 1;
@@ -8239,6 +8246,15 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                              (sp_streq(name, "subclasses") || sp_streq(name, "allocate") ||
                               sp_streq(name, "keyword_init?")))) &&
                            !recv_user_defines(c, name);
+    /* `members` on a Class read out of a container is its member list (the
+       generated sp_cls_members). emit_poly_call's arm answers that, unless
+       a class reads a value of its own as `members` or defines the method:
+       then the call is this dispatch's, and a boxed class, which carries the
+       CLASS's id, would take that class's instance arm. Where no class-side
+       switch takes class values (emit_poly_cls_value_prearm), they are
+       told apart ahead of the instance switch. */
+    int is_cls_members = sp_streq(name, "members") && g_gen_cls_answers &&
+                         nt_ref(nt, id, "block") < 0;
     int is_pred = nt_ref(nt, id, "block") < 0 && poly_pred_kind(name, 0);
     /* When ostruct is in the program a bare `obj.reader` on a poly value may be
        an OpenStruct member access (any name) -- read it at runtime (#3197).
@@ -8733,7 +8749,15 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                       (c->classes[0].instantiated || class_is_prim_reopen(c, 0));
       /* a class-valued receiver dispatches class-side, ahead of the instance
          arms (#4218) */
-      emit_poly_cls_value_prearm(c, id, name, 0, NULL, NULL, NULL, NULL, tv, tr, ret, blk_tmp0, b);
+      if (!emit_poly_cls_value_prearm(c, id, name, 0, NULL, NULL, NULL, NULL, tv, tr, ret, blk_tmp0, b) &&
+          is_cls_members) {
+        if (ret == TY_POLY || ret == TY_POLY_ARRAY)
+          buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) _t%d = %ssp_cls_members(_t%d)%s; else ",
+                     tv, tr, ret == TY_POLY ? "sp_box_poly_array(" : "", tv, ret == TY_POLY ? ")" : "");
+        else
+          buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) sp_raise_nomethod(sp_nomethod_msg(\"members\", _t%d)); else ",
+                     tv, tv);
+      }
       /* a primitive-reopen candidate needs the tag-mapping key (#4219) */
       int prim_cand0 = 0;
       for (int k = 0; k < c->nclasses && !prim_cand0; k++) {
@@ -21585,7 +21609,30 @@ void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b) {
   int caller = (cs && !cs->is_cmethod) ? cs->class_id : -1;
   for (int k = 0; k < c->nclasses; k++) {
     if (!c->classes[k].instantiated || c->classes[k].is_native_class) continue;
-    if (comp_method_in_chain(c, k, vnm, NULL) < 0) continue;
+    if (comp_method_in_chain(c, k, vnm, NULL) < 0) {
+      /* a generated reader has no method entry, but the switch has its arm
+         (`[lobby].first.members`), so its visibility and an `undef` of it
+         are checked here, as a method's are */
+      if (!comp_reader_in_chain(c, k, vnm, NULL)) continue;
+      /* undefined unless a class below the `undef` declares the reader
+         again, or an alias of that name (comp_is_undeffed_in_chain stops
+         only at a method; a reader is not inherited past an `undef`, so a
+         reader below one is declared there) */
+      int undeffed = 0;
+      for (int u = k; u >= 0; u = c->classes[u].parent) {
+        ClassInfo *uc = &c->classes[u];
+        int hit = 0;
+        for (int j = 0; j < uc->nundefs && !hit; j++) hit = sp_streq(uc->undefs[j], vnm);
+        if (hit) { undeffed = 1; break; }
+        for (int j = 0; j < uc->naliases && !hit; j++) hit = sp_streq(uc->alias_new[j], vnm);
+        if (hit || comp_is_reader(uc, vnm) || comp_method_in_class(c, u, vnm) >= 0) break;
+      }
+      if (undeffed) {
+        buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d) { sp_exc_stage_recv(_t%d); "
+                      "sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); } ", tv, tv, k, tv, vnm, tv);
+        continue;
+      }
+    }
     int owner = -1;
     int vis = comp_method_vis_declared(c, k, vnm, &owner);
     if (vis == SP_VIS_PROTECTED && plain && caller >= 0 && owner >= 0 &&
