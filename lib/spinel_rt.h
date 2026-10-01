@@ -14165,6 +14165,21 @@ static sp_PolyArray *sp_enum_hash_side(sp_RbVal h, int keyside) {
    array (every arm allocates a new one), so reversing it in place does not
    touch the receiver's backing store. (The reverse_each-doesn't-mutate test
    guards this invariant if sp_enum_items_from is ever changed to share.) */
+/* `x.enum_for` (:each) on a boxed value that no user class's generator
+   serves: an Enumerator is itself (live, so an endless one is not drained),
+   an Array, Hash or Range is enumerated as it is typed, and anything else
+   has no each -- CRuby's NoMethodError, raised here rather than at the
+   first iteration. */
+static sp_Enumerator *sp_poly_enum_for_each(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.v.p) {
+    if (v.cls_id == SP_BUILTIN_ENUMERATOR) return (sp_Enumerator *)v.v.p;
+    if (sp_poly_is_array_kind(v.cls_id) || sp_poly_is_hash_kind(v.cls_id) ||
+        v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE)
+      return sp_Enumerator_new_from(v);
+  }
+  sp_raise_cls("NoMethodError", sp_nomethod_msg("each", v));
+  return NULL;
+}
 static sp_Enumerator *sp_Enumerator_new_from_rev(sp_RbVal arr) {
   SP_GC_ROOT_RBVAL(arr);   /* published into the enumerator below, after several allocations */
   sp_PolyArray *items = sp_enum_items_from(arr);

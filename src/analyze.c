@@ -8409,6 +8409,25 @@ static int desugar_to_enum(Compiler *c) {
     /* self is main in a top-level method or the program body: m and its
        generator are top-level methods */
     int toplevel = self_recv && es->class_id < 0 && !es->is_cmethod;
+    /* A boxed receiver -- an Array, or an object whose class iterates by a
+       yielding each (Rack::Lint's `@body.enum_for.to_a`) -- dispatches to
+       the generator helper the classes that have one carry, and the
+       dispatch's default arm builds the builtin's Enumerator; with no such
+       class, __poly_enum_for is that arm alone (emit_poly_enum_for). */
+    if (rt == TY_POLY && recv >= 0 && !self_recv && extra == 0 && sp_streq(m, "each")) {
+      int any_helper = 0;
+      for (int k = 0; k < c->nclasses && !any_helper; k++)
+        if (comp_method_in_class(c, k, "__to_enum_each") >= 0) any_helper = 1;
+      nt_node_set_str(nt, id, "name", any_helper ? "__to_enum_each" : "__poly_enum_for");
+      int empty = nt_new_node(nt, "ArgumentsNode");
+      nt_node_set_arr(nt, empty, "arguments", NULL, 0);
+      nt_node_set_ref(nt, id, "arguments", empty);
+      if (has_block) nt_node_set_ref(nt, id, "block", -1);
+      comp_grow_node_arrays(c);
+      c->nscope[empty] = c->nscope[id];
+      changed = 1;
+      continue;
+    }
     if (ty_is_object(rt) || toplevel) {
       char hname[160]; snprintf(hname, sizeof hname, "__to_enum_%s", m);
       int helper = toplevel ? comp_method_index(c, hname)

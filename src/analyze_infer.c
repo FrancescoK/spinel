@@ -1848,6 +1848,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   const int *argv = NULL;
   if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
   if (!name) return TY_UNKNOWN;
+  /* a boxed value's enum_for no generator serves (desugar_to_enum) */
+  if (sp_streq(name, "__poly_enum_for")) return TY_ENUMERATOR;
 
   /* Array#to_a and #to_ary answer the receiver itself, and a boxed typed
      array can only hand out a converted copy as an sp_PolyArray. Where that
