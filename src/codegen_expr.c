@@ -2356,6 +2356,19 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
   if (sp_streq(ty, "InstanceVariableReadNode")) {
     const char *nm = nt_str(nt, id, "name");  /* "@x" */
     Scope *cs = comp_scope_of(c, id);
+    /* A POLY ivar handed to a parameter the callee appends to in place: a
+       plain String it holds becomes the shared handle and is stored back
+       first, as a POLY local's marked read is (poly_strbuf_lift); an
+       instance's field store takes its write barrier from gc_wb_insert. */
+    if (c->poly_strbuf_lift[id] && !g_ie_nil_ivars && comp_ntype(c, id) == TY_POLY) {
+      c->poly_strbuf_lift[id] = 0;
+      Buf rl; memset(&rl, 0, sizeof rl);
+      emit_expr_node(c, id, &rl);
+      c->poly_strbuf_lift[id] = 1;
+      emit_poly_lift_ref(rl.p ? rl.p : "", b);
+      free(rl.p);
+      return;
+    }
     if (g_ie_nil_ivars) {
       TyKind it = comp_ntype(c, id);
       const char *nv = nil_value(it);
