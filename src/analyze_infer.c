@@ -4203,6 +4203,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         sp_streq(name, "unix?") || sp_streq(name, "ip?")) return TY_BOOL;
   }
   if (recv >= 0 && rt == TY_IO) {
+    /* answered true or false, whatever the name (the catch-all below is poly) */
+    if (sp_streq(name, "respond_to?")) return TY_BOOL;
     if (sp_streq(name, "read") || sp_streq(name, "gets") || sp_streq(name, "readline") ||
         sp_streq(name, "path") || sp_streq(name, "to_path")) return TY_STRING;
     if (sp_streq(name, "read") && nt_ref(nt, id, "arguments") >= 0) return TY_STRING;

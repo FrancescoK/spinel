@@ -40188,6 +40188,9 @@ else {
     }
     else if (recv >= 0 && rt != TY_CLASS && nt_kind(nt, argv[0]) != NK_SplatNode && !any_class_defines(c, "respond_to?")) {
       int tv = ++g_tmp;
+      /* boxed when the call is typed so (an IO's is, see the fold above) */
+      int boxed = comp_ntype(c, id) == TY_POLY;
+      if (boxed) buf_puts(b, "sp_box_bool(");
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, recv, b);
       buf_printf(b, "; const char *_n%d = sp_poly_to_name(", tv); emit_boxed(c, argv[0], b);
       buf_printf(b, "); sp_bool _a%d = ", tv);
@@ -40228,6 +40231,7 @@ else {
       }
       buf_printf(b, "0)) || (_a%d && (!strcmp(_n%d, \"initialize\") || !strcmp(_n%d, \"initialize_copy\"))) || "
                  "sp_poly_responds_builtin(_t%d, _n%d); })", tv, tv, tv, tv, tv);
+      if (boxed) buf_puts(b, ")");
       return;
     }
   }
