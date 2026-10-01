@@ -1328,6 +1328,25 @@ static void emit_if_arm_value(Compiler *c, int last, TyKind res, int tr) {
   free(le.p);
 }
 
+/* The engine's String constants (RUBY_VERSION, ...) are frozen in CRuby, and
+   each is one object however often it is read. Each is a frozen static laid
+   out like a frozen literal -- a real sp_str_hdr, then the 0xf1 marker --
+   defined once ahead of the bodies at its first read, so `RUBY_VERSION << "x"`
+   raises FrozenError and RUBY_VERSION.equal?(RUBY_VERSION) still holds. `lit`
+   is the C source of a string literal (RUBY_PLATFORM's is the runtime's
+   macros). `var` is named under sp_str_, a prefix the runtime owns, so a
+   user `def ruby_version` (sp_ruby_version) cannot take the same C name. */
+static void emit_engine_const_str(const char *var, const char *lit, Buf *b) {
+  char key[64];
+  snprintf(key, sizeof key, " %s = {", var);
+  if (!g_proc_protos.p || !strstr(g_proc_protos.p, key))
+    buf_printf(&g_proc_protos,
+               "static struct { sp_str_hdr h; unsigned char m; char d[sizeof(%s)]; } %s = "
+               "{ { NULL, sizeof(%s) | SP_STR_SIZE_ASCII7, sizeof(%s) - 1, 0 }, 0xf1, %s };\n",
+               lit, var, lit, lit, lit);
+  buf_printf(b, "((const char *)%s.d)", var);
+}
+
 static void emit_expr_node(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -2624,15 +2643,15 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       if (sp_streq(nm, "PI")) { buf_puts(b, "M_PI"); return; }
       if (sp_streq(nm, "E"))  { buf_puts(b, "M_E"); return; }
     }
-    if (nm && sp_streq(nm, "RUBY_DESCRIPTION")) { buf_puts(b, "SPL(\"spinel\")"); return; }
-    if (nm && sp_streq(nm, "RUBY_VERSION"))     { buf_puts(b, "SPL(\"" SP_RUBY_VERSION "\")"); return; }
-    if (nm && sp_streq(nm, "RUBY_ENGINE"))      { buf_puts(b, "SPL(\"spinel\")"); return; }
-    if (nm && sp_streq(nm, "RUBY_ENGINE_VERSION")) { buf_puts(b, "SPL(\"" SP_RUBY_VERSION "\")"); return; }
-    if (nm && sp_streq(nm, "RUBY_PLATFORM"))    { buf_puts(b, "sp_ruby_platform_str()"); return; }
-    if (nm && sp_streq(nm, "RUBY_RELEASE_DATE")) { buf_puts(b, "SPL(\"2026-09-15\")"); return; }
-    if (nm && sp_streq(nm, "RUBY_REVISION"))    { buf_puts(b, "SPL(\"0\")"); return; }
+    if (nm && sp_streq(nm, "RUBY_DESCRIPTION")) { emit_engine_const_str("sp_str_ruby_description", "\"spinel\"", b); return; }
+    if (nm && sp_streq(nm, "RUBY_VERSION"))     { emit_engine_const_str("sp_str_ruby_version", "\"" SP_RUBY_VERSION "\"", b); return; }
+    if (nm && sp_streq(nm, "RUBY_ENGINE"))      { emit_engine_const_str("sp_str_ruby_engine", "\"spinel\"", b); return; }
+    if (nm && sp_streq(nm, "RUBY_ENGINE_VERSION")) { emit_engine_const_str("sp_str_ruby_engine_version", "\"" SP_RUBY_VERSION "\"", b); return; }
+    if (nm && sp_streq(nm, "RUBY_PLATFORM"))    { emit_engine_const_str("sp_str_ruby_platform", "SP_RUBY_ARCH \"-\" SP_RUBY_OS", b); return; }
+    if (nm && sp_streq(nm, "RUBY_RELEASE_DATE")) { emit_engine_const_str("sp_str_ruby_release_date", "\"2026-09-15\"", b); return; }
+    if (nm && sp_streq(nm, "RUBY_REVISION"))    { emit_engine_const_str("sp_str_ruby_revision", "\"0\"", b); return; }
     if (nm && sp_streq(nm, "RUBY_PATCHLEVEL"))  { buf_puts(b, "((sp_int)0)"); return; }
-    if (nm && sp_streq(nm, "RUBY_COPYRIGHT"))   { buf_puts(b, "SPL(\"ruby - Copyright (C) 1993-2026 Yukihiro Matsumoto\")"); return; }
+    if (nm && sp_streq(nm, "RUBY_COPYRIGHT"))   { emit_engine_const_str("sp_str_ruby_copyright", "\"ruby - Copyright (C) 1993-2026 Yukihiro Matsumoto\"", b); return; }
     if (nm && sp_streq(nm, "ARGV")) { buf_puts(b, "sp_get_ARGV()"); return; }
     if (nm && sp_streq(nm, "ARGF")) { buf_puts(b, "(&sp_argf_obj)"); return; }
     if (nm && sp_streq(nm, "STDOUT")) { buf_puts(b, "sp_io_stdout()"); return; }

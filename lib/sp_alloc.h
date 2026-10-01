@@ -123,6 +123,23 @@ extern const char sp_str_empty_data[];
 extern const char *const sp_str_frozen_empty;
 extern const char *const sp_str_frozen_true;
 extern const char *const sp_str_frozen_false;
+/* A chilled String is what CRuby's Symbol#to_s answers: not frozen (frozen?
+   is false, and a mutation goes through), but +@ copies it as it copies a
+   frozen one. Spinel keeps one per symbol (sp_sym_to_s_chilled): static
+   storage with a header, the 0xfb marker, whose `next` link names
+   sp_str_chilled_tag. A static string is on no sweep list, so the link is
+   free to carry the mark, and no marker test -- the collector's included --
+   has to learn a new byte. The symbol rides ahead of the header, so a String
+   handle made from one can name it (sp_String.chilled). */
+extern const sp_str_hdr sp_str_chilled_tag;
+typedef struct { sp_int sym; sp_str_hdr h; unsigned char m; char d[]; } sp_str_chilled_obj;
+static inline int sp_str_is_chilled(const char *s) {
+  return s && ((const unsigned char *)s)[-1] == 0xfb &&
+         (((const sp_str_hdr *)(s - 1)) - 1)->next == &sp_str_chilled_tag;
+}
+static inline sp_int sp_str_chilled_sym(const char *s) {
+  return ((const sp_str_chilled_obj *)(s - offsetof(sp_str_chilled_obj, d)))->sym;
+}
 /* a nullable string (NULL) as the empty string, the standard C spelling of
    GNU's `s ?: sp_str_empty` */
 static inline const char *sp_str_or_empty(const char *s) { return s ? s : sp_str_empty; }
