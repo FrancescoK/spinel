@@ -53,6 +53,10 @@ typedef struct {
 int dyn_call_site(Compiler *c, int n);
 void dyn_call_reach(Compiler *c, int n, int k, DynReach *r);
 void dyn_value_reach(Compiler *c, int v, int k, DynReach *r);
+int dyn_yield_site(Compiler *c, int y);
+void dyn_yield_reach(Compiler *c, int y, int k, DynReach *r);
+int dyn_yield_param_appends(Compiler *c, int mi, int j);
+int dyn_yield_live(Compiler *c, int mi, int k);
 int dyn_open_site(Compiler *c, int n, int *shift);
 void dyn_open_reach(Compiler *c, int n, int k, DynReach *r);
 int dyn_method_appends(Compiler *c, int mi, int j);

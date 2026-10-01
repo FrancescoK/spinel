@@ -9011,6 +9011,67 @@ static void rehome_block_body(Compiler *c, int body, int encl) {
   free(stack);
 }
 
+static void subtree_rename_local(NodeTable *nt, int root, const char *oldn, const char *newn, int depth);
+/* Is local `name` written anywhere under `root`? */
+static int exec_subtree_writes_local(const NodeTable *nt, int root, const char *name, int depth) {
+  if (root < 0 || depth > 200) return 0;
+  NodeKind k = nt_kind(nt, root);
+  if ((k == NK_LocalVariableWriteNode || k == NK_LocalVariableTargetNode || k == NK_LocalVariableOperatorWriteNode ||
+       k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode) &&
+      nt_str(nt, root, "name") && sp_streq(nt_str(nt, root, "name"), name)) return 1;
+  int nr = nt_num_refs(nt, root);
+  for (int i = 0; i < nr; i++)
+    if (exec_subtree_writes_local(nt, nt_ref_at(nt, root, i), name, depth + 1)) return 1;
+  int na = nt_num_arrs(nt, root);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, root, i, &n);
+    for (int j = 0; j < n; j++)
+      if (exec_subtree_writes_local(nt, ids[j], name, depth + 1)) return 1;
+  }
+  return 0;
+}
+/* Does the code under `root` append to local `name` in place or hand it to
+   a call? */
+static int exec_subtree_lends_local(const NodeTable *nt, int root, const char *name, int depth) {
+  if (root < 0 || depth > 200) return 0;
+  if (nt_kind(nt, root) == NK_CallNode) {
+    int r = nt_ref(nt, root, "receiver");
+    if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && nt_str(nt, r, "name") &&
+        sp_streq(nt_str(nt, r, "name"), name) && an_str_mutator_name(nt_str(nt, root, "name"))) return 1;
+    int a = nt_ref(nt, root, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    for (int k = 0; k < an; k++)
+      if (nt_kind(nt, av[k]) == NK_LocalVariableReadNode && nt_str(nt, av[k], "name") &&
+          sp_streq(nt_str(nt, av[k], "name"), name)) return 1;
+  }
+  int nr = nt_num_refs(nt, root);
+  for (int i = 0; i < nr; i++)
+    if (exec_subtree_lends_local(nt, nt_ref_at(nt, root, i), name, depth + 1)) return 1;
+  int na = nt_num_arrs(nt, root);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, root, i, &n);
+    for (int j = 0; j < n; j++)
+      if (exec_subtree_lends_local(nt, ids[j], name, depth + 1)) return 1;
+  }
+  return 0;
+}
+/* An exec block's parameter `pn`, bound from `arg`, a String variable of the
+   caller's, which the block appends to or hands on: `pn = arg` makes a
+   second variable holding the String, whose appends reach the caller only
+   through the alias rule, and that follows neither a hand-off nor a
+   parameter of the caller's. When neither name is written in the body, the
+   body reads `arg` itself instead (the caller renames `pn` to it), and its
+   appends take the paths a direct one does (#6179). */
+static int exec_param_reads_arg(Compiler *c, int body, const char *pn, int arg) {
+  const NodeTable *nt = c->nt;
+  if (!pn || arg < 0 || nt_kind(nt, arg) != NK_LocalVariableReadNode) return 0;
+  const char *an = nt_str(nt, arg, "name");
+  TyKind at = infer_type(c, arg);
+  if (!an || (at != TY_STRING && at != TY_STRBUF)) return 0;
+  if (exec_subtree_writes_local(nt, body, pn, 0) || exec_subtree_writes_local(nt, body, an, 0)) return 0;
+  return exec_subtree_lends_local(nt, body, pn, 0);
+}
+
 /* The value forms of class_eval / class_exec (and module_*): the block is
    evaluated with self = the class, and the call's value is the block's. A
    pure-def body is a compile-time reopen (class_eval_reopen_class) and is left
@@ -9068,6 +9129,10 @@ int desugar_class_eval_value(Compiler *c) {
     /* `param = arg` writes prepended to the body, then the body statements */
     int items[8 + 64]; int ni = 0;
     for (int k = 0; k < np; k++) {
+      if (exec_param_reads_arg(c, body, pnames[k], pvals[k])) {
+        subtree_rename_local(nt, body, pnames[k], nt_str(nt, pvals[k], "name"), 0);
+        continue;
+      }
       int w = nt_new_node(nt, "LocalVariableWriteNode");
       if (w < 0) { ni = -1; break; }
       nt_node_set_str(nt, w, "name", pnames[k]);
@@ -9410,6 +9475,14 @@ int desugar_instance_eval_builtin(Compiler *c) {
         for (int j = k + 1; j < np && !used; j++)
           used = ie_subtree_uses_local(nt, pvals[j], pnames[k], 0);
         if (!used) { items[ni++] = pvals[k]; continue; }
+        /* a String the block appends to is the caller's variable itself
+           (exec_param_reads_arg); a later default reading it keeps the write */
+        int later = 0;
+        for (int j = k + 1; j < np && !later; j++) later = ie_subtree_uses_local(nt, pvals[j], pnames[k], 0);
+        if (!pdef[k] && !pnew[k] && !later && exec_param_reads_arg(c, body, pnames[k], pvals[k])) {
+          subtree_rename_local(nt, body, pnames[k], nt_str(nt, pvals[k], "name"), 0);
+          continue;
+        }
         int w = nt_new_node(nt, "LocalVariableWriteNode");
         if (w < 0) { ni = -1; break; }
         nt_node_set_str(nt, w, "name", pnames[k]);
@@ -9419,14 +9492,19 @@ int desugar_instance_eval_builtin(Compiler *c) {
     }
     else if (np == 1 && ie_subtree_uses_local(nt, body, pnames[0], 0)) {
       /* instance_eval yields self to the sole param; an unused param binds
-         nothing (#2734) */
-      int rd = nt_new_node(nt, "LocalVariableReadNode");
-      int w = nt_new_node(nt, "LocalVariableWriteNode");
-      if (rd < 0 || w < 0) continue;
-      nt_node_set_str(nt, rd, "name", tmp);
-      nt_node_set_str(nt, w, "name", pnames[0]);
-      nt_node_set_ref(nt, w, "value", rd);
-      items[ni++] = w;
+         nothing (#2734). A String receiver the block appends to through the
+         param is the caller's variable itself (exec_param_reads_arg). */
+      if (exec_param_reads_arg(c, body, pnames[0], recv))
+        subtree_rename_local(nt, body, pnames[0], nt_str(nt, recv, "name"), 0);
+      else {
+        int rd = nt_new_node(nt, "LocalVariableReadNode");
+        int w = nt_new_node(nt, "LocalVariableWriteNode");
+        if (rd < 0 || w < 0) continue;
+        nt_node_set_str(nt, rd, "name", tmp);
+        nt_node_set_str(nt, w, "name", pnames[0]);
+        nt_node_set_ref(nt, w, "value", rd);
+        items[ni++] = w;
+      }
     }
     if (ni < 0) continue;
     {
@@ -11871,6 +11949,39 @@ int infer_block_params(Compiler *c) {
     const char *name = nt_str(nt, id, "name");
     int recv = nt_ref(nt, id, "receiver");
     if (!name) continue;
+
+    /* `run(s, &method(:m))` into a user method that yields: each yield
+       calls m with its arguments, which type m's parameters as a
+       `method(:m).call(args)` does. m's parameters took nothing from them,
+       and a String yielded to a parameter only its body typed was read as
+       an Integer (TypeError at run time). */
+    if (nt_kind(nt, block) == NK_BlockArgumentNode) {
+      int bx = nt_ref(nt, block, "expression");
+      int tmi = bx >= 0 && nt_kind(nt, bx) == NK_CallNode ? method_obj_target_mi(c, bx) : -1;
+      int ymi = -1;
+      if (tmi >= 0 && !method_call_param_shift(c, bx, tmi)) {
+        if (recv < 0) {
+          Scope *self = comp_scope_of(c, id);
+          if (self && self->class_id >= 0) ymi = comp_method_in_chain(c, self->class_id, name, NULL);
+          if (ymi < 0) ymi = comp_method_index(c, name);
+        }
+        else if (sp_streq(name, "new") && (nt_kind(nt, recv) == NK_ConstantReadNode ||
+                                           nt_kind(nt, recv) == NK_ConstantPathNode)) {
+          int cid = nt_str(nt, recv, "name") ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
+          if (cid >= 0) ymi = comp_method_in_chain(c, cid, "initialize", NULL);
+        }
+        else if (ty_is_object(infer_type(c, recv))) ymi = comp_method_in_chain(c, ty_object_class(infer_type(c, recv)), name, NULL);
+      }
+      if (ymi >= 0 && c->scopes[ymi].yields) {
+        NT_FOREACH_KIND(nt, NK_YieldNode, y) {
+          if (comp_scope_of(c, y) != &c->scopes[ymi]) continue;
+          int ya = nt_ref(nt, y, "arguments"), yc = 0;
+          const int *yv = ya >= 0 ? nt_arr(nt, ya, "arguments", &yc) : NULL;
+          changed |= bind_args_params(c, y, tmi, yv, yc);
+        }
+        continue;
+      }
+    }
 
     /* proc {} / lambda {} / Proc.new {}: type the literal's block params.
        Without call-site arg-type inference (a later slice) default required
