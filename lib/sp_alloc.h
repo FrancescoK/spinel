@@ -119,6 +119,10 @@ void sp_alloc_worker_tune(int workers); /* size the collection budget for N work
 
 extern const char sp_str_empty_data[];
 #define sp_str_empty (sp_str_empty_data + 1)
+/* nil.to_s / true.to_s / false.to_s: frozen, as in CRuby (lib/sp_alloc.c) */
+extern const char *const sp_str_frozen_empty;
+extern const char *const sp_str_frozen_true;
+extern const char *const sp_str_frozen_false;
 /* a nullable string (NULL) as the empty string, the standard C spelling of
    GNU's `s ?: sp_str_empty` */
 static inline const char *sp_str_or_empty(const char *s) { return s ? s : sp_str_empty; }

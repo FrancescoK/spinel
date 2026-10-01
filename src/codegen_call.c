@@ -23525,6 +23525,23 @@ static void refuse_string_copies(Compiler *c, int id) {
 }
 
 void emit_call(Compiler *c, int id, Buf *b) {
+  /* Module#name answers a frozen String in CRuby; the many arms below spell
+     it as a static name, so the result is wrapped here once */
+  { static int in_name = 0;
+    const char *cn = nt_str(c->nt, id, "name");
+    int r = nt_ref(c->nt, id, "receiver"), ca = nt_ref(c->nt, id, "arguments");
+    Scope *es = comp_scope_of(c, id);
+    if (!in_name && cn && sp_streq(cn, "name") && ca < 0 && nt_ref(c->nt, id, "block") < 0 &&
+        comp_ntype(c, id) == TY_STRING &&
+        ((r >= 0 && comp_ntype(c, r) == TY_CLASS) ||
+         (r < 0 && es && es->is_cmethod && es->class_id >= 0))) {
+      in_name = 1;
+      buf_puts(b, "sp_str_frozen_name(");
+      emit_call(c, id, b);
+      buf_puts(b, ")");
+      in_name = 0;
+      return;
+    } }
   int nd_saved = g_nd_call_id; g_nd_call_id = id;
   if (nt_int(c->nt, id, "node_line", 0) > 0) g_refuse_outer = id;
   refuse_string_copies(c, id);
@@ -41499,7 +41516,7 @@ else {
       return;
     }
     if (argc == 0 && sp_streq(name, "inspect")) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SPL(\"nil\"))"); return; }
-    if (argc == 0 && sp_streq(name, "to_s"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SPL(\"\"))"); return; }
+    if (argc == 0 && sp_streq(name, "to_s"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_str_frozen_empty)"); return; }
     if (argc == 0 && sp_streq(name, "nil?"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)"); return; }
     if (argc == 0 && sp_streq(name, "to_i"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (sp_int)0)"); return; }
     if (argc == 0 && sp_streq(name, "to_f"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0.0)"); return; }
@@ -42644,7 +42661,7 @@ else {
   /* boolean receiver methods */
   if (recv >= 0 && rt == TY_BOOL) {
     if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) {
-      buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") ? SPL(\"true\") : SPL(\"false\"))");
+      buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") ? sp_str_frozen_true : sp_str_frozen_false)");
       return;
     }
     if (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^")) {

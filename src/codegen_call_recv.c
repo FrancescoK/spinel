@@ -8448,7 +8448,7 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
            comparable against "" (#1664). A provably non-nil receiver costs
            one always-taken branch. */
         int tv = ++g_tmp;
-        buf_printf(b, "({ const char *_t%d = %s; _t%d ? _t%d : SPL(\"\"); })", tv, r, tv, tv);
+        buf_printf(b, "({ const char *_t%d = %s; _t%d ? _t%d : sp_str_frozen_empty; })", tv, r, tv, tv);
       }
       else if (sp_streq(name, "to_str")) {
         /* Unlike to_s, CRuby's nil has no to_str: raise. */
@@ -9138,7 +9138,7 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
          a method call) is evaluated exactly once, not twice. */
       if (sp_streq(name, "to_s") && argc == 0) {
         int _tn = ++g_tmp;
-        buf_printf(b, "({ sp_int _t%d = (%s); _t%d == SP_INT_NIL ? SPL(\"\") : sp_int_to_s(_t%d); })", _tn, r, _tn, _tn);
+        buf_printf(b, "({ sp_int _t%d = (%s); _t%d == SP_INT_NIL ? sp_str_frozen_empty : sp_int_to_s(_t%d); })", _tn, r, _tn, _tn);
       }
       else if (sp_streq(name, "inspect")) {
         int _tn = ++g_tmp;

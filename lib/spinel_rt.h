@@ -996,6 +996,28 @@ static inline sp_int sp_str_setbyte(const char *s, sp_int i, sp_int v) {
    returns ITSELF -- CRuby's uminus is an interning hint, and `(-a).equal?(a)`
    is true for a frozen `a`. Only a mutable string takes the freeze-copy. */
 static inline const char *sp_str_uminus_val(const char *s);
+static inline const char *sp_str_freeze_val(const char *s);
+/* Module#name: a frozen String, as in CRuby. The name is a static string;
+   its frozen copy is made once per name (per worker) and handed out again,
+   so `k.name` in a loop allocates nothing after the first call. */
+static const char *sp_str_frozen_name(const char *s) {
+  static SP_TLS const char **src = NULL, **frz = NULL;
+  static SP_TLS int n = 0, cap = 0;
+  if (!s || sp_str_is_frozen_val(s)) return s;
+  for (int i = 0; i < n; i++) if (src[i] == s) return frz[i];
+  if (n == cap) {
+    int nc = cap ? cap * 2 : 16;
+    const char **ns = (const char **)realloc((void *)src, sizeof(char *) * (size_t)nc);
+    if (!ns) return sp_str_freeze_val(s);
+    src = ns;
+    const char **nf = (const char **)realloc((void *)frz, sizeof(char *) * (size_t)nc);
+    if (!nf) return sp_str_freeze_val(s);
+    frz = nf; cap = nc;
+  }
+  const char *f = sp_str_freeze_val(s);
+  src[n] = s; frz[n] = f; n++;
+  return f;
+}
 static inline const char *sp_str_freeze_val(const char *s) {
   if (!s) return s;
   unsigned char m = ((const unsigned char *)s)[-1];
@@ -1960,11 +1982,11 @@ static inline int sp_is_exc_subclass_cls(sp_int cls_id) {
 static inline const char *sp_poly_to_s(sp_RbVal v) {
   switch (v.tag) {
     /* int-typed nil (SP_INT_NIL) is Ruby nil; nil.to_s is "" -- match it. */
-    case SP_TAG_INT: return v.v.i == SP_INT_NIL ? sp_str_empty : sp_int_to_s(v.v.i);
-    case SP_TAG_STR: return v.v.s ? v.v.s : sp_str_empty;
+    case SP_TAG_INT: return v.v.i == SP_INT_NIL ? sp_str_frozen_empty : sp_int_to_s(v.v.i);
+    case SP_TAG_STR: return v.v.s ? v.v.s : sp_str_frozen_empty;
     case SP_TAG_FLT: return sp_float_to_s(v.v.f);
-    case SP_TAG_BOOL: return v.v.b ? SPL("true") : SPL("false");
-    case SP_TAG_NIL: return sp_str_empty;
+    case SP_TAG_BOOL: return v.v.b ? sp_str_frozen_true : sp_str_frozen_false;
+    case SP_TAG_NIL: return sp_str_frozen_empty;
     case SP_TAG_SYM: return sp_sym_to_s((sp_sym)v.v.i);
     case SP_TAG_CLASS: return sp_class_val_name(v);
     case SP_TAG_ENCODING: return v.v.s ? v.v.s : sp_str_empty;
