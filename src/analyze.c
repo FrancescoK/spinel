@@ -19750,6 +19750,15 @@ static int yield_splice_kw_handles(Compiler *c, int mi, int h, int kwh, int pass
   }
   return changed;
 }
+/* Will yielding method mi be lowered to call its named block as a proc
+   (the post-fixpoint lowering's test: a value use of the block, a call of
+   itself, a yield inside a lifted body)? */
+static int scope_yields_inside_lifted_body(Compiler *c, int mi);
+static int yield_lowers_block(Compiler *c, int mi) {
+  Scope *m = &c->scopes[mi];
+  if (!m->blk_param || !m->blk_param[0]) return 0;
+  return m->blk_param_value_use || scope_calls_itself(c, mi) || scope_yields_inside_lifted_body(c, mi);
+}
 /* One yield of a spliced method (or a `blk.call` the splice expands as
    one): a spliced block's parameter a handle is yielded to, and then every
    variable yielded to it. */
@@ -19844,9 +19853,11 @@ static int yield_splice_site(Compiler *c, int y, int pass, ALocalAliases *aliase
       /* a boxed parameter the block appends to in place appends through
          a box that holds the handle (#5957): the yielded variable has
          to be the handle, which the binding boxes as itself. Not for a
-         method that names its block, which is lowered to call it as a
-         proc once it keeps it, where the yield boxes what it hands. */
-      if (t->type == TY_POLY && !(ms->blk_param && ms->blk_param[0]) &&
+         method that is lowered to call its named block as a proc (it
+         keeps it, or calls itself: the lowering's own test), where the
+         yield boxes what it hands; one that only calls it (`b.call(1)`)
+         is spliced like any yielder. */
+      if (t->type == TY_POLY && !yield_lowers_block(c, mi) &&
           an_subtree_lends_local(c, nt_ref(nt, blk, "body"), bp, 0)) { into_h = 1; continue; }
       if (pass || !is_h || t->type != TY_STRING || !an_block_param_lent(c, blk, k)) continue;
       t->type = TY_STRBUF; t->str_shared = 1; changed = 1;

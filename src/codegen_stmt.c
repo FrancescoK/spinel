@@ -13038,12 +13038,17 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       if (rlN && rlN->type == TY_POLY) {
         TyKind svN = c->ntype[recv];
         TyKind svNN = c->nilnarrow[recv];
+        TyKind svC = c->ntype[id];
         c->ntype[recv] = TY_POLY;
         c->nilnarrow[recv] = TY_UNKNOWN;
+        /* the call's value is the poly arm's too (a String-typed call made
+           an arm hold its boxed answer in a String temp) */
+        c->ntype[id] = TY_POLY;
         emit_indent(b, indent);
         buf_puts(b, "(void)(");
         emit_call(c, id, b);
         buf_puts(b, ");\n");
+        c->ntype[id] = svC;
         c->ntype[recv] = svN;
         c->nilnarrow[recv] = svNN;
         return 1;
@@ -13194,6 +13199,20 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     int chain[64]; int cur;
     int nchain = str_append_chain(c, id, chain, &cur);
     const char *rty = nt_type(nt, cur);
+    /* a chain from a guard-narrowed POLY local appends through the box, as
+       the value form does (emit_call) */
+    if (nchain > 1 && nt_kind(nt, cur) == NK_LocalVariableReadNode) {
+      const char *cnN = nt_str(nt, cur, "name");
+      Scope *csN = cnN ? comp_scope_of(c, cur) : NULL;
+      LocalVar *clN = csN ? scope_local(csN, cnN) : NULL;
+      if (clN && clN->type == TY_POLY) {
+        emit_indent(b, indent);
+        buf_puts(b, "(void)(");
+        emit_call(c, id, b);
+        buf_puts(b, ");\n");
+        return 1;
+      }
+    }
     if (nchain > 0 && str_mut_recv_assignable(c, cur)) {
       /* chain was collected outermost-first; emit left-to-right */
       for (int j = nchain - 1; j >= 0; j--) {
