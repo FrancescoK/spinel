@@ -35772,6 +35772,48 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     }
   }
   if (recv >= 0 && comp_ntype(c, recv) == TY_EXCEPTION) {
+    /* A class-gated accessor's name that the program also gave Object
+       (`class Object; def tag`): the classes owning the accessor answer it,
+       every other exception the Object method, as CRuby's lookup reaches
+       Object for them. Both answers ride boxed. The accessor alone raised
+       NoMethodError for a RuntimeError. */
+    int xom = argc == 0 && nt_ref(nt, id, "block") < 0 ? exc_acc_object_method(c, name) : -1;
+    if (xom >= 0) {
+      int xt = ++g_tmp;
+      static const struct { const char *nm, *fn; TyKind t; } XACC[] = {
+        {"key", "sp_exc_key_acc", TY_POLY}, {"receiver", "sp_exc_receiver_acc", TY_POLY},
+        {"args", "sp_exc_args_acc", TY_POLY}, {"private_call?", "sp_exc_private_call_acc", TY_BOOL},
+        {"reason", "sp_exc_reason_acc", TY_POLY}, {"exit_value", "sp_exc_exit_value_acc", TY_POLY},
+        {"tag", "sp_exc_tag_acc", TY_POLY}, {"value", "sp_exc_throw_value_acc", TY_POLY},
+        {"status", "sp_exc_status_acc", TY_INT}, {"success?", "sp_exc_success_acc", TY_BOOL},
+        {"signo", "sp_exc_signo_acc", TY_INT}, {"signm", "sp_exc_signm_acc", TY_STRING},
+        {"name", "sp_exc_name_acc", TY_POLY}, {"errno", "sp_exc_errno_acc", TY_POLY},
+        {"result", "sp_exc_result", TY_POLY}, {NULL, NULL, TY_UNKNOWN} };
+      int xa = 0;
+      while (XACC[xa].nm && !sp_streq(XACC[xa].nm, name)) xa++;
+      if (sp_streq(name, "reason") || sp_streq(name, "tag") || sp_streq(name, "key") ||
+          sp_streq(name, "name")) g_uses_symbols = 1;
+      char xv[32]; snprintf(xv, sizeof xv, "_t%d", xt);
+      Buf ab; memset(&ab, 0, sizeof ab);
+      buf_printf(&ab, "%s(_t%d)", XACC[xa].fn, xt);
+      Buf ob; memset(&ob, 0, sizeof ob);
+      buf_printf(&ob, "sp_Object_%s(", mc(c->scopes[xom].name));
+      emit_boxed_text(c, TY_EXCEPTION, xv, &ob);
+      buf_puts(&ob, ")");
+      TyKind want = comp_ntype(c, id), omr = (TyKind)c->scopes[xom].ret;
+      buf_printf(b, "({ sp_Exception *_t%d = (sp_Exception *)(", xt);
+      emit_expr(c, recv, b);
+      buf_printf(b, "); SP_GC_ROOT(_t%d); sp_exc_has_acc(_t%d, \"%s\") ? ", xt, xt, name);
+      if (want == TY_POLY && XACC[xa].t != TY_POLY) emit_boxed_text(c, XACC[xa].t, ab.p, b);
+      else buf_puts(b, ab.p);
+      buf_puts(b, " : ");
+      if (method_is_void(&c->scopes[xom])) buf_printf(b, "(%s, sp_box_nil())", ob.p);
+      else if (want == TY_POLY && omr != TY_POLY) emit_boxed_text(c, omr, ob.p, b);
+      else buf_puts(b, ob.p);
+      buf_puts(b, "; })");
+      free(ab.p); free(ob.p);
+      return;
+    }
     /* equal? and eql? are pointer identity; == and === are CRuby's value
        equality (same class and message): Object's protocol arm, which also
        unwraps a poly operand and stands down for a user subclass's own

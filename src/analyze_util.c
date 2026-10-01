@@ -174,6 +174,22 @@ int is_syserr_family_name(const char *n) {
   return sp_streq(n, "SystemCallError") || strncmp(n, "Errno::", 7) == 0 ||
          (strncmp(n, "IO::E", 5) == 0 && strstr(n, "Wait") && is_builtin_exception_name(n));
 }
+/* A method the program adds to Object under the name of a class-gated
+   exception accessor (UncaughtThrowError#tag, KeyError#key, ...): every
+   exception but those classes answers it, as CRuby's lookup reaches Object.
+   Its scope, or -1 (none, or one taking arguments or a block). */
+int exc_acc_object_method(Compiler *c, const char *name) {
+  static const char *const ACC[] = {
+    "key", "receiver", "args", "private_call?", "reason", "exit_value", "tag",
+    "value", "status", "success?", "signo", "signm", "name", "errno", "result", NULL };
+  int hit = 0;
+  for (int i = 0; ACC[i] && !hit; i++) if (name && strcmp(name, ACC[i]) == 0) hit = 1;
+  if (!hit) return -1;
+  int oc = comp_class_index(c, "Object");
+  int mi = oc >= 0 ? comp_method_in_class(c, oc, name) : -1;
+  if (mi < 0 || c->scopes[mi].nparams != 0 || c->scopes[mi].yields) return -1;
+  return mi;
+}
 /* The Errno:: class a name stands for. CRuby defines one class per errno
    number: a later name whose number an earlier class already has is a
    constant for that class, so on Linux Errno::EOPNOTSUPP *is* Errno::ENOTSUP

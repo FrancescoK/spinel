@@ -5220,6 +5220,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "class")) return TY_CLASS;  /* a Class object, carried by name */
     if (sp_streq(name, "backtrace")) return TY_STR_ARRAY;  /* empty: no frames captured */
     if (sp_streq(name, "cause")) return TY_EXCEPTION;      /* the threaded cause, nil if none */
+    /* a gated accessor's name the program also gave Object: one class
+       answers the accessor, every other one the Object method, boxed */
+    if (rt == TY_EXCEPTION && argc == 0 && exc_acc_object_method(c, name) >= 0) return TY_POLY;
     if (sp_streq(name, "result")) return TY_POLY;          /* StopIteration#result, nil otherwise */
     if (sp_streq(name, "errno")) return TY_POLY;           /* SystemCallError#errno: the Errno:: class's number, nil for the parent (#4560) */
     if (sp_streq(name, "name")) return TY_POLY;            /* NameError#name, nil otherwise */
