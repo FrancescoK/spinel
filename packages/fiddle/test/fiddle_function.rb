@@ -46,7 +46,7 @@ p r.class, r.null?
 p fn("getenv", [Fiddle::TYPE_VOIDP], Fiddle::TYPE_VOIDP).call("NO_SUCH_VARIABLE_ZZ").null?
 
 f = Fiddle::Function.new(Fiddle::Handle::DEFAULT["abs"], [Fiddle::TYPE_INT], Fiddle::TYPE_INT, name: "abs")
-p f.name, f.abi, f.ptr.class, f.to_i.class, f.to_proc.call(-4)
+p f.name, f.abi == Fiddle::Function::DEFAULT, f.ptr.class, f.to_i.class, f.to_proc.call(-4)
 p Fiddle::Function.new(Fiddle::Pointer.new(Fiddle::Handle::DEFAULT["abs"]), [Fiddle::TYPE_INT], Fiddle::TYPE_INT).call(-5)
 
 begin

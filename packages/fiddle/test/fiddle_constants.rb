@@ -14,6 +14,6 @@ p Fiddle::SIZEOF_CHAR, Fiddle::SIZEOF_SHORT, Fiddle::SIZEOF_INT, Fiddle::SIZEOF_
 p Fiddle::ALIGN_CHAR, Fiddle::ALIGN_SHORT, Fiddle::ALIGN_INT, Fiddle::ALIGN_LONG,
   Fiddle::ALIGN_DOUBLE, Fiddle::ALIGN_VOIDP
 p Fiddle::RTLD_LAZY, Fiddle::RTLD_NOW, Fiddle::RTLD_GLOBAL > 0   # the flag's value is the host's
-p Fiddle::Handle::RTLD_LAZY == Fiddle::RTLD_LAZY, Fiddle::Function::DEFAULT
+p Fiddle::Handle::RTLD_LAZY == Fiddle::RTLD_LAZY, Fiddle::Function::DEFAULT.is_a?(Integer)   # the ABI code is the host's
 p Fiddle::DLError.ancestors.first(3), Fiddle::Error.superclass
 p Fiddle::WINDOWS, Fiddle::NULL.null?, Fiddle::RUBY_FREE.class
