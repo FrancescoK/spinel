@@ -5928,6 +5928,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
          `size[0]` that follows reads it as an untyped value. */
       if (sp_streq(name, "winsize") && sp_feature_enabled("io/console"))
         return an_poly_concrete(c, name, TY_INT_ARRAY);
+      /* a boxed socket's addresses, as the TY_IO arm types them */
+      if ((sp_streq(name, "addr") || sp_streq(name, "peeraddr")) && argc == 0 &&
+          sp_feature_required("socket"))
+        return an_poly_concrete(c, name, TY_POLY_ARRAY);
       /* the non-blocking pair on a poly-carried handle, typed as the TY_IO arm
          types it: `exception: false` answers a wait symbol (read) or nil
          (write) as well as the ordinary result, so that shape is poly and a
