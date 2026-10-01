@@ -2286,7 +2286,8 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
        answers the receiver. Emitting the product alone answered the tuple array
        instead, so `arr.product(x, y) { }.equal?(arr)` was false (and the
        inference, which already said self, disagreed with the emission). */
-    if (sp_streq(name, "product") && argc >= 2 && nt_ref(nt, id, "block") >= 0) {
+    if (sp_streq(name, "product") && (argc >= 2 || (argc == 1 && rt == TY_POLY_ARRAY)) &&
+        nt_ref(nt, id, "block") >= 0) {
       int blk = nt_ref(nt, id, "block");
       int bbody = nt_ref(nt, blk, "body");
       int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
