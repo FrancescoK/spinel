@@ -8074,6 +8074,22 @@ int block_opt_default(Compiler *c, int block, int idx) {
   return -1;
 }
 
+/* The parameter a yield's position idx binds whatever the yield's count: a
+   required one, or an optional after them when no required parameter
+   follows (`|a = 1, b|` hands b the last argument first). A parameter the
+   block appends to binds as an alias of the variable yielded to it at such
+   a position (block_param_wants_alias), an optional as a required one
+   (#6179). */
+const char *block_lead_param_name(Compiler *c, int block, int idx) {
+  const char *bp = block_param_name(c, block, idx);
+  if (bp || block_post_name(c, block, 0)) return bp;
+  int bpn = nt_ref(c->nt, block, "parameters");
+  int pn = bpn >= 0 && nt_kind(c->nt, bpn) == NK_BlockParametersNode ? nt_ref(c->nt, bpn, "parameters") : -1;
+  int rn = 0;
+  if (pn >= 0) nt_arr(c->nt, pn, "requireds", &rn);
+  return pn >= 0 && idx >= rn ? block_opt_name(c, block, idx - rn) : NULL;
+}
+
 /* Name of a block's idx-th post-required parameter (`|a, *b, c|` -> c), or NULL. */
 const char *block_post_name(Compiler *c, int block, int idx) {
   return block_list_name(c, block, "posts", idx);

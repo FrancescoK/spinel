@@ -6498,7 +6498,7 @@ static void emit_proc_param_slot(Compiler *c, Buf *pb, const char *name, const c
      its parameter, so the boxed slot is unboxed into that type. */
   int typed = lt == TY_INT || lt == TY_FLOAT || lt == TY_BOOL || lt == TY_SYMBOL ||
               lt == TY_STRING || lt == TY_POLY_POLY_HASH || lt == TY_SYM_POLY_HASH ||
-              lt == TY_STR_POLY_HASH;
+              lt == TY_STR_POLY_HASH || lt == TY_STRBUF;
   const char *slot = typed ? "_pv_" : "lv_";
   buf_printf(pb, "    sp_RbVal %s%s;\n", slot, name);
   buf_printf(pb, "    if (%s) %s%s = %s;\n", cond, slot, name, arg);
@@ -6511,6 +6511,10 @@ static void emit_proc_param_slot(Compiler *c, Buf *pb, const char *name, const c
     snprintf(src, sizeof src, "_pv_%s", name);
     Buf ub = {0};
     if (nilable) emit_unbox_nilable_text(c, lt, src, &ub);
+    /* an optional the body appends to is the shared handle (#6179): the
+       boxed channel carries the caller's, and nil, passed or defaulted, is
+       the NULL handle */
+    else if (lt == TY_STRBUF) buf_printf(&ub, "sp_poly_nil_p(%s) ? NULL : sp_poly_as_strbuf(%s)", src, src);
     else emit_unbox_text(c, lt, src, &ub);
     buf_printf(pb, "    %s lv_%s = %s;", c_type_name(lt), name, ub.p);
     if (proc_slot_is_ptr(lt)) buf_printf(pb, " SP_GC_ROOT(lv_%s);", name);

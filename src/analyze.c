@@ -12621,7 +12621,8 @@ static int an_subtree_yields_lent(Compiler *c, int node, const char *vn, int mi)
   return 0;
 }
 static int an_block_param_lent(Compiler *c, int blk, int k) {
-  const char *bp = blk >= 0 ? block_param_name(c, blk, k) : NULL;
+  /* an optional the position binds is aliased too (emit_block_binds) */
+  const char *bp = blk >= 0 ? block_lead_param_name(c, blk, k) : NULL;
   if (!bp) return 0;
   Scope *bs = comp_scope_of(c, blk);
   LocalVar *lv = bs ? scope_local(bs, bp) : NULL;
@@ -17448,13 +17449,34 @@ static int dyn_alias_writes(Compiler *c, int node, Scope *sc, const char *vn, co
   }
   return n;
 }
-/* The memo entry of a proc literal or a block: its required positional
-   parameters (the ones a position binds whatever the count). */
+/* The parameter call position k of a proc literal or a block binds whatever
+   the count, or NULL: a required one, or an optional after them unless
+   required parameters follow (as dyn_method_nreq counts a method's). The
+   requireds alone left `proc { |t = nil| t << x }` appending to a copy. */
+static const char *dyn_lit_param_name(Compiler *c, int lit, int k) {
+  const char *pn = proc_param_name(c, lit, k);
+  if (pn) return pn;
+  const NodeTable *nt = c->nt;
+  int pnode = -1;
+  if (nt_kind(nt, lit) == NK_BlockNode) {
+    int bp = nt_ref(nt, lit, "parameters");
+    pnode = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
+  }
+  else pnode = a_proc_params_node(c, lit);
+  int rn = 0, on = 0, sn = 0;
+  if (pnode < 0) return NULL;
+  nt_arr(nt, pnode, "requireds", &rn);
+  const int *ov = nt_arr(nt, pnode, "optionals", &on);
+  nt_arr(nt, pnode, "posts", &sn);
+  return sn == 0 && k >= rn && k - rn < on ? nt_str(nt, ov[k - rn], "name") : NULL;
+}
+/* The memo entry of a proc literal or a block: its positional parameters
+   that a position binds whatever the count (dyn_lit_param_name). */
 static unsigned dyn_lit_bits(Compiler *c, int lit) {
   if (lit < 0 || lit >= g_dyn.nlit) return 0;
   if (g_dyn.lit[lit] & DYN_DONE) return g_dyn.lit[lit];
   const char *pn[DYN_ARGS]; int np = 0;
-  while (np < DYN_ARGS && (pn[np] = proc_param_name(c, lit, np))) np++;
+  while (np < DYN_ARGS && (pn[np] = dyn_lit_param_name(c, lit, np))) np++;
   unsigned app = 0, kept = 0;
   int body = nt_kind(c->nt, lit) == NK_BlockNode ? nt_ref(c->nt, lit, "body") : a_proc_body(c, lit);
   dyn_body_scan(c, body, pn, np, &app, &kept);
@@ -17504,15 +17526,36 @@ static unsigned dyn_lit_bits(Compiler *c, int lit) {
   return g_dyn.lit[lit];
 }
 
-/* A method's required positional parameters: the ones call position k binds
-   for k below this count. */
+/* A method's leading positional parameters that call position k binds for
+   k below this count, whatever the count: the required ones, and the
+   optionals after them unless required parameters follow (`def f(a = 1, b)`
+   or `def f(a = 1, *r, b)` hands the last argument to b first, so a short
+   call moves the lead argument onto it). An optional counted only the
+   required ones, and `def fill(s = nil)` reached through `method(:fill)`
+   or `bind_call` appended to a copy (#6179). */
 static int dyn_method_nreq(Compiler *c, Scope *m) {
   if (m->def_node < 0) return 0;
-  /* a define_method body's scope hangs off the call; it counts its own */
-  if (nt_kind(c->nt, m->def_node) != NK_DefNode) return m->nrequired < m->nparams ? m->nrequired : m->nparams;
-  int pn = nt_ref(c->nt, m->def_node, "parameters"), rn = 0;
-  if (pn >= 0) nt_arr(c->nt, pn, "requireds", &rn);
-  return rn < m->nparams ? rn : m->nparams;
+  const NodeTable *nt = c->nt;
+  int pn = -1;
+  if (nt_kind(nt, m->def_node) == NK_DefNode) pn = nt_ref(nt, m->def_node, "parameters");
+  else {
+    /* a define_method body's scope hangs off the call: its block's
+       parameters, requireds then optionals (collect_scopes); any other
+       scope counts its own required ones */
+    int b = nt_ref(nt, m->def_node, "block");
+    if (b < 0 || nt_kind(nt, b) != NK_BlockNode) return m->nrequired < m->nparams ? m->nrequired : m->nparams;
+    int bp = nt_ref(nt, b, "parameters");
+    int inner = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
+    pn = inner >= 0 ? inner : bp;
+  }
+  int rn = 0, on = 0, sn = 0;
+  if (pn >= 0) {
+    nt_arr(nt, pn, "requireds", &rn);
+    nt_arr(nt, pn, "optionals", &on);
+    nt_arr(nt, pn, "posts", &sn);
+  }
+  int n = sn > 0 ? rn : rn + on;
+  return n < m->nparams ? n : m->nparams;
 }
 static unsigned dyn_meth_bits(Compiler *c, int mi) {
   if (mi < 0 || mi >= g_dyn.nscope) return 0;
@@ -17938,7 +17981,7 @@ static void dyn_reach_value(Compiler *c, int v, int k, int depth, DynReach *r) {
   NodeKind vk = nt_kind(nt, v);
   if (dyn_rest_takes(c, v, k)) r->app = 1;
   if (dyn_is_proc_literal(c, v) || vk == NK_BlockNode) {
-    const char *pn = proc_param_name(c, v, k);
+    const char *pn = dyn_lit_param_name(c, vk == NK_CallNode ? nt_ref(nt, v, "block") : v, k);
     int open = proc_opt_count(c, v) > 0 || proc_has_rest(c, v) || proc_post_count(c, v) > 0;
     Scope *bs = comp_scope_of(c, v);
     LocalVar *q = pn && bs ? scope_local(bs, pn) : NULL;
@@ -18692,7 +18735,7 @@ static int dyn_convert_params(Compiler *c) {
       Scope *bs = app ? comp_scope_of(c, create) : NULL;
       for (int k = 0; bs && k < DYN_ARGS; k++) {
         if (!(app & (1u << k))) continue;
-        const char *pn = proc_param_name(c, create, k);
+        const char *pn = dyn_lit_param_name(c, lit, k);
         LocalVar *lv = pn ? scope_local(bs, pn) : NULL;
         if (!lv || lv->type != TY_STRING || lv->is_cell) continue;
         lv->type = TY_STRBUF; lv->str_shared = 1; changed = 1;
@@ -19435,7 +19478,7 @@ static int yield_splice_site(Compiler *c, int y, int pass, ALocalAliases *aliase
       for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
         int u = g_dyn.bnode[e], blk = nt_ref(nt, u, "block");
         if (nt_kind(nt, blk) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
-        const char *bp = block_param_name(c, blk, k);
+        const char *bp = block_lead_param_name(c, blk, k);
         Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
         LocalVar *t = bs ? scope_local(bs, bp) : NULL;
         if (!t || t->is_cell || t->type != TY_STRING || !an_block_param_alias_mutated(c, aliases, bs, bp))
@@ -19468,7 +19511,7 @@ static int yield_splice_site(Compiler *c, int y, int pass, ALocalAliases *aliase
     for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
       int u = g_dyn.bnode[e], blk = nt_ref(nt, u, "block");
       if (nt_kind(nt, blk) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
-      const char *bp = block_param_name(c, blk, k);
+      const char *bp = block_lead_param_name(c, blk, k);
       Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
       LocalVar *t = bs ? scope_local(bs, bp) : NULL;
       if (!t || t->is_cell) continue;
@@ -19546,7 +19589,7 @@ static int yield_splice_handles(Compiler *c) {
       if (ak != NK_LocalVariableReadNode) continue;
       TyKind at = comp_ntype(c, av[k]);
       if (at != TY_STRING && at != TY_STRBUF) continue;
-      const char *bp = block_param_name(c, blk, k);
+      const char *bp = block_lead_param_name(c, blk, k);
       Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
       LocalVar *t = bs ? scope_local(bs, bp) : NULL;
       if (!t || t->is_cell) continue;
