@@ -3331,6 +3331,10 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         char hd[48], hl[48], hw[48];
         if ((rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && infer_type(c, argv[0]) == TY_INT &&
             hc_array(c, recv, rt == TY_FLOAT_ARRAY, hd, hl, hw, sizeof hd)) {
+          if (hc_index_in_range(c, recv, argv[0])) {   /* in range by the loop's own test */
+            buf_printf(b, "%s[", hd); emit_int_expr(c, argv[0], b); buf_puts(b, "]");
+            return 1;
+          }
           int tk = ++g_tmp;
           buf_printf(b, "({ sp_int _t%d = ", tk); emit_int_expr(c, argv[0], b);
           buf_printf(b, "; (unsigned long long)_t%d < (unsigned long long)%s ? %s[_t%d] : sp_%sArray_get(",

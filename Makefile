@@ -1539,6 +1539,8 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/index_opassign_fused.rb \
                   test/loop_array_header_cache.rb \
                   test/array_new_fill_sized.rb \
+                  test/loop_bounded_index_read.rb \
+                  test/loop_bounded_index_polls.rb \
                   test/array_new_block_fresh_binding.rb \
                   test/proc_body_block_fresh_binding.rb \
                   test/hash_new_block_frame.rb \
@@ -2392,6 +2394,15 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -E '^#define _SP_HCR' "$$tmp/lahc.c" | grep -q 'lv_cur\b' && { echo "infer-test: FAIL (an array local the loop reassigns was read through a cached header)"; ok=0; }; \
 	grep -E '^#define _SP_HCR' "$$tmp/lahc.c" | grep -q 'self->iv_v\b' && { echo "infer-test: FAIL (an ivar the loop writes was read through a cached header)"; ok=0; }; \
 	grep -qE '^#define _SP_HCR[0-9]+\(\) .*lv_qv.*lv_qk.*lv_qs' "$$tmp/lahc.c" || { echo "infer-test: FAIL (a class test on a scalar kept a loop from caching its arrays' headers)"; ok=0; }; \
+	$(SPINEL) test/loop_bounded_index_read.rb -c --no-line-map -o "$$tmp/lbi.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (loop_bounded_index_read: -c)"; ok=0; }; \
+	grep -qE '_hcd[0-9]+_[0-9]+\[lv_i\]' "$$tmp/lbi.c" && grep -qE '_hcd[0-9]+_[0-9]+\[lv_j\]' "$$tmp/lbi.c" || { echo "infer-test: FAIL (a read bounded by its loop's own i < a.length test still tests its index)"; ok=0; }; \
+	grep -qE '_hcd[0-9]+_[0-9]+\[lv_(m|q|r|w|x|y|z)\]' "$$tmp/lbi.c" && { echo "infer-test: FAIL (a read whose index the loop does not keep in range lost its bounds test)"; ok=0; }; \
+	grep -qE 'while \(\(lv_i < _hcl[0-9]+_[0-9]+\)\)' "$$tmp/lbi.c" || { echo "infer-test: FAIL (a loop that reads a[i] untested does not test i against the cached length)"; ok=0; }; \
+	grep -qE 'lv_(m|q|r|w|y|z) < _hcl' "$$tmp/lbi.c" && { echo "infer-test: FAIL (a loop whose index is not kept in range tests it against the cached length)"; ok=0; }; \
+	$(SPINEL) test/loop_bounded_index_polls.rb -c --no-line-map -o "$$tmp/lbp.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (loop_bounded_index_polls: -c)"; ok=0; }; \
+	grep -F 'while (({ if (SP_UNLIKELY(SP_SAFEPOINT_POLL())) sp_safepoint(), _SP_HCR' "$$tmp/lbp.c" | grep -qF 'sp_fin_run_pending(), _SP_HCR' && grep -qE '_hcd[0-9]+_[0-9]+\[lv_i\]' "$$tmp/lbp.c" || { echo "infer-test: FAIL (a loop that reads a[i] untested does not poll ahead of its i < a.length test)"; ok=0; }; \
+	awk '/^[a-z].* sp_total\(.*\{$$/,/^}/' "$$tmp/lbp.c" | awk 'f { print; exit } /while \(\(\{/ { f = 1 }' | grep -qE 'SP_SAFEPOINT_POLL|SP_FIN_POLL|sp_fin_run_pending' && { echo "infer-test: FAIL (a loop that reads a[i] untested polls between its test and the read)"; ok=0; }; \
+	awk '/^[a-z].* sp_back\(.*\{$$/,/^}/' "$$tmp/lbp.c" | grep -qE '^ +if .*sp_fin_run_pending\(\), _SP_HCR' || { echo "infer-test: FAIL (a cached loop does not read its headers again after a finalizer runs)"; ok=0; }; \
 	$(SPINEL) test/array_new_fill_sized.rb -c --no-line-map -o "$$tmp/anf.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (array_new_fill_sized: -c)"; ok=0; }; \
 	grep -q 'sp_IntArray_new_fill(' "$$tmp/anf.c" && grep -q 'sp_FloatArray_new_fill(' "$$tmp/anf.c" || { echo "infer-test: FAIL (Array.new(n, v) on an Integer or Float array grows by n pushes instead of allocating n)"; ok=0; }; \
 	$(SPINEL) test/reader_operands_pure_read.rb -c --no-line-map -o "$$tmp/rop.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (reader_operands_pure_read: -c)"; ok=0; }; \
