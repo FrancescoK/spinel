@@ -27,3 +27,37 @@ class I < A
   def self.x = K
 end
 p I.x
+
+# a superclass is resolved from where it is written, by its whole path:
+# `B` inside Outer is Outer::B, and at the top level the top-level B
+module Outer
+  class B
+    Q = :outer_b
+  end
+  class OC < B
+    def self.x = Q
+  end
+end
+class B
+  Q = :top_b
+end
+class TD < B
+  def self.x = Q
+end
+p Outer::OC.x, TD.x
+
+# a module's own includes are searched too
+module Inner
+  R = :inner
+end
+module MidM
+  include Inner
+end
+class RA
+  R = :ra
+end
+class RC
+  include MidM
+  def self.x = R
+end
+p RC.x
