@@ -6238,10 +6238,12 @@ int propagate_prep_params(Compiler *c) {
     for (int k = 0; k < cls->nprep_chain; k++) {
       const char *from_name = cls->prep_from[k];
       const char *to_name   = cls->prep_to[k];
-      int from_mi = comp_method_in_class(c, ci, from_name);
+      /* a class method's chain is keyed `self.<name>` (comp_super_shadow) */
+      int cm = strncmp(from_name, "self.", 5) == 0;
+      int from_mi = cm ? comp_cmethod_in_class(c, ci, from_name + 5) : comp_method_in_class(c, ci, from_name);
       int to_mi = -1;
       for (int s = 0; s < c->nscopes; s++) {
-        if (c->scopes[s].class_id == ci && !c->scopes[s].is_cmethod &&
+        if (c->scopes[s].class_id == ci && c->scopes[s].is_cmethod == cm &&
             c->scopes[s].name && sp_streq(c->scopes[s].name, to_name)) {
           to_mi = s; break;
         }

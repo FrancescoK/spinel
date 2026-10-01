@@ -564,6 +564,7 @@ void compute_reachable(Compiler *c) {
         const char *pf = cls->prep_from[i]; /* user-facing name, e.g. "hi" */
         const char *pt = cls->prep_to[i];   /* shadow name, e.g. "__prep_0_hi" */
         if (!pf || !pt) continue;
+        if (strncmp(pf, "self.", 5) == 0) pf += 5;   /* a class method's chain */
         /* When the user-facing name is called, the codegen wrapper calls the shadow
            implementation directly -- so mark the shadow reachable too. */
         int pf_in_called = anh_has(&cn_set, pf);
@@ -20342,7 +20343,7 @@ static int promote_spread_string_args(Compiler *c) {
 
 /* The method a `super` in scope `m` calls, or -1. */
 int a_super_target(Compiler *c, Scope *m) {
-  const char *shadow = comp_prep_chain_target(c, m->class_id, m->name);
+  const char *shadow = comp_super_shadow(c, m);
   if (shadow) return m->is_cmethod ? comp_cmethod_in_class(c, m->class_id, shadow)
                                    : comp_method_in_class(c, m->class_id, shadow);
   int p = c->classes[m->class_id].parent;
