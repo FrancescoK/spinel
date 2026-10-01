@@ -23560,6 +23560,23 @@ static void emit_utime_arg_bad(Compiler *c, int node, TyKind t, Buf *b) {
 }
 
 static void emit_call_body(Compiler *c, int id, Buf *b);
+
+/* Each emitter tried in turn below answers 1 when it took the call. One that
+   declines after it has emitted part of its receiver -- into g_pre, the
+   output, or the argument overrides -- leaves that part behind, and the
+   emitter that does take the call emits the receiver again: its prelude ran
+   twice, `[3, 1].min { |a, b| n += 1; a <=> b }.m` the min block twice over.
+   What a declining emitter left is taken back. */
+static int emit_or_take_back(Compiler *c, int id, Buf *b, int (*fn)(Compiler *, int, Buf *)) {
+  Buf *pre = g_pre;
+  size_t pre_mark = pre ? pre->len : 0, out_mark = b->len;
+  int argov_mark = g_n_argov;
+  if (fn(c, id, b)) return 1;
+  if (pre && g_pre == pre && pre->len > pre_mark) { pre->len = pre_mark; pre->p[pre_mark] = '\0'; }
+  if (b->len > out_mark) { b->len = out_mark; b->p[out_mark] = '\0'; }
+  if (g_n_argov > argov_mark) g_n_argov = argov_mark;
+  return 0;
+}
 static void emit_call_held(Compiler *c, int id, Buf *b);
 /* nonzero while a setter call is re-entered for its own emission, its value
    already arranged (the `def x=` value-position arm); the emission may go
@@ -25125,8 +25142,8 @@ static int emit_at_without_array(Compiler *c, int id, Buf *b) {
 }
 
 static void emit_call_held(Compiler *c, int id, Buf *b) {
-  if (emit_at_without_array(c, id, b)) return;
-  if (emit_boxed_class_aref(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_at_without_array)) return;
+  if (emit_or_take_back(c, id, b, emit_boxed_class_aref)) return;
   /* a tuple element read typed as the element itself: the read answers the
      boxed element, unboxed here */
   { TyKind et = tuple_elem_read_unboxed(c, id);
@@ -27892,7 +27909,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   }
 
   /* nil's own to_a / to_h / =~ on a nullable Integer or Float slot */
-  if (emit_nullable_scalar_nil_only(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_nullable_scalar_nil_only)) return;
 
   /* A generated READER named after an Object builtin owns the name, as any
      reader does in CRuby: Data.define(:freeze) answers the member. The
@@ -27912,7 +27929,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       TyKind rt0 = comp_ntype(c, recv0);
       if (acr == 0 && ty_is_object(rt0) &&
           comp_resolve_member(c, ty_object_class(rt0), nm0, 0, NULL, NULL) == SP_MEMBER_ATTR) {
-        if (emit_value_recv_call(c, id, b)) return;
+        if (emit_or_take_back(c, id, b, emit_value_recv_call)) return;
       }
     }
   }
@@ -27966,19 +27983,19 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   /* A provably wrong argument count raises before any type guard, as CRuby
      checks arity at dispatch (defined above). */
-  if (emit_builtin_arity_guard(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_builtin_arity_guard)) return;
   /* ...and on a boxed receiver, for the classes that reject the count */
-  if (emit_poly_arity_guard(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_poly_arity_guard)) return;
   /* String#upcase and friends' case-mapping options (defined above) */
-  if (emit_case_opts_guard(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_case_opts_guard)) return;
   /* An argument whose static class the method cannot take (defined above). */
-  if (emit_arg_type_guards(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_arg_type_guards)) return;
   /* A local receiver its own argument reassigns (defined above). */
-  if (emit_recv_snapshot(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_recv_snapshot)) return;
   /* Hash.new's keyword and default/block rules (defined above) */
-  if (emit_hash_new_arg_guard(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_hash_new_arg_guard)) return;
   /* Operands in Ruby's order, each held across the call (defined above). */
-  if (emit_operands_in_order(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_operands_in_order)) return;
   /* Proc#=== calls the proc; a Proc read out of a container arrives boxed,
      where a value comparison would just answer false (#3683). */
   {
@@ -28295,9 +28312,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       }
     }
   }
-  if (emit_dynamic_send(c, id, b)) return;   /* recv.send(runtime_name, args) static dispatch */
-  if (emit_dynamic_respond_to(c, id, b)) return;   /* recv.respond_to?(runtime_name) static dispatch */
-  if (emit_dynamic_const_get(c, id, b)) return;   /* recv.const_get(runtime_name) static dispatch */
+  if (emit_or_take_back(c, id, b, emit_dynamic_send)) return;   /* recv.send(runtime_name, args) static dispatch */
+  if (emit_or_take_back(c, id, b, emit_dynamic_respond_to)) return;   /* recv.respond_to?(runtime_name) static dispatch */
+  if (emit_or_take_back(c, id, b, emit_dynamic_const_get)) return;   /* recv.const_get(runtime_name) static dispatch */
   /* A program's own method on Range / Time / File / Class, ahead of the
      builtin emitters for those receivers (the inference twin sits at the top
      of infer_call_inner for the same reason: a reopen's name wins over the
@@ -28321,7 +28338,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       }
     }
   }
-  if (emit_vis_refusal(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_vis_refusal)) return;
   /* k = Struct.new(:a, :b): the registered anonymous struct class, as a
      first-class class value */
   {
@@ -28478,41 +28495,41 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
      re-enters this same chain on the guarded temp with g_sn_skip set, and that
      pass lowers normally. */
   if (!poly_block_call_needs_dispatch(c, id) && !sn_guard_pending(c, id)) {
-  if (emit_lazy_size_expr(c, id, b)) return;
-  if (emit_lazy_class_expr(c, id, b)) return;
-  if (emit_lazy_pipeline_expr(c, id, b)) return;
-  if (emit_with_index_expr(c, id, b)) return;
-  if (emit_enum_with_index_expr(c, id, b)) return;
-  if (emit_enum_find_expr(c, id, b)) return;
-  if (emit_each_with_index_chain(c, id, b)) return;
-  if (emit_each_with_index_terminal(c, id, b)) return;
-  if (emit_collect_expr(c, id, b)) return;
-  if (emit_predicate_expr(c, id, b)) return;
-  if (emit_find_index_poly_expr(c, id, b)) return;
-  if (emit_poly_uniq_block(c, id, b)) return;
-  if (emit_takewhile_with_index(c, id, b)) return;
-  if (emit_iter_value_expr(c, id, b)) return;
-  if (emit_sort_cmp_expr(c, id, b)) return;
-  if (emit_minmax_cmp_expr(c, id, b)) return;
-  if (emit_step_array_expr(c, id, b)) return;
-  if (emit_chunk_while_expr(c, id, b)) return;
-  if (emit_chunk_family_poly_expr(c, id, b)) return;
-  if (emit_chunk_family_enum_expr(c, id, b)) return;
-  if (emit_chunk_first_class_expr(c, id, b)) return;
-  if (emit_cycle_bounded_expr(c, id, b)) return;
-  if (emit_slice_when_chunk_inspect_expr(c, id, b)) return;
-  if (emit_product_inspect_expr(c, id, b)) return;
-  if (emit_bsearch_expr(c, id, b)) return;
-  if (emit_sum_block_poly_expr(c, id, b)) return;
-  if (emit_sum_block_expr(c, id, b)) return;
-  if (emit_transform_hash_expr(c, id, b)) return;
-  if (emit_gsub_block_expr(c, id, b)) return;
-  if (emit_inject_expr(c, id, b)) return;
-  if (emit_reduce_block_expr(c, id, b)) return;
-  if (emit_sortby_expr(c, id, b)) return;
-  if (emit_tap_then_expr(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_lazy_size_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_lazy_class_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_lazy_pipeline_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_with_index_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_enum_with_index_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_enum_find_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_each_with_index_chain)) return;
+  if (emit_or_take_back(c, id, b, emit_each_with_index_terminal)) return;
+  if (emit_or_take_back(c, id, b, emit_collect_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_predicate_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_find_index_poly_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_poly_uniq_block)) return;
+  if (emit_or_take_back(c, id, b, emit_takewhile_with_index)) return;
+  if (emit_or_take_back(c, id, b, emit_iter_value_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_sort_cmp_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_minmax_cmp_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_step_array_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_chunk_while_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_chunk_family_poly_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_chunk_family_enum_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_chunk_first_class_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_cycle_bounded_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_slice_when_chunk_inspect_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_product_inspect_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_bsearch_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_sum_block_poly_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_sum_block_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_transform_hash_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_gsub_block_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_inject_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_reduce_block_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_sortby_expr)) return;
+  if (emit_or_take_back(c, id, b, emit_tap_then_expr)) return;
   }
-  if (emit_inline_expr(c, id, b)) return;  /* value-returning yield method */
+  if (emit_or_take_back(c, id, b, emit_inline_expr)) return;  /* value-returning yield method */
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   int argc;
@@ -28713,9 +28730,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     return;
   }
 
-  if (emit_numeric_coerce_call(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_numeric_coerce_call)) return;
 
-  if (emit_complex_rational_call(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_complex_rational_call)) return;
 
   /* loop { break val } as expression: emit pre-statement for-loop, result via break var */
   /* Kernel#caller / caller(start) / caller(start, len) -> the current stack
@@ -31812,10 +31829,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     emit_expr(c, recv, b); return;
   }
 
-  if (emit_concurrency_call(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_concurrency_call)) return;
 
   /* A blockless iterator answers an Enumerator instead (defined above). */
-  if (emit_blockless_enumerator(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_blockless_enumerator)) return;
   /* Enumerator instance methods: #next / #peek (raise StopIteration past the
      end), #rewind (reset, returns self), #size. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_ENUMERATOR) {
@@ -37753,7 +37770,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     int dispatch_cid = (g_ie_class_id >= 0) ? g_ie_class_id
                      : (g_emitting_class_id >= 0) ? g_emitting_class_id : self->class_id;
     if (dispatch_cid >= 0) {
-      if (emit_implicit_self_member(c, id, b)) return;
+      if (emit_or_take_back(c, id, b, emit_implicit_self_member)) return;
       int mi = comp_method_in_chain(c, dispatch_cid, name, NULL);
       /* Template-method pattern: a base-class method calls an abstract method
          that is implemented only in subclasses. Not found up the chain, but if a
@@ -38406,7 +38423,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
            and rendered the positional arguments alone, so `NS::Reg.new` and
            `NS::Reg.new { ... }` on an `initialize(o = nil, &blk)` were calls
            with too few arguments (a plain `Reg.new` never came this way). */
-        if (emit_class_new_call(c, id, b)) return;
+        if (emit_or_take_back(c, id, b, emit_class_new_call)) return;
         buf_printf(b, "sp_%s_new(", c->classes[ci].c_name);
         int initm = comp_method_in_chain(c, ci, "initialize", NULL);
         if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
@@ -38901,7 +38918,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     }
   }
 
-  if (emit_class_new_call(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_class_new_call)) return;
 
   /* StringIO is a native-bound package class; .open is Ruby in the package. */
 
@@ -40553,7 +40570,7 @@ else {
           }
         }
         if (_awins) {
-          if (emit_vis_refusal(c, id, b)) return;   /* `private :x=` on the writer */
+          if (emit_or_take_back(c, id, b, emit_vis_refusal)) return;   /* `private :x=` on the writer */
           char _aivn[258]; snprintf(_aivn, sizeof _aivn, "@%s", _abase);
           int _aiv = comp_ivar_index(&c->classes[_adefc < 0 ? _arc : _adefc], _aivn);
           TyKind _aivt = _aiv >= 0 ? c->classes[_adefc < 0 ? _arc : _adefc].ivar_types[_aiv] : TY_UNKNOWN;
@@ -42382,7 +42399,7 @@ else {
     return;
   }
 
-  if (emit_array_arith_call(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_array_arith_call)) return;
 
   /* a literal `<<` whose result overflowed int64 (`1 << 64`): the node is typed
      bigint, but the int receiver would otherwise emit a UB C `1LL << 64LL`.
@@ -43404,7 +43421,7 @@ else {
     return;
   }
 
-  if (emit_poly_call(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_poly_call)) return;
 
   /* between?(lo, hi): lo <= self <= hi */
   if (sp_streq(name, "between?") && argc == 2) {
@@ -43848,11 +43865,11 @@ else {
     }
   }
 
-  if (emit_case_eq_call(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_case_eq_call)) return;
 
-  if (emit_object_call(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_object_call)) return;
 
-  if (emit_value_recv_call(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_value_recv_call)) return;
 
   /* Array-reduction methods on a boxed array element of a poly array (e.g.
      `runs.map { |r| r.sum }` over chunk_while runs). The runtime helper switches
@@ -44090,7 +44107,7 @@ else {
     }
   }
 
-  if (emit_range_call(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_range_call)) return;
 
   /* hash value methods */
   /* A literal Hash.new(d) receiver that never narrowed: .default and []
@@ -44159,7 +44176,7 @@ else {
     buf_puts(b, "(sp_Proc *)NULL)");
     return;
   }
-  if (emit_hash_call(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_hash_call)) return;
 
   /* `arr[i] = v` in expression position: do the store, evaluate to the rhs
      (Ruby []= returns the assigned value). The statement form is emitted
@@ -44260,7 +44277,7 @@ else {
       return;
     }
   }
-  if (emit_array_call(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_array_call)) return;
 
   /* symbol receiver methods */
   if (recv >= 0 && rt == TY_SYMBOL) {
@@ -44473,7 +44490,7 @@ else {
     return;
   }
 
-  if (emit_scalar_call(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_scalar_call)) return;
 
   /* bigint methods */
   if (recv >= 0 && rt == TY_BIGINT) {
@@ -45454,9 +45471,9 @@ else {
   }
 
   /* Object's identity protocol on a native handle no arm above claimed. */
-  if (emit_native_object_protocol(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_native_object_protocol)) return;
 
   /* The NoMethodError gate for a call nothing above resolved (defined above). */
-  if (emit_unresolved_call(c, id, b)) return;
+  if (emit_or_take_back(c, id, b, emit_unresolved_call)) return;
   unsupported(c, id, "call");
 }
