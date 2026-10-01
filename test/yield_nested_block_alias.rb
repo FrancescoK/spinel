@@ -24,6 +24,23 @@ def run4(x) = run(x) { |u| u << "-"; yield u }
 s = +"g"; run4(s) { |w| w << LONG }; p s.size
 def runb(x, &b) = run(x) { |u| b.call(u) }
 s = +"h"; runb(s) { |w| w << LONG }; p s.size
+def rundot(x, &b) = run(x) { |u| b.(u) }
+s = +"h"; rundot(s) { |w| w << LONG }; p s.size
+
+# the &block called as `b[x]` or `b.yield(x)` beside a `yield`, which keeps
+# the block out of line: a call on the proc, sharing the String as `.call`
+# does (variables of their own: one shared with a proc is the handle, which
+# a spliced chain does not take yet)
+def ri(x, &b)
+  return yield(x) if x.size > 50
+  b[x]
+end
+def ry(x, &b)
+  return yield(x) if x.size > 50
+  b.yield(x)
+end
+v1 = +"h"; ri(v1) { |w| w << LONG }; p v1.size
+v2 = +"h"; ry(v2) { |w| w << LONG }; p v2.size
 def rund(x) = run(x) { |u| yield(u, 1) }
 s = +"i"; rund(s) { |w, i| w << LONG }; p s.size
 

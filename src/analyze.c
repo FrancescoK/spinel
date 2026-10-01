@@ -17358,7 +17358,11 @@ const char *dyn_kw_elem_key(Compiler *c, int el, int *val) {
 /* A proc/Method call with the type-erased ABI: `.call`, `.()`, `[]`,
    `.yield`, `===` on a Proc or a Method value. A `&blk.call` in a method
    whose block is inlined at its call sites is a yield, and binds the block's
-   parameter directly. */
+   parameter directly. In a method lowered to take its block as a proc
+   (is_lowered_yield) it is a call on that proc like any other: `blk[x]` or
+   `blk.yield(x)` beside a `yield` keeps the block out of line, and the
+   String went over as a copy, neither pulled into the handle here nor
+   refused, where a `yield` of it is (dyn_yield_site). */
 int dyn_call_site(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   if (n < 0 || nt_kind(nt, n) != NK_CallNode) return 0;
@@ -17373,7 +17377,7 @@ int dyn_call_site(Compiler *c, int n) {
   if (nt_kind(nt, r) == NK_LocalVariableReadNode) {
     Scope *rs = comp_scope_of(c, r);
     const char *rn = nt_str(nt, r, "name");
-    if (rs && rs->blk_param && rn && sp_streq(rs->blk_param, rn) && (rs->yields || rs->is_lowered_yield))
+    if (rs && rs->blk_param && rn && sp_streq(rs->blk_param, rn) && rs->yields && !rs->is_lowered_yield)
       return 0;
   }
   return 1;
