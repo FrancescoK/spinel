@@ -17002,7 +17002,10 @@ static int convert_byref_handle_params(Compiler *c,
             }
             continue;
           }
-          if (!alv || !strbuf_slot_eligible_shape(c, vn2, vs2, alv)) continue;
+          /* already the handle: nothing below changes, and the shape check
+             walks the scope's calls, once per call site and per round */
+          if (!alv || (alv->type == TY_STRBUF && alv->str_shared)) continue;
+          if (!strbuf_slot_eligible_shape(c, vn2, vs2, alv)) continue;
           if (alv->type != TY_UNKNOWN && alv->type != TY_STRING &&
               alv->type != TY_STRBUF && alv->type != TY_POLY) continue;
           if (alv->type != TY_POLY && (alv->type != TY_STRBUF || !alv->str_shared))
