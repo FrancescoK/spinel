@@ -687,6 +687,23 @@ static int tail_output_has_value(const char *nm) {
   return nm && (sp_streq(nm, "system") || sp_streq(nm, "p") || sp_streq(nm, "pp"));
 }
 
+void system_refuse_unsupported(Compiler *c, int id, const int *argv, int argc) {
+  if (ty_is_hash(comp_ntype(c, argv[0]))) unsupported_feature(c, id, "system with an environment Hash");
+  if (ty_is_array(comp_ntype(c, argv[0]))) unsupported_feature(c, id, "system with a [command, argv0] pair");
+  /* A trailing options Hash (`out:`, `err:`, `chdir:`, ...) was converted
+     like any other argument, so it reached #to_str and raised "no implicit
+     conversion of Hash into String" at run time -- naming a conversion the
+     program never asked for. system's redirects are not wired to the spawn
+     path that implements them, so refuse the call where the other two
+     unsupported system shapes are refused, and say where they do work. */
+  if (argc >= 2) {
+    const char *lty = nt_type(c->nt, argv[argc - 1]);
+    if (ty_is_hash(comp_ntype(c, argv[argc - 1])) ||
+        (lty && (sp_streq(lty, "HashNode") || sp_streq(lty, "KeywordHashNode"))))
+      unsupported_feature(c, id, "system with an options Hash (use Process.spawn, which takes in:/out:/err:)");
+  }
+}
+
 int emit_output_call(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -729,20 +746,7 @@ else {
     return 1;
   }
   if (sp_streq(name, "system") && argc >= 1) {
-    if (ty_is_hash(comp_ntype(c, argv[0]))) { unsupported_feature(c, id, "system with an environment Hash"); return 0; }
-    if (ty_is_array(comp_ntype(c, argv[0]))) { unsupported_feature(c, id, "system with a [command, argv0] pair"); return 0; }
-    /* A trailing options Hash (`out:`, `err:`, `chdir:`, ...) was converted
-       like any other argument, so it reached #to_str and raised "no implicit
-       conversion of Hash into String" at run time -- naming a conversion the
-       program never asked for. system's redirects are not wired to the spawn
-       path that implements them, so refuse the call where the other two
-       unsupported system shapes are refused, and say where they do work. */
-    if (argc >= 2) {
-      const char *lty = nt_type(nt, argv[argc - 1]);
-      if (ty_is_hash(comp_ntype(c, argv[argc - 1])) ||
-          (lty && (sp_streq(lty, "HashNode") || sp_streq(lty, "KeywordHashNode"))))
-        { unsupported_feature(c, id, "system with an options Hash (use Process.spawn, which takes in:/out:/err:)"); return 0; }
-    }
+    system_refuse_unsupported(c, id, argv, argc);
     int ts = ++g_tmp;
     emit_indent(b, indent);
     buf_puts(b, "{ ");
