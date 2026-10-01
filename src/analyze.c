@@ -15219,6 +15219,28 @@ static int an_hash_value_block(Compiler *c, const char *itn, int recv, int *hrec
   return 1;
 }
 
+/* A chained index (`a.each.with_index { |x, i| }`, `h.each_value.
+   each_with_index`, `a.map.with_index`) binds the element its blockless
+   receiver call would, ahead of the index: the call under it is the
+   iterator, over that call's own receiver. Rewrites *itn and *recv to that
+   iterator and receiver. Left unread, the block's append went to a copy. */
+static void an_unchain_index(const NodeTable *nt, const char **itn, int *recv) {
+  int r = *recv;
+  if (!(sp_streq(*itn, "with_index") || sp_streq(*itn, "each_with_index"))) return;
+  /* an Enumerator walked through the `to_a` hop the desugar puts in front
+     of it (enum_each_wrap) */
+  if (r >= 0 && nt_kind(nt, r) == NK_CallNode && nt_str(nt, r, "enum_each_wrap") &&
+      nt_ref(nt, r, "block") < 0)
+    r = nt_ref(nt, r, "receiver");
+  if (r < 0 || nt_kind(nt, r) != NK_CallNode || nt_ref(nt, r, "block") >= 0 ||
+      nt_ref(nt, r, "arguments") >= 0 || nt_ref(nt, r, "receiver") < 0) return;
+  const char *inner = nt_str(nt, r, "name");
+  if (!inner || !(sp_streq(inner, "each") || sp_streq(inner, "map") || sp_streq(inner, "collect") ||
+                  sp_streq(inner, "each_value") || sp_streq(inner, "each_entry"))) return;
+  *itn = inner;
+  *recv = nt_ref(nt, r, "receiver");
+}
+
 static int promote_shared_stored_strings(Compiler *c) {
   int changed = 0;
   sb_store_valid = 0;   /* this run's store index is built on first use */
@@ -15714,6 +15736,7 @@ static int promote_shared_stored_strings(Compiler *c) {
     if (blk4 < 0) continue;
     int recv4 = nt_ref(nt, w, "receiver");
     int hrecv4 = -1, hvi4 = 0;
+    an_unchain_index(nt, &itn, &recv4);
     /* the builtin's own copy, once the call has been rewritten onto it:
        `__enum_filter_map__N(arr) { |x| }` carries the container as its
        first argument (desugar_builtin_enum_calls) */
