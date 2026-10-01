@@ -1,0 +1,6 @@
+test/warn_uplevel_zero.rb:7: warning: invalid offset is ignored: bogus
+test/warn_uplevel_zero.rb:12: warning: first
+second
+test/warn_uplevel_zero.rb:13: warning: x
+y
+test/warn_uplevel_zero.rb:14: warning: ends in newline

@@ -634,6 +634,26 @@ static int flatten(pm_node_t *node) {
       } }
     N("CallNode");
     NAME("name", n->name);
+    /* a bare `warn`: the line and file it was written in, which `uplevel: 0`
+       prints ahead of the message -- stamped as __LINE__ and __FILE__ are,
+       since node positions exist only under the line map */
+    if (!n->receiver) {
+      char *wn = cstr(n->name);
+      if (strcmp(wn, "warn") == 0) {
+        int32_t wl = pm_newline_list_line(&g_parser->newline_list, node->location.start, g_parser->start_line);
+        if (sp_line_map_n > 0 && wl >= 1 && wl <= sp_line_map_n && sp_line_orig[wl] > 0) wl = sp_line_orig[wl];
+        I("warn_line", (long long)wl);
+        const char *rf = sp_node_required_file(node);
+        if (rf) {
+          char *ap = sp_required_file_path(rf);
+          char *esc = escape_str((const uint8_t *)ap, strlen(ap));
+          emit_str(id, "warn_path", esc);
+          free(esc); free(ap);
+        }
+        else emit_str(id, "warn_path", g_source_file_escaped);
+      }
+      free(wn);
+    }
     R("receiver", n->receiver);
     R("arguments", n->arguments);
     R("block", n->block);

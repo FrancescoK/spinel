@@ -891,12 +891,15 @@ else {
            prints nothing, while `Warning[cat] = true` re-enables it. The
            messages are evaluated for side effects either way, and an unknown
            literal category raises CRuby's ArgumentError;
-         - `uplevel:` prefixes each line with the caller's source location, which
-           needs a runtime line-granularity call stack spinel does not have.
-           Emitting any prefix would be a wrong location, so it loud-rejects. */
+         - `uplevel: 0` prefixes the first line with the location of the warn
+           call itself ("file:line: warning: "), known where it is written; a
+           higher level is a caller's location, which needs a runtime
+           line-granularity call stack spinel does not have. Emitting any
+           prefix would be a wrong location, so that loud-rejects. */
     int kw_idx = -1;
     const char *cat_guard = NULL;   /* literal known category: runtime-gated */
     int cat_dyn = 0;                /* tmp holding a dynamic category name */
+    int up0 = 0;                    /* uplevel: 0 -- the call's own location */
     char bad_cat[64]; bad_cat[0] = 0;   /* literal unknown category: ArgumentError */
     if (argc > 0) {
       int last = argv[argc - 1];
@@ -916,7 +919,10 @@ else {
           const char *kty = key >= 0 ? nt_type(c->nt, key) : NULL;
           const char *kname = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(c->nt, key, "value") : NULL;
           if (kname && sp_streq(kname, "uplevel")) {
-            unsupported(c, elems[e], "warn(uplevel:) caller-location prefix (no runtime source-line stack)");
+            if (val >= 0 && nt_kind(c->nt, val) == NK_IntegerNode && nt_int(c->nt, val, "value", -1) == 0)
+              up0 = 1;
+            else
+              unsupported(c, elems[e], "warn(uplevel:) caller-location prefix (no runtime source-line stack)");
           }
           else if (kname && sp_streq(kname, "category")) {
             /* the category gates printing through the runtime Warning flags
@@ -958,9 +964,30 @@ else {
     char guard[64]; guard[0] = 0;
     if (cat_guard) snprintf(guard, sizeof guard, "sp_warning_enabled(\"%s\")", cat_guard);
     else if (cat_dyn) snprintf(guard, sizeof guard, "sp_warning_aref(_t%d)", cat_dyn);
+    /* uplevel: 0 -- "file:line: warning: " ahead of the first message, where
+       the message goes and under the same category gate */
+    char up_pre[1200]; up_pre[0] = 0;
+    if (up0 && !bad_cat[0]) {
+      const char *fp = nt_str(c->nt, id, "warn_path");
+      snprintf(up_pre, sizeof up_pre, "%s:%lld: warning: ", fp ? fp : "-",
+               (long long)nt_int(c->nt, id, "warn_line", 0));
+    }
     for (int k = 0; k < argc; k++) {
       if (k == kw_idx) continue;
       if (bad_cat[0]) { emit_indent(b, indent); buf_puts(b, "(void)("); emit_expr(c, argv[k], b); buf_puts(b, ");\n"); continue; }
+      if (up_pre[0]) {
+        emit_indent(b, indent);
+        if (guard[0]) buf_printf(b, "if (%s) ", guard);
+        if (redirect) {
+          buf_puts(b, "{ if (gv_stderr) sp_StringIO_write(gv_stderr, ");
+          emit_str_literal(b, up_pre);
+          buf_puts(b, "); else fputs(");
+          emit_str_literal(b, up_pre);
+          buf_puts(b, ", stderr); }\n");
+        }
+        else { buf_puts(b, "fputs("); emit_str_literal(b, up_pre); buf_puts(b, ", stderr);\n"); }
+        up_pre[0] = 0;
+      }
       TyKind at = comp_ntype(c, argv[k]);
       if (redirect) {
         /* stringify into a temp, then branch on the live $stderr redirect */
