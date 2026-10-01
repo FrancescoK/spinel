@@ -975,12 +975,14 @@ static void warn_undefined_constant(Compiler *c, int id, const char *nm) {
    raises afterwards raised where CRuby answered the memo (#4513). The setup
    is spliced inside the conditional. Value form yields the LHS after; the
    statement form ends its line. */
-void emit_orw_guard(Compiler *c, int v, int boxed, const char *cond, const char *lhs,
+void emit_orw_guard(Compiler *c, int v, TyKind slot, const char *cond, const char *lhs,
                     int value_form, int indent, Buf *b) {
+  int boxed = slot == TY_POLY;
   Buf vpre; memset(&vpre, 0, sizeof vpre);
   Buf vval; memset(&vval, 0, sizeof vval);
   Buf *saved_pre = g_pre; g_pre = &vpre;
-  if (boxed) emit_boxed(c, v, &vval); else emit_expr(c, v, &vval);
+  if (boxed) emit_boxed(c, v, &vval);
+  else emit_coerce(c, v, slot, CO_HOLD, "a local variable's `||=` or `&&=`", &vval);
   g_pre = saved_pre;
   if (!value_form) emit_indent(b, indent);
   if (value_form) buf_puts(b, "({ ");
@@ -1084,7 +1086,9 @@ void emit_slot_orw_value(Compiler *c, TyKind t, const char *ref, int v, int is_o
     /* a typed array into a general Array slot is rebuilt as one, as a plain
        write does */
     else if (emit_array_into_poly_slot(c, t, v, &vval)) { }
-    else emit_array_store_value(c, t, v, &vval);   /* a seed-pinned kind converts */
+    else if (seeded_array_kind_mismatch(t, comp_ntype(c, v)))
+      emit_array_store_value(c, t, v, &vval);   /* a seed-pinned kind converts */
+    else emit_coerce(c, v, t, CO_HOLD, "a variable's `||=` or `&&=`", &vval);
     g_pre = saved_pre;
     if (t == TY_BOOL || t == TY_STRING)
       snprintf(condb, sizeof condb, "%s%s", is_or ? "!" : "", ref);
@@ -2000,16 +2004,16 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     char cond[400];
     if (t == TY_POLY) {
       snprintf(cond, sizeof cond, "%ssp_poly_truthy(%s)", is_or ? "!" : "", lhs);
-      emit_orw_guard(c, v, 1, cond, lhs, 1, 0, b);
+      emit_orw_guard(c, v, t, cond, lhs, 1, 0, b);
     }
     else if (t == TY_BOOL) {
       snprintf(cond, sizeof cond, "%s%s", is_or ? "!" : "", lhs);
-      emit_orw_guard(c, v, 0, cond, lhs, 1, 0, b);
+      emit_orw_guard(c, v, t, cond, lhs, 1, 0, b);
     }
     else if (t == TY_SYMBOL) {
       /* nilable symbol: (sp_sym)-1 is the nil sentinel */
       snprintf(cond, sizeof cond, "%s %s= (sp_sym)-1", lhs, is_or ? "=" : "!");
-      emit_orw_guard(c, v, 0, cond, lhs, 1, 0, b);
+      emit_orw_guard(c, v, t, cond, lhs, 1, 0, b);
     }
     else if (!is_or) {
       /* `x &&= v` assigns only when x is not nil, as the statement form
@@ -2030,7 +2034,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         buf_printf(b, " } %s; })", lhs);
         free(apre.p); free(abody.p);
       }
-      else emit_orw_guard(c, v, 0, NULL, lhs, 1, 0, b);
+      else emit_orw_guard(c, v, t, NULL, lhs, 1, 0, b);
       free(nb.p);
     }
     else {
