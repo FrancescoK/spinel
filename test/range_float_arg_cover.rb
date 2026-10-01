@@ -19,3 +19,4 @@ p g(1.4), g(1.5), g(1), g(2)
 lim = 2.5
 p [2.3, 2, 2.6, -0.5].map { |v| case v when 0..lim then :in when ..0 then :neg else :out end }
 p(case "s" when ..2.5 then :a else :b end)
+p [3, 2.5, "3", :a, true, nil, 2**70, -(2**70)].map { |v| case v when 1..5 then :in when 1.. then :up when ..5 then :down else :out end }
