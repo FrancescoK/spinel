@@ -32646,7 +32646,11 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                                sp_streq(cty0, "FalseNode") || sp_streq(cty0, "ArrayNode") ||
                                sp_streq(cty0, "HashNode") || sp_streq(cty0, "RangeNode") ||
                                sp_streq(cty0, "RationalNode") || sp_streq(cty0, "ImaginaryNode"));
-      int cause_never_nil = cause_lit || ckt == TY_FLOAT || ckt == TY_BOOL || ckt == TY_SYMBOL ||
+      /* a Float that may be nil (a parameter some caller leaves out) is not
+         known to be never nil: it is judged at run time with the rest */
+      int cause_never_nil = cause_lit ||
+                            (ckt == TY_FLOAT && !call_returns_nullable_int(c, cause_node)) ||
+                            ckt == TY_BOOL || ckt == TY_SYMBOL ||
                             ckt == TY_CLASS || ckt == TY_RANGE;
       int cause_exc = cause_is_nil || (!cause_lit && (ckt == TY_NIL || ckt == TY_EXCEPTION || ckt == TY_POLY || ckt == TY_UNKNOWN ||
                       (ty_is_object(ckt) && class_is_exc_subclass(c, ty_object_class(ckt)))));

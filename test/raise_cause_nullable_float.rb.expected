@@ -1,0 +1,5 @@
+[TypeError, "exception object expected", nil]
+[RuntimeError, "x", nil]
+[TypeError, "exception object expected", nil]
+[ArgumentError, "a", nil]
+[TypeError, "exception object expected", nil]
