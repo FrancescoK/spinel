@@ -220,6 +220,7 @@ static pthread_t      g_sysmon;                                  /* monitor: wak
 static int            g_sysmon_started = 0;
 static int            g_sysmon_idle = 0; /* monitor is parked on g_sysmon_cv (signal it to start ticking) */
 static int            g_sysmon_pipe[2] = { -1, -1 };  /* self-pipe: wake the monitor out of poll() */
+static void sp_sched_report_stats(void);   /* SPINEL_SCHED_STATS, below */
 /* What the monitor actually did, for SPINEL_SCHED_STATS=1. The cost of a wake
    is O(parked) three times over (rebuild, poll, unlink), so the number that
    sizes a deployment is iterations x set size -- and neither is visible from
@@ -3120,6 +3121,9 @@ static int sp_sched_start_workers(void) {
   else { g_sysmon_pipe[0] = g_sysmon_pipe[1] = -1; }
   if (pthread_create(&g_sysmon, NULL, sp_sysmon_main, NULL) == 0) {
     g_sysmon_started = 1;
+    /* SPINEL_SCHED_STATS reports at any end of the program -- `exit`, an
+       uncaught exception -- not only when main returns and drains */
+    atexit(sp_sched_report_stats);
     return 1;
   }
   if (g_sysmon_pipe[0] >= 0) close(g_sysmon_pipe[0]);
@@ -3167,8 +3171,10 @@ static void sp_sched_maybe_grow(void) {
    standalone and a real server unexplained (#4317). */
 static void sp_sched_report_stats(void) {
 #ifdef SP_THREADS
+  static int reported = 0;   /* main's drain and the atexit hook both call it */
   const char *e = getenv("SPINEL_SCHED_STATS");
-  if (!e || !*e || *e == '0') return;
+  if (reported || !e || !*e || *e == '0') return;
+  reported = 1;
   double avg = g_mon_polls ? (double)g_mon_pollfds / (double)g_mon_polls : 0.0;
   fprintf(stderr,
           "[sched] monitor: %llu turns, %llu polls, %.1f fds/poll avg, "
