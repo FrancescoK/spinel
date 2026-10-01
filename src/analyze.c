@@ -16747,7 +16747,7 @@ static struct {
      by scope, the names a Symbol or String argument spells, and whether
      the program reaches methods by a name it computes */
   ANameHash cnames;
-  int *chead, *cnext, *rhead, *rnext, ibuilt, open_names;
+  int *chead, *cnext, *rhead, *rnext, ccap, ibuilt, open_names;
   ANameHash lnames;
 } g_dyn;
 
@@ -17639,14 +17639,18 @@ static void dyn_callable_index(Compiler *c) {
     if (h < 0) {
       anh_add(&g_dyn.cnames, nm);
       h = g_dyn.cnames.n - 1;
-      g_dyn.chead = (int *)realloc(g_dyn.chead, sizeof(int) * (size_t)g_dyn.cnames.n);
-      if (!g_dyn.chead) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      if (h >= g_dyn.ccap) {
+        g_dyn.ccap = g_dyn.ccap ? g_dyn.ccap * 2 : 256;
+        g_dyn.chead = (int *)realloc(g_dyn.chead, sizeof(int) * (size_t)g_dyn.ccap);
+        if (!g_dyn.chead) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
       g_dyn.chead[h] = -1;
     }
     g_dyn.cnext[n] = g_dyn.chead[h];
     g_dyn.chead[h] = n;
     /* a method named by a Symbol or a String anywhere: send, method,
-       define_method, alias_method, respond_to?... */
+       define_method, alias_method, respond_to?... Every literal argument
+       counts (`h["run"]` too): coarse, and safe */
     int a = nt_ref(nt, n, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
     for (int k = 0; k < ac; k++) {
@@ -17735,7 +17739,8 @@ static int dyn_returns_may_callable(Compiler *c, int mi, int depth) {
 /* Can call `n` dispatch to method mi? Not when its receiver's type is one
    that does not have it: a builtin value, or an object whose class (or a
    subclass of it) has another. A method on Object, Kernel, a builtin class
-   or a module can be anyone's. */
+   or a module can be anyone's. "Can" over-approximates on purpose: a
+   subclass's method counts for a receiver typed as its parent. */
 static int dyn_site_may_reach(Compiler *c, int n, int mi) {
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
@@ -17773,6 +17778,14 @@ static int dyn_param_walk(Compiler *c, Scope *m, int j, int depth) {
   int mi = (int)(m - c->scopes);
   if (!m->name || m->is_cmethod || sp_streq(m->name, "initialize")) return 1;
   if (m->nrequired != m->nparams || m->rest_idx >= 0 || m->kwrest_idx >= 0 || m->npost_rest) return 1;
+  /* a method Ruby calls by itself has callers the source does not show:
+     an operator (`case` calls ===, Comparable calls <=>), a setter (`||=`),
+     and a few protocol names that take an argument */
+  static const char *const implicit[] = {
+    "eql?", "coerce", "each", "method_missing", "respond_to_missing?", NULL };
+  size_t ml = strlen(m->name);
+  if (!(isalpha((unsigned char)m->name[0]) || m->name[0] == '_') || m->name[ml - 1] == '=') return 1;
+  for (int i = 0; implicit[i]; i++) if (sp_streq(m->name, implicit[i])) return 1;
   if (g_dyn.open_names || anh_find(&g_dyn.lnames, m->name) >= 0) return 1;
   int h = anh_find(&g_dyn.cnames, m->name);
   for (int n = h >= 0 ? g_dyn.chead[h] : -1; n >= 0; n = g_dyn.cnext[n]) {
@@ -17781,7 +17794,10 @@ static int dyn_param_walk(Compiler *c, Scope *m, int j, int depth) {
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
     for (int k = 0; k < ac; k++) {
       NodeKind ak = nt_kind(nt, av[k]);
-      if (ak == NK_SplatNode || ak == NK_KeywordHashNode) return 1;
+      /* `...` has no NK_ kind of its own; its type name is the check */
+      const char *aty = nt_type(nt, av[k]);
+      if (ak == NK_SplatNode || ak == NK_KeywordHashNode ||
+          (aty && sp_streq(aty, "ForwardingArgumentsNode"))) return 1;
     }
     if (ac != m->nparams) continue;   /* it raises ArgumentError instead */
     if (dyn_may_callable(c, av[j], depth + 1)) return 1;
@@ -17853,6 +17869,15 @@ static int dyn_may_callable_walk(Compiler *c, int v, int depth) {
       /* an attribute reader is a slot, which may hold anything */
       for (int k = 0; k < c->nclasses; k++)
         if (comp_reader_in_chain(c, k, nm, NULL)) return 1;
+      /* a user method only a subclass defines leaves the receiver's own
+         class with the builtin's */
+      {
+        int rcls = -1;
+        if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode) rcls = ty_object_class(comp_ntype(c, recv));
+        else { Scope *encl = comp_scope_of(c, v); rcls = encl ? encl->class_id : -1; }
+        if (rcls >= 0 && comp_method_in_chain(c, rcls, nm, NULL) < 0) return 1;
+        if (rcls < 0 && comp_method_index(c, nm) < 0) return 1;
+      }
       int any = 0;
       for (int mi = dyn_scopes_named(c, nm); mi >= 0; mi = g_dyn.snext[mi]) {
         if (!dyn_site_may_reach(c, v, mi)) continue;
@@ -17868,6 +17893,7 @@ static int dyn_may_callable(Compiler *c, int v, int depth) {
   if (v < 0 || depth > 16) return 1;
   if (!g_dyn.fresh) dyn_memo_reset(c);
   dyn_callable_index(c);
+  if (v >= g_dyn.nlit) return 1;   /* a node made after the memo was sized */
   unsigned char *m = &g_dyn.callable[v];
   if (*m == 3) return 1;
   if (*m) return *m == 2;
