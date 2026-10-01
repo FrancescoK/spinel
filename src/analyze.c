@@ -6627,6 +6627,13 @@ int desugar_include_math(Compiler *c) {
   return changed;
 }
 
+/* A method synth_struct_each generated, not one the program wrote. */
+static int struct_iter_synth(Compiler *c, int si) {
+  if (si < 0 || si >= c->nscopes) return 0;
+  int dn = c->scopes[si].def_node;
+  return dn >= 0 && nt_str(c->nt, dn, "synth") != NULL;
+}
+
 int desugar_enum_method_recv(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -7375,7 +7382,14 @@ int desugar_enum_method_recv(Compiler *c) {
       int prv = nt_ref(nt, id, "receiver");
       TyKind prt = prv >= 0 ? infer_type(c, prv) : TY_UNKNOWN;
       int pcid = ty_is_object(prt) ? ty_object_class(prt) : -1;
-      if (pcid >= 0 && pcid < c->nclasses && c->classes[pcid].is_struct && !c->classes[pcid].is_data) {
+      /* each_with_index only over the generated iterator and the member
+         array: a Struct that defines its own each_with_index or to_a answers
+         through its own methods */
+      int okc = pcid >= 0 && pcid < c->nclasses;
+      int smi = wix && okc ? comp_method_in_chain(c, pcid, nm, NULL) : -1;
+      int cmi = wix && okc ? comp_method_in_chain(c, pcid, "to_a", NULL) : -1;
+      int own = (smi >= 0 && !struct_iter_synth(c, smi)) || cmi >= 0;
+      if (okc && c->classes[pcid].is_struct && !c->classes[pcid].is_data && !own) {
         int wrap = nt_new_node(nt, "CallNode");
         if (wrap >= 0) {
           nt_node_set_str(nt, wrap, "name", wix ? "to_a" : "to_h");
