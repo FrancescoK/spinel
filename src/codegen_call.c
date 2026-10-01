@@ -28382,6 +28382,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   if (emit_or_take_back(c, id, b, emit_recv_snapshot)) return;
   /* Hash.new's keyword and default/block rules (defined above) */
   if (emit_or_take_back(c, id, b, emit_hash_new_arg_guard)) return;
+  if (emit_or_take_back(c, id, b, emit_str_append_chain_handle)) return;
   /* Operands in Ruby's order, each held across the call (defined above). */
   if (emit_or_take_back(c, id, b, emit_operands_in_order)) return;
   /* Proc#=== calls the proc; a Proc read out of a container arrives boxed,
