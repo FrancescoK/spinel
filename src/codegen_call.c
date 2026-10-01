@@ -3240,11 +3240,16 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
     int sv_open_defaults = g_open_defaults, sv_arm_argov = g_n_argov;
     int sv_moves = comp_scope_move_depth();
     volatile int ok;
+    /* the enclosing recovery point is restored after the probe: left
+       pointing into this frame, a later refusal in the same unit jumped
+       back into it after it had returned */
+    jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
     if (setjmp(g_unsup_recover) == 0) { emit_expr(c, arm, &body); ok = 1; }
     else { ok = 0; comp_scope_move_unwind(sv_moves); }
     g_conv_hold = sv_hold;  /* a dropped arm may have unwound through emit_call */
     g_open_defaults = sv_open_defaults; g_n_argov = sv_arm_argov;
     g_unsup_probe = sv_probe;
+    memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
     g_pre = sv_pre;
     if (ok) {
       /* the arm's name as the compile-time symbol it is, the way a literal
@@ -3309,11 +3314,16 @@ static int emit_dynamic_respond_to(Compiler *c, int id, Buf *b) {
     int sv_open_defaults = g_open_defaults;
     int sv_moves = comp_scope_move_depth();
     volatile int ok;
+    /* the enclosing recovery point is restored after the probe: left
+       pointing into this frame, a later refusal in the same unit jumped
+       back into it after it had returned */
+    jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
     if (setjmp(g_unsup_recover) == 0) { emit_expr(c, arm, &body); ok = 1; }
     else { ok = 0; comp_scope_move_unwind(sv_moves); }
     g_conv_hold = sv_hold;
     g_open_defaults = sv_open_defaults;
     g_unsup_probe = sv_probe;
+    memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
     g_pre = sv_pre;
     if (ok) {
       buf_printf(b, "if (_t%d == (sp_sym)%d) { ", t, comp_sym_intern(c, nm));
@@ -3376,11 +3386,16 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
     int sv_open_defaults = g_open_defaults;
     int sv_moves = comp_scope_move_depth();
     volatile int ok;
+    /* the enclosing recovery point is restored after the probe: left
+       pointing into this frame, a later refusal in the same unit jumped
+       back into it after it had returned */
+    jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
     if (setjmp(g_unsup_recover) == 0) { emit_expr(c, arm, &body); ok = 1; }
     else { ok = 0; comp_scope_move_unwind(sv_moves); }
     g_conv_hold = sv_hold;
     g_open_defaults = sv_open_defaults;
     g_unsup_probe = sv_probe;
+    memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
     g_pre = sv_pre;
     if (ok) {
       buf_printf(b, "if (strcmp(_n%d, \"", t); emit_c_escaped(b, nm); buf_puts(b, "\") == 0) { ");
