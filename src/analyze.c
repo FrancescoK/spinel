@@ -15038,6 +15038,25 @@ static int cap_wrap_mutates_param(Compiler *c, int blk, const char *bp) {
   return 0;
 }
 
+/* The capture wrapper's call (see cap_wrap_mutates_param) hands its lambda
+   the block's parameter `bp`: a parameter that is the shared handle goes
+   over boxed as the handle, so the proc's appends reach it. Marks those
+   argument reads; 1 on a change. */
+static int cap_wrap_box_arg(Compiler *c, int blk, const char *bp) {
+  const NodeTable *nt = c->nt;
+  int body = nt_ref(nt, blk, "body"), bn = 0;
+  const int *bv = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn != 1 || nt_kind(nt, bv[0]) != NK_CallNode) return 0;
+  int a = nt_ref(nt, bv[0], "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  int changed = 0;
+  for (int k = 0; k < ac; k++)
+    if (nt_kind(nt, av[k]) == NK_LocalVariableReadNode && nt_str(nt, av[k], "name") &&
+        sp_streq(nt_str(nt, av[k], "name"), bp) && !c->strbuf_box[av[k]])
+      { c->strbuf_box[av[k]] = 1; changed = 1; }
+  return changed;
+}
+
 /* Does the code under `node` hand local `vn` to a user method whose
    parameter there it appends to in place, is lent or is the handle? Asked
    in the fixpoint, before the lent slots are settled, so the method's own
@@ -17854,6 +17873,12 @@ static unsigned dyn_lit_bits(Compiler *c, int lit) {
       }
     }
   }
+  /* A block whose parameter a proc inside captures is a capture wrapper
+     (cap_wrap_mutates_param): the body appends to the wrapper's renamed
+     parameter, which the scan above does not name */
+  if (nt_kind(nt, lit) == NK_BlockNode)
+    for (int k = 0; k < np; k++)
+      if (!(app & (1u << k)) && cap_wrap_mutates_param(c, lit, pn[k])) app |= 1u << k;
   g_dyn.lit[lit] = DYN_DONE | (app & 0xffffu) | ((kept & 0x3fffu) << 16);
   return g_dyn.lit[lit];
 }
@@ -19902,9 +19927,11 @@ static int yield_splice_site(Compiler *c, int y, int pass, ALocalAliases *aliase
     /* by keyword, to the blocks' keyword of that name */
     if (ak == NK_KeywordHashNode) { changed |= yield_splice_kw_handles(c, mi, h, av[k], pass); break; }
     /* a block parameter a String value is yielded to, appended to
-       through a local that names it: it takes the handle the alias
-       shares, wrapped around the value (a yielded variable is pulled in
-       below) */
+       through a local that names it, or through a proc that captures it
+       (the block is then a capture wrapper, cap_wrap_mutates_param, whose
+       call hands the proc the parameter boxed): it takes the handle the
+       alias shares, wrapped around the value (a yielded variable is
+       pulled in below) */
     TyKind at = comp_ntype(c, av[k]);
     if (!pass && (at == TY_STRING || at == TY_STRBUF))
       for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
@@ -19913,7 +19940,10 @@ static int yield_splice_site(Compiler *c, int y, int pass, ALocalAliases *aliase
         const char *bp = block_param_at(c, blk, k, call_plain_argc(c, y));
         Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
         LocalVar *t = bs ? scope_local(bs, bp) : NULL;
-        if (!t || t->is_cell || t->type != TY_STRING || !an_block_param_alias_mutated(c, aliases, bs, bp))
+        if (!t || t->is_cell) continue;
+        int cw = cap_wrap_mutates_param(c, blk, bp);
+        if (cw && t->type == TY_STRBUF && t->str_shared) changed |= cap_wrap_box_arg(c, blk, bp);
+        if (t->type != TY_STRING || (!cw && !an_block_param_alias_mutated(c, aliases, bs, bp)))
           continue;
         t->type = TY_STRBUF; t->str_shared = 1; changed = 1;
       }

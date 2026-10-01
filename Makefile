@@ -1110,6 +1110,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a product block with a rest parameter compiled)"; ok=0; \
 	else grep -q "a block with a rest, optional or post parameter" "$$tmp/pbr.out" || \
 	  { echo "reject-test: FAIL (a product block with a rest parameter rejected without saying why)"; sed -n 1,5p "$$tmp/pbr.out"; ok=0; }; fi; \
+	t=test/reject/string_yield_splat_captured.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/ysc.c" >"$$tmp/ysc.out" 2>&1; then \
+	  echo "reject-test: FAIL (a String yielded with a splat to a captured append compiled)"; ok=0; \
+	else grep -q "through a splat into a yield" "$$tmp/ysc.out" || \
+	  { echo "reject-test: FAIL (a String yielded with a splat to a captured append rejected without saying why)"; sed -n 1,5p "$$tmp/ysc.out"; ok=0; }; fi; \
 	t=test/reject/string_splat_changed_array.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sca.c" >"$$tmp/sca.out" 2>&1; then \
 	  echo "reject-test: FAIL (a global in a changed splatted Array compiled)"; ok=0; \
