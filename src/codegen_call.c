@@ -3653,7 +3653,9 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "report_on_exception=") && argc == 1) {
       int t = ++g_tmp;
       buf_printf(b, "({ sp_thread *_t%d = ", t); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_Thread_set_report(_t%d, ", t); emit_expr(c, argv[0], b); buf_puts(b, "); })");
+      buf_printf(b, "; sp_Thread_set_report(_t%d, ", t);
+      emit_coerce(c, argv[0], TY_BOOL, CO_CONVERT, "Thread#report_on_exception=", b);
+      buf_puts(b, "); })");
       return 1;
     }
     if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
@@ -38859,7 +38861,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       buf_puts(b, "(sp_Thread_stop(), sp_box_nil())"); return;
     }
     if (tcn && sp_streq(tcn, "Thread") && sp_streq(name, "report_on_exception=") && argc == 1) {
-      buf_puts(b, "sp_Thread_set_report_default("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+      buf_puts(b, "sp_Thread_set_report_default(");
+      emit_coerce(c, argv[0], TY_BOOL, CO_CONVERT, "Thread.report_on_exception=", b);
+      buf_puts(b, ")"); return;
     }
     if (tcn && sp_streq(tcn, "Thread") && sp_streq(name, "report_on_exception") && argc == 0) {
       buf_puts(b, "sp_Thread_get_report_default()"); return;

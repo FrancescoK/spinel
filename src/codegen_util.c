@@ -2364,7 +2364,8 @@ void store_check(Compiler *c, int node, TyKind slot, const char *what, Buf *b) {
    CO_CONVERT  the slot is a conversion Ruby makes itself -- the Float
                operand of a Float method, a duration -- so the value
                converts as Ruby converts it: an Integer past 64 bits or a
-               Rational to its nearest double.
+               Rational to its nearest double, any value to its truthiness
+               for a boolean flag.
 
    A store no conversion keeps right is refused at compile time, naming the
    construct (`what`), the class it was given and the slot's C type. That is
@@ -2405,6 +2406,10 @@ void emit_coerce_text(Compiler *c, int node, TyKind from, TyKind slot, int how,
 }
 
 void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, Buf *b) {
+  /* A boolean a builtin takes as a flag (`report_on_exception = v`) is the
+     value's truthiness, whatever its class: nil and false are false, 0 and
+     "" are true (emit_cond) */
+  if (how == CO_CONVERT && slot == TY_BOOL) { emit_cond(c, node, b); return; }
   TyKind from = store_value_kind(c, node);
   if (store_fits(c, from, slot)) { emit_expr(c, node, b); return; }
   /* An empty `[]` or `{}` (or a bare Array.new / Hash.new) has no element
