@@ -50,6 +50,12 @@ typedef struct {
   const char *pname;     /* a parameter it binds, for a diagnostic */
   const char *mname;     /* the method it binds, when the target is one */
 } DynReach;
+/* The keyword arm (`f.call(k1: s)`): what the targets do with keyword `key`. */
+void dyn_call_kw_reach(Compiler *c, int n, const char *key, DynReach *r);
+void dyn_value_kw_reach(Compiler *c, int v, const char *key, DynReach *r);
+int dyn_method_kw_appends(Compiler *c, int mi, const char *key, int *j_out);
+/* A keyword-hash element's Symbol key, and its value node in *val. */
+const char *dyn_kw_elem_key(Compiler *c, int el, int *val);
 int dyn_call_site(Compiler *c, int n);
 void dyn_call_reach(Compiler *c, int n, int k, DynReach *r);
 void dyn_value_reach(Compiler *c, int v, int k, DynReach *r);

@@ -152,6 +152,18 @@ static int block_param_handed_to_appender(Compiler *c, int blk, const char *bp) 
   }
   return 0;
 }
+/* Block `blk`'s keyword parameter that keyword `key` binds, or NULL. */
+static const char *block_kw_key(const char *kp, char *buf, size_t n);
+static const char *block_kw_param_named(Compiler *c, int blk, const char *key) {
+  for (int ki = 0; key; ki++) {
+    const char *kp = block_keyword_name(c, blk, ki);
+    char knb[160];
+    if (!kp) break;
+    if (sp_streq(block_kw_key(kp, knb, sizeof knb), key)) return kp;
+  }
+  return NULL;
+}
+static int block_local_wants_alias(Compiler *c, int blk, const char *bp);
 /* A block parameter of `blk` that the block's body mutates in place, or
    hands to a method that appends to it, and that no write site in its scope
    rebinds: the yield it is bound from has to lend the yielded variable
@@ -159,9 +171,13 @@ static int block_param_handed_to_appender(Compiler *c, int blk, const char *bp) 
    the parameter's copy and the yielded string never sees it (`fill(buf) {
    |s| s << "z" }` left buf empty, and so did `{ |s| grow(s) }`). */
 int block_param_wants_alias(Compiler *c, int blk, int k) {
-  const NodeTable *nt = c->nt;
   const char *bp = block_param_name(c, blk, k);
-  if (!bp) return 0;
+  return bp && block_local_wants_alias(c, blk, bp);
+}
+/* The same for any of the block's own parameters by name, a keyword one
+   (`|k:|`) included. */
+static int block_local_wants_alias(Compiler *c, int blk, const char *bp) {
+  const NodeTable *nt = c->nt;
   Scope *bs = comp_scope_of(c, blk);
   LocalVar *lv = bs ? scope_local(bs, bp) : NULL;
   if (!lv || lv->type != TY_STRING || (lv->is_cell && !lv->inline_alias)) return 0;
@@ -184,11 +200,32 @@ int block_param_wants_alias(Compiler *c, int blk, int k) {
 static int inline_param_yielded_mutated(Compiler *c, int mi, const char *name, int blk) {
   const NodeTable *nt = c->nt;
   if (blk < 0) return 0;
+  const char *bpn = c->scopes[mi].blk_param;
   for (int q = 0; q < nt->count; q++) {
-    if (c->nscope[q] != mi || nt_kind(nt, q) != NK_YieldNode) continue;
+    if (c->nscope[q] != mi) continue;
+    /* `blk.call(...)` on the method's own &block splices as a yield does */
+    int r = nt_kind(nt, q) == NK_CallNode ? nt_ref(nt, q, "receiver") : -1;
+    int blk_call = r >= 0 && bpn && nt_kind(nt, r) == NK_LocalVariableReadNode &&
+                   nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), bpn) &&
+                   nt_str(nt, q, "name") && sp_streq(nt_str(nt, q, "name"), "call");
+    if (nt_kind(nt, q) != NK_YieldNode && !blk_call) continue;
     int aa = nt_ref(nt, q, "arguments"); int an = 0;
     const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &an) : NULL;
     for (int k = 0; k < an; k++) {
+      /* a keyword (`yield(k: name)`) binds the block's keyword of that name */
+      if (nt_kind(nt, av[k]) == NK_KeywordHashNode) {
+        int en = 0; const int *el = nt_arr(nt, av[k], "elements", &en);
+        for (int e = 0; e < en; e++) {
+          int key = nt_kind(nt, el[e]) == NK_AssocNode ? nt_ref(nt, el[e], "key") : -1;
+          int v = key >= 0 ? nt_ref(nt, el[e], "value") : -1;
+          if (key < 0 || nt_kind(nt, key) != NK_SymbolNode || v < 0 ||
+              nt_kind(nt, v) != NK_LocalVariableReadNode || !nt_str(nt, v, "name") ||
+              !sp_streq(nt_str(nt, v, "name"), name)) continue;
+          const char *kp = block_kw_param_named(c, blk, nt_str(nt, key, "value"));
+          if (kp && block_local_wants_alias(c, blk, kp)) return 1;
+        }
+        continue;
+      }
       if (nt_kind(nt, av[k]) != NK_LocalVariableReadNode) continue;
       const char *vn = nt_str(nt, av[k], "name");
       if (vn && sp_streq(vn, name) && block_param_wants_alias(c, blk, k)) return 1;
@@ -1316,7 +1353,7 @@ static void bi_method_side(BiRen *r) {
    keyword hash `ykw` (-1: the call passes none), for a yield or block.call
    and for instance_exec. `bsc` holds the parameters' slots. */
 void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int indent,
-                         int as_expr, BiRen *bi) {
+                         int as_expr, BiRen *bi, BlockAliases *al) {
   const NodeTable *nt = c->nt;
   /* Keyword block params (`|a:, b: 5|`) and a `**kw` keyword-rest take the
      trailing yielded kwargs hash. Literal pairs match by name at compile
@@ -1406,6 +1443,37 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
     TyKind kt = kl ? kl->type : TY_UNKNOWN;
     int vn = ykw >= 0 && !ykw_splat ? ie_kwhash_value(c, ykw, kn) : -1;
     int dv = block_keyword_default(c, blk, ki);
+    /* A keyword the block appends to, bound from a yield of a plain String
+       variable: alias the variable, as a positional parameter is aliased
+       (emit_block_binds), or the append lands in the keyword's copy. */
+    int kw_alias = al && vn >= 0 && kl && nt_kind(nt, vn) == NK_LocalVariableReadNode &&
+                   comp_ntype(c, vn) == TY_STRING && block_local_wants_alias(c, blk, kp);
+    /* A variable that is the shared handle has no `const char *` slot to
+       lend, and a positional one has no binding of its own yet either: the
+       append would land in a copy, so the program is refused rather than
+       compiled without it. */
+    if (kw_alias && strbuf_local_name(c, vn)) {
+      char msg[512];
+      snprintf(msg, sizeof msg,
+               "a String is passed to a block's keyword `%s` through a yield, which the block appends to: "
+               "this yield hands the block a copy, so the append would not reach the caller's String (a "
+               "String is not yet shared by reference through a `yield` from a variable that is also "
+               "shared with a proc or method). Return the String from the block and assign it, or append "
+               "to it in the caller.", kn);
+      unsupported_feature(c, vn, msg);
+    }
+    if (kw_alias && al->n < (int)(sizeof al->lv / sizeof al->lv[0])) {
+      if (!as_expr) emit_indent(b, indent);
+      if (!as_expr && !al->open) { buf_puts(b, "{\n"); emit_indent(b, indent); al->open = 1; }
+      buf_printf(b, "const char **_cell_%s = &(", kpr);
+      emit_expr(c, vn, b);
+      buf_puts(b, ")");
+      buf_puts(b, as_expr ? "; " : ";\n");
+      al->lv[al->n++] = kl;
+      kl->inline_alias++;
+      kl->is_cell = 1;
+      continue;
+    }
     if (!as_expr) emit_indent(b, indent);
     buf_printf(b, "lv_%s = ", kpr);
     if (kwh_tmp >= 0) {
@@ -1974,7 +2042,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
                hb.p ? hb.p : "sp_box_nil()", as_expr ? " " : "\n");
     free(hb.p);
   }
-  else emit_block_kw_binds(c, blk, ykw, bsc, b, indent, as_expr, bi);
+  else emit_block_kw_binds(c, blk, ykw, bsc, b, indent, as_expr, bi, al);
   if (rest_tmp >= 0) {
     if (!as_expr) emit_indent(b, indent);
     buf_printf(b, "lv_%s = _t%d;%s", rest_lv, rest_tmp, as_expr ? " " : "\n");

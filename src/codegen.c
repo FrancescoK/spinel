@@ -1589,8 +1589,14 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
           buf_printf(b, "lv_%s", rename_local(bn0));
         else if (th0 >= 0)   /* ran first: the handle it read then, as above */
           buf_printf(b, "sp_box_obj(_t%d, SP_BUILTIN_STRBUF)", th0);
-        else
-          buf_printf(b, "sp_box_obj(lv_%s, SP_BUILTIN_STRBUF)", rename_local(bn0));
+        else {
+          /* through emit_local_ref: a local a proc captures is its cell's
+             handle (`f.call(k: s)` beside `-> { s }` named an lv_s nothing
+             declared) */
+          buf_puts(b, "sp_box_obj(");
+          emit_local_ref(c, node, bn0, b);
+          buf_puts(b, ", SP_BUILTIN_STRBUF)");
+        }
         return;
       }
       { char srefX[192];
