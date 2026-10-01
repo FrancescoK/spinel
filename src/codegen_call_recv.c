@@ -517,11 +517,9 @@ static int emit_array_block_index(Compiler *c, int id, int recv, TyKind rt, cons
                  ti, ti, k, trecv, ti);
     if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti); }
     Buf cb; memset(&cb, 0, sizeof cb);
-    if (!emit_block_cond_next(c, block, g_indent + 1, &cb)) {
-      for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+    { IterStep st; emit_iter_step_open(c, block, 1, g_indent + 1, &st);
       int sv = g_indent; g_indent++;
-      cb = expr_buf(c, bb[bn - 1]); g_indent = sv;
-    }
+      emit_iter_step_cond(c, &st, 1, &cb); g_indent = sv; }
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "if (%s) { _t%d = _t%d; break; }\n", cb.p ? cb.p : "0", tres, ti);
     free(cb.p);
@@ -862,11 +860,10 @@ static void emit_find_loop_head(Compiler *c, int id, const char *k, int ti, int 
 
 static Buf block_cond_buf(Compiler *c, int block, const int *bb, int bn) {
   Buf cb; memset(&cb, 0, sizeof cb);
-  if (!emit_block_cond_next(c, block, g_indent + 1, &cb)) {
-    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
-    int sv = g_indent; g_indent++;
-    emit_cond(c, bb[bn - 1], &cb); g_indent = sv;
-  }
+  (void)bb; (void)bn;
+  IterStep st; emit_iter_step_open(c, block, 1, g_indent + 1, &st);
+  int sv = g_indent; g_indent++;
+  emit_iter_step_cond(c, &st, 0, &cb); g_indent = sv;
   return cb;
 }
 
@@ -2026,9 +2023,9 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         emit_block_param_from_boxed(c, bp, mpt, es, g_pre);
       }
       else if (!splat && bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_RbVal lv_%s = %s;\n", bp, es); }
-      for (int j = 0; j < mbn - 1; j++) emit_stmt(c, mbb[j], g_pre, g_indent + 1);
+      IterStep st; emit_iter_step_open(c, mblock, 1, g_indent + 1, &st);
       int sv = g_indent; g_indent++;
-      Buf vb; memset(&vb, 0, sizeof vb); emit_boxed(c, mbb[mbn - 1], &vb); g_indent = sv;
+      Buf vb; memset(&vb, 0, sizeof vb); emit_iter_step_tail(c, &st, &vb); g_indent = sv;
       emit_indent(g_pre, g_indent + 1);
       buf_printf(g_pre, "_t%d->data[_t%d] = %s;\n", trecv, ti, vb.p ? vb.p : "sp_box_nil()");
       free(vb.p);
@@ -2088,7 +2085,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       if (eilv->type == TY_POLY) buf_printf(g_pre, "lv_%s = sp_box_int(_t%d);\n", ip, ti);
       else buf_printf(g_pre, "lv_%s = _t%d;\n", ip, ti);
     }
-    emit_stmts(c, body, g_pre, g_indent + 1);
+    emit_iter_loop_stmts(c, body, g_pre, g_indent + 1);
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
     buf_printf(b, "_t%d", tself);
     return 1;
@@ -2329,7 +2326,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       if (emit_tuple_block_params(c, id, blk, tsrc, b)) { }
       else if (fp0) buf_printf(b, " lv_%s = %s;", rename_local(fp0), tsrc);
       buf_puts(b, " {");
-      for (int j2 = 0; j2 < bn; j2++) emit_stmt(c, bb[j2], b, 0);
+      emit_iter_step_body(c, blk, b, 0);
       buf_puts(b, " } } ");
       /* the receiver, in the C type this call is inferred to have */
       TyKind pres = comp_ntype(c, id);
@@ -2615,16 +2612,12 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           if (fit == TY_POLY) buf_printf(g_pre, "lv_%s = sp_box_int(_t%d);\n", ip, ti);
           else buf_printf(g_pre, "lv_%s = _t%d;\n", ip, ti);
         }
-        for (int bi = 0; bi < fbn - 1; bi++) {
-          Buf sb; memset(&sb, 0, sizeof sb);
-          emit_expr(c, fbb[bi], &sb);
-          emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, sb.p ? sb.p : ""); buf_puts(g_pre, ";\n"); free(sb.p);
-        }
+        IterStep st; emit_iter_step_open(c, fblk, 0, g_indent + 1, &st);
         Buf vb; memset(&vb, 0, sizeof vb);
-        emit_expr(c, fbb[fbn - 1], &vb);
+        TyKind fvt = emit_iter_step_tail(c, &st, &vb);
         emit_indent(g_pre, g_indent + 1);
         if (sp_streq(fk, "Poly")) {
-          TyKind vt = comp_ntype(c, fbb[fbn - 1]);
+          TyKind vt = fvt;
           buf_printf(g_pre, "sp_PolyArray_set(_t%d, _t%d, ", trecv, ti);
           if (vt != TY_POLY && vt != TY_UNKNOWN) emit_boxed_text(c, vt, vb.p ? vb.p : "sp_box_nil()", g_pre);
           else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed(c, fbb[fbn - 1], &bx);
@@ -2921,7 +2914,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
             else
               buf_printf(g_pre, "lv_%s = _t%d;\n", ip, ti);
           }
-          emit_stmts(c, body, g_pre, g_indent + 1);
+          emit_iter_loop_stmts(c, body, g_pre, g_indent + 1);
           emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
           buf_printf(b, "_t%d", trecv); return 1;
         }
@@ -3253,7 +3246,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
             emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
             buf_printf(b, "_t%d", tres); return 1;
           }
-          emit_iter_step_cond(c, &st, &cb); g_indent = sv;
+          emit_iter_step_cond(c, &st, 0, &cb); g_indent = sv;
           emit_indent(g_pre, g_indent + 1);
           buf_printf(g_pre, "if (%s) { _t%d = _t%d; _t%d = _t%d - 1; }\n", cb.p ? cb.p : "0", tres, tmid, thi, tmid);
           free(cb.p);
@@ -3830,7 +3823,7 @@ else {
         if (emit_tuple_block_params(c, id, blk, tsrc, b)) { }
         else if (fp0) buf_printf(b, " lv_%s = %s;", rename_local(fp0), tsrc);
         buf_puts(b, " {");
-        for (int j2 = 0; j2 < bn; j2++) emit_stmt(c, bb[j2], b, 0);
+        emit_iter_step_body(c, blk, b, 0);
         buf_printf(b, " } } } _t%d; })", ta);
         return 1;
       }
@@ -4271,11 +4264,9 @@ else {
              the ordinary in-body case, which is harmless. */
           if (bp) { emit_indent(g_pre, g_indent + 1); emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti); }
           Buf cb; memset(&cb, 0, sizeof cb);
-          if (!emit_block_cond_next(c, block, g_indent + 1, &cb)) {
-            for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+          { IterStep st; emit_iter_step_open(c, block, 1, g_indent + 1, &st);
             int sv = g_indent; g_indent++;
-            cb = expr_buf(c, bb[bn - 1]); g_indent = sv;
-          }
+            emit_iter_step_cond(c, &st, 1, &cb); g_indent = sv; }
           emit_indent(g_pre, g_indent + 1);
           if (bp) buf_printf(g_pre, "if (%s) { _t%d = lv_%s; break; }\n", cb.p ? cb.p : "0", tres, bp);
           else buf_printf(g_pre, "if (%s) { _t%d = sp_%sArray_get(_t%d, _t%d); break; }\n",
@@ -4313,9 +4304,9 @@ else {
             emit_indent(g_pre, g_indent + 1); emit_ctype(c, et, g_pre);
             buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti);
           }
-          for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+          IterStep st; emit_iter_step_open(c, block, 0, g_indent + 1, &st);
           int sv = g_indent; g_indent++;
-          Buf vb = expr_buf(c, bb[bn - 1]); g_indent = sv;
+          Buf vb; memset(&vb, 0, sizeof vb); emit_iter_step_tail(c, &st, &vb); g_indent = sv;
           emit_indent(g_pre, g_indent + 1);
           buf_printf(g_pre, "sp_%sArray_set%s(_t%d, _t%d, ", k, nil_store_sfx(c, k, bb[bn - 1]), trecv, ti);
           emit_typed_sink_text(c, bb[bn - 1], et, vb.p ? vb.p : "0", g_pre);
@@ -5813,12 +5804,12 @@ else {
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {\n", ti, ti, trecv, ti);
           if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", bp, trecv, ti); }
-          for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+          IterStep st; emit_iter_step_open(c, blk, 1, g_indent + 1, &st);
           int sv = g_indent; g_indent++;
           /* The slot takes a boxed value: a block whose tail is statically
              typed (`[].map! { 0 }`, where the empty receiver leaves nothing to
              widen the tail against) would otherwise put a raw scalar in it. */
-          Buf vb; memset(&vb, 0, sizeof vb); emit_boxed(c, bb[bn - 1], &vb); g_indent = sv;
+          Buf vb; memset(&vb, 0, sizeof vb); emit_iter_step_tail(c, &st, &vb); g_indent = sv;
           emit_indent(g_pre, g_indent + 1);
           buf_printf(g_pre, "sp_PolyArray_set(_t%d, _t%d, %s);\n", trecv, ti, vb.p ? vb.p : "sp_box_nil()");
           free(vb.p);
