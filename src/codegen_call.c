@@ -1673,6 +1673,18 @@ static int uk_class_can_be_reached(Compiler *c, int ci) {
   return an_class_can_be_reached(c, ci) || class_is_prim_reopen(c, ci);
 }
 
+/* A native-bound class the program can reach defines instance method `name`
+   (StringScanner#scan): a poly receiver may be one, so a String-only
+   shortcut for the name would answer it wrongly. */
+int native_class_defines(Compiler *c, const char *name) {
+  for (int uk = 0; uk < c->nclasses; uk++)
+    if (c->classes[uk].is_native_class && uk_class_can_be_reached(c, uk))
+      for (int nm = 0; nm < c->n_native_methods; nm++)
+        if (c->native_methods[nm].class_id == uk && c->native_methods[nm].kind == 0 &&
+            sp_streq(c->native_methods[nm].name, name)) return 1;
+  return 0;
+}
+
 int user_defines_or_reads(Compiler *c, const char *name) {
   if (g_poly_builtin_arm) return 0;
   /* Instance reachability only: a CLASS method of the same name is reached
