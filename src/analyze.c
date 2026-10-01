@@ -15193,6 +15193,32 @@ static int promote_local_alias_pair(Compiler *c, Scope *ws, const char *srcn, co
   return changed;
 }
 
+/* Does the block of `itn` over `recv` bind the VALUE of a Hash local or a
+   Hash literal? It does for
+   `h.each_value { |v| }`, `h.each { |k, v| }` / `each_pair`, and an element
+   iterator over `h.values`. Answers the Hash's read in *hrecv and the
+   value's parameter position in *vi. */
+static int an_hash_value_block(Compiler *c, const char *itn, int recv, int *hrecv, int *vi) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0) return 0;
+  /* `h.values.each { |v| }`: the Array `values` answers holds those Strings */
+  const char *rn = nt_kind(nt, recv) == NK_CallNode ? nt_str(nt, recv, "name") : NULL;
+  if (rn && sp_streq(rn, "values") && nt_ref(nt, recv, "arguments") < 0 &&
+      nt_ref(nt, recv, "block") < 0) {
+    if (!strbuf_elem_first_iterator(itn)) return 0;
+    recv = nt_ref(nt, recv, "receiver");
+    *vi = 0;
+  }
+  else if (sp_streq(itn, "each_value")) *vi = 0;
+  else if (sp_streq(itn, "each") || sp_streq(itn, "each_pair")) *vi = 1;
+  else return 0;
+  if (recv < 0 || (nt_kind(nt, recv) != NK_LocalVariableReadNode && nt_kind(nt, recv) != NK_HashNode) ||
+      !ty_is_hash(infer_type(c, recv)))
+    return 0;
+  *hrecv = recv;
+  return 1;
+}
+
 static int promote_shared_stored_strings(Compiler *c) {
   int changed = 0;
   sb_store_valid = 0;   /* this run's store index is built on first use */
@@ -15687,6 +15713,7 @@ static int promote_shared_stored_strings(Compiler *c) {
     int blk4 = nt_ref(nt, w, "block");
     if (blk4 < 0) continue;
     int recv4 = nt_ref(nt, w, "receiver");
+    int hrecv4 = -1, hvi4 = 0;
     /* the builtin's own copy, once the call has been rewritten onto it:
        `__enum_filter_map__N(arr) { |x| }` carries the container as its
        first argument (desugar_builtin_enum_calls) */
@@ -15717,6 +15744,27 @@ static int promote_shared_stored_strings(Compiler *c) {
           !block_yields_param_to_lender(c, blk4, sp4, &cbl)) continue;
       changed |= strbuf_store_leaf(c, recv4, 0, SB_DEMAND);
       if (sv4->type != TY_STRBUF || !sv4->str_shared) { sv4->type = TY_STRBUF; sv4->str_shared = 1; changed = 1; }
+      continue;
+    }
+    /* A Hash's values the same way (an_hash_value_block): the Strings the
+       Hash stores are what the block appends to. Its stores become handles,
+       which a poly-valued Hash boxes, and the parameter binds the box. */
+    else if (an_hash_value_block(c, itn, recv4, &hrecv4, &hvi4)) {
+      TyKind ht4 = infer_type(c, hrecv4);
+      if (ty_hash_val(ht4) != TY_STRING && ty_hash_val(ht4) != TY_POLY) continue;
+      const char *vp4 = block_param_name(c, blk4, hvi4);
+      Scope *vs4 = vp4 ? comp_scope_of(c, blk4) : NULL;
+      LocalVar *vv4 = vs4 ? scope_local(vs4, vp4) : NULL;
+      if (!vv4 || (vv4->type != TY_UNKNOWN && vv4->type != TY_STRING && vv4->type != TY_STRBUF &&
+                   vv4->type != TY_POLY)) continue;
+      if (strbuf_mut_kind(c, vp4, vs4) != 1 && !cap_wrap_mutates_param(c, blk4, vp4) &&
+          !an_subtree_hands_to_appender(c, nt_ref(nt, blk4, "body"), vp4, 0)) continue;
+      /* a Hash literal iterated in place is its own store site, as an
+         Array literal is below */
+      changed |= nt_kind(nt, hrecv4) == NK_HashNode
+                 ? strbuf_container_source_walk(c, hrecv4, 0, SB_DEMAND)
+                 : strbuf_demand_container_stores(c, nt_str(nt, hrecv4, "name"), comp_scope_of(c, hrecv4));
+      if (vv4->type != TY_POLY) { vv4->type = TY_POLY; changed = 1; }
       continue;
     }
     else if (!strbuf_elem_first_iterator(itn)) continue;
