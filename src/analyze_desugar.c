@@ -6793,16 +6793,6 @@ static int bi_kernel_call_name(const char *nm) {
   return 0;
 }
 
-static int bi_subtree_max(const NodeTable *nt, int id) {
-  if (id < 0 || id >= nt->count) return -1;
-  const SpNode *nd = &nt->nodes[id];
-  int mx = id;
-  for (int j = 0; j < nd->nr; j++) { int m = bi_subtree_max(nt, nd->r[j].ref); if (m > mx) mx = m; }
-  for (int j = 0; j < nd->na; j++)
-    for (int k = 0; k < nd->a[j].n; k++) { int m = bi_subtree_max(nt, nd->a[j].ids[k]); if (m > mx) mx = m; }
-  return mx;
-}
-
 /* Retype every node of the subtree at `id` to a NilNode. The generic
    definition is cloned per call site and then left out of the program, but
    the passes that walk the node table by id rather than by tree still saw
@@ -6879,7 +6869,7 @@ int desugar_builtins(Compiler *c) {
       const char *name = nt_str(nt, def, "name");
       int bi = builtin_enum_name_index(name);
       /* the receiver becomes the first required parameter */
-      int hi = bi_subtree_max(nt, def);
+      int hi = fwd_subtree_max(nt, def);
       int pn = nt_ref(nt, def, "parameters");
       if (pn < 0) { pn = nt_new_node(nt, "ParametersNode"); if (pn < 0) break; nt_node_set_ref(nt, def, "parameters", pn); }
       int sp = nt_new_node(nt, "RequiredParameterNode"); if (sp < 0) break;
@@ -7789,7 +7779,7 @@ int desugar_builtin_scalar_defs(Compiler *c) {
         int def = bb[k];
         const char *name = nt_str(nt, def, "name");
         int bi = sp_builtin_extra_name_index(bx, name);
-        int hi = bi_subtree_max(nt, def);
+        int hi = fwd_subtree_max(nt, def);
         int pn = nt_ref(nt, def, "parameters");
         if (pn < 0) { pn = nt_new_node(nt, "ParametersNode"); if (pn < 0) break; nt_node_set_ref(nt, def, "parameters", pn); }
         int spself = nt_new_node(nt, "RequiredParameterNode"); if (spself < 0) break;
@@ -7849,7 +7839,7 @@ int desugar_builtin_scalar_defs(Compiler *c) {
       }
       int clone = nt_clone_subtree(nt, def);
       if (clone < 0) continue;
-      int hi = bi_subtree_max(nt, clone);
+      int hi = fwd_subtree_max(nt, clone);
       int pn = nt_ref(nt, clone, "parameters");
       if (pn < 0) { pn = nt_new_node(nt, "ParametersNode"); if (pn < 0) continue; nt_node_set_ref(nt, clone, "parameters", pn); }
       int spself = nt_new_node(nt, "RequiredParameterNode"); if (spself < 0) continue;
