@@ -7057,6 +7057,10 @@ int desugar_enum_method_recv(Compiler *c) {
           infer_type(c, er) == TY_ENUMERATOR) {
         const char *ern = nt_str(nt, er, "name");
         if (ern && !sp_streq(ern, "lazy")) {
+          /* a boxed receiver's to_enum (desugar_to_enum) builds the
+             Enumerator and takes no block: with one it is the receiver's
+             own each, which answers what each answers */
+          if (sp_streq(ern, "__poly_enum_for") || sp_streq(ern, "__to_enum_each")) ern = "each";
           nt_node_set_str(nt, id, "name", ern);
           nt_node_set_ref(nt, id, "receiver", nt_ref(nt, er, "receiver"));
           int ira = nt_ref(nt, er, "arguments");

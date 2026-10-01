@@ -21605,9 +21605,9 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
       comp_ntype(c, recv) == TY_POLY && comp_ntype(c, id) == TY_ENUMERATOR &&
       poly_blockless_enum_name(name)) {
     int te = ++g_tmp;
-    buf_printf(b, "({ sp_Enumerator *_t%d = sp_Enumerator_new_from(", te);
+    buf_printf(b, "({ sp_Enumerator *_t%d = sp_poly_blockless_enum(", te);
     emit_boxed(c, recv, b);
-    buf_printf(b, "); _t%d->meth = SPL(\"%s\"); _t%d; })", te,
+    buf_printf(b, ", \"%s\"); _t%d->meth = SPL(\"%s\"); _t%d; })", name, te,
                sp_streq(name, "collect") ? "map" : sp_streq(name, "find_all") ? "select" : name, te);
     return 1;
   }

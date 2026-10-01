@@ -14277,6 +14277,15 @@ static sp_Enumerator *sp_poly_enum_for_each(sp_RbVal v) {
   sp_raise_cls("NoMethodError", sp_nomethod_msg("each", v));
   return NULL;
 }
+/* A blockless map, select or reject on a boxed value (emit_blockless_enumerator):
+   a String, Symbol, number, nil or boolean has none of them, CRuby's
+   NoMethodError naming the method as written; an object is enumerated as
+   sp_Enumerator_new_from enumerates it. */
+static sp_Enumerator *sp_poly_blockless_enum(sp_RbVal v, const char *m) {
+  if (v.tag != SP_TAG_OBJ || !v.v.p || v.cls_id == SP_BUILTIN_STRBUF)
+    sp_raise_cls("NoMethodError", sp_nomethod_msg(m, v));
+  return sp_Enumerator_new_from(v);
+}
 static sp_Enumerator *sp_Enumerator_new_from_rev(sp_RbVal arr) {
   SP_GC_ROOT_RBVAL(arr);   /* published into the enumerator below, after several allocations */
   sp_PolyArray *items = sp_enum_items_from(arr);
