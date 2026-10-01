@@ -27688,6 +27688,14 @@ static int emit_method_obj_on_constant(Compiler *c, int id, int recv, const char
   return 1;
 }
 
+/* The boxed temp `_t<t>` as a value of the call's own type `want`: kept
+   boxed for a poly slot, else unboxed to it. */
+static void emit_unbox_or_keep(Compiler *c, TyKind want, int t, Buf *b) {
+  char tn[24]; snprintf(tn, sizeof tn, "_t%d", t);
+  if (want == TY_POLY || want == TY_UNKNOWN || want == TY_VOID) buf_puts(b, tn);
+  else emit_unbox_text(c, want, tn, b);
+}
+
 static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -33023,11 +33031,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       free(rb.p); return;
     }
     if (sp_streq(name, "sync=") && argc >= 1) {
+      /* answers its argument; only its truth sets the mode */
       int ts2 = ++g_tmp;
-      buf_printf(b, "({ sp_bool _t%d = (", ts2);
-      if (comp_ntype(c, argv[0]) == TY_BOOL) emit_expr(c, argv[0], b);
-      else { buf_puts(b, "sp_poly_truthy("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
-      buf_printf(b, "); sp_File_set_sync(%s, _t%d); })", r, ts2);
+      buf_puts(b, "({ sp_RbVal ");
+      buf_printf(b, "_t%d = ", ts2); emit_boxed(c, argv[0], b);
+      buf_printf(b, "; sp_File_set_sync(%s, sp_poly_truthy(_t%d)); ", r, ts2);
+      emit_unbox_or_keep(c, comp_ntype(c, id), ts2, b);
+      buf_puts(b, "; })");
       free(rb.p); return;
     }
     if (sp_streq(name, "flush") || sp_streq(name, "binmode")) {
@@ -33383,10 +33393,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "sync") && argc == 0)
         buf_printf(b, "sp_File_sync_p(_t%d); })", tio2);
       else if (sp_streq(name, "sync=") && argc >= 1) {
+        /* answers its argument; only its truth sets the mode */
         int ts3 = ++g_tmp;
-        buf_printf(b, "sp_bool _t%d = sp_poly_truthy(", ts3);
+        buf_printf(b, "sp_RbVal _t%d = ", ts3);
         emit_boxed(c, argv[0], b);
-        buf_printf(b, "); sp_File_set_sync(_t%d, _t%d); })", tio2, ts3);
+        buf_printf(b, "; sp_File_set_sync(_t%d, sp_poly_truthy(_t%d)); ", tio2, ts3);
+        emit_unbox_or_keep(c, comp_ntype(c, id), ts3, b);
+        buf_puts(b, "; })");
       }
       /* read_nonblock / write_nonblock, the same answers the typed-receiver
          arms give: `exception: false` answers the wait symbol (read) or nil
