@@ -11793,6 +11793,18 @@ static int bind_method_obj_block_sites(Compiler *c, int ymi, int tmi, int call, 
   return changed;
 }
 
+static int proc_params_poly(const NodeTable *nt, Scope *bs, int pn, const char *field) {
+  int n = 0, changed = 0; const int *ids = nt_arr(nt, pn, field, &n);
+  for (int j = 0; j < n; j++) {
+    const char *pname = nt_str(nt, ids[j], "name");
+    if (!pname) continue;
+    LocalVar *lv = scope_local_intern(bs, pname);
+    lv->is_block_param = 1;
+    if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+  }
+  return changed;
+}
+
 int infer_block_params(Compiler *c) {
   nn_inference_round(c);
   const NodeTable *nt = c->nt;
@@ -11820,35 +11832,14 @@ int infer_block_params(Compiler *c) {
           lv->is_block_param = 1;
           if (lv->type != TY_POLY_ARRAY) { lv->type = TY_POLY_ARRAY; changed = 1; }
         }
-        int np = 0; const int *posts = nt_arr(nt, pn, "posts", &np);
-        for (int j = 0; j < np; j++) {
-          const char *pname = nt_str(nt, posts[j], "name");
-          if (!pname) continue;
-          LocalVar *lv = scope_local_intern(bs, pname);
-          lv->is_block_param = 1;
-          if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
-        }
-        int nop = 0; const int *opts = nt_arr(nt, pn, "optionals", &nop);
-        for (int j = 0; j < nop; j++) {
-          const char *pname = nt_str(nt, opts[j], "name");
-          if (!pname) continue;
-          LocalVar *lv = scope_local_intern(bs, pname);
-          lv->is_block_param = 1;
-          if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
-        }
+        changed |= proc_params_poly(nt, bs, pn, "posts");
+        changed |= proc_params_poly(nt, bs, pn, "optionals");
         /* keyword params bind out of the boxed kwargs hash, as the proc and
            lambda-call forms' do below. Left untyped here they turned poly
            only after the fixpoint, so what flowed from them (an ivar and the
            calls on it) was still unknown when the enumerable rewrite ran,
            and `@v.scan(re).filter_map { }` raised NoMethodError. */
-        int nkw = 0; const int *kws = nt_arr(nt, pn, "keywords", &nkw);
-        for (int j = 0; j < nkw; j++) {
-          const char *pname = nt_str(nt, kws[j], "name");
-          if (!pname) continue;
-          LocalVar *lv = scope_local_intern(bs, pname);
-          lv->is_block_param = 1;
-          if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
-        }
+        changed |= proc_params_poly(nt, bs, pn, "keywords");
       }
     }
   }
@@ -11868,42 +11859,12 @@ int infer_block_params(Compiler *c) {
       lv->is_block_param = 1;
       if (lv->type != TY_POLY_ARRAY) { lv->type = TY_POLY_ARRAY; changed = 1; }
     }
-    int np = 0; const int *posts = nt_arr(nt, pn, "posts", &np);
-    for (int j = 0; j < np; j++) {
-      const char *pname = nt_str(nt, posts[j], "name");
-      if (!pname) continue;
-      LocalVar *lv = scope_local_intern(bs, pname);
-      lv->is_block_param = 1;
-      if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
-    }
-    int nop = 0; const int *opts = nt_arr(nt, pn, "optionals", &nop);
-    for (int j = 0; j < nop; j++) {
-      const char *pname = nt_str(nt, opts[j], "name");
-      if (!pname) continue;
-      LocalVar *lv = scope_local_intern(bs, pname);
-      lv->is_block_param = 1;
-      if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
-    }
+    changed |= proc_params_poly(nt, bs, pn, "posts");
+    changed |= proc_params_poly(nt, bs, pn, "optionals");
     /* Keyword params (`proc { |a:, b: 5| }`): the call-site kwargs arrive as a
        boxed hash on the proc ABI, so the param binds a boxed value. */
-    if (a_proc_forwarded_with_amp(c, id)) {
-      int nrq = 0; const int *reqs = nt_arr(nt, pn, "requireds", &nrq);
-      for (int j = 0; j < nrq; j++) {
-        const char *pname = nt_str(nt, reqs[j], "name");
-        if (!pname) continue;
-        LocalVar *lv = scope_local_intern(bs, pname);
-        lv->is_block_param = 1;
-        if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
-      }
-    }
-    int nkw = 0; const int *kws = nt_arr(nt, pn, "keywords", &nkw);
-    for (int j = 0; j < nkw; j++) {
-      const char *pname = nt_str(nt, kws[j], "name");
-      if (!pname) continue;
-      LocalVar *lv = scope_local_intern(bs, pname);
-      lv->is_block_param = 1;
-      if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
-    }
+    if (a_proc_forwarded_with_amp(c, id)) changed |= proc_params_poly(nt, bs, pn, "requireds");
+    changed |= proc_params_poly(nt, bs, pn, "keywords");
   }
 
   /* `->(x, ...) {}` (LambdaNode): its params live in the enclosing scope (no
