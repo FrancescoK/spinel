@@ -8858,6 +8858,10 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
      here, before the key-typed dispatch below coerces it to an index */
   if (recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_CURRY)
     return sp_curry_call_poly((sp_Curry *)recv.v.p, 1, &idx);
+  /* a Proc's or a Method's [] is a call, and a shared String handle is an
+     argument like any other: the key-typed arms below would take it for an
+     index (#6179) */
+  if (sp_poly_is_strbuf(idx) && sp_poly_is_call_aref(recv)) return sp_poly_call_aref(recv, idx);
   /* Reading through a shared-string handle is non-mutating, so it answers as
      its live value: the String arms below all test SP_TAG_STR, and a handle
      fell past every one of them to the trailing nil (#4279). */

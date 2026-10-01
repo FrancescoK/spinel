@@ -16735,10 +16735,8 @@ static void dyn_fold(DynReach *r, unsigned bits, int k, int bound, int open, TyK
 
 static void dyn_reach_method_node(Compiler *c, int mn, int k, DynReach *r) {
   const NodeTable *nt = c->nt;
-  const char *cn = nt_str(nt, mn, "name");
-  /* an UnboundMethod bound later (`instance_method(:m).bind(o)`) is PR 4's
-     path: not shared yet */
-  if (cn && sp_streq(cn, "instance_method")) { r->unlifted = "bind"; return; }
+  /* an UnboundMethod (`instance_method(:m)`, bound later with `bind` or
+     called with `bind_call`) names its method as a Method does */
   int mi = method_obj_target_mi(c, mn);
   if (mi < 0) { r->unknown = 1; return; }
   /* a bound builtin's wrapper (`"ab".method(:center)`, `a.method(:push)`)
@@ -16784,9 +16782,6 @@ static void dyn_reach_value(Compiler *c, int v, int k, int depth, DynReach *r) {
       free(mns);
       return;
     }
-    /* a curried proc re-boxes the arguments it collects as plain Strings:
-       PR 4's path, not shared yet */
-    if (nm && sp_streq(nm, "curry")) { r->unlifted = "curry"; return; }
     r->unknown = 1;
     return;
   }
@@ -16843,6 +16838,35 @@ int dyn_call_site(Compiler *c, int n) {
       return 0;
   }
   return 1;
+}
+
+/* A call through a callable the analysis cannot name, or an UnboundMethod's
+   bind_call: `.call`, `.()`, `[]`, `.yield` or `===` on a boxed value (a
+   Method or proc read out of a slot that holds other values too) or on a
+   curried proc, which collects the boxes it is handed and passes them on;
+   and `um.bind_call(o, s)`, whose first argument is the receiver (*shift).
+   The String rides the box either way, so it is shared as at a dynamic
+   call. */
+int dyn_open_site(Compiler *c, int n, int *shift) {
+  const NodeTable *nt = c->nt;
+  *shift = 0;
+  if (n < 0 || nt_kind(nt, n) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, n, "name");
+  int r = nt_ref(nt, n, "receiver");
+  if (!nm || r < 0) return 0;
+  TyKind rt = comp_ntype(c, r);
+  if (sp_streq(nm, "bind_call")) { *shift = 1; return rt == TY_METHOD; }
+  if (!(sp_streq(nm, "call") || sp_streq(nm, "()") || sp_streq(nm, "[]") ||
+        sp_streq(nm, "yield") || sp_streq(nm, "==="))) return 0;
+  return rt == TY_POLY || rt == TY_CURRY;
+}
+void dyn_open_reach(Compiler *c, int n, int k, DynReach *r) {
+  int shift;
+  memset(r, 0, sizeof *r);
+  if (!g_dyn.fresh) dyn_memo_reset(c);
+  if (dyn_open_site(c, n, &shift) && shift) dyn_reach_value(c, nt_ref(c->nt, n, "receiver"), k - shift, 0, r);
+  else r->unknown = 1;
+  if (r->unknown && !r->app && dyn_any_appender(c)) r->app = 1;
 }
 
 /* What the targets of dynamic call `n` do with its argument at position k
@@ -17000,7 +17024,8 @@ static int dyn_convert_params(Compiler *c) {
   for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
     if (nt_kind(nt, n) != NK_CallNode) continue;
     const char *nm = nt_str(nt, n, "name");
-    if (!nm || !(sp_streq(nm, "method") || sp_streq(nm, "public_method"))) continue;
+    if (!nm || !(sp_streq(nm, "method") || sp_streq(nm, "public_method") ||
+                 sp_streq(nm, "instance_method") || sp_streq(nm, "public_instance_method"))) continue;
     for (int mi = dyn_scopes_named(c, method_sym_arg(c, n)); mi >= 0; mi = g_dyn.snext[mi]) {
       Scope *m = &c->scopes[mi];
       unsigned app = dyn_meth_bits(c, mi) & 0xffffu;
@@ -17010,6 +17035,23 @@ static int dyn_convert_params(Compiler *c) {
         if (!q || !q->is_param || q->is_block_param || q->type != TY_STRING || q->byref_out || q->is_cell) continue;
         q->type = TY_STRBUF; q->str_shared = 1; q->dyn_handle = 1; changed = 1;
       }
+    }
+  }
+  /* A method `define_method` defines keeps the value ABI too (its name is a
+     DYN literal), and a direct call reaches it as well as a Method: its
+     appended String parameter takes the handle the same way. */
+  for (int mi = 1; mi < c->nscopes; mi++) {
+    Scope *m = &c->scopes[mi];
+    int dn = m->def_node;
+    if (!m->name || dn < 0 || nt_kind(nt, dn) != NK_CallNode || !nt_str(nt, dn, "name") ||
+        !(sp_streq(nt_str(nt, dn, "name"), "define_method") ||
+          sp_streq(nt_str(nt, dn, "name"), "define_singleton_method"))) continue;
+    unsigned app = dyn_meth_bits(c, mi) & 0xffffu;
+    for (int j = 0; app && j < m->nparams && j < DYN_ARGS; j++) {
+      if (!(app & (1u << j))) continue;
+      LocalVar *q = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
+      if (!q || !q->is_param || q->is_block_param || q->type != TY_STRING || q->byref_out || q->is_cell) continue;
+      q->type = TY_STRBUF; q->str_shared = 1; q->dyn_handle = 1; changed = 1;
     }
   }
   free(tg);
@@ -17471,6 +17513,29 @@ static int promote_dyncall_string_args(Compiler *c) {
         DynReach r; memset(&r, 0, sizeof r);
         dyn_reach_value(c, nt_ref(nt, n, "receiver"), k, 0, &r);
         if (r.unlifted) continue;   /* refused by the emitter */
+        if (!r.app && !(r.unknown && dyn_any_appender(c))) continue;
+      }
+      changed |= dyn_pull_arg(c, av[k], 1);
+    }
+  }
+  /* the open sites: a boxed callable, a curried proc, bind_call */
+  for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
+    int shift;
+    if (!dyn_open_site(c, n, &shift)) continue;
+    int a = nt_ref(nt, n, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    for (int k = shift; k < ac && k < DYN_ARGS; k++) {
+      if (nt_kind(nt, av[k]) == NK_SplatNode) break;
+      if (nt_kind(nt, av[k]) != NK_LocalVariableReadNode) continue;
+      TyKind at = comp_ntype(c, av[k]);
+      if (at != TY_STRING && at != TY_STRBUF) continue;
+      const char *vn = nt_str(nt, av[k], "name");
+      Scope *vs = vn ? comp_scope_of(c, av[k]) : NULL;
+      LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+      if (!(lv && lv->type == TY_STRBUF && lv->str_shared)) {
+        DynReach r; memset(&r, 0, sizeof r);
+        if (shift) dyn_reach_value(c, nt_ref(nt, n, "receiver"), k - shift, 0, &r);
+        else r.unknown = 1;
         if (!r.app && !(r.unknown && dyn_any_appender(c))) continue;
       }
       changed |= dyn_pull_arg(c, av[k], 1);

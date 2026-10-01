@@ -22819,6 +22819,25 @@ static int refuse_ctor_copies(Compiler *c, int id, const char *name, int recv) {
   return 1;
 }
 
+/* Is the argument a String variable that is the shared handle itself, which
+   a static binder hands over as it is (strbuf_slot_ref)? */
+static int strvar_is_handle(Compiler *c, int a) {
+  const NodeTable *nt = c->nt;
+  if (a < 0 || nt_kind(nt, a) != NK_LocalVariableReadNode) return 0;
+  const char *vn = nt_str(nt, a, "name");
+  Scope *vs = vn ? comp_scope_of(c, a) : NULL;
+  LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+  return lv && lv->type == TY_STRBUF && lv->str_shared && !lv->is_cell && !lv->is_block_param;
+}
+/* A define_method body's parameter a String variable that is not the
+   handle reaches as a copy: a value parameter, and a handle parameter the
+   binder wraps a fresh handle around. */
+static int refuse_param_copies_dm(Compiler *c, int mi, int j, int arg) {
+  LocalVar *q = j < c->scopes[mi].nparams && c->scopes[mi].pnames[j] ? scope_local(&c->scopes[mi], c->scopes[mi].pnames[j]) : NULL;
+  if (q && q->type == TY_STRBUF && q->str_shared) return 1;
+  return refuse_param_copies(c, mi, j, arg);
+}
+
 static void refuse_string_copies(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -22849,12 +22868,6 @@ static void refuse_string_copies(Compiler *c, int id) {
       if (!kind) continue;
       DynReach r;
       dyn_call_reach(c, id, k, &r);
-      if (r.unlifted && (r.app || r.unknown)) {
-        if (sp_streq(r.unlifted, "bind"))
-          refuse_string_copy(c, av[k], r.mname ? r.mname : "`?`", r.pname, "`bind(...).call`",
-                             "through an UnboundMethod bound with `bind`");
-        refuse_string_copy(c, av[k], NULL, r.pname, "a curried proc", "through `curry`");
-      }
       if (shared || !r.app) continue;
       char why[96]; snprintf(why, sizeof why, "from %s", kind);
       char mt[96]; if (r.mname) snprintf(mt, sizeof mt, "`%s`", r.mname);
@@ -22862,24 +22875,30 @@ static void refuse_string_copies(Compiler *c, int id) {
     }
     return;
   }
-  /* a proc or a Method read out of a slot that holds other values too, or a
-     curried proc (which re-boxes what it collects): the call boxes a copy
-     for whatever it reaches */
-  if (dyn && recv >= 0 && (comp_ntype(c, recv) == TY_POLY || comp_ntype(c, recv) == TY_CURRY)) {
-    int curried = comp_ntype(c, recv) == TY_CURRY;
-    int n = refuse_arg_layout(c, id, av, 16);
-    for (int k = 0; k < n; k++) {
-      int shared;
-      if (!strvar_arg(c, av[k], &shared)) continue;
-      DynReach r;
-      dyn_value_reach(c, -1, k, &r);
-      if (r.app)
-        refuse_string_copy(c, av[k], NULL, NULL,
-                           curried ? "a curried proc" : "a proc or Method read out of a slot that holds other values",
-                           curried ? "through `curry`" : "through such a slot");
-    }
-    return;
-  }
+  /* a proc or a Method read out of a slot that holds other values too, a
+     curried proc, an UnboundMethod's bind_call: shared as at a dynamic call
+     (dyn_open_site), unless the String is a variable the call cannot pull */
+  { int shift;
+    if (dyn_open_site(c, id, &shift)) {
+      int mn = shift ? method_recv_node(c, recv) : -1;
+      int mi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
+      if (shift && mi >= 0 && !refuse_call_binds(c, refuse_scope_params(c, &c->scopes[mi]), id, 1, 0)) return;
+      const char *through = shift ? "`bind_call`" : comp_ntype(c, recv) == TY_CURRY ? "a curried proc"
+                          : "a proc or Method read out of a slot that holds other values";
+      int n = refuse_arg_layout(c, id, av, 16);
+      for (int k = shift; k < n; k++) {
+        int shared;
+        const char *kind = strvar_arg(c, av[k], &shared);
+        if (!kind || shared) continue;
+        DynReach r;
+        dyn_open_reach(c, id, k, &r);
+        if (!r.app) continue;
+        char why[96]; snprintf(why, sizeof why, "from %s", kind);
+        char mt[96]; if (r.mname) snprintf(mt, sizeof mt, "`%s`", r.mname);
+        refuse_string_copy(c, av[k], r.mname ? mt : NULL, r.pname, through, why);
+      }
+      return;
+    } }
   /* `C.new(s)`, `k.new(s)`, `new(s)` in a class method and `raise C, s`: an
      initialize's appended String parameter is the handle (ctor_convert_params),
      and the caller's String variable is pulled into it (ctor_pull_args), but
@@ -22887,23 +22906,6 @@ static void refuse_string_copies(Compiler *c, int id) {
      global, a class variable, and an ivar handed to a class value's `new` */
   if ((sp_streq(name, "new") || (sp_streq(name, "raise") && recv < 0)) && refuse_ctor_copies(c, id, name, recv))
     return;
-  /* `M.instance_method(:m).bind_call(o, s)`: the method keeps the value ABI
-     (an `instance_method` literal is a DYN name) */
-  if (sp_streq(name, "bind_call") && recv >= 0) {
-    int mn = method_recv_node(c, recv);
-    int mi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
-    if (mi < 0 || !refuse_call_binds(c, refuse_scope_params(c, &c->scopes[mi]), id, 1, 0)) return;
-    int n = refuse_arg_layout(c, id, av, 16);
-    for (int k = 1; k < n; k++) {
-      int shared;
-      if (!strvar_arg(c, av[k], &shared)) continue;
-      if (dyn_method_appends(c, mi, k - 1) && refuse_param_copies(c, mi, k - 1, av[k])) {
-        char mt[96]; snprintf(mt, sizeof mt, "`%s`", c->scopes[mi].name);
-        refuse_string_copy(c, av[k], mt, c->scopes[mi].pnames[k - 1], "`bind_call`", "through `bind_call`");
-      }
-    }
-    return;
-  }
   /* `o.instance_exec(s) { |t| t << x }`: the block's parameter is bound as a
      plain assignment */
   if (sp_streq(name, "instance_exec") || sp_streq(name, "class_exec") || sp_streq(name, "module_exec")) {
@@ -22923,7 +22925,9 @@ static void refuse_string_copies(Compiler *c, int id) {
     }
     return;
   }
-  /* a method `define_method` defines keeps the value ABI (a DYN name) */
+  /* a method `define_method` defines takes an appended String as the handle
+     (dyn_convert_params), and its callers are pulled in as a handle
+     method's are, but for a variable that cannot be */
   if (dyn) return;
   static int dm_any = -1;
   if (dm_any < 0) {
@@ -22942,11 +22946,12 @@ static void refuse_string_copies(Compiler *c, int id) {
     for (int k = 0; k < n; k++) {
       int shared;
       if (!strvar_arg(c, av[k], &shared)) continue;
-      if (dyn_method_appends(c, dmi, k) && refuse_param_copies(c, dmi, k, av[k])) {
-        char mt[96]; snprintf(mt, sizeof mt, "`%s`", name);
-        refuse_string_copy(c, av[k], mt, c->scopes[dmi].pnames[k], "a method `define_method` defines",
-                           "into a `define_method` body");
-      }
+      const char *kind = strvar_arg(c, av[k], &shared);
+      if (strvar_is_handle(c, av[k]) || !dyn_method_appends(c, dmi, k) || !refuse_param_copies_dm(c, dmi, k, av[k]))
+        continue;
+      char mt[96]; snprintf(mt, sizeof mt, "`%s`", name);
+      char why[96]; snprintf(why, sizeof why, "from %s", kind);
+      refuse_string_copy(c, av[k], mt, c->scopes[dmi].pnames[k], "a method `define_method` defines", why);
     }
   }
 }
