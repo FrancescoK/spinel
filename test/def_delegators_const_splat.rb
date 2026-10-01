@@ -29,15 +29,13 @@ s = Stream.new(IOish.new, [1, 2])
 p s.read, s.write("abc"), s.closed?, (s << "x").class
 p s.size, s.empty?, s.first, s.last, s.include?(2)
 
-# the constant of the class body the call is in, not a nested class's
-class Outer
+# the constant is read elsewhere too, as Rack::Lint's is
+class Checked
   extend Forwardable
-  NAMES = [:size]
-  class Inner
-    NAMES = [:empty?]
-  end
-  def_delegators :@a, *NAMES
+  WANTED = [:size, :first]
+  def_delegators :@a, *WANTED
   def initialize(a) = @a = a
+  def complete? = WANTED.all? { |m| respond_to?(m) }
 end
-o = Outer.new([1, 2, 3])
-p o.size, o.respond_to?(:empty?)
+ck = Checked.new([7, 8])
+p ck.size, ck.first, ck.complete?

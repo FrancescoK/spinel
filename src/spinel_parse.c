@@ -3907,12 +3907,13 @@ static int sp_is_method_name_char(char c) {
 }
 
 /* The names of the constant NAME that the `def_delegators ... *NAME` at
-   `before` splats, read from the source text: its definition must be a line
-   of its own at the call's indentation -- the same class body, no line in
-   between indented less, no heredoc in between -- holding a literal Symbol
-   Array (`[:a, :b]` over any lines, or `%i[a b]`), with nothing after it but
-   `.freeze` and a comment, and nothing in the file may change it (`<<`,
-   `+=`, `.concat`, ...). 0 for anything else, which the caller refuses. */
+   `before` splats, read from the source text. Its one definition in the
+   file must be a line of its own at the call's (indented) indentation, in
+   the same class body with no heredoc between, holding a literal Symbol
+   Array (`[:a, :b]` over any lines, or `%i[a b]`) followed by nothing but
+   `.freeze` and a comment; every other use of the name must be a splat or a
+   read (`.each`, `.include?`, ...). 0 for anything else, which the caller
+   refuses. */
 static int sp_ident_char(char ch) {
   return isalnum((unsigned char)ch) || ch == '_';
 }
@@ -3929,20 +3930,35 @@ static int sp_const_symbol_list(const char *src, size_t len, size_t before, cons
                                 char (**out)[160], int *nout) {
   size_t nl = strlen(name);
   size_t call_ls = sp_line_start(src, before), call_ind = sp_indent(src, call_ls);
-  /* nothing in the file may change the constant */
-  static const char *const muts[] = {
-    "<<", "+=", "-=", "|=", "&=", "*=", ".concat", ".push", ".append", ".prepend", ".unshift",
-    ".insert", ".replace", ".delete", ".clear", ".pop", ".shift", ".map!", ".select!",
-    ".reject!", ".filter!", ".uniq!", ".compact!", ".flatten!", ".sort!", ".reverse!",
-    ".fill", ".keep_if", ".delete_if", ".slice!", ".rotate!", ".shuffle!", "[", NULL };
+  /* a class body at the top level is not indented: too close to its
+     neighbours to tell apart by indentation alone */
+  if (call_ind == 0) return 0;
+  /* Every use of the name in the file must be one of: its one definition
+     (checked below), a `*NAME` splat, or a call of a method that only reads
+     the Array. Anything else -- a second assignment (in a string, a branch,
+     after `;`), an alias, `<<`, `A::NAME.push` -- could change what it
+     holds, and refuses. */
+  static const char *const reads[] = {
+    ".each", ".each_with_index", ".include?", ".map", ".size", ".length", ".first",
+    ".last", ".join", ".to_a", ".freeze", ".frozen?", ".dup", ".any?", ".all?", ".none?",
+    ".count", ".index", ".sort", ".min", ".max", ".inspect", ".to_s", ".empty?", NULL };
+  int ndefs = 0;
   for (size_t p = 0; p + nl <= len; p++) {
     if (strncmp(src + p, name, nl) != 0) continue;
-    if ((p > 0 && (sp_ident_char(src[p - 1]) || src[p - 1] == ':')) || sp_ident_char(src[p + nl])) continue;
+    if ((p > 0 && sp_ident_char(src[p - 1])) || sp_ident_char(src[p + nl])) continue;
+    if (p > 0 && src[p - 1] == '*') continue;                        /* a splat */
     size_t q = p + nl;
     while (q < len && (src[q] == ' ' || src[q] == '\t')) q++;
-    for (int m = 0; muts[m]; m++)
-      if (strncmp(src + q, muts[m], strlen(muts[m])) == 0) return 0;
+    if (src[q] == '=' && src[q + 1] != '=' && src[q + 1] != '~' && src[q + 1] != '>') { ndefs++; continue; }
+    int ok = 0;
+    for (int r = 0; reads[r] && !ok; r++) {
+      size_t rl = strlen(reads[r]);
+      if (strncmp(src + q, reads[r], rl) == 0 && !sp_ident_char(src[q + rl]) &&
+          src[q + rl] != '!' && src[q + rl] != '=') ok = 1;
+    }
+    if (!ok) return 0;
   }
+  if (ndefs != 1) return 0;
   /* the last definition line at the call's indentation, walking back */
   size_t at = (size_t)-1;
   size_t ls = call_ls;
@@ -3980,14 +3996,14 @@ static int sp_const_symbol_list(const char *src, size_t len, size_t before, cons
     if (q >= before) { free(names); return 0; }
     if (src[q] == close) { q++; break; }
     if (!pct) { if (src[q] != ':') { free(names); return 0; } q++; }
-    /* a name, with a trailing ? ! or = (closed?, write!, v=), or an
-       operator spelled with < > = (:<<, :<=>, :==) */
+    /* a name, with a trailing ? ! or = (closed?, write!, v=), or :<< --
+       the one operator the rewrite is known to delegate right */
     size_t s0 = q;
     if (sp_ident_char(src[q])) {
       while (q < before && sp_ident_char(src[q])) q++;
       if (src[q] == '?' || src[q] == '!' || (src[q] == '=' && src[q + 1] != '>')) q++;
     }
-    else while (q < before && (src[q] == '<' || src[q] == '>' || src[q] == '=')) q++;
+    else if (src[q] == '<' && src[q + 1] == '<' && src[q + 2] != '<' && src[q + 2] != '=') q += 2;
     if (q == s0 || q - s0 >= 160) { free(names); return 0; }
     if (n == cap) {
       cap *= 2;
