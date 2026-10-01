@@ -35741,7 +35741,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           buf_printf(g_pre, " _t%d = %s;\n", ot, rb.p ? rb.p : ""); free(rb.p);
           buf_printf(&objptr, "_t%d", ot);
         }
-        if (nimpl <= 1) {
+        if (nimpl <= 1 && !cmethod_takes_self_cls(c, defmi)) {
           /* single implementation: call directly. The value still has to fit
              the slot the INFERENCE gave this call: the many-implementation
              branch below unifies the returns and boxes each arm, and this one
