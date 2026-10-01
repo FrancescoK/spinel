@@ -2513,6 +2513,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      (after the fixpoint), the call was still unknown to every expression
      around it, and `b.to_a.inspect` raised NoMethodError for the nil. */
   if (scalar_nil_only_call(c, id, rt)) return sp_streq(name, "!~") ? TY_BOOL : TY_POLY;
+  /* Integer's &, | and ^ on a receiver that can be nil, used where the value
+     is boxed anyway, answer nil's boolean there (int_bitop_may_be_nil) */
+  if (rt == TY_INT && int_bitop_may_be_nil(c, id)) return TY_POLY;
 
   /* Safe navigation &. : nil receiver always short-circuits to nil */
   {

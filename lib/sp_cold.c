@@ -4503,6 +4503,14 @@ SP_NORETURN void sp_raise_nil_int_op(sp_int a, sp_int b, const char *op) {SP_GC_
   sp_raise_cls("TypeError", "nil can't be coerced into Integer");
 }
 
+/* &, | or ^ on an Integer slot holding the nil sentinel: NilClass answers
+   them with a boolean, which the slot the result goes to cannot hold. */
+SP_NORETURN void sp_raise_nil_bitop(const char *op) {SP_GC_ROOT_STR(op);
+  sp_raise_cls("NotImplementedError",
+               sp_sprintf("nil %s Integer answers %s, which an Integer slot cannot hold",
+                          op, op[0] == '&' ? "false" : "true or false"));
+}
+
 /* A comparison whose operand is the int or float nil sentinel: nil on the
    LEFT has no `<`, and nil on the right is the Comparable failure CRuby
    reports from Integer#< / Float#<. The sentinel compared as a number

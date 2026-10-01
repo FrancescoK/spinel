@@ -22394,6 +22394,114 @@ int nullable_scalar_nil_only_call(Compiler *c, int id) {
   return recv >= 0 && scalar_nil_only_call(c, id, c->ntype[recv]) && nullable_int_value(c, recv);
 }
 
+/* Integer's own &, | and ^ on a receiver that can be nil: NilClass answers
+   them with a boolean (`nil ^ 1` is true, `nil & 1` false), which an
+   Integer slot cannot carry, so the C read the sentinel's bits as a number
+   and `nil ^ 1` answered -9223372036854775807. Where the value is boxed
+   anyway -- printed by p / puts / print / pp, interpolated, or written to a
+   boxed local -- the call is typed boxed (int_bitop_boxed_consumer) and
+   emitted through the boxed operators, which answer nil's boolean. Everywhere
+   else it keeps Integer's C, and a receiver that is nil at run time raises
+   NotImplementedError naming the answer it cannot hold
+   (int_bitop_nil_guarded): boxing the call there would put a boxed
+   operator on hot paths whose reads the analysis cannot prove non-nil
+   (optcarrot's CPU registers read out of its RAM array). */
+static int int_bitop_shape(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm || !(sp_streq(nm, "&") || sp_streq(nm, "|") || sp_streq(nm, "^"))) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 || nt_ref(nt, id, "block") >= 0) return 0;
+  const char *op = nt_str(nt, id, "call_operator");
+  if (op && sp_streq(op, "&.")) return 0;
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  return argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode && nt_kind(nt, argv[0]) != NK_KeywordHashNode &&
+         nt_kind(nt, argv[0]) != NK_BlockArgumentNode;
+}
+
+static int nn_read_nonnil(int id);
+/* Whether Integer value `v` can be nil while the types are still being
+   inferred. The nullable marking settles only after them, so a local is
+   asked through its writes in its own scope: `b = [1][5]` leaves b nil. */
+static int int_value_may_be_nil(Compiler *c, int v, int depth) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || depth > 4) return 0;
+  if (nullable_int_value(c, v)) return 1;
+  if (nt_kind(nt, v) != NK_LocalVariableReadNode || nn_read_nonnil(v)) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  Scope *sc = nm ? comp_scope_of(c, v) : NULL;
+  if (!sc) return 0;
+  for (int r = lw_shared_first(c, nm, (int)(sc - c->scopes)); r >= 0; r = lw_shared_next(r)) {
+    int w = lw_shared_node(r);
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode || comp_scope_of(c, w) != sc) continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (wn && sp_streq(wn, nm) && int_value_may_be_nil(c, nt_ref(nt, w, "value"), depth + 1)) return 1;
+  }
+  return 0;
+}
+
+/* Whether the value of bit-op call `id` is boxed where it is used: an
+   argument of a receiverless p / puts / print / pp, the value of an
+   interpolation, or the value written to a local already typed boxed. */
+static int *g_bitop_parent;
+static int g_bitop_parent_n = -1;
+static unsigned g_bitop_parent_ver;
+static int int_bitop_boxed_consumer(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (!g_bitop_parent || g_bitop_parent_n != nt->count || g_bitop_parent_ver != nt->version) {
+    free(g_bitop_parent);
+    g_bitop_parent = an_parent_map(nt);
+    if (!g_bitop_parent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    g_bitop_parent_n = nt->count; g_bitop_parent_ver = nt->version;
+  }
+  int p = id < nt->count ? g_bitop_parent[id] : -1;
+  if (p < 0) return 0;
+  if (nt_type(nt, p) && sp_streq(nt_type(nt, p), "ArgumentsNode")) {
+    int call = g_bitop_parent[p];
+    const char *cn = call >= 0 && nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
+    return cn && nt_ref(nt, call, "receiver") < 0 && comp_method_index(c, cn) < 0 &&
+           (sp_streq(cn, "p") || sp_streq(cn, "puts") || sp_streq(cn, "print") || sp_streq(cn, "pp"));
+  }
+  if (nt_kind(nt, p) == NK_StatementsNode) {
+    int e = g_bitop_parent[p];
+    int n = 0; const int *st = nt_arr(nt, p, "body", &n);
+    return e >= 0 && nt_kind(nt, e) == NK_EmbeddedStatementsNode && st && n > 0 && st[n - 1] == id;
+  }
+  if (nt_kind(nt, p) == NK_LocalVariableWriteNode && nt_ref(nt, p, "value") == id) {
+    const char *wn = nt_str(nt, p, "name");
+    Scope *sc = wn ? comp_scope_of(c, p) : NULL;
+    LocalVar *lv = sc ? scope_local(sc, wn) : NULL;
+    return lv && lv->type == TY_POLY;
+  }
+  return 0;
+}
+
+int int_bitop_may_be_nil(Compiler *c, int id) {
+  /* the question types the receiver's reads, and one of them can be this
+     call again (`x = x ^ y`): a nested ask answers no */
+  static int busy;
+  if (busy || !int_bitop_shape(c, id) || !int_bitop_boxed_consumer(c, id)) return 0;
+  busy = 1;
+  int r = int_value_may_be_nil(c, nt_ref(c->nt, id, "receiver"), 0);
+  busy = 0;
+  return r;
+}
+
+/* ... a call kept Integer whose receiver can be nil: its sentinel raises */
+int int_bitop_nil_guarded(Compiler *c, int id) {
+  return int_bitop_shape(c, id) && c->ntype[id] == TY_INT &&
+         c->ntype[nt_ref(c->nt, id, "receiver")] == TY_INT &&
+         nullable_int_value(c, nt_ref(c->nt, id, "receiver"));
+}
+
+/* ... and codegen's question: an Integer receiver's &, | or ^ typed boxed */
+int nullable_int_bitop(Compiler *c, int id) {
+  return int_bitop_shape(c, id) && c->ntype[id] == TY_POLY &&
+         c->ntype[nt_ref(c->nt, id, "receiver")] == TY_INT;
+}
+
 /* Can this expression leave the sentinel in an int slot? */
 /* Whether an unconditional write of ivar `ivn` is among the top-level
    statements of class k's initialize, or of the initialize it inherits. */

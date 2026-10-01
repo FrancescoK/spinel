@@ -7921,8 +7921,27 @@ int nil_answers_name(const char *n) {
    nil, so it answers nil's value, and any other value raises the receiver
    class's NoMethodError the gate below would have. */
 int emit_nullable_scalar_nil_only(Compiler *c, int id, Buf *b) {
-  if (!nullable_scalar_nil_only_call(c, id)) return 0;
   const NodeTable *nt = c->nt;
+  /* Integer's &, | and ^ on a receiver that can be nil (nullable_int_bitop):
+     boxed, nil answering its boolean as the boxed operators do */
+  if (nullable_int_bitop(c, id)) {
+    const char *bn = nt_str(nt, id, "name");
+    int bac = 0; const int *bav = call_args(nt, id, &bac);
+    int tr = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = sp_box_int_or_nil(", tr);
+    emit_expr(c, nt_ref(nt, id, "receiver"), b);
+    buf_puts(b, "); ");
+    /* the argument after the receiver, setup and all (emit_split_pre) */
+    Buf ap; memset(&ap, 0, sizeof ap);
+    Buf av; memset(&av, 0, sizeof av);
+    emit_split_pre(c, bav[0], emit_boxed, &ap, &av);
+    buf_printf(b, "%s%s(_t%d, %s); })", ap.p ? ap.p : "",
+               sp_streq(bn, "&") ? "sp_poly_band" : sp_streq(bn, "|") ? "sp_poly_bor" : "sp_poly_bxor",
+               tr, av.p ? av.p : "sp_box_nil()");
+    free(ap.p); free(av.p);
+    return 1;
+  }
+  if (!nullable_scalar_nil_only_call(c, id)) return 0;
   const char *nm = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   TyKind rt = comp_ntype(c, recv);

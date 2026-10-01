@@ -200,6 +200,17 @@ sp_RbVal sp_raise_nomethod(const char *msg);
 SP_NORETURN SP_COLD void sp_raise_nil_int_op(sp_int a, sp_int b, const char *op);
 #define SP_INT_NIL_CK(a, b, op) \
   if (SP_UNLIKELY((a) == SP_INT_NIL || (b) == SP_INT_NIL)) sp_raise_nil_int_op((a), (b), op)
+/* Integer's &, | or ^ on a receiver that can hold the sentinel, where the
+   result keeps its Integer slot: nil's answer is a boolean the slot cannot
+   hold, so a nil receiver raises saying so. It follows the arithmetic test's
+   mode rule: --int-overflow=wrap drops the arithmetic helpers' nil test
+   with their overflow test, and drops this one with them. */
+SP_NORETURN SP_COLD void sp_raise_nil_bitop(const char *op);
+#ifdef SP_INT_OVERFLOW_MODE_WRAP
+#  define SP_INT_NIL_BITOP_CK(a, op) ((void)0)
+#else
+#  define SP_INT_NIL_BITOP_CK(a, op) do { if (SP_UNLIKELY((a) == SP_INT_NIL)) sp_raise_nil_bitop(op); } while (0)
+#endif
 /* The same sentinel reaching a STRICT Integer argument slot -- an index, a
    count, a width. A compile-time nil is refused at the emitter (`s[nil]` is
    the TypeError), but the nil that arrives through an `Integer?` slot is an

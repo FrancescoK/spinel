@@ -42523,9 +42523,22 @@ else {
        cost (a bare reinterpret). `>>` stays a signed (arithmetic) shift, which
        matches Ruby and is only implementation-defined, not UB. */
     int shl_neg_safe = sp_streq(name, "<<");
+    /* &, | and ^ on a receiver that can be nil, kept Integer: nil answers
+       them with a boolean the slot cannot hold (int_bitop_nil_guarded), so a
+       nil receiver raises, saying so, where the sentinel's bits used to be
+       read as a number. A receiver that cannot be nil pays nothing, and
+       --int-overflow=wrap drops the test as it drops the arithmetic
+       helpers' (SP_INT_NIL_BITOP_CK). */
+    int nil_g = !is_shift && rt == TY_INT && int_bitop_nil_guarded(c, id) ? ++g_tmp : 0;
+    if (nil_g) {
+      buf_printf(b, "({ sp_int _t%d = ", nil_g);
+      emit_expr(c, recv, b);
+      buf_printf(b, "; SP_INT_NIL_BITOP_CK(_t%d, \"%s\"); ", nil_g, name);
+    }
     buf_puts(b, "(");
     if (shl_neg_safe) buf_puts(b, "(sp_int)((uint64_t)(");
-    emit_poly_unboxed(c, recv, rt, "sp_poly_to_i(", b);
+    if (nil_g) buf_printf(b, "_t%d", nil_g);
+    else emit_poly_unboxed(c, recv, rt, "sp_poly_to_i(", b);
     if (shl_neg_safe) buf_puts(b, ")");
     buf_printf(b, " %s ", name);
     if (at0 == TY_POLY) {
@@ -42540,6 +42553,7 @@ else {
     else emit_expr(c, argv[0], b);
     if (shl_neg_safe) buf_puts(b, ")");
     buf_puts(b, ")");
+    if (nil_g) buf_puts(b, "; })");
     return;
   }
 
