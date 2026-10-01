@@ -1367,10 +1367,22 @@ static void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
     emit_strbuf_cond_value(c, lv, v, dst, b, 0);
     buf_printf(b, " %s; })", dst);
   }
-  else if (comp_ntype(c, v) == TY_STRBUF) {
-    /* a demand-marked read (a reader call, a container element) already
-       yields the handle: alias it directly (#3227 P5) */
+  /* a demand-marked read (a reader call, a container element) already
+     yields the handle: alias it directly (#3227 P5). Any other marked call
+     -- `+"lit"`, a `dup` the alias leaves demanded -- renders as a fresh
+     String, wrapped below as a new handle the way a store wraps one
+     (emit_boxed); handed over bare, the C did not build. */
+  else if (comp_ntype(c, v) == TY_STRBUF &&
+           (nt_kind(c->nt, v) != NK_CallNode || strbuf_marked_yields_handle(c, v))) {
     emit_expr(c, v, b);
+  }
+  else if (comp_ntype(c, v) == TY_STRBUF) {
+    unsigned char sv = c->strbuf_box[v];
+    c->strbuf_box[v] = 0;
+    buf_puts(b, "sp_String_new_shared(");
+    emit_str_expr(c, v, b);
+    buf_puts(b, ")");
+    c->strbuf_box[v] = sv;
   }
   else if (comp_ntype(c, v) == TY_POLY || strbuf_boxed_elem_read(c, v)) {
     /* a container element read hands out the element's BOXED handle: take the
