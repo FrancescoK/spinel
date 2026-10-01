@@ -21339,7 +21339,8 @@ int emit_vis_refusal(Compiler *c, int id, Buf *b) {
   const char *vrty = vrecv >= 0 ? nt_type(nt, vrecv) : NULL;
   int stamped = nt_str(nt, id, "vis_enforce") != NULL;
   int plain = !stamped && vrecv >= 0 && !nt_str(nt, id, "send_blind") &&
-              !nt_int(nt, id, "dyn_arm", 0) && !(vrty && sp_streq(vrty, "SelfNode"));
+              !nt_int(nt, id, "dyn_arm", 0) && !(vrty && sp_streq(vrty, "SelfNode")) &&
+              !nt_int(nt, id, "self_call", 0);  /* a class body's own call, given its class as receiver */
   if (!stamped && !plain) return 0;
   const char *vnm = nt_str(nt, id, "name");
   int vcid = -1;
