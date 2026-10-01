@@ -6322,7 +6322,8 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
            coerced to its name; that was an older Hash.new{} model (#4531). */
         if (hash_kt != TY_POLY && hash_kt != TY_UNKNOWN &&
             arg_kt != TY_POLY && arg_kt != TY_UNKNOWN && arg_kt != hash_kt &&
-            !(hash_kt == TY_STRING && arg_kt == TY_STRBUF)) {
+            !(hash_kt == TY_STRING && arg_kt == TY_STRBUF) &&
+            !hash_nil_key_stored(c, argv[0], hash_kt)) {
           TyKind vt = ty_hash_val(rt);
           int t = ++g_tmp;
           buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b); buf_puts(b, "; ");
@@ -6479,7 +6480,8 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
             if (kt == TY_STRING) buf_printf(b, "sp_poly_to_s(sp_PolyArray_get(_t%d, _t%d));", ts, ti);
             else buf_printf(b, "(%s)sp_poly_to_i(sp_PolyArray_get(_t%d, _t%d));", c_type_name(kt), ts, ti);
           }
-          else if (hash_key_misses(c, argv[a], kt)) {
+          else if (hash_key_misses(c, argv[a], kt) &&
+                   !(hash_nil_key_stored(c, argv[a], kt) && !(is_fetch && nt_ref(nt, id, "block") >= 0))) {
             /* a key of a kind the table cannot hold: values_at answers nil,
                fetch_values raises naming the key, boxed once here */
             int fv_blk = nt_ref(nt, id, "block");
@@ -6617,7 +6619,7 @@ else {
         snprintf(htmp, sizeof htmp, "_t%d", th);
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), th); emit_expr(c, recv, b);
         buf_printf(b, "; SP_GC_ROOT(_t%d)", th);   /* rooted across the key, as the array arms are */
-        if (hash_key_misses(c, argv[0], ty_hash_key(rt))) {
+        if (hash_key_misses(c, argv[0], ty_hash_key(rt)) && !hash_nil_key_stored(c, argv[0], ty_hash_key(rt))) {
           /* a key of a kind the table cannot hold: the KeyError names the
              key itself, so box it once rather than look it up */
           buf_printf(b, "; sp_RbVal _t%d = ", tk); emit_boxed(c, argv[0], b);
@@ -6775,7 +6777,7 @@ else {
            sp_streq(name, "include?") || sp_streq(name, "member?")) && argc == 1) {
         TyKind arg_kt = comp_ntype(c, argv[0]);
         TyKind hash_kt = ty_hash_key(rt);
-        if (hash_key_misses(c, argv[0], hash_kt)) {
+        if (hash_key_misses(c, argv[0], hash_kt) && !hash_nil_key_stored(c, argv[0], hash_kt)) {
           /* a key of a class the table cannot hold: false, the receiver and
              the key still evaluated */
           buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); (void)("); emit_expr(c, argv[0], b);

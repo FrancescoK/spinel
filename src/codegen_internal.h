@@ -701,6 +701,7 @@ int rest_shortfall_required(Compiler *c, Scope *m);
 /* Emit a hash key, unboxing a poly value to the typed-hash's key type. */
 void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b);
 int hash_key_misses(Compiler *c, int key, TyKind kt);
+int hash_nil_key_stored(Compiler *c, int key, TyKind kt);
 const char *conv_wrong_cls_name(TyKind t);
 const char *conv_cls_name_of(Compiler *c, TyKind t);
 TyKind obj_container_conv(Compiler *c, TyKind t, const char *conv, int *def);
