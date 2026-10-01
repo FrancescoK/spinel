@@ -174,4 +174,8 @@ int is_integer_class_name(const char *n); /* Fixnum Integer */
 
 int is_ivar_access(const char *n);   /* instance_variable_get instance_variable_set */
 
+int is_string_append(const char *n); /* << concat: appends answering the receiver */
+
+int is_string_rebind_mutator(const char *n); /* mutators needing argument-rebind snapshots */
+
 #endif
