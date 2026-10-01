@@ -1781,6 +1781,17 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
       buf_printf(b, "), %s)", ptr_array_stamp(c, t));
       return;
     }
+    /* A value of a real kind with no boxed form (a Random) was evaluated and
+       boxed as nil: `[Random.new(1), 1][0].class` answered NilClass, and its
+       rand raised NoMethodError for nil. Refuse it; only a value with no
+       kind at all (an unrecognized stdlib class's .new) keeps the fallback. */
+    if (t != TY_UNKNOWN && t != TY_VOID && c_type_name(t)) {
+      char msg[160];
+      const char *tn = ty_name(t);
+      snprintf(msg, sizeof msg, "a %c%s in a slot that holds values of several kinds (it has no boxed form)",
+               tn && tn[0] >= 'a' && tn[0] <= 'z' ? tn[0] - 32 : (tn ? tn[0] : '?'), tn && tn[0] ? tn + 1 : "");
+      unsupported_feature(c, node, msg);
+    }
     /* TY_UNKNOWN (e.g. unrecognized stdlib class .new): evaluate for side-effects, yield nil */
     buf_puts(b, "("); emit_expr(c, node, b); buf_puts(b, ", sp_box_nil())"); return;
   }
