@@ -1992,8 +1992,14 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
         if (!live) {
           slot[k] = ++g_tmp;
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "const char *_t%d = sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])); SP_GC_ROOT(_t%d);\n",
-                     slot[k], atmp[k], slot[k]);
+          /* a yield hands on a parameter that took the handle, which a nil
+             argument leaves NULL */
+          if (call < 0)
+            buf_printf(g_pre, "const char *_t%d = _t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; SP_GC_ROOT(_t%d);\n",
+                       slot[k], atmp[k], atmp[k], slot[k]);
+          else
+            buf_printf(g_pre, "const char *_t%d = sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])); SP_GC_ROOT(_t%d);\n",
+                       slot[k], atmp[k], slot[k]);
         }
       }
     }
@@ -2011,7 +2017,10 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
       int storable = ty_is_object(at) || c_type_name(at) != NULL;
       char tn[24]; snprintf(tn, sizeof tn, "_t%d", atmp[k]);
       buf_printf(b, "_sp_proc_poly_args[%d] = ", k);
-      if (storable) emit_boxed_text(c, at, tn, b); else buf_puts(b, "sp_box_nil()");
+      /* a yielded handle parameter is NULL for a nil argument: it boxes as nil */
+      if (at == TY_STRBUF && call < 0) buf_printf(b, "(%s ? sp_box_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil())", tn, tn);
+      else if (storable) emit_boxed_text(c, at, tn, b);
+      else buf_puts(b, "sp_box_nil()");
       buf_puts(b, ", ");
     }
     if (kwpos) buf_printf(b, "_sp_proc_kwpos = %d, ", kwpos);
@@ -2029,6 +2038,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
          (sp_int)(uintptr_t) does not compile */
       else if (at == TY_FLOAT || proc_slot_via_poly(c, at)) buf_puts(b, "0");  /* rides the boxed side-channel; the sp_int slot is dead */
       else if (at == TY_STRBUF && slot[k] >= 0) buf_printf(b, "(sp_int)(uintptr_t)_t%d", slot[k]);
+      else if (at == TY_STRBUF && call < 0) buf_printf(b, "(sp_int)(uintptr_t)(_t%d ? sp_String_cstr(_t%d) : NULL)", atmp[k], atmp[k]);
       else if (at == TY_STRBUF) buf_printf(b, "(sp_int)(uintptr_t)sp_String_cstr(_t%d)", atmp[k]);
       else if (proc_slot_is_ptr(at) || at == TY_PROC) buf_printf(b, "(sp_int)(uintptr_t)_t%d", atmp[k]);
       else buf_printf(b, "_t%d", atmp[k]);

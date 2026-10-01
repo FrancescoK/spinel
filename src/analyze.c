@@ -12455,8 +12455,9 @@ static int an_byref_promote_group(Compiler *c, const char *nm, int pi,
   return did;
 }
 
-/* The method a plain call `id` names, by its receiver: self or none (a
-   unique name), a constant's `new` (its initialize), an object's class. */
+/* The method a plain call `id` names, by its receiver: self or none (the
+   enclosing class's, else a top-level method's), a constant's `new` (its
+   initialize), an object's class. */
 static int an_call_target_mi(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, id, "name");
@@ -12467,7 +12468,13 @@ static int an_call_target_mi(Compiler *c, int id) {
     TyKind ct = comp_ntype(c, id);
     return ty_is_object(ct) ? comp_method_in_chain(c, ty_object_class(ct), "initialize", NULL) : -1;
   }
-  if (rk == NK_SelfNode) return an_any_scope_by_name(c, nm);
+  if (rk == NK_SelfNode) {
+    /* by name alone, `run(u) { ... }` at the top level found K#run, a
+       different method that keeps its block, and its block parameter was
+       taken for that method's handle */
+    int mi = comp_self_call_mi(c, id, nm);
+    return mi >= 0 ? mi : an_any_scope_by_name(c, nm);
+  }
   TyKind rt = comp_ntype(c, recv);
   return ty_is_object(rt) ? comp_method_in_chain(c, ty_object_class(rt), nm, NULL) : -1;
 }
@@ -17806,6 +17813,26 @@ static int yield_splice_handles(Compiler *c) {
         if (ak == NK_SplatNode || ak == NK_KeywordHashNode) break;
         if (ak != NK_LocalVariableReadNode) continue;
         TyKind at = comp_ntype(c, av[k]);
+        /* A parameter a nil or other argument widened to POLY boxes what it
+           is bound to: yielded to a proc a call site passes that appends to
+           it, that call site's String variable is pulled in, as for a POLY
+           parameter the method appends to itself (convert_byref_handle_params).
+           Left as a plain String, the box the proc appended to was a copy. */
+        if (at == TY_POLY) {
+          int pj = an_param_idx(ms, nt_str(nt, av[k], "name"));
+          for (int e = !pass && pj >= 0 && h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
+            int u = g_dyn.bnode[e], ba = nt_ref(nt, u, "block");
+            if (nt_kind(nt, ba) != NK_BlockArgumentNode || an_call_target_mi(c, u) != mi) continue;
+            int v = nt_ref(nt, ba, "expression");
+            if (v < 0) continue;
+            DynReach r; memset(&r, 0, sizeof r);
+            dyn_reach_value(c, v, k, 0, &r);
+            if (r.unlifted || !(r.app || (r.unknown && dyn_any_appender(c)))) continue;
+            int ua = arg_layout_param_node(c, ms, u, pj, NULL);
+            if (ua >= 0) changed |= dyn_pull_arg(c, ua, 1);
+          }
+          continue;
+        }
         if (at != TY_STRING && at != TY_STRBUF) continue;
         int is_h = an_local_is_handle(c, av[k]), into_h = 0;
         for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
