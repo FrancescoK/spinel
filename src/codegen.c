@@ -9269,7 +9269,7 @@ static void emit_obj_to_ary_dispatch(Compiler *c, Buf *b) {
     int mi = obj_to_ary_method(c, i, &defc);
     if (mi < 0) continue;
     TyKind mret = (TyKind)c->scopes[mi].ret;
-    buf_printf(b, "    case %d: return ", i);
+    buf_printf(b, "    case %d: if (!v.v.p) return sp_box_bool(1); return ", i);
     char callx[256];
     int vobj = comp_ty_value_obj(c, ty_object(defc));
     snprintf(callx, sizeof callx, vobj ? "sp_%s_%s(*(sp_%s *)v.v.p)" : "sp_%s_%s((sp_%s *)v.v.p)",

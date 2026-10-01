@@ -4184,7 +4184,8 @@ static SP_NOINLINE sp_bool sp_poly_eq_slow(sp_RbVal a, sp_RbVal b) {
      a class that does not define one (#3501) */
   { sp_RbVal _u; if (sp_poly_user_cmp("==", a, b, &_u)) return sp_poly_truthy(_u); }
   { sp_RbVal _u; if (a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(a.cls_id) && sp_poly_is_user_obj(b) && sp_obj_to_ary_fn &&
-                     sp_obj_to_ary_fn(b).tag != SP_TAG_NIL && sp_poly_user_cmp("==", b, a, &_u)) return sp_poly_truthy(_u); }
+                     sp_obj_to_ary_fn((sp_RbVal){ .tag = SP_TAG_OBJ, .cls_id = b.cls_id }).tag == SP_TAG_BOOL &&
+                     sp_poly_user_cmp("==", b, a, &_u)) return sp_poly_truthy(_u); }
   /* shared-mutable string handle (#3227): == is content equality, against
      either another handle or a plain string */
   { const char *_sa = (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_STRBUF) ? sp_String_cstr((sp_String *)a.v.p) : NULL;
