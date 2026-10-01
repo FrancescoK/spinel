@@ -1969,7 +1969,7 @@ LocalVar *scope_local_intern(Scope *s, const char *name) {
   lv->rbs_type = TY_UNKNOWN;
   lv->push_widened = 0;
   lv->poly_dispatch_widened = 0;
-  lv->or_write_only = 0;
+  lv->or_written = 0;
   lv->str_shared = 0;
   lv->str_append = 0;
   lv->poly_hash_pin = 0;
