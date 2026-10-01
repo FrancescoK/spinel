@@ -28806,6 +28806,26 @@ void analyze_program(Compiler *c) {
             }
           }
         }
+        /* (6b) ...and the same field in every class that shares it through
+           inheritance. (6) widens the class whose method writes the ivar, but
+           a subclass holds a copy of the slot (inherit_members) and an
+           ancestor's methods reach it through a cast (propagate_ivars_up's
+           cast-compatibility rule), so the slot widens in both directions:
+           `def initialize(k) = (@a = [k])` in N left M < N holding @a as
+           sp_IntArray * against N's sp_PolyArray *. */
+        for (int k = 0; k < c->nclasses; k++) {
+          ClassInfo *kc = &c->classes[k];
+          for (int iv = 0; iv < kc->nivars; iv++) {
+            for (int a = kc->parent; a >= 0; a = c->classes[a].parent) {
+              int ai = comp_ivar_index(&c->classes[a], kc->ivars[iv]);
+              if (ai < 0) continue;
+              TyKind at = c->classes[a].ivar_types[ai], kt = kc->ivar_types[iv];
+              TyKind na = PW_JOIN(at, kt), nk = PW_JOIN(kt, at);
+              if (na != at) { c->classes[a].ivar_types[ai] = na; changed = 1; }
+              if (nk != kt) { kc->ivar_types[iv] = nk; changed = 1; }
+            }
+          }
+        }
         /* (7) a global written a poly array or a boxed element */
         for (int id = 0; id < nt->count; id++) {
           if (nt_kind(nt, id) != NK_GlobalVariableWriteNode && nt_kind(nt, id) != NK_GlobalVariableOrWriteNode) continue;
