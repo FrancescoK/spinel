@@ -5,6 +5,11 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+    # A PR that only touches docs or top-level markdown never affects the
+    # compiler, runtime, or tests; skip CI for it entirely.
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
 
 # One run per branch at a time: a push that supersedes a queued or running
 # run cancels it. Every run was 13 jobs against a small runner pool, and a
