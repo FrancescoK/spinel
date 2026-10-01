@@ -3113,8 +3113,10 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
   int polls_here = !g_loop_polls_in_cond;
   g_loop_polls_in_cond = 0;
   if (polls_here && g_uses_threads) { emit_indent(b, indent); buf_printf(b, "if (SP_UNLIKELY(SP_SAFEPOINT_POLL())) sp_safepoint()%s;\n", hc_mark()); }
-  /* and for pending finalizers (sp_gc.h), when the program defines any */
-  if (polls_here && g_uses_finalizers) { emit_indent(b, indent); buf_puts(b, "SP_FIN_POLL();\n"); }
+  /* and for pending finalizers (sp_gc.h), when the program defines any. A
+     finalizer is Ruby code that may resize an array this loop has cached, so
+     the cache reloads after one runs, as after a safepoint. */
+  if (polls_here && g_uses_finalizers) { emit_indent(b, indent); buf_printf(b, "if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_fin_pending_flag, __ATOMIC_RELAXED))) sp_fin_run_pending()%s;\n", hc_mark()); }
   emit_stmts(c, body, b, indent);
   if (has_redo) g_redo_depth--;
   g_c_loop_depth--;
