@@ -12467,7 +12467,11 @@ int infer_block_params(Compiler *c) {
              Struct in the file was enough to change the answer, because every
              Struct defines `each` (#4086). More candidates is a stronger case
              for poly, not a weaker one. */
-          if (ndef > 0 && poly_enum_op_for(name)) {
+          /* Several candidates and none adopted: the call is a dispatch over
+             them, and the builtin rules below must not type the block from
+             the NAME -- a poly `each_line` read as an IO's walk bound the
+             Integer a user each_line yielded into a String slot. */
+          if (ndef > 0 && (poly_enum_op_for(name) || (mi < 0 && rt0 == TY_POLY))) {
             Scope *bs2 = comp_scope_of(c, block);
             for (int k = 0; ; k++) {
               const char *bp2 = block_param_name(c, block, k);

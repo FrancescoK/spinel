@@ -15544,7 +15544,12 @@ enum {
   SP_PENUM_FIND, SP_PENUM_SORT_BY, SP_PENUM_COUNT, SP_PENUM_SUM,
   SP_PENUM_ANY, SP_PENUM_ALL, SP_PENUM_NONE,
   SP_PENUM_FIND_INDEX,
-  SP_PENUM_EACH_WITH_INDEX
+  SP_PENUM_EACH_WITH_INDEX,
+  /* the Hash-only walks and the reversed one: a user class owning one of
+     these names as a yielding method makes the call a dispatch, and a Hash
+     (or Array) reaching it is served here */
+  SP_PENUM_EACH_PAIR, SP_PENUM_EACH_KEY, SP_PENUM_EACH_VALUE,
+  SP_PENUM_REVERSE_EACH, SP_PENUM_UNIQ
 };
 /* Call `blk` with one element. Both channels are filled, as every other
    proc-driving site does: a poly parameter reads the boxed side-channel, a
@@ -15654,6 +15659,14 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
      values is one packed item; map and the predicates hand a one-param block
      its first value, as CRuby's multi-value yield does, where select, find
      and sort_by hand it the packed Array. */
+  /* each_pair / each_key / each_value are Hash methods: any other receiver
+     reaching the dispatch's builtin arm has no such method */
+  if ((op == SP_PENUM_EACH_PAIR || op == SP_PENUM_EACH_KEY || op == SP_PENUM_EACH_VALUE) &&
+      !(recv.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(recv.cls_id))) {
+    sp_raise_nomethod(sp_nomethod_msg(op == SP_PENUM_EACH_PAIR ? "each_pair" :
+                                      op == SP_PENUM_EACH_KEY ? "each_key" : "each_value", recv));
+    return sp_box_nil();
+  }
   sp_RbVal walk = recv;
   sp_bool first_of_pair = FALSE, spread_pair = FALSE;
   int pair = sp_poly_yields_pair(recv);
@@ -15702,6 +15715,30 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
     case SP_PENUM_EACH_WITH_INDEX:
       for (sp_int i = 0; i < n; i++) sp_penum_call2(blk, src->data[i], sp_box_int(i));
       return recv;
+    case SP_PENUM_EACH_PAIR:
+      for (sp_int i = 0; i < n; i++) sp_penum_call1(blk, src->data[i]);
+      return recv;
+    case SP_PENUM_EACH_KEY: case SP_PENUM_EACH_VALUE:
+      /* a Hash entry is a boxed [k, v] pair (sp_poly_each_elem) */
+      for (sp_int i = 0; i < n; i++)
+        sp_penum_call1(blk, sp_poly_arr_get(src->data[i], op == SP_PENUM_EACH_KEY ? 0 : 1));
+      return recv;
+    case SP_PENUM_REVERSE_EACH:
+      for (sp_int i = n - 1; i >= 0; i--) sp_penum_call1(blk, src->data[i]);
+      return recv;
+    case SP_PENUM_UNIQ: {
+      /* the first element of each block value, in order, compared as the
+         spliced poly uniq loop compares them */
+      sp_PolyArray *seen = sp_PolyArray_new(); SP_GC_ROOT(seen);
+      sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
+      for (sp_int i = 0; i < n; i++) {
+        sp_RbVal k = sp_penum_call1(blk, src->data[i]);
+        sp_bool dup = FALSE;
+        for (sp_int j = 0; j < seen->len; j++) if (sp_poly_eq(seen->data[j], k)) { dup = TRUE; break; }
+        if (!dup) { sp_PolyArray_push(seen, k); sp_PolyArray_push(out, src->data[i]); }
+      }
+      return sp_box_poly_array(out);
+    }
     case SP_PENUM_MAP: {
       sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
       for (sp_int i = 0; i < n; i++) {
