@@ -1783,6 +1783,68 @@ static int method_scope_arity(Compiler *c, int target, int *out) {
   *out = variadic ? -(req + 1) : req;
   return 1;
 }
+/* The send_blind call whose dispatch arm is being emitted (see the split) */
+static int g_send_split = -1;
+/* The modules a builtin class includes ahead of Object, with their own
+   public methods as CRuby 4.0 lists them: Integer and Float are Numeric and
+   Comparable, String and Symbol Comparable, Array, Hash and Range
+   Enumerable. The builtin table holds each class's own methods only. */
+static int builtin_module_owns(const char *cls, const char *m) {
+  static const char *const cmp[] = { "<", "<=", "==", ">", ">=", "between?", "clamp", NULL };
+  static const char *const num[] = {
+    "%", "+@", "-@", "<=>", "abs", "abs2", "angle", "arg", "ceil", "clone", "coerce", "conj",
+    "conjugate", "denominator", "div", "divmod", "dup", "eql?", "fdiv", "finite?", "floor", "i",
+    "imag", "imaginary", "infinite?", "integer?", "magnitude", "modulo", "negative?", "nonzero?",
+    "numerator", "phase", "polar", "positive?", "quo", "real", "real?", "rect", "rectangular",
+    "remainder", "round", "step", "to_c", "to_int", "truncate", "zero?", NULL };
+  static const char *const enm[] = {
+    "all?", "any?", "chain", "chunk", "chunk_while", "collect", "collect_concat", "compact",
+    "count", "cycle", "detect", "drop", "drop_while", "each_cons", "each_entry", "each_slice",
+    "each_with_index", "each_with_object", "entries", "filter", "filter_map", "find", "find_all",
+    "find_index", "first", "flat_map", "grep", "grep_v", "group_by", "include?", "inject", "lazy",
+    "map", "max", "max_by", "member?", "min", "min_by", "minmax", "minmax_by", "none?", "one?",
+    "partition", "reduce", "reject", "reverse_each", "select", "slice_after", "slice_before",
+    "slice_when", "sort", "sort_by", "sum", "take", "take_while", "tally", "to_a", "to_h", "to_set",
+    "uniq", "zip", NULL };
+  int numeric = sp_streq(cls, "Integer") || sp_streq(cls, "Float");
+  if ((numeric || sp_streq(cls, "String") || sp_streq(cls, "Symbol")) && str_in(m, cmp)) return 1;
+  if (numeric && str_in(m, num)) return 1;
+  if ((sp_streq(cls, "Array") || sp_streq(cls, "Hash") || sp_streq(cls, "Range")) && str_in(m, enm)) return 1;
+  return 0;
+}
+
+/* A boxed receiver's send split at run time between the dispatch and the
+   top-level def, when a class the program defines answers the name. */
+int send_blind_split(Compiler *c, TyKind rt, const char *name) {
+  return rt == TY_POLY && send_blind_recv_owns(c, rt, name);
+}
+
+/* Whether a receiver of static type `rt` answers `name` before Object does:
+   `x.send(:m)` reaches a top-level `def m` (Object's private method) only
+   when the receiver's class does not define m first. A user class answers
+   through its chain; a builtin through its own methods and its modules'
+   (builtin_module_owns); a boxed receiver when a class the program defines
+   answers the name, decided per value by the split (send_blind_split). A
+   builtin value in a boxed slot is not asked: the dispatch over a builtin's
+   name hands back that builtin's own C type, which the split's boxed arms
+   cannot take. */
+int send_blind_recv_owns(Compiler *c, TyKind rt, const char *name) {
+  if (!name) return 0;
+  if (ty_is_object(rt))
+    return comp_method_in_chain(c, ty_object_class(rt), name, NULL) >= 0 ||
+           comp_reader_in_chain(c, ty_object_class(rt), name, NULL);
+  if (rt == TY_POLY) {
+    for (int k = 0; k < c->nclasses; k++)
+      if (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL)) return 1;
+    return 0;
+  }
+  const char *bc = rt == TY_INT ? "Integer" : rt == TY_FLOAT ? "Float"
+                 : (rt == TY_STRING || rt == TY_STRBUF) ? "String" : rt == TY_SYMBOL ? "Symbol"
+                 : ty_is_array(rt) ? "Array" : ty_is_hash(rt) ? "Hash"
+                 : rt == TY_RANGE ? "Range" : rt == TY_PROC ? "Proc" : rt == TY_TIME ? "Time" : NULL;
+  return bc && (builtin_method_known(bc, name) || builtin_module_owns(bc, name));
+}
+
 int builtin_object_method_known(const char *m) {
   static const char *const OBJM2[] = {
     "class", "clone", "dup", "display", "enum_for", "eql?", "equal?",
@@ -27643,6 +27705,57 @@ static void emit_handle_inspect(Compiler *c, int recv, TyKind rt, Buf *b) {
   buf_printf(b, "sp_sprintf(\"#<%s:0x%%016llx>\", (unsigned long long)(uintptr_t)(", hn);
   emit_expr(c, recv, b); buf_puts(b, "))");
 }
+static int emit_send_blind(Compiler *c, int id, Buf *b) {
+  if (nt_str(c->nt, id, "send_blind") && nt_ref(c->nt, id, "receiver") >= 0 &&
+      nt_ref(c->nt, id, "block") < 0) {
+    const char *sn = nt_str(c->nt, id, "name");
+    int smi = sn ? comp_method_index(c, sn) : -1;
+    if (smi >= 0 && !(smi < c->nscopes && c->scopes[smi].yields)) {
+      int srcv = nt_ref(c->nt, id, "receiver");
+      TyKind srt = comp_ntype(c, srcv);
+      if (!send_blind_recv_owns(c, srt, sn)) { emit_method_call(c, id, b); return 1; }
+      /* A boxed receiver answers by its class at run time: one whose class
+         defines the name takes the dispatch, any other reaches the top-level
+         def, Object's (the call is typed boxed for the two). The receiver
+         runs once, into a temp both arms read, and the arguments that could
+         run twice are run ahead of them. */
+      if (send_blind_split(c, srt, sn) && g_send_split != id && g_n_argov < MAX_ARG_OVERRIDE &&
+          comp_ntype(c, id) == TY_POLY) {
+        int tv = ++g_tmp;
+        Buf rb; memset(&rb, 0, sizeof rb);
+        emit_boxed(c, srcv, &rb);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tv, rb.p ? rb.p : "sp_box_nil()", tv);
+        free(rb.p);
+        int sac = 0; const int *sav = call_args(c->nt, id, &sac);
+        int sv_argov = g_n_argov;
+        g_argov_node[g_n_argov] = srcv;
+        snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tv);
+        g_n_argov++;
+        if (sav && sac > 0) emit_args_in_source_order(c, sav, sac, g_pre);
+        buf_printf(b, "(((_t%d.tag == SP_TAG_OBJ && (0", tv);
+        for (int k = 0; k < c->nclasses; k++)
+          if (comp_method_in_chain(c, k, sn, NULL) >= 0 || comp_reader_in_chain(c, k, sn, NULL))
+            buf_printf(b, " || _t%d.cls_id == %d", tv, k);
+        buf_puts(b, "))) ? (");
+        int sv_split = g_send_split; g_send_split = id;
+        emit_expr(c, id, b);
+        g_send_split = sv_split;
+        buf_puts(b, ") : (");
+        Buf mb; memset(&mb, 0, sizeof mb);
+        emit_method_call(c, id, &mb);
+        emit_boxed_text(c, c->scopes[smi].ret, mb.p ? mb.p : "0", b);
+        free(mb.p);
+        buf_puts(b, "))");
+        g_n_argov = sv_argov;
+        return 1;
+      }
+    }
+  }
+
+  return 0;
+}
+
 static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -27780,18 +27893,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* A retargeted `x.send(:m)`: send ignores visibility, and a top-level `def`
      is Object's private instance method -- reachable this way and no other.
      The receiver's own class answers first when it defines the name. */
-  if (nt_str(c->nt, id, "send_blind") && nt_ref(c->nt, id, "receiver") >= 0 &&
-      nt_ref(c->nt, id, "block") < 0) {
-    const char *sn = nt_str(c->nt, id, "name");
-    int smi = sn ? comp_method_index(c, sn) : -1;
-    if (smi >= 0 && !(smi < c->nscopes && c->scopes[smi].yields)) {
-      TyKind srt = comp_ntype(c, nt_ref(c->nt, id, "receiver"));
-      int owns = ty_is_object(srt) &&
-                 (comp_method_in_chain(c, ty_object_class(srt), sn, NULL) >= 0 ||
-                  comp_reader_in_chain(c, ty_object_class(srt), sn, NULL));
-      if (!owns) { emit_method_call(c, id, b); return; }
-    }
-  }
+  if (emit_send_blind(c, id, b)) return;
 
   /* A bare call resolves the way CRuby's ancestry does: the enclosing class's
      own chain, then Object -- where a top-level `def` lands -- and only then a

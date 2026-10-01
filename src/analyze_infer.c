@@ -1926,6 +1926,23 @@ const BuiltinOp *an_bop_find(Compiler *c, int id, TyKind rt, const char *name,
   return op;
 }
 
+static int infer_send_blind(Compiler *c, int id, int recv, const char *name, TyKind *out) {
+  const NodeTable *nt = c->nt;
+  /* A retargeted `x.send(:m)` reaching a top-level def: see the codegen twin. */
+  if (nt_str(nt, id, "send_blind") && recv >= 0 && nt_ref(nt, id, "block") < 0) {
+    int smi = comp_method_index(c, name);
+    if (smi >= 0 && !(smi < c->nscopes && c->scopes[smi].yields)) {
+      TyKind srt = infer_type(c, recv);
+      if (!send_blind_recv_owns(c, srt, name)) { *out = an_user_call(c, id, smi, UC_SEND_BLIND, -1); return 1; }
+      /* a boxed receiver answers by its class, the dispatch or the
+         top-level def: boxed, as codegen's split hands either back */
+      if (send_blind_split(c, srt, name)) { *out = TY_POLY; return 1; }
+    }
+  }
+
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   if (g_plan_check && id >= 0 && id < c->node_cap) {
@@ -2089,17 +2106,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       return TY_POLY;
   }
 
-  /* A retargeted `x.send(:m)` reaching a top-level def: see the codegen twin. */
-  if (nt_str(nt, id, "send_blind") && recv >= 0 && nt_ref(nt, id, "block") < 0) {
-    int smi = comp_method_index(c, name);
-    if (smi >= 0 && !(smi < c->nscopes && c->scopes[smi].yields)) {
-      TyKind srt = infer_type(c, recv);
-      int owns = ty_is_object(srt) &&
-                 (comp_method_in_chain(c, ty_object_class(srt), name, NULL) >= 0 ||
-                  comp_reader_in_chain(c, ty_object_class(srt), name, NULL));
-      if (!owns) return an_user_call(c, id, smi, UC_SEND_BLIND, -1);
-    }
-  }
+  TyKind send_ret;
+  if (infer_send_blind(c, id, recv, name, &send_ret)) return send_ret;
 
   /* A call with NO receiver resolves the way CRuby's ancestry does: the
      enclosing scope's own chain first, then Object -- where a top-level `def`
