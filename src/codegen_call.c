@@ -24171,6 +24171,57 @@ static void refuse_forwarded_args(Compiler *c, int id, const char *name) {
   }
 }
 
+/* A String variable written ahead of the first splat of a call whose
+   splats decide which parameter takes it: with an optional parameter
+   before the rest and required ones after it, a short splat moves the
+   argument onto a later parameter (`def g(a = nil, *r, z)` called
+   `g(s, *e)` binds s to z when e is empty, to a otherwise;
+   gather_lead_placed). The binder funds that parameter out of the gather,
+   so a parameter that appends to it grows a copy: refused when one the
+   argument can reach does, unless the argument is the shared handle and
+   the parameter shares it. */
+static void refuse_unplaced_lead(Compiler *c, int id, const char *name, int recv) {
+  const NodeTable *nt = c->nt;
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  int fs = -1;
+  for (int k = 0; k < ac && fs < 0; k++) {
+    NodeKind ak = nt_kind(nt, av[k]);
+    if (ak == NK_BlockArgumentNode || (nt_type(nt, av[k]) && sp_streq(nt_type(nt, av[k]), "ForwardingArgumentsNode")))
+      return;
+    if (ak == NK_SplatNode) fs = k;
+  }
+  if (fs <= 0) return;
+  int mi = -1;
+  if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
+    Scope *encl = comp_scope_of(c, id);
+    mi = encl && encl->class_id >= 0 && !encl->is_cmethod ? comp_method_in_chain(c, encl->class_id, name, NULL) : -1;
+    if (mi < 0) mi = comp_method_index(c, name);
+  }
+  else if (ty_is_object(comp_ntype(c, recv))) mi = comp_method_in_chain(c, ty_object_class(comp_ntype(c, recv)), name, NULL);
+  if (mi < 0) return;
+  Scope *m = &c->scopes[mi];
+  for (int i = 0; i < fs && i < m->nparams; i++) {
+    int shared;
+    const char *kind = strvar_arg(c, av[i], &shared);
+    if (!kind || gather_lead_placed(c, m, av, ac, i)) continue;
+    for (int j = i; j < m->nparams; j++) {
+      if (!m->pnames[j] || j == m->rest_idx || j == m->kwrest_idx ||
+          callee_param_is_declared_kwarg(c, m, m->pnames[j])) continue;
+      LocalVar *q = scope_local(m, m->pnames[j]);
+      if (!q) continue;
+      int handle = q->type == TY_STRBUF && q->str_shared;
+      if (!(q->byref_out || handle || dyn_method_appends(c, mi, j) ||
+            (q->type == TY_POLY && (q->poly_lift & POLY_LIFT_APPENDED)))) continue;
+      if (shared && (handle || q->type == TY_POLY)) continue;
+      char why[160], mt[96];
+      snprintf(why, sizeof why, "from %s ahead of a splat whose length decides which parameter takes it", kind);
+      snprintf(mt, sizeof mt, "`%s`", m->name ? m->name : name);
+      refuse_string_copy(c, av[i], mt, m->pnames[j], "a call that gathers its arguments", why);
+    }
+  }
+}
+
 static void refuse_string_copies(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -24181,6 +24232,7 @@ static void refuse_string_copies(Compiler *c, int id) {
   int dyn = sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]") ||
             sp_streq(name, "yield") || sp_streq(name, "===");
   refuse_changed_splat(c, id, name, recv, dyn);
+  if (!dyn) refuse_unplaced_lead(c, id, name, recv);
   /* a proc, a lambda or a Method: shared, unless the String is a variable
      the call cannot pull into the handle, or the target is reached through
      a path not lifted yet */
