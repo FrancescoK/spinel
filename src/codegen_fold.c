@@ -10144,6 +10144,15 @@ int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name
    expression yielding sp_<static>* (e.g. "self", "&lv_x", "&_t3"). Args
    are pre-evaluated into temps so they're emitted once.
    `blk_node` is the BlockNode id of the attached block, or -1 if none. */
+/* An Object, Array, Hash or Numeric reopening: its instance methods take
+   `sp_RbVal self` (emit_method_signature), any value, with no struct of the
+   class's own to cast it to. */
+static int reopen_takes_boxed_self(Compiler *c, int cid) {
+  const char *cn = cid >= 0 ? c->classes[cid].c_name : NULL;
+  return cn && (sp_streq(cn, "Object") || sp_streq(cn, "Array") ||
+                sp_streq(cn, "Hash") || sp_streq(cn, "Numeric"));
+}
+
 void emit_dispatch(Compiler *c, int cid, const char *name,
                           const char *selfptr, int argsNode, int blk_node, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -10542,8 +10551,10 @@ else {
   const char *mname = m ? m->name : name;
 
   if (!virtual) {
-    /* a value-type receiver is passed by value (no pointer cast) */
-    if (comp_ty_value_obj(c, ty_object(cid)))
+    /* a value-type receiver is passed by value (no pointer cast); so is
+       the self of an Object / Array / Hash / Numeric reopening, which its
+       methods take boxed (emit_method_signature) and which has no struct */
+    if (comp_ty_value_obj(c, ty_object(cid)) || reopen_takes_boxed_self(c, defcls))
       buf_printf(b, "sp_%s_%s(%s", c->classes[defcls].c_name, mc(mname), selfptr);
     else
       buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].c_name, mc(mname), c->classes[defcls].c_name, selfptr);
