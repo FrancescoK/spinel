@@ -1926,11 +1926,36 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
                  trecv, tbox, name, trecv);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tres, tres);
+      /* Hash#select and Hash#reject yield the key and the value as two
+         values (find_all yields the pair whole, as Hash#each does): a lone
+         `|k|` takes the key, and a block of any other shape than plain
+         requireds binds the step's values by the proc distribution. */
+      int gather = block_binds_gathered(c, fblock), thash = 0;
+      int lone = !gather && bp && !block_param_name(c, fblock, 1) && !block_rest_marker(c, fblock) &&
+                 !block_param_is_multi(c, fblock, 0);
+      if ((gather || lone) && !pf_fa) {
+        thash = ++g_tmp;
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "int _t%d = _t%d.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_t%d.cls_id);\n",
+                   thash, tbox, tbox);
+      }
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
       char es[64]; snprintf(es, sizeof es, "sp_PolyArray_get(_t%d, _t%d)", trecv, ti);
-      int splat = emit_iter_autosplat(c, fblock, TY_POLY_ARRAY, es, g_indent + 1);
-      if (!splat && bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_RbVal lv_%s = %s;\n", bp, es); }
+      int splat = 0;
+      if (gather) {
+        char vals[128];
+        if (thash) snprintf(vals, sizeof vals, "sp_yielded_args(_t%d, %s)", thash, es);
+        else snprintf(vals, sizeof vals, "sp_yielded_args(0, %s)", es);
+        emit_boxed_step_binds(c, fblock, vals, g_pre, g_indent + 1, 0);
+        splat = 1;
+      }
+      else splat = emit_iter_autosplat(c, fblock, TY_POLY_ARRAY, es, g_indent + 1);
+      if (!splat && bp && thash) {
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "sp_RbVal lv_%s = sp_yielded_first(_t%d, %s);\n", bp, thash, es);
+      }
+      else if (!splat && bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_RbVal lv_%s = %s;\n", bp, es); }
       Buf cb = block_cond_buf(c, fblock, fbb, fbn);
       emit_indent(g_pre, g_indent + 1);
       buf_printf(g_pre, "if (%s(%s)) sp_PolyArray_push(_t%d, %s);\n",
