@@ -15944,17 +15944,18 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         for (int j = 0; j < sci->nmembers; j++) {
           const char *ivn = iv_c(sci->ivars[j] + 1);   /* skip @, mangle to a C field */
           TyKind ivt = sci->ivar_types[j];
-          if (ivt == TY_INT || ivt == TY_BOOL || ivt == TY_SYMBOL)
-            buf_printf(b, " && _t%d->iv_%s == _t%d->iv_%s", ta, ivn, tb2, ivn);
+          switch (ivt) {
+          case TY_INT: case TY_BOOL: case TY_SYMBOL:
+            buf_printf(b, " && _t%d->iv_%s == _t%d->iv_%s", ta, ivn, tb2, ivn); break;
           /* two nil sentinels are equal though NaN != NaN */
-          else if (ivt == TY_FLOAT)
+          case TY_FLOAT:
             buf_printf(b, " && (_t%d->iv_%s == _t%d->iv_%s || (sp_float_is_nil(_t%d->iv_%s) && sp_float_is_nil(_t%d->iv_%s)))",
-                       ta, ivn, tb2, ivn, ta, ivn, tb2, ivn);
-          else if (ivt == TY_STRING)
-            buf_printf(b, " && sp_str_eq(_t%d->iv_%s, _t%d->iv_%s)", ta, ivn, tb2, ivn);
-          else if (ivt == TY_POLY)
-            buf_printf(b, " && sp_poly_eq(_t%d->iv_%s, _t%d->iv_%s)", ta, ivn, tb2, ivn);
-          else {
+                       ta, ivn, tb2, ivn, ta, ivn, tb2, ivn); break;
+          case TY_STRING:
+            buf_printf(b, " && sp_str_eq(_t%d->iv_%s, _t%d->iv_%s)", ta, ivn, tb2, ivn); break;
+          case TY_POLY:
+            buf_printf(b, " && sp_poly_eq(_t%d->iv_%s, _t%d->iv_%s)", ta, ivn, tb2, ivn); break;
+          default: {
             /* boxed comparison covers arrays/hashes/objects uniformly */
             Buf ba; memset(&ba, 0, sizeof ba);
             char lx[128], rx[128];
@@ -15966,6 +15967,8 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
             emit_boxed_text(c, ivt, rx, b);
             buf_puts(b, ")");
             free(ba.p);
+            break;
+          }
           }
         }
         buf_puts(b, "); })");
