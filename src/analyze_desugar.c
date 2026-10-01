@@ -13137,3 +13137,27 @@ int desugar_class_body_self_calls(Compiler *c) {
   free(q.qual); free(q.outer); free(q.cls);
   return changed;
 }
+
+/* `class Rational < Numeric` -- a builtin reopened with its own superclass
+   named, as the bigdecimal gem's util.rb writes it -- is the reopening
+   `class Rational` is: Ruby accepts the superclass because it is the one the
+   class already has. Left in, it made a user class of the builtin's name,
+   whose struct the runtime's own type already took. The superclass is
+   dropped when it is the builtin's own (not for the exception classes,
+   whose chain the runtime answers). */
+int desugar_builtin_reopen_named_superclass(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  for (int n = 0; n < nt->count; n++) {
+    if (nt_kind(nt, n) != NK_ClassNode) continue;
+    int cp = nt_ref(nt, n, "constant_path"), sc = nt_ref(nt, n, "superclass");
+    if (cp < 0 || sc < 0 || nt_kind(nt, cp) != NK_ConstantReadNode || nt_kind(nt, sc) != NK_ConstantReadNode) continue;
+    const char *cn = nt_str(nt, cp, "name"), *sn = nt_str(nt, sc, "name");
+    if (!cn || !sn || is_builtin_exception_name(cn)) continue;
+    int cid = builtin_class_id(cn), sid = builtin_class_id(sn);
+    if (cid == 0 || sid == 0 || builtin_class_parent_id(cid) != sid) continue;
+    nt_node_set_ref(nt, n, "superclass", -1);
+    changed = 1;
+  }
+  return changed;
+}
