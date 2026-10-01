@@ -27660,14 +27660,20 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                   sp_streq(enm, "replace")) && eac == 1 &&
           nt_ref(nt, id, "block") < 0) {
         TyKind ht2 = comp_ntype(c, eav[0]);
-        const char *hty2 = nt_type(nt, eav[0]);
-        if (ht2 == TY_STR_STR_HASH ||
-            (hty2 && (sp_streq(hty2, "HashNode") || sp_streq(hty2, "KeywordHashNode")))) {
+        if (ht2 == TY_STR_STR_HASH) {
           buf_printf(b, "sp_env_update_h(");
           emit_expr(c, eav[0], b);
           buf_printf(b, ", %d)", sp_streq(enm, "replace") ? 1 : 0);
           return;
         }
+        /* a hash of any other variant (an empty `{}` too), or something a
+           hash may be: boxed, so the run time checks each pair -- a nil value
+           deletes, and a key or value that is not a String raises CRuby's
+           TypeError */
+        buf_printf(b, "sp_env_update_v(");
+        emit_boxed(c, eav[0], b);
+        buf_printf(b, ", %d)", sp_streq(enm, "replace") ? 1 : 0);
+        return;
       }
       if (enm && eac == 0 && nt_ref(nt, id, "block") >= 0 &&
           (sp_streq(enm, "delete_if") || sp_streq(enm, "reject!") ||
