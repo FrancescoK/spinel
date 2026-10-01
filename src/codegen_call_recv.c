@@ -12410,11 +12410,23 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
         }
         else if (kt3 == TY_RANGE) {
           /* a Range argument selects a run of groups, as Array#values_at does;
-             it went into sp_MatchData_aref's sp_int slot as a struct (#3627) */
-          int rk = ++g_tmp, rj = ++g_tmp, rlo = ++g_tmp, rhi = ++g_tmp;
+             it went into sp_MatchData_aref's sp_int slot as a struct (#3627).
+             Its ends resolve against the group count the way CRuby's do: an
+             open end runs to the last group, a negative one counts back from
+             the end, a begin before the whole match raises RangeError, and a
+             group past the last reads nil. Read raw, an endless range ran the
+             loop to INTPTR_MAX, and a negative begin read the groups from the
+             end through sp_MatchData_aref's own negative index. */
+          int rk = ++g_tmp, rj = ++g_tmp, rlo = ++g_tmp, rhi = ++g_tmp, rn = ++g_tmp;
           buf_printf(b, " sp_Range _t%d = ", rk); emit_expr(c, argv[i], b);
-          buf_printf(b, "; sp_int _t%d = _t%d.first, _t%d = _t%d.last - (_t%d.excl ? 1 : 0);",
-                     rlo, rk, rhi, rk, rk);
+          buf_printf(b, "; sp_int _t%d = sp_MatchData_length(_t%d);", rn, mt);
+          buf_printf(b, " sp_int _t%d = _t%d.first == INTPTR_MIN ? 0 : _t%d.first;", rlo, rk, rk);
+          buf_printf(b, " if (_t%d < 0) { if (_t%d < -_t%d) sp_raise_cls(\"RangeError\","
+                        " sp_sprintf(\"%%s out of range\", sp_range_str(_t%d))); _t%d += _t%d; }",
+                     rlo, rlo, rn, rk, rlo, rn);
+          buf_printf(b, " sp_int _t%d = _t%d.last == INTPTR_MAX ? _t%d - 1"
+                        " : ((_t%d.last < 0 ? _t%d.last + _t%d : _t%d.last) - (_t%d.excl ? 1 : 0));",
+                     rhi, rk, rn, rk, rk, rn, rk, rk);
           buf_printf(b, " for (sp_int _t%d = _t%d; _t%d <= _t%d; _t%d++)"
                         " sp_PolyArray_push(_t%d, sp_box_nullable_str(sp_MatchData_aref(_t%d, _t%d)));",
                      rj, rlo, rj, rhi, rj, at, mt, rj);
