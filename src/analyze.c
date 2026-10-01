@@ -16809,6 +16809,142 @@ static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
   return 0;
 }
 
+/* Is POLY variable `vn` of scope `vs` appended to in place: the receiver of
+   a String mutator, or read where it is lifted into the handle for a
+   parameter appended to (poly_strbuf_lift, the reads `lifted` collects)? */
+static int poly_var_appended(Compiler *c, SbMutTab *lifted, const char *vn, Scope *vs) {
+  if (strbuf_any_str_mut(c, vn, vs)) return 1;
+  signed char *v = sb_mut_tab_slot(lifted, vn, (int)(vs - c->scopes), 0);
+  return v && *v == 1;
+}
+/* Lift read `a` of a POLY variable that can hold a String (poly_strbuf_lift);
+   a method's own parameter read so is appended to as well, and its callers
+   are pulled in on the next round (convert_byref_handle_params). */
+static int lift_poly_read(Compiler *c, const HandleArgTab *hat, SbMutTab *lifted, int a) {
+  const NodeTable *nt = c->nt;
+  if (a < 0 || c->poly_strbuf_lift[a]) return 0;
+  /* A POLY ivar is lifted the same way, its slot stored back (emit_expr's
+     ivar read); a value type's ivar is a field of a struct copy, with no
+     slot the caller would see */
+  if (nt_kind(nt, a) == NK_InstanceVariableReadNode) {
+    Scope *as = comp_scope_of(c, a);
+    if (!as || comp_ntype(c, a) != TY_POLY) return 0;
+    if (as->class_id >= 0 && !as->is_cmethod && comp_ty_value_obj(c, ty_object(as->class_id))) return 0;
+    c->poly_strbuf_lift[a] = 1;
+    return 1;
+  }
+  if (nt_kind(nt, a) != NK_LocalVariableReadNode) return 0;
+  const char *vn = nt_str(nt, a, "name");
+  Scope *vs = vn ? comp_scope_of(c, a) : NULL;
+  LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+  if (!lv || lv->type != TY_POLY || !poly_var_may_hold_string(c, hat, vn, vs, 0)) return 0;
+  c->poly_strbuf_lift[a] = 1;
+  if (lifted) sb_mut_tab_note(lifted, vn, (int)(vs - c->scopes), 1);
+  if (lv->is_param && !lv->is_block_param && an_param_idx(vs, vn) >= 0)
+    lv->poly_lift |= POLY_LIFT_APPENDED;
+  return 1;
+}
+/* Is call `n` in yielding method `m` a call of the method's own `&b`
+   (`b.call(v)`, `b.(v)`, `b[v]`, `b.yield(v)`), which is spliced as a
+   yield? */
+static int poly_spliced_block_call(Compiler *c, Scope *m, int n) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, n, "name");
+  int r = nt_ref(nt, n, "receiver");
+  if (!nm || r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode || !m->blk_param) return 0;
+  if (!(sp_streq(nm, "call") || sp_streq(nm, "()") || sp_streq(nm, "[]") || sp_streq(nm, "yield")))
+    return 0;
+  const char *rn = nt_str(nt, r, "name");
+  return rn && m->blk_param[0] && sp_streq(rn, m->blk_param);
+}
+/* A POLY variable holds a plain String as a value, so a second name for it
+   is a copy: `y = x` copied the box, and `sp_poly_shl` on either name
+   answered a new String the other never saw, as did a callee's append
+   through either. The same held for a String a yielding method's POLY
+   parameter yields to a block that appends to it (#6475 lifted a POLY
+   variable only where a call hands it to an appending parameter). The
+   source of an alias write is lifted into the handle where either name is
+   appended to in place, and so is the argument a yielding method binds to
+   a parameter it yields to such a block, so that both names hold the one
+   String. A lifted read makes its variable appended in turn, which carries
+   the rule along a chain of aliases. */
+static int lift_poly_alias_reads(Compiler *c, const HandleArgTab *hat) {
+  const NodeTable *nt = c->nt;
+  int changed = 0, nr = 0;
+  nt_nodes_of_kind(nt, NK_LocalVariableReadNode, &nr);
+  SbMutTab lifted; sb_mut_tab_init(&lifted, nr);
+  NT_FOREACH_KIND(nt, NK_LocalVariableReadNode, r) {
+    if (!c->poly_strbuf_lift[r]) continue;
+    const char *rn = nt_str(nt, r, "name");
+    Scope *rs = rn ? comp_scope_of(c, r) : NULL;
+    if (rs) sb_mut_tab_note(&lifted, rn, (int)(rs - c->scopes), 1);
+  }
+  static const NodeKind wkinds[3] = { NK_LocalVariableWriteNode, NK_LocalVariableOrWriteNode,
+                                       NK_LocalVariableAndWriteNode };
+  for (int round = 1; round; ) {
+    round = 0;
+    /* `y = x`, `y ||= x`, and a chain `z = y = x`, whose every name holds
+       the value of the innermost read */
+    for (int wk = 0; wk < 3; wk++) NT_FOREACH_KIND(nt, wkinds[wk], w) {
+      int v = w, app = 0, poly = 1;
+      while (poly && v >= 0) {
+        NodeKind vk = nt_kind(nt, v);
+        if (vk == NK_ParenthesesNode) {
+          int pb = nt_ref(nt, v, "body"), bn = 0;
+          const int *bb = pb >= 0 ? nt_arr(nt, pb, "body", &bn) : NULL;
+          v = bn == 1 ? bb[0] : -1;
+          continue;
+        }
+        if (vk == NK_InstanceVariableReadNode && v != w) {
+          poly = comp_ntype(c, v) == TY_POLY;
+          break;
+        }
+        if (vk != NK_LocalVariableReadNode && (v != w && vk != NK_LocalVariableWriteNode)) { v = -1; break; }
+        const char *vn = nt_str(nt, v, "name");
+        Scope *vs = vn ? comp_scope_of(c, v) : NULL;
+        LocalVar *vl = vs ? scope_local(vs, vn) : NULL;
+        poly = vl && vl->type == TY_POLY;
+        if (poly && poly_var_appended(c, &lifted, vn, vs)) app = 1;
+        if (vk == NK_LocalVariableReadNode) break;
+        v = nt_ref(nt, v, "value");
+      }
+      if (!poly || !app || v < 0 || v == w) continue;
+      if (lift_poly_read(c, hat, &lifted, v)) round = changed = 1;
+    }
+    /* `def yl(v) = yield(v)` called `yl(x) { |t| t << s }`: the block's
+       parameter is another name for the caller's variable. A `b.call(v)` on
+       the method's own `&b` is spliced as the yield is. */
+    for (int pass = 0; pass < 2; pass++) NT_FOREACH_KIND(nt, pass ? NK_CallNode : NK_YieldNode, y) {
+      Scope *m = comp_scope_of(c, y);
+      if (!m || !m->name || !m->yields || !hat->ok) continue;
+      if (pass && !poly_spliced_block_call(c, m, y)) continue;
+      int mi = (int)(m - c->scopes);
+      int aa = nt_ref(nt, y, "arguments"), ac = 0;
+      const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &ac) : NULL;
+      for (int k = 0; k < ac; k++) {
+        NodeKind ak = nt_kind(nt, av[k]);
+        if (ak == NK_SplatNode || ak == NK_KeywordHashNode) break;
+        if (ak != NK_LocalVariableReadNode) continue;
+        int pj = an_param_idx(m, nt_str(nt, av[k], "name"));
+        LocalVar *q = pj >= 0 ? scope_local(m, m->pnames[pj]) : NULL;
+        if (!q || !q->is_param || q->is_block_param || q->type != TY_POLY) continue;
+        for (int e = hat->head[mi]; e >= 0; e = hat->enext[e]) {
+          int u = hat->enode[e], blk = nt_ref(nt, u, "block");
+          if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+          const char *bp = block_param_name(c, blk, k);
+          Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
+          LocalVar *t = bs ? scope_local(bs, bp) : NULL;
+          if (!t || t->type != TY_POLY || !poly_var_appended(c, &lifted, bp, bs)) continue;
+          if (lift_poly_read(c, hat, &lifted, arg_layout_param_node(c, m, u, pj, NULL)))
+            round = changed = 1;
+        }
+      }
+    }
+  }
+  sb_mut_tab_free(&lifted);
+  return changed;
+}
+
 int spread_string_reads(Compiler *c, Scope *m, int call, int pj, int *out, int *direct, int cap);
 static int dyn_pull_arg(Compiler *c, int a, int mark_read);
 static int convert_byref_handle_params(Compiler *c,
@@ -16951,6 +17087,11 @@ static int convert_byref_handle_params(Compiler *c,
               alv->type != TY_STRBUF && alv->type != TY_POLY) continue;
           if (alv->type != TY_POLY && (alv->type != TY_STRBUF || !alv->str_shared))
             {  alv->type = TY_STRBUF; alv->str_shared = 1; changed = 1;  }
+        }
+        else if (nt_kind(nt, an2) == NK_InstanceVariableReadNode && comp_ntype(c, an2) == TY_POLY) {
+          /* a POLY ivar boxes a plain String as a copy too: its read is
+             lifted as a POLY local's is */
+          if (lift_poly_read(c, hat, NULL, an2)) changed = 1;
         }
         else if (nt_kind(nt, an2) == NK_InstanceVariableReadNode) {
           const char *vn2 = nt_str(nt, an2, "name");
@@ -19042,6 +19183,13 @@ static int ctor_pull_args(Compiler *c) {
    pulls its callers in (poly_lift), as at a static call. */
 static int dyn_lift_poly_arg(Compiler *c, int n, int k, int a) {
   const NodeTable *nt = c->nt;
+  if (nt_kind(nt, a) == NK_InstanceVariableReadNode) {
+    if (c->poly_strbuf_lift[a]) return 0;
+    DynReach r; memset(&r, 0, sizeof r);
+    dyn_reach_value(c, nt_ref(nt, n, "receiver"), k, 0, &r);
+    if (r.unlifted || (!r.app && !(r.unknown && dyn_any_appender(c)))) return 0;
+    return lift_poly_read(c, NULL, NULL, a);
+  }
   const char *vn = nt_str(nt, a, "name");
   Scope *vs = vn ? comp_scope_of(c, a) : NULL;
   LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
@@ -19180,6 +19328,10 @@ static int dyn_pull_site_args(Compiler *c, int n) {
         }
       }
       break;   /* the positions after a splat depend on its length */
+    }
+    if (ak == NK_InstanceVariableReadNode && comp_ntype(c, av[k]) == TY_POLY && nt_kind(nt, n) == NK_CallNode) {
+      changed |= dyn_lift_poly_arg(c, n, k, av[k]);
+      continue;
     }
     if (ak != NK_LocalVariableReadNode) continue;
     TyKind at = comp_ntype(c, av[k]);
@@ -19338,7 +19490,9 @@ static int yield_splice_site(Compiler *c, int y, int pass, ALocalAliases *aliase
         dyn_reach_value(c, v, k, 0, &r);
         if (r.unlifted || !(r.app || (r.unknown && dyn_any_appender(c)))) continue;
         int ua = arg_layout_param_node(c, ms, u, pj, NULL);
-        if (ua >= 0) changed |= dyn_pull_arg(c, ua, 1);
+        /* a POLY variable there is lifted into the handle, as at a call
+           appending to it (lift_poly_alias_reads) */
+        if (ua >= 0) changed |= dyn_pull_arg(c, ua, 1) | lift_poly_read(c, NULL, NULL, ua);
       }
       continue;
     }
@@ -28119,6 +28273,7 @@ void analyze_program(Compiler *c) {
     HandleArgTab hat; handle_arg_tab_init(c, &hat);
     int ch = promote_params_stored_in_shared_ivars(c, &hat);
     if (convert_byref_handle_params(c, &hat)) ch = 1;
+    if (lift_poly_alias_reads(c, &hat)) ch = 1;
     handle_arg_tab_free(&hat);
     if (promote_local_alias_pairs(c)) ch = 1;
     if (promote_dyncall_string_args(c)) ch = 1;
