@@ -174,4 +174,6 @@ int is_integer_class_name(const char *n); /* Fixnum Integer */
 
 int is_ivar_access(const char *n);   /* instance_variable_get instance_variable_set */
 
+int is_builtin_reopen_name(const char *name);
+
 #endif
