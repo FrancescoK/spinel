@@ -1,0 +1,20 @@
+false
+true
+false
+false
+true
+NoMethodError
+true
+"io"
+private method 'tag' called for an instance of File
+protected method 'prot' called for an instance of File
+private method 'tag' called for an instance of IO
+protected method 'prot' called for an instance of IO
+private method 'tag' called for an instance of TCPSocket
+protected method 'prot' called for an instance of TCPSocket
+private method 'tag' called for an instance of File
+protected method 'prot' called for an instance of File
+false
+true
+false
+true

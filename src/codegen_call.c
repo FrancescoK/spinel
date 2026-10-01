@@ -947,6 +947,13 @@ static void emit_io_reopen_responds(Compiler *c, int tv, const char *qm, int inc
   }
   free(ib.p);
 }
+/* The message of a visibility refusal on an IO handle: CRuby names the
+   handle's own class (File, TCPSocket), not the reopening's. */
+static void emit_io_vis_msg(int vis, const char *name, const char *handle, Buf *b) {
+  buf_printf(b, "sp_str_concat3((&(\"\\xff\" \"%s method '%s' called for an instance of \")[1]), "
+                "sp_io_kind_name(%s), NULL)",
+             vis == SP_VIS_PRIVATE ? "private" : "protected", name, handle);
+}
 /* A typed IO calling a method IO-family reopenings define. An IO
    reopening's method is every handle's; any other is picked by the
    handle's kind at run time, and a kind none of them serves raises
@@ -998,8 +1005,11 @@ static void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name,
     Buf vb; memset(&vb, 0, sizeof vb);
     int vis = plain ? io_reopen_call_vis(c, ks[i], name, 1, caller) : SP_VIS_PUBLIC;
     if (vis != SP_VIS_PUBLIC)
-      buf_printf(&vb, "(sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for an instance of %s\")[1])), ",
-                 vis == SP_VIS_PRIVATE ? "private" : "protected", name, c->classes[ks[i]].name);
+    {
+      buf_puts(&vb, "(sp_raise_cls(\"NoMethodError\", ");
+      emit_io_vis_msg(vis, name, h, &vb);
+      buf_puts(&vb, "), ");
+    }
     if (boxed) emit_boxed_text(c, c->scopes[kmi].ret, cb.p, &vb);
     else buf_puts(&vb, cb.p);
     if (vis != SP_VIS_PUBLIC) buf_puts(&vb, ")");
@@ -21593,9 +21603,11 @@ void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b) {
     if (vis == SP_VIS_PUBLIC) continue;
     buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO && ", tv, tv);
     emit_io_pick(c, tv, vnm, 0, b);
-    buf_printf(b, " == %d) { sp_exc_stage_recv(_t%d); "
-                  "sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for an instance of %s\")[1])); } ",
-               ks[i], tv, vis == SP_VIS_PRIVATE ? "private" : "protected", vnm, c->classes[ks[i]].name);
+    char h[48];
+    snprintf(h, sizeof h, "(sp_File *)_t%d.v.p", tv);
+    buf_printf(b, " == %d) { sp_exc_stage_recv(_t%d); sp_raise_cls(\"NoMethodError\", ", ks[i], tv);
+    emit_io_vis_msg(vis, vnm, h, b);
+    buf_puts(b, "); } ");
   }
 }
 
