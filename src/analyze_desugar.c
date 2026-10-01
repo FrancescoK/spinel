@@ -1603,6 +1603,332 @@ int desugar_compose_method_operand(Compiler *c) {
   return changed;
 }
 
+/* A String mutator whose receiver is an expression answering an existing
+   String is sent to that String in CRuby: `(c ? s : t) << x`,
+   `(@buf ||= +"") << x`, `(s).upcase!`, `s.to_s << x`. The mutator
+   lowerings act in place only on a receiver they can name, so such a
+   receiver was a copy and the mutation was lost. The call moves to where
+   the receiver's value is decided:
+
+     (c ? a : b).m(x)   ->  ((c ? a.m(x) : b.m(x)))
+     (s1; s2).m(x)      ->  ((s1; s2.m(x)))
+     (@v ||= e).m(x)    ->  ((@v ||= e; @v.m(x)))
+     (a || b).m(x)      ->  ((a ? a.m(x) : b.m(x)))     a variable's read
+     s.to_s.m(x)        ->  s.m(x)                      s a String
+
+   The receiver still runs first and the arguments after it, once on each
+   path. Only a String-typed receiver is rewritten, so other programs keep
+   their tree; a conditional missing an arm (whose value is nil), a call
+   with a block and an argument holding one are left alone. */
+static int mrv_no_scope(const NodeTable *nt, int root, int depth) {
+  if (root < 0 || root >= nt->count) return 1;
+  if (depth > 200) return 0;
+  NodeKind k = nt_kind(nt, root);
+  if (k == NK_BlockNode || k == NK_LambdaNode || k == NK_DefNode || k == NK_ClassNode ||
+      k == NK_ModuleNode || k == NK_SingletonClassNode) return 0;
+  const SpNode *nd = &nt->nodes[root];
+  for (int i = 0; i < nd->nr; i++) if (!mrv_no_scope(nt, nd->r[i].ref, depth + 1)) return 0;
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++) if (!mrv_no_scope(nt, nd->a[i].ids[j], depth + 1)) return 0;
+  return 1;
+}
+static int mrv_is_string(TyKind t) { return t == TY_STRING || t == TY_STRBUF; }
+/* Does the subtree under `root` write a variable -- any, or the one named
+   `vn` when it is given? Past the depth it follows, it answers that it may. */
+static int mrv_writes(const NodeTable *nt, int root, const char *vn, int depth) {
+  if (root < 0 || root >= nt->count) return 0;
+  if (depth > 200) return 1;
+  const char *ty = nt_type(nt, root);
+  size_t tl = ty ? strlen(ty) : 0;
+  if (((tl > 9 && strcmp(ty + tl - 9, "WriteNode") == 0) || (tl > 10 && strcmp(ty + tl - 10, "TargetNode") == 0)) &&
+      strstr(ty, "Variable") && (!vn || sp_streq(nt_str(nt, root, "name"), vn))) return 1;
+  const SpNode *nd = &nt->nodes[root];
+  for (int i = 0; i < nd->nr; i++) if (mrv_writes(nt, nd->r[i].ref, vn, depth + 1)) return 1;
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++) if (mrv_writes(nt, nd->a[i].ids[j], vn, depth + 1)) return 1;
+  return 0;
+}
+/* The read of the variable a write node names (`x = v`, `@v ||= e`), or -1
+   for another node. */
+static int mrv_target_read(NodeTable *nt, int w) {
+  const char *ty = nt_type(nt, w);
+  static const char *const PFX[] = { "LocalVariable", "InstanceVariable", "GlobalVariable", "ClassVariable", NULL };
+  if (!ty) return -1;
+  size_t tl = strlen(ty);
+  if (tl < 9 || strcmp(ty + tl - 9, "WriteNode") != 0) return -1;
+  for (int i = 0; PFX[i]; i++) {
+    size_t pl = strlen(PFX[i]);
+    if (strncmp(ty, PFX[i], pl) != 0) continue;
+    char rt[48]; snprintf(rt, sizeof rt, "%sReadNode", PFX[i]);
+    int r = nt_new_node(nt, rt);
+    if (r < 0) return -1;
+    nt_node_set_str(nt, r, "name", nt_str(nt, w, "name"));
+    if (i == 0) nt_node_set_int(nt, r, "depth", nt_int(nt, w, "depth", 0));
+    nt_node_set_int(nt, r, "node_line", nt_int(nt, w, "node_line", 0));
+    return r;
+  }
+  return -1;
+}
+/* The StatementsNodes whose last statement is a value `v` answers: the
+   body of a paren, each arm of an if, unless or case. 0 when an arm is
+   missing or empty, or `v` is none of these. */
+static int mrv_arms(const NodeTable *nt, int v, int *out, int cap) {
+  int n = 0;
+  switch (nt_kind(nt, v)) {
+    case NK_ParenthesesNode: {
+      int b = nt_ref(nt, v, "body"), bn = 0;
+      if (b < 0 || nt_kind(nt, b) != NK_StatementsNode) return 0;
+      nt_arr(nt, b, "body", &bn);
+      if (bn < 1 || cap < 1) return 0;
+      out[n++] = b;
+      return n;
+    }
+    case NK_IfNode: case NK_UnlessNode: {
+      for (int cur = v; cur >= 0 && n < cap; ) {
+        int st = nt_ref(nt, cur, "statements"), sn = 0;
+        if (st < 0) return 0;
+        nt_arr(nt, st, "body", &sn);
+        if (sn < 1) return 0;
+        out[n++] = st;
+        int sub = nt_ref(nt, cur, nt_kind(nt, cur) == NK_IfNode ? "subsequent" : "else_clause");
+        if (sub < 0) return 0;
+        if (nt_kind(nt, sub) == NK_IfNode) { cur = sub; continue; }
+        if (nt_kind(nt, sub) != NK_ElseNode) return 0;
+        int es = nt_ref(nt, sub, "statements"), en = 0;
+        if (es < 0) return 0;
+        nt_arr(nt, es, "body", &en);
+        if (en < 1 || n >= cap) return 0;
+        out[n++] = es;
+        return n;
+      }
+      return 0;
+    }
+    case NK_CaseNode: {
+      int wn = 0; const int *w = nt_arr(nt, v, "conditions", &wn);
+      for (int i = 0; i < wn; i++) {
+        int st = nt_ref(nt, w[i], "statements"), sn = 0;
+        if (st < 0 || n >= cap) return 0;
+        nt_arr(nt, st, "body", &sn);
+        if (sn < 1) return 0;
+        out[n++] = st;
+      }
+      int e = nt_ref(nt, v, "else_clause");
+      int es = e >= 0 ? nt_ref(nt, e, "statements") : -1, en = 0;
+      if (es < 0 || n >= cap) return 0;
+      nt_arr(nt, es, "body", &en);
+      if (en < 1) return 0;
+      out[n++] = es;
+      return n;
+    }
+    default:
+      return 0;
+  }
+}
+/* Is a paren's value one the call cannot already reach: a variable's read
+   or write, a conditional, another paren, or a String method answering its
+   receiver? (`(s << "a") << "b"` already appends to s.) */
+static int mrv_paren_value(const NodeTable *nt, int v) {
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_GlobalVariableReadNode ||
+      k == NK_ClassVariableReadNode || k == NK_IfNode || k == NK_UnlessNode || k == NK_CaseNode ||
+      k == NK_ParenthesesNode || k == NK_OrNode) return 1;
+  if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, v, "name");
+    int a = nt_ref(nt, v, "arguments"), ac = 0;
+    if (a >= 0) nt_arr(nt, a, "arguments", &ac);
+    return nm && ac == 0 && nt_ref(nt, v, "block") < 0 &&
+           (sp_streq(nm, "to_s") || sp_streq(nm, "to_str") || sp_streq(nm, "itself"));
+  }
+  const char *ty = nt_type(nt, v);
+  size_t tl = ty ? strlen(ty) : 0;
+  return tl > 9 && strstr(ty, "Variable") && strcmp(ty + tl - 9, "WriteNode") == 0;
+}
+/* Is `r` a `then`/`yield_self` whose block answers its only parameter,
+   unchanged (`s.then { |z| p z; z }`)? */
+static int mrv_then_self(Compiler *c, int r) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, r, "name");
+  if (!nm || !(sp_streq(nm, "then") || sp_streq(nm, "yield_self"))) return 0;
+  int b = nt_ref(nt, r, "block");
+  int bp = nt_ref(nt, b, "parameters"), pn = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
+  int rn = 0, on = 0; const int *rq = pn >= 0 ? nt_arr(nt, pn, "requireds", &rn) : NULL;
+  if (pn >= 0) nt_arr(nt, pn, "optionals", &on);
+  if (rn != 1 || on != 0 || nt_ref(nt, pn, "rest") >= 0 || nt_kind(nt, rq[0]) != NK_RequiredParameterNode) return 0;
+  const char *zn = nt_str(nt, rq[0], "name");
+  int body = nt_ref(nt, b, "body"), n = 0;
+  const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+  if (n < 1 || nt_kind(nt, st[n - 1]) != NK_LocalVariableReadNode || !sp_streq(nt_str(nt, st[n - 1], "name"), zn))
+    return 0;
+  /* rebound in the block, it answers something else */
+  Scope *bs = comp_scope_of(c, rq[0]);
+  int si = bs ? (int)(bs - c->scopes) : -1;
+  for (int w = si >= 0 ? comp_lvw_first_sc(c, si, zn) : -1; w >= 0; w = comp_lvw_next_sc(c, w))
+    if (c->nscope[w] == si && sp_streq(nt_str(nt, w, "name"), zn)) return 0;
+  return 1;
+}
+int desugar_mutator_receiver_value(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int r = nt_ref(nt, id, "receiver");
+    if (!nm || r < 0 || !sp_str_mutator(nm, SP_MUT_LOCAL) || nt_ref(nt, id, "block") >= 0) continue;
+    int args = nt_ref(nt, id, "arguments");
+    /* an argument that writes a variable runs after the receiver: moved
+       into an arm, or onto a re-read of the variable, it would replace the
+       String the receiver answered (`s.to_s << (s = +"b")`) */
+    if (mrv_writes(nt, args, NULL, 0)) continue;
+    NodeKind rk = nt_kind(nt, r);
+    /* `s.tap { }` answers s: the block runs, then the call on s; so does
+       `s.then { |z| ...; z }`, whose block answers its parameter */
+    if (rk == NK_CallNode && nt_kind(nt, nt_ref(nt, r, "block")) == NK_BlockNode &&
+        (sp_streq(nt_str(nt, r, "name"), "tap") || mrv_then_self(c, r))) {
+      int x = nt_ref(nt, r, "receiver");
+      NodeKind xk = nt_kind(nt, x);
+      if ((xk != NK_LocalVariableReadNode && xk != NK_InstanceVariableReadNode) ||
+          !mrv_is_string(infer_type(c, x))) continue;
+      /* a block that assigns the variable leaves it naming another String
+         than the one the call answers */
+      if (mrv_writes(nt, nt_ref(nt, r, "block"), nt_str(nt, x, "name"), 0)) continue;
+      int base = nt->count;
+      int x2 = nt_clone_subtree(nt, x), st = nt_new_node(nt, "StatementsNode"), pr = nt_new_node(nt, "ParenthesesNode");
+      long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
+      int seq[2] = { r, pr };
+      nt_node_set_ref(nt, id, "receiver", x2);
+      nt_swap_nodes(nt, id, pr);
+      nt_node_reset(nt, id, "ParenthesesNode");
+      nt_node_set_arr(nt, st, "body", seq, 2);
+      nt_node_set_ref(nt, id, "body", st);
+      if (line > 0) { nt_node_set_int(nt, id, "node_line", line); nt_node_set_int(nt, id, "node_file", file); }
+      comp_grow_node_arrays(c);
+      int encl = c->nscope[id];
+      for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+      changed = 1;
+      continue;
+    }
+    /* `s.to_s`, `s.to_str`, `s.itself` on a String is s */
+    if (rk == NK_CallNode) {
+      const char *rn = nt_str(nt, r, "name");
+      int ra = nt_ref(nt, r, "arguments"), rac = 0;
+      if (ra >= 0) nt_arr(nt, ra, "arguments", &rac);
+      int x = nt_ref(nt, r, "receiver");
+      if (!rn || rac != 0 || x < 0 || nt_ref(nt, r, "block") >= 0 ||
+          !(sp_streq(rn, "to_s") || sp_streq(rn, "to_str") || sp_streq(rn, "itself")) ||
+          !mrv_is_string(infer_type(c, x))) continue;
+      nt_node_set_ref(nt, id, "receiver", x);
+      nt_node_reset(nt, r, "NilNode");
+      changed = 1;
+      continue;
+    }
+    /* `(@v ||= e) << x`: the write, then the call on the variable */
+    if (mrv_paren_value(nt, r) && strstr(nt_type(nt, r), "WriteNode") && mrv_is_string(infer_type(c, r))) {
+      int base = nt->count;
+      int tr = mrv_target_read(nt, r), st = nt_new_node(nt, "StatementsNode"), pr = nt_new_node(nt, "ParenthesesNode");
+      long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
+      int seq[2] = { r, pr };
+      /* the call moves into a new node; the call's own becomes the paren */
+      nt_node_set_ref(nt, id, "receiver", tr);
+      nt_swap_nodes(nt, id, pr);
+      nt_node_reset(nt, id, "ParenthesesNode");
+      nt_node_set_arr(nt, st, "body", seq, 2);
+      nt_node_set_ref(nt, id, "body", st);
+      if (line > 0) { nt_node_set_int(nt, id, "node_line", line); nt_node_set_int(nt, id, "node_file", file); }
+      comp_grow_node_arrays(c);
+      int encl = c->nscope[id];
+      for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+      changed = 1;
+      continue;
+    }
+    if (rk != NK_ParenthesesNode && rk != NK_IfNode && rk != NK_UnlessNode && rk != NK_CaseNode &&
+        rk != NK_OrNode) continue;
+    if (!mrv_is_string(infer_type(c, r)) || !mrv_no_scope(nt, args, 0)) continue;
+    int arms[64], na = 0;
+    int orl = -1;
+    if (rk == NK_OrNode) orl = nt_ref(nt, r, "left");
+    else {
+      na = mrv_arms(nt, r, arms, 64);
+      if (na == 0) continue;
+      /* an arm longer than the rewrite's buffer is left as it was */
+      int big = 0;
+      for (int k = 0; k < na && !big; k++) { int bn = 0; nt_arr(nt, arms[k], "body", &bn); big = bn > 255; }
+      if (big) continue;
+      if (rk == NK_ParenthesesNode) {
+        int bn = 0; const int *bb = nt_arr(nt, arms[0], "body", &bn);
+        if (!mrv_paren_value(nt, bb[bn - 1])) continue;
+      }
+    }
+    int base = nt->count;
+    long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
+    /* the call without its receiver and arguments, copied once per path */
+    nt_node_set_ref(nt, id, "receiver", -1);
+    nt_node_set_ref(nt, id, "arguments", -1);
+    int paths = rk == NK_OrNode ? 2 : na, shells[64];
+    for (int k = 0; k < paths; k++) {
+      shells[k] = nt_clone_subtree(nt, id);
+      int ak = k == 0 ? args : (args >= 0 ? nt_clone_subtree(nt, args) : -1);
+      nt_node_set_ref(nt, shells[k], "arguments", ak);
+    }
+    int top = r;
+    if (rk == NK_OrNode) {
+      /* `a || b` re-reads a variable's a in the arm that takes it; any
+         other a is run once into a local (`(t = a) ? t.m(x) : b.m(x)`) */
+      int iff = nt_new_node(nt, "IfNode"), s1 = nt_new_node(nt, "StatementsNode");
+      int el = nt_new_node(nt, "ElseNode"), s2 = nt_new_node(nt, "StatementsNode");
+      NodeKind lk = nt_kind(nt, orl);
+      int pred = orl, re;
+      if (lk == NK_LocalVariableReadNode || lk == NK_InstanceVariableReadNode) re = nt_clone_subtree(nt, orl);
+      else {
+        char tname[48]; snprintf(tname, sizeof tname, "__mrv_%d", id);
+        pred = nt_new_node(nt, "LocalVariableWriteNode");
+        re = nt_new_node(nt, "LocalVariableReadNode");
+        nt_node_set_str(nt, pred, "name", tname); nt_node_set_int(nt, pred, "depth", 0);
+        nt_node_set_ref(nt, pred, "value", orl);
+        nt_node_set_str(nt, re, "name", tname); nt_node_set_int(nt, re, "depth", 0);
+        scope_local_intern(comp_scope_of(c, id), tname);
+      }
+      nt_node_set_ref(nt, iff, "predicate", pred);
+      nt_node_set_ref(nt, shells[0], "receiver", re);
+      nt_node_set_arr(nt, s1, "body", &shells[0], 1);
+      nt_node_set_ref(nt, iff, "statements", s1);
+      nt_node_set_ref(nt, shells[1], "receiver", nt_ref(nt, r, "right"));
+      nt_node_set_arr(nt, s2, "body", &shells[1], 1);
+      nt_node_set_ref(nt, el, "statements", s2);
+      nt_node_set_ref(nt, iff, "subsequent", el);
+      nt_node_set_int(nt, iff, "node_line", line);
+      nt_node_reset(nt, r, "NilNode");
+      top = iff;
+    }
+    else
+      for (int k = 0; k < na; k++) {
+        int bn = 0; const int *bb = nt_arr(nt, arms[k], "body", &bn);
+        int body[256];
+        memcpy(body, bb, sizeof(int) * (size_t)bn);
+        int last = body[bn - 1], tr = mrv_target_read(nt, last);
+        if (tr >= 0) {
+          nt_node_set_ref(nt, shells[k], "receiver", tr);
+          body[bn++] = shells[k];
+        }
+        else {
+          nt_node_set_ref(nt, shells[k], "receiver", last);
+          body[bn - 1] = shells[k];
+        }
+        nt_node_set_arr(nt, arms[k], "body", body, bn);
+      }
+    /* the call's node is the value now: a paren around it */
+    int st = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, st, "body", &top, 1);
+    nt_node_reset(nt, id, "ParenthesesNode");
+    nt_node_set_ref(nt, id, "body", st);
+    if (line > 0) { nt_node_set_int(nt, id, "node_line", line); nt_node_set_int(nt, id, "node_file", file); }
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    changed = 1;
+  }
+  return changed;
+}
+
 /* proc.curry(obj) -> proc.curry(obj.to_int): CRuby converts a non-Integer
    count through to_int (a to_int-less count is its TypeError). The rewrite
    fires once per argument -- an arg already spelled to_int, an Integer, or
