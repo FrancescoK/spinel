@@ -5492,6 +5492,7 @@ static sp_RbVal sp_poly_splice(sp_RbVal recv, sp_int start, sp_int len, sp_RbVal
      store back, while a shared handle absorbs it in place -- which is the only
      form an element receiver can use, and the write was silently dropped
      before (#3940). */
+  if (recv.tag == SP_TAG_STR && recv.v.s && sp_str_is_frozen_val(recv.v.s)) sp_raise_frozen_str(recv.v.s);   /* #6328 */
   if (recv.tag == SP_TAG_STR || sp_poly_is_strbuf(recv)) {
     const char *cur = (recv.tag == SP_TAG_STR) ? (recv.v.s ? recv.v.s : sp_str_empty)
                                                : sp_String_cstr((sp_String *)recv.v.p);

@@ -22,3 +22,11 @@ m = method(:app)
 begin; p m.call("q".freeze); rescue FrozenError => e; p e.class; end
 t = +"ok"
 p app(t), t
+
+# a range or start-and-length splice refuses too
+z = ["zz".freeze, 1][ARGV.size]
+begin; z[0, 1] = "Y"; p z; rescue FrozenError => e; p e.class; end
+begin; z[0..0] = "Y"; p z; rescue FrozenError => e; p e.class; end
+r = [+"rr", 1][ARGV.size]
+r[0, 1] = "R"
+p r
