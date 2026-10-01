@@ -42271,8 +42271,7 @@ else {
          (which may run arbitrary code, and allocate) is evaluated */
       int tpl = ++g_tmp, tpr = ++g_tmp;
       buf_printf(b, "({ sp_Bigint *_t%d = sp_bigint_new_int(", tpl);
-      if (rt == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); }
-      else emit_expr(c, recv, b);
+      emit_poly_unboxed(c, recv, rt, "sp_poly_to_i(", b);
       buf_printf(b, "); SP_GC_ROOT(_t%d); sp_Bigint *_t%d = ", tpl, tpr);
       emit_expr(c, argv[0], b);
       buf_printf(b, "; SP_GC_ROOT(_t%d); sp_bigint_%s(_t%d, _t%d); })", tpr,
@@ -42307,8 +42306,7 @@ else {
     if (is_shift && lit_shift &&
         (litc < 0 || litc >= 64 || sp_streq(name, "<<"))) {
       buf_printf(b, "sp_int_%s(", sp_streq(name, "<<") ? "shl" : "shr");
-      if (rt == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); }
-      else emit_expr(c, recv, b);
+      emit_poly_unboxed(c, recv, rt, "sp_poly_to_i(", b);
       buf_printf(b, ", %lldLL)", litc);
       return;
     }
@@ -42316,8 +42314,7 @@ else {
       /* a runtime shift count: range-checked (negative shifts the other way,
          past-the-word raises) via a single-compare fast path (#2423) */
       buf_printf(b, "sp_int_%s_ck(", sp_streq(name, "<<") ? "shl" : "shr");
-      if (rt == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); }
-      else emit_expr(c, recv, b);
+      emit_poly_unboxed(c, recv, rt, "sp_poly_to_i(", b);
       buf_puts(b, ", ");
       if (at0 == TY_POLY) { buf_puts(b, "sp_poly_bit_operand("); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
       else if (at0 == TY_FLOAT) { buf_puts(b, "(sp_int)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -42343,8 +42340,7 @@ else {
     int shl_neg_safe = sp_streq(name, "<<");
     buf_puts(b, "(");
     if (shl_neg_safe) buf_puts(b, "(sp_int)((uint64_t)(");
-    if (rt == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); }
-    else emit_expr(c, recv, b);
+    emit_poly_unboxed(c, recv, rt, "sp_poly_to_i(", b);
     if (shl_neg_safe) buf_puts(b, ")");
     buf_printf(b, " %s ", name);
     if (at0 == TY_POLY) {
