@@ -4412,10 +4412,12 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_TIME) {
     if (sp_streq(name, "-") && argc > 0) {
       TyKind at = infer_type(c, argv[0]);
-      /* Time - Time is a Float duration; Time - poly likewise (the poly holds
-         a Time at run time, the common mixed-collection shape, #2456). An
-         int/float offset keeps the Time type via the general `-` arm below. */
-      if (at == TY_TIME || at == TY_POLY) return TY_FLOAT;
+      /* Time - Time is a Float duration. Time - poly is either: a Time held
+         there gives the duration (#2456), a number an earlier Time, which
+         only the run time tells apart. An int/float offset keeps the Time
+         type via the general `-` arm below. */
+      if (at == TY_TIME) return TY_FLOAT;
+      if (at == TY_POLY) return TY_POLY;
     }
     if (sp_streq(name, "utc") || sp_streq(name, "gmtime") || sp_streq(name, "getutc") ||
         sp_streq(name, "getgm") ||

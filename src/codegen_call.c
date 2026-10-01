@@ -17099,15 +17099,12 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; sp_time_sub_t(_t%d, _t%d); })", tt, tu);
       }
       else if (sp_streq(name, "-") && at == TY_POLY) {
-        /* Time - poly: the poly holds a Time at run time (a mixed collection
-           whose element method returns Time). Unbox to sp_Time and subtract;
-           a non-Time value raises TypeError (#2456). */
+        /* Time - poly: a Time held there gives the Float duration (#2456), a
+           number of the tower an earlier Time, anything else a TypeError --
+           the boxed subtraction's own Time arm, answering boxed */
         buf_printf(b, "({ sp_Time _t%d = ", tt); emit_expr(c, recv, b);
         buf_printf(b, "; sp_RbVal _t%d = ", tu); emit_boxed(c, argv[0], b);
-        buf_printf(b, "; if (_t%d.tag != SP_TAG_OBJ || _t%d.cls_id != SP_BUILTIN_TIME)"
-                      " sp_raise_cls(\"TypeError\", \"can't convert to Time\");"
-                      " sp_time_sub_t(_t%d, *(sp_Time *)_t%d.v.p); })",
-                   tu, tu, tt, tu);
+        buf_printf(b, "; sp_poly_sub(sp_box_time(_t%d), _t%d); })", tt, tu);
       }
       else if (at == TY_FLOAT) {
         buf_printf(b, "({ sp_Time _t%d = ", tt); emit_expr(c, recv, b);
