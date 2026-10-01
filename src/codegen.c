@@ -514,6 +514,16 @@ static void emit_obj_conv_call_inline(Compiler *c, int node, TyKind t, int def, 
           : sp_streq(conv, "to_str") ? "sp_poly_arg_str("
           : NULL;  /* #to_path is wrapped by its own site, not here */
   if (unbox) buf_puts(b, unbox);
+  /* a fresh object (`xs.first(C.new)`) is held by nothing but the argument
+     while its conversion allocates: root it first */
+  if (!comp_ty_value_obj(c, t) && !expr_is_held_ref(c, node)) {
+    int tr = ++g_tmp;
+    buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)(", c->classes[def].c_name, tr, c->classes[def].c_name);
+    emit_expr(c, node, b);
+    buf_printf(b, "); SP_GC_ROOT(_t%d); sp_%s_%s(_t%d); })", tr, c->classes[def].c_name, mc(conv), tr);
+    if (unbox) buf_puts(b, ")");
+    return;
+  }
   buf_printf(b, "sp_%s_%s(", c->classes[def].c_name, mc(conv));
   if (!comp_ty_value_obj(c, t)) buf_printf(b, "(sp_%s *)", c->classes[def].c_name);
   buf_puts(b, "(");
@@ -9724,6 +9734,11 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
     }
     buf_printf(b, "    case %d: {\n", i);
     buf_printf(b, "      sp_%s *o = (sp_%s *)p; (void)o;\n", ci->c_name, ci->c_name);
+    /* The object itself is read after the builder's first allocation, and a
+       caller may hand over a fresh temporary held nowhere else (`p A.new`,
+       `A.new.inspect` boxed): unrooted, a collection there swept it and the
+       walk read whatever reused its slot (#<A:0x @a=26, @x=60>). */
+    if (ci->nivars > 0) buf_puts(b, "      SP_GC_ROOT(o);\n");
     /* An ivar can point back at the object (a tree node's @parent), and the
        walk below renders each ivar through the inspects that come back here.
        CRuby shows the repeated object as #<N:0x... ...>; an object with no

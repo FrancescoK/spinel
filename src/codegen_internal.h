@@ -1063,6 +1063,7 @@ void scope_mark_proc_form(Compiler *c, int s);
 void scope_veto_proc_form(Compiler *c, int s);
 int  scope_needs_proc_form(Compiler *c, int s);
 int  scope_proc_form_of(Compiler *c, int s);
+int  expr_is_held_ref(Compiler *c, int node);   /* a read of a held object: no root needed */
 int  proc_form_live(Compiler *c, int s);
 int  proc_form_source(Compiler *c, int s);
 int  ctor_init_proc_form(Compiler *c, int cid);
