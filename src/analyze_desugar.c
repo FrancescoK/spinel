@@ -3096,6 +3096,37 @@ int desugar_dynamic_send(Compiler *c) {
         anh_free(&seen);
       }
       else continue;
+      /* An interpolated name fixes part of itself -- `"#{name}="` ends in
+         "=" -- and only a name of that shape can be meant: on a receiver
+         whose class is not known, the candidates are every class's methods,
+         which in a program as large as activesupport passed the cap below
+         and the send was refused (Deprecators#set_option). */
+      { NodeKind ak = nt_kind(nt, argv[0]);
+        int pn = 0; const int *ps = (ak == NK_InterpolatedStringNode || ak == NK_InterpolatedSymbolNode)
+                                    ? nt_arr(nt, argv[0], "parts", &pn) : NULL;
+        const char *pre = pn > 1 && nt_kind(nt, ps[0]) == NK_StringNode ? nt_str(nt, ps[0], "content") : NULL;
+        const char *suf = pn > 1 && nt_kind(nt, ps[pn - 1]) == NK_StringNode ? nt_str(nt, ps[pn - 1], "content") : NULL;
+        if ((pre && *pre) || (suf && *suf)) {
+          size_t pl = pre ? strlen(pre) : 0, sl = suf ? strlen(suf) : 0;
+          int kept = 0;
+          for (int k = 0; k < nown; k++) {
+            size_t ol = strlen(own[k]);
+            if (ol > pl + sl && (!pl || strncmp(own[k], pre, pl) == 0) &&
+                (!sl || strcmp(own[k] + ol - sl, suf) == 0)) kept++;
+          }
+          /* none of that shape: the dispatch keeps its arms and raises
+             NoMethodError for the name, as CRuby does */
+          if (kept > 0) {
+            int w = 0;
+            for (int k = 0; k < nown; k++) {
+              size_t ol = strlen(own[k]);
+              if (ol > pl + sl && (!pl || strncmp(own[k], pre, pl) == 0) &&
+                  (!sl || strcmp(own[k] + ol - sl, suf) == 0)) own[w++] = own[k];
+              else free(own[k]);
+            }
+            nown = w;
+          }
+        } }
       if (nown == 0 || nown > 1024) { for (int k = 0; k < nown; k++) free(own[k]); free(own); continue; }
       use = own; nuse = nown;
     }
