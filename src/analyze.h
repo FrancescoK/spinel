@@ -196,6 +196,9 @@ int block_keyword_default(Compiler *c, int block, int idx);
    block from a nested proc/lambda literal. */
 int is_proc_constant(const NodeTable *nt, int n);
 int is_proc_literal(Compiler *c, int id);
+/* A `Hash.new { }` default block lowered to a real proc (analyze_util.c);
+   codegen emits it that way. */
+int hash_new_block_is_proc(Compiler *c, int id);
 
 /* Element type an `each_with_object([])` accumulator is filled with, inferred
    from how the memo param is pushed to (following a forwarded callable's body).
