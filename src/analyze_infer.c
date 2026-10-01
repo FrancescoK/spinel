@@ -8180,6 +8180,15 @@ TyKind infer_uncached(Compiler *c, int id) {
       if (iec < 0) return TY_CLASS;
       self_cls = iec;
     }
+    /* and in an instance method, an instance_eval/exec block there rebinds
+       it to the receiver, of one class or (below -1) of any: typed as the
+       method's own class, `self.class` in `o.instance_exec { }` read an
+       sp_A * through an sp_B * */
+    else if (self_cls >= 0) {
+      int iec = ie_class_of(c, id);
+      if (iec >= 0) self_cls = iec;
+      else if (iec < -1) self_cls = -1;
+    }
     /* `self` inside an instance_eval/exec block is the rebound receiver. */
     if (self_cls < 0) self_cls = (an_ie_class_id >= 0) ? an_ie_class_id : ie_class_of(c, id);
     /* a statement of a class or module body: the class object itself */
