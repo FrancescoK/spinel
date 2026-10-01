@@ -2606,16 +2606,19 @@ static inline sp_Complex sp_poly_as_complex(sp_RbVal v) {
    (*cplx): a Complex as it is, a String parsed whole (Complex("1+2i", 1) is
    (1+3i)), a real number as its real part, Float-classed when it is a Float
    or a Rational (Spinel's Complex holds a Rational as its Float, see
-   docs/limitations.md). nil is CRuby's "can't convert nil into Complex" and
-   anything else "not a real". */
+   docs/limitations.md). nil is CRuby's "can't convert nil into Complex";
+   anything else is "can't convert X into Complex" as the lone argument
+   (Complex(:a)) and "not a real" as one of two (Complex(:a, 1)). */
 sp_Complex sp_str_to_c_strict(const char *s);
-static sp_Complex sp_poly_complex_arg(sp_RbVal v, int *cplx) {
+static const char *sp_convert_src_name(sp_RbVal v);
+static sp_Complex sp_poly_complex_arg(sp_RbVal v, int *cplx, int lone) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p) { *cplx = 1; return *(sp_Complex *)v.v.p; }
   if (v.tag == SP_TAG_STR) { *cplx = 1; return sp_str_to_c_strict(v.v.s ? v.v.s : sp_str_empty); }
   if (v.tag == SP_TAG_NIL) sp_raise_cls("TypeError", "can't convert nil into Complex");
   if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT) return (sp_Complex){sp_poly_to_f(v), 0.0, 0};
   if (v.tag == SP_TAG_FLT || (v.tag == SP_TAG_OBJ && (v.cls_id == SP_BUILTIN_RATIONAL || v.cls_id == SP_BUILTIN_BIG_RATIONAL)))
     return (sp_Complex){sp_poly_to_f(v), 0.0, SP_CPLX_RE_F};
+  if (lone) sp_raise_cls("TypeError", sp_sprintf("can't convert %s into Complex", sp_convert_src_name(v)));
   sp_raise_cls("TypeError", "not a real");
   return (sp_Complex){0, 0, 0};
 }
@@ -3332,15 +3335,16 @@ static sp_float sp_poly_to_f_meth(sp_RbVal v) {
 }
 /* Float-range membership of a boxed value (`when 1.0..3.0`, Range#===): a
    real number is a member by its value, a Complex too when its imaginary
-   part is an exact zero; anything else, nil and a String among them, is not
-   one (CRuby compares, and answers false). */
+   part is zero (Complex#<=> compares one, 0.0 included); anything else,
+   nil and a String among them, is not one (CRuby compares, and answers
+   false). */
 static sp_bool sp_frange_cover_poly(sp_FloatRange r, sp_RbVal v) {
   if (v.tag == SP_TAG_FLT || v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT ||
       (v.tag == SP_TAG_OBJ && (v.cls_id == SP_BUILTIN_RATIONAL || v.cls_id == SP_BUILTIN_BIG_RATIONAL)))
     return sp_frange_cover(r, sp_poly_to_f(v));
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p) {
     sp_Complex z = *(sp_Complex *)v.v.p;
-    return z.im == 0 && !(z.fl & SP_CPLX_IM_F) && sp_frange_cover(r, z.re);
+    return z.im == 0 && sp_frange_cover(r, z.re);
   }
   return 0;
 }
@@ -3677,6 +3681,9 @@ static sp_float sp_poly_Float(sp_RbVal v) {
   /* a Rational is a real number Kernel#Float converts (Float(1/2r) is 0.5);
      without an arm it reached the raise below as "can't convert Rational" */
   if (sp_poly_is_rational(v) || sp_poly_is_brat(v)) return sp_poly_to_f(v);
+  /* a Time by its #to_f, and a Complex by its real part when its imaginary
+     part is an exact zero (RangeError otherwise), as sp_poly_to_f converts */
+  if (v.tag == SP_TAG_OBJ && v.v.p && (v.cls_id == SP_BUILTIN_TIME || v.cls_id == SP_BUILTIN_COMPLEX)) return sp_poly_to_f(v);
   if (v.tag == SP_TAG_STR) return sp_str_to_f_strict(v.v.s ? v.v.s : sp_str_empty);
   /* a user object converts through its own #to_f */
   if (sp_poly_is_user_obj(v)) return sp_poly_Float_ex(v, 1);

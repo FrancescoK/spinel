@@ -4158,7 +4158,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
          Complex([Complex(1, 2)][0], 1) answered (0+1i). */
       int tca = ++g_tmp, tcb = ++g_tmp, tfa = ++g_tmp, tfb = ++g_tmp;
       buf_printf(b, "int _t%d = 0, _t%d = 0; sp_Complex _t%d = ", tfa, tfb, tca);
-      if (re_poly) buf_printf(b, "sp_poly_complex_arg(_t%d, &_t%d)", tre, tfa);
+      if (re_poly) buf_printf(b, "sp_poly_complex_arg(_t%d, &_t%d, %d)", tre, tfa, argc < 2);
       else if (ret0 == TY_COMPLEX) buf_printf(b, "_t%d; _t%d = 1", tre, tfa);
       else if (re_rat) buf_printf(b, "(sp_Complex){sp_rational_to_f(_t%d), 0, SP_CPLX_RE_F}", tre);
       else {
@@ -4169,7 +4169,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       }
       buf_printf(b, "; sp_Complex _t%d = ", tcb);
       if (argc < 2) buf_puts(b, "(sp_Complex){0, 0, 0}");
-      else if (im_poly) buf_printf(b, "sp_poly_complex_arg(_t%d, &_t%d)", tim, tfb);
+      else if (im_poly) buf_printf(b, "sp_poly_complex_arg(_t%d, &_t%d, 0)", tim, tfb);
       else if (imt0 == TY_COMPLEX) buf_printf(b, "_t%d; _t%d = 1", tim, tfb);
       else if (im_rat) buf_printf(b, "(sp_Complex){sp_rational_to_f(_t%d), 0, SP_CPLX_RE_F}", tim);
       else {
