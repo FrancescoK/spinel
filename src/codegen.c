@@ -1502,6 +1502,8 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     const int *hav = haN >= 0 ? nt_arr(c->nt, haN, "arguments", &han) : NULL;
     if (hty && (sp_streq(hty, "ConstantReadNode") || sp_streq(hty, "ConstantPathNode")) &&
         hcn && sp_streq(hcn, "Hash") && han <= 1) {
+      /* an unknown keyword is CRuby's ArgumentError, not the default */
+      if (emit_hash_new_arg_guard(c, node, b)) return;
       if (han == 1 && hav) {
         buf_puts(b, "sp_box_obj(sp_PolyPolyHash_new_with_default(");
         emit_boxed(c, hav[0], b);
