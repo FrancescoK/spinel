@@ -24513,8 +24513,10 @@ int splat_string_var(Compiler *c, const int *av, int ac, int *fs) {
 }
 
 /* `super(*s)`, `super(*e, v)` into a method that appends to a parameter at
-   or past the splat's position: not shared yet, refused rather than
-   copied. */
+   or past the splat's position: the String variable is pulled into the
+   handle (promote_spread_string_args), but for one that cannot be -- an
+   ivar that is no handle, a global or class variable -- which is refused
+   rather than copied. */
 void refuse_super_splat(Compiler *c, int id, int target) {
   const NodeTable *nt = c->nt;
   if (target < 0 || nt_kind(nt, id) != NK_SuperNode) return;
