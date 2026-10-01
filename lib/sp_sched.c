@@ -2181,6 +2181,10 @@ static void sp_safepoint_preempt(void) {
   self->preempt_request = 0;
   g_npreempt--;
   sp_recompute_safepoint_flag();
+  /* Inside a fiber the thread resumed (an Enumerator's), switching out
+     would park that fiber, and the thread is resumed at its own. Skip this
+     slice; the monitor asks again on the next one. */
+  if (sp_fiber_current != self->fiber) return;
   SCHED_UNLOCK();
   sp_Fiber_transfer(sp_fiber_worker_root(), sp_box_nil());
   sp_fiber_fire_inject_if_pending();   /* a #kill/#raise delivered while we were off-cpu */
