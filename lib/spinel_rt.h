@@ -15518,6 +15518,30 @@ static sp_StrStrHash *sp_env_filter_bang(sp_Proc *p, int keep) {
   sp_env_filter_core(p, keep);
   return sp_env_to_h();
 }
+/* ENV.update/merge!/replace(hash) on a hash of another variant, boxed: a String
+   value sets its String key, nil deletes it, and anything else raises CRuby's
+   TypeError. The pairs are stored in order, so the ones before a bad pair stay
+   set; replace then deletes every variable the hash does not name. */
+static sp_StrStrHash *sp_env_update_v(sp_RbVal hv, int replace) {
+  SP_GC_ROOT_RBVAL(hv);
+  sp_PolyPolyHash *h = sp_poly_as_poly_poly_hash(hv);
+  if (!h) sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Hash", sp_poly_class_name(hv)));
+  SP_GC_ROOT(h);
+  for (sp_int i = 0; i < h->len; i++) {
+    sp_RbVal k = h->keys[h->order[i]], v = h->vals[h->order[i]];
+    if (k.tag != SP_TAG_STR) sp_raise_no_str_conversion(k);
+    if (v.tag != SP_TAG_STR && v.tag != SP_TAG_NIL) sp_raise_no_str_conversion(v);
+    if (v.tag == SP_TAG_STR && v.v.s) setenv(k.v.s, v.v.s, 1); else unsetenv(k.v.s);
+  }
+  sp_StrStrHash *env = sp_env_to_h();
+  if (replace) {
+    SP_GC_ROOT(env);
+    for (sp_int i = 0; i < env->len; i++)
+      if (!sp_PolyPolyHash_has_key(h, sp_box_str(env->order[i]))) unsetenv(env->order[i]);
+    env = sp_env_to_h();
+  }
+  return env;
+}
 /* ENV.update/merge!(hash) { |key, old, new| } -- the block resolves a key that
    is already set; its (stringified) result becomes the value (#2998). */
 static sp_StrStrHash *sp_env_update_h_blk(sp_StrStrHash *h, sp_Proc *p) { SP_GC_ROOT(p);

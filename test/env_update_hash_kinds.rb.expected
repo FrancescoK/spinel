@@ -1,0 +1,16 @@
+nil
+"b"
+"no implicit conversion of Integer into String"
+"c"
+nil
+"no implicit conversion of Object into String"
+nil
+"f"
+"no implicit conversion of Integer into Hash"
+"no implicit conversion of Object into String"
+"h"
+false
+"i"
+nil
+"f"
+"i"
