@@ -8249,7 +8249,7 @@ int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
 
 
 /* True if the subtree at `id` reads a local variable named `name`. */
-static int subtree_reads_local(const NodeTable *nt, int id, const char *name) {
+int subtree_reads_local(const NodeTable *nt, int id, const char *name) {
   if (id < 0 || !name) return 0;
   const char *ty = nt_type(nt, id);
   if (!ty) return 0;
