@@ -2413,9 +2413,20 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       } }
     if (cs && cs->is_cmethod && cs->class_id >= 0)
       buf_printf(b, "civ_%s_%s", c->classes[cs->class_id].name, iv_c(nm + 1));  /* module/class-level ivar */
-    else if (cs && cs->class_id < 0 && g_ie_class_id >= 0)
-      /* inside instance_eval block: access ivar via receiver pointer */
-      buf_printf(b, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
+    else if (cs && cs->class_id < 0 && g_ie_class_id >= 0) {
+      /* inside instance_eval block: access ivar via receiver pointer; one
+         the receiver's class never writes is nil, as on that object (the
+         struct has no field for it) */
+      int has = 0;
+      for (int k = g_ie_class_id; k >= 0 && !has; k = c->classes[k].parent)
+        has = comp_ivar_index(&c->classes[k], nm) >= 0;
+      if (!has) {
+        TyKind it = comp_ntype(c, id);
+        const char *nv = nil_value(it);
+        buf_puts(b, nv ? nv : default_value(it));
+      }
+      else buf_printf(b, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
+    }
     else if (cs && cs->class_id < 0) {
       /* top-level method: ivar stored as file-scope global in Toplevel pseudo-class */
       int tl = comp_class_index(c, "Toplevel");

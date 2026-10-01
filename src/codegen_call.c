@@ -26110,6 +26110,28 @@ static int poly_binop_recv_temp(Compiler *c, int recv, int arg, Buf *b, int *stm
   return t;
 }
 
+/* The first ivar write under `node`, or -1. */
+static int ie_body_ivar_write(const NodeTable *nt, int node) {
+  if (node < 0) return -1;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableOrWriteNode ||
+      k == NK_InstanceVariableAndWriteNode || k == NK_InstanceVariableOperatorWriteNode ||
+      k == NK_InstanceVariableTargetNode) return node;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) {
+    int w = ie_body_ivar_write(nt, nt_ref_at(nt, node, i));
+    if (w >= 0) return w;
+  }
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, node, i, &m);
+    for (int j = 0; j < m; j++) {
+      int w = ie_body_ivar_write(nt, ids[j]);
+      if (w >= 0) return w;
+    }
+  }
+  return -1;
+}
 static int ie_body_writes_ivar(const NodeTable *nt, int node) {
   if (node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
@@ -37000,6 +37022,15 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       int niac = 0; const int *niav = niargs >= 0 ? nt_arr(nt, niargs, "arguments", &niac) : NULL;
       int nbody = nt_ref(nt, nblk, "body");
       int nbn = 0; const int *nbb = nbody >= 0 ? nt_arr(nt, nbody, "body", &nbn) : NULL;
+      /* The block's ivars are the receiver's, and this one has none spinel
+         lays out: they read nil, as on a fresh object (emit_ie_poly's
+         non-object arm), where the caller's own were read and written. A
+         write has nowhere to go, and is refused. */
+      { int w = ie_body_ivar_write(nt, nbody);
+        if (w >= 0)
+          unsupported_feature(c, w, "an instance variable written in a block that instance_exec or instance_eval runs "
+                                    "on a value with no instance variable layout (nil, a builtin value, Object.new): "
+                                    "the value has no slot to hold it at run time"); }
       int tself = ++g_tmp;
       {
         Buf rb; memset(&rb, 0, sizeof rb);
@@ -37011,6 +37042,12 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       /* instance_exec binds its arguments as a yield binds them
          (emit_block_binds); instance_eval hands each parameter the receiver */
       int sv_nargov = g_n_argov;
+      /* the arguments are the caller's: they run first, reading its ivars,
+         into temps the binds read (as the object splice does); the block's
+         defaults and body run under the receiver */
+      int sv_nil_ie = g_ie_nil_ivars; g_ie_nil_ivars = 0;
+      if (nexec) emit_args_off_self(c, niav, niac, g_pre);
+      g_ie_nil_ivars = id + 1;
       /* a String variable the block appends to is aliased, as a yield's is
          (#6179); the alias's brace closes after the body, which then leaves
          its value in a temp */
@@ -37057,6 +37094,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       if (nbn == 0) {
         ie_body_restore(c, nsnap); g_self = sv_self; g_self_deref = sv_deref;
         if (nal.open) { emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n"); }
+        g_ie_nil_ivars = sv_nil_ie;
         buf_puts(b, "sp_box_nil()"); return;
       }
       int nscalar = is_scalar_ret(nbt) && nbt != TY_VOID && nbt != TY_NIL && nbt != TY_UNKNOWN;
@@ -37075,6 +37113,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
         if (nal_tr >= 0) buf_printf(b, "_t%d", nal_tr);
         else buf_puts(b, nbox ? "sp_box_nil()" : default_value(nbt));
+        g_ie_nil_ivars = sv_nil_ie;
         return;
       }
       if (nscalar) {
@@ -37095,6 +37134,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         if (nbox && vb.p) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "%s;\n", vb.p); }
         buf_printf(b, "%s", vb.p && !nbox ? vb.p : "sp_box_nil()"); free(vb.p);
       }
+      g_ie_nil_ivars = sv_nil_ie;
       return;
     }
   }
