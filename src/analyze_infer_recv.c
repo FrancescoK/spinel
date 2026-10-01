@@ -163,6 +163,7 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         "each_cons", "each_slice", "chunk", "chunk_while", "cycle", NULL };
       for (int k = 0; iter[k]; k++) if (sp_streq(name, iter[k])) { *out = TY_POLY; return 1; }
     }
+    if (object_reopen_answers(c, "Range", id, out)) return 1;
     { *out = TY_UNKNOWN; return 1; }
   }
   /* endless literal range: size is the Float infinity; take/first with a
