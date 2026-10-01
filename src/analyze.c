@@ -12682,7 +12682,7 @@ static int an_yield_like(Compiler *c, int node, Scope *m) {
    to a lent parameter? The splice then binds it as an alias of the variable
    yielded to it (block_param_wants_alias), and a caller's parameter behind
    that variable has to be lent too. */
-static int an_block_param_lent(Compiler *c, int blk, int k);
+static int an_block_param_lent(Compiler *c, int blk, int k, int n);
 static int an_block_kw_lent(Compiler *c, int blk, const char *key);
 /* Does the code under `node` yield a plain read of `vn`, in spliced method
    `mi`, at a position (or to a keyword) whose parameter some block a call
@@ -12715,7 +12715,7 @@ static int an_subtree_yields_lent(Compiler *c, int node, const char *vn, int mi)
       for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
         int ub = nt_kind(nt, u) == NK_CallNode ? nt_ref(nt, u, "block") : -1;
         if (ub < 0 || nt_kind(nt, ub) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
-        if (key ? an_block_kw_lent(c, ub, key) : an_block_param_lent(c, ub, j)) return 1;
+        if (key ? an_block_kw_lent(c, ub, key) : an_block_param_lent(c, ub, j, call_plain_argc(c, node))) return 1;
       }
     }
   }
@@ -12730,9 +12730,10 @@ static int an_subtree_yields_lent(Compiler *c, int node, const char *vn, int mi)
   }
   return 0;
 }
-static int an_block_param_lent(Compiler *c, int blk, int k) {
-  /* an optional the position binds is aliased too (emit_block_binds) */
-  const char *bp = blk >= 0 ? block_lead_param_name(c, blk, k) : NULL;
+static int an_block_param_lent(Compiler *c, int blk, int k, int n) {
+  /* a post the position binds is aliased too (emit_block_binds); n is the
+     yield's count of plain arguments */
+  const char *bp = blk >= 0 ? block_param_at(c, blk, k, n) : NULL;
   if (!bp) return 0;
   Scope *bs = comp_scope_of(c, blk);
   LocalVar *lv = bs ? scope_local(bs, bp) : NULL;
@@ -12788,7 +12789,7 @@ static int an_yield_lends(Compiler *c, int y, const char *pn, int blk) {
       continue;
     }
     if (nt_kind(nt, av[k]) == NK_LocalVariableReadNode && nt_str(nt, av[k], "name") &&
-        sp_streq(nt_str(nt, av[k], "name"), pn) && an_block_param_lent(c, blk, k)) return 1;
+        sp_streq(nt_str(nt, av[k], "name"), pn) && an_block_param_lent(c, blk, k, call_plain_argc(c, y))) return 1;
   }
   return 0;
 }
@@ -13124,7 +13125,7 @@ static void compute_byref_out_params(Compiler *c) {
           int an = -1;
           if (ymi == -2) {
             if (blk < 0 || nt_kind(nt, av[j]) == NK_SplatNode) break;
-            if (an_block_param_lent(c, blk, j)) an = av[j];
+            if (an_block_param_lent(c, blk, j, call_plain_argc(c, id))) an = av[j];
           }
           else if (an_inline_param_lent(c, ymi, j, blk)) an = arg_layout_param_node(c, &c->scopes[ymi], id, j, NULL);
           if (an < 0 || nt_kind(nt, an) != NK_LocalVariableReadNode) continue;
@@ -15051,26 +15052,33 @@ static void an_caller_blocks_free(ACallerBlocks *t) {
   free(t->head); free(t->next); free(t->blk);
   t->built = 0;
 }
-/* The argument positions at which a yield of method scope `ms` under `node`
-   passes local `bp` as a plain read, as a bit mask (the first 32). */
-static unsigned a_yield_arg_mask(Compiler *c, int node, Scope *ms, const char *bp, int depth) {
+/* Does a yield of method scope `ms` (index mi) under `node` pass local `bp`
+   as a plain read at a position that a caller's block (cb) lends? Each
+   yield is asked with its own count of plain arguments, which places a
+   post the position binds (block_param_at). */
+static int a_yield_param_lent(Compiler *c, int node, Scope *ms, int mi, const char *bp, ACallerBlocks *cb,
+                              int depth) {
   const NodeTable *nt = c->nt;
   if (node < 0 || node >= nt->count || depth > 300) return 0;
-  unsigned m = 0;
   if (nt_kind(nt, node) == NK_YieldNode && comp_scope_of(c, node) == ms) {
     int aa = nt_ref(nt, node, "arguments"), an = 0;
     const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &an) : NULL;
+    int n = call_plain_argc(c, node);
     for (int k = 0; k < an && k < 32; k++) {
       if (nt_kind(nt, av[k]) == NK_SplatNode || nt_kind(nt, av[k]) == NK_KeywordHashNode) break;
-      if (nt_kind(nt, av[k]) == NK_LocalVariableReadNode && nt_str(nt, av[k], "name") &&
-          sp_streq(nt_str(nt, av[k], "name"), bp)) m |= 1u << k;
+      if (nt_kind(nt, av[k]) != NK_LocalVariableReadNode || !nt_str(nt, av[k], "name") ||
+          !sp_streq(nt_str(nt, av[k], "name"), bp)) continue;
+      for (int i = cb->head[mi]; i >= 0; i = cb->next[i])
+        if (an_block_param_lent(c, cb->blk[i], k, n)) return 1;
     }
   }
   const SpNode *nd = &nt->nodes[node];
-  for (int i = 0; i < nd->nr; i++) m |= a_yield_arg_mask(c, nd->r[i].ref, ms, bp, depth + 1);
+  for (int i = 0; i < nd->nr; i++)
+    if (a_yield_param_lent(c, nd->r[i].ref, ms, mi, bp, cb, depth + 1)) return 1;
   for (int i = 0; i < nd->na; i++)
-    for (int j = 0; j < nd->a[i].n; j++) m |= a_yield_arg_mask(c, nd->a[i].ids[j], ms, bp, depth + 1);
-  return m;
+    for (int j = 0; j < nd->a[i].n; j++)
+      if (a_yield_param_lent(c, nd->a[i].ids[j], ms, mi, bp, cb, depth + 1)) return 1;
+  return 0;
 }
 /* Does block `blk` yield its parameter `bp` on, as a plain read, to a block
    a call site of the method it is written in passes, and that block lends
@@ -15084,14 +15092,10 @@ static int block_yields_param_to_lender(Compiler *c, int blk, const char *bp, AC
   if (!ms || !ms->yields) return 0;
   int mi = (int)(ms - c->scopes);
   int body = nt_ref(nt, blk, "body");
-  unsigned mask = body >= 0 ? a_yield_arg_mask(c, body, ms, bp, 0) : 0;
-  if (!mask) return 0;
+  if (body < 0) return 0;
   if (!cb->built) an_caller_blocks_build(c, cb);
   if (mi < 0 || mi >= cb->ns) return 0;
-  for (int i = cb->head[mi]; i >= 0; i = cb->next[i])
-    for (int k = 0; k < 32; k++)
-      if (((mask >> k) & 1u) && an_block_param_lent(c, cb->blk[i], k)) return 1;
-  return 0;
+  return a_yield_param_lent(c, body, ms, mi, bp, cb, 0);
 }
 
 /* Pure-alias pairs, as a pass of its own: promote_shared_stored_strings runs
@@ -17492,6 +17496,8 @@ static struct {
   ANameHash cnames;
   int *chead, *cnext, *rhead, *rnext, ccap, ibuilt, icount, open_names, returns_open;
   ANameHash lnames;
+  unsigned char *litpost; /* per node: 0 not asked, 1 no post appended, 2 a post appended (dyn_lit_post_app) */
+  unsigned char *blkpost; /* per scope: the same for the blocks its call sites pass as `&blk` */
 } g_dyn;
 
 static void dyn_memo_reset(Compiler *c) {
@@ -17499,6 +17505,7 @@ static void dyn_memo_reset(Compiler *c) {
   free(g_dyn.callable); free(g_dyn.pcall); free(g_dyn.rcall);
   anh_free(&g_dyn.cnames); anh_free(&g_dyn.lnames);
   free(g_dyn.chead); free(g_dyn.cnext); free(g_dyn.rhead); free(g_dyn.rnext);
+  free(g_dyn.litpost); free(g_dyn.blkpost);
   anh_free(&g_dyn.bnames);
   free(g_dyn.bhead); free(g_dyn.bnext); free(g_dyn.bnode);
   anh_free(&g_dyn.snames); free(g_dyn.shead); free(g_dyn.snext);
@@ -17512,7 +17519,10 @@ static void dyn_memo_reset(Compiler *c) {
   g_dyn.callable = (unsigned char *)calloc((size_t)g_dyn.nlit + 1, 1);
   g_dyn.pcall = (unsigned char *)calloc(((size_t)g_dyn.nscope + 1) * DYN_ARGS, 1);
   g_dyn.rcall = (unsigned char *)calloc((size_t)g_dyn.nscope + 1, 1);
-  if (!g_dyn.lit || !g_dyn.meth || !g_dyn.blk || !g_dyn.ctor || !g_dyn.callable || !g_dyn.pcall || !g_dyn.rcall) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  g_dyn.litpost = (unsigned char *)calloc((size_t)g_dyn.nlit + 1, 1);
+  g_dyn.blkpost = (unsigned char *)calloc((size_t)g_dyn.nscope + 1, 1);
+  if (!g_dyn.lit || !g_dyn.meth || !g_dyn.blk || !g_dyn.ctor || !g_dyn.callable || !g_dyn.pcall || !g_dyn.rcall ||
+      !g_dyn.litpost || !g_dyn.blkpost) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   g_dyn.any = -1;
   g_dyn.ctor_any = -1;
   g_dyn.kw_any = -1;
@@ -17793,6 +17803,58 @@ static unsigned dyn_lit_bits(Compiler *c, int lit) {
   }
   g_dyn.lit[lit] = DYN_DONE | (app & 0xffffu) | ((kept & 0x3fffu) << 16);
   return g_dyn.lit[lit];
+}
+/* A post parameter of a proc literal or a block (`|*q, t|`, `|n = 0, t|`)
+   binds by the call's count, not by a position of its own, so the entry
+   above leaves it out. The post call position k binds in a call of n plain
+   arguments (sp_proc_fill's distribution), or NULL. */
+static const char *dyn_lit_post_name(Compiler *c, int lit, int k, int n) {
+  const NodeTable *nt = c->nt;
+  int pnode = -1;
+  if (nt_kind(nt, lit) == NK_BlockNode) {
+    int bp = nt_ref(nt, lit, "parameters");
+    pnode = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
+  }
+  else pnode = a_proc_params_node(c, lit);
+  if (pnode < 0 || k >= n) return NULL;
+  int rn = 0, on = 0, sn = 0;
+  nt_arr(nt, pnode, "requireds", &rn);
+  nt_arr(nt, pnode, "optionals", &on);
+  const int *sv = nt_arr(nt, pnode, "posts", &sn);
+  if (sn == 0) return NULL;
+  int ot, ps;
+  block_fill(rn, on, sn, nt_ref(nt, pnode, "rest") >= 0, n, &ot, &ps);
+  return k >= ps && k < ps + sn ? nt_str(nt, sv[k - ps], "name") : NULL;
+}
+/* Does the body of literal `lit` append to its parameter `pn`? */
+static int dyn_lit_name_appended(Compiler *c, int lit, const char *pn) {
+  const NodeTable *nt = c->nt;
+  const char *on1[1] = { pn };
+  unsigned app = 0, kept = 0;
+  int body = nt_kind(nt, lit) == NK_BlockNode ? nt_ref(nt, lit, "body") : a_proc_body(c, lit);
+  dyn_body_scan(c, body, on1, 1, &app, &kept);
+  return app != 0;
+}
+/* Does literal `lit` append to any of its post parameters? Memoized per
+   pass, as its entry is. */
+static int dyn_lit_post_app(Compiler *c, int lit) {
+  const NodeTable *nt = c->nt;
+  if (lit < 0 || lit >= g_dyn.nlit) return 0;
+  if (g_dyn.litpost[lit]) return g_dyn.litpost[lit] == 2;
+  int pnode = -1;
+  if (nt_kind(nt, lit) == NK_BlockNode) {
+    int bp = nt_ref(nt, lit, "parameters");
+    pnode = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
+  }
+  else pnode = a_proc_params_node(c, lit);
+  int sn = 0; const int *sv = pnode >= 0 ? nt_arr(nt, pnode, "posts", &sn) : NULL;
+  int app = 0;
+  for (int i = 0; i < sn && !app; i++) {
+    const char *pn = nt_str(nt, sv[i], "name");
+    if (pn) app = dyn_lit_name_appended(c, lit, pn);
+  }
+  g_dyn.litpost[lit] = app ? 2 : 1;
+  return app;
 }
 
 /* A method's leading positional parameters that call position k binds for
@@ -18089,6 +18151,7 @@ static unsigned dyn_blk_bits(Compiler *c, int mi) {
     if (nt_kind(nt, b) != NK_BlockNode) { bits |= DYN_OPEN; continue; }
     unsigned lb = dyn_lit_bits(c, b);
     bits |= lb & 0x3fffffffu;
+    if (dyn_lit_post_app(c, b)) g_dyn.blkpost[mi] = 2;
   }
   if (!any) bits |= DYN_OPEN;
   g_dyn.blk[mi] = DYN_DONE | bits;
@@ -18135,16 +18198,17 @@ static int dyn_any_appender(Compiler *c) {
   int *tg = (int *)malloc(sizeof(int) * ((size_t)c->nscopes + 1));
   if (!tg) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int n = comp_kind_first(c, NK_LambdaNode); n >= 0 && !g_dyn.any; n = comp_kind_next(c, n))
-    if (nt_kind(nt, n) == NK_LambdaNode && !dyn_cap_wrapper(c, n) && (dyn_lit_bits(c, n) & 0xffffu)) g_dyn.any = 1;
+    if (nt_kind(nt, n) == NK_LambdaNode && !dyn_cap_wrapper(c, n) &&
+        ((dyn_lit_bits(c, n) & 0xffffu) || dyn_lit_post_app(c, n))) g_dyn.any = 1;
   for (int n = comp_kind_first(c, NK_CallNode); n >= 0 && !g_dyn.any; n = comp_kind_next(c, n)) {
     if (nt_kind(nt, n) != NK_CallNode) continue;
     const char *nm = nt_str(nt, n, "name");
     if (!nm) continue;
     int b = nt_ref(nt, n, "block");
-    if (dyn_is_proc_literal(c, n)) { if (dyn_lit_bits(c, b) & 0xffffu) g_dyn.any = 1; continue; }
+    if (dyn_is_proc_literal(c, n)) { if ((dyn_lit_bits(c, b) & 0xffffu) || dyn_lit_post_app(c, b)) g_dyn.any = 1; continue; }
     if (b >= 0 && nt_kind(nt, b) == NK_BlockNode) {
       /* a block handed to a method that keeps it */
-      if (!(dyn_lit_bits(c, b) & 0xffffu)) continue;
+      if (!(dyn_lit_bits(c, b) & 0xffffu) && !dyn_lit_post_app(c, b)) continue;
       int nk = dyn_block_targets(c, n, tg);
       for (int e = 0; e < nk && !g_dyn.any; e++) {
         Scope *m = &c->scopes[tg[e]];
@@ -18250,7 +18314,16 @@ static void dyn_reach_value(Compiler *c, int v, int k, int depth, DynReach *r) {
   NodeKind vk = nt_kind(nt, v);
   if (dyn_rest_takes(c, v, k)) r->app = 1;
   if (dyn_is_proc_literal(c, v) || vk == NK_BlockNode) {
-    const char *pn = dyn_lit_param_name(c, vk == NK_CallNode ? nt_ref(nt, v, "block") : v, k);
+    int lit = vk == NK_CallNode ? nt_ref(nt, v, "block") : v;
+    const char *pn = dyn_lit_param_name(c, lit, k);
+    /* a post the call's count binds there: it reads the boxed channel, so
+       only whether the body appends to it matters */
+    const char *qn = !pn && r->argc1 > 0 ? dyn_lit_post_name(c, lit, k, r->argc1 - 1) : NULL;
+    if (qn) {
+      if (dyn_lit_name_appended(c, lit, qn)) r->app = 1;
+      if (!r->pname) r->pname = qn;
+      return;
+    }
     int open = proc_opt_count(c, v) > 0 || proc_has_rest(c, v) || proc_post_count(c, v) > 0;
     Scope *bs = comp_scope_of(c, v);
     LocalVar *q = pn && bs ? scope_local(bs, pn) : NULL;
@@ -18293,6 +18366,8 @@ static void dyn_reach_value(Compiler *c, int v, int k, int depth, DynReach *r) {
       /* a block's parameter types are its own; the conservative answer for
          the slot is that it may keep what it reads */
       dyn_fold(r, bits, k, 1, 0, TY_UNKNOWN);
+      /* a post of one of the blocks may bind position k by the count */
+      if (g_dyn.blkpost[mi] == 2) r->app = 1;
       return;
     }
     /* every value written to it (a Method-valued local was taken above, by
@@ -18799,6 +18874,7 @@ void dyn_open_reach(Compiler *c, int n, int k, DynReach *r) {
 void dyn_call_reach(Compiler *c, int n, int k, DynReach *r) {
   memset(r, 0, sizeof *r);
   if (!g_dyn.fresh) dyn_memo_reset(c);
+  r->argc1 = call_plain_argc(c, n) + 1;
   dyn_reach_value(c, nt_ref(c->nt, n, "receiver"), k, 0, r);
   if (r->unknown && !r->app && dyn_any_appender(c)) r->app = 1;
 }
@@ -18831,6 +18907,8 @@ void dyn_yield_reach(Compiler *c, int y, int k, DynReach *r) {
   unsigned bits = mi >= 0 ? dyn_blk_bits(c, mi) : DYN_OPEN;
   if (bits & DYN_OPEN) r->unknown = 1;
   dyn_fold(r, bits, k, 1, 0, TY_UNKNOWN);
+  /* a post of one of the blocks may bind position k by the count */
+  if (mi >= 0 && g_dyn.blkpost[mi] == 2) r->app = 1;
   if (r->unknown && !r->app && dyn_any_appender(c)) r->app = 1;
 }
 /* May a lowered method's yield at position k hand the targets the shared
@@ -19779,7 +19857,7 @@ static int yield_splice_site(Compiler *c, int y, int pass, ALocalAliases *aliase
       for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
         int u = g_dyn.bnode[e], blk = nt_ref(nt, u, "block");
         if (nt_kind(nt, blk) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
-        const char *bp = block_lead_param_name(c, blk, k);
+        const char *bp = block_param_at(c, blk, k, call_plain_argc(c, y));
         Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
         LocalVar *t = bs ? scope_local(bs, bp) : NULL;
         if (!t || t->is_cell || t->type != TY_STRING || !an_block_param_alias_mutated(c, aliases, bs, bp))
@@ -19838,7 +19916,7 @@ static int yield_splice_site(Compiler *c, int y, int pass, ALocalAliases *aliase
     for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
       int u = g_dyn.bnode[e], blk = nt_ref(nt, u, "block");
       if (nt_kind(nt, blk) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
-      const char *bp = block_lead_param_name(c, blk, k);
+      const char *bp = block_param_at(c, blk, k, call_plain_argc(c, y));
       Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
       LocalVar *t = bs ? scope_local(bs, bp) : NULL;
       if (!t || t->is_cell) continue;
@@ -19850,7 +19928,7 @@ static int yield_splice_site(Compiler *c, int y, int pass, ALocalAliases *aliase
          proc once it keeps it, where the yield boxes what it hands. */
       if (t->type == TY_POLY && !(ms->blk_param && ms->blk_param[0]) &&
           an_subtree_lends_local(c, nt_ref(nt, blk, "body"), bp, 0)) { into_h = 1; continue; }
-      if (pass || !is_h || t->type != TY_STRING || !an_block_param_lent(c, blk, k)) continue;
+      if (pass || !is_h || t->type != TY_STRING || !an_block_param_lent(c, blk, k, call_plain_argc(c, y))) continue;
       t->type = TY_STRBUF; t->str_shared = 1; changed = 1;
     }
     if (pass && into_h && !an_local_is_handle(c, av[k])) changed |= dyn_pull_arg(c, av[k], 0);
@@ -19916,12 +19994,12 @@ static int yield_splice_handles(Compiler *c) {
       if (ak != NK_LocalVariableReadNode) continue;
       TyKind at = comp_ntype(c, av[k]);
       if (at != TY_STRING && at != TY_STRBUF) continue;
-      const char *bp = block_lead_param_name(c, blk, k);
+      const char *bp = block_param_at(c, blk, k, call_plain_argc(c, u));
       Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
       LocalVar *t = bs ? scope_local(bs, bp) : NULL;
       if (!t || t->is_cell) continue;
       if (an_local_is_handle(c, av[k])) {
-        if (t->type == TY_STRING && an_block_param_lent(c, blk, k)) {
+        if (t->type == TY_STRING && an_block_param_lent(c, blk, k, call_plain_argc(c, u))) {
           t->type = TY_STRBUF; t->str_shared = 1; changed = 1;
         }
       }
