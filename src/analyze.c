@@ -17222,9 +17222,9 @@ static int dyn_block_reaches(Compiler *c, int n, int mi) {
 #define DYN_OPEN 0x40000000u
 static void dyn_reach_value(Compiler *c, int v, int k, int depth, DynReach *r);
 /* Can call `n` not reach method mi of a user class? Its receiver is an Array
-   or a Hash, which only a reopening of that class (or a module) could give
-   the method: `@parts.each(&blk)` inside `def each(&blk)` is Array#each, not
-   a call site of the method, and its `&blk` is not a block it is passed. */
+   or a Hash, which has the method only if Array or Hash is reopened or a
+   module adds it: `@parts.each(&blk)` inside `def each(&blk)` is Array#each,
+   not a call site of the method, and its `&blk` is not a block it is passed. */
 static int dyn_site_misses(Compiler *c, int n, int mi) {
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
@@ -17236,6 +17236,22 @@ static int dyn_site_misses(Compiler *c, int n, int mi) {
   if (recv < 0) return 0;
   TyKind rt = comp_ntype(c, recv);
   return ty_is_array(rt) || ty_is_hash(rt);
+}
+/* Does a `method(:nm)` or `instance_method(:nm)` literal name the method?
+   Its block then comes through `call`, `bind_call` or `to_proc`, which the
+   by-name index of call sites does not see. */
+static int dyn_named_by_method_obj(Compiler *c, const char *nm) {
+  const NodeTable *nt = c->nt;
+  for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
+    if (nt_kind(nt, n) != NK_CallNode) continue;
+    const char *cn = nt_str(nt, n, "name");
+    if (!cn || !(sp_streq(cn, "method") || sp_streq(cn, "public_method") ||
+                 sp_streq(cn, "instance_method") || sp_streq(cn, "public_instance_method")))
+      continue;
+    const char *sym = method_sym_arg(c, n);
+    if (!sym || sp_streq(sym, nm)) return 1;
+  }
+  return 0;
 }
 static unsigned dyn_blk_bits(Compiler *c, int mi) {
   const NodeTable *nt = c->nt;
@@ -17249,6 +17265,7 @@ static unsigned dyn_blk_bits(Compiler *c, int mi) {
   int h = cn ? anh_find(&g_dyn.bnames, ctor ? "new" : cn) : -1;
   /* open while the sites are walked: a `&blk` that leads back here stops */
   g_dyn.blk[mi] = DYN_DONE | DYN_OPEN;
+  if (cn && dyn_named_by_method_obj(c, cn)) return g_dyn.blk[mi];
   for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
     int b = nt_ref(nt, g_dyn.bnode[e], "block");
     if (ctor && !dyn_block_reaches(c, g_dyn.bnode[e], mi)) continue;
@@ -17256,13 +17273,14 @@ static unsigned dyn_blk_bits(Compiler *c, int mi) {
     any = 1;
     /* `&pr`: what the procs it can hold do with each position */
     if (nt_kind(nt, b) == NK_BlockArgumentNode && nt_ref(nt, b, "expression") >= 0) {
-      for (int k = 0; k < 14 && !(bits & DYN_OPEN); k++) {
+      for (int k = 0; k < DYN_ARGS && !(bits & DYN_OPEN); k++) {
         DynReach r;
         memset(&r, 0, sizeof r);
         dyn_reach_value(c, nt_ref(nt, b, "expression"), k, 1, &r);
         if (r.unknown) bits |= DYN_OPEN;
         if (r.app) bits |= 1u << k;
-        if (r.keeps) bits |= 1u << (16 + k);
+        /* past 14 a position is kept anyway (dyn_fold) */
+        if (r.keeps && k < 14) bits |= 1u << (16 + k);
       }
       continue;
     }
