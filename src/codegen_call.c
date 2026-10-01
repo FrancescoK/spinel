@@ -9275,6 +9275,17 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
          classes still answers them. Without a default arm the result stayed
          the empty-string default, so `@x.to_s` on a poly-widened int printed
          blank. Route the fallthrough through the runtime poly converter. */
+      /* `x.enum_for` on a boxed value, rewritten to the generator helper the
+         classes with a yielding each carry: any other value is enumerated
+         as the builtin it is */
+      if (!obj_default_done && sp_streq(name, "__to_enum_each") &&
+          (ret == TY_POLY || ret == TY_ENUMERATOR)) {
+        buf_printf(b, " default: _t%d = ", tr);
+        if (ret == TY_POLY) buf_printf(b, "sp_box_obj(sp_Enumerator_new_from(_t%d), SP_BUILTIN_ENUMERATOR)", tv);
+        else buf_printf(b, "sp_Enumerator_new_from(_t%d)", tv);
+        buf_puts(b, "; break;");
+        obj_default_done = 1;
+      }
       if (!obj_default_done && (sp_streq(name, "to_s") || sp_streq(name, "inspect"))) {
         const char *pfn = sp_streq(name, "to_s") ? "sp_poly_to_s" : "sp_poly_inspect";
         buf_printf(b, " default: _t%d = ", tr);
