@@ -13994,8 +13994,15 @@ static sp_Enumerator *sp_poly_cycle(sp_RbVal v) {
   e->meth = SPL("cycle");
   return e;
 }
-/* A boxed value against an Integer range: a Float compares as a Float. */
-static sp_bool sp_range_cover_poly(sp_Range *r, sp_RbVal x) { return x.tag == SP_TAG_FLT ? sp_range_cover_f(r, x.v.f) : sp_range_include(r, sp_poly_to_i(x)); }
+/* A boxed value against an Integer range: a Float compares as a Float, a
+   Bignum lies past every finite bound, so only an open end can hold it, and
+   a non-numeric value is never covered. */
+static sp_bool sp_range_cover_poly(sp_Range *r, sp_RbVal x) {
+  if (x.tag == SP_TAG_INT) return sp_range_include(r, x.v.i);
+  if (x.tag == SP_TAG_FLT) return sp_range_cover_f(r, x.v.f);
+  if (x.tag == SP_TAG_BIGINT) return sp_bigint_sign((sp_Bigint *)x.v.p) > 0 ? r->last == INTPTR_MAX : r->first == INTPTR_MIN;
+  return 0;
+}
 /* slice_before/slice_after with a pattern VALUE: start a new group before
    (after) each element == pattern. Groups are poly arrays. */
 /* Generic `pattern === element` on boxed values (#2847): a Class pattern

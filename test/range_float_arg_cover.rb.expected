@@ -46,3 +46,4 @@ true
 :hi
 [:in, :in, :out, :neg]
 :b
+[:in, :in, :out, :out, :out, :out, :up, :down]
