@@ -1,0 +1,9 @@
+"float 1e+100 out of range of integer"
+"float -1e+100 out of range of integer"
+"float NaN out of range of integer"
+"float Inf out of range of integer"
+"float -Inf out of range of integer"
+"he"
+"llo"
+nil
+nil
