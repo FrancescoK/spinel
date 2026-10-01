@@ -113,6 +113,9 @@ int nullable_int_value(Compiler *c, int id);
 /* The same, asked of the variable rather than of the read: what it can hold
    anywhere, the nil narrowing's facts left out. */
 int nullable_int_value_raw(Compiler *c, int id);
+int nullable_int_bitop(Compiler *c, int id);
+int int_bitop_may_be_nil(Compiler *c, int id);
+int int_bitop_nil_guarded(Compiler *c, int id);
 int scalar_nil_only_call(Compiler *c, int id, TyKind rt);
 int nullable_scalar_nil_only_call(Compiler *c, int id);
 int nullable_int_elem_read(Compiler *c, int call);

@@ -481,6 +481,17 @@ literal `s[h[k]..]` does. A genuine `-9223372036854775808` stored in such a
 slot is indistinguishable from nil, which is the price of the
 representation.
 
+`&`, `|` and `^` are the exception: NilClass defines them, and they answer
+a boolean (`nil ^ 1` is `true`, `nil & 1` is `false`). Where the result is
+boxed anyway -- printed by `p` / `puts` / `print` / `pp`, interpolated, or
+written to a local that already holds other kinds -- Spinel answers that
+boolean. Everywhere else the result keeps its Integer slot, which cannot
+hold it, so a receiver that is nil at run time raises `NotImplementedError`
+(`nil ^ Integer answers true or false, which an Integer slot cannot hold`).
+Boxing those results instead would put a boxed operator on every bitwise
+operation whose receiver the analysis cannot prove non-nil, which includes
+an emulator's registers read out of its RAM array.
+
 #### `Integer#**` with a negative exponent
 
 CRuby evaluates a negative integer exponent to a `Rational`. Spinel matches
