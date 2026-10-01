@@ -24400,7 +24400,9 @@ void refuse_super_splat(Compiler *c, int id, int target) {
 }
 
 /* `yield(*s)`, `yield(*e, v)` into a literal block that appends to a
-   parameter at or past the splat's position: refused as above. */
+   parameter at or past the splat's position: the String variable is pulled
+   into the handle the block's parameter takes (block_splat_pull_args), but
+   for one that cannot be, which is refused as above. */
 void refuse_yield_splat(Compiler *c, int blk, int yc, const int *yv) {
   if (blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode) return;
   int fs;
@@ -24721,10 +24723,15 @@ static void refuse_string_copies(Compiler *c, int id) {
       if (!refuse_call_binds(c, bp >= 0 ? nt_ref(nt, bp, "parameters") : -1, id, 0, 1)) return; }
     int n = refuse_arg_layout(c, id, av, 16);
     int spliced = ie_splice_aliases(c, id, name, recv);
+    /* a splat gathers the arguments into an Array the block's parameters
+       bind from: a read that hands out the handle there is its own
+       (block_splat_pull_args) */
+    int gathered = block_splat_shares(c, blk);
     for (int k = 0; k < n; k++) {
       int shared;
       const char *kind = strvar_arg(c, av[k], &shared);
       if (!kind) continue;
+      if (gathered && c->strbuf_box[av[k]] && !sp_streq(kind, "a block's parameter")) continue;
       if (spliced && ie_arg_aliases(c, av[k]) && block_param_wants_alias(c, blk, k)) continue;
       /* a parameter that is the shared handle takes the caller's, pulled in
          (yield_splice_handles) */
