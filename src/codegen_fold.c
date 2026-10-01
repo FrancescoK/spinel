@@ -1053,8 +1053,9 @@ void emit_autosplat_params(Compiler *c, int block, int np, int elem_temp, int in
    `|q, |`), as CRuby's does. Binds those params from the boxed Array
    `tuple_src` (a pure, rooted expression) into `out` and answers 1. Answers 0
    for a block the caller binds whole (one plain parameter, a destructuring
-   one, or none). A rest, an optional or a post-required parameter would take
-   CRuby's full proc distribution, which these emitters do not do: refused. */
+   one, or none). A rest, an optional or a post-required parameter takes
+   CRuby's full proc distribution, which desugar_builtin_iter_block_shapes
+   binds before this runs; one that reaches here is refused. */
 int emit_tuple_block_params(Compiler *c, int id, int block, const char *tuple_src, Buf *out) {
   if (block_opt_name(c, block, 0) || block_post_name(c, block, 0) ||
       (block_rest_marker(c, block) && !block_lead_only(c, block)))
@@ -3718,8 +3719,15 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
     emit_autosplat_params(c, block, np_sb, te, g_indent + 1);
   }
   else if (p0) {
+    /* a boxed element into a parameter the analysis typed (the receiver a
+       poly array only here, read back from a box) is unboxed */
+    Scope *sbs = comp_scope_of(c, block);
+    LocalVar *plv = sbs ? scope_local(sbs, p0_orig) : NULL;
+    TyKind pt = plv ? plv->type : TY_UNKNOWN;
+    char src[96]; snprintf(src, sizeof src, "sp_%sArray_get(_t%d, _t%d)", k, trv, ti);
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trv, ti);
+    if (rt == TY_POLY_ARRAY && pt != TY_POLY && pt != TY_UNKNOWN) emit_block_param_from_boxed(c, p0, pt, src, g_pre);
+    else buf_printf(g_pre, "lv_%s = %s;\n", p0, src);
   }
   for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
   int save = g_indent; g_indent += 1;
