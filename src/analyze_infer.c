@@ -7182,6 +7182,16 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^")))
     return TY_BOOL;
 
+  /* a program's own Object method answers what it returns, whatever its
+     name says: activesupport's Object#acts_like? gives respond_to?'s
+     answer, which a class's own respond_to? may give as any value */
+  if (recv >= 0) {
+    /* a boxed receiver too: the builtin-only answer the poly dispatch's
+       default arm is shaped by is the Object fallback's call */
+    const char *ocls = ty_is_object(rt) || rt == TY_POLY ? "Object" : builtin_class_of_type(rt);
+    TyKind ort;
+    if (ocls && object_reopen_answers(c, ocls, id, &ort)) return ort;
+  }
   size_t nl = strlen(name);
   if (nl > 0 && name[nl - 1] == '?') return TY_BOOL;
 
