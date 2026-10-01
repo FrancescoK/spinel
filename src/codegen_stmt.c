@@ -6937,7 +6937,9 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
           emit_boxed(c, a[k], b);
           buf_puts(b, "); ");
         }
-        buf_printf(b, "_retv%d = _t%d; ", ctx->lid, ta);
+        /* a frame slot holding other values too takes the Array boxed */
+        buf_printf(b, ctx->retv_ty == TY_POLY ? "_retv%d = sp_box_poly_array(_t%d); " : "_retv%d = _t%d; ",
+                   ctx->lid, ta);
       }
       else if (n > 0) {
         buf_printf(b, "_retv%d = ", ctx->lid);
