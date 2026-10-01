@@ -632,6 +632,8 @@ const char *g_rescue_cls = NULL, *g_rescue_msg = NULL;
 const char *g_retry_label = NULL;
 int g_redo_stack[64];
 int g_redo_depth = 0;
+int g_redo_pending = 0;
+int g_redo_owner[64];
 const char *g_loop_break_var = NULL;
 /* When a direct instance_exec/eval splice is wrapped in a do{}while(0), this
    holds the C result temp so a top-level `next <v>` captures its value before

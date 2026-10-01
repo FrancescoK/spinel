@@ -286,6 +286,15 @@ extern const char *g_retry_label;
    iteration without re-testing the guard or advancing the iterator. */
 extern int g_redo_stack[64];
 extern int g_redo_depth;
+/* A redo label the next emit_stmts of a block body places after the body's
+   setup (its locals' reset and block_param_rebind_len's statements); 0 when
+   none is pending. */
+extern int g_redo_pending;
+/* The body whose own `redo`s each label serves (subtree_owns_redo). */
+extern int g_redo_owner[64];
+int subtree_owns_redo(const NodeTable *nt, int body, int redo);
+int block_of_body(Compiler *c, int body);
+int block_param_rebind_len(const NodeTable *nt, int body);
 
 /* When set inside a loop-as-expression, BreakNode assigns its value here. */
 extern const char *g_loop_break_var;

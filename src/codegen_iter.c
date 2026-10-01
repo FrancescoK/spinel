@@ -1805,7 +1805,7 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
     }
   }}
 
-static int subtree_has_own_redo_ex(const NodeTable *nt, int id, int follow_yield);
+static int subtree_has_own_redo_ex(const NodeTable *nt, int id, int redo);
 /* Is `arg` yielded by one of the builtins/ methods whose block CRuby hands
    every value a step of the receiver yields (enum_pair_spread_iter), over
    a receiver whose steps are known only at run time: a boxed one, or an
@@ -2551,15 +2551,23 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
      (a builtin's `buf << x` pushed the element again), and a yield outside
      any loop had none at all (`continue` outside a loop). */
   int rd_lbl = 0;
-  if (bbody >= 0 && subtree_has_own_redo_ex(nt, bbody, 0) &&
+  if (bbody >= 0 && subtree_has_own_redo_ex(nt, bbody, -1) &&
       g_redo_depth < (int)(sizeof g_redo_stack / sizeof g_redo_stack[0])) {
     rd_lbl = ++g_tmp;
+    g_redo_owner[g_redo_depth] = bbody;
     g_redo_stack[g_redo_depth++] = rd_lbl;
-    if (as_expr) buf_printf(b, "_redo_%d: ; ", rd_lbl);
-    else { emit_indent(b, indent); buf_printf(b, "_redo_%d: ;\n", rd_lbl); }
   }
+  /* ...and after the body's setup, its locals' reset and the parameter
+     rebindings (block_param_rebind_len), which a redo does not re-run. The
+     arms below that emit the statements one by one place it after the
+     rebindings; emit_stmts places it for the last arm. */
+  int rd_head = rd_lbl ? block_param_rebind_len(nt, bbody) : 0;
   if (nx_own && as_expr && g_ie_next_var && !nx_tail_stmt && bn3 > 0) {
-    for (int k3 = 0; k3 < bn3 - 1; k3++) emit_stmt(c, bd3[k3], b, 0);
+    for (int k3 = 0; k3 < bn3 - 1; k3++) {
+      if (rd_lbl && k3 == rd_head) buf_printf(b, "_redo_%d: ; ", rd_lbl);
+      emit_stmt(c, bd3[k3], b, 0);
+    }
+    if (rd_lbl && rd_head >= bn3 - 1) buf_printf(b, "_redo_%d: ; ", rd_lbl);
     /* the tail's prelude stays inside the splice, after the parameter
        bindings: hoisted to the enclosing statement, an array literal tail
        (`{ |x| next [] if x == 2; [x] }`) was built from the parameter's
@@ -2606,7 +2614,11 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     if (c->blk_body_map && bbody >= 0 && bbody < c->nt->count &&
         c->blk_body_map[bbody] >= 0)
       emit_block_locals_reset(c, c->blk_body_map[bbody], b, 0);
-    for (int k3 = 0; k3 < bn3 - 1; k3++) emit_stmt(c, bd3[k3], b, 0);
+    for (int k3 = 0; k3 < bn3 - 1; k3++) {
+      if (rd_lbl && k3 == rd_head) buf_printf(b, "_redo_%d: ; ", rd_lbl);
+      emit_stmt(c, bd3[k3], b, 0);
+    }
+    if (rd_lbl && rd_head >= bn3 - 1) buf_printf(b, "_redo_%d: ; ", rd_lbl);
     /* the tail's own prelude stays INSIDE the splice, after the parameter
        bindings above it: hoisted to the enclosing statement, a forwarded
        proc's yield read the block parameter before it was bound */
@@ -2646,7 +2658,11 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     if (c->blk_body_map && bbody >= 0 && bbody < c->nt->count &&
         c->blk_body_map[bbody] >= 0)
       emit_block_locals_reset(c, c->blk_body_map[bbody], b, 0);
-    for (int k3 = 0; k3 < bn3 - 1; k3++) emit_stmt(c, bd3[k3], b, 0);
+    for (int k3 = 0; k3 < bn3 - 1; k3++) {
+      if (rd_lbl && k3 == rd_head) buf_printf(b, "_redo_%d: ; ", rd_lbl);
+      emit_stmt(c, bd3[k3], b, 0);
+    }
+    if (rd_lbl && rd_head >= bn3 - 1) buf_printf(b, "_redo_%d: ; ", rd_lbl);
     /* the tail's prelude stays inside the splice here too: a forwarded
        proc's `f.call(__fwd)` read its parameter's slot ahead of the binding
        when the read was hoisted to the enclosing statement */
@@ -2659,6 +2675,9 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     buf_puts(b, "; ");
   }
   else {
+    if (rd_lbl && block_of_body(c, bbody) >= 0) g_redo_pending = rd_lbl;
+    else if (rd_lbl && as_expr) buf_printf(b, "_redo_%d: ; ", rd_lbl);
+    else if (rd_lbl) { emit_indent(b, indent); buf_printf(b, "_redo_%d: ;\n", rd_lbl); }
     emit_stmts(c, bbody, b, as_expr ? 0 : (nx_own ? indent + 1 : indent));
     /* The block's value is its last statement, and this splice is read as the
        value of a statement expression. A receiver-returning iterator there
@@ -3225,15 +3244,15 @@ int emit_iter_bind_rest(Compiler *c, int block, int np, TyKind elem_t,
 }
 
 /* Does the subtree contain a `redo` that belongs to THIS loop, i.e. one not
-   nested inside a deeper loop/block/def (which would own it instead)? */
-static int subtree_has_own_redo_ex(const NodeTable *nt, int id, int follow_yield) {
+   nested inside a deeper loop/block/def (which would own it instead)? With
+   `redo` >= 0, that particular RedoNode. */
+static int subtree_has_own_redo_ex(const NodeTable *nt, int id, int redo) {
   if (id < 0) return 0;
   const char *ty = nt_type(nt, id);
   if (!ty) return 0;
-  if (sp_streq(ty, "RedoNode")) return 1;
+  if (sp_streq(ty, "RedoNode")) return redo < 0 || id == redo;
   /* a `redo` in a block a yield here splices belongs to that splice, which
      carries its own label (emit_block_invoke), not to this loop */
-  (void)follow_yield;
   /* nested scope/loop boundaries: a redo inside binds to that inner loop */
   if (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode") ||
       sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
@@ -3241,15 +3260,18 @@ static int subtree_has_own_redo_ex(const NodeTable *nt, int id, int follow_yield
     return 0;
   if (sp_streq(ty, "CallNode") && nt_ref(nt, id, "block") >= 0) return 0;  /* nested iteration */
   int nr = nt_num_refs(nt, id);
-  for (int i = 0; i < nr; i++) if (subtree_has_own_redo_ex(nt, nt_ref_at(nt, id, i), follow_yield)) return 1;
+  for (int i = 0; i < nr; i++) if (subtree_has_own_redo_ex(nt, nt_ref_at(nt, id, i), redo)) return 1;
   int na = nt_num_arrs(nt, id);
   for (int i = 0; i < na; i++) {
     int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
-    for (int k = 0; k < n; k++) if (subtree_has_own_redo_ex(nt, ids[k], follow_yield)) return 1;
+    for (int k = 0; k < n; k++) if (subtree_has_own_redo_ex(nt, ids[k], redo)) return 1;
   }
   return 0;
 }
-int subtree_has_own_redo(const NodeTable *nt, int id) { return subtree_has_own_redo_ex(nt, id, 1); }
+int subtree_has_own_redo(const NodeTable *nt, int id) { return subtree_has_own_redo_ex(nt, id, -1); }
+int subtree_owns_redo(const NodeTable *nt, int body, int redo) {
+  return redo >= 0 && subtree_has_own_redo_ex(nt, body, redo);
+}
 
 /* Does the subtree contain a `next` that belongs to THIS block, i.e. one not
    nested inside a deeper loop/block/def (which would own it instead)? Same
@@ -3300,11 +3322,15 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
   int lbl = 0;
   if (has_redo) {
     lbl = ++g_tmp;
-    if (g_redo_depth < (int)(sizeof g_redo_stack / sizeof g_redo_stack[0]))
+    if (g_redo_depth < (int)(sizeof g_redo_stack / sizeof g_redo_stack[0])) {
+      g_redo_owner[g_redo_depth] = body;
       g_redo_stack[g_redo_depth++] = lbl;
+    }
     else has_redo = 0;
   }
-  if (has_redo) { emit_indent(b, indent); buf_printf(b, "_redo_%d: ;\n", lbl); }
+  /* a block body's label goes after its setup, where emit_stmts puts it */
+  if (has_redo && block_of_body(c, body) >= 0) g_redo_pending = lbl;
+  else if (has_redo) { emit_indent(b, indent); buf_printf(b, "_redo_%d: ;\n", lbl); }
   /* Safepoint poll at the loop back-edge: a threaded program's worker checks
      here whether a GC stop-the-world wants it to park, so a long-running loop
      cannot starve the collector. SP_SAFEPOINT_POLL() (sp_sched.h) is a relaxed

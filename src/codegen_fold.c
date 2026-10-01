@@ -4046,7 +4046,23 @@ void emit_block_value_into(Compiler *c, int block, const char *dest,
   int bi = indent + 1; g_indent = bi;
   /* fresh block-locals on every invocation (this path bypasses emit_stmts) */
   emit_block_locals_reset(c, block, g_pre, bi);
-  for (int j = 0; j + 1 < bn; j++) emit_stmt(c, bb[j], g_pre, bi);
+  /* A `redo` re-runs the body without that reset or the parameter
+     rebindings (block_param_rebind_len): its label goes after them. With no
+     label of its own, it fell back to `continue`, which left the block as
+     `next` does (or jumped to an enclosing loop's label). */
+  int rd_lbl = 0;
+  if (subtree_has_own_redo(nt, body) &&
+      g_redo_depth < (int)(sizeof g_redo_stack / sizeof g_redo_stack[0])) {
+    rd_lbl = ++g_tmp;
+    g_redo_owner[g_redo_depth] = body;
+    g_redo_stack[g_redo_depth++] = rd_lbl;
+  }
+  int rd_head = rd_lbl ? block_param_rebind_len(nt, body) : 0;
+  for (int j = 0; j + 1 < bn; j++) {
+    if (rd_lbl && j == rd_head) { emit_indent(g_pre, bi); buf_printf(g_pre, "_redo_%d: ;\n", rd_lbl); }
+    emit_stmt(c, bb[j], g_pre, bi);
+  }
+  if (rd_lbl && rd_head >= bn - 1) { emit_indent(g_pre, bi); buf_printf(g_pre, "_redo_%d: ;\n", rd_lbl); }
   if (bn > 0) {
     int tail = bb[bn - 1];
     const char *tty = nt_type(nt, tail);
@@ -4071,6 +4087,7 @@ void emit_block_value_into(Compiler *c, int block, const char *dest,
       free(vb.p);
     }
   }
+  if (rd_lbl) g_redo_depth--;
   g_indent = sd;
   emit_indent(g_pre, indent); buf_puts(g_pre, "} while (0);\n");
   g_c_loop_depth--;

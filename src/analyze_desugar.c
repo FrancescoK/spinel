@@ -9963,6 +9963,9 @@ int desugar_reassigned_block_params(Compiler *c) {
       nt_node_set_str(nt, rd, "name", renamed);
       nt_node_set_int(nt, rd, "depth", 0);
       nt_node_set_ref(nt, w, "value", rd);
+      /* the iteration's setup, which a redo does not re-run
+         (block_param_rebind_len) */
+      nt_node_set_int(nt, w, "bp_rebind", 1);
       pre = realloc(pre, sizeof(int) * (size_t)(npre + 1));
       pre[npre++] = w;
     }
