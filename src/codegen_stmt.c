@@ -6886,21 +6886,24 @@ static void emit_unbox_node(Compiler *c, TyKind t, int node, Buf *b) {
      type's zero for a boxed nil, which in these two slots is a real value and
      is what made a nullable return read back as 0 / 0.0. bool has no sentinel
      to land on, so it keeps the plain conversion (#3458). */
-  if (t == TY_INT)                 buf_printf(b, "sp_poly_to_i_or_nil(%s)", v);
-  else if (t == TY_FLOAT)          buf_printf(b, "sp_poly_to_f_or_nil(%s)", v);
-  else if (t == TY_BOOL)           buf_printf(b, "sp_poly_to_i(%s)", v);
+  switch (t) {
+  case TY_INT:      buf_printf(b, "sp_poly_to_i_or_nil(%s)", v); break;
+  case TY_FLOAT:    buf_printf(b, "sp_poly_to_f_or_nil(%s)", v); break;
+  case TY_BOOL:     buf_printf(b, "sp_poly_to_i(%s)", v); break;
   /* A Rational slot is a by-value struct, so it matched neither the scalar
      arms above nor the pointer test below and left with the box still on:
      the generated C returned an sp_RbVal through an sp_Rational signature
      and did not build. `Rational#quo` with an Integer operand is the way in
      -- under promote the parameter widens to poly, the call answers boxed,
      and the return slot stays Rational. */
-  else if (t == TY_RATIONAL)       buf_printf(b, "sp_poly_as_rational(%s)", v);
-  else {
+  case TY_RATIONAL: buf_printf(b, "sp_poly_as_rational(%s)", v); break;
+  default: {
     const char *cn = c_type_name(t);
     if (t == TY_STRING || ty_is_object(t) || (cn && cn[0] && cn[strlen(cn) - 1] == '*'))
       emit_unbox_text(c, t, v, b);
     else buf_puts(b, v);
+    break;
+  }
   }
   free(val.p); free(src.p);
 }
