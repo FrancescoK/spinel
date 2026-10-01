@@ -64,8 +64,8 @@ def fixture_files(path, seen)
   return [] if seen[path] || !File.file?(path)
   seen[path] = true
   out = []
-  File.foreach(path) do |l|
-    next unless l =~ /\A\s*require_relative\s+["']([^"']+)["']/
+  File.foreach(path, mode: "rb") do |l|   # a fixture need not be UTF-8
+    next unless l =~ /\A\s*require_relative\s+["']([^"']+)["']/n
     dep = File.expand_path($1.delete_suffix(".rb") + ".rb", File.dirname(path))
     out.concat(fixture_files(dep, seen))
   end
