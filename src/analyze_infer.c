@@ -7181,6 +7181,12 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "nonzero?") && argc == 0) return TY_POLY;   /* self or nil */
     if (sp_streq(name, "fdiv") && argc == 1) return TY_FLOAT;
     if (sp_streq(name, "pow") && argc == 1) return TY_BIGINT;
+    /* A Float operand divides in floats, as CRuby converts the Bignum to its
+       nearest double: modulo and remainder answer a Float, and div the
+       Integer floor of the Float quotient, which may or may not fit a word */
+    if ((sp_streq(name, "modulo") || sp_streq(name, "%") || sp_streq(name, "remainder")) &&
+        argc == 1 && infer_type(c, argv[0]) == TY_FLOAT) return TY_FLOAT;
+    if (sp_streq(name, "div") && argc == 1 && infer_type(c, argv[0]) == TY_FLOAT) return TY_POLY;
     /* modulo/%/remainder/modular-pow stay Bignum; divmod is a [q, r] pair;
        #[] is a single bit (0/1) (#2594) */
     if ((sp_streq(name, "modulo") || sp_streq(name, "%") || sp_streq(name, "remainder")) &&
@@ -7868,9 +7874,12 @@ TyKind infer_uncached(Compiler *c, int id) {
        ivar belongs to the rebound receiver class (an_ie_class_id). */
     int wcls = s->class_id >= 0 ? s->class_id : an_ie_class_id;
     /* a toplevel method's `@x ||= v` / `@x &&= v` answers the Toplevel slot,
-       which the value alone does not type (`(@a ||= []) << 1`) */
+       which the value alone does not type (`(@a ||= []) << 1`); so does a
+       plain write of an untyped value (`y = (@a = [])`, where a later write
+       made the slot a poly array) */
     if (wcls < 0 && !s->is_cmethod && id < c->node_cap && c->node_cbody[id] < 0 &&
-        (nk == NK_InstanceVariableOrWriteNode || nk == NK_InstanceVariableAndWriteNode)) {
+        (nk == NK_InstanceVariableOrWriteNode || nk == NK_InstanceVariableAndWriteNode ||
+         (nk == NK_InstanceVariableWriteNode && infer_type(c, nt_ref(nt, id, "value")) == TY_UNKNOWN))) {
       int tl = comp_class_index(c, "Toplevel");
       int tiv = tl >= 0 && nm ? comp_ivar_index(&c->classes[tl], nm) : -1;
       TyKind tt = tiv >= 0 ? ivar_value_ty(&c->classes[tl], tiv) : TY_UNKNOWN;

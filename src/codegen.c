@@ -734,7 +734,12 @@ static void emit_int_expr_ex(Compiler *c, int node, int strict, Buf *b) {
                strict == 2 ? "_OF" : "", tn, tn);
     return;
   }
-  emit_scalar_operand(c, node, "0", b);
+  Buf tmp; memset(&tmp, 0, sizeof tmp);
+  emit_expr(c, node, &tmp);
+  if (!coerce_const_raise(tmp.p ? tmp.p : "", "0", b))
+    emit_coerce_text(c, node, store_value_kind(c, node), TY_INT, CO_CONVERT, tmp.p ? tmp.p : "",
+                     "an Integer operand", b);
+  free(tmp.p);
 }
 
 void emit_int_expr(Compiler *c, int node, Buf *b) {
@@ -830,7 +835,8 @@ void emit_float_expr(Compiler *c, int node, Buf *b) {
   emit_expr(c, node, &tmp);
   if (!coerce_const_raise(tmp.p ? tmp.p : "", "0.0", b)) {
     buf_puts(b, "(sp_float)(");
-    buf_puts(b, tmp.p ? tmp.p : "");
+    emit_coerce_text(c, node, store_value_kind(c, node), TY_FLOAT, CO_CONVERT, tmp.p ? tmp.p : "",
+                     "a Float operand", b);
     buf_puts(b, ")");
   }
   free(tmp.p);
@@ -931,7 +937,7 @@ static void emit_str_expr_ex(Compiler *c, int node, int strict, Buf *b) {
      token that says the expression cannot return. */
   if (strncmp(past_open_parens(txt), "sp_raise_", 9) == 0)
     buf_printf(b, "((void)(%s), (const char *)NULL)", txt);
-  else buf_puts(b, txt);
+  else emit_coerce_text(c, node, store_value_kind(c, node), TY_STRING, CO_HOLD, txt, "a String operand", b);
   free(tmp.p);
 }
 
@@ -1197,7 +1203,10 @@ int emit_unresolved_coerced(Compiler *c, int node, TyKind target, Buf *b) {
     buf_printf(b, "((void)(%s), %s)", txt, raise_tail_value_c(c, target));
     is_tok = 1;
   }
-  else buf_puts(b, txt);
+  else {
+    store_check(c, node, target, "a store of an untyped value", b);
+    buf_puts(b, txt);
+  }
   free(tmp.p);
   return is_tok;
 }
@@ -13652,6 +13661,7 @@ char *codegen_program(const NodeTable *nt) {
      sides so codegen and the AST agree. */
   g_line_map = (getenv("SPINEL_LINE_MAP") || getenv("SPINEL_DEBUG")) ? 1 : 0;
   g_debug = getenv("SPINEL_DEBUG") ? 1 : 0;
+  g_check_stores = getenv("SPINEL_CHECK_STORES") ? 1 : 0;
   /* The unresolved-call gate raises NoMethodError, matching CRuby (a silent
      wrong answer is the worst failure mode). SPINEL_GATE_RAISE=0 restores the
      old silent typed default as a transition escape hatch. */

@@ -4100,7 +4100,12 @@ int infer_global_const_types(Compiler *c) {
       TyKind cur = lv ? lv->type : TY_UNKNOWN;
       TyKind v = infer_type(c, nt_ref(nt, id, "value"));
       if (cur == TY_STRING) vt = TY_STRING;
-      else if (ty_is_numeric(cur) && ty_is_numeric(v)) vt = (cur == TY_FLOAT || v == TY_FLOAT) ? TY_FLOAT : TY_INT;
+      else if (ty_is_numeric(cur) && ty_is_numeric(v))
+        /* an Integer past 64 bits on either side widens the slot to Bignum,
+           as a local's `x -= 2**63` does: kept an Integer, the Bignum operand
+           had no slot to land in */
+        vt = (cur == TY_FLOAT || v == TY_FLOAT) ? TY_FLOAT
+           : (cur == TY_BIGINT || v == TY_BIGINT) ? TY_BIGINT : TY_INT;
       else vt = cur;
     }
     else if (sp_streq(ty, "GlobalVariableOrWriteNode") || sp_streq(ty, "GlobalVariableAndWriteNode")) {

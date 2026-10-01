@@ -9945,7 +9945,8 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "divmod") && argc == 1) {
         /* Float#divmod(n) -> [floor(x/n) (Integer), x - q*n (Float)] */
         int tx = ++g_tmp, tn = ++g_tmp, tq = ++g_tmp, o = ++g_tmp;
-        buf_printf(b, "({ sp_float _t%d = (%s); sp_float _t%d = ", tx, r, tn); emit_expr(c, argv[0], b);
+        buf_printf(b, "({ sp_float _t%d = (%s); sp_float _t%d = ", tx, r, tn);
+        emit_coerce(c, argv[0], TY_FLOAT, CO_CONVERT, "a Float operand", b);
         buf_printf(b, "; if (isnan(_t%d) || isnan(_t%d)) sp_raise_cls(\"FloatDomainError\", \"NaN\");"
                       /* an infinite dividend has no quotient: FloatDomainError (#3008) */
                       " if (isinf(_t%d)) sp_raise_cls(\"FloatDomainError\", _t%d > 0 ? \"Infinity\" : \"-Infinity\");"
@@ -10120,7 +10121,8 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
                         " sp_FloatArray_push(_t%d, (%s)); _t%d; })", o, o, ta, o, r, o);
         }
         else {
-          buf_printf(b, "({ sp_float _t%d = ", ta); emit_expr(c, argv[0], b);
+          buf_printf(b, "({ sp_float _t%d = ", ta);
+          emit_coerce(c, argv[0], TY_FLOAT, CO_CONVERT, "a Float operand", b);
           buf_printf(b, "; sp_FloatArray *_t%d = sp_FloatArray_new();"
                         " sp_FloatArray_push(_t%d, _t%d);"
                         " sp_FloatArray_push(_t%d, (%s)); _t%d; })", o, o, ta, o, r, o);

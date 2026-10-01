@@ -512,7 +512,9 @@ static void emit_bigint_operand(Compiler *c, int node, Buf *b) {
     buf_printf(b, "; _t%d == SP_INT_NIL ? NULL : sp_bigint_new_int(_t%d); })", tv, tv);
     return;
   }
-  buf_puts(b, "sp_bigint_new_int("); emit_expr(c, node, b); buf_puts(b, ")");
+  buf_puts(b, "sp_bigint_new_int(");
+  emit_coerce(c, node, TY_INT, CO_HOLD, "an Integer operand of a Bignum operation", b);
+  buf_puts(b, ")");
 }
 /* Same, reachable from the other emitters (the ivar op-assign). */
 void emit_bigint_operand_ext(Compiler *c, int node, Buf *b) { emit_bigint_operand(c, node, b); }
@@ -2265,7 +2267,9 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
       Buf vb = expr_buf(c, argv[k]);
       emit_indent(g_pre, g_indent);
       if (storable) emit_ctype(c, at, g_pre); else buf_puts(g_pre, "sp_int");
-      buf_printf(g_pre, " _t%d = %s;\n", atmp[k], vb.p ? vb.p : "");
+      buf_printf(g_pre, " _t%d = ", atmp[k]);
+      store_check(c, argv[k], storable ? at : TY_INT, "a block or proc argument's temp", g_pre);
+      buf_printf(g_pre, "%s;\n", vb.p ? vb.p : "");
       /* Root a GC-managed temp: a later argument's evaluation, or sp_proc_call
          itself, can allocate and collect before the callee reads the value back
          from the (un-scanned) side-channel. Use the type-correct macro. */
@@ -2383,7 +2387,9 @@ void emit_rat_coerce(Compiler *c, int node, Buf *b) {
     buf_puts(b, "sp_poly_kernel_rational("); emit_expr(c, node, b); buf_puts(b, ")");
     return;
   }
-  buf_puts(b, "sp_rational_new((sp_int)("); emit_expr(c, node, b); buf_puts(b, "), 1)");
+  buf_puts(b, "sp_rational_new((sp_int)(");
+  emit_coerce(c, node, TY_INT, CO_HOLD, "a Rational's numerator", b);
+  buf_puts(b, "), 1)");
 }
 /* Emit a node as an sp_Complex: a Complex stays as-is, an Integer/Float
    becomes re+0i (a Float operand marks the real component Float-classed). */
@@ -2403,7 +2409,8 @@ void emit_complex_coerce(Compiler *c, int node, Buf *b) {
     buf_puts(b, "), 0, 1})");
     return;
   }
-  buf_puts(b, "((sp_Complex){(sp_float)("); emit_expr(c, node, b);
+  buf_puts(b, "((sp_Complex){(sp_float)(");
+  emit_coerce(c, node, TY_FLOAT, CO_HOLD, "a Complex component", b);
   buf_printf(b, "), 0, %d})", comp_ntype(c, node) == TY_FLOAT ? 1 : 0);
 }
 
@@ -3642,7 +3649,9 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "report_on_exception=") && argc == 1) {
       int t = ++g_tmp;
       buf_printf(b, "({ sp_thread *_t%d = ", t); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_Thread_set_report(_t%d, ", t); emit_expr(c, argv[0], b); buf_puts(b, "); })");
+      buf_printf(b, "; sp_Thread_set_report(_t%d, ", t);
+      emit_coerce(c, argv[0], TY_BOOL, CO_CONVERT, "Thread#report_on_exception=", b);
+      buf_puts(b, "); })");
       return 1;
     }
     if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
@@ -4146,12 +4155,22 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "(sp_Complex){");
       if (re_poly) buf_printf(b, "sp_poly_to_f(_t%d)", tre);
       else if (re_rat) buf_printf(b, "sp_rational_to_f(_t%d)", tre);
-      else buf_printf(b, "(sp_float)(_t%d)", tre);
+      else {
+        char tn[24]; snprintf(tn, sizeof tn, "_t%d", tre);
+        buf_puts(b, "(sp_float)(");
+        emit_coerce_text(c, argv[0], ret0, TY_FLOAT, CO_HOLD, tn, "a Complex component", b);
+        buf_puts(b, ")");
+      }
       buf_puts(b, ", ");
       if (argc < 2) buf_puts(b, "0");
       else if (im_poly) buf_printf(b, "sp_poly_to_f(_t%d)", tim);
       else if (im_rat) buf_printf(b, "sp_rational_to_f(_t%d)", tim);
-      else buf_printf(b, "(sp_float)(_t%d)", tim);
+      else {
+        char tn[24]; snprintf(tn, sizeof tn, "_t%d", tim);
+        buf_puts(b, "(sp_float)(");
+        emit_coerce_text(c, argv[1], imt0, TY_FLOAT, CO_HOLD, tn, "a Complex component", b);
+        buf_puts(b, ")");
+      }
       buf_printf(b, ", (unsigned char)(%d", fl);
       if (re_poly) buf_printf(b, " | (_t%d.tag == SP_TAG_FLT ? 1 : 0)", tre);
       if (im_poly) buf_printf(b, " | (_t%d.tag == SP_TAG_FLT ? 2 : 0)", tim);
@@ -4160,10 +4179,12 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
     }
     buf_puts(b, "((sp_Complex){");
     buf_puts(b, re_rat ? "sp_rational_to_f(" : "(sp_float)(");
-    emit_expr(c, argv[0], b);
+    if (re_rat) emit_expr(c, argv[0], b);
+    else emit_coerce(c, argv[0], TY_FLOAT, CO_HOLD, "a Complex component", b);
     buf_puts(b, "), ");
     buf_puts(b, im_rat ? "sp_rational_to_f(" : "(sp_float)(");
-    if (argc >= 2) emit_expr(c, argv[1], b);
+    if (argc >= 2 && im_rat) emit_expr(c, argv[1], b);
+    else if (argc >= 2) emit_coerce(c, argv[1], TY_FLOAT, CO_HOLD, "a Complex component", b);
     else buf_puts(b, "0");
     buf_printf(b, "), %d})", fl);
     return 1;
@@ -4348,9 +4369,9 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       int fl = (comp_ntype(c, argv[0]) == TY_FLOAT ? 1 : 0) |
                (argc == 2 && comp_ntype(c, argv[1]) == TY_FLOAT ? 2 : 0);
       buf_puts(b, "((sp_Complex){(sp_float)(");
-      emit_expr(c, argv[0], b);
+      emit_coerce(c, argv[0], TY_FLOAT, CO_HOLD, "a Complex component", b);
       buf_puts(b, "), (sp_float)(");
-      if (argc == 2) emit_expr(c, argv[1], b);
+      if (argc == 2) emit_coerce(c, argv[1], TY_FLOAT, CO_HOLD, "a Complex component", b);
       else buf_puts(b, "0");
       buf_printf(b, "), %d})", fl);
       return 1;
@@ -16969,11 +16990,11 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "sp_float_pow(");
       if (rt == TY_INT) { buf_puts(b, "(double)("); emit_expr(c, recv, b); buf_puts(b, ")"); }
       else if (rt == TY_BIGINT) { buf_puts(b, "sp_bigint_to_double("); emit_expr(c, recv, b); buf_puts(b, ")"); }
-      else emit_expr(c, recv, b);
+      else emit_coerce(c, recv, TY_FLOAT, CO_HOLD, "the receiver of a Float `**`", b);
       buf_puts(b, ", ");
       if (at0 == TY_INT) { buf_puts(b, "(double)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (at0 == TY_BIGINT) { buf_puts(b, "sp_bigint_to_double("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else emit_expr(c, argv[0], b);
+      else emit_coerce(c, argv[0], TY_FLOAT, CO_CONVERT, "a Float operand", b);
       buf_puts(b, ")");
       return 1;
     }
@@ -16984,10 +17005,10 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, at0 == TY_INT ? "sp_fmod_intdiv(" : "sp_fmod(");
       if (rt == TY_INT) { buf_puts(b, "(double)("); emit_expr(c, recv, b); buf_puts(b, ")"); }
       else if (rt == TY_BIGINT) { buf_puts(b, "sp_bigint_to_double("); emit_expr(c, recv, b); buf_puts(b, ")"); }
-      else emit_expr(c, recv, b);
+      else emit_coerce(c, recv, TY_FLOAT, CO_HOLD, "the receiver of a Float `%`", b);
       buf_puts(b, ", ");
       if (at0 == TY_BIGINT) { buf_puts(b, "sp_bigint_to_double("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else emit_expr(c, argv[0], b);
+      else emit_coerce(c, argv[0], TY_FLOAT, CO_CONVERT, "a Float operand", b);
       buf_puts(b, ")");
       return 1;
     }
@@ -34012,7 +34033,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         buf_puts(b, elem == TY_INT ? "sp_poly_elem_i(" : elem == TY_FLOAT ? "sp_poly_elem_f(" : "sp_poly_elem_s(");
         emit_boxed(c, argv[a], b); buf_puts(b, ")");
       }
-      else emit_expr(c, argv[a], b);
+      else emit_coerce(c, argv[a], elem, CO_HOLD, "an Array push", b);
       buf_puts(b, "); ");
     }
     buf_printf(b, "_t%d; })", t);
@@ -39135,7 +39156,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       buf_puts(b, "(sp_Thread_stop(), sp_box_nil())"); return;
     }
     if (tcn && sp_streq(tcn, "Thread") && sp_streq(name, "report_on_exception=") && argc == 1) {
-      buf_puts(b, "sp_Thread_set_report_default("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+      buf_puts(b, "sp_Thread_set_report_default(");
+      emit_coerce(c, argv[0], TY_BOOL, CO_CONVERT, "Thread.report_on_exception=", b);
+      buf_puts(b, ")"); return;
     }
     if (tcn && sp_streq(tcn, "Thread") && sp_streq(name, "report_on_exception") && argc == 0) {
       buf_puts(b, "sp_Thread_get_report_default()"); return;
@@ -40813,6 +40836,21 @@ else {
             TyKind _nt = comp_ntype(c, id);
             if (_nt == TY_POLY || _nt == TY_UNKNOWN) buf_printf(b, "; %s; })", _tvn);
             else buf_printf(b, "; _t%d->iv_%s; })", _atmp, iv_c(_abase));
+            return;
+          }
+          /* a value of another C type than the slot (an Integer into a slot
+             widened to Bignum) converts into it, through a temp: the
+             assignment's value is still the right-hand side as it came */
+          if (argc >= 1 && _aivt != TY_POLY && _aivt != TY_UNKNOWN &&
+              comp_ntype(c, argv[0]) != TY_UNKNOWN &&
+              !store_fits(c, store_value_kind(c, argv[0]), _aivt)) {
+            TyKind _avk = store_value_kind(c, argv[0]);
+            int _tvv = ++g_tmp;
+            char _tvn[32]; snprintf(_tvn, sizeof _tvn, "_t%d", _tvv);
+            emit_ctype(c, _avk, b); buf_printf(b, " %s = ", _tvn); emit_expr(c, argv[0], b);
+            buf_printf(b, "; _t%d->iv_%s = ", _atmp, iv_c(_abase));
+            emit_coerce_text(c, argv[0], _avk, _aivt, CO_HOLD, _tvn, "an attribute writer", b);
+            buf_printf(b, "; %s; })", _tvn);
             return;
           }
           buf_printf(b, "_t%d->iv_%s = ", _atmp, iv_c(_abase));
@@ -44427,7 +44465,7 @@ else {
         if (vt == TY_POLY && et == TY_INT) { buf_puts(b, "sp_poly_elem_i("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
         else if (vt == TY_POLY && et == TY_STRING) { buf_puts(b, "sp_poly_elem_s("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
         else if (vt == TY_POLY && et == TY_FLOAT) { buf_puts(b, "sp_poly_elem_f("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
-        else emit_expr(c, argv[1], b);
+        else emit_coerce(c, argv[1], et, CO_HOLD, "an Array element store", b);
       }
       buf_printf(b, "; sp_%sArray_set%s(_t%d, _t%d, _t%d); _t%d; })", k, nil_store_sfx(c, k, argv[1]), t, ti, tv, tv);
       return;
@@ -44872,6 +44910,54 @@ else {
       buf_printf(b, "sp_bigint_pow(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
       free(rs.p); return;
     }
+    /* A Float operand: CRuby divides in floats, converting the Bignum to its
+       nearest double. modulo and remainder answer a Float; div answers the
+       quotient truncated toward zero, as CRuby's rb_dbl2big takes it (so
+       (-2**64).div(2.0**65) is 0, not -1), and divmod CRuby's flodivmod pair;
+       each quotient an Integer of whatever width (sp_box_f_to_int, which
+       raises FloatDomainError for a NaN or an infinite one). The Bignum arms below
+       took the Float through sp_bigint_new_int, which truncated it:
+       (2**64).div(1.5) divided by 1. */
+    if (argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT &&
+        (sp_streq(name, "modulo") || sp_streq(name, "%") || sp_streq(name, "remainder") ||
+         sp_streq(name, "div") || sp_streq(name, "divmod"))) {
+      if (sp_streq(name, "div")) {
+        int tx = ++g_tmp, ty = ++g_tmp;
+        buf_printf(b, "({ sp_float _t%d = sp_bigint_to_double(%s); sp_float _t%d = ", tx, r, ty);
+        emit_expr(c, argv[0], b);
+        buf_printf(b, "; if (_t%d == 0.0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
+                      " sp_box_f_to_int(_t%d / _t%d); })", ty, tx, ty);
+      }
+      else if (sp_streq(name, "divmod")) {
+        int tx = ++g_tmp, ty = ++g_tmp, td = ++g_tmp, tm = ++g_tmp, tq = ++g_tmp, tp = ++g_tmp;
+        buf_printf(b, "({ sp_float _t%d = sp_bigint_to_double(%s); sp_float _t%d = ", tx, r, ty);
+        emit_expr(c, argv[0], b);
+        buf_printf(b, "; sp_float _t%d, _t%d;"
+                      " if (isnan(_t%d)) _t%d = _t%d = _t%d;"
+                      " else { if (_t%d == 0.0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
+                      " _t%d = (_t%d == 0.0 || (isinf(_t%d) && !isinf(_t%d))) ? _t%d : fmod(_t%d, _t%d);"
+                      " _t%d = (isinf(_t%d) && !isinf(_t%d)) ? _t%d : round((_t%d - _t%d) / _t%d);"
+                      " if (_t%d * _t%d < 0) { _t%d += _t%d; _t%d -= 1.0; } }"
+                      " sp_RbVal _t%d = sp_box_f_to_int(_t%d); SP_GC_ROOT_RBVAL(_t%d);"
+                      " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                      " sp_PolyArray_push(_t%d, _t%d); sp_PolyArray_push(_t%d, sp_box_float(_t%d)); _t%d; })",
+                   td, tm,
+                   ty, td, tm, ty,
+                   ty,
+                   tm, tx, ty, tx, tx, tx, ty,
+                   td, tx, ty, tx, tx, tm, ty,
+                   ty, tm, tm, ty, td,
+                   tq, td, tq,
+                   tp, tp,
+                   tp, tq, tp, tm, tp);
+      }
+      else {
+        buf_printf(b, "%s(sp_bigint_to_double(%s), ", name[0] == 'r' ? "sp_fremainder" : "sp_fmod", r);
+        emit_expr(c, argv[0], b);
+        buf_puts(b, ")");
+      }
+      free(rs.p); return;
+    }
     /* Bignum modulo/%/remainder/divmod/#[]/modular-pow (#2594) */
     if ((sp_streq(name, "modulo") || sp_streq(name, "%")) && argc == 1) {
       buf_printf(b, "sp_bigint_mod(%s, ", r); emit_bigint_operand(c, argv[0], b); buf_puts(b, ")");
@@ -45083,9 +45169,8 @@ else {
         if (is_poly_hash && decl_type != TY_POLY) {
           emit_boxed_text(c, decl_type, tvn, b);
         }
-        else {
-          buf_printf(b, "_t%d", tv);
-        }
+        else if (!is_poly_hash) emit_coerce_text(c, argv[1], decl_type, hvt, CO_HOLD, tvn, "a Hash element store", b);
+        else buf_printf(b, "_t%d", tv);
         /* For poly-hash receivers the expression returns the boxed value
            (sp_RbVal); for typed-hash receivers return the raw typed value. */
         if (is_poly_hash) {

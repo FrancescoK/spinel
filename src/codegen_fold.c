@@ -6602,7 +6602,10 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
            token (`html_escape(obj.details)` on an unknown receiver): emit_str_expr
            passes a real string through and coerces the token to the slot. */
         else if (pt == TY_STRING) emit_str_expr(c, provided, out);
-        else { emit_obj_upcast_prefix(c, pt, at, out); emit_expr(c, provided, out); }
+        else {
+          emit_obj_upcast_prefix(c, pt, at, out);
+          emit_coerce(c, provided, pt, CO_HOLD, "a method argument", out);
+        }
       }
     }
     return;
@@ -6711,7 +6714,7 @@ else if (dty && sp_streq(dty, "NilNode")) {
         if (hn) buf_printf(out, "sp_%sHash_new()", hn);
         else emit_expr(c, dv, out);
       }
-      else emit_expr(c, dv, out);
+      else emit_coerce(c, dv, pt, CO_HOLD, "a parameter default", out);
     }
   }
   g_self = sv_self_dv; g_self_deref = sv_deref_dv;
