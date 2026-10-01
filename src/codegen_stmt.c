@@ -3867,16 +3867,18 @@ static void emit_pm_typed_assign(Compiler *c, Scope *sc, const char *lnm,
   LocalVar *lv = sc ? scope_local(sc, lnm) : NULL;
   TyKind ty = lv ? lv->type : TY_POLY;
   emit_indent(b, indent); buf_printf(b, "lv_%s = ", rename_local(lnm));
-  if (ty == TY_INT || ty == TY_BOOL)      buf_printf(b, "sp_poly_to_i(%s)", boxed);
-  else if (ty == TY_FLOAT)                buf_printf(b, "sp_poly_to_f(%s)", boxed);
-  else if (ty == TY_INT_ARRAY)            buf_printf(b, "(sp_IntArray *)(%s).v.p", boxed);
-  else if (ty == TY_FLOAT_ARRAY)          buf_printf(b, "(sp_FloatArray *)(%s).v.p", boxed);
-  else if (ty == TY_STR_ARRAY)            buf_printf(b, "(sp_StrArray *)(%s).v.p", boxed);
+  switch (ty) {
+  case TY_INT: case TY_BOOL:     buf_printf(b, "sp_poly_to_i(%s)", boxed); break;
+  case TY_FLOAT:                 buf_printf(b, "sp_poly_to_f(%s)", boxed); break;
+  case TY_INT_ARRAY:             buf_printf(b, "(sp_IntArray *)(%s).v.p", boxed); break;
+  case TY_FLOAT_ARRAY:           buf_printf(b, "(sp_FloatArray *)(%s).v.p", boxed); break;
+  case TY_STR_ARRAY:             buf_printf(b, "(sp_StrArray *)(%s).v.p", boxed); break;
   /* the slice keeps the scrutinee's kind, which may be a typed array */
-  else if (ty == TY_POLY_ARRAY)           buf_printf(b, "sp_poly_to_a_arr(%s)", boxed);
-  else if (ty == TY_STRING)               buf_printf(b, "sp_poly_unbox_s(%s)", boxed);
-  else if (ty == TY_POLY || ty == TY_UNKNOWN) buf_puts(b, boxed);
-  else                                    emit_unbox_nilable_text(c, ty, boxed, b);
+  case TY_POLY_ARRAY:            buf_printf(b, "sp_poly_to_a_arr(%s)", boxed); break;
+  case TY_STRING:                buf_printf(b, "sp_poly_unbox_s(%s)", boxed); break;
+  case TY_POLY: case TY_UNKNOWN: buf_puts(b, boxed); break;
+  default:                       emit_unbox_nilable_text(c, ty, boxed, b); break;
+  }
   buf_puts(b, ";\n");
 }
 
