@@ -5220,6 +5220,16 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, ")");
         return 1;
       }
+      /* fdiv(Complex) is the quotient as a Float, as CRuby takes it: a
+         nonzero imaginary part is its RangeError (sp_complex_to_f) */
+      if (rat == TY_COMPLEX && argc == 1 && sp_streq(name, "fdiv")) {
+        buf_puts(b, "sp_complex_to_f(sp_complex_div(((sp_Complex){sp_rational_to_f(");
+        emit_expr(c, recv, b);
+        buf_puts(b, "), 0, 1}), ");
+        emit_expr(c, argv[0], b);
+        buf_puts(b, "))");
+        return 1;
+      }
       /* Only Integer/Rational/Float operands are modeled (a poly operand --
          e.g. a Rational read out of a poly array, which has no box form yet --
          falls through to the generic path rather than miscompiling). */
