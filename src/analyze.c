@@ -1000,6 +1000,15 @@ else {
     if (!const_recv || !const_is_class) {
       TyKind rt = infer_type(c, recv);
       if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), name, NULL);
+      /* A Class value known only at run time dispatches on it to the class
+         methods, which take the block as a real proc the same way */
+      else if (rt == TY_CLASS && class_recv_is_dynamic(c, recv)) {
+        for (int k = 0; k < c->nclasses; k++) {
+          int ck = comp_cmethod_in_chain(c, k, name, NULL);
+          if (ck >= 0 && (c->scopes[ck].yields || (c->scopes[ck].blk_param && c->scopes[ck].blk_param[0])))
+            return 1;
+        }
+      }
       /* A poly receiver dispatches on the runtime class, and the dispatch
          materializes the block as a real proc once, ahead of the switch, for
          any candidate that takes a real &block or is served by a proc-form
@@ -1012,6 +1021,10 @@ else {
         /* not filtered by `instantiated`: that is decided after this runs, and
            a spurious cell is only a missed optimization */
         for (int k = 0; k < c->nclasses; k++) {
+          /* a Class in the union reaches its class method the same way */
+          int ck = comp_cmethod_in_chain(c, k, name, NULL);
+          if (ck >= 0 && (c->scopes[ck].yields || (c->scopes[ck].blk_param && c->scopes[ck].blk_param[0])))
+            return 1;
           int ci2 = comp_method_in_chain(c, k, name, NULL);
           if (ci2 < 0) continue;
           Scope *cm2 = &c->scopes[ci2];
