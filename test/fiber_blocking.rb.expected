@@ -17,5 +17,10 @@ true
 "boom"
 false
 false
+11
+[2, "b"]
+7
+[Fiber, 1]
+Fiber
 nil
 nil

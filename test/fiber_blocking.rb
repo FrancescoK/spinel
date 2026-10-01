@@ -33,5 +33,29 @@ end.resume)
 boxed = [Fiber.new { }, 1][0]
 p boxed.blocking?
 
+
+# the block is a closure like any other: it writes outer locals, its
+# return leaves the method, and its yield reaches the method's block
+y = 1
+Fiber.blocking { y += 10 }
+p y
+def writes
+  x = 1
+  s = "a"
+  Fiber.blocking { x = 2; s = "b" }
+  [x, s]
+end
+p writes
+def early
+  Fiber.blocking { return 7 }
+  8
+end
+p early
+def yielder
+  Fiber.blocking { |f| yield f }
+end
+p(yielder { |f| [f.class, Fiber.blocking?] })
+p Fiber.blocking { |f| f = 1 if f.nil?; f }.class
+
 p Fiber.scheduler
 p Fiber.current_scheduler
