@@ -1,0 +1,7 @@
+[package]
+name = "fiddle"
+
+# Pre-installed spin package: ships with the compiler, versioned with it.
+# The stdlib's Fiddle API in Ruby (fiddle.rb) over the ffi package's native
+# layer, so it carries no C of its own and, like ffi, exists only where
+# libffi was found when spinel was built.

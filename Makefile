@@ -781,7 +781,7 @@ ifneq ($(OPENSSL_AVAILABLE),yes)
 PKG_TESTS := $(filter-out packages/openssl/test/%.rb,$(PKG_TESTS))
 endif
 ifneq ($(FFI_AVAILABLE),yes)
-PKG_TESTS := $(filter-out packages/ffi/test/%.rb,$(PKG_TESTS))
+PKG_TESTS := $(filter-out packages/ffi/test/%.rb packages/fiddle/test/%.rb,$(PKG_TESTS))
 endif
 ifeq ($(SPINEL_INT_BITS),32)   # the same first-line marker as test/*.rb
 PKG_TESTS := $(filter-out $(shell grep -l '^\# spinel: int64' packages/*/test/*.rb),$(PKG_TESTS))

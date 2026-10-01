@@ -3740,6 +3740,16 @@ else {
           if (of) fclose(of);
           else { free(content); content = NULL; }
         }
+        /* fiddle is the ffi package's native layer under the stdlib's API: it
+           exists where that object does */
+        if (content && strcmp(lib_name, "fiddle") == 0) {
+          char op[1200];
+          snprintf(op, sizeof op, "%.*s", (int)(strlen(gp) - strlen("fiddle/fiddle.rb")), gp);
+          strncat(op, "ffi/sp_ffi.o", sizeof op - strlen(op) - 1);
+          FILE *of = fopen(op, "rb");
+          if (of) fclose(of);
+          else { free(content); content = NULL; }
+        }
         if (content) snprintf(lib_path, sizeof(lib_path), "%s", gp);
       }
       if (!content) {

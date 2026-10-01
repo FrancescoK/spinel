@@ -61,6 +61,8 @@ sp_int sp_ffi_rtld(sp_int which) {
     case 1: return RTLD_NOW;
     case 2: return RTLD_GLOBAL;
     case 3: return RTLD_LOCAL;
+    case 4: return (sp_int)(intptr_t)RTLD_DEFAULT;    /* dlsym handles, for fiddle */
+    case 5: return (sp_int)(intptr_t)RTLD_NEXT;
     default: return 0;
   }
 }
