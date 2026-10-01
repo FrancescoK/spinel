@@ -1993,13 +1993,19 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
     buf_puts(&rb, t == TY_FLOAT ? "sp_poly_to_f(" : t == TY_BIGINT ? "sp_poly_as_bigint(" : "sp_poly_to_i(");
     emit_expr(c, v, &rb); buf_puts(&rb, ")");
   }
-  else if (t == TY_BIGINT && vt != TY_BIGINT) {
+  else if (t == TY_BIGINT && vt == TY_INT) {
     buf_puts(&rb, "sp_bigint_new_int("); emit_expr(c, v, &rb); buf_puts(&rb, ")");
   }
   /* an unresolved call (`t += f.weight` with no such method) lowers to the
      gate's raise token, an sp_RbVal; coerce it as a plain write does */
   else if (vt == TY_UNKNOWN && !bitop) emit_unresolved_coerced(c, v, t, &rb);
-  else emit_expr(c, v, &rb);
+  /* The operand of the slot's own arithmetic: a Float slot's operation
+     converts an Integer past 64 bits or a Rational to its double, as Float's
+     operators do (CO_CONVERT); an Integer or Bignum slot takes only an
+     Integer, since anything else would answer another class than the slot
+     holds (a Float operand truncated by C before, or into
+     sp_bigint_new_int). */
+  else emit_coerce(c, v, t, t == TY_FLOAT ? CO_CONVERT : CO_HOLD, "the operand of an `op=`", &rb);
   const char *rhs = rb.p ? rb.p : "";
   char tn[32];
   const char *src = lval;
@@ -9973,7 +9979,7 @@ else {
                                    idx >= 0 && c->classes[sc].cvar_nullable_int[idx], b)) { }
     else {
       buf_printf(b, "%s %s= ", ref, op ? op : "+");
-      emit_expr(c, v, b); buf_puts(b, ";\n");
+      emit_coerce(c, v, ct, CO_HOLD, "the operand of an `op=`", b); buf_puts(b, ";\n");
     }
     return;
   }
@@ -10232,7 +10238,7 @@ else {
       else if (rhst == TY_POLY && vt == TY_FLOAT) {
         buf_puts(b, "sp_poly_to_f("); emit_expr(c, ival, b); buf_puts(b, ")");
       }
-      else emit_expr(c, ival, b);
+      else emit_coerce(c, ival, vt, CO_HOLD, "the operand of an `op=`", b);
       buf_puts(b, ";\n");
     }
     return;
@@ -10695,7 +10701,8 @@ else {
       buf_printf(b, "cst_%s = sp_str_concat(cst_%s, ", nm, nm); emit_expr(c, v, b); buf_puts(b, ");\n");
     }
     else {
-      buf_printf(b, "cst_%s %s= ", nm, op ? op : "+"); emit_expr(c, v, b); buf_puts(b, ";\n");
+      buf_printf(b, "cst_%s %s= ", nm, op ? op : "+");
+      emit_coerce(c, v, cv->type, CO_HOLD, "the operand of an `op=`", b); buf_puts(b, ";\n");
     }
     return;
   }
@@ -10764,7 +10771,7 @@ else {
     else if (emit_scalar_op_assign(c, gref, lv->type, op, v, 1, lv->nullable_int, b)) { }
     else {
       buf_printf(b, "gv_%s %s= ", rn, op ? op : "+");
-      emit_expr(c, v, b); buf_puts(b, ";\n");
+      emit_coerce(c, v, lv->type, CO_HOLD, "the operand of an `op=`", b); buf_puts(b, ";\n");
     }
     return;
   }
