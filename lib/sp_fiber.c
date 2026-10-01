@@ -812,9 +812,8 @@ static void sp_fiber_check_transfer(sp_Fiber*f){
     else g=g->return_to;
   }
 }
-static sp_RbVal sp_Fiber_transfer_core(sp_Fiber*f,sp_RbVal val){SP_GC_ROOT(f);sp_fiber_check_thread(f);sp_fiber_check_transfer(f);f->resumed_value=val;sp_Fiber*prev=sp_fiber_current;
-  /* it returns where its transferrer would: to that fiber if it was resumed */
-  if(f!=&sp_fiber_root&&f!=prev)f->return_to=prev->resumer?prev:prev->return_to;
+/* The switch itself, past CRuby's checks: save prev's context and run f. */
+static sp_RbVal sp_fiber_switch(sp_Fiber*f,sp_RbVal val){SP_GC_ROOT(f);f->resumed_value=val;sp_Fiber*prev=sp_fiber_current;
   sp_fiber_save_roots(prev);sp_fiber_restore_roots(f);if(!prev->exc_ctx)prev->exc_ctx=sp_exc_ctx_new();sp_exc_ctx_save(prev->exc_ctx);sp_exc_ctx_load(f->exc_ctx);sp_fiber_current=f;SP_TSAN_SET_CALLER(f,prev);SP_TSAN_SWITCH(f);if(f->state==0&&f!=&sp_fiber_root){f->state=1;f->transferred=1;sp_ctx_make(&f->ctx,f->stack+sp_fiber_guard(),f->stack_size,sp_fiber_trampoline);sp_ctx_swap(&prev->ctx,&f->ctx);}
 else{/* the root fiber is the implicit running coroutine: it has no mmap'd
    stack/body, so it must never be ctx_make'd. Its context was already
@@ -826,6 +825,15 @@ else{/* the root fiber is the implicit running coroutine: it has no mmap'd
    and freeing its live locals on the next collection -- and, since f may already
    be running on another worker (woken between its switch-out and here), that
    write races that worker's load of f's context. We only restore prev's. */sp_exc_ctx_load(prev->exc_ctx);sp_fiber_restore_roots(prev);sp_fiber_current=prev;return prev->resumed_value;}
+static sp_RbVal sp_Fiber_transfer_core(sp_Fiber*f,sp_RbVal val){SP_GC_ROOT(f);sp_fiber_check_thread(f);sp_fiber_check_transfer(f);sp_Fiber*prev=sp_fiber_current;
+  /* it returns where its transferrer would: to that fiber if it was resumed */
+  if(f!=&sp_fiber_root&&f!=prev)f->return_to=prev->resumer?prev:prev->return_to;
+  return sp_fiber_switch(f,val);}
+/* A green thread's switch back to the fiber that ran it (sp_sched.c). That
+   may be a Fiber the main thread resumed, which a transfer would refuse (it
+   is the main thread's, and resumed), and it is not the green thread's to
+   return to when its body ends, so it leaves return_to alone. */
+void sp_fiber_sched_switch(sp_Fiber*f){SP_GC_ROOT(f);sp_fiber_switch(f,sp_box_nil());}
 sp_RbVal sp_Fiber_transfer(sp_Fiber*f,sp_RbVal val){SP_GC_ROOT_RBVAL(val);SP_GC_ROOT(f);sp_RbVal r=sp_Fiber_transfer_core(f,val);if(f->raised){f->raised=0;const char*rc=f->raised_cls;const char*rm=f->raised_msg;void*ro=f->raised_obj;f->raised_obj=NULL;sp_fiber_reraise(rc,rm,ro);}return r;}
 /* resume / transfer that also tell the body how many values were passed */
 sp_RbVal sp_Fiber_resume_n(sp_Fiber*f,sp_RbVal val,int argc){SP_GC_ROOT(f);f->pass_argc=argc;sp_RbVal r=sp_Fiber_resume(f,val);f->pass_argc=-1;return r;}
