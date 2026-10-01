@@ -1940,6 +1940,14 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
      block bound in place (bi NULL) is instance_exec's, a method that drops
      an empty `**h` before it yields, so there a `**` alone keeps it on. */
   int autosplat = (ykw < 0 || (!bi && kwh_only_spreads(nt, ykw))) && block_auto_splats(P, O, Q, R);
+  /* ...but only an EMPTY one: a `**h` that spreads keywords turns it off as
+     any keywords do, and only the run time knows which. The values are
+     gathered and the lone Array spread there when every `**` is empty; a
+     non-empty `**h` bound [1, 2] across `|a, b, **kw|`. The `**` values run
+     first, in source order, so the test and the keywords' bind read them
+     once. */
+  int ie_kw = autosplat && ykw >= 0;
+  if (ie_kw) emit_args_before(c, yargs, yc + 1, NULL, 0, g_pre);
   int lone_splat_typed = 0;
   if (yc == 1 && yargs && nt_kind(nt, yargs[0]) == NK_SplatNode) {
     TyKind lt = comp_ntype(c, nt_ref(nt, yargs[0], "expression"));
@@ -1984,15 +1992,23 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
      boxed one gathers as well (sp_enum_items_from), and its lone element
      auto-splats: bound by index, `yield(*x)` bound only the requireds, and
      a post took the splat node itself (a C type error). */
-  else if (yargs && ((call_args_need_spread(nt, yargs, yc) && !lone_splat_typed) || boxed_spread)) {
+  else if (yargs && (ie_kw || (call_args_need_spread(nt, yargs, yc) && !lone_splat_typed) || boxed_spread)) {
     splat_at = TY_POLY_ARRAY;
     splat_tmp = emit_spread_args(c, yargs, yc);
     if (autosplat) {
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "if (_t%d->len == 1) { sp_RbVal _e = sp_PolyArray_get(_t%d, 0); "
+      buf_printf(g_pre, "if (_t%d->len == 1", splat_tmp);
+      int kn = 0; const int *kv = ie_kw ? nt_arr(nt, ykw, "elements", &kn) : NULL;
+      for (int e = 0; kv && e < kn; e++) {
+        Buf hb; memset(&hb, 0, sizeof hb);
+        emit_boxed(c, nt_ref(nt, kv[e], "value"), &hb);
+        buf_printf(g_pre, " && sp_poly_length(%s) == 0", hb.p ? hb.p : "sp_box_nil()");
+        free(hb.p);
+      }
+      buf_printf(g_pre, ") { sp_RbVal _e = sp_PolyArray_get(_t%d, 0); "
                         "if (_e.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_e.cls_id)) "
                         "_t%d = sp_poly_to_poly_array(_e); }\n",
-                 splat_tmp, splat_tmp, splat_tmp);
+                 splat_tmp, splat_tmp);
     }
   }
   if (splat_tmp < 0 && yc == 1 && yargs) {
