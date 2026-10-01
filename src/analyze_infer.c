@@ -40,7 +40,8 @@ int an_face_node(void) { return g_face_node; }
    hand-kept copy of "what an object answers" goes stale -- the safe-navigation
    emitter carried one and it did (#4070 follow-up: `begin`, `end`, `count` and
    `bytes` missing, `infinite?` with the wrong type), and the redirect's own
-   short list did too (#4387). Add a name here and every consumer has it. */
+   short list did too (#4387). Integer parts retain their rows for the redirect,
+   but now answer boxed values to preserve Bigints. */
 const struct an_poly_raw_row AN_POLY_RAW[] = {
       { "frozen?", 0, TY_BOOL }, { "nil?", 0, TY_BOOL }, { "zero?", 0, TY_BOOL },
       { "positive?", 0, TY_BOOL }, { "negative?", 0, TY_BOOL },
@@ -48,7 +49,8 @@ const struct an_poly_raw_row AN_POLY_RAW[] = {
       { "finite?", 0, TY_BOOL }, { "integer?", 0, TY_BOOL }, { "empty?", 0, TY_BOOL },
       { "eql?", 1, TY_BOOL }, { "equal?", 1, TY_BOOL }, { "instance_of?", 1, TY_BOOL },
       { "bytesize", 0, TY_INT }, { "ord", 0, TY_INT }, { "bit_length", 0, TY_INT },
-      { "numerator", 0, TY_INT }, { "denominator", 0, TY_INT },
+      /* Integer parts can themselves be boxed Bigints. */
+      { "numerator", 0, TY_POLY }, { "denominator", 0, TY_POLY },
       { "to_i", 0, TY_INT }, { "hash", 0, TY_INT }, { "object_id", 0, TY_INT },
       { "begin", 0, TY_INT }, { "end", 0, TY_INT }, { "count", 0, TY_INT },
       { "to_f", 0, TY_FLOAT }, { "to_r", 0, TY_RATIONAL }, { "to_c", 0, TY_COMPLEX },
@@ -5938,10 +5940,11 @@ static TyKind infer_call_inner(Compiler *c, int id) {
             sp_streq(name, "floor") || sp_streq(name, "ceil") ||
             sp_streq(name, "round") || sp_streq(name, "truncate") ||
             sp_streq(name, "conjugate") || sp_streq(name, "conj") ||
-            sp_streq(name, "abs2") || sp_streq(name, "magnitude")) return an_poly_concrete(c, name, TY_POLY);
+            sp_streq(name, "abs2") || sp_streq(name, "magnitude") ||
+            sp_streq(name, "numerator") || sp_streq(name, "denominator") ||
+            sp_streq(name, "nonzero?")) return an_poly_concrete(c, name, TY_POLY);
         if (sp_streq(name, "bytesize") || sp_streq(name, "ord") ||
             sp_streq(name, "bit_length") ||
-            sp_streq(name, "numerator") || sp_streq(name, "denominator") ||
             sp_streq(name, "begin") || sp_streq(name, "end")) return an_poly_concrete(c, name, TY_INT);
       }
       /* Numeric#round(ndigits) on a boxed value: Float when n > 0, Integer

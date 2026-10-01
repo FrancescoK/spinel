@@ -9347,22 +9347,22 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            sp_streq(name, "pred") || sp_streq(name, "ceil") ||
            sp_streq(name, "floor") || sp_streq(name, "truncate") ||
            /* the value-answering numeric queries a user class can shadow the
-              same way: abs2 and infinite? answer boxed, numerator and
-              denominator a machine int (#4651). bit_length is the same
-              shape: a machine int, and the runtime helper is
+              same way: abs2, infinite?, numerator and denominator answer
+              boxed values. bit_length answers a machine int, and its helper is
               already named to match `sp_poly_%s` below. */
            sp_streq(name, "abs2") || sp_streq(name, "infinite?") ||
            sp_streq(name, "numerator") || sp_streq(name, "denominator") ||
-           sp_streq(name, "bit_length"))) {
+           sp_streq(name, "nonzero?") || sp_streq(name, "bit_length"))) {
         char nv[96];
-        int int_valued = sp_streq(name, "numerator") || sp_streq(name, "denominator") ||
-                         sp_streq(name, "bit_length");
+        int int_valued = sp_streq(name, "bit_length");
         if (sp_streq(name, "succ") || sp_streq(name, "next"))
           snprintf(nv, sizeof nv, "sp_poly_succ_m(_t%d, %d)", tv, sp_streq(name, "next") ? 1 : 0);
         else if (sp_streq(name, "pred"))
           snprintf(nv, sizeof nv, "sp_poly_sub(_t%d, sp_box_int(1))", tv);
         else if (sp_streq(name, "infinite?"))
           snprintf(nv, sizeof nv, "sp_poly_infinite(_t%d)", tv);
+        else if (sp_streq(name, "nonzero?"))
+          snprintf(nv, sizeof nv, "sp_poly_nonzero(_t%d)", tv);
         else
           snprintf(nv, sizeof nv, "sp_poly_%s(_t%d)", name, tv);
         buf_printf(b, " default: _t%d = ", tr);
