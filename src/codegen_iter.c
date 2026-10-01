@@ -3766,6 +3766,36 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+static void emit_filter_body(Compiler *c, int body, int tnv, int tk, int is_rej, Buf *b, int indent) {
+  const NodeTable *nt = c->nt;
+  int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+  const char *sv_nx = g_ie_next_var; int sv_poly = g_ie_res_poly; TyKind sv_nty = g_ie_next_ty;
+  int sv_lexc = g_loop_exc_base, sv_lens = g_loop_ensure_base;
+  char nxbuf[32]; snprintf(nxbuf, sizeof nxbuf, "_t%d", tnv);
+  g_ie_next_var = nxbuf; g_ie_res_poly = 1; g_ie_next_ty = TY_UNKNOWN;
+  g_loop_exc_base = g_exc_frame_depth; g_loop_ensure_base = g_ensure_depth;
+  g_c_loop_depth++;
+  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], b, indent + 1);
+  if (sp_streq(nt_type(nt, bb[bn - 1]), "NextNode")) emit_stmt(c, bb[bn - 1], b, indent + 1);
+  else {
+    /* the predicate in its own buffer: a multi-statement terminal (a block
+       ending in an if/else expression) lowers its statements through g_pre,
+       and they belong inside the loop body, before the verdict */
+    Buf *sp_save = g_pre; int gi_save = g_indent;
+    Buf cpre; memset(&cpre, 0, sizeof cpre); g_pre = &cpre; g_indent = indent + 1;
+    Buf cexpr; memset(&cexpr, 0, sizeof cexpr);
+    emit_cond(c, bb[bn - 1], &cexpr);
+    g_pre = sp_save; g_indent = gi_save;
+    if (cpre.p) { buf_puts(b, cpre.p); free(cpre.p); }
+    emit_indent(b, indent + 1);
+    buf_printf(b, "_t%d = %s(%s);\n", tk, is_rej ? "!" : "", cexpr.p ? cexpr.p : "0");
+    free(cexpr.p);
+  }
+  g_c_loop_depth--;
+  g_loop_exc_base = sv_lexc; g_loop_ensure_base = sv_lens;
+  g_ie_next_var = sv_nx; g_ie_res_poly = sv_poly; g_ie_next_ty = sv_nty;
+}
+
 /* The in-place filter loop of select! / filter! / reject! / keep_if /
    delete_if on a hash of any variant, into `b` at `indent`, over the receiver
    text `rs`: the hash in `_t<tr>`, its pair count before the loop in
@@ -3855,31 +3885,7 @@ int emit_hash_filter_loop(Compiler *c, int recv, int block, TyKind rt, const cha
     else if (hvt == TY_STRING) buf_printf(b, " SP_GC_ROOT_STR(lv_%s);", vp);
     buf_puts(b, "\n");
   }
-  const char *sv_nx = g_ie_next_var; int sv_poly = g_ie_res_poly; TyKind sv_nty = g_ie_next_ty;
-  int sv_lexc = g_loop_exc_base, sv_lens = g_loop_ensure_base;
-  char nxbuf[32]; snprintf(nxbuf, sizeof nxbuf, "_t%d", tnv);
-  g_ie_next_var = nxbuf; g_ie_res_poly = 1; g_ie_next_ty = TY_UNKNOWN;
-  g_loop_exc_base = g_exc_frame_depth; g_loop_ensure_base = g_ensure_depth;
-  g_c_loop_depth++;
-  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], b, indent + 1);
-  if (sp_streq(nt_type(nt, bb[bn - 1]), "NextNode")) emit_stmt(c, bb[bn - 1], b, indent + 1);
-  else {
-    /* the predicate in its own buffer: a multi-statement terminal (a block
-       ending in an if/else expression) lowers its statements through g_pre,
-       and they belong inside the loop body, before the verdict */
-    Buf *sp_save = g_pre; int gi_save = g_indent;
-    Buf cpre; memset(&cpre, 0, sizeof cpre); g_pre = &cpre; g_indent = indent + 1;
-    Buf cexpr; memset(&cexpr, 0, sizeof cexpr);
-    emit_cond(c, bb[bn - 1], &cexpr);
-    g_pre = sp_save; g_indent = gi_save;
-    if (cpre.p) { buf_puts(b, cpre.p); free(cpre.p); }
-    emit_indent(b, indent + 1);
-    buf_printf(b, "_t%d = %s(%s);\n", tk, is_rej ? "!" : "", cexpr.p ? cexpr.p : "0");
-    free(cexpr.p);
-  }
-  g_c_loop_depth--;
-  g_loop_exc_base = sv_lexc; g_loop_ensure_base = sv_lens;
-  g_ie_next_var = sv_nx; g_ie_res_poly = sv_poly; g_ie_next_ty = sv_nty;
+  emit_filter_body(c, body, tnv, tk, is_rej, b, indent);
   emit_indent(b, indent); buf_puts(b, "}\n");
   emit_indent(b, indent);
   buf_printf(b, "sp_int _t%d = _t%d ? _t%d->len : 0;\n", tw, t, t);
@@ -3999,31 +4005,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
     if (et == TY_STRING) buf_printf(b, " SP_GC_ROOT_STR(lv_%s);", bp);
     buf_puts(b, "\n");
   }
-  const char *sv_nx = g_ie_next_var; int sv_poly = g_ie_res_poly; TyKind sv_nty = g_ie_next_ty;
-  int sv_lexc = g_loop_exc_base, sv_lens = g_loop_ensure_base;
-  char nxbuf[32]; snprintf(nxbuf, sizeof nxbuf, "_t%d", tnv);
-  g_ie_next_var = nxbuf; g_ie_res_poly = 1; g_ie_next_ty = TY_UNKNOWN;
-  g_loop_exc_base = g_exc_frame_depth; g_loop_ensure_base = g_ensure_depth;
-  g_c_loop_depth++;
-  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], b, li + 1);
-  if (sp_streq(nt_type(nt, bb[bn - 1]), "NextNode")) emit_stmt(c, bb[bn - 1], b, li + 1);
-  else {
-    /* the predicate in its own buffer: a multi-statement terminal (a block
-       ending in an if/else expression) lowers its statements through g_pre,
-       and they belong inside the loop body, before the verdict */
-    Buf *sp_save = g_pre; int gi_save = g_indent;
-    Buf cpre; memset(&cpre, 0, sizeof cpre); g_pre = &cpre; g_indent = li + 1;
-    Buf cexpr; memset(&cexpr, 0, sizeof cexpr);
-    emit_cond(c, bb[bn - 1], &cexpr);
-    g_pre = sp_save; g_indent = gi_save;
-    if (cpre.p) { buf_puts(b, cpre.p); free(cpre.p); }
-    emit_indent(b, li + 1);
-    buf_printf(b, "_t%d = %s(%s);\n", tk, is_rej ? "!" : "", cexpr.p ? cexpr.p : "0");
-    free(cexpr.p);
-  }
-  g_c_loop_depth--;
-  g_loop_exc_base = sv_lexc; g_loop_ensure_base = sv_lens;
-  g_ie_next_var = sv_nx; g_ie_res_poly = sv_poly; g_ie_next_ty = sv_nty;
+  emit_filter_body(c, body, tnv, tk, is_rej, b, li);
   emit_indent(b, li); buf_puts(b, "}\n");
   if (!region) {
     emit_indent(b, indent); buf_printf(b, "if (_t%d) _t%d->len = _t%d;\n", t, t, tw);
