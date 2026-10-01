@@ -32,3 +32,9 @@ class A
 end
 a = A.new; a.add("p"); a.add("q"); p a.buf, a.tern(c)
 t = nil; (t ||= +"z") << "2"; p t
+
+# an argument that writes a variable, and a block that assigns the
+# receiver's variable, keep the receiver's own String
+e = +"a"; r = e.to_s << (e = +"b"); p [r, e]
+f = +"a"; f.tap { f = +"z" }.upcase!; p f
+g = +"a"; r = g.then { |z| g = +"y"; z } << "!"; p [r, g]
