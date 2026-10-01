@@ -2455,7 +2455,15 @@ sp_Fiber *sp_thread_main_fiber(void) { return g_current ? g_current->fiber : NUL
    can't be taken over by a later thread at the same address. */
 unsigned sp_thread_owner_id(void) { return g_current ? g_current->id + 1 : 0; }
 
-sp_bool sp_Thread_alive(sp_thread *t) { return t->state != SP_TH_DEAD; }
+/* A thread's state is written by the worker running it, under the sched lock
+   (run_thread_once), so a read from another thread takes the lock too, as
+   #stop? does: unlocked, it raced that write. */
+sp_bool sp_Thread_alive(sp_thread *t) {
+  SCHED_LOCK();
+  sp_bool r = t->state != SP_TH_DEAD;
+  SCHED_UNLOCK();
+  return r;
+}
 
 /* Thread.report_on_exception=(v): set the default for threads spawned after.
    Thread.report_on_exception: read the default. Per-thread #report_on_exception
@@ -2486,12 +2494,18 @@ sp_thread *sp_Thread_list_at(sp_int i) {
 }
 
 /* #status: "run" while runnable/running, "sleep" while blocked, false when it
-   finished normally, nil when it died with an unhandled exception. */
+   finished normally, nil when it died with an unhandled exception. The state
+   and has_exc are read under the sched lock, which their writer holds (see
+   sp_Thread_alive). */
 sp_RbVal sp_Thread_status(sp_thread *t) {
-  switch (t->state) {
+  SCHED_LOCK();
+  sp_thread_state st = t->state;
+  int has_exc = t->has_exc;
+  SCHED_UNLOCK();
+  switch (st) {
     case SP_TH_RUNNING: case SP_TH_RUNNABLE: return sp_box_str(&("\xff" "run")[1]);
     case SP_TH_BLOCKED:                       return sp_box_str(&("\xff" "sleep")[1]);
-    default:                                  return t->has_exc ? sp_box_nil() : sp_box_bool(0);
+    default:                                  return has_exc ? sp_box_nil() : sp_box_bool(0);
   }
 }
 
