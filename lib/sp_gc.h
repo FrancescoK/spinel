@@ -697,6 +697,13 @@ static inline void sp_mark_rbval_scratch(sp_RbVal v) {
 static inline void sp_cell_scan_str(void *p) { sp_mark_string(*(const char **)p); }
 static inline void sp_cell_scan_ptr(void *p) { sp_gc_mark(*(void **)p); }
 static inline void sp_cell_scan_rbval(void *p) { sp_mark_rbval(*(sp_RbVal *)p); }
+/* A captured String range rides a cell of its own struct: both endpoints are
+   strings to mark (sp_box_srange's scan, for the cell). */
+static inline void sp_cell_scan_srange(void *p) {
+  sp_StrRange *r = (sp_StrRange *)p;
+  if (r->first) sp_mark_string(r->first);
+  if (r->last) sp_mark_string(r->last);
+}
 /* A captured Proc rides in an sp_int cell as (sp_int)(uintptr_t)ptr -- the cell
    is an integer slot, but what it holds is a collectable object, and without a
    scan the capture kept the CELL alive and nothing kept the proc. A nested
