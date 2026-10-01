@@ -3989,6 +3989,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      passed an intptr_t where an sp_RbVal was expected. Poly only when a
      program class does answer a one-argument to_i. */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "to_i")) {
+    /* what a String answers, for the dispatch's String arm when a class's
+       own to_i makes the call poly (emit_poly_str_prearm) */
+    if (c->poly_builtin_ty && id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN)
+      c->poly_builtin_ty[id] = TY_INT;
     for (int k = 0; k < c->nclasses; k++) {
       if (c->classes[k].is_native_class) {
         if (comp_poly_arm_defines_n(c, k, name, argc)) return TY_POLY;
