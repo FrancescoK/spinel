@@ -5012,6 +5012,45 @@ static int name_used_outside(Compiler *c, int id, int skip, const char *name) {
   return 0;
 }
 
+/* Does `root` hold `target`? */
+static int node_holds(Compiler *c, int root, int target) {
+  if (root < 0) return 0;
+  if (root == target) return 1;
+  int nr = nt_num_refs(c->nt, root);
+  for (int i = 0; i < nr; i++)
+    if (node_holds(c, nt_ref_at(c->nt, root, i), target)) return 1;
+  int na = nt_num_arrs(c->nt, root);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(c->nt, root, i, &n);
+    for (int k = 0; k < n; k++) if (node_holds(c, ids[k], target)) return 1;
+  }
+  return 0;
+}
+
+/* Is `name` a required parameter of a block under `id` that holds `blk`?
+   A block around a Fiber or Thread body binds it there. */
+static int name_param_of_block_around(Compiler *c, int id, int blk, const char *name) {
+  if (id < 0 || id == blk || !name) return 0;
+  if (nt_kind(c->nt, id) == NK_BlockNode && node_holds(c, id, blk)) {
+    int bp = nt_ref(c->nt, id, "parameters");
+    int pl = bp >= 0 ? nt_ref(c->nt, bp, "parameters") : -1;
+    int rn = 0; const int *rq = pl >= 0 ? nt_arr(c->nt, pl, "requireds", &rn) : NULL;
+    for (int k = 0; k < rn; k++) {
+      const char *pn = nt_str(c->nt, rq[k], "name");
+      if (pn && sp_streq(pn, name)) return 1;
+    }
+  }
+  int nr = nt_num_refs(c->nt, id);
+  for (int i = 0; i < nr; i++)
+    if (name_param_of_block_around(c, nt_ref_at(c->nt, id, i), blk, name)) return 1;
+  int na = nt_num_arrs(c->nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n);
+    for (int k = 0; k < n; k++) if (name_param_of_block_around(c, ids[k], blk, name)) return 1;
+  }
+  return 0;
+}
+
 /* Does this node READ a container that outlives the expression -- storage
    something else still holds?
 
@@ -5696,7 +5735,12 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
          the cell is the body's own and is allocated in its prologue. */
       if (nameset_has(&fib_decls, nm)) {
         if (!lv->is_cell) continue;
-        if (!encl->body || encl->body < 0 || !name_used_outside(c, encl->body, blk, nm)) continue;
+        /* A parameter of an iteration block around this one (cell_shadow:
+           the loop publishes its cell each iteration) is bound outside the
+           body even when nothing else there names it. */
+        if (!encl->body || encl->body < 0) continue;
+        if (!name_used_outside(c, encl->body, blk, nm) &&
+            !(lv->cell_shadow && name_param_of_block_around(c, encl->body, blk, nm))) continue;
       }
       nameset_add(&caps, nm);
     }
