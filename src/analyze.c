@@ -14255,6 +14255,27 @@ static int promote_append_accumulators(Compiler *c) {
   return changed;
 }
 
+/* Is local `ln` of scope `mi` only ever another name for local `pn` (every
+   write `ln = pn`, `ln = t` with t such an alias, or `ln = (pn << x)`)? Then
+   an append through it is an append to pn's object (promote_local_alias_pairs
+   shares the two), and a parameter appended to that way is appended to in
+   place: a nil argument must not widen it to a boxed copy. */
+static int an_local_pure_alias_of(Compiler *c, int mi, const char *ln, const char *pn, int depth) {
+  const NodeTable *nt = c->nt;
+  if (depth > 3 || sp_streq(ln, pn)) return 0;
+  int any = 0;
+  for (int w = comp_lvw_first_sc(c, mi, ln); w >= 0; w = comp_lvw_next_sc(c, w)) {
+    if (c->nscope[w] != mi) continue;
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode) return 0;
+    int v = an_strbuf_alias_source(c, nt_ref(nt, w, "value"));
+    const char *vn = v >= 0 ? nt_str(nt, v, "name") : NULL;
+    if (!vn) return 0;
+    if (!sp_streq(vn, pn) && !an_local_pure_alias_of(c, mi, vn, pn, depth + 1)) return 0;
+    any = 1;
+  }
+  return any;
+}
+
 /* Does scope `mi` mutate its parameter `pi` in place (`p << x`, `p.gsub!`)?
    The byref machinery answers the same question, but it is computed after the
    fixpoint (compute_byref_out_params), so this pass -- which runs inside it --
@@ -14278,6 +14299,7 @@ static int an_param_mutated_in_place(Compiler *c, int mi, int pi) {
     if (ur < 0 || nt_kind(nt, ur) != NK_LocalVariableReadNode) continue;
     const char *urn = nt_str(nt, ur, "name");
     if (urn && sp_streq(urn, pn)) return 1;
+    if (urn && an_local_pure_alias_of(c, mi, urn, pn, 0)) return 1;
   }
   return 0;
 }
