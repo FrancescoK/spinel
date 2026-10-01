@@ -1976,6 +1976,18 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     TyKind t = lv ? lv->type : TY_UNKNOWN;
     /* the local as every other write names it: a captured one lives in its
        cell (`(*_cell_x)`), an inlined one under its renamed C name */
+    /* a number local given a boxed value (`u = (v &&= z)`, z boxed) answers
+       a boxed value, as its type says: the local's number, or nil for its
+       nil sentinel */
+    static int orw_boxing_id = -1;
+    if ((t == TY_INT || t == TY_FLOAT) && comp_ntype(c, id) == TY_POLY && orw_boxing_id != id) {
+      int sv = orw_boxing_id; orw_boxing_id = id;
+      buf_puts(b, t == TY_INT ? "sp_box_int_or_nil(" : "sp_box_float_or_nil(");
+      emit_expr_node(c, id, b);
+      buf_puts(b, ")");
+      orw_boxing_id = sv;
+      return;
+    }
     char lhs[300];
     { Buf lr; memset(&lr, 0, sizeof lr); emit_local_ref(c, id, nm, &lr);
       snprintf(lhs, sizeof lhs, "%s", lr.p ? lr.p : ""); free(lr.p); }
@@ -1998,8 +2010,19 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
          tests (a slot with no nil representation always assigns) */
       Buf nb; memset(&nb, 0, sizeof nb);
       if (local_nil_test(c, lv, lhs, &nb)) {
-        snprintf(cond, sizeof cond, "!(%s)", nb.p);
-        emit_orw_guard(c, v, 0, cond, lhs, 1, 0, b);
+        /* through emit_assign, as `||=` below: a nil or boxed value takes
+           the coercion the plain `x = v` does (the sentinel, not 0) */
+        Buf apre, abody;
+        memset(&apre, 0, sizeof apre); memset(&abody, 0, sizeof abody);
+        Buf *sv_pre = g_pre; int sv_ind = g_indent;
+        g_pre = &apre; g_indent = 0;
+        emit_assign(c, id, &abody, 0);
+        g_pre = sv_pre; g_indent = sv_ind;
+        buf_printf(b, "({ if (!(%s)) { ", nb.p);
+        if (apre.p) buf_puts(b, apre.p);
+        if (abody.p) buf_puts(b, abody.p);
+        buf_printf(b, " } %s; })", lhs);
+        free(apre.p); free(abody.p);
       }
       else emit_orw_guard(c, v, 0, NULL, lhs, 1, 0, b);
       free(nb.p);

@@ -9500,8 +9500,19 @@ else {
       Buf rb; memset(&rb, 0, sizeof rb); emit_local_ref(c, id, nm, &rb);
       Buf nb; memset(&nb, 0, sizeof nb);
       if (rb.p && local_nil_test(c, lv, rb.p, &nb)) {
-        snprintf(cond, sizeof cond, "!(%s)", nb.p);
-        emit_orw_guard(c, v, 0, cond, lhs, 0, indent, b);
+        /* through emit_assign, as `||=` below: a nil or boxed value takes
+           the coercion the plain `x = v` does (the sentinel, not 0) */
+        Buf apre, abody;
+        memset(&apre, 0, sizeof apre); memset(&abody, 0, sizeof abody);
+        Buf *sv_pre = g_pre; int sv_ind = g_indent;
+        g_pre = &apre; g_indent = indent + 1;
+        emit_assign(c, id, &abody, indent + 1);
+        g_pre = sv_pre; g_indent = sv_ind;
+        emit_indent(b, indent); buf_printf(b, "if (!(%s)) {\n", nb.p);
+        if (apre.p) buf_puts(b, apre.p);
+        if (abody.p) buf_puts(b, abody.p);
+        emit_indent(b, indent); buf_puts(b, "}\n");
+        free(apre.p); free(abody.p);
       }
       else emit_orw_guard(c, v, 0, NULL, lhs, 0, indent, b);
       free(nb.p); free(rb.p);

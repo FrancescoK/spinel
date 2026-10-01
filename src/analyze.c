@@ -24145,7 +24145,7 @@ static void mark_nullable_int_locals(Compiler *c) {
       /* An outright `i = nil` on a slot the other writes make an int leaves
          the sentinel in it just as a search miss does, and so does a local
          only nil is written to, here or through `&&=` / `||=` */
-      if ((wk == NK_LocalVariableWriteNode && nullable_int_value(c, v)) || nil_only_read(c, &nilonly, v)) {
+      if (nullable_int_value(c, v) || nil_only_read(c, &nilonly, v)) {
         lv->nullable_int = 1; changed = 1;
       }
     }
