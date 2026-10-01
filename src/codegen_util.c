@@ -2870,6 +2870,13 @@ int hash_key_misses(Compiler *c, int key, TyKind kt) {
          ty_is_object(actual);
 }
 
+/* nil looked up in an Integer-keyed table: not a miss. A key written from an
+   Integer slot that held nil is stored as the slot's sentinel, which
+   emit_hash_key hands a nil key as, so the lookup finds that entry. */
+int hash_nil_key_stored(Compiler *c, int key, TyKind kt) {
+  return kt == TY_INT && comp_ntype(c, key) == TY_NIL;
+}
+
 void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b) {
   TyKind actual = comp_ntype(c, key);
   if (hash_key_misses(c, key, kt)) {
