@@ -2175,12 +2175,12 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
     "flatten", "compact", "uniq", "reverse", "last", "index", "delete",
     "delete_at", "delete_if", "insert", "fetch", "sample", "shuffle",
     "rotate", "slice", "fill", "dig", "values_at", "+", "-", "*", "&", "|",
-    NULL };
+    "to_ary", NULL };
   static const char *const hashm[] = {
     "empty?", "[]", "[]=", "keys", "values", "fetch", "store", "delete", "key?",
     "has_key?", "member?", "value?", "has_value?", "each_pair", "each_key",
     "each_value", "merge", "merge!", "update", "to_h", "invert", "dig",
-    "default", "key", "transform_keys", "transform_values", NULL };
+    "default", "key", "transform_keys", "transform_values", "to_hash", NULL };
   static const char *const strm[] = {
     "[]", "[]=", "+", "*", "%", "<=>", "<", ">", "<=", ">=", "=~", "length",
     "size", "empty?", "upcase", "downcase", "capitalize", "swapcase", "strip",
@@ -2249,6 +2249,22 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
   }
   /* an Enumerator answers the Enumerable face (#3625) */
   if (strcmp(cn, "Enumerator") == 0) return sp_str_in_list(m, enumm);
+  /* an IO -- a File, a socket, $stderr -- answers the IO surface, and a
+     socket its own few names on top (a Rack server checks rack.errors) */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO && v.v.p) {
+    static const char *const iom[] = {
+      "puts", "print", "printf", "write", "<<", "read", "readpartial", "read_nonblock",
+      "write_nonblock", "gets", "readline", "readlines", "each_line", "each", "each_char",
+      "each_byte", "getc", "getbyte", "readchar", "readbyte", "ungetc", "eof?", "eof",
+      "close", "closed?", "close_read", "close_write", "flush", "fsync", "sync", "sync=",
+      "fileno", "to_io", "binmode", "tty?", "isatty", "pos", "pos=", "tell", "seek",
+      "rewind", "wait_readable", "wait_writable", "set_encoding", "external_encoding", NULL };
+    static const char *const sockm[] = {
+      "peeraddr", "addr", "local_address", "remote_address", "recv", "send",
+      "setsockopt", "getsockopt", "shutdown", "accept", NULL };
+    if (sp_str_in_list(m, iom)) return 1;
+    return ((sp_File *)v.v.p)->is_sock && sp_str_in_list(m, sockm);
+  }
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_EXCEPTION)
     return sp_str_in_list(m, excm);
   return 0;

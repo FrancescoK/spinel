@@ -26009,6 +26009,25 @@ static int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, co
     resolved = 1; yes = include_all;
   }
   for (int u = 0; !resolved && uni[u]; u++) if (sp_streq(qm, uni[u])) { yes = resolved = 1; break; }
+  /* an IO answers the IO surface (the runtime's list in
+     sp_poly_responds_builtin): the probe below would say yes to nearly any
+     name, since a call on an IO compiles to its generic arm. A socket's own
+     names depend on the handle, so they are left to run time. */
+  if (!resolved && recv >= 0 && rt == TY_IO && foldable) {
+    static const char *const iom[] = {
+      "puts", "print", "printf", "write", "<<", "read", "readpartial", "read_nonblock",
+      "write_nonblock", "gets", "readline", "readlines", "each_line", "each", "each_char",
+      "each_byte", "getc", "getbyte", "readchar", "readbyte", "ungetc", "eof?", "eof",
+      "close", "closed?", "close_read", "close_write", "flush", "fsync", "sync", "sync=",
+      "fileno", "to_io", "binmode", "tty?", "isatty", "pos", "pos=", "tell", "seek",
+      "rewind", "wait_readable", "wait_writable", "set_encoding", "external_encoding", NULL };
+    static const char *const sockm[] = {
+      "peeraddr", "addr", "local_address", "remote_address", "recv", "send",
+      "setsockopt", "getsockopt", "shutdown", "accept", NULL };
+    for (int u = 0; sockm[u]; u++) if (sp_streq(qm, sockm[u])) return -1;
+    resolved = 1;
+    for (int u = 0; iom[u]; u++) if (sp_streq(qm, iom[u])) { yes = 1; break; }
+  }
   /* value-type receivers: their builtin surface is not in any class
      table; answer the well-known names directly (the probe below only
      reports methods spinel can dispatch, a subset of CRuby's answer) */
@@ -40007,15 +40026,23 @@ else {
         buf_puts(b, "); })");
         return;
       }
-      if (ans >= 0) { buf_printf(b, "%d", ans); return; }
+      /* boxed when the call is typed so ($stderr, a global, is folded here
+         as the IO it holds, where the analysis typed the call poly) */
+      if (ans >= 0) {
+        buf_printf(b, comp_ntype(c, id) == TY_POLY ? "sp_box_bool(%d)" : "%d", ans);
+        return;
+      }
       /* the runtime answers: a Range value's builtin surface (the probe has
-         no reading for it, #3619), and a poly receiver */
-      if (recv >= 0 && (rt == TY_RANGE || rt == TY_FLOAT_RANGE || rt == TY_STR_RANGE)) {
+         no reading for it, #3619), an IO asked a socket's own name (the
+         handle knows whether it is one), and a poly receiver */
+      if (recv >= 0 && (rt == TY_RANGE || rt == TY_FLOAT_RANGE || rt == TY_STR_RANGE || rt == TY_IO)) {
+        if (comp_ntype(c, id) == TY_POLY) buf_puts(b, "sp_box_bool(");
         buf_puts(b, "sp_poly_responds_builtin(");
         emit_boxed(c, recv, b);
         buf_puts(b, ", \"");
         emit_c_escaped(b, qm);
         buf_puts(b, "\")");
+        if (comp_ntype(c, id) == TY_POLY) buf_puts(b, ")");
         return;
       }
       if (recv >= 0) {
