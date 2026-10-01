@@ -6070,6 +6070,22 @@ static int desugar_lazy_stateful_stage(Compiler *c) {
     int finite = ty_is_array(st) ||
                  (nt_type(nt, src) && sp_streq(nt_type(nt, src), "ArrayNode"));
     if (!finite) continue;
+    /* `src.lazy.each { }` runs the block over each element and answers src,
+       as `src.each { }` does: over a finite source there is no laziness to
+       keep, and a lazy enumerator's own `each` had no emitter */
+    {
+      int first = -1;
+      for (int k = 0; k < nt->count && first < 0; k++)
+        if (nt_kind(nt, k) == NK_CallNode && nt_ref(nt, k, "receiver") == id) first = k;
+      const char *fn = first >= 0 ? nt_str(nt, first, "name") : NULL;
+      int fblk = first >= 0 ? nt_ref(nt, first, "block") : -1;
+      if (fn && sp_streq(fn, "each") && fblk >= 0 && nt_kind(nt, fblk) == NK_BlockNode &&
+          nt_ref(nt, first, "arguments") < 0) {
+        nt_node_set_ref(nt, first, "receiver", src);
+        changed = 1;
+        continue;
+      }
+    }
     /* does any consumer up the chain need cross-element state? */
     int node = id, hit = 0;
     for (int depth = 0; depth < 16 && !hit; depth++) {
