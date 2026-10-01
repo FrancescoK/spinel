@@ -12735,8 +12735,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       if (a0 == TY_POLY) {
         buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, recv, b);
         buf_printf(b, "; sp_RbVal _a%d = ", tr); emit_boxed(c, argv[0], b);
-        buf_printf(b, "; (sp_bool)((_a%d.tag == SP_TAG_INT || _a%d.tag == SP_TAG_FLT) &&"
-                      " sp_frange_cover(_t%d, sp_poly_to_f(_a%d))); })", tr, tr, tr, tr);
+        buf_printf(b, "; sp_frange_cover_poly(_t%d, _a%d); })", tr, tr);
         return 1;
       }
       /* a non-numeric argument can never be covered: false (eval for effect) */
@@ -15054,12 +15053,12 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
        Rational answered NoMethodError for it while answering to_i fine. */
     if (sp_streq(name, "to_i") || sp_streq(name, "to_int") || sp_streq(name, "to_f")) {
       if (!poly_name_user_claimed(c, name, argc, 0)) {
-        /* sp_poly_to_i_meth: this is the METHOD, named by the program, so an
-           object without it is NoMethodError rather than the conversion
-           protocol's TypeError. */
+        /* sp_poly_to_i_meth / sp_poly_to_f_meth: this is the METHOD, named by
+           the program, so an object without it is NoMethodError rather than
+           the conversion protocol's TypeError, and nil.to_f is 0.0 */
         buf_printf(b, "%s(", !sp_streq(name, "to_f")
                               ? (comp_ntype(c, id) == TY_POLY ? "sp_poly_to_i_meth_v" : "sp_poly_to_i_meth")
-                              : "sp_poly_to_f");
+                              : "sp_poly_to_f_meth");
         emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
       }
     }

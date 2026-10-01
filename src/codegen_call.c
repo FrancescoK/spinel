@@ -4154,29 +4154,33 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         else emit_expr(c, argv[1], b);
         buf_puts(b, "; ");
       }
-      buf_puts(b, "(sp_Complex){");
-      if (re_poly) buf_printf(b, "sp_poly_to_f(_t%d)", tre);
-      else if (re_rat) buf_printf(b, "sp_rational_to_f(_t%d)", tre);
+      /* Each component as a Complex, with whether it is one: a boxed one by
+         its class at run time (sp_poly_complex_arg), so that a boxed Complex
+         combines as a + b*i -- read through sp_poly_to_f it was 0.0, and
+         Complex([Complex(1, 2)][0], 1) answered (0+1i). */
+      int tca = ++g_tmp, tcb = ++g_tmp, tfa = ++g_tmp, tfb = ++g_tmp;
+      buf_printf(b, "int _t%d = 0, _t%d = 0; sp_Complex _t%d = ", tfa, tfb, tca);
+      if (re_poly) buf_printf(b, "sp_poly_complex_arg(_t%d, &_t%d)", tre, tfa);
+      else if (ret0 == TY_COMPLEX) buf_printf(b, "_t%d; _t%d = 1", tre, tfa);
+      else if (re_rat) buf_printf(b, "(sp_Complex){sp_rational_to_f(_t%d), 0, SP_CPLX_RE_F}", tre);
       else {
         char tn[24]; snprintf(tn, sizeof tn, "_t%d", tre);
-        buf_puts(b, "(sp_float)(");
+        buf_puts(b, "(sp_Complex){(sp_float)(");
         emit_coerce_text(c, argv[0], ret0, TY_FLOAT, CO_HOLD, tn, "a Complex component", b);
-        buf_puts(b, ")");
+        buf_printf(b, "), 0, %s}", ret0 == TY_FLOAT ? "SP_CPLX_RE_F" : "0");
       }
-      buf_puts(b, ", ");
-      if (argc < 2) buf_puts(b, "0");
-      else if (im_poly) buf_printf(b, "sp_poly_to_f(_t%d)", tim);
-      else if (im_rat) buf_printf(b, "sp_rational_to_f(_t%d)", tim);
+      buf_printf(b, "; sp_Complex _t%d = ", tcb);
+      if (argc < 2) buf_puts(b, "(sp_Complex){0, 0, 0}");
+      else if (im_poly) buf_printf(b, "sp_poly_complex_arg(_t%d, &_t%d)", tim, tfb);
+      else if (imt0 == TY_COMPLEX) buf_printf(b, "_t%d; _t%d = 1", tim, tfb);
+      else if (im_rat) buf_printf(b, "(sp_Complex){sp_rational_to_f(_t%d), 0, SP_CPLX_RE_F}", tim);
       else {
         char tn[24]; snprintf(tn, sizeof tn, "_t%d", tim);
-        buf_puts(b, "(sp_float)(");
+        buf_puts(b, "(sp_Complex){(sp_float)(");
         emit_coerce_text(c, argv[1], imt0, TY_FLOAT, CO_HOLD, tn, "a Complex component", b);
-        buf_puts(b, ")");
+        buf_printf(b, "), 0, %s}", imt0 == TY_FLOAT ? "SP_CPLX_RE_F" : "0");
       }
-      buf_printf(b, ", (unsigned char)(%d", fl);
-      if (re_poly) buf_printf(b, " | (_t%d.tag == SP_TAG_FLT ? 1 : 0)", tre);
-      if (im_poly) buf_printf(b, " | (_t%d.tag == SP_TAG_FLT ? 2 : 0)", tim);
-      buf_puts(b, ")}; })");
+      buf_printf(b, "; sp_complex_convert2(_t%d, _t%d, _t%d, _t%d); })", tca, tfa, tcb, tfb);
       return 1;
     }
     buf_puts(b, "((sp_Complex){");
@@ -9450,7 +9454,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       if (!obj_default_done && argc == 0 &&
           (sp_streq(name, "to_i") || sp_streq(name, "to_f"))) {
         char cv[64];
-        snprintf(cv, sizeof cv, "%s(_t%d)", sp_streq(name, "to_i") ? "sp_poly_to_i_meth" : "sp_poly_to_f", tv);
+        snprintf(cv, sizeof cv, "%s(_t%d)", sp_streq(name, "to_i") ? "sp_poly_to_i_meth" : "sp_poly_to_f_meth", tv);
         buf_printf(b, " default: _t%d = ", tr);
         if (ret == TY_POLY) emit_boxed_text(c, sp_streq(name, "to_i") ? TY_INT : TY_FLOAT, cv, b);
         else buf_puts(b, cv);
@@ -11084,7 +11088,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
              fits the element type (a Set difference against an Array literal
              reaches these; a mismatched tag is simply not a member). */
           buf_printf(b, " case SP_BUILTIN_RANGE: _t%d = %ssp_range_cover_poly((sp_Range *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
-          buf_printf(b, " case SP_BUILTIN_FLOAT_RANGE: _t%d = %ssp_frange_cover(*(sp_FloatRange *)_t%d.v.p, sp_poly_to_f(_t%d))%s; break;", tr, ibo, tv, atmp[0], ibc);
+          buf_printf(b, " case SP_BUILTIN_FLOAT_RANGE: _t%d = %ssp_frange_cover_poly(*(sp_FloatRange *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
           /* a boxed nil is the typed array's sentinel, which the search
              finds wherever a nil was stored */
           buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = %s(_t%d.tag == SP_TAG_INT || _t%d.tag == SP_TAG_NIL) &&"
@@ -34442,7 +34446,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     else if (st == TY_POLY) {   /* a boxed nil sleeps until #wakeup, as a literal nil does */
       int tn = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tn); emit_expr(c, argv[0], b);
-      buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? (sp_sleep_forever(), 0.0) : sp_poly_to_f(_t%d); })", tn, tn);
+      buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? (sp_sleep_forever(), 0.0) : sp_poly_time_interval(_t%d); })", tn, tn);
     }
     else if (st == TY_BOOL) {
       buf_puts(b, "({ sp_raise_cls(\"TypeError\", (");

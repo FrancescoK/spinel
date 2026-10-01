@@ -2602,6 +2602,23 @@ static inline sp_Complex sp_poly_as_complex(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p) return *(sp_Complex *)v.v.p;
   return (sp_Complex){sp_poly_to_f(v), 0.0, 0};
 }
+/* A boxed argument of Kernel#Complex as a Complex, and whether it is one
+   (*cplx): a Complex as it is, a String parsed whole (Complex("1+2i", 1) is
+   (1+3i)), a real number as its real part, Float-classed when it is a Float
+   or a Rational (Spinel's Complex holds a Rational as its Float, see
+   docs/limitations.md). nil is CRuby's "can't convert nil into Complex" and
+   anything else "not a real". */
+sp_Complex sp_str_to_c_strict(const char *s);
+static sp_Complex sp_poly_complex_arg(sp_RbVal v, int *cplx) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p) { *cplx = 1; return *(sp_Complex *)v.v.p; }
+  if (v.tag == SP_TAG_STR) { *cplx = 1; return sp_str_to_c_strict(v.v.s ? v.v.s : sp_str_empty); }
+  if (v.tag == SP_TAG_NIL) sp_raise_cls("TypeError", "can't convert nil into Complex");
+  if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT) return (sp_Complex){sp_poly_to_f(v), 0.0, 0};
+  if (v.tag == SP_TAG_FLT || (v.tag == SP_TAG_OBJ && (v.cls_id == SP_BUILTIN_RATIONAL || v.cls_id == SP_BUILTIN_BIG_RATIONAL)))
+    return (sp_Complex){sp_poly_to_f(v), 0.0, SP_CPLX_RE_F};
+  sp_raise_cls("TypeError", "not a real");
+  return (sp_Complex){0, 0, 0};
+}
 /* Coerce to a C double, understanding boxed Rational (sp_poly_to_f does not).
    Used by the Rational+Float arms, where CRuby yields a Float. */
 static inline sp_float sp_poly_to_f_with_rational(sp_RbVal v) {
@@ -3245,7 +3262,59 @@ static SP_INLINE sp_int sp_poly_arg_perm(sp_RbVal v) {
   return sp_poly_arg_int_chk(v);
 }
 
-static sp_float sp_poly_to_f(sp_RbVal v) { if (v.tag == SP_TAG_FLT) return v.v.f; if (v.tag == SP_TAG_INT || v.tag == SP_TAG_SYM) return (sp_float)v.v.i; if (v.tag == SP_TAG_BIGINT) return sp_bigint_to_double((sp_Bigint *)v.v.p); if (v.tag == SP_TAG_STR) return (sp_float)atof(v.v.s ? v.v.s : sp_str_empty); if (v.tag == SP_TAG_BOOL) return v.v.b ? 1.0 : 0.0; if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RATIONAL) return sp_rational_to_f(*(sp_Rational *)v.v.p); if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_BIG_RATIONAL) return sp_brat_to_f((sp_BigRational *)v.v.p); if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_TIME && v.v.p) { sp_Time _tt = *(sp_Time *)v.v.p; return sp_time_ns_to_f(_tt.tv_sec, _tt.tv_nsec); } return 0.0; }  /* STR arm mirrors sp_poly_to_i's strtoll and the typed String#to_f (atof) */
+/* A boxed value where a Float is wanted, by Kernel#Float's rules: a real
+   number converts (a Bignum or a Rational to its nearest double), a Time by
+   its #to_f, a Complex whose imaginary part is an exact zero by its real
+   part; any other value is sp_poly_Float's -- a String parses strictly, a
+   user object converts through its #to_f, and nil, true, false, a Symbol or
+   a container raise TypeError. This answered 0.0 for every kind it did not
+   name, a Symbol's id, a boolean's 0 or 1 and a String's leading digits, all
+   silently: Complex([Complex(1, 2)][0], 1) built (0+1i). An explicit #to_f
+   follows each class's own method instead (sp_poly_to_f_meth). */
+static sp_float sp_poly_Float(sp_RbVal v);
+static sp_float sp_poly_to_f(sp_RbVal v) {
+  if (v.tag == SP_TAG_FLT) return v.v.f;
+  if (v.tag == SP_TAG_INT) return (sp_float)v.v.i;
+  if (v.tag == SP_TAG_BIGINT) return sp_bigint_to_double((sp_Bigint *)v.v.p);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RATIONAL) return sp_rational_to_f(*(sp_Rational *)v.v.p);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_BIG_RATIONAL) return sp_brat_to_f((sp_BigRational *)v.v.p);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_TIME && v.v.p) { sp_Time _tt = *(sp_Time *)v.v.p; return sp_time_ns_to_f(_tt.tv_sec, _tt.tv_nsec); }
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p) {
+    sp_Complex z = *(sp_Complex *)v.v.p;
+    if (z.im == 0 && !(z.fl & SP_CPLX_IM_F)) return z.re;
+    sp_raise_cls("RangeError", sp_sprintf("can't convert %s into Float", sp_complex_to_s(z)));
+  }
+  return sp_poly_Float(v);
+}
+/* An EXPLICIT `.to_f` on a boxed receiver: the method, by each class's own
+   #to_f. nil answers 0.0 and a String its leading number (String#to_f); a
+   real number, a Time and a Complex convert as sp_poly_to_f does; anything
+   else has no #to_f and is NoMethodError (a user class that defines one has
+   its own arm in the poly dispatch). */
+static sp_float sp_poly_to_f_meth(sp_RbVal v) {
+  if (v.tag == SP_TAG_NIL) return 0.0;
+  if (v.tag == SP_TAG_STR) return sp_str_to_f_cruby(v.v.s ? v.v.s : sp_str_empty);
+  if (v.tag == SP_TAG_FLT || v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT ||
+      (v.tag == SP_TAG_OBJ && (v.cls_id == SP_BUILTIN_RATIONAL || v.cls_id == SP_BUILTIN_BIG_RATIONAL ||
+                               v.cls_id == SP_BUILTIN_TIME || v.cls_id == SP_BUILTIN_COMPLEX)))
+    return sp_poly_to_f(v);
+  sp_raise_nomethod(sp_nomethod_msg("to_f", v));
+  return 0.0;
+}
+/* Float-range membership of a boxed value (`when 1.0..3.0`, Range#===): a
+   real number is a member by its value, a Complex too when its imaginary
+   part is an exact zero; anything else, nil and a String among them, is not
+   one (CRuby compares, and answers false). */
+static sp_bool sp_frange_cover_poly(sp_FloatRange r, sp_RbVal v) {
+  if (v.tag == SP_TAG_FLT || v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT ||
+      (v.tag == SP_TAG_OBJ && (v.cls_id == SP_BUILTIN_RATIONAL || v.cls_id == SP_BUILTIN_BIG_RATIONAL)))
+    return sp_frange_cover(r, sp_poly_to_f(v));
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p) {
+    sp_Complex z = *(sp_Complex *)v.v.p;
+    return z.im == 0 && !(z.fl & SP_CPLX_IM_F) && sp_frange_cover(r, z.re);
+  }
+  return 0;
+}
 /* The same conversions, but a boxed nil lands on the type's sentinel instead
    of the type's zero. A method whose declared return is `Integer?`/`Float?`
    narrows a boxed body into the unboxed slot here, and the plain conversions
