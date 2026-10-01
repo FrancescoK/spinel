@@ -1499,6 +1499,8 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
       /* `Hash.new(capacity: n)` has no default: the hash is its keywords */
       if (hac >= 1 && nt_kind(c->nt, hav[0]) == NK_KeywordHashNode) hash_new_capacity = 1;
       else if (hac >= 1) hash_new_default = hav[0];
+      /* a `capacity:` value left to run (desugar_hash_new_capacity) */
+      if (nt_ref(c->nt, v, "hash_capacity") >= 0) hash_new_capacity = 1;
     }
   }
 
@@ -7023,6 +7025,9 @@ static void emit_tail_value(Compiler *c, int node, Buf *b) {
      through to the generic call path that can't build an untyped Hash. Mirrors
      the `h = Hash.new(default)` local-write case in emit_assign. */
   if (nty && sp_streq(nty, "CallNode") && ty_is_hash(g_ret_type) && ty_hash_cname(g_ret_type) &&
+      nt_ref(c->nt, node, "hash_capacity") >= 0 &&
+      emit_empty_container_for_slot(c, node, g_ret_type, b)) return;
+  if (nty && sp_streq(nty, "CallNode") && ty_is_hash(g_ret_type) && ty_hash_cname(g_ret_type) &&
       sp_streq(nt_str(c->nt, node, "name") ? nt_str(c->nt, node, "name") : "", "new") &&
       nt_ref(c->nt, node, "block") < 0) {
     int hr = nt_ref(c->nt, node, "receiver");
@@ -8319,6 +8324,8 @@ int emit_empty_literal_as(Compiler *c, int v, TyKind slot, Buf *b) {
   if (sp_streq(vty, "CallNode") && node_is_empty_container(nt, v)) {
     const char *rn = nt_str(nt, nt_ref(nt, v, "receiver"), "name");
     if (rn && sp_streq(rn, "Hash") && ty_is_hash(slot) && ty_hash_cname(slot)) {
+      /* a `capacity:` value left to run runs after the Hash is built */
+      if (nt_ref(nt, v, "hash_capacity") >= 0) return emit_empty_container_for_slot(c, v, slot, b);
       buf_printf(b, "sp_%sHash_new()", ty_hash_cname(slot));
       return 1;
     }
@@ -10476,6 +10483,8 @@ else {
           if (nt_kind(nt, v_hash_dflt) == NK_NilNode) v_hash_dflt = -1;   /* Hash.new(nil) is Hash.new */
         }
         else v_hash_cap = han == 1;
+        /* a `capacity:` value left to run (desugar_hash_new_capacity) */
+        if (nt_ref(nt, v, "hash_capacity") >= 0) { v_hash_cap = 1; v_empty_hash = 0; }
       }
     }
     if (vty && sp_streq(vty, "NilNode"))

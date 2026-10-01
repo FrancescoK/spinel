@@ -1535,6 +1535,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     if (hty && (sp_streq(hty, "ConstantReadNode") || sp_streq(hty, "ConstantPathNode")) &&
         hcn && sp_streq(hcn, "Hash") && han <= 1) {
       /* an unknown keyword is CRuby's ArgumentError, not the default */
+      if (emit_hash_new_capacity_wrap(c, node, b, 1)) return;
       if (emit_hash_new_arg_guard(c, node, b)) return;
       if (han == 1 && hav) {
         buf_puts(b, "sp_box_obj(sp_PolyPolyHash_new_with_default(");

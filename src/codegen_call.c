@@ -20925,6 +20925,41 @@ static int bam_binop_wrapper(const Scope *tm) {
          tm->pnames[1] && sp_streq(tm->pnames[1], "__bam_a");
 }
 
+/* `Hash.new(capacity: e)` whose `e` has something to run: desugar_hash_new_capacity
+   took the keyword off the call and left `e` as its `hash_capacity`. The call
+   is emitted as without it, then `e` runs (after the default, as in CRuby)
+   and must convert to an Integer (CRuby's TypeError otherwise), and the
+   Hash is the answer. `boxed` is the emit_boxed form. */
+int g_hash_cap_inner = -1;
+void emit_hash_new_capacity_check(Compiler *c, int cap, Buf *b) {
+  TyKind cty = comp_ntype(c, cap);
+  if (cty == TY_INT || cty == TY_FLOAT) { buf_puts(b, "(void)("); emit_expr(c, cap, b); buf_puts(b, "); "); }
+  else { buf_puts(b, "(void)sp_poly_arg_int_chk("); emit_boxed(c, cap, b); buf_puts(b, "); "); }
+}
+int emit_hash_new_capacity_wrap(Compiler *c, int id, Buf *b, int boxed) {
+  int cap = nt_ref(c->nt, id, "hash_capacity");
+  if (cap < 0 || g_hash_cap_inner == id) return 0;
+  /* a call whose value is not read (no type of its own) is emitted boxed */
+  Buf ct; memset(&ct, 0, sizeof ct);
+  if (!boxed) emit_ctype(c, comp_ntype(c, id), &ct);
+  if (!boxed && (!ct.p || !ct.p[0] || sp_streq(ct.p, "void"))) boxed = 1;
+  if (boxed) { free(ct.p); memset(&ct, 0, sizeof ct); buf_puts(&ct, "sp_RbVal"); }
+  int save = g_hash_cap_inner;
+  g_hash_cap_inner = id;
+  Buf in; memset(&in, 0, sizeof in);
+  if (boxed) emit_boxed(c, id, &in);
+  else emit_expr(c, id, &in);
+  g_hash_cap_inner = save;
+  int t = ++g_tmp;
+  int is_val = boxed || (ct.p && sp_streq(ct.p, "sp_RbVal"));
+  buf_printf(b, "({ %s _t%d = %s; %s(_t%d); ", ct.p ? ct.p : "void *", t, in.p ? in.p : "NULL",
+             is_val ? "SP_GC_ROOT_RBVAL" : "SP_GC_ROOT", t);
+  free(in.p); free(ct.p);
+  emit_hash_new_capacity_check(c, cap, b);
+  buf_printf(b, "_t%d; })", t);
+  return 1;
+}
+
 /* `Hash.new` takes a default or a block, not both, and the one keyword
    `capacity:` (desugar_hash_new_capacity drops it): CRuby raises
    ArgumentError for an unknown keyword, then for a default beside a block.
@@ -24613,6 +24648,9 @@ static void refuse_string_copies(Compiler *c, int id) {
 }
 
 void emit_call(Compiler *c, int id, Buf *b) {
+  /* Hash.new's `capacity:` value runs after the Hash is built (defined in
+     the guards below), whichever arm builds it */
+  if (emit_hash_new_capacity_wrap(c, id, b, 0)) return;
   /* Module#name answers a frozen String in CRuby; the many arms below spell
      it as a static name, so the result is wrapped here once */
   { static int in_name = 0;

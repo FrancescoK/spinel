@@ -6432,12 +6432,45 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
   return changed;
 }
 
+/* A capacity value with nothing to run: an Integer literal, a local or an
+   instance variable, or Integer arithmetic and a builtin collection's
+   size over those (`items.size * 2`, `n + 1`). */
+static int hash_new_capacity_pure(Compiler *c, int n, int depth) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  if (n < 0 || depth > 8) return 0;
+  switch (nt_kind(nt, n)) {
+    case NK_IntegerNode: case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode:
+      return 1;
+    case NK_ParenthesesNode: {
+      int body = nt_ref(nt, n, "body"), bn = 0;
+      const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+      return bn == 1 && hash_new_capacity_pure(c, bb[0], depth + 1);
+    }
+    case NK_CallNode: break;
+    default: return 0;
+  }
+  const char *nm = nt_str(nt, n, "name");
+  int recv = nt_ref(nt, n, "receiver");
+  if (!nm || recv < 0 || nt_ref(nt, n, "block") >= 0) return 0;
+  int args = nt_ref(nt, n, "arguments"), ac = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+  TyKind rt = infer_type(c, recv);
+  if (ac == 0 && (sp_streq(nm, "size") || sp_streq(nm, "length")))
+    return (ty_is_array(rt) || ty_is_hash(rt) || rt == TY_STRING) &&
+           hash_new_capacity_pure(c, recv, depth + 1);
+  if (ac == 1 && rt == TY_INT && infer_type(c, av[0]) == TY_INT &&
+      (sp_streq(nm, "+") || sp_streq(nm, "-") || sp_streq(nm, "*")))
+    return hash_new_capacity_pure(c, recv, depth + 1) && hash_new_capacity_pure(c, av[0], depth + 1);
+  return 0;
+}
+
 /* `Hash.new(capacity: n)`: the capacity only sizes the table, so the
    keyword is dropped and the call is the Hash.new it would be without it.
-   Dropped when its value is an Integer literal or a local read (nothing to
-   run); any other keyword is CRuby's ArgumentError
-   (emit_hash_new_arg_guard). The keyword argument went in as a default
-   value, and the call found no method. */
+   A value with nothing to run (hash_new_capacity_pure) is dropped with it;
+   any other value is kept on the call to run after the Hash is built. Any
+   other keyword is CRuby's ArgumentError (emit_hash_new_arg_guard). The
+   keyword argument went in as a default value, and the call found no
+   method. */
 static int desugar_hash_new_capacity(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -6455,7 +6488,12 @@ static int desugar_hash_new_capacity(Compiler *c) {
     int key = nt_ref(nt, el[0], "key"), val = nt_ref(nt, el[0], "value");
     if (key < 0 || nt_kind(nt, key) != NK_SymbolNode || !nt_str(nt, key, "value") ||
         !sp_streq(nt_str(nt, key, "value"), "capacity")) continue;
-    if (val < 0 || (nt_kind(nt, val) != NK_IntegerNode && nt_kind(nt, val) != NK_LocalVariableReadNode)) continue;
+    if (val < 0) continue;
+    if (an - 1 > 64) continue;
+    /* a value with something to run (a call) still runs, after the Hash is
+       built, and must be an Integer: it rides on the call as
+       `hash_capacity` (emit_hash_new_capacity_wrap) */
+    if (!hash_new_capacity_pure(c, val, 0)) nt_node_set_ref(nt, id, "hash_capacity", val);
     if (an == 1) nt_node_set_ref(nt, id, "arguments", -1);
     else {
       int keep[64];

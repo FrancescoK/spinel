@@ -1668,6 +1668,23 @@ int emit_empty_container_for_slot(Compiler *c, int v, TyKind slot, Buf *b) {
     }
     const char *hcn = ty_is_hash(slot) ? ty_hash_cname(slot) : NULL;
     if (!hcn || !sp_streq(rn, "Hash") || an > 1) return 0;
+    /* a `capacity:` value with something to run runs after the Hash is
+       built (emit_hash_new_capacity_wrap) */
+    int cap = nt_ref(nt, v, "hash_capacity");
+    if (cap >= 0 && g_hash_cap_inner != v) {
+      int save = g_hash_cap_inner;
+      g_hash_cap_inner = v;
+      Buf in; memset(&in, 0, sizeof in);
+      int ok = emit_empty_container_for_slot(c, v, slot, &in);
+      g_hash_cap_inner = save;
+      if (!ok) { free(in.p); return 0; }
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_%sHash *_t%d = %s; SP_GC_ROOT(_t%d); ", hcn, t, in.p ? in.p : "NULL", t);
+      free(in.p);
+      emit_hash_new_capacity_check(c, cap, b);
+      buf_printf(b, "_t%d; })", t);
+      return 1;
+    }
     if (an == 1 && nt_kind(nt, av[0]) == NK_KeywordHashNode) {
       /* `capacity:` sizes nothing here, but its value is still evaluated */
       int en = 0; const int *el = nt_arr(nt, av[0], "elements", &en);
