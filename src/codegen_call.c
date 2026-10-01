@@ -28314,6 +28314,20 @@ static void emit_handle_inspect(Compiler *c, int recv, TyKind rt, Buf *b) {
   buf_printf(b, "sp_sprintf(\"#<%s:0x%%016llx>\", (unsigned long long)(uintptr_t)(", hn);
   emit_expr(c, recv, b); buf_puts(b, "))");
 }
+
+static int emit_enumerator_each_or_next(Compiler *c, int id, int recv, const char *name,
+                                        int argc, Buf *b) {
+  /* a blockless #each is the Enumerator itself; it had no arm, so the call
+     had no value and `e.each.to_a` raised NoMethodError for unknown */
+  if (sp_streq(name, "each") && argc == 0 && nt_ref(c->nt, id, "block") < 0) {
+    emit_expr(c, recv, b); return 1;
+  }
+  if (sp_streq(name, "next") && argc == 0) {
+    buf_puts(b, "sp_Enumerator_next("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+  }
+  return 0;
+}
+
 static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -32361,9 +32375,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       else buf_printf(b, "); _t%d == SP_INT_NIL ? sp_box_nil() : sp_box_int(_t%d); })", t, t);
       return;
     }
-    if (sp_streq(name, "next") && argc == 0) {
-      buf_puts(b, "sp_Enumerator_next("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
+    if (emit_enumerator_each_or_next(c, id, recv, name, argc, b)) return;
     if (sp_streq(name, "peek") && argc == 0) {
       buf_puts(b, "sp_Enumerator_peek("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
