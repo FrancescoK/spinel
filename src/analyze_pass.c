@@ -1660,18 +1660,22 @@ static int widen_aliased_array_ivars(Compiler *c, int node, int cls_id) {
     }
     return changed;
   }
-  if (k == NK_IfNode || k == NK_UnlessNode) {
+  switch (k) {
+  case NK_IfNode: case NK_UnlessNode:
     changed |= widen_aliased_array_ivars(c, nt_ref(nt, node, "statements"), cls_id);
     changed |= widen_aliased_array_ivars(c, nt_ref(nt, node,
                  k == NK_UnlessNode ? "else_clause" : "subsequent"), cls_id);
-  }
-  else if (k == NK_ElseNode)
-    changed |= widen_aliased_array_ivars(c, nt_ref(nt, node, "statements"), cls_id);
-  else if (k == NK_ParenthesesNode)
-    changed |= widen_aliased_array_ivars(c, nt_ref(nt, node, "body"), cls_id);
-  else if (k == NK_StatementsNode) {
+    break;
+  case NK_ElseNode:
+    changed |= widen_aliased_array_ivars(c, nt_ref(nt, node, "statements"), cls_id); break;
+  case NK_ParenthesesNode:
+    changed |= widen_aliased_array_ivars(c, nt_ref(nt, node, "body"), cls_id); break;
+  case NK_StatementsNode: {
     int bn = 0; const int *bb = nt_arr(nt, node, "body", &bn);
     if (bb && bn > 0) changed |= widen_aliased_array_ivars(c, bb[bn - 1], cls_id);
+    break;
+  }
+  default: break;
   }
   return changed;
 }
