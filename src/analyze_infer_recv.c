@@ -1725,6 +1725,19 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       NULL };
     for (int i = 0; PBANGN[i]; i++) if (sp_streq(name, PBANGN[i])) { *out = TY_STRING; return 1; }
   }
+  /* The String surface the emitter serves on a boxed receiver beside the
+     zero-argument arms: a case mapping given options answers the receiver's
+     kind (a String or a Symbol, boxed), dump and undump a String,
+     grapheme_clusters an Array of Strings. Untyped, the call took a void slot
+     and the value read back as nil. */
+  if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 &&
+      !an_user_defines_or_reads(c, name)) {
+    if (argc >= 1 && (sp_streq(name, "upcase") || sp_streq(name, "downcase") ||
+                      sp_streq(name, "capitalize") || sp_streq(name, "swapcase")))
+      { *out = TY_POLY; return 1; }
+    if (argc == 0 && (sp_streq(name, "dump") || sp_streq(name, "undump"))) { *out = TY_STRING; return 1; }
+    if (argc == 0 && sp_streq(name, "grapheme_clusters")) { *out = TY_STR_ARRAY; return 1; }
+  }
   /* The names Regexp alone owns, on a boxed receiver: the emitter unboxes the
      pattern and dispatches through the typed emitter, so the answer is the
      typed one. Untyped, the call boxed nil and `re.source` on a block

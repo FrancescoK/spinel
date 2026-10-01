@@ -14316,6 +14316,55 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
   }
+  /* The String surface the zero-argument poly arms leave out, on a boxed
+     receiver. A case mapping given options checks them as the typed call
+     does (sp_case_opts_check; a lone literal :ascii picks the ASCII mapping
+     instead) and maps a String or a Symbol through sp_poly_case_conv. dump,
+     undump and grapheme_clusters take the String alone (sp_poly_recv_s
+     answers NoMethodError for anything else). Each answered NoMethodError
+     naming String for a method String has. */
+  if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 && !user_defines_or_reads(c, name)) {
+    int cmap = argc >= 1 && (sp_streq(name, "upcase") || sp_streq(name, "downcase") ||
+                             sp_streq(name, "capitalize") || sp_streq(name, "swapcase"));
+    for (int i = 0; cmap && i < argc; i++) {
+      NodeKind ak = nt_kind(nt, argv[i]);
+      if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) cmap = 0;
+    }
+    if (cmap) {
+      const char *sfx = case_map_suffix(c, argc, argv);
+      int lit_ascii = argc == 1 && sfx[0];
+      int tr = ++g_tmp;
+      Buf cb; memset(&cb, 0, sizeof cb);
+      buf_printf(&cb, "({ sp_RbVal _t%d = ", tr); emit_boxed(c, recv, &cb);
+      buf_printf(&cb, "; SP_GC_ROOT_RBVAL(_t%d); ", tr);
+      if (!lit_ascii) {
+        buf_printf(&cb, "sp_case_opts_check(%d, (sp_RbVal[]){", argc);
+        for (int i = 0; i < argc; i++) { if (i) buf_puts(&cb, ", "); emit_boxed(c, argv[i], &cb); }
+        buf_printf(&cb, "}, %d, _t%d); ", sp_streq(name, "downcase"), tr);
+      }
+      buf_printf(&cb, "sp_poly_case_conv(_t%d, sp_str_%s%s, \"%s\"); })",
+                 tr, name, lit_ascii ? sfx : "", name);
+      TyKind want = comp_ntype(c, id);
+      if (want == TY_POLY || want == TY_UNKNOWN) buf_puts(b, cb.p);
+      else emit_unbox_text(c, want, cb.p, b);
+      free(cb.p);
+      return 1;
+    }
+    const char *sfn = NULL; TyKind sty = TY_STRING;
+    if (argc == 0 && sp_streq(name, "dump")) sfn = "sp_str_dump";
+    else if (argc == 0 && sp_streq(name, "undump")) sfn = "sp_str_undump";
+    else if (argc == 0 && sp_streq(name, "grapheme_clusters")) { sfn = "sp_str_chars"; sty = TY_STR_ARRAY; }
+    if (sfn) {
+      Buf sb; memset(&sb, 0, sizeof sb);
+      buf_printf(&sb, "%s(sp_poly_recv_s(", sfn); emit_expr(c, recv, &sb);
+      buf_printf(&sb, ", \"%s\"))", name);
+      TyKind want = comp_ntype(c, id);
+      if (want == TY_POLY || want == TY_UNKNOWN) emit_boxed_text(c, sty, sb.p, b);
+      else buf_puts(b, sb.p);
+      free(sb.p);
+      return 1;
+    }
+  }
   /* The Regexp surface on a boxed receiver: the names Regexp alone owns unbox
      the pattern and re-dispatch through the typed emitter, and the match forms
      -- which String owns too -- go to the runtime pair dispatch, where either

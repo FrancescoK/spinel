@@ -1,0 +1,18 @@
+"AB"
+"ab"
+"Ab"
+"AB"
+:SY
+:sY
+"ArgumentError: invalid option"
+"ArgumentError: too many options"
+é
+"\"ab\""
+"\"h\\u00E9\""
+"ab"
+RuntimeError
+["a", "b"]
+"NoMethodError: undefined method 'upcase' for an instance of Integer"
+"NoMethodError: undefined method 'dump' for an instance of Integer"
+"NoMethodError: undefined method 'grapheme_clusters' for an instance of Integer"
+"AB!"
