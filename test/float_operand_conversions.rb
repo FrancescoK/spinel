@@ -1,3 +1,4 @@
+# spinel: int64
 # A Float method's operand converts as CRuby converts it: an Integer past 64
 # bits and a Rational become their nearest double. Float#divmod and
 # Float#coerce took such an operand into an sp_float as it was, and the C did
