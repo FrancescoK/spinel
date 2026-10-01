@@ -1530,14 +1530,16 @@ static int block_tail_needs_value_form(Compiler *c, int id) {
       LocalVar *rl = rs ? scope_local(rs, rn) : NULL;
       if (rl && rl->type == TY_STRBUF) return 1;
     } }
+  /* a call to a user method that yields is spliced inline, with a block or
+     without one (`def m(...) = super` forwards the block it never gets):
+     its STATEMENT form is a plain compound whose value is void, so a block
+     whose value it is must take the expression form (`wrap { M.build(n) {
+     ... } }` assigned a void ({...}) to wrap's slot, as `t { F2.new.m(1) }`
+     did with no block) */
+  if (call_targets_yielding_method(c, id)) return 1;
   if (nt_ref(nt, id, "block") < 0) return 0;
   if (sp_streq(nm, "tap") || sp_streq(nm, "then") || sp_streq(nm, "yield_self"))
     return nt_ref(nt, id, "receiver") >= 0;
-  /* a block-driving call to a user method that yields is spliced inline;
-     its STATEMENT form is a plain compound whose value is void, so a block
-     whose value it is must take the expression form (`wrap { M.build(n) {
-     ... } }` assigned a void ({...}) to wrap's slot). */
-  if (call_targets_yielding_method(c, id)) return 1;
   return iter_value_answers_recv(c, id) && tail_iter_receiver(c, id) < 0;
 }
 
