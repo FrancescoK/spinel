@@ -44,6 +44,7 @@ Fiddle::DLError: NULL pointer dereference
 Fiddle::DLError: NULL pointer dereference
 TypeError: no implicit conversion of String into Integer
 TypeError: no implicit conversion of nil into Integer
+TypeError: no implicit conversion of nil into Integer
 ArgumentError: negative string size (or size too big)
 ArgumentError: negative string size (or size too big)
 TypeError: no implicit conversion of String into Integer

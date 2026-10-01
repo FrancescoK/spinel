@@ -300,14 +300,16 @@ module Fiddle
     end
 
     # ptr[i] = byte; ptr[i, n] = string (n of its bytes)
-    def []=(off, a, b = nil)
+    def []=(off, a, *rest)
       off = Fiddle.__int(off)
       raise DLError, "NULL pointer dereference" if @addr == 0
-      if b.nil?
+      if rest.empty?
         a = Fiddle.__int(a)
         FFI::Native.put_int(@addr + off, FFI::Type::K_I8, a & 255)
         a
       else
+        b = rest[0]
+        raise ::TypeError, "no implicit conversion of nil into Integer" if b.nil?
         len = Fiddle.__int(a)
         raise ::TypeError, "no implicit conversion of #{b.class} into String" unless b.is_a?(String)
         n = len < b.bytesize ? len : b.bytesize
