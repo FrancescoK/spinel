@@ -9114,8 +9114,21 @@ else {
                 return;
               }
             }
+            /* Every other name that reads back as an expression is still a
+               String the freeze has to reach: an ivar that holds the shared
+               handle freezes the handle, and a byref parameter's cell or a
+               yielded block parameter's (`(*_cell_x)`) takes the frozen
+               String back through the value form, which assigns it. This
+               emitted `(void)(x)`, so `x.freeze; x << "!"` appended to a
+               String frozen? called unfrozen. */
+            char fzref[1024];
+            if (strbuf_slot_ref(c, frcv, fzref, sizeof fzref)) {
+              emit_indent(b, indent);
+              buf_printf(b, "sp_String_freeze(%s);\n", fzref);
+              return;
+            }
             emit_indent(b, indent);
-            buf_puts(b, "(void)("); emit_expr(c, frcv, b); buf_puts(b, ");\n");
+            buf_puts(b, "(void)"); emit_expr(c, id, b); buf_puts(b, ";\n");
             return;
           }
         }
