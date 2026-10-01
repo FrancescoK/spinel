@@ -19060,9 +19060,15 @@ static int fwd_call_target(Compiler *c, int u) {
 }
 
 static unsigned fwd_rest_bits(Compiler *c, int mi);
-/* Set when an answer below was cut short -- the depth bound, or a method
-   still being asked (a cycle of forwarders) -- so it is not kept as final. */
+/* Set when an answer below was cut short, so it is not kept as final: 1 a
+   method still being asked (a cycle of forwarders), 2 the depth bound. */
 static int g_fwd_taint;
+/* fwd_rest_bits beside the elements' bits 0-15: an element at offset 16 or
+   more, past what the bits and the dynamic masks hold, reaches a parameter
+   that appends; and an answer below was cut at the bound. Either way the
+   caller's String cannot be pulled in, and the refusal takes it. */
+#define FWD_REST_PAST 0x10000u
+#define FWD_REST_OPEN 0x20000u
 /* Does method mi append to what its parameter j is bound to: in place, lent,
    the handle, or a POLY parameter or a rest element it hands on? */
 static int fwd_param_appends(Compiler *c, int mi, int j, int depth) {
@@ -19071,15 +19077,18 @@ static int fwd_param_appends(Compiler *c, int mi, int j, int depth) {
   /* a rest takes the arguments from its position on; a chain of them is
      memoized per method (fwd_rest_bits), so it does not count toward the
      depth, which bounds the POLY hand-ons below */
-  if (m->rest_idx >= 0 && j >= m->rest_idx)
-    return j - m->rest_idx < 16 && ((fwd_rest_bits(c, mi) >> (j - m->rest_idx)) & 1u);
+  if (m->rest_idx >= 0 && j >= m->rest_idx) {
+    unsigned rb = fwd_rest_bits(c, mi);
+    if (rb & FWD_REST_OPEN) g_fwd_taint |= 2;
+    return j - m->rest_idx < 16 ? (int)((rb >> (j - m->rest_idx)) & 1u) : (rb & FWD_REST_PAST) != 0;
+  }
   if (j >= m->nparams || !m->pnames[j]) return 0;
   LocalVar *q = scope_local(m, m->pnames[j]);
   if (!q || !q->is_param || q->is_block_param) return 0;
   if (q->byref_out || (q->type == TY_STRBUF && q->str_shared)) return 1;
   if (q->type != TY_POLY) return 0;
   if (an_param_mutated_in_place(c, mi, j)) return 1;
-  if (depth > 4) { g_fwd_taint = 1; return 0; }
+  if (depth > 4) { g_fwd_taint |= 2; return 0; }
   return fwd_poly_param_handed_on(c, mi, j, depth + 1);
 }
 
@@ -19101,9 +19110,9 @@ static int fwd_splat_start(Compiler *c, int u, const char *rn) {
   return -1;
 }
 
-/* Per pass: which elements of each method's rest (bits 0-15) it forwards to
-   a parameter that appends; bit 30 answered, bit 29 being asked (with the
-   bits found so far). An answer that leaned on a cut-short one is not kept:
+/* Per pass: which elements of each method's rest (bits 0-15, and the two
+   flags above) it forwards to a parameter that appends; bit 30 answered, bit
+   29 being asked (with the bits found so far). An answer that leaned on a cut-short one is not kept:
    the outermost query of a cycle of forwarders asks again with what it found
    until that stops growing, and a forwarder a deeper query reached is asked
    afresh by its own. */
@@ -19113,9 +19122,9 @@ static unsigned fwd_rest_bits_once(Compiler *c, int mi, const char *rn);
 static int g_fwd_rest_depth;   /* forwarders being asked, nested */
 static unsigned fwd_rest_bits(Compiler *c, int mi) {
   if (mi < 0 || mi >= g_fwd_n) return 0;
-  if (g_fwd_rest[mi] & 0x40000000u) return g_fwd_rest[mi] & 0xffffu;
-  if (g_fwd_rest[mi] & 0x20000000u) { g_fwd_taint = 1; return g_fwd_rest[mi] & 0xffffu; }
-  if (g_fwd_rest_depth > 64) { g_fwd_taint = 1; return 0; }
+  if (g_fwd_rest[mi] & 0x40000000u) return g_fwd_rest[mi] & 0x3ffffu;
+  if (g_fwd_rest[mi] & 0x20000000u) { g_fwd_taint |= 1; return g_fwd_rest[mi] & 0x3ffffu; }
+  if (g_fwd_rest_depth > 64) { g_fwd_taint |= 2; return FWD_REST_OPEN; }
   Scope *m = &c->scopes[mi];
   const char *rn = m->rest_idx >= 0 ? m->pnames[m->rest_idx] : NULL;
   if (!rn) { g_fwd_rest[mi] = 0x40000000u; return 0; }
@@ -19132,9 +19141,20 @@ static unsigned fwd_rest_bits(Compiler *c, int mi) {
     bits = got;
   }
   g_fwd_rest_depth--;
-  g_fwd_taint = outer | (!top && tainted);
+  /* the top of a cycle has its answer; one cut at the bound says so */
+  if (tainted & 2) bits |= FWD_REST_OPEN;
+  g_fwd_taint = outer | (top ? 0 : tainted);
   g_fwd_rest[mi] = !top && tainted ? 0 : 0x40000000u | bits;
   return bits;
+}
+/* Does target t, its parameters laid from position p on, append to one at
+   offset 16 or more: one of its own, or (a rest) one it forwards that far? */
+static unsigned fwd_rest_past(Compiler *c, int t, int p) {
+  Scope *tm = &c->scopes[t];
+  int end = tm->rest_idx >= 0 ? tm->rest_idx + 17 : tm->nparams;
+  for (int j = p + 16; j < end && j < p + 64; j++)
+    if (fwd_param_appends(c, t, j, 0)) return FWD_REST_PAST;
+  return 0;
 }
 static unsigned fwd_rest_bits_once(Compiler *c, int mi, const char *rn) {
   const NodeTable *nt = c->nt;
@@ -19146,6 +19166,7 @@ static unsigned fwd_rest_bits_once(Compiler *c, int mi, const char *rn) {
     int t = p >= 0 ? fwd_call_target(c, u) : -1;
     for (int i = 0; t >= 0 && i < 16; i++)
       if (fwd_param_appends(c, t, p + i, 0)) bits |= 1u << i;
+    if (t >= 0) bits |= fwd_rest_past(c, t, p);
   }
   /* `super(*a)`, and a zsuper handing on the rest at its own position */
   for (int pass = 0; pass < 2 && m->class_id >= 0; pass++) {
@@ -19156,6 +19177,7 @@ static unsigned fwd_rest_bits_once(Compiler *c, int mi, const char *rn) {
       int t = p >= 0 ? a_super_target(c, m) : -1;
       for (int i = 0; t >= 0 && i < 16; i++)
         if (fwd_param_appends(c, t, p + i, 0)) bits |= 1u << i;
+      if (t >= 0) bits |= fwd_rest_past(c, t, p);
     }
   }
   return bits;
@@ -19165,7 +19187,7 @@ static unsigned fwd_rest_bits_once(Compiler *c, int mi, const char *rn) {
    `super` or a call it is handed to? */
 static int fwd_poly_param_handed_on(Compiler *c, int mi, int pj, int depth) {
   const NodeTable *nt = c->nt;
-  if (depth > 4) { g_fwd_taint = 1; return 0; }
+  if (depth > 4) { g_fwd_taint |= 2; return 0; }
   if (mi < 0 || mi >= c->nscopes) return 0;
   Scope *m = &c->scopes[mi];
   if (pj < 0 || pj >= m->nparams || !m->pnames[pj]) return 0;
@@ -19213,22 +19235,37 @@ static void fwd_memo_fresh(Compiler *c) {
   if (!g_fwd_rest) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   g_fwd_codegen = 1;
 }
+/* Each answers 1 when it appends, 0 when it does not, and -1 when it cannot
+   tell -- a POLY hand-on past the depth bound -- which the refusal takes as
+   appending, so an answer cut short is refused rather than copied. */
 int fwd_rest_elem_appends(Compiler *c, int mi, int i) {
-  if (mi < 0 || mi >= c->nscopes || i < 0 || i >= 16 || c->scopes[mi].rest_idx < 0) return 0;
+  if (mi < 0 || mi >= c->nscopes || i < 0 || c->scopes[mi].rest_idx < 0) return 0;
   fwd_memo_fresh(c);
-  return (int)((fwd_rest_bits(c, mi) >> i) & 1u);
+  unsigned rb = fwd_rest_bits(c, mi);
+  if (i < 16 ? (rb >> i) & 1u : (rb & FWD_REST_PAST) != 0) return 1;
+  return rb & FWD_REST_OPEN ? -1 : 0;
 }
 int fwd_param_appends_at(Compiler *c, int mi, int j) {
   if (mi < 0 || mi >= c->nscopes || j < 0) return 0;
   fwd_memo_fresh(c);
-  return fwd_param_appends(c, mi, j, 0);
+  int outer = g_fwd_taint;
+  g_fwd_taint = 0;
+  int r = fwd_param_appends(c, mi, j, 0);
+  if (!r && (g_fwd_taint & 2)) r = -1;
+  g_fwd_taint = outer;
+  return r;
 }
 int fwd_poly_param_appends(Compiler *c, int mi, int j) {
   if (mi < 0 || mi >= c->nscopes || j < 0 || j >= c->scopes[mi].nparams) return 0;
   LocalVar *q = c->scopes[mi].pnames[j] ? scope_local(&c->scopes[mi], c->scopes[mi].pnames[j]) : NULL;
   if (!q || q->type != TY_POLY || an_param_mutated_in_place(c, mi, j)) return 0;
   fwd_memo_fresh(c);
-  return fwd_poly_param_handed_on(c, mi, j, 0);
+  int outer = g_fwd_taint;
+  g_fwd_taint = 0;
+  int r = fwd_poly_param_handed_on(c, mi, j, 0);
+  if (!r && (g_fwd_taint & 2)) r = -1;
+  g_fwd_taint = outer;
+  return r;
 }
 
 /* A String parameter a `super` hands on to a parameter that appends: one
