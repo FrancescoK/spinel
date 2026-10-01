@@ -1,3 +1,4 @@
+# spinel: int64
 # Integer#div with a Float divisor: zero is ZeroDivisionError, NaN is
 # FloatDomainError, the rest floors the real quotient.
 def try(n)

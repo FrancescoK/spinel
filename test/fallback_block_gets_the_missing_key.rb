@@ -1,3 +1,4 @@
+# spinel: int64
 # The block of `Array#delete`, `Hash#fetch` and `Hash#delete` that runs when the value or
 # the key is missing is given it, whatever the block builds from it: an Array or Hash
 # literal, a String, a call. The setup of a literal used to run ahead of the call, so
