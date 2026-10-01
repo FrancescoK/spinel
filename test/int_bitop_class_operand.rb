@@ -1,3 +1,4 @@
+# spinel: int64
 # An Integer's &, | and ^ with a Class or Module operand is CRuby's TypeError
 # ("Class can't be coerced into Integer"), and a shift's is the conversion
 # error ("no implicit conversion of Class into Integer"); a constant defined
