@@ -11849,17 +11849,6 @@ static void emit_time_in_zone(Compiler *c, int ts, int zone, Buf *b) {
   }
 }
 
-static int time_hhmm_offset(const char *sv, long *off) {
-  if (!sv || strlen(sv) != 6 || (sv[0] != '+' && sv[0] != '-') || sv[3] != ':' ||
-      sv[1] < '0' || sv[1] > '9' || sv[2] < '0' || sv[2] > '9' ||
-      sv[4] < '0' || sv[4] > '9' || sv[5] < '0' || sv[5] > '9')
-    return 0;
-  *off = ((sv[1] - '0') * 10 + (sv[2] - '0')) * 3600 +
-         ((sv[4] - '0') * 10 + (sv[5] - '0')) * 60;
-  if (sv[0] == '-') *off = -*off;
-  return 1;
-}
-
 /* Civil-argument Time constructor forms, shared by `Time.new(...)` (via the
    generic constant-new path) and Time.local/mktime/utc/gm. Up to 6 civil
    fields with CRuby's defaults (month/day 1, rest 0); a 7th positional
@@ -11912,8 +11901,7 @@ static int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf
     }
   }
   /* Time.new(y[, mo[, d[, h[, mi[, s]]]]], in: <off>): the `in:` keyword is
-     the utc_offset, same as the 7th positional (#2718). A "+HH:MM" literal
-     resolves at compile time; an Integer expression passes through. */
+     the utc_offset, same as the 7th positional (#2718). */
   if (is_new && argc >= 2 && argc <= 7 &&
       nt_type(nt, argv[argc - 1]) && sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
     int inv = struct_kwarg_value(c, argv[argc - 1], "in");
@@ -11924,13 +11912,6 @@ static int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf
         emit_time_civil_zoned(c, (int *)argv, npos, inv, b);
         return 1;
       }
-      long koff = 0; int khave = 0;
-      const char *ity = nt_type(nt, inv);
-      if (ity && sp_streq(ity, "StringNode")) {
-        if (!time_hhmm_offset(nt_str(nt, inv, "content"), &koff)) return 0;
-        khave = 1;
-      }
-      else if (comp_ntype(c, inv) != TY_INT) return 0;
       buf_puts(b, "sp_time_new_off(");
       for (int i = 0; i < 6; i++) {
         if (i) buf_puts(b, ", ");
@@ -11943,8 +11924,7 @@ static int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf
         else buf_puts(b, i == 1 || i == 2 ? "1" : "0");   /* mo/d default 1; h/mi/s 0 */
       }
       buf_puts(b, ", ");
-      if (khave) buf_printf(b, "%ld", koff);
-      else emit_int_expr(c, inv, b);
+      emit_int_expr(c, inv, b);
       buf_puts(b, ")");
       return 1;
     }
@@ -11954,24 +11934,7 @@ static int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf
     emit_time_civil_zoned(c, (int *)argv, 6, argv[6], b);
     return 1;
   }
-  long lit_off = 0;
-  int have_lit_off = 0;
-  if (argc == 7 && is_new) {
-    /* utc_offset: an Integer-second expression, or a literal "+HH:MM" */
-    const char *oty = nt_type(nt, argv[6]);
-    if (oty && sp_streq(oty, "StringNode")) {
-      if (!time_hhmm_offset(nt_str(nt, argv[6], "content"), &lit_off)) return 0;
-      have_lit_off = 1;
-    }
-else {
-      /* sp_time_new_off's 7th param is int64_t; only TY_INT guarantees an
-         int-compatible emission. A TY_UNKNOWN offset can emit a boxed value
-         (invalid C), so fall back to the generic "unsupported form" error. */
-      TyKind ot = comp_ntype(c, argv[6]);
-      if (ot != TY_INT) return 0;
-    }
-    buf_puts(b, "sp_time_new_off(");
-  }
+  if (argc == 7 && is_new) buf_puts(b, "sp_time_new_off(");
 else if (argc == 7) {
     /* a Rational subsecond (usec) has no int64 slot; route it through the
        float helper via sp_rational_to_f (#3091) */
@@ -11998,8 +11961,7 @@ else buf_printf(b, "sp_time_new%s(", is_utc ? "_utc" : "");
   }
   if (argc == 7) {
     buf_puts(b, is_new ? ", " : "), ");
-    if (have_lit_off) buf_printf(b, "%ld", lit_off);
-    else if (comp_ntype(c, argv[6]) == TY_RATIONAL) {
+    if (comp_ntype(c, argv[6]) == TY_RATIONAL) {
       buf_puts(b, "sp_rational_to_f("); emit_expr(c, argv[6], b); buf_puts(b, ")");
     }
     else emit_expr(c, argv[6], b);
