@@ -2532,7 +2532,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     else if (emit_scalar_op_assign_value(c, gref, lv->type, op, v, lv->nullable_int, b)) { }
     else {
       buf_printf(b, "(gv_%s %s= ", rn, op ? op : "+");
-      emit_expr(c, v, b); buf_puts(b, ")");
+      emit_coerce(c, v, lv->type, CO_HOLD, "the operand of an `op=`", b); buf_puts(b, ")");
     }
     return;
   }
@@ -2581,7 +2581,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
                                          idx >= 0 && c->classes[cid].cvar_nullable_int[idx], b)) { }
     else {
       buf_printf(b, "(%s %s= ", ref, op ? op : "+");
-      emit_expr(c, v, b); buf_puts(b, ")");
+      emit_coerce(c, v, ct, CO_HOLD, "the operand of an `op=`", b); buf_puts(b, ")");
     }
     return;
   }
@@ -4251,7 +4251,10 @@ else {
       /* inline the write */
       const char *op = nt_str(nt, id, "binary_operator");
       buf_printf(b, "%s %s= ", ref, op ? op : "+");
-      emit_expr(c, nt_ref(nt, id, "value"), b);
+      /* a Float slot's operator converts its operand as Float's does, as
+         the statement form (emit_scalar_op_assign) takes it */
+      emit_coerce(c, nt_ref(nt, id, "value"), vt, vt == TY_FLOAT ? CO_CONVERT : CO_HOLD,
+                  "the operand of an `op=`", b);
       buf_printf(b, "; _t%d = %s; _t%d; })", t, ref, t);
     }
     return;
