@@ -16413,6 +16413,15 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
     }
     /* the remaining native handles and value kinds share Object's protocol */
     if (emit_native_object_protocol(c, id, b)) return 1;
+    /* A receiver that never hands back a value (a method whose every path
+       raises): evaluating it raises, so the argument is never evaluated and
+       nothing reads the answer, as in CRuby. Refusing it stopped a program
+       CRuby runs -- a base class's `def version = raise ...` compared in a
+       method no live path reaches. */
+    if (recv >= 0 && call_never_returns(c, recv)) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", eq ? 0 : 1);
+      return 1;
+    }
     unsupported(c, id, "equality");
   }
   return 0;
