@@ -6547,6 +6547,13 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
     TyKind lr = lambda_nonlocal_return_ty(c, body);
     if (lr != TY_UNKNOWN && lr != ret) ret = TY_POLY;
   }
+  /* A `next <v>` answers the proc's value as the tail does: a body whose tail
+     has no value (`next k.to_s if k.is_a?(Symbol); nil`) still publishes the
+     value a `next` hands back, rather than nil for every call. */
+  if (ret == TY_NIL || ret == TY_VOID) {
+    TyKind nx = ie_block_break_next_ty(c, body);
+    if (nx != TY_UNKNOWN && nx != TY_NIL && nx != TY_VOID) ret = TY_POLY;
+  }
   if (ret_proc && tail_is_return) { tail_ret_arg = -1; ret = TY_NIL; }
   /* A block passed as a method's &block argument must return the value type the
      method expects across all its call sites (its blk_ret): if that unified type
