@@ -3211,6 +3211,21 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+static void emit_dyn_name_sym(Compiler *c, int sym, Buf *b) {
+  TyKind st = comp_ntype(c, sym);
+  if (st == TY_SYMBOL) emit_expr(c, sym, b);
+  else if (st == TY_STRING) { buf_puts(b, "sp_sym_intern("); emit_expr(c, sym, b); buf_puts(b, ")"); }
+  else {
+    /* a boxed Symbol already carries its sp_sym; only a String name is
+       interned, where rendering the Symbol to text and interning it back ran
+       on every call (#4854) */
+    int tn = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tn); emit_boxed(c, sym, b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_SYM ? (sp_sym)_t%d.v.i : sp_sym_intern(sp_poly_to_s(_t%d)); })",
+               tn, tn, tn);
+  }
+}
+
 /* Dynamic `recv.send(name, args)` over a runtime name: desugar_dynamic_send
    stashed one synthesized `recv.m(args)` arm per candidate method name. Emit a
    chain `name == :m1 ? recv.m1(args) : ... : raise NoMethodError`, boxing each
@@ -3235,7 +3250,6 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
   if (g_dsend_depth >= 64) return 0;
   g_dsend_active[g_dsend_depth++] = id;
   int sym = argv[0], mo = sp_streq(nt_str(nt, id, "name"), "method");
-  TyKind st = comp_ntype(c, sym);
   int t = ++g_tmp, recv = nt_ref(nt, id, "receiver"), sv_nargov = g_n_argov;
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   buf_puts(b, "({ ");
@@ -3245,17 +3259,7 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
     g_argov_node[g_n_argov] = recv; snprintf(g_argov_text[g_n_argov++], sizeof g_argov_text[0], "_t%d", tr);
   }
   buf_printf(b, "sp_sym _t%d = ", t);
-  if (st == TY_SYMBOL) emit_expr(c, sym, b);
-  else if (st == TY_STRING) { buf_puts(b, "sp_sym_intern("); emit_expr(c, sym, b); buf_puts(b, ")"); }
-  else {
-    /* a boxed Symbol already carries its sp_sym; only a String name is
-       interned, where rendering the Symbol to text and interning it back ran
-       on every call (#4854) */
-    int tn = ++g_tmp;
-    buf_printf(b, "({ sp_RbVal _t%d = ", tn); emit_boxed(c, sym, b);
-    buf_printf(b, "; _t%d.tag == SP_TAG_SYM ? (sp_sym)_t%d.v.i : sp_sym_intern(sp_poly_to_s(_t%d)); })",
-               tn, tn, tn);
-  }
+  emit_dyn_name_sym(c, sym, b);
   buf_printf(b, "; sp_RbVal _r%d; ", t);
   Buf *sv_pre = g_pre;
   for (int k = 0; k < narm; k++) {
@@ -3340,17 +3344,9 @@ static int emit_dynamic_respond_to(Compiler *c, int id, Buf *b) {
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   if (argc < 1 || !argv) return 0;
   int sym = argv[0];
-  TyKind st = comp_ntype(c, sym);
   int t = ++g_tmp;
   buf_printf(b, "({ sp_sym _t%d = ", t);
-  if (st == TY_SYMBOL) emit_expr(c, sym, b);
-  else if (st == TY_STRING) { buf_puts(b, "sp_sym_intern("); emit_expr(c, sym, b); buf_puts(b, ")"); }
-  else {
-    int tn = ++g_tmp;
-    buf_printf(b, "({ sp_RbVal _t%d = ", tn); emit_boxed(c, sym, b);
-    buf_printf(b, "; _t%d.tag == SP_TAG_SYM ? (sp_sym)_t%d.v.i : sp_sym_intern(sp_poly_to_s(_t%d)); })",
-               tn, tn, tn);
-  }
+  emit_dyn_name_sym(c, sym, b);
   buf_printf(b, "; sp_bool _r%d = 0; ", t);
   Buf *sv_pre = g_pre;
   for (int k = 0; k < narm; k++) {
