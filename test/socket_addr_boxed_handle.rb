@@ -2,22 +2,23 @@
 # into a Thread, or read out of an Array.
 require "socket"
 
-srv = TCPServer.new("127.0.0.1", 19394)
+srv = TCPServer.new("127.0.0.1", 0)
+port = srv.addr[1]
 done = Queue.new
 server_side = Thread.new do
   c = srv.accept
   Thread.new(c) do |cc|
     peer = cc.peeraddr
     mine = cc.addr
-    line = [peer[0], peer[3], mine[0], mine[1] == 19394]
+    line = [peer[0], peer[3], mine[0], mine[1] == port]
     done.pop
     cc.close
     line
   end.value
 end
-s = TCPSocket.new("127.0.0.1", 19394)
+s = TCPSocket.new("127.0.0.1", port)
 boxed = [s, 1][0]
-p boxed.peeraddr[1] == 19394, boxed.addr[3]
+p boxed.peeraddr[1] == port, boxed.addr[3]
 done << :ok
 p server_side.value
 s.close
