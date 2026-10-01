@@ -3388,6 +3388,16 @@ static char *sp_prepend_builtin_file(char *source, const char *exe_path, const c
   return ns;
 }
 
+/* Does the source open `kw` ("module Enumerable", "class Set") as written,
+   the name ending there? A bare strstr also took ruby/spec's
+   `module EnumerableSpecs` or a `class Settings` for it. */
+static int sp_src_opens(const char *source, const char *kw) {
+  size_t kl = strlen(kw);
+  for (const char *p = strstr(source, kw); p; p = strstr(p + 1, kw))
+    if (!sp_req_ident_char(p[kl])) return 1;
+  return 0;
+}
+
 static int sp_src_defines_module(const char *source, const char *cname) {
   char def1[80], def2[80];
   snprintf(def1, sizeof def1, "module %s\n", cname);
@@ -3439,7 +3449,7 @@ static char *sp_splice_builtins(char *source, const char *exe_path,
     sp_builtin_names_from(content); free(content);
     if (sp_builtin_enum_names_n == 0) return source;
   }
-  if (strstr(source, "module Enumerable")) return source;   /* the program reopens it itself: leave that alone for now */
+  if (sp_src_opens(source, "module Enumerable")) return source;   /* the program reopens it itself: leave that alone for now */
   int any = 0;
   for (int i = 0; i < sp_builtin_enum_names_n && !any; i++)
     if (sp_source_mentions_method(source, sp_builtin_enum_names[i])) any = 1;
@@ -4576,7 +4586,7 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
      so a `require "set"` appearing only in a comment also suppresses the
      splice -- acceptable for a convenience heuristic. */
   if (!strstr(source, "require \"set\"") && !strstr(source, "require 'set'") &&
-      !strstr(source, "class Set") && source_references_set(source)) {
+      !sp_src_opens(source, "class Set") && source_references_set(source)) {
     /* Insert AFTER the leading shebang/comment block, not at position 0: a
        prepend at the top pushed the `# frozen_string_literal:` magic comment
        off the first lines, so the entry file's pragma silently reverted to
@@ -4606,7 +4616,7 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
      over the resolved program, the way the builtins splice below does, and
      splice set.rb ahead of everything when it is named and was not
      required: CRuby provides Set without a require wherever it is used. */
-  if (!sp_feature_required("set") && !strstr(source, "class Set") &&
+  if (!sp_feature_required("set") && !sp_src_opens(source, "class Set") &&
       source_references_set(source)) {
     const char *head = "require \"set\"\n";
     size_t sl = strlen(source), hl = strlen(head);
