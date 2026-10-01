@@ -21650,6 +21650,20 @@ static int text_uses_tmp(const char *txt, int n) {
   return 0;
 }
 
+/* Does `txt` store into the temp `_t<n>`: `_t<n> = ...`, not `_t<n> == ...`? */
+static int text_assigns_tmp(const char *txt, int n) {
+  if (!txt) return 0;
+  char want[24];
+  int wl = snprintf(want, sizeof want, "_t%d", n);
+  for (const char *q = strstr(txt, want); q; q = strstr(q + 1, want)) {
+    const char *r = q + wl;
+    if (*r >= '0' && *r <= '9') continue;
+    while (*r == ' ') r++;
+    if (r[0] == '=' && r[1] != '=') return 1;
+  }
+  return 0;
+}
+
 /* the call node currently being rewritten for operand order (no re-entry) */
 static int g_operand_order_node = -1;
 
@@ -22096,8 +22110,12 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
        is poly, and converts nothing). Counted as emitted, not as held: a
        #to_int renders inline and IO#write holds per operand. */
     if (observable < 2 && g_conv_emitted == conv_mark) ok = 0;
+    /* An arm that stores back into its receiver -- a poly `[]=` splice
+       answering a new String, `@bytes = sp_poly_splice(@bytes, ...)` -- treats
+       the operand as its slot; bound, the store lands in the temp and the
+       ivar keeps the old value. */
     for (int i = 0; i < nb && ok; i++) {
-      if (!text_uses_tmp(ob.p, tmp[i])) ok = 0;
+      if (!text_uses_tmp(ob.p, tmp[i]) || text_assigns_tmp(ob.p, tmp[i])) ok = 0;
       else if (g_pre->p && g_pre->len > pre_mark &&
                text_uses_tmp(g_pre->p + pre_mark, tmp[i])) ok = 0;
     }
