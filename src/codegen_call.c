@@ -34479,8 +34479,18 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                comp_method_in_chain(c, ty_object_class(at), "to_str", NULL) >= 0) {
         int tsc = ty_object_class(at), tsd = tsc;
         (void)comp_method_in_chain(c, tsc, "to_str", &tsd);
-        buf_printf(b, "sp_%s_to_str((sp_%s *)(", c->classes[tsd].c_name, c->classes[tsd].c_name);
-        emit_expr(c, av[0], b); buf_puts(b, "))");
+        if (expr_is_held_ref(c, av[0])) {
+          buf_printf(b, "sp_%s_to_str((sp_%s *)(", c->classes[tsd].c_name, c->classes[tsd].c_name);
+          emit_expr(c, av[0], b); buf_puts(b, "))");
+        }
+        else {
+          /* rooted: `String(C.new)` holds the fresh object nowhere else while
+             its #to_str allocates */
+          int tso = ++g_tmp;
+          buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)(", c->classes[tsd].c_name, tso, c->classes[tsd].c_name);
+          emit_expr(c, av[0], b);
+          buf_printf(b, "); SP_GC_ROOT(_t%d); sp_%s_to_str(_t%d); })", tso, c->classes[tsd].c_name, tso);
+        }
       }
       else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, av[0], b); buf_puts(b, ")"); }  /* container/range/object: #to_s */
       return;
@@ -34530,8 +34540,17 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         int acid = ty_object_class(at), adef = acid;
         const char *anm = comp_method_in_chain(c, acid, "to_ary", NULL) >= 0 ? "to_ary" : "to_a";
         (void)comp_method_in_chain(c, acid, anm, &adef);
-        buf_printf(b, "sp_%s_%s((sp_%s *)(", c->classes[adef].c_name, mc(anm), c->classes[adef].c_name);
-        emit_expr(c, av[0], b); buf_puts(b, "))");
+        if (expr_is_held_ref(c, av[0])) {
+          buf_printf(b, "sp_%s_%s((sp_%s *)(", c->classes[adef].c_name, mc(anm), c->classes[adef].c_name);
+          emit_expr(c, av[0], b); buf_puts(b, "))");
+        }
+        else {
+          /* rooted, as Kernel#String roots its #to_str receiver */
+          int tao = ++g_tmp;
+          buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)(", c->classes[adef].c_name, tao, c->classes[adef].c_name);
+          emit_expr(c, av[0], b);
+          buf_printf(b, "); SP_GC_ROOT(_t%d); sp_%s_%s(_t%d); })", tao, c->classes[adef].c_name, mc(anm), tao);
+        }
       }
       else { buf_puts(b, "sp_kernel_array("); emit_boxed(c, av[0], b); buf_puts(b, ")"); }
       return;
