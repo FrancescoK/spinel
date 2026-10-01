@@ -1331,8 +1331,8 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     /* A forwarding block (`wrap { yield }` handing its own block on) has a
        yield for its tail, and that node's cached type is one site's too:
        the value at THIS site is what the block one level out answers, the
-       one the splice will run (#4495). One level is all the expander
-       records (g_yield_block_fallback). */
+       one the splice will run (#4495), and a tail yield there answers what
+       the block a level further out does (yield_block_out). */
     int tblk = g_block_id;
     TyKind bt = TY_NIL;
     for (int depth = 0; tblk >= 0; depth++) {
@@ -1340,8 +1340,8 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
       int bn = 0; const int *bb = bbody >= 0 ? nt_arr(c->nt, bbody, "body", &bn) : NULL;
       if (bn <= 0) { bt = TY_NIL; break; }
       int tail = bb[bn - 1];
-      if (depth == 0 && g_yield_block_fallback >= 0 && nt_type(c->nt, tail) &&
-          sp_streq(nt_type(c->nt, tail), "YieldNode")) { tblk = g_yield_block_fallback; continue; }
+      if (nt_type(c->nt, tail) && sp_streq(nt_type(c->nt, tail), "YieldNode") &&
+          yield_block_out(depth + 1) >= 0) { tblk = yield_block_out(depth + 1); continue; }
       bt = comp_ntype(c, tail);
       /* The tail is not the only value the block can produce: `next v` leaves
          it early with one, and that value is as much this site's answer as

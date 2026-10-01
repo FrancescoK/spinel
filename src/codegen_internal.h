@@ -212,6 +212,7 @@ int iter_recv_bind_once(Compiler *c, int node);
    that was active in the CALLER's context so nested `yield`s inside the
    passed block can chain back to the outermost caller's block. */
 extern int  g_yield_block_fallback;
+int yield_block_out(int k);   /* codegen_iter.c */
 extern const char *g_yield_self_fallback;        /* see codegen_util.c */
 extern const char *g_yield_self_fallback2;
 extern const char *g_yield_self_deref_fallback2;
