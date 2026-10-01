@@ -9833,10 +9833,25 @@ static int dir_enumerable_name(const char *nm) {
   for (int i = 0; E[i]; i++) if (sp_streq(nm, E[i])) return 1;
   return 0;
 }
+/* Whether an argument the streaming File.foreach evaluates after opening the
+   file reads the same as one evaluated before it, as CRuby does: a literal or
+   a local, which nothing in between can run code to change. */
+static int foreach_arg_inert(const NodeTable *nt, int a) {
+  switch (nt_kind(nt, a)) {
+    case NK_StringNode: case NK_IntegerNode: case NK_NilNode:
+    case NK_TrueNode: case NK_FalseNode: case NK_LocalVariableReadNode:
+      return 1;
+    default:
+      return 0;
+  }
+}
+
 /* Whether File.foreach call `id` can stream (desugar_dir_surface): a literal
    block, a path, and after it only arguments an IO's each_line takes as they
-   are written -- a separator, a limit, `chomp:`. A splat, a block argument or
-   another keyword (mode:, encoding:) keeps the readlines form. */
+   are written -- a separator, a limit, `chomp:` -- each a literal or a local,
+   since they are evaluated after the file is opened. A splat, a block
+   argument, another keyword (mode:, encoding:) or an argument that runs code
+   keeps the readlines form. */
 static int file_foreach_streams(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int blk = nt_ref(nt, id, "block");
@@ -9856,8 +9871,11 @@ static int file_foreach_streams(Compiler *c, int id) {
         if (key < 0 || nt_kind(nt, key) != NK_SymbolNode) return 0;
         const char *kn = nt_str(nt, key, "value");
         if (!kn || !sp_streq(kn, "chomp")) return 0;
+        int val = nt_ref(nt, ev[j], "value");
+        if (val < 0 || !foreach_arg_inert(nt, val)) return 0;
       }
     }
+    else if (k > 0 && !foreach_arg_inert(nt, a[k])) return 0;
   }
   return 1;
 }
