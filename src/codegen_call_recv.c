@@ -2118,12 +2118,16 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         (sp_streq(name, "sort") || sp_streq(name, "min") || sp_streq(name, "max"))) ||
        (nt_ref(nt, id, "block") < 0 && argc == 1 && !user_defines_or_reads(c, name) &&
         (sp_streq(name, "each_cons") || sp_streq(name, "each_slice") ||
-         sp_streq(name, "combination") || sp_streq(name, "permutation"))) ||
+         sp_streq(name, "combination") || sp_streq(name, "permutation") ||
+         sp_streq(name, "repeated_combination") || sp_streq(name, "repeated_permutation"))) ||
        /* and their BLOCK forms, which had no arm of their own and fell to the
           loud NoMethodError -- the array emitters they re-dispatch to serve
           the block and the blockless shape alike. */
        (nt_ref(nt, id, "block") >= 0 && argc == 1 && !user_defines_or_reads(c, name) &&
         (sp_streq(name, "zip") ||
+         /* the repeated pair, which the array emitters serve as they do
+            combination's; the boxed receiver had no arm and raised */
+         sp_streq(name, "repeated_combination") || sp_streq(name, "repeated_permutation") ||
          /* each_slice / each_cons answer the receiver, and the wrapper that
             hands it back re-enters this node -- which a pending safe-nav guard
             re-enters too, and the two do not compose: the inner pass finds no
@@ -2138,7 +2142,8 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
        the binding back -- the same shape emit_iter_value_expr uses for a
        receiver rewritten to `__enum_to_a`. */
     int ret_recv = (nt_ref(nt, id, "block") >= 0 &&
-                    (sp_streq(name, "each_cons") || sp_streq(name, "each_slice")));
+                    (sp_streq(name, "each_cons") || sp_streq(name, "each_slice") ||
+                     sp_streq(name, "repeated_combination") || sp_streq(name, "repeated_permutation")));
     int tbox = ret_recv ? ++g_tmp : 0;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     if (ret_recv) {
@@ -5659,11 +5664,12 @@ else {
         return 1;
       }
       if ((sp_streq(name, "repeated_combination") || sp_streq(name, "combination") ||
-           sp_streq(name, "permutation")) &&
+           sp_streq(name, "permutation") || sp_streq(name, "repeated_permutation")) &&
           (argc == 1 || (sp_streq(name, "permutation") && argc == 0)) &&
           nt_ref(nt, id, "block") < 0) {
         const char *combfn = sp_streq(name, "combination") ? "sp_PolyArray_combination"
                            : sp_streq(name, "permutation") ? "sp_PolyArray_permutation"
+                           : sp_streq(name, "repeated_permutation") ? "sp_PolyArray_repeated_permutation"
                            : "sp_PolyArray_repeated_combination";
         int ta = ++g_tmp;
         /* a poly-array receiver keeps materializing the tuples: an Enumerator
