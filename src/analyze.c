@@ -24365,6 +24365,7 @@ void analyze_program(Compiler *c) {
   desugar_engine_branches(c);
   desugar_def_unless_method_defined(c); /* def m .. end unless method_defined?(:m), answered in program order --
                                            ahead of the runtime-condition defs, which it answers statically */
+  desugar_class_body_self_calls(c);     /* self.v = x / v in a class body -> Cls.v = x / Cls.v */
   desugar_conditional_defs(c);
   mark_match_ranges(c);                  /* when 0..0.05 matches as 0.0..0.05 */
   desugar_duplicate_underscore_params(c); /* |_, _| -> |_, _dup1| */

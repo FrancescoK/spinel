@@ -12963,3 +12963,103 @@ int desugar_static_class_eval(Compiler *c) {
   if (changed) comp_grow_node_arrays(c);
   return changed;
 }
+
+/* ---- a class body's calls of its own class methods ----
+   In `class Sub < Base; self.v = 1; p v; end` self is Sub, and an inherited
+   class method it calls runs for Sub: a class-level @ivar it touches is
+   Sub's own. The body's code is emitted outside any method, where a
+   `self.` receiver -- or none -- reached the defining class's generic copy,
+   so Sub's `self.v = 1` wrote Base's @v. Such a call takes the class's
+   constant as its receiver, the form `Sub.v = 1` from outside already
+   compiles right: an explicit `self.` one or a bare one, whose name a
+   class method of the class or a superclass defines. Nested defs, classes
+   and singleton classes are not entered, nor blocks whose self is another
+   object (class_eval, instance_eval, define_method, ...). */
+static const char *cbs_leaf(const NodeTable *nt, int path) {
+  if (path < 0) return NULL;
+  NodeKind k = nt_kind(nt, path);
+  return k == NK_ConstantReadNode || k == NK_ConstantPathNode ? nt_str(nt, path, "name") : NULL;
+}
+/* does a body of class `cls` (by leaf name), or of a superclass, define a
+   class method `m` (`def self.m` or in `class << self`)? */
+static int cbs_cmethod_defined(const NodeTable *nt, const char *cls, const char *m, int depth) {
+  if (!cls || depth > 16) return 0;
+  const char *super = NULL;
+  for (int n = 0; n < nt->count; n++) {
+    if (nt_kind(nt, n) != NK_ClassNode) continue;
+    const char *ln = cbs_leaf(nt, nt_ref(nt, n, "constant_path"));
+    if (!ln || !sp_streq(ln, cls)) continue;
+    if (!super) super = cbs_leaf(nt, nt_ref(nt, n, "superclass"));
+    int b = nt_ref(nt, n, "body");
+    int bn = 0; const int *bs = b >= 0 && nt_kind(nt, b) == NK_StatementsNode ? nt_arr(nt, b, "body", &bn) : NULL;
+    for (int k = 0; k < bn; k++) {
+      int st = bs[k];
+      if (nt_kind(nt, st) == NK_DefNode && nt_ref(nt, st, "receiver") >= 0 &&
+          nt_kind(nt, nt_ref(nt, st, "receiver")) == NK_SelfNode && nt_str(nt, st, "name") &&
+          sp_streq(nt_str(nt, st, "name"), m)) return 1;
+      if (nt_kind(nt, st) == NK_SingletonClassNode) {
+        int sb = nt_ref(nt, st, "body");
+        int sn = 0; const int *ss = sb >= 0 && nt_kind(nt, sb) == NK_StatementsNode ? nt_arr(nt, sb, "body", &sn) : NULL;
+        for (int q = 0; q < sn; q++)
+          if (nt_kind(nt, ss[q]) == NK_DefNode && nt_str(nt, ss[q], "name") && sp_streq(nt_str(nt, ss[q], "name"), m)) return 1;
+      }
+    }
+  }
+  return super ? cbs_cmethod_defined(nt, super, m, depth + 1) : 0;
+}
+static int cbs_self_changing_block_call(const NodeTable *nt, int call) {
+  static const char *const names[] = { "class_eval", "module_eval", "class_exec", "module_exec",
+    "instance_eval", "instance_exec", "define_method", "define_singleton_method", "new", NULL };
+  const char *nm = nt_str(nt, call, "name");
+  for (int i = 0; nm && names[i]; i++) if (sp_streq(nm, names[i])) return 1;
+  return 0;
+}
+static int cbs_walk(Compiler *c, int n, int cls_node, const char *cls) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return 0;
+  int changed = 0;
+  if (k == NK_CallNode) {
+    int recv = nt_ref(nt, n, "receiver");
+    const char *nm = nt_str(nt, n, "name");
+    /* only a class method the program defines: a builtin one (singleton_class,
+       instance_method, attr_accessor, ...) keeps the self or bare form its
+       own desugars look for */
+    int retarget = nm && (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) && cbs_cmethod_defined(nt, cls, nm, 0);
+    if (retarget) {
+      int cp = nt_clone_subtree(nt, nt_ref(nt, cls_node, "constant_path"));
+      if (cp >= 0) { comp_grow_node_arrays(c); c->nscope[cp] = c->nscope[n]; nt_node_set_ref(nt, n, "receiver", cp); changed = 1; }
+    }
+    if (nt_ref(nt, n, "block") >= 0 && cbs_self_changing_block_call(nt, n)) {
+      /* the block's self is another object: only the receiver and arguments are ours */
+      changed |= cbs_walk(c, nt_ref(nt, n, "receiver"), cls_node, cls);
+      changed |= cbs_walk(c, nt_ref(nt, n, "arguments"), cls_node, cls);
+      return changed;
+    }
+  }
+  const SpNode *nd = &nt->nodes[n];
+  int nr = nd->nr;
+  int refs[64]; if (nr > 64) nr = 64;
+  for (int j = 0; j < nr; j++) refs[j] = nd->r[j].ref;
+  for (int j = 0; j < nr; j++) changed |= cbs_walk(c, refs[j], cls_node, cls);
+  for (int j = 0; j < nt->nodes[n].na; j++) {
+    int an = nt->nodes[n].a[j].n;
+    int *ids = malloc(sizeof(int) * (size_t)(an + 1));
+    memcpy(ids, nt->nodes[n].a[j].ids, sizeof(int) * (size_t)an);
+    for (int q = 0; q < an; q++) changed |= cbs_walk(c, ids[q], cls_node, cls);
+    free(ids);
+  }
+  return changed;
+}
+int desugar_class_body_self_calls(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0, n0 = nt->count;
+  for (int cl = 0; cl < n0; cl++) {
+    if (nt_kind(nt, cl) != NK_ClassNode) continue;
+    const char *cls = cbs_leaf(nt, nt_ref(nt, cl, "constant_path"));
+    if (!cls) continue;
+    changed |= cbs_walk(c, nt_ref(nt, cl, "body"), cl, cls);
+  }
+  return changed;
+}

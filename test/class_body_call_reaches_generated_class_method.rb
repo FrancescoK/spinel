@@ -1,6 +1,7 @@
 # A macro that defines a class method named like another macro: a later call
-# of that name reaches the generated method, not the macro, so it is not
-# expanded (its run-time public_send refused).
+# of that name reaches the generated method, not the macro -- `constant :SIZE`
+# calls the `self.constant` that `gen :constant` defined, which sets no
+# constant.
 module Gen
   def gen(n) = module_eval("def self.#{n}(x) = 1")
 end

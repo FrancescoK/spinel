@@ -339,6 +339,7 @@ int desugar_errno_aliases(Compiler *c);
 const char *errno_canonical_name(const char *n);   /* analyze_util.c */
 void desugar_class_reopen(Compiler *c);
 int desugar_def_unless_method_defined(Compiler *c);
+int desugar_class_body_self_calls(Compiler *c);
 int desugar_builtins(Compiler *c);
 void desugar_stored_enum_each(Compiler *c);
 int desugar_enum_walk_calls(Compiler *c);
