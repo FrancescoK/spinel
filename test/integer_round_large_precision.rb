@@ -24,4 +24,10 @@ rescue => e
   p [:boxed_keyword, e.class]
 end
 
+begin
+  p [:bignum, (2**70).round(n)]
+rescue => e
+  p [:bignum, e.class]
+end
+
 p 42.round((1 << 31) - 1)

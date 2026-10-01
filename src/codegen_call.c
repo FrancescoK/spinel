@@ -44408,8 +44408,9 @@ else {
     }
     if ((sp_streq(name, "round") || sp_streq(name, "ceil") || sp_streq(name, "floor")) && argc == 1) {
       int mode = sp_streq(name, "floor") ? 1 : sp_streq(name, "ceil") ? 2 : 0;
-      buf_printf(b, "sp_bigint_round_prec(%s, ", r); emit_int_expr(c, argv[0], b);
-      buf_printf(b, ", %d)", mode); free(rs.p); return;
+      /* a precision past a C int is a RangeError, as on a Fixnum (#6702) */
+      buf_printf(b, "sp_bigint_round_prec(%s, ({ sp_int _rnd = ", r); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; sp_int_round_check_ndigits(_rnd); _rnd; }), %d)", mode); free(rs.p); return;
     }
     if (sp_streq(name, "to_s") && argc == 1) {
       buf_printf(b, "sp_str_dup_external(sp_bigint_to_s_base(%s, ", r);
