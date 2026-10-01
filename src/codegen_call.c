@@ -18091,10 +18091,11 @@ static int json_to_json_is_builtin(Compiler *c, int recv) {
 static int emit_range_step_bad_stride(Compiler *c, int id, int recv, int arg,
                                       const char *into, int conv, Buf *b) {
   TyKind at = comp_ntype(c, arg);
+  NodeKind ak = nt_kind(c->nt, arg);
   const char *cn = (at == TY_STRING || at == TY_STRBUF) ? "String" :
                    at == TY_NIL ? "nil" :
-                   (ty_is_array(at) || ty_is_obj_array(at)) ? "Array" :
-                   ty_is_hash(at) ? "Hash" :
+                   (ty_is_array(at) || ty_is_obj_array(at) || ak == NK_ArrayNode) ? "Array" :
+                   (ty_is_hash(at) || ak == NK_HashNode) ? "Hash" :
                    (at == TY_RANGE || at == TY_FLOAT_RANGE || at == TY_STR_RANGE) ? "Range" : NULL;
   /* The conversion form names a Symbol by its CLASS (a boolean still by its
      inspect); the coercion form names both by inspect. */
