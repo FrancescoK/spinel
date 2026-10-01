@@ -6939,14 +6939,17 @@ void emit_rest_from_splat_and_argv(int tmp, TyKind at, int from_idx,
   int t = ++g_tmp;
   buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", t, t);
   /* elements from the splatted array starting at from_idx */
-  if (at == TY_INT_ARRAY)
-    buf_printf(b, " if (_t%d) for (sp_int _si = %d; _si < _t%d->len; _si++) sp_PolyArray_push(_t%d, sp_box_int(_t%d->data[_t%d->start+_si]));", tmp, from_idx, tmp, t, tmp, tmp);
-  else if (at == TY_STR_ARRAY)
-    buf_printf(b, " if (_t%d) for (sp_int _si = %d; _si < _t%d->len; _si++) sp_PolyArray_push(_t%d, sp_box_str(_t%d->data[_si]));", tmp, from_idx, tmp, t, tmp);
-  else if (at == TY_FLOAT_ARRAY)
-    buf_printf(b, " if (_t%d) for (sp_int _si = %d; _si < _t%d->len; _si++) sp_PolyArray_push(_t%d, sp_box_float(_t%d->data[_si]));", tmp, from_idx, tmp, t, tmp);
-  else if (at == TY_POLY_ARRAY)
-    buf_printf(b, " if (_t%d) for (sp_int _si = %d; _si < _t%d->len; _si++) sp_PolyArray_push(_t%d, _t%d->data[_si]);", tmp, from_idx, tmp, t, tmp);
+  switch (at) {
+  case TY_INT_ARRAY:
+    buf_printf(b, " if (_t%d) for (sp_int _si = %d; _si < _t%d->len; _si++) sp_PolyArray_push(_t%d, sp_box_int(_t%d->data[_t%d->start+_si]));", tmp, from_idx, tmp, t, tmp, tmp); break;
+  case TY_STR_ARRAY:
+    buf_printf(b, " if (_t%d) for (sp_int _si = %d; _si < _t%d->len; _si++) sp_PolyArray_push(_t%d, sp_box_str(_t%d->data[_si]));", tmp, from_idx, tmp, t, tmp); break;
+  case TY_FLOAT_ARRAY:
+    buf_printf(b, " if (_t%d) for (sp_int _si = %d; _si < _t%d->len; _si++) sp_PolyArray_push(_t%d, sp_box_float(_t%d->data[_si]));", tmp, from_idx, tmp, t, tmp); break;
+  case TY_POLY_ARRAY:
+    buf_printf(b, " if (_t%d) for (sp_int _si = %d; _si < _t%d->len; _si++) sp_PolyArray_push(_t%d, _t%d->data[_si]);", tmp, from_idx, tmp, t, tmp); break;
+  default: break;
+  }
   /* then suffix args after the splat */
   for (int j = argv_from; j < pos_argc; j++) {
     const char *jty = argv ? nt_type(c->nt, argv[j]) : NULL;
