@@ -2332,6 +2332,13 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     int orecv = nt_ref(nt, recv, "receiver");
     if (orecv >= 0) return infer_type(c, orecv);
   }
+  /* `x.each(&pr)` on a boxed receiver drives the proc through
+     sp_poly_enum_proc, which hands back the receiver, as `x.each { }` does;
+     typed nil, the value was dropped and `p r.each(&q)` printed nil */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && sp_streq(name, "each") &&
+      nt_ref(nt, id, "block") >= 0 && nt_type(nt, nt_ref(nt, id, "block")) &&
+      sp_streq(nt_type(nt, nt_ref(nt, id, "block")), "BlockArgumentNode"))
+    return TY_POLY;
   /* A block each-family call returns its receiver (each, each_value/each_key/
      each_pair, each_with_index, reverse_each), so the value form composes:
      r = arr.each { }; arr.each { }.map { }. Gated to receivers that define
