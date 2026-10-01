@@ -6538,6 +6538,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
          sp_re_scan_poly pushes the whole match when the pattern has no groups
          and a captures row when it does (#3389). */
       if (infer_type(c, argv[0]) == TY_REGEX) return TY_POLY_ARRAY;
+      /* so is a BOXED pattern, a Regexp or a String only at run time, as the
+         poly-receiver rule already has it (sp_scan_boxed_poly) */
+      if (infer_type(c, argv[0]) == TY_POLY) return TY_POLY_ARRAY;
       return TY_STR_ARRAY;
     }
     if (sp_streq(name, "upto") && argc == 1) return TY_STR_ARRAY;  /* blockless: materialized sequence */

@@ -6592,6 +6592,33 @@ static sp_PolyArray *sp_PolyArray_sum_concat(sp_PolyArray *a, sp_RbVal init) {
    flag is set AFTER the pushes, which would otherwise raise on it. */
 static sp_PolyArray *sp_PolyArray_from_int_array(sp_IntArray *a) { SP_GC_ROOT(a); sp_PolyArray *p = sp_PolyArray_new(); if (!a) return p; for (sp_int i = 0; i < a->len; i++) { sp_int v = a->data[a->start+i]; sp_PolyArray_push(p, v == SP_INT_NIL ? sp_box_nil() : sp_box_int(v)); } p->frozen = a->frozen; return p; }
 static sp_PolyArray *sp_PolyArray_from_str_array(sp_StrArray *a) { SP_GC_ROOT(a); sp_PolyArray *p = sp_PolyArray_new(); if (!a) return p; for (sp_int i = 0; i < a->len; i++) sp_PolyArray_push(p, sp_box_str(a->data[i])); p->frozen = a->frozen; return p; }
+/* String#scan with a pattern that arrives boxed (read out of a table, a
+   block parameter over mixed values): a Regexp's payload is the compiled
+   pattern; a String is scanned for its bytes, setting $~ as a String pattern
+   does; anything else is CRuby's TypeError. The _poly form answers the rows
+   a pattern with captures gives (arrays), a String pattern's as Strings. */
+static SP_NORETURN void sp_scan_bad_pattern(sp_RbVal pat) {
+  const char *n = pat.tag == SP_TAG_NIL ? "nil" : pat.tag == SP_TAG_BOOL ? (pat.v.b ? "true" : "false")
+                : sp_poly_class_name(pat);
+  sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (expected Regexp)", n));
+}
+static sp_StrArray *sp_scan_boxed(const char *s, sp_RbVal pat) SP_UNUSED;
+static sp_StrArray *sp_scan_boxed(const char *s, sp_RbVal pat) {
+  if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_REGEX)
+    return sp_re_scan((mrb_regexp_pattern *)pat.v.p, s);
+  if (pat.tag == SP_TAG_STR || sp_poly_is_strbuf(pat)) return sp_str_scan(s, sp_poly_to_s(pat));
+  sp_scan_bad_pattern(pat);
+}
+static sp_PolyArray *sp_scan_boxed_poly(const char *s, sp_RbVal pat) SP_UNUSED;
+static sp_PolyArray *sp_scan_boxed_poly(const char *s, sp_RbVal pat) {
+  if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_REGEX)
+    return sp_re_scan_poly((mrb_regexp_pattern *)pat.v.p, s);
+  if (pat.tag == SP_TAG_STR || sp_poly_is_strbuf(pat)) {
+    sp_StrArray *r = sp_str_scan(s, sp_poly_to_s(pat)); SP_GC_ROOT(r);
+    return sp_PolyArray_from_str_array(r);
+  }
+  sp_scan_bad_pattern(pat);
+}
 static sp_PolyArray *sp_PolyArray_from_float_array(sp_FloatArray *a) { SP_GC_ROOT(a); sp_PolyArray *p = sp_PolyArray_new(); if (!a) return p; for (sp_int i = 0; i < a->len; i++) sp_PolyArray_push(p, sp_box_float_or_nil(a->data[i])); p->frozen = a->frozen; return p; }
 /* Reverse coercions: materialize a concrete typed array from a poly array by
    unboxing each element to the declared element type. Used to honor a typed-array
