@@ -2057,6 +2057,17 @@ static void sp_sched_signal_if_quiescent(void) {
   if (g_nrunning == 0 && g_runnable == 0) SCHED_WAKE_MAIN();
 }
 
+/* The fiber a green thread switches back to when it yields, blocks or is
+   preempted: the one that ran it on this worker (run_thread_once). That is
+   the worker's root fiber, except when the main thread runs a green thread
+   from inside a Fiber it resumed (a Thread.pass sweep, or the pump): the root
+   is then suspended in that #resume, its context saved in the fiber's
+   caller_ctx rather than its own, so a switch to it lands on a context that
+   was never saved. run_thread_once never nests on a worker, so it sets the
+   home and clears it after. */
+static SP_TLS sp_Fiber *g_sched_home = NULL;
+static sp_Fiber *sp_sched_home(void) { return g_sched_home ? g_sched_home : sp_fiber_worker_root(); }
+
 static void run_thread_once(sp_thread *t) { sp_gc_wb((void*)t);   /* PRE/POST: sched lock held */
   if (sched_lat_enabled() && t->readied_at > 0) {
     double d = (sp_monotonic_now() - t->readied_at) * 1e6;   /* us */
@@ -2094,9 +2105,11 @@ static void run_thread_once(sp_thread *t) { sp_gc_wb((void*)t);   /* PRE/POST: s
   sp_RbVal in = (t->fiber->state == 0) ? t->arg : sp_box_nil();
   /* Run the green thread with the lock dropped: it executes Ruby (and may park
      on, or wake, other threads, which re-take the lock themselves). */
+  g_sched_home = sp_fiber_current;
   SCHED_UNLOCK();
   sp_Fiber_transfer_catch(t->fiber, in, &raised, &ec, &em, &eo);
   SCHED_LOCK();
+  g_sched_home = NULL;
   g_current = saved;
 #ifdef SP_THREADS
   g_wslot[sp_worker_id].cur = NULL;   /* no longer timing t on this worker */
@@ -2170,11 +2183,11 @@ static void run_thread_once(sp_thread *t) { sp_gc_wb((void*)t);   /* PRE/POST: s
 #ifdef SP_THREADS
 /* Cooperative preemption point (called from sp_safepoint with the lock held). If
    the monitor flagged the running green thread as over its timeslice, yield to
-   the worker root exactly as Thread.pass does for a spawned thread: stay RUNNING
-   so run_thread_once requeues us at the tail and the worker runs a sibling. The
-   main thread is never flagged (the monitor only times green threads it runs via
-   run_thread_once), so this only ever preempts a spawned thread. PRE/POST: lock
-   held. */
+   the fiber that ran it (sp_sched_home) exactly as Thread.pass does for a
+   spawned thread: stay RUNNING so run_thread_once requeues us at the tail and
+   the worker runs a sibling. The main thread is never flagged (the monitor
+   only times green threads it runs via run_thread_once), so this only ever
+   preempts a spawned thread. PRE/POST: lock held. */
 static void sp_safepoint_preempt(void) {
   sp_thread *self = g_current;
   if (!self || self == &g_main_thread || !self->preempt_request) return;
@@ -2182,7 +2195,7 @@ static void sp_safepoint_preempt(void) {
   g_npreempt--;
   sp_recompute_safepoint_flag();
   SCHED_UNLOCK();
-  sp_Fiber_transfer(sp_fiber_worker_root(), sp_box_nil());
+  sp_fiber_sched_switch(sp_sched_home());
   sp_fiber_fire_inject_if_pending();   /* a #kill/#raise delivered while we were off-cpu */
   SCHED_LOCK();
 }
@@ -2439,10 +2452,10 @@ void sp_Thread_pass(void) {
   else {
     /* Yield but stay runnable. Do NOT enqueue ourselves here: a second worker
        could pop and run our fiber while we are still mid-context-switch. We keep
-       our state RUNNING and transfer to our worker's root; run_thread_once
+       our state RUNNING and transfer to the fiber that ran us; run_thread_once
        requeues us once we are fully off-cpu. */
     SCHED_UNLOCK();
-    sp_Fiber_transfer(sp_fiber_worker_root(), sp_box_nil());
+    sp_fiber_sched_switch(sp_sched_home());
     sp_fiber_fire_inject_if_pending();   /* a #kill/#raise delivered while paused */
   }
 }
@@ -2814,7 +2827,7 @@ static int sp_sched_sleep_park(double seconds) {
     void *exc_snap = sp_exc_ctx_new();
     sp_exc_ctx_save(exc_snap);
     SCHED_UNLOCK();
-    sp_Fiber_transfer(sp_fiber_worker_root(), sp_box_nil());
+    sp_fiber_sched_switch(sp_sched_home());
     sp_exc_ctx_load(exc_snap);
     sp_exc_ctx_free(exc_snap);
     woken = self->woken;
@@ -2987,7 +3000,7 @@ static int sp_sched_wait_io_impl(int fd, short events, struct pollfd *set, int n
   void *exc_snap = sp_exc_ctx_new();
   sp_exc_ctx_save(exc_snap);
   SCHED_UNLOCK();
-  sp_Fiber_transfer(sp_fiber_worker_root(), sp_box_nil());
+  sp_fiber_sched_switch(sp_sched_home());
   sp_exc_ctx_load(exc_snap);
   sp_exc_ctx_free(exc_snap);
   int rev = self->io_revents; self->io_revents = 0; self->io_fd = -1;
@@ -3278,7 +3291,7 @@ static void sp_sched_block(sp_thread **waitlist, int defer_inject) {   /* PRE/PO
     sp_exc_ctx_save(exc_snap);
     if (defer_inject) sp_fiber_defer_inject();
     SCHED_UNLOCK();   /* drop the lock across the transfer (we run no metadata while parked) */
-    sp_Fiber_transfer(sp_fiber_worker_root(), sp_box_nil());
+    sp_fiber_sched_switch(sp_sched_home());
     sp_exc_ctx_load(exc_snap);
     sp_exc_ctx_free(exc_snap);
     /* resumed: a pending #kill/#raise fires here, in this thread's context (lock
@@ -3342,7 +3355,7 @@ static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mute
     sp_exc_ctx_save(exc_snap);
     if (mutex) sp_fiber_defer_inject();
     SCHED_UNLOCK();
-    sp_Fiber_transfer(sp_fiber_worker_root(), sp_box_nil());
+    sp_fiber_sched_switch(sp_sched_home());
     sp_exc_ctx_load(exc_snap);
     sp_exc_ctx_free(exc_snap);
     if (!mutex) sp_fiber_fire_inject_if_pending();
