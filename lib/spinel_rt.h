@@ -3422,25 +3422,51 @@ static sp_RbVal sp_poly_case_conv(sp_RbVal v, const char *(*fn)(const char *), c
 static const char *sp_case_opt_name(sp_RbVal v) {
   return v.tag == SP_TAG_SYM && sp_sym_name_fn ? sp_sym_name_fn((sp_sym)v.v.i) : NULL;
 }
-SP_COLD static void sp_case_opts_check(sp_int argc, const sp_RbVal *o, int down) {
+/* A valid option this check lets through maps with the full Unicode tables
+   (only a literal :ascii picks the ASCII mapping, and never reaches here):
+   that is the answer CRuby gives only on ASCII text, and for :turkic only
+   without an `i` or `I`. Anything else is refused, not mapped differently. */
+SP_COLD static void sp_case_opts_unmapped(sp_RbVal recv, int turkic, const char *opt) {
+  const char *s = NULL; size_t n = 0;
+  if (recv.tag == SP_TAG_STR) { s = recv.v.s; n = s ? sp_str_byte_len(s) : 0; }
+  else if (recv.tag == SP_TAG_SYM) { s = sp_sym_name_fn ? sp_sym_name_fn((sp_sym)recv.v.i) : NULL; n = s ? strlen(s) : 0; }
+  else if (sp_poly_is_strbuf(recv)) { sp_String *h = (sp_String *)recv.v.p; s = h->data; n = s ? (size_t)h->len : 0; }
+  for (size_t i = 0; i < n; i++) {
+    unsigned char ch = (unsigned char)s[i];
+    if (ch >= 0x80 || (turkic && (ch == 'i' || ch == 'I'))) {
+      char msg[160];
+      snprintf(msg, sizeof msg, "case mapping option :%s is supported only on ASCII text%s", opt,
+               turkic ? " without i or I" : "");
+      sp_raise_cls("NotImplementedError", msg);
+      return;
+    }
+  }
+}
+SP_COLD static void sp_case_opts_check(sp_int argc, const sp_RbVal *o, int down, sp_RbVal recv) {
   if (argc <= 0) return;
   if (argc > 2) { sp_raise_cls("ArgumentError", "too many options"); return; }
   const char *a = sp_case_opt_name(o[0]);
   if (a && strcmp(a, "ascii") == 0) {
-    if (argc == 2) sp_raise_cls("ArgumentError", "too many options");
+    if (argc == 2) { sp_raise_cls("ArgumentError", "too many options"); return; }
+    sp_case_opts_unmapped(recv, 0, a);
     return;
   }
   if (a && (strcmp(a, "turkic") == 0 || strcmp(a, "lithuanian") == 0)) {
     if (argc == 2) {
       const char *b = sp_case_opt_name(o[1]);
-      if (!b || strcmp(b, a[0] == 't' ? "lithuanian" : "turkic") != 0)
+      if (!b || strcmp(b, a[0] == 't' ? "lithuanian" : "turkic") != 0) {
         sp_raise_cls("ArgumentError", "invalid second option");
+        return;
+      }
     }
+    int tk = argc == 2 || a[0] == 't';
+    sp_case_opts_unmapped(recv, tk, tk ? "turkic" : a);
     return;
   }
   if (argc > 1) { sp_raise_cls("ArgumentError", "too many options"); return; }
   if (a && strcmp(a, "fold") == 0) {
-    if (!down) sp_raise_cls("ArgumentError", "option :fold only allowed for downcasing");
+    if (!down) { sp_raise_cls("ArgumentError", "option :fold only allowed for downcasing"); return; }
+    sp_case_opts_unmapped(recv, 0, a);
     return;
   }
   sp_raise_cls("ArgumentError", "invalid option");

@@ -20903,8 +20903,10 @@ static int emit_poly_arity_guard(Compiler *c, int id, Buf *b) {
    and :lithuanian alone or together, :fold for downcasing only. Any other
    option, or a combination, is ArgumentError; spinel mapped regardless, or
    raised FrozenError for a `!` on a frozen String. The call is emitted
-   behind sp_case_opts_check, unless its options are valid as written (a
-   Symbol literal combination), which keeps its C. A receiver that is not a
+   behind sp_case_opts_check, unless its option is a literal :ascii, which
+   keeps its C. Any other valid option maps as if absent, so the check also
+   refuses it (NotImplementedError) on text where that answer differs from
+   CRuby's (non-ASCII, or an i or I under :turkic). A receiver that is not a
    plain read is evaluated into a temp first, as CRuby evaluates it before
    the method checks its options. */
 static int case_opts_valid_lits(Compiler *c, const int *av, int argc, int down) {
@@ -20913,11 +20915,11 @@ static int case_opts_valid_lits(Compiler *c, const int *av, int argc, int down) 
   for (int i = 0; i < argc; i++) {
     if (nt_kind(c->nt, av[i]) != NK_SymbolNode || !(a[i] = nt_str(c->nt, av[i], "value"))) return 0;
   }
-  if (argc == 1)
-    return sp_streq(a[0], "ascii") || sp_streq(a[0], "turkic") || sp_streq(a[0], "lithuanian") ||
-           (down && sp_streq(a[0], "fold"));
-  return (sp_streq(a[0], "turkic") && sp_streq(a[1], "lithuanian")) ||
-         (sp_streq(a[0], "lithuanian") && sp_streq(a[1], "turkic"));
+  (void)down;
+  /* only :ascii picks its own mapping (case_map_suffix); :turkic,
+     :lithuanian and :fold map as if absent, which the runtime check
+     answers only where that is CRuby's answer too */
+  return argc == 1 && sp_streq(a[0], "ascii");
 }
 static int g_case_opts_node = -1;
 static int emit_case_opts_guard(Compiler *c, int id, Buf *b) {
@@ -20965,7 +20967,10 @@ static int emit_case_opts_guard(Compiler *c, int id, Buf *b) {
     if (i) buf_puts(b, ", ");
     emit_boxed(c, av[i], b);
   }
-  buf_printf(b, "}, %d)%s ", down, plain ? "," : ";");
+  buf_printf(b, "}, %d, ", down);
+  if (plain) emit_boxed(c, recv, b);
+  else { char tn[32]; snprintf(tn, sizeof tn, "_t%d", tv); emit_boxed_text(c, rt, tn, b); }
+  buf_printf(b, ")%s ", plain ? "," : ";");
   if (!plain) {
     g_argov_node[g_n_argov] = recv;
     snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tv);
