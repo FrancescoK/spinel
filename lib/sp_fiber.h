@@ -73,6 +73,9 @@ extern SP_TLS sp_Fiber *sp_fiber_current;
    the single-threaded build the root is a shared static and these are inert. */
 void      sp_fiber_worker_init(void);
 sp_Fiber *sp_fiber_worker_root(void);
+/* Switch from a green thread back to the fiber that ran it, without the
+   checks Fiber#transfer makes (that fiber may be one the main thread resumed). */
+void      sp_fiber_sched_switch(sp_Fiber *f);
 /* Publish the running worker's shadow-stack roots into its current green thread
    (for a stop-the-world collector to mark while the worker is parked). */
 void      sp_fiber_publish_current_roots(void);
