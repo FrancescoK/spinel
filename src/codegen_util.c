@@ -2194,9 +2194,10 @@ const char *ffi_cb_arg_ctype(const char *spec) {
    not "already truthy". Reading it as truthy is what dropped the assignment in
    `text ||= [...].join(" ")` (#3388). */
 /* The initial value of a local's slot: its type's zero, or the type's nil
-   sentinel when a `||=` writes the local (#3388). */
+   sentinel when a `||=` writes the local or a read can run before any write
+   (#3388). */
 const char *local_init_value(Compiler *c, LocalVar *lv) {
-  if (lv->or_written && !lv->is_param && !lv->is_block_param) {
+  if ((lv->or_written || lv->maybe_unset) && !lv->is_param && !lv->is_block_param) {
     const char *nv = nil_value(lv->type);
     if (nv) return nv;
   }
@@ -2247,7 +2248,7 @@ int local_nil_test(Compiler *c, LocalVar *lv, const char *ref, Buf *out) {
   /* sp_int 0 and 0.0 are real values, so the slot only distinguishes nil when
      it was declared with the sentinel -- which declare_local does exactly when
      a `||=` writes the local (or_written). */
-  int nil_init = lv->or_written && !lv->is_param && !lv->is_block_param;
+  int nil_init = (lv->or_written || lv->maybe_unset) && !lv->is_param && !lv->is_block_param;
   /* ...or when some write leaves the sentinel in it (`a = nil; a ||= 10`):
      the nil join keeps such a slot an sp_int, and its nil is the sentinel */
   if (lv->nullable_int) nil_init = 1;

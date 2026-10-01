@@ -169,6 +169,11 @@ typedef struct {
                      rather than the zero value, so a kind whose zero is a
                      real value (sp_int 0, 0.0) can still tell the two apart
                      (mirrors ConstantVar's const_def_write). */
+  int maybe_unset;  /* (Integer / Float) some read can run before any write:
+                       every write to it ahead of the read is conditional (a
+                       modifier `if`, one branch, a loop body), so the read
+                       answers nil, and the slot starts as its nil sentinel
+                       as an or-written one does */
   int str_shared;   /* (TY_STRBUF) a shared-mutable string: it is aliased
                        (`s2 = s1`) AND mutated in place, so the whole alias set
                        holds the one sp_String* handle -- reads hand out the live
