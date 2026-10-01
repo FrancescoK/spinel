@@ -2449,6 +2449,65 @@ static SP_INLINE sp_Complex sp_complex_real_chk(sp_Complex c) {
   if (c.im != 0.0) sp_raise_cls("TypeError", "not a real");
   return c;
 }
+/* Kernel#Complex(a, b) with a Complex argument, as CRuby's nucomp_convert.
+   A part is a value and an is-Float bit, and the arithmetic takes CRuby's
+   Integer shortcuts (f_add, f_sub, f_mul, safe_mul), so each part of the
+   answer keeps the class CRuby gives it: Complex(Complex(1, 0.0), 1) is
+   (1+1i), Complex(Complex(1, 0), 1.5) is (1+1.5i). */
+typedef struct { sp_float v; int f; } sp_cplx_part;
+static inline sp_cplx_part sp_cplx_part_new(sp_float v, int f) {
+  sp_cplx_part r; r.v = v; r.f = f; return r;
+}
+static inline int sp_cplx_part_izero(sp_cplx_part x) { return !x.f && x.v == 0; }
+static inline sp_cplx_part sp_cplx_part_add(sp_cplx_part x, sp_cplx_part y) {
+  if (sp_cplx_part_izero(x)) return y;
+  if (sp_cplx_part_izero(y)) return x;
+  return sp_cplx_part_new(x.v + y.v, x.f | y.f);
+}
+static inline sp_cplx_part sp_cplx_part_sub(sp_cplx_part x, sp_cplx_part y) {
+  if (sp_cplx_part_izero(y)) return x;
+  return sp_cplx_part_new(x.v - y.v, x.f | y.f);
+}
+static inline sp_cplx_part sp_cplx_part_mul(sp_cplx_part x, sp_cplx_part y) {
+  if (!x.f) {
+    if (sp_cplx_part_izero(y) || (x.v == 0 && !y.f)) return sp_cplx_part_new(0, 0);
+    if (x.v == 1) return y;
+  }
+  if (!y.f && y.v == 1) return x;
+  return sp_cplx_part_new(x.v * y.v, x.f | y.f);
+}
+/* safe_mul: a finite Float multiplied by a zero is taken as +-1.0 first */
+static inline sp_cplx_part sp_cplx_part_safe_mul(sp_cplx_part a, sp_cplx_part b) {
+  int az = a.v == 0, bz = b.v == 0;
+  if (!az && bz && a.f && !isnan(a.v)) a = sp_cplx_part_new(signbit(a.v) ? -1.0 : 1.0, 1);
+  if (!bz && az && b.f && !isnan(b.v)) b = sp_cplx_part_new(signbit(b.v) ? -1.0 : 1.0, 1);
+  return sp_cplx_part_mul(a, b);
+}
+static inline sp_Complex sp_complex_convert2(sp_Complex a, int a_cplx, sp_Complex b, int b_cplx) {
+  sp_cplx_part ar = sp_cplx_part_new(a.re, a.fl & SP_CPLX_RE_F), ai = sp_cplx_part_new(a.im, (a.fl & SP_CPLX_IM_F) != 0);
+  sp_cplx_part br = sp_cplx_part_new(b.re, b.fl & SP_CPLX_RE_F), bi = sp_cplx_part_new(b.im, (b.fl & SP_CPLX_IM_F) != 0);
+  sp_cplx_part rr, ri;
+  /* a Complex with an exact-zero imaginary part is its real part */
+  if (a_cplx && sp_cplx_part_izero(ai)) a_cplx = 0;
+  if (b_cplx && sp_cplx_part_izero(bi)) b_cplx = 0;
+  if (!a_cplx) ai = sp_cplx_part_new(0, 0);
+  if (!b_cplx) bi = sp_cplx_part_new(0, 0);
+  /* a Complex a with b an exact zero (a Complex b equal to 0 too) is a */
+  if (a_cplx && (b_cplx ? (b.re == 0 && b.im == 0) : sp_cplx_part_izero(br))) return a;
+  if ((a_cplx && ai.v != 0) || (b_cplx && bi.v != 0)) {
+    /* a + b*i, b*i being comp_mul(b.re, b.im, 0, 1) */
+    sp_cplx_part zero = sp_cplx_part_new(0, 0), one = sp_cplx_part_new(1, 0);
+    sp_cplx_part mr = sp_cplx_part_sub(sp_cplx_part_safe_mul(br, zero), sp_cplx_part_safe_mul(bi, one));
+    sp_cplx_part mi = sp_cplx_part_add(sp_cplx_part_safe_mul(br, one), sp_cplx_part_safe_mul(bi, zero));
+    rr = sp_cplx_part_add(ar, mr);
+    ri = sp_cplx_part_add(ai, mi);
+  }
+  else { rr = ar; ri = br; }   /* both real: Complex(a.real, b.real) */
+  sp_Complex r;
+  r.re = rr.v; r.im = ri.v;
+  r.fl = (unsigned char)((rr.f ? SP_CPLX_RE_F : 0) | (ri.f ? SP_CPLX_IM_F : 0));
+  return r;
+}
 /* Kernel#Rational on a boxed argument: a Rational passes through exactly, a
    Float converts to its exact value the way Rational(2.5) does, a String
    parses, and anything else reads as an integer. */

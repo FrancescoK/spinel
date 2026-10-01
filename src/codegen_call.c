@@ -3822,12 +3822,11 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
                   " (sp_Complex){0, 0, 0}; })");
       return 1;
     }
-    /* A Complex component combines: CRuby's Complex(a, b) is a + b*i, so
-       (a.re - b.im) + (a.im + b.re)i, and Complex(a) is a itself. b*i is
-       (b.re*0 - b.im*1) + (b.re*1 + b.im*0)i, so a Float part anywhere in b
-       makes both parts of the sum Float-classed, while a's parts keep their
-       own class. The (sp_float) casts below met the struct and the C did not
-       build. */
+    /* A Complex component combines: CRuby's Complex(a, b) is a + b*i when
+       either is not real, Complex(a.real, b.real) when both are, and
+       Complex(a) is a itself. Which part comes out a Float follows CRuby's
+       Integer shortcuts, so the runtime computes it (sp_complex_convert2).
+       The (sp_float) casts below met the struct and the C did not build. */
     { TyKind k0 = comp_ntype(c, argv[0]), k1 = argc >= 2 ? comp_ntype(c, argv[1]) : TY_INT;
       int real0 = k0 == TY_INT || k0 == TY_FLOAT || k0 == TY_RATIONAL || k0 == TY_COMPLEX;
       int real1 = k1 == TY_INT || k1 == TY_FLOAT || k1 == TY_RATIONAL || k1 == TY_COMPLEX;
@@ -3836,9 +3835,8 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         int ta = ++g_tmp, tb = ++g_tmp;
         buf_printf(b, "({ sp_Complex _t%d = ", ta); emit_complex_coerce(c, argv[0], b);
         buf_printf(b, "; sp_Complex _t%d = ", tb); emit_complex_coerce(c, argv[1], b);
-        buf_printf(b, "; (sp_Complex){_t%d.re - _t%d.im, _t%d.im + _t%d.re,"
-                      " (unsigned char)(_t%d.fl | ((_t%d.fl & 3) ? 3 : 0))}; })",
-                   ta, tb, ta, tb, ta, tb);
+        buf_printf(b, "; sp_complex_convert2(_t%d, %d, _t%d, %d); })",
+                   ta, k0 == TY_COMPLEX, tb, k1 == TY_COMPLEX);
         return 1;
       } }
     int re_rat = comp_ntype(c, argv[0]) == TY_RATIONAL;
