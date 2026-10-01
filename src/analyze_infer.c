@@ -5875,6 +5875,24 @@ static TyKind infer_call_inner(Compiler *c, int id) {
           c->poly_builtin_ty[id] = bt;
         if (bt != TY_UNKNOWN && bt != TY_VOID && bt != r) return TY_POLY;
       }
+      /* No user answer is settled yet -- a method answering through this
+         very call (`def to_ary = @body.to_ary`, where @body may be another
+         wrapper) never settles on its own, and the loop above skips it --
+         but the builtin surface has an answer: poly, as the container reads
+         below get, so the call has a type and the dispatch a default arm for
+         a genuine builtin. A user answer that settles later still fits. */
+      if (((found && r == TY_UNKNOWN) || (!found && npc > 0)) && !an_builtin_only && recv >= 0 &&
+          nt_ref(nt, id, "block") < 0 && (nat_found || an_user_defines_or_reads(c, name))) {
+        long uk = narrow_key(5, id, "");
+        int uhit; int ucached = narrow_memo_get(uk, &uhit);
+        TyKind ubt = uhit ? (TyKind)ucached : an_builtin_answer(c, id);
+        if (!uhit) narrow_memo_put(uk, (int)ubt);
+        if (ubt != TY_UNKNOWN && ubt != TY_VOID) {
+          if (c->poly_builtin_ty && id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN)
+            c->poly_builtin_ty[id] = ubt;
+          return TY_POLY;
+        }
+      }
       if (found) return r;
       /* Every user method of a container-read name is still unsettled -- one
          in a class nothing constructs never settles, its ivars untyped -- so
