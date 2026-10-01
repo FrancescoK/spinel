@@ -40963,9 +40963,19 @@ else {
          operand can carry the sentinel: a literal, an arithmetic result (its
          helper raised already) and a length never do, which keeps a loop's
          `i < n` as it was when `i` counts from a literal (#4567). */
+      /* A read the nil narrowing proves non-nil drops only its own half of
+         the test: the other operand keeps the half it had wherever the
+         variable can hold nil at all. That half is what told gcc the other
+         value is no nil either, which `best.nil? || x > best` needs to split
+         its loop after the first element; without it the loop retests
+         `best` on every pass (18% more instructions). */
+      int rawl9 = nullable_int_value_raw(c, recv), rawr9 = cat == rt && nullable_int_value_raw(c, argv[0]);
+      int narl9 = rawl9 && !cmp_operand_may_be_nil(c, recv);
+      int narr9 = rawr9 && !cmp_operand_may_be_nil(c, argv[0]);
       int guard9 = rt == rht9 && (rt == TY_INT || rt == TY_FLOAT) &&
-                   (cat == rt || cat == TY_POLY) &&
-                   (cmp_operand_may_be_nil(c, recv) || (cat == rt && cmp_operand_may_be_nil(c, argv[0])));
+                   (cat == rt || cat == TY_POLY) && (rawl9 || rawr9) &&
+                   !((narl9 || nt_kind(c->nt, recv) == NK_IntegerNode || nt_kind(c->nt, recv) == NK_FloatNode) &&
+                     (narr9 || nt_kind(c->nt, argv[0]) == NK_IntegerNode || nt_kind(c->nt, argv[0]) == NK_FloatNode));
       /* An Integer against a Float compares as C does, each side its own
          kind, so each is tested by its own sentinel: `nil > 1` on a Float
          slot, `nil < 2.0` on an Integer one, answered as numbers. */
@@ -41000,8 +41010,11 @@ else {
           emit_expr(c, argv[0], b); buf_puts(b, ")");
         }
         else emit_expr(c, argv[0], b);
-        buf_printf(b, "; %s(_t%d, _t%d_r, \"%s\"); _t%d %s _t%d_r; })",
-                   rt == TY_FLOAT ? "SP_FLOAT_NIL_CMP_CK" : "SP_INT_NIL_CMP_CK", tg, tg, name, tg, name, tg);
+        char l9[32], r9[32];
+        if (narl9) snprintf(l9, sizeof l9, "%s", rt == TY_FLOAT ? "0.0" : "0"); else snprintf(l9, sizeof l9, "_t%d", tg);
+        if (narr9) snprintf(r9, sizeof r9, "%s", rt == TY_FLOAT ? "0.0" : "0"); else snprintf(r9, sizeof r9, "_t%d_r", tg);
+        buf_printf(b, "; %s(%s, %s, \"%s\"); _t%d %s _t%d_r; })",
+                   rt == TY_FLOAT ? "SP_FLOAT_NIL_CMP_CK" : "SP_INT_NIL_CMP_CK", l9, r9, name, tg, name, tg);
         return;
       }
       buf_puts(b, "(");
