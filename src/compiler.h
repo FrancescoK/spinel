@@ -1018,12 +1018,16 @@ unsigned   comp_scope_index_gen(void);
 int        comp_cmethod_in_class(Compiler *c, int class_id, const char *name);
 /* Find the class (singleton) method scope, walking the superclass chain. */
 int        comp_cmethod_in_chain(Compiler *c, int class_id, const char *name, int *def_class);
-/* Like comp_method_in_class but walks the superclass chain. On success,
-   *def_class (if non-NULL) is set to the class that defines the method. */
-/* The IO family: File and the socket classes share the IO handle type. */
+/* The IO family: File, IO and the socket classes share the IO handle type.
+   io_family_class: class k is a top-level reopening of one of them. */
 int        io_family_name(const char *n);
+int        io_family_class(Compiler *c, int k);
 /* The reopened IO-family class whose method `name` a typed IO calls, or -1. */
 int        io_reopen_class(Compiler *c, const char *name);
+int        io_reopen_defs(Compiler *c, const char *name, int public_only, int *ks, int max);
+int        io_reopen_ret_mixed(Compiler *c, const char *name);
+/* Like comp_method_in_class but walks the superclass chain. On success,
+   *def_class (if non-NULL) is set to the class that defines the method. */
 int        comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_class);
 /* Record method `name`'s visibility on a class (overwrite-or-append). */
 void       comp_method_vis_set(ClassInfo *ci, const char *name, int kind);

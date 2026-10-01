@@ -49,3 +49,25 @@ p bs.respond_to?(:port_number), bc.respond_to?(:port_number), bc.respond_to?(:ta
 sock.close
 srv.close
 f.close
+
+# a private one answers only with include_all, and an explicit call raises
+p f.respond_to?(:secret, true), slots[0].respond_to?(:secret, true)
+begin; f.secret; rescue NoMethodError; p :private; end
+begin; slots[0].secret; rescue NoMethodError; p :private_boxed; end
+p slots[0].__send__(:secret)
+
+# a File method on a stream that is not a File
+begin; $stdout.first_line; rescue NoMethodError; p :not_a_file; end
+
+# reopenings answering different types
+class IO
+  def kind_val = 1
+  def shout = "io!"
+  alias yell shout
+end
+class File
+  def kind_val = "file"
+end
+g = File.open(__FILE__)
+p g.kind_val, $stdout.kind_val, $stdout.yell
+g.close

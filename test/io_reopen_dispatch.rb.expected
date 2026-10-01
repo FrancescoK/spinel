@@ -29,3 +29,12 @@ true
 false
 true
 false
+true
+true
+:private
+:private_boxed
+1
+:not_a_file
+"file"
+1
+"io!"

@@ -2694,8 +2694,17 @@ static const char *const io_family[] = {
   "UNIXSocket", "Socket", "BasicSocket", NULL };
 int io_family_name(const char *n) {
   if (!n) return 0;
-  for (int i = 0; io_family[i]; i++) if (sp_streq(n, io_family[i])) return 1;
+  if (sp_streq(n, "File") || sp_streq(n, "IO")) return 1;
+  /* a socket class is the builtin only once the program loads socket */
+  if (!sp_feature_required("socket")) return 0;
+  for (int i = 2; io_family[i]; i++) if (sp_streq(n, io_family[i])) return 1;
   return 0;
+}
+/* Class k is a reopening of one of them, not a class of that name nested
+   in a module of the program's own. */
+int io_family_class(Compiler *c, int k) {
+  return k >= 0 && k < c->nclasses && c->classes[k].enclosing_class < 0 &&
+         io_family_name(c->classes[k].name);
 }
 /* A typed IO's kind is only known at run time. Its reopened method is looked
    up as a File's first (File, then IO), then as a socket's. */
@@ -2703,8 +2712,29 @@ int io_reopen_class(Compiler *c, const char *name) {
   if (!name) return -1;
   for (int i = 0; io_family[i]; i++) {
     int k = comp_class_index(c, io_family[i]), def = -1;
-    if (k >= 0 && comp_method_in_chain(c, k, name, &def) >= 0 && def >= 0 &&
-        io_family_name(c->classes[def].name)) return def;
+    if (k >= 0 && comp_method_in_chain(c, k, name, &def) >= 0 && io_family_class(c, def)) return def;
   }
   return -1;
+}
+/* The IO-family reopenings that define `name` themselves (public ones only
+   when asked), in class order, into ks[]; their count. */
+int io_reopen_defs(Compiler *c, const char *name, int public_only, int *ks, int max) {
+  int n = 0;
+  for (int k = 0; k < c->nclasses && n < max; k++) {
+    int def = -1;
+    if (!io_family_class(c, k)) continue;
+    if (comp_method_in_chain(c, k, name, &def) < 0 || def != k) continue;
+    if (public_only && comp_method_vis_in_chain(c, k, name) != SP_VIS_PUBLIC) continue;
+    ks[n++] = k;
+  }
+  return n;
+}
+/* Do the reopenings defining `name` answer different types? A typed IO's
+   call is then boxed, each kind's answer boxed into it. */
+int io_reopen_ret_mixed(Compiler *c, const char *name) {
+  int ks[16], n = io_reopen_defs(c, name, 0, ks, 16);
+  for (int i = 1; i < n; i++)
+    if (c->scopes[comp_method_in_chain(c, ks[i], name, NULL)].ret !=
+        c->scopes[comp_method_in_chain(c, ks[0], name, NULL)].ret) return 1;
+  return 0;
 }
