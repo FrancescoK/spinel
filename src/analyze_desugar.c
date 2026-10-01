@@ -4007,9 +4007,8 @@ int desugar_index_op_write_user(Compiler *c) {
     NodeKind ak = nt_kind(nt, argv[0]);
     if (ak == NK_SplatNode || ak == NK_BlockArgumentNode || ak == NK_KeywordHashNode) continue;
     TyKind rt = infer_type(c, recv);
-    if (!ty_is_object(rt)) continue;
-    int ci = ty_object_class(rt);
-    if (comp_method_in_chain(c, ci, "[]", NULL) < 0 || comp_method_in_chain(c, ci, "[]=", NULL) < 0) continue;
+    int ci = ty_is_object(rt) ? ty_object_class(rt) : -1;
+    if (rt != TY_THREAD && (ci < 0 || comp_method_in_chain(c, ci, "[]", NULL) < 0 || comp_method_in_chain(c, ci, "[]=", NULL) < 0)) continue;
     const char *op = k == NK_IndexOperatorWriteNode ? nt_str(nt, id, "binary_operator") : NULL;
     if (k == NK_IndexOperatorWriteNode && !op) continue;
     char opname[64]; if (op) snprintf(opname, sizeof opname, "%s", op);
