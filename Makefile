@@ -1540,6 +1540,7 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/loop_array_header_cache.rb \
                   test/array_new_fill_sized.rb \
                   test/array_new_block_fresh_binding.rb \
+                  test/proc_body_block_fresh_binding.rb \
                   test/kw_splat_boxed_to_hash.rb \
                   test/byref_keyword_rest_splat_param.rb \
                   test/byref_gather_lead_block_super.rb \
