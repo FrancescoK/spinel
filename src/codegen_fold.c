@@ -851,6 +851,18 @@ int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
    smallest member where the block is truthy, or nil (the SP_INT_NIL sentinel)
    when none qualifies. Loop in the statement prelude; value is the result.
    Returns 1 if handled. */
+/* A range literal (or a sole-assignment local's) with a Float at either end:
+   CRuby bisects it as Floats, `(0..Float::INFINITY)` included, where the
+   sp_int sp_Range would have to hold the Infinity. */
+static int bsearch_float_range(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  if (range_float_begin(c, recv)) return 1;
+  int rn = unwrap_parens(c, recv);
+  if (rn >= 0 && (!nt_type(nt, rn) || !sp_streq(nt_type(nt, rn), "RangeNode"))) rn = local_sole_range_node(c, rn);
+  int hi = rn >= 0 ? nt_ref(nt, rn, "right") : -1;
+  return hi >= 0 && comp_ntype(c, hi) == TY_FLOAT;
+}
+
 int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   int block = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
@@ -863,10 +875,13 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1) return 0;
   /* Float-range bsearch: a range literal with a float bound cannot ride the
-     sp_int sp_Range, so bisect the float interval directly (CRuby find-minimum
-     over the reals, a fixed ~100-iteration halving to double precision). The
-     block is truthy at/after the answer, falsy before. */
-  if (recv >= 0 && ((comp_ntype(c, recv) == TY_RANGE && range_float_begin(c, recv)) ||
+     sp_int sp_Range, so bisect the float interval directly. As CRuby does, it
+     bisects the bounds' bit patterns ordered as integers (sp_dbl_as_i64), so
+     it ends within 64 probes and meets either bound exactly, an infinite one
+     included: halving the reals made Infinity - 0 a NaN-free Infinity forever
+     and -Infinity + Infinity a NaN. The block is truthy at/after the answer,
+     falsy before. */
+  if (recv >= 0 && ((comp_ntype(c, recv) == TY_RANGE && bsearch_float_range(c, recv)) ||
                     comp_ntype(c, recv) == TY_FLOAT_RANGE)) {
     int rn9 = unwrap_parens(c, recv);
     if (rn9 >= 0 && nt_type(nt, rn9) && !sp_streq(nt_type(nt, rn9), "RangeNode"))
@@ -878,16 +893,23 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
     TyKind brt9 = rright >= 0 ? infer_type(c, rright) : TY_NIL;
     if ((blt9 == TY_INT || blt9 == TY_FLOAT) && (brt9 == TY_INT || brt9 == TY_FLOAT)) {
       int flo = ++g_tmp, fhi = ++g_tmp, fres = ++g_tmp, fi = ++g_tmp, fmid = ++g_tmp;
+      int fexcl = (int)(nt_int(nt, rn9, "flags", 0) & 4) ? 1 : 0;
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "double _t%d = ", flo); emit_float_expr(c, rleft, g_pre); buf_puts(g_pre, ";\n");
+      buf_printf(g_pre, "int64_t _t%d = sp_dbl_as_i64(", flo); emit_float_expr(c, rleft, g_pre); buf_puts(g_pre, ") - 1;\n");
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "double _t%d = ", fhi); emit_float_expr(c, rright, g_pre); buf_puts(g_pre, ";\n");
+      buf_printf(g_pre, "int64_t _t%d = sp_dbl_as_i64(", fhi); emit_float_expr(c, rright, g_pre);
+      buf_printf(g_pre, ")%s;\n", fexcl ? "" : " + 1");
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_float _t%d = sp_float_nil(); int _t%d;\n", fres, fi);
+      buf_printf(g_pre, "sp_float _t%d = sp_float_nil();\n", fres);
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "for (_t%d = 0; _t%d < 100; _t%d++) {\n", fi, fi, fi);
+      buf_printf(g_pre, "while (_t%d + 1 < _t%d) {\n", flo, fhi);
+      /* the midpoint without overflow: same-signed halves subtract, opposite
+         ones add */
       emit_indent(g_pre, g_indent + 1);
-      buf_printf(g_pre, "double _t%d = _t%d + (_t%d - _t%d) / 2.0;\n", fmid, flo, fhi, flo);
+      buf_printf(g_pre, "int64_t _t%d = ((_t%d < 0) == (_t%d < 0)) ? _t%d + (_t%d - _t%d) / 2 : (_t%d + _t%d) / 2;\n",
+                 fi, fhi, flo, flo, fhi, flo, flo, fhi);
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "double _t%d = sp_i64_as_dbl(_t%d);\n", fmid, fi);
       if (p0) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = _t%d;\n", p0, fmid); }
       for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
       int save = g_indent; g_indent++;
@@ -903,9 +925,9 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
         emit_indent(g_pre, g_indent + 1);
         buf_printf(g_pre, "if (_t%d == 0.0) { _t%d = _t%d; break; }\n", fcmp, fres, fmid);
         emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "else if (_t%d > 0.0) { _t%d = _t%d; }\n", fcmp, flo, fmid);
+        buf_printf(g_pre, "else if (_t%d > 0.0) { _t%d = _t%d; }\n", fcmp, flo, fi);
         emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "else { _t%d = _t%d; }\n", fhi, fmid);
+        buf_printf(g_pre, "else { _t%d = _t%d; }\n", fhi, fi);
       }
       else if (bt == TY_POLY) {
         /* mixed block: an Integer/Float value is find-any, any other truthy
@@ -920,23 +942,23 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
         emit_indent(g_pre, g_indent + 2);
         buf_printf(g_pre, "if (_c == 0.0) { _t%d = _t%d; break; }\n", fres, fmid);
         emit_indent(g_pre, g_indent + 2);
-        buf_printf(g_pre, "else if (_c > 0.0) { _t%d = _t%d; }\n", flo, fmid);
+        buf_printf(g_pre, "else if (_c > 0.0) { _t%d = _t%d; }\n", flo, fi);
         emit_indent(g_pre, g_indent + 2);
-        buf_printf(g_pre, "else { _t%d = _t%d; }\n", fhi, fmid);
+        buf_printf(g_pre, "else { _t%d = _t%d; }\n", fhi, fi);
         emit_indent(g_pre, g_indent + 1);
         buf_puts(g_pre, "}\n");
         emit_indent(g_pre, g_indent + 1);
         buf_printf(g_pre, "else if (sp_poly_truthy(_t%d)) { _t%d = _t%d; _t%d = _t%d; }\n",
-                   fv, fres, fmid, fhi, fmid);
+                   fv, fres, fmid, fhi, fi);
         emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "else { _t%d = _t%d; }\n", flo, fmid);
+        buf_printf(g_pre, "else { _t%d = _t%d; }\n", flo, fi);
       }
       else {
         emit_indent(g_pre, g_indent + 1);
         buf_printf(g_pre, "if (%s) { _t%d = _t%d; _t%d = _t%d; }\n",
-                   cb.p ? cb.p : "0", fres, fmid, fhi, fmid);
+                   cb.p ? cb.p : "0", fres, fmid, fhi, fi);
         emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "else { _t%d = _t%d; }\n", flo, fmid);
+        buf_printf(g_pre, "else { _t%d = _t%d; }\n", flo, fi);
       }
       free(cb.p);
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");

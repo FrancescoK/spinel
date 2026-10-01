@@ -231,6 +231,11 @@ SP_NORETURN SP_COLD void sp_raise_nil_cmp(int left_nil, const char *op, const ch
    `nil + 1.0` computed a NaN that read back as nil instead of raising.
    Emitted only for an operand the #3505 marking says can be the sentinel. */
 SP_NORETURN SP_COLD void sp_raise_nil_float_op(int left_nil, const char *op);
+/* A Float's place in Range#bsearch's bisection: its bit pattern, ordered as
+   an integer, negative values mirrored (CRuby's double_as_int64), so the
+   halving ends within 64 probes and reaches either bound exactly. */
+static inline int64_t sp_dbl_as_i64(double d) { union { double d; int64_t i; } u; u.d = fabs(d); return d < 0 ? -u.i : u.i; }
+static inline double sp_i64_as_dbl(int64_t i) { union { double d; int64_t i; } u; if (i < 0) { u.i = -i; return -u.d; } u.i = i; return u.d; }
 #define SP_FLOAT_NIL_CK(a, b, op) \
   if (SP_UNLIKELY(sp_float_is_nil(a) || sp_float_is_nil(b))) sp_raise_nil_float_op(sp_float_is_nil(a), op)
 
