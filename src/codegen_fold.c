@@ -1048,6 +1048,32 @@ void emit_autosplat_params(Compiler *c, int block, int np, int elem_temp, int in
   }
 }
 
+/* The block of an emitter that yields one Array per step (product's tuple)
+   auto-splats it across a block taking only leading requireds (`|q, r|`,
+   `|q, |`), as CRuby's does. Binds those params from the boxed Array
+   `tuple_src` (a pure, rooted expression) into `out` and answers 1. Answers 0
+   for a block the caller binds whole (one plain parameter, a destructuring
+   one, or none). A rest, an optional or a post-required parameter would take
+   CRuby's full proc distribution, which these emitters do not do: refused. */
+int emit_tuple_block_params(Compiler *c, int id, int block, const char *tuple_src, Buf *out) {
+  if (block_opt_name(c, block, 0) || block_post_name(c, block, 0) ||
+      (block_rest_marker(c, block) && !block_lead_only(c, block)))
+    unsupported_feature(c, id, "a block with a rest, optional or post parameter on this Array iterator");
+  if (!block_lead_only(c, block)) return 0;
+  Scope *asc = comp_scope_of(c, block);
+  for (int pj = 0; block_param_name(c, block, pj); pj++) {
+    const char *pn = block_param_name(c, block, pj);
+    LocalVar *lvp = asc ? scope_local(asc, pn) : NULL;
+    /* an unused param has no C declaration; the element read is pure (#2734) */
+    if (!lvp || lvp->type == TY_UNKNOWN) continue;
+    char src[160]; snprintf(src, sizeof src, "sp_poly_massign_get(%s, %d)", tuple_src, pj);
+    buf_printf(out, " lv_%s = ", rename_local(pn));
+    Buf cv; memset(&cv, 0, sizeof cv); flatmap_coerce_from_poly(lvp->type, src, &cv);
+    buf_puts(out, cv.p ? cv.p : src); free(cv.p); buf_puts(out, ";");
+  }
+  return 1;
+}
+
 /* Shared entry for element-loop emitters: when a flat multi-param block runs
    over a poly array, its element (itself an array) auto-splats across the
    params; bind them from `elem_src` and return the param count. Returns 0 when

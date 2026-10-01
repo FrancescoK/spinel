@@ -2311,7 +2311,9 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
                  tprod, tprod, nn, tprod);
       buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {",
                  ti, ti, tprod, ti);
-      if (fp0) buf_printf(b, " lv_%s = sp_PolyArray_get(_t%d, _t%d);", rename_local(fp0), tprod, ti);
+      char tsrc[64]; snprintf(tsrc, sizeof tsrc, "sp_PolyArray_get(_t%d, _t%d)", tprod, ti);
+      if (emit_tuple_block_params(c, id, blk, tsrc, b)) { }
+      else if (fp0) buf_printf(b, " lv_%s = %s;", rename_local(fp0), tsrc);
       buf_puts(b, " {");
       for (int j2 = 0; j2 < bn; j2++) emit_stmt(c, bb[j2], b, 0);
       buf_puts(b, " } } ");
@@ -3809,7 +3811,9 @@ else {
         buf_printf(b, "); sp_PolyArray_push(_t%d, ", tpair);
         emit_boxed_text(c, ty_array_elem(at), e2, b);
         buf_puts(b, ");");
-        if (fp0) buf_printf(b, " lv_%s = sp_box_poly_array(_t%d);", rename_local(fp0), tpair);
+        char tsrc[48]; snprintf(tsrc, sizeof tsrc, "sp_box_poly_array(_t%d)", tpair);
+        if (emit_tuple_block_params(c, id, blk, tsrc, b)) { }
+        else if (fp0) buf_printf(b, " lv_%s = %s;", rename_local(fp0), tsrc);
         buf_puts(b, " {");
         for (int j2 = 0; j2 < bn; j2++) emit_stmt(c, bb[j2], b, 0);
         buf_printf(b, " } } } _t%d; })", ta);

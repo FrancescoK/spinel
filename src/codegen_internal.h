@@ -1141,6 +1141,7 @@ int emit_cycle_bounded_expr(Compiler *c, int id, Buf *b);
 int emit_predicate_expr(Compiler *c, int id, Buf *b);
 int emit_find_index_poly_expr(Compiler *c, int id, Buf *b);
 void emit_autosplat_params(Compiler *c, int block, int np, int elem_temp, int indent);
+int emit_tuple_block_params(Compiler *c, int id, int block, const char *tuple_src, Buf *out);
 int poly_block_call_needs_dispatch(Compiler *c, int id);
 void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b);
 void emit_own_class_alloc(Compiler *c, int id, int base, Buf *b);
