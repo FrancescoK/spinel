@@ -1110,6 +1110,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a product block with a rest parameter compiled)"; ok=0; \
 	else grep -q "a block with a rest, optional or post parameter" "$$tmp/pbr.out" || \
 	  { echo "reject-test: FAIL (a product block with a rest parameter rejected without saying why)"; sed -n 1,5p "$$tmp/pbr.out"; ok=0; }; fi; \
+	t=test/reject/builtin_value_ivar_set.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/bvi.c" >"$$tmp/bvi.out" 2>&1; then \
+	  echo "reject-test: FAIL (instance_variable_set on a String compiled)"; ok=0; \
+	else grep -q "instance_variable_set on a String, an Array or a Hash" "$$tmp/bvi.out" || \
+	  { echo "reject-test: FAIL (instance_variable_set on a String rejected without saying why)"; sed -n 1,5p "$$tmp/bvi.out"; ok=0; }; fi; \
 	t=test/reject/string_splat_changed_array.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sca.c" >"$$tmp/sca.out" 2>&1; then \
 	  echo "reject-test: FAIL (a global in a changed splatted Array compiled)"; ok=0; \
