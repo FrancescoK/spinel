@@ -26728,9 +26728,13 @@ static const char *const respond_universal[] = {
 static int obj_responds_answer(Compiler *c, int cid, const char *qm) {
   if (name_is_synth_method(c, qm)) return 0;
   if (sp_streq(qm, "initialize_copy")) return 1;
-  /* BasicObject#initialize is private too, unless the class made its own public */
-  if (sp_streq(qm, "initialize"))
-    return comp_method_in_chain(c, cid, qm, NULL) >= 0 && comp_method_vis_in_chain(c, cid, qm) == SP_VIS_PUBLIC ? 2 : 1;
+  /* BasicObject#initialize is private too, unless the class made it public:
+     a `public :initialize` counts whether or not the chain defines it */
+  if (sp_streq(qm, "initialize")) {
+    int at = -1, vis = comp_method_vis_declared(c, cid, qm, &at);
+    if (at >= 0) return vis == SP_VIS_PUBLIC ? 2 : 1;
+    return comp_method_in_chain(c, cid, qm, NULL) >= 0 && vis == SP_VIS_PUBLIC ? 2 : 1;
+  }
   for (int u = 0; respond_universal[u]; u++) if (sp_streq(qm, respond_universal[u])) return 2;
   size_t ql = strlen(qm);
   int is_wr = ql > 0 && qm[ql - 1] == '=';
