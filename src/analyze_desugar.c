@@ -5029,7 +5029,7 @@ int desugar_multi_value_jump(Compiler *c) {
   return changed;
 }
 
-static const char *scg_literal_name(const NodeTable *nt, int node);
+static const char *sym_or_str_literal(const NodeTable *nt, int node);
 
 /* `::Name` (a ConstantPathNode with no parent) is the top-level constant
    `Name`. The analyzer resolves a bare ConstantReadNode everywhere -- the
@@ -5142,7 +5142,7 @@ int desugar_root_scoped_constants(Compiler *c) {
     const char *cm = nt_kind(nt, id) == NK_CallNode ? nt_str(nt, id, "name") : NULL;
     int args = cm && sp_streq(cm, "const_get") ? nt_ref(nt, id, "arguments") : -1;
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    const char *cn = an == 1 ? scg_literal_name(nt, av[0]) : NULL;
+    const char *cn = an == 1 ? sym_or_str_literal(nt, av[0]) : NULL;
     if (!cn || !comp_is_wellknown_const(cn) || !engine_const(nt, nt_ref(nt, id, "receiver"), "Object")) continue;
     nt_node_set_type(nt, id, "ConstantReadNode");
     nt_node_set_str(nt, id, "name", cn);
@@ -9519,7 +9519,7 @@ int desugar_duplicate_underscore_params(Compiler *c) {
  * Encoding.find with a literal name of one of the encodings a string here can
  * carry is that constant. The setters take their value and change nothing. */
 /* the text of a literal String or Symbol argument, else NULL */
-static const char *enc_literal_name(const NodeTable *nt, int node) {
+static const char *sym_or_str_literal(const NodeTable *nt, int node) {
   if (node < 0) return NULL;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_StringNode) {
@@ -9580,7 +9580,7 @@ int desugar_encoding_queries(Compiler *c) {
     }
     else if (sp_streq(nm, "find") && ac == 1) {
       /* a literal name only: the constant it names */
-      const char *lit = enc_literal_name(nt, av[0]);
+      const char *lit = sym_or_str_literal(nt, av[0]);
       if (!lit) continue;
       const char *cn = NULL;
       if (!strcasecmp(lit, "utf-8") || !strcasecmp(lit, "utf8")) cn = "UTF_8";
@@ -9613,17 +9613,6 @@ int desugar_encoding_queries(Compiler *c) {
  *
  * (An alias of the class's own method keeps the mapping, which also captures
  * the definition in effect at the alias.) */
-/* the text of a literal Symbol or String argument, else NULL */
-static const char *alias_literal_name(const NodeTable *nt, int node) {
-  if (node < 0) return NULL;
-  NodeKind k = nt_kind(nt, node);
-  if (k == NK_SymbolNode) return nt_str(nt, node, "value");
-  if (k == NK_StringNode) {
-    const char *u = nt_str(nt, node, "unescaped");
-    return u ? u : nt_str(nt, node, "content");
-  }
-  return NULL;
-}
 
 /* `alias_method "k", "y"`: a String name is the Symbol of its text. Every
    pass that reads alias_method reads Symbol arguments, so the literal
@@ -9639,7 +9628,7 @@ int desugar_alias_method_string_names(Compiler *c) {
     int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
     for (int i = 0; i < ac && i < 2; i++) {
       if (nt_kind(nt, av[i]) != NK_StringNode) continue;
-      const char *s = alias_literal_name(nt, av[i]);
+      const char *s = sym_or_str_literal(nt, av[i]);
       if (!s) continue;
       char *name = strdup(s);
       nt_node_reset(nt, av[i], "SymbolNode");
@@ -9754,7 +9743,7 @@ static void alias_pair_names(const NodeTable *nt, int s, const char **nw, const 
            nt_str(nt, s, "name") && sp_streq(nt_str(nt, s, "name"), "alias_method")) {
     int an = nt_ref(nt, s, "arguments");
     int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
-    if (ac == 2) { *nw = alias_literal_name(nt, av[0]); *od = alias_literal_name(nt, av[1]); }
+    if (ac == 2) { *nw = sym_or_str_literal(nt, av[0]); *od = sym_or_str_literal(nt, av[1]); }
   }
 }
 
@@ -9825,7 +9814,7 @@ static int ra_body_declares_reader(const NodeTable *nt, const int *st, int upto,
     int an = nt_ref(nt, st[k], "arguments");
     int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
     for (int i = 0; i < ac; i++) {
-      const char *a = alias_literal_name(nt, av[i]);
+      const char *a = sym_or_str_literal(nt, av[i]);
       if (a && sp_streq(a, meth)) in_effect = 1;
     }
   }
@@ -10428,17 +10417,6 @@ int desugar_included_hooks(Compiler *c) {
  *
  * and the call becomes `__spinel_cg_Name` on self: class-method dispatch then
  * picks the nearest definition, as the ancestor lookup would. */
-/* the text of a literal Symbol or String argument, else NULL */
-static const char *scg_literal_name(const NodeTable *nt, int node) {
-  if (node < 0) return NULL;
-  NodeKind k = nt_kind(nt, node);
-  if (k == NK_SymbolNode) return nt_str(nt, node, "value");
-  if (k == NK_StringNode) {
-    const char *u = nt_str(nt, node, "unescaped");
-    return u ? u : nt_str(nt, node, "content");
-  }
-  return NULL;
-}
 
 static void scg_add_def_body(NodeTable *nt, int cls, const char *cname, int like, int raising);
 static void scg_add_def(NodeTable *nt, int cls, const char *cname, int like) {
@@ -10545,7 +10523,7 @@ int desugar_self_const_get(Compiler *c) {
     int args = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     if (an < 1 || an > 2) continue;
-    cname = scg_literal_name(nt, av[0]);
+    cname = sym_or_str_literal(nt, av[0]);
     }
     if (!cname || !cname[0] || cname[0] < 'A' || cname[0] > 'Z' || strstr(cname, "::")) continue;
     if (!parent) parent = an_parent_map(nt);
