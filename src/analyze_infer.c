@@ -6239,12 +6239,12 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       int brn = an_unparen(nt, recv);
       if (brn >= 0 && nt_type(nt, brn) && sp_streq(nt_type(nt, brn), "RangeNode")) {
         int bl = nt_ref(nt, brn, "left"), br = nt_ref(nt, brn, "right");
-        /* both bounds must be real NUMERIC nodes (the float-bisection branch
-           needs a finite interval; a beginless/endless bound is nil) and at
-           least one float -> a float member */
+        /* each bound a NUMERIC node, or missing (a beginless or endless
+           range bisects from -Infinity or to Infinity), and at least one
+           float -> a float member */
         TyKind blt = bl >= 0 ? infer_type(c, bl) : TY_NIL;
         TyKind brt = br >= 0 ? infer_type(c, br) : TY_NIL;
-        if ((blt == TY_INT || blt == TY_FLOAT) && (brt == TY_INT || brt == TY_FLOAT) &&
+        if ((blt == TY_INT || blt == TY_FLOAT || bl < 0) && (brt == TY_INT || brt == TY_FLOAT || br < 0) &&
             (blt == TY_FLOAT || brt == TY_FLOAT)) return TY_FLOAT;
       }
       return TY_INT;  /* a member, or nil (nullable int) */

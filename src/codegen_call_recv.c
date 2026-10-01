@@ -3114,7 +3114,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
              on every turn, and the block allocates between turns */
           emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n");
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_int _t%d = 0, _t%d = sp_%sArray_length(_t%d) - 1;\n", tlo, thi, k, trecv);
+          buf_printf(g_pre, "sp_int _t%d = 0, _t%d = sp_%sArray_length(_t%d);\n", tlo, thi, k, trecv);
           emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre);
           buf_printf(g_pre, " _t%d = %s;", tres,
                      et == TY_INT ? "SP_INT_NIL" :
@@ -3129,7 +3129,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           if (needs_root(et)) { buf_puts(g_pre, " "); emit_gc_root_tmp(c, et, tres, g_pre); }
           buf_puts(g_pre, "\n");
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "while (_t%d <= _t%d) {\n", tlo, thi);
+          buf_printf(g_pre, "while (_t%d < _t%d) {\n", tlo, thi);
           emit_indent(g_pre, g_indent + 1);
           buf_printf(g_pre, "sp_int _t%d = _t%d + (_t%d - _t%d) / 2;\n", tmid, tlo, thi, tlo);
           if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, tmid); }
@@ -3151,7 +3151,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
             buf_printf(g_pre, "else if (_t%d == 0) { _t%d = sp_%sArray_get(_t%d, _t%d); break; }\n",
                        tcmp, tres, k, trecv, tmid);
             emit_indent(g_pre, g_indent + 1);
-            buf_printf(g_pre, "else if (_t%d < 0) { _t%d = _t%d - 1; }\n", tcmp, thi, tmid);
+            buf_printf(g_pre, "else if (_t%d < 0) { _t%d = _t%d; }\n", tcmp, thi, tmid);
             emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
           }
           else if (comp_ntype(c, bb[bn - 1]) == TY_POLY) {
@@ -3168,16 +3168,16 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
             emit_indent(g_pre, g_indent + 2);
             buf_printf(g_pre, "else if (_t%d.v.i > 0) { _t%d = _t%d + 1; }\n", tv, tlo, tmid);
             emit_indent(g_pre, g_indent + 2);
-            buf_printf(g_pre, "else { _t%d = _t%d - 1; }\n", thi, tmid);
+            buf_printf(g_pre, "else { _t%d = _t%d; }\n", thi, tmid);
             emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
             emit_indent(g_pre, g_indent + 1);
-            buf_printf(g_pre, "else if (sp_poly_truthy(_t%d)) { _t%d = sp_%sArray_get(_t%d, _t%d); _t%d = _t%d - 1; }\n",
+            buf_printf(g_pre, "else if (sp_poly_truthy(_t%d)) { _t%d = sp_%sArray_get(_t%d, _t%d); _t%d = _t%d; }\n",
                        tv, tres, k, trecv, tmid, thi, tmid);
             emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
           }
           else {
             emit_indent(g_pre, g_indent + 1);
-            buf_printf(g_pre, "if (%s) { _t%d = sp_%sArray_get(_t%d, _t%d); _t%d = _t%d - 1; }\n",
+            buf_printf(g_pre, "if (%s) { _t%d = sp_%sArray_get(_t%d, _t%d); _t%d = _t%d; }\n",
                        cb.p ? cb.p : "0", tres, k, trecv, tmid, thi, tmid);
             emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
           }
@@ -3207,9 +3207,9 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
              is an index rather than an element, so it needs no root of its own. */
           emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n");
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_int _t%d = 0, _t%d = sp_%sArray_length(_t%d) - 1, _t%d = SP_INT_NIL;\n", tlo, thi, bk, trecv, tres);
+          buf_printf(g_pre, "sp_int _t%d = 0, _t%d = sp_%sArray_length(_t%d), _t%d = SP_INT_NIL;\n", tlo, thi, bk, trecv, tres);
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "while (_t%d <= _t%d) {\n", tlo, thi);
+          buf_printf(g_pre, "while (_t%d < _t%d) {\n", tlo, thi);
           emit_indent(g_pre, g_indent + 1);
           buf_printf(g_pre, "sp_int _t%d = _t%d + (_t%d - _t%d) / 2;\n", tmid, tlo, thi, tlo);
           if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, bk, trecv, tmid); }
@@ -3229,7 +3229,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
             emit_indent(g_pre, g_indent + 1);
             buf_printf(g_pre, "if (_t%d == 0) { _t%d = _t%d; break; }\n", tcmp, tres, tmid);
             emit_indent(g_pre, g_indent + 1);
-            buf_printf(g_pre, "else if (_t%d < 0) { _t%d = _t%d - 1; }\n", tcmp, thi, tmid);
+            buf_printf(g_pre, "else if (_t%d < 0) { _t%d = _t%d; }\n", tcmp, thi, tmid);
             emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
             free(ib.p);
             emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
@@ -3237,7 +3237,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           }
           emit_cond(c, bb[bn - 1], &cb); g_indent = sv;
           emit_indent(g_pre, g_indent + 1);
-          buf_printf(g_pre, "if (%s) { _t%d = _t%d; _t%d = _t%d - 1; }\n", cb.p ? cb.p : "0", tres, tmid, thi, tmid);
+          buf_printf(g_pre, "if (%s) { _t%d = _t%d; _t%d = _t%d; }\n", cb.p ? cb.p : "0", tres, tmid, thi, tmid);
           free(cb.p);
           emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
           emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");

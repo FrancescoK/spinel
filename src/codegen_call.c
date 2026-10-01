@@ -28278,10 +28278,11 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   {
     int rcv = nt_ref(nt, id, "receiver");
     const char *cn = nt_str(nt, id, "name");
-    /* Range#bsearch over a BOUNDED float range with a truthy (non-find-any)
+    /* Range#bsearch over a float range literal with a truthy (non-find-any)
        block is handled by emit_bsearch_expr's float-bisection branch, so it is
-       exempt from the float-iteration reject; a beginless/endless or find-any
-       (int-block) bsearch still reaches the reject like other iterations. */
+       exempt from the float-iteration reject -- an endless or beginless one
+       too, bisecting to Infinity or from -Infinity; a find-any (int-block)
+       bsearch still reaches the reject like other iterations. */
     int bsearch_float_ok = 0;
     if (rcv >= 0 && cn && sp_streq(cn, "step") == 0 && sp_streq(cn, "bsearch")) {
       int brn = unwrap_parens(c, rcv);
@@ -28292,7 +28293,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       int bblk = nt_ref(nt, id, "block");
       int bbd = bblk >= 0 ? nt_ref(nt, bblk, "body") : -1;
       int bbn = 0; const int *bbb = bbd >= 0 ? nt_arr(nt, bbd, "body", &bbn) : NULL;
-      if (bl >= 0 && br >= 0 && bbn >= 1 && comp_ntype(c, bbb[bbn - 1]) != TY_INT)
+      if ((bl >= 0 || br >= 0) && bbn >= 1 && comp_ntype(c, bbb[bbn - 1]) != TY_INT)
         bsearch_float_ok = 1;
       /* a distinct-typed float range bsearch (variable or literal) bisects too */
       if (rcv >= 0 && comp_ntype(c, rcv) == TY_FLOAT_RANGE) bsearch_float_ok = 1;

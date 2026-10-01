@@ -12524,8 +12524,9 @@ int infer_block_params(Compiler *c) {
       int fb = fl9 ? nt_ref(nt, frn, "left") : -1, fe = fl9 ? nt_ref(nt, frn, "right") : -1;
       TyKind fbt = fb >= 0 ? infer_type(c, fb) : TY_NIL;
       TyKind fet = fe >= 0 ? infer_type(c, fe) : TY_NIL;
+      /* a beginless or endless one too, from -Infinity or to Infinity */
       if (sp_streq(name, "bsearch") && fl9 &&
-          (fbt == TY_INT || fbt == TY_FLOAT) && (fet == TY_INT || fet == TY_FLOAT) &&
+          (fbt == TY_INT || fbt == TY_FLOAT || fb < 0) && (fet == TY_INT || fet == TY_FLOAT || fe < 0) &&
           (fbt == TY_FLOAT || fet == TY_FLOAT))
         pt = TY_FLOAT;
       /* a string-endpoint range ("a".."c") yields String elements (#3103) */
