@@ -1470,12 +1470,10 @@ void mark_proc_captures(Compiler *c) {
              the emitter had to reject the whole program. */
           int q_is_proc = qproc[q];
           int q_is_block = !q_is_proc;   /* listed: a proc or a block call */
-          /* One shared cell per loop, not one per iteration: only a proc the
-             call CONSUMES while the iteration runs may read it. A `proc {}` /
-             lambda / Fiber / Thread body outlives its iteration -- Ruby gives
-             each of those its own binding -- so those keep the by-value
-             capture they had. */
-          if (!q_is_proc && q_is_block && (fib_create || is_proc_create(c, id))) continue;
+          /* The cell is fresh for every iteration (#4462), the binding Ruby
+             gives each, so a `proc {}` / lambda / Fiber / Thread body that
+             outlives its iteration shares it too: kept by value, its writes
+             to the parameter were lost. */
           if (!q_is_proc && !q_is_block) continue;
           int qpn = a_proc_params_node(c, q);
           int qrn = 0; const int *qreqs = qpn >= 0 ? nt_arr(nt, qpn, "requireds", &qrn) : NULL;
