@@ -1,0 +1,9 @@
+:fin
+:xdone
+:slept
+:x2done
+:fin2
+[:a_got, :ydone]
+:adone
+[2, :fin, :only]
+:done

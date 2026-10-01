@@ -2067,6 +2067,7 @@ static void sp_sched_signal_if_quiescent(void) {
    home and clears it after. */
 static SP_TLS sp_Fiber *g_sched_home = NULL;
 static sp_Fiber *sp_sched_home(void) { return g_sched_home ? g_sched_home : sp_fiber_worker_root(); }
+sp_Fiber *sp_sched_home_fiber(void) { return sp_sched_home(); }
 
 static void run_thread_once(sp_thread *t) { sp_gc_wb((void*)t);   /* PRE/POST: sched lock held */
   if (sched_lat_enabled() && t->readied_at > 0) {

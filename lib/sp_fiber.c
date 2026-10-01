@@ -716,7 +716,7 @@ else{const char*_cc=sp_exc_cur_cls();
 else{f->raised=1;f->raised_cls=_cc;f->raised_msg=sp_exc_cur_msg();f->raised_obj=sp_exc_cur_obj();}}f->state=3;f->saved_nroots=0;/* dead: the snapshot points into unwound frames; never mark it */if(f->transferred){
   /* back to the fiber it returns to, whose transfer answers the block's result */
   sp_Fiber*home=f->return_to&&f->return_to->state!=3?f->return_to:sp_thread_main_fiber();
-  if(!home||home==f)home=&sp_fiber_root;
+  if(!home||home==f)home=sp_sched_home_fiber();
   home->resumed_value=f->yielded_value;sp_fiber_current=home;
   SP_TSAN_SWITCH(home);sp_ctx_swap(&f->ctx,&home->ctx);}
 else{SP_TSAN_SWITCH(f->caller_fiber);sp_ctx_swap(&f->ctx,&f->caller_ctx);}}
@@ -847,7 +847,11 @@ sp_RbVal sp_Fiber_transfer_n(sp_Fiber*f,sp_RbVal val,int argc){SP_GC_ROOT(f);f->
 /* Thread scheduler transfer: on f's unhandled termination exception, hand the
    (cls,msg,obj) back through *out_* and set *out_raised, rather than re-raising
    in the caller (the scheduler stores it on the green thread for #join/#value).
-   A non-terminating transfer (f yielded back) leaves *out_raised 0. */
-sp_RbVal sp_Fiber_transfer_catch(sp_Fiber*f,sp_RbVal val,int*out_raised,const char**out_cls,const char**out_msg,void**out_obj){SP_GC_ROOT_RBVAL(val);SP_GC_ROOT(f);sp_RbVal r=sp_Fiber_transfer_core(f,val);*out_raised=f->raised;if(f->raised){f->raised=0;*out_cls=f->raised_cls;*out_msg=f->raised_msg;*out_obj=f->raised_obj;f->raised_obj=NULL;}return r;}
+   A non-terminating transfer (f yielded back) leaves *out_raised 0.
+   The thread's fiber returns to no fiber: the fibers it transfers to end in
+   it, and its own body ends where its yields go, in the fiber that ran it
+   (sp_sched_home_fiber). The main thread may run it from inside a Fiber,
+   whose chain is not the thread's. */
+sp_RbVal sp_Fiber_transfer_catch(sp_Fiber*f,sp_RbVal val,int*out_raised,const char**out_cls,const char**out_msg,void**out_obj){SP_GC_ROOT_RBVAL(val);SP_GC_ROOT(f);sp_fiber_check_thread(f);sp_fiber_check_transfer(f);sp_Fiber*prev=sp_fiber_current;f->return_to=NULL;SP_TSAN_SET_CALLER(f,prev);sp_RbVal r=sp_fiber_switch(f,prev,val);*out_raised=f->raised;if(f->raised){f->raised=0;*out_cls=f->raised_cls;*out_msg=f->raised_msg;*out_obj=f->raised_obj;f->raised_obj=NULL;}return r;}
 
 void sp_mark_fiber_root_storage(void){if(sp_fiber_root.storage)sp_gc_mark(sp_fiber_root.storage);if(sp_fiber_root.attrs)sp_gc_mark(sp_fiber_root.attrs);}
