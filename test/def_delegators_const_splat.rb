@@ -28,3 +28,16 @@ end
 s = Stream.new(IOish.new, [1, 2])
 p s.read, s.write("abc"), s.closed?, (s << "x").class
 p s.size, s.empty?, s.first, s.last, s.include?(2)
+
+# the constant of the class body the call is in, not a nested class's
+class Outer
+  extend Forwardable
+  NAMES = [:size]
+  class Inner
+    NAMES = [:empty?]
+  end
+  def_delegators :@a, *NAMES
+  def initialize(a) = @a = a
+end
+o = Outer.new([1, 2, 3])
+p o.size, o.respond_to?(:empty?)

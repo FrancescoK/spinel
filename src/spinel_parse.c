@@ -3906,20 +3906,60 @@ static int sp_is_method_name_char(char c) {
          c == '%' || c == '[' || c == ']';
 }
 
-/* The names of a constant whose last definition before `before` is a
-   literal Symbol Array -- `NAME = [:a, :b]` or `NAME = %i[a b]`, frozen or
-   not, over as many lines as it takes. 0 when there is none, or it holds
-   anything else. */
-static int sp_const_symbol_list(const char *src, size_t before, const char *name,
+/* The names of the constant NAME that the `def_delegators ... *NAME` at
+   `before` splats, read from the source text: its definition must be a line
+   of its own at the call's indentation -- the same class body, no line in
+   between indented less, no heredoc in between -- holding a literal Symbol
+   Array (`[:a, :b]` over any lines, or `%i[a b]`), with nothing after it but
+   `.freeze` and a comment, and nothing in the file may change it (`<<`,
+   `+=`, `.concat`, ...). 0 for anything else, which the caller refuses. */
+static int sp_ident_char(char ch) {
+  return isalnum((unsigned char)ch) || ch == '_';
+}
+static size_t sp_line_start(const char *src, size_t p) {
+  while (p > 0 && src[p - 1] != '\n') p--;
+  return p;
+}
+static size_t sp_indent(const char *src, size_t ls) {
+  size_t q = ls;
+  while (src[q] == ' ' || src[q] == '\t') q++;
+  return q - ls;
+}
+static int sp_const_symbol_list(const char *src, size_t len, size_t before, const char *name,
                                 char (**out)[160], int *nout) {
-  size_t nl = strlen(name), at = (size_t)-1;
-  for (size_t p = 0; p + nl < before; p++) {
+  size_t nl = strlen(name);
+  size_t call_ls = sp_line_start(src, before), call_ind = sp_indent(src, call_ls);
+  /* nothing in the file may change the constant */
+  static const char *const muts[] = {
+    "<<", "+=", "-=", "|=", "&=", "*=", ".concat", ".push", ".append", ".prepend", ".unshift",
+    ".insert", ".replace", ".delete", ".clear", ".pop", ".shift", ".map!", ".select!",
+    ".reject!", ".filter!", ".uniq!", ".compact!", ".flatten!", ".sort!", ".reverse!",
+    ".fill", ".keep_if", ".delete_if", ".slice!", ".rotate!", ".shuffle!", "[", NULL };
+  for (size_t p = 0; p + nl <= len; p++) {
     if (strncmp(src + p, name, nl) != 0) continue;
-    if (p > 0 && (sp_is_method_name_char(src[p - 1]) || src[p - 1] == ':')) continue;
+    if ((p > 0 && (sp_ident_char(src[p - 1]) || src[p - 1] == ':')) || sp_ident_char(src[p + nl])) continue;
     size_t q = p + nl;
-    if (sp_is_method_name_char(src[q])) continue;
-    while (q < before && (src[q] == ' ' || src[q] == '\t')) q++;
-    if (q < before && src[q] == '=' && src[q + 1] != '=' && src[q + 1] != '>') at = q + 1;
+    while (q < len && (src[q] == ' ' || src[q] == '\t')) q++;
+    for (int m = 0; muts[m]; m++)
+      if (strncmp(src + q, muts[m], strlen(muts[m])) == 0) return 0;
+  }
+  /* the last definition line at the call's indentation, walking back */
+  size_t at = (size_t)-1;
+  size_t ls = call_ls;
+  while (ls > 0) {
+    ls = sp_line_start(src, ls - 1);
+    size_t ind = sp_indent(src, ls), t = ls + ind;
+    if (src[t] == '\n' || src[t] == '#' || src[t] == '\r') continue;   /* blank or comment */
+    if (ind < call_ind) return 0;                                     /* left the class body */
+    for (size_t h = t; src[h] != '\n'; h++)                           /* a heredoc opens here */
+      if (src[h] == '<' && src[h + 1] == '<' && (src[h + 2] == '~' || src[h + 2] == '-' ||
+          isupper((unsigned char)src[h + 2]))) return 0;
+    if (ind != call_ind || strncmp(src + t, name, nl) != 0 || sp_ident_char(src[t + nl])) continue;
+    size_t q = t + nl;
+    while (src[q] == ' ' || src[q] == '\t') q++;
+    if (src[q] != '=' || src[q + 1] == '=' || src[q + 1] == '~' || src[q + 1] == '>') continue;
+    at = q + 1;
+    break;
   }
   if (at == (size_t)-1) return 0;
   size_t q = at;
@@ -3938,13 +3978,16 @@ static int sp_const_symbol_list(const char *src, size_t before, const char *name
     while (q < before && (src[q] == ' ' || src[q] == '\t' || src[q] == '\n' || src[q] == '\r' ||
                           (!pct && src[q] == ','))) q++;
     if (q >= before) { free(names); return 0; }
-    if (src[q] == close) break;
+    if (src[q] == close) { q++; break; }
     if (!pct) { if (src[q] != ':') { free(names); return 0; } q++; }
+    /* a name, with a trailing ? ! or = (closed?, write!, v=), or an
+       operator spelled with < > = (:<<, :<=>, :==) */
     size_t s0 = q;
-    /* a name (closed?, write!) or an operator spelled with < > = (:<<,
-       :<=>, :==); not sp_is_method_name_char, which takes the list's own ] */
-    while (q < before && (isalnum((unsigned char)src[q]) || src[q] == '_' || src[q] == '?' ||
-                          src[q] == '!' || src[q] == '<' || src[q] == '>' || src[q] == '=')) q++;
+    if (sp_ident_char(src[q])) {
+      while (q < before && sp_ident_char(src[q])) q++;
+      if (src[q] == '?' || src[q] == '!' || (src[q] == '=' && src[q + 1] != '>')) q++;
+    }
+    else while (q < before && (src[q] == '<' || src[q] == '>' || src[q] == '=')) q++;
     if (q == s0 || q - s0 >= 160) { free(names); return 0; }
     if (n == cap) {
       cap *= 2;
@@ -3956,6 +3999,10 @@ static int sp_const_symbol_list(const char *src, size_t before, const char *name
     names[n][q - s0] = 0;
     n++;
   }
+  /* only `.freeze` and a comment may follow */
+  if (strncmp(src + q, ".freeze", 7) == 0) q += 7;
+  while (src[q] == ' ' || src[q] == '\t' || src[q] == '\r') q++;
+  if (src[q] != '\n' && src[q] != '#' && src[q] != 0) { free(names); return 0; }
   if (n == 0) { free(names); return 0; }
   *out = names; *nout = n;
   return 1;
@@ -4351,7 +4398,7 @@ static char *rewrite_syntax_sugar(char *source) {
             if (c1 - c0 >= sizeof cname) { bad3 = 1; break; }
             memcpy(cname, source + c0, c1 - c0); cname[c1 - c0] = 0;
             char (*csyms)[160] = NULL; int ncs = 0;
-            if (!sp_const_symbol_list(source, i, cname, &csyms, &ncs)) { bad3 = 1; break; }
+            if (!sp_const_symbol_list(source, len, i, cname, &csyms, &ncs)) { bad3 = 1; break; }
             for (int q = 0; q < ncs; q++) {
               if ((size_t)nsym == symcap) {
                 symcap *= 2;
