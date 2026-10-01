@@ -826,11 +826,14 @@ static inline sp_gc_hdr *sp_pool_try_pop(sp_gc_hdr **head) {
   _p; \
 }))
 
-/* `Object.new` -- a sentinel object whose only meaningful property is
-   identity. Each call returns a fresh GC-managed allocation, so two
+/* `Object.new` -- a sentinel object whose meaningful properties are
+   identity and the instance variables instance_variable_set gives it,
+   kept in a Symbol-keyed table made on the first one (no class lays them
+   out). Each call returns a fresh GC-managed allocation, so two
    `Object.new` results compare as `!=` via their pointer addresses. */
-typedef struct sp_Object_s { uint8_t _pad; } sp_Object;
-static sp_Object *sp_Object_new(void){return(sp_Object*)sp_gc_alloc(sizeof(sp_Object),NULL,NULL);}
+typedef struct sp_Object_s { struct sp_SymPolyHash *ivars; } sp_Object;
+static void sp_Object_scan(void *p){ sp_Object *o=(sp_Object*)p; if(o->ivars) sp_gc_mark(o->ivars); }
+static sp_Object *sp_Object_new(void){return(sp_Object*)sp_gc_alloc(sizeof(sp_Object),NULL,sp_Object_scan);}
 
 /* Integer#[start, len]: the len-bit field starting at bit `start`, i.e.
    (n >> start) & ((1 << len) - 1) with Ruby's shift semantics (a negative
@@ -7863,6 +7866,28 @@ static void sp_kwargs_check(sp_SymPolyHash *h, const char *const *allowed) {
    key from the insertion-order list. Issue #510. */
 static void sp_SymPolyHash_delete(sp_SymPolyHash*h,sp_sym k){ sp_gc_wb((void*)h);sp_int idx=(sp_int)(((sp_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k){h->keys[idx]=-1;h->vals[idx]=sp_box_nil();h->len--;sp_int j=(idx+1)&h->mask;while(h->keys[j]>=0){sp_int nj=(sp_int)(((sp_int)h->keys[j])&h->mask);if((j>idx&&(nj<=idx||nj>j))||(j<idx&&nj<=idx&&nj>j)){h->keys[idx]=h->keys[j];h->vals[idx]=h->vals[j];h->keys[j]=-1;h->vals[j]=sp_box_nil();idx=j;}j=(j+1)&h->mask;}{sp_int oi=0;while(oi<=h->len){if(h->order[oi]==k){while(oi<h->len){h->order[oi]=h->order[oi+1];oi++;}break;}oi++;}}return;}idx=(idx+1)&h->mask;}}
 static sp_SymPolyHash*sp_SymPolyHash_dup(sp_SymPolyHash*h){sp_SymPolyHash*r=sp_SymPolyHash_new();r->default_v=h->default_v;r->dproc=h->dproc;r->dproc_self=h->dproc_self;for(sp_int i=0;i<h->len;i++)sp_SymPolyHash_set(r,h->order[i],sp_SymPolyHash_get(h,h->order[i]));return r;}
+/* An Object.new instance's instance variables (sp_Object): get answers nil
+   for one never set, set raises FrozenError on a frozen object, as CRuby. */
+static sp_RbVal sp_Object_ivar_get(sp_Object *o, sp_sym k){
+  if(!o||!o->ivars||!sp_SymPolyHash_has_key(o->ivars,k)) return sp_box_nil();
+  return sp_SymPolyHash_get(o->ivars,k);
+}
+static sp_RbVal sp_Object_ivar_set(sp_Object *o, sp_sym k, sp_RbVal v){
+  if(!o) return v;
+  if(sp_gc_is_frozen(o)){ SP_GC_ROOT(o); sp_raise_frozen_obj(sp_box_obj(o,SP_BUILTIN_OBJECT),(&("\xff" "can't modify frozen Object")[1])); }
+  SP_GC_ROOT(o); SP_GC_ROOT_RBVAL(v);
+  if(!o->ivars){ sp_SymPolyHash *t=sp_SymPolyHash_new(); sp_gc_wb((void*)o); o->ivars=t; }
+  sp_SymPolyHash_set(o->ivars,k,v);
+  return v;
+}
+static sp_bool sp_Object_ivar_defined(sp_Object *o, sp_sym k){
+  return o&&o->ivars&&sp_SymPolyHash_has_key(o->ivars,k);
+}
+static sp_PolyArray *sp_Object_ivars(sp_Object *o){
+  sp_PolyArray *a=sp_PolyArray_new(); SP_GC_ROOT(a);
+  for(sp_int i=0;o&&o->ivars&&i<o->ivars->len;i++) sp_PolyArray_push(a,sp_box_sym(o->ivars->order[i]));
+  return a;
+}
 static sp_SymPolyHash*sp_SymPolyHash_replace(sp_SymPolyHash*h,sp_SymPolyHash*o){if(!h)return h;for(sp_int i=0;i<h->cap;i++)h->keys[i]=-1;h->len=0;if(o)for(sp_int i=0;i<o->len;i++)sp_SymPolyHash_set(h,o->order[i],sp_SymPolyHash_get(o,o->order[i]));return h;}
 static void sp_SymPolyHash_clear(sp_SymPolyHash*h){if(!h)return;for(sp_int i=0;i<h->cap;i++)h->keys[i]=-1;h->len=0;}
 static sp_bool sp_SymPolyHash_eq(sp_SymPolyHash*a,sp_SymPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(sp_int i=0;i<a->len;i++){sp_sym k=a->order[i];if(!sp_SymPolyHash_has_key(b,k))return FALSE;if(!sp_poly_eq(sp_SymPolyHash_get(a,k),sp_SymPolyHash_get(b,k)))return FALSE;}return TRUE;}
@@ -9719,6 +9744,12 @@ static sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen) {
     SP_GC_ROOT(src);
     void *n = sp_gc_alloc(payload, h->finalize, h->scan);
     memcpy(n, src, payload);
+    /* a bare Object's ivars are its own table: the copy takes a copy */
+    if (v.cls_id == SP_BUILTIN_OBJECT && ((sp_Object *)n)->ivars) {
+      SP_GC_ROOT(n);
+      sp_SymPolyHash *t = sp_SymPolyHash_dup(((sp_Object *)n)->ivars);
+      ((sp_Object *)n)->ivars = t;
+    }
     if (sp_user_init_copy_hook) { SP_GC_ROOT(n); sp_RbVal r = v; r.v.p = n; sp_user_init_copy_hook(r, v); }
     if (keep_frozen && h->frozen)
       ((sp_gc_hdr *)((char *)n - sizeof(sp_gc_hdr)))->frozen = 1;
