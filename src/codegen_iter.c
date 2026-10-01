@@ -2555,11 +2555,18 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       g_redo_depth < (int)(sizeof g_redo_stack / sizeof g_redo_stack[0])) {
     rd_lbl = ++g_tmp;
     g_redo_stack[g_redo_depth++] = rd_lbl;
-    if (as_expr) buf_printf(b, "_redo_%d: ; ", rd_lbl);
-    else { emit_indent(b, indent); buf_printf(b, "_redo_%d: ;\n", rd_lbl); }
   }
+  /* ...and after the body's setup, its locals' reset and the parameter
+     rebindings (block_param_rebind_len), which a redo does not re-run. The
+     arms below that emit the statements one by one place it after the
+     rebindings; emit_stmts places it for the last arm. */
+  int rd_head = rd_lbl ? block_param_rebind_len(nt, bbody) : 0;
   if (nx_own && as_expr && g_ie_next_var && !nx_tail_stmt && bn3 > 0) {
-    for (int k3 = 0; k3 < bn3 - 1; k3++) emit_stmt(c, bd3[k3], b, 0);
+    for (int k3 = 0; k3 < bn3 - 1; k3++) {
+      if (rd_lbl && k3 == rd_head) buf_printf(b, "_redo_%d: ; ", rd_lbl);
+      emit_stmt(c, bd3[k3], b, 0);
+    }
+    if (rd_lbl && rd_head >= bn3 - 1) buf_printf(b, "_redo_%d: ; ", rd_lbl);
     /* the tail's prelude stays inside the splice, after the parameter
        bindings: hoisted to the enclosing statement, an array literal tail
        (`{ |x| next [] if x == 2; [x] }`) was built from the parameter's
@@ -2606,7 +2613,11 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     if (c->blk_body_map && bbody >= 0 && bbody < c->nt->count &&
         c->blk_body_map[bbody] >= 0)
       emit_block_locals_reset(c, c->blk_body_map[bbody], b, 0);
-    for (int k3 = 0; k3 < bn3 - 1; k3++) emit_stmt(c, bd3[k3], b, 0);
+    for (int k3 = 0; k3 < bn3 - 1; k3++) {
+      if (rd_lbl && k3 == rd_head) buf_printf(b, "_redo_%d: ; ", rd_lbl);
+      emit_stmt(c, bd3[k3], b, 0);
+    }
+    if (rd_lbl && rd_head >= bn3 - 1) buf_printf(b, "_redo_%d: ; ", rd_lbl);
     /* the tail's own prelude stays INSIDE the splice, after the parameter
        bindings above it: hoisted to the enclosing statement, a forwarded
        proc's yield read the block parameter before it was bound */
@@ -2646,7 +2657,11 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     if (c->blk_body_map && bbody >= 0 && bbody < c->nt->count &&
         c->blk_body_map[bbody] >= 0)
       emit_block_locals_reset(c, c->blk_body_map[bbody], b, 0);
-    for (int k3 = 0; k3 < bn3 - 1; k3++) emit_stmt(c, bd3[k3], b, 0);
+    for (int k3 = 0; k3 < bn3 - 1; k3++) {
+      if (rd_lbl && k3 == rd_head) buf_printf(b, "_redo_%d: ; ", rd_lbl);
+      emit_stmt(c, bd3[k3], b, 0);
+    }
+    if (rd_lbl && rd_head >= bn3 - 1) buf_printf(b, "_redo_%d: ; ", rd_lbl);
     /* the tail's prelude stays inside the splice here too: a forwarded
        proc's `f.call(__fwd)` read its parameter's slot ahead of the binding
        when the read was hoisted to the enclosing statement */
@@ -2659,6 +2674,9 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     buf_puts(b, "; ");
   }
   else {
+    if (rd_lbl && block_of_body(c, bbody) >= 0) g_redo_pending = rd_lbl;
+    else if (rd_lbl && as_expr) buf_printf(b, "_redo_%d: ; ", rd_lbl);
+    else if (rd_lbl) { emit_indent(b, indent); buf_printf(b, "_redo_%d: ;\n", rd_lbl); }
     emit_stmts(c, bbody, b, as_expr ? 0 : (nx_own ? indent + 1 : indent));
     /* The block's value is its last statement, and this splice is read as the
        value of a statement expression. A receiver-returning iterator there
@@ -3304,7 +3322,9 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
       g_redo_stack[g_redo_depth++] = lbl;
     else has_redo = 0;
   }
-  if (has_redo) { emit_indent(b, indent); buf_printf(b, "_redo_%d: ;\n", lbl); }
+  /* a block body's label goes after its setup, where emit_stmts puts it */
+  if (has_redo && block_of_body(c, body) >= 0) g_redo_pending = lbl;
+  else if (has_redo) { emit_indent(b, indent); buf_printf(b, "_redo_%d: ;\n", lbl); }
   /* Safepoint poll at the loop back-edge: a threaded program's worker checks
      here whether a GC stop-the-world wants it to park, so a long-running loop
      cannot starve the collector. SP_SAFEPOINT_POLL() (sp_sched.h) is a relaxed

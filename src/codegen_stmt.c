@@ -12779,28 +12779,50 @@ static int stmt_is_folded_return(Compiler *c, int id) {
   return n > 0 && nt_kind(nt, body[n - 1]) == NK_ReturnNode;
 }
 
+/* The BlockNode whose body is statement list `body`, or -1 (the map is built
+   lazily on the compiler, so it dies with it -- no static state to go stale
+   across node tables). */
+int block_of_body(Compiler *c, int body) {
+  if (!c->blk_body_map) {
+    c->blk_body_map = malloc(sizeof(int) * (size_t)c->nt->count);
+    for (int i2 = 0; i2 < c->nt->count; i2++) c->blk_body_map[i2] = -1;
+    for (int i2 = 0; i2 < c->nt->count; i2++) {
+      const char *t2 = nt_type(c->nt, i2);
+      if (t2 && sp_streq(t2, "BlockNode")) {
+        int b2 = nt_ref(c->nt, i2, "body");
+        if (b2 >= 0 && b2 < c->nt->count) c->blk_body_map[b2] = i2;
+      }
+    }
+  }
+  return body >= 0 && body < c->nt->count ? c->blk_body_map[body] : -1;
+}
+
+/* How many statements open block body `body` by rebinding a parameter the
+   body assigns: desugar_reassigned_block_params turns `|x|` into `|x__bpin|`
+   and prepends `x = x__bpin`, marked `bp_rebind`. They set up the iteration,
+   like the parameter binding itself, so a `redo` re-runs the body after
+   them: before them, it put the parameter back to the yielded value and lost
+   the body's write. */
+int block_param_rebind_len(const NodeTable *nt, int body) {
+  int n = 0; const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+  int k = 0;
+  while (k < n && nt_int(nt, st[k], "bp_rebind", 0)) k++;
+  return k;
+}
+
 void emit_stmts(Compiler *c, int id, Buf *b, int indent) {
   /* Ruby block-locals are FRESH on every block invocation. Find the
-     BlockNode whose body this is (map built lazily on the compiler, so it
-     dies with it -- no static state to go stale across node tables) and
+     BlockNode whose body this is (block_of_body) and
      reset its non-param locals at the top of each iteration -- without
      this a name first assigned inside the block kept the previous
      iteration's value (doom's render_sprites `sprite ||= ...` reused the
      first sprite for every object on screen). */
-  {
-    if (!c->blk_body_map) {
-      c->blk_body_map = malloc(sizeof(int) * (size_t)c->nt->count);
-      for (int i2 = 0; i2 < c->nt->count; i2++) c->blk_body_map[i2] = -1;
-      for (int i2 = 0; i2 < c->nt->count; i2++) {
-        const char *t2 = nt_type(c->nt, i2);
-        if (t2 && sp_streq(t2, "BlockNode")) {
-          int b2 = nt_ref(c->nt, i2, "body");
-          if (b2 >= 0 && b2 < c->nt->count) c->blk_body_map[b2] = i2;
-        }
-      }
-    }
-    if (id >= 0 && id < c->nt->count && c->blk_body_map[id] >= 0)
-      emit_block_locals_reset(c, c->blk_body_map[id], b, indent);
+  /* A block body's `redo` label (g_redo_pending, set by the loop that runs
+     it) goes after that setup: the reset and the parameter rebindings. */
+  int redo_lbl = 0;
+  if (block_of_body(c, id) >= 0) {
+    emit_block_locals_reset(c, block_of_body(c, id), b, indent);
+    redo_lbl = g_redo_pending; g_redo_pending = 0;
   }
 
   if (id < 0) return;
@@ -12809,13 +12831,16 @@ void emit_stmts(Compiler *c, int id, Buf *b, int indent) {
   if (ty && sp_streq(ty, "StatementsNode")) {
     int n = 0;
     const int *body = nt_arr(nt, id, "body", &n);
+    int head = redo_lbl ? block_param_rebind_len(nt, id) : 0;
     for (int k = 0; k < n; k++) {
+      if (redo_lbl && k == head) { emit_indent(b, indent); buf_printf(b, "_redo_%d: ;\n", redo_lbl); }
       g_stmt_cur = body[k]; g_stmt_prev = k ? body[k - 1] : -1;
       emit_stmt(c, body[k], b, indent);
       if (stmt_is_folded_return(c, body[k])) break;
     }
   }
   else {
+    if (redo_lbl) { emit_indent(b, indent); buf_printf(b, "_redo_%d: ;\n", redo_lbl); }
     emit_stmt(c, id, b, indent);
   }
 }
