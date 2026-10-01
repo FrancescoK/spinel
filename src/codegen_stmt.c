@@ -7264,7 +7264,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent);
     buf_puts(b, "{ ");
     for (int k = 0; k < n; k++) { buf_puts(b, "(void)("); emit_boxed(c, a[k], b); buf_puts(b, "); "); }
-    buf_puts(b, "exit(sp_at_exit_run(0)); }\n");
+    buf_puts(b, "sp_unwind_kind = SP_UNWIND_EXIT; sp_unwind_exc_top = 0; sp_unwind_resume(); }\n");
     return;
   }
 

@@ -11927,7 +11927,7 @@ static sp_StrArray *sp_caller(sp_int start, sp_bool have_len, sp_int len) {
    ensures it passes over). Declared here, before sp_raise_cls, so a real raise
    can clear it -- an exception raised inside an ensure during an unwind
    supersedes that unwind. The machinery that uses it lives further down. */
-enum { SP_UNWIND_NONE, SP_UNWIND_PROCRET, SP_UNWIND_THROW, SP_UNWIND_BREAK };
+enum { SP_UNWIND_NONE, SP_UNWIND_PROCRET, SP_UNWIND_THROW, SP_UNWIND_BREAK, SP_UNWIND_EXIT };
 struct sp_proc_home;
 static SP_TLS int sp_unwind_kind = SP_UNWIND_NONE, sp_unwind_target = -1, sp_unwind_exc_top = 0;  /* per-worker (see sp_exc_stack) */
 static SP_TLS struct sp_proc_home *sp_unwind_home = NULL;  /* PROCRET target (THROW uses sp_unwind_target) */
@@ -12977,6 +12977,7 @@ static void sp_unwind_resume(void) {
   if (sp_exc_top > sp_unwind_exc_top) { sp_poly_recur_unwind(); longjmp(sp_exc_stack[sp_exc_top - 1], 1); }
   int kind = sp_unwind_kind;
   sp_unwind_kind = SP_UNWIND_NONE;
+  if (kind == SP_UNWIND_EXIT) exit(sp_at_exit_run(0));
   /* the ensures are done; deliver, giving the walk path back the depth the
      target arm recorded (the intervening exception frames restored their own on
      the way here) */
