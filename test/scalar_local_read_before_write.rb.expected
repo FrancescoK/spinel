@@ -11,3 +11,7 @@ nil
 nil
 1
 2
+[7, 1.5]
+[nil, nil]
+2
+"undefined method '+' for nil"

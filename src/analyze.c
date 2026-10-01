@@ -24923,7 +24923,12 @@ static int du_writes(const NodeTable *nt, int n, const char *nm, int depth) {
   case NK_LocalVariableAndWriteNode: case NK_LocalVariableOperatorWriteNode:
   case NK_LocalVariableTargetNode: {
     const char *wn = nt_str(nt, n, "name");
-    if (wn && sp_streq(wn, nm)) return 1;
+    NodeKind wk = nt_kind(nt, n);
+    /* `x &&= v` writes only an x already truthy: an unassigned one stays
+       nil. (`x ||= v` writes a nil x, and `x += v` raises on one.) */
+    if (wn && sp_streq(wn, nm)) return wk != NK_LocalVariableAndWriteNode;
+    /* the value of `||=` and `&&=` runs only on one side of the test */
+    if (wk == NK_LocalVariableOrWriteNode || wk == NK_LocalVariableAndWriteNode) return 0;
     return du_writes(nt, nt_ref(nt, n, "value"), nm, depth + 1);
   }
   case NK_MultiWriteNode: case NK_MultiTargetNode: {
@@ -25138,8 +25143,14 @@ static void mark_nullable_int_locals(Compiler *c) {
      carries it (du_read_maybe_unset); the rounds below spread the mark */
   {
     int *par = NULL;
-    for (int r = comp_kind_first(c, NK_LocalVariableReadNode); r >= 0; r = comp_kind_next(c, r)) {
-      if (nt_kind(nt, r) != NK_LocalVariableReadNode) continue;
+    /* `x &&= v` and `x += v` read x before they write it: an unassigned x
+       there is nil, which `&&=` keeps and `+=` raises on, where the zero
+       start was truthy and counted */
+    static const NodeKind rk[] = { NK_LocalVariableReadNode, NK_LocalVariableAndWriteNode,
+                                   NK_LocalVariableOperatorWriteNode };
+    for (int q = 0; q < 3; q++)
+    for (int r = comp_kind_first(c, rk[q]); r >= 0; r = comp_kind_next(c, r)) {
+      if (nt_kind(nt, r) != rk[q]) continue;
       const char *nm = nt_str(nt, r, "name");
       Scope *rs = nm ? comp_scope_of(c, r) : NULL;
       LocalVar *lv = rs ? scope_local(rs, nm) : NULL;
