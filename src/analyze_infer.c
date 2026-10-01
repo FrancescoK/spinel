@@ -4551,6 +4551,14 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variables") && argc == 0 &&
       nt_ref(nt, id, "block") < 0)
     return TY_POLY_ARRAY;
+  /* the same on a builtin value, which holds none: nil, false, [] (the
+     codegen twin), and a set raises, answering its value's type */
+  if (recv >= 0 && ty_builtin_ivar_less(rt) && nt_ref(nt, id, "block") < 0) {
+    if (sp_streq(name, "instance_variable_get") && argc == 1) return TY_NIL;
+    if (sp_streq(name, "instance_variable_defined?") && argc == 1) return TY_BOOL;
+    if (sp_streq(name, "instance_variables") && argc == 0) return TY_POLY_ARRAY;
+    if (sp_streq(name, "instance_variable_set") && argc == 2) return infer_type(c, argv[1]);
+  }
 
   /* instance_variable_set(:@x, v) on a POLY receiver answers v, boxed (the
      codegen twin stores it per class) */
