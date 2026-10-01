@@ -11604,6 +11604,20 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
                    sym ? sym : "");
         return 1;
       }
+      /* a Data instance is frozen: the write raises, as in CRuby, after the
+         receiver and the value run */
+      if (is_set && c->classes[cid].is_data) {
+        const char *dn = class_ruby_name(c, cid) ? class_ruby_name(c, cid) : c->classes[cid].name;
+        int td = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", td);
+        emit_boxed(c, recv, b);
+        buf_puts(b, "; (void)(");
+        emit_boxed(c, argv[1], b);
+        buf_printf(b, "); sp_raise_frozen_obj(_t%d, (&(\"\\xff\" \"can't modify frozen %s\")[1])); ", td, dn);
+        TyKind rt9 = comp_ntype(c, id);
+        buf_printf(b, "%s; })", rt9 == TY_POLY || rt9 == TY_UNKNOWN ? "sp_box_nil()" : default_value(rt9));
+        return 1;
+      }
       int mi = -1;
       /* Data/Struct members live in the layout but are NOT @-instance
          variables in CRuby: a get answers nil, not the member (#2849) */
@@ -14428,6 +14442,14 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     const char *sym = sp_streq(a0ty, "SymbolNode")
                         ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
     if (sym && sym[0] == '@') {
+      /* a Struct member's name: CRuby keeps such an ivar beside the member,
+         and Spinel has one slot for both, as the typed form refuses */
+      for (int k = 0; k < c->nclasses; k++) {
+        ClassInfo *sk = &c->classes[k];
+        int miv = sk->instantiated && sk->is_struct && !sk->is_data ? comp_ivar_index(sk, sym) : -1;
+        if (miv >= 0 && miv < sk->nmembers)
+          unsupported(c, id, "instance_variable_set to an ivar absent from the fixed object layout");
+      }
       TyKind res = comp_ntype(c, id);
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv);
@@ -14442,10 +14464,11 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
                      k, tv, class_ruby_name(c, k) ? class_ruby_name(c, k) : c->classes[k].name);
           continue;
         }
-        if (!c->classes[k].instantiated || c->classes[k].is_struct) continue;
+        if (!c->classes[k].instantiated) continue;
         if (comp_ty_value_obj(c, ty_object(k))) continue;   /* by value: no reference to write through */
         int iv = comp_ivar_index(&c->classes[k], sym);
-        if (iv < 0) continue;
+        /* a Struct member is no ivar (#2849) */
+        if (iv < 0 || (c->classes[k].is_struct && iv < c->classes[k].nmembers)) continue;
         TyKind t = c->classes[k].ivar_types[iv];
         if (t == TY_STRBUF) continue;
         char val[48]; snprintf(val, sizeof val, "_ivs%d", tv);
@@ -14497,7 +14520,8 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       for (int k = 0; k < c->nclasses; k++) {
         if (!c->classes[k].instantiated) continue;
         int iv = comp_ivar_index(&c->classes[k], sym);
-        if (iv < 0) continue;
+        /* a Struct member is no ivar: it reads nil (#2849) */
+        if (iv < 0 || (c->classes[k].is_struct && iv < c->classes[k].nmembers)) continue;
         TyKind t = c->classes[k].ivar_types[iv];
         char fld[320];
         snprintf(fld, sizeof fld, "((sp_%s *)_t%d.v.p)->iv_%s", c->classes[k].c_name, tv, iv_c(sym + 1));
@@ -14509,8 +14533,11 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
                  tv, tv, sym);
       buf_puts(b, " } ");
       if (res != TY_POLY && res != TY_UNKNOWN) {
+        /* a receiver whose class lacks the slot answers nil: an Integer or
+           Float answer takes its nil sentinel */
         char ivn[24]; snprintf(ivn, sizeof ivn, "_ivg%d", tv);
-        emit_unbox_text(c, res, ivn, b);
+        if (res == TY_INT || res == TY_FLOAT) emit_unbox_nilable_text(c, res, ivn, b);
+        else emit_unbox_text(c, res, ivn, b);
         buf_puts(b, "; })");
       }
       else buf_printf(b, "_ivg%d; })", tv);
