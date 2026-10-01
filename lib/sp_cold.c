@@ -3703,9 +3703,10 @@ sp_bool sp_str_re_match_p_at(mrb_regexp_pattern *pat, const char *str, sp_int cp
 const char *sp_str_sub_str_str_hash(const char *str, const char *pat, sp_StrStrHash *h) {SP_GC_ROOT_STR(pat);SP_GC_ROOT(h);SP_GC_ROOT_STR(str);
   if (!str || !pat) return str;
   const char *found = strstr(str, pat);
-  if (!found) return str;
+  if (!found) { if (sp_re_track_last) sp_re_clear_last_match(); return str; }
   size_t before = (size_t)(found - str);
   size_t plen = strlen(pat);
+  if (sp_re_track_last) sp_re_set_lit_match(str, (sp_int)before, (sp_int)(before + plen));
   const char *rep = (h && sp_StrStrHash_has_key(h, pat)) ? sp_StrStrHash_get(h, pat) : "";
   size_t rlen = strlen(rep);
   size_t rest = strlen(str) - before - plen;
@@ -4312,6 +4313,7 @@ const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp
   char out_sb[512];
   size_t cap = (slen * 2) + 64; char *out = cap <= sizeof out_sb ? out_sb : (char *)malloc(cap); size_t olen = 0;
   int64_t pos = 0; int caps[64];
+  int lastcaps[64], lastn = 0;   /* the last match, for `$~` */
   #define GSH_GROW(need) do { size_t _nc = (need); \
     if (out == out_sb) { char *_o = (char *)malloc(_nc); memcpy(_o, out, olen); out = _o; } \
     else out = (char *)realloc(out, _nc); \
@@ -4319,6 +4321,7 @@ const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp
   while (pos <= slen) {
     int n = re_exec(pat, str, slen, pos, caps, 64, 0);
     if (n <= 0 || caps[0] < 0) break;
+    if (sp_re_track_last) { lastn = n > 64 ? 64 : n; memcpy(lastcaps, caps, sizeof(int) * (size_t)lastn); }
     size_t before = caps[0] - pos;
     int mlen = caps[1] - caps[0];
     /* Lay a 0xff (rodata-literal) marker byte right before the transient key
@@ -4359,6 +4362,7 @@ else {
     memcpy(out + olen, str + pos, rest); olen += rest;
   }
   #undef GSH_GROW
+  if (sp_re_track_last) sp_re_set_last_match(pat, str, lastcaps, lastn);
   char *res = sp_str_alloc(olen);
   memcpy(res, out, olen);
   if (out != out_sb) free(out);
@@ -4370,7 +4374,7 @@ const char *sp_re_sub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_
   int64_t slen = (int64_t)strlen(str);
   int caps[64];
   int n = re_exec(pat, str, slen, 0, caps, 64, 0);
-  if (n <= 0 || caps[0] < 0) return str;
+  if (n <= 0 || caps[0] < 0) { if (sp_re_track_last) sp_re_clear_last_match(); return str; }
   int mlen = caps[1] - caps[0];
   /* 0xff marker before the transient key: keeps sp_str_hash's s[-1] read
      in-bounds and on the non-caching path (no sp_str_hdr behind this buffer). */
@@ -4387,6 +4391,7 @@ const char *sp_re_sub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_
   size_t rlen = strlen(rep);
   size_t rest = slen - caps[1];
   size_t total = caps[0] + rlen + rest;
+  if (sp_re_track_last) sp_re_set_last_match(pat, str, caps, n);
   char *out = sp_str_alloc_raw(total + 1);
   memcpy(out, str, caps[0]);
   memcpy(out + caps[0], rep, rlen);

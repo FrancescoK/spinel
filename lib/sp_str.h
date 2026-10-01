@@ -115,6 +115,7 @@ const char*sp_str_bytesplice(const char*s,sp_int start,sp_int len,const char*val
 int sp_str_ascii_only(const char*s);
 const char*sp_str_format_strarr(const char*fmt,sp_StrArray*a);
 const char*sp_str_sub(const char*s,const char*pat,const char*rep);
+const char*sp_str_remove_first(const char*s,const char*pat);
 const char*sp_str_capitalize(const char*s);
 const char*sp_str_repeat(const char*s,sp_int n);
 sp_IntArray*sp_str_bytes(const char*s);
@@ -154,6 +155,7 @@ sp_StrArray*sp_str_split_limit(const char*s,const char*sep,sp_int n);
 sp_StrArray*sp_str_split_ws(const char*s);
 sp_StrArray*sp_str_split_ws_limit(const char*s,sp_int n);
 sp_StrArray*sp_str_scan(const char*s,const char*pat);
+sp_int sp_str_scan_at(const char*s,const char*pat,sp_int pos);
 const char*sp_str_gsub(const char*s,const char*pat,const char*rep);
 sp_int sp_str_index(const char*s,const char*sub);
 sp_int sp_str_index_from(const char*s,const char*sub,sp_int start);

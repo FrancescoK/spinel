@@ -1976,6 +1976,15 @@ static int scope_performs_match(Compiler *c, int si) {
     int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     for (int k = 0; k < an && av; k++)
       if (comp_ntype(c, av[k]) == TY_REGEX) return 1;
+    /* gsub, sub and scan on a String set them for a String pattern too, and
+       for a pattern that is a Regexp or a String only at run time, in a
+       program that reads them */
+    if (g_reads_match_regs && r >= 0 && an > 0 && av &&
+        (sp_streq(nm, "gsub") || sp_streq(nm, "gsub!") || sp_streq(nm, "sub") ||
+         sp_streq(nm, "sub!") || sp_streq(nm, "scan"))) {
+      TyKind rt = comp_ntype(c, r), pt = comp_ntype(c, av[0]);
+      if ((rt == TY_STRING || rt == TY_POLY) && (pt == TY_STRING || pt == TY_POLY)) return 1;
+    }
   }
   return 0;
 }
@@ -12416,9 +12425,12 @@ static void scan_prologue_features(Compiler *c) {
   g_uses_marshal = 0;
   g_uses_regex = 0; g_uses_argv = 0; g_uses_threads = 0; g_uses_finalizers = 0;
   g_uses_program_name = 0;
+  g_reads_match_regs = 0;
   for (int i = 0; i < nt->count; i++) {
     const char *ty = nt_type(nt, i);
     if (!ty) continue;
+    if (sp_streq(ty, "BackReferenceReadNode") || sp_streq(ty, "NumberedReferenceReadNode"))
+      g_reads_match_regs = 1;
     if (sp_streq(ty, "RegularExpressionNode") || sp_streq(ty, "InterpolatedRegularExpressionNode"))
       g_uses_regex = 1;
     else if (sp_streq(ty, "SymbolNode") || sp_streq(ty, "InterpolatedSymbolNode"))
@@ -12487,6 +12499,8 @@ static void scan_prologue_features(Compiler *c) {
       const char *nm = nt_str(nt, i, "name");
       if (nm && sp_streq(nm, "$*")) g_uses_argv = 1;
       else if (nm && (sp_streq(nm, "$0") || sp_streq(nm, "$PROGRAM_NAME"))) g_uses_program_name = 1;
+      else if (nm && (sp_streq(nm, "$~") || sp_streq(nm, "$&") || sp_streq(nm, "$`") ||
+                      sp_streq(nm, "$'") || sp_streq(nm, "$+"))) g_reads_match_regs = 1;
     }
     else if (sp_streq(ty, "CallNode")) {
       const char *nm = nt_str(nt, i, "name");
@@ -12504,6 +12518,7 @@ static void scan_prologue_features(Compiler *c) {
         unsupported_feature(c, i,
           "Refinements are not supported by AOT compilation: scope-keyed dispatch is "
           "incompatible with direct C calls. Reopen the class instead (see docs/limitations.md)");
+      if (sp_streq(nm, "last_match")) g_reads_match_regs = 1;
       if (sp_streq(nm, "to_sym") || sp_streq(nm, "intern") ||
           sp_streq(nm, "constants") || sp_streq(nm, "members") ||
           sp_streq(nm, "instance_methods") || sp_streq(nm, "public_instance_methods") ||
@@ -14974,6 +14989,7 @@ char *codegen_program(const NodeTable *nt) {
     if (g_re_init_needed) buf_puts(body, "    sp_tu_init();\n");
     if (g_uses_threads) buf_puts(body, "    sp_sched_init();\n");
     if (g_uses_program_name) buf_puts(body, "    sp_program_name = sp_str_empty;\n");
+    if (g_reads_match_regs) buf_puts(body, "    sp_re_track_last = 1;\n");
   }
   else {
   /* The body runs on a stack this compiler chose, not the one the loader
@@ -15007,6 +15023,9 @@ char *codegen_program(const NodeTable *nt) {
   /* Adopt the main thread and chain the scheduler's GC root hook. Placed after
      sp_tu_init so it chains whatever globals hook that installed. */
   if (g_uses_threads) buf_puts(body, "    sp_sched_init();\n");
+  /* gsub / sub / scan record their last match only for a program that reads
+     it (g_reads_match_regs) */
+  if (g_reads_match_regs) buf_puts(body, "    sp_re_track_last = 1;\n");
   /* The ARGV copy loop only matters if the program reads ARGV / ARGF / $*. */
   if (g_uses_argv)
     buf_puts(body, "    { int argc = _sp_main_argc; char **argv = _sp_main_argv; sp_argv.len = argc - 1; sp_argv.data = (const char**)malloc(sizeof(const char*) * (size_t)(argc > 1 ? argc - 1 : 1)); for (int _ai = 0; _ai < argc - 1; _ai++) sp_argv.data[_ai] = sp_str_dup_external(argv[_ai + 1]); }\n");

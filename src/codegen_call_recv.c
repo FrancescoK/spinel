@@ -1531,8 +1531,16 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       if (sb_asgn) {
         buf_printf(b, " if (_hit%d) ", tp2);
         emit_expr(c, recv, b);
-        buf_printf(b, " = sp_str_sub("); emit_expr(c, recv, b);
-        buf_printf(b, ", _t%d, (&(\"\\xff\")[1]));", tp2);
+        /* sub would set `$~`, which slice! leaves alone; a program that
+           never reads it has sub record nothing */
+        if (g_reads_match_regs) {
+          buf_printf(b, " = sp_str_remove_first("); emit_expr(c, recv, b);
+          buf_printf(b, ", _t%d);", tp2);
+        }
+        else {
+          buf_printf(b, " = sp_str_sub("); emit_expr(c, recv, b);
+          buf_printf(b, ", _t%d, (&(\"\\xff\")[1]));", tp2);
+        }
       }
       buf_printf(b, " _hit%d ? _t%d : (const char *)0; })", tp2, tp2);
       return 1;
@@ -7823,7 +7831,7 @@ static int same_sefree_lvalue(Compiler *c, int a, int b) {
 /* Does this subtree read the regexp match globals ($~, $1..$9, $&, $`, $')?
    A scan block that does needs the match registers refreshed per iteration,
    which the pre-computed rows alone do not do (#3601). */
-static int subtree_reads_match_globals(Compiler *c, int root) {
+int subtree_reads_match_globals(Compiler *c, int root) {
   if (root < 0) return 0;
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, root);
@@ -8289,7 +8297,7 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         int np = 0; while (block_param_name(c, blk, np)) np++;
         int body = nt_ref(nt, blk, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-        int tr = ++g_tmp, tm = ++g_tmp, ti = ++g_tmp;
+        int tr = ++g_tmp, tm = ++g_tmp, ti = ++g_tmp, tpat = -1;
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "const char *_t%d = %s;\n", tr, r);
         emit_indent(g_pre, g_indent);
@@ -8323,22 +8331,40 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
                      tm, pb2.p ? pb2.p : "sp_box_nil()", tr, tm);
           free(pb2.p);
         }
+        /* a String pattern the body walks the subject with (below) is held
+           in a temp, read by every turn */
+        else if (subtree_reads_match_globals(c, body)) {
+          Buf sb; memset(&sb, 0, sizeof sb);
+          emit_expr(c, argv[0], &sb);
+          tpat = ++g_tmp;
+          buf_printf(g_pre, "const char *_t%d = %s; SP_GC_ROOT_STR(_t%d);\n",
+                     tpat, sb.p ? sb.p : "NULL", tpat);
+          free(sb.p);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_StrArray *_t%d = sp_str_scan(_t%d, _t%d); SP_GC_ROOT(_t%d);\n",
+                     tm, tr, tpat, tm);
+        }
         else {
           buf_printf(g_pre, "sp_StrArray *_t%d = sp_str_scan(_t%d, ", tm, tr);
           emit_expr(c, argv[0], g_pre);
           buf_printf(g_pre, "); SP_GC_ROOT(_t%d);\n", tm);
         }
-        /* the rows are pre-computed, so the match registers still hold the
-           last match; walk the subject again per iteration when the body
-           reads $~ or a capture global (#3601) */
-        int sc_pos = (re_idx >= 0 && subtree_reads_match_globals(c, body)) ? ++g_tmp : -1;
+        /* the rows are pre-computed, so the match registers hold the last
+           match; walk the subject again per iteration when the body reads $~
+           or a capture global (#3601). The walk reads the subject after the
+           body has run, so it is rooted. */
+        int sc_pos = ((re_idx >= 0 || tpat >= 0) && subtree_reads_match_globals(c, body)) ? ++g_tmp : -1;
         if (sc_pos >= 0) {
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_int _t%d = 0;\n", sc_pos);
+          buf_printf(g_pre, "sp_int _t%d = 0; SP_GC_ROOT_STR(_t%d);\n", sc_pos, tr);
         }
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, tm, ti);
-        if (sc_pos >= 0) {
+        if (sc_pos >= 0 && tpat >= 0) {
+          emit_indent(g_pre, g_indent + 1);
+          buf_printf(g_pre, "_t%d = sp_str_scan_at(_t%d, _t%d, _t%d);\n", sc_pos, tr, tpat, sc_pos);
+        }
+        else if (sc_pos >= 0) {
           emit_indent(g_pre, g_indent + 1);
           buf_printf(g_pre, "if (sp_re_match_at(sp_re_pat_%d, _t%d, _t%d) >= 0)"
                             " _t%d = sp_re_caps[1] > sp_re_caps[0] ? sp_re_caps[1] : sp_re_caps[1] + 1;\n",
@@ -14662,11 +14688,21 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     int re_i = re_lit_index(c, argv[0]);
     TyKind pat_t = comp_ntype(c, argv[0]);
     int ts = ++g_tmp, tm = ++g_tmp, ti = ++g_tmp;
+    /* a body that reads `$~` or a capture global walks the subject for its
+       own turn's match, as the typed-String arm does (#3601) */
+    int tw = (re_i >= 0 || pat_t == TY_STRING) && subtree_reads_match_globals(c, sbody) ? ++g_tmp : -1;
+    int tp = tw >= 0 && re_i < 0 ? ++g_tmp : -1;
     buf_printf(b, "({ const char *_t%d = sp_poly_recv_s(", ts); emit_expr(c, recv, b);
     buf_printf(b, ", \"%s\"); SP_GC_ROOT(_t%d);", name, ts);
+    if (tp >= 0) {
+      buf_printf(b, " const char *_t%d = ", tp); emit_expr(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT_STR(_t%d);", tp);
+    }
+    if (tw >= 0) buf_printf(b, " sp_int _t%d = 0;", tw);
     buf_printf(b, " sp_StrArray *_t%d = ", tm);
     if (re_i >= 0) buf_printf(b, "sp_re_scan(sp_re_pat_%d, _t%d)", re_i, ts);
     else if (pat_t == TY_REGEX) { buf_puts(b, "sp_re_scan("); emit_expr(c, argv[0], b); buf_printf(b, ", _t%d)", ts); }
+    else if (tp >= 0) buf_printf(b, "sp_str_scan(_t%d, _t%d)", ts, tp);
     else if (pat_t == TY_STRING) { buf_printf(b, "sp_str_scan(_t%d, ", ts); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
     else {
       /* the pattern arrived boxed (a Regexp read out of a table): its payload
@@ -14677,6 +14713,11 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     }
     buf_printf(b, "; SP_GC_ROOT(_t%d);", tm);
     buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {", ti, ti, tm, ti);
+    if (tp >= 0) buf_printf(b, " _t%d = sp_str_scan_at(_t%d, _t%d, _t%d);", tw, ts, tp, tw);
+    else if (tw >= 0)
+      buf_printf(b, " if (sp_re_match_at(sp_re_pat_%d, _t%d, _t%d) >= 0)"
+                    " _t%d = sp_re_caps[1] > sp_re_caps[0] ? sp_re_caps[1] : sp_re_caps[1] + 1;",
+                 re_i, ts, tw, tw);
     if (sp0r) {
       Scope *sbs = comp_scope_of(c, sblk);
       LocalVar *sblv = sbs ? scope_local(sbs, sp0r) : NULL;

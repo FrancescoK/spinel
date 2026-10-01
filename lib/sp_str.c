@@ -12,6 +12,11 @@
 #include <stdint.h>
 #include "sp_str.h"
 extern SP_TLS int sp_re_sub_matched;   /* sp_re.h: the bang forms' "a substitution happened" */
+/* sp_re.h: what gsub / sub / scan with a String pattern leave in `$~`, when
+   the program reads it (sp_re_track_last) */
+extern int sp_re_track_last;
+void sp_re_clear_last_match(void);
+void sp_re_set_lit_match(const char *str, sp_int beg, sp_int end);
 #include "sp_crypto.h"   /* sp_crypto_hmac_sha256_b64url for sp_str_crypt */
 /* general categories, for what inspect escapes; `spin ext build` vendors
    the runtime flat, lib/regexp/ beside lib/ */
@@ -592,7 +597,10 @@ else{if(out+1>=cap){size_t nc=cap*2;char*nb=(char*)realloc(buf,nc);if(!nb){free(
 /* byte-exact search and lengths: strstr/strlen stop at an embedded NUL, so a
    pattern or subject holding one matched the wrong place or not at all (the
    opportunistic NUL policy -- fix what is met). */
-const char*sp_str_sub(const char*s,const char*pat,const char*rep){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(pat);SP_GC_ROOT_STR(rep);if(!s)sp_nil_recv("sub");if(!pat||!rep)return s;size_t pl0=sp_str_byte_len(pat),sl0=sp_str_byte_len(s);const char*f=sp_bytestr(s,sl0,pat,pl0);if(!f)return s;sp_re_sub_matched=1;char*rep_exp=sp_str_rep_expand(rep,pat,pl0);if(rep_exp)rep=rep_exp;size_t pl=pl0,rl=rep_exp?strlen(rep):sp_str_byte_len(rep),sl=sl0;char*r=sp_str_alloc_raw(sl-pl+rl+1);size_t n=f-s;memcpy(r,s,n);memcpy(r+n,rep,rl);memcpy(r+n+rl,f+pl,sl-n-pl);r[sl-pl+rl]=0;sp_str_set_len(r,sl-pl+rl);if(rep_exp)free(rep_exp);return r;}
+/* slice!(str): s without the first occurrence of pat, or s itself when there
+   is none. Unlike sub it sets no `$~`, as CRuby's slice! sets none. */
+const char*sp_str_remove_first(const char*s,const char*pat){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(pat);if(!s||!pat)return s;size_t pl=sp_str_byte_len(pat),sl=sp_str_byte_len(s);const char*f=sp_bytestr(s,sl,pat,pl);if(!f)return s;size_t n=(size_t)(f-s);char*r=sp_str_alloc_raw(sl-pl+1);memcpy(r,s,n);memcpy(r+n,f+pl,sl-n-pl);r[sl-pl]=0;sp_str_set_len(r,sl-pl);return r;}
+const char*sp_str_sub(const char*s,const char*pat,const char*rep){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(pat);SP_GC_ROOT_STR(rep);if(!s)sp_nil_recv("sub");if(!pat||!rep)return s;size_t pl0=sp_str_byte_len(pat),sl0=sp_str_byte_len(s);const char*f=sp_bytestr(s,sl0,pat,pl0);if(!f){if(sp_re_track_last)sp_re_clear_last_match();return s;}sp_re_sub_matched=1;if(sp_re_track_last)sp_re_set_lit_match(s,(sp_int)(f-s),(sp_int)(f-s+pl0));char*rep_exp=sp_str_rep_expand(rep,pat,pl0);if(rep_exp)rep=rep_exp;size_t pl=pl0,rl=rep_exp?strlen(rep):sp_str_byte_len(rep),sl=sl0;char*r=sp_str_alloc_raw(sl-pl+rl+1);size_t n=f-s;memcpy(r,s,n);memcpy(r+n,rep,rl);memcpy(r+n+rl,f+pl,sl-n-pl);r[sl-pl+rl]=0;sp_str_set_len(r,sl-pl+rl);if(rep_exp)free(rep_exp);return r;}
 const char*sp_str_capitalize(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("capitalize");size_t l=sp_str_byte_len(s);char*r=sp_str_alloc_raw(l*3+1);size_t oi=0;int first=1;for(size_t i=0;i<l;){uint32_t cp;int n=sp_utf8_decode(s+i,&cp);i+=(size_t)n;if(first){uint32_t u=sp_uc_toupper(cp);if(cp==0xDF){r[oi++]='S';r[oi++]='S';}
 else oi+=(size_t)sp_utf8_encode(u,r+oi);first=0;}
 else oi+=(size_t)sp_utf8_encode(sp_uc_tolower(cp),r+oi);}r[oi]=0;sp_str_set_len(r,oi);return r;}
@@ -1030,14 +1038,29 @@ sp_StrArray*sp_str_scan(const char*s,const char*pat){if(!s)sp_nil_recv("scan");
   sp_StrArray*a=sp_StrArray_new();SP_GC_ROOT(a);
   if(!pat)sp_raise_cls("TypeError","wrong argument type nil (expected Regexp)");
   size_t pl=strlen(pat);
+  /* `$~` is the last match, or nil when there was none */
   if(pl==0){
     const char*p=s;
     for(;;){sp_str_split_push(a,p,0);if(!*p)break;p+=sp_utf8_advance(p);}
+    if(sp_re_track_last)sp_re_set_lit_match(s,(sp_int)(p-s),(sp_int)(p-s));
     return a;
   }
-  const char*p=s,*f;
-  while((f=strstr(p,pat))!=NULL){sp_str_split_push(a,f,pl);p=f+pl;}
+  const char*p=s,*f,*last=NULL;
+  while((f=strstr(p,pat))!=NULL){sp_str_split_push(a,f,pl);last=f;p=f+pl;}
+  if(sp_re_track_last){if(last)sp_re_set_lit_match(s,(sp_int)(last-s),(sp_int)(last-s+pl));else sp_re_clear_last_match();}
   return a;
+}
+/* One turn of `s.scan(pat) { }` whose block reads `$~`: sp_str_scan builds
+   the rows up front, so each turn finds its own match again from byte `pos`
+   and sets the registers to it (#3601). Answers where the next turn looks. */
+sp_int sp_str_scan_at(const char*s,const char*pat,sp_int pos){SP_GC_ROOT_STR(s);
+  size_t pl=strlen(pat);
+  const char*f=pl?strstr(s+pos,pat):s+pos;
+  if(!f)return pos;
+  sp_int at=(sp_int)(f-s);
+  sp_re_set_lit_match(s,at,at+(sp_int)pl);
+  if(pl)return at+(sp_int)pl;
+  return *f?at+sp_utf8_advance(f):at+1;
 }
 /* String#gsub(pat, rep) for literal (non-regex) patterns. Issue #827: the
    result must come from sp_str_alloc, not a raw malloc buffer, because the
@@ -1095,22 +1118,26 @@ const char*sp_str_gsub(const char*s,const char*pat,const char*rep){SP_GC_ROOT_ST
       i+=(size_t)n;
     }
     out[ol]=0;
+    if(sp_re_track_last)sp_re_set_lit_match(s,(sp_int)sl,(sp_int)sl);   /* `$~`: the last, empty, match at the end */
     char*r=sp_str_alloc(ol); memcpy(r,out,ol); sp_str_set_len(r,ol); free(out); if(rep_exp)free(rep_exp); return r;
   }
   size_t cap=(sl*2)+1;
   char*out=(char*)malloc(cap);
   size_t ol=0;
-  const char*p=s;const char*se=s+sl;
+  const char*p=s;const char*se=s+sl;const char*last=NULL;
   while(p<se){
     const char*f=sp_bytestr(p,(size_t)(se-p),pat,pl);
     if(!f){size_t n=(size_t)(se-p);if(ol+n>=cap){cap=((ol+n)*2)+1;out=(char*)realloc(out,cap);}memcpy(out+ol,p,n);ol+=n;break;}
     sp_re_sub_matched=1;
+    last=f;
     size_t n=(size_t)(f-p);
     if(ol+n+rl>=cap){cap=((ol+n+rl)*2)+1;out=(char*)realloc(out,cap);}
     memcpy(out+ol,p,n);ol+=n;
     memcpy(out+ol,rep,rl);ol+=rl;
     p=f+pl;
   }
+  /* `$~` is the last match, or nil when there was none */
+  if(sp_re_track_last){if(last)sp_re_set_lit_match(s,(sp_int)(last-s),(sp_int)(last-s+pl));else sp_re_clear_last_match();}
   out[ol]=0;char*r=sp_str_alloc(ol);memcpy(r,out,ol);sp_str_set_len(r,ol);free(out);if(rep_exp)free(rep_exp);return r;
 }
 /* `s.index(sub)` -- leftmost occurrence; returns a codepoint offset (not a
