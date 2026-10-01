@@ -5901,15 +5901,28 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
   int changed = 0;
   /* `callee(...)`: the arg list is a single ForwardingArgumentsNode. Bind the
      callee's params from the enclosing `def foo(...)` method's synthesized
-     __fwd_* params, positionally, so the callee's return type resolves (#1288). */
+     __fwd_* params, positionally, so the callee's return type resolves (#1288).
+     A `def foo(a, ...)` forwards only what follows its own leading params, so
+     the binding starts at the first __fwd_ slot, where the call's emission
+     (emit_args_filled_argv) starts: counted from the first param, the
+     callee's first param took `a`'s type -- a splat param the method name's
+     in `method_missing(name, ...)`, typing it apart from the Array its
+     callers pass. */
   if (argc == 1 && argv && nt_type(nt, argv[0]) &&
       sp_streq(nt_type(nt, argv[0]), "ForwardingArgumentsNode")) {
     Scope *encl = comp_scope_of(c, argv[0]);
     if (!encl) return 0;
-    int n = m->nparams < encl->nparams ? m->nparams : encl->nparams;
+    int lead = 0;
+    while (lead < encl->nparams &&
+           (!encl->pnames[lead] || strncmp(encl->pnames[lead], "__fwd_", 6) != 0)) lead++;
+    if (lead >= encl->nparams) lead = 0;  /* no __fwd_ slot: forward all */
+    int n = m->nparams < encl->nparams - lead ? m->nparams : encl->nparams - lead;
     for (int k = 0; k < n; k++) {
+      /* a splat param gathers the rest, an Array by construction, which no
+         one forwarded value types */
+      if (k == m->rest_idx) break;
       LocalVar *p = scope_local(m, m->pnames[k]);
-      LocalVar *ep = scope_local(encl, encl->pnames[k]);
+      LocalVar *ep = scope_local(encl, encl->pnames[lead + k]);
       if (!p || p->rbs_seeded || !ep || ep->type == TY_UNKNOWN) continue;
       changed |= slot_take(c, p, ep->type, ep->why.node >= 0 ? ep->why.node : argv[0]);
     }
