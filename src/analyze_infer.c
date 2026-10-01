@@ -6256,12 +6256,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      in a variable (`p = src.lazy.select{}; p.first(n)`) -- resolve the alias to
      the chain node so the forced type matches emit_lazy_pipeline_expr (#2932). */
   if (sp_streq(name, "first") || sp_streq(name, "last")) {
-    int lrecv = recv;
-    if (lrecv >= 0 && nt_type(nt, lrecv) && sp_streq(nt_type(nt, lrecv), "LocalVariableReadNode")) {
-      int a = lazy_alias_chain(c, lrecv);
-      if (a >= 0) lrecv = a;
-    }
-    else if (lrecv >= 0) { int a = lazy_method_chain(c, lrecv); if (a >= 0) lrecv = a; }
+    int lrecv = lazy_resolve_chain(c, recv);
   if (lrecv >= 0 && nt_type(nt, lrecv) && sp_streq(nt_type(nt, lrecv), "CallNode")) {
     int lazy_src = -1;
     int grouped = 0;   /* a terminal-adjacent each_cons/each_slice groups the stream */

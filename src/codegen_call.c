@@ -2682,11 +2682,7 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   if (recv < 0) return 0;
   /* the chain may be held in a variable (`p = src.lazy.select{}; p.first(n)`);
      resolve the alias to its lazy chain and fuse it inline (#2932) */
-  if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "LocalVariableReadNode")) {
-    int a = lazy_alias_chain(c, recv);
-    if (a >= 0) recv = a;
-  }
-  else { int a = lazy_method_chain(c, recv); if (a >= 0) recv = a; }
+  recv = lazy_resolve_chain(c, recv);
 
   int has_count = 0, count_node = -1;
   {
@@ -2709,11 +2705,7 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   /* The chain may be held in a variable (`b = arr.lazy.map { }; b.first(2)`).
      Resolve a single-plain-write local back to the chain it was assigned so
      the pipeline fuses the same way the inline form does (#3012). */
-  if (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "LocalVariableReadNode")) {
-    int a = lazy_alias_chain(c, cur);
-    if (a >= 0) cur = a;
-  }
-  else { int a = lazy_method_chain(c, cur); if (a >= 0) cur = a; }
+  cur = lazy_resolve_chain(c, cur);
   while (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "CallNode")) {
     const char *nm = nt_str(nt, cur, "name");
     if (!nm) return 0;
@@ -2743,11 +2735,7 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
       ops[nops].cnt = -1; ops[nops].lim = -1;
       nops++;
       cur = nt_ref(nt, cur, "receiver");
-      if (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "LocalVariableReadNode")) {
-        int a = lazy_alias_chain(c, cur);
-        if (a >= 0) cur = a;
-      }
-      else { int a = lazy_method_chain(c, cur); if (a >= 0) cur = a; }
+      cur = lazy_resolve_chain(c, cur);
       continue;
     }
     int cs = -1;
@@ -2765,11 +2753,7 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
       cur = nt_ref(nt, cur, "receiver");
       /* the rest of the chain may be held in a variable
          (`s = src.lazy.select{}; s.each_cons(2).first(2)`) */
-      if (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "LocalVariableReadNode")) {
-        int a = lazy_alias_chain(c, cur);
-        if (a >= 0) cur = a;
-      }
-      else { int a = lazy_method_chain(c, cur); if (a >= 0) cur = a; }
+      cur = lazy_resolve_chain(c, cur);
       continue;
     }
     int blk = nt_ref(nt, cur, "block");
@@ -2785,11 +2769,7 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
     ops[nops].arg = -1; ops[nops].cnt = -1; ops[nops].lim = -1;
     nops++;
     cur = nt_ref(nt, cur, "receiver");
-    if (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "LocalVariableReadNode")) {
-      int a = lazy_alias_chain(c, cur);
-      if (a >= 0) cur = a;
-    }
-    else { int a = lazy_method_chain(c, cur); if (a >= 0) cur = a; }
+    cur = lazy_resolve_chain(c, cur);
   }
   /* An ENDLESS range is its own lazy source: there is no array to materialize,
      so `(1..).each_cons(2).first(2)` has nowhere else to go and raised rather
