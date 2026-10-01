@@ -11825,9 +11825,20 @@ int desugar_safe_nav_attr_write(Compiler *c) {
     nt_node_set_str(nt, op, "name", rnb);
     if (bopb[0]) nt_node_set_str(nt, op, "binary_operator", bopb);
     nt_node_set_ref(nt, op, "value", v);
+    /* the source position of the op-write, which a refusal of the rewritten
+       one (a receiver that is always nil, a value position) reports */
+    long long ln = nt_int(nt, id, "node_line", 0), fl = nt_int(nt, id, "node_file", 0);
+    {
+      int pos[3] = { op, w, nq };
+      for (int k = 0; k < 3 && ln > 0; k++) {
+        nt_node_set_int(nt, pos[k], "node_line", ln);
+        nt_node_set_int(nt, pos[k], "node_file", fl);
+      }
+    }
     nt_node_set_arr(nt, es, "body", &op, 1);
     nt_node_set_ref(nt, eln, "statements", es);
     nt_node_reset(nt, id, "IfNode");
+    if (ln > 0) { nt_node_set_int(nt, id, "node_line", ln); nt_node_set_int(nt, id, "node_file", fl); }
     nt_node_set_ref(nt, id, "predicate", nq);
     nt_node_set_ref(nt, id, "statements", ts);
     nt_node_set_ref(nt, id, "subsequent", eln);
