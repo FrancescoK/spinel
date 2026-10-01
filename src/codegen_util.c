@@ -1751,32 +1751,25 @@ int emit_poly_rhs_coerced(Compiler *c, TyKind slot, int v, Buf *b) {
   return 1;
 }
 
+static int strbuf_box_ref_as(Compiler *c, int recv, const char *fmt, Buf *b) {
+  char sref[1024];
+  int svm = c->strbuf_box[recv];
+  c->strbuf_box[recv] = 1;
+  int is_sb = strbuf_slot_ref(c, recv, sref, sizeof sref);
+  c->strbuf_box[recv] = (unsigned char)svm;
+  if (!is_sb) return 0;
+  buf_printf(b, fmt, sref);
+  return 1;
+}
+
 /* Emit a shared-mutable string receiver for an operation that only READS its
    bytes: the live buffer, not the whole-buffer copy an ordinary value read
    makes (#3227). Answers 0 when the receiver is not such a slot, so the caller
    falls back to emit_expr. */
-int emit_strbuf_read_ref(Compiler *c, int recv, Buf *b) {
-  char sref[1024];
-  int svm = c->strbuf_box[recv];
-  c->strbuf_box[recv] = 1;
-  int is_sb = strbuf_slot_ref(c, recv, sref, sizeof sref);
-  c->strbuf_box[recv] = (unsigned char)svm;
-  if (!is_sb) return 0;
-  buf_printf(b, "sp_String_cstr(%s)", sref);
-  return 1;
-}
+int emit_strbuf_read_ref(Compiler *c, int recv, Buf *b) { return strbuf_box_ref_as(c, recv, "sp_String_cstr(%s)", b); }
 /* The object_id of a String held as a shared sp_String: the handle's address,
    which is what a box of it carries. 0 when `recv` is not one. */
-int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
-  char sref[1024];
-  int svm = c->strbuf_box[recv];
-  c->strbuf_box[recv] = 1;
-  int is_sb = strbuf_slot_ref(c, recv, sref, sizeof sref);
-  c->strbuf_box[recv] = (unsigned char)svm;
-  if (!is_sb) return 0;
-  buf_printf(b, "((sp_int)(uintptr_t)(%s))", sref);
-  return 1;
-}
+int strbuf_object_ref(Compiler *c, int recv, Buf *b) { return strbuf_box_ref_as(c, recv, "((sp_int)(uintptr_t)(%s))", b); }
 /* `cont[k]` where the container hands its elements out BOXED (a poly array, a
    hash): the read is an sp_RbVal, so a shared-handle destination has to unbox
    it rather than wrap it (#3941). */
