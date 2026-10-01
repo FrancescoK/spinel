@@ -2219,7 +2219,7 @@ $(RUBYSPEC_DIR)/.pinned:
 # (core/comparable is not enrolled: its specs build fixture classes through
 # Module.new/def_method patterns the extractor can't project -- 53 of 54
 # extract as HARNESS-SKEW, leaving nothing to defend.)
-RUBYSPEC_SUITES := language core/array core/string core/hash core/integer core/range
+RUBYSPEC_SUITES := language core/array core/string core/hash core/integer core/range core/symbol core/float core/matchdata core/set core/math core/rational core/nil core/true core/false
 
 rubyspec: $(SPINEL) $(RUBYSPEC_DIR)/.pinned
 	@for d in $(RUBYSPEC_SUITES); do \
