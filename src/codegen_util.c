@@ -2472,30 +2472,31 @@ const char *ptr_array_stamp(Compiler *c, TyKind t) {
   return buf;
 }
 void emit_box_open(Compiler *c, TyKind t, Buf *b) {
-  if (t == TY_INT)          buf_puts(b, "sp_box_int(");
-  else if (t == TY_STRING)  buf_puts(b, "sp_box_str(");
-  else if (t == TY_FLOAT)   buf_puts(b, "sp_box_float(");
-  else if (t == TY_BOOL)    buf_puts(b, "sp_box_bool(");
-  else if (t == TY_NIL)     buf_puts(b, "sp_box_nil(); (void)(");
-  else if (t == TY_SYMBOL)  buf_puts(b, "sp_box_sym(");
+  switch (t) {
+  case TY_INT:      buf_puts(b, "sp_box_int("); return;
+  case TY_STRING:   buf_puts(b, "sp_box_str("); return;
+  case TY_FLOAT:    buf_puts(b, "sp_box_float("); return;
+  case TY_BOOL:     buf_puts(b, "sp_box_bool("); return;
+  case TY_NIL:      buf_puts(b, "sp_box_nil(); (void)("); return;
+  case TY_SYMBOL:   buf_puts(b, "sp_box_sym("); return;
   /* Array slots are nilable C pointers (a nil-defaulting param, `[x] if cond`
      in value position): box NULL as a proper nil, not a truthy OBJ wrapping
      NULL that passes truthy checks and then segfaults on the first access
      (#3275). Matches emit_boxed_text's array cases. */
-  else if (t == TY_INT_ARRAY)   buf_puts(b, "sp_box_nullable_obj((void *)(");
-  else if (t == TY_FLOAT_ARRAY) buf_puts(b, "sp_box_nullable_obj((void *)(");
-  else if (t == TY_STR_ARRAY)   buf_puts(b, "sp_box_nullable_obj((void *)(");
-  else if (t == TY_POLY_ARRAY)  buf_puts(b, "sp_box_nullable_obj((void *)(");
-  else if (ty_is_ptr_array(t))  buf_puts(b, "sp_box_ptr_array_k((void *)(");   /* by reference, stamped (#4486) */
+  case TY_INT_ARRAY: case TY_FLOAT_ARRAY: case TY_STR_ARRAY: case TY_POLY_ARRAY:
+    buf_puts(b, "sp_box_nullable_obj((void *)("); return;
   /* A shared-mutable string boxes as the handle, the SP_BUILTIN_STRBUF object
      the poly operators deref (sp_poly_is_strbuf). Without an arm of its own it
      fell to TY_STRING's sp_box_str, which takes a `const char *` and was
      handed an `sp_String *`: the C build stopped. emit_boxed_text has had the
      handle arm; this is its open/close twin. */
-  else if (t == TY_STRBUF) buf_puts(b, "sp_box_obj(");
-  else if (t == TY_CLASS) buf_puts(b, "sp_box_class(");
-  else if (t == TY_COMPLEX)  buf_puts(b, "sp_box_complex(");
-  else if (t == TY_RATIONAL) buf_puts(b, "sp_box_rational(");
+  case TY_STRBUF:   buf_puts(b, "sp_box_obj("); return;
+  case TY_CLASS:    buf_puts(b, "sp_box_class("); return;
+  case TY_COMPLEX:  buf_puts(b, "sp_box_complex("); return;
+  case TY_RATIONAL: buf_puts(b, "sp_box_rational("); return;
+  default: break;
+  }
+  if (ty_is_ptr_array(t))  buf_puts(b, "sp_box_ptr_array_k((void *)(");   /* by reference, stamped (#4486) */
   /* Reference-backed builtins are nilable C pointers: box NULL as nil. */
   else if (ty_nullable_builtin_id(t)) buf_puts(b, "sp_box_nullable_obj((void *)(");
   else if (ty_is_object(t)) {
