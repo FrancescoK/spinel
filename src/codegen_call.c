@@ -36437,12 +36437,15 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     case TY_ENUMERATOR: {
       /* a chain built by Enumerable#chain / Enumerator#+ reports as
          Enumerator::Chain, and a product Enumerator::Product; every other
-         enumerator is an Enumerator (#2545) */
+         enumerator is an Enumerator (#2545). The slot holds NULL for nil, as
+         `v&.each` answers for a nil `v`: that is a NilClass, as a MatchData
+         slot's no-match is. */
       int te = ++g_tmp;
       buf_printf(b, "({ sp_Enumerator *_t%d = ", te); emit_expr(c, recv, b);
-      buf_printf(b, "; (_t%d && _t%d->is_chain) ? ((sp_Class){(sp_int)-1, SPL(\"Enumerator::Chain\")})"
-                    " : (_t%d && _t%d->is_product) ? ((sp_Class){(sp_int)-1, SPL(\"Enumerator::Product\")})"
-                    " : ((sp_Class){(sp_int)-1, SPL(\"Enumerator\")}); })", te, te, te, te);
+      buf_printf(b, "; !_t%d ? ((sp_Class){(sp_int)-1, SPL(\"NilClass\")})"
+                    " : _t%d->is_chain ? ((sp_Class){(sp_int)-1, SPL(\"Enumerator::Chain\")})"
+                    " : _t%d->is_product ? ((sp_Class){(sp_int)-1, SPL(\"Enumerator::Product\")})"
+                    " : ((sp_Class){(sp_int)-1, SPL(\"Enumerator\")}); })", te, te, te);
       return;
     }
     case TY_DIR: cn = "Dir"; break;
