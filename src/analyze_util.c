@@ -1966,15 +1966,71 @@ int is_proc_literal(Compiler *c, int id) {
   if (recv >= 0 && name && sp_streq(name, "new") && is_proc_constant(nt, recv)) return 1;
   return 0;
 }
+/* `Hash.new { |h, k| ... }`, whose block codegen emits as a bare C function
+   taking only the hash and the key (emit_class_new_call). */
+static int is_hash_new_block(const NodeTable *nt, int id) {
+  if (nt_kind(nt, id) != NK_CallNode) return 0;
+  int blk = nt_ref(nt, id, "block");
+  if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return 0;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  return name && sp_streq(name, "new") && recv >= 0 &&
+         nt_kind(nt, recv) == NK_ConstantReadNode &&
+         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Hash");
+}
+static int hash_new_body_needs_frame(Compiler *c, int id, const char *hp, const char *kp) {
+  const NodeTable *nt = c->nt;
+  if (id < 0) return 0;
+  const char *ty = nt_type(nt, id);
+  if (!ty) return 0;
+  if (sp_streq(ty, "LocalVariableReadNode") || sp_streq(ty, "LocalVariableWriteNode") ||
+      sp_streq(ty, "LocalVariableTargetNode") || sp_streq(ty, "LocalVariableOperatorWriteNode") ||
+      sp_streq(ty, "LocalVariableOrWriteNode") || sp_streq(ty, "LocalVariableAndWriteNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !((hp && sp_streq(nm, hp)) || (kp && sp_streq(nm, kp)))) return 1;
+  }
+  if (sp_streq(ty, "LambdaNode")) return 1;
+  /* a nested default block that stays bare is a function of its own, its
+     parameters its own; one that does not is a proc made here */
+  if (is_hash_new_block(nt, id)) return hash_new_block_is_proc(c, id);
+  if (sp_streq(ty, "CallNode") && a_proc_create_or_lifted(c, id)) return 1;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++)
+    if (hash_new_body_needs_frame(c, nt_ref_at(nt, id, i), hp, kp)) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int k = 0; k < n; k++) if (hash_new_body_needs_frame(c, ids[k], hp, kp)) return 1;
+  }
+  return 0;
+}
+/* A `Hash.new { |h, k| ... }` block that is lowered to a real sp_Proc, which
+   the hash's default calls through sp_dyn_hash_dproc. The bare function
+   declares nothing but the hash and the key: a local the block writes, the
+   parameter of an iteration block it runs, an enclosing local it reads, and a
+   proc it makes (which captures through cells the function never had) all
+   named identifiers it did not declare, and a proc literal's own function was
+   written into the middle of it. Those blocks take the proc machinery, the
+   way a deferred handler does; a block reading only its two parameters keeps
+   the bare function. */
+int hash_new_block_is_proc(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (!is_hash_new_block(nt, id)) return 0;
+  int blk = nt_ref(nt, id, "block");
+  return hash_new_body_needs_frame(c, nt_ref(nt, blk, "body"),
+                                   block_param_name(c, blk, 0), block_param_name(c, blk, 1));
+}
 /* A block lowered to a REAL sp_Proc by its consumer -- a deferred handler
-   (at_exit / Signal.trap, #2836) or an ENV block mutator (#2832). These need
-   the full proc capture machinery but keep their own call-level inference
-   (trap returns the previous handler, not the proc). */
+   (at_exit / Signal.trap, #2836), an ENV block mutator (#2832) or a Hash.new
+   default block that needs a frame of its own (hash_new_block_is_proc). These
+   need the full proc capture machinery but keep their own call-level
+   inference (trap returns the previous handler, not the proc). */
 int is_handler_proc_block(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
   if (!ty || !sp_streq(ty, "CallNode")) return 0;
   if (nt_ref(nt, id, "block") < 0) return 0;
+  if (hash_new_block_is_proc(c, id)) return 1;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   if (!name) return 0;

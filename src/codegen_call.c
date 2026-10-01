@@ -14527,13 +14527,30 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
          value, so a symbol key round-trips as a symbol (inspect renders `a:`),
          a string as a string, etc. -- faithful for the dynamically-keyed hash a
          default block implies. */
+      if (cn && sp_streq(cn, "Hash") && nt_ref(nt, id, "block") >= 0 &&
+          hash_new_block_is_proc(c, id)) {
+        /* A block that needs a frame of its own is a real proc, as analysis
+           decided (hash_new_block_is_proc), with its captures in cells; the
+           hash's default calls it through sp_dyn_hash_dproc, the trampoline a
+           Hash constructed through a Class value already uses, and marks it
+           through dproc_self. */
+        int tp = ++g_tmp;
+        buf_printf(b, "({ sp_Proc *_t%d = ", tp);
+        emit_proc_literal(c, id, b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_PolyPolyHash_new_dproc(sp_dyn_hash_dproc, (void *)_t%d); })", tp, tp);
+        return 1;
+      }
       if (cn && sp_streq(cn, "Hash") && nt_ref(nt, id, "block") >= 0) {
         int hblk = nt_ref(nt, id, "block");
         int hbody = nt_ref(nt, hblk, "body");
         const char *hp = block_param_name(c, hblk, 0);
         const char *kp = block_param_name(c, hblk, 1);
         int dn = ++g_proc_counter;
-        Buf *pb = &g_procs;
+        /* Built into a buffer of its own and appended once complete, as a
+           proc literal's function is: a nested default block's function
+           written straight into g_procs landed in the middle of this one. */
+        Buf dproc_buf; memset(&dproc_buf, 0, sizeof dproc_buf);
+        Buf *pb = &dproc_buf;
         /* If the default block runs inside an instance/class method, thread
            that receiver in as `self` so the block can call instance methods
            or read ivars (the enclosing self is named `self` with `->`
@@ -14578,6 +14595,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         }
         g_pre = sv_pre; g_indent = sv_ind; g_self = sv_self;
         buf_puts(pb, "}\n");
+        if (dproc_buf.p) buf_puts(&g_procs, dproc_buf.p);
+        free(dproc_buf.p);
         if (dp_self) buf_printf(b, "sp_PolyPolyHash_new_dproc(_sp_hash_dproc_%d, (void *)self)", dn);
         else buf_printf(b, "sp_PolyPolyHash_new_dproc(_sp_hash_dproc_%d, NULL)", dn);
         return 1;
