@@ -12848,6 +12848,36 @@ void emit_state_release(EmitUnitState *s, int rollback) {
     }                                                         \
   } while (0)
 
+/* --defer-refusals: the statements `raise NotImplementedError, msg`, in
+   scope `scope`, positioned as `like` -- the body a refused method is
+   emitted with instead, so its callers still have it to call. */
+static int deferred_raise_body(Compiler *c, int like, int scope, const char *msg) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int st = nt_new_node(nt, "StatementsNode"), call = nt_new_node(nt, "CallNode");
+  int args = nt_new_node(nt, "ArgumentsNode"), cls = nt_new_node(nt, "ConstantReadNode");
+  int str = nt_new_node(nt, "StringNode");
+  if (st < 0 || call < 0 || args < 0 || cls < 0 || str < 0) return -1;
+  comp_grow_node_arrays(c);
+  int ids[5] = { st, call, args, cls, str };
+  for (int i = 0; i < 5; i++) {
+    c->nscope[ids[i]] = scope;
+    nt_node_set_int(nt, ids[i], "node_line", nt_int(nt, like, "node_line", 0));
+    nt_node_set_int(nt, ids[i], "node_file", nt_int(nt, like, "node_file", 0));
+  }
+  nt_node_set_str(nt, call, "name", "raise");
+  nt_node_set_ref(nt, call, "receiver", -1);
+  nt_node_set_ref(nt, call, "block", -1);
+  nt_node_set_str(nt, cls, "name", "NotImplementedError");
+  nt_node_set_str(nt, str, "content", msg);
+  nt_node_set_str(nt, str, "unescaped", msg);
+  int av[2] = { cls, str };
+  nt_node_set_arr(nt, args, "arguments", av, 2);
+  nt_node_set_ref(nt, call, "arguments", args);
+  nt_node_set_arr(nt, st, "body", &call, 1);
+  c->ntype[cls] = TY_CLASS; c->ntype[str] = TY_STRING; c->ntype[call] = TY_VOID; c->ntype[st] = TY_VOID;
+  return st;
+}
+
 /* `send` / `__send__` / `public_send` with a literal symbol/string name is
    rewritten to a direct call before this point (textually for a receiver form,
    on the AST for implicit self). A call to one of these that survives therefore
@@ -14929,7 +14959,24 @@ char *codegen_program(const NodeTable *nt) {
   emit_obj_to_ary_dispatch(c, body);
   emit_obj_with_dispatch(c, body);
   for (int s = 1; s < c->nscopes; s++) {
-    if (c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || (c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s))) continue; EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));
+    if (c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || (c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s))) continue;
+    int ndiag0 = g_ndiags;
+    EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));
+    /* --defer-refusals: a refused method is emitted again with a body that
+       raises NotImplementedError naming the refusal, when it is called */
+    if (defer_refusals() && g_ndiags > ndiag0 && c->scopes[s].body >= 0) {
+      char dmsg[2600];
+      const SpDiag *d = &g_diags[g_ndiags - 1];
+      if (d->line > 0) snprintf(dmsg, sizeof dmsg, "%s:%d: %s", d->file ? d->file : "?", d->line, d->msg);
+      else snprintf(dmsg, sizeof dmsg, "%s", d->msg);
+      int ob = c->scopes[s].body;
+      int nb = deferred_raise_body(c, ob, s, dmsg);
+      if (nb >= 0) {
+        c->scopes[s].body = nb;
+        EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));
+        c->scopes[s].body = ob;
+      }
+    }
   }
   /* Comparable cmp-hook dispatcher (after the user `<=>` definitions it calls). */
   emit_synth_line_marker(body);
@@ -15195,7 +15242,9 @@ char *codegen_program(const NodeTable *nt) {
     { const char *keep = getenv("SPINEL_EMIT_TYPES_KEEP_C");
       if (!(keep && *keep)) { free(b.p); b.p = NULL; } }
   }
-  if (g_ndiags > 0 && !collect_emit_anyway()) {
+  if (g_ndiags > 0 && defer_refusals())
+    fprintf(stderr, "spinel: %d refusal%s deferred to run time\n", g_ndiags, g_ndiags == 1 ? "" : "s");
+  if (g_ndiags > 0 && !collect_emit_anyway() && !defer_refusals()) {
     /* not "unsupported": spinel-doctor and spinel-reduce count the lines
        that say so, and this one is the count */
     fprintf(stderr, "spinel: %d refusal%s%s\n", g_ndiags, g_ndiags == 1 ? "" : "s",

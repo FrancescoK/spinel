@@ -8635,7 +8635,7 @@ static void emit_class_body_stmts(Compiler *c, int ci, int body, Buf *b, int ind
        assigns are assigned where it stands (#5996) */
     if (sp_streq(sty, "SingletonClassNode")) {
       int sx = nt_ref(nt, stmts[k], "expression");
-      if (sx >= 0 && nt_kind(nt, sx) == NK_SelfNode) emit_stmt(c, stmts[k], b, indent);
+      if (sx >= 0 && nt_kind(nt, sx) == NK_SelfNode) emit_stmt_or_defer(c, stmts[k], b, indent);
       continue;
     }
     /* A receiver-less call in a class body is, by default, a declaration
@@ -8679,7 +8679,7 @@ static void emit_class_body_stmts(Compiler *c, int ci, int body, Buf *b, int ind
       }
       if (!is_output && !is_user) continue;
     }
-    emit_stmt(c, stmts[k], b, indent);
+    emit_stmt_or_defer(c, stmts[k], b, indent);
   }
   g_class_body_id = saved_cbi;
 }
@@ -12469,6 +12469,33 @@ void emit_stmts(Compiler *c, int id, Buf *b, int indent) {
   }
 }
 
+/* One top-level or class-body statement under --defer-refusals: a refusal in
+   it rolls its text back and skips it (the refusal stays reported), so one
+   unsupported line in a module body no longer takes the whole program's
+   main with it. Without the switch, or outside a collect unit, it is
+   emit_stmt. Answers whether the statement was emitted. */
+int emit_stmt_or_defer(Compiler *c, int st, Buf *b, int indent) {
+  if (!defer_refusals() || !g_unsup_armed) { emit_stmt(c, st, b, indent); return 1; }
+  jmp_buf outer; memcpy(outer, g_unsup_recover, sizeof outer);
+  size_t saved_len = b->len;
+  Buf *saved_pre = g_pre; size_t saved_pre_len = g_pre ? g_pre->len : 0;
+  ConvHold *saved_hold = g_conv_hold;
+  EmitUnitState *saved = emit_state_snapshot();
+  volatile int ok = 0;
+  if (setjmp(g_unsup_recover) == 0) { emit_stmt(c, st, b, indent); ok = 1; }
+  else {
+    g_conv_hold = saved_hold;
+    emit_state_release(saved, 1); saved = NULL;
+    g_pre = saved_pre;
+    if (g_pre && g_pre->len > saved_pre_len) { g_pre->len = saved_pre_len; if (g_pre->p) g_pre->p[saved_pre_len] = '\0'; }
+    b->len = saved_len; if (b->p) b->p[saved_len] = '\0';
+    g_unsup_armed = 1;
+  }
+  if (saved) emit_state_release(saved, 0);
+  memcpy(g_unsup_recover, outer, sizeof outer);
+  return ok;
+}
+
 /* emit_stmts over the top level's statement list, noting in cuts[k] where
    statement k's text ends; `cuts` holds one entry per statement. Answers how
    many were emitted (a folded return ends the list early), 0 for a body that
@@ -12479,7 +12506,7 @@ int emit_top_stmts(Compiler *c, int id, Buf *b, int indent, size_t *cuts) {
   int n = 0;
   const int *body = nt_arr(c->nt, id, "body", &n);
   for (int k = 0; k < n; k++) {
-    emit_stmt(c, body[k], b, indent);
+    emit_stmt_or_defer(c, body[k], b, indent);
     cuts[k] = b->len;
     if (stmt_is_folded_return(c, body[k])) return k + 1;
   }

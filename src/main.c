@@ -353,6 +353,9 @@ static void usage(void) {
     "              and writes <out>.symbols.json (perf record -g ready)\n"
     "  --debug     Debug build: step through the .rb in gdb/lldb (#line, -g -O0)\n"
     "  --no-line-map  Suppress #line directives\n"
+    "  --defer-refusals  Build anyway: a refused method raises NotImplementedError\n"
+    "               when called, a refused top-level or class-body statement\n"
+    "               is skipped\n"
     "  --ext-init NAME    Emit a host-callable library: NAME() replaces main\n"
     "  --ext-entry M.m,.. Export these module methods (with -c; writes a .h contract)\n"
     "  --ext cruby        Also generate the CRuby extension shim (<out>_ext.c)\n"
@@ -461,6 +464,7 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--profile"))     { profile = 1; want_g = 1; i++; }
     else if (sp_streq(a, "--line-map"))    { line_map = 1; i++; }
     else if (sp_streq(a, "--no-line-map")) { line_map = 0; i++; }
+    else if (sp_streq(a, "--defer-refusals")) { set_env("SPINEL_DEFER_REFUSALS", "1"); i++; }
     else if (sp_streq(a, "--warn-widen"))  { warn_widen = 1; i++; }
     /* keep every GC root, so a suspected miscompile can be bisected against
        the same binary rather than against a different build. */

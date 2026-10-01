@@ -22,6 +22,14 @@ int g_unsup_probe = 0;   /* silent emittability probe: longjmp without printing/
    gaps are dropped and the rest is emitted anyway, which is what the
    collect-errors gate and a reduction want. */
 int collect_mode(void) { return 1; }
+/* --defer-refusals: a refused method compiles to one that raises
+   NotImplementedError (naming the refusal) when it is called, and a refused
+   top-level or class-body statement is skipped; the build goes on. */
+int defer_refusals(void) {
+  static int v = -1;
+  if (v < 0) { const char *e = getenv("SPINEL_DEFER_REFUSALS"); v = e && *e ? 1 : 0; }
+  return v;
+}
 int collect_emit_anyway(void) {
   static int v = -1;
   if (v < 0) v = getenv("SP_COLLECT_ERRORS") ? 1 : 0;
