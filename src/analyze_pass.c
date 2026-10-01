@@ -13271,6 +13271,14 @@ int infer_block_params(Compiler *c) {
       }
     }
     if (sp_streq(name, "zip") && ty_is_array(rt)) {
+      int za = nt_ref(nt, id, "arguments"), zn = 0;
+      const int *zv = za >= 0 ? nt_arr(nt, za, "arguments", &zn) : NULL;
+      if (zn != 1 || (zv && nt_kind(nt, zv[0]) == NK_SplatNode)) {
+        Scope *zs = comp_scope_of(c, block);
+        for (int j = 0; block_param_name(c, block, j); j++)
+          if (bp_widen(zs, block_param_name(c, block, j), TY_POLY)) changed = 1;
+        continue;
+      }
       Scope *zs = comp_scope_of(c, block);
       const char *zp1s = block_param_name(c, block, 1);
       LocalVar *ep0 = scope_local_intern(zs, p0); ep0->is_block_param = 1;
