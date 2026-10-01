@@ -536,11 +536,37 @@ static int yield_operator_site_type(const Compiler *c, int id, TyKind *out) {
   return 0;
 }
 
+/* A no-arg builtin method whose return type follows the receiver's type,
+   called on a yield: yield.abs on an Integer block returns Integer; on a
+   Float block, Float.  Unary minus on a String block is the deduplicated
+   frozen String, so a String site answers String for `-@`; a String has no
+   abs, and that site keeps the cached type. Like yield_operator_site_type,
+   only covers the set that analyze_infer.c's YU_RECEIVER arm widens to
+   TY_POLY; extend both in tandem. */
+static int yield_builtin_method_site_type(const Compiler *c, int id, TyKind *out) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, id) != NK_CallNode) return 0;
+  const char *op = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!op || recv < 0 || nt_kind(nt, recv) != NK_YieldNode) return 0;
+  if (nt_ref(nt, id, "block") >= 0) return 0;
+  int an = nt_ref(nt, id, "arguments"), ac = 0;
+  if (an >= 0) nt_arr(nt, an, "arguments", &ac);
+  if (ac != 0) return 0;
+  if (!sp_streq(op, "abs") && !sp_streq(op, "-@")) return 0;
+  TyKind rt;
+  if (!sp_yield_site_type(c, recv, &rt)) return 0;
+  if (rt != TY_INT && rt != TY_FLOAT && !(rt == TY_STRING && sp_streq(op, "-@"))) return 0;
+  *out = rt;
+  return 1;
+}
+
 int sp_yield_site_type(const Compiler *c, int id, TyKind *out) {
   if (g_block_id < 0 || id < 0) return 0;
   const char *ty = nt_type(c->nt, id);
   if (!ty) return 0;
   if (sp_streq(ty, "CallNode") && yield_operator_site_type(c, id, out)) return 1;
+  if (sp_streq(ty, "CallNode") && yield_builtin_method_site_type(c, id, out)) return 1;
   if (!sp_streq(ty, "YieldNode") &&
       !(sp_streq(ty, "CallNode") && blk_param_call(c, id))) return 0;
   int bbody = nt_ref(c->nt, g_block_id, "body");
