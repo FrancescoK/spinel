@@ -10717,10 +10717,11 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       /* A method written in the `Struct.new` / `Data.define` block overrides the
          generated one of the same name, as it does in CRuby: `[]` defined there
          has to run instead of the member lookup, which raised NameError for a
-         key that is not a member (#3794). The generated accessors are not
-         methods, so they are unaffected; the iterator this file synthesizes for
-         a struct is a method and is served by the object path below. */
-      !(name && comp_method_in_chain(c, ty_object_class(rt), name, NULL) >= 0)) {
+         key that is not a member (#3794). A member accessor overrides it too:
+         Struct.new(:members) answers the member, not the member names. The
+         iterator this file synthesizes for a struct is a method and is served
+         by the object path below. */
+      comp_resolve_member(c, ty_object_class(rt), name, 0, NULL, NULL) == SP_MEMBER_NONE) {
     ClassInfo *sc = &c->classes[ty_object_class(rt)];
     /* #inspect / #to_s -> the generated (or user-overridden) struct/data stringifier */
     if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
@@ -14828,9 +14829,12 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
-    /* Struct#members on a Struct/Data read out of a container. */
+    /* Struct#members on a Struct/Data read out of a container. A class with
+       a reader of the name (an attr_reader, a member named `members`) takes
+       the dispatch instead, whose default still answers a Struct's names;
+       answered here, `room.members` read out of a Hash was the names. */
     if (sp_streq(name, "members") && argc == 0 && nt_ref(nt, id, "block") < 0) {
-      if (!poly_name_user_claimed(c, "members", argc, 0)) {
+      if (!poly_name_user_claimed(c, "members", argc, 1)) {
         /* a Class read out of the slot answers the class-side members list
            through the generated sp_cls_members, when the program has it;
            anything else answers through the instance helper */
