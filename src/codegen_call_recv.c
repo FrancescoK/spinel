@@ -14491,7 +14491,8 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
      conversions live in the argc == 0 block below, which this form would skip.
      Receiver then argument are bound in that order to keep CRuby's evaluation
      order (both are evaluated before the call raises). */
-  if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "to_i")) {
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "to_i") &&
+      comp_ntype(c, id) != TY_POLY) {
     int tr = ++g_tmp, tb = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", tr); emit_expr(c, recv, b);
     buf_printf(b, "; sp_int _t%d = ", tb); emit_int_expr(c, argv[0], b);
