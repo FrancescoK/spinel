@@ -140,8 +140,7 @@ static int method_name_implicitly_invoked(const char *nm) {
        machinery meets, and nothing in the program names it (#3761) */
     "__enum_to_a", NULL };
   if (!nm) return 0;
-  for (int i = 0; implicit[i]; i++) if (sp_streq(implicit[i], nm)) return 1;
-  return 0;
+  return str_in(nm, implicit);
 }
 
 /* Can this fold seed only ever be a BUILTIN? A literal, or an expression whose
@@ -4020,8 +4019,7 @@ static int iter_elem_block_method(const char *n) {
     "take_while","drop_while","sort_by","sort_by!","min_by","max_by","group_by",
     "partition","count","sum","any?","all?","none?","one?","keep_if",
     "delete_if","uniq","find_index","each_with_index","reduce","inject", NULL };
-  for (int i = 0; names[i]; i++) if (sp_streq(n, names[i])) return 1;
-  return 0;
+  return str_in(n, names);
 }
 
 /* Is local `nm` assigned anywhere in `node`'s subtree (a block body)? Stops at
@@ -4844,8 +4842,7 @@ static int to_enum_builtin_method(const char *m) {
     "each", "reverse_each", "each_with_index", "each_index",
     "each_char", "each_line", "each_slice", "each_cons", "each_pair",
     "times", "each_byte", NULL };
-  for (int k = 0; ok[k]; k++) if (sp_streq(m, ok[k])) return 1;
-  return 0;
+  return str_in(m, ok);
 }
 
 /* Synthesize, on each user class whose yielding instance method `m` is the
@@ -4998,8 +4995,7 @@ static int is_array_enum_method(const char *nm) {
     "each_cons", "each_slice", "chunk", "chunk_while", "slice_when",
     "minmax_by", "cycle", "lazy", "each_entry", "reverse_each", "compact",
     "chain", "slice_before", "slice_after", NULL };
-  for (int k = 0; names[k]; k++) if (sp_streq(nm, names[k])) return 1;
-  return 0;
+  return str_in(nm, names);
 }
 
 /* Redirect a bare Enumerable call -- `obj.map { }`, `obj.to_a`, ... -- on a
@@ -6552,8 +6548,7 @@ static int name_is_math_fn(const char *nm) {
     "tanh", "asinh", "acosh", "atanh", "exp", "log", "log2", "log10", "sqrt",
     "cbrt", "hypot", "ldexp", "erf", "erfc", "gamma", "lgamma", "frexp",
     "expm1", "log1p", NULL };
-  for (int i = 0; fns[i]; i++) if (sp_streq(nm, fns[i])) return 1;
-  return 0;
+  return str_in(nm, fns);
 }
 
 /* `include Math` exposes the module's functions as bare calls: rewrite
@@ -6577,8 +6572,7 @@ static int kernel_module_function(const char *m) {
     "Integer", "Float", "String", "Array", "Hash", "Rational", "Complex",
     NULL
   };
-  for (int i = 0; K[i]; i++) if (sp_streq(m, K[i])) return 1;
-  return 0;
+  return str_in(m, K);
 }
 
 /* `Kernel.puts x` / `Kernel.exit(1)` / `Kernel.format(...)`: Kernel's module
@@ -10272,8 +10266,7 @@ static int npi_is_int_op(const char *nm) {
   if (!nm) return 0;
   static const char *const ops[] = {
     "+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>", "**", NULL };
-  for (int i = 0; ops[i]; i++) if (sp_streq(nm, ops[i])) return 1;
-  return 0;
+  return str_in(nm, ops);
 }
 static void narrow_poly_int_locals(Compiler *c) {
   const NodeTable *nt = c->nt;
@@ -10653,8 +10646,7 @@ static int isa_array_read_only(const char *nm) {
     "each_with_object", "to_h", "transpose", "grep", "grep_v", "bsearch",
     "sample", "shuffle", NULL };
   if (!nm) return 0;
-  for (int i = 0; R[i]; i++) if (sp_streq(nm, R[i])) return 1;
-  return 0;
+  return str_in(nm, R);
 }
 
 /* Like nng_mark_reads, but a bare read that is a direct ELEMENT of an array
@@ -11037,8 +11029,7 @@ static int empty_arr_same_kind_method(const char *nm) {
   static const char *const ok[] = {
     "+", "-", "&", "|", "==", "!=", "<=>", "eql?", "concat", "replace",
     "union", "intersection", "difference", "intersect?", "equal?", NULL };
-  for (int i = 0; ok[i]; i++) if (sp_streq(nm, ok[i])) return 1;
-  return 0;
+  return str_in(nm, ok);
 }
 static int is_empty_array_literal(const NodeTable *nt, int id, int cap) {
   if (id < 0 || id >= cap || nt_kind(nt, id) != NK_ArrayNode) return 0;
@@ -14067,8 +14058,7 @@ static int strbuf_elem_first_iterator(const char *n) {
     "min_by", "max_by", "minmax_by", "sort_by", "sort_by!", "group_by",
     "partition", "take_while", "drop_while", "uniq", "tally_by", "to_h",
     NULL };
-  for (int i = 0; names[i]; i++) if (sp_streq(n, names[i])) return 1;
-  return 0;
+  return str_in(n, names);
 }
 /* The nodes that can store into a local, keyed by (name, scope): a write of
    it, and a call on it as the receiver. The question below was answered by a
@@ -21638,8 +21628,7 @@ static int nullable_int_call_name(const char *nm) {
     /* `a <=> b` answers nil when the two are not comparable, and the poly
        helper spells that with the sentinel like every other nullable int */
     "<=>", NULL };
-  for (int i = 0; N[i]; i++) if (sp_streq(nm, N[i])) return 1;
-  return 0;
+  return str_in(nm, N);
 }
 /* A scalar slot on a class the fixpoint could not pin to a receiver still
    dispatches at runtime: codegen emits a cls_id switch over every class that
@@ -21700,8 +21689,7 @@ static int nullable_elem_ivar(Compiler *c, int at, ClassInfo **out) {
 
 static int name_in(const char *nm, const char *const *set) {
   if (!nm) return 0;
-  for (int i = 0; set[i]; i++) if (sp_streq(nm, set[i])) return 1;
-  return 0;
+  return str_in(nm, set);
 }
 
 /* An array method whose result elements are the receiver's own, so element
@@ -22657,8 +22645,7 @@ static int nn_int_array(TyKind t) {
 
 static int nn_name_in(const char *nm, const char *const *set) {
   if (!nm) return 0;
-  for (int i = 0; set[i]; i++) if (sp_streq(nm, set[i])) return 1;
-  return 0;
+  return str_in(nm, set);
 }
 
 /* A call that cannot run Ruby code or change an array's length: an
