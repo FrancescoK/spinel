@@ -1,0 +1,14 @@
+"hello"
+"hello"
+"he"
+"llo"
+nil
+""
+""
+"abc"
+"a"
+"negative length -1 given"
+"no implicit conversion of String into Integer"
+"wrong number of arguments (given 3, expected 0..2)"
+3
+"a1b"

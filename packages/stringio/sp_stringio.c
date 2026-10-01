@@ -400,3 +400,18 @@ static int64_t sio_write_vals(sp_StringIO *s, sp_int n, sp_RbVal *v, int is_puts
 void sp_StringIO_print_va(sp_StringIO *s, sp_int n, sp_RbVal *v) { sio_write_vals(s, n, v, 0); }
 void sp_StringIO_puts_va(sp_StringIO *s, sp_int n, sp_RbVal *v) { sio_write_vals(s, n, v, 1); }
 sp_int sp_StringIO_write_va(sp_StringIO *s, sp_int n, sp_RbVal *v) { return sio_write_vals(s, n, v, 0); }
+/* read(*args), when the count is only known at run time: read, read(nil)
+   and read(len). A buffer to read into is not supported here. */
+const char *sp_StringIO_read_va(sp_StringIO *s, sp_int n, sp_RbVal *v) {
+  if (n > 2) {
+    char msg[80];
+    snprintf(msg, sizeof msg, "wrong number of arguments (given %lld, expected 0..2)", (long long)n);
+    sp_raise_cls("ArgumentError", msg);
+  }
+  if (n == 2) sp_raise_cls("NotImplementedError", "StringIO#read into a buffer");
+  if (n == 0 || v[0].tag == SP_TAG_NIL) return sp_StringIO_read(s);
+  if (v[0].tag == SP_TAG_INT) return sp_StringIO_read_n(s, v[0].v.i);
+  if (v[0].tag == SP_TAG_FLT) return sp_StringIO_read_n(s, (sp_int)v[0].v.f);
+  sio_type_error(v[0], "Integer");
+  return NULL;
+}
