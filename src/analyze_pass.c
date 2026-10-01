@@ -2493,14 +2493,18 @@ static int masgn_unify_elem(Compiler *c, Scope *ms, const int *tgts, int n, TyKi
       if (!lv || lv->is_param || lv->is_block_param) continue;
       lv->type = ty_unify(lv->type, elem);
     }
-    else if (sp_streq(lty_ms, "InstanceVariableTargetNode") &&
-             ms && ms->class_id >= 0) {
+    else if (sp_streq(lty_ms, "InstanceVariableTargetNode") && ms) {
+      /* outside a method: the class body's slot, or the top level's */
+      int icid = ms->class_id;
+      if (icid < 0 && c->node_cbody && tgts[i] < c->node_cap) icid = c->node_cbody[tgts[i]];
+      if (icid < 0) icid = comp_class_index(c, "Toplevel");
+      if (icid < 0) continue;
       const char *ivnm = nt_str(nt, tgts[i], "name");
-      int iv_ms = ivnm ? comp_ivar_index(&c->classes[ms->class_id], ivnm) : -1;
-      if (iv_ms < 0 || class_ivar_pinned(&c->classes[ms->class_id], ivnm)) continue;
-      TyKind mg = ty_unify(c->classes[ms->class_id].ivar_types[iv_ms], elem);
-      if (mg != c->classes[ms->class_id].ivar_types[iv_ms]) {
-        c->classes[ms->class_id].ivar_types[iv_ms] = mg; changed = 1;
+      int iv_ms = ivnm ? comp_ivar_index(&c->classes[icid], ivnm) : -1;
+      if (iv_ms < 0 || class_ivar_pinned(&c->classes[icid], ivnm)) continue;
+      TyKind mg = ty_unify(c->classes[icid].ivar_types[iv_ms], elem);
+      if (mg != c->classes[icid].ivar_types[iv_ms]) {
+        c->classes[icid].ivar_types[iv_ms] = mg; changed = 1;
       }
     }
     else if (sp_streq(lty_ms, "GlobalVariableTargetNode")) {
