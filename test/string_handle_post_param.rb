@@ -41,3 +41,9 @@ s = +"a"; p rd.call(1, s), s.size
 fz = "fr".freeze
 begin; r(fz) { |*q, t| t << X }; rescue FrozenError => e; p e.class; end
 begin; pr.call(1, fz); rescue FrozenError => e; p e.class; end
+# a block yielding its own parameter on, to a caller's block whose post the
+# yield's count lands it on
+def ry1(x) = [x].each { |u| yield u }
+s = +"a"; ry1(s) { |a = 0, t| t << X }; p s.size
+def ry2(x) = [x].each { |u| yield 9, u }
+s = +"a"; ry2(s) { |a, *q, t| t << X }; p s.size
