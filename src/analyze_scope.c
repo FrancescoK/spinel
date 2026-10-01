@@ -6770,7 +6770,7 @@ int infer_ivar_types(Compiler *c) {
                   if (piv < 0) continue;
                   if (pvt == TY_NIL) nil_write_note(&nilw, k, sym);
                   else if (!class_ivar_pinned(pk, sym)) {
-                    TyKind pm = ty_unify(pk->ivar_types[piv], pvt);
+                    TyKind pm = ivar_merge_with_write(pk->ivar_types[piv], pvt);
                     if (pm != pk->ivar_types[piv]) { pk->ivar_types[piv] = pm; changed = 1; }
                   }
                 }
@@ -6784,7 +6784,7 @@ int infer_ivar_types(Compiler *c) {
               TyKind vt = infer_type(c, sav[1]);
               if (vt == TY_NIL) nil_write_note(&nilw, tcid, sym);
               else if (!class_ivar_pinned(ci, sym)) {
-                TyKind merged = ty_unify(ci->ivar_types[iv], vt);
+                TyKind merged = ivar_merge_with_write(ci->ivar_types[iv], vt);
                 if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
               }
             }
