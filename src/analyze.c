@@ -16581,9 +16581,42 @@ static void dyn_blk_index(Compiler *c) {
     g_dyn.bhead[h] = g_dyn.bn++;
   }
 }
+/* The methods call `n` hands its block to, into out[] (room for every
+   scope): the one its name names, or for a `new` the initialize methods it
+   can reach (ctor_call_targets). No method is named `new`, so a block
+   `Agg.new { |t| t << x }` hands to an initialize that keeps it as `&b`
+   was looked up by that name, found nothing, and was never taken for a
+   kept block: its parameter kept the value ABI, the program counted no
+   appender, and `@b.call(s)` later appended to a copy. */
+static int dyn_block_targets(Compiler *c, int n, int *out) {
+  const char *nm = nt_str(c->nt, n, "name");
+  if (!nm) return 0;
+  if (sp_streq(nm, "new")) {
+    int first, boxed;
+    return ctor_call_targets(c, n, &first, &boxed, out, c->nscopes);
+  }
+  int mi = an_any_scope_by_name(c, nm);
+  if (mi < 0) return 0;
+  out[0] = mi;
+  return 1;
+}
+/* Is scope mi one of them? */
+static int dyn_block_reaches(Compiler *c, int n, int mi) {
+  const char *nm = nt_str(c->nt, n, "name");
+  if (!nm || !c->scopes[mi].name) return 0;
+  if (!sp_streq(nm, "new")) return sp_streq(nm, c->scopes[mi].name);
+  int *tg = (int *)malloc(sizeof(int) * ((size_t)c->nscopes + 1));
+  if (!tg) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int k = dyn_block_targets(c, n, tg), hit = 0;
+  for (int e = 0; e < k && !hit; e++) hit = tg[e] == mi;
+  free(tg);
+  return hit;
+}
+
 /* The blocks a method's call sites pass as its `&blk`: the OR of their
    entries, with DYN_OPEN set when one passes something that is not a
-   literal block, or none is found. */
+   literal block, or none is found. An initialize's call sites are the
+   `new` calls that reach it. */
 #define DYN_OPEN 0x40000000u
 static unsigned dyn_blk_bits(Compiler *c, int mi) {
   const NodeTable *nt = c->nt;
@@ -16592,9 +16625,12 @@ static unsigned dyn_blk_bits(Compiler *c, int mi) {
   dyn_blk_index(c);
   unsigned bits = 0;
   int any = 0;
-  int h = c->scopes[mi].name ? anh_find(&g_dyn.bnames, c->scopes[mi].name) : -1;
+  const char *cn = c->scopes[mi].name;
+  int ctor = cn && sp_streq(cn, "initialize") && !c->scopes[mi].is_cmethod;
+  int h = cn ? anh_find(&g_dyn.bnames, ctor ? "new" : cn) : -1;
   for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
     int b = nt_ref(nt, g_dyn.bnode[e], "block");
+    if (ctor && !dyn_block_reaches(c, g_dyn.bnode[e], mi)) continue;
     any = 1;
     if (nt_kind(nt, b) != NK_BlockNode) { bits |= DYN_OPEN; continue; }
     unsigned lb = dyn_lit_bits(c, b);
@@ -16636,6 +16672,8 @@ static int dyn_any_appender(Compiler *c) {
   const NodeTable *nt = c->nt;
   if (g_dyn.any >= 0) return g_dyn.any;
   g_dyn.any = 0;
+  int *tg = (int *)malloc(sizeof(int) * ((size_t)c->nscopes + 1));
+  if (!tg) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int n = comp_kind_first(c, NK_LambdaNode); n >= 0 && !g_dyn.any; n = comp_kind_next(c, n))
     if (nt_kind(nt, n) == NK_LambdaNode && !dyn_cap_wrapper(c, n) && (dyn_lit_bits(c, n) & 0xffffu)) g_dyn.any = 1;
   for (int n = comp_kind_first(c, NK_CallNode); n >= 0 && !g_dyn.any; n = comp_kind_next(c, n)) {
@@ -16646,15 +16684,19 @@ static int dyn_any_appender(Compiler *c) {
     if (dyn_is_proc_literal(c, n)) { if (dyn_lit_bits(c, b) & 0xffffu) g_dyn.any = 1; continue; }
     if (b >= 0 && nt_kind(nt, b) == NK_BlockNode) {
       /* a block handed to a method that keeps it */
-      int mi = an_any_scope_by_name(c, nm);
-      if (mi >= 0 && c->scopes[mi].blk_param && c->scopes[mi].blk_param[0] &&
-          !c->scopes[mi].yields && (dyn_lit_bits(c, b) & 0xffffu)) g_dyn.any = 1;
+      if (!(dyn_lit_bits(c, b) & 0xffffu)) continue;
+      int nk = dyn_block_targets(c, n, tg);
+      for (int e = 0; e < nk && !g_dyn.any; e++) {
+        Scope *m = &c->scopes[tg[e]];
+        if (m->blk_param && m->blk_param[0] && !m->yields) g_dyn.any = 1;
+      }
       continue;
     }
     if (!sp_streq(nm, "method") && !sp_streq(nm, "public_method")) continue;
     for (int mi = dyn_scopes_named(c, method_sym_arg(c, n)); mi >= 0 && !g_dyn.any; mi = g_dyn.snext[mi])
       if (dyn_meth_bits(c, mi) & 0xffffu) g_dyn.any = 1;
   }
+  free(tg);
   return g_dyn.any;
 }
 
@@ -16898,6 +16940,8 @@ static int dyn_pull_arg(Compiler *c, int a, int mark_read) {
 static int dyn_convert_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
+  int *tg = (int *)malloc(sizeof(int) * ((size_t)c->nscopes + 1));
+  if (!tg) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int pass = 0; pass < 2; pass++) {
     NodeKind want = pass ? NK_CallNode : NK_LambdaNode;
     for (int n = comp_kind_first(c, want); n >= 0; n = comp_kind_next(c, n)) {
@@ -16907,9 +16951,11 @@ static int dyn_convert_params(Compiler *c) {
       else if (pass) {
         /* a block a method keeps as `&blk` is emitted as a proc too */
         int b = nt_ref(nt, n, "block");
-        int mi = b >= 0 && nt_kind(nt, b) == NK_BlockNode ? an_any_scope_by_name(c, nt_str(nt, n, "name")) : -1;
-        if (mi >= 0 && c->scopes[mi].blk_param && c->scopes[mi].blk_param[0] &&
-            !c->scopes[mi].yields && !c->scopes[mi].is_lowered_yield) create = lit = b;
+        int nk = b >= 0 && nt_kind(nt, b) == NK_BlockNode ? dyn_block_targets(c, n, tg) : 0;
+        for (int e = 0; e < nk && lit < 0; e++) {
+          Scope *m = &c->scopes[tg[e]];
+          if (m->blk_param && m->blk_param[0] && !m->yields && !m->is_lowered_yield) create = lit = b;
+        }
       }
       if (lit < 0) continue;
       unsigned app = dyn_lit_bits(c, lit) & 0xffffu;
@@ -16938,6 +16984,7 @@ static int dyn_convert_params(Compiler *c) {
       }
     }
   }
+  free(tg);
   return changed;
 }
 
