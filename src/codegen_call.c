@@ -22979,6 +22979,7 @@ static int refuse_dm_target(Compiler *c, int id, const char *name) {
    (a lowered method's yield pulls it in, dyn_yield_site); any other is a
    copy the proc's parameter takes. */
 void refuse_yield_string_copies(Compiler *c, int yargc, const int *yargv) {
+  int spread = 0;
   for (int k = 0; k < yargc && k < 16; k++) {
     int shared;
     /* a keyword (`yield(k: s)`) binds the proc's keyword of that name, and
@@ -23002,7 +23003,10 @@ void refuse_yield_string_copies(Compiler *c, int yargc, const int *yargv) {
       }
       continue;
     }
-    if (nt_kind(c->nt, yargv[k]) == NK_SplatNode) return;
+    /* the positions after a splat depend on its length; the keywords that
+       follow it bind by name all the same, so the scan goes on to them */
+    if (nt_kind(c->nt, yargv[k]) == NK_SplatNode) spread = 1;
+    if (spread) continue;
     if (!strvar_arg(c, yargv[k], &shared) || shared || local_is_handle(c, yargv[k])) continue;
     DynReach r;
     dyn_value_reach(c, g_yield_proc_expr, k, &r);
@@ -23297,7 +23301,9 @@ static void refuse_string_copies(Compiler *c, int id) {
           const char *key = dyn_kw_elem_key(c, el[e], &v);
           if (!key || v < 0 || !strvar_arg(c, v, &shared)) continue;
           if (shift) {
-            if (mi >= 0 && dyn_method_kw_appends(c, mi, key, &j) && refuse_param_copies(c, mi, j, v)) {
+            /* the method's keyword can be the handle (dyn_convert_params),
+               but the caller's String is not pulled into it here */
+            if (!shared && mi >= 0 && dyn_method_kw_appends(c, mi, key, &j) && refuse_param_copies_dm(c, mi, j, v)) {
               char mt[96]; snprintf(mt, sizeof mt, "`%s`", c->scopes[mi].name);
               refuse_string_copy(c, v, mt, c->scopes[mi].pnames[j], through, "through `bind_call`");
             }

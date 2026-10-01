@@ -16918,10 +16918,13 @@ static int dyn_lit_kw_any(Compiler *c, int lit) {
   }
   return 0;
 }
+static int dyn_block_targets(Compiler *c, int n, int *out);
 static int dyn_any_kw_appender(Compiler *c) {
   const NodeTable *nt = c->nt;
   if (g_dyn.kw_any >= 0) return g_dyn.kw_any;
   g_dyn.kw_any = 0;
+  int *tg = (int *)malloc(sizeof(int) * ((size_t)c->nscopes + 1));
+  if (!tg) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int n = comp_kind_first(c, NK_LambdaNode); n >= 0 && !g_dyn.kw_any; n = comp_kind_next(c, n))
     if (nt_kind(nt, n) == NK_LambdaNode && !dyn_cap_wrapper(c, n) && dyn_lit_kw_any(c, n)) g_dyn.kw_any = 1;
   for (int n = comp_kind_first(c, NK_CallNode); n >= 0 && !g_dyn.kw_any; n = comp_kind_next(c, n)) {
@@ -16931,9 +16934,14 @@ static int dyn_any_kw_appender(Compiler *c) {
     int b = nt_ref(nt, n, "block");
     if (dyn_is_proc_literal(c, n)) { if (dyn_lit_kw_any(c, b)) g_dyn.kw_any = 1; continue; }
     if (b >= 0 && nt_kind(nt, b) == NK_BlockNode) {
-      int mi = an_any_scope_by_name(c, nm);
-      if (mi >= 0 && c->scopes[mi].blk_param && c->scopes[mi].blk_param[0] &&
-          !c->scopes[mi].yields && dyn_lit_kw_any(c, b)) g_dyn.kw_any = 1;
+      /* the methods the block reaches, `new`'s initialize included (as
+         dyn_any_appender asks it) */
+      if (!dyn_lit_kw_any(c, b)) continue;
+      int nk = dyn_block_targets(c, n, tg);
+      for (int e = 0; e < nk && !g_dyn.kw_any; e++) {
+        Scope *m = &c->scopes[tg[e]];
+        if (m->blk_param && m->blk_param[0] && !m->yields) g_dyn.kw_any = 1;
+      }
       continue;
     }
     if (!sp_streq(nm, "method") && !sp_streq(nm, "public_method")) continue;
@@ -16944,6 +16952,7 @@ static int dyn_any_kw_appender(Compiler *c) {
             (dyn_meth_kw_bits(c, mi, m->pnames[j], NULL) & 1u)) g_dyn.kw_any = 1;
     }
   }
+  free(tg);
   return g_dyn.kw_any;
 }
 

@@ -376,6 +376,9 @@ unsigned inline_alias_params(Compiler *c, int mi, const int *argv, int pargc, co
     /* a String that is the shared handle has no slot to lend: the
        parameter takes the handle (yield_splice_handles) or a copy */
     else if (ak != NK_LocalVariableReadNode || local_is_handle(c, an)) continue;
+    /* a variable that can hold other values (`u = nil`) is an sp_RbVal,
+       no `const char *` slot to lend either */
+    else if (comp_ntype(c, an) != TY_STRING) continue;
     LocalVar *lv = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
     if (!lv || !lv->is_param || lv->is_block_param || lv->type != TY_STRING) continue;
     if (lv->is_cell && !lv->inline_alias) continue;
@@ -1424,6 +1427,23 @@ static void bi_method_side(BiRen *r) {
   g_nren = r->cs_nren;
 }
 
+/* Was yielded value `v` run ahead into a temp (emit_args_before), since a
+   later value rebinds the variable it reads? An alias of it then names the
+   temp, not the variable's slot, and the block's append never reaches the
+   String the caller holds: refused rather than compiled without it. */
+static void refuse_alias_of_snapshot(Compiler *c, int v, const char *pn) {
+  for (int i = 0; i < g_n_argov; i++) {
+    if (g_argov_node[i] != v) continue;
+    char msg[512];
+    snprintf(msg, sizeof msg,
+             "a String is passed to a block's parameter `%s` through a yield, which the block appends to, "
+             "and a later value of the same yield rebinds the variable it is read from: the block would "
+             "append to a copy of the String the variable held, so the append would not reach the "
+             "caller's String. Read the variable into another one ahead of the yield.", pn);
+    unsupported_feature(c, v, msg);
+    return;
+  }
+}
 /* Bind block `blk`'s keyword parameters and **kwrest from a call's trailing
    keyword hash `ykw` (-1: the call passes none), for a yield or block.call
    and for instance_exec. `bsc` holds the parameters' slots. */
@@ -1537,6 +1557,7 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
                "to it in the caller.", kn);
       unsupported_feature(c, vn, msg);
     }
+    if (kw_alias) refuse_alias_of_snapshot(c, vn, kn);
     if (kw_alias && al->n < (int)(sizeof al->lv / sizeof al->lv[0])) {
       if (!as_expr) emit_indent(b, indent);
       if (!as_expr && !al->open) { buf_puts(b, "{\n"); emit_indent(b, indent); al->open = 1; }
@@ -1873,6 +1894,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
         nt_kind(nt, yargs[k]) == NK_LocalVariableReadNode && !local_is_handle(c, yargs[k]) &&
         comp_ntype(c, yargs[k]) == TY_STRING && block_param_wants_alias(c, blk, k)) {
       LocalVar *bl = bsc ? scope_local(bsc, bp) : NULL;
+      if (bl && al) refuse_alias_of_snapshot(c, yargs[k], bp);
       if (bl && al && al->n < (int)(sizeof al->lv / sizeof al->lv[0])) {
         if (!as_expr && !al->open) { buf_puts(b, "{\n"); emit_indent(b, indent); al->open = 1; }
         buf_printf(b, "const char **_cell_%s = &(", bpr);

@@ -1118,6 +1118,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (#6179: a block parameter's String copied into a proc's appending keyword compiled)"; ok=0; \
 	else grep -q "which the proc appends to" "$$tmp/sk.out" || \
 	  { echo "reject-test: FAIL (#6179: keyword rejected without saying why)"; sed -n 1,5p "$$tmp/sk.out"; ok=0; }; fi; \
+	t=test/reject/string_append_bind_call_keyword.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/bk.c" >"$$tmp/bk.out" 2>&1; then \
+	  echo "reject-test: FAIL (#6179: a String copied into an appending keyword through bind_call compiled)"; ok=0; \
+	else grep -q "through \`bind_call\`" "$$tmp/bk.out" || \
+	  { echo "reject-test: FAIL (#6179: bind_call keyword rejected without saying why)"; sed -n 1,5p "$$tmp/bk.out"; ok=0; }; fi; \
 	t=test/reject/typed_array_kept_by_struct_into_boxed_param_store.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/tb.c" >"$$tmp/tb.out" 2>&1; then \
 	  echo "reject-test: FAIL (a typed array held by the caller, stored into through a boxed parameter, compiled)"; ok=0; \
