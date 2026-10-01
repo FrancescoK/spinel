@@ -24149,8 +24149,153 @@ static int nil_only_read(Compiler *c, const NilOnlyLocals *s, int v) {
   return lv && nil_only_has(s, lv);
 }
 
+/* ---- a scalar local read before any write ----
+
+   A Ruby local exists from its first assignment in the source, and reads nil
+   until a write runs. An Integer or Float slot started at 0 / 0.0, so a read
+   no write has reached yet (`x = 5 if c; p x` with c false, a multiple
+   assignment under a modifier `if`) answered 0. A read is covered when an
+   earlier statement of a list around it writes the local on every path; any
+   other read may see the slot unassigned. */
+static int du_writes(const NodeTable *nt, int n, const char *nm, int depth);
+static int du_list_writes(const NodeTable *nt, int stmts, const char *nm, int depth) {
+  int bn = 0; const int *b = stmts >= 0 ? nt_arr(nt, stmts, "body", &bn) : NULL;
+  for (int i = 0; i < bn; i++) if (du_writes(nt, b[i], nm, depth + 1)) return 1;
+  return 0;
+}
+/* Does evaluating node `n` write local `nm` on every path through it? */
+static int du_writes(const NodeTable *nt, int n, const char *nm, int depth) {
+  if (n < 0 || depth > 64) return 0;
+  switch (nt_kind(nt, n)) {
+  case NK_LocalVariableWriteNode: case NK_LocalVariableOrWriteNode:
+  case NK_LocalVariableAndWriteNode: case NK_LocalVariableOperatorWriteNode:
+  case NK_LocalVariableTargetNode: {
+    const char *wn = nt_str(nt, n, "name");
+    if (wn && sp_streq(wn, nm)) return 1;
+    return du_writes(nt, nt_ref(nt, n, "value"), nm, depth + 1);
+  }
+  case NK_MultiWriteNode: case NK_MultiTargetNode: {
+    const char *keys[] = { "lefts", "rights" };
+    for (int k = 0; k < 2; k++) {
+      int ln = 0; const int *l = nt_arr(nt, n, keys[k], &ln);
+      for (int i = 0; i < ln; i++) if (du_writes(nt, l[i], nm, depth + 1)) return 1;
+    }
+    int r = nt_ref(nt, n, "rest");
+    if (r >= 0 && du_writes(nt, nt_kind(nt, r) == NK_SplatNode ? nt_ref(nt, r, "expression") : r, nm, depth + 1))
+      return 1;
+    return du_writes(nt, nt_ref(nt, n, "value"), nm, depth + 1);
+  }
+  case NK_StatementsNode: return du_list_writes(nt, n, nm, depth);
+  case NK_ParenthesesNode: return du_writes(nt, nt_ref(nt, n, "body"), nm, depth + 1);
+  case NK_BeginNode:
+    /* a rescue or ensure can leave the body before its write */
+    if (nt_ref(nt, n, "rescue_clause") >= 0 || nt_ref(nt, n, "ensure_clause") >= 0) return 0;
+    return du_writes(nt, nt_ref(nt, n, "statements"), nm, depth + 1);
+  case NK_IfNode: case NK_UnlessNode: {
+    if (du_writes(nt, nt_ref(nt, n, "predicate"), nm, depth + 1)) return 1;
+    int els = nt_ref(nt, n, nt_kind(nt, n) == NK_IfNode ? "subsequent" : "else_clause");
+    return els >= 0 && du_writes(nt, nt_ref(nt, n, "statements"), nm, depth + 1) &&
+           du_writes(nt, els, nm, depth + 1);
+  }
+  case NK_ElseNode: return du_writes(nt, nt_ref(nt, n, "statements"), nm, depth + 1);
+  case NK_CaseNode: {
+    if (du_writes(nt, nt_ref(nt, n, "predicate"), nm, depth + 1)) return 1;
+    int els = nt_ref(nt, n, "else_clause");
+    if (els < 0 || !du_writes(nt, els, nm, depth + 1)) return 0;
+    int wn = 0; const int *w = nt_arr(nt, n, "conditions", &wn);
+    for (int i = 0; i < wn; i++)
+      if (!du_writes(nt, nt_ref(nt, w[i], "statements"), nm, depth + 1)) return 0;
+    return 1;
+  }
+  case NK_AndNode: case NK_OrNode: return du_writes(nt, nt_ref(nt, n, "left"), nm, depth + 1);
+  case NK_WhileNode: case NK_UntilNode: return du_writes(nt, nt_ref(nt, n, "predicate"), nm, depth + 1);
+  case NK_CallNode: {
+    if (du_writes(nt, nt_ref(nt, n, "receiver"), nm, depth + 1)) return 1;
+    int a = nt_ref(nt, n, "arguments");
+    int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    for (int i = 0; i < an; i++) if (du_writes(nt, av[i], nm, depth + 1)) return 1;
+    return 0;
+  }
+  default: return 0;
+  }
+}
+/* Can the read `rd` of local `nm` run before any write of it? Walks out
+   through the lists around it to the method (a def is the boundary: a
+   local does not cross it), asking each list's statements ahead of the one
+   holding the read. A block's body is walked through to the statements
+   around the call that carries it. */
+/* The first statement of list `stmts` that writes `nm` on every path, or
+   the list's length: memoized per (list, name), so a long list read many
+   times is scanned once per local (scale-test's flat programs). */
+typedef struct { int stmts; const char *nm; int first; } DUMemo;
+static DUMemo *du_memo; static int du_memo_cap, du_memo_n;
+static int du_first_write(const NodeTable *nt, int stmts, const char *nm) {
+  unsigned h = 2166136261u ^ (unsigned)stmts;
+  for (const char *q = nm; *q; q++) { h ^= (unsigned char)*q; h *= 16777619u; }
+  if (du_memo_n * 2 >= du_memo_cap) {
+    int ncap = du_memo_cap ? du_memo_cap * 2 : 1024;
+    DUMemo *nm2 = calloc((size_t)ncap, sizeof *nm2);
+    for (int k = 0; k < ncap; k++) nm2[k].stmts = -1;
+    for (int k = 0; k < du_memo_cap; k++) {
+      if (du_memo[k].stmts < 0) continue;
+      unsigned h2 = 2166136261u ^ (unsigned)du_memo[k].stmts;
+      for (const char *q = du_memo[k].nm; *q; q++) { h2 ^= (unsigned char)*q; h2 *= 16777619u; }
+      unsigned j = h2 & (unsigned)(ncap - 1);
+      while (nm2[j].stmts >= 0) j = (j + 1) & (unsigned)(ncap - 1);
+      nm2[j] = du_memo[k];
+    }
+    free(du_memo); du_memo = nm2; du_memo_cap = ncap;
+  }
+  unsigned j = h & (unsigned)(du_memo_cap - 1);
+  while (du_memo[j].stmts >= 0) {
+    if (du_memo[j].stmts == stmts && sp_streq(du_memo[j].nm, nm)) return du_memo[j].first;
+    j = (j + 1) & (unsigned)(du_memo_cap - 1);
+  }
+  int bn = 0; const int *b = nt_arr(nt, stmts, "body", &bn);
+  int first = bn;
+  for (int i = 0; i < bn; i++) if (du_writes(nt, b[i], nm, 0)) { first = i; break; }
+  du_memo[j].stmts = stmts; du_memo[j].nm = nm; du_memo[j].first = first; du_memo_n++;
+  return first;
+}
+static int du_read_maybe_unset(const NodeTable *nt, const int *par, int rd, const char *nm) {
+  int cur = rd;
+  for (int guard = 0; guard < 4096; guard++) {
+    int p = par[cur];
+    if (p < 0) return 1;
+    NodeKind pk = nt_kind(nt, p);
+    if (pk == NK_DefNode || pk == NK_ClassNode || pk == NK_ModuleNode || pk == NK_SingletonClassNode) return 1;
+    if (pk == NK_StatementsNode) {
+      int bn = 0; const int *b = nt_arr(nt, p, "body", &bn);
+      int first = du_first_write(nt, p, nm);
+      /* the read inside or before that write's own statement is not covered */
+      for (int i = 0; i <= first && i < bn; i++) if (b[i] == cur) { first = -1; break; }
+      if (first >= 0 && first < bn) return 0;   /* a write ahead of the read's statement */
+    }
+    cur = p;
+  }
+  return 1;
+}
+
 static void mark_nullable_int_locals(Compiler *c) {
   const NodeTable *nt = c->nt;
+  /* A scalar local a read can reach before any write starts as its nil and
+     carries it (du_read_maybe_unset); the rounds below spread the mark */
+  {
+    int *par = NULL;
+    for (int r = comp_kind_first(c, NK_LocalVariableReadNode); r >= 0; r = comp_kind_next(c, r)) {
+      if (nt_kind(nt, r) != NK_LocalVariableReadNode) continue;
+      const char *nm = nt_str(nt, r, "name");
+      Scope *rs = nm ? comp_scope_of(c, r) : NULL;
+      LocalVar *lv = rs ? scope_local(rs, nm) : NULL;
+      if (!lv || lv->is_param || lv->is_block_param || lv->maybe_unset ||
+          (lv->type != TY_INT && lv->type != TY_FLOAT)) continue;
+      if (!par) par = an_parent_map(nt);
+      if (!par) break;
+      if (du_read_maybe_unset(nt, par, r, nm)) { lv->maybe_unset = 1; lv->nullable_int = 1; }
+    }
+    free(par);
+    free(du_memo); du_memo = NULL; du_memo_cap = du_memo_n = 0;
+  }
   /* An --rbs `Integer?` return is the seeded form of the same property the
      rounds below infer, so start the propagation from it. */
   for (int mi = 1; mi < c->nscopes; mi++)
