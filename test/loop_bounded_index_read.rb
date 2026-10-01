@@ -62,13 +62,19 @@ p t
 
 # the increment is not last: the read after it can be one past the end
 late = [1, 2, 3]
-lt = []
+lt = 0
+lnil = 0
 r = 0
 while r < late.length
   r += 1
-  lt << late[r]
+  v = late[r]
+  if v.nil?
+    lnil += 1
+  else
+    lt += v
+  end
 end
-p lt
+p lt, lnil
 
 # a second write to the index
 two = [1, 2, 3, 4, 5, 6]
@@ -84,13 +90,19 @@ p tw
 # an index into a different array than the one the loop is bounded by
 short = [1, 2]
 long = [7, 8, 9, 10]
-ds = []
+ds = 0
+dnil = 0
 x = 0
 while x < long.length
-  ds << short[x]
+  v = short[x]
+  if v.nil?
+    dnil += 1
+  else
+    ds += v
+  end
   x += 1
 end
-p ds
+p ds, dnil
 
 # the start is not the statement just ahead of the loop
 st = [4, 5, 6]
