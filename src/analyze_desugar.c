@@ -9744,21 +9744,6 @@ static int local_read_like(NodeTable *nt, int like, const char *name) {
   return r;
 }
 
-static int alias_class_defines(const NodeTable *nt, const char *cls, const char *meth, int n0) {
-  for (int m = 0; m < n0; m++) {
-    if (nt_kind(nt, m) != NK_ClassNode) continue;
-    int cp = nt_ref(nt, m, "constant_path");
-    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    if (!cn || !sp_streq(cn, cls)) continue;
-    int body = nt_ref(nt, m, "body");
-    int n = 0; const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
-    for (int k = 0; k < n; k++)
-      if (nt_kind(nt, st[k]) == NK_DefNode && nt_ref(nt, st[k], "receiver") < 0 &&
-          nt_str(nt, st[k], "name") && sp_streq(nt_str(nt, st[k], "name"), meth)) return 1;
-  }
-  return 0;
-}
-
 static void alias_pair_names(const NodeTable *nt, int s, const char **nw, const char **od) {
   if (nt_kind(nt, s) == NK_AliasMethodNode) {
     int nn = nt_ref(nt, s, "new_name"), on = nt_ref(nt, s, "old_name");
@@ -9771,6 +9756,27 @@ static void alias_pair_names(const NodeTable *nt, int s, const char **nw, const 
     int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
     if (ac == 2) { *nw = sym_or_str_literal(nt, av[0]); *od = sym_or_str_literal(nt, av[1]); }
   }
+}
+
+static int alias_class_defines(const NodeTable *nt, const char *cls, const char *meth, int n0) {
+  for (int m = 0; m < n0; m++) {
+    if (nt_kind(nt, m) != NK_ClassNode) continue;
+    int cp = nt_ref(nt, m, "constant_path");
+    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (!cn || !sp_streq(cn, cls)) continue;
+    int body = nt_ref(nt, m, "body");
+    int n = 0; const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+    for (int k = 0; k < n; k++) {
+      if (nt_kind(nt, st[k]) == NK_DefNode && nt_ref(nt, st[k], "receiver") < 0 &&
+          nt_str(nt, st[k], "name") && sp_streq(nt_str(nt, st[k], "name"), meth)) return 1;
+      /* an alias that binds the name here is a definition of it too: the
+         forwarder would call that one, not the inherited body */
+      const char *anw = NULL, *aod = NULL;
+      alias_pair_names(nt, st[k], &anw, &aod);
+      if (anw && sp_streq(anw, meth)) return 1;
+    }
+  }
+  return 0;
 }
 
 int desugar_inherited_aliases(Compiler *c) {
