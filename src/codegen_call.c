@@ -1370,7 +1370,7 @@ static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int
       free(cb.p); cb = wb;
     }
     free(pre.p);
-    if (method_is_void(ks)) buf_puts(b, cb.p ? cb.p : "");
+    if (tr < 0 || method_is_void(ks)) buf_puts(b, cb.p ? cb.p : "");
     else {
       buf_printf(b, "_t%d = ", tr);
       if (ret == TY_POLY && kr != TY_POLY) emit_boxed_text(c, kr, cb.p ? cb.p : "", b);
@@ -10191,7 +10191,8 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       }
       /* a class-valued receiver dispatches class-side, ahead of the instance
          arms (#4218). */
-      emit_poly_cls_value_prearm(c, id, name, pos_argc, atmp, atmp_ty, htmp, &kw, tv, tr, ret, blk_tmp2, b);
+      emit_poly_cls_value_prearm(c, id, name, pos_argc, atmp, atmp_ty, htmp, &kw, tv,
+                                 is_setter_val ? -1 : tr, ret, blk_tmp2, b);
       /* a primitive-reopen candidate needs the tag-mapping key (#4219) */
       int prim_cand2 = 0;
       for (int k = 0; k < c->nclasses && !prim_cand2; k++) {
