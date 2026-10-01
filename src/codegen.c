@@ -10112,6 +10112,16 @@ static void emit_zsuper_param(Compiler *c, Scope *s, Scope *pm, const ZSuper *z,
   g_nren = sv;
 }
 
+static void emit_zsuper_args(Compiler *c, Scope *s, Scope *pm, const char *sep0, Buf *b) {
+  ZSuper z;
+  zsuper_begin(c, s, pm, &z);
+  for (int i = 0; i < pm->nparams; i++) {
+    buf_puts(b, i == 0 ? sep0 : ", ");
+    emit_zsuper_param(c, s, pm, &z, i, g_nren, g_nren, b);
+  }
+  zsuper_end(&z);
+}
+
 /* A bare `super` in a method taking `*rest`: CRuby passes its positionals
    with the rest spread among them, so how many reach the parent is known only
    at run time. Gather them into one Array rooted in the prelude and refuse a
@@ -10558,14 +10568,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
     if (ty && sp_streq(ty, "ForwardingSuperNode") && smi >= 0) {
       /* laid out over the shadow's parameters as any bare super is: passed
          slot by slot, a `**` went into the shadow's first keyword */
-      Scope *pm = &c->scopes[smi];
-      ZSuper z;
-      zsuper_begin(c, s, pm, &z);
-      for (int i = 0; i < pm->nparams; i++) {
-        buf_puts(b, ", ");
-        emit_zsuper_param(c, s, pm, &z, i, g_nren, g_nren, b);
-      }
-      zsuper_end(&z);
+      emit_zsuper_args(c, s, &c->scopes[smi], ", ", b);
     }
     else if (ty && sp_streq(ty, "ForwardingSuperNode")) {
       for (int i = 0; i < s->nparams; i++) { buf_puts(b, ", "); emit_scope_local_ref(c, s, s->pnames[i], b); }
@@ -10606,16 +10609,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
       buf_printf(b, "%s%s", cmethod_takes_self_cls(c, (int)(s - c->scopes)) ? "_sp_cls" : own,
                  c->scopes[cmi].nparams > 0 ? ", " : "");
     }
-    if (ty && sp_streq(ty, "ForwardingSuperNode")) {
-      Scope *pm = &c->scopes[cmi];
-      ZSuper z;
-      zsuper_begin(c, s, pm, &z);
-      for (int i = 0; i < pm->nparams; i++) {
-        buf_puts(b, i == 0 ? "" : ", ");
-        emit_zsuper_param(c, s, pm, &z, i, g_nren, g_nren, b);
-      }
-      zsuper_end(&z);
-    }
+    if (ty && sp_streq(ty, "ForwardingSuperNode")) emit_zsuper_args(c, s, &c->scopes[cmi], "", b);
     else emit_args_filled(c, cmi, nt_ref(c->nt, id, "arguments"), "", b);
     emit_super_block_arg(c, id, s, &c->scopes[cmi],
                          c->scopes[cmi].nparams > 0 || cmethod_takes_self_cls(c, cmi), b);
@@ -10836,16 +10830,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
           int xm = comp_method_in_chain(c, xr[q], uname, NULL);
           if (q != xn - 1) buf_printf(b, "_xi%d == %d ? ", pk, q);
           buf_printf(b, "sp_%s_%s((sp_Exception *)%s", mc_reopen_cls(c, xr[q], uname), mc(uname), g_self);
-          if (ty && sp_streq(ty, "ForwardingSuperNode")) {
-            Scope *pm = &c->scopes[xm];
-            ZSuper z;
-            zsuper_begin(c, s, pm, &z);
-            for (int i = 0; i < pm->nparams; i++) {
-              buf_puts(b, ", ");
-              emit_zsuper_param(c, s, pm, &z, i, g_nren, g_nren, b);
-            }
-            zsuper_end(&z);
-          }
+          if (ty && sp_streq(ty, "ForwardingSuperNode")) emit_zsuper_args(c, s, &c->scopes[xm], ", ", b);
           else emit_args_filled(c, xm, nt_ref(c->nt, id, "arguments"), ", ", b);
           buf_puts(b, ")");
           if (q != xn - 1) buf_puts(b, " : ");
@@ -10896,14 +10881,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
     /* The parent may declare more than this method does -- an optional,
        `*rest`, a keyword, `**` -- which a bare super leaves to their defaults
        and empties, as CRuby does (#4852). */
-    Scope *pm = &c->scopes[mi];
-    ZSuper z;
-    zsuper_begin(c, s, pm, &z);
-    for (int i = 0; i < pm->nparams; i++) {
-      buf_puts(b, ", ");
-      emit_zsuper_param(c, s, pm, &z, i, g_nren, g_nren, b);
-    }
-    zsuper_end(&z);
+    emit_zsuper_args(c, s, &c->scopes[mi], ", ", b);
   }
   else {
     emit_args_filled(c, mi, nt_ref(c->nt, id, "arguments"), ", ", b);
