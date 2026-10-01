@@ -18088,14 +18088,28 @@ static int json_to_json_is_builtin(Compiler *c, int recv) {
    class. Emits the raise and reports 1; reports 0 when the stride is one the
    range can use. `into` names the type in the message; `conv` selects the
    conversion wording, which is what a String range's own comparison raises. */
+/* The class of an empty container (`[]`, `{}`, `Array.new`, `Hash.new`, in
+   parentheses or not), or NULL. Its type carries no element type, so it does
+   not read as an Array or Hash type. */
+static const char *empty_container_class(Compiler *c, int node) {
+  node = unwrap_parens(c, node);
+  if (!node_is_empty_container(c->nt, node)) return NULL;
+  NodeKind k = nt_kind(c->nt, node);
+  if (k == NK_ArrayNode) return "Array";
+  if (k != NK_CallNode) return "Hash";
+  int r = nt_ref(c->nt, node, "receiver");
+  return sp_streq(nt_str(c->nt, r, "name"), "Array") ? "Array" : "Hash";
+}
+
 static int emit_range_step_bad_stride(Compiler *c, int id, int recv, int arg,
                                       const char *into, int conv, Buf *b) {
   TyKind at = comp_ntype(c, arg);
-  NodeKind ak = nt_kind(c->nt, arg);
-  const char *cn = (at == TY_STRING || at == TY_STRBUF) ? "String" :
+  const char *ecn = empty_container_class(c, arg);
+  const char *cn = ecn ? ecn :
+                   (at == TY_STRING || at == TY_STRBUF) ? "String" :
                    at == TY_NIL ? "nil" :
-                   (ty_is_array(at) || ty_is_obj_array(at) || ak == NK_ArrayNode) ? "Array" :
-                   (ty_is_hash(at) || ak == NK_HashNode) ? "Hash" :
+                   (ty_is_array(at) || ty_is_obj_array(at)) ? "Array" :
+                   ty_is_hash(at) ? "Hash" :
                    (at == TY_RANGE || at == TY_FLOAT_RANGE || at == TY_STR_RANGE) ? "Range" : NULL;
   /* The conversion form names a Symbol by its CLASS (a boolean still by its
      inspect); the coercion form names both by inspect. */

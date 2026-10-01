@@ -1,0 +1,6 @@
+"Array can't be coerced into Integer"
+"no implicit conversion of Hash into String"
+"Array can't be coerced into Float"
+"Array can't be coerced into Integer"
+"no implicit conversion of Array into String"
+"Hash can't be coerced into Float"
