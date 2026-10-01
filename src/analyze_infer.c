@@ -7147,6 +7147,12 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "nonzero?") && argc == 0) return TY_POLY;   /* self or nil */
     if (sp_streq(name, "fdiv") && argc == 1) return TY_FLOAT;
     if (sp_streq(name, "pow") && argc == 1) return TY_BIGINT;
+    /* A Float operand divides in floats, as CRuby converts the Bignum to its
+       nearest double: modulo and remainder answer a Float, and div the
+       Integer floor of the Float quotient, which may or may not fit a word */
+    if ((sp_streq(name, "modulo") || sp_streq(name, "%") || sp_streq(name, "remainder")) &&
+        argc == 1 && infer_type(c, argv[0]) == TY_FLOAT) return TY_FLOAT;
+    if (sp_streq(name, "div") && argc == 1 && infer_type(c, argv[0]) == TY_FLOAT) return TY_POLY;
     /* modulo/%/remainder/modular-pow stay Bignum; divmod is a [q, r] pair;
        #[] is a single bit (0/1) (#2594) */
     if ((sp_streq(name, "modulo") || sp_streq(name, "%") || sp_streq(name, "remainder")) &&
