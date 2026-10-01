@@ -10418,13 +10418,15 @@ int desugar_included_hooks(Compiler *c) {
  * and the call becomes `__spinel_cg_Name` on self: class-method dispatch then
  * picks the nearest definition, as the ancestor lookup would. */
 
-static void scg_add_def_body(NodeTable *nt, int cls, const char *cname, int like, int raising);
-static void scg_add_def(NodeTable *nt, int cls, const char *cname, int like) {
-  scg_add_def_body(nt, cls, cname, like, 0);
+static void scg_add_def_body(NodeTable *nt, int cls, const char *cname, int like, int raising,
+                             const char *mname);
+static void scg_add_def(NodeTable *nt, int cls, const char *cname, int like, const char *mname) {
+  scg_add_def_body(nt, cls, cname, like, 0, mname);
 }
 /* `raising`: 0 reads the constant, 1 raises NameError; 2 and 3 are the
    `defined?` twin, `__spinel_cd_Name`, answering "constant" or nil */
-static void scg_add_def_body(NodeTable *nt, int cls, const char *cname, int like, int raising) {
+static void scg_add_def_body(NodeTable *nt, int cls, const char *cname, int like, int raising,
+                             const char *mname) {
   int body = nt_ref(nt, cls, "body");
   if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) {
     int nb = fwd_new_node_like(nt, like, "StatementsNode");
@@ -10432,7 +10434,6 @@ static void scg_add_def_body(NodeTable *nt, int cls, const char *cname, int like
     nt_node_set_ref(nt, cls, "body", nb);
     body = nb;
   }
-  char mname[256]; snprintf(mname, sizeof mname, raising >= 2 ? "__spinel_cd_%s" : "__spinel_cg_%s", cname);
   int bn = 0; const int *bs = nt_arr(nt, body, "body", &bn);
   for (int k = 0; k < bn; k++)
     if (nt_kind(nt, bs[k]) == NK_DefNode && nt_str(nt, bs[k], "name") &&
@@ -10528,58 +10529,86 @@ static int scg_body_privatizes(const NodeTable *nt, int cls, const char *cname) 
   return 0;
 }
 
-/* Does a class or module named `nm` (any of its bodies) define `cname` as a
-   public constant, or any module one of those bodies includes? Names match
-   by their last segment, so `Ns::X` including `Y` that includes `X` reads as
-   a cycle: a name already walked (`seen`) is not walked again. */
+/* The name a superclass or an included module is written with: the last
+   segment of a qualified one (`Outer::Parent`), as class bodies are matched
+   by name here. */
+static const char *scg_const_name(const NodeTable *nt, int n) {
+  if (n < 0) return NULL;
+  NodeKind k = nt_kind(nt, n);
+  return k == NK_ConstantReadNode || k == NK_ConstantPathNode ? nt_str(nt, n, "name") : NULL;
+}
+
+/* Where the lookup of `cname` from a class or module named `nm` ends: 1 when
+   it or a module it includes defines it, -1 when the nearest definition is
+   private and `honor_private` (a scoped read, `self::cname`, raises there),
+   0 when none does. A private_constant in any reopening counts, and the
+   module included last is searched first, as Ruby's ancestors run. Names
+   match by their last segment, so `Ns::X` including `Y` that includes `X`
+   reads as a cycle: a name already walked (`seen`) is not walked again. */
 typedef struct { const char *nm[64]; int n; } ScgSeen;
-static int scg_named_defines(const NodeTable *nt, const char *nm, const char *cname, int n0, ScgSeen *seen) {
+static int scg_named_lookup(const NodeTable *nt, const char *nm, const char *cname, int n0,
+                            int honor_private, ScgSeen *seen) {
   for (int q = 0; q < seen->n; q++) if (sp_streq(seen->nm[q], nm)) return 0;
   if (seen->n >= 64) return 0;
   seen->nm[seen->n++] = nm;
+  int defined = 0, priv = 0;
   for (int m = 0; m < n0; m++) {
     NodeKind mk = nt_kind(nt, m);
     if (mk != NK_ClassNode && mk != NK_ModuleNode) continue;
-    int cp = nt_ref(nt, m, "constant_path");
-    const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    const char *mn = scg_const_name(nt, nt_ref(nt, m, "constant_path"));
     if (!mn || !sp_streq(mn, nm)) continue;
-    if (scg_body_defines(nt, m, cname)) return !scg_body_privatizes(nt, m, cname);
+    if (scg_body_defines(nt, m, cname)) defined = 1;
+    if (scg_body_privatizes(nt, m, cname)) priv = 1;
+  }
+  if (defined) return honor_private && priv ? -1 : 1;
+  for (int m = n0 - 1; m >= 0; m--) {
+    NodeKind mk = nt_kind(nt, m);
+    if (mk != NK_ClassNode && mk != NK_ModuleNode) continue;
+    const char *mn = scg_const_name(nt, nt_ref(nt, m, "constant_path"));
+    if (!mn || !sp_streq(mn, nm)) continue;
     int body = nt_ref(nt, m, "body");
     int n = 0; const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
-    for (int k = 0; k < n; k++) {
+    for (int k = n - 1; k >= 0; k--) {
       if (nt_kind(nt, st[k]) != NK_CallNode || nt_ref(nt, st[k], "receiver") >= 0) continue;
       const char *cn = nt_str(nt, st[k], "name");
       if (!cn || !sp_streq(cn, "include")) continue;
       int args = nt_ref(nt, st[k], "arguments");
       int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
       for (int a = 0; a < an; a++) {
-        const char *in = nt_kind(nt, av[a]) == NK_ConstantReadNode ? nt_str(nt, av[a], "name") : NULL;
-        if (in && scg_named_defines(nt, in, cname, n0, seen)) return 1;
+        const char *in = scg_const_name(nt, av[a]);
+        if (!in || sp_streq(in, nm)) continue;
+        int r = scg_named_lookup(nt, in, cname, n0, honor_private, seen);
+        if (r) return r;
       }
     }
   }
   return 0;
 }
 
-/* Does an ancestor of class `cls` -- a superclass, or a module it or one of
-   them includes -- define `cname`? Then `self::cname` finds it there. */
-static int scg_ancestor_defines(const NodeTable *nt, int cls, const char *cname, int n0) {
-  int cp = nt_ref(nt, cls, "constant_path");
-  const char *own = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+/* Does any class or module body make `cname` a private constant? */
+static int scg_any_privatizes(const NodeTable *nt, const char *cname, int n0) {
+  for (int m = 0; m < n0; m++) {
+    NodeKind mk = nt_kind(nt, m);
+    if ((mk == NK_ClassNode || mk == NK_ModuleNode) && scg_body_privatizes(nt, m, cname)) return 1;
+  }
+  return 0;
+}
+
+/* The same from class `cls` up its superclasses: 1 when the nearest
+   definition is one the lookup reads, -1 when it is private to a scoped
+   read, 0 when no ancestor defines the name. */
+static int scg_ancestor_lookup(const NodeTable *nt, int cls, const char *cname, int n0, int honor_private) {
+  const char *nm = scg_const_name(nt, nt_ref(nt, cls, "constant_path"));
   ScgSeen seen = {{0}, 0};
-  if (own && scg_named_defines(nt, own, cname, n0, &seen)) return 1;
-  const char *nm = own;
   for (int depth = 0; nm && depth < 32; depth++) {
+    int r = scg_named_lookup(nt, nm, cname, n0, honor_private, &seen);
+    if (r) return r;
     const char *sup = NULL;
     for (int m = 0; m < n0 && !sup; m++) {
       if (nt_kind(nt, m) != NK_ClassNode) continue;
-      int mcp = nt_ref(nt, m, "constant_path");
-      const char *mn = mcp >= 0 ? nt_str(nt, mcp, "name") : NULL;
-      int sc = nt_ref(nt, m, "superclass");
-      if (mn && sp_streq(mn, nm) && sc >= 0 && nt_kind(nt, sc) == NK_ConstantReadNode) sup = nt_str(nt, sc, "name");
+      const char *mn = scg_const_name(nt, nt_ref(nt, m, "constant_path"));
+      if (mn && sp_streq(mn, nm)) sup = scg_const_name(nt, nt_ref(nt, m, "superclass"));
     }
-    if (!sup) return 0;
-    if (scg_named_defines(nt, sup, cname, n0, &seen)) return 1;
     nm = sup;
   }
   return 0;
@@ -10647,20 +10676,29 @@ int desugar_self_const_get(Compiler *c) {
     }
     if (p < 0 || (cpath == 2 ? is_cm : !is_cm)) continue;
     int owner = p;
+    /* `self::NAME` raises for a private constant, const_get reads it: where
+       the program makes the name private anywhere, const_get takes getters of
+       its own */
+    int honor = cpath != 0;
+    char mname[256];
+    snprintf(mname, sizeof mname, !honor && scg_any_privatizes(nt, cname, n0) ? "__spinel_cgp_%s" : "__spinel_cg_%s",
+             cname);
+    char dname[256]; snprintf(dname, sizeof dname, "__spinel_cd_%s", cname);
     /* every class body that defines the name */
     int others = 0;
     for (int m = 0; m < n0; m++) {
       NodeKind mk = nt_kind(nt, m);
       if ((mk != NK_ClassNode && mk != NK_ModuleNode) || m == owner) continue;
-      if (scg_body_defines(nt, m, cname)) {
-        if (dnode >= 0) scg_add_def_body(nt, m, cname, id, scg_body_privatizes(nt, m, cname) ? 3 : 2);
-        else scg_add_def(nt, m, cname, id);
-        others = 1;
-      }
+      if (!scg_body_defines(nt, m, cname)) continue;
+      const char *mn = scg_const_name(nt, nt_ref(nt, m, "constant_path"));
+      ScgSeen mseen = {{0}, 0};
+      int priv = honor && mn && scg_named_lookup(nt, mn, cname, n0, 1, &mseen) < 0;
+      if (dnode >= 0) scg_add_def_body(nt, m, cname, id, priv ? 3 : 2, dname);
+      else scg_add_def_body(nt, m, cname, id, priv, mname);
+      others = 1;
     }
     if (dnode >= 0) {
-      scg_add_def_body(nt, owner, cname, id, scg_ancestor_defines(nt, owner, cname, n0) ? 2 : 3);
-      char dname[256]; snprintf(dname, sizeof dname, "__spinel_cd_%s", cname);
+      scg_add_def_body(nt, owner, cname, id, scg_ancestor_lookup(nt, owner, cname, n0, 1) > 0 ? 2 : 3, dname);
       int line = (int)nt_int(nt, dnode, "node_line", 0);
       int file = (int)nt_int(nt, dnode, "node_file", 0);
       nt_node_reset(nt, dnode, "CallNode");
@@ -10676,12 +10714,11 @@ int desugar_self_const_get(Compiler *c) {
        leaves the name to its subclasses (an abstract `self::KEYBYTES`), where
        a reader of a constant defined nowhere would only raise. A name it
        inherits, from a superclass or an included module, is not one it
-       leaves: the lookup finds it there. `const_get` reads the class's own
-       private constant too, which `self::` does not. */
-    if (!others || scg_ancestor_defines(nt, owner, cname, n0) ||
-        (!cpath && scg_body_defines(nt, owner, cname))) scg_add_def(nt, owner, cname, id);
-    else scg_add_def_body(nt, owner, cname, id, 1);
-    char mname[256]; snprintf(mname, sizeof mname, "__spinel_cg_%s", cname);
+       leaves: the lookup finds it there. One whose nearest definition is
+       private raises for `self::NAME`, while const_get reads it. */
+    int found = scg_ancestor_lookup(nt, owner, cname, n0, honor);
+    if (found > 0 || (!others && found == 0)) scg_add_def(nt, owner, cname, id, mname);
+    else scg_add_def_body(nt, owner, cname, id, 1, mname);
     if (cpath) {
       int line = (int)nt_int(nt, id, "node_line", 0);
       int file = (int)nt_int(nt, id, "node_file", 0);
