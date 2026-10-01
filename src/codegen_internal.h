@@ -208,6 +208,9 @@ int hc_array(Compiler *c, int recv, int is_float, char *d, char *l, char *w, siz
 int hc_index_in_range(Compiler *c, int recv, int idx);
 extern int g_loop_polls_in_cond;   /* the next emit_loop_body leaves its polls to the loop's condition */
 int hc_string(Compiler *c, int recv, char *d, char *l, size_t cap);
+/* hc_array for a Float array whose in-range elements the reader needs to
+   be no nil: *n names a length that is 0 while the array may hold one. */
+int hc_array_nilfree(Compiler *c, int recv, char *d, char *n, size_t cap);
 const char *hc_mark(void);
 int call_is_scalar_op(Compiler *c, int id);   /* a builtin operator over scalars */
 /* Whether the subtree at `id` assigns the local `nm`: a write, an op-write
@@ -1424,7 +1427,7 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent);
 void emit_op_assign(Compiler *c, int id, Buf *b, int indent);
 int emit_array_op_assign(Compiler *c, const char *lval, TyKind t, const char *op, int v, Buf *b);
 int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *op,
-                          int v, int capture, Buf *b);
+                          int v, int capture, int lhs_nil, Buf *b);
 int emit_poly_op_assign(Compiler *c, const char *lval, const char *op, int v,
                         int capture, Buf *b);
 void emit_cond(Compiler *c, int id, Buf *b);

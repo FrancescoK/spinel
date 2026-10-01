@@ -1266,9 +1266,9 @@ static int emit_array_op_assign_value(Compiler *c, const char *ref, TyKind t,
    expression, so a global or class variable takes the overflow-checked
    helpers in value position too. */
 static int emit_scalar_op_assign_value(Compiler *c, const char *ref, TyKind t,
-                                       const char *op, int v, Buf *b) {
+                                       const char *op, int v, int lhs_nil, Buf *b) {
   Buf ab; memset(&ab, 0, sizeof ab);
-  int ok = emit_scalar_op_assign(c, ref, t, op, v, 1, &ab);
+  int ok = emit_scalar_op_assign(c, ref, t, op, v, 1, lhs_nil, &ab);
   if (ok) buf_printf(b, "({ %s%s; })", ab.p, ref);
   free(ab.p);
   return ok;
@@ -2519,7 +2519,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     }
     else if (emit_array_op_assign_value(c, gref, lv->type, op, v, b)) { }
     else if (emit_poly_op_assign_value(c, gref, lv->type, op, v, b)) { }
-    else if (emit_scalar_op_assign_value(c, gref, lv->type, op, v, b)) { }
+    else if (emit_scalar_op_assign_value(c, gref, lv->type, op, v, lv->nullable_int, b)) { }
     else {
       buf_printf(b, "(gv_%s %s= ", rn, op ? op : "+");
       emit_expr(c, v, b); buf_puts(b, ")");
@@ -2567,7 +2567,8 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     }
     else if (emit_array_op_assign_value(c, ref, ct, op, v, b)) { }
     else if (emit_poly_op_assign_value(c, ref, ct, op, v, b)) { }
-    else if (emit_scalar_op_assign_value(c, ref, ct, op, v, b)) { }
+    else if (emit_scalar_op_assign_value(c, ref, ct, op, v,
+                                         idx >= 0 && c->classes[cid].cvar_nullable_int[idx], b)) { }
     else {
       buf_printf(b, "(%s %s= ", ref, op ? op : "+");
       emit_expr(c, v, b); buf_puts(b, ")");
