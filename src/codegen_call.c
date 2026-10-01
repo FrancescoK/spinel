@@ -23502,7 +23502,7 @@ static int ie_splice_aliases(Compiler *c, int id, const char *name, int recv) {
 
 /* Is block `blk`'s parameter k the shared String handle? */
 static int block_param_is_handle(Compiler *c, int blk, int k) {
-  const char *bp = block_param_name(c, blk, k);
+  const char *bp = block_lead_param_name(c, blk, k);
   Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
   LocalVar *t = bs ? scope_local(bs, bp) : NULL;
   return t && t->type == TY_STRBUF && t->str_shared;
