@@ -2072,9 +2072,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      a String-returning reopen. The scalar reopens (String, Integer, ...) keep
      their place further down, where their rules have long been ordered. */
   if (recv >= 0 && (rt == TY_RANGE || rt == TY_TIME || rt == TY_IO || rt == TY_CLASS)) {
-    const char *ecn = rt == TY_RANGE ? "Range" : rt == TY_TIME ? "Time" : rt == TY_IO ? "File" : "Class";
-    int eci = comp_class_index(c, ecn);
+    const char *ecn = rt == TY_RANGE ? "Range" : rt == TY_TIME ? "Time" : "Class";
+    int eci = rt == TY_IO ? io_reopen_class(c, name) : comp_class_index(c, ecn);
     int emi = eci >= 0 ? comp_method_in_chain(c, eci, name, NULL) : -1;
+    if (emi >= 0 && rt == TY_IO && io_reopen_ret_mixed(c, name)) return TY_POLY;
     if (emi >= 0) return method_call_ret(c, emi, id);
   }
   /* A boxed-value hash whose values are all one class: its value reads are
@@ -4542,9 +4543,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     else if (rt == TY_IO)      oc_cn = "File";
     else if (rt == TY_CLASS)   oc_cn = "Class";
     if (oc_cn) {
-      int oc_ci = comp_class_index(c, oc_cn);
+      int oc_ci = rt == TY_IO ? io_reopen_class(c, name) : comp_class_index(c, oc_cn);
       if (oc_ci >= 0) {
         int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
+        if (oc_mi >= 0 && rt == TY_IO && io_reopen_ret_mixed(c, name)) return TY_POLY;
         if (oc_mi >= 0) return method_call_ret(c, oc_mi, id);
       }
     }
@@ -8116,7 +8118,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (sp_streq(cn, "Time"))    return TY_TIME;
     if (sp_streq(cn, "Thread"))  return TY_THREAD;
     if (sp_streq(cn, "Fiber"))   return TY_FIBER;
-    if (sp_streq(cn, "File"))    return TY_IO;
+    if (io_family_class(c, self_cls)) return TY_IO;   /* File, IO, the sockets: one handle type */
     if (sp_streq(cn, "Class"))   return TY_CLASS;
     if (is_builtin_exception_name(cn)) return TY_EXCEPTION;
     return ty_object(self_cls);

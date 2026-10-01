@@ -1365,7 +1365,7 @@ int desugar_reopen_implicit_self(Compiler *c) {
        directly. */
     int boxed_any = cn && (sp_streq(cn, "Object") || sp_streq(cn, "Numeric"));
     if (!cn || !(boxed_any || sp_streq(cn, "Range") || sp_streq(cn, "Time") ||
-                 sp_streq(cn, "File") || sp_streq(cn, "Class") ||
+                 io_family_class(c, sc->class_id) || sp_streq(cn, "Class") ||
                  sp_streq(cn, "Array") || sp_streq(cn, "Hash"))) continue;
     if (!boxed_any && comp_method_in_chain(c, sc->class_id, nm, NULL) >= 0) continue;   /* the reopen's own */
     if (comp_method_index(c, nm) >= 0) continue;                            /* a top-level def */

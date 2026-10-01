@@ -1,0 +1,44 @@
+"file:io_reopen_dispatch.rb"
+"a-1"
+"# Methods a program adds by reopening IO, File or a socket class: called and"
+"io:IO"
+false
+true
+true
+false
+false
+[true, true, false]
+[true, false, false]
+[false, false, false]
+"file:io_reopen_dispatch.rb"
+"b-2"
+"# Methods a program adds by reopening IO, File or a socket class: called and"
+"io:IO"
+[true, true, true, false]
+"socket"
+"socket"
+true
+"c-3"
+false
+true
+false
+"socket"
+"socket"
+true
+true
+false
+true
+false
+true
+true
+:private
+:private_boxed
+1
+:not_a_file
+"file"
+1
+"io!"
+false
+false
+true
+true

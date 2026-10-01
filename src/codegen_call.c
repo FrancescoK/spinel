@@ -868,6 +868,8 @@ static int class_is_prim_reopen(Compiler *c, int k) {
          sp_streq(n, "Time") || sp_streq(n, "Range") ||
          sp_streq(n, "Array") || sp_streq(n, "Hash") ||
          sp_streq(n, "Thread") || sp_streq(n, "Fiber") ||
+         /* an IO or socket reopening: its instances are the runtime's handles */
+         io_family_class(c, k) ||
          /* a builtin exception's reopening: its instances are the runtime's */
          class_has_exc_name(c, k);
 }
@@ -897,6 +899,128 @@ static int poly_exc_cand(Compiler *c, const char *name) {
 
 static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int prim_cand, int exc_cand,
                                         const char *pick_name, Buf *b);
+/* `sp_io_pick_class(<handle>, names, idx)` over the reopened IO classes
+   that define `name` (public ones only when asked): the one the handle's
+   kind is nearest to, or 0x7fffffff. Emits nothing and answers 0 when no
+   reopening defines it. */
+static int emit_io_pick_of(Compiler *c, const char *handle, const char *name, int public_only, Buf *b) {
+  int ks[16], n = io_reopen_defs(c, name, public_only, ks, 16);
+  if (!n) return 0;
+  buf_printf(b, "sp_io_pick_class(%s, (const char *const[]){", handle);
+  for (int i = 0; i < n; i++) buf_printf(b, "\"%s\", ", c->classes[ks[i]].name);
+  buf_puts(b, "NULL}, (const int[]){");
+  for (int i = 0; i < n; i++) buf_printf(b, "%s%d", i ? ", " : "", ks[i]);
+  buf_puts(b, "})");
+  return n;
+}
+/* ... for the boxed handle in _t<tv> */
+static int emit_io_pick(Compiler *c, int tv, const char *name, int public_only, Buf *b) {
+  char h[48];
+  snprintf(h, sizeof h, "(sp_File *)_t%d.v.p", tv);
+  return emit_io_pick_of(c, h, name, public_only, b);
+}
+/* ` || <the boxed IO in _t<tv> has reopened method qm>`, or nothing when no
+   IO reopening defines it. */
+/* `(_p == k1 || _p == k2 ...)` over the reopenings of qm that are public:
+   the reopening the pick chose answers only if it is one of them. */
+static void emit_io_pick_public(Compiler *c, const char *qm, const char *pick, Buf *b) {
+  int ks[16], n = io_reopen_defs(c, qm, 0, ks, 16);
+  buf_puts(b, "(0");
+  for (int i = 0; i < n; i++)
+    if (comp_method_vis_in_chain(c, ks[i], qm) == SP_VIS_PUBLIC) buf_printf(b, " || %s == %d", pick, ks[i]);
+  buf_puts(b, ")");
+}
+static void emit_io_reopen_responds(Compiler *c, int tv, const char *qm, int include_all, Buf *b) {
+  /* the nearest reopening by kind, then its visibility: a public IO#foo
+     does not answer for a socket whose nearer IPSocket#foo is private */
+  Buf ib; memset(&ib, 0, sizeof ib);
+  if (emit_io_pick(c, tv, qm, 0, &ib)) {
+    int pt = ++g_tmp;
+    buf_printf(b, " || (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO && "
+                  "({ int _p%d = %s; _p%d != 0x7fffffff", tv, tv, pt, ib.p, pt);
+    if (!include_all) {
+      char pn[24]; snprintf(pn, sizeof pn, "_p%d", pt);
+      buf_puts(b, " && ");
+      emit_io_pick_public(c, qm, pn, b);
+    }
+    buf_puts(b, "; }))");
+  }
+  free(ib.p);
+}
+/* A typed IO calling a method IO-family reopenings define. An IO
+   reopening's method is every handle's; any other is picked by the
+   handle's kind at run time, and a kind none of them serves raises
+   NoMethodError as CRuby does. When the reopenings answer different
+   types the call is boxed (io_reopen_ret_mixed), each answer boxed. */
+static int io_reopen_call_vis(Compiler *c, int k, const char *nm, int plain, int caller);
+static int io_builtin_name(const char *m);
+static void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int ks[16], n = io_reopen_defs(c, name, 0, ks, 16);
+  int args = nt_ref(nt, id, "arguments");
+  /* an explicit receiver reaches only a public method, as at a boxed one
+     (emit_poly_vis_precheck); send and self calls reach any */
+  int plain = nt_str(nt, id, "vis_enforce") != NULL ||
+              (!nt_str(nt, id, "send_blind") && !nt_int(nt, id, "dyn_arm", 0) &&
+               nt_kind(nt, recv) != NK_SelfNode);
+  Scope *cs = comp_scope_of(c, id);
+  int caller = (cs && !cs->is_cmethod) ? cs->class_id : -1;
+  int all_public = 1;
+  for (int i = 0; i < n; i++) {
+    if (plain && io_reopen_call_vis(c, ks[i], name, 1, caller) != SP_VIS_PUBLIC) all_public = 0;
+    /* a block-taking one has no standalone function to call */
+    Scope *km = &c->scopes[comp_method_in_chain(c, ks[i], name, NULL)];
+    if (km->yields || (km->blk_param && km->blk_param[0])) unsupported(c, id, "call");
+  }
+  if (n == 1 && all_public && sp_streq(c->classes[ks[0]].name, "IO")) {
+    int mi = comp_method_in_chain(c, ks[0], name, NULL);
+    buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, ks[0], c->scopes[mi].name), mc(c->scopes[mi].name));
+    emit_expr(c, recv, b);
+    emit_args_filled(c, mi, args, ", ", b);
+    buf_puts(b, ")");
+    return;
+  }
+  int boxed = comp_ntype(c, id) == TY_POLY;
+  int tv = ++g_tmp;
+  char h[32];
+  snprintf(h, sizeof h, "_r%d", tv);
+  buf_printf(b, "({ sp_File *_r%d = ", tv);
+  emit_expr(c, recv, b);
+  buf_printf(b, "; int _k%d = ", tv);
+  emit_io_pick_of(c, h, name, 0, b);
+  buf_puts(b, "; ");
+  for (int i = 0; i < n; i++) {
+    int kmi = comp_method_in_chain(c, ks[i], name, NULL);
+    Buf cb; memset(&cb, 0, sizeof cb);
+    buf_printf(&cb, "sp_%s_%s(_r%d", mc_reopen_cls(c, ks[i], c->scopes[kmi].name), mc(c->scopes[kmi].name), tv);
+    emit_args_filled(c, kmi, args, ", ", &cb);
+    buf_puts(&cb, ")");
+    Buf vb; memset(&vb, 0, sizeof vb);
+    int vis = plain ? io_reopen_call_vis(c, ks[i], name, 1, caller) : SP_VIS_PUBLIC;
+    if (vis != SP_VIS_PUBLIC)
+      buf_printf(&vb, "(sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for an instance of %s\")[1])), ",
+                 vis == SP_VIS_PRIVATE ? "private" : "protected", name, c->classes[ks[i]].name);
+    if (boxed) emit_boxed_text(c, c->scopes[kmi].ret, cb.p, &vb);
+    else buf_puts(&vb, cb.p);
+    if (vis != SP_VIS_PUBLIC) buf_puts(&vb, ")");
+    free(cb.p);
+    if (i < n - 1) buf_printf(b, "_k%d == %d ? %s : ", tv, ks[i], vb.p);
+    else if (io_builtin_name(name)) {
+      /* a builtin IO method a reopening overrides: a kind none of them
+         serves should run the builtin, which this typed call cannot reach;
+         it calls the reopening as before (a boxed handle does reach it) */
+      buf_puts(b, vb.p);
+    }
+    else {
+      /* no kind matched: the raise does not return, the call types the arm */
+      buf_printf(b, "_k%d == 0x7fffffff ? (sp_raise_nomethod(sp_nomethod_msg(\"%s\", "
+                    "sp_box_nullable_obj((void *)_r%d, SP_BUILTIN_IO))), %s) : %s",
+                 tv, name, tv, vb.p, vb.p);
+    }
+    free(vb.p);
+  }
+  buf_puts(b, "; })");
+}
 static void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_cand, int exc_cand, Buf *b) {
   emit_poly_dispatch_key_pick(c, tv, cls0_cand, prim_cand, exc_cand, NULL, b);
 }
@@ -907,6 +1031,21 @@ static void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_
    or to no arm when none is above it (NoMethodError). */
 static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int prim_cand, int exc_cand,
                                         const char *pick_name, Buf *b) {
+  /* a boxed IO handle keys by its kind to the reopening that has the method */
+  static int io_done = 0;
+  if (pick_name && !io_done) {
+    Buf ib; memset(&ib, 0, sizeof ib);
+    if (emit_io_pick(c, tv, pick_name, 0, &ib)) {
+      buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO) ? %s : ", tv, tv, ib.p);
+      io_done = 1;
+      emit_poly_dispatch_key_pick(c, tv, cls0_cand, prim_cand, exc_cand, pick_name, b);
+      io_done = 0;
+      buf_puts(b, ")");
+      free(ib.p);
+      return;
+    }
+    free(ib.p);
+  }
   if (exc_cand) {
     /* a boxed exception keys by its user class (sp_exc_user_cls_id); every
        other value by the rule below */
@@ -8683,8 +8822,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           } }
         if (mi >= 0 && c->scopes[mi].nrequired == 0 &&
             (scope_has_callable_symbol(c, mi) || scope_needs_proc_form(c, mi)) &&
-            !(c->classes[defcls].name && (sp_streq(c->classes[defcls].name, "Class") ||
-                                          sp_streq(c->classes[defcls].name, "File")))) {
+            !(c->classes[defcls].name && sp_streq(c->classes[defcls].name, "Class"))) {
           nd_callee(c, id, mi, defcls, 1);   /* one switch arm (#4557) */
           /* Build the call; append default values for any optional params
              not provided by the (zero-arg) call site. */
@@ -8719,6 +8857,13 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             snprintf(_dself, sizeof _dself, "*(sp_%s *)_t%d.v.p", _dcn, tv);
           /* a boxed thread is the runtime's sp_thread handle (not an sp_Thread struct) */
           else if (sp_streq(_dcn, "Thread")) { snprintf(_dself, sizeof _dself, "(sp_thread *)_t%d.v.p", tv); _dstruct = 1; }
+          /* a boxed IO or socket is the runtime's sp_File handle */
+          else if (io_family_class(c, defcls)) {
+            /* a block-taking IO reopening has no standalone function (as typed) */
+            if (c->scopes[mi].yields || (c->scopes[mi].blk_param && c->scopes[mi].blk_param[0]))
+              unsupported(c, id, "call");
+            snprintf(_dself, sizeof _dself, "(sp_File *)_t%d.v.p", tv); _dstruct = 1;
+          }
           /* a boxed exception is the runtime's sp_Exception, whatever its class */
           else if (class_has_exc_name(c, defcls)) { snprintf(_dself, sizeof _dself, "(sp_Exception *)_t%d.v.p", tv); _dstruct = 1; }
           /* a by-value (value-type) class method takes self by value:
@@ -8741,6 +8886,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             if (_dstruct && c->classes[defcls].is_value_type) {
               snprintf(selfpbuf, sizeof selfpbuf, "(*(sp_%s *)_t%d.v.p)", _dcn, tv);
               g_self_deref = ".";
+            }
+            else if (_dstruct && io_family_class(c, defcls)) {
+              snprintf(selfpbuf, sizeof selfpbuf, "((sp_File *)_t%d.v.p)", tv);
+              g_self_deref = "->";
             }
             else if (_dstruct && class_has_exc_name(c, defcls)) {
               snprintf(selfpbuf, sizeof selfpbuf, "((sp_Exception *)_t%d.v.p)", tv);
@@ -10248,6 +10397,11 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             snprintf(selfpbuf2, sizeof selfpbuf2, "*(sp_%s *)_t%d.v.p", _dcn2, tv);
           else if (sp_streq(_dcn2, "Thread"))
             snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_thread *)_t%d.v.p", tv);
+          else if (io_family_class(c, defcls)) {
+            if (c->scopes[mi].yields || (c->scopes[mi].blk_param && c->scopes[mi].blk_param[0]))
+              unsupported(c, id, "call");
+            snprintf(selfpbuf2, sizeof selfpbuf2, "((sp_File *)_t%d.v.p)", tv);
+          }
           /* a boxed exception is the runtime's sp_Exception, whatever its class */
           else if (class_has_exc_name(c, defcls)) {
             snprintf(selfpbuf2, sizeof selfpbuf2, "((sp_Exception *)_t%d.v.p)", tv);
@@ -19677,6 +19831,12 @@ sp_builtin_arity_spec_tbl[] = {
   {"Module","undefined_instance_methods",0,0,NULL,"0",0,0,NULL,"0"},
   {NULL, NULL, 0, 0, NULL, NULL, 0, 0, NULL, NULL}
 };
+/* Is `m` a method the builtin File (IO and its Enumerable included) has? */
+static int io_builtin_name(const char *m) {
+  for (const SpAritySpec *r = sp_builtin_arity_spec_tbl; r->cls; r++)
+    if (sp_streq(r->cls, "File") && sp_streq(r->m, m)) return 1;
+  return 0;
+}
 
 /* Class/module-method positional arity, probed from ruby 4.0.6 the same
    way as the instance table above (tools/gen_builtin_arity_spec.rb): the
@@ -21392,6 +21552,15 @@ int emit_vis_refusal(Compiler *c, int id, Buf *b) {
    switch runs. The switch's arms call the method whatever its visibility, so
    `[obj].any? { |x| x.hid? }`, whose block parameter is boxed, ran a private
    method (#4920). Emits nothing when no class refuses. */
+/* The visibility an IO reopening's method `nm` (on class k) has for a
+   call: public when it is, or protected and the caller is that class's. */
+static int io_reopen_call_vis(Compiler *c, int k, const char *nm, int plain, int caller) {
+  int owner = -1;
+  int vis = comp_method_vis_declared(c, k, nm, &owner);
+  if (vis == SP_VIS_PROTECTED && plain && caller >= 0 && owner >= 0 && io_family_descends(c, caller, owner))
+    vis = SP_VIS_PUBLIC;
+  return vis;
+}
 void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b) {
   const NodeTable *nt = c->nt;
   int vrecv = nt_ref(nt, id, "receiver");
@@ -21416,6 +21585,17 @@ void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b) {
     buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d) { sp_exc_stage_recv(_t%d); "
                   "sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for an instance of %s\")[1])); } ",
                tv, tv, k, tv, vis == SP_VIS_PRIVATE ? "private" : "protected", vnm, vrn);
+  }
+  /* a boxed IO handle, by the reopening its kind picks */
+  int ks[16], n = io_reopen_defs(c, vnm, 0, ks, 16);
+  for (int i = 0; i < n; i++) {
+    int vis = io_reopen_call_vis(c, ks[i], vnm, plain, caller);
+    if (vis == SP_VIS_PUBLIC) continue;
+    buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO && ", tv, tv);
+    emit_io_pick(c, tv, vnm, 0, b);
+    buf_printf(b, " == %d) { sp_exc_stage_recv(_t%d); "
+                  "sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for an instance of %s\")[1])); } ",
+               ks[i], tv, vis == SP_VIS_PRIVATE ? "private" : "protected", vnm, c->classes[ks[i]].name);
   }
 }
 
@@ -26361,14 +26541,13 @@ static int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, co
   for (int u = 0; !resolved && uni[u]; u++) if (sp_streq(qm, uni[u])) { yes = resolved = 1; break; }
   /* An IO answers by its kind -- a File, a socket, a server socket, a stat
      share the type -- which only the handle knows: sp_io_responds decides at
-     run time. A method a reopening of Object, IO, File or a socket class
-     defines answers here, by its name whatever the kind. */
+     run time. A method an Object reopening defines answers here; one an
+     IO, File or socket reopening defines answers at run time too, by the
+     handle's kind (emit_io_reopen_responds). */
   if (!resolved && recv >= 0 && rt == TY_IO) {
-    static const char *const ioclasses[] = {
-      "BasicObject", "Object", "Kernel", "IO", "File", "BasicSocket", "IPSocket",
-      "TCPSocket", "TCPServer", "UDPSocket", "UNIXSocket", "UNIXServer", "Socket", NULL };
-    for (int u = 0; ioclasses[u]; u++) {
-      int k = comp_class_index(c, ioclasses[u]);
+    static const char *const roots[] = { "BasicObject", "Object", "Kernel", NULL };
+    for (int u = 0; roots[u]; u++) {
+      int k = comp_class_index(c, roots[u]);
       if (k < 0 || comp_method_in_chain(c, k, qm, NULL) < 0) continue;
       if (comp_method_vis_in_chain(c, k, qm) == SP_VIS_PUBLIC) return 1;
       return foldable ? include_all : -1;
@@ -26784,8 +26963,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                       : rtR == TY_IO ? "File"
                       : rtR == TY_CLASS ? "Class" : NULL;
       if (ocR) {
-        int ciR = comp_class_index(c, ocR);
+        int ciR = rtR == TY_IO ? io_reopen_class(c, nmR) : comp_class_index(c, ocR);
         int miR = ciR >= 0 ? comp_method_in_chain(c, ciR, nmR, NULL) : -1;
+        if (miR >= 0 && rtR == TY_IO) { emit_io_reopen_call(c, id, recvR, nmR, b); return; }
         if (miR >= 0) {
           buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, ciR, nmR), mc(nmR));
           emit_expr(c, recvR, b);
@@ -27210,9 +27390,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     if (erecv >= 0 && (ert == TY_RANGE || ert == TY_TIME || ert == TY_IO || ert == TY_CLASS) &&
         nt_ref(c->nt, id, "block") < 0) {
       const char *ename = nt_str(c->nt, id, "name");
-      const char *ecn = ert == TY_RANGE ? "Range" : ert == TY_TIME ? "Time" : ert == TY_IO ? "File" : "Class";
-      int eci = comp_class_index(c, ecn);
+      const char *ecn = ert == TY_RANGE ? "Range" : ert == TY_TIME ? "Time" : "Class";
+      int eci = ert == TY_IO ? io_reopen_class(c, ename) : comp_class_index(c, ecn);
       int emi = (eci >= 0 && ename) ? comp_method_in_chain(c, eci, ename, NULL) : -1;
+      if (emi >= 0 && ert == TY_IO) { emit_io_reopen_call(c, id, erecv, ename, b); return; }
       if (emi >= 0) {
         buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, eci, ename), mc(ename));
         emit_expr(c, erecv, b);
@@ -35027,7 +35208,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode") &&
         is_builtin_reopen(c->classes[g_emitting_class_id].name)) {
       const char *ecn = c->classes[g_emitting_class_id].name;
-      if (!sp_streq(ecn, "TrueClass") && !sp_streq(ecn, "FalseClass"))
+      /* an IO reopening's self is the sp_File handle, typed so */
+      if (!sp_streq(ecn, "TrueClass") && !sp_streq(ecn, "FalseClass") && !io_family_class(c, g_emitting_class_id))
         rt = TY_POLY;
     }
     /* MatchData is nullable (nil on no-match): .class checks at run time so a
@@ -40490,12 +40672,17 @@ else {
          no reading for it, #3619), an IO (the handle knows its kind), and a
          poly receiver */
       if (recv >= 0 && (rt == TY_RANGE || rt == TY_FLOAT_RANGE || rt == TY_STR_RANGE || rt == TY_IO)) {
+        int tv = ++g_tmp;
         if (comp_ntype(c, id) == TY_POLY) buf_puts(b, "sp_box_bool(");
-        buf_puts(b, rt == TY_IO ? "sp_io_typed_responds(" : "sp_poly_responds_builtin(");
+        buf_printf(b, "({ sp_RbVal _t%d = ", tv);
         emit_boxed(c, recv, b);
-        buf_puts(b, ", \"");
+        buf_printf(b, "; %s(_t%d, \"", rt == TY_IO ? "sp_io_typed_responds" : "sp_poly_responds_builtin", tv);
         emit_c_escaped(b, qm);
         buf_puts(b, "\")");
+        /* a private one too when the literal second argument is true */
+        if (rt == TY_IO)
+          emit_io_reopen_responds(c, tv, qm, argc >= 2 && nt_kind(nt, argv[1]) == NK_TrueNode, b);
+        buf_puts(b, "; })");
         if (comp_ntype(c, id) == TY_POLY) buf_puts(b, ")");
         return;
       }
@@ -40573,6 +40760,7 @@ else {
           buf_puts(b, "\"");
           emit_c_escaped(b, qm);
           buf_puts(b, "\")");
+          emit_io_reopen_responds(c, tv, qm, argc >= 2 && nt_kind(nt, argv[1]) == NK_TrueNode, b);
           class_value_responds(c, tv, qm, b);
           buf_puts(b, "; })");
           return;
@@ -40631,7 +40819,31 @@ else {
         buf_puts(b, "0)) || ");
       }
       buf_printf(b, "0)) || (_a%d && (!strcmp(_n%d, \"initialize\") || !strcmp(_n%d, \"initialize_copy\"))) || "
-                 "sp_poly_responds_builtin(_t%d, _n%d); })", tv, tv, tv, tv, tv);
+                 "sp_poly_responds_builtin(_t%d, _n%d)", tv, tv, tv, tv, tv);
+      /* a boxed IO: the methods IO reopenings add, by the handle's kind */
+      for (int s2 = 0; s2 < c->nscopes; s2++) {
+        Scope *ms = &c->scopes[s2];
+        if (!ms->name || ms->is_cmethod || ms->is_proc_form || ms->class_id < 0) continue;
+        if (!io_family_class(c, ms->class_id)) continue;
+        int dup = 0;
+        for (int s3 = 0; s3 < s2 && !dup; s3++)
+          dup = c->scopes[s3].name && !c->scopes[s3].is_cmethod && c->scopes[s3].class_id >= 0 &&
+                io_family_class(c, c->scopes[s3].class_id) && sp_streq(c->scopes[s3].name, ms->name);
+        if (dup) continue;
+        /* a private one too when the second argument is true (_a) */
+        Buf ab;
+        memset(&ab, 0, sizeof ab);
+        emit_io_pick(c, tv, ms->name, 0, &ab);
+        int pt = ++g_tmp;
+        char pn[24]; snprintf(pn, sizeof pn, "_p%d", pt);
+        buf_printf(b, " || (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO && !strcmp(_n%d, \"", tv, tv, tv);
+        emit_c_escaped(b, ms->name);
+        buf_printf(b, "\") && ({ int %s = %s; %s != 0x7fffffff && (_a%d || ", pn, ab.p, pn, tv);
+        emit_io_pick_public(c, ms->name, pn, b);
+        buf_puts(b, "); }))");
+        free(ab.p);
+      }
+      buf_puts(b, "; })");
       if (boxed) buf_puts(b, ")");
       return;
     }
@@ -43891,9 +44103,10 @@ else {
     else if (rt == TY_IO)      oc_cn = "File";
     else if (rt == TY_CLASS)   oc_cn = "Class";
     if (oc_cn) {
-      int oc_ci = comp_class_index(c, oc_cn);
+      int oc_ci = rt == TY_IO ? io_reopen_class(c, name) : comp_class_index(c, oc_cn);
       if (oc_ci >= 0) {
         int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
+        if (oc_mi >= 0 && rt == TY_IO) { emit_io_reopen_call(c, id, recv, name, b); return; }
         if (oc_mi >= 0) {
           buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, oc_ci, name), mc(name));
           emit_expr(c, recv, b);

@@ -3367,7 +3367,7 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
     else if (sp_streq(cn, "Thread"))  { buf_puts(b, "sp_thread *self"); }
     else if (sp_streq(cn, "Fiber"))   { buf_puts(b, "sp_Fiber *self"); }
     else if (is_exc_name(c->classes[s->class_id].name)) { buf_puts(b, "sp_Exception *self"); }
-    else if (sp_streq(cn, "File"))    { buf_puts(b, "sp_File *self"); }
+    else if (io_family_class(c, s->class_id)) { buf_puts(b, "sp_File *self"); }
     else if (sp_streq(cn, "Class"))   { buf_puts(b, "sp_Class self"); }
     else {
       /* value-type reader methods take self by value; initialize keeps a
@@ -4657,6 +4657,10 @@ static void gc_wb_insert_seg(Compiler *c, Buf *b, size_t fn_off) {
 }
 
 void emit_method(Compiler *c, Scope *s, Buf *b) {
+  /* an IO handle has no slots for a program's instance variables */
+  if (s->class_id >= 0 && !s->is_cmethod && io_family_class(c, s->class_id) &&
+      scope_uses_ivars(c, (int)(s - c->scopes)))
+    unsupported(c, s->def_node, "instance variable in an IO reopening");
   /* A proc form holds its block in a real parameter, so its `yield`s are calls
      on that proc rather than an inline splice (#3399). */
   const char *sv_ypr9 = g_yield_proc_ref;
@@ -7783,7 +7787,7 @@ int is_builtin_reopen(const char *name) {
             blank.rb reopens Range and Time) */
          sp_streq(name, "Range")     || sp_streq(name, "Time") ||
          sp_streq(name, "File")      || sp_streq(name, "Class") ||
-         sp_streq(name, "Hash")      ||
+         sp_streq(name, "Hash")      || io_family_name(name) ||
          /* a thread and a fiber are runtime handles too (activesupport's
             IsolatedExecutionState gives both an accessor) */
          sp_streq(name, "Thread")    || sp_streq(name, "Fiber") ||

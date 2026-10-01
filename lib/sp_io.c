@@ -545,7 +545,8 @@ const char *sp_io_kind_name(sp_File *f) {
 /* The builtin superclass chain for a handle's class, mirroring the one the
    generated TU carries for class VALUES (sp_builtin_superclass). A handle
    answers #is_a? from its kind, which is a runtime property, so the walk lives
-   here rather than in the emitted switch. */
+   here rather than in the emitted switch. io_super_name (src/analyze_util.c)
+   is the compiler's copy; keep the two the same. */
 static const char *sp_io_super_of(const char *k) {
   if (strcmp(k, "TCPServer") == 0)   return SPL("TCPSocket");
   if (strcmp(k, "TCPSocket") == 0)   return SPL("IPSocket");
@@ -566,6 +567,14 @@ sp_bool sp_io_is_a(sp_File *f, const char *cls) {SP_GC_ROOT(f);
   for (const char *k = sp_io_kind_name(f); k; k = sp_io_super_of(k))
     if (strcmp(k, cls) == 0) return 1;
   return 0;
+}
+int sp_io_pick_class(sp_File *f, const char *const *names, const int *idx) {SP_GC_ROOT(f);
+  if (!f) return 0x7fffffff;
+  if (f->mode && (strcmp(f->mode, "stat") == 0 || strcmp(f->mode, "lstat") == 0)) return 0x7fffffff;
+  for (const char *k = sp_io_kind_name(f); k; k = sp_io_super_of(k))
+    for (int i = 0; names[i]; i++)
+      if (strcmp(k, names[i]) == 0) return idx[i];
+  return 0x7fffffff;
 }
 sp_bool sp_io_instance_of(sp_File *f, const char *cls) {SP_GC_ROOT(f);
   return cls && strcmp(sp_io_kind_name(f), cls) == 0;
