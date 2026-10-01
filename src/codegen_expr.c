@@ -1928,6 +1928,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     }
     else {
       /* a subclass instance stored into an ancestor-typed ivar slot (#3418) */
+      store_check(c, v, ivt2, "an instance variable write", b);
       emit_obj_upcast_prefix(c, ivt2, comp_ntype(c, v), b);
       emit_expr(c, v, b);
     }
@@ -3442,7 +3443,7 @@ else {
         /* element preludes flow to g_pre first; an untyped element (a raise
            token, a void call) is coerced to the element type */
         if (comp_ntype(c, els[j]) == TY_UNKNOWN) emit_unresolved_coerced(c, els[j], ty_array_elem(at), &el);
-        else emit_expr(c, els[j], &el);
+        else { store_check(c, els[j], ty_array_elem(at), "an Array literal element", &el); emit_expr(c, els[j], &el); }
         emit_indent(g_pre, g_indent);
         /* an element that can be nil sets the literal's may_nil */
         buf_printf(g_pre, "sp_%sArray_push%s(_t%d, ", k, nil_store_sfx(c, k, els[j]), t);
@@ -3534,9 +3535,11 @@ else {
       int key = nt_ref(nt, els[j], "key");
       int val = nt_ref(nt, els[j], "value");
       Buf kb; memset(&kb, 0, sizeof kb);
-      if (poly_poly) emit_boxed(c, key, &kb); else emit_expr(c, key, &kb);
+      if (poly_poly) emit_boxed(c, key, &kb);
+      else { if (ty_is_hash(ht)) store_check(c, key, ty_hash_key(ht), "a Hash literal key", &kb); emit_expr(c, key, &kb); }
       Buf vb; memset(&vb, 0, sizeof vb);
-      if (sym_poly || poly_poly) emit_boxed(c, val, &vb); else emit_expr(c, val, &vb);
+      if (sym_poly || poly_poly) emit_boxed(c, val, &vb);
+      else { if (ty_is_hash(ht)) store_check(c, val, ty_hash_val(ht), "a Hash literal value", &vb); emit_expr(c, val, &vb); }
       emit_indent(g_pre, g_indent);
       /* A pair's key and value are the set's sibling arguments, as a store's
          are: a key that can allocate goes into a rooted temp ahead of the
