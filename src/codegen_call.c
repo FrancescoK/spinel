@@ -35766,6 +35766,11 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     const int *ops = argv; int nops = argc;
     if (argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ArrayNode"))
       ops = nt_arr(nt, argv[0], "elements", &nops);
+    /* `Regexp.union(*[a, b])`: so does a splatted literal */
+    else if (argc == 1 && nt_kind(nt, argv[0]) == NK_SplatNode &&
+             nt_ref(nt, argv[0], "expression") >= 0 &&
+             nt_kind(nt, nt_ref(nt, argv[0], "expression")) == NK_ArrayNode)
+      ops = nt_arr(nt, nt_ref(nt, argv[0], "expression"), "elements", &nops);
     /* A single Array-valued argument whose elements are only known at run time
        (a variable/expression, not a literal) is joined by the runtime helper. */
     else if (argc == 1) {
@@ -35774,11 +35779,14 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       int splat = nt_kind(nt, ua) == NK_SplatNode && nt_ref(nt, ua, "expression") >= 0;
       if (splat) ua = nt_ref(nt, ua, "expression");
       TyKind uat = comp_ntype(c, ua);
-      if (uat == TY_POLY_ARRAY || uat == TY_STR_ARRAY || (splat && uat == TY_POLY)) {
+      if (uat == TY_POLY_ARRAY || uat == TY_STR_ARRAY || (splat && uat != TY_UNKNOWN)) {
         buf_puts(b, "sp_re_union_array(");
         if (uat == TY_STR_ARRAY) { buf_puts(b, "sp_StrArray_to_poly_fmt("); emit_expr(c, ua, b); buf_puts(b, ")"); }
-        else if (uat == TY_POLY) { buf_puts(b, "sp_poly_to_poly_array(sp_splat_to_array("); emit_expr(c, ua, b); buf_puts(b, "))"); }
-        else emit_expr(c, ua, b);
+        else if (uat == TY_POLY_ARRAY) emit_expr(c, ua, b);
+        /* any other splatted value -- boxed, a scalar, nil, a typed array --
+           is the Array its splat makes, and each element is checked at run
+           time (a non-String, non-Regexp one raises TypeError) */
+        else { buf_puts(b, "sp_poly_to_poly_array(sp_splat_to_array("); emit_boxed(c, ua, b); buf_puts(b, "))"); }
         buf_puts(b, ")");
         return;
       }

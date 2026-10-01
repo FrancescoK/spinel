@@ -907,6 +907,11 @@ else {
    options survive. An empty array yields the never-matching /(?!)/. */
 mrb_regexp_pattern *sp_re_union_array(sp_PolyArray *a) {
   if (!a || a->len == 0) return re_compile("(?!)", 4, 0);
+  /* a lone Regexp is the answer itself, its source and flags as they are */
+  if (a->len == 1) {
+    sp_RbVal v0 = sp_PolyArray_get(a, 0);
+    if (v0.tag == SP_TAG_OBJ && v0.cls_id == SP_BUILTIN_REGEX && v0.v.p) return (mrb_regexp_pattern *)v0.v.p;
+  }
   const char *joined = NULL;
   for (sp_int i = 0; i < a->len; i++) {
     sp_RbVal v = sp_PolyArray_get(a, i);
