@@ -8019,6 +8019,7 @@ void emit_str_pattern_expr(Compiler *c, int node, Buf *b) {
   emit_str_expr_nilable(c, node, b);
 }
 
+static void emit_strbuf_force_encoding(Compiler *c, const char *name, const char *ref, const int *argv, int argc, Buf *b);
 int emit_scalar_call(Compiler *c, int id, Buf *b) {
   /* Shared-mutable shim (#3227): setbyte on a strbuf local -- shadow-copy
      re-entry, same as emit_array_call's. */
@@ -8803,8 +8804,11 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         int trc0 = ++g_tmp;
         buf_printf(b, "({ const char *_t%d = %s; sp_str_check_mutable(_t%d); _t%d; })", trc0, r, trc0, trc0);
       }
-      else if ((sp_streq(name, "force_encoding") || sp_streq(name, "encode!")) && argc <= 2)
-        emit_str_force_encoding(c, name, r, argv, argc, b);
+      else if ((sp_streq(name, "force_encoding") || sp_streq(name, "encode!")) && argc <= 2) {
+        char feref[1024];
+        if (strbuf_slot_ref(c, recv, feref, sizeof feref)) emit_strbuf_force_encoding(c, name, feref, argv, argc, b);
+        else emit_str_force_encoding(c, name, r, argv, argc, b);
+      }
       else if ((sp_streq(name, "=~") || sp_streq(name, "!~")) && argc == 1 &&
                comp_ntype(c, argv[0]) == TY_STRING) {
         /* `str =~ str` is a TypeError in CRuby, not a missing method: only a
@@ -11929,7 +11933,10 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
    check and the retag, and a receiver that is a call with effects --
    campfire's `request.body.read.force_encoding("UTF-8")`, where `read`
    advances a cursor -- ran twice and retagged the second, empty, read. */
-void emit_str_force_encoding(Compiler *c, const char *name, const char *r, const int *argv, int argc, Buf *b) {
+/* The encoding a force_encoding / encode! call names as a literal: 1 for
+   ASCII-8BIT, 0 for UTF-8, -1 for any other or a computed one, which only
+   checks that the receiver may change. */
+static int str_force_encoding_mode(Compiler *c, const int *argv, int argc) {
   const NodeTable *nt = c->nt;
   const char *fe_nm = NULL;
   if (argc >= 1) {
@@ -11951,6 +11958,11 @@ void emit_str_force_encoding(Compiler *c, const char *name, const char *r, const
     fe_bin = sp_streq(fe_up, "ASCII-8BIT") || sp_streq(fe_up, "BINARY");
     fe_txt = sp_streq(fe_up, "UTF-8");
   }
+  return fe_bin ? 1 : fe_txt ? 0 : -1;
+}
+void emit_str_force_encoding(Compiler *c, const char *name, const char *r, const int *argv, int argc, Buf *b) {
+  int mode = str_force_encoding_mode(c, argv, argc);
+  int fe_bin = mode == 1, fe_txt = mode == 0;
   int trc = ++g_tmp;
   /* a nil receiver (a nullable String slot, #4567) is NoMethodError, not the
      FrozenError the mutability check reads a NULL as */
@@ -11959,6 +11971,16 @@ void emit_str_force_encoding(Compiler *c, const char *name, const char *r, const
   if (fe_bin) buf_printf(b, "sp_str_as_binary(_t%d); })", trc);
   else if (fe_txt) buf_printf(b, "sp_str_as_text(_t%d); })", trc);
   else buf_printf(b, "_t%d; })", trc);
+}
+/* The same on a shared String handle (#6179), whose ASCII-8BIT tag lives on
+   the handle and is stamped back into its bytes after every growth
+   (sp_fd_publish). Marked on the bytes alone, the tag went to a copy -- a
+   handle local or ivar reads back as one -- or was dropped by the next
+   append that moved the bytes. `ref` is the handle; the value is its bytes. */
+static void emit_strbuf_force_encoding(Compiler *c, const char *name, const char *ref, const int *argv, int argc, Buf *b) {
+  int th = ++g_tmp;
+  buf_printf(b, "({ sp_String *_t%d = %s; if (!_t%d) sp_nil_recv(\"%s\"); sp_String_force_encoding(_t%d, %d); sp_String_cstr(_t%d); })",
+             th, ref, th, name, th, str_force_encoding_mode(c, argv, argc), th);
 }
 static void emit_str_encode_call(Compiler *c, const char *recv_txt, const int *argv, int argc, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -15409,12 +15431,16 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     else if (sp_streq(name, "force_encoding") || sp_streq(name, "encode!")) {
       /* the String receiver's arm on the unboxed value: a `String | nil` slot
          holding a String answered NoMethodError for want of this (#4441) */
-      Buf rb; memset(&rb, 0, sizeof rb);
-      buf_puts(&rb, "sp_poly_recv_s("); emit_expr(c, recv, &rb); buf_printf(&rb, ", \"%s\")", name);
+      /* a shared handle in the box takes the tag on the handle, and the call
+         answers the box itself */
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_poly_is_strbuf(_t%d) ? (sp_String_force_encoding((sp_String *)_t%d.v.p, %d), _t%d) : ",
+                 tv, tv, str_force_encoding_mode(c, argv, argc), tv);
+      char rv[64]; snprintf(rv, sizeof rv, "sp_poly_recv_s(_t%d, \"%s\")", tv, name);
       buf_puts(b, "sp_box_str(");
-      emit_str_force_encoding(c, name, rb.p ? rb.p : "", argv, argc, b);
-      buf_puts(b, ")");
-      free(rb.p);
+      emit_str_force_encoding(c, name, rv, argv, argc, b);
+      buf_puts(b, "); })");
     }
     else {  /* encode: the same transcode the String receiver takes (#4439) */
       Buf rb; memset(&rb, 0, sizeof rb);
