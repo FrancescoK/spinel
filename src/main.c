@@ -355,7 +355,7 @@ static void usage(void) {
     "  --no-line-map  Suppress #line directives\n"
     "  --defer-refusals  Build anyway: a refused method raises NotImplementedError\n"
     "               when called, a refused top-level or class-body statement\n"
-    "               is skipped\n"
+    "               when reached\n"
     "  --ext-init NAME    Emit a host-callable library: NAME() replaces main\n"
     "  --ext-entry M.m,.. Export these module methods (with -c; writes a .h contract)\n"
     "  --ext cruby        Also generate the CRuby extension shim (<out>_ext.c)\n"

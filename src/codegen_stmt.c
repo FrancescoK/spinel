@@ -12821,10 +12821,12 @@ void emit_stmts(Compiler *c, int id, Buf *b, int indent) {
 }
 
 /* One top-level or class-body statement under --defer-refusals: a refusal in
-   it rolls its text back and skips it (the refusal stays reported), so one
-   unsupported line in a module body no longer takes the whole program's
-   main with it. Without the switch, or outside a collect unit, it is
-   emit_stmt. Answers whether the statement was emitted. */
+   it rolls its text back and puts a raise of NotImplementedError naming the
+   refusal in its place (the refusal stays reported), so one unsupported line
+   in a module body no longer takes the whole program's main with it, and a
+   run that reaches the line stops there instead of going on without it.
+   Without the switch, or outside a collect unit, it is emit_stmt. Answers
+   whether the statement was emitted as written. */
 int emit_stmt_or_defer(Compiler *c, int st, Buf *b, int indent) {
   if (!defer_refusals() || !g_unsup_armed) { emit_stmt(c, st, b, indent); return 1; }
   jmp_buf outer; memcpy(outer, g_unsup_recover, sizeof outer);
@@ -12833,6 +12835,7 @@ int emit_stmt_or_defer(Compiler *c, int st, Buf *b, int indent) {
   ConvHold *saved_hold = g_conv_hold;
   EmitUnitState *saved = emit_state_snapshot();
   volatile int ok = 0;
+  int ndiag0 = g_ndiags;
   if (setjmp(g_unsup_recover) == 0) { emit_stmt(c, st, b, indent); ok = 1; }
   else {
     g_conv_hold = saved_hold;
@@ -12841,6 +12844,17 @@ int emit_stmt_or_defer(Compiler *c, int st, Buf *b, int indent) {
     if (g_pre && g_pre->len > saved_pre_len) { g_pre->len = saved_pre_len; if (g_pre->p) g_pre->p[saved_pre_len] = '\0'; }
     b->len = saved_len; if (b->p) b->p[saved_len] = '\0';
     g_unsup_armed = 1;
+    char dmsg[2600];
+    if (g_ndiags > ndiag0) {
+      const SpDiag *d = &g_diags[g_ndiags - 1];
+      if (d->line > 0) snprintf(dmsg, sizeof dmsg, "%s:%d: %s", d->file ? d->file : "?", d->line, d->msg);
+      else snprintf(dmsg, sizeof dmsg, "%s", d->msg);
+    }
+    else snprintf(dmsg, sizeof dmsg, "refused at compile time");
+    emit_indent(b, indent);
+    buf_puts(b, "sp_raise_cls(\"NotImplementedError\", \"");
+    emit_c_escaped(b, dmsg);
+    buf_puts(b, "\");\n");
   }
   if (saved) emit_state_release(saved, 0);
   memcpy(g_unsup_recover, outer, sizeof outer);

@@ -1025,16 +1025,21 @@ ext-cruby-test: $(SPINEL) $(SP_RT_LIB)
 # class-body statement is left out.
 defer-refusals-test: $(SPINEL)
 	@ok=1; tmp=$$(mktemp -d /tmp/spinel-defer.XXXXXX); \
-	t=test/defer/deferred_refusals.rb; \
-	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/p.c" >"$$tmp/p.out" 2>&1; then \
-	  echo "defer-refusals-test: FAIL (refused program compiled without the flag)"; ok=0; fi; \
-	if ! $(SPINEL) --defer-refusals "$$t" -o "$$tmp/d" >"$$tmp/d.out" 2>&1; then \
-	  echo "defer-refusals-test: FAIL (--defer-refusals still refused)"; sed -n 1,5p "$$tmp/d.out"; ok=0; \
-	else grep -q "3 refusals deferred to run time" "$$tmp/d.out" || \
-	  { echo "defer-refusals-test: FAIL (deferred refusals not counted)"; sed -n 1,5p "$$tmp/d.out"; ok=0; }; \
-	  out=$$("$$tmp/d" 2>&1 | tr '\n' ' '); \
-	  [ "$$out" = "before after top NotImplementedError true done " ] || \
-	  { echo "defer-refusals-test: FAIL (deferred program ran wrong: $$out)"; ok=0; }; fi; \
+	for spec in "deferred_refusals:2:top NotImplementedError true done " \
+	            "deferred_refusal_class_body:1:before "; do \
+	  t=test/defer/$${spec%%:*}.rb; rest=$${spec#*:}; n=$${rest%%:*}; want=$${rest#*:}; \
+	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/p.c" >"$$tmp/p.out" 2>&1; then \
+	    echo "defer-refusals-test: FAIL ($$t compiled without the flag)"; ok=0; fi; \
+	  if ! $(SPINEL) --defer-refusals "$$t" -o "$$tmp/d" >"$$tmp/d.out" 2>&1; then \
+	    echo "defer-refusals-test: FAIL ($$t: --defer-refusals still refused)"; sed -n 1,5p "$$tmp/d.out"; ok=0; continue; fi; \
+	  if [ $$n -eq 1 ]; then rn="1 refusal deferred"; else rn="$$n refusals deferred"; fi; \
+	  grep -q "$$rn to run time" "$$tmp/d.out" || \
+	    { echo "defer-refusals-test: FAIL ($$t: deferred refusals not counted)"; sed -n 1,5p "$$tmp/d.out"; ok=0; }; \
+	  "$$tmp/d" >"$$tmp/r.out" 2>"$$tmp/r.err"; st=$$?; out=$$(tr '\n' ' ' <"$$tmp/r.out"); \
+	  [ "$$out" = "$$want" ] || { echo "defer-refusals-test: FAIL ($$t ran wrong: $$out)"; ok=0; }; \
+	  [ $$st -ne 0 ] && grep -q "unicode_normalize is not supported.*(NotImplementedError)" "$$tmp/r.err" || \
+	    { echo "defer-refusals-test: FAIL ($$t: a refused line did not raise NotImplementedError, exit $$st)"; sed -n 1,3p "$$tmp/r.err"; ok=0; }; \
+	done; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "defer-refusals-test: pass"; else exit 1; fi
 
