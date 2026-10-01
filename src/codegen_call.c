@@ -11045,27 +11045,28 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                      tv, name, tv, tv, ab5.p ? ab5.p : "sp_box_nil()", tr, ibo, tv, ibc);
           free(ab5.p); }
         TyKind at = infer_type(c, argv[0]);
-        if (at == TY_INT) {
+        switch (at) {
+        case TY_INT:
           buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = %ssp_IntArray_include((sp_IntArray *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
           buf_printf(b, " case SP_BUILTIN_RANGE: _t%d = %ssp_range_include((sp_Range *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
           buf_printf(b, " case SP_BUILTIN_FLOAT_RANGE: _t%d = %ssp_frange_cover(*(sp_FloatRange *)_t%d.v.p, (sp_float)_t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
-        }
-        else if (at == TY_FLOAT) {
+          break;
+        case TY_FLOAT:
           buf_printf(b, " case SP_BUILTIN_RANGE: _t%d = %ssp_range_cover_f((sp_Range *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
           buf_printf(b, " case SP_BUILTIN_FLOAT_RANGE: _t%d = %ssp_frange_cover(*(sp_FloatRange *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
-        }
-        else if (at == TY_STRING) {
+          break;
+        case TY_STRING:
           buf_printf(b, " case SP_BUILTIN_STR_ARRAY: _t%d = %ssp_StrArray_include((sp_StrArray *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
           buf_printf(b, " case SP_BUILTIN_STR_INT_HASH: _t%d = %ssp_StrIntHash_has_key((sp_StrIntHash *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
           buf_printf(b, " case SP_BUILTIN_STR_STR_HASH: _t%d = %ssp_StrStrHash_has_key((sp_StrStrHash *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
           buf_printf(b, " case SP_BUILTIN_STR_POLY_HASH: _t%d = %ssp_StrPolyHash_has_key((sp_StrPolyHash *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
-        }
-        else if (at == TY_SYMBOL) {
+          break;
+        case TY_SYMBOL:
           /* sym array is stored as IntArray (sp_sym == sp_int) */
           buf_printf(b, " case SP_BUILTIN_SYM_ARRAY: _t%d = %ssp_IntArray_include((sp_IntArray *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
           buf_printf(b, " case SP_BUILTIN_SYM_POLY_HASH: _t%d = %ssp_SymPolyHash_has_key((sp_SymPolyHash *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
-        }
-        else if (at == TY_POLY) {
+          break;
+        case TY_POLY:
           /* promote: the include? arg widened to poly. A Range receiver
              (`case x when Range; x.include?(n)`) tests numeric membership, so
              unbox the arg; the PolyArray/PolyPolyHash arms below cover the
@@ -11083,11 +11084,13 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                         " sp_FloatArray_include((sp_FloatArray *)_t%d.v.p, _t%d.tag == SP_TAG_NIL ? sp_float_nil() : _t%d.v.f)%s; break;",
                      tr, ibo, atmp[0], atmp[0], tv, atmp[0], atmp[0], ibc);
           buf_printf(b, " case SP_BUILTIN_STR_ARRAY: _t%d = %s_t%d.tag == SP_TAG_STR && sp_StrArray_include((sp_StrArray *)_t%d.v.p, _t%d.v.s)%s; break;", tr, ibo, atmp[0], tv, atmp[0], ibc);
-        }
-        else if (at == TY_NIL) {
+          break;
+        case TY_NIL:
           /* an Integer or Float array holds nil as its sentinel */
           buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = %ssp_IntArray_include((sp_IntArray *)_t%d.v.p, SP_INT_NIL)%s; break;", tr, ibo, tv, ibc);
           buf_printf(b, " case SP_BUILTIN_FLT_ARRAY: _t%d = %ssp_FloatArray_include((sp_FloatArray *)_t%d.v.p, sp_float_nil())%s; break;", tr, ibo, tv, ibc);
+          break;
+        default: break;
         }
         /* PolyArray: box the arg for runtime comparison */
         {
