@@ -5505,6 +5505,31 @@ static int poly_pred_kind(const char *name, int argc) {
   return 0;
 }
 
+/* A class test (is_a?, kind_of?, instance_of?, Class ===) of an Integer or
+   Float value. Such a slot holds nil as its sentinel, which the static type
+   cannot say, so the test reads the sentinel the way `nil?` does: nil is a
+   NilClass and not an Integer, and only the universal classes hold for both.
+   A literal number is never nil and keeps the constant. Answers 0 (nothing
+   emitted) for any other operand or class. */
+static int emit_scalar_class_test(Compiler *c, int node, TyKind t, const char *cn, int exact, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if ((t != TY_INT && t != TY_FLOAT) || !cn) return 0;
+  NodeKind nk = nt_kind(nt, node);
+  if (nk == NK_IntegerNode || nk == NK_FloatNode) return 0;
+  int yes = ty_matches_class(t, cn, exact);
+  if (yes < 0) return 0;
+  int nilcls = sp_streq(cn, "NilClass");
+  int univ = !exact && (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject") || sp_streq(cn, "Kernel"));
+  if (!nilcls && (!yes || univ)) return 0;   /* the same answer for nil */
+  int tn = ++g_tmp;
+  buf_puts(b, "({ "); emit_ctype(c, t, b); buf_printf(b, " _t%d = ", tn); emit_expr(c, node, b);
+  buf_printf(b, "; %s(", nilcls ? "" : "!");
+  if (t == TY_INT) buf_printf(b, "_t%d == SP_INT_NIL", tn);
+  else buf_printf(b, "sp_float_is_nil(_t%d)", tn);
+  buf_puts(b, "); })");
+  return 1;
+}
+
 /* Emit the boolean VALUE of a universal predicate on a poly receiver already
    held in `tvref` (an sp_RbVal lvalue like "_t42"). `argref` is the BOXED
    argument expression for the binary forms (eql?/equal?); the class forms read
@@ -43020,23 +43045,23 @@ else {
         return;
       } }
     int yes = ty_matches_class(eff_rt, nt_str(nt, argv[0], "name"), sp_streq(name, "instance_of?"));
-    /* A nullable scalar slot (a String whose nil is NULL, an Integer or a
-       Float that also sees nil) answers at run time: nil is a NilClass and
+    /* an Integer or a Float reads its nil sentinel at run time, as nil?
+       does: the nullable-value analysis does not see every way nil reaches
+       one (a method's parameter only nil is passed to, a splat of a boxed
+       Array), and folded, a nil answered true to is_a?(Integer) */
+    if (emit_scalar_class_test(c, recv, eff_rt, nt_str(nt, argv[0], "name"),
+                               sp_streq(name, "instance_of?"), b)) return;
+    /* A nullable String slot answers at run time too: nil is a NilClass and
        is not a String, whatever the slot's kind says. Object and its
        ancestors hold for nil too. */
-    if (yes >= 0 && (eff_rt == TY_STRING ||
-                     ((eff_rt == TY_INT || eff_rt == TY_FLOAT) && nullable_int_value(c, recv)))) {
+    if (yes >= 0 && eff_rt == TY_STRING) {
       const char *kn = nt_str(nt, argv[0], "name");
       int nilcls = kn && sp_streq(kn, "NilClass");
       int univ = kn && (sp_streq(kn, "Object") || sp_streq(kn, "BasicObject") || sp_streq(kn, "Kernel"));
       if (nilcls || (yes && !univ)) {
         int tn = ++g_tmp;
         buf_puts(b, "({ "); emit_ctype(c, eff_rt, b); buf_printf(b, " _t%d = ", tn); emit_expr(c, recv, b);
-        buf_printf(b, "; %s(", nilcls ? "" : "!");
-        if (eff_rt == TY_STRING) buf_printf(b, "_t%d == NULL", tn);
-        else if (eff_rt == TY_INT) buf_printf(b, "_t%d == SP_INT_NIL", tn);
-        else buf_printf(b, "sp_float_is_nil(_t%d)", tn);
-        buf_puts(b, "); })");
+        buf_printf(b, "; %s(_t%d == NULL); })", nilcls ? "" : "!", tn);
         return;
       }
     }
@@ -43664,18 +43689,10 @@ else {
     const char *cn = isa_match_name(nt, recv, rq, sizeof rq);
     if (cn) {
       TyKind at2 = comp_ntype(c, argv[0]);
-      /* A nullable Integer or Float argument is nil where it holds its
-         sentinel, which the scalar type cannot say: `Integer === x` answered
-         true and `NilClass === x` false for a nil x. Box it, as nil where it
-         is one, and test the tag as a poly argument is tested. */
-      if ((at2 == TY_INT || at2 == TY_FLOAT) && call_returns_nullable_int(c, argv[0])) {
-        int tv = ++g_tmp;
-        buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b); buf_puts(b, "; ");
-        char v[32]; snprintf(v, sizeof v, "_t%d", tv);
-        emit_poly_isa_test(c, cn, v, 0, b);
-        buf_puts(b, "; })");
-        return;
-      }
+      /* An Integer or Float argument is nil where it holds its sentinel,
+         which the scalar type cannot say: `Integer === x` answered true and
+         `NilClass === x` false for a nil x (emit_scalar_class_test). */
+      if (emit_scalar_class_test(c, argv[0], at2, cn, 0, b)) return;
       /* TrueClass/FalseClass/NilClass === <literal/typed value>: decide
          statically from the arg's node kind or scalar type. */
       const char *aty = nt_type(nt, argv[0]);
