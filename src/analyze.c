@@ -20433,7 +20433,9 @@ static int *nn_ctxdep;     /* (block nodes) nesting depth */
 static int *nn_stlist;     /* (statements) the StatementsNode holding it */
 static int *nn_stidx;      /* (statements) its index there */
 static int *nn_loopout;    /* outermost loop around the node in its own context */
-static unsigned char *nn_retry;  /* (context roots; nn_cap for frames) a retry or redo */
+static unsigned char *nn_retry;  /* (a block, or a frame's root) a retry or redo in it */
+static int *nn_frame;      /* the root of the frame the node is in */
+static int nn_cur_frame;
 static unsigned char *nn_jump;   /* (blocks) a next or break of its own */
 static unsigned char *nn_defbody;  /* a method's body: 1, initialize's: 2 */
 static const char **nn_attrs; static int nn_nattrs, nn_cattrs;   /* names attr_* hands out */
@@ -20565,6 +20567,7 @@ static void nn_pre(Compiler *c, int id, int par, int ctx, int loopout, int dep) 
   NodeKind k = nt_kind(nt, id);
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return;
   nn_par[id] = par;
+  nn_frame[id] = nn_cur_frame;
   nn_seq[id] = nn_seqc++;
   nn_ctx[id] = ctx;
   nn_loopout[id] = loopout;
@@ -20573,7 +20576,7 @@ static void nn_pre(Compiler *c, int id, int par, int ctx, int loopout, int dep) 
     nn_ctxpar[id] = ctx; nn_ctxdep[id] = dep + 1;
     cctx = id; cloop = -1; cdep = dep + 1;
   } else if (nn_is_loop(k) && loopout < 0) cloop = id;
-  if (k == NK_RetryNode || k == NK_RedoNode) nn_retry[ctx >= 0 ? ctx : nn_cap] = 1;
+  if (k == NK_RetryNode || k == NK_RedoNode) nn_retry[ctx >= 0 ? ctx : nn_cur_frame] = 1;
   if ((k == NK_NextNode || k == NK_BreakNode) && ctx >= 0) nn_jump[ctx] = 1;
   if (nn_is_local_node(k)) nn_occur(c, id, ctx);
   if (nn_is_ivar_node(k)) {
@@ -20612,7 +20615,7 @@ static int nn_write_safe(int w, int owner, int ctx) {
   int b = ctx;
   while (b >= 0 && nn_ctxpar[b] != wc) b = nn_ctxpar[b];
   if (b < 0 || owner != wc) return 0;
-  if (nn_retry[wc >= 0 ? wc : nn_cap]) return 0;
+  if (nn_retry[wc >= 0 ? wc : nn_frame[w]]) return 0;
   if (nn_seq[w] >= nn_seq[b]) return 0;
   int lo = nn_loopout[w];
   if (lo >= 0 && nn_seq[b] >= nn_seq[lo] && nn_seq[b] <= nn_send[lo]) return 0;
@@ -21520,11 +21523,11 @@ static void nn_reset(void) {
 static void nn_alloc(int cap) {
   free(nn_nonnil); free(nn_inb); free(nn_cand); free(nn_wrok); free(nn_par); free(nn_ctx);
   free(nn_seq); free(nn_send); free(nn_ctxpar); free(nn_ctxdep); free(nn_stlist); free(nn_stidx);
-  free(nn_loopout); free(nn_retry); free(nn_jump); free(nn_defbody);
+  free(nn_loopout); free(nn_retry); free(nn_jump); free(nn_defbody); free(nn_frame);
   size_t n = (size_t)cap + 1;
   nn_cap = cap;
   nn_nonnil = malloc(n); nn_inb = malloc(n); nn_wrok = malloc(n); nn_retry = malloc(n);
-  nn_jump = malloc(n); nn_defbody = malloc(n);
+  nn_jump = malloc(n); nn_defbody = malloc(n); nn_frame = malloc(sizeof(int) * n);
   nn_cand = malloc(sizeof(int) * n); nn_par = malloc(sizeof(int) * n); nn_ctx = malloc(sizeof(int) * n);
   nn_seq = malloc(sizeof(int) * n); nn_send = malloc(sizeof(int) * n); nn_ctxpar = malloc(sizeof(int) * n);
   nn_ctxdep = malloc(sizeof(int) * n); nn_stlist = malloc(sizeof(int) * n);
@@ -21559,7 +21562,7 @@ static void nn_structure(Compiler *c) {
   NT_FOREACH_KIND(nt, NK_SingletonClassNode, p) NN_ROOT(nt_ref(nt, p, "body"));
   NT_FOREACH_KIND(nt, NK_DefNode, p) {
     int pr = nt_ref(nt, p, "parameters");
-    if (pr >= 0 && pr < nn_cap && !done[pr]) { done[pr] = 1; nn_pre(c, pr, -1, -1, -1, 0); }
+    if (pr >= 0 && pr < nn_cap && !done[pr]) { done[pr] = 1; nn_cur_frame = pr; nn_pre(c, pr, -1, -1, -1, 0); }
     int body = nt_ref(nt, p, "body");
     const char *dn = nt_str(nt, p, "name");
     if (body >= 0 && body < nn_cap) nn_defbody[body] = dn && sp_streq(dn, "initialize") ? 2 : 1;
@@ -21567,7 +21570,7 @@ static void nn_structure(Compiler *c) {
   }
 #undef NN_ROOT
   free(done);
-  for (int i = 0; i < nn_nroots; i++) nn_pre(c, nn_roots[i], -1, -1, -1, 0);
+  for (int i = 0; i < nn_nroots; i++) { nn_cur_frame = nn_roots[i]; nn_pre(c, nn_roots[i], -1, -1, -1, 0); }
   /* the flags' shapes, the contexts the writes sit in, the index iterators */
   for (int k = 0; k < nn_nvars; k++) {
     NNVar *v = &nn_vars[k];

@@ -29,6 +29,34 @@ def lo_of(xs)
   lo
 end
 
+# a call between the flag's test and the read: lo's nil is written before
+# the block is made, and a retry elsewhere in the program changes nothing
+def lo_after_call(xs)
+  lo = nil
+  found = false
+  xs.each do |x|
+    if found
+      xs.dup
+      lo = x if x < lo
+    else
+      lo = x
+      found = true
+    end
+  end
+  lo
+end
+
+def retried
+  n = 0
+  begin
+    n += 1
+    raise "again" if n < 2
+    n
+  rescue
+    retry
+  end
+end
+
 class Rows
   def initialize(n) = (@rows = Array.new(n) { |i| i % 5 })
   def over(k)
@@ -57,4 +85,4 @@ rescue NoMethodError
   gc = -1
 end
 
-p best_of([1, 2]), guarded({1 => 3}, 1), lo_of([2, 1]), Rows.new(4).over(1), gc
+p best_of([1, 2]), guarded({1 => 3}, 1), lo_of([2, 1]), lo_after_call([2, 1]), retried, Rows.new(4).over(1), gc
