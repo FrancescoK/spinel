@@ -1,0 +1,18 @@
+"Array can't be coerced into Integer"
+"String can't be coerced into Integer"
+0
+"Array can't be coerced into Float"
+300000000000000000000
+"Hash can't be coerced into Integer"
+"Range can't be coerced into Integer"
+[1, 2]
+[1, 2]
+(3/1)
+"Array can't be coerced into Integer"
+"Array can't be coerced into Integer"
+"12"
+6
+1.5
+3.0
+"true can't be coerced into Integer"
+0
