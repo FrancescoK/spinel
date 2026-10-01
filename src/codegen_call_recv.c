@@ -14427,6 +14427,12 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       emit_boxed(c, argv[1], b);
       buf_printf(b, "; if (_t%d.tag == SP_TAG_OBJ) switch (_t%d.cls_id) {", tv, tv);
       for (int k = 0; k < c->nclasses; k++) {
+        /* a Data instance is frozen: the write raises, as in CRuby */
+        if (c->classes[k].instantiated && c->classes[k].is_data) {
+          buf_printf(b, " case %d: sp_raise_frozen_obj(_t%d, (&(\"\\xff\" \"can't modify frozen %s\")[1])); break;",
+                     k, tv, class_ruby_name(c, k) ? class_ruby_name(c, k) : c->classes[k].name);
+          continue;
+        }
         if (!c->classes[k].instantiated || c->classes[k].is_struct) continue;
         if (comp_ty_value_obj(c, ty_object(k))) continue;   /* by value: no reference to write through */
         int iv = comp_ivar_index(&c->classes[k], sym);
