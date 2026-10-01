@@ -1373,7 +1373,7 @@ typedef struct BiRen BiRen;
 typedef struct BlockAliases { LocalVar *lv[16]; int n, open; } BlockAliases;
 void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int indent,
                          int as_expr, BiRen *bi, BlockAliases *al);
-int block_param_wants_alias(Compiler *c, int blk, int k);
+int block_param_wants_alias(Compiler *c, int blk, int k, int n);
 void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
                       Buf *b, int indent, int as_expr, BiRen *bi, BlockAliases *al);
 void emit_yield_proc_call(Compiler *c, int args_node, TyKind result_ty, Buf *b, int indent, int as_expr);
