@@ -791,6 +791,9 @@ const char *g_yield_proc_ref = NULL;
    the node, since the ref is swapped in more places than this is. -1 when
    unknown. Read by refuse_yield_string_copies (#6179). */
 int g_yield_proc_expr = -1;
+/* The method whose call sites pass the block, when the yield is in a proc
+   form and the proc is its block parameter; else -1. */
+int g_yield_proc_method = -1;
 const char *g_yield_proc_expr_ref = NULL;
 /* The inlined call's return-slot type while g_yield_proc_ref is set: sp_proc_call
    yields poly, but the slot may be concrete (the analyzer typed this forwarding
@@ -3215,15 +3218,22 @@ int scope_proc_form_of(Compiler *c, int s) {
 int proc_form_live(Compiler *c, int s) {
   Scope *pf = &c->scopes[s];
   if (!pf->is_proc_form || pf->reachable) return 1;
+  if (pf->class_id < 0) return 1;
+  int si = proc_form_source(c, s);
+  return si < 0 || c->scopes[si].reachable;
+}
+/* The method proc form `s` was cloned from, or -1. */
+int proc_form_source(Compiler *c, int s) {
+  Scope *pf = &c->scopes[s];
   const char *nm = pf->name;
   const char *h = nm ? strstr(nm, "#pf") : NULL;
-  if (!h || pf->class_id < 0) return 1;
+  if (!pf->is_proc_form || !h) return -1;
   char src[192];
   size_t n = (size_t)(h - nm);
-  if (n >= sizeof src) return 1;
+  if (n >= sizeof src) return -1;
   memcpy(src, nm, n); src[n] = 0;
-  int si = (pf->is_cmethod ? comp_cmethod_in_class : comp_method_in_class)(c, pf->class_id, src);
-  return si < 0 || c->scopes[si].reachable;
+  if (pf->class_id < 0) return comp_method_index(c, src);
+  return (pf->is_cmethod ? comp_cmethod_in_class : comp_method_in_class)(c, pf->class_id, src);
 }
 int scope_needs_proc_form(Compiler *c, int s) {
   return scope_proc_form_of(c, s) >= 0;

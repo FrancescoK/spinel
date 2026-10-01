@@ -1179,7 +1179,13 @@ void emit_proc_yield(Compiler *c, const char *ref, int yargc, const int *yargv, 
   /* the proc behind the yield, when the inline that drives it named one */
   { int sv = g_yield_proc_expr;
     if (!ref || g_yield_proc_expr_ref != g_yield_proc_ref || ref != g_yield_proc_ref) g_yield_proc_expr = -1;
+    /* a proc form's own block: the blocks its source method's calls pass */
+    Scope *ys = yargc > 0 ? comp_scope_of(c, yargv[0]) : NULL;
+    g_yield_proc_method = -1;
+    if (ref && ys && ys->is_proc_form && ys->blk_param && !strncmp(ref, "lv_", 3) && sp_streq(ref + 3, ys->blk_param))
+      g_yield_proc_method = proc_form_source(c, (int)(ys - c->scopes));
     refuse_yield_string_copies(c, yargc, yargv);
+    g_yield_proc_method = -1;
     g_yield_proc_expr = sv; }
   if (call_args_need_spread(c->nt, yargv, yargc)) {
     char kwp[24];
