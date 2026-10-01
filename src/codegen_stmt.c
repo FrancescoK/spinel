@@ -11643,7 +11643,7 @@ else {
            (`mk, x = 0, nl` with nl only ever nil) */
         else if (valt == TY_POLY && ltt != TY_POLY && ltt != TY_UNKNOWN) {
           char tv[24]; snprintf(tv, sizeof tv, "_t%d", tmps[i]);
-          masgn_conv(c, ltt, valt, tv, b);
+          masgn_conv(c, lefts[i], ltt, valt, tv, b);
         }
         else buf_printf(b, "_t%d", tmps[i]);
         if (proc_cell) buf_puts(b, ")");
