@@ -14620,9 +14620,11 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   /* poly.scan(pat) { }: the block form over a receiver only known to be a
      String at run time. Rows are precomputed exactly as the typed-String arm
      does, then the block runs per row; the value is the receiver string
-     (CRuby answers self). */
+     (CRuby answers self). A native class defining scan does not step this
+     aside as it does the blockless forms: the dispatch has no String arm
+     for a call with a block, so a genuine String would raise there. */
   if (sp_streq(name, "scan") && argc == 1 && nt_ref(nt, id, "block") >= 0 &&
-      !user_defines_or_reads(c, "scan") && !native_class_defines(c, "scan")) {
+      !user_defines_or_reads(c, "scan")) {
     int sblk = nt_ref(nt, id, "block");
     const char *sp0 = block_param_name(c, sblk, 0);
     const char *sp0r = sp0 ? rename_local(sp0) : NULL;

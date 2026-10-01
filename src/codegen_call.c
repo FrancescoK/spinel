@@ -1677,6 +1677,8 @@ static int uk_class_can_be_reached(Compiler *c, int ci) {
    (StringScanner#scan): a poly receiver may be one, so a String-only
    shortcut for the name would answer it wrongly. */
 int native_class_defines(Compiler *c, const char *name) {
+  /* inside a dispatch's String arm the receiver IS a String */
+  if (g_poly_builtin_arm) return 0;
   for (int uk = 0; uk < c->nclasses; uk++)
     if (c->classes[uk].is_native_class && uk_class_can_be_reached(c, uk))
       for (int nm = 0; nm < c->n_native_methods; nm++)
