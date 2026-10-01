@@ -2230,6 +2230,16 @@ void emit_proc_ret_unbox(Compiler *c, TyKind rty, Buf *b) {
    boxed and published, not just the statically-poly ones. (A `yield` knows its
    block's parameter types, so it passes force_poly=0 and keeps the lean ABI.) */
 unsigned g_yield_live_mask = 0;
+/* The type a proc call publishes an argument as. An empty Array literal
+   inference left without an element type emits as the empty Integer Array
+   it starts as, so it is published as that, not as a nil in an sp_int. */
+static TyKind proc_arg_ty(Compiler *c, int a) {
+  TyKind t = comp_ntype(c, a);
+  if (t == TY_UNKNOWN && nt_kind(c->nt, a) == NK_ArrayNode && node_is_empty_container(c->nt, a))
+    return TY_INT_ARRAY;
+  return t;
+}
+
 void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *b, int force_poly) {
   int nargs = argc < 16 ? argc : 16;  /* proc-call ABI caps args at sp_int[16] */
   int any_poly = force_poly;
@@ -2237,7 +2247,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
      sp_int[] slot is value-truncated (0.7 -> 0), so it must be published boxed
      like a poly and read back with sp_poly_to_f in the callee. */
   for (int k = 0; k < nargs && !any_poly; k++) {
-    TyKind at = comp_ntype(c, argv[k]);
+    TyKind at = proc_arg_ty(c, argv[k]);
     /* a by-value struct (Range, Time, Rational, ...) rides the side channel for
        the same reason a float does: the sp_int slot cannot hold it (#3962) */
     if (at == TY_POLY || at == TY_FLOAT || proc_slot_via_poly(c, at)) any_poly = 1;
@@ -2255,7 +2265,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
        has no storable C type; it rides an sp_int temp and boxes to nil. */
     int atmp[16], slot[16];
     for (int k = 0; k < nargs; k++) {
-      TyKind at = comp_ntype(c, argv[k]);
+      TyKind at = proc_arg_ty(c, argv[k]);
       int storable = ty_is_object(at) || c_type_name(at) != NULL;
       atmp[k] = ++g_tmp;
       slot[k] = -1;
@@ -2321,7 +2331,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
        per-call, and they are what the roots are taken on. */
     buf_puts(b, "(");
     for (int k = 0; k < nargs; k++) {
-      TyKind at = comp_ntype(c, argv[k]);
+      TyKind at = proc_arg_ty(c, argv[k]);
       int storable = ty_is_object(at) || c_type_name(at) != NULL;
       char tn[24]; snprintf(tn, sizeof tn, "_t%d", atmp[k]);
       buf_printf(b, "_sp_proc_poly_args[%d] = ", k);
@@ -2334,7 +2344,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
     if (kwpos) buf_printf(b, "_sp_proc_kwpos = %d, ", kwpos);
     buf_puts(b, "(sp_int[16]){");
     for (int k = 0; k < nargs; k++) {
-      TyKind at = comp_ntype(c, argv[k]);
+      TyKind at = proc_arg_ty(c, argv[k]);
       if (k) buf_puts(b, ", ");
       /* sp_poly_slot_i: the value is published BOXED just above, and this
          unboxed copy is read only by a callee whose parameter is concretely
@@ -2358,7 +2368,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
     buf_puts(b, "(sp_int[16]){");
     for (int k = 0; k < nargs; k++) {
       if (k) buf_puts(b, ", ");
-      if (proc_slot_is_ptr(comp_ntype(c, argv[k]))) { buf_puts(b, "(sp_int)(uintptr_t)("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
+      if (proc_slot_is_ptr(proc_arg_ty(c, argv[k]))) { buf_puts(b, "(sp_int)(uintptr_t)("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
       else emit_expr(c, argv[k], b);
     }
     if (nargs == 0) buf_puts(b, "0");  /* C99: no empty initializer list */

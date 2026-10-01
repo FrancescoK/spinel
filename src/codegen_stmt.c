@@ -12805,9 +12805,15 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
            emit_empty_container_for_slot(c, id, g_result_ty, b)) { }
   /* A boxed call value feeding a typed result slot (an inlined method whose
      tail forwards its block into a builtin answering boxed) is unboxed into
-     it, as a return slot's is, not dropped for the slot's nil below. */
+     it, as a return slot's is, not dropped for the slot's nil below. So is a
+     boxed yield into a literal block: the yield is poly where its blocks
+     answer different types, and the slot this site's call was typed for
+     takes this site's value. (A forwarded proc's yield answers the slot's
+     type already.) */
   else if (g_result_var && !g_result_poly && !is_subst && vty == TY_POLY &&
-           sp_streq(ty, "CallNode") && g_result_ty != TY_UNKNOWN &&
+           (sp_streq(ty, "CallNode") ||
+            (sp_streq(ty, "YieldNode") && g_block_id >= 0 && !g_yield_proc_ref)) &&
+           g_result_ty != TY_UNKNOWN &&
            g_result_ty != TY_VOID && g_result_ty != TY_NIL)
     emit_unbox_node(c, g_result_ty, id, b);
   /* A void tail value (a rescue arm ending in `puts`, or a void-returning

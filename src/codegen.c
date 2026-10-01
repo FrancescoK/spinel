@@ -10394,8 +10394,9 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     buf_printf(b, " _t%d = %s;\n", rtag, default_value(rt));
     const char *sv_rv = g_result_var; g_result_var = rvbuf;
     int sp = g_result_poly; g_result_poly = (rt == TY_POLY);
+    TyKind srt = g_result_ty; g_result_ty = rt;
     emit_stmts_tail(c, m->body, b, din);
-    g_result_var = sv_rv; g_result_poly = sp;
+    g_result_var = sv_rv; g_result_poly = sp; g_result_ty = srt;
     emit_indent(b, din); buf_printf(b, "_t%d;\n", rtag);
   }
   else emit_stmts(c, m->body, b, din);
