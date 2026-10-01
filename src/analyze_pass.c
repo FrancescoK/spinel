@@ -13975,6 +13975,33 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
     snprintf(arm_name, sizeof arm_name, "\x02%s", nm);
     names[0] = arm_name;
   }
+  /* `K.new(...).m`: Class#new answers an instance of K (initialize cannot
+     change that), so the call reaches an instance method and never a class
+     method of the same name. Marking it by bare name kept every `def self.m`
+     alive -- raylib's `Color.new.set(...)` resurrected the never-called
+     `def self.set` whose `self[:r] = ...` is a provable NoMethodError. Only
+     when K is one of the program's classes with no class-side `new` of its
+     own (a user `self.new` may answer anything). */
+  char inst_name[300];
+  if (k0 == NK_CallNode && nm && names[0] == nm) {
+    int r = nt_ref(nt, id, "receiver");
+    if (r >= 0 && nt_kind(nt, r) == NK_CallNode && nt_str(nt, r, "name") &&
+        sp_streq(nt_str(nt, r, "name"), "new")) {
+      int rr = nt_ref(nt, r, "receiver");
+      NodeKind rrk = rr >= 0 ? nt_kind(nt, rr) : NK_NONE;
+      const char *kn = (rrk == NK_ConstantReadNode || rrk == NK_ConstantPathNode) ? nt_str(nt, rr, "name") : NULL;
+      int k = kn ? comp_class_index(c, kn) : -1;
+      /* Class.new / Module.new / Struct.new / Data answer a new CLASS, whose
+         class methods include the ones it inherits */
+      if (k >= 0 && !comp_class_is_module(c, &c->classes[k]) &&
+          !sp_streq(kn, "Class") && !sp_streq(kn, "Module") &&
+          !sp_streq(kn, "Struct") && !sp_streq(kn, "Data") &&
+          comp_cmethod_in_chain(c, k, "new", NULL) < 0) {
+        snprintf(inst_name, sizeof inst_name, "\x03%s", nm);
+        names[0] = inst_name;
+      }
+    }
+  }
   if (k0 == NK_IndexOperatorWriteNode || k0 == NK_IndexOrWriteNode || k0 == NK_IndexAndWriteNode) {
     names[1] = "[]"; names[2] = "[]=";
   }

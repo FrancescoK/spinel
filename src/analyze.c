@@ -319,6 +319,8 @@ void compute_reachable(Compiler *c) {
       if (sp_streq(sn_set.key[_i], _q)) { _r = sn_first[_i]; break; } _r; })
   /* A name already called is fully marked: reachability never clears, so a
      second MARK_NAME of it found nothing to do. */
+  #define CN_LIVE(NM) ({ const char *_l=(NM); char _ib[300]; snprintf(_ib,sizeof _ib,"\x03%s",_l); \
+    anh_has(&cn_set,_l) || anh_has(&cn_set,_ib); })
   #define CN_ADD(NM) do { const char *_n=(NM); if(_n && !anh_has(&cn_set,_n)){ \
     if(cn_n>=cn_cap){cn_cap=cn_cap?cn_cap*2:32;called_names=realloc(called_names,sizeof(char*)*cn_cap);} \
     called_names[cn_n++]=strdup(_n); anh_add(&cn_set,called_names[cn_n-1]);} } while(0)
@@ -326,7 +328,9 @@ void compute_reachable(Compiler *c) {
   /* Helper: mark a name reachable -- all scopes with that name join the BFS.
      "\x01<scope>" marks one resolved scope. "\x02<name>" is a runtime-name
      send's arm: the method of that name in every class's chain, and a
-     top-level def of it, a private method of Object every receiver has. */
+     top-level def of it, a private method of Object every receiver has.
+     "\x03<name>" is a call on a known instance (`K.new.m`): every scope of
+     the name but the class methods, which no instance can reach. */
   #define MARK_NAME(NM) do { const char *_mn=(NM); if(_mn && _mn[0]=='\x01'){ int _t=atoi(_mn+1); \
       if(_t>=0 && _t<c->nscopes && !c->scopes[_t].reachable){ c->scopes[_t].reachable=1; queue[qtail++]=_t; \
         if(cr_scope_has_super(c, _t)) for(int _u=SN_FIRST(c->scopes[_t].name);_u>=0;_u=sn_link[_u]) \
@@ -339,6 +343,10 @@ void compute_reachable(Compiler *c) {
           if(_t>=0 && !c->scopes[_t].reachable){ c->scopes[_t].reachable=1; queue[qtail++]=_t; } } } \
       for(int _t=SN_FIRST(_mn+1);_t>=0;_t=sn_link[_t]) \
         if(c->scopes[_t].class_id<0 && !c->scopes[_t].is_cmethod && !c->scopes[_t].reachable) \
+          { c->scopes[_t].reachable=1; queue[qtail++]=_t; } } } \
+    else if(_mn && _mn[0]=='\x03'){ if(!anh_has(&cn_set,_mn) && !anh_has(&cn_set,_mn+1)){ CN_ADD(_mn); \
+      for(int _t=SN_FIRST(_mn+1);_t>=0;_t=sn_link[_t]) \
+        if((!c->scopes[_t].is_cmethod || c->scopes[_t].is_module_function) && !c->scopes[_t].reachable) \
           { c->scopes[_t].reachable=1; queue[qtail++]=_t; } } } \
     else if(_mn && !anh_has(&cn_set,_mn)){ CN_ADD(_mn); \
     for(int _t=SN_FIRST(_mn);_t>=0;_t=sn_link[_t]) \
@@ -529,7 +537,7 @@ void compute_reachable(Compiler *c) {
       ClassInfo *cls = &c->classes[ci];
       for (int i = 0; i < cls->naliases; i++) {
         const char *an = cls->alias_new[i], *ao = cls->alias_old[i];
-        int an_live = (an && anh_has(&cn_set, an)), ao_live = (ao && anh_has(&cn_set, ao));
+        int an_live = (an && CN_LIVE(an)), ao_live = (ao && CN_LIVE(ao));
         /* also check reachable scope names (covers scope-backed aliases) */
         if (an) for (int t = SN_FIRST(an); t >= 0 && !an_live; t = sn_link[t]) if (c->scopes[t].reachable) an_live = 1;
         if (ao) for (int t = SN_FIRST(ao); t >= 0 && !ao_live; t = sn_link[t]) if (c->scopes[t].reachable) ao_live = 1;
@@ -566,7 +574,7 @@ void compute_reachable(Compiler *c) {
         if (strncmp(pf, "self.", 5) == 0) pf += 5;   /* a class method's chain */
         /* When the user-facing name is called, the codegen wrapper calls the shadow
            implementation directly -- so mark the shadow reachable too. */
-        int pf_in_called = anh_has(&cn_set, pf);
+        int pf_in_called = CN_LIVE(pf);
         if (!pf_in_called)
           for (int t = SN_FIRST(pf); t >= 0; t = sn_link[t])
             if (c->scopes[t].reachable) { pf_in_called = 1; break; }
@@ -585,6 +593,7 @@ void compute_reachable(Compiler *c) {
   free(called_names);
   anh_free(&cn_set); anh_free(&sn_set); free(sn_first); free(sn_link);
   #undef CN_ADD
+  #undef CN_LIVE
   #undef MARK_NAME
   #undef SN_FIRST
 
