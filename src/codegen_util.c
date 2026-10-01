@@ -1858,6 +1858,20 @@ void sb_reader_shim_close(Compiler *c, int recv, const SbReaderSave *sv) {
 const char *g_sb_iv_name = NULL;
 int         g_sb_iv_cid  = -1;
 char        g_sb_iv_repl[64];
+/* Does demand-marked call `v` render as a handle itself? A reader call, a
+   container's element read and a call that answers its receiver (`h << x
+   << y`, `h.freeze`) do. A call on a String that makes a new one -- `+"lit"`,
+   `s.dup`, `s + t` -- renders as that String, which the demand marked to be
+   wrapped as a fresh handle where it is stored. */
+int strbuf_marked_yields_handle(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, v) != NK_CallNode) return 0;
+  int r = nt_ref(nt, v, "receiver");
+  TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+  if (rt != TY_STRING && rt != TY_STRBUF) return 1;
+  const char *nm = nt_str(nt, v, "name");
+  return nm && (sp_streq(nm, "<<") || sp_streq(nm, "concat") || str_self_call(nt, v));
+}
 int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
   const char *rn = strbuf_local_name(c, recv);
   if (rn) {
@@ -1876,7 +1890,7 @@ int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
      made after the node-type cache is finalized cannot move the type without
      moving the call off the surface that dispatches it (see compiler.h). */
   if (recv >= 0 && nt_kind(c->nt, recv) == NK_CallNode &&
-      ((c->strbuf_box[recv] && comp_ntype(c, recv) == TY_STRBUF) ||
+      ((c->strbuf_box[recv] && comp_ntype(c, recv) == TY_STRBUF && strbuf_marked_yields_handle(c, recv)) ||
        c->strbuf_handle_demand[recv])) {
     Buf rb2; memset(&rb2, 0, sizeof rb2);
     emit_expr(c, recv, &rb2);
