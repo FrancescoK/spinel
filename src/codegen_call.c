@@ -10350,6 +10350,29 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            while its zero-arg calls dispatched (#4504). Positional calls
            only: a binding declares no keywords and no splat. */
         if (c->classes[k].is_native_class) {
+          /* a lone splat goes whole to a binding that is all :rest */
+          if (kw_pos && has_splat_arg && argc == 1 && splat_a == 0 && kwh < 0 &&
+              c->classes[k].instantiated) {
+            const NativeMethod *rm = NULL;
+            for (int i = 0; i < c->n_native_methods && !rm; i++) {
+              const NativeMethod *m = &c->native_methods[i];
+              if (m->class_id == k && m->kind == 0 && m->rest && m->nargs == 0 && sp_streq(m->name, name))
+                rm = m;
+            }
+            if (!rm) continue;
+            Buf cb; memset(&cb, 0, sizeof cb);
+            int sp = stk >= 0 ? stk : atmp[0];
+            if (sp_streq(rm->ret, "string?")) buf_puts(&cb, "sp_box_nullable_str(");
+            buf_printf(&cb, "%s((%s *)_t%d.v.p, _t%d->len, _t%d->data)",
+                       rm->csym, c->classes[k].c_struct, tv, sp, sp);
+            if (sp_streq(rm->ret, "string?")) buf_puts(&cb, ")");
+            TyKind mret = sp_streq(rm->ret, "self") ? ty_object(k) : native_spec_to_ty(rm->ret);
+            buf_printf(b, " case %d: ", k);
+            emit_poly_native_arm_stmt(c, cb.p, mret, ret, tr, is_setter_val, b);
+            buf_puts(b, " break;");
+            free(cb.p);
+            continue;
+          }
           if (!kw_pos || has_splat_arg || !c->classes[k].instantiated) continue;
           Buf cb; TyKind mret = TY_UNKNOWN;
           if (kwall < 0) {
