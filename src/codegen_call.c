@@ -15106,7 +15106,8 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
      (#2629). A pointer-backed arg compares by address; anything else (a scalar,
      or a value-type object with no stable identity) is never the same object. */
   if (argc == 1 && sp_streq(name, "equal?") && recv >= 0 && ty_is_object(rt) &&
-      !comp_ty_value_obj(c, rt)) {
+      !comp_ty_value_obj(c, rt) &&
+      comp_resolve_member(c, ty_object_class(rt), "equal?", 0, NULL, NULL) == SP_MEMBER_NONE) {
     if (ty_is_object(a0) && !comp_ty_value_obj(c, a0)) {
       buf_puts(b, "((void *)("); emit_expr(c, recv, b); buf_puts(b, ") == (void *)(");
       emit_expr(c, argv[0], b); buf_puts(b, "))");
@@ -15196,7 +15197,10 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
                      (ty_is_array(rt) || ty_is_hash(rt) ||
                       (ty_is_object(rt) && ty_object_class(rt) >= 0 &&
                        ty_object_class(rt) < c->nclasses &&
-                       c->classes[ty_object_class(rt)].is_struct))))) {
+                       c->classes[ty_object_class(rt)].is_struct &&
+                       /* an eql? written in the Struct.new block answers
+                          for itself, as a struct's own == does below */
+                       comp_method_in_chain(c, ty_object_class(rt), "eql?", NULL) < 0))))) {
     /* Array#eql? is structural like == but class-strict per element
        (1 is not eql? to 1.0): box both sides through the strict poly
        comparator. Scalar eql? is handled by the per-type emitters. */
@@ -15428,11 +15432,15 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         emit_poly_eq_ordered(c, recv, argv[0], eq, b);
         return 1;
       }
-      if ((ty_is_hash(rt) || ty_is_hash(a0)) && rt != TY_POLY && a0 != TY_POLY) {
+      if ((ty_is_hash(rt) || ty_is_hash(a0)) && rt != TY_POLY && a0 != TY_POLY &&
+          !(ty_is_object(rt) && eq_class_has_own_eq(c, ty_object_class(rt)))) {
         /* hash vs a concrete non-hash: never equal. A poly operand instead
            falls through to the dynamic sp_poly_eq arm below (it may hold a
            hash at runtime -- the JSON.parse result compared against a hash
-           literal used to constant-fold here to false). */
+           literal used to constant-fold here to false). A user object with a
+           == of its own (or a <=> that Comparable#== calls) answers for
+           itself, as the Array arm above leaves it to the arms below: folded
+           here, the program's == never ran (`x.should == {"a" => 1}`). */
         buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), (");
         emit_expr(c, argv[0], b); buf_printf(b, "), %d)", eq ? 0 : 1);
         return 1;
