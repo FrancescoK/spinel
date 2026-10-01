@@ -931,7 +931,9 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       int splZ = 0;
       for (int ai = 0; ai < acZ; ai++)
         if (nt_kind(ntZ, avZ[ai]) == NK_SplatNode) { splZ = 1; break; }
-      if (splZ) {
+      /* ...and so does a zip past the 16 operands the typed arms below hold:
+         they stopped at the 16th and dropped the rest without a word */
+      if (splZ || (sp_streq(nmZ, "zip") && acZ > 16)) {
         int tops = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tops, tops);
         for (int ai = 0; ai < acZ; ai++) {
@@ -3748,10 +3750,10 @@ else {
         buf_printf(b, "); sp_%sArray_reverse_bang(_t%d); _t%d; })", k, t, t);
         return 1;
       }
-      if (sp_streq(name, "zip") && argc >= 1 && nt_ref(nt, id, "block") < 0) {
+      if (sp_streq(name, "zip") && argc >= 1 && argc <= 16 && nt_ref(nt, id, "block") < 0) {
         /* recv.zip(b, c...) → [[recv[0],b[0],c[0],...], ...] as PolyArray of PolyArrays */
         int ta = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, tpair = ++g_tmp;
-        int tb[16]; TyKind at[16]; int nargs = argc < 16 ? argc : 16;
+        int tb[16]; TyKind at[16]; int nargs = argc;
         for (int j = 0; j < nargs; j++) {
           tb[j] = ++g_tmp; at[j] = comp_ntype(c, argv[j]);
         }
@@ -5475,9 +5477,9 @@ else {
         }
         return 1;
       }
-      if (sp_streq(name, "zip") && argc >= 1 && nt_ref(nt, id, "block") < 0) {
+      if (sp_streq(name, "zip") && argc >= 1 && argc <= 16 && nt_ref(nt, id, "block") < 0) {
         int ta = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, tpair = ++g_tmp;
-        int tb[16]; TyKind at[16]; int nargs = argc < 16 ? argc : 16;
+        int tb[16]; TyKind at[16]; int nargs = argc;
         for (int j = 0; j < nargs; j++) {
           tb[j] = ++g_tmp; at[j] = comp_ntype(c, argv[j]);
         }
