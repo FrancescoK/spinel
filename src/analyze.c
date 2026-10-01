@@ -26093,6 +26093,7 @@ void analyze_program(Compiler *c) {
   desugar_data_positional_new(c);
   topup_forwarding_arity(c);
   expand_struct_forwarding_super(c);
+  refuse_super_init_value(c);
   inherit_members(c);
   register_includes(c);
   register_include_attrs(c);

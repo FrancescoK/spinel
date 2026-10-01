@@ -343,6 +343,94 @@ void topup_forwarding_arity(Compiler *c) {
   }
 }
 
+/* Is node v's value used? A statement list, a branch, a begin and a rescue
+   pass it on to whatever holds them. A statement before a list's last, a
+   loop body, an ensure clause, a method body and the block of an iterator
+   that ignores its block's value throw it away. */
+static int super_value_used(const NodeTable *nt, const int *par, int v) {
+  for (int p; (p = par[v]) >= 0; v = p) {
+    switch (nt_kind(nt, p)) {
+    case NK_StatementsNode: {
+      int n = 0;
+      const int *st = nt_arr(nt, p, "body", &n);
+      if (n == 0 || st[n - 1] != v) return 0;
+      break;
+    }
+    case NK_IfNode: case NK_UnlessNode: case NK_CaseNode: case NK_CaseMatchNode:
+      if (nt_ref(nt, p, "predicate") == v) return 1;
+      break;
+    case NK_WhileNode: case NK_UntilNode:
+      return nt_ref(nt, p, "predicate") == v;
+    case NK_InNode: case NK_RescueNode:
+      if (nt_ref(nt, p, "statements") != v && nt_ref(nt, p, "subsequent") != v) return 1;
+      break;
+    case NK_ElseNode: case NK_ParenthesesNode: case NK_BeginNode:
+      break;
+    case NK_DefNode:
+      return 0;
+    case NK_BlockNode: {
+      int call = par[p];
+      const char *cn = call >= 0 && nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
+      static const char *const it[] = { "each", "each_with_index", "each_index", "times", "upto",
+                                        "downto", "step", "loop", "each_slice", "each_cons",
+                                        "reverse_each", "tap", NULL };
+      for (int k = 0; cn && it[k]; k++)
+        if (sp_streq(cn, it[k])) return 0;
+      return 1;
+    }
+    default: {
+      const char *ty = nt_type(nt, p);
+      if (ty && sp_streq(ty, "EnsureNode")) return 0;
+      if (ty && sp_streq(ty, "WhenNode") && nt_ref(nt, p, "statements") == v) break;
+      return 1;
+    }
+    }
+  }
+  return 0;
+}
+
+/* initialize is emitted as a void C function (method_is_void), so `super`
+   in a subclass's initialize has no value to give when the parent's
+   initialize is one the program wrote: `c = super` assigned the void call.
+   CRuby answers the parent's last value. A super whose value is used --
+   `c = super`, but also the last statement of a branch or a begin whose
+   value is used -- is refused rather than compiled into C that does not
+   build. */
+void refuse_super_init_value(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int *par = NULL;
+  static const NodeKind kinds[] = { NK_SuperNode, NK_ForwardingSuperNode };
+  for (int k = 0; k < 2; k++) {
+    int cnt = 0;
+    const int *ids = nt_nodes_of_kind(nt, kinds[k], &cnt);
+    for (int i = 0; i < cnt; i++) {
+      int v = ids[i];
+      Scope *s = comp_scope_of(c, v);
+      if (!s || s->is_cmethod || s->class_id < 0 || !s->name || !sp_streq(s->name, "initialize")) continue;
+      int pc = comp_super_parent(c, s->class_id, 0);
+      if (pc < 0 || comp_method_in_chain(c, pc, "initialize", NULL) < 0) continue;
+      if (!par) {   /* each node's parent, built once a candidate turns up */
+        par = malloc(sizeof(int) * (size_t)(nt->count > 0 ? nt->count : 1));
+        for (int n = 0; n < nt->count; n++) par[n] = -1;
+        for (int p = 0; p < nt->count; p++) {
+          int nr = nt_num_refs(nt, p), na = nt_num_arrs(nt, p);
+          for (int r = 0; r < nr + na; r++) {
+            int n = 1, one = r < nr ? nt_ref_at(nt, p, r) : -1;
+            const int *kids = r < nr ? &one : nt_arr_at(nt, p, r - nr, &n);
+            for (int j = 0; kids && j < n; j++)
+              if (kids[j] >= 0 && kids[j] < nt->count) par[kids[j]] = p;
+          }
+        }
+      }
+      if (!super_value_used(nt, par, v)) continue;
+      unsupported_feature(c, v, "unsupported value of `super` in initialize: initialize is compiled to "
+                                "return nothing, so the parent's last value is not there to answer "
+                                "(see docs/limitations.md)");
+    }
+  }
+  free(par);
+}
+
 /* `super(...)` in a Struct or Data initialize reaches the built-in one that
    sets the members, which has no method scope to forward into. Spell the
    forward out from the synthesized params, `super(__fwd_0, .., k: k)`, so it
