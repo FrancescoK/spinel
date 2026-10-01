@@ -3407,6 +3407,22 @@ static int sp_src_defines_module(const char *source, const char *cname) {
   return strstr(source, def1) || strstr(source, def2);
 }
 
+static char *sp_prepend_require(char *source, const char *exe_path, const char *head,
+                                unsigned char **fsl, size_t *fsl_n) {
+  size_t sl = strlen(source), hl = strlen(head);
+  char *ns = (char *)malloc(sl + hl + 1);
+  if (!ns) return source;
+  memcpy(ns, head, hl); memcpy(ns + hl, source, sl + 1);
+  free(source);
+  ns = resolve_plain_requires(ns, exe_path, fsl, fsl_n);
+  size_t pl = strlen(SP_PUSH_PREFIX), il = strlen(SP_INSERT_PREFIX), nl = strlen(ns);
+  char *w = strncmp(ns, SP_PUSH_PREFIX, pl) == 0 ? (char *)malloc(nl - pl + il + 1) : NULL;
+  if (!w) return ns;
+  memcpy(w, SP_INSERT_PREFIX, il); memcpy(w + il, ns + pl, nl - pl + 1);
+  free(ns);
+  return w;
+}
+
 static char *sp_splice_named_builtin(char *source, const char *exe_path, const char *cname,
                                      const char *file, unsigned char **fsl, size_t *fsl_n) {
   if (!sp_src_names_const(source, cname) || sp_src_defines_module(source, cname)) return source;
@@ -3463,13 +3479,7 @@ static char *sp_splice_builtins(char *source, const char *exe_path,
     if (known && sp_source_mentions_method(source, aliases[k][0])) any = 1;
   }
   if (!any) return source;
-  const char *head = "require \"builtins/enumerable\"\n";
-  size_t sl = strlen(source), hl = strlen(head);
-  char *ns = (char *)malloc(sl + hl + 1);
-  if (!ns) return source;
-  memcpy(ns, head, hl); memcpy(ns + hl, source, sl + 1);
-  free(source);
-  return resolve_plain_requires(ns, exe_path, fsl, fsl_n);
+  return sp_prepend_require(source, exe_path, "require \"builtins/enumerable\"\n", fsl, fsl_n);
 }
 
 /* builtins/enumerator.rb: the Enumerator walks desugar_enum_walk_calls
@@ -3497,13 +3507,7 @@ static char *sp_splice_builtin_enumerator(char *source, const char *exe_path,
   if (!fp) { snprintf(gp, sizeof gp, "%.*s/../builtins/enumerator.rb", base_len, lib_dir); fp = fopen(gp, "r"); }
   if (!fp) return source;
   fclose(fp);
-  const char *head = "require \"builtins/enumerator\"\n";
-  size_t sl = strlen(source), hl = strlen(head);
-  char *ns = (char *)malloc(sl + hl + 1);
-  if (!ns) return source;
-  memcpy(ns, head, hl); memcpy(ns + hl, source, sl + 1);
-  free(source);
-  return resolve_plain_requires(ns, exe_path, fsl, fsl_n);
+  return sp_prepend_require(source, exe_path, "require \"builtins/enumerator\"\n", fsl, fsl_n);
 }
 
 /* ---- builtins/: the other containers (Integer, Float, Comparable) ----
@@ -3554,12 +3558,7 @@ static char *sp_splice_builtin_extra(char *source, const char *exe_path, SpBuilt
     if (sp_source_mentions_method(source, bf->names[i])) any = 1;
   if (!any) return source;
   char head[160]; snprintf(head, sizeof head, "require \"%s\"\n", bf->req);
-  size_t sl = strlen(source), hl = strlen(head);
-  char *ns = (char *)malloc(sl + hl + 1);
-  if (!ns) return source;
-  memcpy(ns, head, hl); memcpy(ns + hl, source, sl + 1);
-  free(source);
-  return resolve_plain_requires(ns, exe_path, fsl, fsl_n);
+  return sp_prepend_require(source, exe_path, head, fsl, fsl_n);
 }
 
 static char *sp_splice_builtin_extras(char *source, const char *exe_path,
@@ -4679,20 +4678,6 @@ static char *sp_prepend_after_comments(char *source, const char *head) {
   return ns;
 }
 
-/* Prepend `head` (a `require "x"` line) to the already-resolved program and
-   resolve it, so a core feature CRuby provides without a require is spliced
-   ahead of a use found anywhere in the program, not just in the entry file. */
-static char *sp_splice_implicit_require(char *source, const char *head, const char *argv0,
-                                        unsigned char **fsl, size_t *fsl_n) {
-  size_t sl = strlen(source), hl = strlen(head);
-  char *ns = (char *)malloc(sl + hl + 1);
-  if (!ns) return source;
-  memcpy(ns, head, hl);
-  memcpy(ns + hl, source, sl + 1);
-  free(source);
-  return resolve_plain_requires(ns, argv0, fsl, fsl_n);
-}
-
 /* ---- Main ---- */
 /* Parse `source_file` and append the text AST to `out`. `argv0` is the
    invoking program path (used to locate the stdlib for plain `require`s).
@@ -4779,9 +4764,9 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
      provides both without a require wherever they are used. */
   if (!sp_feature_required("set") && !sp_src_opens(source, "class Set") &&
       source_references_set(source))
-    source = sp_splice_implicit_require(source, "require \"set\"\n", argv0, &fsl, &fsl_n);
+    source = sp_prepend_require(source, argv0, "require \"set\"\n", &fsl, &fsl_n);
   if (!sp_feature_required("io/buffer") && source_references_io_buffer(source))
-    source = sp_splice_implicit_require(source, "require \"io/buffer\"\n", argv0, &fsl, &fsl_n);
+    source = sp_prepend_require(source, argv0, "require \"io/buffer\"\n", &fsl, &fsl_n);
   source = sp_splice_builtins(source, argv0, &fsl, &fsl_n);
   source = sp_splice_builtin_extras(source, argv0, &fsl, &fsl_n);
   source = sp_splice_builtin_enumerator(source, argv0, &fsl, &fsl_n);
