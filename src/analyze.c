@@ -27887,6 +27887,12 @@ void analyze_program(Compiler *c) {
       for (int id = 0; id < c->nt->count; id++) {
         const char *ty = nt_type(c->nt, id);
         if (!ty || (!sp_streq(ty, "SuperNode") && !sp_streq(ty, "ForwardingSuperNode"))) continue;
+        /* `super(..) { }` hands the parent a block of its own, spliced where
+           the super is (emit_super_inline): the caller's block plays no part,
+           so the child need not be inlined to bring it -- and inlined, a
+           `return` in that block left the child's caller instead of it */
+        int sb = nt_ref(c->nt, id, "block");
+        if (sb >= 0 && nt_kind(c->nt, sb) == NK_BlockNode) continue;
         Scope *sc = comp_scope_of(c, id);
         if (!sc) continue;
         int idx = (int)(sc - c->scopes);
