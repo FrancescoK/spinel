@@ -13379,13 +13379,21 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
       buf_printf(val, "({ (void)(%s); %s; sp_box_nil(); })", call, wb.p);
       nat = TY_POLY;
     }
-    else if (kind == PF_HASH && (flags & PF_VAL_SELF)) {
+    else if (kind == PF_STRING && (flags & PF_VAL_SELF)) {
+      /* The value is the receiver as the write left it: the shared handle, or
+         the plain string box the variable now holds -- not a fresh box of the
+         new contents, which no alias observes (s.concat("!").equal?(s)). */
+      int tq = ++g_tmp;
+      if (face_str_var_recv(nt, recv)) buf_printf(val, "({ %s _t%d = %s; sp_RbVal _t%d = (%s); _t%d; })", c_type_name(nat), tr, call, tq, wb.p, tq);
+      else buf_printf(val, "({ %s _t%d = %s; %s; _t%d; })", c_type_name(nat), tr, call, wb.p, box);
+      nat = TY_POLY;
+    }
+    else if (flags & PF_VAL_SELF) {
       /* The value is the receiver -- the box -- not the general copy the
          emitter worked on: a typed original has no general stand-in, and the
          copy is detached once written back, so a write through the value
-         (h.merge!(a)[:k] = v, and the chain h.merge!(a, b) folds into) would
-         go nowhere. compact! answers nil when it removed nothing, and the
-         receiver else. */
+         (h.merge!(a)[:k] = v, a.concat(b) << x) would go nowhere. compact!
+         answers nil when it removed nothing, and the receiver else. */
       if (nat == TY_POLY) buf_printf(val, "({ sp_RbVal _t%d = %s; %s; sp_poly_nil_p(_t%d) ? _t%d : _t%d; })", tr, call, wb.p, tr, tr, box);
       else buf_printf(val, "({ (void)(%s); %s; _t%d; })", call, wb.p, box);
       nat = TY_POLY;

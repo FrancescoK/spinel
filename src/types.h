@@ -69,7 +69,7 @@ enum {
   PF_STR_BANG = 1 << 9,  /* String value-form bang: re-enter the plain name, nil when unchanged */
   PF_STR_SELF = 1 << 10, /* ... but a bang that answers self (succ!/next!): never nil */
   PF_ARGS_OWN = 1 << 11, /* the arguments must be of the owner's own kind (concat) */
-  PF_VAL_SELF = 1 << 12, /* a mutator whose value is the receiver: a String row's typed value is its new contents, a Hash row's value is the box itself */
+  PF_VAL_SELF = 1 << 12, /* a mutator whose value is the receiver: the box itself, or for a String the box its variable holds after the write */
   PF_SAME_OK  = 1 << 14, /* ... and contents that are the receiver's own mean no write, so no frozen check (scrub!) */
   PF_LAST     = 1 << 13  /* answers only once no poly-receiver emitter of its own has claimed the name */
 };

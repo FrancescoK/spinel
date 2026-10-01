@@ -7225,9 +7225,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         TyKind ht = infer_call(c, id);
         an_set_face_node(-1, TY_UNKNOWN);
         if (ht == TY_UNKNOWN) continue;
-        /* a Hash mutator answers its box, not the general copy its emitter
-           worked on (see emit_face_arm) */
-        if (bit == PF_HASH && (ty_poly_face_owner_flags(name, argc, blk, nt_call_args_plain(nt, id), bit) & PF_VAL_SELF)) ht = TY_POLY;
+        /* a mutator that answers its receiver answers the box, not the copy
+           its emitter worked on (see emit_face_arm) */
+        if (ty_poly_face_owner_flags(name, argc, blk, nt_call_args_plain(nt, id), bit) & PF_VAL_SELF) ht = TY_POLY;
         r = r == TY_UNKNOWN ? ht : ty_unify(r, ht);
       }
       if (r != TY_UNKNOWN) return r;
