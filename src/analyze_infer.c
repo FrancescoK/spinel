@@ -8222,7 +8222,14 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (cls_id < 0) return TY_UNKNOWN;
     ClassInfo *ci = &c->classes[cls_id];
     int iv = nm ? comp_ivar_index(ci, nm) : -1;
-    if (iv < 0) return TY_UNKNOWN;
+    if (iv < 0) {
+      /* an instance_eval/exec body reads its receiver's: one the receiver's
+         class never writes is nil there (emit_expr reads it so) */
+      int ie = s->class_id < 0 && (an_ie_class_id >= 0 || ie_class_of(c, id) >= 0);
+      for (int k = ci->parent; ie && nm && k >= 0; k = c->classes[k].parent)
+        if (comp_ivar_index(&c->classes[k], nm) >= 0) ie = 0;
+      return ie && nm ? TY_NIL : TY_UNKNOWN;
+    }
     /* an UNMARKED read of a shared-mutable string slot demotes to the plain
        string type (copy-read), mirroring the local-read demotion (#3227) */
     if (ci->ivar_types[iv] == TY_STRBUF) return TY_STRING;
