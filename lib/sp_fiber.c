@@ -613,6 +613,7 @@ void sp_Fiber_storage_set(sp_Fiber*f,sp_sym k,sp_RbVal v){
 sp_int sp_Fiber_storage_len(sp_Fiber*f){
   return f->storage?((sp_FiberStore*)f->storage)->len:0;
 }
+/* entry i: keep i below sp_Fiber_storage_len, which is 0 when there is no store */
 sp_sym sp_Fiber_storage_key(sp_Fiber*f,sp_int i){
   return ((sp_FiberStore*)f->storage)->keys[i];
 }
