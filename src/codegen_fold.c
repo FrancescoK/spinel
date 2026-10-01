@@ -5962,6 +5962,14 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
     const char *k = (pt == TY_POLY_ARRAY) ? "Poly" : array_kind(pt);
     if (k) { buf_printf(out, "sp_%sArray_new()", k); return; }
   }
+  /* ...and an omitted `**kwrest` an empty Hash: the same arm handed it
+     NULL, which `o.class`, `o.is_a?(Hash)` and `o.empty?` read as nil. */
+  if (provided < 0 && idx == m->kwrest_idx && (ty_is_hash(pt) || pt == TY_POLY) &&
+      !(p && p->byref_out)) {
+    const char *hcn = ty_is_hash(pt) ? ty_hash_cname(pt) : NULL;
+    if (hcn) { buf_printf(out, "sp_%sHash_new()", hcn); return; }
+    if (pt == TY_POLY) { buf_puts(out, "sp_box_obj(sp_SymPolyHash_new(), SP_BUILTIN_SYM_POLY_HASH)"); return; }
+  }
   /* A nil-typed argument (a void call, an always-nil method) into a pointer
      parameter: evaluated for its effects, it passes the pointer's nil. Raw,
      the void call or its sp_int 0 was a C type error (#4930). */
