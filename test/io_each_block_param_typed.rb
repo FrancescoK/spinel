@@ -2,7 +2,8 @@
 # each_byte / each_codepoint Integers, and the block's body is inferred against
 # that: an array the block pushes them into is a String (Integer) array, not a
 # boxed one, whether it is pushed directly, through a local, or transformed.
-path = "/tmp/sp_io_each_block_param_typed.txt"
+require "tmpdir"
+path = File.join(Dir.tmpdir, "sp_io_each_block_param_typed_#{Process.pid}.txt")
 File.write(path, "one\ntwé\nthree\n")
 
 lines = []
