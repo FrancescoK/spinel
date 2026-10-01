@@ -4221,8 +4221,16 @@ else {
     int sc = comp_scope_of(c, id)->class_id;
     char ref[300];
     Scope *cs = comp_scope_of(c, id);
+    /* the slot is read back as the read of the ivar finds it: a top-level
+       ivar is the Toplevel pseudo-class's file-scope global, where `self`
+       names nothing (`x = (@i += 1)` at the top level, or a min/max block) */
+    int tl = cs && cs->class_id < 0 && g_ie_class_id < 0 ? comp_class_index(c, "Toplevel") : -1;
     if (cs && cs->is_cmethod && cs->class_id >= 0)
       snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[cs->class_id].name, iv_c(nm + 1));
+    else if (tl >= 0) {
+      snprintf(ref, sizeof ref, "civ_Toplevel_%s", iv_c(nm + 1));
+      sc = tl;
+    }
     else
       snprintf(ref, sizeof ref, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
     if (g_pre) {
