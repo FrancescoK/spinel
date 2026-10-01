@@ -39456,12 +39456,13 @@ else {
     return;
   }
   /* h.default_proc = <a Proc value>: install a trampoline that drives the
-     Proc, so any callable works and not just an inline lambda (#3563). */
+     Proc, so any callable works (#3563) -- a lambda literal included, which
+     is a Proc of its own like any other and keeps its own body's typing,
+     `return` and preludes. */
   if (recv >= 0 && sp_streq(name, "default_proc=") && argc == 1 &&
       (comp_ntype(c, recv) == TY_STR_POLY_HASH || comp_ntype(c, recv) == TY_SYM_POLY_HASH ||
        comp_ntype(c, recv) == TY_POLY_POLY_HASH) &&
-      comp_ntype(c, argv[0]) == TY_PROC &&
-      !(nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "LambdaNode"))) {
+      comp_ntype(c, argv[0]) == TY_PROC) {
     TyKind hrt = comp_ntype(c, recv);
     const char *hn2 = ty_hash_cname(hrt);
     const char *keyct = hrt == TY_SYM_POLY_HASH ? "sp_sym"
@@ -39479,76 +39480,14 @@ else {
     buf_printf(b, "; sp_Proc *_t%d = ", tp2); emit_expr(c, argv[0], b);
     buf_printf(b, "; if (_t%d && sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);",
                th2, th2, th2, hash_box_cls(hrt));
+    /* An assignment's value in Ruby is the RIGHT-HAND SIDE: `h.default_proc
+       = p` answers the proc, not the hash, which would land a sp_XHash * in
+       whatever slot the expression feeds -- a Proc * one here (#3833). */
+    TyKind vt2 = comp_ntype(c, id);
+    int ans = (vt2 == TY_PROC || vt2 == TY_POLY || vt2 == TY_UNKNOWN) ? tp2 : th2;
     buf_printf(b, " _t%d->dproc = _sp_hash_dproc_%d; _t%d->dproc_self = (void *)_t%d;"
                   " sp_gc_wb((void *)_t%d); _t%d; })",
-               th2, dn2, th2, tp2, th2, th2);
-    return;
-  }
-  /* h.default_proc = ->(hh, k) { ... }: lower the lambda literal to the same
-     dedicated dproc C function Hash.new{} uses and install it on the receiver
-     (dproc + dproc_self slots exist on every poly-valued variant) (#2371). */
-  if (recv >= 0 && sp_streq(name, "default_proc=") && argc == 1 &&
-      (comp_ntype(c, recv) == TY_STR_POLY_HASH || comp_ntype(c, recv) == TY_SYM_POLY_HASH ||
-       comp_ntype(c, recv) == TY_POLY_POLY_HASH) &&
-      nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "LambdaNode")) {
-    TyKind hrt = comp_ntype(c, recv);
-    const char *hn2 = ty_hash_cname(hrt);
-    int lam = argv[0];
-    int lbody = nt_ref(nt, lam, "body");
-    /* LambdaNode carries its ParametersNode directly (the BlockParameters
-       wrapper is unwrapped at parse time), so read requireds by hand */
-    const char *hp = NULL, *kp = NULL;
-    { int pn = nt_ref(nt, lam, "parameters");
-      if (pn >= 0) { int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
-        if (rn > 0) hp = nt_str(nt, reqs[0], "name");
-        if (rn > 1) kp = nt_str(nt, reqs[1], "name"); } }
-    int dn = ++g_proc_counter;
-    Buf *pb = &g_procs;
-    const char *keyct = hrt == TY_SYM_POLY_HASH ? "sp_sym"
-                      : hrt == TY_STR_POLY_HASH ? "const char *" : "sp_RbVal";
-    buf_printf(pb, "static sp_RbVal _sp_hash_dproc_%d(sp_%sHash *_self_h, %s _key, void *_dproc_self) {\n",
-               dn, hn2, keyct);
-    buf_puts(pb, "  (void)_dproc_self;\n");
-    if (hp) buf_printf(pb, "  sp_%sHash *lv_%s = _self_h; (void)lv_%s;\n", hn2, rename_local(hp), rename_local(hp));
-    if (kp) {
-      const char *box = hrt == TY_SYM_POLY_HASH ? "sp_box_sym(_key)"
-                      : hrt == TY_STR_POLY_HASH ? "sp_box_str(_key)" : "_key";
-      buf_printf(pb, "  sp_RbVal lv_%s = %s; (void)lv_%s;\n", rename_local(kp), box, rename_local(kp));
-    }
-    { Buf *sv_pre = g_pre; int sv_ind = g_indent;
-      g_pre = pb; g_indent = 1;
-      int bn = 0; const int *bb = lbody >= 0 ? nt_arr(nt, lbody, "body", &bn) : NULL;
-      /* a `next <v>` answers the missing key, as in the Hash.new block form */
-      if (bn > 0 && fold_body_has_next(c, lbody)) {
-        char dst[32]; snprintf(dst, sizeof dst, "_t%d", ++g_tmp);
-        emit_indent(pb, 1); buf_printf(pb, "sp_RbVal %s = sp_box_nil();\n", dst);
-        emit_block_value_into(c, lam, dst, 1, 1);
-        emit_indent(pb, 1); buf_printf(pb, "return %s;\n}\n", dst);
-      }
-      else {
-        for (int k = 0; k + 1 < bn; k++) emit_stmt(c, bb[k], pb, 1);
-        buf_puts(pb, "  return ");
-        if (bn > 0) emit_boxed(c, bb[bn - 1], pb); else buf_puts(pb, "sp_box_nil()");
-        buf_puts(pb, ";\n}\n");
-      }
-      g_pre = sv_pre; g_indent = sv_ind; }
-    int th = ++g_tmp;
-    /* An assignment's value in Ruby is the RIGHT-HAND SIDE: `h.default_proc = p`
-       answers the proc, not the hash. Answering the hash assigned a
-       sp_XHash * into whatever slot the expression fed -- a Proc * one here
-       (#3833). */
-    buf_printf(b, "({ sp_%sHash *_t%d = ", hn2, th); emit_expr(c, recv, b);
-    buf_printf(b, "; if (_t%d && sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);",
-               th, th, th, hash_box_cls(hrt));
-    buf_printf(b, " _t%d->dproc = _sp_hash_dproc_%d; _t%d->dproc_self = NULL; ", th, dn, th);
-    { TyKind vt = comp_ntype(c, id);
-      if (vt == TY_PROC || vt == TY_POLY || vt == TY_UNKNOWN) {
-        /* the proc value the call site wrote; re-emitting a literal lambda is
-           side-effect-free */
-        if (argc >= 1) emit_expr(c, argv[0], b); else buf_printf(b, "(sp_Proc *)0");
-      }
-      else buf_printf(b, "_t%d", th); }
-    buf_puts(b, "; })");
+               th2, dn2, th2, tp2, th2, ans);
     return;
   }
   /* value-position String#[]= (s[i] = v / s[i, n] = v / s[range] = v / s["sub"]
