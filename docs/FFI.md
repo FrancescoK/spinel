@@ -429,8 +429,18 @@ a call of it: that is `call_free`), and a variadic function's types end with
 A pointer argument that is not a Pointer, String, Integer, nil or something with
 `to_ptr` raises `TypeError` (CRuby's Fiddle crashes there).
 
-Not provided yet, and so refused when the program is compiled: `Fiddle::Importer`
-and `CStruct`, `Pinned`, `MemoryView`, `Fiddle.dlwrap` / `dlunwrap`.
+`require "fiddle/import"` adds `Fiddle::Importer`: a module that `extend`s it
+loads libraries with `dlload`, aliases types with `typealias` and declares C
+functions from their prototypes with `extern` (the prototype parser is the
+gem's own), and calls them on the module -- `LibC.strlen("hello")`. As with an
+`extend FFI::Library` module, the compiler sends a call of a name the module has
+no method for to the declared function, and a class that includes the module
+(which CRuby's Importer does not support) may call them bare. Like the gem,
+`dlload nil` searches nothing; pass `Fiddle.dlopen(nil)` for the process.
+
+Not provided, and so refused when the program is compiled: `Importer#struct`,
+`union`, `value` and `bind` (they build classes and methods from data), and
+`CStruct`, `Pinned`, `MemoryView`, `Fiddle.dlwrap` / `dlunwrap`.
 
 ## Examples
 
