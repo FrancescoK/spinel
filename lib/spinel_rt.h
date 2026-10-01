@@ -3220,6 +3220,35 @@ static SP_INLINE sp_int sp_poly_arg_perm(sp_RbVal v) {
   if (v.tag == SP_TAG_NIL || (v.tag == SP_TAG_INT && v.v.i == SP_INT_NIL)) return SP_INT_NIL;
   return sp_poly_arg_int_chk(v);
 }
+/* IO#each_line's separator and limit read out of an argument list a splat
+   supplied, as CRuby's extract_getline_args reads them: a lone argument is
+   the separator when it is nil or a String, the limit otherwise; a pair is
+   the separator and the limit, either of them nil. A nil separator is NULL
+   (read to the end) and no limit is 0, as sp_File_gets_sep takes them. */
+static SP_NOINLINE void sp_io_line_args(sp_PolyArray *a, const char **sep, sp_int *lim) {
+  sp_int n = a ? a->len : 0;
+  *sep = "\n"; *lim = 0;
+  if (n > 2)
+    sp_raise_cls("ArgumentError", sp_sprintf("wrong number of arguments (given %lld, expected 0..2)", (long long)n));
+  sp_RbVal lv = sp_box_nil();
+  if (n == 1) {
+    sp_RbVal v = a->data[0];
+    if (v.tag == SP_TAG_NIL) *sep = NULL;
+    else if (v.tag == SP_TAG_STR || sp_poly_is_strbuf(v)) *sep = sp_poly_arg_str_chk(v);
+    else { const char *s = sp_poly_check_str(v); if (s) *sep = s; else lv = v; }
+  }
+  else if (n == 2) {
+    *sep = a->data[0].tag == SP_TAG_NIL ? NULL : sp_poly_arg_str_chk(a->data[0]);
+    lv = a->data[1];
+  }
+  /* a String argument is never the NULL that means nil */
+  if (n > 0 && !*sep && a->data[0].tag != SP_TAG_NIL) *sep = sp_str_empty;
+  if (lv.tag != SP_TAG_NIL) {
+    *lim = sp_poly_arg_int_chk(lv);
+    /* CRuby names each_line for IO#each too */
+    if (*lim == 0) sp_raise_cls("ArgumentError", "invalid limit: 0 for each_line");
+  }
+}
 
 static sp_float sp_poly_to_f(sp_RbVal v) { if (v.tag == SP_TAG_FLT) return v.v.f; if (v.tag == SP_TAG_INT || v.tag == SP_TAG_SYM) return (sp_float)v.v.i; if (v.tag == SP_TAG_BIGINT) return sp_bigint_to_double((sp_Bigint *)v.v.p); if (v.tag == SP_TAG_STR) return (sp_float)atof(v.v.s ? v.v.s : sp_str_empty); if (v.tag == SP_TAG_BOOL) return v.v.b ? 1.0 : 0.0; if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RATIONAL) return sp_rational_to_f(*(sp_Rational *)v.v.p); if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_BIG_RATIONAL) return sp_brat_to_f((sp_BigRational *)v.v.p); if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_TIME && v.v.p) { sp_Time _tt = *(sp_Time *)v.v.p; return sp_time_ns_to_f(_tt.tv_sec, _tt.tv_nsec); } return 0.0; }  /* STR arm mirrors sp_poly_to_i's strtoll and the typed String#to_f (atof) */
 /* The same conversions, but a boxed nil lands on the type's sentinel instead
