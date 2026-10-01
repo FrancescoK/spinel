@@ -11571,6 +11571,41 @@ static int new_block_initialize(Compiler *c, int id, int *several) {
   return found;
 }
 
+/* `run(s, &method(:m))`: bind m's parameters from every place the block
+   run receives is called -- a yield, a `blk.call` (block_sites), through a
+   pure `...` forwarder (forwarding_yield_target), and through a call run
+   hands its own `&blk` on to -- as a `method(:m).call(args)` binds them. */
+static int bind_method_obj_block_sites(Compiler *c, int ymi, int tmi, int call, int depth) {
+  const NodeTable *nt = c->nt;
+  int y = depth > 4 ? -1 : forwarding_yield_target(c, ymi, 0);
+  if (y < 0) return 0;
+  int changed = 0;
+  const int *sites = NULL;
+  int ns = block_sites(c, y, &sites);
+  for (int k = 0; k < ns; k++) {
+    int ya = block_site_args(c, y, sites[k], y == ymi ? call : -1), yc = 0;
+    const int *yv = ya >= 0 ? nt_arr(nt, ya, "arguments", &yc) : NULL;
+    changed |= bind_args_params(c, sites[k], tmi, yv, yc);
+  }
+  Scope *m = &c->scopes[y];
+  if (!m->blk_param || !m->blk_param[0]) return changed;
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    if (comp_scope_of(c, u) != m) continue;
+    int ba = nt_ref(nt, u, "block");
+    int bx = ba >= 0 && nt_kind(nt, ba) == NK_BlockArgumentNode ? nt_ref(nt, ba, "expression") : -1;
+    if (bx < 0 || nt_kind(nt, bx) != NK_LocalVariableReadNode || !nt_str(nt, bx, "name") ||
+        !sp_streq(nt_str(nt, bx, "name"), m->blk_param)) continue;
+    const char *un = nt_str(nt, u, "name");
+    int r = nt_ref(nt, u, "receiver");
+    int t = -1;
+    if (!un) continue;
+    if (r < 0 || nt_kind(nt, r) == NK_SelfNode) t = comp_self_call_mi(c, u, un);
+    else if (ty_is_object(infer_type(c, r))) t = comp_method_in_chain(c, ty_object_class(infer_type(c, r)), un, NULL);
+    if (t >= 0 && t != y) changed |= bind_method_obj_block_sites(c, t, tmi, u, depth + 1);
+  }
+  return changed;
+}
+
 int infer_block_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -11957,6 +11992,11 @@ int infer_block_params(Compiler *c) {
        an Integer (TypeError at run time). */
     if (nt_kind(nt, block) == NK_BlockArgumentNode) {
       int bx = nt_ref(nt, block, "expression");
+      /* `&method(:m)` handed to a method that keeps its block arrives as
+         `method(:m).to_proc` */
+      if (bx >= 0 && nt_kind(nt, bx) == NK_CallNode && nt_str(nt, bx, "name") &&
+          sp_streq(nt_str(nt, bx, "name"), "to_proc") && nt_ref(nt, bx, "arguments") < 0)
+        bx = nt_ref(nt, bx, "receiver");
       int tmi = bx >= 0 && nt_kind(nt, bx) == NK_CallNode ? method_obj_target_mi(c, bx) : -1;
       int ymi = -1;
       if (tmi >= 0 && !method_call_param_shift(c, bx, tmi)) {
@@ -11972,13 +12012,8 @@ int infer_block_params(Compiler *c) {
         }
         else if (ty_is_object(infer_type(c, recv))) ymi = comp_method_in_chain(c, ty_object_class(infer_type(c, recv)), name, NULL);
       }
-      if (ymi >= 0 && c->scopes[ymi].yields) {
-        NT_FOREACH_KIND(nt, NK_YieldNode, y) {
-          if (comp_scope_of(c, y) != &c->scopes[ymi]) continue;
-          int ya = nt_ref(nt, y, "arguments"), yc = 0;
-          const int *yv = ya >= 0 ? nt_arr(nt, ya, "arguments", &yc) : NULL;
-          changed |= bind_args_params(c, y, tmi, yv, yc);
-        }
+      if (ymi >= 0 && forwarding_yield_target(c, ymi, 0) >= 0) {
+        changed |= bind_method_obj_block_sites(c, ymi, tmi, id, 0);
         continue;
       }
     }
