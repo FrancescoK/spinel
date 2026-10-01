@@ -11071,6 +11071,9 @@ else {
               /* typed target from a poly tuple (known multi-value return) */
               emit_unbox_text(c, ltt, gx, b);
             }
+            /* a mutable-String local holds an sp_String *: wrap a String
+               element, as the single write and the tuple path do */
+            else if (ltt == TY_STRBUF && elem == TY_STRING) buf_printf(b, "sp_String_new_shared(%s)", gx);
             else buf_puts(b, gx);
             buf_puts(b, ";\n");
           }
