@@ -10408,6 +10408,23 @@ static sp_RbVal sp_poly_to_r_m(sp_RbVal v) {
   if (sp_poly_is_strbuf(v)) return sp_poly_to_r_m(sp_poly_strbuf_deref(v));
   sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'to_r' for %s", sp_poly_class_name(v)));
 }
+/* #rationalize on a boxed value, with `argc` epsilons (0 or 1): nil and an
+   Integer ignore it and answer (0/1) and (n/1); a Float answers the simplest
+   rational within it, or the simplest that rounds back to the Float, as its
+   typed receiver does; a Rational the same through its double, as the typed
+   Rational#rationalize(eps) does (#3057). The epsilon is read only by the
+   kinds that use it. */
+static sp_RbVal sp_poly_rationalize_m(sp_RbVal v, int argc, sp_RbVal eps) {
+  if (v.tag == SP_TAG_NIL) return sp_box_rational(sp_rational_new(0, 1));
+  if (v.tag == SP_TAG_INT) return sp_box_rational(sp_rational_new(v.v.i, 1));
+  if (v.tag == SP_TAG_FLT)
+    return sp_box_rational(argc ? sp_float_rationalize(v.v.f, sp_poly_to_f(eps)) : sp_float_rationalize0(v.v.f));
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RATIONAL && v.v.p) {
+    if (!argc) return v;
+    return sp_box_rational(sp_float_rationalize(sp_rational_to_f(*(sp_Rational *)v.v.p), sp_poly_to_f(eps)));
+  }
+  sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'rationalize' for %s", sp_poly_class_name(v)));
+}
 static sp_RbVal sp_poly_to_c_m(sp_RbVal v) {
   /* fl carries the per-component int/float flag inspect renders from, so it has
      to be set, not left as whatever the stack held. The typed path is the

@@ -41951,6 +41951,13 @@ else {
     if (argc == 0 && sp_streq(name, "to_i"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (sp_int)0)"); return; }
     if (argc == 0 && sp_streq(name, "to_f"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0.0)"); return; }
     if (argc == 0 && (sp_streq(name, "to_r") || sp_streq(name, "rationalize"))) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_rational_new(0, 1))"); return; }
+    /* nil.rationalize takes an epsilon of any kind and ignores it; it is
+       still evaluated, after the receiver */
+    if (argc == 1 && sp_streq(name, "rationalize")) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+      emit_expr(c, argv[0], b); buf_puts(b, "), sp_rational_new(0, 1))");
+      return;
+    }
     /* nil =~ anything is nil; nil !~ anything is true (#2385) */
     if (argc == 1 && sp_streq(name, "=~")) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b);

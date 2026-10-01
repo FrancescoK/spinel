@@ -5436,10 +5436,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
          `(expr, sp_box_nil())` -- it evaluates the answer and throws it away. */
       if (sp_streq(name, "encoding") && argc == 0) return an_poly_concrete(c, name, TY_POLY);
       /* nil-aware conversions (a nil local widens to poly): boxed results */
-      if (argc == 0 && nt_ref(nt, id, "block") < 0 &&
-          (sp_streq(name, "to_a") || sp_streq(name, "to_h") ||
-           sp_streq(name, "to_r") || sp_streq(name, "rationalize") ||
-           sp_streq(name, "to_c"))) {
+      if (nt_ref(nt, id, "block") < 0 &&
+          ((argc == 0 && (sp_streq(name, "to_a") || sp_streq(name, "to_h") ||
+                          sp_streq(name, "to_r") || sp_streq(name, "to_c"))) ||
+           (argc <= 1 && sp_streq(name, "rationalize")))) {   /* an optional epsilon */
         int has_user = 0;
         if (!an_builtin_only)
         for (int k = 0; k < c->nclasses && !has_user; k++)
