@@ -3395,7 +3395,7 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
     /* byref string out-param: the caller's slot, so body mutation propagates.
        Named _cell_<name> so the ordinary is_cell deref forms read/write it. */
     if (p && p->byref_out) {
-      buf_printf(b, "const char *%s *_cell_%s", p->borrowed_volatile ? " volatile" : "", s->pnames[i]);
+      buf_printf(b, "%s *_cell_%s", borrowed_string_type(p), s->pnames[i]);
       continue;
     }
     TyKind pt = (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY;
@@ -5414,6 +5414,12 @@ void emit_cell_elem_type(Compiler *c, LocalVar *lv, Buf *b) {
   buf_puts(b, "sp_int");
 }
 
+/* The element type of a borrowed String slot, not an owned heap cell.
+   Selector volatility is a separate qualifier on the pointer to this. */
+const char *borrowed_string_type(const LocalVar *lv) {
+  return lv->borrowed_volatile ? "const char * volatile" : "const char *";
+}
+
 /* True if the AST subtree at `id` has a YieldNode, not crossing DefNode. */
 int proc_body_has_yield(Compiler *c, int id) {
   if (id < 0) return 0;
@@ -5791,8 +5797,9 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
       if (lv && lv->is_cell) {
         /* a shared cell pointer (see emit_scope_decls): float -> sp_float*,
            poly -> sp_RbVal*, heap object -> its typed pointer, else sp_int*. */
-        buf_puts(&g_proc_protos, " "); emit_cell_elem_type(c, lv, &g_proc_protos);
-        if (lv->byref_out && lv->borrowed_volatile) buf_puts(&g_proc_protos, " volatile");
+        buf_puts(&g_proc_protos, " ");
+        if (lv->byref_out) buf_puts(&g_proc_protos, borrowed_string_type(lv));
+        else emit_cell_elem_type(c, lv, &g_proc_protos);
         buf_printf(&g_proc_protos, " *c_%s;", caps.v[i]);
       }
       else {
@@ -5915,8 +5922,9 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
       if (lv && lv->is_cell) {
         /* unpack the shared cell pointer; reads/writes go through (*_cell_<name>)
            (emit_local_ref), so the write reaches the enclosing scope. */
-        buf_puts(pb, "    "); emit_cell_elem_type(c, lv, pb);
-        if (lv->byref_out && lv->borrowed_volatile) buf_puts(pb, " volatile");
+        buf_puts(pb, "    ");
+        if (lv->byref_out) buf_puts(pb, borrowed_string_type(lv));
+        else emit_cell_elem_type(c, lv, pb);
         buf_printf(pb, " *_cell_%s = _fc->c_%s;\n", caps.v[i], caps.v[i]);
         buf_printf(pb, "    SP_GC_ROOT(_cell_%s);\n", caps.v[i]);
         continue;
@@ -7063,8 +7071,9 @@ else if (orecv >= 0 && onm) {
       LocalVar *clv = scope_local(bs, caps.v[i]);
       /* a float capture rides a native sp_float cell, a poly capture an
          sp_RbVal cell, a heap object its typed pointer (see emit_scope_decls). */
-      buf_puts(&g_procs, " "); emit_cell_elem_type(c, clv, &g_procs);
-      if (clv && (clv->byref_out || clv->inline_alias) && clv->borrowed_volatile) buf_puts(&g_procs, " volatile");
+      buf_puts(&g_procs, " ");
+      if (clv && (clv->byref_out || clv->inline_alias)) buf_puts(&g_procs, borrowed_string_type(clv));
+      else emit_cell_elem_type(c, clv, &g_procs);
       buf_printf(&g_procs, " *c_%s;", caps.v[i]);
     }
     if (cap_self && self_is_value) buf_printf(&g_procs, " sp_%s __self_val;", self_cls);

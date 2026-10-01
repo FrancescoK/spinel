@@ -2462,6 +2462,10 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	done; \
 	grep -q 'sp_rb_kw_leaf(const char \* volatile \*_cell_s, const char \* lv_suffix) {' "$$tmp/bsv.c" && \
 	grep -q 'sp_two_slots(const char \* \*_cell_plain, const char \* volatile \*_cell_guarded) {' "$$tmp/bsv.c" || { echo "infer-test: FAIL (borrowed volatility is not selective per parameter or through keywords)"; ok=0; }; \
+	for cap in fib proc; do \
+	  grep -q "typedef struct { sp_String \* \*c_s; } _$${cap}_cap_" "$$tmp/bsv.c" || { echo "infer-test: FAIL (an owned $$cap capture became a borrowed volatile slot)"; ok=0; }; \
+	done; \
+	grep -q 'sp_handle_bound(sp_String \* lv_s) {' "$$tmp/bsv.c" || { echo "infer-test: FAIL (a bound Method lost its shared String handle ABI)"; ok=0; }; \
 	$(SPINEL) test/infer/hash_one_class_each_value.rb -c --no-line-map -o "$$tmp/hoc.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (hash_one_class_each_value: -c)"; ok=0; }; \
 	grep -q 'sp_Item \* lv_it' "$$tmp/hoc.c" && grep -q 'sp_Item_describe((sp_Item \*)lv_it)' "$$tmp/hoc.c" || { echo "infer-test: FAIL (#4846 a one-class hash's each_value is not typed)"; ok=0; }; \
 	$(SPINEL) test/infer/hash_or_write_index_setter.rb -c --no-line-map -o "$$tmp/hos.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (hash_or_write_index_setter: -c)"; ok=0; }; \

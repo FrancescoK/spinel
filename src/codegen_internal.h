@@ -779,6 +779,7 @@ const char *cell_value_struct(TyKind t);
 const char *cell_value_struct_empty(TyKind t);
 const char *cell_value_struct_scan(TyKind t);
 void emit_cell_elem_type(Compiler *c, LocalVar *lv, Buf *b);
+const char *borrowed_string_type(const LocalVar *lv);
 int splat_string_var(Compiler *c, const int *av, int ac, int *fs);
 void refuse_super_splat(Compiler *c, int id, int target);
 void refuse_yield_splat(Compiler *c, int blk, int yc, const int *yv);

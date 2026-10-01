@@ -98,6 +98,32 @@ def guarded(s, other)
   end
 end
 
+# Captures and bound Methods promote their Strings to shared handles.
+# These owned capture cells must stay distinct from volatile borrowed slots.
+def handle_capture(s)
+  s << "C"
+  proc { puts s }.call
+end
+def handle_fiber(s)
+  s << "F"
+  Fiber.new { puts s; Fiber.yield }.resume
+end
+def handle_bound(s)
+  s << "B"
+end
+def guarded_handles(s)
+  s << "["
+  begin
+    s = String.new("fresh")
+    yield
+  ensure
+    handle_capture(s)
+    handle_fiber(s)
+    method(:handle_bound).call(s)
+    puts s
+  end
+end
+
 plain = String.new("plain")
 unrelated_begin(plain)
 puts plain
@@ -108,3 +134,6 @@ caller = String.new("caller")
 other = String.new("other")
 p guarded(caller, other) { break 37 }
 puts caller
+handle_caller = String.new("caller")
+p guarded_handles(handle_caller) { break 31 }
+puts handle_caller
