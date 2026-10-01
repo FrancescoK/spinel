@@ -53,7 +53,8 @@ jobs:
               for k in $(seq 1 "${REPEAT:-1}"); do
                 n=$b; [ "${REPEAT:-1}" -gt 1 ] && n="$b#$k"
                 valgrind --tool=callgrind --callgrind-out-file="$RUNNER_TEMP/cg/$n-$side.cg" "$RUNNER_TEMP/$b-$side" > /dev/null 2> "$RUNNER_TEMP/$n-$side.vg" || true
-                ir=$(grep -o 'Collected : [0-9]*' "$RUNNER_TEMP/$n-$side.vg" | grep -o '[0-9]*$')
+                ir=$(grep -o 'Collected : [0-9]*' "$RUNNER_TEMP/$n-$side.vg" | grep -o '[0-9]*$') || ir=
+                [ -n "$ir" ] || { echo "$n $side: no Ir"; tail -20 "$RUNNER_TEMP/$n-$side.vg"; }
                 echo "$n $side ${ir:-none}" >> "$RUNNER_TEMP/ir.txt"
               done
             done
