@@ -5878,7 +5878,7 @@ static int g_n_ran_hnd, g_cap_ran_hnd;
    declared anywhere in the statement's pending lines, matched another
    String's temp when the variable held no handle: `h((buf.upcase!; 1), d,
    (d = +"q"; 2))` bound the block-scoped temp upcase! took of buf. */
-static int ran_first_handle(int node) {
+int ran_first_handle(int node) {
   for (int i = g_n_argov - 1; i >= 0; i--) {
     if (g_argov_node[i] != node) continue;
     int t;

@@ -595,6 +595,9 @@ void emit_args_run(Compiler *c, const int *argv, int argc);
 /* Has the argument `node` run already, into the temp an override from
    the `from`th on names? */
 int arg_ran_first(int node, int from);
+/* The handle temp a shared String slot's argument took when it ran first
+   (emit_arg_temp), -1 when there is none. */
+int ran_first_handle(int node);
 int emit_splat_gather(Compiler *c, Scope *m, const int *argv, const ArgLayout *L);
 void emit_gather_arity_check(Compiler *c, Scope *m, int ct);
 void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out);
