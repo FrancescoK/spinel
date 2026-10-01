@@ -35752,7 +35752,22 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           Buf dcb; memset(&dcb, 0, sizeof dcb);
           emit_method_cname(c, &c->scopes[defmi], &dcb);
           buf_puts(&dcb, "(");
-          { const char *ld = emit_cmethod_self_cls_arg(c, defmi, cid, &dcb);
+          /* The one implementation still runs with self = the receiver's
+             runtime class: `self.class.label` from a Base method on a Child
+             names Child in the body. Naming the static class (cid) answered
+             Base for every subclass instance. */
+          int rt_cls = cmethod_takes_self_cls(c, defmi) && !comp_ty_value_obj(c, rrt) &&
+                       class_has_subclass(c, cid);
+          if (rt_cls) {
+            int self_recv = sp_streq(rty ? rty : "", "SelfNode");
+            const char *op = objptr.p ? objptr.p : "";
+            buf_puts(&dcb, "((sp_Class){");
+            if (!self_recv) buf_printf(&dcb, "(%s) ? ", op);
+            emit_obj_dispatch_key(c, cid, op, &dcb);
+            if (!self_recv) buf_printf(&dcb, " : %d", cid);
+            buf_puts(&dcb, ", NULL})");
+          }
+          { const char *ld = rt_cls ? ", " : emit_cmethod_self_cls_arg(c, defmi, cid, &dcb);
             emit_args_filled(c, defmi, nt_ref(nt, id, "arguments"), ld, &dcb); }
           buf_puts(&dcb, ")");
           TyKind want = comp_ntype(c, id);
