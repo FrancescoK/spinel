@@ -8306,12 +8306,12 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
           free(eb.p);
         }
         else if (comp_ntype(c, argv[0]) == TY_POLY) {
-          /* the pattern is a Regexp read out of a table, so it arrives boxed:
-             its payload IS the compiled pattern */
+          /* the pattern arrives boxed (read out of a table): a Regexp or a
+             String, told apart at run time (sp_scan_boxed) */
           Buf pb2; memset(&pb2, 0, sizeof pb2);
           emit_boxed(c, argv[0], &pb2);
-          buf_printf(g_pre, "sp_StrArray *_t%d = sp_re_scan((mrb_regexp_pattern *)(%s).v.p, _t%d); SP_GC_ROOT(_t%d);\n",
-                     tm, pb2.p ? pb2.p : "sp_box_nil()", tr, tm);
+          buf_printf(g_pre, "sp_StrArray *_t%d = sp_scan_boxed(_t%d, %s); SP_GC_ROOT(_t%d);\n",
+                     tm, tr, pb2.p ? pb2.p : "sp_box_nil()", tm);
           free(pb2.p);
         }
         /* a String pattern the body walks the subject with (below) is held
@@ -8403,14 +8403,13 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "%s(", comp_ntype(c, id) == TY_POLY_ARRAY ? "sp_re_scan_poly" : "sp_re_scan");
         emit_expr(c, argv[0], b); buf_printf(b, ", %s)", r);
       }
-      /* the same, for a pattern that arrives BOXED (a Regexp read out of a
-         table): its payload is the compiled pattern */
+      /* the same, for a pattern that arrives BOXED (read out of a table): a
+         Regexp or a String, told apart at run time (sp_scan_boxed) */
       else if (sp_streq(name, "scan") && argc == 1 && comp_ntype(c, argv[0]) == TY_POLY &&
                nt_ref(nt, id, "block") < 0) {
-        buf_printf(b, "%s((mrb_regexp_pattern *)(",
-                   comp_ntype(c, id) == TY_POLY_ARRAY ? "sp_re_scan_poly" : "sp_re_scan");
+        buf_printf(b, "%s(%s, ", comp_ntype(c, id) == TY_POLY_ARRAY ? "sp_scan_boxed_poly" : "sp_scan_boxed", r);
         emit_boxed(c, argv[0], b);
-        buf_printf(b, ").v.p, %s)", r);
+        buf_puts(b, ")");
       }
       /* the receiver is a spinel string, so its own byte length is what the
          symbol's name is -- a NUL in it is a byte of the name (#nul) */
@@ -14752,7 +14751,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     }
   }
   /* poly.scan(pat) with no block: the rows themselves. The pattern may arrive
-     boxed (read out of a table), where its payload IS the compiled pattern. */
+     boxed (read out of a table), a Regexp or a String (sp_scan_boxed). */
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "scan") && argc == 1 &&
       nt_ref(nt, id, "block") < 0 && !user_defines_or_reads(c, "scan") &&
       !native_class_defines(c, "scan")) {
@@ -14761,11 +14760,19 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     TyKind sres = comp_ntype(c, id);
     const char *sfn = sres == TY_STR_ARRAY ? "sp_re_scan" : "sp_re_scan_poly";
     if (spt == TY_STRING) { sfn = "sp_str_scan"; }
+    /* a boxed pattern is a Regexp or a String, told apart at run time */
+    if (sre < 0 && spt != TY_REGEX && spt != TY_STRING) {
+      buf_printf(b, "%s(sp_poly_recv_s(", sres == TY_STR_ARRAY ? "sp_scan_boxed" : "sp_scan_boxed_poly");
+      emit_expr(c, recv, b);
+      buf_printf(b, ", \"%s\"), ", name);
+      emit_boxed(c, argv[0], b);
+      buf_puts(b, ")");
+      return 1;
+    }
     buf_printf(b, "%s(", sfn);
     if (sre >= 0) buf_printf(b, "sp_re_pat_%d", sre);
     else if (spt == TY_REGEX) emit_expr(c, argv[0], b);
     else if (spt == TY_STRING) { buf_puts(b, "sp_poly_recv_s("); emit_expr(c, recv, b); buf_printf(b, ", \"%s\"), ", name); }
-    else { buf_puts(b, "(mrb_regexp_pattern *)("); emit_boxed(c, argv[0], b); buf_puts(b, ").v.p"); }
     if (spt == TY_STRING) { emit_expr(c, argv[0], b); buf_puts(b, ")"); }
     else { buf_puts(b, ", sp_poly_recv_s("); emit_expr(c, recv, b); buf_printf(b, ", \"%s\"))", name); }
     return 1;
@@ -14804,11 +14811,11 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     else if (tp >= 0) buf_printf(b, "sp_str_scan(_t%d, _t%d)", ts, tp);
     else if (pat_t == TY_STRING) { buf_printf(b, "sp_str_scan(_t%d, ", ts); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
     else {
-      /* the pattern arrived boxed (a Regexp read out of a table): its payload
-         IS the compiled pattern */
-      buf_puts(b, "sp_re_scan((mrb_regexp_pattern *)(");
+      /* the pattern arrived boxed (read out of a table): a Regexp or a
+         String, told apart at run time */
+      buf_printf(b, "sp_scan_boxed(_t%d, ", ts);
       emit_boxed(c, argv[0], b);
-      buf_printf(b, ").v.p, _t%d)", ts);
+      buf_puts(b, ")");
     }
     buf_printf(b, "; SP_GC_ROOT(_t%d);", tm);
     buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {", ti, ti, tm, ti);
