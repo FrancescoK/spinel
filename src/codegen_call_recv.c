@@ -78,6 +78,55 @@ static void emit_int_array_delete(Compiler *c, const char *arr, int arg, int nil
 
 static void emit_str_encode_call(Compiler *c, const char *recv_txt, const int *argv, int argc, Buf *b);
 
+/* An append chain over an existing handle must hand that handle to the
+   next link. Mark its receiver links before operand ordering can bind a
+   String read into a const char * temp, and restore their emission types
+   afterwards. No slot becomes shared here. */
+int emit_str_append_chain_handle(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || (!sp_streq(name, "<<") && !sp_streq(name, "concat"))) return 0;
+  int recv = nt_ref(nt, id, "receiver"), args = nt_ref(nt, id, "arguments"), argc = 0;
+  if (args >= 0) nt_arr(nt, args, "arguments", &argc);
+  if (recv < 0 || argc < 1 || nt_ref(nt, id, "block") >= 0) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (rt != TY_STRING && rt != TY_STRBUF) return 0;
+  int first = unwrap_parens(c, recv);
+  if (c->strbuf_box[first] && comp_ntype(c, first) == TY_STRBUF) return 0;
+  int links[64], nlinks = 0, cur = recv, calls = 0;
+  while (cur >= 0 && nlinks < 64) {
+    if (nt_kind(nt, cur) == NK_ParenthesesNode) {
+      int body = nt_ref(nt, cur, "body"), n = 0;
+      const int *bb = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+      if (n != 1) break;
+      links[nlinks++] = cur; cur = bb[0]; continue;
+    }
+    if (nt_kind(nt, cur) != NK_CallNode) break;
+    const char *nm = nt_str(nt, cur, "name");
+    int ca = nt_ref(nt, cur, "arguments"), ac = 0;
+    if (ca >= 0) nt_arr(nt, ca, "arguments", &ac);
+    if (!nm || (!sp_streq(nm, "<<") && !sp_streq(nm, "concat")) ||
+        ac < 1 || nt_ref(nt, cur, "block") >= 0) break;
+    links[nlinks++] = cur; calls++;
+    cur = nt_ref(nt, cur, "receiver");
+  }
+  char ref[1024];
+  if (!calls || cur < 0 ||
+      (nt_kind(nt, cur) != NK_LocalVariableReadNode &&
+       nt_kind(nt, cur) != NK_InstanceVariableReadNode) ||
+      !strbuf_slot_ref(c, cur, ref, sizeof ref)) return 0;
+  unsigned char sv[64]; TyKind st[64];
+  for (int i = 0; i < nlinks; i++) {
+    sv[i] = c->strbuf_box[links[i]]; st[i] = c->ntype[links[i]];
+    c->strbuf_box[links[i]] = 1; c->ntype[links[i]] = TY_STRBUF;
+  }
+  emit_call(c, id, b);
+  for (int i = 0; i < nlinks; i++) {
+    c->strbuf_box[links[i]] = sv[i]; c->ntype[links[i]] = st[i];
+  }
+  return 1;
+}
+
 /* Object's identity protocol, text form (defined with its node form at the end of this file). */
 static void emit_native_object_protocol_text(Compiler *c, const char *name, TyKind rt, const char *r, TyKind at, const char *a, Buf *b);
 
@@ -1386,9 +1435,16 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
          below would emit an invalid assignment (#2020). prepend replaces the
          buffer with args-then-contents, keeping the handle stable (#3227). */
       { char sref0[1024];
-        if (strbuf_slot_ref(c, recv, sref0, sizeof sref0)) {
+        int sr = unwrap_parens(c, recv);
+        const char *sn = nt_kind(nt, sr) == NK_CallNode ? nt_str(nt, sr, "name") : NULL;
+        int chain_handle = sn && (sp_streq(sn, "<<") || sp_streq(sn, "concat")) &&
+                           c->strbuf_box[sr] && comp_ntype(c, sr) == TY_STRBUF;
+        if (chain_handle || strbuf_slot_ref(c, sr, sref0, sizeof sref0)) {
           int tb2 = ++g_tmp;
-          buf_printf(b, "({ sp_String *_t%d = %s;", tb2, sref0);
+          buf_printf(b, "({ sp_String *_t%d = ", tb2);
+          if (chain_handle) emit_expr(c, sr, b);
+          else buf_puts(b, sref0);
+          buf_puts(b, ";");
           if (sp_streq(name, "prepend")) {
             int tp3 = ++g_tmp;
             buf_printf(b, " const char *_t%d = ", tp3);
