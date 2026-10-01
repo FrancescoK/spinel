@@ -7177,7 +7177,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent);
     buf_puts(b, "{ ");
     for (int k = 0; k < n; k++) { buf_puts(b, "(void)("); emit_boxed(c, a[k], b); buf_puts(b, "); "); }
-    buf_puts(b, "exit(0); }\n");
+    buf_puts(b, "exit(sp_at_exit_run(0)); }\n");
     return;
   }
 
@@ -7295,6 +7295,15 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
     return;
   }
 
+  if (g_c_ret_void && g_ret_type == TY_UNKNOWN) {
+    emit_indent(b, indent);
+    buf_puts(b, "{ ");
+    for (int k = 0; k < n; k++) { buf_puts(b, "(void)("); emit_expr(c, a[k], b); buf_puts(b, "); "); }
+    emit_frame_unwind(b, 0, NULL);
+    emit_main_exit(b);
+    return;
+  }
+
   emit_indent(b, indent);
   /* leaving through live begin/rescue frames: pop them, or their jmp_bufs
      dangle into this soon-dead C frame and the next raise longjmps into
@@ -7377,7 +7386,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
   }
   else if (g_ret_type == TY_POLY) buf_puts(b, "return sp_box_nil();\n");
   else if (g_ret_type == TY_VOID) buf_puts(b, "return;\n");
-  /* TY_UNKNOWN is emitted as an int C return type (main(), or a never-inferred
+  /* TY_UNKNOWN is emitted as an int C return type (a never-inferred
      method), so its bare return is `return 0;`, not the void `return;`. */
   else if (g_ret_type == TY_UNKNOWN) buf_puts(b, "return 0;\n");
   /* bare `return` is Ruby nil: emit the return type's nil representation, not a

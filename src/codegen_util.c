@@ -3648,12 +3648,18 @@ void emit_recv_rooted(Compiler *c, int recv, int t, const char *rootm, Buf *b) {
   else buf_printf(b, "; %s(_t%d); ", rootm, t);
 }
 
+void emit_main_exit(Buf *b) {
+  if (g_uses_threads) buf_puts(b, "sp_sched_drain(); ");
+  buf_puts(b, "_sp_main_rc = sp_at_exit_run(0); return; }\n");
+}
+
 void emit_retf_return(int eid, int has_retval, Buf *b) {
+  if (g_c_ret_void && g_ret_type == TY_UNKNOWN) { buf_printf(b, "if (_retf%d) { ", eid); emit_main_exit(b); }
   /* A fiber body is `static void`: returning the value there is a C
      constraint violation (GCC 14 rejects it), and the value had nowhere to
      go anyway -- a void function's caller cannot read it. Drop it and
      return, which is what the generated code already did in practice. */
-  if (has_retval && g_c_ret_void) buf_printf(b, "if (_retf%d) return;\n", eid);
+  else if (has_retval && g_c_ret_void) buf_printf(b, "if (_retf%d) return;\n", eid);
   else if (has_retval) buf_printf(b, "if (_retf%d) return _retv%d;\n", eid, eid);
   else if (g_in_proc_body && g_result_var && g_result_poly)
     buf_printf(b, "if (_retf%d) { %s = sp_box_nil(); return 0; }\n", eid, g_result_var);
