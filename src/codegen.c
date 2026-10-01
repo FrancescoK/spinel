@@ -4953,6 +4953,8 @@ void proc_collect_locals(Compiler *c, int id, NameSet *locals) {
    flat fiber-body C function it is inlined into. */
 static void collect_block_param_names(Compiler *c, int blk, NameSet *out) {
   const NodeTable *nt = c->nt;
+  const char *spa = nt_str(nt, blk, "sym_proc_arg");
+  if (spa) nameset_add(out, spa);
   int bp_node = nt_ref(nt, blk, "parameters");
   if (bp_node < 0) return;
   int inner = nt_ref(nt, bp_node, "parameters");
