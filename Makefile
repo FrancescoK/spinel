@@ -50,7 +50,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: all regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test re-lit-test reject-test cli-opts-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \
+.PHONY: all regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test re-lit-test reject-test cli-opts-test defer-refusals-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate check gate-legs gate-test gate-bench gc-phases-test gc-str-major-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot scale-test clean install uninstall deps tools
@@ -930,7 +930,7 @@ test: $(SPINEL_TIMEOUT)
 # The actual run. rbs-test golden-checks the RBS extractor (cheap, C-only).
 # rbs-seed-test checks the seeds actually reach the analyzer (incl. nested
 # classes, #1417).
-test-run: rbs-test rbs-seed-test re-lit-test reject-test cli-opts-test backtrace-test gc-minor-test gc-phases-test gc-threshold-test gc-obj-budget-test gc-str-major-test threaded-render-test gc-locality-test byref-capture-test thread-puts-test ext-test ext-cruby-test test-corpus-summary
+test-run: rbs-test rbs-seed-test re-lit-test reject-test cli-opts-test defer-refusals-test backtrace-test gc-minor-test gc-phases-test gc-threshold-test gc-obj-budget-test gc-str-major-test threaded-render-test gc-locality-test byref-capture-test thread-puts-test ext-test ext-cruby-test test-corpus-summary
 
 # The test/*.rb corpus (and the bundled packages') on its own, without the
 # C-side legs: what a 32-bit target runs (`make test-corpus CC='cc -m32'`),
@@ -1020,6 +1020,24 @@ ext-cruby-test: $(SPINEL) $(SP_RT_LIB)
 # than what was asked for is the one thing it must not do quietly. Also pins
 # the joined -O<n> spelling, which every C compiler takes and which used to
 # fall through to the unknown-flag arm and be discarded.
+# --defer-refusals: the program the compiler refuses builds anyway; a refused
+# method raises NotImplementedError when called, a refused top-level or
+# class-body statement is left out.
+defer-refusals-test: $(SPINEL)
+	@ok=1; tmp=$$(mktemp -d /tmp/spinel-defer.XXXXXX); \
+	t=test/defer/deferred_refusals.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/p.c" >"$$tmp/p.out" 2>&1; then \
+	  echo "defer-refusals-test: FAIL (refused program compiled without the flag)"; ok=0; fi; \
+	if ! $(SPINEL) --defer-refusals "$$t" -o "$$tmp/d" >"$$tmp/d.out" 2>&1; then \
+	  echo "defer-refusals-test: FAIL (--defer-refusals still refused)"; sed -n 1,5p "$$tmp/d.out"; ok=0; \
+	else grep -q "3 refusals deferred to run time" "$$tmp/d.out" || \
+	  { echo "defer-refusals-test: FAIL (deferred refusals not counted)"; sed -n 1,5p "$$tmp/d.out"; ok=0; }; \
+	  out=$$("$$tmp/d" 2>&1 | tr '\n' ' '); \
+	  [ "$$out" = "before after top NotImplementedError true done " ] || \
+	  { echo "defer-refusals-test: FAIL (deferred program ran wrong: $$out)"; ok=0; }; fi; \
+	rm -rf "$$tmp"; \
+	if [ $$ok -eq 1 ]; then echo "defer-refusals-test: pass"; else exit 1; fi
+
 cli-opts-test: $(SPINEL)
 	@ok=1; tmp=$$(mktemp -d /tmp/spinel-cliopts.XXXXXX); \
 	printf 'p ARGV\n' > "$$tmp/p.rb"; \
