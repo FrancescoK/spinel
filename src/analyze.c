@@ -11210,6 +11210,13 @@ static void mark_empty_literal_tails(Compiler *c) {
   #undef MARK_EMPTY_TAIL
   free(has_ret);
 }
+static void *an_grow(void *p, int n, int *cap, size_t sz) {
+  if (n < *cap) return p;
+  *cap = *cap ? *cap * 2 : 16;
+  p = realloc(p, sz * (size_t)*cap);
+  if (!p) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  return p;
+}
 /* An empty `{}` passed as an argument to a USER method (`m({})`) is an
    accumulator seed: the callee builds it up (a yield-wrapper's inject /
    each_with_object), so the param and the method's return settle from it. An
@@ -11248,11 +11255,7 @@ static NonstrIdxWrite *nonstr_idx_writes(Compiler *c, int *out_n) {
        sites) cannot be assumed String: defaulting the caller's `{}` to the
        string-keyed variant would drop the callee's write (#2894). */
     if (kt != TY_INT && kt != TY_SYMBOL && kt != TY_UNKNOWN && kt != TY_POLY) continue;
-    if (n >= cap) {
-      cap = cap ? cap * 2 : 16;
-      v = realloc(v, sizeof(*v) * (size_t)cap);
-      if (!v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    }
+    v = an_grow(v, n, &cap, sizeof(*v));
     v[n].sc = comp_scope_of(c, recv);
     v[n].nm = rn;
     n++;
@@ -11622,11 +11625,7 @@ static void mark_mixed_key_hash_locals(Compiler *c) {
     { int nf = 0; const int *fs = mp_get(&uix, nm, (int)(sc - c->scopes), &nf);
       if (nf > 0) f = fs[0]; }
     if (f >= 0) { uses[f].bits |= b; continue; }
-    if (nu >= cap) {
-      cap = cap ? cap * 2 : 16;
-      uses = realloc(uses, sizeof(*uses) * (size_t)cap);
-      if (!uses) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    }
+    uses = an_grow(uses, nu, &cap, sizeof(*uses));
     uses[nu].sc = sc; uses[nu].nm = nm; uses[nu].bits = b;
     mp_add(&uix, nm, (int)(sc - c->scopes), nu);
     nu++;
@@ -12088,11 +12087,7 @@ static int widen_mixed_key_hash_slots(Compiler *c) {
       int f = -1;
       for (int q = 0; q < ns; q++) if (hash_key_slot_same(c, &slots[q], &hs, 0)) { f = q; break; }
       if (f < 0) {
-        if (ns >= cap) {
-          cap = cap ? cap * 2 : 16;
-          slots = realloc(slots, sizeof(*slots) * (size_t)cap);
-          if (!slots) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-        }
+        slots = an_grow(slots, ns, &cap, sizeof(*slots));
         f = ns++;
         slots[f] = hs;
       }
@@ -28036,11 +28031,7 @@ void analyze_program(Compiler *c) {
     if (!nm || !sp_streq(nm, "method")) continue;
     const char *msym = method_sym_arg(c, id);
     if (!msym) continue;
-    if (msym_n >= msym_cap) {
-      msym_cap = msym_cap ? msym_cap * 2 : 16;
-      msym_names = realloc(msym_names, sizeof(*msym_names) * (size_t)msym_cap);
-      if (!msym_names) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    }
+    msym_names = an_grow(msym_names, msym_n, &msym_cap, sizeof(*msym_names));
     msym_names[msym_n++] = msym;
   }
   /* The evidence for those parameters: what the program passes at every
