@@ -583,6 +583,20 @@ static void nki_build(const NodeTable *nt) {
    The returned pointer is valid until the next call with a changed node table.
    Falls back to count 0 on allocation failure (callers then see no nodes -- they
    must only use this for kinds they would otherwise have filtered for anyway). */
+/* Exchange the contents of nodes a and b: what was node a is now numbered b,
+   and the reverse. A desugar that must put a new node AHEAD of an existing
+   one in node order (passes that fold by ascending id read it first) builds
+   it at the end and swaps it into the earlier slot; the caller re-points the
+   references to both. */
+void nt_swap_nodes(NodeTable *nt, int a, int b) {
+  if (a < 0 || b < 0 || a >= nt->count || b >= nt->count || a == b) return;
+  SpNode t = nt->nodes[a];
+  nt->nodes[a] = nt->nodes[b];
+  nt->nodes[b] = t;
+  nt->version++;
+  nki_nt = NULL;   /* the kind index lists ids by kind: rebuild it */
+}
+
 const int *nt_nodes_of_kind(const NodeTable *nt, NodeKind k, int *count) {
   if (nki_nt != nt || nki_ntc != nt->count) nki_build(nt);
   if (!nki_off || !nki_ids || k < 0 || k >= NK__COUNT) { *count = 0; return NULL; }

@@ -75,3 +75,18 @@ end
 fn = FcNamed.new
 fn.go
 p fn.out
+
+# A *rest parameter the body reassigns from itself (`args = args.first`, the
+# background job's perform(*args)), as a statement of the body and inside a
+# branch: the desugared copy must not keep the fold alternating (#6491)
+def fp_perform(*args)
+  args = args.first
+  args
+end
+def fp_maybe_first(*a)
+  if a.size > 0
+    a = a.first
+  end
+  a
+end
+p fp_perform(7), fp_maybe_first(7), fp_maybe_first

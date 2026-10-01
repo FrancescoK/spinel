@@ -555,6 +555,29 @@ int desugar_rest_param_writes(Compiler *c) {
     if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
     if (bpw_walk(nt, body, rp, NULL) == 0) continue;
     char nn[300]; snprintf(nn, sizeof nn, "__rpv_%s", rp);
+    /* The usual shape writes it once, as a statement of the body itself
+       (`args = args.first`), with no write before it: the statements before
+       read the parameter, the write's own value reads it too, and from the
+       write on the name is the copy. Renaming in place adds no statement:
+       a prepended copy is a node numbered after the whole body, and the
+       write-type fold, which visits writes in node order, then took the
+       copy's write after the reads it feeds and alternated between two
+       answers until the round cap (#6491). */
+    { int bn0 = 0; const int *bb0 = nt_arr(nt, body, "body", &bn0);
+      int k = -1;
+      for (int j = 0; j < bn0 && k < 0; j++) {
+        if (nt_kind(nt, bb0[j]) == NK_LocalVariableWriteNode && nt_str(nt, bb0[j], "name") &&
+            sp_streq(nt_str(nt, bb0[j], "name"), rp) &&
+            bpw_walk(nt, nt_ref(nt, bb0[j], "value"), rp, NULL) == 0)
+          k = j;
+        else if (bpw_walk(nt, bb0[j], rp, NULL) > 0) break;   /* a write elsewhere first */
+      }
+      if (k >= 0) {
+        nt_node_set_str(nt, bb0[k], "name", nn);
+        for (int j = k + 1; j < bn0; j++) bpw_walk(nt, bb0[j], rp, nn);
+        changed = 1;
+        continue;
+      } }
     bpw_walk(nt, body, rp, nn);
     int rd = nt_new_node(nt, "LocalVariableReadNode"); if (rd < 0) continue;
     nt_node_set_str(nt, rd, "name", rp);
@@ -565,6 +588,17 @@ int desugar_rest_param_writes(Compiler *c) {
     int *nb = (int *)malloc(sizeof(int) * (size_t)(bn + 1));
     if (!nb) continue;
     nb[0] = wr; for (int j = 0; j < bn; j++) nb[j + 1] = bb[j];
+    /* The copy goes ahead of the body in node order too: numbered after it,
+       the write-type fold (ascending ids) took the body's `args = args.first`
+       read of the copy before the copy's own write re-typed it each round,
+       and alternated between two answers until the round cap (#6491). The
+       copy takes the first statement's number, and that statement the
+       copy's. */
+    if (bn > 0 && bb[0] < wr) {
+      int first = bb[0];
+      nt_swap_nodes(nt, first, wr);
+      nb[0] = first; nb[1] = wr;
+    }
     nt_node_set_arr(nt, body, "body", nb, bn + 1);
     free(nb);
     comp_grow_node_arrays(c);
