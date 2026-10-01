@@ -1,4 +1,5 @@
 #include "analyze_internal.h"
+#include <errno.h>
 #include <limits.h>
 
 /* One table for the builtin class/module/exception names. These four
@@ -158,6 +159,31 @@ int is_builtin_exception_name(const char *n) {
      any qualified Errno name is an exception class (#2922 follow-up) */
   return n && strncmp(n, "Errno::", 7) == 0;
 }
+/* The Errno:: class a name stands for. CRuby defines one class per errno
+   number: a later name whose number an earlier class already has is a
+   constant for that class, so on Linux Errno::EOPNOTSUPP *is* Errno::ENOTSUP
+   (both 95) while on macOS (102, 45) they are two classes. The numbers are
+   the C library's, so the compiler asks its own <errno.h>, the one the
+   program's runtime is built against. Returns the canonical name, or n. */
+const char *errno_canonical_name(const char *n) {
+  if (!n || strncmp(n, "Errno::", 7) != 0) return n;
+  static const struct { const char *alias, *canon; int same; } ALIASES[] = {
+#if defined(EWOULDBLOCK) && defined(EAGAIN)
+    { "Errno::EWOULDBLOCK", "Errno::EAGAIN", EWOULDBLOCK == EAGAIN },
+#endif
+#if defined(EOPNOTSUPP) && defined(ENOTSUP)
+    { "Errno::EOPNOTSUPP", "Errno::ENOTSUP", EOPNOTSUPP == ENOTSUP },
+#endif
+#if defined(EDEADLOCK) && defined(EDEADLK)
+    { "Errno::EDEADLOCK", "Errno::EDEADLK", EDEADLOCK == EDEADLK },
+#endif
+    { NULL, NULL, 0 }
+  };
+  for (int i = 0; ALIASES[i].alias; i++)
+    if (ALIASES[i].same && strcmp(n, ALIASES[i].alias) == 0) return ALIASES[i].canon;
+  return n;
+}
+
 /* Defined here rather than in codegen_util.c so the id and the name
    predicates cannot disagree; codegen_internal.h still declares it. */
 /* The builtin class above a builtin a program can subclass, as the generated

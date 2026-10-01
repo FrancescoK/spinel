@@ -1,0 +1,14 @@
+Errno::EAGAIN
+true
+"Errno::EAGAIN"
+true
+true
+Errno::EAGAIN
+true
+true
+Errno::EAGAIN
+:would_block
+true
+true
+true
+true

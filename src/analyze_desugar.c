@@ -5039,6 +5039,30 @@ static void rsc_mark_nested_defs(const NodeTable *nt, int id, unsigned char *see
       rsc_mark_nested_defs(nt, nd->a[j].ids[k2], seen, names, nn, depth + 1);
 }
 
+/* Errno::EWOULDBLOCK -> Errno::EAGAIN where the two share a number (and
+   EOPNOTSUPP -> ENOTSUP, EDEADLOCK -> EDEADLK): CRuby makes the later name a
+   constant for the earlier class, so they are one class -- equal, rescued by
+   either name, named the first way (errno_canonical_name). Renaming the path
+   once, before anything reads it, gives every later stage one spelling. */
+int desugar_errno_aliases(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_ConstantPathNode, id) {
+    int par = nt_ref(nt, id, "parent");
+    const char *leaf = nt_str(nt, id, "name");
+    if (par < 0 || !leaf || nt_kind(nt, par) != NK_ConstantReadNode) continue;
+    const char *pn = nt_str(nt, par, "name");
+    if (!pn || !sp_streq(pn, "Errno")) continue;
+    char q[96];
+    snprintf(q, sizeof q, "Errno::%s", leaf);
+    const char *cn = errno_canonical_name(q);
+    if (cn == q) continue;
+    nt_node_set_str(nt, id, "name", cn + 7);
+    changed = 1;
+  }
+  return changed;
+}
+
 int desugar_root_scoped_constants(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;

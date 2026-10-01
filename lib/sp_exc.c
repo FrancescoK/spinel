@@ -341,7 +341,10 @@ sp_RbVal sp_exc_result(volatile sp_Exception *ve) {
    from the class name the exception carries -- no field on the exception, as
    in CRuby the class determines the number (#4560). The names are the ones
    the runtime raises today plus the common POSIX rest; an errno with no row
-   raises the parent SystemCallError, and a class with no row answers nil. */
+   raises the parent SystemCallError, and a class with no row answers nil.
+   Rows go in CRuby's order: where two names share a number, the first is the
+   class an errno raises and the other is the same class (the compiler spells
+   it the first way, errno_canonical_name), so ENOTSUP precedes EOPNOTSUPP. */
 #define SP_ERRNO_ROWS(X) \
   X(EPERM) X(ENOENT) X(ESRCH) X(EINTR) X(EIO) X(ENXIO) X(E2BIG) X(ENOEXEC) \
   X(EBADF) X(ECHILD) X(EAGAIN) X(ENOMEM) X(EACCES) X(EFAULT) X(EBUSY) \
@@ -349,15 +352,22 @@ sp_RbVal sp_exc_result(volatile sp_Exception *ve) {
   X(EMFILE) X(ENOTTY) X(EFBIG) X(ENOSPC) X(ESPIPE) X(EROFS) X(EMLINK) \
   X(EPIPE) X(EDOM) X(ERANGE) X(EDEADLK) X(ENAMETOOLONG) X(ENOLCK) X(ENOSYS) \
   X(ENOTEMPTY) X(ELOOP) X(ENOTSOCK) X(EMSGSIZE) X(EPROTOTYPE) \
-  X(ENOPROTOOPT) X(EPROTONOSUPPORT) X(EOPNOTSUPP) X(EAFNOSUPPORT) \
+  X(ENOPROTOOPT) X(EPROTONOSUPPORT) X(ENOTSUP) X(EOPNOTSUPP) X(EAFNOSUPPORT) \
   X(EADDRINUSE) X(EADDRNOTAVAIL) X(ENETDOWN) X(ENETUNREACH) X(ENETRESET) \
   X(ECONNABORTED) X(ECONNRESET) X(ENOBUFS) X(EISCONN) X(ENOTCONN) \
   X(ETIMEDOUT) X(ECONNREFUSED) X(EHOSTUNREACH) X(EALREADY) X(EINPROGRESS) \
-  X(ESTALE) X(EDQUOT) X(ECANCELED) X(EOVERFLOW) X(EILSEQ) X(ENOTSUP)
+  X(ESTALE) X(EDQUOT) X(ECANCELED) X(EOVERFLOW) X(EILSEQ)
 static const struct { const char *name; int num; } SP_ERRNO_TAB[] = {
 #define SP_ERRNO_ROW(n) { "Errno::" #n, n },
   SP_ERRNO_ROWS(SP_ERRNO_ROW)
 #undef SP_ERRNO_ROW
+  /* names a platform may give a number of their own */
+#ifdef EWOULDBLOCK
+  { "Errno::EWOULDBLOCK", EWOULDBLOCK },
+#endif
+#ifdef EDEADLOCK
+  { "Errno::EDEADLOCK", EDEADLOCK },
+#endif
 };
 const char *sp_errno_class_name(int e) {
   for (size_t i = 0; i < sizeof SP_ERRNO_TAB / sizeof SP_ERRNO_TAB[0]; i++)

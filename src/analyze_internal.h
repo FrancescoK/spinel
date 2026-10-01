@@ -332,6 +332,8 @@ int desugar_splat_to_a(Compiler *c);
 int desugar_lazy_method_call(Compiler *c);
 int desugar_value_callable_forwards(Compiler *c);
 int desugar_root_scoped_constants(Compiler *c);
+int desugar_errno_aliases(Compiler *c);
+const char *errno_canonical_name(const char *n);   /* analyze_util.c */
 void desugar_class_reopen(Compiler *c);
 int desugar_def_unless_method_defined(Compiler *c);
 int desugar_builtins(Compiler *c);
