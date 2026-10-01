@@ -41118,6 +41118,15 @@ else {
               comp_ntype(c, argv[0]) != TY_UNKNOWN &&
               !store_fits(c, store_value_kind(c, argv[0]), _aivt)) {
             TyKind _avk = store_value_kind(c, argv[0]);
+            /* A nil-valued argument has no C type for a temporary. Keep its
+               effects, store the slot's nil, and answer nil as the writer
+               does rather than reading the slot as an ordinary number. */
+            if (_avk == TY_NIL || _avk == TY_VOID) {
+              buf_printf(b, "_t%d->iv_%s = ", _atmp, iv_c(_abase));
+              emit_coerce(c, argv[0], _aivt, CO_HOLD, "an attribute writer", b);
+              buf_puts(b, "; 0; })");
+              return;
+            }
             int _tvv = ++g_tmp;
             char _tvn[32]; snprintf(_tvn, sizeof _tvn, "_t%d", _tvv);
             emit_ctype(c, _avk, b); buf_printf(b, " %s = ", _tvn); emit_expr(c, argv[0], b);
