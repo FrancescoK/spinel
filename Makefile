@@ -1100,6 +1100,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a called class method's provable NoMethodError compiled)"; ok=0; \
 	else grep -q "undefined method '\[\]=' for a Class" "$$tmp/nrc.out" || \
 	  { echo "reject-test: FAIL (a called class method's NoMethodError rejected without saying why)"; sed -n 1,5p "$$tmp/nrc.out"; ok=0; }; fi; \
+	t=test/reject/combination_safe_nav_two_params.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/csn.c" >"$$tmp/csn.out" 2>&1; then \
+	  echo "reject-test: FAIL (a combination block taking two parameters through &. compiled)"; ok=0; \
+	else grep -q "a block taking more than one parameter on combination" "$$tmp/csn.out" || \
+	  { echo "reject-test: FAIL (a combination block through &. rejected without saying why)"; sed -n 1,5p "$$tmp/csn.out"; ok=0; }; fi; \
 	t=test/reject/redo_unlabeled_iterator.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/rui.c" >"$$tmp/rui.out" 2>&1; then \
 	  echo "reject-test: FAIL (a redo with no label for it compiled)"; ok=0; \
