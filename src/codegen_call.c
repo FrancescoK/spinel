@@ -906,11 +906,30 @@ static int emit_io_pick(Compiler *c, int tv, const char *name, int public_only, 
 }
 /* ` || <the boxed IO in _t<tv> has reopened method qm>`, or nothing when no
    IO reopening defines it. */
+/* `(_p == k1 || _p == k2 ...)` over the reopenings of qm that are public:
+   the reopening the pick chose answers only if it is one of them. */
+static void emit_io_pick_public(Compiler *c, const char *qm, const char *pick, Buf *b) {
+  int ks[16], n = io_reopen_defs(c, qm, 0, ks, 16);
+  buf_puts(b, "(0");
+  for (int i = 0; i < n; i++)
+    if (comp_method_vis_in_chain(c, ks[i], qm) == SP_VIS_PUBLIC) buf_printf(b, " || %s == %d", pick, ks[i]);
+  buf_puts(b, ")");
+}
 static void emit_io_reopen_responds(Compiler *c, int tv, const char *qm, int include_all, Buf *b) {
+  /* the nearest reopening by kind, then its visibility: a public IO#foo
+     does not answer for a socket whose nearer IPSocket#foo is private */
   Buf ib; memset(&ib, 0, sizeof ib);
-  if (emit_io_pick(c, tv, qm, !include_all, &ib))
-    buf_printf(b, " || (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO && %s != 0x7fffffff)",
-               tv, tv, ib.p);
+  if (emit_io_pick(c, tv, qm, 0, &ib)) {
+    int pt = ++g_tmp;
+    buf_printf(b, " || (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO && "
+                  "({ int _p%d = %s; _p%d != 0x7fffffff", tv, tv, pt, ib.p, pt);
+    if (!include_all) {
+      char pn[24]; snprintf(pn, sizeof pn, "_p%d", pt);
+      buf_puts(b, " && ");
+      emit_io_pick_public(c, qm, pn, b);
+    }
+    buf_puts(b, "; }))");
+  }
   free(ib.p);
 }
 /* A typed IO calling a method IO-family reopenings define. An IO
@@ -40411,15 +40430,17 @@ else {
                 io_family_class(c, c->scopes[s3].class_id) && sp_streq(c->scopes[s3].name, ms->name);
         if (dup) continue;
         /* a private one too when the second argument is true (_a) */
-        Buf ib, ab;
-        memset(&ib, 0, sizeof ib); memset(&ab, 0, sizeof ab);
-        int any_pub = emit_io_pick(c, tv, ms->name, 1, &ib);
+        Buf ab;
+        memset(&ab, 0, sizeof ab);
         emit_io_pick(c, tv, ms->name, 0, &ab);
+        int pt = ++g_tmp;
+        char pn[24]; snprintf(pn, sizeof pn, "_p%d", pt);
         buf_printf(b, " || (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO && !strcmp(_n%d, \"", tv, tv, tv);
         emit_c_escaped(b, ms->name);
-        if (any_pub) buf_printf(b, "\") && (%s != 0x7fffffff || (_a%d && %s != 0x7fffffff)))", ib.p, tv, ab.p);
-        else buf_printf(b, "\") && _a%d && %s != 0x7fffffff)", tv, ab.p);
-        free(ib.p); free(ab.p);
+        buf_printf(b, "\") && ({ int %s = %s; %s != 0x7fffffff && (_a%d || ", pn, ab.p, pn, tv);
+        emit_io_pick_public(c, ms->name, pn, b);
+        buf_puts(b, "); }))");
+        free(ab.p);
       }
       buf_puts(b, "; })");
       if (boxed) buf_puts(b, ")");
