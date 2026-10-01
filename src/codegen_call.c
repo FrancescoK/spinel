@@ -28659,9 +28659,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
             an_set_face_node(recv, TY_POLY_POLY_HASH);
             TyKind fac = infer_uncached(c, id);
             an_set_face_node(svf, svfk);
-            /* only the array answers: a face that answers another hash boxes
+            /* a face that answers another hash boxes
                through a different entry point than emit_boxed_text picks */
-            if (ty_is_array(fac)) natg = fac;
+            if (ty_is_array(fac) || fac == TY_ENUMERATOR) natg = fac;
           }
           int gbox = (!sn_ptr && ret2 == TY_POLY && natg != TY_POLY &&
                       natg != TY_UNKNOWN && natg != TY_VOID);
