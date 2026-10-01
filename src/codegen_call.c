@@ -23696,6 +23696,17 @@ void refuse_yield_string_copies(Compiler *c, int yargc, const int *yargv) {
       }
       continue;
     }
+    if (nt_kind(c->nt, yargv[k]) == NK_SplatNode && !spread) {
+      /* a String in or past the splat: its position is the run time's,
+         and the proc takes a copy wherever it lands */
+      int fs, sv = splat_string_var(c, yargv, yargc, &fs);
+      for (int j = k; sv >= 0 && j < 16; j++) {
+        DynReach r;
+        dyn_value_reach(c, g_yield_proc_expr, j, &r);
+        if (r.app) refuse_string_copy(c, sv, NULL, r.pname, "a splat into a yield",
+                                      "through a splat into a yield");
+      }
+    }
     /* the positions after a splat depend on its length; the keywords that
        follow it bind by name all the same, so the scan goes on to them */
     if (nt_kind(c->nt, yargv[k]) == NK_SplatNode) spread = 1;
@@ -23854,6 +23865,7 @@ static int ie_arg_aliases(Compiler *c, int a) {
    The call's String variable is pulled into it, but for one that cannot
    be: a block's parameter, a global or class variable, an ivar that is no
    handle. A spliced call is emitted by the inliner, which asks this too. */
+static void refuse_rest_yield_copies(Compiler *c, int id, int t);
 void refuse_yield_handle_args(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -23863,6 +23875,7 @@ void refuse_yield_handle_args(Compiler *c, int id) {
   if (!ym || !(ym->is_lowered_yield || ym->yields) ||
       !refuse_call_binds(c, refuse_scope_params(c, ym), id, 0, 0)) return;
   if (nt_int(nt, id, "node_line", 0) > 0) g_refuse_call = id;
+  refuse_rest_yield_copies(c, id, ymi);
   for (int j = 0; j < ym->nparams && j < 16; j++) {
     LocalVar *q = ym->pnames[j] ? scope_local(ym, ym->pnames[j]) : NULL;
     if (!q || q->type != TY_STRBUF || !q->str_shared) continue;
@@ -23954,6 +23967,208 @@ static void refuse_changed_splat(Compiler *c, int id, const char *name, int recv
   char mt[96]; if (mname) snprintf(mt, sizeof mt, "`%s`", mname);
   refuse_string_copy(c, sp, mname ? mt : NULL, pname, "a splat of an Array the program changes",
                      "through a splat of an Array that holds a copy");
+}
+
+/* A String variable a call, `super` or `yield` hands over at or past its
+   first splat: one written after the splat, or an element of a splatted
+   Array literal or of a local every write of which is one. Its position is
+   the run time's, and the binders hand it over as a copy. Answers the
+   variable's read and sets *fs to the splat's index, or -1. */
+int splat_string_var(Compiler *c, const int *av, int ac, int *fs) {
+  const NodeTable *nt = c->nt;
+  *fs = -1;
+  for (int k = 0; k < ac; k++) {
+    NodeKind ak = nt_kind(nt, av[k]);
+    if (ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) break;
+    if (ak == NK_SplatNode) {
+      if (*fs < 0) *fs = k;
+      int x = nt_ref(nt, av[k], "expression"), lits[16], nl = 0;
+      if (x >= 0 && nt_kind(nt, x) == NK_ArrayNode) lits[nl++] = x;
+      else if (x >= 0 && nt_kind(nt, x) == NK_LocalVariableReadNode) {
+        const char *xn = nt_str(nt, x, "name");
+        Scope *xs = xn ? comp_scope_of(c, x) : NULL;
+        for (int w = xs ? comp_lvw_first_sc(c, (int)(xs - c->scopes), xn) : -1; w >= 0 && nl < 16;
+             w = comp_lvw_next_sc(c, w)) {
+          if (comp_scope_of(c, w) != xs || !nt_str(nt, w, "name") || !sp_streq(nt_str(nt, w, "name"), xn)) continue;
+          int wv = nt_kind(nt, w) == NK_LocalVariableWriteNode ? nt_ref(nt, w, "value") : -1;
+          if (wv >= 0 && nt_kind(nt, wv) == NK_ArrayNode) lits[nl++] = wv;
+        }
+      }
+      for (int l = 0; l < nl; l++) {
+        int en = 0; const int *ev = nt_arr(nt, lits[l], "elements", &en);
+        for (int e = 0; e < en; e++) {
+          int shared;
+          /* a read marked as the handle rides the Array as one */
+          if (strvar_arg(c, ev[e], &shared) && !c->strbuf_box[ev[e]]) return ev[e];
+        }
+      }
+      continue;
+    }
+    int shared;
+    if (*fs >= 0 && strvar_arg(c, av[k], &shared) && !c->strbuf_box[av[k]]) return av[k];
+  }
+  return -1;
+}
+
+/* `super(*s)`, `super(*e, v)` into a method that appends to a parameter at
+   or past the splat's position: not shared yet, refused rather than
+   copied. */
+void refuse_super_splat(Compiler *c, int id, int target) {
+  const NodeTable *nt = c->nt;
+  if (target < 0 || nt_kind(nt, id) != NK_SuperNode) return;
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  int fs;
+  int sv = splat_string_var(c, av, ac, &fs);
+  if (sv < 0) return;
+  Scope *m = &c->scopes[target];
+  /* every position the target binds, its rest's past the bits too (an
+     answer it cannot give is refused, fwd_param_appends_at) */
+  int end = m->rest_idx >= 0 && m->rest_idx + 17 > m->nparams ? m->rest_idx + 17 : m->nparams;
+  for (int j = fs; j < end; j++) {
+    if (!fwd_param_appends_at(c, target, j)) continue;
+    const char *pn = j < m->nparams ? m->pnames[j] : m->pnames[m->rest_idx];
+    char mt[96]; snprintf(mt, sizeof mt, "`%s`", m->name ? m->name : "?");
+    char why[96]; snprintf(why, sizeof why, "through a splat into `super`");
+    refuse_string_copy(c, sv, mt, pn ? pn : "?", "a splat into `super`", why);
+  }
+}
+
+/* `yield(*s)`, `yield(*e, v)` into a literal block that appends to a
+   parameter at or past the splat's position: refused as above. */
+void refuse_yield_splat(Compiler *c, int blk, int yc, const int *yv) {
+  if (blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode) return;
+  int fs;
+  int sv = splat_string_var(c, yv, yc, &fs);
+  if (sv < 0) return;
+  for (int k = fs; k < fs + 64; k++) {
+    /* past the masks' 16 positions, a parameter the block binds there (or
+       its rest) is refused unasked */
+    if (k >= 16 && !proc_param_name(c, blk, k) && !proc_has_rest(c, blk)) break;
+    if (k < 16 && !dyn_block_appends(c, blk, k)) continue;
+    refuse_string_copy(c, sv, "a block", proc_param_name(c, blk, k), "a splat into a yield",
+                       "through a splat into a yield");
+  }
+}
+
+/* The method a static call names, for the forwarding refusal: by the
+   receiver's class, the enclosing class for self, a constant's `new` (its
+   initialize), or the free function. */
+static int refuse_fwd_target(Compiler *c, int id, const char *name) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_SelfNode;
+  int cls = -1;
+  if (sp_streq(name, "new") && (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)) {
+    TyKind ct = comp_ntype(c, id);
+    return ty_is_object(ct) ? comp_method_in_chain(c, ty_object_class(ct), "initialize", NULL) : -1;
+  }
+  if (rk == NK_SelfNode) {
+    Scope *encl = comp_scope_of(c, id);
+    if (encl && encl->is_cmethod && encl->class_id >= 0 && sp_streq(name, "new"))
+      return comp_method_in_chain(c, encl->class_id, "initialize", NULL);
+    cls = encl && !encl->is_cmethod ? encl->class_id : -1;
+  }
+  else {
+    TyKind rt = comp_ntype(c, recv);
+    if (!ty_is_object(rt)) return -1;
+    cls = ty_object_class(rt);
+  }
+  int mi = cls >= 0 ? comp_method_in_chain(c, cls, name, NULL) : -1;
+  return mi >= 0 ? mi : comp_method_index(c, name);
+}
+
+/* The position method t's `yield(..., *rest)` lays its rest from, or -1. */
+static int fwd_rest_yield_start(Compiler *c, int t) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[t];
+  const char *rn = m->rest_idx >= 0 ? m->pnames[m->rest_idx] : NULL;
+  if (!rn || !m->yields) return -1;
+  for (int y = comp_kind_first(c, NK_YieldNode); y >= 0; y = comp_kind_next(c, y)) {
+    if (nt_kind(nt, y) != NK_YieldNode || comp_scope_of(c, y) != m) continue;
+    int a = nt_ref(nt, y, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    for (int k = 0; k < ac; k++) {
+      if (nt_kind(nt, av[k]) != NK_SplatNode) continue;
+      int x = nt_ref(nt, av[k], "expression");
+      if (x >= 0 && nt_kind(nt, x) == NK_LocalVariableReadNode && nt_str(nt, x, "name") &&
+          sp_streq(nt_str(nt, x, "name"), rn)) return k;
+      break;
+    }
+  }
+  return -1;
+}
+
+/* A String gathered into the rest of a method that yields it with a splat
+   (`def y(*r) = yield(*r)`) to the call's literal block, which appends to
+   the parameter it lands on: the element is a copy, as for any splat into a
+   yield. Asked for spliced and lowered calls alike (refuse_yield_handle_args). */
+static void refuse_rest_yield_copies(Compiler *c, int id, int t) {
+  const NodeTable *nt = c->nt;
+  int blk = nt_ref(nt, id, "block");
+  if (t < 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return;
+  int ys = fwd_rest_yield_start(c, t);
+  if (ys < 0) return;
+  Scope *m = &c->scopes[t];
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  int pos = ac;
+  while (pos > 0 && (nt_kind(nt, av[pos - 1]) == NK_KeywordHashNode || nt_kind(nt, av[pos - 1]) == NK_BlockArgumentNode)) pos--;
+  for (int k = m->rest_idx; k < pos - m->npost_rest; k++) {
+    if (nt_kind(nt, av[k]) == NK_SplatNode) break;
+    int shared;
+    if (!strvar_arg(c, av[k], &shared) || shared || local_is_handle(c, av[k])) continue;
+    int bk = ys + (k - m->rest_idx);
+    if (bk < 16 ? !dyn_block_appends(c, blk, bk) : !proc_param_name(c, blk, bk) && !proc_has_rest(c, blk)) continue;
+    refuse_string_copy(c, av[k], "a block", proc_param_name(c, blk, bk), "a splat into a yield",
+                       "through a splat into a yield");
+  }
+}
+
+/* A method that forwards its rest (`def w(*a) = m(*a)`, `*`, `...`) to a
+   parameter that appends, or hands a POLY parameter on to one (`def m(p,
+   k:) = super`, called with `**h`): the call's String variable is pulled
+   into the handle (promote_forwarded_rest_args, convert_byref_handle_params),
+   but for one that cannot be -- a block's parameter, an ivar that is no
+   handle, a global or class variable -- which goes over as a copy. */
+static void refuse_forwarded_args(Compiler *c, int id, const char *name) {
+  const NodeTable *nt = c->nt;
+  int t = refuse_fwd_target(c, id, name);
+  if (t < 0) return;
+  Scope *m = &c->scopes[t];
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  int pos = ac;
+  while (pos > 0 && (nt_kind(nt, av[pos - 1]) == NK_KeywordHashNode || nt_kind(nt, av[pos - 1]) == NK_BlockArgumentNode)) pos--;
+  for (int k = 0; k < pos; k++) {
+    if (nt_kind(nt, av[k]) == NK_SplatNode) break;
+    int shared;
+    const char *kind = strvar_arg(c, av[k], &shared);
+    if (!kind || ctor_arg_shared(c, av[k], 0)) continue;
+    const char *pn = NULL, *thr = NULL;
+    int r, pulled;
+    if (m->rest_idx >= 0 && k >= m->rest_idx) {
+      if (k >= pos - m->npost_rest || !(r = fwd_rest_elem_appends(c, t, k - m->rest_idx))) continue;
+      pn = m->pnames[m->rest_idx] && m->pnames[m->rest_idx][0] != '_' ? m->pnames[m->rest_idx] : "*";
+      thr = "the rest it hands on";
+      pulled = r > 0 && k - m->rest_idx < 16;
+    }
+    else {
+      if (k >= m->nparams || !(r = fwd_poly_param_appends(c, t, k))) continue;
+      pn = m->pnames[k];
+      thr = "a parameter it hands on";
+      pulled = r > 0;
+    }
+    /* a local or a parameter the passes pulled into the handle goes over as
+       it; one past the 16 positions, or behind an answer cut short, was not */
+    if (nt_kind(nt, av[k]) == NK_LocalVariableReadNode && !sp_streq(kind, "a block's parameter") &&
+        !sp_streq(kind, "a variable a block or a proc captures") && (pulled || local_is_handle(c, av[k])))
+      continue;
+    char mt[96]; snprintf(mt, sizeof mt, "`%s`", name);
+    char why[96]; snprintf(why, sizeof why, "from %s", kind);
+    char through[96]; snprintf(through, sizeof through, "%s", thr);
+    refuse_string_copy(c, av[k], mt, pn, through, why);
+  }
 }
 
 static void refuse_string_copies(Compiler *c, int id) {
@@ -24126,6 +24341,7 @@ static void refuse_string_copies(Compiler *c, int id) {
     return;
   }
   if (!dyn) refuse_yield_handle_args(c, id);
+  if (!dyn) refuse_forwarded_args(c, id, name);
   /* a method `define_method` defines takes an appended String as the handle
      (dyn_convert_params), and its callers are pulled in as a handle
      method's are, but for a variable that cannot be */
