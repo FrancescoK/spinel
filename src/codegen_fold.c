@@ -6009,7 +6009,7 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
       }
       /* nil, a default's or an argument's, is the NULL handle a nullable
          handle parameter reads as nil (`def initialize(o: nil)`) */
-      if (p->dyn_handle && comp_ntype(c, provided) == TY_NIL) { buf_puts(out, "NULL"); return; }
+      if (comp_ntype(c, provided) == TY_NIL) { buf_puts(out, "NULL"); return; }
       buf_puts(out, p->dyn_handle && pk != NK_LocalVariableReadNode && pk != NK_InstanceVariableReadNode
                       ? "sp_String_new_fresh(" : "sp_String_new_shared(");
       emit_str_expr(c, provided, out);
@@ -6017,7 +6017,7 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
       return;
     }
     int dvP = m->pdefault[idx];
-    if (p->dyn_handle && dvP >= 0 && comp_ntype(c, dvP) == TY_NIL) { buf_puts(out, "NULL"); return; }
+    if (dvP >= 0 && comp_ntype(c, dvP) == TY_NIL) { buf_puts(out, "NULL"); return; }
     /* a default that is an earlier parameter binds that parameter's handle,
        the one String both names hold (promote_default_alias_params) */
     { char srefD[192];
