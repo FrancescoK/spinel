@@ -17671,9 +17671,26 @@ static void dyn_callable_index(Compiler *c) {
       if (sp_streq(nm, by_name[k]) && ac > 0 && nt_kind(nt, av[0]) != NK_SymbolNode &&
           nt_kind(nt, av[0]) != NK_StringNode) g_dyn.open_names = 1;
   }
-  /* `super` hands a method's own arguments on; an alias gives it a second name */
-  if (comp_kind_first(c, NK_SuperNode) >= 0 || comp_kind_first(c, NK_ForwardingSuperNode) >= 0 ||
-      comp_kind_first(c, NK_AliasMethodNode) >= 0) g_dyn.open_names = 1;
+  /* `super` hands its arguments to the method of the enclosing one's name,
+     and an alias gives a method a second name: those names are open */
+  for (int pass = 0; pass < 2; pass++) {
+    NodeKind sk = pass ? NK_ForwardingSuperNode : NK_SuperNode;
+    for (int n = comp_kind_first(c, sk); n >= 0; n = comp_kind_next(c, n)) {
+      if (nt_kind(nt, n) != sk) continue;
+      Scope *ss = comp_scope_of(c, n);
+      if (!ss || !ss->name) { g_dyn.open_names = 1; continue; }
+      if (anh_find(&g_dyn.lnames, ss->name) < 0) anh_add(&g_dyn.lnames, ss->name);
+    }
+  }
+  for (int n = comp_kind_first(c, NK_AliasMethodNode); n >= 0; n = comp_kind_next(c, n)) {
+    if (nt_kind(nt, n) != NK_AliasMethodNode) continue;
+    const char *names[2] = { NULL, NULL };
+    int nn = nt_ref(nt, n, "new_name"), on = nt_ref(nt, n, "old_name");
+    if (nn >= 0 && nt_kind(nt, nn) == NK_SymbolNode) names[0] = nt_str(nt, nn, "value");
+    if (on >= 0 && nt_kind(nt, on) == NK_SymbolNode) names[1] = nt_str(nt, on, "value");
+    if (!names[0] || !names[1]) { g_dyn.open_names = 1; continue; }
+    for (int i = 0; i < 2; i++) if (anh_find(&g_dyn.lnames, names[i]) < 0) anh_add(&g_dyn.lnames, names[i]);
+  }
   for (int r = comp_kind_first(c, NK_ReturnNode); r >= 0; r = comp_kind_next(c, r)) {
     if (r >= g_dyn.icount) { g_dyn.returns_open = 1; continue; }
     if (nt_kind(nt, r) != NK_ReturnNode) continue;
