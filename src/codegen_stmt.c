@@ -1042,11 +1042,13 @@ else {
         /* stringify into a temp, then branch on the live $stderr redirect */
         int wt = ++g_tmp;
         emit_indent(b, indent); buf_printf(b, "const char *_t%d = ", wt);
-        if (at == TY_STRING) emit_expr(c, argv[k], b);
-        else if (at == TY_INT) { buf_puts(b, "sp_int_to_s("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
-        else if (at == TY_FLOAT) { buf_puts(b, "sp_float_to_s("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
-        else if (at == TY_SYMBOL) { buf_puts(b, "sp_sym_to_s("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
-        else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[k], b); buf_puts(b, ")"); }
+        switch (at) {
+        case TY_STRING: emit_expr(c, argv[k], b); break;
+        case TY_INT: buf_puts(b, "sp_int_to_s("); emit_expr(c, argv[k], b); buf_puts(b, ")"); break;
+        case TY_FLOAT: buf_puts(b, "sp_float_to_s("); emit_expr(c, argv[k], b); buf_puts(b, ")"); break;
+        case TY_SYMBOL: buf_puts(b, "sp_sym_to_s("); emit_expr(c, argv[k], b); buf_puts(b, ")"); break;
+        default: buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[k], b); buf_puts(b, ")"); break;
+        }
         buf_puts(b, ";\n");
         emit_indent(b, indent);
         if (guard[0]) buf_printf(b, "if (%s) {\n", guard);
