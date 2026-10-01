@@ -221,25 +221,35 @@ between the fact and the read (a plain write, a proc, lambda, Fiber or
 stored proc that writes the local, a method that yields to a block that
 does, by send, `method(:m).call` or instance_exec, a rescue that retries,
 an ensure, a redo, a loop of each kind, a case/when or case/in arm, a
-multiple assignment, `&&=`, `||=`, instance_variable_set), where the nil
-it writes comes from (an Integer parameter that may be nil, or a value typed
-nil), the compare or arithmetic read last, the local that carries the value
-(a local, a method's or a block's parameter), its type, and for an index
-read the array's slot (a local or an ivar), a call on it that may answer the
-array itself (CRuby's own list: the methods that answer their receiver with
-or without a block, and the Enumerators whose `each` does), where that
-answer is held (a local, a method's answer, an ivar, a Hash value, a Struct
-member, an attr_reader, instance_variable_get, a user `each`'s kept block
-value, `super` in initialize) and the write through it that leaves a gap or
-a nil. Each case is a method run four times, the fact kept and broken, and
-each run prints `p`, the reads that do not raise for a nil, and the last
-read, so a finding's kind names the run of the first line that differs
-(`break: no-raise(NoMethodError)` is a nil the breaker left that read as a
-number). Most of what it finds on master is older than the narrowing: to
-tell the two apart, run it again against a spinel whose narrowing is
-switched off (`nn_fresh` in `src/analyze.c` answering 0) and compare the
-case files. A pairwise run (the default: 2810 cases, taking 5598 of the
-7392 pairs of levels; a pair another factor rules out, such as an alias for
+multiple assignment, `&&=`, `||=`, instance_variable_set, or a helper local
+written by `||=` and an op-assign, by `&&=` or by a multiple assignment),
+the loop or block a redo or a helper runs in (a `while`, or an each, map,
+select or times block), where the nil it writes comes from (an Integer
+parameter that may be nil, or a value typed nil), the compare or arithmetic
+read last, the local that carries the value (a local, a method's or a
+block's parameter), its type, and for an index read the array's slot (a
+local or an ivar), a call on it that may answer the array itself (CRuby's
+own list: the methods that answer their receiver with or without a block,
+and the Enumerators whose `each` does), its block's parameters (its own,
+two, or a splat, which print what they were given), where that answer is
+held (a local, a method's answer, an ivar, a Hash value, a Struct member, an
+attr_reader, instance_variable_get, a user `each`'s kept block value,
+`super` in initialize), whether the call is made on the array or on what is
+read back from where it is held (a Hash value or a kept block value is
+boxed), and the write through it that leaves a gap or a nil. The rows are
+pairwise, and on top of that cover every 3-way combination of the factors
+`--strength3` names: by default the call, where it is held, what it is made
+on and the element type, so that each call meets each boxed receiver;
+`--strength3 ''` asks for none. Each case is a method run four times, the
+fact kept and broken, and each run prints `p`, the reads that do not raise
+for a nil, and the last read, so a finding's kind names the run of the
+first line that differs (`break: no-raise(NoMethodError)` is a nil the
+breaker left that read as a number). Most of what it finds on master is
+older than the narrowing: to tell the two apart, run it again against a
+spinel whose narrowing is switched off (`nn_fresh` in `src/analyze.c`
+answering 0) and compare the case files. The default run (3474 cases,
+taking 7145 of the 9159 pairs of levels and 2086 of the 2196 3-way
+combinations; a combination another factor rules out, such as an alias for
 a guard, is never taken) takes about ten minutes at `--jobs 2` with
 `--no-reduce`. On master most of its several hundred findings are older
 bugs, so reduce only a run whose findings are few. Like the other probes it
