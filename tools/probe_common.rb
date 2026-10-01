@@ -374,6 +374,7 @@ module ProbeCommon
   # or message, or another value (and the first place in the answer it
   # differs, named `word`@N). Nil when the answers are the same.
   def answer_kind(w, g, word)
+    return nil if same_answer?(w, g)
     err = ->(r) { r[/\A([A-Z][\w:]*): /, 1] }
     we = err.call(w)
     ge = err.call(g)
@@ -386,6 +387,41 @@ module ProbeCommon
     gv = elements(g)
     at = wv && gv ? (0...[wv.size, gv.size].max).find { |x| wv[x] != gv[x] } : nil
     at ? "#{word}@#{at}" : word
+  end
+
+  # CRuby names the operands of a comparison that fails in the order it
+  # compared them -- the class of one, then the other by its inspect when it
+  # is nil, true, false, an Integer, a Float or a Symbol, else by its class
+  # -- and a sort's order is its platform's qsort's: on Linux `[1, nil,
+  # 1].sort` says "comparison of Integer with nil failed" and then
+  # "comparison of NilClass with 1 failed". Two such lines are one answer
+  # when they name the same pair either way round and agree in the rest.
+  CMP_FAILED = /comparison of (\S+) with (.+?) failed/
+
+  def same_answer?(w, g)
+    return true if w == g
+    wm = w.match(CMP_FAILED)
+    gm = g.match(CMP_FAILED)
+    return false unless wm && gm && wm.pre_match == gm.pre_match && wm.post_match == gm.post_match
+    operand_class(wm[2]) == gm[1] && operand_class(gm[2]) == wm[1]
+  end
+
+  # The lines of two runs, the same answer line by line.
+  def same_answers?(want, got)
+    want.size == got.size && want.zip(got).all? { |w, g| same_answer?(w, g) }
+  end
+
+  # The class of an operand as a failed comparison names it.
+  def operand_class(s)
+    case s
+    when "nil" then "NilClass"
+    when "true" then "TrueClass"
+    when "false" then "FalseClass"
+    when /\A-?\d+\z/ then "Integer"
+    when /\A-?(?:\d+\.\d+(?:e[+-]\d+)?|Infinity)\z|\ANaN\z/ then "Float"
+    when /\A:/ then "Symbol"
+    else s
+    end
   end
 
   # The kind of a difference in the number of lines, or nil when both have
@@ -570,7 +606,7 @@ module ProbeCommon
       if (k = ProbeCommon.count_kind(want, got))
         return k
       end
-      w, g = want.zip(got).find { |a, b| a != b }
+      w, g = want.zip(got).find { |a, b| !ProbeCommon.same_answer?(a, b) }
       return "exit-status" if w.nil?
       split = ->(l) { l =~ /\A(.*) (\[[\d, ]*\])\z/ ? [$1, $2] : [l, ""] }
       wr, wl = split.call(w)
@@ -593,7 +629,7 @@ module ProbeCommon
       o = spinel([c])
       if o.label == "ran"
         got = o.lines[c.id]
-        return ["ran", nil, want, got, ""] if got == want && o.status.zero?
+        return ["ran", nil, want, got, ""] if ProbeCommon.same_answers?(want, got) && o.status.zero?
         detail = o.status.zero? ? "" : "exit #{o.status}: #{o.stderr.lines.first.to_s.strip}"
         return ["output-diff", diff_kind(want, got, c), want, got, detail]
       end
@@ -613,7 +649,7 @@ module ProbeCommon
       o = spinel(cases)
       stopped = o.label == "ran" && (!o.status.zero? || cases.any? { |c| o.lines[c.id].empty? && !want[c.id].empty? })
       if o.label == "ran" && !stopped
-        cases.reject { |c| o.lines[c.id] == want[c.id] }.map do |c|
+        cases.reject { |c| ProbeCommon.same_answers?(want[c.id], o.lines[c.id]) }.map do |c|
           l, k, w, g, det = judge(c)
           record(if l == "ran"
                    interaction(cases, "case #{c.id} differs only beside the other cases of its program",
