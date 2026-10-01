@@ -13751,6 +13751,23 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
     c->strbuf_box[sn] = 1;
     return 1;
   }
+  /* an ivar stores its own String the way a local does: the slot takes the
+     handle and the element is that handle. Wrapped fresh at the store site,
+     the element was a copy, and an append through it never reached the
+     ivar (#6179). */
+  if (nt_kind(nt, sn) == NK_InstanceVariableReadNode) {
+    const char *ivn = nt_str(nt, sn, "name");
+    int icid = an_ivar_owner(c, sn);
+    if (ivn && icid >= 0 && strbuf_ivar_mut_kind(c, icid, ivn) >= 0) {
+      int ch = strbuf_promote_ivar(c, icid, ivn);
+      int iv = comp_ivar_index(&c->classes[icid], ivn);
+      if (iv >= 0 && c->classes[icid].ivar_str_shared[iv]) {
+        c->strbuf_box[sn] = 1;
+        return 1;
+      }
+      if (ch) return 1;
+    }
+  }
   TyKind st2 = infer_type(c, sn);
   if (st2 == TY_POLY) return strbuf_demand_value_leaves(c, sn, 0);
   if (st2 != TY_STRING && st2 != TY_STRBUF) return 0;

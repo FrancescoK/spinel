@@ -1555,7 +1555,8 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/string_alias_yield_block_param.rb \
                   test/string_alias_chain_append.rb \
                   test/string_handle_keyword_args.rb \
-                  test/gsub_sub_scan_last_match.rb
+                  test/gsub_sub_scan_last_match.rb \
+                  test/string_handle_ivar_in_container.rb
 
 # Each program runs with the minor mark off and on and must answer the same;
 # then once more under the generational verifier with stress on (every
