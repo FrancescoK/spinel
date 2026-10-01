@@ -98,8 +98,8 @@ end
 # name<TAB>status, '#' comments. PASS rows are what `make rubyspec-gate` keeps
 # passing; every other status records the frontier. A PASS that stops being one
 # is a promise broken whatever the new status says, but PASS -> REJECT-BYDESIGN
-# is a deliberate withdrawal (those rows pair with docs/limitations.md), so it
-# is reported apart from a regression.
+# or ERROR-BYDESIGN is a deliberate withdrawal (those rows pair with
+# docs/limitations.md), so it is reported apart from a regression.
 def spec_rows(rev, file)
   txt = at(rev, "tools/rubyspec/expectations/#{file}")
   rows = {}
@@ -130,7 +130,7 @@ def rubyspec(from, to)
       now = b[name]
       if now.nil?
         regressed << [f, name, "row removed"]
-      elsif now == "REJECT-BYDESIGN"
+      elsif now.end_with?("-BYDESIGN")
         withdrawn << [f, name, now]
       elsif now != "PASS"
         regressed << [f, name, now]
