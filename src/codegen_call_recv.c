@@ -870,6 +870,32 @@ static Buf block_cond_buf(Compiler *c, int block, const int *bb, int bn) {
   return cb;
 }
 
+/* product hands its block one Array per tuple, and the block's parameters
+   take it as a yield of one Array does: a lone parameter is the tuple, two
+   or more are its elements (nil past its end). `tuple` is the tuple's boxed
+   C text. A signature with an optional, a rest, a destructuring or keywords
+   is refused rather than bound wrongly. */
+static void emit_product_block_binds(Compiler *c, int blk, const char *tuple, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int bp = nt_ref(nt, blk, "parameters");
+  int pn = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
+  if (pn >= 0) {
+    int nr = 0, no = 0, nq = 0, nk = 0;
+    const int *rq = nt_arr(nt, pn, "requireds", &nr);
+    nt_arr(nt, pn, "optionals", &no); nt_arr(nt, pn, "posts", &nq); nt_arr(nt, pn, "keywords", &nk);
+    int plain = no == 0 && nq == 0 && nk == 0 && nt_ref(nt, pn, "rest") < 0 &&
+                nt_ref(nt, pn, "keyword_rest") < 0;
+    for (int i = 0; plain && i < nr; i++) if (nt_kind(nt, rq[i]) == NK_MultiTargetNode) plain = 0;
+    if (!plain) unsupported_feature(c, blk, "Array#product with a block whose parameters are not plain names");
+  }
+  int np = 0;
+  while (block_param_name(c, blk, np)) np++;
+  if (np == 1) buf_printf(b, " lv_%s = %s;", rename_local(block_param_name(c, blk, 0)), tuple);
+  else
+    for (int j = 0; j < np; j++)
+      buf_printf(b, " lv_%s = sp_poly_arr_get(%s, %d);", rename_local(block_param_name(c, blk, j)), tuple, j);
+}
+
 int emit_array_call(Compiler *c, int id, Buf *b) {
   if (emit_array_splat_mutator(c, id, b)) return 1;
   /* An array indexed by a String or a Symbol is CRuby's TypeError. A
@@ -2291,7 +2317,6 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       int blk = nt_ref(nt, id, "block");
       int bbody = nt_ref(nt, blk, "body");
       int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
-      const char *fp0 = block_param_name(c, blk, 0);
       int nn = argc + 1;
       int *ids = (int *)malloc(sizeof(int) * nn);
       if (!ids) { perror("malloc"); exit(1); }
@@ -2311,7 +2336,8 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
                  tprod, tprod, nn, tprod);
       buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {",
                  ti, ti, tprod, ti);
-      if (fp0) buf_printf(b, " lv_%s = sp_PolyArray_get(_t%d, _t%d);", rename_local(fp0), tprod, ti);
+      { char tup[64]; snprintf(tup, sizeof tup, "sp_PolyArray_get(_t%d, _t%d)", tprod, ti);
+        emit_product_block_binds(c, blk, tup, b); }
       buf_puts(b, " {");
       for (int j2 = 0; j2 < bn; j2++) emit_stmt(c, bb[j2], b, 0);
       buf_puts(b, " } } ");
@@ -3793,7 +3819,6 @@ else {
         const char *kb = (at == TY_POLY_ARRAY) ? "Poly" : (array_kind(at) ? array_kind(at) : "Poly");
         int bbody = nt_ref(nt, blk, "body");
         int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
-        const char *fp0 = block_param_name(c, blk, 0);
         int ta = ++g_tmp, tb = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp, tpair = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = %s; SP_GC_ROOT(_t%d); sp_%sArray *_t%d = %s; SP_GC_ROOT(_t%d);",
                    k, ta, ra.p ? ra.p : "NULL", ta, kb, tb, rb2.p ? rb2.p : "NULL", tb);
@@ -3809,7 +3834,8 @@ else {
         buf_printf(b, "); sp_PolyArray_push(_t%d, ", tpair);
         emit_boxed_text(c, ty_array_elem(at), e2, b);
         buf_puts(b, ");");
-        if (fp0) buf_printf(b, " lv_%s = sp_box_poly_array(_t%d);", rename_local(fp0), tpair);
+        { char tup[64]; snprintf(tup, sizeof tup, "sp_box_poly_array(_t%d)", tpair);
+          emit_product_block_binds(c, blk, tup, b); }
         buf_puts(b, " {");
         for (int j2 = 0; j2 < bn; j2++) emit_stmt(c, bb[j2], b, 0);
         buf_printf(b, " } } } _t%d; })", ta);

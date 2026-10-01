@@ -12891,10 +12891,15 @@ int infer_block_params(Compiler *c) {
       continue;
     }
 
-    /* array.product(other) { |pair| } binds the boxed pair array */
+    /* array.product(other) { |pair| } binds the boxed pair array, and
+       `{ |a, b| }` its boxed elements */
     if (sp_streq(name, "product") && ty_is_array(rt) && p0) {
       Scope *aps = comp_scope_of(c, block);
-      if (bp_widen(aps, p0, TY_POLY)) changed = 1;
+      for (int pi = 0; pi < 9; pi++) {
+        const char *pnm = block_param_name(c, block, pi);
+        if (!pnm) break;
+        if (bp_widen(aps, pnm, TY_POLY)) changed = 1;
+      }
       continue;
     }
     /* array.fetch(i) { |i| } binds the (int) index */
