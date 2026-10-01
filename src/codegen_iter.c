@@ -476,9 +476,12 @@ unsigned inline_alias_params(Compiler *c, int mi, const int *argv, int pargc, co
           (!as || as->class_id < 0 || as->is_cmethod ||
            comp_ty_value_obj(c, ty_object(as->class_id)) || !g_self)) continue;
     }
-    /* a global variable's C global (gv_), as a call lends it */
-    else if (ak == NK_GlobalVariableReadNode) {
-      if (comp_ntype(c, an) != TY_STRING || !gvar_global_slot(c, an, gref, sizeof gref)) continue;
+    /* a global variable's C global (gv_), and a class variable's, as a call
+       lends it */
+    else if (ak == NK_GlobalVariableReadNode || ak == NK_ClassVariableReadNode) {
+      if (comp_ntype(c, an) != TY_STRING ||
+          !(ak == NK_GlobalVariableReadNode ? gvar_global_slot(c, an, gref, sizeof gref)
+                                            : cvar_global_slot(c, an, gref, sizeof gref))) continue;
       gslot = 1;
     }
     /* a String that is the shared handle has no slot to lend: the
@@ -2081,11 +2084,19 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
        variable: alias the variable itself rather than copy it, so the
        block's append reaches what was yielded. The parameter reads and
        writes through the cell for the rest of this splice. */
+    /* A global's or a class variable's C global is aliased the same way,
+       as a call lends it, unless the block or what it calls can assign the
+       variable meanwhile (refuse_lent_global_rebound). */
+    char gref[256];
+    NodeKind yk = poly_splat_tmp < 0 && splat_tmp < 0 && k < yc ? nt_kind(nt, yargs[k]) : NK__COUNT;
+    int gslot = (yk == NK_GlobalVariableReadNode && gvar_global_slot(c, yargs[k], gref, sizeof gref)) ||
+                (yk == NK_ClassVariableReadNode && cvar_global_slot(c, yargs[k], gref, sizeof gref));
     if (poly_splat_tmp < 0 && splat_tmp < 0 && k < yc &&
-        nt_kind(nt, yargs[k]) == NK_LocalVariableReadNode && !local_is_handle(c, yargs[k]) &&
+        ((yk == NK_LocalVariableReadNode && !local_is_handle(c, yargs[k])) || gslot) &&
         comp_ntype(c, yargs[k]) == TY_STRING && block_param_wants_alias(c, blk, k, -1)) {
       LocalVar *bl = bsc ? scope_local(bsc, bp) : NULL;
-      if (bl && al) refuse_alias_of_snapshot(c, yargs[k], bp);
+      if (bl && al && !gslot) refuse_alias_of_snapshot(c, yargs[k], bp);
+      if (bl && al && gslot) refuse_lent_global_rebound(c, yargs[k], gref, "a block", bp);
       if (bl && al && al->n < (int)(sizeof al->lv / sizeof al->lv[0])) {
         if (!as_expr && !al->open) { buf_puts(b, "{\n"); emit_indent(b, indent); al->open = 1; }
         buf_printf(b, "const char **_cell_%s = &(", bpr);
