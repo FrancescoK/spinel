@@ -683,6 +683,10 @@ int emit_output_spilled(Compiler *c, const char *name, int argc, const int *argv
   return 1;
 }
 
+static int tail_output_has_value(const char *nm) {
+  return nm && (sp_streq(nm, "system") || sp_streq(nm, "p") || sp_streq(nm, "pp"));
+}
+
 int emit_output_call(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -12178,6 +12182,10 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
       ((sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode")) &&
        !loop_has_valued_break(c, nt_ref(nt, id, "statements"))) ||
       (sp_streq(ty, "CallNode") && nt_ref(nt, id, "receiver") < 0 &&
+       /* the statement form drops the call's value: only the outputs whose
+          value is nil take it; `system` answers the command's success and
+          `p` / `pp` their argument (#6553) */
+       !tail_output_has_value(nt_str(nt, id, "name")) &&
        emit_output_call(c, id, b, indent))) {
     if (!sp_streq(ty, "CallNode")) emit_stmt(c, id, b, indent);
     return;
