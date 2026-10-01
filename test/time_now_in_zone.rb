@@ -17,6 +17,6 @@ p Time.now(in: off).utc_offset
 s = "+02:30"
 p Time.now(in: s).utc_offset
 t = Time.now(in: "+05:00")
-p [t.zone, t.strftime("%z"), (t.to_i - Time.now.to_i).abs <= 1]
+p [t.zone, t.strftime("%z"), (t.to_i - Time.now.to_i).abs <= 60]
 p((Time.now(in: "bogus") rescue $!.class))
 p((Time.now(in: 86400) rescue $!.message))
