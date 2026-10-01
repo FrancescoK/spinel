@@ -20434,7 +20434,7 @@ static int *nn_stlist;     /* (statements) the StatementsNode holding it */
 static int *nn_stidx;      /* (statements) its index there */
 static int *nn_loopout;    /* outermost loop around the node in its own context */
 static unsigned char *nn_retry;  /* (context roots; nn_cap for frames) a retry or redo */
-static unsigned char *nn_jump;   /* (blocks) a next or break of its own */
+static unsigned char *nn_jump;   /* (blocks) a next or break of its own; (loops) a redo */
 static unsigned char *nn_defbody;  /* a method's body: 1, initialize's: 2 */
 static const char **nn_attrs; static int nn_nattrs, nn_cattrs;   /* names attr_* hands out */
 static int nn_seqc;
@@ -20575,6 +20575,13 @@ static void nn_pre(Compiler *c, int id, int par, int ctx, int loopout, int dep) 
   } else if (nn_is_loop(k) && loopout < 0) cloop = id;
   if (k == NK_RetryNode || k == NK_RedoNode) nn_retry[ctx >= 0 ? ctx : nn_cap] = 1;
   if ((k == NK_NextNode || k == NK_BreakNode) && ctx >= 0) nn_jump[ctx] = 1;
+  /* a redo runs again the body of the loop or block it is in */
+  if (k == NK_RedoNode)
+    for (int p = par; p >= 0; p = nn_par[p]) {
+      NodeKind pk = nt_kind(nt, p);
+      if (pk == NK_WhileNode || pk == NK_UntilNode) { nn_jump[p] = 1; break; }
+      if (pk == NK_ForNode || pk == NK_BlockNode || pk == NK_LambdaNode) break;
+    }
   if (nn_is_local_node(k)) nn_occur(c, id, ctx);
   if (nn_is_ivar_node(k)) {
     int iv = nn_ivar(nt_str(nt, id, "name"));
@@ -21021,7 +21028,10 @@ static void nn_visit(Compiler *c, int id, NNF *f, int ctx) {
     } else {
       nn_cond(c, nt_ref(nt, id, "predicate"), &in, &t, &e, ctx);
       if (k == NK_UntilNode) { NNF x = t; t = e; e = x; }
-      nn_visit(c, nt_ref(nt, id, "statements"), &t, ctx);
+      /* a redo runs the body again without the condition, so the body
+         starts with the loop's invariant facts only */
+      NNF b = nn_jump[id] ? in : t;
+      nn_visit(c, nt_ref(nt, id, "statements"), &b, ctx);
     }
     /* a break leaves with the loop's invariant facts only */
     *f = e; nn_meet(f, &in);
