@@ -46,6 +46,8 @@ jobs:
              for p in build/rubyspec/core/*/; do s="core/$(basename "$p")"
                case "$skip$named" in *" $s "*) ;; *) suites="$suites $s" ;; esac; done ;;
           esac
+          set -a; . "$GITHUB_WORKSPACE/census.conf"; set +a
+          if [ -n "$ONLY" ]; then [ "${{ matrix.shard }}" = 1 ] && suites="$ONLY" || suites=""; fi
           echo "suites:$suites"
           for d in $suites; do
             nm=$(echo "$d" | tr / -)
