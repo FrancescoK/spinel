@@ -1,0 +1,19 @@
+true
+FrozenError: can't modify frozen String: "ab"
+"ab"
+true
+FrozenError: can't modify frozen String: "kw"
+"kw"
+true
+FrozenError: can't modify frozen String: "mid"
+"mid"
+true
+FrozenError: can't modify frozen String: "blk?"
+"blk?"
+true
+true
+FrozenError: can't modify frozen String: "iv?"
+"iv?"
+true
+false
+"cp?"
