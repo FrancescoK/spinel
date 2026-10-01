@@ -8869,13 +8869,15 @@ static void emit_obj_to_hash_dispatch(Compiler *c, Buf *b) {
       const char *iv = ci->ivars[j] + 1;  /* member name, sans @ (hash key) */
       const char *ivf = iv_c(iv);          /* C field id (mangled member) */
       buf_printf(b, "      sp_StrPolyHash_set(h, SPL(\"%s\"), ", iv);
-      if (mt == TY_INT) buf_printf(b, "(o->iv_%s == SP_INT_NIL ? sp_box_nil() : sp_box_int(o->iv_%s))", ivf, ivf);
-      else if (mt == TY_STRING) buf_printf(b, "(o->iv_%s ? sp_box_str(o->iv_%s) : sp_box_nil())", ivf, ivf);
-      else if (mt == TY_FLOAT) buf_printf(b, "sp_box_float_or_nil(o->iv_%s)", ivf);
-      else if (mt == TY_BOOL) buf_printf(b, "sp_box_bool(o->iv_%s)", ivf);
-      else if (mt == TY_SYMBOL) buf_printf(b, "sp_box_sym(o->iv_%s)", ivf);
-      else if (mt == TY_POLY) buf_printf(b, "o->iv_%s", ivf);
-      else buf_puts(b, "sp_box_nil()");
+      switch (mt) {
+      case TY_INT: buf_printf(b, "(o->iv_%s == SP_INT_NIL ? sp_box_nil() : sp_box_int(o->iv_%s))", ivf, ivf); break;
+      case TY_STRING: buf_printf(b, "(o->iv_%s ? sp_box_str(o->iv_%s) : sp_box_nil())", ivf, ivf); break;
+      case TY_FLOAT: buf_printf(b, "sp_box_float_or_nil(o->iv_%s)", ivf); break;
+      case TY_BOOL: buf_printf(b, "sp_box_bool(o->iv_%s)", ivf); break;
+      case TY_SYMBOL: buf_printf(b, "sp_box_sym(o->iv_%s)", ivf); break;
+      case TY_POLY: buf_printf(b, "o->iv_%s", ivf); break;
+      default: buf_puts(b, "sp_box_nil()"); break;
+      }
       buf_puts(b, ");\n");
     }
     buf_puts(b, "      return sp_box_obj(h, SP_BUILTIN_STR_POLY_HASH);\n    }\n");
