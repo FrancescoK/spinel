@@ -24366,11 +24366,13 @@ static void splat_appended_param(Compiler *c, int id, const char *name, int recv
 }
 
 /* An ivar, global or class variable a call hands over at or past its first
-   splat: an element of a splatted Array literal, or of a local every write
-   of which is one, or an argument written after the splat. Its position is
-   the run time's, so the binder boxes it into the gathered Array as a copy,
-   and none of them can be the handle there (an ivar that is one goes over
-   as it): answers the read, or -1. */
+   splat: an element of a splatted Array literal, or of any Array literal
+   written to the local the splat reads (another write does not clear it:
+   the local may still hold the literal at the call), or an argument written
+   after the splat. Its position is the run time's, so the binder boxes it
+   into the gathered Array as a copy. Only an ivar can be the handle there,
+   and one marked as it goes over as it: a global's or a class variable's
+   marked read boxes a fresh handle of its bytes. Answers the read, or -1. */
 static int splat_nonlocal_string(Compiler *c, const int *av, int ac, int fs, int depth) {
   const NodeTable *nt = c->nt;
   if (depth > 4) return -1;
@@ -24380,7 +24382,8 @@ static int splat_nonlocal_string(Compiler *c, const int *av, int ac, int fs, int
     if (ak != NK_SplatNode) {
       int shared;
       const char *kind = k >= fs ? strvar_arg(c, av[k], &shared) : NULL;
-      if (kind && ak != NK_LocalVariableReadNode && !c->strbuf_box[av[k]]) return av[k];
+      if (kind && ak != NK_LocalVariableReadNode &&
+          (ak != NK_InstanceVariableReadNode || !c->strbuf_box[av[k]])) return av[k];
       continue;
     }
     int x = nt_ref(nt, av[k], "expression"), lits[16], nl = 0;
