@@ -21399,6 +21399,23 @@ static void check_seed_contradictions(Compiler *c) {
       TyKind val = infer_type(c, a);
       if (slot == TY_POLY) continue;   /* `untyped` accepts anything */
       if (!seed_contradicts(c, slot, val, 0)) continue;
+      /* An arm of a runtime-name send (`send(name, h)`, `method(name).call(h)`)
+         runs only when the name selects this method, and the arm set holds
+         every method the program names anywhere. Judging the arm as a call
+         site refused a program whose send never picks the contradicted
+         method (#6672). The arm keeps its name in the dispatch but raises
+         TypeError when chosen; its call is never emitted, so the seeded
+         parameter is neither reinterpreted nor widened. */
+      if (nt_int(nt, id, "dyn_arm", 0) && nt_str(nt, id, "dyn_name")) {
+        const char *vc = builtin_class_of_type(val);
+        if (!vc && ty_is_object(val)) vc = seed_ty_name_into(c, val, _sn2, sizeof _sn2);
+        if (!vc) vc = seed_ty_name_into(c, val, _sn2, sizeof _sn2);
+        char msg[512];
+        snprintf(msg, sizeof msg, "%s: parameter %s is declared %s by --rbs but got %s",
+                 name, m->pnames[i], seed_ty_name_into(c, slot, _sn1, sizeof _sn1), vc);
+        nt_node_set_str((NodeTable *)nt, id, "seed_type_error", msg);
+        break;
+      }
       int ln  = (int)nt_int(nt, a, "node_line", 0);
       int fid = (int)nt_int(nt, a, "node_file", 0);
       const char *file = nt_file_path(nt, fid);

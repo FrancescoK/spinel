@@ -1,0 +1,6 @@
+3
+42
+10
+true
+TypeError: read_file: parameter path is declared String by --rbs but got Hash
+TypeError: read_file: parameter path is declared String by --rbs but got Hash

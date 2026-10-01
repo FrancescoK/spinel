@@ -3208,6 +3208,16 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
     if (mo && method_obj_target_mi(c, arm) < 0) continue;
     const char *nm = nt_str(nt, arm, "dyn_name");
     if (!nm) continue;
+    /* An arm whose argument contradicts the callee's --rbs seed raises when
+       the name selects it; the typed call would reinterpret the value
+       (check_seed_contradictions, #6672). */
+    { const char *se = nt_str(nt, arm, "seed_type_error");
+      if (se) {
+        buf_printf(b, "if (_t%d == (sp_sym)%d) { sp_raise_cls(\"TypeError\", \"", t, comp_sym_intern(c, nm));
+        emit_c_escaped(b, se);
+        buf_printf(b, "\"); _r%d = sp_box_nil(); }\nelse ", t);
+        continue;
+      } }
     /* Emit the arm into private buffers under a silent probe: a method that
        resolves by type but not by codegen (e.g. wrong arity for a builtin)
        longjmps out of emit and the arm is simply dropped. Its preludes are

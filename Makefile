@@ -1765,6 +1765,8 @@ rbs-seed-test: $(SPINEL) $(RBS_EXTRACT_BIN) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	@tmp=$$(mktemp -d /tmp/spinel-rbsseed.XXXXXX); ok=1; \
 	$(SPINEL) test/rbs-seed/attr_writer_poly_value.rb --rbs test/rbs-seed/sig -o "$$tmp/awp" >/dev/null 2>&1 && \
 	  "$$tmp/awp" > "$$tmp/awp.out" 2>/dev/null && cmp -s "$$tmp/awp.out" test/rbs-seed/attr_writer_poly_value.expected || { echo "rbs-seed-test: FAIL (#4856 a boxed value into an --rbs Integer attr as a method's value)"; ok=0; }; \
+	$(SPINEL) test/rbs-seed/dyn_send_arm_seed_contradiction.rb --rbs test/rbs-seed/sig -o "$$tmp/dasc" >/dev/null 2>&1 && \
+	  "$$tmp/dasc" > "$$tmp/dasc.out" 2>/dev/null && cmp -s "$$tmp/dasc.out" test/rbs-seed/dyn_send_arm_seed_contradiction.expected || { echo "rbs-seed-test: FAIL (#6672 a runtime-name send arm contradicting a seeded parameter: refused, or did not raise TypeError when chosen)"; ok=0; }; \
 	$(SPINEL) test/rbs-seed/seed_ret_instance_for_class.rb --rbs test/rbs-seed/sig -o "$$tmp/sric" >/dev/null 2>"$$tmp/sric.err" && \
 	  "$$tmp/sric" > "$$tmp/sric.out" 2>/dev/null && cmp -s "$$tmp/sric.out" test/rbs-seed/seed_ret_instance_for_class.expected || { echo "rbs-seed-test: FAIL (an instance return seed on a method returning the class itself)"; ok=0; }; \
 	[ "$$(grep -c 'returns the class itself' "$$tmp/sric.err")" = 2 ] || { echo "rbs-seed-test: FAIL (an instance return seed contradicting a class-valued body was not reported)"; ok=0; }; \
