@@ -7148,6 +7148,24 @@ static void emit_tail_value(Compiler *c, int node, Buf *b) {
         return;
       }
     }
+    /* A pointer slot reads NULL as nil, and a bare `nil` emits the numeric
+       0, a null pointer constant. A nil-typed EXPRESSION is not one: the
+       block form of File.foreach is `(lines.each { ... }; nil)`, emitted
+       `({ ...; 0; })`, an int, and a method whose block `return`s a String
+       answered it through its `const char *` slot -- the C build stopped.
+       Evaluate it, then spell the slot's NULL. */
+    else if (slot != TY_POLY && slot != TY_UNKNOWN && slot != TY_VOID && slot != TY_NIL &&
+             nt_kind(c->nt, node) != NK_NilNode) {
+      TyKind nvt = comp_ntype(c, node);
+      Buf nb; memset(&nb, 0, sizeof nb);
+      emit_ret_nil(c, slot, &nb);
+      int null_slot = nb.p && sp_streq(nb.p, "NULL");
+      free(nb.p);
+      if (null_slot && (nvt == TY_NIL || nvt == TY_VOID)) {
+        buf_puts(b, "({ (void)("); emit_expr(c, node, b); buf_puts(b, "); NULL; })");
+        return;
+      }
+    }
   }
   /* a case whose value is nil -- each arm returns or answers nil -- is held
      boxed by emit_case_expr (a nil has no C slot of its own); the method's
