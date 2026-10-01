@@ -287,6 +287,9 @@ extern int g_redo_depth;
    setup (its locals' reset and block_param_rebind_len's statements); 0 when
    none is pending. */
 extern int g_redo_pending;
+/* The body whose own `redo`s each label serves (subtree_owns_redo). */
+extern int g_redo_owner[64];
+int subtree_owns_redo(const NodeTable *nt, int body, int redo);
 int block_of_body(Compiler *c, int body);
 int block_param_rebind_len(const NodeTable *nt, int body);
 

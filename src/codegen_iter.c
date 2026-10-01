@@ -1805,7 +1805,7 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
     }
   }}
 
-static int subtree_has_own_redo_ex(const NodeTable *nt, int id, int follow_yield);
+static int subtree_has_own_redo_ex(const NodeTable *nt, int id, int redo);
 /* Is `arg` yielded by one of the builtins/ methods whose block CRuby hands
    every value a step of the receiver yields (enum_pair_spread_iter), over
    a receiver whose steps are known only at run time: a boxed one, or an
@@ -2551,9 +2551,10 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
      (a builtin's `buf << x` pushed the element again), and a yield outside
      any loop had none at all (`continue` outside a loop). */
   int rd_lbl = 0;
-  if (bbody >= 0 && subtree_has_own_redo_ex(nt, bbody, 0) &&
+  if (bbody >= 0 && subtree_has_own_redo_ex(nt, bbody, -1) &&
       g_redo_depth < (int)(sizeof g_redo_stack / sizeof g_redo_stack[0])) {
     rd_lbl = ++g_tmp;
+    g_redo_owner[g_redo_depth] = bbody;
     g_redo_stack[g_redo_depth++] = rd_lbl;
   }
   /* ...and after the body's setup, its locals' reset and the parameter
@@ -3243,15 +3244,15 @@ int emit_iter_bind_rest(Compiler *c, int block, int np, TyKind elem_t,
 }
 
 /* Does the subtree contain a `redo` that belongs to THIS loop, i.e. one not
-   nested inside a deeper loop/block/def (which would own it instead)? */
-static int subtree_has_own_redo_ex(const NodeTable *nt, int id, int follow_yield) {
+   nested inside a deeper loop/block/def (which would own it instead)? With
+   `redo` >= 0, that particular RedoNode. */
+static int subtree_has_own_redo_ex(const NodeTable *nt, int id, int redo) {
   if (id < 0) return 0;
   const char *ty = nt_type(nt, id);
   if (!ty) return 0;
-  if (sp_streq(ty, "RedoNode")) return 1;
+  if (sp_streq(ty, "RedoNode")) return redo < 0 || id == redo;
   /* a `redo` in a block a yield here splices belongs to that splice, which
      carries its own label (emit_block_invoke), not to this loop */
-  (void)follow_yield;
   /* nested scope/loop boundaries: a redo inside binds to that inner loop */
   if (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode") ||
       sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
@@ -3259,15 +3260,18 @@ static int subtree_has_own_redo_ex(const NodeTable *nt, int id, int follow_yield
     return 0;
   if (sp_streq(ty, "CallNode") && nt_ref(nt, id, "block") >= 0) return 0;  /* nested iteration */
   int nr = nt_num_refs(nt, id);
-  for (int i = 0; i < nr; i++) if (subtree_has_own_redo_ex(nt, nt_ref_at(nt, id, i), follow_yield)) return 1;
+  for (int i = 0; i < nr; i++) if (subtree_has_own_redo_ex(nt, nt_ref_at(nt, id, i), redo)) return 1;
   int na = nt_num_arrs(nt, id);
   for (int i = 0; i < na; i++) {
     int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
-    for (int k = 0; k < n; k++) if (subtree_has_own_redo_ex(nt, ids[k], follow_yield)) return 1;
+    for (int k = 0; k < n; k++) if (subtree_has_own_redo_ex(nt, ids[k], redo)) return 1;
   }
   return 0;
 }
-int subtree_has_own_redo(const NodeTable *nt, int id) { return subtree_has_own_redo_ex(nt, id, 1); }
+int subtree_has_own_redo(const NodeTable *nt, int id) { return subtree_has_own_redo_ex(nt, id, -1); }
+int subtree_owns_redo(const NodeTable *nt, int body, int redo) {
+  return redo >= 0 && subtree_has_own_redo_ex(nt, body, redo);
+}
 
 /* Does the subtree contain a `next` that belongs to THIS block, i.e. one not
    nested inside a deeper loop/block/def (which would own it instead)? Same
@@ -3318,8 +3322,10 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
   int lbl = 0;
   if (has_redo) {
     lbl = ++g_tmp;
-    if (g_redo_depth < (int)(sizeof g_redo_stack / sizeof g_redo_stack[0]))
+    if (g_redo_depth < (int)(sizeof g_redo_stack / sizeof g_redo_stack[0])) {
+      g_redo_owner[g_redo_depth] = body;
       g_redo_stack[g_redo_depth++] = lbl;
+    }
     else has_redo = 0;
   }
   /* a block body's label goes after its setup, where emit_stmts puts it */

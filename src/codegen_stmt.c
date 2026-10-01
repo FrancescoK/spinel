@@ -12090,8 +12090,13 @@ else {
   }
   if (sp_streq(ty, "RedoNode"))   {
     emit_indent(b, indent);
-    if (g_redo_depth > 0) buf_printf(b, "goto _redo_%d;\n", g_redo_stack[g_redo_depth - 1]);
-    else buf_puts(b, "continue;\n");  /* redo outside a labeled loop: best-effort */
+    /* the innermost label serves this redo only when it is that body's own;
+       an iterator whose emitter places none has no way to re-run its body
+       (a `continue` there left the block as `next` does, or re-ran an
+       enclosing loop instead) */
+    if (g_redo_depth > 0 && subtree_owns_redo(nt, g_redo_owner[g_redo_depth - 1], id))
+      buf_printf(b, "goto _redo_%d;\n", g_redo_stack[g_redo_depth - 1]);
+    else unsupported_feature(c, id, "redo in this block (its iterator cannot re-run the body)");
     return;
   }
   if (sp_streq(ty, "RetryNode")) {

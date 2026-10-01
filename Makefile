@@ -1090,6 +1090,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a singleton def on an untraceable receiver compiled)"; ok=0; \
 	else grep -q "singleton method that needs a self, on a receiver that is not one user-class instance" "$$tmp/r.out" || \
 	  { echo "reject-test: FAIL (rejected without saying why)"; sed -n 1,5p "$$tmp/r.out"; ok=0; }; fi; \
+	t=test/reject/redo_unlabeled_iterator.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/rui.c" >"$$tmp/rui.out" 2>&1; then \
+	  echo "reject-test: FAIL (a redo with no label for it compiled)"; ok=0; \
+	else grep -q "redo in this block" "$$tmp/rui.out" || \
+	  { echo "reject-test: FAIL (a redo with no label rejected without saying why)"; sed -n 1,5p "$$tmp/rui.out"; ok=0; }; fi; \
 	t=test/reject/string_splat_changed_array.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sca.c" >"$$tmp/sca.out" 2>&1; then \
 	  echo "reject-test: FAIL (a global in a changed splatted Array compiled)"; ok=0; \
