@@ -28593,12 +28593,23 @@ void analyze_program(Compiler *c) {
         #define PW_TYPED_ARR(t) ((t) == TY_INT_ARRAY || (t) == TY_STR_ARRAY || (t) == TY_FLOAT_ARRAY)
         #define PW_JOIN(cur, val) (PW_TYPED_ARR(cur) && (val) == TY_POLY_ARRAY ? TY_POLY_ARRAY \
                                    : PW_TYPED_ARR(cur) && (val) == TY_POLY ? TY_POLY : (cur))
+        /* an op-assign that combines the slot with an Array (`|=` `&=` `-=`
+           `+=`) is written the combination: with a poly-array operand that
+           is the poly array the join answers, while `*=` repeats the slot's
+           own kind. The fixpoint merged the operand while it was still the
+           Integer array the widening made poly (#4833's rule) */
+        #define PW_OPW_JOINS(id) (nt_str(nt, (id), "binary_operator") && \
+          (sp_streq(nt_str(nt, (id), "binary_operator"), "|") || sp_streq(nt_str(nt, (id), "binary_operator"), "&") || \
+           sp_streq(nt_str(nt, (id), "binary_operator"), "-") || sp_streq(nt_str(nt, (id), "binary_operator"), "+")))
         /* (6) an ivar / cvar written a poly array or a boxed element */
         for (int id = 0; id < nt->count; id++) {
           NodeKind k = nt_kind(nt, id);
+          int opw = (k == NK_InstanceVariableOperatorWriteNode || k == NK_ClassVariableOperatorWriteNode) &&
+                    PW_OPW_JOINS(id);
           int iv_write = k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableOrWriteNode ||
-                         k == NK_InstanceVariableAndWriteNode;
-          int cv_write = k == NK_ClassVariableWriteNode || k == NK_ClassVariableOrWriteNode;
+                         k == NK_InstanceVariableAndWriteNode || (opw && k == NK_InstanceVariableOperatorWriteNode);
+          int cv_write = k == NK_ClassVariableWriteNode || k == NK_ClassVariableOrWriteNode ||
+                         (opw && k == NK_ClassVariableOperatorWriteNode);
           if (!iv_write && !cv_write) continue;
           int vnode = nt_ref(nt, id, "value");
           if (vnode < 0) continue;
@@ -28606,6 +28617,7 @@ void analyze_program(Compiler *c) {
           if (!nm) continue;
           TyKind vt = infer_type(c, vnode);
           if (vt != TY_POLY_ARRAY && vt != TY_POLY) continue;
+          if (opw && vt != TY_POLY_ARRAY) continue;
           if (iv_write) {
             int cid = an_ivar_owner(c, id);
             int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
@@ -28625,15 +28637,37 @@ void analyze_program(Compiler *c) {
             }
           }
         }
+        /* ...and an attribute's (`obj.items |= [n]`), whose slot is the
+           backing ivar the emitter combines in place */
+        for (int id = 0; id < nt->count; id++) {
+          const char *cty = nt_type(nt, id);
+          if (!cty || !sp_streq(cty, "CallOperatorWriteNode") || !PW_OPW_JOINS(id)) continue;
+          int recv = nt_ref(nt, id, "receiver"), vnode = nt_ref(nt, id, "value");
+          const char *attr = nt_str(nt, id, "name");
+          if (recv < 0 || vnode < 0 || !attr) continue;
+          TyKind rt = infer_type(c, recv);
+          int rdcls = -1;
+          if (!ty_is_object(rt) || !comp_reader_in_chain(c, ty_object_class(rt), attr, &rdcls) ||
+              !comp_writer_in_chain(c, ty_object_class(rt), attr, NULL)) continue;
+          char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, rdcls, attr));
+          int iv = comp_ivar_index(&c->classes[rdcls], ivn);
+          if (iv < 0 || infer_type(c, vnode) != TY_POLY_ARRAY) continue;
+          TyKind cur = c->classes[rdcls].ivar_types[iv], nw = PW_JOIN(cur, TY_POLY_ARRAY);
+          if (nw != cur) { c->classes[rdcls].ivar_types[iv] = nw; changed = 1; }
+        }
         /* (7) a global written a poly array or a boxed element */
         for (int id = 0; id < nt->count; id++) {
-          if (nt_kind(nt, id) != NK_GlobalVariableWriteNode && nt_kind(nt, id) != NK_GlobalVariableOrWriteNode) continue;
+          int gopw = nt_kind(nt, id) == NK_GlobalVariableOperatorWriteNode && PW_OPW_JOINS(id);
+          if (nt_kind(nt, id) != NK_GlobalVariableWriteNode && nt_kind(nt, id) != NK_GlobalVariableOrWriteNode &&
+              !gopw) continue;
           int vnode = nt_ref(nt, id, "value");
           const char *nm = nt_str(nt, id, "name");
           if (vnode < 0 || !nm) continue;
           LocalVar *gv = comp_gvar(c, nm[0] == '$' ? nm + 1 : nm);   /* keyed without the `$` */
           if (!gv) continue;
-          TyKind vt = infer_type(c, vnode), nw = PW_JOIN(gv->type, vt);
+          TyKind vt = infer_type(c, vnode);
+          if (gopw && vt != TY_POLY_ARRAY) continue;
+          TyKind nw = PW_JOIN(gv->type, vt);
           if (nw != gv->type) { gv->type = nw; changed = 1; }
         }
         /* (8) a multiple assignment: a splat target collects a poly array
@@ -28757,13 +28791,15 @@ void analyze_program(Compiler *c) {
            holds and the slot takes the box (int_array_array's `row = t[3]`) */
         for (int id = 0; id < nt->count; id++) {
           NodeKind k = nt_kind(nt, id);
-          if (k != NK_LocalVariableWriteNode && k != NK_LocalVariableOrWriteNode) continue;
+          int lopw = k == NK_LocalVariableOperatorWriteNode && PW_OPW_JOINS(id);
+          if (k != NK_LocalVariableWriteNode && k != NK_LocalVariableOrWriteNode && !lopw) continue;
           const char *nm = nt_str(nt, id, "name");
           LocalVar *lv = nm ? scope_local(comp_scope_of(c, id), nm) : NULL;
           if (!lv || !PW_TYPED_ARR(lv->type)) continue;
           int vnode = nt_ref(nt, id, "value");
           if (vnode < 0) continue;
           TyKind vt = infer_type(c, vnode);
+          if (lopw && vt != TY_POLY_ARRAY) continue;
           if (vt == TY_POLY_ARRAY) { lv->type = TY_POLY_ARRAY; changed = 1; }   /* step 4's rule, for `||=` */
           else if (vt == TY_POLY) { lv->type = TY_POLY; lv->oa_pin = TY_UNKNOWN; changed = 1; }
         }
@@ -28905,6 +28941,7 @@ void analyze_program(Compiler *c) {
           lv->type = TY_POLY_ARRAY; changed = 1;
         }
         #undef PW_JOIN
+        #undef PW_OPW_JOINS
         #undef PW_TYPED_ARR
       }
     }
