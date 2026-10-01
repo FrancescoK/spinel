@@ -12466,6 +12466,16 @@ int infer_block_params(Compiler *c) {
       pt = TY_POLY;
     else if (rt == TY_POLY && sp_streq(name, "each_line"))
       pt = TY_STRING;  /* File/IO object yielding lines */
+    /* a typed File/IO (or ARGF) yields lines and chars as Strings, bytes and
+       codepoints as Integers -- typed here, with the other block params, so
+       the body is inferred against it: set only where infer_type reaches the
+       call, `h << line` had already made `h = []` a PolyArray */
+    else if ((rt == TY_IO || rt == TY_ARGF) &&
+             (sp_streq(name, "each_line") || sp_streq(name, "each") ||
+              (rt == TY_IO && sp_streq(name, "each_char")) || (rt == TY_ARGF && sp_streq(name, "each_string"))))
+      pt = TY_STRING;
+    else if (rt == TY_IO && (sp_streq(name, "each_byte") || sp_streq(name, "each_codepoint")))
+      pt = TY_INT;
     else if (rt == TY_POLY && sp_streq(name, "each_byte"))
       pt = TY_INT;
     else if (rt == TY_STRING && (sp_streq(name, "each_char") || sp_streq(name, "each_line") || sp_streq(name, "upto") ||
