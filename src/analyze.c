@@ -5596,7 +5596,8 @@ static int desugar_builtin_method_obj(Compiler *c) {
          or `def __bam_N(*__bam_r) = puts(*__bam_r)` when they disagree; one
          parameter when there are none */
       int knf = bam_call_argc(c, id);
-      if (knf != BAM_VARIADIC && (knf < 1 || knf > 8)) knf = 1;
+      if (knf > 8) knf = BAM_VARIADIC;
+      if (knf != BAM_VARIADIC && knf < 1) knf = 1;
       int kparams, kargs;
       bam_wrapper_params(nt, NULL, knf, &kparams, &kargs);
       int kcall = nt_new_node(nt, "CallNode");
@@ -5696,7 +5697,8 @@ static int desugar_builtin_method_obj(Compiler *c) {
        def __bam_<id>(__bam_r, __bam_a, __bam_a1, ...) = __bam_r.<sym>(__bam_a, ...),
        or when they disagree def __bam_<id>(__bam_r, *__bam_a) = __bam_r.<sym>(*__bam_a) */
     int nfwd = binop ? 1 : bam_call_argc(c, id);
-    if (nfwd != BAM_VARIADIC && (nfwd < 0 || nfwd > 8)) nfwd = 0;
+    if (nfwd > 8) nfwd = BAM_VARIADIC;
+    if (nfwd != BAM_VARIADIC && nfwd < 0) nfwd = 0;
     int params, cargs;
     bam_wrapper_params(nt, "__bam_r", nfwd, &params, &cargs);
     int rread = nt_new_node(nt, "LocalVariableReadNode");
