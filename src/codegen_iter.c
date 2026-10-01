@@ -3398,7 +3398,12 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   if (use_shadow) { emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n"); }
   if (tlv0) tlv0->type = tsaved0;
 
-  buf_printf(b, "_t%d", is_tap ? tr : tres);
+  /* a receiver read as the shared handle (a block parameter that appends to
+     it is the handle, promote_shared_stored_strings): tap's value is that
+     String, read as one */
+  if (is_tap && et == TY_STRBUF && comp_ntype(c, id) == TY_STRING)
+    buf_printf(b, "sp_String_cstr(_t%d)", tr);
+  else buf_printf(b, "_t%d", is_tap ? tr : tres);
   return 1;
 }
 
