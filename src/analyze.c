@@ -27318,8 +27318,9 @@ void analyze_program(Compiler *c) {
       if (!p || p->rbs_seeded) continue;
       if (p->type == TY_UNKNOWN)
         slot_rule(c, p, TY_POLY, sc->pdefault[i], "a `= nil` default and no call site typing it: the parameter holds nil or a value, untyped");
-      else if (p->type == TY_SYMBOL || p->type == TY_BOOL)
-        slot_rule(c, p, TY_POLY, sc->pdefault[i], "a `= nil` default on a Symbol or Bool parameter, which has no nil of its own: boxed, untyped");
+      else if (p->type == TY_SYMBOL || p->type == TY_BOOL || p->type == TY_RANGE ||
+               p->type == TY_FLOAT_RANGE || p->type == TY_STR_RANGE)
+        slot_rule(c, p, TY_POLY, sc->pdefault[i], "a `= nil` default on a Symbol, Bool or Range parameter, which has no nil of its own: boxed, untyped");
     }
   }
 
