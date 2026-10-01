@@ -1616,10 +1616,9 @@ TyKind yield_value_type_via_super(Compiler *c, int mi) {
     if (!cs || cs->class_id < 0 || !cs->name) continue;
     int cmi = (int)(cs - c->scopes);
     if (cmi == mi) continue;
-    int p = c->classes[cs->class_id].parent;
-    if (p < 0) continue;
-    int rmi = cs->is_cmethod ? comp_cmethod_in_chain(c, p, cs->name, NULL)
-                             : comp_method_in_chain(c, p, cs->name, NULL);
+    /* where that super lands: the next shadow in its own class (an earlier
+       include's or extend's copy), or the superclass chain */
+    int rmi = a_super_target(c, cs);
     if (rmi != mi) continue;
     TyKind ft = yield_value_type(c, cmi);
     if (ft == TY_UNKNOWN) ft = yield_value_type_via_super(c, cmi);

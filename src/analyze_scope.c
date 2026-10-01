@@ -5207,7 +5207,11 @@ void unmark_referenced_module_sources(Compiler *c) {
   }
 }
 
-static int extend_class_with(Compiler *c, int ci, int mod_id) {
+/* `inherited`: a superclass already extends mod_id, so the module is among
+   the singleton's ancestors. CRuby ignores the extend for the lookup: the
+   module stays behind the superclass, and it supersedes no earlier module's
+   copy here. */
+static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited) {
   int did_clone = 0;
   int snap = c->nscopes;
   for (int ms = 0; ms < snap; ms++) {
@@ -5221,7 +5225,7 @@ static int extend_class_with(Compiler *c, int ci, int mod_id) {
        to an instance pointer (#4648). */
     if (src->class_id != mod_id || (src->is_cmethod && !src->is_module_function) || !src->name) continue;
     int own = comp_cmethod_in_class(c, ci, src->name);
-    if (own >= 0 && !c->scopes[own].is_extend_copy) continue;   /* the class's own */
+    if (own >= 0 && (inherited || !c->scopes[own].is_extend_copy)) continue;   /* the class's own */
     if (own >= 0) {
       /* An earlier extend put this name here. The later module comes first
          among the singleton's ancestors, so it supersedes: the earlier copy
@@ -5288,6 +5292,36 @@ static int class_is_root(Compiler *c, int ci) {
 
 /* For each class, find `extend M` declarations and transplant M's instance
    methods as class methods (is_cmethod=1) so they are callable as C.m. */
+/* The module a constant argument of `extend` names, or -1. */
+static int extend_arg_module(Compiler *c, int arg) {
+  const NodeTable *nt = c->nt;
+  const char *aty = nt_type(nt, arg);
+  const char *mname = NULL;
+  if (aty && sp_streq(aty, "ConstantReadNode")) mname = nt_str(nt, arg, "name");
+  else if (aty && sp_streq(aty, "ConstantPathNode")) mname = nt_str(nt, arg, "name");
+  return mname ? comp_class_index(c, mname) : -1;
+}
+
+/* Whether class body `cn` has a bare `extend` naming mod_id. */
+static int body_extends_module(Compiler *c, int cn, int mod_id) {
+  const NodeTable *nt = c->nt;
+  int body = class_def_body(c, cn);
+  int n = 0;
+  const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+  for (int k = 0; k < n; k++) {
+    int s = stmts[k];
+    if (nt_kind(nt, s) != NK_CallNode || nt_ref(nt, s, "receiver") >= 0) continue;
+    const char *nm = nt_str(nt, s, "name");
+    if (!nm || !sp_streq(nm, "extend")) continue;
+    int anode = nt_ref(nt, s, "arguments");
+    int an = 0;
+    const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+    for (int j = 0; j < an; j++)
+      if (extend_arg_module(c, args[j]) == mod_id) return 1;
+  }
+  return 0;
+}
+
 void register_extends(Compiler *c) {
   const NodeTable *nt = c->nt;
   int did_clone = 0;
@@ -5361,12 +5395,16 @@ void register_extends(Compiler *c) {
           if (!seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
         }
         seen[nseen++] = mod_id;
-        did_clone |= extend_class_with(c, ci, mod_id);
+        int inherited = 0;
+        for (int p = c->classes[ci].parent; p >= 0 && !inherited; p = c->classes[p].parent)
+          for (int bj = 0; bj < nbody && !inherited; bj++)
+            if (body_cls[bj] == p) inherited = body_extends_module(c, body_node[bj], mod_id);
+        did_clone |= extend_class_with(c, ci, mod_id, inherited);
       }
     }
    }
    if (cls_mod >= 0 && (ci == cls_mod || class_is_root(c, ci)))
-     did_clone |= extend_class_with(c, ci, cls_mod);
+     did_clone |= extend_class_with(c, ci, cls_mod, 0);
   }
   /* The cloned bodies introduced new local nodes, and register_locals ran
      before this pass: a local first assigned in the clone had no slot, so
