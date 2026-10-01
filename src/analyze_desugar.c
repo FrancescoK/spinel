@@ -5976,7 +5976,7 @@ static int dmc_has(const DmcNames *s, const char *nm) {
    own. Unset `rewrite` collects those referenced inside a define_method
    block; set, it retypes every reference to a collected name into the
    body's global. */
-static void dmc_walk(NodeTable *nt, int id, int lvl, int in_dm, int cls,
+static void dmc_walk(NodeTable *nt, int id, int lvl, int in_dm, const char *cls,
                      DmcNames *s, int rewrite) {
   if (id < 0) return;
   NodeKind k = nt_kind(nt, id);
@@ -5994,7 +5994,7 @@ static void dmc_walk(NodeTable *nt, int id, int lvl, int in_dm, int cls,
     }
     else if (rewrite && dmc_has(s, nm)) {
       char gname[256];
-      snprintf(gname, sizeof gname, "$__dmcap%d_%s", cls, nm);
+      snprintf(gname, sizeof gname, "$__dmcap%s_%s", cls, nm);
       nt_node_set_type(nt, id, dmc_kinds[lk].global);
       nt_node_set_str(nt, id, "name", gname);
     }
@@ -6234,9 +6234,11 @@ int desugar_define_method_captures(Compiler *c) {
              ? nt_ref(nt, cls, "body") : -1;
     if (body < 0) continue;
     DmcNames s = { 0 };
-    dmc_walk(nt, body, 0, 0, cls, &s, 0);
+    dmc_walk(nt, body, 0, 0, NULL, &s, 0);
     if (s.n) {
-      dmc_walk(nt, body, 0, 0, cls, &s, 1);
+      /* the global carries the class's stable number, not its node id */
+      char ctag[64]; snprintf(ctag, sizeof ctag, "%s", comp_node_tag(c, cls));
+      dmc_walk(nt, body, 0, 0, ctag, &s, 1);
       changed = 1;
     }
     for (int i = 0; i < s.n; i++) free(s.names[i]);
