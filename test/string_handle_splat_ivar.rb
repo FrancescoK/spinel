@@ -25,3 +25,11 @@ class D
   def after = (m2(*[1], @d); @d.size)
 end
 p D.new.run, D.new.after
+
+# a local the splat reads that another write also sets: the literal may
+# still be what it holds at the call
+class E
+  def lit_then_other(o) = (@v = +"v"; s = [@v]; B.new.m(*s); s = o; @v.size)
+  def other_then_lit(o) = (@w = +"w"; s = o; s = [@w] if o.size > 0; B.new.m(*s); @w.size)
+end
+p E.new.lit_then_other([1]), E.new.other_then_lit([1])

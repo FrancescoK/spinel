@@ -20375,9 +20375,11 @@ static int spread_rest_from(Compiler *c, int *rf, int mi) {
 }
 
 /* An ivar among the elements a splat hands on (of an Array literal, or of
-   a local every write of which is one), or written after the splat: its
-   slot takes the handle, as a container store's does
-   (strbuf_demand_store_leaf), so the gathered Array holds it. */
+   any Array literal written to the local it splats), or written after the
+   splat: its slot takes the handle, as a container store's does
+   (strbuf_demand_store_leaf), so the gathered Array holds it. Another
+   write of the local does not clear a literal one, which the local may
+   still hold at the call. */
 static int spread_demand_ivar(Compiler *c, int r) {
   if (nt_kind(c->nt, r) != NK_InstanceVariableReadNode || c->strbuf_box[r]) return 0;
   TyKind it = infer_type(c, r);
@@ -20402,8 +20404,7 @@ static int spread_demand_ivar_elems(Compiler *c, const int *av, int ac) {
         if (comp_scope_of(c, w) != xs || nt_kind(nt, w) != NK_LocalVariableWriteNode ||
             !sp_streq(nt_str(nt, w, "name"), xn)) continue;
         int wv = nt_ref(nt, w, "value");
-        if (wv < 0 || nt_kind(nt, wv) != NK_ArrayNode) { nl = 0; break; }
-        lits[nl++] = wv;
+        if (wv >= 0 && nt_kind(nt, wv) == NK_ArrayNode) lits[nl++] = wv;
       }
     }
     for (int l = 0; l < nl; l++) {
