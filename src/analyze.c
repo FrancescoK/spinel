@@ -20206,7 +20206,11 @@ static int spread_param_appended(Compiler *c, int mi, int pj) {
    method of the call's name (a splat's positions are the run time's, and a
    group member that only reads pulls nothing), and a class's initialize
    for its `new`: bound by value, that one is refused still
-   (refuse_string_copies), since `new` does not share a String yet. */
+   (refuse_string_copies), since `new` does not share a String yet. A
+   `super` with a splat binds the one method it calls from an Array of
+   boxes, an argument written after the splat among them: each String
+   variable there is pulled, and the parent's parameter, POLY, appends
+   through the handle its box holds. */
 /* Is local Array `xn` changed after the literal it is written from: a call
    on it that mutates an Array (`s << w`, `s.clear`, `s.replace(t)`), or
    handed to a call that may? Its layout is then the run time's, not the
@@ -20300,6 +20304,127 @@ static int spread_rest_from(Compiler *c, int *rf, int mi) {
   return r;
 }
 
+/* A parameter that is an element of a splatted local Array (`r = [x];
+   m(*r)`): the container rule (promote_shared_stored_strings) takes locals
+   only, so the Array a parameter is stored into is demanded to hold the
+   handle here, or it stayed a StrArray of copies and the append missed the
+   caller's String. */
+static int spread_demand_param_elem(Compiler *c, const int *av, int ac, int el) {
+  const NodeTable *nt = c->nt;
+  const char *en = nt_str(nt, el, "name");
+  Scope *es = en ? comp_scope_of(c, el) : NULL;
+  LocalVar *elv = es ? scope_local(es, en) : NULL;
+  if (!elv || !elv->is_param || elv->is_block_param) return 0;
+  int changed = 0;
+  for (int i = 0; i < ac; i++) {
+    if (nt_kind(nt, av[i]) != NK_SplatNode) continue;
+    int x = nt_ref(nt, av[i], "expression");
+    if (x < 0 || nt_kind(nt, x) != NK_LocalVariableReadNode) continue;
+    const char *xn = nt_str(nt, x, "name");
+    Scope *xs = xn ? comp_scope_of(c, x) : NULL;
+    int holds = 0;
+    for (int w = xs ? comp_lvw_first_sc(c, (int)(xs - c->scopes), xn) : -1; w >= 0 && !holds;
+         w = comp_lvw_next_sc(c, w)) {
+      if (comp_scope_of(c, w) != xs || nt_kind(nt, w) != NK_LocalVariableWriteNode ||
+          !sp_streq(nt_str(nt, w, "name"), xn)) continue;
+      int wv = nt_ref(nt, w, "value"), wn = 0;
+      const int *ev = wv >= 0 && nt_kind(nt, wv) == NK_ArrayNode ? nt_arr(nt, wv, "elements", &wn) : NULL;
+      for (int e = 0; e < wn && !holds; e++) holds = ev[e] == el;
+    }
+    if (holds) changed |= strbuf_demand_container_stores(c, xn, xs);
+  }
+  return changed;
+}
+
+/* A block parameter read `a` handed to a parameter that appends. */
+static int spread_demand_block_param(Compiler *c, int a) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, a) != NK_LocalVariableReadNode || c->strbuf_box[a]) return 0;
+  const char *vn = nt_str(nt, a, "name");
+  Scope *vs = vn ? comp_scope_of(c, a) : NULL;
+  LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+  if (!lv || !lv->is_block_param || (lv->type != TY_STRING && lv->type != TY_STRBUF)) return 0;
+  return strbuf_demand_store_leaf(c, a, 0);
+}
+
+/* Mark POLY parameter `pn` of scope `vs` appended to (poly_lift). */
+static int spread_lift_poly_param(Compiler *c, Scope *vs, const char *pn) {
+  LocalVar *pv = pn ? scope_local(vs, pn) : NULL;
+  if (!pv || !pv->is_param || pv->is_block_param || pv->type != TY_POLY || an_param_idx(vs, pn) < 0 ||
+      (pv->poly_lift & POLY_LIFT_APPENDED)) return 0;
+  pv->poly_lift |= POLY_LIFT_APPENDED;
+  return 1;
+}
+
+/* A POLY variable among the elements a splat hands on (of an Array literal,
+   or of a local every write of which is one), or written past the splat
+   when `past` is set: its read is lifted, so a plain String it holds goes
+   over as the handle, and a method's own POLY parameter pulls its callers
+   in (poly_lift), as at a static call. */
+static int spread_lift_poly_elems(Compiler *c, const int *av, int ac, int past) {
+  const NodeTable *nt = c->nt;
+  int changed = 0, fs = 0;
+  for (int i = 0; i < ac; i++) {
+    int reads[64], nr = 0;
+    if (nt_kind(nt, av[i]) != NK_SplatNode) {
+      if (fs && past) reads[nr++] = av[i];
+    }
+    else {
+      fs = 1;
+      int x = nt_ref(nt, av[i], "expression"), lits[16], nl = 0;
+      if (x >= 0 && nt_kind(nt, x) == NK_ArrayNode) lits[nl++] = x;
+      else if (x >= 0 && nt_kind(nt, x) == NK_LocalVariableReadNode) {
+        const char *xn = nt_str(nt, x, "name");
+        Scope *xs = xn ? comp_scope_of(c, x) : NULL;
+        for (int w = xs ? comp_lvw_first_sc(c, (int)(xs - c->scopes), xn) : -1; w >= 0 && nl < 16;
+             w = comp_lvw_next_sc(c, w)) {
+          if (comp_scope_of(c, w) != xs || nt_kind(nt, w) != NK_LocalVariableWriteNode ||
+              !sp_streq(nt_str(nt, w, "name"), xn)) continue;
+          int wv = nt_ref(nt, w, "value");
+          if (wv < 0 || nt_kind(nt, wv) != NK_ArrayNode) { nl = 0; break; }
+          lits[nl++] = wv;
+        }
+      }
+      for (int l = 0; l < nl; l++) {
+        int en = 0; const int *ev = nt_arr(nt, lits[l], "elements", &en);
+        for (int e = 0; e < en && nr < 64; e++) reads[nr++] = ev[e];
+      }
+    }
+    for (int r = 0; r < nr; r++) {
+      int a = reads[r];
+      if (nt_kind(nt, a) != NK_LocalVariableReadNode) continue;
+      const char *vn = nt_str(nt, a, "name");
+      Scope *vs = vn ? comp_scope_of(c, a) : NULL;
+      LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+      if (!lv || lv->type != TY_POLY || lv->is_block_param || !poly_var_may_hold_string(c, NULL, vn, vs, 0)) continue;
+      if (!c->poly_strbuf_lift[a]) { c->poly_strbuf_lift[a] = 1; changed = 1; }
+      /* the method's own POLY parameter, or one a local is written from
+         (`v = x`): its box is the caller's, so it pulls its callers in */
+      if (lv->is_param) changed |= spread_lift_poly_param(c, vs, vn);
+      else {
+        for (int w = comp_lvw_first_sc(c, (int)(vs - c->scopes), vn); w >= 0; w = comp_lvw_next_sc(c, w)) {
+          if (comp_scope_of(c, w) != vs || nt_kind(nt, w) != NK_LocalVariableWriteNode ||
+              !sp_streq(nt_str(nt, w, "name"), vn)) continue;
+          int wv = nt_ref(nt, w, "value");
+          if (wv >= 0 && nt_kind(nt, wv) == NK_LocalVariableReadNode)
+            changed |= spread_lift_poly_param(c, vs, nt_str(nt, wv, "name"));
+        }
+      }
+    }
+  }
+  return changed;
+}
+
+/* Is `an` one of the n arguments av[] written at or past the first splat? */
+static int an_arg_after_splat(const NodeTable *nt, const int *av, int n, int an) {
+  int fs = 0;
+  for (int k = 0; k < n; k++) {
+    if (nt_kind(nt, av[k]) == NK_SplatNode) fs = 1;
+    else if (fs && av[k] == an) return 1;
+  }
+  return 0;
+}
+
 static int promote_spread_string_args(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -20343,11 +20468,46 @@ static int promote_spread_string_args(Compiler *c) {
         if (!(app[mi] & (1u << pj))) continue;
         int out[32], direct[32];
         int k = spread_string_reads(c, m, n, pj, out, direct, 32);
-        for (int i = 0; i < k; i++) changed |= dyn_pull_arg(c, out[i], direct[i]);
+        for (int i = 0; i < k; i++) {
+          changed |= dyn_pull_arg(c, out[i], direct[i]);
+          if (!direct[i]) changed |= spread_demand_param_elem(c, av, ac, out[i]);
+        }
+        if (splat) changed |= spread_lift_poly_elems(c, av, ac, 0);
         /* a splatted local Array the program changes holds what was stored */
         for (int i = 0; splat && i < ac; i++)
           if (nt_kind(nt, av[i]) == NK_SplatNode) changed |= spread_demand_changed_local(c, av[i]);
       }
+    }
+  }
+  /* `super(*s)`, `super(*e, v)`: the one method the super calls */
+  for (int n = comp_kind_first(c, NK_SuperNode); n >= 0; n = comp_kind_next(c, n)) {
+    if (nt_kind(nt, n) != NK_SuperNode) continue;
+    int a = nt_ref(nt, n, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    int splat = 0;
+    for (int k = 0; k < ac && !splat; k++) splat = nt_kind(nt, av[k]) == NK_SplatNode;
+    Scope *ss = splat ? comp_scope_of(c, n) : NULL;
+    int mi = ss && ss->class_id >= 0 && ss->name ? a_super_target(c, ss) : -1;
+    if (mi < 0) continue;
+    Scope *m = &c->scopes[mi];
+    for (int pj = 0; pj < m->nparams && pj < 31; pj++) {
+      if (!spread_param_appended(c, mi, pj)) continue;
+      int out[32], direct[32];
+      int k = spread_string_reads(c, m, n, pj, out, direct, 32);
+      /* an argument written past the splat, which a call's binder lends:
+         super boxes it into the Array it binds from */
+      int an = k == 0 ? arg_layout_param_node(c, m, n, pj, NULL) : -1;
+      if (an >= 0 && an_arg_after_splat(nt, av, ac, an)) { out[0] = an; direct[0] = 1; k = 1; }
+      for (int i = 0; i < k; i++) {
+        changed |= dyn_pull_arg(c, out[i], direct[i]);
+        if (!direct[i]) changed |= spread_demand_param_elem(c, av, ac, out[i]);
+        /* a block's parameter holds what its iterator hands it: those
+           Strings are the ones demanded (strbuf_block_param_source_walk) */
+        else changed |= spread_demand_block_param(c, out[i]);
+      }
+      changed |= spread_lift_poly_elems(c, av, ac, 1);
+      for (int i = 0; i < ac; i++)
+        if (nt_kind(nt, av[i]) == NK_SplatNode) changed |= spread_demand_changed_local(c, av[i]);
     }
   }
   free(app);
@@ -27612,6 +27772,21 @@ void analyze_program(Compiler *c) {
         LocalVar *p2 = scope_local(sc2, sc2->pnames[k]);
         if (!p1 || !p2) continue;
         if (p1->type != p2->type && (p1->type == TY_POLY || p2->type == TY_POLY)) {
+          /* a handle widened to a box is still appended to: its callers
+             hand over the handle (convert_byref_handle_params) */
+          LocalVar *ph = p1->type == TY_POLY ? p2 : p1;
+          if (ph->type == TY_STRBUF && ph->str_shared) {
+            ph->poly_lift |= POLY_LIFT_APPENDED;
+            /* its reads marked to hand out the handle read the box now */
+            Scope *sh = p1->type == TY_POLY ? sc2 : sc1;
+            const char *hn = sh->pnames[k];
+            for (int r = comp_kind_first(c, NK_LocalVariableReadNode); r >= 0; r = comp_kind_next(c, r)) {
+              if (nt_kind(c->nt, r) != NK_LocalVariableReadNode || !c->strbuf_box[r] ||
+                  !sp_streq(nt_str(c->nt, r, "name"), hn) || comp_scope_of(c, r) != sh) continue;
+              c->strbuf_box[r] = 0;
+              comp_sn_retype(c, r, TY_POLY);
+            }
+          }
           p1->type = TY_POLY;
           p2->type = TY_POLY;
         }
