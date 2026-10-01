@@ -1,0 +1,5 @@
+true
+:raise
+"hi from dep"
+"hi from dep"
+NoMethodError: undefined method 'nope'

@@ -2757,6 +2757,31 @@ static int dsend_receiver_names(Compiler *c, int cls, int subclasses, char ***ou
   return n;
 }
 
+/* Does every definition of `name` in the program refuse `argc` positional
+   arguments? A name the program does not define (a builtin's) is never
+   excluded; an attr reader takes none, an attr writer exactly one. */
+static int dsend_defined_arity_excludes(Compiler *c, const char *name, int argc) {
+  int defined = 0;
+  for (int s = 0; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    if (!sc->name || !sp_streq(sc->name, name)) continue;
+    defined = 1;
+    if (argc >= sc->nrequired && (sc->rest_idx >= 0 || argc <= sc->nparams)) return 0;
+  }
+  char wbase[256];
+  int is_w = setter_base_name(name, wbase, sizeof wbase);
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    ClassInfo *cl = &c->classes[ci];
+    if (comp_is_reader(cl, name)) { defined = 1; if (argc == 0) return 0; }
+    if (is_w && comp_is_writer(cl, wbase)) { defined = 1; if (argc == 1) return 0; }
+  }
+  return defined;
+}
+
+/* The candidates dsend_candidates took from the program's literals (keys
+   point into its answer, valid until the caller frees that). */
+static ANameHash g_dsend_lits;
+
 /* The closed set of method names a runtime-name send (and respond_to?)
    dispatches over: the symbol and string literals the program spells, and
    the methods it defines, ranked so the names that can be meant survive the
@@ -2775,6 +2800,7 @@ char **dsend_candidates(Compiler *c, int *out_n) {
      round (rubys/roundhouse#72). */
   char **cand = NULL; int ncand = 0, candcap = 0;
   ANameHash cand_set; memset(&cand_set, 0, sizeof cand_set);
+  anh_free(&g_dsend_lits); memset(&g_dsend_lits, 0, sizeof g_dsend_lits);
   for (int id = 0; id < n0; id++) {
     const char *ty = nt_type(nt, id);
     const char *v = NULL;
@@ -2788,6 +2814,41 @@ char **dsend_candidates(Compiler *c, int *out_n) {
     if (ncand == candcap) { candcap = candcap ? candcap * 2 : 16; cand = (char **)realloc(cand, sizeof(char *) * candcap); }
     cand[ncand++] = strdup(v);
     anh_add(&cand_set, cand[ncand - 1]);
+    anh_add(&g_dsend_lits, cand[ncand - 1]);
+  }
+  /* ... and the names the program DEFINES: its defs, class methods, attr
+     readers and writers (as `x=`). A writer reached as `public_send("#{name}=",
+     value)` (activesupport's deprecators) or a method named by concatenation
+     is spelled by no literal, yet is exactly what the receiver answers; a
+     name outside both sets raises NoMethodError at the dispatch. The
+     constructor is left out: it is emitted as a void C function whatever
+     its body's value, and an arm typed from that body did not compile. */
+  {
+    for (int s = 0; s < c->nscopes; s++) {
+      const char *sn = c->scopes[s].name;
+      if (!sn || !*sn || strncmp(sn, "__", 2) == 0 || strchr(sn, '#') || !dsend_method_name_shaped(sn)) continue;
+      if (sp_streq(sn, "initialize")) continue;
+      int skip = 0;
+      for (int k = 0; sends[k]; k++) if (sp_streq(sn, sends[k])) { skip = 1; break; }
+      if (skip || anh_has(&cand_set, sn)) continue;
+      if (ncand == candcap) { candcap = candcap ? candcap * 2 : 16; cand = (char **)realloc(cand, sizeof(char *) * candcap); }
+      cand[ncand++] = strdup(sn);
+      anh_add(&cand_set, cand[ncand - 1]);
+    }
+    for (int ci = 0; ci < c->nclasses; ci++) {
+      ClassInfo *cl = &c->classes[ci];
+      for (int pass = 0; pass < 2; pass++) {
+        int n = pass ? cl->nwriters : cl->nreaders;
+        char **names = pass ? cl->writers : cl->readers;
+        for (int j = 0; j < n; j++) {
+          char nm2[200]; snprintf(nm2, sizeof nm2, pass ? "%s=" : "%s", names[j]);
+          if (anh_has(&cand_set, nm2) || !dsend_method_name_shaped(nm2)) continue;
+          if (ncand == candcap) { candcap = candcap ? candcap * 2 : 16; cand = (char **)realloc(cand, sizeof(char *) * candcap); }
+          cand[ncand++] = strdup(nm2);
+          anh_add(&cand_set, cand[ncand - 1]);
+        }
+      }
+    }
   }
   anh_free(&cand_set);
   int any_computed = 0;
@@ -2825,6 +2886,9 @@ char **dsend_candidates(Compiler *c, int *out_n) {
     }
     for (int k = 0; k < ncand; k++) {
       if (anh_has(&defined, cand[k])) score[k] = 2;
+      /* the writer table holds the attribute, so `x=` ranks through `x` */
+      { char wbase[256];
+        if (score[k] < 2 && setter_base_name(cand[k], wbase, sizeof wbase) && anh_has(&defined, wbase)) score[k] = 2; }
       if (score[k] < 2 && !((cand[k][0] >= 'a' && cand[k][0] <= 'z') || cand[k][0] == '_')) score[k] = 1;   /* an operator */
       if (score[k] < 1 && anh_has(&called, cand[k])) score[k] = 1;
     }
@@ -2871,6 +2935,7 @@ int desugar_dynamic_send(Compiler *c) {
   int ncand = 0;
   char **cand = dsend_candidates(c, &ncand);
   char **picked = (char **)malloc(sizeof(char *) * (size_t)(ncand > 0 ? ncand : 1));
+  char **lits = (char **)malloc(sizeof(char *) * (size_t)(ncand > 0 ? ncand : 1));
   for (int id = 0; id < n0; id++) {
     if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
     const char *nm = nt_str(nt, id, "name");
@@ -2881,10 +2946,10 @@ int desugar_dynamic_send(Compiler *c) {
     if (recv < 0) {
       /* A receiverless `send(name, ...)` in a method is `self.send(name, ...)`:
          send ignores visibility, so the two reach the same (private) methods,
-         and the explicit form already lowers (#4851). public_send differs --
-         it refuses a private target either way -- and is left alone. Only a
-         runtime name: a literal one is rewritten earlier. */
-      if (sp_streq(nm, "public_send")) continue;
+         and the explicit form already lowers (#4851). A receiverless
+         public_send is `self.public_send` the same way: it refuses a private
+         target either way, which is what its arms' vis_enforce stamp does.
+         Only a runtime name: a literal one is rewritten earlier. */
       Scope *ss = comp_scope_of(c, id);
       if (!ss || !ss->name) continue;
       int sa = nt_ref(nt, id, "arguments");
@@ -2907,12 +2972,38 @@ int desugar_dynamic_send(Compiler *c) {
     if (argc < 1 || !argv) continue;
     const char *a0 = nt_type(nt, argv[0]);
     if (a0 && (sp_streq(a0, "SymbolNode") || sp_streq(a0, "StringNode"))) continue;  /* literal: handled earlier */
+    /* `recv.public_send(*args, &blk)` (activesupport's Object#try): the name
+       is the array's first element and the rest are the arguments. The name
+       reads as `args[0]` and every arm takes `*args.drop(1)`; the array is
+       read more than once, so only a variable's -- a rest parameter, an
+       ivar -- not an expression with effects. Interning the whole array as
+       the name answered "undefined method '[:name]'". */
+    int splat_src = -1;
+    if (argc == 1 && nt_kind(nt, argv[0]) == NK_SplatNode) {
+      int se = nt_ref(nt, argv[0], "expression");
+      NodeKind sk = se >= 0 ? nt_kind(nt, se) : NK_NONE;
+      if (sk != NK_LocalVariableReadNode && sk != NK_InstanceVariableReadNode) continue;
+      splat_src = se;
+    }
     int nrest = argc - 1;
     if (nrest > 64) continue;
     char **use = cand; int nuse = ncand;
     char **own = NULL; int nown = 0;
     int computed = an_send_name_is_computed(c, argv[0]);
-    if (!computed && ncand > 256) {
+    /* A name that is not computed -- a variable, a parameter, a table read
+       (`send(type, ...)`, `send(*DISPATCH[op])`) -- holds one of the names
+       the program spells, so its arms are the literals alone. The methods it
+       defines are for a computed name (an interpolation, a concatenation),
+       which can spell a name no literal does; as arms of every send, their
+       return types widened the slots the sends flow into (optcarrot's
+       CPU#irq_flags became boxed, 42% more instructions). */
+    int nlit = 0;
+    if (!computed) {
+      for (int k = 0; k < ncand; k++)
+        if (anh_has(&g_dsend_lits, cand[k])) lits[nlit++] = cand[k];
+      use = lits; nuse = nlit;
+    }
+    if (!computed && nlit > 256) {
       /* Past the cap, the literals the receiver answers go first and are all
          kept, so a program's other literals can't crowd its own names out. */
       int npick = 0;
@@ -2925,14 +3016,14 @@ int desugar_dynamic_send(Compiler *c) {
           for (int k = 0; k < nrn; k++) { if (!anh_has(&answers, rn[k])) anh_add(&answers, rn[k]); else free(rn[k]); }
           free(rn);
         }
-        for (int k = 0; k < ncand; k++)
-          if (anh_has(&answers, cand[k])) picked[npick++] = cand[k];
-        for (int k = 0; k < ncand && npick < 256; k++)
-          if (!anh_has(&answers, cand[k])) picked[npick++] = cand[k];
+        for (int k = 0; k < nlit; k++)
+          if (anh_has(&answers, lits[k])) picked[npick++] = lits[k];
+        for (int k = 0; k < nlit && npick < 256; k++)
+          if (!anh_has(&answers, lits[k])) picked[npick++] = lits[k];
         for (int k = 0; k < answers.n; k++) free((char *)answers.key[k]);
         anh_free(&answers);
       }
-      else for (; npick < 256; npick++) picked[npick] = cand[npick];
+      else for (; npick < 256; npick++) picked[npick] = lits[npick];
       use = picked; nuse = npick;
     }
     if (computed) {
@@ -2954,16 +3045,63 @@ int desugar_dynamic_send(Compiler *c) {
       use = own; nuse = nown;
     }
     int rest[64]; for (int k = 0; k < nrest; k++) rest[k] = argv[k + 1];  /* copy before realloc */
+    /* the send's block goes to whichever method the name selects: a
+       forwarded `&blk` or the block written at the send (the arms are
+       emitted one per branch, so one node serves them all) */
+    int sblk = nt_ref(nt, id, "block");
     int base = nt->count;
+    if (splat_src >= 0) {
+      int r0 = nt_clone_subtree(nt, splat_src); if (r0 < 0) continue;
+      int i0 = nt_new_node(nt, "IntegerNode"); if (i0 < 0) continue;
+      nt_node_set_int(nt, i0, "value", 0);
+      int a0n = nt_new_node(nt, "ArgumentsNode"); if (a0n < 0) continue;
+      nt_node_set_arr(nt, a0n, "arguments", &i0, 1);
+      int nmcall = nt_new_node(nt, "CallNode"); if (nmcall < 0) continue;
+      nt_node_set_ref(nt, nmcall, "receiver", r0);
+      nt_node_set_str(nt, nmcall, "name", "[]");
+      nt_node_set_ref(nt, nmcall, "arguments", a0n);
+      int sargs = nt_new_node(nt, "ArgumentsNode"); if (sargs < 0) continue;
+      nt_node_set_arr(nt, sargs, "arguments", &nmcall, 1);
+      nt_node_set_ref(nt, id, "arguments", sargs);           /* the name: args[0] */
+      int r1 = nt_clone_subtree(nt, splat_src); if (r1 < 0) continue;
+      int i1 = nt_new_node(nt, "IntegerNode"); if (i1 < 0) continue;
+      nt_node_set_int(nt, i1, "value", 1);
+      int a1n = nt_new_node(nt, "ArgumentsNode"); if (a1n < 0) continue;
+      nt_node_set_arr(nt, a1n, "arguments", &i1, 1);
+      int drop = nt_new_node(nt, "CallNode"); if (drop < 0) continue;
+      nt_node_set_ref(nt, drop, "receiver", r1);
+      nt_node_set_str(nt, drop, "name", "drop");
+      nt_node_set_ref(nt, drop, "arguments", a1n);
+      int sp = nt_new_node(nt, "SplatNode"); if (sp < 0) continue;
+      nt_node_set_ref(nt, sp, "expression", drop);
+      rest[0] = sp; nrest = 1;                                 /* the arms: *args.drop(1) */
+    }
+    /* a `*args` or `**kwargs` among the arguments makes the count a run-time
+       matter (`send(method, *args, **kwargs, &block)`): the arity filter
+       below would have read them as two positionals and dropped a
+       one-parameter callee */
+    int rest_variadic = 0;
+    for (int k = 0; k < nrest; k++) {
+      NodeKind rk = nt_kind(nt, rest[k]);
+      if (rk == NK_SplatNode || rk == NK_KeywordHashNode) rest_variadic = 1;
+    }
     int *arms = (int *)malloc(sizeof(int) * (size_t)(nuse > 0 ? nuse : 1)); int narm = 0;
     for (int k = 0; k < nuse; k++) {
       if (sp_streq(use[k], "initialize") || sp_streq(use[k], "initialize_copy")) continue;
+      /* A method the program defines takes only the arities its definitions
+         take: with a fixed argument list, a name no definition accepts at
+         that count gets no arm (a reader takes none, a writer one). The
+         fixpoint types such a call anyway, and its arm was emitted -- and
+         one naming the enclosing method itself, which the block-carrying
+         inline expands at the arm, expanded without end. */
+      if (splat_src < 0 && !rest_variadic && dsend_defined_arity_excludes(c, use[k], nrest)) continue;
       int na = nt_new_node(nt, "ArgumentsNode"); if (na < 0) break;
       if (nrest) nt_node_set_arr(nt, na, "arguments", rest, nrest);
       int call = nt_new_node(nt, "CallNode"); if (call < 0) break;
       nt_node_set_ref(nt, call, "receiver", recv);
+      if (sblk >= 0) nt_node_set_ref(nt, call, "block", sblk);
       nt_node_set_str(nt, call, "name", use[k]);
-      if (computed) comp_sym_intern(c, use[k]);
+      comp_sym_intern(c, use[k]);
       /* The dispatch keys each arm on the NAME it was built for, so a later
          desugar that rewrites the name (`first` -> `[]`) leaves the arm
          unreachable and the send raises. Mark them as owned. */
@@ -2987,6 +3125,7 @@ int desugar_dynamic_send(Compiler *c) {
     changed = 1;
   }
   free(picked);
+  free(lits);
   for (int k = 0; k < ncand; k++) free(cand[k]);
   free(cand);
   return changed;

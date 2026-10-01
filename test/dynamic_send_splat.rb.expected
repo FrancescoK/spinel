@@ -1,0 +1,12 @@
+"Ann"
+"Hi, Ann!"
+"Yo, Ann?"
+nil
+A.n.n.
+"ANN"
+"Ann"
+"Hey, Ann!"
+"Yo, Ann?"
+"Yo, Ann?"
+"Ho, Ann!"
+NoMethodError: undefined method 'nope'

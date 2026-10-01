@@ -12769,9 +12769,12 @@ static void reject_runtime_send(Compiler *c) {
     /* a literal name should have been rewritten already; only a runtime name
        (a variable, a method result, an interpolated string, ...) reaches here */
     if (a0 && (sp_streq(a0, "SymbolNode") || sp_streq(a0, "StringNode"))) continue;
-    /* lowered to a static name-dispatch (desugar_dynamic_send): the arm set can
-       only cover a name that is provably one of the program's literals; a
-       genuinely runtime-computed name falls through to the loud reject below. */
+    /* lowered to a static name-dispatch (desugar_dynamic_send) over the
+       program's literals AND the methods it defines: a computed name (an
+       interpolated `"#{name}="`, a concatenation) resolves there too, and a
+       name outside that set raises NoMethodError at the dispatch -- loud at
+       run time rather than here. A builtin method reached only through a
+       computed name is the one shape that set does not cover. */
     { int dn = 0; nt_arr(nt, id, "dyn_send_arms", &dn);
       if (dn > 0 && (!an_send_name_is_computed(c, av[0]) || nt_int(nt, id, "dyn_send_complete", 0) > 0)) continue; }
     /* Only diagnose a send that codegen will actually emit. A send in a dead

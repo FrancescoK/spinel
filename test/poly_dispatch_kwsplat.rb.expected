@@ -1,0 +1,22 @@
+plain a :t warn
+fancy A :t warn
+plain b nil info
+fancy B nil info
+plain c :lit debug
+fancy C :lit debug
+plain opts {tag: :t, level: :warn}
+fancy opts 2
+plain mixed d :t {level: :warn}
+fancy mixed d :t [:level]
+plain e :t warn
+fancy E :t warn
+plain bare e
+fancy bare e
+plain f :dsp info
+fancy F :dsp info
+plain bare g
+fancy bare g
+plain h nil error
+fancy H nil error
+plain opts {tag: :r}
+fancy opts 1

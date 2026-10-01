@@ -5549,14 +5549,25 @@ static TyKind infer_call_inner(Compiler *c, int id) {
          and yields the argument's own temp, so no arm's return widens it.
          Only when some class has the writer -- otherwise the call is the
          NoMethodError the dispatch raises. */
-      if (argc == 1 && call_is_setter_assign(nt, id) && nt_ref(nt, id, "block") < 0) {
-        int owned = 0;
+      if (argc == 1 && name_is_plain_setter(name) && nt_ref(nt, id, "block") < 0) {
+        int has_def = 0, has_writer = 0;
         char sbase[256];
         int has_base = setter_base_name(name, sbase, sizeof sbase);
-        for (int k = 0; k < c->nclasses && !owned; k++)
-          owned = comp_poly_arm_defines_n(c, k, name, argc) ||
-                  (has_base && !c->classes[k].is_native_class &&
-                   comp_writer_in_chain(c, k, sbase, NULL));
+        for (int k = 0; k < c->nclasses && !(has_def && has_writer); k++) {
+          if (comp_poly_arm_defines_n(c, k, name, argc)) has_def = 1;
+          if (has_base && !c->classes[k].is_native_class &&
+              comp_writer_in_chain(c, k, sbase, NULL)) has_writer = 1;
+        }
+        /* A call the send desugar retargeted (`obj.send(:x=, v)`, and a
+           public_send dispatch arm) is a plain call, not an assignment
+           (#4921): a hand-written `def x=` answers its body through the
+           method dispatch below. An attr writer has no body to answer with
+           and stores exactly the argument, so the plain call answers the
+           argument as the assignment does: gating it on the assignment shape
+           left `d.public_send("silenced=", v)` over a boxed receiver untyped,
+           and the dispatch dropped the arm. */
+        int owned = call_is_setter_assign(nt, id) ? (has_def || has_writer)
+                                                  : (has_writer && !has_def);
         TyKind at = owned ? infer_type(c, argv[0]) : TY_UNKNOWN;
         if (at != TY_UNKNOWN) return at;
       }

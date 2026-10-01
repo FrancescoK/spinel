@@ -96,6 +96,12 @@ writers, and the Object methods every instance has -- so the set is complete; on
 boxed receiver it covers every user class plus the program's literals. A computed
 name sent to a builtin receiver (a String, an Array, ...) is still refused at compile
 time. A **literal** name is fully resolved -- see below.
+`public_send(*args, &blk)` with the name as the first element of a splatted
+variable (activesupport's `Object#try`) dispatches too: the arms take
+`*args.drop(1)`. The send's block -- written at the send or a forwarded `&blk`
+-- goes to the method the name selects. A receiverless `send` / `public_send`
+in a method is the `self.` form. `respond_to?(name)` with a runtime name is
+answered over the same closed set (false outside it).
 
 ---
 
