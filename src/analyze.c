@@ -8494,6 +8494,69 @@ static int desugar_for_enumerable(Compiler *c) {
   return changed;
 }
 
+/* each_with_index (builtins/enumerable.rb) walks the receiver's #each with
+   `each do |x|`, which takes only the first of several yielded values, where
+   CRuby's packs them into one element as the collector does. In the copy for
+   a call on a class whose #each yields several values, the walk's block
+   takes them all and packs them: `|*x|`, then `x = x.length <= 1 ? x[0] : x`. */
+static int enum_copy_site(Compiler *c, const Scope *sc);
+static int desugar_ewi_pack_values(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "each")) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || nt_int(nt, blk, "ewi_packed", 0)) continue;
+    Scope *sc = comp_scope_of(c, id);
+    if (!sc || !sc->name || strncmp(sc->name, "__enum_each_with_index__", 24) != 0) continue;
+    int site = enum_copy_site(c, sc);
+    if (site < 0 || site >= n0 || nt_kind(nt, site) != NK_CallNode) continue;
+    int srecv = nt_ref(nt, site, "receiver");
+    TyKind rt = srecv >= 0 ? infer_type(c, srecv) : TY_UNKNOWN;
+    if (!ty_is_object(rt)) continue;
+    int cid = ty_object_class(rt);
+    if (cid < 0 || cid >= c->nclasses ||
+        (c->classes[cid].enum_yield_arity <= 1 && !c->classes[cid].enum_yield_packed)) continue;
+    int bp = nt_ref(nt, blk, "parameters");
+    int pn = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
+    if (pn < 0 || nt_kind(nt, pn) != NK_ParametersNode) continue;
+    int nreq = 0; const int *reqs = nt_arr(nt, pn, "requireds", &nreq);
+    if (nreq != 1 || nt_kind(nt, reqs[0]) != NK_RequiredParameterNode || nt_ref(nt, pn, "rest") >= 0) continue;
+    const char *pnm = nt_str(nt, reqs[0], "name");
+    int body = nt_ref(nt, blk, "body");
+    if (!pnm || body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+    if (bn + 1 > 64) continue;
+    int n1 = nt->count;
+    const char *vn = "__ewi_v";   /* the values, kept apart from the element */
+    int rest = nt_new_node(nt, "RestParameterNode");
+    nt_node_set_str(nt, rest, "name", vn);
+    nt_node_set_arr(nt, pn, "requireds", NULL, 0);
+    nt_node_set_ref(nt, pn, "rest", rest);
+    int len = te_call(nt, te_lvread(nt, vn), "length", -1, -1);
+    int cmp = te_call(nt, len, "<=", te_args1(nt, te_int(nt, 1)), -1);
+    int first = te_call(nt, te_lvread(nt, vn), "[]", te_args1(nt, te_int(nt, 0)), -1);
+    int els = nt_new_node(nt, "ElseNode");
+    nt_node_set_ref(nt, els, "statements", te_stmts1(nt, te_lvread(nt, vn)));
+    int iff = nt_new_node(nt, "IfNode");
+    nt_node_set_ref(nt, iff, "predicate", cmp);
+    nt_node_set_ref(nt, iff, "statements", te_stmts1(nt, first));
+    nt_node_set_ref(nt, iff, "subsequent", els);
+    int nb[64];
+    nb[0] = te_lvwrite(nt, pnm, iff);
+    for (int q = 0; q < bn; q++) nb[q + 1] = bb[q];
+    nt_node_set_arr(nt, body, "body", nb, bn + 1);
+    nt_node_set_int(nt, blk, "ewi_packed", 1);
+    comp_grow_node_arrays(c);
+    for (int q = n1; q < nt->count; q++) c->nscope[q] = c->nscope[blk];
+    changed = 1;
+  }
+  return changed;
+}
+
 /* `obj.map { |x| }` on a user Enumerable whose #each yields SEVERAL values:
    CRuby hands them to the block, so a one-parameter block binds the first
    value -- while #select / #find / #sort_by answer the packed element. The
@@ -28155,6 +28218,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_enum_pair_lone_param(c);     /* a.each_with_index.map { |x| } -> { |x, i| } */
     ch |= desugar_builtin_iter_block_shapes(c);  /* [1].each { |c, a = 10| } -> { |v| c = v; a = 10 } */
     ch |= desugar_multi_yield_map_param(c);    /* multi-yield each: map's |x| takes the 1st */
+    ch |= desugar_ewi_pack_values(c);          /* multi-yield each: each_with_index packs */
     ch |= desugar_enum_walk_calls(c);          /* enum.map { break } -> __enumw_map(enum) { } */
     ch |= desugar_enum_method_recv(c);         /* obj.map{} -> obj.__enum_to_a.map{} */
     ch |= give_native_self_calls_a_receiver(c);  /* native class: implicit self -> self.m */
