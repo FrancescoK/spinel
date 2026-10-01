@@ -167,6 +167,11 @@ static int block_local_wants_alias_at(Compiler *c, int blk, const char *bp, int 
 static int block_local_wants_alias(Compiler *c, int blk, const char *bp) {
   return block_local_wants_alias_at(c, blk, bp, 0);
 }
+/* The same for block `blk`'s keyword parameter that keyword `key` binds. */
+int block_kw_wants_alias(Compiler *c, int blk, const char *key) {
+  const char *kp = block_kw_param_named(c, blk, key);
+  return kp && block_local_wants_alias(c, blk, kp);
+}
 /* The block a spliced block's own `yield` reaches, per enclosing inline: a
    literal block passed to an inlined method yields to the block that was
    current where it is written (g_yield_block_fallback while its body is

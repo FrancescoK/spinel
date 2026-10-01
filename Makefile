@@ -1123,11 +1123,6 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (#6179: a block parameter's String copied into a proc's appending keyword compiled)"; ok=0; \
 	else grep -q "which the proc appends to" "$$tmp/sk.out" || \
 	  { echo "reject-test: FAIL (#6179: keyword rejected without saying why)"; sed -n 1,5p "$$tmp/sk.out"; ok=0; }; fi; \
-	t=test/reject/string_append_bind_call_keyword.rb; \
-	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/bk.c" >"$$tmp/bk.out" 2>&1; then \
-	  echo "reject-test: FAIL (#6179: a String copied into an appending keyword through bind_call compiled)"; ok=0; \
-	else grep -q "through \`bind_call\`" "$$tmp/bk.out" || \
-	  { echo "reject-test: FAIL (#6179: bind_call keyword rejected without saying why)"; sed -n 1,5p "$$tmp/bk.out"; ok=0; }; fi; \
 	t=test/reject/string_append_through_kept_block_index.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/kb.c" >"$$tmp/kb.out" 2>&1; then \
 	  echo "reject-test: FAIL (#6179: a block parameter's String copied through a kept block's b[] compiled)"; ok=0; \
@@ -1555,7 +1550,8 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/string_alias_yield_block_param.rb \
                   test/string_alias_chain_append.rb \
                   test/string_handle_keyword_args.rb \
-                  test/gsub_sub_scan_last_match.rb
+                  test/gsub_sub_scan_last_match.rb \
+                  test/string_handle_keyword_dyn_sites.rb
 
 # Each program runs with the minor mark off and on and must answer the same;
 # then once more under the generational verifier with stress on (every
