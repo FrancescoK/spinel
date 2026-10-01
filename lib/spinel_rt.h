@@ -15608,6 +15608,56 @@ static sp_Fiber *sp_Fiber_new_callable(sp_RbVal callable) {
   return f;
 }
 
+/* Fiber#storage and #storage= work only on the running fiber (CRuby). */
+static void sp_fiber_storage_own(sp_Fiber *f) {
+  if (f != sp_fiber_current)
+    sp_raise_cls("ArgumentError", "Fiber storage can only be accessed from the Fiber it belongs to");
+}
+/* Fiber#storage: a copy of the store as a Hash, or nil when there is none.
+   A key set to nil is gone, as in CRuby. */
+static sp_RbVal sp_Fiber_storage_hash(sp_Fiber *f) {
+  sp_fiber_storage_own(f);
+  if (!f->storage) return sp_box_nil();
+  sp_PolyPolyHash *h = sp_PolyPolyHash_new();
+  SP_GC_ROOT(h);
+  for (sp_int i = 0; i < sp_Fiber_storage_len(f); i++) {
+    sp_RbVal v = sp_Fiber_storage_val(f, i);
+    if (v.tag != SP_TAG_NIL) sp_PolyPolyHash_set(h, sp_box_sym(sp_Fiber_storage_key(f, i)), v);
+  }
+  return sp_box_obj((void *)h, SP_BUILTIN_POLY_POLY_HASH);
+}
+/* Fiber.new(storage:) and #storage=: the store becomes the Hash's entries,
+   or empty for nil. Every key must be a Symbol; nothing changes otherwise. */
+static void sp_Fiber_storage_replace(sp_Fiber *f, sp_RbVal v) {
+  SP_GC_ROOT(f);
+  SP_GC_ROOT_RBVAL(v);
+  if (v.tag == SP_TAG_NIL) { sp_Fiber_storage_clear(f); return; }
+  if (!(v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id)))
+    sp_raise_cls("TypeError", "storage must be a hash");
+  sp_PolyArray *keys = sp_poly_keys(v);
+  SP_GC_ROOT(keys);
+  sp_PolyArray *vals = sp_poly_values(v);
+  SP_GC_ROOT(vals);
+  for (sp_int i = 0; i < keys->len; i++) {
+    sp_RbVal k = sp_PolyArray_get(keys, i);
+    if (k.tag != SP_TAG_SYM)
+      sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (expected Symbol)", sp_poly_class_name(k)));
+  }
+  sp_Fiber_storage_empty(f);
+  for (sp_int i = 0; i < keys->len; i++)
+    sp_Fiber_storage_set(f, (sp_sym)sp_PolyArray_get(keys, i).v.i, sp_PolyArray_get(vals, i));
+}
+/* Fiber#storage=: the running fiber only */
+static void sp_Fiber_storage_assign(sp_Fiber *f, sp_RbVal v) {
+  sp_fiber_storage_own(f);
+  sp_Fiber_storage_replace(f, v);
+}
+/* Fiber.new(storage: x): true keeps the copy of the parent's it was made with */
+static sp_Fiber *sp_Fiber_with_storage(sp_Fiber *f, sp_RbVal v) {
+  if (!(v.tag == SP_TAG_BOOL && v.v.i)) sp_Fiber_storage_replace(f, v);
+  return f;
+}
+
 /* Hash#to_proc cap-scan: the proc's `cap` field IS the source hash
    (a single GC pointer), so marking it keeps the hash alive for the
    proc's lifetime. The per-variant lookup fn is emitted by codegen
