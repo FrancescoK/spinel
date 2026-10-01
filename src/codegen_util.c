@@ -3515,29 +3515,32 @@ int eq_family(TyKind t) {
 }
 int ty_matches_class(TyKind t, const char *cn, int exact) {
   const char *self_cls = NULL;
-  if (t == TY_STRING || t == TY_STRBUF) self_cls = "String";
-  else if (t == TY_INT || t == TY_BIGINT) self_cls = "Integer";
-  else if (t == TY_FLOAT) self_cls = "Float";
-  else if (t == TY_SYMBOL) self_cls = "Symbol";
-  else if (t == TY_RANGE || t == TY_FLOAT_RANGE || t == TY_STR_RANGE) self_cls = "Range";
-  else if (ty_is_array(t)) self_cls = "Array";
+  switch (t) {
+  case TY_STRING: case TY_STRBUF: self_cls = "String"; break;
+  case TY_INT: case TY_BIGINT: self_cls = "Integer"; break;
+  case TY_FLOAT: self_cls = "Float"; break;
+  case TY_SYMBOL: self_cls = "Symbol"; break;
+  case TY_RANGE: case TY_FLOAT_RANGE: case TY_STR_RANGE: self_cls = "Range"; break;
+  case TY_NIL: self_cls = "NilClass"; break;
+  case TY_BOOL: self_cls = "Boolean"; break; /* true/false split handled at call site */
+  case TY_FIBER: self_cls = "Fiber"; break;
+  case TY_THREAD: self_cls = "Thread"; break;
+  case TY_QUEUE: self_cls = "Queue"; break;
+  case TY_MUTEX: self_cls = "Mutex"; break;
+  case TY_CONDVAR: self_cls = "ConditionVariable"; break;
+  case TY_ENUMERATOR: self_cls = "Enumerator"; break;
+  case TY_TIME: self_cls = "Time"; break;
+  case TY_COMPLEX: self_cls = "Complex"; break;
+  case TY_RATIONAL: self_cls = "Rational"; break;
+  case TY_REGEX: self_cls = "Regexp"; break;
+  case TY_MATCHDATA: self_cls = "MatchData"; break;
+  case TY_PROC: self_cls = "Proc"; break;
+  case TY_RANDOM: self_cls = "Random"; break;
+  case TY_IO: self_cls = "IO"; break;
+  default: break;
+  }
+  if (ty_is_array(t)) self_cls = "Array";
   else if (ty_is_hash(t)) self_cls = "Hash";
-  else if (t == TY_NIL) self_cls = "NilClass";
-  else if (t == TY_BOOL) self_cls = "Boolean"; /* true/false split handled at call site */
-  else if (t == TY_FIBER) self_cls = "Fiber";
-  else if (t == TY_THREAD) self_cls = "Thread";
-  else if (t == TY_QUEUE) self_cls = "Queue";
-  else if (t == TY_MUTEX) self_cls = "Mutex";
-  else if (t == TY_CONDVAR) self_cls = "ConditionVariable";
-  else if (t == TY_ENUMERATOR) self_cls = "Enumerator";
-  else if (t == TY_TIME) self_cls = "Time";
-  else if (t == TY_COMPLEX) self_cls = "Complex";
-  else if (t == TY_RATIONAL) self_cls = "Rational";
-  else if (t == TY_REGEX) self_cls = "Regexp";
-  else if (t == TY_MATCHDATA) self_cls = "MatchData";
-  else if (t == TY_PROC) self_cls = "Proc";
-  else if (t == TY_RANDOM) self_cls = "Random";
-  else if (t == TY_IO) self_cls = "IO";
   if (!self_cls) return -1;
   if (sp_streq(cn, self_cls)) return 1;
   if (exact) return 0;
