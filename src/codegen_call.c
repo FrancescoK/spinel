@@ -28110,32 +28110,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
 
   /* system(cmd, ...) expr: run and return bool */
   if (recv < 0 && sp_streq(name, "system") && argc >= 1 && !bare_call_class_owned(c, id)) {
-    if (ty_is_hash(comp_ntype(c, argv[0]))) { unsupported_feature(c, id, "system with an environment Hash"); return; }
-    if (ty_is_array(comp_ntype(c, argv[0]))) { unsupported_feature(c, id, "system with a [command, argv0] pair"); return; }
-    /* A trailing options Hash (`out:`, `err:`, `chdir:`, ...) was converted
-       like any other argument, so it reached #to_str and raised "no implicit
-       conversion of Hash into String" at run time -- naming a conversion the
-       program never asked for. system's redirects are not wired to the spawn
-       path that implements them, so refuse the call where the other two
-       unsupported system shapes are refused, and say where they do work. */
-    if (argc >= 2) {
-      const char *lty = nt_type(nt, argv[argc - 1]);
-      if (ty_is_hash(comp_ntype(c, argv[argc - 1])) ||
-          (lty && (sp_streq(lty, "HashNode") || sp_streq(lty, "KeywordHashNode"))))
-        { unsupported_feature(c, id, "system with an options Hash (use Process.spawn, which takes in:/out:/err:)"); return; }
-    }
-    /* A trailing options Hash (`out:`, `err:`, `chdir:`, ...) was converted
-       like any other argument, so it reached #to_str and raised "no implicit
-       conversion of Hash into String" at run time -- naming a conversion the
-       program never asked for. system's redirects are not wired to the spawn
-       path that implements them, so refuse the call where the other two
-       unsupported system shapes are refused, and say where they do work. */
-    if (argc >= 2) {
-      const char *lty = nt_type(nt, argv[argc - 1]);
-      if (ty_is_hash(comp_ntype(c, argv[argc - 1])) ||
-          (lty && (sp_streq(lty, "HashNode") || sp_streq(lty, "KeywordHashNode"))))
-        { unsupported_feature(c, id, "system with an options Hash (use Process.spawn, which takes in:/out:/err:)"); return; }
-    }
+    system_refuse_unsupported(c, id, argv, argc);
     /* each argument converts and is rooted before the next converts: a
        #to_str's answer is a heap String the following conversion may collect */
     int ts = ++g_tmp;
