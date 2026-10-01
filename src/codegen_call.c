@@ -35331,6 +35331,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)");
       return;
     }
+    /* a shared String handle keeps its own frozen flag: read through it, not
+       through the String value the handle is read as (a fresh copy) */
+    char fsref[1024];
+    if ((frt == TY_STRING || frt == TY_STRBUF) && strbuf_slot_ref(c, recv, fsref, sizeof fsref)) {
+      buf_printf(b, "sp_String_is_frozen(%s)", fsref);
+      return;
+    }
     if (frt == TY_STRING) {
       buf_puts(b, "sp_str_is_frozen_val("); emit_expr(c, recv, b); buf_puts(b, ")");
       return;
@@ -40342,15 +40349,14 @@ else {
   if ((sp_streq(name, "-@") || sp_streq(name, "+@")) && recv >= 0 && argc == 0 && !ty_is_object(rt)) {
     if (rt == TY_POLY) {
       if (name[0] == '-') { buf_puts(b, "sp_poly_neg("); emit_expr(c, recv, b); buf_puts(b, ")"); }
-      else { emit_expr(c, recv, b); }  /* +@ is identity on poly */
+      else { buf_puts(b, "sp_poly_uplus("); emit_expr(c, recv, b); buf_puts(b, ")"); }
     }
     else if (rt == TY_STRING) {
-      /* +str returns a mutable copy (so subsequent <</concat/upcase! mutate a
-         fresh string); -str returns a FROZEN string (#2331). */
-      /* sp_str_dup, not sp_str_dup_external: the latter sizes the copy with
-         strlen (it is for C strings that carry no header), which truncated a
-         receiver holding an embedded NUL (#3473) */
-      if (name[0] == '+') { buf_puts(b, "sp_str_dup("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+      /* +str is str itself unless it is frozen, else a mutable copy (so a
+         later <</concat/upcase! mutates it); -str returns a FROZEN string
+         (#2331). The copy is sp_str_dup, not sp_str_dup_external: the latter
+         sizes it with strlen, which truncated an embedded NUL (#3473). */
+      if (name[0] == '+') { buf_puts(b, "sp_str_uplus("); emit_expr(c, recv, b); buf_puts(b, ")"); }
       else { buf_puts(b, "sp_str_uminus_val("); emit_expr(c, recv, b); buf_puts(b, ")"); }  /* frozen recv: identity (#2369) */
     }
     else if (rt == TY_BIGINT) {
