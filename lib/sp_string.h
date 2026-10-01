@@ -13,8 +13,13 @@
 
 /* `binary` is the ASCII-8BIT tag, kept on the HANDLE: sp_fd_setup zeroes the
    payload header on every grow, so the tag has to be re-stamped after each
-   mutation rather than living only in the bytes. */
-typedef struct { char *data; int64_t len; int64_t cap; unsigned binary; } sp_String;
+   mutation rather than living only in the bytes. `chilled` is nonzero for a
+   handle made from a chilled String (sp_str_is_chilled: what Symbol#to_s
+   answers): that symbol's id + 1, so sp_String_uplus can tell whether the
+   bytes are still its name -- +@ copies it then, as it copies a frozen one,
+   and a mutated one is an ordinary String, as CRuby's is. A GC allocation is
+   zeroed, so every other handle starts at 0 with no store. */
+typedef struct { char *data; int64_t len; int64_t cap; unsigned binary; unsigned chilled; } sp_String;
 
 /* Per-mutable-string freeze flag rides in the GC header alongside `marked`. */
 static inline sp_bool sp_String_is_frozen(sp_String*s){if(!s)return TRUE;sp_gc_hdr*h=(sp_gc_hdr*)((char*)s-sizeof(sp_gc_hdr));return h->frozen;}
@@ -127,6 +132,14 @@ static inline void sp_String_append_bin(sp_String*s,const char*t){if(!s||!t)retu
    callers pass bare C literals with NO marker -- they must use the plain
    sp_String_new above (reading s[-1] there is OOB and, under clang's rodata
    layout, misreads as frozen; cf. the #282 marker-probe lesson). */
+/* Chilled Strings (sp_str_is_chilled), compiled once in lib/sp_string.c and
+   kept off the inlined constructors and +@: sp_String_chill names the symbol
+   a new handle came from (a 0xfb static is rare, a chilled one rarer),
+   sp_String_chilled_now asks whether a handle is still that symbol's name,
+   and sp_sym_to_s_chilled is Symbol#to_s. */
+SP_COLD void sp_String_chill(sp_String*r,const char*s);
+int sp_String_chilled_now(sp_String*h);
+const char*sp_sym_to_s_chilled(sp_sym id);
 static inline sp_String*sp_String_new_shared(const char*s){
   if(!s)return NULL;   /* nil into a shared-string slot stays nil (a nullable String, #4567) */
   /* Read every property of `s` HERE, before the allocation below: the handle's
@@ -151,10 +164,12 @@ static inline sp_String*sp_String_new_shared(const char*s){
      only for an UNMARKED string, which this constructor is never given. */
   int bin=sp_str_is_binary(s);
   int frozen=sp_str_is_frozen_val(s);
+  int mk=((const unsigned char*)s)[-1];
   int64_t len=(int64_t)sp_str_byte_len(s);
   sp_String*r=sp_String_new_len(s,len);
   if(bin){r->binary=1;sp_fd_publish(r);}
   if(frozen){sp_gc_hdr*h=(sp_gc_hdr*)((char*)r-sizeof(sp_gc_hdr));h->frozen=1;}
+  if(SP_UNLIKELY(mk==0xfb))sp_String_chill(r,s);   /* a static: still there after the allocation */
   return r;
 }
 /* sp_String_new_shared for a String no one else holds (a literal's copy, a
@@ -164,10 +179,12 @@ static inline sp_String*sp_String_new_fresh(const char*s){
   if(!s)return NULL;
   int bin=sp_str_is_binary(s);
   int frozen=(((const unsigned char*)s)[-1]==0xf1);
+  int mk=((const unsigned char*)s)[-1];
   int64_t len=(int64_t)sp_str_byte_len(s);
   sp_String*r=sp_String_new_inline_len(s,len);
   if(bin){r->binary=1;sp_fd_publish(r);}
   if(frozen){sp_gc_hdr*h=(sp_gc_hdr*)((char*)r-sizeof(sp_gc_hdr));h->frozen=1;}
+  if(SP_UNLIKELY(mk==0xfb))sp_String_chill(r,s);   /* a static: still there after the allocation */
   return r;
 }
 /* ...and for `+"lit"`: a mutable copy of a literal, which is frozen itself */

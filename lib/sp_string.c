@@ -28,3 +28,64 @@ int sp_fd_grow_inline(sp_String *s, int64_t need){
   if (!h->finalize) { h->finalize = sp_String_fin; sp_slab_set_fin(h); }
   return 1;
 }
+
+/* A handle made from a chilled String records the symbol whose to_s it holds
+   (sp_String.chilled is its id + 1). */
+void sp_String_chill(sp_String*r,const char*s){
+  if(sp_str_is_chilled(s))r->chilled=(unsigned)(sp_str_chilled_sym(s)+1);
+}
+/* Such a handle is chilled while its bytes are still the symbol's name: the
+   first mutation makes it plain for good (CRuby's str_modify), which is read
+   here, at +@, instead of on every mutation. */
+int sp_String_chilled_now(sp_String*h){
+  const char*nm=sp_sym_name_fn?sp_sym_name_fn((sp_sym)(h->chilled-1)):NULL;
+  size_t n=nm?sp_str_byte_len(nm):0;
+  if(nm&&(size_t)h->len==n&&memcmp(h->data,nm,n)==0)return 1;
+  h->chilled=0;
+  return 0;
+}
+/* Symbol#to_s and #id2name: CRuby answers a new chilled String each time
+   (sp_str_is_chilled), so `s = sym.to_s; t = +s` copies and `t << x` leaves
+   s alone. The symbol table's own name is a plain static that a handle would
+   take as an ordinary String, so each symbol gets one chilled copy, built at
+   its first to_s and kept as long as the symbol is: static storage with a
+   header, which the collector neither marks nor sweeps, and the symbol ahead
+   of it (sp_str_chilled_obj). The table is guarded by the heap lock, as the
+   dedup table is. */
+static const char**sp_sym_chilled_tab=NULL;
+static sp_int sp_sym_chilled_cap=0;
+const char*sp_sym_to_s_chilled(sp_sym id){
+  const char*nm=sp_sym_name_fn?sp_sym_name_fn(id):sp_str_empty;
+  if(id<0||!sp_sym_name_fn)return nm;
+  SP_HEAP_LOCK();
+  const char*hit=id<sp_sym_chilled_cap?sp_sym_chilled_tab[id]:NULL;
+  SP_HEAP_UNLOCK();
+  if(hit)return hit;
+  size_t n=sp_str_byte_len(nm);
+  sp_str_chilled_obj*o=(sp_str_chilled_obj*)malloc(sizeof(sp_str_chilled_obj)+n+1);
+  if(!o)return nm;
+  int ascii7=1;
+  for(size_t i=0;i<n;i++)if((unsigned char)nm[i]>=0x80)ascii7=0;
+  o->sym=id;
+  o->h.next=(sp_str_hdr*)&sp_str_chilled_tag;
+  o->h.size=(uint32_t)(n+1)|(ascii7?SP_STR_SIZE_ASCII7:0u)|(sp_str_is_binary(nm)?SP_STR_SIZE_BINARY:0u);
+  o->h.len=(uint32_t)n;o->h.hash=0;
+  o->m=0xfb;memcpy(o->d,nm,n);o->d[n]=0;
+  SP_HEAP_LOCK();
+  if(id>=sp_sym_chilled_cap){
+    sp_int nc=sp_sym_chilled_cap?sp_sym_chilled_cap:64;
+    while(nc<=id)nc*=2;
+    const char**nt=(const char**)realloc((void*)sp_sym_chilled_tab,(size_t)nc*sizeof(const char*));
+    if(nt){
+      memset((void*)(nt+sp_sym_chilled_cap),0,(size_t)(nc-sp_sym_chilled_cap)*sizeof(const char*));
+      sp_sym_chilled_tab=nt;sp_sym_chilled_cap=nc;
+    }
+  }
+  const char*r=o->d;
+  if(id<sp_sym_chilled_cap){
+    if(sp_sym_chilled_tab[id]){free(o);r=sp_sym_chilled_tab[id];}   /* another thread won */
+    else sp_sym_chilled_tab[id]=r;
+  }
+  SP_HEAP_UNLOCK();
+  return r;
+}

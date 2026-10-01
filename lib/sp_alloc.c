@@ -178,6 +178,8 @@ static struct { sp_str_hdr h; unsigned char m; char d[6]; } sp_fz_false_s = { { 
 const char *const sp_str_frozen_empty = sp_fz_empty_s.d;
 const char *const sp_str_frozen_true = sp_fz_true_s.d;
 const char *const sp_str_frozen_false = sp_fz_false_s.d;
+/* the link a chilled String's header carries (sp_str_is_chilled) */
+const sp_str_hdr sp_str_chilled_tag = { NULL, 0, 0, 0 };
 
 SP_TLS int sp_ffi_bin_len = 0;   /* see sp_alloc.h: byte count for :binstr / :cbinstr */
 
