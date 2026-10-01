@@ -19,9 +19,10 @@ rescue ArgumentError => e
   p e.message
 end
 
-buf = +"old"
-p StringIO.new("abc").readpartial(2, buf)
-p buf
+# with a buffer: the data comes back as the result. (Spinel doesn't yet
+# change the caller's own variable through a package method's String
+# parameter -- docs/limitations.md -- so the test reads the result.)
+p StringIO.new("abc").readpartial(2, +"old")
 
 p StringIO.new("q").sysread(5)
 begin
@@ -50,3 +51,17 @@ p r.read(5)
 p r.read(5)
 p r.read(0)
 p r.read
+
+# with and without a buffer in one program, through every name
+p StringIO.new("x").sysread(3, +"k")
+p StringIO.new("y").sysread(3)
+p StringIO.new("z").read_nonblock(3, +"k")
+p StringIO.new("w").read_nonblock(3)
+p StringIO.new("").read_nonblock(3, +"keep", exception: false)
+
+# a negative length is an ArgumentError for read too
+begin
+  StringIO.new("abc").read(-1)
+rescue ArgumentError => e
+  p e.message
+end

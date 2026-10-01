@@ -5,7 +5,6 @@
 ""
 "negative length -1 given"
 "ab"
-"ab"
 "q"
 EOFError
 "r"
@@ -16,3 +15,9 @@ nil
 nil
 ""
 ""
+"x"
+"y"
+"z"
+"w"
+nil
+"negative length -1 given"

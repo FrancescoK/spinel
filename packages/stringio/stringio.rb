@@ -105,23 +105,33 @@ class StringIO
 
   # readpartial / sysread / read_nonblock: read(n), but EOFError at the end
   # of the string, as CRuby's StringIO does. read_nonblock answers nil there
-  # instead when given exception: false.
+  # instead when given exception: false. A given buffer is emptied at the end.
+  # Neither passes its buffer on to the other: that changed how the buffer
+  # parameter is passed, and the caller's buffer stopped seeing the replace.
   def readpartial(maxlen, outbuf = nil)
     raise ArgumentError, "negative length #{maxlen} given" if maxlen < 0
     s = maxlen == 0 ? "" : read(maxlen)
-    raise EOFError, "end of file reached" if s.nil?
+    if s.nil?
+      outbuf.replace("") if outbuf
+      raise EOFError, "end of file reached"
+    end
     return s unless outbuf
     outbuf.replace(s)
     outbuf
   end
-
-  def sysread(maxlen, outbuf = nil)
-    readpartial(maxlen, outbuf)
-  end
+  alias sysread readpartial
 
   def read_nonblock(maxlen, outbuf = nil, exception: true)
-    return nil if !exception && maxlen > 0 && eof?
-    readpartial(maxlen, outbuf)
+    raise ArgumentError, "negative length #{maxlen} given" if maxlen < 0
+    s = maxlen == 0 ? "" : read(maxlen)
+    if s.nil?
+      outbuf.replace("") if outbuf
+      raise EOFError, "end of file reached" if exception
+      return nil
+    end
+    return s unless outbuf
+    outbuf.replace(s)
+    outbuf
   end
 
   # The iteration surface, plain Ruby over gets / getc / getbyte. The BLOCK
