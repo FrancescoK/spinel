@@ -51,3 +51,10 @@ p w.respond_to?(:hidden, flag), w.respond_to?(:hidden, !flag)
 pl = Pl.new
 m2 = :pl
 p pl.respond_to?(m2)
+
+# `public :initialize` without a def of its own
+class Pub
+  public :initialize
+  def respond_to?(n, ia = false) = super
+end
+p Pub.new.respond_to?(:initialize)
