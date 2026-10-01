@@ -12415,11 +12415,35 @@ int an_class_can_be_reached(Compiler *c, int ci) {
    refused two methods that agree perfectly, so adding an UNUSED class with a
    same-named method took the ABI away from a method that had it and the
    caller's buffer came back empty (#4390). Agreeing is the thing to require,
-   so require it: every member must be eligible, must have a parameter at that
-   index, must have it typed String, and must not have blocked it by
-   rebinding. One member that cannot take it keeps the value ABI for all.
-   A member whose parameter a proc captures takes it as the shared handle
-   instead, and so does the rest of the group (`handle`, below). */
+   so require it of every member a String can reach at that index: it must
+   be eligible, must have it typed String, and must not have blocked it by
+   rebinding. One such member that cannot take it keeps the value ABI for
+   all. A member with no parameter at that index, or one typed as something
+   no String is (an Integer, an Array, a class's object) or boxed, binds no
+   lent slot there and has no say: a `def m = 0` or a `def m(n) = n + 1`
+   in another class took the ABI away from every `m(s)` appending to its
+   String, and the caller's buffer came back as it was (#6179); so did a
+   top-level `def m(p) = yield(p)`. A dispatch
+   that reaches both binds each arm on its own (#6135, #6183). A member
+   whose parameter a proc captures takes it as the shared handle instead,
+   and so does the rest of the group (`handle`, below). */
+static int an_byref_group_member_string(Compiler *c, Scope *m, int pi) {
+  if (pi >= m->nparams || !m->pnames[pi]) return 0;
+  /* a yielding method spliced into each call that gives it a block binds
+     its parameters there, aliasing the caller's String where its block
+     appends (inline_alias_params): no lent slot either. One that names its
+     block can be lowered to keep it, and keeps its say. */
+  if (m->yields && !m->is_lowered_yield && !(m->blk_param && m->blk_param[0])) return 0;
+  LocalVar *q = scope_local(m, m->pnames[pi]);
+  if (!q || !q->is_param || q->is_block_param) return 1;
+  TyKind t = q->type;
+  /* a boxed one takes the box whatever the group lends: a String it
+     appends to in place reaches it as the handle (convert_byref_handle_params) */
+  if (t == TY_UNKNOWN || t == TY_NIL || t == TY_INT || t == TY_BIGINT || t == TY_FLOAT || t == TY_BOOL ||
+      t == TY_SYMBOL || t == TY_POLY || ty_is_array(t) || ty_is_hash(t) || ty_is_object(t))
+    return 0;
+  return 1;
+}
 static int an_byref_promote_group(Compiler *c, const char *nm, int pi,
                                   const char *elig, const unsigned *blocked, int n,
                                   unsigned *handle) {
@@ -12429,6 +12453,7 @@ static int an_byref_promote_group(Compiler *c, const char *nm, int pi,
     Scope *m = &c->scopes[k];
     if (!m->name || !sp_streq(m->name, nm)) continue;
     if (m->class_id >= 0 && !m->is_cmethod && !an_class_can_be_reached(c, m->class_id)) continue;
+    if (!an_byref_group_member_string(c, m, pi)) continue;
     /* A module's method is called through the copies its includers get
        (their own scopes, judged on their own), so the source is not refused
        for being one: it takes the group's ABI and keeps the group's answer
@@ -12459,6 +12484,7 @@ static int an_byref_promote_group(Compiler *c, const char *nm, int pi,
     Scope *m = &c->scopes[k];
     if (!m->name || !sp_streq(m->name, nm)) continue;
     if (m->class_id >= 0 && !m->is_cmethod && !an_class_can_be_reached(c, m->class_id)) continue;
+    if (!an_byref_group_member_string(c, m, pi)) continue;
     if (captured) handle[k] |= 1u << pi;
     LocalVar *q = scope_local(m, m->pnames[pi]);
     if (q && !q->byref_out) { q->byref_out = 1; q->is_cell = 1; did = 1; }
@@ -16943,6 +16969,8 @@ static int convert_byref_handle_params(Compiler *c,
               (alv->type == TY_UNKNOWN || alv->type == TY_STRING ||
                alv->type == TY_STRBUF)) {
             if (alv->type != TY_STRBUF || !alv->str_shared) {
+              /* a lent slot's cell goes with it, as above */
+              if (alv->byref_out) alv->is_cell = 0;
               alv->type = TY_STRBUF; alv->str_shared = 1; alv->byref_out = 0;
               changed = 1;
             }
