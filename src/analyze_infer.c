@@ -5623,7 +5623,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
            sp_streq(name, "to_str") || sp_streq(name, "ascii_only?") ||
            sp_streq(name, "ascii_compatible?") || sp_streq(name, "dummy?") ||
            sp_streq(name, "valid_encoding?") || sp_streq(name, "encode") ||
-           sp_streq(name, "scrub") || sp_streq(name, "b")))
+           sp_streq(name, "scrub") || sp_streq(name, "b") ||
+           sp_streq(name, "dump") || sp_streq(name, "undump")))
         return an_poly_concrete(c, name, TY_POLY);
       /* ...and the same names where they take arguments. unpack answers a
          boxed array, byteslice a boxed String or nil; the codegen arm for
@@ -5632,7 +5633,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
           (sp_streq(name, "byteslice") && (argc == 1 || argc == 2)) ||
           (sp_streq(name, "scrub") && argc == 1) ||
           (sp_streq(name, "encode") && argc >= 1 && argc <= 3) ||
-          ((sp_streq(name, "force_encoding") || sp_streq(name, "encode!")) && argc >= 1 && argc <= 2))
+          ((sp_streq(name, "force_encoding") || sp_streq(name, "encode!")) && argc >= 1 && argc <= 2) ||
+          /* the case mappings given options */
+          ((sp_streq(name, "upcase") || sp_streq(name, "downcase") || sp_streq(name, "capitalize") ||
+            sp_streq(name, "swapcase")) && argc >= 1 && argc <= 2 && nt_ref(nt, id, "block") < 0))
         return an_poly_concrete(c, name, TY_POLY);
       /* chomp / chop / delete_prefix / delete_suffix answer a String and are
          served at argc 0 only, so the separator forms -- `line.chomp("|")`,

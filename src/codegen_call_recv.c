@@ -14934,6 +14934,34 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     buf_printf(b, " } _t%d; })", ts);
     return 1;
   }
+  /* upcase / downcase / capitalize / swapcase given options, on a boxed
+     String or Symbol: the arms below map it as they do with none, and the
+     options are checked as on a typed receiver (emit_case_opts_guard) -- a
+     literal :ascii alone picks the ASCII mapping and needs no check. With no
+     arm the call raised NoMethodError naming String. */
+  if (recv >= 0 && rt == TY_POLY && argc >= 1 && argc <= 2 && nt_ref(nt, id, "block") < 0 &&
+      (sp_streq(name, "upcase") || sp_streq(name, "downcase") || sp_streq(name, "capitalize") ||
+       sp_streq(name, "swapcase")) && !user_defines_or_reads(c, name)) {
+    int plain_args = 1;
+    for (int i = 0; i < argc; i++) {
+      NodeKind ak = nt_kind(nt, argv[i]);
+      if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) plain_args = 0;
+    }
+    if (plain_args) {
+      const char *sfx = argc == 1 ? case_map_suffix(c, argc, argv) : "";
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
+      if (!*sfx) {
+        buf_printf(b, "if (_t%d.tag == SP_TAG_STR || _t%d.tag == SP_TAG_SYM || sp_poly_is_strbuf(_t%d)) "
+                      "sp_case_opts_check(%d, (sp_RbVal[]){", tv, tv, tv, argc);
+        for (int i = 0; i < argc; i++) { if (i) buf_puts(b, ", "); emit_boxed(c, argv[i], b); }
+        buf_printf(b, "}, %d, _t%d); ", sp_streq(name, "downcase"), tv);
+      }
+      buf_printf(b, "sp_poly_case_conv(_t%d, sp_str_%s%s, \"%s\"); })", tv, name, sfx, name);
+      return 1;
+    }
+  }
   if (recv >= 0 && rt == TY_POLY && argc == 0) {
     /* Skip when a user class defines nil? so its method wins the dispatch --
        the same reason the to_a arm below gives. A Null Object answering true
@@ -15261,6 +15289,12 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
        has. Each of these already works on a concrete receiver and the runtime
        function is the one that arm calls. */
     if (sp_streq(name, "lstrip"))     { buf_puts(b, "sp_box_str(sp_str_lstrip(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"lstrip\")))"); return 1; }
+    /* String#dump / undump, the typed receiver's runtime functions */
+    if (sp_streq(name, "dump") || sp_streq(name, "undump")) {
+      buf_printf(b, "sp_box_str(sp_str_%s(sp_poly_recv_s(", name); emit_expr(c, recv, b);
+      buf_printf(b, ", \"%s\")))", name);
+      return 1;
+    }
     if (sp_streq(name, "rstrip"))     { buf_puts(b, "sp_box_str(sp_str_rstrip(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"rstrip\")))"); return 1; }
     /* to_str is the implicit-conversion protocol, so a poly slot holding a
        String has to answer it: sp_poly_recv_s raises for anything else, which
