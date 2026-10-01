@@ -1,0 +1,12 @@
+["http://example.com/a?b=1#f", true]
+["https://user@[::1]:8080/x", true]
+["mailto:a@b.c", true]
+["/path", false]
+["*", false]
+["example.com:443", true]
+["http://a b", false]
+["", false]
+["http", nil, "u", "h.example", "81", nil, "/p/q;x", "k=v", "top"]
+true
+false
+true
