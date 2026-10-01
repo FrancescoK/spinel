@@ -872,8 +872,21 @@ static Buf block_cond_buf(Compiler *c, int block, const int *bb, int bn) {
    the call raises CRuby's TypeError, or answers {} when the Array is empty.
    A program with a def, alias or define_method of to_h in a class or module
    keeps the path it had. */
-static int emit_scalar_array_to_h(Compiler *c, int id, int recv, TyKind rt,
+static int emit_scalar_array_conversion(Compiler *c, int id, int recv, TyKind rt,
                                   const char *name, int argc, Buf *b) {
+  /* transpose of an Array of Integers, Floats or Strings: CRuby converts
+     each element to an Array, which a scalar cannot -- TypeError, and an
+     empty one answers [] */
+  if (sp_streq(name, "transpose") && argc == 0 &&
+      (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY || rt == TY_STR_ARRAY)) {
+    const char *k = array_kind(rt);
+    int t = ++g_tmp;
+    const char *en = rt == TY_INT_ARRAY ? "Integer" : rt == TY_FLOAT_ARRAY ? "Float" : "String";
+    buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
+    buf_printf(b, "; if (_t%d && sp_%sArray_length(_t%d) > 0) sp_raise_cls(\"TypeError\","
+                  " \"no implicit conversion of %s into Array\"); sp_%sArray_new(); })", t, k, t, en, k);
+    return 1;
+  }
   if (!(rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY || rt == TY_STR_ARRAY) ||
       !sp_streq(name, "to_h") || argc != 0 || nt_ref(c->nt, id, "block") >= 0 ||
       an_user_recv_defines_method(c, "to_h"))
@@ -2191,7 +2204,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     return 1;
   }
   if (recv >= 0 && ty_is_array(rt)) {
-    if (emit_scalar_array_to_h(c, id, recv, rt, name, argc, b)) return 1;
+    if (emit_scalar_array_conversion(c, id, recv, rt, name, argc, b)) return 1;
     /* a nil / true / false OPERAND to the Array-expecting family is CRuby's
        TypeError ("no implicit conversion of nil into Array") -- concat fell
        to NoMethodError, product answered [] -- with every argument still
@@ -5923,6 +5936,31 @@ void emit_str_pattern_expr(Compiler *c, int node, Buf *b) {
 }
 
 static void emit_strbuf_force_encoding(Compiler *c, const char *name, const char *ref, const int *argv, int argc, Buf *b);
+static int scan_pattern_needs_box(TyKind t) {
+  return t != TY_STRING && t != TY_STRBUF && t != TY_REGEX && t != TY_UNKNOWN;
+}
+
+static void emit_float_rationalize_arg(Compiler *c, int arg, const char *r, Buf *b) {
+  /* The epsilon must reach sp_float_rationalize as a float. emit_float_expr
+     casts a Rational arg with (sp_float)(<struct>), which the C compiler
+     rejects; convert it through sp_rational_to_f instead (#3224). */
+  TyKind et = comp_ntype(c, arg);
+  /* an epsilon that is no number: CRuby asks it for its #abs, which
+     it does not answer -- NoMethodError, not a conversion's TypeError */
+  if (et != TY_RATIONAL && et != TY_INT && et != TY_FLOAT && et != TY_BIGINT && et != TY_POLY &&
+      et != TY_UNKNOWN) {
+    buf_printf(b, "({ (void)(%s); sp_raise_nomethod(sp_nomethod_msg(\"abs\", ", r);
+    emit_boxed(c, arg, b);
+    buf_puts(b, ")); sp_float_rationalize0(0.0); })");
+  }
+  else {
+    buf_printf(b, "sp_float_rationalize(%s, ", r);
+    if (et == TY_RATIONAL) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, arg, b); buf_puts(b, ")"); }
+    else emit_float_expr(c, arg, b);
+    buf_puts(b, ")");
+  }
+}
+
 static int emit_scalar_call_arms(Compiler *c, int id, Buf *b);
 /* The arms evaluate a scalar receiver into text before they look at the
    method name, and its prelude (`Foo.new` hoisted into a temp for
@@ -6405,10 +6443,9 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         buf_printf(b, "%s(", comp_ntype(c, id) == TY_POLY_ARRAY ? "sp_re_scan_poly" : "sp_re_scan");
         emit_expr(c, argv[0], b); buf_printf(b, ", %s)", r);
       }
-      /* the same, for a pattern that arrives BOXED (read out of a table): a
-         Regexp or a String, told apart at run time (sp_scan_boxed) */
-      else if (sp_streq(name, "scan") && argc == 1 && comp_ntype(c, argv[0]) == TY_POLY &&
-               nt_ref(nt, id, "block") < 0) {
+      /* A boxed pattern, or a kind that is no pattern, uses the runtime check. */
+      else if (sp_streq(name, "scan") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+               scan_pattern_needs_box(comp_ntype(c, argv[0]))) {
         buf_printf(b, "%s(%s, ", comp_ntype(c, id) == TY_POLY_ARRAY ? "sp_scan_boxed_poly" : "sp_scan_boxed", r);
         emit_boxed(c, argv[0], b);
         buf_puts(b, ")");
@@ -7651,13 +7688,7 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
                    o, tx, tq, tn, o);
       }
       else if (sp_streq(name, "rationalize") && argc == 1) {
-        /* The epsilon must reach sp_float_rationalize as a float. emit_float_expr
-           casts a Rational arg with (sp_float)(<struct>), which the C compiler
-           rejects; convert it through sp_rational_to_f instead (#3224). */
-        buf_printf(b, "sp_float_rationalize(%s, ", r);
-        if (comp_ntype(c, argv[0]) == TY_RATIONAL) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-        else emit_float_expr(c, argv[0], b);
-        buf_puts(b, ")");
+        emit_float_rationalize_arg(c, argv[0], r, b);
       }
       else if (sp_streq(name, "to_int")) buf_printf(b, comp_ntype(c, id) == TY_POLY ? "sp_box_f_to_int(%s)" : "sp_float_to_i_checked(%s)", r);  /* alias of to_i (#2317); raises on Inf/NaN */
       /* a nil bound is an open side: clamp one-sided (or return the receiver),
