@@ -2106,6 +2106,17 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     int eci = rt == TY_IO ? io_reopen_class(c, name) : comp_class_index(c, ecn);
     int emi = eci >= 0 ? comp_method_in_chain(c, eci, name, NULL) : -1;
     if (emi >= 0 && rt == TY_IO && io_reopen_ret_mixed(c, name)) return TY_POLY;
+    /* a kind no reopening serves gets the builtin's answer: boxed when the
+       two answer different types */
+    if (emi >= 0 && rt == TY_IO && io_reopen_leaves_builtin(c, name)) {
+      TyKind ur = method_call_ret(c, emi, id);
+      int sv_skip = g_io_skip_reopen, sv_skip_node = g_io_skip_node;
+      g_io_skip_reopen = 1; g_io_skip_node = id;
+      TyKind bt = an_builtin_answer(c, id);
+      g_io_skip_reopen = sv_skip; g_io_skip_node = sv_skip_node;
+      if (bt != TY_UNKNOWN && ur != TY_UNKNOWN && bt != ur) return TY_POLY;
+      return ur;
+    }
     if (emi >= 0) return method_call_ret(c, emi, id);
   }
   /* A boxed-value hash whose values are all one class: its value reads are
@@ -8982,6 +8993,12 @@ static int why_node_origin(Compiler *c, int id, TyKind t) {
 
 TyKind infer_type(Compiler *c, int id) {
   if (id < 0 || id >= c->nt->count) return TY_UNKNOWN;
+  if (g_io_skip_reopen && id != g_io_skip_node) {
+    g_io_skip_reopen = 0;
+    TyKind t = infer_type(c, id);
+    g_io_skip_reopen = 1;
+    return t;
+  }
   /* The face re-inference (infer_call's last resort, and codegen's re-entry)
      asks what one call would be with this receiver pinned to one concrete
      kind (the face table in types.h). Only that receiver node, only for the

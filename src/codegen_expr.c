@@ -1292,6 +1292,13 @@ static void emit_expr_node(Compiler *c, int id, Buf *b);
 int g_expr_depth = 0;
 
 void emit_expr(Compiler *c, int id, Buf *b) {
+  /* an argument of a call re-emitted as its builtin sees the reopenings */
+  if (g_io_skip_reopen && id != g_io_skip_node) {
+    g_io_skip_reopen = 0;
+    emit_expr(c, id, b);
+    g_io_skip_reopen = 1;
+    return;
+  }
   g_expr_depth++;
   emit_expr_node(c, id, b);
   g_expr_depth--;

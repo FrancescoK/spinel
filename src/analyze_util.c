@@ -2826,8 +2826,12 @@ int io_family_class(Compiler *c, int k) {
 }
 /* A typed IO's kind is only known at run time. Its reopened method is looked
    up as a File's first (File, then IO), then as a socket's. */
+/* Set while a typed IO's call (g_io_skip_node) is re-emitted as the
+   builtin it overrides: the reopenings are out of sight for that call
+   alone, not for the calls in its arguments. */
+int g_io_skip_reopen = 0, g_io_skip_node = -1;
 int io_reopen_class(Compiler *c, const char *name) {
-  if (!name) return -1;
+  if (!name || g_io_skip_reopen) return -1;
   for (int i = 0; io_family[i]; i++) {
     int k = comp_class_index(c, io_family[i]), def = -1;
     if (k >= 0 && comp_method_in_chain(c, k, name, &def) >= 0 && io_family_class(c, def)) return def;
@@ -2872,4 +2876,11 @@ int io_family_descends(Compiler *c, int k, int owner) {
   for (const char *n = c->classes[k].name; n; n = io_super_name(n))
     if (sp_streq(n, c->classes[owner].name)) return 1;
   return 0;
+}
+/* Does some IO kind reach no reopening of `name` (no IO#name among them),
+   so that the builtin answers for it? */
+int io_reopen_leaves_builtin(Compiler *c, const char *name) {
+  int ks[16], n = io_reopen_defs(c, name, 0, ks, 16);
+  for (int i = 0; i < n; i++) if (sp_streq(c->classes[ks[i]].name, "IO")) return 0;
+  return n > 0;
 }
