@@ -1477,7 +1477,15 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       if (ln - 1 < sizeof base) {
         memcpy(base, name, ln - 1); base[ln - 1] = '\0';
         int wdefc = -1;
-        if (comp_writer_in_chain(c, cid, base, &wdefc) && argc >= 1) {
+        /* only while the attribute's writer is the one the call reaches: an
+           explicit `def x=` at an equal-or-more-derived class wins, as the
+           emitter decides (comp_resolve_member), and its value is the
+           argument as written (the rule below). Typed from the attribute's
+           boxed slot instead, the expression read as poly while the emitter
+           handed back the raw argument (`def x=(v) = super` under
+           --int-overflow=promote). */
+        if (comp_writer_in_chain(c, cid, base, &wdefc) && argc >= 1 &&
+            comp_resolve_member(c, cid, base, 1, NULL, NULL) == SP_MEMBER_ATTR) {
           TyKind rhsk = infer_type(c, argv[0]);
           /* codegen boxes a scalar rhs into a poly ivar slot, so the assignment
              expression's C value is that boxed poly -- report poly to match. */
