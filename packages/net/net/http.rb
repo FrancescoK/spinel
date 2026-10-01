@@ -525,10 +525,14 @@ module Net
     def write_request(req)
       out = String.new
       out << "#{req.method} #{req.path} HTTP/1.1\r\n"
-      # The port belongs in Host unless it is the scheme's default, which is
-      # what a virtual host on a non-standard port depends on.
-      default = @use_ssl ? 443 : 80
-      out << (@port == default ? "Host: #{@address}\r\n" : "Host: #{@address}:#{@port}\r\n")
+      # The default Host goes out only when the request carries none, as
+      # CRuby's `req['host'] ||= addr_port`. The port belongs in it unless it
+      # is the scheme's default, which is what a virtual host on a
+      # non-standard port depends on.
+      unless req.key?("host")
+        default = @use_ssl ? 443 : 80
+        out << (@port == default ? "Host: #{@address}\r\n" : "Host: #{@address}:#{@port}\r\n")
+      end
       have_len = false
       req.each_header do |k, v|
         have_len = true if k.downcase == "content-length"
