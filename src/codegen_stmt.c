@@ -13346,54 +13346,27 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
        result back: a user-defined `<<`, which the value form still
        dispatches per class, may answer something that is not the receiver,
        and the slot keeps its object. */
-    /* A chain `out << a << b` rebinds the slot at its root the same way:
-       each plain-String step answers a new box, the next appends to that,
-       and the chain's value is the whole String. */
-    int slot = recv;
-    while (sp_streq(name, "<<") && argc == 1 && nt_kind(nt, slot) == NK_CallNode &&
-           nt_str(nt, slot, "name") && sp_streq(nt_str(nt, slot, "name"), "<<") &&
-           nt_ref(nt, slot, "receiver") >= 0) {
-      int sargc = 0; call_args(nt, slot, &sargc);
-      if (sargc != 1) break;
-      slot = nt_ref(nt, slot, "receiver");
-    }
-    if (sp_streq(name, "<<") && argc == 1 && nt_type(nt, slot) &&
-        (sp_streq(nt_type(nt, slot), "LocalVariableReadNode") ||
-         sp_streq(nt_type(nt, slot), "InstanceVariableReadNode")) &&
-        (slot == recv || comp_ntype(c, slot) == TY_POLY)) {
-      int was = ++g_tmp, got = ++g_tmp;
-      int user_shl = 0;
-      for (int k = 0; k < c->nclasses && !user_shl; k++)
-        if (comp_poly_arm_defines_n(c, k, "<<", 1)) user_shl = 1;
-      int ns = 0;
-      for (int n = id; n != slot; n = nt_ref(nt, n, "receiver")) ns++;
-      int *steps = slot != recv && !user_shl ? malloc(sizeof(int) * (size_t)ns) : NULL;
-      if (steps) {
-        /* A real chain, every link of it: one step at a time, each storing
-           back before the next argument runs, so a raise there keeps the
-           appends done so far (CRuby has them in the String already). The
-           next step appends to what the last answered, as the chain does.
-           The single call below stays where a user class may own <<, or
-           where the list can't be allocated. */
-        ns = 0;
-        for (int n = id; n != slot; n = nt_ref(nt, n, "receiver")) steps[ns++] = n;
-        emit_indent(b, indent);
-        buf_printf(b, "{ sp_RbVal _t%d = ", was); emit_expr(c, slot, b);
-        buf_printf(b, "; sp_RbVal _t%d = _t%d;", got, was);
-        for (int k = ns - 1; k >= 0; k--) {
-          int sac = 0; const int *sav = call_args(nt, steps[k], &sac);
-          buf_printf(b, " _t%d = sp_poly_shl(_t%d, ", got, got); emit_boxed(c, sav[0], b);
-          buf_printf(b, "); if (_t%d.tag == SP_TAG_STR) ", was); emit_expr(c, slot, b);
-          buf_printf(b, " = _t%d;", got);
-        }
-        buf_puts(b, " }\n");
-        free(steps);
-        return 1;
-      }
+    /* A chain `out << a << b` (or a single `<<`) on a boxed local or ivar:
+       the value form stores each step back into that slot, before the next
+       argument runs and only while the slot still holds the receiver, so the
+       statement is that form. A user class's own #<< keeps the single call
+       below, which its per-class dispatch needs. */
+    int user_shl = 0;
+    for (int k = 0; k < c->nclasses && !user_shl; k++)
+      if (comp_poly_arm_defines_n(c, k, "<<", 1)) user_shl = 1;
+    if (sp_streq(name, "<<") && argc == 1 && !user_shl && poly_shl_root_slot(c, recv) >= 0) {
       emit_indent(b, indent);
-      buf_printf(b, "{ sp_RbVal _t%d = ", was); emit_expr(c, slot, b);
+      buf_puts(b, "(void)("); emit_call(c, id, b); buf_puts(b, ");\n");
+      return 1;
+    }
+    if (sp_streq(name, "<<") && argc == 1 && nt_type(nt, recv) &&
+        (sp_streq(nt_type(nt, recv), "LocalVariableReadNode") ||
+         sp_streq(nt_type(nt, recv), "InstanceVariableReadNode"))) {
+      int was = ++g_tmp, got = ++g_tmp;
+      emit_indent(b, indent);
+      buf_printf(b, "{ sp_RbVal _t%d = ", was); emit_expr(c, recv, b);
       buf_printf(b, "; sp_RbVal _t%d = ", got); emit_call(c, id, b);
-      buf_printf(b, "; if (_t%d.tag == SP_TAG_STR) ", was); emit_expr(c, slot, b);
+      buf_printf(b, "; if (_t%d.tag == SP_TAG_STR) ", was); emit_expr(c, recv, b);
       buf_printf(b, " = _t%d; }\n", got);
       return 1;
     }

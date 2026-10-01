@@ -2240,7 +2240,7 @@ static void emit_str_eq_ordered(Compiler *c, int recv, int arg, int eq, Buf *b) 
 /* The local or ivar a `<<` chain on a boxed value starts at (`out` in
    `out << a << b`), or -1. A plain boxed String answers a new box from each
    `<<`, so that slot has to take the result back. */
-static int poly_shl_root_slot(Compiler *c, int recv) {
+int poly_shl_root_slot(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
   int slot = recv;
   while (nt_kind(nt, slot) == NK_CallNode && nt_str(nt, slot, "name") &&
@@ -32017,25 +32017,30 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
        class's own #<<, something that is not the receiver at all. */
     /* The same holds for any boxed local or ivar a chain starts at: a
        block's last line (its value goes nowhere, but it is a value), or
-       `r = (x << y)`, left the variable without the append. */
+       `r = (x << y)`, left the variable without the append. It takes the
+       result only while it still holds the receiver: an argument that
+       stored a new String there (`@buf << take`) keeps it, as in CRuby.
+       Each step of a chain comes through here, so each stores back before
+       the next argument runs. */
     const char *rvn = nt_kind(nt, recv) == NK_LocalVariableReadNode ? nt_str(nt, recv, "name") : NULL;
     int slot = rvn && strncmp(rvn, "__cap_", 6) == 0 ? recv : poly_shl_root_slot(c, recv);
-    int rebind = slot >= 0;
-    int was = 0, got = 0;
-    if (rebind) {
-      was = ++g_tmp; got = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", was); emit_expr(c, slot, b);
-      buf_printf(b, "; sp_RbVal _t%d = ", got);
-    }
     int se = 0;
     int t = poly_binop_recv_temp(c, recv, argv[0], b, &se);
-    buf_printf(b, "sp_poly_shl(_t%d, ", t);
-    emit_boxed(c, argv[0], b);
-    buf_puts(b, se ? "); })" : ")");
-    if (rebind) {
-      buf_printf(b, "; if (_t%d.tag == SP_TAG_STR) ", was); emit_expr(c, slot, b);
-      buf_printf(b, " = _t%d; _t%d; })", got, got);
+    if (slot < 0) {
+      buf_printf(b, "sp_poly_shl(_t%d, ", t);
+      emit_boxed(c, argv[0], b);
+      buf_puts(b, se ? "); })" : ")");
+      return;
     }
+    int got = ++g_tmp, cur = ++g_tmp;
+    if (!se) buf_puts(b, "({ ");
+    buf_printf(b, "sp_RbVal _t%d = sp_poly_shl(_t%d, ", got, t);
+    emit_boxed(c, argv[0], b);
+    buf_printf(b, "); if (_t%d.tag == SP_TAG_STR) { sp_RbVal _t%d = ", t, cur);
+    emit_expr(c, slot, b);
+    buf_printf(b, "; if (_t%d.tag == SP_TAG_STR && _t%d.v.s == _t%d.v.s) ", cur, cur, t);
+    emit_expr(c, slot, b);
+    buf_printf(b, " = _t%d; } _t%d; })", got, got);
     return;
   }
   /* poly_val >> int: unbox recv to int, apply op. & | ^ dispatch on the
@@ -40469,18 +40474,6 @@ else {
      (Integer#<< shift -> boxed int, Array#push append -> the array) and returns
      a poly either way, matching the statement-level path. */
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "<<") && argc == 1) {
-    /* the same store-back as the dispatch above, where this path is reached */
-    int slot = poly_shl_root_slot(c, recv);
-    int rooted = slot >= 0;
-    if (rooted) {
-      int was = ++g_tmp, got = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", was); emit_expr(c, slot, b);
-      buf_printf(b, "; sp_RbVal _t%d = sp_poly_shl(", got); emit_expr(c, recv, b); buf_puts(b, ", ");
-      emit_boxed(c, argv[0], b);
-      buf_printf(b, "); if (_t%d.tag == SP_TAG_STR) ", was); emit_expr(c, slot, b);
-      buf_printf(b, " = _t%d; _t%d; })", got, got);
-      return;
-    }
     buf_puts(b, "sp_poly_shl("); emit_expr(c, recv, b); buf_puts(b, ", ");
     emit_boxed(c, argv[0], b); buf_puts(b, ")");
     return;
