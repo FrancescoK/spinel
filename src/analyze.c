@@ -13794,6 +13794,41 @@ static int an_local_handed_to_appender(Compiler *c, Scope *bs, const char *vn) {
   }
   return 0;
 }
+/* In the straight-line statements of a block or method body of scope `bs`
+   that hold `t = x` (local t written from local x), is t appended to in
+   place, or handed to a method that appends to it, by a statement before
+   t's next write? Only top-level statements are read, in order. */
+static int an_alias_mutated_before_rebind(Compiler *c, Scope *bs, const char *t, const char *x) {
+  const NodeTable *nt = c->nt;
+  int si = bs ? (int)(bs - c->scopes) : -1;
+  if (si < 0 || !t || !x) return 0;
+  for (int w = comp_lvw_first_sc(c, si, t); w >= 0; w = comp_lvw_next_sc(c, w)) {
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode || comp_scope_of(c, w) != bs) continue;
+    int v = nt_ref(nt, w, "value");
+    if (v < 0 || nt_kind(nt, v) != NK_LocalVariableReadNode || !sp_streq(nt_str(nt, v, "name"), x)) continue;
+    /* the statements list holding the write */
+    int par = -1;
+    for (int st = comp_kind_first(c, NK_StatementsNode); st >= 0 && par < 0; st = comp_kind_next(c, st)) {
+      if (nt_kind(nt, st) != NK_StatementsNode) continue;
+      int n = 0; const int *b = nt_arr(nt, st, "body", &n);
+      for (int i = 0; i < n; i++) if (b[i] == w) { par = st; break; }
+    }
+    if (par < 0) continue;
+    int n = 0; const int *b = nt_arr(nt, par, "body", &n);
+    int i = 0;
+    while (i < n && b[i] != w) i++;
+    for (i++; i < n; i++) {
+      NodeKind k = nt_kind(nt, b[i]);
+      if (k == NK_LocalVariableWriteNode && sp_streq(nt_str(nt, b[i], "name"), t)) break;
+      if (k != NK_CallNode) continue;
+      int r = nt_ref(nt, b[i], "receiver");
+      const char *cn = nt_str(nt, b[i], "name");
+      if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && sp_streq(nt_str(nt, r, "name"), t) &&
+          cn && an_str_mutator_name(cn)) return 1;
+    }
+  }
+  return 0;
+}
 /* Is block parameter `bp` (of block scope `bs`) appended to through another
    name: a local only ever written from it (`t = x`, or a chain `u = t`)
    that is appended to in place, handed to a method that appends to it, or
@@ -13816,8 +13851,13 @@ static int an_block_param_alias_mutated(Compiler *c, const ALocalAliases *t, Sco
       if (!wl || wl->is_param || wl->is_cell) continue;
       /* only a local that is never another String: one also rebound
          (`line = line.strip`, the rebinding #5669 desugars a reassigned
-         parameter to) appends to what it was rebound to */
-      if (!an_local_pure_alias_of(c, si, wn, bp, 0)) continue;
+         parameter to) appends to what it was rebound to -- unless, in the
+         block's own statements, an append comes between the alias write
+         and the first rebind (`t = x; t << y; t = +"s"`) */
+      if (!an_local_pure_alias_of(c, si, wn, bp, 0)) {
+        if (an_alias_mutated_before_rebind(c, bs, wn, bp)) return 1;
+        continue;
+      }
       if (strbuf_mut_kind(c, wn, bs) == 1 || (wl->type == TY_STRBUF && wl->str_shared) ||
           an_local_handed_to_appender(c, bs, wn)) return 1;
       if (nn < 8) names[nn++] = wn;
@@ -14052,6 +14092,34 @@ static int pw_scope_mutates_param(Compiler *c, int mi, const char *name) {
   return 0;
 }
 /* Iterators whose block receives the ELEMENT as its first parameter. */
+/* Is node `id` a statement ahead of another in its list, whose value the
+   program throws away? Built once per tree, for the iteration rule. */
+static int an_stmt_discarded(Compiler *c, int id) {
+  static char *disc = NULL;
+  static int disc_n = -1;
+  static unsigned disc_ver = 0;
+  const NodeTable *nt = c->nt;
+  if (disc_n != nt->count || disc_ver != nt->version) {
+    free(disc);
+    disc = (char *)calloc((size_t)(nt->count > 0 ? nt->count : 1), 1);
+    if (!disc) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    NT_FOREACH_KIND(nt, NK_StatementsNode, st) {
+      int n = 0; const int *b = nt_arr(nt, st, "body", &n);
+      for (int i = 0; i + 1 < n; i++) if (b[i] >= 0 && b[i] < nt->count) disc[b[i]] = 1;
+    }
+    disc_n = nt->count; disc_ver = nt->version;
+  }
+  return id >= 0 && id < disc_n && disc[id];
+}
+/* An element-first iterator that answers its receiver (Array#each and its
+   kin, the bang filters). */
+static int strbuf_self_iterator(const char *n) {
+  static const char *const names[] = {
+    "each", "each_with_index", "reverse_each", "each_entry", "map!", "collect!", "select!",
+    "filter!", "reject!", "keep_if", "delete_if", "sort_by!", NULL };
+  for (int i = 0; names[i]; i++) if (sp_streq(n, names[i])) return 1;
+  return 0;
+}
 static int strbuf_elem_first_iterator(const char *n) {
   static const char *const names[] = {
     "each", "each_with_index", "each_with_object", "each_entry", "reverse_each",
@@ -15733,7 +15801,7 @@ static int promote_shared_stored_strings(Compiler *c) {
        String the block appends to, or yields on to a block that does, is
        the variable's, which becomes the handle */
     else if ((sp_streq(itn, "then") || sp_streq(itn, "tap") || sp_streq(itn, "yield_self")) &&
-             recv4 >= 0 && nt_kind(nt, recv4) == NK_LocalVariableReadNode) {
+             recv4 >= 0 && (nt_kind(nt, recv4) == NK_LocalVariableReadNode || sp_streq(itn, "tap"))) {
       TyKind rt4 = infer_type(c, recv4);
       const char *sp4 = block_param_name(c, blk4, 0);
       Scope *ss4 = sp4 ? comp_scope_of(c, blk4) : NULL;
@@ -15805,9 +15873,18 @@ static int promote_shared_stored_strings(Compiler *c) {
     if (lit4) {
       int en = 0, var = 0; const int *el = nt_arr(nt, recv4, "elements", &en);
       for (int e = 0; e < en && !var; e++) var = nt_kind(nt, el[e]) == NK_LocalVariableReadNode;
-      if (!var) continue;
+      /* an iterator that answers its receiver hands the literal on, its
+         elements as the block left them (`p [+"a"].each { |w| w << x }`);
+         a statement ahead of another throws the literal away */
+      if (!var && (!strbuf_self_iterator(itn) || an_stmt_discarded(c, w))) continue;
     }
-    if (!lit4 && nt_kind(nt, recv4) != NK_LocalVariableReadNode) continue;
+    /* an ivar's Array, or one a call answers (`h.values.each`, `@a.each`):
+       the container walk follows it to what it was built from, as a
+       literal's */
+    if (!lit4 && nt_kind(nt, recv4) != NK_LocalVariableReadNode) {
+      if (nt_kind(nt, recv4) != NK_InstanceVariableReadNode && nt_kind(nt, recv4) != NK_CallNode) continue;
+      lit4 = 1;
+    }
     const char *contn4 = lit4 ? NULL : nt_str(nt, recv4, "name");
     Scope *conts4 = contn4 ? comp_scope_of(c, recv4) : NULL;
     LocalVar *contv4 = (contn4 && conts4) ? scope_local(conts4, contn4) : NULL;

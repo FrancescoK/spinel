@@ -3452,7 +3452,7 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
     if (et == TY_POLY_ARRAY) buf_puts(&rb, "sp_PolyArray_new()");
     else buf_printf(&rb, "sp_%sArray_new()", array_kind(et) ? array_kind(et) : "Int");
   }
-  else if (et_nil) emit_boxed(c, recv, &rb); else emit_expr(c, recv, &rb);
+  else if (et_nil) emit_boxed(c, recv, &rb); else emit_strbuf_value_expr(c, recv, et, &rb);
   emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre);
   buf_printf(g_pre, " _t%d = %s;\n", tr, rb.p ? rb.p : ""); free(rb.p);
   if (needs_root(et)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, et, tr, g_pre); buf_puts(g_pre, "\n"); }
@@ -5791,7 +5791,8 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     TyKind tsaved0 = tlv0 ? tlv0->type : TY_UNKNOWN;
     int use_shadow_t = tlv0 && tlv0->type != et && et != TY_UNKNOWN;
     int tr = ++g_tmp;
-    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    Buf rb; memset(&rb, 0, sizeof rb);
+    emit_strbuf_value_expr(c, recv, et, &rb);
     emit_indent(b, indent); emit_ctype(c, et, b);
     buf_printf(b, " _t%d = %s;\n", tr, rb.p ? rb.p : ""); free(rb.p);
     /* An OBJECT-receiver tap whose param widened to poly (it escaped through

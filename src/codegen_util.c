@@ -1895,6 +1895,23 @@ int strbuf_marked_yields_handle(Compiler *c, int v) {
   const char *nm = nt_str(nt, v, "name");
   return nm && (sp_streq(nm, "<<") || sp_streq(nm, "concat") || str_self_call(nt, v));
 }
+/* Value `v` into a slot of type `et`: a value the demand marked to be the
+   handle (`+"a"` a tap's block appends to) that renders as a String is
+   wrapped as a new handle (strbuf_marked_yields_handle); anything else is
+   emitted as it is. */
+void emit_strbuf_value_expr(Compiler *c, int v, TyKind et, Buf *b) {
+  if (et == TY_STRBUF && v >= 0 && nt_kind(c->nt, v) == NK_CallNode && c->strbuf_box[v] &&
+      !strbuf_marked_yields_handle(c, v)) {
+    unsigned char sv = c->strbuf_box[v];
+    c->strbuf_box[v] = 0;
+    buf_puts(b, "sp_String_new_shared(");
+    emit_str_expr(c, v, b);
+    buf_puts(b, ")");
+    c->strbuf_box[v] = sv;
+    return;
+  }
+  emit_expr(c, v, b);
+}
 int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
   const char *rn = strbuf_local_name(c, recv);
   if (rn) {
