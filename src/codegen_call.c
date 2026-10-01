@@ -22803,6 +22803,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
              Integer or a Float that also sees nil) names nil or its class at
              run time: the slot's kind alone cannot say which the value is */
           char gmsg[400];
+          int recv_evaluated = 0;
           {
             int nullable_recv = recv >= 0 && (grt == TY_STRING ||
                 ((grt == TY_INT || grt == TY_FLOAT) && nullable_int_value(c, recv)));
@@ -22820,6 +22821,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
                 free(rx.p);
                 buf_printf(&rvb, "_t%d", rvt);
               }
+              recv_evaluated = 1;
               const char *rv = rvb.p ? rvb.p : "0";
               snprintf(gmsg, sizeof gmsg, "(%s%s%s ? \"undefined method '%s' for nil\" : \"undefined method '%s' for %s\")",
                        grt == TY_FLOAT ? "sp_float_is_nil(" : "(", rv,
@@ -22850,16 +22852,32 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
             } \
             else buf_puts(b, gmsg); \
           } while (0)
+          /* A receiver the message could not stage is still evaluated, once,
+             ahead of the raise, as CRuby evaluates it before the method is
+             looked up: `Foo.new.bar` never ran Foo.new, so its side effects
+             were lost, and a receiver that is itself an unresolved call
+             (`f.bar.size`) never raised its own NoMethodError -- the outer
+             one named 'size' on "unknown" instead of 'bar' on Foo. */
+          /* It goes inside the message argument, ahead of the message (whose
+             staged arguments come after it), and not around the raise: the
+             coercion sites recognize the sp_raise_nomethod token by its text. */
+          int recv_effect = recv >= 0 && !recv_stageable && !recv_evaluated;
+          #define EMIT_GATE_RECV_MSG() do { \
+            if (recv_effect) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), "); } \
+            EMIT_GATE_MSG(); \
+            if (recv_effect) buf_puts(b, ")"); \
+          } while (0)
           if (sp_streq(dflt, "sp_box_nil()")) {
             buf_puts(b, "sp_raise_nomethod(");
-            EMIT_GATE_MSG();
+            EMIT_GATE_RECV_MSG();
             buf_puts(b, ")");
           }
           else {
             buf_puts(b, "(sp_raise_cls(\"NoMethodError\", ");
-            EMIT_GATE_MSG();
+            EMIT_GATE_RECV_MSG();
             buf_printf(b, "), %s)", dflt);
           }
+          #undef EMIT_GATE_RECV_MSG
           #undef EMIT_GATE_MSG
           #undef EMIT_GATE_ARGS
         }

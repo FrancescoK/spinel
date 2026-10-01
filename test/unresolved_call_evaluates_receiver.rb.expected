@@ -1,0 +1,9 @@
+Foo.new ran
+undefined method 'bar' for an instance of Foo
+Foo.new ran
+undefined method 'bar' for an instance of Foo
+Foo.new ran
+undefined method 'bar' for an instance of Foo
+Foo.new ran
+undefined method 'missing' for an instance of Foo
+[:made]
