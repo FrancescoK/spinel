@@ -58,3 +58,29 @@ p m
 lp = {a: 1}
 lp.default_proc = ->(hh, k) { k.to_s }
 p lp[:b]
+
+# default= evaluates its argument once, and before the frozen check.
+class Pt; def initialize(x) = @x = x; attr_reader :x; end
+def ev_i(x) = (puts "eval #{x}"; x)
+def ev_s(x) = (puts "eval #{x}"; x)
+def ev_y(x) = (puts "eval #{x}"; x)
+def ev_f(x) = (puts "eval #{x}"; x)
+def ev_o(x) = (puts "eval #{x.x}"; x)
+def ev_n = (puts "eval nil"; nil)
+di = {"a" => 1}
+p(di.default = ev_i(5), di["z"])
+ds = {"a" => "s"}
+p(ds.default = ev_s("d"), ds["z"])
+dp = {a: 1, "b" => :c}
+p(dp.default = ev_y(:q), dp[:z])
+p(dp.default = ev_f(2.5), dp[:z])
+p((dp.default = ev_o(Pt.new(7))).x, dp[:z].class)
+p(dp.default = ev_n, dp[:z])
+p(dp.default = nil, dp[:z])
+ii = {1 => 2}
+p(ii.default = nil, ii[9])
+[di, ds, dp].each(&:freeze)
+begin; di.default = ev_i(9); rescue => e; p e.class; end
+begin; ds.default = ev_s("e"); rescue => e; p e.class; end
+begin; dp.default = ev_y(:r); rescue => e; p e.class; end
+p di["z"], ds["z"], dp[:z]
