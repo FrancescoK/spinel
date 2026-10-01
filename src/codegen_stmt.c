@@ -8575,8 +8575,10 @@ static void masgn_part(Compiler *c, int node, int tmp, Buf *b) {
 static void masgn_conv(Compiler *c, TyKind st, TyKind vt, const char *val, Buf *b) {
   if (!val) { buf_puts(b, nil_sentinel(st == TY_UNKNOWN ? TY_POLY : st)); return; }
   if (st == TY_POLY && vt != TY_POLY) emit_boxed_src(c, vt, val, b);
-  else if (vt == TY_POLY && st == TY_INT) buf_printf(b, "sp_poly_to_i(%s)", val);
-  else if (vt == TY_POLY && st == TY_FLOAT) buf_printf(b, "sp_poly_to_f(%s)", val);
+  /* a boxed nil lands the slot's nil, not the type's zero, as a plain write
+     unboxes it (#3458) */
+  else if (vt == TY_POLY && st == TY_INT) buf_printf(b, "sp_poly_to_i_or_nil(%s)", val);
+  else if (vt == TY_POLY && st == TY_FLOAT) buf_printf(b, "sp_poly_to_f_or_nil(%s)", val);
   else if (vt == TY_POLY && st != TY_POLY && st != TY_UNKNOWN) emit_unbox_text(c, st, val, b);
   else buf_puts(b, val);
 }
@@ -11490,6 +11492,12 @@ else {
            wrapped, as the single write wraps it (emit_strbuf_value) */
         else if (ltt == TY_STRBUF && valt == TY_STRING) buf_printf(b, "sp_String_new_shared(_t%d)", tmps[i]);
         else if (ltt == TY_STRBUF && valt == TY_POLY) buf_printf(b, "sp_poly_as_strbuf(_t%d)", tmps[i]);
+        /* a boxed element into a typed local: unboxed, as a plain write does
+           (`mk, x = 0, nl` with nl only ever nil) */
+        else if (valt == TY_POLY && ltt != TY_POLY && ltt != TY_UNKNOWN) {
+          char tv[24]; snprintf(tv, sizeof tv, "_t%d", tmps[i]);
+          masgn_conv(c, ltt, valt, tv, b);
+        }
         else buf_printf(b, "_t%d", tmps[i]);
         if (proc_cell) buf_puts(b, ")");
         buf_puts(b, ";\n");
