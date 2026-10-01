@@ -26011,13 +26011,13 @@ static int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, co
   for (int u = 0; !resolved && uni[u]; u++) if (sp_streq(qm, uni[u])) { yes = resolved = 1; break; }
   /* An IO answers by its kind -- a File, a socket, a server socket, a stat
      share the type -- which only the handle knows: sp_io_responds decides at
-     run time. A method a reopening of IO, File or a socket class defines
-     answers here. */
-  if (!resolved && recv >= 0 && rt == TY_IO && foldable) {
+     run time. A method a reopening of Object, IO, File or a socket class
+     defines answers here, by its name whatever the kind. */
+  if (!resolved && recv >= 0 && rt == TY_IO) {
     static const char *const ioclasses[] = {
-      "IO", "File", "BasicSocket", "IPSocket", "TCPSocket", "TCPServer",
-      "UDPSocket", "UNIXSocket", "UNIXServer", "Socket", NULL };
-    for (int u = 0; ioclasses[u]; u++) {
+      "BasicObject", "Object", "Kernel", "IO", "File", "BasicSocket", "IPSocket",
+      "TCPSocket", "TCPServer", "UDPSocket", "UNIXSocket", "UNIXServer", "Socket", NULL };
+    for (int u = 0; foldable && ioclasses[u]; u++) {
       int k = comp_class_index(c, ioclasses[u]);
       if (k >= 0 && comp_method_in_chain(c, k, qm, NULL) >= 0) return 1;
     }
@@ -40028,8 +40028,8 @@ else {
         return;
       }
       /* the runtime answers: a Range value's builtin surface (the probe has
-         no reading for it, #3619), an IO asked a socket's own name (the
-         handle knows whether it is one), and a poly receiver */
+         no reading for it, #3619), an IO (the handle knows its kind), and a
+         poly receiver */
       if (recv >= 0 && (rt == TY_RANGE || rt == TY_FLOAT_RANGE || rt == TY_STR_RANGE || rt == TY_IO)) {
         if (comp_ntype(c, id) == TY_POLY) buf_puts(b, "sp_box_bool(");
         buf_puts(b, "sp_poly_responds_builtin(");

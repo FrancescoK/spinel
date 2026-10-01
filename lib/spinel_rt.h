@@ -2151,43 +2151,68 @@ static const char *sp_poly_class_name(sp_RbVal v) {
     default: return SPL("Object");
   }
 }
-/* respond_to? on an IO handle, by its kind, as CRuby answers: a File::Stat
-   has its own surface; every IO has the read/write/descriptor one; a File
-   adds its size and locks; a socket its addresses and recv/send; a server
-   socket accept and listen. */
+/* respond_to? on an IO handle, by its kind, as CRuby 4.0 answers: a
+   File::Stat has its own surface; every IO the read/write one and
+   Enumerable; a File adds its times and locks; a socket the BasicSocket
+   surface, and each kind its own class's methods. */
 static sp_bool sp_io_responds(sp_File *f, const char *m) {
   static const char *const statm[] = {
-    "size", "size?", "zero?", "mtime", "atime", "ctime", "birthtime", "mode", "uid",
-    "gid", "ino", "dev", "nlink", "blksize", "blocks", "rdev", "ftype", "file?",
-    "directory?", "symlink?", "pipe?", "socket?", "readable?", "writable?",
-    "executable?", "<=>", NULL };
+    "<", "<=", ">", ">=", "atime", "between?", "birthtime", "blksize", "blockdev?",
+    "blocks", "chardev?", "clamp", "ctime", "dev", "dev_major", "dev_minor",
+    "directory?", "executable?", "executable_real?", "file?", "ftype", "gid",
+    "grpowned?", "ino", "mode", "mtime", "nlink", "owned?", "pipe?", "rdev",
+    "rdev_major", "rdev_minor", "readable?", "readable_real?", "setgid?", "setuid?",
+    "size", "size?", "socket?", "sticky?", "symlink?", "uid", "world_readable?",
+    "world_writable?", "writable?", "writable_real?", "zero?", NULL };
   static const char *const iom[] = {
-    "puts", "print", "printf", "write", "<<", "read", "readpartial", "read_nonblock",
-    "write_nonblock", "gets", "readline", "readlines", "each_line", "each", "each_char",
-    "each_byte", "getc", "getbyte", "readchar", "readbyte", "ungetc", "eof?", "eof",
-    "close", "closed?", "close_read", "close_write", "flush", "fsync", "fdatasync",
-    "sync", "sync=", "fileno", "to_io", "binmode", "binmode?", "tty?", "isatty", "pos",
-    "pos=", "tell", "seek", "rewind", "lineno", "lineno=", "wait", "wait_readable",
-    "wait_writable", "set_encoding", "external_encoding", "internal_encoding", "path",
-    "to_path", "stat", "fcntl", "ioctl", "sysread", "syswrite", "sysseek", "pread",
-    "pwrite", "advise", "autoclose?", "autoclose=", "close_on_exec?", "close_on_exec=",
-    "reopen", NULL };
+    "<<", "advise", "all?", "any?", "autoclose=", "autoclose?", "binmode", "binmode?",
+    "chain", "chunk", "chunk_while", "close", "close_on_exec=", "close_on_exec?",
+    "close_read", "close_write", "closed?", "collect", "collect_concat", "compact",
+    "count", "cycle", "detect", "drop", "drop_while", "each", "each_byte", "each_char",
+    "each_codepoint", "each_cons", "each_entry", "each_line", "each_slice",
+    "each_with_index", "each_with_object", "entries", "eof", "eof?",
+    "external_encoding", "fcntl", "fdatasync", "fileno", "filter", "filter_map", "find",
+    "find_all", "find_index", "first", "flat_map", "flush", "fsync", "getbyte", "getc",
+    "gets", "grep", "grep_v", "group_by", "include?", "inject", "internal_encoding",
+    "ioctl", "isatty", "lazy", "lineno", "lineno=", "map", "max", "max_by", "member?",
+    "min", "min_by", "minmax", "minmax_by", "none?", "one?", "partition", "path", "pid",
+    "pos", "pos=", "pread", "print", "printf", "putc", "puts", "pwrite", "read",
+    "read_nonblock", "readbyte", "readchar", "readline", "readlines", "readpartial",
+    "reduce", "reject", "reopen", "reverse_each", "rewind", "seek", "select",
+    "set_encoding", "set_encoding_by_bom", "slice_after", "slice_before", "slice_when",
+    "sort", "sort_by", "stat", "sum", "sync", "sync=", "sysread", "sysseek", "syswrite",
+    "take", "take_while", "tally", "tell", "timeout", "timeout=", "to_a", "to_h", "to_i",
+    "to_io", "to_path", "to_set", "tty?", "ungetbyte", "ungetc", "uniq", "wait",
+    "wait_priority", "wait_readable", "wait_writable", "write", "write_nonblock", "zip",
+    NULL };
   static const char *const filem[] = {
-    "size", "flock", "truncate", "chmod", "chown", "mtime", "atime", "ctime",
-    "birthtime", "lstat", NULL };
-  static const char *const sockm[] = {
-    "peeraddr", "addr", "getpeername", "getsockname", "local_address",
-    "remote_address", "connect_address", "recv", "recv_nonblock", "send",
-    "setsockopt", "getsockopt", "shutdown", NULL };
+    "atime", "birthtime", "chmod", "chown", "ctime", "flock", "lstat", "mtime", "size",
+    "truncate", NULL };
+  static const char *const basicm[] = {
+    "connect_address", "do_not_reverse_lookup", "do_not_reverse_lookup=", "getpeereid",
+    "getpeername", "getsockname", "getsockopt", "local_address", "recv", "recv_nonblock",
+    "recvmsg", "recvmsg_nonblock", "remote_address", "sendmsg", "sendmsg_nonblock",
+    "setsockopt", "shutdown", NULL };
+  static const char *const ipm[] = { "addr", "peeraddr", "recvfrom", NULL };
+  static const char *const udpm[] = { "bind", "connect", "recvfrom_nonblock", NULL };
+  static const char *const unixm[] = { "addr", "peeraddr", "recv_io", "recvfrom", "send_io", NULL };
   static const char *const serverm[] = { "accept", "accept_nonblock", "listen", "sysaccept", NULL };
+  static const char *const socketm[] = {
+    "accept", "accept_nonblock", "bind", "connect", "connect_nonblock", "ipv6only!",
+    "listen", "recvfrom", "recvfrom_nonblock", "sysaccept", NULL };
+  const char *k;
   if (f->mode && (strcmp(f->mode, "stat") == 0 || strcmp(f->mode, "lstat") == 0))
     return sp_str_in_list(m, statm);
   if (sp_str_in_list(m, iom)) return 1;
-  if (f->is_sock) {
-    if (sp_str_in_list(m, sockm)) return 1;
-    return strstr(sp_io_kind_name(f), "Server") != NULL && sp_str_in_list(m, serverm);
-  }
-  return strcmp(sp_io_kind_name(f), "File") == 0 && sp_str_in_list(m, filem);
+  k = sp_io_kind_name(f);
+  if (!f->is_sock) return strcmp(k, "File") == 0 && sp_str_in_list(m, filem);
+  if (sp_str_in_list(m, basicm)) return 1;
+  if (strcmp(k, "Socket") == 0) return sp_str_in_list(m, socketm);
+  if (strncmp(k, "UNIX", 4) == 0)
+    return sp_str_in_list(m, unixm) || (strcmp(k, "UNIXServer") == 0 && sp_str_in_list(m, serverm));
+  if (sp_str_in_list(m, ipm)) return 1;
+  if (strcmp(k, "UDPSocket") == 0) return sp_str_in_list(m, udpm);
+  return strcmp(k, "TCPServer") == 0 && sp_str_in_list(m, serverm);
 }
 static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
   static const char *const uni[] = {
