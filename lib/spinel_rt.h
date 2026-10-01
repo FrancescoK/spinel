@@ -3879,11 +3879,15 @@ static sp_RbVal sp_poly_round_n(sp_RbVal v, sp_int n) {
     return isinf(f) ? sp_box_int(0) : sp_box_f_to_int(round(x / f) * f);
   }
   if (v.tag == SP_TAG_INT) {
+    sp_int_round_check_ndigits(n);
     if (n >= 0) return v;
     double f = pow(10, (double)(-n));
     return sp_box_int(isinf(f) ? 0 : (sp_int)(round((double)v.v.i / f) * f));
   }
-  if (v.tag == SP_TAG_BIGINT) return v;  /* n < 0 on a bignum is out of scope */
+  if (v.tag == SP_TAG_BIGINT) {
+    sp_int_round_check_ndigits(n);
+    return v;  /* n < 0 on a bignum is out of scope */
+  }
   /* Rational#round(n): a positive precision keeps the Rational, n <= 0 lands
      on an Integer, matching the typed path. */
   if (sp_poly_is_rational(v)) {
@@ -11968,6 +11972,8 @@ static sp_RbVal sp_poly_round_half(sp_RbVal v, sp_int n, sp_RbVal mode) {
   /* The mode is checked before anything answers: `2.round(0, half: :bogus)`
      is an ArgumentError in CRuby even though the Integer arm below returns
      the receiver unchanged. */
+  if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT)
+    sp_int_round_check_ndigits(n);
   int md = sp_round_half_code(mode);
   if (v.tag == SP_TAG_INT) {
     /* an Integer has a tie to break only below the decimal point, and the
@@ -12090,6 +12096,7 @@ static sp_RbVal sp_rational_round_half_v(sp_Rational a, sp_int nd, sp_RbVal mode
    (`1.round(0, half: :bogus)` is an ArgumentError). The no-digits form is
    the one CRuby answers without looking at the keywords at all. */
 static sp_int sp_int_round_half_v(sp_int v, sp_int nd, sp_RbVal mode) {
+  sp_int_round_check_ndigits(nd);
   int md = sp_round_half_code(mode);
   return sp_int_round_half(v, nd, md < 0 ? 1 : md);
 }
