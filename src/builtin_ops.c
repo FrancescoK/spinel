@@ -500,6 +500,10 @@ static const BuiltinOp bop_rows[] = {
   { TY_RATIONAL, "quo", 1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_rational_div($r, $q0)", RAT_IR },
   /* fdiv: float division whatever the operand; div: floor division to an
      Integer (Numeric#div) */
+  /* fdiv(Complex) takes the quotient's Float, raising RangeError for a
+     nonzero imaginary part. */
+  { TY_RATIONAL, "fdiv",        1,   1, BF_ANY, TY_FLOAT,      BOPE_TEMPLATE,
+    "sp_complex_to_f(sp_complex_div(((sp_Complex){sp_rational_to_f($r), 0, 1}), $e0))", BOP_K(TY_COMPLEX) },
   { TY_RATIONAL, "fdiv",        1,   1, BF_ANY, TY_FLOAT,      BOPE_TEMPLATE, "(sp_rational_to_f($r) / sp_rational_to_f($e0))", BOP_K(TY_RATIONAL) },
   { TY_RATIONAL, "fdiv",        1,   1, BF_ANY, TY_FLOAT,      BOPE_TEMPLATE, "(sp_rational_to_f($r) / $f0)", BOP_K(TY_INT) | BOP_K(TY_FLOAT) },
   { TY_RATIONAL, "fdiv",        0, 127, BF_ANY, TY_FLOAT,      BOPE_NONE },
