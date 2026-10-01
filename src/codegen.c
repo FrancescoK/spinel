@@ -10227,7 +10227,12 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int defcls = -1;
   /* `super` inside a class method resolves through the parent's CLASS-method
      chain; the instance chain would miss `def self.x` entirely. */
-  int mi = p < 0 ? -1
+  /* the next shadow in this class -- an earlier include's, prepend's or
+     extend's copy -- is the parent here, as in emit_super's call form */
+  const char *shadow = comp_super_shadow(c, s);
+  int mi = shadow ? (s->is_cmethod ? comp_cmethod_in_class(c, s->class_id, shadow)
+                                   : comp_method_in_class(c, s->class_id, shadow))
+         : p < 0 ? -1
          : s->is_cmethod ? comp_cmethod_in_chain(c, p, s->name, &defcls)
                          : comp_method_in_chain(c, p, s->name, &defcls);
   if (mi < 0) return 0;
