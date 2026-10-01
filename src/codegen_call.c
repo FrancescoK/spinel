@@ -6359,7 +6359,9 @@ static int emit_poly_kw_param(Compiler *c, Scope *ms, int a, const PolyKw *kw,
     TyKind at = kw->kwty[e_found];
     char tn[32]; snprintf(tn, sizeof tn, "_t%d", kw->kwtmp[e_found]);
     if (kpt == TY_POLY && at != TY_POLY) emit_boxed_text(c, at, tn, pa);
-    else if (at == TY_POLY && kpt != TY_POLY && kpt != TY_UNKNOWN) emit_unbox_text(c, kpt, tn, pa);
+    /* a boxed value may be nil, which an Integer or Float keyword takes as
+       its own nil: the plain unbox read the zero under the nil tag */
+    else if (at == TY_POLY && kpt != TY_POLY && kpt != TY_UNKNOWN) emit_unbox_nilable_text(c, kpt, tn, pa);
     else { emit_obj_upcast_prefix(c, kpt, at, pa); buf_puts(pa, tn); }
   }
   else emit_arg_or_default(c, ms, a, -1, pa);
@@ -7631,7 +7633,9 @@ static void poly_arm_layout(Compiler *c, Scope *ms, const PolyArgs *A, ArgLayout
 static void emit_poly_temp_as(Compiler *c, TyKind pt, int tmp, TyKind at, Buf *pa) {
   char tn[32]; snprintf(tn, sizeof tn, "_t%d", tmp);
   if (pt == TY_POLY && at != TY_POLY) emit_boxed_text(c, at, tn, pa);
-  else if (at == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) emit_unbox_text(c, pt, tn, pa);
+  /* a boxed argument may be nil, which an Integer or Float parameter takes
+     as its own nil: the plain unbox read the zero under the nil tag */
+  else if (at == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) emit_unbox_nilable_text(c, pt, tn, pa);
   /* a subclass argument into an ancestor-typed parameter: layout-compatible,
      but C wants it spelled (#3418) */
   else { emit_obj_upcast_prefix(c, pt, at, pa); buf_puts(pa, tn); }

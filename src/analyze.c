@@ -25528,7 +25528,16 @@ static void mark_nullable_int_locals(Compiler *c) {
          may hold (method_recv_nodes). A bound builtin's wrapper carries its
          receiver in the first parameter and is left alone. */
       const char *cn = nt_str(nt, id, "name");
-      if (mi >= 0) changed |= mark_nullable_params_of_call(c, id, mi);
+      /* a boxed receiver binds whichever method of the name its class has:
+         the dispatch's arms are every one of them, which the lookups above
+         cannot name, and each takes the nil an argument can be */
+      if (mi < 0 && recv >= 0 && cn && infer_type(c, recv) == TY_POLY) {
+        for (int k = 1; k < c->nscopes; k++)
+          if (c->scopes[k].name && sp_streq(c->scopes[k].name, cn) && !c->scopes[k].is_cmethod &&
+              c->scopes[k].class_id >= 0)
+            changed |= mark_nullable_params_of_call(c, id, k);
+      }
+      else if (mi >= 0) changed |= mark_nullable_params_of_call(c, id, mi);
       else if (recv >= 0 && cn && (sp_streq(cn, "call") || sp_streq(cn, "[]") || sp_streq(cn, "()"))) {
         TyKind rt = infer_type(c, recv);
         int *mns = NULL;
