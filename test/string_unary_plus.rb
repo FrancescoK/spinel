@@ -51,6 +51,15 @@ b = +b
 b << "x"
 p b
 
+# a raise later in a chain keeps the appends already done
+def boom = raise("boom")
+cr = [1, +"a"][1]
+begin
+  cr << "b" << boom
+rescue RuntimeError
+end
+p cr
+
 def build(status_lines, status)
   out = +(status_lines[status] || "HTTP/1.1 #{status} Unknown\r\n")
   { "a" => "1", "b" => "2" }.each { |key, val| out << key << ": " << val << "\r\n" }

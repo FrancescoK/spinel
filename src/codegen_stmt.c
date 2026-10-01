@@ -13315,6 +13315,28 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
          sp_streq(nt_type(nt, slot), "InstanceVariableReadNode")) &&
         (slot == recv || comp_ntype(c, slot) == TY_POLY)) {
       int was = ++g_tmp, got = ++g_tmp;
+      int user_shl = 0;
+      for (int k = 0; k < c->nclasses && !user_shl; k++)
+        if (comp_poly_arm_defines_n(c, k, "<<", 1)) user_shl = 1;
+      if (slot != recv && !user_shl) {
+        /* A real chain: one step at a time, each storing back before the
+           next argument runs, so a raise there keeps the appends done so far
+           (CRuby has them in the String already). The next step appends to
+           what the last answered, as the chain does. */
+        int steps[64], ns = 0;
+        for (int n = id; n != slot && ns < 64; n = nt_ref(nt, n, "receiver")) steps[ns++] = n;
+        emit_indent(b, indent);
+        buf_printf(b, "{ sp_RbVal _t%d = ", was); emit_expr(c, slot, b);
+        buf_printf(b, "; sp_RbVal _t%d = _t%d;", got, was);
+        for (int k = ns - 1; k >= 0; k--) {
+          int sac = 0; const int *sav = call_args(nt, steps[k], &sac);
+          buf_printf(b, " _t%d = sp_poly_shl(_t%d, ", got, got); emit_boxed(c, sav[0], b);
+          buf_printf(b, "); if (_t%d.tag == SP_TAG_STR) ", was); emit_expr(c, slot, b);
+          buf_printf(b, " = _t%d;", got);
+        }
+        buf_puts(b, " }\n");
+        return 1;
+      }
       emit_indent(b, indent);
       buf_printf(b, "{ sp_RbVal _t%d = ", was); emit_expr(c, slot, b);
       buf_printf(b, "; sp_RbVal _t%d = ", got); emit_call(c, id, b);
