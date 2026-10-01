@@ -710,7 +710,9 @@ m(*a)`, `def w(*) = m(*)`, `def w(...) = m(...)`, `def m(*) = super`) and
 through a parameter a method hands on to `super` or a call after a `**h`
 call typed it POLY; through those, one held by a block parameter, a
 variable a proc captures, an instance variable that is no shared String,
-or a global or class variable is refused.
+or a global or class variable is refused. A String variable in or past a
+splat into `super` or `yield` (`super(*s)`, `yield(*e, v)`), bound to a
+parameter that appends, is refused as well.
 
 Each is lifted in turn, and this list shrinks with it. Until then, return
 the String from the method and assign it, or append to it in the caller. A

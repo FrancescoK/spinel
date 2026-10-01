@@ -19185,12 +19185,93 @@ int fwd_rest_elem_appends(Compiler *c, int mi, int i) {
   fwd_memo_fresh(c);
   return (int)((fwd_rest_bits(c, mi, 0) >> i) & 1u);
 }
+int fwd_param_appends_at(Compiler *c, int mi, int j) {
+  if (mi < 0 || mi >= c->nscopes || j < 0) return 0;
+  fwd_memo_fresh(c);
+  return fwd_param_appends(c, mi, j, 0);
+}
 int fwd_poly_param_appends(Compiler *c, int mi, int j) {
   if (mi < 0 || mi >= c->nscopes || j < 0 || j >= c->scopes[mi].nparams) return 0;
   LocalVar *q = c->scopes[mi].pnames[j] ? scope_local(&c->scopes[mi], c->scopes[mi].pnames[j]) : NULL;
   if (!q || q->type != TY_POLY || an_param_mutated_in_place(c, mi, j)) return 0;
   fwd_memo_fresh(c);
   return fwd_poly_param_handed_on(c, mi, j, 0);
+}
+
+/* A String parameter a `super` hands on to a parameter that appends: one
+   an included module's copy takes boxed, which no override family widens
+   the child's to (the zsuper gathers it, a child's `**o` beside it). Such a
+   parameter takes the handle, which the gather boxes, and its callers are
+   pulled in as a handle method's are. Answers 1 when it changed anything. */
+static int fwd_super_string_params(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int pass = 0; pass < 2; pass++) {
+    NodeKind sk = pass ? NK_ForwardingSuperNode : NK_SuperNode;
+    for (int q = comp_kind_first(c, sk); q >= 0; q = comp_kind_next(c, q)) {
+      if (nt_kind(nt, q) != sk) continue;
+      Scope *m = comp_scope_of(c, q);
+      int t = m && m->name && m->class_id >= 0 ? a_super_target(c, m) : -1;
+      if (t < 0) continue;
+      Scope *tm = &c->scopes[t];
+      for (int j = 0; j < tm->nparams && j < 32; j++) {
+        LocalVar *d = tm->pnames[j] ? scope_local(tm, tm->pnames[j]) : NULL;
+        if (!d || !d->is_param || d->is_block_param || !fwd_param_appends(c, t, j, 0)) continue;
+        int src = -1;
+        if (pass) src = zsuper_param_source(c, m, tm, j);
+        else {
+          int an = arg_layout_param_node(c, tm, q, j, NULL);
+          if (an >= 0 && nt_kind(nt, an) == NK_LocalVariableReadNode) src = an_param_idx(m, nt_str(nt, an, "name"));
+        }
+        LocalVar *p = src >= 0 && src < m->nparams && m->pnames[src] ? scope_local(m, m->pnames[src]) : NULL;
+        if (!p || !p->is_param || p->is_block_param) continue;
+        /* a String into a boxed parameter: the child's takes the handle */
+        if (d->type == TY_POLY && p->type == TY_STRING && !p->byref_out && !p->is_cell) {
+          p->type = TY_STRBUF; p->str_shared = 1; changed = 1;
+        }
+        /* a box, which carries the caller's handle (fwd_poly_param_handed_on),
+           into a lent slot: the parent's takes the handle, as a handle
+           argument at a call converts one (convert_byref_handle_params) */
+        else if (p->type == TY_POLY && d->byref_out) {
+          d->byref_out = 0; d->is_cell = 0; d->type = TY_STRBUF; d->str_shared = 1; changed = 1;
+        }
+      }
+    }
+  }
+  return changed;
+}
+
+/* The String variables a call's splat of an Array literal, or of a local
+   every write of which is one, lays at positions from `p` on: out[i] the
+   read, at[i] its position, direct[i] 1 for an element of a literal written
+   in the call (the call boxes it) and 0 for one of a local's (the container
+   rule makes the local Array hold the handle). Answers the count. */
+static int fwd_splat_lit_reads(Compiler *c, int splat, int p, int *out, int *at, int *direct, int cap) {
+  const NodeTable *nt = c->nt;
+  int x = nt_ref(nt, splat, "expression"), lits[16], nl = 0, inl = 0;
+  if (x >= 0 && nt_kind(nt, x) == NK_ArrayNode) { lits[nl++] = x; inl = 1; }
+  else if (x >= 0 && nt_kind(nt, x) == NK_LocalVariableReadNode) {
+    const char *xn = nt_str(nt, x, "name");
+    Scope *xs = xn ? comp_scope_of(c, x) : NULL;
+    for (int w = xs ? comp_lvw_first_sc(c, (int)(xs - c->scopes), xn) : -1; w >= 0 && nl < 16; w = comp_lvw_next_sc(c, w)) {
+      if (comp_scope_of(c, w) != xs || !nt_str(nt, w, "name") || !sp_streq(nt_str(nt, w, "name"), xn)) continue;
+      int wv = nt_kind(nt, w) == NK_LocalVariableWriteNode ? nt_ref(nt, w, "value") : -1;
+      if (wv < 0 || nt_kind(nt, wv) != NK_ArrayNode) return 0;
+      lits[nl++] = wv;
+    }
+  }
+  int n = 0;
+  for (int l = 0; l < nl; l++) {
+    int en = 0; const int *ev = nt_arr(nt, lits[l], "elements", &en);
+    for (int e = 0; e < en && n < cap; e++) {
+      if (nt_kind(nt, ev[e]) == NK_SplatNode) break;
+      if (nt_kind(nt, ev[e]) != NK_LocalVariableReadNode) continue;
+      TyKind et = comp_ntype(c, ev[e]);
+      if (et != TY_STRING && et != TY_STRBUF) continue;
+      out[n] = ev[e]; at[n] = p + e; direct[n] = inl; n++;
+    }
+  }
+  return n;
 }
 
 /* Pull the String variables a call gathers into a rest whose elements the
@@ -19202,6 +19283,7 @@ static int promote_forwarded_rest_args(Compiler *c) {
   g_fwd_codegen = 0;
   fwd_memo_fresh(c);
   g_fwd_codegen = 0;
+  changed |= fwd_super_string_params(c);
   for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
     if (nt_kind(nt, u) != NK_CallNode) continue;
     int a = nt_ref(nt, u, "arguments");
@@ -19216,7 +19298,15 @@ static int promote_forwarded_rest_args(Compiler *c) {
     if (pos > 0 && (nt_kind(nt, av[pos - 1]) == NK_KeywordHashNode || nt_kind(nt, av[pos - 1]) == NK_BlockArgumentNode)) pos--;
     if (pos > 0 && nt_kind(nt, av[pos - 1]) == NK_KeywordHashNode) pos--;
     for (int k = m->rest_idx; k < pos - m->npost_rest && k - m->rest_idx < 16; k++) {
-      if (nt_kind(nt, av[k]) == NK_SplatNode) break;
+      /* a splat of an Array literal, or of a local every write of which is
+         one, lays its elements from here on (`w(*s)` with `s = [v]`) */
+      if (nt_kind(nt, av[k]) == NK_SplatNode) {
+        int out[16], at[16], direct[16];
+        int ne = fwd_splat_lit_reads(c, av[k], k - m->rest_idx, out, at, direct, 16);
+        for (int e = 0; e < ne; e++)
+          if (at[e] < 16 && ((bits >> at[e]) & 1u)) changed |= dyn_pull_arg(c, out[e], direct[e]);
+        break;
+      }
       if (!((bits >> (k - m->rest_idx)) & 1u) || nt_kind(nt, av[k]) != NK_LocalVariableReadNode) continue;
       TyKind at = comp_ntype(c, av[k]);
       if (at != TY_STRING && at != TY_STRBUF) continue;
@@ -25010,6 +25100,7 @@ void analyze_program(Compiler *c) {
     ch |= promote_shared_stored_strings(c);
     ch |= promote_dyncall_string_args(c);
     ch |= promote_spread_string_args(c);
+    ch |= promote_forwarded_rest_args(c);
     ch |= promote_append_accumulators(c);
     ch |= infer_ivar_types(c);
     ch |= infer_cvar_types(c);
@@ -25215,6 +25306,7 @@ void analyze_program(Compiler *c) {
         { int _w = promote_shared_stored_strings(c); ch |= _w; ch_other |= _w; }
         { int _w = promote_dyncall_string_args(c); ch |= _w; ch_other |= _w; }
         { int _w = promote_spread_string_args(c); ch |= _w; ch_other |= _w; }
+        { int _w = promote_forwarded_rest_args(c); ch |= _w; ch_other |= _w; }
         { int _w = promote_append_accumulators(c); ch |= _w; ch_other |= _w; }
         { int _w = widen_shared_cmp_params(c); ch |= _w; ch_other |= _w; }
         { int _w = infer_cvar_types(c); ch |= _w; ch_other |= _w; }

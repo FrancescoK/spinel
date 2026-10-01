@@ -9943,6 +9943,7 @@ static void emit_super_block_arg(Compiler *c, int id, Scope *s, Scope *pm, int l
 int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   Scope *s = comp_scope_of(c, id);
   if (s->class_id < 0 || !s->name) return 0;
+  refuse_super_splat(c, id, a_super_target(c, s));
   int p = comp_super_parent(c, s->class_id, s->is_cmethod);
   int defcls = -1;
   /* `super` inside a class method resolves through the parent's CLASS-method
@@ -10262,6 +10263,8 @@ static int struct_super_handle_arg(Compiler *c, int v, Buf *b) {
 }
 
 void emit_super(Compiler *c, int id, Buf *b) {
+  { Scope *ss = comp_scope_of(c, id);
+    if (ss && ss->class_id >= 0 && ss->name) refuse_super_splat(c, id, a_super_target(c, ss)); }
   Scope *s = comp_scope_of(c, id);
   if (s->class_id < 0 || !s->name) { unsupported(c, id, "super (not in a method)"); return; }
   const char *ty = nt_type(c->nt, id);

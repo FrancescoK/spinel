@@ -23164,6 +23164,17 @@ void refuse_yield_string_copies(Compiler *c, int yargc, const int *yargv) {
       }
       continue;
     }
+    if (nt_kind(c->nt, yargv[k]) == NK_SplatNode && !spread) {
+      /* a String in or past the splat: its position is the run time's,
+         and the proc takes a copy wherever it lands */
+      int fs, sv = splat_string_var(c, yargv, yargc, &fs);
+      for (int j = k; sv >= 0 && j < 16; j++) {
+        DynReach r;
+        dyn_value_reach(c, g_yield_proc_expr, j, &r);
+        if (r.app) refuse_string_copy(c, sv, NULL, r.pname, "a splat into a yield",
+                                      "through a splat into a yield");
+      }
+    }
     /* the positions after a splat depend on its length; the keywords that
        follow it bind by name all the same, so the scan goes on to them */
     if (nt_kind(c->nt, yargv[k]) == NK_SplatNode) spread = 1;
@@ -23421,6 +23432,84 @@ static void refuse_changed_splat(Compiler *c, int id, const char *name, int recv
   char mt[96]; if (mname) snprintf(mt, sizeof mt, "`%s`", mname);
   refuse_string_copy(c, sp, mname ? mt : NULL, pname, "a splat of an Array the program changes",
                      "through a splat of an Array that holds a copy");
+}
+
+/* A String variable a call, `super` or `yield` hands over at or past its
+   first splat: one written after the splat, or an element of a splatted
+   Array literal or of a local every write of which is one. Its position is
+   the run time's, and the binders hand it over as a copy. Answers the
+   variable's read and sets *fs to the splat's index, or -1. */
+int splat_string_var(Compiler *c, const int *av, int ac, int *fs) {
+  const NodeTable *nt = c->nt;
+  *fs = -1;
+  for (int k = 0; k < ac; k++) {
+    NodeKind ak = nt_kind(nt, av[k]);
+    if (ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) break;
+    if (ak == NK_SplatNode) {
+      if (*fs < 0) *fs = k;
+      int x = nt_ref(nt, av[k], "expression"), lits[16], nl = 0;
+      if (x >= 0 && nt_kind(nt, x) == NK_ArrayNode) lits[nl++] = x;
+      else if (x >= 0 && nt_kind(nt, x) == NK_LocalVariableReadNode) {
+        const char *xn = nt_str(nt, x, "name");
+        Scope *xs = xn ? comp_scope_of(c, x) : NULL;
+        for (int w = xs ? comp_lvw_first_sc(c, (int)(xs - c->scopes), xn) : -1; w >= 0 && nl < 16;
+             w = comp_lvw_next_sc(c, w)) {
+          if (comp_scope_of(c, w) != xs || !nt_str(nt, w, "name") || !sp_streq(nt_str(nt, w, "name"), xn)) continue;
+          int wv = nt_kind(nt, w) == NK_LocalVariableWriteNode ? nt_ref(nt, w, "value") : -1;
+          if (wv >= 0 && nt_kind(nt, wv) == NK_ArrayNode) lits[nl++] = wv;
+        }
+      }
+      for (int l = 0; l < nl; l++) {
+        int en = 0; const int *ev = nt_arr(nt, lits[l], "elements", &en);
+        for (int e = 0; e < en; e++) {
+          int shared;
+          /* a read marked as the handle rides the Array as one */
+          if (strvar_arg(c, ev[e], &shared) && !c->strbuf_box[ev[e]]) return ev[e];
+        }
+      }
+      continue;
+    }
+    int shared;
+    if (*fs >= 0 && strvar_arg(c, av[k], &shared) && !c->strbuf_box[av[k]]) return av[k];
+  }
+  return -1;
+}
+
+/* `super(*s)`, `super(*e, v)` into a method that appends to a parameter at
+   or past the splat's position: not shared yet, refused rather than
+   copied. */
+void refuse_super_splat(Compiler *c, int id, int target) {
+  const NodeTable *nt = c->nt;
+  if (target < 0 || nt_kind(nt, id) != NK_SuperNode) return;
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  int fs;
+  int sv = splat_string_var(c, av, ac, &fs);
+  if (sv < 0) return;
+  Scope *m = &c->scopes[target];
+  for (int j = fs; j < m->nparams && j < fs + 16; j++) {
+    if (!fwd_param_appends_at(c, target, j)) continue;
+    int shared;
+    const char *kind = strvar_arg(c, sv, &shared);
+    char mt[96]; snprintf(mt, sizeof mt, "`%s`", m->name ? m->name : "?");
+    char why[96]; snprintf(why, sizeof why, "through a splat into `super`");
+    (void)kind;
+    refuse_string_copy(c, sv, mt, m->pnames[j] ? m->pnames[j] : "?", "a splat into `super`", why);
+  }
+}
+
+/* `yield(*s)`, `yield(*e, v)` into a literal block that appends to a
+   parameter at or past the splat's position: refused as above. */
+void refuse_yield_splat(Compiler *c, int blk, int yc, const int *yv) {
+  if (blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode) return;
+  int fs;
+  int sv = splat_string_var(c, yv, yc, &fs);
+  if (sv < 0) return;
+  for (int k = fs; k < fs + 16 && k < 16; k++) {
+    if (!dyn_block_appends(c, blk, k)) continue;
+    refuse_string_copy(c, sv, "a block", proc_param_name(c, blk, k), "a splat into a yield",
+                       "through a splat into a yield");
+  }
 }
 
 /* The method a static call names, for the forwarding refusal: by the

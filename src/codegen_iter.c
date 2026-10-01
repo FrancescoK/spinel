@@ -2184,6 +2184,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   #define BI_BLOCK_SIDE() bi_block_side(&bi)
   #define BI_METHOD_SIDE() bi_method_side(&bi)
   BlockAliases al = { .n = 0 };
+  refuse_yield_splat(c, blk, yc, yargs);
   if (as_expr) buf_puts(b, "({ ");
   emit_block_binds(c, blk, yargs, yc, b, indent, as_expr, &bi, &al);
   /* Keep the rename table active for the block body: the block's variable
