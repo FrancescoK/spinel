@@ -12398,17 +12398,16 @@ static void mark_empty_hash_receivers(Compiler *c) {
    - not an `initialize`: its callers are the sp_X_new wrappers, which the
      class values, `raise`, `allocate` and the poly `new` dispatch all call
      with values;
-   - the param is mutated via a receiver-reassigning string mutator (`<<`,
-     replace, prepend, insert, clear, concat, bang forms) or passed on into
+   - the param is mutated via a receiver-reassigning string mutator (one
+     sp_str_mutator names, or a bang form) or passed on into
      another method's byref slot (fixpoint), and is never PLAIN-reassigned:
      CRuby `s = ...` rebinds the local invisibly to the caller, which a
      write-through cell would wrongly propagate. */
 int an_str_mutator_name(const char *nm) {
   size_t l = nm ? strlen(nm) : 0;
   if (!l) return 0;
-  return sp_streq(nm, "<<") || sp_streq(nm, "concat") || sp_streq(nm, "replace") ||
-         sp_streq(nm, "prepend") || sp_streq(nm, "insert") || sp_streq(nm, "clear") ||
-         sp_streq(nm, "[]=") || (l > 1 && nm[l - 1] == '!');
+  /* the one table of String mutators (sp_str_mutator), and any bang name */
+  return sp_str_mutator(nm, SP_MUT_LOCAL) || (l > 1 && nm[l - 1] == '!');
 }
 
 /* ANY method scope with this name, or -1. Byref is decided per NAME GROUP --
