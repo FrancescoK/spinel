@@ -23812,6 +23812,7 @@ void analyze_program(Compiler *c) {
   }
   mark_sym_proc_blocks(c);               /* { |_spx| _spx.m } is `&:m` */
   desugar_root_scoped_constants(c);      /* ::Name -> Name (#4801) */
+  desugar_builtin_reopen_named_superclass(c); /* class Rational < Numeric -> class Rational */
   desugar_engine_branches(c);
   desugar_def_unless_method_defined(c); /* def m .. end unless method_defined?(:m), answered in program order --
                                            ahead of the runtime-condition defs, which it answers statically */
