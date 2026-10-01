@@ -178,6 +178,19 @@ static inline sp_String*sp_String_new_unfrozen(const char*s){
   if(bin){r->binary=1;sp_fd_publish(r);}
   return r;
 }
+/* force_encoding / encode! on a handle: the ASCII-8BIT tag goes on the
+   handle, where every later growth re-stamps it from (sp_fd_publish), and
+   into the bytes now; mode 1 sets it, 0 clears it, -1 (another encoding)
+   leaves it. A frozen String refuses either way, as CRuby does (#3334). */
+static inline sp_String*sp_String_force_encoding(sp_String*s,int mode){
+  if(sp_String_is_frozen(s)){sp_raise_frozen_str(s->data);return s;}
+  if(mode<0)return s;
+  s->binary=(unsigned)mode;
+  sp_str_hdr*h=(sp_str_hdr*)sp_fd_base(s->data);
+  if(mode)h->size|=SP_STR_SIZE_BINARY;else h->size&=~SP_STR_SIZE_BINARY;
+  sp_str_lcache_drop(s->data);
+  return s;
+}
 static inline const char*sp_String_cstr(sp_String*s){return s->data;}
 static inline int64_t sp_String_length(sp_String*s){return s->len;}
 
