@@ -5226,6 +5226,11 @@ static void rsc_mark_nested_defs(const NodeTable *nt, int id, unsigned char *see
       rsc_mark_nested_defs(nt, nd->a[j].ids[k2], seen, names, nn, depth + 1);
 }
 
+static int rsc_shadowed(char **names, int nn, const char *nm) {
+  for (int k = 0; k < nn; k++) if (sp_streq(nm, names[k])) return 1;
+  return 0;
+}
+
 /* Errno::EWOULDBLOCK -> Errno::EAGAIN where the two share a number (and
    EOPNOTSUPP -> ENOTSUP, EDEADLOCK -> EDEADLK): CRuby makes the later name a
    constant for the earlier class, so they are one class -- equal, rescued by
@@ -5287,9 +5292,7 @@ int desugar_root_scoped_constants(Compiler *c) {
     if (par >= 0 && !engine_const(nt, par, "Object")) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
-    int shadowed = 0;
-    for (int k = 0; k < nn; k++) if (sp_streq(nm, names[k])) { shadowed = 1; break; }
-    if (shadowed) continue;
+    if (rsc_shadowed(names, nn, nm)) continue;
     nt_node_set_type(nt, id, "ConstantReadNode");
     nt_node_set_ref(nt, id, "parent", -1);
     changed = 1;
@@ -5302,7 +5305,7 @@ int desugar_root_scoped_constants(Compiler *c) {
     int rv = nt_ref(nt, id, "receiver");
     const char *rn = nt_kind(nt, rv) == NK_ConstantReadNode ? nt_str(nt, rv, "name") : NULL;
     if (!cn || !comp_is_wellknown_const(cn) || !builtin_class_id(rn) || sp_streq(rn, "BasicObject")) continue;
-    nt_node_set_type(nt, id, "ConstantReadNode");
+    nt_node_set_type(nt, id, rsc_shadowed(names, nn, cn) ? "ConstantPathNode" : "ConstantReadNode");
     nt_node_set_str(nt, id, "name", cn);
     nt_node_set_ref(nt, id, "receiver", -1); nt_node_set_ref(nt, id, "arguments", -1);
     changed = 1;
