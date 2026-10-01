@@ -11827,7 +11827,12 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
      live (a --debug build). Without it there is no location to print, and an
      uncaught raise in a multi-file program said only what went wrong, never
      where (#3974). Frames are method-granularity, so there is no `:line:`. */
-  if (sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; sp_exc_obj[sp_exc_top-1] = sp_pending_exc_obj; sp_pending_exc_obj = NULL; sp_pending_cause = sp_explicit_cause_set ? sp_explicit_cause : (sp_cur_handled() ? sp_cur_handled() : sp_inflight_cause); sp_inflight_cause = NULL; sp_explicit_cause = NULL; sp_explicit_cause_set = 0; sp_last_exc_cls = cls; sp_handler_stacks_unwind(); sp_poly_recur_unwind(); longjmp(sp_exc_stack[sp_exc_top-1], 1); }
+  /* The implicit cause is the exception being handled, unless that is the
+     very object raised: re-raised from its own rescue (a bare `raise`,
+     `raise e`, or through an ensure), it keeps the cause it had instead of
+     becoming its own -- the pending cause is that cause, so a rescue that
+     stores the pending cause outright (a modifier rescue) keeps it too. */
+  if (sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; sp_exc_obj[sp_exc_top-1] = sp_pending_exc_obj; sp_pending_exc_obj = NULL; sp_pending_cause = sp_explicit_cause_set ? sp_explicit_cause : sp_cur_handled() ? (sp_cur_handled() == sp_exc_obj[sp_exc_top-1] ? (void *)((sp_Exception *)sp_cur_handled())->cause : sp_cur_handled()) : sp_inflight_cause; sp_inflight_cause = NULL; sp_explicit_cause = NULL; sp_explicit_cause_set = 0; sp_last_exc_cls = cls; sp_handler_stacks_unwind(); sp_poly_recur_unwind(); longjmp(sp_exc_stack[sp_exc_top-1], 1); }
   /* Uncaught SystemExit terminates silently with its status (Kernel#exit).
      Read the status BEFORE the hooks run: it lives in the pending exception
      object, which nothing roots once the hooks start allocating. */
