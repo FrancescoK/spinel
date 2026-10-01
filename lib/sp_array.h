@@ -199,6 +199,8 @@ sp_bool sp_FloatArray_intersect_p(sp_FloatArray *a, sp_FloatArray *b);
 sp_FloatArray *sp_FloatArray_union(sp_FloatArray *a, sp_FloatArray *b);
 sp_FloatArray *sp_FloatArray_difference(sp_FloatArray *a, sp_FloatArray *b);
 sp_FloatArray *sp_FloatArray_uniq(sp_FloatArray *a);
+void sp_FloatArray_uniq_bang(sp_FloatArray *a);
+void sp_FloatArray_insert(sp_FloatArray *a, sp_int i, sp_float v);
 
 /* ============================= sp_PtrArray ============================ */
 /* Array of void* pointers (user-class arrays, FFI pointer arrays). */
@@ -366,6 +368,7 @@ sp_FloatArray *sp_FloatArray_nil_sum_ck(sp_FloatArray *a, int float_seed);
 /* unshift / insert of a value that may be nil (see sp_IntArray_push_nilable) */
 #define sp_IntArray_unshift_nilable(a, v) ({ sp_IntArray *_un_a = (a); sp_int _un_v = (v); if (SP_UNLIKELY(_un_v == SP_INT_NIL)) sp_IntArray_note_nil(_un_a); sp_IntArray_unshift(_un_a, _un_v); })
 #define sp_IntArray_insert_nilable(a, i, v) ({ sp_IntArray *_in_a = (a); sp_int _in_i = (i); sp_int _in_v = (v); if (SP_UNLIKELY(_in_v == SP_INT_NIL)) sp_IntArray_note_nil(_in_a); sp_IntArray_insert(_in_a, _in_i, _in_v); })
+#define sp_FloatArray_insert_nilable(a, i, v) ({ sp_FloatArray *_in_a = (a); sp_int _in_i = (i); sp_float _in_v = (v); if (SP_UNLIKELY(sp_float_is_nil(_in_v))) sp_FloatArray_note_nil(_in_a); sp_FloatArray_insert(_in_a, _in_i, _in_v); })
 #define sp_FloatArray_unshift_nilable(a, v) ({ sp_FloatArray *_un_a = (a); sp_float _un_v = (v); if (SP_UNLIKELY(sp_float_is_nil(_un_v))) sp_FloatArray_note_nil(_un_a); sp_FloatArray_unshift(_un_a, _un_v); })
 /* The elements that are not nil, for all? / any? / none? / one?: the length,
    unless the array is `marked` (analyze saw a nil stored) or may_nil is set. */

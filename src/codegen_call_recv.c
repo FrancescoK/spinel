@@ -3685,7 +3685,7 @@ else {
           return 1;
         }
       }
-      if (sp_streq(name, "uniq!") && argc == 0 && (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY)) {
+      if (sp_streq(name, "uniq!") && argc == 0 && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY || rt == TY_STR_ARRAY)) {
         /* value form: self when changed, nil when a no-op (CRuby) */
         buf_printf(b, "sp_%sArray_uniq_bangq(", k); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
@@ -3979,7 +3979,7 @@ else {
         buf_printf(b, "); _t%d; })", t0);
         return 1;
       }
-      if (sp_streq(name, "insert") && argc >= 2 && (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY)) {
+      if (sp_streq(name, "insert") && argc >= 2 && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY || rt == TY_STR_ARRAY)) {
         /* insert(i, v1, v2, ...): normalize a negative index ONCE against the
            pre-insert length (per-element normalization would drift as the
            array grows), then insert consecutively. */

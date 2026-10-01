@@ -7149,6 +7149,12 @@ static sp_RbVal sp_IntArray_uniq_bangq(sp_IntArray *a) {
   sp_IntArray_uniq_bang(a);
   return a->len != n ? sp_box_int_array(a) : sp_box_nil();
 }
+static sp_RbVal sp_FloatArray_uniq_bangq(sp_FloatArray *a) {
+  if (!a) return sp_box_nil();
+  sp_int n = a->len;
+  sp_FloatArray_uniq_bang(a);
+  return a->len != n ? sp_box_float_array(a) : sp_box_nil();
+}
 /* uniq dedups with eql? (class-strict: 1 and 1.0 both survive), as CRuby. */
 static sp_bool sp_poly_eql(sp_RbVal a, sp_RbVal b);
 static void sp_PolyArray_uniq_bang(sp_PolyArray*a){sp_gc_wb((void*)a); if(!a||a->frozen){if(a&&a->frozen)sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);return;}for(sp_int i=0;i<a->len;){int dup=0;for(sp_int j=0;j<i;j++){if(sp_poly_eql(a->data[j],a->data[i])){dup=1;break;}}if(dup){for(sp_int k2=i;k2<a->len-1;k2++)a->data[k2]=a->data[k2+1];a->len--;}
@@ -8379,19 +8385,9 @@ static sp_RbVal sp_poly_insert(sp_RbVal v, sp_int i, sp_RbVal x) {
       case SP_BUILTIN_INT_ARRAY:
         sp_IntArray_insert_nilable((sp_IntArray *)v.v.p, i, sp_poly_elem_i(x));
         return v;
-      case SP_BUILTIN_FLT_ARRAY: {
-        sp_FloatArray *a = (sp_FloatArray *)v.v.p;
-        sp_int orig = i, i2 = i < 0 ? i + a->len + 1 : i;
-        if (i2 < 0)
-          sp_raise_cls("IndexError", sp_sprintf("index %lld too small for array; minimum: %lld",
-                                                (long long)orig, (long long)(-(a->len + 1))));
-        /* the gap before an index past the end is nil, the slot's sentinel,
-           as sp_IntArray_insert pads it -- 0.0 was a number CRuby never put there */
-        if (i2 > a->len) SP_MAY_NIL(a) = 1;
-        while (i2 > a->len) sp_FloatArray_push(a, sp_float_nil());
-        { sp_float fv = sp_poly_elem_f(x); sp_FloatArray_splice(a, i2, 0, &fv, 1); if (SP_UNLIKELY(sp_float_is_nil(fv))) sp_FloatArray_note_nil(a); }
+      case SP_BUILTIN_FLT_ARRAY:
+        sp_FloatArray_insert_nilable((sp_FloatArray *)v.v.p, i, sp_poly_elem_f(x));
         return v;
-      }
       case SP_BUILTIN_STR_ARRAY:
         sp_StrArray_insert((sp_StrArray *)v.v.p, i, sp_poly_elem_s(x));
         return v;
