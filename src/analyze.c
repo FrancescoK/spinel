@@ -26177,6 +26177,9 @@ void analyze_program(Compiler *c) {
   register_include_attrs(c);
   register_extends(c);
   register_prepends(c);
+  /* again, now that modules have put their methods in: an alias can take an
+     inherited method an ancestor got from one */
+  resolve_inherited_aliases(c);
   rewrite_attr_supers(c);
   specialize_inherited_cls_new(c);
 

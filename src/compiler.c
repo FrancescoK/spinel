@@ -686,8 +686,9 @@ int comp_cmethod_in_class(Compiler *c, int class_id, const char *name) {
   return sm_lookup(c, class_id, name, 1);
 }
 int comp_cmethod_in_chain(Compiler *c, int class_id, const char *name, int *def_class) {
-  name = comp_resolve_alias(c, class_id, name);
-  for (int cid = class_id; cid >= 0; cid = c->classes[cid].parent) {
+  int start = class_id;
+  name = comp_resolve_alias_at(c, class_id, name, &start);
+  for (int cid = start; cid >= 0; cid = c->classes[cid].parent) {
     int mi = comp_cmethod_in_class(c, cid, name);
     if (mi >= 0) { if (def_class) *def_class = cid; return mi; }
   }
@@ -1277,7 +1278,12 @@ const char *comp_resolve_alias_at(Compiler *c, int class_id, const char *name, i
              where the alias appeared, so a redefinition in this class must not
              capture it: resume the lookup at the ancestor that owned the name
              (#3873). */
-          if (start_cls && ci->alias_cls && ci->alias_cls[i] >= 0) *start_cls = ci->alias_cls[i];
+          if (ci->alias_cls && ci->alias_cls[i] >= 0) {
+            if (start_cls) *start_cls = ci->alias_cls[i];
+            /* ... and so does the rest of the chase: this class's later
+               aliases of the name are not the body the alias took */
+            class_id = ci->alias_cls[i];
+          }
           break;
         }
     }
