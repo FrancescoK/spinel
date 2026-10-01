@@ -175,6 +175,7 @@ int desugar_class_body_bare_new(Compiler *c) {
     c->nscope[cr] = c->nscope[id];
     c->node_cbody[cr] = cid;
     nt_node_set_ref(nt, id, "receiver", cr);
+    nt_node_set_int(nt, id, "self_call", 1);
     changed = 1;
   }
   return changed;
