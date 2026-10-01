@@ -29580,9 +29580,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
        ((comp_ntype(c, recv) == TY_RATIONAL || comp_ntype(c, recv) == TY_FLOAT ||
          comp_ntype(c, recv) == TY_BIGINT) &&
         sp_streq(name, "step")))) {
+    /* the receiver is read twice, by the loop and as the answer: one that
+       acts (`next_n.times { }`) is bound once */
+    int bound = iter_recv_bind_once(c, recv);
     buf_puts(b, "({ ");
     emit_iteration_stmt(c, id, b, 0);
     emit_expr(c, recv, b); buf_puts(b, "; })");
+    if (bound) g_n_argov--;
     return;
   }
   /* n.times / lo.upto(hi) / hi.downto(lo) without block: produce sp_Range for chaining */
