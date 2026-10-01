@@ -1530,6 +1530,87 @@ int gvar_global_slot(Compiler *c, int node, char *out, size_t cap) {
   free(gb.p);
   return plain;
 }
+/* The innermost block or lambda `node` is written in, within its method;
+   -1 at the method's own level. */
+int *an_parent_map(const NodeTable *nt);
+static int *g_lent_parent;
+static int g_lent_parent_n = -1;
+static unsigned g_lent_parent_ver;
+static int lent_enclosing_closure(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (!g_lent_parent || g_lent_parent_n != nt->count || g_lent_parent_ver != nt->version) {
+    free(g_lent_parent);
+    g_lent_parent = an_parent_map(nt);
+    if (!g_lent_parent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    g_lent_parent_n = nt->count; g_lent_parent_ver = nt->version;
+  }
+  for (int p = node >= 0 && node < nt->count ? g_lent_parent[node] : -1; p >= 0; p = g_lent_parent[p]) {
+    NodeKind k = nt_kind(nt, p);
+    if (k == NK_BlockNode || k == NK_LambdaNode) return p;
+    if (k == NK_DefNode) return -1;
+  }
+  return -1;
+}
+/* A write of the C global `slot` (ivar_global_slot, gvar_global_slot) that
+   can run while a call lent `slot` at `arg` is running: one in another
+   method, or in a block or lambda other than the one the call is written
+   in. The callee holds the slot's address, so after such a write its
+   appends land in the new String, where CRuby appends to the one the call
+   was handed. Answers the write, or -1 when every write is in the call's
+   own method and block or in the program's top level outside a block (it
+   runs before or after the call). A write in the call's own method still
+   runs during the call when the callee calls that method back; that
+   recursion is not followed. */
+int lent_global_slot_rebound(Compiler *c, int arg, const char *slot) {
+  static const NodeKind gk[] = { NK_GlobalVariableWriteNode, NK_GlobalVariableOrWriteNode,
+                                 NK_GlobalVariableAndWriteNode, NK_GlobalVariableOperatorWriteNode,
+                                 NK_GlobalVariableTargetNode };
+  static const NodeKind ik[] = { NK_InstanceVariableWriteNode, NK_InstanceVariableOrWriteNode,
+                                 NK_InstanceVariableAndWriteNode, NK_InstanceVariableOperatorWriteNode,
+                                 NK_InstanceVariableTargetNode };
+  const NodeTable *nt = c->nt;
+  int is_g = nt_kind(nt, arg) == NK_GlobalVariableReadNode;
+  const NodeKind *ks = is_g ? gk : ik;
+  Scope *as = comp_scope_of(c, arg);
+  int ab = lent_enclosing_closure(c, arg);
+  for (int k = 0; k < 5; k++)
+    for (int w = comp_kind_first(c, ks[k]); w >= 0; w = comp_kind_next(c, w)) {
+      if (nt_kind(nt, w) != ks[k]) continue;
+      char ws[256];
+      if (is_g) {
+        const char *gn = nt_str(nt, w, "name");
+        const char *grn = gn && gn[0] == '$' ? comp_resolve_gvar(c, gn + 1) : NULL;
+        if (!grn) continue;
+        snprintf(ws, sizeof ws, "gv_%s", grn);
+      }
+      else if (!ivar_global_slot(c, w, ws, sizeof ws)) continue;
+      if (!sp_streq(ws, slot)) continue;
+      /* the program's top level, outside any block or lambda, runs once and
+         is never reentered, so it is never running during a call */
+      Scope *ws2 = comp_scope_of(c, w);
+      int wb = lent_enclosing_closure(c, w);
+      if (wb < 0 && ws2 && !ws2->name && ws2->def_node < 0) continue;
+      if (ws2 != as || wb != ab) return w;
+    }
+  return -1;
+}
+/* Refuse lending `slot` at `arg` when lent_global_slot_rebound finds a
+   write that can run during the call. */
+void refuse_lent_global_rebound(Compiler *c, int arg, const char *slot, const char *target, const char *pname) {
+  int w = lent_global_slot_rebound(c, arg, slot);
+  if (w < 0) return;
+  const char *vn = nt_str(c->nt, arg, "name");
+  char msg[768];
+  snprintf(msg, sizeof msg,
+           "`%s` is passed to %s's parameter `%s`, which appends to it, and `%s` is assigned at line %d, "
+           "where the assignment can run during the call: the append would then reach the newly "
+           "assigned String instead of the one passed (a String held by a global or a top-level or "
+           "class-level instance variable is not yet shared by reference). Pass a local and assign it "
+           "back after the call.",
+           vn ? vn : "?", target ? target : "a method", pname ? pname : "?", vn ? vn : "?",
+           (int)nt_int(c->nt, w, "node_line", 0));
+  unsupported_feature(c, arg, msg);
+}
 /* Emit-side lvalue for a shared-mutable string receiver: lv_<x> for a
    strbuf local, <self>-><iv_x> (or civ_Toplevel_x) for a strbuf ivar.
    Returns 1 and fills `out`, or 0 when the receiver is neither (#3227). */

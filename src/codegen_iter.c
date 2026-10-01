@@ -460,21 +460,24 @@ unsigned inline_alias_params(Compiler *c, int mi, const int *argv, int pargc, co
     if (L->from[i] != ARG_NODE || L->arg[i] >= pargc || (m->rest_idx >= 0 && i >= m->rest_idx)) continue;
     int an = argv[L->arg[i]];
     NodeKind ak = nt_kind(nt, an);
+    /* the C global lent, when the argument is one (refuse_lent_global_rebound) */
+    char gref[256];
+    int gslot = 0;
     if (ak == NK_InstanceVariableReadNode) {
       /* an ivar buffer: the object's own slot, from an instance method of a
          heap class (a value type is a struct copy with no slot to lend), or
          the C global a top-level or class method's ivar lives in */
       Scope *as = comp_scope_of(c, an);
-      char gref[256];
       if (comp_ntype(c, an) != TY_STRING) continue;
-      if (!ivar_global_slot(c, an, gref, sizeof gref) &&
+      gslot = ivar_global_slot(c, an, gref, sizeof gref);
+      if (!gslot &&
           (!as || as->class_id < 0 || as->is_cmethod ||
            comp_ty_value_obj(c, ty_object(as->class_id)) || !g_self)) continue;
     }
     /* a global variable's C global (gv_), as a call lends it */
     else if (ak == NK_GlobalVariableReadNode) {
-      char gref[256];
       if (comp_ntype(c, an) != TY_STRING || !gvar_global_slot(c, an, gref, sizeof gref)) continue;
+      gslot = 1;
     }
     /* a String that is the shared handle has no slot to lend: the
        parameter takes the handle (yield_splice_handles) or a copy */
@@ -488,6 +491,7 @@ unsigned inline_alias_params(Compiler *c, int mi, const int *argv, int pargc, co
     if (inline_param_rebound(c, mi, m->pnames[i]) == 2 ||
         (!inline_param_mutated(c, mi, m->pnames[i]) &&
          !inline_param_yielded_mutated(c, mi, m->pnames[i], blk))) continue;
+    if (gslot) refuse_lent_global_rebound(c, an, gref, m->name, m->pnames[i]);
     alias_mask |= 1u << i;
     lv->inline_alias++;
     lv->is_cell = 1;

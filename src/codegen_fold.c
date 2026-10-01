@@ -6098,6 +6098,7 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
            address is lent as an instance's slot is, with no owner to pin.
            Lent a temp, the callee's appends stayed in the copy. */
         if (comp_ntype(c, provided) == TY_STRING && ivar_global_slot(c, provided, gref, sizeof gref)) {
+          refuse_lent_global_rebound(c, provided, gref, m->name, m->pnames[idx]);
           buf_printf(out, "&%s", gref);
           return;
         }
@@ -6106,6 +6107,7 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
          gv_ slot (not a special global's runtime accessor) */
       if (aty && sp_streq(aty, "GlobalVariableReadNode") && comp_ntype(c, provided) == TY_STRING &&
           gvar_global_slot(c, provided, gref, sizeof gref)) {
+        refuse_lent_global_rebound(c, provided, gref, m->name, m->pnames[idx]);
         buf_printf(out, "&%s", gref);
         return;
       }

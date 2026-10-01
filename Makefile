@@ -1128,6 +1128,12 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (#6179: a block parameter's String copied through a kept block's b[] compiled)"; ok=0; \
 	else grep -q "a proc or Method it can reach appends to the String" "$$tmp/kb.out" || \
 	  { echo "reject-test: FAIL (#6179: b[] rejected without saying why)"; sed -n 1,5p "$$tmp/kb.out"; ok=0; }; fi; \
+	for t in string_lent_global_rebound string_lent_ivar_rebound string_lent_global_rebound_block; do \
+	  if $(SPINEL) "test/reject/$$t.rb" -c --no-line-map -o "$$tmp/$$t.c" >"$$tmp/$$t.out" 2>&1; then \
+	    echo "reject-test: FAIL (#6179: $$t, a lent global slot assigned during the call, compiled)"; ok=0; \
+	  else grep -q "where the assignment can run during the call" "$$tmp/$$t.out" || \
+	    { echo "reject-test: FAIL (#6179: $$t rejected without saying why)"; sed -n 1,5p "$$tmp/$$t.out"; ok=0; }; fi; \
+	done; \
 	t=test/reject/typed_array_kept_by_struct_into_boxed_param_store.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/tb.c" >"$$tmp/tb.out" 2>&1; then \
 	  echo "reject-test: FAIL (a typed array held by the caller, stored into through a boxed parameter, compiled)"; ok=0; \
