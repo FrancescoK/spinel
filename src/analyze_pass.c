@@ -12038,13 +12038,16 @@ int infer_block_params(Compiler *c) {
         int several = 0;
         mi = new_block_initialize(c, id, &several);
         if (several) {
-          Scope *bs = comp_scope_of(c, block);
-          for (int k = 0; ; k++) {
-            const char *bp = block_param_name(c, block, k);
-            if (!bp) break;
-            LocalVar *lv = scope_local_intern(bs, bp); lv->is_block_param = 1;
-            if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
-          }
+          /* every parameter, the optionals, posts and keywords too, as a
+             kept block's are (block_params_widen) */
+          BlockSig s;
+          block_sig(c, nt_ref(nt, block, "parameters"), 0, &s);
+          size_t nw = (size_t)(s.P + s.O + s.Q + s.nk) + 1;
+          TyKind *tf = (TyKind *)calloc(nw, sizeof *tf);
+          char *ab = (char *)calloc(nw, 1);
+          if (!tf || !ab) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+          changed |= block_params_widen(c, block, &s, 1, tf, ab, tf + s.P + s.O + s.Q);
+          free(tf); free(ab);
           continue;
         }
       }
