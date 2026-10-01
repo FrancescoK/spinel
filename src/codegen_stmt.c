@@ -8626,13 +8626,13 @@ static void masgn_guard_line(Buf *fb, Buf *b, int indent) {
 }
 /* `val`, a C value of type `vt`, as a slot of type `st` holds it; a NULL
    `val` is Ruby nil. */
-static void masgn_conv(Compiler *c, TyKind st, TyKind vt, const char *val, Buf *b) {
+static void masgn_conv(Compiler *c, int id, TyKind st, TyKind vt, const char *val, Buf *b) {
   if (!val) { buf_puts(b, nil_sentinel(st == TY_UNKNOWN ? TY_POLY : st)); return; }
   if (st == TY_POLY && vt != TY_POLY) emit_boxed_src(c, vt, val, b);
   else if (vt == TY_POLY && st == TY_INT) buf_printf(b, "sp_poly_to_i(%s)", val);
   else if (vt == TY_POLY && st == TY_FLOAT) buf_printf(b, "sp_poly_to_f(%s)", val);
   else if (vt == TY_POLY && st != TY_POLY && st != TY_UNKNOWN) emit_unbox_text(c, st, val, b);
-  else buf_puts(b, val);
+  else emit_coerce_text(c, id, vt, st, CO_HOLD, val, "a multiple assignment's target", b);
 }
 /* A tuple element with no value of its own (nil, or a call that answers
    none): its temp holds a boxed nil, and a typed slot takes its own nil. */
@@ -8700,7 +8700,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
     int ix = comp_ivar_index(&c->classes[cid], nm);
     emit_indent(b, indent);
     buf_printf(b, "%s = ", lhs);
-    masgn_conv(c, ix >= 0 ? c->classes[cid].ivar_types[ix] : TY_UNKNOWN, vt, val, b);
+    masgn_conv(c, id, ix >= 0 ? c->classes[cid].ivar_types[ix] : TY_UNKNOWN, vt, val, b);
     buf_puts(b, ";\n");
     return 1;
   }
@@ -8710,7 +8710,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
     if (!gv) { unsupported(c, id, "multiple assignment global target"); return 1; }
     emit_indent(b, indent);
     buf_printf(b, "gv_%s = ", gn);
-    masgn_conv(c, gv->type, vt, val, b);
+    masgn_conv(c, id, gv->type, vt, val, b);
     buf_puts(b, ";\n");
     return 1;
   }
@@ -8723,7 +8723,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
     emit_indent(b, indent);
     emit_cvar_set_flag(c, cid, nm, 0, b);
     buf_printf(b, "cvar_%s_%s = ", c->classes[cid].name, nm + 2);
-    masgn_conv(c, c->classes[cid].cvar_types[cx], vt, val, b);
+    masgn_conv(c, id, c->classes[cid].cvar_types[cx], vt, val, b);
     buf_puts(b, ";\n");
     return 1;
   }
@@ -8732,7 +8732,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
     if (!cv) { unsupported(c, id, "multiple assignment constant target"); return 1; }
     emit_indent(b, indent);
     buf_printf(b, "cst_%s = ", nm);
-    masgn_conv(c, cv->type, vt, val, b);
+    masgn_conv(c, id, cv->type, vt, val, b);
     buf_puts(b, ";\n");
     return 1;
   }
@@ -8756,7 +8756,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
       TyKind et = rt == TY_POLY_ARRAY ? TY_POLY : ty_array_elem(rt);
       if (val && vt == TY_POLY && (et == TY_INT || et == TY_FLOAT || et == TY_STRING))
         buf_printf(b, "sp_poly_elem_%c(%s)", et == TY_INT ? 'i' : et == TY_FLOAT ? 'f' : 's', val);
-      else masgn_conv(c, et, vt, val, b);
+      else masgn_conv(c, id, et, vt, val, b);
       buf_puts(b, ");\n");
     }
     else if (rt == TY_POLY || rt == TY_UNKNOWN) {
@@ -8769,7 +8769,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
         buf_printf(b, "; sp_poly_arr_set(_t%d, ", tm);
         emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
       }
-      masgn_conv(c, TY_POLY, vt, val, b);
+      masgn_conv(c, id, TY_POLY, vt, val, b);
       buf_puts(b, recv_tmp >= 0 ? ");\n" : "); }\n");
     }
     else if (ty_is_hash(rt) && ty_hash_cname(rt)) {
@@ -8785,7 +8785,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
       else if (ty_hash_key(rt) == TY_POLY) emit_boxed(c, argv[0], b);
       else emit_expr(c, argv[0], b);
       buf_puts(b, ", ");
-      masgn_conv(c, ty_hash_val(rt), vt, val, b);
+      masgn_conv(c, id, ty_hash_val(rt), vt, val, b);
       buf_puts(b, ");\n");
     }
     else if (ty_is_object(rt) && masgn_index_writer(c, rt, NULL, NULL) >= 0) {
@@ -8799,7 +8799,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
       if (key_tmp >= 0) buf_printf(b, "_t%d", key_tmp);
       else masgn_index_key(c, argv[0], kt, b);
       buf_puts(b, ", ");
-      masgn_conv(c, vp ? vp->type : vt, vt, val, b);
+      masgn_conv(c, id, vp ? vp->type : vt, vt, val, b);
       buf_puts(b, ");\n");
     }
     else unsupported(c, id, "multiple assignment index target non-array/hash");
@@ -8821,7 +8821,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
       LocalVar *wp = c->scopes[wmi].nparams >= 1 ? scope_local(&c->scopes[wmi], c->scopes[wmi].pnames[0]) : NULL;
       buf_printf(b, "sp_%s_%s((sp_%s *)", c->classes[cdef].c_name, mc(c->scopes[wmi].name), c->classes[cdef].c_name);
       emit_node_or_tmp(c, crecv, recv_tmp, b); buf_puts(b, ", ");
-      masgn_conv(c, wp ? wp->type : vt, vt, val, b);
+      masgn_conv(c, id, wp ? wp->type : vt, vt, val, b);
       buf_puts(b, ");\n");
     }
     else {
@@ -8831,7 +8831,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
       int ix = comp_ivar_index(&c->classes[crc], ivn);
       buf_puts(b, "("); emit_node_or_tmp(c, crecv, recv_tmp, b);
       buf_printf(b, ")->iv_%s = ", iv_c(base));
-      masgn_conv(c, ix >= 0 ? c->classes[crc].ivar_types[ix] : vt, vt, val, b);
+      masgn_conv(c, id, ix >= 0 ? c->classes[crc].ivar_types[ix] : vt, vt, val, b);
       buf_puts(b, ";\n");
     }
     return 1;
@@ -8854,7 +8854,7 @@ static void emit_massign_poly_target(Compiler *c, int id, int tgt, const char *v
     LocalVar *lv = scope_local(comp_scope_of(c, tgt), lnm);
     emit_indent(b, indent);
     emit_local_ref(c, tgt, lnm, b); buf_puts(b, " = ");
-    masgn_conv(c, lv ? lv->type : TY_POLY, TY_POLY, val, b);
+    masgn_conv(c, id, lv ? lv->type : TY_POLY, TY_POLY, val, b);
     buf_puts(b, ";\n");
     return;
   }
@@ -8892,7 +8892,7 @@ static void emit_massign_poly_target(Compiler *c, int id, int tgt, const char *v
       LocalVar *rlv = scope_local(comp_scope_of(c, inner), rnm);
       emit_indent(b, indent);
       emit_local_ref(c, inner, rnm, b); buf_puts(b, " = ");
-      masgn_conv(c, rlv ? rlv->type : TY_POLY_ARRAY, TY_POLY_ARRAY, rx, b);
+      masgn_conv(c, id, rlv ? rlv->type : TY_POLY_ARRAY, TY_POLY_ARRAY, rx, b);
       buf_puts(b, ";\n");
     }
     else if (!masgn_store(c, id, inner, rx, TY_POLY_ARRAY, -1, -1, indent, b))
@@ -9527,16 +9527,16 @@ else {
     char cond[400];
     if (t == TY_POLY) {
       snprintf(cond, sizeof cond, "%ssp_poly_truthy(%s)", is_or ? "!" : "", lhs);
-      emit_orw_guard(c, v, 1, cond, lhs, 0, indent, b);
+      emit_orw_guard(c, v, t, cond, lhs, 0, indent, b);
     }
     else if (t == TY_BOOL) {
       snprintf(cond, sizeof cond, "%s%s", is_or ? "!" : "", lhs);
-      emit_orw_guard(c, v, 0, cond, lhs, 0, indent, b);
+      emit_orw_guard(c, v, t, cond, lhs, 0, indent, b);
     }
     else if (t == TY_SYMBOL) {
       /* nilable symbol: (sp_sym)-1 is the nil sentinel */
       snprintf(cond, sizeof cond, "%s %s= (sp_sym)-1", lhs, is_or ? "=" : "!");
-      emit_orw_guard(c, v, 0, cond, lhs, 0, indent, b);
+      emit_orw_guard(c, v, t, cond, lhs, 0, indent, b);
     }
     else if (!is_or) {
       /* `x &&= v` assigns only when x is not nil: a slot that can hold nil
@@ -9559,7 +9559,7 @@ else {
         emit_indent(b, indent); buf_puts(b, "}\n");
         free(apre.p); free(abody.p);
       }
-      else emit_orw_guard(c, v, 0, NULL, lhs, 0, indent, b);
+      else emit_orw_guard(c, v, t, NULL, lhs, 0, indent, b);
       free(nb.p); free(rb.p);
     }
     else {
@@ -9635,12 +9635,15 @@ else {
                ivt2 == TY_FIBER || ivt2 == TY_THREAD || ivt2 == TY_QUEUE || ivt2 == TY_MUTEX || ivt2 == TY_CONDVAR || ivt2 == TY_PROC || ivt2 == TY_IO ||
                ivt2 == TY_MATCHDATA || ivt2 == TY_EXCEPTION || ivt2 == TY_REGEX) {
         emitted_lit = emit_empty_literal_as(c, v, ivt2, &vval);
-        if (!emitted_lit) emit_array_store_value(c, ivt2, v, &vval);   /* a seed-pinned kind converts */
+        if (emitted_lit) { }
+        else if (seeded_array_kind_mismatch(ivt2, comp_ntype(c, v)))
+          emit_array_store_value(c, ivt2, v, &vval);   /* a seed-pinned kind converts */
+        else emit_coerce(c, v, ivt2, CO_HOLD, "an instance variable's `||=` or `&&=`", &vval);
       }
       else if (ivt2 == TY_BIGINT && comp_ntype(c, v) != TY_BIGINT && ty_is_numeric(comp_ntype(c, v))) {
         buf_puts(&vval, "sp_bigint_new_int("); emit_int_expr(c, v, &vval); buf_puts(&vval, ")");
       }
-      else emit_expr(c, v, &vval);
+      else emit_coerce(c, v, ivt2, CO_HOLD, "an instance variable's `||=` or `&&=`", &vval);
       g_pre = saved_pre;
     }
     if (ivt2 == TY_POLY) snprintf(cond2, sizeof cond2, "%ssp_poly_truthy(%s)", is_or ? "!" : "", ref2);
@@ -9664,7 +9667,8 @@ else {
     }
     else if (!is_or) {
       emit_indent(b, indent);
-      buf_printf(b, "%s = ", ref2); emit_expr(c, v, b); buf_puts(b, ";\n");
+      buf_printf(b, "%s = ", ref2);
+      emit_coerce(c, v, ivt2, CO_HOLD, "an instance variable's `||=` or `&&=`", b); buf_puts(b, ";\n");
     }
     return;
   }
@@ -9960,7 +9964,7 @@ else {
     emit_slot_truthy(ot, ref, b);
     buf_printf(b, is_or ? ") { %s = " : " { %s = ", ref);
     if (ot == TY_POLY) emit_boxed(c, v, b);
-    else emit_expr(c, v, b);
+    else emit_coerce(c, v, ot, CO_HOLD, "a class variable's `||=` or `&&=`", b);
     buf_puts(b, "; ");
     emit_cvar_set_flag(c, sc, nm, 0, b);
     buf_puts(b, "}\n");
@@ -10699,11 +10703,13 @@ else {
     }
     else if (cv->type == TY_BOOL) {
       emit_indent(b, indent);
-      buf_printf(b, "if (%scst_%s) { cst_%s = ", is_or ? "!" : "", nm, nm); emit_expr(c, v, b); buf_puts(b, "; }\n");
+      buf_printf(b, "if (%scst_%s) { cst_%s = ", is_or ? "!" : "", nm, nm);
+      emit_coerce(c, v, cv->type, CO_HOLD, "a constant's `||=` or `&&=`", b); buf_puts(b, "; }\n");
     }
     else if (!is_or) {  /* &&= on an always-truthy constant: always assign */
       emit_indent(b, indent);
-      buf_printf(b, "cst_%s = ", nm); emit_expr(c, v, b); buf_puts(b, ";\n");
+      buf_printf(b, "cst_%s = ", nm);
+      emit_coerce(c, v, cv->type, CO_HOLD, "a constant's `||=` or `&&=`", b); buf_puts(b, ";\n");
     }
     /* ||= on an always-truthy constant: no-op */
     return;
@@ -10759,7 +10765,7 @@ else {
       /* a poly slot boxes the value, as the plain write does: `$g ||= nil`
          into a global that also holds a bool assigned the bare C 0 */
       if (lv->type == TY_POLY && comp_ntype(c, v) != TY_POLY) emit_boxed(c, v, b);
-      else emit_expr(c, v, b);
+      else emit_coerce(c, v, lv->type, CO_HOLD, "a global variable's `||=` or `&&=`", b);
       buf_puts(b, "; }\n"); }
     return;
   }
@@ -10980,7 +10986,7 @@ else {
             emit_indent(b, indent);
             if (rest_var) { emit_local_ref(c, id, rest_var, b); buf_puts(b, " = "); }
             else buf_printf(b, "gv_%s = ", rest_gvar);
-            masgn_conv(c, rlv0 ? rlv0->type : rat0, rat0, rx, b);
+            masgn_conv(c, id, rlv0 ? rlv0->type : rat0, rat0, rx, b);
             buf_puts(b, ";\n");
           }
           if (ln == 0 && rn == 0) return;
@@ -11121,7 +11127,7 @@ else {
           TyKind rvt = rest_arr_t;
           if (rslot == TY_POLY) {
             char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr);
-            masgn_conv(c, TY_POLY, st, rx, &rv);
+            masgn_conv(c, id, TY_POLY, st, rx, &rv);
             rvt = TY_POLY;
           }
           else if (sp_streq(rk, k)) buf_printf(&rv, "_t%d", tr);
@@ -11318,7 +11324,7 @@ else {
               LocalVar *rg = rest_var ? scope_local(comp_scope_of(c, id), rest_var) : comp_gvar(c, rest_gvar);
               if (rest_var) { emit_local_ref(c, id, rest_var, b); buf_puts(b, " = "); }
               else buf_printf(b, "gv_%s = ", rest_gvar);
-              masgn_conv(c, rg ? rg->type : TY_POLY_ARRAY, TY_POLY_ARRAY, rx, b);
+              masgn_conv(c, id, rg ? rg->type : TY_POLY_ARRAY, TY_POLY_ARRAY, rx, b);
               buf_puts(b, ";\n");
             }
           }
@@ -11626,7 +11632,7 @@ else {
         }
         /* a nil element lands the slot's own nil, not the boxed temp */
         char expr2[32]; snprintf(expr2, sizeof expr2, "_t%d", tmps[i]);
-        masgn_conv(c, ivt2, tmpts[i], masgn_nil_el(c, els[i]) ? NULL : expr2, b);
+        masgn_conv(c, id, ivt2, tmpts[i], masgn_nil_el(c, els[i]) ? NULL : expr2, b);
         buf_puts(b, ";\n");
       }
       else if (lty && sp_streq(lty, "MultiTargetNode")) {
@@ -11805,7 +11811,7 @@ else {
         emit_indent(b, indent);
         if (rest_var) buf_printf(b, "lv_%s = ", rename_local(rest_var));
         else buf_printf(b, "gv_%s = ", rest_gvar);
-        masgn_conv(c, slot_t == TY_POLY ? TY_POLY : rest_arr_t, rest_arr_t, rx, b);
+        masgn_conv(c, id, slot_t == TY_POLY ? TY_POLY : rest_arr_t, rest_arr_t, rx, b);
         buf_puts(b, ";\n");
       }
     }
