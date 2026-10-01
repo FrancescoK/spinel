@@ -35719,8 +35719,12 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     TyKind rrt = robj >= 0 ? comp_ntype(c, robj) : TY_UNKNOWN;
     if (ty_is_object(rrt)) {
       int cid = ty_object_class(rrt);
-      int defmi = comp_cmethod_in_chain(c, cid, name, NULL);
-      if (defmi >= 0 && !c->scopes[defmi].yields) {
+      int defmi = comp_cmethod_in_chain(c, cid, name, NULL), dyield = 0;
+      for (int k = 0; defmi >= 0 && k < c->nclasses; k++) {
+        int km = is_descendant(c, k, cid) ? comp_cmethod_in_chain(c, k, name, NULL) : -1;
+        if (km >= 0 && c->scopes[km].yields) dyield = 1;
+      }
+      if (defmi >= 0 && !dyield) {
         /* Count distinct class method impls across the hierarchy */
         int nimpl = 0;
         for (int k = 0; k < c->nclasses; k++) {
