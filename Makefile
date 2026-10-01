@@ -1552,6 +1552,7 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/main_body_split.rb \
                   test/string_handle_initialize_kept_block.rb \
                   test/string_handle_captured_param.rb \
+                  test/string_alias_yield_block_param.rb \
                   test/string_alias_chain_append.rb \
                   test/string_handle_keyword_args.rb \
                   test/gsub_sub_scan_last_match.rb
