@@ -4751,7 +4751,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         if (brt != TY_UNKNOWN) {
           /* Temporarily set rt to the built-in type and recursively call infer_call
              is not safe. Instead inline key return types for common method names. */
-          if (brt == TY_STRING) {
+          switch (brt) {
+          case TY_STRING:
             if (sp_streq(name, "upcase") || sp_streq(name, "downcase") ||
                 sp_streq(name, "capitalize") || sp_streq(name, "reverse") || sp_streq(name, "strip") ||
                 sp_streq(name, "lstrip") || sp_streq(name, "rstrip") || sp_streq(name, "chomp") ||
@@ -4779,8 +4780,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
             if (sp_streq(name, "split") || sp_streq(name, "chars") || sp_streq(name, "lines") ||
                 sp_streq(name, "bytes"))
               return TY_STR_ARRAY;
-          }
-          else if (brt == TY_INT) {
+            break;
+          case TY_INT:
             if (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") ||
                 sp_streq(name, "/") || sp_streq(name, "%") || sp_streq(name, "**") ||
                 sp_streq(name, "abs") || sp_streq(name, "succ") || sp_streq(name, "next") ||
@@ -4795,8 +4796,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
                 sp_streq(name, "==") || sp_streq(name, "!=") || sp_streq(name, "<") ||
                 sp_streq(name, "<=") || sp_streq(name, ">") || sp_streq(name, ">="))
               return TY_BOOL;
-          }
-          else if (brt == TY_FLOAT) {
+            break;
+          case TY_FLOAT:
             if (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") ||
                 sp_streq(name, "/") || sp_streq(name, "**") || sp_streq(name, "abs") ||
                 sp_streq(name, "floor") || sp_streq(name, "ceil") || sp_streq(name, "round") ||
@@ -4809,14 +4810,16 @@ static TyKind infer_call_inner(Compiler *c, int id) {
                 sp_streq(name, "<") || sp_streq(name, "<=") || sp_streq(name, ">") ||
                 sp_streq(name, ">="))
               return TY_BOOL;
-          }
-          else if (brt == TY_SYMBOL) {
+            break;
+          case TY_SYMBOL:
             if (sp_streq(name, "to_s") || sp_streq(name, "id2name") || sp_streq(name, "inspect"))
               return TY_STRING;
             if (sp_streq(name, "to_sym") || sp_streq(name, "itself")) return TY_SYMBOL;
             if (sp_streq(name, "length") || sp_streq(name, "size")) return TY_INT;
             if (sp_streq(name, "empty?") || sp_streq(name, "==") || sp_streq(name, "!="))
               return TY_BOOL;
+            break;
+          default: break;
           }
         }
       }
