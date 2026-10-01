@@ -3861,8 +3861,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       if (cn2 && sp_streq(name, "new") && (sp_streq(cn2, "Mutex") || (sp_streq(cn2, "Monitor") && sp_feature_enabled("monitor")))) return TY_MUTEX;
       if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "ConditionVariable")) return TY_CONDVAR;
       if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Random")) return TY_RANDOM;
-      if (cn2 && sp_streq(cn2, "Enumerator") && sp_streq(name, "product") && (argc == 2 || argc == 3))
-        return TY_ENUMERATOR;   /* #2484 */
+      if (cn2 && sp_streq(cn2, "Enumerator") && sp_streq(name, "product"))
+        return TY_ENUMERATOR;   /* #2484; any number of factors */
       if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "current")) return TY_THREAD;
       if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "main")) return TY_THREAD;
       if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "list")) return TY_POLY_ARRAY;
