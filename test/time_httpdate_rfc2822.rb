@@ -1,3 +1,4 @@
+# spinel: int64 -- Time.at(-10_000_000_000) is past a 32-bit integer and time_t
 require "time"
 
 # Time#httpdate is always GMT; #rfc2822 (and rfc822) keeps the offset and
