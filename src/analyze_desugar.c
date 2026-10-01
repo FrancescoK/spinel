@@ -975,6 +975,7 @@ int desugar_body_self_call(Compiler *c) {
     nt_node_set_int(nt, recv, "node_line", line);
     nt_node_set_int(nt, recv, "node_file", file);
     nt_node_set_int(nt, recv, "node_col", col);
+    nt_node_set_int(nt, id, "self_call", 1);   /* still a call on self: a private class method answers it */
     changed = 1;
   }
   return changed;
