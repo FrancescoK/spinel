@@ -2218,6 +2218,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (rt == TY_POLY && nt_ref(nt, id, "block") >= 0 &&
         (sp_streq(name, "each") || sp_streq(name, "each_with_index") ||
          sp_streq(name, "reverse_each") || sp_streq(name, "each_entry") ||
+         /* each_index's poly arm hands back the boxed receiver as well;
+            untyped, its value read as nil */
+         sp_streq(name, "each_index") ||
          /* the three Hash walks take the same poly iterator emission, which
             hands back the boxed receiver; typed through the face table they
             read as a Hash and the chained inspect was handed an sp_RbVal,
