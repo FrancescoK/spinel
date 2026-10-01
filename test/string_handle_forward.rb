@@ -74,6 +74,26 @@ box = Box.build(d)
 R.new.m(d)
 p d.size, box.n
 
+# a zsuper beside a child's `**o` into an included module's method, also
+# from a call that splats and passes `**h`; a splatted local Array into a
+# forwarder
+module Grow
+  def g(p1, p2, p3 = 0, *r, k1:) = (p1 << X; nil)
+end
+class Inc
+  include Grow
+  def g(p1, p2, p3 = 0, *r, k1:, **o) = super
+end
+f = +"f"
+Inc.new.g(f, 2, k1: 1)
+rest = [2]
+kw = {}
+Inc.new.g(f, *rest, 3, **kw, k1: 4)
+fwd_anon(*[f])
+arr = [f]
+fwd_named(*arr)
+p f.size
+
 # a method that only reads leaves the String alone
 def size_of(p1) = p1.size
 def fwd_read(*r) = size_of(*r)
