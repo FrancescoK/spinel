@@ -1631,19 +1631,21 @@ int comp_is_local_write(NodeKind k) {
          k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode ||
          k == NK_LocalVariableOperatorWriteNode;
 }
+static int comp_chain_alloc(int **head, int **next, int nb, int n, int *built) {
+  *head = malloc((size_t)nb * sizeof(int));
+  *next = malloc((size_t)(n > 0 ? n : 1) * sizeof(int));
+  if (*head && *next) return 1;
+  free(*head); free(*next);
+  *head = *next = NULL;
+  *built = 0;
+  return 0;
+}
 static void lvw_build(Compiler *c) {
   free(c->lvw_head); free(c->lvw_next);
   int n = c->nt->count;
   int nb = 16;
   while (nb < n && nb < (1 << 22)) nb <<= 1;
-  c->lvw_head = malloc((size_t)nb * sizeof(int));
-  c->lvw_next = malloc((size_t)(n > 0 ? n : 1) * sizeof(int));
-  if (!c->lvw_head || !c->lvw_next) {
-    free(c->lvw_head); free(c->lvw_next);
-    c->lvw_head = c->lvw_next = NULL;
-    c->lvw_built = 0;
-    return;
-  }
+  if (!comp_chain_alloc(&c->lvw_head, &c->lvw_next, nb, n, &c->lvw_built)) return;
   c->lvw_nbuckets = nb;
   c->lvw_count = n;
   for (int b = 0; b < nb; b++) c->lvw_head[b] = -1;
@@ -1679,14 +1681,7 @@ static void lvws_build(Compiler *c) {
   int n = c->nt->count;
   int nb = 16;
   while (nb < n && nb < (1 << 22)) nb <<= 1;
-  c->lvws_head = malloc((size_t)nb * sizeof(int));
-  c->lvws_next = malloc((size_t)(n > 0 ? n : 1) * sizeof(int));
-  if (!c->lvws_head || !c->lvws_next) {
-    free(c->lvws_head); free(c->lvws_next);
-    c->lvws_head = c->lvws_next = NULL;
-    c->lvws_built = 0;
-    return;
-  }
+  if (!comp_chain_alloc(&c->lvws_head, &c->lvws_next, nb, n, &c->lvws_built)) return;
   c->lvws_nbuckets = nb;
   c->lvws_count = n;
   for (int b = 0; b < nb; b++) c->lvws_head[b] = -1;
@@ -1720,14 +1715,7 @@ static void scall_build(Compiler *c) {
   free(c->scall_head); free(c->scall_next);
   int n = c->nt->count;
   int ns = c->nscopes > 0 ? c->nscopes : 1;
-  c->scall_head = malloc((size_t)ns * sizeof(int));
-  c->scall_next = malloc((size_t)(n > 0 ? n : 1) * sizeof(int));
-  if (!c->scall_head || !c->scall_next) {
-    free(c->scall_head); free(c->scall_next);
-    c->scall_head = c->scall_next = NULL;
-    c->scall_built = 0;
-    return;
-  }
+  if (!comp_chain_alloc(&c->scall_head, &c->scall_next, ns, n, &c->scall_built)) return;
   c->scall_nscopes = ns;
   c->scall_count = n;
   for (int s = 0; s < ns; s++) c->scall_head[s] = -1;
@@ -1761,14 +1749,7 @@ static void kind_build(Compiler *c) {
   int nk = 0;
   for (int i = 0; i < n; i++) if ((int)nt_kind(c->nt, i) >= nk) nk = (int)nt_kind(c->nt, i) + 1;
   if (nk < 1) nk = 1;
-  c->kind_head = malloc((size_t)nk * sizeof(int));
-  c->kind_next = malloc((size_t)(n > 0 ? n : 1) * sizeof(int));
-  if (!c->kind_head || !c->kind_next) {
-    free(c->kind_head); free(c->kind_next);
-    c->kind_head = c->kind_next = NULL;
-    c->kind_built = 0;
-    return;
-  }
+  if (!comp_chain_alloc(&c->kind_head, &c->kind_next, nk, n, &c->kind_built)) return;
   c->kind_nkinds = nk;
   c->kind_count = n;
   for (int k = 0; k < nk; k++) c->kind_head[k] = -1;
