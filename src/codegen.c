@@ -13586,6 +13586,15 @@ static int cmp_int_pair(const void *a, const void *b) {
   return x[1] < y[1] ? -1 : x[1] > y[1];
 }
 
+static int exc_text_method(Compiler *c, int i, int want_message, int *dcls, const char **fn) {
+  int dmsg = -1, dtos = -1;
+  int mi_msg = comp_method_in_chain(c, i, "message", &dmsg);
+  int mi_tos = comp_method_in_chain(c, i, "to_s", &dtos);
+  if (want_message && mi_msg >= 0) { *dcls = dmsg; *fn = "message"; return mi_msg; }
+  if (mi_tos >= 0) { *dcls = dtos; *fn = "to_s"; return mi_tos; }
+  return -1;
+}
+
 char *codegen_program(const NodeTable *nt) {
   Compiler *c = comp_new(nt);
   analyze_program(c);
@@ -14799,16 +14808,8 @@ char *codegen_program(const NodeTable *nt) {
       buf_puts(&b, "  if(!e)return (&(\"\\xff\")[1]);\n  const char *cls=e->cls_name;\n");
       for (int i = 0; i < c->nclasses; i++) {
         if (!class_is_exc_subclass(c, i)) continue;
-        int dmsg = -1, dtos = -1;
-        int mi_msg = comp_method_in_chain(c, i, "message", &dmsg);
-        int mi_tos = comp_method_in_chain(c, i, "to_s", &dtos);
-        int mi = -1, dcls = -1;
-        const char *fn = NULL;
-        if (want_message) {
-          if (mi_msg >= 0)      { mi = mi_msg; dcls = dmsg; fn = "message"; }
-          else if (mi_tos >= 0) { mi = mi_tos; dcls = dtos; fn = "to_s"; }
-        }
-        else if (mi_tos >= 0) { mi = mi_tos; dcls = dtos; fn = "to_s"; }
+        int dcls = -1; const char *fn = NULL;
+        int mi = exc_text_method(c, i, want_message, &dcls, &fn);
         if (mi < 0) continue;
         if ((TyKind)c->scopes[mi].ret != TY_STRING) continue;  /* string-returning only */
         /* a reopening's method is picked by the runtime class below */
@@ -14857,16 +14858,8 @@ char *codegen_program(const NodeTable *nt) {
       buf_puts(&b, "  if(!e)return sp_box_str((&(\"\\xff\")[1]));\n  const char *cls=e->cls_name;\n");
       for (int i = 0; i < c->nclasses; i++) {
         if (!class_is_exc_subclass(c, i)) continue;
-        int dmsg = -1, dtos = -1;
-        int mi_msg = comp_method_in_chain(c, i, "message", &dmsg);
-        int mi_tos = comp_method_in_chain(c, i, "to_s", &dtos);
-        int mi = -1, dcls = -1;
-        const char *fn = NULL;
-        if (want_message) {
-          if (mi_msg >= 0)      { mi = mi_msg; dcls = dmsg; fn = "message"; }
-          else if (mi_tos >= 0) { mi = mi_tos; dcls = dtos; fn = "to_s"; }
-        }
-        else if (mi_tos >= 0) { mi = mi_tos; dcls = dtos; fn = "to_s"; }
+        int dcls = -1; const char *fn = NULL;
+        int mi = exc_text_method(c, i, want_message, &dcls, &fn);
         if (mi < 0) continue;
         TyKind mret = (TyKind)c->scopes[mi].ret;
         if (mret == TY_UNKNOWN || mret == TY_VOID) continue;
