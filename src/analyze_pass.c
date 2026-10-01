@@ -2394,14 +2394,11 @@ static int local_is_kept_block_param(Compiler *c, Scope *sc, const char *nm) {
    in scope `sc`. The body runs as its own function and declares each such
    parameter an sp_RbVal (emit_fiber_new): the runtime hands it the thread's
    arguments or the resume value boxed, whatever they are. */
-static int local_is_fiber_block_param(Compiler *c, Scope *sc, const char *nm) {
+static int local_is_fiber_block_param(Compiler *c, const int *fb, int nfb, Scope *sc, const char *nm) {
   const NodeTable *nt = c->nt;
-  for (int call = an_calls_named_first(c, "new"); call >= 0; call = an_calls_named_next(call)) {
-    int blk = nt_ref(nt, call, "block"), recv = nt_ref(nt, call, "receiver");
-    if (nt_kind(nt, call) != NK_CallNode || blk < 0 || nt_kind(nt, blk) != NK_BlockNode || recv < 0) continue;
-    if (nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode) continue;
-    const char *rn = nt_str(nt, recv, "name");
-    if (!rn || (!sp_streq(rn, "Thread") && !sp_streq(rn, "Fiber")) || comp_scope_of(c, blk) != sc) continue;
+  for (int f = 0; f < nfb; f++) {
+    int blk = fb[f];
+    if (comp_scope_of(c, blk) != sc) continue;
     int pn = nt_ref(nt, blk, "parameters");
     int inner = pn >= 0 ? nt_ref(nt, pn, "parameters") : -1;
     int rn2 = 0; const int *reqs = inner >= 0 ? nt_arr(nt, inner, "requireds", &rn2) : NULL;
@@ -2411,6 +2408,28 @@ static int local_is_fiber_block_param(Compiler *c, Scope *sc, const char *nm) {
     }
   }
   return 0;
+}
+/* The blocks of the program's `Thread.new { }` / `Fiber.new { }` calls, into
+   a malloc'd array (NULL when there are none): collected once per pass, so
+   the push sites ask a short list rather than every `new` in the program. */
+static int *fiber_new_blocks(Compiler *c, int *out_n) {
+  const NodeTable *nt = c->nt;
+  int n = 0, cap = 0, *v = NULL;
+  for (int call = an_calls_named_first(c, "new"); call >= 0; call = an_calls_named_next(call)) {
+    int blk = nt_ref(nt, call, "block"), recv = nt_ref(nt, call, "receiver");
+    if (nt_kind(nt, call) != NK_CallNode || blk < 0 || nt_kind(nt, blk) != NK_BlockNode || recv < 0) continue;
+    if (nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode) continue;
+    const char *rn = nt_str(nt, recv, "name");
+    if (!rn || (!sp_streq(rn, "Thread") && !sp_streq(rn, "Fiber"))) continue;
+    if (n == cap) {
+      cap = cap ? cap * 2 : 8;
+      v = (int *)realloc(v, sizeof(int) * (size_t)cap);
+      if (!v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    v[n++] = blk;
+  }
+  *out_n = n;
+  return v;
 }
 
 static int recv_hash_or_write(Compiler *c, int recv) {
@@ -2540,6 +2559,7 @@ int infer_write_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
   g_infer_write_round = 1;
+  int nfb = 0, *fb = fiber_new_blocks(c, &nfb);
 
   /* Recompute non-param local types FRESH each iteration: reset to UNKNOWN
      (saving the old value), then unify all write-site RHS types. This lets
@@ -3635,7 +3655,7 @@ int infer_write_types(Compiler *c) {
          as well as an Array. Read as "t is a String array", `Thread.new(s)
          { |t| t << x }` pushed into the boxed value as an sp_StrArray *,
          and the C did not compile; an Integer array's push did not either. */
-      if ((is_push || is_idx_write) && local_is_fiber_block_param(c, lsc, rnm)) continue;
+      if ((is_push || is_idx_write) && nfb && local_is_fiber_block_param(c, fb, nfb, lsc, rnm)) continue;
       /* A bare `x[i]` read OR an `x[i] = v` element assignment must not promote
          `x` to a hash if `x` elsewhere gets an array-typed write (`x = a.split`
          etc.): it is an array indexed/assigned by position, and the hash type
@@ -4185,6 +4205,7 @@ int infer_write_types(Compiler *c) {
   lw_index_free(&lw_ix);
   lw_index_free(&ivw_ix);
   g_infer_write_round = 0;
+  free(fb);
   return changed;
 }
 
