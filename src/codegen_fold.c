@@ -3889,11 +3889,13 @@ void emit_block_param_assign(Compiler *c, int scope_id, const char *nm, int tidx
   LocalVar *lv = sc ? scope_local(sc, nm) : NULL;
   int box = lv && lv->type == TY_POLY && et != TY_POLY;
   if (box) {
-    if (et == TY_INT)    buf_printf(b, "lv_%s = sp_box_int(_t%d);", nm, tidx);
-    else if (et == TY_STRING) buf_printf(b, "lv_%s = sp_box_str(_t%d);", nm, tidx);
-    else if (et == TY_FLOAT)  buf_printf(b, "lv_%s = sp_box_float(_t%d);", nm, tidx);
-    else if (et == TY_BOOL)   buf_printf(b, "lv_%s = sp_box_bool(_t%d);", nm, tidx);
-    else buf_printf(b, "lv_%s = _t%d;", nm, tidx);
+    switch (et) {
+    case TY_INT:    buf_printf(b, "lv_%s = sp_box_int(_t%d);", nm, tidx); break;
+    case TY_STRING: buf_printf(b, "lv_%s = sp_box_str(_t%d);", nm, tidx); break;
+    case TY_FLOAT:  buf_printf(b, "lv_%s = sp_box_float(_t%d);", nm, tidx); break;
+    case TY_BOOL:   buf_printf(b, "lv_%s = sp_box_bool(_t%d);", nm, tidx); break;
+    default:        buf_printf(b, "lv_%s = _t%d;", nm, tidx); break;
+    }
   }
 else {
     buf_printf(b, "lv_%s = _t%d;", nm, tidx);
