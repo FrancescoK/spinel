@@ -145,11 +145,15 @@ module Fiddle
     nil
   end
 
-  def self.last_error = FFI::Native.errno
+  # The errno of the last Function#call, saved right after the native call
+  # (what Fiddle does): the work between that call and the caller's read can
+  # change the live errno.
+  @last_error = 0
+
+  def self.last_error = @last_error
 
   def self.last_error=(v)
-    FFI::Native.set_errno(v)
-    v
+    @last_error = v
   end
 
   # The address of libc's free: what a Pointer given RUBY_FREE calls.
@@ -481,6 +485,7 @@ module Fiddle
         i += 2
       end
       r = @ffi.invoke(conv, nil)
+      Fiddle.last_error = FFI::Native.errno
       if @ret == Fiddle::TYPE_VOIDP
         Pointer.new(r.nil? ? 0 : r.address)
       else
@@ -509,7 +514,13 @@ module Fiddle
 
     def __dispatch(vals)
       conv = []
-      vals.each { |v| conv << (v.is_a?(FFI::AbstractMemory) ? v.address : v) }
+      vals.each_with_index do |v, i|
+        if @args[i] == Fiddle::TYPE_VOIDP
+          conv << Pointer.new(v.nil? ? 0 : v.address)
+        else
+          conv << v
+        end
+      end
       r = call(*conv)
       r.is_a?(Pointer) ? r.to_i : r
     end

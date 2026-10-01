@@ -76,3 +76,10 @@ rescue TypeError => e
 end
 Fiddle.last_error = 7
 p Fiddle.last_error
+
+# last_error is the errno the last call left, whatever runs in between
+openf = Fiddle::Function.new(Fiddle::Handle::DEFAULT["open"], [Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT], Fiddle::TYPE_INT)
+p openf.call("/nonexistent/zzz", 0)
+junk = Fiddle::Pointer.malloc(64)
+junk.free
+p Fiddle.last_error

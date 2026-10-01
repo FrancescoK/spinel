@@ -9,7 +9,8 @@ qsort = Fiddle::Function.new(libc["qsort"],
 calls = 0
 cmp = Fiddle::Closure::BlockCaller.new(Fiddle::TYPE_INT, [Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP]) do |a, b|
   calls += 1
-  Fiddle::Pointer.new(a)[0, 1].ord <=> Fiddle::Pointer.new(b)[0, 1].ord
+  (a.is_a?(Fiddle::Pointer) && b.is_a?(Fiddle::Pointer)) or raise "callback args are Pointers"
+  a[0, 1].ord <=> b[0, 1].ord
 end
 p cmp.class, cmp.to_i.class, cmp.args, cmp.ctype, cmp.freed?
 

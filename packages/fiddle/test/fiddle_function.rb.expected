@@ -37,3 +37,5 @@ TypeError: no implicit conversion of String into Integer
 RuntimeError: unknown type 99
 TypeError: wrong argument type Integer (expected Array)
 7
+-1
+2
