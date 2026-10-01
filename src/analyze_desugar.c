@@ -2560,12 +2560,39 @@ static int engine_lexically_nested(NodeTable *nt, int id) {
 }
 
 /* The namespace a constant path's parent names is Object itself (`::X`,
-   `Object::X`), or anything else. */
+   `Object::X`, `::Object::X`), or anything else. */
 static int engine_parent_is_object(NodeTable *nt, int path) {
   int par = nt_ref(nt, path, "parent");
   if (par < 0) return 1;
-  return nt_kind(nt, par) == NK_ConstantReadNode && nt_str(nt, par, "name") &&
+  NodeKind pk = nt_kind(nt, par);
+  if (pk == NK_ConstantPathNode && nt_ref(nt, par, "parent") >= 0) return 0;
+  return (pk == NK_ConstantReadNode || pk == NK_ConstantPathNode) && nt_str(nt, par, "name") &&
          sp_streq(nt_str(nt, par, "name"), "Object");
+}
+
+/* The innermost class, module or singleton class body `id` is in, or -1. */
+static int engine_inner_body(NodeTable *nt, int id) {
+  int inner = -1;
+  for (int n = 0; n < nt->count; n++) {
+    NodeKind nk = nt_kind(nt, n);
+    if (n == id || (nk != NK_ClassNode && nk != NK_ModuleNode && nk != NK_SingletonClassNode)) continue;
+    if (!subtree_has(nt, nt_ref(nt, n, "body"), id)) continue;
+    if (inner < 0 || subtree_has(nt, nt_ref(nt, inner, "body"), n)) inner = n;
+  }
+  return inner;
+}
+
+/* Is `name` Object, Kernel or BasicObject, whose constants Object's lookup
+   reaches, or a name the program also assigns as a value (`K = Kernel`)? */
+static int engine_maybe_object_chain(NodeTable *nt, const char *name) {
+  if (!name || sp_streq(name, "Object") || sp_streq(name, "Kernel") || sp_streq(name, "BasicObject")) return 1;
+  for (int w = 0; w < nt->count; w++) {
+    NodeKind wk = nt_kind(nt, w);
+    if (wk == NK_ClassNode || wk == NK_ModuleNode) continue;
+    const char *wn = engine_written(nt, w);
+    if (wn && sp_streq(wn, name)) return 1;
+  }
+  return 0;
 }
 
 /* Writer `id` (an engine_written node) provably defines a constant of some
@@ -2579,31 +2606,27 @@ static int engine_writer_qualified(NodeTable *nt, int id) {
   if (path >= 0 && (nt_kind(nt, path) == NK_ConstantPathNode || nt_kind(nt, path) == NK_ConstantPathTargetNode))
     return !engine_parent_is_object(nt, path);
   /* the innermost enclosing body owns the constant */
-  int inner = -1;
-  for (int n = 0; n < nt->count; n++) {
-    NodeKind nk = nt_kind(nt, n);
-    if (n == id || (nk != NK_ClassNode && nk != NK_ModuleNode && nk != NK_SingletonClassNode)) continue;
-    if (!subtree_has(nt, nt_ref(nt, n, "body"), id)) continue;
-    if (inner < 0 || subtree_has(nt, nt_ref(nt, inner, "body"), n)) inner = n;
-  }
+  int inner = engine_inner_body(nt, id);
   if (inner < 0 || nt_kind(nt, inner) == NK_SingletonClassNode) return 0;  /* `class << obj`: whose? */
-  const char *on = nt_str(nt, nt_ref(nt, inner, "constant_path"), "name");
-  if (!on || sp_streq(on, "Object") || sp_streq(on, "Kernel") || sp_streq(on, "BasicObject")) return 0;
   /* `K = Kernel; module K` reopens Kernel: a namespace name that is also
      assigned as a value could be Object's chain */
-  for (int w = 0; w < nt->count; w++) {
-    NodeKind wk = nt_kind(nt, w);
-    if (wk == NK_ClassNode || wk == NK_ModuleNode) continue;
-    const char *wn = engine_written(nt, w);
-    if (wn && sp_streq(wn, on)) return 0;
-  }
-  return 1;
+  return !engine_maybe_object_chain(nt, nt_str(nt, nt_ref(nt, inner, "constant_path"), "name"));
 }
 
 /* Does the program mix a module into Object (a top-level `include M`,
    `Object.include M`, ...)? Then a module's constants are Object's too, and
    the namespace test above is off. */
+static int engine_object_mixes_in_scan(NodeTable *nt);
+/* Asked once per desugar_engine_branches run, not once per guard: the scan
+   walks every class body for each include, and a program with hundreds of
+   guards and includes took seconds. The pass only blanks nodes, so an
+   answer taken before a fold stays the conservative one. */
+static int g_engine_mixes = -1;
 static int engine_object_mixes_in(NodeTable *nt) {
+  if (g_engine_mixes < 0) g_engine_mixes = engine_object_mixes_in_scan(nt);
+  return g_engine_mixes;
+}
+static int engine_object_mixes_in_scan(NodeTable *nt) {
   for (int id = 0; id < nt->count; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
@@ -2618,22 +2641,34 @@ static int engine_object_mixes_in(NodeTable *nt) {
     }
     if (!mix) continue;
     int r = nt_ref(nt, id, "receiver");
-    /* receiverless: top-level self is main, whose include is Object's */
-    if (r < 0) { if (!engine_lexically_nested(nt, id)) return 1; continue; }
-    if (nt_kind(nt, r) == NK_SelfNode) { if (!engine_lexically_nested(nt, id)) return 1; continue; }
+    /* receiverless: top-level self is main, whose include is Object's, and
+       in `class Object` / `module Kernel` the body's self is that one */
+    if (r < 0 || nt_kind(nt, r) == NK_SelfNode) {
+      int inner = engine_inner_body(nt, id);
+      if (inner < 0) return 1;
+      if (nt_kind(nt, inner) != NK_SingletonClassNode &&
+          engine_maybe_object_chain(nt, nt_str(nt, nt_ref(nt, inner, "constant_path"), "name"))) return 1;
+      continue;
+    }
     /* a named class or module other than Object's chain keeps it; anything
-       computed could be Object */
+       computed, or a constant also assigned a value (`O = Object`), could be
+       Object */
     const char *rn = nt_kind(nt, r) == NK_ConstantReadNode ? nt_str(nt, r, "name") : NULL;
-    if (!rn || sp_streq(rn, "Object") || sp_streq(rn, "Kernel") || sp_streq(rn, "BasicObject")) return 1;
+    if (engine_maybe_object_chain(nt, rn)) return 1;
   }
   return 0;
 }
 
 /* Does `id` sit where it can run more than once -- in a loop, a block, a
-   method or a lambda? */
+   method or a lambda, or a begin whose rescue may `retry`? */
 static int engine_may_rerun(NodeTable *nt, int id) {
   for (int n = 0; n < nt->count; n++) {
     NodeKind k = nt_kind(nt, n);
+    if (k == NK_RetryNode) {
+      for (int b = 0; b < nt->count; b++)
+        if (nt_kind(nt, b) == NK_BeginNode && subtree_has(nt, b, n) && subtree_has(nt, b, id)) return 1;
+      continue;
+    }
     if (n == id || (k != NK_WhileNode && k != NK_UntilNode && k != NK_ForNode && k != NK_BlockNode &&
                     k != NK_DefNode && k != NK_LambdaNode)) continue;
     if (subtree_has(nt, n, id)) return 1;
@@ -2748,6 +2783,7 @@ int desugar_engine_branches(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
   int changed = 0, eng = 1, ver = 1;
+  g_engine_mixes = -1;
   /* A program that defines a RUBY_ENGINE of its own (a shim module's
      `RUBY_ENGINE = "jruby"`) reads that one where it is in scope, so the
      fold, which knows only the global, would answer for the wrong constant:
