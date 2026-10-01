@@ -52,3 +52,20 @@ true
 true
 true
 true
+Math::DomainError
+StandardError
+Math::DomainError
+[DE2, DE, Math::DomainError, StandardError]
+true
+true
+true
+[DE2, "dom"]
+Encoding::CompatibilityError
+EncodingError
+true
+true
+CE
+Errno::EILSEQ
+true
+Errno::EPERM
+X64

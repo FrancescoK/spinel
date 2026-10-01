@@ -114,6 +114,9 @@ static const BuiltinClass BUILTIN_CLASSES[] = {
   { "Enumerator::Chain",            0,     BC_CLASS },
   { "Enumerator::Lazy",             0,     BC_CLASS },
   { "Enumerator::Product",          0,     BC_CLASS },
+  { "Encoding::CompatibilityError",        0, BC_EXCEPTION },
+  { "Encoding::InvalidByteSequenceError",  0, BC_EXCEPTION },
+  { "Encoding::UndefinedConversionError",  0, BC_EXCEPTION },
   { "Errno::ENOENT",                0,     BC_EXCEPTION },
   { "GC",                           0,     BC_CLASS | BC_MODULE },
   { "IO::EAGAINWaitReadable",       0,     BC_EXCEPTION },
@@ -234,9 +237,15 @@ const char *superclass_builtin_exc_name(const NodeTable *nt, int sc) {
         if (sp_streq(pty, "ConstantReadNode")) break;
       }
       if (ok && any && is_builtin_exception_name(q)) {
-        static char *interned[64]; static int ninterned;
+        /* grows: a full table would send the name to the leaf reading
+           below, and "ENOENT" alone names no exception */
+        static char **interned; static int ninterned, cap;
         for (int i = 0; i < ninterned; i++) if (sp_streq(interned[i], q)) return interned[i];
-        if (ninterned < 64) return interned[ninterned++] = strdup(q);
+        if (ninterned == cap) {
+          cap = cap ? cap * 2 : 16;
+          interned = realloc(interned, sizeof *interned * (size_t)cap);
+        }
+        return interned[ninterned++] = strdup(q);
       }
     }
   }

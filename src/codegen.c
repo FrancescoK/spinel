@@ -12656,6 +12656,10 @@ int class_builtin_superclass(Compiler *c, int i) {
   if (sc_node >= 0) {
     const char *sc_ty = nt_type(c->nt, sc_node);
     const char *sc_nm = (sc_ty && (sp_streq(sc_ty, "ConstantReadNode") || sp_streq(sc_ty, "ConstantPathNode"))) ? nt_str(c->nt, sc_node, "name") : NULL;
+    /* an exception path is read whole: the leaf of Math::DomainError,
+       "DomainError", has no id, and the class sat under Object */
+    const char *exc_nm = superclass_builtin_exc_name(c->nt, sc_node);
+    if (exc_nm) sc_nm = exc_nm;
     if (sc_nm) { int bid = builtin_class_id(sc_nm); if (bid != 0) builtin_par = bid; }
   }
   return builtin_par;
