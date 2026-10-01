@@ -29667,6 +29667,16 @@ void analyze_program(Compiler *c) {
     if (promote_forwarded_rest_args(c)) ch = 1;
     if (!ch) break;
   }
+  /* A read an is_a? or nil guard narrowed to String (`m(x) if
+     x.is_a?(String)`) unboxed a copy of the String its POLY variable holds:
+     one lifted into the handle for a parameter appended to keeps the box,
+     so the callee appends to the variable's own String. The narrowing ran
+     before the lifts were decided. */
+  NT_FOREACH_KIND(c->nt, NK_LocalVariableReadNode, r) {
+    if (!c->poly_strbuf_lift[r] || c->nilnarrow[r] != TY_STRING) continue;
+    c->nilnarrow[r] = TY_UNKNOWN;
+    c->ntype[r] = TY_POLY;
+  }
   mark_reader_identity_operands(c);
   mark_reader_read_only_operands(c);
 
