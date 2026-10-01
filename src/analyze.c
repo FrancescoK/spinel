@@ -26719,6 +26719,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_bare_class_self_calls(c);    /* cmethod `const_get(:K)` -> `self.const_get(:K)` */
     ch |= desugar_ie_bare_object_calls(c);     /* instance_eval { is_a?(K) } -> self.is_a?(K) */
     ch |= desugar_bare_object_reopen_calls(c);  /* Object reopened: `helper` -> `self.helper` */
+    ch |= desugar_descendant_reader_calls(c);
     ch |= desugar_masgn_store_evidence(c);     /* h[k], o.x = v, w -> detached h[k] = v, o.x = w as type evidence */
     ch |= desugar_index_assign_user_recv(c);   /* r[k] ||= v on a user [] / []= receiver -> r[k] || (r[k] = v) */
     ch |= desugar_dynamic_const_get_arms(c);   /* recv.const_get(var) on any other receiver -> static name dispatch */

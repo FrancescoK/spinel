@@ -299,6 +299,32 @@ int desugar_bare_object_reopen_calls(Compiler *c) {
   return changed;
 }
 
+int desugar_descendant_reader_calls(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    if (nt_ref(nt, id, "receiver") >= 0 || nt_ref(nt, id, "arguments") >= 0 ||
+        nt_ref(nt, id, "block") >= 0 || id >= c->node_cap || ie_class_of(c, id) >= 0) continue;
+    const char *nm = nt_str(nt, id, "name");
+    Scope *sc = comp_scope_of(c, id);
+    if (!nm || !sc || !sc->name || sc->is_cmethod || sc->class_id < 0) continue;
+    if (comp_method_in_chain(c, sc->class_id, nm, NULL) >= 0 || comp_reader_in_chain(c, sc->class_id, nm, NULL)) continue;
+    int nd = 0, hit = 0;
+    const int *ds = comp_descendants(c, sc->class_id, &nd);
+    for (int i = 0; i < nd && !hit; i++) hit = comp_reader_in_chain(c, ds[i], nm, NULL);
+    if (!hit) continue;
+    int sn = nt_new_node(nt, "SelfNode");
+    if (sn < 0) continue;
+    nt_node_set_int(nt, id, "vcall", 0);
+    comp_grow_node_arrays(c);
+    c->nscope[sn] = c->nscope[id];
+    c->node_cbody[sn] = c->node_cbody[id];
+    nt_node_set_ref(nt, id, "receiver", sn);
+    changed = 1;
+  }
+  return changed;
+}
+
 /* `h[k], o.x = v, w` stores through `[]=` and `x=` just as `h[k] = v` and
    `o.x = w` do, but the passes that widen a container's key and element
    types, or an attribute's slot, from those stores only look at CallNodes:
