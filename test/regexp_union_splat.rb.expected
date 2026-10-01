@@ -4,3 +4,6 @@ false
 "none"
 "http|https"
 "(?!)"
+"(?!)"
+"a\\.b"
+"x|y"

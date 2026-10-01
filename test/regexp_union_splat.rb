@@ -11,3 +11,6 @@ p schemes_re, schemes_re(["http", "https"])
 
 e = []
 p Regexp.union(*e).source
+
+# a boxed scalar splats to itself, nil to nothing
+[nil, "a.b", ["x", "y"]].each { |v| p Regexp.union(*v).source }

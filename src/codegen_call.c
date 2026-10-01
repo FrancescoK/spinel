@@ -35489,7 +35489,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       if (uat == TY_POLY_ARRAY || uat == TY_STR_ARRAY || (splat && uat == TY_POLY)) {
         buf_puts(b, "sp_re_union_array(");
         if (uat == TY_STR_ARRAY) { buf_puts(b, "sp_StrArray_to_poly_fmt("); emit_expr(c, ua, b); buf_puts(b, ")"); }
-        else if (uat == TY_POLY) { buf_puts(b, "sp_poly_to_a_arr("); emit_expr(c, ua, b); buf_puts(b, ")"); }
+        else if (uat == TY_POLY) { buf_puts(b, "sp_poly_to_poly_array(sp_splat_to_array("); emit_expr(c, ua, b); buf_puts(b, "))"); }
         else emit_expr(c, ua, b);
         buf_puts(b, ")");
         return;
