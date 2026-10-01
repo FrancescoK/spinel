@@ -19635,10 +19635,7 @@ static int dyn_pull_site_kw_args(Compiler *c, int n) {
       if (!key || v < 0 || nt_kind(nt, v) != NK_LocalVariableReadNode) continue;
       TyKind vt = comp_ntype(c, v);
       if (vt != TY_STRING && vt != TY_STRBUF) continue;
-      const char *vn = nt_str(nt, v, "name");
-      Scope *vs = vn ? comp_scope_of(c, v) : NULL;
-      LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
-      if (!(lv && lv->type == TY_STRBUF && lv->str_shared)) {
+      if (!local_is_handle(c, v)) {
         DynReach r;
         dyn_site_kw_reach(c, n, key, &r);
         if (r.unlifted || !r.app) continue;
@@ -19710,10 +19707,7 @@ static int dyn_pull_site_args(Compiler *c, int n) {
     /* A local that is the handle already goes over as the handle at every
        dynamic call, appending target or not: demoted, a read-only call
        would copy the whole String per call. */
-    const char *vn = nt_str(nt, av[k], "name");
-    Scope *vs = vn ? comp_scope_of(c, av[k]) : NULL;
-    LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
-    int already = lv && lv->type == TY_STRBUF && lv->str_shared;
+    int already = local_is_handle(c, av[k]);
     if (!already) {
       DynReach r;
       dyn_site_reach(c, n, k, &r);
@@ -19739,13 +19733,6 @@ static int dyn_pull_site_args(Compiler *c, int n) {
    variable bound to it is pulled in (convert_byref_handle_params pulls a
    method's callers, dyn_pull_arg a yield's variables). A program that
    yields no handle into an appending block keeps its C. */
-static int an_local_is_handle(Compiler *c, int a) {
-  if (a < 0 || nt_kind(c->nt, a) != NK_LocalVariableReadNode) return 0;
-  const char *vn = nt_str(c->nt, a, "name");
-  Scope *vs = vn ? comp_scope_of(c, a) : NULL;
-  LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
-  return lv && lv->type == TY_STRBUF && lv->str_shared;
-}
 /* A plain String local that another local names too (`z = x; yield z`): the
    lent alias (a `const char **` slot) would grow only the yielded name, so
    such a local counts as a handle here, as an aliased local handed to a lent
@@ -19753,7 +19740,7 @@ static int an_local_is_handle(Compiler *c, int a) {
    parameter takes the handle, the local is pulled in, and the pure-alias
    rule (promote_local_alias_pairs) then takes its other names along. */
 static int an_local_is_handle_or_aliased(Compiler *c, const ALocalAliases *t, int a) {
-  if (an_local_is_handle(c, a)) return 1;
+  if (local_is_handle(c, a)) return 1;
   if (a < 0 || nt_kind(c->nt, a) != NK_LocalVariableReadNode) return 0;
   const char *vn = nt_str(c->nt, a, "name");
   Scope *vs = vn ? comp_scope_of(c, a) : NULL;
@@ -19797,7 +19784,7 @@ static int yield_splice_kw_handles(Compiler *c, int mi, int h, int kwh, int pass
     if (!key || v < 0 || nt_kind(nt, v) != NK_LocalVariableReadNode) continue;
     TyKind at = comp_ntype(c, v);
     if (at != TY_STRING && at != TY_STRBUF) continue;
-    int is_h = an_local_is_handle(c, v), into_h = 0;
+    int is_h = local_is_handle(c, v), into_h = 0;
     for (int ei = h >= 0 ? g_dyn.bhead[h] : -1; ei >= 0; ei = g_dyn.bnext[ei]) {
       int u = g_dyn.bnode[ei], blk = nt_ref(nt, u, "block");
       if (nt_kind(nt, blk) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
@@ -19925,7 +19912,7 @@ static int yield_splice_site(Compiler *c, int y, int pass, ALocalAliases *aliase
       if (pass || !is_h || t->type != TY_STRING || !an_block_param_lent(c, blk, k, call_plain_argc(c, y))) continue;
       t->type = TY_STRBUF; t->str_shared = 1; changed = 1;
     }
-    if (pass && into_h && !an_local_is_handle(c, av[k])) changed |= dyn_pull_arg(c, av[k], 0);
+    if (pass && into_h && !local_is_handle(c, av[k])) changed |= dyn_pull_arg(c, av[k], 0);
     /* a call site handing the method a proc (`run(s, &pr)`,
        `&method(:m)`): the spliced yield calls it, boxing what it yields,
        which carries the handle into a proc that appends to it */
@@ -19992,7 +19979,7 @@ static int yield_splice_handles(Compiler *c) {
       Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
       LocalVar *t = bs ? scope_local(bs, bp) : NULL;
       if (!t || t->is_cell) continue;
-      if (an_local_is_handle(c, av[k])) {
+      if (local_is_handle(c, av[k])) {
         if (t->type == TY_STRING && an_block_param_lent(c, blk, k, call_plain_argc(c, u))) {
           t->type = TY_STRBUF; t->str_shared = 1; changed = 1;
         }
@@ -20101,10 +20088,7 @@ static int promote_dyncall_string_args(Compiler *c) {
       if (nt_kind(nt, av[k]) != NK_LocalVariableReadNode) continue;
       TyKind at = comp_ntype(c, av[k]);
       if (at != TY_STRING && at != TY_STRBUF) continue;
-      const char *vn = nt_str(nt, av[k], "name");
-      Scope *vs = vn ? comp_scope_of(c, av[k]) : NULL;
-      LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
-      if (!(lv && lv->type == TY_STRBUF && lv->str_shared)) {
+      if (!local_is_handle(c, av[k])) {
         DynReach r; memset(&r, 0, sizeof r);
         if (shift) dyn_reach_value(c, nt_ref(nt, n, "receiver"), k - shift, 0, &r);
         else r.unknown = 1;
@@ -20124,10 +20108,7 @@ static int promote_dyncall_string_args(Compiler *c) {
       if (nt_kind(nt, av[k]) != NK_LocalVariableReadNode) continue;
       TyKind at = comp_ntype(c, av[k]);
       if (at != TY_STRING && at != TY_STRBUF) continue;
-      const char *vn = nt_str(nt, av[k], "name");
-      Scope *vs = vn ? comp_scope_of(c, av[k]) : NULL;
-      LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
-      if (!(lv && lv->type == TY_STRBUF && lv->str_shared)) {
+      if (!local_is_handle(c, av[k])) {
         DynReach r; memset(&r, 0, sizeof r);
         if (shift) dyn_reach_value(c, nt_ref(nt, n, "receiver"), k - shift, 0, &r);
         else r.unknown = 1;
