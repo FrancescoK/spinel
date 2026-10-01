@@ -426,6 +426,11 @@ int local_is_handle(Compiler *c, int a) {
    rather than the copy a plain read of it takes. 0 when it is none. */
 int emit_handle_var_ref(Compiler *c, int a, Buf *b) {
   if (!local_is_handle(c, a)) return 0;
+  /* a value that ran first, ahead of a later one that rebinds the local
+     (`yield(s, (s = +"q"; 1))`), is the handle it read then: the slot holds
+     the new String by now (ran_first_handle, as emit_boxed asks it) */
+  int th = ran_first_handle(a);
+  if (th >= 0) { buf_printf(b, "_t%d", th); return 1; }
   char ref[1024];
   unsigned char svm = c->strbuf_box[a];
   c->strbuf_box[a] = 1;

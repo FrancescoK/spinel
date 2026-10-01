@@ -39,3 +39,20 @@ n = +"n\0o"; SH.call(n); run2(n) { |w| w << LONG }; p n.bytesize
 # and a variable that is no handle, through a keyword yielded on
 def yk3(x) = run(x) { |u| yield(k: u) }
 o = +"o"; yk3(o) { |k:| k << LONG }; p seen(o)
+
+# a later value of the same yield rebinds the variable: the block gets the
+# String the variable held when its value ran, by position and by keyword
+def yr
+  s = +"r"
+  SH.call(s)
+  yield(s, (s = +"new"; 1))
+  s
+end
+q1 = nil; p yr { |w, _| q1 = w; w << LONG }, seen(q1)
+def ykr
+  s = +"k"
+  KW.call(k: s)
+  yield(k: s, j: (s = +"new"; 1))
+  s
+end
+q2 = nil; p ykr { |k:, j:| q2 = k; k << LONG }, seen(q2)
