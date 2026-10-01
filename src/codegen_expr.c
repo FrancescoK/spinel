@@ -1947,23 +1947,36 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     int v = nt_ref(nt, id, "value");
     LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
     TyKind t = lv ? lv->type : TY_UNKNOWN;
-    const char *en = rename_local(nm);
-    char lhs[300]; snprintf(lhs, sizeof lhs, "lv_%s", en);
+    /* the local as every other write names it: a captured one lives in its
+       cell (`(*_cell_x)`), an inlined one under its renamed C name */
+    char lhs[300];
+    { Buf lr; memset(&lr, 0, sizeof lr); emit_local_ref(c, id, nm, &lr);
+      snprintf(lhs, sizeof lhs, "%s", lr.p ? lr.p : ""); free(lr.p); }
     char cond[400];
     if (t == TY_POLY) {
-      snprintf(cond, sizeof cond, "%ssp_poly_truthy(lv_%s)", is_or ? "!" : "", en);
+      snprintf(cond, sizeof cond, "%ssp_poly_truthy(%s)", is_or ? "!" : "", lhs);
       emit_orw_guard(c, v, 1, cond, lhs, 1, 0, b);
     }
     else if (t == TY_BOOL) {
-      snprintf(cond, sizeof cond, "%slv_%s", is_or ? "!" : "", en);
+      snprintf(cond, sizeof cond, "%s%s", is_or ? "!" : "", lhs);
       emit_orw_guard(c, v, 0, cond, lhs, 1, 0, b);
     }
     else if (t == TY_SYMBOL) {
       /* nilable symbol: (sp_sym)-1 is the nil sentinel */
-      snprintf(cond, sizeof cond, "lv_%s %s= (sp_sym)-1", en, is_or ? "=" : "!");
+      snprintf(cond, sizeof cond, "%s %s= (sp_sym)-1", lhs, is_or ? "=" : "!");
       emit_orw_guard(c, v, 0, cond, lhs, 1, 0, b);
     }
-    else if (!is_or) emit_orw_guard(c, v, 0, NULL, lhs, 1, 0, b);
+    else if (!is_or) {
+      /* `x &&= v` assigns only when x is not nil, as the statement form
+         tests (a slot with no nil representation always assigns) */
+      Buf nb; memset(&nb, 0, sizeof nb);
+      if (local_nil_test(c, lv, lhs, &nb)) {
+        snprintf(cond, sizeof cond, "!(%s)", nb.p);
+        emit_orw_guard(c, v, 0, cond, lhs, 1, 0, b);
+      }
+      else emit_orw_guard(c, v, 0, NULL, lhs, 1, 0, b);
+      free(nb.p);
+    }
     else {
       /* `x ||= v` in value position on a slot that can hold nil (see
          local_nil_test): the old bare read assumed every non-poly local was
@@ -1983,7 +1996,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         buf_printf(b, " } %s; })", rb.p);
         free(apre.p); free(abody.p);
       }
-      else buf_printf(b, "lv_%s", en);
+      else buf_puts(b, lhs);
       free(nb.p); free(rb.p);
     }
     return;
