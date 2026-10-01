@@ -15613,17 +15613,14 @@ static void sp_fiber_storage_own(sp_Fiber *f) {
   if (f != sp_fiber_current)
     sp_raise_cls("ArgumentError", "Fiber storage can only be accessed from the Fiber it belongs to");
 }
-/* Fiber#storage: a copy of the store as a Hash, or nil when there is none.
-   A key set to nil is gone, as in CRuby. */
+/* Fiber#storage: a copy of the store as a Hash, or nil when there is none */
 static sp_RbVal sp_Fiber_storage_hash(sp_Fiber *f) {
   sp_fiber_storage_own(f);
   if (!f->storage) return sp_box_nil();
   sp_PolyPolyHash *h = sp_PolyPolyHash_new();
   SP_GC_ROOT(h);
-  for (sp_int i = 0; i < sp_Fiber_storage_len(f); i++) {
-    sp_RbVal v = sp_Fiber_storage_val(f, i);
-    if (v.tag != SP_TAG_NIL) sp_PolyPolyHash_set(h, sp_box_sym(sp_Fiber_storage_key(f, i)), v);
-  }
+  for (sp_int i = 0; i < sp_Fiber_storage_len(f); i++)
+    sp_PolyPolyHash_set(h, sp_box_sym(sp_Fiber_storage_key(f, i)), sp_Fiber_storage_val(f, i));
   return sp_box_obj((void *)h, SP_BUILTIN_POLY_POLY_HASH);
 }
 /* Fiber.new(storage:) and #storage=: the store becomes the Hash's entries,
@@ -15645,7 +15642,7 @@ static void sp_Fiber_storage_replace(sp_Fiber *f, sp_RbVal v) {
   }
   sp_Fiber_storage_empty(f);
   for (sp_int i = 0; i < keys->len; i++)
-    sp_Fiber_storage_set(f, (sp_sym)sp_PolyArray_get(keys, i).v.i, sp_PolyArray_get(vals, i));
+    sp_Fiber_storage_put(f, (sp_sym)sp_PolyArray_get(keys, i).v.i, sp_PolyArray_get(vals, i));
 }
 /* Fiber#storage=: the running fiber only */
 static void sp_Fiber_storage_assign(sp_Fiber *f, sp_RbVal v) {

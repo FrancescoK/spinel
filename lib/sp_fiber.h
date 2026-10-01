@@ -106,6 +106,7 @@ sp_Fiber *sp_Fiber_at(sp_Fiber *f, const char *file, sp_int line);
 const char *sp_Fiber_inspect(sp_Fiber *f);   /* #inspect / #to_s */
 sp_RbVal sp_Fiber_storage_get(sp_Fiber *f, sp_sym k);
 void sp_Fiber_storage_set(sp_Fiber *f, sp_sym k, sp_RbVal v);
+void sp_Fiber_storage_put(sp_Fiber *f, sp_sym k, sp_RbVal v);
 sp_int sp_Fiber_storage_len(sp_Fiber *f);
 sp_sym sp_Fiber_storage_key(sp_Fiber *f, sp_int i);
 sp_RbVal sp_Fiber_storage_val(sp_Fiber *f, sp_int i);

@@ -14095,13 +14095,20 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           int e = kwh_elem_named(c, kwn, kwels, "storage");
           if (e >= 0) fst = nt_ref(nt, kwels[e], "value");
         }
-        if (fst >= 0) buf_puts(b, "sp_Fiber_with_storage(");
+        /* storage: is evaluated first, as CRuby does, and stays rooted
+           while the fiber is allocated */
+        int tst = 0;
+        if (fst >= 0) {
+          tst = ++g_tmp;
+          buf_printf(b, "({ sp_RbVal _t%d = ", tst); emit_boxed(c, fst, b);
+          buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_Fiber_with_storage(", tst);
+        }
         buf_puts(b, "sp_Fiber_at(");
         emit_fiber_new(c, id, b, 0, -1);
         buf_puts(b, ", \"");
         emit_c_escaped(b, fpath && *fpath ? fpath : "source.rb");
         buf_printf(b, "\", %d)", (int)nt_int(nt, id, "node_line", 0));
-        if (fst >= 0) { buf_puts(b, ", "); emit_boxed(c, fst, b); buf_puts(b, ")"); }
+        if (tst) buf_printf(b, ", _t%d); })", tst);
         return 1;
       }
       if (cn && sp_streq(cn, "Queue")) { buf_puts(b, "sp_Queue_new()"); return 1; }

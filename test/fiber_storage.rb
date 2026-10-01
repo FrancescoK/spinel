@@ -62,6 +62,19 @@ many = Fiber.new(storage: (1..50).to_h { |i| [:"k#{i}", "v#{i}" * 3] }) do
 end
 p many.resume
 
+
+# the storage: value is evaluated, and kept alive, before the fiber exists
+def mk(i) = {k: "x" * i, j: [i, "y" * i]}
+made = []
+200.times { |i| made << Fiber.new(storage: mk(i)) { Fiber[:j][0] } }
+p made.map(&:resume).sum
+Fiber[:y] = 7
+p Fiber.new(storage: (Fiber[:y] = 8; true)) { Fiber[:y] }.resume
+
+# a nil value given in storage: stays; Fiber[]= nil removes the key
+p Fiber.new(storage: {a: nil, b: 1}) { Fiber.current.storage }.resume
+p Fiber.new(storage: {a: nil, b: 1}) { Fiber[:b] = nil; Fiber.current.storage }.resume
+
 Fiber.current.storage = nil
 p Fiber[:a]
 p Fiber.current.storage

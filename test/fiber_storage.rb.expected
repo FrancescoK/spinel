@@ -15,5 +15,9 @@ nil
 "storage must be a hash"
 1
 [50, "v50v50v50"]
+19900
+8
+{a: nil, b: 1}
+{a: nil}
 nil
 nil

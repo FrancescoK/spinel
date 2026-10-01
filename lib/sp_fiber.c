@@ -199,6 +199,18 @@ static void sp_FiberStore_set(sp_FiberStore *s, sp_sym k, sp_RbVal v) {SP_GC_ROO
   }
   s->keys[s->len] = k; s->vals[s->len] = v; s->len++;
 }
+/* drop key k, keeping the order of the rest */
+static void sp_FiberStore_delete(sp_FiberStore *s, sp_sym k) {
+  for (sp_int i = 0; i < s->len; i++) {
+    if (s->keys[i] != k) continue;
+    for (sp_int j = i + 1; j < s->len; j++) {
+      s->keys[j - 1] = s->keys[j];
+      s->vals[j - 1] = s->vals[j];
+    }
+    s->len--;
+    return;
+  }
+}
 static sp_FiberStore *sp_FiberStore_dup(sp_FiberStore *o) {SP_GC_ROOT(o);
   sp_FiberStore *s = sp_FiberStore_new();
   for (sp_int i = 0; i < o->len; i++) sp_FiberStore_set(s, o->keys[i], o->vals[i]);
@@ -586,17 +598,38 @@ f->stack=(char*)mmap(NULL,_g+f->stack_size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_
 #endif
   return f;}
 sp_RbVal sp_Fiber_storage_get(sp_Fiber*f,sp_sym k){if(!f->storage)return sp_box_nil();return sp_FiberStore_get((sp_FiberStore*)f->storage,k);}
-void sp_Fiber_storage_set(sp_Fiber*f,sp_sym k,sp_RbVal v){SP_GC_ROOT_RBVAL(v);SP_GC_ROOT(f); sp_gc_wb((void*)f);if(!f->storage){f->storage=sp_FiberStore_new();sp_gc_wb((void*)f);}sp_FiberStore_set((sp_FiberStore*)f->storage,k,v);}
+/* store v under k as it is, nil included */
+void sp_Fiber_storage_put(sp_Fiber*f,sp_sym k,sp_RbVal v){SP_GC_ROOT_RBVAL(v);SP_GC_ROOT(f); sp_gc_wb((void*)f);if(!f->storage){f->storage=sp_FiberStore_new();sp_gc_wb((void*)f);}sp_FiberStore_set((sp_FiberStore*)f->storage,k,v);}
+/* Fiber[k] = v: nil removes the key (CRuby) */
+void sp_Fiber_storage_set(sp_Fiber*f,sp_sym k,sp_RbVal v){
+  if(v.tag==SP_TAG_NIL){
+    if(f->storage)sp_FiberStore_delete((sp_FiberStore*)f->storage,k);
+    return;
+  }
+  sp_Fiber_storage_put(f,k,v);
+}
 /* the whole store, for Fiber#storage / #storage= (the Hash side is in
    spinel_rt.h) */
 sp_int sp_Fiber_storage_len(sp_Fiber*f){
   return f->storage?((sp_FiberStore*)f->storage)->len:0;
 }
-sp_sym sp_Fiber_storage_key(sp_Fiber*f,sp_int i){return ((sp_FiberStore*)f->storage)->keys[i];}
-sp_RbVal sp_Fiber_storage_val(sp_Fiber*f,sp_int i){return ((sp_FiberStore*)f->storage)->vals[i];}
+sp_sym sp_Fiber_storage_key(sp_Fiber*f,sp_int i){
+  return ((sp_FiberStore*)f->storage)->keys[i];
+}
+sp_RbVal sp_Fiber_storage_val(sp_Fiber*f,sp_int i){
+  return ((sp_FiberStore*)f->storage)->vals[i];
+}
 /* no store at all (#storage answers nil), or an empty one */
-void sp_Fiber_storage_clear(sp_Fiber*f){sp_gc_wb((void*)f);f->storage=NULL;}
-void sp_Fiber_storage_empty(sp_Fiber*f){SP_GC_ROOT(f);sp_FiberStore*s=sp_FiberStore_new();sp_gc_wb((void*)f);f->storage=s;}
+void sp_Fiber_storage_clear(sp_Fiber*f){
+  sp_gc_wb((void*)f);
+  f->storage=NULL;
+}
+void sp_Fiber_storage_empty(sp_Fiber*f){
+  SP_GC_ROOT(f);
+  sp_FiberStore*s=sp_FiberStore_new();
+  sp_gc_wb((void*)f);
+  f->storage=s;
+}
 /* A `Fiber.attr_accessor` attribute: the fiber's own table, which -- unlike
    `storage` -- a new fiber does not inherit (an attribute on a fresh fiber is
    nil, as an ivar on a fresh object is). */
