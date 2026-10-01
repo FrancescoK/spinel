@@ -1670,6 +1670,16 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       buf_puts(b, "), (&(\"\\xff\")[1])))");
       return;
     }
+    /* A POLY variable handed to a parameter the callee appends to in place:
+       a plain String it holds becomes the shared handle and is stored back
+       first, so the callee appends to the variable's own String (#6179). */
+    if (c->poly_strbuf_lift[id] && slv && slv->type == TY_POLY) {
+      Buf rl; memset(&rl, 0, sizeof rl);
+      emit_local_ref(c, id, lrn, &rl);
+      emit_poly_lift_ref(rl.p ? rl.p : "", b);
+      free(rl.p);
+      return;
+    }
     emit_local_ref(c, id, lrn, b); return;
   }
   if (sp_streq(ty, "LocalVariableWriteNode")) {
