@@ -8593,6 +8593,13 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
       buf_printf(b, "  SP_GC_ROOT(self);\n");
       emit_ivar_nil_inits(b, ci, "self->", "  ", ";\n");
     }
+    /* below SystemCallError, #errno is what its initialize stores: an
+       initialize of the program's own that never calls super leaves it nil,
+       and with none at all SystemCallError#initialize runs on no arguments */
+    if (class_is_syserr(c, cid)) {
+      if (init >= 0) buf_puts(b, "  self->xkey = sp_box_nil();\n");
+      else buf_puts(b, "  sp_syserr_super((sp_Exception *)self, 0, NULL);\n");
+    }
   }
   else {
   buf_printf(b, ") {\n  sp_%s *self = SP_POOL_NEW(%s, %s%s%s);\n",
@@ -8718,7 +8725,11 @@ void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b) {
     const char *cn2 = class_ruby_name(c, cid); if (!cn2) cn2 = ci->name;
     const char *par = exc_builtin_parent(c, cid);
     if (ci->nivars == 0) {
-      buf_printf(b, "sp_exc_new_sub(\"%s\", \"%s\", (&(\"\\xff\")[1]))", cn2, par);
+      /* allocate runs no initialize: below SystemCallError, #errno is nil */
+      if (class_is_syserr(c, cid))
+        buf_printf(b, "({ sp_Exception *_t%d = sp_exc_new_sub(\"%s\", \"%s\", (&(\"\\xff\")[1]));"
+                      " _t%d->xkey = sp_box_nil(); _t%d; })", t, cn2, par, t, t);
+      else buf_printf(b, "sp_exc_new_sub(\"%s\", \"%s\", (&(\"\\xff\")[1]))", cn2, par);
       return;
     }
     buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), NULL, sp_%s__gc_scan);"
@@ -10663,6 +10674,35 @@ void emit_super(Compiler *c, int id, Buf *b) {
       int argc2 = 0;
       const int *argv2 = NULL;
       if (args_id >= 0) argv2 = nt_arr(c->nt, args_id, "arguments", &argc2);
+      /* SystemCallError#initialize(msg = nil, func = nil) builds the message
+         from the class's errno ("No such file or directory - msg") and
+         stores #errno; a bare `super` forwards this initialize's parameters */
+      if (class_is_syserr(c, s->class_id)) {
+        char lead[64]; snprintf(lead, sizeof lead, "(sp_Exception *)%s, ", g_self);
+        if (ty && sp_streq(ty, "ForwardingSuperNode")) {
+          if (s->rest_idx >= 0 || s->kwrest_idx >= 0 || nt_ref(c->nt, id, "block") >= 0)
+            unsupported(c, id, "a bare super forwarding a rest, keyword or block parameter to SystemCallError#initialize");
+          if (s->nparams == 0) { buf_printf(b, "sp_syserr_super(%s0, NULL)", lead); return; }
+          int t0 = g_tmp + 1;
+          g_tmp += s->nparams;
+          buf_puts(b, "({ ");
+          for (int k = 0; k < s->nparams; k++) {
+            LocalVar *pk = scope_local(s, s->pnames[k]);
+            Buf rn; memset(&rn, 0, sizeof rn); emit_scope_local_ref(c, s, s->pnames[k], &rn);
+            TyKind pt = (pk && pk->type != TY_UNKNOWN) ? pk->type : TY_POLY;
+            buf_printf(b, "sp_RbVal _t%d = ", t0 + k);
+            emit_boxed_text(c, pt, rn.p ? rn.p : "0", b);
+            buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", t0 + k);
+            free(rn.p);
+          }
+          buf_printf(b, "sp_syserr_super(%s%d, (sp_RbVal[]){", lead, s->nparams);
+          for (int k = 0; k < s->nparams; k++) buf_printf(b, "%s_t%d", k ? ", " : "", t0 + k);
+          buf_puts(b, "}); })");
+          return;
+        }
+        emit_syserr_call(c, id, "sp_syserr_super", lead, argc2, argv2, b);
+        return;
+      }
       if (argc2 > 0) {
         /* msg is a const char*; a poly message (e.g. an un-instantiated
            subclass whose `message` param never got constrained to a String)
@@ -13620,6 +13660,38 @@ static int exc_text_method(Compiler *c, int i, int want_message, int *dcls, cons
   return -1;
 }
 
+/* SystemCallError#initialize reads the errno through the class's own `Errno`
+   constant, so a class of the program below SystemCallError that defines
+   one picks the number its instances carry. The runtime knows the Errno
+   classes' numbers by name and not a constant of the program's, so such a
+   class would get the number of the Errno class above it -- or, directly
+   under SystemCallError, CRuby's TypeError where CRuby answers the
+   constant's number. Refused rather than answered differently. */
+static void refuse_syserr_errno_const(Compiler *c) {
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    if (!class_is_syserr(c, ci)) continue;
+    int body = nt_ref(c->nt, c->classes[ci].def_node, "body");
+    int n = 0;
+    const int *st = body >= 0 ? nt_arr(c->nt, body, "body", &n) : NULL;
+    for (int i = 0; i < n; i++)
+      if (nt_kind(c->nt, st[i]) == NK_ConstantWriteNode &&
+          sp_streq(nt_str(c->nt, st[i], "name"), "Errno"))
+        unsupported_feature(c, st[i], "an Errno constant defined in a subclass of SystemCallError "
+                                      "(its errno is read from the Errno class above it)");
+  }
+  int kn = 0;
+  const int *ks = nt_nodes_of_kind(c->nt, NK_ConstantPathWriteNode, &kn);
+  for (int i = 0; i < kn; i++) {
+    int tg = nt_ref(c->nt, ks[i], "target");
+    int par = tg >= 0 ? nt_ref(c->nt, tg, "parent") : -1;
+    const char *pn = par >= 0 ? nt_str(c->nt, par, "name") : NULL;
+    if (tg >= 0 && sp_streq(nt_str(c->nt, tg, "name"), "Errno") && pn &&
+        class_is_syserr(c, comp_class_index(c, pn)))
+      unsupported_feature(c, ks[i], "an Errno constant defined in a subclass of SystemCallError "
+                                    "(its errno is read from the Errno class above it)");
+  }
+}
+
 char *codegen_program(const NodeTable *nt) {
   Compiler *c = comp_new(nt);
   analyze_program(c);
@@ -13646,6 +13718,7 @@ char *codegen_program(const NodeTable *nt) {
      emissions are gated on them (a `puts "hello"` program gets none). */
   g_needs_class_machinery = program_needs_class_machinery(c);
   scan_prologue_features(c);
+  refuse_syserr_errno_const(c);
 
   /* Analyze-only emit modes (legacy --emit-*): write the requested artifact
      from the analysis result and skip codegen. Returns an empty translation

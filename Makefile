@@ -1276,6 +1276,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a Method of a builtin module function compiled)"; ok=0; \
 	else grep -q "ENV.method(:each) is not supported: a Method object of a builtin module" "$$tmp/mb.out" || \
 	  { echo "reject-test: FAIL (a Method of a builtin module function refused without saying why)"; sed -n 1,5p "$$tmp/mb.out"; ok=0; }; fi; \
+	t=test/reject/systemcallerror_subclass_errno_const.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sce.c" >"$$tmp/sce.out" 2>&1; then \
+	  echo "reject-test: FAIL (an Errno constant in a subclass of SystemCallError compiled)"; ok=0; \
+	else grep -q "an Errno constant defined in a subclass of SystemCallError" "$$tmp/sce.out" || \
+	  { echo "reject-test: FAIL (an Errno constant in a subclass of SystemCallError refused without saying why)"; sed -n 1,5p "$$tmp/sce.out"; ok=0; }; fi; \
 	t=test/reject/dynamic_send_then_refusal.rb; \
 	$(SPINEL) "$$t" -c --no-line-map -o "$$tmp/ds.c" >"$$tmp/ds.out" 2>&1; st=$$?; \
 	if [ $$st -ne 1 ] || ! grep -q "1 refusal," "$$tmp/ds.out"; then \
