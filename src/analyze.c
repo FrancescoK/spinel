@@ -23942,6 +23942,21 @@ static char *an_ivar_nonscalar_table(Compiler *c, int *off) {
   return bad;
 }
 
+/* A class with an instance in a local some proc captures (is_cell) is a
+   heap class: a cell holds a GC pointer or a builtin struct, not a user
+   struct (cell_is_typed_ptr), so a value type there has no cell to ride. */
+static void an_heap_captured_classes(Compiler *c) {
+  for (int si = 0; si < c->nscopes; si++) {
+    Scope *s = &c->scopes[si];
+    for (int j = 0; j < s->nlocals; j++) {
+      LocalVar *lv = &s->locals[j];
+      if (!lv->is_cell || !ty_is_object(lv->type)) continue;
+      int q = ty_object_class(lv->type);
+      if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0;
+    }
+  }
+}
+
 void analyze_program(Compiler *c) {
   comp_poly_candidates_reset();
   comp_descendants_reset();
@@ -27610,15 +27625,7 @@ void analyze_program(Compiler *c) {
      cell the proc keeps, and a cell holds a GC pointer or a builtin struct,
      not a user struct. Nothing else here disqualified it, so
      `v = V.new(1); proc { v.a }` was refused as a non-integer capture. */
-  for (int si = 0; si < c->nscopes; si++) {
-    Scope *s = &c->scopes[si];
-    for (int j = 0; j < s->nlocals; j++) {
-      LocalVar *lv = &s->locals[j];
-      if (!lv->is_cell || !ty_is_object(lv->type)) continue;
-      int q = ty_object_class(lv->type);
-      if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0;
-    }
-  }
+  an_heap_captured_classes(c);
   for (int id = 0; id < c->nt->count; id++) {
     const char *ty = nt_type(c->nt, id);
     if (!ty || !sp_streq(ty, "BlockNode")) continue;
@@ -28020,6 +28027,12 @@ void analyze_program(Compiler *c) {
      the cls_id dispatch (a real proc) while analyze left its captures
      uncelled, and the emit refuses. Only sets is_cell, and is idempotent. */
   mark_proc_captures(c);
+  /* ...and a local it cells there may hold a value-type instance the
+     detection above let through: a receiver typed poly only by the late
+     widenings (a parameter every caller passes nil) lifts the block now.
+     Nothing between there and here reads is_value_type, so clearing it is
+     still in time for the emit. */
+  an_heap_captured_classes(c);
   /* A capped run emits from whatever the last round left, which need not be a
      fixpoint; that is a compiler bug worth hearing about, not a quiet log. */
   if (g_fixpoint_rounds >= 128)

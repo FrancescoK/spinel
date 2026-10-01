@@ -62,3 +62,21 @@ p pv.call
 setv = -> { v = V.new("t" * 2) }
 setv.call
 p v.a
+
+# a block on a receiver typed poly only by the late widenings -- a parameter
+# every caller passes nil -- is lifted by the last capture pass, after the
+# value-type detection has run: the instance it captures still needs a cell
+class W
+  def initialize(a) = (@a = a)
+  def a = @a
+end
+def lift(r)
+  w = W.new(7)
+  begin
+    p(r.map { w.a })
+  rescue NoMethodError
+    p :no_map
+  end
+  0
+end
+p lift(nil)
