@@ -3120,7 +3120,9 @@ static char *resolve_requires(const char *source, const char *source_path,
 
     /* Build full path */
     char full_path[1024];
-    int fp_n = snprintf(full_path, sizeof(full_path), "%s/%s", dir, rel_path);
+    /* an absolute path is taken as it is, as CRuby does */
+    int fp_n = rel_path[0] == '/' ? snprintf(full_path, sizeof(full_path), "%s", rel_path)
+                                  : snprintf(full_path, sizeof(full_path), "%s/%s", dir, rel_path);
     if (fp_n < 0 || (size_t)fp_n >= sizeof(full_path)) break;
     /* Collapse "." / ".." before appending ".rb", so a target ending in
        ".." resolves to the parent dir's `<dir>.rb` rather than "...rb". */
