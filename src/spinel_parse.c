@@ -4659,25 +4659,6 @@ else {
   #undef OUT_STR
 }
 
-static char *sp_prepend_after_comments(char *source, const char *head) {
-  const char *ins = source;
-  while (*ins) {
-    const char *q = ins; while (*q == ' ' || *q == '\t') q++;
-    if (*q != '#') break;
-    const char *nl = strchr(ins, '\n');
-    if (!nl) { ins = ins + strlen(ins); break; }
-    ins = nl + 1;
-  }
-  size_t sl = strlen(source), hl = strlen(head), off = (size_t)(ins - source);
-  char *ns = (char *)malloc(sl + hl + 1);
-  if (!ns) return source;
-  memcpy(ns, source, off);
-  memcpy(ns + off, head, hl);
-  memcpy(ns + off + hl, source + off, sl - off + 1);
-  free(source);
-  return ns;
-}
-
 /* ---- Main ---- */
 /* Parse `source_file` and append the text AST to `out`. `argv0` is the
    invoking program path (used to locate the stdlib for plain `require`s).
@@ -4721,31 +4702,6 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
      assignment cannot ride inside a flag string, and `spin flags` has to hand
      a caller's Makefile the same gate `spin build` compiles under. */
   g_require_gate = (g_require_gate_cli || getenv("SPINEL_REQUIRE_GATE")) ? 1 : 0;
-  /* CRuby (3.2+) provides Set without an explicit require. Mirror it: when
-     the program references the Set constant or calls to_set and never
-     requires "set" (and doesn't define its own Set), prepend the require so
-     the bundled shim splices ahead of its uses -- class-method call typing
-     reads definitions in document order. The require-splice line map keeps
-     diagnostics attributed to the right user lines. The checks are textual,
-     so a `require "set"` appearing only in a comment also suppresses the
-     splice -- acceptable for a convenience heuristic. */
-  if (!strstr(source, "require \"set\"") && !strstr(source, "require 'set'") &&
-      !sp_src_opens(source, "class Set") && source_references_set(source)) {
-    /* Insert AFTER the leading shebang/comment block, not at position 0: a
-       prepend at the top pushed the `# frozen_string_literal:` magic comment
-       off the first lines, so the entry file's pragma silently reverted to
-       the default (#3298 -- "Set-Cookie" in a string is enough to trip the
-       textual Set heuristic). */
-    source = sp_prepend_after_comments(source, "require \"set\"\n");
-  }
-  /* CRuby provides IO::Buffer with no require at all (it is core). Mirror
-     it the way Set is mirrored just above: when the program references
-     `IO::Buffer` and never requires "io/buffer", prepend the require so the
-     bundled binding (packages/io/io/buffer.rb) splices ahead of its uses. */
-  if (!strstr(source, "require \"io/buffer\"") && !strstr(source, "require 'io/buffer'") &&
-      source_references_io_buffer(source)) {
-    source = sp_prepend_after_comments(source, "require \"io/buffer\"\n");
-  }
   unsigned char *fsl = NULL; size_t fsl_n = 0;
   sp_autoload_is_main = 1;
   char *resolved = resolve_requires(source, source_file, &fsl, &fsl_n);
@@ -4754,14 +4710,15 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
   source = sp_splice_named_builtin(source, argv0, "Gem", "builtins/gem.rb", &fsl, &fsl_n);
   source = sp_splice_named_builtin(source, argv0, "RbConfig", "builtins/rbconfig.rb", &fsl, &fsl_n);
   source = sp_splice_object_space(source, argv0, &fsl, &fsl_n);
-  /* The implicit Set and IO::Buffer splices above saw the ENTRY file only;
-     a `Set.new` in a required file (activesupport's notifications/fanout.rb)
-     was invisible to it, and the build stopped on the name without its
-     require, and an `IO::Buffer.new` in a required file compiled but raised
-     NameError for the missing class at run time (#6740). Ask again over the
-     resolved program, the way the builtins splice below does, and splice the
-     binding ahead of everything when it is named and was not required: CRuby
-     provides both without a require wherever they are used. */
+  /* CRuby provides Set (3.2+) and IO::Buffer without a require wherever
+     they are used, in a required file as well (activesupport's
+     notifications/fanout.rb; #6740 for IO::Buffer). Ask over the resolved
+     program, the way the builtins splice below does, and splice the binding
+     ahead of everything when it is named and was not required.
+     sp_prepend_require marks the splice as inserted, so the program's own
+     line numbers stay where they are; a require written into the entry
+     file's text instead took a line of its own and pushed every later line
+     down by one. */
   if (!sp_feature_required("set") && !sp_src_opens(source, "class Set") &&
       source_references_set(source))
     source = sp_prepend_require(source, argv0, "require \"set\"\n", &fsl, &fsl_n);
