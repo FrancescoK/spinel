@@ -11197,6 +11197,25 @@ static void mark_empty_literal_tails(Compiler *c) {
     if (has_ret && sc && has_ret[(int)(sc - c->scopes)]) continue;
     MARK_EMPTY_TAIL(bs);
   }
+  /* `next v` hands the block its value as the tail does, so an empty `[]` /
+     `{}` there is the value too: left unmarked it took the other blocks'
+     type, and `next []` among `next 1` went into an sp_int (`next 1`, `next
+     []` to one yield). */
+  NT_FOREACH_KIND(nt, NK_NextNode, nx) {
+    int na = nt_ref(nt, nx, "arguments");
+    int an = 0; const int *av = na >= 0 ? nt_arr(nt, na, "arguments", &an) : NULL;
+    int v = an == 1 ? unwrap_parens(c, av[0]) : -1;   /* `next({})` */
+    if (v < 0 || v >= c->node_cap) continue;
+    int en = 0;
+    if (nt_kind(nt, v) == NK_ArrayNode) {
+      nt_arr(nt, v, "elements", &en);
+      if (en == 0) c->empty_arr_recv[v] = 1;
+    }
+    else if (nt_kind(nt, v) == NK_HashNode) {
+      nt_arr(nt, v, "elements", &en);
+      if (en == 0) c->empty_hash_recv[v] = 1;
+    }
+  }
   #undef MARK_EMPTY_TAIL
   free(has_ret);
 }

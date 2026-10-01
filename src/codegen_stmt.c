@@ -12354,6 +12354,15 @@ static int case_arms_all_diverge(Compiler *c, int id) {
   }
   return 1;
 }
+/* Is the literal block being spliced for a yield one whose value is boxed:
+   its tail typed poly, with no `next` handing back a value of its own? */
+static int yield_block_value_boxed(Compiler *c) {
+  if (g_block_id < 0 || g_yield_proc_ref) return 0;
+  int bb = nt_ref(c->nt, g_block_id, "body");
+  int bn = 0; const int *bd = bb >= 0 ? nt_arr(c->nt, bb, "body", &bn) : NULL;
+  return bn > 0 && comp_ntype(c, bd[bn - 1]) == TY_POLY && block_next_value_ty(c, bb) == TY_UNKNOWN;
+}
+
 
 void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
@@ -12772,9 +12781,16 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
            emit_empty_container_for_slot(c, id, g_result_ty, b)) { }
   /* A boxed call value feeding a typed result slot (an inlined method whose
      tail forwards its block into a builtin answering boxed) is unboxed into
-     it, as a return slot's is, not dropped for the slot's nil below. */
+     it, as a return slot's is, not dropped for the slot's nil below. So is a
+     boxed yield into a literal block whose own value is boxed: the block's
+     parameter took a boxed value from another path to the yield (a proc
+     form's), and the slot this site's call was typed for takes it. (A block
+     with a concrete value splices it as that type, and a forwarded proc's
+     yield answers the slot's type already.) */
   else if (g_result_var && !g_result_poly && !is_subst && vty == TY_POLY &&
-           sp_streq(ty, "CallNode") && g_result_ty != TY_UNKNOWN &&
+           (sp_streq(ty, "CallNode") ||
+            (sp_streq(ty, "YieldNode") && yield_block_value_boxed(c))) &&
+           g_result_ty != TY_UNKNOWN &&
            g_result_ty != TY_VOID && g_result_ty != TY_NIL)
     emit_unbox_node(c, g_result_ty, id, b);
   /* A void tail value (a rescue arm ending in `puts`, or a void-returning
