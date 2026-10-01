@@ -1821,6 +1821,10 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     /* inside an instance_eval/exec splice the block scope has no class_id, so
        the ivar belongs to the rebound receiver class (g_ie_class_id). */
     int ivcls2 = cid2 >= 0 ? cid2 : g_ie_class_id;
+    /* ...and a toplevel method's ivar lives on the Toplevel class, the slot
+       (`civ_Toplevel_x`) the write below lands in: without its type the
+       value went in raw, which a slot the promote widening boxed refused */
+    if (ivcls2 < 0) ivcls2 = comp_class_index(c, "Toplevel");
     TyKind ivt2 = TY_UNKNOWN;
     if (ivcls2 >= 0) {
       int iv2 = comp_ivar_index(&c->classes[ivcls2], nm);
