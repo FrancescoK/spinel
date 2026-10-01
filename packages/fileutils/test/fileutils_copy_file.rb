@@ -20,4 +20,13 @@ begin
 rescue SystemCallError => e
   p e.class
 end
+# preserve copies the mode onto an existing file too; a plain copy keeps it
+File.chmod(0755, src)
+File.write("#{dir}/e", "old")
+File.chmod(0644, "#{dir}/e")
+FileUtils.copy_file(src, "#{dir}/e", true)
+p File.stat("#{dir}/e").mode.to_s(8)
+File.chmod(0644, "#{dir}/e")
+FileUtils.copy_file(src, "#{dir}/e")
+p File.stat("#{dir}/e").mode.to_s(8)
 FileUtils.rm_rf(dir)

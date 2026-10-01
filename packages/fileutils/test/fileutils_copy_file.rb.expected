@@ -4,3 +4,5 @@ nil
 true
 "hello"
 Errno::ENOENT
+"100755"
+"100644"
