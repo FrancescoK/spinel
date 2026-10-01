@@ -940,6 +940,7 @@ int comp_defined_guard_true(Compiler *c, int pred);
 ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node);
 int        comp_class_index(Compiler *c, const char *name);   /* -1 if none */
 int        comp_is_wellknown_const(const char *cn);
+int        const_name_resolves_top_level(Compiler *c, const char *cn);
 /* The class Ruby sees for `ci`: a synthesized singleton subclass reports its
    parent (CRuby hides the singleton class), every other class reports itself. */
 static inline int singleton_visible_ci(Compiler *c, int ci) {

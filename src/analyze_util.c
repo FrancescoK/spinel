@@ -1019,6 +1019,7 @@ static int cn_body_writes_const(const NodeTable *nt, int root, const char *const
 int const_owned_by_class(Compiler *c, const char *clsname, const char *constname) {
   const NodeTable *nt = c->nt;
   if (!clsname || !constname) return 0;
+  if (sp_streq(clsname, "Object") && const_name_resolves_top_level(c, constname)) return 1;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty || !sp_streq(ty, "ClassNode")) continue;

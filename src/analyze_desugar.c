@@ -5170,7 +5170,9 @@ int desugar_root_scoped_constants(Compiler *c) {
     int args = cm && sp_streq(cm, "const_get") ? nt_ref(nt, id, "arguments") : -1;
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     const char *cn = an == 1 ? sym_or_str_literal(nt, av[0]) : NULL;
-    if (!cn || !comp_is_wellknown_const(cn) || !engine_const(nt, nt_ref(nt, id, "receiver"), "Object")) continue;
+    int rv = nt_ref(nt, id, "receiver");
+    const char *rn = nt_kind(nt, rv) == NK_ConstantReadNode ? nt_str(nt, rv, "name") : NULL;
+    if (!cn || !comp_is_wellknown_const(cn) || !builtin_class_id(rn) || sp_streq(rn, "BasicObject")) continue;
     nt_node_set_type(nt, id, "ConstantReadNode");
     nt_node_set_str(nt, id, "name", cn);
     nt_node_set_ref(nt, id, "receiver", -1); nt_node_set_ref(nt, id, "arguments", -1);
