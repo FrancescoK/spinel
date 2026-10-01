@@ -20,7 +20,7 @@ end
 
 read_tsv = lambda do |path|
   h = {}
-  File.foreach(path) do |line|
+  File.foreach(path, mode: "rb") do |line|   # ERROR details are raw bytes
     name, status, = line.chomp.split("\t", 3)
     h[name] = status if name && status
   end
@@ -41,9 +41,9 @@ missing = []       # listed but not measured
   if e.nil? then unlisted << name
   elsif r.nil? then missing << name
   elsif e == r then next
-  # a by-design row is a REJECT with a ledger annotation; the raw measurement
-  # reports it as plain REJECT and that is not drift
-  elsif e == "REJECT-BYDESIGN" && r == "REJECT" then next
+  # a by-design row is a REJECT or ERROR with a ledger annotation; the raw
+  # measurement reports it as plain REJECT or ERROR and that is not drift
+  elsif e == "#{r}-BYDESIGN" then next
   elsif e == "PASS" then regressions << [name, r]
   elsif r == "PASS" then improvements << [name, e]
   else drift << [name, e, r]

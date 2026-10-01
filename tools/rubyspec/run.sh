@@ -42,21 +42,40 @@ classify_one() {
   local bin="$TDIR/bin-$bn"
   if [ -z "$GATE" ]; then
     # CRuby oracle first: a skewed extraction must not count against spinel.
-    local cr; cr=$(timeout 10 ruby "$f" 2>/dev/null | tail -1)
+    # Census: the oracle runs with frozen string literals (Matz's ruling:
+    # spinel's literals are frozen by design). An example that passes only
+    # with mutable literals is FROZEN-LIT, by design, not a spinel failure.
+    local cr err="$TDIR/err-$bn"
+    cr=$(timeout 10 ruby --enable-frozen-string-literal "$f" 2>"$err" | tail -1)
     if ! grep -q "fail=0" <<<"$cr"; then
-      echo -e "$bn\tHARNESS-SKEW\t${cr:-crash}" > "$row"; return
+      if timeout 10 ruby "$f" 2>/dev/null | tail -1 | grep -q "fail=0"; then
+        printf '%s\tFROZEN-LIT\t%s\n' "$bn" "$(grep -m1 -oE '[A-Za-z:]*Error[^\t]*' "$err" | head -c 200)" > "$row"
+      else
+        local why; why=$(grep -m1 -E 'Error|error' "$err" | sed -E 's/^[^:]+:[0-9]+:in [^:]+: //; s/^[^ ]+\.rb:[0-9]+: //' | tr '\t' ' ' | head -c 200)
+        [ -z "$why" ] && why=$(grep -m1 '^MSPEC-FAIL' <<<"$(timeout 10 ruby --enable-frozen-string-literal "$f" 2>/dev/null)" | head -c 200)
+        printf '%s\tHARNESS-SKEW\t%s\n' "$bn" "${why:-${cr:-crash}}" > "$row"
+      fi
+      rm -f "$err"; return
     fi
+    rm -f "$err"
   fi
   local diag; diag=$("$SPINEL" "$f" -o "$bin" 2>&1 >/dev/null)
   if [ ! -x "$bin" ]; then
     local reason; reason=$(grep -oE "unsupported [^:]*|Parse errors|cannot [a-z ]*|error: [^(]*" <<<"$diag" | head -1)
+    # a refusal in the compiler's present wording ("Refinements are not
+    # supported by AOT compilation: ...", "undefined method 'x' for a Class:
+    # ...") matches none of the forms above; take its message up to the
+    # explanation. Read as "unknown", 40% of the rejects hid their construct
+    # from the ranking and from gen_manifest's by-design ledger.
+    [ -z "$reason" ] && reason=$(sed -nE 's/^spinel: [^ ]+:[0-9]+: //p' <<<"$diag" |
+      grep -v '^warning:' | head -1 | sed -E 's/: .*//; s/ \(see docs[^)]*\)//')
     # a rejected call names its method: append it so the reject ranking (and
     # the by-design ledger's rules) can see WHICH call, not just "a call"
     case "$reason" in unsupported*call*|unsupported*argument*)
       local mn; mn=$(grep -oE 'CallNode `[A-Za-z_0-9?!=<>]+`' <<<"$diag" | head -1 | sed 's/CallNode //')
       [ -n "$mn" ] && reason="$reason $mn";;
     esac
-    echo -e "$bn\tREJECT\t${reason:-unknown}" > "$row"; return
+    printf '%s\tREJECT\t%s\n' "$bn" "${reason:-unknown}" > "$row"; return
   fi
   local rc last
   # run output goes to a file, NOT a shell variable: an example that prints
@@ -64,13 +83,19 @@ classify_one() {
   local run_out="$TDIR/out-$bn"
   timeout 10 "$bin" > "$run_out" 2>&1; rc=$?
   last=$(tail -c 4096 "$run_out" | tail -1)
+  # census: a FAIL row carries its first failed expectation
+  local firstfail; firstfail=$(grep -a -m1 '^MSPEC-FAIL' "$run_out" | tr '\t' ' ' | head -c 200)
   rm -f "$bin" "$run_out"
   if [ $rc -ne 0 ] || ! grep -q "MSPEC-DONE" <<<"$last"; then
-    echo -e "$bn\tERROR\trc=$rc" > "$row"
+    # the last line is what the program died with (an uncaught exception's
+    # message, if it raised one): gen_manifest's ledger reads it, as it reads
+    # a reject's reason
+    last=${last//$'\t'/ }; last=${last//$'\r'/}
+    printf '%s\tERROR\trc=%s %s\n' "$bn" "$rc" "${last:0:200}" > "$row"
   elif grep -q "fail=0" <<<"$last"; then
     echo -e "$bn\tPASS\t$last" > "$row"
   else
-    echo -e "$bn\tFAIL\t$last" > "$row"
+    printf '%s\tFAIL\t%s\n' "$bn" "${firstfail:-$last}" > "$row"
   fi
 }
 export -f classify_one
