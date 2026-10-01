@@ -16188,6 +16188,62 @@ static int mark_reader_identity_operands(Compiler *c) {
   return changed;
 }
 
+/* Can POLY variable `vn` of scope `vs` hold a String? Only then can lifting
+   its read into the handle (poly_strbuf_lift) change anything, so a variable
+   that only ever holds Arrays, Hashes or numbers -- an accumulator handed to
+   a method that pushes onto it -- keeps its plain read and its C. Answers 1
+   whenever the values cannot all be seen: a block's parameter, a captured
+   local, a parameter whose callers the table does not list (hat NULL), a
+   multiple assignment or an operator write, and a chain deeper than a few
+   variables. */
+static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
+                                    const char *vn, Scope *vs, int depth);
+static int poly_value_may_be_string(Compiler *c, const HandleArgTab *hat, int v, int depth) {
+  const NodeTable *nt = c->nt;
+  if (v < 0) return 1;
+  TyKind t = comp_ntype(c, v);
+  if (t == TY_UNKNOWN) t = infer_type(c, v);
+  if (t == TY_STRING || t == TY_STRBUF || t == TY_UNKNOWN) return 1;
+  if (t != TY_POLY) return 0;
+  if (nt_kind(nt, v) != NK_LocalVariableReadNode) return 1;
+  const char *rn = nt_str(nt, v, "name");
+  Scope *rs = rn ? comp_scope_of(c, v) : NULL;
+  return !rs || poly_var_may_hold_string(c, hat, rn, rs, depth + 1);
+}
+static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
+                                    const char *vn, Scope *vs, int depth) {
+  const NodeTable *nt = c->nt;
+  LocalVar *lv = vn && vs ? scope_local(vs, vn) : NULL;
+  if (!lv || depth > 4 || lv->is_cell || lv->is_block_param) return 1;
+  /* a variable already being asked about further up the chain (a method
+     handing its parameter to itself) adds no value of its own */
+  static LocalVar *asking[6];
+  for (int k = 0; k < depth && k < 6; k++) if (asking[k] == lv) return 0;
+  asking[depth] = lv;
+  int si = (int)(vs - c->scopes);
+  if (lv->is_param) {
+    int pj = an_param_idx(vs, vn);
+    if (pj < 0 || !hat || !hat->ok || !vs->name) return 1;
+    if (vs->pdefault && vs->pdefault[pj] >= 0 &&
+        poly_value_may_be_string(c, hat, vs->pdefault[pj], depth)) return 1;
+    for (int e = hat->head[si]; e >= 0; e = hat->enext[e]) {
+      int sp = -1;
+      int a = arg_layout_param_node(c, vs, hat->enode[e], pj, &sp);
+      if (a < 0 || sp >= 0 || poly_value_may_be_string(c, hat, a, depth)) return 1;
+    }
+  }
+  for (int w = comp_lvw_first_sc(c, si, vn); w >= 0; w = comp_lvw_next_sc(c, w)) {
+    if (comp_scope_of(c, w) != vs) continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, vn)) continue;
+    NodeKind wk = nt_kind(nt, w);
+    if (wk != NK_LocalVariableWriteNode && wk != NK_LocalVariableOrWriteNode &&
+        wk != NK_LocalVariableAndWriteNode) return 1;
+    if (poly_value_may_be_string(c, hat, nt_ref(nt, w, "value"), depth)) return 1;
+  }
+  return 0;
+}
+
 static int convert_byref_handle_params(Compiler *c,
                                        const HandleArgTab *hat) {
   const NodeTable *nt = c->nt;
@@ -16218,7 +16274,8 @@ static int convert_byref_handle_params(Compiler *c,
          other call site has to hand one over -- boxed as a plain string, the
          plain local was copied and the caller never saw the append. */
       int poly_mut = (pp->is_param && pp->type == TY_POLY &&
-                      an_param_mutated_in_place(c, mi2, pj));
+                      ((pp->poly_lift & POLY_LIFT_APPENDED) || an_param_mutated_in_place(c, mi2, pj)));
+      if (poly_mut && !(pp->poly_lift & POLY_LIFT_APPENDED)) { pp->poly_lift |= POLY_LIFT_APPENDED; changed = 1; }
       /* A String parameter the callee mutates that inference typed from a
          handle argument (the copy-on-read refinement, not the handle): it
          never passed through the byref ABI this pass converts, so it is
@@ -16273,6 +16330,24 @@ static int convert_byref_handle_params(Compiler *c,
           const char *vn2 = nt_str(nt, an2, "name");
           Scope *vs2 = vn2 ? comp_scope_of(c, an2) : NULL;
           LocalVar *alv = vs2 ? scope_local(vs2, vn2) : NULL;
+          /* A POLY variable -- a local, a parameter, a block's parameter --
+             holds a boxed value, and a plain String in the box is a copy: the
+             callee appended to its own and the caller's variable kept the old
+             String (#6179). Its read is lifted instead: a plain String it
+             holds becomes the handle and is stored back before the call
+             (sp_poly_strbuf_lift), so both sides hold the one String. A
+             method's own POLY parameter handed on this way is appended to as
+             much as one it appends to itself, so its callers are pulled in
+             on the next round (poly_lift). */
+          if (alv && alv->type == TY_POLY) {
+            if (c->poly_strbuf_lift[an2] || !poly_var_may_hold_string(c, hat, vn2, vs2, 0)) continue;
+            c->poly_strbuf_lift[an2] = 1; changed = 1;
+            if (alv->is_param && !alv->is_block_param && an_param_idx(vs2, vn2) >= 0 &&
+                !(alv->poly_lift & POLY_LIFT_APPENDED)) {
+              alv->poly_lift |= POLY_LIFT_APPENDED; changed = 1;
+            }
+            continue;
+          }
           /* The argument is this method's OWN parameter, being passed on:
              `def via(k, y) k.take(y) end`. It has to become a handle for the
              same reason the callee's did, and then this loop's next round
@@ -16342,14 +16417,37 @@ static int convert_byref_handle_params(Compiler *c,
       if (mi < 0) continue;
       Scope *pm = &c->scopes[mi];
       for (int j = 0; j < pm->nparams; j++) {
-        int pi = -1;
+        int pi = -1, an = -1;
         if (pass) pi = zsuper_param_source(c, s, pm, j);
         else {
-          int an = arg_layout_param_node(c, pm, q, j, NULL);
+          an = arg_layout_param_node(c, pm, q, j, NULL);
           if (an >= 0 && nt_kind(nt, an) == NK_LocalVariableReadNode)
             pi = an_param_idx(s, nt_str(nt, an, "name"));
+          else an = -1;
         }
-        if (pi < 0 || !pm->pnames[j]) continue;
+        if (!pm->pnames[j]) continue;
+        /* A POLY parent parameter appended to in place takes a POLY variable
+           the super hands it the way a call's does: the read is lifted into
+           the handle (a bare super lifts this method's parameter itself), and
+           a parameter of this method handed on is appended to as well, so
+           its callers are pulled in on the next round. */
+        LocalVar *pdst = scope_local(pm, pm->pnames[j]);
+        if (pdst && pdst->is_param && pdst->type == TY_POLY && (pdst->poly_lift & POLY_LIFT_APPENDED)) {
+          const char *vn3 = pass ? (pi >= 0 ? s->pnames[pi] : NULL) : (an >= 0 ? nt_str(nt, an, "name") : NULL);
+          Scope *vs3 = pass ? s : (an >= 0 ? comp_scope_of(c, an) : NULL);
+          LocalVar *v3 = vn3 && vs3 ? scope_local(vs3, vn3) : NULL;
+          if (v3 && v3->type == TY_POLY && poly_var_may_hold_string(c, hat, vn3, vs3, 0)) {
+            if (!pass && !c->poly_strbuf_lift[an]) { c->poly_strbuf_lift[an] = 1; changed = 1; }
+            if (pass && v3->is_param && !(v3->poly_lift & POLY_LIFT_ZSUPER)) {
+              v3->poly_lift |= POLY_LIFT_ZSUPER; changed = 1;
+            }
+            if (v3->is_param && !v3->is_block_param && an_param_idx(vs3, vn3) >= 0 &&
+                !(v3->poly_lift & POLY_LIFT_APPENDED)) {
+              v3->poly_lift |= POLY_LIFT_APPENDED; changed = 1;
+            }
+          }
+        }
+        if (pi < 0) continue;
         LocalVar *dst = scope_local(pm, pm->pnames[j]), *src = scope_local(s, s->pnames[pi]);
         if (!dst || !src || !dst->is_param || !src->is_param || src->is_block_param) continue;
         int dh = dst->type == TY_STRBUF && dst->str_shared;
@@ -16551,7 +16649,8 @@ static int dyn_scopes_named(Compiler *c, const char *nm);
 static int dyn_param_appended(Compiler *c, int mi, int j) {
   Scope *m = &c->scopes[mi];
   LocalVar *q = j < m->nparams && m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
-  return q && (q->byref_out || (q->type == TY_STRBUF && q->str_shared) || an_param_mutated_in_place(c, mi, j));
+  return q && (q->byref_out || (q->type == TY_STRBUF && q->str_shared) || an_param_mutated_in_place(c, mi, j) ||
+               (q->type == TY_POLY && (q->poly_lift & POLY_LIFT_APPENDED)));
 }
 /* Does call `call` into method mi bind argument `arg` to a parameter the
    method appends to? The argument is placed by the call's own layout
@@ -16723,7 +16822,8 @@ static unsigned dyn_meth_bits(Compiler *c, int mi) {
   for (int j = 0; j < np; j++) {
     pn[j] = m->pnames[j];
     LocalVar *q = pn[j] ? scope_local(m, pn[j]) : NULL;
-    if (q && (q->byref_out || (q->type == TY_STRBUF && q->str_shared) || an_param_mutated_in_place(c, mi, j)))
+    if (q && (q->byref_out || (q->type == TY_STRBUF && q->str_shared) || an_param_mutated_in_place(c, mi, j) ||
+              (q->type == TY_POLY && (q->poly_lift & POLY_LIFT_APPENDED))))
       app |= 1u << j;
   }
   dyn_body_scan(c, m->body, pn, np, &app, &kept);
@@ -17685,6 +17785,26 @@ static int ctor_pull_args(Compiler *c) {
   return changed;
 }
 
+/* A POLY variable handed as argument k of dynamic call n: when a target the
+   call can reach appends to the parameter it binds, its read is lifted
+   (poly_strbuf_lift), and a method's own POLY parameter handed on this way
+   pulls its callers in (poly_lift), as at a static call. */
+static int dyn_lift_poly_arg(Compiler *c, int n, int k, int a) {
+  const NodeTable *nt = c->nt;
+  const char *vn = nt_str(nt, a, "name");
+  Scope *vs = vn ? comp_scope_of(c, a) : NULL;
+  LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+  if (!lv || lv->type != TY_POLY || c->poly_strbuf_lift[a]) return 0;
+  if (!poly_var_may_hold_string(c, NULL, vn, vs, 0)) return 0;
+  DynReach r; memset(&r, 0, sizeof r);
+  dyn_reach_value(c, nt_ref(nt, n, "receiver"), k, 0, &r);
+  if (r.unlifted) return 0;
+  if (!r.app && !(r.unknown && dyn_any_appender(c))) return 0;
+  c->poly_strbuf_lift[a] = 1;
+  if (lv->is_param && !lv->is_block_param && an_param_idx(vs, vn) >= 0) lv->poly_lift |= POLY_LIFT_APPENDED;
+  return 1;
+}
+
 /* Run in the fixpoint beside promote_shared_stored_strings (so a container
    holding the String widens with it) and again after it beside
    convert_byref_handle_params (so the byref slots have settled). */
@@ -17743,6 +17863,13 @@ static int dyn_pull_site_args(Compiler *c, int n) {
     }
     if (ak != NK_LocalVariableReadNode) continue;
     TyKind at = comp_ntype(c, av[k]);
+    /* A POLY variable boxes whatever it holds, and a plain String boxed
+       is a copy: a target that appends to it gets its read lifted into
+       the handle (convert_byref_handle_params' rule, at a dynamic call) */
+    if (at == TY_POLY) {
+      if (nt_kind(nt, n) == NK_CallNode) changed |= dyn_lift_poly_arg(c, n, k, av[k]);
+      continue;
+    }
     if (at != TY_STRING && at != TY_STRBUF) continue;
     /* A local that is the handle already goes over as the handle at every
        dynamic call, appending target or not: demoted, a read-only call
