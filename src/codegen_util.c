@@ -2271,13 +2271,16 @@ void emit_typed_sink_text(Compiler *c, int node, TyKind slot, const char *text, 
    answers its own (yield_site_type) -- except for the untyped nodes the
    emitter still renders in a definite C type. An empty `[]` with no element
    type is built as the method's array return kind, else as an Integer array
-   (the ArrayNode arm of emit_expr). */
+   (the ArrayNode arm of emit_expr), and an empty `{}` as a String-keyed
+   boxed-value hash (its HashNode arm). */
 TyKind store_value_kind(Compiler *c, int node) {
   if (node < 0) return TY_UNKNOWN;
   TyKind t = yield_site_type(c, node);
-  if (t == TY_UNKNOWN && nt_kind(c->nt, node) == NK_ArrayNode) {
+  NodeKind k = nt_kind(c->nt, node);
+  if (t == TY_UNKNOWN && (k == NK_ArrayNode || k == NK_HashNode)) {
     int n = 0;
     nt_arr(c->nt, node, "elements", &n);
+    if (n == 0 && k == NK_HashNode) return TY_STR_POLY_HASH;
     if (n == 0) return ty_is_array(g_ret_type) && array_kind(g_ret_type) ? g_ret_type : TY_INT_ARRAY;
   }
   return t;
@@ -2402,6 +2405,7 @@ void emit_coerce_text(Compiler *c, int node, TyKind from, TyKind slot, int how,
     buf_puts(b, text);
     return;
   }
+  if (slot == TY_POLY) { emit_boxed_text(c, from, text, b); return; }
   /* A value with no C type of its own -- a call that answers nothing, a
      raise -- is evaluated for its effect, and the slot takes its nil */
   if (from == TY_VOID || from == TY_NIL) {
@@ -2449,6 +2453,8 @@ void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, 
     emit_expr(c, node, b);
     return;
   }
+  /* A boxed slot takes any value boxed, as it is */
+  if (slot == TY_POLY) { emit_boxed(c, node, b); return; }
   /* An empty `[]` or `{}` of another kind than the slot's is built at the
      slot's */
   if ((ty_is_array(slot) || ty_is_hash(slot)) && emit_empty_literal_as(c, node, slot, b)) return;
@@ -2461,12 +2467,13 @@ void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, 
      it: a scalar or a String through its conversion (emit_poly_rhs_coerced,
      nil kept as the slot's nil), a container, an object or a Bignum through
      the checked unbox, which converts or raises for a value of another class
-     rather than reading its memory. A struct-valued or other handle slot has
-     no checked unbox, and is refused below. */
+     rather than reading its memory, and a Class from its boxed form. A
+     struct-valued or other handle slot has no checked unbox, and is refused
+     below. */
   if (from == TY_POLY && how == CO_HOLD) {
     if (emit_poly_rhs_coerced(c, slot, node, b)) return;
     if (ty_is_array(slot) || ty_is_ptr_array(slot) || ty_is_hash(slot) || slot == TY_BIGINT ||
-        slot == TY_STRBUF || (ty_is_object(slot) && !comp_ty_value_obj(c, slot))) {
+        slot == TY_STRBUF || slot == TY_CLASS || (ty_is_object(slot) && !comp_ty_value_obj(c, slot))) {
       Buf vb; memset(&vb, 0, sizeof vb);
       emit_expr(c, node, &vb);
       emit_unbox_nilable_text(c, slot, vb.p ? vb.p : "sp_box_nil()", b);

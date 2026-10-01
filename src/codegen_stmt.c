@@ -4249,8 +4249,12 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
   if (pred >= 0) sb = expr_buf(c, pred);
   emit_indent(b, indent); emit_ctype(c, pt, b);
   buf_printf(b, " _t%d = ", t);
-  if (pred >= 0) store_check(c, pred, pt, "a case/in subject's temp", b);
-  buf_puts(b, sb.p ? sb.p : default_value(pt));
+  if (pred >= 0 && !store_fits(c, store_value_kind(c, pred), pt)) {
+    /* the subject is rendered already; a value of another C type than the
+       temp (an empty `[]` the temp holds boxed) converts into it */
+    emit_coerce_text(c, pred, store_value_kind(c, pred), pt, CO_HOLD, sb.p ? sb.p : "", "a case/in subject", b);
+  }
+  else buf_puts(b, sb.p ? sb.p : default_value(pt));
   free(sb.p);
   buf_puts(b, ";\n");
   if (needs_root(pt)) {
@@ -7338,7 +7342,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
         buf_printf(b, "_retv%d = ", ctx->lid);
         /* the FRAME's slot type, not g_ret_type: see EnsureCtx.retv_ty */
         if (ctx->retv_ty == TY_POLY && comp_ntype(c, a[0]) != TY_POLY) emit_boxed(c, a[0], b);
-        else { store_check(c, a[0], ctx->retv_ty, "a return through ensure", b); emit_expr(c, a[0], b); }
+        else emit_coerce(c, a[0], ctx->retv_ty, CO_HOLD, "a return through ensure", b);
         buf_puts(b, "; ");
       }
     }
@@ -11486,7 +11490,10 @@ else {
         buf_puts(b, "\n");
         continue;
       }
-      emit_ctype(c, nilish ? TY_POLY : elt, b);
+      /* an element with no C type of its own (an unresolved call, which
+         raises) is held boxed: `void _tN` is no declaration */
+      int boxed_el = !nilish && !c_type_name(elt) && !ty_is_object(elt);
+      emit_ctype(c, nilish || boxed_el ? TY_POLY : elt, b);
       buf_printf(b, " _t%d = ", tmps[i]);
       if (nilish) {
         /* A void element (e.g. a call that raises) still runs for its side
@@ -11512,12 +11519,13 @@ else {
         buf_puts(b, "sp_box_nullable_obj((void *)sp_PolyArray_new(), SP_BUILTIN_POLY_ARRAY)");
       else if (poly_empty_hash)
         buf_puts(b, "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)");
+      else if (boxed_el) emit_coerce(c, els[i], TY_POLY, CO_HOLD, "a multiple assignment's value", b);
       else {
         Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, els[i], &vb);
         buf_puts(b, vb.p ? vb.p : ""); free(vb.p);
       }
       buf_puts(b, ";");
-      if (tmpts) tmpts[i] = nilish ? TY_POLY : elt;
+      if (tmpts) tmpts[i] = nilish || boxed_el ? TY_POLY : elt;
       /* Nothing holds the temp until its target takes it, and whatever can
          allocate after it can run user code that drops its other holder, so
          it is rooted while a later value or a store can collect. */
