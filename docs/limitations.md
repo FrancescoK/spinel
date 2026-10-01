@@ -637,10 +637,9 @@ A local, ivar, Hash value or Array element that holds more than one kind of
 value can carry a String two ways. As a shared handle (where a String in it
 is changed in place elsewhere in the program) it behaves as in CRuby. As a
 plain boxed String, `<<` builds the longer String instead of changing the
-old one: a `<<` statement (or a chain of them) on a local or ivar stores the
-result back into that slot, so the slot is right, but another name for the
-same String does not see the change, and a `<<` whose value is used
-(`r = (x << y)`, `p(x << y)`) does not store it back at all:
+old one. A `<<` (or a chain of them) on a local or ivar stores the result back
+into that slot, whether its value is used or not, so the slot is right; but
+another name for the same String does not see the change:
 
 ```ruby
 h = {}

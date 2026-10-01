@@ -2237,6 +2237,23 @@ static void emit_str_eq_ordered(Compiler *c, int recv, int arg, int eq, Buf *b) 
   emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, arg, b);
   buf_puts(b, eq ? ")" : "))");
 }
+/* The local or ivar a `<<` chain on a boxed value starts at (`out` in
+   `out << a << b`), or -1. A plain boxed String answers a new box from each
+   `<<`, so that slot has to take the result back. */
+static int poly_shl_root_slot(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  int slot = recv;
+  while (nt_kind(nt, slot) == NK_CallNode && nt_str(nt, slot, "name") &&
+         sp_streq(nt_str(nt, slot, "name"), "<<") && nt_ref(nt, slot, "receiver") >= 0) {
+    int sac = 0; call_args(nt, slot, &sac);
+    if (sac != 1) break;
+    slot = nt_ref(nt, slot, "receiver");
+  }
+  int kind = nt_kind(nt, slot);
+  if (kind != NK_LocalVariableReadNode && kind != NK_InstanceVariableReadNode) return -1;
+  return comp_ntype(c, slot) == TY_POLY ? slot : -1;
+}
+
 static int poly_binop_recv_temp(Compiler *c, int recv, int arg, Buf *b, int *stmt_expr);
 /* One poly comparison called with its receiver evaluated strictly before its
    argument, through the same hoist the bit-operator and arithmetic arms use.
@@ -31998,12 +32015,16 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
        old String and the append was lost. Only a plain String takes the
        result back: any other receiver answers itself, or, through a user
        class's own #<<, something that is not the receiver at all. */
+    /* The same holds for any boxed local or ivar a chain starts at: a
+       block's last line (its value goes nowhere, but it is a value), or
+       `r = (x << y)`, left the variable without the append. */
     const char *rvn = nt_kind(nt, recv) == NK_LocalVariableReadNode ? nt_str(nt, recv, "name") : NULL;
-    int rebind = rvn && strncmp(rvn, "__cap_", 6) == 0;
+    int slot = rvn && strncmp(rvn, "__cap_", 6) == 0 ? recv : poly_shl_root_slot(c, recv);
+    int rebind = slot >= 0;
     int was = 0, got = 0;
     if (rebind) {
       was = ++g_tmp; got = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", was); emit_expr(c, recv, b);
+      buf_printf(b, "({ sp_RbVal _t%d = ", was); emit_expr(c, slot, b);
       buf_printf(b, "; sp_RbVal _t%d = ", got);
     }
     int se = 0;
@@ -32012,7 +32033,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     emit_boxed(c, argv[0], b);
     buf_puts(b, se ? "); })" : ")");
     if (rebind) {
-      buf_printf(b, "; if (_t%d.tag == SP_TAG_STR) ", was); emit_expr(c, recv, b);
+      buf_printf(b, "; if (_t%d.tag == SP_TAG_STR) ", was); emit_expr(c, slot, b);
       buf_printf(b, " = _t%d; _t%d; })", got, got);
     }
     return;
@@ -40448,6 +40469,18 @@ else {
      (Integer#<< shift -> boxed int, Array#push append -> the array) and returns
      a poly either way, matching the statement-level path. */
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "<<") && argc == 1) {
+    /* the same store-back as the dispatch above, where this path is reached */
+    int slot = poly_shl_root_slot(c, recv);
+    int rooted = slot >= 0;
+    if (rooted) {
+      int was = ++g_tmp, got = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", was); emit_expr(c, slot, b);
+      buf_printf(b, "; sp_RbVal _t%d = sp_poly_shl(", got); emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_boxed(c, argv[0], b);
+      buf_printf(b, "); if (_t%d.tag == SP_TAG_STR) ", was); emit_expr(c, slot, b);
+      buf_printf(b, " = _t%d; _t%d; })", got, got);
+      return;
+    }
     buf_puts(b, "sp_poly_shl("); emit_expr(c, recv, b); buf_puts(b, ", ");
     emit_boxed(c, argv[0], b); buf_puts(b, ")");
     return;
