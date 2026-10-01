@@ -28,6 +28,16 @@ class SpecExpectation
   def ==(other)
     report(@v == other, "expected #{other.inspect}, got #{@v.inspect}")
   end
+  # x.should.eq(y): the extractor's spelling of x.should == y. spinel does not
+  # dispatch a user == whose argument is a Hash (see extract.rb's rewrite).
+  def eq(other)
+    report(@v == other, "expected #{other.inspect}, got #{@v.inspect}")
+  end
+  # x.should.same(y): the extractor's spelling of x.should.equal?(y). spinel
+  # compiles equal? as identity in place and never calls a user's.
+  def same(other)
+    report(@v.equal?(other), "expected same object as #{other.inspect}")
+  end
   def !=(other)
     report(@v != other, "expected not #{other.inspect}")
   end
@@ -97,15 +107,74 @@ class SpecExpectation
   def empty?
     report(@v.empty?, "expected #{@v.inspect} to be empty")
   end
+  def nan?
+    report(@v.nan?, "expected #{@v.inspect} to be NaN")
+  end
+  def finite?
+    report(@v.finite?, "expected #{@v.inspect} to be finite")
+  end
+  def infinite?
+    report(!@v.infinite?.nil?, "expected #{@v.inspect} to be infinite")
+  end
+  def zero?
+    report(@v.zero?, "expected #{@v.inspect} to be zero")
+  end
+  def any?
+    report(@v.any?, "expected #{@v.inspect}.any?")
+  end
+  def all?
+    report(@v.all?, "expected #{@v.inspect}.all?")
+  end
+  def none?
+    report(@v.none?, "expected #{@v.inspect}.none?")
+  end
+  def one?
+    report(@v.one?, "expected #{@v.inspect}.one?")
+  end
+  def lambda?
+    report(@v.lambda?, "expected a lambda")
+  end
+  def start_with?(x)
+    report(@v.start_with?(x), "expected #{@v.inspect} to start with #{x.inspect}")
+  end
+  def end_with?(x)
+    report(@v.end_with?(x), "expected #{@v.inspect} to end with #{x.inspect}")
+  end
+  def exclude_end?
+    report(@v.exclude_end?, "expected #{@v.inspect} to exclude its end")
+  end
+  def utc?
+    report(@v.utc?, "expected #{@v.inspect} to be UTC")
+  end
+  # (respond_to? is not one of them: the extractor rewrites
+  # `x.should.respond_to?(:m)` to `x.respond_to?(:m).should == true`, so the
+  # name reaches respond_to? as a literal, the only form spinel answers.)
+  def <(o)
+    report(@v < o, "expected #{@v.inspect} < #{o.inspect}")
+  end
+  def >(o)
+    report(@v > o, "expected #{@v.inspect} > #{o.inspect}")
+  end
+  def <=(o)
+    report(@v <= o, "expected #{@v.inspect} <= #{o.inspect}")
+  end
+  def >=(o)
+    report(@v >= o, "expected #{@v.inspect} >= #{o.inspect}")
+  end
+  # mspec's be_close(expected, tolerance); the extractor rewrites
+  # `x.should be_close(..)` to this chain form
+  def be_close(exp, tol)
+    report((@v - exp).abs < tol, "expected #{@v.inspect} to be within #{tol} of #{exp.inspect}")
+  end
   # Chain form (modern ruby/spec): -> { }.should.raise(E) is the same check.
   def raise(cls = nil, msg = nil)
     raise_error(cls, msg)
   end
   # -> { ... }.should raise_error(SomeError)  /  raise_error(SomeError, "msg")
-  # v1 matches the exception CLASS BY NAME (exact), not by ancestry: spinel has
-  # no is_a? on a rescued exception yet. A spec expecting a superclass therefore
-  # over-reports FAIL (never under-reports PASS), which is the safe direction
-  # for a measurement harness.
+  # The class matches by ancestry, by name: spinel has no is_a? on a rescued
+  # exception yet, but it answers the names of the exception class's
+  # ancestors. The message matches a String exactly and a Regexp by =~, as
+  # mspec's does.
   def raise_error(cls = nil, msg = nil)
     raised = false
     ok = false
@@ -113,8 +182,8 @@ class SpecExpectation
       @v.call
     rescue Exception => e
       raised = true
-      ok = cls.nil? || e.class.to_s == cls.to_s
-      ok = ok && (msg.nil? || e.message == msg)
+      ok = cls.nil? || e.class.ancestors.map { |a| a.to_s }.include?(cls.to_s)
+      ok = ok && (msg.nil? || (msg.is_a?(Regexp) ? !(e.message =~ msg).nil? : e.message == msg))
     end
     report(raised && ok, raised ? "wrong exception raised" : "no exception raised")
   end
@@ -125,6 +194,21 @@ end
 def flunk(msg = "flunked")
   $spec_fail += 1
   puts "MSPEC-FAIL: #{msg}"
+end
+
+# mspec's value helpers (mspec/helpers/numeric.rb, mspec/guards/...)
+TOLERANCE = 0.00003
+def bignum_value(plus = 0)
+  0x1_0000_0000_0000_0000 + plus   # 2**64, as mspec has it
+end
+def nan_value
+  0 / 0.0
+end
+def infinity_value
+  1 / 0.0
+end
+def suppress_warning
+  yield
 end
 
 def spec_version(s)
