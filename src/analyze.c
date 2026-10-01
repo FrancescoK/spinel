@@ -19440,6 +19440,27 @@ static int an_local_is_handle_or_aliased(Compiler *c, const ALocalAliases *t, in
   return lv && !lv->is_param && !lv->is_cell && lv->type == TY_STRING &&
          an_local_has_alias(c, t, vn, vs);
 }
+/* The arguments yield_splice_handles found going into a boxed parameter
+   that the call's block appends to through a yield: a local is pulled into
+   the handle there, and the emitter refuses any other String variable
+   (refuse_yield_handle_args), which would go into the box as a copy. */
+static unsigned char *g_ypoly_need;
+static int g_ypoly_cap;
+static void yield_poly_need_mark(Compiler *c, int a) {
+  if (a < 0) return;
+  if (a >= g_ypoly_cap) {
+    int n = c->nt->count > a ? c->nt->count : a + 1;
+    unsigned char *p = (unsigned char *)realloc(g_ypoly_need, (size_t)n);
+    if (!p) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memset(p + g_ypoly_cap, 0, (size_t)(n - g_ypoly_cap));
+    g_ypoly_need = p; g_ypoly_cap = n;
+  }
+  g_ypoly_need[a] = 1;
+}
+int yield_poly_arg_wants_handle(Compiler *c, int a) {
+  (void)c;
+  return a >= 0 && a < g_ypoly_cap && g_ypoly_need[a];
+}
 /* The keywords of a spliced yield (`yield(k: x)`): a block keyword a
    handle is yielded to, and that the block lends, takes the handle, and
    then every variable yielded to it is pulled in; a proc a call site passes
@@ -19550,6 +19571,8 @@ static int yield_splice_site(Compiler *c, int y, int pass, ALocalAliases *aliase
         }
         int ua = arg_layout_param_node(c, ms, u, pj, NULL);
         if (ua < 0) continue;
+        /* the emitter refuses what this cannot pull (yield_poly_arg_wants_handle) */
+        yield_poly_need_mark(c, ua);
         if (nt_kind(nt, ua) == NK_LocalVariableReadNode) changed |= dyn_pull_arg(c, ua, 1);
         /* a String value written in the call (`w(+"s") { ... }`) is boxed
            as a fresh handle, so the block's append grows the value the

@@ -23910,6 +23910,25 @@ void refuse_yield_handle_args(Compiler *c, int id) {
   refuse_rest_yield_copies(c, id, ymi);
   for (int j = 0; j < ym->nparams && j < 16; j++) {
     LocalVar *q = ym->pnames[j] ? scope_local(ym, ym->pnames[j]) : NULL;
+    /* a boxed parameter the block appends to through a yield: a local is
+       pulled in and boxed as the handle, any other variable is a copy */
+    if (q && q->type == TY_POLY) {
+      int a = arg_layout_param_node(c, ym, id, j, NULL);
+      int shared;
+      const char *kind = yield_poly_arg_wants_handle(c, a) ? strvar_arg(c, a, &shared) : NULL;
+      if (!kind || ctor_arg_shared(c, a, 0)) continue;
+      /* a local pulled in (its read boxes the handle), one that is the
+         handle, or a boxed one, whose box goes over as it is */
+      if (nt_kind(nt, a) == NK_LocalVariableReadNode && !sp_streq(kind, "a block's parameter")) {
+        const char *vn = nt_str(nt, a, "name");
+        Scope *vs = vn ? comp_scope_of(c, a) : NULL;
+        LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+        if (c->strbuf_box[a] || local_is_handle(c, a) || (lv && lv->type == TY_POLY)) continue;
+      }
+      char mt[96]; snprintf(mt, sizeof mt, "`%s`", name);
+      char why[96]; snprintf(why, sizeof why, "from %s", kind);
+      refuse_string_copy(c, a, mt, ym->pnames[j], "a yield into a block argument", why);
+    }
     if (!q || q->type != TY_STRBUF || !q->str_shared) continue;
     if (ym->is_lowered_yield && !dyn_yield_param_appends(c, ymi, j)) continue;
     int a = arg_layout_param_node(c, ym, id, j, NULL);

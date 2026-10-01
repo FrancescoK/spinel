@@ -1100,6 +1100,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a String forwarded past 16 positions compiled)"; ok=0; \
 	else grep -q "through the rest it hands on" "$$tmp/frp.out" || \
 	  { echo "reject-test: FAIL (a String forwarded past 16 positions rejected without saying why)"; sed -n 1,5p "$$tmp/frp.out"; ok=0; }; fi; \
+	t=test/reject/string_yield_poly_param_global.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/ypg.c" >"$$tmp/ypg.out" 2>&1; then \
+	  echo "reject-test: FAIL (a global yielded through a boxed parameter's alias into an appending block compiled)"; ok=0; \
+	else grep -q "through a yield into a block argument" "$$tmp/ypg.out" || \
+	  { echo "reject-test: FAIL (a global through a boxed parameter's alias rejected without saying why)"; sed -n 1,5p "$$tmp/ypg.out"; ok=0; }; fi; \
 	t=test/reject/string_forward_poly_chain.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/fpc.c" >"$$tmp/fpc.out" 2>&1; then \
 	  echo "reject-test: FAIL (a global through a POLY hand-on past the depth bound compiled)"; ok=0; \
