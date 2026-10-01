@@ -8376,11 +8376,13 @@ TyKind infer_uncached(Compiler *c, int id) {
          poly, exactly like the HashNode arm below does for `{}`. Otherwise
          UNKNOWN unifies away and `[[], 1]` collapses to an IntArray, whose
          emit pushes the nested array POINTER as an int element (silent
-         garbage). */
+         garbage). A bare `Array.new` / `Hash.new` is that same empty
+         container (node_is_empty_container). */
       if (et == TY_UNKNOWN) {
         const char *ety = nt_type(nt, els[k]);
-        if (ety && (sp_streq(ety, "ArrayNode") || sp_streq(ety, "HashNode") ||
-                    sp_streq(ety, "KeywordHashNode")))
+        if ((ety && (sp_streq(ety, "ArrayNode") || sp_streq(ety, "HashNode") ||
+                     sp_streq(ety, "KeywordHashNode"))) ||
+            node_is_empty_container(nt, els[k]))
           et = TY_POLY;
       }
       /* a nil element keeps the literal a boxed container, as it always was:

@@ -27286,17 +27286,16 @@ void analyze_program(Compiler *c) {
      while its callers, typed from the String face, read a `const char *`:
      `p obj.w("a")` for `def w(v) = (@body = v.to_s)` printed garbage, and
      the C did not build under -Werror (#4567). */
-  /* Backstop: a local variable assigned only empty array literals with no
-     push evidence stays TY_UNKNOWN. Default it to TY_POLY_ARRAY so array
+  /* Backstop: a local variable assigned only empty arrays -- a `[]` literal
+     or a bare `Array.new`, the same empty array (#3613) -- with no push
+     evidence stays TY_UNKNOWN. Default it to TY_POLY_ARRAY so array
      operations (map!, p, etc.) can dispatch. */
   for (int id = 0; id < c->nt->count; id++) {
     const char *ty = nt_type(c->nt, id);
     if (!ty || !sp_streq(ty, "LocalVariableWriteNode")) continue;
     int v = nt_ref(c->nt, id, "value");
-    const char *vty = v >= 0 ? nt_type(c->nt, v) : NULL;
-    if (!vty || !sp_streq(vty, "ArrayNode")) continue;
-    int en = 0; nt_arr(c->nt, v, "elements", &en);
-    if (en != 0) continue;
+    NodeKind vk = nt_kind(c->nt, v);
+    if ((vk != NK_ArrayNode && vk != NK_CallNode) || an_empty_container_kind(c, v) != 1) continue;
     const char *nm = nt_str(c->nt, id, "name");
     Scope *s = comp_scope_of(c, id);
     LocalVar *lv = nm ? scope_local(s, nm) : NULL;
@@ -27333,24 +27332,28 @@ void analyze_program(Compiler *c) {
        this way -- the union of the two types is the boxed one (#3990). */
     else if (!ty_is_array(lv->type) && lv->type != TY_POLY) lv->type = TY_POLY;
   }
-  /* Backstop: a local assigned only empty hash literals `{}` that no key-write
-     ever narrowed stays TY_UNKNOWN, so its hash block methods (select/reject/
-     each/...) can't dispatch. Default it to the bare-{} hash type. Runs
-     post-fixpoint, so a key-write that narrowed it to a concrete variant
-     (SYM_POLY / STR_INT / ...) already set lv->type and is kept (#2336). */
+  /* Backstop: a local assigned only empty hashes -- a `{}` literal or a bare
+     `Hash.new` -- that no key-write ever narrowed stays TY_UNKNOWN, so its
+     hash block methods (select/reject/each/...) can't dispatch. Default it
+     to the bare-{} hash type. Runs post-fixpoint, so a key-write that
+     narrowed it to a concrete variant (SYM_POLY / STR_INT / ...) already set
+     lv->type and is kept (#2336). */
   for (int id = 0; id < c->nt->count; id++) {
     const char *ty = nt_type(c->nt, id);
     if (!ty || !sp_streq(ty, "LocalVariableWriteNode")) continue;
     int v = nt_ref(c->nt, id, "value");
-    const char *vty = v >= 0 ? nt_type(c->nt, v) : NULL;
-    if (!vty || !sp_streq(vty, "HashNode")) continue;
-    int en = 0; nt_arr(c->nt, v, "elements", &en);
-    if (en != 0) continue;
+    NodeKind vk = nt_kind(c->nt, v);
+    if (vk == NK_HashNode) {
+      int en = 0; nt_arr(c->nt, v, "elements", &en);
+      if (en != 0) continue;
+    }
+    else if (vk != NK_CallNode || an_empty_container_kind(c, v) != 2 ||
+             nt_ref(c->nt, v, "arguments") >= 0 || nt_ref(c->nt, v, "block") >= 0) continue;
     const char *nm = nt_str(c->nt, id, "name");
     Scope *s = comp_scope_of(c, id);
     LocalVar *lv = nm ? scope_local(s, nm) : NULL;
     if (lv && !lv->rbs_seeded && lv->type == TY_UNKNOWN &&
-        local_all_writes_empty_hash(c, s, nm)) {
+        local_all_writes_empty_hash_or_new(c, s, nm)) {
       /* a use context on this write's literal (an indexing key, a compared
          peer) picks the variant; otherwise the local's own `[]=` keys do.
          The StrPolyHash default is only safe for a String (or absent) key:
@@ -27361,7 +27364,13 @@ void analyze_program(Compiler *c) {
          block's return value has no type yet -- but here, post-fixpoint, it
          does (#3397). */
       TyKind want = (c->hash_want && v < c->node_cap) ? c->hash_want[v] : TY_UNKNOWN;
-      if (!ty_is_hash(want)) {
+      /* The key context marks only a `{}` literal, so a bare `Hash.new` has
+         no variant here. It takes the boxed slot such a local always ended
+         in (a default proc read with other keys still answers), but here,
+         where an empty `{}` settles, so a literal holding it as an element,
+         and a local read out of one, follow as they do for `{}`. */
+      if (vk == NK_CallNode && !ty_is_hash(want)) want = TY_POLY;
+      else if (!ty_is_hash(want)) {
         int nkw = 0;
         TyKind kt = local_aset_key_type(c, s, nm, &nkw);
         want = (kt == TY_SYMBOL) ? TY_SYM_POLY_HASH
