@@ -3244,6 +3244,15 @@ static const char *sp_poly_recv_s(sp_RbVal v, const char *meth) {
   sp_raise_nomethod(sp_nomethod_msg(meth, v));
   return sp_str_empty;
 }
+/* ...as the receiver of a String mutator. A shared handle hands out its own
+   bytes, which a mutator such as setbyte writes in place, and its frozen flag
+   is on the handle, not in the bytes: a frozen one refuses here, before the
+   write, or the write landed and only the write-back raised. */
+static const char *sp_poly_recv_s_mut(sp_RbVal v, const char *meth) {
+  if (sp_poly_is_strbuf(v) && sp_String_is_frozen((sp_String *)v.v.p))
+    sp_raise_frozen_str(sp_String_cstr((sp_String *)v.v.p));
+  return sp_poly_recv_s(v, meth);
+}
 
 /* Encoding#ascii_compatible? / Encoding#dummy? on a boxed Encoding (the
    SP_TAG_ENCODING box carries the name): every encoding this runtime hands
@@ -3629,8 +3638,11 @@ static sp_RbVal sp_poly_abs2(sp_RbVal v) { if (v.tag == SP_TAG_OBJ && v.cls_id =
 static sp_RbVal sp_poly_floor(sp_RbVal v) { if (v.tag == SP_TAG_FLT) { sp_poly_flo_domain_ck(v.v.f); return sp_box_f_to_int(floor(v.v.f)); } if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT) return v; if (sp_poly_is_rational(v)) return sp_box_int(sp_rational_floor_i(sp_poly_as_rational(v))); if (sp_poly_is_brat(v) && v.v.p) return sp_box_bigint(sp_brat_floor_b((sp_BigRational *)v.v.p)); sp_raise_poly_nomethod("floor", v); }
 /* a NULL char* carried under SP_TAG_STR is the empty string (as in
    sp_poly_to_i / sp_poly_eq): bytesize 0, ord raises CRuby's ArgumentError. */
-static sp_int sp_poly_bytesize(sp_RbVal v) { if (v.tag == SP_TAG_STR) return v.v.s ? sp_str_bytesize_m(v.v.s) : 0; sp_raise_poly_nomethod("bytesize", v); }
-static sp_int sp_poly_ord(sp_RbVal v) { if (v.tag == SP_TAG_STR) { if (!v.v.s) sp_raise_cls("ArgumentError", "empty string"); return sp_str_ord(v.v.s); } if (v.tag == SP_TAG_INT) return v.v.i; sp_raise_poly_nomethod("ord", v); }
+/* A shared String handle (#6179) answers bytesize, ord and getbyte from its
+   live bytes: each tested the plain String box alone and raised NoMethodError
+   for a String a method had appended to. */
+static sp_int sp_poly_bytesize(sp_RbVal v) { v = sp_poly_strbuf_deref(v); if (v.tag == SP_TAG_STR) return v.v.s ? sp_str_bytesize_m(v.v.s) : 0; sp_raise_poly_nomethod("bytesize", v); }
+static sp_int sp_poly_ord(sp_RbVal v) { v = sp_poly_strbuf_deref(v); if (v.tag == SP_TAG_STR) { if (!v.v.s) sp_raise_cls("ArgumentError", "empty string"); return sp_str_ord(v.v.s); } if (v.tag == SP_TAG_INT) return v.v.i; sp_raise_poly_nomethod("ord", v); }
 /* The Integer surface on a boxed receiver that may hold a Bignum (#4665).
    Each name below used to narrow the box to sp_int and run the typed arm,
    which truncated a Bignum to int64 and answered on the wrong number
@@ -3749,7 +3761,7 @@ static sp_int sp_poly_numerator(sp_RbVal v) { if (sp_poly_is_rational(v)) return
 static sp_int sp_poly_denominator(sp_RbVal v) { if (sp_poly_is_rational(v)) return sp_poly_as_rational(v).den; if (sp_poly_is_brat(v) && v.v.p) return sp_brat_part_i(((sp_BigRational *)v.v.p)->den); if (v.tag == SP_TAG_INT) return 1; sp_raise_poly_nomethod("denominator", v); }
 /* String#getbyte on a poly value; nil (not 0) for an out-of-range index, per
    CRuby, so the result is boxed. */
-static sp_RbVal sp_poly_getbyte(sp_RbVal v, sp_int i) { if (v.tag != SP_TAG_STR) sp_raise_poly_nomethod("getbyte", v); const char *s = v.v.s; if (!s) return sp_box_nil(); sp_int bl = (sp_int)sp_str_byte_len(s); if (i < 0) i += bl; if (i < 0 || i >= bl) return sp_box_nil(); return sp_box_int((sp_int)(unsigned char)s[i]); }
+static sp_RbVal sp_poly_getbyte(sp_RbVal v, sp_int i) { v = sp_poly_strbuf_deref(v); if (v.tag != SP_TAG_STR) sp_raise_poly_nomethod("getbyte", v); const char *s = v.v.s; if (!s) return sp_box_nil(); sp_int bl = (sp_int)sp_str_byte_len(s); if (i < 0) i += bl; if (i < 0 || i >= bl) return sp_box_nil(); return sp_box_int((sp_int)(unsigned char)s[i]); }
 static sp_RbVal sp_poly_ceil(sp_RbVal v) { if (v.tag == SP_TAG_FLT) { sp_poly_flo_domain_ck(v.v.f); return sp_box_f_to_int(ceil(v.v.f)); } if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT) return v; if (sp_poly_is_rational(v)) return sp_box_int(sp_rational_ceil_i(sp_poly_as_rational(v))); if (sp_poly_is_brat(v) && v.v.p) return sp_box_bigint(sp_brat_ceil_b((sp_BigRational *)v.v.p)); sp_raise_poly_nomethod("ceil", v); }
 static sp_RbVal sp_poly_round(sp_RbVal v) { if (v.tag == SP_TAG_FLT) { sp_poly_flo_domain_ck(v.v.f); return sp_box_f_to_int(round(v.v.f)); } if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT) return v; if (sp_poly_is_rational(v)) return sp_box_int(sp_rational_round_i(sp_poly_as_rational(v))); if (sp_poly_is_brat(v) && v.v.p) return sp_box_bigint(sp_brat_round_b((sp_BigRational *)v.v.p)); sp_raise_poly_nomethod("round", v); }
 /* Numeric#round(ndigits): a Float stays Float when n > 0 (rounded to n decimal
@@ -10392,6 +10404,7 @@ static sp_RbVal sp_poly_to_c_m(sp_RbVal v) {
     return sp_box_complex(z);
   }
   if (v.tag == SP_TAG_STR) return sp_box_complex(sp_str_to_c(v.v.s ? v.v.s : sp_str_empty));
+  if (sp_poly_is_strbuf(v)) return sp_poly_to_c_m(sp_poly_strbuf_deref(v));
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX) return v;
   sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'to_c' for %s", sp_poly_class_name(v)));
 }
