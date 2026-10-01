@@ -3295,6 +3295,7 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
     else if (sp_streq(cn, "Time"))    { buf_puts(b, "sp_Time self"); }
     else if (sp_streq(cn, "Thread"))  { buf_puts(b, "sp_thread *self"); }
     else if (sp_streq(cn, "Fiber"))   { buf_puts(b, "sp_Fiber *self"); }
+    else if (is_exc_name(c->classes[s->class_id].name)) { buf_puts(b, "sp_Exception *self"); }
     else if (sp_streq(cn, "File"))    { buf_puts(b, "sp_File *self"); }
     else if (sp_streq(cn, "Class"))   { buf_puts(b, "sp_Class self"); }
     else {
@@ -7553,7 +7554,11 @@ int is_builtin_reopen(const char *name) {
          sp_streq(name, "Hash")      ||
          /* a thread and a fiber are runtime handles too (activesupport's
             IsolatedExecutionState gives both an accessor) */
-         sp_streq(name, "Thread")    || sp_streq(name, "Fiber");
+         sp_streq(name, "Thread")    || sp_streq(name, "Fiber") ||
+         /* a builtin exception's reopening (`class LoadError; def is_missing?`)
+            adds methods to the runtime's class: the value stays the runtime's
+            sp_Exception, raised, rescued and constructed by name as before */
+         is_builtin_exception_name(name);
 }
 
 /* Returns 1 if n is a known built-in exception class name. */
@@ -7586,6 +7591,56 @@ int class_is_exc_subclass(Compiler *c, int ci) {
     k = next;
   }
   return 0;
+}
+
+/* Per-class exception facts, computed once per class table: bit 1 the class
+   carries a builtin exception's name, bit 2 it is that builtin's reopening
+   (no superclass of its own). The name test is a scan of the builtin table,
+   and these are asked for every class at every call site the dispatch
+   emits, so asking afresh each time made the emission grow with call sites
+   times classes. */
+static unsigned char *g_excf;
+static int g_excf_n = -1, g_excf_any;
+static const Compiler *g_excf_c;
+static void excf_fill(Compiler *c) {
+  if (g_excf_c == c && g_excf_n == c->nclasses) return;
+  free(g_excf);
+  g_excf = calloc((size_t)c->nclasses + 1, 1);
+  g_excf_n = c->nclasses; g_excf_c = c; g_excf_any = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!c->classes[k].name || !is_exc_name(c->classes[k].name)) continue;
+    g_excf[k] = 1;
+    if (nt_ref(c->nt, c->classes[k].def_node, "superclass") < 0) { g_excf[k] |= 2; g_excf_any = 1; }
+  }
+}
+int any_exc_reopen(Compiler *c) { excf_fill(c); return g_excf_any; }
+int class_has_exc_name(Compiler *c, int ci) {
+  excf_fill(c);
+  return ci >= 0 && ci < g_excf_n && (g_excf[ci] & 1);
+}
+
+/* A reopening of a builtin exception class: an entry under the builtin's
+   name with no superclass of its own. */
+int class_is_exc_reopen(Compiler *c, int ci) {
+  excf_fill(c);
+  return ci >= 0 && ci < g_excf_n && (g_excf[ci] & 2);
+}
+
+/* The reopenings of builtin exception classes that define method mname, at
+   most max of them, in declaration order: a call on a value whose static type
+   is the base exception picks among them by the runtime class name. Returns
+   the count. */
+int exc_reopen_definers(Compiler *c, const char *mname, int *out, int max) {
+  int n = 0;
+  excf_fill(c);
+  if (!g_excf_any) return 0;
+  for (int k = 0; k < c->nclasses && n < max; k++) {
+    if (!(g_excf[k] & 2)) continue;
+    int mi = comp_method_in_chain(c, k, mname, NULL);
+    if (mi < 0 || c->scopes[mi].class_id != k) continue;
+    out[n++] = k;
+  }
+  return n;
 }
 
 /* Build the full Ruby-style qualified name ("ActiveRecord::RecordNotFound") for
@@ -10268,7 +10323,8 @@ void emit_super(Compiler *c, int id, Buf *b) {
   int mi = p >= 0 ? comp_method_in_chain(c, p, uname, &defcls) : -1;
   if (mi < 0) {
     /* super(msg) in exception subclass initialize: capture msg into self->msg */
-    if (class_is_exc_subclass(c, s->class_id) && uname && sp_streq(uname, "initialize")) {
+    if ((class_is_exc_subclass(c, s->class_id) || class_is_exc_reopen(c, s->class_id)) &&
+        uname && sp_streq(uname, "initialize")) {
       int args_id = nt_ref(c->nt, id, "arguments");
       int argc2 = 0;
       const int *argv2 = NULL;
@@ -14286,19 +14342,32 @@ char *codegen_program(const NodeTable *nt) {
      followed by the class's ivars (#5093). The name an exception carries is
      its qualified Ruby name ("Storage::WriteError"), as class_ruby_name
      gives it, not the class table's short name. */
+  /* A builtin exception's reopening (`class KeyError; def hint`) is an entry
+     too: a boxed exception of exactly that class keys to it by name, and one
+     of a class under it (a builtin the runtime raised, with only its
+     ancestor reopened) by the runtime's ancestry, most-derived reopening
+     first in declaration order, a base Exception reopening last. */
   { int any_exc = 0;
-    for (int i = 0; i < c->nclasses && !any_exc; i++) any_exc = class_is_exc_subclass(c, i);
+    for (int i = 0; i < c->nclasses && !any_exc; i++)
+      any_exc = class_is_exc_subclass(c, i) || class_is_exc_reopen(c, i);
     if (any_exc) {
       buf_puts(&b, "SP_UNUSED static int sp_exc_user_cls_id(sp_RbVal v){\n");
       buf_puts(&b, "  const char *n = v.v.p ? ((sp_Exception *)v.v.p)->cls_name : NULL;\n  if (!n) return 0x7fffffff;\n");
       for (int i = 0; i < c->nclasses; i++) {
-        if (!class_is_exc_subclass(c, i)) continue;
+        if (!class_is_exc_subclass(c, i) && !class_is_exc_reopen(c, i)) continue;
         const char *qn = class_ruby_name(c, i);
         if (!qn) qn = c->classes[i].name;
         if (!qn) continue;
         buf_printf(&b, "  if (strcmp(n, \"%s\") == 0) return %d;\n", qn, i);
       }
-      buf_puts(&b, "  return 0x7fffffff;\n}\n");
+      int base_exc = -1;
+      for (int i = 0; i < c->nclasses; i++) {
+        if (!class_is_exc_reopen(c, i)) continue;
+        if (sp_streq(c->classes[i].name, "Exception")) { base_exc = i; continue; }
+        buf_printf(&b, "  if (sp_exc_cls_matches(n, \"%s\")) return %d;\n", c->classes[i].name, i);
+      }
+      if (base_exc >= 0) buf_printf(&b, "  return %d;\n}\n", base_exc);
+      else buf_puts(&b, "  return 0x7fffffff;\n}\n");
     } }
 
   /* User exception #message / #to_s overrides: a cls_name-keyed dispatcher so

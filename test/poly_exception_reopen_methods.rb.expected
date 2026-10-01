@@ -1,0 +1,13 @@
+true
+true
+true
+false
+true
+false
+false
+false
+"KeyError: key not found: :b"
+"MyError: mine"
+"ArgumentError: invalid value for Integer(): \"zz\""
+"not an exception"
+"key=:b"

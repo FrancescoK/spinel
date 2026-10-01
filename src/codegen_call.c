@@ -852,12 +852,31 @@ static int class_is_prim_reopen(Compiler *c, int k) {
          sp_streq(n, "TrueClass") || sp_streq(n, "FalseClass") ||
          sp_streq(n, "Time") || sp_streq(n, "Range") ||
          sp_streq(n, "Array") || sp_streq(n, "Hash") ||
-         sp_streq(n, "Thread") || sp_streq(n, "Fiber");
+         sp_streq(n, "Thread") || sp_streq(n, "Fiber") ||
+         /* a builtin exception's reopening: its instances are the runtime's */
+         class_has_exc_name(c, k);
+}
+
+/* The reopening of a builtin exception class whose `name` serves class k --
+   k itself when it is that reopening, else the one named by k's nearest
+   builtin ancestor, else a base Exception reopening, else the first that
+   defines the name -- or -1. A boxed exception of class k that has no
+   method of its own for the name dispatches there (poly_exception_reopen). */
+static int exc_arm_definer(Compiler *c, int k, const char *name) {
+  int xr[8];
+  int xn = exc_reopen_definers(c, name, xr, 8);
+  if (xn <= 0) return -1;
+  for (int q = 0; q < xn; q++) if (xr[q] == k) return k;
+  const char *par = class_is_exc_subclass(c, k) ? exc_builtin_parent(c, k) : NULL;
+  if (par) for (int q = 0; q < xn; q++) if (sp_streq(c->classes[xr[q]].name, par)) return xr[q];
+  for (int q = 0; q < xn; q++) if (sp_streq(c->classes[xr[q]].name, "Exception")) return xr[q];
+  return xr[0];
 }
 
 /* Whether a user exception class answers `name`: the dispatch key then has
    to map a boxed exception (tagged SP_BUILTIN_EXCEPTION) to its class. */
 static int poly_exc_cand(Compiler *c, const char *name) {
+  { int xr[8]; if (exc_reopen_definers(c, name, xr, 8) > 0) return 1; }
   for (int k = 0; k < c->nclasses; k++)
     if (class_is_exc_subclass(c, k) &&
         (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL)))
@@ -8326,6 +8345,12 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         }
         int defcls = -1;
         int mi = comp_method_in_chain(c, k, name, &defcls);
+        /* an exception class with no method of its own for the name takes
+           the builtin reopening's (`class Exception; def brief`) */
+        if (mi < 0 && any_exc_reopen(c) && (class_has_exc_name(c, k) || class_is_exc_subclass(c, k))) {
+          int xd = exc_arm_definer(c, k, name);
+          if (xd >= 0) { defcls = xd; mi = comp_method_in_chain(c, xd, name, NULL); }
+        }
         /* A Struct's synthesized each or each_pair, called with no block on a
            boxed receiver: the typed receiver answers an Enumerator over the
            members (its blockless each is redirected through __enum_to_a, its
@@ -8396,6 +8421,8 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             snprintf(_dself, sizeof _dself, "*(sp_%s *)_t%d.v.p", _dcn, tv);
           /* a boxed thread is the runtime's sp_thread handle (not an sp_Thread struct) */
           else if (sp_streq(_dcn, "Thread")) { snprintf(_dself, sizeof _dself, "(sp_thread *)_t%d.v.p", tv); _dstruct = 1; }
+          /* a boxed exception is the runtime's sp_Exception, whatever its class */
+          else if (class_has_exc_name(c, defcls)) { snprintf(_dself, sizeof _dself, "(sp_Exception *)_t%d.v.p", tv); _dstruct = 1; }
           /* a by-value (value-type) class method takes self by value:
              dereference the boxed pointer instead of passing it (#2441) */
           else if (c->classes[defcls].is_value_type) {
@@ -8416,6 +8443,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             if (_dstruct && c->classes[defcls].is_value_type) {
               snprintf(selfpbuf, sizeof selfpbuf, "(*(sp_%s *)_t%d.v.p)", _dcn, tv);
               g_self_deref = ".";
+            }
+            else if (_dstruct && class_has_exc_name(c, defcls)) {
+              snprintf(selfpbuf, sizeof selfpbuf, "((sp_Exception *)_t%d.v.p)", tv);
+              g_self_deref = "->";
             }
             else if (_dstruct) {
               snprintf(selfpbuf, sizeof selfpbuf, "((sp_%s *)_t%d.v.p)", _dcn, tv);
@@ -9725,6 +9756,12 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         }
         int defcls = -1;
         int mi = comp_method_in_chain(c, k, name, &defcls);
+        /* an exception class with no method of its own for the name takes
+           the builtin reopening's (`class Exception; def brief`) */
+        if (mi < 0 && any_exc_reopen(c) && (class_has_exc_name(c, k) || class_is_exc_subclass(c, k))) {
+          int xd = exc_arm_definer(c, k, name);
+          if (xd >= 0) { defcls = xd; mi = comp_method_in_chain(c, xd, name, NULL); }
+        }
         if (mi < 0) continue;
         /* the same widened arity a candidate was counted with above: a
            keyword hash funds the DECLARED keyword params it names (#4205) */
@@ -9877,6 +9914,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             snprintf(selfpbuf2, sizeof selfpbuf2, "*(sp_%s *)_t%d.v.p", _dcn2, tv);
           else if (sp_streq(_dcn2, "Thread"))
             snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_thread *)_t%d.v.p", tv);
+          /* a boxed exception is the runtime's sp_Exception, whatever its class */
+          else if (class_has_exc_name(c, defcls)) {
+            snprintf(selfpbuf2, sizeof selfpbuf2, "((sp_Exception *)_t%d.v.p)", tv);
+            self2_struct = 1; }
           else if (sp_streq(_dcn2, "Array") || sp_streq(_dcn2, "Hash") || sp_streq(_dcn2, "Object"))
             snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d", tv);
           else if (sp_streq(_dcn2, "Float"))
@@ -13748,6 +13789,37 @@ static int array_new_block_needs_fresh_locals(Compiler *c, int blk) {
   return 0;
 }
 
+/* The reopening of builtin exception class ci (`class KeyError; def
+   initialize(msg = "no key") super("wrapped: " + msg) end`) defining its
+   own initialize: the index of that method, or -1. */
+static int exc_reopen_initialize(Compiler *c, int ci) {
+  if (!class_is_exc_reopen(c, ci)) return -1;
+  int mi = comp_method_in_chain(c, ci, "initialize", NULL);
+  return (mi >= 0 && c->scopes[mi].class_id == ci && c->scopes[mi].reachable) ? mi : -1;
+}
+
+/* Build the runtime's exception of the reopened class ci and run the
+   reopening's initialize on it: from the call's argument list (args >= 0),
+   or from one message node (the `raise Cls, msg` form; -1 = none) with the
+   remaining parameters at their defaults. Its `super(msg)` sets the message
+   (the exception-initialize super arm); without one the message stays the
+   class name, as CRuby's Exception#initialize leaves it. */
+static void emit_exc_reopen_construct(Compiler *c, int ci, int initm, int args, int msg_node, Buf *b) {
+  Scope *im = &c->scopes[initm];
+  int te = ++g_tmp;
+  buf_printf(b, "({ sp_Exception *_t%d = sp_exc_new(\"%s\", (&(\"\\xff\")[1])); SP_GC_ROOT(_t%d); ", te, c->classes[ci].name, te);
+  buf_printf(b, "sp_%s_%s(_t%d", mc_reopen_cls(c, ci, "initialize"), mc("initialize"), te);
+  if (args >= 0) emit_args_filled(c, initm, args, ", ", b);
+  else {
+    for (int pk = 0; pk < im->nparams; pk++) {
+      buf_puts(b, ", ");
+      emit_arg_or_default(c, im, pk, pk == 0 ? msg_node : -1, b);
+    }
+  }
+  if (ctor_init_takes_block(c, initm)) buf_puts(b, ", NULL");
+  buf_printf(b, "); _t%d; })", te);
+}
+
 static int emit_class_new_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -14000,6 +14072,10 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       }
       const char *cn = nt_str(nt, recv, "name");
       if (cn && is_exc_name(cn)) {
+        /* a reopening's own initialize runs on the runtime's exception */
+        { int rci = comp_class_index(c, cn);
+          int rim = rci >= 0 ? exc_reopen_initialize(c, rci) : -1;
+          if (rim >= 0) { emit_exc_reopen_construct(c, rci, rim, nt_ref(nt, id, "arguments"), -1, b); return 1; } }
         /* SignalException.new(sig) / Interrupt.new(msg?): the message is the
            SIG-name and #signo is carried (#2762) */
         if (sp_streq(cn, "SignalException")) {
@@ -32964,6 +33040,19 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
          defaults to the class name, so the (cls, "") fast path is correct. */
       const char *cn = nt_str(nt, av[0], "name");
       int xc = cn ? comp_class_index(c, cn) : -1;
+      /* a reopened builtin exception is still the builtin: raised by name,
+         through the reopening's own initialize when it has one */
+      if (xc >= 0 && cn && is_exc_name(cn) && is_builtin_reopen(cn)) {
+        int rim = exc_reopen_initialize(c, xc);
+        if (rim >= 0) {
+          buf_puts(b, "sp_raise_exc(");
+          emit_exc_reopen_construct(c, xc, rim, -1, -1, b);
+          buf_puts(b, ")");
+          if (cause_node >= 0) buf_puts(b, ")");
+          return;
+        }
+        xc = -1;
+      }
       int ic = (xc >= 0 && class_is_exc_subclass(c, xc))
                  ? comp_method_in_chain(c, xc, "initialize", NULL) : -1;
       if (xc >= 0 && ic >= 0 && c->scopes[ic].reachable && ctor_needs_self_defaults(c, ic, 0)) {
@@ -33000,6 +33089,19 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
          A bare-string/builtin exception keeps the (cls, msg) fast path. */
       const char *cn = nt_str(nt, av[0], "name");
       int xc = cn ? comp_class_index(c, cn) : -1;
+      /* a reopened builtin exception is still the builtin: raised by name,
+         through the reopening's own initialize when it has one */
+      if (xc >= 0 && cn && is_exc_name(cn) && is_builtin_reopen(cn)) {
+        int rim = exc_reopen_initialize(c, xc);
+        if (rim >= 0 && c->scopes[rim].nparams >= 1) {
+          buf_puts(b, "sp_raise_exc(");
+          emit_exc_reopen_construct(c, xc, rim, -1, av[1], b);
+          buf_puts(b, ")");
+          if (cause_node >= 0) buf_puts(b, ")");
+          return;
+        }
+        xc = -1;
+      }
       int ic = -1;
       if (xc >= 0 && class_is_exc_subclass(c, xc))
         ic = comp_method_in_chain(c, xc, "initialize", NULL);
@@ -33372,6 +33474,62 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       buf_printf(b, ", \"%s\")", name);
       if (unwrap) buf_puts(b, ")");
       return;
+    }
+  }
+  /* a method a reopening of a builtin exception class defined (`class
+     LoadError; def is_missing?`): the receiver is the runtime's sp_Exception --
+     base-typed, or a user subclass instance whose own chain lacks the method
+     or reaches it through the reopened parent. Several reopenings defining
+     the name (Exception#brief and KeyError#brief) are told apart by the
+     runtime class name, most-derived first in declaration order; a base
+     Exception reopening answers for every class. */
+  if (recv >= 0) {
+    TyKind xrt = comp_ntype(c, recv);
+    int xdef = -1, xob = ty_is_object(xrt) ? ty_object_class(xrt) : -1;
+    int xhit = xob >= 0 && class_is_exc_subclass(c, xob)
+                 ? comp_method_in_chain(c, xob, name, &xdef) : -1;
+    if (xrt == TY_EXCEPTION ||
+        (xob >= 0 && class_is_exc_subclass(c, xob) &&
+         (xhit < 0 || (xdef >= 0 && is_builtin_reopen(c->classes[xdef].name))))) {
+      int xr[8];
+      int xn = exc_reopen_definers(c, name, xr, 8);
+      if (xn > 0) {
+        int xt = ++g_tmp, xbase = -1;
+        for (int q = 0; q < xn; q++)
+          if (sp_streq(c->classes[xr[q]].name, "Exception")) xbase = q;
+        buf_printf(b, "({ sp_Exception *_t%d = (sp_Exception *)(", xt);
+        emit_expr(c, recv, b);
+        buf_puts(b, "); ");
+        if (xbase < 0) {
+          /* no catch-all reopening: a runtime class none of them names has
+             no such method */
+          buf_puts(b, "if (!(");
+          for (int q = 0; q < xn; q++)
+            buf_printf(b, "%ssp_exc_cls_matches(_t%d->cls_name, \"%s\")", q ? " || " : "", xt, c->classes[xr[q]].name);
+          buf_printf(b, ")) sp_raise_nomethod(sp_nomethod_msg(\"%s\", ", name);
+          char xv[32]; snprintf(xv, sizeof xv, "_t%d", xt);
+          emit_boxed_text(c, TY_EXCEPTION, xv, b);
+          buf_puts(b, ")); ");
+        }
+        int last = xbase >= 0 ? xbase : xn - 1;
+        for (int q = 0; q < xn; q++) {
+          if (q == xbase) continue;
+          int mi = comp_method_in_chain(c, xr[q], name, NULL);
+          if (q != last) buf_printf(b, "sp_exc_cls_matches(_t%d->cls_name, \"%s\") ? ", xt, c->classes[xr[q]].name);
+          buf_printf(b, "sp_%s_%s(_t%d", mc_reopen_cls(c, xr[q], name), mc(name), xt);
+          emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), ", ", b);
+          buf_puts(b, ")");
+          if (q != last) buf_puts(b, " : ");
+        }
+        if (xbase >= 0) {
+          int mi = comp_method_in_chain(c, xr[xbase], name, NULL);
+          buf_printf(b, "sp_%s_%s(_t%d", mc_reopen_cls(c, xr[xbase], name), mc(name), xt);
+          emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), ", ", b);
+          buf_puts(b, ")");
+        }
+        buf_puts(b, "; })");
+        return;
+      }
     }
   }
   if (recv >= 0 && comp_ntype(c, recv) == TY_EXCEPTION) {
@@ -39738,10 +39896,21 @@ else {
                       /* the names the class carries without a method entry
                          answer as they do on the typed receiver */
                       class_implicit_responds(c, k, qm);
-            if (!has) continue;
+            /* an exception class with no method of its own for the name
+               answers through a builtin reopening its runtime class is under */
+            int xr[8], xn = 0;
+            if (!has && (class_is_exc_subclass(c, k) || class_is_exc_reopen(c, k))) xn = exc_reopen_definers(c, qm, xr, 8);
+            if (!has && xn <= 0) continue;
             const char *kn = c->classes[k].name;
             int root = kn && (sp_streq(kn, "Object") || sp_streq(kn, "Kernel") || sp_streq(kn, "BasicObject"));
             if (root) buf_printf(b, "%s1", first ? "" : " || ");
+            else if (!has) {
+              buf_printf(b, "%s(_k%d == %d && (", first ? "" : " || ", tv, k);
+              for (int q = 0; q < xn; q++)
+                buf_printf(b, "%ssp_exc_cls_matches(((sp_Exception *)_t%d.v.p)->cls_name, \"%s\")",
+                           q ? " || " : "", tv, c->classes[xr[q]].name);
+              buf_puts(b, "))");
+            }
             else buf_printf(b, "%s_k%d == %d", first ? "" : " || ", tv, k);
             first = 0;
           }

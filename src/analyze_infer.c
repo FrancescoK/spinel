@@ -5196,6 +5196,16 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* A specialized rescue var is typed as the exception subclass object, but
      its exception-shaped queries still answer as on a base exception, unless
      the subclass defines its own override (#1415). */
+  /* a method a reopening of a builtin exception class defined, reached on a
+     base-typed exception or on a user subclass instance whose own chain
+     lacks it (`class Exception; def as_json`) */
+  if (recv >= 0 && (rt == TY_EXCEPTION ||
+                    (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt)) &&
+                     comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0))) {
+    int xr[8];
+    if (exc_reopen_definers(c, name, xr, 8) > 0)
+      return method_call_ret(c, comp_method_in_chain(c, xr[0], name, NULL), id);
+  }
   int exc_shaped = rt == TY_EXCEPTION ||
                    (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt)) &&
                     comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0);
@@ -8064,6 +8074,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (sp_streq(cn, "Fiber"))   return TY_FIBER;
     if (sp_streq(cn, "File"))    return TY_IO;
     if (sp_streq(cn, "Class"))   return TY_CLASS;
+    if (is_builtin_exception_name(cn)) return TY_EXCEPTION;
     return ty_object(self_cls);
   }
   if (nk == NK_InstanceVariableReadNode) {

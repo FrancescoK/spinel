@@ -1,0 +1,7 @@
+{"class" => "MyError", "message" => "code 7"}
+"MyError: code 7"
+7
+{"class" => "ArgumentError", "message" => "invalid value for Integer(): \"zz\""}
+"ArgumentError: invalid value for Integer(): \"zz\""
+{"class" => "RuntimeError", "message" => "plain"}
+"RuntimeError: r"

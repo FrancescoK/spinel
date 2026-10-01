@@ -1,0 +1,16 @@
+"m"
+"LE:m"
+true
+true
+LoadError
+"n"
+"LoadError"
+"LE:z"
+false
+false
+true
+"LE:z"
+"invalid: a b"
+"key=:b"
+"key not found: :b"
+"mn:zork"

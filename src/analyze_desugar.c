@@ -1379,9 +1379,17 @@ int desugar_handle_reopen_self_recv(Compiler *c) {
     Scope *s = comp_scope_of(c, id);
     if (!s || s->class_id < 0 || s->is_cmethod || s->class_id >= c->nclasses) continue;
     const char *cn = c->classes[s->class_id].name;
-    if (!cn || (!sp_streq(cn, "Thread") && !sp_streq(cn, "Fiber"))) continue;
+    if (!cn || (!sp_streq(cn, "Thread") && !sp_streq(cn, "Fiber") &&
+                !is_builtin_exception_name(cn))) continue;
     if (comp_method_in_chain(c, s->class_id, nm, NULL) >= 0) continue;
-    if (nt_int(nt, id, "vcall", 0) && nt_ref(nt, id, "arguments") < 0) continue;  /* a local read, not a call */
+    if (nt_int(nt, id, "vcall", 0) && nt_ref(nt, id, "arguments") < 0) {
+      /* a bare identifier is a local read when the scope declares that name
+         (`message` in a LoadError reopening is the exception's message) */
+      int is_local = 0;
+      for (int i = 0; i < s->nlocals; i++)
+        if (s->locals[i].name && sp_streq(s->locals[i].name, nm)) { is_local = 1; break; }
+      if (is_local) continue;
+    }
     int sf = nt_new_node(nt, "SelfNode");
     if (sf < 0) continue;
     nt_node_set_int(nt, sf, "node_line", nt_int(nt, id, "node_line", 0));

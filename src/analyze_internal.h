@@ -530,6 +530,7 @@ int hv_value_class(Compiler *c, int recv);
 int comp_class_is_module(Compiler *c, ClassInfo *ci);
 int is_builtin_reopen(const char *name);
 char **dsend_candidates(Compiler *c, int *out_n);
+int exc_reopen_definers(Compiler *c, const char *mname, int *out, int max);
 
 #endif
 
