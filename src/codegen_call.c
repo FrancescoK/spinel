@@ -28889,6 +28889,22 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         else
           buf_printf(g_pre, "sp_catch_tag[sp_catch_top] = %s;\n", tgb.p ? tgb.p : "");
         free(tgb.p);
+        /* the block takes the tag it was given (a literal, or a variable
+           read again: neither runs anything) */
+        const char *tp0 = block_param_name(c, blk, 0);
+        NodeKind tk = nt_kind(nt, argv[0]);
+        if (tp0 && (tk == NK_SymbolNode || tk == NK_StringNode || tk == NK_IntegerNode ||
+                    tk == NK_LocalVariableReadNode)) {
+          Scope *cbs = comp_scope_of(c, blk);
+          LocalVar *clv = cbs ? scope_local(cbs, tp0) : NULL;
+          if (clv && clv->type != TY_UNKNOWN) {
+            Buf vb; memset(&vb, 0, sizeof vb);
+            if (clv->type == TY_POLY) emit_boxed(c, argv[0], &vb); else emit_expr(c, argv[0], &vb);
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "lv_%s = %s;\n", rename_local(tp0), vb.p ? vb.p : "");
+            free(vb.p);
+          }
+        }
       }
       else {
         /* `catch { |tag| ... }`: mint a fresh, content-unique heap tag per

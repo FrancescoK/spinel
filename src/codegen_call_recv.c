@@ -6529,9 +6529,18 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
               buf_puts(b, ";");
             }
             if (fvn > 0) {
-              buf_printf(b, " sp_PolyArray_push(_t%d, ", tr);
-              emit_boxed(c, fvv[fvn - 1], b);
-              buf_puts(b, ");");
+              /* the whole body, its leading statements too, inside this
+                 key's arm (they ran nowhere) */
+              Buf inner; memset(&inner, 0, sizeof inner);
+              Buf vb; memset(&vb, 0, sizeof vb);
+              Buf *sv_pre = g_pre; g_pre = &inner;
+              int svlm = g_line_map; g_line_map = 0;
+              IterStep st; emit_iter_step_open(c, fv_blk, 1, 0, &st);
+              emit_iter_step_tail(c, &st, &vb);
+              g_line_map = svlm; g_pre = sv_pre;
+              if (inner.p) buf_printf(b, " %s", inner.p);
+              buf_printf(b, " sp_PolyArray_push(_t%d, %s);", tr, vb.p ? vb.p : "sp_box_nil()");
+              free(inner.p); free(vb.p);
             }
             buf_puts(b, " }");
           }
@@ -10772,8 +10781,13 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           Buf kbuf; memset(&kbuf, 0, sizeof kbuf);
           Buf vbuf; memset(&vbuf, 0, sizeof vbuf);
           Buf *sv_pre = g_pre; g_pre = &kpre;
+          /* the step's setup and the body's leading statements, which ran
+             nowhere */
+          emit_block_locals_reset(c, block, &kpre, 0);
+          int rd_lbl = emit_iter_step_stmts(c, bbody, &kpre, 0, NULL);
           if (ke >= 0) { if (kt == TY_POLY && comp_ntype(c, ke) != TY_POLY) emit_boxed(c, ke, &kbuf); else emit_expr(c, ke, &kbuf); }
           if (ve >= 0) { if (vt == TY_POLY && comp_ntype(c, ve) != TY_POLY) emit_boxed(c, ve, &vbuf); else emit_expr(c, ve, &vbuf); }
+          if (rd_lbl) g_redo_depth--;
           g_pre = sv_pre;
           if (kpre.p) { buf_puts(b, " "); buf_puts(b, kpre.p); }
           free(kpre.p);
