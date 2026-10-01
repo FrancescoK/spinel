@@ -32265,15 +32265,18 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     for (int a = 0; a < argc; a++) {
       buf_printf(b, "sp_%sArray_push%s(_t%d, ", k, nil_store_sfx(c, k, argv[a]), t);
       if (art == TY_POLY_ARRAY) emit_boxed(c, argv[a], b);
+      /* a poly value into a String, Integer or Float array: its nil is the
+         slot's nil, and a value of another kind is refused, as the statement
+         form takes them (sp_poly_elem_*). The sp_poly_to_* conversions read
+         a nil as 0, 0.0 or "", and turned 1 into "1" and 2.5 into 2. */
       else if (comp_ntype(c, argv[a]) == TY_POLY && elem == TY_STRING) {
-        /* a poly value (holds a string at runtime) into a str_array: coerce */
-        buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[a], b); buf_puts(b, ")");
+        buf_puts(b, "sp_poly_elem_s("); emit_expr(c, argv[a], b); buf_puts(b, ")");
       }
       else if (comp_ntype(c, argv[a]) == TY_POLY && elem == TY_INT) {
-        buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[a], b); buf_puts(b, ")");
+        buf_puts(b, "sp_poly_elem_i("); emit_expr(c, argv[a], b); buf_puts(b, ")");
       }
       else if (comp_ntype(c, argv[a]) == TY_POLY && elem == TY_FLOAT) {
-        buf_puts(b, "sp_poly_to_f("); emit_expr(c, argv[a], b); buf_puts(b, ")");
+        buf_puts(b, "sp_poly_elem_f("); emit_expr(c, argv[a], b); buf_puts(b, ")");
       }
       else if (comp_ntype(c, argv[a]) == TY_UNKNOWN) emit_unresolved_coerced(c, argv[a], elem, b);
       /* an Array, a Hash or an object into an Integer, Float or String
