@@ -27606,6 +27606,19 @@ void analyze_program(Compiler *c) {
       if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0;
     }
   }
+  /* An instance held in a local a proc captures: the local lives in a heap
+     cell the proc keeps, and a cell holds a GC pointer or a builtin struct,
+     not a user struct. Nothing else here disqualified it, so
+     `v = V.new(1); proc { v.a }` was refused as a non-integer capture. */
+  for (int si = 0; si < c->nscopes; si++) {
+    Scope *s = &c->scopes[si];
+    for (int j = 0; j < s->nlocals; j++) {
+      LocalVar *lv = &s->locals[j];
+      if (!lv->is_cell || !ty_is_object(lv->type)) continue;
+      int q = ty_object_class(lv->type);
+      if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0;
+    }
+  }
   for (int id = 0; id < c->nt->count; id++) {
     const char *ty = nt_type(c->nt, id);
     if (!ty || !sp_streq(ty, "BlockNode")) continue;

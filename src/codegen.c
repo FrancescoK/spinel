@@ -2029,7 +2029,8 @@ static void emit_cell_decl(Compiler *c, Scope *s, LocalVar *lv, Buf *b) {
          over a boxed receiver, where the block is a real closure (#3995). */
       { const char *vs = cell_value_struct(lv->type);
         if (vs) {
-          buf_printf(b, "    %s *_cell_%s = (%s *)sp_gc_alloc(sizeof(%s), NULL, NULL);\n", vs, lv->name, vs, vs);
+          buf_printf(b, "    %s *_cell_%s = (%s *)sp_gc_alloc(sizeof(%s), NULL, %s);\n", vs, lv->name, vs, vs,
+                     cell_value_struct_scan(lv->type));
           buf_printf(b, "    SP_GC_ROOT(_cell_%s);\n", lv->name);
           if (lv->is_param) buf_printf(b, "    *_cell_%s = lv_%s;\n", lv->name, lv->name);
           else buf_printf(b, "    *_cell_%s = %s;\n", lv->name, cell_value_struct_empty(lv->type));
@@ -2050,8 +2051,18 @@ static void emit_cell_decl(Compiler *c, Scope *s, LocalVar *lv, Buf *b) {
       int ptr_cell = cell_is_typed_ptr(c, lv);
       /* a Symbol is int-represented (sp_sym), so it rides the sp_int cell */
       if (lv->type != TY_INT && lv->type != TY_BOOL && lv->type != TY_SYMBOL &&
-          lv->type != TY_UNKNOWN && !ptr_cell)
-        unsupported(c, s->def_node, "closure capturing a non-integer variable (later slice)");
+          lv->type != TY_UNKNOWN && !ptr_cell) {
+        /* The top-level scope has no def node, and the refusal named no
+           FILE:LINE at all; point it at the local's first write there. */
+        int at = s->def_node;
+        int nids = 0; const int *ids = at < 0 ? cg_scope_nodes(c, (int)(s - c->scopes), &nids) : NULL;
+        for (int k = 0; k < nids && at < 0; k++) {
+          const char *wn = nt_kind(c->nt, ids[k]) == NK_LocalVariableWriteNode
+                         ? nt_str(c->nt, ids[k], "name") : NULL;
+          if (wn && sp_streq(wn, lv->name)) at = ids[k];
+        }
+        unsupported(c, at, "closure capturing a non-integer variable (later slice)");
+      }
       if (ptr_cell) {
         const char *cell_scan = cell_scan_fn(lv->type);
         buf_puts(b, "    "); emit_ctype(c, lv->type, b);
@@ -5230,22 +5241,34 @@ const char *cell_scan_fn(TyKind t) {
 }
 
 /* Types that ride a cell of their own C struct instead of laundering through
-   the sp_int slot: a small by-value struct with no GC pointer in it, so the
-   cell needs no scan. Float and poly keep hand-written arms (their reset values
-   and their scans differ); these share one shape, so they share one arm rather
-   than a fourth copy in each of the three cell prologues. #3995 gave a captured
-   class its cell but stopped at TY_CLASS, leaving Range / Rational / Complex on
-   the "non-integer capture" reject. */
+   the sp_int slot: a small by-value struct. Float and poly keep hand-written
+   arms (their reset values and their scans differ); these share one shape, so
+   they share one arm rather than a fourth copy in each of the three cell
+   prologues. #3995 gave a captured class its cell but stopped at TY_CLASS,
+   leaving Range / Rational / Complex on the "non-integer capture" reject, and
+   that fix stopped short of Time, Process::Tms and a String range, so
+   `t = Time.at(0); proc { t.to_i }` was still refused. Every by-value builtin
+   (ty_is_struct_valued) is here. */
 const char *cell_value_struct(TyKind t) {
   switch (t) {
     case TY_CLASS:       return "sp_Class";
     case TY_RANGE:       return "sp_Range";
     case TY_FLOAT_RANGE: return "sp_FloatRange";
+    case TY_STR_RANGE:   return "sp_StrRange";
+    case TY_TIME:        return "sp_Time";
+    case TY_TMS:         return "sp_Tms";
     case TY_RATIONAL:    return "sp_Rational";
     case TY_COMPLEX:     return "sp_Complex";
     default: break;
   }
   return NULL;
+}
+
+/* The scan a value-struct cell needs. Only a String range holds GC pointers,
+   its two endpoint strings; the others are scalars and need none. A cell with
+   a scan also gets the write barrier on its stores (wb_cells_collect). */
+const char *cell_value_struct_scan(TyKind t) {
+  return t == TY_STR_RANGE ? "sp_cell_scan_srange" : "NULL";
 }
 
 /* The empty value a value-struct cell resets to. A class has no zero cls_id, so
@@ -5255,6 +5278,9 @@ const char *cell_value_struct_empty(TyKind t) {
     case TY_CLASS:       return "((sp_Class){-1, NULL})";
     case TY_RANGE:       return "((sp_Range){0})";
     case TY_FLOAT_RANGE: return "((sp_FloatRange){0})";
+    case TY_STR_RANGE:   return "((sp_StrRange){0})";
+    case TY_TIME:        return "((sp_Time){0})";
+    case TY_TMS:         return "((sp_Tms){0})";
     case TY_RATIONAL:    return "((sp_Rational){0})";
     case TY_COMPLEX:     return "((sp_Complex){0})";
     default: break;
@@ -6215,7 +6241,8 @@ void emit_inlined_local_decl(Compiler *c, LocalVar *lv, const char *rn, Buf *b, 
   buf_puts(b, "), NULL, ");
   if (lv->type == TY_PROC) buf_puts(b, "sp_cell_scan_procint");
   else if (lv->type == TY_POLY) buf_puts(b, "sp_cell_scan_rbval");
-  else if (lv->type != TY_FLOAT && !vs && cell_is_typed_ptr(c, lv)) buf_puts(b, cell_scan_fn(lv->type));
+  else if (vs) buf_puts(b, cell_value_struct_scan(lv->type));
+  else if (lv->type != TY_FLOAT && cell_is_typed_ptr(c, lv)) buf_puts(b, cell_scan_fn(lv->type));
   else buf_puts(b, "NULL");
   buf_printf(b, "); SP_GC_ROOT(_cell_%s); *_cell_%s = ", rn, rn);
   if (lv->type == TY_FLOAT) buf_puts(b, "0.0");
@@ -6420,9 +6447,9 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
          side-channel (sp_box_float / sp_poly_to_f), not the truncating slot. */
       int float_cell = lv->type == TY_FLOAT;
       int poly_cell = lv->type == TY_POLY;
-      /* a by-value struct rides its own cell, like a float: scalar fields with
-         no GC pointer of its own (#3995 for the class; the Range / Rational /
-         Complex siblings were left on the reject) */
+      /* a by-value struct rides its own cell, like a float (#3995 for the
+         class; the Range / Rational / Complex siblings were left on the
+         reject, and Time / Tms / a String range after them) */
       int class_cell = cell_value_struct(lv->type) != NULL;
       if (lv->type != TY_INT && lv->type != TY_BOOL && lv->type != TY_SYMBOL &&
           lv->type != TY_UNKNOWN &&
@@ -7124,8 +7151,9 @@ else if (orecv >= 0 && onm) {
     }
     else if (cell_value_struct(lv->type)) {
       const char *vs = cell_value_struct(lv->type);
-      buf_printf(pb, "    %s *_cell_%s = (%s *)sp_gc_alloc(sizeof(%s), NULL, NULL);"
-                     " SP_GC_ROOT(_cell_%s); *_cell_%s = lv_%s;%c", vs, p, vs, vs, p, p, p, 10);
+      buf_printf(pb, "    %s *_cell_%s = (%s *)sp_gc_alloc(sizeof(%s), NULL, %s);"
+                     " SP_GC_ROOT(_cell_%s); *_cell_%s = lv_%s;%c", vs, p, vs, vs,
+                     cell_value_struct_scan(lv->type), p, p, p, 10);
     }
     else if (proc_slot_is_ptr(lv->type) && !comp_ty_value_obj(c, lv->type)) {
       buf_puts(pb, "    ");
@@ -7174,7 +7202,8 @@ else if (orecv >= 0 && onm) {
           buf_puts(pb, "), NULL, ");
           if (lv->type == TY_PROC) buf_puts(pb, "sp_cell_scan_procint");
           else if (lv->type == TY_POLY) buf_puts(pb, "sp_cell_scan_rbval");
-          else if (lv->type != TY_FLOAT && !vs && cell_is_typed_ptr(c, lv)) buf_puts(pb, cell_scan_fn(lv->type));
+          else if (vs) buf_puts(pb, cell_value_struct_scan(lv->type));
+          else if (lv->type != TY_FLOAT && cell_is_typed_ptr(c, lv)) buf_puts(pb, cell_scan_fn(lv->type));
           else buf_puts(pb, "NULL");
           buf_printf(pb, "); SP_GC_ROOT(_cell_%s); *_cell_%s = ", nbuf, nbuf);
           if (lv->type == TY_FLOAT) buf_puts(pb, "0.0");
