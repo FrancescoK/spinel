@@ -464,7 +464,18 @@ int infer_param_hash_value(Compiler *c) {
   return changed;
 }
 
-static int local_all_writes_empty(Compiler *c, Scope *sc, const char *name, NodeKind k) {
+/* 1 when `v` is a bare `Array.new` (k NK_ArrayNode) or `Hash.new` (k
+   NK_HashNode): no argument, no block, the same empty container as the
+   literal (#3613) */
+static int is_bare_container_new(Compiler *c, int v, NodeKind k) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "arguments") >= 0 || nt_ref(nt, v, "block") >= 0) return 0;
+  return an_empty_container_kind(c, v) == (k == NK_HashNode ? 2 : 1);
+}
+
+/* `bare_new`: a bare constructor (is_bare_container_new) counts as the
+   empty literal too */
+static int local_all_writes_empty(Compiler *c, Scope *sc, const char *name, NodeKind k, int bare_new) {
   const NodeTable *nt = c->nt;
   int saw = 0;
   int si = (int)(sc - c->scopes);
@@ -474,7 +485,9 @@ static int local_all_writes_empty(Compiler *c, Scope *sc, const char *name, Node
     const char *wn = nt_str(nt, id, "name");
     if (!wn || !sp_streq(wn, name) || comp_scope_of(c, id) != sc) continue;
     int v = nt_ref(nt, id, "value");
-    if (v < 0 || nt_kind(nt, v) != k) return 0;
+    if (v < 0) return 0;
+    if (bare_new && is_bare_container_new(c, v, k)) { saw = 1; continue; }
+    if (nt_kind(nt, v) != k) return 0;
     int en = 0; nt_arr(nt, v, "elements", &en);
     if (en != 0) return 0;
     saw = 1;
@@ -490,7 +503,12 @@ static int local_all_writes_empty(Compiler *c, Scope *sc, const char *name, Node
    below): bucket walk over (scope, name) instead of a whole-table rescan per
    query. */
 int local_all_writes_empty_hash(Compiler *c, Scope *sc, const char *name) {
-  return local_all_writes_empty(c, sc, name, NK_HashNode);
+  return local_all_writes_empty(c, sc, name, NK_HashNode, 0);
+}
+
+/* local_all_writes_empty_hash, where a bare `Hash.new` is the empty `{}` too */
+int local_all_writes_empty_hash_or_new(Compiler *c, Scope *sc, const char *name) {
+  return local_all_writes_empty(c, sc, name, NK_HashNode, 1);
 }
 
 /* 1 if local `name` in scope `sc` has at least one write and every write
@@ -498,7 +516,7 @@ int local_all_writes_empty_hash(Compiler *c, Scope *sc, const char *name) {
    local_all_writes_empty_hash. Such a local carries no element evidence of
    its own, so it can adopt the poly element type a callee's push forced. */
 int local_all_writes_empty_array(Compiler *c, Scope *sc, const char *name) {
-  return local_all_writes_empty(c, sc, name, NK_ArrayNode);
+  return local_all_writes_empty(c, sc, name, NK_ArrayNode, 0);
 }
 
 /* 1 iff every write of local `name` in `sc` builds a new array (and there is
