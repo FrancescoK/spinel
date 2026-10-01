@@ -118,6 +118,7 @@ void sp_re_frame_push(sp_re_frame *f) {
   f->last_ncap = sp_re_last_ncap;
   f->last_pat = sp_re_last_pat;
   f->last_lit = sp_re_last_lit;
+  f->pp_span[0] = sp_re_pp_span[0]; f->pp_span[1] = sp_re_pp_span[1];
 }
 void sp_re_frame_pop(sp_re_frame *f) {
   if (!f) return;
@@ -130,6 +131,8 @@ void sp_re_frame_pop(sp_re_frame *f) {
   sp_re_last_ncap = f->last_ncap;
   sp_re_last_pat = f->last_pat;
   sp_re_last_lit = f->last_lit;
+  /* the span $` and $' are built from lazily: the caller's, not the callee's */
+  sp_re_pp_span[0] = f->pp_span[0]; sp_re_pp_span[1] = f->pp_span[1];
 }
 void sp_re_set_captures(const char *str, int *caps, int ncaps) {SP_GC_ROOT_STR(str);
   sp_re_last_str = str;
