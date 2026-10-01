@@ -7997,7 +7997,8 @@ TyKind infer_uncached(Compiler *c, int id) {
     }
     if (par_nm && sp_streq(par_nm, "Regexp")) {
       if (nm && (sp_streq(nm, "IGNORECASE") || sp_streq(nm, "EXTENDED") ||
-                 sp_streq(nm, "MULTILINE"))) return TY_INT;
+                 sp_streq(nm, "MULTILINE") || sp_streq(nm, "FIXEDENCODING") ||
+                 sp_streq(nm, "NOENCODING"))) return TY_INT;
     }
     if (par_nm && sp_streq(par_nm, "Encoding") && nm) {
       /* every ALL_CAPS Encoding constant is a boxed Encoding value: the two

@@ -2813,11 +2813,14 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       if (sp_streq(nm, "E"))  { buf_puts(b, "M_E"); return; }
     }
     /* Regexp option constants: CRuby's public bits (IGNORECASE=1, EXTENDED=2,
-       MULTILINE=4) the same integers Regexp.new's option arg accepts. */
+       MULTILINE=4) the same integers Regexp.new's option arg accepts, and the
+       encoding bits Regexp#options reports (FIXEDENCODING=16, NOENCODING=32). */
     if (par_nmc && sp_streq(par_nmc, "Regexp") && nm) {
       if (sp_streq(nm, "IGNORECASE")) { buf_puts(b, "((sp_int)1)"); return; }
       if (sp_streq(nm, "EXTENDED"))   { buf_puts(b, "((sp_int)2)"); return; }
       if (sp_streq(nm, "MULTILINE"))  { buf_puts(b, "((sp_int)4)"); return; }
+      if (sp_streq(nm, "FIXEDENCODING")) { buf_puts(b, "((sp_int)16)"); return; }
+      if (sp_streq(nm, "NOENCODING"))    { buf_puts(b, "((sp_int)32)"); return; }
     }
     /* well-known Encoding constants -> the matching boxed encoding value.
        Spinel has one internal representation (UTF-8 / ASCII-8BIT), so the

@@ -94,6 +94,21 @@ static int re_src_all_ascii(const char *s) {
   return 1;
 }
 
+/* A regexp literal's encoding bits as Regexp#options answers them:
+   NOENCODING (32) for //n, and FIXEDENCODING (16) for //u, //e and //s and for
+   a source that is not 7-bit clean, whose encoding is fixed to the source's.
+   They come from the literal's own Prism flags: the literal table keys a
+   pattern by its source and engine flags only, so `//u` and `//` share a
+   slot. */
+static int re_lit_enc_opts(Compiler *c, int recv, int rre) {
+  int nid = re_lit_node(c, recv);
+  int pf = nid >= 0 ? (int)nt_int(c->nt, nid, "flags", 0) : 0;
+  int o = 0;
+  if (pf & 128) o |= 32;                                   /* ASCII_8BIT: n */
+  if ((pf & (64 | 256 | 512)) || !re_src_all_ascii(g_re_src[rre])) o |= 16;   /* EUC_JP, WINDOWS_31J, UTF_8 */
+  return o;
+}
+
 /* A backreference (\1..\9, \k<name>, \g<name>) defeats the linear-time matcher,
    so Regexp.linear_time? is false for such a pattern and true otherwise. */
 static int re_src_has_backref(const char *s) {
@@ -39320,16 +39335,21 @@ else {
     }
     if (rre >= 0 && sp_streq(name, "options") && argc == 0) {
       int pf = g_re_flg[rre];
-      int opt = ((pf & 1) ? 1 : 0) | ((pf & 8) ? 2 : 0) | ((pf & 4) ? 4 : 0);
+      int opt = ((pf & 1) ? 1 : 0) | ((pf & 8) ? 2 : 0) | ((pf & 4) ? 4 : 0) |
+                re_lit_enc_opts(c, recv, rre);
       buf_printf(b, "%d", opt); return;
     }
+    /* //u fixes UTF-8 even on an ASCII source; //n keeps an ASCII source
+       US-ASCII and makes any other ASCII-8BIT */
     if (rre >= 0 && sp_streq(name, "encoding") && argc == 0) {
-      int ascii = re_src_all_ascii(g_re_src[rre]);
-      buf_printf(b, "sp_box_encoding(%s)", ascii ? "sp_encoding_us_ascii()" : "sp_encoding_utf8()");
+      int eo = re_lit_enc_opts(c, recv, rre);
+      buf_printf(b, "sp_box_encoding(%s)",
+                 (eo & 32) ? ((eo & 16) ? "sp_encoding_binary()" : "sp_encoding_us_ascii()")
+                 : (eo & 16) ? "sp_encoding_utf8()" : "sp_encoding_us_ascii()");
       return;
     }
     if (rre >= 0 && sp_streq(name, "fixed_encoding?") && argc == 0) {
-      buf_puts(b, re_src_all_ascii(g_re_src[rre]) ? "FALSE" : "TRUE");
+      buf_puts(b, (re_lit_enc_opts(c, recv, rre) & 16) ? "TRUE" : "FALSE");
       return;
     }
   }
