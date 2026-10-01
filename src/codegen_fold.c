@@ -3275,6 +3275,35 @@ int emit_iter_step_stmts(Compiler *c, int body, Buf *b, int indent, const char *
   return rd_lbl;
 }
 
+/* A step's whole body as statements, its answer dropped, inside the
+   iterator's own C loop (a `next` is its `continue`): the block's locals
+   reset, then the body, with its own redo label after that setup. */
+void emit_iter_step_body(Compiler *c, int block, Buf *b, int indent) {
+  const NodeTable *nt = c->nt;
+  int body = nt_ref(nt, block, "body");
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  emit_block_locals_reset(c, block, b, indent);
+  int rd_lbl = emit_iter_step_stmts(c, body, b, indent, NULL);
+  if (bn > 0) emit_stmt(c, bb[bn - 1], b, indent);
+  if (rd_lbl) g_redo_depth--;
+}
+
+/* A step's body inside the iterator's own C loop, through emit_stmts (the
+   locals' reset, the statements), with the body's own redo label after
+   that setup (g_redo_pending), where it had none. */
+void emit_iter_loop_stmts(Compiler *c, int body, Buf *b, int indent) {
+  int lbl = 0;
+  if (body >= 0 && subtree_has_own_redo(c->nt, body) &&
+      g_redo_depth < (int)(sizeof g_redo_stack / sizeof g_redo_stack[0])) {
+    lbl = ++g_tmp;
+    g_redo_owner[g_redo_depth] = body;
+    g_redo_stack[g_redo_depth++] = lbl;
+    g_redo_pending = lbl;
+  }
+  emit_stmts(c, body, b, indent);
+  if (lbl) g_redo_depth--;
+}
+
 /* Does block `block` need the step's frame: a `next` or a `redo` of its
    own (emit_iter_step_value)? */
 int iter_step_needs_frame(Compiler *c, int block) {
@@ -3334,13 +3363,15 @@ TyKind emit_iter_step_tail(Compiler *c, const IterStep *st, Buf *vb) {
 }
 
 /* The answer of a step opened for a condition (want_poly), as a C truth
-   test by Ruby's rules (emit_cond). */
-void emit_iter_step_cond(Compiler *c, const IterStep *st, Buf *cb) {
+   test by Ruby's rules (emit_cond), or, with `raw`, the tail as it is, for
+   the emitters that read a typed tail as the test themselves. */
+void emit_iter_step_cond(Compiler *c, const IterStep *st, int raw, Buf *cb) {
   if (st->slot) { buf_printf(cb, "sp_poly_truthy(_t%d)", st->slot); return; }
   int body = nt_ref(c->nt, st->block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(c->nt, body, "body", &bn) : NULL;
   if (bn == 0) { buf_puts(cb, "0"); return; }
-  emit_cond(c, bb[bn - 1], cb);
+  if (raw) emit_expr(c, bb[bn - 1], cb);
+  else emit_cond(c, bb[bn - 1], cb);
 }
 
 static int ewi_chain(Compiler *c, int id, int *out_arr, int *out_off) {
@@ -4445,11 +4476,10 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
                            p0_ec_r, kec, ta_ec, ti_ec, tn_ec);
               }
             }
-            for (int j = 0; j < bn_ec - 1; j++) emit_stmt(c, bb_ec[j], g_pre, g_indent + 1);
+            IterStep st_ec; emit_iter_step_open(c, block, res_poly_ec, g_indent + 1, &st_ec);
             int saveInd_ec = g_indent; g_indent = g_indent + 1;
             Buf vb_ec; memset(&vb_ec, 0, sizeof vb_ec);
-            if (res_poly_ec) emit_boxed(c, bb_ec[bn_ec - 1], &vb_ec);
-            else emit_expr(c, bb_ec[bn_ec - 1], &vb_ec);
+            emit_iter_step_tail(c, &st_ec, &vb_ec);
             g_indent = saveInd_ec;
             emit_indent(g_pre, g_indent + 1);
             buf_printf(g_pre, "sp_%sArray_push%s(_t%d, %s);\n", rk_ec, nil_store_sfx(c, rk_ec, bb_ec[bn_ec - 1]), tres_ec, vb_ec.p ? vb_ec.p : "");
@@ -4564,11 +4594,10 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
                   }
                 }
               }
-              for (int j = 0; j < bn_wi - 1; j++) emit_stmt(c, bb_wi[j], g_pre, g_indent + 1);
+              IterStep st_wi; emit_iter_step_open(c, block, res_poly_wi, g_indent + 1, &st_wi);
               int saveInd_wi = g_indent; g_indent = g_indent + 1;
               Buf vb_wi; memset(&vb_wi, 0, sizeof vb_wi);
-              if (res_poly_wi) emit_boxed(c, bb_wi[bn_wi - 1], &vb_wi);
-              else emit_expr(c, bb_wi[bn_wi - 1], &vb_wi);
+              emit_iter_step_tail(c, &st_wi, &vb_wi);
               g_indent = saveInd_wi;
               emit_indent(g_pre, g_indent + 1);
               buf_printf(g_pre, "sp_%sArray_push%s(_t%d, ", rk_wi, nil_store_sfx(c, rk_wi, bb_wi[bn_wi - 1]), tres_wi);
@@ -5081,15 +5110,16 @@ int emit_with_index_expr(Compiler *c, int id, Buf *b) {
     if (clv1 && clv1->type == TY_POLY) buf_printf(g_pre, "lv_%s = sp_box_int(_t%d);\n", p1, tidx);
     else buf_printf(g_pre, "lv_%s = _t%d;\n", p1, tidx);
   }
-  if (is_each) {
-    for (int j = 0; j < bn; j++) emit_stmt(c, bb[j], g_pre, innerIndent);
-  }
+  if (is_each) emit_iter_step_body(c, block, g_pre, innerIndent);
   else {
-    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, innerIndent);
+    IterStep st; emit_iter_step_open(c, block, !is_map, innerIndent, &st);
     int saveInd = g_indent; g_indent = innerIndent;
-    Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, bb[bn - 1], &vb); g_indent = saveInd;
+    Buf vb; memset(&vb, 0, sizeof vb);
+    TyKind body_ty = TY_UNKNOWN;
+    if (is_map) body_ty = emit_iter_step_tail(c, &st, &vb);
+    else emit_iter_step_cond(c, &st, 1, &vb);
+    g_indent = saveInd;
     if (is_map) {
-      TyKind body_ty = comp_ntype(c, bb[bn - 1]);
       emit_indent(g_pre, innerIndent); buf_printf(g_pre, "sp_%sArray_push%s(_t%d, ", rk, nil_store_sfx(c, rk, bb[bn - 1]), tres);
       if (res_poly && body_ty != TY_POLY) {
         Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, body_ty, vb.p ? vb.p : "", &bx);

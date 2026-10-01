@@ -619,8 +619,37 @@ static TyKind then_next_array_ty(Compiler *c, int node) {
    while `next [v]` over the block parameter (an Integer, not widened) is an
    Integer array, so the slot took the tail's kind and the arm did not build.
    The codegen converts the odd one out at its assignment (#4747). */
+/* Does a `next` binding to this `then` block (not one in a nested loop,
+   block or def) leave with a value the tail's type cannot hold: one of
+   another scalar kind, or a bare `next`'s nil? Its value is the block's,
+   so the slot boxes it. */
+static int then_next_other_scalar(Compiler *c, int node, TyKind tail) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return 0;
+  const char *ty = nt_type(nt, node);
+  if (!ty) return 0;
+  if (sp_streq(ty, "NextNode")) {
+    int a = nt_ref(nt, node, "arguments"); int an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    TyKind t = an == 1 ? infer_type(c, av[0]) : TY_NIL;
+    if (then_array_kind_joins(t) || t == TY_UNKNOWN) return 0;
+    return ty_unify(t, tail) != tail || (t == TY_NIL && tail != TY_NIL && tail != TY_POLY);
+  }
+  if (sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
+      sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode") || sp_streq(ty, "DefNode") ||
+      sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) return 0;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) if (then_next_other_scalar(c, nt_ref_at(nt, node, i), tail)) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, node, i, &n);
+    for (int k = 0; k < n; k++) if (then_next_other_scalar(c, ids[k], tail)) return 1;
+  }
+  return 0;
+}
+
 TyKind then_block_value_ty(Compiler *c, int body, TyKind tail) {
-  if (!then_array_kind_joins(tail)) return tail;
+  if (!then_array_kind_joins(tail)) return then_next_other_scalar(c, body, tail) ? TY_POLY : tail;
   TyKind a = then_next_array_ty(c, body);
   if (a == TY_UNKNOWN || a == tail) return tail;
   return TY_POLY_ARRAY;
