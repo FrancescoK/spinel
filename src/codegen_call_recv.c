@@ -8923,8 +8923,8 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       }
       else if (sp_streq(name, "squeeze") && argc == 0) buf_printf(b, "sp_str_squeeze(%s)", r);
       else if (sp_streq(name, "squeeze") && argc == 1) { buf_printf(b, "sp_str_squeeze_chars(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (sp_streq(name, "squeeze") && argc >= 2) {
-        buf_printf(b, "sp_str_squeeze_n(%s, (const char *[]){", r);
+      else if ((sp_streq(name, "squeeze") || sp_streq(name, "delete") || sp_streq(name, "count")) && argc >= 2) {
+        buf_printf(b, "sp_str_%s_n(%s, (const char *[]){", name, r);
         for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_str_expr(c, argv[a], b); }
         buf_printf(b, "}, %d)", argc);
       }
@@ -8933,18 +8933,8 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       }
       else if (sp_streq(name, "delete") && argc == 0) { buf_printf(b, "(%s)", r); return 1; }
       else if (sp_streq(name, "delete") && argc == 1) { buf_printf(b, "sp_str_delete(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (sp_streq(name, "delete") && argc >= 2) {
-        buf_printf(b, "sp_str_delete_n(%s, (const char *[]){", r);
-        for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_str_expr(c, argv[a], b); }
-        buf_printf(b, "}, %d)", argc);
-      }
       else if (sp_streq(name, "count") && argc == 0) { buf_printf(b, "(sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into String\"), 0LL)"); return 1; }
       else if (sp_streq(name, "count") && argc == 1) { buf_printf(b, "sp_str_count(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (sp_streq(name, "count") && argc >= 2) {
-        buf_printf(b, "sp_str_count_n(%s, (const char *[]){", r);
-        for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_str_expr(c, argv[a], b); }
-        buf_printf(b, "}, %d)", argc);
-      }
       else if (sp_streq(name, "lines") && argc == 0) buf_printf(b, "sp_str_lines(%s)", r);
       else if (sp_streq(name, "lines") && argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
         buf_printf(b, "sp_str_lines_sep(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
