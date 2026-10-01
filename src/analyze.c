@@ -2222,6 +2222,11 @@ static int ie_class_value_target(Compiler *c, int id, int recv, TyKind rt, int b
     int t = ie_forward_target(c, k / 2, k % 2, nm, 0);
     if (t >= 0) cls = cls == -1 || cls == t ? t : -2 - id;
   }
+  const char *names[64];
+  int nn = rt == TY_POLY && cls >= 0 ? ie_self_call_names(c, ie_block_body(c, blk), names, 0, 64) : 0;
+  for (int i = 0; i < nn; i++)
+    for (int k = 0; k < c->nclasses && !ie_class_answers(c, cls, names[i]) && comp_method_index(c, names[i]) < 0; k++)
+      if (ie_poly_class_ok(c, k) && ie_class_answers(c, k, names[i])) return -1;
   return cls < -1 && !arg && sp_streq(nm, "new") ? -1 : cls;
 }
 
