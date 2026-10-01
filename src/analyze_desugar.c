@@ -2949,9 +2949,11 @@ int desugar_dynamic_send(Compiler *c) {
          and the explicit form already lowers (#4851). A receiverless
          public_send is `self.public_send` the same way: it refuses a private
          target either way, which is what its arms' vis_enforce stamp does.
-         Only a runtime name: a literal one is rewritten earlier. */
+         Only a runtime name: a literal one is rewritten earlier. At the top
+         level self is main, whose methods are the top-level defs (private
+         methods of Object, which send reaches). */
       Scope *ss = comp_scope_of(c, id);
-      if (!ss || !ss->name) continue;
+      if (!ss) continue;
       int sa = nt_ref(nt, id, "arguments");
       int sac = 0; const int *sav = sa >= 0 ? nt_arr(nt, sa, "arguments", &sac) : NULL;
       if (sac < 1 || !sav) continue;

@@ -1,0 +1,7 @@
+"hi a"
+hi b
+"hi c"
+"hi d"
+["name=a", "tag=a"]
+NoMethodError
+30
