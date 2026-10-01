@@ -28856,23 +28856,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
 
   /* Fiber[:k] / Fiber.current[:k] -> sp_Fiber_storage_get */
   if (recv >= 0 && sp_streq(name, "[]") && argc == 1) {
-    int is_fiber_recv = 0;
-    const char *rty2 = nt_type(nt, recv);
-    if (rty2 && sp_streq(rty2, "ConstantReadNode")) {
-      const char *rn = nt_str(nt, recv, "name");
-      if (rn && sp_streq(rn, "Fiber")) is_fiber_recv = 1;
-    }
-    else if (rty2 && sp_streq(rty2, "CallNode")) {
-      const char *rn = nt_str(nt, recv, "name");
-      int rr = nt_ref(nt, recv, "receiver");
-      if (rn && sp_streq(rn, "current") && rr >= 0) {
-        const char *rrty = nt_type(nt, rr);
-        const char *rrn = nt_str(nt, rr, "name");
-        if (rrty && sp_streq(rrty, "ConstantReadNode") && rrn && sp_streq(rrn, "Fiber"))
-          is_fiber_recv = 1;
-      }
-    }
-    if (is_fiber_recv) {
+    if (fiber_storage_recv(nt, recv)) {
       buf_puts(b, "sp_Fiber_storage_get(sp_fiber_current, ");
       emit_fiber_storage_key(c, argv[0], b);
       buf_puts(b, ")");
@@ -44577,23 +44561,7 @@ else {
 
   /* Fiber[:k] = v (expression form) */
   if (sp_streq(name, "[]=") && argc == 2 && recv >= 0) {
-    int is_fiber2 = 0;
-    const char *rty3 = nt_type(nt, recv);
-    if (rty3 && sp_streq(rty3, "ConstantReadNode")) {
-      const char *rn3 = nt_str(nt, recv, "name");
-      if (rn3 && sp_streq(rn3, "Fiber")) is_fiber2 = 1;
-    }
-    else if (rty3 && sp_streq(rty3, "CallNode")) {
-      const char *rn3 = nt_str(nt, recv, "name");
-      int rr3 = nt_ref(nt, recv, "receiver");
-      if (rn3 && sp_streq(rn3, "current") && rr3 >= 0) {
-        const char *rrty3 = nt_type(nt, rr3);
-        const char *rrn3 = nt_str(nt, rr3, "name");
-        if (rrty3 && sp_streq(rrty3, "ConstantReadNode") && rrn3 && sp_streq(rrn3, "Fiber"))
-          is_fiber2 = 1;
-      }
-    }
-    if (is_fiber2) {
+    if (fiber_storage_recv(nt, recv)) {
       TyKind fvt = comp_ntype(c, argv[1]);
       /* Fiber storage is poly-valued. A nil/void/untyped value has no scalar
          C slot -- carry it boxed (`void _t = nil` is otherwise a type error). */

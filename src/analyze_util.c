@@ -638,6 +638,17 @@ int str_self_call(const NodeTable *nt, int id) {
     return 1;
   return ac == 2 && sp_streq(nm, "insert");
 }
+int fiber_storage_recv(const NodeTable *nt, int recv) {
+  const char *rty = nt_type(nt, recv);
+  const char *rn = nt_str(nt, recv, "name");
+  if (rty && sp_streq(rty, "ConstantReadNode")) return rn && sp_streq(rn, "Fiber");
+  if (!rty || !sp_streq(rty, "CallNode")) return 0;
+  int rr = nt_ref(nt, recv, "receiver");
+  if (!rn || !sp_streq(rn, "current") || rr < 0) return 0;
+  const char *rrty = nt_type(nt, rr);
+  const char *rrn = nt_str(nt, rr, "name");
+  return rrty && sp_streq(rrty, "ConstantReadNode") && rrn && sp_streq(rrn, "Fiber");
+}
 /* A receiver-mutating Array method. */
 int array_mutator_name(const char *nm) {
   size_t l = nm ? strlen(nm) : 0;

@@ -5016,43 +5016,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   }
 
   /* Fiber storage: Fiber[:k] and Fiber.current[:k] -> poly */
-  if (recv >= 0 && sp_streq(name, "[]") && argc == 1) {
-    const char *rty = nt_type(nt, recv);
-    if (rty && sp_streq(rty, "ConstantReadNode")) {
-      const char *rn = nt_str(nt, recv, "name");
-      if (rn && sp_streq(rn, "Fiber")) return TY_POLY;
-    }
-    if (rty && sp_streq(rty, "CallNode")) {
-      const char *rn = nt_str(nt, recv, "name");
-      int rr = nt_ref(nt, recv, "receiver");
-      if (rn && sp_streq(rn, "current") && rr >= 0) {
-        const char *rrty = nt_type(nt, rr);
-        const char *rrn = nt_str(nt, rr, "name");
-        if (rrty && sp_streq(rrty, "ConstantReadNode") && rrn && sp_streq(rrn, "Fiber"))
-          return TY_POLY;
-      }
-    }
-  }
+  if (recv >= 0 && sp_streq(name, "[]") && argc == 1 && fiber_storage_recv(nt, recv)) return TY_POLY;
   /* Fiber[:k] = v -> returns v's type */
-  if (recv >= 0 && sp_streq(name, "[]=") && argc == 2) {
-    const char *rty = nt_type(nt, recv);
-    int is_fiber = 0;
-    if (rty && sp_streq(rty, "ConstantReadNode")) {
-      const char *rn = nt_str(nt, recv, "name");
-      if (rn && sp_streq(rn, "Fiber")) is_fiber = 1;
-    }
-    else if (rty && sp_streq(rty, "CallNode")) {
-      const char *rn = nt_str(nt, recv, "name");
-      int rr = nt_ref(nt, recv, "receiver");
-      if (rn && sp_streq(rn, "current") && rr >= 0) {
-        const char *rrty = nt_type(nt, rr);
-        const char *rrn = nt_str(nt, rr, "name");
-        if (rrty && sp_streq(rrty, "ConstantReadNode") && rrn && sp_streq(rrn, "Fiber"))
-          is_fiber = 1;
-      }
-    }
-    if (is_fiber) return infer_type(c, argv[1]);
-  }
+  if (recv >= 0 && sp_streq(name, "[]=") && argc == 2 && fiber_storage_recv(nt, recv)) return infer_type(c, argv[1]);
   /* ENV[key] -> string or nil (use TY_STRING; null means nil). ENV.fetch
      answers its default on a miss, so the call is the union of String with
      the default's type: a String or nil default keeps the nullable string,
