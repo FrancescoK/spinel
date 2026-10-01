@@ -20440,6 +20440,7 @@ static const char **nn_attrs; static int nn_nattrs, nn_cattrs;   /* names attr_*
 static int nn_seqc;
 static int nn_no_ivar_slots;     /* reflection or a reopened Array: no ivar is nil-free */
 static int nn_no_local_slots;    /* binding's local_variable_set, or a reopened Array */
+static unsigned nn_user_named;   /* bits of nn_named[] the program defines a method for */
 
 static LocalVar *nn_local_of(Compiler *c, int id) {
   const char *nm = nt_str(c->nt, id, "name");
@@ -20738,6 +20739,21 @@ static int nn_pure_call(Compiler *c, int id) {
   if (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY)
     return sp_streq(nm, "[]") || sp_streq(nm, "size") || sp_streq(nm, "length");
   return 0;
+}
+
+/* The calls the walk takes by their name for Kernel's or a builtin
+   iterator's: raise, exit and abort do not come back (the first three), and
+   the iterators throw their block's value away. A method the program
+   defines by the name may do neither (`def raise(msg) = nil` in a class,
+   `def each = (@got = yield)`), so nn_structure notes the names it
+   defines. */
+static const char *const nn_named[] = { "raise", "exit", "abort",
+                                        "each", "each_with_index", "each_index", "times", "upto", "downto",
+                                        "step", "loop", "each_slice", "each_cons", "reverse_each", "tap", NULL };
+#define NN_NAMED_ITER 3
+static int nn_name_at(const char *nm, const char *const *set, int from) {
+  for (int i = from; set[i]; i++) if (sp_streq(nm, set[i])) return i;
+  return -1;
 }
 
 static void nn_visit(Compiler *c, int id, NNF *f, int ctx);
@@ -21046,9 +21062,10 @@ static void nn_visit(Compiler *c, int id, NNF *f, int ctx) {
       nn_visit(c, nt_ref(nt, blk, "body"), &e, blk);
     } else if (blk >= 0) nn_visit_children_generic(c, blk, f, ctx);
     if (!nn_pure_call(c, id)) { nn_call_kill(f, ctx, 0); nn_logpush(NN_LOG_CALL, NULL, -1, 0); }
+    /* Kernel's raise, exit and abort do not come back */
     const char *nm = nt_str(nt, id, "name");
-    if (nm && nt_ref(nt, id, "receiver") < 0 && comp_method_index(c, nm) < 0 &&
-        (sp_streq(nm, "raise") || sp_streq(nm, "exit") || sp_streq(nm, "abort"))) {
+    int ex = nm && nt_ref(nt, id, "receiver") < 0 ? nn_name_at(nm, nn_named, 0) : -1;
+    if (ex >= 0 && ex < NN_NAMED_ITER && !(nn_user_named & (1u << ex))) {
       memset(f, 0, sizeof *f); f->bot = 1;
     }
     return;
@@ -21376,13 +21393,11 @@ static int nn_stmts_discarded(Compiler *c, int s) {
   }
   case NK_ParenthesesNode: case NK_BeginNode: return nn_discarded(c, p);
   case NK_BlockNode: {
-    /* an iterator that ignores its block's value */
+    /* a builtin iterator that ignores its block's value */
     int call = nn_par[p];
     const char *cn = call >= 0 && nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
-    static const char *const it[] = { "each", "each_with_index", "each_index", "times", "upto",
-                                      "downto", "step", "loop", "each_slice", "each_cons",
-                                      "reverse_each", "tap", NULL };
-    return nn_name_in(cn, it);
+    int it = cn ? nn_name_at(cn, nn_named, NN_NAMED_ITER) : -1;
+    return it >= 0 && !(nn_user_named & (1u << it));
   }
   default: return 0;
   }
@@ -21588,6 +21603,16 @@ static void nn_structure(Compiler *c) {
     /* a parameter bound to an iterator's index is no other parameter */
     if (v->iter_index) for (int o = 0; o < v->nocc; o++)
       if (nn_is_param_node(nt_kind(nt, v->occ[o])) && !nn_iter_index(c, v->occ[o])) v->iter_index = 0;
+  }
+  /* the names of nn_named the program defines methods for, asked of the
+     methods themselves: the facts can be computed while the analysis
+     derives a builtin-only answer, under which an_user_defines_method
+     answers no */
+  nn_user_named = 0;
+  for (int i = 0; nn_named[i]; i++) {
+    int own = comp_method_index(c, nn_named[i]) >= 0;
+    for (int k = 0; k < c->nclasses && !own; k++) own = comp_method_in_chain(c, k, nn_named[i], NULL) >= 0;
+    if (own) nn_user_named |= 1u << i;
   }
   /* reflection that reads or writes an ivar by name, or an Array reopened by
      the program, leaves no ivar slot to reason about */
