@@ -1773,7 +1773,7 @@ proc_spec__037	PASS
 proc_spec__038	REJECT
 range_spec__001	ERROR
 range_spec__002	ERROR
-range_spec__003	PASS
+range_spec__003	FAIL
 range_spec__004	ERROR
 range_spec__005	ERROR
 redo_spec__001	REJECT

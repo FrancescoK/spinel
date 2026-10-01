@@ -337,7 +337,7 @@ size_spec__004	ERROR
 size_spec__005	ERROR
 size_spec__006	HARNESS-SKEW
 size_spec__007	FAIL
-step_spec__001	PASS
+step_spec__001	FAIL
 step_spec__002	HARNESS-SKEW
 step_spec__003	HARNESS-SKEW
 step_spec__004	PASS

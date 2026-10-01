@@ -248,7 +248,7 @@ chomp_spec__008	HARNESS-SKEW
 chomp_spec__009	REJECT
 chomp_spec__010	REJECT
 chomp_spec__011	PASS
-chomp_spec__012	PASS
+chomp_spec__012	FAIL
 chomp_spec__013	PASS
 chomp_spec__014	PASS
 chomp_spec__015	PASS
@@ -652,7 +652,7 @@ force_encoding_spec__008	ERROR
 force_encoding_spec__009	ERROR
 force_encoding_spec__010	FAIL
 force_encoding_spec__011	PASS
-freeze_spec__001	PASS
+freeze_spec__001	FAIL
 freeze_spec__002	PASS
 freeze_spec__003	FAIL
 getbyte_spec__001	PASS
@@ -1072,7 +1072,7 @@ rjust_spec__012	HARNESS-SKEW
 rpartition_spec__001	PASS
 rpartition_spec__002	PASS
 rpartition_spec__003	PASS
-rpartition_spec__004	PASS
+rpartition_spec__004	FAIL
 rpartition_spec__005	PASS
 rpartition_spec__006	PASS
 rpartition_spec__007	FAIL
@@ -1276,7 +1276,7 @@ strip_spec__005	ERROR
 strip_spec__006	ERROR
 strip_spec__007	PASS
 strip_spec__008	PASS
-sub_spec__001	PASS
+sub_spec__001	FAIL
 sub_spec__002	PASS
 sub_spec__003	PASS
 sub_spec__004	FAIL
@@ -1540,10 +1540,10 @@ try_convert_spec__006	HARNESS-SKEW
 try_convert_spec__007	HARNESS-SKEW
 try_convert_spec__008	HARNESS-SKEW
 uminus_spec__001	PASS
-uminus_spec__002	PASS
+uminus_spec__002	FAIL
 uminus_spec__003	PASS
 uminus_spec__004	PASS
-uminus_spec__005	PASS
+uminus_spec__005	FAIL
 uminus_spec__006	ERROR
 undump_spec__001	PASS
 undump_spec__002	HARNESS-SKEW

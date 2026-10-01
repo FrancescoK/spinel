@@ -59,7 +59,7 @@ bit_xor_spec__013	HARNESS-SKEW
 case_compare_spec__001	ERROR-BYDESIGN
 ceildiv_spec__001	REJECT
 chr_spec__001	PASS
-chr_spec__002	PASS
+chr_spec__002	FAIL
 chr_spec__003	HARNESS-SKEW
 chr_spec__004	HARNESS-SKEW
 chr_spec__005	FAIL

@@ -1,0 +1,32 @@
+E#== Hash
+true
+E#== Hash
+true
+E#== Hash
+true
+E#== Hash
+false
+C#<=> Hash
+true
+E#== Hash
+true
+2
+false
+true
+S#== Hash
+true
+S#eql? Hash
+true
+S#eql? Array
+true
+S#eql? S
+true
+true
+false
+Same#equal? Hash
+true
+Same#equal? Integer
+true
+false
+pass
+fail
