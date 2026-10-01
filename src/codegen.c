@@ -6380,31 +6380,35 @@ static int nested_block_declares(Compiler *c, int id, const char *nm) {
   return 0;
 }
 
+static void emit_cell_alloc(Compiler *c, LocalVar *lv, const char *nm, Buf *b) {
+  const char *vs = cell_value_struct(lv->type);
+  emit_cell_elem_type(c, lv, b);
+  buf_printf(b, " *_cell_%s = (", nm);
+  emit_cell_elem_type(c, lv, b);
+  buf_puts(b, " *)sp_gc_alloc(sizeof(");
+  emit_cell_elem_type(c, lv, b);
+  buf_puts(b, "), NULL, ");
+  if (lv->type == TY_PROC) buf_puts(b, "sp_cell_scan_procint");
+  else if (lv->type == TY_POLY) buf_puts(b, "sp_cell_scan_rbval");
+  else if (vs) buf_puts(b, cell_value_struct_scan(lv->type));
+  else if (lv->type != TY_FLOAT && cell_is_typed_ptr(c, lv)) buf_puts(b, cell_scan_fn(lv->type));
+  else buf_puts(b, "NULL");
+  buf_printf(b, "); SP_GC_ROOT(_cell_%s); *_cell_%s = ", nm, nm);
+  if (lv->type == TY_FLOAT) buf_puts(b, "0.0");
+  else if (lv->type == TY_POLY) buf_puts(b, "sp_box_nil()");
+  else if (vs) buf_puts(b, cell_value_struct_empty(lv->type));
+  else if (lv->type != TY_PROC && cell_is_typed_ptr(c, lv)) buf_puts(b, "NULL");
+  else buf_puts(b, "0");
+  buf_puts(b, ";\n");
+}
+
 /* A cell the proc's own frame owns, allocated in its prologue (#4087). A
    cell over an inlined block's parameter also gets the plain C slot the
    loop binds (LocalVar.cell_shadow). */
 static void emit_proc_owned_cell(Compiler *c, Buf *pb, LocalVar *lv, const char *nm) {
   if (lv->cell_shadow) declare_local_named(c, pb, lv, nm, 0);
-  const char *vs = cell_value_struct(lv->type);
   buf_puts(pb, "    ");
-  emit_cell_elem_type(c, lv, pb);
-  buf_printf(pb, " *_cell_%s = (", nm);
-  emit_cell_elem_type(c, lv, pb);
-  buf_puts(pb, " *)sp_gc_alloc(sizeof(");
-  emit_cell_elem_type(c, lv, pb);
-  buf_puts(pb, "), NULL, ");
-  if (lv->type == TY_PROC) buf_puts(pb, "sp_cell_scan_procint");
-  else if (lv->type == TY_POLY) buf_puts(pb, "sp_cell_scan_rbval");
-  else if (vs) buf_puts(pb, cell_value_struct_scan(lv->type));
-  else if (lv->type != TY_FLOAT && cell_is_typed_ptr(c, lv)) buf_puts(pb, cell_scan_fn(lv->type));
-  else buf_puts(pb, "NULL");
-  buf_printf(pb, "); SP_GC_ROOT(_cell_%s); *_cell_%s = ", nm, nm);
-  if (lv->type == TY_FLOAT) buf_puts(pb, "0.0");
-  else if (lv->type == TY_POLY) buf_puts(pb, "sp_box_nil()");
-  else if (vs) buf_puts(pb, cell_value_struct_empty(lv->type));
-  else if (lv->type != TY_PROC && cell_is_typed_ptr(c, lv)) buf_puts(pb, "NULL");
-  else buf_puts(pb, "0");
-  buf_puts(pb, ";\n");
+  emit_cell_alloc(c, lv, nm, pb);
 }
 
 /* How an inlined method's PARAMETER is spelled as an assignment target, under
@@ -6468,26 +6472,8 @@ void emit_inlined_local_decl(Compiler *c, LocalVar *lv, const char *rn, Buf *b, 
     }
     return;
   }
-  const char *vs = cell_value_struct(lv->type);
   emit_indent(b, din);
-  emit_cell_elem_type(c, lv, b);
-  buf_printf(b, " *_cell_%s = (", rn);
-  emit_cell_elem_type(c, lv, b);
-  buf_puts(b, " *)sp_gc_alloc(sizeof(");
-  emit_cell_elem_type(c, lv, b);
-  buf_puts(b, "), NULL, ");
-  if (lv->type == TY_PROC) buf_puts(b, "sp_cell_scan_procint");
-  else if (lv->type == TY_POLY) buf_puts(b, "sp_cell_scan_rbval");
-  else if (vs) buf_puts(b, cell_value_struct_scan(lv->type));
-  else if (lv->type != TY_FLOAT && cell_is_typed_ptr(c, lv)) buf_puts(b, cell_scan_fn(lv->type));
-  else buf_puts(b, "NULL");
-  buf_printf(b, "); SP_GC_ROOT(_cell_%s); *_cell_%s = ", rn, rn);
-  if (lv->type == TY_FLOAT) buf_puts(b, "0.0");
-  else if (lv->type == TY_POLY) buf_puts(b, "sp_box_nil()");
-  else if (vs) buf_puts(b, cell_value_struct_empty(lv->type));
-  else if (lv->type != TY_PROC && cell_is_typed_ptr(c, lv)) buf_puts(b, "NULL");
-  else buf_puts(b, "0");
-  buf_puts(b, ";\n");
+  emit_cell_alloc(c, lv, rn, b);
 }
 
 void emit_inlined_locals(Compiler *c, Scope *m, int tag, Buf *b, int din) {
