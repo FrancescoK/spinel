@@ -961,9 +961,16 @@ else {
        a File): the stream its own puts writes to */
     const char *wfp = serr && serr->type == TY_IO ? "(gv_stderr ? gv_stderr->fp : stderr)" : "stderr";
     /* the runtime gate expression, when a category was given */
-    char guard[64]; guard[0] = 0;
+    char guard[96]; guard[0] = 0;
     if (cat_guard) snprintf(guard, sizeof guard, "sp_warning_enabled(\"%s\")", cat_guard);
     else if (cat_dyn) snprintf(guard, sizeof guard, "sp_warning_aref(_t%d)", cat_dyn);
+    /* A nil `$VERBOSE` (ruby -W0) silences warn, whatever the category. Only
+       a program that can set it nil has the boxed slot to test. */
+    LocalVar *verb = comp_gvar(c, "VERBOSE");
+    if (verb && verb->type == TY_POLY) {
+      size_t gl = strlen(guard);
+      snprintf(guard + gl, sizeof guard - gl, "%s!sp_poly_nil_p(gv_VERBOSE)", gl ? " && " : "");
+    }
     /* uplevel: 0 -- "file:line: warning: " ahead of the first message, where
        the message goes and under the same category gate */
     char up_pre[1200]; up_pre[0] = 0;

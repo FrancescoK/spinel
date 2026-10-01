@@ -2829,6 +2829,11 @@ void register_globals_consts(Compiler *c) {
       comp_add_gvar_alias(c, nw + 1, old + 1); /* $new -> $old */
     }
   }
+  /* `$-v` and `$-w` are the interpreter's other names for `$VERBOSE`, and
+     `$-d` for `$DEBUG`: they read and write the one flag. */
+  comp_add_gvar_alias(c, "-v", "VERBOSE");
+  comp_add_gvar_alias(c, "-w", "VERBOSE");
+  comp_add_gvar_alias(c, "-d", "DEBUG");
   /* Pass 2: intern all other globals (skipping alias names). */
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
@@ -2841,6 +2846,8 @@ void register_globals_consts(Compiler *c) {
       if (nm && nm[0] == '$' && is_c_ident(nm + 1) &&
           sp_streq(nm + 1, comp_resolve_gvar(c, nm + 1)))
         comp_gvar_intern(c, nm + 1);
+      else if (nm && nm[0] == '$' && nm[1] == '-' && !sp_streq(nm + 1, comp_resolve_gvar(c, nm + 1)))
+        comp_gvar_intern(c, comp_resolve_gvar(c, nm + 1));
     }
     else if (sp_streq(ty, "AliasGlobalVariableNode")) {
       /* already handled in pass 1 */
@@ -3898,7 +3905,7 @@ static int gvar_implicit_nil_writes(Compiler *c) {
   for (int g = 0; g < c->ngvars; g++) {
     LocalVar *lv = &c->gvars[g];
     if (!lv->name || nil_write_type(lv->type) == lv->type) continue;
-    if (sp_streq(lv->name, "VERBOSE") || sp_streq(lv->name, "DEBUG")) continue;
+    if (comp_gvar_is_interp_flag(lv->name)) continue;
     char g0 = lv->name[0];
     if (!((g0 >= 'a' && g0 <= 'z') || (g0 >= 'A' && g0 <= 'Z') || g0 == '_')) continue;
     if (gvar_seeded_before_read(c, lv->name)) continue;

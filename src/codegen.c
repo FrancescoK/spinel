@@ -14675,6 +14675,10 @@ char *codegen_program(const NodeTable *nt) {
     emit_ctype(c, lv->type, &b);
     buf_printf(&b, " gv_%s = %s;\n", lv->name,
                lv->type == TY_RANGE ? "{0}" :
+               /* The interpreter's own flags start false, not nil: the
+                  ruby run without -w or -d reads `$VERBOSE` and `$DEBUG` as
+                  false, and a nil `$VERBOSE` is the one that silences warn */
+               lv->type == TY_POLY && comp_gvar_is_interp_flag(lv->name) ? "{SP_TAG_BOOL, 0, {0}}" :
                lv->type == TY_POLY  ? "{SP_TAG_NIL, 0, {0}}" :
                /* A global read before its first write is nil, so the slot
                   starts at the kind's nil SENTINEL. Only the string case knew
