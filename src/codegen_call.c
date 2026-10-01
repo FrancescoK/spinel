@@ -43399,7 +43399,17 @@ else {
       (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
     const char *ivn = sp_streq(nt_type(nt, argv[0]), "SymbolNode")
                         ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
-    int have = ivn && ivn[0] == '@' && comp_ivar_index(&c->classes[ty_object_class(rt)], ivn) >= 0;
+    int dcid = ty_object_class(rt);
+    int have = ivn && ivn[0] == '@' && comp_ivar_index(&c->classes[dcid], ivn) >= 0;
+    /* one nothing has set yet is not defined (ivar_set_kind) */
+    if (have && ivar_set_kind(c, dcid, ivn) == 1) {
+      int tro = ++g_tmp;
+      char ex[160], tb[256];
+      snprintf(ex, sizeof ex, "_t%d->iv_%s", tro, iv_c(ivn + 1));
+      buf_printf(b, "({ sp_%s *_t%d = ", c->classes[dcid].c_name, tro); emit_expr(c, recv, b);
+      buf_printf(b, "; (sp_bool)%s; })", ivar_set_test(c, dcid, ivn, ex, tb, sizeof tb));
+      return;
+    }
     buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", have);
     return;
   }

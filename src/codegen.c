@@ -9743,10 +9743,23 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
        ivars has no such walk: it appends one byte, which reallocs off the GC
        heap and cannot collect, so its arm is left as it was. */
     if (ci->nivars > 0) buf_puts(b, "      SP_GC_ROOT(_s);\n");
+    /* an ivar nothing has set yet is not shown (ivar_set_kind): with one
+       such, the separator ahead of each shown ivar is decided at run time */
+    int any1 = 0;
+    for (int j = 0; j < ci->nivars && !any1; j++) any1 = ivar_set_kind(c, i, ci->ivars[j]) == 1;
+    if (any1) buf_puts(b, "      int _ivsep = 0; (void)_ivsep;\n");
     for (int j = 0; j < ci->nivars; j++) {
       char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
-      buf_printf(b, "      sp_String_append(_s, \"%s%s=\"); sp_String_append(_s, ",
-                 j ? ", " : " ", ci->ivars[j]);
+      char tb[256];
+      const char *set = any1 ? ivar_set_test(c, i, ci->ivars[j], expr, tb, sizeof tb) : NULL;
+      if (set) buf_printf(b, "      if %s { ", set);
+      else if (any1) buf_puts(b, "      ");
+      if (any1)
+        buf_printf(b, "sp_String_append(_s, _ivsep++ ? \", %s=\" : \" %s=\"); sp_String_append(_s, ",
+                   ci->ivars[j], ci->ivars[j]);
+      else
+        buf_printf(b, "      sp_String_append(_s, \"%s%s=\"); sp_String_append(_s, ",
+                   j ? ", " : " ", ci->ivars[j]);
       TyKind ivt = ci->ivar_types[j];
       /* containers have their own typed inspect; scalars box through the
          marshal helper into sp_poly_inspect; an UNKNOWN (never usefully
@@ -9779,7 +9792,7 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
       }
       else
         buf_puts(b, "\"#<?>\"");
-      buf_puts(b, ");\n");
+      buf_puts(b, set ? "); }\n" : ");\n");
     }
     buf_puts(b, "      sp_String_append(_s, \">\");\n");
     if (ci->nivars > 0) buf_puts(b, "      sp_poly_recur_pop(_rcm);\n");
