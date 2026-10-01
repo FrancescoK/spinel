@@ -8089,6 +8089,12 @@ TyKind infer_uncached(Compiler *c, int id) {
       return TY_INT;
     if (nm && comp_class_index(c, nm) >= 0) return TY_CLASS;
     if (nm && is_builtin_class_name(nm)) return TY_CLASS;
+    /* a builtin class named by its path (Enumerator::Chain), a Class value
+       carried by that name */
+    if (par_nm && nm) {
+      char qn[256]; snprintf(qn, sizeof qn, "%s::%s", par_nm, nm);
+      if (is_builtin_class_name(qn) || is_builtin_module_name(qn)) return TY_CLASS;
+    }
     /* an exception class with no cls_id of its own (SystemCallError,
        LoadError) is still a first-class Class value, carried by name */
     if (nm && is_builtin_exception_name(nm)) return TY_CLASS;
