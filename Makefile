@@ -1211,6 +1211,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (an Array element splatted into a yield to an appending block compiled)"; ok=0; \
 	else grep -q "from a value that is not a String variable" "$$tmp/yse.out" || \
 	  { echo "reject-test: FAIL (an Array element splatted into a yield rejected without saying why)"; sed -n 1,5p "$$tmp/yse.out"; ok=0; }; fi; \
+	t=test/reject/random_in_boxed_slot.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/rbs.c" >"$$tmp/rbs.out" 2>&1; then \
+	  echo "reject-test: FAIL (a Random boxed into a mixed Array compiled)"; ok=0; \
+	else grep -q "a Random in a slot that holds values of several kinds" "$$tmp/rbs.out" || \
+	  { echo "reject-test: FAIL (a boxed Random rejected without saying why)"; sed -n 1,5p "$$tmp/rbs.out"; ok=0; }; fi; \
 	t=test/reject/string_splat_changed_array.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sca.c" >"$$tmp/sca.out" 2>&1; then \
 	  echo "reject-test: FAIL (a global in a changed splatted Array compiled)"; ok=0; \
