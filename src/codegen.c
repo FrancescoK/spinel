@@ -8800,6 +8800,8 @@ static int marshal_ivar_type_ok(TyKind t) {
   switch (t) {
     case TY_INT: case TY_FLOAT: case TY_STRING: case TY_BOOL:
     case TY_SYMBOL: case TY_BIGINT: case TY_POLY: case TY_NIL:
+    /* the shared handle (`attr_reader :buf` and `obj.buf << x`) */
+    case TY_STRBUF:
       return 1;
     default:
       /* a nested user object reloads with its real cls_id */
@@ -8833,6 +8835,8 @@ static void emit_marshal_box_ivar(Compiler *c, TyKind t, const char *expr, Buf *
     case TY_INT:    buf_printf(b, "(%s == SP_INT_NIL ? sp_box_nil() : sp_box_int(%s))", expr, expr); break;
     case TY_FLOAT:  buf_printf(b, "sp_box_float_or_nil(%s)", expr); break;
     case TY_STRING: buf_printf(b, "(%s ? sp_box_str(%s) : sp_box_nil())", expr, expr); break;
+    /* the handle's live bytes, as a boxed handle's unbox reads them */
+    case TY_STRBUF: buf_printf(b, "(%s ? sp_box_str(sp_String_cstr(%s)) : sp_box_nil())", expr, expr); break;
     case TY_BOOL:   buf_printf(b, "sp_box_bool(%s)", expr); break;
     case TY_SYMBOL: buf_printf(b, "sp_box_sym(%s)", expr); break;
     case TY_BIGINT: buf_printf(b, "(%s ? sp_box_bigint(%s) : sp_box_nil())", expr, expr); break;
@@ -8855,6 +8859,7 @@ static void emit_marshal_unbox_ivar(Compiler *c, TyKind t, Buf *b) {
     case TY_INT:    buf_puts(b, "(val.tag == SP_TAG_NIL ? SP_INT_NIL : (sp_int)sp_poly_to_i(val))"); break;
     case TY_FLOAT:  buf_puts(b, "(val.tag == SP_TAG_NIL ? sp_float_nil() : (sp_float)sp_poly_to_f(val))"); break;
     case TY_STRING: buf_puts(b, "(val.tag == SP_TAG_STR ? val.v.s : NULL)"); break;
+    case TY_STRBUF: buf_puts(b, "(val.tag == SP_TAG_STR ? sp_String_new_shared(val.v.s) : NULL)"); break;
     case TY_BOOL:   buf_puts(b, "(val.tag == SP_TAG_BOOL ? val.v.b : 0)"); break;
     case TY_SYMBOL: buf_puts(b, "(val.tag == SP_TAG_SYM ? (sp_sym)val.v.i : 0)"); break;
     /* a Bignum whose value fits the inline representation arrives INT-tagged
