@@ -6551,7 +6551,9 @@ int infer_ivar_types(Compiler *c) {
        lowered. An unassigned ivar is always nil in Ruby: register a slot for
        it in the Toplevel pseudo-class (or the enclosing class body), leaving
        its type unpinned so it stays a nil-valued poly. */
-    if (sp_streq(ty, "InstanceVariableReadNode")) {
+    /* a multiple assignment's target too: `@a, @b = pair` at the top level
+       wrote a slot nothing had registered */
+    if (sp_streq(ty, "InstanceVariableReadNode") || sp_streq(ty, "InstanceVariableTargetNode")) {
       Scope *s = comp_scope_of(c, id);
       if (s->class_id >= 0) continue;  /* class/instance reads: register_locals */
       const char *nm = nt_str(nt, id, "name");

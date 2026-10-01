@@ -2511,14 +2511,18 @@ static int masgn_unify_elem(Compiler *c, Scope *ms, const int *tgts, int n, TyKi
       if (!lv || lv->is_param || lv->is_block_param) continue;
       lv->type = ty_unify(lv->type, elem);
     }
-    else if (sp_streq(lty_ms, "InstanceVariableTargetNode") &&
-             ms && ms->class_id >= 0) {
+    else if (sp_streq(lty_ms, "InstanceVariableTargetNode") && ms) {
+      /* outside a method: the class body's slot, or the top level's */
+      int icid = ms->class_id;
+      if (icid < 0 && c->node_cbody && tgts[i] < c->node_cap) icid = c->node_cbody[tgts[i]];
+      if (icid < 0) icid = comp_class_index(c, "Toplevel");
+      if (icid < 0) continue;
       const char *ivnm = nt_str(nt, tgts[i], "name");
-      int iv_ms = ivnm ? comp_ivar_index(&c->classes[ms->class_id], ivnm) : -1;
-      if (iv_ms < 0 || class_ivar_pinned(&c->classes[ms->class_id], ivnm)) continue;
-      TyKind mg = ty_unify(c->classes[ms->class_id].ivar_types[iv_ms], elem);
-      if (mg != c->classes[ms->class_id].ivar_types[iv_ms]) {
-        c->classes[ms->class_id].ivar_types[iv_ms] = mg; changed = 1;
+      int iv_ms = ivnm ? comp_ivar_index(&c->classes[icid], ivnm) : -1;
+      if (iv_ms < 0 || class_ivar_pinned(&c->classes[icid], ivnm)) continue;
+      TyKind mg = ty_unify(c->classes[icid].ivar_types[iv_ms], elem);
+      if (mg != c->classes[icid].ivar_types[iv_ms]) {
+        c->classes[icid].ivar_types[iv_ms] = mg; changed = 1;
       }
     }
     else if (sp_streq(lty_ms, "GlobalVariableTargetNode")) {
@@ -2979,14 +2983,16 @@ int infer_write_types(Compiler *c) {
                  transition is a real change. */
               if (mg_p != lv_p->type) { lv_p->type = mg_p; if (lv_p->rbs_seeded) changed = 1; }
             }
-            else if (sp_streq(lty_p, "GlobalVariableTargetNode") || sp_streq(lty_p, "ClassVariableTargetNode"))
+            else if (sp_streq(lty_p, "GlobalVariableTargetNode") || sp_streq(lty_p, "ClassVariableTargetNode") ||
+                     sp_streq(lty_p, "InstanceVariableTargetNode"))
               changed |= masgn_unify_elem(c, ms_poly, &lefts[i], 1, TY_POLY);
           }
           int rn_p = 0;
           const int *rights_p = nt_arr(nt, id, "rights", &rn_p);
           for (int j = 0; j < rn_p; j++) {
             const char *rty_p = nt_type(nt, rights_p[j]) ? nt_type(nt, rights_p[j]) : "";
-            if (sp_streq(rty_p, "GlobalVariableTargetNode") || sp_streq(rty_p, "ClassVariableTargetNode"))
+            if (sp_streq(rty_p, "GlobalVariableTargetNode") || sp_streq(rty_p, "ClassVariableTargetNode") ||
+                sp_streq(rty_p, "InstanceVariableTargetNode"))
               changed |= masgn_unify_elem(c, ms_poly, &rights_p[j], 1, TY_POLY);
           }
           int rest_p = nt_ref(nt, id, "rest");
