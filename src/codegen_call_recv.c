@@ -2458,6 +2458,15 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       }
     }
     const char *k = array_kind(rt);
+    /* fetch_values with no keys reads nothing, of a boxed-element array too
+       (an empty literal is one) */
+    if (sp_streq(name, "fetch_values") && argc == 0 && rt == TY_POLY_ARRAY &&
+        !an_zero_arg_builtin_shadowed(c, name, argc)) {
+      int tr = ++g_tmp;
+      buf_printf(b, "({ sp_PolyArray *_t%d = ", tr); emit_expr(c, recv, b);
+      buf_printf(b, "; if (!_t%d) sp_nil_recv(\"fetch_values\"); sp_PolyArray_new(); })", tr);
+      return 1;
+    }
     /* drop(n) / take(n): subarrays via slice (all kinds incl. poly). */
     if ((sp_streq(name, "drop") || sp_streq(name, "take")) && argc == 1) {
       const char *dk = (rt == TY_POLY_ARRAY) ? "Poly" : k;
@@ -6427,6 +6436,13 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
         }
         return 1;
       }
+      if (sp_streq(name, "fetch_values") && argc == 0 && !an_zero_arg_builtin_shadowed(c, name, argc)) {
+        /* no key: an empty array, from a Hash that is not nil */
+        int tr = ++g_tmp;
+        buf_printf(b, "({ %s _t%d = ", c_type_name(rt), tr); emit_expr(c, recv, b);
+        buf_printf(b, "; if (!_t%d) sp_nil_recv(\"fetch_values\"); sp_PolyArray_new(); })", tr);
+        return 1;
+      }
       if (sp_streq(name, "values_at") && argc == 0) {
         /* zero keys: an empty array; evaluate the receiver for effects (#2408) */
         buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_PolyArray_new())");
@@ -6942,6 +6958,18 @@ else {
         char fn[64]; snprintf(fn, sizeof fn, "sp_%sHash_inspect", hn);
         if (sp_streq(name, "to_s")) { emit_null_guarded_call(c, recv, rt, fn, "sp_str_empty", b); return 1; }
         buf_printf(b, "%s(", fn); emit_expr(c, recv, b); buf_puts(b, ")");
+        return 1;
+      }
+      /* merge!/update with no Hash has nothing to fold in and answers the
+         receiver, after the nil and frozen checks; a block has no conflict to
+         resolve. A program that defines the name is left to the path it took before. */
+      if ((sp_streq(name, "merge!") || sp_streq(name, "update")) && argc == 0 &&
+          !an_zero_arg_builtin_shadowed(c, name, argc)) {
+        int tr = ++g_tmp;
+        buf_printf(b, "({ %s _t%d = ", c_type_name(rt), tr); emit_expr(c, recv, b); buf_puts(b, ";");
+        buf_printf(b, " if (!_t%d) sp_nil_recv(\"%s\");", tr, name);
+        buf_printf(b, " if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", tr, tr, hash_box_cls(rt));
+        buf_printf(b, " _t%d; })", tr);
         return 1;
       }
       /* PolyPoly receiver: any hash-variant argument folds in through the
@@ -14075,7 +14103,8 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_POLY && !user_defines_or_reads(c, name) &&
       g_n_argov < MAX_ARG_OVERRIDE) {
     int has_blk = nt_ref(nt, id, "block") >= 0;
-    unsigned own = ty_poly_face_owners(name, argc, has_blk, nt_call_args_plain(nt, id), 0);
+    unsigned own = an_zero_arg_builtin_shadowed(c, name, argc) ? 0
+                   : ty_poly_face_owners(name, argc, has_blk, nt_call_args_plain(nt, id), 0);
     unsigned kinds = own & PF_OWNERS;
     if (own & PF_STR_BANG) { emit_face_str_bang(c, id, own, b); return 1; }
     if (kinds && !(kinds & (kinds - 1)) && emit_face_reentry(c, id, kinds, own, b)) return 1;

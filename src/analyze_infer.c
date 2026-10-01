@@ -7238,7 +7238,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      NoMethodError there, as it did before (#3449). */
   if (recv >= 0 && rt == TY_POLY && g_face_node < 0 && !an_user_defines_or_reads(c, name)) {
     int blk = nt_ref(nt, id, "block") >= 0;
-    unsigned own = ty_poly_face_owners(name, argc, blk, nt_call_args_plain(nt, id), 1) & PF_OWNERS;
+    unsigned own = an_zero_arg_builtin_shadowed(c, name, argc) ? 0
+                   : ty_poly_face_owners(name, argc, blk, nt_call_args_plain(nt, id), 1) & PF_OWNERS;
     if (own) {
       TyKind r = TY_UNKNOWN;
       for (unsigned bit = 1; bit & PF_OWNERS; bit <<= 1) {

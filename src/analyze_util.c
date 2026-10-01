@@ -1701,6 +1701,21 @@ int an_user_recv_defines_method(Compiler *c, const char *name) {
     if (comp_method_in_chain(c, uk, name, NULL) >= 0) return 1;
   return 0;
 }
+/* A call of merge!, update or fetch_values with no argument is a Hash or Array
+   method only when the program defines no method of that name: with one (on
+   Hash, Array, Object, a module they include or prepend, ...) or an alias to
+   it (`alias update keys`) the call keeps the path it took before these forms
+   were accepted. */
+int an_zero_arg_builtin_shadowed(Compiler *c, const char *name, int argc) {
+  if (argc != 0 || !name) return 0;
+  if (!sp_streq(name, "merge!") && !sp_streq(name, "update") && !sp_streq(name, "fetch_values")) return 0;
+  /* asked directly, not through an_user_defines_method: the builtin-only
+     derivation (a user class owning the name beside a builtin receiver) must
+     keep the program's definition in view too */
+  for (int uk = 0; uk < c->nclasses; uk++)
+    if (comp_method_in_chain(c, uk, name, NULL) >= 0) return 1;
+  return udm_aliased_name(c, name);
+}
 int an_user_defines_method(Compiler *c, const char *name) {
   if (an_builtin_only_p()) return 0;   /* deriving the builtin-only answer (#3459) */
   if (!name) return 0;

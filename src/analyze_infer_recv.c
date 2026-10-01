@@ -723,8 +723,10 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     if (sp_streq(name, "key") && argc == 1) { *out = TY_POLY; return 1; }
     /* blockless one? -> bool (exactly one pair) (#2354) */
     if (sp_streq(name, "one?") && argc == 0 && nt_ref(nt, id, "block") < 0) { *out = TY_BOOL; return 1; }
-    /* in-place merge mutates and returns the receiver (its variant is fixed) */
-    if ((sp_streq(name, "merge!") || sp_streq(name, "update")) && argc >= 1) { *out = rt; return 1; }
+    /* in-place merge mutates and returns the receiver (its variant is fixed);
+       with no argument, unless the program defines a method of that name */
+    if ((sp_streq(name, "merge!") || sp_streq(name, "update")) &&
+        !an_zero_arg_builtin_shadowed(c, name, argc)) { *out = rt; return 1; }
     if (sp_streq(name, "has_key?") || sp_streq(name, "key?") ||
         sp_streq(name, "include?") || sp_streq(name, "member?") ||
         sp_streq(name, "has_value?") || sp_streq(name, "value?") ||
