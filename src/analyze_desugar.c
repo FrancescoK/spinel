@@ -12567,6 +12567,23 @@ static int sce_eval_string(const NodeTable *nt, int st) {
   if (an < 1 || !av) return -1;
   NodeKind k = nt_kind(nt, av[0]);
   if (k != NK_StringNode && k != NK_InterpolatedStringNode) return -1;
+  /* the file and line arguments are not evaluated: only ones with nothing
+     to run (`__FILE__`, a string, `__LINE__`, `__LINE__ + 1`, an integer) */
+  if (an > 3) return -1;
+  if (an >= 2 && nt_kind(nt, av[1]) != NK_SourceFileNode && nt_kind(nt, av[1]) != NK_StringNode) return -1;
+  if (an >= 3) {
+    int l = av[2];
+    if (nt_kind(nt, l) == NK_CallNode) {
+      const char *op = nt_str(nt, l, "name");
+      int la = nt_ref(nt, l, "arguments"), ln = 0;
+      const int *lv = la >= 0 ? nt_arr(nt, la, "arguments", &ln) : NULL;
+      int lr = nt_ref(nt, l, "receiver");
+      if (!op || !(sp_streq(op, "+") || sp_streq(op, "-")) || ln != 1 || !lv || lr < 0 ||
+          nt_kind(nt, lr) != NK_SourceLineNode || nt_kind(nt, lv[0]) != NK_IntegerNode)
+        return -1;
+    }
+    else if (nt_kind(nt, l) != NK_SourceLineNode && nt_kind(nt, l) != NK_IntegerNode) return -1;
+  }
   return av[0];
 }
 static void sce_append(char **buf, size_t *len, size_t *cap, const char *t) {
@@ -12610,6 +12627,8 @@ static char *sce_text(const NodeTable *nt, int str, const char *var, const char 
     if (!nm || !sp_streq(nm, var)) { free(buf); return NULL; }
     char *v = strdup(elem);
     if (conv && !sp_streq(conv, "to_s")) {
+      /* by character in CRuby: only ASCII maps the same byte by byte */
+      for (size_t q = 0; v[q]; q++) if ((unsigned char)v[q] >= 0x80) { free(v); free(buf); return NULL; }
       for (size_t q = 0; v[q]; q++) {
         if (sp_streq(conv, "upcase")) v[q] = (char)toupper((unsigned char)v[q]);
         else if (sp_streq(conv, "downcase")) v[q] = (char)tolower((unsigned char)v[q]);
@@ -12621,8 +12640,32 @@ static char *sce_text(const NodeTable *nt, int str, const char *var, const char 
   }
   return buf;
 }
-/* parse `text` and graft its statements into nt with the site's line/file;
-   the count, or -1 when it does not parse */
+/* The line the eval's text starts on: the `__LINE__` / `__LINE__ + k` it is
+   given, else the call's own line; -1 when the program has no lines. */
+static long long sce_base_line(const NodeTable *nt, int site) {
+  long long line = nt_int(nt, site, "node_line", -1);
+  if (line < 0) return -1;
+  int an = 0; int args = nt_ref(nt, site, "arguments");
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an < 3 || !av) return line;
+  int a = av[2];
+  long long k = 0;
+  if (nt_kind(nt, a) == NK_CallNode && nt_str(nt, a, "name") &&
+      (sp_streq(nt_str(nt, a, "name"), "+") || sp_streq(nt_str(nt, a, "name"), "-"))) {
+    int aa = nt_ref(nt, a, "arguments"); int kn = 0;
+    const int *kv = aa >= 0 ? nt_arr(nt, aa, "arguments", &kn) : NULL;
+    if (kn != 1 || !kv || nt_kind(nt, kv[0]) != NK_IntegerNode) return line;
+    k = nt_int(nt, kv[0], "value", 0);
+    if (sp_streq(nt_str(nt, a, "name"), "-")) k = -k;
+    a = nt_ref(nt, a, "receiver");
+  }
+  if (a < 0 || nt_kind(nt, a) != NK_SourceLineNode) return line;
+  return nt_int(nt, a, "start_line", line) + k;
+}
+/* parse `text` and graft its statements into nt: each node on its line in
+   the text counted from the eval's base line, in the site's file. The count,
+   or -1 when it does not parse (or reads differently spliced, see
+   sp_snippet_graftable) */
 static int sce_graft(Compiler *c, const char *text, int site, int **out, int *n) {
   NodeTable *nt = (NodeTable *)c->nt;
   char *ast = sp_parse_snippet_to_text(text);
@@ -12633,7 +12676,7 @@ static int sce_graft(Compiler *c, const char *text, int site, int **out, int *n)
   int prog = tmp->root_id;
   int stmts = prog >= 0 ? nt_ref(tmp, prog, "statements") : -1;
   int sn = 0; const int *ss = stmts >= 0 ? nt_arr(tmp, stmts, "body", &sn) : NULL;
-  long long line = nt_int(nt, site, "node_line", -1), file = nt_int(nt, site, "node_file", -1);
+  long long line = sce_base_line(nt, site), file = nt_int(nt, site, "node_file", -1);
   int base = nt->count;
   for (int i = 0; i < sn; i++) {
     int id = nt_import_subtree(nt, tmp, ss[i]);
@@ -12642,28 +12685,58 @@ static int sce_graft(Compiler *c, const char *text, int site, int **out, int *n)
   }
   if (line >= 0)
     for (int id = base; id < nt->count; id++) {
-      nt_node_set_int(nt, id, "node_line", line);
+      long long rel = nt_int(nt, id, "node_line", 1);
+      nt_node_set_int(nt, id, "node_line", line + (rel > 0 ? rel - 1 : 0));
       if (file >= 0) nt_node_set_int(nt, id, "node_file", file);
     }
   nt_free(tmp);
   return sn;
 }
-/* the literal array `name` is assigned, searched in `body` first: its
-   element texts (strings or symbols) */
-static int sce_const_elems(const NodeTable *nt, int body, const char *name, const char ***out) {
+/* Is every read of constant `name` in the program the receiver of a call
+   that leaves the Array as it is? Then its literal is what an each sees. */
+static int sce_const_unmutated(const NodeTable *nt, const char *name) {
+  static const char *const RO[] = { "each", "each_with_index", "each_with_object", "map", "flat_map",
+    "filter_map", "select", "reject", "find", "include?", "first", "last", "size", "length", "count",
+    "empty?", "any?", "all?", "none?", "join", "to_a", "freeze", "frozen?", "dup", "[]", "index",
+    "sort", "reverse", "uniq", "zip", "min", "max", "inspect", "to_s", "==", "+", "-", "&", "|", NULL };
+  int reads = 0, ro = 0;
+  NtKindIter it = nt_kind_iter_begin(nt, NK_ConstantReadNode);
+  while (nt_kind_iter_next(&it)) {
+    const char *cn = nt_str(nt, it.id, "name");
+    if (cn && sp_streq(cn, name)) reads++;
+  }
+  nt_kind_iter_close(&it);
+  it = nt_kind_iter_begin(nt, NK_ConstantPathNode);
+  while (nt_kind_iter_next(&it)) {
+    const char *cn = nt_str(nt, it.id, "name");
+    if (cn && sp_streq(cn, name)) { nt_kind_iter_close(&it); return 0; }
+  }
+  nt_kind_iter_close(&it);
+  it = nt_kind_iter_begin(nt, NK_CallNode);
+  while (nt_kind_iter_next(&it)) {
+    int r = nt_ref(nt, it.id, "receiver");
+    if (r < 0 || nt_kind(nt, r) != NK_ConstantReadNode) continue;
+    const char *cn = nt_str(nt, r, "name"), *m = nt_str(nt, it.id, "name");
+    if (!cn || !m || !sp_streq(cn, name)) continue;
+    for (int q = 0; RO[q]; q++) if (sp_streq(m, RO[q])) { ro++; break; }
+  }
+  nt_kind_iter_close(&it);
+  return reads == ro;
+}
+/* the element texts (strings or symbols) of the literal array constant
+   `name` is when statement `before` of `body` runs: written exactly once in
+   this body, ahead of it, and never changed after (sce_const_unmutated).
+   One written anywhere else could be shadowed by a superclass's or an
+   enclosing scope's on the way, so only the body's own is read. -1 if not. */
+static int sce_const_elems(const NodeTable *nt, int body, int before, const char *name, const char ***out) {
   int w = -1;
   int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
-  for (int i = 0; i < bn && w < 0; i++)
-    if (nt_kind(nt, bb[i]) == NK_ConstantWriteNode && nt_str(nt, bb[i], "name") && sp_streq(nt_str(nt, bb[i], "name"), name)) w = bb[i];
-  if (w < 0) {
-    NtKindIter it = nt_kind_iter_begin(nt, NK_ConstantWriteNode);
-    while (nt_kind_iter_next(&it)) {
-      const char *cn = nt_str(nt, it.id, "name");
-      if (cn && sp_streq(cn, name)) { w = it.id; break; }
+  for (int i = 0; i < bn; i++)
+    if (nt_kind(nt, bb[i]) == NK_ConstantWriteNode && nt_str(nt, bb[i], "name") && sp_streq(nt_str(nt, bb[i], "name"), name)) {
+      if (w >= 0 || i >= before) return -1;
+      w = bb[i];
     }
-    nt_kind_iter_close(&it);
-  }
-  if (w < 0) return -1;
+  if (w < 0 || !sce_const_unmutated(nt, name)) return -1;
   int v = nt_ref(nt, w, "value");
   if (v < 0 || nt_kind(nt, v) != NK_ArrayNode) return -1;
   int en = 0; const int *els = nt_arr(nt, v, "elements", &en);
@@ -12678,9 +12751,65 @@ static int sce_const_elems(const NodeTable *nt, int body, const char *name, cons
   *out = res;
   return en;
 }
+/* A program that gives class_eval / module_eval a method of its own, or
+   hooks what a graft does (method_added, singleton_method_added,
+   const_added), is grafted nowhere: the splice would bypass the override or
+   the hook (the rule sp_macro.c's expansion follows). */
+static int sce_name_reflective(const char *nm) {
+  static const char *const NAMES[] = { "class_eval", "module_eval", "method_added",
+    "singleton_method_added", "const_added", NULL };
+  if (!nm) return 0;
+  if (*nm == ':') nm++;
+  for (int i = 0; NAMES[i]; i++) if (sp_streq(nm, NAMES[i])) return 1;
+  return 0;
+}
+static int sce_program_reflects(const NodeTable *nt) {
+  int hit = 0;
+  NtKindIter it = nt_kind_iter_begin(nt, NK_DefNode);
+  while (!hit && nt_kind_iter_next(&it)) hit = sce_name_reflective(nt_str(nt, it.id, "name"));
+  nt_kind_iter_close(&it);
+  it = nt_kind_iter_begin(nt, NK_AliasMethodNode);
+  while (!hit && nt_kind_iter_next(&it)) {
+    int nn = nt_ref(nt, it.id, "new_name");
+    hit = nn >= 0 && sce_name_reflective(nt_str(nt, nn, "value"));
+  }
+  nt_kind_iter_close(&it);
+  it = nt_kind_iter_begin(nt, NK_UndefNode);
+  while (!hit && nt_kind_iter_next(&it)) {
+    int un = 0; const int *uv = nt_arr(nt, it.id, "names", &un);
+    for (int q = 0; q < un && !hit; q++) hit = sce_name_reflective(nt_str(nt, uv[q], "value"));
+  }
+  nt_kind_iter_close(&it);
+  it = nt_kind_iter_begin(nt, NK_CallNode);
+  while (!hit && nt_kind_iter_next(&it)) {
+    const char *m = nt_str(nt, it.id, "name");
+    int dm = m && sp_streq(m, "define_method");
+    if (!m || !(dm || sp_streq(m, "alias_method") || sp_streq(m, "define_singleton_method") ||
+                sp_streq(m, "remove_method") || sp_streq(m, "undef_method")))
+      continue;
+    int args = nt_ref(nt, it.id, "arguments"); int an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an < 1 || !av) continue;
+    NodeKind k = nt_kind(nt, av[0]);
+    if (k == NK_SymbolNode) hit = sce_name_reflective(nt_str(nt, av[0], "value"));
+    else if (k == NK_StringNode) hit = sce_name_reflective(nt_str(nt, av[0], "content"));
+    else hit = !dm;   /* a computed name could be any of them (as sp_macro.c reads it) */
+  }
+  nt_kind_iter_close(&it);
+  return hit;
+}
+/* a bare `private` / `protected` / `public` / `module_function`: a def
+   spliced after it takes that visibility, a class_eval'd one does not */
+static int sce_bare_visibility(const NodeTable *nt, int st) {
+  if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "receiver") >= 0 || nt_ref(nt, st, "arguments") >= 0) return 0;
+  const char *m = nt_str(nt, st, "name");
+  return m && (sp_streq(m, "private") || sp_streq(m, "protected") || sp_streq(m, "public") ||
+               sp_streq(m, "module_function"));
+}
 int desugar_static_class_eval(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
+  int gate = -1;   /* sce_program_reflects, asked once a candidate is seen */
   for (int id = 0; id < n0; id++) {
     NodeKind k = nt_kind(nt, id);
     if (k != NK_ModuleNode && k != NK_ClassNode) continue;
@@ -12690,17 +12819,21 @@ int desugar_static_class_eval(Compiler *c) {
     int *bb = (int *)malloc(sizeof(int) * (size_t)(bn > 0 ? bn : 1));
     if (!bb) continue;
     memcpy(bb, bb0, sizeof(int) * (size_t)bn);
-    int *nb = NULL, nbn = 0, any = 0;
+    int *nb = NULL, nbn = 0, any = 0, vis = 0;
     for (int i = 0; i < bn; i++) {
       int st = bb[i];
       int *ins = NULL, nins = 0, ok = 0;
-      int str = sce_eval_string(nt, st);
+      vis |= sce_bare_visibility(nt, st);
+      int str = vis ? -1 : sce_eval_string(nt, st);
+      int each = !vis && str < 0 && nt_kind(nt, st) == NK_CallNode && nt_str(nt, st, "name") &&
+                 sp_streq(nt_str(nt, st, "name"), "each") && nt_ref(nt, st, "arguments") < 0;
+      if ((str >= 0 || each) && gate < 0) gate = sce_program_reflects(nt);
+      if (gate > 0) { str = -1; each = 0; }
       if (str >= 0) {
         char *text = sce_text(nt, str, NULL, NULL);
         if (text) { ok = sce_graft(c, text, st, &ins, &nins) >= 0; free(text); }
       }
-      else if (nt_kind(nt, st) == NK_CallNode && nt_str(nt, st, "name") && sp_streq(nt_str(nt, st, "name"), "each") &&
-               nt_ref(nt, st, "arguments") < 0) {
+      else if (each) {
         /* CONST.each do |v| class_eval "..." end */
         int recv = nt_ref(nt, st, "receiver"), blk = nt_ref(nt, st, "block");
         const char *cname = recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
@@ -12711,7 +12844,7 @@ int desugar_static_class_eval(Compiler *c) {
         const char *var = rn == 1 && reqs ? nt_str(nt, reqs[0], "name") : NULL;
         int sn = 0; const int *ss = bbody >= 0 && nt_kind(nt, bbody) == NK_StatementsNode ? nt_arr(nt, bbody, "body", &sn) : NULL;
         int estr = sn == 1 ? sce_eval_string(nt, ss[0]) : -1;
-        const char **elems = NULL; int ne = cname ? sce_const_elems(nt, body, cname, &elems) : -1;
+        const char **elems = NULL; int ne = cname ? sce_const_elems(nt, body, i, cname, &elems) : -1;
         if (var && estr >= 0 && ne >= 0) {
           ok = 1;
           for (int e = 0; e < ne && ok; e++) {

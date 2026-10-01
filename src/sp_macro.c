@@ -123,6 +123,77 @@ static int mx_sym_plain(const char *s) {
   return 1;
 }
 
+/* ---- may a string module_eval / class_eval be read as the body's own code?
+   Text that a class body evaluates is spliced into it (a macro's module_eval
+   here, a literal class_eval by desugar_static_class_eval), but CRuby runs
+   it in a scope of its own, so a splice answers differently when the text
+   - reads or writes a local, or names one Prism cannot tell from a call
+     (`x`, `private`): the eval sees the caller's locals and keeps its own;
+   - says a bare `private` / `protected` / `public` / `module_function`:
+     it ends with the eval and does not reach the statements after it;
+   - says `__LINE__`, `__FILE__` or `__dir__`: they answer the eval's
+     arguments, not the line the text was written on;
+   - evaluates a string itself (eval, class_eval, instance_eval, ...).
+   Inside a `def` only the last two matter: a method body has its own
+   scope either way. Such text is left to run time, refused as before. */
+typedef struct { int bad; int in_def; } SpSnipScan;
+static bool sp_snippet_visit(const pm_node_t *n, void *data) {
+  SpSnipScan *s = data;
+  if (s->bad) return false;
+  switch (PM_NODE_TYPE(n)) {
+  case PM_SOURCE_LINE_NODE: case PM_SOURCE_FILE_NODE:
+    s->bad = 1; return false;
+  case PM_DEF_NODE:
+    if (!s->in_def) {
+      SpSnipScan in = { 0, 1 };
+      pm_visit_node(n, sp_snippet_visit, &in);
+      if (in.bad) s->bad = 1;
+      return false;
+    }
+    return true;
+  case PM_LOCAL_VARIABLE_READ_NODE: case PM_LOCAL_VARIABLE_WRITE_NODE:
+  case PM_LOCAL_VARIABLE_TARGET_NODE: case PM_LOCAL_VARIABLE_AND_WRITE_NODE:
+  case PM_LOCAL_VARIABLE_OR_WRITE_NODE: case PM_LOCAL_VARIABLE_OPERATOR_WRITE_NODE:
+    if (!s->in_def) { s->bad = 1; return false; }
+    return true;
+  case PM_CALL_NODE: {
+    const pm_call_node_t *cn = (const pm_call_node_t *)n;
+    if (!s->in_def && PM_NODE_FLAG_P(n, PM_CALL_NODE_FLAGS_VARIABLE_CALL)) { s->bad = 1; return false; }
+    char *nm = cstr(cn->name);
+    int ev = strcmp(nm, "eval") == 0 || strcmp(nm, "class_eval") == 0 || strcmp(nm, "module_eval") == 0 ||
+             strcmp(nm, "instance_eval") == 0 || strcmp(nm, "class_exec") == 0 || strcmp(nm, "module_exec") == 0 ||
+             strcmp(nm, "instance_exec") == 0 || strcmp(nm, "binding") == 0 || strcmp(nm, "__dir__") == 0;
+    int vis = !cn->receiver && !cn->arguments && !cn->block &&
+              (strcmp(nm, "private") == 0 || strcmp(nm, "protected") == 0 || strcmp(nm, "public") == 0 ||
+               strcmp(nm, "module_function") == 0);
+    free(nm);
+    if (ev || (vis && !s->in_def)) { s->bad = 1; return false; }
+    return true;
+  }
+  default:
+    return true;
+  }
+}
+/* 1 when `src` parses and reads the same spliced into the body (above) */
+static int sp_snippet_graftable(const char *src) {
+  if (!src) return 0;
+  pm_parser_t parser;
+  pm_parser_init(&parser, (const uint8_t *)src, strlen(src), NULL);
+  pm_node_t *root = pm_parse(&parser);
+  int ok = parser.error_list.size == 0;
+  if (ok) {
+    const pm_parser_t *saved = g_parser;   /* cstr reads the names from it */
+    g_parser = &parser;
+    SpSnipScan s = { 0, 0 };
+    pm_visit_node(root, sp_snippet_visit, &s);
+    g_parser = saved;
+    ok = !s.bad;
+  }
+  pm_node_destroy(&parser, root);
+  pm_parser_free(&parser);
+  return ok;
+}
+
 static void mx_quote(const char *s, MxBuf *b) {
   mxb_puts(b, "\"");
   for (const char *p = s; *p; p++) {
@@ -765,7 +836,7 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
              (strcmp(name, "module_eval") == 0 || strcmp(name, "class_eval") == 0) &&
              mx_prim_builtin(name)) {
       Mv code;
-      if (mx_eval(c, args->nodes[0], &code) && code.k == MV_STR) {
+      if (mx_eval(c, args->nodes[0], &code) && code.k == MV_STR && sp_snippet_graftable(code.s)) {
         if (o) { mxb_puts(o, code.s); mxb_puts(o, "\n"); }
         c->ret = mv_nil();
         ok = 1;

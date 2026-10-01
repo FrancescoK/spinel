@@ -23419,6 +23419,9 @@ void analyze_program(Compiler *c) {
   /* scope 0 = top level */
   Scope *top = comp_scope_new(c, NULL, -1);
   top->body = nt_ref(c->nt, c->nt->root_id, "statements");
+  /* class_eval "<text known now>" -> that code, grafted into the body. First,
+     so every pass below reads the grafted code as it reads the program's */
+  desugar_static_class_eval(c);
 
   /* `&(expr)`: the parentheses carry no meaning for a block argument, but they
      hide the expression from every shape check downstream (`&blk` as a proc
@@ -23516,7 +23519,6 @@ void analyze_program(Compiler *c) {
   desugar_singleton_attr(c);             /* singleton_class.attr_accessor :x -> def self.x / def self.x= */
   desugar_handle_attr_accessor(c);       /* Thread.attr_accessor :x -> a Thread reopening on its store */
   desugar_constant_path_self_alias(c);   /* A::B::C = remove_const(:C) (C a class) -> dropped */
-  desugar_static_class_eval(c);          /* class_eval "<text known now>" -> that code, grafted into the body */
   /* builtins/enumerable.rb, spliced by the parser: its definitions become
      the receiver-taking top-level functions before any scope is built */
   desugar_builtins(c);

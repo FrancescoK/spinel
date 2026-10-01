@@ -4788,30 +4788,50 @@ char *sp_parse_file_to_text(const char *source_file, const char *argv0) {
    the node lines, no file map. NULL when it does not parse. The flattener's
    globals belong to the entry parse, which is over by the time this runs;
    they are saved around the call and reset the way that parse resets them.
-   Line / file facts are left off: the desugar stamps the eval site's. */
+   The entry's source map and per-line frozen_string_literal table describe
+   the entry buffer, not this text, so they are off for it; a node's line is
+   its line in the text (when the entry has lines at all), which the desugar
+   moves to the eval site's. NULL as well for text that does not read the
+   same spliced into the body (sp_snippet_graftable). */
 char *sp_parse_snippet_to_text(const char *src) {
-  if (!src) return NULL;
-  pm_parser_t parser;
-  pm_parser_init(&parser, (const uint8_t *)src, strlen(src), NULL);
-  pm_node_t *root = pm_parse(&parser);
-  if (parser.error_list.size > 0) {
-    pm_node_destroy(&parser, root);
-    pm_parser_free(&parser);
-    return NULL;
-  }
+  if (!src || !sp_snippet_graftable(src)) return NULL;
+  /* the entry buffer's state the flattener reads: its source map, per-line
+     frozen_string_literal table, the `&:sym` block offsets (rewritten
+     below for this text), the statement cursor and owner */
   const pm_parser_t *saved_parser = g_parser;
   int saved_emit_line = g_emit_line, saved_emit_end = g_emit_end;
   char **saved_lines = lines; size_t saved_count = line_count, saved_cap = line_cap; int saved_counter = node_counter;
-  g_parser = &parser; g_emit_line = 0; g_emit_end = 0;
-  lines = NULL; line_count = 0; line_cap = 0; node_counter = 0;
-  int root_id = flatten(root);
-  SpStrBuf out = {0};
-  sb_printf(&out, "ROOT %d\n", root_id);
-  for (size_t i = 0; i < line_count; i++) { sb_puts(&out, lines[i]); sb_puts(&out, "\n"); free(lines[i]); }
-  free(lines);
+  int saved_map_n = sp_line_map_n; unsigned char *saved_fsl = g_fsl_lines; size_t saved_fsl_n = g_fsl_nlines;
+  size_t saved_symp_n = g_sym_proc_n;
+  pm_node_t **saved_next = g_stmt_next, **saved_end = g_stmt_end; const uint8_t *saved_owner = g_owner;
+  sp_line_map_n = 0; g_fsl_lines = NULL; g_fsl_nlines = 0; g_sym_proc_n = 0;
+  g_stmt_next = g_stmt_end = NULL; g_owner = NULL; g_emit_end = 0;
+  /* the sugar the entry source went through (`&:sym`, `.send(:m)`), which
+     line count it keeps */
+  char *buf = strdup(src);
+  if (buf) buf = rewrite_syntax_sugar(buf);
+  char *res = NULL;
+  if (buf) {
+    pm_parser_t parser;
+    pm_parser_init(&parser, (const uint8_t *)buf, strlen(buf), NULL);
+    pm_node_t *root = pm_parse(&parser);
+    if (parser.error_list.size == 0) {
+      g_parser = &parser;
+      lines = NULL; line_count = 0; line_cap = 0; node_counter = 0;
+      int root_id = flatten(root);
+      SpStrBuf out = {0};
+      sb_printf(&out, "ROOT %d\n", root_id);
+      for (size_t i = 0; i < line_count; i++) { sb_puts(&out, lines[i]); sb_puts(&out, "\n"); free(lines[i]); }
+      free(lines);
+      res = out.data;
+    }
+    pm_node_destroy(&parser, root);
+    pm_parser_free(&parser);
+    free(buf);
+  }
   lines = saved_lines; line_count = saved_count; line_cap = saved_cap; node_counter = saved_counter;
   g_parser = saved_parser; g_emit_line = saved_emit_line; g_emit_end = saved_emit_end;
-  pm_node_destroy(&parser, root);
-  pm_parser_free(&parser);
-  return out.data;
+  sp_line_map_n = saved_map_n; g_fsl_lines = saved_fsl; g_fsl_nlines = saved_fsl_n; g_sym_proc_n = saved_symp_n;
+  g_stmt_next = saved_next; g_stmt_end = saved_end; g_owner = saved_owner;
+  return res;
 }
