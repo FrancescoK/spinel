@@ -17986,16 +17986,18 @@ static int emit_ffi_cb_trampoline(Compiler *c, int cbidx, int mi) {
       if (lv) p = lv->type;
     }
     char a[16]; snprintf(a, sizeof a, "_a%d", i);
-    if (p == TY_POLY || p == TY_UNKNOWN) {           /* param is sp_RbVal: box it */
+    switch (p) {
+    case TY_POLY: case TY_UNKNOWN:           /* param is sp_RbVal: box it */
       if (sp_streq(spec, "ptr"))                          buf_printf(&call, "sp_box_foreign_ptr((void *)%s)", a);
       else if (sp_streq(spec, "str"))                     buf_printf(&call, "sp_box_str(%s)", a);
       else if (sp_streq(spec, "float") || sp_streq(spec, "double")) buf_printf(&call, "sp_box_float(%s)", a);
       else                                                buf_printf(&call, "sp_box_int((sp_int)%s)", a);
+      break;
+    case TY_INT:    buf_printf(&call, sp_streq(spec, "ptr") ? "(sp_int)(uintptr_t)%s" : "(sp_int)%s", a); break;
+    case TY_STRING: buf_printf(&call, "(const char *)%s", a); break;
+    case TY_FLOAT:  buf_printf(&call, "(sp_float)%s", a); break;
+    default:        buf_printf(&call, "(sp_int)%s", a); break;
     }
-    else if (p == TY_INT)    buf_printf(&call, sp_streq(spec, "ptr") ? "(sp_int)(uintptr_t)%s" : "(sp_int)%s", a);
-    else if (p == TY_STRING) buf_printf(&call, "(const char *)%s", a);
-    else if (p == TY_FLOAT)  buf_printf(&call, "(sp_float)%s", a);
-    else                     buf_printf(&call, "(sp_int)%s", a);
   }
   buf_puts(&call, ")");
   /* convert the result to the callback's return type */
