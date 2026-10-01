@@ -10117,6 +10117,12 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
                         " sp_FloatArray_push(_t%d, (%s)); _t%d; })", o, o, ta, o, r, o);
         }
       }
+      /* fdiv(Complex) is self / c, as Float#/ divides by one: a Complex
+         argument went into the Float coercion as a struct */
+      else if (sp_streq(name, "fdiv") && argc == 1 && a0 == TY_COMPLEX) {
+        buf_printf(b, "sp_complex_div(((sp_Complex){(%s), 0, SP_CPLX_RE_F}), ", r);
+        emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
       else if (sp_streq(name, "fdiv") && argc == 1) { buf_printf(b, "((%s) / (", r); emit_float_coerce_expr(c, argv[0], b); buf_puts(b, "))"); }
       /* Float#eql?(x): true only when x is itself a Float of equal value (no
          numeric coercion, unlike ==). A float-typed arg compares directly; any

@@ -6726,6 +6726,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "i")) return TY_COMPLEX;
     /* Float <=> Rational: compare via the rational's float value (#2596) */
     if (sp_streq(name, "<=>") && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) return TY_INT;
+    /* Float#fdiv(Complex) is self / c, a Complex */
+    if (sp_streq(name, "fdiv") && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX) return TY_COMPLEX;
     if (sp_streq(name, "next_float") || sp_streq(name, "prev_float") ||
         sp_streq(name, "abs") || sp_streq(name, "magnitude") ||
         sp_streq(name, "modulo") || sp_streq(name, "remainder") || sp_streq(name, "to_f") ||

@@ -2161,6 +2161,31 @@ void emit_complex_coerce(Compiler *c, int node, Buf *b) {
   buf_printf(b, "), 0, %d})", comp_ntype(c, node) == TY_FLOAT ? 1 : 0);
 }
 
+/* Complex.rectangular / .polar with a Complex argument: CRuby takes each
+   argument's real part when its imaginary part is zero (0 or 0.0) and raises
+   TypeError "not a real" otherwise, once both are evaluated. The float casts
+   of the plain arms met the struct and the C did not build. Declines (0)
+   when no argument is statically a Complex. */
+int emit_complex_real_args(Compiler *c, const int *argv, int argc, int polar, Buf *b) {
+  int any = 0;
+  for (int k = 0; k < argc && k < 2; k++) {
+    TyKind t = comp_ntype(c, argv[k]);
+    if (t == TY_COMPLEX) any = 1;
+    else if (t != TY_INT && t != TY_FLOAT && t != TY_RATIONAL) return 0;
+  }
+  if (!any) return 0;
+  int ta = ++g_tmp, tb = ++g_tmp;
+  buf_printf(b, "({ sp_Complex _t%d = ", ta); emit_complex_coerce(c, argv[0], b);
+  buf_printf(b, "; sp_Complex _t%d = ", tb);
+  if (argc >= 2) emit_complex_coerce(c, argv[1], b); else buf_puts(b, "((sp_Complex){0, 0, 0})");
+  buf_printf(b, "; sp_complex_real_chk(_t%d); sp_complex_real_chk(_t%d); ", ta, tb);
+  if (polar) buf_printf(b, "sp_complex_polar(_t%d.re, _t%d.re, _t%d.fl & SP_CPLX_RE_F); })", ta, tb, ta);
+  else buf_printf(b, "(sp_Complex){_t%d.re, _t%d.re,"
+                     " (unsigned char)((_t%d.fl & SP_CPLX_RE_F) | ((_t%d.fl & SP_CPLX_RE_F) << 1))}; })",
+                  ta, tb, ta, tb);
+  return 1;
+}
+
 /* Returns 1 if `id` is a `Float::INFINITY` / `nil` / absent range endpoint. */
 int lazy_endpoint_is_infinite(Compiler *c, int right) {
   const NodeTable *nt = c->nt;
@@ -3782,6 +3807,25 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
                   " (sp_Complex){0, 0, 0}; })");
       return 1;
     }
+    /* A Complex component combines: CRuby's Complex(a, b) is a + b*i, so
+       (a.re - b.im) + (a.im + b.re)i, and Complex(a) is a itself. b*i is
+       (b.re*0 - b.im*1) + (b.re*1 + b.im*0)i, so a Float part anywhere in b
+       makes both parts of the sum Float-classed, while a's parts keep their
+       own class. The (sp_float) casts below met the struct and the C did not
+       build. */
+    { TyKind k0 = comp_ntype(c, argv[0]), k1 = argc >= 2 ? comp_ntype(c, argv[1]) : TY_INT;
+      int real0 = k0 == TY_INT || k0 == TY_FLOAT || k0 == TY_RATIONAL || k0 == TY_COMPLEX;
+      int real1 = k1 == TY_INT || k1 == TY_FLOAT || k1 == TY_RATIONAL || k1 == TY_COMPLEX;
+      if ((k0 == TY_COMPLEX || k1 == TY_COMPLEX) && real0 && real1) {
+        if (argc == 1) { emit_expr(c, argv[0], b); return 1; }
+        int ta = ++g_tmp, tb = ++g_tmp;
+        buf_printf(b, "({ sp_Complex _t%d = ", ta); emit_complex_coerce(c, argv[0], b);
+        buf_printf(b, "; sp_Complex _t%d = ", tb); emit_complex_coerce(c, argv[1], b);
+        buf_printf(b, "; (sp_Complex){_t%d.re - _t%d.im, _t%d.im + _t%d.re,"
+                      " (unsigned char)(_t%d.fl | ((_t%d.fl & 3) ? 3 : 0))}; })",
+                   ta, tb, ta, tb, ta, tb);
+        return 1;
+      } }
     int re_rat = comp_ntype(c, argv[0]) == TY_RATIONAL;
     int im_rat = argc >= 2 && comp_ntype(c, argv[1]) == TY_RATIONAL;
     int fl = (comp_ntype(c, argv[0]) == TY_FLOAT || re_rat ? 1 : 0) |
@@ -3898,6 +3942,39 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
                   " sp_rational_new(0, 1))");
       return 1;
     }
+    /* Rational(Complex) is Complex#to_r: the real part, exactly, when the
+       imaginary part is zero, else RangeError. With two arguments CRuby
+       answers a / b, which is a Complex unless each Complex argument reduces
+       to its real part -- known here only for a Complex(x) or Complex(x, 0)
+       written in place; any other is refused, as the Rational this call is
+       typed cannot hold the Complex. */
+    if (argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX) {
+      buf_puts(b, "sp_complex_to_r("); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      return 1;
+    }
+    if (argc == 2 && (comp_ntype(c, argv[0]) == TY_COMPLEX || comp_ntype(c, argv[1]) == TY_COMPLEX)) {
+      for (int k = 0; k < 2; k++) {
+        if (comp_ntype(c, argv[k]) != TY_COMPLEX) continue;
+        int ca = nt_ref(nt, argv[k], "arguments"), cn = 0;
+        const int *cv = ca >= 0 ? nt_arr(nt, ca, "arguments", &cn) : NULL;
+        const char *cnm = nt_kind(nt, argv[k]) == NK_CallNode ? nt_str(nt, argv[k], "name") : NULL;
+        int exact = cnm && sp_streq(cnm, "Complex") && nt_ref(nt, argv[k], "receiver") < 0 &&
+                    (cn == 1 || (cn == 2 && cv && nt_kind(nt, cv[1]) == NK_IntegerNode &&
+                                 nt_int(nt, cv[1], "value", 1) == 0));
+        if (!exact)
+          unsupported_feature(c, id, "Rational(a, b) with a Complex argument that may have an imaginary part (the answer is a Complex)");
+      }
+      buf_puts(b, "sp_rational_div(");
+      for (int k = 0; k < 2; k++) {
+        if (k) buf_puts(b, ", ");
+        if (comp_ntype(c, argv[k]) == TY_COMPLEX) {
+          buf_puts(b, "sp_complex_to_r("); emit_expr(c, argv[k], b); buf_puts(b, ")");
+        }
+        else emit_rat_coerce(c, argv[k], b);
+      }
+      buf_puts(b, ")");
+      return 1;
+    }
     /* Rational(Float) is the exact value of the double (5/2 for 2.5), not the
        truncating int cast; a Rational passes through unchanged. */
     if (argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
@@ -3978,6 +4055,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
     /* Complex.polar(magnitude, angle) */
     if (rrty && sp_streq(rrty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
         sp_streq(nt_str(nt, recv, "name"), "Complex") && sp_streq(name, "polar") && argc >= 1) {
+      if (emit_complex_real_args(c, argv, argc, 1, b)) return 1;
       buf_puts(b, "sp_complex_polar(");
       emit_float_expr(c, argv[0], b);
       buf_puts(b, ", ");
@@ -3990,6 +4068,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
     if (rrty && sp_streq(rrty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
         sp_streq(nt_str(nt, recv, "name"), "Complex") &&
         (sp_streq(name, "rect") || sp_streq(name, "rectangular")) && argc >= 1 && argc <= 2) {
+      if (emit_complex_real_args(c, argv, argc, 0, b)) return 1;
       int fl = (comp_ntype(c, argv[0]) == TY_FLOAT ? 1 : 0) |
                (argc == 2 && comp_ntype(c, argv[1]) == TY_FLOAT ? 2 : 0);
       buf_puts(b, "((sp_Complex){(sp_float)(");
@@ -4124,15 +4203,11 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
       if (sp_streq(name, "to_f") && argc == 0) {
-        int t = ++g_tmp;
-        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
-        buf_printf(b, "; if (_t%d.im != 0.0) sp_raise_cls(\"RangeError\", \"can't convert into Float\"); _t%d.re; })", t, t);
+        buf_puts(b, "sp_complex_to_f("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
       if (sp_streq(name, "to_r") && argc == 0) {
-        int t = ++g_tmp;
-        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
-        buf_printf(b, "; if (_t%d.im != 0.0) sp_raise_cls(\"RangeError\", \"can't convert into Rational\"); sp_float_to_rational(_t%d.re); })", t, t);
+        buf_puts(b, "sp_complex_to_r("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
       if (sp_streq(name, "<=>") && argc == 1 &&
