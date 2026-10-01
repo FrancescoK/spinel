@@ -14645,34 +14645,74 @@ static int an_subtree_hands_to_appender(Compiler *c, int node, const char *vn, i
   return 0;
 }
 
+/* The blocks that calls pass, listed by the method each call names, built
+   once a pass on first need: asked of every call for each block that yields
+   its parameter on, the question grew with the square of the program
+   (scale-test). */
+typedef struct { int *head, *next, *blk, n, ns, built; } ACallerBlocks;
+static void an_caller_blocks_build(Compiler *c, ACallerBlocks *t) {
+  const NodeTable *nt = c->nt;
+  t->ns = c->nscopes > 0 ? c->nscopes : 1;
+  int nc = nt->count > 0 ? nt->count : 1;
+  t->head = malloc(sizeof(int) * (size_t)t->ns);
+  t->next = malloc(sizeof(int) * (size_t)nc);
+  t->blk = malloc(sizeof(int) * (size_t)nc);
+  for (int i = 0; i < t->ns; i++) t->head[i] = -1;
+  t->n = 0; t->built = 1;
+  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
+    if (nt_kind(nt, u) != NK_CallNode) continue;
+    int ub = nt_ref(nt, u, "block");
+    if (ub < 0 || nt_kind(nt, ub) != NK_BlockNode) continue;
+    int mi = an_call_target_mi(c, u);
+    if (mi < 0 || mi >= t->ns) continue;
+    t->blk[t->n] = ub; t->next[t->n] = t->head[mi]; t->head[mi] = t->n++;
+  }
+}
+static void an_caller_blocks_free(ACallerBlocks *t) {
+  if (!t->built) return;
+  free(t->head); free(t->next); free(t->blk);
+  t->built = 0;
+}
+/* The argument positions at which a yield of method scope `ms` under `node`
+   passes local `bp` as a plain read, as a bit mask (the first 32). */
+static unsigned a_yield_arg_mask(Compiler *c, int node, Scope *ms, const char *bp, int depth) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || node >= nt->count || depth > 300) return 0;
+  unsigned m = 0;
+  if (nt_kind(nt, node) == NK_YieldNode && comp_scope_of(c, node) == ms) {
+    int aa = nt_ref(nt, node, "arguments"), an = 0;
+    const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &an) : NULL;
+    for (int k = 0; k < an && k < 32; k++) {
+      if (nt_kind(nt, av[k]) == NK_SplatNode || nt_kind(nt, av[k]) == NK_KeywordHashNode) break;
+      if (nt_kind(nt, av[k]) == NK_LocalVariableReadNode && nt_str(nt, av[k], "name") &&
+          sp_streq(nt_str(nt, av[k], "name"), bp)) m |= 1u << k;
+    }
+  }
+  const SpNode *nd = &nt->nodes[node];
+  for (int i = 0; i < nd->nr; i++) m |= a_yield_arg_mask(c, nd->r[i].ref, ms, bp, depth + 1);
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++) m |= a_yield_arg_mask(c, nd->a[i].ids[j], ms, bp, depth + 1);
+  return m;
+}
 /* Does block `blk` yield its parameter `bp` on, as a plain read, to a block
    a call site of the method it is written in passes, and that block lends
    the parameter it binds (appends to it, or hands it to a lent one)? The
    element is then appended to through the yield: `def r(x) = [x].each { |u|
    yield u }` called as `r(s) { |w| w << "!" }` grows the String the Array
    holds, which is the caller's. */
-static int block_yields_param_to_lender(Compiler *c, int blk, const char *bp) {
+static int block_yields_param_to_lender(Compiler *c, int blk, const char *bp, ACallerBlocks *cb) {
   const NodeTable *nt = c->nt;
   Scope *ms = comp_scope_of(c, blk);
   if (!ms || !ms->yields) return 0;
   int mi = (int)(ms - c->scopes);
   int body = nt_ref(nt, blk, "body");
-  for (int y = comp_kind_first(c, NK_YieldNode); y >= 0 && body >= 0; y = comp_kind_next(c, y)) {
-    if (nt_kind(nt, y) != NK_YieldNode || comp_scope_of(c, y) != ms || !a_subtree_contains(nt, body, y, 0)) continue;
-    int aa = nt_ref(nt, y, "arguments"), an = 0;
-    const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &an) : NULL;
-    for (int k = 0; k < an; k++) {
-      if (nt_kind(nt, av[k]) == NK_SplatNode || nt_kind(nt, av[k]) == NK_KeywordHashNode) break;
-      if (nt_kind(nt, av[k]) != NK_LocalVariableReadNode || !nt_str(nt, av[k], "name") ||
-          !sp_streq(nt_str(nt, av[k], "name"), bp)) continue;
-      for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
-        if (nt_kind(nt, u) != NK_CallNode) continue;
-        int ub = nt_ref(nt, u, "block");
-        if (ub < 0 || nt_kind(nt, ub) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
-        if (an_block_param_lent(c, ub, k)) return 1;
-      }
-    }
-  }
+  unsigned mask = body >= 0 ? a_yield_arg_mask(c, body, ms, bp, 0) : 0;
+  if (!mask) return 0;
+  if (!cb->built) an_caller_blocks_build(c, cb);
+  if (mi < 0 || mi >= cb->ns) return 0;
+  for (int i = cb->head[mi]; i >= 0; i = cb->next[i])
+    for (int k = 0; k < 32; k++)
+      if (((mask >> k) & 1u) && an_block_param_lent(c, cb->blk[i], k)) return 1;
   return 0;
 }
 
@@ -15237,6 +15277,7 @@ static int promote_shared_stored_strings(Compiler *c) {
      local that names it (`{ |x| t = x; t << "!" }`) mutates the element
      too (an_block_param_alias_mutated). */
   ALocalAliases bpa; int bpa_built = 0;
+  ACallerBlocks cbl; memset(&cbl, 0, sizeof cbl);
   for (int w = 0; w < nt->count; w++) {
     if (nt_kind(nt, w) != NK_CallNode) continue;
     const char *itn = nt_str(nt, w, "name");
@@ -15271,7 +15312,7 @@ static int promote_shared_stored_strings(Compiler *c) {
       if (!sv4 || (rt4 != TY_STRING && rt4 != TY_STRBUF) ||
           (sv4->type != TY_UNKNOWN && sv4->type != TY_STRING && sv4->type != TY_STRBUF)) continue;
       if (strbuf_mut_kind(c, sp4, ss4) != 1 && !cap_wrap_mutates_param(c, blk4, sp4) &&
-          !block_yields_param_to_lender(c, blk4, sp4)) continue;
+          !block_yields_param_to_lender(c, blk4, sp4, &cbl)) continue;
       changed |= strbuf_store_leaf(c, recv4, 0, SB_DEMAND);
       if (sv4->type != TY_STRBUF || !sv4->str_shared) { sv4->type = TY_STRBUF; sv4->str_shared = 1; changed = 1; }
       continue;
@@ -15289,7 +15330,7 @@ static int promote_shared_stored_strings(Compiler *c) {
     int alias_mut = 0;
     if (strbuf_mut_kind(c, bp4, bs4) != 1 && !cap_wrap_mutates_param(c, blk4, bp4) &&
         !an_subtree_hands_to_appender(c, nt_ref(nt, blk4, "body"), bp4, 0) &&
-        !block_yields_param_to_lender(c, blk4, bp4)) {
+        !block_yields_param_to_lender(c, blk4, bp4, &cbl)) {
       if (!bpa_built) { an_local_aliases_build(c, &bpa); bpa_built = 1; }
       if (!an_block_param_alias_mutated(c, &bpa, bs4, bp4)) continue;
       alias_mut = 1;
@@ -15372,6 +15413,7 @@ static int promote_shared_stored_strings(Compiler *c) {
       {  bpv4->type = TY_STRBUF; bpv4->str_shared = 1; changed = 1;  }
   }
   if (bpa_built) an_local_aliases_free(&bpa);
+  an_caller_blocks_free(&cbl);
   /* deep-return alias: `r = make_held` where EVERY return path of the
      (receiverless, uniquely-named) callee yields a shared handle -- r joins
      the set and the call is marked so the emitter picks the handle off the

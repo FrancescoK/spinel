@@ -3402,7 +3402,7 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
      it is the handle, promote_shared_stored_strings): tap's value is that
      String, read as one */
   if (is_tap && et == TY_STRBUF && comp_ntype(c, id) == TY_STRING)
-    buf_printf(b, "sp_String_cstr(_t%d)", tr);
+    buf_printf(b, "(_t%d ? sp_String_cstr(_t%d) : NULL)", tr, tr);
   else buf_printf(b, "_t%d", is_tap ? tr : tres);
   return 1;
 }

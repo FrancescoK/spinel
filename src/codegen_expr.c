@@ -1675,8 +1675,9 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       emit_local_ref(c, id, lrn, b);
       /* A parameter that is the handle can be nil, `def initialize(s, o: nil)`
          or `def run(cmd, text: nil)` whose block appends to it: nil is a NULL
-         handle, and reads as nil. */
-      if (slv->dyn_handle || slv->is_param) {
+         handle, and reads as nil. So is a local's (`q = nil; q = +"x" if c`
+         with `q.tap { |w| w << "!" if w }` making q the handle). */
+      if (slv->dyn_handle || slv->is_param || slv->str_shared) {
         buf_puts(b, ", ");
         emit_local_ref(c, id, lrn, b);
         buf_puts(b, " ? sp_str_concat(sp_String_cstr(");
