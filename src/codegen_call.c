@@ -26009,24 +26009,19 @@ static int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, co
     resolved = 1; yes = include_all;
   }
   for (int u = 0; !resolved && uni[u]; u++) if (sp_streq(qm, uni[u])) { yes = resolved = 1; break; }
-  /* an IO answers the IO surface (the runtime's list in
-     sp_poly_responds_builtin): the probe below would say yes to nearly any
-     name, since a call on an IO compiles to its generic arm. A socket's own
-     names depend on the handle, so they are left to run time. */
+  /* An IO answers by its kind -- a File, a socket, a server socket, a stat
+     share the type -- which only the handle knows: sp_io_responds decides at
+     run time. A method a reopening of IO, File or a socket class defines
+     answers here. */
   if (!resolved && recv >= 0 && rt == TY_IO && foldable) {
-    static const char *const iom[] = {
-      "puts", "print", "printf", "write", "<<", "read", "readpartial", "read_nonblock",
-      "write_nonblock", "gets", "readline", "readlines", "each_line", "each", "each_char",
-      "each_byte", "getc", "getbyte", "readchar", "readbyte", "ungetc", "eof?", "eof",
-      "close", "closed?", "close_read", "close_write", "flush", "fsync", "sync", "sync=",
-      "fileno", "to_io", "binmode", "tty?", "isatty", "pos", "pos=", "tell", "seek",
-      "rewind", "wait_readable", "wait_writable", "set_encoding", "external_encoding", NULL };
-    static const char *const sockm[] = {
-      "peeraddr", "addr", "local_address", "remote_address", "recv", "send",
-      "setsockopt", "getsockopt", "shutdown", "accept", NULL };
-    for (int u = 0; sockm[u]; u++) if (sp_streq(qm, sockm[u])) return -1;
-    resolved = 1;
-    for (int u = 0; iom[u]; u++) if (sp_streq(qm, iom[u])) { yes = 1; break; }
+    static const char *const ioclasses[] = {
+      "IO", "File", "BasicSocket", "IPSocket", "TCPSocket", "TCPServer",
+      "UDPSocket", "UNIXSocket", "UNIXServer", "Socket", NULL };
+    for (int u = 0; ioclasses[u]; u++) {
+      int k = comp_class_index(c, ioclasses[u]);
+      if (k >= 0 && comp_method_in_chain(c, k, qm, NULL) >= 0) return 1;
+    }
+    return -1;
   }
   /* value-type receivers: their builtin surface is not in any class
      table; answer the well-known names directly (the probe below only

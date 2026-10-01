@@ -2151,6 +2151,44 @@ static const char *sp_poly_class_name(sp_RbVal v) {
     default: return SPL("Object");
   }
 }
+/* respond_to? on an IO handle, by its kind, as CRuby answers: a File::Stat
+   has its own surface; every IO has the read/write/descriptor one; a File
+   adds its size and locks; a socket its addresses and recv/send; a server
+   socket accept and listen. */
+static sp_bool sp_io_responds(sp_File *f, const char *m) {
+  static const char *const statm[] = {
+    "size", "size?", "zero?", "mtime", "atime", "ctime", "birthtime", "mode", "uid",
+    "gid", "ino", "dev", "nlink", "blksize", "blocks", "rdev", "ftype", "file?",
+    "directory?", "symlink?", "pipe?", "socket?", "readable?", "writable?",
+    "executable?", "<=>", NULL };
+  static const char *const iom[] = {
+    "puts", "print", "printf", "write", "<<", "read", "readpartial", "read_nonblock",
+    "write_nonblock", "gets", "readline", "readlines", "each_line", "each", "each_char",
+    "each_byte", "getc", "getbyte", "readchar", "readbyte", "ungetc", "eof?", "eof",
+    "close", "closed?", "close_read", "close_write", "flush", "fsync", "fdatasync",
+    "sync", "sync=", "fileno", "to_io", "binmode", "binmode?", "tty?", "isatty", "pos",
+    "pos=", "tell", "seek", "rewind", "lineno", "lineno=", "wait", "wait_readable",
+    "wait_writable", "set_encoding", "external_encoding", "internal_encoding", "path",
+    "to_path", "stat", "fcntl", "ioctl", "sysread", "syswrite", "sysseek", "pread",
+    "pwrite", "advise", "autoclose?", "autoclose=", "close_on_exec?", "close_on_exec=",
+    "reopen", NULL };
+  static const char *const filem[] = {
+    "size", "flock", "truncate", "chmod", "chown", "mtime", "atime", "ctime",
+    "birthtime", "lstat", NULL };
+  static const char *const sockm[] = {
+    "peeraddr", "addr", "getpeername", "getsockname", "local_address",
+    "remote_address", "connect_address", "recv", "recv_nonblock", "send",
+    "setsockopt", "getsockopt", "shutdown", NULL };
+  static const char *const serverm[] = { "accept", "accept_nonblock", "listen", "sysaccept", NULL };
+  if (f->mode && (strcmp(f->mode, "stat") == 0 || strcmp(f->mode, "lstat") == 0))
+    return sp_str_in_list(m, statm);
+  if (sp_str_in_list(m, iom)) return 1;
+  if (f->is_sock) {
+    if (sp_str_in_list(m, sockm)) return 1;
+    return strstr(sp_io_kind_name(f), "Server") != NULL && sp_str_in_list(m, serverm);
+  }
+  return strcmp(sp_io_kind_name(f), "File") == 0 && sp_str_in_list(m, filem);
+}
 static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
   static const char *const uni[] = {
     "to_s", "inspect", "class", "nil?", "dup", "clone", "freeze", "frozen?",
@@ -2249,22 +2287,9 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
   }
   /* an Enumerator answers the Enumerable face (#3625) */
   if (strcmp(cn, "Enumerator") == 0) return sp_str_in_list(m, enumm);
-  /* an IO -- a File, a socket, $stderr -- answers the IO surface, and a
-     socket its own few names on top (a Rack server checks rack.errors) */
-  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO && v.v.p) {
-    static const char *const iom[] = {
-      "puts", "print", "printf", "write", "<<", "read", "readpartial", "read_nonblock",
-      "write_nonblock", "gets", "readline", "readlines", "each_line", "each", "each_char",
-      "each_byte", "getc", "getbyte", "readchar", "readbyte", "ungetc", "eof?", "eof",
-      "close", "closed?", "close_read", "close_write", "flush", "fsync", "sync", "sync=",
-      "fileno", "to_io", "binmode", "tty?", "isatty", "pos", "pos=", "tell", "seek",
-      "rewind", "wait_readable", "wait_writable", "set_encoding", "external_encoding", NULL };
-    static const char *const sockm[] = {
-      "peeraddr", "addr", "local_address", "remote_address", "recv", "send",
-      "setsockopt", "getsockopt", "shutdown", "accept", NULL };
-    if (sp_str_in_list(m, iom)) return 1;
-    return ((sp_File *)v.v.p)->is_sock && sp_str_in_list(m, sockm);
-  }
+  /* an IO handle -- a File, a socket, $stderr, a stat -- by its kind */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO && v.v.p)
+    return sp_io_responds((sp_File *)v.v.p, m);
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_EXCEPTION)
     return sp_str_in_list(m, excm);
   return 0;
