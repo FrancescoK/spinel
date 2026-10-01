@@ -17368,7 +17368,10 @@ static int respond_to_user_defined(Compiler *c, int id, int recv) {
   int any = 0;
   for (int k = 0; k < c->nclasses && !any; k++)
     if (comp_method_in_class(c, k, "respond_to?") >= 0) any = 1;
-  if (!any || g_poly_builtin_arm) return 0;
+  if (!any) return 0;
+  /* the dispatch's default arm re-enters for a boxed value that is not an
+     overriding class's, which answers by the fold */
+  if (g_poly_builtin_arm && recv >= 0 && comp_ntype(c, recv) == TY_POLY) return 0;
   int k = -1;
   if (recv < 0) {
     Scope *s = comp_scope_of(c, id);
@@ -26106,6 +26109,9 @@ static const char *const respond_universal[] = {
 static int obj_responds_answer(Compiler *c, int cid, const char *qm) {
   if (name_is_synth_method(c, qm)) return 0;
   if (sp_streq(qm, "initialize_copy")) return 1;
+  /* BasicObject#initialize is private too, unless the class made its own public */
+  if (sp_streq(qm, "initialize"))
+    return comp_method_in_chain(c, cid, qm, NULL) >= 0 && comp_method_vis_in_chain(c, cid, qm) == SP_VIS_PUBLIC ? 2 : 1;
   for (int u = 0; respond_universal[u]; u++) if (sp_streq(qm, respond_universal[u])) return 2;
   size_t ql = strlen(qm);
   int is_wr = ql > 0 && qm[ql - 1] == '=';
@@ -26165,11 +26171,11 @@ int emit_super_respond_to(Compiler *c, int id, Scope *s, Buf *b) {
     /* `def respond_to?(name, *)`: the second parameter is the rest Array,
        whose first element (if any) is include_all */
     if (s->rest_idx == 1 && ty_is_array(ia_ty)) {
-      char rb[160];
+      Buf rb = {0, 0, 0};
       if (ia_ty == TY_POLY_ARRAY)
-        snprintf(rb, sizeof rb, "(%s->len > 0 && sp_poly_truthy(%s->data[0]))", ia.p, ia.p);
-      else snprintf(rb, sizeof rb, "(%s->len > 0)", ia.p);
-      free(ia.p); memset(&ia, 0, sizeof ia); buf_puts(&ia, rb);
+        buf_printf(&rb, "(%s->len > 0 && sp_poly_truthy(%s->data[0]))", ia.p, ia.p);
+      else buf_printf(&rb, "(%s->len > 0)", ia.p);
+      free(ia.p); ia = rb;
       ia_ty = TY_BOOL;
     }
   }
@@ -26189,13 +26195,17 @@ int emit_super_respond_to(Compiler *c, int id, Scope *s, Buf *b) {
   buf_printf(b, "; sp_bool _r%d = 0; switch (_s%d) {", t, t);
   int ncand = 0;
   char **cand = dsend_candidates(c, &ncand);
-  for (int pass = 0; pass < 2; pass++) {
-    int n = pass ? ncand : 0;
-    for (int q = 0; pass ? q < n : respond_universal[q] != NULL; q++) {
-      const char *qm = pass ? cand[q] : respond_universal[q];
+  /* the names every object has privately, which neither list need carry */
+  static const char *const priv_universal[] = { "initialize", "initialize_copy", NULL };
+  for (int pass = 0; pass < 3; pass++) {
+    int n = pass == 1 ? ncand : 0;
+    const char *const *list = pass == 2 ? priv_universal : respond_universal;
+    for (int q = 0; pass == 1 ? q < n : list[q] != NULL; q++) {
+      const char *qm = pass == 1 ? cand[q] : list[q];
       if (pass) {
         int dup = 0;
         for (int u = 0; respond_universal[u]; u++) if (sp_streq(qm, respond_universal[u])) { dup = 1; break; }
+        for (int u = 0; pass == 2 && u < ncand; u++) if (sp_streq(qm, cand[u])) { dup = 1; break; }
         if (dup) continue;
       }
       int ans[256], same = 1, any = 0;
@@ -40464,9 +40474,11 @@ else {
       }
     }
     else if (recv >= 0 && rt != TY_CLASS && nt_kind(nt, argv[0]) != NK_SplatNode &&
-             /* an override only answers for an object or a boxed value */
+             /* an override answers only for its own class's objects (and a
+                boxed value, which dispatches) */
              (!any_class_defines(c, "respond_to?") || g_poly_builtin_arm ||
-              !(ty_is_object(rt) || rt == TY_POLY))) {
+              !(rt == TY_POLY ||
+                (ty_is_object(rt) && comp_method_in_chain(c, ty_object_class(rt), "respond_to?", NULL) >= 0)))) {
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, recv, b);
       buf_printf(b, "; const char *_n%d = sp_poly_to_name(", tv); emit_boxed(c, argv[0], b);

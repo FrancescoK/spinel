@@ -33,3 +33,21 @@ p Wrap.new(3).respond_to?(:each), 3.respond_to?(:each)
 x = [3, "s"][0]
 m = :upcase
 p x.respond_to?(m), [3, "s"][1].respond_to?(m)
+
+# the (name, include_all = false) form, and include_all through the rest
+class Ov
+  def respond_to?(n, ia = false) = n == :special || super
+  private def priv = 1
+end
+class Pl
+  def pl = 1
+end
+o = Ov.new
+p o.respond_to?(:priv, true), o.respond_to?(:initialize, true), o.respond_to?(:special)
+both = [Ov.new, 1]
+p both.map { |v| v.respond_to?(:priv, true) }, both.map { |v| v.respond_to?(:initialize, true) }
+flag = ARGV.empty?
+p w.respond_to?(:hidden, flag), w.respond_to?(:hidden, !flag)
+pl = Pl.new
+m2 = :pl
+p pl.respond_to?(m2)
