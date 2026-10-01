@@ -231,6 +231,10 @@ static unsigned long long g_mon_polls = 0;    /* poll(2) calls it made */
 static unsigned long long g_mon_pollfds = 0;  /* descriptors handed to those polls */
 static unsigned long long g_mon_regs = 0;     /* I/O parks registered */
 static unsigned long long g_mon_readied = 0;  /* waiters the poll found ready */
+/* The counters are bumped with relaxed atomics: the report can read them
+   from an exit hook while the monitor still runs (#6489). */
+#define SP_STAT_ADD(c, n) SP_ATOMIC_FETCH_ADD(&(c), (unsigned long long)(n), __ATOMIC_RELAXED)
+#define SP_STAT_GET(c) SP_ATOMIC_LOAD(&(c), __ATOMIC_RELAXED)
 /* Wake the monitor whether it idles on the condvar or blocks in poll(). PRE: lock held. */
 static void sp_sysmon_wake(void) {
   if (g_sysmon_idle) pthread_cond_signal(&g_sysmon_cv);
@@ -1001,7 +1005,7 @@ static int sp_ev_backend_arm(int set, int fd, short want) {
   if (epoll_ctl(set, EPOLL_CTL_MOD, fd, &e) == 0) return 0;
   /* Not in the set: epoll's one-shot only DISABLES, so MOD is the usual arm
      and ADD is the first one. */
-  if (errno == ENOENT) { g_ev_adds++; return epoll_ctl(set, EPOLL_CTL_ADD, fd, &e); }
+  if (errno == ENOENT) { SP_STAT_ADD(g_ev_adds, 1); return epoll_ctl(set, EPOLL_CTL_ADD, fd, &e); }
   return -1;
 #else
   /* kqueue's one-shot DELETES the entry when it fires, so every arm is an
@@ -1012,7 +1016,7 @@ static int sp_ev_backend_arm(int set, int fd, short want) {
   if (want & POLLIN)  EV_SET(&ch[n++], (uintptr_t)fd, EVFILT_READ,  EV_ADD | EV_ONESHOT, 0, 0, NULL);
   if (want & POLLOUT) EV_SET(&ch[n++], (uintptr_t)fd, EVFILT_WRITE, EV_ADD | EV_ONESHOT, 0, 0, NULL);
   if (!n) return 0;
-  g_ev_adds++;
+  SP_STAT_ADD(g_ev_adds, 1);
   return kevent(set, ch, n, NULL, 0, NULL) < 0 ? -1 : 0;
 #endif
 }
@@ -1083,9 +1087,9 @@ static void sp_ev_arm_fd(int fd) {   /* PRE: sched lock held */
     for (sp_ev_waiter *x = g_ev_tab[fd].waiters; x; x = x->next)
       if (sp_ev_home_of(x->t) == h) want |= sp_evw_events(x);
     if (!want || g_wslot[h].evfd <= 0) continue;
-    g_ev_arms++;
+    SP_STAT_ADD(g_ev_arms, 1);
     if (sp_ev_backend_arm(g_wslot[h].evfd, fd, want) == 0) continue;
-    g_ev_lost++;
+    SP_STAT_ADD(g_ev_lost, 1);
   }
   return;
   {
@@ -1135,7 +1139,7 @@ static int sp_ev_dispatch(int rfd, short rev, int only_home) {
     if (!(sp_evw_events(e) & rev)) continue;
     if (w->wait_head != &g_io_waiters) continue;
     if (only_home >= 0 && sp_ev_home_of(w) != only_home) continue;
-    g_mon_readied++;
+    SP_STAT_ADD(g_mon_readied, 1);
     for (sp_thread **pp = &g_io_waiters; *pp; pp = &(*pp)->wait_next)
       if (*pp == w) { *pp = w->wait_next; break; }
     sp_timer_cancel(w);
@@ -1170,8 +1174,8 @@ static int sp_ev_worker_wait(int wid, int tmo_ms) {
   SCHED_LOCK();
   if (out) sp_out_leave_locked(wid);
   g_wslot[wid].ev_waiting = 0;
-  if (en == 0) g_ev_backstop++;
-  g_mon_polls++; g_mon_pollfds += (unsigned long long)(en > 0 ? en : 0);
+  if (en == 0) SP_STAT_ADD(g_ev_backstop, 1);
+  SP_STAT_ADD(g_mon_polls, 1); SP_STAT_ADD(g_mon_pollfds, en > 0 ? en : 0);
   int n = 0;
   for (int i = 0; i < en; i++) {
     if (evs[i].fd == g_wslot[wid].kick[0]) {
@@ -2597,7 +2601,7 @@ static void *sp_sysmon_main(void *arg) {
        the monitor is not a GC participant (it holds no roots) but it must not
        move threads between lists concurrently with the collector. */
     if (g_stw_active) { pthread_cond_wait(&g_stw_release, &g_sched_lock); continue; }
-    g_mon_iters++;
+    SP_STAT_ADD(g_mon_iters, 1);
     double now = sp_monotonic_now();
     if (sched_lat_enabled()) {
       static double last_report = 0;
@@ -2716,7 +2720,7 @@ static void *sp_sysmon_main(void *arg) {
         ts.tv_sec += (time_t)dt;
         ts.tv_nsec += (long)((dt - (double)(time_t)dt) * 1e9);
         if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
-        g_mon_polls++;
+        SP_STAT_ADD(g_mon_polls, 1);
         g_sysmon_idle = 1;
         pthread_cond_timedwait(&g_sysmon_cv, &g_sched_lock, &ts);
         g_sysmon_idle = 0;
@@ -2740,14 +2744,14 @@ static void *sp_sysmon_main(void *arg) {
       SCHED_UNLOCK();
       int pr = poll(g_pfds, (nfds_t)npf, tmo);
       SCHED_LOCK();
-      g_mon_polls++; g_mon_pollfds += (unsigned long long)npf;
+      SP_STAT_ADD(g_mon_polls, 1); SP_STAT_ADD(g_mon_pollfds, npf);
       if (g_pfds[0].revents & POLLIN) {   /* drain the wake pipe */
         char buf[64]; while (read(g_sysmon_pipe[0], buf, sizeof buf) > 0) {}
       }
       if (pr > 0) {
         for (int i = 1; i < npf; i++) {
           if (!g_pfds[i].revents) continue;
-          g_mon_readied++;
+          SP_STAT_ADD(g_mon_readied, 1);
           sp_thread *t = g_pths[i];
           if (t->wait_head != &g_io_waiters) continue;   /* unparked meanwhile (e.g. #kill) */
           for (sp_thread **pp = &g_io_waiters; *pp; pp = &(*pp)->wait_next)
@@ -2947,7 +2951,7 @@ static int sp_sched_wait_io_impl(int fd, short events, struct pollfd *set, int n
   self->off_cpu = 0;
   self->wake_pending = 0;
   self->wait_next = g_io_waiters; self->wait_head = &g_io_waiters; g_io_waiters = self;
-  g_mon_regs++;
+  SP_STAT_ADD(g_mon_regs, 1);
 #ifdef SP_EV_BACKEND
   int registered = 1;
   if (set) { for (int i = 0; i < n; i++) if (!sp_ev_park_entry(&self->ev_set[i], set[i].fd)) registered = 0; }
@@ -3179,16 +3183,20 @@ static void sp_sched_report_stats(void) {
   const char *e = getenv("SPINEL_SCHED_STATS");
   if (reported || !e || !*e || *e == '0') return;
   reported = 1;
-  double avg = g_mon_polls ? (double)g_mon_pollfds / (double)g_mon_polls : 0.0;
+  unsigned long long iters = SP_STAT_GET(g_mon_iters), polls = SP_STAT_GET(g_mon_polls),
+                     pollfds = SP_STAT_GET(g_mon_pollfds), regs = SP_STAT_GET(g_mon_regs),
+                     readied = SP_STAT_GET(g_mon_readied);
+  double avg = polls ? (double)pollfds / (double)polls : 0.0;
   fprintf(stderr,
           "[sched] monitor: %llu turns, %llu polls, %.1f fds/poll avg, "
           "%llu fds total; %llu io parks registered, %llu waiters readied\n",
-          g_mon_iters, g_mon_polls, avg, g_mon_pollfds, g_mon_regs, g_mon_readied);
+          iters, polls, avg, pollfds, regs, readied);
 #ifdef SP_EV_BACKEND
-  if (g_ev_fd >= 0 || g_ev_arms)
+  if (g_ev_fd >= 0 || SP_STAT_GET(g_ev_arms))
     fprintf(stderr, "[sched] events: %llu arms (%llu adds), %llu refused, "
                     "%llu deadline expiries, %llu backstop expiries\n",
-            g_ev_arms, g_ev_adds, g_ev_lost, g_ev_timeouts, g_ev_backstop);
+            SP_STAT_GET(g_ev_arms), SP_STAT_GET(g_ev_adds), SP_STAT_GET(g_ev_lost),
+            SP_STAT_GET(g_ev_timeouts), SP_STAT_GET(g_ev_backstop));
 #endif
 #endif
 }
@@ -3388,7 +3396,7 @@ static void sp_sched_timer_expire(sp_sched_timer *timer, double now) {
   if (timer->kind == SP_TIMER_WAIT) t->timer_expired = 1;
   if (timer->kind == SP_TIMER_IO) {
 #ifdef SP_EV_BACKEND
-    g_ev_timeouts++;
+    SP_STAT_ADD(g_ev_timeouts, 1);
 #endif
   }
   sp_sched_unpark(t);
