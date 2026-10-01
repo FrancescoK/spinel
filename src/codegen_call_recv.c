@@ -12002,19 +12002,20 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
     else if (sp_streq(name, "localtime") && argc == 0 && r_lval)
       buf_printf(b, "(%s = sp_time_localtime(%s))", r, r);
     else if (sp_streq(name, "utc") || sp_streq(name, "gmtime") || sp_streq(name, "getutc")) buf_printf(b, "sp_time_utc(%s)", r);
-    /* getlocal(off)/localtime(off): a fixed UTC offset, given as seconds or a
-       "+HH:MM" string, reinterprets the instant in that zone (#3093) */
+    /* getlocal(zone)/localtime(zone): a fixed UTC offset, given as seconds or
+       a zone string, reinterprets the instant in that zone (#3093) */
     else if ((sp_streq(name, "localtime") || sp_streq(name, "getlocal")) && argc == 1) {
       int mutate = sp_streq(name, "localtime") && r_lval;
       if (mutate) buf_printf(b, "(%s = ", r);
-      buf_printf(b, "sp_time_getlocal_off(%s, ", r);
-      /* a String offset ("+01:00"), or a user object naming one through
-         #to_str, parses; anything else is a second count */
+      /* a String zone ("+01:00", "UTC", "A"), or a user object naming one
+         through #to_str, reads as `in:` does; an Integer is a second count;
+         any other value is resolved at run time (sp_time_in_zone_v) */
       TyKind ot = comp_ntype(c, argv[0]);
       if (ot == TY_STRING || obj_conv_method(c, ot, "to_str", TY_STRING, NULL) >= 0) {
-        buf_puts(b, "sp_time_offset_from_str("); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
+        buf_printf(b, "sp_time_in_zone_s(%s, ", r); emit_str_expr(c, argv[0], b);
       }
-      else emit_int_expr(c, argv[0], b);
+      else if (ot == TY_INT) { buf_printf(b, "sp_time_getlocal_off(%s, ", r); emit_int_expr(c, argv[0], b); }
+      else { buf_printf(b, "sp_time_in_zone_v(%s, ", r); emit_boxed(c, argv[0], b); buf_puts(b, ", 1"); }
       buf_puts(b, ")");
       if (mutate) buf_puts(b, ")");
     }

@@ -90,7 +90,6 @@ double sp_time_sub_t(sp_Time a, sp_Time b);
 const char *sp_time_strftime(sp_Time t, const char *fmt);
 const char *sp_time_iso8601(sp_Time t);
 const char *sp_time_iso8601_frac(sp_Time t, int64_t digits);
-int32_t sp_time_offset_from_str(const char *s);
 sp_Time sp_time_getlocal_off(sp_Time t, int64_t off);
 const char *sp_time_zone(sp_Time t);
 const char *sp_time_inspect_v(sp_Time t);  /* renders fractional seconds */
