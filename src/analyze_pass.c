@@ -9446,7 +9446,9 @@ static int ie_subtree_self_calls(Compiler *c, int root, const char *cls, int dep
 
 /* Does the subtree under `node` read or write an ivar? */
 static int subtree_has_ivar(const NodeTable *nt, int node, int depth) {
-  if (node < 0 || depth > 200) return 0;
+  if (node < 0) return 0;
+  /* past the depth this follows, an ivar may be there: not spliced */
+  if (depth > 200) return 1;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_InstanceVariableReadNode || k == NK_InstanceVariableWriteNode ||
       k == NK_InstanceVariableOrWriteNode || k == NK_InstanceVariableAndWriteNode ||

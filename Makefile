@@ -1110,6 +1110,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a product block with a rest parameter compiled)"; ok=0; \
 	else grep -q "a block with a rest, optional or post parameter" "$$tmp/pbr.out" || \
 	  { echo "reject-test: FAIL (a product block with a rest parameter rejected without saying why)"; sed -n 1,5p "$$tmp/pbr.out"; ok=0; }; fi; \
+	t=test/reject/instance_exec_default_ivar_write.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/idw.c" >"$$tmp/idw.out" 2>&1; then \
+	  echo "reject-test: FAIL (an ivar written in a block default on a value with no ivars compiled)"; ok=0; \
+	else grep -q "on a value with no instance variable layout" "$$tmp/idw.out" || \
+	  { echo "reject-test: FAIL (an ivar written in a block default rejected without saying why)"; sed -n 1,5p "$$tmp/idw.out"; ok=0; }; fi; \
 	t=test/reject/string_splat_changed_array.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sca.c" >"$$tmp/sca.out" 2>&1; then \
 	  echo "reject-test: FAIL (a global in a changed splatted Array compiled)"; ok=0; \

@@ -26415,9 +26415,22 @@ static int ie_body_ivar_write(const NodeTable *nt, int node) {
   if (k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableOrWriteNode ||
       k == NK_InstanceVariableAndWriteNode || k == NK_InstanceVariableOperatorWriteNode ||
       k == NK_InstanceVariableTargetNode) return node;
+  /* a body with a self of its own writes its own receiver's ivars: a def,
+     a class or module body, and the block of a nested instance_exec or
+     instance_eval (that call answers for its receiver) */
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return -1;
+  int own_self_blk = -1;
+  if (k == NK_CallNode) {
+    const char *cn = nt_str(nt, node, "name");
+    if (cn && (sp_streq(cn, "instance_exec") || sp_streq(cn, "instance_eval") || sp_streq(cn, "class_exec") ||
+               sp_streq(cn, "class_eval") || sp_streq(cn, "module_exec") || sp_streq(cn, "module_eval")))
+      own_self_blk = nt_ref(nt, node, "block");
+  }
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++) {
-    int w = ie_body_ivar_write(nt, nt_ref_at(nt, node, i));
+    int r = nt_ref_at(nt, node, i);
+    if (r >= 0 && r == own_self_blk) continue;
+    int w = ie_body_ivar_write(nt, r);
     if (w >= 0) return w;
   }
   int na = nt_num_arrs(nt, node);
@@ -37404,6 +37417,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
          non-object arm), where the caller's own were read and written. A
          write has nowhere to go, and is refused. */
       { int w = ie_body_ivar_write(nt, nbody);
+        /* an omitted optional parameter's default runs under the receiver too */
+        if (w < 0) w = ie_body_ivar_write(nt, nt_ref(nt, nblk, "parameters"));
         if (w >= 0)
           unsupported_feature(c, w, "an instance variable written in a block that instance_exec or instance_eval runs "
                                     "on a value with no instance variable layout (nil, a builtin value, Object.new): "
