@@ -3180,7 +3180,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
            instead, which answers poly. */
         if (c->scopes[kmi].rest_idx < 0 &&
             (c->scopes[kmi].yields || (c->scopes[kmi].blk_param && c->scopes[kmi].blk_param[0]))) {
-          if (argc >= c->scopes[kmi].nrequired && argc <= c->scopes[kmi].nparams) nblk++;
+          if (splat ? argc - splat <= c->scopes[kmi].nparams : argc >= c->scopes[kmi].nrequired && argc <= c->scopes[kmi].nparams) nblk++;
           continue;
         }
         /* a *rest the emitter packs is an arm like any other */
