@@ -3551,7 +3551,7 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
     g_c_loop_depth++;
     emit_indent(g_pre, din); buf_puts(g_pre, "do {\n");
     int bi = din + 1; g_indent = bi;
-    for (int j = 0; j < bn; j++) emit_stmt(c, bb[j], g_pre, bi);
+    emit_iter_step_body(c, block, g_pre, bi);
     g_indent = din;
     emit_indent(g_pre, din); buf_puts(g_pre, "} while (0);\n");
     g_c_loop_depth--;
@@ -3847,7 +3847,9 @@ static void emit_filter_body(Compiler *c, int body, int tnv, int tk, int is_rej,
   g_ie_next_var = nxbuf; g_ie_res_poly = 1; g_ie_next_ty = TY_UNKNOWN;
   g_loop_exc_base = g_exc_frame_depth; g_loop_ensure_base = g_ensure_depth;
   g_c_loop_depth++;
-  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], b, indent + 1);
+  /* the step's setup: locals fresh, and a redo's label after them */
+  if (block_of_body(c, body) >= 0) emit_block_locals_reset(c, block_of_body(c, body), b, indent + 1);
+  int rd_lbl = emit_iter_step_stmts(c, body, b, indent + 1, NULL);
   if (sp_streq(nt_type(nt, bb[bn - 1]), "NextNode")) emit_stmt(c, bb[bn - 1], b, indent + 1);
   else {
     /* the predicate in its own buffer: a multi-statement terminal (a block
@@ -3863,6 +3865,7 @@ static void emit_filter_body(Compiler *c, int body, int tnv, int tk, int is_rej,
     buf_printf(b, "_t%d = %s(%s);\n", tk, is_rej ? "!" : "", cexpr.p ? cexpr.p : "0");
     free(cexpr.p);
   }
+  if (rd_lbl) g_redo_depth--;
   g_c_loop_depth--;
   g_loop_exc_base = sv_lexc; g_loop_ensure_base = sv_lens;
   g_ie_next_var = sv_nx; g_ie_res_poly = sv_poly; g_ie_next_ty = sv_nty;
