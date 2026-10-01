@@ -14112,8 +14112,12 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
      mutator can't take effect; emitting it as a no-op would silently diverge
      (subsequent lookups behave as a value-keyed hash). Reject loudly instead.
      The `compare_by_identity?` predicate is left to report false, which is
-     correct for any hash this mutator never (successfully) ran on. */
-  if (sp_streq(name, "compare_by_identity"))  /* any arity: identity hashing is unsupported */
+     correct for any hash this mutator never (successfully) ran on. Only a
+     boxed receiver can be a Hash here (a typed one is refused in
+     emit_hash_call), as every other arm of this function assumes: refused on
+     the name alone, a user class's own compare_by_identity was rejected. */
+  if (recv >= 0 && rt == TY_POLY &&
+      sp_streq(name, "compare_by_identity"))  /* any arity: identity hashing is unsupported */
     unsupported(c, id, "Hash#compare_by_identity (identity-keyed hashing)");
   /* #slice on a boxed receiver is two different methods: Hash#slice(*keys)
      answers a sub-Hash, while String#slice / Array#slice is exactly #[]. Only
