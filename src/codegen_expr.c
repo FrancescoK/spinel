@@ -2659,7 +2659,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     if (nm && sp_streq(nm, "RUBY_ENGINE_VERSION")) { emit_engine_const_str("sp_str_ruby_engine_version", "\"" SP_RUBY_VERSION "\"", b); return; }
     if (nm && sp_streq(nm, "RUBY_PLATFORM"))    { emit_engine_const_str("sp_str_ruby_platform", "SP_RUBY_ARCH \"-\" SP_RUBY_OS", b); return; }
     if (nm && sp_streq(nm, "RUBY_RELEASE_DATE")) { emit_engine_const_str("sp_str_ruby_release_date", "\"2026-09-15\"", b); return; }
-    if (nm && sp_streq(nm, "RUBY_REVISION"))    { emit_engine_const_str("sp_str_ruby_revision", "\"0\"", b); return; }
+    if (nm && sp_streq(nm, "RUBY_REVISION"))    { emit_engine_const_str("sp_str_ruby_revision", "\"229531a6cfbf07e3caef30dbac24a2a3f3fed482\"", b); return; }
     if (nm && sp_streq(nm, "RUBY_PATCHLEVEL"))  { buf_puts(b, "((sp_int)0)"); return; }
     if (nm && sp_streq(nm, "RUBY_COPYRIGHT"))   { emit_engine_const_str("sp_str_ruby_copyright", "\"ruby - Copyright (C) 1993-2026 Yukihiro Matsumoto\"", b); return; }
     if (nm && sp_streq(nm, "ARGV")) { buf_puts(b, "sp_get_ARGV()"); return; }
