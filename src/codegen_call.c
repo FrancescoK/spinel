@@ -14425,9 +14425,9 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         /* a `next v` in the block is that element's value: the body runs in
            a do/while(0) that `next` leaves after storing v in the slot the
            push reads, as the yielding iterators route it */
-        /* (a narrowed pointer array keeps the plain form: its element slot
-           is not a type this carries) */
-        int an_next = bn > 0 && bb && !sp_streq(k, "Ptr") && subtree_has_own_next(nt, bbody);
+        /* (a narrowed pointer array holds unboxed element pointers: its slot
+           is a `void *`, which every element pointer and a nil converts to) */
+        int an_next = bn > 0 && bb && subtree_has_own_next(nt, bbody);
         const char *sv_anx = g_ie_next_var; int sv_anp = g_ie_res_poly; TyKind sv_ant = g_ie_next_ty;
         char anbuf[32]; int anv = 0;
         if (an_next) {
@@ -14435,7 +14435,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           snprintf(anbuf, sizeof anbuf, "_t%d", anv);
           TyKind et = sp_streq(k, "Poly") ? TY_POLY : ty_array_elem(at);
           emit_indent(g_pre, g_indent);
-          if (et == TY_POLY) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil();\n", anv);
+          if (sp_streq(k, "Ptr")) { et = TY_UNKNOWN; buf_printf(g_pre, "void *_t%d = NULL;\n", anv); }
+          else if (et == TY_POLY) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil();\n", anv);
           else { emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = %s;\n", anv, (et == TY_INT || et == TY_FLOAT) ? nil_value(et) : default_value(et)); }
           emit_indent(g_pre, g_indent); buf_puts(g_pre, "do {\n");
           g_indent++;
