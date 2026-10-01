@@ -751,6 +751,7 @@ void emit_inlined_param_target(Compiler *c, Scope *m, const char *pname,
 const char *cell_scan_fn(TyKind t);
 const char *cell_value_struct(TyKind t);
 const char *cell_value_struct_empty(TyKind t);
+const char *cell_value_struct_scan(TyKind t);
 void emit_cell_elem_type(Compiler *c, LocalVar *lv, Buf *b);
 void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *b, int force_poly);
 int call_args_need_spread(const NodeTable *nt, const int *argv, int argc);
