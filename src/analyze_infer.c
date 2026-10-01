@@ -7873,12 +7873,14 @@ TyKind infer_uncached(Compiler *c, int id) {
     /* inside an instance_eval/exec splice the block scope has no class_id; the
        ivar belongs to the rebound receiver class (an_ie_class_id). */
     int wcls = s->class_id >= 0 ? s->class_id : an_ie_class_id;
-    /* a toplevel method's `@x ||= v` / `@x &&= v` answers the Toplevel slot,
-       which the value alone does not type (`(@a ||= []) << 1`); so does a
-       plain write of an untyped value (`y = (@a = [])`, where a later write
-       made the slot a poly array) */
+    /* a toplevel method's `@x ||= v` / `@x &&= v` / `@x += v` answers the
+       Toplevel slot, which the value alone does not type (`(@a ||= []) << 1`,
+       a boxed `@i += 1` read back as the slot); so does a plain write of an
+       untyped value (`y = (@a = [])`, where a later write made the slot a
+       poly array) */
     if (wcls < 0 && !s->is_cmethod && id < c->node_cap && c->node_cbody[id] < 0 &&
         (nk == NK_InstanceVariableOrWriteNode || nk == NK_InstanceVariableAndWriteNode ||
+         nk == NK_InstanceVariableOperatorWriteNode ||
          (nk == NK_InstanceVariableWriteNode && infer_type(c, nt_ref(nt, id, "value")) == TY_UNKNOWN))) {
       int tl = comp_class_index(c, "Toplevel");
       int tiv = tl >= 0 && nm ? comp_ivar_index(&c->classes[tl], nm) : -1;
