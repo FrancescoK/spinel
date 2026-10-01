@@ -725,7 +725,25 @@ static void sp_fiber_check_thread(sp_Fiber*f){
   if(f->owner&&f->owner!=sp_thread_owner_id())
     sp_raise_cls("FiberError","fiber called across threads");
 }
-sp_RbVal sp_Fiber_resume(sp_Fiber*f,sp_RbVal val){SP_GC_ROOT_RBVAL(val);SP_GC_ROOT(f);sp_fiber_check_thread(f);if(f->state==3){sp_raise_cls("FiberError","attempt to resume a terminated fiber");}if(f->transferred){sp_raise_cls("FiberError","attempt to resume a transferring fiber");}if(f==sp_fiber_current){sp_raise_cls("FiberError","attempt to resume the current fiber");}if(f->state==1){sp_raise_cls("FiberError","attempt to resume a resumed fiber (double resume)");}f->resumed_value=val;sp_Fiber*prev=sp_fiber_current;sp_fiber_save_roots(prev);sp_fiber_restore_roots(f);if(!prev->exc_ctx)prev->exc_ctx=sp_exc_ctx_new();sp_exc_ctx_save(prev->exc_ctx);sp_exc_ctx_load(f->exc_ctx);f->resumer=prev;sp_fiber_current=f;SP_TSAN_SET_CALLER(f,prev);SP_TSAN_SWITCH(f);if(f->state==0){f->state=1;sp_ctx_make(&f->ctx,f->stack+sp_fiber_guard(),f->stack_size,sp_fiber_trampoline);sp_ctx_swap(&f->caller_ctx,&f->ctx);}
+/* f is waiting in its #resume of a fiber on the running chain. */
+static int sp_fiber_resuming(sp_Fiber*f){
+  for(sp_Fiber*g=sp_fiber_current;g;){
+    if(g->resumer){if(g->resumer==f)return 1;g=g->resumer;}
+    else g=g->return_to;
+  }
+  return 0;
+}
+/* CRuby's refusals for a resume target, in its order. The root fiber has no
+   stack and is never resumable: it is current, resuming, or transferring. */
+static void sp_fiber_check_resume(sp_Fiber*f){
+  if(f->state==3)sp_raise_cls("FiberError","attempt to resume a terminated fiber");
+  if(f==sp_fiber_current)sp_raise_cls("FiberError","attempt to resume the current fiber");
+  if(f->resumer)sp_raise_cls("FiberError","attempt to resume a resumed fiber (double resume)");
+  if(sp_fiber_resuming(f))sp_raise_cls("FiberError","attempt to resume a resuming fiber");
+  if(f->transferred||f==&sp_fiber_root)sp_raise_cls("FiberError","attempt to resume a transferring fiber");
+  if(f->state==1)sp_raise_cls("FiberError","attempt to resume a resumed fiber (double resume)");
+}
+sp_RbVal sp_Fiber_resume(sp_Fiber*f,sp_RbVal val){SP_GC_ROOT_RBVAL(val);SP_GC_ROOT(f);sp_fiber_check_thread(f);sp_fiber_check_resume(f);f->resumed_value=val;sp_Fiber*prev=sp_fiber_current;sp_fiber_save_roots(prev);sp_fiber_restore_roots(f);if(!prev->exc_ctx)prev->exc_ctx=sp_exc_ctx_new();sp_exc_ctx_save(prev->exc_ctx);sp_exc_ctx_load(f->exc_ctx);f->resumer=prev;sp_fiber_current=f;SP_TSAN_SET_CALLER(f,prev);SP_TSAN_SWITCH(f);if(f->state==0){f->state=1;sp_ctx_make(&f->ctx,f->stack+sp_fiber_guard(),f->stack_size,sp_fiber_trampoline);sp_ctx_swap(&f->caller_ctx,&f->ctx);}
 else{f->state=1;sp_ctx_swap(&f->caller_ctx,&f->ctx);}f->resumer=NULL;sp_exc_ctx_save(f->exc_ctx);sp_exc_ctx_load(prev->exc_ctx);if(f->state!=3)sp_fiber_save_roots(f);sp_fiber_restore_roots(prev);sp_fiber_current=prev;if(f->raised){f->raised=0;const char*rc=f->raised_cls;const char*rm=f->raised_msg;void*ro=f->raised_obj;f->raised_obj=NULL;sp_fiber_reraise(rc,rm,ro);}return f->yielded_value;}
 /* Fiber.yield is only valid inside a fiber entered via #resume. The root fiber
    was never resumed, and a fiber entered via #transfer has no resumer to return
