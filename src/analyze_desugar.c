@@ -6444,7 +6444,15 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
         ok = 0; break;
       }
       if (sh < 0 || nt_ref(nt, id, "block") >= 0) { ok = 0; break; }
-      if (ncalls && sh != shape) { ok = 0; break; }
+      /* Targets of different shapes (`c ? m(...) : n(...)` into `m(a)` and
+         `n(**kw)`) each take both channels: `...` forwards everything, and
+         each target sorts out what it was handed. Left to the __fwd_N model,
+         which binds one slot per argument a caller passes, n was handed the
+         leading parameter c in place of the keywords. */
+      if (ncalls && sh != shape) {
+        if ((sh | shape) & FWD_BUILTIN) { ok = 0; break; }
+        sh = 3 | ((sh | shape) & 4);
+      }
       shape = sh;
       calls[ncalls++] = id;
     }
