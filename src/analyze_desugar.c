@@ -8628,6 +8628,8 @@ static int bs_yield_count(TyKind rt, const char *nm, int argc, TyKind *elem, int
     if (argc != 0) return 0;
     for (int k = 0; hash_kv[k]; k++) if (sp_streq(nm, hash_kv[k])) return 2;
     if (sp_streq(nm, "each_pair")) { *hash_pair = 1; return 1; }
+    if (sp_streq(nm, "each_key")) { *elem = ty_hash_key(rt); return 1; }
+    if (sp_streq(nm, "each_value")) { *elem = ty_hash_val(rt); return 1; }
     if (sp_streq(nm, "reverse_each") || sp_streq(nm, "uniq") || sp_streq(nm, "map!") ||
         sp_streq(nm, "collect!")) return 0;
     for (int k = 0; one[k]; k++) if (sp_streq(nm, one[k])) { *hash_pair = 1; return 1; }
@@ -8636,11 +8638,22 @@ static int bs_yield_count(TyKind rt, const char *nm, int argc, TyKind *elem, int
   if (rt == TY_INT) {
     if ((sp_streq(nm, "times") && argc == 0) ||
         ((sp_streq(nm, "upto") || sp_streq(nm, "downto")) && argc == 1)) { *elem = TY_INT; return 1; }
+    /* the numbers step yields are Integers or Floats; neither spreads */
+    if (sp_streq(nm, "step") && argc >= 1 && argc <= 2) { *elem = TY_INT; return 1; }
+    return 0;
+  }
+  if (rt == TY_FLOAT) {
+    if (sp_streq(nm, "step") && argc >= 1 && argc <= 2) { *elem = TY_FLOAT; return 1; }
     return 0;
   }
   if (rt == TY_STRING) {
     if ((sp_streq(nm, "each_char") || sp_streq(nm, "each_line")) && argc == 0) { *elem = TY_STRING; return 1; }
+    if (sp_streq(nm, "each_byte") && argc == 0) { *elem = TY_INT; return 1; }
     return 0;
+  }
+  if ((rt == TY_RANGE || rt == TY_FLOAT_RANGE) && sp_streq(nm, "step") && argc == 1) {
+    *elem = rt == TY_RANGE ? TY_INT : TY_FLOAT;
+    return 1;
   }
   TyKind et;
   if (ty_is_array(rt) || ty_is_obj_array(rt)) et = ty_array_elem(rt);
@@ -8651,6 +8664,17 @@ static int bs_yield_count(TyKind rt, const char *nm, int argc, TyKind *elem, int
     return 1;
   }
   if (sp_streq(nm, "sum") && argc <= 1) { *elem = et; return 1; }
+  /* inject with a seed yields the accumulator and the element (the seedless
+     form is builtins/enumerable.rb's, which yields them itself) */
+  if ((sp_streq(nm, "inject") || sp_streq(nm, "reduce")) && argc == 1) return 2;
+  if (ty_is_array(rt) || ty_is_obj_array(rt)) {
+    /* each_index and the block form of fill yield the index */
+    if ((sp_streq(nm, "each_index") && argc == 0) || (sp_streq(nm, "fill") && argc <= 2)) {
+      *elem = TY_INT;
+      return 1;
+    }
+    if (sp_streq(nm, "sort_by!") && argc == 0) { *elem = et; return 1; }
+  }
   if (argc != 0) return 0;
   if (rt == TY_RANGE && (sp_streq(nm, "reverse_each") || sp_streq(nm, "uniq") ||
                          sp_streq(nm, "map!") || sp_streq(nm, "collect!") ||
@@ -8659,6 +8683,25 @@ static int bs_yield_count(TyKind rt, const char *nm, int argc, TyKind *elem, int
                          sp_streq(nm, "reject!"))) return 0;
   for (int k = 0; one[k]; k++) if (sp_streq(nm, one[k])) { *elem = et; return 1; }
   return 0;
+}
+
+/* Does the emitter of builtin iterator `nm` on `rt` bind a rest beside the
+   leading requireds itself (`|x, *r|`, the rest empty for a value that does
+   not spread)? The Array element walks and the Integer counters do
+   (emit_iter_bind_rest), and so do the builtins/enumerable.rb methods, whose
+   yield binds by the block distribution (emit_block_binds). Any other keeps
+   such a block for the prologue below: left to it, the rest read nil, or the
+   call was refused (check_block_rest_support). */
+static int bs_binds_rest(TyKind rt, const char *nm, int argc) {
+  if ((sp_streq(nm, "inject") || sp_streq(nm, "reduce")) && argc > 0) return 0;
+  if (builtin_enum_name_index(nm) >= 0) return 1;
+  if (rt == TY_INT) return 1;   /* times, upto, downto, step */
+  if (sp_streq(nm, "step")) return rt == TY_FLOAT || rt == TY_RANGE || rt == TY_FLOAT_RANGE;
+  int arr = ty_is_array(rt) || ty_is_obj_array(rt);
+  if (!arr && rt != TY_RANGE) return 0;
+  if (sp_streq(nm, "map") || sp_streq(nm, "collect") || sp_streq(nm, "select") ||
+      sp_streq(nm, "filter") || sp_streq(nm, "reject")) return 1;
+  return arr && (sp_streq(nm, "each") || sp_streq(nm, "each_entry") || sp_streq(nm, "reverse_each"));
 }
 
 /* bs_yield_count for a call on an Enumerator. with_index / with_object yield
@@ -9027,6 +9070,12 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
     int via_enum = m != 0;
     hash_pair = 0;
     if (m == 0) m = bs_yield_count(rt, nm, argc, &elem, &hash_pair);
+    /* Array.new(n) { } yields the index */
+    if (m == 0 && sp_streq(nm, "new") && argc == 1 && nt_kind(nt, recv) == NK_ConstantReadNode &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Array")) {
+      m = 1;
+      elem = TY_INT;
+    }
     if (m == 0) {
       /* no Enumerator passes its block keywords, whatever it yields */
       if (has_kw && rt == TY_ENUMERATOR && bs_strip_keywords(c, blk, bp, pn)) changed = 1;
@@ -9053,13 +9102,18 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
       if (ty_is_array(elem)) dyn = 1;
       else if (elem == TY_POLY) dyn = 2;
     }
-    /* a rest beside the leading requireds of a two-value yield is bound
-       right; a lone rest over ONE yielded value never spreads it (`|*r|`
-       gets `[x]` even when x is an Array), which the emitters got wrong for
-       an Array element, so that shape is always lowered here; the chain
-       emitters over an Enumerator bind no rest right, so there it is too */
-    if (s.O == 0 && s.Q == 0 && !splat && m != 1 && !ty_is_hash(rt) && !via_enum) continue;
-    if (s.O == 0 && s.Q == 0 && splat && !hash_pair && !dyn) continue;
+    /* a rest beside the leading requireds is left to an emitter that binds
+       it (bs_binds_rest); a lone rest over ONE yielded value never spreads
+       it (`|*r|` gets `[x]` even when x is an Array), which the emitters got
+       wrong for an Array element, so that shape is always lowered here; the
+       chain emitters over an Enumerator bind no rest right, so there it is
+       too */
+    { const char *rn = s.rest >= 0 ? nt_str(nt, s.rest, "name") : NULL;
+      /* an anonymous `*` binds nothing: beside requireds it only drops the
+         values past them, which every emitter does */
+      int rest_bound = !(rn && *rn) || bs_binds_rest(rt, nm, argc);
+      if (s.O == 0 && s.Q == 0 && !splat && m != 1 && !ty_is_hash(rt) && !via_enum && rest_bound) continue;
+      if (s.O == 0 && s.Q == 0 && splat && !hash_pair && !dyn && rest_bound) continue; }
 
     BsB b = { nt, 1 };
     int base = nt->count;
@@ -9279,6 +9333,7 @@ static int desugar_enum_pair_op_sym(Compiler *c, int id, int recv, int blk, cons
   const char *mn = ex >= 0 && nt_kind(nt, ex) == NK_SymbolNode ? nt_str(nt, ex, "value") : NULL;
   TyKind elem; int hash_pair;
   if (!mn || !*mn) return 0;
+  if (sp_streq(nm, "reduce") || sp_streq(nm, "inject")) return 0;
   if (user_block_values(c, id) != 2 &&
       (recv < 0 || (bs_enum_yield_count(c, recv, nm, argc, &elem) != 2 &&
                     bs_yield_count(infer_type(c, recv), nm, argc, &elem, &hash_pair) != 2 &&
