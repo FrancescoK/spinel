@@ -103,6 +103,27 @@ class StringIO
     end
   end
 
+  # readpartial / sysread / read_nonblock: read(n), but EOFError at the end
+  # of the string, as CRuby's StringIO does. read_nonblock answers nil there
+  # instead when given exception: false.
+  def readpartial(maxlen, outbuf = nil)
+    raise ArgumentError, "negative length #{maxlen} given" if maxlen < 0
+    s = maxlen == 0 ? "" : read(maxlen)
+    raise EOFError, "end of file reached" if s.nil?
+    return s unless outbuf
+    outbuf.replace(s)
+    outbuf
+  end
+
+  def sysread(maxlen, outbuf = nil)
+    readpartial(maxlen, outbuf)
+  end
+
+  def read_nonblock(maxlen, outbuf = nil, exception: true)
+    return nil if !exception && maxlen > 0 && eof?
+    readpartial(maxlen, outbuf)
+  end
+
   # The iteration surface, plain Ruby over gets / getc / getbyte. The BLOCK
   # form only: CRuby answers an Enumerator when no block is given, and a
   # method returning either that or `self` is a union spinel's typing has no

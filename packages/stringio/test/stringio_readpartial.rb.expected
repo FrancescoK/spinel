@@ -1,0 +1,18 @@
+"hello"
+" world"
+[EOFError, "end of file reached"]
+""
+""
+"negative length -1 given"
+"ab"
+"ab"
+"q"
+EOFError
+"r"
+EOFError
+nil
+["chunk", nil]
+"ab"
+nil
+""
+""
