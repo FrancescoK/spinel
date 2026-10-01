@@ -7359,6 +7359,168 @@ static int poly_other_arg_runs(Compiler *c, const int *argv, int pos_argc, int k
   return 0;
 }
 
+static int poly_inert(Compiler *c, int node);
+
+/* Is `key` a hash key whose #hash and #eql? are the builtin ones: a
+   Symbol, String or Integer, read or written, that runs nothing itself? */
+static int poly_key_inert(Compiler *c, int key) {
+  if (key < 0 || !poly_inert(c, key)) return 0;
+  TyKind kt = comp_ntype(c, unwrap_parens(c, key));
+  return kt == TY_SYMBOL || kt == TY_STRING || kt == TY_INT;
+}
+
+/* Can evaluating `node` run none of the program's own code? A read, a
+   literal, an operator on scalars, and Arrays and Hashes of these. They
+   may allocate, but write no variable. Anything else is taken to run
+   code, implicitly as well as explicitly: an interpolation calls #to_s, a
+   hash key #hash, a `*` #to_a, a `**` #to_hash, a Range's ends #<=>. */
+static int poly_inert(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  node = unwrap_parens(c, node);
+  if (node < 0) return 1;
+  int n = 0; const int *els;
+  switch (nt_kind(nt, node)) {
+  case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode:
+  case NK_ClassVariableReadNode: case NK_GlobalVariableReadNode:
+  case NK_ConstantReadNode: case NK_SelfNode:
+  case NK_NilNode: case NK_TrueNode: case NK_FalseNode: case NK_IntegerNode:
+  case NK_FloatNode: case NK_SymbolNode: case NK_StringNode:
+    return 1;
+  case NK_ConstantPathNode:
+    return poly_inert(c, nt_ref(nt, node, "parent"));
+  case NK_ArrayNode:
+    els = nt_arr(nt, node, "elements", &n);
+    for (int i = 0; i < n; i++)
+      if (nt_kind(nt, els[i]) == NK_SplatNode || !poly_inert(c, els[i])) return 0;
+    return 1;
+  case NK_HashNode: case NK_KeywordHashNode:
+    els = nt_arr(nt, node, "elements", &n);
+    for (int i = 0; i < n; i++)
+      if (nt_kind(nt, els[i]) != NK_AssocNode || !poly_key_inert(c, nt_ref(nt, els[i], "key")) ||
+          !poly_inert(c, nt_ref(nt, els[i], "value")))
+        return 0;
+    return 1;
+  case NK_CallNode: {
+    /* `i + 1`: no user code as long as the operand is a scalar too
+       (`1 == obj` asks obj). An operator the program reopens on Integer
+       or Float is renamed to its method before this (`__int_^__N`), so
+       it is a call like any other here. */
+    if (!call_is_scalar_op(c, node) || !poly_inert(c, nt_ref(nt, node, "receiver"))) return 0;
+    const int *av = call_args(nt, node, &n);
+    for (int i = 0; i < n; i++) {
+      TyKind at = comp_ntype(c, av[i]);
+      if ((at != TY_INT && at != TY_FLOAT && at != TY_BOOL) || !poly_inert(c, av[i])) return 0;
+    }
+    return 1;
+  }
+  default:
+    return 0;
+  }
+}
+
+/* The index of the last of the `n` in `args` that is not inert, -1 for
+   none: an argument before it has code run after its temp is made. */
+static int poly_last_live(Compiler *c, const int *args, int n) {
+  for (int j = n - 1; j >= 0; j--)
+    if (!poly_inert(c, args[j])) return j;
+  return -1;
+}
+
+/* Is the argument a read of something that already holds its value -- a
+   variable, a constant, self -- or a literal that allocates nothing? Its
+   temp is then a second name for a held value. Any other argument (a call,
+   a container literal, a conditional whose arm boxes, a backtick, the copy
+   a shared-mutable String's read makes) may have built a value only the
+   temp holds. */
+static int poly_arg_held(Compiler *c, int node) {
+  node = unwrap_parens(c, node);
+  if (node < 0 || operand_may_allocate(c, node)) return 0;
+  switch (nt_kind(c->nt, node)) {
+  case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode:
+  case NK_ClassVariableReadNode: case NK_GlobalVariableReadNode:
+  case NK_ConstantReadNode: case NK_ConstantPathNode: case NK_SelfNode:
+  case NK_NilNode: case NK_TrueNode: case NK_FalseNode: case NK_IntegerNode:
+  case NK_FloatNode: case NK_SymbolNode: case NK_StringNode:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+static LocalVar *poly_anon_kwrest(Compiler *c, int node);
+
+/* Can building the call's keyword hash `kwh` run code, after the
+   positional temps are made? A value or key that is not inert (poly_inert,
+   poly_key_inert: a user object's #hash runs as it is stored), and a `**`
+   operand that is not a Hash of Symbols, Strings or Integers: another
+   object converts through #to_hash (sp_kw_splat_conv), and a Hash of keys
+   of any class hashes each key as it merges. An anonymous `**` is the
+   enclosing method's keyword rest, asked the same of its type. */
+static int poly_kw_runs(Compiler *c, int kwh) {
+  if (kwh < 0) return 0;
+  int en = 0; const int *els = nt_arr(c->nt, kwh, "elements", &en);
+  for (int e = 0; e < en; e++) {
+    if (nt_kind(c->nt, els[e]) != NK_AssocSplatNode) {
+      if (!poly_key_inert(c, nt_ref(c->nt, els[e], "key")) ||
+          !poly_inert(c, nt_ref(c->nt, els[e], "value")))
+        return 1;
+      continue;
+    }
+    int src = nt_ref(c->nt, els[e], "value");
+    LocalVar *kl = src < 0 ? poly_anon_kwrest(c, els[e]) : NULL;
+    if (src < 0 && !kl) return 1;
+    if (src >= 0 && !poly_inert(c, src)) return 1;
+    TyKind st = src >= 0 ? comp_ntype(c, src) : kl->type;
+    TyKind kt = ty_is_hash(st) ? ty_hash_key(st) : TY_UNKNOWN;
+    if (st != TY_NIL && kt != TY_SYMBOL && kt != TY_STRING && kt != TY_INT) return 1;
+  }
+  return 0;
+}
+
+/* Does `m` fill in a default that runs code for a parameter this call
+   leaves out: an optional positional one when the call may pass fewer
+   positionals than `m` takes, or a keyword one the call does not name? */
+static int poly_default_runs(Compiler *c, Scope *m, int pos_argc, int splat, int kwh) {
+  if (!m->pdefault) return 0;
+  int npos = 0;
+  for (int i = 0; i < m->nparams; i++) {
+    const char *pn = m->pnames ? m->pnames[i] : NULL;
+    if (i != m->rest_idx && i != m->kwrest_idx && !(pn && callee_has_kwarg(c, m, pn))) npos++;
+  }
+  for (int i = 0; i < m->nparams; i++) {
+    if (m->pdefault[i] < 0 || poly_inert(c, m->pdefault[i])) continue;
+    const char *pn = m->pnames ? m->pnames[i] : NULL;
+    if (pn && callee_has_kwarg(c, m, pn)) {
+      if (kwh_lookup(c->nt, kwh, pn) < 0) return 1;
+    }
+    else if (splat || pos_argc < npos) return 1;
+  }
+  return 0;
+}
+
+/* Can an arm of the call run code of the program's own after the argument
+   temps and before its callee binds them? A default the arm fills in for a
+   parameter the call leaves out is spelled at the call site
+   (emit_arg_or_default), and can write the variable a plain argument was
+   read from (`def m(a, b = drop!)` with drop! clearing the caller's @x, for
+   `o.m(@x)`). Asked of the instance methods of the classes that have
+   instances, as the zero-argument dispatch counts its arms (#4460), and of
+   the class methods a Class receiver takes, for the defaults the call may
+   leave out (poly_default_runs; it errs toward rooting). */
+static int poly_arm_runs_code(Compiler *c, const char *name, int pos_argc, int splat, int kwh) {
+  int n = 0;
+  const PolyCand *pc = comp_poly_candidates(c, name, &n);
+  for (int i = 0; i < n; i++) {
+    int k = pc[i].cls;
+    if (pc[i].mi < 0 || !(c->classes[k].instantiated || class_is_prim_reopen(c, k))) continue;
+    if (poly_default_runs(c, &c->scopes[pc[i].mi], pos_argc, splat, kwh)) return 1;
+  }
+  pc = comp_cmethod_candidates(c, name, &n);
+  for (int i = 0; i < n; i++)
+    if (pc[i].mi >= 0 && poly_default_runs(c, &c->scopes[pc[i].mi], pos_argc, splat, kwh)) return 1;
+  return 0;
+}
+
 /* Does any method of this name take a parameter as the shared handle? Only
    then can a poly dispatch's arm want an argument's handle. */
 static int poly_name_takes_handle(Compiler *c, const char *name) {
@@ -9351,6 +9513,11 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       TyKind *atmp_ty = malloc(sizeof(TyKind) * argc);
       int *htmp = calloc((size_t)argc, sizeof(int));
       int takes_handle = -1;   /* poly_name_takes_handle, asked once when it matters */
+      int arm_runs = -1;       /* poly_arm_runs_code, likewise */
+      /* what runs after an argument temp is made, judged once per call:
+         the last positional that is not inert, and the keyword hash */
+      int pos_live = poly_last_live(c, argv, pos_argc);
+      int kw_runs = poly_kw_runs(c, kwh);
       /* Root the receiver temp across the arms, as the zero-arg dispatch does:
          an arm's callee may allocate and collect the otherwise-unreferenced
          receiver out from under itself (#3476). */
@@ -9398,6 +9565,25 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           emit_poly_arg_temp(c, argv[a], at, 0, atmp[a], ran, b);
         }
         ran |= subtree_has_side_effect(c, argv[a]);
+        /* The temp holds the argument until an arm hands it on: past the
+           arguments after it, and past what the arm builds first (the
+           keyword hash, a box), either of which can collect. Root it unless
+           something else holds the value all that while: a variable it was
+           read from (or a literal), as long as no code of the program's
+           runs before the callee binds it that could write the variable --
+           an argument after it that is not inert (`o.m(s, (s = nil; f))`,
+           or an interpolation's #to_s; pos_live), the keyword hash's values,
+           keys and `**` merges (kw_runs), or a default the arm fills in
+           (poly_arm_runs_code).
+           Unrooted, the arm handed the callee a freed object whose slot a
+           later allocation had reused. An argument a hoist around the call
+           already ran into a temp is rooted here all the same: not every
+           hoist roots its temp, nor the Strings a by-value kind carries. */
+        if (ty_gc_holds_refs(c, atmp_ty[a]) &&
+            (!poly_arg_held(c, argv[a]) || a < pos_live || kw_runs ||
+             (arm_runs >= 0 ? arm_runs : (arm_runs = poly_arm_runs_code(c, name, pos_argc, has_splat_arg, kwh))))) {
+          emit_gc_root_tmp_refs(c, atmp_ty[a], atmp[a], b); buf_puts(b, " ");
+        }
       }
       /* keyword values, evaluated once like the positionals; matched to each
          arm's keyword params by name below (#3268) */
@@ -9412,6 +9598,11 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       }
       else if (kwh >= 0) {
         kwels = nt_arr(nt, kwh, "elements", &kwn);
+        /* the last keyword whose value is not inert; the keys here are
+           Symbols (kw_ds otherwise) */
+        int kw_live = -1;
+        for (int e = kwn - 1; e >= 0 && kw_live < 0; e--)
+          if (!poly_inert(c, nt_ref(nt, kwels[e], "value"))) kw_live = e;
         kwtmp = malloc(sizeof(int) * (size_t)(kwn > 0 ? kwn : 1));
         kwty  = malloc(sizeof(TyKind) * (size_t)(kwn > 0 ? kwn : 1));
         for (int e = 0; e < kwn; e++) {
@@ -9428,6 +9619,13 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             emit_poly_arg_temp(c, val, at, 0, kwtmp[e], ran, b);
           }
           if (val >= 0) ran |= subtree_has_side_effect(c, val);
+          /* rooted as a positional's temp is: an arm allocates its keyword
+             hash before it stores this value into it */
+          if (val >= 0 && ty_gc_holds_refs(c, kwty[e]) &&
+              (!poly_arg_held(c, val) || e < kw_live ||
+               (arm_runs >= 0 ? arm_runs : (arm_runs = poly_arm_runs_code(c, name, pos_argc, has_splat_arg, kwh))))) {
+            emit_gc_root_tmp_refs(c, kwty[e], kwtmp[e], b); buf_puts(b, " ");
+          }
         }
         /* The builtin arms read the keyword hash as the last positional
            argument (`h.fetch(k, a: 1)` takes it as the default), through the

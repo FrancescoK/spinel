@@ -3461,6 +3461,36 @@ void emit_gc_root_tmp(Compiler *c, TyKind t, int tmp, Buf *b) {
 int ty_gc_rootable(Compiler *c, TyKind t) {
   return needs_root(t) && !comp_ty_value_obj(c, t);
 }
+/* Whether a temp of this kind holds a reference a collection has to see:
+   one ty_gc_rootable takes, or one of the by-value kinds that carry
+   Strings inside -- a String Range's two ends, a value object's String
+   fields (a keyword value keeps the by-value layout). declare_local_named
+   roots a local of those kinds field by field. */
+int ty_gc_holds_refs(Compiler *c, TyKind t) {
+  if (ty_gc_rootable(c, t) || t == TY_STR_RANGE) return 1;
+  if (!comp_ty_value_obj(c, t)) return 0;
+  ClassInfo *vc = &c->classes[ty_object_class(t)];
+  for (int i = 0; i < vc->nivars; i++)
+    if (vc->ivar_types[i] == TY_STRING) return 1;
+  return 0;
+}
+/* Root a temp of a kind ty_gc_holds_refs answers: as emit_gc_root_tmp, or
+   each String a by-value kind carries, the way declare_local_named roots
+   a local of that kind. */
+void emit_gc_root_tmp_refs(Compiler *c, TyKind t, int tmp, Buf *b) {
+  if (t == TY_STR_RANGE) {
+    buf_printf(b, "SP_GC_ROOT_STR(_t%d.first); SP_GC_ROOT_STR(_t%d.last);", tmp, tmp);
+    return;
+  }
+  if (!comp_ty_value_obj(c, t)) { emit_gc_root_tmp(c, t, tmp, b); return; }
+  ClassInfo *vc = &c->classes[ty_object_class(t)];
+  const char *sep = "";
+  for (int i = 0; i < vc->nivars; i++)
+    if (vc->ivar_types[i] == TY_STRING) {
+      buf_printf(b, "%sSP_GC_ROOT(_t%d.iv_%s);", sep, tmp, iv_c(vc->ivars[i] + 1));
+      sep = " ";
+    }
+}
 
 /* An arm that hoists its receiver into `_tN` and then evaluates arguments
    holds the receiver in nothing while they run, nor while the call itself

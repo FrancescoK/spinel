@@ -1444,6 +1444,8 @@ int needs_root(TyKind t);
 int ty_gc_rootable(Compiler *c, TyKind t);
 void emit_gc_root_var(Compiler *c, TyKind t, const char *name, Buf *b);
 void emit_gc_root_tmp(Compiler *c, TyKind t, int tmp, Buf *b);
+int ty_gc_holds_refs(Compiler *c, TyKind t);
+void emit_gc_root_tmp_refs(Compiler *c, TyKind t, int tmp, Buf *b);
 /* `_t<tmp>` when the node was already evaluated into that temp, else the node */
 void emit_node_or_tmp(Compiler *c, int node, int tmp, Buf *b);
 /* the key of a hash store, as the kind's set takes it (codegen_stmt.c) */

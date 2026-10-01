@@ -3661,6 +3661,17 @@ else {
       emit_ctype(c, res, g_pre);
       buf_printf(g_pre, " _t%d = %s;\n", tr,
                  res == TY_RANGE ? "(sp_Range){0}" : default_value(res));
+      /* The temp is set here, in the statement's prelude, and read where the
+         `if` stands in the statement, after what is written ahead of it
+         there has run: the receiver, in `src(i).merge(note: ("n#{i}" if
+         i > 0))`. A value the branch allocated has no other holder in
+         between, and a collection there freed it. Root it, as the case/in
+         value's temp is rooted. */
+      if (ty_gc_holds_refs(c, res)) {
+        emit_indent(g_pre, g_indent);
+        emit_gc_root_tmp_refs(c, res, tr, g_pre);
+        buf_puts(g_pre, "\n");
+      }
       /* Emit the condition into its own buffer: any prolog it hoists is a
          statement, and writing it to g_pre after "if (" had been written left
          the declaration in the middle of the expression. */
