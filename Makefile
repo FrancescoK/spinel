@@ -2387,6 +2387,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	$(SPINEL) test/loop_bounded_index_read.rb -c --no-line-map -o "$$tmp/lbi.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (loop_bounded_index_read: -c)"; ok=0; }; \
 	grep -qE '_hcd[0-9]+_[0-9]+\[lv_i\]' "$$tmp/lbi.c" && grep -qE '_hcd[0-9]+_[0-9]+\[lv_j\]' "$$tmp/lbi.c" || { echo "infer-test: FAIL (a read bounded by its loop's own i < a.length test still tests its index)"; ok=0; }; \
 	grep -qE '_hcd[0-9]+_[0-9]+\[lv_(m|q|r|w|x|y|z)\]' "$$tmp/lbi.c" && { echo "infer-test: FAIL (a read whose index the loop does not keep in range lost its bounds test)"; ok=0; }; \
+	grep -qE 'while \(\(lv_i < _hcl[0-9]+_[0-9]+\)\)' "$$tmp/lbi.c" || { echo "infer-test: FAIL (a loop that reads a[i] untested does not test i against the cached length)"; ok=0; }; \
+	grep -qE 'lv_(m|q|r|w|y|z) < _hcl' "$$tmp/lbi.c" && { echo "infer-test: FAIL (a loop whose index is not kept in range tests it against the cached length)"; ok=0; }; \
 	$(SPINEL) test/loop_bounded_index_polls.rb -c --no-line-map -o "$$tmp/lbp.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (loop_bounded_index_polls: -c)"; ok=0; }; \
 	grep -F 'while (({ if (SP_UNLIKELY(SP_SAFEPOINT_POLL())) sp_safepoint(), _SP_HCR' "$$tmp/lbp.c" | grep -qF 'sp_fin_run_pending(), _SP_HCR' && grep -qE '_hcd[0-9]+_[0-9]+\[lv_i\]' "$$tmp/lbp.c" || { echo "infer-test: FAIL (a loop that reads a[i] untested does not poll ahead of its i < a.length test)"; ok=0; }; \
 	awk '/^[a-z].* sp_total\(.*\{$$/,/^}/' "$$tmp/lbp.c" | awk 'f { print; exit } /while \(\(\{/ { f = 1 }' | grep -qE 'SP_SAFEPOINT_POLL|SP_FIN_POLL|sp_fin_run_pending' && { echo "infer-test: FAIL (a loop that reads a[i] untested polls between its test and the read)"; ok=0; }; \

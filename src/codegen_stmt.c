@@ -6149,6 +6149,24 @@ static void hc_bounded_index(Compiler *c, int prev, int pred, int body, HcRegion
 
 int g_loop_polls_in_cond = 0;
 
+/* The test of a loop hc_bounded_index proved, against the cached length: the
+   cache holds the array's current header wherever the test runs -- nothing in
+   the loop shrinks it, a write that grows it refreshes it, and the polls ahead
+   of the test refresh it after other code has run -- so the test and the read
+   compare i with the same local, and the C compiler can fold the two. */
+static int hc_bounded_cond(Compiler *c, int pred, Buf *out) {
+  const NodeTable *nt = c->nt;
+  int pa = nt_ref(nt, pred, "arguments"), pac = 0;
+  const int *pav = nt_arr(nt, pa, "arguments", &pac);
+  int av = nt_ref(nt, pav[0], "receiver");
+  char hd[64], hl[64], hw[64];
+  if (!hc_array(c, av, comp_ntype(c, av) == TY_FLOAT_ARRAY, hd, hl, hw, sizeof hd)) return 0;
+  buf_puts(out, "(");
+  emit_expr(c, nt_ref(nt, pred, "receiver"), out);
+  buf_printf(out, " < %s)", hl);
+  return 1;
+}
+
 /* Is `recv[idx]` the read hc_bounded_index proved in range for this loop? */
 int hc_index_in_range(Compiler *c, int recv, int idx) {
   const NodeTable *nt = c->nt;
@@ -6286,6 +6304,11 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
      a prelude has no single test to put them ahead of, so it keeps its checks */
   int polls_in_cond = use_hc && hcr.bi[0] && !(cpre.p && cpre.p[0]) && (g_uses_threads || g_uses_finalizers);
   if (use_hc && hcr.bi[0] && cpre.p && cpre.p[0]) hcr.bi[0] = 0;
+  if (use_hc && hcr.bi[0]) {
+    Buf hcc; memset(&hcc, 0, sizeof hcc);
+    if (hc_bounded_cond(c, pred, &hcc)) { free(ccond.p); ccond = hcc; }
+    else free(hcc.p);
+  }
   if (cpre.p && cpre.p[0]) {
     emit_indent(b, indent); buf_puts(b, "while (1) {\n");
     buf_puts(b, cpre.p);
