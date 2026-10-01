@@ -4982,6 +4982,78 @@ int desugar_block_implicit_rest(Compiler *c) {
   return changed;
 }
 
+/* `m(**{ k: v })` passes the same keywords as `m(k: v)`. The keyword
+   walks that share a String variable with the parameter it binds (a
+   dynamic call's, a yield's) read a call's `k: v` pairs and stepped over a
+   splatted Hash literal, so its String went to a copy. A splatted literal
+   whose keys are all Symbols, none repeated among the call's keywords, is
+   spliced into the call's own pairs. Only one holding a variable is: a
+   literal of constants has no String to share, and keeps its C. */
+static int kwsplat_var_value(const NodeTable *nt, int v) {
+  NodeKind k = nt_kind(nt, v);
+  return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
+         k == NK_GlobalVariableReadNode || k == NK_ClassVariableReadNode;
+}
+int desugar_kwsplat_hash_literal(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0, nkh = 0;
+  /* the resets below change the kind index: walk a copy of it */
+  const int *khs0 = nt_nodes_of_kind(nt, NK_KeywordHashNode, &nkh);
+  int *khs = nkh > 0 ? (int *)malloc(sizeof(int) * (size_t)nkh) : NULL;
+  if (nkh > 0 && !khs) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  if (nkh > 0) memcpy(khs, khs0, sizeof(int) * (size_t)nkh);
+  for (int q = 0; q < nkh; q++) {
+    int kh = khs[q];
+    int en = 0; const int *el = nt_arr(nt, kh, "elements", &en);
+    int any = 0, ok = 1, total = 0;
+    const char *keys[64]; int nk = 0;
+    for (int e = 0; e < en && ok; e++) {
+      if (nt_kind(nt, el[e]) == NK_AssocNode) {
+        int key = nt_ref(nt, el[e], "key");
+        if (nt_kind(nt, key) == NK_SymbolNode && nk < 64) keys[nk++] = nt_str(nt, key, "value");
+        total++;
+        continue;
+      }
+      if (nt_kind(nt, el[e]) != NK_AssocSplatNode) { ok = 0; break; }
+      int h = nt_ref(nt, el[e], "value");
+      if (nt_kind(nt, h) != NK_HashNode) continue;
+      int hn = 0; const int *he = nt_arr(nt, h, "elements", &hn);
+      int lit = 1, var = 0;
+      for (int i = 0; i < hn && lit; i++) {
+        int key = nt_kind(nt, he[i]) == NK_AssocNode ? nt_ref(nt, he[i], "key") : -1;
+        lit = key >= 0 && nt_kind(nt, key) == NK_SymbolNode;
+        if (lit) var |= kwsplat_var_value(nt, nt_ref(nt, he[i], "value"));
+        if (lit && nk < 64) keys[nk++] = nt_str(nt, key, "value");
+        else if (lit) lit = 0;
+      }
+      if (!lit) { ok = 0; break; }
+      any |= var;
+      total += hn;
+    }
+    if (!ok || !any || total > 64) continue;
+    /* a repeated key: the later pair wins, which the call's own binder does
+       not model; such a call is left as it was */
+    int dup = 0;
+    for (int i = 0; i < nk && !dup; i++)
+      for (int j = i + 1; j < nk && !dup; j++) dup = keys[i] && keys[j] && sp_streq(keys[i], keys[j]);
+    if (dup) continue;
+    int flat[64], n = 0, gone[128], ng = 0;
+    for (int e = 0; e < en; e++) {
+      if (nt_kind(nt, el[e]) == NK_AssocNode) { flat[n++] = el[e]; continue; }
+      int h = nt_ref(nt, el[e], "value");
+      int hn = 0; const int *he = nt_arr(nt, h, "elements", &hn);
+      for (int i = 0; i < hn; i++) flat[n++] = he[i];
+      gone[ng++] = el[e]; gone[ng++] = h;
+    }
+    nt_node_set_arr(nt, kh, "elements", flat, n);
+    /* the splat and its Hash, left behind, no longer hold the pairs */
+    for (int i = 0; i < ng; i++) nt_node_reset(nt, gone[i], "NilNode");
+    changed = 1;
+  }
+  free(khs);
+  return changed;
+}
+
 /* `return a, *b, c` / `break a, *b` / `next a, b` hand back one array:
    CRuby reads them as `return [a, *b, c]`. Wrap the arguments in that
    ArrayNode so the array-literal builders splice the splat and every

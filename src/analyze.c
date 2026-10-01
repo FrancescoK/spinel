@@ -26444,6 +26444,7 @@ void analyze_program(Compiler *c) {
   desugar_anon_block_param(c);           /* def m(&) = f(&) -> &__anon_block */
   desugar_block_implicit_rest(c);        /* |x,| -> |x, __implicit_rest| (destructures) */
   desugar_multi_value_jump(c);           /* return *a, b -> return [*a, b] */
+  desugar_kwsplat_hash_literal(c);       /* m(**{ k: v }) -> m(k: v) */
   desugar_block_destructure_params(c);   /* |a,(b,c),d| -> flat param + `b,c = __destr` */
   desugar_for_nonlocal_index(c);         /* for $g in xs -> for __for in xs; $g = __for */
   desugar_endless_str_range_iter(c);     /* ("a"..).take(3) -> Enumerator.produce("a") { succ }.take(3) */
