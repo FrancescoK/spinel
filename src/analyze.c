@@ -19311,21 +19311,28 @@ static int fwd_call_target(Compiler *c, int u) {
   return -1;
 }
 
-static unsigned fwd_rest_bits(Compiler *c, int mi, int depth);
+static unsigned fwd_rest_bits(Compiler *c, int mi);
+/* Set when an answer below was cut short -- the depth bound, or a method
+   still being asked (a cycle of forwarders) -- so it is not kept as final. */
+static int g_fwd_taint;
 /* Does method mi append to what its parameter j is bound to: in place, lent,
    the handle, or a POLY parameter or a rest element it hands on? */
 static int fwd_param_appends(Compiler *c, int mi, int j, int depth) {
   Scope *m = &c->scopes[mi];
-  if (depth > 4 || j < 0) return 0;
-  /* a rest takes the arguments from its position on */
+  if (j < 0) return 0;
+  /* a rest takes the arguments from its position on; a chain of them is
+     memoized per method (fwd_rest_bits), so it does not count toward the
+     depth, which bounds the POLY hand-ons below */
   if (m->rest_idx >= 0 && j >= m->rest_idx)
-    return j - m->rest_idx < 16 && ((fwd_rest_bits(c, mi, depth + 1) >> (j - m->rest_idx)) & 1u);
+    return j - m->rest_idx < 16 && ((fwd_rest_bits(c, mi) >> (j - m->rest_idx)) & 1u);
   if (j >= m->nparams || !m->pnames[j]) return 0;
   LocalVar *q = scope_local(m, m->pnames[j]);
   if (!q || !q->is_param || q->is_block_param) return 0;
   if (q->byref_out || (q->type == TY_STRBUF && q->str_shared)) return 1;
   if (q->type != TY_POLY) return 0;
-  return an_param_mutated_in_place(c, mi, j) || fwd_poly_param_handed_on(c, mi, j, depth + 1);
+  if (an_param_mutated_in_place(c, mi, j)) return 1;
+  if (depth > 4) { g_fwd_taint = 1; return 0; }
+  return fwd_poly_param_handed_on(c, mi, j, depth + 1);
 }
 
 /* The position a call or `super`'s splat of local `rn` starts at among the
@@ -19347,24 +19354,50 @@ static int fwd_splat_start(Compiler *c, int u, const char *rn) {
 }
 
 /* Per pass: which elements of each method's rest (bits 0-15) it forwards to
-   a parameter that appends; bit 30 answered, bit 29 being asked. */
+   a parameter that appends; bit 30 answered, bit 29 being asked (with the
+   bits found so far). An answer that leaned on a cut-short one is not kept:
+   the outermost query of a cycle of forwarders asks again with what it found
+   until that stops growing, and a forwarder a deeper query reached is asked
+   afresh by its own. */
 static unsigned *g_fwd_rest;
 static int g_fwd_n;
-static unsigned fwd_rest_bits(Compiler *c, int mi, int depth) {
-  const NodeTable *nt = c->nt;
-  if (mi < 0 || mi >= g_fwd_n || depth > 4) return 0;
-  if (g_fwd_rest[mi] & 0x60000000u) return g_fwd_rest[mi] & 0xffffu;
+static unsigned fwd_rest_bits_once(Compiler *c, int mi, const char *rn);
+static int g_fwd_rest_depth;   /* forwarders being asked, nested */
+static unsigned fwd_rest_bits(Compiler *c, int mi) {
+  if (mi < 0 || mi >= g_fwd_n) return 0;
+  if (g_fwd_rest[mi] & 0x40000000u) return g_fwd_rest[mi] & 0xffffu;
+  if (g_fwd_rest[mi] & 0x20000000u) { g_fwd_taint = 1; return g_fwd_rest[mi] & 0xffffu; }
+  if (g_fwd_rest_depth > 64) { g_fwd_taint = 1; return 0; }
   Scope *m = &c->scopes[mi];
   const char *rn = m->rest_idx >= 0 ? m->pnames[m->rest_idx] : NULL;
   if (!rn) { g_fwd_rest[mi] = 0x40000000u; return 0; }
-  g_fwd_rest[mi] = 0x20000000u;
+  int outer = g_fwd_taint, top = g_fwd_rest_depth == 0;
+  unsigned bits = 0;
+  int tainted;
+  g_fwd_rest_depth++;
+  for (int round = 0; ; round++) {
+    g_fwd_rest[mi] = 0x20000000u | bits;
+    g_fwd_taint = 0;
+    unsigned got = bits | fwd_rest_bits_once(c, mi, rn);
+    tainted = g_fwd_taint;
+    if (got == bits || !top || round >= 16) { bits = got; break; }
+    bits = got;
+  }
+  g_fwd_rest_depth--;
+  g_fwd_taint = outer | (!top && tainted);
+  g_fwd_rest[mi] = !top && tainted ? 0 : 0x40000000u | bits;
+  return bits;
+}
+static unsigned fwd_rest_bits_once(Compiler *c, int mi, const char *rn) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
   unsigned bits = 0;
   for (int u = comp_scall_first(c, mi); u >= 0; u = comp_scall_next(c, u)) {
     if (nt_kind(nt, u) != NK_CallNode) continue;
     int p = fwd_splat_start(c, u, rn);
     int t = p >= 0 ? fwd_call_target(c, u) : -1;
     for (int i = 0; t >= 0 && i < 16; i++)
-      if (fwd_param_appends(c, t, p + i, depth + 1)) bits |= 1u << i;
+      if (fwd_param_appends(c, t, p + i, 0)) bits |= 1u << i;
   }
   /* `super(*a)`, and a zsuper handing on the rest at its own position */
   for (int pass = 0; pass < 2 && m->class_id >= 0; pass++) {
@@ -19374,10 +19407,9 @@ static unsigned fwd_rest_bits(Compiler *c, int mi, int depth) {
       int p = pass ? m->rest_idx : fwd_splat_start(c, q, rn);
       int t = p >= 0 ? a_super_target(c, m) : -1;
       for (int i = 0; t >= 0 && i < 16; i++)
-        if (fwd_param_appends(c, t, p + i, depth + 1)) bits |= 1u << i;
+        if (fwd_param_appends(c, t, p + i, 0)) bits |= 1u << i;
     }
   }
-  g_fwd_rest[mi] = 0x40000000u | bits;
   return bits;
 }
 
@@ -19385,7 +19417,8 @@ static unsigned fwd_rest_bits(Compiler *c, int mi, int depth) {
    `super` or a call it is handed to? */
 static int fwd_poly_param_handed_on(Compiler *c, int mi, int pj, int depth) {
   const NodeTable *nt = c->nt;
-  if (depth > 4 || mi < 0 || mi >= c->nscopes) return 0;
+  if (depth > 4) { g_fwd_taint = 1; return 0; }
+  if (mi < 0 || mi >= c->nscopes) return 0;
   Scope *m = &c->scopes[mi];
   if (pj < 0 || pj >= m->nparams || !m->pnames[pj]) return 0;
   const char *pn = m->pnames[pj];
@@ -19435,7 +19468,7 @@ static void fwd_memo_fresh(Compiler *c) {
 int fwd_rest_elem_appends(Compiler *c, int mi, int i) {
   if (mi < 0 || mi >= c->nscopes || i < 0 || i >= 16 || c->scopes[mi].rest_idx < 0) return 0;
   fwd_memo_fresh(c);
-  return (int)((fwd_rest_bits(c, mi, 0) >> i) & 1u);
+  return (int)((fwd_rest_bits(c, mi) >> i) & 1u);
 }
 int fwd_param_appends_at(Compiler *c, int mi, int j) {
   if (mi < 0 || mi >= c->nscopes || j < 0) return 0;
@@ -19542,7 +19575,7 @@ static int promote_forwarded_rest_args(Compiler *c) {
     if (a < 0) continue;
     int t = fwd_call_target(c, u);
     if (t < 0 || c->scopes[t].rest_idx < 0) continue;
-    unsigned bits = fwd_rest_bits(c, t, 0);
+    unsigned bits = fwd_rest_bits(c, t);
     if (!bits) continue;
     Scope *m = &c->scopes[t];
     int ac = 0; const int *av = nt_arr(nt, a, "arguments", &ac);
