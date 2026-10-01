@@ -174,4 +174,6 @@ int is_integer_class_name(const char *n); /* Fixnum Integer */
 
 int is_ivar_access(const char *n);   /* instance_variable_get instance_variable_set */
 
+int builtin_module_owns(const char *cls, const char *name); /* included ahead of Object */
+
 #endif
