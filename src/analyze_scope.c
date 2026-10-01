@@ -4789,9 +4789,7 @@ void process_include_body(Compiler *c, int ci, int body_node) {
     const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
     for (int j = 0; j < an; j++) {
       const char *aty = nt_type(nt, args[j]);
-      const char *mname = NULL;
-      if (aty && sp_streq(aty, "ConstantReadNode")) mname = nt_str(nt, args[j], "name");
-      else if (aty && sp_streq(aty, "ConstantPathNode")) mname = nt_str(nt, args[j], "name");
+      const char *mname = (aty && (sp_streq(aty, "ConstantReadNode") || sp_streq(aty, "ConstantPathNode"))) ? nt_str(nt, args[j], "name") : NULL;
       int mod_id = mname ? comp_class_index(c, mname) : -1;
       /* `M = ::M` beside the include: a constant that merely ALIASES the
          module names it just as well, and the collision qualifier rewrites
@@ -5407,9 +5405,7 @@ void register_extends(Compiler *c) {
       /* `extend A, B` extends B first, so A ends up in front */
       for (int j = an - 1; j >= 0; j--) {
         const char *aty = nt_type(nt, args[j]);
-        const char *mname = NULL;
-        if (aty && sp_streq(aty, "ConstantReadNode")) mname = nt_str(nt, args[j], "name");
-        else if (aty && sp_streq(aty, "ConstantPathNode")) mname = nt_str(nt, args[j], "name");
+        const char *mname = (aty && (sp_streq(aty, "ConstantReadNode") || sp_streq(aty, "ConstantPathNode"))) ? nt_str(nt, args[j], "name") : NULL;
         int mod_id = mname ? comp_class_index(c, mname) : -1;
         if (mod_id < 0) continue;
         /* extending a module the class already extends is a no-op: it stays
@@ -5965,9 +5961,7 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
       const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
       for (int j = 0; j < an; j++) {
         const char *aty = nt_type(nt, args[j]);
-        const char *mname = NULL;
-        if (aty && sp_streq(aty, "ConstantReadNode")) mname = nt_str(nt, args[j], "name");
-        else if (aty && sp_streq(aty, "ConstantPathNode")) mname = nt_str(nt, args[j], "name");
+        const char *mname = (aty && (sp_streq(aty, "ConstantReadNode") || sp_streq(aty, "ConstantPathNode"))) ? nt_str(nt, args[j], "name") : NULL;
         int mod_id = mname ? comp_class_index(c, mname) : -1;
         if (mod_id < 0) continue;
         /* Transplant each instance method of the module into class ci. */
