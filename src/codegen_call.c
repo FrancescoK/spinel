@@ -23151,7 +23151,8 @@ void refuse_yield_string_copies(Compiler *c, int yargc, const int *yargv) {
     if (spread) continue;
     if (!strvar_arg(c, yargv[k], &shared) || shared || local_is_handle(c, yargv[k])) continue;
     DynReach r;
-    dyn_value_reach(c, g_yield_proc_expr, k, &r);
+    if (g_yield_proc_expr < 0 && g_yield_proc_method >= 0) dyn_blk_reach(c, g_yield_proc_method, k, &r);
+    else dyn_value_reach(c, g_yield_proc_expr, k, &r);
     if (!r.app) continue;
     if (r.mname) {
       char mt[96]; snprintf(mt, sizeof mt, "`%s`", r.mname);

@@ -17220,6 +17220,23 @@ static int dyn_block_reaches(Compiler *c, int n, int mi) {
    literal block, or none is found. An initialize's call sites are the
    `new` calls that reach it. */
 #define DYN_OPEN 0x40000000u
+static void dyn_reach_value(Compiler *c, int v, int k, int depth, DynReach *r);
+/* Can call `n` not reach method mi of a user class? Its receiver is an Array
+   or a Hash, which only a reopening of that class (or a module) could give
+   the method: `@parts.each(&blk)` inside `def each(&blk)` is Array#each, not
+   a call site of the method, and its `&blk` is not a block it is passed. */
+static int dyn_site_misses(Compiler *c, int n, int mi) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  if (m->is_cmethod || m->class_id < 0) return 0;
+  ClassInfo *ci = &c->classes[m->class_id];
+  if (ci->def_node < 0 || nt_kind(nt, ci->def_node) != NK_ClassNode || is_builtin_class_name(ci->name))
+    return 0;
+  int recv = nt_ref(nt, n, "receiver");
+  if (recv < 0) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  return ty_is_array(rt) || ty_is_hash(rt);
+}
 static unsigned dyn_blk_bits(Compiler *c, int mi) {
   const NodeTable *nt = c->nt;
   if (mi < 0 || mi >= g_dyn.nscope) return DYN_OPEN;
@@ -17230,10 +17247,25 @@ static unsigned dyn_blk_bits(Compiler *c, int mi) {
   const char *cn = c->scopes[mi].name;
   int ctor = cn && sp_streq(cn, "initialize") && !c->scopes[mi].is_cmethod;
   int h = cn ? anh_find(&g_dyn.bnames, ctor ? "new" : cn) : -1;
+  /* open while the sites are walked: a `&blk` that leads back here stops */
+  g_dyn.blk[mi] = DYN_DONE | DYN_OPEN;
   for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
     int b = nt_ref(nt, g_dyn.bnode[e], "block");
     if (ctor && !dyn_block_reaches(c, g_dyn.bnode[e], mi)) continue;
+    if (!ctor && dyn_site_misses(c, g_dyn.bnode[e], mi)) continue;
     any = 1;
+    /* `&pr`: what the procs it can hold do with each position */
+    if (nt_kind(nt, b) == NK_BlockArgumentNode && nt_ref(nt, b, "expression") >= 0) {
+      for (int k = 0; k < 14 && !(bits & DYN_OPEN); k++) {
+        DynReach r;
+        memset(&r, 0, sizeof r);
+        dyn_reach_value(c, nt_ref(nt, b, "expression"), k, 1, &r);
+        if (r.unknown) bits |= DYN_OPEN;
+        if (r.app) bits |= 1u << k;
+        if (r.keeps) bits |= 1u << (16 + k);
+      }
+      continue;
+    }
     if (nt_kind(nt, b) != NK_BlockNode) { bits |= DYN_OPEN; continue; }
     unsigned lb = dyn_lit_bits(c, b);
     bits |= lb & 0x3fffffffu;
@@ -17588,6 +17620,16 @@ int dyn_yield_site(Compiler *c, int y) {
   if (y < 0 || nt_kind(c->nt, y) != NK_YieldNode) return -1;
   Scope *s = comp_scope_of(c, y);
   return s && s->name && s->is_lowered_yield ? (int)(s - c->scopes) : -1;
+}
+/* What the blocks method mi's call sites pass do with position k: the yield
+   of a method emitted in proc form, whose block is a parameter. */
+void dyn_blk_reach(Compiler *c, int mi, int k, DynReach *r) {
+  memset(r, 0, sizeof *r);
+  if (!g_dyn.fresh) dyn_memo_reset(c);
+  unsigned bits = dyn_blk_bits(c, mi);
+  if (bits & DYN_OPEN) r->unknown = 1;
+  dyn_fold(r, bits, k, 1, 0, TY_UNKNOWN);
+  if (r->unknown && !r->app && dyn_any_appender(c)) r->app = 1;
 }
 /* What the blocks such a yield reaches do with its argument at position k. */
 void dyn_yield_reach(Compiler *c, int y, int k, DynReach *r) {
