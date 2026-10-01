@@ -13162,6 +13162,7 @@ static int cbs_walk(Compiler *c, const CbsNames *q, int n, int cls_node, const c
   for (int j = 0; j < nr; j++) changed |= cbs_walk(c, q, refs[j], cls_node, cls);
   for (int j = 0; j < nt->nodes[n].na; j++) {
     int an = nt->nodes[n].a[j].n;
+    if (an <= 0) continue;  /* an empty array's ids may be NULL: memcpy from NULL is UB */
     int *ids = malloc(sizeof(int) * (size_t)(an + 1));
     memcpy(ids, nt->nodes[n].a[j].ids, sizeof(int) * (size_t)an);
     for (int r = 0; r < an; r++) changed |= cbs_walk(c, q, ids[r], cls_node, cls);
