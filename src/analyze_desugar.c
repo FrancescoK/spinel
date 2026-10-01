@@ -12372,3 +12372,83 @@ int desugar_singleton_attr(Compiler *c) {
 }
 
 
+
+/* ---- `def m ... end unless method_defined?(:m)` in a class body ----
+   The guard runs where it stands: the def happens only when nothing has
+   defined the method by then -- an earlier def in this or another body of
+   the class (or module), or in a superclass, by the program's text. Each
+   guard is answered in program order and replaced by its statements or
+   dropped, so a def an earlier guard dropped does not count. Only a bare or
+   `self.` method_defined? / public_method_defined? with a literal name is
+   answered; anything else keeps its runtime refusal. */
+/* a def of `m` (no receiver) in body subtree `n`, ahead of `before` and
+   outside it; nested classes, defs and singleton classes are not entered */
+static int dum_defines(const NodeTable *nt, int n, const char *m, int before) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode) {
+    const char *dn = nt_str(nt, n, "name");
+    return n < before && nt_ref(nt, n, "receiver") < 0 && dn && sp_streq(dn, m);
+  }
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return 0;
+  if (n == before) return 0;
+  const SpNode *nd = &nt->nodes[n];
+  for (int j = 0; j < nd->nr; j++) if (dum_defines(nt, nd->r[j].ref, m, before)) return 1;
+  for (int j = 0; j < nd->na; j++)
+    for (int q = 0; q < nd->a[j].n; q++) if (dum_defines(nt, nd->a[j].ids[q], m, before)) return 1;
+  return 0;
+}
+static const char *dum_leaf(const NodeTable *nt, int path) {
+  if (path < 0) return NULL;
+  NodeKind k = nt_kind(nt, path);
+  return k == NK_ConstantReadNode || k == NK_ConstantPathNode ? nt_str(nt, path, "name") : NULL;
+}
+static int dum_defined_before(const NodeTable *nt, const char *cls, const char *m, int before, int depth) {
+  if (!cls || depth > 16) return 0;
+  const char *super = NULL;
+  for (int n = 0; n < before && n < nt->count; n++) {
+    NodeKind k = nt_kind(nt, n);
+    if (k != NK_ClassNode && k != NK_ModuleNode) continue;
+    const char *ln = dum_leaf(nt, nt_ref(nt, n, "constant_path"));
+    if (!ln || !sp_streq(ln, cls)) continue;
+    if (dum_defines(nt, nt_ref(nt, n, "body"), m, before)) return 1;
+    if (k == NK_ClassNode && !super) super = dum_leaf(nt, nt_ref(nt, n, "superclass"));
+  }
+  return super ? dum_defined_before(nt, super, m, before, depth + 1) : 0;
+}
+int desugar_def_unless_method_defined(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0, n0 = nt->count;
+  for (int cls = 0; cls < n0; cls++) {
+    NodeKind ck = nt_kind(nt, cls);
+    if (ck != NK_ClassNode && ck != NK_ModuleNode) continue;
+    const char *cn = dum_leaf(nt, nt_ref(nt, cls, "constant_path"));
+    int body = nt_ref(nt, cls, "body");
+    if (!cn || body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bs = nt_arr(nt, body, "body", &bn);
+    int *out = malloc(sizeof(int) * (size_t)(bn + 1)); int no = 0, touched = 0;
+    for (int i = 0; i < bn; i++) {
+      int st = bs[i];
+      int pred = nt_kind(nt, st) == NK_UnlessNode ? nt_ref(nt, st, "predicate") : -1;
+      const char *pn = pred >= 0 && nt_kind(nt, pred) == NK_CallNode ? nt_str(nt, pred, "name") : NULL;
+      int pr = pred >= 0 ? nt_ref(nt, pred, "receiver") : -1;
+      int an = 0; const int *av = pn ? nt_arr(nt, nt_ref(nt, pred, "arguments"), "arguments", &an) : NULL;
+      const char *m = an == 1 && nt_kind(nt, av[0]) == NK_SymbolNode ? nt_str(nt, av[0], "value")
+                    : an == 1 && nt_kind(nt, av[0]) == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
+      int arm = pn ? nt_ref(nt, st, "statements") : -1;
+      if (!pn || (!sp_streq(pn, "method_defined?") && !sp_streq(pn, "public_method_defined?")) ||
+          (pr >= 0 && nt_kind(nt, pr) != NK_SelfNode) || !m || nt_ref(nt, pred, "block") >= 0 ||
+          nt_ref(nt, st, "else_clause") >= 0 || arm < 0 || nt_kind(nt, arm) != NK_StatementsNode) {
+        out[no++] = st; continue;
+      }
+      touched = 1; changed = 1;
+      if (dum_defined_before(nt, cn, m, st, 0)) continue;   /* defined already: the guarded body does not run */
+      int sn = 0; const int *ss = nt_arr(nt, arm, "body", &sn);
+      out = realloc(out, sizeof(int) * (size_t)(no + sn + (bn - i) + 1));
+      for (int q = 0; q < sn; q++) out[no++] = ss[q];
+    }
+    if (touched) nt_node_set_arr(nt, body, "body", out, no);
+    free(out);
+  }
+  return changed;
+}

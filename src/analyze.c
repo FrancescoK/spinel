@@ -21441,6 +21441,8 @@ void analyze_program(Compiler *c) {
   mark_sym_proc_blocks(c);               /* { |_spx| _spx.m } is `&:m` */
   desugar_root_scoped_constants(c);      /* ::Name -> Name (#4801) */
   desugar_engine_branches(c);
+  desugar_def_unless_method_defined(c); /* def m .. end unless method_defined?(:m), answered in program order --
+                                           ahead of the runtime-condition defs, which it answers statically */
   desugar_conditional_defs(c);
   mark_match_ranges(c);                  /* when 0..0.05 matches as 0.0..0.05 */
   desugar_duplicate_underscore_params(c); /* |_, _| -> |_, _dup1| */
