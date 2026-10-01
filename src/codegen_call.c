@@ -17697,6 +17697,7 @@ static int operand_hoists_effect(Compiler *c, int node) {
 }
 
 static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
+  if (emit_or_take_back(c, id, b, emit_str_append_chain_handle)) return 1;
   const NodeTable *nt = c->nt;
   if (id == g_operand_order_node) return 0;
   int recv = nt_ref(nt, id, "receiver");
