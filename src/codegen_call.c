@@ -45160,13 +45160,22 @@ else {
           TyKind want3 = comp_ntype(c, id);
           int void3 = method_is_void(&c->scopes[oc_mi3]) && want3 != TY_VOID &&
                       want3 != TY_UNKNOWN && want3 != TY_NIL;
-          if (void3) buf_puts(b, "(");
-          buf_printf(b, "sp_Object_%s(", mc(c->scopes[oc_mi3].name));
-          emit_boxed(c, recv, b);
-          emit_args_filled(c, oc_mi3, nt_ref(nt, id, "arguments"), ", ", b);
-          emit_trailing_blk_arg(c, &c->scopes[oc_mi3], id, -1, b);
-          buf_puts(b, ")");
-          if (void3) buf_printf(b, ", %s)", want3 == TY_POLY ? "sp_box_nil()" : default_value(want3));
+          /* a site typed wider than the method's answer -- the poly slot a
+             `&.` gives `x&.m` -- takes it boxed, as the proc form's does */
+          TyKind mr3 = (TyKind)c->scopes[oc_mi3].ret;
+          int box3 = !void3 && want3 == TY_POLY && mr3 != TY_POLY && mr3 != TY_UNKNOWN &&
+                     mr3 != TY_VOID && !method_is_void(&c->scopes[oc_mi3]);
+          Buf oc3; memset(&oc3, 0, sizeof oc3);
+          if (void3) buf_puts(&oc3, "(");
+          buf_printf(&oc3, "sp_Object_%s(", mc(c->scopes[oc_mi3].name));
+          emit_boxed(c, recv, &oc3);
+          emit_args_filled(c, oc_mi3, nt_ref(nt, id, "arguments"), ", ", &oc3);
+          emit_trailing_blk_arg(c, &c->scopes[oc_mi3], id, -1, &oc3);
+          buf_puts(&oc3, ")");
+          if (void3) buf_printf(&oc3, ", %s)", want3 == TY_POLY ? "sp_box_nil()" : default_value(want3));
+          if (box3) emit_boxed_text(c, mr3, oc3.p, b);
+          else buf_puts(b, oc3.p);
+          free(oc3.p);
           return;
         }
       }
