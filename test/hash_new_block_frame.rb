@@ -49,4 +49,4 @@ end
 p Scaled.new(7)[3]
 
 fib = Hash.new { |hh, n| s = n < 2 ? n : hh[n - 1] + hh[n - 2]; hh[n] = s }
-p fib[60]
+p fib[40]
