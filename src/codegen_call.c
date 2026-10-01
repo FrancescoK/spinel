@@ -3611,6 +3611,18 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
     if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
       buf_puts(b, "sp_Fiber_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
     }
+    /* the running fiber's storage as a Hash copy, or replaced by one */
+    if (sp_streq(name, "storage") && argc == 0) {
+      buf_puts(b, "sp_Fiber_storage_hash("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+    if (sp_streq(name, "storage=") && argc == 1) {
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_Fiber_storage_assign(", tv);
+      emit_expr(c, recv, b);
+      buf_printf(b, ", _t%d); _t%d; })", tv, tv);
+      return 1;
+    }
   }
   return 0;
 }
@@ -14185,11 +14197,27 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       if (cn && sp_streq(cn, "Fiber") && nt_ref(nt, id, "block") >= 0) {
         /* the Ruby creation site, which #inspect carries (as Thread's does) */
         const char *fpath = c->nt->source_file;
+        /* Fiber.new(storage: x): the store it starts with */
+        int fst = -1;
+        if (argc >= 1 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) {
+          int kwn = 0; const int *kwels = nt_arr(nt, argv[argc - 1], "elements", &kwn);
+          int e = kwh_elem_named(c, kwn, kwels, "storage");
+          if (e >= 0) fst = nt_ref(nt, kwels[e], "value");
+        }
+        /* storage: is evaluated first, as CRuby does, and stays rooted
+           while the fiber is allocated */
+        int tst = 0;
+        if (fst >= 0) {
+          tst = ++g_tmp;
+          buf_printf(b, "({ sp_RbVal _t%d = ", tst); emit_boxed(c, fst, b);
+          buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_Fiber_with_storage(", tst);
+        }
         buf_puts(b, "sp_Fiber_at(");
         emit_fiber_new(c, id, b, 0, -1);
         buf_puts(b, ", \"");
         emit_c_escaped(b, fpath && *fpath ? fpath : "source.rb");
         buf_printf(b, "\", %d)", (int)nt_int(nt, id, "node_line", 0));
+        if (tst) buf_printf(b, ", _t%d); })", tst);
         return 1;
       }
       if (cn && sp_streq(cn, "Queue")) { buf_puts(b, "sp_Queue_new()"); return 1; }

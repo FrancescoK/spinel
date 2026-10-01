@@ -106,6 +106,12 @@ sp_Fiber *sp_Fiber_at(sp_Fiber *f, const char *file, sp_int line);
 const char *sp_Fiber_inspect(sp_Fiber *f);   /* #inspect / #to_s */
 sp_RbVal sp_Fiber_storage_get(sp_Fiber *f, sp_sym k);
 void sp_Fiber_storage_set(sp_Fiber *f, sp_sym k, sp_RbVal v);
+void sp_Fiber_storage_put(sp_Fiber *f, sp_sym k, sp_RbVal v);
+sp_int sp_Fiber_storage_len(sp_Fiber *f);
+sp_sym sp_Fiber_storage_key(sp_Fiber *f, sp_int i);
+sp_RbVal sp_Fiber_storage_val(sp_Fiber *f, sp_int i);
+void sp_Fiber_storage_clear(sp_Fiber *f);
+void sp_Fiber_storage_empty(sp_Fiber *f);
 sp_RbVal sp_Fiber_attr_get(sp_Fiber *f, sp_sym k);
 void sp_Fiber_attr_set(sp_Fiber *f, sp_sym k, sp_RbVal v);
 /* Reached from sp_re_mark_globals in the generated TU during a GC pass. */

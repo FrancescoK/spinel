@@ -3829,6 +3829,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "alive?")) return TY_BOOL;
     if (sp_streq(name, "value")) return TY_POLY;
     if (sp_streq(name, "kill")) return TY_FIBER;   /* returns the receiver */
+    if (sp_streq(name, "storage") && argc == 0) return TY_POLY;   /* a Hash copy, or nil */
+    if (sp_streq(name, "storage=") && argc == 1) return TY_POLY;
   }
 
   /* Object's identity protocol on the native kinds: typed from the same

@@ -1,0 +1,23 @@
+nil
+[nil, 2]
+[nil, nil]
+{}
+1
+{a: 1}
+nil
+{a: 1}
+{a: 9}
+1
+[nil, 3]
+"Fiber storage can only be accessed from the Fiber it belongs to"
+"Fiber storage can only be accessed from the Fiber it belongs to"
+"wrong argument type String (expected Symbol)"
+"storage must be a hash"
+1
+[50, "v50v50v50"]
+19900
+8
+{a: nil, b: 1}
+{a: nil}
+nil
+nil
