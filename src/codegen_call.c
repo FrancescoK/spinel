@@ -1792,6 +1792,9 @@ static int method_scope_arity(Compiler *c, int target, int *out) {
   *out = variadic ? -(req + 1) : req;
   return 1;
 }
+/* The send_blind call whose dispatch arm is being emitted (see the split) */
+static int g_send_split = -1;
+
 int builtin_object_method_known(const char *m) {
   static const char *const OBJM2[] = {
     "class", "clone", "dup", "display", "enum_for", "eql?", "equal?",
@@ -24570,6 +24573,54 @@ static void emit_handle_inspect(Compiler *c, int recv, TyKind rt, Buf *b) {
   buf_printf(b, "sp_sprintf(\"#<%s:0x%%016llx>\", (unsigned long long)(uintptr_t)(", hn);
   emit_expr(c, recv, b); buf_puts(b, "))");
 }
+static int emit_send_blind(Compiler *c, int id, Buf *b) {
+  if (nt_str(c->nt, id, "send_blind")) {
+    const CallPlan *plan = cplan_user(c, id);
+    if (plan->via == UC_SEND_BLIND) { emit_method_call(c, id, b); return 1; }
+    int smi = plan->send_fallback;
+    if (smi >= 0) {
+      const char *sn = nt_str(c->nt, id, "name");
+      int srcv = nt_ref(c->nt, id, "receiver");
+      /* A boxed receiver answers by its class at run time: one whose class
+         defines the name takes the dispatch, any other reaches the top-level
+         def, Object's (the call is typed boxed for the two). The receiver
+         runs once, into a temp both arms read, and the arguments that could
+         run twice are run ahead of them. */
+      if (g_send_split != id && g_n_argov < MAX_ARG_OVERRIDE &&
+          comp_ntype(c, id) == TY_POLY) {
+        int tv = ++g_tmp;
+        Buf rb; memset(&rb, 0, sizeof rb);
+        emit_boxed(c, srcv, &rb);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tv, rb.p ? rb.p : "sp_box_nil()", tv);
+        free(rb.p);
+        int sac = 0; const int *sav = call_args(c->nt, id, &sac);
+        int sv_argov = g_n_argov;
+        view_bind(srcv, "_t%d", tv);
+        if (sav && sac > 0) emit_args_in_source_order(c, sav, sac, g_pre);
+        buf_printf(b, "(((_t%d.tag == SP_TAG_OBJ && (0", tv);
+        for (int k = 0; k < c->nclasses; k++)
+          if (comp_method_in_chain(c, k, sn, NULL) >= 0 || comp_reader_in_chain(c, k, sn, NULL))
+            buf_printf(b, " || _t%d.cls_id == %d", tv, k);
+        buf_puts(b, "))) ? (");
+        int sv_split = g_send_split; g_send_split = id;
+        emit_expr(c, id, b);
+        g_send_split = sv_split;
+        buf_puts(b, ") : (");
+        Buf mb; memset(&mb, 0, sizeof mb);
+        emit_method_call(c, id, &mb);
+        emit_boxed_text(c, c->scopes[smi].ret, mb.p ? mb.p : "0", b);
+        free(mb.p);
+        buf_puts(b, "))");
+        view_unbind(sv_argov);
+        return 1;
+      }
+    }
+  }
+
+  return 0;
+}
+
 static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -24707,15 +24758,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* A retargeted `x.send(:m)`: send ignores visibility, and a top-level `def`
      is Object's private instance method -- reachable this way and no other.
      The receiver's own class answers first when it defines the name. */
-  if (nt_str(c->nt, id, "send_blind") && nt_ref(c->nt, id, "receiver") >= 0 &&
-      nt_ref(c->nt, id, "block") < 0) {
-    const char *sn = nt_str(c->nt, id, "name");
-    int smi = sn ? comp_method_index(c, sn) : -1;
-    if (smi >= 0 && !(smi < c->nscopes && c->scopes[smi].yields)) {
-      int srecv = nt_ref(c->nt, id, "receiver");
-      if (!send_blind_recv_owns(c, srecv, comp_ntype(c, srecv), sn)) { emit_method_call(c, id, b); return; }
-    }
-  }
+  if (emit_send_blind(c, id, b)) return;
 
   /* A bare call resolves the way CRuby's ancestry does: the enclosing class's
      own chain, then Object -- where a top-level `def` lands -- and only then a

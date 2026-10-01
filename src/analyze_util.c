@@ -2341,6 +2341,34 @@ int comp_self_call_mi(Compiler *c, int id, const char *name) {
   return mi;
 }
 
+/* The modules a builtin class includes ahead of Object, with their own
+   public methods as CRuby 4.0 lists them: Integer and Float are Numeric and
+   Comparable, String and Symbol Comparable, Array, Hash and Range
+   Enumerable. The builtin table holds each class's own methods only. */
+static int builtin_module_owns(const char *cls, const char *m) {
+  static const char *const cmp[] = { "<", "<=", "==", ">", ">=", "between?", "clamp", NULL };
+  static const char *const num[] = {
+    "%", "+@", "-@", "<=>", "abs", "abs2", "angle", "arg", "ceil", "clone", "coerce", "conj",
+    "conjugate", "denominator", "div", "divmod", "dup", "eql?", "fdiv", "finite?", "floor", "i",
+    "imag", "imaginary", "infinite?", "integer?", "magnitude", "modulo", "negative?", "nonzero?",
+    "numerator", "phase", "polar", "positive?", "quo", "real", "real?", "rect", "rectangular",
+    "remainder", "round", "step", "to_c", "to_int", "truncate", "zero?", NULL };
+  static const char *const enm[] = {
+    "all?", "any?", "chain", "chunk", "chunk_while", "collect", "collect_concat", "compact",
+    "count", "cycle", "detect", "drop", "drop_while", "each_cons", "each_entry", "each_slice",
+    "each_with_index", "each_with_object", "entries", "filter", "filter_map", "find", "find_all",
+    "find_index", "first", "flat_map", "grep", "grep_v", "group_by", "include?", "inject", "lazy",
+    "map", "max", "max_by", "member?", "min", "min_by", "minmax", "minmax_by", "none?", "one?",
+    "partition", "reduce", "reject", "reverse_each", "select", "slice_after", "slice_before",
+    "slice_when", "sort", "sort_by", "sum", "take", "take_while", "tally", "to_a", "to_h", "to_set",
+    "uniq", "zip", NULL };
+  int numeric = sp_streq(cls, "Integer") || sp_streq(cls, "Float");
+  if ((numeric || sp_streq(cls, "String") || sp_streq(cls, "Symbol")) && str_in(m, cmp)) return 1;
+  if (numeric && str_in(m, num)) return 1;
+  if ((sp_streq(cls, "Array") || sp_streq(cls, "Hash") || sp_streq(cls, "Range")) && str_in(m, enm)) return 1;
+  return 0;
+}
+
 int send_blind_recv_owns(Compiler *c, int recv, TyKind srt, const char *name) {
   if (ty_is_object(srt))
     return comp_method_in_chain(c, ty_object_class(srt), name, NULL) >= 0 ||
@@ -2350,7 +2378,17 @@ int send_blind_recv_owns(Compiler *c, int recv, TyKind srt, const char *name) {
   NodeKind rk = nt_kind(c->nt, recv);
   int ci = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode
            ? comp_class_index(c, nt_str(c->nt, recv, "name")) : self_class_static_ci(c, recv);
-  return ci >= 0 && comp_cmethod_in_chain(c, ci, name, NULL) >= 0;
+  if (ci >= 0 && comp_cmethod_in_chain(c, ci, name, NULL) >= 0) return 1;
+  if (srt == TY_POLY) {
+    for (int k = 0; k < c->nclasses; k++)
+      if (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL)) return 1;
+    return 0;
+  }
+  const char *bc = srt == TY_INT ? "Integer" : srt == TY_FLOAT ? "Float"
+                 : (srt == TY_STRING || srt == TY_STRBUF) ? "String" : srt == TY_SYMBOL ? "Symbol"
+                 : ty_is_array(srt) ? "Array" : ty_is_hash(srt) ? "Hash"
+                 : srt == TY_RANGE ? "Range" : srt == TY_PROC ? "Proc" : srt == TY_TIME ? "Time" : NULL;
+  return bc && (builtin_method_known(bc, name) || builtin_module_owns(bc, name));
 }
 
 /* A receiverless call directly in a class body is sent to the class. */
