@@ -481,7 +481,7 @@ sp_PolyArray *sp_process_waitpid2(sp_int pid);
    sp_alloc.h / sp_alloc.c, shared (extern) so standalone lib C files can
    allocate onto the same heap. sp_str_sweep moved to sp_alloc.c. */
 
-/* RUBY_PLATFORM string -- host arch + OS. Detected at C compile time
+/* RUBY_PLATFORM's parts -- host arch + OS. Detected at C compile time
    so cross-builds report the target platform. Issue #890. */
 #if defined(__x86_64__) || defined(_M_X64)
 #  define SP_RUBY_ARCH "x86_64"
@@ -503,8 +503,8 @@ sp_PolyArray *sp_process_waitpid2(sp_int pid);
 #else
 #  define SP_RUBY_OS "unknown"
 #endif
-static const char sp_ruby_platform_data[] = "\xff" SP_RUBY_ARCH "-" SP_RUBY_OS;
-static inline const char *sp_ruby_platform_str(void) { return sp_ruby_platform_data + 1; }
+/* (the program defines the frozen String from these at its first read of
+   RUBY_PLATFORM: emit_engine_const_str) */
 
 /* Process.ppid wrapper. */
 static inline sp_int sp_process_ppid(void) {
@@ -998,8 +998,10 @@ static inline sp_int sp_str_setbyte(const char *s, sp_int i, sp_int v) {
 static inline const char *sp_str_uminus_val(const char *s);
 static inline const char *sp_str_freeze_val(const char *s);
 /* Module#name: a frozen String, as in CRuby. The name is a static string;
-   its frozen copy is made once per name (per worker) and handed out again,
-   so `k.name` in a loop allocates nothing after the first call. */
+   its frozen copy is the interned one (sp_str_uminus_val), so a class reached
+   as a boxed value, whose name the poly dispatch interns directly, answers
+   the same object. It is looked up once per name (per worker) and handed out
+   again, so `k.name` in a loop allocates nothing after the first call. */
 static const char *sp_str_frozen_name(const char *s) {
   static SP_TLS const char **src = NULL, **frz = NULL;
   static SP_TLS int n = 0, cap = 0;
@@ -1008,13 +1010,13 @@ static const char *sp_str_frozen_name(const char *s) {
   if (n == cap) {
     int nc = cap ? cap * 2 : 16;
     const char **ns = (const char **)realloc((void *)src, sizeof(char *) * (size_t)nc);
-    if (!ns) return sp_str_freeze_val(s);
+    if (!ns) return sp_str_uminus_val(s);
     src = ns;
     const char **nf = (const char **)realloc((void *)frz, sizeof(char *) * (size_t)nc);
-    if (!nf) return sp_str_freeze_val(s);
+    if (!nf) return sp_str_uminus_val(s);
     frz = nf; cap = nc;
   }
-  const char *f = sp_str_freeze_val(s);
+  const char *f = sp_str_uminus_val(s);
   src[n] = s; frz[n] = f; n++;
   return f;
 }
@@ -1987,7 +1989,7 @@ static inline const char *sp_poly_to_s(sp_RbVal v) {
     case SP_TAG_FLT: return sp_float_to_s(v.v.f);
     case SP_TAG_BOOL: return v.v.b ? sp_str_frozen_true : sp_str_frozen_false;
     case SP_TAG_NIL: return sp_str_frozen_empty;
-    case SP_TAG_SYM: return sp_sym_to_s((sp_sym)v.v.i);
+    case SP_TAG_SYM: return sp_sym_to_s_chilled((sp_sym)v.v.i);
     case SP_TAG_CLASS: return sp_class_val_name(v);
     case SP_TAG_ENCODING: return v.v.s ? v.v.s : sp_str_empty;
     case SP_TAG_BIGINT: return sp_bigint_to_s((sp_Bigint *)v.v.p);
@@ -4689,20 +4691,22 @@ static sp_RbVal sp_poly_bxor(sp_RbVal a, sp_RbVal b) {
    Complex, so `[Rational(1,10)].map { |r| -r }` answered [0] with nothing
    said (#4299). Each kind negates through its own helper, the way sp_poly_mul
    dispatches its tower one line at a time. */
-/* +h on a shared String handle: h itself unless it is frozen, else a new,
-   unfrozen handle with the same contents */
+/* +h on a shared String handle: h itself unless it is frozen or chilled
+   (one made from Symbol#to_s), else a new, plain handle with the same
+   contents */
 static inline sp_String *sp_String_uplus(sp_String *h) {
-  if (!h || !sp_String_is_frozen(h)) return h;
+  if (!h || !(sp_String_is_frozen(h) || (h->chilled && sp_String_chilled_now(h)))) return h;
   return sp_String_new_shared(sp_str_dup(sp_String_cstr(h)));
 }
-/* +s: s itself unless it is frozen, else an unfrozen copy (CRuby) */
+/* +s: s itself unless it is frozen or chilled, else a plain copy (CRuby) */
 static inline const char *sp_str_uplus(const char *s) {
-  return sp_str_is_frozen_val(s) ? sp_str_dup(s) : s;
+  return sp_str_is_frozen_val(s) || sp_str_is_chilled(s) ? sp_str_dup(s) : s;
 }
 /* +v on a boxed value: the same for a String, whether it is boxed as a
    plain value or as a shared handle; anything else is itself */
 static sp_RbVal sp_poly_uplus(sp_RbVal v) {
-  if (v.tag == SP_TAG_STR && v.v.s && sp_str_is_frozen_val(v.v.s)) return sp_box_str(sp_str_dup(v.v.s));
+  if (v.tag == SP_TAG_STR && v.v.s && (sp_str_is_frozen_val(v.v.s) || sp_str_is_chilled(v.v.s)))
+    return sp_box_str(sp_str_dup(v.v.s));
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p) {
     sp_String *h = (sp_String *)v.v.p;
     sp_String *n = sp_String_uplus(h);
@@ -7052,7 +7056,8 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
     case SP_TAG_INT:  return v.v.i == SP_INT_NIL ? SPL("nil") : sp_int_to_s(v.v.i);
     case SP_TAG_STR:  return sp_str_inspect(v.v.s);
     case SP_TAG_FLT:  return sp_float_to_s(v.v.f);
-    case SP_TAG_BOOL: return v.v.b ? SPL("true") : SPL("false");
+    /* true.inspect is true.to_s, the frozen one; nil.inspect is a new "nil" */
+    case SP_TAG_BOOL: return v.v.b ? sp_str_frozen_true : sp_str_frozen_false;
     case SP_TAG_NIL:  return SPL("nil");
     case SP_TAG_SYM:  return sp_sym_inspect((sp_sym)v.v.i);
     case SP_TAG_ENCODING: return sp_sprintf("#<Encoding:%s>", v.v.s ? v.v.s : "");

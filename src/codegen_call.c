@@ -7998,8 +7998,13 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       if (is_class_named) {
         const char *sbopen = (ret == TY_POLY) ? "sp_box_str(" : "";
         const char *sbclose = (ret == TY_POLY) ? ")" : "";
-        buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) _t%d = %ssp_class_val_name(_t%d)%s; else ",
-                   tv, tr, sbopen, tv, sbclose);
+        /* a boxed class's #name is the interned frozen String the typed
+           forms answer (sp_str_frozen_name, which emit_call wraps around
+           those), as the Encoding and Symbol arms below intern theirs; its
+           to_s and inspect are not frozen */
+        int fzn = sp_streq(name, "name");
+        buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) _t%d = %s%ssp_class_val_name(_t%d)%s%s; else ",
+                   tv, tr, sbopen, fzn ? "sp_str_uminus_val(" : "", tv, fzn ? ")" : "", sbclose);
         /* `name` on an Encoding (always carried boxed) and on a Symbol: a
            frozen String, as CRuby answers and as the typed Symbol#name does */
         if (sp_streq(name, "name"))
@@ -32720,8 +32725,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); const char *_s%d = sp_poly_check_str(_t%d);"
                       " _s%d ? _s%d : sp_poly_to_s(_t%d); })", ts, ts, ts, ts, ts, ts);
       }
-      else if (at == TY_BOOL) { buf_puts(b, "("); emit_expr(c, av[0], b); buf_puts(b, " ? \"true\" : \"false\")"); }
-      else if (at == TY_SYMBOL) { buf_puts(b, "sp_sym_to_s("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
+      /* the frozen "true" / "false" true.to_s answers; a bare C literal here
+         had no marker byte at all */
+      else if (at == TY_BOOL) { buf_puts(b, "(("); emit_expr(c, av[0], b); buf_puts(b, ") ? sp_str_frozen_true : sp_str_frozen_false)"); }
+      else if (at == TY_SYMBOL) { buf_puts(b, "sp_sym_to_s_chilled("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       else if (at == TY_NIL || at == TY_UNKNOWN) { buf_puts(b, "sp_poly_to_s(sp_box_nil())"); }
       /* Kernel#String asks for #to_str first, and only then #to_s (#3721) */
       else if (ty_is_object(at) &&
@@ -36348,8 +36355,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
             }
           }
           else if (brt == TY_SYMBOL) {
+            /* the chilled String CRuby answers (sp_sym_to_s_chilled) */
             if (sp_streq(name, "to_s") || sp_streq(name, "id2name")) {
-              buf_printf(b, "sp_sym_to_s(%s)", s); return;
+              buf_printf(b, "sp_sym_to_s_chilled(%s)", s); return;
             }
             if (sp_streq(name, "inspect")) { buf_printf(b, "sp_sym_inspect(%s)", s); return; }
             if (sp_streq(name, "to_sym") || sp_streq(name, "itself")) { buf_puts(b, s); return; }
@@ -42727,11 +42735,13 @@ else {
 
   /* symbol receiver methods */
   if (recv >= 0 && rt == TY_SYMBOL) {
+    /* #to_s answers a chilled String, one per symbol: not frozen, but +@
+       copies it (sp_sym_to_s_chilled) */
     if (sp_streq(name, "to_s") || sp_streq(name, "id2name")) {
-      buf_puts(b, "sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, ")");
+      buf_puts(b, "sp_sym_to_s_chilled("); emit_expr(c, recv, b); buf_puts(b, ")");
       return;
     }
-    /* #name answers the frozen name string (to_s answers a mutable copy) */
+    /* #name answers the frozen name string */
     if (sp_streq(name, "name")) {
       buf_puts(b, "sp_str_uminus_val(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, "))");
       return;
