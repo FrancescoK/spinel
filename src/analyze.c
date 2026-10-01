@@ -13665,6 +13665,22 @@ static int an_block_param_alias_mutated(Compiler *c, const ALocalAliases *t, Sco
     }
   return 0;
 }
+/* Is local `to` written, in scope si, from local `from` (`to = from`), or
+   through a chain of such writes? */
+static int an_local_aliases_reach(const ALocalAliases *t, int si, const char *from, const char *to) {
+  if (!t->head || si < 0 || !from || !to) return 0;
+  const char *names[8]; int nn = 0;
+  names[nn++] = from;
+  for (int i = 0; i < nn; i++)
+    for (int r = t->head[si]; r >= 0; r = t->next[r]) {
+      if (!sp_streq(t->rn[r], names[i])) continue;
+      if (sp_streq(t->wn[r], to)) return 1;
+      int seen = 0;
+      for (int j = 0; j < nn && !seen; j++) seen = sp_streq(names[j], t->wn[r]);
+      if (!seen && nn < 8) names[nn++] = t->wn[r];
+    }
+  return 0;
+}
 /* Is this argument node a shared-handle slot read (a str_shared local or a
    shared ivar)? */
 static int strbuf_container_stores_string(Compiler *c, const char *contn, Scope *conts);
@@ -14615,7 +14631,9 @@ static int an_local_pure_alias_of(Compiler *c, int mi, const char *ln, const cha
   if (depth > 3 || sp_streq(ln, pn)) return 0;
   int any = 0;
   for (int w = comp_lvw_first_sc(c, mi, ln); w >= 0; w = comp_lvw_next_sc(c, w)) {
-    if (c->nscope[w] != mi) continue;
+    /* the chain is a hash bucket: another local's write can share it, and
+       taken for one of ln's it made a pure alias look rebound */
+    if (c->nscope[w] != mi || !nt_str(nt, w, "name") || !sp_streq(nt_str(nt, w, "name"), ln)) continue;
     if (nt_kind(nt, w) != NK_LocalVariableWriteNode) return 0;
     int v = an_strbuf_alias_source(c, nt_ref(nt, w, "value"));
     const char *vn = v >= 0 ? nt_str(nt, v, "name") : NULL;
@@ -19328,17 +19346,38 @@ static int yield_splice_site(Compiler *c, int y, int pass, ALocalAliases *aliase
        parameter the method appends to itself (convert_byref_handle_params).
        Left as a plain String, the box the proc appended to was a copy. */
     if (at == TY_POLY) {
-      int pj = an_param_idx(ms, nt_str(nt, av[k], "name"));
+      /* the parameter yielded, or a local written from it (`z = x;
+         yield z`, through a chain too): that local may hold the
+         parameter's String, and the block appends to whatever it holds */
+      const char *yn = nt_str(nt, av[k], "name");
+      int pj = an_param_idx(ms, yn);
+      for (int j = 0; pj < 0 && yn && j < ms->nparams; j++)
+        if (ms->pnames[j] && an_local_aliases_reach(aliases, mi, ms->pnames[j], yn)) pj = j;
       for (int e = !pass && pj >= 0 && h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
         int u = g_dyn.bnode[e], ba = nt_ref(nt, u, "block");
-        if (nt_kind(nt, ba) != NK_BlockArgumentNode || an_call_target_mi(c, u) != mi) continue;
-        int v = nt_ref(nt, ba, "expression");
-        if (v < 0) continue;
-        DynReach r; memset(&r, 0, sizeof r);
-        dyn_reach_value(c, v, k, 0, &r);
-        if (r.unlifted || !(r.app || (r.unknown && dyn_any_appender(c)))) continue;
+        if (an_call_target_mi(c, u) != mi) continue;
+        /* a literal block the method is spliced with appends to the
+           parameter its position binds, directly or through an alias
+           (dyn_lit_bits): the boxed value it reaches is the caller's,
+           so the caller's String goes over as the handle */
+        if (nt_kind(nt, ba) == NK_BlockNode) {
+          if (k >= 16 || !(dyn_lit_bits(c, ba) & (1u << k))) continue;
+        }
+        else {
+          if (nt_kind(nt, ba) != NK_BlockArgumentNode) continue;
+          int v = nt_ref(nt, ba, "expression");
+          if (v < 0) continue;
+          DynReach r; memset(&r, 0, sizeof r);
+          dyn_reach_value(c, v, k, 0, &r);
+          if (r.unlifted || !(r.app || (r.unknown && dyn_any_appender(c)))) continue;
+        }
         int ua = arg_layout_param_node(c, ms, u, pj, NULL);
-        if (ua >= 0) changed |= dyn_pull_arg(c, ua, 1);
+        if (ua < 0) continue;
+        if (nt_kind(nt, ua) == NK_LocalVariableReadNode) changed |= dyn_pull_arg(c, ua, 1);
+        /* a String value written in the call (`w(+"s") { ... }`) is boxed
+           as a fresh handle, so the block's append grows the value the
+           method goes on to read */
+        else if (!c->strbuf_box[ua] && infer_type(c, ua) == TY_STRING) { c->strbuf_box[ua] = 1; changed = 1; }
       }
       continue;
     }
