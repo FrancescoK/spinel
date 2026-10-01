@@ -35720,7 +35720,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     if (ty_is_object(rrt)) {
       int cid = ty_object_class(rrt);
       int defmi = comp_cmethod_in_chain(c, cid, name, NULL);
-      if (defmi >= 0) {
+      if (defmi >= 0 && !c->scopes[defmi].yields) {
         /* Count distinct class method impls across the hierarchy */
         int nimpl = 0;
         for (int k = 0; k < c->nclasses; k++) {
@@ -36807,10 +36807,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
            signature -- the args are hoisted into poly temps first so a
            side-effecting argument is evaluated once, not once per arm. */
         int simple9 = (nt_ref(nt, id, "block") < 0);
-        /* With a block, a candidate taking it -- a yielding one through its
+        /* A candidate taking a block -- a yielding one through its
            proc form -- is an arm of the poly receiver's class-tag dispatch,
            which hands the block over as a proc: box the class and take it. */
-        if (!simple9 && comp_ntype(c, id) == TY_POLY && g_n_argov < MAX_ARG_OVERRIDE) {
+        if (comp_ntype(c, id) == TY_POLY && g_n_argov < MAX_ARG_OVERRIDE) {
           int any_pf9 = 0;
           for (int k = 0; k < c->nclasses && !any_pf9; k++) {
             int kmi = comp_cmethod_in_chain(c, k, name, NULL);

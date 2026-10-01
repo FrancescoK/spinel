@@ -3175,10 +3175,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
            candidate with the WRONG ARITY does not: this call cannot reach it,
            so it neither contributes a return type nor vetoes the others
            (#4129). Codegen's cls_arm_takes_argc is the same rule.
-           With a block, a candidate taking it (a yielding one through its
+           A candidate taking a block (a yielding one through its
            proc form) is reached by the poly receiver's class-tag dispatch
            instead, which answers poly. */
-        if (has_blk && c->scopes[kmi].rest_idx < 0 &&
+        if (c->scopes[kmi].rest_idx < 0 &&
             (c->scopes[kmi].yields || (c->scopes[kmi].blk_param && c->scopes[kmi].blk_param[0]))) {
           if (argc >= c->scopes[kmi].nrequired && argc <= c->scopes[kmi].nparams) nblk++;
           continue;

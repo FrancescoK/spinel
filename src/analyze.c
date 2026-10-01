@@ -21305,8 +21305,7 @@ static int pf_wanted(Compiler *c, const char *name) {
     int recv = nt_ref(nt, id, "receiver");
     if (recv >= 0 && infer_type(c, recv) == TY_POLY) return 1;
     /* a Class value known only at run time dispatches the same way */
-    if (recv >= 0 && infer_type(c, recv) == TY_CLASS && class_recv_is_dynamic(c, recv) &&
-        nt_ref(nt, id, "block") >= 0) return 1;
+    if (recv >= 0 && infer_type(c, recv) == TY_CLASS && class_recv_is_dynamic(c, recv)) return 1;
     /* a method the program adds to Object, called with a block on an object
        whose class chain stops short of Object (#5779): the call reaches it
        through the clone, since it cannot be spliced in on that class */
