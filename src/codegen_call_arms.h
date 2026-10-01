@@ -239,4 +239,6 @@ int method_poly_abi(Compiler *c, int mi, int recv_bound, int *out_fixed, int *ou
 int method_scope_arity(Compiler *c, int target, int *out);
 void emit_bm_legacy_ok(Buf *b, int tmp, int argc, const char *arg_sig);
 
+int emit_send_blind(Compiler *c, int id, Buf *b);
+
 #endif
