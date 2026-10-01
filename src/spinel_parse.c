@@ -3906,6 +3906,61 @@ static int sp_is_method_name_char(char c) {
          c == '%' || c == '[' || c == ']';
 }
 
+/* The names of a constant whose last definition before `before` is a
+   literal Symbol Array -- `NAME = [:a, :b]` or `NAME = %i[a b]`, frozen or
+   not, over as many lines as it takes. 0 when there is none, or it holds
+   anything else. */
+static int sp_const_symbol_list(const char *src, size_t before, const char *name,
+                                char (**out)[160], int *nout) {
+  size_t nl = strlen(name), at = (size_t)-1;
+  for (size_t p = 0; p + nl < before; p++) {
+    if (strncmp(src + p, name, nl) != 0) continue;
+    if (p > 0 && (sp_is_method_name_char(src[p - 1]) || src[p - 1] == ':')) continue;
+    size_t q = p + nl;
+    if (sp_is_method_name_char(src[q])) continue;
+    while (q < before && (src[q] == ' ' || src[q] == '\t')) q++;
+    if (q < before && src[q] == '=' && src[q + 1] != '=' && src[q + 1] != '>') at = q + 1;
+  }
+  if (at == (size_t)-1) return 0;
+  size_t q = at;
+  while (q < before && (src[q] == ' ' || src[q] == '\t')) q++;
+  int pct = 0;
+  char close = ']';
+  if (strncmp(src + q, "%i[", 3) == 0 || strncmp(src + q, "%i(", 3) == 0) {
+    pct = 1; close = src[q + 2] == '[' ? ']' : ')'; q += 3;
+  }
+  else if (src[q] == '[') q++;
+  else return 0;
+  int cap = 16, n = 0;
+  char (*names)[160] = malloc(sizeof(*names) * (size_t)cap);
+  if (!names) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  for (;;) {
+    while (q < before && (src[q] == ' ' || src[q] == '\t' || src[q] == '\n' || src[q] == '\r' ||
+                          (!pct && src[q] == ','))) q++;
+    if (q >= before) { free(names); return 0; }
+    if (src[q] == close) break;
+    if (!pct) { if (src[q] != ':') { free(names); return 0; } q++; }
+    size_t s0 = q;
+    /* a name (closed?, write!) or an operator spelled with < > = (:<<,
+       :<=>, :==); not sp_is_method_name_char, which takes the list's own ] */
+    while (q < before && (isalnum((unsigned char)src[q]) || src[q] == '_' || src[q] == '?' ||
+                          src[q] == '!' || src[q] == '<' || src[q] == '>' || src[q] == '=')) q++;
+    if (q == s0 || q - s0 >= 160) { free(names); return 0; }
+    if (n == cap) {
+      cap *= 2;
+      char (*nn)[160] = realloc(names, sizeof(*names) * (size_t)cap);
+      if (!nn) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+      names = nn;
+    }
+    memcpy(names[n], src + s0, q - s0);
+    names[n][q - s0] = 0;
+    n++;
+  }
+  if (n == 0) { free(names); return 0; }
+  *out = names; *nout = n;
+  return 1;
+}
+
 /* Where rewrite_syntax_sugar wrote the `{` / `do` of each block it made
    from `&:sym`, in the buffer Prism parses: flatten marks those BlockNodes
    (sym_proc_block), which a user's own `{ |_spx| _spx.m }` is not. The
@@ -4285,6 +4340,31 @@ static char *rewrite_syntax_sugar(char *source) {
             if (ch == '\\' && k3 + 1 < len && source[k3 + 1] == '\n') { nl3++; k3 += 2; continue; }
             if (ch == '\n' && (after_comma || paren3 > 0)) { nl3++; k3++; continue; }
             break;
+          }
+          /* `*NAMES`, a constant holding a literal Symbol Array (Rack::Lint's
+             `def_delegators :@stream, *REQUIRED_METHODS`): its names */
+          if (k3 + 1 < len && source[k3] == '*' && source[k3 + 1] >= 'A' && source[k3 + 1] <= 'Z' &&
+              nsym > 0) {
+            size_t c0 = k3 + 1, c1 = c0;
+            while (c1 < len && sp_is_method_name_char(source[c1])) c1++;
+            char cname[128];
+            if (c1 - c0 >= sizeof cname) { bad3 = 1; break; }
+            memcpy(cname, source + c0, c1 - c0); cname[c1 - c0] = 0;
+            char (*csyms)[160] = NULL; int ncs = 0;
+            if (!sp_const_symbol_list(source, i, cname, &csyms, &ncs)) { bad3 = 1; break; }
+            for (int q = 0; q < ncs; q++) {
+              if ((size_t)nsym == symcap) {
+                symcap *= 2;
+                char (*ns)[160] = realloc(syms, sizeof(*syms) * symcap);
+                if (!ns) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+                syms = ns;
+              }
+              memcpy(syms[nsym++], csyms[q], sizeof csyms[q]);
+            }
+            free(csyms);
+            after_comma = 0;
+            k3 = c1;
+            continue;
           }
           if (k3 >= len || source[k3] != ':') break;
           after_comma = 0;
