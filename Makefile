@@ -1546,6 +1546,7 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/string_handle_bind_dm_curry.rb \
                   test/string_handle_initialize.rb \
                   test/string_handle_poly_variable.rb \
+                  test/string_alias_conditional_write.rb \
                   test/string_handle_splat_gather.rb \
                   test/string_alias_gathered_lead.rb \
                   test/default_reads_callee_self.rb \

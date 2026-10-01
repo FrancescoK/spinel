@@ -1164,6 +1164,221 @@ static void emit_poly_array_from(Compiler *c, int v, Buf *b) {
 }
 
 static int str_append_chain_base(Compiler *c, int id);
+static int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth);
+static void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b);
+/* The operand of a `+s` value (`+@` with no argument), -1 for any other. */
+static int strbuf_uplus_operand(Compiler *c, int v) {
+  return v >= 0 && nt_kind(c->nt, v) == NK_CallNode && nt_str(c->nt, v, "name") &&
+         sp_streq(nt_str(c->nt, v, "name"), "+@") && nt_ref(c->nt, v, "arguments") < 0 ?
+         nt_ref(c->nt, v, "receiver") : -1;
+}
+static void emit_strbuf_cond_value(Compiler *c, LocalVar *lv, int v, const char *dst, Buf *b, int depth);
+/* The `case` emitted as a conditional value into a shared String slot
+   (emit_strbuf_cond_value), and that slot: its result is the handle. */
+static int g_strbuf_case_node = -1;
+static LocalVar *g_strbuf_case_lv;
+/* Is a String local that is the shared handle one of the values conditional
+   `v` can hand over (an_strbuf_alias_leaves' arms)? */
+static int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || depth > 8) return 0;
+  switch (nt_kind(nt, v)) {
+    case NK_ParenthesesNode:
+      return strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "body"), depth + 1);
+    case NK_StatementsNode: {
+      int n = 0; const int *bb = nt_arr(nt, v, "body", &n);
+      return n > 0 && strbuf_cond_has_handle_leaf(c, bb[n - 1], depth + 1);
+    }
+    case NK_ElseNode:
+      return strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "statements"), depth + 1);
+    case NK_IfNode: case NK_UnlessNode:
+      return strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "statements"), depth + 1) ||
+             strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"),
+                                         depth + 1);
+    case NK_OrNode:
+      return strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "left"), depth + 1) ||
+             strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "right"), depth + 1);
+    case NK_AndNode:
+      return strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "right"), depth + 1);
+    case NK_CaseNode: {
+      int nw = 0; const int *whens = nt_arr(nt, v, "conditions", &nw);
+      for (int w = 0; w < nw; w++)
+        if (strbuf_cond_has_handle_leaf(c, nt_ref(nt, whens[w], "statements"), depth + 1)) return 1;
+      return strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "else_clause"), depth + 1);
+    }
+    /* `+g` is g itself unless g is frozen (sp_String_uplus) */
+    case NK_CallNode:
+      return strbuf_uplus_operand(c, v) >= 0 && strbuf_cond_has_handle_leaf(c, strbuf_uplus_operand(c, v), depth + 1);
+    /* a read, or an arm's chained write (`c ? (t = g) : x`), whose value is
+       its target's */
+    case NK_LocalVariableReadNode: case NK_LocalVariableWriteNode: {
+      if (depth == 0) return 0;
+      const char *vn = nt_str(nt, v, "name");
+      LocalVar *vl = vn ? scope_local(comp_scope_of(c, v), vn) : NULL;
+      return vl && vl->type == TY_STRBUF && vl->str_shared;
+    }
+    default:
+      return 0;
+  }
+}
+/* Assign conditional `v`'s value to the handle temp `dst` as statements,
+   arm by arm (strbuf_cond_has_handle_leaf): the condition is tested where
+   the value form tests it, and each arm's own setup runs only on its path. */
+static void emit_strbuf_cond_arm(Compiler *c, LocalVar *lv, int v, const char *dst, Buf *b, int depth) {
+  Buf pre; memset(&pre, 0, sizeof pre);
+  Buf *sv = g_pre; g_pre = &pre;
+  Buf body; memset(&body, 0, sizeof body);
+  emit_strbuf_cond_value(c, lv, v, dst, &body, depth);
+  g_pre = sv;
+  buf_puts(b, "{ ");
+  buf_puts(b, pre.p ? pre.p : "");
+  buf_puts(b, body.p ? body.p : "");
+  buf_puts(b, " }");
+  free(pre.p); free(body.p);
+}
+static void emit_strbuf_cond_value(Compiler *c, LocalVar *lv, int v, const char *dst, Buf *b, int depth) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = v >= 0 ? nt_kind(nt, v) : NK_NilNode;
+  if (depth > 8) k = NK_NilNode;
+  switch (k) {
+    case NK_ParenthesesNode:
+      emit_strbuf_cond_value(c, lv, nt_ref(nt, v, "body"), dst, b, depth + 1);
+      return;
+    case NK_StatementsNode: {
+      int n = 0; const int *bb = nt_arr(nt, v, "body", &n);
+      for (int i = 0; i < n - 1; i++) emit_stmt(c, bb[i], b, 0);
+      if (n > 0) emit_strbuf_cond_value(c, lv, bb[n - 1], dst, b, depth + 1);
+      else buf_printf(b, "%s = NULL;\n", dst);
+      return;
+    }
+    case NK_ElseNode:
+      emit_strbuf_cond_value(c, lv, nt_ref(nt, v, "statements"), dst, b, depth + 1);
+      return;
+    case NK_IfNode: case NK_UnlessNode: {
+      int is_unless = k == NK_UnlessNode;
+      int sub = nt_ref(nt, v, is_unless ? "else_clause" : "subsequent");
+      Buf cnd; memset(&cnd, 0, sizeof cnd);
+      emit_cond(c, nt_ref(nt, v, "predicate"), &cnd);
+      buf_printf(b, "if (%s%s%s) ", is_unless ? "!(" : "", cnd.p ? cnd.p : "0", is_unless ? ")" : "");
+      free(cnd.p);
+      emit_strbuf_cond_arm(c, lv, nt_ref(nt, v, "statements"), dst, b, depth + 1);
+      buf_puts(b, " else ");
+      emit_strbuf_cond_arm(c, lv, sub, dst, b, depth + 1);
+      buf_puts(b, "\n");
+      return;
+    }
+    /* `l || r`: l's object when it is not nil, else r's (a String value is
+       falsy only as nil, the NULL handle); `l && r`: r's when l is truthy,
+       else nil, the one falsy value a String slot holds */
+    case NK_OrNode: case NK_AndNode: {
+      int l = nt_ref(nt, v, "left");
+      TyKind ltk = comp_ntype(c, l);
+      if (k == NK_AndNode && ltk != TY_STRING && ltk != TY_STRBUF) {
+        Buf cnd; memset(&cnd, 0, sizeof cnd);
+        emit_cond(c, l, &cnd);
+        buf_printf(b, "if (%s) ", cnd.p ? cnd.p : "0");
+        free(cnd.p);
+        emit_strbuf_cond_arm(c, lv, nt_ref(nt, v, "right"), dst, b, depth + 1);
+        buf_printf(b, " else %s = NULL;\n", dst);
+        return;
+      }
+      emit_strbuf_cond_value(c, lv, l, dst, b, depth + 1);
+      buf_printf(b, " if (%s%s) ", k == NK_OrNode ? "!" : "", dst);
+      emit_strbuf_cond_arm(c, lv, nt_ref(nt, v, "right"), dst, b, depth + 1);
+      buf_puts(b, "\n");
+      return;
+    }
+    /* a `case` keeps its own dispatch: its arms assign the handle through
+       emit_case_branch_value, typed by the case's result */
+    case NK_CaseNode: {
+      int svn = g_strbuf_case_node;
+      LocalVar *svl = g_strbuf_case_lv;
+      g_strbuf_case_node = v; g_strbuf_case_lv = lv;
+      buf_printf(b, "%s = ", dst);
+      emit_case_expr(c, v, b);
+      buf_puts(b, ";");
+      g_strbuf_case_node = svn; g_strbuf_case_lv = svl;
+      return;
+    }
+    case NK_NilNode:
+      buf_printf(b, "%s = NULL;", dst);
+      return;
+    default:
+      buf_printf(b, "%s = ", dst);
+      emit_strbuf_value(c, lv, v, b);
+      buf_puts(b, ";");
+      return;
+  }
+}
+/* The value a write hands a mutable-String slot `lv` (TY_STRBUF), as an
+   sp_String *. */
+static void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
+  /* A shared-mutable alias (`s2 = s1`, both str_shared) copies the sp_String
+     HANDLE, not the buffer, so the two names denote one object: a later
+     `s1 << x` shows through s2 and `s1.equal?(s2)` is true (#3227). */
+  char srefV[1024];
+  LocalVar *vlv = NULL;
+  int vplus = strbuf_uplus_operand(c, v);
+  if (lv->str_shared && strbuf_slot_ref(c, v, srefV, sizeof srefV))
+    buf_puts(b, srefV);
+  /* `s2 = +s1`: the same handle, or a fresh one when s1 is frozen */
+  else if (lv->str_shared && vplus >= 0 && strbuf_slot_ref(c, vplus, srefV, sizeof srefV))
+    buf_printf(b, "sp_String_uplus(%s)", srefV);
+  else if (lv->str_shared && emit_strbuf_ivar_write_handle(c, v, b)) { }
+  /* A chained assignment (`u = t = s`) whose inner target is the handle too:
+     run the inner write, then alias ITS handle. Wrapping the write's value
+     as a fresh String forked u off the object t and s share. */
+  else if (lv->str_shared && nt_kind(c->nt, v) == NK_LocalVariableWriteNode &&
+           nt_str(c->nt, v, "name") &&
+           (vlv = scope_local(comp_scope_of(c, v), nt_str(c->nt, v, "name"))) &&
+           vlv->type == TY_STRBUF && vlv->str_shared) {
+    buf_puts(b, "({ (void)(");
+    emit_expr(c, v, b);
+    buf_puts(b, "); ");
+    emit_local_ref(c, v, nt_str(c->nt, v, "name"), b);
+    buf_puts(b, "; })");
+  }
+  /* A conditional whose arms include a local that is the handle (`h = c ? x
+     : g`, paired by an_strbuf_alias_leaves): each arm hands over its own
+     object, the handle for such a local and a fresh String for any other
+     value. Wrapped whole, the value forked h off the String g names. */
+  else if (lv->str_shared && strbuf_cond_has_handle_leaf(c, v, 0)) {
+    char dst[32];
+    snprintf(dst, sizeof dst, "_t%d", ++g_tmp);
+    buf_printf(b, "({ sp_String *%s = NULL; ", dst);
+    emit_strbuf_cond_value(c, lv, v, dst, b, 0);
+    buf_printf(b, " %s; })", dst);
+  }
+  else if (comp_ntype(c, v) == TY_STRBUF) {
+    /* a demand-marked read (a reader call, a container element) already
+       yields the handle: alias it directly (#3227 P5) */
+    emit_expr(c, v, b);
+  }
+  else if (comp_ntype(c, v) == TY_POLY || strbuf_boxed_elem_read(c, v)) {
+    /* a container element read hands out the element's BOXED handle: take the
+       handle out of the box, so the local and the element are one object and
+       a mutation through either shows in the other (#3941) */
+    buf_puts(b, "sp_poly_as_strbuf("); emit_expr(c, v, b); buf_puts(b, ")");
+  }
+  else {
+    /* a value-position append chain over a shared base: run the chain (it
+       appends in place), then alias the BASE handle -- wrapping the cstr
+       would fork a second buffer and break the alias (#3307 family) */
+    int cb9 = str_append_chain_base(c, v);
+    char srefC9[1024];
+    if (cb9 != v && lv->str_shared &&
+        strbuf_slot_ref(c, cb9, srefC9, sizeof srefC9)) {
+      buf_puts(b, "({ (void)(");
+      emit_expr(c, v, b);
+      buf_printf(b, "); %s; })", srefC9);
+    }
+    else {
+      /* otherwise a mutable-string local wraps the (const char*) RHS in a
+         fresh sp_String so later `<<` appends are amortized O(1). */
+      buf_puts(b, "sp_String_new_shared("); emit_expr(c, v, b); buf_puts(b, ")");
+    }
+  }
+}
 void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   const char *nm = nt_str(c->nt, id, "name");
   int v = nt_ref(c->nt, id, "value");
@@ -1279,62 +1494,7 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
     else buf_puts(b, default_value(lv->type));
   }
   else if (lv && lv->type == TY_STRBUF) {
-    /* A shared-mutable alias (`s2 = s1`, both str_shared) copies the sp_String
-       HANDLE, not the buffer, so the two names denote one object: a later
-       `s1 << x` shows through s2 and `s1.equal?(s2)` is true (#3227). */
-    char srefV[1024];
-    LocalVar *vlv = NULL;
-    int vplus = nt_kind(c->nt, v) == NK_CallNode && nt_str(c->nt, v, "name") &&
-                sp_streq(nt_str(c->nt, v, "name"), "+@") && nt_ref(c->nt, v, "arguments") < 0 ?
-                nt_ref(c->nt, v, "receiver") : -1;
-    if (lv->str_shared && strbuf_slot_ref(c, v, srefV, sizeof srefV))
-      buf_puts(b, srefV);
-    /* `s2 = +s1`: the same handle, or a fresh one when s1 is frozen */
-    else if (lv->str_shared && vplus >= 0 && strbuf_slot_ref(c, vplus, srefV, sizeof srefV))
-      buf_printf(b, "sp_String_uplus(%s)", srefV);
-    else if (lv->str_shared && emit_strbuf_ivar_write_handle(c, v, b)) { }
-    /* A chained assignment (`u = t = s`) whose inner target is the handle too:
-       run the inner write, then alias ITS handle. Wrapping the write's value
-       as a fresh String forked u off the object t and s share. */
-    else if (lv->str_shared && nt_kind(c->nt, v) == NK_LocalVariableWriteNode &&
-             nt_str(c->nt, v, "name") &&
-             (vlv = scope_local(comp_scope_of(c, v), nt_str(c->nt, v, "name"))) &&
-             vlv->type == TY_STRBUF && vlv->str_shared) {
-      buf_puts(b, "({ (void)(");
-      emit_expr(c, v, b);
-      buf_puts(b, "); ");
-      emit_local_ref(c, v, nt_str(c->nt, v, "name"), b);
-      buf_puts(b, "; })");
-    }
-    else if (comp_ntype(c, v) == TY_STRBUF) {
-      /* a demand-marked read (a reader call, a container element) already
-         yields the handle: alias it directly (#3227 P5) */
-      emit_expr(c, v, b);
-    }
-    else if (comp_ntype(c, v) == TY_POLY || strbuf_boxed_elem_read(c, v)) {
-      /* a container element read hands out the element's BOXED handle: take the
-         handle out of the box, so the local and the element are one object and
-         a mutation through either shows in the other (#3941) */
-      buf_puts(b, "sp_poly_as_strbuf("); emit_expr(c, v, b); buf_puts(b, ")");
-    }
-    else {
-      /* a value-position append chain over a shared base: run the chain (it
-         appends in place), then alias the BASE handle -- wrapping the cstr
-         would fork a second buffer and break the alias (#3307 family) */
-      int cb9 = str_append_chain_base(c, v);
-      char srefC9[1024];
-      if (cb9 != v && lv->str_shared &&
-          strbuf_slot_ref(c, cb9, srefC9, sizeof srefC9)) {
-        buf_puts(b, "({ (void)(");
-        emit_expr(c, v, b);
-        buf_printf(b, "); %s; })", srefC9);
-      }
-      else {
-        /* otherwise a mutable-string local wraps the (const char*) RHS in a
-           fresh sp_String so later `<<` appends are amortized O(1). */
-        buf_puts(b, "sp_String_new_shared("); emit_expr(c, v, b); buf_puts(b, ")");
-      }
-    }
+    emit_strbuf_value(c, lv, v, b);
   }
   else if (is_empty_array && lv && array_kind(lv->type)) {
     /* `a = []` -> a new array of the variable's resolved element type */
@@ -5512,6 +5672,15 @@ void emit_case_branch_value(Compiler *c, int stmts, TyKind rt, int cr, Buf *b) {
   const NodeTable *nt = c->nt;
   int n = 0;
   const int *bb = stmts >= 0 ? nt_arr(nt, stmts, "body", &n) : NULL;
+  /* an arm of a conditional value into a shared String slot: the handle
+     the arm hands over (emit_strbuf_cond_value) */
+  if (rt == TY_STRBUF && g_strbuf_case_node >= 0) {
+    char dst[32];
+    snprintf(dst, sizeof dst, "_cr%d", cr);
+    emit_strbuf_cond_arm(c, g_strbuf_case_lv, stmts, dst, b, 1);
+    buf_puts(b, " ");
+    return;
+  }
   for (int k = 0; k < n - 1; k++) emit_stmt(c, bb[k], b, 0);
   TyKind lt = n > 0 ? comp_ntype(c, bb[n - 1]) : TY_NIL;
   /* An empty `[]`/`{}` tail caches TY_UNKNOWN on its own -- an empty literal
@@ -5585,7 +5754,7 @@ void emit_case_branch_value(Compiler *c, int stmts, TyKind rt, int cr, Buf *b) {
    matched branch's value (or the result type's nil/default on no match). */
 void emit_case_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
-  TyKind rt = comp_ntype(c, id);
+  TyKind rt = id == g_strbuf_case_node ? TY_STRBUF : comp_ntype(c, id);
   /* a void/nil-typed case (arms are writer calls or nil) has no C storage
      type -- emit_ctype would declare `void _crN` -- so hold it boxed.
      TY_UNKNOWN falls through emit_ctype to `void` too; widen it as well,
@@ -11039,6 +11208,27 @@ else {
       int poly_empty_arr = el_empty_arr && elt == TY_POLY;
       int poly_empty_hash = el_empty_hash && elt == TY_POLY;
       int nilish = (elt == TY_NIL || elt == TY_VOID);
+      /* A target that is the shared handle takes the element's own object
+         (`t, u = s, 1` names s as t, promote_local_alias_pairs): a local
+         that is the handle is held as the handle, so a swap (`a, b = b, a`)
+         reads both before either is rebound. */
+      char hsrc[1024];
+      LocalVar *htl = NULL;
+      if (i < ln && nt_kind(nt, lefts[i]) == NK_LocalVariableTargetNode && nt_str(nt, lefts[i], "name"))
+        htl = scope_local(comp_scope_of(c, id), nt_str(nt, lefts[i], "name"));
+      int hup = htl && htl->type == TY_STRBUF && htl->str_shared ? strbuf_uplus_operand(c, els[i]) : -1;
+      if (htl && htl->type == TY_STRBUF && htl->str_shared && elt != TY_STRBUF &&
+          ((nt_kind(nt, els[i]) == NK_LocalVariableReadNode && strbuf_slot_ref(c, els[i], hsrc, sizeof hsrc)) ||
+           (hup >= 0 && nt_kind(nt, hup) == NK_LocalVariableReadNode && strbuf_slot_ref(c, hup, hsrc, sizeof hsrc)))) {
+        /* `+s` is s itself unless s is frozen */
+        buf_printf(b, hup >= 0 ? "sp_String * _t%d = sp_String_uplus(%s);" : "sp_String * _t%d = %s;", tmps[i], hsrc);
+        if (tmpts) tmpts[i] = TY_STRBUF;
+        int later_alloc_h = store_alloc;
+        for (int j = i + 1; j < en && !later_alloc_h; j++) later_alloc_h = masgn_part_allocates(c, els[j]);
+        if (later_alloc_h) masgn_root(c, TY_STRBUF, tmps[i], b);
+        buf_puts(b, "\n");
+        continue;
+      }
       emit_ctype(c, nilish ? TY_POLY : elt, b);
       buf_printf(b, " _t%d = ", tmps[i]);
       if (nilish) {
@@ -11138,6 +11328,10 @@ else {
           else buf_printf(b, "_t%d", tmps[i]);
         }
         else if (ltt == TY_POLY && valt != TY_POLY) emit_boxed_tmp(c, valt, tmps[i], b);
+        /* a mutable-String slot holds an sp_String *: a String element is
+           wrapped, as the single write wraps it (emit_strbuf_value) */
+        else if (ltt == TY_STRBUF && valt == TY_STRING) buf_printf(b, "sp_String_new_shared(_t%d)", tmps[i]);
+        else if (ltt == TY_STRBUF && valt == TY_POLY) buf_printf(b, "sp_poly_as_strbuf(_t%d)", tmps[i]);
         else buf_printf(b, "_t%d", tmps[i]);
         if (proc_cell) buf_puts(b, ")");
         buf_puts(b, ";\n");
