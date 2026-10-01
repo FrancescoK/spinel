@@ -1020,6 +1020,10 @@ int        comp_cmethod_in_class(Compiler *c, int class_id, const char *name);
 int        comp_cmethod_in_chain(Compiler *c, int class_id, const char *name, int *def_class);
 /* Like comp_method_in_class but walks the superclass chain. On success,
    *def_class (if non-NULL) is set to the class that defines the method. */
+/* The IO family: File and the socket classes share the IO handle type. */
+int        io_family_name(const char *n);
+/* The reopened IO-family class whose method `name` a typed IO calls, or -1. */
+int        io_reopen_class(Compiler *c, const char *name);
 int        comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_class);
 /* Record method `name`'s visibility on a class (overwrite-or-append). */
 void       comp_method_vis_set(ClassInfo *ci, const char *name, int kind);

@@ -2949,7 +2949,7 @@ const char *mc_reopen_cls(Compiler *c, int class_id, const char *mname) {
   {
     const char *rn = c->classes[class_id].name;
     if (rn && (sp_streq(rn, "Range") || sp_streq(rn, "Time") ||
-               sp_streq(rn, "File") || sp_streq(rn, "Class"))) {
+               io_family_name(rn) || sp_streq(rn, "Class"))) {
       snprintf(buf, sizeof buf, "%s_oc", stem);
       return buf;
     }

@@ -3308,7 +3308,7 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
     else if (sp_streq(cn, "Thread"))  { buf_puts(b, "sp_thread *self"); }
     else if (sp_streq(cn, "Fiber"))   { buf_puts(b, "sp_Fiber *self"); }
     else if (is_exc_name(c->classes[s->class_id].name)) { buf_puts(b, "sp_Exception *self"); }
-    else if (sp_streq(cn, "File"))    { buf_puts(b, "sp_File *self"); }
+    else if (io_family_name(c->classes[s->class_id].name)) { buf_puts(b, "sp_File *self"); }
     else if (sp_streq(cn, "Class"))   { buf_puts(b, "sp_Class self"); }
     else {
       /* value-type reader methods take self by value; initialize keeps a
@@ -7563,7 +7563,7 @@ int is_builtin_reopen(const char *name) {
             blank.rb reopens Range and Time) */
          sp_streq(name, "Range")     || sp_streq(name, "Time") ||
          sp_streq(name, "File")      || sp_streq(name, "Class") ||
-         sp_streq(name, "Hash")      ||
+         sp_streq(name, "Hash")      || io_family_name(name) ||
          /* a thread and a fiber are runtime handles too (activesupport's
             IsolatedExecutionState gives both an accessor) */
          sp_streq(name, "Thread")    || sp_streq(name, "Fiber") ||

@@ -2687,3 +2687,24 @@ void an_node_dir(const NodeTable *nt, int id, char *dir, size_t cap) {
   if (n >= cap) n = cap - 1;
   memcpy(dir, sl ? sf : ".", n); dir[n] = 0;
 }
+
+/* The classes whose instances are the runtime's IO handles (sp_File). */
+static const char *const io_family[] = {
+  "File", "IO", "TCPServer", "TCPSocket", "UDPSocket", "IPSocket", "UNIXServer",
+  "UNIXSocket", "Socket", "BasicSocket", NULL };
+int io_family_name(const char *n) {
+  if (!n) return 0;
+  for (int i = 0; io_family[i]; i++) if (sp_streq(n, io_family[i])) return 1;
+  return 0;
+}
+/* A typed IO's kind is only known at run time. Its reopened method is looked
+   up as a File's first (File, then IO), then as a socket's. */
+int io_reopen_class(Compiler *c, const char *name) {
+  if (!name) return -1;
+  for (int i = 0; io_family[i]; i++) {
+    int k = comp_class_index(c, io_family[i]), def = -1;
+    if (k >= 0 && comp_method_in_chain(c, k, name, &def) >= 0 && def >= 0 &&
+        io_family_name(c->classes[def].name)) return def;
+  }
+  return -1;
+}
