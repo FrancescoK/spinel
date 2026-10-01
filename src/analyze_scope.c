@@ -6409,12 +6409,12 @@ static TyKind ivar_nullable_int_ternary(Compiler *c, int vnode) {
 typedef struct { int n, cap; int *cls; const char **nm; } NilWrites;
 
 /* Can an instance of class k take an ivar `instance_variable_set` on a
-   boxed receiver names: a class, not a module, a Struct or Data class
-   (whose layout follows its members; a Data one is frozen), a native
-   class, a singleton, or the Toplevel pseudo-class. */
+   boxed receiver names: a class or a Struct (its ivars follow its
+   members), not a module, a Data class (frozen: the write raises), a
+   native class, a singleton, or the Toplevel pseudo-class. */
 int poly_ivar_set_class(Compiler *c, int k) {
   ClassInfo *pk = &c->classes[k];
-  if (pk->is_struct || pk->is_data || pk->is_native_class || pk->is_singleton_of) return 0;
+  if (pk->is_data || pk->is_native_class || pk->is_singleton_of) return 0;
   if (!pk->name || sp_streq(pk->name, "Toplevel") || comp_class_is_module(c, pk)) return 0;
   return 1;
 }
@@ -6783,7 +6783,8 @@ int infer_ivar_types(Compiler *c) {
                   int old_pn = pk->nivars;
                   int piv = comp_ivar_intern(pk, sym);
                   if (pk->nivars != old_pn) changed = 1;
-                  if (piv < 0) continue;
+                  /* a Struct member is no ivar (#2849): the write cannot go there */
+                  if (piv < 0 || (pk->is_struct && piv < pk->nmembers)) continue;
                   if (pvt == TY_NIL) nil_write_note(&nilw, k, sym);
                   else if (!class_ivar_pinned(pk, sym)) {
                     TyKind pm = ty_unify(pk->ivar_types[piv], pvt);
@@ -6792,6 +6793,8 @@ int infer_ivar_types(Compiler *c) {
                 }
               }
             }
+            /* a Data instance is frozen: the write raises, and lays nothing out */
+            if (tcid >= 0 && tcid < c->nclasses && c->classes[tcid].is_data) tcid = -1;
             if (tcid >= 0 && tcid < c->nclasses) {
               ClassInfo *ci = &c->classes[tcid];
               int old_ni = ci->nivars;
