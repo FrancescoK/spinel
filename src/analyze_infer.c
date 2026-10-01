@@ -1749,6 +1749,28 @@ static int sg_accessor_type(Compiler *c, int ci, const char *name, TyKind *out) 
   return 1;
 }
 
+/* A program's own Object method on a builtin receiver whose class has no
+   method of that name: CRuby's lookup reaches Object after the class itself,
+   and the emitter's reopened-Object fallback calls it on the boxed receiver.
+   The Time, File and Float-range arms end in a catch-all (Integer, poly,
+   unknown) that answered first, so `(Time.at(100) - 100).me` with
+   `class Object; def me = self; end` was an int slot around a call answering
+   a boxed value: invalid C, or `==` refused. A name the builtin class or
+   Object's own surface has stays theirs, as the emitter keeps it. Returns 1
+   with the type through `out`. */
+int object_reopen_answers(Compiler *c, const char *cls, int call_id, TyKind *out) {
+  const char *name = nt_str(c->nt, call_id, "name");
+  if (!name || builtin_method_known(cls, name) || builtin_object_method_known(name)) return 0;
+  int oci = comp_class_index(c, "Object");
+  int omi = oci >= 0 ? comp_method_in_chain(c, oci, name, NULL) : -1;
+  if (omi < 0) return 0;
+  /* a yielding one given a block answers what its proc form does, a boxed
+     value (#5779), as the general Object fallback says */
+  *out = c->scopes[omi].yields && nt_ref(c->nt, call_id, "block") >= 0
+         ? TY_POLY : method_call_ret(c, omi, call_id);
+  return 1;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
 
   /* a yielder push (`y << v` inside an Enumerator.new generator) lowers to a
@@ -4323,6 +4345,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       }
       return TY_IO;
     }
+    { TyKind ort; if (object_reopen_answers(c, "File", id, &ort)) return ort; }
     return TY_POLY;
   }
 
@@ -4365,6 +4388,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     /* predicates (is_a?/kind_of?/instance_of?/between?/...) before the int
        catch-all below swallows them */
     { size_t tnl = strlen(name); if (tnl > 0 && name[tnl - 1] == '?') return TY_BOOL; }
+    { TyKind ort; if (object_reopen_answers(c, "Time", id, &ort)) return ort; }
     /* year/mon/day/hour/min/sec/wday/yday/to_i/tv_sec/tv_usec/usec/tv_nsec/nsec/... */
     return TY_INT;
   }
