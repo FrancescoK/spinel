@@ -3406,6 +3406,9 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
     else if (sp_streq(cn, "Time"))    { buf_puts(b, "sp_Time self"); }
     else if (sp_streq(cn, "Thread"))  { buf_puts(b, "sp_thread *self"); }
     else if (sp_streq(cn, "Fiber"))   { buf_puts(b, "sp_Fiber *self"); }
+    /* the runtime's generator: a reopening's self is its handle (the class's
+       C name is u_Random, clear of the runtime's own sp_Random) */
+    else if (sp_streq(c->classes[s->class_id].name, "Random")) { buf_puts(b, "sp_Random *self"); }
     else if (is_exc_name(c->classes[s->class_id].name)) { buf_puts(b, "sp_Exception *self"); }
     else if (io_family_class(c, s->class_id)) { buf_puts(b, "sp_File *self"); }
     else if (sp_streq(cn, "Class"))   { buf_puts(b, "sp_Class self"); }
@@ -7907,6 +7910,7 @@ int is_builtin_reopen(const char *name) {
          /* a thread and a fiber are runtime handles too (activesupport's
             IsolatedExecutionState gives both an accessor) */
          sp_streq(name, "Thread")    || sp_streq(name, "Fiber") ||
+         sp_streq(name, "Random")    ||
          /* a builtin exception's reopening (`class LoadError; def is_missing?`)
             adds methods to the runtime's class: the value stays the runtime's
             sp_Exception, raised, rescued and constructed by name as before */

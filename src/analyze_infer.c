@@ -4501,6 +4501,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     case TY_TIME:   oc_cn = "Time"; break;
     case TY_THREAD: oc_cn = "Thread"; break;
     case TY_FIBER:  oc_cn = "Fiber"; break;
+    case TY_RANDOM: oc_cn = "Random"; break;
     case TY_IO:     oc_cn = "File"; break;
     case TY_CLASS:  oc_cn = "Class"; break;
     default: break;
@@ -8028,6 +8029,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (sp_streq(cn, "Time"))    return TY_TIME;
     if (sp_streq(cn, "Thread"))  return TY_THREAD;
     if (sp_streq(cn, "Fiber"))   return TY_FIBER;
+    if (sp_streq(cn, "Random"))  return TY_RANDOM;
     if (io_family_class(c, self_cls)) return TY_IO;   /* File, IO, the sockets: one handle type */
     if (sp_streq(cn, "Class"))   return TY_CLASS;
     if (is_builtin_exception_name(cn)) return TY_EXCEPTION;
