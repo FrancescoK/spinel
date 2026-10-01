@@ -2,6 +2,7 @@
  * libspinel_rt.a. See sp_core.h for the rationale. */
 #include "sp_core.h"
 #include <float.h>
+#include <limits.h>
 #include <string.h>
 #include "sp_alloc.h"   /* sp_str_byte_len: embedded-NUL detection in Integer()/Float() */
 #include "sp_dtoa.h"    /* sp_read_float: locale-independent String#to_f / Float() */
@@ -512,7 +513,12 @@ sp_int sp_int_sqrt(sp_int n){if(n<0)sp_raise_cls("Math::DomainError","Numerical 
    only for p<=18; p>=19 collapses to 0. Round-up multiply is overflow-
    guarded and falls back to the truncated value. */
 sp_int sp_ipow10(sp_int p){sp_int f=1;sp_int i=0;while(i<p){f*=10;i++;}return f;}
-sp_int sp_int_round(sp_int v,sp_int nd){if(nd>=0)return v;sp_int p=-nd;if(p>=SP_INT_POW10_LIMIT)return 0;sp_int f=sp_ipow10(p);sp_int q=v/f,r=v%f,half=f/2;if(v>=0){if(r>=half&&q<INTPTR_MAX/f)return(q+1)*f;return q*f;}if(-r>=half&&q>INTPTR_MIN/f)return(q-1)*f;return q*f;}
+void sp_int_round_check_ndigits(sp_int nd) {
+  if (nd > INT_MAX || nd < INT_MIN)
+    sp_raise_cls("RangeError", sp_sprintf("integer %lld too %s to convert to 'int'",
+                 (long long)nd, nd < 0 ? "small" : "big"));
+}
+sp_int sp_int_round(sp_int v,sp_int nd){sp_int_round_check_ndigits(nd);if(nd>=0)return v;sp_int p=-nd;if(p>=SP_INT_POW10_LIMIT)return 0;sp_int f=sp_ipow10(p);sp_int q=v/f,r=v%f,half=f/2;if(v>=0){if(r>=half&&q<INTPTR_MAX/f)return(q+1)*f;return q*f;}if(-r>=half&&q>INTPTR_MIN/f)return(q-1)*f;return q*f;}
 sp_int sp_int_ceil(sp_int v,sp_int nd){if(nd>=0)return v;sp_int p=-nd;if(p>=SP_INT_POW10_LIMIT)return 0;sp_int f=sp_ipow10(p);sp_int q=v/f,r=v%f;if(r!=0&&v>0&&q<INTPTR_MAX/f)return(q+1)*f;return q*f;}
 sp_int sp_int_floor(sp_int v,sp_int nd){if(nd>=0)return v;sp_int p=-nd;if(p>=SP_INT_POW10_LIMIT)return 0;sp_int f=sp_ipow10(p);sp_int q=v/f,r=v%f;if(r!=0&&v<0&&q>INTPTR_MIN/f)return(q-1)*f;return q*f;}
 sp_int sp_int_truncate(sp_int v,sp_int nd){if(nd>=0)return v;sp_int p=-nd;if(p>=SP_INT_POW10_LIMIT)return 0;sp_int f=sp_ipow10(p);return(v/f)*f;}

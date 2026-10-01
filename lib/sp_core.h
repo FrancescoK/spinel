@@ -36,6 +36,7 @@ intptr_t sp_int_clamp(intptr_t v, intptr_t lo, intptr_t hi);
 double sp_float_clamp(double v, double lo, double hi);
 intptr_t sp_int_sqrt(intptr_t n);
 intptr_t sp_ipow10(intptr_t p);
+void sp_int_round_check_ndigits(intptr_t nd);
 intptr_t sp_int_round(intptr_t v, intptr_t nd);
 intptr_t sp_int_ceil(intptr_t v, intptr_t nd);
 intptr_t sp_int_floor(intptr_t v, intptr_t nd);
