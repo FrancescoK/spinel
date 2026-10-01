@@ -2182,6 +2182,17 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     return 1;
   }
   if (recv >= 0 && ty_is_array(rt)) {
+    /* Primitive typed arrays still have #to_h: their elements must be
+       validated as pairs (and an empty typed array returns an empty hash).
+       A program with a def, alias or define_method of to_h in a class or
+       module keeps the path it had. */
+    if ((rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY || rt == TY_STR_ARRAY) &&
+        sp_streq(name, "to_h") && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+        !an_user_recv_defines_method(c, "to_h")) {
+      buf_puts(b, "((sp_PolyPolyHash *)sp_poly_to_h_val(");
+      emit_boxed(c, recv, b); buf_puts(b, ").v.p)");
+      return 1;
+    }
     /* a nil / true / false OPERAND to the Array-expecting family is CRuby's
        TypeError ("no implicit conversion of nil into Array") -- concat fell
        to NoMethodError, product answered [] -- with every argument still
