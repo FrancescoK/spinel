@@ -14561,6 +14561,42 @@ static int cap_wrap_mutates_param(Compiler *c, int blk, const char *bp) {
   return 0;
 }
 
+/* Does the code under `node` hand local `vn` to a user method whose
+   parameter there it appends to in place, is lent or is the handle? Asked
+   in the fixpoint, before the lent slots are settled, so the method's own
+   appends (an_param_mutated_in_place) are the evidence. */
+static int an_param_mutated_in_place(Compiler *c, int mi, int pi);
+static int an_subtree_hands_to_appender(Compiler *c, int node, const char *vn, int depth) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || depth > 64) return 0;
+  NodeKind nk = nt_kind(nt, node);
+  if (nk == NK_DefNode || nk == NK_ClassNode || nk == NK_ModuleNode) return 0;
+  if (nk == NK_CallNode) {
+    int mi = an_call_target_mi(c, node);
+    Scope *m = mi >= 0 ? &c->scopes[mi] : NULL;
+    for (int j = 0; m && j < m->nparams && j < 32; j++) {
+      int an = arg_layout_param_node(c, m, node, j, NULL);
+      if (an < 0 || nt_kind(nt, an) != NK_LocalVariableReadNode || !nt_str(nt, an, "name") ||
+          !sp_streq(nt_str(nt, an, "name"), vn)) continue;
+      LocalVar *q = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
+      if (q && (q->byref_out || (q->type == TY_STRBUF && q->str_shared) || an_param_mutated_in_place(c, mi, j)))
+        return 1;
+      /* or hands its parameter on to one that does, a few levels deep */
+      if (q && q->is_param && depth < 48 && m->body >= 0 &&
+          an_subtree_hands_to_appender(c, m->body, m->pnames[j], depth + 8)) return 1;
+    }
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++)
+    if (an_subtree_hands_to_appender(c, nt_ref_at(nt, node, i), vn, depth + 1)) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *a = nt_arr_at(nt, node, i, &n);
+    for (int k = 0; k < n; k++)
+      if (an_subtree_hands_to_appender(c, a[k], vn, depth + 1)) return 1;
+  }
+  return 0;
+}
 /* Pure-alias pairs, as a pass of its own: promote_shared_stored_strings runs
    it in the fixpoint, and the post-fixpoint handle loop again, since a
    local convert_byref_handle_params pulls into the handle there (`t = s;
@@ -15151,8 +15187,12 @@ static int promote_shared_stored_strings(Compiler *c) {
     Scope *bs4 = comp_scope_of(c, blk4);
     LocalVar *bpv4 = bs4 ? scope_local(bs4, bp4) : NULL;
     if (!bpv4) continue;
+    /* mutated in place, or handed to a user method that appends to it
+       (`a.each { |e| go(e) }` with `def go(e) = e << x`): either way the
+       append is the element's */
     int alias_mut = 0;
-    if (strbuf_mut_kind(c, bp4, bs4) != 1 && !cap_wrap_mutates_param(c, blk4, bp4)) {
+    if (strbuf_mut_kind(c, bp4, bs4) != 1 && !cap_wrap_mutates_param(c, blk4, bp4) &&
+        !an_subtree_hands_to_appender(c, nt_ref(nt, blk4, "body"), bp4, 0)) {
       if (!bpa_built) { an_local_aliases_build(c, &bpa); bpa_built = 1; }
       if (!an_block_param_alias_mutated(c, &bpa, bs4, bp4)) continue;
       alias_mut = 1;
