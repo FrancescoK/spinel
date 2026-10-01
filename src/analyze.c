@@ -835,6 +835,18 @@ int a_proc_body(Compiler *c, int create) {
   int block = nt_ref(c->nt, create, "block");
   return block >= 0 ? nt_ref(c->nt, block, "body") : -1;
 }
+static int a_call_forwards_blk_param(const NodeTable *nt, int nid, const Scope *m) {
+  int blk = nt_ref(nt, nid, "block");
+  const char *bty = blk >= 0 ? nt_type(nt, blk) : NULL;
+  if (!bty || !sp_streq(bty, "BlockArgumentNode")) return 0;
+  int fwd = nt_ref(nt, blk, "expression");
+  if (fwd >= 0) {   /* named `&blk`: only THIS method's block param counts */
+    const char *fty = nt_type(nt, fwd);
+    const char *fn = fty && sp_streq(fty, "LocalVariableReadNode") ? nt_str(nt, fwd, "name") : NULL;
+    if (!fn || !m->blk_param[0] || !sp_streq(fn, m->blk_param)) return 0;
+  }
+  return 1;
+}
 /* A name used inside a proc is captured iff it belongs to the enclosing scope:
    it is an enclosing parameter, or it is assigned somewhere in the enclosing
    scope OUTSIDE any proc body. (A name assigned only inside the proc is a
@@ -856,15 +868,7 @@ static int a_scope_forwards_block_to_poly(Compiler *c, int mi) {
     if (c->nscope[nid] != mi) continue;
     const char *ty = nt_type(nt, nid);
     if (!ty || !sp_streq(ty, "CallNode")) continue;
-    int blk = nt_ref(nt, nid, "block");
-    const char *bty = blk >= 0 ? nt_type(nt, blk) : NULL;
-    if (!bty || !sp_streq(bty, "BlockArgumentNode")) continue;
-    int fwd = nt_ref(nt, blk, "expression");
-    if (fwd >= 0) {   /* named `&blk`: only THIS method's block param counts */
-      const char *fty = nt_type(nt, fwd);
-      const char *fn = fty && sp_streq(fty, "LocalVariableReadNode") ? nt_str(nt, fwd, "name") : NULL;
-      if (!fn || !m->blk_param[0] || !sp_streq(fn, m->blk_param)) continue;
-    }
+    if (!a_call_forwards_blk_param(nt, nid, m)) continue;
     int recv = nt_ref(nt, nid, "receiver");
     if (recv < 0) continue;
     if (infer_type(c, recv) == TY_POLY) return 1;
@@ -906,15 +910,7 @@ static int a_scope_forwards_block_to_lowered(Compiler *c, int mi) {
     if (c->nscope[nid] != mi) continue;
     const char *ty = nt_type(nt, nid);
     if (!ty || !sp_streq(ty, "CallNode")) continue;
-    int blk = nt_ref(nt, nid, "block");
-    const char *bty = blk >= 0 ? nt_type(nt, blk) : NULL;
-    if (!bty || !sp_streq(bty, "BlockArgumentNode")) continue;
-    int fwd = nt_ref(nt, blk, "expression");
-    if (fwd >= 0) {   /* named `&blk`: only THIS method's block param counts */
-      const char *fty = nt_type(nt, fwd);
-      const char *fn = fty && sp_streq(fty, "LocalVariableReadNode") ? nt_str(nt, fwd, "name") : NULL;
-      if (!fn || !m->blk_param[0] || !sp_streq(fn, m->blk_param)) continue;
-    }
+    if (!a_call_forwards_blk_param(nt, nid, m)) continue;
     const char *tn = nt_str(nt, nid, "name");
     if (!tn) continue;
     int recv = nt_ref(nt, nid, "receiver");
@@ -1084,15 +1080,7 @@ static int a_scope_forwards_block_to_keeper(Compiler *c, int mi, int depth) {
   for (int nid = 0; nid < nt->count; nid++) {
     if (c->nscope[nid] != mi) continue;
     if (nt_kind(nt, nid) != NK_CallNode) continue;
-    int blk = nt_ref(nt, nid, "block");
-    const char *bty = blk >= 0 ? nt_type(nt, blk) : NULL;
-    if (!bty || !sp_streq(bty, "BlockArgumentNode")) continue;
-    int fwd = nt_ref(nt, blk, "expression");
-    if (fwd >= 0) {   /* named `&blk`: only THIS method's block param counts */
-      const char *fty = nt_type(nt, fwd);
-      const char *fn = fty && sp_streq(fty, "LocalVariableReadNode") ? nt_str(nt, fwd, "name") : NULL;
-      if (!fn || !m->blk_param[0] || !sp_streq(fn, m->blk_param)) continue;
-    }
+    if (!a_call_forwards_blk_param(nt, nid, m)) continue;
     const char *tn = nt_str(nt, nid, "name");
     if (!tn) continue;
     int recv = nt_ref(nt, nid, "receiver");
