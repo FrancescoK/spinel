@@ -11312,6 +11312,11 @@ static sp_sym sp_thread_local_key(sp_RbVal k) {
   SP_GC_ROOT_RBVAL(k);
   if (k.tag == SP_TAG_SYM) return (sp_sym)k.v.i;
   if (k.tag == SP_TAG_STR && k.v.s) return sp_sym_intern_n(k.v.s, sp_str_byte_len(k.v.s));
+  /* an object converts through its #to_str, as CRuby's rb_to_symbol takes it */
+  if (k.tag == SP_TAG_OBJ && k.cls_id >= 0) {
+    const char *s = sp_poly_check_str(k);
+    if (s) return sp_sym_intern_n(s, sp_str_byte_len(s));
+  }
   sp_raise_cls("TypeError", sp_sprintf("%s is not a symbol nor a string", sp_poly_inspect(k)));
   return (sp_sym)0;
 }
