@@ -4734,6 +4734,10 @@ static void synth_enum_to_a(Compiler *c) {
        as many parameters as the widest yield and pushes them as an array; with
        a single parameter it saw only the first value (#3754). */
     int yarity = 1;
+    /* yields of one value and of several, or a splat, whose count is known
+       only at run time: Enumerable packs only a yield of several values, so
+       the collector takes them all as a rest and packs by the count */
+    int ymany = 0, yone = 0, ysplat = 0;
     { int esi = comp_method_in_class(c, cls[k], "each");
       if (esi >= 0)
         for (int nid = 0; nid < nt->count; nid++) {
@@ -4742,7 +4746,9 @@ static void synth_enum_to_a(Compiler *c) {
           if (!ynt || !sp_streq(ynt, "YieldNode")) continue;
           int ya = nt_ref(nt, nid, "arguments");
           int yn2 = 0;
-          if (ya >= 0) nt_arr(nt, ya, "arguments", &yn2);
+          const int *yav = ya >= 0 ? nt_arr(nt, ya, "arguments", &yn2) : NULL;
+          for (int q = 0; q < yn2; q++) if (nt_kind(nt, yav[q]) == NK_SplatNode) ysplat = 1;
+          if (yn2 >= 2) ymany = 1; else yone = 1;
           if (yn2 > yarity) yarity = yn2;
         }
       /* The same method written with an explicit block parameter drives it
@@ -4763,7 +4769,9 @@ static void synth_enum_to_a(Compiler *c) {
           if (!crn || !sp_streq(crn, bpn)) continue;
           int ca2 = nt_ref(nt, nid, "arguments");
           int cn2 = 0;
-          if (ca2 >= 0) nt_arr(nt, ca2, "arguments", &cn2);
+          const int *cav = ca2 >= 0 ? nt_arr(nt, ca2, "arguments", &cn2) : NULL;
+          for (int q = 0; q < cn2; q++) if (nt_kind(nt, cav[q]) == NK_SplatNode) ysplat = 1;
+          if (cn2 >= 2) ymany = 1; else yone = 1;
           if (cn2 > yarity) yarity = cn2;
         }
       }
@@ -4775,6 +4783,9 @@ static void synth_enum_to_a(Compiler *c) {
     int accw = nt_new_node(nt, "LocalVariableWriteNode");
     nt_node_set_str(nt, accw, "name", "__enum_acc");
     nt_node_set_ref(nt, accw, "value", arr);
+    int packed = ysplat || (ymany && yone);
+    c->classes[cls[k]].enum_yield_packed = packed;
+    if (packed) yarity = 1;
     char enames[8][16];
     int eps[8];
     for (int q = 0; q < yarity; q++) {
@@ -4784,22 +4795,40 @@ static void synth_enum_to_a(Compiler *c) {
       nt_node_set_str(nt, eps[q], "name", enames[q]);
     }
     int params = nt_new_node(nt, "ParametersNode");
-    nt_node_set_arr(nt, params, "requireds", eps, yarity);
-    int bparams = nt_new_node(nt, "BlockParametersNode");
-    nt_node_set_ref(nt, bparams, "parameters", params);
     int accr1 = nt_new_node(nt, "LocalVariableReadNode");
     nt_node_set_str(nt, accr1, "name", "__enum_acc");
-    int ereads[8];
-    for (int q = 0; q < yarity; q++) {
-      ereads[q] = nt_new_node(nt, "LocalVariableReadNode");
-      nt_node_set_str(nt, ereads[q], "name", enames[q]);
-    }
     int eread;
-    if (yarity == 1) eread = ereads[0];
-    else {
-      eread = nt_new_node(nt, "ArrayNode");
-      nt_node_set_arr(nt, eread, "elements", ereads, yarity);
+    if (packed) {
+      /* |*__enum_e|, pushed as __enum_e.length <= 1 ? __enum_e[0] : __enum_e:
+         nothing yielded is nil, one value itself, several an Array */
+      int rest = nt_new_node(nt, "RestParameterNode");
+      nt_node_set_str(nt, rest, "name", "__enum_e");
+      nt_node_set_ref(nt, params, "rest", rest);
+      int len = te_call(nt, te_lvread(nt, "__enum_e"), "length", -1, -1);
+      int cmp = te_call(nt, len, "<=", te_args1(nt, te_int(nt, 1)), -1);
+      int first = te_call(nt, te_lvread(nt, "__enum_e"), "[]", te_args1(nt, te_int(nt, 0)), -1);
+      int els = nt_new_node(nt, "ElseNode");
+      nt_node_set_ref(nt, els, "statements", te_stmts1(nt, te_lvread(nt, "__enum_e")));
+      eread = nt_new_node(nt, "IfNode");
+      nt_node_set_ref(nt, eread, "predicate", cmp);
+      nt_node_set_ref(nt, eread, "statements", te_stmts1(nt, first));
+      nt_node_set_ref(nt, eread, "subsequent", els);
     }
+    else {
+      nt_node_set_arr(nt, params, "requireds", eps, yarity);
+      int ereads[8];
+      for (int q = 0; q < yarity; q++) {
+        ereads[q] = nt_new_node(nt, "LocalVariableReadNode");
+        nt_node_set_str(nt, ereads[q], "name", enames[q]);
+      }
+      if (yarity == 1) eread = ereads[0];
+      else {
+        eread = nt_new_node(nt, "ArrayNode");
+        nt_node_set_arr(nt, eread, "elements", ereads, yarity);
+      }
+    }
+    int bparams = nt_new_node(nt, "BlockParametersNode");
+    nt_node_set_ref(nt, bparams, "parameters", params);
     int pushargs = nt_new_node(nt, "ArgumentsNode");
     nt_node_set_arr(nt, pushargs, "arguments", &eread, 1);
     int push = nt_new_node(nt, "CallNode");
@@ -8243,7 +8272,8 @@ static int desugar_for_enumerable(Compiler *c) {
        which is what a single-left MultiTarget already means. */
     int idxn = nt_ref(nt, id, "index");
     const char *ixt = idxn >= 0 ? nt_type(nt, idxn) : NULL;
-    if (c->classes[cid].enum_yield_arity > 1 && ixt && !sp_streq(ixt, "MultiTargetNode") &&
+    if ((c->classes[cid].enum_yield_arity > 1 || c->classes[cid].enum_yield_packed) &&
+        ixt && !sp_streq(ixt, "MultiTargetNode") &&
         !nt_int(nt, id, "for_packed", 0)) {
       int mt = nt_new_node(nt, "MultiTargetNode");
       nt_node_set_arr(nt, mt, "lefts", &idxn, 1);
@@ -8278,7 +8308,8 @@ static int desugar_multi_yield_map_param(Compiler *c) {
     TyKind rt = infer_type(c, recv);
     if (!ty_is_object(rt)) continue;
     int cid = ty_object_class(rt);
-    if (cid < 0 || cid >= c->nclasses || c->classes[cid].enum_yield_arity <= 1) continue;
+    if (cid < 0 || cid >= c->nclasses ||
+        (c->classes[cid].enum_yield_arity <= 1 && !c->classes[cid].enum_yield_packed)) continue;
     int bp = nt_ref(nt, blk, "parameters");
     if (bp < 0) continue;
     const char *bpty = nt_type(nt, bp);
@@ -8298,6 +8329,30 @@ static int desugar_multi_yield_map_param(Compiler *c) {
       int v0 = nt_ref(nt, bb[0], "value");
       if (v0 >= 0 && nt_kind(nt, v0) == NK_CallNode && nt_str(nt, v0, "name") &&
           sp_streq(nt_str(nt, v0, "name"), "[]")) continue;
+    }
+    if (bn > 0 && nt_kind(nt, bb[0]) == NK_MultiWriteNode && nt_int(nt, bb[0], "map_packed", 0)) continue;
+    /* a packed collector's element is the value itself when one was yielded,
+       so the parameter destructures it as `x, = x` does: the first of an
+       Array, anything else as it is */
+    if (c->classes[cid].enum_yield_packed) {
+      int tg = nt_new_node(nt, "LocalVariableTargetNode");
+      int rv = nt_new_node(nt, "LocalVariableReadNode");
+      int mw = nt_new_node(nt, "MultiWriteNode");
+      if (tg < 0 || rv < 0 || mw < 0) continue;
+      nt_node_set_str(nt, tg, "name", pnm);
+      nt_node_set_str(nt, rv, "name", pnm);
+      nt_node_set_arr(nt, mw, "lefts", &tg, 1);
+      nt_node_set_ref(nt, mw, "value", rv);
+      nt_node_set_int(nt, mw, "map_packed", 1);
+      int nb[64];
+      if (bn + 1 > 64) continue;
+      nb[0] = mw;
+      for (int q = 0; q < bn; q++) nb[q + 1] = bb[q];
+      nt_node_set_arr(nt, body, "body", nb, bn + 1);
+      comp_grow_node_arrays(c);
+      c->nscope[tg] = c->nscope[rv] = c->nscope[mw] = c->nscope[blk];
+      changed = 1;
+      continue;
     }
     int rd = nt_new_node(nt, "LocalVariableReadNode");
     int ix = nt_new_node(nt, "IntegerNode");
