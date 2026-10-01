@@ -24553,7 +24553,9 @@ void refuse_super_splat(Compiler *c, int id, int target) {
 }
 
 /* `yield(*s)`, `yield(*e, v)` into a literal block that appends to a
-   parameter at or past the splat's position: refused as above. */
+   parameter at or past the splat's position: the String variable is pulled
+   into the handle the block's parameter takes (block_splat_pull_args), but
+   for one that cannot be, which is refused as above. */
 void refuse_yield_splat(Compiler *c, int blk, int yc, const int *yv) {
   if (blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode) return;
   int fs;
@@ -24875,10 +24877,15 @@ static void refuse_string_copies(Compiler *c, int id) {
       if (!refuse_call_binds(c, bp >= 0 ? nt_ref(nt, bp, "parameters") : -1, id, 0, 1)) return; }
     int n = refuse_arg_layout(c, id, av, 16);
     int spliced = ie_splice_aliases(c, id, name, recv);
+    /* a splat gathers the arguments into an Array the block's parameters
+       bind from: a read that hands out the handle there is its own
+       (block_splat_pull_args) */
+    int gathered = block_splat_shares(c, blk);
     for (int k = 0; k < n; k++) {
       int shared;
       const char *kind = strvar_arg(c, av[k], &shared);
       if (!kind) continue;
+      if (gathered && c->strbuf_box[av[k]] && !sp_streq(kind, "a block's parameter")) continue;
       if (spliced && ie_arg_aliases(c, av[k]) && block_param_wants_alias(c, blk, k, call_plain_argc(c, id))) continue;
       /* a parameter that is the shared handle takes the caller's, pulled in
          (yield_splice_handles) */
@@ -24987,6 +24994,53 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ")");
       in_name = 0;
       return;
+    } }
+  /* `x << y` on a POLY local an `is_a?(String)` guard narrowed, in value
+     position (a block's last line): the read is typed String but the slot
+     is a box, so the String arm wrote the new value back into the unboxed
+     read (not an lvalue: the C build stopped), and a box holding the shared
+     handle lost it. Routed through the poly append, as the statement form
+     is (emit_array_mutate_stmt), and the answer unboxed to the call's type.
+     A chain (`x << a << b`) takes the poly append at each step. */
+  { const char *cn = nt_str(c->nt, id, "name");
+    int chain[16], nch = 0, r = nt_ref(c->nt, id, "receiver");
+    while (cn && sp_streq(cn, "<<") && r >= 0 && nt_kind(c->nt, r) == NK_CallNode && nch < 16 &&
+           nt_str(c->nt, r, "name") && sp_streq(nt_str(c->nt, r, "name"), "<<") &&
+           c->ntype[r] == TY_STRING) {
+      chain[nch++] = r;
+      r = nt_ref(c->nt, r, "receiver");
+    }
+    /* a poly arm that re-emits the call over the unboxed receiver
+       overrides its read (g_argov): that one is the String arm's */
+    int over = 0;
+    for (int i = 0; r >= 0 && i < g_n_argov && !over; i++) over = g_argov_node[i] == r;
+    if (cn && !over && (nch > 0 || sp_str_mutator(cn, SP_MUT_NARROW)) && r >= 0 &&
+        nt_kind(c->nt, r) == NK_LocalVariableReadNode && c->ntype[r] == TY_STRING) {
+      const char *rn = nt_str(c->nt, r, "name");
+      Scope *rs = rn ? comp_scope_of(c, r) : NULL;
+      LocalVar *rl = rs ? scope_local(rs, rn) : NULL;
+      if (rl && rl->type == TY_POLY) {
+        TyKind sv = c->ntype[r], svn = c->nilnarrow[r];
+        TyKind ct = comp_ntype(c, id), svc = c->ntype[id];
+        c->ntype[r] = TY_POLY;
+        c->nilnarrow[r] = TY_UNKNOWN;
+        c->ntype[id] = TY_POLY;
+        for (int i = 0; i < nch; i++) c->ntype[chain[i]] = TY_POLY;
+        Buf pb; memset(&pb, 0, sizeof pb);
+        emit_call(c, id, &pb);
+        for (int i = 0; i < nch; i++) c->ntype[chain[i]] = TY_STRING;
+        c->ntype[id] = svc;
+        c->ntype[r] = sv;
+        c->nilnarrow[r] = svn;
+        /* the poly arms answer the box or the String by mutator */
+        Buf vb; memset(&vb, 0, sizeof vb);
+        buf_printf(&vb, "SP_BOX_STR_OR_POLY(%s)", pb.p ? pb.p : "sp_box_nil()");
+        if (ct == TY_POLY || ct == TY_UNKNOWN) buf_puts(b, vb.p);
+        else emit_unbox_text(c, ct, vb.p, b);
+        free(vb.p);
+        free(pb.p);
+        return;
+      }
     } }
   int nd_saved = g_nd_call_id; g_nd_call_id = id;
   if (nt_int(c->nt, id, "node_line", 0) > 0) g_refuse_outer = id;

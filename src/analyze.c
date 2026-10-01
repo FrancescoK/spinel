@@ -12802,11 +12802,16 @@ static int an_subtree_yields_lent(Compiler *c, int node, const char *vn, int mi)
   }
   return 0;
 }
+static int an_block_name_lent(Compiler *c, int blk, const char *bp);
 static int an_block_param_lent(Compiler *c, int blk, int k, int n) {
   /* a post the position binds is aliased too (emit_block_binds); n is the
      yield's count of plain arguments */
   const char *bp = blk >= 0 ? block_param_at(c, blk, k, n) : NULL;
-  if (!bp) return 0;
+  return bp && an_block_name_lent(c, blk, bp);
+}
+/* Does literal block `blk` lend its String parameter `bp`: append to it,
+   or yield it on to blocks that do? */
+static int an_block_name_lent(Compiler *c, int blk, const char *bp) {
   Scope *bs = comp_scope_of(c, blk);
   LocalVar *lv = bs ? scope_local(bs, bp) : NULL;
   if (!lv || lv->type != TY_STRING || lv->is_cell) return 0;
@@ -19863,6 +19868,15 @@ static int yield_splice_kw_handles(Compiler *c, int mi, int h, int kwh, int pass
   }
   return changed;
 }
+/* Will yielding method mi be lowered to call its named block as a proc
+   (the post-fixpoint lowering's test: a value use of the block, a call of
+   itself, a yield inside a lifted body)? */
+static int scope_yields_inside_lifted_body(Compiler *c, int mi);
+static int yield_lowers_block(Compiler *c, int mi) {
+  Scope *m = &c->scopes[mi];
+  if (!m->blk_param || !m->blk_param[0]) return 0;
+  return m->blk_param_value_use || scope_calls_itself(c, mi) || scope_yields_inside_lifted_body(c, mi);
+}
 /* One yield of a spliced method (or a `blk.call` the splice expands as
    one): a spliced block's parameter a handle is yielded to, and then every
    variable yielded to it. */
@@ -19957,9 +19971,11 @@ static int yield_splice_site(Compiler *c, int y, int pass, ALocalAliases *aliase
       /* a boxed parameter the block appends to in place appends through
          a box that holds the handle (#5957): the yielded variable has
          to be the handle, which the binding boxes as itself. Not for a
-         method that names its block, which is lowered to call it as a
-         proc once it keeps it, where the yield boxes what it hands. */
-      if (t->type == TY_POLY && !(ms->blk_param && ms->blk_param[0]) &&
+         method that is lowered to call its named block as a proc (it
+         keeps it, or calls itself: the lowering's own test), where the
+         yield boxes what it hands; one that only calls it (`b.call(1)`)
+         is spliced like any yielder. */
+      if (t->type == TY_POLY && !yield_lowers_block(c, mi) &&
           an_subtree_lends_local(c, nt_ref(nt, blk, "body"), bp, 0)) { into_h = 1; continue; }
       if (pass || !is_h || t->type != TY_STRING || !an_block_param_lent(c, blk, k, call_plain_argc(c, y))) continue;
       t->type = TY_STRBUF; t->str_shared = 1; changed = 1;
@@ -20115,11 +20131,219 @@ static int yield_rest_handles(Compiler *c) {
   return changed;
 }
 
+/* ---- A String a yield hands on through a splat (#6179) -----------------
+
+   A spliced yield, and instance_exec, with a splat gather every positional
+   value into one Array and bind the block's parameters from it by a
+   distribution only the run time knows (emit_block_binds). A parameter
+   the block appends to was bound to a copy of the String it got, so the
+   splice refused the yield (refuse_yield_splat), or appended to the copy
+   when the String landed past the parameters that refusal asks. Such a
+   parameter takes the handle, and every String variable the Array holds
+   is pulled in: the Array then holds the handle, which the parameter
+   unboxes as itself. */
+static int an_local_array_changed(Compiler *c, const char *xn, Scope *xs);
+/* Pull the String variables among the n positional items iv[] a gathered
+   Array holds: one written there, and the elements of each splatted Array
+   literal, or of a local every write of which is one (a desugared yield
+   nests them: `yield(*s, 2)` is `yield(*[*s, 2])`). An element of a local
+   leaves its read to the container rule (inl 0), as dyn_pull_arg says. */
+static int splat_pull_items(Compiler *c, const int *iv, int n, int inl, int depth) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  if (depth > 4) return 0;
+  for (int k = 0; k < n; k++) {
+    NodeKind ak = nt_kind(nt, iv[k]);
+    if (ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) break;
+    if (ak != NK_SplatNode) {
+      TyKind at = ak == NK_LocalVariableReadNode ? comp_ntype(c, iv[k]) : TY_UNKNOWN;
+      if (at == TY_STRING || at == TY_STRBUF) changed |= dyn_pull_arg(c, iv[k], inl);
+      /* a POLY one is lifted, and a parameter pulls its callers in */
+      else if (at == TY_POLY) changed |= lift_poly_read(c, NULL, NULL, iv[k]);
+      continue;
+    }
+    int x = nt_ref(nt, iv[k], "expression");
+    if (x >= 0 && nt_kind(nt, x) == NK_ArrayNode) {
+      int en = 0; const int *ev = nt_arr(nt, x, "elements", &en);
+      changed |= splat_pull_items(c, ev, en, inl, depth + 1);
+      /* a literal that holds a handle now is an Array of boxes, also when
+         the handle came after its type settled */
+      for (int e = 0; inl && e < en; e++)
+        if (c->strbuf_box[ev[e]] && comp_ntype(c, x) != TY_POLY_ARRAY) {
+          comp_sn_retype(c, x, TY_POLY_ARRAY); changed = 1;
+        }
+      continue;
+    }
+    if (x < 0 || nt_kind(nt, x) != NK_LocalVariableReadNode) continue;
+    const char *xn = nt_str(nt, x, "name");
+    Scope *xs = xn ? comp_scope_of(c, x) : NULL;
+    int lits[16], nl = 0;
+    for (int w = xs ? comp_lvw_first_sc(c, (int)(xs - c->scopes), xn) : -1; w >= 0 && nl < 16;
+         w = comp_lvw_next_sc(c, w)) {
+      if (comp_scope_of(c, w) != xs || nt_kind(nt, w) != NK_LocalVariableWriteNode ||
+          !sp_streq(nt_str(nt, w, "name"), xn)) continue;
+      int wv = nt_ref(nt, w, "value");
+      if (wv < 0 || nt_kind(nt, wv) != NK_ArrayNode) { nl = 0; break; }
+      lits[nl++] = wv;
+    }
+    int param = 0;
+    for (int l = 0; l < nl; l++) {
+      int en = 0; const int *ev = nt_arr(nt, lits[l], "elements", &en);
+      changed |= splat_pull_items(c, ev, en, 0, depth + 1);
+      for (int e = 0; e < en && !param; e++) {
+        const char *en2 = nt_kind(nt, ev[e]) == NK_LocalVariableReadNode ? nt_str(nt, ev[e], "name") : NULL;
+        LocalVar *ev2 = en2 ? scope_local(xs, en2) : NULL;
+        param = ev2 && ev2->is_param && !ev2->is_block_param && ev2->type == TY_STRBUF && ev2->str_shared;
+      }
+    }
+    /* an Array the program changes holds what was stored, and so does one
+       that holds a parameter, which the container rule leaves alone */
+    if (xs && (param || an_local_array_changed(c, xn, xs))) changed |= strbuf_demand_container_stores(c, xn, xs);
+  }
+  return changed;
+}
+/* The literal blocks a splat reaches whose appended parameters all take
+   the handle from the gathered Array (block_splat_pull_args): the
+   refusals ask it. */
+static unsigned char *g_bsplat;
+static int g_bsplat_cap;
+static void block_splat_mark(Compiler *c, int blk, int on) {
+  if (blk >= g_bsplat_cap) {
+    if (!on) return;
+    int n = c->nt->count > blk ? c->nt->count : blk + 1;
+    unsigned char *p = (unsigned char *)realloc(g_bsplat, (size_t)n);
+    if (!p) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memset(p + g_bsplat_cap, 0, (size_t)(n - g_bsplat_cap));
+    g_bsplat = p; g_bsplat_cap = n;
+  }
+  g_bsplat[blk] = (unsigned char)on;
+}
+int block_splat_shares(Compiler *c, int blk) {
+  (void)c;
+  return blk >= 0 && blk < g_bsplat_cap && g_bsplat[blk];
+}
+/* Does a call under `node` hand local `vn` as a plain argument to a method
+   parameter the method appends to? */
+static int subtree_hands_to_appender(Compiler *c, int node, const char *vn, int depth) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || node >= nt->count || depth > 300) return 0;
+  if (nt_kind(nt, node) == NK_CallNode) {
+    int a = nt_ref(nt, node, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    int mi = ac > 0 ? an_call_target_mi(c, node) : -1;
+    for (int k = 0; mi >= 0 && k < ac && k < c->scopes[mi].nparams; k++) {
+      NodeKind ak = nt_kind(nt, av[k]);
+      if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) break;
+      if (ak == NK_LocalVariableReadNode && sp_streq(nt_str(nt, av[k], "name"), vn) &&
+          an_param_mutated_in_place(c, mi, k)) return 1;
+    }
+  }
+  const SpNode *nd = &nt->nodes[node];
+  for (int i = 0; i < nd->nr; i++)
+    if (subtree_hands_to_appender(c, nd->r[i].ref, vn, depth + 1)) return 1;
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++)
+      if (subtree_hands_to_appender(c, nd->a[i].ids[j], vn, depth + 1)) return 1;
+  return 0;
+}
+/* Does literal block `blk` append to its boxed parameter `bp`: in place, by
+   lending it, or by handing it to a parameter that appends to it? */
+static int block_poly_param_appended(Compiler *c, int blk, const char *bp) {
+  int body = nt_ref(c->nt, blk, "body");
+  Scope *bs = comp_scope_of(c, blk);
+  return an_subtree_lends_local(c, body, bp, 0) || (bs && strbuf_any_str_mut(c, bp, bs)) ||
+         subtree_hands_to_appender(c, body, bp, 0);
+}
+/* Is one of the n positional arguments av[] a splat? */
+static int args_have_splat(const NodeTable *nt, const int *av, int n) {
+  for (int k = 0; k < n; k++) {
+    NodeKind ak = nt_kind(nt, av[k]);
+    if (ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
+    if (ak == NK_SplatNode) return 1;
+  }
+  return 0;
+}
+static int block_splat_pull_args(Compiler *c, int blk, const int *av, int n) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  if (!args_have_splat(nt, av, n)) return 0;
+  Scope *bs = comp_scope_of(c, blk);
+  int lent = 0, copy = 0;
+  for (int kind = 0; kind < 3 && bs; kind++)
+    for (int i = 0; i < 64; i++) {
+      const char *bp = kind == 0 ? block_param_name(c, blk, i) : kind == 1 ? block_opt_name(c, blk, i)
+                                                                : block_post_name(c, blk, i);
+      if (!bp) break;
+      LocalVar *t = scope_local(bs, bp);
+      if (!t) continue;
+      if (t->type == TY_STRING && !t->is_cell && an_block_name_lent(c, blk, bp)) {
+        t->type = TY_STRBUF; t->str_shared = 1; changed = 1;
+      }
+      /* a boxed one appends through the handle its box holds; a captured
+         String one is a cell bound from a copy */
+      if ((t->type == TY_STRBUF && t->str_shared) || (t->type == TY_POLY && block_poly_param_appended(c, blk, bp)))
+        lent = 1;
+      else if (t->type == TY_STRING && t->is_cell && an_subtree_lends_local(c, nt_ref(nt, blk, "body"), bp, 0))
+        copy = 1;
+    }
+  /* the rest gathers boxes, which hold the handle (block_rest_position) */
+  const char *rn = block_rest_name(c, blk);
+  if (rn && rn[0] && rest_elems_mutated_walk(c, nt_ref(nt, blk, "body"), rn, 0)) lent = 1;
+  block_splat_mark(c, blk, lent && !copy);
+  /* a copy stays refused (refuse_yield_splat) */
+  if (!lent || copy) return changed;
+  return changed | splat_pull_items(c, av, n, 1, 0);
+}
+
+static int yield_splat_handles(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  dyn_blk_index(c);
+  for (int y = comp_kind_first(c, NK_YieldNode); y >= 0; y = comp_kind_next(c, y)) {
+    if (nt_kind(nt, y) != NK_YieldNode) continue;
+    Scope *ms = comp_scope_of(c, y);
+    if (!ms || !ms->name || !ms->yields) continue;
+    int mi = (int)(ms - c->scopes);
+    int aa = nt_ref(nt, y, "arguments"), ac = 0;
+    const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &ac) : NULL;
+    if (ac == 0) continue;
+    int h = anh_find(&g_dyn.bnames, sp_streq(ms->name, "initialize") ? "new" : ms->name);
+    for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
+      int u = g_dyn.bnode[e], blk = nt_ref(nt, u, "block");
+      if (an_call_target_mi(c, u) != mi) continue;
+      if (nt_kind(nt, blk) == NK_BlockNode) { changed |= block_splat_pull_args(c, blk, av, ac); continue; }
+      /* a proc a call site passes with `&` (`y(s, &pr)`): the yield boxes
+         the gathered values, so a String one there goes over as the handle
+         when the proc appends at a position the splat can reach */
+      int x = blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode && args_have_splat(nt, av, ac)
+                ? nt_ref(nt, blk, "expression") : -1;
+      int app = 0;
+      for (int k = 0; x >= 0 && k < DYN_ARGS && !app; k++) {
+        DynReach r; memset(&r, 0, sizeof r);
+        dyn_reach_value(c, x, k, 0, &r);
+        app = !r.unlifted && (r.app || (r.unknown && dyn_any_appender(c)));
+      }
+      if (app) changed |= splat_pull_items(c, av, ac, 1, 0);
+    }
+  }
+  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
+    if (nt_kind(nt, u) != NK_CallNode || !nt_str(nt, u, "name") || !sp_streq(nt_str(nt, u, "name"), "instance_exec"))
+      continue;
+    int blk = nt_ref(nt, u, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+    int aa = nt_ref(nt, u, "arguments"), ac = 0;
+    const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &ac) : NULL;
+    changed |= block_splat_pull_args(c, blk, av, ac);
+  }
+  return changed;
+}
+
 static int promote_dyncall_string_args(Compiler *c) {
   const NodeTable *nt = c->nt;
   dyn_memo_reset(c);
   int yh = yield_splice_handles(c);
   yh |= yield_rest_handles(c);
+  yh |= yield_splat_handles(c);
   int changed = dyn_convert_params(c);
   changed |= ctor_convert_params(c);
   changed |= ctor_pull_args(c);
