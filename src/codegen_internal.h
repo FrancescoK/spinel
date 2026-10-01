@@ -111,6 +111,8 @@ typedef struct { int sv, from, n; char (*f)[96]; char (*t)[112]; } RenPark;
 RenPark ren_park(int from);
 void ren_unpark(RenPark *p);
 const char *strbuf_local_name(Compiler *c, int recv);
+int ivar_global_slot(Compiler *c, int node, char *out, size_t cap);
+int gvar_global_slot(Compiler *c, int node, char *out, size_t cap);
 int strbuf_ivar_owner(Compiler *c, int node);
 /* The shared-mutable shim (codegen_stmt.c) re-runs a value-semantics mutator
    arm against a plain shadow copy, then swaps the handle's bytes for it. A

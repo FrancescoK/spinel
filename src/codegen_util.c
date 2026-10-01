@@ -1499,6 +1499,37 @@ int strbuf_ivar_owner(Compiler *c, int node) {
   if (g_ie_class_id >= 0) return -1;
   return comp_class_index(c, "Toplevel");
 }
+/* The C global ivar read `node` lives in, by the read emitter's storage
+   rule: a class method's ivar is the class's civ_ slot, a top-level one
+   (outside an instance_eval) the Toplevel's. Fills `out` and answers 1;
+   0 for an instance's field. */
+int ivar_global_slot(Compiler *c, int node, char *out, size_t cap) {
+  const char *nm = nt_str(c->nt, node, "name");
+  Scope *cs = comp_scope_of(c, node);
+  if (!nm || !cs || g_ie_nil_ivars) return 0;
+  if (g_sb_iv_name && sp_streq(nm, g_sb_iv_name)) return 0;
+  if (cs->is_cmethod && cs->class_id >= 0)
+    snprintf(out, cap, "civ_%s_%s", c->classes[cs->class_id].name, iv_c(nm + 1));
+  else if (cs->class_id < 0 && g_ie_class_id < 0 && comp_class_index(c, "Toplevel") >= 0)
+    snprintf(out, cap, "civ_Toplevel_%s", iv_c(nm + 1));
+  else return 0;
+  return 1;
+}
+/* The C global global-variable read `node` reads, when it is the plain
+   gv_ slot rather than a special global's runtime accessor (`$0`, `$~`,
+   `$stdout`, ...): the read emitter decides, so its own text is asked. */
+int gvar_global_slot(Compiler *c, int node, char *out, size_t cap) {
+  const char *gn = nt_str(c->nt, node, "name");
+  const char *grn = gn && gn[0] == '$' ? comp_resolve_gvar(c, gn + 1) : NULL;
+  if (!grn || !comp_gvar(c, grn)) return 0;
+  Buf gb; memset(&gb, 0, sizeof gb);
+  emit_expr(c, node, &gb);
+  int plain = gb.p && !strncmp(gb.p, "gv_", 3) && sp_streq(gb.p + 3, grn) &&
+              strlen(gb.p) < cap;
+  if (plain) snprintf(out, cap, "%s", gb.p);
+  free(gb.p);
+  return plain;
+}
 /* Emit-side lvalue for a shared-mutable string receiver: lv_<x> for a
    strbuf local, <self>-><iv_x> (or civ_Toplevel_x) for a strbuf ivar.
    Returns 1 and fills `out`, or 0 when the receiver is neither (#3227). */

@@ -462,10 +462,19 @@ unsigned inline_alias_params(Compiler *c, int mi, const int *argv, int pargc, co
     NodeKind ak = nt_kind(nt, an);
     if (ak == NK_InstanceVariableReadNode) {
       /* an ivar buffer: the object's own slot, from an instance method of a
-         heap class (a value type is a struct copy with no slot to lend) */
+         heap class (a value type is a struct copy with no slot to lend), or
+         the C global a top-level or class method's ivar lives in */
       Scope *as = comp_scope_of(c, an);
-      if (!as || as->class_id < 0 || as->is_cmethod || comp_ntype(c, an) != TY_STRING ||
-          comp_ty_value_obj(c, ty_object(as->class_id)) || !g_self) continue;
+      char gref[256];
+      if (comp_ntype(c, an) != TY_STRING) continue;
+      if (!ivar_global_slot(c, an, gref, sizeof gref) &&
+          (!as || as->class_id < 0 || as->is_cmethod ||
+           comp_ty_value_obj(c, ty_object(as->class_id)) || !g_self)) continue;
+    }
+    /* a global variable's C global (gv_), as a call lends it */
+    else if (ak == NK_GlobalVariableReadNode) {
+      char gref[256];
+      if (comp_ntype(c, an) != TY_STRING || !gvar_global_slot(c, an, gref, sizeof gref)) continue;
     }
     /* a String that is the shared handle has no slot to lend: the
        parameter takes the handle (yield_splice_handles) or a copy */
@@ -526,6 +535,9 @@ void emit_inline_alias_arg(Compiler *c, int av, Buf *b) {
     /* the slot itself, and the owner pinned as a byref call pins it: the
        store lands inside this expansion, past any dirty bit (#4378) */
     const char *ivn = nt_str(nt, av, "name");
+    /* a C global is a root every collection marks: no owner to pin */
+    char gref[256];
+    if (ivar_global_slot(c, av, gref, sizeof gref)) { buf_printf(b, "%s)", gref); return; }
     buf_printf(b, "%s%siv_%s); sp_gc_pin_remembered((void *)%s)", g_self, g_self_deref, iv_c(ivn + 1), g_self);
     return;
   }

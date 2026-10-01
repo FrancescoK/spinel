@@ -6062,6 +6062,7 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
        like any other value, as a shared handle binds a fresh one. */
     if (provided >= 0 && !arg_ran_first(provided, 0)) {
       const char *aty = nt_type(c->nt, provided);
+      char gref[256];
       if (aty && sp_streq(aty, "LocalVariableReadNode")) {
         const char *vn = nt_str(c->nt, provided, "name");
         if (emit_lent_local(vn ? scope_local(comp_scope_of(c, provided), vn) : NULL, vn, out))
@@ -6092,6 +6093,21 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
           buf_printf(out, "&%s%siv_%s", g_self, g_self_deref, iv_c(ivn + 1));
           return;
         }
+        /* A top-level ivar, or a class method's, lives in a C global (the
+           read emitter's civ_ slot), a root every collection marks: its
+           address is lent as an instance's slot is, with no owner to pin.
+           Lent a temp, the callee's appends stayed in the copy. */
+        if (comp_ntype(c, provided) == TY_STRING && ivar_global_slot(c, provided, gref, sizeof gref)) {
+          buf_printf(out, "&%s", gref);
+          return;
+        }
+      }
+      /* a global variable's C global likewise, when the read is the plain
+         gv_ slot (not a special global's runtime accessor) */
+      if (aty && sp_streq(aty, "GlobalVariableReadNode") && comp_ntype(c, provided) == TY_STRING &&
+          gvar_global_slot(c, provided, gref, sizeof gref)) {
+        buf_printf(out, "&%s", gref);
+        return;
       }
     }
     Buf ab; memset(&ab, 0, sizeof ab);
