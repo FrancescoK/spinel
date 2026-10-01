@@ -3372,6 +3372,36 @@ static sp_RbVal sp_poly_case_conv(sp_RbVal v, const char *(*fn)(const char *), c
     return sp_box_sym(sp_json_sym_intern_fn(fn(sp_sym_name_fn((sp_sym)v.v.i))));
   return sp_box_str(fn(sp_poly_recv_s(v, meth)));
 }
+/* The options of String#upcase / downcase / capitalize / swapcase and their
+   `!` forms, and Symbol's, checked as CRuby's check_case_options does before
+   it maps (or checks frozen): :ascii alone, :turkic and :lithuanian alone or
+   together, :fold for downcasing only; `down` is 1 for downcase. */
+static const char *sp_case_opt_name(sp_RbVal v) {
+  return v.tag == SP_TAG_SYM && sp_sym_name_fn ? sp_sym_name_fn((sp_sym)v.v.i) : NULL;
+}
+SP_COLD static void sp_case_opts_check(sp_int argc, const sp_RbVal *o, int down) {
+  if (argc <= 0) return;
+  if (argc > 2) { sp_raise_cls("ArgumentError", "too many options"); return; }
+  const char *a = sp_case_opt_name(o[0]);
+  if (a && strcmp(a, "ascii") == 0) {
+    if (argc == 2) sp_raise_cls("ArgumentError", "too many options");
+    return;
+  }
+  if (a && (strcmp(a, "turkic") == 0 || strcmp(a, "lithuanian") == 0)) {
+    if (argc == 2) {
+      const char *b = sp_case_opt_name(o[1]);
+      if (!b || strcmp(b, a[0] == 't' ? "lithuanian" : "turkic") != 0)
+        sp_raise_cls("ArgumentError", "invalid second option");
+    }
+    return;
+  }
+  if (argc > 1) { sp_raise_cls("ArgumentError", "too many options"); return; }
+  if (a && strcmp(a, "fold") == 0) {
+    if (!down) sp_raise_cls("ArgumentError", "option :fold only allowed for downcasing");
+    return;
+  }
+  sp_raise_cls("ArgumentError", "invalid option");
+}
 static sp_bool sp_poly_numeric_p(sp_RbVal v) { return v.tag == SP_TAG_INT || v.tag == SP_TAG_FLT || v.tag == SP_TAG_BIGINT; }
 /* Display form of a value in a `can't convert %s into ...` TypeError:
    nil/true/false render lowercase, everything else by class name (CRuby). */
