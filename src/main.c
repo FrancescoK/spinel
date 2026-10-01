@@ -898,6 +898,7 @@ int main(int argc, char **argv) {
      overflowing detectably, and always_inline bypasses the C compiler's own
      large-frame brake -- ask for the warning back (#3913). */
   int fiber_frame_guard = strstr(csrc, "/* SPINEL_FIBER_FRAME_GUARD */") != NULL;
+  int uses_crypt = strstr(csrc, "sp_str_crypt(") != NULL;  /* String#crypt: link -lcrypt */
   const char *rt_lib = uses_threads ? "libspinel_rt_mt.a" : "libspinel_rt.a";
   free(csrc);
   /* wasm has no threads without SharedArrayBuffer and no stack switching
@@ -1146,8 +1147,11 @@ int main(int argc, char **argv) {
     for (size_t wi = 0; wi < sizeof wlibs / sizeof wlibs[0]; wi++) { s_add(&cmd, wlibs[wi]); s_add(&cmd, " "); bi_put(&bi, "lib", wlibs[wi]); }
   }
 #if !defined(__APPLE__)
-  else {
-    s_add(&cmd, "-lcrypt ");  /* String#crypt = libc crypt(3); --as-needed drops it when unused */
+  /* String#crypt = libc crypt(3), linked only when the program calls it:
+     a linker without a default --as-needed (Fedora's) otherwise made
+     libcrypt a dependency of every binary (#6674) */
+  else if (uses_crypt) {
+    s_add(&cmd, "-lcrypt ");
     bi_put(&bi, "lib", "-lcrypt");
   }
 #endif

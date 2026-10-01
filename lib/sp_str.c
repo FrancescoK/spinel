@@ -3,7 +3,7 @@
  * Leaf `const char*` operations moved out of spinel_rt.h so they compile
  * once into libspinel_rt.a instead of into every generated TU. They reach
  * the GC string heap via sp_alloc.h and the typed arrays via sp_array.h;
- * sp_str_crypt calls into lib/sp_crypto.c; sp_sprintf / sp_raise_* resolve
+ * sp_str_crypt is in lib/sp_str_crypt.c; sp_sprintf / sp_raise_* resolve
  * at the final link against the generated TU. */
 #include <string.h>
 #include <stdlib.h>
@@ -17,7 +17,6 @@ extern SP_TLS int sp_re_sub_matched;   /* sp_re.h: the bang forms' "a substituti
 extern int sp_re_track_last;
 void sp_re_clear_last_match(void);
 void sp_re_set_lit_match(const char *str, sp_int beg, sp_int end);
-#include "sp_crypto.h"   /* sp_crypto_hmac_sha256_b64url for sp_str_crypt */
 /* general categories, for what inspect escapes; `spin ext build` vendors
    the runtime flat, lib/regexp/ beside lib/ */
 #if defined(__has_include)
@@ -625,19 +624,6 @@ const char*sp_str_repeat(const char*s,sp_int n){SP_GC_ROOT_STR(s);
    Colormap.load), and a collection triggered by the alloc freed it mid-call,
    yielding an empty result exactly on GC-boundary iterations. */
 sp_IntArray*sp_str_bytes(const char*s){SP_GC_ROOT_STR(s);sp_IntArray*a=sp_IntArray_new();if(!s)sp_nil_recv("bytes");size_t n=sp_str_byte_len(s);for(size_t i=0;i<n;i++)sp_IntArray_push(a,(sp_int)(unsigned char)s[i]);return a;}
-const char *sp_str_crypt(const char *s, const char *salt) {SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(salt);
-  /* the real libc crypt(3) -- DES with a 2-char salt (or the platform's
-     extended schemes), byte-identical to CRuby's String#crypt (#2398).
-     Declared by hand: glibc hides it behind crypt.h/_XOPEN_SOURCE while
-     macOS ships it in unistd.h. */
-  extern char *crypt(const char *key, const char *slt);
-  if (!s) sp_nil_recv("crypt");
-  if (!salt || !salt[0] || !salt[1])
-    sp_raise_cls("ArgumentError", "salt too short (need >=2 bytes)");
-  char *d = crypt(s, salt);
-  if (!d) sp_raise_cls("ArgumentError", "invalid salt");
-  return sp_str_dup_external(d);
-}
 const char*sp_str_lstrip(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("lstrip");size_t len=sp_str_byte_len(s);size_t a=0;while(a<len&&(isspace((unsigned char)s[a])||s[a]=='\0'))a++;size_t n=len-a;char*r=sp_str_alloc(n);memcpy(r,s+a,n);r[n]=0;return r;}
 const char*sp_str_rstrip(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("rstrip");size_t len=sp_str_byte_len(s);size_t b=len;while(b>0&&(isspace((unsigned char)s[b-1])||s[b-1]=='\0'))b--;char*r=sp_str_alloc(b);memcpy(r,s,b);r[b]=0;return r;}
 /* String#b: a fresh, unfrozen copy tagged BINARY (ASCII-8BIT). The dup alone
