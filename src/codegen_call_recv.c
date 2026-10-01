@@ -860,6 +860,16 @@ static void emit_find_loop_head(Compiler *c, int id, const char *k, int ti, int 
     buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, k, trecv, ti);
 }
 
+static Buf block_cond_buf(Compiler *c, int block, const int *bb, int bn) {
+  Buf cb; memset(&cb, 0, sizeof cb);
+  if (!emit_block_cond_next(c, block, g_indent + 1, &cb)) {
+    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+    int sv = g_indent; g_indent++;
+    emit_cond(c, bb[bn - 1], &cb); g_indent = sv;
+  }
+  return cb;
+}
+
 int emit_array_call(Compiler *c, int id, Buf *b) {
   if (emit_array_splat_mutator(c, id, b)) return 1;
   /* An array indexed by a String or a Symbol is CRuby's TypeError. A
@@ -1794,12 +1804,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       char es[64]; snprintf(es, sizeof es, "sp_PolyArray_get(_t%d, _t%d)", trecv, ti);
       int splat = emit_iter_autosplat(c, fblock, TY_POLY_ARRAY, es, g_indent + 1);
       if (!splat && bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_RbVal lv_%s = %s;\n", bp, es); }
-      Buf cb; memset(&cb, 0, sizeof cb);
-      if (!emit_block_cond_next(c, fblock, g_indent + 1, &cb)) {
-        for (int j = 0; j < fbn - 1; j++) emit_stmt(c, fbb[j], g_pre, g_indent + 1);
-        int sv = g_indent; g_indent++;
-        emit_cond(c, fbb[fbn - 1], &cb); g_indent = sv;
-      }
+      Buf cb = block_cond_buf(c, fblock, fbb, fbn);
       emit_indent(g_pre, g_indent + 1);
       if (!splat && bp) buf_printf(g_pre, "if (%s) { _t%d = lv_%s; break; }\n", cb.p ? cb.p : "0", tres, bp);
       else buf_printf(g_pre, "if (%s) { _t%d = %s; break; }\n", cb.p ? cb.p : "0", tres, es);
@@ -1932,12 +1937,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       char es[64]; snprintf(es, sizeof es, "sp_PolyArray_get(_t%d, _t%d)", trecv, ti);
       int splat = emit_iter_autosplat(c, fblock, TY_POLY_ARRAY, es, g_indent + 1);
       if (!splat && bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_RbVal lv_%s = %s;\n", bp, es); }
-      Buf cb; memset(&cb, 0, sizeof cb);
-      if (!emit_block_cond_next(c, fblock, g_indent + 1, &cb)) {
-        for (int j = 0; j < fbn - 1; j++) emit_stmt(c, fbb[j], g_pre, g_indent + 1);
-        int sv = g_indent; g_indent++;
-        emit_cond(c, fbb[fbn - 1], &cb); g_indent = sv;
-      }
+      Buf cb = block_cond_buf(c, fblock, fbb, fbn);
       emit_indent(g_pre, g_indent + 1);
       buf_printf(g_pre, "if (%s(%s)) sp_PolyArray_push(_t%d, %s);\n",
                  keep_truthy ? "" : "!", cb.p ? cb.p : "0", tres, es);
@@ -2988,12 +2988,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           char es_fd[64]; snprintf(es_fd, sizeof es_fd, "sp_PolyArray_get(_t%d, _t%d)", trecv, ti);
           int splat_fd = emit_iter_autosplat(c, fblock, rt, es_fd, g_indent + 1);
           if (!splat_fd && bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_RbVal lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", bp, trecv, ti); }
-          Buf cb; memset(&cb, 0, sizeof cb);
-          if (!emit_block_cond_next(c, fblock, g_indent + 1, &cb)) {
-            for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
-            int sv = g_indent; g_indent++;
-            emit_cond(c, bb[bn - 1], &cb); g_indent = sv;
-          }
+          Buf cb = block_cond_buf(c, fblock, bb, bn);
           emit_indent(g_pre, g_indent + 1);
           {
             char fset[24] = "";
@@ -3049,12 +3044,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           int splat_fi = emit_iter_autosplat(c, fblock, rt, es_fi, g_indent + 1);
           if (!splat_fi && bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_RbVal lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", bp, trecv, ti); }
         }
-        Buf cb; memset(&cb, 0, sizeof cb);
-        if (!emit_block_cond_next(c, fblock, g_indent + 1, &cb)) {
-          for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
-          int sv = g_indent; g_indent++;
-          emit_cond(c, bb[bn - 1], &cb); g_indent = sv;
-        }
+        Buf cb = block_cond_buf(c, fblock, bb, bn);
         emit_indent(g_pre, g_indent + 1);
         buf_printf(g_pre, "if (%s) { _t%d = _t%d; break; }\n", cb.p ? cb.p : "0", tres, ti);
         free(cb.p);
@@ -4505,17 +4495,11 @@ else {
           buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
                      ti, ti, k, trecv, ti);
           if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti); }
-          Buf vb2; memset(&vb2, 0, sizeof vb2);
-          if (!emit_block_cond_next(c, blk, g_indent + 1, &vb2)) {
-            for (int j = 0; j < bn2 - 1; j++) emit_stmt(c, bb2[j], g_pre, g_indent + 1);
-            int saveI = g_indent; g_indent = g_indent + 1;
-            /* The block value is a condition: route through emit_cond so a poly /
-               nil / scalar predicate becomes a valid C truthiness test (e.g.
-               `count(&:alive)` where the element method is poly-dispatched would
-               otherwise emit `if (sp_RbVal)` -- a struct in scalar position). */
-            emit_cond(c, bb2[bn2 - 1], &vb2);
-            g_indent = saveI;
-          }
+          /* The block value is a condition: route through emit_cond so a poly /
+             nil / scalar predicate becomes a valid C truthiness test (e.g.
+             `count(&:alive)` where the element method is poly-dispatched would
+             otherwise emit `if (sp_RbVal)` -- a struct in scalar position). */
+          Buf vb2 = block_cond_buf(c, blk, bb2, bn2);
           emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "if (%s) _t%d++;\n", vb2.p ? vb2.p : "0", tcnt);
           free(vb2.p);
           emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
@@ -5376,15 +5360,9 @@ else {
           if (!emit_iter_autosplat(c, blk, rt, es_ct, g_indent + 1) && bp) {
             emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", bp, trecv, ti);
           }
-          Buf vb2; memset(&vb2, 0, sizeof vb2);
-          if (!emit_block_cond_next(c, blk, g_indent + 1, &vb2)) {
-            for (int j = 0; j < bn2 - 1; j++) emit_stmt(c, bb2[j], g_pre, g_indent + 1);
-            int saveI = g_indent; g_indent = g_indent + 1;
-            /* The block value is a condition: route through emit_cond so a poly /
-               nil / scalar predicate becomes a valid C truthiness test. */
-            emit_cond(c, bb2[bn2 - 1], &vb2);
-            g_indent = saveI;
-          }
+          /* The block value is a condition: route through emit_cond so a poly /
+             nil / scalar predicate becomes a valid C truthiness test. */
+          Buf vb2 = block_cond_buf(c, blk, bb2, bn2);
           emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "if (%s) _t%d++;\n", vb2.p ? vb2.p : "0", tcnt);
           free(vb2.p);
           emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
