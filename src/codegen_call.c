@@ -31587,6 +31587,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
        (sp_streq(name, "winsize") && sp_feature_enabled("io/console")) ||
        sp_streq(name, "readlines") || sp_streq(name, "rewind") ||
        sp_streq(name, "readpartial") ||
+       /* a socket's addresses: a connection passed into a Thread arrives
+          boxed, and a server reads REMOTE_ADDR from it */
+       ((sp_streq(name, "addr") || sp_streq(name, "peeraddr")) && argc == 0 &&
+        sp_feature_required("socket")) ||
        /* the descriptor controls, at CRuby's arities, unless a splat carries
           the arguments, the advice is not a Symbol, or a class method or an
           attribute writer of that name may be the receiver's */
@@ -31853,6 +31857,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "tty?") || sp_streq(name, "isatty"))
         buf_printf(b, "sp_File_tty_p(_t%d); })", tio2);
       else if (sp_streq(name, "winsize")) buf_printf(b, "sp_File_winsize(_t%d); })", tio2);
+      else if (sp_streq(name, "addr") || sp_streq(name, "peeraddr"))
+        buf_printf(b, "sp_sock_addr(_t%d, %d); })", tio2, sp_streq(name, "peeraddr") ? 1 : 0);
       /* a stat's mode and fields, answered as the TY_IO arms answer them,
          for a stat's handle only */
       else if (sp_streq(name, "mode")) {
