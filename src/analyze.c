@@ -22624,6 +22624,10 @@ typedef struct {
   int n; LocalVar *v[NN_MAXF];         /* locals known non-nil */
   int nn; LocalVar *nonneg[NN_MAXF];   /* integer locals known >= 0 */
   int nr; NNRel r[NN_MAXR];
+  /* `len = a.size` (`length`, `bytesize`): local len holds slot a's size
+     until either is written or a call could change a, so `i < len` relates
+     i to a as `i < a.size` does */
+  int na; NNRel al[NN_MAXR];
 } NNF;
 
 static Compiler *nn_c;
@@ -22927,6 +22931,7 @@ static void nn_addnn(NNF *f, LocalVar *lv) {
 }
 static void nn_kill_rel_slot(NNF *f, int slot) {
   for (int i = 0; i < f->nr; ) { if (f->r[i].slot == slot) f->r[i] = f->r[--f->nr]; else i++; }
+  for (int i = 0; i < f->na; ) { if (f->al[i].slot == slot) f->al[i] = f->al[--f->na]; else i++; }
 }
 static void nn_kill(NNF *f, LocalVar *lv) {
   if (f->bot) return;
@@ -22935,6 +22940,9 @@ static void nn_kill(NNF *f, LocalVar *lv) {
   int k = nn_var(lv);
   for (int i = 0; i < f->nr; ) {
     if (f->r[i].i == lv || (k >= 0 && f->r[i].slot == 2 * k)) f->r[i] = f->r[--f->nr]; else i++;
+  }
+  for (int i = 0; i < f->na; ) {
+    if (f->al[i].i == lv || (k >= 0 && f->al[i].slot == 2 * k)) f->al[i] = f->al[--f->na]; else i++;
   }
 }
 static void nn_meet(NNF *a, const NNF *b) {
@@ -22946,6 +22954,11 @@ static void nn_meet(NNF *a, const NNF *b) {
     int keep = 0;
     for (int j = 0; j < b->nr; j++) if (b->r[j].i == a->r[i].i && b->r[j].slot == a->r[i].slot) keep = 1;
     if (!keep) a->r[i] = a->r[--a->nr]; else i++;
+  }
+  for (int i = 0; i < a->na; ) {
+    int keep = 0;
+    for (int j = 0; j < b->na; j++) if (b->al[j].i == a->al[i].i && b->al[j].slot == a->al[i].slot) keep = 1;
+    if (!keep) a->al[i] = a->al[--a->na]; else i++;
   }
 }
 
@@ -22973,7 +22986,7 @@ static void nn_call_kill(NNF *f, int ctx, int pure) {
   }
   if (pure) return;
   /* the call may shrink an array or write a local through a closure */
-  f->nr = 0;
+  f->nr = 0; f->na = 0;
   for (int i = 0; i < f->nn; ) {
     int k = nn_var(f->nonneg[i]);
     if (k < 0 || nn_vars[k].allw_ctx != ctx || nn_vars[k].owner != ctx) f->nonneg[i] = f->nonneg[--f->nn]; else i++;
@@ -23008,11 +23021,19 @@ static int nn_pure_call(Compiler *c, int id) {
   TyKind rt = comp_ntype(c, recv);
   if (rt == TY_INT || rt == TY_FLOAT) {
     static const char *const ops[] = { "+", "-", "*", "<", "<=", ">", ">=", "==", "!=", "<=>",
-                                       "&", "|", "^", "%", "nil?", "!", "-@", "abs", NULL };
+                                       "&", "|", "^", "%", "nil?", "!", "-@", "abs",
+                                       "succ", "next", "pred", NULL };
     return nn_name_in(nm, ops);
   }
   if (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY)
     return sp_streq(nm, "[]") || sp_streq(nm, "size") || sp_streq(nm, "length");
+  /* a String's reads, its copy, and setbyte, which rewrites a byte in place
+     and keeps the length (or raises) */
+  if (rt == TY_STRING || rt == TY_STRBUF) {
+    static const char *const sops[] = { "getbyte", "setbyte", "bytesize", "size", "length",
+                                        "dup", "clone", "==", "!=", NULL };
+    return nn_name_in(nm, sops);
+  }
   return 0;
 }
 
@@ -23041,9 +23062,26 @@ static int nn_nonnil_value(Compiler *c, int v) {
   return v >= 0 && nn_numeric(comp_ntype(c, v)) && !nullable_int_value(c, v);
 }
 
-/* `i < a.size` (or `a.size > i`, `.length`) on an Integer or Float array
-   slot: the relation, or 0 */
-static int nn_rel_of(Compiler *c, int cond, NNRel *out) {
+/* The slot whose size call `sz` is (`a.size`, `a.length`, a String's
+   `a.bytesize`), or -1. A String's character count is no more than its
+   byte count, so an index below either is a byte inside it. */
+static int nn_size_slot(Compiler *c, int sz) {
+  const NodeTable *nt = c->nt;
+  if (sz < 0 || nt_kind(nt, sz) != NK_CallNode) return -1;
+  const char *sn = nt_str(nt, sz, "name");
+  int arr = nt_ref(nt, sz, "receiver");
+  if (!sn || arr < 0 || nt_ref(nt, sz, "arguments") >= 0 || nt_ref(nt, sz, "block") >= 0) return -1;
+  TyKind at = comp_ntype(c, arr);
+  int str = at == TY_STRING || at == TY_STRBUF;
+  if (!(sp_streq(sn, "size") || sp_streq(sn, "length") || (str && sp_streq(sn, "bytesize")))) return -1;
+  if (!nn_int_array(at) && !str) return -1;
+  return nn_slot_of(c, arr);
+}
+
+/* `i < a.size` (or `a.size > i`, `.length`; `.bytesize` too on a String) on
+   an Integer or Float array slot or a String slot, or `i < len` with len an
+   alias of one (NNF.al): the relation, or 0 */
+static int nn_rel_of(Compiler *c, int cond, const NNF *f, NNRel *out) {
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, cond) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, cond, "name");
@@ -23055,15 +23093,17 @@ static int nn_rel_of(Compiler *c, int cond, NNRel *out) {
   if (sp_streq(nm, "<")) { lhs = recv; sz = av[0]; }
   else if (sp_streq(nm, ">")) { lhs = av[0]; sz = recv; }
   else return 0;
-  if (nt_kind(nt, lhs) != NK_LocalVariableReadNode || nt_kind(nt, sz) != NK_CallNode) return 0;
-  const char *sn = nt_str(nt, sz, "name");
-  int arr = nt_ref(nt, sz, "receiver");
-  if (!sn || arr < 0 || !(sp_streq(sn, "size") || sp_streq(sn, "length")) ||
-      nt_ref(nt, sz, "arguments") >= 0 || nt_ref(nt, sz, "block") >= 0) return 0;
-  if (!nn_int_array(comp_ntype(c, arr))) return 0;
-  int slot = nn_slot_of(c, arr);
+  if (nt_kind(nt, lhs) != NK_LocalVariableReadNode) return 0;
   LocalVar *iv = nn_local_of(c, lhs);
-  if (slot < 0 || !iv) return 0;
+  if (!iv) return 0;
+  if (nt_kind(nt, sz) == NK_LocalVariableReadNode) {
+    LocalVar *lv = nn_local_of(c, sz);
+    for (int i = 0; lv && !f->bot && i < f->na; i++)
+      if (f->al[i].i == lv) { out->i = iv; out->slot = f->al[i].slot; return 1; }
+    return 0;
+  }
+  int slot = nn_size_slot(c, sz);
+  if (slot < 0) return 0;
   out->i = iv; out->slot = slot;
   return 1;
 }
@@ -23076,7 +23116,9 @@ static int nn_index_in_range(Compiler *c, int id, const NNF *f, int set) {
   int recv = nt_ref(nt, id, "receiver");
   int ca = nt_ref(nt, id, "arguments"); int an = 0;
   const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
-  if (!nm || recv < 0 || !sp_streq(nm, set ? "[]=" : "[]") || an != (set ? 2 : 1) ||
+  int gb = !set && nm && sp_streq(nm, "getbyte") && recv >= 0 &&
+           (comp_ntype(c, recv) == TY_STRING || comp_ntype(c, recv) == TY_STRBUF);
+  if (!nm || recv < 0 || (!gb && !sp_streq(nm, set ? "[]=" : "[]")) || an != (set ? 2 : 1) ||
       nt_ref(nt, id, "block") >= 0 || nt_kind(nt, av[0]) != NK_LocalVariableReadNode) return 0;
   LocalVar *iv = nn_local_of(c, av[0]);
   int slot = nn_slot_of(c, recv);
@@ -23126,7 +23168,7 @@ static void nn_cond(Compiler *c, int id, const NNF *in, NNF *t, NNF *e, int ctx)
       return;
     }
     NNRel r;
-    if (nn_rel_of(c, id, &r)) {
+    if (nn_rel_of(c, id, in, &r)) {
       *t = *in; nn_visit(c, id, t, ctx);
       *e = *t;
       if (!t->bot && nn_hasnn(t, r.i) && t->nr < NN_MAXR) t->r[t->nr++] = r;
@@ -23233,9 +23275,26 @@ static void nn_visit(Compiler *c, int id, NNF *f, int ctx) {
     nn_visit(c, v, f, ctx);
     LocalVar *lv = nn_local_of(c, id);
     if (!lv) return;
-    nn_write_kill(f, lv, 0);
+    /* `i = i.succ`, `i = i + 1`: an increment, as `i += 1` is */
+    int incr = 0;
+    if (v >= 0 && nt_kind(nt, v) == NK_CallNode && nt_ref(nt, v, "block") < 0) {
+      const char *vn = nt_str(nt, v, "name");
+      int vr = nt_ref(nt, v, "receiver");
+      int va = nt_ref(nt, v, "arguments"); int vac = 0;
+      const int *vav = va >= 0 ? nt_arr(nt, va, "arguments", &vac) : NULL;
+      if (vn && vr >= 0 && nt_kind(nt, vr) == NK_LocalVariableReadNode && nn_local_of(c, vr) == lv &&
+          lv->type == TY_INT)
+        incr = ((sp_streq(vn, "succ") || sp_streq(vn, "next")) && vac == 0) ||
+               (sp_streq(vn, "+") && vac == 1 && nn_nonneg_lit(c, vav[0]));
+    }
+    int wasnn = nn_hasnn(f, lv);
+    nn_write_kill(f, lv, incr);
     if (nn_nonnil_value(c, v)) nn_add(f, lv);
-    if (nn_nonneg_lit(c, v)) nn_addnn(f, lv);
+    if (nn_nonneg_lit(c, v) || (incr && wasnn)) nn_addnn(f, lv);
+    /* `len = a.size`: len holds a's size (NNF.al) */
+    int as = nn_size_slot(c, v);
+    int k = nn_var(lv);
+    if (as >= 0 && as != 2 * k && !f->bot && f->na < NN_MAXR) { f->al[f->na].i = lv; f->al[f->na].slot = as; f->na++; }
     return;
   }
   case NK_LocalVariableOperatorWriteNode: {
@@ -23376,7 +23435,7 @@ static void nn_visit(Compiler *c, int id, NNF *f, int ctx) {
     /* control flow the walk does not follow: nothing survives it */
     if (k == NK_BeginNode || k == NK_CaseNode || k == NK_CaseMatchNode || k == NK_ForNode ||
         k == NK_RescueModifierNode) {
-      f->n = 0; f->nr = 0; f->nn = 0;
+      f->n = 0; f->nr = 0; f->nn = 0; f->na = 0;
     }
     return;
   }
@@ -23958,6 +24017,9 @@ static void nn_facts(Compiler *c) {
   for (int id = 0; id < nn_cap; id++) {
     if (!nn_cand[id]) continue;
     int recv = nt_ref(nt, id, "receiver");
+    const char *cn = nt_str(nt, id, "name");
+    /* a byte inside a String is never nil */
+    if (cn && sp_streq(cn, "getbyte")) { nn_inb[id] = 1; continue; }
     if (nn_slot_nilfree(c, nn_cand[id] - 1) && !nullable_int_elem_expr(c, recv, 0)) nn_inb[id] = 1;
   }
 }
