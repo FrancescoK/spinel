@@ -1105,6 +1105,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a called class method's provable NoMethodError compiled)"; ok=0; \
 	else grep -q "undefined method '\[\]=' for a Class" "$$tmp/nrc.out" || \
 	  { echo "reject-test: FAIL (a called class method's NoMethodError rejected without saying why)"; sed -n 1,5p "$$tmp/nrc.out"; ok=0; }; fi; \
+	t=test/reject/new_receiver_class_chain_still_reached.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/ncc.c" >"$$tmp/ncc.out" 2>&1; then \
+	  echo "reject-test: FAIL (a called class-side super chain's provable NoMethodError compiled)"; ok=0; \
+	else grep -q "undefined method '\[\]=' for a Class" "$$tmp/ncc.out" || \
+	  { echo "reject-test: FAIL (a called class-side super chain's NoMethodError rejected without saying why)"; sed -n 1,5p "$$tmp/ncc.out"; ok=0; }; fi; \
 	t=test/reject/redo_unlabeled_iterator.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/rui.c" >"$$tmp/rui.out" 2>&1; then \
 	  echo "reject-test: FAIL (a redo with no label for it compiled)"; ok=0; \

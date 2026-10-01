@@ -577,13 +577,17 @@ void compute_reachable(Compiler *c) {
         const char *pf = cls->prep_from[i]; /* user-facing name, e.g. "hi" */
         const char *pt = cls->prep_to[i];   /* shadow name, e.g. "__prep_0_hi" */
         if (!pf || !pt) continue;
-        if (strncmp(pf, "self.", 5) == 0) pf += 5;   /* a class method's chain */
+        int cside = strncmp(pf, "self.", 5) == 0;   /* a class method's chain */
+        if (cside) pf += 5;
         /* When the user-facing name is called, the codegen wrapper calls the shadow
-           implementation directly -- so mark the shadow reachable too. */
-        int pf_in_called = cn_live(&cn_set, pf);
+           implementation directly -- so mark the shadow reachable too. A class
+           method's chain is live through a call that can reach a class method:
+           not an instance-only "\x03" mark (`K.new.m`), nor an instance method
+           of the name being reachable. */
+        int pf_in_called = cside ? anh_has(&cn_set, pf) : cn_live(&cn_set, pf);
         if (!pf_in_called)
           for (int t = SN_FIRST(pf); t >= 0; t = sn_link[t])
-            if (c->scopes[t].reachable) { pf_in_called = 1; break; }
+            if (c->scopes[t].reachable && (!cside || c->scopes[t].is_cmethod)) { pf_in_called = 1; break; }
         if (pf_in_called) {
           int prev_qtail = qtail;
           MARK_NAME(pt);
