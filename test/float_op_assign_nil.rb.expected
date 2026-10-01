@@ -21,3 +21,8 @@ true
 true
 4.0
 TypeError
+2.5
+NoMethodError
+3.5
+NoMethodError
+2.5

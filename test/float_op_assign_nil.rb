@@ -119,3 +119,22 @@ try { p total([1.5, 2.5]) }
 h = [1.0]
 h[a.size] = 4.0
 try { p total(h) }
+
+# an accessor's op-assign takes its backing ivar's nil the same way, through
+# a typed receiver and through the dispatch on a boxed one
+class Acc
+  attr_accessor :x
+  def initialize(v) = (@x = v)
+end
+try { a = Acc.new(1.5); a.x += 1.0; p a.x }
+try { b = Acc.new(nil); b.x += 1.0; p b.x }
+class AccB
+  attr_accessor :y
+  def initialize(v) = (@y = v)
+end
+class AccC
+  attr_accessor :y
+  def initialize(v) = (@y = v)
+end
+AccC.new(4.5)
+[AccB.new(2.5), AccC.new(nil), AccC.new(1.5)].each { |o| try { o.y += 1.0; p o.y } }
