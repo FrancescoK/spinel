@@ -12564,7 +12564,59 @@ int comp_byref_param(Compiler *c, Scope *m, int idx) {
   LocalVar *p = scope_local(m, m->pnames[idx]);
   return p && p->byref_out;
 }
+/* Is local `vn` of scope `vs` handed by a call in that scope to a method
+   parameter the method appends to in place (the byref slot, or the
+   handle, it is lent)? The callee's append is one to `vn`'s String, so
+   `vn` is mutated in place there as by `<<`. Asked by the parameter's
+   mutation, not its ABI, which is settled after the fixpoint. */
+static int an_any_scope_by_name(Compiler *c, const char *nm);
+static int an_param_mutated_in_place(Compiler *c, int mi, int pi);
+static int an_call_target_mi(Compiler *c, int id);
+static int an_local_lent(Compiler *c, const char *vn, Scope *vs) {
+  const NodeTable *nt = c->nt;
+  if (!vn || !vs) return 0;
+  int vsi = (int)(vs - c->scopes);
+  for (int u = comp_scall_first(c, vsi); u >= 0; u = comp_scall_next(c, u)) {
+    if (nt_kind(nt, u) != NK_CallNode || comp_scope_of(c, u) != vs) continue;
+    int mi = an_call_target_mi(c, u);
+    if (mi < 0) mi = an_any_scope_by_name(c, nt_str(nt, u, "name"));
+    if (mi < 0) continue;
+    for (int j = 0; j < c->scopes[mi].nparams; j++) {
+      if (!comp_byref_param(c, &c->scopes[mi], j) && !an_param_mutated_in_place(c, mi, j)) continue;
+      int a = arg_layout_param_node(c, &c->scopes[mi], u, j, NULL);
+      if (a >= 0 && nt_kind(nt, a) == NK_LocalVariableReadNode && sp_streq(nt_str(nt, a, "name"), vn)) return 1;
+    }
+  }
+  return 0;
+}
 
+/* The same for ivar `ivn` of class `cid`, handed by a call in one of its
+   methods. */
+static int an_ivar_owner(Compiler *c, int node);
+static int an_ivar_lent(Compiler *c, int cid, const char *ivn) {
+  const NodeTable *nt = c->nt;
+  if (!ivn || cid < 0) return 0;
+  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
+    if (nt_kind(nt, u) != NK_CallNode) continue;
+    int a = nt_ref(nt, u, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    int hit = 0;
+    for (int k = 0; k < ac && !hit; k++)
+      hit = nt_kind(nt, av[k]) == NK_InstanceVariableReadNode && sp_streq(nt_str(nt, av[k], "name"), ivn) &&
+            an_ivar_owner(c, av[k]) == cid;
+    if (!hit) continue;
+    int mi = an_call_target_mi(c, u);
+    if (mi < 0) mi = an_any_scope_by_name(c, nt_str(nt, u, "name"));
+    if (mi < 0) continue;
+    for (int j = 0; j < c->scopes[mi].nparams; j++) {
+      if (!comp_byref_param(c, &c->scopes[mi], j) && !an_param_mutated_in_place(c, mi, j)) continue;
+      int x = arg_layout_param_node(c, &c->scopes[mi], u, j, NULL);
+      if (x >= 0 && nt_kind(nt, x) == NK_InstanceVariableReadNode && sp_streq(nt_str(nt, x, "name"), ivn) &&
+          an_ivar_owner(c, x) == cid) return 1;
+    }
+  }
+  return 0;
+}
 /* Can a call ever arrive at an instance method of this class or module? Only
    through a value that is one, so a class nobody instantiates -- and that no
    instantiated class inherits from or includes -- has neither a direct call
@@ -12664,7 +12716,11 @@ static int an_byref_promote_group(Compiler *c, const char *nm, int pi,
       captured = 1;
     }
     if (pi >= m->nparams || !m->pnames[pi]) return 0;
-    if (blocked[k] & (1u << pi)) return 0;
+    /* a parameter rebound after its append (`io << x; io = String.new`)
+       cannot be the caller's slot, whose String the rebind would replace:
+       the group takes the shared handle, which the rebind leaves to the
+       caller. Refused, the append before the rebind went to a copy. */
+    if (blocked[k] & (1u << pi)) captured = 1;
     LocalVar *q = scope_local(m, m->pnames[pi]);
     if (!q || !q->is_param || q->is_block_param || q->type != TY_STRING) return 0;
     /* celled for a proc that can outlive the call (a stored proc, a Thread
@@ -13178,7 +13234,7 @@ static void compute_byref_out_params(Compiler *c) {
             if (an >= 0 && nt_kind(nt, an) == NK_LocalVariableReadNode)
               pi = an_param_idx(s, nt_str(nt, an, "name"));
           }
-          if (pi < 0 || pi >= 32 || (blocked[si] & (1u << pi))) continue;
+          if (pi < 0 || pi >= 32) continue;
           LocalVar *p = scope_local(s, s->pnames[pi]);
           if (p && p->is_param && p->type == TY_STRING && !p->byref_out &&
               an_byref_promote_group(c, s->name, pi, elig, blocked, n, cellh))
@@ -13197,7 +13253,7 @@ static void compute_byref_out_params(Compiler *c) {
       if (rty && sp_streq(rty, "LocalVariableReadNode") && an_str_mutator_name(nm)) {
         const char *vn = nt_str(nt, recv, "name");
         int pi = an_param_idx(s, vn);
-        if (pi >= 0 && pi < 32 && !(blocked[si] & (1u << pi))) {
+        if (pi >= 0 && pi < 32) {
           LocalVar *p = scope_local(s, vn);
           /* the whole name group takes it or none of it does; the cell deref
              forms the body already emits are what the ABI rides on */
@@ -13228,7 +13284,7 @@ static void compute_byref_out_params(Compiler *c) {
           if (an < 0 || nt_kind(nt, an) != NK_LocalVariableReadNode) continue;
           const char *vn = nt_str(nt, an, "name");
           int pi = an_param_idx(s, vn);
-          if (pi < 0 || pi >= 32 || (blocked[si] & (1u << pi))) continue;
+          if (pi < 0 || pi >= 32) continue;
           LocalVar *p = scope_local(s, vn);
           if (p && p->is_param && p->type == TY_STRING && !p->byref_out &&
               an_byref_promote_group(c, s->name, pi, elig, blocked, n, cellh))
@@ -13248,7 +13304,7 @@ static void compute_byref_out_params(Compiler *c) {
           if (an < 0 || nt_kind(nt, an) != NK_LocalVariableReadNode) continue;
           const char *vn = nt_str(nt, an, "name");
           int pi = an_param_idx(s, vn);
-          if (pi < 0 || pi >= 32 || (blocked[si] & (1u << pi))) continue;
+          if (pi < 0 || pi >= 32) continue;
           LocalVar *p = scope_local(s, vn);
           if (p && p->is_param && p->type == TY_STRING && !p->byref_out &&
               an_byref_promote_group(c, s->name, pi, elig, blocked, n, cellh))
@@ -15273,6 +15329,11 @@ static int promote_local_alias_pair(Compiler *c, Scope *ws, const char *srcn, co
   int ms = strbuf_mut_kind(c, srcn, ws);
   int mt = strbuf_mut_kind(c, tgtn, ws);
   if (ms < 0 || mt < 0) return 0;         /* a disqualifying mutator */
+  /* Lent to a parameter that appends (a byref slot) is mutated in place
+     too: the callee's append writes the new String back through the slot,
+     and the other name kept the old one (an_local_lent). */
+  if (ms == 0 && an_local_lent(c, srcn, ws)) ms = 1;
+  if (mt == 0 && an_local_lent(c, tgtn, ws)) mt = 1;
   /* An endpoint another rule made the handle counts as mutated: being the
      handle is the conclusion that evidence was for. The alias set is then
      mutated through it somewhere, by a later alias (`t = s; u = t;
@@ -15396,8 +15457,10 @@ static int promote_shared_stored_strings(Compiler *c) {
       LocalVar *vlv = (vn3 && vs3) ? scope_local(vs3, vn3) : NULL;
       if (!strbuf_slot_eligible(c, vn3, vs3, vlv)) continue;
       /* already-shared (e.g. demanded through a return edge) qualifies even
-         without a direct mutator of its own */
-      if (strbuf_mut_kind(c, vn3, vs3) != 1 && !vlv->str_shared) continue;
+         without a direct mutator of its own, and so does one lent to a
+         parameter that appends (an_local_lent): the container's element was
+         the String the callee replaced */
+      if (strbuf_mut_kind(c, vn3, vs3) != 1 && !vlv->str_shared && !an_local_lent(c, vn3, vs3)) continue;
       /* equal?/eql? args only join a set that is ALREADY shared (a store
          made it a handle); they must not themselves force the promotion */
       { const char *wn2 = nt_str(nt, w, "name");
@@ -15688,6 +15751,10 @@ static int promote_shared_stored_strings(Compiler *c) {
     int lmk = strbuf_mut_kind(c, lname, ls);
     int imk = strbuf_ivar_mut_kind(c, icid, ivname);
     if (lmk < 0 || imk < 0) continue;
+    /* lent to a parameter that appends is mutated in place too
+       (an_local_lent, an_ivar_lent) */
+    if (lmk == 0 && an_local_lent(c, lname, ls)) lmk = 1;
+    if (imk == 0 && an_ivar_lent(c, icid, ivname)) imk = 1;
     if (lmk != 1 && imk != 1) continue;
     int ch2 = strbuf_promote_ivar(c, icid, ivname);
     { ClassInfo *ci2 = &c->classes[icid];
@@ -17234,6 +17301,35 @@ static int lift_poly_alias_reads(Compiler *c, const HandleArgTab *hat) {
 int spread_string_reads(Compiler *c, Scope *m, int call, int pj, int *out, int *direct, int cap);
 static int dyn_pull_arg(Compiler *c, int a, int mark_read);
 static int fwd_poly_param_handed_on(Compiler *c, int mi, int pj, int depth);
+/* Local `vn` of scope `vs` lent to byref slots by calls in that scope: each
+   such parameter, with every method of its name, takes the shared handle
+   instead (a slot cannot carry it). Answers 1 when it changed any. */
+static int an_unlend_local(Compiler *c, const char *vn, Scope *vs) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  if (!vn || !vs) return 0;
+  int vsi = (int)(vs - c->scopes);
+  for (int u = comp_scall_first(c, vsi); u >= 0; u = comp_scall_next(c, u)) {
+    if (nt_kind(nt, u) != NK_CallNode || comp_scope_of(c, u) != vs) continue;
+    int mi = an_any_scope_by_name(c, nt_str(nt, u, "name"));
+    if (mi < 0) continue;
+    for (int j = 0; j < c->scopes[mi].nparams; j++) {
+      if (!comp_byref_param(c, &c->scopes[mi], j)) continue;
+      int a2 = arg_layout_param_node(c, &c->scopes[mi], u, j, NULL);
+      const char *an2 = a2 >= 0 && nt_kind(nt, a2) == NK_LocalVariableReadNode ? nt_str(nt, a2, "name") : NULL;
+      if (!an2 || !sp_streq(an2, vn)) continue;
+      const char *gname = c->scopes[mi].name;
+      for (int m = 1; m < c->nscopes; m++) {
+        Scope *mk = &c->scopes[m];
+        if (!mk->name || !sp_streq(mk->name, gname) || j >= mk->nparams) continue;
+        LocalVar *q = mk->pnames[j] ? scope_local(mk, mk->pnames[j]) : NULL;
+        if (!q || !q->byref_out) continue;
+        q->byref_out = 0; q->is_cell = 0; q->type = TY_STRBUF; q->str_shared = 1; changed = 1;
+      }
+    }
+  }
+  return changed;
+}
 static int convert_byref_handle_params(Compiler *c,
                                        const HandleArgTab *hat) {
   const NodeTable *nt = c->nt;
@@ -17375,6 +17471,12 @@ static int convert_byref_handle_params(Compiler *c,
           /* already the handle: nothing below changes, and the shape check
              walks the scope's calls, once per call site and per round */
           if (!alv || (alv->type == TY_STRBUF && alv->str_shared)) continue;
+          /* Also lent to a byref slot (`app(s)` beside this call): a slot
+             cannot carry the handle, so that parameter takes the handle
+             instead, with its whole name group (an_unlend_local), as at a
+             dynamic call (dyn_pull_arg). Left lent, the local stayed a plain
+             String, which this call took a copy of. */
+          if (!strbuf_slot_eligible_shape(c, vn2, vs2, alv) && an_unlend_local(c, vn2, vs2)) changed = 1;
           if (!strbuf_slot_eligible_shape(c, vn2, vs2, alv)) continue;
           if (alv->type != TY_UNKNOWN && alv->type != TY_STRING &&
               alv->type != TY_STRBUF && alv->type != TY_POLY) continue;
@@ -17391,6 +17493,16 @@ static int convert_byref_handle_params(Compiler *c,
           int cid2 = vn2 ? an_ivar_owner(c, an2) : -1;
           if (cid2 >= 0 && strbuf_ivar_mut_kind(c, cid2, vn2) >= 0)
             if (strbuf_promote_ivar(c, cid2, vn2)) changed = 1;
+          /* into a boxed parameter, or a handle one a gathering call binds
+             out of an Array of boxes, the read boxes the handle itself (its
+             mark, as a container store's); unmarked, the box held a copy */
+          int iv4 = cid2 >= 0 ? comp_ivar_index(&c->classes[cid2], vn2) : -1;
+          if ((pp->type == TY_POLY || (pp->type == TY_STRBUF && pp->str_shared)) &&
+              iv4 >= 0 && c->classes[cid2].ivar_str_shared[iv4] && !c->strbuf_box[an2]) {
+            c->strbuf_box[an2] = 1;
+            comp_sn_retype(c, an2, TY_STRBUF);
+            changed = 1;
+          }
         }
         /* `K.new(obj.reader)`: the reader has to hand out the HANDLE, or the
            new holder and `obj` walk away with two strings. The P5 rule makes
