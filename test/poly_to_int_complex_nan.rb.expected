@@ -1,0 +1,18 @@
+3
+3
+3
+7
+-2
+3
+4
+12
+0
+"RangeError: can't convert 3+1i into Integer"
+"RangeError: can't convert 3+0.0i into Integer"
+"FloatDomainError: NaN"
+"FloatDomainError: Infinity"
+"FloatDomainError: -Infinity"
+"NaN"
+"Infinity"
+"-Infinity"
+"NaN"

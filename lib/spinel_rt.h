@@ -3739,6 +3739,17 @@ static sp_int sp_poly_to_i_meth(sp_RbVal v) {
      fit it: say so rather than hand back its low word (#4665). Promoting
      the slot is the wider question of #2024. */
   if (v.tag == SP_TAG_BIGINT) sp_raise_cls("RangeError", "bignum too big to convert into 'long'");
+  /* Float#to_i and Complex#to_i as the typed calls answer them: NaN and the
+     infinities are FloatDomainError, a Complex is its real part only with
+     an exact-zero imaginary part (RangeError otherwise). sp_poly_to_i, the
+     loose conversion, cast NaN and answered 0 for any Complex. */
+  if (v.tag == SP_TAG_FLT) {
+    if (!isfinite(v.v.f))
+      sp_raise_cls("FloatDomainError", isnan(v.v.f) ? "NaN" : v.v.f > 0 ? "Infinity" : "-Infinity");
+    return sp_float_to_i_checked(v.v.f);
+  }
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p)
+    return sp_complex_to_int(*(sp_Complex *)v.v.p);
   return sp_poly_to_i(v);
 }
 
@@ -3807,6 +3818,9 @@ static sp_RbVal sp_poly_to_i_meth_v(sp_RbVal v) {
      holds one (#4688) */
   if (sp_poly_is_brat(v) && v.v.p)
     return sp_box_bigint(sp_brat_trunc_b((sp_BigRational *)v.v.p));
+  /* a Complex as sp_poly_to_i_meth takes it */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p)
+    return sp_box_int(sp_complex_to_int(*(sp_Complex *)v.v.p));
   return sp_box_int(sp_poly_to_i(v));
 }
 static inline sp_int sp_float_fit_i(sp_float v) {
