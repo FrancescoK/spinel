@@ -400,6 +400,7 @@ extern TyKind g_yield_slot_ty_fallback2;
 extern int g_line_map;
 void emit_current_line_directive(Compiler *c, Buf *b);
 extern int g_debug;
+extern int g_check_stores;
 extern int g_gate_raise;  /* SPINEL_GATE_RAISE: raise NoMethodError at the
                              unresolved-call gate instead of a silent default. */
 /* Emit a `#line` directive for node `id` into `b`, deduped against the last
@@ -544,6 +545,16 @@ const char *rename_local(const char *nm);
 void emit_expr(Compiler *c, int id, Buf *b);
 void emit_expr_slot(Compiler *c, int node, TyKind slot, Buf *b);
 void emit_typed_sink_text(Compiler *c, int node, TyKind slot, const char *text, Buf *b);
+/* The store check (--check-stores): see codegen_util.c. */
+TyKind store_value_kind(Compiler *c, int node);
+int store_fits(Compiler *c, TyKind from, TyKind to);
+void store_check(Compiler *c, int node, TyKind slot, const char *what, Buf *b);
+void store_check_kind(Compiler *c, int node, TyKind from, TyKind slot, const char *what, Buf *b);
+/* How emit_coerce may convert: see codegen_util.c. */
+enum { CO_HOLD, CO_CONVERT };
+void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, Buf *b);
+void emit_coerce_text(Compiler *c, int node, TyKind from, TyKind slot, int how,
+                      const char *text, const char *what, Buf *b);
 
 /* ---- forward decls ---- */
 
