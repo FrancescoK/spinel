@@ -1865,12 +1865,14 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         if (fz_cid >= 0) emit_frozen_obj_guard(c, fz_cid, g_self ? g_self : "self", b);
         emit_stmt_inner(c, v, b, 0);
         buf_printf(b, "%s = ", ref2e);
-        if (ivt2 == TY_RANGE) buf_puts(b, "(sp_Range){0}");
-        else if (ivt2 == TY_POLY) buf_puts(b, "sp_box_nil()");
-        else if (ivt2 == TY_INT) buf_puts(b, "SP_INT_NIL");
-        else if (ivt2 == TY_FLOAT) buf_puts(b, "sp_float_nil()");
-        else if (ivt2 == TY_STRING) buf_puts(b, "NULL");
-        else buf_puts(b, default_value(ivt2));
+        switch (ivt2) {
+        case TY_RANGE: buf_puts(b, "(sp_Range){0}"); break;
+        case TY_POLY: buf_puts(b, "sp_box_nil()"); break;
+        case TY_INT: buf_puts(b, "SP_INT_NIL"); break;
+        case TY_FLOAT: buf_puts(b, "sp_float_nil()"); break;
+        case TY_STRING: buf_puts(b, "NULL"); break;
+        default: buf_puts(b, default_value(ivt2)); break;
+        }
         buf_printf(b, "; %s; })", ref2e);
         return;
       }
