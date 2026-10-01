@@ -1190,6 +1190,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (ObjectSpace in an instance_exec block compiled)"; ok=0; \
 	else grep -q "1 refusal," "$$tmp/ie.out" || \
 	  { echo "reject-test: FAIL (a refusal in an instance_exec block left its method moved, and a later call was refused too)"; sed -n 1,5p "$$tmp/ie.out"; ok=0; }; fi; \
+	t=test/reject/method_of_builtin_module.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/mb.c" >"$$tmp/mb.out" 2>&1; then \
+	  echo "reject-test: FAIL (a Method of a builtin module function compiled)"; ok=0; \
+	else grep -q "ENV.method(:each) is not supported: a Method object of a builtin module" "$$tmp/mb.out" || \
+	  { echo "reject-test: FAIL (a Method of a builtin module function refused without saying why)"; sed -n 1,5p "$$tmp/mb.out"; ok=0; }; fi; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "reject-test: pass"; else exit 1; fi
 

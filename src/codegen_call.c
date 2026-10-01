@@ -26303,6 +26303,45 @@ static int raise_plain_arg(const NodeTable *nt, int node) {
                  sp_streq(t, "BlockArgumentNode") || sp_streq(t, "ForwardingArgumentsNode")));
 }
 
+/* `Const.method(:sym)` whose constant is no user class or value, so no target
+   resolves. A builtin module or class (Math, Process, Kernel, String, ENV,
+   FileTest, Marshal, ...) has module functions the Method machinery cannot
+   bind: there is no C function to take the address of, and the Method it
+   built raised NoMethodError when called, `&Math.method(:sqrt)` included --
+   or, for ENV, FileTest and Marshal, which are modeled only as call
+   receivers, cast their constant to a pointer and the C did not build. That
+   is refused here, at the call. A constant defined nowhere raises the
+   NameError of its read, as CRuby does, instead of the same invalid C.
+   Answers 0 for any other receiver. */
+static int emit_method_obj_on_constant(Compiler *c, int id, int recv, const char *sym, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0 || (nt_kind(nt, recv) != NK_ConstantReadNode &&
+                   nt_kind(nt, recv) != NK_ConstantPathNode)) return 0;
+  const char *rcn = nt_str(nt, recv, "name");
+  if (!rcn) return 0;
+  int rci = comp_class_index(c, rcn);
+  if ((rci >= 0 && !is_builtin_reopen(c->classes[rci].name)) || comp_const(c, rcn)) return 0;
+  /* the CRuby constants spinel models only as call receivers, beside the
+     builtin class and module table */
+  static const char *const RECV_ONLY[] = { "ENV", "FileTest", "Marshal", "Random",
+                                           "Warning", "ARGF", "ObjectSpace", NULL };
+  int builtin = rci >= 0 || is_builtin_class_name(rcn) || is_builtin_module_name(rcn) ||
+                is_builtin_exception_name(rcn);
+  for (int k = 0; !builtin && RECV_ONLY[k]; k++) builtin = sp_streq(rcn, RECV_ONLY[k]);
+  if (builtin) {
+    char msg[512];
+    snprintf(msg, sizeof msg,
+             "%s.method(:%s) is not supported: a Method object of a builtin module or class "
+             "function has no compiled function to bind. Call %s.%s directly, or wrap it "
+             "in a lambda", rcn, sym, rcn, sym);
+    unsupported_feature(c, id, msg);
+  }
+  buf_puts(b, "((void)(");
+  emit_expr(c, recv, b);
+  buf_puts(b, "), (sp_BoundMethod *)0)");
+  return 1;
+}
+
 static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -28778,6 +28817,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   if (sp_streq(name, "method") && method_sym_arg(c, id) != NULL) {
     const char *sym = method_sym_arg(c, id);
     int mi = method_obj_target_mi(c, id);
+    if (mi < 0 && emit_method_obj_on_constant(c, id, recv, sym, b)) return;
     /* A poly receiver has no statically-known class, so method_obj_target_mi
        resolves nothing (mi < 0), there is no callable address to bind, and
        the boxed sp_RbVal is not a C pointer: the `(void *)(<expr>)` self slot
