@@ -4120,9 +4120,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       /* to_i/to_f/to_r require a zero imaginary part (RangeError otherwise);
          numerator/denominator model the Integer-component case (den 1). */
       if ((sp_streq(name, "to_i") || sp_streq(name, "to_int")) && argc == 0) {
-        int t = ++g_tmp;
-        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
-        buf_printf(b, "; if (_t%d.im != 0.0) sp_raise_cls(\"RangeError\", \"can't convert into Integer\"); (sp_int)_t%d.re; })", t, t);
+        buf_puts(b, "sp_complex_to_int("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
       if (sp_streq(name, "to_f") && argc == 0) {
@@ -32589,16 +32587,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       else if (at == TY_POLY) { buf_puts(b, "sp_poly_Integer("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       else if (at == TY_INT || at == TY_UNKNOWN) { buf_puts(b, "("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       /* Kernel#Integer converts anything answering #to_int, and a Rational or
-         a Complex with no imaginary part are among them (#3888). */
-      else if (at == TY_RATIONAL) {
-        buf_puts(b, "((sp_int)sp_rational_to_f("); emit_expr(c, av[0], b); buf_puts(b, "))");
-      }
-      else if (at == TY_COMPLEX) {
-        int tc = ++g_tmp;
-        buf_printf(b, "({ sp_Complex _t%d = ", tc); emit_expr(c, av[0], b);
-        buf_printf(b, "; if (_t%d.im != 0) sp_raise_cls(\"RangeError\", "
-                      "\"can't convert into Integer\"); (sp_int)_t%d.re; })", tc, tc);
-      }
+         a Complex with no imaginary part are among them (#3888): the Integer
+         slot's own conversion, which truncates the Rational exactly where the
+         trip through a double lost the low digits of a large one. */
+      else if (at == TY_RATIONAL || at == TY_COMPLEX) emit_int_expr(c, av[0], b);
       /* a user object converts through its own #to_int, #to_str and #to_i,
          each answer judged by the runtime as CRuby judges it; a class whose
          #to_int or #to_i answers a Bignum types the call as one */

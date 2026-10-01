@@ -12300,13 +12300,16 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
       else if (kt == TY_POLY) {
         /* a poly key dispatches at runtime: a Symbol/String resolves by name,
            anything else is an index -- passing the raw sp_RbVal to
-           sp_MatchData_aref (sp_int) would be a C type error. */
+           sp_MatchData_aref (sp_int) would be a C type error. The index takes
+           the Integer slot's conversion: a Float or a Rational truncates, an
+           object answers #to_int, and nil or an Object is CRuby's TypeError,
+           where sp_poly_to_i read them as group 0. */
         int mtmp = ++g_tmp, ktmp = ++g_tmp;
         buf_printf(b, "({ sp_MatchData *_t%d = %s; sp_RbVal _t%d = ", mtmp, r, ktmp);
         emit_expr(c, argv[0], b);
         buf_printf(b, "; _t%d.tag == SP_TAG_SYM ? sp_MatchData_aref_name(_t%d, sp_sym_to_s((sp_sym)_t%d.v.i)) :"
                       " _t%d.tag == SP_TAG_STR ? sp_MatchData_aref_name(_t%d, _t%d.v.s) :"
-                      " sp_MatchData_aref(_t%d, sp_poly_to_i(_t%d)); })",
+                      " sp_MatchData_aref(_t%d, sp_poly_arg_int_chk(_t%d)); })",
                    ktmp, mtmp, ktmp, ktmp, mtmp, ktmp, mtmp, ktmp);
       }
       else { buf_printf(b, "sp_MatchData_aref(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -12476,7 +12479,7 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
           buf_printf(b, "; sp_PolyArray_push(_t%d, sp_box_nullable_str("
                         "_t%d.tag == SP_TAG_SYM ? sp_MatchData_aref_name(_t%d, sp_sym_to_s((sp_sym)_t%d.v.i)) :"
                         " _t%d.tag == SP_TAG_STR ? sp_MatchData_aref_name(_t%d, _t%d.v.s) :"
-                        " sp_MatchData_aref(_t%d, sp_poly_to_i(_t%d))));",
+                        " sp_MatchData_aref(_t%d, sp_poly_arg_int_chk(_t%d))));",
                      at, kt, mt, kt, kt, mt, kt, mt, kt);
         }
         else {

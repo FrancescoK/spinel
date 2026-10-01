@@ -2959,6 +2959,16 @@ static SP_INLINE const char *sp_poly_arg_path(sp_RbVal v) {
   if (v.tag == SP_TAG_STR) return v.v.s;
   return sp_poly_arg_path_slow(v);
 }
+/* Complex#to_int: the real part, when the imaginary part is an exact zero
+   (an Integer 0; a Float 0.0 is not exact), truncated as Float#to_i does;
+   RangeError otherwise, naming the value as CRuby does. */
+static SP_NOINLINE sp_int sp_complex_to_int(sp_Complex c) {
+  if (c.im != 0.0 || (c.fl & SP_CPLX_IM_F))
+    sp_raise_cls("RangeError", sp_sprintf("can't convert %s into Integer", sp_complex_to_s(c)));
+  if (!isfinite(c.re))
+    sp_raise_cls("FloatDomainError", isnan(c.re) ? "NaN" : c.re > 0 ? "Infinity" : "-Infinity");
+  return (sp_int)c.re;
+}
 static SP_NOINLINE sp_int sp_poly_arg_int_chk_slow(sp_RbVal v) {
   /* a boxed int slot's nil sentinel is nil, not a number */
   if (v.tag == SP_TAG_INT && v.v.i == SP_INT_NIL)
@@ -2985,6 +2995,8 @@ static SP_NOINLINE sp_int sp_poly_arg_int_chk_slow(sp_RbVal v) {
                                          sp_poly_class_name(v)));
   }
   if (v.tag == SP_TAG_OBJ && v.cls_id >= 0) return sp_poly_arg_int_obj(v);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p)
+    return sp_complex_to_int(*(sp_Complex *)v.v.p);
   return sp_poly_to_i(v);
 }
 /* The arguments of a bound-Method THUNK (#4542): a Method called out of a

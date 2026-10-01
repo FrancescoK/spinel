@@ -605,6 +605,24 @@ const char *conv_cls_name_of(Compiler *c, TyKind t) {
   return conv_wrong_cls_name(t);
 }
 
+/* An empty `[]` or `{}`, or an `Array.new` / `Hash.new`, whose element type
+   nothing settles: it keeps TY_UNKNOWN to the end, yet is emitted as an Array
+   or a Hash all the same, so in a scalar slot it is the same mismatch as a
+   typed one ("abc"[[]], :sym[Array.new]). NULL for anything else. */
+static const char *unsettled_container_cls(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_ArrayNode || k == NK_HashNode) {
+    int n = 0; nt_arr(nt, node, "elements", &n);
+    return n ? NULL : k == NK_ArrayNode ? "Array" : "Hash";
+  }
+  const char *nm = k == NK_CallNode ? nt_str(nt, node, "name") : NULL;
+  int r = nm && sp_streq(nm, "new") ? nt_ref(nt, node, "receiver") : -1;
+  const char *rn = r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode ? nt_str(nt, r, "name") : NULL;
+  if (rn && (sp_streq(rn, "Array") || sp_streq(rn, "Hash"))) return rn;
+  return NULL;
+}
+
 static int emit_nilbool_conv_raise_w(Compiler *c, int node, TyKind want, int nil_ok,
                                      int of_wording, Buf *b) {
   TyKind t = comp_ntype(c, node);
@@ -616,7 +634,7 @@ static int emit_nilbool_conv_raise_w(Compiler *c, int node, TyKind want, int nil
        truncation arm above); stringish kinds belong in a String slot. */
     if (want == TY_STRING && (t == TY_STRING || t == TY_STRBUF)) return 0;
     if (want == TY_INT && (t == TY_INT || t == TY_BIGINT || t == TY_FLOAT)) return 0;
-    const char *cn = conv_wrong_cls_name(t);
+    const char *cn = t == TY_UNKNOWN ? unsettled_container_cls(c, node) : conv_wrong_cls_name(t);
     if (!cn) return 0;
     buf_puts(b, "({ (void)(");
     emit_expr(c, node, b);
@@ -681,6 +699,20 @@ static void emit_int_expr_ex(Compiler *c, int node, int strict, Buf *b) {
      clang warns that the literal changes value and the build reads as broken. */
   if (comp_ntype(c, node) == TY_FLOAT) {
     buf_puts(b, "(sp_int)("); emit_scalar_operand(c, node, "0", b); buf_puts(b, ")");
+    return;
+  }
+  /* A Rational or a Complex converts through #to_int too, which the struct
+     went into the slot without: a Rational truncates toward zero, and a
+     Complex answers its real part only when its imaginary part is an exact
+     zero (sp_complex_to_int). */
+  if (comp_ntype(c, node) == TY_RATIONAL) {
+    int tq = ++g_tmp;
+    buf_printf(b, "({ sp_Rational _t%d = ", tq); emit_expr(c, node, b);
+    buf_printf(b, "; _t%d.num / _t%d.den; })", tq, tq);
+    return;
+  }
+  if (comp_ntype(c, node) == TY_COMPLEX) {
+    buf_puts(b, "sp_complex_to_int("); emit_expr(c, node, b); buf_puts(b, ")");
     return;
   }
   if (emit_nilbool_conv_raise_w(c, node, TY_INT, strict == 0, strict == 2, b)) return;

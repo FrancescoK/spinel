@@ -1,0 +1,51 @@
+"b"
+"b"
+"b"
+"b"
+[RangeError, "can't convert 1+2i into Integer"]
+[RangeError, "can't convert 1+0.0i into Integer"]
+[FloatDomainError, "NaN"]
+"bc"
+"c"
+"y"
+"m"
+[0, 1]
+[1, 2]
+1
+[RangeError, "can't convert 1+1i into Integer"]
+"f"
+["o", "f"]
+10
+20
+[RangeError, "can't convert 20+2i into Integer"]
+2
+[1, 2]
+"abab"
+1152921504606846977
+[RangeError, "can't convert 1+0.0i into Integer"]
+[RangeError, "can't convert 3+0.0i into Integer"]
+[RangeError, "can't convert 3+4i into Integer"]
+"b"
+[RangeError, "can't convert 1+1i into Integer"]
+[TypeError, "no implicit conversion of Object into Integer"]
+[TypeError, "no implicit conversion from nil to integer"]
+[TypeError, "no implicit conversion of Object into Integer"]
+"f"
+[TypeError, "no implicit conversion of Array into Integer"]
+[TypeError, "no implicit conversion of Array into Integer"]
+[TypeError, "no implicit conversion of Hash into Integer"]
+[TypeError, "no implicit conversion of Array into Integer"]
+[TypeError, "no implicit conversion of Hash into Integer"]
+[TypeError, "no implicit conversion of Array into Integer"]
+[TypeError, "no implicit conversion of Array into Integer"]
+[TypeError, "no implicit conversion of Array into Integer"]
+[TypeError, "no implicit conversion of Array into Integer"]
+[TypeError, "no implicit conversion of Hash into Integer"]
+[TypeError, "no implicit conversion of Array into Integer"]
+[TypeError, "no implicit conversion of Array into Integer"]
+[TypeError, "no implicit conversion of Hash into Integer"]
+[TypeError, "no implicit conversion of Array into Integer"]
+[TypeError, "no implicit conversion of Hash into Integer"]
+[TypeError, "no implicit conversion of Array into Integer"]
+[TypeError, "no implicit conversion of Array into String"]
+[TypeError, "no implicit conversion of Array into String"]
