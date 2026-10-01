@@ -21680,12 +21680,24 @@ static int text_uses_tmp(const char *txt, int n) {
   return 0;
 }
 
-/* Does `txt` store into the temp `_t<n>`: `_t<n> = ...`, not `_t<n> == ...`? */
+/* Does `txt` store into the temp `_t<n>`: `_t<n> = ...`, not `_t<n> == ...`?
+   Text inside a C string or character literal is a program's data, not a
+   store (`"_t1 = "` from a Ruby string), and `lv_x_t1` is another name. */
 static int text_assigns_tmp(const char *txt, int n) {
   if (!txt) return 0;
   char want[24];
   int wl = snprintf(want, sizeof want, "_t%d", n);
-  for (const char *q = strstr(txt, want); q; q = strstr(q + 1, want)) {
+  for (const char *q = txt; *q; q++) {
+    if (*q == '"' || *q == '\'') {
+      char quote = *q;
+      for (q++; *q && *q != quote; q++)
+        if (*q == '\\' && q[1]) q++;
+      if (!*q) break;
+      continue;
+    }
+    if (strncmp(q, want, (size_t)wl) != 0) continue;
+    if (q > txt && (q[-1] == '_' || (q[-1] >= '0' && q[-1] <= '9') ||
+                    (q[-1] >= 'a' && q[-1] <= 'z') || (q[-1] >= 'A' && q[-1] <= 'Z'))) continue;
     const char *r = q + wl;
     if (*r >= '0' && *r <= '9') continue;
     while (*r == ' ') r++;
