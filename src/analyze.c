@@ -15506,10 +15506,11 @@ static int promote_shared_stored_strings(Compiler *c) {
     const char *contn = nt_str(nt, cont, "name");
     Scope *conts = contn ? comp_scope_of(c, cont) : NULL;
     LocalVar *contv = (contn && conts) ? scope_local(conts, contn) : NULL;
-    /* a block parameter bound to boxed elements is POLY, whatever it holds */
+    /* a block parameter bound to boxed elements is POLY, whatever it holds,
+       and so is a local bound from one (`x = a[0]; x[0] << "!"`): its
+       stores are walked to the container they name */
     if (!contv || (!ty_is_array(contv->type) && !ty_is_hash(contv->type) &&
-                   contv->type != TY_UNKNOWN &&
-                   !(contv->type == TY_POLY && contv->is_block_param))) continue;
+                   contv->type != TY_UNKNOWN && contv->type != TY_POLY)) continue;
     changed |= strbuf_demand_container_stores(c, contn, conts);
   }
 
