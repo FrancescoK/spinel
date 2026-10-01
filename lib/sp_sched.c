@@ -3171,7 +3171,11 @@ static void sp_sched_maybe_grow(void) {
    standalone and a real server unexplained (#4317). */
 static void sp_sched_report_stats(void) {
 #ifdef SP_THREADS
-  static int reported = 0;   /* main's drain and the atexit hook both call it */
+  /* main's drain and the atexit hook both call it. From the hook (an
+     `exit` before the drain) the monitor may still be running, so the
+     counters are a best-effort snapshot -- read without the lock, which the
+     exiting code may hold. */
+  static int reported = 0;
   const char *e = getenv("SPINEL_SCHED_STATS");
   if (reported || !e || !*e || *e == '0') return;
   reported = 1;
