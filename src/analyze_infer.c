@@ -5914,6 +5914,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
           sp_streq(name, "fdatasync")) return an_poly_concrete(c, name, TY_INT);
       if (sp_streq(name, "write") || sp_streq(name, "syswrite"))
         return an_poly_concrete(c, name, TY_INT);   /* IO#write / #syswrite: the byte count */
+      /* close answers nil for an IO or a Dir, and the queue for a Queue */
+      if (sp_streq(name, "close") && argc == 0) return an_poly_concrete(c, name, TY_POLY);
       if (sp_streq(name, "close") || sp_streq(name, "flush")) return an_poly_concrete(c, name, TY_NIL);
       if (sp_streq(name, "fileno")) return an_poly_concrete(c, name, TY_INT);
       /* the descriptor controls, at the arities the poly-IO arm takes them:
