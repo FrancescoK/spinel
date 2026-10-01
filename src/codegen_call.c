@@ -26528,6 +26528,17 @@ static int raise_plain_arg(const NodeTable *nt, int node) {
                  sp_streq(t, "BlockArgumentNode") || sp_streq(t, "ForwardingArgumentsNode")));
 }
 
+/* A Fiber storage key. The storage is keyed by Symbol, and CRuby takes a
+   String as its Symbol and raises TypeError for anything else ("12 is not a
+   symbol nor a string"), the rule Thread#[] keys follow, so any key that is
+   not statically a Symbol goes through the same conversion, boxed. */
+static void emit_fiber_storage_key(Compiler *c, int key, Buf *b) {
+  if (comp_ntype(c, key) == TY_SYMBOL) { emit_expr(c, key, b); return; }
+  buf_puts(b, "sp_thread_local_key(");
+  emit_boxed(c, key, b);
+  buf_puts(b, ")");
+}
+
 static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -27796,7 +27807,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     }
     if (is_fiber_recv) {
       buf_puts(b, "sp_Fiber_storage_get(sp_fiber_current, ");
-      emit_expr(c, argv[0], b);
+      emit_fiber_storage_key(c, argv[0], b);
       buf_puts(b, ")");
       return;
     }
@@ -43455,7 +43466,7 @@ else {
       if (fval_poly) emit_boxed(c, argv[1], b);
       else emit_expr(c, argv[1], b);
       buf_puts(b, "; sp_Fiber_storage_set(sp_fiber_current, ");
-      emit_expr(c, argv[0], b);
+      emit_fiber_storage_key(c, argv[0], b);
       buf_puts(b, ", ");
       if (!fval_poly) {
         char tfs[32]; snprintf(tfs, sizeof tfs, "_t%d", tf);
