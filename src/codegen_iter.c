@@ -534,8 +534,8 @@ void emit_inline_locals_aliased(Compiler *c, int mi, int tag, unsigned alias_mas
            both across the same setjmp as ordinary inline locals (#6552).
            Nested inlines must also retain the borrowed slot's qualifier. */
         emit_indent(b, din);
-        buf_printf(b, "const char * volatile *%s _cell_%s = NULL;\n",
-                   vol ? " volatile" : "", rn);
+        buf_printf(b, "const char *%s *%s _cell_%s = NULL;\n",
+                   lv->borrowed_volatile ? " volatile" : "", vol ? " volatile" : "", rn);
         continue;
       }
     }
@@ -1724,7 +1724,7 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
     if (kw_alias && al->n < (int)(sizeof al->lv / sizeof al->lv[0])) {
       if (!as_expr) emit_indent(b, indent);
       if (!as_expr && !al->open) { buf_puts(b, "{\n"); emit_indent(b, indent); al->open = 1; }
-      buf_printf(b, "const char * volatile *_cell_%s = &(", kpr);
+      buf_printf(b, "const char *%s *_cell_%s = &(", kl->borrowed_volatile ? " volatile" : "", kpr);
       emit_expr(c, vn, b);
       buf_puts(b, ")");
       buf_puts(b, as_expr ? "; " : ";\n");
@@ -1877,7 +1877,7 @@ static int emit_block_post_alias(Compiler *c, int blk, const char *bp, const cha
   refuse_alias_of_snapshot(c, yarg, bp);
   if (!as_expr) emit_indent(b, indent);
   if (!as_expr && !al->open) { buf_puts(b, "{\n"); emit_indent(b, indent); al->open = 1; }
-  buf_printf(b, "const char **_cell_%s = &(", bpr);
+  buf_printf(b, "const char *%s *_cell_%s = &(", bl->borrowed_volatile ? " volatile" : "", bpr);
   emit_expr(c, yarg, b);
   buf_puts(b, ")");
   buf_puts(b, as_expr ? "; " : ";\n");
@@ -2096,7 +2096,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
       if (bl && al) refuse_alias_of_snapshot(c, yargs[k], bp);
       if (bl && al && al->n < (int)(sizeof al->lv / sizeof al->lv[0])) {
         if (!as_expr && !al->open) { buf_puts(b, "{\n"); emit_indent(b, indent); al->open = 1; }
-        buf_printf(b, "const char * volatile *_cell_%s = &(", bpr);
+        buf_printf(b, "const char *%s *_cell_%s = &(", bl->borrowed_volatile ? " volatile" : "", bpr);
         emit_expr(c, yargs[k], b);
         buf_puts(b, ")");
         buf_puts(b, as_expr ? "; " : ";\n");
@@ -2223,7 +2223,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
       refuse_alias_of_snapshot(c, yargs[yi], op);
       if (!as_expr) emit_indent(b, indent);
       if (!as_expr && !al->open) { buf_puts(b, "{\n"); emit_indent(b, indent); al->open = 1; }
-      buf_printf(b, "const char **_cell_%s = &(", opr);
+      buf_printf(b, "const char *%s *_cell_%s = &(", ol->borrowed_volatile ? " volatile" : "", opr);
       emit_expr(c, yargs[yi], b);
       buf_puts(b, ")");
       buf_puts(b, as_expr ? "; " : ";\n");
@@ -6049,4 +6049,3 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
 }
 
 /* ---- interpolation ---- */
-

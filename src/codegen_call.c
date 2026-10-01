@@ -8062,7 +8062,7 @@ static void emit_poly_arm_args(Compiler *c, Scope *m, Scope *ms, const ArgLayout
       TyKind pt = pv ? pv->type : TY_POLY;
       if (pt == TY_UNKNOWN) pt = TY_POLY;
       if (pv && pv->byref_out) {
-        buf_printf(pre, "const char * volatile *_cell__pd%d_%d = %s; ", pd_uid, a, pa.p ? pa.p : "NULL");
+        buf_printf(pre, "const char *%s *_cell__pd%d_%d = %s; ", pv->borrowed_volatile ? " volatile" : "", pd_uid, a, pa.p ? pa.p : "NULL");
         buf_printf(cb, "_cell__pd%d_%d", pd_uid, a);
       }
       else {
@@ -26970,7 +26970,7 @@ static void emit_bound_method_call(Compiler *c, int id, int recv, int target, Bu
   for (int k = 0; k < tm->nparams; k++) {
     if (np++) buf_puts(&cast, ", ");
     LocalVar *pp = tm->pnames[k] ? scope_local(tm, tm->pnames[k]) : NULL;
-    if (pp && pp->byref_out) buf_puts(&cast, "const char * volatile *");
+    if (pp && pp->byref_out) buf_puts(&cast, pp->borrowed_volatile ? "const char * volatile *" : "const char **");
     else emit_ctype(c, pp ? pp->type : TY_POLY, &cast);
   }
   if (tm->blk_param && tm->blk_param[0] && !tm->yields) buf_puts(&cast, np++ ? ", sp_Proc *" : "sp_Proc *");

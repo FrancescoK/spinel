@@ -9701,7 +9701,7 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
          `_cell_<uniq>` makes the two meet, and it needs no root of its own:
          it points at a slot the caller already roots. */
       if (byref) {
-        buf_printf(g_pre, "const char * volatile *_cell_%s = %s;\n", uniq, vb.p ? vb.p : "NULL");
+        buf_printf(g_pre, "const char *%s *_cell_%s = %s;\n", plv->borrowed_volatile ? " volatile" : "", uniq, vb.p ? vb.p : "NULL");
       }
       else {
         emit_ctype(c, pt, g_pre);
@@ -10539,7 +10539,7 @@ else {
          own type. */
       if (p && p->byref_out) {
         emit_indent(g_pre, g_indent);
-        if (att == TY_STRING) buf_puts(g_pre, "const char * volatile");
+        if (att == TY_STRING && p->borrowed_volatile) buf_puts(g_pre, "const char * volatile");
         else emit_ctype(c, att, g_pre);
         buf_printf(g_pre, " *_t%d = ", atmp[k]);
         buf_puts(g_pre, ab.p ? ab.p : ""); buf_puts(g_pre, ";\n");
@@ -10547,7 +10547,7 @@ else {
         if (pd_active && pm->pnames[k] && g_nren < MAX_RENAME) {
           /* the lent address under the cell spelling a reading default emits */
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "const char * volatile *_cell__pd%d_%d = _t%d;\n", pd_uid, k, atmp[k]);
+          buf_printf(g_pre, "const char *%s *_cell__pd%d_%d = _t%d;\n", p->borrowed_volatile ? " volatile" : "", pd_uid, k, atmp[k]);
           snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", pm->pnames[k]);
           snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_pd%d_%d", pd_uid, k);
           g_nren++;

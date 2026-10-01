@@ -3395,7 +3395,7 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
     /* byref string out-param: the caller's slot, so body mutation propagates.
        Named _cell_<name> so the ordinary is_cell deref forms read/write it. */
     if (p && p->byref_out) {
-      buf_printf(b, "const char * volatile *_cell_%s", s->pnames[i]);
+      buf_printf(b, "const char *%s *_cell_%s", p->borrowed_volatile ? " volatile" : "", s->pnames[i]);
       continue;
     }
     TyKind pt = (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY;
@@ -3501,6 +3501,7 @@ static void inherit_transplant_locals(Compiler *c, Scope *s) {
       dl->proc_ret = sl.proc_ret;
       dl->is_cell = sl.is_cell;
       dl->byref_out = sl.byref_out;
+      dl->borrowed_volatile = sl.borrowed_volatile;
     }
     break;
   }
@@ -5791,7 +5792,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
         /* a shared cell pointer (see emit_scope_decls): float -> sp_float*,
            poly -> sp_RbVal*, heap object -> its typed pointer, else sp_int*. */
         buf_puts(&g_proc_protos, " "); emit_cell_elem_type(c, lv, &g_proc_protos);
-        if (lv->byref_out) buf_puts(&g_proc_protos, " volatile");
+        if (lv->byref_out && lv->borrowed_volatile) buf_puts(&g_proc_protos, " volatile");
         buf_printf(&g_proc_protos, " *c_%s;", caps.v[i]);
       }
       else {
@@ -5915,7 +5916,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
         /* unpack the shared cell pointer; reads/writes go through (*_cell_<name>)
            (emit_local_ref), so the write reaches the enclosing scope. */
         buf_puts(pb, "    "); emit_cell_elem_type(c, lv, pb);
-        if (lv->byref_out) buf_puts(pb, " volatile");
+        if (lv->byref_out && lv->borrowed_volatile) buf_puts(pb, " volatile");
         buf_printf(pb, " *_cell_%s = _fc->c_%s;\n", caps.v[i], caps.v[i]);
         buf_printf(pb, "    SP_GC_ROOT(_cell_%s);\n", caps.v[i]);
         continue;
@@ -6446,7 +6447,10 @@ void emit_inlined_param_target(Compiler *c, Scope *m, const char *pname,
 int inlined_local_needs_volatile(Compiler *c, LocalVar *lv) {
   for (int si = 0; si < c->nscopes; si++) {
     Scope *s = &c->scopes[si];
-    if (!s->locals || lv < s->locals || lv >= s->locals + s->nlocals) continue;
+    int owns = 0;
+    for (int k = 0; k < s->nlocals; k++)
+      if (lv == &s->locals[k]) { owns = 1; break; }
+    if (!owns) continue;
     if (!scope_has_begin(c, si)) return 0;
     char **names = NULL; int nn = 0, all = 0;
     begin_volatile_names(c, si, &names, &nn, &all);
@@ -7060,7 +7064,7 @@ else if (orecv >= 0 && onm) {
       /* a float capture rides a native sp_float cell, a poly capture an
          sp_RbVal cell, a heap object its typed pointer (see emit_scope_decls). */
       buf_puts(&g_procs, " "); emit_cell_elem_type(c, clv, &g_procs);
-      if (clv && clv->byref_out) buf_puts(&g_procs, " volatile");
+      if (clv && (clv->byref_out || clv->inline_alias) && clv->borrowed_volatile) buf_puts(&g_procs, " volatile");
       buf_printf(&g_procs, " *c_%s;", caps.v[i]);
     }
     if (cap_self && self_is_value) buf_printf(&g_procs, " sp_%s __self_val;", self_cls);
@@ -13601,6 +13605,24 @@ char *codegen_program(const NodeTable *nt) {
   Compiler *c = comp_new(nt);
   analyze_program(c);
   g_scopes_settled = 1;   /* scope_is_shadowed may answer from its table now */
+  /* Only stack String slots selected by the existing setjmp policy seed
+     borrowed volatility; a heap cell itself does not live across setjmp. */
+  int borrowed_vol = 0;
+  for (int si = 0; si < c->nscopes; si++) {
+    if (!scope_has_begin(c, si)) continue;
+    char **names = NULL; int nn = 0, all = 0;
+    begin_volatile_names(c, si, &names, &nn, &all);
+    Scope *s = &c->scopes[si];
+    for (int k = 0; k < s->nlocals; k++) {
+      LocalVar *lv = &s->locals[k];
+      if (lv->type == TY_STRING && !lv->is_cell && (all || name_in(names, nn, lv->name))) {
+        lv->borrowed_volatile = 1;
+        borrowed_vol = 1;
+      }
+    }
+    free(names);
+  }
+  if (borrowed_vol) propagate_borrowed_volatile(c);
   /* From here on a yield reads the type of the block spliced at THIS site,
      not the union the node cache holds across sites (#3784). Installed after
      analysis so the fixpoint keeps seeing the cache unchanged. */
@@ -15550,4 +15572,3 @@ char *codegen_program(const NodeTable *nt) {
     if (types_out && !(keep && *keep)) return strdup(""); }
   return b.p;
 }
-
