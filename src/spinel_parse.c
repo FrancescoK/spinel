@@ -636,8 +636,9 @@ static int flatten(pm_node_t *node) {
     NAME("name", n->name);
     /* a bare `warn`: the line and file it was written in, which `uplevel: 0`
        prints ahead of the message -- stamped as __LINE__ and __FILE__ are,
-       since node positions exist only under the line map */
-    if (!n->receiver) {
+       since node positions exist only under the line map. `Kernel.warn` is
+       the same call. */
+    if (!n->receiver || PM_NODE_TYPE(n->receiver) == PM_CONSTANT_READ_NODE) {
       char *wn = cstr(n->name);
       if (strcmp(wn, "warn") == 0) {
         int32_t wl = pm_newline_list_line(&g_parser->newline_list, node->location.start, g_parser->start_line);

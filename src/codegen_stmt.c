@@ -968,9 +968,43 @@ else {
        the message goes and under the same category gate */
     char up_pre[1200]; up_pre[0] = 0;
     if (up0 && !bad_cat[0]) {
+      /* a call the parser did not stamp has no location to print, and a
+         splatted first message may be empty, where CRuby prints nothing at
+         all: neither may print a prefix it cannot vouch for */
+      int first = -1;
+      for (int k = 0; k < argc && first < 0; k++) if (k != kw_idx) first = argv[k];
+      if (nt_int(c->nt, id, "warn_line", 0) <= 0)
+        unsupported(c, id, "warn(uplevel: 0) on a call with no recorded location");
+      else if (first >= 0 && nt_kind(c->nt, first) == NK_SplatNode)
+        unsupported(c, first, "warn(*msgs, uplevel: 0) (an empty splat prints no prefix)");
+    }
+    /* CRuby evaluates the messages before warn prints anything: the first
+       one is held in a rooted temp ahead of the prefix, so a message that
+       raises leaves no prefix behind */
+    int up_held = 0;
+    if (up0 && !bad_cat[0]) {
       const char *fp = nt_str(c->nt, id, "warn_path");
       snprintf(up_pre, sizeof up_pre, "%s:%lld: warning: ", fp ? fp : "-",
                (long long)nt_int(c->nt, id, "warn_line", 0));
+      int first = -1;
+      for (int k = 0; k < argc && first < 0; k++) if (k != kw_idx) first = argv[k];
+      TyKind ft = first >= 0 ? comp_ntype(c, first) : TY_UNKNOWN;
+      if (first >= 0 && g_n_argov < MAX_ARG_OVERRIDE && subtree_has_side_effect(c, first) &&
+          ft != TY_UNKNOWN && ft != TY_NIL && ft != TY_VOID &&
+          !ty_is_struct_valued(ft) && !comp_ty_value_obj(c, ft)) {
+        Buf fb; memset(&fb, 0, sizeof fb);
+        emit_expr(c, first, &fb);
+        int t = ++g_tmp;
+        emit_indent(b, indent);
+        emit_ctype(c, ft, b);
+        buf_printf(b, " _t%d = %s; ", t, fb.p ? fb.p : "");
+        emit_gc_root_tmp(c, ft, t, b);
+        buf_puts(b, "\n");
+        free(fb.p);
+        snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", t);
+        g_argov_node[g_n_argov++] = first;
+        up_held = 1;
+      }
     }
     for (int k = 0; k < argc; k++) {
       if (k == kw_idx) continue;
@@ -981,11 +1015,11 @@ else {
         if (redirect) {
           buf_puts(b, "{ if (gv_stderr) sp_StringIO_write(gv_stderr, ");
           emit_str_literal(b, up_pre);
-          buf_puts(b, "); else fputs(");
+          buf_puts(b, ");\nelse fputs(");
           emit_str_literal(b, up_pre);
           buf_puts(b, ", stderr); }\n");
         }
-        else { buf_puts(b, "fputs("); emit_str_literal(b, up_pre); buf_puts(b, ", stderr);\n"); }
+        else { buf_puts(b, "fputs("); emit_str_literal(b, up_pre); buf_printf(b, ", %s);\n", wfp); }
         up_pre[0] = 0;
       }
       TyKind at = comp_ntype(c, argv[k]);
@@ -1029,6 +1063,7 @@ else {
       emit_str_literal(b, bad_cat);
       buf_puts(b, "));\n");
     }
+    if (up_held) g_n_argov--;
     return 1;
   }
   return 0;

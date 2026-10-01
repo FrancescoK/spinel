@@ -1,0 +1,4 @@
+test/warn_uplevel_zero_stdout.rb:5: warning: to stdout
+rescued boom
+test/warn_uplevel_zero_stdout.rb:12: warning: m2
+second

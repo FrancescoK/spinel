@@ -1,0 +1,4 @@
+test/warn_uplevel_zero_kernel.rb:3: warning: explicit receiver
+test/warn_uplevel_zero_kernel.rb:4: warning: note 1
+test/warn_uplevel_zero_kernel.rb:6: warning: a
+b
