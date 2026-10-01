@@ -102,6 +102,8 @@ sp_RbVal sp_exc_result(volatile sp_Exception *ve);
 const char *sp_errno_class_name(int e);   /* "Errno::ENOENT" for ENOENT; the parent for an unlisted one */
 sp_RbVal sp_exc_errno_acc(sp_Exception *e);   /* SystemCallError#errno */
 sp_int sp_errno_num(const char *cls);   /* Errno::ENOENT::Errno */
+const char *sp_syserr_msg(const char *cls, const char *msg);   /* "<strerror> - msg" */
+sp_Exception *sp_syserr_new_n(const char *msg, sp_RbVal num);   /* SystemCallError.new(msg, errno) */
 const char *sp_exc_parent_of_name(const char *cls);
 sp_RbVal sp_exc_name_acc(sp_Exception *e);
 sp_RbVal sp_exc_key_acc(sp_Exception *e);

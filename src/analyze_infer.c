@@ -3478,6 +3478,17 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         if (!(cn && is_builtin_reopen(cn))) return ty_object(ci);
       }
       if (cn && is_builtin_exception_name(cn)) return TY_EXCEPTION;
+      /* a namespaced builtin exception goes by its qualified name
+         (Errno::ENOENT.new), as the emitter builds it */
+      {
+        int qpar = nt_ref(nt, recv, "parent");
+        const char *qpnm = qpar >= 0 && nt_kind(nt, qpar) == NK_ConstantReadNode ? nt_str(nt, qpar, "name") : NULL;
+        char qbuf[160];
+        if (qpnm && cn) {
+          snprintf(qbuf, sizeof qbuf, "%s::%s", qpnm, cn);
+          if (is_builtin_exception_name(qbuf)) return TY_EXCEPTION;
+        }
+      }
       /* ::Array.new / ::String.new / ::StringIO.new etc. */
       if (cn && sp_streq(cn, "Array") && argc == 2) return ty_array_of(infer_type(c, argv[1]));
       if (cn && sp_streq(cn, "Array")) return TY_POLY_ARRAY;

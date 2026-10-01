@@ -390,6 +390,33 @@ sp_RbVal sp_exc_errno_acc(sp_Exception *e) {SP_GC_ROOT(e);
     if (!strcmp(SP_ERRNO_TAB[i].name, cn)) return sp_box_int(SP_ERRNO_TAB[i].num);
   return sp_box_nil();
 }
+/* The message of a SystemCallError or an Errno:: class the program builds
+   (`Errno::ENOENT.new("f")`, `raise Errno::EACCES`): the errno's own text,
+   then " - msg" when a message is given, as CRuby renders it. A class with
+   no number says "unknown error". The runtime's own raises pass the full
+   text and never come here. */
+const char *sp_syserr_msg(const char *cls, const char *msg) {
+  sp_int n = sp_errno_num(cls);
+  const char *base = n == SP_INT_NIL ? "unknown error" : strerror((int)n);
+  if (msg == sp_exc_no_msg) return sp_sprintf("%s - ", base);
+  if (!msg || !msg[0]) return sp_sprintf("%s", base);
+  SP_GC_ROOT_STR(msg);
+  return sp_sprintf("%s - %s", base, msg);
+}
+/* SystemCallError.new(msg, errno): the Errno:: class of that number, or
+   SystemCallError itself for one with no class (or a nil errno) */
+sp_Exception *sp_syserr_new_n(const char *msg, sp_RbVal num) {
+  SP_GC_ROOT_STR(msg);
+  const char *cls = num.tag == SP_TAG_INT ? sp_errno_class_name((int)num.v.i) : "SystemCallError";
+  const char *m;
+  if (num.tag == SP_TAG_INT && !strcmp(cls, "SystemCallError")) {
+    const char *base = strerror((int)num.v.i);
+    m = msg == sp_exc_no_msg ? sp_sprintf("%s - ", base)
+      : (!msg || !msg[0]) ? sp_sprintf("%s", base) : sp_sprintf("%s - %s", base, msg);
+  }
+  else m = sp_syserr_msg(cls, msg);
+  return sp_exc_new(cls, m);
+}
 /* The builtin exception hierarchy, as {class, direct superclass} pairs. Shared
    by Exception#is_a? and the by-name #superclass lookup (#3031). */
 const char *sp_exc_parent_of_name(const char *cls) {

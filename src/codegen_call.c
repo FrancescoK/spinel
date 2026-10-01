@@ -3561,6 +3561,28 @@ static void emit_fiber_pass_call(Compiler *c, const char *fn, const char *recv,
   buf_puts(b, "); })");
 }
 
+/* SystemCallError and the Errno:: classes build their message from the
+   errno's text, then " - msg" when one is given (sp_syserr_msg). */
+static int syserr_cls(const char *cn) {
+  return cn && (sp_streq(cn, "SystemCallError") || (!strncmp(cn, "Errno::", 7) && is_exc_name(cn)));
+}
+
+/* The message argument of `Cls.new(msg)` / `raise Cls, msg`: a String stays
+   even when empty (#3711, #3713), nil is no message and falls back to the
+   class name like the message-less form (#3812), anything else is its to_s
+   (#2741). -1 is no argument. */
+static void emit_exc_given_msg(Compiler *c, int arg, Buf *b) {
+  if (arg < 0) { buf_puts(b, "(&(\"\\xff\")[1])"); return; }
+  if (comp_ntype(c, arg) == TY_STRING) {
+    buf_puts(b, "sp_exc_msg_given("); emit_expr(c, arg, b); buf_puts(b, ")");
+    return;
+  }
+  int mt = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", mt); emit_boxed(c, arg, b);
+  buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? (&(\"\\xff\")[1])"
+                " : sp_exc_msg_given(sp_poly_to_s(_t%d)); })", mt, mt);
+}
+
 static void emit_exc_msg_arg(Compiler *c, int arg, Buf *b) {
   if (arg < 0) buf_puts(b, "(&(\"\\xff\")[1])");
   else if (comp_ntype(c, arg) == TY_STRING) emit_expr(c, arg, b);
@@ -14739,6 +14761,14 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
       const char *cn = nt_str(nt, recv, "name");
+      /* `Errno::ENOENT.new`: the class goes by its qualified name, as the
+         raise of it does (RAISE_EXC_NAME); by the leaf it was no exception
+         at all and raised NameError */
+      char nqexc[160];
+      if (cn && !is_exc_name(cn) && nt_kind(nt, recv) == NK_ConstantPathNode) {
+        const char *qn = isa_const_qualname(nt, recv, nqexc, sizeof nqexc);
+        if (qn && is_exc_name(qn)) cn = qn;
+      }
       if (cn && is_exc_name(cn)) {
         /* a reopening's own initialize runs on the runtime's exception */
         { int rci = comp_class_index(c, cn);
@@ -14872,29 +14902,28 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
            a non-String coerces via to_s (#2741). Built this way it recorded
            neither a key nor a receiver, and the accessors for those raise
            rather than answering nil (#3030). */
+        /* SystemCallError.new(msg, errno) is the Errno:: class of that
+           number; the family's message starts with the errno's text */
+        if (sp_streq(cn, "SystemCallError") && argc == 2) {
+          buf_puts(b, "sp_syserr_new_n(");
+          emit_exc_given_msg(c, argv[0], b);
+          buf_puts(b, ", ");
+          emit_boxed(c, argv[1], b);
+          buf_puts(b, ")");
+          return 1;
+        }
+        int syserr = syserr_cls(cn);
         int clr_recv = sp_streq(cn, "KeyError") || sp_streq(cn, "NameError") ||
                        sp_streq(cn, "NoMethodError") || sp_streq(cn, "FrozenError");
         int clr_key = sp_streq(cn, "KeyError");
         int tex = clr_recv || clr_key ? ++g_tmp : 0;
         if (tex) buf_printf(b, "({ sp_Exception *_t%d = ", tex);
         buf_printf(b, "sp_exc_new(\"%s\", ", cn);
-        if (argc >= 1) {
-          /* an explicitly given message stays, even empty; only a message-less
-             .new falls back to the class name (#3713) */
-          if (comp_ntype(c, argv[0]) == TY_STRING) {
-            buf_puts(b, "sp_exc_msg_given("); emit_expr(c, argv[0], b); buf_puts(b, ")");
-          }
-          else {
-            /* nil is not a message: it falls back to the class name like the
-               no-argument form, while an empty string stays empty (#3812) */
-            int mt = ++g_tmp;
-            buf_printf(b, "({ sp_RbVal _t%d = ", mt); emit_boxed(c, argv[0], b);
-            buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? (&(\"\\xff\")[1])"
-                          " : sp_exc_msg_given(sp_poly_to_s(_t%d)); })", mt, mt);
-          }
-        }
-        else buf_puts(b, "(&(\"\\xff\")[1])");
-        buf_puts(b, ")");
+        if (syserr) buf_printf(b, "sp_syserr_msg(\"%s\", ", cn);
+        /* an explicitly given message stays, even empty; only a message-less
+           .new falls back to the class name (#3713) */
+        emit_exc_given_msg(c, argc >= 1 ? argv[0] : -1, b);
+        buf_puts(b, syserr ? "))" : ")");
         if (tex) {
           buf_puts(b, ";");
           if (clr_recv) buf_printf(b, " _t%d->has_recv = 0;", tex);
@@ -34975,7 +35004,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         /* a known user class raises under its qualified Ruby name (matching
            the constructor emission and the rescue-arm canonicalization) */
         const char *rn = (xc >= 0) ? class_ruby_name(c, xc) : NULL;
-        buf_printf(b, "sp_raise_cls(\"%s\", (&(\"\\xff\")[1]))", rn ? rn : (cn ? RAISE_EXC_NAME(av[0], cn) : ""));
+        const char *effn = rn ? rn : (cn ? RAISE_EXC_NAME(av[0], cn) : "");
+        if (xc < 0 && syserr_cls(effn))
+          buf_printf(b, "sp_raise_cls(\"%s\", sp_syserr_msg(\"%s\", (&(\"\\xff\")[1])))", effn, effn);
+        else buf_printf(b, "sp_raise_cls(\"%s\", (&(\"\\xff\")[1]))", effn);
       }
     }
     else if (ac >= 2 && nt_type(nt, av[0]) &&
@@ -35046,18 +35078,11 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         else {
           /* an explicitly given message is kept even when empty, unlike the
              class-only form, which falls back to the class name (#3711) */
-          if (comp_ntype(c, av[1]) == TY_STRING) {
-            buf_printf(b, "sp_raise_cls(\"%s\", sp_exc_msg_given(", effn);
-            emit_expr(c, av[1], b);
-            buf_puts(b, "))");
-          }
-          else {
-            /* nil is not a message, so the class name answers (#3812) */
-            int rt2 = ++g_tmp;
-            buf_printf(b, "({ sp_RbVal _t%d = ", rt2); emit_boxed(c, av[1], b);
-            buf_printf(b, "; sp_raise_cls(\"%s\", _t%d.tag == SP_TAG_NIL ? (&(\"\\xff\")[1])"
-                          " : sp_exc_msg_given(sp_poly_to_s(_t%d))); })", effn, rt2, rt2);
-          }
+          int syserr = xc < 0 && syserr_cls(effn);
+          buf_printf(b, "sp_raise_cls(\"%s\", ", effn);
+          if (syserr) buf_printf(b, "sp_syserr_msg(\"%s\", ", effn);
+          emit_exc_given_msg(c, av[1], b);
+          buf_puts(b, syserr ? "))" : ")");
         }
       }
     }
