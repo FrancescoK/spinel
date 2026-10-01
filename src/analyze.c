@@ -18578,6 +18578,24 @@ int spread_string_reads(Compiler *c, Scope *m, int call, int pj, int *out, int *
   int lo, hi;
   if (fs >= 0) {
     int an = arg_layout_param_node(c, m, call, pj, NULL);
+    /* A required parameter ahead of the first splat is filled by the
+       argument at its own position, but the gather funds it when a later
+       argument rebinds that variable (gather_lead_arg): the layout then
+       names no node, and the String the argument read first is the one in
+       the gathered Array (`gath(s, *xs, (s = +"v"; 9))`). When that String
+       is the shared handle it is the read to follow: a lent parameter takes
+       the handle, or the append lands in the slot's copy and the String's
+       other name misses it. Any other String there stays lent as before,
+       so a call that hands over no shared String keeps its slots. */
+    if (an < 0 && pj < fs && pj < m->nparams && pj != m->rest_idx) {
+      for (int k = 0; k <= pj; k++)
+        if (!m->pnames[k] || k == m->rest_idx || k == m->kwrest_idx ||
+            (m->pdefault && m->pdefault[k] >= 0) || callee_param_is_declared_kwarg(c, m, m->pnames[k]))
+          return 0;
+      if (cap < 1 || !an_arg_is_shared_handle(c, av[pj])) return 0;
+      out[0] = av[pj]; direct[0] = 1;
+      return 1;
+    }
     if (an >= 0) {
       /* A splat of Array literals alone has a layout, and it places the
          parameter on an element: the literal the call builds holds that
