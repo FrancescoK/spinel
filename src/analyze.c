@@ -25437,6 +25437,10 @@ void analyze_program(Compiler *c) {
          function return types (e.g. `x = f([])` after `f`'s param was
          promoted from UNKNOWN to POLY_ARRAY) get updated. */
       ch |= infer_write_types(c);
+      /* ...and a global or constant written from such an ivar: `$g = @v`
+         merged the ivar's UNKNOWN or nil during the fixpoint and kept its
+         scalar slot, which the boxed ivar cannot be assigned to. */
+      ch |= infer_global_const_types(c);
       if (!ch) break;
     }
   }
