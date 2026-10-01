@@ -174,4 +174,7 @@ int is_integer_class_name(const char *n); /* Fixnum Integer */
 
 int is_ivar_access(const char *n);   /* instance_variable_get instance_variable_set */
 
+int is_gated_exception_accessor(const char *n); /* accessors owned by specific exception classes */
+int is_symbol_exception_accessor(const char *n); /* exception accessors that can return a Symbol */
+
 #endif
