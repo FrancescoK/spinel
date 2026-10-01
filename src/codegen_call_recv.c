@@ -128,6 +128,15 @@ void emit_str_append_arg(Compiler *c, int arg, const char *rtext, Buf *b) {
   emit_str_expr(c, arg, b);
 }
 
+/* A Float index is cut to the Integer it converts to, as CRuby's does (an
+   error then names that offset); NaN and a Float outside the C int range,
+   where CRuby raises RangeError, stay as they are. `tk` is the key temp, `tk0`
+   the copy kept for the messages. */
+static void emit_struct_float_offset(Buf *b, int tk, int tk0) {
+  buf_printf(b, " if (_t%d.tag == SP_TAG_FLT && _t%d.v.f > -2147483649.0 && _t%d.v.f < 2147483648.0)"
+                " _t%d = _t%d = sp_box_int((sp_int)_t%d.v.f);", tk, tk, tk, tk, tk0, tk);
+}
+
 /* One member read by an arbitrary key: an index (negative counts from the
    end), a Symbol or a String naming a member. CRuby raises for a key no member
    matches, so the miss is IndexError / NameError rather than nil. `rtxt` names
@@ -147,6 +156,8 @@ static void emit_struct_member_by_key(Compiler *c, ClassInfo *sc, const char *rt
                   " if (_t%d.tag != SP_TAG_INT) sp_raise_cls(\"TypeError\","
                   " sp_sprintf(\"no implicit conversion of %%s into Integer\","
                   " sp_poly_class_name(_t%d)));", tk, tk, tk, tk, tk0, tk, tk, tk);
+  else
+    emit_struct_float_offset(b, tk, tk0);
   buf_printf(b, " if (_t%d.tag == SP_TAG_INT && _t%d.v.i < 0) _t%d = sp_box_int(_t%d.v.i + %d);",
              tk, tk, tk, tk, sc->nmembers);
   buf_printf(b, " sp_RbVal _t%d = sp_box_nil();", tr);
@@ -11091,6 +11102,17 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       free(rbw.p);
       emit_boxed(c, argv[0], b);
       buf_printf(b, "; sp_RbVal _t%d = _t%d;", tk0, tk);
+      /* A Float key is cut to an Integer only where every member takes a value
+         of the type stored: the store below unboxes the value as the member's
+         type, so another type would be written as garbage. A Float key is a
+         NameError otherwise, as it was. */
+      {
+        TyKind fvt = comp_ntype(c, argv[1]);
+        int fok = fvt != TY_POLY && fvt != TY_UNKNOWN;
+        for (int i = 0; i < sc->nmembers && fok; i++)
+          if (sc->ivar_types[i] != TY_POLY && sc->ivar_types[i] != fvt) fok = 0;
+        if (fok) emit_struct_float_offset(b, tk, tk0);
+      }
       buf_printf(b, " if (_t%d.tag == SP_TAG_INT && _t%d.v.i < 0) _t%d = sp_box_int(_t%d.v.i + %d);",
                  tk, tk, tk, tk, sc->nmembers);
       /* The assignment's own value is the right-hand side in ITS type -- that
@@ -11168,6 +11190,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         /* a negative offset counts from the end; keep the original for the
            error message */
         buf_printf(b, "; sp_RbVal _t%d = _t%d;", tk0, tk);
+        emit_struct_float_offset(b, tk, tk0);
         buf_printf(b, " if (_t%d.tag == SP_TAG_INT && _t%d.v.i < 0) _t%d = sp_box_int(_t%d.v.i + %d);",
                    tk, tk, tk, tk, sc->nmembers);
         buf_printf(b, " sp_RbVal _t%d = sp_box_nil();", tr);

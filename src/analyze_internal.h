@@ -125,6 +125,7 @@ int an_bare_call_class_owned(Compiler *c, int id);
    member; an IntegerNode is a positional index. Returns the member index
    (0-based, matching ivar order) or -1. */
 int struct_member_idx(Compiler *c, ClassInfo *sc, int keynode);
+int struct_member_idx_float(Compiler *c, ClassInfo *sc, int keynode);
 /* Last statement of a scope's body, or -1. */
 int scope_body_last(Compiler *c, int mi);
 /* 1 if `node` is `<&block-param>.call(...)` / .() / [] for method mi -- the
