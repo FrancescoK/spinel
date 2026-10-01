@@ -26247,6 +26247,23 @@ static int boxed_write_takes_list(Compiler *c, int id, const int *argv, int argc
   return argc != 1 || nt_kind(nt, argv[0]) == NK_SplatNode;
 }
 
+static void emit_push_arg_list(Compiler *c, const int *argv, int argc, int tpa, Buf *b) {
+  for (int ai = 0; ai < argc; ai++) {
+    /* a splat contributes its ELEMENTS, not one array argument (#3957) */
+    if (nt_kind(c->nt, argv[ai]) == NK_SplatNode) {
+      int so = nt_ref(c->nt, argv[ai], "expression");
+      buf_printf(b, "sp_PolyArray_append_all(_t%d, ", tpa);
+      emit_splat_operand_array(c, so >= 0 ? so : argv[ai], b);
+      buf_puts(b, "); ");
+    }
+    else {
+      buf_printf(b, "sp_PolyArray_push(_t%d, ", tpa);
+      emit_boxed(c, argv[ai], b);
+      buf_puts(b, "); ");
+    }
+  }
+}
+
 static int emit_sg_accessor(Compiler *c, int ci, const char *cn, const char *name,
                             int argc, const int *argv, Buf *b) {
   ClassInfo *cls = &c->classes[ci];
@@ -32729,20 +32746,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       emit_boxed(c, recv, b);
       buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ",
                  trv, tpa, tpa);
-      for (int ai = 0; ai < argc; ai++) {
-        /* a splat contributes its ELEMENTS, not one array argument (#3957) */
-        if (nt_kind(nt, argv[ai]) == NK_SplatNode) {
-          int so = nt_ref(nt, argv[ai], "expression");
-          buf_printf(b, "sp_PolyArray_append_all(_t%d, ", tpa);
-          emit_splat_operand_array(c, so >= 0 ? so : argv[ai], b);
-          buf_puts(b, "); ");
-        }
-        else {
-          buf_printf(b, "sp_PolyArray_push(_t%d, ", tpa);
-          emit_boxed(c, argv[ai], b);
-          buf_puts(b, "); ");
-        }
-      }
+      emit_push_arg_list(c, argv, argc, tpa, b);
       buf_printf(b, "sp_File *_t%d = sp_poly_as_io(_t%d, \"printf\"); ", tio3, trv);
       buf_printf(b, "if (_t%d->len == 0) sp_raise_cls(\"ArgumentError\", \"too few arguments\"); ", tpa);
       buf_printf(b, "sp_RbVal _t%d = sp_PolyArray_shift(_t%d); SP_GC_ROOT_RBVAL(_t%d); ", tfv, tpa, tfv);
@@ -32764,19 +32768,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         emit_boxed(c, recv, b);
         buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ",
                    trv, tpa, tpa);
-        for (int ai = 0; ai < argc; ai++) {
-          if (nt_kind(nt, argv[ai]) == NK_SplatNode) {
-            int so = nt_ref(nt, argv[ai], "expression");
-            buf_printf(b, "sp_PolyArray_append_all(_t%d, ", tpa);
-            emit_splat_operand_array(c, so >= 0 ? so : argv[ai], b);
-            buf_puts(b, "); ");
-          }
-          else {
-            buf_printf(b, "sp_PolyArray_push(_t%d, ", tpa);
-            emit_boxed(c, argv[ai], b);
-            buf_puts(b, "); ");
-          }
-        }
+        emit_push_arg_list(c, argv, argc, tpa, b);
         buf_printf(b, "sp_File *_t%d = sp_poly_as_io(_t%d, \"write\"); SP_IO_OPEN(_t%d); sp_int _t%d = 0; ",
                    tio3, trv, tio3, tn);
         buf_printf(b, "for (sp_int _i = 0; _i < _t%d->len; _i++) _t%d += sp_File_write_poly(_t%d, _t%d->data[_i]); _t%d; })",
