@@ -10448,6 +10448,8 @@ static void scg_add_def_body(NodeTable *nt, int cls, const char *cname, int like
 static void scg_add_def(NodeTable *nt, int cls, const char *cname, int like) {
   scg_add_def_body(nt, cls, cname, like, 0);
 }
+/* `raising`: 0 reads the constant, 1 raises NameError; 2 and 3 are the
+   `defined?` twin, `__spinel_cd_Name`, answering "constant" or nil */
 static void scg_add_def_body(NodeTable *nt, int cls, const char *cname, int like, int raising) {
   int body = nt_ref(nt, cls, "body");
   if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) {
@@ -10456,14 +10458,28 @@ static void scg_add_def_body(NodeTable *nt, int cls, const char *cname, int like
     nt_node_set_ref(nt, cls, "body", nb);
     body = nb;
   }
-  char mname[256]; snprintf(mname, sizeof mname, "__spinel_cg_%s", cname);
+  char mname[256]; snprintf(mname, sizeof mname, raising >= 2 ? "__spinel_cd_%s" : "__spinel_cg_%s", cname);
   int bn = 0; const int *bs = nt_arr(nt, body, "body", &bn);
   for (int k = 0; k < bn; k++)
     if (nt_kind(nt, bs[k]) == NK_DefNode && nt_str(nt, bs[k], "name") &&
         sp_streq(nt_str(nt, bs[k], "name"), mname)) return;
   int d = fwd_new_node_like(nt, like, "DefNode");
   int db = fwd_new_node_like(nt, like, "StatementsNode");
-  if (raising) {
+  if (raising == 2) {
+    int sn = str_node_like(nt, like, "constant");
+    nt_node_set_int(nt, sn, "fzl", 1);   /* defined?'s answers are frozen */
+    nt_node_set_arr(nt, db, "body", &sn, 1);
+  }
+  else if (raising == 3) {
+    /* nil, typed as defined?'s answer is (a bare nil would make the twin
+       return nothing while its siblings return a String) */
+    int dn = fwd_new_node_like(nt, like, "DefinedNode");
+    int cr = fwd_new_node_like(nt, like, "ConstantReadNode");
+    nt_node_set_str(nt, cr, "name", "SpinelNoSuchConstant__");
+    nt_node_set_ref(nt, dn, "value", cr);
+    nt_node_set_arr(nt, db, "body", &dn, 1);
+  }
+  else if (raising) {
     /* raise NameError, "uninitialized constant X"; nil */
     int rc = fwd_new_node_like(nt, like, "CallNode");
     int ra = fwd_new_node_like(nt, like, "ArgumentsNode");
@@ -10623,6 +10639,9 @@ int desugar_self_const_get(Compiler *c) {
     if (!cname || !cname[0] || cname[0] < 'A' || cname[0] > 'Z' || strstr(cname, "::")) continue;
     if (!parent) parent = an_parent_map(nt);
     if (!parent) break;
+    /* `defined?(self::NAME)`: the same dispatch, to a twin that answers
+       "constant" or nil, and the defined? itself becomes the call */
+    int dnode = cpath && parent[id] >= 0 && nt_kind(nt, parent[id]) == NK_DefinedNode ? parent[id] : -1;
     /* the enclosing def must be a class method: `def self.m` or a def in
        `class << self`; then the class it belongs to */
     int p = parent[id], def = -1;
@@ -10652,7 +10671,25 @@ int desugar_self_const_get(Compiler *c) {
     for (int m = 0; m < n0; m++) {
       NodeKind mk = nt_kind(nt, m);
       if ((mk != NK_ClassNode && mk != NK_ModuleNode) || m == owner) continue;
-      if (scg_body_defines(nt, m, cname)) { scg_add_def(nt, m, cname, id); others = 1; }
+      if (scg_body_defines(nt, m, cname)) {
+        if (dnode >= 0) scg_add_def_body(nt, m, cname, id, scg_body_privatizes(nt, m, cname) ? 3 : 2);
+        else scg_add_def(nt, m, cname, id);
+        others = 1;
+      }
+    }
+    if (dnode >= 0) {
+      scg_add_def_body(nt, owner, cname, id, scg_ancestor_defines(nt, owner, cname, n0) ? 2 : 3);
+      char dname[256]; snprintf(dname, sizeof dname, "__spinel_cd_%s", cname);
+      int line = (int)nt_int(nt, dnode, "node_line", 0);
+      int file = (int)nt_int(nt, dnode, "node_file", 0);
+      nt_node_reset(nt, dnode, "CallNode");
+      if (line) nt_node_set_int(nt, dnode, "node_line", line);
+      if (file) nt_node_set_int(nt, dnode, "node_file", file);
+      if (cls_recv >= 0) nt_node_set_ref(nt, dnode, "receiver", cls_recv);
+      nt_node_set_str(nt, dnode, "name", dname);
+      nt_node_set_ref(nt, dnode, "arguments", -1);
+      changed = 1;
+      continue;
     }
     /* the method's own class answers through its lexical scope -- unless it
        leaves the name to its subclasses (an abstract `self::KEYBYTES`), where
