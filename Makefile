@@ -1612,6 +1612,7 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/string_handle_poly_variable.rb \
                   test/string_lent_global_slot.rb \
                   test/string_alias_conditional_write.rb \
+                  test/string_handle_poly_alias.rb \
                   test/string_handle_splat_gather.rb \
                   test/string_alias_gathered_lead.rb \
                   test/string_gather_optional_post.rb \
