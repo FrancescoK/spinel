@@ -13358,7 +13358,7 @@ static void sb_mut_tabs_build(Compiler *c, SbMutTab *lt, SbMutTab *it, SbMutTab 
     if (sp_str_mutator(un, SP_MUT_IVAR)) v = 1;
     else if (ul > 0 && un[ul - 1] == '!') v = -1;
     int ucid = -1;
-    if (us && !us->is_cmethod) ucid = us->class_id >= 0 ? us->class_id : toplevel;
+    if (us) ucid = us->class_id >= 0 ? us->class_id : toplevel;
     if (sp_str_mutator(un, SP_MUT_LOCAL)) sb_mut_tab_note(iat, urn, ucid, 1);
     if (v) sb_mut_tab_note(it, urn, ucid, v);
   }
@@ -13458,7 +13458,10 @@ static int strbuf_ivar_mut_kind(Compiler *c, int cid, const char *nm) {
    methods / instance_eval contexts return -1). */
 static int an_ivar_owner(Compiler *c, int node) {
   Scope *cs = comp_scope_of(c, node);
-  if (!cs || cs->is_cmethod) return -1;
+  if (!cs) return -1;
+  /* a class method's ivar is its class's civ_ slot, typed with the class's
+     ivars (strbuf_ivar_owner): the same rules make it the handle */
+  if (cs->is_cmethod) return cs->class_id;
   if (cs->class_id >= 0) return cs->class_id;
   return comp_class_index(c, "Toplevel");
 }
