@@ -92,6 +92,9 @@ static const PolyFace ty_poly_face_tbl[] = {
   {"assoc", PF_ARRAY, 1, 1, 0}, {"assoc", PF_HASH, 1, 1, 0},
   {"rassoc", PF_ARRAY, 1, 1, 0}, {"rassoc", PF_HASH, 1, 1, 0},
   {"fetch_values", PF_ARRAY, 1, -1, 0}, {"fetch_values", PF_HASH, 1, -1, 0},
+  /* fetch's block form: the dispatch that serves the argument forms has no
+     block to call on a miss */
+  {"fetch", PF_ARRAY, 1, 2, 1}, {"fetch", PF_HASH, 1, 2, 1},
   /* The read-only Hash/Enumerable face. */
   {"dig", PF_HASH | PF_LAST, 0, -1, -1}, {"value?", PF_HASH | PF_LAST, 0, -1, -1}, {"has_value?", PF_HASH | PF_LAST, 0, -1, -1},
   {"invert", PF_HASH | PF_LAST, 0, -1, -1}, {"assoc", PF_HASH | PF_LAST, 0, -1, -1}, {"rassoc", PF_HASH | PF_LAST, 0, -1, -1}, {"key", PF_HASH | PF_LAST, 0, -1, -1},
