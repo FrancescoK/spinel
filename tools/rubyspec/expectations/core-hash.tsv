@@ -448,7 +448,7 @@ transform_values_spec__012	REJECT
 transform_values_spec__013	FAIL
 transform_values_spec__014	PASS
 transform_values_spec__015	REJECT
-try_convert_spec__001	FAIL
+try_convert_spec__001	PASS
 try_convert_spec__002	HARNESS-SKEW
 try_convert_spec__003	REJECT
 try_convert_spec__004	HARNESS-SKEW
