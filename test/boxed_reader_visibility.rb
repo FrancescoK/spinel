@@ -45,3 +45,28 @@ end
 kid = [Kid.new, Pt.new(2)][0]
 try { kid.members }
 try { kid.secret }
+
+# a subclass that only inherits them finds them undefined; one whose
+# reopened body aliases the names below the `undef` answers the alias
+class Annex < Hall; end
+class Wing < Hall
+  attr_reader :payload
+  def initialize = (super; @payload = 11)
+end
+class Wing
+  alias members payload
+  alias secret payload
+end
+
+rest = [Annex.new, Wing.new, Pt.new(3)]
+try { rest[0].members }
+try { rest[0].secret }
+try { rest[1].members }
+try { rest[1].secret }
+
+# a Struct's member keeps its place below an `undef` of its reader
+class PtSub < Pt
+  undef x
+end
+class PtKid < PtSub; end
+[PtKid, Pt].each { |k| p k.new(4).to_a }

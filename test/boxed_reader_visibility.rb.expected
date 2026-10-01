@@ -9,3 +9,9 @@ NoMethodError: undefined method 'secret' for an instance of Hall
 [:x]
 9
 10
+NoMethodError: undefined method 'members' for an instance of Annex
+NoMethodError: undefined method 'secret' for an instance of Annex
+11
+11
+[4]
+[4]

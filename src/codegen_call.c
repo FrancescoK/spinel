@@ -21127,14 +21127,17 @@ void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b) {
          are checked here, as a method's are */
       if (!comp_reader_in_chain(c, k, vnm, NULL)) continue;
       /* undefined unless a class below the `undef` declares the reader
-         again (comp_is_undeffed_in_chain stops only at a method) */
+         again, or an alias of that name (comp_is_undeffed_in_chain stops
+         only at a method; a reader is not inherited past an `undef`, so a
+         reader below one is declared there) */
       int undeffed = 0;
       for (int u = k; u >= 0; u = c->classes[u].parent) {
         ClassInfo *uc = &c->classes[u];
         int hit = 0;
         for (int j = 0; j < uc->nundefs && !hit; j++) hit = sp_streq(uc->undefs[j], vnm);
         if (hit) { undeffed = 1; break; }
-        if (comp_is_reader(uc, vnm) || comp_method_in_class(c, u, vnm) >= 0) break;
+        for (int j = 0; j < uc->naliases && !hit; j++) hit = sp_streq(uc->alias_new[j], vnm);
+        if (hit || comp_is_reader(uc, vnm) || comp_method_in_class(c, u, vnm) >= 0) break;
       }
       if (undeffed) {
         buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d) { sp_exc_stage_recv(_t%d); "

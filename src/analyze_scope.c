@@ -5935,9 +5935,16 @@ void inherit_members(Compiler *c) {
        def answers the name for the child and everything below it, so copying
        the flag on let a grandchild read the attribute past the def -- and a
        grandchild that re-declares the attribute looked like it had only
-       inherited it, so a `super` below it skipped to the def. */
-    for (int k = 0; k < pc->nreaders; k++)
-      if (comp_method_in_class(c, i, pc->readers[k]) < 0) comp_add_reader(ci, pc->readers[k]);
+       inherited it, so a `super` below it skipped to the def. An attribute
+       the parent undefines stops there too: copied on, it looked declared
+       again in the child, and a boxed `sub.x` read it. A Struct's readers
+       are its positional members, so they stay. */
+    for (int k = 0; k < pc->nreaders; k++) {
+      int undeffed = 0;
+      for (int j = 0; j < pc->nundefs && !undeffed; j++) undeffed = sp_streq(pc->undefs[j], pc->readers[k]);
+      if (comp_method_in_class(c, i, pc->readers[k]) < 0 && (!undeffed || ci->is_struct))
+        comp_add_reader(ci, pc->readers[k]);
+    }
     for (int k = 0; k < pc->nwriters; k++) {
       char wn[300];
       snprintf(wn, sizeof wn, "%s=", pc->writers[k]);
